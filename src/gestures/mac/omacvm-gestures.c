@@ -898,12 +898,13 @@ int main(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-v")) verbose = 1;
     else if (!strcmp(argv[i], "--keys-only")) trackpad = 0;
-    else if (!strcmp(argv[i], "--scroll")) ;   // test flag of the Glide experiment: Glide is per VM now
     else if (!strcmp(argv[i], "--record")) {
       char path[1024]; snprintf(path, sizeof path, "%s/Library/Logs/omacvm-input.tsv", getenv("HOME"));
       rec = fopen(path, "a");
       if (rec) setvbuf(rec, NULL, _IOLBF, 0);
     }
+    // A wrong option is not worth a launchd restart loop: say it and go on.
+    else logf_("unknown option %s, ignored", argv[i]);
   }
   signal(SIGPIPE, SIG_IGN);
 
