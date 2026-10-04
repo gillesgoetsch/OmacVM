@@ -1,5 +1,5 @@
 [Unit]
-Description=OmacVM: install Omanotch's VM side at the first login (build.sh --omanotch)
+Description=OmacVM: install Omanotch's VM side at the first login (feature omanotch)
 After=graphical-session.target omacvm-plugins.service
 PartOf=graphical-session.target
 ConditionPathExists=/usr/local/share/omacvm/omanotch/guest/install.sh

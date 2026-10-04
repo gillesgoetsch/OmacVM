@@ -4,7 +4,7 @@
 # From vincenzopalazzo/omarchy-parallels (MIT, see LICENSE here), with two
 # fixes (work dir created before the key, sparse disk pour). OmacVM only
 # uses it to get a bootable ARM64 Linux with SSH into a fresh Parallels VM;
-# build.sh then installs Arch Linux ARM + omarchy-mac onto a second disk from
+# `omacvm build` then installs Arch Linux ARM + omarchy-mac onto a second disk from
 # it and deletes this disk again.
 #
 # Original description:
@@ -37,13 +37,14 @@ RAW_IMAGE=""               # --raw-image PATH: write a plain disk image (UTM) in
 log()  { printf '\033[1;32m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
-trap 'printf "\033[1;31mbuild.sh failed on line %s\033[0m\n" "$LINENO" >&2' ERR
+trap 'printf "\033[1;31mbuild-live.sh failed on line %s\033[0m\n" "$LINENO" >&2' ERR
 
 usage() {
   cat <<EOF
-usage: ./build.sh [--vm-name NAME] [--dmg PATH] [--release TAG]
-                  [--root-size-gib N] [--esp-size-mib N] [--disk-size-mib N]
-                  [--workdir DIR] [--ssh-key PUBKEY] [--skip-boot] [--keep-dmgs]
+usage: build-live.sh [--vm-name NAME] [--vm-dir DIR] [--dmg PATH] [--release TAG]
+                     [--root-size-gib N] [--esp-size-mib N] [--disk-size-mib N]
+                     [--workdir DIR] [--ssh-key PUBKEY] [--skip-boot] [--keep-dmgs]
+                     [--raw-image PATH]
 EOF
   exit 0
 }

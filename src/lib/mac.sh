@@ -217,7 +217,7 @@ utm_start() {   # <vm name>: UTM must run in the foreground (open -g makes the V
     for ((i = 0; i < 30; i++)); do pgrep -xq UTM || break; sleep 1; done
     open -a UTM; sleep 5
   done
-  die "UTM VM '$1' did not start (try quitting and reopening UTM, then run build.sh again)"
+  die "UTM VM '$1' did not start (try quitting and reopening UTM, then run the omacvm command again)"
 }
 
 # utm_add_sound NAME: an Intel HDA sound card (speakers and microphone, through
