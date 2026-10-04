@@ -59,3 +59,6 @@ jobs:
 
       - name: Prebuilt manifests are checked (untrusted input)
         run: src/tests/prebuilt-manifest.sh
+
+      - name: omacvm-netd offline tests
+        run: src/net/mac/test.sh

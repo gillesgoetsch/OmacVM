@@ -27,6 +27,9 @@
 // - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
 //   are logged at most once per LOG_QUIET seconds, and the log is cut at
 //   LOG_MAX bytes.
+// - vmnet answers a start or stop within VMNET_WAIT seconds, or the
+//   connection is given up (logged) and its slot freed, so a vmnet that never
+//   answers cannot use up a user's slots.
 // It runs no commands, opens no files, takes no other requests, and frames
 // are only passed on (their length checked), never parsed.
 //
@@ -77,6 +80,9 @@
 #define RBUF (512 * 1024)       // socket -> vmnet read buffer
 #define MAX_FRAME 65536         // a length above this is not QEMU's framing: drop the connection
 #define SOCK_BUF (1024 * 1024)  // our side's socket buffers (macOS's default is 8 KB)
+#ifndef VMNET_WAIT
+#define VMNET_WAIT 10           // seconds to wait for vmnet's start/stop answer
+#endif
 
 static SecRequirementRef requirement;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -211,22 +217,36 @@ static void toVM(struct conn *c) {
             out[k++] = (struct iovec){ iov[i].iov_base, pkts[i].vm_pkt_size };
         }
         if (writeAll(c->fd, out, k)) { shutdown(c->fd, SHUT_RDWR); return; }
-        c->toVM += (unsigned long long)n;
+        c->toVM += (unsigned long long)(k / 2);
+        c->dropped += (unsigned long long)(n - k / 2);
         if (n < BATCH) return;
     }
 }
 
-// Stops c's vmnet interface on its own queue and waits: no callback runs after.
-static void stopInterface(struct conn *c) {
-    if (!c->iface) return;
+static dispatch_time_t vmnetDeadline(void) { return dispatch_time(DISPATCH_TIME_NOW, (int64_t)VMNET_WAIT * NSEC_PER_SEC); }
+
+// Stops c's vmnet interface on its own queue and waits: no callback runs
+// after. 0 when stopped; -1 when vmnet did not answer in time: a callback may
+// still run then, so the caller must keep c (and its socket) alive.
+static int stopInterface(struct conn *c) {
+    if (!c->iface) return 0;
     vmnet_interface_set_event_callback(c->iface, 0, NULL, NULL);
+    // The semaphore is not released on a timeout: the late callback still signals it.
     dispatch_semaphore_t s = dispatch_semaphore_create(0);
-    if (vmnet_stop_interface(c->iface, c->q, ^(vmnet_return_t st) { (void)st; dispatch_semaphore_signal(s); }) == VMNET_SUCCESS)
-        dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
-    dispatch_release(s);
+    int r = 0;
+    if (vmnet_stop_interface(c->iface, c->q, ^(vmnet_return_t st) { (void)st; dispatch_semaphore_signal(s); }) == VMNET_SUCCESS) {
+        if (dispatch_semaphore_wait(s, vmnetDeadline())) {
+            logf_("pid %d: vmnet did not stop within %d s: giving the interface up", c->pid, VMNET_WAIT);
+            r = -1;
+        }
+    }
+    if (!r) dispatch_release(s);
     c->iface = NULL;
+    return r;
 }
 
+// 0: c's vmnet interface is up. -1: it is not. -2: vmnet did not answer in
+// time and may still call back on c->q: the caller keeps c alive.
 static int startInterface(struct conn *c) {
     xpc_object_t desc = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_uint64(desc, vmnet_operation_mode_key, VMNET_SHARED_MODE);
@@ -240,17 +260,43 @@ static int startInterface(struct conn *c) {
     uuid_t id; uuid_generate_random(id);
     xpc_dictionary_set_uuid(desc, vmnet_interface_id_key, id);
 
+    // vmnet answers on c->q. Waited for VMNET_WAIT seconds; an answer after
+    // that (late) stops what it started. The answer and the giving up are
+    // decided under the lock, so exactly one of the two happens.
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     __block vmnet_return_t status = VMNET_FAILURE;
     __block size_t maxPacket = 0;
-    c->iface = vmnet_start_interface(desc, c->q, ^(vmnet_return_t st, xpc_object_t param) {
-        status = st;
-        if (st == VMNET_SUCCESS && param) maxPacket = (size_t)xpc_dictionary_get_uint64(param, vmnet_max_packet_size_key);
-        dispatch_semaphore_signal(done);
+    __block int answered = 0, late = 0;
+    __block interface_ref iface = NULL;
+    dispatch_queue_t q = c->q;
+    iface = vmnet_start_interface(desc, q, ^(vmnet_return_t st, xpc_object_t param) {
+        pthread_mutex_lock(&lock);
+        int gaveUp = late;
+        if (!gaveUp) {
+            answered = 1;
+            status = st;
+            if (st == VMNET_SUCCESS && param) maxPacket = (size_t)xpc_dictionary_get_uint64(param, vmnet_max_packet_size_key);
+        }
+        pthread_mutex_unlock(&lock);
+        if (!gaveUp) dispatch_semaphore_signal(done);
+        else if (st == VMNET_SUCCESS && iface) vmnet_stop_interface(iface, q, ^(vmnet_return_t s2) { (void)s2; });
     });
     xpc_release(desc);
-    if (!c->iface) return -1;
-    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    c->iface = iface;
+    if (!c->iface) { dispatch_release(done); return -1; }
+    if (dispatch_semaphore_wait(done, vmnetDeadline())) {
+        pthread_mutex_lock(&lock);
+        int got = answered;
+        if (!got) late = 1;
+        pthread_mutex_unlock(&lock);
+        if (!got) {
+            logf_("pid %d: vmnet did not start within %d s: giving it up", c->pid, VMNET_WAIT);
+            dispatch_release(done);
+            c->iface = NULL;
+            return -2;   // the late answer still uses c->q: keep it
+        }
+        dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);   // answered just now: signalled next
+    }
     dispatch_release(done);
     if (status != VMNET_SUCCESS) {
         logf_("pid %d: vmnet did not start (status %d)", c->pid, status);
@@ -261,7 +307,7 @@ static int startInterface(struct conn *c) {
     c->rx = maxPacket >= 1514 && maxPacket <= MAX_FRAME ? malloc((size_t)BATCH * maxPacket) : NULL;
     if (!c->rx) {
         logf_("pid %d: no buffers for vmnet's frames (max packet %zu)", c->pid, maxPacket);
-        stopInterface(c);
+        if (stopInterface(c)) return -2;
         return -1;
     }
     vmnet_interface_set_event_callback(c->iface, VMNET_INTERFACE_PACKETS_AVAILABLE, c->q,
@@ -317,16 +363,27 @@ static void *serve(void *arg) {
     char label[64];
     snprintf(label, sizeof label, "org.omacvm.netd.%d", c->fd);
     c->q = dispatch_queue_create(label, DISPATCH_QUEUE_SERIAL);
-    if (startInterface(c) == 0) {
+    int hung = 0;
+    int r = startInterface(c);
+    if (r == 0) {
         logf_("pid %d (uid %d): connected, vmnet interface up (max frame %zu)", c->pid, c->uid, c->maxPacket);
         fromVM(c);
         // Wake a write that waits for QEMU, then stop vmnet on its own queue:
         // no callback runs after the stop.
         shutdown(c->fd, SHUT_RDWR);
-        stopInterface(c);
+        hung = stopInterface(c) != 0;
         logf_("pid %d: disconnected (%llu frames to the VM, %llu from it, %llu dropped)", c->pid, c->toVM, c->fromVM, c->dropped);
     } else {
+        hung = r == -2;
         logf_("pid %d: no vmnet interface: closing", c->pid);
+    }
+    if (hung) {
+        // vmnet may still call toVM on c->q: keep c, its buffers and its
+        // (shut down) socket, so nothing it touches is freed or reused. The
+        // slot goes back; the leak ends when the daemon exits idle.
+        shutdown(c->fd, SHUT_RDWR);
+        slotGive(c->uid);
+        return NULL;
     }
     close(c->fd);
     dispatch_release(c->q);
@@ -386,10 +443,11 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--version")) { puts(NETD_VERSION); return 0; }
         if (!strcmp(argv[i], "--requirement") && i + 1 < argc) req = argv[++i];
-        else if (!strcmp(argv[i], "--user") && i + 1 < argc && nusers < MAX_USERS) {
+        else if (!strcmp(argv[i], "--user") && i + 1 < argc) {
             char *end; long u = strtol(argv[++i], &end, 10);
             if (*end || u < 0) { fprintf(stderr, "omacvm-netd: --user takes a uid\n"); return 2; }
-            users[nusers++] = (uid_t)u;
+            if (nusers < MAX_USERS) users[nusers++] = (uid_t)u;
+            else logf_("more than %d users: uid %ld left out", MAX_USERS, u);
         }
         else if (!strcmp(argv[i], "--socket") && i + 1 < argc) path = argv[++i];
         else { fprintf(stderr, "usage: omacvm-netd --requirement REQ --user UID... [--socket PATH]\n"); return 2; }
