@@ -62,7 +62,7 @@ app_dir() {
 # address is in its fast-network file. On vmnet the VM has an address of its
 # own (macOS's DHCP server hands it out), and SSH goes there (port 22), its
 # host key checked as always.
-app_net() { sed -n '1s/ .*//p' "$1/logs/network" 2>/dev/null; }   # DIR -> vmnet|slirp
+app_net() { awk 'NR == 1 { print $1 }' "$1/logs/network" 2>/dev/null; }   # DIR -> vmnet|slirp
 app_vmnet_ip() {   # DIR -> the VM's address in /var/db/dhcpd_leases (bootpd drops leading zeros)
   local m
   m=$(sed -n 's/^mac=//p' "$1/fast-network" 2>/dev/null | tr 'A-F' 'a-f' | sed 's/:0/:/g; s/^0//')
