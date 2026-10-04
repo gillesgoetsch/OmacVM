@@ -254,7 +254,7 @@ app)
       vainfo --display drm 2>/dev/null | sed -n 's/^[[:space:]]*VAProfile\([A-Za-z0-9]*\)[[:space:]]*:[[:space:]]*VAEntrypointEncSlice$/\1/p' | tr '\n' ' ')
   if [[ -n $e ]]; then
     ok "video encoding" "the Mac's media engine: $e"
-    check "WebRTC encoding in Chrome" "VA-API encoder features in the browsers' flags (omacvm apply)" \
+    check "WebRTC encoding" "Chrome, Brave: VA-API encoder features in their flags (omacvm apply)" \
       test -s "$H/.local/state/omacvm/video-encode-flags"
   elif command -v vainfo >/dev/null; then skip "video encoding" "none offered (OmacVM.app older than the video encoding?)"; fi ;;
 fusion)
