@@ -188,25 +188,18 @@ static int nameIs(int i, int exact) {
   return n[0] && (exact ? !strcmp(frontTitle, n) : strstr(frontTitle, n) != NULL);
 }
 
-// OmacVM.app's VMs on its fast network (vmnet) come in on UTM's network
-// (192.168.64.1): while the app is in front they count as the app's, but only
-// by their name in its window title (a UTM VM is there too).
-static int onFrontNet(int i) {
-  return clients[i].net == frontNet || (frontNet == NET_APP && clients[i].net == NET_UTM && nameIs(i, 0));
-}
-
 // The front VM's clients (clients[].target); sendLock held. Returns the
 // targets as a bit mask.
 static unsigned pickTargets(void) {
   int exact = 0; size_t best = 0;
   for (int i = 0; i < MAX_CLIENTS; i++) {
-    if (clients[i].fd < 0 || !onFrontNet(i)) continue;
+    if (clients[i].fd < 0 || clients[i].net != frontNet) continue;
     if (nameIs(i, 1)) exact = 1;
     else if (nameIs(i, 0) && strlen(clients[i].name) > best) best = strlen(clients[i].name);
   }
   unsigned mask = 0;
   for (int i = 0; i < MAX_CLIENTS; i++) {
-    int on = clients[i].fd >= 0 && onFrontNet(i) &&
+    int on = clients[i].fd >= 0 && clients[i].net == frontNet &&
              (exact ? nameIs(i, 1) : best ? nameIs(i, 0) && strlen(clients[i].name) == best : 1);
     clients[i].target = on;
     if (on) mask |= 1u << i;
@@ -746,8 +739,9 @@ static void addClient(int c, int net, const char *ip, int gestures, int glide, c
   clients[slot].gestures = gestures != 0; clients[slot].glide = glide != 0;
   snprintf(clients[slot].ip, sizeof clients[slot].ip, "%s", ip);
   snprintf(clients[slot].name, sizeof clients[slot].name, "%s", name);
-  logf_("guest connected: %s (gestures %s, scroll momentum %s%s%s%s)", ip, gestures ? "on" : "off",
-        glide ? "on" : "off", name[0] ? ", VM \"" : "", name, name[0] ? "\"" : "");
+  logf_("guest connected: %s (gestures %s, scroll momentum %s%s%s%s%s)", ip, gestures ? "on" : "off",
+        glide ? "on" : "off", name[0] ? ", VM \"" : "", name, name[0] ? "\"" : "",
+        net == NET_APP && strncmp(ip, "127.", 4) ? ", OmacVM.app on its fast network" : "");
   retargetLocked(capturing);
   int front = clients[slot].target;
   pthread_mutex_unlock(&sendLock);
@@ -775,7 +769,7 @@ static void *greet(void *arg) {
   int c = g.fd, gestures = 1, glide = 0, ok = 0;
   const char *addr = listenAddrs[g.net];
   char ip[32]; inet_ntop(AF_INET, &g.addr, ip, sizeof ip);
-  char line[640], name64[360] = "", name[256];
+  char line[640], name64[360] = "", name[256], kind[8] = "";
   const char *why = "no token (omacvm update gives the VM a daemon that proves it)";
   struct timeval tv = { .tv_sec = 1 };
   setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
@@ -796,7 +790,7 @@ static void *greet(void *arg) {
       int k = snprintf(out, sizeof out, "M %s %s\n", mn, mine);
       tv.tv_sec = 3; setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
       if (send(c, out, (size_t)k, MSG_NOSIGNAL) == k && recvLine(c, line, sizeof line) > 0 && line[0] == 'R' &&
-          sscanf(line + 1, "%d %d %71s %359s", &gestures, &glide, got, name64) >= 3) {
+          sscanf(line + 1, "%d %d %71s %359s %7s", &gestures, &glide, got, name64, kind) >= 3) {
         proof(tok, tl, "vm", at, gn, mn, want);
         ok = sameText(got, want);
       }
@@ -810,7 +804,11 @@ static void *greet(void *arg) {
   }
   if (ok) {
     base64Name(name64, name, sizeof name);
-    addClient(c, g.net, ip, gestures, glide, name);
+    // OmacVM.app's VMs on its fast network (vmnet) come in on UTM's address
+    // and say they are the app's: they belong to the app, never to UTM (else
+    // UTM in front with no named match would send everything to them).
+    int net = g.net == NET_UTM && !strcmp(kind, "app") ? NET_APP : g.net;
+    addClient(c, net, ip, gestures, glide, name);
   } else {
     // A refused daemon tries again every 2 s; only the log line is throttled.
     // Keeping its socket open instead would not save anything: a daemon from

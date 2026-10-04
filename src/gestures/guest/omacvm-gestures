@@ -632,8 +632,12 @@ def run(pad, keys, glide):
         m = re.fullmatch(rb"M ([0-9a-f]{32}) ([0-9a-f]{64})", line)
         if not m or not hmac.compare_digest(m[2], proof(tok, "mac", addr, gn, m[1].decode())):
             raise ConnectionError(f"{host}:{PORT} did not prove it knows the Bridge's token: not talking to it")
+        # An OmacVM.app VM says so after its name ("=": none): on the fast
+        # network it comes in on UTM's address, and the Mac must not count it
+        # as a UTM VM. Mac helpers from before read only up to the name.
+        app = " app" if os.environ.get("OMACVM_VM_TYPE") == "app" else ""
         s.sendall(f"R {int(GESTURES)} {int(GLIDE_ON)} {proof(tok, 'vm', addr, gn, m[1].decode()).decode()}"
-                  f"{' ' + NAME if NAME else ''}\n".encode())
+                  f"{' ' + (NAME or '=') if NAME or app else ''}{app}\n".encode())
         print(f"omacvm-gestures: connected to {host}:{PORT} (gestures {'on' if GESTURES else 'off'}, "
               f"scroll momentum {'on' if GLIDE_ON else 'off'})", flush=True)
         tick = -1          # forces the first settimeout (create_connection left 5 s)
