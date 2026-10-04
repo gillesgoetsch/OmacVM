@@ -83,9 +83,9 @@ done
 cpu1=$("${SSH[@]}" "head -1 /proc/stat"); t1=$(python3 -c "import time; print(time.time())"); m1=$(mac_cpu)
 "${SSH[@]}" "cat $G/out.jsonl" > "$OUT.jsonl" || true
 "${SSH[@]}" "pkill -f '/tmp/[w]ebrtc-encode-prof' || true; pkill -f '$G/[p]ost-server.py' || true"
-python3 - "$OUT" "$cpu0" "$cpu1" "$t0" "$t1" "$m0" "$m1" "$SRC" "$FEATURES" <<'PY'
+python3 - "$OUT" "$cpu0" "$cpu1" "$t0" "$t1" "$m0" "$m1" "$SRC" "$FEATURES" "$HD" <<'PY'
 import json, sys
-out, c0, c1, t0, t1, m0, m1, src, feats = sys.argv[1:10]
+out, c0, c1, t0, t1, m0, m1, src, feats, hd = sys.argv[1:11]
 secs = max(float(t1) - float(t0), 1)
 a = [int(x) for x in c0.split()[1:]]; b = [int(x) for x in c1.split()[1:]]
 busy = (sum(b) - sum(a)) - ((b[3] + b[4]) - (a[3] + a[4]))
@@ -93,7 +93,7 @@ guest_cores = busy / 100.0 / secs
 (q0, v0), (q1, v1) = [[float(x) for x in m.split()] for m in (m0, m1)]
 recs = [json.loads(l) for l in open(out + '.jsonl') if l.strip()]
 res = next((r for r in recs if r.get('kind') == 'result'), {})
-summary = {"test": "webrtc-encode", "source": src, "chrome_features": feats, "result": res,
+summary = {"test": "webrtc-encode", "source": src, "hd": hd == "1", "chrome_features": feats, "result": res,
            "seconds": round(secs, 1), "guest_cpu_cores": round(guest_cores, 2),
            "qemu_cpu_cores": round((q1 - q0) / secs, 2), "mac_vt_cpu_cores": round((v1 - v0) / secs, 3),
            "hardware_encoder": bool(res.get("senders")) and all(
