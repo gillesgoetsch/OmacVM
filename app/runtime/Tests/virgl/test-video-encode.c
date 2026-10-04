@@ -7,8 +7,9 @@
  * SPS, PPS) and holds an IDR slice, later frames hold slices, and the whole stream
  * decodes again (VTDecompressionSession) to pictures close to what went in (luma PSNR).
  * Guest input: nonsense rate control (zero or huge frame rates, bitrates, GOP, QP) still
- * encodes, also when the frame rate changes; a frame never ended does not leak into the
- * next; a frame that fails gets failure feedback; a coded-data buffer too small gets a
+ * encodes, also when the frame rate changes; a frame never ended gets failure feedback and
+ * does not leak into the next; a frame that fails, or whose coded-data resource is missing
+ * or not a buffer, gets failure feedback; a coded-data buffer too small gets a
  * failure, not a cut frame; codecs the host does not offer (too small, too large, HEVC
  * Main 10) encode nothing.
  * Runs on Apple's software OpenGL (soft-gl.h); the encoder is the Mac's media engine.
@@ -554,8 +555,10 @@ static void test_codec(uint32_t handle, uint32_t profile, const char *name, cons
             name, bad);
    check(!bad, line);
 
-   /* A frame begun and encoded but never ended, then a normal frame: that one
-    * gets its own output only. */
+   /* A frame begun and encoded but never ended: failure feedback when the next
+    * frame begins; then a normal frame gets its own output only. */
+   feed.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
+   feed.coded_size = 1234;
    make_picture(5, y, uv);
    emit_plane(c, R_Y, W, H, 1, y);
    emit_plane(c, R_UV, W / 2, H / 2, 2, uv);
@@ -568,7 +571,13 @@ static void test_codec(uint32_t handle, uint32_t profile, const char *name, cons
    emit(c, R_CODED);
    emit(c, R_DESC);
    emit(c, R_FEED);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
+   emit(c, handle);
+   emit(c, BUF);
    submit(c);
+   snprintf(line, sizeof(line), "%s: a frame never ended: failure feedback at the next begin "
+            "(stat %u, size %u)", name, feed.stat, feed.coded_size);
+   check(feed.stat == VIRGL_VIDEO_ENCODE_STAT_FAILURE && feed.coded_size == 0, line);
    r = encode_frame(handle, profile, 6, &rc_normal, R_CODED);
    int types[64], k = r ? 0 : nal_types(coded, feed.coded_size, types, 64), slices = 0;
    for (int i = 0; i < k; i++)
@@ -609,10 +618,16 @@ static void test_codec(uint32_t handle, uint32_t profile, const char *name, cons
    snprintf(line, sizeof(line), "%s: 16-byte coded buffer: failure feedback (stat %u, size %u)",
             name, feed.stat, feed.coded_size);
    check(r != 0 && feed.stat == VIRGL_VIDEO_ENCODE_STAT_FAILURE && feed.coded_size == 0, line);
-   /* A texture as the coded-data buffer: refused before encoding. */
+   /* A texture as the coded-data buffer, or no such resource: refused before
+    * encoding, with failure feedback. */
    r = encode_frame(handle, profile, 1, &rc_normal, R_TEX);
-   snprintf(line, sizeof(line), "%s: texture as coded buffer: refused", name);
-   check(r != 0 && feed.stat != VIRGL_VIDEO_ENCODE_STAT_SUCCESS, line);
+   snprintf(line, sizeof(line), "%s: texture as coded buffer: refused, failure feedback "
+            "(stat %u)", name, feed.stat);
+   check(r != 0 && feed.stat == VIRGL_VIDEO_ENCODE_STAT_FAILURE && feed.coded_size == 0, line);
+   r = encode_frame(handle, profile, 1, &rc_normal, 999);
+   snprintf(line, sizeof(line), "%s: unknown coded buffer: refused, failure feedback "
+            "(stat %u)", name, feed.stat);
+   check(r != 0 && feed.stat == VIRGL_VIDEO_ENCODE_STAT_FAILURE && feed.coded_size == 0, line);
    /* and the codec still works after both */
    r = encode_frame(handle, profile, 2, &rc_normal, R_CODED);
    snprintf(line, sizeof(line), "%s: encodes again afterwards", name);
