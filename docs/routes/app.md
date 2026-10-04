@@ -173,6 +173,52 @@ the VM's SSH on `127.0.0.1:<port>`.
   draws Omarchy's own pointer; VMs set up before that still need the Mac's
   pointer (QEMU's `show-cursor=on`).
 
+## Fast network (experimental, off by default)
+
+`omacvm enable fast-network --vm NAME` puts the VM on macOS's own VM network
+(vmnet, shared mode, as Parallels and UTM) instead of QEMU's user network.
+The VM gets an address of its own on `192.168.64.0/24`, the Mac is
+`192.168.64.1` for it, and traffic between the VM and the Mac no longer goes
+through one QEMU thread. Measured: see
+[the numbers](../benchmarks/README.md#fast-network-omacvmapp).
+
+- vmnet needs root or Apple's `com.apple.vm.networking` entitlement, which the
+  app does not have. So `omacvm enable fast-network` builds and installs a
+  small system service, `omacvm-netd` (`src/net/mac`), and macOS asks for your
+  password once. launchd starts it when a VM connects; it quits a minute
+  after the last one went.
+- The service only takes connections from OmacVM.app's QEMU: it checks the
+  connecting process's code signature (OmacVM's Developer ID team, or for an
+  app built from source exactly that build: enable it again after a rebuild).
+  It makes one vmnet interface per VM, isolated from the other VMs'
+  interfaces, and does nothing else: no commands, no files, no other requests.
+- The app picks the network at each start: the fast network when the VM has
+  it (its `fast-network` file, with its own MAC address), the service is
+  there and would take this app's QEMU; else QEMU's user network as before.
+  `logs/network` and `qemu.log` say which and why; `omacvm check` shows it.
+- On the fast network the Mac reaches the VM's SSH on its own address (from
+  macOS's DHCP leases), with the same remembered host key; the VM lets SSH in
+  from `192.168.64.1` only. The VM's Bridge and Gestures find the Mac at the
+  gateway and prove it with that address, as on UTM.
+- `omacvm disable fast-network` goes back at the next start; `omacvm
+  uninstall` removes the service.
+
+What is missing before it can become the default: [below](#fast-network-not-done-yet).
+
+### Fast network: not done yet
+
+- Omanotch over the fast network (its notchcast still looks for the Mac at
+  `10.0.2.2` in app VMs).
+- Tested on a Mac mini (macOS 27): SSH, DNS, IPv6, the Bridge (proof on
+  `192.168.64.1`), a restart of the service under a running VM (QEMU
+  reconnects, about 1 s without network), the VM paused for a minute (as over
+  the Mac's sleep), and the fallback to the user network without the service.
+- Not tested yet: VPN clients on the Mac, a real sleep and wake, Wi-Fi
+  changes while the VM runs, several app VMs at once, trackpad gestures over
+  the fast network, and the MacBook (numbers there too).
+- The service is built on the Mac (Xcode's Command Line Tools) and installed
+  from the omacvm command; the app has no button for it yet.
+
 ## Every Mac display
 
 QEMU's macOS window (its "cocoa" display) showed one guest screen. OmacVM's

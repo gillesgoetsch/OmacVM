@@ -296,3 +296,42 @@ Notes:
 - Chrome must open on the built-in display's monitor: on Fusion it first
   opened on the external one (page 1920x1200, 60 Hz) and gave 41 to 43 fps and
   Basemark 2072 to 2596. Those runs are not in the table.
+
+## Fast network (OmacVM.app)
+
+QEMU's user network (libslirp, the default) against the fast network (vmnet
+through `omacvm-netd`, `omacvm enable fast-network`), same VM and same QEMU,
+one after the other on the Mac mini M4 (macOS 27, 16 GB; VM 6 CPUs / 6 GB,
+text mode, no other VM running), 2026-10-05. iperf3 20 s, single runs. CPU:
+process CPU time over the run, 100% = one core; the fast network adds
+`omacvm-netd`'s. Scripts: `measure-mini.sh` in the track notes (the same
+tests as the MacBook measurement of 2026-10-04).
+
+| Test | User network (slirp) | Fast network (vmnet) |
+|---|---|---|
+| VM → Mac, 1 stream | 3.0 Gbit/s, QEMU 189% | **7.2 Gbit/s**, QEMU 158% + netd 105% |
+| VM → Mac, 4 streams | 3.1 Gbit/s, 190% | **6.7 Gbit/s**, 167% + 106% |
+| Mac → VM, 1 stream | **12.2 Gbit/s**, 174% | 9.5 Gbit/s, 125% + 57% |
+| Mac → VM, 4 streams | **19.6 Gbit/s**, 279% | 8.6 Gbit/s, 171% + 64% |
+| Mac connects in, Mac → VM, 4 streams | **19.1 Gbit/s** (port forward) | 8.6 Gbit/s (the VM's own address) |
+| Mac connects in, VM → Mac, 4 streams | 3.0 Gbit/s | **6.7 Gbit/s** |
+| CPU per Gbit/s, VM → Mac | 0.63 cores | **0.37 cores** |
+| TCP connect VM → Mac, median (min..max) | 0.13 ms (0.11..0.17) | 0.17 ms (0.13..0.24) |
+| Small HTTP request VM → Mac, median | 0.34 ms | 0.47 ms |
+| ping VM → Mac | 0.19 ms | 0.35 ms |
+| TCP connect to 1.1.1.1, median | 3.8 ms | 3.2 ms |
+| IPv6 to the internet | works (NAT) | works (vmnet's NAT66) |
+| Idle CPU | QEMU 3% | QEMU 2%, netd 0% |
+
+- The fast network more than doubles VM → Mac, slirp's weak side (one QEMU
+  thread does all of TCP/IP), at 40% less CPU per Gbit/s. Mac → VM is slower
+  than slirp on this Mac but still about 9 Gbit/s, about where Parallels' own
+  vmnet network was on the MacBook (7.7 to 8.7 Gbit/s). Internet speed does
+  not change: the link is the limit on both.
+- The MacBook measurement of the user network (busier Mac, other VMs
+  running) was slower and less steady: VM → Mac 1.7 Gbit/s, Mac → VM 3.3 to
+  6.7, connect latency 4.5 ms median with spikes to 33 ms. The fast network
+  is not measured on the MacBook yet (its service needs an administrator's
+  password).
+- A bigger MTU (9000 on the vmnet interface and the VM) changed nothing
+  (7.5 / 9.6 Gbit/s): the Mac's side of the network stays at 1500.
