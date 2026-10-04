@@ -7,8 +7,10 @@
  * SPS, PPS) and holds an IDR slice, later frames hold slices, and the whole stream
  * decodes again (VTDecompressionSession) to pictures close to what went in (luma PSNR).
  * Guest input: nonsense rate control (zero or huge frame rates, bitrates, GOP, QP) still
- * encodes; a coded-data buffer too small gets a failure, not a cut frame; codecs the
- * host does not offer (too small, too large, HEVC Main 10) encode nothing.
+ * encodes, also when the frame rate changes; a frame never ended does not leak into the
+ * next; a frame that fails gets failure feedback; a coded-data buffer too small gets a
+ * failure, not a cut frame; codecs the host does not offer (too small, too large, HEVC
+ * Main 10) encode nothing.
  * Runs on Apple's software OpenGL (soft-gl.h); the encoder is the Mac's media engine.
  * Skips a codec the Mac has no hardware encoder for.
  * OMACVM_TEST_H264_OUT=FILE / OMACVM_TEST_HEVC_OUT=FILE also write the streams. */
@@ -539,6 +541,68 @@ static void test_codec(uint32_t handle, uint32_t profile, const char *name, cons
    r = encode_frame(handle, profile, 3, &rc_normal, R_CODED);
    snprintf(line, sizeof(line), "%s: 200 random picture descriptions, then encodes again", name);
    check(r == 0, line);
+
+   /* Frame rate changing during the stream (Chrome does): time stamps keep
+    * increasing, every frame encodes. */
+   bad = 0;
+   for (int f = 0; f < 12; f++) {
+      struct rc v = rc_normal;
+      v.fps_num = f % 3 == 0 ? 15 : f % 3 == 1 ? 60 : 30;
+      bad += encode_frame(handle, profile, f + 1, &v, R_CODED) != 0;
+   }
+   snprintf(line, sizeof(line), "%s: frame rate 15/60/30 by turns: all frames encode (%u failed)",
+            name, bad);
+   check(!bad, line);
+
+   /* A frame begun and encoded but never ended, then a normal frame: that one
+    * gets its own output only. */
+   make_picture(5, y, uv);
+   emit_plane(c, R_Y, W, H, 1, y);
+   emit_plane(c, R_UV, W / 2, H / 2, 2, uv);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
+   emit(c, handle);
+   emit(c, BUF);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
+   emit(c, handle);
+   emit(c, BUF);
+   emit(c, R_CODED);
+   emit(c, R_DESC);
+   emit(c, R_FEED);
+   submit(c);
+   r = encode_frame(handle, profile, 6, &rc_normal, R_CODED);
+   int types[64], k = r ? 0 : nal_types(coded, feed.coded_size, types, 64), slices = 0;
+   for (int i = 0; i < k; i++)
+      slices += is_slice(types[i]);
+   snprintf(line, sizeof(line), "%s: a frame never ended, then one more: one picture's output "
+            "(%d slices)", name, slices);
+   check(r == 0 && slices == 1, line);
+
+   /* A frame that cannot be encoded (wrong profile in its description) gets
+    * failure feedback, not the previous frame's result. */
+   feed.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
+   feed.coded_size = 1234;
+   make_picture(7, y, uv);
+   emit_plane(c, R_Y, W, H, 1, y);
+   emit_plane(c, R_UV, W / 2, H / 2, 2, uv);
+   memset(&desc, 0, sizeof(desc));
+   desc.base.profile = profile + 1;
+   desc.base.entry_point = G_ENTRYPOINT_ENCODE;
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
+   emit(c, handle);
+   emit(c, BUF);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
+   emit(c, handle);
+   emit(c, BUF);
+   emit(c, R_CODED);
+   emit(c, R_DESC);
+   emit(c, R_FEED);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_END_FRAME, 0, 2));
+   emit(c, handle);
+   emit(c, BUF);
+   submit(c);
+   snprintf(line, sizeof(line), "%s: a frame that fails: failure feedback (stat %u, size %u)",
+            name, feed.stat, feed.coded_size);
+   check(feed.stat == VIRGL_VIDEO_ENCODE_STAT_FAILURE && feed.coded_size == 0, line);
 
    /* A coded-data buffer too small for a key frame: failure, no partial frame. */
    r = encode_frame(handle, profile, 0, &rc_normal, R_SMALL);
