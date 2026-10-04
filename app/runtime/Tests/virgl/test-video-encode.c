@@ -1,14 +1,17 @@
-/* H.264 encoding through the VideoToolbox backend, the way the guest's VA-API driver
+/* H.264 and HEVC encoding through the VideoToolbox backend, the way the guest's VA-API driver
  * drives it: a video codec with the ENCODE entrypoint, an NV12 video buffer whose
  * planes are guest textures, then per frame BEGIN_FRAME, ENCODE_BITSTREAM (picture
  * description, coded-data buffer, feedback buffer) and END_FRAME.
- * Checks: the feedback says success with a size, the coded data is an Annex B access
- * unit, the first one starts with SPS and PPS and holds an IDR slice, later frames hold
- * slices, and the whole stream decodes again (VTDecompressionSession) to pictures close
- * to what went in (luma PSNR).
+ * Checks per codec: the feedback says success with a size, the coded data is an Annex B
+ * access unit, the first one starts with its parameter sets (H.264: SPS, PPS; HEVC: VPS,
+ * SPS, PPS) and holds an IDR slice, later frames hold slices, and the whole stream
+ * decodes again (VTDecompressionSession) to pictures close to what went in (luma PSNR).
+ * Guest input: nonsense rate control (zero or huge frame rates, bitrates, GOP, QP) still
+ * encodes; a coded-data buffer too small gets a failure, not a cut frame; codecs the
+ * host does not offer (too small, too large, HEVC Main 10) encode nothing.
  * Runs on Apple's software OpenGL (soft-gl.h); the encoder is the Mac's media engine.
- * Skips when the Mac offers no hardware H.264 encoder.
- * OMACVM_TEST_H264_OUT=FILE also writes the stream (for ffprobe/ffplay). */
+ * Skips a codec the Mac has no hardware encoder for.
+ * OMACVM_TEST_H264_OUT=FILE / OMACVM_TEST_HEVC_OUT=FILE also write the streams. */
 #include <CoreMedia/CoreMedia.h>
 #include <OpenGL/OpenGL.h>
 #include <VideoToolbox/VideoToolbox.h>
@@ -28,9 +31,10 @@
 enum { W = 320, H = 240, FRAMES = 30 };
 enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2 };
 /* guest numbering (Mesa >= 26): enum pipe_video_profile / entrypoint */
-enum { G_AVC_HIGH = 11, G_ENTRYPOINT_ENCODE = 4 };
+enum { G_AVC_HIGH = 11, G_HEVC_MAIN = 15, G_HEVC_MAIN_10 = 16, G_ENTRYPOINT_ENCODE = 4 };
 enum { PIC_P = 0, PIC_IDR = 3 };
-enum { R_Y = 1, R_UV, R_DESC, R_CODED, R_FEED };
+enum { R_Y = 1, R_UV, R_DESC, R_CODED, R_FEED, R_SMALL, R_TEX };
+enum { BUF = 2 };   /* the video buffer's handle; codecs get 10, 11, ... */
 
 static CGLContextObj main_ctx;
 static int failures;
@@ -150,13 +154,31 @@ static void make_picture(int f, uint8_t *y, uint8_t *uv)
       }
 }
 
+static int hevc;   /* the codec under test: 0 H.264, 1 HEVC */
+
+static int nal_type(const uint8_t *nal)
+{
+   return hevc ? (nal[0] >> 1) & 0x3f : nal[0] & 0x1f;
+}
+
+/* slice NAL units: H.264 1 (non-IDR), 5 (IDR); HEVC 0-9 (trailing...), 19-21 (IDR, CRA) */
+static int is_slice(int t)
+{
+   return hevc ? t <= 9 || (t >= 16 && t <= 21) : t == 1 || t == 5;
+}
+
+static int is_idr(int t)
+{
+   return hevc ? t == 19 || t == 20 : t == 5;
+}
+
 /* Annex B NAL unit types in the order they appear */
 static int nal_types(const uint8_t *d, uint32_t n, int *types, int max)
 {
    int k = 0;
    for (uint32_t i = 0; i + 4 < n && k < max; i++)
       if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0 && d[i + 3] == 1) {
-         types[k++] = d[i + 4] & 0x1f;
+         types[k++] = nal_type(d + i + 4);
          i += 3;
       }
    return k;
@@ -217,6 +239,310 @@ static int split_nals(const uint8_t *d, uint32_t n, const uint8_t **nal, size_t 
    return k;
 }
 
+static struct cmds *c;
+static uint8_t y[W * H], uv[W * H / 2];
+static union virgl_picture_desc desc;
+static uint8_t coded[4 << 20], small[16];
+static struct virgl_video_encode_feedback feed;
+
+static void create_codec(uint32_t handle, uint32_t profile, uint32_t w, uint32_t h)
+{
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_CODEC, 0, 8));
+   emit(c, handle);
+   emit(c, profile);
+   emit(c, G_ENTRYPOINT_ENCODE);
+   emit(c, 1);                    /* chroma 4:2:0 */
+   emit(c, 41);
+   emit(c, w);
+   emit(c, h);
+   emit(c, 1);
+   submit(c);
+}
+
+struct rc {
+   uint32_t method, bitrate, peak, fps_num, fps_den, gop, qp;
+};
+
+static const struct rc rc_normal = { 4, 2000000, 0, 30, 1, 30, 0 };
+
+/* One frame: upload picture f, encode it into DEST; 0 when the feedback says success. */
+static int encode_frame(uint32_t codec, uint32_t profile, int f, const struct rc *rc,
+                        uint32_t dest)
+{
+   make_picture(f, y, uv);
+   emit_plane(c, R_Y, W, H, 1, y);
+   emit_plane(c, R_UV, W / 2, H / 2, 2, uv);
+
+   memset(&desc, 0, sizeof(desc));
+   if (profile == G_AVC_HIGH) {
+      struct virgl_h264_enc_picture_desc *d = &desc.h264_enc;
+      d->base.profile = profile;
+      d->base.entry_point = G_ENTRYPOINT_ENCODE;
+      d->rate_ctrl[0].rate_ctrl_method = rc->method;
+      d->rate_ctrl[0].target_bitrate = rc->bitrate;
+      d->rate_ctrl[0].peak_bitrate = rc->peak;
+      d->rate_ctrl[0].frame_rate_num = rc->fps_num;
+      d->rate_ctrl[0].frame_rate_den = rc->fps_den;
+      d->gop_size = rc->gop;
+      d->quant_i_frames = d->quant_p_frames = rc->qp;
+      d->picture_type = f == 0 ? PIC_IDR : PIC_P;
+   } else {
+      struct virgl_h265_enc_picture_desc *d = &desc.h265_enc;
+      d->base.profile = profile;
+      d->base.entry_point = G_ENTRYPOINT_ENCODE;
+      d->rc.rate_ctrl_method = rc->method;
+      d->rc.target_bitrate = rc->bitrate;
+      d->rc.peak_bitrate = rc->peak;
+      d->rc.frame_rate_num = rc->fps_num;
+      d->rc.frame_rate_den = rc->fps_den;
+      d->seq.intra_period = rc->gop;
+      d->rc.quant_i_frames = d->rc.quant_p_frames = rc->qp;
+      d->picture_type = f == 0 ? PIC_IDR : PIC_P;
+   }
+   memset(&feed, 0xaa, sizeof(feed));
+
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
+   emit(c, codec);
+   emit(c, BUF);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
+   emit(c, codec);
+   emit(c, BUF);
+   emit(c, dest);
+   emit(c, R_DESC);
+   emit(c, R_FEED);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_END_FRAME, 0, 2));
+   emit(c, codec);
+   emit(c, BUF);
+   submit(c);
+   return feed.stat == VIRGL_VIDEO_ENCODE_STAT_SUCCESS && feed.coded_size &&
+          feed.coded_size <= sizeof(coded) ? 0 : -1;
+}
+
+static int offered(uint32_t profile)
+{
+   uint32_t max_ver = 0, max_size = 0;
+   int found = 0;
+   virgl_renderer_get_cap_set(2, &max_ver, &max_size);
+   union virgl_caps *caps = calloc(1, max_size > sizeof(*caps) ? max_size : sizeof(*caps));
+   virgl_renderer_fill_caps(2, 2, caps);
+   for (unsigned i = 0; i < caps->v2.num_video_caps && i < 32; i++)
+      found |= caps->v2.video_caps[i].entrypoint == G_ENTRYPOINT_ENCODE &&
+               caps->v2.video_caps[i].profile == profile;
+   free(caps);
+   return found;
+}
+
+/* decode a whole Annex B stream with VideoToolbox; lowest luma PSNR against ys */
+static int decode_back(const uint8_t *stream, uint32_t stream_size, uint8_t (*ys)[W * H],
+                       double *min_psnr)
+{
+   static const uint8_t *nal[4096];
+   static size_t len[4096];
+   int n = split_nals(stream, stream_size, nal, len, 4096);
+   const uint8_t *ps[3] = { NULL, NULL, NULL };
+   size_t ps_len[3] = { 0, 0, 0 };
+   int first_ps = hevc ? 32 : 7, nps = hevc ? 3 : 2;
+   for (int i = 0; i < n; i++) {
+      int t = nal_type(nal[i]) - first_ps;
+      if (t >= 0 && t < nps && !ps[t]) {
+         ps[t] = nal[i];
+         ps_len[t] = len[i];
+      }
+   }
+   CMVideoFormatDescriptionRef fmt = NULL;
+   OSStatus st;
+   for (int i = 0; i < nps; i++)
+      if (!ps[i])
+         return 0;
+   st = hevc ? CMVideoFormatDescriptionCreateFromHEVCParameterSets(NULL, 3, ps, ps_len, 4, NULL, &fmt)
+             : CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, ps, ps_len, 4, &fmt);
+   if (st != noErr)
+      return 0;
+   int decoded = 0, frame = 0;
+   struct decoded d = { 0 };
+   VTDecompressionOutputCallbackRecord cb = { dec_cb, &d };
+   VTDecompressionSessionRef dec = NULL;
+   *min_psnr = 99;
+   if (VTDecompressionSessionCreate(NULL, fmt, NULL, NULL, &cb, &dec) == noErr) {
+      for (int i = 0; i < n; i++) {
+         if (!is_slice(nal_type(nal[i])))
+            continue;
+         /* one slice per frame here: AVCC sample of this NAL unit */
+         uint8_t *avcc = malloc(len[i] + 4);
+         avcc[0] = len[i] >> 24;
+         avcc[1] = len[i] >> 16;
+         avcc[2] = len[i] >> 8;
+         avcc[3] = len[i];
+         memcpy(avcc + 4, nal[i], len[i]);
+         CMBlockBufferRef block = NULL;
+         CMSampleBufferRef sample = NULL;
+         size_t ssize = len[i] + 4;
+         CMBlockBufferCreateWithMemoryBlock(NULL, avcc, ssize, kCFAllocatorMalloc, NULL, 0,
+                                            ssize, 0, &block);
+         CMSampleBufferCreateReady(NULL, block, fmt, 1, 0, NULL, 1, &ssize, &sample);
+         d.pix = NULL;
+         VTDecompressionSessionDecodeFrame(dec, sample, 0, NULL, NULL);
+         VTDecompressionSessionWaitForAsynchronousFrames(dec);
+         if (d.pix && frame < FRAMES) {
+            double p = psnr_y(d.pix, ys[frame]);
+            if (p < *min_psnr)
+               *min_psnr = p;
+            decoded++;
+            CVPixelBufferRelease(d.pix);
+         }
+         frame++;
+         CFRelease(sample);
+         CFRelease(block);
+      }
+      VTDecompressionSessionInvalidate(dec);
+      CFRelease(dec);
+   }
+   CFRelease(fmt);
+   return decoded;
+}
+
+static void test_codec(uint32_t handle, uint32_t profile, const char *name, const char *out_env)
+{
+   static uint8_t stream[8 << 20];
+   static uint8_t ys[FRAMES][W * H];
+   uint32_t stream_size = 0, bad = 0, sizes_ok = 1;
+   int first_types[8] = { 0 }, first_n = 0, later_slices = 1;
+   char line[160];
+
+   hevc = profile != G_AVC_HIGH;
+   if (!offered(profile)) {
+      printf("skip: no hardware %s encoder offered\n", name);
+      return;
+   }
+   snprintf(line, sizeof(line), "caps offer %s encoding", name);
+   check(1, line);
+   create_codec(handle, profile, W, H);
+
+   for (int f = 0; f < FRAMES; f++) {
+      if (encode_frame(handle, profile, f, &rc_normal, R_CODED)) {
+         bad++;
+         continue;
+      }
+      memcpy(ys[f], y, sizeof(y));
+      int types[64];
+      int k = nal_types(coded, feed.coded_size, types, 64);
+      if (f == 0) {
+         first_n = k < 8 ? k : 8;
+         memcpy(first_types, types, first_n * sizeof(int));
+      } else {
+         int slice = 0;
+         for (int i = 0; i < k; i++)
+            slice |= is_slice(types[i]);
+         later_slices &= slice;
+      }
+      if (stream_size + feed.coded_size > sizeof(stream)) {
+         sizes_ok = 0;
+         break;
+      }
+      memcpy(stream + stream_size, coded, feed.coded_size);
+      stream_size += feed.coded_size;
+   }
+
+   snprintf(line, sizeof(line), "%s: %d frames encoded, feedback success with a size (%u failed)",
+            name, FRAMES, bad);
+   check(!bad && sizes_ok, line);
+   int has_ps = hevc ? first_n >= 4 && first_types[0] == 32 && first_types[1] == 33 &&
+                       first_types[2] == 34
+                     : first_n >= 3 && first_types[0] == 7 && first_types[1] == 8;
+   int has_idr = 0;
+   for (int i = 0; i < first_n; i++)
+      has_idr |= is_idr(first_types[i]);
+   snprintf(line, sizeof(line), "%s: first access unit: %s, IDR slice", name,
+            hevc ? "VPS, SPS, PPS" : "SPS, PPS");
+   check(has_ps && has_idr, line);
+   snprintf(line, sizeof(line), "%s: later access units hold slices", name);
+   check(later_slices, line);
+   snprintf(line, sizeof(line), "%s: stream of %u bytes for %d frames of %dx%d", name,
+            stream_size, FRAMES, W, H);
+   check(stream_size > 1000 && stream_size < 2000000, line);
+
+   const char *out = getenv(out_env);
+   if (out) {
+      FILE *fp = fopen(out, "wb");
+      if (fp) {
+         fwrite(stream, 1, stream_size, fp);
+         fclose(fp);
+      }
+   }
+
+   double min_psnr = 0;
+   int decoded = decode_back(stream, stream_size, ys, &min_psnr);
+   snprintf(line, sizeof(line), "%s: %d of %d frames decode again, lowest luma PSNR %.1f dB",
+            name, decoded, FRAMES, min_psnr);
+   check(decoded == FRAMES && min_psnr > 30, line);
+
+   /* Guest numbers out of any sensible range: clamped, every frame still encoded. */
+   static const struct rc odd[] = {
+      { 4, 0, 0, 0, 0, 0, 0 },                                /* nothing set */
+      { 4, 0xffffffff, 0xffffffff, 0xffffffff, 1, 0xffffffff, 0 },
+      { 4, 1, 0, 1, 1000000000, 1, 0 },                       /* 1 bit/s, 1 frame in 31 years */
+      { 3, 2000000, 2000000, 1000000, 999999, 2, 0 },         /* CBR */
+      { 0, 0, 0, 30, 1, 30, 999 },                            /* constant QP, QP 999 */
+      { 0, 0, 0, 30, 1, 30, 0 },                              /* constant QP 0 */
+   };
+   int r;
+   bad = 0;
+   for (unsigned i = 0; i < sizeof(odd) / sizeof(odd[0]); i++)
+      for (int f = 0; f < 4; f++)
+         bad += encode_frame(handle, profile, f, &odd[i], R_CODED) != 0;
+   snprintf(line, sizeof(line), "%s: nonsense rate control is clamped (%u of %u frames failed)",
+            name, bad, (unsigned)(sizeof(odd) / sizeof(odd[0]) * 4));
+   check(!bad, line);
+
+   /* Random picture descriptions (profile and entrypoint kept, so they reach the
+    * encoder): no crash, and the codec still works afterwards. */
+   srand(1234);
+   for (int f = 0; f < 200; f++) {
+      uint8_t *b = (uint8_t *)&desc;
+      make_picture(f, y, uv);
+      emit_plane(c, R_Y, W, H, 1, y);
+      emit_plane(c, R_UV, W / 2, H / 2, 2, uv);
+      for (size_t i = 0; i < sizeof(desc); i++)
+         b[i] = (uint8_t)rand();
+      desc.base.profile = profile;
+      desc.base.entry_point = G_ENTRYPOINT_ENCODE;
+      emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
+      emit(c, handle);
+      emit(c, BUF);
+      emit(c, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
+      emit(c, handle);
+      emit(c, BUF);
+      emit(c, R_CODED);
+      emit(c, R_DESC);
+      emit(c, R_FEED);
+      emit(c, VIRGL_CMD0(VIRGL_CCMD_END_FRAME, 0, 2));
+      emit(c, handle);
+      emit(c, BUF);
+      submit(c);
+   }
+   r = encode_frame(handle, profile, 3, &rc_normal, R_CODED);
+   snprintf(line, sizeof(line), "%s: 200 random picture descriptions, then encodes again", name);
+   check(r == 0, line);
+
+   /* A coded-data buffer too small for a key frame: failure, no partial frame. */
+   r = encode_frame(handle, profile, 0, &rc_normal, R_SMALL);
+   snprintf(line, sizeof(line), "%s: 16-byte coded buffer: failure feedback (stat %u, size %u)",
+            name, feed.stat, feed.coded_size);
+   check(r != 0 && feed.stat == VIRGL_VIDEO_ENCODE_STAT_FAILURE && feed.coded_size == 0, line);
+   /* A texture as the coded-data buffer: refused before encoding. */
+   r = encode_frame(handle, profile, 1, &rc_normal, R_TEX);
+   snprintf(line, sizeof(line), "%s: texture as coded buffer: refused", name);
+   check(r != 0 && feed.stat != VIRGL_VIDEO_ENCODE_STAT_SUCCESS, line);
+   /* and the codec still works after both */
+   r = encode_frame(handle, profile, 2, &rc_normal, R_CODED);
+   snprintf(line, sizeof(line), "%s: encodes again afterwards", name);
+   check(r == 0, line);
+
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+   emit(c, handle);
+   submit(c);
+}
+
 int main(void)
 {
    setvbuf(stdout, NULL, _IONBF, 0);
@@ -231,28 +557,12 @@ int main(void)
       printf("FAIL: virgl_renderer_init\n");
       return 1;
    }
-
-   /* the host must list H.264 encoding, or there is nothing to test */
-   uint32_t max_ver = 0, max_size = 0;
-   virgl_renderer_get_cap_set(2, &max_ver, &max_size);
-   union virgl_caps *caps = calloc(1, max_size > sizeof(*caps) ? max_size : sizeof(*caps));
-   virgl_renderer_fill_caps(2, 2, caps);
-   int offered = 0;
-   for (unsigned i = 0; i < caps->v2.num_video_caps && i < 32; i++)
-      offered |= caps->v2.video_caps[i].entrypoint == G_ENTRYPOINT_ENCODE &&
-                 caps->v2.video_caps[i].profile == G_AVC_HIGH;
-   free(caps);
-   if (!offered) {
-      printf("skip: no hardware H.264 encoder offered\n");
+   if (!offered(G_AVC_HIGH) && !offered(G_HEVC_MAIN)) {
+      printf("skip: no hardware video encoder offered\n");
       return 0;
    }
-   check(1, "caps offer H.264 High encoding");
 
    virgl_renderer_context_create(1, 4, "venc");
-   static uint8_t y[W * H], uv[W * H / 2];
-   static union virgl_picture_desc desc;
-   static uint8_t coded[4 << 20];
-   static struct virgl_video_encode_feedback feed;
    make_res(R_Y, TEST_PIPE_TEXTURE_2D, VIRGL_FORMAT_R8_UNORM,
             VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_RENDER_TARGET, W, H, NULL, 0);
    make_res(R_UV, TEST_PIPE_TEXTURE_2D, VIRGL_FORMAT_R8G8_UNORM,
@@ -263,175 +573,43 @@ int main(void)
             coded, sizeof(coded));
    make_res(R_FEED, TEST_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM,
             sizeof(feed), 1, &feed, sizeof(feed));
+   make_res(R_SMALL, TEST_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, 0, sizeof(small), 1,
+            small, sizeof(small));
+   make_res(R_TEX, TEST_PIPE_TEXTURE_2D, VIRGL_FORMAT_R8_UNORM,
+            VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_RENDER_TARGET, 64, 64, NULL, 0);
 
-   struct cmds *c = calloc(1, sizeof(*c));
-   emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_CODEC, 0, 8));
-   emit(c, 1);                    /* handle */
-   emit(c, G_AVC_HIGH);
-   emit(c, G_ENTRYPOINT_ENCODE);
-   emit(c, 1);                    /* chroma 4:2:0 */
-   emit(c, 41);
-   emit(c, W);
-   emit(c, H);
-   emit(c, 1);
+   c = calloc(1, sizeof(*c));
    emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_BUFFER, 0, 6));
-   emit(c, 2);                    /* handle */
+   emit(c, BUF);
    emit(c, VIRGL_FORMAT_Y8_U8V8_420_UNORM);
    emit(c, W);
    emit(c, H);
    emit(c, R_Y);
    emit(c, R_UV);
-   check(submit(c) == 0, "codec and video buffer created");
+   check(submit(c) == 0, "video buffer created");
 
-   static uint8_t stream[8 << 20];
-   uint32_t stream_size = 0, bad = 0, sizes_ok = 1;
-   int first_types[8] = { 0 }, first_n = 0, later_slices = 1;
-   static uint8_t ys[FRAMES][W * H];
+   test_codec(10, G_AVC_HIGH, "H.264", "OMACVM_TEST_H264_OUT");
+   test_codec(11, G_HEVC_MAIN, "HEVC", "OMACVM_TEST_HEVC_OUT");
 
-   for (int f = 0; f < FRAMES; f++) {
-      make_picture(f, y, uv);
-      memcpy(ys[f], y, sizeof(y));
-      emit_plane(c, R_Y, W, H, 1, y);
-      emit_plane(c, R_UV, W / 2, H / 2, 2, uv);
-
-      memset(&desc, 0, sizeof(desc));
-      desc.h264_enc.base.profile = G_AVC_HIGH;
-      desc.h264_enc.base.entry_point = G_ENTRYPOINT_ENCODE;
-      desc.h264_enc.rate_ctrl[0].rate_ctrl_method = 4;   /* variable */
-      desc.h264_enc.rate_ctrl[0].target_bitrate = 2000000;
-      desc.h264_enc.rate_ctrl[0].frame_rate_num = 30;
-      desc.h264_enc.rate_ctrl[0].frame_rate_den = 1;
-      desc.h264_enc.gop_size = 30;
-      desc.h264_enc.picture_type = f == 0 ? PIC_IDR : PIC_P;
-      memset(&feed, 0, sizeof(feed));
-
-      emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
-      emit(c, 1);
-      emit(c, 2);
-      emit(c, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
-      emit(c, 1);
-      emit(c, 2);
-      emit(c, R_CODED);
-      emit(c, R_DESC);
-      emit(c, R_FEED);
-      emit(c, VIRGL_CMD0(VIRGL_CCMD_END_FRAME, 0, 2));
-      emit(c, 1);
-      emit(c, 2);
-      if (submit(c) || feed.stat != VIRGL_VIDEO_ENCODE_STAT_SUCCESS || !feed.coded_size ||
-          feed.coded_size > sizeof(coded)) {
-         bad++;
-         continue;
-      }
-      int types[64];
-      int k = nal_types(coded, feed.coded_size, types, 64);
-      if (f == 0) {
-         first_n = k < 8 ? k : 8;
-         memcpy(first_types, types, first_n * sizeof(int));
-      } else {
-         int slice = 0;
-         for (int i = 0; i < k; i++)
-            slice |= types[i] == 1 || types[i] == 5;
-         later_slices &= slice;
-      }
-      if (stream_size + feed.coded_size > sizeof(stream)) {
-         sizes_ok = 0;
-         break;
-      }
-      memcpy(stream + stream_size, coded, feed.coded_size);
-      stream_size += feed.coded_size;
+   /* Codecs the host does not offer: nothing is encoded with them. */
+   static const struct { uint32_t profile, w, h; const char *what; } refused[] = {
+      { G_AVC_HIGH, 8, 8, "H.264 8x8" },
+      { G_AVC_HIGH, 4097, 2304, "H.264 4097x2304" },
+      { G_AVC_HIGH, 4096, 2305, "H.264 4096x2305" },
+      { G_HEVC_MAIN_10, W, H, "HEVC Main 10" },
+      { 0xffff, W, H, "profile 0xffff" },
+   };
+   for (unsigned i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+      char line[160];
+      create_codec(20 + i, refused[i].profile, refused[i].w, refused[i].h);
+      hevc = refused[i].profile != G_AVC_HIGH;
+      snprintf(line, sizeof(line), "refused: %s encodes nothing", refused[i].what);
+      check(encode_frame(20 + i, refused[i].profile, 0, &rc_normal, R_CODED) != 0 &&
+            feed.stat != VIRGL_VIDEO_ENCODE_STAT_SUCCESS, line);
    }
-
-   char line[160];
-   snprintf(line, sizeof(line), "%d frames encoded, feedback success with a size (%u failed)",
-            FRAMES, bad);
-   check(!bad && sizes_ok, line);
-   int has_sps = first_n >= 3 && first_types[0] == 7 && first_types[1] == 8;
-   int has_idr = 0;
-   for (int i = 0; i < first_n; i++)
-      has_idr |= first_types[i] == 5;
-   check(has_sps && has_idr, "first access unit: SPS, PPS, IDR slice");
-   check(later_slices, "later access units hold slices");
-   snprintf(line, sizeof(line), "stream of %u bytes for %d frames of %dx%d", stream_size,
-            FRAMES, W, H);
-   check(stream_size > 1000 && stream_size < 2000000, line);
-
-   const char *out = getenv("OMACVM_TEST_H264_OUT");
-   if (out) {
-      FILE *fp = fopen(out, "wb");
-      if (fp) {
-         fwrite(stream, 1, stream_size, fp);
-         fclose(fp);
-      }
-   }
-
-   /* decode the stream again and compare each picture's luma with what went in */
-   const uint8_t *nal[4096];
-   size_t len[4096];
-   int n = split_nals(stream, stream_size, nal, len, 4096);
-   const uint8_t *ps[2] = { NULL, NULL };
-   size_t ps_len[2] = { 0, 0 };
-   for (int i = 0; i < n && (!ps[0] || !ps[1]); i++) {
-      if ((nal[i][0] & 0x1f) == 7 && !ps[0]) {
-         ps[0] = nal[i];
-         ps_len[0] = len[i];
-      }
-      if ((nal[i][0] & 0x1f) == 8 && !ps[1]) {
-         ps[1] = nal[i];
-         ps_len[1] = len[i];
-      }
-   }
-   CMVideoFormatDescriptionRef fmt = NULL;
-   double min_psnr = 99;
-   int decoded = 0;
-   if (ps[0] && ps[1] &&
-       CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, ps, ps_len, 4, &fmt) == noErr) {
-      struct decoded d = { 0 };
-      VTDecompressionOutputCallbackRecord cb = { dec_cb, &d };
-      VTDecompressionSessionRef dec = NULL;
-      if (VTDecompressionSessionCreate(NULL, fmt, NULL, NULL, &cb, &dec) == noErr) {
-         int frame = 0;
-         for (int i = 0; i < n; i++) {
-            int t = nal[i][0] & 0x1f;
-            if (t != 1 && t != 5)
-               continue;
-            /* one slice per frame here: AVCC sample of this NAL unit */
-            uint8_t *avcc = malloc(len[i] + 4);
-            avcc[0] = len[i] >> 24;
-            avcc[1] = len[i] >> 16;
-            avcc[2] = len[i] >> 8;
-            avcc[3] = len[i];
-            memcpy(avcc + 4, nal[i], len[i]);
-            CMBlockBufferRef block = NULL;
-            CMSampleBufferRef sample = NULL;
-            size_t ssize = len[i] + 4;
-            CMBlockBufferCreateWithMemoryBlock(NULL, avcc, ssize, kCFAllocatorMalloc, NULL, 0,
-                                               ssize, 0, &block);
-            CMSampleBufferCreateReady(NULL, block, fmt, 1, 0, NULL, 1, &ssize, &sample);
-            d.pix = NULL;
-            VTDecompressionSessionDecodeFrame(dec, sample, 0, NULL, NULL);
-            VTDecompressionSessionWaitForAsynchronousFrames(dec);
-            if (d.pix && frame < FRAMES) {
-               double p = psnr_y(d.pix, ys[frame]);
-               if (p < min_psnr)
-                  min_psnr = p;
-               decoded++;
-               CVPixelBufferRelease(d.pix);
-            }
-            frame++;
-            CFRelease(sample);
-            CFRelease(block);
-         }
-         VTDecompressionSessionInvalidate(dec);
-         CFRelease(dec);
-      }
-      CFRelease(fmt);
-   }
-   snprintf(line, sizeof(line), "%d of %d frames decode again, lowest luma PSNR %.1f dB",
-            decoded, FRAMES, min_psnr);
-   check(decoded == FRAMES && min_psnr > 30, line);
 
    virgl_renderer_context_destroy(1);
-   for (uint32_t r = R_Y; r <= R_FEED; r++)
+   for (uint32_t r = R_Y; r <= R_TEX; r++)
       virgl_renderer_resource_unref(r);
    free(c);
    virgl_renderer_cleanup(&cookie);
