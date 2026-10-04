@@ -78,6 +78,7 @@ udp_patch="$native_dir/patches/libslirp-ipv4-udp-translation.patch"
 fence_poll_patch="$native_dir/patches/qemu-darwin-gpu-fence-poll.patch"
 virgl_native_patch="$native_dir/patches/virgl-native-opengl.patch"
 virgl_videotoolbox_patch="$native_dir/patches/virgl-videotoolbox-decode.patch"
+virgl_vt_encode_patch="$native_dir/patches/virgl-videotoolbox-encode.patch"
 hidden_window_patch="$native_dir/patches/qemu-cocoa-hidden-for-tests.patch"
 prepare_runtime="$native_dir/prepare-qemu-gpu-runtime.sh"
 pinned_bottles="$native_dir/pinned-runtime-bottles.sh"
@@ -108,6 +109,7 @@ mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a67
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
 virgl_videotoolbox_patch_sha256=12c0863d818a1b26da3be9c59220ee22ce55a037887297cd6dac53e62dbc37c3
+virgl_vt_encode_patch_sha256=88c3256a6f9b290fc9d2b74e9caaf906bcd6427d41982a54ddf26cb923051071
 hidden_window_patch_sha256=286aa59317d16f21cb0fe1dd42b6636995d24f1c65312175e40f36b14272dc93
 strchrnul_patch_sha256=ec1048dd0e8ebe53bf7e8a3bca9bf2f5f4336cd607d4cd077437470e9a32094a
 usb_exact_bus_patch_sha256=5e39159171295c566d014a1ef2744130f80fa02b742c349fa47373b00ae697ec
@@ -628,6 +630,9 @@ patch -d "$virgl_source" -p1 -f -i "$virgl_native_patch"
 # Video decode on the Mac's media engine: guest VA-API -> VideoToolbox.
 verify_file_sha "VideoToolbox video decode patch" "$virgl_videotoolbox_patch" "$virgl_videotoolbox_patch_sha256"
 patch -d "$virgl_source" -p1 -f -i "$virgl_videotoolbox_patch"
+# Video encode (H.264) on the Mac's media engine: guest VA-API -> VTCompressionSession.
+verify_file_sha "VideoToolbox video encode patch" "$virgl_vt_encode_patch" "$virgl_vt_encode_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_vt_encode_patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

@@ -1,0 +1,668 @@
+virglrenderer: H.264 encoding on the Mac's media engine (VideoToolbox)
+
+What: the VideoToolbox video backend (virgl-videotoolbox-decode.patch) also
+encodes. The host offers H.264 Constrained Baseline, Main and High with the
+ENCODE entrypoint (up to 4096x2304) when VideoToolbox has a hardware H.264
+encoder; OMACVM_VIDEO_NO_ENCODE=1 leaves encoding out (the guest encodes in
+software). Per frame: begin_frame takes a picture from the compression
+session's pool and vrend copies the guest's NV12 plane textures into it (GPU
+blit into the IOSurface planes, CPU readback as fallback); encode_bitstream
+applies the guest's bitrate, frame rate and GOP (clamped) and forces a key frame
+for IDR pictures; end_frame waits for the frame and hands vrend an Annex B access
+unit (SPS and PPS before every key frame). Real-time, low-latency rate control,
+no frame reordering (no B frames).
+vrend_video.c: the coded-data and feedback resources stay referenced from
+encode_bitstream to the end of the frame (a guest could unref them in between),
+and a coded buffer that cannot be mapped is not written to (it was a NULL
+memcpy).
+Why: WebRTC (camera, screen sharing) and ffmpeg h264_vaapi in the VM encode on
+the CPU otherwise.
+Upstream: OmacVM addition to its own backend; the vrend_video.c fixes are
+upstreamable.
+Tests: Tests/virgl/test-video-encode.c (30 frames 320x240 through the virgl
+video protocol: feedback, SPS/PPS/IDR, decode back with VideoToolbox, luma
+PSNR > 30 dB; measured 54.9 dB at 2 Mbit/s).
+diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
+index 6c95bf9..f04455e 100644
+--- a/src/vrend/virgl_video_vt.c
++++ b/src/vrend/virgl_video_vt.c
+@@ -245,6 +245,19 @@ struct virgl_video_codec {
+     uint32_t vp9_width;
+     uint32_t vp9_height;
+     uint32_t vp9_bit_depth;
++
++    /* Encoder (entrypoint ENCODE) */
++    VTCompressionSessionRef enc;
++    CVPixelBufferRef enc_src;           /* this frame's picture, filled by vrend */
++    struct vt_bytes coded;              /* Annex B output of the last frame */
++    OSStatus enc_status;
++    bool enc_have_desc;
++    bool enc_force_key;
++    uint64_t enc_frame;                 /* presentation index */
++    uint32_t enc_bitrate;               /* settings in use, to update only on change */
++    uint32_t enc_fps_num;
++    uint32_t enc_fps_den;
++    uint32_t enc_gop;
+ };
+ 
+ static struct virgl_video_callbacks *callbacks;
+@@ -2096,6 +2109,320 @@ static bool kind_offered(enum vt_codec_kind kind)
+     }
+ }
+ 
++/* ------------------------------------------------------------------------ */
++/* Encoder                                                                   */
++/* ------------------------------------------------------------------------ */
++
++/* The guest's VA-API driver hands over one raw picture per frame plus the
++ * parameters it wants (rate control, frame rate, GOP, picture type). The Mac's
++ * media engine encodes it (VTCompressionSession) and writes the whole stream
++ * itself, parameter sets included; the guest gets an H.264 Annex B access unit
++ * with SPS and PPS before every key frame. VideoToolbox keeps its own reference
++ * frames and never reorders (no B frames), so the guest's reference lists and
++ * picture order counts are not needed. */
++
++/* Limits on what a guest may ask for. */
++#define VT_ENC_MAX_W 4096
++#define VT_ENC_MAX_H 2304
++#define VT_ENC_MAX_BITRATE (400u * 1000 * 1000)
++#define VT_ENC_MAX_CODED (32u * 1024 * 1024)
++
++static bool vt_encoder_offered(void)
++{
++    static int offered = -1;
++
++    if (offered < 0) {
++        CFMutableDictionaryRef spec = CFDictionaryCreateMutable(
++            kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
++            &kCFTypeDictionaryValueCallBacks);
++        CFDictionaryRef props = NULL;
++        CFStringRef id = NULL;
++
++        CFDictionarySetValue(spec,
++            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder,
++            kCFBooleanTrue);
++        offered = !getenv("OMACVM_VIDEO_NO_ENCODE") &&
++                  VTCopySupportedPropertyDictionaryForEncoder(1280, 720, kCMVideoCodecType_H264,
++                                                              spec, &id, &props) == noErr;
++        if (props)
++            CFRelease(props);
++        if (id)
++            CFRelease(id);
++        CFRelease(spec);
++        virgl_info("vt-video: hardware H.264 encoding %s\n", offered ? "offered" : "not offered");
++    }
++    return offered;
++}
++
++static void enc_output_callback(void *ref_con, void *frame_ref_con, OSStatus status,
++                                VTEncodeInfoFlags flags, CMSampleBufferRef sample)
++{
++    struct virgl_video_codec *codec = ref_con;
++    static const uint8_t start[4] = { 0, 0, 0, 1 };
++    CMFormatDescriptionRef fmt;
++    CMBlockBufferRef block;
++    CFArrayRef attachments;
++    bool key = true;
++    size_t total = 0;
++    char *data = NULL;
++    int nal_len = 4;
++
++    (void)frame_ref_con;
++    codec->enc_status = status;
++    if (status != noErr || !sample || (flags & kVTEncodeInfo_FrameDropped))
++        return;
++
++    attachments = CMSampleBufferGetSampleAttachmentsArray(sample, false);
++    if (attachments && CFArrayGetCount(attachments) > 0) {
++        CFDictionaryRef a = CFArrayGetValueAtIndex(attachments, 0);
++        key = !CFDictionaryContainsKey(a, kCMSampleAttachmentKey_NotSync);
++    }
++
++    fmt = CMSampleBufferGetFormatDescription(sample);
++    if (key && fmt) {
++        size_t count = 0;
++        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt, 0, NULL, NULL, &count, &nal_len);
++        for (size_t i = 0; i < count; i++) {
++            const uint8_t *ps = NULL;
++            size_t ps_size = 0;
++            if (CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt, i, &ps, &ps_size,
++                                                                   NULL, NULL) != noErr)
++                continue;
++            bytes_append(&codec->coded, start, 4);
++            bytes_append(&codec->coded, ps, ps_size);
++        }
++    } else if (fmt) {
++        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(fmt, 0, NULL, NULL, NULL, &nal_len);
++    }
++    if (nal_len < 1 || nal_len > 4)
++        nal_len = 4;
++
++    /* AVCC: each NAL unit after an nal_len-byte big-endian length. */
++    block = CMSampleBufferGetDataBuffer(sample);
++    if (!block || CMBlockBufferGetDataPointer(block, 0, NULL, &total, &data) != noErr)
++        return;
++    for (size_t off = 0; off + nal_len <= total;) {
++        uint32_t len = 0;
++        for (int i = 0; i < nal_len; i++)
++            len = (len << 8) | (uint8_t)data[off + i];
++        off += nal_len;
++        if (len > total - off)
++            break;
++        if (codec->coded.size + 4 + len > VT_ENC_MAX_CODED)
++            break;
++        bytes_append(&codec->coded, start, 4);
++        bytes_append(&codec->coded, data + off, len);
++        off += len;
++    }
++}
++
++static void enc_session_destroy(struct virgl_video_codec *codec)
++{
++    if (codec->enc) {
++        VTCompressionSessionCompleteFrames(codec->enc, kCMTimeInvalid);
++        VTCompressionSessionInvalidate(codec->enc);
++        CFRelease(codec->enc);
++        codec->enc = NULL;
++    }
++}
++
++static CFStringRef enc_profile_level(enum pipe_video_profile p)
++{
++    switch (p) {
++    case PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE:
++    case PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE:
++        return kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel;
++    case PIPE_VIDEO_PROFILE_MPEG4_AVC_MAIN:
++        return kVTProfileLevel_H264_Main_AutoLevel;
++    default:
++        return kVTProfileLevel_H264_High_AutoLevel;
++    }
++}
++
++static bool enc_session_create(struct virgl_video_codec *codec)
++{
++    VTCompressionOutputCallback cb = enc_output_callback;
++    CFMutableDictionaryRef spec, attrs, iosurface;
++    OSStatus st;
++
++    spec = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
++                                     &kCFTypeDictionaryValueCallBacks);
++    CFDictionarySetValue(spec,
++        kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, kCFBooleanTrue);
++    CFDictionarySetValue(spec, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
++                         kCFBooleanTrue);
++    attrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
++                                      &kCFTypeDictionaryValueCallBacks);
++    cf_dict_set_int(attrs, kCVPixelBufferPixelFormatTypeKey,
++                    (int32_t)kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
++    cf_dict_set_int(attrs, kCVPixelBufferWidthKey, (int32_t)codec->width);
++    cf_dict_set_int(attrs, kCVPixelBufferHeightKey, (int32_t)codec->height);
++    iosurface = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
++                                          &kCFTypeDictionaryValueCallBacks);
++    CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, iosurface);
++    CFRelease(iosurface);
++
++    st = VTCompressionSessionCreate(kCFAllocatorDefault, (int32_t)codec->width,
++                                    (int32_t)codec->height, kCMVideoCodecType_H264, spec, attrs,
++                                    kCFAllocatorDefault, cb, codec, &codec->enc);
++    CFRelease(spec);
++    CFRelease(attrs);
++    if (st != noErr) {
++        virgl_error("vt-video: VTCompressionSessionCreate %ux%u failed: %d\n",
++                    codec->width, codec->height, (int)st);
++        codec->enc = NULL;
++        return false;
++    }
++    VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
++    VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_AllowFrameReordering,
++                         kCFBooleanFalse);
++    VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_ProfileLevel,
++                         enc_profile_level(codec->profile));
++    VTCompressionSessionPrepareToEncodeFrames(codec->enc);
++    codec->enc_bitrate = codec->enc_fps_num = codec->enc_fps_den = codec->enc_gop = 0;
++    codec->enc_frame = 0;
++    virgl_info("vt-video: H.264 encoder %ux%u\n", codec->width, codec->height);
++    return true;
++}
++
++/* Rate control, frame rate and key frame interval from the guest's picture
++ * description; set again only when they change. */
++static void enc_apply_settings(struct virgl_video_codec *codec,
++                               const struct virgl_h264_enc_picture_desc *d)
++{
++    const struct virgl_h264_enc_rate_control *rc = &d->rate_ctrl[0];
++    uint32_t bitrate = rc->target_bitrate;
++    uint32_t num = rc->frame_rate_num, den = rc->frame_rate_den;
++    uint32_t gop = d->gop_size ? d->gop_size : d->intra_idr_period;
++
++    if (bitrate > VT_ENC_MAX_BITRATE)
++        bitrate = VT_ENC_MAX_BITRATE;
++    if (!num || !den || num / den > 240) {
++        num = 30;
++        den = 1;
++    }
++    if (gop > 3600)
++        gop = 3600;
++
++    if (bitrate && bitrate != codec->enc_bitrate &&
++        rc->rate_ctrl_method != PIPE_H2645_ENC_RATE_CONTROL_METHOD_DISABLE) {
++        int32_t b = (int32_t)bitrate;
++        CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &b);
++        VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_AverageBitRate, n);
++        CFRelease(n);
++        codec->enc_bitrate = bitrate;
++    }
++    if (num != codec->enc_fps_num || den != codec->enc_fps_den) {
++        double fps = (double)num / den;
++        CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &fps);
++        VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_ExpectedFrameRate, n);
++        CFRelease(n);
++        codec->enc_fps_num = num;
++        codec->enc_fps_den = den;
++    }
++    if (gop && gop != codec->enc_gop) {
++        int32_t g = (int32_t)gop;
++        CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &g);
++        VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_MaxKeyFrameInterval, n);
++        CFRelease(n);
++        codec->enc_gop = gop;
++    }
++}
++
++/* begin_frame: a picture buffer from the session's pool; vrend copies the
++ * guest's picture (its plane textures) into it. */
++static int enc_begin_frame(struct virgl_video_codec *codec, struct virgl_video_buffer *target)
++{
++    struct virgl_video_dma_buf dmabuf;
++    CVPixelBufferPoolRef pool;
++
++    if (target->format != PIPE_FORMAT_NV12 || target->width < codec->width ||
++        target->height < codec->height)
++        return -1;
++    if (!codec->enc && !enc_session_create(codec))
++        return -1;
++    if (codec->enc_src) {
++        CVPixelBufferRelease(codec->enc_src);
++        codec->enc_src = NULL;
++    }
++    pool = VTCompressionSessionGetPixelBufferPool(codec->enc);
++    if (!pool || CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool,
++                                                    &codec->enc_src) != kCVReturnSuccess)
++        return -1;
++    if (callbacks && callbacks->encode_upload_picture) {
++        memset(&dmabuf, 0, sizeof(dmabuf));
++        dmabuf.buf = target;
++        dmabuf.width = codec->width;
++        dmabuf.height = codec->height;
++        dmabuf.flags = VIRGL_VIDEO_DMABUF_WRITE_ONLY;
++        dmabuf.num_planes = (uint32_t)CVPixelBufferGetPlaneCount(codec->enc_src);
++        dmabuf.native = codec->enc_src;
++        callbacks->encode_upload_picture(codec, &dmabuf);
++    }
++    codec->coded.size = 0;
++    codec->enc_have_desc = false;
++    return 0;
++}
++
++static int enc_encode(struct virgl_video_codec *codec, const union virgl_picture_desc *desc)
++{
++    const struct virgl_h264_enc_picture_desc *d = &desc->h264_enc;
++    CFMutableDictionaryRef props = NULL;
++    VTEncodeInfoFlags info = 0;
++    OSStatus st;
++
++    if (!codec->enc || !codec->enc_src)
++        return -1;
++    enc_apply_settings(codec, d);
++    if (d->picture_type == PIPE_H2645_ENC_PICTURE_TYPE_IDR || codec->enc_frame == 0) {
++        props = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
++                                          &kCFTypeDictionaryValueCallBacks);
++        CFDictionarySetValue(props, kVTEncodeFrameOptionKey_ForceKeyFrame, kCFBooleanTrue);
++    }
++    CMTime pts = CMTimeMake((int64_t)codec->enc_frame * codec->enc_fps_den,
++                            (int32_t)codec->enc_fps_num);
++    CMTime dur = CMTimeMake(codec->enc_fps_den, (int32_t)codec->enc_fps_num);
++    codec->enc_status = noErr;
++    st = VTCompressionSessionEncodeFrame(codec->enc, codec->enc_src, pts, dur, props, NULL, &info);
++    if (props)
++        CFRelease(props);
++    if (st != noErr) {
++        virgl_error("vt-video: encode frame failed: %d\n", (int)st);
++        return -1;
++    }
++    codec->enc_frame++;
++    codec->enc_have_desc = true;
++    return 0;
++}
++
++/* end_frame: wait for this frame's output and hand it to vrend. */
++static int enc_end_frame(struct virgl_video_codec *codec, struct virgl_video_buffer *target)
++{
++    const void *bufs[1];
++    unsigned sizes[1];
++
++    (void)target;
++    if (!codec->enc || !codec->enc_have_desc)
++        return 0;
++    VTCompressionSessionCompleteFrames(codec->enc, kCMTimeInvalid);
++    codec->enc_have_desc = false;
++    if (codec->enc_src) {
++        CVPixelBufferRelease(codec->enc_src);
++        codec->enc_src = NULL;
++    }
++    if (codec->enc_status != noErr || !codec->coded.size) {
++        codec->errors++;
++        return -1;
++    }
++    codec->frames++;
++    bufs[0] = codec->coded.data;
++    sizes[0] = (unsigned)codec->coded.size;
++    if (callbacks && callbacks->encode_completed)
++        callbacks->encode_completed(codec, NULL, NULL, 1, bufs, sizes);
++    codec->coded.size = 0;
++    return 0;
++}
++
+ int virgl_video_init(int drm_fd, struct virgl_video_callbacks *cbs,
+                      unsigned int flags)
+ {
+@@ -2122,8 +2449,19 @@ void virgl_video_destroy(void)
+     callbacks = NULL;
+ }
+ 
++static void add_caps_entry(union virgl_caps *caps, enum pipe_video_profile p,
++                           enum pipe_video_entrypoint entrypoint,
++                           uint32_t max_w, uint32_t max_h, enum pipe_format fmt);
++
+ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
+                      uint32_t max_w, uint32_t max_h, enum pipe_format fmt)
++{
++    add_caps_entry(caps, p, PIPE_VIDEO_ENTRYPOINT_BITSTREAM, max_w, max_h, fmt);
++}
++
++static void add_caps_entry(union virgl_caps *caps, enum pipe_video_profile p,
++                           enum pipe_video_entrypoint entrypoint,
++                           uint32_t max_w, uint32_t max_h, enum pipe_format fmt)
+ {
+     struct virgl_video_caps *v;
+     uint32_t g = guest_profile(p);
+@@ -2133,7 +2471,7 @@ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
+     v = &caps->v2.video_caps[caps->v2.num_video_caps++];
+     memset(v, 0, sizeof(*v));
+     v->profile = g;
+-    v->entrypoint = PIPE_VIDEO_ENTRYPOINT_BITSTREAM;
++    v->entrypoint = entrypoint;
+     v->max_level = 0;
+     v->stacked_frames = 0;
+     v->max_width = max_w;
+@@ -2170,6 +2508,14 @@ int virgl_video_fill_caps(union virgl_caps *caps)
+     if (kind_offered(VT_KIND_AV1)) {
+         add_caps(caps, PIPE_VIDEO_PROFILE_AV1_MAIN, 8192, 8192, PIPE_FORMAT_NV12);
+     }
++    if (vt_encoder_offered()) {
++        add_caps_entry(caps, PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE,
++                       PIPE_VIDEO_ENTRYPOINT_ENCODE, VT_ENC_MAX_W, VT_ENC_MAX_H, PIPE_FORMAT_NV12);
++        add_caps_entry(caps, PIPE_VIDEO_PROFILE_MPEG4_AVC_MAIN,
++                       PIPE_VIDEO_ENTRYPOINT_ENCODE, VT_ENC_MAX_W, VT_ENC_MAX_H, PIPE_FORMAT_NV12);
++        add_caps_entry(caps, PIPE_VIDEO_PROFILE_MPEG4_AVC_HIGH,
++                       PIPE_VIDEO_ENTRYPOINT_ENCODE, VT_ENC_MAX_W, VT_ENC_MAX_H, PIPE_FORMAT_NV12);
++    }
+     return 0;
+ }
+ 
+@@ -2183,7 +2529,15 @@ struct virgl_video_codec *virgl_video_create_codec(
+         return NULL;
+ 
+     p = host_profile(args->profile);
+-    if (args->entrypoint != PIPE_VIDEO_ENTRYPOINT_BITSTREAM || !kind_offered(kind_of(p)) ||
++    if (args->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE) {
++        if (kind_of(p) != VT_KIND_H264 || !vt_encoder_offered() ||
++            !args->width || !args->height || args->width > VT_ENC_MAX_W ||
++            args->height > VT_ENC_MAX_H) {
++            virgl_warn("vt-video: unsupported encoder profile %u %ux%u\n",
++                       (unsigned)args->profile, args->width, args->height);
++            return NULL;
++        }
++    } else if (args->entrypoint != PIPE_VIDEO_ENTRYPOINT_BITSTREAM || !kind_offered(kind_of(p)) ||
+         (kind_of(p) == VT_KIND_HEVC && p != PIPE_VIDEO_PROFILE_HEVC_MAIN &&
+          p != PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) {
+         virgl_warn("vt-video: unsupported profile %u entrypoint %u\n",
+@@ -2218,6 +2572,10 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
+         return;
+     vt_log("codec done: %u frames, %u errors\n", codec->frames, codec->errors);
+     session_destroy(codec);
++    enc_session_destroy(codec);
++    if (codec->enc_src)
++        CVPixelBufferRelease(codec->enc_src);
++    bytes_free(&codec->coded);
+     if (codec->format)
+         CFRelease(codec->format);
+     if (codec->output)
+@@ -2283,6 +2641,8 @@ int virgl_video_begin_frame(struct virgl_video_codec *codec,
+ {
+     if (!codec || !target)
+         return -1;
++    if (codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE)
++        return enc_begin_frame(codec, target);
+     codec->target = target;
+     codec->bits.size = 0;
+     codec->have_desc = false;
+@@ -2322,10 +2682,15 @@ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
+                                  struct virgl_video_buffer *source,
+                                  const union virgl_picture_desc *desc)
+ {
+-    (void)codec;
+     (void)source;
+-    (void)desc;
+-    return -1;
++    if (!codec || !desc || codec->entrypoint != PIPE_VIDEO_ENTRYPOINT_ENCODE)
++        return -1;
++    if (desc->base.profile != codec->guest_profile) {
++        virgl_error("vt-video: profiles not matched, picture: %d, codec: %u\n",
++                    desc->base.profile, codec->guest_profile);
++        return -1;
++    }
++    return enc_encode(codec, desc);
+ }
+ 
+ int virgl_video_end_frame(struct virgl_video_codec *codec,
+@@ -2335,6 +2700,8 @@ int virgl_video_end_frame(struct virgl_video_codec *codec,
+ 
+     if (!codec || !target)
+         return -1;
++    if (codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE)
++        return enc_end_frame(codec, target);
+     /* The guest may have destroyed the buffer it named earlier: use this one. */
+     codec->target = target;
+     if (!codec->have_desc || !codec->bits.size) {
+diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
+index d3d8065..9d2d21b 100644
+--- a/src/vrend/vrend_video.c
++++ b/src/vrend/vrend_video.c
+@@ -333,6 +333,128 @@ static int sync_pixbuf_to_video_buffer(struct vrend_video_buffer *buf,
+     glFlush();
+     return 0;
+ }
++/* Encoding: copy the guest's picture (plane 0 Y as R8, plane 1 UV as RG8) into
++ * the encoder's IOSurface-backed CVPixelBuffer. The GPU blits each plane into
++ * a rectangle texture on the IOSurface plane; CPU readback when that fails.
++ * GL state touched here is put back exactly as it was. */
++static bool blit_video_buffer_to_pixbuf(struct vrend_video_buffer *buf, CVPixelBufferRef pix)
++{
++    IOSurfaceRef surface = CVPixelBufferGetIOSurface(pix);
++    CGLContextObj cgl = CGLGetCurrentContext();
++    GLint old_read = 0, old_draw = 0, old_rect = 0;
++    GLboolean scissor, srgb, mask[4];
++    GLuint tex[2] = { 0 }, fbo[2] = { 0 };
++    bool ok = true;
++
++    if (!surface || !cgl || IOSurfaceGetPlaneCount(surface) != 2 || buf->num_planes < 2)
++        return false;
++
++    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &old_read);
++    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &old_draw);
++    glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE, &old_rect);
++    scissor = glIsEnabled(GL_SCISSOR_TEST);
++    srgb = glIsEnabled(GL_FRAMEBUFFER_SRGB);
++    glGetBooleanv(GL_COLOR_WRITEMASK, mask);
++    glDisable(GL_SCISSOR_TEST);
++    glDisable(GL_FRAMEBUFFER_SRGB);
++    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
++    glGenTextures(2, tex);
++    glGenFramebuffers(2, fbo);
++
++    for (unsigned i = 0; ok && i < 2; i++) {
++        struct vrend_resource *res;
++        GLsizei w = (GLsizei)IOSurfaceGetWidthOfPlane(surface, i);
++        GLsizei h = (GLsizei)IOSurfaceGetHeightOfPlane(surface, i);
++
++        res = vrend_renderer_ctx_res_lookup(buf->ctx->ctx, buf->planes[i].res_handle);
++        if (!res || res->base.target == PIPE_BUFFER || (uint32_t)w > res->base.width0 ||
++            (uint32_t)h > res->base.height0) {
++            ok = false;
++            break;
++        }
++        glBindTexture(GL_TEXTURE_RECTANGLE, tex[i]);
++        if (CGLTexImageIOSurface2D(cgl, GL_TEXTURE_RECTANGLE, i ? GL_RG8 : GL_R8, w, h,
++                                   i ? GL_RG : GL_RED, GL_UNSIGNED_BYTE, surface, i) != kCGLNoError) {
++            ok = false;
++            break;
++        }
++        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
++        if (res->target == GL_TEXTURE_2D_ARRAY)
++            glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, res->gl_id, 0, 0);
++        else
++            glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, res->target,
++                                   res->gl_id, 0);
++        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
++        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE,
++                               tex[i], 0);
++        if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
++            glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
++            ok = false;
++            break;
++        }
++        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++    }
++
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, old_read);
++    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, old_draw);
++    glDeleteFramebuffers(2, fbo);
++    glBindTexture(GL_TEXTURE_RECTANGLE, old_rect);
++    glDeleteTextures(2, tex);
++    if (scissor)
++        glEnable(GL_SCISSOR_TEST);
++    if (srgb)
++        glEnable(GL_FRAMEBUFFER_SRGB);
++    glColorMask(mask[0], mask[1], mask[2], mask[3]);
++    /* The encoder reads the IOSurface outside GL: the copies must be done. */
++    glFinish();
++    return ok;
++}
++
++static void sync_video_buffer_to_pixbuf(struct vrend_video_buffer *buf,
++                                        const struct virgl_video_dma_buf *dmabuf)
++{
++    CVPixelBufferRef pix = dmabuf->native;
++    GLint old_row = 0, old_align = 4, old_pbo = 0, old_tex = 0;
++    static unsigned failures;
++
++    if (!pix)
++        return;
++    if (!getenv("OMACVM_VIDEO_COPY") && blit_video_buffer_to_pixbuf(buf, pix))
++        return;
++    if (failures++ < 5)
++        virgl_warn("video: encoder picture copied with the CPU\n");
++
++    if (CVPixelBufferLockBaseAddress(pix, 0) != kCVReturnSuccess)
++        return;
++    glGetIntegerv(GL_PACK_ROW_LENGTH, &old_row);
++    glGetIntegerv(GL_PACK_ALIGNMENT, &old_align);
++    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &old_pbo);
++    glGetIntegerv(GL_TEXTURE_BINDING_2D, &old_tex);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
++    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    for (unsigned i = 0; i < 2 && i < buf->num_planes; i++) {
++        struct vrend_resource *res = vrend_renderer_ctx_res_lookup(buf->ctx->ctx,
++                                                                   buf->planes[i].res_handle);
++        size_t row = CVPixelBufferGetBytesPerRowOfPlane(pix, i);
++        uint32_t w = (uint32_t)CVPixelBufferGetWidthOfPlane(pix, i);
++        uint32_t h = (uint32_t)CVPixelBufferGetHeightOfPlane(pix, i);
++        void *base = CVPixelBufferGetBaseAddressOfPlane(pix, i);
++        unsigned texel = i ? 2 : 1;
++
++        /* glGetTexImage writes the whole level: it must fit the pixel buffer plane. */
++        if (!res || !base || res->target != GL_TEXTURE_2D || res->base.width0 != w ||
++            res->base.height0 != h || row < (size_t)w * texel)
++            continue;
++        glBindTexture(GL_TEXTURE_2D, res->gl_id);
++        glPixelStorei(GL_PACK_ROW_LENGTH, row / texel);
++        glGetTexImage(GL_TEXTURE_2D, 0, i ? GL_RG : GL_RED, GL_UNSIGNED_BYTE, base);
++    }
++    glPixelStorei(GL_PACK_ROW_LENGTH, old_row);
++    glPixelStorei(GL_PACK_ALIGNMENT, old_align);
++    glBindBuffer(GL_PIXEL_PACK_BUFFER, old_pbo);
++    glBindTexture(GL_TEXTURE_2D, old_tex);
++    CVPixelBufferUnlockBaseAddress(pix, 0);
++}
+ #else
+ 
+ static int sync_dmabuf_to_video_buffer(struct vrend_video_buffer *buf,
+@@ -485,7 +607,7 @@ static void vrend_video_enocde_upload_picture(
+     (void)codec;
+ 
+ #ifdef ENABLE_VIDEO_VIDEOTOOLBOX
+-    (void)buf;
++    sync_video_buffer_to_pixbuf(buf, dmabuf);
+ #else
+     sync_video_buffer_to_dmabuf(buf, dmabuf);
+ #endif
+@@ -513,10 +635,15 @@ static void vrend_video_encode_completed(
+     memset(&feedback, 0, sizeof(feedback));
+ 
+     /* sync coded data to guest */
+-    if (has_bit(cdc->dest_res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
++    buf = NULL;
++    if (has_bit(cdc->dest_res->storage_bits, VREND_STORAGE_GL_BUFFER) && cdc->dest_res->gl_id) {
+         glBindBufferARB(cdc->dest_res->target, cdc->dest_res->gl_id);
+         buf = glMapBufferRange(cdc->dest_res->target, 0,
+                                cdc->dest_res->base.width0, GL_MAP_WRITE_BIT);
++        if (!buf)
++            glBindBufferARB(cdc->dest_res->target, 0);
++    }
++    if (buf) {
+         for (i = 0, data_size = 0; i < num_coded_bufs &&
+                     data_size < cdc->dest_res->base.width0; i++) {
+             size = MIN2(cdc->dest_res->base.width0 - data_size, coded_sizes[i]);
+@@ -540,8 +667,8 @@ static void vrend_video_encode_completed(
+                          0, (char *)(&feedback),
+                          MIN2(cdc->feed_res->base.width0, sizeof(feedback)));
+ 
+-    cdc->dest_res = NULL;
+-    cdc->feed_res = NULL;
++    vrend_resource_reference(&cdc->dest_res, NULL);
++    vrend_resource_reference(&cdc->feed_res, NULL);
+ }
+ 
+ static struct virgl_video_callbacks video_callbacks = {
+@@ -637,6 +764,8 @@ static void destroy_video_codec(struct vrend_video_codec *cdc)
+     if (cdc) {
+         list_del(&cdc->head);
+         virgl_video_destroy_codec(cdc->codec);
++        vrend_resource_reference(&cdc->dest_res, NULL);
++        vrend_resource_reference(&cdc->feed_res, NULL);
+         free(cdc);
+     }
+ }
+@@ -1054,8 +1183,8 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
+         return -1;
+     }
+ 
+-    cdc->feed_res = feed_res;
+-    cdc->dest_res = dest_res;
++    vrend_resource_reference(&cdc->feed_res, feed_res);
++    vrend_resource_reference(&cdc->dest_res, dest_res);
+ 
+     return virgl_video_encode_bitstream(cdc->codec, src->buffer, &desc);
+ }
