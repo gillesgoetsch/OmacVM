@@ -1,11 +1,15 @@
 #!/bin/bash
-# webrtc-encode.sh [--source camera|screen] [--seconds N] [--size 1280x720] [--features LIST]
-#                  [--fake] [--out FILE.json]
-# Chrome in the guest's desktop session sends a camera (or the screen) through a WebRTC
-# loopback (guest/webrtc-loopback.html, H.264 preferred) and reports which encoder it
-# used (encoderImplementation), frames encoded and encode time; the host adds the guest's
-# and QEMU's CPU while it runs.
-# --fake uses Chrome's fake camera and auto-accepts the picker (no camera needed).
+# webrtc-encode.sh [--source camera|screen|call] [--seconds N] [--size 1280x720]
+#                  [--features LIST] [--fake] [--out FILE.json]
+# Chrome in the guest's desktop session sends a camera (or the screen, or a call:
+# camera, microphone and the screen) through a WebRTC loopback (guest/webrtc-loopback.html,
+# H.264 preferred) and reports which encoder each video sender used
+# (encoderImplementation), frames encoded and encode time; the host adds the guest's and
+# QEMU's CPU while it runs. Permission prompts and the screen picker are accepted
+# automatically (a throw-away profile).
+# --features "" passes no --enable-features: Chrome then runs with the flags files
+# OmacVM writes (src/app/guest/browser-video-encode.sh).
+# --fake uses Chrome's fake camera and microphone (no camera needed).
 # VM: PORT (ssh, default 52296), KEY (~/.ssh/omacvm), GUSER (gilles), VM (name, for QEMU's CPU).
 set -euo pipefail
 SRC=camera; SECS=20; SIZE=1280x720; FEATURES="AcceleratedVideoEncoder,VaapiVideoEncoder"; FAKE=0; OUT=""
@@ -29,8 +33,9 @@ W=${SIZE%x*}; Hh=${SIZE#*x}
 "${SSH[@]}" "cat > $G/page.html" < "$H/guest/webrtc-loopback.html"
 "${SSH[@]}" "nohup python3 $G/post-server.py $G/page.html $G/out.jsonl 8767 >/dev/null 2>&1 &"
 sleep 1
-FLAGS="--enable-features=$FEATURES --ignore-gpu-blocklist"
-[ $FAKE = 1 ] && FLAGS="$FLAGS --use-fake-device-for-media-stream --use-fake-ui-for-media-stream --auto-select-desktop-capture-source=Entire"
+FLAGS="--ignore-gpu-blocklist --use-fake-ui-for-media-stream --auto-select-desktop-capture-source=Entire ${EXTRA_FLAGS:-}"
+[ -n "$FEATURES" ] && FLAGS="--enable-features=$FEATURES $FLAGS"
+[ $FAKE = 1 ] && FLAGS="$FLAGS --use-fake-device-for-media-stream"
 # pkill -f must not see its pattern's plain text in the same command line (it would
 # match its own shell): one ssh for pkill, one for rm.
 "${SSH[@]}" "pkill -f '/tmp/[w]ebrtc-encode-prof' || true"
@@ -62,8 +67,8 @@ q = [float(x) for x in qs.split()] if qs.strip() else []
 summary = {"test": "webrtc-encode", "source": src, "chrome_features": feats, "result": res,
            "guest_cpu_cores": round(guest_cores, 2),
            "qemu_cpu_cores": round(sum(q) / len(q) / 100, 2) if q else None,
-           "hardware_encoder": bool(res.get("encoder")) and "libvpx" not in res.get("encoder", "")
-                               and "OpenH264" not in res.get("encoder", "")}
+           "hardware_encoder": bool(res.get("senders")) and all(
+               "Vaapi" in (o.get("encoder") or "") for o in res["senders"])}
 json.dump(summary, open(out, "w"), indent=1)
 print(json.dumps(summary, indent=1))
 PY
