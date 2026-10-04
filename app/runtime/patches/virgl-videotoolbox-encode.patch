@@ -13,11 +13,15 @@ frame for IDR pictures; end_frame waits for the frame and hands vrend an Annex B
 access unit (parameter sets before every key frame). The stream has the size
 the guest's SPS crops its padded pictures to (1920x1088 -> 1080; the session is
 made with the first picture description, the first picture copied once).
-Real time, no frame
-reordering (no B frames), no low-latency rate control: it drops frames, which a
-VA-API encoder cannot report (Chrome then gives up on the hardware encoder);
-DataRateLimits (1.5 x the target per second) keeps the rate instead. A frame
-that fails, does not fit, or whose picture could not be copied is reported to
+Real time, no frame reordering (no B frames). Bitrate modes: no low-latency
+rate control (it drops frames, which a VA-API encoder cannot report; Chrome
+then gives up on the hardware encoder); DataRateLimits (1.5 x the target per
+second) keeps the rate instead. Constant QP: a low-latency session that takes
+the guest's I/P QP with every frame (BaseFrameQP, no rate control, nothing
+dropped); an encoder without per-frame QP gets VideoToolbox's quality from the
+QP instead (an approximation, logged). A switch between bitrate and constant
+QP makes a new session, so no setting of the other mode stays. A frame that
+fails, does not fit, or whose picture could not be copied is reported to
 the guest as a failure, never cut or left with the previous frame's feedback.
 Threading: VideoToolbox's output callback may run on its own thread at any time
 after EncodeFrame; the coded data and status are under a lock, a frame the
@@ -46,7 +50,8 @@ with VideoToolbox, luma PSNR > 30 dB), nonsense and random picture
 descriptions, a too small, a non-buffer and a missing coded resource (failure
 feedback), refused sizes and profiles, cropped pictures through the GPU blit
 and the CPU copy, frame-rate changes, a frame never ended (failure feedback,
-no leak into the next), failure feedback. In a VM: tests/video/
+no leak into the next), failure feedback, constant QP 18 against QP 40 and
+against 50 kbit/s before and after it (the size follows the QP). In a VM: tests/video/
 (FFmpeg, Chrome WebRTC camera, screen and calls).
 diff --git a/src/vrend/virgl_video.h b/src/vrend/virgl_video.h
 index 5cc19a2..425bfb5 100644
@@ -63,7 +68,7 @@ index 5cc19a2..425bfb5 100644
  
      /* Callback when encoding is complete, used to download the encoded data
 diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
-index 6c95bf9..1d537b4 100644
+index 6c95bf9..a3a6f59 100644
 --- a/src/vrend/virgl_video_vt.c
 +++ b/src/vrend/virgl_video_vt.c
 @@ -65,6 +65,7 @@
@@ -74,7 +79,7 @@ index 6c95bf9..1d537b4 100644
  
  #include "pipe/p_video_state.h"
  #include "util/u_formats.h"
-@@ -245,6 +246,26 @@ struct virgl_video_codec {
+@@ -245,6 +246,29 @@ struct virgl_video_codec {
      uint32_t vp9_width;
      uint32_t vp9_height;
      uint32_t vp9_bit_depth;
@@ -92,6 +97,9 @@ index 6c95bf9..1d537b4 100644
 +    bool enc_attempted;                 /* encode_bitstream came this frame: feedback owed */
 +    CMTime enc_pts;                     /* next frame's time stamp, always increasing */
 +    uint64_t enc_frame;                 /* presentation index */
++    bool enc_cqp;                       /* session made for constant QP */
++    bool enc_frame_qp;                  /* ... and it takes the QP per frame (BaseFrameQP) */
++    uint32_t enc_sessions;              /* sessions made, to log only the first few */
 +    uint32_t enc_bitrate;               /* settings in use, to update only on change */
 +    uint32_t enc_peak;
 +    uint32_t enc_qp;
@@ -101,7 +109,7 @@ index 6c95bf9..1d537b4 100644
  };
  
  static struct virgl_video_callbacks *callbacks;
-@@ -2096,6 +2117,592 @@ static bool kind_offered(enum vt_codec_kind kind)
+@@ -2096,6 +2120,657 @@ static bool kind_offered(enum vt_codec_kind kind)
      }
  }
  
@@ -298,19 +306,19 @@ index 6c95bf9..1d537b4 100644
 +    }
 +}
 +
-+static bool enc_session_create(struct virgl_video_codec *codec)
++static bool enc_session_make(struct virgl_video_codec *codec, bool low_latency)
 +{
 +    VTCompressionOutputCallback cb = enc_output_callback;
 +    CFMutableDictionaryRef spec, attrs, iosurface;
 +    OSStatus st;
 +
-+    /* No low-latency rate control: it drops frames to keep the bitrate, and a
-+     * VA-API encoder has no way to tell the guest a frame was dropped (Chrome
-+     * then gives up on the hardware encoder). DataRateLimits keeps the rate. */
 +    spec = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
 +                                     &kCFTypeDictionaryValueCallBacks);
 +    CFDictionarySetValue(spec,
 +        kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder, kCFBooleanTrue);
++    if (low_latency)
++        CFDictionarySetValue(spec, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
++                             kCFBooleanTrue);
 +    attrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
 +                                      &kCFTypeDictionaryValueCallBacks);
 +    cf_dict_set_int(attrs, kCVPixelBufferPixelFormatTypeKey,
@@ -333,19 +341,54 @@ index 6c95bf9..1d537b4 100644
 +        codec->enc = NULL;
 +        return false;
 +    }
++    return true;
++}
++
++/* Bitrate modes: no low-latency rate control. It drops frames to keep the
++ * bitrate, and a VA-API encoder has no way to tell the guest a frame was
++ * dropped (Chrome then gives up on the hardware encoder); DataRateLimits keeps
++ * the rate instead. Constant QP: a low-latency session, which takes the QP per
++ * frame (BaseFrameQP; no rate control, so nothing is dropped). Where the
++ * encoder cannot, a normal session with VideoToolbox's quality from the QP
++ * (an approximation, logged). Settings and time stamps start over. */
++static bool enc_session_create(struct virgl_video_codec *codec, bool cqp)
++{
++    CFBooleanRef frame_qp = NULL;
++
++    codec->enc_frame_qp = false;
++    if (cqp) {
++        if (!enc_session_make(codec, true))
++            return false;
++        if (VTSessionCopyProperty(codec->enc, kVTCompressionPropertyKey_SupportsBaseFrameQP,
++                                  kCFAllocatorDefault, &frame_qp) == noErr && frame_qp) {
++            codec->enc_frame_qp = frame_qp == kCFBooleanTrue;
++            CFRelease(frame_qp);
++        }
++        if (!codec->enc_frame_qp) {
++            if (codec->enc_sessions < 4)
++                virgl_warn("vt-video: no per-frame QP; constant QP approximated by quality\n");
++            enc_session_destroy(codec);
++        }
++    }
++    if (!codec->enc && !enc_session_make(codec, false))
++        return false;
 +    VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
 +    VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_AllowFrameReordering,
 +                         kCFBooleanFalse);
 +    VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_ProfileLevel,
 +                         enc_profile_level(codec->profile));
 +    VTCompressionSessionPrepareToEncodeFrames(codec->enc);
++    codec->enc_cqp = cqp;
 +    codec->enc_bitrate = codec->enc_peak = codec->enc_qp = 0;
 +    codec->enc_fps_num = codec->enc_fps_den = codec->enc_gop = 0;
 +    codec->enc_frame = 0;
 +    codec->enc_pts = kCMTimeZero;
-+    virgl_info("vt-video: %s encoder %ux%u (pictures %ux%u)\n",
-+               codec->kind == VT_KIND_HEVC ? "HEVC" : "H.264", codec->enc_w, codec->enc_h,
-+               codec->width, codec->height);
++    /* A guest switching modes every frame gets a new session every frame: log a few. */
++    if (codec->enc_sessions++ < 4)
++        virgl_info("vt-video: %s encoder %ux%u (pictures %ux%u), %s\n",
++                   codec->kind == VT_KIND_HEVC ? "HEVC" : "H.264", codec->enc_w, codec->enc_h,
++                   codec->width, codec->height,
++                   !cqp ? "bitrate" : codec->enc_frame_qp ? "constant QP" : "quality from QP");
 +    return true;
 +}
 +
@@ -419,7 +462,7 @@ index 6c95bf9..1d537b4 100644
 +
 +/* What a frame asks for, from either codec's picture description. */
 +struct enc_params {
-+    uint32_t bitrate, peak, fps_num, fps_den, gop, qp;
++    uint32_t bitrate, peak, fps_num, fps_den, gop, qp_i, qp_p;
 +    bool cqp, idr;
 +};
 +
@@ -434,7 +477,8 @@ index 6c95bf9..1d537b4 100644
 +        e->fps_num = d->rc.frame_rate_num;
 +        e->fps_den = d->rc.frame_rate_den;
 +        e->gop = d->seq.intra_period;
-+        e->qp = d->rc.quant_p_frames ? d->rc.quant_p_frames : d->rc.quant_i_frames;
++        e->qp_i = d->rc.quant_i_frames;
++        e->qp_p = d->rc.quant_p_frames;
 +        e->cqp = d->rc.rate_ctrl_method == PIPE_H2645_ENC_RATE_CONTROL_METHOD_DISABLE;
 +        e->idr = d->picture_type == PIPE_H2645_ENC_PICTURE_TYPE_IDR;
 +    } else {
@@ -444,7 +488,8 @@ index 6c95bf9..1d537b4 100644
 +        e->fps_num = d->rate_ctrl[0].frame_rate_num;
 +        e->fps_den = d->rate_ctrl[0].frame_rate_den;
 +        e->gop = d->gop_size ? d->gop_size : d->intra_idr_period;
-+        e->qp = d->quant_p_frames ? d->quant_p_frames : d->quant_i_frames;
++        e->qp_i = d->quant_i_frames;
++        e->qp_p = d->quant_p_frames;
 +        e->cqp = d->rate_ctrl[0].rate_ctrl_method == PIPE_H2645_ENC_RATE_CONTROL_METHOD_DISABLE;
 +        e->idr = d->picture_type == PIPE_H2645_ENC_PICTURE_TYPE_IDR;
 +    }
@@ -460,8 +505,17 @@ index 6c95bf9..1d537b4 100644
 +    }
 +    if (e->gop > VT_ENC_MAX_GOP)
 +        e->gop = VT_ENC_MAX_GOP;
-+    if (e->qp > 51)
-+        e->qp = 51;
++    /* QP 1..51 (0, lossless, is not offered); one given counts for both. */
++    if (!e->qp_i)
++        e->qp_i = e->qp_p;
++    if (!e->qp_p)
++        e->qp_p = e->qp_i;
++    if (!e->qp_i)
++        e->qp_i = e->qp_p = 26;
++    if (e->qp_i > 51)
++        e->qp_i = 51;
++    if (e->qp_p > 51)
++        e->qp_p = 51;
 +}
 +
 +static void enc_set_int(VTCompressionSessionRef s, CFStringRef key, int32_t v)
@@ -474,16 +528,17 @@ index 6c95bf9..1d537b4 100644
 +/* Rate control, frame rate and key frame interval; set again only on change.
 + * Bitrate: the guest's target as the average, at most 1.5 times it (or its
 + * peak, if higher) in any second, so a frame is never dropped for the rate.
-+ * Constant QP: VideoToolbox's quality from the guest's QP. */
++ * Constant QP: the QP goes with each frame (enc_encode); only an encoder without
++ * per-frame QP gets VideoToolbox's quality from the guest's P-frame QP. */
 +static void enc_apply_settings(struct virgl_video_codec *codec, const struct enc_params *e)
 +{
 +    if (e->cqp) {
-+        if (e->qp != codec->enc_qp) {
-+            float q = (51.0f - (float)e->qp) / 51.0f;
++        if (!codec->enc_frame_qp && e->qp_p != codec->enc_qp) {
++            float q = (51.0f - (float)e->qp_p) / 51.0f;
 +            CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloatType, &q);
 +            VTSessionSetProperty(codec->enc, kVTCompressionPropertyKey_Quality, n);
 +            CFRelease(n);
-+            codec->enc_qp = e->qp;
++            codec->enc_qp = e->qp_p;
 +        }
 +    } else if (e->bitrate && (e->bitrate != codec->enc_bitrate || e->peak != codec->enc_peak)) {
 +        uint64_t limit = (uint64_t)e->bitrate * 3 / 2;
@@ -595,16 +650,27 @@ index 6c95bf9..1d537b4 100644
 +    VTEncodeInfoFlags info = 0;
 +    struct enc_params e;
 +    OSStatus st;
++    bool key;
 +
 +    /* One picture per frame (begin_frame gives a new one). */
 +    if (!codec->enc_src || codec->enc_have_desc)
 +        return -1;
++    enc_params_get(codec, desc, &e);
++    /* Rate control mode changed (bitrate <-> constant QP): a new session, so no
++     * setting of the old mode stays (it starts with parameter sets and a key frame). */
++    if (codec->enc && e.cqp != codec->enc_cqp) {
++        enc_session_destroy(codec);
++        if (!enc_session_create(codec, e.cqp)) {
++            codec->enc_broken = true;
++            return -1;
++        }
++    }
 +    if (!codec->enc) {
 +        CVPixelBufferPoolRef pool;
 +        CVPixelBufferRef first = NULL;
 +
 +        enc_visible_size(codec, desc, &codec->enc_w, &codec->enc_h);
-+        if (!enc_session_create(codec)) {
++        if (!enc_session_create(codec, e.cqp)) {
 +            codec->enc_broken = true;   /* logged once; the guest falls back */
 +            return -1;
 +        }
@@ -621,12 +687,19 @@ index 6c95bf9..1d537b4 100644
 +            codec->enc_src = first;
 +        }
 +    }
-+    enc_params_get(codec, desc, &e);
 +    enc_apply_settings(codec, &e);
-+    if (e.idr || codec->enc_frame == 0) {
++    key = e.idr || codec->enc_frame == 0;
++    if (key || codec->enc_frame_qp)
 +        props = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
 +                                          &kCFTypeDictionaryValueCallBacks);
++    if (key)
 +        CFDictionarySetValue(props, kVTEncodeFrameOptionKey_ForceKeyFrame, kCFBooleanTrue);
++    if (codec->enc_frame_qp) {
++        /* Every frame of such a session must carry it. */
++        CFNumberRef n = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type,
++                                       key ? &e.qp_i : &e.qp_p);
++        CFDictionarySetValue(props, kVTEncodeFrameOptionKey_BaseFrameQP, n);
++        CFRelease(n);
 +    }
 +    /* Time stamps: each frame lasts 1/fps of the guest's current frame rate
 +     * (fps_num <= 240 * fps_den), added up, so they increase also when the rate
@@ -694,7 +767,7 @@ index 6c95bf9..1d537b4 100644
  int virgl_video_init(int drm_fd, struct virgl_video_callbacks *cbs,
                       unsigned int flags)
  {
-@@ -2122,8 +2729,19 @@ void virgl_video_destroy(void)
+@@ -2122,8 +2797,19 @@ void virgl_video_destroy(void)
      callbacks = NULL;
  }
  
@@ -714,7 +787,7 @@ index 6c95bf9..1d537b4 100644
  {
      struct virgl_video_caps *v;
      uint32_t g = guest_profile(p);
-@@ -2133,7 +2751,7 @@ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
+@@ -2133,7 +2819,7 @@ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
      v = &caps->v2.video_caps[caps->v2.num_video_caps++];
      memset(v, 0, sizeof(*v));
      v->profile = g;
@@ -723,7 +796,7 @@ index 6c95bf9..1d537b4 100644
      v->max_level = 0;
      v->stacked_frames = 0;
      v->max_width = max_w;
-@@ -2170,6 +2788,17 @@ int virgl_video_fill_caps(union virgl_caps *caps)
+@@ -2170,6 +2856,17 @@ int virgl_video_fill_caps(union virgl_caps *caps)
      if (kind_offered(VT_KIND_AV1)) {
          add_caps(caps, PIPE_VIDEO_PROFILE_AV1_MAIN, 8192, 8192, PIPE_FORMAT_NV12);
      }
@@ -741,7 +814,7 @@ index 6c95bf9..1d537b4 100644
      return 0;
  }
  
-@@ -2183,7 +2812,16 @@ struct virgl_video_codec *virgl_video_create_codec(
+@@ -2183,7 +2880,16 @@ struct virgl_video_codec *virgl_video_create_codec(
          return NULL;
  
      p = host_profile(args->profile);
@@ -759,7 +832,7 @@ index 6c95bf9..1d537b4 100644
          (kind_of(p) == VT_KIND_HEVC && p != PIPE_VIDEO_PROFILE_HEVC_MAIN &&
           p != PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) {
          virgl_warn("vt-video: unsupported profile %u entrypoint %u\n",
-@@ -2204,6 +2842,7 @@ struct virgl_video_codec *virgl_video_create_codec(
+@@ -2204,6 +2910,7 @@ struct virgl_video_codec *virgl_video_create_codec(
      codec->opaque = args->opaque;
      codec->l0_default = -1;
      codec->l1_default = -1;
@@ -767,7 +840,7 @@ index 6c95bf9..1d537b4 100644
  
      vt_log("codec profile %u (%s) %ux%u\n", (unsigned)args->profile,
             codec->kind == VT_KIND_H264 ? "H.264" : codec->kind == VT_KIND_VP9 ? "VP9" :
-@@ -2218,6 +2857,10 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
+@@ -2218,6 +2925,10 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
          return;
      vt_log("codec done: %u frames, %u errors\n", codec->frames, codec->errors);
      session_destroy(codec);
@@ -778,7 +851,7 @@ index 6c95bf9..1d537b4 100644
      if (codec->format)
          CFRelease(codec->format);
      if (codec->output)
-@@ -2226,6 +2869,7 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
+@@ -2226,6 +2937,7 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
          if (codec->held[i])
              CVPixelBufferRelease(codec->held[i]);
      bytes_free(&codec->bits);
@@ -786,7 +859,7 @@ index 6c95bf9..1d537b4 100644
      free(codec);
  }
  
-@@ -2283,6 +2927,8 @@ int virgl_video_begin_frame(struct virgl_video_codec *codec,
+@@ -2283,6 +2995,8 @@ int virgl_video_begin_frame(struct virgl_video_codec *codec,
  {
      if (!codec || !target)
          return -1;
@@ -795,7 +868,7 @@ index 6c95bf9..1d537b4 100644
      codec->target = target;
      codec->bits.size = 0;
      codec->have_desc = false;
-@@ -2322,10 +2968,18 @@ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
+@@ -2322,10 +3036,18 @@ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
                                   struct virgl_video_buffer *source,
                                   const union virgl_picture_desc *desc)
  {
@@ -817,7 +890,7 @@ index 6c95bf9..1d537b4 100644
  }
  
  int virgl_video_end_frame(struct virgl_video_codec *codec,
-@@ -2335,6 +2989,8 @@ int virgl_video_end_frame(struct virgl_video_codec *codec,
+@@ -2335,6 +3057,8 @@ int virgl_video_end_frame(struct virgl_video_codec *codec,
  
      if (!codec || !target)
          return -1;

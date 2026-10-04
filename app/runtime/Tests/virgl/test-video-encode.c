@@ -10,7 +10,8 @@
  * encodes, also when the frame rate changes; a frame never ended gets failure feedback and
  * does not leak into the next; a frame that fails, or whose coded-data resource is missing
  * or not a buffer, gets failure feedback; a coded-data buffer too small gets a
- * failure, not a cut frame; codecs the host does not offer (too small, too large, HEVC
+ * failure, not a cut frame; constant QP follows the guest's QP, also after a switch from
+ * bitrate mode; codecs the host does not offer (too small, too large, HEVC
  * Main 10) encode nothing.
  * Runs on Apple's software OpenGL (soft-gl.h); the encoder is the Mac's media engine.
  * Skips a codec the Mac has no hardware encoder for.
@@ -140,6 +141,8 @@ static void emit_plane(struct cmds *c, uint32_t handle, uint32_t w, uint32_t h, 
    c->n += words;
 }
 
+static int noise;   /* add grain, so the QP shows in the size */
+
 /* a moving gradient with a square, so frames differ */
 static void make_picture(int f, uint8_t *y, uint8_t *uv)
 {
@@ -148,6 +151,11 @@ static void make_picture(int f, uint8_t *y, uint8_t *uv)
          int v = (i + 2 * f) * 255 / (W + 60);
          if (i >= 40 + 4 * f && i < 100 + 4 * f && j >= 60 && j < 120)
             v = 235;
+         if (noise) {
+            uint32_t h = (uint32_t)(j * W + i) * 2654435761u ^ (uint32_t)f * 40503u;
+            v += (int)((h >> 24) % 41) - 20;
+            v = v < 0 ? 0 : v > 255 ? 255 : v;
+         }
          y[j * W + i] = (uint8_t)(16 + v * 219 / 255);
       }
    for (int j = 0; j < H / 2; j++)
@@ -638,6 +646,48 @@ static void test_codec(uint32_t handle, uint32_t profile, const char *name, cons
    submit(c);
 }
 
+/* Bytes of 8 frames (an IDR, then P frames) under rate control RC; 0 if one failed. */
+static uint32_t eight_frames(uint32_t handle, uint32_t profile, const struct rc *rc)
+{
+   uint32_t total = 0;
+   for (int f = 0; f < 8; f++) {
+      if (encode_frame(handle, profile, f, rc, R_CODED))
+         return 0;
+      total += feed.coded_size;
+   }
+   return total;
+}
+
+/* Constant QP follows the guest's QP: QP 18 gives clearly more bytes than QP 40,
+ * also right after bitrate mode (no bitrate limit left over), and bitrate mode
+ * after constant QP keeps to its bitrate again. */
+static void test_cqp(uint32_t handle, uint32_t profile, const char *name)
+{
+   static const struct rc qp18 = { 0, 0, 0, 30, 1, 30, 18 }, qp40 = { 0, 0, 0, 30, 1, 30, 40 };
+   static const struct rc low = { 4, 50000, 0, 30, 1, 30, 0 };
+   char line[160];
+
+   hevc = profile != G_AVC_HIGH;
+   if (!offered(profile))
+      return;
+   create_codec(handle, profile, W, H);
+   noise = 1;
+   uint32_t a = eight_frames(handle, profile, &qp18);
+   uint32_t b = eight_frames(handle, profile, &qp40);
+   snprintf(line, sizeof(line), "%s: constant QP 18: %u bytes, QP 40: %u bytes", name, a, b);
+   check(a && b && a > 2 * b, line);
+   uint32_t lo = eight_frames(handle, profile, &low);
+   uint32_t a2 = eight_frames(handle, profile, &qp18);
+   uint32_t lo2 = eight_frames(handle, profile, &low);
+   snprintf(line, sizeof(line), "%s: 50 kbit/s %u bytes, then QP 18 %u bytes, then 50 kbit/s "
+            "%u bytes", name, lo, a2, lo2);
+   check(lo && a2 && lo2 && a2 > a / 2 && a2 > 2 * lo && lo2 < a2 / 2, line);
+   noise = 0;
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+   emit(c, handle);
+   submit(c);
+}
+
 /* Pictures padded the way encoders pad them, the SPS cropping 16 columns and 8
  * rows: the stream has the cropped size and shows the top-left of each picture.
  * Twice: GPU blit, and the CPU copy (OMACVM_VIDEO_COPY=1). */
@@ -731,6 +781,8 @@ int main(void)
    test_crop(13, G_AVC_HIGH, "H.264", 1);
    test_crop(14, G_HEVC_MAIN, "HEVC", 0);
    test_crop(15, G_HEVC_MAIN, "HEVC", 1);
+   test_cqp(16, G_AVC_HIGH, "H.264");
+   test_cqp(17, G_HEVC_MAIN, "HEVC");
 
    /* Codecs the host does not offer: nothing is encoded with them. */
    static const struct { uint32_t profile, w, h; const char *what; } refused[] = {
