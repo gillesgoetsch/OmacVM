@@ -98,7 +98,7 @@ xcrun clang -O2 -Wall -mmacosx-version-min=14.0 -DNETD_VERSION="\"$VERSION\"" -o
   -framework vmnet -framework Security -framework CoreFoundation -lbsm
 x() { local s=$1; s=${s//&/&amp;}; s=${s//</&lt;}; printf '%s' "${s//>/&gt;}"; }
 # This user, and the ones it was installed for before.
-USERS=$( { installed_users; id -u; } | grep -E '^[0-9]+$' | sort -un | head -16 |
+USERS=$( { id -u; installed_users | grep -vx "$(id -u)" | head -15; } | grep -E '^[0-9]+$' |
   while read -r u; do printf '    <string>--user</string><string>%s</string>\n' "$u"; done)
 cat > "$T/$LABEL.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -114,7 +114,8 @@ cat > "$T/$LABEL.plist" <<EOF
 $USERS
   </array>
   <!-- launchd holds the socket and starts the daemon on the first connection;
-       anyone may connect, the daemon checks the caller's code signature. -->
+       anyone may connect, the daemon checks the caller's user (- -user) and
+       code signature (- -requirement). -->
   <key>Sockets</key>
   <dict>
     <key>omacvm-netd</key>

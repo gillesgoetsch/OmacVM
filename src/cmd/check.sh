@@ -106,7 +106,9 @@ if ! msg=$(vm_network_ok "$TYPE" "$IP" 2>&1); then
   exit 1
 fi
 if ! ifconfig | grep -q "inet $HOST "; then
-  bad "VM network" "$HOST is not up on this Mac: start the VM, then run omacvm check again"
+  if [[ $TYPE == app && $HOST == 192.168.64.1 ]]; then
+    bad "VM network" "the fast network is not up: $(head -1 "$(app_dir "$VM")/logs/network" 2>/dev/null) (omacvm-netd's log: /var/log/org.omacvm.netd.log)"
+  else bad "VM network" "$HOST is not up on this Mac: start the VM, then run omacvm check again"; fi
   (( JSON )) && json_out false
   exit 1
 fi

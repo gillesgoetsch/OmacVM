@@ -93,7 +93,10 @@ static void logf_(const char *fmt, ...) {
     strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", localtime_r(&t, &tm));
     pthread_mutex_lock(&logLock);
     struct stat st;
-    if (fstat(STDERR_FILENO, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > LOG_MAX) ftruncate(STDERR_FILENO, 0);
+    if (fstat(STDERR_FILENO, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > LOG_MAX) {
+        ftruncate(STDERR_FILENO, 0);
+        lseek(STDERR_FILENO, 0, SEEK_SET);   // in case launchd did not open it O_APPEND
+    }
     va_list ap; va_start(ap, fmt);
     fprintf(stderr, "%s omacvm-netd: ", ts); vfprintf(stderr, fmt, ap); fputc('\n', stderr);
     va_end(ap);
@@ -347,8 +350,10 @@ static void accepted(int fd) {
     }
     pid_t pid = audit_token_to_pid(tok);
     uid_t uid = audit_token_to_euid(tok);
-    const char *why = !userAllowed(uid) ? "not a user the fast network was installed for" : checkPeer(&tok);
-    if (why) { refused(pid, uid, why); close(fd); return; }
+    if (!userAllowed(uid)) { refused(pid, uid, "not a user the fast network was installed for"); close(fd); return; }
+    // Refusals of its own users always go to the log (others' floods cannot hide them).
+    const char *why = checkPeer(&tok);
+    if (why) { logf_("pid %d (uid %d) refused: %s", pid, uid, why); close(fd); return; }
     if (!slotTake(uid)) { refused(pid, uid, "too many VMs connected"); close(fd); return; }
     struct conn *c = calloc(1, sizeof *c);
     pthread_t t;
