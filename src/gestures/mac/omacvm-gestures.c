@@ -188,18 +188,25 @@ static int nameIs(int i, int exact) {
   return n[0] && (exact ? !strcmp(frontTitle, n) : strstr(frontTitle, n) != NULL);
 }
 
+// OmacVM.app's VMs on its fast network (vmnet) come in on UTM's network
+// (192.168.64.1): while the app is in front they count as the app's, but only
+// by their name in its window title (a UTM VM is there too).
+static int onFrontNet(int i) {
+  return clients[i].net == frontNet || (frontNet == NET_APP && clients[i].net == NET_UTM && nameIs(i, 0));
+}
+
 // The front VM's clients (clients[].target); sendLock held. Returns the
 // targets as a bit mask.
 static unsigned pickTargets(void) {
   int exact = 0; size_t best = 0;
   for (int i = 0; i < MAX_CLIENTS; i++) {
-    if (clients[i].fd < 0 || clients[i].net != frontNet) continue;
+    if (clients[i].fd < 0 || !onFrontNet(i)) continue;
     if (nameIs(i, 1)) exact = 1;
     else if (nameIs(i, 0) && strlen(clients[i].name) > best) best = strlen(clients[i].name);
   }
   unsigned mask = 0;
   for (int i = 0; i < MAX_CLIENTS; i++) {
-    int on = clients[i].fd >= 0 && clients[i].net == frontNet &&
+    int on = clients[i].fd >= 0 && onFrontNet(i) &&
              (exact ? nameIs(i, 1) : best ? nameIs(i, 0) && strlen(clients[i].name) == best : 1);
     clients[i].target = on;
     if (on) mask |= 1u << i;

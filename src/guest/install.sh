@@ -6,7 +6,7 @@
 #                    [--display WxH@Hz] [--feature NAME=on|off]... [--clock-format-b64 FMT]
 #                    [--vm-name-b64 NAME]   (or --vm-type app: OmacVM.app)
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
-# omanotch, mac-clock, camera, idle-lock, autologin, thp-kernel, battery) with its defaults; a feature
+# omanotch, mac-clock, camera, idle-lock, autologin, thp-kernel, battery, fast-network) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
 # --vm-type defaults to what the hardware says (Parallels or QEMU = UTM);
@@ -91,6 +91,8 @@ case $TYPE in
 esac
 # Parallels gives the VM the Mac's battery itself.
 [[ $TYPE == parallels ]] && F[battery]=off
+# The fast network is OmacVM.app's (the other apps have vmnet themselves).
+[[ $TYPE == app ]] || F[fast-network]=off
 # Fusion: the public DNS from fusion/guest/install.sh goes again also when a
 # later step fails.
 if [[ $TYPE == fusion ]]; then trap '"$R/fusion/guest/dns.sh" off' EXIT; fi
@@ -117,6 +119,13 @@ log "system: SSH from the Mac, bootable snapshots, DNS fallback"
 # Omarchy's firewall denies everything inbound; the Mac (Parallels' shared
 # network) may still reach SSH.
 ufw allow from "${HOST%.*}.0/24" to any port 22 proto tcp comment "omacvm: ssh from the Mac" >/dev/null 2>&1 || true
+# OmacVM.app's fast network (vmnet): the Mac reaches SSH from 192.168.64.1
+# (only the Mac: other VMs on that network do not).
+if [[ ${F[fast-network]} == on ]]; then
+  ufw allow from 192.168.64.1 to any port 22 proto tcp comment "omacvm: ssh from the Mac (fast network)" >/dev/null 2>&1 || true
+else
+  ufw delete allow from 192.168.64.1 to any port 22 proto tcp >/dev/null 2>&1 || true
+fi
 # A VM switched off during pacman keeps pacman's lock, and every pacman below
 # would fail. Wait for one that runs (omarchy update); a lock without pacman goes.
 for ((i = 0; i < 120; i++)); do
