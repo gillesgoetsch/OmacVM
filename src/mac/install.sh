@@ -34,6 +34,8 @@ for a in "$@"; do
 done
 STAMPS=~/Library/Application\ Support/omacvm/installed
 mkdir -p "$HOME/.local/share/omacvm/clip" "$STAMPS"
+# Up to 2.7, Gestures kept its list of VMs without a token here; nothing reads it now.
+rm -f ~/Library/Application\ Support/omacvm/gestures-legacy{,.new}
 
 # install_app NAME LAUNCHD_LABEL DIR [ARGS...]: DIR/install.sh unless the same
 # sources and options are already installed and running.
