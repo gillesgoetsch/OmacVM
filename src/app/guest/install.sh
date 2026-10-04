@@ -7,6 +7,8 @@
 #  * the QEMU guest agent
 #  * video decoding on the Mac's media engine (VA-API: vainfo, a driver shim
 #    so Firefox gets NV12 surfaces, Firefox's VA-API switch)
+#  * video encoding on it: Chrome's and Brave's VA-API encoder for WebRTC
+#    (browser-video-encode.sh)
 set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user>}
@@ -45,4 +47,12 @@ else
 fi
 rm -rf "$T"
 install -Dm644 omacvm-app-video.js /usr/lib/firefox/defaults/pref/omacvm-app-video.js
-echo "OmacVM.app: display sync, guest agent, video decoding"
+# Video encoding on the Mac's media engine (FFmpeg's h264_vaapi/hevc_vaapi need
+# nothing): Chrome's and Brave's WebRTC encoder, when this app offers encoding.
+if vainfo --display drm 2>/dev/null | grep -q VAEntrypointEncSlice; then
+  ./browser-video-encode.sh "$U" on
+  echo "OmacVM.app: display sync, guest agent, video decoding and encoding"
+else
+  ./browser-video-encode.sh "$U" off
+  echo "OmacVM.app: display sync, guest agent, video decoding"
+fi
