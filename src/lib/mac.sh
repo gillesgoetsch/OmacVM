@@ -182,6 +182,16 @@ utm_state() {   # <vm name> -> started|stopped|...
   "$UTMCTL" status "$1" 2>/dev/null | tr -d '[:space:]'; echo
 }
 
+# lease_ip MAC: the newest address macOS's DHCP server (bootpd: vmnet's shared
+# network) gave that MAC (aa:bb:..; the lease file drops leading zeros).
+lease_ip() {
+  local m
+  m=$(tr 'A-F' 'a-f' <<<"$1" | sed 's/:0/:/g; s/^0//')
+  [[ -n $m ]] || return 1
+  awk -v m="1,$m" '/ip_address=/ { split($0, a, "="); ip = a[2] } /hw_address=/ { split($0, b, "="); if (b[2] == m) print ip }' \
+    /var/db/dhcpd_leases 2>/dev/null | tail -1
+}
+
 utm_ip() {   # <vm name> [seconds]: the guest's address on UTM's shared network
   local ip mac="" end=$((SECONDS + ${2:-1})) ask=1
   # utmctl and AppleScript wait while macOS asks whether this terminal may
@@ -199,7 +209,7 @@ utm_ip() {   # <vm name> [seconds]: the guest's address on UTM's shared network
             -e 'copy (configuration of virtual machine named (item 1 of argv)) to c' \
             -e 'get address of item 1 of (network interfaces of c)' -e 'end tell' -e 'end timeout' -e 'end run' "$1" 2>/dev/null) || true
     if [[ -n $mac ]]; then
-      ip=$(awk -v m="1,$(tr 'A-F' 'a-f' <<<"$mac" | sed 's/:0/:/g; s/^0//')" '/ip_address=/ { split($0, a, "="); ip = a[2] } /hw_address=/ { split($0, b, "="); if (b[2] == m) print ip }' /var/db/dhcpd_leases 2>/dev/null | tail -1)
+      ip=$(lease_ip "$mac")
       [[ -n $ip ]] && { echo "$ip"; return 0; }
     fi
     (( SECONDS < end )) || return 1

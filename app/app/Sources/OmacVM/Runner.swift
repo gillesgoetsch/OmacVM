@@ -167,10 +167,44 @@ final class Runner {
         }
         try p.run()
         process = p
+        if network.vmnet { watchFastNetwork() }
         observeSleep()
         startClipboard()
         startBattery()
         startCamera()
+    }
+
+    /// omacvm-netd may still refuse QEMU (another build, the limit) or vmnet may
+    /// not start: then QEMU only tries to connect, and the VM has no network.
+    /// Say so in logs/network (omacvm check) and qemu.log; the user network
+    /// comes back with the next start after `omacvm disable fast-network`.
+    private func watchFastNetwork() {
+        let qmpPath = config.qmpSocket.path
+        let record = config.folder.appendingPathComponent("logs/network")
+        let logPath = config.folder.appendingPathComponent("logs/qemu.log").path
+        Task.detached {
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            var connected = 0, polls = 0
+            for _ in 0..<4 {
+                if let qmp = try? QMPConnection(socketPath: qmpPath, identifierPrefix: "omacvm-net"),
+                   let r = try? qmp.execute("human-monitor-command", arguments: ["command-line": "info network"]),
+                   let text = r["text"] as? String {
+                    polls += 1
+                    // "net0: index=0,type=stream,unix:<path>" while connected,
+                    // "connecting" or "error: ..." while not.
+                    let line = text.split(separator: "\n").first { $0.contains("net0: index=") } ?? ""
+                    if line.contains("type=stream,unix:") && !line.contains("link=down") { connected += 1 }
+                    qmp.close()
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+            guard polls > 0, connected == 0 else { return }
+            let why = "vmnet-down QEMU cannot connect to omacvm-netd: no network until the VM starts again (omacvm check; omacvm disable fast-network)"
+            try? Data("\(why)\n".utf8).write(to: record)
+            if let h = FileHandle(forWritingAtPath: logPath) {
+                h.seekToEndOfFile(); h.write(Data("OmacVM: network: \(why)\n".utf8)); try? h.close()
+            }
+        }
     }
 
     static var micAllowed: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }

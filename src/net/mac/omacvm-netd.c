@@ -10,16 +10,23 @@
 // (QEMU's stream framing: a 4-byte big-endian length, then the frame).
 //
 // What it may do, and nothing else:
-// - Accept a connection only from a process whose code signature satisfies
-//   the requirement it was started with (--requirement, set by root in its
-//   launchd plist): OmacVM.app's QEMU, by its Developer ID team or by the
-//   exact build (cdhash). It checks the connecting process itself (its audit
-//   token), not a path or a PID.
+// - Accept a connection only from a process of a user it was installed for
+//   (--user, one per Mac user who ran omacvm enable fast-network) whose code
+//   signature satisfies the requirement it was started with (--requirement):
+//   OmacVM.app's QEMU, by its Developer ID team or by the exact build
+//   (cdhash). Both come from the connecting process itself (its audit token),
+//   not a path or a PID; both are set by root in its launchd plist. The user
+//   check matters: anyone can run the signed QEMU with any arguments, and
+//   with an interface they could send any frame on the VM network (other
+//   VMs of that Mac are the ones they could fool), so only the users who
+//   asked for it get one.
 // - For each accepted connection, one vmnet interface in shared mode on
 //   192.168.64.0/24 (macOS's default shared network: the Mac is 192.168.64.1,
 //   as on UTM), isolated from the other VMs' interfaces. It closes with the
 //   connection.
-// - At most MAX_PER_UID connections per user and MAX_CONNS in all.
+// - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
+//   are logged at most once per LOG_QUIET seconds, and the log is cut at
+//   LOG_MAX bytes.
 // It runs no commands, opens no files, takes no other requests, and frames
 // are only passed on (their length checked), never parsed.
 //
@@ -29,7 +36,8 @@
 //
 // Build: clang -O2 -Wall -o omacvm-netd omacvm-netd.c -framework vmnet
 //          -framework Security -framework CoreFoundation -lbsm
-// Test without launchd (as root): omacvm-netd --requirement REQ --socket PATH
+// Test without launchd (as root): omacvm-netd --requirement REQ --user UID --socket PATH
+// (PATH in a directory only root can write).
 
 #include <bsm/libbsm.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -37,6 +45,7 @@
 #include <dispatch/dispatch.h>
 #include <errno.h>
 #include <launch.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -58,8 +67,11 @@
 #ifndef NETD_VERSION
 #define NETD_VERSION "dev"
 #endif
-#define MAX_CONNS 16
-#define MAX_PER_UID 8
+#define MAX_CONNS 32
+#define MAX_PER_UID 16
+#define MAX_USERS 16
+#define LOG_QUIET 10            // seconds between two "refused" lines
+#define LOG_MAX (1024 * 1024)   // the log starts over above this
 #define IDLE_EXIT 60            // seconds without connections, then exit (launchd restarts on demand)
 #define BATCH 64                // frames per vmnet_read / vmnet_write
 #define RBUF (512 * 1024)       // socket -> vmnet read buffer
@@ -71,13 +83,39 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int nconns;
 static struct { uid_t uid; int n; } perUid[MAX_CONNS];
 static time_t lastActive;
+static uid_t users[MAX_USERS];
+static int nusers;
 
+// One line to stderr (launchd's log file), which starts over above LOG_MAX.
 static void logf_(const char *fmt, ...) {
-    char ts[32]; time_t t = time(NULL);
-    strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", localtime(&t));
+    static pthread_mutex_t logLock = PTHREAD_MUTEX_INITIALIZER;
+    char ts[32]; struct tm tm; time_t t = time(NULL);
+    strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", localtime_r(&t, &tm));
+    pthread_mutex_lock(&logLock);
+    struct stat st;
+    if (fstat(STDERR_FILENO, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > LOG_MAX) ftruncate(STDERR_FILENO, 0);
     va_list ap; va_start(ap, fmt);
     fprintf(stderr, "%s omacvm-netd: ", ts); vfprintf(stderr, fmt, ap); fputc('\n', stderr);
     va_end(ap);
+    pthread_mutex_unlock(&logLock);
+}
+
+// "refused" lines: at most one per LOG_QUIET seconds (a loop of connects
+// must not fill the disk); the next one says how many were not logged.
+static void refused(pid_t pid, uid_t uid, const char *why) {
+    static time_t last; static unsigned long quiet;
+    time_t now = time(NULL);
+    pthread_mutex_lock(&lock);
+    int say = now - last >= LOG_QUIET;
+    unsigned long n = quiet;
+    if (say) { last = now; quiet = 0; } else quiet++;
+    pthread_mutex_unlock(&lock);
+    if (say) logf_("pid %d (uid %d) refused: %s%s", pid, uid, why, n ? " (and earlier refusals not logged)" : "");
+}
+
+static int userAllowed(uid_t uid) {
+    for (int i = 0; i < nusers; i++) if (users[i] == uid) return 1;
+    return 0;
 }
 
 // ---- who may connect ----
@@ -175,6 +213,17 @@ static void toVM(struct conn *c) {
     }
 }
 
+// Stops c's vmnet interface on its own queue and waits: no callback runs after.
+static void stopInterface(struct conn *c) {
+    if (!c->iface) return;
+    vmnet_interface_set_event_callback(c->iface, 0, NULL, NULL);
+    dispatch_semaphore_t s = dispatch_semaphore_create(0);
+    if (vmnet_stop_interface(c->iface, c->q, ^(vmnet_return_t st) { (void)st; dispatch_semaphore_signal(s); }) == VMNET_SUCCESS)
+        dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
+    dispatch_release(s);
+    c->iface = NULL;
+}
+
 static int startInterface(struct conn *c) {
     xpc_object_t desc = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_uint64(desc, vmnet_operation_mode_key, VMNET_SHARED_MODE);
@@ -200,20 +249,18 @@ static int startInterface(struct conn *c) {
     if (!c->iface) return -1;
     dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
     dispatch_release(done);
-    if (status != VMNET_SUCCESS || maxPacket < 1514 || maxPacket > MAX_FRAME) {
-        logf_("pid %d: vmnet did not start (status %d, max packet %zu)", c->pid, status, maxPacket);
-        if (status == VMNET_SUCCESS) {
-            dispatch_semaphore_t s = dispatch_semaphore_create(0);
-            vmnet_stop_interface(c->iface, c->q, ^(vmnet_return_t st) { (void)st; dispatch_semaphore_signal(s); });
-            dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
-            dispatch_release(s);
-        }
+    if (status != VMNET_SUCCESS) {
+        logf_("pid %d: vmnet did not start (status %d)", c->pid, status);
         c->iface = NULL;
         return -1;
     }
     c->maxPacket = maxPacket;
-    c->rx = malloc((size_t)BATCH * maxPacket);
-    if (!c->rx) return -1;
+    c->rx = maxPacket >= 1514 && maxPacket <= MAX_FRAME ? malloc((size_t)BATCH * maxPacket) : NULL;
+    if (!c->rx) {
+        logf_("pid %d: no buffers for vmnet's frames (max packet %zu)", c->pid, maxPacket);
+        stopInterface(c);
+        return -1;
+    }
     vmnet_interface_set_event_callback(c->iface, VMNET_INTERFACE_PACKETS_AVAILABLE, c->q,
                                        ^(interface_event_t ev, xpc_object_t e) { (void)ev; (void)e; toVM(c); });
     return 0;
@@ -273,11 +320,7 @@ static void *serve(void *arg) {
         // Wake a write that waits for QEMU, then stop vmnet on its own queue:
         // no callback runs after the stop.
         shutdown(c->fd, SHUT_RDWR);
-        vmnet_interface_set_event_callback(c->iface, 0, NULL, NULL);
-        dispatch_semaphore_t s = dispatch_semaphore_create(0);
-        if (vmnet_stop_interface(c->iface, c->q, ^(vmnet_return_t st) { (void)st; dispatch_semaphore_signal(s); }) == VMNET_SUCCESS)
-            dispatch_semaphore_wait(s, DISPATCH_TIME_FOREVER);
-        dispatch_release(s);
+        stopInterface(c);
         logf_("pid %d: disconnected (%llu frames to the VM, %llu from it, %llu dropped)", c->pid, c->toVM, c->fromVM, c->dropped);
     } else {
         logf_("pid %d: no vmnet interface: closing", c->pid);
@@ -298,15 +341,15 @@ static void accepted(int fd) {
     audit_token_t tok;
     socklen_t tl = sizeof tok;
     if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &tok, &tl) || tl != sizeof tok) {
-        logf_("a connection without credentials: refused");
+        refused(0, (uid_t)-1, "no credentials");
         close(fd);
         return;
     }
     pid_t pid = audit_token_to_pid(tok);
     uid_t uid = audit_token_to_euid(tok);
-    const char *why = checkPeer(&tok);
-    if (why) { logf_("pid %d (uid %d) refused: %s", pid, uid, why); close(fd); return; }
-    if (!slotTake(uid)) { logf_("pid %d (uid %d) refused: too many VMs connected", pid, uid); close(fd); return; }
+    const char *why = !userAllowed(uid) ? "not a user the fast network was installed for" : checkPeer(&tok);
+    if (why) { refused(pid, uid, why); close(fd); return; }
+    if (!slotTake(uid)) { refused(pid, uid, "too many VMs connected"); close(fd); return; }
     struct conn *c = calloc(1, sizeof *c);
     pthread_t t;
     pthread_attr_t a;
@@ -325,7 +368,11 @@ static int listenOn(const char *path) {
     if (s < 0 || strlen(path) >= sizeof a.sun_path) return -1;
     strcpy(a.sun_path, path);
     unlink(path);
-    if (bind(s, (struct sockaddr *)&a, sizeof a) || chmod(path, 0666) || listen(s, 16)) return -1;
+    // The mode comes from the umask at bind: no chmod that could follow a link.
+    mode_t old = umask(0111);
+    int r = bind(s, (struct sockaddr *)&a, sizeof a);
+    umask(old);
+    if (r || listen(s, 16)) return -1;
     return s;
 }
 
@@ -334,10 +381,15 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--version")) { puts(NETD_VERSION); return 0; }
         if (!strcmp(argv[i], "--requirement") && i + 1 < argc) req = argv[++i];
+        else if (!strcmp(argv[i], "--user") && i + 1 < argc && nusers < MAX_USERS) {
+            char *end; long u = strtol(argv[++i], &end, 10);
+            if (*end || u < 0) { fprintf(stderr, "omacvm-netd: --user takes a uid\n"); return 2; }
+            users[nusers++] = (uid_t)u;
+        }
         else if (!strcmp(argv[i], "--socket") && i + 1 < argc) path = argv[++i];
-        else { fprintf(stderr, "usage: omacvm-netd --requirement REQ [--socket PATH]\n"); return 2; }
+        else { fprintf(stderr, "usage: omacvm-netd --requirement REQ --user UID... [--socket PATH]\n"); return 2; }
     }
-    if (!req) { fprintf(stderr, "omacvm-netd: --requirement is needed\n"); return 2; }
+    if (!req || !nusers) { fprintf(stderr, "omacvm-netd: --requirement and --user are needed\n"); return 2; }
     if (geteuid() != 0) { fprintf(stderr, "omacvm-netd: vmnet needs root\n"); return 1; }
     CFStringRef rs = CFStringCreateWithCString(NULL, req, kCFStringEncodingUTF8);
     if (!rs || SecRequirementCreateWithString(rs, kSecCSDefaultFlags, &requirement) != errSecSuccess) {
@@ -358,22 +410,22 @@ int main(int argc, char **argv) {
     }
     if (ls < 0) { logf_("no socket to listen on (%s)", path ? path : "launchd"); return 1; }
 
-    // Leave when idle; launchd starts us again on the next connection.
+    // Leave when idle; launchd starts us again on the next connection. Decided
+    // here, between accepts, so a connection that just came in is never dropped.
     lastActive = time(NULL);
-    dispatch_source_t idle = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                                                    dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
-    dispatch_source_set_timer(idle, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), 10 * NSEC_PER_SEC, NSEC_PER_SEC);
-    dispatch_source_set_event_handler(idle, ^{
-        pthread_mutex_lock(&lock);
-        int quit = !path && nconns == 0 && time(NULL) - lastActive >= IDLE_EXIT;
-        pthread_mutex_unlock(&lock);
-        if (quit) exit(0);
-    });
-    dispatch_resume(idle);
-
     for (;;) {
+        struct pollfd pf = { .fd = ls, .events = POLLIN };
+        int r = poll(&pf, 1, 10 * 1000);
+        if (r == 0) {
+            pthread_mutex_lock(&lock);
+            int quit = !path && nconns == 0 && time(NULL) - lastActive >= IDLE_EXIT;
+            pthread_mutex_unlock(&lock);
+            if (quit) return 0;
+            continue;
+        }
+        if (r < 0) { if (errno != EINTR) { logf_("poll: %s", strerror(errno)); sleep(1); } continue; }
         int fd = accept(ls, NULL, NULL);
-        if (fd < 0) { if (errno == EINTR || errno == ECONNABORTED) continue; logf_("accept: %s", strerror(errno)); sleep(1); continue; }
+        if (fd < 0) { if (errno == EINTR || errno == ECONNABORTED || errno == EAGAIN) continue; logf_("accept: %s", strerror(errno)); sleep(1); continue; }
         accepted(fd);
     }
 }

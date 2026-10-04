@@ -38,8 +38,14 @@ enum FastNetwork {
               lstat(socket, &st) == 0, st.st_mode & S_IFMT == S_IFSOCK else {
             return slirp("omacvm-netd is not installed (omacvm enable fast-network)")
         }
-        guard let req = daemonRequirement() else {
+        guard let args = daemonArguments(), let i = args.firstIndex(of: "--requirement"), i + 1 < args.count else {
             return slirp("omacvm-netd's settings are unreadable (omacvm enable fast-network)")
+        }
+        let req = args[i + 1]
+        // It takes VMs of the users it was installed for only.
+        let me = String(getuid())
+        guard args.indices.contains(where: { args[$0] == "--user" && $0 + 1 < args.count && args[$0 + 1] == me }) else {
+            return slirp("omacvm-netd was installed for another user of this Mac (omacvm enable fast-network)")
         }
         guard qemuSatisfies(req) else {
             return slirp("omacvm-netd was installed for another build of the app (omacvm enable fast-network)")
@@ -47,13 +53,12 @@ enum FastNetwork {
         return Choice(vmnet: true, mac: mac, record: "vmnet")
     }
 
-    /// The code requirement the daemon checks callers against (its launchd plist).
-    private static func daemonRequirement() -> String? {
+    /// The daemon's arguments (its launchd plist): the code requirement it
+    /// checks callers against and the users it takes.
+    private static func daemonArguments() -> [String]? {
         guard let data = FileManager.default.contents(atPath: daemonPlist),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let args = plist["ProgramArguments"] as? [String],
-              let i = args.firstIndex(of: "--requirement"), i + 1 < args.count else { return nil }
-        return args[i + 1]
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+        return plist["ProgramArguments"] as? [String]
     }
 
     /// The daemon would accept this app's QEMU: same check as its own, on the file.

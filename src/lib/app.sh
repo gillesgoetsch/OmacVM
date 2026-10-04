@@ -63,13 +63,10 @@ app_dir() {
 # own (macOS's DHCP server hands it out), and SSH goes there (port 22), its
 # host key checked as always.
 app_net() { awk 'NR == 1 { print $1 }' "$1/logs/network" 2>/dev/null; }   # DIR -> vmnet|slirp
-app_vmnet_ip() {   # DIR -> the VM's address in /var/db/dhcpd_leases (bootpd drops leading zeros)
+app_vmnet_ip() {   # DIR -> the VM's address on vmnet's network (lease_ip, src/lib/mac.sh)
   local m
-  m=$(sed -n 's/^mac=//p' "$1/fast-network" 2>/dev/null | tr 'A-F' 'a-f' | sed 's/:0/:/g; s/^0//')
-  [[ -n $m ]] || return 1
-  m=$(awk -v m="1,$m" '/ip_address=/ { split($0, a, "="); ip = a[2] } /hw_address=/ { split($0, b, "="); if (b[2] == m) print ip }' \
-        /var/db/dhcpd_leases 2>/dev/null | tail -1)
-  [[ $m =~ ^192\.168\.64\.[0-9]+$ ]] && echo "$m"
+  m=$(sed -n 's/^mac=//p' "$1/fast-network" 2>/dev/null)
+  [[ -n $m ]] && m=$(lease_ip "$m") && [[ $m =~ ^192\.168\.64\.[0-9]+$ ]] && echo "$m"
 }
 
 app_ip() {   # NAME [seconds]: only when that QEMU itself holds the port (not

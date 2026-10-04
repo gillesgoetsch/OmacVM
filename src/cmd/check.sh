@@ -44,6 +44,11 @@ if [[ -z $IP ]]; then
   msg=$(sed 's/^omacvm: //' "$err"); rm -f "$err"
   (( rc == 0 )) || stop "$rc" "${msg:-no VM}"
   IFS=$'\t' read -r VM TYPE IP <<<"$r"
+  # An app VM whose fast network did not come up has no address: say why.
+  if [[ -z $IP && $TYPE == app ]] && d=$(app_dir "$VM") && app_running_dir "$d" &&
+     n=$(head -1 "$d/logs/network" 2>/dev/null) && [[ $n == vmnet-down* ]]; then
+    stop 1 "fast network: ${n#vmnet-down }"
+  fi
   [[ -n $IP ]] || stop 1 "'$VM' is not running (start it, or omacvm apply --vm \"$VM\" starts it)"
 fi
 if [[ -z $TYPE ]]; then
@@ -132,6 +137,7 @@ if [[ $TYPE == app ]]; then
     case $net in
       vmnet) ok "fast network" "on (vmnet), the VM is $IP" ;;
       slirp*) bad "fast network" "this start took QEMU's user network: ${net#slirp }" ;;
+      vmnet-down*) bad "fast network" "${net#vmnet-down }" ;;
       *) bad "fast network" "the app did not say which network it took (from before the fast network? omacvm update)" ;;
     esac
   else skip "fast network" "off (experimental: omacvm enable fast-network)"; fi

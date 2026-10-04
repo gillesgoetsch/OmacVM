@@ -8,9 +8,10 @@
 #   src/net/mac/install.sh --status [--app APP]
 #                                        ok | old (another build or another app) | missing
 #   src/net/mac/install.sh --remove      take it off this Mac (sudo)
-# Accepted callers: QEMU signed with OmacVM's Developer ID (team 722686Y34B), or,
-# for an app signed ad hoc (built from source), exactly that app's QEMU (its
-# cdhash: install again after rebuilding the app).
+# Accepted callers: processes of the Mac users who installed it (each user who
+# runs this is added) that are QEMU signed with OmacVM's Developer ID (team
+# 722686Y34B), or, for an app signed ad hoc (built from source), exactly that
+# app's QEMU (its cdhash: install again after rebuilding the app).
 # Exit codes: 0 done, 1 failed, 2 usage, 3 needs a person (no password to ask for).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -32,14 +33,7 @@ while (( $# )); do
   esac
 done
 
-app_bundle_default() {   # the installed OmacVM.app (as src/lib/app.sh finds it)
-  local a
-  for a in /Applications/*.app "$HOME"/Applications/*.app; do
-    [[ -f $a/Contents/Resources/scripts/create-vm.sh ]] || continue
-    [[ $(defaults read "$a/Contents/Info" CFBundleIdentifier 2>/dev/null) == org.omacvm.app ]] && { echo "$a"; return 0; }
-  done
-  return 1
-}
+source "$HERE/../../lib/app.sh"   # app_bundle: the installed OmacVM.app
 
 # The code requirement for APP's QEMU: the team for a Developer ID build, else
 # that exact build.
@@ -59,12 +53,17 @@ VERSION=$(shasum -a 256 "$HERE/omacvm-netd.c" | cut -c1-16)
 installed_req() {   # the requirement the installed daemon runs with
   /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:2' "$PLIST" 2>/dev/null
 }
+installed_users() {   # the uids it takes connections from, one per line
+  plutil -extract ProgramArguments json -o - "$PLIST" 2>/dev/null |
+    python3 -c 'import json, sys; a = json.load(sys.stdin); print("\n".join(a[i + 1] for i in range(len(a) - 1) if a[i] == "--user"))' 2>/dev/null
+}
 
 status() {
   [[ -x $BIN && -f $PLIST ]] || { echo missing; return 0; }
   local want
   if [[ $("$BIN" --version 2>/dev/null) != "$VERSION" ]]; then echo old; return 0; fi
-  if [[ -n $APP ]] || APP=$(app_bundle_default); then
+  installed_users | grep -qx "$(id -u)" || { echo old; return 0; }
+  if [[ -n $APP ]] || APP=$(app_bundle); then
     want=$(requirement "$APP" 2>/dev/null) || { echo old; return 0; }
     [[ $(installed_req) == "$want" ]] || { echo old; return 0; }
   fi
@@ -89,7 +88,7 @@ case $MODE in
     exit 0 ;;
 esac
 
-[[ -n $APP ]] || APP=$(app_bundle_default) || { echo "no OmacVM.app installed (in /Applications or ~/Applications)" >&2; exit 1; }
+[[ -n $APP ]] || APP=$(app_bundle) || { echo "no OmacVM.app installed (in /Applications or ~/Applications)" >&2; exit 1; }
 REQ=$(requirement "$APP") || exit 1
 if [[ $(status) == ok ]]; then exit 0; fi
 xcrun -f clang >/dev/null 2>&1 || { echo "the fast network is built here and needs Xcode's Command Line Tools: xcode-select --install" >&2; exit 3; }
@@ -98,6 +97,9 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 xcrun clang -O2 -Wall -mmacosx-version-min=14.0 -DNETD_VERSION="\"$VERSION\"" -o "$T/omacvm-netd" "$HERE/omacvm-netd.c" \
   -framework vmnet -framework Security -framework CoreFoundation -lbsm
 x() { local s=$1; s=${s//&/&amp;}; s=${s//</&lt;}; printf '%s' "${s//>/&gt;}"; }
+# This user, and the ones it was installed for before.
+USERS=$( { installed_users; id -u; } | grep -E '^[0-9]+$' | sort -un | head -16 |
+  while read -r u; do printf '    <string>--user</string><string>%s</string>\n' "$u"; done)
 cat > "$T/$LABEL.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -109,6 +111,7 @@ cat > "$T/$LABEL.plist" <<EOF
     <string>$BIN</string>
     <string>--requirement</string>
     <string>$(x "$REQ")</string>
+$USERS
   </array>
   <!-- launchd holds the socket and starts the daemon on the first connection;
        anyone may connect, the daemon checks the caller's code signature. -->

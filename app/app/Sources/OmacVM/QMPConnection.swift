@@ -114,6 +114,10 @@ final class QMPConnection: @unchecked Sendable {
                     let detail = error["desc"] as? String ?? "unknown QMP error"
                     throw HelperError.io("QMP command \(command) failed: \(detail)")
                 }
+                // human-monitor-command answers with text: kept under "text".
+                if let text = response["return"] as? String {
+                    return CommandExecution(result: ["text": text], events: matched.events)
+                }
                 guard let result = response["return"] as? [String: Any] else {
                     throw HelperError.io("QMP command \(command) returned an invalid response")
                 }
