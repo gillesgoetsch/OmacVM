@@ -10,7 +10,10 @@ copies the guest's NV12 plane textures into it (GPU blit into the IOSurface
 planes, CPU readback as fallback); encode_bitstream applies the guest's
 bitrate, peak, frame rate, GOP or constant QP (all clamped) and forces a key
 frame for IDR pictures; end_frame waits for the frame and hands vrend an Annex B
-access unit (parameter sets before every key frame). Real time, no frame
+access unit (parameter sets before every key frame). The stream has the size
+the guest's SPS crops its padded pictures to (1920x1088 -> 1080; the session is
+made with the first picture description, the first picture copied once).
+Real time, no frame
 reordering (no B frames), no low-latency rate control: it drops frames, which a
 VA-API encoder cannot report (Chrome then gives up on the hardware encoder);
 DataRateLimits (1.5 x the target per second) keeps the rate instead. A frame
@@ -28,18 +31,19 @@ Tests: Tests/virgl/test-video-encode.c, for H.264 and HEVC: 30 frames 320x240
 through the virgl video protocol (feedback, parameter sets, IDR, decode back
 with VideoToolbox, luma PSNR > 30 dB), nonsense and random picture
 descriptions, a too small and a non-buffer coded resource, refused sizes and
-profiles. In a VM: tests/video/ (FFmpeg, Chrome WebRTC camera and screen).
+profiles, cropped pictures through the GPU blit and the CPU copy. In a VM: tests/video/ (FFmpeg, Chrome WebRTC camera and screen).
 diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
-index 6c95bf9..02f49ce 100644
+index 6c95bf9..cf31232 100644
 --- a/src/vrend/virgl_video_vt.c
 +++ b/src/vrend/virgl_video_vt.c
-@@ -245,6 +245,21 @@ struct virgl_video_codec {
+@@ -245,6 +245,22 @@ struct virgl_video_codec {
      uint32_t vp9_width;
      uint32_t vp9_height;
      uint32_t vp9_bit_depth;
 +
 +    /* Encoder (entrypoint ENCODE) */
 +    VTCompressionSessionRef enc;
++    uint32_t enc_w, enc_h;              /* the stream's size: the guest's picture cropped */
 +    CVPixelBufferRef enc_src;           /* this frame's picture, filled by vrend */
 +    struct vt_bytes coded;              /* Annex B output of the last frame */
 +    OSStatus enc_status;
@@ -55,7 +59,7 @@ index 6c95bf9..02f49ce 100644
  };
  
  static struct virgl_video_callbacks *callbacks;
-@@ -2096,6 +2111,430 @@ static bool kind_offered(enum vt_codec_kind kind)
+@@ -2096,6 +2112,536 @@ static bool kind_offered(enum vt_codec_kind kind)
      }
  }
  
@@ -242,21 +246,21 @@ index 6c95bf9..02f49ce 100644
 +                                      &kCFTypeDictionaryValueCallBacks);
 +    cf_dict_set_int(attrs, kCVPixelBufferPixelFormatTypeKey,
 +                    (int32_t)kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
-+    cf_dict_set_int(attrs, kCVPixelBufferWidthKey, (int32_t)codec->width);
-+    cf_dict_set_int(attrs, kCVPixelBufferHeightKey, (int32_t)codec->height);
++    cf_dict_set_int(attrs, kCVPixelBufferWidthKey, (int32_t)codec->enc_w);
++    cf_dict_set_int(attrs, kCVPixelBufferHeightKey, (int32_t)codec->enc_h);
 +    iosurface = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
 +                                          &kCFTypeDictionaryValueCallBacks);
 +    CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, iosurface);
 +    CFRelease(iosurface);
 +
-+    st = VTCompressionSessionCreate(kCFAllocatorDefault, (int32_t)codec->width,
-+                                    (int32_t)codec->height, enc_codec_type(codec->kind), spec,
++    st = VTCompressionSessionCreate(kCFAllocatorDefault, (int32_t)codec->enc_w,
++                                    (int32_t)codec->enc_h, enc_codec_type(codec->kind), spec,
 +                                    attrs, kCFAllocatorDefault, cb, codec, &codec->enc);
 +    CFRelease(spec);
 +    CFRelease(attrs);
 +    if (st != noErr) {
 +        virgl_error("vt-video: VTCompressionSessionCreate %ux%u failed: %d\n",
-+                    codec->width, codec->height, (int)st);
++                    codec->enc_w, codec->enc_h, (int)st);
 +        codec->enc = NULL;
 +        return false;
 +    }
@@ -269,9 +273,78 @@ index 6c95bf9..02f49ce 100644
 +    codec->enc_bitrate = codec->enc_peak = codec->enc_qp = 0;
 +    codec->enc_fps_num = codec->enc_fps_den = codec->enc_gop = 0;
 +    codec->enc_frame = 0;
-+    virgl_info("vt-video: %s encoder %ux%u\n", codec->kind == VT_KIND_HEVC ? "HEVC" : "H.264",
++    virgl_info("vt-video: %s encoder %ux%u (pictures %ux%u)\n",
++               codec->kind == VT_KIND_HEVC ? "HEVC" : "H.264", codec->enc_w, codec->enc_h,
 +               codec->width, codec->height);
 +    return true;
++}
++
++/* The stream's size: the guest's pictures are padded to whole macroblocks or
++ * coding blocks (1920x1088 for 1080p) and its SPS crops them (H.264 frame
++ * cropping, HEVC conformance window, in 2-pixel units for 4:2:0). VideoToolbox
++ * writes its own SPS, so the session gets the cropped size instead. Only
++ * right/bottom cropping (what encoders pad); anything else keeps the full size. */
++static void enc_visible_size(const struct virgl_video_codec *codec,
++                             const union virgl_picture_desc *desc, uint32_t *w, uint32_t *h)
++{
++    uint32_t left, right, top, bottom;
++    bool crop;
++
++    *w = codec->width;
++    *h = codec->height;
++    if (codec->kind == VT_KIND_HEVC) {
++        const struct virgl_h265_enc_seq_param *q = &desc->h265_enc.seq;
++        crop = q->conformance_window_flag;
++        left = q->conf_win_left_offset;
++        right = q->conf_win_right_offset;
++        top = q->conf_win_top_offset;
++        bottom = q->conf_win_bottom_offset;
++    } else {
++        const struct virgl_h264_enc_seq_param *q = &desc->h264_enc.seq;
++        crop = q->enc_frame_cropping_flag;
++        left = q->enc_frame_crop_left_offset;
++        right = q->enc_frame_crop_right_offset;
++        top = q->enc_frame_crop_top_offset;
++        bottom = q->enc_frame_crop_bottom_offset;
++    }
++    if (!crop || left || top || right > VT_ENC_MAX_W || bottom > VT_ENC_MAX_H)
++        return;
++    if (2 * right + VT_ENC_MIN_SIZE <= codec->width && 2 * bottom + VT_ENC_MIN_SIZE <= codec->height) {
++        *w = codec->width - 2 * right;
++        *h = codec->height - 2 * bottom;
++    }
++}
++
++/* Copies the top-left w x h of an NV12 picture into another (CPU; once per
++ * stream, for the first picture, which arrives before the stream's size). */
++static bool enc_copy_picture(CVPixelBufferRef from, CVPixelBufferRef to)
++{
++    bool ok = false;
++
++    if (CVPixelBufferLockBaseAddress(from, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess)
++        return false;
++    if (CVPixelBufferLockBaseAddress(to, 0) == kCVReturnSuccess) {
++        ok = CVPixelBufferGetPlaneCount(from) == 2 && CVPixelBufferGetPlaneCount(to) == 2;
++        for (size_t p = 0; ok && p < 2; p++) {
++            const uint8_t *src = CVPixelBufferGetBaseAddressOfPlane(from, p);
++            uint8_t *dst = CVPixelBufferGetBaseAddressOfPlane(to, p);
++            size_t src_row = CVPixelBufferGetBytesPerRowOfPlane(from, p);
++            size_t dst_row = CVPixelBufferGetBytesPerRowOfPlane(to, p);
++            size_t rows = CVPixelBufferGetHeightOfPlane(to, p);
++            size_t bytes = CVPixelBufferGetWidthOfPlane(to, p) * (p ? 2 : 1);   /* Y, UV pairs */
++
++            if (!src || !dst || rows > CVPixelBufferGetHeightOfPlane(from, p) ||
++                bytes > src_row || bytes > dst_row) {
++                ok = false;
++                break;
++            }
++            for (size_t r = 0; r < rows; r++)
++                memcpy(dst + r * dst_row, src + r * src_row, bytes);
++        }
++        CVPixelBufferUnlockBaseAddress(to, 0);
++    }
++    CVPixelBufferUnlockBaseAddress(from, kCVPixelBufferLock_ReadOnly);
++    return ok;
 +}
 +
 +/* What a frame asks for, from either codec's picture description. */
@@ -381,7 +454,9 @@ index 6c95bf9..02f49ce 100644
 +}
 +
 +/* begin_frame: a picture buffer from the session's pool; vrend copies the
-+ * guest's picture (its plane textures) into it. */
++ * guest's picture (its plane textures) into it. The session comes with the
++ * first picture description (it has the stream's size): the first picture
++ * gets a buffer of its own, at the guest's full picture size. */
 +static int enc_begin_frame(struct virgl_video_codec *codec, struct virgl_video_buffer *target)
 +{
 +    struct virgl_video_dma_buf dmabuf;
@@ -390,21 +465,36 @@ index 6c95bf9..02f49ce 100644
 +    if (target->format != PIPE_FORMAT_NV12 || target->width < codec->width ||
 +        target->height < codec->height)
 +        return -1;
-+    if (!codec->enc && !enc_session_create(codec))
-+        return -1;
 +    if (codec->enc_src) {
 +        CVPixelBufferRelease(codec->enc_src);
 +        codec->enc_src = NULL;
 +    }
-+    pool = VTCompressionSessionGetPixelBufferPool(codec->enc);
-+    if (!pool || CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool,
-+                                                    &codec->enc_src) != kCVReturnSuccess)
-+        return -1;
++    if (codec->enc) {
++        pool = VTCompressionSessionGetPixelBufferPool(codec->enc);
++        if (!pool || CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool,
++                                                        &codec->enc_src) != kCVReturnSuccess)
++            return -1;
++    } else {
++        CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
++            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++        CFDictionaryRef iosurface = CFDictionaryCreate(kCFAllocatorDefault, NULL, NULL, 0,
++            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
++        CVReturn r;
++
++        CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, iosurface);
++        r = CVPixelBufferCreate(kCFAllocatorDefault, codec->width, codec->height,
++                                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, attrs,
++                                &codec->enc_src);
++        CFRelease(iosurface);
++        CFRelease(attrs);
++        if (r != kCVReturnSuccess)
++            return -1;
++    }
 +    if (callbacks && callbacks->encode_upload_picture) {
 +        memset(&dmabuf, 0, sizeof(dmabuf));
 +        dmabuf.buf = target;
-+        dmabuf.width = codec->width;
-+        dmabuf.height = codec->height;
++        dmabuf.width = (uint32_t)CVPixelBufferGetWidth(codec->enc_src);
++        dmabuf.height = (uint32_t)CVPixelBufferGetHeight(codec->enc_src);
 +        dmabuf.flags = VIRGL_VIDEO_DMABUF_WRITE_ONLY;
 +        dmabuf.num_planes = (uint32_t)CVPixelBufferGetPlaneCount(codec->enc_src);
 +        dmabuf.native = codec->enc_src;
@@ -422,8 +512,28 @@ index 6c95bf9..02f49ce 100644
 +    struct enc_params e;
 +    OSStatus st;
 +
-+    if (!codec->enc || !codec->enc_src)
++    if (!codec->enc_src)
 +        return -1;
++    if (!codec->enc) {
++        CVPixelBufferPoolRef pool;
++        CVPixelBufferRef first = NULL;
++
++        enc_visible_size(codec, desc, &codec->enc_w, &codec->enc_h);
++        if (!enc_session_create(codec))
++            return -1;
++        if (codec->enc_w != codec->width || codec->enc_h != codec->height) {
++            pool = VTCompressionSessionGetPixelBufferPool(codec->enc);
++            if (!pool || CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool,
++                                                            &first) != kCVReturnSuccess ||
++                !enc_copy_picture(codec->enc_src, first)) {
++                if (first)
++                    CVPixelBufferRelease(first);
++                return -1;
++            }
++            CVPixelBufferRelease(codec->enc_src);
++            codec->enc_src = first;
++        }
++    }
 +    enc_params_get(codec, desc, &e);
 +    enc_apply_settings(codec, &e);
 +    if (e.idr || codec->enc_frame == 0) {
@@ -486,7 +596,7 @@ index 6c95bf9..02f49ce 100644
  int virgl_video_init(int drm_fd, struct virgl_video_callbacks *cbs,
                       unsigned int flags)
  {
-@@ -2122,8 +2561,19 @@ void virgl_video_destroy(void)
+@@ -2122,8 +2668,19 @@ void virgl_video_destroy(void)
      callbacks = NULL;
  }
  
@@ -506,7 +616,7 @@ index 6c95bf9..02f49ce 100644
  {
      struct virgl_video_caps *v;
      uint32_t g = guest_profile(p);
-@@ -2133,7 +2583,7 @@ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
+@@ -2133,7 +2690,7 @@ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
      v = &caps->v2.video_caps[caps->v2.num_video_caps++];
      memset(v, 0, sizeof(*v));
      v->profile = g;
@@ -515,7 +625,7 @@ index 6c95bf9..02f49ce 100644
      v->max_level = 0;
      v->stacked_frames = 0;
      v->max_width = max_w;
-@@ -2170,6 +2620,17 @@ int virgl_video_fill_caps(union virgl_caps *caps)
+@@ -2170,6 +2727,17 @@ int virgl_video_fill_caps(union virgl_caps *caps)
      if (kind_offered(VT_KIND_AV1)) {
          add_caps(caps, PIPE_VIDEO_PROFILE_AV1_MAIN, 8192, 8192, PIPE_FORMAT_NV12);
      }
@@ -533,7 +643,7 @@ index 6c95bf9..02f49ce 100644
      return 0;
  }
  
-@@ -2183,7 +2644,16 @@ struct virgl_video_codec *virgl_video_create_codec(
+@@ -2183,7 +2751,16 @@ struct virgl_video_codec *virgl_video_create_codec(
          return NULL;
  
      p = host_profile(args->profile);
@@ -551,7 +661,7 @@ index 6c95bf9..02f49ce 100644
          (kind_of(p) == VT_KIND_HEVC && p != PIPE_VIDEO_PROFILE_HEVC_MAIN &&
           p != PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) {
          virgl_warn("vt-video: unsupported profile %u entrypoint %u\n",
-@@ -2218,6 +2688,10 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
+@@ -2218,6 +2795,10 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
          return;
      vt_log("codec done: %u frames, %u errors\n", codec->frames, codec->errors);
      session_destroy(codec);
@@ -562,7 +672,7 @@ index 6c95bf9..02f49ce 100644
      if (codec->format)
          CFRelease(codec->format);
      if (codec->output)
-@@ -2283,6 +2757,8 @@ int virgl_video_begin_frame(struct virgl_video_codec *codec,
+@@ -2283,6 +2864,8 @@ int virgl_video_begin_frame(struct virgl_video_codec *codec,
  {
      if (!codec || !target)
          return -1;
@@ -571,7 +681,7 @@ index 6c95bf9..02f49ce 100644
      codec->target = target;
      codec->bits.size = 0;
      codec->have_desc = false;
-@@ -2322,10 +2798,15 @@ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
+@@ -2322,10 +2905,15 @@ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
                                   struct virgl_video_buffer *source,
                                   const union virgl_picture_desc *desc)
  {
@@ -590,7 +700,7 @@ index 6c95bf9..02f49ce 100644
  }
  
  int virgl_video_end_frame(struct virgl_video_codec *codec,
-@@ -2335,6 +2816,8 @@ int virgl_video_end_frame(struct virgl_video_codec *codec,
+@@ -2335,6 +2923,8 @@ int virgl_video_end_frame(struct virgl_video_codec *codec,
  
      if (!codec || !target)
          return -1;
@@ -600,10 +710,10 @@ index 6c95bf9..02f49ce 100644
      codec->target = target;
      if (!codec->have_desc || !codec->bits.size) {
 diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
-index d3d8065..216277c 100644
+index d3d8065..ea5ea5c 100644
 --- a/src/vrend/vrend_video.c
 +++ b/src/vrend/vrend_video.c
-@@ -333,6 +333,128 @@ static int sync_pixbuf_to_video_buffer(struct vrend_video_buffer *buf,
+@@ -333,6 +333,144 @@ static int sync_pixbuf_to_video_buffer(struct vrend_video_buffer *buf,
      glFlush();
      return 0;
  }
@@ -715,13 +825,29 @@ index d3d8065..216277c 100644
 +        void *base = CVPixelBufferGetBaseAddressOfPlane(pix, i);
 +        unsigned texel = i ? 2 : 1;
 +
-+        /* glGetTexImage writes the whole level: it must fit the pixel buffer plane. */
-+        if (!res || !base || res->target != GL_TEXTURE_2D || res->base.width0 != w ||
-+            res->base.height0 != h || row < (size_t)w * texel)
++        /* glGetTexImage writes the whole level. The guest's picture may be a
++         * little larger than the stream (padding the encoder crops): then read
++         * it into a temporary copy, at most 64 rows and columns more. */
++        if (!res || !base || res->target != GL_TEXTURE_2D || res->base.width0 < w ||
++            res->base.height0 < h || res->base.width0 > w + 64 || res->base.height0 > h + 64 ||
++            row < (size_t)w * texel)
 +            continue;
 +        glBindTexture(GL_TEXTURE_2D, res->gl_id);
-+        glPixelStorei(GL_PACK_ROW_LENGTH, row / texel);
-+        glGetTexImage(GL_TEXTURE_2D, 0, i ? GL_RG : GL_RED, GL_UNSIGNED_BYTE, base);
++        if (res->base.width0 == w && res->base.height0 == h) {
++            glPixelStorei(GL_PACK_ROW_LENGTH, row / texel);
++            glGetTexImage(GL_TEXTURE_2D, 0, i ? GL_RG : GL_RED, GL_UNSIGNED_BYTE, base);
++        } else {
++            size_t full_row = (size_t)res->base.width0 * texel;
++            uint8_t *full = malloc(full_row * res->base.height0);
++
++            if (!full)
++                continue;
++            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
++            glGetTexImage(GL_TEXTURE_2D, 0, i ? GL_RG : GL_RED, GL_UNSIGNED_BYTE, full);
++            for (uint32_t r = 0; r < h; r++)
++                memcpy((uint8_t *)base + r * row, full + r * full_row, (size_t)w * texel);
++            free(full);
++        }
 +    }
 +    glPixelStorei(GL_PACK_ROW_LENGTH, old_row);
 +    glPixelStorei(GL_PACK_ALIGNMENT, old_align);
@@ -732,7 +858,7 @@ index d3d8065..216277c 100644
  #else
  
  static int sync_dmabuf_to_video_buffer(struct vrend_video_buffer *buf,
-@@ -485,7 +607,7 @@ static void vrend_video_enocde_upload_picture(
+@@ -485,7 +623,7 @@ static void vrend_video_enocde_upload_picture(
      (void)codec;
  
  #ifdef ENABLE_VIDEO_VIDEOTOOLBOX
@@ -741,7 +867,7 @@ index d3d8065..216277c 100644
  #else
      sync_video_buffer_to_dmabuf(buf, dmabuf);
  #endif
-@@ -512,14 +634,30 @@ static void vrend_video_encode_completed(
+@@ -512,14 +650,30 @@ static void vrend_video_encode_completed(
  
      memset(&feedback, 0, sizeof(feedback));
  
@@ -777,7 +903,7 @@ index d3d8065..216277c 100644
              memcpy((uint8_t *)buf + data_size, coded_bufs[i], size);
              vrend_write_to_iovec(cdc->dest_res->iov, cdc->dest_res->num_iovs,
                                   data_size, coded_bufs[i], size);
-@@ -530,7 +668,8 @@ static void vrend_video_encode_completed(
+@@ -530,7 +684,8 @@ static void vrend_video_encode_completed(
          feedback.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
          feedback.coded_size = data_size;
      } else {
@@ -787,7 +913,7 @@ index d3d8065..216277c 100644
          feedback.stat = VIRGL_VIDEO_ENCODE_STAT_FAILURE;
          feedback.coded_size = 0;
      }
-@@ -540,8 +679,8 @@ static void vrend_video_encode_completed(
+@@ -540,8 +695,8 @@ static void vrend_video_encode_completed(
                           0, (char *)(&feedback),
                           MIN2(cdc->feed_res->base.width0, sizeof(feedback)));
  
@@ -798,7 +924,7 @@ index d3d8065..216277c 100644
  }
  
  static struct virgl_video_callbacks video_callbacks = {
-@@ -637,6 +776,8 @@ static void destroy_video_codec(struct vrend_video_codec *cdc)
+@@ -637,6 +792,8 @@ static void destroy_video_codec(struct vrend_video_codec *cdc)
      if (cdc) {
          list_del(&cdc->head);
          virgl_video_destroy_codec(cdc->codec);
@@ -807,7 +933,7 @@ index d3d8065..216277c 100644
          free(cdc);
      }
  }
-@@ -1054,8 +1195,14 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
+@@ -1054,8 +1211,14 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
          return -1;
      }
  

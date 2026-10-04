@@ -201,19 +201,28 @@ static void dec_cb(void *ref, void *frame_ref, OSStatus st, VTDecodeInfoFlags fl
       d->pix = CVPixelBufferRetain(img);
 }
 
+static int dec_w, dec_h;   /* size of the last decoded picture */
+
+/* luma PSNR of a decoded picture (at most W x H: a cropped stream is smaller)
+ * against the top-left of the source picture */
 static double psnr_y(CVPixelBufferRef pix, const uint8_t *y)
 {
    double se = 0;
+   int w = (int)CVPixelBufferGetWidth(pix), h = (int)CVPixelBufferGetHeight(pix);
+   dec_w = w;
+   dec_h = h;
+   if (w > W || h > H)
+      return 0;
    CVPixelBufferLockBaseAddress(pix, kCVPixelBufferLock_ReadOnly);
    const uint8_t *base = CVPixelBufferGetBaseAddressOfPlane(pix, 0);
    size_t row = CVPixelBufferGetBytesPerRowOfPlane(pix, 0);
-   for (int j = 0; j < H; j++)
-      for (int i = 0; i < W; i++) {
+   for (int j = 0; j < h; j++)
+      for (int i = 0; i < w; i++) {
          double e = (double)base[j * row + i] - y[j * W + i];
          se += e * e;
       }
    CVPixelBufferUnlockBaseAddress(pix, kCVPixelBufferLock_ReadOnly);
-   double mse = se / (W * H);
+   double mse = se / (w * h);
    return mse > 0 ? 10 * log10(255.0 * 255.0 / mse) : 99;
 }
 
@@ -264,6 +273,7 @@ struct rc {
 };
 
 static const struct rc rc_normal = { 4, 2000000, 0, 30, 1, 30, 0 };
+static uint32_t crop_right, crop_bottom;   /* in 2-pixel units, as in the guest's SPS */
 
 /* One frame: upload picture f, encode it into DEST; 0 when the feedback says success. */
 static int encode_frame(uint32_t codec, uint32_t profile, int f, const struct rc *rc,
@@ -286,6 +296,9 @@ static int encode_frame(uint32_t codec, uint32_t profile, int f, const struct rc
       d->gop_size = rc->gop;
       d->quant_i_frames = d->quant_p_frames = rc->qp;
       d->picture_type = f == 0 ? PIC_IDR : PIC_P;
+      d->seq.enc_frame_cropping_flag = crop_right || crop_bottom;
+      d->seq.enc_frame_crop_right_offset = crop_right;
+      d->seq.enc_frame_crop_bottom_offset = crop_bottom;
    } else {
       struct virgl_h265_enc_picture_desc *d = &desc.h265_enc;
       d->base.profile = profile;
@@ -298,6 +311,9 @@ static int encode_frame(uint32_t codec, uint32_t profile, int f, const struct rc
       d->seq.intra_period = rc->gop;
       d->rc.quant_i_frames = d->rc.quant_p_frames = rc->qp;
       d->picture_type = f == 0 ? PIC_IDR : PIC_P;
+      d->seq.conformance_window_flag = crop_right || crop_bottom;
+      d->seq.conf_win_right_offset = crop_right;
+      d->seq.conf_win_bottom_offset = crop_bottom;
    }
    memset(&feed, 0xaa, sizeof(feed));
 
@@ -543,6 +559,48 @@ static void test_codec(uint32_t handle, uint32_t profile, const char *name, cons
    submit(c);
 }
 
+/* Pictures padded the way encoders pad them, the SPS cropping 16 columns and 8
+ * rows: the stream has the cropped size and shows the top-left of each picture.
+ * Twice: GPU blit, and the CPU copy (OMACVM_VIDEO_COPY=1). */
+static void test_crop(uint32_t handle, uint32_t profile, const char *name, int cpu)
+{
+   static uint8_t stream[2 << 20];
+   static uint8_t ys[FRAMES][W * H];
+   uint32_t stream_size = 0, bad = 0;
+   char line[160];
+
+   hevc = profile != G_AVC_HIGH;
+   if (!offered(profile))
+      return;
+   if (cpu)
+      setenv("OMACVM_VIDEO_COPY", "1", 1);
+   crop_right = 8;
+   crop_bottom = 4;
+   create_codec(handle, profile, W, H);
+   for (int f = 0; f < 10; f++) {
+      if (encode_frame(handle, profile, f, &rc_normal, R_CODED) ||
+          stream_size + feed.coded_size > sizeof(stream)) {
+         bad++;
+         continue;
+      }
+      memcpy(ys[f], y, sizeof(y));
+      memcpy(stream + stream_size, coded, feed.coded_size);
+      stream_size += feed.coded_size;
+   }
+   crop_right = crop_bottom = 0;
+   unsetenv("OMACVM_VIDEO_COPY");
+   double min_psnr = 0;
+   dec_w = dec_h = 0;
+   int decoded = decode_back(stream, stream_size, ys, &min_psnr);
+   snprintf(line, sizeof(line), "%s, cropped picture (%s copy): %d of 10 frames decode at %dx%d "
+            "(want %dx%d), lowest luma PSNR %.1f dB", name, cpu ? "CPU" : "GPU", decoded, dec_w,
+            dec_h, W - 16, H - 8, min_psnr);
+   check(!bad && decoded == 10 && dec_w == W - 16 && dec_h == H - 8 && min_psnr > 30, line);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+   emit(c, handle);
+   submit(c);
+}
+
 int main(void)
 {
    setvbuf(stdout, NULL, _IONBF, 0);
@@ -590,6 +648,10 @@ int main(void)
 
    test_codec(10, G_AVC_HIGH, "H.264", "OMACVM_TEST_H264_OUT");
    test_codec(11, G_HEVC_MAIN, "HEVC", "OMACVM_TEST_HEVC_OUT");
+   test_crop(12, G_AVC_HIGH, "H.264", 0);
+   test_crop(13, G_AVC_HIGH, "H.264", 1);
+   test_crop(14, G_HEVC_MAIN, "HEVC", 0);
+   test_crop(15, G_HEVC_MAIN, "HEVC", 1);
 
    /* Codecs the host does not offer: nothing is encoded with them. */
    static const struct { uint32_t profile, w, h; const char *what; } refused[] = {
