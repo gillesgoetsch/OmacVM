@@ -1,5 +1,6 @@
 # Quick checks on every pull request and on main: syntax, ShellCheck errors,
-# the app's Swift build and Omanotch's offline tests. No signing, no VMs.
+# the app's and the Mac helpers' builds and Omanotch's offline tests. No
+# signing beyond ad hoc, no VMs.
 name: check
 
 on:
@@ -47,6 +48,11 @@ jobs:
       - name: OmacVM.app builds
         working-directory: app/app
         run: swift build
+
+      - name: Mac helpers build (Gestures, Bridge)
+        run: |
+          src/gestures/mac/build.sh
+          src/bridge/mac/build.sh
 
       - name: Omanotch offline tests
         run: src/omanotch/mac/test.sh
