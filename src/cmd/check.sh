@@ -111,7 +111,7 @@ fi
 # What was chosen at setup for this VM (defaults for VMs from before the choices).
 envf=$(gssh "$IP" cat /etc/omacvm/env 2>/dev/null)
 feat() { local v; v=$(sed -n "s/^OMACVM_FEATURE_$1=//p" <<<"$envf" | tail -1); echo "${v:-${2:-on}}"; }
-BRIDGE=$(feat bridge); GESTURES=$(feat gestures); GLIDE=$(feat scroll_momentum off)
+BRIDGE=$(feat bridge); GESTURES=$(feat gestures); GLIDE=$(feat scroll_momentum "$(feat glide off)")
 
 if [[ $BRIDGE == on ]]; then
   if running org.omacvm.bridge; then

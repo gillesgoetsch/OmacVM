@@ -52,6 +52,8 @@ AUTOLOGIN_CONF=/etc/sddm.conf.d/20-omacvm-autologin.conf
 [[ $NAME64 =~ ^[A-Za-z0-9+/=]*$ ]] || { echo "guest/install.sh: --vm-name-b64: not base64" >&2; exit 2; }
 if [[ -r $ENV ]]; then
   [[ -n $NAME64 ]] || NAME64=$(sed -n 's/^OMACVM_VM_NAME_B64=//p' "$ENV" | tail -1)
+  # scroll-momentum was called glide in the experiment: keep an old VM's choice.
+  v=$(sed -n "s/^OMACVM_FEATURE_glide=//p" "$ENV" | tail -1); [[ -n $v ]] && F[scroll-momentum]=$v
   for f in "${FEATURES[@]}"; do
     v=$(sed -n "s/^OMACVM_FEATURE_${f//-/_}=//p" "$ENV" | tail -1)
     [[ -n $v ]] && F[$f]=$v

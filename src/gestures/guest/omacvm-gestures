@@ -71,7 +71,9 @@ MAC_ADDR = "127.0.0.1" if os.environ.get("OMACVM_VM_TYPE") == "app" else HOST
 PORT = int(env_float("OMACVM_GESTURES_PORT", 47830))
 # The VM's feature choices (/etc/omacvm/env, loaded by the service).
 GESTURES = os.environ.get("OMACVM_FEATURE_gestures", "on") == "on"
-GLIDE_ON = GESTURES and os.environ.get("OMACVM_FEATURE_scroll_momentum", "off") == "on"
+# (scroll-momentum was called glide in the experiment)
+GLIDE_ON = GESTURES and (os.environ.get("OMACVM_FEATURE_scroll_momentum")
+                         or os.environ.get("OMACVM_FEATURE_glide", "off")) == "on"
 # The VM's name in its app, base64 (omacvm apply): the Mac sends to the VM whose
 # name is in the front window's title.
 NAME = os.environ.get("OMACVM_VM_NAME_B64", "")
