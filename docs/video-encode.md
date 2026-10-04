@@ -118,9 +118,15 @@ MacBook Air), where software encoding costs more.
 
 ### Soak
 
-Not yet: `exp/soak.sh` (30 minutes of FFmpeg H.264 and HEVC at 1080p and a
-Chrome call in a loop, checking every clip, QEMU's memory and the encoder
-warnings) runs after the numbers above.
+30 minutes on the same runtime, 25 rounds back to back (2026-10-05 01:25 to
+01:56). Each round: FFmpeg `h264_vaapi` and `hevc_vaapi` on a 1080p clip (300
+frames each, the frame count checked with ffprobe) and a 60-second Chrome call
+(camera, microphone, screen). All 50 FFmpeg encodes complete, all 25 calls
+send both video streams on *VaapiVideoEncodeAccelerator*, no encoder warning
+in QEMU's log, and the same QEMU process the whole time (7.9 GB resident after
+the first round, 7.6 GB at the end, 16 GB VM). The soak ran before the last
+two encoder fixes (failure feedback for refused frames, constant QP), which
+change only those paths.
 
 ## How it works
 
