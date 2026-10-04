@@ -9,7 +9,7 @@
 # encoder service. Permission prompts and the screen picker are accepted automatically
 # (a throw-away profile).
 # --features "" passes no --enable-features: Chrome then runs with the flags files
-# OmacVM writes (src/app/guest/browser-video-encode.sh).
+# OmacVM writes (src/app/guest/browser-video-encode.py).
 # --fake uses Chrome's fake camera and microphone (no camera needed).
 # --hd keeps the full size and starts the bandwidth estimate high (see the page).
 # VM: PORT (ssh, default 52296), KEY (~/.ssh/omacvm), GUSER (gilles), VM (name, for QEMU's CPU).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OmacVM.app: Chrome, Chromium and Brave encode WebRTC video (camera, screen sharing)
+"""OmacVM.app: Chrome and Brave encode WebRTC video (camera, screen sharing)
 on the Mac's media engine. As root: browser-video-encode.py USER on|off|check
 
 Chrome's VA-API encoder is off on Linux unless AcceleratedVideoEncoder and
@@ -7,7 +7,9 @@ VaapiVideoEncoder are enabled. Chrome uses only the LAST --enable-features of it
 command line, and Omarchy's flags files already have one, so the features go into
 the last --enable-features the browser reads (several flags may share a line), or
 a new line in the user's file when there is none. Firefox (157) has no VA-API
-encoder on Linux: nothing to switch there.
+encoder on Linux, and Arch Linux ARM builds Chromium without VA-API: nothing to
+switch there (Chromium's files stay known, so "off" and "on" take out what an
+earlier version added).
 
 Safety: the user's files are read and written by a child process running as the
 user (a link in ~/.config cannot make root write elsewhere); /etc files only when
@@ -171,7 +173,7 @@ def effective(owner, files):
 
 def wanted(owner, name, files):
     if name == "chromium":
-        return True   # Omarchy's browser (Arch Linux ARM's has no VA-API yet)
+        return False   # Arch Linux ARM's has no VA-API: the features change nothing
     exe = {"chrome": ("google-chrome-stable", "google-chrome"), "brave": ("brave",)}[name]
     if any(os.access(os.path.join(d, e), os.X_OK)
            for d in ("/usr/local/bin", "/usr/bin") for e in exe):
