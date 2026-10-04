@@ -94,6 +94,16 @@ install -m644 "$ROOT/THIRD_PARTY_NOTICES.md" "$C/Resources/licenses/"
 install -m644 "$ROOT/runtime/LICENSE.try-omarchy" "$C/Resources/licenses/"
 install -m644 "$RT/firmware/edk2-licenses.txt" "$C/Resources/licenses/"
 install -m644 "$ROOT/runtime/boot-logo/LICENSE.omarchy" "$C/Resources/licenses/"
+# The fast network's root daemon (src/net/mac), built here and signed with the
+# app, so omacvm enable fast-network needs no Xcode on the user's Mac. Its
+# version is its source's hash, as src/net/mac/install.sh builds it.
+log "omacvm-netd"
+NETD_SRC=$C/Resources/omacvm/src/net/mac/omacvm-netd.c
+NETD=$C/Library/LaunchServices/org.omacvm.netd
+mkdir -p "$C/Library/LaunchServices"
+xcrun clang -O2 -Wall -Wextra -Werror -mmacosx-version-min=14.0 \
+  -DNETD_VERSION="\"$(shasum -a 256 "$NETD_SRC" | cut -c1-16)\"" -o "$NETD" "$NETD_SRC" \
+  -framework vmnet -framework Security -framework CoreFoundation -lbsm
 
 # The app carries the version of the OmacVM it is part of.
 VERSION=$(cat "$REPO/src/VERSION")
@@ -132,6 +142,7 @@ if [[ -n ${OMACVM_SIGN_ID:-} ]]; then
   done
   codesign "${SIGN[@]}" --identifier org.omacvm.app.qemu \
     --entitlements "$ROOT/runtime/qemu-hvf.entitlements" "$C/Resources/runtime/bin/OmacVM"
+  codesign "${SIGN[@]}" --identifier org.omacvm.netd "$NETD"
   codesign "${SIGN[@]}" --identifier org.omacvm.app \
     --entitlements "$ROOT/app/OmacVM.entitlements" "$APP"
 else
@@ -143,6 +154,7 @@ else
   # macOS keeps Accessibility and other grants across rebuilds (as OmacVM's helpers).
   codesign --force --sign - --identifier org.omacvm.app.qemu -r='designated => identifier "org.omacvm.app.qemu"' \
     --entitlements "$ROOT/runtime/qemu-hvf.entitlements" "$C/Resources/runtime/bin/OmacVM"
+  codesign --force --sign - --identifier org.omacvm.netd "$NETD"
   codesign --force --sign - --identifier org.omacvm.app -r='designated => identifier "org.omacvm.app"' "$APP"
 fi
 codesign --verify --deep --strict "$APP"

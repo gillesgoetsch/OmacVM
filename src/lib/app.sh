@@ -5,6 +5,7 @@
 #   app_list            NAME<TAB>app<TAB>running|stopped, one line per VM
 #   app_dir NAME        the VM's folder
 #   app_ip NAME         127.0.0.1:PORT while it runs (fast network: its vmnet address)
+#   app_any_fast_network  one of the VMs has the fast network on
 #   app_start NAME      start it in the app (its window opens)
 #   app_other_running NAME  another app VM that runs, if any
 #   app_bundle          the installed OmacVM.app (any name it was installed under)
@@ -67,6 +68,12 @@ app_vmnet_ip() {   # DIR -> the VM's address on vmnet's network (lease_ip, src/l
   local m
   m=$(sed -n 's/^mac=//p' "$1/fast-network" 2>/dev/null)
   [[ -n $m ]] && m=$(lease_ip "$m") && [[ $m =~ ^192\.168\.64\.[0-9]+$ ]] && echo "$m"
+}
+
+app_any_fast_network() {   # one of this user's app VMs has the fast network on
+  local d
+  for d in "$(app_vms_root)"/*; do [[ -s $d/fast-network ]] && return 0; done
+  return 1
 }
 
 app_ip() {   # NAME [seconds]: only when that QEMU itself holds the port (not
