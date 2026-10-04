@@ -34,7 +34,8 @@ enum FastNetwork {
         }
         func slirp(_ why: String) -> Choice { Choice(vmnet: false, mac: mac, record: "slirp \(why)") }
         var st = stat()
-        guard lstat(socket, &st) == 0, st.st_mode & S_IFMT == S_IFSOCK else {
+        guard FileManager.default.fileExists(atPath: daemonPlist),
+              lstat(socket, &st) == 0, st.st_mode & S_IFMT == S_IFSOCK else {
             return slirp("omacvm-netd is not installed (omacvm enable fast-network)")
         }
         guard let req = daemonRequirement() else {
