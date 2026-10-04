@@ -104,6 +104,8 @@ live_fetch() {
 qemu_headless() {
   local name=$1; shift
   rm -f "$QMP"
+  # Always QEMU's user network here (SSH on 127.0.0.1): say so for app_ip (src/lib/app.sh).
+  echo "slirp headless" > "$LOG/network"
   OMACVM_SLIRP_HOST_PORTS=$HOST_PORTS \
   "$QEMU" -name "$(qe "$NAME")" -machine virt,gic-version=3 -accel hvf -cpu host,pmu=off \
     -smp "$CPUS" -m "${MEM_MB}M" -nodefaults -display none -monitor none \

@@ -42,9 +42,7 @@ final class Runner {
             "-drive", "if=pflash,format=raw,file=\(q(c.efiVars.path))",
             "-drive", "if=none,id=disk,file=\(q(c.disk.path)),format=raw,cache=writeback,discard=unmap",
             "-device", "nvme,serial=omacvm,drive=disk,bootindex=0",
-            // QEMU's user network: the Mac is 10.0.2.2 for the VM; SSH from the Mac on 127.0.0.1.
-            "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(c.sshPort)-:22",
-            "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56,romfile=",
+        ] + networkArguments() + [
             // One output per Mac display in full screen (Virtual-1 is the window;
             // QEMU's window code opens the others): the built-in and four more.
             "-device", "virtio-gpu-gl-pci,max_outputs=\(Runner.maxOutputs),xres=1920,yres=1080,romfile=",
@@ -96,6 +94,24 @@ final class Runner {
         return a
     }
 
+    /// The path the network took at the last start (FastNetwork).
+    private(set) var network = FastNetwork.Choice(vmnet: false, mac: FastNetwork.defaultMAC, record: "slirp off")
+
+    private func networkArguments() -> [String] {
+        let c = config
+        let choice = FastNetwork.choose(for: c)
+        network = choice
+        if choice.vmnet {
+            // vmnet (shared, the Mac is 192.168.64.1) through omacvm-netd; QEMU
+            // connects again within a second if the daemon restarts.
+            return ["-netdev", "stream,id=net0,server=off,reconnect-ms=1000,addr.type=unix,addr.path=\(FastNetwork.socket)",
+                    "-device", "virtio-net-pci,netdev=net0,mac=\(choice.mac),romfile="]
+        }
+        // QEMU's user network: the Mac is 10.0.2.2 for the VM; SSH from the Mac on 127.0.0.1.
+        return ["-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(c.sshPort)-:22",
+                "-device", "virtio-net-pci,netdev=net0,mac=\(choice.mac),romfile="]
+    }
+
     func start() throws {
         let c = config
         try FileManager.default.createDirectory(at: c.folder.appendingPathComponent("logs"),
@@ -125,6 +141,10 @@ final class Runner {
         let logURL = c.folder.appendingPathComponent("logs/qemu.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let log = try FileHandle(forWritingTo: logURL)
+        // Which network this start took, for omacvm check and the omacvm command
+        // (SSH: the VM's vmnet address, else 127.0.0.1:SSH_PORT).
+        log.write(Data("OmacVM: network: \(network.record)\n".utf8))
+        try? Data("\(network.record)\n".utf8).write(to: c.folder.appendingPathComponent("logs/network"))
         if !Runner.micAllowed {
             log.write(Data("OmacVM: no microphone permission yet: the VM records nothing until its next start\n".utf8))
         }
