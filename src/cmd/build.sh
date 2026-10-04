@@ -72,6 +72,7 @@ feature_flag() {   # NAME on|off
     idle-lock) IDLE_LOCK=$v ;;
     autologin) AUTOLOGIN=$v ;;
     thp-kernel) THP=$v ;;
+    fast-network) [[ $2 == off ]] || usage "the fast network goes on after the build: omacvm enable fast-network --vm NAME" ;;
     *) usage "unknown feature '$1' (omacvm features lists them)" ;;
   esac
   [[ $2 == on || $2 == off ]] || usage "--feature $1=$2: on or off"
@@ -367,6 +368,7 @@ fput() { local v; v=$(fvar "$1"); [[ -n $v ]] && printf -v "$v" '%s' "$2"; retur
 explain_features() {
   local i v state
   for ((i = 0; i < ${#FN[@]}; i++)); do
+    feature_has_tag "$i" app-only && continue
     v=$(fget "${FN[$i]}")
     state=$( ((v)) && echo on || echo off)
     [[ ${FN[$i]} == idle-lock ]] && state=$( ((v)) && echo kept || echo "off, the Mac's lock")
@@ -378,6 +380,8 @@ explain_features() {
 if (( ! YES )); then
   UI_KEYS=(); UI_LABELS=(); UI_DETAILS=(); UI_ON=(); UI_TAG=(); UI_OFF_REASON=(); UI_NEEDS=()
   for ((i = 0; i < ${#FN[@]}; i++)); do
+    # Opt-in after the build (omacvm enable): the fast network.
+    feature_has_tag "$i" app-only && continue
     UI_KEYS+=("${FN[$i]}"); UI_LABELS+=("${FTITLE[$i]}"); UI_DETAILS+=("${FSUM[$i]}")
     UI_ON+=("$(fget "${FN[$i]}")")
     t=""; feature_has_tag "$i" experimental && t=experimental; feature_has_tag "$i" slow && t=slow

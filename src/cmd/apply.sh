@@ -116,6 +116,11 @@ if (( MAC )); then
   # leaves alone).
   on omanotch && args+=(--omanotch)
   "$R/src/mac/install.sh" "${args[@]}"
+  # OmacVM.app's fast network: a system service (macOS asks for the password once).
+  if [[ $TYPE == app ]] && on fast-network; then
+    rc=0; "$R/src/net/mac/install.sh" || rc=$?
+    (( rc == 0 )) || { echo "omacvm apply: the fast network did not install (omacvm disable fast-network keeps QEMU's own network)" >&2; exit "$rc"; }
+  fi
   # Chrome in the guest gets no GPU with UTM's "Apple Core OpenGL" renderer.
   if [[ $TYPE == utm ]]; then
     case $(defaults read com.utmapp.UTM QEMURendererBackend 2>/dev/null || echo 0) in
@@ -170,6 +175,16 @@ gssh "$IP" "/usr/local/share/omacvm/guest/install.sh --user '$U' --keyboard '$KB
 # hid Omarchy's pointer and need the Mac's until they get this apply.
 if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
   echo omarchy > "$d/guest-pointer"
+  # The fast network from the VM's next start: its own MAC address (the VMs
+  # share vmnet's network), kept in fast-network, which the app reads.
+  if on fast-network; then
+    [[ -s $d/fast-network ]] ||
+      printf 'mac=52:54:00:%02x:%02x:%02x\n' $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256)) > "$d/fast-network"
+    [[ $(app_net "$d") == vmnet ]] || info "fast network: from the VM's next start (shut it down, then start it again)"
+  elif [[ -e $d/fast-network ]]; then
+    rm -f "$d/fast-network"
+    [[ $(app_net "$d") == vmnet ]] && info "fast network: off from the VM's next start"
+  fi
   # Its VA-API shim keeps AV1 to Chromium-based browsers (FFmpeg's AV1 cannot
   # go to the Mac's decoder): the app may offer AV1 to this VM.
   gssh "$IP" "test -x /usr/local/lib/dri/omacvm_drv_video.so" < /dev/null 2>/dev/null &&

@@ -3,7 +3,8 @@
 # follow. One feature per line, tab-separated:
 #   name  default (on|off|notch: on with a notch|laptop: on with a battery, not on Parallels)  sides (mac,vm)  tags  needs  title  summary
 # Tags: experimental, slow (adds build/update time), notch (needs a MacBook with a notch),
-# laptop (needs a Mac with a battery), not-parallels (Parallels does it itself).
+# laptop (needs a Mac with a battery), not-parallels (Parallels does it itself),
+# app-only (OmacVM.app's VMs only).
 bridge	on	mac,vm	-	-	OmacVM Bridge	the Mac's Wi-Fi, Bluetooth, audio, Night Shift and media keys in Omarchy's bar
 wallpaper	on	vm	-	bridge	Wallpaper on the Mac	Omarchy's wallpaper becomes the Mac's, following the theme
 gestures	on	mac,vm	-	-	Trackpad gestures	3/4-finger swipes and pinch in Omarchy while it is full screen (⌃⌥⌘ Esc hands them back to macOS)
@@ -15,3 +16,4 @@ battery	laptop	mac,vm	laptop,not-parallels	-	The Mac's battery	its charge and ch
 idle-lock	on	vm	-	-	Screensaver and lock	Omarchy's own, after idle in the VM (off: the Mac's lock protects the VM)
 autologin	off	vm	-	-	Autologin	straight into Omarchy, without its login screen
 thp-kernel	off	vm	slow	-	Memory-optimized kernel	Arch Linux ARM's kernel with transparent huge pages and MGLRU, for memory-heavy work (about 10 minutes per build and update)
+fast-network	off	mac,vm	experimental,app-only	-	Fast network	the VM on macOS's own VM network (vmnet, as Parallels and UTM) instead of QEMU's built-in one: faster to and from the Mac, steady latency, an address of its own; a small system service, so macOS asks for your password once (OmacVM.app only)

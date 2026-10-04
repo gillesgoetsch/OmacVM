@@ -48,6 +48,7 @@ feature_available() {
   if feature_has_tag "$1" notch && [[ ${NOTCH:-none} != notch ]]; then REASON="needs a MacBook with a notch"; return 1; fi
   if feature_has_tag "$1" laptop && [[ $(mac_battery) != yes ]]; then REASON="needs a Mac with a battery"; return 1; fi
   if feature_has_tag "$1" not-parallels && [[ ${TYPE:-} == parallels ]]; then REASON="Parallels does it itself"; return 1; fi
+  if feature_has_tag "$1" app-only && [[ -n ${TYPE:-} && $TYPE != app ]]; then REASON="OmacVM.app only"; return 1; fi
   return 0
 }
 
@@ -60,7 +61,7 @@ features_read_env() {
       # VMs from before a feature existed: what they were built with.
       # (scroll-momentum was called glide in the experiment)
       [[ ${FN[$i]} == scroll-momentum ]] && v=$(sed -n 's/^OMACVM_FEATURE_glide=//p' <<<"$1" | tail -1)
-      [[ -n $v ]] || case ${FN[$i]} in omanotch|scroll-momentum|autologin|thp-kernel) v=off ;; *) v=$(feature_default "$i") ;; esac
+      [[ -n $v ]] || case ${FN[$i]} in omanotch|scroll-momentum|autologin|thp-kernel|fast-network) v=off ;; *) v=$(feature_default "$i") ;; esac
     fi
     FV[$i]=$v
   done

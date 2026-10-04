@@ -58,8 +58,10 @@ case $TYPE in
        [[ -n $IP ]] || IP=$(utm_ip "$VM" 10) || stop 1 "no IP for UTM VM '$VM' (is it running?)" ;;
   fusion) HOST=$(fusion_host)
           [[ -n $IP ]] || IP=$(fusion_ip "$VM" 10) || stop 1 "no IP for VMware Fusion VM '$VM' (is it running?)" ;;
-  app) HOST=127.0.0.1   # OmacVM.app: the VM reaches the Mac's 127.0.0.1 as 10.0.2.2
-       [[ -n $IP ]] || IP=$(app_ip "$VM") || stop 1 "OmacVM.app VM '$VM' is not running" ;;
+  app) [[ -n $IP ]] || IP=$(app_ip "$VM") || stop 1 "OmacVM.app VM '$VM' is not running"
+       # OmacVM.app: QEMU's user network reaches the Mac's 127.0.0.1 as 10.0.2.2;
+       # with the fast network (vmnet) the Mac is 192.168.64.1, as for UTM.
+       if [[ $IP == 127.0.0.1:* ]]; then HOST=127.0.0.1; else HOST=192.168.64.1; fi ;;
   *) stop 2 "--vm-type parallels, utm, fusion or app" ;;
 esac
 export OMA_KEY=$KEY
@@ -116,6 +118,24 @@ fi
 envf=$(gssh "$IP" cat /etc/omacvm/env 2>/dev/null)
 feat() { local v; v=$(sed -n "s/^OMACVM_FEATURE_$1=//p" <<<"$envf" | tail -1); echo "${v:-${2:-on}}"; }
 BRIDGE=$(feat bridge); GESTURES=$(feat gestures); GLIDE=$(feat scroll_momentum "$(feat glide off)")
+
+# OmacVM.app's fast network: the service on the Mac, and which network this
+# start of the VM took (the app writes it to logs/network).
+if [[ $TYPE == app ]]; then
+  if [[ $(feat fast_network off) == on ]]; then
+    case $("$R/src/net/mac/install.sh" --status 2>/dev/null) in
+      ok) ok "fast network service" "omacvm-netd, for this OmacVM.app" ;;
+      old) bad "fast network service" "for another build of the app, or older: omacvm enable fast-network --vm \"$VM\"" ;;
+      *) bad "fast network service" "not installed: omacvm enable fast-network --vm \"$VM\"" ;;
+    esac
+    d=$(app_dir "$VM" 2>/dev/null); net=$(head -1 "$d/logs/network" 2>/dev/null)
+    case $net in
+      vmnet) ok "fast network" "on (vmnet), the VM is $IP" ;;
+      slirp*) bad "fast network" "this start took QEMU's user network: ${net#slirp }" ;;
+      *) bad "fast network" "the app did not say which network it took (from before the fast network? omacvm update)" ;;
+    esac
+  else skip "fast network" "off (experimental: omacvm enable fast-network)"; fi
+fi
 
 if [[ $BRIDGE == on ]]; then
   if running org.omacvm.bridge; then

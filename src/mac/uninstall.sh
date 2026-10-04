@@ -14,6 +14,8 @@ done
 "$R/gestures/mac/uninstall.sh"
 "$R/clipboard/mac/uninstall.sh"
 "$R/omanotch/mac/uninstall.sh"
+# OmacVM.app's fast network (a system service: macOS asks for the password).
+"$R/net/mac/install.sh" --remove || echo "the fast network's service stays (src/net/mac/install.sh --remove takes it off)" >&2
 tccutil reset Accessibility org.omacvm.gestures >/dev/null 2>&1 || true
 tccutil reset ListenEvent org.omacvm.gestures >/dev/null 2>&1 || true
 S="$HOME/Library/Application Support/omacvm"

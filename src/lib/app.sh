@@ -4,7 +4,7 @@
 # 127.0.0.1:PORT (gssh understands that).
 #   app_list            NAME<TAB>app<TAB>running|stopped, one line per VM
 #   app_dir NAME        the VM's folder
-#   app_ip NAME         127.0.0.1:PORT while it runs
+#   app_ip NAME         127.0.0.1:PORT while it runs (fast network: its vmnet address)
 #   app_start NAME      start it in the app (its window opens)
 #   app_other_running NAME  another app VM that runs, if any
 #   app_bundle          the installed OmacVM.app (any name it was installed under)
@@ -57,14 +57,31 @@ app_dir() {
   return 1
 }
 
+# The fast network (feature fast-network): the app writes which network each
+# start took to logs/network ("vmnet", or "slirp" and why); the VM's MAC
+# address is in its fast-network file. On vmnet the VM has an address of its
+# own (macOS's DHCP server hands it out), and SSH goes there (port 22), its
+# host key checked as always.
+app_net() { sed -n '1s/ .*//p' "$1/logs/network" 2>/dev/null; }   # DIR -> vmnet|slirp
+app_vmnet_ip() {   # DIR -> the VM's address in /var/db/dhcpd_leases (bootpd drops leading zeros)
+  local m
+  m=$(sed -n 's/^mac=//p' "$1/fast-network" 2>/dev/null | tr 'A-F' 'a-f' | sed 's/:0/:/g; s/^0//')
+  [[ -n $m ]] || return 1
+  m=$(awk -v m="1,$m" '/ip_address=/ { split($0, a, "="); ip = a[2] } /hw_address=/ { split($0, b, "="); if (b[2] == m) print ip }' \
+        /var/db/dhcpd_leases 2>/dev/null | tail -1)
+  [[ $m =~ ^192\.168\.64\.[0-9]+$ ]] && echo "$m"
+}
+
 app_ip() {   # NAME [seconds]: only when that QEMU itself holds the port (not
-  # whatever else listens there)
-  local d p i pid
+  # whatever else listens there), or its vmnet address
+  local d p i pid ip
   d=$(app_dir "$1") || return 1
   p=$(app_env "$d" SSH_PORT); [[ $p =~ ^[0-9]+$ ]] || return 1
   for ((i = 0; i <= ${2:-0}; i += 2)); do
     pid=$(app_pid_dir "$d")
-    if [[ -n $pid ]] && lsof -nP -a -p "$pid" -iTCP@127.0.0.1:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+    if [[ -n $pid && $(app_net "$d") == vmnet ]]; then
+      ip=$(app_vmnet_ip "$d") && { echo "$ip"; return 0; }
+    elif [[ -n $pid ]] && lsof -nP -a -p "$pid" -iTCP@127.0.0.1:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
       echo "127.0.0.1:$p"; return 0
     fi
     sleep 2
