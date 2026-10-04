@@ -255,7 +255,7 @@ app)
   if [[ -n $e ]]; then
     ok "video encoding" "the Mac's media engine: $e"
     check "WebRTC encoding" "Chrome, Brave: VA-API encoder features in their flags (omacvm apply)" \
-      test -s "$H/.local/state/omacvm/video-encode-flags"
+      python3 /usr/local/share/omacvm/app/guest/browser-video-encode.py "$U" check
   elif command -v vainfo >/dev/null; then skip "video encoding" "none offered (OmacVM.app older than the video encoding?)"; fi ;;
 fusion)
   section "VMware Fusion"
