@@ -7,9 +7,9 @@ VaapiVideoEncoder are enabled. Chrome uses only the LAST --enable-features of it
 command line, and Omarchy's flags files already have one, so the features go into
 the last --enable-features the browser reads (several flags may share a line), or
 a new line in the user's file when there is none. Firefox (157) has no VA-API
-encoder on Linux, and Arch Linux ARM builds Chromium without VA-API: nothing to
-switch there (Chromium's files stay known, so "off" and "on" take out what an
-earlier version added).
+encoder on Linux, and Arch Linux ARM builds Chromium without VA-API (its binary
+does not load libva): nothing to switch there until it does (Chromium's files
+stay known, so "off" and "on" take out what an earlier version added).
 
 Safety: the user's files are read and written by a child process running as the
 user (a link in ~/.config cannot make root write elsewhere); /etc files only when
@@ -19,7 +19,7 @@ before anything is removed; "off" removes only that, from the last
 --enable-features of that file.
 check: exit 0 when the last --enable-features of every configured browser has
 both features (whoever put them there)."""
-import json, os, pwd, re, stat, sys
+import json, mmap, os, pwd, re, stat, sys
 
 FEATURES = ("AcceleratedVideoEncoder", "VaapiVideoEncoder")
 MARK = "/var/lib/omacvm/video-encode-flags.json"
@@ -171,9 +171,19 @@ def effective(owner, files):
     return last
 
 
+def has_vaapi(exe):
+    """Whether a Chromium binary was built with VA-API (it then loads libva-drm)."""
+    try:
+        with open(exe, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            return m.find(b"libva-drm.so") >= 0
+    except (OSError, ValueError):
+        return False
+
+
 def wanted(owner, name, files):
     if name == "chromium":
-        return False   # Arch Linux ARM's has no VA-API: the features change nothing
+        # Arch Linux ARM's has no VA-API today: the features would change nothing.
+        return has_vaapi("/usr/lib/chromium/chromium")
     exe = {"chrome": ("google-chrome-stable", "google-chrome"), "brave": ("brave",)}[name]
     if any(os.access(os.path.join(d, e), os.X_OK)
            for d in ("/usr/local/bin", "/usr/bin") for e in exe):
