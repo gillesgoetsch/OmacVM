@@ -105,10 +105,27 @@ if ! msg=$(vm_network_ok "$TYPE" "$IP" 2>&1); then
   (( JSON )) && json_out false
   exit 1
 fi
+# OmacVM.app on the fast network: 192.168.64.1 alone proves nothing (UTM's
+# shared network has it too). The app must still say vmnet (it watches the
+# link the whole run), the VM's address must route to a Mac interface with
+# 192.168.64.1, and the VM must answer there.
+fast_net_down() {   # -> why, when the VM's fast network is not working
+  local d n ifc
+  d=$(app_dir "$VM" 2>/dev/null); n=$(head -1 "$d/logs/network" 2>/dev/null)
+  [[ $n == vmnet ]] || { echo "${n:-the app did not say which network it took}"; return 0; }
+  ifc=$(route -n get "$IP" 2>/dev/null | awk '/interface:/ { print $2 }')
+  [[ -n $ifc ]] && ifconfig "$ifc" 2>/dev/null | grep -q "inet 192.168.64.1 " ||
+    { echo "no Mac interface with 192.168.64.1 leads to the VM's $IP"; return 0; }
+  ping -c 1 -t 3 -q "$IP" >/dev/null 2>&1 || { echo "the VM does not answer at $IP"; return 0; }
+  return 1
+}
+if [[ $TYPE == app && $HOST == 192.168.64.1 ]] && why=$(fast_net_down); then
+  bad "VM network" "the fast network is not working: $why (omacvm-netd's log: /var/log/org.omacvm.netd.log)"
+  (( JSON )) && json_out false
+  exit 1
+fi
 if ! ifconfig | grep -q "inet $HOST "; then
-  if [[ $TYPE == app && $HOST == 192.168.64.1 ]]; then
-    bad "VM network" "the fast network is not up: $(head -1 "$(app_dir "$VM")/logs/network" 2>/dev/null) (omacvm-netd's log: /var/log/org.omacvm.netd.log)"
-  else bad "VM network" "$HOST is not up on this Mac: start the VM, then run omacvm check again"; fi
+  bad "VM network" "$HOST is not up on this Mac: start the VM, then run omacvm check again"
   (( JSON )) && json_out false
   exit 1
 fi
@@ -138,6 +155,7 @@ if [[ $TYPE == app ]]; then
     d=$(app_dir "$VM" 2>/dev/null); net=$(head -1 "$d/logs/network" 2>/dev/null)
     case $net in
       vmnet) ok "fast network" "on (vmnet), the VM is $IP" ;;
+      slirp\ fallback*) bad "fast network" "${net#slirp fallback: }" ;;
       slirp*) bad "fast network" "this start took QEMU's user network: ${net#slirp }" ;;
       vmnet-down*) bad "fast network" "${net#vmnet-down }" ;;
       *) bad "fast network" "the app did not say which network it took (from before the fast network? omacvm update)" ;;
