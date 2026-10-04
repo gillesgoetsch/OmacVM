@@ -805,7 +805,10 @@ static void *greet(void *arg) {
     base64Name(name64, name, sizeof name);
     addClient(c, g.net, ip, gestures, glide, name);
   } else {
-    static char lastIp[32]; static time_t lastLog;   // a refused daemon retries every 2 s
+    // A refused daemon tries again every 2 s; only the log line is throttled.
+    // Keeping its socket open instead would not save anything: a daemon from
+    // 2.3 or older then polls it every 2 ms. omacvm check tells the user.
+    static char lastIp[32]; static time_t lastLog;
     pthread_mutex_lock(&sendLock);
     if (strcmp(lastIp, ip) || time(NULL) - lastLog >= 60) {
       logf_("refused %s on %s: %s", ip, addr, why);
