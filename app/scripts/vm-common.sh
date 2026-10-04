@@ -56,7 +56,8 @@ truncate_file() { dd if=/dev/null of="$1" bs=1 seek="$2" 2>/dev/null; }
 efi_vars_create() { [[ -f $VM_DIR/efi-vars.fd ]] || mkfile -n 64m "$VM_DIR/efi-vars.fd"; }
 
 # try-omarchy's release: kernel, initramfs and its Arch Linux ARM root file
-# system, checked against the release's own manifest. Downloaded once.
+# system: the DMG checked against its pinned SHA-256, the files inside against
+# the release's own manifest. Downloaded once.
 live_fetch() {
   local d=$CACHE/live dmg vol app g
   mkdir -p "$d"
@@ -75,6 +76,11 @@ live_fetch() {
       "https://github.com/omacom/try-omarchy/releases/download/$LIVE_RELEASE/TryOmarchy.dmg"
     mv "$dmg.part" "$dmg"
   fi
+  # The DMG must be the pinned one (src/vm/live/release.sh), then its own
+  # manifest vouches for the files inside.
+  log "checking the download against its pinned SHA-256"
+  [[ $(shasum -a 256 "$dmg" | cut -d' ' -f1) == "$LIVE_DMG_SHA256" ]] ||
+    { rm -f "$dmg"; die "TryOmarchy.dmg $LIVE_RELEASE is not the pinned one; deleted it, try again to download it again"; }
   vol=$d/mnt; mkdir -p "$vol"
   hdiutil attach -nobrowse -readonly -mountpoint "$vol" "$dmg" >/dev/null || die "could not open $dmg"
   app=$(find "$vol" -maxdepth 2 -name '*.app' | head -1)
