@@ -67,7 +67,8 @@ live_fetch() {
   fi
   rm -f "$d/ok-$LIVE_RELEASE"
   dmg=$d/TryOmarchy-$LIVE_RELEASE.dmg
-  # The same folder as the omacvm command's (build-live.sh), so they share it.
+  # Only the app uses this folder: the omacvm command's build-live.sh works in
+  # ../build-live and deletes its files when done.
   if [[ ! -f $dmg ]]; then
     log "downloading try-omarchy $LIVE_RELEASE (1.4 GB)"
     curl -fL --retry 3 --progress-bar -o "$dmg.part" \

@@ -22,7 +22,9 @@ VM_NAME="Omarchy ARM"
 source "$(dirname "${BASH_SOURCE[0]}")/release.sh"
 RELEASE=$LIVE_RELEASE
 REPO="omacom/try-omarchy"
-WORKDIR="${HOME}/Library/Caches/omacvm/live"
+# Not OmacVM.app's cache (~/Library/Caches/omacvm/live): this script deletes
+# its work files and the DMG when done, the app keeps its unpacked copy.
+WORKDIR="${HOME}/Library/Caches/omacvm/build-live"
 ESP_SIZE_MIB=1024          # 1 GiB ESP (kernel + initramfs + bootloader)
 ROOT_SIZE_GIB=16           # ext4 is grown to this before first boot
 VM_DIR="${HOME}/Parallels"

@@ -664,7 +664,7 @@ elif [[ $TYPE == fusion ]]; then
   fusion_start "$VM"
   ui_spin_val IP "The live installer gets its address" fusion_ip "$VM" 300 || die "the live installer got no IP address"
 else
-  LIVE="$HOME/Library/Caches/omacvm/live/$VM-live.img"
+  LIVE="$HOME/Library/Caches/omacvm/build-live/$VM-live.img"
   "$R/src/vm/live/build-live.sh" --root-size-gib 16 --raw-image "$LIVE" --ssh-key "$KEY.pub"
   utm_tune_app
   log "UTM VM with a ${DISK_GB} GB NVMe disk"
