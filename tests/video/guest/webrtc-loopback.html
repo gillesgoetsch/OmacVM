@@ -7,10 +7,16 @@
 // A camera (or the screen, or a whole call: camera, microphone and the screen) sent
 // through an RTCPeerConnection pair inside this page, H.264 preferred; after SECONDS
 // posts the senders' stats (encoder implementation, frames encoded, encode time) to
-// /result. ?source=camera|screen|call&seconds=N&w=&h=&fps=
+// /result. ?source=camera|screen|call&seconds=N&w=&h=&fps=&hd=1
+// hd=1 keeps the size (degradationPreference maintain-resolution) and starts the
+// bandwidth estimate high (x-google-*-bitrate), so encoders compare at the full size
+// instead of the loopback's ramp-up.
 const q = new URLSearchParams(location.search);
 const source = q.get('source') || 'camera', seconds = +(q.get('seconds') || 20);
 const W = +(q.get('w') || 1280), H = +(q.get('h') || 720), FPS = +(q.get('fps') || 30);
+const HD = q.get('hd') === '1';
+const hdSdp = d => HD ? { type: d.type, sdp: d.sdp.replace(/^(a=fmtp:\d+ .*profile-level-id=[0-9a-f]+.*)$/gm,
+  '$1;x-google-min-bitrate=2000;x-google-start-bitrate=3000;x-google-max-bitrate=4000') } : d;
 const log = m => { document.getElementById('log').textContent += m + '\n'; };
 const post = (kind, o) => fetch('/' + kind, { method: 'POST', body: JSON.stringify(o) });
 
@@ -34,12 +40,13 @@ async function run() {
       if (h264.length) t.setCodecPreferences(h264);
       const p = t.sender.getParameters();
       p.encodings = [{ maxBitrate: 4000000 }];
+      if (HD) p.degradationPreference = 'maintain-resolution';
       await t.sender.setParameters(p).catch(() => {});
     }
   }
-  await pc1.setLocalDescription(await pc1.createOffer());
+  await pc1.setLocalDescription(hdSdp(await pc1.createOffer()));
   await pc2.setRemoteDescription(pc1.localDescription);
-  await pc2.setLocalDescription(await pc2.createAnswer());
+  await pc2.setLocalDescription(hdSdp(await pc2.createAnswer()));
   await pc1.setRemoteDescription(pc2.localDescription);
   post('start', { source, W, H, FPS, tracks: stream.getTracks().map(t => t.kind + ':' + t.label) });
   const t0 = performance.now();
