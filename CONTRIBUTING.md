@@ -1,7 +1,7 @@
 # Contributing to OmacVM
 
 OmacVM makes Omarchy feel at home on a Mac. Help is welcome, and a good bug
-report counts as help.
+report counts as help. One that comes with a fix counts twice.
 
 ## Report a problem
 
