@@ -47,8 +47,9 @@ Mac's hardware to the VM over its private network, with a token.
   helpers as they are; `OMACVM_HEADLESS=1` starts VMs without a window (UTM,
   Fusion, Parallels Pro or trial).
 - Ask before anything that changes the Mac side: `src/mac/install.sh`,
-  `omacvm update`, `omacvm uninstall`, `apply` without `--no-mac`. They replace
-  or remove the person's Bridge, Gestures and Omanotch.
+  `omacvm update`, `omacvm uninstall`, `build` or `apply` without `--no-mac`
+  (`build` ends in `apply`). They replace or remove the person's Bridge,
+  Gestures and Omanotch.
 - Never rebuild an app bundle that is running. Don't switch Spaces, go full
   screen or inject input on a Mac someone is using.
 - Done means section 1 holds and `omacvm check --vm NAME` passes. Then shut
