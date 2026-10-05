@@ -228,8 +228,12 @@ def main():
     files = browser_files(owner.home)
     known = {p for fs in files.values() for p in fs}
     if sys.argv[2] == "check":
-        missing = [n for n, fs in files.items() if wanted(owner, n, fs)
-                   and not all(f in effective(owner, fs)[1] for f in FEATURES)]
+        try:
+            missing = [n for n, fs in files.items() if wanted(owner, n, fs)
+                       and not all(f in effective(owner, fs)[1] for f in FEATURES)]
+        except RuntimeError as err:
+            print(f"cannot read: {err}")
+            sys.exit(1)
         print("missing in: " + ", ".join(missing) if missing else "on")
         sys.exit(1 if missing else 0)
     # A removal that fails stays in the marker, so the next run can still take
