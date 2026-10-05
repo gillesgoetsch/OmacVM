@@ -90,13 +90,15 @@ status() {
   echo ok
 }
 
-# The daemon stopped starting vmnet after too many failures in a row (its
-# STATE: "boot failures pause live", this boot's only): yes/no.
+# The daemon stopped starting vmnet after MAX_FAILURES failures in a row
+# (its STATE: "boot failures pause live", this boot's only): yes/no.
+MAX_FAILURES=$(sed -n 's/^#define MAX_FAILURES  *\([0-9][0-9]*\).*/\1/p' "$HERE/omacvm-netd.c" | head -1)
+[[ -n $MAX_FAILURES ]] || { echo "no MAX_FAILURES in $HERE/omacvm-netd.c" >&2; exit 1; }
 stopped() {
   local boot b f
   boot=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p')
   [[ -r $STATE ]] && read -r b f _ < "$STATE" || return 1
-  [[ $b == "$boot" && $f =~ ^[0-9]+$ ]] && (( f >= 8 ))
+  [[ $b == "$boot" && $f =~ ^[0-9]+$ ]] && (( f >= MAX_FAILURES ))
 }
 
 as_root() {   # SCRIPT ARGS...: one sudo for all of it
