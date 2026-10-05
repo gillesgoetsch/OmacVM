@@ -44,6 +44,8 @@
 //   starts the service again for it), or the app falls back to its user
 //   network. A connection whose vmnet reads or writes keep failing is
 //   closed too (full vmnet buffers only drop frames, as a busy NIC does).
+//   The service is the root process /usr/libexec/InternetSharing: any user
+//   can start a process with that name, and its exit means nothing.
 // - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
 //   are logged at most once per LOG_QUIET seconds (its users' apart from the
 //   others'), and the log is cut at LOG_MAX bytes.
@@ -123,7 +125,8 @@
 #define FAIL_COUNT 5            // vmnet reads or writes failing this many times in a row
 #define FAIL_SECS 2             // ... for this many seconds: the interface is gone
 #define NET_PREFIX "192.168.77."
-#define SHARING "InternetSharing"   // macOS's vmnet service (a launchd daemon)
+#define SHARING "InternetSharing"   // macOS's vmnet service (a launchd daemon) ...
+#define SHARING_PATH "/usr/libexec/InternetSharing"   // ... run by root from here
 #define NET_FIRST "192.168.77.1"   // the Mac on the fast network
 #define NET_LAST "192.168.77.254"
 #define NET_MASK "255.255.255.0"
@@ -360,6 +363,16 @@ struct conn {
 
 // ---- macOS's vmnet service ----
 
+// pid is macOS's service: root's /usr/libexec/InternetSharing, not just a
+// process with that name (any user can start one).
+static int isSharing(pid_t pid) {
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    struct proc_bsdinfo bi;
+    if (proc_pidpath(pid, path, sizeof path) <= 0 || strcmp(path, SHARING_PATH)) return 0;
+    if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &bi, sizeof bi) != (int)sizeof bi) return 0;
+    return bi.pbi_uid == 0 && bi.pbi_ruid == 0;
+}
+
 static pid_t sharingPid(void) {
     int n = proc_listallpids(NULL, 0);
     if (n <= 0) return 0;
@@ -368,7 +381,7 @@ static pid_t sharingPid(void) {
     n = proc_listallpids(p, (int)(((size_t)n + 64) * sizeof *p));
     for (int i = 0; i < n && !found; i++) {
         char name[2 * MAXCOMLEN + 1];
-        if (proc_name(p[i], name, sizeof name) > 0 && !strcmp(name, SHARING)) found = p[i];
+        if (proc_name(p[i], name, sizeof name) > 0 && !strcmp(name, SHARING) && isSharing(p[i])) found = p[i];
     }
     free(p);
     return found;

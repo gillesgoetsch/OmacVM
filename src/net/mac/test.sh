@@ -10,4 +10,9 @@ xcrun clang -O2 -Wall -Wextra -Werror -mmacosx-version-min=14.0 -o "$T/omacvm-ne
 echo "ok   omacvm-netd builds without warnings"
 xcrun clang -O1 -g -Wall -Wno-unused-function -fsanitize=address,undefined -mmacosx-version-min=14.0 \
   -o "$T/test-netd" "$HERE/test-netd.c" "${FW[@]}"
-NETD_STATE=$T/state "$T/test-netd" 2>"$T/log" || { cat "$T/log" >&2; exit 1; }
+# A user's process named like macOS's vmnet service (the daemon must not watch it).
+echo '#include <unistd.h>
+int main(void) { sleep(120); return 0; }' | xcrun clang -x c -o "$T/InternetSharing" -
+"$T/InternetSharing" & FAKE=$!; disown "$FAKE"
+trap 'kill "$FAKE" 2>/dev/null; rm -rf "$T"' EXIT
+NETD_STATE=$T/state NETD_FAKE_SHARING=$FAKE "$T/test-netd" 2>"$T/log" || { cat "$T/log" >&2; exit 1; }

@@ -220,6 +220,17 @@ int main(void) {
     expect(t >= 3 && nconns == 0 && vmnetFailures == 0, "vmnet buffers full: frames dropped, connection kept, no failure");
     writeFails = 0;
 
+    // A process of a user named InternetSharing (test.sh starts one) is not
+    // macOS's service: its exit must not close anyone's connection.
+    const char *fp = getenv("NETD_FAKE_SHARING");
+    if (fp) {
+        pid_t fake = (pid_t)atoi(fp), real = sharingPid();
+        char name[2 * MAXCOMLEN + 1] = "";
+        proc_name(fake, name, sizeof name);
+        expect(!strcmp(name, SHARING) && !isSharing(fake) && real != fake,
+               "a user's process named InternetSharing is not taken for macOS's service");
+    }
+
     // macOS's vmnet service exits under a live connection (a child process
     // stands in for it): the connection is closed within seconds.
     resetBackoff();
