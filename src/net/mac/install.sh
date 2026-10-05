@@ -93,9 +93,9 @@ status() {
 # The daemon stopped starting vmnet after too many failures in a row (its
 # STATE: "boot failures pause live", this boot's only): yes/no.
 stopped() {
-  local boot f
+  local boot b f
   boot=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p')
-  read -r b f _ < "$STATE" 2>/dev/null || return 1
+  [[ -r $STATE ]] && read -r b f _ < "$STATE" || return 1
   [[ $b == "$boot" && $f =~ ^[0-9]+$ ]] && (( f >= 8 ))
 }
 
