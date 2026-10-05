@@ -80,7 +80,7 @@ live_fetch() {
   # manifest vouches for the files inside.
   log "checking the download against its pinned SHA-256"
   [[ $(shasum -a 256 "$dmg" | cut -d' ' -f1) == "$LIVE_DMG_SHA256" ]] ||
-    { rm -f "$dmg"; die "TryOmarchy.dmg $LIVE_RELEASE is not the pinned one; deleted it, try again to download it again"; }
+    { rm -f "$dmg"; die "TryOmarchy.dmg $LIVE_RELEASE is not the pinned one; deleted it; try again to download it fresh"; }
   vol=$d/mnt; mkdir -p "$vol"
   hdiutil attach -nobrowse -readonly -mountpoint "$vol" "$dmg" >/dev/null || die "could not open $dmg"
   app=$(find "$vol" -maxdepth 2 -name '*.app' | head -1)
