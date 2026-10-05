@@ -40,12 +40,12 @@ Mac's hardware to the VM over its private network, with a token.
 **Test without touching the person's setup**
 
 - No VM needed: the CI steps ([CONTRIBUTING.md](CONTRIBUTING.md#test-your-change)),
-  `./omacvm build --plan --json --vm-type ROUTE`, `./omacvm check --json`
-  (read-only), `src/omanotch/mac/test.sh`.
+  `./omacvm build --plan --json --vm-type ROUTE`, `src/omanotch/mac/test.sh`.
 - Use your own VM, named for the test (`--vm-name "OmacVM Test-<topic>"`), never
-  the person's. `--no-mac` on `build` and `apply` leaves the Mac's installed
-  helpers as they are; `OMACVM_HEADLESS=1` starts VMs without a window (UTM,
-  Fusion, Parallels Pro or trial).
+  the person's. Check it with `./omacvm check --vm NAME --json` (read-only;
+  without `--vm` it picks the person's VM). `--no-mac` on `build` and `apply`
+  leaves the Mac's installed helpers as they are; `OMACVM_HEADLESS=1` starts
+  VMs without a window (UTM, Fusion, Parallels Pro or trial).
 - Ask before anything that changes the Mac side: `src/mac/install.sh`,
   `omacvm update`, `omacvm uninstall`, `build` or `apply` without `--no-mac`
   (`build` ends in `apply`). They replace or remove the person's Bridge,
