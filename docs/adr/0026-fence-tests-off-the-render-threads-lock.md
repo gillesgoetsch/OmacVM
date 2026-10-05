@@ -56,8 +56,21 @@ Option 3, macOS only:
 
 ## Consequences
 
-- Numbers (bench lock, same VM and window): see the patch headers and
-  [../architecture/graphics.md](../architecture/graphics.md) section 4.
+- Bench lock, one app VM, window alone on a virtual 120 Hz display, two
+  sessions each (2.8.0 / RC3 / this): Aquarium 20.2 / 19.0 / 19.9 fps,
+  glmark2 short set 1160 / 2986 / 3168, testufo 117.0 / 117.5 new frames a
+  second (RC3 / this), Basemark Web 3.0 2524 / 2916 (RC3 / this, ranges
+  overlap). The sync thread part alone gives Aquarium 20.15-20.6, the
+  present part alone 19.65-19.85, neither 19.1-19.85.
+- The sync thread's CPU during Aquarium 7.3 % -> 2.3 %; QEMU's wakeups
+  5,900 -> 3,600 a second.
+- Outside QEMU (`Tests/virgl/bench-fence-contention.c`, two shared CGL
+  contexts, bench lock): a thread testing a fence back to back, as the
+  sync thread does for up to 100 us after each new fence, cuts a draw-heavy
+  GL thread by 35 %; one test every 50 us or every 1 ms stays within the
+  noise (2-4 %). The spin after each new fence (thousands a second in
+  Aquarium) is what hurt; it now happens only while the render thread is
+  idle.
 - A fence that finishes while the render thread is busy is reported at the
   end of the current submit or within 1 ms. The guest only waits on such a
   fence when it has nothing else to send, and then the render thread is

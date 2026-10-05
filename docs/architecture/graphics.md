@@ -259,7 +259,9 @@ thread runs a guest command buffer, `vrend-sync` waits for the end of the
 submit (the render thread wakes it, at most 1 ms) instead of testing on a
 timer; an idle render thread gets the spin and naps above. The present
 queue's naps double after 1 ms, up to 1 ms. `OMACVM_VIRGL_FENCE_BUSY=0` and
-`OMACVM_GL_PRESENT_NAP_MAX_US=100` turn them off.
+`OMACVM_GL_PRESENT_NAP_MAX_US=100` turn them off. Bench lock, 2.8.0 / RC3 /
+with both: Aquarium 20.2 / 19.0 / 19.9 fps, glmark2 short set 1160 / 2986 /
+3168; testufo unchanged.
 
 ### Where the time goes
 

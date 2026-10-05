@@ -10,6 +10,11 @@ Aquarium (50 ms frames) that was some 500 tests per frame, each taking Apple
 GL's share-group lock that the render thread's GL calls take too; a
 collision parks the render thread in the kernel. Frames that finish within
 1 ms (testufo, video, the desktop) are tested exactly as before.
+Results (bench lock, same VM and window, one session each): Aquarium with
+this patch alone 19.65-19.85 fps against 19.1-19.85 with neither patch;
+with virgl-darwin-fence-wait-busy.patch 19.9 (2.8.0: 20.2, RC3: 19.0).
+testufo on a virtual 120 Hz display unchanged (117.5 vs 117.0 new frames a
+second).
 Upstream: not sent (depends on the IOSurface present, an OmacVM patch).
 Test: Aquarium, glmark2, testufo (virtual 120 Hz display) A/B against RC3
 with the bench lock. Applies after qemu-cocoa-gl-present-color.patch.

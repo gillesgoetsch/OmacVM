@@ -17,6 +17,14 @@ WebGL Aquarium the render thread is saturated and the sync thread tested
 thousands of times a second beside it: samples of the render thread show
 it parked in _os_unfair_lock_lock_slow/__ulock_wake inside those calls,
 and Aquarium ran about 5 % slower than with polled fences (2.8.0 path).
+Results (bench lock, one app VM, window alone on a virtual 120 Hz display,
+2.8.0 / RC3 / this, two sessions each in A B C C B A order): Aquarium
+20.2 / 19.0 / 19.9 fps (medians of 6 runs), glmark2 short set 1160 / 2986 /
+3168, testufo 117.0 / 117.5 new frames a second (RC3 / this), Basemark Web
+3.0 medians 2524 / 2916 (RC3 / this, ranges overlap). This patch alone
+(present backoff off): Aquarium 20.15-20.6; both off: 19.1-19.85, as RC3.
+The sync thread's CPU in Aquarium 7.3 % -> 2.3 %, QEMU's wakeups 5,900 ->
+3,600 a second.
 Upstream: macOS-specific, goes with virgl-darwin-fence-wait.patch.
 Test: Tests/virgl/test-fence-wait-busy.c (build time, no GL: busy and grace
 detection, a waiter wakes at the end of a 300 us submit, at about 1 ms
