@@ -46,12 +46,13 @@ It's written for coding agents and reads fine for humans.
 
 ## Test your change
 
-**Quick checks**, roughly what CI runs:
+**Quick checks**, the same ones CI runs:
 
 ```bash
-git ls-files '*.sh' | xargs -n1 /bin/bash -n                    # macOS's bash 3.2
-git ls-files '*.sh' | xargs shellcheck -S error -s bash
-git ls-files '*.py' | xargs python3 -m py_compile
+brew install shellcheck                                     # once
+.github/shell-files.sh | tr '\n' '\0' | xargs -0 -n1 /bin/bash -n   # macOS's bash 3.2
+.github/shell-files.sh | tr '\n' '\0' | xargs -0 shellcheck -S error -s bash
+git ls-files -z '*.py' | xargs -0 python3 -m py_compile
 (cd app/app && swift build)
 src/gestures/mac/build.sh && src/bridge/mac/build.sh
 src/omanotch/mac/test.sh
