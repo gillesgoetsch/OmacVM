@@ -16,6 +16,14 @@ in more words.
   FFmpeg 1080p uses 6 to 8 times less Mac CPU than x264/x265. 8 encoders at
   once per VM, 12 at most. `OMACVM_VIDEO_NO_ENCODE=1` in QEMU's environment
   turns it off.
+- Fast network for OmacVM.app, experimental and off by default:
+  `omacvm enable fast-network --vm NAME` puts the VM on macOS's own VM
+  network (vmnet, as Parallels and UTM) through a small system service,
+  `omacvm-netd`, that asks for your password once. On a Mac mini, VM to Mac
+  7.2 instead of 3.0 Gbit/s with less CPU; Mac to VM is lower than the user
+  network (9.5 against 12.2 Gbit/s). Without the service the VM keeps QEMU's
+  user network. Not tested yet: a MacBook, VPNs, sleep and wake, Wi-Fi
+  changes, several VMs at once, Omanotch over it.
 
 ## 2.8.0
 
