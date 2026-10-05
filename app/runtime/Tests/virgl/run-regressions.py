@@ -36,7 +36,26 @@ def run_test(name, implementation):
     subprocess.run([str(binary)], check=True)
 
 
+def run_api_test(name, frameworks=()):
+    """Link against the built libvirglrenderer and drive it through its public API
+    (on Apple's software OpenGL, soft-gl.h)."""
+    entry = next(item for item in entries if item["file"].endswith("/virglrenderer.c"))
+    command = entry.get("arguments") or shlex.split(entry["command"])
+    directory = Path(entry["directory"])
+    source = (directory / entry["file"]).resolve().parent
+    binary = output / name
+    subprocess.run([command[0], "-I" + str(source), "-I" + str(build / "src"),
+                    str(Path(__file__).with_name(name + ".c")),
+                    "-L" + str(build / "src"), "-lvirglrenderer",
+                    "-Wl,-rpath," + str(build / "src"),
+                    "-framework", "OpenGL", *[a for f in frameworks for a in ("-framework", f)],
+                    "-Wno-deprecated-declarations", "-o", str(binary)],
+                   cwd=directory, check=True)
+    subprocess.run([str(binary)], check=True)
+
+
 run_test("test-multisample-formats", "vrend_formats.c")
 run_test("test-native-shader-inputs", "vrend_renderer.c")
 run_test("test-integer-sampler-shader", "vrend_shader.c")
+run_api_test("test-video-decode", ("VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"))
 run_test("test-transfer-row-size", "vrend_formats.c")

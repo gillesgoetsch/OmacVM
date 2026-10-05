@@ -104,6 +104,15 @@ put the shim in: the VM folder's `video-decode` file).
   whole frame. So AV1 is offered to Chromium-based browsers only.
 - **HEVC**: Main and Main 10; long-term reference pictures from the SPS are
   not supported (rare).
+- **At most 8 decoders at once per VM.** Each holds a session on the Mac's
+  media engine, which the Mac's own apps and other VMs share, plus its
+  pictures; without a limit one VM could tie it all up. A player or a
+  browser video uses one. The 9th gets no decoder, and the guest cannot be
+  told (creating a decoder has no reply): that video plays with empty
+  pictures (FFmpeg runs to the end with blank frames) and QEMU's log says
+  `decoders already open`. Closing a video frees its slot; so does a player
+  that quits or crashes. `Tests/virgl/test-video-decode.c` checks the limit
+  at build time.
 - **YUYV surfaces**: not offered. virglrenderer stored their plane format
   (R8G8_R8B8) at twice its size, and reading one back overflowed QEMU's heap
   (mpv's VA-API check did it, before 2.7.0's release);

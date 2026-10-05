@@ -1,3 +1,23 @@
+virglrenderer: video decoding on the Mac's media engine (VideoToolbox)
+
+What: a VideoToolbox backend for virglrenderer's video protocol on macOS
+(src/vrend/virgl_video_vt.c, built instead of the VA-API one). The guest's
+VA-API driver (Mesa virgl) decodes H.264, HEVC Main and Main 10, VP9 profile 0
+and 2 and AV1 (only with OMACVM_VIDEO_AV1=1) through VTDecompressionSession;
+vrend_video.c copies each decoded IOSurface into the guest's plane textures
+(GPU blit, CPU copy as fallback).
+Guest limits (the guest is untrusted): at most 8 decoders open at once per VM
+(each holds a session on the Mac's media engine, shared with the Mac's own
+apps, and its pictures); the 9th gets none and decodes nothing, closing one
+frees its slot, and a guest context that goes away frees its own. Compressed
+data is clamped to the guest's buffer and capped at 64 MiB per picture.
+Why: video in the VM decodes on the media engine instead of the VM's CPU
+(numbers in docs/video-decode.md).
+Upstream: not submitted (docs/video-decode.md, "UTM", lists what it needs).
+Tests: app/runtime/Tests/virgl/test-video-decode.c at build time (Apple's
+software OpenGL; H.264 pictures land in the guest's planes, the 8-decoder
+limit, a closed context freeing its decoders). In a VM:
+src/bench/video-bench.py and the checks in docs/video-decode.md.
 diff --git a/config.h.meson b/config.h.meson
 index da93f61..2fc6849 100644
 --- a/config.h.meson
@@ -75,10 +95,10 @@ index e954559..5cc19a2 100644
  /*
 diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
 new file mode 100644
-index 0000000..6c95bf9
+index 0000000..31d1d51
 --- /dev/null
 +++ b/src/vrend/virgl_video_vt.c
-@@ -0,0 +1,2365 @@
+@@ -0,0 +1,2385 @@
 +/**************************************************************************
 + *
 + * Copyright (C) 2026 OmacVM contributors
@@ -2254,6 +2274,13 @@ index 0000000..6c95bf9
 +    return 0;
 +}
 +
++/* Decoders alive at once in this VM. Each holds a session on the Mac's media
++ * engine (shared with the Mac's own apps and other VMs) and its pictures; past
++ * this the guest gets no decoder. A player or a browser tab uses one. Counted
++ * on vrend's thread only, like everything here. */
++#define VT_DEC_MAX_LIVE 8
++static unsigned live_decoders;
++
 +struct virgl_video_codec *virgl_video_create_codec(
 +        const struct virgl_video_create_codec_args *args)
 +{
@@ -2269,6 +2296,14 @@ index 0000000..6c95bf9
 +         p != PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) {
 +        virgl_warn("vt-video: unsupported profile %u entrypoint %u\n",
 +                   (unsigned)args->profile, (unsigned)args->entrypoint);
++        return NULL;
++    }
++    if (args->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM &&
++        live_decoders >= VT_DEC_MAX_LIVE) {
++        static unsigned warned;
++        if (warned++ < 5)
++            virgl_warn("vt-video: %u decoders already open, no more for this VM\n",
++                       live_decoders);
 +        return NULL;
 +    }
 +
@@ -2290,11 +2325,16 @@ index 0000000..6c95bf9
 +           codec->kind == VT_KIND_H264 ? "H.264" : codec->kind == VT_KIND_VP9 ? "VP9" :
 +           codec->kind == VT_KIND_HEVC ? "HEVC" : "AV1",
 +           args->width, args->height);
++    if (codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM)
++        live_decoders++;
 +    return codec;
 +}
 +
 +void virgl_video_destroy_codec(struct virgl_video_codec *codec)
 +{
++    /* its slot is free again (see VT_DEC_MAX_LIVE) */
++    if (codec && codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM)
++        live_decoders--;
 +    if (!codec)
 +        return;
 +    vt_log("codec done: %u frames, %u errors\n", codec->frames, codec->errors);
@@ -2466,7 +2506,7 @@ index 394fb9b..ba0a885 100644
          if (vrend_clicbs->get_drm_fd)
              vrend_video_init(vrend_clicbs->get_drm_fd());
 diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
-index 57341d8..d3d8065 100644
+index 57341d8..f265dcd 100644
 --- a/src/vrend/vrend_video.c
 +++ b/src/vrend/vrend_video.c
 @@ -74,6 +74,12 @@
@@ -2798,7 +2838,20 @@ index 57341d8..d3d8065 100644
  
      virgl_video_destroy_buffer(buf->buffer);
  
-@@ -771,10 +987,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
+@@ -747,7 +963,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
+     union virgl_picture_desc desc;
+ 
+     if (!cdc || !tgt){
+-        virgl_error("video codec: %p, video buffer: %p, invalid.\n", (void *)cdc, (void *)tgt);
++        /* Also every picture of a decoder the host refused (too many open):
++         * say it a few times, not for every picture. */
++        static unsigned warned;
++        if (warned++ < 5)
++            virgl_error("video codec: %p, video buffer: %p, invalid.\n", (void *)cdc, (void *)tgt);
+         return -1;
+     }
+ 
+@@ -771,10 +991,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
              continue;
          }
  
