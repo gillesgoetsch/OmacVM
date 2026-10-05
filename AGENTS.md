@@ -1,14 +1,62 @@
 # AGENTS.md: operating manual for coding agents
 
-Read this before changing anything. It describes how to set OmacVM up for a
-person (section 0), how the full setup is built on each route (Parallels
-Desktop, UTM, VMware Fusion), how the pieces talk to each other, how to verify it, and what
-has already been tried and does not work.
+## Start here
 
 OmacVM = Omarchy (omarchy-mac, Arch Linux ARM) in a VM on an Apple Silicon Mac,
-made to feel native. Omanotch (Omarchy's bar beside the notch) is part of it:
-`src/omanotch/`, brought in with its history by `git subtree`; its own
-[README](src/omanotch/README.md).
+made to feel native. One command, `omacvm`, builds and looks after the VM on
+four routes: OmacVM.app (its own QEMU, in `app/`), UTM, VMware Fusion and
+Parallels Desktop. Small Mac helpers (Bridge, Gestures, Omanotch) pass the
+Mac's hardware to the VM over its private network, with a token.
+
+**Where things are** (all of it: section 3)
+
+| Path | What |
+|---|---|
+| `omacvm`, `src/cmd/` | The command and its subcommands |
+| `src/lib/` | Mac-side libraries: finding VMs, the four apps, signing |
+| `src/guest/` | The VM side: `install.sh` (root, idempotent) and `check.sh` |
+| `src/<feature>/` | One folder per feature, `mac/` and `guest/` inside; the list is `src/features.tsv` |
+| `src/omanotch/` | Omanotch, the bar beside the notch (`git subtree`, history kept, [own README](src/omanotch/README.md)) |
+| `app/` | OmacVM.app: Swift launcher, QEMU runtime build, patches in `app/runtime/patches/` |
+| `docs/` | For users; `docs/notes/findings.md` for developers |
+
+**Rules that matter**
+
+- The Mac side runs on macOS's `/bin/bash` 3.2: no `declare -A`, `mapfile`,
+  `${x,,}`.
+- Code changes go through a PR; CI (`.github/workflows/check.yml`) must pass.
+  One concern per PR, one change per commit, plain messages
+  ([CONTRIBUTING.md](CONTRIBUTING.md)).
+- Installers are idempotent. Every feature has a line in `omacvm check`. The
+  new-feature checklist is in section 9.
+- The guest is untrusted on the Mac side: check sizes, counts and state of
+  everything it sends.
+- Never edit `/usr/share/omarchy`; Omarchy 4's Hyprland config is Lua.
+  Section 8 lists the other dead ends: read it before trying the obvious.
+- Only a person grants macOS permissions, installs the VM apps or picks a
+  password. Hand it over (exit 3), never work around it.
+- No personal data in the repo.
+
+**Test without touching the person's setup**
+
+- No VM needed: the CI steps ([CONTRIBUTING.md](CONTRIBUTING.md#test-your-change)),
+  `./omacvm build --plan --json --vm-type ROUTE`, `./omacvm check --json`
+  (read-only), `src/omanotch/mac/test.sh`.
+- Use your own VM, named for the test (`--vm-name "OmacVM Test-<topic>"`), never
+  the person's. `--no-mac` on `build` and `apply` leaves the Mac's installed
+  helpers as they are; `OMACVM_HEADLESS=1` starts VMs without a window (UTM,
+  Fusion, Parallels Pro or trial).
+- Ask before anything that changes the Mac side: `src/mac/install.sh`,
+  `omacvm update`, `omacvm uninstall`, `apply` without `--no-mac`. They replace
+  or remove the person's Bridge, Gestures and Omanotch.
+- Never rebuild an app bundle that is running. Don't switch Spaces, go full
+  screen or inject input on a Mac someone is using.
+- Done means section 1 holds and `omacvm check --vm NAME` passes. Then shut
+  down and delete your test VMs.
+
+The rest of this file: how to set OmacVM up for a person (section 0), how the
+full setup is built on each route, how the pieces talk to each other, how to
+verify it, and what has already been tried and does not work.
 
 ## 0. Recipes: setting OmacVM up for someone
 
