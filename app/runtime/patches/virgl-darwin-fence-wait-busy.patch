@@ -18,8 +18,11 @@ thousands of times a second beside it: samples of the render thread show
 it parked in _os_unfair_lock_lock_slow/__ulock_wake inside those calls,
 and Aquarium ran about 5 % slower than with polled fences (2.8.0 path).
 Upstream: macOS-specific, goes with virgl-darwin-fence-wait.patch.
-Test: Aquarium, glmark2, testufo, Basemark A/B against RC3 (bench lock);
-tests/graphics dEQP GLES2/3 + WebGL smoke; soak.
+Test: Tests/virgl/test-fence-wait-busy.c (build time, no GL: busy and grace
+detection, a waiter wakes at the end of a 300 us submit, at about 1 ms
+during a long one, not at all for an idle render thread); Aquarium,
+glmark2, testufo, Basemark A/B against RC3 (bench lock); tests/graphics
+dEQP GLES2/3 + WebGL smoke.
 Applies after virgl-darwin-fence-wait.patch and the rest of the list (last).
 
 --- a/src/vrend/vrend_renderer.c
