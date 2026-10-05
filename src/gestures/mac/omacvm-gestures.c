@@ -111,12 +111,14 @@ extern int MTDeviceGetSensorSurfaceDimensions(MTDeviceRef, int *, int *);   // 1
 // The Mac's address on each VM network: Parallels' shared network, UTM's
 // shared network (vmnet), VMware Fusion's NAT network (vmnet8: Fusion picks
 // its subnet at install time, the Mac is .1; empty without Fusion) and
-// OmacVM.app (QEMU's user network reaches the Mac's 127.0.0.1). One listener
-// per address; never 0.0.0.0.
-static char listenAddrs[4][16] = { "10.211.55.2", "192.168.64.1", "", "127.0.0.1" };
+// OmacVM.app (QEMU's user network reaches the Mac's 127.0.0.1; its fast
+// network, src/net/mac, is 192.168.77.0/24). One listener per address; never
+// 0.0.0.0.
+static char listenAddrs[5][16] = { "10.211.55.2", "192.168.64.1", "", "127.0.0.1", "192.168.77.1" };
 #define NET_UTM 1
 #define NET_FUSION 2
 #define NET_APP 3
+#define NET_APP_FAST 4   // its clients count as NET_APP's
 
 // The first VNET_8_HOSTONLY_SUBNET line, and only a private address (as
 // fusion_host in src/lib/mac.sh and the Bridge read it). Fusion installed
@@ -133,7 +135,7 @@ static void readFusionHost(void) {
       int priv = (h >> 24) == 10 || (h >> 20) == 0xAC1 || (h >> 16) == 0xC0A8;
       char host[16];
       snprintf(host, sizeof host, "%u.%u.%u.1", h >> 24, (h >> 16) & 255, (h >> 8) & 255);
-      if (priv && strcmp(host, listenAddrs[0]) && strcmp(host, listenAddrs[NET_UTM])) {
+      if (priv && strcmp(host, listenAddrs[0]) && strcmp(host, listenAddrs[NET_UTM]) && strcmp(host, listenAddrs[NET_APP_FAST])) {
         // Other threads test the first byte: set it last.
         memcpy(listenAddrs[NET_FUSION] + 1, host + 1, sizeof host - 1);
         __sync_synchronize();
@@ -769,7 +771,7 @@ static void *greet(void *arg) {
   int c = g.fd, gestures = 1, glide = 0, ok = 0;
   const char *addr = listenAddrs[g.net];
   char ip[32]; inet_ntop(AF_INET, &g.addr, ip, sizeof ip);
-  char line[640], name64[360] = "", name[256], kind[8] = "";
+  char line[640], name64[360] = "", name[256];
   const char *why = "no token (omacvm update gives the VM a daemon that proves it)";
   struct timeval tv = { .tv_sec = 1 };
   setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
@@ -790,7 +792,7 @@ static void *greet(void *arg) {
       int k = snprintf(out, sizeof out, "M %s %s\n", mn, mine);
       tv.tv_sec = 3; setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
       if (send(c, out, (size_t)k, MSG_NOSIGNAL) == k && recvLine(c, line, sizeof line) > 0 && line[0] == 'R' &&
-          sscanf(line + 1, "%d %d %71s %359s %7s", &gestures, &glide, got, name64, kind) >= 3) {
+          sscanf(line + 1, "%d %d %71s %359s", &gestures, &glide, got, name64) >= 3) {
         proof(tok, tl, "vm", at, gn, mn, want);
         ok = sameText(got, want);
       }
@@ -804,11 +806,9 @@ static void *greet(void *arg) {
   }
   if (ok) {
     base64Name(name64, name, sizeof name);
-    // OmacVM.app's VMs on its fast network (vmnet) come in on UTM's address
-    // and say they are the app's: they belong to the app, never to UTM (else
-    // UTM in front with no named match would send everything to them).
-    int net = g.net == NET_UTM && !strcmp(kind, "app") ? NET_APP : g.net;
-    addClient(c, net, ip, gestures, glide, name);
+    // OmacVM.app's VMs on its fast network are the app's (its window in
+    // front), whichever address they came in on.
+    addClient(c, g.net == NET_APP_FAST ? NET_APP : g.net, ip, gestures, glide, name);
   } else {
     // A refused daemon tries again every 2 s; only the log line is throttled.
     // Keeping its socket open instead would not save anything: a daemon from

@@ -65,8 +65,8 @@ case $TYPE in
           [[ -n $IP ]] || IP=$(fusion_ip "$VM" 10) || stop 1 "no IP for VMware Fusion VM '$VM' (is it running?)" ;;
   app) [[ -n $IP ]] || IP=$(app_ip "$VM") || stop 1 "OmacVM.app VM '$VM' is not running"
        # OmacVM.app: QEMU's user network reaches the Mac's 127.0.0.1 as 10.0.2.2;
-       # with the fast network (vmnet) the Mac is 192.168.64.1, as for UTM.
-       if [[ $IP == 127.0.0.1:* ]]; then HOST=127.0.0.1; else HOST=192.168.64.1; fi ;;
+       # on its fast network (vmnet) the Mac is 192.168.77.1.
+       if [[ $IP == 127.0.0.1:* ]]; then HOST=127.0.0.1; else HOST=192.168.77.1; fi ;;
   *) stop 2 "--vm-type parallels, utm, fusion or app" ;;
 esac
 export OMA_KEY=$KEY
@@ -105,21 +105,21 @@ if ! msg=$(vm_network_ok "$TYPE" "$IP" 2>&1); then
   (( JSON )) && json_out false
   exit 1
 fi
-# OmacVM.app on the fast network: 192.168.64.1 alone proves nothing (UTM's
-# shared network has it too). The app must still say vmnet (it watches the
-# link the whole run), the VM's address must route to a Mac interface with
-# 192.168.64.1, and the VM must answer there.
+# OmacVM.app on the fast network: 192.168.77.1 being up proves little (it
+# stays while any app VM uses it). The app must still say vmnet (it watches
+# the link the whole run), the VM's address must route to a Mac interface
+# with 192.168.77.1, and the VM must answer there.
 fast_net_down() {   # -> why, when the VM's fast network is not working
   local d n ifc
   d=$(app_dir "$VM" 2>/dev/null); n=$(head -1 "$d/logs/network" 2>/dev/null)
   [[ $n == vmnet ]] || { echo "${n:-the app did not say which network it took}"; return 0; }
   ifc=$(route -n get "$IP" 2>/dev/null | awk '/interface:/ { print $2 }')
-  [[ -n $ifc ]] && ifconfig "$ifc" 2>/dev/null | grep -q "inet 192.168.64.1 " ||
-    { echo "no Mac interface with 192.168.64.1 leads to the VM's $IP"; return 0; }
+  [[ -n $ifc ]] && ifconfig "$ifc" 2>/dev/null | grep -q "inet 192.168.77.1 " ||
+    { echo "no Mac interface with 192.168.77.1 leads to the VM's $IP"; return 0; }
   ping -c 1 -t 3 -q "$IP" >/dev/null 2>&1 || { echo "the VM does not answer at $IP"; return 0; }
   return 1
 }
-if [[ $TYPE == app && $HOST == 192.168.64.1 ]] && why=$(fast_net_down); then
+if [[ $TYPE == app && $HOST == 192.168.77.1 ]] && why=$(fast_net_down); then
   bad "VM network" "the fast network is not working: $why (omacvm-netd's log: /var/log/org.omacvm.netd.log)"
   (( JSON )) && json_out false
   exit 1

@@ -1,8 +1,9 @@
 #!/bin/bash
-# Offline test (no VM, no permissions): an OmacVM.app VM on the fast network
-# comes in on UTM's address and must count as the app's, never UTM's. The
-# Mac helper's own handshake and choice (test-gestures.c) against the guest
-# daemon's own run() (omacvm-gestures), an app VM and a UTM VM.
+# Offline test (no VM, no permissions): an OmacVM.app VM on its fast network
+# (192.168.77.1) must count as the app's, never UTM's, and a UTM VM never as
+# the app's. The Mac helper's own handshake and choice (test-gestures.c)
+# against the guest daemon's own run() (omacvm-gestures): an app VM on the
+# fast network's listener, a UTM VM on UTM's.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'kill "${PID:-}" 2>/dev/null || true; rm -rf "$T"' EXIT
@@ -14,7 +15,7 @@ TOKEN=$(openssl rand -hex 24)
 mkdir -p "$T/mac/Library/Application Support/omacvm-bridge" "$T/vm"
 echo "$TOKEN" > "$T/mac/Library/Application Support/omacvm-bridge/token"
 echo "$TOKEN" > "$T/vm/token"
-HOME=$T/mac "$T/test-gestures" "$T/port" 2 > "$T/out" 2> "$T/err" &
+HOME=$T/mac "$T/test-gestures" "$T/port" 4 1 > "$T/out" 2> "$T/err" &   # NET_APP_FAST, NET_UTM
 PID=$!
 ( sleep 20; kill "$PID" 2>/dev/null ) &   # a guest that never connects must not hang the test
 for _ in $(seq 50); do [[ -s $T/port ]] && break; sleep 0.1; done

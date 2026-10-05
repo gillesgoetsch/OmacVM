@@ -1,7 +1,8 @@
 // Offline test of which VM gets the gestures (src/gestures/mac/test.sh): the
 // helper's own handshake (greet) and choice (pickTargets), with the guests
-// connecting on 127.0.0.1 as if on UTM's network. No permissions, no VM.
-//   test-gestures PORTFILE N   accept N guests, then print the checks' answers
+// connecting on 127.0.0.1 as if on the given VM networks. No permissions, no VM.
+//   test-gestures PORTFILE NET...   accept one guest per NET (the index into
+//                                   listenAddrs), then print the checks' answers
 #define main helper_main
 #include "omacvm-gestures.c"
 #undef main
@@ -24,8 +25,8 @@ static void say(const char *what, unsigned mask) {
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3) return 2;
-  int want = atoi(argv[2]);
+  if (argc < 3) return 2;
+  int want = argc - 2;
   for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;
   int s = socket(AF_INET, SOCK_STREAM, 0), one = 1;
   setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
@@ -40,8 +41,8 @@ int main(int argc, char **argv) {
     int c = accept(s, (struct sockaddr *)&peer, &pl);
     if (c < 0) return 1;
     struct greetArg *g = malloc(sizeof *g);
-    // Each guest as if it came in on UTM's address; greet decides the rest.
-    g->fd = c; g->net = NET_UTM; g->addr = peer.sin_addr;
+    // As if it came in on that network's address; greet decides the rest.
+    g->fd = c; g->net = atoi(argv[2 + k]); g->addr = peer.sin_addr;
     __sync_add_and_fetch(&greeting, 1);
     greet(g);
   }

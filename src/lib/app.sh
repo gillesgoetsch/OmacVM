@@ -67,7 +67,7 @@ app_net() { awk 'NR == 1 { print $1 }' "$1/logs/network" 2>/dev/null; }   # DIR 
 app_vmnet_ip() {   # DIR -> the VM's address on vmnet's network (lease_ip, src/lib/mac.sh)
   local m
   m=$(sed -n 's/^mac=//p' "$1/fast-network" 2>/dev/null)
-  [[ -n $m ]] && m=$(lease_ip "$m") && [[ $m =~ ^192\.168\.64\.[0-9]+$ ]] && echo "$m"
+  [[ -n $m ]] && m=$(lease_ip "$m") && [[ $m =~ ^192\.168\.77\.[0-9]+$ ]] && echo "$m"
 }
 
 app_any_fast_network() {   # one of this user's app VMs has the fast network on

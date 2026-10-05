@@ -47,9 +47,10 @@ setvbuf(stdout, nil, _IOLBF, 0)
 let env = ProcessInfo.processInfo.environment
 // The Mac's address on each VM network: Parallels' shared network, UTM's
 // shared network (vmnet) and VMware Fusion's NAT network (vmnet8, when Fusion
-// is installed), and 127.0.0.1 for OmacVM.app (its VMs reach it as 10.0.2.2).
-// One listener per address; never 0.0.0.0.
-let listenAddrs = (env["OMACVM_BRIDGE_ADDRS"] ?? (["10.211.55.2", "192.168.64.1"] + [fusionHost()].compactMap { $0 } + ["127.0.0.1"])
+// is installed), and for OmacVM.app 127.0.0.1 (its VMs reach it as 10.0.2.2)
+// and 192.168.77.1 (its fast network, src/net/mac). One listener per
+// address; never 0.0.0.0.
+let listenAddrs = (env["OMACVM_BRIDGE_ADDRS"] ?? (["10.211.55.2", "192.168.64.1"] + [fusionHost()].compactMap { $0 } + ["127.0.0.1", "192.168.77.1"])
   .joined(separator: ",")).split(separator: ",").map(String.init)
 
 /// Fusion picks its NAT subnet at install time; the Mac is .1 there (the guests' gateway is .2).
@@ -62,7 +63,7 @@ func fusionHost() -> String? {
     let o = f[2].split(separator: ".").compactMap { UInt8($0) }
     guard o.count == 4, o[0] == 10 || (o[0] == 172 && (16...31).contains(o[1])) || (o[0] == 192 && o[1] == 168) else { return nil }
     let host = "\(o[0]).\(o[1]).\(o[2]).1"
-    return ["10.211.55.2", "192.168.64.1"].contains(host) ? nil : host
+    return ["10.211.55.2", "192.168.64.1", "192.168.77.1"].contains(host) ? nil : host
   }
   return nil
 }

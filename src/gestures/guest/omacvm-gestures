@@ -592,12 +592,12 @@ def default_gateway():
 def mac_host():
     """(where to connect, the Mac address the helper must have accepted on: both
     proofs name it). OmacVM.app: QEMU's user network's 10.0.2.2 is the Mac's
-    127.0.0.1; with the fast network (vmnet, the app picks it at each start) the
-    Mac is the gateway 192.168.64.1, as on UTM."""
+    127.0.0.1; on its fast network (vmnet, the app picks it at each start) the
+    Mac is the gateway 192.168.77.1."""
     if os.environ.get("OMACVM_VM_TYPE") != "app":
         return HOST, HOST
-    if not os.environ.get("OMACVM_GESTURES_HOST") and default_gateway() == "192.168.64.1":
-        return "192.168.64.1", "192.168.64.1"
+    if not os.environ.get("OMACVM_GESTURES_HOST") and default_gateway() == "192.168.77.1":
+        return "192.168.77.1", "192.168.77.1"
     return HOST, "127.0.0.1"
 
 
@@ -632,12 +632,8 @@ def run(pad, keys, glide):
         m = re.fullmatch(rb"M ([0-9a-f]{32}) ([0-9a-f]{64})", line)
         if not m or not hmac.compare_digest(m[2], proof(tok, "mac", addr, gn, m[1].decode())):
             raise ConnectionError(f"{host}:{PORT} did not prove it knows the Bridge's token: not talking to it")
-        # An OmacVM.app VM says so after its name ("=": none): on the fast
-        # network it comes in on UTM's address, and the Mac must not count it
-        # as a UTM VM. Mac helpers from before read only up to the name.
-        app = " app" if os.environ.get("OMACVM_VM_TYPE") == "app" else ""
         s.sendall(f"R {int(GESTURES)} {int(GLIDE_ON)} {proof(tok, 'vm', addr, gn, m[1].decode()).decode()}"
-                  f"{' ' + (NAME or '=') if NAME or app else ''}{app}\n".encode())
+                  f"{' ' + NAME if NAME else ''}\n".encode())
         print(f"omacvm-gestures: connected to {host}:{PORT} (gestures {'on' if GESTURES else 'off'}, "
               f"scroll momentum {'on' if GLIDE_ON else 'off'})", flush=True)
         tick = -1          # forces the first settimeout (create_connection left 5 s)

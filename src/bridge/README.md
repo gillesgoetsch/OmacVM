@@ -8,7 +8,7 @@ VM network (Parallels, UTM or VMware Fusion) and pushes every change as Server-S
 | Part | Where |
 |---|---|
 | Mac app | `mac/*.swift` → `~/Applications/OmacVMBridge.app` (agent app, keyboard icon in the menu bar), LaunchAgent `org.omacvm.bridge`, log `~/Library/Logs/omacvm-bridge.log` |
-| Listens on | port 47831 of the Mac's address on each VM network: `10.211.55.2` (Parallels' shared network), `192.168.64.1` (UTM's) and the `.1` of VMware Fusion's NAT network (`VNET_8_HOSTONLY_SUBNET` in `/Library/Preferences/VMware Fusion/networking`), never `0.0.0.0`. Waits for an address while its VM app is not running and re-binds after wake |
+| Listens on | port 47831 of the Mac's address on each VM network: `10.211.55.2` (Parallels' shared network), `192.168.64.1` (UTM's) and the `.1` of VMware Fusion's NAT network (`VNET_8_HOSTONLY_SUBNET` in `/Library/Preferences/VMware Fusion/networking`), and for OmacVM.app `127.0.0.1` and `192.168.77.1` (its fast network), never `0.0.0.0`. Waits for an address while its VM app is not running and re-binds after wake |
 | Token | Mac `~/Library/Application Support/omacvm-bridge/token` (0600, made on first start); VM `~/.config/omacvm-bridge/token` (copied by `omacvm apply`) |
 | Config | `~/Library/Application Support/omacvm-bridge/config.json`: `capture_keys`, `menu_bar_icon`, `keyboard_low_steps` |
 | VM client | `guest/omacvm-bridge` (bash + curl; the token never shows in `ps`, and goes only to a Bridge that proved it knows it, see API) |

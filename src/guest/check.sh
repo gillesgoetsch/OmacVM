@@ -42,9 +42,9 @@ ev_device() { grep -q "^N: Name=\"$1\"" /proc/bus/input/devices; }
 [[ -r /etc/omacvm/env ]] || { bad "OmacVM guest side" "not installed (run omacvm apply on the Mac)"; exit 1; }
 source /etc/omacvm/env
 HOST=$OMACVM_HOST; TYPE=$OMACVM_VM_TYPE
-# OmacVM.app with the fast network (vmnet): the Mac is the gateway 192.168.64.1.
+# OmacVM.app on its fast network (vmnet): the Mac is the gateway 192.168.77.1.
 GW=$(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }')
-[[ $TYPE == app && $GW == 192.168.64.1 ]] && HOST=$GW
+[[ $TYPE == app && $GW == 192.168.77.1 ]] && HOST=$GW
 FAST_NET=${OMACVM_FEATURE_fast_network:-off}
 # Features chosen at setup (VMs set up before the choices existed: the defaults
 # they were built with).
@@ -254,7 +254,7 @@ app)
   check "display follows the window" "omacvm-display-sync" pgrep -u "$U" -f omacvm-display-sync
   check "QEMU guest agent" "clean shutdown fallback" systemctl is-active -q qemu-guest-agent
   # Fast network (vmnet through omacvm-netd on the Mac), else QEMU's user network.
-  if [[ $GW == 192.168.64.1 ]]; then
+  if [[ $GW == 192.168.77.1 ]]; then
     a=$(ip -4 -o addr show scope global 2>/dev/null | awk '{ print $4; exit }')
     if [[ $FAST_NET == on ]]; then ok "fast network" "vmnet, ${a%/*}"
     else bad "fast network" "the VM is on vmnet, but the feature is off here: omacvm enable fast-network"; fi

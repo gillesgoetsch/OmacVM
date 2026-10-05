@@ -20,11 +20,11 @@
 #      OMACVM_BRIDGE_EVENTS_SOCKET (default $XDG_RUNTIME_DIR/omacvm-bridge-events.sock)
 set -euo pipefail
 [[ -r /etc/omacvm/env ]] && source /etc/omacvm/env   # OMACVM_VM_TYPE, OMACVM_HOST (guest/install.sh)
-# OmacVM.app with the fast network (vmnet, the app picks it at each start):
-# the Mac is the gateway 192.168.64.1, as on UTM.
+# OmacVM.app on its fast network (vmnet, the app picks it at each start and
+# may switch while the VM runs): the Mac is the gateway 192.168.77.1.
 if [[ ${OMACVM_VM_TYPE:-} == app && -z ${OMACVM_BRIDGE_URL:-} ]] &&
-   [[ $(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }') == 192.168.64.1 ]]; then
-  OMACVM_HOST=192.168.64.1
+   [[ $(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }') == 192.168.77.1 ]]; then
+  OMACVM_HOST=192.168.77.1
 fi
 URL=${OMACVM_BRIDGE_URL:-http://${OMACVM_HOST:-10.211.55.2}:47831}
 TOKEN_FILE=${OMACVM_BRIDGE_TOKEN_FILE:-$HOME/.config/omacvm-bridge/token}
@@ -35,7 +35,7 @@ TOKEN_FILE=${OMACVM_BRIDGE_TOKEN_FILE:-$HOME/.config/omacvm-bridge/token}
 # Bridge on 10.211.55.2 but for the address. Bridges from before /proof get no
 # token: omacvm update.
 MAC_ADDR=${URL#*://}; MAC_ADDR=${MAC_ADDR%%[:/]*}
-[[ ${OMACVM_VM_TYPE:-} == app && $MAC_ADDR != 192.168.64.1 ]] && MAC_ADDR=127.0.0.1   # OmacVM.app's 10.0.2.2 is the Mac's 127.0.0.1
+[[ ${OMACVM_VM_TYPE:-} == app && $MAC_ADDR != 192.168.77.1 ]] && MAC_ADDR=127.0.0.1   # OmacVM.app's 10.0.2.2 is the Mac's 127.0.0.1
 proven() {
   local n p
   n=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')

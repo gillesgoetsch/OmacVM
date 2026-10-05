@@ -119,12 +119,12 @@ log "system: SSH from the Mac, bootable snapshots, DNS fallback"
 # Omarchy's firewall denies everything inbound; the Mac (Parallels' shared
 # network) may still reach SSH.
 ufw allow from "${HOST%.*}.0/24" to any port 22 proto tcp comment "omacvm: ssh from the Mac" >/dev/null 2>&1 || true
-# OmacVM.app's fast network (vmnet): the Mac reaches SSH from 192.168.64.1
+# OmacVM.app's fast network (vmnet): the Mac reaches SSH from 192.168.77.1
 # (only the Mac: other VMs on that network do not).
 if [[ ${F[fast-network]} == on ]]; then
-  ufw allow from 192.168.64.1 to any port 22 proto tcp comment "omacvm: ssh from the Mac (fast network)" >/dev/null 2>&1 || true
+  ufw allow from 192.168.77.1 to any port 22 proto tcp comment "omacvm: ssh from the Mac (fast network)" >/dev/null 2>&1 || true
 else
-  ufw delete allow from 192.168.64.1 to any port 22 proto tcp >/dev/null 2>&1 || true
+  ufw delete allow from 192.168.77.1 to any port 22 proto tcp >/dev/null 2>&1 || true
 fi
 # A VM switched off during pacman keeps pacman's lock, and every pacman below
 # would fail. Wait for one that runs (omarchy update); a lock without pacman goes.

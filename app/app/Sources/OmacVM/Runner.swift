@@ -106,7 +106,7 @@ final class Runner {
         let choice = FastNetwork.choose(for: c)
         network = choice
         if choice.vmnet {
-            // vmnet (shared, the Mac is 192.168.64.1) through omacvm-netd; QEMU
+            // vmnet (shared, its own 192.168.77.0/24: the Mac is .1) through omacvm-netd; QEMU
             // connects again within a second if the daemon restarts. The NIC
             // sits right on it: through a QEMU hub (to swap networks) VM -> Mac
             // lost a quarter of its speed. The fallback adds a NIC instead.
