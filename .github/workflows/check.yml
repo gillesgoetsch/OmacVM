@@ -65,3 +65,6 @@ jobs:
 
       - name: Gestures offline test (which VM gets them)
         run: src/gestures/mac/test.sh
+
+      - name: Gestures off means no Gestures link from the VM
+        run: src/tests/gestures-off.sh

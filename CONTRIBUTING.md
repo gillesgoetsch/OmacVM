@@ -58,6 +58,7 @@ src/gestures/mac/build.sh && src/bridge/mac/build.sh
 src/omanotch/mac/test.sh
 src/tests/vm-names.sh
 src/tests/prebuilt-manifest.sh
+src/tests/gestures-off.sh
 ```
 
 The Mac side runs on macOS's `/bin/bash` 3.2: no `declare -A`, `mapfile`

@@ -207,11 +207,13 @@ elif [[ $BATTERY == on ]]; then
 else skip "battery" "off (omacvm enable battery, on a MacBook)"; fi
 
 section "Trackpad and keyboard"
-if [[ $GESTURES == on || $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; then   # on UTM, Fusion and OmacVM.app the daemon also types Cmd as Super
+if [[ $GESTURES == on ]]; then
   if systemctl is-active -q omacvm-gestures; then
     if connected_to "$HOST" 47830; then ok "gestures" "connected to the Mac"
     else bad "gestures" "service runs but is not connected to $HOST:47830"; fi
   else bad "gestures" "omacvm-gestures.service not running"; fi
+elif systemctl is-active -q omacvm-gestures; then
+  bad "gestures" "off, but omacvm-gestures.service runs and talks to the Mac: omacvm apply"
 fi
 if [[ $GESTURES == on ]]; then
   check "virtual trackpad" "Magic Trackpad (OmacVM)" ev_device "Apple Inc. Magic Trackpad (OmacVM)"
@@ -231,7 +233,9 @@ if [[ $GLIDE == on && $GESTURES == on ]]; then
   else bad "scroll settings" "omacvm_glide.lua missing or not loaded from hyprland.lua (omacvm enable scroll-momentum)"; fi
 else skip "scroll momentum" "off (experimental, opt-in: omacvm enable scroll-momentum)"; fi
 if [[ $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; then
-  check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"
+  if [[ $GESTURES == on ]]; then
+    check "Cmd as Super" "OmacVM keyboard (Mac shortcuts)" ev_device "OmacVM keyboard (Mac shortcuts)"
+  else skip "Cmd as Super" "comes with trackpad gestures, which are off (omacvm enable gestures)"; fi
 fi
 check "Cmd+V paste" "Universal paste binding" grep -qs '"Universal paste"' "$H/.config/hypr/bindings.lua"
 kb=$(as_user hyprctl getoption input:kb_layout -j 2>/dev/null | jq -r '.str // empty' 2>/dev/null)

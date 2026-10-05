@@ -235,9 +235,9 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     skip "GPU contexts" "lost earlier in this run by: $lost (an app that draws nothing needs a restart; the shell: omarchy-restart-shell)"
   else ok "GPU contexts" "no VM app lost its GPU context in this run"; fi
 fi
-# Gestures runs keys-only when trackpad gestures were turned off; on UTM it
-# also types Cmd as Super, so it is needed there either way.
-if [[ $GESTURES == on || $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; then
+# With gestures off the VM's daemon is off too (also on UTM, Fusion and
+# OmacVM.app), so this VM needs no Gestures on the Mac.
+if [[ $GESTURES == on ]]; then
   if running org.omacvm.gestures; then
     a=$(listeners 47830)
     [[ " $a " == *" $HOST "* ]] && ok "Gestures" "listening on $a" || bad "Gestures" "not listening on $HOST (only: ${a:-nothing})"

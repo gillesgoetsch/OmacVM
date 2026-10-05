@@ -63,6 +63,8 @@ OmacVM's version.
   `omacvm-displays external on|off`).
 - ⌘ shortcuts (⌘Space too) go to Omarchy as Super in full screen, through
   OmacVM Gestures, as on UTM: the app needs no Accessibility of its own.
+  With the gestures feature off the VM does not talk to Gestures, so these
+  shortcuts stay with macOS.
 - Optional notch-strip mode (a switch in the app): the window covers the
   strip itself and Omarchy's bar moves there, but that full screen has no
   Space of its own (macOS 15 keeps full-screen Spaces below the notch).

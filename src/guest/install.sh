@@ -218,11 +218,12 @@ elif [[ -f /etc/systemd/system/omacvm-battery.service ]]; then
 fi
 log "memory";     "$R/memory/guest/install.sh"
 log "keyboard";   "$R/keyboard/guest/install.sh" "$U" "$layout" "${variant:-}"
-# On UTM, VMware Fusion and OmacVM.app the gestures daemon also types Cmd
-# shortcuts as Super, so it stays.
-if [[ ${F[gestures]} == on || $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; then
+# Gestures off means the daemon is off on every route. It used to stay on UTM,
+# VMware Fusion and OmacVM.app for the Cmd shortcuts (keys-only), so a VM with
+# gestures off still connected to the Mac's Gestures.
+if [[ ${F[gestures]} == on ]]; then
   log "gestures";   "$R/gestures/guest/install.sh" "$U"
-elif systemctl is-enabled -q omacvm-gestures 2>/dev/null; then
+elif systemctl is-enabled -q omacvm-gestures 2>/dev/null || systemctl is-active -q omacvm-gestures 2>/dev/null; then
   log "gestures: off"; systemctl disable --now omacvm-gestures >/dev/null 2>&1 || true
 fi
 if [[ ${F[scroll-momentum]} == on ]]; then

@@ -20,7 +20,9 @@ trackpad. Then:
 - the Mac's pointer is hidden wherever the VM window is what a click would hit
   (the guest draws its own pointer), and shown over anything else (the
   Omanotch strip, the Dock, menus, another display);
-- on UTM, Cmd shortcuts reach the guest as Super (a virtual keyboard).
+- on UTM, VMware Fusion and OmacVM.app, Cmd shortcuts reach the guest as Super (a virtual
+  keyboard). With the gestures feature off, the VM's daemon is off too (no link to the Mac's
+  Gestures at all), and so is this.
 
 **⌃⌥⌘ Esc** releases the trackpad to macOS (Omarchy shows a notification); it
 re-arms when you come back to the full-screen VM, or press the combo again.

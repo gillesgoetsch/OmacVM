@@ -24,6 +24,11 @@ in more words.
   network (9.5 against 12.2 Gbit/s). Without the service the VM keeps QEMU's
   user network. Not tested yet: a MacBook, VPNs, sleep and wake, Wi-Fi
   changes, several VMs at once, Omanotch over it.
+- Trackpad gestures off now means the VM's Gestures service is off on every
+  route. On UTM, VMware Fusion and OmacVM.app it used to keep running for
+  the Cmd shortcuts and connected to the Mac's Gestures anyway; Cmd as Super
+  there now comes with the gestures feature. `omacvm apply` stops the service
+  in VMs that have gestures off.
 
 ## 2.8.0
 

@@ -109,7 +109,7 @@ info "features: $(for ((i = 0; i < ${#FN[@]}; i++)); do printf '%s=%s ' "${FN[$i
 if (( MAC )); then
   args=(--quiet)
   needs_bridge || args+=(--no-bridge)
-  { on gestures || [[ $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; } || args+=(--skip-gestures)   # on UTM and Fusion it also types Cmd as Super
+  on gestures || args+=(--skip-gestures)
   [[ $TYPE == parallels ]] || args+=(--skip-clip)   # the VM -> Mac clipboard of Parallels' shared folder
   # Omanotch from src/omanotch. OmacVM.app too, as for the other routes (the
   # app's own notch-strip mode is a separate switch in the app, which apply
@@ -146,9 +146,9 @@ fi
 T=$BRIDGE_TOKEN
 # A Bridge installed a moment ago writes its token when it first starts.
 if (( MAC )) && needs_bridge; then for _ in $(seq 20); do [[ -f $T ]] && break; sleep 1; done; fi
-# The gestures daemon says it too (on UTM, Fusion and OmacVM.app it always
-# runs; OmacVM.app's VMs show it on 127.0.0.1 even without the Bridge).
-if (( TOKEN )) && { on gestures || [[ $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; }; then bridge_token_ensure; fi
+# The gestures daemon says it too (OmacVM.app's VMs show it on 127.0.0.1 even
+# without the Bridge).
+if (( TOKEN )) && on gestures; then bridge_token_ensure; fi
 if (( ! TOKEN )); then
   :
 elif [[ -f $T ]]; then
