@@ -183,12 +183,18 @@ if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
     [[ $(app_net "$d") == vmnet ]] || info "fast network: from the VM's next start (shut it down, then start it again)"
   elif [[ -e $d/fast-network ]]; then
     rm -f "$d/fast-network"
-    [[ $(app_net "$d") == vmnet ]] && info "fast network: off from the VM's next start"
     # The root service only while one of this user's app VMs has the fast
-    # network (a VM still running on it switches to the user network).
+    # network; without it a VM still running on it switches to the user
+    # network within seconds, else at its next start.
     if (( MAC )) && ! app_any_fast_network; then
-      "$R/src/net/mac/install.sh" --remove ||
+      if "$R/src/net/mac/install.sh" --remove; then
+        [[ $(app_net "$d") == vmnet ]] && info "fast network: off (the running VM switches to QEMU's own network now)"
+      else
         info "the fast network's service stays installed (omacvm uninstall, or src/net/mac/install.sh --remove, takes it off)"
+        [[ $(app_net "$d") == vmnet ]] && info "fast network: off from the VM's next start"
+      fi
+    elif [[ $(app_net "$d") == vmnet ]]; then
+      info "fast network: off from the VM's next start"
     fi
   fi
   # Its VA-API shim keeps AV1 to Chromium-based browsers (FFmpeg's AV1 cannot
