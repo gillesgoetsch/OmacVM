@@ -93,6 +93,10 @@ def read_lines(path):
 
 
 def write_lines(path, lines):
+    # A linked flags file (dotfiles) keeps its link: write the file it points
+    # to. Home files are written by the user's own process, so a link reaches
+    # nothing the user could not write anyway; /etc files are never links here.
+    path = os.path.realpath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.omacvm-new"
     mode = stat.S_IMODE(os.stat(path).st_mode) if os.path.exists(path) else 0o644
@@ -154,7 +158,7 @@ def remove_from(path, feats, created):
             if f in have:
                 del have[len(have) - 1 - have[::-1].index(f)]
         set_switch(lines, sw[-1], have)
-    if created and not any(l.strip() for l in lines):
+    if created and not any(l.strip() for l in lines) and not os.path.islink(path):
         os.remove(path)
     else:
         write_lines(path, lines)
