@@ -188,7 +188,9 @@ case $(status) in
     exit 0 ;;
 esac
 # What the daemon must satisfy: for a Developer ID app, OmacVM's team and the
-# daemon's identifier; else any valid signature (built here: ad hoc).
+# daemon's identifier; else (ad hoc: an app built from source, or built here)
+# exactly the file checked here, by its cdhash. Any file can be signed ad hoc,
+# so "a valid signature" alone would let a swapped file through.
 DREQ=""
 [[ $REQ == "$DEVID" ]] && DREQ="$TEAM and identifier \"$LABEL\""
 if h=$(bundled "$APP"); then
@@ -203,6 +205,11 @@ else
   xcrun -f clang >/dev/null 2>&1 || { echo "this OmacVM.app has no fast network service built in, and building it here needs Xcode's Command Line Tools: xcode-select --install (or update the app)" >&2; exit 3; }
   xcrun clang -O2 -Wall -mmacosx-version-min=14.0 -DNETD_VERSION="\"$VERSION\"" -o "$T/omacvm-netd" "$HERE/omacvm-netd.c" \
     -framework vmnet -framework Security -framework CoreFoundation -lbsm
+fi
+if [[ -z $DREQ ]]; then
+  h=$(cdhash "$T/omacvm-netd")
+  [[ $h =~ ^[0-9a-f]{40}$ ]] || { echo "no cdhash for omacvm-netd" >&2; exit 1; }
+  DREQ="cdhash H\"$h\""
 fi
 # This user, and the ones it was installed for before.
 # shellcheck disable=SC2046   # one uid per word
