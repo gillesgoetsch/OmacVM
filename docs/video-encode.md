@@ -57,6 +57,12 @@ is part of QEMU's time, so adding the two would count it twice, and for the
 media engine it is even higher than QEMU's (probably because the VM cannot
 tell when its vCPUs wait on the host).
 
+The numbers ran on the encoder as of commit 95ad777, before the last fixes
+(failure feedback for refused frames, constant QP, one encode per frame, the
+8-encoder limit). None of them changes how a frame is encoded at a bitrate: a
+check run on the later encoder gave the same H.264 result (luma PSNR 39.5748
+dB on both).
+
 ### FFmpeg
 
 1080p30, 300 frames of a moving test picture with noise (raw NV12 from the
@@ -107,14 +113,18 @@ three times the frames on the media engine (about 20 against 7 per second;
 Chrome reported no CPU or bandwidth limit in either case).
 
 What this shows: at 720p the media engine does **not** save the Mac's CPU in
-Chrome. Per frame the two are within 5 %. Most of a call's CPU goes to
-capturing, Chrome itself and (in this test) receiving and showing the streams;
-OpenH264 at 720p is cheap on an M4 Max. Chrome's own encode time per frame is
-longer on the media engine (about 7 ms against 4 ms for the camera: the
-picture goes through virtio-gpu, and the frame waits for its data). The call's
-lower CPU per megapixel comes from the screen's extra frames, not from cheaper
-encoding. Not measured yet: 1080p and larger screens, and slower Macs (M1, M2,
-MacBook Air), where software encoding costs more.
+Chrome. Per frame the two are within 5 % for the camera and the screen alone.
+The call is 13 % lower per frame on the media engine (20.4 against 23.4 ms)
+because its screen sender sent about three times the frames, not because
+encoding is cheaper. Most of a call's CPU goes to capturing, Chrome itself and
+(in this test) receiving and showing the streams; OpenH264 at 720p is cheap on
+an M4 Max. Chrome's own encode time per frame is longer on the media engine
+(about 7 ms against 4 ms for the camera: the picture goes through virtio-gpu,
+and the frame waits for its data). `webrtc-summary.py` counts each sender's
+frames at the last size Chrome reported, so for a call that started smaller
+and grew, megapixels are overstated and CPU per megapixel too low; compare
+per frame. Not measured yet: 1080p and larger screens, and slower Macs (M1,
+M2, MacBook Air), where software encoding costs more.
 
 ### Soak
 
@@ -202,4 +212,4 @@ the backend asks VideoToolbox at run time and offers only what it reports.
     the Mac's CPU. `--features ""` uses the flags files `omacvm apply` wrote;
     the real screen goes through the portal with a test picker.
   - `tests/video/webrtc-summary.py RESULT.json...`: runs side by side, CPU per
-    frame and per megapixel.
+    frame and per megapixel (frames counted at each sender's last size).
