@@ -6,16 +6,19 @@ VA-API driver (Mesa virgl) decodes H.264, HEVC Main and Main 10, VP9 profile 0
 and 2 and AV1 (only with OMACVM_VIDEO_AV1=1) through VTDecompressionSession;
 vrend_video.c copies each decoded IOSurface into the guest's plane textures
 (GPU blit, CPU copy as fallback).
-Guest limits (the guest is untrusted): at most 32 decoders open at once per VM
-(each holds a session on the Mac's media engine, shared with the Mac's own
-apps, and its pictures); one more gets none and decodes nothing, closing one
-frees its slot, and a guest context that goes away frees its own. The limit
-goes to the guest in each decoder's video caps (virgl_hw.h: omacvm_max_open,
-8 of the 20 reserved bits; Mesa ignores them) so OmacVM's VA-API shim
-(src/app/guest/omacvm_drv_video.c) refuses vaCreateContext past it and the
-player decodes on the CPU instead of showing a black video. A refusal is
-logged at once, then at most every 10 s with a count; pictures for a refused
-decoder are dropped quietly, unknown handles are logged the same way.
+Guest limits (the guest is untrusted): decoders per VM are limited (each
+holds a session on the Mac's media engine, shared with the Mac's own apps,
+and its pictures). Each decoder's video caps tell the guest 32 (virgl_hw.h:
+omacvm_max_open, 8 of the 20 reserved bits; Mesa ignores them), so OmacVM's
+VA-API shim (src/app/guest/omacvm_drv_video.c) refuses vaCreateContext past
+it and the player decodes on the CPU instead of showing a black video. The
+host refuses only past 48: Mesa sends a decoder's close with the app's next
+commands (the shim has freed the slot already), and apps outside the desktop
+session do not use the shim. Past 48 one more gets none and decodes nothing;
+closing one frees its slot, and a guest context that goes away frees its
+own. A refusal is logged at once, then at most every 10 s with a count;
+pictures for a refused decoder are dropped quietly, unknown handles are
+logged the same way.
 Compressed data is clamped to the guest's buffer and capped at 64 MiB per
 picture. The GPU copy runs with the guest's conditional rendering paused
 (vrend_renderer.c exports the pause vrend's own blits use) and rasterizer
@@ -27,8 +30,8 @@ Upstream: not submitted (docs/video-decode.md, "UTM", lists what it needs).
 Tests: app/runtime/Tests/virgl/test-video-decode.c at build time (Apple's
 software OpenGL; H.264 pictures land in the guest's planes, also under the
 guest's conditional rendering and rasterizer discard, every decoder cap says
-the limit, the 32-decoder limit, a closed context freeing its decoders). In
-a VM: src/bench/video-bench.py and the checks in docs/video-decode.md.
+32, the host's 48-decoder limit, a closed context freeing its decoders). In a
+VM: src/bench/video-bench.py and the checks in docs/video-decode.md.
 diff --git a/config.h.meson b/config.h.meson
 index da93f61..2fc6849 100644
 --- a/config.h.meson
@@ -91,17 +94,18 @@ index 951f48e..202ce3d 100644
  
  if with_host_windows
 diff --git a/src/virgl_hw.h b/src/virgl_hw.h
-index 4cfc1ca..e49da1f 100644
+index 4cfc1ca..dd35107 100644
 --- a/src/virgl_hw.h
 +++ b/src/virgl_hw.h
-@@ -747,7 +747,11 @@ struct virgl_video_caps {
+@@ -747,7 +747,12 @@ struct virgl_video_caps {
          uint32_t supports_interlaced:1;
          uint32_t prefers_interlaced:1;
          uint32_t max_temporal_layers:8;
 -        uint32_t reserved:20;
 +        uint32_t reserved:12;
-+        /* OmacVM: how many codecs with this entrypoint the host keeps open at
-+         * once per VM (0: no limit said). Guest Mesa ignores these bits; the
++        /* OmacVM: how many codecs with this entrypoint the guest should keep
++         * open at once per VM (0: no limit said); the host refuses only past
++         * a higher limit of its own. Guest Mesa ignores these bits; the
 +         * OmacVM VA-API shim refuses vaCreateContext past it. */
 +        uint32_t omacvm_max_open:8;
  };
@@ -175,10 +179,10 @@ index e954559..5a7f880 100644
  /*
 diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
 new file mode 100644
-index 0000000..19ecff7
+index 0000000..90b34a5
 --- /dev/null
 +++ b/src/vrend/virgl_video_vt.c
-@@ -0,0 +1,2395 @@
+@@ -0,0 +1,2401 @@
 +/**************************************************************************
 + *
 + * Copyright (C) 2026 OmacVM contributors
@@ -2307,13 +2311,19 @@ index 0000000..19ecff7
 + * engine (shared with the Mac's own apps and other VMs) and its pictures
 + * (~30 MB in VideoToolbox's service at 1080p, ~90 MB at 4K). One per playing
 + * video: Chrome keeps at most 16 itself, Firefox has no limit of its own (24
-+ * on a page of 24 videos). 32 leaves room for that and still bounds what one
-+ * VM takes. The limit goes to the guest in the video caps (omacvm_max_open),
-+ * and OmacVM's VA-API shim refuses past it, so players decode on the CPU
-+ * instead; a guest without the shim gets no decoder past it. Counted on
-+ * vrend's thread only, like everything here. */
-+#define VT_DEC_MAX_LIVE 32
-+_Static_assert(VT_DEC_MAX_LIVE <= 255, "omacvm_max_open has 8 bits");
++ * on a page of 24 videos). The guest is told 32 in the video caps
++ * (omacvm_max_open): Chrome's 16 plus one Firefox's 16. OmacVM's VA-API shim
++ * refuses past that, so players decode on the CPU instead.
++ * The host itself refuses only past 48. The shim frees a slot when an app
++ * closes a decoder, but Mesa sends that close with the app's next commands
++ * (a browser that closed a tab of videos may send it much later), and apps
++ * outside the desktop session (SSH, services) do not use the shim. The room
++ * above 32 covers both; past 48 a video gets no decoder and stays black.
++ * Counted on vrend's thread only, like everything here. */
++#define VT_DEC_CAPS_LIMIT 32
++#define VT_DEC_MAX_LIVE 48
++_Static_assert(VT_DEC_CAPS_LIMIT <= VT_DEC_MAX_LIVE && VT_DEC_CAPS_LIMIT <= 255,
++               "omacvm_max_open has 8 bits");
 +static unsigned live_decoders;
 +
 +static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
@@ -2340,7 +2350,7 @@ index 0000000..19ecff7
 +    v->supports_interlaced = 0;
 +    v->prefers_interlaced = 0;
 +    v->max_temporal_layers = 0;
-+    v->omacvm_max_open = VT_DEC_MAX_LIVE;
++    v->omacvm_max_open = VT_DEC_CAPS_LIMIT;
 +}
 +
 +int virgl_video_fill_caps(union virgl_caps *caps)
@@ -2387,8 +2397,8 @@ index 0000000..19ecff7
 +    }
 +    if (args->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM &&
 +        live_decoders >= VT_DEC_MAX_LIVE) {
-+        /* With OmacVM's VA-API shim the guest refuses first; this is a
-+         * guest without it (or a stale count there): that video stays black. */
++        /* With OmacVM's VA-API shim the guest stays at VT_DEC_CAPS_LIMIT;
++         * this is many apps outside it: that video stays black. */
 +        static struct virgl_video_log_limit said;
 +        unsigned skipped;
 +        if (virgl_video_log_ok(&said, &skipped))

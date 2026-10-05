@@ -110,27 +110,35 @@ put the shim in: the VM folder's `video-decode` file).
   whole frame. So AV1 is offered to Chromium-based browsers only.
 - **HEVC**: Main and Main 10; long-term reference pictures from the SPS are
   not supported (rare).
-- **At most 32 decoders at once per VM.** Each holds a session on the Mac's
-  media engine, which the Mac's own apps and other VMs share, plus its
+- **32 decoders at once per VM, 48 at most.** Each holds a session on the
+  Mac's media engine, which the Mac's own apps and other VMs share, plus its
   pictures (about 30 MB in VideoToolbox's service per 1080p video, 90 MB at
   4K); without a limit one VM could tie it all up. A playing video uses one:
   Chrome keeps at most 16 itself, Firefox has no limit of its own (a page of
-  24 muted videos opened 24, two such tabs 48 for a moment). The Mac says the
-  limit in its video caps, and the shim refuses `vaCreateContext` past it
-  (`VA_STATUS_ERROR_MAX_NUM_EXCEEDED`), so that video decodes on the CPU
-  instead of staying black. Checked in a VM: FFmpeg (`-hwaccel vaapi`, frames
-  identical to software), mpv (`--hwdec=vaapi`, `--vo=gpu`), Chrome and
-  Firefox (every video plays with pictures; the ones past the limit on the
-  CPU). The shim counts across processes with a lock per slot on
-  `/dev/shm/omacvm-va-slots` (freed when a process quits or crashes). Firefox
-  decodes in a sandbox that can neither open nor lock it, so a process like
-  that counts only its own, up to 16, and the shared slots are the other 16:
-  the VM stays within 32 as long as at most one such process decodes (one
-  Firefox). A guest without the shim gets no decoder past 32: that video
-  stays black, and QEMU's log says `decoders already open` (at most every
-  10 s, with a count). The shim prints its own refusals the same way;
-  `omacvm check` shows the limit. `Tests/virgl/test-video-decode.c` checks
-  the limit and that the caps say it at build time.
+  24 muted videos opened 24, two such tabs 48 for a moment). The Mac tells the
+  VM 32 in its video caps: Chrome's 16 plus one Firefox's 16. The shim
+  refuses `vaCreateContext` past that (`VA_STATUS_ERROR_MAX_NUM_EXCEEDED`),
+  so that video decodes on the CPU instead of staying black. Checked in a VM:
+  FFmpeg (`-hwaccel vaapi`, frames identical to software), mpv
+  (`--hwdec=vaapi`, `--vo=gpu`), Chrome and Firefox (every video plays with
+  pictures; the ones past the limit on the CPU). The shim counts across
+  processes with a lock per slot on `/dev/shm/omacvm-va-slots` (freed when a
+  process quits or crashes). Firefox decodes in a sandbox that can neither
+  open nor lock it, so a process like that counts only its own, up to 16,
+  and the shared slots are the other 16. So all apps that can share the
+  count (Chrome, mpv, FFmpeg) have 16 together: with Chrome's 16 in use, mpv
+  decodes on the CPU even when no Firefox runs.
+  The Mac itself refuses only past 48. The room above 32 is for two cases
+  the shim cannot see: Mesa sends a closed decoder to the Mac only with the
+  app's next commands (a browser that closed a tab of videos may send it
+  much later, while the shim has given the slots to other apps already), and
+  apps outside the desktop session (SSH shells, sudo, system services) do
+  not get `LIBVA_DRIVER_NAME=omacvm` and use Mesa's driver directly. Past 48
+  a video gets no decoder and stays black, and QEMU's log says `decoders
+  already open` (at most every 10 s, with a count). The shim prints its own
+  refusals the same way; `omacvm check` shows the limit.
+  `Tests/virgl/test-video-decode.c` checks at build time that the caps say
+  32 and that the Mac keeps 48 open and refuses one more.
 - **YUYV surfaces**: not offered. virglrenderer stored their plane format
   (R8G8_R8B8) at twice its size, and reading one back overflowed QEMU's heap
   (mpv's VA-API check did it, before 2.7.0's release);

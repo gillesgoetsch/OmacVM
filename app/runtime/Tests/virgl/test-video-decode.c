@@ -9,10 +9,10 @@
  * they still do while the guest's conditional rendering says skip and while its
  * rasterizer discard is on, and the guest's rasterizer discard is back on afterwards
  * (Apple's software OpenGL may copy either way: then these guard the path only);
- * the host says its limit in the video caps (omacvm_max_open, for the guest's VA-API
- * shim) and keeps to it: at most 32 decoders open at once per VM, one more decodes
- * nothing, closing one makes room, and a guest context that goes away frees the
- * decoders it had.
+ * the video caps tell the guest's VA-API shim 32 decoders per VM (omacvm_max_open)
+ * and the host keeps a hard limit above that: 48 decoders open at once per VM
+ * decode, one more decodes nothing, closing one makes room, and a guest context
+ * that goes away frees the decoders it had.
  * Runs on Apple's software OpenGL (soft-gl.h); the decoder is the Mac's media engine.
  * Skips when the Mac has no H.264 encoder or decoder. */
 #include <CoreMedia/CoreMedia.h>
@@ -35,7 +35,9 @@
 unsigned char glIsEnabled(unsigned int cap);
 #define TEST_GL_RASTERIZER_DISCARD 0x8C89
 
-enum { W = 320, H = 240, FRAMES = 10, MAX_LIVE = 32 };
+/* CAPS_LIMIT: what the video caps tell the guest; MAX_LIVE: where the host refuses
+ * (room for Mesa's late closes and apps without the shim) */
+enum { W = 320, H = 240, FRAMES = 10, CAPS_LIMIT = 32, MAX_LIVE = 48 };
 enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2 };
 /* guest numbering (Mesa >= 26): enum pipe_video_profile / entrypoint */
 enum { G_AVC_HIGH = 11, G_ENTRYPOINT_BITSTREAM = 1 };
@@ -257,7 +259,7 @@ static uint8_t bits[1 << 20];
 static uint8_t query_result[64];
 static uint8_t blank[W * H];
 
-/* decoders the caps offer; *limit_ok: every one says MAX_LIVE as its limit */
+/* decoders the caps offer; *limit_ok: every one says CAPS_LIMIT as its limit */
 static int h264_offered(int *limit_ok)
 {
    uint32_t max_ver = 0, max_size = 0;
@@ -270,7 +272,7 @@ static int h264_offered(int *limit_ok)
       if (caps->v2.video_caps[i].entrypoint != G_ENTRYPOINT_BITSTREAM)
          continue;
       found |= caps->v2.video_caps[i].profile == G_AVC_HIGH;
-      *limit_ok &= caps->v2.video_caps[i].omacvm_max_open == MAX_LIVE;
+      *limit_ok &= caps->v2.video_caps[i].omacvm_max_open == CAPS_LIMIT;
    }
    free(caps);
    return found;
@@ -397,7 +399,7 @@ int main(void)
       return 0;
    }
    snprintf(line, sizeof(line), "every decoder in the video caps says the limit (%d) for "
-            "the guest's VA-API shim: %s", MAX_LIVE, limit_ok ? "yes" : "no");
+            "the guest's VA-API shim: %s", CAPS_LIMIT, limit_ok ? "yes" : "no");
    check(limit_ok, line);
    if (!make_stream()) {
       printf("skip: no H.264 encoder to make the test stream (%d pictures)\n", au_count);
@@ -474,7 +476,8 @@ int main(void)
    check(p > 30 && discard_kept, line);
 
    /* At most MAX_LIVE decoders at once (each holds a media engine session and
-    * its pictures): one more decodes nothing; closing one makes room again. */
+    * its pictures), also past CAPS_LIMIT: one more decodes nothing; closing one
+    * makes room again. */
    int ok_all = 0;
    for (uint32_t h = 100; h < 100 + MAX_LIVE; h++) {
       create_codec(h);

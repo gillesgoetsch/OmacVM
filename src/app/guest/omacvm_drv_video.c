@@ -11,12 +11,16 @@
  * AV1 is listed for Chromium-based browsers only (OMACVM_VA_AV1=1 or 0
  * overrides).
  *
- * Limits: the Mac keeps only so many decoders and encoders open at once per
- * VM and says how many in its video caps. Past that it gives a new one
- * nothing, and the guest cannot be told, so the video would stay black. So
- * the shim refuses vaCreateContext first (VA_STATUS_ERROR_MAX_NUM_EXCEEDED)
- * and players and browsers decode (or encode) that one on the CPU; an FFmpeg
- * command that names a VA-API encoder itself stops with that error.
+ * Limits: the Mac says in its video caps how many decoders and encoders a VM
+ * should keep open at once. Past a somewhat higher limit of its own it gives
+ * a new one nothing, and the guest cannot be told, so the video would stay
+ * black. So the shim refuses vaCreateContext past the caps' number
+ * (VA_STATUS_ERROR_MAX_NUM_EXCEEDED) and players and browsers decode (or
+ * encode) that one on the CPU; an FFmpeg command that names a VA-API encoder
+ * itself stops with that error. The Mac's extra room covers what the shim
+ * cannot see: Mesa sends a closed context to the Mac only with the app's next
+ * commands (the shim has freed its slot already), and apps that do not use
+ * the shim.
  * Counting across processes: a context holds a slot, an OFD lock on one byte
  * of /dev/shm/omacvm-va-slots, so a process that quits or crashes frees its
  * slots. Firefox decodes in a sandbox that can neither open that file nor
