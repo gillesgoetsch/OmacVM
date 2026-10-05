@@ -56,3 +56,6 @@ jobs:
 
       - name: Which VM --vm NAME means
         run: src/tests/vm-names.sh
+
+      - name: Prebuilt manifests are checked (untrusted input)
+        run: src/tests/prebuilt-manifest.sh

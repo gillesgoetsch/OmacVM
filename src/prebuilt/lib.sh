@@ -46,13 +46,30 @@ PY2
     curl -fsSL --max-time 30 "$url" -o "$PB_MANIFEST" || return 1
     PB_SOURCE=${url%/*}
   fi
-  [[ $(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" route) == "$type" ]] || return 1
-  PB_VERSION=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omacvm)
-  PB_OMARCHY=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omarchy)
-  PB_SIZE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" size)
-  PB_BUNDLE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" bundle)
-  PB_DISK_GB=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" disk_gb)
+  # manifest.py get checks the whole manifest and fails on anything odd. Each
+  # step needs its own "|| return 1": callers use "prebuilt_lookup && ...",
+  # where set -e is off.
+  local route
+  route=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" route) || return 1
+  [[ $route == "$type" ]] || return 1
+  PB_VERSION=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omacvm) || return 1
+  PB_OMARCHY=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omarchy) || return 1
+  PB_SIZE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" size) || return 1
+  PB_BUNDLE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" bundle) || return 1
+  PB_DISK_GB=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" disk_gb) || return 1
+  # And again here, so no manifest text can reach bash arithmetic or a path.
+  [[ $PB_SIZE =~ ^[0-9]{1,15}$ && $PB_DISK_GB =~ ^[0-9]{1,4}$ ]] || return 1
+  [[ $PB_BUNDLE =~ ^[A-Za-z0-9._-]{1,64}$ && $PB_BUNDLE != . && $PB_BUNDLE != .. ]] || return 1
+  [[ $PB_VERSION =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || return 1
   [[ $PB_VERSION == "${iv:-$PB_VERSION}" ]]
+}
+
+# pb_disk_bigger GB: is GB more than the image's disk? PB_DISK_GB is checked
+# to be digits only before it goes near bash arithmetic (a value like
+# "a[$(cmd)]" there would run cmd).
+pb_disk_bigger() {
+  [[ $1 =~ ^[0-9]{1,6}$ && $PB_DISK_GB =~ ^[0-9]{1,4}$ ]] || die "bad disk size in the prebuilt manifest"
+  (( 10#$1 > 10#$PB_DISK_GB ))
 }
 
 pb_gb() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1e9 }'; }
@@ -63,6 +80,7 @@ prebuilt_download() {
   local dir name size sum try have
   dir=$(dirname "$PB_MANIFEST")
   while read -r name size sum; do
+    [[ $size =~ ^[0-9]{1,15}$ ]] || die "bad part size in the prebuilt manifest"
     for try in 1 2; do
       if [[ -n ${OMACVM_PREBUILT_SOURCE:-} ]]; then
         [[ -f $dir/$name && $(stat -f %z "$dir/$name") == "$size" ]] || cp -c "$PB_SOURCE/$name" "$dir/$name" 2>/dev/null || cp "$PB_SOURCE/$name" "$dir/$name"
