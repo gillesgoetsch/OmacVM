@@ -220,6 +220,10 @@ int main(void) {
     expect(t >= 2 && t < 6 && nconns == 0 && liveIfaces == 0 && vmnetFailures == 0,
            "vmnet's service exits: connection closed, not counted as a failure");
     waitpid(child, NULL, 0);
+    // The bridge it left behind (192.168.77.1, no service to remove it) is ours.
+    ifName = "bridge100"; ifAddr = "192.168.77.1";
+    expect(inherited && !foreignBridge(who, sizeof who), "... and the bridge it left is not taken for another program's");
+    inherited = 0; ifName = "en0"; ifAddr = "192.168.1.5";
 
     // --user takes a number (an empty one is not uid 0).
     char *a1[] = { "netd", "--requirement", "x", "--user", "", NULL };

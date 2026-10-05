@@ -239,11 +239,12 @@ static long bootTime(void) {
     return sysctlbyname("kern.boottime", &tv, &l, NULL, 0) ? 0 : (long)tv.tv_sec;
 }
 
-// STATE_FILE: "boot failures pause live" (readable by all: install.sh and omacvm
+// STATE_FILE: "boot failures pause live" (live: our interfaces, or bridges
+// we left behind; readable by all: install.sh and omacvm
 // check show a stop). Written under the lock, no links followed.
 static void saveState(void) {
     char b[96];
-    int n = snprintf(b, sizeof b, "%ld %d %ld %d\n", bootTime(), vmnetFailures, (long)vmnetPause, liveIfaces);
+    int n = snprintf(b, sizeof b, "%ld %d %ld %d\n", bootTime(), vmnetFailures, (long)vmnetPause, liveIfaces + inherited);
     int fd = open(statePath, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
     if (fd < 0) return;
     if (write(fd, b, (size_t)n) != n) { /* the next save tries again */ }
@@ -365,34 +366,42 @@ static pid_t sharingPid(void) {
 static pid_t (*findSharing)(void) = sharingPid;   // the offline test puts its own in
 
 // The service is gone and our interfaces with it: end every connection
-// (fromVM sees it; serve stops what is left, QEMU connects again).
+// (fromVM sees it; serve stops what is left, QEMU connects again). Its
+// bridge stays behind with 192.168.77.1 until the service runs again (for
+// our next start): ours, not another program's.
 static void sharingGone(void) {
     int n = 0;
     pthread_mutex_lock(&lock);
     for (int i = 0; i < MAX_CONNS; i++)
         if (live[i]) { live[i]->gone = 1; shutdown(live[i]->fd, SHUT_RDWR); n++; }
+    if (n) { inherited = 1; saveState(); }
     pthread_mutex_unlock(&lock);
     if (n) logf_("macOS's vmnet service (%s) stopped: closing %d connection(s) (QEMU connects again)", SHARING, n);
 }
 
 // Watches the service's process while we have interfaces. Only an exit it
-// saw counts: a service it cannot find (another name in a later macOS) only
-// turns the watch off, so connections are never closed on a guess.
+// saw counts: a service it cannot find (another name in a later macOS) is
+// looked for again each second, and connections are never closed on a guess.
 static void *watchSharing(void *arg) {
     (void)arg;
     int kq = kqueue();
     pid_t watched = 0;
-    int blind = 0;
+    int said = 0;
     if (kq < 0) { logf_("kqueue: %s: not watching %s", strerror(errno), SHARING); return NULL; }
     for (;;) {
         pthread_mutex_lock(&lock);
         int any = 0;
         for (int i = 0; i < MAX_CONNS; i++) any |= live[i] != NULL;
         pthread_mutex_unlock(&lock);
-        if (!any || blind) { watched = 0; sleep(1); continue; }
+        if (!any) { watched = 0; sleep(1); continue; }
         if (!watched) {
             pid_t p = findSharing();
-            if (!p) { logf_("%s not found: not watching it", SHARING); blind = 1; continue; }
+            if (!p) {
+                if (!said++) logf_("%s not found: not watching it until it is", SHARING);
+                sleep(1);
+                continue;
+            }
+            said = 0;
             struct kevent ev;
             EV_SET(&ev, (uintptr_t)p, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
             if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
