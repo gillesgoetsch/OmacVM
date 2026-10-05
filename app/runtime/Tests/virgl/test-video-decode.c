@@ -6,6 +6,9 @@
  * Before each picture the guest's luma texture is cleared, so a picture that never
  * arrives shows as a failure.
  * Checks: the pictures land in the guest's textures close to what went in (luma PSNR);
+ * they still do while the guest's conditional rendering says skip and while its
+ * rasterizer discard is on, and the guest's rasterizer discard is back on afterwards
+ * (Apple's software OpenGL may copy either way: then these guard the path only);
  * at most 8 decoders are open at once per VM: a 9th decodes nothing, closing one
  * makes room, and a guest context that goes away frees the decoders it had.
  * Runs on Apple's software OpenGL (soft-gl.h); the decoder is the Mac's media engine.
@@ -26,12 +29,16 @@
 #include "virgl_protocol.h"
 #include "virgl_video_hw.h"
 
+/* GL without the GL headers (they clash with virgl's) */
+unsigned char glIsEnabled(unsigned int cap);
+#define TEST_GL_RASTERIZER_DISCARD 0x8C89
+
 enum { W = 320, H = 240, FRAMES = 10, MAX_LIVE = 8 };
 enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2 };
 /* guest numbering (Mesa >= 26): enum pipe_video_profile / entrypoint */
 enum { G_AVC_HIGH = 11, G_ENTRYPOINT_BITSTREAM = 1 };
-enum { R_Y = 1, R_UV, R_DESC, R_BITS };
-enum { BUF = 2 };   /* codecs get 10, 11, ... */
+enum { R_Y = 1, R_UV, R_DESC, R_BITS, R_QUERY };
+enum { BUF = 2, QUERY = 40, RAST = 41 };   /* codecs get 10, 11, ... */
 
 static CGLContextObj main_ctx;
 static int failures;
@@ -245,6 +252,7 @@ static int make_stream(void)
 /* --- the guest's side ---------------------------------------------------------- */
 static union virgl_picture_desc desc;
 static uint8_t bits[1 << 20];
+static uint8_t query_result[64];
 static uint8_t blank[W * H];
 
 static int h264_offered(void)
@@ -338,7 +346,7 @@ static double decode_picture(uint32_t ctx_id, uint32_t codec, int f)
 static void setup_context(uint32_t ctx_id)
 {
    virgl_renderer_context_create(ctx_id, 4, "vdec");
-   for (uint32_t r = R_Y; r <= R_BITS; r++)
+   for (uint32_t r = R_Y; r <= R_QUERY; r++)
       virgl_renderer_ctx_attach_resource((int)ctx_id, (int)r);
    create_buffer();
    submit(ctx_id);
@@ -394,6 +402,8 @@ int main(void)
             sizeof(desc), 1, &desc, sizeof(desc));
    make_res(R_BITS, TEST_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM,
             sizeof(bits), 1, bits, sizeof(bits));
+   make_res(R_QUERY, TEST_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM,
+            sizeof(query_result), 1, query_result, sizeof(query_result));
 
    c = calloc(1, sizeof(*c));
    setup_context(1);
@@ -402,6 +412,55 @@ int main(void)
    snprintf(line, sizeof(line), "%d pictures land in the guest's planes, lowest luma PSNR "
             "%.1f dB", FRAMES, p);
    check(p > 30, line);
+
+   /* The guest's conditional rendering is on and says "skip" (an occlusion query
+    * with no samples): the copy into its planes is not rendering and must happen. */
+   emit(VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_QUERY, VIRGL_OBJ_QUERY_SIZE));
+   emit(QUERY);
+   emit(VIRGL_OBJ_QUERY_TYPE(0));      /* PIPE_QUERY_OCCLUSION_COUNTER */
+   emit(0);
+   emit(R_QUERY);
+   emit(VIRGL_CMD0(VIRGL_CCMD_BEGIN_QUERY, 0, 1));
+   emit(QUERY);
+   emit(VIRGL_CMD0(VIRGL_CCMD_END_QUERY, 0, 1));
+   emit(QUERY);
+   emit(VIRGL_CMD0(VIRGL_CCMD_SET_RENDER_CONDITION, 0, VIRGL_RENDER_CONDITION_SIZE));
+   emit(QUERY);
+   emit(0);                            /* condition: skip when no samples passed */
+   emit(0);                            /* PIPE_RENDER_COND_WAIT */
+   submit(1);
+   p = decode_all(1, 11);
+   emit(VIRGL_CMD0(VIRGL_CCMD_SET_RENDER_CONDITION, 0, VIRGL_RENDER_CONDITION_SIZE));
+   emit(0);
+   emit(0);
+   emit(0);
+   emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_QUERY, 1));
+   emit(QUERY);
+   submit(1);
+   snprintf(line, sizeof(line), "guest's conditional rendering on: pictures land, lowest "
+            "luma PSNR %.1f dB", p);
+   check(p > 30, line);
+
+   /* The guest's rasterizer discards everything: the copy still lands, and the
+    * guest's setting is back afterwards. */
+   emit(VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_RASTERIZER, VIRGL_OBJ_RS_SIZE));
+   emit(RAST);
+   emit(VIRGL_OBJ_RS_S0_RASTERIZER_DISCARD(1) | VIRGL_OBJ_RS_S0_DEPTH_CLIP(1));
+   for (int i = 0; i < VIRGL_OBJ_RS_SIZE - 2; i++)
+      emit(i == 0 || i == 3 ? 0x3f800000 : 0);   /* point size, line width 1.0 */
+   emit(VIRGL_CMD0(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_RASTERIZER, 1));
+   emit(RAST);
+   submit(1);
+   p = decode_all(1, 12);
+   int discard_kept = glIsEnabled(TEST_GL_RASTERIZER_DISCARD);
+   emit(VIRGL_CMD0(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_RASTERIZER, 1));
+   emit(0);
+   emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_RASTERIZER, 1));
+   emit(RAST);
+   submit(1);
+   snprintf(line, sizeof(line), "guest's rasterizer discard on: pictures land, lowest luma "
+            "PSNR %.1f dB; discard still on afterwards: %s", p, discard_kept ? "yes" : "no");
+   check(p > 30 && discard_kept, line);
 
    /* At most 8 decoders at once (each holds a media engine session and its
     * pictures): the 9th decodes nothing; closing one makes room again. */
@@ -453,7 +512,7 @@ int main(void)
    check(in2 && again == MAX_LIVE, line);
 
    virgl_renderer_context_destroy(1);
-   for (uint32_t r = R_Y; r <= R_BITS; r++)
+   for (uint32_t r = R_Y; r <= R_QUERY; r++)
       virgl_renderer_resource_unref(r);
    for (int f = 0; f < FRAMES; f++)
       free(au[f]);

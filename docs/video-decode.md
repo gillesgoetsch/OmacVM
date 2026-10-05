@@ -83,7 +83,11 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   whole. Tested bit-exact against software decoding (FFmpeg) with x264, x265
   and libvpx streams and real 1080p clips.
 - The decoded frame is an IOSurface; the GPU copies it into the textures the
-  VM sees (no CPU copy on the Mac's OpenGL).
+  VM sees (no CPU copy on the Mac's OpenGL). The copy pauses the guest's
+  conditional rendering and turns its rasterizer discard off while it runs:
+  either could drop it without an error and leave the old picture. (Apple's
+  software OpenGL, which the build-time test runs on, copies either way, so
+  the test guards the path but cannot show the GPU's behaviour.)
 - In the VM, `src/app/guest/install.sh` adds `vainfo` and a small VA-API driver
   shim (`omacvm_drv_video.c`, used through `LIBVA_DRIVER_NAME=omacvm`): Mesa's
   driver unchanged, but it offers only NV12 surfaces (Firefox cannot show the

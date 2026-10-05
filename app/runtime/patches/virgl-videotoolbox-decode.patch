@@ -10,14 +10,18 @@ Guest limits (the guest is untrusted): at most 8 decoders open at once per VM
 (each holds a session on the Mac's media engine, shared with the Mac's own
 apps, and its pictures); the 9th gets none and decodes nothing, closing one
 frees its slot, and a guest context that goes away frees its own. Compressed
-data is clamped to the guest's buffer and capped at 64 MiB per picture.
+data is clamped to the guest's buffer and capped at 64 MiB per picture. The
+GPU copy runs with the guest's conditional rendering paused (vrend_renderer.c
+exports the pause vrend's own blits use) and rasterizer discard off: either
+could drop the blit without a GL error and leave the guest's old picture.
 Why: video in the VM decodes on the media engine instead of the VM's CPU
 (numbers in docs/video-decode.md).
 Upstream: not submitted (docs/video-decode.md, "UTM", lists what it needs).
 Tests: app/runtime/Tests/virgl/test-video-decode.c at build time (Apple's
-software OpenGL; H.264 pictures land in the guest's planes, the 8-decoder
-limit, a closed context freeing its decoders). In a VM:
-src/bench/video-bench.py and the checks in docs/video-decode.md.
+software OpenGL; H.264 pictures land in the guest's planes, also under the
+guest's conditional rendering and rasterizer discard, the 8-decoder limit, a
+closed context freeing its decoders). In a VM: src/bench/video-bench.py and
+the checks in docs/video-decode.md.
 diff --git a/config.h.meson b/config.h.meson
 index da93f61..2fc6849 100644
 --- a/config.h.meson
@@ -2485,7 +2489,7 @@ index 0000000..31d1d51
 +    return ret;
 +}
 diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
-index 394fb9b..ba0a885 100644
+index 394fb9b..301c662 100644
 --- a/src/vrend/vrend_renderer.c
 +++ b/src/vrend/vrend_renderer.c
 @@ -7909,7 +7909,15 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
@@ -2505,8 +2509,33 @@ index 394fb9b..ba0a885 100644
     if (flags & VREND_USE_VIDEO) {
          if (vrend_clicbs->get_drm_fd)
              vrend_video_init(vrend_clicbs->get_drm_fd());
+@@ -12392,6 +12400,11 @@ static void vrend_pause_render_condition(struct vrend_context *ctx, bool pause)
+    }
+ }
+ 
++void vrend_renderer_pause_render_condition(struct vrend_context *ctx, bool pause)
++{
++   vrend_pause_render_condition(ctx, pause);
++}
++
+ void vrend_render_condition(struct vrend_context *ctx,
+                             uint32_t handle,
+                             bool condition,
+diff --git a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
+index 6c7c7de..b7d9816 100644
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -492,6 +492,8 @@ void vrend_render_condition(struct vrend_context *ctx,
+                             uint32_t handle,
+                             bool condtion,
+                             uint32_t mode);
++/* Pause the guest's conditional rendering for a host-side copy (and resume it). */
++void vrend_renderer_pause_render_condition(struct vrend_context *ctx, bool pause);
+ void *vrend_renderer_get_cursor_contents(struct pipe_resource *pres,
+                                          uint32_t *width,
+                                          uint32_t *height);
 diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
-index 57341d8..f265dcd 100644
+index 57341d8..22713b5 100644
 --- a/src/vrend/vrend_video.c
 +++ b/src/vrend/vrend_video.c
 @@ -74,6 +74,12 @@
@@ -2534,7 +2563,7 @@ index 57341d8..f265dcd 100644
  };
  
  struct vrend_video_buffer {
-@@ -146,6 +154,187 @@ static struct vrend_video_buffer *get_video_buffer(
+@@ -146,6 +154,198 @@ static struct vrend_video_buffer *get_video_buffer(
  }
  
  
@@ -2549,7 +2578,7 @@ index 57341d8..f265dcd 100644
 +    IOSurfaceRef surface = CVPixelBufferGetIOSurface(pix);
 +    CGLContextObj cgl = CGLGetCurrentContext();
 +    GLint old_read = 0, old_draw = 0, old_rect = 0;
-+    GLboolean scissor, srgb, mask[4];
++    GLboolean scissor, srgb, discard, mask[4];
 +    GLuint tex[3] = { 0 }, fbo[2] = { 0 };
 +    size_t planes;
 +    bool ok = true;
@@ -2559,6 +2588,14 @@ index 57341d8..f265dcd 100644
 +    planes = IOSurfaceGetPlaneCount(surface);
 +    if (planes > 3)
 +        planes = 3;
++
++    /* The guest's state must not touch the copy: conditional rendering (and
++     * on some drivers rasterizer discard) can drop a blit without a GL error,
++     * and the guest would show its old picture. Both are off for the copy, as
++     * vrend's own blits do it. */
++    vrend_renderer_pause_render_condition(buf->ctx->ctx, true);
++    discard = glIsEnabled(GL_RASTERIZER_DISCARD);
++    glDisable(GL_RASTERIZER_DISCARD);
 +
 +    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &old_read);
 +    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &old_draw);
@@ -2627,7 +2664,10 @@ index 57341d8..f265dcd 100644
 +        glEnable(GL_SCISSOR_TEST);
 +    if (srgb)
 +        glEnable(GL_FRAMEBUFFER_SRGB);
++    if (discard)
++        glEnable(GL_RASTERIZER_DISCARD);
 +    glColorMask(mask[0], mask[1], mask[2], mask[3]);
++    vrend_renderer_pause_render_condition(buf->ctx->ctx, false);
 +    /* Other contexts (the guest's compositor) read these textures. */
 +    glFlush();
 +    return ok;
@@ -2722,7 +2762,7 @@ index 57341d8..f265dcd 100644
  static int sync_dmabuf_to_video_buffer(struct vrend_video_buffer *buf,
                                         const struct virgl_video_dma_buf *dmabuf)
  {
-@@ -268,6 +457,7 @@ static int sync_video_buffer_to_dmabuf(struct vrend_video_buffer *buf,
+@@ -268,6 +468,7 @@ static int sync_video_buffer_to_dmabuf(struct vrend_video_buffer *buf,
  
      return 0;
  }
@@ -2730,7 +2770,7 @@ index 57341d8..f265dcd 100644
  
  
  static void vrend_video_decode_completed(
-@@ -278,7 +468,11 @@ static void vrend_video_decode_completed(
+@@ -278,7 +479,11 @@ static void vrend_video_decode_completed(
  
      (void)codec;
  
@@ -2742,7 +2782,7 @@ index 57341d8..f265dcd 100644
  }
  
  
-@@ -290,7 +484,11 @@ static void vrend_video_enocde_upload_picture(
+@@ -290,7 +495,11 @@ static void vrend_video_enocde_upload_picture(
  
      (void)codec;
  
@@ -2754,7 +2794,7 @@ index 57341d8..f265dcd 100644
  }
  
  static void vrend_video_encode_completed(
-@@ -354,8 +552,10 @@ static struct virgl_video_callbacks video_callbacks = {
+@@ -354,8 +563,10 @@ static struct virgl_video_callbacks video_callbacks = {
  
  int vrend_video_init(int drm_fd)
  {
@@ -2765,7 +2805,7 @@ index 57341d8..f265dcd 100644
  
      return virgl_video_init(drm_fd, &video_callbacks, 0);
  }
-@@ -384,12 +584,17 @@ int vrend_video_create_codec(struct vrend_video_context *ctx,
+@@ -384,12 +595,17 @@ int vrend_video_create_codec(struct vrend_video_context *ctx,
      struct vrend_video_codec *cdc = get_video_codec(ctx, handle);
      struct virgl_video_create_codec_args args;
  
@@ -2783,7 +2823,7 @@ index 57341d8..f265dcd 100644
  
      if (entrypoint <= PIPE_VIDEO_ENTRYPOINT_UNKNOWN ||
          entrypoint > PIPE_VIDEO_ENTRYPOINT_ENCODE)
-@@ -457,6 +662,8 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -457,6 +673,8 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
      struct vrend_video_buffer *buf = get_video_buffer(ctx, handle);
      struct virgl_video_create_buffer_args args;
  
@@ -2792,7 +2832,7 @@ index 57341d8..f265dcd 100644
      if (buf)
          return 0;
  
-@@ -483,8 +690,10 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -483,8 +701,10 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
          return -1;
      }
  
@@ -2803,7 +2843,7 @@ index 57341d8..f265dcd 100644
  
      for (i = 0, buf->num_planes = 0;
           i < num_res && buf->num_planes < ARRAY_SIZE(buf->planes); i++) {
-@@ -494,6 +703,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -494,6 +714,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
  
          plane = &buf->planes[buf->num_planes++];
          plane->res_handle = res_handles[i];
@@ -2811,7 +2851,7 @@ index 57341d8..f265dcd 100644
          glGenFramebuffers(1, &plane->framebuffer);
          glGenTextures(1, &plane->texture);
          glBindTexture(GL_TEXTURE_2D, plane->texture);
-@@ -502,6 +712,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -502,6 +723,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
          glBindTexture(GL_TEXTURE_2D, 0);
@@ -2819,7 +2859,7 @@ index 57341d8..f265dcd 100644
      }
  
      buf->handle = handle;
-@@ -521,6 +732,7 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
+@@ -521,6 +743,7 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
  
      list_del(&buf->head);
  
@@ -2827,7 +2867,7 @@ index 57341d8..f265dcd 100644
      for (i = 0; i < buf->num_planes; i++) {
          plane = &buf->planes[i];
  
-@@ -529,6 +741,10 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
+@@ -529,6 +752,10 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
          if (plane->egl_image == EGL_NO_IMAGE_KHR)
              eglDestroyImageKHR(eglGetCurrentDisplay(), plane->egl_image);
      }
@@ -2838,7 +2878,7 @@ index 57341d8..f265dcd 100644
  
      virgl_video_destroy_buffer(buf->buffer);
  
-@@ -747,7 +963,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
+@@ -747,7 +974,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
      union virgl_picture_desc desc;
  
      if (!cdc || !tgt){
@@ -2851,7 +2891,7 @@ index 57341d8..f265dcd 100644
          return -1;
      }
  
-@@ -771,10 +991,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
+@@ -771,10 +1002,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
              continue;
          }
  
