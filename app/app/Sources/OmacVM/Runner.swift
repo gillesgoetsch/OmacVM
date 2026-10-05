@@ -184,10 +184,12 @@ final class Runner {
     /// may not start, or the daemon may go away later: then QEMU only tries
     /// to connect again and again, and the VM has no network. Watched for the
     /// whole run: when vmnet stays down, QEMU's user network takes over
-    /// (useUserNetwork); when it is back for a whole window, vmnet takes over
-    /// again (useFastNetwork). logs/network and qemu.log say which (omacvm
-    /// check, app_ip). launchd accepts every connect at first, so one
-    /// "connected" poll proves nothing: most of the last polls must see it.
+    /// (switchNetwork); when it is back for a whole window, vmnet takes over
+    /// again. A switch that fails or is only half done (QMP busy or timed
+    /// out) is tried again at the next poll: switching is safe to repeat.
+    /// logs/network and qemu.log say what the VM has now (omacvm check,
+    /// app_ip). launchd accepts every connect at first, so one "connected"
+    /// poll proves nothing: most of the last polls must see it.
     private func watchFastNetwork() {
         let qmpPath = config.qmpSocket.path
         let sshPort = config.sshPort
@@ -195,7 +197,8 @@ final class Runner {
         // Polls and switches off the main thread (QMP blocks); the verdicts back here.
         Task { [weak self] in
             var recent: [Bool] = []
-            var onVmnet = true, userNICAdded = false
+            var toUser = false     // the network the VM should be on: the user network, else vmnet
+            var done = true        // ... and the last switch to it went through
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             while self?.isRun(pid) == true {
                 if let up = await Task.detached(operation: { Runner.fastLinkUp(qmpPath: qmpPath) }).value {
@@ -203,24 +206,20 @@ final class Runner {
                     if recent.count > Runner.watchWindow { recent.removeFirst() }
                 }
                 let ups = recent.filter { $0 }.count
-                if recent.count == Runner.watchWindow, onVmnet, ups * 2 < recent.count {
-                    let added = userNICAdded
-                    let ok = await Task.detached(operation: {
-                        Runner.useUserNetwork(qmpPath: qmpPath, sshPort: sshPort, nicAdded: added)
+                if recent.count == Runner.watchWindow {
+                    if !toUser, ups * 2 < recent.count { toUser = true; done = false }
+                    else if toUser, ups == recent.count { toUser = false; done = false }
+                }
+                if !done {
+                    let user = toUser
+                    let links = await Task.detached(operation: {
+                        Runner.switchNetwork(qmpPath: qmpPath, sshPort: sshPort, toUser: user)
                     }).value
                     guard let self, self.isRun(pid) else { return }
-                    if !ok {
-                        self.recordNetwork("vmnet-down QEMU cannot connect to omacvm-netd, and the user network could not take over: no network until the VM starts again (omacvm check; omacvm disable fast-network)")
-                        return
-                    }
-                    onVmnet = false; userNICAdded = true; recent.removeAll()
-                    self.recordNetwork("slirp fallback: the fast network stopped working (QEMU could not stay connected to omacvm-netd; its log: /var/log/org.omacvm.netd.log): QEMU's user network took over until it is back")
-                } else if recent.count == Runner.watchWindow, !onVmnet, ups == recent.count {
-                    let ok = await Task.detached(operation: { Runner.useFastNetwork(qmpPath: qmpPath) }).value
-                    guard let self, self.isRun(pid) else { return }
-                    if ok {
-                        onVmnet = true; recent.removeAll()
-                        self.recordNetwork("vmnet", note: "the fast network is back")
+                    done = links.error == nil
+                    if done { recent.removeAll() }
+                    if let line = Runner.networkRecord(links, toUser: user) {
+                        self.recordNetwork(line, note: line == "vmnet" ? "the fast network is back" : nil)
                     }
                 }
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -228,9 +227,25 @@ final class Runner {
         }
     }
 
+    /// What logs/network says after a switch: what the VM has now (nil:
+    /// nothing changed for it).
+    nonisolated static func networkRecord(_ l: NetLinks, toUser: Bool) -> String? {
+        let why = "the fast network stopped working (QEMU could not stay connected to omacvm-netd; its log: /var/log/org.omacvm.netd.log)"
+        if toUser {
+            if l.user == true {
+                return "slirp fallback: \(why): QEMU's user network took over until it is back"
+                    + (l.fast == false ? "" : " (the fast network's NIC is still up: trying again)")
+            }
+            return "vmnet-down \(why), and the user network could not take over yet (\(l.error ?? "unknown")): trying again every 3 s (omacvm check; omacvm disable fast-network)"
+        }
+        // Back to vmnet once its NIC is up again; until then the user network stays.
+        return l.fast == true ? "vmnet" : nil
+    }
+
     /// logs/network (first line: vmnet, slirp or vmnet-down, then why) and a
-    /// line in qemu.log.
+    /// line in qemu.log; a retry that changes nothing writes nothing.
     private func recordNetwork(_ line: String, note: String? = nil) {
+        if line == network.record { return }
         try? Data("\(line)\n".utf8).write(to: config.folder.appendingPathComponent("logs/network"))
         if let h = FileHandle(forWritingAtPath: config.folder.appendingPathComponent("logs/qemu.log").path) {
             h.seekToEndOfFile()
@@ -259,45 +274,66 @@ final class Runner {
         return line.contains("type=stream,unix:") && !line.contains("link=down")
     }
 
-    /// QEMU's user network as at a start without the fast network (SSH on
-    /// 127.0.0.1:sshPort): the first time on a second NIC plugged into the
-    /// empty slot (the guest's NetworkManager takes it up with DHCP:
-    /// 10.0.2.15), later its link up again. The vmnet NIC's link goes down,
-    /// so its address and route go. Its netdev stays: QEMU keeps a NIC's
-    /// netdev until the NIC goes (and cannot unplug this one), and its
-    /// reconnects are what tells that vmnet is back.
-    nonisolated static func useUserNetwork(qmpPath: String, sshPort: Int, nicAdded: Bool) -> Bool {
-        guard let qmp = try? QMPConnection(socketPath: qmpPath, identifierPrefix: "omacvm-net") else { return false }
+    /// The two NICs after a switch: true/false once set, nil when the switch
+    /// stopped before (error says why).
+    struct NetLinks { var fast: Bool?; var user: Bool?; var error: String? }
+
+    /// To QEMU's user network (toUser) or back to vmnet; safe to repeat after
+    /// a half-done switch. The user network is as at a start without the fast
+    /// network (SSH on 127.0.0.1:sshPort): its netdev ("slow") and its NIC
+    /// ("nic1", in the empty slot; the guest's NetworkManager takes it up with
+    /// DHCP: 10.0.2.15) are added the first time, only what is not there yet;
+    /// later its link goes up again. The vmnet NIC's link goes down, so its
+    /// address and route go. Its netdev stays: QEMU keeps a NIC's netdev until
+    /// the NIC goes (and cannot unplug this one), and its reconnects are what
+    /// tells that vmnet is back. Back: the vmnet NIC's link up (the guest asks
+    /// DHCP), the user network's down.
+    nonisolated static func switchNetwork(qmpPath: String, sshPort: Int, toUser: Bool) -> NetLinks {
+        var l = NetLinks()
+        guard let qmp = try? QMPConnection(socketPath: qmpPath, identifierPrefix: "omacvm-net") else {
+            l.error = "QEMU's monitor did not answer"
+            return l
+        }
         defer { qmp.close() }
         do {
-            if nicAdded {
-                _ = try qmp.execute("set_link", arguments: ["name": "nic1", "up": true])
+            let have = networkNames(try qmp.execute("human-monitor-command", arguments: ["command-line": "info network"])["text"] as? String ?? "")
+            if toUser {
+                if !have.contains("slow") {
+                    _ = try qmp.execute("netdev_add", arguments: [
+                        "type": "user", "id": "slow", "hostfwd": [["str": "tcp:127.0.0.1:\(sshPort)-:22"]]])
+                }
+                if !have.contains("nic1") {
+                    _ = try qmp.execute("device_add", arguments: [
+                        "driver": "virtio-net-pci", "id": "nic1", "netdev": "slow", "bus": "netfb",
+                        "mac": FastNetwork.defaultMAC, "romfile": ""])
+                } else {
+                    _ = try qmp.execute("set_link", arguments: ["name": "nic1", "up": true])
+                }
+                l.user = true
+                _ = try qmp.execute("set_link", arguments: ["name": "nic0", "up": false])
+                l.fast = false
             } else {
-                _ = try qmp.execute("netdev_add", arguments: [
-                    "type": "user", "id": "slow", "hostfwd": [["str": "tcp:127.0.0.1:\(sshPort)-:22"]]])
-                _ = try qmp.execute("device_add", arguments: [
-                    "driver": "virtio-net-pci", "id": "nic1", "netdev": "slow", "bus": "netfb",
-                    "mac": FastNetwork.defaultMAC, "romfile": ""])
+                _ = try qmp.execute("set_link", arguments: ["name": "nic0", "up": true])
+                l.fast = true
+                if have.contains("nic1") { _ = try qmp.execute("set_link", arguments: ["name": "nic1", "up": false]) }
+                l.user = false
             }
-            _ = try qmp.execute("set_link", arguments: ["name": "nic0", "up": false])
-            return true
         } catch {
-            return false
+            l.error = error.localizedDescription
         }
+        return l
     }
 
-    /// vmnet again: its NIC's link up (the guest asks DHCP), the user
-    /// network's down.
-    nonisolated static func useFastNetwork(qmpPath: String) -> Bool {
-        guard let qmp = try? QMPConnection(socketPath: qmpPath, identifierPrefix: "omacvm-net") else { return false }
-        defer { qmp.close() }
-        do {
-            _ = try qmp.execute("set_link", arguments: ["name": "nic0", "up": true])
-            _ = try qmp.execute("set_link", arguments: ["name": "nic1", "up": false])
-            return true
-        } catch {
-            return false
+    /// The NICs and netdevs "info network" lists: "nic0: index=0,...", its
+    /// netdev indented after a backslash, a netdev without a NIC on its own line.
+    nonisolated static func networkNames(_ text: String) -> Set<String> {
+        var names = Set<String>()
+        for line in text.split(whereSeparator: \.isNewline) {
+            var l = line.drop { $0 == " " }
+            if l.hasPrefix("\\ ") { l = l.dropFirst(2) }
+            if let colon = l.firstIndex(of: ":"), l[colon...].hasPrefix(": index=") { names.insert(String(l[..<colon])) }
         }
+        return names
     }
 
     static var micAllowed: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
