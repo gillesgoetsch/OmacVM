@@ -62,3 +62,6 @@ jobs:
 
       - name: omacvm-netd offline tests
         run: src/net/mac/test.sh
+
+      - name: Gestures offline test (which VM gets them)
+        run: src/gestures/mac/test.sh
