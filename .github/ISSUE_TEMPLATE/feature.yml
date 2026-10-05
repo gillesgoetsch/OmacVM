@@ -1,0 +1,40 @@
+name: Feature request
+description: Something that would make Omarchy on a Mac feel more native.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [every feature](https://github.com/gillesgoetsch/omacvm/blob/main/docs/features.md) and the open issues first. Maybe it's there, or coming.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      placeholder: The Mac's Focus mode shown in Omarchy's bar.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: What do you do today instead? What gets better?
+    validations:
+      required: true
+  - type: dropdown
+    id: route
+    attributes:
+      label: Route
+      description: Where do you need it?
+      multiple: true
+      options:
+        - All of them
+        - OmacVM.app
+        - UTM
+        - VMware Fusion
+        - Parallels Desktop
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Help
+      options:
+        - label: I'd like to build this myself.

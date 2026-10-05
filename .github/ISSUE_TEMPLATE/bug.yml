@@ -1,0 +1,63 @@
+# Field ids match the sections of `omacvm report` and the control centre's
+# "Report a problem", so a link with ?template=bug.yml&what=...&check=...
+# fills the form.
+name: Bug
+description: Something in OmacVM doesn't work.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `omacvm check` first: it often names the fix. Common problems are in [troubleshooting](https://github.com/gillesgoetsch/omacvm/blob/main/docs/troubleshooting.md).
+        Have `omacvm report`? It fills this form for you and takes out personal data first.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you saw.
+      placeholder: After waking the Mac, three-finger swipes stop switching workspaces until I restart the VM.
+    validations:
+      required: true
+  - type: dropdown
+    id: route
+    attributes:
+      label: Route
+      description: Which app runs the VM?
+      options:
+        - OmacVM.app
+        - UTM
+        - VMware Fusion
+        - Parallels Desktop
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: |
+        OmacVM (`omacvm --version`; `omacvm vms` shows each VM's), the app's version, macOS, and your Mac model (Apple menu › About This Mac).
+      placeholder: OmacVM 2.7.0 (VM 2.7.0) · Parallels 27.0.2 · macOS 15.7.4 · MacBook Pro M4 Max, 48 GB
+    validations:
+      required: true
+  - type: textarea
+    id: features
+    attributes:
+      label: Features
+      description: Optional. Which features are on (`omacvm features --vm NAME`).
+      render: text
+  - type: textarea
+    id: check
+    attributes:
+      label: omacvm check
+      description: The output of `omacvm check` (add `--vm NAME` for another VM). Read it before you paste it.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Optional. The last lines of `~/Library/Logs/omacvm-bridge.log`, `omacvm-gestures.log` or `omanotch.log` on the Mac, or `journalctl --user -b | grep omacvm` in the VM. Take out names, addresses and Wi-Fi names you don't want public.
+      render: text
