@@ -3,6 +3,13 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 2.9.0 (unreleased)
+
+- Video decoding: up to 32 hardware decoders per VM (Chrome's 16 plus one
+  Firefox's 16). Past that, a video decodes on the CPU instead of playing
+  black (the VM's VA-API driver knows the Mac's limit). The copy of each
+  decoded picture can no longer be dropped by the app's own graphics state.
+
 ## 2.8.0
 
 - OmacVM.app uses every Mac display in full screen: a window (in its own
