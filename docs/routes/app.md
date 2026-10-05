@@ -235,9 +235,14 @@ longer goes through one QEMU thread. Measured: see
   gateway and prove it with that address; the Mac's Bridge and Gestures
   listen there too, and Gestures counts those VMs as the app's. When the app
   moves the VM between the two networks, the VM's Gestures sees the new
-  gateway and connects again within a second (tested both ways); TCP
-  keepalive on both ends drops a connection whose path went away in about
-  10 s.
+  gateway and connects again within a second (tested both ways). On the Mac
+  the old connection goes in one of two ways: TCP keepalive drops it in
+  about 10 s when its path went away (the fast network); on the user network
+  QEMU itself keeps answering for the VM, so keepalive never fires, and the
+  Mac drops it when the same app VM (by name) connects from the other
+  address. So two running app VMs with the same name (an APFS clone before
+  `omacvm apply` renames it), one on each network, push each other out of
+  Gestures every 2 s: give clones their own name.
 - `omacvm disable fast-network` goes back at the next start; when none of
   your app VMs has the fast network any more it also removes the service
   (a VM still running on it then moves to the user network at once).
