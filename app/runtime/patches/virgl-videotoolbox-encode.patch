@@ -4,7 +4,10 @@ What: the VideoToolbox video backend (virgl-videotoolbox-decode.patch) also
 encodes. The host offers H.264 Constrained Baseline, Main and High and HEVC Main
 with the ENCODE entrypoint (16x16 up to 4096x2304), each only when VideoToolbox
 has a hardware encoder for it; OMACVM_VIDEO_NO_ENCODE=1 leaves encoding out
-(OMACVM_VIDEO_NO_HEVC=1 HEVC; the guest then encodes in software). Per frame:
+(OMACVM_VIDEO_NO_HEVC=1 HEVC; the guest then encodes in software). At most 8
+encoders are open at once per VM (each holds a media engine session, shared with
+the Mac's own apps, and pictures of up to ~14 MB); past that the guest gets no
+encoder and encodes in software. Per frame:
 begin_frame takes a picture from the compression session's pool and vrend
 copies the guest's NV12 plane textures into it (GPU blit into the IOSurface
 planes, CPU readback as fallback); encode_bitstream applies the guest's
@@ -53,7 +56,7 @@ feedback), refused sizes and profiles, cropped pictures through the GPU blit
 and the CPU copy, frame-rate changes, a frame never ended (failure feedback,
 no leak into the next), two encodes in one frame, failure feedback, constant
 QP 18 against QP 40 and against 50 kbit/s before and after it (the size
-follows the QP). In a VM: tests/video/
+follows the QP), the 8-encoder limit. In a VM: tests/video/
 (FFmpeg, Chrome WebRTC camera, screen and calls).
 diff --git a/src/vrend/virgl_video.h b/src/vrend/virgl_video.h
 index 5cc19a2..425bfb5 100644
@@ -70,7 +73,7 @@ index 5cc19a2..425bfb5 100644
  
      /* Callback when encoding is complete, used to download the encoded data
 diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
-index 6c95bf9..a3a6f59 100644
+index 6c95bf9..a32395c 100644
 --- a/src/vrend/virgl_video_vt.c
 +++ b/src/vrend/virgl_video_vt.c
 @@ -65,6 +65,7 @@
@@ -81,7 +84,7 @@ index 6c95bf9..a3a6f59 100644
  
  #include "pipe/p_video_state.h"
  #include "util/u_formats.h"
-@@ -245,6 +246,29 @@ struct virgl_video_codec {
+@@ -245,12 +246,36 @@ struct virgl_video_codec {
      uint32_t vp9_width;
      uint32_t vp9_height;
      uint32_t vp9_bit_depth;
@@ -111,7 +114,14 @@ index 6c95bf9..a3a6f59 100644
  };
  
  static struct virgl_video_callbacks *callbacks;
-@@ -2096,6 +2120,657 @@ static bool kind_offered(enum vt_codec_kind kind)
+ static bool vt_initialized;
+ static bool vt_debug;
+ static uint32_t next_buffer_id = 1;
++static unsigned live_encoders;   /* encode codecs alive (vrend's thread only) */
+ 
+ #define vt_log(...) do { if (vt_debug) virgl_info("vt-video: " __VA_ARGS__); } while (0)
+ 
+@@ -2096,6 +2121,662 @@ static bool kind_offered(enum vt_codec_kind kind)
      }
  }
  
@@ -140,6 +150,11 @@ index 6c95bf9..a3a6f59 100644
 +#define VT_ENC_MAX_CODED (32u * 1024 * 1024)
 +#define VT_ENC_MAX_GOP 3600
 +#define VT_ENC_MAX_FPS 240
++/* Encoders alive at once in this VM. Each holds a session on the Mac's media
++ * engine (shared with FaceTime, screen recording and other VMs) and pictures of
++ * up to ~14 MB; past this the guest gets no encoder and encodes in software.
++ * A call with camera and screen sharing uses two, OBS one more. */
++#define VT_ENC_MAX_LIVE 8
 +
 +static CMVideoCodecType enc_codec_type(enum vt_codec_kind kind)
 +{
@@ -769,7 +784,7 @@ index 6c95bf9..a3a6f59 100644
  int virgl_video_init(int drm_fd, struct virgl_video_callbacks *cbs,
                       unsigned int flags)
  {
-@@ -2122,8 +2797,19 @@ void virgl_video_destroy(void)
+@@ -2122,8 +2803,19 @@ void virgl_video_destroy(void)
      callbacks = NULL;
  }
  
@@ -789,7 +804,7 @@ index 6c95bf9..a3a6f59 100644
  {
      struct virgl_video_caps *v;
      uint32_t g = guest_profile(p);
-@@ -2133,7 +2819,7 @@ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
+@@ -2133,7 +2825,7 @@ static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
      v = &caps->v2.video_caps[caps->v2.num_video_caps++];
      memset(v, 0, sizeof(*v));
      v->profile = g;
@@ -798,7 +813,7 @@ index 6c95bf9..a3a6f59 100644
      v->max_level = 0;
      v->stacked_frames = 0;
      v->max_width = max_w;
-@@ -2170,6 +2856,17 @@ int virgl_video_fill_caps(union virgl_caps *caps)
+@@ -2170,6 +2862,17 @@ int virgl_video_fill_caps(union virgl_caps *caps)
      if (kind_offered(VT_KIND_AV1)) {
          add_caps(caps, PIPE_VIDEO_PROFILE_AV1_MAIN, 8192, 8192, PIPE_FORMAT_NV12);
      }
@@ -816,7 +831,7 @@ index 6c95bf9..a3a6f59 100644
      return 0;
  }
  
-@@ -2183,7 +2880,16 @@ struct virgl_video_codec *virgl_video_create_codec(
+@@ -2183,7 +2886,23 @@ struct virgl_video_codec *virgl_video_create_codec(
          return NULL;
  
      p = host_profile(args->profile);
@@ -830,19 +845,28 @@ index 6c95bf9..a3a6f59 100644
 +                       (unsigned)args->profile, args->width, args->height);
 +            return NULL;
 +        }
++        if (live_encoders >= VT_ENC_MAX_LIVE) {
++            static unsigned warned;
++            if (warned++ < 5)
++                virgl_warn("vt-video: %u encoders already open, no more for this VM\n",
++                           live_encoders);
++            return NULL;
++        }
 +    } else if (args->entrypoint != PIPE_VIDEO_ENTRYPOINT_BITSTREAM || !kind_offered(kind_of(p)) ||
          (kind_of(p) == VT_KIND_HEVC && p != PIPE_VIDEO_PROFILE_HEVC_MAIN &&
           p != PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) {
          virgl_warn("vt-video: unsupported profile %u entrypoint %u\n",
-@@ -2204,6 +2910,7 @@ struct virgl_video_codec *virgl_video_create_codec(
+@@ -2204,6 +2923,9 @@ struct virgl_video_codec *virgl_video_create_codec(
      codec->opaque = args->opaque;
      codec->l0_default = -1;
      codec->l1_default = -1;
 +    pthread_mutex_init(&codec->enc_lock, NULL);
++    if (codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE)
++        live_encoders++;
  
      vt_log("codec profile %u (%s) %ux%u\n", (unsigned)args->profile,
             codec->kind == VT_KIND_H264 ? "H.264" : codec->kind == VT_KIND_VP9 ? "VP9" :
-@@ -2218,6 +2925,10 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
+@@ -2218,6 +2940,10 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
          return;
      vt_log("codec done: %u frames, %u errors\n", codec->frames, codec->errors);
      session_destroy(codec);
@@ -853,15 +877,17 @@ index 6c95bf9..a3a6f59 100644
      if (codec->format)
          CFRelease(codec->format);
      if (codec->output)
-@@ -2226,6 +2937,7 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
+@@ -2226,6 +2952,9 @@ void virgl_video_destroy_codec(struct virgl_video_codec *codec)
          if (codec->held[i])
              CVPixelBufferRelease(codec->held[i]);
      bytes_free(&codec->bits);
 +    pthread_mutex_destroy(&codec->enc_lock);
++    if (codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE)
++        live_encoders--;
      free(codec);
  }
  
-@@ -2283,6 +2995,8 @@ int virgl_video_begin_frame(struct virgl_video_codec *codec,
+@@ -2283,6 +3012,8 @@ int virgl_video_begin_frame(struct virgl_video_codec *codec,
  {
      if (!codec || !target)
          return -1;
@@ -870,7 +896,7 @@ index 6c95bf9..a3a6f59 100644
      codec->target = target;
      codec->bits.size = 0;
      codec->have_desc = false;
-@@ -2322,10 +3036,18 @@ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
+@@ -2322,10 +3053,18 @@ int virgl_video_encode_bitstream(struct virgl_video_codec *codec,
                                   struct virgl_video_buffer *source,
                                   const union virgl_picture_desc *desc)
  {
@@ -892,7 +918,7 @@ index 6c95bf9..a3a6f59 100644
  }
  
  int virgl_video_end_frame(struct virgl_video_codec *codec,
-@@ -2335,6 +3057,8 @@ int virgl_video_end_frame(struct virgl_video_codec *codec,
+@@ -2335,6 +3074,8 @@ int virgl_video_end_frame(struct virgl_video_codec *codec,
  
      if (!codec || !target)
          return -1;

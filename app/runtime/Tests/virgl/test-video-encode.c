@@ -13,7 +13,8 @@
  * or not a buffer, gets failure feedback; a coded-data buffer too small gets a
  * failure, not a cut frame; constant QP follows the guest's QP, also after a switch from
  * bitrate mode; codecs the host does not offer (too small, too large, HEVC
- * Main 10) encode nothing.
+ * Main 10) encode nothing; at most 8 encoders are open at once, and one closed
+ * makes room for the next.
  * Runs on Apple's software OpenGL (soft-gl.h); the encoder is the Mac's media engine.
  * Skips a codec the Mac has no hardware encoder for.
  * OMACVM_TEST_H264_OUT=FILE / OMACVM_TEST_HEVC_OUT=FILE also write the streams. */
@@ -836,6 +837,34 @@ int main(void)
       snprintf(line, sizeof(line), "refused: %s encodes nothing", refused[i].what);
       check(encode_frame(20 + i, refused[i].profile, 0, &rc_normal, R_CODED) != 0 &&
             feed.stat != VIRGL_VIDEO_ENCODE_STAT_SUCCESS, line);
+   }
+
+   /* At most 8 encoders at once (each holds a media engine session): the 9th
+    * encodes nothing; closing one makes room again. */
+   hevc = 0;
+   if (offered(G_AVC_HIGH)) {
+      char line[160];
+      int ok8 = 0;
+      for (uint32_t h = 30; h < 38; h++) {
+         create_codec(h, G_AVC_HIGH, W, H);
+         ok8 += encode_frame(h, G_AVC_HIGH, 0, &rc_normal, R_CODED) == 0;
+      }
+      create_codec(38, G_AVC_HIGH, W, H);
+      int ninth = encode_frame(38, G_AVC_HIGH, 0, &rc_normal, R_CODED) == 0;
+      emit(c, VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+      emit(c, 30);
+      submit(c);
+      create_codec(39, G_AVC_HIGH, W, H);
+      int after = encode_frame(39, G_AVC_HIGH, 0, &rc_normal, R_CODED) == 0;
+      snprintf(line, sizeof(line), "8 encoders open: %d of 8 encode, a 9th %s, after closing one "
+               "a new one %s", ok8, ninth ? "encodes" : "is refused",
+               after ? "encodes" : "is refused");
+      check(ok8 == 8 && !ninth && after, line);
+      for (uint32_t h = 31; h < 40; h++) {
+         emit(c, VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+         emit(c, h);
+         submit(c);
+      }
    }
 
    virgl_renderer_context_destroy(1);
