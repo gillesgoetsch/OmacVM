@@ -59,7 +59,7 @@ tell when its vCPUs wait on the host).
 
 The numbers ran on the encoder as of commit 95ad777, before the last fixes
 (failure feedback for refused frames, constant QP, one encode per frame, the
-8-encoder limit). None of them changes how a frame is encoded at a bitrate: a
+encoder limit). None of them changes how a frame is encoded at a bitrate: a
 check run on the later encoder gave the same H.264 result (luma PSNR 39.5748
 dB on both).
 
@@ -176,14 +176,17 @@ App ─VA-API─▶ Mesa's virgl VA driver ─virtio-gpu─▶ virglrenderer (QE
   4096x2304), profiles, frame rate, bitrate, GOP and QP are clamped, the coded
   data and feedback must be buffers. `Tests/virgl/test-video-encode.c` feeds
   nonsense and random picture descriptions (on Apple's software OpenGL).
-- At most 8 encoders are open at once per VM. Each holds a session on the
-  Mac's media engine, which the Mac's own apps (FaceTime, screen recording)
-  and other VMs share, and pictures of up to about 14 MB. A call with camera
-  and screen sharing uses two. The guest's driver cannot tell that the Mac
-  refused a 9th: its frames all fail. FFmpeg then writes a file without
-  frames and still exits 0 (tested in the VM); Chrome switches to software,
-  as it does whenever the encoder returns no data. One encode per frame: a
-  second one in the same frame is refused.
+- 8 encoders at once per VM, 12 at most. Each holds a session on the Mac's
+  media engine, which the Mac's own apps (FaceTime, screen recording) and
+  other VMs share, and pictures of up to about 14 MB. A call with camera and
+  screen sharing uses two. The Mac tells the VM 8 in the encoders' video
+  caps, and OmacVM's VA-API shim refuses `vaCreateContext` past that, as for
+  the decoders (docs/video-decode.md, Limits): Chrome then encodes in
+  software, an FFmpeg command that names a VA-API encoder stops with the
+  error. The Mac itself refuses only past 12 (room for closes Mesa sends
+  late and apps without the shim); the guest's driver cannot tell that, so
+  such an encoder's frames all fail. One encode per frame: a second one in
+  the same frame is refused.
 
 Switches on the Mac (QEMU's environment): `OMACVM_VIDEO_NO_ENCODE=1` leaves
 encoding out (the guest then encodes on its CPU, and the next `omacvm apply`
@@ -205,7 +208,7 @@ the backend asks VideoToolbox at run time and offers only what it reports.
   encodes in one frame (failure feedback for each), refused sizes and
   profiles, cropped pictures through the GPU blit and the CPU copy, constant
   QP 18 against QP 40 and against 50 kbit/s before and after it, the
-  8-encoder limit.
+  12-encoder limit.
 - In a VM:
   - `tests/video/ffmpeg-encode.sh [ENCODER...]`: FFmpeg, frames per second,
     the VM's and the Mac's CPU, bitrate, PSNR.
