@@ -65,9 +65,9 @@ or `${var,,}`.
 | You changed | Test with |
 |---|---|
 | Build questions, options | `./omacvm build --plan --json --vm-type app\|utm\|fusion\|parallels`: builds nothing |
-| VM side (`src/guest`, a feature's `guest/`) | `./omacvm apply --vm "OmacVM Test"`, then `./omacvm check --vm "OmacVM Test"` |
+| VM side (`src/guest`, a feature's `guest/`) | `./omacvm apply --no-mac --vm "OmacVM Test-<topic>"`, then `./omacvm check --vm "OmacVM Test-<topic>"` |
 | Mac helpers (Bridge, Gestures, Omanotch) | `src/mac/install.sh` (replaces the installed ones), then `./omacvm check` |
-| The build itself | `./omacvm build --vm-type ROUTE --vm-name "OmacVM Test"`: 30 to 70 minutes |
+| The build itself | `./omacvm build --no-mac --vm-type ROUTE --vm-name "OmacVM Test-<topic>"`: 30 to 70 minutes |
 | OmacVM.app | `cd app && scripts/build-app.sh`, then open `app/dist/OmacVM.app` |
 
 Per route:
