@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## Unreleased
+
+### GPU and display (OmacVM.app)
+
+- WebGL Aquarium is back to 2.8.0's speed (19.9 fps against 2.9.0's 19.0
+  and 2.8.0's 20.2, bench lock) and glmark2 keeps the new path's speed.
+  The fence and frame threads no longer test GPU fences back to back while
+  QEMU's render thread runs guest commands: each test took a lock in
+  Apple's OpenGL that the render thread needs for its draw calls (ADR
+  0026). `OMACVM_VIRGL_FENCE_BUSY=0` and `OMACVM_GL_PRESENT_NAP_MAX_US=100`
+  go back.
+
 ## 2.9.0
 
 A faster GPU path for OmacVM.app with frames on the display's refresh (120

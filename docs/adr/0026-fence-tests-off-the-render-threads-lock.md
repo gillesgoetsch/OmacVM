@@ -20,7 +20,7 @@ thread's `glBindBuffer`, `glUseProgram` and friends. Samples of the render
 thread show it in `_os_unfair_lock_lock_slow` and `__ulock_wake` inside
 those calls in 2.9.0 and hardly at all in 2.8.0; `vrend-sync` shows the
 same lock from its side. Each collision parks the render thread in the
-kernel. RC3 in GPU safe mode (2.8.0's polled fences and layer drawing) was
+kernel. 2.9.0 RC3 in GPU safe mode (2.8.0's polled fences and layer drawing) was
 as fast as 2.8.0, so the shader and security changes are not the cause.
 
 ## Options
@@ -52,12 +52,13 @@ Option 3, macOS only:
   nap doubles up to 1 ms. Frames whose blit is done within 1 ms (testufo,
   video, the desktop) see no change.
 - `OMACVM_VIRGL_FENCE_BUSY=0` and `OMACVM_GL_PRESENT_NAP_MAX_US=100` go
-  back to the 2.9.0 RC behaviour; the sync thread logs which way it waits.
+  back to 2.9.0's behaviour; the sync thread logs which way it waits.
 
 ## Consequences
 
 - Bench lock, one app VM, window alone on a virtual 120 Hz display, two
-  sessions each (2.8.0 / RC3 / this): Aquarium 20.2 / 19.0 / 19.9 fps,
+  sessions each (2.8.0 / 2.9.0 RC3, the GPU code 2.9.0 shipped / this):
+  Aquarium 20.2 / 19.0 / 19.9 fps,
   glmark2 short set 1160 / 2986 / 3168, testufo 117.0 / 117.5 new frames a
   second (RC3 / this), Basemark Web 3.0 2524 / 2916 (RC3 / this, ranges
   overlap). The sync thread part alone gives Aquarium 20.15-20.6, the

@@ -18,7 +18,8 @@ thousands of times a second beside it: samples of the render thread show
 it parked in _os_unfair_lock_lock_slow/__ulock_wake inside those calls,
 and Aquarium ran about 5 % slower than with polled fences (2.8.0 path).
 Results (bench lock, one app VM, window alone on a virtual 120 Hz display,
-2.8.0 / RC3 / this, two sessions each in A B C C B A order): Aquarium
+2.8.0 / 2.9.0 RC3 (the GPU code 2.9.0 shipped) / this, two sessions each
+in A B C C B A order): Aquarium
 20.2 / 19.0 / 19.9 fps (medians of 6 runs), glmark2 short set 1160 / 2986 /
 3168, testufo 117.0 / 117.5 new frames a second (RC3 / this), Basemark Web
 3.0 medians 2524 / 2916 (RC3 / this, ranges overlap). This patch alone
