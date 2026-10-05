@@ -1,0 +1,67 @@
+From: OmacVM
+Subject: [PATCH] cocoa: fewer present fence tests while a frame waits on the GPU
+
+What: the present queue tests the fence of a frame it blitted every 100 us
+for the first millisecond, then doubles the nap up to 1 ms
+(OMACVM_GL_PRESENT_NAP_MAX_US, 100-100000; 100 = the old fixed 100 us).
+Still at most 1 s in all.
+Why: the blit waits on the GPU behind the guest's whole frame. In WebGL
+Aquarium (50 ms frames) that was some 500 tests per frame, each taking Apple
+GL's share-group lock that the render thread's GL calls take too; a
+collision parks the render thread in the kernel. Frames that finish within
+1 ms (testufo, video, the desktop) are tested exactly as before.
+Upstream: not sent (depends on the IOSurface present, an OmacVM patch).
+Test: Aquarium, glmark2, testufo (virtual 120 Hz display) A/B against RC3
+with the bench lock. Applies after qemu-cocoa-gl-present-color.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -3183,6 +3183,8 @@
+ static int64_t present_alloc_ns;       /* when the surfaces were made */
+ static bool present_realloc_due;       /* surfaces of the wrong size */
+ static uint64_t present_cap;           /* largest display: w << 32 | h */
++/* Longest nap between present fence tests (OMACVM_GL_PRESENT_NAP_MAX_US). */
++static int present_nap_max_us = 1000;
+ 
+ /*
+  * Vsync present (default; OMACVM_GL_VSYNC=0 shows each frame as soon as the
+@@ -3339,6 +3341,10 @@
+     const char *r = getenv("OMACVM_GL_REFRESH");
+     present_vsync = !(v && !strcmp(v, "0"));
+     present_fixed = r && !strcmp(r, "fixed");
++    const char *nm = getenv("OMACVM_GL_PRESENT_NAP_MAX_US");
++    if (nm && atoi(nm) >= 100 && atoi(nm) <= 100000) {
++        present_nap_max_us = atoi(nm);
++    }
+     present_nsurf = present_vsync ? PRESENT_SURFACES : 3;
+     if (present_vsync) {
+         present_bh = qemu_bh_new(cocoa_gl_present_bh, NULL);
+@@ -3603,14 +3609,24 @@
+             /*
+              * Apple's glClientWaitSync spins a core until the fence
+              * signals: test it, and nap 100 us between tests (the queue is
+-             * user-interactive, so naps are not stretched). At most 1 s,
+-             * as before.
++             * user-interactive, so naps are not stretched). Each test takes
++             * Apple GL's share-group lock, which the render thread's GL
++             * calls take too: after 1 ms (the frame waits behind a long
++             * guest frame on the GPU) the nap doubles up to
++             * present_nap_max_us, so a 50 ms frame costs some 60 tests,
++             * not 500. At most 1 s, as before.
+              */
+-            for (int t = 0; t < 10000; t++) {
++            int64_t waited = 0;
++            int nap = 100;
++            while (waited < 1000000) {
+                 if (glClientWaitSync(sync, 0, 0) != GL_TIMEOUT_EXPIRED) {
+                     break;
+                 }
+-                g_usleep(100);
++                g_usleep(nap);
++                waited += nap;
++                if (waited >= 1000) {
++                    nap = MIN(nap * 2, present_nap_max_us);
++                }
+             }
+             glDeleteSync(sync);
+         }

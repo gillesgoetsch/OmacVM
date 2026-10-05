@@ -1,0 +1,202 @@
+From: OmacVM
+Subject: [PATCH] vrend: fence tests wait while the render thread runs commands (macOS)
+
+What: on macOS the sync thread no longer spins or naps on a timer while the
+render thread (QEMU's main loop) runs a guest command buffer
+(virgl_renderer_submit_cmd/submit_cmd2 mark it, begin and end). It tests its
+fence once each time a submit ends (the render thread wakes it through a
+Mach semaphore, only when it waits) and at the latest every 1 ms. A submit
+that ended less than 50 us ago counts as running, since the next one
+usually follows at once. When the render thread is idle (a guest that waits
+on its fence, e.g. glmark2) the wait is as before: up to 100 us of spinning,
+then naps of 50 us, doubling after 1 ms. OMACVM_VIRGL_FENCE_BUSY=0 turns it
+off (the sync thread logs which way it waits).
+Why: each glClientWaitSync takes Apple GL's share-group lock, which the
+render thread's GL calls (glBindBuffer, glUseProgram, ...) take too. In
+WebGL Aquarium the render thread is saturated and the sync thread tested
+thousands of times a second beside it: samples of the render thread show
+it parked in _os_unfair_lock_lock_slow/__ulock_wake inside those calls,
+and Aquarium ran about 5 % slower than with polled fences (2.8.0 path).
+Upstream: macOS-specific, goes with virgl-darwin-fence-wait.patch.
+Test: Aquarium, glmark2, testufo, Basemark A/B against RC3 (bench lock);
+tests/graphics dEQP GLES2/3 + WebGL smoke; soak.
+Applies after virgl-darwin-fence-wait.patch and the rest of the list (last).
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -99,6 +99,7 @@
+ #include <mach/mach.h>
+ #include <mach/mach_time.h>
+ #include <mach/thread_policy.h>
++#include <mach/semaphore.h>
+ 
+ /* The sync thread's fence wait on macOS (do_wait): busy for at most SPIN
+  * after the thread last slept, then naps of NAP between tests; once a
+@@ -115,8 +116,47 @@
+ 
+ /* When the sync thread last woke from a sleep (only it reads or writes). */
+ static uint64_t fence_awake_since;
++
++/* While the render thread runs guest commands (virgl_renderer_submit_cmd),
++ * a fence test on the sync thread takes Apple GL's share-group lock that the
++ * render thread's GL calls take too; every collision parks the render thread
++ * in the kernel (WebGL Aquarium: the render thread is saturated, 5 % slower
++ * with the sync thread testing than with polled fences). So while it runs
++ * the sync thread does not spin or nap on a timer: it tests once each time a
++ * submit ends (the render thread wakes it) and at the latest every
++ * FENCE_BUSY_NAP. A submit that ended less than FENCE_BUSY_GRACE ago counts
++ * as running: the next one usually follows at once. An idle render thread
++ * (a guest waiting on a fence: glmark2) gets the spin and naps as before.
++ * OMACVM_VIRGL_FENCE_BUSY=0 turns this off. */
++#define FENCE_BUSY_NAP_NS 1000000ull
++#define FENCE_BUSY_GRACE_NS 50000ull
++
++static atomic_uint render_submits;       /* submits running (render thread) */
++static _Atomic uint64_t render_idle_at;  /* when the last one ended */
++static atomic_bool fence_busy_waiting;   /* the sync thread waits for an end */
++static semaphore_t fence_busy_sem;
++static bool fence_busy_on;
+ #endif
+ 
++/* Called by virgl_renderer_submit_cmd(2) around a context's command buffer. */
++void vrend_renderer_submit_begin(void)
++{
++#ifdef __APPLE__
++   atomic_fetch_add_explicit(&render_submits, 1, memory_order_relaxed);
++#endif
++}
++
++void vrend_renderer_submit_end(void)
++{
++#ifdef __APPLE__
++   atomic_store_explicit(&render_idle_at, mach_absolute_time(), memory_order_relaxed);
++   atomic_fetch_sub_explicit(&render_submits, 1, memory_order_release);
++   if (atomic_load_explicit(&fence_busy_waiting, memory_order_acquire) &&
++       atomic_exchange(&fence_busy_waiting, false))
++      semaphore_signal(fence_busy_sem);
++#endif
++}
++
+ struct vrend_fence {
+    /* When the sync thread is waiting on the fence and the main thread
+     * destroys the context, ctx is set to NULL.  Otherwise, ctx is always
+@@ -8251,6 +8291,45 @@
+    }
+ }
+ 
++#ifdef __APPLE__
++/* Sync thread: is the render thread running guest commands (or did it stop
++ * less than the grace period ago)? */
++static bool fence_render_busy(uint64_t now)
++{
++   static uint64_t grace;
++   if (!grace) {
++      mach_timebase_info_data_t tb;
++      mach_timebase_info(&tb);
++      grace = FENCE_BUSY_GRACE_NS * tb.denom / tb.numer;
++   }
++   return atomic_load_explicit(&render_submits, memory_order_acquire) ||
++          now - atomic_load_explicit(&render_idle_at, memory_order_relaxed) < grace;
++}
++
++/* Sync thread: wait until a submit ends, at most FENCE_BUSY_NAP; or, when
++ * the render thread already stopped, until the grace period is over. */
++static void fence_wait_render(uint64_t now)
++{
++   static uint64_t grace;
++   if (!grace) {
++      mach_timebase_info_data_t tb;
++      mach_timebase_info(&tb);
++      grace = FENCE_BUSY_GRACE_NS * tb.denom / tb.numer;
++   }
++   atomic_store(&fence_busy_waiting, true);
++   if (atomic_load(&render_submits)) {
++      mach_timespec_t ts = { 0, (clock_res_t)FENCE_BUSY_NAP_NS };
++      semaphore_timedwait(fence_busy_sem, ts);
++   } else {
++      uint64_t idle = atomic_load_explicit(&render_idle_at, memory_order_relaxed);
++      if (now - idle < grace)
++         mach_wait_until(idle + grace);
++   }
++   atomic_store(&fence_busy_waiting, false);
++   fence_awake_since = mach_absolute_time();
++}
++#endif
++
+ static bool do_wait(struct vrend_fence *fence, bool can_block)
+ {
+ #ifdef HAVE_EPOXY_EGL_H
+@@ -8270,7 +8349,7 @@
+       static mach_timebase_info_data_t tb;
+       if (!tb.denom)
+          mach_timebase_info(&tb);
+-      const uint64_t t0 = mach_absolute_time();
++      uint64_t t0 = mach_absolute_time();
+       const uint64_t spin = FENCE_SPIN_NS * tb.denom / tb.numer;
+       const uint64_t lng = FENCE_LONG_NS * tb.denom / tb.numer;
+       const uint64_t nap_max = FENCE_NAP_MAX_NS * tb.denom / tb.numer;
+@@ -8282,6 +8361,13 @@
+          if (glret != GL_TIMEOUT_EXPIRED)
+             return true;
+          const uint64_t now = mach_absolute_time();
++         if (fence_busy_on && fence_render_busy(now)) {
++            /* Afterwards the wait starts over: spin and short naps first. */
++            fence_wait_render(now);
++            t0 = fence_awake_since;
++            nap = FENCE_NAP_NS * tb.denom / tb.numer;
++            continue;
++         }
+          if (now - t0 <= spin && now - fence_awake_since <= spin)
+             continue;
+          mach_wait_until(now + nap);
+@@ -8408,6 +8494,13 @@
+       if (kr != KERN_SUCCESS)
+          virgl_warn("sync thread: no time-constraint policy, fence waits may be late\n");
+       fence_awake_since = mach_absolute_time();
++      const char *busy = getenv("OMACVM_VIRGL_FENCE_BUSY");
++      if (!fence_busy_sem &&
++          semaphore_create(mach_task_self(), &fence_busy_sem, SYNC_POLICY_FIFO, 0) != KERN_SUCCESS)
++         fence_busy_sem = MACH_PORT_NULL;
++      fence_busy_on = !(busy && !strcmp(busy, "0")) && fence_busy_sem != MACH_PORT_NULL;
++      virgl_info("sync thread: fence tests %s the render thread's commands\n",
++                 fence_busy_on ? "wait for the end of" : "run beside");
+    }
+ #endif
+ 
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -472,6 +472,8 @@
+                                 uint64_t fence_id);
+ 
+ void vrend_renderer_check_fences(void);
++void vrend_renderer_submit_begin(void);
++void vrend_renderer_submit_end(void);
+ 
+ int vrend_renderer_create_ctx0_fence(uint32_t fence_id);
+ int vrend_renderer_export_ctx0_fence(uint32_t fence_id, int* out_fd);
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -336,7 +336,10 @@
+    if (((uintptr_t)buffer & 3) != 0)
+       return EFAULT;
+ 
+-   return ctx->submit_cmd(ctx, buffer, (uint32_t)ndw * sizeof(uint32_t));
++   vrend_renderer_submit_begin();
++   int ret = ctx->submit_cmd(ctx, buffer, (uint32_t)ndw * sizeof(uint32_t));
++   vrend_renderer_submit_end();
++   return ret;
+ }
+ 
+ int virgl_renderer_transfer_write_iov(uint32_t handle,
+@@ -1734,7 +1737,10 @@
+          return err;
+    }
+ 
+-   return ctx->submit_cmd(ctx, buffer, (uint32_t)ndw * sizeof(uint32_t));
++   vrend_renderer_submit_begin();
++   int ret = ctx->submit_cmd(ctx, buffer, (uint32_t)ndw * sizeof(uint32_t));
++   vrend_renderer_submit_end();
++   return ret;
+ }
+ 
+ int virgl_renderer_get_dev_fd(int ctx_id)
