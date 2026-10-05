@@ -32,9 +32,11 @@ guest never ended is completed, dropped and reported as failed when the next
 one begins, and time stamps add up per frame (they keep increasing when the
 frame rate changes).
 vrend_video.c: the planes must be R8/RG8 textures (GL errors in the copy fail
-it), the upload reports whether the picture was copied (virgl_video.h:
-encode_upload_picture returns int); coded-data and feedback resources must be
-buffers and stay
+it), the GPU copy runs with the guest's conditional rendering paused and
+rasterizer discard off (either could drop the blit without a GL error;
+vrend_renderer.c exports the pause vrend's own blits use), the upload reports
+whether the picture was copied (virgl_video.h: encode_upload_picture returns
+int); coded-data and feedback resources must be buffers and stay
 referenced from encode_bitstream to the end of the frame (a guest could unref
 them in between); coded data that does not fit the guest's buffer, or a buffer
 that cannot be mapped, gives failure feedback (was: a cut frame reported as
@@ -56,7 +58,9 @@ feedback), refused sizes and profiles, cropped pictures through the GPU blit
 and the CPU copy, frame-rate changes, a frame never ended (failure feedback,
 no leak into the next), two encodes in one frame, failure feedback, constant
 QP 18 against QP 40 and against 50 kbit/s before and after it (the size
-follows the QP), the 8-encoder limit. In a VM: tests/video/
+follows the QP), the 8-encoder limit, encoding while the guest's conditional
+rendering says skip (Apple's software OpenGL copies either way, so this guards
+the path but does not show the GPU effect). In a VM: tests/video/
 (FFmpeg, Chrome WebRTC camera, screen and calls).
 diff --git a/src/vrend/virgl_video.h b/src/vrend/virgl_video.h
 index 5cc19a2..425bfb5 100644
@@ -927,8 +931,37 @@ index 6c95bf9..a32395c 100644
      /* The guest may have destroyed the buffer it named earlier: use this one. */
      codec->target = target;
      if (!codec->have_desc || !codec->bits.size) {
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+index ba0a885..301c662 100644
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -12400,6 +12400,11 @@ static void vrend_pause_render_condition(struct vrend_context *ctx, bool pause)
+    }
+ }
+ 
++void vrend_renderer_pause_render_condition(struct vrend_context *ctx, bool pause)
++{
++   vrend_pause_render_condition(ctx, pause);
++}
++
+ void vrend_render_condition(struct vrend_context *ctx,
+                             uint32_t handle,
+                             bool condition,
+diff --git a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
+index 6c7c7de..b7d9816 100644
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -492,6 +492,8 @@ void vrend_render_condition(struct vrend_context *ctx,
+                             uint32_t handle,
+                             bool condtion,
+                             uint32_t mode);
++/* Pause the guest's conditional rendering for a host-side copy (and resume it). */
++void vrend_renderer_pause_render_condition(struct vrend_context *ctx, bool pause);
+ void *vrend_renderer_get_cursor_contents(struct pipe_resource *pres,
+                                          uint32_t *width,
+                                          uint32_t *height);
 diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
-index d3d8065..e4a3953 100644
+index d3d8065..a15bc97 100644
 --- a/src/vrend/vrend_video.c
 +++ b/src/vrend/vrend_video.c
 @@ -232,6 +232,8 @@ static bool blit_pixbuf_to_video_buffer(struct vrend_video_buffer *buf,
@@ -940,7 +973,7 @@ index d3d8065..e4a3953 100644
      }
  
      glBindFramebuffer(GL_READ_FRAMEBUFFER, old_read);
-@@ -333,6 +335,163 @@ static int sync_pixbuf_to_video_buffer(struct vrend_video_buffer *buf,
+@@ -333,6 +335,174 @@ static int sync_pixbuf_to_video_buffer(struct vrend_video_buffer *buf,
      glFlush();
      return 0;
  }
@@ -965,12 +998,20 @@ index d3d8065..e4a3953 100644
 +    IOSurfaceRef surface = CVPixelBufferGetIOSurface(pix);
 +    CGLContextObj cgl = CGLGetCurrentContext();
 +    GLint old_read = 0, old_draw = 0, old_rect = 0;
-+    GLboolean scissor, srgb, mask[4];
++    GLboolean scissor, srgb, discard, mask[4];
 +    GLuint tex[2] = { 0 }, fbo[2] = { 0 };
 +    bool ok = true;
 +
 +    if (!surface || !cgl || IOSurfaceGetPlaneCount(surface) != 2 || buf->num_planes < 2)
 +        return false;
++
++    /* The guest's state must not touch the copy: conditional rendering (and
++     * on some drivers rasterizer discard) can drop a blit without a GL error,
++     * and the frame would encode the pool's old picture. Both are off for the
++     * copy, as vrend's own blits do it. */
++    vrend_renderer_pause_render_condition(buf->ctx->ctx, true);
++    discard = glIsEnabled(GL_RASTERIZER_DISCARD);
++    glDisable(GL_RASTERIZER_DISCARD);
 +
 +    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &old_read);
 +    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &old_draw);
@@ -1030,7 +1071,10 @@ index d3d8065..e4a3953 100644
 +        glEnable(GL_SCISSOR_TEST);
 +    if (srgb)
 +        glEnable(GL_FRAMEBUFFER_SRGB);
++    if (discard)
++        glEnable(GL_RASTERIZER_DISCARD);
 +    glColorMask(mask[0], mask[1], mask[2], mask[3]);
++    vrend_renderer_pause_render_condition(buf->ctx->ctx, false);
 +    /* The encoder reads the IOSurface outside GL: the copies must be done. */
 +    glFinish();
 +    return ok;
@@ -1104,7 +1148,7 @@ index d3d8065..e4a3953 100644
  #else
  
  static int sync_dmabuf_to_video_buffer(struct vrend_video_buffer *buf,
-@@ -476,7 +635,7 @@ static void vrend_video_decode_completed(
+@@ -476,7 +646,7 @@ static void vrend_video_decode_completed(
  }
  
  
@@ -1113,7 +1157,7 @@ index d3d8065..e4a3953 100644
                                  struct virgl_video_codec *codec,
                                  const struct virgl_video_dma_buf *dmabuf)
  {
-@@ -485,9 +644,10 @@ static void vrend_video_enocde_upload_picture(
+@@ -485,9 +655,10 @@ static void vrend_video_enocde_upload_picture(
      (void)codec;
  
  #ifdef ENABLE_VIDEO_VIDEOTOOLBOX
@@ -1125,7 +1169,7 @@ index d3d8065..e4a3953 100644
  #endif
  }
  
-@@ -512,14 +672,30 @@ static void vrend_video_encode_completed(
+@@ -512,14 +683,30 @@ static void vrend_video_encode_completed(
  
      memset(&feedback, 0, sizeof(feedback));
  
@@ -1161,7 +1205,7 @@ index d3d8065..e4a3953 100644
              memcpy((uint8_t *)buf + data_size, coded_bufs[i], size);
              vrend_write_to_iovec(cdc->dest_res->iov, cdc->dest_res->num_iovs,
                                   data_size, coded_bufs[i], size);
-@@ -530,7 +706,8 @@ static void vrend_video_encode_completed(
+@@ -530,7 +717,8 @@ static void vrend_video_encode_completed(
          feedback.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
          feedback.coded_size = data_size;
      } else {
@@ -1171,7 +1215,7 @@ index d3d8065..e4a3953 100644
          feedback.stat = VIRGL_VIDEO_ENCODE_STAT_FAILURE;
          feedback.coded_size = 0;
      }
-@@ -540,8 +717,8 @@ static void vrend_video_encode_completed(
+@@ -540,8 +728,8 @@ static void vrend_video_encode_completed(
                           0, (char *)(&feedback),
                           MIN2(cdc->feed_res->base.width0, sizeof(feedback)));
  
@@ -1182,7 +1226,7 @@ index d3d8065..e4a3953 100644
  }
  
  static struct virgl_video_callbacks video_callbacks = {
-@@ -637,6 +814,8 @@ static void destroy_video_codec(struct vrend_video_codec *cdc)
+@@ -637,6 +825,8 @@ static void destroy_video_codec(struct vrend_video_codec *cdc)
      if (cdc) {
          list_del(&cdc->head);
          virgl_video_destroy_codec(cdc->codec);
@@ -1191,7 +1235,7 @@ index d3d8065..e4a3953 100644
          free(cdc);
      }
  }
-@@ -1015,6 +1194,21 @@ err:
+@@ -1015,6 +1205,21 @@ err:
      return err;
  }
  
@@ -1213,7 +1257,7 @@ index d3d8065..e4a3953 100644
  int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
                                   uint32_t cdc_handle,
                                   uint32_t src_handle,
-@@ -1027,9 +1221,6 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
+@@ -1027,9 +1232,6 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
      struct vrend_video_codec  *cdc = get_video_codec(ctx, cdc_handle);
      struct vrend_video_buffer *src = get_video_buffer(ctx, src_handle);
  
@@ -1223,7 +1267,7 @@ index d3d8065..e4a3953 100644
      /* Feedback resource */
      feed_res = vrend_renderer_ctx_res_lookup(ctx->ctx, feed_handle);
      if (!feed_res) {
-@@ -1037,10 +1228,16 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
+@@ -1037,10 +1239,16 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
          return -1;
      }
  
@@ -1240,7 +1284,7 @@ index d3d8065..e4a3953 100644
          return -1;
      }
      memset(&desc, 0, sizeof(desc));
-@@ -1051,11 +1248,30 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
+@@ -1051,11 +1259,30 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
      dest_res = vrend_renderer_ctx_res_lookup(ctx->ctx, dest_handle);
      if (!dest_res) {
          virgl_error("%s: dest res %d not found\n", __func__, dest_handle);

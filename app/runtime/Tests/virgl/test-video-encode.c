@@ -14,7 +14,8 @@
  * failure, not a cut frame; constant QP follows the guest's QP, also after a switch from
  * bitrate mode; codecs the host does not offer (too small, too large, HEVC
  * Main 10) encode nothing; at most 8 encoders are open at once, and one closed
- * makes room for the next.
+ * makes room for the next; the guest's conditional rendering does not stop the
+ * picture copy (Apple's software OpenGL copies either way: no proof for the GPU).
  * Runs on Apple's software OpenGL (soft-gl.h); the encoder is the Mac's media engine.
  * Skips a codec the Mac has no hardware encoder for.
  * OMACVM_TEST_H264_OUT=FILE / OMACVM_TEST_HEVC_OUT=FILE also write the streams. */
@@ -39,7 +40,7 @@ enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2 };
 /* guest numbering (Mesa >= 26): enum pipe_video_profile / entrypoint */
 enum { G_AVC_HIGH = 11, G_HEVC_MAIN = 15, G_HEVC_MAIN_10 = 16, G_ENTRYPOINT_ENCODE = 4 };
 enum { PIC_P = 0, PIC_IDR = 3 };
-enum { R_Y = 1, R_UV, R_DESC, R_CODED, R_FEED, R_SMALL, R_TEX, R_FEED2 };
+enum { R_Y = 1, R_UV, R_DESC, R_CODED, R_FEED, R_SMALL, R_TEX, R_FEED2, R_QUERY };
 enum { BUF = 2 };   /* the video buffer's handle; codecs get 10, 11, ... */
 
 static CGLContextObj main_ctx;
@@ -266,6 +267,7 @@ static uint8_t y[W * H], uv[W * H / 2];
 static union virgl_picture_desc desc;
 static uint8_t coded[4 << 20], small[16];
 static struct virgl_video_encode_feedback feed, feed2;
+static uint8_t query_result[64];
 
 static void create_codec(uint32_t handle, uint32_t profile, uint32_t w, uint32_t h)
 {
@@ -766,6 +768,60 @@ static void test_crop(uint32_t handle, uint32_t profile, const char *name, int c
    submit(c);
 }
 
+/* The guest's conditional rendering is on and says "skip" (an occlusion query
+ * with no samples): the copy into the encoder's picture is not rendering and
+ * must still happen, so the stream shows the guest's pictures. */
+static void test_render_condition(uint32_t handle, uint32_t profile, const char *name)
+{
+   static uint8_t stream[2 << 20];
+   static uint8_t ys[FRAMES][W * H];
+   uint32_t stream_size = 0, bad = 0;
+   char line[160];
+
+   hevc = profile != G_AVC_HIGH;
+   if (!offered(profile))
+      return;
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_QUERY, VIRGL_OBJ_QUERY_SIZE));
+   emit(c, 40);
+   emit(c, VIRGL_OBJ_QUERY_TYPE(0));   /* PIPE_QUERY_OCCLUSION_COUNTER */
+   emit(c, 0);
+   emit(c, R_QUERY);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_QUERY, 0, 1));
+   emit(c, 40);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_END_QUERY, 0, 1));
+   emit(c, 40);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_SET_RENDER_CONDITION, 0, VIRGL_RENDER_CONDITION_SIZE));
+   emit(c, 40);
+   emit(c, 0);                          /* condition: skip when no samples passed */
+   emit(c, 0);                          /* PIPE_RENDER_COND_WAIT */
+   submit(c);
+   create_codec(handle, profile, W, H);
+   for (int f = 0; f < 5; f++) {
+      if (encode_frame(handle, profile, f, &rc_normal, R_CODED) ||
+          stream_size + feed.coded_size > sizeof(stream)) {
+         bad++;
+         continue;
+      }
+      memcpy(ys[f], y, sizeof(y));
+      memcpy(stream + stream_size, coded, feed.coded_size);
+      stream_size += feed.coded_size;
+   }
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_SET_RENDER_CONDITION, 0, VIRGL_RENDER_CONDITION_SIZE));
+   emit(c, 0);
+   emit(c, 0);
+   emit(c, 0);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+   emit(c, handle);
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_QUERY, 1));
+   emit(c, 40);
+   submit(c);
+   double min_psnr = 0;
+   int decoded = decode_back(stream, stream_size, ys, &min_psnr);
+   snprintf(line, sizeof(line), "%s: guest's conditional rendering on: %d of 5 frames decode, "
+            "lowest luma PSNR %.1f dB", name, decoded, min_psnr);
+   check(!bad && decoded == 5 && min_psnr > 30, line);
+}
+
 int main(void)
 {
    setvbuf(stdout, NULL, _IONBF, 0);
@@ -802,6 +858,8 @@ int main(void)
             VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_RENDER_TARGET, 64, 64, NULL, 0);
    make_res(R_FEED2, TEST_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM,
             sizeof(feed2), 1, &feed2, sizeof(feed2));
+   make_res(R_QUERY, TEST_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM,
+            sizeof(query_result), 1, query_result, sizeof(query_result));
 
    c = calloc(1, sizeof(*c));
    emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_BUFFER, 0, 6));
@@ -821,6 +879,7 @@ int main(void)
    test_crop(15, G_HEVC_MAIN, "HEVC", 1);
    test_cqp(16, G_AVC_HIGH, "H.264");
    test_cqp(17, G_HEVC_MAIN, "HEVC");
+   test_render_condition(18, G_AVC_HIGH, "H.264");
 
    /* Codecs the host does not offer: nothing is encoded with them. */
    static const struct { uint32_t profile, w, h; const char *what; } refused[] = {
@@ -868,7 +927,7 @@ int main(void)
    }
 
    virgl_renderer_context_destroy(1);
-   for (uint32_t r = R_Y; r <= R_FEED2; r++)
+   for (uint32_t r = R_Y; r <= R_QUERY; r++)
       virgl_renderer_resource_unref(r);
    free(c);
    virgl_renderer_cleanup(&cookie);
