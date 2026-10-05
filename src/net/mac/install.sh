@@ -7,7 +7,8 @@
 #                                        Mac user; asks for an administrator's
 #                                        password (sudo)
 #   src/net/mac/install.sh --status [--app APP]
-#                                        ok | old (another build or another app) | missing
+#                                        ok | old (another build or another app) |
+#                                        down (installed, not loaded) | missing
 #   src/net/mac/install.sh --remove      not for this Mac user any more; off this
 #                                        Mac when no other user has it (sudo)
 # The daemon comes built and signed inside OmacVM.app (Contents/Library/
@@ -80,7 +81,7 @@ status() {
     if h=$(bundled "$APP"); then [[ -n $(cdhash "$h") && $(cdhash "$h") == "$(cdhash "$BIN")" ]] || { echo old; return 0; }
     elif [[ $("$BIN" --version 2>/dev/null) != "$VERSION" ]]; then echo old; return 0; fi
   elif [[ $("$BIN" --version 2>/dev/null) != "$VERSION" ]]; then echo old; return 0; fi
-  launchctl print "system/$LABEL" >/dev/null 2>&1 && [[ -S $SOCK ]] || { echo old; return 0; }
+  launchctl print "system/$LABEL" >/dev/null 2>&1 && [[ -S $SOCK ]] || { echo down; return 0; }
   echo ok
 }
 

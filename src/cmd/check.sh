@@ -150,6 +150,7 @@ if [[ $TYPE == app ]]; then
     case $("$R/src/net/mac/install.sh" --status 2>/dev/null) in
       ok) ok "fast network service" "omacvm-netd, for this OmacVM.app" ;;
       old) bad "fast network service" "for another build of the app, or older: omacvm enable fast-network --vm \"$VM\"" ;;
+      down) bad "fast network service" "installed, but launchd does not run it: sudo launchctl bootstrap system /Library/LaunchDaemons/org.omacvm.netd.plist" ;;
       *) bad "fast network service" "not installed: omacvm enable fast-network --vm \"$VM\"" ;;
     esac
     d=$(app_dir "$VM" 2>/dev/null); net=$(head -1 "$d/logs/network" 2>/dev/null)
