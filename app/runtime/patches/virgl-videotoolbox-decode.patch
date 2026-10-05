@@ -6,22 +6,29 @@ VA-API driver (Mesa virgl) decodes H.264, HEVC Main and Main 10, VP9 profile 0
 and 2 and AV1 (only with OMACVM_VIDEO_AV1=1) through VTDecompressionSession;
 vrend_video.c copies each decoded IOSurface into the guest's plane textures
 (GPU blit, CPU copy as fallback).
-Guest limits (the guest is untrusted): at most 8 decoders open at once per VM
+Guest limits (the guest is untrusted): at most 32 decoders open at once per VM
 (each holds a session on the Mac's media engine, shared with the Mac's own
-apps, and its pictures); the 9th gets none and decodes nothing, closing one
-frees its slot, and a guest context that goes away frees its own. Compressed
-data is clamped to the guest's buffer and capped at 64 MiB per picture. The
-GPU copy runs with the guest's conditional rendering paused (vrend_renderer.c
-exports the pause vrend's own blits use) and rasterizer discard off: either
-could drop the blit without a GL error and leave the guest's old picture.
+apps, and its pictures); one more gets none and decodes nothing, closing one
+frees its slot, and a guest context that goes away frees its own. The limit
+goes to the guest in each decoder's video caps (virgl_hw.h: omacvm_max_open,
+8 of the 20 reserved bits; Mesa ignores them) so OmacVM's VA-API shim
+(src/app/guest/omacvm_drv_video.c) refuses vaCreateContext past it and the
+player decodes on the CPU instead of showing a black video. A refusal is
+logged at once, then at most every 10 s with a count; pictures for a refused
+decoder are dropped quietly, unknown handles are logged the same way.
+Compressed data is clamped to the guest's buffer and capped at 64 MiB per
+picture. The GPU copy runs with the guest's conditional rendering paused
+(vrend_renderer.c exports the pause vrend's own blits use) and rasterizer
+discard off: either could drop the blit without a GL error and leave the
+guest's old picture.
 Why: video in the VM decodes on the media engine instead of the VM's CPU
 (numbers in docs/video-decode.md).
 Upstream: not submitted (docs/video-decode.md, "UTM", lists what it needs).
 Tests: app/runtime/Tests/virgl/test-video-decode.c at build time (Apple's
 software OpenGL; H.264 pictures land in the guest's planes, also under the
-guest's conditional rendering and rasterizer discard, the 8-decoder limit, a
-closed context freeing its decoders). In a VM: src/bench/video-bench.py and
-the checks in docs/video-decode.md.
+guest's conditional rendering and rasterizer discard, every decoder cap says
+the limit, the 32-decoder limit, a closed context freeing its decoders). In
+a VM: src/bench/video-bench.py and the checks in docs/video-decode.md.
 diff --git a/config.h.meson b/config.h.meson
 index da93f61..2fc6849 100644
 --- a/config.h.meson
@@ -83,11 +90,80 @@ index 951f48e..202ce3d 100644
  endif
  
  if with_host_windows
+diff --git a/src/virgl_hw.h b/src/virgl_hw.h
+index 4cfc1ca..e49da1f 100644
+--- a/src/virgl_hw.h
++++ b/src/virgl_hw.h
+@@ -747,7 +747,11 @@ struct virgl_video_caps {
+         uint32_t supports_interlaced:1;
+         uint32_t prefers_interlaced:1;
+         uint32_t max_temporal_layers:8;
+-        uint32_t reserved:20;
++        uint32_t reserved:12;
++        /* OmacVM: how many codecs with this entrypoint the host keeps open at
++         * once per VM (0: no limit said). Guest Mesa ignores these bits; the
++         * OmacVM VA-API shim refuses vaCreateContext past it. */
++        uint32_t omacvm_max_open:8;
+ };
+ 
+ /*
 diff --git a/src/vrend/virgl_video.h b/src/vrend/virgl_video.h
-index e954559..5cc19a2 100644
+index e954559..5a7f880 100644
 --- a/src/vrend/virgl_video.h
 +++ b/src/vrend/virgl_video.h
-@@ -97,6 +97,9 @@ struct virgl_video_dma_buf {
+@@ -45,6 +45,8 @@
+ 
+ #include <stdint.h>
+ #include <stdbool.h>
++#include <stdio.h>
++#include <time.h>
+ 
+ #include "util/u_formats.h"
+ #include "pipe/p_video_enums.h"
+@@ -75,6 +77,42 @@ struct virgl_video_create_buffer_args {
+     void *opaque;
+ };
+ 
++/* OmacVM: a message the guest can make come again and again is logged the
++ * first time, then at most every 10 s with how often it came in between, so
++ * it neither floods the log nor goes quiet for good. */
++struct virgl_video_log_limit {
++    int64_t last_ns;        /* 0: not logged yet */
++    unsigned skipped;
++};
++
++static inline bool virgl_video_log_ok(struct virgl_video_log_limit *l, unsigned *skipped)
++{
++    struct timespec ts;
++    int64_t now;
++
++    clock_gettime(CLOCK_MONOTONIC, &ts);
++    now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec + 1;
++    if (l->last_ns && now - l->last_ns < 10 * (int64_t)1000000000) {
++        l->skipped++;
++        return false;
++    }
++    *skipped = l->skipped;
++    l->skipped = 0;
++    l->last_ns = now;
++    return true;
++}
++
++/* " (and N more since the last message)", or "" (one buffer: vrend's thread only) */
++static inline const char *virgl_video_log_since(unsigned skipped)
++{
++    static char s[64];
++
++    if (!skipped)
++        return "";
++    snprintf(s, sizeof(s), " (and %u more since the last message)", skipped);
++    return s;
++}
++
+ /* flags for virgl_video_dma_buffers */
+ #define VIRGL_VIDEO_DMABUF_READ_ONLY        0x0001
+ #define VIRGL_VIDEO_DMABUF_WRITE_ONLY       0x0002
+@@ -97,6 +135,9 @@ struct virgl_video_dma_buf {
          uint32_t offset;
          uint32_t pitch;
      } planes[4];
@@ -99,10 +175,10 @@ index e954559..5cc19a2 100644
  /*
 diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
 new file mode 100644
-index 0000000..31d1d51
+index 0000000..19ecff7
 --- /dev/null
 +++ b/src/vrend/virgl_video_vt.c
-@@ -0,0 +1,2385 @@
+@@ -0,0 +1,2395 @@
 +/**************************************************************************
 + *
 + * Copyright (C) 2026 OmacVM contributors
@@ -2227,6 +2303,19 @@ index 0000000..31d1d51
 +    callbacks = NULL;
 +}
 +
++/* Decoders alive at once in this VM. Each holds a session on the Mac's media
++ * engine (shared with the Mac's own apps and other VMs) and its pictures
++ * (~30 MB in VideoToolbox's service at 1080p, ~90 MB at 4K). One per playing
++ * video: Chrome keeps at most 16 itself, Firefox has no limit of its own (24
++ * on a page of 24 videos). 32 leaves room for that and still bounds what one
++ * VM takes. The limit goes to the guest in the video caps (omacvm_max_open),
++ * and OmacVM's VA-API shim refuses past it, so players decode on the CPU
++ * instead; a guest without the shim gets no decoder past it. Counted on
++ * vrend's thread only, like everything here. */
++#define VT_DEC_MAX_LIVE 32
++_Static_assert(VT_DEC_MAX_LIVE <= 255, "omacvm_max_open has 8 bits");
++static unsigned live_decoders;
++
 +static void add_caps(union virgl_caps *caps, enum pipe_video_profile p,
 +                     uint32_t max_w, uint32_t max_h, enum pipe_format fmt)
 +{
@@ -2251,6 +2340,7 @@ index 0000000..31d1d51
 +    v->supports_interlaced = 0;
 +    v->prefers_interlaced = 0;
 +    v->max_temporal_layers = 0;
++    v->omacvm_max_open = VT_DEC_MAX_LIVE;
 +}
 +
 +int virgl_video_fill_caps(union virgl_caps *caps)
@@ -2278,13 +2368,6 @@ index 0000000..31d1d51
 +    return 0;
 +}
 +
-+/* Decoders alive at once in this VM. Each holds a session on the Mac's media
-+ * engine (shared with the Mac's own apps and other VMs) and its pictures; past
-+ * this the guest gets no decoder. A player or a browser tab uses one. Counted
-+ * on vrend's thread only, like everything here. */
-+#define VT_DEC_MAX_LIVE 8
-+static unsigned live_decoders;
-+
 +struct virgl_video_codec *virgl_video_create_codec(
 +        const struct virgl_video_create_codec_args *args)
 +{
@@ -2304,10 +2387,13 @@ index 0000000..31d1d51
 +    }
 +    if (args->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM &&
 +        live_decoders >= VT_DEC_MAX_LIVE) {
-+        static unsigned warned;
-+        if (warned++ < 5)
-+            virgl_warn("vt-video: %u decoders already open, no more for this VM\n",
-+                       live_decoders);
++        /* With OmacVM's VA-API shim the guest refuses first; this is a
++         * guest without it (or a stale count there): that video stays black. */
++        static struct virgl_video_log_limit said;
++        unsigned skipped;
++        if (virgl_video_log_ok(&said, &skipped))
++            virgl_warn("vt-video: %u decoders already open in this VM, refused one more%s\n",
++                       live_decoders, virgl_video_log_since(skipped));
 +        return NULL;
 +    }
 +
@@ -2535,10 +2621,10 @@ index 6c7c7de..b7d9816 100644
                                           uint32_t *width,
                                           uint32_t *height);
 diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
-index 57341d8..22713b5 100644
+index 57341d8..1622c45 100644
 --- a/src/vrend/vrend_video.c
 +++ b/src/vrend/vrend_video.c
-@@ -74,6 +74,12 @@
+@@ -74,12 +74,25 @@
  #include "vrend_renderer.h"
  #include "vrend_video.h"
  
@@ -2550,8 +2636,21 @@ index 57341d8..22713b5 100644
 +
  struct vrend_context;
  
++/* Codec handles the backend did not create (e.g. too many decoders open):
++ * their pictures are dropped quietly, the refusal itself was logged. The last
++ * few per context; older ones count as unknown handles. */
++#define VREND_VIDEO_REFUSED_MAX 16
++
  struct vrend_video_context {
-@@ -93,9 +99,11 @@ struct vrend_video_codec {
+     struct vrend_context *ctx;
+     struct list_head codecs;
+     struct list_head buffers;
++    uint32_t refused[VREND_VIDEO_REFUSED_MAX];
++    unsigned num_refused, next_refused;
+ };
+ 
+ struct vrend_video_codec {
+@@ -93,9 +106,11 @@ struct vrend_video_codec {
  
  struct vrend_video_plane {
      uint32_t res_handle;
@@ -2563,7 +2662,38 @@ index 57341d8..22713b5 100644
  };
  
  struct vrend_video_buffer {
-@@ -146,6 +154,198 @@ static struct vrend_video_buffer *get_video_buffer(
+@@ -133,6 +148,30 @@ static struct vrend_video_codec *get_video_codec(
+     return NULL;
+ }
+ 
++static bool codec_refused(struct vrend_video_context *ctx, uint32_t handle, bool forget)
++{
++    if (!handle)
++        return false;
++    for (unsigned i = 0; i < ctx->num_refused; i++) {
++        if (ctx->refused[i] == handle) {
++            if (forget)
++                ctx->refused[i] = 0;   /* 0 is never a guest object handle */
++            return true;
++        }
++    }
++    return false;
++}
++
++static void remember_refused(struct vrend_video_context *ctx, uint32_t handle)
++{
++    if (!handle || codec_refused(ctx, handle, false))
++        return;
++    ctx->refused[ctx->next_refused] = handle;
++    ctx->next_refused = (ctx->next_refused + 1) % VREND_VIDEO_REFUSED_MAX;
++    if (ctx->num_refused < VREND_VIDEO_REFUSED_MAX)
++        ctx->num_refused++;
++}
++
+ static struct vrend_video_buffer *get_video_buffer(
+                                         struct vrend_video_context *ctx,
+                                         uint32_t buf_handle)
+@@ -146,6 +185,198 @@ static struct vrend_video_buffer *get_video_buffer(
  }
  
  
@@ -2762,7 +2892,7 @@ index 57341d8..22713b5 100644
  static int sync_dmabuf_to_video_buffer(struct vrend_video_buffer *buf,
                                         const struct virgl_video_dma_buf *dmabuf)
  {
-@@ -268,6 +468,7 @@ static int sync_video_buffer_to_dmabuf(struct vrend_video_buffer *buf,
+@@ -268,6 +499,7 @@ static int sync_video_buffer_to_dmabuf(struct vrend_video_buffer *buf,
  
      return 0;
  }
@@ -2770,7 +2900,7 @@ index 57341d8..22713b5 100644
  
  
  static void vrend_video_decode_completed(
-@@ -278,7 +479,11 @@ static void vrend_video_decode_completed(
+@@ -278,7 +510,11 @@ static void vrend_video_decode_completed(
  
      (void)codec;
  
@@ -2782,7 +2912,7 @@ index 57341d8..22713b5 100644
  }
  
  
-@@ -290,7 +495,11 @@ static void vrend_video_enocde_upload_picture(
+@@ -290,7 +526,11 @@ static void vrend_video_enocde_upload_picture(
  
      (void)codec;
  
@@ -2794,7 +2924,7 @@ index 57341d8..22713b5 100644
  }
  
  static void vrend_video_encode_completed(
-@@ -354,8 +563,10 @@ static struct virgl_video_callbacks video_callbacks = {
+@@ -354,8 +594,10 @@ static struct virgl_video_callbacks video_callbacks = {
  
  int vrend_video_init(int drm_fd)
  {
@@ -2805,7 +2935,7 @@ index 57341d8..22713b5 100644
  
      return virgl_video_init(drm_fd, &video_callbacks, 0);
  }
-@@ -384,12 +595,17 @@ int vrend_video_create_codec(struct vrend_video_context *ctx,
+@@ -384,12 +626,17 @@ int vrend_video_create_codec(struct vrend_video_context *ctx,
      struct vrend_video_codec *cdc = get_video_codec(ctx, handle);
      struct virgl_video_create_codec_args args;
  
@@ -2823,7 +2953,30 @@ index 57341d8..22713b5 100644
  
      if (entrypoint <= PIPE_VIDEO_ENTRYPOINT_UNKNOWN ||
          entrypoint > PIPE_VIDEO_ENTRYPOINT_ENCODE)
-@@ -457,6 +673,8 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -417,12 +664,14 @@ int vrend_video_create_codec(struct vrend_video_context *ctx,
+     cdc->codec = virgl_video_create_codec(&args);
+     if (!cdc->codec) {
+         free(cdc);
++        remember_refused(ctx, handle);
+         return -1;
+     }
+ 
+     cdc->handle = handle;
+     cdc->ctx = ctx;
+     list_add(&cdc->head, &ctx->codecs);
++    codec_refused(ctx, handle, true);
+ 
+     return 0;
+ }
+@@ -441,6 +690,7 @@ void vrend_video_destroy_codec(struct vrend_video_context *ctx,
+ {
+     struct vrend_video_codec *cdc = get_video_codec(ctx, handle);
+ 
++    codec_refused(ctx, handle, true);
+     destroy_video_codec(cdc);
+ }
+ 
+@@ -457,6 +707,8 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
      struct vrend_video_buffer *buf = get_video_buffer(ctx, handle);
      struct virgl_video_create_buffer_args args;
  
@@ -2832,7 +2985,7 @@ index 57341d8..22713b5 100644
      if (buf)
          return 0;
  
-@@ -483,8 +701,10 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -483,8 +735,10 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
          return -1;
      }
  
@@ -2843,7 +2996,7 @@ index 57341d8..22713b5 100644
  
      for (i = 0, buf->num_planes = 0;
           i < num_res && buf->num_planes < ARRAY_SIZE(buf->planes); i++) {
-@@ -494,6 +714,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -494,6 +748,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
  
          plane = &buf->planes[buf->num_planes++];
          plane->res_handle = res_handles[i];
@@ -2851,7 +3004,7 @@ index 57341d8..22713b5 100644
          glGenFramebuffers(1, &plane->framebuffer);
          glGenTextures(1, &plane->texture);
          glBindTexture(GL_TEXTURE_2D, plane->texture);
-@@ -502,6 +723,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
+@@ -502,6 +757,7 @@ int vrend_video_create_buffer(struct vrend_video_context *ctx,
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
          glBindTexture(GL_TEXTURE_2D, 0);
@@ -2859,7 +3012,7 @@ index 57341d8..22713b5 100644
      }
  
      buf->handle = handle;
-@@ -521,6 +743,7 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
+@@ -521,6 +777,7 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
  
      list_del(&buf->head);
  
@@ -2867,7 +3020,7 @@ index 57341d8..22713b5 100644
      for (i = 0; i < buf->num_planes; i++) {
          plane = &buf->planes[i];
  
-@@ -529,6 +752,10 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
+@@ -529,6 +786,10 @@ static void destroy_video_buffer(struct vrend_video_buffer *buf)
          if (plane->egl_image == EGL_NO_IMAGE_KHR)
              eglDestroyImageKHR(eglGetCurrentDisplay(), plane->egl_image);
      }
@@ -2878,20 +3031,24 @@ index 57341d8..22713b5 100644
  
      virgl_video_destroy_buffer(buf->buffer);
  
-@@ -747,7 +974,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
+@@ -747,7 +1008,15 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
      union virgl_picture_desc desc;
  
      if (!cdc || !tgt){
 -        virgl_error("video codec: %p, video buffer: %p, invalid.\n", (void *)cdc, (void *)tgt);
-+        /* Also every picture of a decoder the host refused (too many open):
-+         * say it a few times, not for every picture. */
-+        static unsigned warned;
-+        if (warned++ < 5)
-+            virgl_error("video codec: %p, video buffer: %p, invalid.\n", (void *)cdc, (void *)tgt);
++        static struct virgl_video_log_limit said;
++        unsigned skipped;
++
++        /* A codec the backend refused: its refusal was logged already. */
++        if (!cdc && codec_refused(ctx, cdc_handle, false))
++            return -1;
++        if (virgl_video_log_ok(&said, &skipped))
++            virgl_error("video: decode with unknown codec %u or buffer %u%s\n",
++                        cdc_handle, tgt_handle, virgl_video_log_since(skipped));
          return -1;
      }
  
-@@ -771,10 +1002,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
+@@ -771,10 +1040,11 @@ int vrend_video_decode_bitstream(struct vrend_video_context *ctx,
              continue;
          }
  

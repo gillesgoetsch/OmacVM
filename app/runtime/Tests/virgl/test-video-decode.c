@@ -9,8 +9,10 @@
  * they still do while the guest's conditional rendering says skip and while its
  * rasterizer discard is on, and the guest's rasterizer discard is back on afterwards
  * (Apple's software OpenGL may copy either way: then these guard the path only);
- * at most 8 decoders are open at once per VM: a 9th decodes nothing, closing one
- * makes room, and a guest context that goes away frees the decoders it had.
+ * the host says its limit in the video caps (omacvm_max_open, for the guest's VA-API
+ * shim) and keeps to it: at most 32 decoders open at once per VM, one more decodes
+ * nothing, closing one makes room, and a guest context that goes away frees the
+ * decoders it had.
  * Runs on Apple's software OpenGL (soft-gl.h); the decoder is the Mac's media engine.
  * Skips when the Mac has no H.264 encoder or decoder. */
 #include <CoreMedia/CoreMedia.h>
@@ -33,7 +35,7 @@
 unsigned char glIsEnabled(unsigned int cap);
 #define TEST_GL_RASTERIZER_DISCARD 0x8C89
 
-enum { W = 320, H = 240, FRAMES = 10, MAX_LIVE = 8 };
+enum { W = 320, H = 240, FRAMES = 10, MAX_LIVE = 32 };
 enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2 };
 /* guest numbering (Mesa >= 26): enum pipe_video_profile / entrypoint */
 enum { G_AVC_HIGH = 11, G_ENTRYPOINT_BITSTREAM = 1 };
@@ -255,16 +257,21 @@ static uint8_t bits[1 << 20];
 static uint8_t query_result[64];
 static uint8_t blank[W * H];
 
-static int h264_offered(void)
+/* decoders the caps offer; *limit_ok: every one says MAX_LIVE as its limit */
+static int h264_offered(int *limit_ok)
 {
    uint32_t max_ver = 0, max_size = 0;
    int found = 0;
    virgl_renderer_get_cap_set(2, &max_ver, &max_size);
    union virgl_caps *caps = calloc(1, max_size > sizeof(*caps) ? max_size : sizeof(*caps));
    virgl_renderer_fill_caps(2, 2, caps);
-   for (unsigned i = 0; i < caps->v2.num_video_caps && i < 32; i++)
-      found |= caps->v2.video_caps[i].entrypoint == G_ENTRYPOINT_BITSTREAM &&
-               caps->v2.video_caps[i].profile == G_AVC_HIGH;
+   *limit_ok = 1;
+   for (unsigned i = 0; i < caps->v2.num_video_caps && i < 32; i++) {
+      if (caps->v2.video_caps[i].entrypoint != G_ENTRYPOINT_BITSTREAM)
+         continue;
+      found |= caps->v2.video_caps[i].profile == G_AVC_HIGH;
+      *limit_ok &= caps->v2.video_caps[i].omacvm_max_open == MAX_LIVE;
+   }
    free(caps);
    return found;
 }
@@ -384,10 +391,14 @@ int main(void)
       printf("FAIL: virgl_renderer_init\n");
       return 1;
    }
-   if (!h264_offered()) {
+   int limit_ok;
+   if (!h264_offered(&limit_ok)) {
       printf("skip: no H.264 decoder offered\n");
       return 0;
    }
+   snprintf(line, sizeof(line), "every decoder in the video caps says the limit (%d) for "
+            "the guest's VA-API shim: %s", MAX_LIVE, limit_ok ? "yes" : "no");
+   check(limit_ok, line);
    if (!make_stream()) {
       printf("skip: no H.264 encoder to make the test stream (%d pictures)\n", au_count);
       return 0;
@@ -462,48 +473,49 @@ int main(void)
             "PSNR %.1f dB; discard still on afterwards: %s", p, discard_kept ? "yes" : "no");
    check(p > 30 && discard_kept, line);
 
-   /* At most 8 decoders at once (each holds a media engine session and its
-    * pictures): the 9th decodes nothing; closing one makes room again. */
-   int ok8 = 0;
-   for (uint32_t h = 30; h < 30 + MAX_LIVE; h++) {
+   /* At most MAX_LIVE decoders at once (each holds a media engine session and
+    * its pictures): one more decodes nothing; closing one makes room again. */
+   int ok_all = 0;
+   for (uint32_t h = 100; h < 100 + MAX_LIVE; h++) {
       create_codec(h);
       submit(1);
-      ok8 += decode_picture(1, h, 0) > 30;
+      ok_all += decode_picture(1, h, 0) > 30;
    }
-   create_codec(30 + MAX_LIVE);
+   create_codec(100 + MAX_LIVE);
    submit(1);
-   double ninth = decode_picture(1, 30 + MAX_LIVE, 0);
-   destroy_codec(30);
-   create_codec(40);
+   double over = decode_picture(1, 100 + MAX_LIVE, 0);
+   destroy_codec(100);
+   create_codec(200);
    submit(1);
-   double after = decode_picture(1, 40, 0);
+   double after = decode_picture(1, 200, 0);
    /* the open ones keep decoding */
-   int still = decode_picture(1, 31, 1) > 30;
-   snprintf(line, sizeof(line), "%d decoders open: %d of %d decode, a 9th %s (PSNR %.1f), "
+   int still = decode_picture(1, 101, 1) > 30;
+   snprintf(line, sizeof(line), "%d decoders open: %d of %d decode, one more %s (PSNR %.1f), "
             "after closing one a new one %s (PSNR %.1f), an open one still decodes: %s",
-            MAX_LIVE, ok8, MAX_LIVE, ninth > 30 ? "decodes" : "decodes nothing", ninth,
+            MAX_LIVE, ok_all, MAX_LIVE, over > 30 ? "decodes" : "decodes nothing", over,
             after > 30 ? "decodes" : "decodes nothing", after, still ? "yes" : "no");
-   check(ok8 == MAX_LIVE && ninth < 20 && after > 30 && still, line);
-   for (uint32_t h = 31; h <= 40; h++)
+   check(ok_all == MAX_LIVE && over < 20 && after > 30 && still, line);
+   for (uint32_t h = 101; h <= 100 + MAX_LIVE; h++)
       destroy_codec(h);
+   destroy_codec(200);
    submit(1);
 
    /* A guest context that goes away with its decoders still open (a killed
-    * player) frees them: 8 open in context 2, context 2 destroyed, then 8 open
-    * again in context 1. */
+    * player) frees them: MAX_LIVE open in context 2, context 2 destroyed, then
+    * MAX_LIVE open again in context 1. */
    setup_context(2);
-   for (uint32_t h = 50; h < 50 + MAX_LIVE; h++)
+   for (uint32_t h = 300; h < 300 + MAX_LIVE; h++)
       create_codec(h);
    submit(2);
-   int in2 = decode_picture(2, 50 + MAX_LIVE - 1, 0) > 30;
+   int in2 = decode_picture(2, 300 + MAX_LIVE - 1, 0) > 30;
    virgl_renderer_context_destroy(2);
    int again = 0;
-   for (uint32_t h = 60; h < 60 + MAX_LIVE; h++) {
+   for (uint32_t h = 400; h < 400 + MAX_LIVE; h++) {
       create_codec(h);
       submit(1);
       again += decode_picture(1, h, 0) > 30;
    }
-   for (uint32_t h = 60; h < 60 + MAX_LIVE; h++)
+   for (uint32_t h = 400; h < 400 + MAX_LIVE; h++)
       destroy_codec(h);
    submit(1);
    snprintf(line, sizeof(line), "a context closed with %d decoders open (they decoded: %s) "
