@@ -335,3 +335,9 @@ tests as the MacBook measurement of 2026-10-04).
   password).
 - A bigger MTU (9000 on the vmnet interface and the VM) changed nothing
   (7.5 / 9.6 Gbit/s): the Mac's side of the network stays at 1500.
+- A QEMU hub between the network card and vmnet (to swap networks while the
+  VM runs) cost a quarter of VM → Mac: 7.1 → 5.3 Gbit/s, Mac → VM unchanged
+  (A/B on the mini, same VM headless, iperf3 10 s, single runs, no bench lock).
+  The fallback therefore plugs in a second card instead. With it, in the
+  app (display on, a UTM VM running beside it): 6.9 / 6.3 Gbit/s VM → Mac,
+  9.5 / 8.8 Mac → VM (1 / 4 streams).

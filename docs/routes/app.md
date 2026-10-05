@@ -177,31 +177,52 @@ the VM's SSH on `127.0.0.1:<port>`.
 
 `omacvm enable fast-network --vm NAME` puts the VM on macOS's own VM network
 (vmnet, shared mode, as Parallels and UTM) instead of QEMU's user network.
-The VM gets an address of its own on `192.168.64.0/24`, the Mac is
-`192.168.64.1` for it, and traffic between the VM and the Mac no longer goes
-through one QEMU thread. Measured: see
+The VM gets an address of its own on a network of its own, `192.168.77.0/24`
+(the Mac is `192.168.77.1`), and traffic between the VM and the Mac no
+longer goes through one QEMU thread. Measured: see
 [the numbers](../benchmarks/README.md#fast-network-omacvmapp).
 
 - vmnet needs root or Apple's `com.apple.vm.networking` entitlement, which the
-  app does not have. So `omacvm enable fast-network` builds and installs a
-  small system service, `omacvm-netd` (`src/net/mac`), and macOS asks for your
-  password once. launchd starts it when a VM connects; it quits a minute
-  after the last one went.
-- The service only takes connections from OmacVM.app's QEMU: it checks the
-  connecting process's code signature (OmacVM's Developer ID team, or for an
-  app built from source exactly that build: enable it again after a rebuild).
-  It makes one vmnet interface per VM, isolated from the other VMs'
-  interfaces, and does nothing else: no commands, no files, no other requests.
+  app does not have. So `omacvm enable fast-network` installs a small system
+  service, `omacvm-netd` (`src/net/mac`), and macOS asks for your password
+  once. It comes built and signed inside OmacVM.app (Developer ID for
+  published apps; no Xcode needed); apps from before that build it from
+  source. launchd starts it when a VM connects; it quits a minute after the
+  last connection.
+- The service only takes connections from OmacVM.app's QEMU run by a Mac user
+  who enabled it: it checks the connecting process's user and code signature
+  (OmacVM's Developer ID team, or for an app built from source exactly that
+  build: enable it again after a rebuild). It makes one vmnet interface per
+  VM, isolated from the other VMs' interfaces, and does nothing else: no
+  commands, no files, no other requests.
+- Its own network, not UTM's `192.168.64.0/24`: while UTM (or another app)
+  has that one up, vmnet refuses an isolated interface on it. With its own,
+  UTM VMs and the fast network run side by side (tested on the Mac mini).
+  Each refused start costs macOS's vmnet service a descriptor it never gives
+  back (at 256 vmnet stops working on the whole Mac until a restart), so after
+  a failed start the service waits 30 s before the next one, doubling up to
+  an hour while it keeps failing. When another interface (a LAN, a VPN)
+  already has addresses in `192.168.77.0/24`, the app does not try and takes
+  QEMU's user network, saying why.
 - The app picks the network at each start: the fast network when the VM has
   it (its `fast-network` file, with its own MAC address), the service is
   there and would take this app's QEMU; else QEMU's user network as before.
-  `logs/network` and `qemu.log` say which and why; `omacvm check` shows it.
+  While the VM runs, the app watches the link (every 3 s): when vmnet stays
+  down (service gone, vmnet refusing), it plugs a second network card on
+  QEMU's user network into the VM and takes the first one's link down (the
+  VM's NetworkManager moves over within seconds); when vmnet is back for 15 s,
+  it swaps back. `logs/network` and `qemu.log` say which network and why;
+  `omacvm check` shows it.
 - On the fast network the Mac reaches the VM's SSH on its own address (from
   macOS's DHCP leases), with the same remembered host key; the VM lets SSH in
-  from `192.168.64.1` only. The VM's Bridge and Gestures find the Mac at the
-  gateway and prove it with that address, as on UTM.
-- `omacvm disable fast-network` goes back at the next start; `omacvm
-  uninstall` removes the service.
+  from `192.168.77.1` only. The VM's Bridge and Gestures find the Mac at the
+  gateway and prove it with that address; the Mac's Bridge and Gestures
+  listen there too, and Gestures counts those VMs as the app's.
+- `omacvm disable fast-network` goes back at the next start; when none of
+  your app VMs has the fast network any more it also removes the service
+  (a VM still running on it then moves to the user network at once).
+  `omacvm uninstall` removes it for your Mac user, and from the Mac when no
+  other user has it.
 
 What is missing before it can become the default: [below](#fast-network-not-done-yet).
 
@@ -210,14 +231,20 @@ What is missing before it can become the default: [below](#fast-network-not-done
 - Omanotch over the fast network (its notchcast still looks for the Mac at
   `10.0.2.2` in app VMs).
 - Tested on a Mac mini (macOS 27): SSH, DNS, IPv6, the Bridge (proof on
-  `192.168.64.1`), a restart of the service under a running VM (QEMU
-  reconnects, about 1 s without network), the VM paused for a minute (as over
-  the Mac's sleep), and the fallback to the user network without the service.
+  `192.168.77.1`), a UTM VM on UTM's shared network at the same time, the
+  service going away and coming back under a running VM (user network after
+  7 s, vmnet again after 13 s), a start with the service unreachable (user
+  network after 17 s), vmnet refusing (back-off), a restart of the service
+  (QEMU reconnects, about 1 s without network), the VM paused for a minute (as
+  over the Mac's sleep), refused callers (another program, another user).
 - Not tested yet: VPN clients on the Mac, a real sleep and wake, Wi-Fi
   changes while the VM runs, several app VMs at once, trackpad gestures over
-  the fast network, and the MacBook (numbers there too).
-- The service is built on the Mac (Xcode's Command Line Tools) and installed
-  from the omacvm command; the app has no button for it yet.
+  the fast network (the mini's Gestures helper waits for its permissions;
+  the choice of VM is covered by `src/gestures/mac/test.sh`), and the MacBook
+  (numbers there too).
+- The service is installed from the omacvm command (sudo in a terminal); the
+  app has no button for it yet (SMAppService would give macOS's own approval
+  instead).
 
 ## Every Mac display
 
