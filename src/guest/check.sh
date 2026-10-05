@@ -195,7 +195,10 @@ if [[ $GESTURES == on ]]; then
 else skip "trackpad gestures" "off (chosen at setup): macOS keeps its swipes"; fi
 if [[ $GLIDE == on && $GESTURES == on ]]; then
   pid=$(systemctl show -p MainPID --value omacvm-gestures 2>/dev/null)
-  if [[ -n $pid && $pid != 0 ]] && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx 'OMACVM_FEATURE_scroll_momentum=on'; then
+  # same rule as the daemon: the new key wins, a VM not yet updated may only have the old glide key
+  denv=$( [[ -n $pid && $pid != 0 ]] && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null)
+  dsm=$(sed -n 's/^OMACVM_FEATURE_scroll_momentum=//p' <<<"$denv"); dgl=$(sed -n 's/^OMACVM_FEATURE_glide=//p' <<<"$denv")
+  if [[ ${dsm:-${dgl:-off}} == on ]]; then
     ok "scroll momentum" "two-finger scrolling from the Mac (experimental)"
   else bad "scroll momentum" "chosen, but the daemon runs without it: systemctl restart omacvm-gestures"; fi
   if [[ -f $H/.config/hypr/omacvm_glide.lua ]] && grep -qxF 'require("hypr.omacvm_glide")' "$H/.config/hypr/hyprland.lua"; then
