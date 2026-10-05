@@ -750,6 +750,12 @@ def main():
     glide = Glide(pad)
     print(f"omacvm-gestures: virtual touchpad {ui.device.path}"
           f"{', macOS-native scroll momentum on' if GLIDE_ON else ''}", flush=True)
+    serve(pad, keys, glide)
+
+
+def serve(pad, keys, glide):
+    """run() for good: after a lost connection let go of what is held and
+    connect again, at once when the way to the Mac changed, else after 2 s."""
     while True:
         try:
             run(pad, keys, glide)

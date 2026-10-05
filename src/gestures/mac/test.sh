@@ -20,9 +20,9 @@ echo "$TOKEN" > "$T/mac/Library/Application Support/omacvm-bridge/token"
 echo "$TOKEN" > "$T/vm/token"
 # The guest daemon, loaded with stand-ins for what a Mac lacks: evdev, the VM's
 # routing table (the file $T/gw), and its addresses (both Mac addresses reach
-# the test's listener on 127.0.0.1). once: one run(); loop: as main() runs it.
+# the test's listener on 127.0.0.1). once: one run(); loop: serve(), main()'s loop.
 cat > "$T/guest.py" <<'PY'
-import importlib.machinery, importlib.util, itertools, socket, sys, threading, time, types
+import importlib.machinery, importlib.util, itertools, socket, sys, threading, types
 n = itertools.count(1)
 class Any(int):
     def __getattr__(self, name): return Any(next(n))
@@ -54,18 +54,11 @@ class Stub:
     pending = held = None
     touch = types.SimpleNamespace(down=False)
     def __getattr__(self, name): return lambda *a, **k: None
-def loop():
-    while True:
-        try:
-            g.run(Stub(), Stub(), Stub())
-        except (OSError, ConnectionError) as err:
-            print(f"guest: {err}", flush=True)
-            if not isinstance(err, g.Moved): time.sleep(2)
 if mode == "once":
     t = threading.Thread(target=lambda: g.run(Stub(), Stub(), Stub()), daemon=True)
     t.start(); t.join(1.5)
 else:
-    loop()
+    g.serve(Stub(), Stub(), Stub())   # main()'s own retry loop
 PY
 # mac OUT ITEM...: the helper's side (see test-gestures.c), at most 20 s.
 mac() {
