@@ -57,6 +57,9 @@ requirement() {
 VERSION=$(shasum -a 256 "$HERE/omacvm-netd.c" | cut -c1-16)
 # The daemon inside APP (build-app.sh builds and signs it), if it has one.
 bundled() { [[ -x $1/Contents/Library/LaunchServices/$LABEL ]] && echo "$1/Contents/Library/LaunchServices/$LABEL"; }
+# Its code's hash: the same daemon signed again (another app build of the
+# same source) needs no new install, and no password.
+cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p' | head -1; }
 
 installed_req() {   # the requirement the installed daemon runs with
   /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:2' "$PLIST" 2>/dev/null
@@ -73,8 +76,8 @@ status() {
   if [[ -n $APP ]] || APP=$(app_bundle); then
     want=$(requirement "$APP" 2>/dev/null) || { echo old; return 0; }
     [[ $(installed_req) == "$want" ]] || { echo old; return 0; }
-    # The app's own daemon, byte for byte; apps without one: this source's.
-    if h=$(bundled "$APP"); then cmp -s "$h" "$BIN" || { echo old; return 0; }
+    # The app's own daemon (its code); apps without one: this source's.
+    if h=$(bundled "$APP"); then [[ -n $(cdhash "$h") && $(cdhash "$h") == "$(cdhash "$BIN")" ]] || { echo old; return 0; }
     elif [[ $("$BIN" --version 2>/dev/null) != "$VERSION" ]]; then echo old; return 0; fi
   elif [[ $("$BIN" --version 2>/dev/null) != "$VERSION" ]]; then echo old; return 0; fi
   launchctl print "system/$LABEL" >/dev/null 2>&1 && [[ -S $SOCK ]] || { echo old; return 0; }
