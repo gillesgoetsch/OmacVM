@@ -9,6 +9,13 @@ in more words.
   Firefox's 16). Past that, a video decodes on the CPU instead of playing
   black (the VM's VA-API driver knows the Mac's limit). The copy of each
   decoded picture can no longer be dropped by the app's own graphics state.
+- Video encoding on the Mac's media engine: apps in the VM that encode H.264
+  or HEVC through VA-API use it instead of the VM's CPU (FFmpeg's
+  `h264_vaapi`/`hevc_vaapi`, OBS Studio's VAAPI encoders). Google Chrome's
+  and Brave's WebRTC encoder (camera and screen sharing) is on by default.
+  FFmpeg 1080p uses 6 to 8 times less Mac CPU than x264/x265. 8 encoders at
+  once per VM, 12 at most. `OMACVM_VIDEO_NO_ENCODE=1` in QEMU's environment
+  turns it off.
 
 ## 2.8.0
 
