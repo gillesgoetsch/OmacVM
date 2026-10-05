@@ -201,9 +201,23 @@ longer goes through one QEMU thread. Measured: see
   Each refused start costs macOS's vmnet service a descriptor it never gives
   back (at 256 vmnet stops working on the whole Mac until a restart), so after
   a failed start the service waits 30 s before the next one, doubling up to
-  an hour while it keeps failing. When another interface (a LAN, a VPN)
-  already has addresses in `192.168.77.0/24`, the app does not try and takes
-  QEMU's user network, saying why.
+  an hour while it keeps failing, and after 8 failures in a row it stops
+  trying until the Mac restarts or `omacvm enable fast-network` runs again
+  (`omacvm check` says so). It keeps that count in
+  `/var/run/org.omacvm.netd.state`, so quitting when idle does not reset it.
+  After a failure it also does not try while another program's VM network
+  holds `192.168.77.0/24` (a bridge with those addresses that is not its
+  own): one failed start per conflict, not one a minute. When another
+  interface (a LAN, a VPN) already has addresses in `192.168.77.0/24`, the
+  app does not try and takes QEMU's user network, saying why.
+- When macOS's vmnet service (InternetSharing) stops or crashes, every VM
+  interface on the Mac goes with it, but vmnet tells no one. The service
+  watches that process and closes its connections when it exits; QEMU
+  connects again at once and gets a new interface (tested: the VM answered
+  again 3 s after the kill). Parallels' shared and host-only networks are
+  gone after such a restart too, and Parallels does not notice: quit and
+  reopen Parallels Desktop, or `sudo killall prl_naptd` (its watchdog starts
+  it again within about a minute, with its networks).
 - The app picks the network at each start: the fast network when the VM has
   it (its `fast-network` file, with its own MAC address), the service is
   there and would take this app's QEMU; else QEMU's user network as before.
@@ -211,13 +225,19 @@ longer goes through one QEMU thread. Measured: see
   down (service gone, vmnet refusing), it plugs a second network card on
   QEMU's user network into the VM and takes the first one's link down (the
   VM's NetworkManager moves over within seconds); when vmnet is back for 15 s,
-  it swaps back. `logs/network` and `qemu.log` say which network and why;
-  `omacvm check` shows it.
+  it swaps back. A switch that fails (QEMU's monitor busy) is tried again
+  every 3 s, adding only what is not there yet. `logs/network` and
+  `qemu.log` say which network the VM has and why; `omacvm check` shows it,
+  with the service's last refusal.
 - On the fast network the Mac reaches the VM's SSH on its own address (from
   macOS's DHCP leases), with the same remembered host key; the VM lets SSH in
   from `192.168.77.1` only. The VM's Bridge and Gestures find the Mac at the
   gateway and prove it with that address; the Mac's Bridge and Gestures
-  listen there too, and Gestures counts those VMs as the app's.
+  listen there too, and Gestures counts those VMs as the app's. When the app
+  moves the VM between the two networks, the VM's Gestures sees the new
+  gateway and connects again within a second (tested both ways); TCP
+  keepalive on both ends drops a connection whose path went away in about
+  10 s.
 - `omacvm disable fast-network` goes back at the next start; when none of
   your app VMs has the fast network any more it also removes the service
   (a VM still running on it then moves to the user network at once).
@@ -236,12 +256,16 @@ What is missing before it can become the default: [below](#fast-network-not-done
   7 s, vmnet again after 13 s), a start with the service unreachable (user
   network after 17 s), vmnet refusing (back-off), a restart of the service
   (QEMU reconnects, about 1 s without network), the VM paused for a minute (as
-  over the Mac's sleep), refused callers (another program, another user).
+  over the Mac's sleep), refused callers (another program, another user),
+  macOS's vmnet service killed under a running VM, another program holding
+  `192.168.77.0/24` while the VM starts (one failed start, user network,
+  vmnet again once it was gone), the Gestures link across network switches
+  (with the helper's own handshake code: the mini's Gestures helper waits
+  for its permissions, so no real swipes).
 - Not tested yet: VPN clients on the Mac, a real sleep and wake, Wi-Fi
-  changes while the VM runs, several app VMs at once, trackpad gestures over
-  the fast network (the mini's Gestures helper waits for its permissions;
-  the choice of VM is covered by `src/gestures/mac/test.sh`), and the MacBook
-  (numbers there too).
+  changes while the VM runs, several app VMs at once, real trackpad gestures
+  over the fast network (the choice of VM is covered by
+  `src/gestures/mac/test.sh`), and the MacBook (numbers there too).
 - The service is installed from the omacvm command (sudo in a terminal); the
   app has no button for it yet (SMAppService would give macOS's own approval
   instead).
