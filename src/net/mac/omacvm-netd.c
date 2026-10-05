@@ -43,7 +43,7 @@
 //   when it exits, so QEMU connects again and gets a new interface (launchd
 //   starts the service again for it), or the app falls back to its user
 //   network. A connection whose vmnet reads or writes keep failing is
-//   closed too.
+//   closed too (full vmnet buffers only drop frames, as a busy NIC does).
 // - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
 //   are logged at most once per LOG_QUIET seconds (its users' apart from the
 //   others'), and the log is cut at LOG_MAX bytes.
@@ -331,6 +331,9 @@ static int foreignBridge(char *ifname, size_t len) {
 // FAIL_SECS seconds. ok resets it.
 struct fails { time_t since; unsigned n; };
 struct conn;
+// vmnet's answer says the interface works: VMNET_BUFFER_EXHAUSTED (its
+// buffers are full) drops frames, it is no failure.
+static int vmnetOk(vmnet_return_t st) { return st == VMNET_SUCCESS || st == VMNET_BUFFER_EXHAUSTED; }
 static int keepsFailing(struct fails *f, int ok) {
     if (ok) { f->n = 0; return 0; }
     time_t now = time(NULL);
@@ -454,7 +457,7 @@ static void toVM(struct conn *c) {
             pkts[i] = (struct vmpktdesc){ .vm_pkt_size = c->maxPacket, .vm_pkt_iov = &iov[i], .vm_pkt_iovcnt = 1 };
         }
         vmnet_return_t st = vmnet_read(c->iface, pkts, &n);
-        if (keepsFailing(&c->rfail, st == VMNET_SUCCESS)) {
+        if (keepsFailing(&c->rfail, vmnetOk(st))) {
             // The interface is gone: end the connection (fromVM sees it).
             c->lastErr = st; c->broken = 1;
             shutdown(c->fd, SHUT_RDWR);
@@ -603,7 +606,7 @@ static void fromVM(struct conn *c) {
             vmnet_return_t st = vmnet_write(c->iface, pkts, &sent);
             if (st != VMNET_SUCCESS) c->dropped += (unsigned long long)n;
             else { c->fromVM += (unsigned long long)sent; c->dropped += (unsigned long long)(n - sent); }
-            if (keepsFailing(&c->wfail, st == VMNET_SUCCESS)) { c->lastErr = st; c->broken = 1; break; }
+            if (keepsFailing(&c->wfail, vmnetOk(st))) { c->lastErr = st; c->broken = 1; break; }
         }
         if (c->broken) break;
         if (bad) { logf_("pid %d: not QEMU's stream framing: closing", c->pid); break; }

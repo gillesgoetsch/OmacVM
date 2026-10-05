@@ -46,10 +46,10 @@ vmnet_return_t fake_stop(interface_ref i, dispatch_queue_t q, vmnet_interface_co
     return VMNET_SUCCESS;
 }
 
-static int writeFails;
+static vmnet_return_t writeFails;   // what vmnet_write answers; 0: success
 vmnet_return_t fake_write(interface_ref i, struct vmpktdesc *p, int *n) {
     (void)i; (void)p;
-    if (writeFails) return VMNET_FAILURE;
+    if (writeFails) return writeFails;
     (void)n;
     return VMNET_SUCCESS;
 }
@@ -207,13 +207,18 @@ int main(void) {
 
     // An interface that keeps failing (InternetSharing restarted under it) is
     // closed within seconds; soon after its start that counts as a failure.
-    writeFails = 1;
+    writeFails = VMNET_FAILURE;
     t = talkingConnection(10);
     expect(t >= FAIL_SECS && t < 5 && nconns == 0 && liveIfaces == 0 && vmnetFailures == 1,
            "vmnet writes keep failing: connection closed, counts as a failed start");
     resetBackoff(); writeFails = 0;
     t = talkingConnection(3);
     expect(t >= 2 && nconns == 0 && vmnetFailures == 0, "vmnet writes work: connection kept until the VM closes");
+    // Full vmnet buffers (VMNET_BUFFER_EXHAUSTED) drop frames; the interface works.
+    writeFails = VMNET_BUFFER_EXHAUSTED;
+    t = talkingConnection(4);
+    expect(t >= 3 && nconns == 0 && vmnetFailures == 0, "vmnet buffers full: frames dropped, connection kept, no failure");
+    writeFails = 0;
 
     // macOS's vmnet service exits under a live connection (a child process
     // stands in for it): the connection is closed within seconds.
