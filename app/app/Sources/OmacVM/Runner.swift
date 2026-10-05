@@ -91,6 +91,10 @@ final class Runner {
               // external displays (omacvm-displays in the VM).
               "-chardev", "socket,id=disp0,path=\(q(c.displaySocket.path)),server=on,wait=off",
               "-device", "virtserialport,bus=vser0.0,nr=5,chardev=disp0,name=org.omacvm.display"]
+        // The fast network: an empty PCIe slot for the user network's NIC
+        // should vmnet fail while the VM runs (fallBackToUserNetwork). Last,
+        // so no other device moves.
+        if network.vmnet { a += ["-device", "pcie-root-port,id=netfb"] }
         return a
     }
 
@@ -104,12 +108,10 @@ final class Runner {
         if choice.vmnet {
             // vmnet (shared, the Mac is 192.168.64.1) through omacvm-netd; QEMU
             // connects again within a second if the daemon restarts. The NIC
-            // and vmnet meet on hub 0, so QEMU's user network can take vmnet's
-            // place while the VM runs (fallBackToUserNetwork).
+            // sits right on it: through a QEMU hub (to swap networks) VM -> Mac
+            // lost a quarter of its speed. The fallback adds a NIC instead.
             return ["-netdev", "stream,id=fast,server=off,reconnect-ms=1000,addr.type=unix,addr.path=\(FastNetwork.socket)",
-                    "-netdev", "hubport,id=hfast,hubid=0,netdev=fast",
-                    "-netdev", "hubport,id=net0,hubid=0",
-                    "-device", "virtio-net-pci,id=nic0,netdev=net0,mac=\(choice.mac),romfile="]
+                    "-device", "virtio-net-pci,id=nic0,netdev=fast,mac=\(choice.mac),romfile="]
         }
         // QEMU's user network: the Mac is 10.0.2.2 for the VM; SSH from the Mac on 127.0.0.1.
         return ["-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(c.sshPort)-:22",
@@ -239,26 +241,24 @@ final class Runner {
         return line.contains("type=stream,unix:") && !line.contains("link=down")
     }
 
-    /// QEMU's user network in vmnet's place on hub 0, as at a start without
-    /// the fast network (SSH on 127.0.0.1:sshPort); then the NIC's link goes
-    /// down and up, so the guest asks DHCP again and gets 10.0.2.15.
+    /// QEMU's user network as at a start without the fast network (SSH on
+    /// 127.0.0.1:sshPort), on a second NIC plugged into the empty slot (the
+    /// guest's NetworkManager takes it up with DHCP: 10.0.2.15). The vmnet
+    /// NIC's link goes down, so its address and route go, and QEMU stops
+    /// trying to connect.
     nonisolated static func fallBackToUserNetwork(qmpPath: String, sshPort: Int) -> Bool {
         guard let qmp = try? QMPConnection(socketPath: qmpPath, identifierPrefix: "omacvm-net") else { return false }
         defer { qmp.close() }
         do {
             _ = try qmp.execute("netdev_add", arguments: [
                 "type": "user", "id": "slow", "hostfwd": [["str": "tcp:127.0.0.1:\(sshPort)-:22"]]])
-            _ = try qmp.execute("netdev_add", arguments: ["type": "hubport", "id": "hslow", "hubid": 0, "netdev": "slow"])
-            // vmnet off the hub, and no more connect attempts.
-            _ = try? qmp.execute("netdev_del", arguments: ["id": "hfast"])
+            _ = try qmp.execute("device_add", arguments: [
+                "driver": "virtio-net-pci", "id": "nic1", "netdev": "slow", "bus": "netfb",
+                "mac": FastNetwork.defaultMAC, "romfile": ""])
+            _ = try? qmp.execute("set_link", arguments: ["name": "nic0", "up": false])
             _ = try? qmp.execute("netdev_del", arguments: ["id": "fast"])
-            _ = try qmp.execute("set_link", arguments: ["name": "nic0", "up": false])
-            // Long enough for NetworkManager to drop the vmnet address.
-            Thread.sleep(forTimeInterval: 6)
-            _ = try qmp.execute("set_link", arguments: ["name": "nic0", "up": true])
             return true
         } catch {
-            _ = try? qmp.execute("set_link", arguments: ["name": "nic0", "up": true])
             return false
         }
     }
