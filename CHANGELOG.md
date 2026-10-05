@@ -3,6 +3,129 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 2.9.0 (unreleased)
+
+- Video decoding: up to 32 hardware decoders per VM (Chrome's 16 plus one
+  Firefox's 16). Past that, a video decodes on the CPU instead of playing
+  black (the VM's VA-API driver knows the Mac's limit). The copy of each
+  decoded picture can no longer be dropped by the app's own graphics state.
+
+## 2.8.0
+
+- OmacVM.app uses every Mac display in full screen: a window (in its own
+  Space) and an Omarchy output per display, at its resolution, scale and
+  refresh rate, placed as in macOS's arrangement, with plugging in and out
+  live. "Use external displays" in Omarchy's display panel keeps full screen
+  on one display. Tested on a real external monitor next to a MacBook with a
+  notch, and on virtual displays.
+- OmacVM.app in full screen on a Mac with a notch: Omarchy gets the window's
+  real size (1728x1080 points on a 14-inch MacBook Pro, was 1728x1085). The
+  picture is no longer squeezed and the pointer lands where it is on the Mac
+  (it was up to 5 points off at the bottom).
+- OmacVM.app in full screen: the Dock no longer comes up at the edge of an
+  external display. Near a screen corner the Mac's cursor is held 3 points
+  short of it; whether that keeps macOS hot corners from firing is not
+  confirmed yet (in tests with simulated mouse motion they still fired).
+- Cmd-drag moves an Omarchy window from one Mac display to another; a held
+  modifier key is no longer let go when the pointer crosses to another
+  display's window.
+- Omanotch with external displays: the strip and its bar stay on the
+  MacBook whichever display holds the main window (OmacVM.app tells the VM
+  which output is the built-in display). Before, with the main window on an
+  external display, the MacBook showed two bars.
+- OmacVM.app: displays no longer come up black (dark grey, no wallpaper, no
+  bar) after a start or reboot, about one boot in six with two displays.
+  QEMU refused the memory of a large texture (Omarchy's wallpaper, 81 MB)
+  when the VM's memory was fragmented, and the shell lost its GPU context.
+  It also happened with one display, less often, in earlier versions.
+  The VM now also checks what each display really shows and restarts the
+  shell once if one stays grey; omacvm check says "desktop" and, on the Mac,
+  "GPU contexts".
+- Omanotch's wallpaper is decoded at the display's size (about a third of
+  the memory per display on a MacBook, so UTM's QEMU, which keeps the old
+  limit, no longer refuses it up to about a 4K display; a 6K display's
+  upload is still too big for it), and its bar and wallpaper follow their
+  output when it moves in the layout.
+- Omanotch: after a shell restart the bar is parked under the strip again
+  within seconds; before, the MacBook could show two bars.
+- Per-display workspaces handle more than two displays (Virtual-3 gets
+  21..30, and so on), and several workspaces of an unplugged display all
+  come back when it returns. Tested on OmacVM.app; Parallels and Fusion use
+  the same file.
+- Change the CPUs and memory of an existing VM: `omacvm resources --vm NAME`
+  with `--resources low|balanced|high|best`, `--cpus N` or `--memory-gb N`
+  (also in the `omacvm` menu). The same tiers and limits as the build, on
+  every route: Parallels (`prlctl set`, or its settings file on Standard),
+  UTM, VMware Fusion (graphics memory goes down with the memory when it would
+  no longer fit) and OmacVM.app. The VM must be stopped, except on
+  OmacVM.app, which takes the change at its next start. A name used in two
+  apps needs `--vm-type`.
+- OmacVM.app: a Resources picker in the VM's window, with the create
+  screen's tiers; it applies on the next start.
+
+## 2.7.1
+
+Security and crash fixes for OmacVM.app's GPU (a VM could restart the Mac),
+plus fixes from testing 2.7.0 on a Mac mini.
+
+- OmacVM.app: a Linux app could make the Mac's GPU read outside a buffer (a
+  draw past the end of its buffers, an unbound uniform block); the GPU
+  faulted and macOS restarted. The app now checks every buffer range a draw
+  reaches before the GPU sees it, and skips draws that would leave one.
+- OmacVM.app: a WebGL 2 or OpenGL ES app using transform feedback could stop
+  the VM (QEMU crashed in Apple's OpenGL when it ended the recording). Fixed in
+  the app's virglrenderer, with a build-time test.
+- OmacVM.app: a shader the Mac refuses skips its draws instead of stopping the
+  whole app's GPU context.
+- OmacVM.app: a Linux app switching the screen between large modes in a loop
+  grew the VM's GPU memory on the Mac by up to 1.1 GB per switch and never gave
+  it back, until the Mac ran out of memory (2.6.0 and 2.7.0 too). Two GL
+  contexts were never flushed; both are now, and the memory stays flat.
+- OmacVM.app: the textures and buffers a VM's apps make have a memory budget
+  on the Mac, a quarter of its memory (`OMACVM_GPU_MEMORY_MB` changes it, 0
+  turns it off). Past it, the app's GPU context stops; the VM and the Mac go on.
+  Screens and cursors may go 256 MB past it, so the desktop keeps working.
+- OmacVM.app: a texture copy whose size the app's check cannot work out is
+  refused (2.7.0 let such copies through unchecked).
+- OmacVM.app: a VM starts with Omarchy's logo instead of TianoCore's. The app
+  builds its UEFI firmware itself: the same edk2 as QEMU's, with QEMU's build
+  flags, only the logo is new. If that build fails, the app keeps QEMU's
+  firmware and says so.
+- Omanotch no longer asks for Accessibility. It picks the VM for the strip by
+  the full-screen window's app; with two VMs of one app it keeps the one it
+  serves (or takes the one that connected last) instead of reading window
+  titles.
+- `omacvm uninstall --purge` deleted every OmacVM.app VM: on macOS's usual
+  disk, OmacVM's settings folder and the app's VMs folder are the same. It
+  now removes only OmacVM's own files, and says what stays.
+- A VM name used in two apps (a Parallels VM and an OmacVM.app VM both called
+  "OmacVM Test") is no longer guessed: `omacvm apply`, `check`, `features` and
+  `update --vm NAME` stop and ask for `--vm-type`. Before, they took the
+  Parallels VM.
+- UTM: listing VMs (the menu, `omacvm vms`, `update`, `build --dry-run`) no
+  longer hangs for up to 10 minutes while macOS asks whether the terminal may
+  control UTM; a VM's address is found without waiting on UTM; a UTM VM in an
+  unknown state is never started. The build asks about that permission before
+  the download, and a timeout says it may be macOS's unanswered prompt. Build
+  UTM VMs in Terminal on the Mac, not over SSH.
+- `omacvm build` lists OmacVM.app first in the app question, as the README
+  recommends.
+- `omacvm check` on a Mac without a notch says "no notch" for the app's notch
+  strip line.
+- `omacvm update` says "macOS asks for permissions now" only on a first
+  install.
+- **VMs last set up or updated with OmacVM 2.3 or older need one
+  `omacvm update`** (with the VM running). Until then OmacVM Gestures doesn't
+  let them in, because their trackpad daemon has no Bridge token.
+  `omacvm check` says so.
+- Old names are gone: `--mac-wallpaper` (now `--wallpaper`), the feature name
+  `glide` on the command line (now `scroll-momentum`; a VM that still has the
+  old setting keeps it), and the clean-up of the "Omarchy Notch Bar" app from
+  before Omanotch had its name.
+- The 1.x commands `./build.sh`, `./apply.sh` and `./check.sh` in the
+  repository's root are gone. Use `omacvm build`, `omacvm apply` and
+  `omacvm check`.
+
 ## 2.7.0
 
 - OmacVM.app: videos are decoded by the Mac's media engine instead of the

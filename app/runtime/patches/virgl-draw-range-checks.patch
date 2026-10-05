@@ -1,0 +1,592 @@
+virglrenderer: draws only fetch inside their buffers
+
+What: before any GL work for a draw, vrend checks that every vertex and instance it
+fetches lies inside the vertex buffers: non-indexed draws from first and count,
+indexed draws from the indices themselves, read back from the GL buffer (64-bit
+math, index bias and primitive restart included); instanced attributes from the
+first instance, instance count and divisor. The index range is checked in 64 bit
+(it wrapped at 32), the index size must be 1, 2 or 4 and the offset aligned.
+Indirect draws read their commands (and draw count) from the GL buffers and are
+drawn as checked direct draws, so the GPU never takes an unchecked count. A draw
+that would leave its buffers is skipped and logged (three lines per context); the
+context lives. glDrawRangeElements gets the real index range. Two upstream bugs on
+the way: the legacy attribute path re-enabled attributes whose vertex buffer was
+unbound (XOR toggle), so they fetched from the old buffer with the new draw's
+range; and a failed glMapBufferRange for a stride-0 attribute passed NULL to
+glVertexAttrib*fv (QEMU crash).
+Why: Apple's GL has no robust buffer access; its GPU fetches what it is told. A
+fetch past a buffer reads memory other contexts own or makes the GPU fault; a
+fault resets the GPU and on 2026-10-04 that hung WindowServer and panicked macOS.
+A guest must not be able to do that. Reading the indices back grows with the
+index count: on an M4 Max (bench lock, median of 3) under 1 us per draw for
+12 KB, 0.03 ms for 1 MB, 0.11 ms for 4 MB of indices (ADR 0017); mapping instead
+would cost 95 us per draw.
+Depends on: virgl-buffer-binding-checks.patch (vrend_buffer_range_ok).
+Upstream: upstreamable hardening for hosts without robust buffer access; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c (each refused draw and the accepted edge
+cases, on Apple's software renderer); Tests/virgl/fuzz-cmd-stream.sh with
+gl-oracle.c (checks every GL draw call independently).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -900,6 +900,7 @@
+    unsigned shader_failures;
+    bool dropped_draws_logged;
+    unsigned gl_errors;
++   unsigned range_drops;
+ 
+ #ifdef ENABLE_TRACING
+    struct hash_table *active_markers;
+@@ -5446,6 +5447,10 @@
+          void *data;
+          /* for 0 stride we are kinda screwed */
+          data = glMapBufferRange(GL_ARRAY_BUFFER, vbo->base.buffer_offset, ve->nr_chan * sizeof(GLfloat), GL_MAP_READ_BIT);
++         if (!data) {
++            disable_bitmask |= (1 << loc);
++            continue;
++         }
+ 
+          switch (ve->nr_chan) {
+          case 1:
+@@ -5475,16 +5480,16 @@
+          glVertexAttribDivisorARB(loc, ve->base.instance_divisor);
+       }
+    }
++   (void)disable_bitmask;
+    if (ctx->sub->enabled_attribs_bitmask != enable_bitmask) {
+-      uint32_t mask = ctx->sub->enabled_attribs_bitmask & disable_bitmask;
++      uint32_t mask = ctx->sub->enabled_attribs_bitmask & ~enable_bitmask;
+ 
+       while (mask) {
+          i = u_bit_scan(&mask);
+          glDisableVertexAttribArray(i);
+       }
+-      ctx->sub->enabled_attribs_bitmask &= ~disable_bitmask;
+ 
+-      mask = ctx->sub->enabled_attribs_bitmask ^ enable_bitmask;
++      mask = enable_bitmask & ~ctx->sub->enabled_attribs_bitmask;
+       while (mask) {
+          i = u_bit_scan(&mask);
+          glEnableVertexAttribArray(i);
+@@ -6208,8 +6213,397 @@
+    }
+    memcpy(ctx->sub->prog_ids, prev_shader_ids, PIPE_SHADER_TYPES * sizeof(uint32_t));
+    ctx->sub->prog = prev_prog;
++}
++
++/* One draw as the GL gets it: the guest's direct draw, or one command of its indirect
++ * buffer, read on the CPU so that the GPU draws exactly what was checked. */
++struct vrend_direct_draw {
++   uint32_t start, count;           /* vertices (non-indexed) */
++   uint32_t ib_offset;              /* indexed: byte offset of the first index */
++   int32_t index_bias;
++   uint32_t instance_count;         /* 0: not instanced */
++   uint32_t start_instance;
++   uint32_t min_index, max_index;   /* indexed: range of the indices actually used */
++   bool empty;                      /* nothing to fetch: no GL draw */
++};
++
++/* Bytes the GL reads for one vertex of an element. */
++static uint32_t vrend_vertex_element_size(const struct vrend_vertex_element *ve)
++{
++   uint32_t per_channel;
++
++   switch (ve->type) {
++   case GL_INT_2_10_10_10_REV:
++   case GL_UNSIGNED_INT_2_10_10_10_REV:
++   case GL_UNSIGNED_INT_10F_11F_11F_REV:
++      return 4;
++   case GL_BYTE:
++   case GL_UNSIGNED_BYTE:
++      per_channel = 1;
++      break;
++   case GL_SHORT:
++   case GL_UNSIGNED_SHORT:
++   case GL_HALF_FLOAT:
++      per_channel = 2;
++      break;
++   case GL_DOUBLE:
++      per_channel = 8;
++      break;
++   default:
++      per_channel = 4;
++      break;
++   }
++   return MAX2(per_channel * ve->nr_chan, util_format_get_blocksize(ve->base.src_format));
++}
++
++/* Every vertex and instance a draw fetches lies inside its vertex buffer. The GL does
++ * not check this (Apple's GL has no robust buffer access): a fetch past a buffer reads
++ * other memory, or makes the GPU fault and macOS reset it. min/max_vertex: vertex
++ * indices with the index bias applied, none when max < min. */
++static bool vrend_draw_vertices_inside(struct vrend_sub_context *sub_ctx,
++                                       int64_t min_vertex, int64_t max_vertex,
++                                       uint64_t first_instance, uint64_t instances)
++{
++   const struct vrend_vertex_element_array *va = sub_ctx->ve;
++   const bool legacy = !has_feature(feat_gles31_vertex_attrib_binding);
++
++   if (!va)
++      return true;
++
++   unsigned n = va->count;
++   /* the legacy path enables only the elements the vertex shader reads */
++   if (legacy)
++      n = MIN2(n, (unsigned)sub_ctx->prog->ss[PIPE_SHADER_VERTEX]->sel->sinfo.num_inputs);
++
++   for (unsigned i = 0; i < n; i++) {
++      const struct vrend_vertex_element *ve = &va->elements[i];
++      const struct vrend_vertex_buffer *vbo = &sub_ctx->vbo[ve->base.vertex_buffer_index];
++      const struct vrend_resource *res = (const struct vrend_resource *)vbo->base.buffer;
++      const uint64_t stride = vbo->base.stride;
++      const uint64_t base = (uint64_t)vbo->base.buffer_offset + ve->base.src_offset;
++      int64_t first, last;
++
++      if (!res)
++         continue; /* not enabled: the attribute reads its current value */
++      if (stride > INT32_MAX)
++         return false; /* the GL would refuse it and keep the previous pointer */
++
++      if (!stride) {
++         /* one value for every vertex; the legacy path reads it at buffer_offset */
++         if (legacy && !vrend_buffer_range_ok(res, vbo->base.buffer_offset,
++                                              ve->nr_chan * sizeof(GLfloat)))
++            return false;
++         first = last = 0;
++      } else if (ve->base.instance_divisor) {
++         /* a draw that is not instanced reads instance 0 */
++         first = instances ? (int64_t)first_instance : 0;
++         last = instances ? (int64_t)(first_instance + (instances - 1) / ve->base.instance_divisor) : 0;
++      } else {
++         if (max_vertex < min_vertex)
++            continue;
++         first = min_vertex;
++         last = max_vertex;
++      }
++      if (first < 0)
++         return false;
++      /* last < 2^34, stride < 2^31: no 64-bit wrap */
++      if (!vrend_buffer_range_ok(res, base + (uint64_t)last * stride, vrend_vertex_element_size(ve)))
++         return false;
++   }
++   return true;
++}
++
++/* Reads [offset, offset + size) of a GL buffer. glGetBufferSubData copies from the
++ * driver's copy without waiting for the GPU unless it writes the buffer (measured on
++ * an M4 Max: no cost per draw); GLES has only mapping. */
++static bool vrend_read_gl_buffer(const struct vrend_resource *res, uint64_t offset,
++                                 uint32_t size, void *out)
++{
++   bool ok = true;
++
++   glBindBuffer(GL_COPY_READ_BUFFER, res->gl_id);
++   if (!vrend_state.use_gles) {
++      glGetBufferSubData(GL_COPY_READ_BUFFER, offset, size, out);
++   } else {
++      void *p = glMapBufferRange(GL_COPY_READ_BUFFER, offset, size, GL_MAP_READ_BIT);
++      if (p) {
++         memcpy(out, p, size);
++         glUnmapBuffer(GL_COPY_READ_BUFFER);
++      } else {
++         ok = false;
++      }
++   }
++   glBindBuffer(GL_COPY_READ_BUFFER, 0);
++   return ok;
++}
++
++/* The smallest and largest index a draw uses, read back from the GL buffer: the guest
++ * (transfers) or the GPU (copies, transform feedback) may have written it since. */
++static bool vrend_draw_index_range(const struct vrend_resource *ib, uint32_t index_size,
++                                   uint64_t offset, uint32_t count, bool restart,
++                                   uint32_t restart_index, uint32_t *min_index,
++                                   uint32_t *max_index)
++{
++   uint8_t chunk[16384];
++   const uint64_t bytes = (uint64_t)count * index_size;
++   uint32_t lo = UINT32_MAX, hi = 0;
++   bool any = false;
++
++   for (uint64_t done = 0; done < bytes;) {
++      uint32_t n = MIN2(sizeof(chunk), bytes - done);
++      if (!vrend_read_gl_buffer(ib, offset + done, n, chunk))
++         return false;
++      for (uint32_t i = 0; i < n; i += index_size) {
++         uint32_t v;
++         if (index_size == 1) {
++            v = chunk[i];
++         } else if (index_size == 2) {
++            uint16_t v16;
++            memcpy(&v16, chunk + i, 2);
++            v = v16;
++         } else {
++            memcpy(&v, chunk + i, 4);
++         }
++         if (restart && v == restart_index)
++            continue;
++         lo = MIN2(lo, v);
++         hi = MAX2(hi, v);
++         any = true;
++      }
++      done += n;
++   }
++   *min_index = any ? lo : 1;
++   *max_index = any ? hi : 0;
++   return true;
++}
++
++/* Checks one direct draw; fills in the index range of indexed draws. Returns false when
++ * it would read past a buffer (why: a short reason for the log). */
++static bool vrend_check_direct_draw(struct vrend_sub_context *sub_ctx,
++                                    const struct pipe_draw_info *info,
++                                    struct vrend_direct_draw *d, const char **why)
++{
++   int64_t min_vertex = 0, max_vertex = -1;
++
++   if (d->start_instance && !has_feature(feat_base_instance)) {
++      *why = "a first instance without base instance support";
++      return false;
++   }
++
++   if (info->indexed) {
++      const struct vrend_resource *ib = (struct vrend_resource *)sub_ctx->ib.buffer;
++      const uint32_t isize = sub_ctx->ib.index_size;
++      uint32_t restart_index = info->restart_index;
++
++      if (!ib) {
++         *why = "an indexed draw without an index buffer";
++         return false;
++      }
++      if ((isize != 1 && isize != 2 && isize != 4) || d->ib_offset % isize) {
++         *why = "an index size or offset the GL cannot use";
++         return false;
++      }
++      if (!vrend_buffer_range_ok(ib, d->ib_offset, (uint64_t)d->count * isize)) {
++         *why = "indices past the end of the index buffer";
++         return false;
++      }
++      if (has_bit(ib->storage_bits, VREND_STORAGE_GL_IMMUTABLE) &&
++          (ib->buffer_storage_flags & GL_MAP_PERSISTENT_BIT)) {
++         /* the guest can change those indices after the check (never on macOS: its GL
++          * has no persistent buffers) */
++         *why = "indices in a persistently mapped buffer";
++         return false;
++      }
++      if (d->index_bias && !has_feature(feat_draw_elements_base_vertex)) {
++         *why = "an index bias without base vertex support";
++         return false;
++      }
++      if (vrend_state.use_gles)
++         restart_index = isize == 1 ? 0xff : isize == 2 ? 0xffff : 0xffffffff;
++      if (!vrend_draw_index_range(ib, isize, d->ib_offset, d->count, info->primitive_restart,
++                                  restart_index, &d->min_index, &d->max_index)) {
++         *why = "indices that could not be read back";
++         return false;
++      }
++      d->empty = d->max_index < d->min_index;
++      if (!d->empty) {
++         min_vertex = (int64_t)d->min_index + d->index_bias;
++         max_vertex = (int64_t)d->max_index + d->index_bias;
++      }
++   } else {
++      d->empty = !d->count;
++      if (!d->empty) {
++         min_vertex = d->start;
++         max_vertex = (int64_t)d->start + d->count - 1;
++      }
++   }
++
++   if (d->empty)
++      return true;
++   if (!vrend_draw_vertices_inside(sub_ctx, min_vertex, max_vertex, d->start_instance,
++                                   d->instance_count)) {
++      *why = "vertices or instances past the end of a vertex buffer";
++      return false;
++   }
++   return true;
++}
++
++/* The direct draws for a draw call. An indirect draw's commands (and its draw count)
++ * are read from the GL buffers and drawn as direct draws, so the GPU never takes a
++ * vertex count, first vertex or index offset that was not checked. *draws is `one` or
++ * malloc'ed. */
++static bool vrend_prepare_draws(struct vrend_sub_context *sub_ctx,
++                                const struct pipe_draw_info *info, uint32_t cso,
++                                const struct vrend_resource *indirect_res,
++                                const struct vrend_resource *indirect_params_res,
++                                struct vrend_direct_draw *one,
++                                struct vrend_direct_draw **draws, uint32_t *num_draws,
++                                const char **why)
++{
++   *draws = one;
++   *num_draws = 1;
++   memset(one, 0, sizeof(*one));
++
++   if (!indirect_res) {
++      one->start = cso ? 0 : info->start;
++      one->count = cso ? cso : info->count;
++      one->ib_offset = sub_ctx->ib.offset;
++      one->index_bias = info->index_bias;
++      one->instance_count = info->instance_count;
++      one->start_instance = info->start_instance;
++      return vrend_check_direct_draw(sub_ctx, info, one, why);
++   }
++
++   const uint32_t cmd_size = info->indexed ? 5 * sizeof(uint32_t) : 4 * sizeof(uint32_t);
++   uint64_t stride = info->indirect.stride ? info->indirect.stride : cmd_size;
++   /* one command when no count is given, as the GL calls upstream made */
++   uint32_t n = MAX2(info->indirect.draw_count, 1);
++
++   if (indirect_params_res) {
++      uint32_t count;
++      if (!vrend_buffer_range_ok(indirect_params_res, info->indirect.indirect_draw_count_offset,
++                                 sizeof(count)) ||
++          !vrend_read_gl_buffer(indirect_params_res, info->indirect.indirect_draw_count_offset,
++                                sizeof(count), &count)) {
++         *why = "an indirect draw count past the end of its buffer";
++         return false;
++      }
++      n = MIN2(info->indirect.draw_count, count);
++   }
++   if (!n) {
++      *num_draws = 0;
++      return true;
++   }
++   if (n > 65536 || (stride & 3) ||
++       !vrend_buffer_range_ok(indirect_res, info->indirect.offset + (n - 1) * stride, cmd_size)) {
++      *why = "indirect draw commands past the end of their buffer";
++      return false;
++   }
++   if (n > 1) {
++      *draws = calloc(n, sizeof(**draws));
++      if (!*draws) {
++         *draws = one;
++         *why = "no memory for the indirect draws";
++         return false;
++      }
++   }
++   *num_draws = n;
++
++   for (uint32_t i = 0; i < n; i++) {
++      struct vrend_direct_draw *d = &(*draws)[i];
++      uint32_t cmd[5];
++
++      memset(d, 0, sizeof(*d));
++      if (!vrend_read_gl_buffer(indirect_res, info->indirect.offset + i * stride, cmd_size, cmd)) {
++         *why = "indirect draw commands that could not be read back";
++         return false;
++      }
++      d->count = cmd[0];
++      d->instance_count = cmd[1];
++      if (info->indexed) {
++         uint64_t offset = sub_ctx->ib.offset + (uint64_t)cmd[2] * sub_ctx->ib.index_size;
++         if (offset > UINT32_MAX) {
++            *why = "indices past the end of the index buffer";
++            return false;
++         }
++         d->ib_offset = offset;
++         d->index_bias = (int32_t)cmd[3];
++         d->start_instance = cmd[4];
++      } else {
++         d->start = cmd[2];
++         d->start_instance = cmd[3];
++      }
++      if (!d->instance_count) {
++         d->empty = true; /* an indirect command with no instances draws nothing */
++         continue;
++      }
++      if (!vrend_check_direct_draw(sub_ctx, info, d, why))
++         return false;
++   }
++   return true;
+ }
+ 
++/* Issues one checked direct draw (the GL calls upstream made for direct draws). */
++static void vrend_issue_direct_draw(struct vrend_sub_context *sub_ctx,
++                                    const struct pipe_draw_info *info,
++                                    const struct vrend_direct_draw *d)
++{
++   const GLenum mode = info->mode;
++
++   if (d->empty)
++      return;
++
++   if (!info->indexed) {
++      if (d->instance_count > 0) {
++         if (d->start_instance > 0)
++            glDrawArraysInstancedBaseInstance(mode, d->start, d->count, d->instance_count,
++                                              d->start_instance);
++         else
++            glDrawArraysInstancedARB(mode, d->start, d->count, d->instance_count);
++      } else {
++         glDrawArrays(mode, d->start, d->count);
++      }
++      return;
++   }
++
++   GLenum elsz;
++   switch (sub_ctx->ib.index_size) {
++   case 1:
++      elsz = GL_UNSIGNED_BYTE;
++      break;
++   case 2:
++      elsz = GL_UNSIGNED_SHORT;
++      break;
++   default:
++      elsz = GL_UNSIGNED_INT;
++      break;
++   }
++   void *indices = (void *)(uintptr_t)d->ib_offset;
++
++   if (d->index_bias) {
++      if (d->instance_count > 0) {
++         if (d->start_instance > 0)
++            glDrawElementsInstancedBaseVertexBaseInstance(mode, d->count, elsz, indices,
++                                                          d->instance_count, d->index_bias,
++                                                          d->start_instance);
++         else
++            glDrawElementsInstancedBaseVertex(mode, d->count, elsz, indices,
++                                              d->instance_count, d->index_bias);
++      } else {
++         glDrawRangeElementsBaseVertex(mode, d->min_index, d->max_index, d->count, elsz,
++                                       indices, d->index_bias);
++      }
++   } else if (d->instance_count > 0) {
++      if (d->start_instance > 0)
++         glDrawElementsInstancedBaseInstance(mode, d->count, elsz, indices,
++                                             d->instance_count, d->start_instance);
++      else
++         glDrawElementsInstancedARB(mode, d->count, elsz, indices, d->instance_count);
++   } else {
++      glDrawRangeElements(mode, d->min_index, d->max_index, d->count, elsz, indices);
++   }
++}
++
+ int vrend_draw_vbo(struct vrend_context *ctx,
+                    const struct pipe_draw_info *info,
+                    uint32_t cso, uint32_t indirect_handle,
+@@ -6288,6 +6682,20 @@
+       return 0;
+    }
+ 
++   struct vrend_direct_draw one_draw, *draws;
++   uint32_t num_draws;
++   const char *why = NULL;
++   if (!vrend_prepare_draws(sub_ctx, info, cso, indirect_res, indirect_params_res,
++                            &one_draw, &draws, &num_draws, &why)) {
++      if (draws != &one_draw)
++         free(draws);
++      if (++ctx->range_drops <= 3)
++         virgl_error("context %d (%s): a draw with %s is skipped%s\n", ctx->ctx_id,
++                     ctx->debug_name, why,
++                     ctx->range_drops == 3 ? "; further skipped draws are not logged" : "");
++      return 0;
++   }
++
+    vrend_use_program(sub_ctx->prog);
+ 
+    if (has_feature(feat_draw_parameters) &&
+@@ -6334,20 +6742,6 @@
+ 
+    if (info->indexed) {
+       struct vrend_resource *res = (struct vrend_resource *)sub_ctx->ib.buffer;
+-      if (!res) {
+-         virgl_error("VBO missing indexed array buffer\n");
+-         return 0;
+-      }
+-
+-      if (!indirect_handle) {
+-         uint32_t expected_size = sub_ctx->ib.index_size * info->count + sub_ctx->ib.offset;
+-         if (expected_size > res->base.width0) {
+-            virgl_error("Indexed array buffer (%u) not large enough for draw operation "
+-                        "(req. %u\n", res->base.width0, expected_size);
+-            return 0;
+-         }
+-      }
+-
+       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res->gl_id);
+    } else
+       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+@@ -6426,78 +6820,10 @@
+       glEnable(GL_BLEND);
+    }
+ 
+-   /* set the vertex state up now on a delay */
+-   if (!info->indexed) {
+-      GLenum mode = info->mode;
+-      int count = cso ? cso : info->count;
+-      int start = cso ? 0 : info->start;
+-
+-      if (indirect_handle) {
+-         if (indirect_params_res)
+-            glMultiDrawArraysIndirectCountARB(mode, (GLvoid const *)(uintptr_t)info->indirect.offset,
+-                                              info->indirect.indirect_draw_count_offset, info->indirect.draw_count, info->indirect.stride);
+-         else if (info->indirect.draw_count > 1)
+-            glMultiDrawArraysIndirect(mode, (GLvoid const *)(uintptr_t)info->indirect.offset, info->indirect.draw_count, info->indirect.stride);
+-         else
+-            glDrawArraysIndirect(mode, (GLvoid const *)(uintptr_t)info->indirect.offset);
+-      } else if (info->instance_count > 0) {
+-         if (info->start_instance > 0)
+-            glDrawArraysInstancedBaseInstance(mode, start, count, info->instance_count, info->start_instance);
+-         else
+-            glDrawArraysInstancedARB(mode, start, count, info->instance_count);
+-      } else
+-         glDrawArrays(mode, start, count);
+-   } else {
+-      GLenum elsz;
+-      GLenum mode = info->mode;
+-      switch (sub_ctx->ib.index_size) {
+-      case 1:
+-         elsz = GL_UNSIGNED_BYTE;
+-         break;
+-      case 2:
+-         elsz = GL_UNSIGNED_SHORT;
+-         break;
+-      case 4:
+-      default:
+-         elsz = GL_UNSIGNED_INT;
+-         break;
+-      }
+-
+-      if (indirect_handle) {
+-         if (indirect_params_res)
+-            glMultiDrawElementsIndirectCountARB(mode, elsz, (GLvoid const *)(uintptr_t)info->indirect.offset,
+-                                                info->indirect.indirect_draw_count_offset, info->indirect.draw_count, info->indirect.stride);
+-         else if (info->indirect.draw_count > 1)
+-            glMultiDrawElementsIndirect(mode, elsz, (GLvoid const *)(uintptr_t)info->indirect.offset, info->indirect.draw_count, info->indirect.stride);
+-         else
+-            glDrawElementsIndirect(mode, elsz, (GLvoid const *)(uintptr_t)info->indirect.offset);
+-      } else if (info->index_bias) {
+-         if (info->instance_count > 0) {
+-            if (info->start_instance > 0)
+-               glDrawElementsInstancedBaseVertexBaseInstance(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset,
+-                                                             info->instance_count, info->index_bias, info->start_instance);
+-            else if (has_feature(feat_draw_elements_base_vertex))
+-               glDrawElementsInstancedBaseVertex(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count, info->index_bias);
+-            else
+-               return EINVAL;
+-
+-         } else if (has_feature(feat_draw_elements_base_vertex)) {
+-            if (info->min_index != 0 || info->max_index != (unsigned)-1)
+-               glDrawRangeElementsBaseVertex(mode, info->min_index, info->max_index, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
+-            else
+-               glDrawElementsBaseVertex(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->index_bias);
+-         } else
+-            return EINVAL;
+-      } else if (info->instance_count > 0) {
+-         if (info->start_instance > 0) {
+-            glDrawElementsInstancedBaseInstance(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count, info->start_instance);
+-         } else
+-            glDrawElementsInstancedARB(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset, info->instance_count);
+-      } else if (info->min_index != 0 || info->max_index != (unsigned)-1)
+-         glDrawRangeElements(mode, info->min_index, info->max_index, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset);
+-      else
+-         glDrawElements(mode, info->count, elsz, (void *)(uintptr_t)sub_ctx->ib.offset);
+-   }
++   for (uint32_t i = 0; i < num_draws; i++)
++      vrend_issue_direct_draw(sub_ctx, info, &draws[i]);
++   if (draws != &one_draw)
++      free(draws);
+ 
+    if (info->primitive_restart) {
+       if (vrend_state.use_gles) {

@@ -24,11 +24,8 @@ jobs:
 
       - name: List shell scripts
         run: |
-          # *.sh plus the files without an extension that start with a bash shebang.
-          { git ls-files '*.sh'
-            git ls-files | grep -v '\.[^/]*$' | while read -r f; do
-              head -1 "$f" 2>/dev/null | grep -qE '^#!.*\b(ba)?sh\b' && echo "$f"
-            done; } | sort -u > "$RUNNER_TEMP/shell-files"
+          # The same list CONTRIBUTING.md's quick checks use.
+          .github/shell-files.sh > "$RUNNER_TEMP/shell-files"
           wc -l < "$RUNNER_TEMP/shell-files"
 
       - name: bash -n (macOS's bash 3.2, which the Mac side runs on)
@@ -56,3 +53,9 @@ jobs:
 
       - name: Omanotch offline tests
         run: src/omanotch/mac/test.sh
+
+      - name: Which VM --vm NAME means
+        run: src/tests/vm-names.sh
+
+      - name: Prebuilt manifests are checked (untrusted input)
+        run: src/tests/prebuilt-manifest.sh

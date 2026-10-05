@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/gillesgoetsch/omacvm/main/install.s
 | 🔳 **Omanotch**<br>Omarchy's real bar beside the MacBook's notch, where the VM leaves a black strip. | 🍎 **Standalone app, UTM, VMware Fusion or Parallels**<br>Pick one, OmacVM sets it up the same way. |
 | 🎬 **Hardware video decoding**<br>YouTube 4K on the Mac's media engine, not the CPU. | 💻 **Runs on M1, M2, M3, M4, M5, M6**<br>Adapts to notch, ProMotion, HDR and missing hardware on its own. |
 | 🎮 **Real GPU performance**<br>Vulkan, WebGPU and OpenCL in the VM. *(coming with 2.9.0)* | 🛠️ **A setup script that fits your needs**<br>Pick the app, CPUs, memory, disk, keyboard, user and every feature; change them later anytime. |
-| 🖥️ **Multiple external monitors**<br>Every display in your macOS arrangement, hardware accelerated. *(coming with 2.8.0)* | ⏱️ **Ready in 5 minutes**<br>Download a prebuilt VM, or build it fully yourself. |
+| 🖥️ **Multiple external monitors**<br>Every display in your macOS arrangement, hardware accelerated. | ⏱️ **Ready in 5 minutes**<br>Download a prebuilt VM, or build it fully yourself. |
 | 👆 **Mac trackpad gestures**<br>2, 3 and 4 finger swipes and pinch zoom, plus optional macOS-like momentum scrolling. | 🎨 **Theme and wallpaper sync**<br>Your Omarchy theme and wallpaper carry over to macOS. |
 | ⌨️ **Mac keys, fully Omarchy**<br>Cmd works as Super, macOS shortcuts stay out of the way. | 🔋 **Optimized for battery**<br>Measured power draw on every route, tuned to stay close to macOS. |
 | 📶 **Wi-Fi, audio and battery from the Mac**<br>The bar shows your real networks, sound devices and battery. | 🔀 **Features on or off anytime**<br>`omacvm features` switches them on an existing VM. |
@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/gillesgoetsch/omacvm/main/install.s
 
 ### Which app?
 
-**OmacVM.app** is the recommended way: free, open source, and the only one with hardware video and the full GPU. **UTM** is the free classic. **VMware Fusion** is free and supports external monitors. **Parallels** is the most polished, but paid.
+**OmacVM.app** is the recommended way: free, open source, and the only one with hardware video and the full GPU. **UTM** is the free classic. **VMware Fusion** is free. **Parallels** is the most polished, but paid.
 
 | | OmacVM.app | UTM | VMware Fusion | Parallels |
 |---|:---:|:---:|:---:|:---:|
@@ -52,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/gillesgoetsch/omacvm/main/install.s
 | Hardware video decoding | ✅ | ❌ | ❌ | ❌ |
 | GPU in desktop and browsers | ✅ | ✅ | ✅ | ✅ |
 | Vulkan, WebGPU, OpenCL | 🔜 2.9.0 | ❌ | ❌ | ❌ |
-| External monitors | 🔜 2.8.0 | ❌ | ✅ | ✅ |
+| External monitors | ✅ | ❌ | ✅ | ✅ |
 | 120 Hz ProMotion | 🔜 2.9.0 | ✅ | ✅ | ✅ |
 | Trackpad gestures | ✅ | ✅ | ✅ | ✅ |
 | Momentum scrolling (optional) | ✅ | ✅ | ✅ | ✅ |
@@ -125,6 +125,7 @@ omacvm features                 # switch features on or off
 omacvm update                   # the newest OmacVM, on the Mac and in every running VM
 omacvm check                    # what works and what to fix; it changes nothing
 omacvm vms                      # your VMs and their OmacVM version
+omacvm resources --vm NAME      # change its CPUs and memory
 ```
 
 Add `--vm NAME` for a VM other than the default. Have an Omarchy VM from
@@ -172,7 +173,7 @@ stays too: drag it to the Bin (its VMs stay in ~/Library/Application
 Support/OmacVM until you delete them).
 
 **OmacVM 2.7.0 and older: don't use `--purge` if you have OmacVM.app VMs.** It
-deletes them with the settings; fixed in the next release.
+deletes them with the settings. Fixed in 2.7.1: run `omacvm update` first.
 
 ## Credits
 
@@ -190,6 +191,8 @@ of `omacvm-vdagent`. The bar widgets are clones of Omarchy's own.
 
 OmacVM is a community project, not affiliated with the Omarchy team,
 Parallels, UTM, VMware (Broadcom) or Apple.
+
+Want to help? Start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

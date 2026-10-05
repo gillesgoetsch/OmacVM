@@ -1,0 +1,113 @@
+virglrenderer: a lost Venus context signals its fences instead of hanging the guest
+
+What: when the render server ends a context (vkr hit a fatal error in its command
+stream, then "failed to dispatch context op"), the proxy marks the context lost:
+fences submitted for it are queued and retired by the next retire_fences call
+(the fence poll, or the sync thread, which is woken), queued fences are retired at
+once instead of after 100 stalled polls, and further SUBMIT_CMDs are dropped
+without a log line each. On macOS poll() reports POLLHUP for a closed peer of a
+stream socket only when POLLIN is asked for: proxy_socket_is_connected asks for it.
+(An earlier version also peeked at the socket with recv(MSG_PEEK); with it the
+guest hung in Venus soaks within 6-10 minutes, without it the soak passed twice.
+Why the peek hung the guest is not known: it consumes nothing, and a test showed
+that it does not drop file descriptors passed with the next message. The removal
+is an empirical fix; the hang may have been timing and could come back.)
+Why: the proxy dropped the fence of every submit that failed, so the guest's
+vkWaitForFences (and anything waiting on that syncobj) blocked forever: the app
+hung (tests/graphics/venus-loss.sh: 60 s timeout). Now the app runs on, and the
+guest's venus ends it with abort() when it sees the fatal ring status (2 s in the
+test); a new Vulkan app works right after.
+Threading: lost is set once, by the thread that submits (QEMU's main thread),
+under timeline_mutex; that thread reads it without the lock, the sync thread only
+under timeline_mutex (in retire_timeline_fences_locked).
+Upstream: upstreamable (the macOS socket part only matters where the render server
+socket is a stream socket, see virgl-darwin-stream-sockets.patch on gpu-venus).
+Not sent.
+Tests: tests/graphics/venus-loss.sh (needs a Venus runtime and guest Mesa venus).
+--- a/src/proxy/proxy_context.h
++++ b/src/proxy/proxy_context.h
+@@ -29,6 +29,10 @@
+ 
+    struct proxy_client *client;
+    struct proxy_socket socket;
++   /* The render server ended this context. Set once by the submitting thread
++    * under timeline_mutex; that thread reads it without the lock, the sync
++    * thread only under timeline_mutex. */
++   bool lost;
+ 
+    /* this tracks resources early attached in get_blob */
+    struct hash_table *resource_table;
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -106,12 +106,14 @@
+                                             uint32_t cur_seqno)
+ {
+    struct proxy_timeline *timeline = &ctx->timelines[ring_idx];
+-   bool force_retire_all = false;
++   /* a lost context's fences will never be signalled by the render server */
++   bool force_retire_all = ctx->lost;
+ 
+    /* check if the socket has been disconnected (i.e., the other end has
+     * crashed) if no progress is made after a while
+     */
+-   if (timeline->cur_seqno == cur_seqno && !list_is_empty(&timeline->fences)) {
++   if (!force_retire_all && timeline->cur_seqno == cur_seqno &&
++       !list_is_empty(&timeline->fences)) {
+       timeline->cur_seqno_stall_count++;
+       if (timeline->cur_seqno_stall_count < 100 ||
+           proxy_socket_is_connected(&ctx->socket))
+@@ -229,9 +231,28 @@
+       .ring_index = ring_idx,
+       .seqno = fence->seqno,
+    };
+-   if (proxy_socket_send_request(&ctx->socket, &req, sizeof(req)))
++   if (!ctx->lost && proxy_socket_send_request(&ctx->socket, &req, sizeof(req)))
+       return 0;
+ 
++   /* The render server ended this context (a fatal error in its commands), so it
++    * will never signal this fence. Keep it queued and let the next retire signal
++    * it with the others, so the guest's wait returns instead of hanging; the
++    * guest's venus then sees the fatal ring status and ends the app. */
++   if (ctx->lost || !proxy_socket_is_connected(&ctx->socket)) {
++      if (!ctx->lost) {
++         proxy_log("context %u is lost: its fences are signalled from now on",
++                   ctx->base.ctx_id);
++         if (proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB)
++            mtx_lock(&ctx->timeline_mutex);
++         ctx->lost = true;
++         if (proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB)
++            mtx_unlock(&ctx->timeline_mutex);
++      }
++      if (ctx->sync_thread.fence_eventfd >= 0)
++         write_eventfd(ctx->sync_thread.fence_eventfd, 1);
++      return 0;
++   }
++
+    /* recover timeline fences and busy_mask on submit_fence request failure */
+    if (proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB)
+       mtx_lock(&ctx->timeline_mutex);
+@@ -273,6 +294,10 @@
+    if (!size)
+       return 0;
+ 
++   /* logged once when the context was lost */
++   if (ctx->lost)
++      return -1;
++
+    struct render_context_op_submit_cmd_request req = {
+       .header.op = RENDER_CONTEXT_OP_SUBMIT_CMD,
+       .size = size,
+--- a/src/proxy/proxy_socket.c
++++ b/src/proxy/proxy_socket.c
+@@ -90,8 +90,11 @@
+ bool
+ proxy_socket_is_connected(const struct proxy_socket *socket)
+ {
++   /* macOS reports POLLHUP for a closed peer of a stream socket only when POLLIN is
++    * asked for (with no events it reports nothing). */
+    struct pollfd poll_fd = {
+       .fd = socket->fd,
++      .events = POLLIN,
+    };
+ 
+    while (true) {

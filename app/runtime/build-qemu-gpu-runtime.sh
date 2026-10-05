@@ -16,6 +16,9 @@ The build is Apple-Silicon/HVF-only. It enables Cocoa+VirGL, SLIRP user
 networking, SDL duplex audio, and virtio-9p folder sharing. All downloaded source archives and wheels are
 immutable and checksum-pinned; scratch sources are removed on every exit.
 
+It also builds the UEFI firmware with Omarchy's boot logo (build-edk2.sh);
+OMACVM_FIRMWARE=qemu keeps QEMU's prebuilt firmware instead.
+
 Set OMARCHY_RUNTIME_BUILD_JOBS to a positive integer to bound compilation.
 With --archive-dir, reuse already-downloaded pinned archives from DIR. Every
 archive is copied into private scratch space and checksum-verified before use.
@@ -82,6 +85,28 @@ virgl_videotoolbox_patch="$native_dir/patches/virgl-videotoolbox-decode.patch"
 virgl_row_size_patch="$native_dir/patches/virgl-transfer-row-size.patch"
 virgl_vt_encode_patch="$native_dir/patches/virgl-videotoolbox-encode.patch"
 hidden_window_patch="$native_dir/patches/qemu-cocoa-hidden-for-tests.patch"
+virgl_skip_draws_patch="$native_dir/patches/virgl-shader-failure-skip-draws.patch"
+virgl_loss_report_patch="$native_dir/patches/virgl-context-loss-report.patch"
+virgl_test_fault_patch="$native_dir/patches/virgl-test-shader-fault.patch"
+virgl_null_variant_patch="$native_dir/patches/virgl-shader-variant-null-checks.patch"
+virgl_shader_limits_patch="$native_dir/patches/virgl-shader-size-limits.patch"
+virgl_venus_lost_patch="$native_dir/patches/virgl-venus-lost-context-fences.patch"
+virgl_instance_id_patch="$native_dir/patches/virgl-core-instance-id.patch"
+virgl_xfb_end_patch="$native_dir/patches/virgl-transform-feedback-end.patch"
+virgl_so_checks_patch="$native_dir/patches/virgl-stream-output-checks.patch"
+virgl_gl_error_patch="$native_dir/patches/virgl-gl-error-skip-command.patch"
+virgl_buffer_checks_patch="$native_dir/patches/virgl-buffer-binding-checks.patch"
+virgl_draw_checks_patch="$native_dir/patches/virgl-draw-range-checks.patch"
+virgl_ubo_checks_patch="$native_dir/patches/virgl-uniform-buffer-checks.patch"
+virgl_index_clamp_patch="$native_dir/patches/virgl-shader-index-clamp.patch"
+virgl_vertex_format_patch="$native_dir/patches/virgl-vertex-format-checks.patch"
+virgl_ubo_align_patch="$native_dir/patches/virgl-uniform-buffer-alignment.patch"
+virgl_block_array_patch="$native_dir/patches/virgl-uniform-block-array.patch"
+virgl_draw_error_patch="$native_dir/patches/virgl-draw-gl-error-check.patch"
+virgl_vertex_unused_patch="$native_dir/patches/virgl-vertex-unused-first-input.patch"
+virgl_memory_budget_patch="$native_dir/patches/virgl-resource-memory-budget.patch"
+virgl_queue_flush_patch="$native_dir/patches/virgl-control-queue-flush.patch"
+virgl_venus_robust_patch="$native_dir/patches/virgl-venus-robust-buffer-access.patch"
 prepare_runtime="$native_dir/prepare-qemu-gpu-runtime.sh"
 pinned_bottles="$native_dir/pinned-runtime-bottles.sh"
 
@@ -111,10 +136,32 @@ mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a67
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
 virgl_int_tex_patch_sha256=5336df08e7096fb0e4b977ebedf36aac29c6c053df7edbdea7ff5e45273f57e4
-virgl_videotoolbox_patch_sha256=12c0863d818a1b26da3be9c59220ee22ce55a037887297cd6dac53e62dbc37c3
-virgl_row_size_patch_sha256=5858714fd4f7bcfaa1c9e10fc9ea706df30e59a37be62ad4c20003e049e347e9
+virgl_videotoolbox_patch_sha256=3ebb7b1b2046dce6d205081206f9d5c3ea049c6883309a2272ba3a1e4eea33bc
+virgl_row_size_patch_sha256=c1994d82562625ba8211d1443423b23763b8932fbfe610a416ae6f556010da9f
 virgl_vt_encode_patch_sha256=29677d3946f489215b64a535c0ac1deb7171b8db71d68892eed2ebfe57f1ae3f
-hidden_window_patch_sha256=286aa59317d16f21cb0fe1dd42b6636995d24f1c65312175e40f36b14272dc93
+hidden_window_patch_sha256=21e1d8bf7c26c748266f9c4d6a3c1784bbc62f91d4cc189c2a04b9deb9b508b3
+virgl_skip_draws_patch_sha256=7611495f5afd94b016c9cd7126a457bfdcb13f60df46b5a754cb3d584a4002f1
+virgl_loss_report_patch_sha256=cfef9d4417fabb60cc559f970598fa7f7da069ff747ff652baddb922ca29905a
+virgl_test_fault_patch_sha256=4b09b62f5d1ac73ff056a93891ca4041cfe6ee0f93f7b6bbbcee0fb7b3c94728
+virgl_null_variant_patch_sha256=305d6fffe723fa32ffe3576c0e33c68b7358e142d88612817a175489aaa16832
+virgl_shader_limits_patch_sha256=df6b333dbeb1fe43fd023551fac8ee2d75228f3866b5b1e456621614dc9c01c9
+virgl_instance_id_patch_sha256=67de90babfec3f4abf2b1747f6637bd74e4cd5a2c2cdf0b44eaaeb0e33a6f0d6
+virgl_so_checks_patch_sha256=bf9c4f1eeeda2542fec37d225717a93299b165b5820b3d1936651fc8aea62d64
+virgl_xfb_end_patch_sha256=ebb035a13cf275be1809856ed79b68da12adebe232d88dadc59e8ccb371e2932
+virgl_gl_error_patch_sha256=694dade0eebb88a8de81b45c9cfe48ca55eae5a93284fcb13eeb9a082cbfbc00
+virgl_buffer_checks_patch_sha256=8ec68618b2688ede52afcd286283c80e84787bf2e4ccfa5899cff77a79835688
+virgl_draw_checks_patch_sha256=308521bdb7ba297ce166a587abb10b590a5564739e600d53b71ce0a473e9b1e8
+virgl_ubo_checks_patch_sha256=fdb2c662933bfee31c0f9f871cd69126e0261e1bab767e9334407da2da3b72ff
+virgl_index_clamp_patch_sha256=cab18c535c5ed46d2d6c8785c7096c280288d9aff9f30b499c48487ad2c3d933
+virgl_vertex_format_patch_sha256=dd1ad464871635c753622037d5f188af821028ade1093866f99e969e53a96ad6
+virgl_ubo_align_patch_sha256=0087f49d9f64e497580bbb6174b92ef0990c85eea73afbc18ff34be2084a8f80
+virgl_block_array_patch_sha256=8b9fb4870fbd4ee629d2802d10672406c7ad43bdf54ae558bd6427e6f5a4011c
+virgl_draw_error_patch_sha256=9243046f78aa8eaa1c22591a3afeafe6a51ea092170ac8370d26ffa57e92c363
+virgl_vertex_unused_patch_sha256=1c424509f19ebcd23c17a8fdb1984ddaa64e90e682959d5621236444aa1a2cc6
+virgl_memory_budget_patch_sha256=c8068ca79738984e8c1205fc4eea73956de44ce92a98148bca50ee19e304c868
+virgl_queue_flush_patch_sha256=7f468d955d47cfbf9df75578efddfab0f36256b9b092c8e992f6b78faf67991b
+virgl_venus_robust_patch_sha256=1f877c60460374d0d0109089e70de8c0bb3f5d670404d1a0b1e76d426db80946
+virgl_venus_lost_patch_sha256=c88ad7984c70a79e90c9685d39879f445f637ad1a99d5496976049d3fa494fdc
 strchrnul_patch_sha256=ec1048dd0e8ebe53bf7e8a3bca9bf2f5f4336cd607d4cd077437470e9a32094a
 usb_exact_bus_patch_sha256=5e39159171295c566d014a1ef2744130f80fa02b742c349fa47373b00ae697ec
 udp_patch_sha256=95e8ee890be78cdce70b3ee54a8adac27be02421be08b986ae987c74ef8cec8c
@@ -257,10 +304,17 @@ if [[ -n $archive_cache ]]; then
 fi
 
 work_dir=
+# QEMU's configure refuses a folder with spaces (a home on "Macintosh SSD",
+# say): then the scratch files go to macOS's temp folder.
+scratch_root="$native_dir/.build/tmp"
+if [[ $scratch_root == *[[:space:]]* ]]; then
+  scratch_root=$(cd "${TMPDIR:-/private/tmp}" && pwd -P) || die "no temp folder: ${TMPDIR:-/private/tmp}"
+  [[ $scratch_root != *[[:space:]]* ]] || die "build OmacVM from a folder without spaces in its path"
+fi
 remove_work_dir() {
   local path=$1
   [[ -n $path && ( -e $path || -L $path ) ]] || return 0
-  [[ $path == "$native_dir"/.build/tmp/omarchy-qemu-source-build.* ]] || \
+  [[ $path == "$scratch_root"/omarchy-qemu-source-build.* ]] || \
     die "refusing to remove unexpected scratch path: $path"
   rm -rf -- "$path"
 }
@@ -283,8 +337,8 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-mkdir -p "$native_dir/.build/tmp"
-work_dir=$(mktemp -d "$native_dir/.build/tmp/omarchy-qemu-source-build.XXXXXX")
+mkdir -p "$scratch_root"
+work_dir=$(mktemp -d "$scratch_root/omarchy-qemu-source-build.XXXXXX")
 archive_dir="$work_dir/archives"
 listing_dir="$work_dir/listings"
 source_parent="$work_dir/source"
@@ -507,15 +561,60 @@ patch -d "$source_dir" -p1 -f -i "$iso_swap_patch"
 patch -d "$source_dir" -p1 -f -i "$injected_text_patch"
 patch -d "$source_dir" -p1 -f -i "$usb_exact_bus_patch"
 # OmacVM: app name and icon from the launcher; Quit shuts the guest down;
-# full screen beside the notch; the window keeps its size; the recording
-# device opens off the BQL.
+# full screen beside the notch; the window keeps its size; full screen at the
+# window's real size; modifiers only from input events; the recording device
+# opens off the BQL.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-identity.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-quit-powerdown.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-notch.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-window-size.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullscreen-size.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-modifiers-input-only.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-sdl-audio-capture-thread.patch"
+# OmacVM: a window per Mac display in full screen (Virtual-2, Virtual-3, ...).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-displays.patch"
+# Test runs without a window (OMACVM_COCOA_HIDDEN=1); on top of the displays patch.
 verify_file_sha "Cocoa hidden-window patch" "$hidden_window_patch" "$hidden_window_patch_sha256"
 patch -d "$source_dir" -p1 -f -i "$hidden_window_patch"
+# OmacVM: outputs switched on or off together reach the guest (virtio-gpu).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virtio-gpu-display-event-race.patch"
+# OmacVM: big buffers in fragmented guest memory attach (virtio-gpu).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virtio-gpu-mapping-entries.patch"
+# OmacVM: no Dock, menu bar or hot corner from inside full screen (all displays).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullscreen-edges.patch"
+# Test hook: real full screen on some displays only (OMACVM_TEST_ONLY_DISPLAYS).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-test-only-displays.patch"
+# OmacVM: full screen keeps its size over guest reboots (the display, not the view).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullscreen-area.patch"
+# OmacVM: QEMU's view context is flushed after surface texture work; guest mode
+# changes left whole screen textures in GPU memory. Tested on Apple's software
+# renderer with the patched with_gl_view_ctx(), no VM needed.
+cocoa_view_flush_patch="$native_dir/patches/qemu-cocoa-gl-view-flush.patch"
+cocoa_view_flush_patch_sha256=cf979033b462b39ed264c4899d2711f63674ae61ad091a3933832439fd3c285c
+verify_file_sha "QEMU Cocoa view-context flush" \
+  "$cocoa_view_flush_patch" "$cocoa_view_flush_patch_sha256"
+patch -d "$source_dir" -p1 -f -i "$cocoa_view_flush_patch"
+display_tests="$work_dir/display-tests"
+mkdir -p "$display_tests"
+awk '/^static void with_gl_view_ctx\(CodeBlock block\)$/,/^}$/' "$source_dir/ui/cocoa.m" \
+  > "$display_tests/with-gl-view-ctx.inc"
+grep -q 'glFlush();' "$display_tests/with-gl-view-ctx.inc" || \
+  die "with_gl_view_ctx() in ui/cocoa.m has no glFlush (view-context flush patch)"
+cc -fblocks -Wall -Werror -Wno-deprecated-declarations -I"$display_tests" \
+  "$native_dir/Tests/display/test-gl-view-flush.c" -framework OpenGL \
+  -o "$display_tests/test-gl-view-flush"
+"$display_tests/test-gl-view-flush"
+# OmacVM: 2D resources (the guest's dumb buffers: console, plymouth, dumb
+# screens and cursors) are made with the SCANOUT bind, so the guest memory
+# budget's display reserve covers them (test-resource-budget checks the reserve
+# with this bind).
+virgl_2d_scanout_patch="$native_dir/patches/qemu-virgl-2d-resource-scanout.patch"
+virgl_2d_scanout_patch_sha256=24bbe264116db2cea635ba3c1218ec5bcd3a2a1db1cc5cb508f2918528aaec0a
+verify_file_sha "QEMU virgl 2D resources as screens" \
+  "$virgl_2d_scanout_patch" "$virgl_2d_scanout_patch_sha256"
+patch -d "$source_dir" -p1 -f -i "$virgl_2d_scanout_patch"
+grep -q 'args.bind = (1 << 1) | (1 << 18);' "$source_dir/hw/display/virtio-gpu-virgl.c" || \
+  die "virgl_cmd_create_resource_2d does not make 2D resources as screens"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
@@ -647,6 +746,74 @@ patch -d "$virgl_source" -p1 -f -i "$virgl_row_size_patch"
 # Video encode (H.264, HEVC) on the Mac's media engine: guest VA-API -> VTCompressionSession.
 verify_file_sha "VideoToolbox video encode patch" "$virgl_vt_encode_patch" "$virgl_vt_encode_patch_sha256"
 patch -d "$virgl_source" -p1 -f -i "$virgl_vt_encode_patch"
+# OmacVM: a shader the Mac's GL refuses skips its draws instead of stopping the guest's
+# whole context, and a context that does stop tells the guest (GL context reset).
+verify_file_sha "Refused shader patch" "$virgl_skip_draws_patch" "$virgl_skip_draws_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_skip_draws_patch"
+verify_file_sha "Context loss report patch" "$virgl_loss_report_patch" "$virgl_loss_report_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_loss_report_patch"
+# OmacVM: two guest inputs the fuzzer found that crashed QEMU or asked for 4 GiB.
+verify_file_sha "Shader variant NULL checks" "$virgl_null_variant_patch" "$virgl_null_variant_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_null_variant_patch"
+verify_file_sha "Shader size limits" "$virgl_shader_limits_patch" "$virgl_shader_limits_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_shader_limits_patch"
+# OmacVM: a Venus context the render server ended no longer leaves the guest waiting
+# on fences forever.
+verify_file_sha "Venus lost context fences" "$virgl_venus_lost_patch" "$virgl_venus_lost_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_venus_lost_patch"
+# OmacVM: shaders reading gl_InstanceID (instanced WebGL) compile on Apple's core profile.
+verify_file_sha "Core gl_InstanceID patch" "$virgl_instance_id_patch" "$virgl_instance_id_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_instance_id_patch"
+# OmacVM: transform feedback ends with its own program bound (a guest could crash
+# QEMU in Apple's glEndTransformFeedback).
+verify_file_sha "Transform feedback end patch" "$virgl_xfb_end_patch" "$virgl_xfb_end_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_xfb_end_patch"
+# OmacVM: stream output registers from the guest are checked (the fuzzer aborted QEMU).
+verify_file_sha "Stream output checks patch" "$virgl_so_checks_patch" "$virgl_so_checks_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_so_checks_patch"
+# OmacVM: a GL error after a guest command no longer stops the context.
+verify_file_sha "GL error skip patch" "$virgl_gl_error_patch" "$virgl_gl_error_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_gl_error_patch"
+# OmacVM: the guest must not make the Mac's GPU read or write outside a buffer (a GPU
+# fault resets the GPU; on 2026-10-04 that panicked macOS). Buffer bindings, draw
+# ranges and uniform blocks are checked before any GL call.
+verify_file_sha "Buffer binding checks" "$virgl_buffer_checks_patch" "$virgl_buffer_checks_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_buffer_checks_patch"
+verify_file_sha "Draw range checks" "$virgl_draw_checks_patch" "$virgl_draw_checks_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_draw_checks_patch"
+verify_file_sha "Uniform buffer checks" "$virgl_ubo_checks_patch" "$virgl_ubo_checks_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_ubo_checks_patch"
+# OmacVM: array indexes a guest shader computes stay inside their arrays.
+verify_file_sha "Shader index clamp" "$virgl_index_clamp_patch" "$virgl_index_clamp_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_index_clamp_patch"
+# OmacVM: a GL call the Mac's GL refuses keeps older state the checks above never saw.
+# Vertex formats and buffer offsets the GL would refuse are refused first, uniform block
+# arrays are bound as declared, and a GL error while a draw is set up skips the draw.
+verify_file_sha "Vertex format checks" "$virgl_vertex_format_patch" "$virgl_vertex_format_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_vertex_format_patch"
+verify_file_sha "Uniform buffer alignment" "$virgl_ubo_align_patch" "$virgl_ubo_align_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_ubo_align_patch"
+verify_file_sha "Uniform block arrays" "$virgl_block_array_patch" "$virgl_block_array_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_block_array_patch"
+verify_file_sha "Draw GL error check" "$virgl_draw_error_patch" "$virgl_draw_error_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_draw_error_patch"
+verify_file_sha "Unused first vertex input" "$virgl_vertex_unused_patch" "$virgl_vertex_unused_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_vertex_unused_patch"
+# OmacVM: guest resources have a memory budget (OMACVM_GPU_MEMORY_MB, default a quarter of the Mac's memory).
+verify_file_sha "Resource memory budget" "$virgl_memory_budget_patch" "$virgl_memory_budget_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_memory_budget_patch"
+# OmacVM: QEMU's resource and transfer commands are flushed (Apple's GL keeps unflushed texture memory).
+verify_file_sha "Control queue flush" "$virgl_queue_flush_patch" "$virgl_queue_flush_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_queue_flush_patch"
+# OmacVM: Venus devices always get robust buffer access where the host device has it.
+verify_file_sha "Venus robust buffer access" "$virgl_venus_robust_patch" "$virgl_venus_robust_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_venus_robust_patch"
+# Test runtimes only (tests/graphics/context-loss.sh): refuse marked shaders on demand.
+if [[ ${OMACVM_RUNTIME_TEST_HOOKS:-} == 1 ]]; then
+  log "Adding the test-only shader fault hook (OMACVM_RUNTIME_TEST_HOOKS=1)"
+  verify_file_sha "Shader fault test hook" "$virgl_test_fault_patch" "$virgl_test_fault_patch_sha256"
+  patch -d "$virgl_source" -p1 -f -i "$virgl_test_fault_patch"
+fi
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
@@ -791,12 +958,21 @@ description=$(file -b "$qemu_binary")
 [[ $description == *Mach-O* && $description == *arm64* ]] || \
   die "source build did not produce an arm64 Mach-O QEMU binary"
 
-# OmacVM: QEMU's own UEFI firmware (edk2) and its licence notes, for booting
-# an installed system through GRUB.
+# OmacVM: the UEFI firmware (edk2) and its licence notes, for booting an
+# installed system through GRUB. Our own build of the edk2 QEMU ships, with
+# QEMU's flags and Omarchy's boot logo (build-edk2.sh); QEMU's prebuilt one
+# (TianoCore logo) with OMACVM_FIRMWARE=qemu, or when our build or its boot
+# test fails. .build/firmware/firmware-source says which one it is.
 firmware_dir="$native_dir/.build/firmware"
 rm -rf "$firmware_dir"; mkdir -p "$firmware_dir"
-bunzip2 -c "$source_dir/pc-bios/edk2-aarch64-code.fd.bz2" > "$firmware_dir/edk2-aarch64-code.fd"
 install -m 0644 "$source_dir/pc-bios/edk2-licenses.txt" "$firmware_dir/edk2-licenses.txt"
+firmware=${OMACVM_FIRMWARE:-omacvm}
+[[ $firmware == omacvm || $firmware == qemu ]] || die "OMACVM_FIRMWARE must be omacvm or qemu"
+edk2_out="$work_dir/edk2"
+if [[ $firmware == omacvm ]] && ! "$native_dir/build-edk2.sh" --qemu-source "$source_dir" --out "$edk2_out"; then
+  log "The edk2 build failed: using QEMU's prebuilt firmware (TianoCore logo)"
+  firmware=qemu
+fi
 
 log "Relocating, capability-gating, signing, and publishing the runtime"
 "$prepare_runtime" \
@@ -804,5 +980,31 @@ log "Relocating, capability-gating, signing, and publishing the runtime"
   --source-slirp "$slirp_root/lib/libslirp.0.dylib" \
   --source-virgl "$virgl_root/lib/libvirglrenderer.1.dylib" \
   --archive-dir "$archive_dir"
+
+# The firmware must show the logo and name the disk's boot entry as QEMU's
+# does, with the QEMU it ships with (Tests/firmware/test-firmware.py).
+if [[ $firmware == omacvm ]]; then
+  if python3 "$native_dir/Tests/firmware/test-firmware.py" \
+      "$native_dir/.build/qemu-gpu-runtime/bin/qemu-system-aarch64" \
+      "$edk2_out/edk2-aarch64-code.fd" "$edk2_out/Logo.bmp"; then
+    install -m 0644 "$edk2_out/edk2-aarch64-code.fd" "$firmware_dir/"
+    echo "omacvm edk2-stable202408-omacvm (Omarchy boot logo, build-edk2.sh)" > "$firmware_dir/firmware-source"
+  else
+    log "The edk2 build's firmware test failed: using QEMU's prebuilt firmware (TianoCore logo)"
+    firmware=qemu
+  fi
+fi
+if [[ $firmware == qemu ]]; then
+  bunzip2 -c "$source_dir/pc-bios/edk2-aarch64-code.fd.bz2" > "$firmware_dir/edk2-aarch64-code.fd"
+  echo "qemu edk2-stable202408-prebuilt.qemu.org (QEMU's prebuilt, TianoCore logo)" > "$firmware_dir/firmware-source"
+fi
+log "Firmware: $(cat "$firmware_dir/firmware-source")"
+
+# Mark a test runtime so build-app.sh never ships it.
+if [[ ${OMACVM_RUNTIME_TEST_HOOKS:-} == 1 ]]; then
+  : > "$native_dir/.build/qemu-gpu-runtime.test-hooks"
+else
+  rm -f "$native_dir/.build/qemu-gpu-runtime.test-hooks"
+fi
 
 log "Pinned patched runtime is ready; scratch source and archives will now be removed"

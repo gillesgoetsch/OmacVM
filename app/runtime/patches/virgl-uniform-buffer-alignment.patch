@@ -1,0 +1,74 @@
+virglrenderer: uniform and storage buffer offsets must be aligned
+
+What: a uniform buffer offset that is not a multiple of the host's
+GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, a storage buffer offset that is not a multiple
+of GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT, and an atomic counter buffer offset
+that is not a multiple of 4 are refused (context error, like an offset past the
+buffer). vrend tells the guest both alignments in its caps, so Mesa never sends
+such an offset.
+Why: glBindBufferRange refuses an unaligned offset and keeps the binding point's
+previous buffer. The uniform block checks look at the guest's new range, the GPU
+reads the old, smaller buffer (review of gpu-robust, repro 2: a 64-byte block at
+offset 4 read from the 32-byte buffer bound before).
+Depends on: virgl-buffer-binding-checks.patch.
+Upstream: upstreamable; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c case 32 (a uniform block at offset 4 after
+one in a 32-byte buffer: refused, nothing drawn).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -388,6 +388,9 @@
+    uint32_t max_texture_units;
+    /* GL_UNSIGNED_INT_10F_11F_11F_REV vertex attributes (ARB_vertex_type_10f_11f_11f_rev) */
+    bool vertex_10f_11f_11f;
++   /* glBindBufferRange refuses other offsets (and keeps the old binding) */
++   uint32_t ubo_offset_alignment;
++   uint32_t ssbo_offset_alignment;
+ 
+    /* inferred GL caching type */
+    uint32_t inferred_gl_caching_type;
+@@ -3830,7 +3833,8 @@
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
+          return;
+       }
+-      if (offset > res->base.width0) {
++      /* the guest knows the alignment from the caps */
++      if (offset > res->base.width0 || offset % vrend_state.ubo_offset_alignment) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_RESOURCE_OUT_OF_RANGE, res_handle);
+          return;
+       }
+@@ -4180,7 +4184,8 @@
+          return;
+       }
+ 
+-      if (offset > res->base.width0 || length > res->base.width0 - offset) {
++      if (offset > res->base.width0 || length > res->base.width0 - offset ||
++          offset % vrend_state.ssbo_offset_alignment) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_SSBO_BINDING_RANGE, handle);
+          return;
+       }
+@@ -4215,7 +4220,7 @@
+          return;
+       }
+ 
+-      if (!vrend_buffer_range_ok(res, offset, length)) {
++      if (!vrend_buffer_range_ok(res, offset, length) || offset % 4) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_RESOURCE_OUT_OF_RANGE, handle);
+          return;
+       }
+@@ -8500,6 +8505,16 @@
+    /* For testing we need to know maximum */
+    glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, (GLint*)&vrend_state.max_vertex_attributes);
+    vrend_state.vertex_10f_11f_11f = epoxy_has_gl_extension("GL_ARB_vertex_type_10f_11f_11f_rev");
++   vrend_state.ubo_offset_alignment = 1;
++   vrend_state.ssbo_offset_alignment = 1;
++   if (has_feature(feat_ubo))
++      glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT,
++                    (GLint *)&vrend_state.ubo_offset_alignment);
++   if (has_feature(feat_ssbo))
++      glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,
++                    (GLint *)&vrend_state.ssbo_offset_alignment);
++   vrend_state.ubo_offset_alignment = MAX2(vrend_state.ubo_offset_alignment, 1);
++   vrend_state.ssbo_offset_alignment = MAX2(vrend_state.ssbo_offset_alignment, 1);
+ 
+    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
+                  (GLint*)&vrend_state.max_texture_units);

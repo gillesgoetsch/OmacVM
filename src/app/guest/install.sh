@@ -9,13 +9,15 @@
 #    so Firefox gets NV12 surfaces, Firefox's VA-API switch)
 #  * video encoding on it: Chrome's and Brave's VA-API encoder for WebRTC
 #    (browser-video-encode.py)
+#  * every Mac display in full screen (omacvm-displays; the switch
+#    "Use external displays" in the bar's display menu)
 set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user>}
 H=$(getent passwd "$U" | cut -d: -f6)
 pacman -S --needed --noconfirm qemu-guest-agent python >/dev/null 2>&1 || true
 systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true
-install -m755 omacvm-display-sync omacvm-app-host omacvm-clipboard /usr/local/bin/
+install -m755 omacvm-display-sync omacvm-app-host omacvm-clipboard omacvm-displays /usr/local/bin/
 # Clipboard both ways, over a virtio port (the agent is try-omarchy's).
 pacman -S --needed --noconfirm wl-clipboard >/dev/null 2>&1 || true
 # uaccess: the logged-in user may open the port (before 73-seat-late.rules).
@@ -24,6 +26,18 @@ udevadm control --reload 2>/dev/null; udevadm trigger --subsystem-match=virtio-p
 install -m644 omacvm-clipboard.service /etc/systemd/user/
 systemctl --global enable omacvm-clipboard.service >/dev/null 2>&1 || true
 systemctl --user -M "$U@" daemon-reload 2>/dev/null && systemctl --user -M "$U@" restart omacvm-clipboard.service 2>/dev/null || true
+# The Mac's displays (over a virtio port; the same uaccess rule).
+install -m644 omacvm-displays.service /etc/systemd/user/
+systemctl --global enable omacvm-displays.service >/dev/null 2>&1 || true
+systemctl --user -M "$U@" daemon-reload 2>/dev/null && systemctl --user -M "$U@" restart omacvm-displays.service 2>/dev/null || true
+# The switch "Use external displays" in Omarchy's display panel: Omarchy's own
+# widget with one more section (omacvm.monitor; the stock one stays if it no
+# longer fits).
+W=$(mktemp -d)
+if python3 monitor-widget/build.py "$W/omacvm.monitor"; then
+  ../../lib/install-plugin.sh "$U" "$W/omacvm.monitor" || echo "WARN: the display widget did not install"
+fi
+rm -rf "$W"
 install -m644 omacvm-app-host.service /etc/systemd/system/
 systemctl enable --now omacvm-app-host.service >/dev/null 2>&1 || true
 install -Dm644 90-omacvm-app.conf /etc/environment.d/90-omacvm-app.conf
@@ -55,8 +69,8 @@ install -Dm644 omacvm-app-video.js /usr/lib/firefox/defaults/pref/omacvm-app-vid
 # nothing): Chrome's and Brave's WebRTC encoder, when this app offers encoding.
 if vainfo --display drm 2>/dev/null | grep -q VAEntrypointEncSlice; then
   python3 browser-video-encode.py "$U" on
-  echo "OmacVM.app: display sync, guest agent, video decoding and encoding"
+  echo "OmacVM.app: display sync, every Mac display, guest agent, video decoding and encoding"
 else
   python3 browser-video-encode.py "$U" off
-  echo "OmacVM.app: display sync, guest agent, video decoding"
+  echo "OmacVM.app: display sync, every Mac display, guest agent, video decoding"
 fi

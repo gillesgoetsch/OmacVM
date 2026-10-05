@@ -1,0 +1,58 @@
+virglrenderer: Venus devices always get robust buffer access
+
+What: vkr_dispatch_vkCreateDevice turns on robustBufferAccess (in
+VkPhysicalDeviceFeatures2 when the guest chains it, else in pEnabledFeatures)
+whenever the host device offers it, whatever the guest asked for. Without it
+the host's Vulkan driver logs once.
+Why: a guest Vulkan app chooses its buffer ranges; without robust buffer access
+an out-of-range vertex, index, uniform or storage access reaches the GPU as
+told. On Apple's GPUs a fault resets the GPU (on 2026-10-04 that hung
+WindowServer and panicked macOS). The GL path checks ranges itself (ADR 0017);
+Vulkan has a driver feature for it, so it is asked for. Not shown to protect
+anything: MoltenVK reports the feature on every Apple GPU, and no test has made
+an out-of-range Vulkan access to see it contained (that would have to run on the
+real GPU, STANDARDS 14). The cost was not measured either.
+Upstream: OmacVM policy (a host may rather trust its guests); not sent.
+Tests: tests/graphics venus runs (vkmark, deqp.sh vk) on a Venus runtime; the
+log line tells when a host device lacks the feature.
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -173,6 +173,38 @@
+ 
+    ((VkDeviceCreateInfo *)args->pCreateInfo)->ppEnabledExtensionNames = exts;
+    ((VkDeviceCreateInfo *)args->pCreateInfo)->enabledExtensionCount = ext_count;
++
++   /* Robust buffer access is on whenever the host device offers it, whatever the guest
++    * asked: without it the GPU fetches out-of-range buffer addresses as told, and on
++    * Apple's GPUs a fault there resets the GPU (on 2026-10-04 that panicked macOS). The
++    * create info is the decoder's copy, so it can be changed. */
++   VkPhysicalDeviceFeatures supported;
++   VkPhysicalDeviceFeatures robust_features;
++   memset(&supported, 0, sizeof(supported));
++   vk->GetPhysicalDeviceFeatures(physical_dev->base.handle.physical_device, &supported);
++   if (supported.robustBufferAccess) {
++      VkPhysicalDeviceFeatures2 *features2 = NULL;
++      for (VkBaseOutStructure *s = (VkBaseOutStructure *)args->pCreateInfo->pNext; s;
++           s = s->pNext) {
++         if (s->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2)
++            features2 = (VkPhysicalDeviceFeatures2 *)s;
++      }
++      if (features2) {
++         features2->features.robustBufferAccess = VK_TRUE;
++      } else {
++         if (args->pCreateInfo->pEnabledFeatures)
++            robust_features = *args->pCreateInfo->pEnabledFeatures;
++         else
++            memset(&robust_features, 0, sizeof(robust_features));
++         robust_features.robustBufferAccess = VK_TRUE;
++         ((VkDeviceCreateInfo *)args->pCreateInfo)->pEnabledFeatures = &robust_features;
++      }
++   } else {
++      static bool warned;
++      if (!warned)
++         vkr_log("the host Vulkan device has no robust buffer access");
++      warned = true;
++   }
+ 
+    struct vkr_device *dev =
+       vkr_context_alloc_object(ctx, sizeof(*dev), VK_OBJECT_TYPE_DEVICE, args->pDevice);

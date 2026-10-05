@@ -1,6 +1,7 @@
 #!/bin/bash
 # omacvm features / enable / disable: a VM's OmacVM features.
 #   omacvm features [--vm NAME] [--json]     list them; in a terminal, switch them
+#   (--vm-type parallels|utm|fusion|app when two apps have a VM of that name)
 #   omacvm enable FEATURE... [--vm NAME] [--yes]
 #   omacvm disable FEATURE... [--vm NAME] [--yes]
 # Features (src/features.tsv): bridge wallpaper gestures scroll-momentum omanotch
@@ -26,9 +27,10 @@ usage() { echo "omacvm $MODE: $*" >&2; exit 2; }
 while (( $# )); do
   case $1 in
     --vm) VM=$2; shift 2 ;;
+    --vm-type) TYPE=$2; shift 2 ;;
     --json) JSON=1; shift ;;
     --yes|-y) YES=1; shift ;;
-    -h|--help) sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14s/^# \{0,1\}//p' "$0"; exit 0 ;;
     -*) usage "unknown option $1 (see --help)" ;;
     *) feature_index "$1" >/dev/null || usage "unknown feature '$1' (omacvm features lists them)"
        WANT+=("$1"); shift ;;

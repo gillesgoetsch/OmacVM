@@ -1,0 +1,341 @@
+virglrenderer: skip the draws of a shader the host GL refuses, keep the context
+
+What: when vrend cannot translate a shader the guest's Mesa already accepted
+(TGSI->GLSL), or the Mac's OpenGL refuses to compile or link it (a GLSL gap or a
+host limit, e.g. Apple's 4096 uniform components), the shader is marked failed
+and the draws and compute dispatches that need it are skipped, like a native
+driver does. The context keeps running. Failures are logged three times per context at most (the first with the
+GLSL and the GL info log), one line about skipped draws or dispatches once per
+context (compute too, though Apple's GL 4.1 has no compute shaders). A
+failed compile is never retried; failed links are remembered per fragment shader
+(by a serial that is never reused, unlike GL names) so a page that keeps drawing
+does not relink every draw.
+Why: upstream reports VIRGL_ERROR_CTX_ILLEGAL_SHADER, which stops the whole guest
+context for good; the guest is never told (stock Mesa has no reset query on
+virgl), so Chrome's GPU process keeps drawing into a dead context and the tab
+hangs (Basemark Web 3.0, finding 23). OMACVM_VIRGL_SHADER_FAILURES=lose restores
+the upstream behaviour (then virgl-context-loss-report.patch tells the guest).
+Upstream: upstreamable in spirit (behaviour change, would need a flag or a
+discussion on the virglrenderer list); not sent.
+Tests: Tests/virgl/test-context-loss.c (build time: a program over Apple's uniform
+limit and a shader with a property the translator lacks are skipped, the context
+stays alive, 20 draws link once and log one dropped line);
+tests/graphics/context-loss.sh --expect contain (Chrome WebGL page keeps drawing correct frames after a refused
+shader, with virgl-test-shader-fault.patch).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -357,6 +357,9 @@
+    struct list_head fence_wait_list;
+    struct vrend_fence *fence_waiting;
+ 
++   /* Never reused, unlike GL names: keys the failed-link memo of each shader. */
++   uint32_t shader_serial;
++
+    int gl_major_ver;
+    int gl_minor_ver;
+ 
+@@ -513,6 +516,16 @@
+    GLuint last_pipeline_id;
+    bool is_compiled;
+    bool is_linked; /* only used for separable shaders */
++   /* The host GL refused it; never retried, draws that need it are skipped. */
++   bool compile_failed;
++   bool link_failed; /* separable or compute program */
++   uint32_t serial;
++   /* Last programs with this fragment shader that failed to link (by serial). */
++   struct {
++      uint32_t vs, gs, tcs, tes;
++      bool dual_src;
++   } failed_links[4];
++   unsigned next_failed_link;
+    struct vrend_shader_key key;
+    struct list_head programs;
+ };
+@@ -879,6 +892,9 @@
+    vrend_context_fence_retire fence_retire;
+    void *fence_retire_data;
+ 
++   unsigned shader_failures;
++   bool dropped_draws_logged;
++
+ #ifdef ENABLE_TRACING
+    struct hash_table *active_markers;
+ #endif
+@@ -1143,8 +1159,47 @@
+    virgl_error("%s: context error reported %d \"%s\" %s %d\n", fname,
+                ctx->ctx_id, ctx->debug_name, vrend_ctx_error_strings[error],
+                value);
++}
++
++/* The guest compiled the shader; only the host GL refused it (a translation gap or a
++ * host limit). A native driver skips the draws that need such a shader, so do the
++ * same instead of stopping the whole context, which leaves the guest app drawing into
++ * a dead context. OMACVM_VIRGL_SHADER_FAILURES=lose keeps the upstream behaviour.
++ * Returns true when the caller should log the details. */
++static bool vrend_shader_failures_lose(void)
++{
++   static int lose = -1;
++
++   if (lose < 0) {
++      const char *policy = getenv("OMACVM_VIRGL_SHADER_FAILURES");
++      lose = policy && !strcmp(policy, "lose");
++   }
++   return lose;
++}
++
++static bool vrend_report_shader_failure(struct vrend_context *ctx, const char *what)
++{
++   if (vrend_shader_failures_lose()) {
++      vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_SHADER, 0);
++      return true;
++   }
++
++   ctx->shader_failures++;
++   if (ctx->shader_failures <= 3)
++      virgl_error("context %d (%s): the host refused a shader (%s), draws that need it "
++                  "are skipped%s\n", ctx->ctx_id, ctx->debug_name, what,
++                  ctx->shader_failures == 3 ? "; further failures are not logged" : "");
++   return ctx->shader_failures == 1;
+ }
+ 
++static void vrend_report_dropped_draws(struct vrend_context *ctx, const char *what)
++{
++   if (ctx->dropped_draws_logged)
++      return;
++   ctx->dropped_draws_logged = true;
++   virgl_error("%s: %s (logged once per context)\n", what, ctx->debug_name);
++}
++
+ #define CORE_PROFILE_WARN_NONE 0
+ #define CORE_PROFILE_WARN_STIPPLE 1
+ #define CORE_PROFILE_WARN_POLYGON_MODE 2
+@@ -1403,6 +1458,9 @@
+    GLint param;
+    const char *shader_parts[SHADER_MAX_STRINGS];
+    char *modified_shaders[SHADER_MAX_STRINGS] = {NULL};
++
++   if (shader->compile_failed)
++      return false;
+ 
+    /* Firefox uses GL_EXT_shader_texture_lod (GLES extension), but on OpenGL 4.1 Core Profile
+     * textureLod is built into the core spec - no extension directive needed.
+@@ -1452,9 +1510,13 @@
+       char infolog[65536];
+       int len;
+       glGetShaderInfoLog(shader->id, 65536, &len, infolog);
+-      vrend_report_context_error(sub_ctx->parent, VIRGL_ERROR_CTX_ILLEGAL_SHADER, 0);
+-      virgl_error("Shader failed to compile\n%s\n", infolog);
+-      vrend_shader_dump(shader);
++      shader->compile_failed = true;
++      if (vrend_report_shader_failure(sub_ctx->parent, "compile")) {
++         virgl_error("Shader failed to compile\n%s\n", infolog);
++         vrend_shader_dump(shader);
++      }
++      glDeleteShader(shader->id);
++      shader->id = 0;
+       return false;
+    }
+ 
+@@ -1946,6 +2008,9 @@
+    int i;
+    char name[64];
+ 
++   if (shader->compile_failed || shader->link_failed)
++      return false;
++
+    if (type == PIPE_SHADER_VERTEX || type == PIPE_SHADER_GEOMETRY ||
+        type == PIPE_SHADER_TESS_EVAL)
+        set_stream_out_varyings(sub_ctx, shader->program_id, &shader->sel->sinfo);
+@@ -1992,9 +2057,9 @@
+    shader->is_linked = vrend_link(shader->program_id);
+ 
+    if (!shader->is_linked) {
+-      /* dump shaders */
+-      vrend_report_context_error(sub_ctx->parent, VIRGL_ERROR_CTX_ILLEGAL_SHADER, 0);
+-      vrend_shader_dump(shader);
++      shader->link_failed = true;
++      if (vrend_report_shader_failure(sub_ctx->parent, "separable link"))
++         vrend_shader_dump(shader);
+    }
+ 
+    return shader->is_linked;
+@@ -2003,15 +2068,20 @@
+ static struct vrend_linked_shader_program *add_cs_shader_program(struct vrend_context *ctx,
+                                                                  struct vrend_shader *cs)
+ {
+-   struct vrend_linked_shader_program *sprog = CALLOC_STRUCT(vrend_linked_shader_program);
++   struct vrend_linked_shader_program *sprog;
+    GLuint prog_id;
++
++   if (cs->link_failed)
++      return NULL;
++
++   sprog = CALLOC_STRUCT(vrend_linked_shader_program);
+    prog_id = glCreateProgram();
+    glAttachShader(prog_id, cs->id);
+ 
+    if (!vrend_link(prog_id)) {
+-      /* dump shaders */
+-      vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_SHADER, 0);
+-      vrend_shader_dump(cs);
++      cs->link_failed = true;
++      if (vrend_report_shader_failure(ctx, "compute link"))
++         vrend_shader_dump(cs);
+       glDeleteProgram(prog_id);
+       free(sprog);
+       return NULL;
+@@ -2034,11 +2104,52 @@
+ 
+ static inline bool
+ vrend_link_stage(struct vrend_shader *stage) {
+-   if (!stage->is_linked)
++   if (!stage->is_linked && !stage->link_failed) {
+       stage->is_linked = vrend_link(stage->program_id);
++      stage->link_failed = !stage->is_linked;
++   }
+    return stage->is_linked;
+ }
+ 
++static uint32_t vrend_shader_serial(const struct vrend_shader *shader)
++{
++   return shader ? shader->serial : 0;
++}
++
++static bool vrend_program_failed_before(const struct vrend_shader *vs,
++                                        const struct vrend_shader *fs,
++                                        const struct vrend_shader *gs,
++                                        const struct vrend_shader *tcs,
++                                        const struct vrend_shader *tes,
++                                        bool dual_src)
++{
++   for (unsigned i = 0; i < ARRAY_SIZE(fs->failed_links); i++) {
++      if (fs->failed_links[i].vs == vrend_shader_serial(vs) &&
++          fs->failed_links[i].gs == vrend_shader_serial(gs) &&
++          fs->failed_links[i].tcs == vrend_shader_serial(tcs) &&
++          fs->failed_links[i].tes == vrend_shader_serial(tes) &&
++          fs->failed_links[i].dual_src == dual_src)
++         return true;
++   }
++   return false;
++}
++
++static void vrend_remember_failed_program(const struct vrend_shader *vs,
++                                          struct vrend_shader *fs,
++                                          const struct vrend_shader *gs,
++                                          const struct vrend_shader *tcs,
++                                          const struct vrend_shader *tes,
++                                          bool dual_src)
++{
++   unsigned i = fs->next_failed_link++ % ARRAY_SIZE(fs->failed_links);
++
++   fs->failed_links[i].vs = vrend_shader_serial(vs);
++   fs->failed_links[i].gs = vrend_shader_serial(gs);
++   fs->failed_links[i].tcs = vrend_shader_serial(tcs);
++   fs->failed_links[i].tes = vrend_shader_serial(tes);
++   fs->failed_links[i].dual_src = dual_src;
++}
++
+ static struct vrend_linked_shader_program *add_shader_program(struct vrend_sub_context *sub_ctx,
+                                                               struct vrend_shader *vs,
+                                                               struct vrend_shader *fs,
+@@ -2148,18 +2259,19 @@
+          glDeleteProgram(prog_id);
+       }
+ 
++      vrend_remember_failed_program(vs, fs, gs, tcs, tes, sprog->dual_src_linked);
+       free(sprog);
+ 
+-      /* dump shaders */
+-      vrend_report_context_error(sub_ctx->parent, VIRGL_ERROR_CTX_ILLEGAL_SHADER, 0);
+-      vrend_shader_dump(vs);
+-      if (tcs)
+-         vrend_shader_dump(tcs);
+-      if (tes)
+-         vrend_shader_dump(tes);
+-      if (gs)
+-         vrend_shader_dump(gs);
+-      vrend_shader_dump(fs);
++      if (vrend_report_shader_failure(sub_ctx->parent, "link")) {
++         vrend_shader_dump(vs);
++         if (tcs)
++            vrend_shader_dump(tcs);
++         if (tes)
++            vrend_shader_dump(tes);
++         if (gs)
++            vrend_shader_dump(gs);
++         vrend_shader_dump(fs);
++      }
+       return NULL;
+    }
+ 
+@@ -4439,8 +4551,15 @@
+                                       shader->sel->req_local_mem, key, &shader->sel->sinfo,
+                                       &shader->var_sinfo, &shader->glsl_strings);
+       if (!ret) {
+-         vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_SHADER, shader->sel->type);
+-         return -1;
++         if (vrend_shader_failures_lose()) {
++            vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_SHADER, shader->sel->type);
++            return -1;
++         }
++         /* A gap in the TGSI -> GLSL translation: the guest accepted the shader, so
++          * treat it like one the host GL refuses. It has no GLSL and is never compiled. */
++         shader->compile_failed = true;
++         if (vrend_report_shader_failure(ctx, "translation"))
++            vrend_shader_dump(shader);
+       }
+    } else if (!ctx->shader_cfg.use_gles && shader->sel->type != PIPE_SHADER_TESS_CTRL) {
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_SHADER, shader->sel->type);
+@@ -4481,6 +4600,7 @@
+ 
+    if (!shader) {
+       shader = CALLOC_STRUCT(vrend_shader);
++      shader->serial = ++vrend_state.shader_serial;
+       shader->sel = sel;
+       list_inithead(&shader->programs);
+       strarray_alloc(&shader->glsl_strings, SHADER_MAX_STRINGS);
+@@ -5718,6 +5838,7 @@
+ 
+    vrend_fill_shader_key(sub_ctx, sel, &shader->key);
+ 
++   shader->serial = ++vrend_state.shader_serial;
+    shader->sel = sel;
+    list_inithead(&shader->programs);
+    strarray_alloc(&shader->glsl_strings, SHADER_MAX_STRINGS);
+@@ -5861,6 +5982,8 @@
+    if (!same_prog) {
+       prog = lookup_shader_program(sub_ctx, vs_id, fs_id, gs_id, tcs_id, tes_id, dual_src);
+       if (!prog) {
++         if (vrend_program_failed_before(vs, fs, gs, tcs, tes, dual_src))
++            return PROGRAMM_ERROR;
+          prog = add_shader_program(sub_ctx,
+                                    sub_ctx->shaders[PIPE_SHADER_VERTEX]->current,
+                                    sub_ctx->shaders[PIPE_SHADER_FRAGMENT]->current,
+@@ -6061,7 +6184,7 @@
+       program_select_result = vrend_select_program(sub_ctx, info->vertices_per_patch);
+ 
+    if (!sub_ctx->prog || program_select_result == PROGRAMM_ERROR) {
+-      virgl_error("Dropping rendering due to missing shaders: %s\n", ctx->debug_name);
++      vrend_report_dropped_draws(ctx, "Dropping rendering due to missing shaders");
+       return 0;
+    }
+ 
+@@ -6314,7 +6437,7 @@
+       }
+       if (!sub_ctx->shaders[PIPE_SHADER_COMPUTE]->current->is_compiled) {
+          if (!vrend_compile_shader(sub_ctx, sub_ctx->shaders[PIPE_SHADER_COMPUTE]->current)) {
+-            virgl_error("Failure to compile compute shader variant: %s\n", ctx->debug_name);
++            vrend_report_dropped_draws(ctx, "Skipping compute shader execution, its shader failed to compile");
+             return;
+          }
+       }
+@@ -6340,8 +6463,7 @@
+    }
+ 
+    if (!sub_ctx->prog) {
+-      virgl_error("%s: Skipping compute shader execution due to missing shaders: %s\n",
+-                   __func__, ctx->debug_name);
++      vrend_report_dropped_draws(ctx, "Skipping compute shader execution due to missing shaders");
+       return;
+    }
+ 

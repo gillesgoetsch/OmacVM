@@ -1,0 +1,97 @@
+From: OmacVM
+Subject: [PATCH] cocoa: full screen at the window's real size
+
+On a Mac with a notch, macOS puts a full-screen window below the menu bar
+(1728x1080 points on a 14-inch MacBook Pro), a few points lower than the
+safe area that sized the guest (1728x1085). The guest image was squeezed
+into the window and the pointer was off by up to 5 points at the bottom.
+Once the window is in full screen the guest gets the window's own size;
+while it is on its way there the safe area stays the guess.
+
+Upstream: upstreamable (upstream sizes full screen by the safe area too).
+Test: notch MacBook in macOS full screen (OMACVM_NOTCH=0): the output is
+3456x2160 and the Mac pointer lands on the same guest point within 0.1 point
+at the top and bottom of the display. Applies after
+omacvm-cocoa-window-size.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -786,6 +786,9 @@
+ 
+     return fixed;
+ }
++
++/* The main window is in macOS full screen and done moving there. */
++static bool omacvm_main_full_settled;
+ 
+ /* OmacVM: with OMACVM_NOTCH=1, full screen covers the strip beside the notch too. */
+ static bool omacvm_notch_mode(void)
+@@ -804,6 +807,17 @@
+     size.width -= insets.left + insets.right;
+     size.height -= insets.top + insets.bottom;
+     return size;
++}
++
++/*
++ * OmacVM: the size the guest gets in macOS full screen. On a Mac with a notch
++ * the window ends below the menu bar, a few points lower than the safe area
++ * says; only the window itself knows once it is there. Until then (and while
++ * it moves) the safe area is the best guess.
++ */
++- (NSSize) fullScreenSize
++{
++    return omacvm_main_full_settled ? [self frame].size : [self screenSafeAreaSize];
+ }
+ 
+ - (void) resizeWindow
+@@ -826,7 +840,7 @@
+         [[self window] setContentSize:NSMakeSize(width, height)];
+         [[self window] center];
+     } else if ([[self window] styleMask] & NSWindowStyleMaskFullScreen) {
+-        [[self window] setContentSize:[self fixAspectRatio:[self screenSafeAreaSize]]];
++        [[self window] setContentSize:[self fixAspectRatio:[self fullScreenSize]]];
+         [[self window] center];
+     } else {
+         [[self window] setContentSize:[self fixAspectRatio:[self frame].size]];
+@@ -864,7 +878,7 @@
+         CVDisplayLinkRef displayLink;
+         uint32_t refreshRate = 0;
+ 
+-        frameSize = isFullscreen ? [self screenSafeAreaSize] : [self frame].size;
++        frameSize = isFullscreen ? [self fullScreenSize] : [self frame].size;
+ 
+         if (!CVDisplayLinkCreateWithCGDisplay(display, &displayLink)) {
+             CVTime period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink);
+@@ -1903,8 +1917,24 @@
+     [cocoaView updateUIInfo];
+ }
+ 
++- (void)windowWillEnterFullScreen:(NSNotification *)notification
++{
++    omacvm_main_full_settled = false;
++}
++
++- (void)windowDidFailToEnterFullScreen:(NSWindow *)window
++{
++    omacvm_main_full_settled = false;
++}
++
++- (void)windowWillExitFullScreen:(NSNotification *)notification
++{
++    omacvm_main_full_settled = false;
++}
++
+ - (void)windowDidEnterFullScreen:(NSNotification *)notification
+ {
++    omacvm_main_full_settled = true;
+     [fullScreenMenuItem setTitle:@"Exit Full Screen"];
+     [cocoaView updateScale];
+     [cocoaView updateUIInfo];
+@@ -1913,6 +1943,7 @@
+ 
+ - (void)windowDidExitFullScreen:(NSNotification *)notification
+ {
++    omacvm_main_full_settled = false;
+     [fullScreenMenuItem setTitle:@"Enter Full Screen"];
+     [cocoaView resizeWindow];
+     [cocoaView updateScale];

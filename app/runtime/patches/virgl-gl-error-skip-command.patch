@@ -1,0 +1,95 @@
+virglrenderer: a GL error after a guest command no longer stops the context
+
+What: after each guest command vrend checks glGetError (check-gl-errors, on by
+default). Any error stopped the whole guest context for good. Now the context goes
+on, logged three times per context at most. The error only says that the GL
+ignored one of its calls; the rest of the command, a draw included, has already
+run. A GL error while a draw is set up is caught before the draw
+(virgl-draw-gl-error-check.patch), so a refused call cannot leave older state
+for the draw to use. GL_OUT_OF_MEMORY and GL_CONTEXT_LOST still stop it, and so does
+every error with OMACVM_VIRGL_SHADER_FAILURES=lose (the upstream behaviour).
+Errors inside object creation and transfers keep their own checks (fatal).
+Why: the guest's Mesa accepted the command; the Mac's GL refused it (seen:
+GL_INVALID_FRAMEBUFFER_OPERATION on a draw in the WebGL 1 conformance pages).
+With the stock guest Mesa nothing tells Chrome its context is gone, so every
+later WebGL page of that GPU process drew nothing.
+Depends on: virgl-shader-failure-skip-draws.patch (vrend_shader_failures_lose).
+Upstream: a behaviour change; would need a flag upstream. Not sent.
+Tests: Tests/virgl/test-context-loss.c (a draw into a framebuffer the host GL
+calls incomplete is skipped, the context lives); tests/graphics webgl.sh with
+ISOLATE=0 (all pages in one Chrome).
+--- a/src/vrend/vrend_decode.c
++++ b/src/vrend/vrend_decode.c
+@@ -2129,7 +2129,7 @@
+       }
+ 
+       ret = decode_table[cmd](gdctx->grctx, buf, len);
+-      if (!vrend_check_no_error(gdctx->grctx) && !ret) {
++      if (!vrend_check_no_error_contained(gdctx->grctx, vrend_get_comand_name(cmd)) && !ret) {
+          /* Surface the offending command when a GL error is observed. */
+          virgl_error("GL error after %s (ctx %d cmd=0x%x len=%u offset=%u)\n",
+                      vrend_get_comand_name(cmd), gdctx->base.ctx_id,
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -899,6 +899,7 @@
+    struct vrend_resource *reset_status_res;
+    unsigned shader_failures;
+    bool dropped_draws_logged;
++   unsigned gl_errors;
+ 
+ #ifdef ENABLE_TRACING
+    struct hash_table *active_markers;
+@@ -7848,7 +7849,43 @@
+    return true;
+ #endif
+ }
++
++/* A GL error after a guest command means the host GL ignored that call although the
++ * guest's Mesa accepted it (e.g. a framebuffer Apple's GL finds incomplete). Like a
++ * refused shader, the context goes on without it, logged three times per context at
++ * most. Out of memory or a lost GL context, and the "lose" policy, stop the context
++ * as before. Returns true when the context goes on. */
++bool vrend_check_no_error_contained(struct vrend_context *ctx, const char *what)
++{
++   GLenum errors[8];
++   unsigned n = 0;
++   bool contain = !vrend_shader_failures_lose();
+ 
++   for (GLenum err = glGetError(); err != GL_NO_ERROR; err = glGetError()) {
++      if (err == GL_OUT_OF_MEMORY || err == GL_CONTEXT_LOST)
++         contain = false;
++      if (n < ARRAY_SIZE(errors))
++         errors[n++] = err;
++      else
++         break;
++   }
++   if (!n)
++      return true;
++
++   if (!contain) {
++      for (unsigned i = 0; i < n; i++)
++         vrend_report_context_error(ctx, VIRGL_ERROR_CTX_UNKNOWN, errors[i]);
++      return false;
++   }
++
++   ctx->gl_errors++;
++   if (ctx->gl_errors <= 3)
++      virgl_error("context %d (%s): the host GL refused %s (GL error 0x%x), it is skipped%s\n",
++                  ctx->ctx_id, ctx->debug_name, what, errors[0],
++                  ctx->gl_errors == 3 ? "; further GL errors are not logged" : "");
++   return true;
++}
++
+ const struct virgl_resource_pipe_callbacks *
+ vrend_renderer_get_pipe_callbacks(void)
+ {
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -207,6 +207,7 @@
+ #define VREND_USE_GBM_LAYOUT (1 << 7)
+ 
+ bool vrend_check_no_error(struct vrend_context *ctx);
++bool vrend_check_no_error_contained(struct vrend_context *ctx, const char *what);
+ 
+ const struct virgl_resource_pipe_callbacks *
+ vrend_renderer_get_pipe_callbacks(void);

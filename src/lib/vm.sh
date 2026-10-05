@@ -1,6 +1,7 @@
 # Finding and reaching VMs from the Mac (sourced after mac.sh; bash 3.2).
 #   vms_list                 one line per VM: NAME<TAB>parallels|utm|fusion|app<TAB>running|stopped|...
-#                            (Parallels' and UTM's other states as they name them)
+#                            (Parallels' and UTM's other states as they name them;
+#                            unknown: UTM runs but does not answer this terminal)
 #   vm_find_ip NAME TYPE [s] the VM's address (waits up to s seconds)
 #   vm_probe IP              what the VM says about itself, as KEY=value lines:
 #                            OMACVM_USER, OMACVM_VERSION (empty: no OmacVM yet),
@@ -10,16 +11,25 @@
 UTM_PREFS=$HOME/Library/Containers/com.utmapp.UTM/Data/Library/Preferences/com.utmapp.UTM.plist
 source "$(dirname "${BASH_SOURCE[0]}")/app.sh"
 
+# utm_ctl_list: utmctl list, given 15 seconds. utmctl talks to UTM through
+# AppleEvents: over SSH, or where this terminal may not control UTM, it fails;
+# while macOS still asks about it, it waits up to 10 minutes.
+utm_ctl_list() { perl -e 'alarm shift; exec @ARGV' 15 "$UTMCTL" list 2>/dev/null; }
+UTM_NO_ANSWER="UTM did not answer: run omacvm in a terminal app on the Mac and allow it to control UTM"
+
 vms_list() {
+  local u=""
   if [[ -x $PRLCTL ]]; then
     "$PRLCTL" list -a -o status,name 2>/dev/null | awk 'NR > 1 { s = $1; $1 = ""; sub(/^ /, ""); print $0 "\tparallels\t" s }'
   fi
-  if [[ -x $UTMCTL ]] && pgrep -xq UTM; then
-    "$UTMCTL" list 2>/dev/null | awk 'NR > 1 { s = $2; $1 = ""; $2 = ""; sub(/^  /, ""); print $0 "\tutm\t" (s == "started" ? "running" : s) }'
+  if [[ -x $UTMCTL ]] && pgrep -xq UTM && u=$(utm_ctl_list); then
+    awk 'NR > 1 { s = $2; $1 = ""; $2 = ""; sub(/^  /, ""); print $0 "\tutm\t" (s == "started" ? "running" : s) }' <<<"$u"
   elif [[ -f $UTM_PREFS ]]; then
-    # UTM not running (utmctl would start it): its VMs, wherever they are, from
-    # UTM's registry; all stopped.
-    python3 - "$UTM_PREFS" <<'PY' 2>/dev/null
+    # UTM not running (utmctl would start it), or not answering: its VMs,
+    # wherever they are, from UTM's registry; stopped, suspended when UTM saved
+    # their state (UTM itself calls those "paused" once it runs), or unknown
+    # while UTM runs.
+    python3 - "$UTM_PREFS" "$(pgrep -xq UTM && echo unknown || echo stopped)" <<'PY' 2>/dev/null
 import os, plistlib, sys
 for entry in plistlib.load(open(sys.argv[1], "rb")).get("Registry", {}).values():
     path = (entry.get("Package") or {}).get("Path", "")
@@ -29,7 +39,8 @@ for entry in plistlib.load(open(sys.argv[1], "rb")).get("Registry", {}).values()
         name = plistlib.load(open(os.path.join(path, "config.plist"), "rb"))["Information"]["Name"]
     except Exception:
         name = os.path.basename(path)[:-4]
-    print(f"{name}\tutm\tstopped")
+    state = sys.argv[2] if sys.argv[2] == "unknown" else ("suspended" if entry.get("Suspended") else "stopped")
+    print(f"{name}\tutm\t{state}")
 PY
   fi
   local n x
@@ -129,24 +140,31 @@ ssh_setup_command() {
 # the only running VM. With "start", a stopped VM is started; without, IP stays
 # empty for it. Exits 2 when it cannot tell which VM ("soft": returns 1).
 resolve_vm() {
-  local running
+  local running list state
+  list=$(vms_list)   # once: it can take 15 s while UTM does not answer
   if [[ -z ${VM:-} ]]; then
-    if vms_list | cut -f1 | grep -qxF Omarchy; then VM=Omarchy
+    if cut -f1 <<<"$list" | grep -qxF Omarchy; then VM=Omarchy
     else
-      running=$(vms_list | awk -F'\t' '$3 == "running" { print $1 }')
+      running=$(awk -F'\t' '$3 == "running" { print $1 }' <<<"$list")
       if [[ $(grep -c . <<<"$running") == 1 ]]; then VM=$running
       else
         [[ ${1:-} == soft ]] && return 1
-        echo "omacvm: which VM? pass --vm NAME (your VMs: $(vms_list | cut -f1 | paste -sd, - | sed 's/,/, /g'))" >&2
+        echo "omacvm: which VM? pass --vm NAME (your VMs: $(cut -f1 <<<"$list" | paste -sd, - | sed 's/,/, /g'))" >&2
         exit 2
       fi
     fi
   fi
-  [[ -n ${TYPE:-} ]] || TYPE=$(vm_type "$VM") || { echo "omacvm: no Parallels, UTM, VMware Fusion or OmacVM.app VM named '$VM'" >&2; exit 2; }
+  # vm_type_in exits 2 for a name in two apps, and has said so.
+  [[ -n ${TYPE:-} ]] || TYPE=$(vm_type_in "$VM" <<<"$list") || {
+    (( $? == 2 )) || echo "omacvm: no Parallels, UTM, VMware Fusion or OmacVM.app VM named '$VM'" >&2
+    exit 2; }
   vm_pin "$VM" "$TYPE"
   IP=""
+  state=$(awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && $2 == t { print $3; exit }' <<<"$list")
+  # UTM does not answer: the VM may well run, so never start it
+  [[ $state == unknown ]] && { echo "omacvm: '$VM': $UTM_NO_ANSWER" >&2; exit 3; }
   # DHCP leases outlive a stopped VM: only a running one has an address.
-  if vms_list | awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && $2 == t && $3 == "running" { f = 1 } END { exit !f }'; then
+  if [[ $state == running ]]; then
     IP=$(vm_find_ip "$VM" "$TYPE" 30 2>/dev/null) || IP=""
   fi
   if [[ -z $IP && ${1:-} == start ]]; then
@@ -160,13 +178,31 @@ resolve_vm() {
   fi
 }
 
-# vm_type NAME -> parallels | utm | fusion (replaces mac.sh's, without starting UTM); a
-# name in both: the running one, else a usable one (Parallels first), and an
+# vm_type NAME -> parallels | utm | fusion | app (replaces mac.sh's, without
+# starting UTM). A name in two apps (a Parallels VM and an OmacVM.app VM both
+# called "OmacVM Test") is not guessed: exit 2 with a message, --vm-type picks.
+# A name in one app twice: the running one, else a usable one, and an
 # "invalid" Parallels VM (its files are gone) last.
-vm_type() {
-  vms_list | awk -F'\t' -v n="$1" '
+vm_type() { vms_list | vm_type_in "$1"; }
+vm_type_in() {   # NAME, vms_list's lines on stdin
+  local list apps
+  list=$(cat)
+  apps=$(awk -F'\t' -v n="$1" '$1 == n && $3 != "invalid" && !seen[$2]++ { print $2 }' <<<"$list")
+  if [[ $(grep -c . <<<"$apps") -gt 1 ]]; then
+    echo "omacvm: there is a VM named '$1' in $(vm_app_names "$apps" and): pass $(sed 's/^/--vm-type /' <<<"$apps" | paste -sd, - | sed 's/,/ or /g') to say which" >&2
+    return 2
+  fi
+  awk -F'\t' -v n="$1" '
     $1 == n { if ($3 == "running") run = $2
               else if ($3 == "invalid") bad = $2
-              else if (!any || $2 == "parallels") any = $2 }
-    END { if (run) print run; else if (any) print any; else if (bad) print bad; else exit 1 }'
+              else if (!any) any = $2 }
+    END { if (run) print run; else if (any) print any; else if (bad) print bad; else exit 1 }' <<<"$list"
+}
+vm_app_names() {   # "TYPE\nTYPE..." WORD -> "Parallels WORD OmacVM.app"
+  local t out=""
+  while read -r t; do
+    case $t in parallels) t=Parallels ;; utm) t=UTM ;; fusion) t="VMware Fusion" ;; app) t=OmacVM.app ;; esac
+    out=${out:+$out $2 }$t
+  done <<<"$1"
+  echo "$out"
 }

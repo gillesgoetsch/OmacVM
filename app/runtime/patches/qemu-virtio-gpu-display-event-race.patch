@@ -1,0 +1,59 @@
+From: OmacVM
+Subject: [PATCH] virtio-gpu: no lost display event
+
+Linux reads the outputs on a display event and clears the event when done.
+An output that changes while it reads (two Mac displays switched on or off
+at once) raised the same event again, and the clear dropped it: the guest
+kept a stale output list. Remember changes made after the guest read the
+event, and raise it again when the guest clears it.
+
+--- a/hw/display/virtio-gpu-base.c
++++ b/hw/display/virtio-gpu-base.c
+@@ -121,6 +121,7 @@ static void virtio_gpu_ui_info(void *opaque, uint32_t idx, QemuUIInfo *info)
+     }
+ 
+     /* send event to guest */
++    g->display_changed = true;
+     virtio_gpu_notify_event(g, VIRTIO_GPU_EVENT_DISPLAY);
+ }
+ 
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -1746,6 +1746,10 @@ virtio_gpu_get_config(VirtIODevice *vdev, uint8_t *config)
+     VirtIOGPUBase *g = VIRTIO_GPU_BASE(vdev);
+ 
+     memcpy(config, &g->virtio_config, sizeof(g->virtio_config));
++    /* The guest reads the outputs after this: later changes need a new event. */
++    if (g->virtio_config.events_read & VIRTIO_GPU_EVENT_DISPLAY) {
++        g->display_changed = false;
++    }
+ }
+ 
+ static void
+@@ -1757,6 +1761,15 @@ virtio_gpu_set_config(VirtIODevice *vdev, const uint8_t *config)
+ 
+     if (vgconfig->events_clear) {
+         g->virtio_config.events_read &= ~vgconfig->events_clear;
++        /*
++         * An output changed while the guest was reading them (a second
++         * event then would be cleared with the first): tell it again.
++         */
++        if ((vgconfig->events_clear & VIRTIO_GPU_EVENT_DISPLAY) &&
++            g->display_changed) {
++            g->virtio_config.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
++            virtio_notify_config(vdev);
++        }
+     }
+ }
+ 
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -162,6 +162,8 @@ struct VirtIOGPUBase {
+ 
+     int enabled_output_bitmask;
+     struct virtio_gpu_requested_state req_state[VIRTIO_GPU_MAX_SCANOUTS];
++    /* The outputs changed since the guest last read the display event. */
++    bool display_changed;
+ };
+ 
+ struct VirtIOGPUBaseClass {

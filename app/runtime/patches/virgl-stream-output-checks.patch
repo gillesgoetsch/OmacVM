@@ -1,0 +1,60 @@
+virglrenderer: check the guest's stream output registers
+
+What: the stream output info of a shader comes from the guest: each output names
+a register index (0..255). prepare_so_movs indexed the translator's outputs[64]
+with it, and get_io_slot asserted (or, without assertions, returned NULL that
+emit_so_movs and emit_ios_streamout dereferenced) when no output covers it. Now
+indexes past outputs[] are skipped, get_io_slot returns NULL without asserting,
+and both callers fail the translation instead.
+Why: a guest app could abort QEMU (the runtime keeps assertions) or write past
+outputs[] in the translator's stack context. Found by Tests/virgl/fuzz-cmd-stream.sh
+within minutes once its contexts could draw. A failed translation is contained by
+virgl-shader-failure-skip-draws.patch (the shader's draws are skipped).
+Upstream: upstreamable bug fix; not sent.
+Tests: Tests/virgl/fuzz-regressions/so-register-past-outputs (crashed before, the
+fuzzer replays it in every run).
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -2283,6 +2283,9 @@
+    uint32_t i;
+    for (i = 0; i < ctx->so->num_outputs; i++) {
+       ctx->write_so_outputs[i] = true;
++      /* the guest's register index (0..255) indexes outputs[] below */
++      if (ctx->so->output[i].register_index >= ARRAY_SIZE(ctx->outputs))
++         continue;
+       if (ctx->so->output[i].start_component != 0)
+          continue;
+       if (ctx->so->output[i].num_components != 4)
+@@ -2307,7 +2310,7 @@
+       if ((result->first <=  idx) && (result->last >=  idx))
+          return result;
+    }
+-   assert(0 && "Output not found");
++   /* The guest's stream output info can name any register: callers check. */
+    return NULL;
+ }
+ 
+@@ -2360,6 +2363,12 @@
+ 
+    for (i = 0; i < ctx->so->num_outputs; i++) {
+       const struct vrend_shader_io *output = get_io_slot(&ctx->outputs[0], ctx->num_outputs, ctx->so->output[i].register_index);
++      if (!output) {
++         virgl_error("Stream output %u names register %u, which the shader does not write\n",
++                     i, ctx->so->output[i].register_index);
++         set_buf_error(glsl_strbufs);
++         return;
++      }
+       if (ctx->so->output[i].start_component != 0) {
+          int wm_idx = 0;
+          writemask[wm_idx++] = '.';
+@@ -6815,6 +6824,10 @@
+          else  {
+             const struct vrend_shader_io *output = get_io_slot(&ctx->outputs[0], ctx->num_outputs,
+                   ctx->so->output[i].register_index);
++            if (!output) {
++               set_buf_error(glsl_strbufs);
++               return;
++            }
+             if (ctx->so->output[i].need_temp || output->name == TGSI_SEMANTIC_CLIPDIST ||
+                 ctx->prog_type == TGSI_PROCESSOR_GEOMETRY || output->glsl_predefined_no_emit) {
+ 

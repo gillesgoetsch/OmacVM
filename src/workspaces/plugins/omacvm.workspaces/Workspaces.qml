@@ -6,9 +6,9 @@ import qs.Commons
 import qs.Ui
 
 // Per-monitor workspaces (see ~/.config/hypr/monitor_workspaces.lua): the
-// main display (Virtual-1, the Parallels window) owns workspace IDs 1..10, an
-// external monitor 11..20. Each bar shows only its own monitor's range and
-// labels it 1..0, so the offset never shows. Omanotch's hidden NOTCH*
+// main display (Virtual-1, the VM window) owns workspace IDs 1..10,
+// Virtual-2 11..20, Virtual-3 21..30 and so on. Each bar shows only its own
+// monitor's range and labels it 1..0, so the offset never shows. Omanotch's hidden NOTCH*
 // output stands in for Virtual-1. Keep laptop/offset in sync with the Lua file.
 BarWidget {
   id: root
@@ -22,7 +22,14 @@ BarWidget {
   readonly property var barScreen: root.QsWindow && root.QsWindow.window ? root.QsWindow.window.screen : null
   readonly property bool laptopBar: !barScreen || barScreen.name === laptop || barScreen.name.indexOf("NOTCH") === 0
   readonly property var monitor: laptopBar ? laptopMonitor() : Hyprland.monitorFor(barScreen)
-  readonly property int base: laptopBar ? 0 : offset
+  readonly property int base: laptopBar ? 0 : offsetOf(barScreen.name)
+
+  // Virtual-N: (N-1) * offset; another external name counts as the second.
+  function offsetOf(name) {
+    var m = /^Virtual-(\d+)$/.exec(String(name || ""))
+    var n = m ? parseInt(m[1], 10) : 2
+    return (n >= 2 ? n - 1 : 1) * root.offset
+  }
 
   function laptopMonitor() {
     var values = Hyprland.monitors.values

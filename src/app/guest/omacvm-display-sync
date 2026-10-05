@@ -1,15 +1,21 @@
 #!/bin/bash
 # OmacVM.app: Hyprland follows the Mac window. QEMU passes the window size,
 # refresh rate and pixel density by EDID; this applies them on every change.
+# In full screen with external displays every Mac display is an output
+# (Virtual-1 the main window, Virtual-2 ...): each gets its own mode and
+# scale, placed as the Mac's displays are (omacvm-displays writes where).
 # From try-omarchy (omarchy-native-display-sync), MIT, (c) Try Omarchy contributors.
 
 set -euo pipefail
 
 drm_root=${OMARCHY_DISPLAY_SYNC_DRM_ROOT:-/sys/class/drm}
 monitor_config=${OMARCHY_DISPLAY_SYNC_MONITOR_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/hypr/monitors.lua}
+layout_file=${OMACVM_DISPLAYS_LAYOUT:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/omacvm/displays.json}
 
+# preferred_mode_from_edid EDID [main|other]: Omarchy's scale setting is for
+# the main output; the other displays keep their own density.
 preferred_mode_from_edid() {
-  python3 - "$1" "$monitor_config" <<'PY'
+  python3 - "$1" "$monitor_config" "${2:-main}" <<'PY'
 import pathlib
 import re
 import sys
@@ -80,6 +86,8 @@ def scale_for_mode(
     # Auto/missing settings retain the live EDID's density-based scale.
     requested = None
     try:
+        if sys.argv[3] != "main":
+            raise OSError("not the main output")
         config = pathlib.Path(sys.argv[2]).read_text()
         match = re.search(
             r"^\s*local\s+omarchy_monitor_scale\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*(?:--[^\n]*)?$",
@@ -266,6 +274,59 @@ user_rule() {
     sed 's/--.*$//' "$monitor_config" | grep -qE "output[[:space:]]*=[[:space:]]*[\"']$1[\"']"
 }
 
+# output_positions LAYOUT OUTPUT:WIDTH:HEIGHT:SCALE ...: one "OUTPUT XxY" line
+# each. The Mac's arrangement is in points; Hyprland's in logical pixels,
+# which differ when an output has its own scale (Omarchy's zoom on the main
+# one): displays beside the main one stay beside it, the rest keep their
+# offset, scaled. Without an arrangement: Virtual-1 at 0x0, the rest to its right.
+output_positions() {
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+try:
+    layout = {o["output"]: o for o in json.load(open(sys.argv[1]))["layout"]}
+except (OSError, ValueError, KeyError, TypeError):
+    layout = {}
+outputs = {}
+for arg in sys.argv[2:]:
+    name, w, h, scale = arg.split(":")
+    s = float(scale) if scale not in ("", "auto") else 1.0
+    outputs[name] = (int(w) / s, int(h) / s)
+
+main = layout.get("Virtual-1")
+if not main or "Virtual-1" not in outputs:
+    for name in outputs:
+        print(name, "0x0" if name == "Virtual-1" else "auto-right")
+    raise SystemExit(0)
+
+mw, mh = outputs["Virtual-1"]
+places = {}
+for name, (lw, lh) in outputs.items():
+    box = layout.get(name)
+    if not box:
+        continue
+    def axis(pos, size, own, main_pos, main_size, main_logical):
+        if pos >= main_pos + main_size:          # after the main display
+            return pos - (main_pos + main_size) + main_logical
+        if pos + size <= main_pos:               # before it
+            return pos + size - main_pos - own
+        return (pos - main_pos) * main_logical / main_size
+    places[name] = (
+        axis(box["x"], box["width"], lw, main["x"], main["width"], mw),
+        axis(box["y"], box["height"], lh, main["y"], main["height"], mh),
+    )
+minx = min(x for x, _ in places.values())
+miny = min(y for _, y in places.values())
+for name in outputs:
+    if name in places:
+        x, y = places[name]
+        print(name, f"{round(x - minx)}x{round(y - miny)}")
+    else:
+        print(name, "auto-right")
+PY
+}
+
 apply_preferred_modes() {
   local connector
   local connector_name
@@ -275,6 +336,10 @@ apply_preferred_modes() {
   local response
   local rule
   local scale
+  local position
+  local i w h
+  local -a outputs=() modes=() scales=() sizes=()
+  local -A placed=()
 
   shopt -s nullglob
   for connector in "$drm_root"/card*-Virtual-*; do
@@ -283,11 +348,28 @@ apply_preferred_modes() {
 
     connector_name=${connector##*/}
     output=${connector_name#*-}
-    if ! preferred=$(preferred_mode_from_edid "$connector/edid"); then
+    if ! preferred=$(preferred_mode_from_edid "$connector/edid" \
+        "$([[ $output == Virtual-1 ]] && echo main || echo other)"); then
       continue
     fi
     IFS=$'\t' read -r mode scale <<<"$preferred"
     [[ -n $mode && -n $scale ]] || continue
+    outputs+=("$output"); modes+=("$mode"); scales+=("$scale")
+    # modeline CLOCK WIDTH ... HEIGHT ...
+    read -r _ _ w _ _ _ h _ <<<"$mode"
+    sizes+=("$output:$w:$h:$scale")
+  done
+  shopt -u nullglob
+  ((${#outputs[@]})) || return 0
+
+  while read -r output position; do
+    [[ -n $output ]] && placed[$output]=$position
+  done < <(output_positions "$layout_file" "${sizes[@]}" 2>/dev/null || true)
+
+  for i in "${!outputs[@]}"; do
+    output=${outputs[$i]} mode=${modes[$i]} scale=${scales[$i]}
+    position=${placed[$output]:-}
+    [[ -n $position ]] || { [[ $output == Virtual-1 ]] && position=0x0 || position=auto-right; }
 
     # Aquamarine 0.14 does not refresh its mode cache when an existing DRM
     # connector's EDID or physical size changes. A complete modeline bypasses
@@ -295,9 +377,9 @@ apply_preferred_modes() {
     # avoids using the stale fullscreen dimensions for Hyprland's auto scale.
     # Hyprland's Lua config parser requires eval instead of the legacy keyword
     # command.
-    # OmacVM: this output only, at 0x0. A catch-all rule ("", auto position)
-    # also hit Omanotch's hidden NOTCH output; the screen then sat to the
-    # right of NOTCH, NOTCH followed it, and both kept moving right.
+    # OmacVM: these outputs only, each placed. A catch-all rule ("", auto
+    # position) also hit Omanotch's hidden NOTCH output; the screen then sat
+    # to the right of NOTCH, NOTCH followed it, and both kept moving right.
     # A rule naming this output would replace the user's own for it (it comes
     # later): with one in monitors.lua, the user's rule stays and the screen no
     # longer follows the window.
@@ -308,7 +390,7 @@ apply_preferred_modes() {
       fi
       continue
     fi
-    rule="hl.monitor({ output = \"$output\", mode = \"$mode\", position = \"0x0\", scale = \"$scale\" })"
+    rule="hl.monitor({ output = \"$output\", mode = \"$mode\", position = \"$position\", scale = \"$scale\" })"
     if ! response=$(hyprctl eval "$rule" 2>&1); then
       printf 'omacvm-display-sync: failed to apply %s to %s: %s\n' \
         "$mode" "$output" "$response" >&2
@@ -316,9 +398,11 @@ apply_preferred_modes() {
       printf 'omacvm-display-sync: Hyprland rejected %s for %s: %s\n' \
         "$mode" "$output" "$response" >&2
     fi
-    notch_bar "$mode" "$scale"
+    # The notch strip is the main window's (full screen on the built-in display).
+    if [[ $output == Virtual-1 ]]; then
+      notch_bar "$mode" "$scale"
+    fi
   done
-  shopt -u nullglob
 }
 
 # OmacVM.app: when the window covers the strip beside the notch (full screen

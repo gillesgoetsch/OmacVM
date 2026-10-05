@@ -1,5 +1,5 @@
 #!/bin/bash
-# omacvm update [--vm NAME] [--no-pull]: OmacVM up to date everywhere. This
+# omacvm update [--vm NAME [--vm-type T]] [--no-pull]: OmacVM up to date everywhere. This
 # checkout (git pull, when it is a clean clone), the Mac side that is
 # installed (Omanotch with it), OmacVM.app when it is installed and a newer
 # one is published (not while it runs), then OmacVM in every running VM that
@@ -11,10 +11,11 @@ set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
 source "$R/src/lib/vm.sh"
-VM=""; PULL=1; ARGS=("$@")
+VM=""; TYPE=""; PULL=1; ARGS=("$@")
 while (( $# )); do
   case $1 in
     --vm) VM=$2; shift 2 ;;
+    --vm-type) TYPE=$2; shift 2 ;;
     --no-pull) PULL=0; shift ;;
     -h|--help) sed -n '2,10s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) echo "omacvm update: unknown option $1 (see --help)" >&2; exit 2 ;;
@@ -72,12 +73,13 @@ fi
 
 # ---------- the VMs ----------
 if [[ -n $VM ]]; then
-  "$R/src/cmd/apply.sh" --vm "$VM" --no-mac
+  "$R/src/cmd/apply.sh" --vm "$VM" ${TYPE:+--vm-type "$TYPE"} --no-mac
   exit
 fi
-done_any=0; stopped=(); failed=()
+done_any=0; stopped=(); unanswered=(); failed=()
 while IFS=$'\t' read -r name type state; do
   [[ -n $name ]] || continue
+  if [[ $state == unknown ]]; then unanswered+=("$name"); continue; fi
   if [[ $state != running ]]; then stopped+=("$name"); continue; fi
   ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null) || continue
   vm_pin "$name" "$type"
@@ -101,6 +103,7 @@ if (( ${#stopped[@]} )); then
   info "not running, so not updated: $(printf '%s, ' "${stopped[@]}" | sed 's/, $//')"
   info "start one and run: omacvm update --vm NAME"
 fi
+(( ${#unanswered[@]} )) && info "not updated: $(printf '%s, ' "${unanswered[@]}" | sed 's/, $//'): $UTM_NO_ANSWER"
 (( ${failed_app:-0} )) && failed+=("OmacVM.app")
 if (( ${#failed[@]} )); then
   echo "omacvm update: failed in $(printf '%s, ' "${failed[@]}" | sed 's/, $//') (see above)" >&2

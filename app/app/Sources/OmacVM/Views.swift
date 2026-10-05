@@ -102,7 +102,7 @@ struct SetupView: View {
                 Picker("Resources", selection: $tier) {
                     ForEach(0..<4) { t in
                         let v = Mac.tier(t)
-                        Text("\(["Low", "Balanced", "High", "Best"][t]): \(v.cpus) CPUs, \(v.memoryGB) GB").tag(t)
+                        Text("\(Mac.tierNames[t]): \(v.cpus) CPUs, \(v.memoryGB) GB").tag(t)
                     }
                 }
                 Toggle("OmacVM Bridge: the Mac's Wi-Fi, Bluetooth, audio and media keys in Omarchy's bar", isOn: $bridge)
@@ -239,12 +239,47 @@ struct ReadyView: View {
     @ObservedObject var state: AppState
     @State private var fullScreen = Settings.startFullScreen
     @State private var notch = Settings.useNotch
+    @State private var resourcesNote: String?
+
+    /// The create screen's tiers; resources set some other way show as Custom.
+    private var tier: Binding<Int> {
+        Binding(get: { Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) ?? -1 },
+                set: { setTier($0) })
+    }
+
+    private func setTier(_ t: Int) {
+        guard Mac.tierNames.indices.contains(t) else { return }
+        let v = Mac.tier(t)
+        var c = state.config
+        c.cpus = v.cpus
+        c.memoryMB = v.memoryGB * 1024
+        guard c != state.config else { return }
+        do {
+            try c.writeResources()
+            state.config = c
+            resourcesNote = "Applies on the next start."
+        } catch {
+            resourcesNote = "Could not save: \(error.localizedDescription)"
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(state.config.name).font(.title2.bold())
             Text("\(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB memory, \(state.config.diskGB) GB disk, user \(state.config.user)")
                 .foregroundStyle(.secondary)
+            Picker("Resources", selection: tier) {
+                ForEach(0..<4) { t in
+                    let v = Mac.tier(t)
+                    Text("\(Mac.tierNames[t]): \(v.cpus) CPUs, \(v.memoryGB) GB").tag(t)
+                }
+                if Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) == nil {
+                    Text("Custom: \(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB").tag(-1)
+                }
+            }
+            if let n = resourcesNote {
+                Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
+            }
             Toggle("Start in full screen", isOn: $fullScreen)
                 .onChange(of: fullScreen) { _, v in Settings.startFullScreen = v }
             if Mac.hasNotch {

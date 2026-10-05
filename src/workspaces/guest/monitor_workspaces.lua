@@ -1,15 +1,17 @@
 -- Separate workspaces per monitor: SUPER + 1..0 always means "1..0 on the
 -- monitor I'm on", instead of jumping to wherever workspace N happens to live.
 --
--- Parallels VM: the main display is Virtual-1 (the VM window, or the first
--- display in full screen); further displays are Virtual-2, ... Omanotch's
--- hidden NOTCH output overlaps Virtual-1 and is never an external monitor.
+-- The main display is Virtual-1 (the VM window, or the first display in full
+-- screen); further displays are Virtual-2, Virtual-3, ... (Parallels, Fusion
+-- and OmacVM.app all name them so). Omanotch's hidden NOTCH output overlaps
+-- Virtual-1 and is never an external monitor.
 --
 -- Hyprland has one global list of workspace IDs, and each ID belongs to one
 -- monitor, so two "workspace 2"s cannot share an ID. The notebook keeps the
--- real IDs 1..10; the external monitor uses 11..20 (offset 10). The keys and
--- the bar widget (plugin omacvm.workspaces) subtract the offset again,
--- so 11..20 never show up anywhere you look.
+-- real IDs 1..10; Virtual-2 uses 11..20, Virtual-3 21..30 and so on (offset
+-- 10 per display; an external with another name counts as the second). The
+-- keys and the bar widget (plugin omacvm.workspaces) subtract the offset
+-- again, so 11..20 never show up anywhere you look.
 --
 -- Used by hypr/bindings.lua (monitor_workspaces.workspace(n)).
 
@@ -23,11 +25,20 @@ local function ignored(name)
   return name:find("^NOTCH") ~= nil
 end
 
-function M.offset(monitor)
-  if not monitor or not monitor.name or monitor.name == M.LAPTOP or ignored(monitor.name) then
+-- The offset of a monitor name: 0 for the main display, (N-1)*10 for Virtual-N.
+local function name_offset(name)
+  if not name or name == M.LAPTOP or ignored(name) then
     return 0
   end
+  local n = tonumber(name:match("^Virtual%-(%d+)$"))
+  if n and n >= 2 then
+    return (n - 1) * M.OFFSET
+  end
   return M.OFFSET
+end
+
+function M.offset(monitor)
+  return name_offset(monitor and monitor.name)
 end
 
 -- Workspace N (1..10) on the focused monitor, as a workspace selector string.
@@ -35,13 +46,23 @@ function M.workspace(n)
   return tostring(n + M.offset(hl.get_active_monitor()))
 end
 
-local function external_name()
+-- The external monitors that are there, by offset.
+local function externals()
+  local present = {}
   for _, monitor in ipairs(hl.get_monitors() or {}) do
     if monitor.name and monitor.name ~= M.LAPTOP and not ignored(monitor.name) and not monitor.is_mirror then
-      return monitor.name
+      local offset = name_offset(monitor.name)
+      if not present[offset] then
+        present[offset] = monitor.name
+      end
     end
   end
-  return nil
+  return present
+end
+
+-- The offset whose range holds workspace ID (0 for 1..10).
+local function range_of(id)
+  return math.floor((id - 1) / M.OFFSET) * M.OFFSET
 end
 
 local function workspace_ids()
@@ -97,17 +118,15 @@ local function change_id(from, to)
   hl.dispatch(hl.dsp.workspace.change_id({ workspace = tostring(from), id = to }))
 end
 
--- Without an external: renumber every 11..20 into the lowest free 1..10, in
--- order. If the notebook is full, the rest keep their 11+ IDs.
+-- Workspaces of a display that is gone: renumber each into the lowest free
+-- 1..10, in order. If the notebook is full, the rest keep their IDs.
 local function park()
-  if external_name() then
-    return
-  end
-
+  local present = externals()
   local ids = workspace_ids()
   local stray = {}
   for id in pairs(ids) do
-    if id > M.OFFSET and id <= 2 * M.OFFSET then
+    local range = range_of(id)
+    if range > 0 and not present[range] then
       table.insert(stray, id)
     end
   end
@@ -132,48 +151,91 @@ local function park()
   write_parked(parked)
 end
 
--- With an external back: give each parked workspace that still exists its
--- original ID again. pin() then moves it to the external. An emptied parked
--- workspace is gone and simply dropped.
+-- With a display back: give each parked workspace of it that still exists
+-- its original ID again. pin() then moves it to that display. An emptied
+-- parked workspace is gone and simply dropped; parked workspaces of displays
+-- still missing stay parked.
+--
+-- `ids` is kept in step with every renumbering (Hyprland refuses an ID that
+-- is taken), and the records go in order of their original ID, so several
+-- parked workspaces of one display all come back.
 local function unpark()
   local parked = read_parked()
   if next(parked) == nil then
-    return
+    return {}
   end
 
+  local present = externals()
   local ids = workspace_ids()
+  local wanted = {}
+  local slots = {}
   for slot, original in pairs(parked) do
-    if ids[slot] and not ids[original] then
-      change_id(slot, original)
+    wanted[original] = true
+    slots[#slots + 1] = slot
+  end
+  table.sort(slots, function(a, b) return parked[a] < parked[b] end)
+
+  local function move(from, to)
+    change_id(from, to)
+    ids[to], ids[from] = ids[from], nil
+  end
+
+  local left = {}
+  local back = {}
+  for _, slot in ipairs(slots) do
+    local original = parked[slot]
+    local range = range_of(original)
+    if not ids[slot] then
+      -- emptied: gone
+    elseif not present[range] then
+      left[slot] = original
+    elseif not ids[original] then
+      move(slot, original)
+    elseif (ids[original].windows or 1) == 0 then
+      -- Hyprland already opened the empty workspace "original" on the
+      -- display that came back: rename that one out of the way first, to
+      -- an ID that is free and that no other parked workspace wants.
+      local spare
+      for id = range + 1, range + M.OFFSET do
+        if not ids[id] and not wanted[id] then
+          spare = id
+          break
+        end
+      end
+      if spare then
+        move(original, spare)
+        move(slot, original)
+        back[#back + 1] = original
+      else
+        left[slot] = original
+      end
     end
   end
-  write_parked({})
+  write_parked(left)
+  return back
 end
 
 -- Pin each range to its monitor, so a workspace created by moving a window to
--- it opens on the right screen. The external's name (DP-1, DP-2, ...) depends
--- on the port, so its rules are rewritten whenever a monitor appears.
+-- it opens on the right screen. Rewritten whenever a monitor appears.
 local function pin()
   for n = 1, M.OFFSET do
     hl.workspace_rule({ workspace = tostring(n), monitor = M.LAPTOP })
   end
 
-  local external = external_name()
-  if not external then
-    return
+  local present = externals()
+  for offset, name in pairs(present) do
+    for n = offset + 1, offset + M.OFFSET do
+      hl.workspace_rule({ workspace = tostring(n), monitor = name })
+    end
   end
 
-  for n = M.OFFSET + 1, 2 * M.OFFSET do
-    hl.workspace_rule({ workspace = tostring(n), monitor = external })
-  end
-
-  -- Unplugging parks 11..20 on the notebook. The rules above may land after
-  -- Hyprland has already placed workspaces for the new monitor, so hand the
-  -- external's range back explicitly.
+  -- Unplugging parks a display's range on the notebook. The rules above may
+  -- land after Hyprland has already placed workspaces for the new monitor,
+  -- so hand each range back explicitly.
   for _, ws in ipairs(hl.get_workspaces() or {}) do
-    if ws.id and ws.id > M.OFFSET and ws.id <= 2 * M.OFFSET
-        and ws.monitor and ws.monitor.name ~= external then
-      hl.dispatch(hl.dsp.workspace.move({ workspace = tostring(ws.id), monitor = external }))
+    local name = ws.id and ws.id > M.OFFSET and present[range_of(ws.id)]
+    if name and ws.monitor and ws.monitor.name ~= name then
+      hl.dispatch(hl.dsp.workspace.move({ workspace = tostring(ws.id), monitor = name }))
     end
   end
 end
@@ -192,8 +254,19 @@ park() -- also covers a reload while unplugged
 hl.on("monitor.added", function()
   pin()
   later(function()
-    unpark()
+    local back = unpark()
     pin()
+    -- Show each workspace that came back on its display (not the empty one
+    -- Hyprland opened there), then return to where the focus was.
+    if #back > 0 then
+      local focused = hl.get_active_workspace and hl.get_active_workspace()
+      for _, id in ipairs(back) do
+        hl.dispatch(hl.dsp.focus({ workspace = tostring(id) }))
+      end
+      if focused and focused.id then
+        hl.dispatch(hl.dsp.focus({ workspace = tostring(focused.id) }))
+      end
+    end
   end)
 end)
 hl.on("monitor.removed", function() later(park) end)

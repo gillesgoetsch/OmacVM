@@ -28,7 +28,7 @@ prebuilt_make_vm() {
       ui_spin "Unpacking" prebuilt_unpack "$tmp" || die "could not unpack the image (free disk space?)"
       PVM="$VM_DIR/$VM.pvm"
       mv "$tmp/$PB_BUNDLE" "$PVM"; rmdir "$tmp"
-      (( DISK_GB > PB_DISK_GB )) && /usr/local/bin/prl_disk_tool resize --hdd "$PVM/omarchy.hdd" --size "${DISK_GB}G" >/dev/null
+      pb_disk_bigger "$DISK_GB" && /usr/local/bin/prl_disk_tool resize --hdd "$PVM/omarchy.hdd" --size "${DISK_GB}G" >/dev/null
       mkdir -p "$HOME/.local/share/omacvm/clip"
       python3 "$R/src/prebuilt/vmconfig.py" pvs-identity "$PVM/config.pvs" "$VM" "$PVM" \
         "$HOME/.local/share/omacvm/clip" "$CPUS" $((MEM_GB * 1024)) $((DISK_GB * 1024))
@@ -52,7 +52,7 @@ prebuilt_make_vm() {
       python3 "$R/src/prebuilt/vmconfig.py" utm-identity "$b/config.plist" "$VM" "$CPUS" $((MEM_GB * 1024))
       prebuilt_seed "$b/Data/omacvm-seed.iso"
       python3 "$R/src/prebuilt/vmconfig.py" utm-seed "$b/config.plist" omacvm-seed.iso
-      if (( DISK_GB > PB_DISK_GB )); then
+      if pb_disk_bigger "$DISK_GB"; then
         python3 "$R/src/prebuilt/vmconfig.py" qcow2-grow "$b/Data/$(plutil -extract Drive.0.ImageName raw "$b/config.plist")" $((DISK_GB * 1024))
       fi
       utm_tune_app
@@ -74,7 +74,7 @@ prebuilt_make_vm() {
       mv "$b/$PREBUILT_NAME.vmx" "$b/$VM.vmx"
       [[ -f $b/$PREBUILT_NAME.nvram ]] && mv "$b/$PREBUILT_NAME.nvram" "$b/$VM.nvram"
       vmx_set "$b/$VM.vmx" nvram "$VM.nvram"
-      (( DISK_GB > PB_DISK_GB )) && "$FUSION_LIB/vmware-vdiskmanager" -x "${DISK_GB}GB" "$b/omarchy.vmdk" >/dev/null
+      pb_disk_bigger "$DISK_GB" && "$FUSION_LIB/vmware-vdiskmanager" -x "${DISK_GB}GB" "$b/omarchy.vmdk" >/dev/null
       read -r n w h < <(fusion_mac_displays)
       python3 "$R/src/prebuilt/vmconfig.py" vmx-identity "$b/$VM.vmx" "$VM" "$CPUS" $((MEM_GB * 1024)) "$GFX_GB" "$n" "$w" "$h"
       PB_SEED="$b/omacvm-seed.iso"

@@ -1,4 +1,4 @@
-/* texture() on integer samplers: the GLSL the renderer writes must compile.
+/* texture() on integer samplers (and gl_InstanceID): the GLSL the renderer writes must compile.
  * Chrome samples usampler2D in some of its shaders; a vec4 temporary there made
  * Apple's OpenGL refuse the shader, and the guest's context stopped for good.
  * Translates TGSI offline, checks the text, then compiles it with the Mac's own
@@ -49,7 +49,8 @@ static bool gl_init(void)
 
 static bool gl_compiles(const char *name, const char *glsl)
 {
-   unsigned s = gl.create(0x8B30 /* GL_FRAGMENT_SHADER */);
+   bool vertex = strstr(glsl, "gl_Position") != NULL;
+   unsigned s = gl.create(vertex ? 0x8B31 /* GL_VERTEX_SHADER */ : 0x8B30 /* GL_FRAGMENT_SHADER */);
    int ok = 0;
    gl.source(s, 1, &glsl, NULL);
    gl.compile(s);
@@ -134,5 +135,11 @@ int main(void)
    failed |= convert("alpha-only sampler, swizzled in the shader",
                      FS("FLOAT", "TEX TEMP[0], IN[0].xyyy, SAMP[0], 2D", "MOV OUT[0], TEMP[0]"),
                      "val = vec4(0, 0, 0, val.x)", NULL, true, have_gl);
+   /* Instanced drawing (WebGL through ANGLE): gl_InstanceID is core GLSL; Apple's
+    * core profile refuses "#extension GL_ARB_draw_instanced : require". */
+   failed |= convert("vertex shader reading gl_InstanceID",
+                     "VERT\nDCL IN[0]\nDCL SV[0], INSTANCEID\nDCL OUT[0], POSITION\n"
+                     "DCL TEMP[0]\nI2F TEMP[0].x, SV[0].xxxx\nADD OUT[0], IN[0], TEMP[0].xxxx\nEND\n",
+                     "gl_InstanceID", "GL_ARB_draw_instanced", false, have_gl);
    return failed;
 }

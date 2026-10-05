@@ -8,6 +8,7 @@ elsewhere, everything else is this file. Usage:
       the OmacVM settings: CPUs/RAM fixed, 3D + VSync, Retina (HiDPI in
       the guest, native resolution in full screen), all displays in full
       screen, smooth scrolling, no Mac volumes or iCloud in the guest
+  pvs.py CONFIG resources --cpus N --memsize MB   only CPUs and memory (fixed)
   pvs.py CONFIG add-nvme NAME SIZE_MB     add an existing .hdd bundle (in the .pvm) as NVMe disk
   pvs.py CONFIG boot-from INDEX           boot from that disk only
   pvs.py CONFIG remove-hdd INDEX          detach a disk (its files stay)
@@ -58,10 +59,17 @@ def child(parent, tag, text):
     return e
 
 
-def omacvm(root, cpus, memsize, description):
-    s = {
+def resources(root, cpus, memsize):
+    for path, value in {
         "Hardware/Cpu/Number": cpus, "Hardware/Cpu/AutoCountEnabled": 0,
         "Hardware/Memory/RAM": memsize, "Hardware/Memory/RamAutoSizeEnabled": 0,
+    }.items():
+        setv(root, path, value)
+
+
+def omacvm(root, cpus, memsize, description):
+    resources(root, cpus, memsize)
+    s = {
         "Hardware/Video/Enable3DAcceleration": 1, "Hardware/Video/EnableVSync": 1,
         "Hardware/Video/VideoMemorySize": 0,
         "Hardware/Video/EnableHiResDrawing": 1, "Hardware/Video/UseHiResInGuest": 1,
@@ -183,6 +191,9 @@ def main(argv):
     if cmd == "omacvm":
         opts = dict(zip(args[::2], args[1::2]))
         omacvm(root, int(opts["--cpus"]), int(opts["--memsize"]), opts.get("--description"))
+    elif cmd == "resources":
+        opts = dict(zip(args[::2], args[1::2]))
+        resources(root, int(opts["--cpus"]), int(opts["--memsize"]))
     elif cmd == "displays":
         if not displays(root):
             return

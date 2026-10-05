@@ -1,0 +1,60 @@
+virglrenderer: a GL error while a draw is set up skips the draw
+
+What: right before each GL draw call (and compute dispatch) vrend asks the GL
+for errors. Any error means the GL refused a call while vrend set up the draw
+(an attribute format, a buffer range, a binding), so older state is still in
+place: the draw is skipped and logged like any GL error after a command (three
+lines per context). Out of memory, a lost GL context and the "lose" policy stop
+the context as before. Draws that the GL itself refuses later still only show in
+the check after the command.
+Why: the range checks look at what the guest asked for. When the GL refuses part
+of it, the GPU uses whatever was bound before, which the checks never saw. The
+format and alignment checks close the cases known today; this catches the rest.
+Without it the after-command check (virgl-gl-error-skip-command.patch) let the
+draw run on the stale state and only then logged the error, so a guest could
+repeat it at will.
+Depends on: virgl-gl-error-skip-command.patch, virgl-uniform-buffer-checks.patch.
+Upstream: needs the error-skip behaviour first; not sent.
+Tests: Tests/virgl/gl-oracle.c aborts when a GL draw call finds a GL error
+pending, so test-gpu-ranges and every fuzz input check it.
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -6746,6 +6746,19 @@
+    } else {
+       glDrawRangeElements(mode, d->min_index, d->max_index, d->count, elsz, indices);
+    }
++}
++
++/* Right before a GL draw call or dispatch. A GL error now means the GL refused a call
++ * that set the draw up (an attribute format, a buffer range, a binding) and kept older
++ * state, which the range checks never saw: the draw is skipped. The errors count and are
++ * logged like those after a command; out of memory or a lost GL context stop the
++ * context. A draw the GL refuses itself shows up at the next draw or after the command. */
++static bool vrend_draw_state_ok(struct vrend_context *ctx)
++{
++   unsigned gl_errors = ctx->gl_errors;
++
++   return vrend_check_no_error_contained(ctx, "the state of a draw") &&
++          ctx->gl_errors == gl_errors;
+ }
+ 
+ int vrend_draw_vbo(struct vrend_context *ctx,
+@@ -6974,7 +6987,7 @@
+       glEnable(GL_BLEND);
+    }
+ 
+-   for (uint32_t i = 0; i < num_draws; i++)
++   for (uint32_t i = 0; i < num_draws && vrend_draw_state_ok(ctx); i++)
+       vrend_issue_direct_draw(sub_ctx, info, &draws[i]);
+    if (draws != &one_draw)
+       free(draws);
+@@ -7093,6 +7106,9 @@
+    else
+       glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
+ 
++   if (!vrend_draw_state_ok(ctx))
++      return;
++
+    if (indirect_res) {
+       glDispatchComputeIndirect(indirect_offset);
+    } else {

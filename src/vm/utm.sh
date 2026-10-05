@@ -4,6 +4,30 @@
 
 utm_osa() { osascript "$@" 2>&1; }
 
+# utm_scripting: may OmacVM drive UTM from here? Prints why not. macOS asks
+# once per terminal app whether it may control UTM; over SSH it cannot ask
+# (-1743) and utmctl refuses to work. Checked before the long download.
+utm_scripting() {
+  local out pid i t
+  if [[ -n ${SSH_CONNECTION:-} ]]; then
+    echo "UTM takes no orders over SSH: run omacvm in Terminal on the Mac itself"
+    return 1
+  fi
+  t=$(mktemp)
+  osascript -e 'with timeout of 600 seconds' -e 'tell application "UTM" to count virtual machines' -e 'end timeout' > "$t" 2>&1 &
+  pid=$!
+  for ((i = 0; i < 6; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -0 "$pid" 2>/dev/null && info "macOS asks whether this terminal may control UTM: click Allow" >&2
+  wait "$pid" && { rm -f "$t"; return 0; }
+  out=$(cat "$t"); rm -f "$t"
+  case $out in
+    *-1743*) echo "this terminal may not control UTM: System Settings > Privacy & Security > Automation > your terminal app > UTM: on, then run omacvm again" ;;
+    *-1712*) echo "UTM did not answer in time: click Allow if macOS still asks whether this terminal may control UTM, else quit and reopen UTM; then run omacvm again" ;;
+    *) echo "UTM did not answer (${out:-no reply}): quit and reopen UTM, then run omacvm again" ;;
+  esac
+  return 1
+}
+
 # utm_create NAME CPUS MEMORY_MB LIVE_IMAGE DISK_MB
 # A QEMU VM like the one ggalancs/omarchy-arm-utm and OmacVM were tested with:
 # HVF, UEFI, virtio-gpu-gl (native resolution, dynamic resolution), virtio-net

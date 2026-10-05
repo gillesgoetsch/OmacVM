@@ -59,6 +59,14 @@ pick() {
 # ---------- resources ----------
 TIERS=(Low Balanced High Best)
 
+# mac_specs: this Mac's CPUs (all, performance, efficiency) and memory in GB.
+mac_specs() {
+  mac_cores=$(sysctl -n hw.ncpu)
+  mac_perf=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || echo "$mac_cores")
+  mac_eff=$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo 0)
+  mac_mem_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+}
+
 # tier_values INDEX -> sets T_CPUS and T_MEM (GB), within CAP_CPUS / CAP_MEM_GB.
 # Memory "Best" leaves macOS and the GPU (unified memory) max(8 GB, a quarter).
 tier_values() {

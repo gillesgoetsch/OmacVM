@@ -81,7 +81,20 @@ struct __attribute__((packed)) text_header {
     uint32_t len;
 };
 
-static const char *cfg_output, *cfg_host, *cfg_shell, *cfg_screen;
+static const char *cfg_output, *cfg_host, *cfg_shell;
+// The display whose bar the strip stands in for (the built-in one): see
+// update_screen. Read through screen_name(): the keeper thread changes it.
+static char cfg_screen_buf[64] = "Virtual-1";
+static pthread_mutex_t screen_lock = PTHREAD_MUTEX_INITIALIZER;
+static const char *screen_name(char out[64]) {
+    pthread_mutex_lock(&screen_lock);
+    memcpy(out, cfg_screen_buf, 64);
+    pthread_mutex_unlock(&screen_lock);
+    return out;
+}
+// Set by the keeper: close the capture session, then remove and create the
+// hidden output again (see keeper_thread).
+static _Atomic int remake_output;
 // Height of the Mac's black strip in points (`strip H`); 0 until reported.
 // The hidden output is made this tall so the strip needs no padding.
 static _Atomic int strip_height;
@@ -210,16 +223,19 @@ static int query_session_locked(void) {
 }
 
 // Runs `qs ipc call -- notchbar <fn> <args...>`; returns its stdout (malloc'd)
-// when want_output is set.
+// when want_output is set. A call that fails is logged with qs's own words (at
+// most every 30 s), so a bar that does not park says why in the journal.
 static char *ipc_call(int want_output, const char *fn, const char *a1, const char *a2, const char *a3) {
     int pfd[2] = {-1, -1};
     if (want_output && pipe2(pfd, O_CLOEXEC)) return NULL;
+    // qs's stderr goes to a memory file: it can never block the call.
+    int efd = memfd_create("notchcast-ipc", MFD_CLOEXEC);
     pid_t pid = fork();
     if (pid == 0) {
         int devnull = open("/dev/null", O_RDWR);
         dup2(devnull, 0);
         dup2(want_output ? pfd[1] : devnull, 1);
-        dup2(devnull, 2);
+        dup2(efd >= 0 ? efd : devnull, 2);
         const char *argv[12];
         int n = 0;
         argv[n++] = "qs";
@@ -254,7 +270,37 @@ static char *ipc_call(int want_output, const char *fn, const char *a1, const cha
         }
         close(pfd[0]);
     }
-    if (pid > 0) waitpid(pid, NULL, 0);
+    int status = 0;
+    if (pid > 0 && waitpid(pid, &status, 0) == pid &&
+        !(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+        // At most every 30 s per function; the net thread and the worker both call here.
+        static pthread_mutex_t said_lock = PTHREAD_MUTEX_INITIALIZER;
+        static struct { char fn[24]; time_t at; } said[8];
+        time_t now = time(NULL);
+        int say = 0;
+        pthread_mutex_lock(&said_lock);
+        int k = 0, oldest = 0;
+        for (; k < 8 && said[k].fn[0] && strcmp(said[k].fn, fn); k++)
+            if (said[k].at < said[oldest].at) oldest = k;
+        if (k == 8) k = oldest;
+        if (strcmp(said[k].fn, fn) || now - said[k].at >= 30) {
+            snprintf(said[k].fn, sizeof said[k].fn, "%s", fn);
+            said[k].at = now;
+            say = 1;
+        }
+        pthread_mutex_unlock(&said_lock);
+        if (say) {
+            char why[240] = "";
+            ssize_t n = efd >= 0 ? pread(efd, why, sizeof why - 1, 0) : 0;
+            why[n > 0 ? n : 0] = 0;
+            why[strcspn(why, "\n")] = 0;
+            LOG("ipc %s failed (%s %d)%s%s", fn, WIFEXITED(status) ? "exit" : "signal",
+                  WIFEXITED(status) ? WEXITSTATUS(status) : WTERMSIG(status), *why ? ": " : "", why);
+        }
+    } else if (pid < 0) {
+        LOG("ipc %s: fork failed: %s", fn, strerror(errno));
+    }
+    if (efd >= 0) close(efd);
     return out;
 }
 
@@ -435,10 +481,11 @@ static void show_guest_cursor_at_exit(const char *dir, double strip_x, double de
         set_guest_cursor_visible(1);
         return;
     }
-    char *j = hypr_request("j/monitors all");
+    char *j = hypr_request("j/monitors all"), scr[64];
     double x, y, w, s;
-    if (!j || monitor_field(j, cfg_screen, "x", &x) || monitor_field(j, cfg_screen, "y", &y) ||
-        monitor_field(j, cfg_screen, "width", &w) || monitor_field(j, cfg_screen, "scale", &s) || s <= 0) {
+    screen_name(scr);
+    if (!j || monitor_field(j, scr, "x", &x) || monitor_field(j, scr, "y", &y) ||
+        monitor_field(j, scr, "width", &w) || monitor_field(j, scr, "scale", &s) || s <= 0) {
         free(j);
         set_guest_cursor_visible(1);
         return;
@@ -488,6 +535,21 @@ static void write_beat(void) {
         fprintf(f, "%.0f\n", ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6);
         fclose(f);
     }
+}
+
+// The parking the helper asked for, for a shell that starts (or restarts)
+// after it was said: "1 <output>" or "0", rewritten in place. The bar (patch
+// v14+) reads it with the beat at startup and every few seconds, so a new
+// shell parks at once instead of waiting for an IPC call that may have gone
+// to the old shell, or to none while the new one was still loading.
+static void write_park(int on) {
+    char path[600], scr[64];
+    state_path(path, sizeof path, "park");
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    if (on) fprintf(f, "1 %s\n", screen_name(scr));
+    else fputs("0\n", f);
+    fclose(f);
 }
 
 // The bar's own report (bar patch v9+): {"parked":…,"barSize":…,"started":…}.
@@ -735,8 +797,8 @@ static int handshake(int fd, const char *tok) {
 
 // Tells the helper which hypervisor this guest runs in, so it only takes this
 // VM app's full-screen window for the strip ("hello qemu", "hello parallels"),
-// and the VM's name, so it can tell several VMs of one app apart by their
-// window titles ("vmname <base64>"; older helpers ignore it).
+// and the VM's name for its log and to spot a rebooted OmacVM.app VM
+// ("vmname <base64>"; older helpers ignore it).
 static void send_hello(void) {
     char vendor[64] = "", msg[96], name[400], namemsg[420];
 
@@ -781,9 +843,10 @@ static int have_geom;
 static double mac_bar;
 
 static double screen_logical_width(void) {
-    char *j = hypr_request("j/monitors all");
+    char *j = hypr_request("j/monitors all"), scr[64];
     double w = 0, sc = 0;
-    if (j && !monitor_field(j, cfg_screen, "width", &w) && !monitor_field(j, cfg_screen, "scale", &sc) && sc > 0)
+    screen_name(scr);
+    if (j && !monitor_field(j, scr, "width", &w) && !monitor_field(j, scr, "scale", &sc) && sc > 0)
         w /= sc;
     else
         w = 0;
@@ -850,7 +913,9 @@ static void handle_command(char *line) {
                 static double started;
                 if (read_bar_state(&st)) {
                     // Unparked although we keep it parked, or a new shell.
-                    fresh = !st.parked || (started && st.started != started);
+                    // The first read cannot tell an old shell's report from
+                    // the current one's: count it as new (one extra call).
+                    fresh = !st.parked || st.started != started;
                     started = st.started;
                 } else {
                     // A bar patched before v9 only knows the IPC heartbeat.
@@ -860,12 +925,21 @@ static void handle_command(char *line) {
                 }
             }
             if (on != bar_parked || fresh) {
-                if (getenv("NOTCHBAR_SCREEN")) free(ipc_call(0, "setParkedScreen", cfg_screen, NULL, NULL));
+                char scr[64];
+                write_park(on);  // first: a shell starting right now reads it
+                free(ipc_call(0, "setParkedScreen", screen_name(scr), NULL, NULL));
                 free(ipc_call(0, "setParked", on ? "true" : "false", NULL, NULL));
                 if (on && fresh) sync_geometry(1);
             }
             bar_parked = on;
             bar_beat_ms = now;
+        }
+    } else if (!strcmp(c, "screen") && argc == 1) {
+        // The built-in display is another output now (update_screen).
+        char scr[64];
+        if (bar_parked == 1) {
+            write_park(1);
+            free(ipc_call(0, "setParkedScreen", screen_name(scr), NULL, NULL));
         }
     } else if (!strcmp(c, "beat") && argc == 1) {
         free(ipc_call(0, "heartbeat", NULL, NULL, NULL));
@@ -1238,6 +1312,15 @@ static int monitor_field(const char *json, const char *name, const char *field, 
     return -1;
 }
 
+// Whether output A comes before output B in Hyprland's list (creation order).
+static int listed_before(const char *json, const char *a, const char *b) {
+    char pa[96], pb[96];
+    snprintf(pa, sizeof pa, "\"name\": \"%s\"", a);
+    snprintf(pb, sizeof pb, "\"name\": \"%s\"", b);
+    const char *x = strstr(json, pa), *y = strstr(json, pb);
+    return x && y && x < y;
+}
+
 static void run_quiet(const char *const argv[]) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -1298,7 +1381,8 @@ static int follow_modes(void) {
 
 static int preferred_mode(int *w, int *h) {
     char pattern[128];
-    snprintf(pattern, sizeof pattern, "/sys/class/drm/card*-%s/modes", cfg_screen);
+    char scr[64];
+    snprintf(pattern, sizeof pattern, "/sys/class/drm/card*-%s/modes", screen_name(scr));
     glob_t g;
     int found = 0;
     if (glob(pattern, 0, NULL, &g) == 0) {
@@ -1333,9 +1417,11 @@ static void follow_preferred_mode(const char *monitors_json) {
     }
     if (!following) return;
     double cw, ch, x, y, s, r;
-    if (monitor_field(monitors_json, cfg_screen, "width", &cw) || monitor_field(monitors_json, cfg_screen, "height", &ch) ||
-        monitor_field(monitors_json, cfg_screen, "x", &x) || monitor_field(monitors_json, cfg_screen, "y", &y) ||
-        monitor_field(monitors_json, cfg_screen, "scale", &s) || monitor_field(monitors_json, cfg_screen, "refreshRate", &r) ||
+    char scr[64];
+    screen_name(scr);
+    if (monitor_field(monitors_json, scr, "width", &cw) || monitor_field(monitors_json, scr, "height", &ch) ||
+        monitor_field(monitors_json, scr, "x", &x) || monitor_field(monitors_json, scr, "y", &y) ||
+        monitor_field(monitors_json, scr, "scale", &s) || monitor_field(monitors_json, scr, "refreshRate", &r) ||
         s <= 0)
         return;
     if ((int)cw == w && (int)ch == h) return;
@@ -1354,13 +1440,41 @@ static void follow_preferred_mode(const char *monitors_json) {
     char lua[256];
     snprintf(lua, sizeof lua,
              "hl.monitor({ output = \"%s\", mode = \"%dx%d@%d\", position = \"%dx%d\", scale = %.6f })",
-             cfg_screen, w, h, (int)(r + 0.5), (int)x, (int)y, s);
+             scr, w, h, (int)(r + 0.5), (int)x, (int)y, s);
     // Do not hammer Hyprland with a rule it keeps refusing.
     if (!strcmp(lua, last_applied) && now_ms() - last_ms < 30000) return;
     snprintf(last_applied, sizeof last_applied, "%s", lua);
     last_ms = now_ms();
     LOG("display follows the host's window size: %s", lua);
     hypr_eval(lua);
+}
+
+// Which output is the built-in display: $NOTCHBAR_SCREEN if set; else the one
+// OmacVM.app names in $XDG_RUNTIME_DIR/omacvm/builtin (with external displays
+// it can be any Virtual-N: Virtual-1 is the main window's display); else
+// Virtual-1, the only one under Parallels, UTM and Fusion. Says when it changed.
+static int update_screen(void) {
+    if (getenv("NOTCHBAR_SCREEN")) return 0;
+    char want[64] = "Virtual-1", path[512];
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    snprintf(path, sizeof path, "%s/omacvm/builtin", rt && *rt ? rt : "/nonexistent");
+    FILE *f = fopen(path, "r");
+    if (f) {
+        char line[64] = "";
+        if (fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            int ok = !strncmp(line, "Virtual-", 8) && line[8];
+            for (const char *q = line + 8; ok && *q; q++) ok = *q >= '0' && *q <= '9';
+            if (ok) snprintf(want, sizeof want, "%s", line);
+        }
+        fclose(f);
+    }
+    pthread_mutex_lock(&screen_lock);
+    int changed = strcmp(want, cfg_screen_buf) != 0;
+    if (changed) snprintf(cfg_screen_buf, sizeof cfg_screen_buf, "%s", want);
+    pthread_mutex_unlock(&screen_lock);
+    if (changed) LOG("built-in display: %s", want);
+    return changed;
 }
 
 // Keeps the hidden output present and exactly as wide as the display whose
@@ -1371,21 +1485,36 @@ static void *keeper_thread(void *unused) {
     char last_applied[256] = "";
     double last_apply_ms = -1e9;
     int created_attempts = 0;
+    double last_recreate_ms = -1e9;
     for (;;) {
-        char *j = hypr_request("j/monitors all");
+        if (update_screen()) enqueue_command("screen");
+        char *j = hypr_request("j/monitors all"), scr[64];
+        screen_name(scr);
         if (j) {
             double sx, sy, sw, ss, nx, ny, nw, nh, ns;
-            int have_screen = !monitor_field(j, cfg_screen, "x", &sx) && !monitor_field(j, cfg_screen, "y", &sy) &&
-                              !monitor_field(j, cfg_screen, "width", &sw) && !monitor_field(j, cfg_screen, "scale", &ss);
+            int have_screen = !monitor_field(j, scr, "x", &sx) && !monitor_field(j, scr, "y", &sy) &&
+                              !monitor_field(j, scr, "width", &sw) && !monitor_field(j, scr, "scale", &ss);
             int have_notch = !monitor_field(j, cfg_output, "x", &nx) && !monitor_field(j, cfg_output, "y", &ny) &&
                              !monitor_field(j, cfg_output, "width", &nw) && !monitor_field(j, cfg_output, "height", &nh) &&
                              !monitor_field(j, cfg_output, "scale", &ns);
-            if (!have_notch && have_screen && created_attempts < 5) {
+            if (!have_notch && have_screen && created_attempts < 5 && !atomic_load(&remake_output)) {
                 LOG("creating headless output %s", cfg_output);
                 const char *argv[] = {"hyprctl", "output", "create", "headless", cfg_output, NULL};
                 run_quiet(argv);
                 created_attempts++;
-            } else if (have_notch && have_screen) {
+            } else if (have_notch && have_screen && listed_before(j, cfg_output, scr) &&
+                       now_ms() - last_recreate_ms > 10000) {
+                // Hyprland gives a point that two outputs cover to the one made
+                // first. A display that came later (OmacVM.app's external
+                // displays) would lose its top edge to the hidden output, so it
+                // is made again, after the display: by the capture loop, once
+                // its session is closed (removing an output that is being
+                // captured crashes Hyprland 0.56). A repaint wakes the loop.
+                LOG("%s came before %s: making it again", cfg_output, scr);
+                atomic_store(&remake_output, 1);
+                free(ipc_call(0, "poke", NULL, NULL, NULL));
+                last_recreate_ms = now_ms();
+            } else if (have_notch && have_screen && !atomic_load(&remake_output)) {
                 created_attempts = 0;
                 static double last_lw;
                 if (ss > 0 && fabs(sw / ss - last_lw) > 0.5) {
@@ -1649,7 +1778,7 @@ static void capture_session(struct wl_output *out) {
     if (!have_frame) free(ipc_call(0, "poke", NULL, NULL, NULL));
 
     double pcx = -1e9, pcy = -1e9;  // cursor position at the previous frame
-    while (!sess_stopped && !outputs_changed) {
+    while (!sess_stopped && !outputs_changed && !atomic_load(&remake_output)) {
         frame_ready = frame_failed = 0;
         struct ext_image_copy_capture_frame_v1 *f = ext_image_copy_capture_session_v1_create_frame(ses);
         ext_image_copy_capture_frame_v1_add_listener(f, &frame_listener, NULL);
@@ -1738,6 +1867,7 @@ static void *signal_thread(void *arg) {
     sigwait(set, &sig);
     LOG("signal %d, restoring the guest cursor and exiting", sig);
     set_guest_cursor_visible(1);
+    write_park(0);
     _exit(0);
     return NULL;
 }
@@ -1768,7 +1898,10 @@ int main(int argc, char **argv) {
     }
     cfg_port = getenv("NOTCHBAR_PORT") ? atoi(getenv("NOTCHBAR_PORT")) : 47811;
     // The display whose bar is parked while the strip shows (the built-in one).
-    cfg_screen = getenv("NOTCHBAR_SCREEN") ? getenv("NOTCHBAR_SCREEN") : "Virtual-1";
+    if (getenv("NOTCHBAR_SCREEN"))
+        snprintf(cfg_screen_buf, sizeof cfg_screen_buf, "%s", getenv("NOTCHBAR_SCREEN"));
+    update_screen();
+    write_park(0);  // nothing is parked until the helper says so
     const char *op = getenv("OMARCHY_PATH") ? getenv("OMARCHY_PATH") : "/usr/share/omarchy";
     if (asprintf((char **)&cfg_shell, "%s/shell", op) < 0) return 1;
 
@@ -1779,8 +1912,6 @@ int main(int argc, char **argv) {
     pthread_create(&worker, NULL, worker_thread, NULL);
     pthread_create(&th, NULL, net_thread, NULL);
     pthread_create(&keeper, NULL, keeper_thread, NULL);
-    if (getenv("NOTCHBAR_SCREEN")) free(ipc_call(0, "setParkedScreen", cfg_screen, NULL, NULL));
-
     for (;;) {
         dpy = wl_display_connect(NULL);
         if (!dpy) {
@@ -1809,6 +1940,16 @@ int main(int argc, char **argv) {
                 continue;
             }
             capture_session(out);
+            if (atomic_load(&remake_output)) {
+                const char *rm[] = {"hyprctl", "output", "remove", cfg_output, NULL};
+                const char *mk[] = {"hyprctl", "output", "create", "headless", cfg_output, NULL};
+                run_quiet(rm);
+                wl_display_roundtrip(dpy);  // forget the old output before the new one
+                run_quiet(mk);
+                wl_display_roundtrip(dpy);
+                atomic_store(&remake_output, 0);
+                continue;
+            }
             if (!outputs_changed) usleep(200000);  // stopped session: brief pause before retrying
         }
         LOG("Wayland connection lost, reconnecting");

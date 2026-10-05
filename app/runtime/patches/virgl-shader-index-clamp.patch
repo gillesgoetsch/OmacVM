@@ -1,0 +1,156 @@
+virglrenderer: shader array indexes the guest computes are clamped
+
+What: vrend's TGSI-to-GLSL translator emits array indexes computed at run time
+(address registers) as clamp(addrN + offset, 0, size - 1) for uniform block
+contents and arrays of blocks, the uniform store (const0), sampler and image
+arrays, and temporary arrays. Constant indexes past an array already fail to
+compile (GLSL compile-time error, the draws are skipped).
+Why: GLSL leaves an index past an array undefined, and the guest's shader picks
+it. Apple's GPU then reads or writes outside the array's memory: past a
+uniform buffer (virgl-uniform-buffer-checks.patch only guarantees the declared
+block size), past the uniform store, past the sampler descriptors, or outside
+private memory, any of which can make it fault (a GPU fault resets the GPU; on
+2026-10-04 that panicked macOS). WebGL implementations clamp the same way
+(ANGLE's SH_CLAMP_INDIRECT_ARRAY_BOUNDS). Varying and output arrays (GPU
+registers) and SSBOs (not on macOS' GL 4.1) are left as they are.
+Upstream: upstreamable hardening; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c (a shader indexing a uniform block with an
+address register: the GLSL holds the clamp, and the draw runs); the fuzzer's
+shaders go through it on every input.
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -933,8 +933,26 @@
+    ctx->sampler_arrays[idx].first = first;
+    ctx->sampler_arrays[idx].array_size = last - first + 1;
+    return true;
++}
++
++/* "clamp(addrN + offset, 0, size - 1)" for an array index the guest's shader computes.
++ * GLSL leaves an index past an array undefined; Apple's GPU then reads or writes outside
++ * the array's memory (uniform buffers, the uniform store, sampler descriptors, private
++ * memory), which can make it fault. Clamping keeps every access inside the array. */
++static const char *clamped_index(char buf[static 64], int addr, int offset, int size)
++{
++   snprintf(buf, 64, "clamp(addr%d + %d, 0, %d)", addr, offset, size > 1 ? size - 1 : 0);
++   return buf;
+ }
+ 
++static int sampler_array_size(const struct dump_ctx *ctx, int first)
++{
++   for (uint32_t i = 0; i < ctx->num_sampler_arrays; i++)
++      if (ctx->sampler_arrays[i].first == first)
++         return ctx->sampler_arrays[i].array_size;
++   return 1;
++}
++
+ static int lookup_sampler_array(const struct dump_ctx *ctx, int index)
+ {
+    uint32_t i;
+@@ -2949,7 +2967,9 @@
+    struct vrend_temp_range *range = find_temp_range(ctx, reg);
+    if (range) {
+       if (indirect_dim) {
+-         snprintf(buf, 64, "temp%d[addr%d + %d]", range->first, dim, reg - range->first);
++         char index[64];
++         snprintf(buf, 64, "temp%d[%s]", range->first,
++                  clamped_index(index, dim, reg - range->first, range->last - range->first + 1));
+       } else {
+          if (range->array_id > 0) {
+             snprintf(buf, 64, "temp%d[%d]", range->first, reg - range->first);
+@@ -4536,7 +4556,11 @@
+             if (dst_reg->Register.Indirect) {
+                if (dst_reg->Indirect.File != TGSI_FILE_ADDRESS)
+                   return false;
+-               strbuf_fmt(&dst_bufs[i], "%simg%d[addr%d + %d]", cname, basearrayidx, dst_reg->Indirect.Index, dst_reg->Register.Index - basearrayidx);
++               char index[64];
++               const struct vrend_array *image = lookup_image_array_ptr(ctx, dst_reg->Register.Index);
++               strbuf_fmt(&dst_bufs[i], "%simg%d[%s]", cname, basearrayidx,
++                          clamped_index(index, dst_reg->Indirect.Index, dst_reg->Register.Index - basearrayidx,
++                                        image ? image->array_size : 1));
+             } else
+                strbuf_fmt(&dst_bufs[i], "%simg%d[%d]", cname, basearrayidx, dst_reg->Register.Index - basearrayidx);
+          } else
+@@ -4918,25 +4942,34 @@
+                if (src->DimIndirect.File != TGSI_FILE_ADDRESS)
+                   return false;
+                ctx->shader_req_bits |= SHADER_REQ_GPU_SHADER5;
++               char block[64], index[64];
++               const int first = ffs(ctx->ubo_used_mask) - 1;
++               clamped_index(block, src->DimIndirect.Index, 0, util_bitcount(ctx->ubo_used_mask));
+                if (src->Register.Indirect) {
+                   if (src->Indirect.File != TGSI_FILE_ADDRESS)
+                      return false;
+-                  strbuf_fmt(src_buf, "%s(%s%suboarr[addr%d].ubocontents[addr%d + %d]%s)", get_string(stypeprefix), prefix, cname, src->DimIndirect.Index, src->Indirect.Index, src->Register.Index, swizzle);
++                  strbuf_fmt(src_buf, "%s(%s%suboarr[%s].ubocontents[%s]%s)", get_string(stypeprefix), prefix, cname, block,
++                             clamped_index(index, src->Indirect.Index, src->Register.Index, ctx->ubo_sizes[first]), swizzle);
+                } else
+-                  strbuf_fmt(src_buf, "%s(%s%suboarr[addr%d].ubocontents[%d]%s)", get_string(stypeprefix), prefix, cname, src->DimIndirect.Index, src->Register.Index, swizzle);
++                  strbuf_fmt(src_buf, "%s(%s%suboarr[%s].ubocontents[%d]%s)", get_string(stypeprefix), prefix, cname, block, src->Register.Index, swizzle);
+             } else {
+                if (ctx->info.dimension_indirect_files & (1 << TGSI_FILE_CONSTANT)) {
+                   if (src->Register.Indirect) {
+-                     strbuf_fmt(src_buf, "%s(%s%suboarr[%d].ubocontents[addr%d + %d]%s)", get_string(stypeprefix), prefix, cname, dim - ctx->ubo_base, src->Indirect.Index, src->Register.Index, swizzle);
++                     char index[64];
++                     const int first = ffs(ctx->ubo_used_mask) - 1;
++                     strbuf_fmt(src_buf, "%s(%s%suboarr[%d].ubocontents[%s]%s)", get_string(stypeprefix), prefix, cname, dim - ctx->ubo_base,
++                                clamped_index(index, src->Indirect.Index, src->Register.Index, ctx->ubo_sizes[first]), swizzle);
+                   } else
+                      strbuf_fmt(src_buf, "%s(%s%suboarr[%d].ubocontents[%d]%s)", get_string(stypeprefix), prefix, cname, dim - ctx->ubo_base, src->Register.Index, swizzle);
+                } else {
+                   if (src->Register.Indirect) {
++                     char index[64];
+                      if (src->Indirect.File != TGSI_FILE_ADDRESS)
+                         return false;
+-                     strbuf_fmt(src_buf, "%s(%s%subo%dcontents[addr%d + %d]%s)",
++                     strbuf_fmt(src_buf, "%s(%s%subo%dcontents[%s]%s)",
+                                 get_string(stypeprefix), prefix, cname, dim,
+-                                src->Indirect.Index, src->Register.Index,
++                                clamped_index(index, src->Indirect.Index, src->Register.Index,
++                                              ctx->ubo_sizes[dim]),
+                                 swizzle);
+                   } else
+                      strbuf_fmt(src_buf, "%s(%s%subo%dcontents[%d]%s)", get_string(stypeprefix), prefix, cname, dim, src->Register.Index, swizzle);
+@@ -4953,11 +4986,14 @@
+                csp = IVEC4;
+ 
+             if (src->Register.Indirect) {
++               char index[64];
+                if (src->Indirect.File != TGSI_FILE_ADDRESS)
+                   return false;
+-               strbuf_fmt(src_buf, "%s%s(%sconst%d[addr%d + %d]%s)", prefix,
+-                          get_string(csp), cname, dim, src->Indirect.Index,
+-                          src->Register.Index, swizzle);
++               strbuf_fmt(src_buf, "%s%s(%sconst%d[%s]%s)", prefix,
++                          get_string(csp), cname, dim,
++                          clamped_index(index, src->Indirect.Index, src->Register.Index,
++                                        ctx->num_consts),
++                          swizzle);
+             } else
+                strbuf_fmt(src_buf, "%s%s(%sconst%d[%d]%s)", prefix, get_string(csp), cname, dim, src->Register.Index, swizzle);
+          }
+@@ -4968,7 +5004,11 @@
+          if (ctx->info.indirect_files & (1 << TGSI_FILE_SAMPLER)) {
+             int basearrayidx = lookup_sampler_array(ctx, src->Register.Index);
+             if (src->Register.Indirect) {
+-               strbuf_fmt(src_buf, "%ssamp%d[addr%d+%d]%s", cname, basearrayidx, src->Indirect.Index, src->Register.Index - basearrayidx, swizzle);
++               char index[64];
++               strbuf_fmt(src_buf, "%ssamp%d[%s]%s", cname, basearrayidx,
++                          clamped_index(index, src->Indirect.Index, src->Register.Index - basearrayidx,
++                                        sampler_array_size(ctx, basearrayidx)),
++                          swizzle);
+             } else {
+                strbuf_fmt(src_buf, "%ssamp%d[%d]%s", cname, basearrayidx, src->Register.Index - basearrayidx, swizzle);
+             }
+@@ -4984,7 +5024,11 @@
+             if (src->Register.Indirect) {
+                if (src->Indirect.File != TGSI_FILE_ADDRESS)
+                   return false;
+-               strbuf_fmt(src_buf, "%simg%d[addr%d + %d]", cname, basearrayidx, src->Indirect.Index, src->Register.Index - basearrayidx);
++               char index[64];
++               const struct vrend_array *image = lookup_image_array_ptr(ctx, src->Register.Index);
++               strbuf_fmt(src_buf, "%simg%d[%s]", cname, basearrayidx,
++                          clamped_index(index, src->Indirect.Index, src->Register.Index - basearrayidx,
++                                        image ? image->array_size : 1));
+             } else
+                strbuf_fmt(src_buf, "%simg%d[%d]", cname, basearrayidx, src->Register.Index - basearrayidx);
+          } else

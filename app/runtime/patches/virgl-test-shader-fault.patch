@@ -1,0 +1,39 @@
+virglrenderer: test hook to refuse marked shaders (test runtimes only)
+
+What: OMACVM_VIRGL_TEST_FAIL_GLSL=<text> makes vrend treat every shader whose
+GLSL contains <text> as refused by the host compiler. tests/graphics uses the
+bits of the float 4242.25 (1166316032; Mesa sends immediates as UINT32) so one
+WebGL shader of the test page fails on purpose.
+Why: a real host compile failure that the guest's Mesa lets through is a bug we
+fix when we find it; the robustness paths need a failure on demand.
+Applied only when build-qemu-gpu-runtime.sh runs with OMACVM_RUNTIME_TEST_HOOKS=1;
+release runtimes never contain it.
+Upstream: not applicable.
+Tests: tests/graphics/context-loss.sh, tests/graphics/guest/gl-lost.c.
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -1512,6 +1512,13 @@
+       }
+    }
+ 
++   /* Test builds only: refuse shaders whose GLSL contains this text, like the host GL
++    * refusing a shader the guest compiled (tests/graphics/context-loss.sh). */
++   const char *fail_marker = getenv("OMACVM_VIRGL_TEST_FAIL_GLSL");
++   bool inject_failure = false;
++   for (int i = 0; fail_marker && *fail_marker && i < shader->glsl_strings.num_strings; i++)
++      inject_failure |= strstr(shader_parts[i], fail_marker) != NULL;
++
+    shader->id = glCreateShader(conv_shader_type(shader->sel->type));
+    glShaderSource(shader->id, shader->glsl_strings.num_strings, shader_parts, NULL);
+    glCompileShader(shader->id);
+@@ -1523,6 +1530,10 @@
+    }
+ 
+    glGetShaderiv(shader->id, GL_COMPILE_STATUS, &param);
++   if (inject_failure) {
++      virgl_error("OMACVM_VIRGL_TEST_FAIL_GLSL: refusing a shader on purpose\n");
++      param = GL_FALSE;
++   }
+    if (param == GL_FALSE) {
+       char infolog[65536];
+       int len;

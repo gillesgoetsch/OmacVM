@@ -1,0 +1,49 @@
+QEMU Cocoa: flush the view context after surface texture work
+
+What: with_gl_view_ctx() calls glFlush() before it leaves QEMU's view context
+(CGL and EGL). Surface switches (cocoa_gl_switch) and surface updates
+(cocoa_gl_update) run there, also for every display head.
+Why: nothing else flushes that context, and Apple's GL keeps the memory of large
+textures made, deleted or uploaded on a context until it is flushed. With virgl
+the layer shows the guest's scanout texture and never touches the surface
+texture, so every guest mode change (set_scanout -> qemu_console_resize ->
+cocoa_gl_switch) left a whole screen texture behind in "IOAccelerator
+(graphics)". A guest switching between two large modes in a loop grew QEMU
+without end (gpu-native: about 1.1 GB per switch at 8000x6000 <-> 7000x5000,
+20 GB after 18; also in 2.6.0 and 2.7.0). This patch fixes one of the two causes;
+the other is vrend's own context, which uploads the new screen on every switch
+and was not flushed either (virgl-control-queue-flush.patch). Test VM, 3840x2160
+<-> 2560x1440 (tests/graphics/scanout-churn.sh): about 100 MB per switch without
+either patch, about 16 MB with this one only, flat with both.
+Upstream: the Cocoa GL code comes from the texture-borrowing patch, not upstream
+QEMU; not sent.
+Tests: Tests/display/test-gl-view-flush.c (build time, Apple's software
+renderer: runs with_gl_view_ctx() from the patched cocoa.m and counts texture
+work left unflushed; without this patch all 128 checks fail);
+Tests/display/view-texture-churn.c (manual, GPU memory per switch, capped);
+tests/graphics/scanout-churn.sh (test VM).
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -2629,6 +2629,7 @@
+         eglMakeCurrent(qemu_egl_display, egl_surface,
+                        egl_surface, gl_view_ctx);
+         block();
++        glFlush();
+         eglMakeCurrent(qemu_egl_display, EGL_NO_SURFACE,
+                        EGL_NO_SURFACE, EGL_NO_CONTEXT);
+         return;
+@@ -2637,6 +2638,14 @@
+ 
+     CGLSetCurrentContext((CGLContextObj)gl_view_ctx);
+     block();
++    /*
++     * OmacVM: hand the work to the driver before leaving the context. Nothing
++     * else flushes this context, and Apple's GL keeps the memory of large
++     * textures (a 4K screen or more) made, deleted or uploaded here until it
++     * is flushed: every guest mode change left a whole screen texture behind,
++     * and a guest switching modes in a loop used up the Mac's memory.
++     */
++    glFlush();
+     CGLSetCurrentContext(NULL);
+ }
+ 

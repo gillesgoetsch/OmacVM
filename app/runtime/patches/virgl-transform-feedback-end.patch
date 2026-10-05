@@ -1,0 +1,158 @@
+virglrenderer: end transform feedback with its own program bound
+
+What: a stream-output target the guest destroys while its transform feedback is
+still paused on the host (Mesa's virgl driver unbinds the targets to end, the GL
+object stays paused) is ended with the program the recording began with bound,
+and the previous program restored. Recordings also end when that program is
+destroyed and when the sub-context goes away, so glDeleteTransformFeedbacks never
+sees an active object. A draw that binds the same targets again with another
+program or primitive ends the old recording and begins a new one instead of
+resuming (GL refuses such a resume, which lost the whole context).
+Why: Apple's GL reads the current program in glEndTransformFeedback. vrend binds
+no program for clears and transfers, so after a readback the end dereferenced
+NULL (SIGSEGV at 0x40 in glEndTransformFeedback_Exec): any guest app could crash
+QEMU. dEQP-GLES3.functional.transform_feedback.* (12 of 27 sampled cases) and
+WebGL 2 conformance2/transform_feedback did. With another program bound the end
+failed with GL_INVALID_OPERATION and the context was lost.
+Upstream: upstreamable (the NULL program is a GL spec grey zone, but ending with
+the begin program is correct everywhere); not sent.
+Tests: Tests/virgl/test-transform-feedback.c (build time, 15 teardown orders on
+Apple's GL; without this patch, on the whole gpu-robust series, cases 3, 5, 7,
+11, 14 and 15 crash with SIGSEGV; with it all 29 checks pass);
+tests/graphics: ./deqp.sh gles3 --filter 'transform_feedback' and ./webgl.sh
+--version 2.0.0 --filter '^conformance2/(transform_feedback|vertex_arrays)/'.
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -703,6 +703,9 @@
+    struct list_head head;
+    int xfb_state;
+    struct vrend_so_target *so_targets[16];
++   /* The program transform feedback began with; it is current again when it ends. */
++   struct vrend_linked_shader_program *begin_prog;
++   GLenum begin_mode;
+ };
+ 
+ #define XFB_STATE_OFF 0
+@@ -913,6 +916,8 @@
+ static void vrend_swizzle_data_bgra(uint64_t size, void *data);
+ static void vrend_update_frontface_state(struct vrend_sub_context *ctx);
+ static void vrend_destroy_program(struct vrend_linked_shader_program *ent);
++static void vrend_end_streamout_object(struct vrend_sub_context *sub_ctx,
++                                       struct vrend_streamout_object *obj);
+ static void vrend_apply_sampler_state(struct vrend_sub_context *sub_ctx,
+                                       struct vrend_resource *res,
+                                       struct vrend_sampler_state *sampler_state,
+@@ -2426,6 +2431,15 @@
+    if (ent->ref_context && ent->ref_context->prog == ent)
+       ent->ref_context->prog = NULL;
+ 
++   /* Recordings that began with this program end while it still exists. */
++   if (ent->ref_context) {
++      list_for_each_entry(struct vrend_streamout_object, obj,
++                          &ent->ref_context->streamout_list, head) {
++         if (obj->begin_prog == ent)
++            vrend_end_streamout_object(ent->ref_context, obj);
++      }
++   }
++
+    if (ent->ubo_sysval_buffer_id != GL_INVALID_INDEX) {
+        glDeleteBuffers(1, &ent->ubo_sysval_buffer_id);
+    }
+@@ -2466,6 +2480,28 @@
+             vrend_destroy_program(ent);
+       }
+    }
++}
++
++/* Ends transform feedback that is still active on obj (paused after its last draw).
++ * Apple's GL reads the current program in glEndTransformFeedback: with none bound
++ * (vrend binds none for clears and transfers) it crashes, with another one it fails.
++ * So the program the recording began with is bound for the end, then restored. */
++static void vrend_end_streamout_object(struct vrend_sub_context *sub_ctx,
++                                       struct vrend_streamout_object *obj)
++{
++   if (obj->xfb_state != XFB_STATE_STARTED && obj->xfb_state != XFB_STATE_PAUSED)
++      return;
++
++   if (has_feature(feat_transform_feedback2))
++      glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, obj->id);
++   vrend_use_program(obj->begin_prog);
++   glEndTransformFeedback();
++   vrend_use_program(sub_ctx->prog);
++   if (has_feature(feat_transform_feedback2))
++      glBindTransformFeedback(GL_TRANSFORM_FEEDBACK,
++                              sub_ctx->current_so ? sub_ctx->current_so->id : 0);
++   obj->xfb_state = XFB_STATE_STARTED_NEED_BEGIN;
++   obj->begin_prog = NULL;
+ }
+ 
+ static void vrend_destroy_streamout_object(struct vrend_streamout_object *obj)
+@@ -2620,13 +2656,7 @@
+          if (obj->so_targets[i] == target) {
+             if (obj == sub_ctx->current_so)
+                sub_ctx->current_so = NULL;
+-            if (obj->xfb_state == XFB_STATE_PAUSED) {
+-                  if (has_feature(feat_transform_feedback2))
+-                     glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, obj->id);
+-                  glEndTransformFeedback();
+-               if (sub_ctx->current_so && has_feature(feat_transform_feedback2))
+-                  glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, sub_ctx->current_so->id);
+-            }
++            vrend_end_streamout_object(sub_ctx, obj);
+             vrend_destroy_streamout_object(obj);
+             break;
+          }
+@@ -6280,18 +6310,32 @@
+       glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+ 
+    if (sub_ctx->current_so) {
+-      if (sub_ctx->current_so->xfb_state == XFB_STATE_STARTED_NEED_BEGIN) {
+-         if (sub_ctx->shaders[PIPE_SHADER_GEOMETRY])
+-            glBeginTransformFeedback(get_gs_xfb_mode(sub_ctx->shaders[PIPE_SHADER_GEOMETRY]->sinfo.gs_out_prim));
+-     else if (sub_ctx->shaders[PIPE_SHADER_TESS_EVAL])
+-            glBeginTransformFeedback(get_tess_xfb_mode(sub_ctx->shaders[PIPE_SHADER_TESS_EVAL]->sinfo.tes_prim,
+-                               sub_ctx->shaders[PIPE_SHADER_TESS_EVAL]->sinfo.tes_point_mode));
+-         else
+-            glBeginTransformFeedback(get_xfb_mode(info->mode));
+-         sub_ctx->current_so->xfb_state = XFB_STATE_STARTED;
+-      } else if (sub_ctx->current_so->xfb_state == XFB_STATE_PAUSED) {
++      struct vrend_streamout_object *so = sub_ctx->current_so;
++      GLenum xfb_mode;
++
++      if (sub_ctx->shaders[PIPE_SHADER_GEOMETRY])
++         xfb_mode = get_gs_xfb_mode(sub_ctx->shaders[PIPE_SHADER_GEOMETRY]->sinfo.gs_out_prim);
++      else if (sub_ctx->shaders[PIPE_SHADER_TESS_EVAL])
++         xfb_mode = get_tess_xfb_mode(sub_ctx->shaders[PIPE_SHADER_TESS_EVAL]->sinfo.tes_prim,
++                                      sub_ctx->shaders[PIPE_SHADER_TESS_EVAL]->sinfo.tes_point_mode);
++      else
++         xfb_mode = get_xfb_mode(info->mode);
++
++      /* Mesa's virgl driver unbinds the targets both to pause and to end, so the same
++       * targets bound again may start a new recording. With another program or
++       * primitive it cannot be a resume (GL refuses that), so end and begin again. */
++      if (so->xfb_state == XFB_STATE_PAUSED &&
++          (so->begin_prog != sub_ctx->prog || so->begin_mode != xfb_mode))
++         vrend_end_streamout_object(sub_ctx, so);
++
++      if (so->xfb_state == XFB_STATE_STARTED_NEED_BEGIN) {
++         glBeginTransformFeedback(xfb_mode);
++         so->xfb_state = XFB_STATE_STARTED;
++         so->begin_prog = sub_ctx->prog;
++         so->begin_mode = xfb_mode;
++      } else if (so->xfb_state == XFB_STATE_PAUSED) {
+          glResumeTransformFeedback();
+-         sub_ctx->current_so->xfb_state = XFB_STATE_STARTED;
++         so->xfb_state = XFB_STATE_STARTED;
+       }
+    }
+ 
+@@ -8163,6 +8207,9 @@
+    }
+    glDeleteVertexArrays(1, &sub->vaoid);
+    glBindVertexArray(0);
++
++   list_for_each_entry(struct vrend_streamout_object, obj, &sub->streamout_list, head)
++      vrend_end_streamout_object(sub, obj);
+ 
+    if (sub->current_so)
+       glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);

@@ -60,6 +60,12 @@ elif [[ $mon == 1160x768* ]]; then bad "display" "$mon: still the firmware mode 
 else ok "display" "$mon"; fi
 bg=$H/.local/state/omarchy/current/background
 if [[ -L $bg && ! -e $bg ]]; then bad "desktop background" "$(readlink "$bg") is missing: omacvm apply, then log in again"; fi
+if [[ $TYPE == app ]]; then
+  # Which UEFI firmware OmacVM.app started the VM with (SMBIOS BIOS version).
+  fw=$(cat /sys/class/dmi/id/bios_version 2>/dev/null)
+  if [[ $fw == *-omacvm ]]; then ok "firmware" "$fw (Omarchy boot logo)"
+  else skip "firmware" "${fw:-unknown}: QEMU's own (TianoCore logo), from an older OmacVM.app or OMACVM_FIRMWARE=qemu"; fi
+fi
 
 section "The Mac in the bar (Bridge)"
 if [[ $BRIDGE == on ]]; then
@@ -246,6 +252,22 @@ app)
   check "power key" "Quit on the Mac shuts down" test -f /etc/systemd/logind.conf.d/90-omacvm-app-power.conf
   if user_active omacvm-clipboard.service; then ok "clipboard" "both ways (omacvm-clipboard)"
   else bad "clipboard" "omacvm-clipboard.service not running (the app passes the port: started from OmacVM.app?)"; fi
+  if [[ ! -e /dev/virtio-ports/org.omacvm.display ]]; then
+    skip "every Mac display" "no display port: an OmacVM.app from before external displays (omacvm update)"
+  elif user_active omacvm-displays.service; then
+    n=$(as_user hyprctl monitors -j 2>/dev/null | jq '[.[] | select(.name | test("^Virtual-"))] | length' 2>/dev/null || echo "?")
+    ok "every Mac display" "external displays $(as_user omacvm-displays state 2>/dev/null || echo "?"), $n output(s) now"
+    # What each display really shows (a small screenshot): only Hyprland's grey
+    # where the desktop should be means no wallpaper and no bar were drawn.
+    desk=$(as_user omacvm-displays desktop 2>/dev/null)
+    dark=$(jq -r '.undrawn // [] | join(", ")' <<<"$desk" 2>/dev/null)
+    off=$(jq -r '.misplaced // [] | join("; ")' <<<"$desk" 2>/dev/null)
+    fixes=$(jq -r '.repairs.count // 0' <<<"$desk" 2>/dev/null)
+    if [[ -n $dark ]]; then bad "desktop" "nothing drawn on $dark, only Hyprland's grey${off:+ ($off)}: omarchy-restart-shell; journalctl --user -u omacvm-displays"
+    elif [[ -n $off ]]; then bad "desktop" "wallpaper not on its display: $off (omarchy-restart-shell)"
+    elif [[ -z $desk ]]; then skip "desktop" "omacvm-displays desktop gave nothing"
+    else ok "desktop" "wallpaper drawn on every display without windows$([[ ${fixes:-0} != 0 ]] && echo " (shell restarted $fixes time(s) to draw it)")"; fi
+  else bad "every Mac display" "omacvm-displays.service not running: omacvm apply"; fi
   if as_user pactl list short sinks 2>/dev/null | grep -q .; then ok "sound" "$(as_user pactl list short sinks 2>/dev/null | head -1 | cut -f2)"
   else bad "sound" "no PipeWire sink: omacvm apply"; fi
   if as_user hyprctl monitors -j 2>/dev/null | jq -e '.[0].refreshRate' >/dev/null 2>&1; then
@@ -260,9 +282,12 @@ app)
   esac
   # Video decoding on the Mac's media engine (an app with it lists decoders).
   drv=virtio_gpu; [[ -f /usr/local/lib/dri/omacvm_drv_video.so ]] && drv=omacvm
-  v=$(as_user env LIBVA_DRIVER_NAME=$drv LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri \
-      vainfo --display drm 2>/dev/null | sed -n 's/^[[:space:]]*VAProfile\([A-Za-z0-9]*\)[[:space:]]*:[[:space:]]*VAEntrypointVLD$/\1/p' | tr '\n' ' ')
-  if [[ -n $v ]]; then ok "video decoding" "the Mac's media engine: $v"
+  # The shim prints the Mac's per-VM limit (past it, players decode on the CPU).
+  va=$(as_user env LIBVA_DRIVER_NAME=$drv LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri \
+      OMACVM_VA_DEBUG=1 vainfo --display drm 2>&1)
+  v=$(sed -n 's/^[[:space:]]*VAProfile\([A-Za-z0-9]*\)[[:space:]]*:[[:space:]]*VAEntrypointVLD$/\1/p' <<<"$va" | tr '\n' ' ')
+  lim=$(sed -n 's/^omacvm_drv_video: the Mac keeps at most \([1-9][0-9]*\) decoders.*/\1/p' <<<"$va" | head -1)
+  if [[ -n $v ]]; then ok "video decoding" "the Mac's media engine: $v${lim:+(at most $lim at once, more decode on the CPU)}"
   elif ! command -v vainfo >/dev/null; then skip "video decoding" "no vainfo (omacvm apply installs it)"
   else skip "video decoding" "no decoders (OmacVM.app older than the video decoding?)"; fi
   if [[ $drv == omacvm ]] && command -v firefox >/dev/null; then
@@ -351,6 +376,29 @@ elif systemctl --user -M "$U@" list-unit-files notchcast.service 2>/dev/null | g
   if connected_to "$HOST" 47811; then ok "Omanotch" "streaming the bar to the Mac"
   elif [[ $TYPE == app ]]; then bad "Omanotch" "notchcast is not connected to $HOST:47811 (is Omanotch running on the Mac, and new enough for OmacVM.app? omacvm check on the Mac says)"
   else bad "Omanotch" "notchcast is not connected to $HOST:47811 (Omanotch on the Mac serves one VM at a time: is it running, or is another VM connected?)"; fi
+  # The hidden NOTCH output sits on the built-in display, and the bar parked
+  # under the strip is that display's (else the MacBook shows two bars).
+  # OmacVM.app with external displays says which output that is.
+  b=$(cat "$RUN/omacvm/builtin" 2>/dev/null || echo Virtual-1)
+  mons=$(as_user hyprctl monitors all -j 2>/dev/null)
+  at() { jq -r --arg n "$1" '.[] | select(.name == $n) | "\(.x),\(.y),\(.width)"' <<<"$mons" 2>/dev/null; }
+  st=$(as_user omarchy-shell notchbar state 2>/dev/null)
+  parked=$(jq -r '.parked' <<<"$st" 2>/dev/null); pscreen=$(jq -r '.screen' <<<"$st" 2>/dev/null)
+  if [[ -z $(at NOTCH) || -z $(at "$b") ]]; then skip "notch display" "no NOTCH or $b output now"
+  elif [[ $(at NOTCH) != "$(at "$b")" ]]; then bad "notch display" "NOTCH is not on $b, the built-in display (journalctl --user -u notchcast)"
+  elif [[ $parked == true && $pscreen != "$b" ]]; then bad "notch display" "the bar on $pscreen is parked, not $b's: two bars on the MacBook"
+  elif beat=$(tr -cd 0-9 < "$H/.local/state/omanotch/beat" 2>/dev/null) &&
+       [[ $parked != true && -n $beat && $(cut -d' ' -f1 "$H/.local/state/omanotch/park" 2>/dev/null) == 1 ]] &&
+       (( $(date +%s%3N) - beat < 15000 )); then
+    bad "notch display" "the strip shows the bar but $b's own bar is not parked: two bars on the MacBook (omarchy-restart-shell)"
+  elif [[ $(cut -d' ' -f1 "$H/.local/state/omanotch/park" 2>/dev/null) == 1 && -n $beat ]] &&
+       (( $(date +%s%3N) - beat < 15000 )) &&
+       [[ $(as_user hyprctl layers -j 2>/dev/null | jq --arg n "$b" --argjson m "$(jq -c --arg n "$b" '.[] | select(.name == $n)' <<<"$mons" 2>/dev/null || echo null)" \
+            '[(.[$n].levels // {})[][] | select(.namespace == "omarchy-bar" and .h >= 8 and $m != null
+              and .y < $m.y + $m.height / $m.scale and .y + .h > $m.y)] | length' 2>/dev/null) -gt 0 ]]; then
+    # What Hyprland composites, whatever the bar says about itself.
+    bad "notch display" "the strip shows the bar and a bar is also on $b: two bars on the MacBook (omarchy-restart-shell)"
+  else ok "notch display" "$b$([[ $parked == true ]] && echo ", its bar in the strip")"; fi
 else skip "Omanotch" "not installed (omacvm enable omanotch, on a MacBook with a notch)"; fi
 
 (( TSV )) && exit $(( fails ? 1 : 0 ))
