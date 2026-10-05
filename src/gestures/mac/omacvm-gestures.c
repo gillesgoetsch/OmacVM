@@ -729,10 +729,16 @@ static void addClient(int c, int net, const char *ip, int gestures, int glide, c
   int slot = -1;
   // The same VM reconnecting replaces its old connection. OmacVM.app's VMs
   // all come from 127.0.0.1 (QEMU's user network): there the name tells them
-  // apart, or two running VMs would keep pushing each other out.
+  // apart, or two running VMs would keep pushing each other out. An app VM
+  // the app moved between its fast network and the user network comes back
+  // from another address: its name tells it is the same VM (its old
+  // connection may not have noticed yet that its path is gone).
   int loopback = !strncmp(ip, "127.", 4);
   for (int i = 0; i < MAX_CLIENTS; i++)
-    if (clients[i].fd >= 0 && !strcmp(clients[i].ip, ip) && (!loopback || !strcmp(clients[i].name, name))) {
+    if (clients[i].fd >= 0 &&
+        ((!strcmp(clients[i].ip, ip) && (!loopback || !strcmp(clients[i].name, name))) ||
+         (net == NET_APP && clients[i].net == NET_APP && name[0] && !strcmp(clients[i].name, name)))) {
+      if (strcmp(clients[i].ip, ip)) logf_("guest %s now comes from %s: its old connection closed", clients[i].ip, ip);
       close(clients[i].fd); slot = i; break;
     }
   for (int i = 0; slot < 0 && i < MAX_CLIENTS; i++) if (clients[i].fd < 0) slot = i;
@@ -758,6 +764,20 @@ static void addClient(int c, int net, const char *ip, int gestures, int glide, c
   if (nat) CFRelease(nat);
   n = snprintf(b, sizeof b, "O %d %d %d\n", natural, tpW, tpH);
   send(c, b, (size_t)n, MSG_NOSIGNAL);
+}
+
+// A guest whose path went away (OmacVM.app moved it to another network, a
+// VM that was killed) is noticed in about KA_IDLE + KA_INTVL * KA_CNT seconds,
+// not after TCP's minutes: the next send to it fails and drops it.
+#define KA_IDLE 5
+#define KA_INTVL 2
+#define KA_CNT 3
+static void keepalive(int c) {
+  int on = 1, idle = KA_IDLE, intvl = KA_INTVL, cnt = KA_CNT;
+  setsockopt(c, SOL_SOCKET, SO_KEEPALIVE, &on, sizeof on);
+  setsockopt(c, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof idle);
+  setsockopt(c, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof intvl);
+  setsockopt(c, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof cnt);
 }
 
 // Each connection's handshake runs in its own thread, so a peer that connects
@@ -850,6 +870,7 @@ static void *serverThread(void *arg) {
       if (c < 0) break;
       setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
       setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+      keepalive(c);
       struct greetArg *g = malloc(sizeof *g);
       if (!g || __sync_add_and_fetch(&greeting, 1) > MAX_GREETING) {
         if (g) { __sync_fetch_and_sub(&greeting, 1); free(g); }

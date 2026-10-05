@@ -1,11 +1,24 @@
 // Offline test of which VM gets the gestures (src/gestures/mac/test.sh): the
 // helper's own handshake (greet) and choice (pickTargets), with the guests
 // connecting on 127.0.0.1 as if on the given VM networks. No permissions, no VM.
-//   test-gestures PORTFILE NET...   accept one guest per NET (the index into
-//                                   listenAddrs), then print the checks' answers
+//   test-gestures PORTFILE NET[,LOCAL,PEER]...
+//       accept one guest per NET (the index into listenAddrs), then print the
+//       checks' answers and the connected guests. LOCAL: the Mac address the
+//       guest came in on as greet sees it (getsockname), PEER: the guest's
+//       address (default: the real ones, 127.0.0.1).
+#include <arpa/inet.h>
+#include <sys/socket.h>
+static const char *fakeLocal;
+static int test_getsockname(int fd, struct sockaddr *a, socklen_t *l) {
+  int r = getsockname(fd, a, l);
+  if (!r && fakeLocal && a->sa_family == AF_INET) inet_pton(AF_INET, fakeLocal, &((struct sockaddr_in *)a)->sin_addr);
+  return r;
+}
+#define getsockname test_getsockname
 #define main helper_main
 #include "omacvm-gestures.c"
 #undef main
+#undef getsockname
 
 // The front app and window, as updateCapture would set them.
 static unsigned targetsFor(int net, const char *title) {
@@ -40,12 +53,22 @@ int main(int argc, char **argv) {
     struct sockaddr_in peer; socklen_t pl = sizeof peer;
     int c = accept(s, (struct sockaddr *)&peer, &pl);
     if (c < 0) return 1;
+    keepalive(c);
     struct greetArg *g = malloc(sizeof *g);
     // As if it came in on that network's address; greet decides the rest.
-    g->fd = c; g->net = atoi(argv[2 + k]); g->addr = peer.sin_addr;
+    char item[128], *local = NULL, *from = NULL;
+    snprintf(item, sizeof item, "%s", argv[2 + k]);
+    if ((local = strchr(item, ','))) { *local++ = 0; if ((from = strchr(local, ','))) *from++ = 0; }
+    g->fd = c; g->net = atoi(item); g->addr = peer.sin_addr;
+    if (from) inet_pton(AF_INET, from, &g->addr);
+    fakeLocal = local;
     __sync_add_and_fetch(&greeting, 1);
     greet(g);
+    printf("accepted %d\n", k + 1);
+    fflush(stdout);
   }
+  for (int i = 0; i < MAX_CLIENTS; i++)
+    if (clients[i].fd >= 0) printf("live %s %s\n", clients[i].name, clients[i].ip);
   for (int i = 0; i < MAX_CLIENTS; i++)
     if (clients[i].fd >= 0)
       printf("client %s: %s\n", clients[i].name, clients[i].net == NET_APP ? "app" : clients[i].net == NET_UTM ? "utm" : "other");

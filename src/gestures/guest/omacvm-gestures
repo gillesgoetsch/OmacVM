@@ -601,6 +601,28 @@ def mac_host():
     return HOST, "127.0.0.1"
 
 
+# A connection whose path went away (the app switched the VM between its fast
+# network and the user network, or the Mac slept) is noticed by TCP keepalive
+# in about 5 + 2 * 3 s; an idle one also looks every RECHECK seconds whether the
+# way to the Mac changed (a new default gateway) and connects again at once.
+KEEPALIVE = (5, 2, 3)   # idle seconds, seconds between probes, probes
+RECHECK = 2.0
+
+
+class Moved(ConnectionError):
+    """The way to the Mac changed: connect again now."""
+
+
+def keepalive(s):
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    # Linux: TCP_KEEPIDLE; macOS (the offline test): TCP_KEEPALIVE.
+    idle = getattr(socket, "TCP_KEEPIDLE", None) or getattr(socket, "TCP_KEEPALIVE", None)
+    for opt, v in ((idle, KEEPALIVE[0]), (getattr(socket, "TCP_KEEPINTVL", None), KEEPALIVE[1]),
+                   (getattr(socket, "TCP_KEEPCNT", None), KEEPALIVE[2])):
+        if opt is not None:
+            s.setsockopt(socket.IPPROTO_TCP, opt, v)
+
+
 def proof(tok, who, addr, gn, mn):
     """HMAC-SHA256(token, "omacvm-gestures <who> <Mac address> <guest nonce> <mac nonce>"), hex.
     With the address, a listener on 127.0.0.1 cannot pass on a proof it got from
@@ -619,6 +641,7 @@ def run(pad, keys, glide):
     host, addr = mac_host()
     with socket.create_connection((host, PORT), timeout=5) as s:
         s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        keepalive(s)
         gn = secrets.token_hex(16)
         s.sendall(f"C {gn}\n".encode())
         buf = b""
@@ -637,21 +660,28 @@ def run(pad, keys, glide):
         print(f"omacvm-gestures: connected to {host}:{PORT} (gestures {'on' if GESTURES else 'off'}, "
               f"scroll momentum {'on' if GLIDE_ON else 'off'})", flush=True)
         tick = -1          # forces the first settimeout (create_connection left 5 s)
+        recheck = time.monotonic() + RECHECK
         while True:
             # A 2 ms tick (the glide's clock) only while a frame or a held
-            # touch waits; otherwise block, so an idle VM is not woken.
-            want = 0.002 if (pad.pending is not None or glide.held is not None or glide.touch.down) else None
+            # touch waits; otherwise wake every RECHECK seconds (one look at
+            # the routing table), so an idle VM is hardly woken.
+            want = 0.002 if (pad.pending is not None or glide.held is not None or glide.touch.down) else RECHECK
             if want != tick:
                 s.settimeout(want)
                 tick = want
             try:
                 data = s.recv(65536)
             except socket.timeout:
-                pad.flush()
-                glide.idle()
-                continue
+                data = None
             pad.flush()
             glide.idle()
+            now = time.monotonic()
+            if now >= recheck:
+                recheck = now + RECHECK
+                if mac_host() != (host, addr):
+                    raise Moved(f"the way to the Mac changed (now {mac_host()[0]}): connecting again")
+            if data is None:
+                continue
             if not data:
                 raise ConnectionError("helper closed the connection")
             buf += data
@@ -713,7 +743,8 @@ def main():
             pad.release()
             keys.release()
             print(f"omacvm-gestures: {err}; retrying", file=sys.stderr, flush=True)
-            time.sleep(2)
+            if not isinstance(err, Moved):
+                time.sleep(2)
 
 
 if __name__ == "__main__":
