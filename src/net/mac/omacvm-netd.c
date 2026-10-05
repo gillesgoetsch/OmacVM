@@ -21,9 +21,15 @@
 //   VMs of that Mac are the ones they could fool), so only the users who
 //   asked for it get one.
 // - For each accepted connection, one vmnet interface in shared mode on
-//   192.168.64.0/24 (macOS's default shared network: the Mac is 192.168.64.1,
-//   as on UTM), isolated from the other VMs' interfaces. It closes with the
-//   connection.
+//   its own network, 192.168.77.0/24 (the Mac is 192.168.77.1), isolated
+//   from the other VMs' interfaces. It closes with the connection. Not
+//   macOS's default 192.168.64.0/24: while UTM (or another app) has that one
+//   up without isolation, vmnet refuses an isolated interface on it.
+// - After vmnet fails to start an interface, no new one for BACKOFF seconds
+//   (doubling up to BACKOFF_MAX while it keeps failing): each failed start
+//   costs macOS's vmnet service (InternetSharing) a descriptor it never
+//   gives back, and at 256 vmnet stops working on the whole Mac until a
+//   restart. QEMU tries again every second; those tries are refused here.
 // - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
 //   are logged at most once per LOG_QUIET seconds (its users' apart from the
 //   others'), and the log is cut at LOG_MAX bytes.
@@ -34,8 +40,9 @@
 // are only passed on (their length checked), never parsed.
 //
 // launchd starts it on the first connection (socket activation, see
-// install.sh); it stays while VMs are connected and leaves IDLE_EXIT seconds
-// after the last one went.
+// install.sh); it stays while VMs are connected or knock, and leaves
+// IDLE_EXIT seconds after the last connection of any kind (so the back-off
+// outlives a QEMU that keeps trying).
 //
 // Build: clang -O2 -Wall -o omacvm-netd omacvm-netd.c -framework vmnet
 //          -framework Security -framework CoreFoundation -lbsm
@@ -83,12 +90,21 @@
 #ifndef VMNET_WAIT
 #define VMNET_WAIT 10           // seconds to wait for vmnet's start/stop answer
 #endif
+#ifndef BACKOFF
+#define BACKOFF 30              // seconds without vmnet starts after one failed
+#endif
+#define BACKOFF_MAX 3600        // ... doubling while it keeps failing, up to this
+#define NET_FIRST "192.168.77.1"   // the Mac on the fast network
+#define NET_LAST "192.168.77.254"
+#define NET_MASK "255.255.255.0"
 
 static SecRequirementRef requirement;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static int nconns;
 static struct { uid_t uid; int n; } perUid[MAX_CONNS];
 static time_t lastActive;
+static time_t vmnetPause;         // no vmnet starts before this (after failures)
+static int vmnetFailures;         // failed starts in a row
 static uid_t users[MAX_USERS];
 static int nusers;
 
@@ -173,6 +189,32 @@ static void slotGive(uid_t uid) {
     pthread_mutex_unlock(&lock);
 }
 
+// ---- vmnet's back-off ----
+
+// No vmnet starts until then (failed ones leak in macOS's vmnet service).
+static int vmnetPaused(void) {
+    pthread_mutex_lock(&lock);
+    int p = time(NULL) < vmnetPause;
+    pthread_mutex_unlock(&lock);
+    return p;
+}
+
+static void vmnetResult(int ok) {
+    pthread_mutex_lock(&lock);
+    long secs = 0;
+    if (ok) vmnetFailures = 0;
+    else {
+        int n = ++vmnetFailures;
+        secs = BACKOFF;
+        while (--n > 0 && secs < BACKOFF_MAX) secs *= 2;
+        if (secs > BACKOFF_MAX) secs = BACKOFF_MAX;
+        vmnetPause = time(NULL) + secs;
+    }
+    int n = vmnetFailures;
+    pthread_mutex_unlock(&lock);
+    if (!ok) logf_("vmnet failed %d time(s) in a row: no new interfaces for %ld s", n, secs);
+}
+
 // ---- one VM ----
 
 struct conn {
@@ -253,9 +295,9 @@ static int stopInterface(struct conn *c) {
 static int startInterface(struct conn *c) {
     xpc_object_t desc = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_uint64(desc, vmnet_operation_mode_key, VMNET_SHARED_MODE);
-    xpc_dictionary_set_string(desc, vmnet_start_address_key, "192.168.64.1");
-    xpc_dictionary_set_string(desc, vmnet_end_address_key, "192.168.64.254");
-    xpc_dictionary_set_string(desc, vmnet_subnet_mask_key, "255.255.255.0");
+    xpc_dictionary_set_string(desc, vmnet_start_address_key, NET_FIRST);
+    xpc_dictionary_set_string(desc, vmnet_end_address_key, NET_LAST);
+    xpc_dictionary_set_string(desc, vmnet_subnet_mask_key, NET_MASK);
     // A VM cannot reach another VM's interface: no ARP games between them.
     xpc_dictionary_set_bool(desc, vmnet_enable_isolation_key, true);
     // The VM keeps the MAC address QEMU gives it (OmacVM picks one per VM).
@@ -368,6 +410,7 @@ static void *serve(void *arg) {
     c->q = dispatch_queue_create(label, DISPATCH_QUEUE_SERIAL);
     int hung = 0;
     int r = startInterface(c);
+    vmnetResult(r == 0);
     if (r == 0) {
         logf_("pid %d (uid %d): connected, vmnet interface up (max frame %zu)", c->pid, c->uid, c->maxPacket);
         fromVM(c);
@@ -410,9 +453,13 @@ static void accepted(int fd) {
     }
     pid_t pid = audit_token_to_pid(tok);
     uid_t uid = audit_token_to_euid(tok);
+    pthread_mutex_lock(&lock);
+    lastActive = time(NULL);   // any caller keeps it (and its back-off) alive
+    pthread_mutex_unlock(&lock);
     if (!userAllowed(uid)) { refused(pid, uid, "not a user the fast network was installed for"); close(fd); return; }
     const char *why = checkPeer(&tok);
     if (why) { refused(pid, uid, why); close(fd); return; }
+    if (vmnetPaused()) { refused(pid, uid, "vmnet failed a moment ago: trying again later"); close(fd); return; }
     if (!slotTake(uid)) { refused(pid, uid, "too many VMs connected"); close(fd); return; }
     struct conn *c = calloc(1, sizeof *c);
     pthread_t t;

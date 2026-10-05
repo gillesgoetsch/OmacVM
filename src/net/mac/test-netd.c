@@ -12,13 +12,14 @@
 #include "omacvm-netd.c"
 #undef main
 
-static enum { ANSWER, LATE, NEVER } startMode, stopMode;
+static enum { ANSWER, LATE, NEVER, FAIL } startMode, stopMode;
 static volatile int stops, lateStops;
 static struct { int dummy; } fakeIface;
 
 interface_ref fake_start(xpc_object_t desc, dispatch_queue_t q, vmnet_start_interface_completion_handler_t h) {
     (void)desc;
     if (startMode == NEVER) return (interface_ref)&fakeIface;
+    if (startMode == FAIL) { dispatch_async(q, ^{ h(VMNET_SHARING_SERVICE_BUSY, NULL); }); return (interface_ref)&fakeIface; }
     xpc_object_t p = xpc_dictionary_create(NULL, NULL, 0);
     xpc_dictionary_set_uint64(p, vmnet_max_packet_size_key, 1514);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, startMode == LATE ? 1500 * NSEC_PER_MSEC : 0), q, ^{ h(VMNET_SUCCESS, p); });
@@ -75,6 +76,21 @@ int main(void) {
     startMode = ANSWER; stopMode = NEVER; stops = 0;
     t = oneConnection();
     expect(t >= 0 && t <= 2 && nconns == 0 && stops == 1, "stop never answered: given up after VMNET_WAIT, slot freed");
+
+    // A failed start pauses vmnet starts (BACKOFF, then doubling); a good one ends it.
+    startMode = FAIL; stopMode = ANSWER;
+    t = oneConnection();
+    time_t p1 = vmnetPause - time(NULL);
+    expect(t >= 0 && nconns == 0 && vmnetPaused() && p1 >= BACKOFF - 1 && p1 <= BACKOFF, "vmnet failed: back-off");
+    vmnetPause = 0;
+    oneConnection();
+    time_t p2 = vmnetPause - time(NULL);
+    expect(vmnetFailures == 2 && p2 >= 2 * BACKOFF - 1 && p2 <= 2 * BACKOFF, "failed again: back-off doubles");
+    for (int i = 0; i < 20; i++) { vmnetPause = 0; oneConnection(); }
+    expect(vmnetPause - time(NULL) <= BACKOFF_MAX, "back-off capped");
+    vmnetPause = 0; startMode = ANSWER;
+    oneConnection();
+    expect(vmnetFailures == 0 && !vmnetPaused(), "vmnet works again: no back-off");
 
     // The limits: MAX_PER_UID per user, MAX_CONNS in all.
     int got = 0;
