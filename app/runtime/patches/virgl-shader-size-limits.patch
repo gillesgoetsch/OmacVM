@@ -1,0 +1,39 @@
+virglrenderer: limit the shader sizes a guest may ask for
+
+What: VIRGL_CCMD_CREATE_OBJECT(SHADER) takes num_tokens and the shader text length
+(offlen) from the guest and sizes host allocations by them (calloc of num_tokens
+TGSI tokens, malloc of a long shader's whole text). Both are now capped:
+1 << 20 tokens and 16 MiB of text, else EINVAL.
+Why: a guest asked for 4 GiB per shader (fuzzer: malloc(4294968536)); standards
+section 4: no guest-controlled allocation without a limit. Real shaders (Chrome,
+Basemark) are a few thousand tokens.
+Upstream: upstream issue, upstreamable; not sent.
+Tests: Tests/virgl/fuzz-cmd-stream.sh (no out-of-memory with -rss_limit_mb=4096).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -4722,6 +4722,9 @@
+    return 0;
+ }
+ 
++#define VREND_MAX_SHADER_TOKENS (1u << 20)
++#define VREND_MAX_SHADER_TEXT    (16u << 20)
++
+ int vrend_create_shader(struct vrend_context *ctx,
+                         uint32_t handle,
+                         const struct pipe_stream_output_info *so_info,
+@@ -4773,6 +4776,15 @@
+    /* Ensure that we won't hit an overflow */
+    if (pkt_length >= (UINT32_MAX >> 2)) {
+       virgl_error("Packed length overflow\n");
++      return EINVAL;
++   }
++
++   /* Both sizes come from the guest and size host allocations (the TGSI token
++    * array, the long-shader buffer). Real shaders stay far below these. */
++   if (num_tokens > VREND_MAX_SHADER_TOKENS ||
++       VIRGL_OBJ_SHADER_OFFSET_VAL(offlen) > VREND_MAX_SHADER_TEXT) {
++      virgl_error("Shader too large: %u tokens, %u bytes of text\n", num_tokens,
++                  VIRGL_OBJ_SHADER_OFFSET_VAL(offlen));
+       return EINVAL;
+    }
+ 

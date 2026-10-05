@@ -1,0 +1,79 @@
+From: OmacVM
+Subject: [PATCH] MdeModulePkg/UefiBootManagerLib: align the NVMe identify buffer
+
+What: BmGetNvmeDescription() reads the NVMe controller's model and serial
+number into NVME_ADMIN_CONTROLLER_DATA on the stack. That structure is packed
+(alignment 1), but the NVMe pass-thru refuses a buffer that is not aligned to
+its IoAlign (sizeof (UINTN), 8) with EFI_INVALID_PARAMETER. A union with a
+UINT64 gives the buffer 8-byte alignment; nothing else changes.
+
+Why: GCC happens to place the buffer 8-byte aligned, clang (which
+build-edk2.sh uses on the Mac) does not. The identify then fails and the
+firmware names the VM's disk "UEFI Misc Device" instead of "UEFI QEMU NVMe
+Ctrl omacvm 1", renaming the boot entry that QEMU's prebuilt firmware made
+(GRUB lists it). With this patch the boot entries are the same as with QEMU's
+firmware.
+
+Upstream: not fixed in edk2 (master 999fd0f1 still has the stack buffer); to
+be sent to edk2.
+
+Test: Tests/firmware/test-firmware.py boots with an NVMe disk (serial
+omacvm) and fails if the firmware's boot entry for it is not
+"UEFI QEMU NVMe Ctrl omacvm 1".
+
+--- a/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c
++++ b/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c
+@@ -584,7 +584,14 @@
+   EFI_NVM_EXPRESS_PASS_THRU_COMMAND_PACKET  CommandPacket;
+   EFI_NVM_EXPRESS_COMMAND                   Command;
+   EFI_NVM_EXPRESS_COMPLETION                Completion;
+-  NVME_ADMIN_CONTROLLER_DATA                ControllerData;
++  //
++  // The pass-thru checks the buffer against IoAlign (8): the packed
++  // structure alone may sit anywhere on the stack.
++  //
++  union {
++    NVME_ADMIN_CONTROLLER_DATA    Data;
++    UINT64                        Align;
++  } Controller;
+   CHAR16                                    *Description;
+   CHAR16                                    *Char;
+   UINTN                                     Index;
+@@ -623,8 +630,8 @@
+   Command.Nsid                 = 0;
+   CommandPacket.NvmeCmd        = &Command;
+   CommandPacket.NvmeCompletion = &Completion;
+-  CommandPacket.TransferBuffer = &ControllerData;
+-  CommandPacket.TransferLength = sizeof (ControllerData);
++  CommandPacket.TransferBuffer = &Controller.Data;
++  CommandPacket.TransferLength = sizeof (Controller.Data);
+   CommandPacket.CommandTimeout = EFI_TIMER_PERIOD_SECONDS (5);
+   CommandPacket.QueueType      = NVME_ADMIN_QUEUE;
+   //
+@@ -644,20 +651,20 @@
+   }
+ 
+   Description = AllocateZeroPool (
+-                  (ARRAY_SIZE (ControllerData.Mn) + 1
+-                   + ARRAY_SIZE (ControllerData.Sn) + 1
++                  (ARRAY_SIZE (Controller.Data.Mn) + 1
++                   + ARRAY_SIZE (Controller.Data.Sn) + 1
+                    + MAXIMUM_VALUE_CHARACTERS + 1
+                   ) * sizeof (CHAR16)
+                   );
+   if (Description != NULL) {
+     Char = Description;
+-    for (Index = 0; Index < ARRAY_SIZE (ControllerData.Mn); Index++) {
+-      *(Char++) = (CHAR16)ControllerData.Mn[Index];
++    for (Index = 0; Index < ARRAY_SIZE (Controller.Data.Mn); Index++) {
++      *(Char++) = (CHAR16)Controller.Data.Mn[Index];
+     }
+ 
+     *(Char++) = L' ';
+-    for (Index = 0; Index < ARRAY_SIZE (ControllerData.Sn); Index++) {
+-      *(Char++) = (CHAR16)ControllerData.Sn[Index];
++    for (Index = 0; Index < ARRAY_SIZE (Controller.Data.Sn); Index++) {
++      *(Char++) = (CHAR16)Controller.Data.Sn[Index];
+     }
+ 
+     *(Char++) = L' ';

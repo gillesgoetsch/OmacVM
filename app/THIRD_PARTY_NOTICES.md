@@ -19,8 +19,14 @@ OmacVM.app's own code is MIT (`LICENSE`). It ships or uses:
   original file) and agent, in OmacVM's `src/battery/` (see the
   repository's `THIRD_PARTY_NOTICES.md`).
   Its release is also downloaded at build time as the temporary live system.
-- **edk2** UEFI firmware as built by the QEMU project: BSD-2-Clause-Patent,
-  with OpenSSL (Apache-2.0) and others, see `edk2-licenses.txt`.
+- **edk2** UEFI firmware (edk2-stable202408, the release QEMU 11.1.1 ships),
+  built by `runtime/build-edk2.sh` with QEMU's build flags:
+  BSD-2-Clause-Patent, with OpenSSL (Apache-2.0) and others, see
+  `edk2-licenses.txt`. Built with LLVM (Apache-2.0 with LLVM exception) and
+  acpica's iasl, which are not shipped.
+- **Omarchy** (github.com/basecamp/omarchy), MIT, (c) David Heinemeier
+  Hansson: the boot logo in the firmware is Omarchy's `logo.svg`
+  (`runtime/patches/edk2-logo-omarchy.patch`), `LICENSE.omarchy`.
 - **QEMU's libraries** in the app: GLib, libintl, libusb (LGPL-2.1+, kept as
   replaceable .dylib files); virglrenderer, libepoxy, pixman (MIT); ANGLE,
   libslirp, PCRE2 (BSD); SDL (zlib); zstd, lz4 (BSD); xz (0BSD).

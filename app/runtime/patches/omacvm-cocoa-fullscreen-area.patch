@@ -1,0 +1,103 @@
+From: OmacVM
+Subject: [PATCH] cocoa: full screen keeps its size over guest reboots
+
+What: the main window's size in macOS full screen (what the guest is sized
+to, and its box in the display layout) is worked out from its display: the
+display's height less the strip above the full-screen area, as macOS
+proposes it when full screen is entered (window:willUseFullScreenContentSize:).
+Before, it was the view's own size.
+
+Why: in full screen the view is letterboxed to the guest's aspect ratio. On a
+guest reboot the firmware and boot modes have another aspect ratio, so the
+view got smaller, and the guest was then sized from that smaller view:
+3456x2160 -> 2880x1800 -> 2400x1500 -> 2000x1250 on a 14-inch MacBook Pro,
+one step per reboot, until the next display change. Came with
+omacvm-cocoa-fullscreen-size.patch (2.8.0 branch; 2.7.0 keeps its size).
+If the proposed size is not as wide as the display or starts more than 64
+points down, the safe area is used, as before that patch. (The view itself
+can't be measured: it is already letterboxed when full screen is entered.)
+QEMU's log says what macOS proposed ("omacvm: full screen: ...", on change).
+
+Upstream: not applicable (fixes OmacVM's own fullscreen-size patch).
+Test: real full screen on the MacBook, three guest reboots: Virtual-1 stays
+3456x2160 (notes: display-bugs track, r5/shrink.sh). Applies after
+omacvm-cocoa-displays.patch and omacvm-cocoa-test-only-displays.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -812,6 +812,17 @@
+ 
+ /* The main window is in macOS full screen and done moving there. */
+ static bool omacvm_main_full_settled;
++
++/*
++ * OmacVM: how far below the top of its display the main window's full-screen
++ * area starts (the menu bar beside a notch), from the content size macOS
++ * proposes when full screen is entered; -1 until then (the safe area is the
++ * guess). The area comes from the display, never from the view's own size:
++ * in full screen the view is letterboxed to the guest's aspect ratio (the
++ * firmware's and boot's modes on a guest reboot), and sizing the guest from
++ * that view shrank it on every reboot.
++ */
++static CGFloat omacvm_main_full_top = -1;
+ 
+ /* OmacVM: with OMACVM_NOTCH=1, full screen covers the strip beside the notch too. */
+ static bool omacvm_notch_mode(void)
+@@ -840,7 +851,12 @@
+  */
+ - (NSSize) fullScreenSize
+ {
+-    return omacvm_main_full_settled ? [self frame].size : [self screenSafeAreaSize];
++    NSSize size = [self screenSafeAreaSize];
++
++    if (omacvm_main_full_settled && omacvm_main_full_top >= 0) {
++        size.height = [[[self window] screen] frame].size.height - omacvm_main_full_top;
++    }
++    return size;
+ }
+ 
+ - (void) resizeWindow
+@@ -2095,6 +2111,27 @@
+ - (void)windowWillExitFullScreen:(NSNotification *)notification
+ {
+     omacvm_main_full_settled = false;
++}
++
++/* OmacVM: macOS says how big the full-screen area is: remember where it starts. */
++- (NSSize)window:(NSWindow *)window willUseFullScreenContentSize:(NSSize)proposedSize
++{
++    NSSize display = [[window screen] frame].size;
++    CGFloat top = display.height - proposedSize.height;
++
++    if (window == [cocoaView window]) {
++        CGFloat was = omacvm_main_full_top;
++
++        omacvm_main_full_top = fabs(proposedSize.width - display.width) < 1 &&
++                               top > -1 && top <= 64 ? MAX(0, top) : -1;
++        if (omacvm_main_full_top == was) {
++            return proposedSize;  /* asked again (each resize): logged already */
++        }
++        fprintf(stderr, "omacvm: full screen: area %.0fx%.0f on a %.0fx%.0f display%s\n",
++                proposedSize.width, proposedSize.height, display.width, display.height,
++                omacvm_main_full_top >= 0 ? "" : " (not used: the safe area is)");
++    }
++    return proposedSize;
+ }
+ 
+ - (void)windowDidEnterFullScreen:(NSNotification *)notification
+@@ -3523,8 +3560,13 @@
+ 
+     memset(omacvm_mac_box, 0, sizeof(omacvm_mac_box));
+     if (omacvm_main_full_screen() && [mw screen]) {
+-        omacvm_mac_box[0] = omacvm_main_full_settled && !notchFull ?
+-            omacvm_view_box(cocoaView) : omacvm_display_box([mw screen], !notchFull);
++        omacvm_mac_box[0] = omacvm_display_box([mw screen], !notchFull);
++        if (omacvm_main_full_settled && !notchFull && omacvm_main_full_top >= 0) {
++            /* The full-screen area, not the (maybe letterboxed) view. */
++            CGRect d = CGDisplayBounds(omacvm_screen_id([mw screen]));
++            omacvm_mac_box[0].y = d.origin.y + omacvm_main_full_top;
++            omacvm_mac_box[0].h = d.size.height - omacvm_main_full_top;
++        }
+     } else {
+         NSSize size = [cocoaView frame].size;
+         omacvm_mac_box[0] = (OmacVMBox){ 0, 0, size.width, size.height };

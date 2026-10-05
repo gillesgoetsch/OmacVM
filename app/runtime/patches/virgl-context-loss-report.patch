@@ -1,0 +1,222 @@
+virglrenderer: tell the guest when its context is lost, log it once
+
+What: a new command VIRGL_CCMD_SET_RESET_STATUS_BUFFER (capset bit
+VIRGL_CAP_V2_RESET_STATUS_BUFFER, 1u << 30) names a guest-memory buffer
+(VIRGL_BIND_CUSTOM, like query results). The first time a context hits a fatal
+error the host writes VIRGL_RESET_STATUS_GUILTY into its first dword and logs one
+line ("context N (name) is lost ..., the guest driver was told"). A guest Mesa
+with src/app/guest/mesa/mesa-virgl-reset-status.patch reports that through
+glGetGraphicsResetStatus (GL_GUILTY_CONTEXT_RESET) and EXT/KHR_robustness, so
+ANGLE/Chrome and other robust apps recreate their context. Venus: the ring
+thread's fatal path logs once per context; the guest's Mesa ends the app on the
+fatal ring status (its fences: virgl-venus-lost-context-fences.patch).
+Why: a lost virgl context left the guest app drawing into nothing forever; the
+host printed one error per failed command instead of saying what happened.
+Validation: the buffer must be a PIPE_BUFFER with VIRGL_BIND_CUSTOM (no GL object,
+host-side copy in res->ptr) of at least 4 bytes, else the request itself is a
+context error. The host only writes 4 bytes at offset 0, through the checked iov
+helper; a detached buffer is not written.
+Upstream: upstreamable (protocol addition; the command number and capset bit would
+be assigned upstream, ours are placed so that older guests never send them).
+Not sent.
+Tests: Tests/virgl/test-context-loss.c (build time: status 0 while alive, GUILTY
+after an illegal surface, the context's draws fail, a second context keeps
+working, a GL vertex buffer is refused as status buffer);
+tests/graphics/context-loss.sh --expect recover (Chrome) and guest/gl-lost.c.
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -481,6 +481,12 @@
+ void
+ vkr_context_on_ring_fatal(struct vkr_context *ctx)
+ {
++   /* The ring thread stops here for good; log it once per context. */
++   if (!ctx->loss_logged)
++      virgl_error("venus context %u (%s) is lost: the guest driver sees the fatal ring "
++                  "status and ends the app\n", ctx->ctx_id,
++                  ctx->debug_name ? ctx->debug_name : "");
++   ctx->loss_logged = true;
+    vkr_context_set_fatal(ctx);
+ 
+    mtx_lock(&ctx->wait_ring.mutex);
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -50,6 +50,7 @@
+    vkr_renderer_retire_fence_callback_type retire_fence;
+ 
+    char *debug_name;
++   bool loss_logged;
+    enum vkr_context_validate_level validate_level;
+    bool validate_fatal;
+ 
+--- a/src/virgl_hw.h
++++ b/src/virgl_hw.h
+@@ -630,6 +630,8 @@
+ #define VIRGL_CAP_V2_RESOURCE_LAYOUT      (1u << 18)
+ 
+ #define VIRGL_CAP_V2_CORE_PROFILE_ONLY    (1u << 19)
++/* VIRGL_CCMD_SET_RESET_STATUS_BUFFER is understood (OmacVM). */
++#define VIRGL_CAP_V2_RESET_STATUS_BUFFER  (1u << 30)
+ /* virgl bind flags - these are compatible with mesa 10.5 gallium.
+  * but are fixed, no other should be passed to virgl either.
+  */
+--- a/src/virgl_protocol.h
++++ b/src/virgl_protocol.h
+@@ -144,6 +144,7 @@
+ 
+    VIRGL_CCMD_CLEAR_SURFACE,
+    VIRGL_CCMD_GET_PIPE_RESOURCE_LAYOUT,
++   VIRGL_CCMD_SET_RESET_STATUS_BUFFER,
+ 
+    VIRGL_MAX_COMMANDS
+ };
+@@ -789,5 +790,14 @@
+ #define VIRGL_RESOURCE_LAYOUT_SIZE           2
+ #define VIRGL_RESOURCE_LAYOUT_HANDLE_OUT     1
+ #define VIRGL_RESOURCE_LAYOUT_HANDLE_TARGET  2
++
++/* VIRGL_CCMD_SET_RESET_STATUS_BUFFER
++ * A guest-memory buffer (VIRGL_BIND_CUSTOM, at least 4 bytes) whose first
++ * dword the host sets to VIRGL_RESET_STATUS_GUILTY when the context is lost.
++ * Handle 0 forgets the buffer.
++ */
++#define VIRGL_SET_RESET_STATUS_BUFFER_SIZE   1
++#define VIRGL_SET_RESET_STATUS_BUFFER_HANDLE 1
++#define VIRGL_RESET_STATUS_GUILTY            1
+ 
+ #endif
+--- a/src/vrend/vrend_debug.c
++++ b/src/vrend/vrend_debug.c
+@@ -97,6 +97,7 @@
+    "END_FRAME",
+    "CLEAR_SURFACE",
+    "GET_PIPE_RESOURCE_LAYOUT",
++   "SET_RESET_STATUS_BUFFER",
+ };
+ 
+ static const char *object_type_names[VIRGL_MAX_OBJECTS] = {
+--- a/src/vrend/vrend_decode.c
++++ b/src/vrend/vrend_decode.c
+@@ -1742,6 +1742,19 @@
+    return 0;
+ }
+ 
++static int vrend_decode_set_reset_status_buffer(struct vrend_context *ctx, const uint32_t *buf, uint32_t length)
++{
++   TRACE_FUNC();
++   if (length != VIRGL_SET_RESET_STATUS_BUFFER_SIZE)
++      return EINVAL;
++
++   uint32_t res_handle = get_buf_entry(buf, VIRGL_SET_RESET_STATUS_BUFFER_HANDLE);
++
++   vrend_renderer_set_reset_status_buffer(ctx, res_handle);
++
++   return 0;
++}
++
+ static int vrend_decode_send_string_marker(struct vrend_context *ctx, const uint32_t *buf, uint32_t length)
+ {
+    size_t buf_len = sizeof(uint32_t) * (length - 1);
+@@ -2042,6 +2055,7 @@
+    [VIRGL_CCMD_END_FRAME] = vrend_unsupported,
+ #endif
+    [VIRGL_CCMD_GET_PIPE_RESOURCE_LAYOUT] = vrend_decode_get_pipe_resource_layout,
++   [VIRGL_CCMD_SET_RESET_STATUS_BUFFER] = vrend_decode_set_reset_status_buffer,
+ };
+ 
+ static void dump_command_stream_to_file(const void *buffer, size_t size)
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -892,6 +892,8 @@
+    vrend_context_fence_retire fence_retire;
+    void *fence_retire_data;
+ 
++   /* Guest buffer that learns about a context loss (VIRGL_CCMD_SET_RESET_STATUS_BUFFER). */
++   struct vrend_resource *reset_status_res;
+    unsigned shader_failures;
+    bool dropped_draws_logged;
+ 
+@@ -1151,14 +1153,34 @@
+    [VIRGL_ERROR_CTX_RESOURCE_OUT_OF_RANGE] = "Resource copy out of range for resource",
+ };
+ 
++static void vrend_notify_context_lost(struct vrend_context *ctx)
++{
++   const uint32_t status = VIRGL_RESET_STATUS_GUILTY;
++   struct vrend_resource *res = ctx->reset_status_res;
++
++   virgl_error("context %d (%s) is lost, it draws nothing from now on; %s\n",
++               ctx->ctx_id, ctx->debug_name,
++               res ? "the guest driver was told (context reset)"
++                   : "the guest driver cannot be told, the app must be restarted");
++   if (res) {
++      memcpy(res->ptr, &status, sizeof(status));
++      if (res->iov)
++         vrend_write_to_iovec(res->iov, res->num_iovs, 0, (const char *)&status, sizeof(status));
++   }
++}
++
+ void vrend_report_context_error_internal(const char *fname, struct vrend_context *ctx,
+                                          enum virgl_ctx_errors error, uint32_t value)
+ {
++   bool first = !ctx->in_error;
++
+    ctx->in_error = true;
+    ctx->last_error = error;
+    virgl_error("%s: context error reported %d \"%s\" %s %d\n", fname,
+                ctx->ctx_id, ctx->debug_name, vrend_ctx_error_strings[error],
+                value);
++   if (first && ctx->ctx_id)
++      vrend_notify_context_lost(ctx);
+ }
+ 
+ /* The guest compiled the shader; only the host GL refused it (a translation gap or a
+@@ -8234,6 +8256,7 @@
+ 
+    list_for_each_entry_safe(struct vrend_untyped_resource, untyped_res, &ctx->untyped_resources, head)
+       free(untyped_res);
++   vrend_resource_reference(&ctx->reset_status_res, NULL);
+    vrend_ctx_resource_fini_table(ctx->res_hash);
+ 
+ #ifdef ENABLE_TRACING
+@@ -13566,6 +13589,7 @@
+ #endif
+    if (vrend_state.gbm_layout_feat)
+       caps->v2.capability_bits_v2 |= VIRGL_CAP_V2_RESOURCE_LAYOUT;
++   caps->v2.capability_bits_v2 |= VIRGL_CAP_V2_RESET_STATUS_BUFFER;
+ }
+ 
+ void vrend_renderer_fill_caps(uint32_t set, uint32_t version,
+@@ -14414,6 +14438,23 @@
+    (void)out_fd;
+ #endif
+    return -EINVAL;
++}
++
++void vrend_renderer_set_reset_status_buffer(struct vrend_context *ctx, uint32_t res_handle)
++{
++   struct vrend_resource *res = NULL;
++
++   if (res_handle) {
++      res = vrend_renderer_ctx_res_lookup(ctx, res_handle);
++      /* Like query results: no GL object, the host writes into guest memory. */
++      if (!res || res->base.target != PIPE_BUFFER ||
++          res->base.bind != VIRGL_BIND_CUSTOM ||
++          res->base.width0 < sizeof(uint32_t) || !res->ptr) {
++         vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
++         return;
++      }
++   }
++   vrend_resource_reference(&ctx->reset_status_res, res);
+ }
+ 
+ void vrend_renderer_get_meminfo(struct vrend_context *ctx, uint32_t res_handle)
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -646,6 +646,7 @@
+ int vrend_renderer_resource_unmap(struct pipe_resource *pres);
+ 
+ void vrend_renderer_get_meminfo(struct vrend_context *ctx, uint32_t res_handle);
++void vrend_renderer_set_reset_status_buffer(struct vrend_context *ctx, uint32_t res_handle);
+ 
+ void vrend_context_emit_string_marker(struct vrend_context *ctx, GLsizei length, const char * message);
+ 

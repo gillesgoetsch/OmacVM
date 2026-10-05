@@ -3,7 +3,8 @@
 In OmacVM.app, videos in the VM are decoded by the Mac's own video decoder
 (the media engine) instead of the VM's CPU. YouTube in 4K at 60 frames per
 second plays in Google Chrome with the VM's CPU nearly idle: 0.3 cores busy
-instead of 1.2 to 1.6.
+instead of 1.2 to 1.6 (single runs on a busy Mac, see [Numbers](#numbers)).
+Firefox decodes in hardware too, but its VM stays at about 0.9 cores.
 
 ## What works
 
@@ -22,14 +23,19 @@ Browsers in an OmacVM.app VM:
   `chrome://media-internals` *VaapiVideoDecoder*. Install it with
   `src/bench/install-chrome.sh` (Arch Linux ARM has no package).
 - **Firefox**: yes for H.264 and VP9 (AV1 stays on the CPU, see below; HEVC
-  Firefox does not hand to VA-API at all here).
+  Firefox does not hand to VA-API at all here). The decoding is on the media
+  engine, but YouTube 4K at 60 fps in VP9 still kept the VM at 0.9 to 1.0
+  cores (two 4-minute runs, Mac busy), near what CPU decoding costs. Where
+  Firefox spends it is not measured yet.
 - **Brave** (Linux ARM, from Brave's `.deb`): like Chrome. YouTube 4K at
   60 fps in VP9 and AV1 (Brave 1.96).
 - **Chromium from Arch Linux ARM** (Omarchy's default browser): no. Arch Linux
   ARM builds it without VA-API, so it always decodes on the CPU.
 - **mpv, FFmpeg** (`--hwdec=vaapi`, `-hwaccel vaapi`) and **GStreamer**
-  (`vah264dec`, `vah265dec`, `vavp9dec`; Celluloid and other GStreamer
-  players): H.264, VP9 and HEVC. FFmpeg decodes a 4K HEVC clip at about 200
+  (`vah264dec`, `vah265dec`, `vavp9dec` from the `gst-plugin-va` package;
+  Celluloid and other GStreamer players): H.264, VP9 and HEVC. 8-bit frames
+  come out bit for bit as in software decoding; 10-bit ones within one step
+  of 1023. FFmpeg decodes a 4K HEVC clip at about 200
   frames per second.
 - **HEVC in Google Chrome** (154): in hardware, but not finished: 1080p60
   plays smoothly until Chrome seeks (the end of a looped clip, a jump in
@@ -52,7 +58,8 @@ seconds, measured with `src/bench/video-bench.py` in an OmacVM.app VM (6 CPUs,
 | Mac's media engine, VP9 | 60 fps | 0.1 % | 0.33 | 0.45 |
 | Mac's media engine, AV1 | 60 fps | 0.5 % | 0.30 | 0.42 |
 
-Each row is one run, and the Mac was busy with other work during them. The
+These are not benchmark numbers: each row is one run, taken without the
+benchmark lock while the Mac was busy with other work. The
 dropped frames depend on that load: a CPU-decoding run in a test VM (the
 try-omarchy live system, same CPUs and memory) had 60 fps and 0.0 % dropped,
 with the VM at 1.21 cores and QEMU at 1.71. So the media engine is not shown

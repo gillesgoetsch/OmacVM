@@ -1,0 +1,14 @@
+[Unit]
+Description=OmacVM.app: Omarchy on every Mac display (full screen)
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionPathExists=/dev/virtio-ports/org.omacvm.display
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/omacvm-displays
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

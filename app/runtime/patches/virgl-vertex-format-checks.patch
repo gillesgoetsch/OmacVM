@@ -1,0 +1,70 @@
+virglrenderer: vertex formats the GL refuses are refused when created
+
+What: vertex elements whose format the host GL would refuse are refused when the
+guest creates them (context error, like a format vrend does not know): GL_BGRA
+order (B8G8R8A8_*, B10G10R10A2_*) only as normalized unsigned bytes or 2_10_10_10,
+never as integer or scaled attributes; R11G11B10_FLOAT only with
+ARB_vertex_type_10f_11f_11f_rev (vrend offers that format to the guest only then).
+Why: a refused glVertexAttribPointer / glVertexAttribIPointer leaves the
+attribute's previous buffer and format in place. The draw range checks see the
+guest's new buffer, the GPU fetches from the old, smaller one: a guest could read
+past a buffer (review of gpu-robust, repro 1: B8G8R8A8_UINT after a draw from a
+16-byte buffer read 64 bytes from it).
+Depends on: virgl-draw-range-checks.patch.
+Upstream: upstreamable; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c cases 30 and 31 (B8G8R8A8_UINT and
+B8G8R8A8_USCALED after a draw from a smaller buffer: refused, nothing drawn).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -386,6 +386,8 @@
+    uint32_t max_shader_patch_varyings;
+    uint32_t max_vertex_attributes;
+    uint32_t max_texture_units;
++   /* GL_UNSIGNED_INT_10F_11F_11F_REV vertex attributes (ARB_vertex_type_10f_11f_11f_rev) */
++   bool vertex_10f_11f_11f;
+ 
+    /* inferred GL caching type */
+    uint32_t inferred_gl_caching_type;
+@@ -3577,6 +3579,21 @@
+       else \
+          signed_mask |= (1 << i); \
+    }
++
++/* Whether the GL takes this attribute format. A refused glVertexAttrib*Pointer keeps the
++ * attribute's previous buffer and format, which the draw range checks never see, so
++ * the guest could make the GPU fetch past that older buffer. GL_BGRA (desktop GL only)
++ * needs normalized unsigned bytes or 2_10_10_10 and no integer attribute. */
++static bool vrend_vertex_format_ok(const struct vrend_vertex_element *ve, bool bgra)
++{
++   if (ve->type == GL_UNSIGNED_INT_10F_11F_11F_REV && !vrend_state.vertex_10f_11f_11f)
++      return false;
++   if (!bgra || vrend_state.use_gles)
++      return true;
++   return ve->norm && !util_format_is_pure_integer(ve->base.src_format) &&
++          (ve->type == GL_UNSIGNED_BYTE || ve->type == GL_INT_2_10_10_10_REV ||
++           ve->type == GL_UNSIGNED_INT_2_10_10_10_REV);
++}
+ 
+ int vrend_create_vertex_elements_state(struct vrend_context *ctx,
+                                        uint32_t handle,
+@@ -3660,6 +3677,12 @@
+ 
+       if (desc->nr_channels == 4 && desc->swizzle[0] == PIPE_SWIZZLE_Z)
+          v->zyxw_bitmask |= 1 << i;
++
++      if (!vrend_vertex_format_ok(&v->elements[i], v->zyxw_bitmask & (1 << i))) {
++         vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_VERTEX_FORMAT, elements[i].src_format);
++         FREE(v);
++         return EINVAL;
++      }
+    }
+ 
+    ret_handle = vrend_renderer_object_insert(ctx, v, handle,
+@@ -8476,6 +8499,7 @@
+ 
+    /* For testing we need to know maximum */
+    glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, (GLint*)&vrend_state.max_vertex_attributes);
++   vrend_state.vertex_10f_11f_11f = epoxy_has_gl_extension("GL_ARB_vertex_type_10f_11f_11f_rev");
+ 
+    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,
+                  (GLint*)&vrend_state.max_texture_units);

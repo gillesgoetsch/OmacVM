@@ -1,0 +1,33 @@
+QEMU virgl: 2D resources are made as screens
+
+What: virgl_cmd_create_resource_2d asks virglrenderer for RENDER_TARGET |
+SCANOUT (1 << 1 | 1 << 18) instead of RENDER_TARGET only.
+Why: in virgl mode the guest kernel makes a 2D resource only for dumb buffers:
+the text console (fbcon), plymouth, and KMS dumb screens and cursors. The guest
+memory budget (virgl-resource-memory-budget.patch) gives screens and cursors a
+256 MB reserve past the budget so one app that fills it does not also stop the
+desktop's next screen or cursor; it finds them by their SCANOUT, CURSOR or
+DISPLAY_TARGET bind, and 2D resources had none of these. vrend uses SCANOUT only
+for GBM buffers, which macOS does not have, so nothing else changes.
+Upstream: not sent (the reserve is OmacVM's).
+Tests: Tests/virgl/test-resource-budget.c checks the reserve with exactly this
+bind (a SCANOUT|RENDER_TARGET screen fits past the budget up to the reserve, one
+row more is refused); the build checks the patched source has the bind.
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -346,7 +346,14 @@
+     args.handle = c2d.resource_id;
+     args.target = 2;
+     args.format = c2d.format;
+-    args.bind = (1 << 1);
++    /*
++     * OmacVM: a 2D resource is a dumb buffer: a screen (fbcon, plymouth,
++     * KMS dumb buffers) or a cursor. Mark it as a scanout (VIRGL_BIND_SCANOUT,
++     * 1 << 18) next to RENDER_TARGET so virglrenderer's memory budget lets it
++     * use the display reserve; vrend uses this bind only for GBM, which macOS
++     * does not have.
++     */
++    args.bind = (1 << 1) | (1 << 18);
+     args.width = c2d.width;
+     args.height = c2d.height;
+     args.depth = 1;

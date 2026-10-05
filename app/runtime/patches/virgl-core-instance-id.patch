@@ -1,0 +1,25 @@
+virglrenderer: no "#extension GL_ARB_draw_instanced" in core GLSL
+
+What: a shader that reads gl_InstanceID got "#extension GL_ARB_draw_instanced :
+require". gl_InstanceID is core since GLSL 1.40 and Apple's core profile refuses
+the extension, so every such shader failed to compile on the Mac. The requirement
+is now dropped for GLSL >= 140, like ARB_texture_rectangle already was.
+Why: found in a Chrome WebGL soak (tests/graphics/soak.sh): "extension
+'GL_ARB_draw_instanced' is not supported". Instanced WebGL drawing (ANGLE emits
+gl_InstanceID) stopped Chrome's whole GL context before; with
+virgl-shader-failure-skip-draws.patch it skipped those draws; now it draws.
+Upstream: upstreamable; not sent.
+Tests: Tests/virgl/test-integer-sampler-shader.c "vertex shader reading
+gl_InstanceID" (compiled by the Mac's OpenGL; fails without this patch).
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -6354,6 +6354,9 @@
+       for (uint32_t i = 0; i < ARRAY_SIZE(shader_req_table); i++) {
+          if (shader_req_table[i].key == SHADER_REQ_SAMPLER_RECT && ctx->glsl_ver_required >= 140)
+             continue;
++         /* gl_InstanceID is core in GLSL 1.40; Apple's core profile refuses the extension. */
++         if (shader_req_table[i].key == SHADER_REQ_INSTANCE_ID && ctx->glsl_ver_required >= 140)
++            continue;
+ 
+          if (ctx->shader_req_bits & shader_req_table[i].key) {
+             emit_ext(glsl_strbufs, shader_req_table[i].string, "require");

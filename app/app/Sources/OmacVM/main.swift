@@ -95,7 +95,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// The VM's settings as vm.env has them now (`omacvm resources` may have
+    /// changed them while the app ran).
+    private func reloadConfig() {
+        guard state.screen == .ready, let c = VMConfig.load(from: state.config.folder) else { return }
+        if c != state.config { state.config = c }
+    }
+
     private func showWindow() {
+        reloadConfig()
         NSApp.setActivationPolicy(.regular)
         if window == nil {
             let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable, .miniaturizable],
@@ -111,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startVM() {
+        reloadConfig()
         let r = Runner(config: state.config)
         r.onExit = { [weak self] status in
             guard let self else { return }

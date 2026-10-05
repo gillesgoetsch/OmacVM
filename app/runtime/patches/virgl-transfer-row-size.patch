@@ -5,7 +5,9 @@ was stored as GL_RGBA8 at the full width, so every transfer moved twice the
 bytes of the guest's buffers. On readback that is a QEMU heap overflow (the
 Mac's GL has no robust glReadnPixels to stop it); mpv's VA-API probe hit it
 in OmacVM.app 2.7.0 tests and aborted the VM. Uploads read past the buffer.
-The row check guards every other format the same way.
+The row check guards every other format the same way, and refuses a GL
+format/type pair it does not know (the guest must not reach a transfer the
+check cannot size).
 Upstream: not sent yet (virglrenderer has the same table entry).
 Test: Tests/virgl/test-transfer-row-size.c (build time); mpv --hwdec=vaapi
 --vo=gpu-next in an app VM (crashed QEMU before, under Guard Malloc too).
@@ -27,7 +29,7 @@ index 05ff403..608622e 100644
      { VIRGL_FORMAT_R8G8B8X8_UNORM, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, RGB1_SWIZZLE, view_class_32 },
      { VIRGL_FORMAT_R8G8B8A8_UNORM, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, NO_SWIZZLE, view_class_32 },
  
-@@ -548,6 +552,101 @@ static void vrend_add_compressed_formats(struct vrend_format_table *table, int n
+@@ -548,6 +552,109 @@ static void vrend_add_compressed_formats(struct vrend_format_table *table, int n
  }
  
  
@@ -85,11 +87,16 @@ index 05ff403..608622e 100644
 +   case GL_LUMINANCE:
 +   case GL_DEPTH_COMPONENT:
 +   case GL_STENCIL_INDEX:
++   case GL_ALPHA_INTEGER:
++   case GL_GREEN_INTEGER:
++   case GL_BLUE_INTEGER:
++   case GL_LUMINANCE_INTEGER_EXT:
 +      components = 1;
 +      break;
 +   case GL_RG:
 +   case GL_RG_INTEGER:
 +   case GL_LUMINANCE_ALPHA:
++   case GL_LUMINANCE_ALPHA_INTEGER_EXT:
 +      components = 2;
 +      break;
 +   case GL_RGB:
@@ -115,14 +122,17 @@ index 05ff403..608622e 100644
 + * of `width` pixels moves width * (GL's pixel size) bytes per row; the
 + * guest's buffers hold the format's own rows. Where GL would move more, it
 + * reads or writes past them (the Mac's GL has no robust glReadnPixels to
-+ * stop it): such transfers must not happen. Unknown pairs pass. */
++ * stop it): such transfers must not happen. A pair it cannot size is
++ * refused too. */
 +bool vrend_format_gl_rows_fit(enum virgl_formats format, GLenum glformat,
 +                              GLenum gltype, uint32_t width)
 +{
 +   unsigned pixel = vrend_gl_pixel_size(glformat, gltype);
 +
-+   if (!pixel || util_format_is_compressed(format))
++   if (util_format_is_compressed(format))
 +      return true;
++   if (!pixel)
++      return false;
 +   return (uint64_t)pixel * width <= (uint64_t)util_format_get_stride(format, width);
 +}
 +
@@ -154,8 +164,8 @@ index ba0a885..157e6c6 100644
 +      return true;
 +   if (!said) {
 +      said = true;
-+      virgl_warn("transfer refused: format %d moves more bytes per row in GL than in the guest\n",
-+                 res->base.format);
++      virgl_warn("transfer refused: format %d (GL 0x%x/0x%x) moves more bytes per row in GL than in the guest, or GL's row size is unknown\n",
++                 res->base.format, glformat, gltype);
 +   }
 +   return false;
 +}

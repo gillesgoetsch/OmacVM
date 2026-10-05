@@ -1,0 +1,268 @@
+virglrenderer: uniform block arrays are named and bound as declared
+
+What: a shader that indexes its uniform blocks at run time (CONST[ADDR + n]) gets
+them as one GLSL array. That array now starts at the lowest block the shader
+declares and runs to the highest, holes included; the renderer names, binds and
+checks every element from the same mask, and the run-time index is
+"addr + n - first" (it ignored n). Every element keeps the first block's size, as
+before (the array has one element type). Before, the array had one element per declared
+block, but the renderer named element k after block k + 1: with holes some names
+did not exist (the block then counted as inactive) and some elements were never
+bound. A second line of defence: before vrend binds a program's blocks, each
+active block points at a binding vrend never fills; any block still there
+afterwards (one vrend does not know by name) skips the program's draws.
+Why: an element that vrend never bound stays on binding 0, whatever buffer
+another stage put there. The GPU then reads the block from a buffer the uniform
+block checks never saw (review of gpu-robust, repro 3: CONST[1] and CONST[3]
+read 64 bytes from the vertex shader's 32-byte buffer). Mesa declares block
+arrays without holes from the first block, so its shaders are unchanged.
+Depends on: virgl-uniform-buffer-checks.patch, virgl-shader-index-clamp.patch.
+Upstream: upstreamable fix of the block array naming; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c cases 33 (a block array with a hole
+without a buffer: skipped) and 34 (all bound: drawn, the pixel shows the block
+the index picked).
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -262,7 +262,6 @@
+    uint32_t req_local_mem;
+    bool integer_memory;
+ 
+-   uint32_t ubo_base;
+    uint32_t ubo_used_mask;
+    int ubo_sizes[32];
+    uint32_t num_address;
+@@ -943,6 +942,19 @@
+ {
+    snprintf(buf, 64, "clamp(addr%d + %d, 0, %d)", addr, offset, size > 1 ? size - 1 : 0);
+    return buf;
++}
++
++/* A shader that picks its uniform block at run time (CONST[ADDR + n]) sees its blocks as
++ * one GLSL array, "uboarr": element k is block first + k, first being the lowest block
++ * the shader declares, and the array runs to the highest one, holes included. The
++ * renderer names, binds and checks the elements from this mask (fill_sinfo), so every
++ * element the index can reach has a checked buffer. */
++static uint32_t ubo_array_mask(const struct dump_ctx *ctx)
++{
++   if (!ctx->ubo_used_mask)
++      return 0;
++   const unsigned first = ffs(ctx->ubo_used_mask) - 1;
++   return u_bit_consecutive(first, util_last_bit(ctx->ubo_used_mask) - first);
+ }
+ 
+ static int sampler_array_size(const struct dump_ctx *ctx, int first)
+@@ -1974,8 +1986,6 @@
+          ctx->ubo_used_mask |= (1 << decl->Dim.Index2D);
+          ctx->ubo_sizes[decl->Dim.Index2D] = decl->Range.Last + 1;
+       } else {
+-         /* if we have a normal single const set then ubo base should be 1 */
+-         ctx->ubo_base = 1;
+          if (decl->Range.Last) {
+             if (decl->Range.Last + 1 > ctx->num_consts)
+                ctx->num_consts = decl->Range.Last + 1;
+@@ -4944,7 +4954,8 @@
+                ctx->shader_req_bits |= SHADER_REQ_GPU_SHADER5;
+                char block[64], index[64];
+                const int first = ffs(ctx->ubo_used_mask) - 1;
+-               clamped_index(block, src->DimIndirect.Index, 0, util_bitcount(ctx->ubo_used_mask));
++               clamped_index(block, src->DimIndirect.Index, dim - first,
++                             util_bitcount(ubo_array_mask(ctx)));
+                if (src->Register.Indirect) {
+                   if (src->Indirect.File != TGSI_FILE_ADDRESS)
+                      return false;
+@@ -4954,13 +4965,13 @@
+                   strbuf_fmt(src_buf, "%s(%s%suboarr[%s].ubocontents[%d]%s)", get_string(stypeprefix), prefix, cname, block, src->Register.Index, swizzle);
+             } else {
+                if (ctx->info.dimension_indirect_files & (1 << TGSI_FILE_CONSTANT)) {
++                  const int first = ffs(ctx->ubo_used_mask) - 1;
+                   if (src->Register.Indirect) {
+                      char index[64];
+-                     const int first = ffs(ctx->ubo_used_mask) - 1;
+-                     strbuf_fmt(src_buf, "%s(%s%suboarr[%d].ubocontents[%s]%s)", get_string(stypeprefix), prefix, cname, dim - ctx->ubo_base,
++                     strbuf_fmt(src_buf, "%s(%s%suboarr[%d].ubocontents[%s]%s)", get_string(stypeprefix), prefix, cname, dim - first,
+                                 clamped_index(index, src->Indirect.Index, src->Register.Index, ctx->ubo_sizes[first]), swizzle);
+                   } else
+-                     strbuf_fmt(src_buf, "%s(%s%suboarr[%d].ubocontents[%d]%s)", get_string(stypeprefix), prefix, cname, dim - ctx->ubo_base, src->Register.Index, swizzle);
++                     strbuf_fmt(src_buf, "%s(%s%suboarr[%d].ubocontents[%d]%s)", get_string(stypeprefix), prefix, cname, dim - first, src->Register.Index, swizzle);
+                } else {
+                   if (src->Register.Indirect) {
+                      char index[64];
+@@ -6772,8 +6783,8 @@
+       if (ctx->info.dimension_indirect_files & (1 << TGSI_FILE_CONSTANT)) {
+          glsl_ver_required = require_glsl_ver(ctx, 150);
+          int first = ffs(ctx->ubo_used_mask) - 1;
+-         unsigned num_ubo = util_bitcount(ctx->ubo_used_mask);
+-         emit_hdrf(glsl_strbufs, "uniform %subo { vec4 ubocontents[%d]; } %suboarr[%d];\n", cname, ctx->ubo_sizes[first], cname, num_ubo);
++         emit_hdrf(glsl_strbufs, "uniform %subo { vec4 ubocontents[%d]; } %suboarr[%d];\n", cname,
++                   ctx->ubo_sizes[first], cname, util_bitcount(ubo_array_mask(ctx)));
+       } else {
+          unsigned mask = ctx->ubo_used_mask;
+          while (mask) {
+@@ -7936,7 +7947,8 @@
+    sinfo->image_binding_offset = ctx->key->image_binding_offset;
+    sinfo->image_last_binding = ctx->key->image_binding_offset + ctx->image_last_binding;
+    sinfo->num_consts = ctx->num_consts;
+-   sinfo->ubo_used_mask = ctx->ubo_used_mask;
++   sinfo->ubo_used_mask = (ctx->info.dimension_indirect_files & (1 << TGSI_FILE_CONSTANT)) ?
++                          ubo_array_mask(ctx) : ctx->ubo_used_mask;
+    sinfo->fog_input_mask = ctx->fog_input_mask;
+    sinfo->fog_output_mask = ctx->fog_output_mask;
+ 
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -391,6 +391,7 @@
+    /* glBindBufferRange refuses other offsets (and keeps the old binding) */
+    uint32_t ubo_offset_alignment;
+    uint32_t ssbo_offset_alignment;
++   uint32_t max_ubo_bindings;
+ 
+    /* inferred GL caching type */
+    uint32_t inferred_gl_caching_type;
+@@ -478,6 +479,8 @@
+    uint32_t ubo_used_mask[PIPE_SHADER_TYPES];
+    /* GL_UNIFORM_BLOCK_DATA_SIZE of each used block; 0 when the GL found it inactive */
+    uint32_t ubo_block_size[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
++   /* an active uniform block vrend did not bind: its draws are skipped */
++   bool blocks_unbound;
+    uint32_t samplers_used_mask[PIPE_SHADER_TYPES];
+    // a subset of samplers_used_mask
+    uint32_t shadow_samp_mask[PIPE_SHADER_TYPES];
+@@ -1877,12 +1880,15 @@
+    if (sinfo->ubo_used_mask) {
+       const char *prefix = pipe_shader_to_prefix(shader_type);
+ 
++      /* with a run-time index the blocks are one array from the first one (vrend_shader.c
++       * ubo_array_mask): element k is block first + k */
++      const int first = ffs(sinfo->ubo_used_mask) - 1;
+       unsigned mask = sinfo->ubo_used_mask;
+       while (mask) {
+          uint32_t ubo_idx = u_bit_scan(&mask);
+          char name[32];
+          if (sinfo->ubo_indirect)
+-            snprintf(name, 32, "%subo[%d]", prefix, ubo_idx - 1);
++            snprintf(name, 32, "%subo[%d]", prefix, ubo_idx - first);
+          else
+             snprintf(name, 32, "%subo%d", prefix, ubo_idx);
+ 
+@@ -1939,8 +1945,66 @@
+          glBindBuffer(GL_UNIFORM_BUFFER, sprog->ubo_sysval_buffer_id);
+          glBufferData(GL_UNIFORM_BUFFER, virgl_block_size, NULL, GL_DYNAMIC_DRAW);
+          glBindBuffer(GL_UNIFORM_BUFFER, 0);
++      }
++   }
++}
++
++/* The binding vrend never puts a buffer at. Before vrend binds a program's uniform
++ * blocks by name, every active block points there; a block still there afterwards is one
++ * vrend did not know by name. The GPU would read it from whatever buffer the binding
++ * holds, unchecked, so the program's draws are skipped (vrend_ubos_inside). */
++static GLuint vrend_unbound_ubo_binding(void)
++{
++   return vrend_state.max_ubo_bindings - 1;
++}
++
++/* The GL programs of a linked program: one, or one per stage of a pipeline. */
++static unsigned vrend_program_gl_ids(const struct vrend_linked_shader_program *sprog,
++                                     enum pipe_shader_type last_shader,
++                                     GLuint ids[PIPE_SHADER_TYPES])
++{
++   unsigned n = 0;
++
++   if (!sprog->is_pipeline) {
++      ids[n++] = sprog->id.program;
++      return n;
++   }
++   for (enum pipe_shader_type t = PIPE_SHADER_VERTEX; t <= last_shader; t++)
++      if (sprog->ss[t])
++         ids[n++] = sprog->ss[t]->program_id;
++   return n;
++}
++
++static void vrend_park_blocks(const GLuint *ids, unsigned n)
++{
++   if (!has_feature(feat_ubo))
++      return;
++   for (unsigned p = 0; p < n; p++) {
++      GLint blocks = 0;
++      glGetProgramiv(ids[p], GL_ACTIVE_UNIFORM_BLOCKS, &blocks);
++      for (GLint i = 0; i < blocks; i++)
++         glUniformBlockBinding(ids[p], i, vrend_unbound_ubo_binding());
++   }
++}
++
++/* next_ubo_id: one past the last binding vrend fills for the program (or its VirglBlock) */
++static bool vrend_blocks_all_bound(const GLuint *ids, unsigned n, GLuint next_ubo_id)
++{
++   if (!has_feature(feat_ubo))
++      return true;
++   if (next_ubo_id > vrend_unbound_ubo_binding())
++      return false;
++   for (unsigned p = 0; p < n; p++) {
++      GLint blocks = 0;
++      glGetProgramiv(ids[p], GL_ACTIVE_UNIFORM_BLOCKS, &blocks);
++      for (GLint i = 0; i < blocks; i++) {
++         GLint binding = -1;
++         glGetActiveUniformBlockiv(ids[p], i, GL_UNIFORM_BLOCK_BINDING, &binding);
++         if ((GLuint)binding == vrend_unbound_ubo_binding())
++            return false;
+       }
+    }
++   return true;
+ }
+ 
+ static void rebind_ubo_and_sampler_locs(struct vrend_linked_shader_program *sprog,
+@@ -1948,7 +2012,11 @@
+ {
+    int next_sampler_id = 0;
+    GLuint next_ubo_id = 0;
++   GLuint ids[PIPE_SHADER_TYPES];
++   unsigned num_ids = vrend_program_gl_ids(sprog, last_shader, ids);
+ 
++   vrend_park_blocks(ids, num_ids);
++
+    for (enum pipe_shader_type shader_type = PIPE_SHADER_VERTEX;
+         shader_type <= last_shader;
+         shader_type++) {
+@@ -1972,6 +2040,7 @@
+ 
+       bind_virgl_block_loc(sprog, shader_type, next_ubo_id);
+    }
++   sprog->blocks_unbound = !vrend_blocks_all_bound(ids, num_ids, next_ubo_id + 1);
+ }
+ 
+ static void bind_ssbo_locs(struct vrend_linked_shader_program *sprog,
+@@ -2139,8 +2208,10 @@
+ 
+    vrend_use_program(sprog);
+ 
++   vrend_park_blocks(&prog_id, 1);
+    bind_sampler_locs(sprog, PIPE_SHADER_COMPUTE, 0);
+-   bind_ubo_locs(sprog, PIPE_SHADER_COMPUTE, 0);
++   GLuint next_ubo_id = bind_ubo_locs(sprog, PIPE_SHADER_COMPUTE, 0);
++   sprog->blocks_unbound = !vrend_blocks_all_bound(&prog_id, 1, next_ubo_id);
+    bind_ssbo_locs(sprog, PIPE_SHADER_COMPUTE);
+    bind_const_locs(sprog, PIPE_SHADER_COMPUTE);
+    bind_image_locs(sprog, PIPE_SHADER_COMPUTE);
+@@ -5698,6 +5769,9 @@
+ {
+    uint32_t mask = sub_ctx->prog->ubo_used_mask[shader_type];
+ 
++   if (sub_ctx->prog->blocks_unbound)
++      return false;
++
+    while (mask) {
+       int i = u_bit_scan(&mask);
+       if (i >= PIPE_MAX_CONSTANT_BUFFERS)
+@@ -8507,9 +8581,11 @@
+    vrend_state.vertex_10f_11f_11f = epoxy_has_gl_extension("GL_ARB_vertex_type_10f_11f_11f_rev");
+    vrend_state.ubo_offset_alignment = 1;
+    vrend_state.ssbo_offset_alignment = 1;
+-   if (has_feature(feat_ubo))
++   if (has_feature(feat_ubo)) {
+       glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT,
+                     (GLint *)&vrend_state.ubo_offset_alignment);
++      glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, (GLint *)&vrend_state.max_ubo_bindings);
++   }
+    if (has_feature(feat_ssbo))
+       glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,
+                     (GLint *)&vrend_state.ssbo_offset_alignment);

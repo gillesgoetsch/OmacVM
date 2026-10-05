@@ -14,9 +14,6 @@ struct StripGeometry: Equatable {
     var windowID: CGWindowID
     /// App that owns it ("Parallels Desktop", "UTM").
     var owner: String
-    var ownerPID: pid_t
-    /// The window's frame (CG coordinates, top-left origin).
-    var windowRect: CGRect
 }
 
 /// Finds the notch strip above a full-screen VM window using public APIs only.
@@ -64,9 +61,7 @@ enum StripDetector {
                                  notchRight: right.minX - screen.frame.minX,
                                  notchHeight: screen.safeAreaInsets.top,
                                  windowID: CGWindowID((w[kCGWindowNumber as String] as? Int) ?? 0),
-                                 owner: owner,
-                                 ownerPID: pid_t((w[kCGWindowOwnerPID as String] as? Int) ?? 0),
-                                 windowRect: r)
+                                 owner: owner)
         }
         return nil
     }

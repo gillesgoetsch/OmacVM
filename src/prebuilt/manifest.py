@@ -4,7 +4,8 @@
   manifest.py write OUT.json --route R --omacvm V --omarchy V --bundle NAME
                     --unpacked KB --disk-gb N PART...
   manifest.py get MANIFEST KEY             one value (route, omacvm, omarchy, bundle,
-                                           size, unpacked_kb, disk_gb, created)
+                                           size, unpacked_kb, disk_gb, created); the
+                                           manifest is checked first, exit 1 if it is bad
   manifest.py parts MANIFEST               one line per part: NAME SIZE SHA256
   manifest.py release RELEASES.json VERSION ROUTE
                                            from GitHub's release list: TAG URL IMAGE_VERSION
@@ -57,6 +58,45 @@ def write(a):
     print(out)
 
 
+# A manifest comes from the internet (or OMACVM_PREBUILT_SOURCE): its values end
+# up in bash (arithmetic, paths, the terminal). Only plain integers, safe names
+# and printable text get out; anything else fails the whole manifest.
+NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+ROUTE = re.compile(r"[a-z]{1,16}")
+VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
+TEXT = re.compile(r"[ -~]{1,80}")   # printable ASCII
+CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+INTS = {"disk_gb": (1, 4096), "size": (1, 1 << 40), "unpacked_kb": (1, 1 << 33)}
+
+
+def plain_int(m, key):
+    v = m.get(key)
+    lo, hi = INTS[key]
+    # JSON true/false are ints in Python; strings and floats are not taken.
+    if type(v) is not int or not lo <= v <= hi:
+        raise ValueError("%s is not a whole number from %d to %d" % (key, lo, hi))
+    return v
+
+
+def checked(path):
+    """The manifest with every value we use checked; ValueError if not."""
+    with open(path) as f:
+        m = json.load(f)
+    if not isinstance(m, dict):
+        raise ValueError("not a JSON object")
+    out = {}
+    for key, rx in (("route", ROUTE), ("omacvm", VERSION), ("omarchy", TEXT), ("bundle", NAME), ("created", CREATED)):
+        v = m.get(key)
+        if not isinstance(v, str) or not rx.fullmatch(v):
+            raise ValueError("bad %s" % key)
+        out[key] = v
+    if out["bundle"] in (".", ".."):
+        raise ValueError("bad bundle")
+    for key in INTS:
+        out[key] = plain_int(m, key)
+    return out
+
+
 def vtuple(v):
     return tuple(int(x) for x in v.split("."))
 
@@ -67,7 +107,7 @@ def pick(cands, version, route):
     mine = vtuple(version)
     best = None
     for c in cands:
-        m = want.match(c[2])
+        m = want.match(str(c[2]))
         if not m:
             continue
         v = vtuple(m.group(1))
@@ -86,24 +126,35 @@ def main(a):
     if cmd == "write":
         write(a[2:])
     elif cmd == "get":
-        v = json.load(open(a[2])).get(a[3], "")
-        print(v)
+        try:
+            m = checked(a[2])
+        except (ValueError, OSError) as e:
+            sys.exit("manifest.py: %s: %s" % (a[2], e))
+        if a[3] not in m:
+            sys.exit("manifest.py: unknown key %r" % a[3])
+        print(m[a[3]])
     elif cmd == "parts":
         m = json.load(open(a[2]))
         # The names become file paths on the Mac: only our own part names.
         ok = re.compile(r"^omacvm-prebuilt-[0-9]+\.[0-9]+\.[0-9]+-(parallels|utm|fusion)\.tar\.zst\.part-[a-z]{2,4}$")
         for p in m["parts"]:
-            if not ok.match(str(p["name"])) or not re.fullmatch(r"[0-9a-f]{64}", str(p["sha256"])) or int(p["size"]) <= 0:
+            size = p.get("size")
+            if (not ok.match(str(p.get("name"))) or not re.fullmatch(r"[0-9a-f]{64}", str(p.get("sha256")))
+                    or type(size) is not int or not 0 < size <= 1 << 40):
                 sys.exit("manifest.py: unexpected part %r" % p.get("name"))
-            print(p["name"], int(p["size"]), p["sha256"])
+            print(p["name"], size, p["sha256"])
     elif cmd == "release":
         # The newest image for this route with the same major version and a
         # version up to ours (the first omacvm apply brings the guest side
         # to ours): prints TAG URL VERSION.
         rels, version, route = json.load(open(a[2])), a[3], a[4]
-        best = pick([(r.get("tag_name", ""), r.get("published_at") or "", x["name"], x["browser_download_url"])
-                     for r in rels if not r.get("draft") and r.get("tag_name", "").startswith("prebuilt-")
-                     for x in r.get("assets", [])], version, route)
+        # Tag and URL are printed for bash's read: no spaces or control characters.
+        tag_ok = re.compile(r"prebuilt-[A-Za-z0-9._-]{1,64}")
+        url_ok = re.compile(r"https://github\.com/[!-~]{1,400}")
+        best = pick([(r["tag_name"], r.get("published_at") or "", x["name"], x["browser_download_url"])
+                     for r in rels if not r.get("draft") and tag_ok.fullmatch(str(r.get("tag_name", "")))
+                     for x in r.get("assets", []) if url_ok.fullmatch(str(x.get("browser_download_url", "")))],
+                    version, route)
         if not best:
             sys.exit(1)
         print(best[1][0], best[1][3], best[0])

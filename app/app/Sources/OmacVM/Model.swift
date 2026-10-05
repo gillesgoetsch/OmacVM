@@ -126,6 +126,7 @@ struct VMConfig: Equatable {
     var clipboardSocket: URL { Paths.runDir.appendingPathComponent("\(id).clip") }
     var batterySocket: URL { Paths.runDir.appendingPathComponent("\(id).batt") }
     var cameraSocket: URL { Paths.runDir.appendingPathComponent("\(id).cam") }
+    var displaySocket: URL { Paths.runDir.appendingPathComponent("\(id).disp") }
 
     func write() throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -146,6 +147,23 @@ struct VMConfig: Equatable {
 
         """
         try text.write(to: folder.appendingPathComponent("vm.env"), atomically: true, encoding: .utf8)
+    }
+
+    /// Only CPUS and MEM_MB in vm.env, every other line as it was (`omacvm
+    /// resources` changes the same two). The VM reads them at its next start.
+    func writeResources() throws {
+        let url = folder.appendingPathComponent("vm.env")
+        var lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+        if lines.last == "" { lines.removeLast() }
+        var cpusDone = false, memDone = false
+        lines = lines.map { line in
+            if line.hasPrefix("CPUS=") { cpusDone = true; return "CPUS=\(cpus)" }
+            if line.hasPrefix("MEM_MB=") { memDone = true; return "MEM_MB=\(memoryMB)" }
+            return line
+        }
+        if !cpusDone { lines.append("CPUS=\(cpus)") }
+        if !memDone { lines.append("MEM_MB=\(memoryMB)") }
+        try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
     static func load(from folder: URL) -> VMConfig? {
@@ -206,6 +224,13 @@ enum Mac {
     static var performanceCores: Int { max(2, sysctlInt("hw.perflevel0.physicalcpu")) }
     static var efficiencyCores: Int { sysctlInt("hw.perflevel1.physicalcpu") }
     static var cores: Int { max(2, sysctlInt("hw.ncpu")) }
+
+    static let tierNames = ["Low", "Balanced", "High", "Best"]
+
+    /// The tier these resources are, if any (the lowest when tiers coincide).
+    static func tierIndex(cpus: Int, memoryMB: Int) -> Int? {
+        (0..<4).first { tier($0).cpus == cpus && tier($0).memoryGB * 1024 == memoryMB }
+    }
 
     /// Like `omacvm build`'s tiers: 0 low, 1 balanced, 2 high, 3 best.
     /// Best leaves macOS and the GPU max(8 GB, a quarter).

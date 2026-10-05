@@ -19,12 +19,18 @@ What the patch adds:
     parked copy, so panels open on the visible display under the strip.
   * IPC target "notchbar" for the helper, and a watchdog that unparks the bar
     when the helper stops sending heartbeats.
+  * The bar is remapped when its output moves (Omarchy's own remap never
+    fires on Quickshell; see notchRemap), so it does not stay behind at the
+    output's old place.
+  * notchcast's last word on parking (~/.local/state/omanotch/park), read at
+    startup and every few seconds: a shell that (re)starts while the strip
+    shows parks at once, and a lost IPC call cannot leave two bars.
 """
 import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 13
+VERSION = 15
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -287,18 +293,44 @@ def main():
     onTriggered: root.notchWriteState()
   }
 
-  // Unpark when the helper goes quiet, so the built-in display never ends up
-  // without a bar. notchcast beats every 4 s and unparks by itself when the
-  // helper or the service stops; this only catches a notchcast that died.
+  // notchcast's last word on parking: "1 <output>" or "0" (notchcast writes
+  // it before its IPC calls). Followed only while notchcast beats, so a file
+  // left behind by a notchcast that died changes nothing.
+  FileView {
+    id: notchParkFile
+    path: root.notchStateDir + "/park"
+    blockLoading: true
+    printErrors: false
+  }
+  function notchFollowParkFile() {
+    notchBeatFile.reload()
+    var beat = parseFloat(String(notchBeatFile.text()).trim())
+    if (!(beat > 0) || Date.now() - beat > 15000) return
+    if (beat > notchLastBeat) notchLastBeat = beat
+    notchParkFile.reload()
+    var p = String(notchParkFile.text()).trim().split(/\\s+/)
+    if (p[0] === "1" && p.length === 2 && /^[A-Za-z0-9_.-]+$/.test(p[1])) {
+      if (notchParkedScreen !== p[1]) notchParkedScreen = p[1]
+      if (!notchParked) notchParked = true
+    } else if (p[0] === "0" && p.length === 1 && notchParked) {
+      notchParked = false
+    }
+  }
+
+  // Follows the park file (at once when the shell starts: a restarted shell
+  // must not wait for the next IPC call), and unparks when the helper goes
+  // quiet, so the built-in display never ends up without a bar. notchcast
+  // beats every 4 s and unparks by itself when the helper or the service
+  // stops; the watchdog only catches a notchcast that died. Two tiny file
+  // reads every 3 s, no process.
   Timer {
     interval: 3000
     repeat: true
-    running: root.notchParked
+    running: true
+    triggeredOnStart: true
     onTriggered: {
-      notchBeatFile.reload()
-      var beat = parseFloat(String(notchBeatFile.text()).trim())
-      if (beat > root.notchLastBeat) root.notchLastBeat = beat
-      if (Date.now() - root.notchLastBeat > 15000) root.notchParked = false
+      root.notchFollowParkFile()
+      if (root.notchParked && Date.now() - root.notchLastBeat > 15000) root.notchParked = false
     }
   }
 
@@ -312,7 +344,8 @@ def main():
     # 3. Parking per window instead of only through the global bar-off flag.
     text = replace_once(text, '''    visible: !remapGuard.remapping
     exclusionMode: root.barHidden ? ExclusionMode.Ignore : ExclusionMode.Auto
-''', '''    visible: !remapGuard.remapping
+''', '''    // omarchy-notch-bar: notchRemap, see below.
+    visible: !remapGuard.remapping && !notchRemap.remapping
     // omarchy-notch-bar: role of this copy ("notch", "parked" or "").
     readonly property string notchRole: root.notchRoleFor(screen)
     // Over fullscreen the NOTCH copy stays mapped, even with the bar off, to
@@ -337,6 +370,37 @@ def main():
     readonly property int notchPadTop: notchRole === "notch" ? Math.floor((parkedSize - root.barSize) / 2) : 0
     readonly property int notchPadBottom: notchRole === "notch" ? parkedSize - root.barSize - notchPadTop : 0
     exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Auto
+
+    // omarchy-notch-bar: Hyprland leaves a mapped layer surface at its old
+    // place when its output moves (the bar is then on no screen at all).
+    // Omarchy's ScreenMoveRemap is meant to remap it, but it waits for
+    // xChanged/yChanged, which Quickshell's screens do not have (they only
+    // have geometryChanged), so it never fires. This does the same on
+    // geometryChanged, when the output's position really changed.
+    Item {
+      id: notchRemap
+      visible: false
+      property bool remapping: false
+      property real lastX: NaN
+      property real lastY: NaN
+      function note() {
+        var s = barWindow.screen
+        if (!s || (s.x === lastX && s.y === lastY)) return
+        var moved = !isNaN(lastX)
+        lastX = s.x
+        lastY = s.y
+        if (moved) notchRemapSettle.restart()
+      }
+      Component.onCompleted: note()
+      Connections {
+        target: barWindow.screen
+        function onGeometryChanged() { notchRemap.note() }
+      }
+      // Let a layout change settle, then unmap for a moment (long enough
+      // that the compositor sees the unmap before the new map).
+      Timer { id: notchRemapSettle; interval: 200; onTriggered: notchRemap.remapping = true }
+      Timer { interval: 100; running: notchRemap.remapping; onTriggered: notchRemap.remapping = false }
+    }
 ''')
     text = replace_once(text, '''      top: root.barHidden && root.position === "top" ? -root.barSize : 0
       bottom: root.barHidden && root.position === "bottom" ? -root.barSize : 0

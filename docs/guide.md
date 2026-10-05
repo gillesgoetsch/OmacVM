@@ -79,7 +79,8 @@ Once, on the Mac:
 
 1. **Allow the prompts**: Location Services for *OmacVM Bridge* (Wi-Fi
    names), Bluetooth for *OmacVM Bridge*, Accessibility for *OmacVM Bridge*
-   and *OmacVM Gestures*, Input Monitoring for *OmacVM Gestures*. The camera
+   and *OmacVM Gestures*, Input Monitoring for *OmacVM Gestures* (Omanotch
+   needs none). The camera
    is asked for the first time a Linux app uses it: for *OmacVM Bridge* (UTM,
    Fusion), *OmacVM* (the app) or *Parallels Desktop*. The microphone belongs
    to the VM's app: UTM asks the first time, OmacVM.app when it starts the VM;
@@ -115,6 +116,20 @@ the Bridge.
 `omacvm apply --vm NAME` adds OmacVM to it. If OmacVM cannot get in yet, it
 prints the one command to run in the VM's terminal first (it lets OmacVM in
 with its own SSH key, from the Mac only).
+
+## Change CPUs and memory
+
+```bash
+omacvm resources --vm Omarchy                    # what it has, and what each tier gives
+omacvm resources --vm Omarchy --resources high   # low, balanced, high or best
+omacvm resources --vm Omarchy --cpus 8 --memory-gb 24
+```
+
+The same tiers and limits as the build: up to this Mac's CPUs and memory, and
+within the Parallels licence. Parallels, UTM and VMware Fusion change a
+stopped VM only (shut it down first; a suspended one too); a change applies on
+the VM's next start. OmacVM.app has the same picker in its window, below the
+VM's name. A name used in two apps needs `--vm-type parallels|utm|fusion|app`.
 
 ## Update
 

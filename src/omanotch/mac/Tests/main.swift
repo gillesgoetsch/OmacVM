@@ -12,10 +12,10 @@ func check<T: Equatable>(_ got: T, _ want: T, _ what: String, line: Int = #line)
     }
 }
 
-let P = "Parallels Desktop", U = "UTM", F = "VMware Fusion"
-func g(_ id: Int, _ owner: String?, _ name: String?) -> GuestCandidate { GuestCandidate(id: id, owner: owner, name: name) }
-func pick(_ guests: [GuestCandidate], _ owner: String, _ title: String?, current: Int?) -> Int? {
-    GuestPicker.pick(guests, front: FrontWindow(owner: owner, title: title), current: current)
+let P = "Parallels Desktop", U = "UTM", F = "VMware Fusion", O = "OmacVM"
+func g(_ id: Int, _ owner: String?) -> GuestCandidate { GuestCandidate(id: id, owner: owner) }
+func pick(_ guests: [GuestCandidate], _ owner: String, current: Int?) -> Int? {
+    GuestPicker.pick(guests, owner: owner, current: current)
 }
 
 // hello and vmname
@@ -34,58 +34,31 @@ check(GuestPicker.vmName(base64: Data("a\nb".utf8).base64EncodedString()), nil, 
 check(GuestPicker.vmName(base64: Data([0xff, 0xfe]).base64EncodedString()), nil, "vmname not UTF-8")
 check(GuestPicker.vmName(base64: Data(String(repeating: "x", count: 256).utf8).base64EncodedString()), nil, "vmname too long")
 
-// One guest: always it, whatever the title says (renamed VMs keep working).
-check(pick([g(1, P, "Omarchy")], P, nil, current: nil), 1, "one guest, no title")
-check(pick([g(1, P, "Omarchy")], P, "Work", current: nil), 1, "one guest, other title")
-check(pick([g(1, nil, nil)], U, "UTM – Omarchy", current: nil), 1, "one old guest")
+// One guest: it, when it can run in the window's app.
+check(pick([g(1, P)], P, current: nil), 1, "one guest")
+check(pick([g(1, nil)], U, current: nil), 1, "one old guest (app not said)")
+check(pick([g(1, P)], U, current: 1), nil, "a Parallels guest never serves a UTM window")
+check(pick([g(1, O)], P, current: nil), nil, "an OmacVM.app guest never serves a Parallels window")
 
-// Two VMs of one app: the title decides, both ways.
-let two = [g(1, P, "OmacVM 2 Parallels"), g(2, P, "OmacVM 3 Parallels")]
-check(pick(two, P, "OmacVM 3 Parallels", current: 1), 2, "title names the other VM")
-check(pick(two, P, "OmacVM 2 Parallels", current: 2), 1, "and back")
-check(pick(two, P, "OmacVM 2 Parallels", current: 1), 1, "stays")
+// Guests of different apps: the window's app decides, both ways.
+let apps = [g(1, P), g(2, U), g(3, O)]
+check(pick(apps, U, current: 1), 2, "UTM window")
+check(pick(apps, P, current: 2), 1, "Parallels window")
+check(pick(apps, O, current: 1), 3, "OmacVM.app window")
+check(pick(apps, F, current: 1), nil, "no guest runs in Fusion")
 
-// The name that is the title wins, else the longest one in it.
-let utm = [g(1, U, "Omarchy"), g(2, U, "Omarchy 2")]
-check(pick(utm, U, "UTM – Omarchy 2", current: 1), 2, "longest name in the title")
-check(pick(utm, U, "UTM – Omarchy", current: 2), 1, "shorter name in the title")
-check(pick(utm, U, "Omarchy", current: 2), 1, "exact title")
-check(pick(utm, U, "Omarchy 2", current: 1), 2, "exact title, longer name")
-check(pick(utm, U, "omarchy 2", current: 1), 1, "case matters: no match keeps the current one")
+// Two VMs of one app: the current one stays, else the most recently connected.
+let two = [g(1, P), g(2, P)]
+check(pick(two, P, current: 1), 1, "keeps the current one")
+check(pick(two, P, current: 2), 2, "keeps the other current one")
+check(pick(two, P, current: nil), 2, "nothing served yet: most recently connected")
+check(pick(two + [g(3, U)], P, current: 3), 2, "back from UTM: most recently connected")
 
-// Same name in two apps: the window's app decides.
-let apps = [g(1, P, "Omarchy"), g(2, U, "Omarchy")]
-check(pick(apps, U, "UTM – Omarchy", current: 1), 2, "UTM window")
-check(pick(apps, P, "Omarchy", current: 2), 1, "Parallels window")
-check(pick(apps, F, "Omarchy", current: 1), nil, "no guest runs in Fusion")
-check(pick([g(1, P, "Omarchy")], U, "UTM – Omarchy", current: 1), nil, "a Parallels guest never serves a UTM window")
-
-// No usable title (no Accessibility permission): first one wins, but a guest
-// whose app is in front beats one whose app is not.
-check(pick(two, P, nil, current: 2), 2, "no title keeps the current one")
-check(pick(two, P, nil, current: nil), 1, "no title, nothing served yet: first connected")
-check(pick([g(1, nil, nil), g(2, P, nil)], P, nil, current: 1), 2, "unknown app vs the front app")
-check(pick([g(1, nil, nil), g(2, U, nil)], P, nil, current: 2), 1, "the front app's guest is the only fit")
-check(pick([g(1, P, nil), g(2, P, nil)], P, "Omarchy", current: 2), 2, "two old guests: keep the current one")
-
-// Names that match nothing: a guest that did not say its name may be the one.
-check(pick([g(1, P, "Alpha"), g(2, P, nil)], P, "Beta", current: 1), 2, "unnamed old guest over a named mismatch")
-check(pick([g(1, U, "Omarchy"), g(2, U, nil)], U, "UTM – Omarchy 2", current: 1), 2, "a name inside another is no match")
-check(pick([g(1, U, "Omarchy"), g(2, U, nil)], U, "UTM – Omarchy", current: 2), 1, "UTM title")
-check(pick([g(1, P, "Omarchy"), g(2, P, nil)], P, "Omarchy - Parallels Desktop", current: 2), 1, "name first")
-check(pick([g(1, P, "Omarchy"), g(2, P, nil)], P, "QEMU (Omarchy)", current: 2), 1, "name in brackets")
-check(pick([g(1, P, "Alpha"), g(2, P, "Beta")], P, "Gamma", current: 2), 2, "no match: keep the current one")
-check(pick([g(1, P, "Alpha"), g(2, P, "Beta")], P, "Gamma", current: nil), 1, "no match, nothing served: first")
-check(pick([g(1, P, ""), g(2, P, "Beta")], P, "Beta", current: 1), 2, "empty name never matches")
-check(pick([g(1, P, "Beta"), g(2, nil, "Beta")], P, "Beta", current: nil), 1, "equal names: the front app's guest")
-
-// A title is only needed when it can change the pick.
-check(GuestPicker.needsTitle([g(1, P, "Omarchy")], front: P), false, "one guest")
-check(GuestPicker.needsTitle([g(1, P, "Omarchy"), g(2, "OmacVM", "Omarchy")], front: P), false, "one guest per app")
-check(GuestPicker.needsTitle([g(1, P, "Omarchy"), g(2, U, nil)], front: U), false, "one guest per app, unnamed")
-check(GuestPicker.needsTitle(two, front: P), true, "two VMs of one app")
-check(GuestPicker.needsTitle([g(1, P, "Omarchy"), g(2, nil, nil)], front: P), true, "a guest of any app")
-check(GuestPicker.needsTitle([g(1, P, nil), g(2, P, nil)], front: P), false, "no names: the title cannot tell them apart")
+// A guest that said the window's app beats one that said nothing.
+check(pick([g(1, nil), g(2, P)], P, current: 1), 2, "unknown app vs the front app")
+check(pick([g(1, P), g(2, nil)], P, current: nil), 1, "the front app's guest, though older")
+check(pick([g(1, nil), g(2, U)], P, current: 2), 1, "the unknown one is the only fit")
+check(pick([g(1, nil), g(2, nil)], P, current: 1), 1, "two old guests: keep the current one")
 
 // ParkState: only the served guest is parked; switching unparks the old one first.
 var st = ParkState()
@@ -119,14 +92,11 @@ check(st2.activate(2).count, 0, "switching away from an unparked guest sends not
 // The whole loop with fake windows: at most one bar parked, always the front VM's.
 var s3 = ParkState()
 parkedGuests = []
-let guests = [g(1, P, "OmacVM 2 Parallels"), g(2, P, "OmacVM 3 Parallels"), g(3, U, "Omarchy"), g(4, P, nil)]
-let windows: [(String, String?, Int?)] = [
-    (P, "OmacVM 2 Parallels", 1), (P, "OmacVM 3 Parallels", 2), (U, "UTM – Omarchy", 3),
-    (P, "OmacVM 2 Parallels", 1), (F, "Windows 11", nil), (P, "Omarchy ARM", 4), (P, nil, 4),
-]
-for (owner, title, want) in windows {
-    let p = GuestPicker.pick(guests, front: FrontWindow(owner: owner, title: title), current: s3.active)
-    check(p, want, "front \(owner) \"\(title ?? "-")\"")
+let guests = [g(1, P), g(2, U), g(3, O), g(4, P)]
+let windows: [(String, Int?)] = [(P, 4), (U, 2), (O, 3), (P, 4), (F, nil), (U, 2)]
+for (owner, want) in windows {
+    let p = GuestPicker.pick(guests, owner: owner, current: s3.active)
+    check(p, want, "front \(owner)")
     if let p {
         apply(s3.activate(p))
         apply(s3.setParked(true))

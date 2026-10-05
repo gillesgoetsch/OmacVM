@@ -1,0 +1,110 @@
+virglrenderer: flush after resource and transfer commands from QEMU
+
+What: after creating or freeing a resource, after a transfer to the host and
+after destroying a context (QEMU's resource create/unref, transfer-to-host and
+context destroy commands), glFlush() on the context the work ran on, mostly
+vrend's own context ctx0. A transfer with a guest context id is not flushed:
+guest contexts are flushed by their fences, and Mesa sends many per frame.
+Why: nothing else flushes ctx0 (guest contexts are flushed by their fences),
+and Apple's GL keeps the memory of textures made, deleted or uploaded on a
+context until that context is flushed. Every guest mode change uploads the new
+screen through QEMU's 2D path on ctx0, so a guest switching modes in a loop
+grew QEMU's "IOAccelerator (graphics)" memory without end even after
+qemu-cocoa-gl-view-flush.patch (3840x2160 <-> 2560x1440: about 16 MB per
+switch; flat with this patch). Found by flushing ctx0 after every QEMU command
+in a test build.
+Upstream: not sent (macOS driver behaviour).
+Tests: tests/graphics/scanout-churn.sh (test VM; IOAccelerator memory over
+120 mode switches).
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -113,6 +113,7 @@
+    vrend_args.flags = args->flags;
+ 
+    pipe_res = vrend_renderer_resource_create(&vrend_args, image);
++   vrend_renderer_flush_current();
+    if (!pipe_res)
+       return EINVAL;
+ 
+@@ -177,6 +178,8 @@
+    virgl_context_foreach(&args);
+ 
+    virgl_resource_remove(res->res_id);
++   if (state.vrend_initialized)
++      vrend_renderer_flush_current();
+ }
+ 
+ void virgl_renderer_fill_caps(uint32_t set, uint32_t version,
+@@ -314,6 +317,8 @@
+ {
+    TRACE_FUNC();
+    virgl_context_remove(handle);
++   if (state.vrend_initialized)
++      vrend_renderer_flush_current();
+ }
+ 
+ int virgl_renderer_submit_cmd(void *buffer,
+@@ -361,20 +366,25 @@
+    transfer_info.iovec_cnt = iovec_cnt;
+    transfer_info.synchronized = false;
+ 
++   int ret;
+    if (ctx_id) {
+       struct virgl_context *ctx = virgl_context_lookup(ctx_id);
+       if (!ctx)
+          return EINVAL;
+ 
+-      return ctx->transfer_3d(ctx, res, &transfer_info,
+-                              VIRGL_TRANSFER_TO_HOST);
++      ret = ctx->transfer_3d(ctx, res, &transfer_info,
++                             VIRGL_TRANSFER_TO_HOST);
+    } else {
+       if (!res->pipe_resource)
+          return EINVAL;
+ 
+-      return vrend_renderer_transfer_pipe(res->pipe_resource, &transfer_info,
+-                                          VIRGL_TRANSFER_TO_HOST);
++      ret = vrend_renderer_transfer_pipe(res->pipe_resource, &transfer_info,
++                                         VIRGL_TRANSFER_TO_HOST);
+    }
++   /* only vrend's own context: a guest context's uploads are flushed by its fences */
++   if (!ctx_id && state.vrend_initialized)
++      vrend_renderer_flush_current();
++   return ret;
+ }
+ 
+ int virgl_renderer_transfer_read_iov(uint32_t handle, uint32_t ctx_id,
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -532,6 +532,7 @@
+ }
+ 
+ void vrend_renderer_force_ctx_0(void);
++void vrend_renderer_flush_current(void);
+ 
+ void vrend_renderer_get_rect(struct pipe_resource *pres,
+                              const struct iovec *iov, unsigned int num_iovs,
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -14543,6 +14543,21 @@
+ }
+ 
+ 
++/*
++ * OmacVM: hand the work of a resource or transfer command from QEMU to the driver
++ * now. These run on vrend's own context (ctx0, made current for every QEMU
++ * command) or, for a transfer with a context id, on that context; nothing else
++ * flushes ctx0, and Apple's GL keeps the memory of textures made, deleted or
++ * uploaded on a context until that context is flushed. A guest switching modes
++ * (a new screen texture uploaded by QEMU's 2D path on every switch) grew QEMU's
++ * GPU memory without end.
++ */
++void vrend_renderer_flush_current(void)
++{
++   if (vrend_state.current_hw_ctx)
++      glFlush();
++}
++
+ void vrend_renderer_force_ctx_0(void)
+ {
+    TRACE_FUNC();

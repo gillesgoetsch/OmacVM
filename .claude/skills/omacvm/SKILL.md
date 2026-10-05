@@ -1,6 +1,6 @@
 ---
 name: omacvm
-description: Set up, change, update or troubleshoot OmacVM (Omarchy in a Parallels, UTM or VMware Fusion VM on an Apple Silicon Mac) with the omacvm command. Use when someone wants an Omarchy VM built, a feature switched (macOS-native scroll momentum, trackpad gestures, Bridge, Omanotch, wallpaper, idle lock, autologin, memory-optimized kernel), OmacVM added to an existing Omarchy VM, updated, or checked.
+description: Set up, change, update or troubleshoot OmacVM (Omarchy in a Parallels, UTM or VMware Fusion VM on an Apple Silicon Mac) with the omacvm command. Use when someone wants an Omarchy VM built, its CPUs or memory changed, a feature switched (macOS-native scroll momentum, trackpad gestures, Bridge, Omanotch, wallpaper, idle lock, autologin, memory-optimized kernel), OmacVM added to an existing Omarchy VM, updated, or checked.
 ---
 
 # OmacVM
@@ -25,7 +25,9 @@ sections 7-8 before fixing anything by hand.
 
 ## New VM
 
-1. `./omacvm vms --json`; then
+1. `./omacvm vms --json` (a UTM VM with `"state": "unknown"`: UTM does not
+   take orders from this terminal; over SSH it never does, so UTM VMs are
+   driven from a terminal app on the Mac that may control UTM); then
    `./omacvm build --plan --json --vm-type parallels|utm|fusion [--vm-name NAME] [--feature scroll-momentum=on]`.
 2. Show the plan (resources, features, `needs_human`), ask for the password
    and for changes.
@@ -38,6 +40,11 @@ sections 7-8 before fixing anything by hand.
 
 - Features: `./omacvm features --vm NAME --json`, then
   `./omacvm enable|disable FEATURE... --vm NAME --yes`, then check.
+- CPUs and memory: `./omacvm resources --vm NAME --json` (what it has, the
+  limits, the tiers), then `./omacvm resources --vm NAME --resources TIER`
+  or `--cpus N --memory-gb N`. Parallels, UTM and Fusion VMs must be stopped
+  (exit 3: the person shuts it down); a change applies on the next start. A
+  name in two apps: add `--vm-type`.
 - Omarchy installed by hand: `./omacvm apply --vm NAME`; exit 3 prints one
   command for the person to run in the VM's terminal, then apply again.
 - Update: `./omacvm update` (or `--vm NAME`).

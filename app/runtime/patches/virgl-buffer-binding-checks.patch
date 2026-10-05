@@ -1,0 +1,305 @@
+virglrenderer: only GL buffers, inside their size, at buffer binding points
+
+What: a resource the guest binds as a vertex, index, uniform, stream output,
+indirect, query, storage or atomic counter buffer must be a GL buffer object
+(target PIPE_BUFFER with GL buffer storage). vrend checked only for a non-zero GL
+name, so a texture's name was used as a buffer name. Ranges are checked in 64 bit
+against the buffer: uniform ranges are clamped to the buffer's end; stream output
+ranges start 4-byte aligned inside the buffer and are clamped; atomic counter
+ranges and query results must fit; an indirect dispatch command must fit. The
+emulated query-buffer path wrote into the GL buffer named like the query object
+instead of the guest's buffer; it uses the buffer now.
+Why: a name the GL does not know as a buffer leaves the previous binding in place
+or makes the attribute a client array (address 0 + offset): the GPU then reads
+memory no buffer owns. On 2026-10-04 a fuzzed command stream made the MacBook's
+GPU fault on address 0 (BIF0 page fault); the GPU reset hung WindowServer and
+macOS panicked. A guest must never reach that (whole-Mac denial of service).
+Upstream: upstreamable hardening; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c (each refused binding, on Apple's software
+renderer); Tests/virgl/fuzz-cmd-stream.sh with gl-oracle.c (aborts on any draw
+whose buffers are unbound or too small).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -3744,6 +3744,24 @@
+       memcpy(consts->consts, data, num_constant * sizeof(unsigned int));
+ 
+    consts->num_consts = num_constant;
++}
++
++/* The GPU reads or writes a resource bound as a vertex, index, uniform, stream output,
++ * indirect, query or storage buffer through its GL buffer object. Only real GL buffers
++ * may be bound there: a texture's GL name means something else in the buffer namespace
++ * (or nothing, and the GL keeps the previous binding), and a buffer that lives only in
++ * guest memory has no GL object. */
++static bool vrend_res_is_gl_buffer(const struct vrend_resource *res)
++{
++   return res && res->base.target == PIPE_BUFFER &&
++          has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER) && res->gl_id;
++}
++
++/* [offset, offset + size) lies inside the buffer; 64-bit, so no 32-bit wrap. */
++static bool vrend_buffer_range_ok(const struct vrend_resource *res, uint64_t offset,
++                                  uint64_t size)
++{
++   return offset <= res->base.width0 && size <= res->base.width0 - offset;
+ }
+ 
+ void vrend_set_uniform_buffer(struct vrend_context *ctx,
+@@ -3761,10 +3779,16 @@
+    if (res_handle) {
+       res = vrend_renderer_ctx_res_lookup(ctx, res_handle);
+ 
+-      if (!res || !res->gl_id) {
++      if (!vrend_res_is_gl_buffer(res)) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
+          return;
+       }
++      if (offset > res->base.width0) {
++         vrend_report_context_error(ctx, VIRGL_ERROR_CTX_RESOURCE_OUT_OF_RANGE, res_handle);
++         return;
++      }
++      if (!vrend_buffer_range_ok(res, offset, length))
++         length = res->base.width0 - offset;
+ 
+       vrend_resource_reference((struct vrend_resource **)&cbs->buffer, res);
+       cbs->buffer_offset = offset;
+@@ -3791,7 +3815,7 @@
+    if (res_handle) {
+       res = vrend_renderer_ctx_res_lookup(ctx, res_handle);
+       if ((struct vrend_resource *)ctx->sub->ib.buffer != res) {
+-         if (!res || !res->gl_id) {
++         if (!vrend_res_is_gl_buffer(res)) {
+             vrend_resource_reference((struct vrend_resource **)&ctx->sub->ib.buffer, NULL);
+             vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
+             return;
+@@ -3825,8 +3849,9 @@
+       vbo->res_id = 0;
+    } else if (vbo->res_id != res_handle) {
+       res = vrend_renderer_ctx_res_lookup(ctx, res_handle);
+-      if (!res || !res->gl_id) {
++      if (!vrend_res_is_gl_buffer(res)) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
++         vrend_resource_reference((struct vrend_resource **)&vbo->base.buffer, NULL);
+          vbo->res_id = 0;
+          return;
+       }
+@@ -4103,7 +4128,7 @@
+ 
+    if (handle) {
+       res = vrend_renderer_ctx_res_lookup(ctx, handle);
+-      if (!res || !res->gl_id) {
++      if (!vrend_res_is_gl_buffer(res)) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, handle);
+          return;
+       }
+@@ -4138,8 +4163,13 @@
+ 
+    if (handle) {
+       res = vrend_renderer_ctx_res_lookup(ctx, handle);
+-      if (!res || !res->gl_id) {
++      if (!vrend_res_is_gl_buffer(res)) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, handle);
++         return;
++      }
++
++      if (!vrend_buffer_range_ok(res, offset, length)) {
++         vrend_report_context_error(ctx, VIRGL_ERROR_CTX_RESOURCE_OUT_OF_RANGE, handle);
+          return;
+       }
+ 
+@@ -6206,7 +6236,7 @@
+       if (!has_feature(feat_indirect_draw))
+          return EINVAL;
+       indirect_res = vrend_renderer_ctx_res_lookup(ctx, indirect_handle);
+-      if (!indirect_res || !indirect_res->gl_id) {
++      if (!vrend_res_is_gl_buffer(indirect_res)) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, indirect_handle);
+          return EINVAL;
+       }
+@@ -6218,7 +6248,7 @@
+          return EINVAL;
+ 
+       indirect_params_res = vrend_renderer_ctx_res_lookup(ctx, indirect_draw_count_handle);
+-      if (!indirect_params_res || !indirect_params_res->gl_id){
++      if (!vrend_res_is_gl_buffer(indirect_params_res)) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, indirect_draw_count_handle);
+          return EINVAL;
+       }
+@@ -6563,7 +6593,8 @@
+ 
+    if (indirect_handle) {
+       indirect_res = vrend_renderer_ctx_res_lookup(ctx, indirect_handle);
+-      if (!indirect_res || !indirect_res->gl_id) {
++      if (!vrend_res_is_gl_buffer(indirect_res) ||
++          !vrend_buffer_range_ok(indirect_res, indirect_offset, 3 * sizeof(GLuint))) {
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, indirect_handle);
+          return;
+       }
+@@ -8683,7 +8714,7 @@
+    return 0;
+ }
+ 
+-static void vrend_create_buffer(struct vrend_resource *gr, uint32_t width, uint32_t flags)
++static int vrend_create_buffer(struct vrend_resource *gr, uint32_t width, uint32_t flags)
+ {
+ 
+    GLbitfield buffer_storage_flags = 0;
+@@ -8720,13 +8751,14 @@
+                                            GBM_FORMAT_R8, GBM_BO_USE_LINEAR);
+          if (!bo) {
+             virgl_error("Failed to allocate emulated GL buffer backing storage");
+-            return;
++            goto fail;
+          }
+ 
+          ret = virgl_gbm_export_fd(gbm->device, gbm_bo_get_handle(bo).u32, &fd);
+          if (ret || fd < 0) {
+             virgl_error("Failed to get file descriptor\n");
+-            return;
++            gbm_bo_destroy(bo);
++            goto fail;
+          }
+ 
+          glCreateMemoryObjectsEXT(1, &memobj);
+@@ -8740,7 +8772,7 @@
+ #endif
+       else {
+          virgl_error("Missing buffer storage and interop extensions\n");
+-         return;
++         goto fail;
+       }
+ 
+       gr->storage_bits |= VREND_STORAGE_GL_IMMUTABLE;
+@@ -8749,7 +8781,24 @@
+    } else
+       glBufferData(gr->target, width, NULL, GL_STREAM_DRAW);
+ 
++   GLint64 size = -1;
++   glGetBufferParameteri64v(gr->target, GL_BUFFER_SIZE, &size);
++   if (size != (GLint64)width) {
++      virgl_error("GL buffer of %u bytes not created (got %lld)\n", width, (long long)size);
++      while (glGetError() != GL_NO_ERROR)
++         ;
++      goto fail;
++   }
++
+    glBindBufferARB(gr->target, 0);
++   return 0;
++
++fail:
++   glBindBufferARB(gr->target, 0);
++   glDeleteBuffers(1, &gr->gl_id);
++   gr->gl_id = 0;
++   gr->storage_bits &= ~VREND_STORAGE_GL_BUFFER;
++   return -ENOMEM;
+ }
+ 
+ static int
+@@ -8768,25 +8817,25 @@
+      /* staging buffers only use guest memory -- nothing to do. */
+    } else if (bind == VIRGL_BIND_INDEX_BUFFER) {
+       gr->target = GL_ELEMENT_ARRAY_BUFFER_ARB;
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else if (bind == VIRGL_BIND_STREAM_OUTPUT) {
+       gr->target = GL_TRANSFORM_FEEDBACK_BUFFER;
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else if (bind == VIRGL_BIND_VERTEX_BUFFER) {
+       gr->target = GL_ARRAY_BUFFER_ARB;
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else if (bind == VIRGL_BIND_CONSTANT_BUFFER) {
+       gr->target = GL_UNIFORM_BUFFER;
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else if (bind == VIRGL_BIND_QUERY_BUFFER) {
+       gr->target = GL_QUERY_BUFFER;
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else if (bind == VIRGL_BIND_COMMAND_ARGS) {
+       gr->target = GL_DRAW_INDIRECT_BUFFER;
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else if (bind == 0 || bind == VIRGL_BIND_SHADER_BUFFER) {
+       gr->target = GL_ARRAY_BUFFER_ARB;
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else if (bind & VIRGL_BIND_SAMPLER_VIEW) {
+       /*
+     * On Desktop we use GL_ARB_texture_buffer_object on GLES we use
+@@ -8802,7 +8851,7 @@
+       } else {
+          gr->target = GL_PIXEL_PACK_BUFFER_ARB;
+       }
+-      vrend_create_buffer(gr, size, flags);
++      return vrend_create_buffer(gr, size, flags);
+    } else {
+       virgl_error("%s: Illegal buffer binding flags 0x%x\n", __func__, bind);
+       return -EINVAL;
+@@ -12546,10 +12595,15 @@
+      return EINVAL;
+ 
+   res = vrend_renderer_ctx_res_lookup(ctx, qbo_handle);
+-  if (!res || !res->gl_id) {
++  if (!vrend_res_is_gl_buffer(res)) {
+      vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, qbo_handle);
+      return EINVAL;
+   }
++  const bool wide = result_type == PIPE_QUERY_TYPE_I64 || result_type == PIPE_QUERY_TYPE_U64;
++  if (!vrend_buffer_range_ok(res, offset, wide ? 8 : 4)) {
++     vrend_report_context_error(ctx, VIRGL_ERROR_CTX_RESOURCE_OUT_OF_RANGE, qbo_handle);
++     return EINVAL;
++  }
+ 
+   VREND_DEBUG(dbg_query, ctx, "Get query result from Query:%d\n", q->id);
+ 
+@@ -12586,25 +12640,25 @@
+      case PIPE_QUERY_TYPE_I32: {
+         GLint value;
+         glGetQueryObjectiv(q->id, qtype, &value);
+-        COPY_QUERY_RESULT_TO_BUFFER(q->id, offset, value, 4, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
++        COPY_QUERY_RESULT_TO_BUFFER(res->gl_id, offset, value, 4, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
+         break;
+      }
+      case PIPE_QUERY_TYPE_U32: {
+         GLuint value;
+         glGetQueryObjectuiv(q->id, qtype, &value);
+-        COPY_QUERY_RESULT_TO_BUFFER(q->id, offset, value, 4, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
++        COPY_QUERY_RESULT_TO_BUFFER(res->gl_id, offset, value, 4, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
+         break;
+      }
+      case PIPE_QUERY_TYPE_I64: {
+         GLint64 value;
+         glGetQueryObjecti64v(q->id, qtype, &value);
+-        COPY_QUERY_RESULT_TO_BUFFER(q->id, offset, value, 8, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
++        COPY_QUERY_RESULT_TO_BUFFER(res->gl_id, offset, value, 8, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
+         break;
+      }
+      case PIPE_QUERY_TYPE_U64: {
+         GLuint64 value;
+         glGetQueryObjectui64v(q->id, qtype, &value);
+-        COPY_QUERY_RESULT_TO_BUFFER(q->id, offset, value, 8, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
++        COPY_QUERY_RESULT_TO_BUFFER(res->gl_id, offset, value, 8, ctx->sub->fake_occlusion_query_samples_passed_multiplier);
+         break;
+      }
+      }
+@@ -12699,10 +12753,17 @@
+    struct vrend_resource *res;
+    int ret_handle;
+    res = vrend_renderer_ctx_res_lookup(ctx, res_handle);
+-   if (!res || !res->gl_id) {
++   if (!vrend_res_is_gl_buffer(res)) {
+       vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_RESOURCE, res_handle);
+       return EINVAL;
+    }
++   if (!vrend_buffer_range_ok(res, buffer_offset, buffer_size))
++      buffer_size = buffer_offset < res->base.width0 ? res->base.width0 - buffer_offset : 0;
++   buffer_size &= ~3u;
++   if ((buffer_offset & 3) || !buffer_size) {
++      vrend_report_context_error(ctx, VIRGL_ERROR_CTX_RESOURCE_OUT_OF_RANGE, res_handle);
++      return EINVAL;
++   }
+ 
+    target = CALLOC_STRUCT(vrend_so_target);
+    if (!target)

@@ -1,0 +1,12 @@
+# Blank issues stay on: older pre-filled links (?title=...&body=...) need them.
+blank_issues_enabled: true
+contact_links:
+  - name: Troubleshooting
+    url: https://github.com/gillesgoetsch/omacvm/blob/main/docs/troubleshooting.md
+    about: Common problems and their fixes. Run `omacvm check` too.
+  - name: A problem in Omarchy itself
+    url: https://github.com/omacom/omarchy-mac/issues
+    about: If it also happens without a VM, it belongs to omarchy-mac.
+  - name: Contributing
+    url: https://github.com/gillesgoetsch/omacvm/blob/main/CONTRIBUTING.md
+    about: How to build, test and send a pull request.

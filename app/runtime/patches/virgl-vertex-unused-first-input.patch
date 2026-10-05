@@ -1,0 +1,50 @@
+virglrenderer: an unused first vertex input no longer leaves old attributes bound
+
+What: when the vertex shader does not read its first input (no attribute
+location for in_0), vrend now goes on to the next attribute instead of
+returning from the vertex setup. Every attribute the program reads gets the
+guest's new buffer, and attributes left unset are disabled. The same for a
+vertex type vrend could not translate (refused when the elements are created,
+so it should never get there).
+Why: the early return ("Shader probably didn't compile - skipping rendering")
+did not skip anything: the draw still went out with the previous draw's
+attribute pointers and enabled mask. No GL call failed, so the pre-draw error
+check saw nothing, and the draw range checks look at the guest's new buffers.
+A guest could make the GPU fetch past an older, smaller buffer (second review
+of gpu-robust, repro 5: a vertex shader that declares IN[0] and IN[1] and reads
+only IN[1], after a draw that put a 16-byte buffer on location 0, read 64 bytes
+from it). A shader that failed to compile never reaches this code; its draws
+are dropped earlier (virgl-shader-failure-skip-draws.patch).
+Upstream: upstream bug in vrend_draw_bind_vertex_legacy (used when the host GL
+has no ARB_vertex_attrib_binding, as on macOS); upstreamable; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c case 35 (drawn, from the new buffer; the
+oracle aborted before this patch).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -5546,19 +5546,20 @@
+             loc = ctx->sub->prog->attrib_locs[i];
+          } else loc = -1;
+ 
++         /* An input the shader never reads has no location. The draw goes on, so
++          * never return here: the attributes after it must still be set, and the
++          * enabled mask below must be updated, or the GPU fetches from the buffers
++          * of the draw before, which the draw range checks never saw. */
+          if (loc == -1) {
+             virgl_warn("%s: Cannot find loc %d %d %d\n", ctx->debug_name, i, va->count, ctx->sub->prog->ss[PIPE_SHADER_VERTEX]->sel->sinfo.num_inputs);
+-            if (i == 0) {
+-               virgl_warn("%s: Shader probably didn't compile - skipping rendering\n", ctx->debug_name);
+-               return;
+-            }
+             continue;
+          }
+       }
+ 
++      /* refused when the vertex elements were created; left disabled if it ever gets here */
+       if (ve->type == GL_FALSE) {
+-         virgl_warn("Failed to translate vertex type - skipping render\n");
+-         return;
++         virgl_warn("Failed to translate vertex type - attribute %d left disabled\n", i);
++         continue;
+       }
+ 
+       glBindBuffer(GL_ARRAY_BUFFER, res->gl_id);

@@ -8,7 +8,7 @@ four, except where the table says otherwise. The short version is the
 **Which one?**
 
 - **OmacVM.app** (recommended): free, open source, nothing else to install,
-  and the only one with hardware video decoding.
+  every display, and the only one with hardware video decoding.
 - **UTM**: free and open source, one display.
 - **VMware Fusion**: free, external displays, the longest battery life.
 - **Parallels**: the least to set up and the fastest 3D, but paid.
@@ -41,7 +41,7 @@ Each app has its own page: [OmacVM.app](routes/app.md), [UTM](routes/utm.md),
 | YouTube 4K | 21.3 W · 4.7 h (old, CPU decoding) | 39.2 W · 2.6 h | **20.4 W · 4.9 h** | 24.2 W · 4.1 h |
 | Every CPU core busy | 71 W · 1.4 h | 61 W · 1.6 h | 74 W · 1.4 h | 72 W · 1.4 h |
 | **Displays** | | | | |
-| External displays | not yet | ✗ one display | **✓ every one, in your macOS arrangement** | **✓ every one, in your macOS arrangement** |
+| External displays | **✓ every one, in your macOS arrangement** | ✗ one display | **✓ every one, in your macOS arrangement** | **✓ every one, in your macOS arrangement** |
 | Native Retina, 120 Hz | ✓ | ✓ | ✓ | ✓ |
 | Resolution changes | **live** | fixed at boot | **live** | **live** |
 | **Mac integration** | | | | |

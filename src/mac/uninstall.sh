@@ -16,6 +16,18 @@ done
 "$R/omanotch/mac/uninstall.sh"
 tccutil reset Accessibility org.omacvm.gestures >/dev/null 2>&1 || true
 tccutil reset ListenEvent org.omacvm.gestures >/dev/null 2>&1 || true
-rm -rf "$HOME/Library/Application Support/omacvm/installed"
-[[ -n $PURGE ]] && rm -rf "$HOME/.local/share/omacvm" "$HOME/Library/Application Support/omacvm"   # also the VMs' SSH host keys
+S="$HOME/Library/Application Support/omacvm"
+rm -rf "$S/installed"
+# Only OmacVM's own files: on macOS's usual case-insensitive disk this is the
+# same folder as OmacVM.app's "Application Support/OmacVM", which holds the
+# app's VMs.
+if [[ -n $PURGE ]]; then
+  rm -rf "$HOME/.local/share/omacvm" "$S/known_hosts" "$S/gestures-legacy"   # known_hosts: the VMs' SSH host keys
+  rmdir "$S" 2>/dev/null || true
+fi
 echo "OmacVM removed from this Mac"
+# What stays: the omacvm command itself and OmacVM.app (which may hold VMs).
+top=$(cd "$R/.." && pwd)
+link=$(command -v omacvm 2>/dev/null) || link=""
+echo "Still here: the omacvm command ($top${link:+ and $link}); delete ${link:+them}${link:-it} to remove it."
+echo "OmacVM.app, if installed, stays too: drag it to the Bin (its VMs stay in ~/Library/Application Support/OmacVM)."

@@ -1,0 +1,66 @@
+virglrenderer: no NULL dereference when a bound shader has no variant
+
+What: vrend_sync_shader_io (the shader key of the stage before and after) and the
+early link of VIRGL_CCMD_LINK_SHADER read sub_ctx->shaders[x]->current without a
+check. A selector has no current variant after its TGSI failed to translate, and
+the decoder keeps taking CREATE_OBJECT commands; the next shader created for a
+neighbouring stage then crashed QEMU (the whole VM) on a NULL pointer. Now the
+missing variant simply gives no clip/cull/colour/fs info for the key and is
+skipped by the early link.
+Why: a guest app could kill the VM with one command stream. Found by
+Tests/virgl/fuzz-cmd-stream.c within seconds; the same input crashes the
+unpatched tree (vrend_sync_shader_io).
+Upstream: upstream bug, upstreamable as is; not sent.
+Tests: the crash input replays clean (fuzz corpus); Tests/virgl/fuzz-cmd-stream.sh.
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -4247,11 +4247,14 @@
+       key->ssbo_binding_offset = prev->sinfo.ssbo_last_binding + 1;
+       key->image_binding_offset = prev->sinfo.image_last_binding + 1;
+ 
+-      key->num_in_clip = sub_ctx->shaders[prev_type]->current->var_sinfo.num_out_clip;
+-      key->num_in_cull = sub_ctx->shaders[prev_type]->current->var_sinfo.num_out_cull;
++      /* The previous stage may have no variant yet (its translation failed). */
++      if (prev->current) {
++         key->num_in_clip = prev->current->var_sinfo.num_out_clip;
++         key->num_in_cull = prev->current->var_sinfo.num_out_cull;
+ 
+-      if (vrend_state.use_gles && type == PIPE_SHADER_FRAGMENT)
+-         key->fs.available_color_in_bits = sub_ctx->shaders[prev_type]->current->var_sinfo.legacy_color_bits;
++         if (vrend_state.use_gles && type == PIPE_SHADER_FRAGMENT)
++            key->fs.available_color_in_bits = prev->current->var_sinfo.legacy_color_bits;
++      }
+    }
+ 
+    enum pipe_shader_type next_type = PIPE_SHADER_INVALID;
+@@ -4331,15 +4334,16 @@
+          /* FS gets the clip/cull info in the key from this shader, so
+           * we can avoid re-translating this shader by not updating the
+           * info in the key */
+-         if (next_type != PIPE_SHADER_FRAGMENT) {
+-            key->num_out_clip = sub_ctx->shaders[next_type]->current->var_sinfo.num_in_clip;
+-            key->num_out_cull = sub_ctx->shaders[next_type]->current->var_sinfo.num_in_cull;
++         if (next_type != PIPE_SHADER_FRAGMENT && next->current) {
++            key->num_out_clip = next->current->var_sinfo.num_in_clip;
++            key->num_out_cull = next->current->var_sinfo.num_in_cull;
+          }
+ 
+          if (next_type == PIPE_SHADER_FRAGMENT) {
+             struct vrend_shader *fs =
+                   sub_ctx->shaders[PIPE_SHADER_FRAGMENT]->current;
+-            key->fs_info = fs->var_sinfo.fs_info;
++            if (fs)
++               key->fs_info = fs->var_sinfo.fs_info;
+             if (type == PIPE_SHADER_VERTEX && sub_ctx->shaders[type]) {
+                uint32_t fog_input = sub_ctx->shaders[next_type]->sinfo.fog_input_mask;
+                uint32_t fog_output = sub_ctx->shaders[type]->sinfo.fog_output_mask;
+@@ -6097,7 +6101,8 @@
+ 
+    /* Force early-linking for separable shaders, since they don't depend on other stages */
+    for (uint32_t type = 0; type < PIPE_SHADER_TYPES; ++type) {
+-       if (ctx->sub->shaders[type] && ctx->sub->shaders[type]->sinfo.separable_program) {
++       if (ctx->sub->shaders[type] && ctx->sub->shaders[type]->current &&
++           ctx->sub->shaders[type]->sinfo.separable_program) {
+            if (!ctx->sub->shaders[type]->current->is_compiled)
+                vrend_compile_shader(ctx->sub, ctx->sub->shaders[type]->current);
+            if (!ctx->sub->shaders[type]->current->is_linked)

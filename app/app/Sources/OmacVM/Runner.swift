@@ -16,6 +16,9 @@ final class Runner {
 
     var isRunning: Bool { process?.isRunning ?? false }
 
+    /// virtio-gpu outputs: the window and up to four more Mac displays.
+    static let maxOutputs = 5
+
     func arguments() -> [String] {
         let c = config
         // QEMU option values split at commas; a comma in a value is written twice.
@@ -42,7 +45,9 @@ final class Runner {
             // QEMU's user network: the Mac is 10.0.2.2 for the VM; SSH from the Mac on 127.0.0.1.
             "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:\(c.sshPort)-:22",
             "-device", "virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56,romfile=",
-            "-device", "virtio-gpu-gl-pci,max_outputs=1,xres=1920,yres=1080,romfile=",
+            // One output per Mac display in full screen (Virtual-1 is the window;
+            // QEMU's window code opens the others): the built-in and four more.
+            "-device", "virtio-gpu-gl-pci,max_outputs=\(Runner.maxOutputs),xres=1920,yres=1080,romfile=",
             "-display", "cocoa,gl=on,show-cursor=\(guestPointer ? "off" : "on"),zoom-to-fit=on,full-screen=\(Settings.startFullScreen ? "on" : "off"),full-grab=on,immersive=on,swap-opt-cmd=off",
             "-device", "virtio-keyboard-pci,romfile=",
             "-device", "virtio-tablet-pci,romfile=",
@@ -82,7 +87,12 @@ final class Runner {
               "-device", "virtserialport,bus=vser0.0,nr=3,chardev=batt0,name=org.omacvm.battery",
               // The Mac's camera, while a Linux app reads it (omacvm-camera in the VM).
               "-chardev", "socket,id=cam0,path=\(q(c.cameraSocket.path)),server=on,wait=off",
-              "-device", "virtserialport,bus=vser0.0,nr=4,chardev=cam0,name=org.omacvm.camera"]
+              "-device", "virtserialport,bus=vser0.0,nr=4,chardev=cam0,name=org.omacvm.camera",
+              // The displays: QEMU's window code tells the VM the Mac's arrangement,
+              // the VM says where its outputs are and whether it wants the
+              // external displays (omacvm-displays in the VM).
+              "-chardev", "socket,id=disp0,path=\(q(c.displaySocket.path)),server=on,wait=off",
+              "-device", "virtserialport,bus=vser0.0,nr=5,chardev=disp0,name=org.omacvm.display"]
         return a
     }
 
@@ -91,6 +101,7 @@ final class Runner {
         try FileManager.default.createDirectory(at: c.folder.appendingPathComponent("logs"),
                                                 withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: c.qmpSocket)
+        try? FileManager.default.removeItem(at: c.displaySocket)
         let p = Process()
         p.executableURL = Paths.qemu
         p.arguments = arguments()
@@ -108,6 +119,8 @@ final class Runner {
            v.contains("av1") {
             env["OMACVM_VIDEO_AV1"] = "1"
         }
+        // QEMU's window code talks to the VM's display agent over this port.
+        env["OMACVM_DISPLAY_SOCKET"] = c.displaySocket.path
         p.environment = env
         let logURL = c.folder.appendingPathComponent("logs/qemu.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)

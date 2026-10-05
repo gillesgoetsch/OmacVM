@@ -1,6 +1,6 @@
 -- omarchy-notch-bar: hidden output that renders the bar for the macOS notch helper.
 --
--- It overlaps the top edge of the built-in display (Virtual-1), so it stays
+-- It overlaps the top edge of the built-in display, so it stays
 -- inside the existing monitor layout: absolute pointers (the Parallels mouse,
 -- UTM's USB tablet) keep their mapping, and the pointer never lands on it.
 -- notchcast keeps its width equal to the built-in display and its height equal
@@ -9,6 +9,19 @@
 -- install.sh fills in NOTCHBAR_OUTPUT / NOTCHBAR_SCREEN if they are set.
 local NOTCH_OUTPUT = "NOTCH"
 local BUILTIN_OUTPUT = "Virtual-1"
+
+-- The built-in display is BUILTIN_OUTPUT, unless OmacVM.app says which output
+-- it is ($XDG_RUNTIME_DIR/omacvm/builtin): with external displays the main
+-- window's display is Virtual-1, and the MacBook's can be Virtual-2 or later.
+-- notchcast follows the same file.
+local function builtin_output()
+  if BUILTIN_OUTPUT ~= "Virtual-1" then return BUILTIN_OUTPUT end  -- set by NOTCHBAR_SCREEN
+  local f = io.open((os.getenv("XDG_RUNTIME_DIR") or "") .. "/omacvm/builtin", "r")
+  if not f then return BUILTIN_OUTPUT end
+  local name = f:read("l")
+  f:close()
+  return (name and name:match("^Virtual%-%d+$")) or BUILTIN_OUTPUT
+end
 
 -- Start out right on a config reload: the built-in display's width, position
 -- and scale, and the logical height notchcast last gave the output (it
@@ -23,8 +36,9 @@ local function logical_height()
 end
 
 local function notch_rule()
+  local builtin = builtin_output()
   for _, m in ipairs(hl.get_monitors()) do
-    if m.name == BUILTIN_OUTPUT and m.width and m.width > 0 then
+    if m.name == builtin and m.width and m.width > 0 then
       local s = m.scale or 2
       local p = type(m.position) == "table" and m.position or {}
       -- A whole number of pixels at this scale, as notchcast does it.
@@ -67,7 +81,7 @@ hl.on("monitor.focused", function(m)
   hl.timer(function()
     local ok, previous = pcall(hl.get_config, "cursor.no_warps")
     hl.config({ cursor = { no_warps = true } })
-    hl.dispatch(hl.dsp.focus({ monitor = BUILTIN_OUTPUT }))
+    hl.dispatch(hl.dsp.focus({ monitor = builtin_output() }))
     hl.config({ cursor = { no_warps = ok and previous == true } })
   end, { timeout = 1, type = "oneshot" })
 end)

@@ -19,8 +19,18 @@ scripts/build-app.sh          # dist/OmacVM.app
 open dist/OmacVM.app
 ```
 
-The first build compiles QEMU (about 70 seconds). The app takes `../src` as
-committed: the build stops when `src/` has uncommitted changes.
+The first build compiles QEMU (about 70 seconds) and the UEFI firmware (about
+2 minutes, 800 MB of downloads, kept in `runtime/.build/edk2`). The app takes
+`../src` as committed: the build stops when `src/` has uncommitted changes.
+
+The firmware is edk2 as QEMU ships it (edk2-stable202408, QEMU's own build
+flags), built on the Mac by `runtime/build-edk2.sh`: a VM starts with
+Omarchy's logo instead of TianoCore's, and otherwise sees the same firmware
+(see `runtime/README.md`). When that build or its test fails, the app gets
+QEMU's prebuilt firmware (TianoCore logo) and the build says so;
+`OMACVM_FIRMWARE=qemu scripts/build-app.sh` asks for it.
+`Contents/Resources/firmware/firmware-source` says which one an app has, and
+`omacvm check` shows it for a running VM.
 
 ## Release
 
@@ -59,10 +69,13 @@ the Mac's camera (on only while a Linux app reads it), WebGL in Chromium,
 Chrome, Brave and Firefox, video decoding on the Mac's media engine (Google
 Chrome, Brave, Firefox, mpv, FFmpeg, GStreamer apps; [docs](../docs/video-decode.md)), clean shutdown on Quit, pause on Mac sleep,
 install under a chosen name, the Mac's battery in Omarchy's bar, ⌘ keys as Super in full screen (through OmacVM
-Gestures, which the build installs on the Mac with the other helpers).
+Gestures, which the build installs on the Mac with the other helpers),
+every Mac display in full screen (one window and one Omarchy output per
+display, placed as in macOS; "Use external displays" in Omarchy's display
+panel switches it off), tested on a real monitor.
 
-Waiting: external displays. Not confirmed on this route yet: the Bridge's
-features (Wi-Fi, Bluetooth, media keys) and trackpad gestures.
+Not confirmed on this route yet: the Bridge's features (Wi-Fi, Bluetooth,
+media keys) and trackpad gestures.
 
 Needs a person: the permissions OmacVM's Mac helpers ask for; the app needs no
 Accessibility of its own.
@@ -75,6 +88,10 @@ Accessibility of its own.
    Omarchy (omarchy-mac) on the disk, then OmacVM's VM side.
 3. Starts it: QEMU shows Omarchy in a window that follows its size. Quit
    shuts the VM down cleanly; the Mac's sleep pauses it.
+4. Before a start, the window has a Resources picker (the same tiers as the
+   create screen): it writes `CPUS` and `MEM_MB` into the VM's `vm.env`,
+   which applies on the next start. `omacvm resources --vm NAME` does the same
+   from the terminal.
 
 The VM is a normal install: `omarchy update` and snapshots work.
 
@@ -82,7 +99,7 @@ The VM is a normal install: `omarchy update` and snapshots work.
 
 | Path | What |
 |---|---|
-| `runtime/` | QEMU build, from try-omarchy, with OmacVM's patches |
+| `runtime/` | QEMU build, from try-omarchy, with OmacVM's patches; the UEFI firmware (`build-edk2.sh`) |
 | `app/` | the launcher (Swift) |
 | `scripts/create-vm.sh` | builds a VM, headless |
 | `scripts/build-app.sh` | builds the app |

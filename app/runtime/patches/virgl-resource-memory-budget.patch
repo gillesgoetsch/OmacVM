@@ -1,0 +1,236 @@
+virglrenderer: a memory budget for guest resources
+
+What: every resource a guest makes (3D and 2D resources, blob pipe resources) is
+charged its estimated size: all mip levels, layers and samples, at least 4 KiB;
+3-component formats count as 4 (Apple's GL pads them).
+A resource that would take the total past the budget is refused like a failed
+allocation (resource create fails, the guest's later use of it is refused);
+freeing a resource gives its bytes back. OMACVM_GPU_MEMORY_MB sets the budget,
+0 turns it off; the default is a quarter of the Mac's memory. Screens and
+cursors (resources with a SCANOUT, CURSOR or DISPLAY_TARGET bind) may go 256 MB
+past it, so an app that fills the budget does not also stop the desktop's next
+screen or cursor. QEMU's 2D resources (dumb buffers: console, plymouth, dumb
+screens and cursors) get SCANOUT from qemu-virgl-2d-resource-scanout.patch;
+without that patch they count as ordinary resources. The QEMU log says
+the budget at start ("guest GPU memory budget: N MB") and logs refusals at the
+1st, 2nd, 4th, 8th ... one. Blob pipe resources a guest made but never
+claimed are now freed with their context including their GL storage (upstream
+freed only the struct and kept the texture or buffer).
+Why: nothing limited the host memory a guest can take with virgl resources
+(QEMU's max_hostmem only covers 2D resources without virgl). A guest making
+max-size textures in a loop could fill the Mac's memory (standards section 4:
+no guest-controlled allocation without a limit).
+Upstream: not sent; upstream has no host memory limit for vrend resources.
+Tests: Tests/virgl/test-resource-budget.c (build time, Apple's software
+renderer): exact fit and refusal at the budget, mip chains, arrays, 3D, MSAA,
+staging buffers, giving bytes back on unref and on context destroy (unclaimed
+pipe resource), RGB32F charged as RGBA32F, the screen/cursor reserve, budget
+off with 0.
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -121,6 +121,8 @@
+    uint32_t blob_id;
+    struct list_head head;
+    bool is_imported;
++   /* OmacVM: bytes counted against the guest's memory budget, given back when freed */
++   uint64_t budget_bytes;
+    bool bgra_swizzled;
+ };
+ 
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -378,6 +378,12 @@
+    float tess_factors[6];
+    int eventfd;
+ 
++   /* OmacVM: estimated bytes of all live guest resources and their limit (0: none).
++    * Only touched where resources are made and freed, on the renderer thread. */
++   uint64_t resource_bytes;
++   uint64_t resource_budget;
++   uint64_t resource_refusals;
++
+    uint32_t max_draw_buffers;
+    uint32_t max_texture_buffer_size;
+    uint32_t max_texture_2d_size;
+@@ -430,6 +436,8 @@
+ };
+ 
+ static struct global_renderer_state vrend_state;
++
++static void vrend_resource_budget_init(void);
+ 
+ bool vrend_renderer_video_available(void)
+ {
+@@ -8480,6 +8488,7 @@
+    struct virgl_gl_ctx_param ctx_params = {0};
+ 
+    vrend_clicbs = cbs;
++   vrend_resource_budget_init();
+ 
+    /* Give some defaults to be able to run the tests */
+    vrend_state.max_texture_2d_size =
+@@ -8912,8 +8921,11 @@
+    vrend_video_destroy_context(ctx->video);
+ #endif
+ 
++   /* OmacVM: blob pipe resources the guest never claimed; free their GL storage
++    * too and give their bytes back to the budget (upstream freed only the struct) */
+    list_for_each_entry_safe(struct vrend_resource, res, &ctx->vrend_resources, head) {
+-      free(res);
++      list_del(&res->head);
++      vrend_renderer_resource_destroy(res);
+    }
+ 
+    list_for_each_entry_safe(struct vrend_untyped_resource, untyped_res, &ctx->untyped_resources, head)
+@@ -9865,6 +9877,123 @@
+    gt->cur_base = -1;
+    gt->cur_max = 10000;
+    return 0;
++}
++
++/*
++ * OmacVM: a memory budget for guest resources. Without it a guest can make
++ * textures and buffers until the Mac runs out of memory (QEMU's max_hostmem only
++ * covers 2D resources without virgl). Each resource is charged its estimated size
++ * (every level, layer and sample; at least one 4 KiB page, so many tiny resources
++ * count too) when it is made and gets it back when it is freed. A resource that
++ * would take the total past the budget is refused like a failed allocation.
++ * OMACVM_GPU_MEMORY_MB sets the budget, 0 turns it off; the default is a quarter
++ * of the Mac's memory (16 GB on a 64 GB Mac, 2 GB on an 8 GB one). Screens and
++ * cursors may go up to VREND_RESOURCE_DISPLAY_RESERVE past it, so one app that
++ * fills the budget does not also stop the desktop's next screen or cursor.
++ */
++#define VREND_RESOURCE_MIN_CHARGE 4096u
++#define VREND_RESOURCE_DISPLAY_RESERVE (256ull << 20)
++#define VREND_RESOURCE_DISPLAY_BINDS    (VIRGL_BIND_SCANOUT | VIRGL_BIND_DISPLAY_TARGET | VIRGL_BIND_CURSOR)
++
++static uint64_t budget_mul(uint64_t a, uint64_t b)
++{
++   return b && a > UINT64_MAX / b ? UINT64_MAX : a * b;
++}
++
++static uint64_t budget_add(uint64_t a, uint64_t b)
++{
++   return a > UINT64_MAX - b ? UINT64_MAX : a + b;
++}
++
++static uint64_t
++vrend_resource_estimated_size(const struct vrend_renderer_resource_create_args *args)
++{
++   uint64_t total = 0;
++
++   if (args->target == PIPE_BUFFER) {
++      /* staging buffers live in guest memory only */
++      if (args->bind != VIRGL_BIND_STAGING)
++         total = args->width;
++   } else {
++      enum pipe_format format = (enum pipe_format)args->format;
++      unsigned blocksize = util_format_get_blocksize(format);
++      uint64_t layers = args->target == PIPE_TEXTURE_3D ? 1 : MAX2(args->array_size, 1);
++
++      if (!blocksize)
++         blocksize = 16;
++      /* Apple's GL stores 3-component formats (RGB8, RGB16F, RGB32F) as 4 */
++      if (util_format_get_nr_components(format) == 3 && util_format_get_blockwidth(format) == 1 &&
++          blocksize % 3 == 0)
++         blocksize = blocksize / 3 * 4;
++      for (uint32_t l = 0; l <= args->last_level && l < 32; l++) {
++         uint64_t depth = args->target == PIPE_TEXTURE_3D ? u_minify(args->depth, l) : 1;
++         uint64_t level = budget_mul(util_format_get_nblocksx(format, u_minify(args->width, l)),
++                                     util_format_get_nblocksy(format, u_minify(args->height, l)));
++         level = budget_mul(budget_mul(budget_mul(level, blocksize), depth), layers);
++         total = budget_add(total, level);
++      }
++      total = budget_mul(total, MAX2(args->nr_samples, 1));
++   }
++   return MAX2(total, VREND_RESOURCE_MIN_CHARGE);
++}
++
++static void vrend_resource_budget_init(void)
++{
++   const char *env = getenv("OMACVM_GPU_MEMORY_MB");
++   long pages = sysconf(_SC_PHYS_PAGES), page_size = sysconf(_SC_PAGESIZE);
++   uint64_t budget = pages > 0 && page_size > 0 ? (uint64_t)pages * (uint64_t)page_size / 4 : 0;
++   const char *from = "a quarter of the Mac's memory";
++
++   if (env && *env) {
++      char *end = NULL;
++      unsigned long long mb = strtoull(env, &end, 10);
++      if (end && !*end && mb <= UINT64_MAX >> 20) {
++         budget = (uint64_t)mb << 20;
++         from = "OMACVM_GPU_MEMORY_MB";
++      } else {
++         virgl_warn("OMACVM_GPU_MEMORY_MB=%s is not a number of MB; using the default\n", env);
++      }
++   }
++   vrend_state.resource_budget = budget;
++   vrend_state.resource_bytes = 0;
++   vrend_state.resource_refusals = 0;
++   if (budget)
++      virgl_info("guest GPU memory budget: %llu MB (%s)\n",
++                 (unsigned long long)(budget >> 20), from);
++   else
++      virgl_info("guest GPU memory budget: none (%s)\n", from);
++}
++
++static bool vrend_resource_charge(struct vrend_resource *gr,
++                                  const struct vrend_renderer_resource_create_args *args)
++{
++   uint64_t size = vrend_resource_estimated_size(args);
++   uint64_t budget = vrend_state.resource_budget;
++   uint64_t limit = budget;
++
++   if (budget && (args->bind & VREND_RESOURCE_DISPLAY_BINDS))
++      limit = budget_add(budget, VREND_RESOURCE_DISPLAY_RESERVE);
++   if (budget && (size > limit || vrend_state.resource_bytes > limit - size)) {
++      /* logged at the 1st, 2nd, 4th, 8th ... refusal: a guest in a loop cannot flood the log */
++      uint64_t n = ++vrend_state.resource_refusals;
++      if (!(n & (n - 1)))
++         virgl_warn("guest GPU memory budget of %llu MB reached: refused a %ux%ux%u resource "
++                    "of %llu KB with %llu MB in use (%llu refused so far)\n",
++                    (unsigned long long)(budget >> 20), args->width, args->height,
++                    MAX2(args->depth, args->array_size), (unsigned long long)(size >> 10),
++                    (unsigned long long)(vrend_state.resource_bytes >> 20),
++                    (unsigned long long)n);
++      return false;
++   }
++   gr->budget_bytes = size;
++   vrend_state.resource_bytes += size;
++   return true;
++}
++
++static void vrend_resource_uncharge(struct vrend_resource *gr)
++{
++   vrend_state.resource_bytes -= MIN2(gr->budget_bytes, vrend_state.resource_bytes);
++   gr->budget_bytes = 0;
+ }
+ 
+ static struct vrend_resource *
+@@ -9906,6 +10035,11 @@
+    if (!gr)
+       return NULL;
+ 
++   if (!vrend_resource_charge(gr, args)) {
++      FREE(gr);
++      return NULL;
++   }
++
+    if (args->target == PIPE_BUFFER) {
+       ret = vrend_resource_alloc_buffer(gr, args->flags);
+    } else {
+@@ -9914,6 +10048,7 @@
+    }
+ 
+    if (ret) {
++      vrend_resource_uncharge(gr);
+       FREE(gr);
+       return NULL;
+    }
+@@ -9923,6 +10058,7 @@
+ 
+ void vrend_renderer_resource_destroy(struct vrend_resource *res)
+ {
++   vrend_resource_uncharge(res);
+    if (has_bit(res->storage_bits, VREND_STORAGE_GL_TEXTURE)) {
+       glDeleteTextures(1, &res->gl_id);
+    } else if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER)) {

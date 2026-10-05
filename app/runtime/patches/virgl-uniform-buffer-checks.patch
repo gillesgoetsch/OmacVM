@@ -1,0 +1,162 @@
+virglrenderer: uniform blocks only read inside their buffers
+
+What: at link time vrend notes each uniform block's GL_UNIFORM_BLOCK_DATA_SIZE
+(0 when the GL found the block inactive). A draw or dispatch is skipped and
+logged (three lines per context) when an active block has no buffer bound, or
+when the buffer from the bound offset is smaller than the block. Every used block
+is bound on every draw; before, only "dirty" ones were, but binding points are
+numbered across stages and shared with compute, and a program change marked only
+the vertex and fragment stages dirty, so a block could read another stage's or
+an older buffer. GL buffers (not texture buffers or mapped ones) are allocated
+rounded up to 16 bytes: vrend declares a block as an array of vec4, so its data
+size is the guest's block size rounded up to 16, while apps size buffers to
+their C struct.
+Why: the GPU reads a block from its buffer pointer without bounds checks. An
+unbound block read address 0 or a stale buffer: the likely cause of the BIF0
+page fault at address 0 on 2026-10-04 that panicked macOS (the fuzzer's shaders
+declare blocks freely). A guest must not be able to fault the Mac's GPU.
+Depends on: virgl-buffer-binding-checks.patch (buffer sizes, range clamping).
+Upstream: upstreamable hardening; not sent.
+Tests: Tests/virgl/test-gpu-ranges.c (draw with an unbound and a too small block
+skipped, an exact and a 16-byte rounded one drawn); fuzz-cmd-stream.sh with
+gl-oracle.c (checks every active block of every GL draw).
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -471,6 +471,8 @@
+    uint64_t vs_fs_key;
+ 
+    uint32_t ubo_used_mask[PIPE_SHADER_TYPES];
++   /* GL_UNIFORM_BLOCK_DATA_SIZE of each used block; 0 when the GL found it inactive */
++   uint32_t ubo_block_size[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
+    uint32_t samplers_used_mask[PIPE_SHADER_TYPES];
+    // a subset of samplers_used_mask
+    uint32_t shadow_samp_mask[PIPE_SHADER_TYPES];
+@@ -1881,6 +1883,15 @@
+ 
+          GLuint loc = vrend_get_uniform_block_index(sprog, name, shader_type);
+          vrend_uniform_block_binding(sprog, shader_type, loc, next_ubo_id++);
++
++         GLint size = 0;
++         if (loc != GL_INVALID_INDEX && ubo_idx < PIPE_MAX_CONSTANT_BUFFERS) {
++            GLuint id = sprog->is_pipeline ? sprog->ss[shader_type]->program_id :
++                                             sprog->id.program;
++            glGetActiveUniformBlockiv(id, loc, GL_UNIFORM_BLOCK_DATA_SIZE, &size);
++         }
++         if (ubo_idx < PIPE_MAX_CONSTANT_BUFFERS)
++            sprog->ubo_block_size[shader_type][ubo_idx] = MAX2(size, 0);
+       }
+    }
+ 
+@@ -3756,6 +3767,18 @@
+ {
+    return res && res->base.target == PIPE_BUFFER &&
+           has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER) && res->gl_id;
++}
++
++/* Bytes of a GL buffer. Up to 15 bytes of slack: vrend declares a uniform block as an
++ * array of vec4, so its data size is the guest's block size rounded up to 16, while apps
++ * size buffers to their C struct. Buffers seen through texel counts (texture buffers)
++ * and mapped ones (immutable storage) keep their exact size. */
++static uint64_t vrend_gl_buffer_size(const struct vrend_resource *res)
++{
++   if ((res->base.bind & VIRGL_BIND_SAMPLER_VIEW) ||
++       has_bit(res->storage_bits, VREND_STORAGE_GL_IMMUTABLE))
++      return res->base.width0;
++   return ((uint64_t)res->base.width0 + 15) & ~(uint64_t)15;
+ }
+ 
+ /* [offset, offset + size) lies inside the buffer; 64-bit, so no 32-bit wrap. */
+@@ -5641,6 +5664,26 @@
+    glActiveTexture(GL_TEXTURE0 + vrend_state.max_texture_units - 1);
+ 
+    return next_sampler_id;
++}
++
++static bool vrend_ubos_inside(struct vrend_sub_context *sub_ctx, int shader_type)
++{
++   uint32_t mask = sub_ctx->prog->ubo_used_mask[shader_type];
++
++   while (mask) {
++      int i = u_bit_scan(&mask);
++      if (i >= PIPE_MAX_CONSTANT_BUFFERS)
++         return false;
++      uint32_t block = sub_ctx->prog->ubo_block_size[shader_type][i];
++      if (!block)
++         continue; /* inactive: the GL reads nothing */
++      const struct pipe_constant_buffer *cb = &sub_ctx->cbs[shader_type][i];
++      const struct vrend_resource *res = (const struct vrend_resource *)cb->buffer;
++      if (!res || !cb->buffer_size ||
++          (uint64_t)cb->buffer_offset + block > vrend_gl_buffer_size(res))
++         return false;
++   }
++   return true;
+ }
+ 
+ static GLuint vrend_draw_bind_ubo_shader(struct vrend_sub_context *sub_ctx,
+@@ -5652,10 +5695,7 @@
+ 
+    mask = sub_ctx->prog->ubo_used_mask[shader_type];
+    dirty = sub_ctx->const_bufs_dirty[shader_type];
+-   update = dirty & sub_ctx->const_bufs_used_mask[shader_type];
+-
+-   if (!update)
+-      return next_ubo_id + util_bitcount(mask);
++   update = sub_ctx->const_bufs_used_mask[shader_type];
+ 
+    while (mask) {
+       /* The const_bufs_used_mask stores the gallium uniform buffer indices */
+@@ -5669,6 +5709,8 @@
+          glBindBufferRange(GL_UNIFORM_BUFFER, next_ubo_id, res->gl_id,
+                            cb->buffer_offset, cb->buffer_size);
+          dirty &= ~(1 << i);
++      } else {
++         glBindBufferBase(GL_UNIFORM_BUFFER, next_ubo_id, 0);
+       }
+       next_ubo_id++;
+    }
+@@ -6682,6 +6724,16 @@
+       return 0;
+    }
+ 
++   for (int stage = PIPE_SHADER_VERTEX; stage <= sub_ctx->last_shader_idx; stage++) {
++      if (!vrend_ubos_inside(sub_ctx, stage)) {
++         if (++ctx->range_drops <= 3)
++            virgl_error("context %d (%s): a draw whose uniform blocks have no buffer or a "
++                        "too small one is skipped%s\n", ctx->ctx_id, ctx->debug_name,
++                        ctx->range_drops == 3 ? "; further skipped draws are not logged" : "");
++         return 0;
++      }
++   }
++
+    struct vrend_direct_draw one_draw, *draws;
+    uint32_t num_draws;
+    const char *why = NULL;
+@@ -6907,6 +6959,14 @@
+       return;
+    }
+ 
++   if (!vrend_ubos_inside(sub_ctx, PIPE_SHADER_COMPUTE)) {
++      if (++ctx->range_drops <= 3)
++         virgl_error("context %d (%s): a dispatch whose uniform blocks have no buffer or a "
++                     "too small one is skipped%s\n", ctx->ctx_id, ctx->debug_name,
++                     ctx->range_drops == 3 ? "; further skipped draws are not logged" : "");
++      return;
++   }
++
+    vrend_use_program(sub_ctx->prog);
+ 
+    vrend_set_active_pipeline_stage(sub_ctx->prog, PIPE_SHADER_COMPUTE);
+@@ -9105,11 +9165,11 @@
+       gr->buffer_storage_flags = buffer_storage_flags;
+       gr->size = width;
+    } else
+-      glBufferData(gr->target, width, NULL, GL_STREAM_DRAW);
++      glBufferData(gr->target, vrend_gl_buffer_size(gr), NULL, GL_STREAM_DRAW);
+ 
+    GLint64 size = -1;
+    glGetBufferParameteri64v(gr->target, GL_BUFFER_SIZE, &size);
+-   if (size != (GLint64)width) {
++   if (size != (GLint64)vrend_gl_buffer_size(gr)) {
+       virgl_error("GL buffer of %u bytes not created (got %lld)\n", width, (long long)size);
+       while (glGetError() != GL_NO_ERROR)
+          ;

@@ -1,0 +1,60 @@
+From: OmacVM
+Subject: [PATCH] virtio-gpu: big buffers in fragmented guest memory attach
+
+What: allow up to 262144 memory entries when the guest attaches a buffer's
+backing, instead of 16384. An entry is one contiguous run of guest memory of
+any length, so this is a count, not a size: at least 1 GiB even when every
+entry is a single 4 KiB page.
+
+Why: Linux gives a buffer's pages as they lie in memory, one entry per
+contiguous run. A large texture upload in fragmented guest memory needs more
+than 16384 entries: Omarchy's wallpaper (6016x3384, an 81 MB staging buffer)
+needed 17867. The attach failed (RESOURCE_ATTACH_BACKING -> ERR_UNSPEC),
+virglrenderer then reported the app's GL context as broken ("Illegal
+resource", "Illegal command buffer") and ignored everything it sent from then
+on. The shell drew nothing: black outputs without wallpaper or bar after
+about one boot in six with two displays, until the shell was restarted.
+The new bound still limits what the guest can make QEMU allocate (an entry
+list of at most 4 MiB).
+
+Upstream: not sent yet (QEMU master still has the 16384 limit).
+Test: 20 cold boots + 20 reboots with two outputs, no "nr_entries is too
+big" in QEMU's log and no black output (notes: display-bugs track); omacvm
+check "GPU contexts" reads QEMU's log for context errors.
+
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index ba6af7c..aba99f1 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -874,6 +874,8 @@ static void virtio_gpu_set_scanout_blob(VirtIOGPU *g,
+                               &fb, res, &ss.r, &cmd->error);
+ }
+ 
++#define VIRTIO_GPU_MAX_MAPPING_ENTRIES (1024 * 1024 * 1024 / 4096)
++
+ int virtio_gpu_create_mapping_iov(VirtIOGPU *g,
+                                   uint32_t nr_entries, uint32_t offset,
+                                   struct virtio_gpu_ctrl_command *cmd,
+@@ -884,10 +886,19 @@ int virtio_gpu_create_mapping_iov(VirtIOGPU *g,
+     size_t esize, s;
+     int e, v;
+ 
+-    if (nr_entries > 16384) {
++    /*
++     * OmacVM: one entry per guest memory chunk. Linux hands over a buffer's
++     * pages as they lie, so a big texture's backing in fragmented guest
++     * memory easily needs more than 16384 entries (an 81 MB wallpaper
++     * upload: 17867). The old limit failed the attach, virglrenderer then
++     * dropped the app's whole GL context and it drew nothing again. Allow
++     * 262144 entries: 1 GiB even if each is one 4 KiB page (16384^2 RGBA,
++     * the largest texture); the entry list is then at most 4 MiB.
++     */
++    if (nr_entries > VIRTIO_GPU_MAX_MAPPING_ENTRIES) {
+         qemu_log_mask(LOG_GUEST_ERROR,
+-                      "%s: nr_entries is too big (%d > 16384)\n",
+-                      __func__, nr_entries);
++                      "%s: nr_entries is too big (%u > %d)\n",
++                      __func__, nr_entries, VIRTIO_GPU_MAX_MAPPING_ENTRIES);
+         return -1;
+     }
+ 

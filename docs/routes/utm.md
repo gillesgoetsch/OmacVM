@@ -47,6 +47,10 @@ omacvm build --vm-type utm
 
 The VM goes into UTM's own library; UTM has no `--vm-dir`.
 
+Run the build in Terminal on the Mac, not over SSH: OmacVM drives UTM
+through AppleScript, and macOS asks once whether Terminal may control UTM.
+Allow it.
+
 ## Keep UTM in the foreground
 
 Start UTM from the Dock or Spotlight, so it is in the foreground app list.

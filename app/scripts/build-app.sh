@@ -33,13 +33,31 @@ if (( RELEASE )) && [[ -n $(git -C "$REPO" status --porcelain) ]]; then
   exit 1
 fi
 RT=$ROOT/runtime/.build
-# What the runtime was built from: its build scripts and patches.
-INPUTS=$(cd "$ROOT/runtime" && shasum -a 256 ./*.sh runtime-files.txt patches/* | shasum -a 256 | cut -d' ' -f1)
+# What the runtime was built from: its build scripts, patches and the tests
+# the build runs, and which UEFI firmware (OMACVM_FIRMWARE=qemu: QEMU's
+# prebuilt one, TianoCore logo).
+INPUTS=$(cd "$ROOT/runtime" && { shasum -a 256 ./*.sh runtime-files.txt patches/* Tests/firmware/*.py Tests/virgl/*.py Tests/virgl/*.c Tests/virgl/*.h
+  echo "firmware=${OMACVM_FIRMWARE:-omacvm}"; } | shasum -a 256 | cut -d' ' -f1)
+# A runtime built with OMACVM_RUNTIME_TEST_HOOKS=1 (test hooks) is never shipped.
 if [[ ! -x $RT/qemu-gpu-runtime/bin/qemu-system-aarch64 || ! -f $RT/firmware/edk2-aarch64-code.fd
+      || -e $RT/qemu-gpu-runtime.test-hooks
       || $(cat "$RT/inputs.sha256" 2>/dev/null) != "$INPUTS" ]]; then
   log "QEMU (from source)"
   "$ROOT/runtime/build-qemu-gpu-runtime.sh"
-  echo "$INPUTS" > "$RT/inputs.sha256"
+  # A fallback to QEMU's firmware (the edk2 build or its test failed, maybe
+  # just a download) is not kept: the next build tries again.
+  if [[ $(cat "$RT/firmware/firmware-source" 2>/dev/null) == omacvm* || ${OMACVM_FIRMWARE:-} == qemu ]]; then
+    echo "$INPUTS" > "$RT/inputs.sha256"
+  else
+    rm -f "$RT/inputs.sha256"
+  fi
+fi
+FIRMWARE=$(cat "$RT/firmware/firmware-source" 2>/dev/null || echo "unknown")
+log "firmware: $FIRMWARE"
+# A release carries Omarchy's boot logo, unless QEMU's firmware was asked for.
+if (( RELEASE )) && [[ $FIRMWARE != omacvm* && ${OMACVM_FIRMWARE:-} != qemu ]]; then
+  echo "the edk2 build failed (QEMU's firmware instead): fix it, or OMACVM_FIRMWARE=qemu for a release without the Omarchy boot logo" >&2
+  exit 1
 fi
 
 log "launcher"
@@ -67,7 +85,7 @@ install -m755 "$LAUNCHER" "$C/MacOS/OmacVM"
 install -m644 "$ICON" "$C/Resources/OmacVM.icns"
 ditto "$RT/qemu-gpu-runtime" "$C/Resources/runtime"
 mv "$C/Resources/runtime/bin/qemu-system-aarch64" "$C/Resources/runtime/bin/OmacVM"
-install -m644 "$RT/firmware/edk2-aarch64-code.fd" "$C/Resources/firmware/"
+install -m644 "$RT/firmware/edk2-aarch64-code.fd" "$RT/firmware/firmware-source" "$C/Resources/firmware/"
 install -m755 "$ROOT/scripts/create-vm.sh" "$ROOT/scripts/apply-vm.sh" "$ROOT/scripts/vm-common.sh" "$C/Resources/scripts/"
 git -C "$REPO" archive "$COMMIT" src | tar -x -C "$C/Resources/omacvm"
 echo "$COMMIT" > "$C/Resources/omacvm/COMMIT"
@@ -75,6 +93,7 @@ install -m644 "$ROOT/LICENSE" "$C/Resources/licenses/LICENSE.omacvm-app"
 install -m644 "$ROOT/THIRD_PARTY_NOTICES.md" "$C/Resources/licenses/"
 install -m644 "$ROOT/runtime/LICENSE.try-omarchy" "$C/Resources/licenses/"
 install -m644 "$RT/firmware/edk2-licenses.txt" "$C/Resources/licenses/"
+install -m644 "$ROOT/runtime/boot-logo/LICENSE.omarchy" "$C/Resources/licenses/"
 
 # The app carries the version of the OmacVM it is part of.
 VERSION=$(cat "$REPO/src/VERSION")

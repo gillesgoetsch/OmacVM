@@ -120,10 +120,7 @@ macos=$(sw_vers -productVersion 2>/dev/null)
 (( YES )) || { : < "$TTY"; } 2>/dev/null || usage "the setup questions need a terminal (or pass --yes and the answers as options, see --help)"
 onoff() { (( $1 )) && echo on || echo off; }
 
-mac_cores=$(sysctl -n hw.ncpu)
-mac_perf=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || echo "$mac_cores")
-mac_eff=$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo 0)
-mac_mem_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
+mac_specs
 # Free space as Finder counts it (macOS frees caches and purgeable files when
 # needed; df leaves those out), else df's.
 free_gb=$(swift -e 'import Foundation; let v = try? URL(fileURLWithPath: NSHomeDirectory()).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]); print((v?.volumeAvailableCapacityForImportantUsage ?? 0) / 1_000_000_000)' 2>/dev/null)
@@ -154,12 +151,13 @@ fi
 # ---------- 1. Parallels, UTM, VMware Fusion or OmacVM.app ----------
 if [[ -z $TYPE ]]; then
   (( YES )) && usage "--yes needs --vm-type parallels, utm, fusion or app"
+  # OmacVM.app first: the README recommends it.
   ui_select pick "Where should Omarchy run?" 0 \
-    "Parallels Desktop|near-native speed, every display · paid" \
+    "OmacVM.app|recommended · free · its own app, nothing else to install · hardware video · every display" \
     "UTM|free · one display, slower desktop · UTM 5 (beta)" \
-    "VMware Fusion|free · every display · slower desktop · OmacVM patches Hyprland for it (new)" \
-    "OmacVM.app|free · its own app, nothing else to install · one display (new)"
-  case $pick in 0) TYPE=parallels ;; 1) TYPE=utm ;; 2) TYPE=fusion ;; *) TYPE=app ;; esac
+    "VMware Fusion|free · every display · slower desktop · OmacVM patches Hyprland for it" \
+    "Parallels Desktop|near-native speed, every display · paid"
+  case $pick in 0) TYPE=app ;; 1) TYPE=utm ;; 2) TYPE=fusion ;; *) TYPE=parallels ;; esac
   say "    Comparison: $README_ROUTES"
 fi
 # The app itself: installed now (after asking) when it is missing.
@@ -180,7 +178,7 @@ case $TYPE in
   utm)
     if (( YES )); then [[ -x $UTMCTL ]] && (( $(utm_major || echo 0) >= 5 )) || { utm_install_help >&2; needs_person "UTM 5 is not installed (brew install --cask utm@beta, then open UTM once)"; }
     else wait_for_app utm; fi
-    : ;;
+    if ! (( DRY )); then why=$(utm_scripting) || needs_person "$why"; fi ;;
   fusion)
     if (( YES )); then have_fusion || needs_person "VMware Fusion is not installed: download it from support.broadcom.com (free, needs a sign-in), then open it once"
     else wait_for_app fusion; fi
@@ -458,7 +456,7 @@ human_steps() {
     parallels_profile_emptied || echo "Let Cmd+C/V/X reach Omarchy as Super: quit Parallels Desktop, run src/mac/parallels-shortcuts.sh (app-wide: every Linux VM in Parallels)."
     parallels_sends_shortcuts || echo "Let Cmd+Space etc. reach Omarchy: Parallels Desktop > Settings > Shortcuts > macOS System Shortcuts > \"Send macOS system shortcuts: Always\" (an alert shows where)." ;;
   utm)
-    echo "UTM: put the VM in full screen on the built-in display (gestures and media keys need it); keep UTM in the foreground, a backgrounded UTM runs slower." ;;
+    echo "UTM: put the VM in full screen on the main display, a MacBook's own screen (gestures and media keys need it); keep UTM in the foreground, a backgrounded UTM runs slower." ;;
   fusion)
     echo "VMware Fusion asks for Accessibility on its first start: click OK, then turn on VMware Fusion in System Settings > Privacy & Security > Accessibility (keyboard and mouse in the VM)."
     echo "VMware Fusion: put the VM in full screen (View > Full Screen; gestures and media keys need it)." ;;
@@ -608,7 +606,8 @@ step "OmacVM.app builds the VM (10-30 minutes, its logs in $(sed "s|^$HOME|~|" <
 port=$(app_free_port) || die "no free port for the VM's SSH (52222-52421)"
 fv=""
 for ((k = 0; k < ${#FEATS[@]}; k += 2)); do fv+=" ${FEATS[$k]}=$(onoff "${FEATS[k+1]}")"; done
-printf '%s\n' "$PW" | app_create "$VM_DIR/$VM" NAME="$VM" CPUS="$CPUS" MEM_MB=$((MEM_GB * 1024)) DISK_GB="$DISK_GB" \
+# --no-mac: the app's own build leaves the Mac's helpers alone too.
+printf '%s\n' "$PW" | OMACVM_CREATE_NO_MAC=${NO_MAC:-0} app_create "$VM_DIR/$VM" NAME="$VM" CPUS="$CPUS" MEM_MB=$((MEM_GB * 1024)) DISK_GB="$DISK_GB" \
   SSH_PORT="$port" VM_USER="$U" VM_FULLNAME="$FULL" VM_HOSTNAME="$HOST" VM_TZ="$TZ_MAC" VM_LANG="$LANG_VM" \
   KEYBOARD="$KB" FEATURES="${fv# }" 2>&1 |
   sed -l -e $'s/.*\r//' -e '/^#.*%$/d' -e '/^READY /d' -e 's|^STEP \([0-9]*/[0-9]*\) |==> \1 |' |
@@ -618,6 +617,7 @@ unset PW PW2
 
 step "OmacVM: the Mac side, then the VM side (the VM starts in OmacVM.app)"
 args=(--vm "$VM" --vm-type app --user "$U" --keyboard "$KB" --reset-host-key)
+(( ${NO_MAC:-0} )) && args+=(--no-mac)
 for ((k = 0; k < ${#FEATS[@]}; k += 2)); do
   args+=(--feature "${FEATS[$k]}=$( ((FEATS[k+1])) && echo on || echo off)")
 done
@@ -768,7 +768,7 @@ mac_steps=$(human_steps | sed 's/^/    * /')
 ssh_to="root@$IP"; [[ $IP == *:* ]] && ssh_to="-p ${IP##*:} root@${IP%:*}"   # OmacVM.app: 127.0.0.1:PORT
 cat <<EOF
 
-  Done in $(( ($(date +%s) - started) / 60 )) minutes${PB_TIMES:+ ($PB_TIMES)}. VM '$VM' ($TYPE) is rebooting into Omarchy.
+  Done in $(mins=$(( ($(date +%s) - started) / 60 )); (( mins == 1 )) && echo "1 minute" || echo "$mins minutes")${PB_TIMES:+ ($PB_TIMES)}. VM '$VM' ($TYPE) is rebooting into Omarchy.
 
   One-time steps on the Mac:
 $mac_steps

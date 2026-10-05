@@ -46,7 +46,11 @@ if [[ -z $IP ]]; then
   IFS=$'\t' read -r VM TYPE IP <<<"$r"
   [[ -n $IP ]] || stop 1 "'$VM' is not running (start it, or omacvm apply --vm \"$VM\" starts it)"
 fi
-[[ -n $TYPE ]] || TYPE=$(vm_type "$VM") || stop 1 "no Parallels, UTM, VMware Fusion or OmacVM.app VM named '$VM' (or pass --vm-type and --ip)"
+if [[ -z $TYPE ]]; then
+  TYPE=$(vm_type "$VM" 2>/dev/null) || {
+    (( $? == 2 )) && stop 2 "there is more than one VM named '$VM': pass --vm-type parallels, utm, fusion or app"
+    stop 1 "no Parallels, UTM, VMware Fusion or OmacVM.app VM named '$VM' (or pass --vm-type and --ip)"; }
+fi
 case $TYPE in
   parallels) HOST=10.211.55.2
              [[ -n $IP ]] || IP=$(vm_ip "$(vm_bundle "$VM")") || stop 1 "no IP for VM '$VM' (is it running?)" ;;
@@ -165,6 +169,17 @@ if [[ -n $miclog && -f $miclog ]]; then
     bad "microphone" "macOS does not let $micapp record: System Settings > Privacy & Security > Microphone, then restart the VM" human
   else ok "microphone" "no refusal in $micapp's log"; fi
 fi
+# A VM app whose GPU context virglrenderer dropped draws nothing until it
+# restarts; for the shell that is a black display without bar. QEMU's log
+# (this run of the VM) names it.
+if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
+  lost=$(grep -o 'context error reported [0-9]* "[^"]*"' "$miclog" | sed 's/.*"\(.*\)"$/\1/' | sort -u | paste -sd, - | sed 's/,/, /g')
+  # Not a failure by itself: the app may have been restarted since (the VM's
+  # "desktop" line says whether the shell draws now).
+  if [[ -n $lost ]]; then
+    skip "GPU contexts" "lost earlier in this run by: $lost (an app that draws nothing needs a restart; the shell: omarchy-restart-shell)"
+  else ok "GPU contexts" "no VM app lost its GPU context in this run"; fi
+fi
 # Gestures runs keys-only when trackpad gestures were turned off; on UTM it
 # also types Cmd as Super, so it is needed there either way.
 if [[ $GESTURES == on || $TYPE == utm || $TYPE == fusion || $TYPE == app ]]; then
@@ -260,7 +275,7 @@ if pgrep -xq omanotch; then
   # Omanotch's own setting (defaults write ch.gillesgoetsch.omanotch flush -bool true|false).
   [[ $(defaults read ch.gillesgoetsch.omanotch flush 2>/dev/null) == 1 ]] && h="the notch's (flush)" || h="the menu bar's"
   ok "Omanotch (Mac)" "running, bar height: $h"
-elif [[ $(swift "$R/src/display/mac-notch.swift" 2>/dev/null || echo none) != notch ]]; then skip "Omanotch (Mac)" "no notch on this Mac"
+elif [[ ${notch:=$(swift "$R/src/display/mac-notch.swift" 2>/dev/null || echo none)} != notch ]]; then skip "Omanotch (Mac)" "no notch on this Mac"
 else skip "Omanotch (Mac)" "not running (omacvm update)"; fi
 if [[ $TYPE == app && $(feat omanotch off) == on ]]; then
   rc=0; omanotch_serves_app || rc=$?
@@ -269,8 +284,9 @@ fi
 if [[ $TYPE == app ]]; then
   # The app's own notch-strip mode (a switch in the app; Omanotch then leaves the strip alone).
   n=$(defaults read org.omacvm.app useNotch 2>/dev/null || echo 0)
-  [[ $n == 1 ]] && skip "notch strip (app)" "the app's full screen covers it (no Space of its own)" \
-    || skip "notch strip (app)" "off: full screen in its own Space, Omanotch fills the strip"
+  if [[ $n == 1 ]]; then skip "notch strip (app)" "the app's full screen covers it (no Space of its own)"
+  elif [[ ${notch:=$(swift "$R/src/display/mac-notch.swift" 2>/dev/null || echo none)} != notch ]]; then skip "notch strip (app)" "no notch on this Mac"
+  else skip "notch strip (app)" "off: full screen in its own Space, Omanotch fills the strip"; fi
 fi
 (( fails )) && mac_failed=1 || mac_failed=0
 

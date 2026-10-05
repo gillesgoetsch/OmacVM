@@ -1,0 +1,37 @@
+From: OmacVM
+Subject: [PATCH] cocoa: tests can keep full screen to some displays
+
+What: OMACVM_TEST_ONLY_DISPLAYS=ID,ID,... gives windows only to those Mac
+displays, with real full screen (Spaces, menu bar, Dock) unlike
+OMACVM_TEST_SKIP_DISPLAYS. Unset: no change.
+
+Why: a full-screen test on the MacBook and its external monitor must not
+put a window on another test's virtual display (it would cover that test's
+VM window).
+
+Upstream: not applicable (test hook of OmacVM's display windows).
+Test: used by the display tests (notes: display-bugs track).
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 0aca169..094a91d 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -3245,6 +3245,18 @@ static bool omacvm_test_mode(void)
+ static bool omacvm_test_allows(CGDirectDisplayID id)
+ {
+     const char *v = getenv("OMACVM_TEST_SKIP_DISPLAYS");
++    const char *only = getenv("OMACVM_TEST_ONLY_DISPLAYS");
++
++    /* Real full screen, but only on these displays (others' test displays stay alone). */
++    if (only && *only) {
++        for (NSString *s in [[NSString stringWithUTF8String:only]
++                             componentsSeparatedByString:@","]) {
++            if ((CGDirectDisplayID)[s longLongValue] == id) {
++                return true;
++            }
++        }
++        return false;
++    }
+     if (!v || !*v) {
+         return true;
+     }

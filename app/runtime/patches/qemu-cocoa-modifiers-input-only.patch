@@ -1,0 +1,52 @@
+From: OmacVM
+Subject: [PATCH] cocoa: modifiers only from input events
+
+Every event that reaches handleEvent re-reads the modifier flags and
+releases the guest's modifiers that are not set. The pointer entering or
+leaving a window comes as an event without flags, so crossing from one
+window to another released a held key: with a window per display, Super
+went up halfway through a Super-drag of a guest window to the other display
+and Hyprland dropped the move. Only key, mouse button, move, drag, scroll and
+pinch events carry the modifier state; other events are not looked at.
+
+Upstream: upstreamable (upstream has the same sync; with one window it only
+shows when the pointer re-enters with a modifier held).
+Test: Cmd-drag of a guest window from the external display to the MacBook
+and back, 6 of 6 moved (before: 0, Super released at the display edge).
+Applies after omacvm-cocoa-fullscreen-size.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -1216,6 +1216,32 @@
+     InputButton button;
+     unsigned int keycode;
+     NSUInteger modifiers = [event modifierFlags];
++
++    /*
++     * OmacVM: only input events tell the modifier state. The pointer entering
++     * or leaving a window comes with no flags at all, and would release a
++     * held modifier: Super halfway through a Super-drag to another display.
++     */
++    switch ([event type]) {
++    case NSEventTypeKeyDown:
++    case NSEventTypeKeyUp:
++    case NSEventTypeFlagsChanged:
++    case NSEventTypeLeftMouseDown:
++    case NSEventTypeLeftMouseUp:
++    case NSEventTypeLeftMouseDragged:
++    case NSEventTypeRightMouseDown:
++    case NSEventTypeRightMouseUp:
++    case NSEventTypeRightMouseDragged:
++    case NSEventTypeOtherMouseDown:
++    case NSEventTypeOtherMouseUp:
++    case NSEventTypeOtherMouseDragged:
++    case NSEventTypeMouseMoved:
++    case NSEventTypeScrollWheel:
++    case NSEventTypeMagnify:
++        break;
++    default:
++        return false;
++    }
+ 
+     /*
+      * Check -[NSEvent modifierFlags] here.

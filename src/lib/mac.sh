@@ -183,22 +183,28 @@ utm_state() {   # <vm name> -> started|stopped|...
 }
 
 utm_ip() {   # <vm name> [seconds]: the guest's address on UTM's shared network
-  local i ip
-  for ((i = 0; i < ${2:-1}; i += 3)); do
+  local ip mac="" end=$((SECONDS + ${2:-1})) ask=1
+  # utmctl and AppleScript wait while macOS asks whether this terminal may
+  # control UTM (and fail over SSH): 15 seconds each, the MAC from the VM's
+  # own settings first, and no more utmctl after one went unanswered.
+  declare -F vm_hw_mac >/dev/null && mac=$(vm_hw_mac "$1" utm | sed 's/../&:/g; s/:$//') || true
+  while :; do
     # the QEMU guest agent knows; without it, UTM's DHCP server (bootpd) does
-    ip=$("$UTMCTL" ip-address "$1" 2>/dev/null | grep -m1 -E '^192\.168\.[0-9]+\.[0-9]+$') && { echo "$ip"; return 0; }
-    local mac
+    if (( ask )); then
+      ip=$(perl -e 'alarm shift; exec @ARGV' 15 "$UTMCTL" ip-address "$1" 2>/dev/null) || { (( $? <= 128 )) || ask=0; }
+      ip=$(grep -m1 -E '^192\.168\.[0-9]+\.[0-9]+$' <<<"$ip") && { echo "$ip"; return 0; }
+    fi
     # the name goes in as an argument, never into the script's source
-    mac=$(osascript -e 'on run argv' -e 'tell application "UTM"' -e 'copy (configuration of virtual machine named (item 1 of argv)) to c' \
-            -e 'get address of item 1 of (network interfaces of c)' -e 'end tell' -e 'end run' "$1" 2>/dev/null |
-          tr 'A-F' 'a-f' | sed 's/:0/:/g; s/^0//')
+    [[ -n $mac ]] || mac=$(osascript -e 'on run argv' -e 'with timeout of 15 seconds' -e 'tell application "UTM"' \
+            -e 'copy (configuration of virtual machine named (item 1 of argv)) to c' \
+            -e 'get address of item 1 of (network interfaces of c)' -e 'end tell' -e 'end timeout' -e 'end run' "$1" 2>/dev/null) || true
     if [[ -n $mac ]]; then
-      ip=$(awk -v m="1,$mac" '/ip_address=/ { split($0, a, "="); ip = a[2] } /hw_address=/ { split($0, b, "="); if (b[2] == m) print ip }' /var/db/dhcpd_leases 2>/dev/null | tail -1)
+      ip=$(awk -v m="1,$(tr 'A-F' 'a-f' <<<"$mac" | sed 's/:0/:/g; s/^0//')" '/ip_address=/ { split($0, a, "="); ip = a[2] } /hw_address=/ { split($0, b, "="); if (b[2] == m) print ip }' /var/db/dhcpd_leases 2>/dev/null | tail -1)
       [[ -n $ip ]] && { echo "$ip"; return 0; }
     fi
+    (( SECONDS < end )) || return 1
     sleep 3
   done
-  return 1
 }
 
 utm_start() {   # <vm name>: UTM must run in the foreground (open -g makes the VM ~8x slower)

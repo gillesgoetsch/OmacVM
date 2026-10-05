@@ -50,14 +50,17 @@ int main(void)
           passed ? "PASS" : "FAIL", checked);
 
    /* The check itself: the old R8G8_R8B8 entry is refused, the same width in
-    * RGBA8 passes, a pair it does not know passes. */
+    * RGBA8 passes, a pair it does not know is refused (every table entry is
+    * known: the loop above), a compressed format is not its business. */
    if (vrend_format_gl_rows_fit(VIRGL_FORMAT_R8G8_R8B8_UNORM, GL_RGBA, GL_UNSIGNED_BYTE, 128) ||
        !vrend_format_gl_rows_fit(VIRGL_FORMAT_R8G8B8A8_UNORM, GL_RGBA, GL_UNSIGNED_BYTE, 128) ||
-       !vrend_format_gl_rows_fit(VIRGL_FORMAT_R8G8B8A8_UNORM, 0, 0, 128)) {
+       vrend_format_gl_rows_fit(VIRGL_FORMAT_R8G8B8A8_UNORM, 0, 0, 128) ||
+       vrend_format_gl_rows_fit(VIRGL_FORMAT_R8G8B8A8_UNORM, GL_RGBA, GL_DOUBLE, 128) ||
+       !vrend_format_gl_rows_fit(VIRGL_FORMAT_DXT1_RGB, GL_RGBA, GL_UNSIGNED_BYTE, 128)) {
       fprintf(stderr, "FAIL: the row check\n");
       passed = false;
    } else {
-      printf("PASS: the row check refuses a 2x1 block stored as one RGBA8 texel per pixel\n");
+      printf("PASS: the row check refuses a 2x1 block stored as one RGBA8 texel per pixel, and pairs it cannot size\n");
    }
    return passed ? 0 : 1;
 }
