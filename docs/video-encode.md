@@ -179,8 +179,10 @@ App ─VA-API─▶ Mesa's virgl VA driver ─virtio-gpu─▶ virglrenderer (QE
 - At most 8 encoders are open at once per VM. Each holds a session on the
   Mac's media engine, which the Mac's own apps (FaceTime, screen recording)
   and other VMs share, and pictures of up to about 14 MB. A call with camera
-  and screen sharing uses two; past 8 the guest gets no encoder (Chrome then
-  encodes in software, FFmpeg stops with an error). One encode per frame: a
+  and screen sharing uses two. The guest's driver cannot tell that the Mac
+  refused a 9th: its frames all fail. FFmpeg then writes a file without
+  frames and still exits 0 (tested in the VM); Chrome switches to software,
+  as it does whenever the encoder returns no data. One encode per frame: a
   second one in the same frame is refused.
 
 Switches on the Mac (QEMU's environment): `OMACVM_VIDEO_NO_ENCODE=1` leaves
