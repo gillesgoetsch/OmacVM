@@ -7,6 +7,8 @@
 #    so it connects there and both proofs name 192.168.77.1. Then the app moves
 #    it to the user network (the gateway becomes 10.0.2.2): it connects again
 #    within seconds, on keepalive, and the Mac drops its old connection.
+# 3. The default gateway: the card with a link, lowest metric, the same in
+#    Gestures, the Bridge client and the guest check.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d); trap 'kill ${PIDS:-} 2>/dev/null || true; rm -rf "$T"' EXIT
@@ -122,6 +124,24 @@ PY
   { echo "FAIL gateway: $(gw)" >&2; fail=1; }
 echo 1 > "$T/sys/enp0s2/carrier"
 [[ $(gw) == 192.168.77.1 ]] && echo "ok   gateway: both cards up, the lower metric (fast network)" || { echo "FAIL gateway: $(gw)" >&2; fail=1; }
+# The Bridge client and the guest check pick it the same way (their
+# default_gateway(), with `ip` showing the same table).
+mkdir -p "$T/bin"
+cat > "$T/bin/ip" <<'SH'
+#!/bin/sh
+echo "default via 192.168.77.1 dev enp0s2 proto dhcp src 192.168.77.2 metric 100"
+echo "default via 10.0.2.2 dev enp1s0 proto dhcp src 10.0.2.15 metric 101"
+SH
+chmod +x "$T/bin/ip"
+for f in "$HERE/../../bridge/guest/omacvm-bridge" "$HERE/../../guest/check.sh"; do
+  fn=$(sed -n '/^default_gateway() {/,/^}/p' "$f")
+  bgw() { PATH="$T/bin:$PATH" bash -c "SYS_NET='$T/sys'; $fn"'
+default_gateway'; }
+  echo 0 > "$T/sys/enp0s2/carrier"; a=$(bgw)
+  echo 1 > "$T/sys/enp0s2/carrier"; b=$(bgw)
+  if [[ $a == 10.0.2.2 && $b == 192.168.77.1 ]]; then echo "ok   gateway: $(basename "$f") picks it the same way"
+  else echo "FAIL gateway in $(basename "$f"): $a / $b" >&2; fail=1; fi
+done
 
 # 2. The fast network as in the VM, then the move to the user network.
 mac "$T/out2" 4,192.168.77.1,192.168.77.2 3   # first on 192.168.77.1 from the VM's lease, then via 127.0.0.1

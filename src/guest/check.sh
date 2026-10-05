@@ -42,8 +42,23 @@ ev_device() { grep -q "^N: Name=\"$1\"" /proc/bus/input/devices; }
 [[ -r /etc/omacvm/env ]] || { bad "OmacVM guest side" "not installed (run omacvm apply on the Mac)"; exit 1; }
 source /etc/omacvm/env
 HOST=$OMACVM_HOST; TYPE=$OMACVM_VM_TYPE
+# The VM's default gateway, as Gestures' default_gateway() picks it: the
+# lowest metric among default routes whose card has a link. After the app
+# switches networks the old card's route stays listed (first) for seconds.
+SYS_NET=/sys/class/net
+default_gateway() {
+  local m via dev c
+  ip -4 route show default 2>/dev/null |
+    awk '{ v = d = ""; m = 0
+           for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1); if ($i == "metric") m = $(i + 1) }
+           if (v != "") print m, v, d }' |
+    while read -r m via dev; do
+      c=$(cat "$SYS_NET/$dev/carrier" 2>/dev/null) || c=1   # no carrier to read: count it
+      if [[ $c == 1 ]]; then echo "$m $via"; fi
+    done | sort -n | awk '{ print $2; exit }'
+}
 # OmacVM.app on its fast network (vmnet): the Mac is the gateway 192.168.77.1.
-GW=$(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }')
+GW=$(default_gateway)
 [[ $TYPE == app && $GW == 192.168.77.1 ]] && HOST=$GW
 FAST_NET=${OMACVM_FEATURE_fast_network:-off}
 # Features chosen at setup (VMs set up before the choices existed: the defaults

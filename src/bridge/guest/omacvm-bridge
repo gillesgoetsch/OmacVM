@@ -20,10 +20,24 @@
 #      OMACVM_BRIDGE_EVENTS_SOCKET (default $XDG_RUNTIME_DIR/omacvm-bridge-events.sock)
 set -euo pipefail
 [[ -r /etc/omacvm/env ]] && source /etc/omacvm/env   # OMACVM_VM_TYPE, OMACVM_HOST (guest/install.sh)
+# The VM's default gateway, as Gestures' default_gateway() picks it: the
+# lowest metric among default routes whose card has a link. After the app
+# switches networks the old card's route stays listed (first) for seconds.
+SYS_NET=/sys/class/net
+default_gateway() {
+  local m via dev c
+  ip -4 route show default 2>/dev/null |
+    awk '{ v = d = ""; m = 0
+           for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1); if ($i == "metric") m = $(i + 1) }
+           if (v != "") print m, v, d }' |
+    while read -r m via dev; do
+      c=$(cat "$SYS_NET/$dev/carrier" 2>/dev/null) || c=1   # no carrier to read: count it
+      if [[ $c == 1 ]]; then echo "$m $via"; fi
+    done | sort -n | awk '{ print $2; exit }'
+}
 # OmacVM.app on its fast network (vmnet, the app picks it at each start and
 # may switch while the VM runs): the Mac is the gateway 192.168.77.1.
-if [[ ${OMACVM_VM_TYPE:-} == app && -z ${OMACVM_BRIDGE_URL:-} ]] &&
-   [[ $(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }') == 192.168.77.1 ]]; then
+if [[ ${OMACVM_VM_TYPE:-} == app && -z ${OMACVM_BRIDGE_URL:-} && $(default_gateway) == 192.168.77.1 ]]; then
   OMACVM_HOST=192.168.77.1
 fi
 URL=${OMACVM_BRIDGE_URL:-http://${OMACVM_HOST:-10.211.55.2}:47831}
