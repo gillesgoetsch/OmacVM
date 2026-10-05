@@ -8,7 +8,8 @@
  * decodes again (VTDecompressionSession) to pictures close to what went in (luma PSNR).
  * Guest input: nonsense rate control (zero or huge frame rates, bitrates, GOP, QP) still
  * encodes, also when the frame rate changes; a frame never ended gets failure feedback and
- * does not leak into the next; a frame that fails, or whose coded-data resource is missing
+ * does not leak into the next; a second encode in one frame is refused (failure feedback
+ * for it, the first keeps its output); a frame that fails, or whose coded-data resource is missing
  * or not a buffer, gets failure feedback; a coded-data buffer too small gets a
  * failure, not a cut frame; constant QP follows the guest's QP, also after a switch from
  * bitrate mode; codecs the host does not offer (too small, too large, HEVC
@@ -37,7 +38,7 @@ enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2 };
 /* guest numbering (Mesa >= 26): enum pipe_video_profile / entrypoint */
 enum { G_AVC_HIGH = 11, G_HEVC_MAIN = 15, G_HEVC_MAIN_10 = 16, G_ENTRYPOINT_ENCODE = 4 };
 enum { PIC_P = 0, PIC_IDR = 3 };
-enum { R_Y = 1, R_UV, R_DESC, R_CODED, R_FEED, R_SMALL, R_TEX };
+enum { R_Y = 1, R_UV, R_DESC, R_CODED, R_FEED, R_SMALL, R_TEX, R_FEED2 };
 enum { BUF = 2 };   /* the video buffer's handle; codecs get 10, 11, ... */
 
 static CGLContextObj main_ctx;
@@ -112,7 +113,7 @@ static void make_res(uint32_t handle, uint32_t target, uint32_t format, uint32_t
    };
    virgl_renderer_resource_create(&a, NULL, 0);
    if (backing) {
-      static struct iovec iov[8];
+      static struct iovec iov[16];
       iov[handle] = (struct iovec){ backing, size };
       virgl_renderer_resource_attach_iov(handle, &iov[handle], 1);
    }
@@ -263,7 +264,7 @@ static struct cmds *c;
 static uint8_t y[W * H], uv[W * H / 2];
 static union virgl_picture_desc desc;
 static uint8_t coded[4 << 20], small[16];
-static struct virgl_video_encode_feedback feed;
+static struct virgl_video_encode_feedback feed, feed2;
 
 static void create_codec(uint32_t handle, uint32_t profile, uint32_t w, uint32_t h)
 {
@@ -594,6 +595,40 @@ static void test_codec(uint32_t handle, uint32_t profile, const char *name, cons
             "(%d slices)", name, slices);
    check(r == 0 && slices == 1, line);
 
+   /* Two encodes in one frame: the second is refused with failure feedback in
+    * its own feedback buffer, the first gets its output. */
+   make_picture(8, y, uv);
+   emit_plane(c, R_Y, W, H, 1, y);
+   emit_plane(c, R_UV, W / 2, H / 2, 2, uv);
+   memset(&feed, 0xaa, sizeof(feed));
+   feed2.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
+   feed2.coded_size = 1234;
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
+   emit(c, handle);
+   emit(c, BUF);
+   for (int i = 0; i < 2; i++) {
+      emit(c, VIRGL_CMD0(VIRGL_CCMD_ENCODE_BITSTREAM, 0, 5));
+      emit(c, handle);
+      emit(c, BUF);
+      emit(c, R_CODED);
+      emit(c, R_DESC);
+      emit(c, i ? R_FEED2 : R_FEED);
+   }
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_END_FRAME, 0, 2));
+   emit(c, handle);
+   emit(c, BUF);
+   submit(c);
+   k = feed.stat == VIRGL_VIDEO_ENCODE_STAT_SUCCESS && feed.coded_size <= sizeof(coded) ?
+       nal_types(coded, feed.coded_size, types, 64) : 0;
+   slices = 0;
+   for (int i = 0; i < k; i++)
+      slices += is_slice(types[i]);
+   snprintf(line, sizeof(line), "%s: two encodes in one frame: the first gets its output "
+            "(%d slices), the second failure (stat %u, size %u)", name, slices, feed2.stat,
+            feed2.coded_size);
+   check(slices == 1 && feed2.stat == VIRGL_VIDEO_ENCODE_STAT_FAILURE && feed2.coded_size == 0,
+         line);
+
    /* A frame that cannot be encoded (wrong profile in its description) gets
     * failure feedback, not the previous frame's result. */
    feed.stat = VIRGL_VIDEO_ENCODE_STAT_SUCCESS;
@@ -764,6 +799,8 @@ int main(void)
             small, sizeof(small));
    make_res(R_TEX, TEST_PIPE_TEXTURE_2D, VIRGL_FORMAT_R8_UNORM,
             VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_RENDER_TARGET, 64, 64, NULL, 0);
+   make_res(R_FEED2, TEST_PIPE_BUFFER, VIRGL_FORMAT_R8_UNORM, VIRGL_BIND_CUSTOM,
+            sizeof(feed2), 1, &feed2, sizeof(feed2));
 
    c = calloc(1, sizeof(*c));
    emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_BUFFER, 0, 6));
@@ -802,7 +839,7 @@ int main(void)
    }
 
    virgl_renderer_context_destroy(1);
-   for (uint32_t r = R_Y; r <= R_TEX; r++)
+   for (uint32_t r = R_Y; r <= R_FEED2; r++)
       virgl_renderer_resource_unref(r);
    free(c);
    virgl_renderer_cleanup(&cookie);

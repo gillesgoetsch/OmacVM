@@ -37,9 +37,10 @@ them in between); coded data that does not fit the guest's buffer, or a buffer
 that cannot be mapped, gives failure feedback (was: a cut frame reported as
 success, and a NULL memcpy). A frame refused before it reaches the encoder (no
 such codec, picture, description or coded-data resource, or one that is not a
-buffer) also gets failure feedback. Not covered: a feedback resource that is
-missing or not a buffer (nothing to write to), and a frame still open when the
-guest destroys its codec.
+buffer) also gets failure feedback, and so does a second encode in one frame
+(the first keeps its buffers and gets its result). Not covered: a feedback
+resource that is missing or not a buffer (nothing to write to), and a frame
+still open when the guest destroys its codec.
 Why: WebRTC (camera, screen sharing) and FFmpeg h264_vaapi/hevc_vaapi in the VM
 encode on the CPU otherwise.
 Upstream: OmacVM addition to its own backend; the vrend_video.c fixes are
@@ -50,8 +51,9 @@ with VideoToolbox, luma PSNR > 30 dB), nonsense and random picture
 descriptions, a too small, a non-buffer and a missing coded resource (failure
 feedback), refused sizes and profiles, cropped pictures through the GPU blit
 and the CPU copy, frame-rate changes, a frame never ended (failure feedback,
-no leak into the next), failure feedback, constant QP 18 against QP 40 and
-against 50 kbit/s before and after it (the size follows the QP). In a VM: tests/video/
+no leak into the next), two encodes in one frame, failure feedback, constant
+QP 18 against QP 40 and against 50 kbit/s before and after it (the size
+follows the QP). In a VM: tests/video/
 (FFmpeg, Chrome WebRTC camera, screen and calls).
 diff --git a/src/vrend/virgl_video.h b/src/vrend/virgl_video.h
 index 5cc19a2..425bfb5 100644
@@ -900,7 +902,7 @@ index 6c95bf9..a3a6f59 100644
      codec->target = target;
      if (!codec->have_desc || !codec->bits.size) {
 diff --git a/src/vrend/vrend_video.c b/src/vrend/vrend_video.c
-index d3d8065..00d2361 100644
+index d3d8065..e4a3953 100644
 --- a/src/vrend/vrend_video.c
 +++ b/src/vrend/vrend_video.c
 @@ -232,6 +232,8 @@ static bool blit_pixbuf_to_video_buffer(struct vrend_video_buffer *buf,
@@ -1212,7 +1214,7 @@ index d3d8065..00d2361 100644
          return -1;
      }
      memset(&desc, 0, sizeof(desc));
-@@ -1051,11 +1248,19 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
+@@ -1051,11 +1248,30 @@ int vrend_video_encode_bitstream(struct vrend_video_context *ctx,
      dest_res = vrend_renderer_ctx_res_lookup(ctx->ctx, dest_handle);
      if (!dest_res) {
          virgl_error("%s: dest res %d not found\n", __func__, dest_handle);
@@ -1224,6 +1226,17 @@ index d3d8065..00d2361 100644
 +    if (dest_res->base.target != PIPE_BUFFER || feed_res->base.target != PIPE_BUFFER) {
 +        virgl_error("%s: coded data or feedback resource is not a buffer\n", __func__);
 +        encode_refused(feed_res);
++        return -1;
++    }
++
++    /* One encode per frame: a second one before the frame ends is refused, so
++     * the first keeps its coded-data and feedback buffers (and gets its result). */
++    if (cdc->feed_res) {
++        static unsigned warned;
++        if (warned++ < 5)
++            virgl_warn("%s: second encode in one frame refused\n", __func__);
++        if (feed_res != cdc->feed_res)
++            encode_refused(feed_res);
          return -1;
      }
  
