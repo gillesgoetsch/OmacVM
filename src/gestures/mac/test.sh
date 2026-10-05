@@ -100,6 +100,36 @@ expect "$T/out" "UTM in front, title UTM VM: UTM VM"
 expect "$T/out" "app in front, title App VM: App VM"
 expect "$T/out" "app in front, title App VM, app VM gone:"
 
+# The VM's default gateway: the card whose link is up, lowest metric (the
+# vmnet card's route, link just taken down, is still listed first).
+mkdir -p "$T/sys/enp0s2" "$T/sys/enp1s0"
+echo 0 > "$T/sys/enp0s2/carrier"; echo 1 > "$T/sys/enp1s0/carrier"
+printf 'Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n%s\n%s\n%s\n' \
+  "enp0s2	00000000	014DA8C0	0003	0	0	100	00000000" \
+  "enp0s2	004DA8C0	00000000	0001	0	0	100	00FFFFFF" \
+  "enp1s0	00000000	0202000A	0003	0	0	101	00000000" > "$T/route"
+gw() {
+  python3 - "$HERE/../guest/omacvm-gestures" "$T/route" "$T/sys" <<'PY'
+import importlib.machinery, importlib.util, itertools, sys, types
+n = itertools.count(1)
+class Any(int):
+    def __getattr__(self, name): return Any(next(n))
+    def __call__(self, *a, **k): return Any(next(n))
+ev = types.ModuleType("evdev")
+ev.__getattr__ = lambda name: Any(next(n))
+sys.modules["evdev"] = ev
+loader = importlib.machinery.SourceFileLoader("g", sys.argv[1])
+g = importlib.util.module_from_spec(importlib.util.spec_from_loader("g", loader))
+loader.exec_module(g)
+g.ROUTES, g.SYS_NET = sys.argv[2], sys.argv[3]
+print(g.default_gateway())
+PY
+}
+[[ $(gw) == 10.0.2.2 ]] && echo "ok   gateway: the card with a link (user network) over the vmnet card just taken down" ||
+  { echo "FAIL gateway: $(gw)" >&2; fail=1; }
+echo 1 > "$T/sys/enp0s2/carrier"
+[[ $(gw) == 192.168.77.1 ]] && echo "ok   gateway: both cards up, the lower metric (fast network)" || { echo "FAIL gateway: $(gw)" >&2; fail=1; }
+
 # 2. The fast network as in the VM, then the move to the user network.
 mac "$T/out2" 4,192.168.77.1,192.168.77.2 3   # first on 192.168.77.1 from the VM's lease, then via 127.0.0.1
 guest "App VM" app 192.168.77.1 loop > "$T/guest3" 2>&1 &

@@ -576,17 +576,32 @@ def bridge_token():
         return ""
 
 
+ROUTES, SYS_NET = "/proc/net/route", "/sys/class/net"
+
+
 def default_gateway():
-    """The IPv4 default gateway, from /proc/net/route ("" without one)."""
+    """The IPv4 default gateway the VM uses, from /proc/net/route ("" without
+    one): the lowest metric among default routes whose network card has a
+    link. When the app switches networks it takes one card's link down; that
+    card's route can stay listed (first) for seconds after."""
+    best = None
     try:
-        with open("/proc/net/route") as f:
+        with open(ROUTES) as f:
             for line in f.readlines()[1:]:
                 p = line.split()
-                if len(p) > 2 and p[1] == "00000000":
-                    return socket.inet_ntoa(struct.pack("<I", int(p[2], 16)))
+                if len(p) < 7 or p[1] != "00000000" or int(p[3], 16) & 3 != 3:   # RTF_UP | RTF_GATEWAY
+                    continue
+                try:
+                    with open(f"{SYS_NET}/{p[0]}/carrier") as c:
+                        if c.read().strip() != "1":
+                            continue
+                except OSError:
+                    pass                                 # no carrier to read: count it
+                if best is None or int(p[6]) < best[0]:
+                    best = (int(p[6]), socket.inet_ntoa(struct.pack("<I", int(p[2], 16))))
     except (OSError, ValueError):
         pass
-    return ""
+    return best[1] if best else ""
 
 
 def mac_host():
