@@ -1,81 +1,123 @@
 #!/usr/bin/env python3
-"""docs/images/benchmarks.svg from report.py's JSON: each route as a share of the Mac.
+"""docs/images/benchmarks.svg from a results JSON: each route as a share of the Mac.
 
-  chart.py results.json docs/images/benchmarks.svg "MacBook Pro M4 Max · macOS 15.7 · 16 CPUs, 48 GB per VM"
+  chart.py docs/benchmarks/chart.json docs/images/benchmarks.svg "MacBook Pro M4 Max · macOS 15.7 · Chrome 154"
+
+The JSON is report.py's ("medians", "missing"), plus optional "unreleased":
+{route: [test, ...]} for numbers from a build that is not out yet. Those bars
+are striped and tagged. Tests without a Mac value are left out.
 """
 import json, sys
 from xml.sax.saxutils import escape
 
 FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 MONO = "ui-monospace, 'SF Mono', Menlo, monospace"
-ROUTES = [  # report.py names (file names), label, colour
-    ("mac", "macOS itself", "#e0def4"),
-    ("parallels", "Parallels", "#9ccfd8"),
+INK, SOFT, MUTED, BG = "#e0def4", "#908caa", "#6e6a86", "#191724"
+ROUTES = [  # report.py names (file names), label, colour; the app first
+    ("app", "OmacVM.app", "#ebbcba"),
     ("utm", "UTM", "#c4a7e7"),
     ("fusion", "VMware Fusion", "#f6c177"),
-    ("app", "OmacVM.app", "#ebbcba"),
+    ("parallels", "Parallels", "#9ccfd8"),
 ]
 TESTS = [
-    ("geekbench-cpu-single", "CPU, one core", "Geekbench 7"),
     ("geekbench-cpu-multi", "CPU, all cores", "Geekbench 7"),
     ("speedometer", "Web apps", "Speedometer 3.1"),
-    ("motionmark", "Graphics in the browser", "MotionMark 1.3.1"),
+    ("aquarium", "Browser graphics", "WebGL Aquarium"),
+    ("basemark", "Browser overall", "Basemark Web 3.0"),
+    ("geekbench-gpu-opencl", "GPU compute", "Geekbench 7 GPU, OpenCL"),
 ]
+NOTE = "Striped: not released yet (OmacVM.app with Vulkan in the VM). glmark2 and vkmark have no macOS version: see docs/benchmarks."
+
+
+def text(x, y, s, size=12, fill=INK, font=FONT, weight=None, anchor=None, halo=False):
+    w = f' font-weight="{weight}"' if weight else ""
+    a = f' text-anchor="{anchor}"' if anchor else ""
+    h = f' stroke="{BG}" stroke-width="4" paint-order="stroke"' if halo else ""
+    return f'<text x="{x}" y="{y}" font-family="{font}" font-size="{size}" fill="{fill}"{w}{a}{h}>{escape(s)}</text>'
+
+
+def textw(s, size):
+    """Rough width of s in the sans font, enough to space a legend."""
+    return sum(0.28 if c in "ilt.,:;|' " else 0.68 if c.isupper() or c in "mw%" else 0.55 for c in s) * size
 
 
 def main():
     data = json.load(open(sys.argv[1]))
     out, subtitle = sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else ""
-    med = data["medians"]
-    tests = [t for t in TESTS if any(t[0] in med.get(r[0], {}) for r in ROUTES[1:])]
+    med, missing = data["medians"], data.get("missing", {})
+    unrel = {(r, t) for r, ts in data.get("unreleased", {}).items() for t in ts}
+    mac = med.get("mac", {})
     routes = [r for r in ROUTES if r[0] in med]
-    W, left, barw = 1000, 300, 600
-    row, gap = 22, 26
-    top = 120
-    H = top + len(tests) * (len(routes) * row + gap) + 40
-    s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-labelledby="t d">',
-         '<title id="t">How fast Omarchy runs on each route, compared with macOS itself</title>']
+    tests = [t for t in TESTS if mac.get(t[0]) and any(t[0] in med[r[0]] or t[0] in missing.get(r[0], {}) for r in routes)]
+
+    W, left, full = 1000, 230, 620          # full = width of 100 % (the Mac)
+    pitch, bar, gap, top = 15, 11, 16, 104
+    group = len(routes) * pitch
+    H = top + len(tests) * (group + gap) + 30
+
+    def share(name, key):
+        v = med.get(name, {}).get(key)
+        return None if v is None else 100 * v / mac[key]
+
     desc = []
     for key, label, bench in tests:
-        base = med.get("mac", {}).get(key)
         parts = []
         for name, rl, _ in routes:
-            v = med.get(name, {}).get(key)
-            if v is None:
-                parts.append(f"{rl}: " + data.get("missing", {}).get(name, {}).get(key, "not available"))
-            elif base and name != "mac":
-                parts.append(f"{rl}: {round(100 * v / base)} percent")
+            p = share(name, key)
+            if p is None:
+                parts.append(f"{rl} {missing.get(name, {}).get(key, 'not available')}")
+            else:
+                parts.append(f"{rl} {round(p)} percent" + (" (not released yet)" if (name, key) in unrel else ""))
         desc.append(f"{label} ({bench}): " + ", ".join(parts))
-    s.append(f'<desc id="d">{escape(". ".join(desc))}.</desc>')
-    s.append('<defs><pattern id="dots" width="40" height="40" patternUnits="userSpaceOnUse"><rect x="20" y="20" width="2" height="2" fill="#26233a"/></pattern></defs>')
-    s.append(f'<rect width="{W}" height="{H}" fill="#191724"/><rect width="{W}" height="{H}" fill="url(#dots)"/>')
-    s.append(f'<text x="{W/2}" y="40" text-anchor="middle" font-family="{FONT}" font-size="22" font-weight="600" fill="#e0def4">How fast is Omarchy in a VM?</text>')
-    s.append(f'<text x="{W/2}" y="66" text-anchor="middle" font-family="{FONT}" font-size="14" fill="#908caa">{escape(subtitle)} · macOS itself = 100 %</text>')
-    x = 330
-    for name, rl, col in routes:
-        s.append(f'<rect x="{x}" y="84" width="12" height="12" rx="3" fill="{col}"/>')
-        s.append(f'<text x="{x + 18}" y="95" font-family="{FONT}" font-size="13" fill="#e0def4">{escape(rl)}</text>')
-        x += 18 + len(rl) * 8 + 26
+
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-labelledby="t d">',
+         '<title id="t">How fast Omarchy runs in OmacVM.app, UTM, VMware Fusion and Parallels, as a share of macOS itself</title>',
+         f'<desc id="d">{escape(". ".join(desc))}. macOS itself is 100 percent.</desc>',
+         '<defs><pattern id="dots" width="40" height="40" patternUnits="userSpaceOnUse"><rect x="20" y="20" width="2" height="2" fill="#26233a"/></pattern>']
+    for name, _, col in routes:
+        s.append(f'<pattern id="hatch-{name}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+                 f'<rect width="6" height="6" fill="{col}" fill-opacity="0.25"/><rect width="3" height="6" fill="{col}"/></pattern>')
+    s.append('</defs>')
+    s.append(f'<rect width="{W}" height="{H}" fill="{BG}"/><rect width="{W}" height="{H}" fill="url(#dots)"/>')
+    s.append(text(W / 2, 34, "How fast is Omarchy in a VM?", 20, weight="600", anchor="middle"))
+    s.append(text(W / 2, 56, subtitle, 13, SOFT, anchor="middle"))
+
+    # legend, centred: the routes in chart order, then the Mac's line
+    items = [(rl, col) for _, rl, col in routes] + [("macOS = 100 %", None)]
+    widths = [18 + textw(rl, 13) + 22 for rl, _ in items]
+    x = (W - sum(widths) + 22) / 2
+    for (rl, col), w in zip(items, widths):
+        if col:
+            s.append(f'<rect x="{x:.0f}" y="69" width="12" height="12" rx="3" fill="{col}"/>')
+        else:
+            s.append(f'<line x1="{x + 6:.0f}" y1="67" x2="{x + 6:.0f}" y2="83" stroke="{INK}" stroke-opacity="0.6" stroke-dasharray="3 3"/>')
+        s.append(text(f"{x + 18:.0f}", 80, rl, 13, weight="600" if rl == routes[0][1] else None))
+        x += w
+
+    # the Mac: one dashed line at 100 % through every row, behind the bars
+    s.append(f'<line x1="{left + full}" y1="{top - 4}" x2="{left + full}" y2="{top + len(tests) * (group + gap) - gap + 4}" stroke="{INK}" stroke-opacity="0.45" stroke-dasharray="3 3"/>')
     y = top
-    delay = 0.0
     for key, label, bench in tests:
-        base = med.get("mac", {}).get(key)
-        vals = [med.get(n, {}).get(key) for n, _, _ in routes]
-        top_v = max([v for v in vals if v] + [base or 0]) or 1
-        s.append(f'<text x="40" y="{y + 16}" font-family="{FONT}" font-size="15" font-weight="600" fill="#e0def4">{escape(label)}</text>')
-        s.append(f'<text x="40" y="{y + 34}" font-family="{FONT}" font-size="12" fill="#6e6a86">{escape(bench)}</text>')
+        s.append(text(40, y + group / 2 - 3, label, 15, weight="600"))
+        s.append(text(40, y + group / 2 + 14, bench, 12, MUTED))
         for i, (name, rl, col) in enumerate(routes):
-            v = med.get(name, {}).get(key)
-            by = y + i * row
-            if v is None:
-                s.append(f'<text x="{left}" y="{by + 14}" font-family="{MONO}" font-size="12" fill="#6e6a86">{escape(data.get("missing", {}).get(name, {}).get(key, "not available"))}</text>')
+            by = y + i * pitch
+            p = share(name, key)
+            if p is None:
+                s.append(text(left, by + 10, f"– {rl}: " + missing.get(name, {}).get(key, "not available"), 11, MUTED, MONO))
                 continue
-            w = max(2, barw * v / top_v)
-            s.append(f'<rect x="{left}" y="{by + 3}" width="{w:.1f}" height="14" rx="4" fill="{col}"/>')
-            pct = "100 %" if name == "mac" else (f"{round(100 * v / base)} %" if base else f"{v:g}")
-            s.append(f'<text x="{left + w + 8:.1f}" y="{by + 15}" font-family="{MONO}" font-size="12" fill="#e0def4">{pct}</text>')
-            delay += 0.05
-        y += len(routes) * row + gap
+            w = max(2, min(full * 1.1, full * p / 100))
+            fill = f"url(#hatch-{name})" if (name, key) in unrel else col
+            s.append(f'<rect x="{left}" y="{by + (pitch - bar) / 2:.1f}" width="{w:.1f}" height="{bar}" rx="3" fill="{fill}"/>')
+            tx = left + w + 8
+            if tx - 8 < left + full < tx + 40:  # keep the Mac's line out from behind the value
+                s.append(f'<rect x="{left + w + 1:.1f}" y="{by}" width="52" height="{pitch}" fill="{BG}"/>')
+            s.append(text(f"{tx:.1f}", by + 11, f"{round(p)} %", 12, INK, MONO, "600" if name == routes[0][0] else None, halo=True))
+            if (name, key) in unrel:
+                s.append(f'<rect x="{tx + 42:.1f}" y="{by + 1}" width="86" height="13" rx="6.5" fill="none" stroke="{col}" stroke-opacity="0.7"/>')
+                s.append(text(f"{tx + 85:.1f}", by + 11, "not released", 10, col, anchor="middle"))
+        y += group + gap
+    s.append(text(W / 2, H - 14, NOTE, 12, MUTED, anchor="middle"))
     s.append('</svg>')
     open(out, "w").write("\n".join(s) + "\n")
 

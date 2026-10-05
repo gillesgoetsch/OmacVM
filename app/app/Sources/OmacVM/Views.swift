@@ -82,7 +82,7 @@ struct SetupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("New Omarchy VM").font(.title2.bold())
-            Text("\(Product.name) installs Arch Linux ARM and Omarchy into a new VM. It takes 20 to 60 minutes and downloads a few GB.")
+            Text("\(Product.name) installs Arch Linux ARM and Omarchy into a new VM. It takes 10 to 30 minutes and downloads a few GB.")
                 .foregroundStyle(.secondary)
             Form {
                 TextField("VM name", text: $state.config.name)

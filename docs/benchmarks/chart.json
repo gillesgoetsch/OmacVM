@@ -1,0 +1,62 @@
+{
+ "baseline": "mac",
+ "sources": {
+  "geekbench-cpu-multi": "2026-10-03 round, single runs",
+  "speedometer": "2026-10-03 round, median of 3",
+  "aquarium": "2026-10-04 GPU round, median of 3, full screen",
+  "basemark": "2026-10-04 GPU round, median of 3, full screen",
+  "geekbench-gpu-opencl": "2026-10-04, one locked batch (Mac 252722, VM 252731 on browser.geekbench.com)"
+ },
+ "medians": {
+  "mac": {
+   "geekbench-cpu-multi": 27290,
+   "speedometer": 62.9,
+   "aquarium": 107.7,
+   "basemark": 3247,
+   "geekbench-gpu-opencl": 95380
+  },
+  "app": {
+   "geekbench-cpu-multi": 26984,
+   "speedometer": 43.8,
+   "aquarium": 23.9,
+   "geekbench-gpu-opencl": 42486
+  },
+  "utm": {
+   "geekbench-cpu-multi": 24414,
+   "speedometer": 32.9,
+   "aquarium": 28.1,
+   "basemark": 2182
+  },
+  "fusion": {
+   "geekbench-cpu-multi": 27037,
+   "speedometer": 44.4,
+   "aquarium": 40.6,
+   "basemark": 2522
+  },
+  "parallels": {
+   "geekbench-cpu-multi": 26218,
+   "speedometer": 42.4,
+   "aquarium": 26.7,
+   "basemark": 2446
+  }
+ },
+ "unreleased": {
+  "app": [
+   "geekbench-gpu-opencl"
+  ]
+ },
+ "missing": {
+  "app": {
+   "basemark": "no full-screen run yet"
+  },
+  "utm": {
+   "geekbench-gpu-opencl": "not available (no OpenCL or Vulkan)"
+  },
+  "fusion": {
+   "geekbench-gpu-opencl": "not available (no OpenCL or Vulkan)"
+  },
+  "parallels": {
+   "geekbench-gpu-opencl": "not available (no OpenCL or Vulkan)"
+  }
+ }
+}

@@ -1,0 +1,58 @@
+# Quick checks on every pull request and on main: syntax, ShellCheck errors,
+# the app's and the Mac helpers' builds and Omanotch's offline tests. No
+# signing beyond ad hoc, no VMs.
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List shell scripts
+        run: |
+          # *.sh plus the files without an extension that start with a bash shebang.
+          { git ls-files '*.sh'
+            git ls-files | grep -v '\.[^/]*$' | while read -r f; do
+              head -1 "$f" 2>/dev/null | grep -qE '^#!.*\b(ba)?sh\b' && echo "$f"
+            done; } | sort -u > "$RUNNER_TEMP/shell-files"
+          wc -l < "$RUNNER_TEMP/shell-files"
+
+      - name: bash -n (macOS's bash 3.2, which the Mac side runs on)
+        run: |
+          fail=0
+          while read -r f; do /bin/bash -n "$f" || { echo "::error file=$f::bash -n failed"; fail=1; }; done < "$RUNNER_TEMP/shell-files"
+          exit $fail
+
+      - name: ShellCheck (errors only)
+        run: |
+          command -v shellcheck >/dev/null || brew install shellcheck
+          tr '\n' '\0' < "$RUNNER_TEMP/shell-files" | xargs -0 shellcheck -S error -s bash
+
+      - name: Python compiles
+        run: git ls-files -z '*.py' | xargs -0 python3 -m py_compile
+
+      - name: OmacVM.app builds
+        working-directory: app/app
+        run: swift build
+
+      - name: Mac helpers build (Gestures, Bridge)
+        run: |
+          src/gestures/mac/build.sh
+          src/bridge/mac/build.sh
+
+      - name: Omanotch offline tests
+        run: src/omanotch/mac/test.sh

@@ -25,4 +25,4 @@ cat > "$PL" <<PL
 PL
 launchctl bootstrap gui/$(id -u) "$PL"
 echo "installed; log: ~/Library/Logs/omacvm-bridge.log"
-echo "token: ~/Library/Application Support/omacvm-bridge/token (apply.sh copies it into the VM)"
+echo "token: ~/Library/Application Support/omacvm-bridge/token (omacvm apply copies it into the VM)"

@@ -36,6 +36,16 @@ TESTS = {
         "sample": "typeof g_fpsTimer !== 'undefined' ? g_fpsTimer.averageFPS : 0",
         "warmup": 10, "seconds": 20,
     },
+    # Basemark Web 3.0: WebGL, canvas and SVG, plus some JavaScript and page
+    # tests (about 2 minutes). It ends on its result page on powerboard.gpuscore.com.
+    "basemark": {
+        "url": "https://web.basemark.com/",
+        "start": "document.getElementById('start').click()",
+        "done": "(() => { const r = document.querySelector('.device-scores__score');"
+                " return /benchmark-result/.test(location.pathname) && r ? r.textContent.trim() : '' })()",
+        "detail": "location.href + ' ' + (document.body.innerText.replace(/\\s+/g, ' ').split('RESULT')[1] || '').slice(0, 700)",
+        "timeout": 900,
+    },
 }
 
 
@@ -112,7 +122,16 @@ def main():
     base = f"http://127.0.0.1:{port}"
     req = urllib.request.Request(f"{base}/json/new?about:blank", method="PUT")
     tab = json.load(urllib.request.urlopen(req))
-    dt = DevTools(tab["webSocketDebuggerUrl"])
+    try:
+        run(DevTools(tab["webSocketDebuggerUrl"]), t)
+    finally:   # close the tab: a page left open can keep drawing during the next test
+        try:
+            urllib.request.urlopen(f"{base}/json/close/{tab['id']}")
+        except OSError:
+            pass
+
+
+def run(dt, t):
     dt.call("Page.enable")
     dt.call("Page.bringToFront")
     dt.call("Page.navigate", url=t["url"])
@@ -121,6 +140,8 @@ def main():
         if dt.js("document.readyState") == "complete" and dt.js("typeof " + t["start"].split("(")[0].split(".")[0]) != "undefined":
             break
     time.sleep(2)
+    # The page size, for the log: it should be the same everywhere.
+    print("viewport " + str(dt.js("innerWidth + 'x' + innerHeight + ' at ' + devicePixelRatio + 'x'")), file=sys.stderr)
     dt.js(t["start"])
     if "sample" in t:
         time.sleep(t["warmup"])

@@ -39,7 +39,7 @@ user_active() { systemctl --user -M "$U@" is-active "$1" >/dev/null 2>&1; }
 connected_to() { ss -Htn state established "dst $1:$2" | grep -q .; }
 ev_device() { grep -q "^N: Name=\"$1\"" /proc/bus/input/devices; }
 
-[[ -r /etc/omacvm/env ]] || { bad "OmacVM guest side" "not installed (run apply.sh on the Mac)"; exit 1; }
+[[ -r /etc/omacvm/env ]] || { bad "OmacVM guest side" "not installed (run omacvm apply on the Mac)"; exit 1; }
 source /etc/omacvm/env
 HOST=$OMACVM_HOST; TYPE=$OMACVM_VM_TYPE
 # Features chosen at setup (VMs set up before the choices existed: the defaults
@@ -58,11 +58,13 @@ mon=$(as_user hyprctl monitors -j 2>/dev/null | jq -r 'max_by(.width * .height) 
 if [[ -z $mon ]]; then bad "display" "no monitor from hyprctl"
 elif [[ $mon == 1160x768* ]]; then bad "display" "$mon: still the firmware mode (monitors.lua not applied)"
 else ok "display" "$mon"; fi
+bg=$H/.local/state/omarchy/current/background
+if [[ -L $bg && ! -e $bg ]]; then bad "desktop background" "$(readlink "$bg") is missing: omacvm apply, then log in again"; fi
 
 section "The Mac in the bar (Bridge)"
 if [[ $BRIDGE == on ]]; then
   if [[ -s $H/.config/omacvm-bridge/token ]]; then ok "token" "~/.config/omacvm-bridge/token"
-  else bad "token" "missing: run apply.sh on the Mac"; fi
+  else bad "token" "missing: run omacvm apply on the Mac"; fi
   state=$(as_user omacvm-bridge state 2>/dev/null)
   if jq -e .power >/dev/null 2>&1 <<<"$state"; then
     if jq -e .location_authorized <<<"$state" >/dev/null; then
@@ -89,6 +91,12 @@ if [[ $BRIDGE == on ]]; then
   else bad "shared event stream" "$n connections to the Mac (widgets from before it: log out and in)"; fi
   if user_active omacvm-bridge-osd.service; then ok "media keys OSD" "omacvm-bridge-osd"
   else bad "media keys OSD" "omacvm-bridge-osd.service not running"; fi
+  # Right after the first login omacvm-plugins may still be enabling the widgets.
+  for _ in $(seq 60); do
+    [[ -s $H/.local/state/omacvm/pending-plugins &&
+       $(systemctl --user -M "$U@" show -p ActiveState --value omacvm-plugins.service 2>/dev/null) == activating ]] || break
+    sleep 1
+  done
   layout=$(jq -r '[.bar.layout[]?[]?.id] | join(" ")' "$H/.config/omarchy/shell.json" 2>/dev/null)
   bt=$(as_user omacvm-bridge bluetooth 2>/dev/null)
   if jq -e .devices >/dev/null 2>&1 <<<"$bt"; then
@@ -144,17 +152,21 @@ else bad "microphone" "PipeWire has no input: no sound card in the VM? (UTM, Fus
 
 section "The Mac's battery"
 if [[ $TYPE == parallels ]]; then
-  skip "battery" "Parallels gives the VM the Mac's battery itself"
+  if compgen -G '/sys/class/power_supply/BAT*' >/dev/null; then skip "battery" "Parallels gives the VM the Mac's battery itself"
+  else skip "battery" "none: this Mac has no battery (on a MacBook Parallels passes it itself)"; fi
 elif [[ $BATTERY == on ]]; then
   if [[ -w /sys/devices/platform/omacvm-battery/state ]]; then ok "battery module" "omacvm_battery loaded"
   else bad "battery module" "not loaded on $(uname -r) (reboot after omacvm apply; log /var/lib/omacvm/battery-build.log)"; fi
   # Every kernel that boots must have it (DKMS builds it with each kernel's headers).
-  for k in $(ls /usr/lib/modules 2>/dev/null); do
+  for k in /usr/lib/modules/*; do k=${k##*/}
     [[ -d /usr/lib/modules/$k/kernel ]] || continue
     if dkms status -k "$k" omacvm-battery 2>/dev/null | grep -q installed; then ok "battery: kernel $k" "module built (DKMS)"
     elif [[ ! -f /usr/lib/modules/$k/build/Makefile ]]; then bad "battery: kernel $k" "no headers to build the module with: omarchy update, reboot, omacvm apply"
     else bad "battery: kernel $k" "module not built (omacvm apply; log /var/lib/omacvm/battery-build.log)"; fi
   done
+  # Right after a boot the agent (and its first snapshot) may need a moment.
+  for _ in $(seq 15); do systemctl is-active -q omacvm-battery && break; sleep 1; done
+  for _ in $(seq 5); do [[ -d /sys/class/power_supply/BAT0 ]] && break; sleep 1; done
   if systemctl is-active -q omacvm-battery; then ok "battery agent" "omacvm-battery feeds it the Mac's"
   else bad "battery agent" "omacvm-battery.service not running ($(journalctl -u omacvm-battery -n1 -o cat 2>/dev/null | sed 's/^omacvm-battery: //'))"; fi
   up=$(upower -i /org/freedesktop/UPower/devices/battery_BAT0 2>/dev/null)
@@ -183,7 +195,10 @@ if [[ $GESTURES == on ]]; then
 else skip "trackpad gestures" "off (chosen at setup): macOS keeps its swipes"; fi
 if [[ $GLIDE == on && $GESTURES == on ]]; then
   pid=$(systemctl show -p MainPID --value omacvm-gestures 2>/dev/null)
-  if [[ -n $pid && $pid != 0 ]] && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx 'OMACVM_FEATURE_scroll_momentum=on'; then
+  # same rule as the daemon: the new key wins, a VM not yet updated may only have the old glide key
+  denv=$( [[ -n $pid && $pid != 0 ]] && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null)
+  dsm=$(sed -n 's/^OMACVM_FEATURE_scroll_momentum=//p' <<<"$denv"); dgl=$(sed -n 's/^OMACVM_FEATURE_glide=//p' <<<"$denv")
+  if [[ ${dsm:-${dgl:-off}} == on ]]; then
     ok "scroll momentum" "two-finger scrolling from the Mac (experimental)"
   else bad "scroll momentum" "chosen, but the daemon runs without it: systemctl restart omacvm-gestures"; fi
   if [[ -f $H/.config/hypr/omacvm_glide.lua ]] && grep -qxF 'require("hypr.omacvm_glide")' "$H/.config/hypr/hyprland.lua"; then
@@ -250,6 +265,10 @@ app)
   if [[ -n $v ]]; then ok "video decoding" "the Mac's media engine: $v"
   elif ! command -v vainfo >/dev/null; then skip "video decoding" "no vainfo (omacvm apply installs it)"
   else skip "video decoding" "no decoders (OmacVM.app older than the video decoding?)"; fi
+  if [[ $drv == omacvm ]] && command -v firefox >/dev/null; then
+    check "video decoding in Firefox" "the driver shim is on ld.so's path (Firefox's sandbox)" \
+      grep -qx /usr/local/lib/dri /etc/ld.so.conf.d/omacvm-video.conf
+  fi
   e=$(as_user env LIBVA_DRIVER_NAME=$drv LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri \
       vainfo --display drm 2>/dev/null | sed -n 's/^[[:space:]]*VAProfile\([A-Za-z0-9]*\)[[:space:]]*:[[:space:]]*VAEntrypointEncSlice$/\1/p' | tr '\n' ' ')
   if [[ -n $e ]]; then
@@ -291,7 +310,7 @@ if [[ $k == *thp* && $THP_KERNEL == off ]]; then bad "kernel" "$k: the memory-op
 elif [[ $k == *thp* ]]; then ok "kernel" "$k (memory-optimized: THP + MGLRU)"
 elif [[ $THP_KERNEL == off ]]; then ok "kernel" "$k (Arch Linux ARM's own; memory-optimized kernel not chosen)"
 elif ! command -v grub-mkconfig >/dev/null; then skip "kernel" "$k (the memory-optimized kernel needs GRUB)"
-else bad "kernel" "$k: not the memory-optimized kernel yet (reboot after apply.sh?)"; fi
+else bad "kernel" "$k: not the memory-optimized kernel yet (reboot after omacvm apply?)"; fi
 thp=$(sed -n 's/.*\[\(.*\)\].*/\1/p' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)
 if [[ $thp == always || $thp == madvise ]]; then ok "transparent huge pages" "$thp"
 elif [[ $k == *thp* ]]; then bad "transparent huge pages" "${thp:-unavailable}"
@@ -301,7 +320,7 @@ if [[ -n $lru && $lru != 0x0000 ]]; then ok "MGLRU" "$lru"
 elif [[ $k == *thp* ]]; then bad "MGLRU" "${lru:-unavailable}"
 else skip "MGLRU" "${lru:-not in this kernel} (part of the memory-optimized kernel)"; fi
 z=$(swapon --show=NAME,SIZE --noheadings 2>/dev/null | awk '/zram/ { print $2; exit }')
-[[ -n $z ]] && ok "zram swap" "$z" || bad "zram swap" "none (reboot after apply.sh?)"
+[[ -n $z ]] && ok "zram swap" "$z" || bad "zram swap" "none (reboot after omacvm apply?)"
 if command -v grub-mkconfig >/dev/null; then
   if ! systemctl is-active -q grub-btrfsd; then bad "bootable snapshots" "grub-btrfsd is not running"
   elif [[ ! -s /boot/grub/grub-btrfs.cfg ]] && btrfs subvolume list -s / 2>/dev/null | grep -q .; then

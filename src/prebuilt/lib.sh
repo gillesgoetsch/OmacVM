@@ -6,7 +6,7 @@ PREBUILT_FULLNAME="OmacVM User"
 PREBUILT_NAME=Omarchy               # the VM's name inside the archive
 PREBUILT_DISK_GB=64                 # the image's disk; grown on install
 # Features of the image build; omacvm build --prebuilt then applies the chosen ones.
-PREBUILT_FEATURES="bridge=on wallpaper=on gestures=on scroll-momentum=off omanotch=off mac-clock=on idle-lock=on autologin=off thp-kernel=off"
+PREBUILT_FEATURES="bridge=on wallpaper=on gestures=on scroll-momentum=off omanotch=off mac-clock=on camera=on battery=off idle-lock=on autologin=off thp-kernel=off"
 UTM_DOCS=$HOME/Library/Containers/com.utmapp.UTM/Data/Documents
 
 PREBUILT_CACHE=$HOME/Library/Caches/omacvm/prebuilt

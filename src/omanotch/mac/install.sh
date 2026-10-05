@@ -9,12 +9,7 @@ APP="$HOME/Applications/Omanotch.app"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 ./build.sh
-# Earlier versions were called "Omarchy Notch Bar" (label ch.gillesgoetsch.notchbar).
-launchctl bootout "gui/$(id -u)/ch.gillesgoetsch.notchbar" 2>/dev/null || true
-rm -f "$HOME/Library/LaunchAgents/ch.gillesgoetsch.notchbar.plist"
-rm -rf "$HOME/Applications/Omarchy Notch Bar.app"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-pkill -x notchbar 2>/dev/null || true
 pkill -x omanotch 2>/dev/null || true
 mkdir -p "$HOME/Applications" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 rm -rf "$APP"

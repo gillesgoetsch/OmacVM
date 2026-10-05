@@ -130,8 +130,8 @@ ui_checklist() {
   while :; do
     (( drawn )) && printf '\033[%dA' $((n + 2)) > "$TTY"
     for ((i = 0; i < n; i++)); do
-      if [[ -n ${UI_OFF_REASON[$i]} ]]; then mark="$UD[–]$UR"
-      elif (( UI_ON[i] )); then mark="$UOK[✓]$UR"
+      if [[ -n ${UI_OFF_REASON[$i]} ]]; then mark="${UD}[–]$UR"
+      elif (( UI_ON[i] )); then mark="${UOK}[✓]$UR"
       else mark="[ ]"; fi
       tag=""
       [[ ${UI_TAG[$i]} == experimental ]] && tag=" ${UEXP}experimental$UR"

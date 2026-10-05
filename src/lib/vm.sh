@@ -62,17 +62,6 @@ vm_marked() {
   esac
 }
 
-vm_hw_mac() {   # NAME TYPE -> the VM's network MAC from its settings (12 hex digits)
-  local m="" b x
-  case $2 in
-    parallels) m=$(vm_mac "$(vm_bundle "$1")" 2>/dev/null) ;;
-    utm) b=$(utm_bundle "$1") && m=$(plutil -extract Network.0.MacAddress raw "$b/config.plist" 2>/dev/null) ;;
-    fusion) x=$(fusion_vmx "$1") &&
-              m=$(sed -n 's/^ethernet0\.generatedAddress = "\(.*\)"$/\1/p; s/^ethernet0\.address = "\(.*\)"$/\1/p' "$x" | head -1) ;;
-  esac
-  mac_norm "$m"
-}
-
 utm_bundle() {   # NAME -> its .utm (UTM's registry also knows VMs outside UTM's folder)
   local b
   b=$(python3 - "$UTM_PREFS" "$1" <<'PY' 2>/dev/null

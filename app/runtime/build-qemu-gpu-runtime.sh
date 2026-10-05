@@ -77,7 +77,9 @@ slirp_patch="$native_dir/patches/libslirp-darwin-icmp-matching.patch"
 udp_patch="$native_dir/patches/libslirp-ipv4-udp-translation.patch"
 fence_poll_patch="$native_dir/patches/qemu-darwin-gpu-fence-poll.patch"
 virgl_native_patch="$native_dir/patches/virgl-native-opengl.patch"
+virgl_int_tex_patch="$native_dir/patches/virgl-texture-integer-samplers.patch"
 virgl_videotoolbox_patch="$native_dir/patches/virgl-videotoolbox-decode.patch"
+virgl_row_size_patch="$native_dir/patches/virgl-transfer-row-size.patch"
 virgl_vt_encode_patch="$native_dir/patches/virgl-videotoolbox-encode.patch"
 hidden_window_patch="$native_dir/patches/qemu-cocoa-hidden-for-tests.patch"
 prepare_runtime="$native_dir/prepare-qemu-gpu-runtime.sh"
@@ -108,7 +110,9 @@ memory_reclaim_patch_sha256=5d422130996b99145d017d4429df660a07c757388ef7d52cba38
 mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
+virgl_int_tex_patch_sha256=5336df08e7096fb0e4b977ebedf36aac29c6c053df7edbdea7ff5e45273f57e4
 virgl_videotoolbox_patch_sha256=12c0863d818a1b26da3be9c59220ee22ce55a037887297cd6dac53e62dbc37c3
+virgl_row_size_patch_sha256=5858714fd4f7bcfaa1c9e10fc9ea706df30e59a37be62ad4c20003e049e347e9
 virgl_vt_encode_patch_sha256=29677d3946f489215b64a535c0ac1deb7171b8db71d68892eed2ebfe57f1ae3f
 hidden_window_patch_sha256=286aa59317d16f21cb0fe1dd42b6636995d24f1c65312175e40f36b14272dc93
 strchrnul_patch_sha256=ec1048dd0e8ebe53bf7e8a3bca9bf2f5f4336cd607d4cd077437470e9a32094a
@@ -503,11 +507,13 @@ patch -d "$source_dir" -p1 -f -i "$iso_swap_patch"
 patch -d "$source_dir" -p1 -f -i "$injected_text_patch"
 patch -d "$source_dir" -p1 -f -i "$usb_exact_bus_patch"
 # OmacVM: app name and icon from the launcher; Quit shuts the guest down;
-# full screen beside the notch; the window keeps its size.
+# full screen beside the notch; the window keeps its size; the recording
+# device opens off the BQL.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-identity.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-quit-powerdown.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-notch.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-window-size.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-sdl-audio-capture-thread.patch"
 verify_file_sha "Cocoa hidden-window patch" "$hidden_window_patch" "$hidden_window_patch_sha256"
 patch -d "$source_dir" -p1 -f -i "$hidden_window_patch"
 
@@ -627,9 +633,17 @@ for virgl_patch in "${virgl_patches[@]}"; do
 done
 verify_file_sha "Native OpenGL browser compatibility patch" "$virgl_native_patch" "$virgl_native_patch_sha256"
 patch -d "$virgl_source" -p1 -f -i "$virgl_native_patch"
+# OmacVM: texture() on an integer sampler (usampler2D, isampler2D) gave a vec4 that the
+# shader then could not convert: the host's GL refused the shader and the guest's
+# GL context stopped for good (Chrome's GPU process hung in Basemark Web 3.0).
+verify_file_sha "Integer sampler shader patch" "$virgl_int_tex_patch" "$virgl_int_tex_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_int_tex_patch"
 # Video decode on the Mac's media engine: guest VA-API -> VideoToolbox.
 verify_file_sha "VideoToolbox video decode patch" "$virgl_videotoolbox_patch" "$virgl_videotoolbox_patch_sha256"
 patch -d "$virgl_source" -p1 -f -i "$virgl_videotoolbox_patch"
+# No texture transfer moves more bytes per row in GL than the guest's buffers hold.
+verify_file_sha "Transfer row size patch" "$virgl_row_size_patch" "$virgl_row_size_patch_sha256"
+patch -d "$virgl_source" -p1 -f -i "$virgl_row_size_patch"
 # Video encode (H.264, HEVC) on the Mac's media engine: guest VA-API -> VTCompressionSession.
 verify_file_sha "VideoToolbox video encode patch" "$virgl_vt_encode_patch" "$virgl_vt_encode_patch_sha256"
 patch -d "$virgl_source" -p1 -f -i "$virgl_vt_encode_patch"

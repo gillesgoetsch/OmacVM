@@ -57,7 +57,8 @@ accepted on, the Mac first), so the token never goes over the wire and the VM
 ignores a listener that cannot prove it (on 127.0.0.1, for OmacVM.app, any Mac
 program could listen; a proof it fetched from the helper on 10.211.55.2 names
 that address and fails). Daemons from before
-that send `H <gestures> <glide> <token> <name>` and are still let in. With two VMs in one app, only the VM named in the title of the app's
+that send `H <gestures> <glide> <token> <name>` and are still let in; daemons
+without a token (OmacVM 2.3 and older) are refused until `omacvm update`. With two VMs in one app, only the VM named in the title of the app's
 front window gets the trackpad and the keys; without a match every VM of that
 app does.
 

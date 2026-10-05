@@ -32,7 +32,7 @@ while IFS=$'\t' read -r name type state; do
     omacvm) what="OmacVM $v" ;;
     plain) what="Omarchy without OmacVM" ;;
     locked) what="running, OmacVM cannot get in yet" ;;
-    *) what="stopped" ;;
+    *) what=${state:-stopped} ;;   # stopped, suspended, paused, ...
   esac
   printf '    %-24s %-10s %s\n' "$name" "$(case $type in (parallels) echo Parallels ;; (utm) echo UTM ;; (fusion) echo Fusion ;; (app) echo OmacVM.app ;; esac)" "$what" > "$TTY"
 done < <(vms_list)

@@ -62,8 +62,8 @@ Each release has, per app, `omacvm-prebuilt-VERSION-ROUTE.tar.zst.part-aa`,
 `-ab`, …, a manifest (`.json`), SHA-256 sums (`.sha256`) and the package list.
 
 ```bash
-shasum -a 256 -c omacvm-prebuilt-2.3.1-utm.sha256
-cat omacvm-prebuilt-2.3.1-utm.tar.zst.part-* | zstd -dc --long=27 | tar -xSf -
+shasum -a 256 -c omacvm-prebuilt-2.6.0-utm.sha256
+cat omacvm-prebuilt-2.6.0-utm.tar.zst.part-* | zstd -dc --long=27 | tar -xSf -
 ```
 
 That gives `Omarchy.pvm`, `Omarchy.utm` or `Omarchy.vmwarevm`. Open it with
@@ -96,7 +96,8 @@ src/prebuilt/make-image.sh parallels clean     # delete the image VM
 
 - **build**: `omacvm build --image`, a normal build with the placeholder user
   `omacvmuser`, timezone UTC, keyboard `us`, `en_US.UTF-8`, a 64 GB disk, the
-  default features without Omanotch, and nothing of the Mac: no Bridge token,
+  default features without Omanotch and the battery (both depend on the Mac),
+  and nothing of the Mac: no Bridge token,
   no Mac side, no Parallels Tools.
 - **generalize** (`src/prebuilt/guest/generalize.sh`, in the VM):
   - the user goes; its home becomes the template

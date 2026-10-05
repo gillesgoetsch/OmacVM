@@ -178,7 +178,7 @@ stage_upload() {
     log "creating the pre-release $TAG"
     gh release create "$TAG" -R "$PREBUILT_REPO" --prerelease --target "${OMACVM_PREBUILT_TARGET:-main}" \
       --title "Prebuilt VMs for OmacVM $VERSION ($TAG)" \
-      --notes "Prebuilt Omarchy VMs for OmacVM $VERSION. Use them with: omacvm build --prebuilt. See docs/prebuilt.md and SOURCES.md." >/dev/null
+      --notes "Prebuilt Omarchy VMs for OmacVM $VERSION. Use them with: omacvm build --prebuilt. What's inside: [SOURCES.md](https://github.com/$PREBUILT_REPO/releases/download/$TAG/SOURCES.md); how they are made: [docs/prebuilt.md](https://github.com/$PREBUILT_REPO/blob/main/docs/prebuilt.md)." >/dev/null
   fi
   log "uploading $base to $TAG"
   gh release upload "$TAG" -R "$PREBUILT_REPO" --clobber "$OUT/$base".tar.zst.part-* "$OUT/$base.json" "$OUT/$base.sha256" "$OUT/$base-packages.txt" "$OUT/SOURCES.md"

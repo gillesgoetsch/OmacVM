@@ -30,9 +30,7 @@ while (( $# )); do
     --yes|-y) YES=1; shift ;;
     -h|--help) sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 0 ;;
     -*) usage "unknown option $1 (see --help)" ;;
-    *) [[ $1 == mac-wallpaper ]] && set -- wallpaper "${@:2}"
-       [[ $1 == glide ]] && set -- scroll-momentum "${@:2}"   # its name in the experiment
-       feature_index "$1" >/dev/null || usage "unknown feature '$1' (omacvm features lists them)"
+    *) feature_index "$1" >/dev/null || usage "unknown feature '$1' (omacvm features lists them)"
        WANT+=("$1"); shift ;;
   esac
 done

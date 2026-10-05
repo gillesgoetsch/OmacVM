@@ -153,6 +153,8 @@ servers.forEach { $0.check() }
 mediaKeys.start()
 if config.menuBarIcon { menuBar.show() }
 log("config \(config.path): capture_keys=\(config.captureKeys) menu_bar_icon=\(config.menuBarIcon) keyboard_low_steps=\(config.keyboardLowSteps)")
+// A Mac mini, iMac or Studio has no keyboard light: Shift + brightness stays macOS's.
+log("keyboard light: \(KeyboardLight.get() != nil ? "found" : "none on this Mac")")
 let listenerTimer = DispatchSource.makeTimerSource(queue: .main)
 listenerTimer.schedule(deadline: .now() + tickSeconds, repeating: tickSeconds, leeway: .seconds(1))
 listenerTimer.setEventHandler { servers.forEach { $0.check() } }

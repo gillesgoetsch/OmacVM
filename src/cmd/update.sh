@@ -41,15 +41,12 @@ fi
 # ---------- the Mac ----------
 args=()
 launchctl print "gui/$(id -u)/org.omacvm.bridge" >/dev/null 2>&1 || args+=(--no-bridge)
-if launchctl print "gui/$(id -u)/org.omacvm.gestures" 2>/dev/null | grep -q -- --keys-only; then args+=(--no-gestures)
+if launchctl print "gui/$(id -u)/org.omacvm.gestures" 2>/dev/null | grep -q -- --keys-only; then args+=(--keys-only)
 elif ! launchctl print "gui/$(id -u)/org.omacvm.gestures" >/dev/null 2>&1; then args+=(--skip-gestures); fi
 launchctl print "gui/$(id -u)/org.omacvm.clip-in" >/dev/null 2>&1 || args+=(--skip-clip)
 launchctl print "gui/$(id -u)/ch.gillesgoetsch.omanotch" >/dev/null 2>&1 && args+=(--omanotch)
 log "OmacVM on the Mac"
 "$R/src/mac/install.sh" ${args[@]+"${args[@]}"}
-# Omanotch comes with OmacVM now (src/omanotch): the clone earlier versions
-# made is no longer used.
-[[ -d $HOME/omanotch/.git ]] && info "Omanotch: ~/omanotch is no longer used (it comes with OmacVM now), delete it when you like"
 
 # ---------- OmacVM.app ----------
 # The version that goes with this OmacVM, from its release (curl: no

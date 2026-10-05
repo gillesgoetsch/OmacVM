@@ -19,7 +19,7 @@ sections 7-8 before fixing anything by hand.
   macOS system shortcuts: Always", install Parallels, UTM 5 or VMware Fusion. Hand these over
   (`needs_human` in the JSON); never work around them, never invent a password.
 - macOS-native scroll momentum (`scroll-momentum`) is experimental and off by default: offer it, let the person decide.
-- A build takes 30-70 minutes (Fusion 45-85, `minutes` in the plan): run it in the background and follow its output.
+- A build takes 30-70 minutes (OmacVM.app 10-30, Fusion 45-85, `minutes` in the plan): run it in the background and follow its output.
 - Do not edit `/usr/share/omarchy` or the user's macOS Spaces; do not put
   personal data into this repository.
 

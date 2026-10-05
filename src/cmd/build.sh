@@ -1,7 +1,8 @@
 #!/bin/bash
 # omacvm build: an Omarchy VM that feels like a native Mac, in Parallels
 # Desktop, UTM, VMware Fusion or OmacVM.app, from nothing, in one go (30-70
-# minutes, mostly downloads; Fusion about 15 more, it builds Hyprland with a fix).
+# minutes, mostly downloads; OmacVM.app 10-30; Fusion about 15 more, it builds
+# Hyprland with a fix).
 #
 #   omacvm build             asks a few questions, shows a summary, then builds
 #   omacvm build --dry-run   asks the questions and shows the summary only
@@ -61,9 +62,9 @@ feature_flag() {   # NAME on|off
   local v; [[ $2 == on ]] && v=1 || v=0
   case $1 in
     bridge) BRIDGE=$v; (( v )) || WALLPAPER=0 ;;
-    wallpaper|mac-wallpaper) WALLPAPER=$v ;;
+    wallpaper) WALLPAPER=$v ;;
     gestures) GESTURES=$v ;;
-    scroll-momentum|glide) GLIDE=$v ;;
+    scroll-momentum) GLIDE=$v ;;
     omanotch) OMANOTCH=$v ;;
     mac-clock) MAC_CLOCK=$v ;;
     camera) CAMERA=$v ;;
@@ -206,7 +207,7 @@ elif (( BATTERY )) && ! feature_available "$i"; then (( JSON )) || info "${FTITL
 # the routes that build the disk here. OmacVM.app brings its own tools.
 (( DRY )) || [[ $TYPE == app ]] || ensure_brew_tools
 # ---------- build it here, or download a prebuilt VM ----------
-build_minutes() { [[ $TYPE == fusion ]] && echo "45 to 85" || echo "30 to 70"; }
+build_minutes() { case $TYPE in fusion) echo "45 to 85" ;; app) echo "10 to 30" ;; *) echo "30 to 70" ;; esac; }
 PB_OK=0
 # OmacVM.app has no prebuilt VMs: it builds its own.
 if [[ $SOURCE != build ]] && ! (( IMAGE )) && [[ $TYPE != app ]]; then
@@ -603,7 +604,7 @@ if [[ $TYPE == app ]]; then
 # The same script the app runs when you build in it (live installer, Arch
 # Linux ARM, Omarchy, OmacVM from the copy inside the app); it leaves the VM
 # shut down. Its STEP lines become ==> lines, curl's progress bar is dropped.
-step "OmacVM.app builds the VM (30-60 minutes, its logs in $(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM")/logs)"
+step "OmacVM.app builds the VM (10-30 minutes, its logs in $(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM")/logs)"
 port=$(app_free_port) || die "no free port for the VM's SSH (52222-52421)"
 fv=""
 for ((k = 0; k < ${#FEATS[@]}; k += 2)); do fv+=" ${FEATS[$k]}=$(onoff "${FEATS[k+1]}")"; done
@@ -663,7 +664,7 @@ elif [[ $TYPE == fusion ]]; then
   fusion_start "$VM"
   ui_spin_val IP "The live installer gets its address" fusion_ip "$VM" 300 || die "the live installer got no IP address"
 else
-  LIVE="$HOME/Library/Caches/omacvm/live/$VM-live.img"
+  LIVE="$HOME/Library/Caches/omacvm/build-live/$VM-live.img"
   "$R/src/vm/live/build-live.sh" --root-size-gib 16 --raw-image "$LIVE" --ssh-key "$KEY.pub"
   utm_tune_app
   log "UTM VM with a ${DISK_GB} GB NVMe disk"

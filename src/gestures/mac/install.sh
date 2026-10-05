@@ -12,7 +12,6 @@ ARGS=""
 for a in "$@"; do
   case $a in
     --keys-only|-v|--record) ARGS+="<string>$a</string>" ;;
-    --scroll) ;;   # the scrolling experiment's switch: scroll momentum is a VM feature now
     *) echo "install.sh: unknown option $a" >&2; exit 2 ;;
   esac
 done

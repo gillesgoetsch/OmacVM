@@ -130,7 +130,7 @@ func boolOrToggle(_ v: Any?, current: Bool) throws -> Bool? {
 func displayControl(_ path: String, _ body: [String: Any]) throws -> String {
   switch path {
   case "/display/brightness":
-    guard let now = Brightness.get() else { throw APIError(409, "no built-in display (lid closed?)") }
+    guard let now = Brightness.get() else { throw APIError(409, "no display whose brightness macOS sets (lid closed?)") }
     let absolute = (body["brightness"] as? NSNumber)?.floatValue, delta = (body["delta"] as? NSNumber)?.floatValue
     guard absolute != nil || delta != nil else { throw APIError(400, "send {\"brightness\": 0..1} or {\"delta\": -1..1}") }
     let target = max(0, min(1, absolute ?? (now + (delta ?? 0))))

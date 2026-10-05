@@ -18,8 +18,7 @@
 // Ctrl+Option+Cmd+Esc toggles capture off/on; it re-arms by itself when
 // Parallels becomes frontmost again. If this process dies, the event tap goes
 // with it and macOS gets its gestures back.
-// Each VM says on connect what it wants ("H <gestures> <glide>"); a VM's
-// daemon from before that message counts as gestures on, Glide off. Capture
+// Each VM says on connect what it wants (the handshake below). Capture
 // only covers a full-screen VM whose connected daemon wants the trackpad, so a
 // VM with gestures off (or not connected yet) leaves macOS its gestures.
 // Glide (experimental, per VM): two-finger scrolling goes to the guest too.
@@ -56,8 +55,9 @@
 //                                     holds: what this VM wants, its own proof (as above
 //                                     with "vm") and the VM's name in base64 (omacvm apply
 //                                     tells the VM). Only then do the lines above flow.
-// Daemons from before the handshake send "H <gestures> <glide> <token> [<name>]",
-// still let in until omacvm apply gives them the new one.
+// Daemons from before the handshake (OmacVM 2.4, 2.5) send "H <gestures> <glide>
+// <token> [<name>]", still let in until omacvm apply gives them the new one.
+// Daemons from before the token (2.3 and older) are refused: omacvm update.
 // Two VMs in one app share its network: F, K, A, W, P and S on/esc go only to
 // the VM whose name is in the title of the app's front window; without such a
 // match (VMs from before the name, a renamed VM) to every VM of that app.
@@ -72,9 +72,6 @@
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <math.h>
-#include <net/if_dl.h>
-#include <net/route.h>
-#include <netinet/if_ether.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
@@ -84,7 +81,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/sysctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -123,7 +119,8 @@ static char listenAddrs[4][16] = { "10.211.55.2", "192.168.64.1", "", "127.0.0.1
 #define NET_APP 3
 
 // The first VNET_8_HOSTONLY_SUBNET line, and only a private address (as
-// fusion_host in src/lib/mac.sh and the Bridge read it).
+// fusion_host in src/lib/mac.sh and the Bridge read it). Fusion installed
+// after this helper started: the Fusion listener reads it again until found.
 static void readFusionHost(void) {
   FILE *f = fopen("/Library/Preferences/VMware Fusion/networking", "r");
   char line[256], net[32];
@@ -136,8 +133,12 @@ static void readFusionHost(void) {
       int priv = (h >> 24) == 10 || (h >> 20) == 0xAC1 || (h >> 16) == 0xC0A8;
       char host[16];
       snprintf(host, sizeof host, "%u.%u.%u.1", h >> 24, (h >> 16) & 255, (h >> 8) & 255);
-      if (priv && strcmp(host, listenAddrs[0]) && strcmp(host, listenAddrs[NET_UTM]))
-        snprintf(listenAddrs[NET_FUSION], sizeof listenAddrs[NET_FUSION], "%s", host);
+      if (priv && strcmp(host, listenAddrs[0]) && strcmp(host, listenAddrs[NET_UTM])) {
+        // Other threads test the first byte: set it last.
+        memcpy(listenAddrs[NET_FUSION] + 1, host + 1, sizeof host - 1);
+        __sync_synchronize();
+        listenAddrs[NET_FUSION][0] = host[0];
+      }
     }
     break;
   }
@@ -705,47 +706,6 @@ static int bridgeTokenOK(const char *given) {
   return ok;
 }
 
-// The peer's MAC address from the Mac's ARP table, as 12 hex digits.
-#define SA_ROUNDUP(a) ((a) > 0 ? (1 + (((a) - 1) | (sizeof(uint32_t) - 1))) : sizeof(uint32_t))
-static int peerMac(struct in_addr a, char out[13]) {
-  int mib[6] = { CTL_NET, PF_ROUTE, 0, AF_INET, NET_RT_FLAGS, RTF_LLINFO };
-  size_t n = 0;
-  if (sysctl(mib, 6, NULL, &n, NULL, 0) < 0 || !n) return 0;
-  char *buf = malloc(n);
-  if (!buf || sysctl(mib, 6, buf, &n, NULL, 0) < 0) { free(buf); return 0; }
-  int found = 0;
-  for (char *p = buf; p + sizeof(struct rt_msghdr) <= buf + n && !found; ) {
-    struct rt_msghdr *rtm = (struct rt_msghdr *)p;
-    if (rtm->rtm_msglen == 0) break;
-    struct sockaddr_inarp *sin = (struct sockaddr_inarp *)(rtm + 1);
-    struct sockaddr_dl *sdl = (struct sockaddr_dl *)((char *)sin + SA_ROUNDUP(sin->sin_len));
-    if (sin->sin_addr.s_addr == a.s_addr && sdl->sdl_family == AF_LINK && sdl->sdl_alen == 6) {
-      const unsigned char *m = (const unsigned char *)LLADDR(sdl);
-      snprintf(out, 13, "%02x%02x%02x%02x%02x%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
-      found = 1;
-    }
-    p += rtm->rtm_msglen;
-  }
-  free(buf);
-  return found;
-}
-
-// Daemons from before the token send none. Until omacvm update or apply gives
-// a VM the new one, it is let in by its MAC address: the VMs OmacVM had set up
-// when this version came (src/mac/install.sh writes the list once, apply
-// takes each VM off it).
-static int legacyOK(struct in_addr a) {
-  char mac[13], path[1024], line[64];
-  if (!peerMac(a, mac)) return 0;
-  snprintf(path, sizeof path, "%s/Library/Application Support/omacvm/gestures-legacy", getenv("HOME"));
-  FILE *f = fopen(path, "r");
-  if (!f) return 0;
-  int ok = 0;
-  while (!ok && fgets(line, sizeof line, f)) { line[strcspn(line, " \t\r\n")] = 0; ok = !strcmp(line, mac); }
-  fclose(f);
-  return ok;
-}
-
 // ---- server ----
 // One line from the guest, up to a few reads (SO_RCVTIMEO each): the newline
 // is cut off. -1: nothing came.
@@ -765,8 +725,14 @@ static ssize_t recvLine(int fd, char *buf, size_t cap) {
 static void addClient(int c, int net, const char *ip, int gestures, int glide, const char *name) {
   pthread_mutex_lock(&sendLock);
   int slot = -1;
-  for (int i = 0; i < MAX_CLIENTS; i++)    // the same VM reconnecting replaces its old connection
-    if (clients[i].fd >= 0 && !strcmp(clients[i].ip, ip)) { close(clients[i].fd); slot = i; break; }
+  // The same VM reconnecting replaces its old connection. OmacVM.app's VMs
+  // all come from 127.0.0.1 (QEMU's user network): there the name tells them
+  // apart, or two running VMs would keep pushing each other out.
+  int loopback = !strncmp(ip, "127.", 4);
+  for (int i = 0; i < MAX_CLIENTS; i++)
+    if (clients[i].fd >= 0 && !strcmp(clients[i].ip, ip) && (!loopback || !strcmp(clients[i].name, name))) {
+      close(clients[i].fd); slot = i; break;
+    }
   for (int i = 0; slot < 0 && i < MAX_CLIENTS; i++) if (clients[i].fd < 0) slot = i;
   if (slot < 0) { close(clients[0].fd); slot = 0; }   // full: drop the oldest slot
   clients[slot].fd = c; clients[slot].net = net;
@@ -830,20 +796,19 @@ static void *greet(void *arg) {
     }
     memset(tok, 0, sizeof tok);
   } else if (n > 0 && line[0] == 'H') {
-    // Daemons from before the handshake: the token itself, or (from before
-    // the token) nothing and a VM on the legacy list.
+    // Daemons from before the handshake say the token itself.
     char given[160] = "";
     sscanf(line + 1, "%d %d %159s %359s", &gestures, &glide, given, name64);
-    if (given[0]) why = "wrong token";
-    ok = given[0] ? bridgeTokenOK(given) : legacyOK(g.addr);
-  } else {
-    ok = legacyOK(g.addr);   // daemons from before the hello say nothing (gestures on, Glide off)
+    if (given[0]) { why = "wrong token"; ok = bridgeTokenOK(given); }
   }
   if (ok) {
     base64Name(name64, name, sizeof name);
     addClient(c, g.net, ip, gestures, glide, name);
   } else {
-    static char lastIp[32]; static time_t lastLog;   // a refused daemon retries every 2 s
+    // A refused daemon tries again every 2 s; only the log line is throttled.
+    // Keeping its socket open instead would not save anything: a daemon from
+    // 2.3 or older then polls it every 2 ms. omacvm check tells the user.
+    static char lastIp[32]; static time_t lastLog;
     pthread_mutex_lock(&sendLock);
     if (strcmp(lastIp, ip) || time(NULL) - lastLog >= 60) {
       logf_("refused %s on %s: %s", ip, addr, why);
@@ -859,6 +824,7 @@ static void *greet(void *arg) {
 static void *serverThread(void *arg) {
   int net = (int)(intptr_t)arg, inUse = 0;
   const char *addr = listenAddrs[net];
+  while (net == NET_FUSION && !addr[0]) { sleep(10); readFusionHost(); }
   for (;;) {
     int s = socket(AF_INET, SOCK_STREAM, 0), one = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
@@ -932,12 +898,13 @@ int main(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-v")) verbose = 1;
     else if (!strcmp(argv[i], "--keys-only")) trackpad = 0;
-    else if (!strcmp(argv[i], "--scroll")) ;   // test flag of the Glide experiment: Glide is per VM now
     else if (!strcmp(argv[i], "--record")) {
       char path[1024]; snprintf(path, sizeof path, "%s/Library/Logs/omacvm-input.tsv", getenv("HOME"));
       rec = fopen(path, "a");
       if (rec) setvbuf(rec, NULL, _IOLBF, 0);
     }
+    // A wrong option is not worth a launchd restart loop: say it and go on.
+    else logf_("unknown option %s, ignored", argv[i]);
   }
   signal(SIGPIPE, SIG_IGN);
 
@@ -992,7 +959,7 @@ int main(int argc, char **argv) {
   initKeymap();
   readFusionHost();
   for (size_t i = 0; i < sizeof listenAddrs / sizeof *listenAddrs; i++) {
-    if (!listenAddrs[i][0]) continue;
+    if (!listenAddrs[i][0] && i != NET_FUSION) continue;
     pthread_t th; pthread_create(&th, NULL, serverThread, (void *)(intptr_t)i);
   }
   logf_(trackpad ? "running (escape: Ctrl+Option+Cmd+Esc)" : "running, keys only: trackpad gestures stay with macOS");

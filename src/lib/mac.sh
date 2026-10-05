@@ -63,27 +63,6 @@ omanotch_serves_app() {
   grep -aqF /Contents/Resources/runtime/bin/OmacVM "$b"/* 2>/dev/null || return 1
 }
 
-# Gestures lets daemons from before the token in only from these VMs (MAC
-# addresses, one per line); src/mac/install.sh writes the list once.
-GESTURES_LEGACY="$HOME/Library/Application Support/omacvm/gestures-legacy"
-mac_norm() {   # aa:b:cc:.. or AABBCC.. -> aabbcc.. (12 hex digits), else nothing
-  local m out="" p
-  m=$(tr 'A-F' 'a-f' <<<"$1")
-  if [[ $m == *:* ]]; then
-    for p in $(tr ':' ' ' <<<"$m"); do (( ${#p} == 1 )) && p=0$p; out+=$p; done
-  else
-    out=$m
-  fi
-  [[ $out =~ ^[0-9a-f]{12}$ ]] && echo "$out"
-}
-gestures_legacy_forget() {   # IP: that VM's daemon sends the token now
-  local m
-  [[ -s $GESTURES_LEGACY ]] || return 0
-  m=$(mac_norm "$(arp -n "$1" 2>/dev/null | awk '{ print $4 }')") || return 0
-  grep -vx "$m" "$GESTURES_LEGACY" > "$GESTURES_LEGACY.new" || true
-  mv -f "$GESTURES_LEGACY.new" "$GESTURES_LEGACY"
-}
-
 wait_ssh() {   # <ip> [seconds]: 3 when the VM's host key changed
   local i
   for ((i = 0; i < ${2:-600}; i += 5)); do
@@ -238,7 +217,7 @@ utm_start() {   # <vm name>: UTM must run in the foreground (open -g makes the V
     for ((i = 0; i < 30; i++)); do pgrep -xq UTM || break; sleep 1; done
     open -a UTM; sleep 5
   done
-  die "UTM VM '$1' did not start (try quitting and reopening UTM, then run build.sh again)"
+  die "UTM VM '$1' did not start (try quitting and reopening UTM, then run the omacvm command again)"
 }
 
 # utm_add_sound NAME: an Intel HDA sound card (speakers and microphone, through

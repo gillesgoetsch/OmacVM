@@ -13,9 +13,9 @@ breaks. The plan and test log from when the route was built is in
 - Stock Omarchy shows a black screen on Fusion. OmacVM builds a fixed Hyprland,
   and builds it again after every Hyprland update (10 to 20 minutes).
 - Speedometer 3.1 in Chrome reached 71 % of the Mac, the best of the four ways
-  ([comparison](../../README.md#four-ways-parallels-utm-vmware-fusion-or-omacvmapp),
+  ([comparison](../compare.md),
   [benchmarks](../benchmarks/README.md)).
-- The newest of the three VM apps OmacVM builds for.
+- The newest route, next to OmacVM.app, UTM and Parallels.
 
 ## What you need
 
@@ -24,7 +24,7 @@ breaks. The plan and test log from when the route was built is in
 | VMware Fusion | 13 or newer, tested with 26.0.1 |
 | Download | no Homebrew cask: Broadcom wants a sign-in. support.broadcom.com > My Downloads > VMware Fusion > the newest version (for example 26H1u1). Drag it into Applications |
 | First start | Fusion asks for Accessibility: click OK, then turn VMware Fusion on in System Settings > Privacy & Security > Accessibility |
-| Everything else | as for the other routes: see the README's Requirements |
+| Everything else | as for the other routes: see the README's [Requirements](../../README.md#requirements) |
 
 ## Build
 

@@ -1,0 +1,52 @@
+diff --git a/src/vrend/vrend_shader.c b/src/vrend/vrend_shader.c
+index 77f5bbb..82c7e38 100644
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -3574,14 +3574,19 @@ static void translate_tex(struct dump_ctx *ctx,
+                          dinfo->dst_override_no_wm[0] ? "" : writemask);
+          }
+       } else {
+-         /* Use temporary variable for shader swizzle lowering (A8_UNORM on Core Profile) */
+-         emit_buff(&ctx->glsl_strbufs, "{\n  vec4 val = texture%s(%s, %s%s%s%s)%s;\n",
+-                    tex_ext, srcs[sampler_index], srcs[0], src_swizzle,
+-                    offset, bias, dinfo->dst_override_no_wm[0] ? "" : writemask);
++         /* Use temporary variable for shader swizzle lowering (A8_UNORM on Core Profile).
++          * It has the sampler's own type (texture() on a usampler gives a uvec4) and
++          * the whole result: the write mask goes on the assignment below. */
++         enum tgsi_return_type ret = ctx->samplers[sinfo->sreg_index].tgsi_sampler_return;
++         const char *val_type = ret == TGSI_RETURN_TYPE_UINT ? "uvec4" :
++                                ret == TGSI_RETURN_TYPE_SINT ? "ivec4" : "vec4";
++         emit_buff(&ctx->glsl_strbufs, "{\n  %s val = texture%s(%s, %s%s%s%s);\n",
++                    val_type, tex_ext, srcs[sampler_index], srcs[0], src_swizzle,
++                    offset, bias);
+ 
+          if (vrend_shader_sampler_views_mask_get(ctx->key->sampler_views_lower_swizzle_mask, sinfo->sreg_index)) {
+             int16_t packed_swizzles = ctx->key->tex_swizzle[sinfo->sreg_index];
+-            emit_buff(&ctx->glsl_strbufs, "   val = vec4(");
++            emit_buff(&ctx->glsl_strbufs, "   val = %s(", val_type);
+ 
+             for (int i = 0; i < 4; ++i) {
+                if (i > 0)
+@@ -3589,20 +3594,8 @@ static void translate_tex(struct dump_ctx *ctx,
+ 
+                int swz = (packed_swizzles >> (i * 3)) & 7;
+                switch (swz) {
+-               case PIPE_SWIZZLE_0: emit_buf(&ctx->glsl_strbufs, "0.0"); break;
+-               case PIPE_SWIZZLE_1:
+-                  switch (dtypeprefix) {
+-                  case UINT_BITS_TO_FLOAT:
+-                     emit_buf(&ctx->glsl_strbufs, "uintBitsToFloat(1u)");
+-                     break;
+-                  case INT_BITS_TO_FLOAT:
+-                     emit_buf(&ctx->glsl_strbufs, "intBitsToFloat(1)");
+-                     break;
+-                  default:
+-                     emit_buf(&ctx->glsl_strbufs, "1.0");
+-                     break;
+-                  }
+-                  break;
++               case PIPE_SWIZZLE_0: emit_buf(&ctx->glsl_strbufs, "0"); break;
++               case PIPE_SWIZZLE_1: emit_buf(&ctx->glsl_strbufs, "1"); break;
+                default:
+                   emit_buff(&ctx->glsl_strbufs, "val%s", get_swizzle_string(swz));
+                }

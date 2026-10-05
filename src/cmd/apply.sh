@@ -41,8 +41,6 @@ while (( $# )); do
     --no-token) TOKEN=0; shift ;;   # prebuilt images: no Bridge token in the VM
     --no-tools) TOOLS=0; shift ;;   # prebuilt images: no Parallels Tools
     --feature) set_feature "${2%%=*}" "${2#*=}"; shift 2 ;;
-    --mac-wallpaper) set_feature wallpaper on; shift ;;       # 1.x names
-    --no-mac-wallpaper) set_feature wallpaper off; shift ;;
     --no-*) set_feature "${1#--no-}" off; shift ;;
     -h|--help) sed -n '2,16s/^# \{0,1\}//p' "$0"; exit 0 ;;
     --*) f=${1#--}; feature_index "$f" >/dev/null || { echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2; }
@@ -167,7 +165,6 @@ on mac-clock && fargs+=" --clock-format-b64 $(swift "$R/src/clock/mac-clock.swif
 # Its name, so the Mac's gestures helper tells it from another VM in the same app.
 (( NAMED )) && fargs+=" --vm-name-b64 $(printf %s "$VM" | base64 | tr -d '\n')"
 gssh "$IP" "/usr/local/share/omacvm/guest/install.sh --user '$U' --keyboard '$KB' --vm-type $TYPE ${MODE:+--display $MODE}$fargs" < /dev/null
-gestures_legacy_forget "$IP"   # its daemon says the token now
 # OmacVM.app: this VM now draws Omarchy's own pointer. The app hides the Mac's
 # over the window only for a VM with this file; VMs set up by older versions
 # hid Omarchy's pointer and need the Mac's until they get this apply.

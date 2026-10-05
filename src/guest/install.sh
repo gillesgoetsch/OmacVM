@@ -8,8 +8,7 @@
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
 # omanotch, mac-clock, camera, idle-lock, autologin, thp-kernel, battery) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
-# so a later run without --feature keeps them. Old flags --no-thp-kernel,
-# --thp-kernel and --autologin still work.
+# so a later run without --feature keeps them.
 # --vm-type defaults to what the hardware says (Parallels or QEMU = UTM);
 # --display (UTM: the fixed mode, from display/mac-display.swift) is required on UTM.
 # --vm-name-b64: the VM's name in its app, base64 (kept in /etc/omacvm/env): the
@@ -34,10 +33,7 @@ while (( $# )); do
     --host) HOST_GIVEN=$2; shift 2 ;;
     --clock-format-b64) CLOCK_FMT=$(base64 -d <<<"$2"); shift 2 ;;
     --vm-name-b64) NAME64=$2; shift 2 ;;
-    --feature) k=${2%%=*}; [[ $k == glide ]] && k=scroll-momentum; SET[$k]=${2#*=}; shift 2 ;;
-    --no-thp-kernel) SET[thp-kernel]=off; shift ;;
-    --thp-kernel) SET[thp-kernel]=on; shift ;;
-    --autologin) SET[autologin]=on; shift ;;
+    --feature) SET[${2%%=*}]=${2#*=}; shift 2 ;;
     *) sed -n '5,6s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
   esac
 done
@@ -56,7 +52,7 @@ AUTOLOGIN_CONF=/etc/sddm.conf.d/20-omacvm-autologin.conf
 [[ $NAME64 =~ ^[A-Za-z0-9+/=]*$ ]] || { echo "guest/install.sh: --vm-name-b64: not base64" >&2; exit 2; }
 if [[ -r $ENV ]]; then
   [[ -n $NAME64 ]] || NAME64=$(sed -n 's/^OMACVM_VM_NAME_B64=//p' "$ENV" | tail -1)
-  # scroll-momentum was called glide in the experiment
+  # scroll-momentum was called glide in the experiment: keep an old VM's choice.
   v=$(sed -n "s/^OMACVM_FEATURE_glide=//p" "$ENV" | tail -1); [[ -n $v ]] && F[scroll-momentum]=$v
   for f in "${FEATURES[@]}"; do
     v=$(sed -n "s/^OMACVM_FEATURE_${f//-/_}=//p" "$ENV" | tail -1)
@@ -105,6 +101,17 @@ if [[ $TYPE == fusion ]]; then trap '"$R/fusion/guest/dns.sh" off' EXIT; fi
 } | install -Dm644 /dev/stdin "$ENV"
 log "$TYPE VM, the Mac is $HOST"
 log "features: $(for f in "${FEATURES[@]}"; do printf '%s=%s ' "$f" "${F[$f]}"; done)"
+
+# A VM from a prebuilt image of OmacVM 2.5 or 2.6: first boot left absolute
+# links into the image's placeholder home (Omarchy's wallpaper: a black desktop).
+OLD=$(sed -n 's/^OMACVM_PREBUILT_USER=//p' /var/lib/omacvm/prebuilt/image 2>/dev/null || true)
+if [[ $OLD =~ ^[a-z_][a-z0-9_-]*$ && $OLD != "$U" && ! -e /home/$OLD ]]; then
+  n=0
+  while IFS= read -r -d '' l; do
+    t=$(readlink "$l"); ln -sfn "$H${t#/home/$OLD}" "$l"; chown -h "$U:$U" "$l"; n=$((n + 1))
+  done < <(find "$H" -xdev -type l \( -lname "/home/$OLD" -o -lname "/home/$OLD/*" \) -print0 2>/dev/null)
+  if (( n )); then log "links from the prebuilt image: $n now point into $H (the wallpaper shows after the next login)"; fi
+fi
 
 log "system: SSH from the Mac, bootable snapshots, DNS fallback"
 # Omarchy's firewall denies everything inbound; the Mac (Parallels' shared

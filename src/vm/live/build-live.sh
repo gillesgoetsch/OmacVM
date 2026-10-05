@@ -4,7 +4,7 @@
 # From vincenzopalazzo/omarchy-parallels (MIT, see LICENSE here), with two
 # fixes (work dir created before the key, sparse disk pour). OmacVM only
 # uses it to get a bootable ARM64 Linux with SSH into a fresh Parallels VM;
-# build.sh then installs Arch Linux ARM + omarchy-mac onto a second disk from
+# `omacvm build` then installs Arch Linux ARM + omarchy-mac onto a second disk from
 # it and deletes this disk again.
 #
 # Original description:
@@ -19,9 +19,12 @@ set -euo pipefail
 
 # ---------- defaults ----------
 VM_NAME="Omarchy ARM"
-RELEASE="v0.4.1"
+source "$(dirname "${BASH_SOURCE[0]}")/release.sh"
+RELEASE=$LIVE_RELEASE
 REPO="omacom/try-omarchy"
-WORKDIR="${HOME}/Library/Caches/omacvm/live"
+# Not OmacVM.app's cache (~/Library/Caches/omacvm/live): this script deletes
+# its work files and the DMG when done, the app keeps its unpacked copy.
+WORKDIR="${HOME}/Library/Caches/omacvm/build-live"
 ESP_SIZE_MIB=1024          # 1 GiB ESP (kernel + initramfs + bootloader)
 ROOT_SIZE_GIB=16           # ext4 is grown to this before first boot
 VM_DIR="${HOME}/Parallels"
@@ -34,13 +37,14 @@ RAW_IMAGE=""               # --raw-image PATH: write a plain disk image (UTM) in
 log()  { printf '\033[1;32m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
-trap 'printf "\033[1;31mbuild.sh failed on line %s\033[0m\n" "$LINENO" >&2' ERR
+trap 'printf "\033[1;31mbuild-live.sh failed on line %s\033[0m\n" "$LINENO" >&2' ERR
 
 usage() {
   cat <<EOF
-usage: ./build.sh [--vm-name NAME] [--dmg PATH] [--release TAG]
-                  [--root-size-gib N] [--esp-size-mib N] [--disk-size-mib N]
-                  [--workdir DIR] [--ssh-key PUBKEY] [--skip-boot] [--keep-dmgs]
+usage: build-live.sh [--vm-name NAME] [--vm-dir DIR] [--dmg PATH] [--release TAG]
+                     [--root-size-gib N] [--esp-size-mib N] [--disk-size-mib N]
+                     [--workdir DIR] [--ssh-key PUBKEY] [--skip-boot] [--keep-dmgs]
+                     [--raw-image PATH]
 EOF
   exit 0
 }
@@ -125,14 +129,9 @@ mkdir -p "$WORKDIR"
 cd "$WORKDIR"
 
 # ---------- 1. fetch + verify try-omarchy artifacts ----------
-# TryOmarchy.dmg's SHA-256 per release (GitHub's digest of the release asset
-# when it was pinned): a download that changed since is refused. Another
-# --release, or your own --dmg, is only checked against its own manifest.
-dmg_sha256() {
-  case $1 in
-    v0.4.1) echo e2f172f67e5d8a99df8e46fa6f7814a061c0af249f100a6bdc7836b922f47674 ;;
-  esac
-}
+# The pinned release's DMG must match its pinned SHA-256 (release.sh): a
+# download that changed since is refused. Another --release, or your own
+# --dmg, is only checked against its own manifest.
 DMG="$WORKDIR/TryOmarchy-$RELEASE.dmg"
 SRC="${DMG_PATH:-$DMG}"
 if [[ ! -f "$SRC" ]]; then
@@ -144,7 +143,7 @@ if [[ ! -f "$SRC" ]]; then
 else
   log "using existing DMG: $SRC"
 fi
-want=$(dmg_sha256 "$RELEASE")
+want=""; [[ $RELEASE == "$LIVE_RELEASE" ]] && want=$LIVE_DMG_SHA256
 if [[ -z $DMG_PATH && -n $want ]]; then
   log "checking the DMG against its pinned SHA-256"
   got=$(shasum -a 256 "$SRC" | cut -d' ' -f1)

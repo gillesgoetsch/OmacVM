@@ -124,10 +124,16 @@ if [[ -n $PLACEHOLDER && $PLACEHOLDER != "$NAME" ]]; then
   grep -rlIF "/home/$PLACEHOLDER" "/home/$NAME" 2>/dev/null | while IFS= read -r f; do
     sed -i "s|/home/$PLACEHOLDER|/home/$NAME|g" "$f"
   done
+  # Links too: Omarchy's wallpaper and btop theme are absolute links into the
+  # home (left alone they point at the placeholder: a black desktop).
+  find "/home/$NAME" -xdev -type l \( -lname "/home/$PLACEHOLDER" -o -lname "/home/$PLACEHOLDER/*" \) -print0 2>/dev/null |
+    while IFS= read -r -d '' l; do
+      t=$(readlink "$l"); ln -sfn "/home/$NAME${t#/home/$PLACEHOLDER}" "$l"
+    done
 fi
 G2=/home/$NAME/.gitconfig
 [[ -f $G2 ]] && sed -i "s/^\(\s*name = \)OmacVM User$/\1$(sed 's/[\/&]/\\&/g' <<<"$FULL")/" "$G2"
-chown -R "$NAME:$NAME" "/home/$NAME"
+chown -R -h "$NAME:$NAME" "/home/$NAME"
 chmod 700 "/home/$NAME"
 sed -i "s/^OMACVM_USER=.*/OMACVM_USER=$NAME/" /etc/omacvm/env 2>/dev/null || true
 # Omarchy's login screen logs in as SDDM's last user.

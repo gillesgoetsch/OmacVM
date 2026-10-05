@@ -12,7 +12,7 @@ instead of 1.2 to 1.6.
 | H.264 | yes | patch tested, see below | no | no |
 | VP9 (YouTube) | yes | patch tested, see below | no | no |
 | AV1 (YouTube) | yes, Chromium-based browsers | – | no | no |
-| HEVC | yes: mpv, FFmpeg | – | no | no |
+| HEVC | yes: mpv, FFmpeg, GStreamer, Chrome | – | no | no |
 | 10-bit (VP9 profile 2, HEVC Main 10, AV1) | yes | – | no | no |
 
 Browsers in an OmacVM.app VM:
@@ -23,13 +23,19 @@ Browsers in an OmacVM.app VM:
   `src/bench/install-chrome.sh` (Arch Linux ARM has no package).
 - **Firefox**: yes for H.264 and VP9 (AV1 stays on the CPU, see below; HEVC
   Firefox does not hand to VA-API at all here).
-- **Brave** (Linux ARM): VP9 yes, like Chrome (tested with a local 4K VP9
-  file; YouTube and AV1 not tried in Brave yet).
+- **Brave** (Linux ARM, from Brave's `.deb`): like Chrome. YouTube 4K at
+  60 fps in VP9 and AV1 (Brave 1.96).
 - **Chromium from Arch Linux ARM** (Omarchy's default browser): no. Arch Linux
   ARM builds it without VA-API, so it always decodes on the CPU.
-- **mpv, FFmpeg** (`--hwdec=vaapi`, `-hwaccel vaapi`): H.264, VP9 and HEVC.
-  Chrome does not play HEVC through it yet: importing its own frame buffers
-  for HEVC fails in Chrome (*Plane 0 is out of bounds*), H.264 and VP9 work.
+- **mpv, FFmpeg** (`--hwdec=vaapi`, `-hwaccel vaapi`) and **GStreamer**
+  (`vah264dec`, `vah265dec`, `vavp9dec`; Celluloid and other GStreamer
+  players): H.264, VP9 and HEVC. FFmpeg decodes a 4K HEVC clip at about 200
+  frames per second.
+- **HEVC in Google Chrome** (154): in hardware, but not finished: 1080p60
+  plays smoothly until Chrome seeks (the end of a looped clip, a jump in
+  the video), then the picture stops; a 4K HEVC clip showed only 10 to 20
+  frames per second (the decoding is not the limit, see FFmpeg above).
+  YouTube does not send HEVC. mpv, FFmpeg and GStreamer have neither problem.
 
 Check in the VM: `vainfo` lists `VAProfileH264*` and `VAProfileVP9Profile0`
 with `VAEntrypointVLD`.
@@ -82,6 +88,9 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   shim (`omacvm_drv_video.c`, used through `LIBVA_DRIVER_NAME=omacvm`): Mesa's
   driver unchanged, but it offers only NV12 surfaces (Firefox cannot show the
   I420 ones FFmpeg would pick) and lists AV1 only to Chromium-based browsers.
+  Its folder `/usr/local/lib/dri` goes into `/etc/ld.so.conf.d`: Firefox
+  decodes in a sandboxed process that may load libraries only from the paths
+  ld.so knows, so without it YouTube in Firefox falls back to the CPU.
 
 Switches on the Mac (QEMU's environment): `OMACVM_VIDEO_DECODE=0` turns it
 off, `OMACVM_VIDEO_DEBUG=1` logs each stream and the time per frame,
@@ -95,6 +104,12 @@ put the shim in: the VM folder's `video-decode` file).
   whole frame. So AV1 is offered to Chromium-based browsers only.
 - **HEVC**: Main and Main 10; long-term reference pictures from the SPS are
   not supported (rare).
+- **YUYV surfaces**: not offered. virglrenderer stored their plane format
+  (R8G8_R8B8) at twice its size, and reading one back overflowed QEMU's heap
+  (mpv's VA-API check did it, before 2.7.0's release);
+  `app/runtime/patches/virgl-transfer-row-size.patch` removes the format and
+  refuses any texture transfer that would move more bytes per row in GL than
+  the guest's buffer holds.
 - **HDR**: 10-bit video decodes (P010, bit-exact); how HDR looks is up to the
   browser and Hyprland in the VM.
 - **Guests with Mesa older than 26.0** number the video profiles differently;

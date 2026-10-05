@@ -56,8 +56,8 @@ chrome_start() {   # url
   sleep 8
 }
 chrome_stop() {
-  if [[ -n $VM ]]; then in_vm "pkill -f -- 'remote-debugging-port=$PORT[ ]'" || true
-  else pkill -f -- "remote-debugging-port=$PORT[ ]" || true; fi
+  if [[ -n $VM ]]; then in_vm "pkill -f -- 'remote-debugging-port=${PORT}[ ]'" || true
+  else pkill -f -- "remote-debugging-port=${PORT}[ ]" || true; fi
   sleep 3
 }
 measure() {   # label: settle, then power.sh; prints and appends one JSON line

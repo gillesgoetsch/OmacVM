@@ -42,6 +42,10 @@ T=$(mktemp -d)
 if cc -shared -fPIC -O2 -o "$T/omacvm_drv_video.so" omacvm_drv_video.c -ldl 2>/dev/null; then
   install -Dm755 "$T/omacvm_drv_video.so" /usr/local/lib/dri/omacvm_drv_video.so
   install -Dm644 90-omacvm-video.conf /etc/environment.d/90-omacvm-video.conf
+  # Firefox decodes in its sandboxed RDD process, which may read only the
+  # library paths ld.so knows: without this vaInitialize fails there.
+  echo /usr/local/lib/dri > /etc/ld.so.conf.d/omacvm-video.conf
+  ldconfig
 else
   echo "OmacVM.app: no C compiler, video decoding without the Firefox shim"
 fi

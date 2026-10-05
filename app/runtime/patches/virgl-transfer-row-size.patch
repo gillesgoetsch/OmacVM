@@ -1,0 +1,200 @@
+What: drop VIRGL_FORMAT_R8G8_R8B8_UNORM from vrend's format table and refuse
+texture transfers whose GL rows are longer than the guest's buffer rows.
+Why: R8G8_R8B8 (a 2x1-pixel block of 4 bytes, used for YUYV video surfaces)
+was stored as GL_RGBA8 at the full width, so every transfer moved twice the
+bytes of the guest's buffers. On readback that is a QEMU heap overflow (the
+Mac's GL has no robust glReadnPixels to stop it); mpv's VA-API probe hit it
+in OmacVM.app 2.7.0 tests and aborted the VM. Uploads read past the buffer.
+The row check guards every other format the same way.
+Upstream: not sent yet (virglrenderer has the same table entry).
+Test: Tests/virgl/test-transfer-row-size.c (build time); mpv --hwdec=vaapi
+--vo=gpu-next in an app VM (crashed QEMU before, under Guard Malloc too).
+
+diff --git a/src/vrend/vrend_formats.c b/src/vrend/vrend_formats.c
+index 05ff403..608622e 100644
+--- a/src/vrend/vrend_formats.c
++++ b/src/vrend/vrend_formats.c
+@@ -55,7 +55,11 @@
+ /* fill the format table */
+ static struct vrend_format_table base_rgba_formats[] =
+   {
+-    { VIRGL_FORMAT_R8G8_R8B8_UNORM, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, NO_SWIZZLE, view_class_32 },
++    /* OmacVM: no VIRGL_FORMAT_R8G8_R8B8_UNORM. It is a 2x1-pixel block of 4
++     * bytes, but stored as GL_RGBA8 at the full width: GL moved twice the
++     * bytes of the guest's buffers in every transfer (past them; a QEMU heap
++     * overflow on readback). Only YUYV video surfaces use it, which the
++     * VideoToolbox backend does not take. */
+     { VIRGL_FORMAT_R8G8B8X8_UNORM, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, RGB1_SWIZZLE, view_class_32 },
+     { VIRGL_FORMAT_R8G8B8A8_UNORM, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, NO_SWIZZLE, view_class_32 },
+ 
+@@ -548,6 +552,101 @@ static void vrend_add_compressed_formats(struct vrend_format_table *table, int n
+ }
+ 
+ 
++/* OmacVM: bytes per pixel GL moves in a pixel transfer of this format/type
++ * pair, or 0 for a pair this function does not know. */
++static unsigned vrend_gl_pixel_size(GLenum format, GLenum type)
++{
++   unsigned components, size;
++
++   switch (type) {
++   case GL_UNSIGNED_BYTE_3_3_2:
++   case GL_UNSIGNED_BYTE_2_3_3_REV:
++      return 1;
++   case GL_UNSIGNED_SHORT_5_6_5:
++   case GL_UNSIGNED_SHORT_5_6_5_REV:
++   case GL_UNSIGNED_SHORT_4_4_4_4:
++   case GL_UNSIGNED_SHORT_4_4_4_4_REV:
++   case GL_UNSIGNED_SHORT_5_5_5_1:
++   case GL_UNSIGNED_SHORT_1_5_5_5_REV:
++      return 2;
++   case GL_UNSIGNED_INT_8_8_8_8:
++   case GL_UNSIGNED_INT_8_8_8_8_REV:
++   case GL_UNSIGNED_INT_10_10_10_2:
++   case GL_UNSIGNED_INT_2_10_10_10_REV:
++   case GL_UNSIGNED_INT_24_8:
++   case GL_UNSIGNED_INT_10F_11F_11F_REV:
++   case GL_UNSIGNED_INT_5_9_9_9_REV:
++      return 4;
++   case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
++      return 8;
++   case GL_UNSIGNED_BYTE:
++   case GL_BYTE:
++      size = 1;
++      break;
++   case GL_UNSIGNED_SHORT:
++   case GL_SHORT:
++   case GL_HALF_FLOAT:
++      size = 2;
++      break;
++   case GL_UNSIGNED_INT:
++   case GL_INT:
++   case GL_FLOAT:
++      size = 4;
++      break;
++   default:
++      return 0;
++   }
++
++   switch (format) {
++   case GL_RED:
++   case GL_RED_INTEGER:
++   case GL_GREEN:
++   case GL_BLUE:
++   case GL_ALPHA:
++   case GL_LUMINANCE:
++   case GL_DEPTH_COMPONENT:
++   case GL_STENCIL_INDEX:
++      components = 1;
++      break;
++   case GL_RG:
++   case GL_RG_INTEGER:
++   case GL_LUMINANCE_ALPHA:
++      components = 2;
++      break;
++   case GL_RGB:
++   case GL_BGR:
++   case GL_RGB_INTEGER:
++   case GL_BGR_INTEGER:
++      components = 3;
++      break;
++   case GL_RGBA:
++   case GL_BGRA:
++   case GL_RGBA_INTEGER:
++   case GL_BGRA_INTEGER:
++   case GL_ABGR_EXT:
++      components = 4;
++      break;
++   default:
++      return 0;
++   }
++   return components * size;
++}
++
++/* OmacVM: a GL pixel transfer (glReadPixels, glGetTexImage, glTexSubImage)
++ * of `width` pixels moves width * (GL's pixel size) bytes per row; the
++ * guest's buffers hold the format's own rows. Where GL would move more, it
++ * reads or writes past them (the Mac's GL has no robust glReadnPixels to
++ * stop it): such transfers must not happen. Unknown pairs pass. */
++bool vrend_format_gl_rows_fit(enum virgl_formats format, GLenum glformat,
++                              GLenum gltype, uint32_t width)
++{
++   unsigned pixel = vrend_gl_pixel_size(glformat, gltype);
++
++   if (!pixel || util_format_is_compressed(format))
++      return true;
++   return (uint64_t)pixel * width <= (uint64_t)util_format_get_stride(format, width);
++}
++
+ #define add_formats(x) vrend_add_formats((x), ARRAY_SIZE((x)))
+ #define add_compressed_formats(x) vrend_add_compressed_formats((x), ARRAY_SIZE((x)))
+ 
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+index ba0a885..157e6c6 100644
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -9493,6 +9493,29 @@ static void vrend_collapse_data_r16g16b16x16(uint64_t size, void *data) {
+    }
+ }
+ 
++/* OmacVM: refuse a texture transfer whose GL rows are longer than the
++ * guest's (vrend_format_gl_rows_fit); logged once. Uses the GL format the
++ * upload falls back to for formats without one. */
++static bool vrend_transfer_rows_fit(const struct vrend_resource *res, uint32_t width)
++{
++   static bool said;
++   GLenum glformat = tex_conv_table[res->base.format].glformat;
++   GLenum gltype = tex_conv_table[res->base.format].gltype;
++
++   if (!glformat) {
++      glformat = GL_BGRA;
++      gltype = GL_UNSIGNED_BYTE;
++   }
++   if (vrend_format_gl_rows_fit(res->base.format, glformat, gltype, width))
++      return true;
++   if (!said) {
++      said = true;
++      virgl_warn("transfer refused: format %d moves more bytes per row in GL than in the guest\n",
++                 res->base.format);
++   }
++   return false;
++}
++
+ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
+                                              struct vrend_resource *res,
+                                              const struct iovec *iov, int num_iovs,
+@@ -9538,6 +9561,9 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
+       GLenum gltype;
+       int need_temp = 0;
+       int elsize = util_format_get_blocksize(res->base.format);
++
++      if (!vrend_transfer_rows_fit(res, info->box->width))
++         return EINVAL;
+       int x = 0, y = 0;
+       bool compressed;
+       bool invert = false;
+@@ -10190,6 +10216,11 @@ static int vrend_renderer_transfer_send_iov(struct vrend_context *ctx,
+       int ret = -1;
+       bool can_readpixels = true;
+ 
++      /* glGetTexImage reads whole levels: check the level's width too. */
++      if (!vrend_transfer_rows_fit(res, info->box->width) ||
++          !vrend_transfer_rows_fit(res, u_minify(res->base.width0, info->level)))
++         return EINVAL;
++
+       can_readpixels = vrend_format_can_render(res->base.format) || vrend_format_is_ds(res->base.format);
+ 
+       if (can_readpixels)
+diff --git a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
+index 6c7c7de..99b0c53 100644
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -502,6 +502,8 @@ void vrend_renderer_fill_caps(uint32_t set, uint32_t version,
+ GLint64 vrend_renderer_get_timestamp(void);
+ 
+ void vrend_build_format_list_common(void);
++bool vrend_format_gl_rows_fit(enum virgl_formats format, GLenum glformat,
++                              GLenum gltype, uint32_t width);
+ void vrend_build_format_list_gl(void);
+ void vrend_build_format_list_gles(void);
+ void vrend_build_emulated_format_list_gles(void);

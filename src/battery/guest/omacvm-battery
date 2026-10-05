@@ -56,6 +56,13 @@ def log(message: str) -> None:
     print(f"omacvm-battery: {message}", file=sys.stderr, flush=True)
 
 
+def say(said: set[str], message: str) -> None:
+    """Log a message once (until `said` is cleared)."""
+    if message not in said:
+        said.add(message)
+        log(message)
+
+
 def is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -162,18 +169,18 @@ def env_value(text: str, key: str) -> str:
     return value
 
 
-def from_bridge(feeder: Feeder) -> int:
+def from_bridge(feeder: Feeder, said: set[str]) -> int:
     """UTM and Fusion: the Bridge's event stream, through OmacVM's own client
     (it checks the Bridge's proof before it sends the token)."""
     user = env_value(ENV_FILE.read_text(), "OMACVM_USER")
     try:
         home = pwd.getpwnam(user).pw_dir
     except KeyError:
-        log(f"no desktop user ({user!r}) in {ENV_FILE}")
+        say(said, f"no desktop user ({user!r}) in {ENV_FILE}")
         return 1
     token = f"{home}/.config/omacvm-bridge/token"
     if not os.path.isfile(token):
-        log(f"no Bridge token yet ({token}; omacvm apply puts it there)")
+        say(said, f"no Bridge token yet ({token}; omacvm apply puts it there)")
         return 1
     env = dict(os.environ, HOME=home, OMACVM_BRIDGE_TOKEN_FILE=token)
     proc = subprocess.Popen([CLIENT, "events"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
@@ -198,13 +205,13 @@ def from_bridge(feeder: Feeder) -> int:
                     log("the Bridge sent a line that is too long")
                     break
             elif time.monotonic() - seen > SILENCE_SECONDS:
-                log("no word from the Bridge: reconnecting")
+                say(said, "no word from the Bridge: reconnecting")
                 break
     finally:
         proc.kill()
         _, err = proc.communicate()
         if err.strip():
-            log(err.decode(errors="replace").strip().splitlines()[-1])
+            say(said, err.decode(errors="replace").strip().splitlines()[-1])
     return 1
 
 
@@ -229,11 +236,23 @@ def main() -> int:
             log(f"the battery port failed: {error}")
             rc = 1
     elif vm_type in ("utm", "fusion"):
-        try:
-            rc = from_bridge(feeder)
-        except OSError as error:
-            log(f"the Bridge failed: {error}")
-            rc = 1
+        # Right after boot the network (or the token) may not be there yet:
+        # keep trying here, slower each time, instead of exiting and leaving
+        # the service failed until systemd restarts it. Each kind of failure
+        # is logged once until the Bridge answers again.
+        delay, said = 2, set()
+        while True:
+            try:
+                from_bridge(feeder, said)
+            except OSError as error:
+                say(said, f"the Bridge failed: {error}")
+            if feeder.last is not None:   # it was connected: start over fast
+                feeder.gone()
+                feeder.last = None
+                log("the Mac's battery is gone for now")
+                delay, said = 2, set()
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
     else:
         log(f"nothing to do on a {vm_type or 'unknown'} VM")
         return 0

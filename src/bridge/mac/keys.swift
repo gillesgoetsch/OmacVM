@@ -31,19 +31,27 @@ final class Config {
 
 func percent(_ v: Float) -> Int { Int((Double(v) * 100).rounded()) }
 
-// ---- built-in display brightness (DisplayServices, private) ----
+// ---- display brightness (DisplayServices, private) ----
 enum Brightness {
   private typealias Get = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
   private typealias Set = @convention(c) (CGDirectDisplayID, Float) -> Int32
+  private typealias Can = @convention(c) (CGDirectDisplayID) -> Bool
   private static let lib = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY)
   private static let getFn = dlsym(lib, "DisplayServicesGetBrightness").map { unsafeBitCast($0, to: Get.self) }
   private static let setFn = dlsym(lib, "DisplayServicesSetBrightness").map { unsafeBitCast($0, to: Set.self) }
+  private static let canFn = dlsym(lib, "DisplayServicesCanChangeBrightness").map { unsafeBitCast($0, to: Can.self) }
 
-  /// nil when there is no active built-in display (lid closed).
+  /// The built-in display; on a Mac without one (or with the lid closed) the
+  /// display macOS dims itself (Studio Display, LG UltraFine), the main one
+  /// first. nil when there is none.
   private static var display: CGDirectDisplayID? {
     var ids = [CGDirectDisplayID](repeating: 0, count: 16), n: UInt32 = 0
     CGGetActiveDisplayList(16, &ids, &n)
-    return ids.prefix(Int(n)).first { CGDisplayIsBuiltin($0) != 0 }
+    let active = Array(ids.prefix(Int(n)))
+    if let d = active.first(where: { CGDisplayIsBuiltin($0) != 0 }) { return d }
+    guard let canFn else { return nil }
+    let main = CGMainDisplayID()
+    return (active.filter { $0 == main } + active.filter { $0 != main }).first { canFn($0) }
   }
 
   static func get() -> Float? {

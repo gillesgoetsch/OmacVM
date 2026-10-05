@@ -51,7 +51,8 @@ final class Runner {
             // Linux reports free memory, so the Mac gets it back.
             "-device", "virtio-balloon-pci,free-page-reporting=on",
             // No recording without the microphone permission: QEMU's recording
-            // would wait minutes for an answer (the whole VM stops meanwhile).
+            // would wait minutes for an answer (silence, and a sound that
+            // starts meanwhile waits too).
             "-audiodev", "sdl,id=snd0,timer-period=1000,out.buffer-count=8\(Runner.micAllowed ? "" : ",in.voices=0")",
             "-device", "intel-hda,id=hda0,romfile=",
             "-device", "hda-micro,bus=hda0.0,audiodev=snd0",

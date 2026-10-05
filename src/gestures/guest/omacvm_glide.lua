@@ -1,6 +1,6 @@
 -- OmacVM Glide (experimental): two-finger scrolling with the Mac's own
 -- acceleration and momentum, on OmacVM's virtual trackpad. Written by OmacVM
--- (omacvm enable/disable glide); changes here are overwritten.
+-- (omacvm enable/disable scroll-momentum); changes here are overwritten.
 
 -- Omarchy's display scale, from monitors.lua (its scaling menu writes it there):
 -- logical pixels grow with the scale, so the scroll factor shrinks with it.

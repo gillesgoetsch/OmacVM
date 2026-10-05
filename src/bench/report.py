@@ -21,7 +21,10 @@ TESTS = [  # key, label, unit
     ("speedometer", "Speedometer 3.1 (browser)", ""),
     ("motionmark", "MotionMark 1.3.1 (browser graphics)", ""),
     ("aquarium", "WebGL Aquarium, 30,000 fish (fps)", ""),
-    ("geekbench-gpu", "Geekbench 7 GPU (Metal on the Mac, Vulkan or OpenCL in a VM)", ""),
+    ("basemark", "Basemark Web 3.0 (browser graphics)", ""),
+    ("geekbench-gpu-Metal", "Geekbench 7 GPU, Metal (Mac only)", ""),
+    ("geekbench-gpu-OpenCL", "Geekbench 7 GPU, OpenCL", ""),
+    ("geekbench-gpu-Vulkan", "Geekbench 7 GPU, Vulkan (VMs only)", ""),
     ("glmark2", "glmark2 (OpenGL ES, VMs only)", ""),
 ]
 
@@ -85,7 +88,7 @@ def main():
             elif t.startswith("geekbench-gpu"):
                 s = scores.get(r.get("url"), [])
                 if s:
-                    vals.setdefault("geekbench-gpu", []).append(s[0])
+                    vals.setdefault(t, []).append(s[0])
             elif isinstance(v, (int, float)):
                 vals.setdefault(t, []).append(v)
             elif t == "gpu-renderer":

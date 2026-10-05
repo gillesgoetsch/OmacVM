@@ -21,9 +21,9 @@ else
   OMACVM_SRC=$_root/omacvm/src
 fi
 [[ -x $QEMU && -f $FIRMWARE && -d $OMACVM_SRC ]] || die "the app is incomplete (QEMU, firmware or OmacVM missing under $_root)"
-CACHE=${OMACVM_CACHE:-$HOME/Library/Caches/OmacVM}
+CACHE=${OMACVM_CACHE:-$HOME/Library/Caches/omacvm}
 KEY=${OMACVM_KEY:-$HOME/.ssh/omacvm}
-LIVE_RELEASE=v0.4.1
+source "$OMACVM_SRC/vm/live/release.sh"
 # The Mac's 127.0.0.1 ports the VM may reach as 10.0.2.2: Omanotch, Gestures, Bridge.
 HOST_PORTS=47811,47830,47831
 
@@ -56,24 +56,31 @@ truncate_file() { dd if=/dev/null of="$1" bs=1 seek="$2" 2>/dev/null; }
 efi_vars_create() { [[ -f $VM_DIR/efi-vars.fd ]] || mkfile -n 64m "$VM_DIR/efi-vars.fd"; }
 
 # try-omarchy's release: kernel, initramfs and its Arch Linux ARM root file
-# system, checked against the release's own manifest. Downloaded once.
+# system: the DMG checked against its pinned SHA-256, the files inside against
+# the release's own manifest. Downloaded once.
 live_fetch() {
   local d=$CACHE/live dmg vol app g
   mkdir -p "$d"
   LIVE_KERNEL=$d/vmlinuz-linux LIVE_INITRD=$d/initramfs-linux.img LIVE_ROOTFS=$d/rootfs.ext4
-  if [[ -f $d/ok-$LIVE_RELEASE ]]; then log "live system cached"; return; fi
-  dmg=$d/TryOmarchy-$LIVE_RELEASE.dmg
-  if [[ ! -f $dmg ]]; then
-    # The omacvm command keeps the same download.
-    local other=$HOME/Library/Caches/omacvm/live/TryOmarchy-$LIVE_RELEASE.dmg
-    if [[ -f $other ]]; then cp -c "$other" "$dmg" 2>/dev/null || cp "$other" "$dmg"
-    else
-      log "downloading try-omarchy $LIVE_RELEASE (1.4 GB)"
-      curl -fL --retry 3 --progress-bar -o "$dmg.part" \
-        "https://github.com/omacom/try-omarchy/releases/download/$LIVE_RELEASE/TryOmarchy.dmg"
-      mv "$dmg.part" "$dmg"
-    fi
+  # macOS may clear Caches: the marker counts only with the files still there.
+  if [[ -f $d/ok-$LIVE_RELEASE && -f $LIVE_KERNEL && -f $LIVE_INITRD && -f $LIVE_ROOTFS ]]; then
+    log "live system cached"; return
   fi
+  rm -f "$d/ok-$LIVE_RELEASE"
+  dmg=$d/TryOmarchy-$LIVE_RELEASE.dmg
+  # Only the app uses this folder: the omacvm command's build-live.sh works in
+  # ../build-live and deletes its files when done.
+  if [[ ! -f $dmg ]]; then
+    log "downloading try-omarchy $LIVE_RELEASE (1.4 GB)"
+    curl -fL --retry 3 --progress-bar -o "$dmg.part" \
+      "https://github.com/omacom/try-omarchy/releases/download/$LIVE_RELEASE/TryOmarchy.dmg"
+    mv "$dmg.part" "$dmg"
+  fi
+  # The DMG must be the pinned one (src/vm/live/release.sh), then its own
+  # manifest vouches for the files inside.
+  log "checking the download against its pinned SHA-256"
+  [[ $(shasum -a 256 "$dmg" | cut -d' ' -f1) == "$LIVE_DMG_SHA256" ]] ||
+    { rm -f "$dmg"; die "TryOmarchy.dmg $LIVE_RELEASE is not the pinned one; deleted it; try again to download it fresh"; }
   vol=$d/mnt; mkdir -p "$vol"
   hdiutil attach -nobrowse -readonly -mountpoint "$vol" "$dmg" >/dev/null || die "could not open $dmg"
   app=$(find "$vol" -maxdepth 2 -name '*.app' | head -1)
@@ -149,14 +156,4 @@ omarchy_channel() {
   code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 \
     https://api.github.com/repos/omarchy-mac/omarchy-pkgs-aarch64/releases/tags/stable) || code=0
   [[ $code == 200 ]] && echo stable || echo rc
-}
-
-# OmacVM's VM side: copy src/ and run guest/install.sh for this VM's features.
-omacvm_guest_install() {
-  local fargs="" f
-  for f in ${FEATURES:-}; do fargs+=" --feature $f"; done
-  COPYFILE_DISABLE=1 tar --no-xattrs -C "$OMACVM_SRC" --exclude build --exclude __pycache__ -czf - . |
-    vssh "rm -rf /usr/local/share/omacvm && mkdir -p /usr/local/share/omacvm &&
-          tar --no-same-owner -C /usr/local/share/omacvm -xzf - 2>/dev/null"
-  vssh "/usr/local/share/omacvm/guest/install.sh --user '$VM_USER' --keyboard '$KEYBOARD' --vm-type app$fargs" < /dev/null
 }

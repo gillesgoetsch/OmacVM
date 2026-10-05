@@ -3,14 +3,14 @@
 # Gestures (trackpad, scroll momentum, Cmd as Super on UTM), clipboard (VM -> Mac),
 # Omanotch (the bar beside the notch, src/omanotch).
 # Idempotent; `omacvm apply` runs it with what the VM's features need.
-#   src/mac/install.sh [--no-bridge] [--skip-gestures | --no-gestures] [--skip-clip] [--omanotch] [--force] [--quiet]
+#   src/mac/install.sh [--no-bridge] [--skip-gestures | --keys-only] [--skip-clip] [--omanotch] [--force] [--quiet]
 # --no-bridge leaves OmacVM Bridge out (one already installed stays, other VMs
 # may use it). --skip-gestures leaves OmacVM Gestures out (likewise).
 # --skip-clip leaves the clipboard helper out (only Parallels VMs use it;
 # likewise kept when already installed).
 # --omanotch installs Omanotch too (without it, one already installed stays as
 # it is).
-# --no-gestures installs it keys-only for every VM: macOS keeps its trackpad
+# --keys-only installs Gestures keys-only for every VM: macOS keeps its trackpad
 # gestures, and on UTM Cmd still reaches Omarchy as Super. (Without it, each
 # VM chooses for itself: gestures and scroll momentum are VM features.)
 # An app whose sources and options did not change since it was installed is
@@ -23,7 +23,7 @@ BRIDGE=1; GESTURES=1; CLIP=1; NOTCH=0; FORCE=0; QUIET=0
 for a in "$@"; do
   case $a in
     --no-bridge) BRIDGE=0 ;;
-    --no-gestures) GESTURES=0 ;;
+    --keys-only) GESTURES=0 ;;
     --skip-gestures) GESTURES=-1 ;;
     --skip-clip) CLIP=0 ;;
     --omanotch) NOTCH=1 ;;
@@ -34,6 +34,8 @@ for a in "$@"; do
 done
 STAMPS=~/Library/Application\ Support/omacvm/installed
 mkdir -p "$HOME/.local/share/omacvm/clip" "$STAMPS"
+# Up to 2.7, Gestures kept its list of VMs without a token here; nothing reads it now.
+rm -f ~/Library/Application\ Support/omacvm/gestures-legacy{,.new}
 
 # install_app NAME LAUNCHD_LABEL DIR [ARGS...]: DIR/install.sh unless the same
 # sources and options are already installed and running.
@@ -59,15 +61,8 @@ source "$R/lib/mac.sh"
 # once could end up with the file holding another token than the Bridge.
 (( BRIDGE || GESTURES != -1 )) && bridge_token_ensure
 (( BRIDGE )) && install_app "OmacVM Bridge" org.omacvm.bridge bridge/mac
-# Gestures lets a VM in when its daemon says the Bridge's token (made here
-# when the Bridge is not installed). VMs set up before that keep working until
-# omacvm update or apply gives them the daemon that says it: the list of them
-# is written once, before the first Gestures that checks.
-if (( GESTURES != -1 )); then
-  if [[ ! -e $GESTURES_LEGACY ]]; then
-    "$R/mac/gestures-legacy.sh" > "$GESTURES_LEGACY.new" && mv -f "$GESTURES_LEGACY.new" "$GESTURES_LEGACY"
-  fi
-fi
+# Gestures lets a VM in only when its daemon proves it knows the Bridge's
+# token (made here when the Bridge is not installed).
 case $GESTURES in
   1) install_app "OmacVM Gestures" org.omacvm.gestures gestures/mac ;;
   0) install_app "OmacVM Gestures" org.omacvm.gestures gestures/mac --keys-only ;;
