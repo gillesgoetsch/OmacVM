@@ -154,7 +154,9 @@ App ─VA-API─▶ Mesa's virgl VA driver ─virtio-gpu─▶ virglrenderer (QE
   hardware encoder for screen sharing).
 - Constant QP (FFmpeg without `-b:v`): every frame carries the guest's QP
   (VideoToolbox's `BaseFrameQP`, which turns its rate control off). A switch
-  between bitrate and constant QP starts a new session.
+  between bitrate and constant QP starts a new session. In the test VM, 1080p
+  `-rc_mode CQP`: QP 18 gives 54 MB (H.264) and 49 MB (HEVC) for the 10-second
+  clip, QP 40 2.3 MB and 2.0 MB (luma PSNR 43.0/42.9 against 36.2/36.3 dB).
 - A frame that fails, does not fit the guest's buffer, is refused before it
   reaches the encoder, or is never ended by the guest is reported to the guest
   as failed (never cut short, never the previous frame's result). Only a
