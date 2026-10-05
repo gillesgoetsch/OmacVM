@@ -7,6 +7,7 @@
 #include <dispatch/dispatch.h>
 #include <ifaddrs.h>
 #include <stdio.h>
+#include <sys/wait.h>
 // The daemon's vmnet calls go to the stand-ins below; its main is only used
 // for its argument checks.
 #define vmnet_start_interface fake_start
@@ -94,10 +95,14 @@ static double oneConnection(void) {
 // One connection whose VM sends a small frame every 100 ms for up to `secs`
 // seconds (or until the daemon closes). Returns the seconds serve() took.
 static int vmSide[2];
+static pid_t stand;
+static pid_t standIn(void) { return stand; }
+static int killAfter;   // seconds; then the stand-in service exits
 static void *sendFrames(void *arg) {
     int secs = (int)(intptr_t)arg;
     unsigned char f[64] = { 0, 0, 0, 60 };
     for (int i = 0; i < secs * 10; i++) {
+        if (killAfter && i == killAfter * 10) kill(stand, SIGTERM);
         if (write(vmSide[1], f, sizeof f) != (ssize_t)sizeof f) break;
         usleep(100 * 1000);
     }
@@ -200,6 +205,21 @@ int main(void) {
     resetBackoff(); writeFails = 0;
     t = talkingConnection(3);
     expect(t >= 2 && nconns == 0 && vmnetFailures == 0, "vmnet writes work: connection kept until the VM closes");
+
+    // macOS's vmnet service exits under a live connection (a child process
+    // stands in for it): the connection is closed within seconds.
+    resetBackoff();
+    pid_t child = fork();
+    if (child == 0) { pause(); _exit(0); }
+    stand = child;
+    findSharing = standIn;
+    pthread_t w;
+    pthread_create(&w, NULL, watchSharing, NULL);
+    killAfter = 2;
+    t = talkingConnection(15);
+    expect(t >= 2 && t < 6 && nconns == 0 && liveIfaces == 0 && vmnetFailures == 0,
+           "vmnet's service exits: connection closed, not counted as a failure");
+    waitpid(child, NULL, 0);
 
     // --user takes a number (an empty one is not uid 0).
     char *a1[] = { "netd", "--requirement", "x", "--user", "", NULL };

@@ -36,9 +36,13 @@
 // - No start while 192.168.77.0/24 is up on a bridge that is not ours (no
 //   interface of ours is up): another program's VM network on the same
 //   addresses, which makes vmnet fail (and leak) every time.
-// - A connection whose vmnet interface keeps failing (InternetSharing was
-//   restarted or crashed under it) is closed, so QEMU connects again and
-//   gets a new interface, or the app falls back to its user network.
+// - When macOS's vmnet service (InternetSharing) stops or crashes, our
+//   interfaces go with it, but vmnet says nothing and writes still "work":
+//   the daemon watches the service's process and closes every connection
+//   when it exits, so QEMU connects again and gets a new interface (launchd
+//   starts the service again for it), or the app falls back to its user
+//   network. A connection whose vmnet reads or writes keep failing is
+//   closed too.
 // - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
 //   are logged at most once per LOG_QUIET seconds (its users' apart from the
 //   others'), and the log is cut at LOG_MAX bytes.
@@ -67,6 +71,7 @@
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <launch.h>
+#include <libproc.h>
 #include <limits.h>
 #include <net/if.h>
 #include <poll.h>
@@ -77,6 +82,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/event.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -116,6 +122,7 @@
 #define FAIL_COUNT 5            // vmnet reads or writes failing this many times in a row
 #define FAIL_SECS 2             // ... for this many seconds: the interface is gone
 #define NET_PREFIX "192.168.77."
+#define SHARING "InternetSharing"   // macOS's vmnet service (a launchd daemon)
 #define NET_FIRST "192.168.77.1"   // the Mac on the fast network
 #define NET_LAST "192.168.77.254"
 #define NET_MASK "255.255.255.0"
@@ -130,6 +137,7 @@ static int vmnetFailures;         // failed starts in a row
 static int liveIfaces;            // our interfaces that are up (or did not answer a stop)
 static int inherited;             // the daemon before us left interfaces up
 static const char *statePath = STATE_FILE;
+static struct conn *live[MAX_CONNS];   // connections with an interface up
 static uid_t users[MAX_USERS];
 static int nusers;
 
@@ -279,10 +287,14 @@ static void vmnetResult(int ok) {
     else if (!ok) logf_("vmnet failed %d time(s) in a row: no new interfaces for %ld s", n, secs);
 }
 
-static void liveChange(int d) {
+// c's interface is up (add), or gone (stopped: up 0) or given up (a stop
+// that was not answered: up 1, it still counts as ours).
+static void liveChange(struct conn *c, int add, int up) {
     pthread_mutex_lock(&lock);
-    liveIfaces += d;
-    if (d > 0) inherited = 0;
+    for (int i = 0; i < MAX_CONNS; i++)
+        if (add ? !live[i] : live[i] == c) { live[i] = add ? c : NULL; break; }
+    liveIfaces += add ? 1 : up ? 0 : -1;
+    if (add) inherited = 0;
     saveState();
     pthread_mutex_unlock(&lock);
 }
@@ -310,6 +322,7 @@ static int foreignBridge(char *ifname, size_t len) {
 // vmnet reads or writes that keep failing: FAIL_COUNT in a row over
 // FAIL_SECS seconds. ok resets it.
 struct fails { time_t since; unsigned n; };
+struct conn;
 static int keepsFailing(struct fails *f, int ok) {
     if (ok) { f->n = 0; return 0; }
     time_t now = time(NULL);
@@ -330,8 +343,74 @@ struct conn {
     unsigned long long toVM, fromVM, dropped;
     struct fails rfail, wfail;
     volatile int broken;     // vmnet kept failing: closed for that
+    volatile int gone;       // macOS's vmnet service stopped: closed for that
     int lastErr;             // vmnet's last failed status
 };
+
+// ---- macOS's vmnet service ----
+
+static pid_t sharingPid(void) {
+    int n = proc_listallpids(NULL, 0);
+    if (n <= 0) return 0;
+    pid_t *p = calloc((size_t)n + 64, sizeof *p), found = 0;
+    if (!p) return 0;
+    n = proc_listallpids(p, (int)(((size_t)n + 64) * sizeof *p));
+    for (int i = 0; i < n && !found; i++) {
+        char name[2 * MAXCOMLEN + 1];
+        if (proc_name(p[i], name, sizeof name) > 0 && !strcmp(name, SHARING)) found = p[i];
+    }
+    free(p);
+    return found;
+}
+static pid_t (*findSharing)(void) = sharingPid;   // the offline test puts its own in
+
+// The service is gone and our interfaces with it: end every connection
+// (fromVM sees it; serve stops what is left, QEMU connects again).
+static void sharingGone(void) {
+    int n = 0;
+    pthread_mutex_lock(&lock);
+    for (int i = 0; i < MAX_CONNS; i++)
+        if (live[i]) { live[i]->gone = 1; shutdown(live[i]->fd, SHUT_RDWR); n++; }
+    pthread_mutex_unlock(&lock);
+    if (n) logf_("macOS's vmnet service (%s) stopped: closing %d connection(s) (QEMU connects again)", SHARING, n);
+}
+
+// Watches the service's process while we have interfaces. Only an exit it
+// saw counts: a service it cannot find (another name in a later macOS) only
+// turns the watch off, so connections are never closed on a guess.
+static void *watchSharing(void *arg) {
+    (void)arg;
+    int kq = kqueue();
+    pid_t watched = 0;
+    int blind = 0;
+    if (kq < 0) { logf_("kqueue: %s: not watching %s", strerror(errno), SHARING); return NULL; }
+    for (;;) {
+        pthread_mutex_lock(&lock);
+        int any = 0;
+        for (int i = 0; i < MAX_CONNS; i++) any |= live[i] != NULL;
+        pthread_mutex_unlock(&lock);
+        if (!any || blind) { watched = 0; sleep(1); continue; }
+        if (!watched) {
+            pid_t p = findSharing();
+            if (!p) { logf_("%s not found: not watching it", SHARING); blind = 1; continue; }
+            struct kevent ev;
+            EV_SET(&ev, (uintptr_t)p, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+            if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
+                if (errno == ESRCH) sharingGone();   // gone between the two
+                sleep(1);
+                continue;
+            }
+            watched = p;
+        }
+        struct kevent out;
+        struct timespec ts = { 1, 0 };
+        if (kevent(kq, NULL, 0, &out, 1, &ts) > 0 && out.filter == EVFILT_PROC && (pid_t)out.ident == watched) {
+            watched = 0;
+            sharingGone();
+        }
+    }
+    return NULL;
+}
 
 // Writes all of iov (blocking socket); 0 when done, -1 when the peer is gone.
 static int writeAll(int fd, struct iovec *iov, int n) {
@@ -529,7 +608,7 @@ static void *serve(void *arg) {
     if (r == -3) refused(c->pid, c->uid, "192.168.77.0/24 is up on another program's bridge: not starting vmnet (its VMs use the fast network's addresses)");
     else vmnetResult(r == 0);
     if (r == 0) {
-        liveChange(1);
+        liveChange(c, 1, 1);
         time_t up = time(NULL);
         logf_("pid %d (uid %d): connected, vmnet interface up (max frame %zu)", c->pid, c->uid, c->maxPacket);
         fromVM(c);
@@ -537,8 +616,8 @@ static void *serve(void *arg) {
         // no callback runs after the stop.
         shutdown(c->fd, SHUT_RDWR);
         hung = stopInterface(c) != 0;
-        if (!hung) liveChange(-1);
-        if (c->broken) {
+        liveChange(c, 0, hung);
+        if (c->broken && !c->gone) {
             // An interface that failed soon after its start counts as a failed
             // start (the back-off then lets the app fall back); one that
             // worked for a while does not (QEMU gets a new one at once).
@@ -646,6 +725,8 @@ int main(int argc, char **argv) {
     CFRelease(rs);
     signal(SIGPIPE, SIG_IGN);
     loadState();
+    pthread_t w;
+    if (pthread_create(&w, NULL, watchSharing, NULL) == 0) pthread_detach(w);
 
     int ls = -1;
     if (path) {
