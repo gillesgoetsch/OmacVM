@@ -179,5 +179,7 @@ as_root 'set -e
   install -o root -g wheel -m 755 "$1" '"$BIN"'
   install -o root -g wheel -m 644 "$2" '"$PLIST"'
   launchctl bootstrap system '"$PLIST" _ "$T/omacvm-netd" "$T/$LABEL.plist"
+# launchd makes the socket a moment after the bootstrap.
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ $(status) == ok ]] && break; sleep 0.5; done
 [[ $(status) == ok ]] || { echo "the fast network did not start (launchctl print system/$LABEL; $LOG)" >&2; exit 1; }
 echo "==> fast network installed (omacvm-netd, for $(basename "$APP"))"
