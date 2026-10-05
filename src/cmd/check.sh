@@ -145,10 +145,12 @@ BRIDGE=$(feat bridge); GESTURES=$(feat gestures); GLIDE=$(feat scroll_momentum "
 
 # OmacVM.app's fast network: the service on the Mac, and which network this
 # start of the VM took (the app writes it to logs/network).
-netd_said() {   # omacvm-netd's last refusal or failure, as "; omacvm-netd: ..."
-  local l
-  l=$(grep -E 'refused|failed|did not|kept failing' /var/log/org.omacvm.netd.log 2>/dev/null | tail -1 | cut -d' ' -f3-)
-  [[ -n $l ]] && printf '; %s' "$l"
+netd_said() {   # omacvm-netd's last refusal or failure of the last 10 minutes, as "; omacvm-netd: ..."
+  local l t
+  l=$(grep -E 'refused|failed|did not|kept failing|stopped' /var/log/org.omacvm.netd.log 2>/dev/null | tail -1)
+  t=$(date -j -f '%Y-%m-%d %H:%M:%S' "${l:0:19}" +%s 2>/dev/null) || return 0
+  (( $(date +%s) - t < 600 )) && printf '; %s' "$(cut -d' ' -f3- <<<"$l")"
+  return 0
 }
 if [[ $TYPE == app ]]; then
   if [[ $(feat fast_network off) == on ]]; then
