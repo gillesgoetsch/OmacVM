@@ -33,9 +33,10 @@
 //   stops working on the whole Mac until a restart. QEMU tries again every
 //   second; those tries are refused here. The count and the pause are kept in
 //   STATE_FILE, so a daemon that exits idle or is restarted goes on from them.
-// - No start while 192.168.77.0/24 is up on a bridge that is not ours (no
-//   interface of ours is up): another program's VM network on the same
-//   addresses, which makes vmnet fail (and leak) every time.
+// - After a failed start, none while 192.168.77.0/24 is up on a bridge that
+//   is not ours (no interface of ours up, the vmnet service running):
+//   another program's VM network on the same addresses makes every start
+//   fail (and leak); it is tried again once that bridge is gone.
 // - When macOS's vmnet service (InternetSharing) stops or crashes, our
 //   interfaces go with it, but vmnet says nothing and writes still "work":
 //   the daemon watches the service's process and closes every connection
@@ -300,13 +301,19 @@ static void liveChange(struct conn *c, int add, int up) {
     pthread_mutex_unlock(&lock);
 }
 
-// A bridge with an address in the fast network's subnet while none of our
-// interfaces is up: another program's (its name in ifname), or 0.
+static pid_t (*findSharing)(void);   // macOS's vmnet service's pid, 0 when not running
+
+// After a failed start: a bridge with an address in the fast network's
+// subnet while none of our interfaces is up and macOS's vmnet service runs,
+// so another program's VM network there, the likely reason (its name in
+// ifname); else 0. Not before a failure or without the service: a bridge
+// the service left behind when it stopped (removed when it starts again,
+// for our next start) must not keep us from starting it.
 static int foreignBridge(char *ifname, size_t len) {
     pthread_mutex_lock(&lock);
-    int ours = liveIfaces > 0 || inherited;
+    int ours = liveIfaces > 0 || inherited, failed = vmnetFailures > 0;
     pthread_mutex_unlock(&lock);
-    if (ours) return 0;
+    if (ours || !failed || !findSharing()) return 0;
     struct ifaddrs *list, *p;
     int found = 0;
     if (getifaddrs(&list)) return 0;

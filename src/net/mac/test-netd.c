@@ -95,6 +95,8 @@ static double oneConnection(void) {
 // One connection whose VM sends a small frame every 100 ms for up to `secs`
 // seconds (or until the daemon closes). Returns the seconds serve() took.
 static int vmSide[2];
+static pid_t sharingRuns(void) { return 1; }
+static pid_t sharingStopped(void) { return 0; }
 static pid_t stand;
 static pid_t standIn(void) { return stand; }
 static int killAfter;   // seconds; then the stand-in service exits
@@ -180,21 +182,28 @@ int main(void) {
     oneConnection();
     expect(vmnetFailures == 0 && !vmnetPaused(), "vmnet works again: no back-off");
 
-    // Another program's bridge on 192.168.77.0/24: no start (no leak), no back-off.
+    // Another program's bridge on 192.168.77.0/24 after a failed start: no
+    // start (no leak) while it is there.
     expect(liveIfaces == 1, "the interface whose stop was never answered still counts as ours");
     liveIfaces = 0; inherited = 0;
     ifName = "bridge100"; ifAddr = "192.168.77.1"; stops = 0;
+    findSharing = sharingRuns;
     char who[IFNAMSIZ];
-    expect(foreignBridge(who, sizeof who) && !strcmp(who, "bridge100"), "another program's bridge on 192.168.77.1 is seen");
+    expect(!foreignBridge(who, sizeof who), "a bridge on 192.168.77.1 before any failure: start (it may be one the service left)");
+    vmnetFailures = 1;
+    expect(foreignBridge(who, sizeof who) && !strcmp(who, "bridge100"), "after a failure, another program's bridge on 192.168.77.1 is seen");
     oneConnection();
-    expect(stops == 0 && vmnetFailures == 0 && nconns == 0, "... and vmnet is not started for it");
+    expect(stops == 0 && vmnetFailures == 1 && nconns == 0, "... and vmnet is not started for it");
+    findSharing = sharingStopped;
+    expect(!foreignBridge(who, sizeof who), "... but not while the vmnet service is not running (a bridge it left)");
+    findSharing = sharingRuns;
     liveIfaces = 1;
     expect(!foreignBridge(who, sizeof who), "with an interface of ours up, the bridge is ours");
     liveIfaces = 0; inherited = 1;
     expect(!foreignBridge(who, sizeof who), "... also when the daemon before us left interfaces up");
     inherited = 0; ifName = "en0";
     expect(!foreignBridge(who, sizeof who), "a LAN on 192.168.77.0/24 is the app's to see, not this");
-    ifAddr = "192.168.1.5";
+    ifAddr = "192.168.1.5"; resetBackoff();
 
     // An interface that keeps failing (InternetSharing restarted under it) is
     // closed within seconds; soon after its start that counts as a failure.
