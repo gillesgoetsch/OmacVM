@@ -191,6 +191,8 @@ of `omacvm-vdagent`. The bar widgets are clones of Omarchy's own.
 OmacVM is a community project, not affiliated with the Omarchy team,
 Parallels, UTM, VMware (Broadcom) or Apple.
 
+Want to help? Start with [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Code reused from others:
