@@ -145,20 +145,26 @@ BRIDGE=$(feat bridge); GESTURES=$(feat gestures); GLIDE=$(feat scroll_momentum "
 
 # OmacVM.app's fast network: the service on the Mac, and which network this
 # start of the VM took (the app writes it to logs/network).
+netd_said() {   # omacvm-netd's last refusal or failure, as "; omacvm-netd: ..."
+  local l
+  l=$(grep -E 'refused|failed|did not|kept failing' /var/log/org.omacvm.netd.log 2>/dev/null | tail -1 | cut -d' ' -f3-)
+  [[ -n $l ]] && printf '; %s' "$l"
+}
 if [[ $TYPE == app ]]; then
   if [[ $(feat fast_network off) == on ]]; then
     case $("$R/src/net/mac/install.sh" --status 2>/dev/null) in
       ok) ok "fast network service" "omacvm-netd, for this OmacVM.app" ;;
       old) bad "fast network service" "for another build of the app, or older: omacvm enable fast-network --vm \"$VM\"" ;;
       down) bad "fast network service" "installed, but launchd does not run it: sudo launchctl bootstrap system /Library/LaunchDaemons/org.omacvm.netd.plist" ;;
+      stopped) bad "fast network service" "vmnet failed too often in a row, so omacvm-netd stopped trying (each failure costs macOS's vmnet service for good): restart the Mac, or omacvm enable fast-network --vm \"$VM\" again" ;;
       *) bad "fast network service" "not installed: omacvm enable fast-network --vm \"$VM\"" ;;
     esac
     d=$(app_dir "$VM" 2>/dev/null); net=$(head -1 "$d/logs/network" 2>/dev/null)
     case $net in
       vmnet) ok "fast network" "on (vmnet), the VM is $IP" ;;
-      slirp\ fallback*) bad "fast network" "${net#slirp fallback: }" ;;
+      slirp\ fallback*) bad "fast network" "${net#slirp fallback: }$(netd_said)" ;;
       slirp*) bad "fast network" "this start took QEMU's user network: ${net#slirp }" ;;
-      vmnet-down*) bad "fast network" "${net#vmnet-down }" ;;
+      vmnet-down*) bad "fast network" "${net#vmnet-down }$(netd_said)" ;;
       *) bad "fast network" "the app did not say which network it took (from before the fast network? omacvm update)" ;;
     esac
   else skip "fast network" "off (experimental: omacvm enable fast-network)"; fi

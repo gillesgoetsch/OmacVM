@@ -9,7 +9,9 @@
 #   src/net/mac/install.sh --status [--app APP]
 #                                        ok | old (another build or another app) |
 #                                        down (installed, not loaded) | missing
-#                                        (also: only for other Mac users)
+#                                        (also: only for other Mac users) |
+#                                        stopped (vmnet failed too often: it no
+#                                        longer tries until a restart or install)
 #   src/net/mac/install.sh --remove      not for this Mac user any more; off this
 #                                        Mac when no other user has it (sudo)
 # The daemon comes built and signed inside OmacVM.app (Contents/Library/
@@ -27,6 +29,7 @@ BIN=/Library/PrivilegedHelperTools/$LABEL
 PLIST=/Library/LaunchDaemons/$LABEL.plist
 SOCK=/var/run/$LABEL.sock
 LOG=/var/log/$LABEL.log
+STATE=/var/run/$LABEL.state   # the daemon's vmnet back-off (omacvm-netd.c)
 TEAM='anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "722686Y34B"'
 DEVID='anchor apple generic and identifier "org.omacvm.app.qemu" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "722686Y34B"'
 
@@ -83,7 +86,17 @@ status() {
     elif [[ $("$BIN" --version 2>/dev/null) != "$VERSION" ]]; then echo old; return 0; fi
   elif [[ $("$BIN" --version 2>/dev/null) != "$VERSION" ]]; then echo old; return 0; fi
   launchctl print "system/$LABEL" >/dev/null 2>&1 && [[ -S $SOCK ]] || { echo down; return 0; }
+  if stopped; then echo stopped; return 0; fi
   echo ok
+}
+
+# The daemon stopped starting vmnet after too many failures in a row (its
+# STATE: "boot failures pause live", this boot's only): yes/no.
+stopped() {
+  local boot f
+  boot=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p')
+  read -r b f _ < "$STATE" 2>/dev/null || return 1
+  [[ $b == "$boot" && $f =~ ^[0-9]+$ ]] && (( f >= 8 ))
 }
 
 as_root() {   # SCRIPT ARGS...: one sudo for all of it
@@ -125,6 +138,9 @@ $users
       <key>SockPathMode</key><integer>438</integer>
     </dict>
   </dict>
+  <!-- macOS 13+: Login Items names the app this background item belongs to. -->
+  <key>AssociatedBundleIdentifiers</key>
+  <array><string>org.omacvm.app</string></array>
   <key>ProcessType</key><string>Interactive</string>
   <key>StandardErrorPath</key><string>$LOG</string>
 </dict>
@@ -154,20 +170,31 @@ case $MODE in
       echo "==> fast network: off for this Mac user (other users of this Mac still have it)"
       exit 0
     fi
-    as_root 'launchctl bootout system/'"$LABEL"' 2>/dev/null || true; rm -f '"$PLIST $BIN $SOCK $LOG"
+    as_root 'launchctl bootout system/'"$LABEL"' 2>/dev/null || true; rm -f '"$PLIST $BIN $SOCK $LOG $STATE"
     echo "==> fast network removed"
     exit 0 ;;
 esac
 
 [[ -n $APP ]] || APP=$(app_bundle) || { echo "no OmacVM.app installed (in /Applications or ~/Applications)" >&2; exit 1; }
 REQ=$(requirement "$APP") || exit 1
-if [[ $(status) == ok ]]; then exit 0; fi
+case $(status) in
+  ok) exit 0 ;;
+  stopped)
+    # Installing again ends a stop after too many vmnet failures (omacvm check says so).
+    as_root 'rm -f '"$STATE"'; launchctl kickstart -k system/'"$LABEL"' 2>/dev/null || true'
+    echo "==> fast network: vmnet is tried again"
+    exit 0 ;;
+esac
+# What the daemon must satisfy: for a Developer ID app, OmacVM's team and the
+# daemon's identifier; else any valid signature (built here: ad hoc).
+DREQ=""
+[[ $REQ == "$DEVID" ]] && DREQ="$TEAM and identifier \"$LABEL\""
 if h=$(bundled "$APP"); then
-  # The app's daemon, checked on a copy (what is checked is what root
-  # installs): a valid signature, and for a Developer ID app, OmacVM's team.
+  # The app's daemon, checked on a copy first (a clear message), and again
+  # as root on the installed file before launchd may run it.
   cp "$h" "$T/omacvm-netd"
   codesign --verify --strict "$T/omacvm-netd" 2>/dev/null || { echo "$h has no valid signature" >&2; exit 1; }
-  if [[ $REQ == "$DEVID" ]] && ! codesign --verify -R="$TEAM and identifier \"$LABEL\"" "$T/omacvm-netd" 2>/dev/null; then
+  if [[ -n $DREQ ]] && ! codesign --verify -R="$DREQ" "$T/omacvm-netd" 2>/dev/null; then
     echo "$h is not signed with OmacVM's Developer ID" >&2; exit 1
   fi
 else
@@ -178,12 +205,19 @@ fi
 # This user, and the ones it was installed for before.
 # shellcheck disable=SC2046   # one uid per word
 make_plist "$T/$LABEL.plist" "$REQ" "$ME" $(installed_users | grep -vx "$ME" || true)
+# The copy in $T is this user's: another of their processes could swap it after
+# the checks above. So root checks the file it installed (root's now) and only
+# then lets launchd run it. A new install also ends a vmnet back-off.
 as_root 'set -e
   install -d -o root -g wheel -m 755 /Library/PrivilegedHelperTools
   launchctl bootout system/'"$LABEL"' 2>/dev/null || true
   install -o root -g wheel -m 755 "$1" '"$BIN"'
+  if ! /usr/bin/codesign --verify --strict ${3:+-R="$3"} '"$BIN"' 2>/dev/null; then
+    rm -f '"$BIN"'; echo "the installed omacvm-netd failed its signature check: removed" >&2; exit 1
+  fi
   install -o root -g wheel -m 644 "$2" '"$PLIST"'
-  launchctl bootstrap system '"$PLIST" _ "$T/omacvm-netd" "$T/$LABEL.plist"
+  rm -f '"$STATE"'
+  launchctl bootstrap system '"$PLIST" _ "$T/omacvm-netd" "$T/$LABEL.plist" "$DREQ"
 # launchd makes the socket a moment after the bootstrap.
 for _ in 1 2 3 4 5 6 7 8 9 10; do [[ $(status) == ok ]] && break; sleep 0.5; done
 [[ $(status) == ok ]] || { echo "the fast network did not start (launchctl print system/$LABEL; $LOG)" >&2; exit 1; }
