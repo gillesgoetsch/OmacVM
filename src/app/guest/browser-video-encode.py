@@ -228,12 +228,15 @@ def main():
                    and not all(f in effective(owner, fs)[1] for f in FEATURES)]
         print("missing in: " + ", ".join(missing) if missing else "on")
         sys.exit(1 if missing else 0)
+    # A removal that fails stays in the marker, so the next run can still take
+    # those features out.
+    entries = []
     for e in load_mark(known):
         try:
             owner.run(e["file"], lambda p, e=e: remove_from(p, e["features"], e["created"]))
         except RuntimeError as err:
             print(f"browser-video-encode: {err}", file=sys.stderr)
-    entries = []
+            entries.append(e)
     if sys.argv[2] == "on":
         for name, fs in files.items():
             try:
