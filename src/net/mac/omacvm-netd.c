@@ -26,17 +26,27 @@
 //   macOS's default 192.168.64.0/24: while UTM (or another app) has that one
 //   up without isolation, vmnet refuses an isolated interface on it.
 // - After vmnet fails to start an interface, no new one for BACKOFF seconds
-//   (doubling up to BACKOFF_MAX while it keeps failing): each failed start
-//   costs macOS's vmnet service (InternetSharing) a descriptor it never
-//   gives back, and at 256 vmnet stops working on the whole Mac until a
-//   restart. QEMU tries again every second; those tries are refused here.
+//   (doubling up to BACKOFF_MAX while it keeps failing), and none at all
+//   after MAX_FAILURES in a row until the Mac restarts or the service is
+//   installed again: each failed start costs macOS's vmnet service
+//   (InternetSharing) a descriptor it never gives back, and at 256 vmnet
+//   stops working on the whole Mac until a restart. QEMU tries again every
+//   second; those tries are refused here. The count and the pause are kept in
+//   STATE_FILE, so a daemon that exits idle or is restarted goes on from them.
+// - No start while 192.168.77.0/24 is up on a bridge that is not ours (no
+//   interface of ours is up): another program's VM network on the same
+//   addresses, which makes vmnet fail (and leak) every time.
+// - A connection whose vmnet interface keeps failing (InternetSharing was
+//   restarted or crashed under it) is closed, so QEMU connects again and
+//   gets a new interface, or the app falls back to its user network.
 // - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
 //   are logged at most once per LOG_QUIET seconds (its users' apart from the
 //   others'), and the log is cut at LOG_MAX bytes.
 // - vmnet answers a start or stop within VMNET_WAIT seconds, or the
 //   connection is given up (logged) and its slot freed, so a vmnet that never
 //   answers cannot use up a user's slots.
-// It runs no commands, opens no files, takes no other requests, and frames
+// It runs no commands, opens no files but STATE_FILE (root's, in /var/run,
+// gone at restart), takes no other requests, and frames
 // are only passed on (their length checked), never parsed.
 //
 // launchd starts it on the first connection (socket activation, see
@@ -47,14 +57,18 @@
 // Build: clang -O2 -Wall -o omacvm-netd omacvm-netd.c -framework vmnet
 //          -framework Security -framework CoreFoundation -lbsm
 // Test without launchd (as root): omacvm-netd --requirement REQ --user UID --socket PATH
-// (PATH in a directory only root can write).
+// [--state FILE] (both in a directory only root can write).
 
 #include <bsm/libbsm.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <dispatch/dispatch.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <ifaddrs.h>
 #include <launch.h>
+#include <limits.h>
+#include <net/if.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -65,6 +79,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <sys/uio.h>
 #include <sys/un.h>
 #include <time.h>
@@ -94,6 +109,13 @@
 #define BACKOFF 30              // seconds without vmnet starts after one failed
 #endif
 #define BACKOFF_MAX 3600        // ... doubling while it keeps failing, up to this
+#ifndef MAX_FAILURES
+#define MAX_FAILURES 8          // failed starts in a row, then none until a restart or reinstall
+#endif
+#define STATE_FILE "/var/run/org.omacvm.netd.state"
+#define FAIL_COUNT 5            // vmnet reads or writes failing this many times in a row
+#define FAIL_SECS 2             // ... for this many seconds: the interface is gone
+#define NET_PREFIX "192.168.77."
 #define NET_FIRST "192.168.77.1"   // the Mac on the fast network
 #define NET_LAST "192.168.77.254"
 #define NET_MASK "255.255.255.0"
@@ -105,6 +127,9 @@ static struct { uid_t uid; int n; } perUid[MAX_CONNS];
 static time_t lastActive;
 static time_t vmnetPause;         // no vmnet starts before this (after failures)
 static int vmnetFailures;         // failed starts in a row
+static int liveIfaces;            // our interfaces that are up (or did not answer a stop)
+static int inherited;             // the daemon before us left interfaces up
+static const char *statePath = STATE_FILE;
 static uid_t users[MAX_USERS];
 static int nusers;
 
@@ -199,20 +224,97 @@ static int vmnetPaused(void) {
     return p;
 }
 
+// When this Mac started: the state of an earlier boot does not count
+// (InternetSharing starts over with the Mac).
+static long bootTime(void) {
+    struct timeval tv; size_t l = sizeof tv;
+    return sysctlbyname("kern.boottime", &tv, &l, NULL, 0) ? 0 : (long)tv.tv_sec;
+}
+
+// STATE_FILE: "boot failures pause live" (readable by all: install.sh and omacvm
+// check show a stop). Written under the lock, no links followed.
+static void saveState(void) {
+    char b[96];
+    int n = snprintf(b, sizeof b, "%ld %d %ld %d\n", bootTime(), vmnetFailures, (long)vmnetPause, liveIfaces);
+    int fd = open(statePath, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    if (write(fd, b, (size_t)n) != n) { /* the next save tries again */ }
+    close(fd);
+}
+
+static void loadState(void) {
+    char b[96] = "";
+    int fd = open(statePath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return;
+    ssize_t r = read(fd, b, sizeof b - 1);
+    close(fd);
+    long boot, pause; int fails, live;
+    if (r <= 0 || sscanf(b, "%ld %d %ld %d", &boot, &fails, &pause, &live) != 4 || boot != bootTime()) return;
+    if (fails < 0 || fails > MAX_FAILURES) fails = MAX_FAILURES;
+    vmnetFailures = fails;
+    vmnetPause = (time_t)pause;
+    inherited = live > 0;
+    if (fails) logf_("vmnet failed %d time(s) in a row before this start%s", fails,
+                     fails >= MAX_FAILURES ? ": no new interfaces until the Mac restarts or the fast network is installed again" : "");
+}
+
 static void vmnetResult(int ok) {
     pthread_mutex_lock(&lock);
     long secs = 0;
-    if (ok) vmnetFailures = 0;
-    else {
-        int n = ++vmnetFailures;
+    if (ok) { vmnetFailures = 0; vmnetPause = 0; }
+    else if (++vmnetFailures >= MAX_FAILURES) {
+        vmnetPause = (time_t)LONG_MAX;
+    } else {
+        int n = vmnetFailures;
         secs = BACKOFF;
         while (--n > 0 && secs < BACKOFF_MAX) secs *= 2;
         if (secs > BACKOFF_MAX) secs = BACKOFF_MAX;
         vmnetPause = time(NULL) + secs;
     }
     int n = vmnetFailures;
+    saveState();
     pthread_mutex_unlock(&lock);
-    if (!ok) logf_("vmnet failed %d time(s) in a row: no new interfaces for %ld s", n, secs);
+    if (!ok && n >= MAX_FAILURES)
+        logf_("vmnet failed %d times in a row: no new interfaces until the Mac restarts or the fast network is installed again", n);
+    else if (!ok) logf_("vmnet failed %d time(s) in a row: no new interfaces for %ld s", n, secs);
+}
+
+static void liveChange(int d) {
+    pthread_mutex_lock(&lock);
+    liveIfaces += d;
+    if (d > 0) inherited = 0;
+    saveState();
+    pthread_mutex_unlock(&lock);
+}
+
+// A bridge with an address in the fast network's subnet while none of our
+// interfaces is up: another program's (its name in ifname), or 0.
+static int foreignBridge(char *ifname, size_t len) {
+    pthread_mutex_lock(&lock);
+    int ours = liveIfaces > 0 || inherited;
+    pthread_mutex_unlock(&lock);
+    if (ours) return 0;
+    struct ifaddrs *list, *p;
+    int found = 0;
+    if (getifaddrs(&list)) return 0;
+    for (p = list; p && !found; p = p->ifa_next) {
+        char a[INET_ADDRSTRLEN];
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET || strncmp(p->ifa_name, "bridge", 6)) continue;
+        if (!inet_ntop(AF_INET, &((struct sockaddr_in *)(void *)p->ifa_addr)->sin_addr, a, sizeof a)) continue;
+        if (!strncmp(a, NET_PREFIX, strlen(NET_PREFIX))) { snprintf(ifname, len, "%s", p->ifa_name); found = 1; }
+    }
+    freeifaddrs(list);
+    return found;
+}
+
+// vmnet reads or writes that keep failing: FAIL_COUNT in a row over
+// FAIL_SECS seconds. ok resets it.
+struct fails { time_t since; unsigned n; };
+static int keepsFailing(struct fails *f, int ok) {
+    if (ok) { f->n = 0; return 0; }
+    time_t now = time(NULL);
+    if (!f->n++) f->since = now;
+    return f->n >= FAIL_COUNT && now - f->since >= FAIL_SECS;
 }
 
 // ---- one VM ----
@@ -226,6 +328,9 @@ struct conn {
     size_t maxPacket;        // vmnet's maximum frame size
     unsigned char *rx;       // BATCH * maxPacket bytes for vmnet_read
     unsigned long long toVM, fromVM, dropped;
+    struct fails rfail, wfail;
+    volatile int broken;     // vmnet kept failing: closed for that
+    int lastErr;             // vmnet's last failed status
 };
 
 // Writes all of iov (blocking socket); 0 when done, -1 when the peer is gone.
@@ -253,7 +358,14 @@ static void toVM(struct conn *c) {
             iov[i].iov_len = c->maxPacket;
             pkts[i] = (struct vmpktdesc){ .vm_pkt_size = c->maxPacket, .vm_pkt_iov = &iov[i], .vm_pkt_iovcnt = 1 };
         }
-        if (vmnet_read(c->iface, pkts, &n) != VMNET_SUCCESS || n <= 0) return;
+        vmnet_return_t st = vmnet_read(c->iface, pkts, &n);
+        if (keepsFailing(&c->rfail, st == VMNET_SUCCESS)) {
+            // The interface is gone: end the connection (fromVM sees it).
+            c->lastErr = st; c->broken = 1;
+            shutdown(c->fd, SHUT_RDWR);
+            return;
+        }
+        if (st != VMNET_SUCCESS || n <= 0) return;
         int k = 0;
         for (int i = 0; i < n; i++) {
             if (!pkts[i].vm_pkt_size || pkts[i].vm_pkt_size > c->maxPacket) continue;
@@ -393,9 +505,12 @@ static void fromVM(struct conn *c) {
             }
             if (!n) break;
             int sent = n;
-            if (vmnet_write(c->iface, pkts, &sent) != VMNET_SUCCESS) c->dropped += (unsigned long long)n;
+            vmnet_return_t st = vmnet_write(c->iface, pkts, &sent);
+            if (st != VMNET_SUCCESS) c->dropped += (unsigned long long)n;
             else { c->fromVM += (unsigned long long)sent; c->dropped += (unsigned long long)(n - sent); }
+            if (keepsFailing(&c->wfail, st == VMNET_SUCCESS)) { c->lastErr = st; c->broken = 1; break; }
         }
+        if (c->broken) break;
         if (bad) { logf_("pid %d: not QEMU's stream framing: closing", c->pid); break; }
         memmove(buf, buf + off, have - off);
         have -= off;
@@ -409,16 +524,34 @@ static void *serve(void *arg) {
     snprintf(label, sizeof label, "org.omacvm.netd.%d", c->fd);
     c->q = dispatch_queue_create(label, DISPATCH_QUEUE_SERIAL);
     int hung = 0;
-    int r = startInterface(c);
-    vmnetResult(r == 0);
+    char other[IFNAMSIZ] = "";
+    int r = foreignBridge(other, sizeof other) ? -3 : startInterface(c);
+    if (r == -3) refused(c->pid, c->uid, "192.168.77.0/24 is up on another program's bridge: not starting vmnet (its VMs use the fast network's addresses)");
+    else vmnetResult(r == 0);
     if (r == 0) {
+        liveChange(1);
+        time_t up = time(NULL);
         logf_("pid %d (uid %d): connected, vmnet interface up (max frame %zu)", c->pid, c->uid, c->maxPacket);
         fromVM(c);
         // Wake a write that waits for QEMU, then stop vmnet on its own queue:
         // no callback runs after the stop.
         shutdown(c->fd, SHUT_RDWR);
         hung = stopInterface(c) != 0;
+        if (!hung) liveChange(-1);
+        if (c->broken) {
+            // An interface that failed soon after its start counts as a failed
+            // start (the back-off then lets the app fall back); one that
+            // worked for a while does not (QEMU gets a new one at once).
+            logf_("pid %d: vmnet kept failing (status %d): closing", c->pid, c->lastErr);
+            if (time(NULL) - up < 30) vmnetResult(0);
+        }
         logf_("pid %d: disconnected (%llu frames to the VM, %llu from it, %llu dropped)", c->pid, c->toVM, c->fromVM, c->dropped);
+    } else if (r == -3) {
+        close(c->fd);
+        dispatch_release(c->q);
+        slotGive(c->uid);
+        free(c);
+        return NULL;
     } else {
         hung = r == -2;
         logf_("pid %d: no vmnet interface: closing", c->pid);
@@ -453,10 +586,10 @@ static void accepted(int fd) {
     }
     pid_t pid = audit_token_to_pid(tok);
     uid_t uid = audit_token_to_euid(tok);
-    pthread_mutex_lock(&lock);
-    lastActive = time(NULL);   // any caller keeps it (and its back-off) alive
-    pthread_mutex_unlock(&lock);
     if (!userAllowed(uid)) { refused(pid, uid, "not a user the fast network was installed for"); close(fd); return; }
+    pthread_mutex_lock(&lock);
+    lastActive = time(NULL);   // its users' VMs keep it alive (the back-off is in STATE_FILE anyway)
+    pthread_mutex_unlock(&lock);
     const char *why = checkPeer(&tok);
     if (why) { refused(pid, uid, why); close(fd); return; }
     if (vmnetPaused()) { refused(pid, uid, "vmnet failed a moment ago: trying again later"); close(fd); return; }
@@ -493,13 +626,15 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--version")) { puts(NETD_VERSION); return 0; }
         if (!strcmp(argv[i], "--requirement") && i + 1 < argc) req = argv[++i];
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) {
-            char *end; long u = strtol(argv[++i], &end, 10);
-            if (*end || u < 0) { fprintf(stderr, "omacvm-netd: --user takes a uid\n"); return 2; }
+            const char *arg = argv[++i];
+            char *end; long u = strtol(arg, &end, 10);
+            if (end == arg || *end || u < 0 || u > (long)UINT32_MAX - 1) { fprintf(stderr, "omacvm-netd: --user takes a uid\n"); return 2; }
             if (nusers < MAX_USERS) users[nusers++] = (uid_t)u;
             else logf_("more than %d users: uid %ld left out", MAX_USERS, u);
         }
         else if (!strcmp(argv[i], "--socket") && i + 1 < argc) path = argv[++i];
-        else { fprintf(stderr, "usage: omacvm-netd --requirement REQ --user UID... [--socket PATH]\n"); return 2; }
+        else if (!strcmp(argv[i], "--state") && i + 1 < argc) statePath = argv[++i];
+        else { fprintf(stderr, "usage: omacvm-netd --requirement REQ --user UID... [--socket PATH] [--state FILE]\n"); return 2; }
     }
     if (!req || !nusers) { fprintf(stderr, "omacvm-netd: --requirement and --user are needed\n"); return 2; }
     if (geteuid() != 0) { fprintf(stderr, "omacvm-netd: vmnet needs root\n"); return 1; }
@@ -510,6 +645,7 @@ int main(int argc, char **argv) {
     }
     CFRelease(rs);
     signal(SIGPIPE, SIG_IGN);
+    loadState();
 
     int ls = -1;
     if (path) {
