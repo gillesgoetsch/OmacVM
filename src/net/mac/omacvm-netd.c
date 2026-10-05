@@ -25,8 +25,8 @@
 //   as on UTM), isolated from the other VMs' interfaces. It closes with the
 //   connection.
 // - At most MAX_PER_UID connections per user and MAX_CONNS in all; refusals
-//   are logged at most once per LOG_QUIET seconds, and the log is cut at
-//   LOG_MAX bytes.
+//   are logged at most once per LOG_QUIET seconds (its users' apart from the
+//   others'), and the log is cut at LOG_MAX bytes.
 // - vmnet answers a start or stop within VMNET_WAIT seconds, or the
 //   connection is given up (logged) and its slot freed, so a vmnet that never
 //   answers cannot use up a user's slots.
@@ -109,22 +109,25 @@ static void logf_(const char *fmt, ...) {
     pthread_mutex_unlock(&logLock);
 }
 
-// "refused" lines: at most one per LOG_QUIET seconds (a loop of connects
-// must not fill the disk); the next one says how many were not logged.
-static void refused(pid_t pid, uid_t uid, const char *why) {
-    static time_t last; static unsigned long quiet;
-    time_t now = time(NULL);
-    pthread_mutex_lock(&lock);
-    int say = now - last >= LOG_QUIET;
-    unsigned long n = quiet;
-    if (say) { last = now; quiet = 0; } else quiet++;
-    pthread_mutex_unlock(&lock);
-    if (say) logf_("pid %d (uid %d) refused: %s%s", pid, uid, why, n ? " (and earlier refusals not logged)" : "");
-}
-
 static int userAllowed(uid_t uid) {
     for (int i = 0; i < nusers; i++) if (users[i] == uid) return 1;
     return 0;
+}
+
+// "refused" lines: at most one per LOG_QUIET seconds (a loop of connects,
+// such as a QEMU reconnecting every second, must not fill the disk); the next
+// one says how many were not logged. The users it was installed for count
+// apart from everyone else, so others' floods cannot hide theirs.
+static void refused(pid_t pid, uid_t uid, const char *why) {
+    static time_t last[2]; static unsigned long quiet[2];
+    int k = userAllowed(uid);
+    time_t now = time(NULL);
+    pthread_mutex_lock(&lock);
+    int say = now - last[k] >= LOG_QUIET;
+    unsigned long n = quiet[k];
+    if (say) { last[k] = now; quiet[k] = 0; } else quiet[k]++;
+    pthread_mutex_unlock(&lock);
+    if (say) logf_("pid %d (uid %d) refused: %s%s", pid, uid, why, n ? " (and earlier refusals not logged)" : "");
 }
 
 // ---- who may connect ----
@@ -408,9 +411,8 @@ static void accepted(int fd) {
     pid_t pid = audit_token_to_pid(tok);
     uid_t uid = audit_token_to_euid(tok);
     if (!userAllowed(uid)) { refused(pid, uid, "not a user the fast network was installed for"); close(fd); return; }
-    // Refusals of its own users always go to the log (others' floods cannot hide them).
     const char *why = checkPeer(&tok);
-    if (why) { logf_("pid %d (uid %d) refused: %s", pid, uid, why); close(fd); return; }
+    if (why) { refused(pid, uid, why); close(fd); return; }
     if (!slotTake(uid)) { refused(pid, uid, "too many VMs connected"); close(fd); return; }
     struct conn *c = calloc(1, sizeof *c);
     pthread_t t;
