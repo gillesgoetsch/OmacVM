@@ -9,6 +9,7 @@
 #   src/net/mac/install.sh --status [--app APP]
 #                                        ok | old (another build or another app) |
 #                                        down (installed, not loaded) | missing
+#                                        (also: only for other Mac users)
 #   src/net/mac/install.sh --remove      not for this Mac user any more; off this
 #                                        Mac when no other user has it (sudo)
 # The daemon comes built and signed inside OmacVM.app (Contents/Library/
@@ -73,7 +74,7 @@ installed_users() {   # the uids it takes connections from, one per line
 status() {
   [[ -x $BIN && -f $PLIST ]] || { echo missing; return 0; }
   local want h
-  installed_users | grep -qx "$(id -u)" || { echo old; return 0; }
+  installed_users | grep -qx "$(id -u)" || { echo missing; return 0; }   # only for other Mac users
   if [[ -n $APP ]] || APP=$(app_bundle); then
     want=$(requirement "$APP" 2>/dev/null) || { echo old; return 0; }
     [[ $(installed_req) == "$want" ]] || { echo old; return 0; }
