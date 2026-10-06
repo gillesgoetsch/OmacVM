@@ -26,6 +26,11 @@ if args.count > 1 && args[1] == "fallback" {
     print(Graphics.fallback(folder: URL(fileURLWithPath: args[2])) ?? "-")
     exit(0)
 }
+if args.count > 1 && args[1] == "smallwindow" {
+    // smallwindow FILE: whether that QEMU binary takes a small highmem-mmio-size.
+    print(Graphics.qemuTakesSmallHighWindow(binary: URL(fileURLWithPath: args[2])))
+    exit(0)
+}
 if args.count > 1 && args[1] == "write" {
     // write CHOICE DIR: the app's Graphics.write.
     try Graphics.write(GraphicsChoice(rawValue: args[2])!, folder: URL(fileURLWithPath: args[3]))
@@ -43,7 +48,9 @@ if args.count > 1 && args[1] == "watch" {
         switch v {
         case .wait: print("\(name) wait")
         case .fine: print("\(name) fine")
-        case .fallBack(let why, let graceful): print("\(name) fallback \(graceful ? "graceful" : "now") \(why)")
+        case .note(let line): print("\(name) note \(line)")
+        case .fallBack(let why, let graceful, let keep):
+            print("\(name) fallback \(graceful ? "graceful" : "now") \(keep ? "keep" : "once") \(why)")
         }
     }
     let ok = VenusStartWatch.Poll(answered: true, pciMapped: true, consoleOutput: true)
@@ -56,12 +63,25 @@ if args.count > 1 && args[1] == "watch" {
     run("normal-24s", Array(repeating: early, count: 8) + [ok])
     // Paused (the Mac asleep) does not count.
     run("paused", Array(repeating: VenusStartWatch.Poll(answered: true, paused: true, pciMapped: false), count: 40))
-    // QEMU's monitor silent 30 s (virgl blocks its main loop).
+    // QEMU's monitor silent 30 s after the firmware ran: a note, no fallback.
     run("silent", [ok] + Array(repeating: silent, count: 10))
     run("silent-short", [ok] + Array(repeating: silent, count: 5) + [ok])
-    // QMP never reachable: no hang verdict from silence; the console decides.
+    // ... and the watch goes on after the note (fine at 180 s).
+    var sw = VenusStartWatch(), sv = VenusStartWatch.Verdict.wait, notes = 0
+    for p in [ok] + Array(repeating: silent, count: 20) + Array(repeating: ok, count: 60) {
+        sv = sw.poll(p, seconds: 3)
+        if case .note = sv { notes += 1; continue }
+        if sv != .wait { break }
+    }
+    print("silent-then-fine \(notes) \(sv == .fine ? "fine" : "\(sv)")")
+    // Silent before the firmware ran: QEMU hangs in the start (kept).
+    run("silent-early", [early] + Array(repeating: silent, count: 10))
+    // QMP never reachable: the firmware clock never starts; only no-picture decides.
     run("no-qmp-console", Array(repeating: VenusStartWatch.Poll(answered: false, consoleOutput: true), count: 20))
     run("no-qmp-nothing", Array(repeating: silent, count: 20))
+    // QMP first answers after 30 s (a slow start): 25 s from then, not from QEMU's start.
+    run("late-qmp", Array(repeating: silent, count: 10) + Array(repeating: early, count: 8))
+    run("late-qmp-hang", Array(repeating: silent, count: 10) + Array(repeating: early, count: 12))
     // The window's no-picture line, after the firmware ran: shut down first.
     run("no-picture", [ok, ok, VenusStartWatch.Poll(answered: true, pciMapped: true, consoleOutput: true, noPicture: true)])
     // Only the console says the firmware ran (info pci not asked).
@@ -74,6 +94,20 @@ if args.count > 1 && args[1] == "watch" {
     let air = Graphics.plan(choice: .vulkan, macOSMajor: 26, kosmicKrisp: true, driverReady: true, forced: false,
                             macMemoryGB: 8, vmMemoryGB: 4, ipaBits: 36)
     print("record \(air.record)")
+    let kept = Graphics.plan(choice: .vulkan, macOSMajor: 26, kosmicKrisp: true, driverReady: true, forced: false,
+                             macMemoryGB: 8, vmMemoryGB: 4, ipaBits: 36, fallback: "the firmware found no devices")
+    print("record-kept \(kept.record)")
+    print("summary-kept \(kept.summary)")
+    let once = Graphics.plan(choice: .vulkan, macOSMajor: 26, kosmicKrisp: true, driverReady: true, forced: false,
+                             macMemoryGB: 8, vmMemoryGB: 4, ipaBits: 36, fallbackOnce: "no picture from the VM after 90 s")
+    print("record-once \(once.record)")
+    print("summary-once \(once.summary)")
+    // A QEMU without the small window patch: no highmem-mmio-size, 256 MB on M1/M2.
+    let old = Graphics.plan(choice: .vulkan, macOSMajor: 26, kosmicKrisp: true, driverReady: true, forced: false,
+                            macMemoryGB: 8, vmMemoryGB: 4, ipaBits: 36, smallHighWindow: false)
+    let oldM4 = Graphics.plan(choice: .vulkan, macOSMajor: 26, kosmicKrisp: true, driverReady: true, forced: false,
+                              macMemoryGB: 16, vmMemoryGB: 8, ipaBits: 42, smallHighWindow: false)
+    print("old-runtime \(old.venus) \(old.hostmemMB) \(old.highWindowGB.map(String.init) ?? "-") \(oldM4.hostmemMB) \(oldM4.highWindowGB.map(String.init) ?? "-")")
     exit(0)
 }
 for c in GraphicsChoice.allCases {

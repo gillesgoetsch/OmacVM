@@ -205,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate()
     }
 
-    private func startVM() {
+    private func startVM(openGLOnce: String? = nil) {
         reloadConfig()
         if state.storage.moving != nil {
             state.message = "A VM is being moved; start once that is done."
@@ -218,25 +218,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let r = Runner(config: state.config)
+        r.openGLOnce = openGLOnce
         r.onExit = { [weak self, weak r] status in
             guard let self else { return }
             let fellBack = r?.venusFallback
             self.runner = nil
-            // Vulkan showed nothing (Runner.watchVenusStart): from now on
-            // OpenGL until Vulkan is chosen again; start once more on it.
-            // The plan then has no Venus, so no second watch and no loop.
-            if let why = fellBack {
+            // Vulkan showed nothing (Runner.watchVenusStart, or QEMU stopped
+            // at once): start once more on OpenGL. keep: from now on OpenGL
+            // until Vulkan is chosen again; else for that start only. The
+            // plan then has no Venus, so no second watch and no loop.
+            if let fb = fellBack {
                 let folder = self.state.config.folder
-                Graphics.recordFallback(why, folder: folder)
+                if fb.keep { Graphics.recordFallback(fb.why, folder: folder) }
                 // The next start empties qemu.log: keep this one's.
                 let logs = folder.appendingPathComponent("logs")
                 try? FileManager.default.removeItem(at: logs.appendingPathComponent("qemu-vulkan-fallback.log"))
                 try? FileManager.default.copyItem(at: logs.appendingPathComponent("qemu.log"),
                                                   to: logs.appendingPathComponent("qemu-vulkan-fallback.log"))
                 if !self.quitting {
-                    self.startVM()
+                    self.startVM(openGLOnce: fb.keep ? nil : fb.why)
                     if self.runner != nil {
-                        self.state.message = "\(Graphics.didNotStart) (\(why)). Choose Vulkan again in Graphics to try once more."
+                        self.state.message = fb.keep
+                            ? "\(Graphics.didNotStart) (\(fb.why)). \"Try Vulkan again\" under Graphics tries it once more."
+                            : "\(Graphics.didNotStart) for this start (\(fb.why)). The next start tries Vulkan again."
                     }
                     return
                 }

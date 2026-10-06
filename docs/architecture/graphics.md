@@ -418,13 +418,27 @@ default, moved into it at the first 3.0.0 launch) adds
 Venus driver with blob rounding (`venus-ready`). Automatic is OpenGL in 3.0.0.
 
 M1/M2: macOS gives their VMs 36 address bits (64 GB), and QEMU's high PCI
-window (512 GB at 512 GB) does not fit, so the host memory window had only
-the 751 MB window below 1 GB (256 MB at most, 3.0.0). From 3.0.1 the app
-adds `highmem-mmio-size=<n>G` to the machine there (`Graphics.highWindowGB`,
-16 GB at most) and `qemu-virt-small-high-window.patch` puts that window
-right above RAM; the host memory window takes at most half of it (M2 Air,
-4 GB VM: 1 GB in 16-32 GB). If no window fits (a VM near 64 GB) it stays
-256 MB.
+window (512 GB at 512 GB) does not fit. Every BAR then shares the 751 MB
+window below 1 GB, where a 1 GB host memory window never fits and the
+firmware maps no device at all (3.0.0: a Vulkan start there never boots).
+From 3.0.1 the app adds `highmem-mmio-size=<n>G` to the machine there
+(`Graphics.highWindowGB`, 16 GB at most) and
+`qemu-virt-small-high-window.patch` puts that window right above RAM; the
+host memory window takes at most half of it (M2 Air, 4 GB VM: 1 GB in
+16-32 GB). If no window fits (a VM near 64 GB), or the app's QEMU lacks the
+patch (the app looks for the patch's error text in the binary), it is
+256 MB, which fits below 1 GB.
+
+A start with Vulkan is watched for 3 minutes (`VenusStartWatch`). No PCI
+BAR mapped 25 s after QMP first answered (the firmware found no devices),
+or QMP silent before that: the app stops QEMU (SIGTERM, SIGKILL after 5 s)
+and starts the VM on OpenGL, and keeps OpenGL (`graphics-fallback`) until
+Vulkan is chosen again: that failure repeats on every start on this Mac.
+The window's "no picture" line, or QEMU exiting with an error within 15 s:
+OpenGL for that start only, the next start tries Vulkan again. QMP silent
+after the firmware ran is only logged. qemu.log of the failed start stays
+as `logs/qemu-vulkan-fallback.log`; `omacvm check` warns on the Graphics
+row.
 
 Limits: MoltenVK has no `nullDescriptor`, no geometry shaders, no logicOp,
 no float64, no `VK_EXT_provoking_vertex`. So Zink as a GL driver and

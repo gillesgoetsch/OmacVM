@@ -79,24 +79,42 @@ expect "fallback: the vulkan feature too"   opengl "$(line 'opengl 27 1 1 1 16 8
 expect "fallback: OpenGL VM unchanged"      "OpenGL" "$(summ 'opengl 27 1 1 0 16 8 42 1')"
 expect "fallback waits behind the driver"   "Vulkan (driver not built yet: runs on OpenGL until the next apply)" "$(summ 'vulkan 27 1 0 0 16 8 42 1')"
 
-# The start watch (VenusStartWatch): the Air hang falls back in 25 s, a normal
-# start never does, the Mac's sleep does not count.
+# The start watch (VenusStartWatch): the Air hang falls back 25 s after QMP
+# first answered and stays on OpenGL, a normal start never falls back, a stall
+# after the firmware is only noted, the Mac's sleep does not count.
 "$T/graphics" watch > "$T/watch.txt"
 wv() { grep "^$1 " "$T/watch.txt" | cut -d' ' -f2-; }
-expect "watch: the Air hang -> OpenGL at once" "fallback now the firmware found no devices in 25 s: no boot disk, no picture" "$(wv air-hang)"
+expect "watch: the Air hang -> OpenGL at once, kept" "fallback now keep the firmware found no devices in 25 s: no boot disk, no picture" "$(wv air-hang)"
 expect "watch: a normal start is fine"          fine "$(wv normal)"
 expect "watch: firmware at 24 s is no hang"     wait "$(wv normal-24s)"
 expect "watch: paused does not count"           wait "$(wv paused)"
-expect "watch: QEMU silent 30 s -> OpenGL"      "fallback now QEMU stopped answering for 30 s while Vulkan started" "$(wv silent)"
+expect "watch: QEMU silent 30 s after the firmware: a note, no fallback" "note QEMU did not answer for 30 s after the firmware ran: no fallback for that" "$(wv silent)"
 expect "watch: QEMU silent 15 s is no hang"     wait "$(wv silent-short)"
+expect "watch: ... the watch goes on after the note" "1 fine" "$(wv silent-then-fine)"
+expect "watch: QEMU silent before the firmware -> OpenGL, kept" "fallback now keep QEMU stopped answering before the firmware found its devices" "$(wv silent-early)"
 expect "watch: QMP never reachable, console ok: no fallback" wait "$(wv no-qmp-console)"
-expect "watch: QMP never reachable, no console: firmware rule" "fallback now the firmware found no devices in 25 s: no boot disk, no picture" "$(wv no-qmp-nothing)"
-expect "watch: no picture after the firmware -> shut down first" "fallback graceful no picture from the VM after 90 s" "$(wv no-picture)"
+expect "watch: QMP never reachable: no firmware verdict" wait "$(wv no-qmp-nothing)"
+expect "watch: QMP late: 25 s from its first answer" wait "$(wv late-qmp)"
+expect "watch: QMP late, then no devices -> OpenGL" "fallback now keep the firmware found no devices in 25 s: no boot disk, no picture" "$(wv late-qmp-hang)"
+expect "watch: no picture after the firmware -> shut down first, this start only" "fallback graceful once no picture from the VM after 90 s" "$(wv no-picture)"
 expect "watch: console output counts as firmware" wait "$(wv console-only)"
 expect "watch: the Mac's wake resets the silence" wait "$(wv woke)"
 expect "watch: info pci mapped / not mapped"    "true false" "$(wv pci-mapped)"
 expect "watch: hostmem by address bits"         "1024 1024 1024 256 MB 4 GB" "$(wv bits)"
 expect "qemu.log line on the Air" "vulkan -> vulkan (chosen, KosmicKrisp), host memory window 1 GB, PCI window 16 GB" "$(wv record)"
+expect "qemu.log line after a kept fallback (one pair of brackets)" "vulkan -> opengl (Vulkan did not start on this Mac: the firmware found no devices; choose Vulkan again to try once more)" "$(wv record-kept)"
+expect "  ... and its summary" "Vulkan did not start on this Mac: using OpenGL (the firmware found no devices; choose Vulkan again to try once more)" "$(wv summary-kept)"
+expect "qemu.log line after a fallback for one start" "vulkan -> opengl (Vulkan did not start on this Mac: no picture from the VM after 90 s; the next start tries Vulkan again)" "$(wv record-once)"
+expect "  ... and its summary" "Vulkan did not start on this Mac: using OpenGL (no picture from the VM after 90 s; the next start tries Vulkan again)" "$(wv summary-once)"
+expect "QEMU without the small window: 256 MB on M2, none asked; M4 unchanged" "true 256 - 4096 -" "$(wv old-runtime)"
+# The runtime marker: the app looks for the patch's text in QEMU's binary.
+marker=$(sed -n 's/.*static let smallHighWindowMarker = "\(.*\)"$/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
+grep -qF "$marker" "$R/app/runtime/patches/qemu-virt-small-high-window.patch" &&
+  grep -qF "'$marker'" "$R/app/runtime/prepare-qemu-gpu-runtime.sh" &&
+  ok "small window marker: in the patch and checked in the runtime" || bad "small window marker '$marker' not in the patch or the runtime check"
+printf 'ELF\0%s\0' "$marker" > "$T/qemu-new"; printf 'ELF\0highmem-mmio-size cannot be set to a lower value\0' > "$T/qemu-old"
+expect "small window: patched QEMU yes, unpatched no, missing no" "true false false" \
+  "$("$T/graphics" smallwindow "$T/qemu-new") $("$T/graphics" smallwindow "$T/qemu-old") $("$T/graphics" smallwindow "$T/none")"
 # The fallback file: the app and omacvm read it the same way; a choice made by hand removes it.
 fd=$T/fb; mkdir -p "$fd"; echo vulkan > "$fd/graphics"
 expect "fallback: none (app)" - "$("$T/graphics" fallback "$fd")"
@@ -177,6 +195,30 @@ expect "omacvm graphics: vulkan after a fallback" vulkan "$(cli --json | j next_
 expect "omacvm graphics: ... after a fallback (removed by the choice)" no "$([[ -e "$H/OmacVM/Test VM/graphics-fallback" ]] && echo yes || echo no)"
 grep -q 'watchVenusStart()' "$R/app/app/Sources/OmacVM/Runner.swift" && grep -q 'r?.venusFallback' "$R/app/app/Sources/OmacVM/main.swift" &&
   ok "the app watches Vulkan starts and starts again on OpenGL" || bad "no Vulkan start watch in the app"
+grep -q 'kill(pid, SIGKILL)' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  ok "a QEMU that ignores SIGTERM is killed (forceStop)" || bad "forceStop sends no SIGKILL"
+grep -q 'self?.noteEarlyExit(status: status, reason: reason)' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  grep -q 'r.openGLOnce = openGLOnce' "$R/app/app/Sources/OmacVM/main.swift" &&
+  ok "a Vulkan start whose QEMU stops at once starts again on OpenGL" || bad "no OpenGL retry after an early QEMU exit"
+grep -q 'smallHighWindow: small' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  grep -q 'runtimeHasSmallHighWindow = Graphics.qemuTakesSmallHighWindow(binary: Paths.qemu)' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  ok "highmem-mmio-size only with a QEMU that takes it" || bad "the small window is not gated on the runtime"
+
+# omacvm check's Graphics row (the block from src/cmd/check.sh, with stubs).
+awk '/^if \[\[ \$TYPE == app \]\] && gd=\$\(app_dir "\$VM" 2>\/dev\/null\); then$/ { on = 1 } on { print } on && /^fi$/ { exit }' \
+  "$R/src/cmd/check.sh" > "$T/check-graphics.sh"
+grep -q 'skip "Graphics"' "$T/check-graphics.sh" || bad "check.sh: Graphics block not found"
+cg=$T/cg; mkdir -p "$cg/logs"; echo vulkan > "$cg/graphics"; : > "$cg/venus-ready"
+crow() { ( TYPE=app VM="Test VM"; app_dir() { echo "$cg"; }
+           ok() { echo "ok $1: $2"; }; warn() { echo "warn $1: $2"; }; skip() { echo "skip $1: $2"; }
+           OMACVM_TEST_MACOS_MAJOR=27 OMACVM_TEST_KOSMICKRISP=1 source "$T/check-graphics.sh" ); }
+echo "OmacVM: graphics: $(wv record)" > "$cg/logs/qemu.log"
+expect "check: Vulkan running" "ok Graphics: Vulkan: $(wv record)" "$(crow)"
+echo "OmacVM: graphics: $(wv record-kept)" > "$cg/logs/qemu.log"; echo "the firmware found no devices" > "$cg/graphics-fallback"
+expect "check: Vulkan fell back (kept): warn, one pair of brackets" \
+  "warn Graphics: Vulkan did not start on this Mac: using OpenGL (the firmware found no devices; choose Vulkan again to try once more: omacvm graphics --vm \"Test VM\" vulkan)" "$(crow)"
+rm -f "$cg/graphics-fallback"; echo "OmacVM: graphics: $(wv record-once)" > "$cg/logs/qemu.log"
+expect "check: Vulkan fell back for this start: warn" "warn Graphics: this start: $(wv record-once)" "$(crow)"
 cli metal >/dev/null 2>&1; expect "omacvm graphics: unknown value refused" 2 "$?"
 cli --vm-type utm >/dev/null 2>&1; expect "omacvm graphics: app VMs only" 2 "$?"
 
