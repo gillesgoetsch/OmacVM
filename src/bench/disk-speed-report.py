@@ -18,6 +18,7 @@ COLS = [  # (header, test, field)
     ("git clone s", "real", "git_clone_s"),
     ("git checkout s", "real", "git_checkout_old_s"),
     ("pacman base s", "real", "pacman_base_s"),
+    ("cold read s", "coldread", "coldread_s"),
 ]
 
 

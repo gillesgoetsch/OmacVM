@@ -4,6 +4,7 @@
 #   disk-speed.sh prep  VM_DIR WORK            clone VM_DIR's disk (APFS clone) into WORK, install fio/git,
 #                                              a git mirror and a package cache in that clone
 #   disk-speed.sh run   WORK TAG CONFIG...     boot the clone with one test disk per CONFIG, measure each
+#   disk-speed.sh soak  WORK MINUTES           the system disk: verified random I/O, pause/resume, fstrim, scrub
 #   disk-speed.sh clean WORK
 #
 # CONFIG = name[@dir]: nvme-wb (today's app default), nvme-none, nvme-wb-ioev, vblk-wb, vblk-wb-iot,
@@ -51,21 +52,28 @@ device_args() {   # config index -> -device (and -object) arguments, one per lin
 
 boot() {   # WORK, extra QEMU args...
   local w=$1; shift
+  # DS_SYS_BUS=virtio: the system disk on virtio-blk with an iothread (else NVMe, as the app today).
+  local sysdev=(-device "nvme,serial=omacvm,drive=disk,bootindex=0")
+  [[ ${DS_SYS_BUS:-} == virtio ]] &&
+    sysdev=(-object "iothread,id=iodisk" -device "virtio-blk-pci,drive=disk,iothread=iodisk,bootindex=0,romfile=")
   rm -f "$w/qmp"
   "$QEMU" -name "OmacVM M-disk-speed" -machine virt,gic-version=3 -accel hvf -cpu host,pmu=off \
     -smp "$CPUS" -m "${MEM}M" -nodefaults -display none -monitor none -serial "file:$w/console.log" \
     -action reboot=reset,shutdown=poweroff \
     -drive "if=pflash,format=raw,readonly=on,file=$FW" -drive "if=pflash,format=raw,file=$w/efi-vars.fd" \
     -drive "if=none,id=disk,file=$w/sys.img,format=raw,cache=writeback,discard=unmap" \
-    -device nvme,serial=omacvm,drive=disk,bootindex=0 \
+    "${sysdev[@]}" \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$PORT-:22" -device virtio-net-pci,netdev=net0,romfile= \
     -device virtio-rng-pci -qmp "unix:$w/qmp,server=on,wait=off" "$@" > "$w/qemu.log" 2>&1 &
   echo $! > "$w/pid"
-  local i
-  for ((i = 0; i < 100; i++)); do
+  local i t0=$SECONDS
+  for ((i = 0; i < 300; i++)); do
     kill -0 "$(cat "$w/pid")" 2>/dev/null || die "QEMU stopped: $(tail -3 "$w/qemu.log")"
-    vssh true </dev/null 2>/dev/null && return 0
-    sleep 3
+    if vssh true </dev/null 2>/dev/null; then
+      echo "{\"test\":\"boot\",\"sys_bus\":\"${DS_SYS_BUS:-nvme}\",\"ssh_s\":$((SECONDS - t0))}" >> "$w/results.jsonl"
+      return 0
+    fi
+    sleep 1
   done
   die "no SSH after 300 s"
 }
@@ -129,6 +137,8 @@ run)
       real)
         emit "$(vssh "/root/ds.sh $s real")" "$c"
         space "$c" after-real "$f"
+        sudo -n purge 2>/dev/null || true
+        emit "$(vssh "/root/ds.sh $s coldread")" "$c"
         vssh "/root/ds.sh $s wipe" >/dev/null ;;
       space)
         space "$c" empty "$f"
@@ -141,6 +151,31 @@ run)
     done
   done
   ;;
+soak)   # WORK MINUTES: the system disk under verified random I/O, paused and resumed every 30 s
+         # (as the app does when the Mac sleeps), fstrim every 2 min; then a reboot and a btrfs scrub.
+  w=$2 min=${3:-10}
+  trap 'halt "$w"' EXIT
+  boot "$w"
+  qmp() { printf '{"execute":"qmp_capabilities"}\n{"execute":"%s"}\n' "$1" | nc -U -w 2 "$w/qmp" >/dev/null; }
+  vssh "rm -f /root/soak.fio; nohup fio --name=soak --filename=/root/soak.fio --size=1G --rw=randrw --bs=4k-64k \
+    --ioengine=libaio --iodepth=16 --direct=1 --verify=crc32c --verify_backlog=1024 --time_based --runtime=$((min * 60)) \
+    --output-format=json --output=/root/soak.json >/dev/null 2>&1 &"
+  pauses=0 trims=0 end=$((SECONDS + min * 60))
+  while ((SECONDS < end)); do
+    sleep 25; qmp stop; sleep 5; qmp cont; pauses=$((pauses + 1))
+    if ((pauses % 4 == 0)); then vssh "fstrim / >/dev/null" && trims=$((trims + 1)); fi
+  done
+  sleep 15
+  res=$(vssh "python3 -c \"import json; j=json.load(open('/root/soak.json'))['jobs'][0]; print(j['error'], j['read']['io_bytes'] >> 20, j['write']['io_bytes'] >> 20)\"")
+  vssh "rm -f /root/soak.fio /root/soak.json; systemctl reboot" || true
+  sleep 10
+  for ((i = 0; i < 60; i++)); do vssh true </dev/null 2>/dev/null && break; sleep 2; done
+  scrub=$(vssh "btrfs scrub start -B / 2>&1 | grep -E 'Error summary|summary' | tr -s ' '; dmesg | grep -ciE 'I/O error|blk_update_request|csum failed' || true")
+  echo "{\"test\":\"soak\",\"sys_bus\":\"${DS_SYS_BUS:-nvme}\",\"minutes\":$min,\"pauses\":$pauses,\"fstrims\":$trims,\"fio_error_read_mib_write_mib\":\"$res\",\"scrub_and_io_errors\":\"$(echo $scrub)\"}" | tee -a "$w/results.jsonl"
+  ;;
+up)    # boot the prepared clone and leave it running (for a look by hand); "down" stops it
+  boot "$2"; echo "ssh -i $KEY -p $PORT root@127.0.0.1" ;;
+down) halt "$2" ;;
 clean)
   w=$2
   halt "$w"

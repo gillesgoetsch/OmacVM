@@ -3,6 +3,7 @@
 # Runs as root in a throwaway test VM; the test disks hold nothing else.
 #   disk-speed-guest.sh SERIAL fio            fio on the raw disk (first 2 GiB)
 #   disk-speed-guest.sh SERIAL real           btrfs: git clone + checkouts, pacman install of base
+#   disk-speed-guest.sh SERIAL coldread       after real: read all its files with empty caches
 #   disk-speed-guest.sh SERIAL fill MiB       btrfs: write MiB of random data, sync
 #   disk-speed-guest.sh SERIAL trim           rm the data, fstrim
 #   disk-speed-guest.sh SERIAL zeros MiB      write MiB of zeros to the raw disk at 4 GiB
@@ -16,6 +17,8 @@ PKGS=/root/ds-pkgs
 OLD=v2.30.0 NEW=v2.47.0          # git checkouts: far apart, many files change
 O=noatime,compress=zstd:1,space_cache=v2,discard=async   # as base-install.sh
 
+# Omarchy's pacman hook stops a direct -Syu; this is a throwaway test VM.
+export OMARCHY_ALLOW_DIRECT_PACMAN=1
 now() { date +%s.%N; }
 dt() { python3 -c "print(round($2-$1,3))"; }
 
@@ -96,6 +99,10 @@ real)
   umount "$root/dev" "$root/proc"
   n=$(pacman -r "$root" -Q | wc -l)
   echo "{\"test\":\"real\",\"serial\":\"$SER\",\"git_clone_s\":$(dt $t0 $t1),\"git_checkout_old_s\":$(dt $t1 $t2),\"git_checkout_new_s\":$(dt $t3 $t4),\"pacman_base_s\":$(dt $t5 $t6),\"pacman_pkgs\":$n,\"used_mib\":$(df -m --output=used "$MNT" | tail -1)}" ;;
+coldread)   # after real: read every file back with empty caches (the Mac's: disk-speed.sh purges)
+  sync; echo 3 > /proc/sys/vm/drop_caches
+  t0=$(now); n=$(tar -cf - -C "$MNT" . | wc -c); t1=$(now)
+  echo "{\"test\":\"coldread\",\"serial\":\"$SER\",\"mib\":$((n / 1048576)),\"files\":$(find "$MNT" -xdev | wc -l),\"coldread_s\":$(dt $t0 $t1)}" ;;
 fill)
   mounted || mkfs_mount
   t0=$(now); head -c "$(( $3 * 1048576 ))" /dev/urandom > "$MNT/fill"; sync; t1=$(now)
