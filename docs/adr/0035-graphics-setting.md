@@ -37,8 +37,8 @@ decides whether Vulkan apps get the Mac's GPU, not how the desktop draws.
   mini M4, macOS 27). 3.0.2 turns Automatic on (`autoVulkan` = true):
   Vulkan on macOS 26 and newer when the app has KosmicKrisp, OpenGL
   otherwise. An A/B of the same VM with and without Vulkan on KosmicKrisp
-  (Mac mini M4 and MacBook Air M2, 2026-10-06) showed no cost to the OpenGL
-  desktop (glmark2, WebGL, GPU throughput within 1 %) and Vulkan windows on
+  (Mac mini M4 and MacBook Air M2, 2026-10-06) showed no cost to the
+  OpenGL desktop (glmark2, WebGL, GPU throughput) and Vulkan windows on
   the GPU. The numbers are in
   [benchmarks](../benchmarks/README.md#graphics-automatic-2026-10-05).
 - No start gives Venus to a VM without a working Venus driver (the old one

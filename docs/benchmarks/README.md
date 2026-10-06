@@ -466,13 +466,26 @@ the 3.0.0 runtime, mini lock held, no other VM; 6 CPUs, 8 GB):
 | vkcube, vkmark full screen | - | runs through the GPU path; 310 |
 
 Chrome stays on ANGLE on GL (virgl) with Vulkan on, and OpenGL apps stay on
-virgl, so the desktop draws the same; Vulkan on adds Vulkan apps and about
-0.6 GB of QEMU memory at idle (the mapped window). On a MacBook Air M2 (8 GB, macOS 26.6,
-KosmicKrisp, a 4 GB VM in full screen, the 3.0.1 runtime with the small PCI
-window: 1 GB host memory window) Vulkan on started and ran vkcube through the
-GPU path, vkmark full screen 820, no context lost, no Mac GPU restart, QEMU
-at idle 10.6 % CPU in both modes, the Mac at 60 % free memory at the end
-either way.
+virgl, so the desktop draws the same. QEMU's memory differed by less than
+1 GB either way (after the runs: 3.8 GB with OpenGL, 3.4 GB with Vulkan).
+
+MacBook Air M2 (8 GB, macOS 26.6, KosmicKrisp): a 4 GB VM in full screen on
+the built-in display (2940x1846 in both modes), the 3.0.1 runtime with the
+small PCI window (1 GB host memory window), Vulkan first, then OpenGL:
+
+| MacBook Air M2, macOS 26 | OpenGL only | Vulkan on |
+|---|---|---|
+| glmark2 2023.01, full screen, 3 s scenes (median of 3) | 1,846 | 1,876 (102 %) |
+| WebGL Aquarium 30k, Chrome 155 (1 run) | 11.7 fps | 14.8 fps |
+| QEMU at the idle desktop: CPU / memory | 10.8 % / 3.5 GB | 10.5 % / 3.8 GB |
+| The Mac's free memory after the runs | 62 % | 43 % (no new swap) |
+| Contexts lost, Mac GPU restarts | 0, 0 | 0, 0 |
+| vkcube, vkmark full screen | - | runs through the GPU path; 803 |
+
+An earlier pass on the Air had a different guest resolution per boot, so its
+OpenGL/Vulkan pair is left out (Vulkan on worked the same way there: vkmark
+820, nothing lost). Why Aquarium came out faster with Vulkan on was not
+looked into; it is one run each.
 
 **Automatic = Vulkan on macOS 26 and newer from 3.0.2** (KosmicKrisp in the
 app; OpenGL on macOS 15 and before, where Venus runs on MoltenVK). 3.0.0 and
