@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.0.2 (unreleased)
+
+- Graphics: Automatic is Vulkan on macOS 26 and newer (KosmicKrisp in the
+  app), OpenGL before. On a Mac mini M4 and a MacBook Air M2 the same VM
+  drew the desktop as fast with Vulkan on as with OpenGL only (glmark2,
+  WebGL Aquarium, the GPU throughput page within 1 %), and Vulkan apps get
+  the Mac's GPU. A VM on Automatic gets Vulkan once it has its Vulkan
+  driver: `omacvm apply` (Update VM) builds it, a few minutes; until then
+  it runs on OpenGL. Pick OpenGL to keep the old behaviour.
+
 ## 3.0.1 (unreleased)
 
 - Graphics Vulkan on macOS 26 and newer (KosmicKrisp): Vulkan apps in a

@@ -7,8 +7,9 @@
 # OpenGL: the VM's apps draw with OpenGL on the Mac's GPU (virgl). Vulkan: the
 # same plus Vulkan on the Mac's GPU (Venus: KosmicKrisp on macOS 26 and newer
 # when the app has it, else MoltenVK), once the VM has its Venus driver (until
-# then OpenGL). Automatic: OpenGL on every Mac in 3.0.0. A running VM with
-# Vulkan ahead builds its Venus driver now.
+# then OpenGL). Automatic (3.0.2): Vulkan on macOS 26 and newer when the app
+# has KosmicKrisp, OpenGL before. A running VM with Vulkan ahead builds its
+# Venus driver now.
 # Exit codes: 0 done, 1 failed, 2 usage.
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)

@@ -34,10 +34,12 @@ decides whether Vulkan apps get the Mac's GPU, not how the desktop draws.
   `GRAPHICS_AUTO_VULKAN` = off): the black desktop from Vulkan windows is
   fixed (the host no longer ends Hyprland's context on that import). Since
   3.0.1 Vulkan windows take that path with KosmicKrisp too (tested on a Mac
-  mini M4, macOS 27); what Vulkan costs the OpenGL desktop there is not
-  measured yet, so Automatic stays OpenGL. With it on: Vulkan on
-  macOS 26 and newer when the app has KosmicKrisp, OpenGL otherwise. The
-  numbers are in
+  mini M4, macOS 27). 3.0.2 turns Automatic on (`autoVulkan` = true):
+  Vulkan on macOS 26 and newer when the app has KosmicKrisp, OpenGL
+  otherwise. An A/B of the same VM with and without Vulkan on KosmicKrisp
+  (Mac mini M4 and MacBook Air M2, 2026-10-06) showed no cost to the OpenGL
+  desktop (glmark2, WebGL, GPU throughput within 1 %) and Vulkan windows on
+  the GPU. The numbers are in
   [benchmarks](../benchmarks/README.md#graphics-automatic-2026-10-05).
 - No start gives Venus to a VM without a working Venus driver (the old one
   fails every Vulkan app with ERROR_OUT_OF_HOST_MEMORY): apply writes
@@ -68,7 +70,7 @@ decides whether Vulkan apps get the Mac's GPU, not how the desktop draws.
 
 - With `autoVulkan` on, a VM that moves to macOS 26 (or gets an app with
   KosmicKrisp) turns Vulkan on by itself at its next start once its driver
-  is there. In 3.0.0 nothing turns Vulkan on except the user.
+  is there (3.0.2). In 3.0.0 and 3.0.1 nothing turns Vulkan on except the user.
 - MoltenVK users who want Vulkan pick Vulkan; Automatic does not expose
   MoltenVK's gaps (no `VK_EXT_provoking_vertex`, no zero-initialised
   workgroup memory, five failing CTS cases) to everyone.

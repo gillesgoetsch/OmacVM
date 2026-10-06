@@ -7,7 +7,7 @@
 # Venus driver (`venus-ready`, written by omacvm apply; before that OpenGL:
 # GRAPHICS_WAITING_FOR_DRIVER); or the vulkan feature's `vulkan` file (always).
 
-GRAPHICS_AUTO_VULKAN=0               # Graphics.autoVulkan (3.0.0: Automatic = OpenGL on every Mac)
+GRAPHICS_AUTO_VULKAN=1               # Graphics.autoVulkan (3.0.2: Automatic = Vulkan on macOS 26+ with KosmicKrisp)
 GRAPHICS_AUTO_VULKAN_FROM_MACOS=26   # Graphics.autoVulkanFromMacOS
 GRAPHICS_AUTO_VULKAN_ON_MOLTENVK=0   # Graphics.autoVulkanOnMoltenVK
 GRAPHICS_WAITING_FOR_DRIVER="driver not built yet: runs on OpenGL until the next apply"   # Graphics.waitingForDriver

@@ -406,7 +406,8 @@ if [[ $TYPE == app ]] && gd=$(app_dir "$VM" 2>/dev/null); then
   elif [[ ${gl%% *} != "$gc" || $gl != *"-> $gn "* ]]; then
     skip "Graphics" "this start: $gl; $(graphics_title "$gc") gives $gs from the VM's next start"
   elif graphics_waiting_for_driver "$gd"; then
-    skip "Graphics" "$(graphics_title "$gc"): $gs (omacvm apply, or omacvm graphics --vm \"$VM\" vulkan while it runs)"
+    [[ $gc == auto ]] && gs="OpenGL until the VM has its Vulkan driver"
+    skip "Graphics" "$(graphics_title "$gc"): $gs (omacvm apply, or omacvm graphics --vm \"$VM\" $gc while it runs)"
   else ok "Graphics" "$(graphics_title "$gc"): $gl"; fi
   FEATURE=""
 fi

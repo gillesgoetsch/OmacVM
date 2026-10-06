@@ -56,12 +56,13 @@ enum Graphics {
     /// Mesa of the vulkan feature). Automatic waits for it.
     static let readyFileName = "venus-ready"
 
-    /// Automatic gives Vulkan at all. 3.0.1: no, on every Mac. Vulkan windows
-    /// show through the GPU (virgl-set-type-without-egl.patch), but what Vulkan
-    /// costs the OpenGL desktop on KosmicKrisp is not measured yet, so Vulkan
-    /// is the user's choice. true turns the macOS 26+ rule below on (src/lib/graphics.sh:
-    /// GRAPHICS_AUTO_VULKAN, kept equal by src/tests/graphics-setting.sh).
-    static let autoVulkan = false
+    /// Automatic gives Vulkan at all. 3.0.2: yes, by the macOS 26+ rule below.
+    /// On KosmicKrisp Vulkan on costs the OpenGL desktop nothing (Mac mini M4
+    /// and MacBook Air M2, A/B 2026-10-06: glmark2, WebGL Aquarium and the GPU
+    /// throughput page within 1 %), and Vulkan windows show through the GPU
+    /// (virgl-set-type-without-egl.patch). src/lib/graphics.sh:
+    /// GRAPHICS_AUTO_VULKAN, kept equal by src/tests/graphics-setting.sh.
+    static let autoVulkan = true
     /// With autoVulkan: Vulkan from this macOS on, and only with KosmicKrisp
     /// in the app (Metal 4). On older macOS Venus runs on MoltenVK, which
     /// cannot carry OpenGL or WebGL (ES 2.0 only): OpenGL there.

@@ -450,11 +450,33 @@ which MoltenVK lacks. With Vulkan on, OpenGL stays on virgl (Zink is slower
 and ES 2.0 only) and Chrome keeps ANGLE on GL, so on macOS 26 and newer
 Vulkan adds Vulkan apps on the better driver and changes nothing else.
 
-**Automatic = OpenGL on every Mac in 3.0.0.** In 3.0.0 Vulkan windows on
-macOS 26 and newer (KosmicKrisp) went through the slow CPU copy below; 3.0.1
-gives them the same path as MoltenVK (numbers below). What Vulkan costs the
-OpenGL desktop on KosmicKrisp is not measured yet, so Vulkan stays the
-user's choice. Turning Automatic to Vulkan on macOS 26 and newer is one constant
+**What Vulkan on costs the desktop on KosmicKrisp (2026-10-06).** The same
+VM started twice, once with OpenGL only and once with Vulkan on (the Venus
+device, a 4 GB host memory window and `omacvm.vkwindows=1`, as the 3.0.1
+app starts it), in full screen at 5120x2880 on the Mac mini M4 (macOS 27,
+the 3.0.0 runtime, mini lock held, no other VM; 6 CPUs, 8 GB):
+
+| Mac mini M4, macOS 27 | OpenGL only | Vulkan on |
+|---|---|---|
+| glmark2 2023.01, full screen, 3 s scenes (median of 3) | 847 | 841 (99 %) |
+| WebGL Aquarium 30k, Chrome 154, full screen (median of 3) | 18.9 fps | 18.8 fps (99 %) |
+| GPU throughput page, Chrome (wall time): fill / ALU | 136.5 Gpixels/s / 3,720 GFLOPS | 136.5 / 3,725 |
+| QEMU at the idle desktop: CPU / memory | 1.1 % / 3.6 GB | 1.0 % / 4.2 GB |
+| Contexts lost, Mac GPU restarts | 0, 0 | 0, 0 |
+| vkcube, vkmark full screen | - | runs through the GPU path; 310 |
+
+Chrome stays on ANGLE on GL (virgl) with Vulkan on, and OpenGL apps stay on
+virgl, so the desktop draws the same; Vulkan on adds Vulkan apps and about
+0.6 GB of QEMU memory at idle (the mapped window). On a MacBook Air M2 (8 GB, macOS 26.6,
+KosmicKrisp, a 4 GB VM in full screen, the 3.0.1 runtime with the small PCI
+window: 1 GB host memory window) Vulkan on started and ran vkcube through the
+GPU path, vkmark full screen 820, no context lost, no Mac GPU restart, QEMU
+at idle 10.6 % CPU in both modes, the Mac at 60 % free memory at the end
+either way.
+
+**Automatic = Vulkan on macOS 26 and newer from 3.0.2** (KosmicKrisp in the
+app; OpenGL on macOS 15 and before, where Venus runs on MoltenVK). 3.0.0 and
+3.0.1 kept Automatic on OpenGL until this A/B. One constant turns it back
 (`Graphics.autoVulkan`, `GRAPHICS_AUTO_VULKAN`).
 
 Vulkan windows: a Venus image handed to Hyprland as a dma-buf cannot be

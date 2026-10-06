@@ -368,7 +368,7 @@ GRAPHICS_TITLES = {"auto": "Automatic", "opengl": "OpenGL", "vulkan": "Vulkan"}
 GRAPHICS_DID_NOT_START = "Vulkan did not start on this Mac: using OpenGL"
 GRAPHICS_FEATURE = Feature(
     name="graphics", default="auto", sides=("mac",), tags=(), needs=None, title="Graphics",
-    summary="OpenGL, Vulkan, or Automatic (OpenGL on every Mac in 3.0.0); from the VM's next start")
+    summary="OpenGL, Vulkan, or Automatic (Vulkan on macOS 26 and newer, OpenGL before); from the VM's next start")
 
 
 def graphics_row(status: dict | None, vm_type: str, jobs: list[Job] | None = None,

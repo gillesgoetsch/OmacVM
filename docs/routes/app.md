@@ -86,8 +86,9 @@ VM runs, and goes back by itself when a new version does not start
   on MoltenVK before (fewer Vulkan features). OpenGL stays on virgl either
   way, so Vulkan only adds Vulkan apps; Vulkan windows show through the
   Mac's GPU (on KosmicKrisp since 3.0.1, before through the CPU, slow in
-  full screen). Automatic is OpenGL on every Mac in 3.0.0
-  ([numbers and why](../benchmarks/README.md#graphics-automatic-2026-10-05)).
+  full screen). Automatic: Vulkan on macOS 26 and newer when the app has
+  KosmicKrisp, OpenGL before (since 3.0.2; OpenGL on every Mac in 3.0.0 and
+  3.0.1; [numbers and why](../benchmarks/README.md#graphics-automatic-2026-10-05)).
   A change applies at the
   VM's next start; `omacvm check` shows what the start got ("Graphics" row)
   and which Vulkan driver the Mac used ("Vulkan (Venus)": KosmicKrisp, or
@@ -107,8 +108,8 @@ VM runs, and goes back by itself when a new version does not start
   OpenGL only, and the app, `omacvm graphics` and the control centre say
   "Vulkan (driver not built yet: runs on OpenGL until the next apply)". In the
   VM `omacvm-venus-driver.timer` checks again 90 s after boot, after the
-  desktop, never in the boot's critical chain. Automatic is OpenGL on every
-  Mac in 3.0.0 (CHANGELOG).
+  desktop, never in the boot's critical chain. With Automatic on macOS 26
+  and newer the driver is built the same way at the next apply (3.0.2).
   OpenCL comes with it: apply installs Arch's `opencl-mesa` (rusticl) and
   `clinfo` and turns rusticl's Zink on (`RUSTICL_ENABLE=zink` in
   `/etc/environment.d/90-omacvm-opencl.conf`, for apps started after the

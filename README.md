@@ -80,7 +80,7 @@ Type `omacvm` in Omarchy (or pick it in the Omarchy menu): every feature with it
 | x86 Linux apps (optional, slower) | ✅ | ✅ | ✅ | ✅ |
 | CPU and memory limit | none | none | none | 4 CPUs, 8 GB on Standard |
 
-¹ after one setting in Parallels · ² when the pointer crosses the VM's edge · ³ a Graphics setting per VM (OpenGL, Vulkan, Automatic = OpenGL in 3.0.0); Vulkan adds Vulkan apps next to OpenGL: on KosmicKrisp on macOS 26 or newer, on MoltenVK before; Vulkan windows show through the Mac's GPU (on KosmicKrisp since 3.0.1); OpenGL and browsers are the same either way; WebGPU and OpenCL opt-in ([numbers](docs/benchmarks/README.md#graphics-automatic-2026-10-05)) · ⁴ with the VM in full screen on that display
+¹ after one setting in Parallels · ² when the pointer crosses the VM's edge · ³ a Graphics setting per VM (OpenGL, Vulkan, Automatic = Vulkan on macOS 26+ from 3.0.2, OpenGL before); Vulkan adds Vulkan apps next to OpenGL: on KosmicKrisp on macOS 26 or newer, on MoltenVK before; Vulkan windows show through the Mac's GPU (on KosmicKrisp since 3.0.1); OpenGL and browsers are the same either way; WebGPU and OpenCL opt-in ([numbers](docs/benchmarks/README.md#graphics-automatic-2026-10-05)) · ⁴ with the VM in full screen on that display
 
 <!-- 3.0.0 benchmark chart: the final round (bare macOS = 100 %, OmacVM.app first) replaces docs/images/benchmarks.svg and this alt text. -->
 <p align="center">

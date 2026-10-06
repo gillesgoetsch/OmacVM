@@ -688,7 +688,7 @@ struct GraphicsPicker: View {
                 Text("OpenGL").tag(GraphicsChoice.opengl)
                 Text("Vulkan (experimental)").tag(GraphicsChoice.vulkan)
             }
-            .help("OpenGL: the VM's apps and browsers draw with OpenGL on the Mac's GPU. Vulkan: the same, plus Vulkan apps on the Mac's GPU (KosmicKrisp on macOS 26 and newer, MoltenVK before); Vulkan windows show through the Mac's GPU. Automatic: OpenGL on every Mac in this version.")
+            .help("OpenGL: the VM's apps and browsers draw with OpenGL on the Mac's GPU. Vulkan: the same, plus Vulkan apps on the Mac's GPU (KosmicKrisp on macOS 26 and newer, MoltenVK before); Vulkan windows show through the Mac's GPU. Automatic: Vulkan on macOS 26 and newer (KosmicKrisp), OpenGL before.")
             if let p = plan {
                 Text(p.choice == .vulkan && !p.venus ? "Next start: \(p.summary)." : "Next start: \(p.summary) (\(p.why)).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
