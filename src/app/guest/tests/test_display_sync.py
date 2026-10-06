@@ -7,7 +7,8 @@ hyprctl that acts like Hyprland).
 
 What they hold: the mode and scale sent for 4K and 5K at Omarchy's scales,
 nothing sent again while Hyprland already shows it (a resend is a modeset:
-the screen flashes and every buffer is made again), and the guard that stops
+the screen flashes and every buffer is made again), the rule kept for config
+reloads (omacvm_app.lua declares it again), and the guard that stops
 following an output that keeps changing.
 """
 import json
@@ -272,13 +273,45 @@ class ModeAndScale(SyncCase):
         self.run_sync()
         self.assertEqual(len(self.evals()), 3)
 
+    def test_rule_kept_for_reloads(self):
+        # A config reload drops eval'd rules; omacvm_app.lua declares the kept
+        # one again, so it must be exactly what Hyprland took, one line.
+        self.set_window(5120, 2880)
+        self.run_sync()
+        kept = (self.state / "Virtual-1.rule").read_text()
+        self.assertEqual(kept.splitlines(), [self.evals()[0]])
+        self.assertRegex(kept, r'^hl\.monitor\(\{ output = "Virtual-1", [^\n]*\}\)\n$')
+        self.set_window(3840, 2160)          # the window changed: the new rule
+        self.run_sync()
+        self.assertEqual((self.state / "Virtual-1.rule").read_text().strip(), self.evals()[-1])
+
+    def test_rule_kept_when_already_shown(self):
+        # A sync from before the rule file existed sent it: the file is written
+        # without sending anything again.
+        self.set_window(5120, 2880)
+        self.run_sync()
+        (self.state / "Virtual-1.rule").unlink()
+        self.run_sync()
+        self.assertEqual(len(self.evals()), 1)
+        self.assertEqual((self.state / "Virtual-1.rule").read_text().strip(), self.evals()[0])
+
+    def test_refused_rule_not_kept(self):
+        self.set_window(5120, 2880)
+        (self.hypr / "refuse").write_text("")
+        self.run_sync()
+        self.assertFalse((self.state / "Virtual-1.rule").exists())
+
     def test_users_own_rule_is_left_alone(self):
         self.set_window(5120, 2880)
         self.config.write_text(self.config.read_text() +
                                'hl.monitor({ output = "Virtual-1", mode = "2560x1440", scale = 1 })\n')
+        self.state.mkdir(parents=True, exist_ok=True)
+        (self.state / "Virtual-1.rule").write_text('hl.monitor({ output = "Virtual-1", mode = "x" })\n')
         r = self.run_sync()
         self.assertEqual(self.evals(), [])
         self.assertIn("its own rule", r.stderr)
+        # a reload must not put the sync's old rule over the user's
+        self.assertFalse((self.state / "Virtual-1.rule").exists())
 
 
 class Guard(SyncCase):

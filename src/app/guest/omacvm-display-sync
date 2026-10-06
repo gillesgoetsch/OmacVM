@@ -350,7 +350,7 @@ PY
 
 # follow_check OUTPUT HASH MODE SCALE POSITION HDR SHOWN: whether to send the
 # rule; SHOWN is Hyprland's j/monitors. Exit 0: send it (and it is
-# counted); 1: Hyprland already shows exactly that (mode, rate, scale, place),
+# counted); 3: Hyprland already shows exactly that (mode, rate, scale, place),
 # so a modeset would only make the screen flash and its buffers be made
 # again; 2: held. With scale "auto" Hyprland picks the scale itself, so the
 # scale counts as shown when this same rule was the last one Hyprland took.
@@ -428,7 +428,7 @@ for m in monitors if isinstance(monitors, list) else []:
     except (KeyError, TypeError, ValueError):
         same = False
     if same:
-        raise SystemExit(1)
+        raise SystemExit(3)   # shown already (1 would also be a Python error)
 
 # Count it; hold the output if it keeps changing.
 history = d / f"{output}.history"
@@ -460,11 +460,25 @@ history.write_text("".join(f"{t} {h}\n" for t, h in events))
 PY
 }
 
-# sent_ok OUTPUT HASH HDR: Hyprland took the rule; what follow_check compares
-# with next time (only now, so a rule Hyprland refused is sent again).
+# sent_ok OUTPUT HASH HDR RULE: Hyprland took the rule; what follow_check
+# compares with next time (only now, so a rule Hyprland refused is sent again).
 sent_ok() {
   printf '%s' "$3" > "$state_dir/$1.hdr"
   printf '%s\n' "$2" > "$state_dir/$1.sent"
+  keep_rule "$1" "$4"
+}
+
+# keep_rule OUTPUT RULE: the rule Hyprland shows for OUTPUT, which
+# omacvm_app.lua declares again on a config reload (a reload drops rules sent
+# with eval: the output would go back to the catch-all's preferred mode and
+# "auto" place, a modeset on every display). Empty RULE: forget it.
+keep_rule() {
+  local f="$state_dir/$1.rule"
+  if [[ -z $2 ]]; then
+    rm -f "$f"
+  elif [[ ! -f $f || $(<"$f") != "$2" ]]; then
+    printf '%s\n' "$2" > "$f.tmp" && mv -f "$f.tmp" "$f"
+  fi
 }
 
 apply_preferred_modes() {
@@ -534,6 +548,7 @@ apply_preferred_modes() {
     # later): with one in monitors.lua, the user's rule stays and the screen no
     # longer follows the window.
     if user_rule "$output"; then
+      keep_rule "$output" ""   # a reload must not override the user's rule
       if [[ -z ${said_user_rule:-} ]]; then
         printf 'omacvm-display-sync: %s has its own rule in %s; not following the window\n' "$output" "$monitor_config" >&2
         said_user_rule=1
@@ -547,8 +562,15 @@ apply_preferred_modes() {
       notch_bar "$mode" "$scale"
     fi
     digest=$(cksum <<<"$rule" | cut -d' ' -f1)
-    follow_check "$output" "$digest" "$mode" "$scale" "$position" "$hdr" "$shown" ||
+    local check=0
+    follow_check "$output" "$digest" "$mode" "$scale" "$position" "$hdr" "$shown" || check=$?
+    if ((check == 3)); then
+      # Already shown: keep the rule for reloads (a sync from before this
+      # file existed sent it).
+      keep_rule "$output" "$rule"
       continue
+    fi
+    ((check == 0)) || continue
     if ! response=$(hyprctl eval "$rule" 2>&1); then
       printf 'omacvm-display-sync: failed to apply %s to %s: %s\n' \
         "$mode" "$output" "$response" >&2
@@ -556,7 +578,7 @@ apply_preferred_modes() {
       printf 'omacvm-display-sync: Hyprland rejected %s for %s: %s\n' \
         "$mode" "$output" "$response" >&2
     else
-      sent_ok "$output" "$digest" "$hdr"
+      sent_ok "$output" "$digest" "$hdr" "$rule"
     fi
   done
   [[ -z ${lock_fd:-} ]] || exec {lock_fd}>&-
