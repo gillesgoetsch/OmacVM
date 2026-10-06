@@ -53,7 +53,9 @@ systemctl enable --now omacvm-app-host.service >/dev/null 2>&1 || true
 install -Dm644 90-omacvm-app.conf /etc/environment.d/90-omacvm-app.conf
 # Omarchy ignores the power key; here it comes only from the Mac's Quit.
 install -Dm644 90-omacvm-app-power.conf /etc/systemd/logind.conf.d/90-omacvm-app-power.conf
-install -o "$U" -g "$U" -m644 omacvm_app.lua "$H/.config/hypr/omacvm_app.lua"
+# Only when it changed: every write makes Hyprland reload its config.
+cmp -s omacvm_app.lua "$H/.config/hypr/omacvm_app.lua" ||
+  install -o "$U" -g "$U" -m644 omacvm_app.lua "$H/.config/hypr/omacvm_app.lua"
 B=$H/.config/hypr/hyprland.lua
 grep -qxF 'require("hypr.omacvm_app")' "$B" || {
   printf -- '-- OmacVM.app: the display follows the Mac window.\nrequire("hypr.omacvm_app")\n' >> "$B"; chown "$U:$U" "$B"; }

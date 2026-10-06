@@ -285,14 +285,17 @@ class ModeAndScale(SyncCase):
         self.run_sync()
         self.assertEqual((self.state / "Virtual-1.rule").read_text().strip(), self.evals()[-1])
 
-    def test_rule_kept_when_already_shown(self):
-        # A sync from before the rule file existed sent it: the file is written
-        # without sending anything again.
+    def test_rule_sent_again_without_kept_rule(self):
+        # Shown, but no kept rule (a sync from before the file existed, after
+        # a reload): Hyprland may be on the catch-all, so the rule goes out
+        # once more, and then not again.
         self.set_window(5120, 2880)
         self.run_sync()
         (self.state / "Virtual-1.rule").unlink()
         self.run_sync()
-        self.assertEqual(len(self.evals()), 1)
+        self.run_sync()
+        self.assertEqual(len(self.evals()), 2)
+        self.assertEqual(self.evals()[0], self.evals()[1])
         self.assertEqual((self.state / "Virtual-1.rule").read_text().strip(), self.evals()[0])
 
     def test_refused_rule_not_kept(self):

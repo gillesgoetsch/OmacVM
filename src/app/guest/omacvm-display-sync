@@ -565,12 +565,14 @@ apply_preferred_modes() {
     local check=0
     follow_check "$output" "$digest" "$mode" "$scale" "$position" "$hdr" "$shown" || check=$?
     if ((check == 3)); then
-      # Already shown: keep the rule for reloads (a sync from before this
-      # file existed sent it).
-      keep_rule "$output" "$rule"
+      # Shown already. If the kept rule is this one, Hyprland has it. If not
+      # (a sync from before the file existed, or a reload that dropped it),
+      # Hyprland may be on the catch-all ("auto" place, which moves beside
+      # NOTCH): send it once more.
+      [[ -f $state_dir/$output.rule && $(<"$state_dir/$output.rule") == "$rule" ]] && continue
+    elif ((check != 0)); then
       continue
     fi
-    ((check == 0)) || continue
     if ! response=$(hyprctl eval "$rule" 2>&1); then
       printf 'omacvm-display-sync: failed to apply %s to %s: %s\n' \
         "$mode" "$output" "$response" >&2
