@@ -97,14 +97,14 @@ reset_root
 file "$H/.local/bin/notchcast"; file "$H/.config/systemd/user/notchcast.service"
 file "$H/.config/systemd/user/notchcast.service.d/omacvm-host.conf"
 link "$H/.config/systemd/user/graphical-session.target.wants/notchcast.service" "$H/.config/systemd/user/notchcast.service"
-file "$H/.config/hypr/notchbar.lua"; file "$H/.local/state/omacvm/omanotch"
+file "$H/.config/hypr/notchbar.lua"; file "$H/.local/state/omacvm/omanotch"; file "$H/.local/state/omanotch/expect"
 file /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook
 printf '%s\n' 'require("hypr.other")' '' '-- omarchy-notch-bar: hidden output for the macOS notch helper.' 'require("hypr.notchbar")' > "$ROOT$H/.config/hypr/hyprland.lua"
 run_off omanotch_off 0
 expect "omanotch off, built: its uninstall tried in the session" yes "$(called "in_session bash /repo/omanotch/guest/uninstall.sh")"
 for p in "$H/.local/bin/notchcast" "$H/.config/systemd/user/notchcast.service" "$H/.config/systemd/user/notchcast.service.d" \
          "$H/.config/systemd/user/graphical-session.target.wants/notchcast.service" "$H/.config/hypr/notchbar.lua" \
-         /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook; do
+         "$H/.local/state/omanotch/expect" /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook; do
   expect "omanotch off, built, no session: $p gone" no "$(has "$p")"
 done
 expect "omanotch off: hyprland.lua no longer loads notchbar" "$(printf '%s\n' 'require("hypr.other")' '')" "$(cat "$ROOT$H/.config/hypr/hyprland.lua")"

@@ -25,12 +25,16 @@ What the patch adds:
   * notchcast's last word on parking (~/.local/state/omanotch/park), read at
     startup and every few seconds: a shell that (re)starts while the strip
     shows parks at once, and a lost IPC call cannot leave two bars.
+  * The right bar from the first frame after login: when the strip showed at
+    the end of the last session (~/.local/state/omanotch/expect), the bar
+    starts parked, with the notch geometry it had then (geom), and only
+    comes back if Omanotch does not confirm within a few seconds.
 """
 import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 15
+VERSION = 16
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -207,6 +211,7 @@ def main():
 
     function setParked(on: bool): string {
       root.notchLastBeat = Date.now()
+      root.notchBootPark = false
       root.notchParked = on
       return root.notchParked ? "parked" : "unparked"
     }
@@ -233,6 +238,7 @@ def main():
     }
     function heartbeat(): string {
       root.notchLastBeat = Date.now()
+      root.notchBootPark = false
       return root.notchParked ? "parked" : "unparked"
     }
     function click(x: real, y: real, button: int): string {
@@ -270,10 +276,13 @@ def main():
   // starts a `qs` process each time.)
   readonly property string notchStateDir: home + "/.local/state/omanotch"
   readonly property real notchStartedAt: Date.now()
+  // blockAllReads: text() right after reload() waits for the new content
+  // (with blockLoading alone it returns the previous load's text).
   FileView {
     id: notchBeatFile
     path: root.notchStateDir + "/beat"
     blockLoading: true
+    blockAllReads: true
     printErrors: false
   }
   FileView {
@@ -300,6 +309,7 @@ def main():
     id: notchParkFile
     path: root.notchStateDir + "/park"
     blockLoading: true
+    blockAllReads: true
     printErrors: false
   }
   function notchFollowParkFile() {
@@ -307,6 +317,7 @@ def main():
     var beat = parseFloat(String(notchBeatFile.text()).trim())
     if (!(beat > 0) || Date.now() - beat > 15000) return
     if (beat > notchLastBeat) notchLastBeat = beat
+    notchBootPark = false
     notchParkFile.reload()
     var p = String(notchParkFile.text()).trim().split(/\\s+/)
     if (p[0] === "1" && p.length === 2 && /^[A-Za-z0-9_.-]+$/.test(p[1])) {
@@ -316,6 +327,51 @@ def main():
       notchParked = false
     }
   }
+
+  // notchcast's word on the strip that outlives a reboot: "1 <output>" when
+  // it showed at the end of the last session, "0" when it was hidden or
+  // Omanotch went away. With "1" the shell starts parked, so the first frame
+  // after login already has the bar in the strip only (no bar on the display
+  // that then disappears, no windows that jump). If Omanotch does not confirm
+  // within notchBootGraceMs (windowed now, or Omanotch not running), the bar
+  // comes back and the file says "0", so the next start does not guess again.
+  // The notch geometry of the last session (geom, "left right strip bar")
+  // lays out the NOTCH copy right from its first frame.
+  readonly property real notchBootGraceMs: 8000
+  property bool notchBootPark: false
+  FileView {
+    id: notchExpectFile
+    path: root.notchStateDir + "/expect"
+    blockLoading: true
+    blockAllReads: true
+    printErrors: false
+  }
+  FileView {
+    id: notchGeomFile
+    path: root.notchStateDir + "/geom"
+    blockLoading: true
+    blockAllReads: true
+    printErrors: false
+  }
+  function notchBoot() {
+    var g = String(notchGeomFile.text()).trim().split(/\\s+/).map(Number)
+    if (g.length === 4 && g.every(isFinite) && g[0] > 0 && g[1] > g[0]) {
+      notchLeft = g[0]
+      notchRight = g[1]
+      notchHeight = g[2] > 0 && g[2] < 200 ? g[2] : 0
+      notchBarHeight = g[3] > 0 && g[3] < 200 ? g[3] : 0
+    }
+    notchFollowParkFile()
+    if (notchParked) return
+    var e = String(notchExpectFile.text()).trim().split(/\\s+/)
+    if (e[0] === "1" && e.length === 2 && /^[A-Za-z0-9_.-]+$/.test(e[1])) {
+      notchParkedScreen = e[1]
+      notchLastBeat = Date.now() - 15000 + notchBootGraceMs
+      notchBootPark = true
+      notchParked = true
+    }
+  }
+  property bool notchBooted: false
 
   // Follows the park file (at once when the shell starts: a restarted shell
   // must not wait for the next IPC call), and unparks when the helper goes
@@ -329,8 +385,19 @@ def main():
     running: true
     triggeredOnStart: true
     onTriggered: {
-      root.notchFollowParkFile()
-      if (root.notchParked && Date.now() - root.notchLastBeat > 15000) root.notchParked = false
+      if (!root.notchBooted) {
+        root.notchBooted = true
+        root.notchBoot()
+      } else {
+        root.notchFollowParkFile()
+      }
+      if (root.notchParked && Date.now() - root.notchLastBeat > 15000) {
+        root.notchParked = false
+        if (root.notchBootPark) {
+          root.notchBootPark = false
+          notchExpectFile.setText("0\\n")
+        }
+      }
     }
   }
 

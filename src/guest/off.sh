@@ -77,7 +77,7 @@ omanotch_off() {
   if off_any "$n" "$u"; then in_session bash "$R/omanotch/guest/uninstall.sh" >/dev/null 2>&1 || true; fi
   user_units_off notchcast.service
   rm -rf "$ROOT$u" "$ROOT$u.d"
-  rm -f "$ROOT$n" "$ROOT$H/.config/hypr/notchbar.lua" "$ROOT$H/.local/state/omacvm/omanotch"
+  rm -f "$ROOT$n" "$ROOT$H/.config/hypr/notchbar.lua" "$ROOT$H/.local/state/omacvm/omanotch" "$ROOT$H/.local/state/omanotch/expect"
   off_lines "$H/.config/hypr/hyprland.lua" '-- omarchy-notch-bar: hidden output for the macOS notch helper.' 'require("hypr.notchbar")'
 }
 

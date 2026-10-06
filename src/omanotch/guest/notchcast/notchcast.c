@@ -62,6 +62,7 @@
 #include "ext-image-capture-source-v1-client-protocol.h"
 #include "ext-image-copy-capture-v1-client-protocol.h"
 #include "notch-place.h"
+#include "notchrule.h"
 
 #define FRAME_MAGIC 0x4843544eu  // "NTCH" little-endian
 #define TEXT_MAGIC 0x5458544eu   // "NTXT"
@@ -566,6 +567,22 @@ static void write_park(int on) {
     fclose(f);
 }
 
+// Whether the strip showed when this was last decided, for the next start of
+// the shell: "1 <output>" while the helper keeps the bar parked, "0" once it
+// says the strip is hidden or goes away. Unlike `park` it survives a reboot:
+// the bar (patch v16+) starts parked on it, so the first desktop frame after
+// login already has the bar in the strip only. A stop of notchcast (the
+// session ending) leaves it alone.
+static void write_expect(int on) {
+    char path[600], scr[64];
+    state_path(path, sizeof path, "expect");
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    if (on) fprintf(f, "1 %s\n", screen_name(scr));
+    else fputs("0\n", f);
+    fclose(f);
+}
+
 // The bar's own report (bar patch v9+): {"parked":…,"barSize":…,"started":…}.
 struct bar_state {
     int parked;
@@ -884,6 +901,20 @@ static void apply_mac_geometry(void) {
     sync_geometry(0);
 }
 
+// The geometry as last passed to the bar, for its next start (see geom_line).
+static void save_geometry(void) {
+    char path[600], line[160];
+    static char saved[160];
+    geom_line(line, sizeof line, sent_notch_l, sent_notch_r, sent_strip, sent_bar);
+    if (!*sent_notch_l || !strcmp(line, saved)) return;
+    state_path(path, sizeof path, "geom");
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fputs(line, f);
+    fclose(f);
+    snprintf(saved, sizeof saved, "%s", line);
+}
+
 // Passes the notch geometry on to the bar when it changed (or always).
 static void sync_geometry(int always) {
     if (*want_notch_l && (always || strcmp(want_notch_l, sent_notch_l) || strcmp(want_notch_r, sent_notch_r))) {
@@ -899,6 +930,7 @@ static void sync_geometry(int always) {
         free(ipc_call(0, "setNotchBarHeight", want_bar, NULL, NULL));
         snprintf(sent_bar, sizeof sent_bar, "%s", want_bar);
     }
+    save_geometry();
 }
 
 // One command line from the helper. Everything is validated before use.
@@ -922,8 +954,8 @@ static void handle_command(char *line) {
         double now = now_ms();
         if (on != bar_parked || now - bar_beat_ms > BEAT_EVERY_MS) {
             int fresh = 0;
-            if (on) write_beat();
             if (on && bar_parked == 1) {
+                write_beat();
                 struct bar_state st;
                 static double started;
                 if (read_bar_state(&st)) {
@@ -941,7 +973,13 @@ static void handle_command(char *line) {
             }
             if (on != bar_parked || fresh) {
                 char scr[64];
-                write_park(on);  // first: a shell starting right now reads it
+                // Files first: a shell starting right now reads them, and the
+                // bar follows them by itself when an IPC call goes nowhere
+                // (the shell still loading). The beat goes last: a bar that
+                // sees it fresh must find the new park file.
+                write_park(on);
+                write_beat();
+                if (on != bar_parked) write_expect(on);
                 free(ipc_call(0, "setParkedScreen", screen_name(scr), NULL, NULL));
                 free(ipc_call(0, "setParked", on ? "true" : "false", NULL, NULL));
                 if (on && fresh) sync_geometry(1);
@@ -954,6 +992,7 @@ static void handle_command(char *line) {
         char scr[64];
         if (bar_parked == 1) {
             write_park(1);
+            write_expect(1);
             free(ipc_call(0, "setParkedScreen", screen_name(scr), NULL, NULL));
         }
     } else if (!strcmp(c, "beat") && argc == 1) {
@@ -1555,6 +1594,35 @@ static int omacvm_app(void) {
     return omacvm_env("OMACVM_VM_TYPE", type, sizeof type) && !strcmp(type, "app");
 }
 
+// The hidden output's size in pixels for a display `sw` px wide at scale
+// `ss`: the strip's height (in points converted with the display's current
+// width, so a scale change resizes it once, not via an intermediate height),
+// at least the bar's. Returns the logical height.
+static int notch_size(double sw, double ss, int *w, int *h) {
+    double bs = bar_size();
+    int sh = atomic_load(&strip_height);
+    if (have_geom && mac_w > 0 && ss > 0) {
+        int conv = (int)(mac_h * (sw / ss) / mac_w + 0.5);
+        if (conv >= 10 && conv <= 200) sh = conv;
+    }
+    if (sh > bs) bs = sh;
+    return notch_mode(sw, ss, bs, w, h);
+}
+
+// Size (pixels) and place of the hidden output for the display `scr` at
+// (sx, sy), `sw` px wide at scale `ss` (`j`: a `j/monitors all` reply).
+// Returns its logical height; *above: right above the display (notch-place.h).
+static int notch_target(const char *j, const char *scr, double sx, double sy, double sw, double ss, int *w, int *h,
+                        double *px, double *py, int *above) {
+    int lh = notch_size(sw, ss, w, h);
+    double sh_px;
+    NotchRect others[NOTCH_MAX_OUTPUTS];
+    int no = notch_other_outputs(j, cfg_output, scr, others, NOTCH_MAX_OUTPUTS);
+    *above = notch_place((NotchRect){sx, sy, sw / ss, monitor_field(j, scr, "height", &sh_px) ? 0 : sh_px / ss},
+                         lh, others, no, omacvm_app(), px, py);
+    return lh;
+}
+
 // Keeps the hidden output present and exactly as wide as the display whose
 // bar it stands in for. Under OmacVM.app it sits right above that display,
 // where the strip is on the Mac (no overlap, so no Hyprland warning); else,
@@ -1579,7 +1647,17 @@ static void *keeper_thread(void *unused) {
                              !monitor_field(j, cfg_output, "width", &nw) && !monitor_field(j, cfg_output, "height", &nh) &&
                              !monitor_field(j, cfg_output, "scale", &ns);
             if (!have_notch && have_screen && created_attempts < 5 && !atomic_load(&remake_output)) {
-                LOG("creating headless output %s", cfg_output);
+                // Its rule first, so it is made at its final size and place:
+                // notchbar.lua's rule may come from before the display existed
+                // (1024x52), and its first frames would reach the strip.
+                char lua[256];
+                int w, h, above;
+                double px, py;
+                notch_target(j, scr, sx, sy, sw, ss, &w, &h, &px, &py, &above);
+                notch_rule_lua(lua, sizeof lua, cfg_output, w, h, (int)px, (int)py, ss);
+                LOG("creating headless output %s: %s", cfg_output, lua);
+                const char *rule[] = {"hyprctl", "eval", lua, NULL};
+                run_quiet(rule);
                 const char *argv[] = {"hyprctl", "output", "create", "headless", cfg_output, NULL};
                 run_quiet(argv);
                 created_attempts++;
@@ -1602,32 +1680,14 @@ static void *keeper_thread(void *unused) {
                     if (last_lw > 0) enqueue_command("regeom");
                     last_lw = sw / ss;
                 }
-                double bs = bar_size();
-                int sh = atomic_load(&strip_height);
-                // With the helper's geometry in points, convert with the
-                // display's current width right here: a scale change then
-                // resizes NOTCH once, not via an intermediate height.
-                if (have_geom && mac_w > 0 && ss > 0) {
-                    int conv = (int)(mac_h * (sw / ss) / mac_w + 0.5);
-                    if (conv >= 10 && conv <= 200) sh = conv;
-                }
-                if (sh > bs) bs = sh;
-                // A whole number of logical px that is also a whole number of
-                // pixels at this scale (fractional scales such as 1.6 or 5/3).
-                int lh = (int)ceil(bs - 1e-6);
-                for (int k = 0; k < 120 && fabs(lh * ss - round(lh * ss)) > 1e-3; k++) lh++;
-                int want_w = (int)(sw + 0.5), want_h = (int)round(lh * ss);
+                int want_w, want_h, above;
+                double px, py;
+                int lh = notch_target(j, scr, sx, sy, sw, ss, &want_w, &want_h, &px, &py, &above);
                 static int saved_lh;
                 if (lh != saved_lh && atomic_load(&strip_height) > 0) {
                     saved_lh = lh;
                     save_strip_height(lh);
                 }
-                double sh_px;
-                NotchRect others[NOTCH_MAX_OUTPUTS];
-                int no = notch_other_outputs(j, cfg_output, scr, others, NOTCH_MAX_OUTPUTS);
-                double px, py;
-                int above = notch_place((NotchRect){sx, sy, sw / ss, monitor_field(j, scr, "height", &sh_px) ? 0 : sh_px / ss},
-                                        lh, others, no, omacvm_app(), &px, &py);
                 if (above != atomic_load(&notch_above)) {
                     LOG("%s goes %s %s", cfg_output, above ? "right above" : "over the top edge of", scr);
                     atomic_store(&notch_above, above);
@@ -1635,9 +1695,7 @@ static void *keeper_thread(void *unused) {
                 if ((int)nw != want_w || (int)nh != want_h || (int)nx != (int)px || (int)ny != (int)py ||
                     ns < ss - 0.01 || ns > ss + 0.01) {
                     char lua[256];
-                    snprintf(lua, sizeof lua,
-                             "hl.monitor({ output = \"%s\", mode = \"%dx%d@60\", position = \"%dx%d\", scale = %.6f })",
-                             cfg_output, want_w, want_h, (int)px, (int)py, ss);
+                    notch_rule_lua(lua, sizeof lua, cfg_output, want_w, want_h, (int)px, (int)py, ss);
                     // Do not hammer Hyprland with a rule it keeps refusing.
                     if (strcmp(lua, last_applied) || now_ms() - last_apply_ms > 30000) {
                         LOG("resizing %s: %s", cfg_output, lua);
@@ -1831,6 +1889,18 @@ static void fill_cursor(uint8_t *px, double cx, double cy) {
     }
 }
 
+// The first frame of a capture session goes out only once the bar has a copy
+// on the hidden output. Before that the output shows the bare wallpaper or
+// Hyprland's grey, and the strip would flash it on its way to the bar. Not
+// longer than BAR_GATE_MS: a bar that never comes must not keep the strip dark.
+#define BAR_GATE_MS 4000
+static int bar_on_output(void) {
+    char *j = hypr_request("j/layers");
+    int on = layer_on_output(j, cfg_output, "omarchy-bar");
+    free(j);
+    return on;
+}
+
 // Runs one capture session until it stops or the output disappears.
 static void capture_session(struct wl_output *out) {
     struct ext_image_capture_source_v1 *src = ext_output_image_capture_source_manager_v1_create_source(source_mgr, out);
@@ -1867,6 +1937,8 @@ static void capture_session(struct wl_output *out) {
     // A capture only completes when the output repaints; ask the bar for one
     // so the helper gets its first frame straight away.
     if (!have_frame) free(ipc_call(0, "poke", NULL, NULL, NULL));
+    double session_ms = now_ms();
+    int held = 0;
 
     double pcx = -1e9, pcy = -1e9;  // cursor position at the previous frame
     while (!sess_stopped && !outputs_changed && !atomic_load(&remake_output)) {
@@ -1889,6 +1961,20 @@ static void capture_session(struct wl_output *out) {
             if (frame_failed - 1 == EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_BUFFER_CONSTRAINTS) break;
             usleep(50000);
             continue;
+        }
+        // have_frame is only written on this thread.
+        if (!have_frame && now_ms() - session_ms < BAR_GATE_MS) {
+            if (!bar_on_output()) {
+                if (!held++) LOG("first frame held until the bar is on %s", cfg_output);
+                continue;  // the bar's arrival repaints the output
+            }
+            if (held) {
+                // This frame may have been drawn just before the bar: take
+                // the next one, which the poke asks for.
+                held = 0;
+                free(ipc_call(0, "poke", NULL, NULL, NULL));
+                continue;
+            }
         }
         double t0 = now_ms();
         double cx, cy;
@@ -1959,6 +2045,11 @@ static void *signal_thread(void *arg) {
     LOG("signal %d, restoring the guest cursor and exiting", sig);
     set_guest_cursor_visible(1);
     write_park(0);
+    // No beat from a notchcast that is gone: a shell that starts soon (a quick
+    // reboot) must not take the "0" above for this session's word.
+    char path[600];
+    state_path(path, sizeof path, "beat");
+    unlink(path);
     _exit(0);
     return NULL;
 }

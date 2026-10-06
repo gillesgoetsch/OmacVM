@@ -12,6 +12,10 @@ RestartSec=2
 ExecStopPost=-/usr/bin/hyprctl eval "hl.config({ cursor = { invisible = false } })"
 # ... and bring the bar back right away instead of after the bar's watchdog.
 ExecStopPost=-/usr/bin/qs ipc -n -p /usr/share/omarchy/shell call notchbar setParked false
+# Turned off (not a session that ends): the next login must not start with
+# the bar parked for a strip that will not come (see the bar patch, expect).
+# (The link, not systemctl: no manager call while the session goes down.)
+ExecStopPost=-/bin/sh -c '[ -e "$$HOME/.config/systemd/user/graphical-session.target.wants/notchcast.service" ] || rm -f "$${XDG_STATE_HOME:-$$HOME/.local/state}/omanotch/expect"'
 
 [Install]
 WantedBy=graphical-session.target

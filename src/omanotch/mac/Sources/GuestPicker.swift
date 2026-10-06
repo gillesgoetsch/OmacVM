@@ -69,6 +69,15 @@ struct ParkState {
         return [(a, "park \(on ? 1 : 0)")]
     }
 
+    /// A guest that just connected, when no full-screen window will show
+    /// its strip (`served` false), is told at once that the strip is hidden:
+    /// a guest whose strip showed at the end of its last session starts with
+    /// its bar parked (bar patch v16) and would otherwise wait for its own
+    /// grace time before the bar comes back.
+    func connected(_ guest: Int, served: Bool) -> [(guest: Int, line: String)] {
+        served ? [] : [(guest, "park 0")]
+    }
+
     /// The guest's session started over (it starts unparked) or ended.
     mutating func reset(_ guest: Int, gone: Bool) {
         guard guest == active else { return }

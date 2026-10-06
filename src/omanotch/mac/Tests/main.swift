@@ -89,6 +89,15 @@ var st2 = ParkState()
 apply(st2.activate(1))
 check(st2.activate(2).count, 0, "switching away from an unparked guest sends nothing")
 
+// A guest that connects while no full-screen window serves it is told at once
+// that the strip is hidden (it may have started parked); a served one is not.
+var s4 = ParkState()
+check(s4.connected(1, served: false).map { "\($0.guest) \($0.line)" }, ["1 park 0"], "windowed: park 0 at once")
+apply(s4.activate(1))
+check(s4.connected(1, served: true).count, 0, "full screen: nothing until the strip shows")
+s4.reset(1, gone: false)
+check(s4.connected(1, served: false).map(\.line), ["park 0"], "reconnect while windowed: park 0")
+
 // The whole loop with fake windows: at most one bar parked, always the front VM's.
 var s3 = ParkState()
 parkedGuests = []

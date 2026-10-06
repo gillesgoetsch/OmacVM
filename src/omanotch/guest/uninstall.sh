@@ -12,6 +12,8 @@ say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 say "stopping notchcast"
 systemctl --user disable --now notchcast.service >/dev/null 2>&1 || true
 rm -f "$HOME/.config/systemd/user/notchcast.service" "$HOME/.local/bin/notchcast"
+# The bar clone stays patched: it must not start parked at the next login.
+rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/omanotch/expect"
 systemctl --user daemon-reload
 
 say "removing Hyprland config"
