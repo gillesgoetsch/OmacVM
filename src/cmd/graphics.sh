@@ -34,6 +34,10 @@ done
 d=$(app_dir "$VM") || usage "no OmacVM.app VM named '$VM' (omacvm vms lists them)"
 
 CHANGED=false; NOTE=""
+# A choice made by hand tries Vulkan again after the app fell back (as the app does).
+if [[ -n $SET ]] && graphics_fallback "$d" >/dev/null; then
+  rm -f "$d/graphics-fallback"; CHANGED=true; NOTE="Vulkan is tried again from the VM's next start"
+fi
 if [[ -n $SET && $SET != "$(graphics_choice "$d")" ]]; then
   printf '%s\n' "$SET" > "$d/graphics.new" && mv -f "$d/graphics.new" "$d/graphics" ||
     die "could not write $d/graphics"

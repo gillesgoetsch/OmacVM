@@ -350,6 +350,8 @@ def counts(rows: list[Row]) -> dict[str, int]:
 # ---- OmacVM.app's Graphics setting (src/cmd/graphics.sh) ----
 GRAPHICS_CHOICES = ("auto", "opengl", "vulkan")
 GRAPHICS_TITLES = {"auto": "Automatic", "opengl": "OpenGL", "vulkan": "Vulkan"}
+# The Mac's words when Vulkan fell back (Graphics.didNotStart, src/lib/graphics.sh).
+GRAPHICS_DID_NOT_START = "Vulkan did not start on this Mac: using OpenGL"
 GRAPHICS_FEATURE = Feature(
     name="graphics", default="auto", sides=("mac",), tags=(), needs=None, title="Graphics",
     summary="OpenGL, Vulkan, or Automatic (OpenGL on every Mac in 3.0.0); from the VM's next start")
@@ -382,6 +384,10 @@ def graphics_row(status: dict | None, vm_type: str, jobs: list[Job] | None = Non
         # Vulkan chosen, no Venus driver for the Mac's pages yet: OpenGL until
         # an apply (or Space on this row while the VM runs) builds it.
         note = str(g.get("summary") or "Vulkan (driver not built yet: runs on OpenGL until the next apply)")
+    elif str(g.get("summary") or "").startswith(GRAPHICS_DID_NOT_START):
+        # A Vulkan start showed nothing on this Mac; the app started it on
+        # OpenGL and stays there until Vulkan is chosen again (Space here).
+        note = str(g["summary"])
     if any(c.status == "fail" for c in mine):
         bad = next(c for c in mine if c.status == "fail")
         return Row(GRAPHICS_FEATURE, True, Status.NEEDS_PERSON if bad.human else Status.FAILING,
