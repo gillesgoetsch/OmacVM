@@ -228,6 +228,15 @@ def test_graphics_row_vulkan_waiting_for_driver():
     assert "driver not built yet" in S.graphics_row(st, "app").note
 
 
+def test_graphics_row_vulkan_fell_back():
+    why = ("Vulkan did not start on this Mac: using OpenGL (the firmware found no devices in 25 s: "
+           "no boot disk, no picture; choose Vulkan again to try once more)")
+    st = {"graphics": {"graphics": "vulkan", "next_start": "opengl", "waiting_for_driver": False, "summary": why,
+                       "this_start": f"vulkan -> opengl ({why})"}}
+    r = S.graphics_row(st, "app")
+    assert r.note == why and r.status is S.Status.WORKS
+
+
 def test_graphics_row_unknown_and_busy():
     assert S.graphics_row({}, "app").status is S.Status.UNKNOWN
     assert S.graphics_row({"graphics": {"graphics": "metal"}}, "app").status is S.Status.UNKNOWN

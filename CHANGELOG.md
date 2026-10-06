@@ -52,6 +52,13 @@ itself. Details below.
 - The escape combo moves one Space, to the one beside the VM, also when
   macOS's slide lands late (it could end two Spaces over, on Desktop 1).
   Pressed twice quickly it opens Mission Control; once, never.
+- Graphics Vulkan on an M1 or M2 Mac no longer leaves a VM that never
+  boots (a black window): macOS gives VMs less address space there, and
+  Vulkan's host memory window is now 256 MB on those Macs so it fits. If a
+  Vulkan start still shows nothing, OmacVM.app stops it and starts the VM
+  on OpenGL, and the app, `omacvm graphics` and the control centre say
+  "Vulkan did not start on this Mac: using OpenGL" with the reason until
+  Vulkan is chosen again.
 - Omanotch under OmacVM.app: the hidden NOTCH output sits above the
   built-in display, where the strip is, so Hyprland no longer warns
   "Monitor NOTCH overlaps" at start; the pointer's hand-over between the

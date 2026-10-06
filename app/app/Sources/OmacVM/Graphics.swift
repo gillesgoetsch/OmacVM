@@ -23,8 +23,8 @@ struct GraphicsPlan: Equatable {
     var choice: GraphicsChoice
     /// The Venus device (Vulkan) at this start.
     var venus: Bool
-    /// Its host memory window in GB (a power of two).
-    var hostmemGB: Int
+    /// Its host memory window in MB (a power of two, 256 MB or more).
+    var hostmemMB: Int
     /// Why, for qemu.log ("OmacVM: graphics: ...") and omacvm check.
     var why: String
 
@@ -32,11 +32,12 @@ struct GraphicsPlan: Equatable {
     /// say it: "Vulkan (driver not built yet: ...)" while a VM set to Vulkan
     /// waits for its driver.
     var summary: String {
-        venus ? "OpenGL and Vulkan" : choice == .vulkan ? "Vulkan (\(why))" : "OpenGL"
+        venus ? "OpenGL and Vulkan"
+            : choice == .vulkan ? (why.hasPrefix(Graphics.didNotStart) ? why : "Vulkan (\(why))") : "OpenGL"
     }
 
     var record: String {
-        "\(choice.rawValue) -> \(venus ? "vulkan" : "opengl") (\(why))" + (venus ? ", host memory window \(hostmemGB) GB" : "")
+        "\(choice.rawValue) -> \(venus ? "vulkan" : "opengl") (\(why))" + (venus ? ", host memory window \(Graphics.size(mb: hostmemMB))" : "")
     }
 }
 
@@ -67,9 +68,34 @@ enum Graphics {
         return GraphicsChoice(rawValue: s.trimmingCharacters(in: .whitespacesAndNewlines)) ?? .auto
     }
 
+    /// Any choice made by hand tries Vulkan again after a fallback.
     static func write(_ c: GraphicsChoice, folder: URL) throws {
         try Data("\(c.rawValue)\n".utf8).write(to: folder.appendingPathComponent(fileName), options: .atomic)
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent(fallbackFileName))
     }
+
+    // MARK: Vulkan that did not start (VenusStartWatch)
+
+    /// Written when a Vulkan start showed nothing and the app started the VM
+    /// on OpenGL instead: one line, why. While it is there, every start is
+    /// OpenGL; choosing a Graphics setting again (app, omacvm graphics,
+    /// control centre) removes it and tries Vulkan once more.
+    static let fallbackFileName = "graphics-fallback"
+    /// Same text in src/lib/graphics.sh (GRAPHICS_DID_NOT_START).
+    static let didNotStart = "Vulkan did not start on this Mac: using OpenGL"
+
+    static func fallback(folder: URL) -> String? {
+        guard let s = try? String(contentsOf: folder.appendingPathComponent(fallbackFileName), encoding: .utf8) else { return nil }
+        let line = s.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        return line.isEmpty ? "it showed nothing" : line
+    }
+
+    static func recordFallback(_ why: String, folder: URL) {
+        try? Data("\(why)\n".utf8).write(to: folder.appendingPathComponent(fallbackFileName), options: .atomic)
+    }
+
+    /// "256 MB", "1 GB".
+    static func size(mb: Int) -> String { mb >= 1024 && mb % 1024 == 0 ? "\(mb / 1024) GB" : "\(mb) MB" }
 
     static func driverReady(folder: URL) -> Bool {
         FileManager.default.fileExists(atPath: folder.appendingPathComponent(readyFileName).path)
@@ -123,24 +149,46 @@ enum Graphics {
     /// power of two between 1 and 32 GB. It is address space for mapping Vulkan
     /// memory into the VM; what Vulkan really allocates counts against the
     /// GPU memory budget (gpu-robust's budget patch).
-    static func hostmemGB(macMemoryGB: Int, vmMemoryGB: Int) -> Int {
+    ///
+    /// The window is a 64-bit PCI memory BAR of its own size and alignment.
+    /// QEMU's virt machine has a 512 GB PCI window above 512 GB only when the
+    /// Mac gives VMs a 40-bit address space or more (M3 and newer; QEMU drops
+    /// it without a word on smaller ones). M1 and M2 give 36 bits: then every
+    /// BAR shares the 751 MB window below 1 GB (0x10000000-0x3efeffff), where
+    /// a 512 MB or 1 GB BAR never fits, and the firmware then maps no PCI
+    /// device at all (no boot disk, no picture: the Air hang of 2026-10-06).
+    /// 256 MB fits beside the other BARs, so that is the most there.
+    /// `ipaBits`: the Mac's VM address space (Mac.vmAddressBits; nil unknown).
+    static func hostmemMB(macMemoryGB: Int, vmMemoryGB: Int, ipaBits: Int?) -> Int {
+        if let b = ipaBits, b < highPCIWindowBits { return lowWindowHostmemMB }
         let reserve = macMemoryGB <= 16 ? 4 : macMemoryGB <= 36 ? 6 : 8
         let free = min(max(macMemoryGB - vmMemoryGB - reserve, 1), 32)
         var p = 1
         while p * 2 <= free { p *= 2 }
-        return p
+        return p * 1024
     }
+
+    /// QEMU virt's high PCI window ends at 1 TB (40 bits).
+    static let highPCIWindowBits = 40
+    static let lowWindowHostmemMB = 256
 
     /// The plan for one start. `forced`: the vulkan feature (the VM's
     /// `vulkan` file: OmacVM's Mesa for WebGPU and OpenCL, which apply only
     /// writes once that Mesa is in the VM), which keeps Venus on whatever the
     /// choice.
+    /// `fallback`: why the last Vulkan start fell back (graphics-fallback);
+    /// it keeps this start on OpenGL.
     static func plan(choice: GraphicsChoice, macOSMajor: Int, kosmicKrisp: Bool, driverReady: Bool,
-                     forced: Bool, macMemoryGB: Int, vmMemoryGB: Int) -> GraphicsPlan {
-        let mem = hostmemGB(macMemoryGB: macMemoryGB, vmMemoryGB: vmMemoryGB)
+                     forced: Bool, macMemoryGB: Int, vmMemoryGB: Int, ipaBits: Int? = nil,
+                     fallback: String? = nil) -> GraphicsPlan {
+        let mem = hostmemMB(macMemoryGB: macMemoryGB, vmMemoryGB: vmMemoryGB, ipaBits: ipaBits)
         let driver = macOSMajor >= 26 && kosmicKrisp ? "KosmicKrisp" : "MoltenVK"
         func p(_ venus: Bool, _ why: String) -> GraphicsPlan {
-            GraphicsPlan(choice: choice, venus: venus, hostmemGB: mem, why: why)
+            if venus, let f = fallback {
+                return GraphicsPlan(choice: choice, venus: false, hostmemMB: mem,
+                                    why: "\(didNotStart) (\(f); choose Vulkan again to try once more)")
+            }
+            return GraphicsPlan(choice: choice, venus: venus, hostmemMB: mem, why: why)
         }
         if forced { return p(true, "WebGPU and GPU compute (vulkan feature) need Vulkan, \(driver)") }
         switch choice {
@@ -158,5 +206,88 @@ enum Graphics {
             guard driverReady else { return p(false, "the VM has no Venus driver for 16 KiB pages yet: omacvm apply") }
             return p(true, "macOS \(macOSMajor), \(driver)")
         }
+    }
+}
+
+/// Watches the first minutes of a start with Vulkan (Runner.watchVenusStart),
+/// so a Vulkan start that shows nothing never leaves a stuck VM: the app
+/// stops it and starts the VM on OpenGL, once (graphics-fallback). Polled
+/// every few seconds with what QMP and the VM's logs say. Time the VM is
+/// paused (the Mac's sleep) does not count.
+struct VenusStartWatch {
+    /// The firmware maps the PCI devices and writes to the console within a
+    /// few seconds; nothing of either this long means it found no devices.
+    static let firmwareSeconds = 25.0
+    /// QEMU's monitor silent this long: its main loop hangs (virgl's Venus
+    /// start runs on it).
+    static let silentSeconds = 30.0
+    /// After this the start counts as fine and the watch ends.
+    static let watchSeconds = 180.0
+
+    struct Poll: Equatable {
+        /// QMP answered (false: no answer within its timeout).
+        var answered: Bool
+        var paused = false
+        /// "info pci" shows a mapped BAR (nil: not asked or no answer).
+        var pciMapped: Bool?
+        /// The VM's console log has something (the firmware writes its boot lines there).
+        var consoleOutput = false
+        /// qemu.log has the window's "no picture from the guest" line.
+        var noPicture = false
+    }
+
+    enum Verdict: Equatable {
+        case wait, fine
+        /// Stop this start and start on OpenGL. graceful: the guest's kernel
+        /// may run, so shut it down first; else stopping at once is safe (or
+        /// the only way: QEMU does not answer).
+        case fallBack(why: String, graceful: Bool)
+    }
+
+    private(set) var ran = 0.0
+    private(set) var silent = 0.0
+    private(set) var answeredOnce = false
+    private(set) var firmwareSeen = false
+    private(set) var done = false
+
+    /// The Mac woke up: a monitor kept busy by the sleep handling is no hang.
+    mutating func woke() { silent = 0 }
+
+    mutating func poll(_ p: Poll, seconds dt: Double) -> Verdict {
+        if done { return .fine }
+        if p.answered {
+            answeredOnce = true
+            silent = 0
+            if p.paused { return .wait }
+        } else if answeredOnce {
+            // Silence counts only after QMP answered once: a monitor this
+            // app cannot reach at all is no hang (the console still tells).
+            silent += dt
+            if silent >= Self.silentSeconds {
+                done = true
+                return .fallBack(why: "QEMU stopped answering for \(Int(Self.silentSeconds)) s while Vulkan started", graceful: false)
+            }
+        }
+        ran += dt
+        if p.pciMapped == true || p.consoleOutput { firmwareSeen = true }
+        if !firmwareSeen && ran >= Self.firmwareSeconds {
+            done = true
+            return .fallBack(why: "the firmware found no devices in \(Int(Self.firmwareSeconds)) s: no boot disk, no picture", graceful: false)
+        }
+        if p.noPicture {
+            done = true
+            return .fallBack(why: "no picture from the VM after 90 s", graceful: firmwareSeen)
+        }
+        if ran >= Self.watchSeconds {
+            done = true
+            return .fine
+        }
+        return .wait
+    }
+
+    /// "info pci": some device has a memory or I/O BAR the firmware mapped
+    /// ("memory at 0x...", "I/O at 0x..."); unmapped ones say "(not mapped)".
+    static func pciMapped(_ infoPCI: String) -> Bool {
+        infoPCI.contains("memory at 0x") || infoPCI.contains("I/O at 0x")
     }
 }

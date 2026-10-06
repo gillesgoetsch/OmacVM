@@ -218,9 +218,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let r = Runner(config: state.config)
-        r.onExit = { [weak self] status in
+        r.onExit = { [weak self, weak r] status in
             guard let self else { return }
+            let fellBack = r?.venusFallback
             self.runner = nil
+            // Vulkan showed nothing (Runner.watchVenusStart): from now on
+            // OpenGL until Vulkan is chosen again; start once more on it.
+            // The plan then has no Venus, so no second watch and no loop.
+            if let why = fellBack {
+                let folder = self.state.config.folder
+                Graphics.recordFallback(why, folder: folder)
+                // The next start empties qemu.log: keep this one's.
+                let logs = folder.appendingPathComponent("logs")
+                try? FileManager.default.removeItem(at: logs.appendingPathComponent("qemu-vulkan-fallback.log"))
+                try? FileManager.default.copyItem(at: logs.appendingPathComponent("qemu.log"),
+                                                  to: logs.appendingPathComponent("qemu-vulkan-fallback.log"))
+                if !self.quitting {
+                    self.startVM()
+                    if self.runner != nil {
+                        self.state.message = "\(Graphics.didNotStart) (\(why)). Choose Vulkan again in Graphics to try once more."
+                    }
+                    return
+                }
+            }
             if self.quitting {
                 self.quitting = false
                 // An update asked for while the VM ran goes in now, quietly:

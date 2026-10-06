@@ -52,7 +52,7 @@ final class Runner {
             // QEMU's window code opens the others): the built-in and four more.
             // Venus (Vulkan: the VM's Graphics setting, see Graphics.swift)
             // needs blobs and a host memory window for them.
-            "-device", "virtio-gpu-gl-pci,max_outputs=\(Runner.maxOutputs),xres=1920,yres=1080,romfile=\(g.venus ? ",blob=true,venus=true,hostmem=\(g.hostmemGB)G" : "")",
+            "-device", "virtio-gpu-gl-pci,max_outputs=\(Runner.maxOutputs),xres=1920,yres=1080,romfile=\(g.venus ? ",blob=true,venus=true,hostmem=\(g.hostmemMB)M" : "")",
             "-display", "cocoa,gl=on,show-cursor=\(guestPointer ? "off" : "on"),zoom-to-fit=on,full-screen=\(Settings.startFullScreen ? "on" : "off"),full-grab=on,immersive=\(Settings.keepDockAway ? "on" : "off"),swap-opt-cmd=off",
             "-device", "virtio-keyboard-pci,romfile=",
             "-device", "virtio-tablet-pci,romfile=",
@@ -149,7 +149,78 @@ final class Runner {
                              macOSMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
                              kosmicKrisp: runtimeHasKosmicKrisp,
                              driverReady: Graphics.driverReady(folder: c.folder), forced: forced,
-                             macMemoryGB: Mac.memoryGB, vmMemoryGB: c.memoryMB / 1024)
+                             macMemoryGB: Mac.memoryGB, vmMemoryGB: c.memoryMB / 1024,
+                             ipaBits: Mac.vmAddressBits, fallback: Graphics.fallback(folder: c.folder))
+    }
+
+    // MARK: A Vulkan start that shows nothing (VenusStartWatch)
+
+    /// Set when this start with Vulkan showed nothing and QEMU is being
+    /// stopped for it: the caller (main.swift onExit) records it and starts
+    /// the VM again, then on OpenGL (the plan reads graphics-fallback).
+    private(set) var venusFallback: String?
+    private var venusWatch = VenusStartWatch()
+    private var hostAsleep = false
+
+    /// Polls QMP and the VM's logs every 3 s while VenusStartWatch says
+    /// wait; QMP off the main thread (it blocks up to 2 s per call).
+    private func watchVenusStart() {
+        let c = config
+        let qmpPath = c.qmpSocket.path
+        let console = c.folder.appendingPathComponent("logs/console.log").path
+        let qemuLog = c.folder.appendingPathComponent("logs/qemu.log").path
+        let pid = process?.processIdentifier
+        Task { [weak self] in
+            var last = Date()
+            while true {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard let self, self.isRun(pid) else { return }
+                if self.hostAsleep { last = Date(); continue }
+                let poll = await Task.detached(operation: {
+                    Runner.venusPoll(qmpPath: qmpPath, console: console, qemuLog: qemuLog)
+                }).value
+                guard self.isRun(pid) else { return }
+                if self.hostAsleep { last = Date(); continue }
+                let now = Date()
+                let verdict = self.venusWatch.poll(poll, seconds: now.timeIntervalSince(last))
+                last = now
+                switch verdict {
+                case .wait: continue
+                case .fine: return
+                case .fallBack(let why, let graceful):
+                    self.venusFallback = why
+                    self.appendLog("OmacVM: graphics: \(Graphics.didNotStart): \(why); stopping this start and starting again on OpenGL")
+                    if graceful {
+                        self.powerDown()
+                        try? await Task.sleep(nanoseconds: 60_000_000_000)
+                        if self.isRun(pid) { self.forceStop() }
+                    } else {
+                        self.forceStop()
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    nonisolated static func venusPoll(qmpPath: String, console: String, qemuLog: String) -> VenusStartWatch.Poll {
+        var p = VenusStartWatch.Poll(answered: false)
+        let size = (try? FileManager.default.attributesOfItem(atPath: console)[.size] as? Int) ?? 0
+        p.consoleOutput = size > 0
+        // qemu.log stays small while starting (a few KB).
+        if let log = try? String(contentsOfFile: qemuLog, encoding: .utf8) {
+            p.noPicture = log.contains("no picture from the guest")
+        }
+        guard let qmp = try? QMPConnection(socketPath: qmpPath, identifierPrefix: "omacvm-venus") else { return p }
+        defer { qmp.close() }
+        guard let status = try? qmp.execute("query-status") else { return p }
+        p.answered = true
+        p.paused = status["status"] as? String == "paused"
+        if let r = try? qmp.execute("human-monitor-command", arguments: ["command-line": "info pci"]),
+           let text = r["text"] as? String {
+            p.pciMapped = VenusStartWatch.pciMapped(text)
+        }
+        return p
     }
 
     /// The path the network took at the last start (FastNetwork).
@@ -276,6 +347,7 @@ final class Runner {
         try p.run()
         process = p
         if network.vmnet { watchFastNetwork() }
+        if graphics?.venus == true { watchVenusStart() }
         observeSleep()
         let watch = GPUMemoryWatch(config: c) { [weak self] line in self?.appendLog(line) }
         watch.start()
@@ -601,10 +673,13 @@ final class Runner {
     }
 
     private func willSleep() {
+        hostAsleep = true
         try? sleep.prepareForHostSleep(vmIsRunning: isRunning, isStopping: false)
     }
 
     private func didWake() {
+        hostAsleep = false
+        venusWatch.woke()
         do {
             try sleep.resumeAfterHostWake(vmIsRunning: isRunning, isStopping: false)
             syncClock()
