@@ -22,17 +22,20 @@ enum KeyAccess {
         "keys: Input Monitoring \(listen ? "allowed" : "NOT allowed"), Accessibility (keys) \(post ? "allowed" : "NOT allowed") for OmacVM"
     }
 
-    /// QEMU's own word from the VM's last start: its tap was refused.
-    static func tapFailed(folder: URL) -> Bool {
-        // The line comes in QEMU's first second: the log's start is enough.
-        guard let h = try? FileHandle(forReadingFrom: folder.appendingPathComponent("logs/qemu.log")) else { return false }
+    /// The head of qemu.log of the VM's last start: macOS's answer recorded
+    /// then (`record`) and QEMU's "Could not create event tap" both come in
+    /// QEMU's first second.
+    static func lastLog(folder: URL) -> String? {
+        guard let h = try? FileHandle(forReadingFrom: folder.appendingPathComponent("logs/qemu.log")) else { return nil }
         defer { try? h.close() }
         let head = (try? h.read(upToCount: 64 * 1024)) ?? Data()
-        return head.range(of: Data("Could not create event tap".utf8)) != nil
+        return String(decoding: head, as: UTF8.self)
     }
 
-    /// Show the note: the last start had no tap, or macOS says neither is allowed.
-    static func needsUser(folder: URL) -> Bool { tapFailed(folder: folder) || !(listen || post) }
+    /// QEMU's own word from the VM's last start: its tap was refused.
+    static func tapFailed(folder: URL) -> Bool {
+        lastLog(folder: folder)?.contains("Could not create event tap") == true
+    }
 
     static let missingText = "macOS does not let OmacVM read the keyboard, so ⌘ Tab, ⌘ Space and ⌘ ⇧ 4 can go to macOS instead of Omarchy (mostly with the VM in a window). In System Settings › Privacy & Security, turn OmacVM on under Input Monitoring and under Accessibility, then quit the VM and start it again. If OmacVM is already on there, select it, remove it with −, and press Allow… again: macOS still has an older build of the app."
 

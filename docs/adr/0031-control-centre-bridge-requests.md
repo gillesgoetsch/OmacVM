@@ -116,8 +116,12 @@ Option 2. Requests under `/omacvm/`: `hello`, `status`, `updates`,
   (`OmacVM --control-run`, also spawned disclaimed), so the run is the
   app's, with the grants the person gave the app. The app runs only its own
   omacvm, only the Bridge's commands, and only when its parent is OmacVM
-  Bridge of the same identity and signer: its access is not lent to any
-  other program.
+  Bridge of the same identity and signer. A program can pass that parent
+  check (start the app, then exec the signed Bridge in its own place), so
+  the app takes nothing from its caller that changes what runs: it sets
+  PATH, HOME and TMPDIR itself, keeps only a job status file of the
+  Bridge's shape, and refuses `--ip`, `--key` and `--user`. Its access is
+  not lent to any other program.
 - A job can outlive the Bridge: an update reinstalls the Bridge, which stops
   it mid-job. Jobs run in their own session and write their output and exit
   code to `omacvm-bridge/jobs/`; a restarted Bridge reports them from there

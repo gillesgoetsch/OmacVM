@@ -42,6 +42,10 @@ UNKNOWN_TRIES, UNKNOWN_WAIT = 20, 5.0
 # change from another window or the Mac) and asks the Mac again, also after
 # "no such OmacVM.app VM". Nothing runs while it is closed.
 LIVE_EVERY = 5.0
+# Said before Graphics -> Vulkan or its repair runs (src/cmd/graphics.sh).
+VULKAN_BUILD = ("The VM builds its Vulkan driver now, a few minutes (when its packages are too old for that, "
+                "after a whole system update with omarchy update, often 5-15 minutes); "
+                "until it is there the VM runs on OpenGL.")
 
 THEME = Theme(
     name="omacvm-ansi", ansi=True, dark=True,
@@ -876,7 +880,7 @@ class ControlCentre(App):
         nxt = S.next_graphics(cur)
         text = {"auto": "Automatic: Vulkan on macOS 26 and newer (KosmicKrisp), OpenGL before. With Vulkan the VM builds its Vulkan driver first, a few minutes; until it is there the VM runs on OpenGL.",
                 "opengl": "OpenGL only (no Vulkan in the VM).",
-                "vulkan": "OpenGL plus Vulkan on the Mac's GPU (experimental; Vulkan windows show through the GPU with OmacVM.app 3.0.1 and newer). The VM builds its Vulkan driver now, a few minutes; until it is there the VM runs on OpenGL."}[nxt]
+                "vulkan": "OpenGL plus Vulkan on the Mac's GPU (experimental; Vulkan windows show through the GPU with OmacVM.app 3.0.1 and newer). " + VULKAN_BUILD}[nxt]
         self.push_screen(ConfirmScreen(f"Graphics: {S.GRAPHICS_TITLES[cur]} -> {S.GRAPHICS_TITLES[nxt]}",
                                        text + "\nFrom the VM's next start (shut it down, then start it again)."),
                          lambda yes: yes and self.run_job("graphics", [nxt]))
@@ -886,8 +890,12 @@ class ControlCentre(App):
             self.notify(f"Graphics memory is measured, not switched. {S.GPU_MEMORY_EXPLAINER}")
             return
         if r.feature.name == "graphics":
-            if self.can_ask() and self.c.graphics():
-                self.run_job("graphics", [self.c.graphics()])   # its Vulkan driver again, if it gets Vulkan
+            g = self.c.graphics() if self.can_ask() else ""
+            if g == "vulkan":   # its Vulkan driver again: may update the VM's system first, so asked
+                self.push_screen(ConfirmScreen("Graphics: the Vulkan driver again", VULKAN_BUILD),
+                                 lambda yes: yes and self.run_job("graphics", [g]))
+            elif g:
+                self.run_job("graphics", [g])
             return
         if not r.on:
             self.notify(f"{r.feature.title} is off: space turns it on", severity="warning")

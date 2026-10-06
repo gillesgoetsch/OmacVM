@@ -11,9 +11,12 @@
 #   3. clones Omarchy's background into ~/.config/omarchy/plugins/$USER.background
 #      and patches it so the wallpaper runs through the notch strip and the
 #      built-in display as one image (seen when the bar is hidden)
-#   4. installs ~/.config/hypr/notchbar.lua (hidden NOTCH output) and loads it
+#   4. clones Omarchy's display panel into ~/.config/omarchy/plugins/omanotch.monitor
+#      with the hidden NOTCH output left out of its display list
+#      (~/.local/bin/omanotch-display-panel builds it again after an Omarchy update)
+#   5. installs ~/.config/hypr/notchbar.lua (hidden NOTCH output) and loads it
 #      from ~/.config/hypr/hyprland.lua
-#   5. installs and starts the systemd user service notchcast.service
+#   6. installs and starts the systemd user service notchcast.service
 # Undo with ./guest/uninstall.sh.
 set -euo pipefail
 
@@ -70,8 +73,13 @@ fi
 bg_result=$(python3 "$here/background/apply-patch.py" "$bgclone/Background.qml")
 echo "    $bg_result"
 
+say "leaving NOTCH out of Omarchy's display panel"
+install -m 755 "$here/monitor/display-panel.py" "$bin/omanotch-display-panel"
+panel_result=$("$bin/omanotch-display-panel") || panel_result="failed (Omarchy's own display panel stays)"
+echo "    $panel_result"
+
 # The shell caches plugin code: a changed patch only takes effect after a restart.
-if [[ $patch_result != already* || $bg_result != already* ]]; then
+if [[ $patch_result != already* || $bg_result != already* || $panel_result == patched ]]; then
   omarchy-restart-shell >/dev/null 2>&1 || true
 fi
 

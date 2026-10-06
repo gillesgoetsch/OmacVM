@@ -19,12 +19,19 @@
 #                               ok | needed (no Vulkan without the build) |
 #                               update (Vulkan works; the build adds WebGPU in Chrome) |
 #                               no-venus | no-pages (nothing to do)
+# Exit: 0 done (or nothing to do), 1 not built (one line why), 2 usage,
+# 3 not built: the system update went through but the desktop's graphics
+# would not start (do not restart the VM), 4 not built: the build tools need
+# a full system update first. With OMACVM_SYSTEM_UPDATE_OK=1 (omacvm graphics,
+# after asking) it runs that update (guest/system-update) and builds; never
+# from omacvm apply or the boot timer.
 # Tests: OMACVM_VENUS_PROBE replaces the probe's output ("venus=1 blob_alignment=16384"),
 # OMACVM_VENUS_LIB the driver whose libraries are checked.
 set -euo pipefail
 cd "$(dirname "$0")"
 # Packages only through guest/pkg-add: never an update of one the VM has.
 PKG_ADD=${OMACVM_PKG_ADD:-$PWD/../../../guest/pkg-add}
+SYSTEM_UPDATE=${OMACVM_SYSTEM_UPDATE:-$PWD/../../../guest/system-update}
 FIXED=1:26.2.4                       # the first Venus driver that honours blob alignment
 # This PKGBUILD's version (1:26.2.4.omacvm1): blob alignment and WebGPU's semaphores.
 OURS=$(bash -c 'source ./PKGBUILD && echo "$epoch:$pkgver"')
@@ -108,29 +115,75 @@ if [[ -n ${OMACVM_VENUS_BOOT:-} ]]; then
 fi
 echo "Vulkan (Venus): building Mesa's vulkan-virtio ${OURS#*:} (a few minutes, log $LOG)"
 # Build tools this VM lacks are added for the build and removed after.
-deps=(base-devel)
-while IFS= read -r d; do deps+=("$d"); done < <(bash -c 'source ./PKGBUILD; printf "%s\n" "${depends[@]}" "${makedepends[@]}"')
+deps=(base-devel) rdeps=()
+while IFS= read -r d; do rdeps+=("$d"); done < <(bash -c 'source ./PKGBUILD; printf "%s\n" "${depends[@]}"')
+while IFS= read -r d; do deps+=("$d"); done < <(bash -c 'source ./PKGBUILD; printf "%s\n" "${makedepends[@]}"')
+deps+=("${rdeps[@]}")
 missing=$(pacman -T "${deps[@]}" || true)
 tools=""                             # what this run installed (removed again at the end)
 B=$(mktemp -d /var/tmp/omacvm-vulkan-virtio.XXXXXX)
 cleanup() {
+  local rm=$tools
+  # The driver's own dependencies (vulkan-mesa-implicit-layers) stay with it:
+  # pacman refuses the whole -Rns otherwise.
+  if [[ -n $rm ]] && pacman -Q vulkan-virtio >/dev/null 2>&1; then
+    rm=$(grep -vxF -f <(printf '%s\n' "${rdeps[@]}") <<<"$rm" || true)
+  fi
   rm -rf "$B"
-  if [[ -n $tools ]]; then
+  if [[ -n $rm ]]; then
     # shellcheck disable=SC2086 # one package per word
-    pacman -Rns --noconfirm $tools >>"$LOG" 2>&1 || echo "Vulkan (Venus): build tools left installed (pacman -Rns did not take them all)"
+    pacman -Rns --noconfirm $rm >>"$LOG" 2>&1 || echo "Vulkan (Venus): build tools left installed (pacman -Rns did not take them all)"
   fi
 }
 trap cleanup EXIT
 fail() { echo "Vulkan (Venus): $1 (OpenGL is unaffected; details in $LOG)" >&2; exit 1; }
 : > "$LOG"
-if [[ -n $missing ]]; then
-  # Never a partial upgrade: when the package lists are newer than the system,
-  # installing a build tool can pull newer versions of installed packages (a
-  # newer libdrm or LLVM under the old Mesa ends in a black desktop). Then
-  # nothing is installed and the driver waits for a full pacman -Syu.
+# Never a partial upgrade: when the package lists are newer than the system,
+# installing a build tool can pull newer versions of installed packages (a
+# newer libdrm or LLVM under the old Mesa ends in a black desktop). Then
+# pkg-add installs nothing and exits 3: the VM needs a full update first.
+add_tools() {   # pkg-add's status; its line in $B/pkg-add.err
+  [[ -n $missing ]] || return 0
   # shellcheck disable=SC2086 # one package per word
-  "$PKG_ADD" --asdeps $missing || fail "the build tools are not installed"
+  "$PKG_ADD" --asdeps $missing 2>"$B/pkg-add.err" || return
   tools=$missing
+}
+rc=0; add_tools || rc=$?
+# A prebuilt VM a day or more after its image: its package list is older
+# than the mirrors (they 404), or the tools need newer versions of what the
+# VM has.
+if (( rc == 3 )) && [[ -z ${OMACVM_SYSTEM_UPDATE_OK:-} ]]; then
+  cat "$B/pkg-add.err" >&2
+  echo "Vulkan (Venus): not built: the VM's system needs a full update first (OpenGL is unaffected)" >&2
+  exit 4
+fi
+if (( rc == 3 )); then
+  echo "Vulkan (Venus): the build tools need a newer system than the VM has (Arch Linux ARM moved on): updating the whole system first"
+  urc=0; "$SYSTEM_UPDATE" || urc=$?
+  # 2: updated, but the desktop's graphics would not start (system-update said why).
+  if (( urc == 2 )); then
+    echo "Vulkan (Venus): not built: the system is updated, but its graphics need fixing first: do not restart the VM" >&2
+    exit 3
+  fi
+  (( urc == 0 )) || fail "not built: the VM's system update did not go through (see above)"
+  # The update can bring a driver that needs no build (a newer Mesa).
+  have=$(pacman -Q vulkan-virtio 2>/dev/null | awk '{ print $2 }' || true)
+  if current "$have"; then
+    echo "Vulkan (Venus): the update brought vulkan-virtio $have, nothing to build"
+    exit 0
+  fi
+  echo "Vulkan (Venus): system updated; building Mesa's vulkan-virtio ${OURS#*:} now"
+  missing=$(pacman -T "${deps[@]}" || true)
+  rc=0; add_tools || rc=$?
+  if (( rc )); then
+    # Not pkg-add's "omarchy update, then omacvm apply": that just ran.
+    cat "$B/pkg-add.err" >>"$LOG"
+    fail "the build tools are not installed even after the update (the mirrors may be behind: try again in a few hours)"
+  fi
+fi
+if (( rc )); then
+  cat "$B/pkg-add.err" >&2
+  fail "the build tools are not installed"
 fi
 install -m644 PKGBUILD patches/mesa-venus-opaque-fd-semaphores.patch "$B/"
 chown -R nobody: "$B"

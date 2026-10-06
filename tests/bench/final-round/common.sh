@@ -42,7 +42,7 @@ low_power() { [ "$(pm_value powermode)" = 1 ] || [ "$(pm_value lowpowermode)" = 
 # their VM processes and their background services (Parallels' prl_disp_service
 # and prl_naptd, Fusion's vmnet daemons). Only the target's own may run.
 HV_PROCS='Parallels Desktop\.app/|VMware Fusion\.app/|UTM\.app/|OmacVM[^/]*\.app/|/prl_|/vmware-|/vmnet-|qemu-system-aarch64|com\.apple\.Virtualization\.VirtualMachine'
-VM_PROCS='qemu-system-aarch64|/runtime/bin/OmacVM$|/prl_vm_app$|/vmware-vmx$|/QEMULauncher$|com\.apple\.Virtualization\.VirtualMachine$'
+VM_PROCS='qemu-system-aarch64|/runtime/bin/OmacVM$|/MacOS/OmacVM-VM$|/prl_vm_app$|/vmware-vmx$|/QEMULauncher$|com\.apple\.Virtualization\.VirtualMachine$'
 
 # Other work on the Mac: hypervisor processes other than the target's, a
 # second VM of the target, Claude agents, the bench lock. Prints a JSON
@@ -134,7 +134,7 @@ vm_running() {   # app|utm|fusion|parallels NAME [PORT]
   local t=$1 name=$2 port=${3:-} line
   case $t in
     app)
-      line=$(ps -axww -o args= | grep -E '(qemu-system-aarch64|/runtime/bin/OmacVM) .*-name ' | grep -F -- "-name $name -" | head -1)
+      line=$(ps -axww -o args= | grep -E '(qemu-system-aarch64|/runtime/bin/OmacVM|/MacOS/OmacVM-VM) .*-name ' | grep -F -- "-name $name -" | head -1)
       [ -n "$line" ] || { echo "OmacVM.app runs no VM named \"$name\"" >&2; return 1; }
       case $line in *hostfwd=*) case $line in *":$port-:22"*) ;; *) echo "port $port is not \"$name\"'s SSH" >&2; return 1 ;; esac ;; esac ;;
     parallels)

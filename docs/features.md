@@ -65,6 +65,15 @@ mini the switch was not always handed back: `defaults delete org.omacvm.app
 macShortcuts` and a VM restart go back to macOS keeping them. `omacvm check`
 says which way it went.
 
+**The globe (fn) key** (OmacVM.app): pressed on its own while the VM has the
+keyboard, it goes to Omarchy and opens Omarchy's emoji picker, not macOS's
+Emoji & Symbols over the VM (in Omarchy it is the key XF86Launch3, for your
+own bindings). Only this one macOS shortcut is off, only while the VM has
+the keyboard; fn+F1..F12, fn as a modifier and the globe key in macOS work
+as before. VMs set up before 3.0.1 get the emoji picker binding with
+`omacvm update` (or `omacvm apply`). `defaults write org.omacvm.app
+globeKeyToVM -bool false` and a VM restart leave it with macOS.
+
 **⌃⌥ Esc** (Control + Option + Escape) in the VM takes you
 straight back to macOS: the trackpad and keys go back to macOS and the
 monitor under the pointer moves to the Space beside the VM's, toward the one

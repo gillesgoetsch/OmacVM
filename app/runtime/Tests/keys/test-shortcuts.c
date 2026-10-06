@@ -152,9 +152,12 @@ static int guest_keys(int keycode, unsigned flags, const char *qcodes[8], int *k
     int special = omacvm_special_key(keycode);
     *key_linux = special >= 0 ? special
                : keycode >= 0 && keycode < 128 ? osx_keys[keycode].linux_code : 0;
-    if (special > 0) {
+    if (special >= 61 && special <= 64) {
         static const char *f[] = { "f3", "f4", "f5", "f6" };
         qcodes[n++] = f[special - 61];
+    } else if (special > 0) {
+        /* The globe key: QEMU has no qcode for KEY_PROG3; the guest gets its
+           Linux code straight (QEMU's linux-keyed input, this runtime). */
     } else if (special < 0 && *key_linux) {
         qcodes[n++] = osx_keys[keycode].qcode;
     }
@@ -164,7 +167,7 @@ static int guest_keys(int keycode, unsigned flags, const char *qcodes[8], int *k
 /* Keys that reach the VM as nothing on purpose (omacvm-shortcuts.h). */
 static int no_guest_key(int keycode)
 {
-    return keycode == 0x7f || keycode == 0x90 || keycode == 0x91 || keycode == 0xb3;
+    return keycode == 0x7f || keycode == 0x90 || keycode == 0x91;
 }
 
 static int check_list(const char *path, int print_qcodes, int *enabled_out)
@@ -183,7 +186,7 @@ static int check_list(const char *path, int print_qcodes, int *enabled_out)
         const char *q[8]; int lnx;
         int n = guest_keys(kc, flags, q, &lnx);
         if (print_qcodes) {
-            if (!en || !lnx) continue;
+            if (!en || !lnx || kc == 0xb3) continue;   /* the globe key: no qcode (above) */
             printf("%d", id);
             for (int i = 0; i < n; i++) printf(" %s", q[i]);
             printf("\t%s\n", name);
@@ -194,6 +197,11 @@ static int check_list(const char *path, int print_qcodes, int *enabled_out)
               "%s: shortcut %d (%s) is the escape combo", path, id, name);
         if (no_guest_key(kc)) {
             CHECK(lnx == 0, "%s: shortcut %d (%s): key 0x%x should give the guest nothing", path, id, name, kc);
+        } else if (kc == 0xb3) {
+            CHECK(lnx == OMACVM_GLOBE_LINUX_KEY, "%s: shortcut %d (%s): the globe key should reach the VM as KEY_PROG3",
+                  path, id, name);
+            CHECK(id != OMACVM_GLOBE_HOTKEY || (flags & (SHIFT | CONTROL | OPTION | COMMAND)) == 0,
+                  "%s: macOS's globe shortcut %d has modifiers: not the lone press", path, id);
         } else {
             CHECK(lnx > 0, "%s: shortcut %d (%s): Mac key 0x%x has no key in the VM", path, id, name, kc);
             CHECK(n >= 1 && q[n - 1] && q[n - 1][0], "%s: shortcut %d (%s): no QEMU key name", path, id, name);
@@ -240,6 +248,88 @@ int main(int argc, char **argv)
     CHECK(omacvm_special_key(0xb2) == 64, "Do Not Disturb key -> F6");
     CHECK(omacvm_special_key(0x83) == 62, "Launchpad key -> F4");
     CHECK(omacvm_special_key(0x67) == -1, "F11 uses QEMU's table");
+
+    /* The globe key on its own: KEY_PROG3, a key no Mac key gives otherwise,
+       below KEY_REPLY (232), the end of what QEMU's virtio keyboard offers. */
+    CHECK(omacvm_special_key(0xb3) == 202 && OMACVM_GLOBE_LINUX_KEY == 202, "globe key -> KEY_PROG3 (202)");
+    CHECK(OMACVM_GLOBE_LINUX_KEY < 232, "globe key below KEY_REPLY: QEMU's virtio keyboard offers it");
+    for (int k = 0; k < 256; k++) {
+        int lnx = omacvm_special_key(k);
+        if (lnx < 0) lnx = k < 128 ? osx_keys[k].linux_code : 0;
+        CHECK(k == 0xb3 || lnx != OMACVM_GLOBE_LINUX_KEY, "Mac key 0x%x also gives KEY_PROG3", k);
+    }
+    CHECK(omacvm_special_key(0x3f) == -1 && osx_keys[0x3f].linux_code == 464,
+          "fn itself (0x3f) stays QEMU's (a modifier change the window drops)");
+
+    /* macOS's globe shortcut: off only while the VM has the keyboard, even when
+       macOS keeps its other shortcuts (that is not an input here). */
+    CHECK(omacvm_globe_to_vm(1, 1, 0, 0), "VM has the keyboard: the globe key goes to the VM");
+    CHECK(!omacvm_globe_to_vm(0, 1, 0, 0), "another app in front: macOS keeps the globe key");
+    CHECK(!omacvm_globe_to_vm(1, 0, 0, 0), "our window not key: macOS keeps the globe key");
+    CHECK(!omacvm_globe_to_vm(1, 1, 1, 0), "OMACVM_GLOBE_KEY=mac: macOS keeps the globe key");
+    CHECK(!omacvm_globe_to_vm(1, 1, 0, 1), "hung VM window: macOS gets the globe key back");
+    CHECK(OMACVM_GLOBE_HOTKEY == 188, "macOS's globe shortcut is 188");
+    /* want VM, macOS has it on, ours */
+    CHECK(omacvm_globe_action(1, 1, 0) == OMACVM_GLOBE_TAKE, "VM gets the keyboard: switch the shortcut off");
+    CHECK(omacvm_globe_action(1, 0, 1) == OMACVM_GLOBE_KEEP, "already off by us: nothing");
+    CHECK(omacvm_globe_action(1, 1, 1) == OMACVM_GLOBE_TAKE, "another VM gave it back meanwhile: off again");
+    CHECK(omacvm_globe_action(1, 0, 0) == OMACVM_GLOBE_KEEP, "off by the user (or another VM): not ours, nothing");
+    CHECK(omacvm_globe_action(0, 1, 1) == OMACVM_GLOBE_GIVE_BACK, "VM loses the keyboard: give it back");
+    CHECK(omacvm_globe_action(0, 0, 1) == OMACVM_GLOBE_GIVE_BACK, "VM loses the keyboard: give it back (state not read)");
+    CHECK(omacvm_globe_action(0, 1, 0) == OMACVM_GLOBE_KEEP, "not ours: never switched on by us");
+    CHECK(omacvm_globe_action(0, 0, 0) == OMACVM_GLOBE_KEEP, "a user's off stays off");
+
+    /* One globe press, one KEY_PROG3, whichever way macOS shows it. */
+    {
+        enum { D = OMACVM_GLOBE_EV_FN_DOWN, U = OMACVM_GLOBE_EV_FN_UP, BD = OMACVM_GLOBE_EV_B3_DOWN,
+               BU = OMACVM_GLOBE_EV_B3_UP, O = OMACVM_GLOBE_EV_OTHER, R = OMACVM_GLOBE_EV_RESET };
+        static const struct { const char *what; int n; int ev[8]; int ms[8]; int keys; } cases[] = {
+            { "fn alone", 2, { D, U }, { 0, 90 }, 1 },
+            { "fn alone, twice", 4, { D, U, D, U }, { 0, 90, 200, 290 }, 2 },
+            { "0xb3 alone", 2, { BD, BU }, { 0, 20 }, 1 },
+            { "fn, 0xb3 while held, fn up", 4, { D, BD, BU, U }, { 0, 10, 30, 90 }, 1 },
+            { "fn tap, then its 0xb3", 4, { D, U, BD, BU }, { 0, 90, 100, 120 }, 1 },
+            { "fn tap, a 0xb3 much later is a new press", 4, { D, U, BD, BU }, { 0, 90, 900, 920 }, 2 },
+            { "fn+F1 (another key)", 3, { D, O, U }, { 0, 50, 90 }, 0 },
+            { "fn+click / fn+Ctrl", 3, { D, O, U }, { 0, 50, 90 }, 0 },
+            { "fn up without a down (VM got the keyboard mid-press)", 1, { U }, { 0 }, 0 },
+            { "VM lost the globe key mid-press", 3, { D, R, U }, { 0, 50, 90 }, 0 },
+            { "a key before fn does not spoil the tap", 3, { O, D, U }, { 0, 10, 90 }, 1 },
+            { "fn + a media/volume/brightness key the window never sees", 3, { D, O, U }, { 0, 40, 120 }, 0 },
+            { "fn held, then let go unused", 2, { D, U }, { 0, 900 }, 0 },
+            { "fn tap just under the hold limit", 2, { D, U }, { 0, 650 }, 1 },
+            { "0xb3 just before fn down (same press)", 4, { BD, D, BU, U }, { 0, 5, 30, 90 }, 1 },
+            { "0xb3 down and up, then fn (same press)", 4, { BD, BU, D, U }, { 0, 20, 30, 90 }, 1 },
+            { "0xb3 alone, a fn tap later is a new press", 4, { BD, BU, D, U }, { 0, 20, 600, 690 }, 2 },
+            { "fn, 0xb3 while held, twice fast", 8, { D, BD, BU, U, D, BD, BU, U }, { 0, 2, 30, 90, 180, 182, 210, 270 }, 2 },
+        };
+        for (size_t c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+            OmacVMGlobeTap t = OMACVM_GLOBE_TAP_INIT;
+            int keys = 0, downs = 0, ups = 0;
+            for (int i = 0; i < cases[c].n; i++) {
+                int ev = cases[c].ev[i], what = omacvm_globe_tap_step(&t, ev, cases[c].ms[i]);
+                if (what == OMACVM_GLOBE_DO_TAP) keys++;
+                if (ev == OMACVM_GLOBE_EV_B3_DOWN && what == OMACVM_GLOBE_DO_PASS) { keys++; downs++; }
+                if (ev == OMACVM_GLOBE_EV_B3_UP && what == OMACVM_GLOBE_DO_PASS) ups++;
+                CHECK(what != OMACVM_GLOBE_DO_TAP || ev == OMACVM_GLOBE_EV_FN_UP, "%s: a tap only at fn up", cases[c].what);
+                CHECK(ev == OMACVM_GLOBE_EV_B3_DOWN || ev == OMACVM_GLOBE_EV_B3_UP ||
+                      (what != OMACVM_GLOBE_DO_PASS && what != OMACVM_GLOBE_DO_DROP),
+                      "%s: only a 0xb3 is passed or dropped", cases[c].what);
+            }
+            CHECK(keys == cases[c].keys, "%s: %d KEY_PROG3 presses to the VM, want %d", cases[c].what, keys, cases[c].keys);
+            CHECK(downs == ups, "%s: every 0xb3 down passed has its up passed (%d downs, %d ups)", cases[c].what, downs, ups);
+        }
+    }
+
+    /* What spoils a fn tap from macOS's counters: keys, media keys, clicks, scrolls; never fn itself. */
+    {
+        int have[32] = { 0 };
+        for (size_t i = 0; i < sizeof omacvm_globe_unseen_types / sizeof omacvm_globe_unseen_types[0]; i++)
+            have[omacvm_globe_unseen_types[i] & 31] = 1;
+        CHECK(have[10] && have[14] && have[22] && have[1] && have[3] && have[25],
+              "fn tap: key downs, media keys (NX_SYSDEFINED), scrolls and clicks the window never sees spoil it");
+        CHECK(!have[12] && !have[11], "fn tap: flags changed (fn itself) and key ups never spoil it");
+    }
 
     int enabled = 0, live_enabled = 0;
     int rows = check_list(argv[1], 0, &enabled);

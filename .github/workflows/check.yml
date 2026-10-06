@@ -89,6 +89,10 @@ jobs:
         working-directory: app/app
         run: swift run features-tests
 
+      - name: OmacVM.app window rules (custom resources, disk, omacvm in Terminal, keyboard note)
+        working-directory: app/app
+        run: swift run window-tests
+
       - name: Install dialog defaults (previous copy, Run Without Installing)
         run: src/tests/install-defaults.sh
 
@@ -226,6 +230,9 @@ jobs:
       - name: OmacVM.app full screen always in its own Space (no notch cover; escape combo stays out)
         run: src/tests/app-fullscreen-space.sh
 
+      - name: One OmacVM in the Dock (QEMU started as the app, found by its kernel path)
+        run: src/tests/app-dock-one-app.sh
+
       - name: Keyboard light steps (offline)
         run: src/tests/keyboard-light.sh
 
@@ -244,16 +251,21 @@ jobs:
       - name: OmacVM.app while the VM idles (guest agent connection, clipboard poll)
         run: src/tests/app-idle.sh
 
-      - name: Guest agents offline tests (desktop check, idle waits)
+      - name: Guest agents offline tests (desktop check, idle waits, display panel)
         run: |
           python3 src/app/guest/tests/test_omacvm_displays.py
           python3 src/app/guest/tests/test_idle_waits.py
+          python3 src/app/guest/tests/test_monitor_widget.py
+          python3 src/omanotch/guest/tests/test_display_panel.py
 
       - name: Final-round benchmark kit offline tests (one timing method per row, what is left out, preflight)
         run: tests/bench/final-round/test.sh
 
       - name: Sound on a busy Mac and a Mac audio device that does not answer (log lines, check, test stub)
         run: src/tests/audio-timing.sh
+
+      - name: Chromium's video decoder comes back (GPU retry, pacman hook, check says why)
+        run: src/tests/vdecd-down.sh
 
   # The guest agents are Linux programs: their inotify and pidfd waits only
   # run here (on the Mac those tests skip). Arm, like the guest.
@@ -267,8 +279,17 @@ jobs:
         run: |
           python3 src/app/guest/tests/test_omacvm_displays.py -v
           python3 src/app/guest/tests/test_idle_waits.py -v
+          python3 src/app/guest/tests/test_monitor_widget.py -v
+          python3 src/omanotch/guest/tests/test_display_panel.py -v
 
       - name: Hyprland Lua files parse (omacvm_app.lua)
         run: |
           sudo apt-get install -y -qq lua5.4 >/dev/null
           luac5.4 -p src/app/guest/omacvm_app.lua
+
+      - name: Chromium's video decoder builds, and waits for a GPU that is not usable (no render node here)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends pkg-config gcc libva-dev libgbm-dev libegl-dev \
+            libgles-dev libdrm-dev libavcodec-dev libavutil-dev libsystemd-dev
+          OMACVM_VDECD_SYSTEMD=1 src/tests/vdecd-down.sh

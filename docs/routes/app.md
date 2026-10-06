@@ -100,11 +100,19 @@ VM runs, and goes back by itself when a new version does not start
   shared semaphores Chrome's WebGPU needs (version `26.2.4.omacvm1`,
   [`src/app/guest/venus`](../../src/app/guest/venus), a few minutes the
   first time) when the setting gives the VM Vulkan (also
-  `omacvm graphics --vm NAME vulkan` on a running VM). Arch's own builds of
-  26.2.4 do not replace it; a newer Mesa from Arch does (Vulkan keeps
-  working, WebGPU in Chrome waits for OmacVM's next build of it; the check
-  says so). VMs from 3.0.0 rebuild it once, after the next start or with
-  `omacvm apply`. Until the driver is there the VM starts with
+  `omacvm graphics --vm NAME vulkan` on a running VM). When the VM's
+  package list is too old for the build tools (a prebuilt VM a day after
+  its image: the mirrors no longer have those versions), `omacvm graphics`
+  and the control centre's Graphics -> Vulkan first update the whole
+  system the way `omarchy update` does
+  ([`src/guest/system-update`](../../src/guest/system-update), then the GBM
+  test; in a terminal `omacvm graphics` asks first) and stop with the
+  reason if the update fails. `omacvm apply` and `omacvm update` never
+  update the VM's system: they say to run `omarchy update` first. Arch's
+  own builds of 26.2.4 do not replace it; a newer Mesa from Arch does
+  (Vulkan keeps working, WebGPU in Chrome waits for OmacVM's next build of
+  it; the check says so). VMs from 3.0.0 rebuild it once, after the next
+  start or with `omacvm apply`. Until the driver is there the VM starts with
   OpenGL only, and the app, `omacvm graphics` and the control centre say
   "Vulkan (driver not built yet: runs on OpenGL until the next apply)". In the
   VM `omacvm-venus-driver.timer` checks again 90 s after boot, after the

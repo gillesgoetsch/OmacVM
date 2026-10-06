@@ -8,6 +8,8 @@ PartOf=graphical-session.target
 ExecStart=%h/.local/bin/notchcast
 Restart=always
 RestartSec=2
+# The display panel without NOTCH, built again when an Omarchy update changed it.
+ExecStartPost=-%h/.local/bin/omanotch-display-panel --refresh
 # Belt and braces: never leave the guest cursor hidden.
 ExecStopPost=-/usr/bin/hyprctl eval "hl.config({ cursor = { invisible = false } })"
 # ... and bring the bar back right away instead of after the bar's watchdog.

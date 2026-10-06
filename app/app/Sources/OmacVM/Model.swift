@@ -219,17 +219,21 @@ struct VMConfig: Equatable {
     /// Only CPUS and MEM_MB in vm.env, every other line as it was (`omacvm
     /// resources` changes the same two). The VM reads them at its next start.
     func writeResources() throws {
+        try writeEnv(["CPUS": "\(cpus)", "MEM_MB": "\(memoryMB)"])
+    }
+
+    /// These KEY=value lines in vm.env, every other line as it was (numbers
+    /// only: no quoting).
+    func writeEnv(_ values: [String: String]) throws {
         let url = folder.appendingPathComponent("vm.env")
         var lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }
-        var cpusDone = false, memDone = false
+        var done = Set<String>()
         lines = lines.map { line in
-            if line.hasPrefix("CPUS=") { cpusDone = true; return "CPUS=\(cpus)" }
-            if line.hasPrefix("MEM_MB=") { memDone = true; return "MEM_MB=\(memoryMB)" }
+            for (k, v) in values where line.hasPrefix(k + "=") { done.insert(k); return "\(k)=\(v)" }
             return line
         }
-        if !cpusDone { lines.append("CPUS=\(cpus)") }
-        if !memDone { lines.append("MEM_MB=\(memoryMB)") }
+        for (k, v) in values.sorted(by: { $0.key < $1.key }) where !done.contains(k) { lines.append("\(k)=\(v)") }
         try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
@@ -452,6 +456,11 @@ enum Settings {
     /// working in macOS), so it waits for a fix.
     /// Hidden: defaults write org.omacvm.app macShortcuts -bool false
     static var macShortcuts: Bool { UserDefaults.standard.object(forKey: "macShortcuts") as? Bool ?? true }
+    /// The globe (fn) key pressed on its own goes to the VM while it has the
+    /// keyboard (Omarchy's emoji picker there), not to macOS's Emoji & Symbols
+    /// (omacvm-cocoa-globe-key.patch). Off: macOS keeps it.
+    /// Hidden: defaults write org.omacvm.app globeKeyToVM -bool false
+    static var globeKeyToVM: Bool { UserDefaults.standard.object(forKey: "globeKeyToVM") as? Bool ?? true }
     /// The VM's window takes the pointer without a click (after a start, a
     /// guest reboot, or the window becoming key with the pointer on it).
     /// Off: QEMU's own way, on entering the window or a click.

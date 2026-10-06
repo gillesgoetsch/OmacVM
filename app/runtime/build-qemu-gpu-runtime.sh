@@ -793,6 +793,10 @@ grep -q 'omacvm_hwc_take(0, qemu_console_get_cursor(dcl->con), cocoaView,' "$sou
   die "ui/cocoa.m does not hand the guest's pointer image to the Mac's cursor (hw-cursor patch)"
 # Opt-in (OMACVM_GL_INPUT_FIRST=1): while input comes, the newest frame goes on screen.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-input-first.patch"
+# The globe key on its own goes to the VM (not Emoji & Symbols) while it has the keyboard.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-globe-key.patch"
+grep -q '^    omacvm_globe_init();$' "$source_dir/ui/cocoa.m" && grep -q 'if (omacvm_globe_event(event)) {' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m does not hand the globe key to the VM (globe-key patch)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"

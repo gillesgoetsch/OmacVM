@@ -133,7 +133,9 @@ days_ago() { mkdir -p "$UPD"; date -u -v-"$1"d '+%Y-%m-%dT%H:%M:%SZ' > "$UPD/las
 ENV=(--env "OMACVM_APPCAST_URL=http://127.0.0.1:$PORT/OmacVM-appcast.json" --env "OMACVM_APPCAST_KEY=$(cat "$WORK/test-key.pub") $(cat "$WORK/spare-key.pub")"
      --env "OMACVM_SETTINGS_DIR=$SETTINGS" --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_UPDATE_WAIT=20)
 start_app() { open -n "${ENV[@]}" "$1" --args "${@:2}"; }
-launcher_pid() { pgrep -f "$1/Contents/MacOS/OmacVM" | head -1; }
+# QEMU, started as Contents/MacOS/OmacVM-VM (3.0.1, DockIdentity) or by its own path.
+QEMU_RE='(MacOS/OmacVM-VM|Resources/runtime/bin/OmacVM) '
+launcher_pid() { pgrep -f "$1/Contents/MacOS/OmacVM( |\$)" | head -1; }
 # A swap that is still on (waiting for the new app's answer) ends first.
 wait_swaps() { local i; for ((i = 0; i < 180; i++)); do pgrep -f "update-swap.sh .*$WORK/" >/dev/null || return 0; sleep 0.5; done; return 1; }
 quit_app() { local p; wait_swaps; p=$(launcher_pid "$1"); [[ -z $p ]] || { kill "$p"; sleep 1; }; }
@@ -202,12 +204,12 @@ EOF
 dd if=/dev/null of="$VM/disk.img" bs=1 seek=$((1 << 30)) 2>/dev/null
 mkfile -n 64m "$VM/efi-vars.fd"; touch "$VM/ready"
 start_app "$APP" --start --vm SU-test-vm
-check "the test VM's QEMU runs from the app" 'wait_for 20 "pgrep -f \"\$APP/Contents/Resources/runtime/bin/OmacVM\" >/dev/null"'
+check "the test VM's QEMU runs from the app" 'wait_for 20 "pgrep -f \"\$APP/Contents/$QEMU_RE\" >/dev/null"'
 start_app "$APP" --update-now
 check "update asked for: held back" 'wait_for 30 "grep -q \"install 2.7.1 deferred\" \"\$UPD/update.log\""'
 sleep 3
 check "still 2.7.0 while the VM runs" '[[ $(version "$APP") == 2.7.0 ]]'
-check "the VM still runs" 'pgrep -f "$APP/Contents/Resources/runtime/bin/OmacVM" >/dev/null'
+check "the VM still runs" 'pgrep -f "$APP/Contents/$QEMU_RE" >/dev/null'
 # Shut the VM down (QMP quit: QEMU ends with 0, as after a guest power-off).
 QMP=$(getconf DARWIN_USER_TEMP_DIR)omacvm/$(printf '%s' "$VM" | shasum | cut -c1-8).qmp
 qmp_quit() {
@@ -219,7 +221,7 @@ for c in ("qmp_capabilities", "quit"):
     f.write(json.dumps({"execute": c}) + "\n"); f.flush(); time.sleep(0.3)
 EOF
 }
-qemu_runs() { pgrep -f "$APP/Contents/Resources/runtime/bin/OmacVM" >/dev/null; }
+qemu_runs() { pgrep -f "$APP/Contents/$QEMU_RE" >/dev/null; }
 qmp_quit
 check "after the VM stopped: 2.7.1 in place" 'wait_for 60 "[[ \$(version \"\$APP\") == 2.7.1 ]]"'
 check "swap result: installed" 'wait_for 30 "grep -q \"result: installed 2.7.0 2.7.1\" \"\$UPD/update.log\""'
@@ -300,7 +302,7 @@ start_app "$APP" --start --vm SU-test-vm
 check "the test VM runs" 'wait_for 20 qemu_runs'
 start_app "$APP" --update-now
 check "update asked for: held back" 'wait_for 30 "grep -q \"install 2.7.4 deferred\" \"\$UPD/update.log\""'
-pkill -9 -f "$APP/Contents/Resources/runtime/bin/OmacVM"
+pkill -9 -f "$APP/Contents/$QEMU_RE"
 check "after the crash: 2.7.4 in place" 'wait_for 60 "[[ \$(version \"\$APP\") == 2.7.4 ]]"'
 check "swap result: installed" 'wait_for 30 "grep -q \"result: installed 2.7.0 2.7.4\" \"\$UPD/update.log\""'
 check "2.7.4 runs" 'wait_for 10 "[[ -n \$(launcher_pid \"\$APP\") ]]"'

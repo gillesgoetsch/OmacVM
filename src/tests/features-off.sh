@@ -64,6 +64,8 @@ run_off() {   # FUNCTION [SESSION=0|1] [SERVICE=enabled|active|none]
     chown() { :; }
     restart_shell_later() { echo "restart-shell" >> "$CALLS"; }
     /repo/guest/omanotch-notifications.sh() { :; }
+    # /repo's Python helpers run from this checkout.
+    SRC=$R/src; python3() { echo "python3 $*" >> "$CALLS"; command python3 "${@/#\/repo\//$SRC/}"; }
     # shellcheck source=../guest/off.sh
     source "$R/src/guest/off.sh"
     R=/repo   # this copy of src/ in the VM
@@ -95,19 +97,23 @@ expect "omanotch off, queued: disabled" yes "$(called "systemctl --global disabl
 
 # Omanotch built and running, nobody logged in (its uninstall needs the session).
 reset_root
-file "$H/.local/bin/notchcast"; file "$H/.config/systemd/user/notchcast.service"
+file "$H/.local/bin/notchcast"; file "$H/.local/bin/omanotch-display-panel"; file "$H/.config/systemd/user/notchcast.service"
 file "$H/.config/systemd/user/notchcast.service.d/omacvm-host.conf"
 link "$H/.config/systemd/user/graphical-session.target.wants/notchcast.service" "$H/.config/systemd/user/notchcast.service"
 file "$H/.config/hypr/notchbar.lua"; file "$H/.local/state/omacvm/omanotch"; file "$H/.local/state/omanotch/expect"
 file /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook
+file "$H/.config/omarchy/plugins/omanotch.monitor/manifest.json" '{"id": "omanotch.monitor", "omarchy": {"clonedFrom": "omarchy.monitor"}}'
+file "$H/.config/omarchy/shell.json" '{"bar": {"layout": {"right": [{"id": "omanotch.monitor"}, {"id": "omarchy.clock"}]}}}'
 printf '%s\n' 'require("hypr.other")' '' '-- omarchy-notch-bar: hidden output for the macOS notch helper.' 'require("hypr.notchbar")' > "$ROOT$H/.config/hypr/hyprland.lua"
 run_off omanotch_off 0
 expect "omanotch off, built: its uninstall tried in the session" yes "$(called "in_session bash /repo/omanotch/guest/uninstall.sh")"
-for p in "$H/.local/bin/notchcast" "$H/.config/systemd/user/notchcast.service" "$H/.config/systemd/user/notchcast.service.d" \
+for p in "$H/.local/bin/notchcast" "$H/.local/bin/omanotch-display-panel" "$H/.config/systemd/user/notchcast.service" "$H/.config/systemd/user/notchcast.service.d" \
          "$H/.config/systemd/user/graphical-session.target.wants/notchcast.service" "$H/.config/hypr/notchbar.lua" \
-         "$H/.local/state/omanotch/expect" /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook; do
+         "$H/.local/state/omanotch/expect" /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook "$H/.config/omarchy/plugins/omanotch.monitor"; do
   expect "omanotch off, built, no session: $p gone" no "$(has "$p")"
 done
+expect "omanotch off, no session: Omarchy's display panel back in the bar" "omarchy.monitor omarchy.clock" \
+  "$(jq -r '[.bar.layout.right[].id] | join(" ")' "$ROOT$H/.config/omarchy/shell.json")"
 expect "omanotch off: hyprland.lua no longer loads notchbar" "$(printf '%s\n' 'require("hypr.other")' '')" "$(cat "$ROOT$H/.config/hypr/hyprland.lua")"
 expect "omanotch off: notchcast stopped" yes "$(called "user_ctl disable --now notchcast.service")"
 : > "$OUT"; : > "$CALLS"; run_off omanotch_off 0

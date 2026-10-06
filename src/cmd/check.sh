@@ -444,6 +444,16 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     warn "VM keyboard" "macOS refused OmacVM's key tap: ⌘ Tab, ⌘ Space, ⌘ ⇧ 4 can go to macOS. System Settings › Privacy & Security: OmacVM on under Input Monitoring and Accessibility (on already: remove it with − and add it again), then restart the VM"
   fi
 fi
+# The globe key on its own (3.0.1): to the VM while it has the keyboard.
+if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
+  if grep -q 'globe key stays with macOS' "$miclog"; then
+    skip "globe key" "stays with macOS (defaults write org.omacvm.app globeKeyToVM -bool false)"
+  elif grep -q "globe key: macOS's switch for its shortcut was not found\|globe key .*FAILED" "$miclog"; then
+    warn "globe key" "opens macOS's Emoji & Symbols: macOS refused to switch its shortcut off (logs/qemu.log)"
+  elif grep -q 'globe key goes to the VM' "$miclog"; then
+    ok "globe key" "goes to the VM while it has the keyboard (Omarchy's emoji picker)"
+  fi
+fi
 # Sound on a busy Mac: QEMU's main loop (the sound card's timers) at
 # user-interactive QoS, and the sound card paced (no catch-up after a stall);
 # the hidden audioClassic setting keeps QEMU's own timing for both.

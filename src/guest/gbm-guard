@@ -9,6 +9,9 @@
 #          since begin back to their old versions (from pacman's cache) and
 #          tests again. Exit 0 = GBM as good as at begin, 1 = still broken
 #          (the line says how to recover)
+#   rebase after a full system update with GBM open (guest/system-update):
+#          the install's start is now (end does not undo the update).
+#          Nothing without a begin
 # guest/install.sh runs begin before its first pacman and end when it stops.
 # Tests: src/tests/pkg-safe.sh (OMACVM_GBM_TEST stands in for the test).
 set -uo pipefail
@@ -61,8 +64,11 @@ case ${1:-} in
     if [[ -z $p ]]; then : > "$D/ok"; else rm -f "$D/ok"; fi
     pacman -Q > "$D/packages" 2>/dev/null
     exit 0 ;;
+  rebase)
+    [[ -f $D/packages ]] || exit 0
+    exec "$0" begin ;;
   end) ;;
-  *) echo "usage: gbm-guard begin|end|test" >&2; exit 2 ;;
+  *) echo "usage: gbm-guard begin|end|test|rebase" >&2; exit 2 ;;
 esac
 
 [[ -f $D/packages ]] || { echo "gbm-guard: no begin" >&2; exit 0; }

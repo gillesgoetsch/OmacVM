@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Combine
 import OmacVMFeatures
+import OmacVMWindow
 import SwiftUI
 import OmacVMBuildProgress
 
@@ -22,6 +23,8 @@ final class AppState: ObservableObject {
     let creator = Creator()
     let storage = StorageModel()
     var startVM: () -> Void = {}
+    /// This app's VM runs (main.swift sets it).
+    var vmRunning: () -> Bool = { false }
 
     init() {
         (config, screen) = Self.start()
@@ -100,6 +103,7 @@ struct SetupView: View {
     @State private var usePrebuilt = true
     @State private var graphics = GraphicsChoice.auto
     @StateObject private var mouse = MagicMouseWatch()
+    @State private var offerCLI = !UserDefaults.standard.bool(forKey: "offeredCLI")
 
     private var userOK: Bool {
         state.config.user.range(of: "^[a-z_][a-z0-9_-]{0,31}$", options: .regularExpression) != nil
@@ -164,6 +168,8 @@ struct SetupView: View {
                     ForEach([64, 128, 256, 512], id: \.self) { Text("\($0) GB (grows as it fills)").tag($0) }
                 }
                 VMsFolderRow(storage: state.storage)
+                // Offered once, in the first setup; later in the VM window.
+                if offerCLI { CommandLineRow() }
                 if let n = state.storage.note, state.storage.noteIsError {
                     Text(n).font(.caption).foregroundStyle(.red)
                 }
@@ -208,6 +214,7 @@ struct SetupView: View {
         state.config.features = NewVMFeatures.string(bridge: bridge, gestures: gestures, autologin: autologin,
                                                      hasBattery: Mac.hasBattery, hasNotch: Mac.hasNotch)
         locationProblem = nil
+        UserDefaults.standard.set(true, forKey: "offeredCLI")
         // A new VM goes into the VMs folder as it is now, under its name; the
         // folder is kept (a default that changes later must not hide the VM).
         Paths.vmsRoot = Paths.vmsRoot
@@ -366,19 +373,27 @@ struct ReadyView: View {
     @State private var graphicsNote: String?
     @State private var macFolder: String?
     @State private var macFolderNote: String?
+    @State private var customResources = false
+    /// Counts the app's activations: the keyboard note is drawn anew on each.
+    @State private var activations = 0
 
-    /// The create screen's tiers; resources set some other way show as Custom.
+    /// The create screen's tiers; resources set some other way show as
+    /// Custom (-1); Custom… (-2) opens the steppers.
     private var tier: Binding<Int> {
         Binding(get: { Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) ?? -1 },
-                set: { setTier($0) })
+                set: { if $0 == -2 { customResources = true } else { setTier($0) } })
     }
 
     private func setTier(_ t: Int) {
         guard Mac.tierNames.indices.contains(t) else { return }
         let v = Mac.tier(t)
+        setResources(cpus: v.cpus, memoryGB: v.memoryGB)
+    }
+
+    private func setResources(cpus: Int, memoryGB: Int) {
         var c = state.config
-        c.cpus = v.cpus
-        c.memoryMB = v.memoryGB * 1024
+        c.cpus = cpus
+        c.memoryMB = memoryGB * 1024
         guard c != state.config else { return }
         do {
             try c.writeResources()
@@ -418,6 +433,13 @@ struct ReadyView: View {
                 if Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) == nil {
                     Text("Custom: \(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB").tag(-1)
                 }
+                Divider()
+                Text("Custom…").tag(-2)
+            }
+            .sheet(isPresented: $customResources) {
+                CustomResourcesSheet(cpus: state.config.cpus, memoryMB: state.config.memoryMB,
+                                     onSave: { setResources(cpus: $0, memoryGB: $1); customResources = false },
+                                     onCancel: { customResources = false })
             }
             if let n = resourcesNote {
                 Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
@@ -453,6 +475,8 @@ struct ReadyView: View {
             fastNetwork
             USBSection(folder: state.config.folder)
             macFolderRow
+            DiskSection(state: state)
+            CommandLineRow()
             Divider()
             StorageSection(storage: state.storage, selected: state.config.location == nil ? nil : state.config.folder)
             Divider()
@@ -534,11 +558,17 @@ struct ReadyView: View {
         }
     }
 
-    /// Shown only when the VM's keyboard tap is refused (KeyAccess); checked
-    /// again every few seconds, so it goes once OmacVM is allowed.
+    /// Shown when the VM's keyboard tap is refused (KeyAccess); checked
+    /// again every few seconds and when OmacVM comes to the front (back from
+    /// System Settings). Allowed since the VM's last start: a grey line.
     private var keyAccess: some View {
         TimelineView(.periodic(from: .now, by: 3)) { _ in
-            if KeyAccess.needsUser(folder: state.config.folder) {
+            switch KeyAccess.note(folder: state.config.folder) {
+            case .none:
+                EmptyView()
+            case .allowedNextStart:
+                Text(KeyNote.allowedText).font(.caption).foregroundStyle(.secondary)
+            case .needsUser:
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Keyboard: OmacVM is not allowed to read it").foregroundStyle(.red)
@@ -549,6 +579,10 @@ struct ReadyView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+        }
+        .id(activations)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            activations += 1
         }
     }
 
@@ -619,6 +653,16 @@ struct ReadyView: View {
                 fastNetStatus = text
             }
         }
+    }
+}
+
+extension KeyAccess {
+    /// What the window says (KeyNote): the red note, nothing, or "allowed,
+    /// takes effect at the next start" when the refusal is from a start
+    /// before OmacVM was allowed. (Here, not in KeyAccess.swift, which
+    /// src/tests/app-key-access.sh compiles on its own.)
+    static func note(folder: URL) -> KeyNote {
+        KeyNote.decide(allowedNow: listen || post, lastLog: lastLog(folder: folder))
     }
 }
 

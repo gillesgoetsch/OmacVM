@@ -7,19 +7,25 @@ Copies Omarchy's own display widget (/usr/share/omarchy/shell/plugins/panels/
 monitor) into OUT_DIR, so it follows the installed Omarchy, and adds a "MAC
 DISPLAYS" section with "Use external displays" (omacvm-displays external
 toggle), and on a display 4K wide or more a line under the scale presets: 2x
-is the sharp one there. OUT_DIR gets this folder's manifest.json and placement.sh and a
+is the sharp one there. Omanotch's hidden NOTCH output is left out of its
+display list (Omanotch's patch, src/omanotch/guest/monitor/display-panel.py).
+OUT_DIR gets this folder's manifest.json and placement.sh and a
 .source-sha256 stamp of the panel it was built from. Exit 1 when Omarchy's
 panel has changed so much that the switch no longer fits: then the stock
 widget stays.
 """
 
 import hashlib
+import importlib.machinery
+import importlib.util
 import pathlib
 import shutil
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
 DEFAULT_SOURCE = "/usr/share/omarchy/shell/plugins/panels/monitor"
+# Omanotch's patch that leaves its hidden NOTCH output out (same copy of src/).
+NOTCH_PATCH = HERE.parents[2] / "omanotch/guest/monitor/display-panel.py"
 
 PROPS = """
   // OmacVM.app: in full screen, Omarchy on every Mac display (omacvm-displays).
@@ -210,6 +216,19 @@ EDITS = [
 ]
 
 
+def hide_notch(panel: str) -> str:
+    """Leave Omanotch's NOTCH output out; the panel as it is if that fails."""
+    try:
+        loader = importlib.machinery.SourceFileLoader("omanotch_display_panel", str(NOTCH_PATCH))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module.patch(panel)
+    except (OSError, ValueError, AttributeError) as error:
+        print(f"omacvm.monitor: NOTCH stays in the display list ({error})", file=sys.stderr)
+        return panel
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__.strip(), file=sys.stderr)
@@ -223,6 +242,7 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         panel = panel.replace(anchor, replacement)
+    panel = hide_notch(panel)
     out.mkdir(parents=True, exist_ok=True)
     for item in source.iterdir():
         if item.name not in ("Panel.qml", "manifest.json") and item.is_file():

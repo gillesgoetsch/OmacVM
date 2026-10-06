@@ -14,8 +14,10 @@
 # the system, or a dependency needs a newer version), nothing is installed and
 # one line on stderr says so: update the whole system first, then
 # `omacvm apply`. Never runs `pacman -Sy`.
-# Exit: 0 all there now, 1 not (one line on stderr). pacman's own output goes
-# to /var/log/omacvm-pacman.log.
+# Exit: 0 all there now, 1 not (one line on stderr), 3 not because the VM
+# needs a full system update first (an old package list, or a partial update
+# refused): guest/system-update, then try again. pacman's own output goes to
+# /var/log/omacvm-pacman.log.
 # Tests: src/tests/pkg-safe.sh.
 set -uo pipefail
 # pacman's English words below ("Depends On", "[installed: "): with the
@@ -57,7 +59,7 @@ if [[ -n $waiting && -z $change ]]; then
 fi
 if [[ -n $change ]]; then
   echo "OmacVM: $names not installed: it goes with newer versions of what the VM has (${change#, }); alone it would be a partial update, which can break the desktop. Update the system with omarchy update, then omacvm apply" >&2
-  exit 1
+  exit 3
 fi
 { echo "== $(date '+%F %T') pkg-add ${asdeps[*]-} $names"; } >>"$LOG" 2>/dev/null || true
 out=$(mktemp) || out=/dev/null
@@ -67,6 +69,8 @@ if ! pacman -S --noconfirm ${asdeps[@]+"${asdeps[@]}"} "${want[@]}" >"$out" 2>&1
   # fresh prebuilt one, not updated for a while): every download is a 404.
   if grep -q "failed retrieving file .* error: 404" "$out" 2>/dev/null; then
     echo "OmacVM: $names not installed: the VM's package list is older than the mirrors (they no longer have those versions). Update the system with omarchy update, then omacvm apply" >&2
+    [[ $out == /dev/null ]] || rm -f "$out"
+    exit 3
   else
     echo "OmacVM: $names not installed: pacman failed (details in $LOG)" >&2
   fi

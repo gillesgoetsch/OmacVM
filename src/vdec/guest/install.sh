@@ -7,6 +7,8 @@
 #        backend); Chromium's switch for its V4L2 decoder in the user's flags,
 #        and an extension that has YouTube send VP9 instead of AV1 (this
 #        Chromium decodes AV1 only on the CPU)
+#        A pacman hook builds the daemon again when FFmpeg's soname changes
+#        and starts it when it was down (vdecd.sh).
 #   off: all of it goes again (dkms and the kernel headers stay installed)
 # Arch Linux ARM's Chromium has no VA-API, only V4L2: see docs/adr/0025.
 # Google Chrome and Brave use VA-API directly and need none of this.
@@ -36,7 +38,7 @@ if [[ $ON == off ]]; then
   rm -rf /usr/local/share/omacvm/chromium-no-av1
   rm -f /etc/systemd/system/omacvm-vdecd.service "$BIN" "$LIB/chromium-flags.py" \
     /etc/udev/rules.d/70-omacvm-vdec.rules /etc/modules-load.d/omacvm-vdec.conf \
-    /etc/sysusers.d/omacvm-vdec.conf "$STAMP"
+    /etc/sysusers.d/omacvm-vdec.conf /etc/pacman.d/hooks/95-omacvm-vdecd.hook "$STAMP"
   systemctl daemon-reload
   if [[ -e /sys/module/omacvm_vdec ]]; then say "off (the module goes at the next VM start: an app has it open)"
   else say "off"; fi
@@ -53,9 +55,7 @@ dkms_build $NAME "$VER" "$LOG"
 # The daemon, built here against the VM's FFmpeg, libva and Mesa.
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-pkgs="libva libva-drm egl glesv2 gbm libdrm libavcodec libavutil libsystemd"
-# shellcheck disable=SC2046
-if ! cc -O2 -Wall -Imodule -o "$T/omacvm-vdecd" omacvm-vdecd.c $(pkg-config --cflags --libs $pkgs) >> "$LOG" 2>&1; then
+if ! ./vdecd.sh build "$T/omacvm-vdecd"; then
   say "the daemon did not build (log: $LOG)"
   exit 1
 fi
@@ -68,6 +68,7 @@ install -Dm644 omacvm-vdec.sysusers /etc/sysusers.d/omacvm-vdec.conf
 systemd-sysusers /etc/sysusers.d/omacvm-vdec.conf
 install -m644 70-omacvm-vdec.rules /etc/udev/rules.d/
 install -m644 omacvm-vdecd.service /etc/systemd/system/
+install -Dm644 95-omacvm-vdecd.hook /etc/pacman.d/hooks/95-omacvm-vdecd.hook
 echo omacvm_vdec | install -Dm644 /dev/stdin /etc/modules-load.d/omacvm-vdec.conf
 udevadm control --reload 2>/dev/null || true
 systemctl daemon-reload

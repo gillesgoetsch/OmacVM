@@ -78,7 +78,7 @@ printf "NAME='Omarchy'\nCPUS=4\nMEM_MB=8192\nDISK_GB=64\nSSH_PORT=52222\nVM_USER
 # The app's own modules first (as SwiftPM builds them), then its sources with
 # this test's main instead of the app's.
 mkdir -p "$T/mods"
-for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMBuildProgress; do
+for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMBuildProgress OmacVMWindow; do
   swiftc -swift-version 5 -parse-as-library -module-cache-path "$T/mc" -module-name $m -emit-module \
     -emit-module-path "$T/mods/$m.swiftmodule" -emit-library -static -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift ||
     { echo "FAIL $m does not build"; exit 1; }
@@ -87,7 +87,7 @@ srcs=()
 for f in "$R"/app/app/Sources/OmacVM/*.swift; do
   case $(basename "$f") in main.swift|RenderUpdateUI.swift) ;; *) srcs+=("$f") ;; esac   # the app's main and its own render mode
 done
-swiftc -swift-version 5 -module-cache-path "$T/mc" -I "$T/mods" -L "$T" -lOmacVMUpdate -lOmacVMNet -lOmacVMUSB -lOmacVMFolder -lOmacVMFeatures -lOmacVMBuildProgress -o "$T/$BIN" \
+swiftc -swift-version 5 -module-cache-path "$T/mc" -I "$T/mods" -L "$T" -lOmacVMUpdate -lOmacVMNet -lOmacVMUSB -lOmacVMFolder -lOmacVMFeatures -lOmacVMBuildProgress -lOmacVMWindow -o "$T/$BIN" \
   "${srcs[@]}" "$R/src/tests/app-mouse-swipe/main.swift" || { echo "FAIL the render test does not build"; exit 1; }
 HOME=$H CFFIXED_USER_HOME=$H OMACVM_RESOURCES=$R/app "$T/$BIN" "$OUT" || fail=1
 echo "PNGs: $OUT"

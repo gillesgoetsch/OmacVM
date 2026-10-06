@@ -54,7 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let installer = args.firstIndex(of: "--installed-by").flatMap { $0 + 1 < args.count ? pid_t(args[$0 + 1]) : nil }
         if let id = Bundle.main.bundleIdentifier,
            let other = NSRunningApplication.runningApplications(withBundleIdentifier: id).first(where: {
+               // The VM's QEMU has this bundle id too (DockIdentity): it is no launcher.
                $0 != me && !$0.isTerminated && $0.processIdentifier != installer
+                   && !Running.isQEMU($0.processIdentifier)
            }) {
             if args.contains("--update-now") {
                 DistributedNotificationCenter.default().postNotificationName(
@@ -86,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The control centre's Mac jobs run this app's omacvm when there is no checkout.
         ControlCLI.refresh()
         state.startVM = { [weak self] in self?.startVM() }
+        state.vmRunning = { [weak self] in self?.runner?.isRunning == true || Self.qemuApp != nil }
         state.storage.appBusy = { [weak self] in
             guard let self else { return false }
             return self.runner?.isRunning == true || self.state.screen == .building || Self.qemuApp != nil
@@ -128,11 +131,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let updateRequest = Notification.Name("\(Bundle.main.bundleIdentifier ?? "org.omacvm.app").update-now")
     /// The VM's window belongs to QEMU's process: the one from this app
     /// (another copy of OmacVM may run a VM of its own).
+    /// By the kernel's path: LaunchServices reports this app's own executable
+    /// for it (DockIdentity).
     static var qemuApp: NSRunningApplication? {
-        let mine = Running.realPath(Bundle.main.bundleURL) + "/"
-        return NSWorkspace.shared.runningApplications.first {
-            guard let p = $0.executableURL.map(Running.realPath) else { return false }
-            return p.hasPrefix(mine) && p.hasSuffix("/runtime/bin/OmacVM")
+        NSWorkspace.shared.runningApplications.first {
+            !$0.isTerminated && Running.isQEMU($0.processIdentifier, of: Bundle.main.bundleURL)
         }
     }
 
@@ -313,14 +316,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         let wasActive = NSApp.isActive
+        // QEMU's window takes this app's own Dock icon (DockIdentity), so this
+        // launcher steps out of the Dock first. If QEMU came up while the
+        // launcher still held the icon, the Dock gave QEMU a second one beside
+        // a pinned OmacVM (MacBook Air, macOS 26.6.2).
+        window?.orderOut(nil)
+        centring?.taken()
+        NSApp.setActivationPolicy(.accessory)
         do {
             try r.start()
             runner = r
             state.message = nil
-            window?.orderOut(nil)
-            centring?.taken()
-            // QEMU's window carries the app's name and icon in the Dock.
-            NSApp.setActivationPolicy(.accessory)
             if let pid = r.process?.processIdentifier { handFocus(to: pid, wasActive: wasActive) }
         } catch {
             state.message = "Could not start the VM: \(error.localizedDescription)"

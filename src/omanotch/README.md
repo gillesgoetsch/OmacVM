@@ -54,6 +54,8 @@ have shown.
    display, right below the notch. The wallpaper is patched the same way: it is
    laid out once across the strip and the display, so with the bar hidden
    (Super+Shift+Space) the image runs straight through the notch strip.
+   Omarchy's display panel gets a patched copy too (`omanotch.monitor`), so
+   `NOTCH` is not listed there as a display to scale or switch off.
 3. **Streaming only what changes.** `notchcast`, a small C program in the VM,
    captures `NOTCH` with Wayland's `ext-image-copy-capture`. A capture only
    completes when Hyprland actually repaints, so an idle bar costs zero CPU. It
@@ -152,7 +154,9 @@ VM — `systemctl --user edit notchcast`, `Environment=…`:
   in the strip.
 - The bar and background clones are forks of Omarchy's plugins. After an
   Omarchy update that changes them, re-clone and run `./guest/install.sh`
-  again — the patches are versioned and refuse to apply blindly.
+  again — the patches are versioned and refuse to apply blindly. The display
+  panel copy is built again by itself when Omarchy's panel changed (at the next
+  notchcast start); if the patch no longer fits, Omarchy's own panel comes back.
 - Hyprland warns about overlapping monitors after layout changes. The overlap
   is deliberate; `notchbar.lua` dismisses that one warning and nothing else.
 - Several VMs at once: the strip shows the bar of the VM whose window is full
@@ -210,8 +214,8 @@ up by itself.
 - [Omarchy](https://omarchy.org) by DHH and contributors — the bar, the
   shell, the whole beautiful thing
 - [Hyprland](https://hyprland.org) and [Quickshell](https://quickshell.org)
-- Not affiliated with Omarchy, Parallels, UTM or Apple. Omarchy's bar and
-  background code is not included here: it is cloned from your own Omarchy
+- Not affiliated with Omarchy, Parallels, UTM or Apple. Omarchy's bar,
+  background and display panel code is not included here: it is cloned from your own Omarchy
   installation and patched at install time.
 
 ## License

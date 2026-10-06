@@ -15,29 +15,32 @@
 # the guest's display agent (OmacVM.app VM), and the VM lock of the Mac it
 # runs on. Not on a Mac someone is working at: it shows the VM and moves the
 # pointer for a moment.
-#   src/tests/fullscreen-space-vm.sh --runtime DIR --firmware FD --vm DIR --ssh-port N
+#   src/tests/fullscreen-space-vm.sh --runtime DIR --firmware FD --vm DIR --ssh-port N [--qemu PATH]
+# --qemu: start QEMU by this path, e.g. an app's Contents/MacOS/OmacVM-VM, as
+# OmacVM.app starts it since 3.0.1 (QEMU then counts as the app, one Dock icon).
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
-RT=""; VMD=""; PORT=""; FW=""
+RT=""; VMD=""; PORT=""; FW=""; QEXE=""
 while (( $# )); do
   case $1 in
     --runtime) RT=$2; shift 2 ;;
     --firmware) FW=$2; shift 2 ;;
     --vm) VMD=$2; shift 2 ;;
     --ssh-port) PORT=$2; shift 2 ;;
-    *) sed -n '19s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+    --qemu) QEXE=$2; shift 2 ;;
+    *) sed -n '18,20s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
   esac
 done
 QEMU=$RT/bin/qemu-system-aarch64; [[ -x $QEMU ]] || QEMU=$RT/bin/OmacVM
+[[ -n $QEXE ]] && QEMU=$QEXE
 [[ -x $QEMU && -f $VMD/disk.img && -f $VMD/efi-vars.fd && $PORT =~ ^[0-9]+$ && -f $FW ]] ||
-  { sed -n '19s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+  { sed -n '18,20s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 [[ -e $HOME/.omacvm-user-testing ]] && { echo "fullscreen-space-vm: the user is testing: no VM (STANDARDS 18)" >&2; exit 1; }
 
 NAME="OmacVM T-fullscreen-space"
 PAT="-name $NAME -machine"
 W=$(mktemp -d "${TMPDIR:-/tmp}/omacvm-fs-space-vm.XXXXXX")
 LOG=$VMD/qemu-fullscreen-space.log
-VDS=()
 gssh() {
   ssh -i "$HOME/.ssh/omacvm" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1 "$@"
@@ -46,7 +49,8 @@ cleanup() {
   pgrep -f -- "$PAT" >/dev/null && gssh "sync; systemctl poweroff" >/dev/null 2>&1
   for _ in $(seq 40); do pgrep -f -- "$PAT" >/dev/null || break; sleep 1; done
   pkill -f -- "$PAT" 2>/dev/null
-  (( ${#VDS[@]} )) && kill "${VDS[@]}" 2>/dev/null
+  # vd runs in $(...): its pids come from files (an array set there stays there).
+  cat "$W"/*.vd-pid 2>/dev/null | xargs kill 2>/dev/null
   rm -rf "$W"
 }
 trap cleanup EXIT
@@ -62,7 +66,7 @@ clang -fobjc-arc -framework Foundation -framework CoreGraphics \
   "$R/app/scripts/dev/virtual-display.m" -o "$W/virtual-display" || exit 1
 vd() {   # NAME SIZE AT -> display id (a new identity each run: pid as serial)
   "$W/virtual-display" "$2" --at "$3" --name "$1" > "$W/$1.out" 2>&1 &
-  VDS+=($!)
+  echo $! > "$W/$1.vd-pid"
   for _ in $(seq 40); do grep -q '^id=' "$W/$1.out" && break; sleep 0.25; done
   sed -n 's/^id=//p' "$W/$1.out"
 }

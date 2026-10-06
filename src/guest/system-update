@@ -1,0 +1,175 @@
+#!/bin/bash
+# system-update (root, in the VM): the VM's whole system up to date the way
+# the control centre's "update Omarchy" does it (omarchy update -y, then
+# gbm-guard test), but without a terminal or a password. For an OmacVM job
+# whose packages the VM's old package list can no longer download: Graphics
+# -> Vulkan on a prebuilt VM a day after its image was made
+# (app/guest/venus/vulkan-virtio.sh). Never pacman -Sy alone (guest/pkg-add
+# says why).
+#   system-update      exit 0 updated, graphics open; 1 not updated (one
+#                      line why); 2 updated, but the graphics would not start
+#                      (the line says not to restart)
+# omarchy update runs as the desktop user in its own unit
+# (omacvm-system-update), so a dropped SSH connection does not cut pacman
+# off. Its sudo needs no password while it runs: a sudoers file the unit
+# removes when it ends (and the next boot, if the VM went off meanwhile).
+# Nobody is at the keyboard: a question Omarchy asks even with -y (remove
+# orphaned packages?) gets no. An update that shows nothing new for 10
+# minutes (a question that still waits) or runs longer than 40 is stopped,
+# and the sudoers file goes with it. One run at a time (a lock). Progress
+# lines on stdout; the update's output in /var/log/omacvm-system-update.log.
+# Called only when someone asked for it: Graphics -> Vulkan (omacvm graphics,
+# the control centre), never omacvm apply. Tests: src/tests/pkg-safe.sh
+# (OMACVM_SYSTEM_UPDATE_RUN stands in for the unit; a copy with stand-ins for
+# systemd tests the unit's way).
+set -uo pipefail
+G=$(cd "$(dirname "$0")" && pwd)/gbm-guard
+LOG=${OMACVM_SYSTEM_UPDATE_LOG:-/var/log/omacvm-system-update.log}
+UNIT=omacvm-system-update
+SUDOERS=/etc/sudoers.d/zz-omacvm-update
+TMPF=/etc/tmpfiles.d/omacvm-update-sudo.conf
+RUN=${OMACVM_SYSTEM_UPDATE_DIR:-/run/omacvm-system-update}   # wrapper, gum, status
+LOCK=${OMACVM_SYSTEM_UPDATE_LOCK:-/run/omacvm-system-update.lock}
+MAX=${OMACVM_SYSTEM_UPDATE_MAX:-2400}      # seconds the update may run
+STALL=${OMACVM_SYSTEM_UPDATE_STALL:-600}   # seconds without new output: it waits for an answer
+say() { echo "OmacVM: $*"; }
+
+# What the update does now: "(12/340) upgrading mesa" while pacman runs.
+progress() {
+  local p
+  p=$(awk '/ omarchy update -y \(OmacVM\)$/ { b = "" } { b = b $0 "\n" } END { printf "%s", b }' "$LOG" 2>/dev/null |
+    tr '\r' '\n' | grep -aoE '\( *[0-9]+/[0-9]+\) (upgrading|installing|reinstalling|removing|downloading|checking) [^ ]+' |
+    tail -1 | tr -s ' ')
+  if [[ -z $p ]] || pgrep -x pacman >/dev/null; then echo "$p"; else echo "packages done, Omarchy's own steps now"; fi
+}
+
+# $RUN/run CMD...: runs it, its status to $RUN/rc (the unit's own status is
+# gone with the unit). $RUN/bin/gum: no to every question, a pager or table
+# printed without waiting, the rest is gum. $1: the user who writes the status.
+helpers() {
+  local gum; gum=$(command -v gum 2>/dev/null) || gum=/usr/bin/gum
+  rm -rf "$RUN" && mkdir -p "$RUN/bin" && : > "$RUN/rc" || return 1
+  cat > "$RUN/run" <<EOF || return 1
+#!/bin/bash
+"\$@"; rc=\$?
+echo "== omarchy update exit \$rc"
+echo "\$rc" > "$RUN/rc"
+EOF
+  cat > "$RUN/bin/gum" <<EOF || return 1
+#!/bin/bash
+# OmacVM's update without a person (guest/system-update): no to questions.
+case \${1:-} in
+  confirm|choose|input|filter|write|file) exit 1 ;;
+  pager) if (( \$# > 1 )); then printf '%s\\n' "\${!#}"; else cat; fi; exit 0 ;;
+  table) exec "$gum" table --print "\${@:2}" ;;
+esac
+exec "$gum" "\$@"
+EOF
+  chmod 755 "$RUN" "$RUN/bin" "$RUN/run" "$RUN/bin/gum" &&
+    { [[ -z ${1:-} ]] || chown "$1:" "$RUN/rc"; }
+}
+
+run_unit() {   # -> the update's exit status
+  local u h uid path cmd g sig
+  u=$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env 2>/dev/null | tail -1)
+  [[ -n $u ]] || u=$(getent passwd 1000 | cut -d: -f1)
+  h=$(getent passwd "$u" | cut -d: -f6); uid=$(id -u "$u" 2>/dev/null)
+  [[ -n $u && -d $h ]] || { say "no desktop user to run omarchy update as" >&2; return 1; }
+  # OMARCHY_PATH must be the checkout the command comes from (Omarchy checks).
+  if [[ -x $h/.local/share/omarchy/bin/omarchy-update ]]; then
+    path=$(realpath "$h/.local/share/omarchy"); cmd=$path/bin/omarchy-update
+  elif [[ -x /usr/share/omarchy/bin/omarchy-update ]]; then
+    path=/usr/share/omarchy; cmd=/usr/bin/omarchy-update
+  else
+    say "no omarchy update in this VM" >&2; return 1
+  fi
+  if ! { printf 'Defaults:%s verifypw=any\n%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$u" "$u" > "$SUDOERS.new" &&
+         chmod 440 "$SUDOERS.new" && visudo -cqf "$SUDOERS.new" && mv -f "$SUDOERS.new" "$SUDOERS"; }; then
+    rm -f "$SUDOERS.new"; say "could not let omarchy update use sudo" >&2; return 1
+  fi
+  echo "r $SUDOERS" > "$TMPF"
+  helpers "$u" || { rm -f "$SUDOERS" "$TMPF"; say "could not prepare omarchy update" >&2; return 1; }
+  systemctl reset-failed "$UNIT" >/dev/null 2>&1
+  local env=(-E HOME="$h" -E USER="$u" -E LOGNAME="$u" -E LANG=C.UTF-8 -E TERM=xterm-256color
+             -E OMARCHY_PATH="$path" -E PATH="$RUN/bin:$path/bin:/usr/local/bin:/usr/bin")
+  # Logged in: the user's runtime folder (Omarchy's update lock is there, so
+  # an update the user starts meanwhile waits for this one), and the
+  # session's D-Bus and Hyprland for the restarts at the update's end.
+  if [[ -n $uid && -d /run/user/$uid ]]; then
+    env+=(-E XDG_RUNTIME_DIR="/run/user/$uid" -E DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus")
+    sig=$(ls -t "/run/user/$uid/hypr" 2>/dev/null | head -1)
+    [[ -z $sig ]] || env+=(-E HYPRLAND_INSTANCE_SIGNATURE="$sig" -E WAYLAND_DISPLAY=wayland-1)
+  fi
+  # A question past the gum above (a newer Omarchy sets its own PATH) takes
+  # its default after 30 s instead of waiting (both spellings gum has used).
+  for g in CONFIRM CHOOSE CCHOOSE INPUT FILTER FILE WRITE PAGER TABLE; do env+=(-E "GUM_${g}_TIMEOUT=30s"); done
+  # Stopped with SIGINT: pacman then stops between two packages, not in one.
+  systemd-run --quiet --unit="$UNIT" --uid="$u" --gid="$(id -g "$u")" -p WorkingDirectory="$h" \
+    -p StandardInput=null -p "StandardOutput=append:$LOG" -p "StandardError=append:$LOG" \
+    -p RuntimeMaxSec="$MAX" -p KillSignal=SIGINT -p TimeoutStopSec=300 \
+    -p "ExecStopPost=+/bin/rm -f $SUDOERS $TMPF" \
+    "${env[@]}" "$RUN/run" "$cmd" -y || { rm -f "$SUDOERS" "$TMPF"; say "could not start omarchy update" >&2; return 1; }
+  local t=0 p n size="" seen=$SECONDS
+  while [[ ! -s $RUN/rc ]] && systemctl is-active -q "$UNIT"; do
+    sleep 5; t=$((t + 5))
+    n=$(wc -c < "$LOG" 2>/dev/null) || n=0
+    if [[ $n != "$size" ]]; then size=$n; seen=$SECONDS; fi
+    if (( SECONDS - seen >= STALL )); then
+      say "omarchy update shows nothing new for $((STALL / 60)) minutes (a question nobody can answer?): stopping it" >&2
+      systemctl stop "$UNIT" >/dev/null 2>&1; break
+    fi
+    if (( t % 60 == 0 )); then p=$(progress); say "still updating ($((t / 60)) min${p:+: $p})"; fi
+  done
+  # Still stopping (its time was up, or the stop above): wait for it.
+  systemctl stop "$UNIT" >/dev/null 2>&1
+  rm -f "$SUDOERS" "$TMPF"   # the unit does; also when it could not
+  local rc; rc=$(cat "$RUN/rc" 2>/dev/null); rm -rf "$RUN"
+  if ! [[ $rc =~ ^[0-9]+$ ]]; then
+    say "omarchy update was stopped before its end (after $((MAX / 60)) minutes, $((STALL / 60)) without new output, or killed)" >&2
+    rc=1
+  fi
+  return "$rc"
+}
+
+[[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]] || (( EUID == 0 )) || { echo "system-update: run as root" >&2; exit 1; }
+# One at a time: a second run would delete the first one's helpers and sudoers.
+if ! { exec 9>>"$LOCK" && flock -n 9; } 2>/dev/null; then
+  say "the VM's system is not updated: an update runs already: try again when it is done" >&2; exit 1
+fi
+if [[ -z ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
+  if systemctl is-active -q "$UNIT"; then
+    say "the VM's system is not updated: an update runs already: try again when it is done" >&2; exit 1
+  fi
+  # Another pacman with the lock (the user's, or Omarchy's update check
+  # right after login): wait for it, as guest/install.sh does. A lock
+  # without pacman is from an install that was cut off.
+  for ((i = 0; i < 120; i++)); do
+    if [[ ! -e /var/lib/pacman/db.lck ]] || ! pgrep -x pacman >/dev/null; then break; fi
+    (( i )) || say "waiting for pacman ($(pgrep -ax pacman | head -1 | cut -c1-80))"
+    sleep 5
+  done
+  if [[ -e /var/lib/pacman/db.lck ]]; then
+    pgrep -x pacman >/dev/null && { say "the VM's system is not updated: pacman still runs after 10 minutes: try again when it is done" >&2; exit 1; }
+    rm -f /var/lib/pacman/db.lck
+  fi
+  # A sudoers file left from an update cut off (the unit was not there to remove it).
+  rm -f "$SUDOERS" "$TMPF"
+fi
+say "updating the VM's system with omarchy update (all packages at once; often 5-15 minutes, log $LOG)"
+{ echo "== $(date '+%F %T') omarchy update -y (OmacVM)"; } >>"$LOG" 2>/dev/null
+if [[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
+  # shellcheck disable=SC2086 # the stand-in command and its words
+  helpers && PATH=$RUN/bin:$PATH "$RUN/run" $OMACVM_SYSTEM_UPDATE_RUN >>"$LOG" 2>&1
+  rc=$(cat "$RUN/rc" 2>/dev/null); rm -rf "$RUN"; [[ $rc =~ ^[0-9]+$ ]] || rc=1
+else run_unit; rc=$?; fi
+(( rc == 0 )) || say "omarchy update stopped (exit $rc; see $LOG)" >&2
+# Also after a stop: it may have changed some packages already.
+line=$("$G" test 2>&1); ok=$?
+if (( ok != 0 )); then
+  say "$line: do not restart the VM; see docs/troubleshooting.md, \"Black screen after an update\"" >&2; exit 2
+fi
+(( rc == 0 )) || exit 1
+# An OmacVM install around this (guest/install.sh) puts back only what it
+# changes after the update.
+"$G" rebase
+say "the VM's system is up to date ($line; restart the VM when it suits)"

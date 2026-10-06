@@ -321,6 +321,7 @@ final class Runner {
         if Settings.macShortcuts { env["OMACVM_MAC_SHORTCUTS"] = "1" }
         if !Settings.pointerStart { env["OMACVM_POINTER_START"] = "0" }
         if Settings.macPointer { env["OMACVM_HW_CURSOR"] = "1" }
+        if !Settings.globeKeyToVM { env["OMACVM_GLOBE_KEY"] = "mac" }
         // Video decoding on the Mac's media engine (H.264, VP9, HEVC). AV1 only for
         // VMs whose VA-API shim keeps it to Chromium (omacvm apply writes
         // video-decode): FFmpeg's AV1 cannot go to VideoToolbox.
@@ -362,6 +363,9 @@ final class Runner {
             env["OMACVM_GL_PRESENT_ON_TICK"] = "1"
         }
         p.environment = env
+        // One OmacVM in the Dock: QEMU counts as this app (DockIdentity).
+        let launch = DockIdentity.launchPath(qemu: Paths.qemu.path, bundle: Bundle.main.bundlePath, env: env)
+        p.executableURL = URL(fileURLWithPath: launch)
         let logURL = c.folder.appendingPathComponent("logs/qemu.log")
         // Append mode: this app adds "OmacVM: ..." lines while QEMU writes
         // (appendLog); without O_APPEND QEMU's next write lands at its own
@@ -385,6 +389,7 @@ final class Runner {
             log.write(Data("OmacVM: no microphone permission yet: the VM records nothing until its next start\n".utf8))
         }
         log.write(Data("OmacVM: \(KeyAccess.record)\n".utf8))
+        log.write(Data("OmacVM: \(DockIdentity.record(launch: launch, qemu: Paths.qemu.path))\n".utf8))
         if Settings.hdr && !Mac.hasHDRDisplay {
             log.write(Data("OmacVM: HDR is on, but no display here can show it: the VM gets the SDR path\n".utf8))
         }
@@ -393,10 +398,14 @@ final class Runner {
         let agentPath = c.agentSocket.path
         p.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
+            // A QEMU killed while the VM had the keyboard leaves macOS's globe
+            // shortcut off: give it back (GlobeKey).
+            let globe = GlobeKey.giveBack(after: proc.processIdentifier)
             GuestAgent.release(socketPath: agentPath)
             let reason = proc.terminationReason
             Task { @MainActor in
                 self?.noteEarlyExit(status: status, reason: reason)
+                if globe { self?.appendLog("OmacVM: macOS's globe shortcut given back (QEMU ended without)") }
                 self?.stopObserving()
                 self?.gpuMemory?.stop()
                 self?.clipboard?.stop()
@@ -435,6 +444,9 @@ final class Runner {
         startControl()
         // Held while QEMU runs, so qemu-ga in the VM sleeps (GuestAgent).
         Thread.detachNewThread { GuestAgent.hold(socketPath: agentPath) }
+        // Grow or Compact asked for in the window (VMDisk), once the guest answers.
+        let pid = p.processIdentifier
+        VMDisk.runJobs(config: c, agentPath: agentPath, running: { kill(pid, 0) == 0 })
     }
 
     /// What of the Mac this start of the VM may use (its features).

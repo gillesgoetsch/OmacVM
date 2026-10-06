@@ -782,6 +782,42 @@ def test_graphics_row_on_an_app_vm(tmp_path, monkeypatch):
         checks.stop()
 
 
+def test_graphics_repair_with_vulkan_asks_first(tmp_path, monkeypatch):
+    from omacvm_cc.tui import ConfirmScreen
+    """Repair on Graphics Vulkan builds the driver again, which can update the
+    VM's whole system first (omarchy update): asked, nothing sent on no."""
+    mac, checks = FakeMac(version="2.9.0"), FakeChecks()
+    mac.graphics = {"graphics": "vulkan", "next_start": "opengl", "this_start": "", "driver_ready": False,
+                    "waiting_for_driver": True}
+    for k, v in vm_env(str(tmp_path), mac.port, checks.path, "OMACVM_VM_TYPE=app\n").items():
+        monkeypatch.setenv(k, v)
+
+    async def go():
+        a = app()
+        async with a.run_test(size=(110, 30)) as pilot:
+            assert await settle(pilot, lambda: a.c.linked and "graphics" in rows(a) and a.c.graphics() == "vulkan")
+            from textual.widgets import DataTable
+            t = a.screen.query_one(DataTable)
+            t.move_cursor(row=[r.feature.name for r in a.rows].index("graphics"))
+            await pilot.press("r")
+            assert await settle(pilot, lambda: isinstance(a.screen, ConfirmScreen))
+            assert "omarchy update" in a.screen.text
+            await pilot.press("n")
+            await pilot.pause(0.5)
+            assert not any(p == "/omacvm/jobs" for _, p, _ in mac.requests)
+            await pilot.press("r")
+            assert await settle(pilot, lambda: isinstance(a.screen, ConfirmScreen))
+            await pilot.press("y")
+            assert await settle(pilot, lambda: any(p == "/omacvm/jobs" for _, p, _ in mac.requests))
+            posts = [b for m, p, b in mac.requests if p == "/omacvm/jobs"]
+            assert posts[-1] == {"action": "graphics", "graphics": "vulkan"}
+    try:
+        asyncio.run(go())
+    finally:
+        mac.stop()
+        checks.stop()
+
+
 def test_no_graphics_row_on_other_routes(world):
     async def go():
         a = app()

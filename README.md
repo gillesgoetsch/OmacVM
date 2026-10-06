@@ -96,6 +96,7 @@ and starts it. Run `omacvm` any time after that: with no VM yet it builds one;
 otherwise it asks what you want to do (build another VM, switch features,
 update, check). Prefer git? `git clone https://github.com/gillesgoetsch/omacvm`
 and run `./install.sh` in it. Using a coding agent? [Copy the prompt](docs/agents.md).
+Only OmacVM.app? Its window's "omacvm in Terminal" Install adds the command.
 
 ## Requirements
 

@@ -28,7 +28,7 @@ for f in "$R"/app/app/Sources/OmacVM/*.swift; do
   case $(basename "$f") in main.swift|RenderUpdateUI.swift) ;; *) srcs+=("$f") ;; esac
 done
 libs=()
-for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMBuildProgress; do   # the app's library targets (Package.swift)
+for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMBuildProgress OmacVMWindow; do   # the app's library targets (Package.swift)
   swiftc -swift-version 5 -parse-as-library -static -emit-library -emit-module -module-name $m \
     -emit-module-path "$T/$m.swiftmodule" -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift
   libs+=(-l$m)

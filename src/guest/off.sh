@@ -67,7 +67,8 @@ gestures_off() {
 omanotch_off() {
   local n=$H/.local/bin/notchcast u=$H/.config/systemd/user/notchcast.service
   local q=/etc/systemd/user/omacvm-omanotch.service hook=/etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook
-  off_any "$n" "$u" "$u.d" "$q" "$hook" "$H/.config/hypr/notchbar.lua" "$H/.local/state/omacvm/omanotch" || return 0
+  local panel=$H/.config/omarchy/plugins/omanotch.monitor
+  off_any "$n" "$u" "$u.d" "$q" "$hook" "$H/.config/hypr/notchbar.lua" "$H/.local/state/omacvm/omanotch" "$panel" || return 0
   log "Omanotch: off"
   user_units_off omacvm-omanotch.service
   rm -f "$ROOT$q" "$ROOT$hook"
@@ -75,9 +76,14 @@ omanotch_off() {
   # Omanotch's own uninstall needs the session (Hyprland, the shell); the
   # files go here too, so it is off also without one.
   if off_any "$n" "$u"; then in_session bash "$R/omanotch/guest/uninstall.sh" >/dev/null 2>&1 || true; fi
+  # Its display panel clone (UTM, Fusion, Parallels): without the session,
+  # Omarchy's panel goes back in its place in shell.json itself.
+  if [[ -d $ROOT$panel ]]; then
+    XDG_CONFIG_HOME=$ROOT$H/.config python3 "$R/omanotch/guest/monitor/display-panel.py" --drop >/dev/null 2>&1 || true
+  fi
   user_units_off notchcast.service
   rm -rf "$ROOT$u" "$ROOT$u.d"
-  rm -f "$ROOT$n" "$ROOT$H/.config/hypr/notchbar.lua" "$ROOT$H/.local/state/omacvm/omanotch" "$ROOT$H/.local/state/omanotch/expect"
+  rm -f "$ROOT$n" "$ROOT$H/.local/bin/omanotch-display-panel" "$ROOT$H/.config/hypr/notchbar.lua" "$ROOT$H/.local/state/omacvm/omanotch" "$ROOT$H/.local/state/omanotch/expect"
   off_lines "$H/.config/hypr/hyprland.lua" '-- omarchy-notch-bar: hidden output for the macOS notch helper.' 'require("hypr.notchbar")'
 }
 
