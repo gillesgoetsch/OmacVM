@@ -96,7 +96,9 @@ parts=()
 while read -r name _; do parts+=("$(dirname "$PB_MANIFEST")/$name"); done < <(python3 "$OMACVM_SRC/prebuilt/manifest.py" parts "$PB_MANIFEST")
 bytes_watch "prebuilt VM" "$PB_SIZE" "${parts[@]}" & watch=$!
 prebuilt_download
-kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null || true
+# Without OMACVM_PROGRESS=1 (omacvm build) the watcher is already gone: kill
+# fails, and set -e must not stop the build there.
+kill "$watch" 2>/dev/null || true; wait "$watch" 2>/dev/null || true; watch=
 progress_line download "prebuilt VM" "$PB_SIZE" "$PB_SIZE"
 log "downloaded and checked in $(( $(date +%s) - t0 )) s"
 
