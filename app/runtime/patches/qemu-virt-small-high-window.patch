@@ -1,0 +1,57 @@
+From: OmacVM
+Subject: [PATCH] virt: allow a small high PCIe window, right above RAM
+
+On Apple M1 and M2, HVF gives a VM a 36-bit IPA space (64 GiB). The virt
+machine puts its high IO regions at 256 GiB or more, so on these Macs the
+high PCIe window never fits and QEMU drops it without a word. Every BAR
+then shares the 751 MiB window below 1 GiB, where Venus's host memory BAR
+(1 GiB and more, aligned to its size) does not fit: the firmware maps no
+PCI device at all.
+
+highmem-mmio-size now takes any power of two from 1 GiB. A size below the
+default 512 GiB also puts the high IO regions right above RAM instead of
+at 256 GiB. With 16 GiB and a 4 GiB VM the window is 16-32 GiB, inside
+36 bits. The default layout is unchanged.
+
+--- a/hw/arm/virt.c
++++ b/hw/arm/virt.c
+@@ -2574,7 +2574,12 @@
+         error_report("maxmem/slots too huge");
+         exit(EXIT_FAILURE);
+     }
+-    if (base < vms->memmap[VIRT_MEM].base + LEGACY_RAMLIMIT_BYTES) {
++    /*
++     * OmacVM: a high PCIe window smaller than the default goes right above
++     * RAM, so it fits a 36-bit IPA space (Apple M1/M2 under HVF: 64 GiB).
++     */
++    if (base < vms->memmap[VIRT_MEM].base + LEGACY_RAMLIMIT_BYTES &&
++        extended_memmap[VIRT_HIGH_PCIE_MMIO].size >= DEFAULT_HIGH_PCIE_MMIO_SIZE) {
+         base = vms->memmap[VIRT_MEM].base + LEGACY_RAMLIMIT_BYTES;
+     }
+ 
+@@ -3391,11 +3396,9 @@
+         return;
+     }
+ 
+-    if (size < DEFAULT_HIGH_PCIE_MMIO_SIZE) {
+-        char *sz = size_to_str(DEFAULT_HIGH_PCIE_MMIO_SIZE);
+-        error_setg(errp, "highmem-mmio-size cannot be set to a lower value "
+-                         "than the default (%s)", sz);
+-        g_free(sz);
++    /* OmacVM: down to 1 GiB; below 512 GiB it sits right above RAM. */
++    if (size < GiB) {
++        error_setg(errp, "highmem-mmio-size cannot be smaller than 1 GiB");
+         return;
+     }
+ 
+@@ -4267,7 +4270,9 @@
+                                    NULL, NULL);
+     object_class_property_set_description(oc, "highmem-mmio-size",
+                                           "Set the high memory region size "
+-                                          "for PCI MMIO");
++                                          "for PCI MMIO (at least 1 GiB; "
++                                          "below 512 GiB it sits right "
++                                          "above RAM)");
+ 
+     object_class_property_add(oc, "virtio-mmio-transports", "uint8",
+                                    virt_get_virtio_transports,

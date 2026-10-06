@@ -417,6 +417,15 @@ default, moved into it at the first 3.0.0 launch) adds
 `blob=true,venus=true,hostmem=<plan>G` to the GPU device, once the VM has a
 Venus driver with blob rounding (`venus-ready`). Automatic is OpenGL in 3.0.0.
 
+M1/M2: macOS gives their VMs 36 address bits (64 GB), and QEMU's high PCI
+window (512 GB at 512 GB) does not fit, so the host memory window had only
+the 751 MB window below 1 GB (256 MB at most, 3.0.0). From 3.0.1 the app
+adds `highmem-mmio-size=<n>G` to the machine there (`Graphics.highWindowGB`,
+16 GB at most) and `qemu-virt-small-high-window.patch` puts that window
+right above RAM; the host memory window takes at most half of it (M2 Air,
+4 GB VM: 1 GB in 16-32 GB). If no window fits (a VM near 64 GB) it stays
+256 MB.
+
 Limits: MoltenVK has no `nullDescriptor`, no geometry shaders, no logicOp,
 no float64, no `VK_EXT_provoking_vertex`. So Zink as a GL driver and
 ANGLE-on-Vulkan in Chrome do not work; they wait for KosmicKrisp, which

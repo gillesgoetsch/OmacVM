@@ -28,6 +28,7 @@ in more words.
   busy (on a Mac mini, 5 minutes of a test tone: up to 81 breaks, against
   0-6 with real-time PipeWire). `omacvm apply` now runs RTKit without that
   watchdog, and `omacvm check` shows "sound priority".
+- Vulkan on an M1 or M2 Mac gets a host memory window of 1 GB or more (3.0.0: 256 MB).
 
 ## 3.0.0
 

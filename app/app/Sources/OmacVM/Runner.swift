@@ -35,7 +35,9 @@ final class Runner {
         graphics = g
         var a: [String] = [
             "-name", q(c.name),
-            "-machine", "virt,gic-version=3",
+            // M1/M2 with Vulkan: a high PCI window that fits their address
+            // space, for Venus's host memory window (Graphics.highWindowGB).
+            "-machine", "virt,gic-version=3" + (g.highWindowGB.map { ",highmem-mmio-size=\($0)G" } ?? ""),
             "-accel", "hvf",
             // HVF has no usable guest PMU on Apple Silicon.
             "-cpu", "host,pmu=off",

@@ -14,6 +14,7 @@ GRAPHICS_WAITING_FOR_DRIVER="driver not built yet: runs on OpenGL until the next
 GRAPHICS_DID_NOT_START="Vulkan did not start on this Mac: using OpenGL"   # Graphics.didNotStart
 GRAPHICS_HIGH_PCI_WINDOW_BITS=40     # Graphics.highPCIWindowBits
 GRAPHICS_LOW_WINDOW_HOSTMEM_MB=256   # Graphics.lowWindowHostmemMB
+GRAPHICS_SMALL_HIGH_WINDOW_MAX_GB=16 # Graphics.smallHighWindowMaxGB
 
 graphics_choice() {   # DIR -> opengl|vulkan|auto
   local c
@@ -89,11 +90,30 @@ graphics_summary() {
   else echo OpenGL; fi
 }
 
-# Venus's host memory window in MB: Graphics.hostmemMB (256 MB on a Mac
-# whose VMs get less than 40 address bits, M1/M2: no high PCI window there).
+# QEMU's high PCI window in GB on a Mac whose VMs get less than 40 address
+# bits (M1/M2): Graphics.highWindowGB. Nothing when none fits or not needed.
+graphics_high_window_gb() {   # VM_GB [VM_ADDRESS_BITS]
+  local b=${2:-} top start w=$GRAPHICS_SMALL_HIGH_WINDOW_MAX_GB
+  [[ -n $b ]] && (( b < GRAPHICS_HIGH_PCI_WINDOW_BITS && b > 30 )) || return 0
+  top=$(( 1 << (b - 30) )); start=$(( $1 + 3 ))
+  while (( w >= 1 )); do
+    (( (start + w - 1) / w * w + w <= top )) && { echo "$w"; return; }
+    w=$(( w / 2 ))
+  done
+}
+
+# Venus's host memory window in MB: Graphics.hostmemMB (on a Mac whose VMs
+# get less than 40 address bits, M1/M2: at most half the small high PCI
+# window, or 256 MB when none fits).
 graphics_hostmem_mb() {   # MAC_GB VM_GB [VM_ADDRESS_BITS]
-  local reserve=8 free p=1
-  if [[ -n ${3:-} ]] && (( $3 < GRAPHICS_HIGH_PCI_WINDOW_BITS )); then echo "$GRAPHICS_LOW_WINDOW_HOSTMEM_MB"; return; fi
+  local reserve=8 free p=1 w m
+  if [[ -n ${3:-} ]] && (( $3 < GRAPHICS_HIGH_PCI_WINDOW_BITS )); then
+    w=$(graphics_high_window_gb "$2" "$3")
+    [[ -n $w ]] || { echo "$GRAPHICS_LOW_WINDOW_HOSTMEM_MB"; return; }
+    m=$(graphics_hostmem_mb "$1" "$2")
+    (( m > w * 512 )) && m=$(( w * 512 ))
+    echo "$m"; return
+  fi
   (( $1 <= 36 )) && reserve=6
   (( $1 <= 16 )) && reserve=4
   free=$(( $1 - $2 - reserve ))

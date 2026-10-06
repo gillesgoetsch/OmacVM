@@ -21,7 +21,7 @@ app_bundle() { return 1; }
 n=0; diff=0
 export OMACVM_TEST_VENUS_SWITCH=0
 while IFS='|' read -r left want_s; do
-  read -r c macos kk ready forced mac vm ipa fb _ want_v want_m <<<"$left"; want_s=${want_s# }
+  read -r c macos kk ready forced mac vm ipa fb _ want_v want_m want_w <<<"$left"; want_s=${want_s# }
   d=$T/vm; rm -rf "$d"; mkdir -p "$d"
   echo "$c" > "$d/graphics"
   (( ready )) && : > "$d/venus-ready"
@@ -30,15 +30,17 @@ while IFS='|' read -r left want_s; do
   got_v=$(OMACVM_TEST_MACOS_MAJOR=$macos OMACVM_TEST_KOSMICKRISP=$kk graphics_next_start "$d")
   got_s=$(OMACVM_TEST_MACOS_MAJOR=$macos OMACVM_TEST_KOSMICKRISP=$kk graphics_summary "$d")
   got_m=$(graphics_hostmem_mb "$mac" "$vm" "$ipa")
+  got_w=-; [[ $got_v == vulkan ]] && got_w=$(graphics_high_window_gb "$vm" "$ipa") && [[ -n $got_w ]] || got_w=-
   n=$((n + 1))
-  if [[ $got_v != "$want_v" || $got_m != "$want_m" || $got_s != "$want_s" ]]; then
-    diff=$((diff + 1)); (( diff <= 5 )) && echo "  differs: $c macOS $macos kk $kk ready $ready forced $forced $mac/$vm GB ipa $ipa fallback $fb: app $want_v $want_m '$want_s', omacvm $got_v $got_m '$got_s'"
+  if [[ $got_v != "$want_v" || $got_m != "$want_m" || $got_w != "$want_w" || $got_s != "$want_s" ]]; then
+    diff=$((diff + 1)); (( diff <= 5 )) && echo "  differs: $c macOS $macos kk $kk ready $ready forced $forced $mac/$vm GB ipa $ipa fallback $fb: app $want_v $want_m $want_w '$want_s', omacvm $got_v $got_m $got_w '$got_s'"
   fi
 done < "$T/swift.txt"
 (( diff == 0 )) && ok "app and omacvm agree on $n cases" || bad "app and omacvm differ in $diff of $n cases"
 
-line() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $(NF-1) }'; }
-mem() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $NF }'; }
+line() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $(NF-2) }'; }
+mem() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $(NF-1) }'; }
+win() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $NF }'; }
 summ() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f2- | sed 's/^ //'; }
 # The rules (choice macOS kk ready forced macGB vmGB ipaBits fallback).
 expect "OpenGL: no Vulkan"                          opengl "$(line 'opengl 27 1 1 0 16 8 42 0')"
@@ -56,10 +58,19 @@ expect "16 GB Mac, 8 GB VM: 4 GB"   4096  "$(mem 'auto 15 0 0 0 16 8 42 0')"
 expect "36 GB Mac, 16 GB VM: 8 GB"  8192  "$(mem 'auto 15 0 0 0 36 16 42 0')"
 expect "128 GB Mac, 16 GB VM: 32 GB (most)" 32768 "$(mem 'auto 15 0 0 0 128 16 42 0')"
 expect "128 GB Mac, 48 GB VM: 64 -> 32 GB"  32768 "$(mem 'auto 15 0 0 0 128 48 42 0')"
-# M1/M2 (36-bit VM address space): no high PCI window in QEMU, a 1 GB BAR
-# never fits below 1 GB and the firmware maps nothing (the Air hang): 256 MB.
-expect "M2 Air, 8 GB Mac, 4 GB VM: 256 MB"  256 "$(mem 'vulkan 26 1 1 0 8 4 36 0')"
-expect "M2, 128 GB Mac: still 256 MB"       256 "$(mem 'vulkan 26 1 1 0 128 16 36 0')"
+# M1/M2 (36-bit VM address space): QEMU's own high PCI window does not fit,
+# so the app asks for a small one right above RAM (16 GB at most); the host
+# memory window takes at most half of it. A 1 GB BAR never fits below 1 GB.
+expect "M2 Air, 8 GB Mac, 4 GB VM: 1 GB"    1024 "$(mem 'vulkan 26 1 1 0 8 4 36 0')"
+expect "  ... in a 16 GB PCI window"        16   "$(win 'vulkan 26 1 1 0 8 4 36 0')"
+expect "M2, 128 GB Mac, 16 GB VM: 8 GB (half of 16)" 8192 "$(mem 'vulkan 26 1 1 0 128 16 36 0')"
+expect "M2, 128 GB Mac, 48 GB VM: 8 GB window" 8   "$(win 'vulkan 26 1 1 0 128 48 36 0')"
+expect "  ... 4 GB host memory"             4096 "$(mem 'vulkan 26 1 1 0 128 48 36 0')"
+expect "M2, 96 GB Mac, 60 GB VM: 1 GB window, 512 MB" 512 "$(mem 'vulkan 26 1 1 0 96 60 36 0')"
+expect "M2, 128 GB Mac, 62 GB VM: no window fits, 256 MB" 256 "$(mem 'vulkan 26 1 1 0 128 62 36 0')"
+expect "  ... and no window asked for"      -    "$(win 'vulkan 26 1 1 0 128 62 36 0')"
+expect "M4: QEMU's own window"              -    "$(win 'vulkan 26 1 1 0 8 4 42 0')"
+expect "OpenGL: no window asked for"        -    "$(win 'opengl 26 1 1 0 8 4 36 0')"
 expect "M2: Vulkan stays on"                vulkan "$(line 'vulkan 26 1 1 0 8 4 36 0')"
 # A Vulkan start that showed nothing: OpenGL from then on, and it says so.
 expect "fallback: OpenGL"                   opengl "$(line 'vulkan 26 1 1 0 8 4 36 1')"
@@ -84,7 +95,8 @@ expect "watch: no picture after the firmware -> shut down first" "fallback grace
 expect "watch: console output counts as firmware" wait "$(wv console-only)"
 expect "watch: the Mac's wake resets the silence" wait "$(wv woke)"
 expect "watch: info pci mapped / not mapped"    "true false" "$(wv pci-mapped)"
-expect "watch: hostmem by address bits"         "256 1024 1024 256 MB 4 GB" "$(wv bits)"
+expect "watch: hostmem by address bits"         "1024 1024 1024 256 MB 4 GB" "$(wv bits)"
+expect "qemu.log line on the Air" "vulkan -> vulkan (chosen, KosmicKrisp), host memory window 1 GB, PCI window 16 GB" "$(wv record)"
 # The fallback file: the app and omacvm read it the same way; a choice made by hand removes it.
 fd=$T/fb; mkdir -p "$fd"; echo vulkan > "$fd/graphics"
 expect "fallback: none (app)" - "$("$T/graphics" fallback "$fd")"
@@ -99,6 +111,8 @@ s_bits=$(sed -n 's/.*static let highPCIWindowBits = \([0-9]*\).*/\1/p' "$R/app/a
 s_low=$(sed -n 's/.*static let lowWindowHostmemMB = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
 expect "high PCI window bits: same" "$s_bits" "$GRAPHICS_HIGH_PCI_WINDOW_BITS"
 expect "low window hostmem: same" "$s_low" "$GRAPHICS_LOW_WINDOW_HOSTMEM_MB"
+s_win=$(sed -n 's/.*static let smallHighWindowMaxGB = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
+expect "small high window: same" "$s_win" "$GRAPHICS_SMALL_HIGH_WINDOW_MAX_GB"
 
 # The hidden venus switch of 2.9 (moved once): a VM without its own choice
 # gets Vulkan, one set to OpenGL keeps it; omacvm reads the switch the same way
@@ -169,6 +183,11 @@ cli --vm-type utm >/dev/null 2>&1; expect "omacvm graphics: app VMs only" 2 "$?"
 # Wired in: the app uses the plan for QEMU's Venus options; apply passes it to the VM.
 grep -q 'g.venus ? ",blob=true,venus=true,hostmem=\\(g.hostmemMB)M"' "$R/app/app/Sources/OmacVM/Runner.swift" &&
   ok "Runner's Venus options come from the plan" || bad "Runner.swift does not use the plan"
+grep -q '"virt,gic-version=3" + (g.highWindowGB.map { ",highmem-mmio-size=\\($0)G" }' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  ok "Runner asks for the small PCI window from the plan" || bad "Runner.swift does not pass highmem-mmio-size"
+grep -q ' qemu-virt-small-high-window.patch$' "$R/app/runtime/patches/SHA256SUMS" &&
+  grep -q 'patches/qemu-virt-small-high-window.patch"' "$R/app/runtime/build-qemu-gpu-runtime.sh" &&
+  ok "the runtime takes a small highmem-mmio-size (patch pinned and applied)" || bad "small high window patch not in the runtime build"
 grep -q 'GI_ARGS+=" --graphics $GRAPHICS"' "$R/src/cmd/apply.sh" && ok "apply passes --graphics" || bad "apply.sh: no --graphics"
 grep -q 'vulkan-virtio.sh --ready' "$R/src/cmd/apply.sh" && ok "apply writes venus-ready from the VM" || bad "apply.sh: no venus-ready"
 # Vulkan windows on the GPU (omacvm.vkwindows): MoltenVK yes, KosmicKrisp not yet (untested there).

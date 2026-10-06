@@ -25,6 +25,9 @@ struct GraphicsPlan: Equatable {
     var venus: Bool
     /// Its host memory window in MB (a power of two, 256 MB or more).
     var hostmemMB: Int
+    /// QEMU's high PCI window in GB on a Mac with a small VM address space
+    /// (M1/M2: highmem-mmio-size, right above RAM); nil: QEMU's own.
+    var highWindowGB: Int? = nil
     /// Why, for qemu.log ("OmacVM: graphics: ...") and omacvm check.
     var why: String
 
@@ -37,7 +40,9 @@ struct GraphicsPlan: Equatable {
     }
 
     var record: String {
-        "\(choice.rawValue) -> \(venus ? "vulkan" : "opengl") (\(why))" + (venus ? ", host memory window \(Graphics.size(mb: hostmemMB))" : "")
+        "\(choice.rawValue) -> \(venus ? "vulkan" : "opengl") (\(why))"
+            + (venus ? ", host memory window \(Graphics.size(mb: hostmemMB))" : "")
+            + (venus && highWindowGB != nil ? ", PCI window \(highWindowGB!) GB" : "")
     }
 }
 
@@ -153,14 +158,23 @@ enum Graphics {
     /// The window is a 64-bit PCI memory BAR of its own size and alignment.
     /// QEMU's virt machine has a 512 GB PCI window above 512 GB only when the
     /// Mac gives VMs a 40-bit address space or more (M3 and newer; QEMU drops
-    /// it without a word on smaller ones). M1 and M2 give 36 bits: then every
-    /// BAR shares the 751 MB window below 1 GB (0x10000000-0x3efeffff), where
-    /// a 512 MB or 1 GB BAR never fits, and the firmware then maps no PCI
-    /// device at all (no boot disk, no picture: the Air hang of 2026-10-06).
-    /// 256 MB fits beside the other BARs, so that is the most there.
+    /// it without a word on smaller ones). M1 and M2 give 36 bits: there the
+    /// app asks for a smaller window right above RAM (highWindowGB, our QEMU
+    /// patch qemu-virt-small-high-window) and the BAR takes at most half of
+    /// it. Without that window every BAR shares the 751 MB window below 1 GB
+    /// (0x10000000-0x3efeffff), where a 512 MB or 1 GB BAR never fits, and
+    /// the firmware then maps no PCI device at all (no boot disk, no picture:
+    /// the Air hang of 2026-10-06); 256 MB fits there, so that is the most.
     /// `ipaBits`: the Mac's VM address space (Mac.vmAddressBits; nil unknown).
     static func hostmemMB(macMemoryGB: Int, vmMemoryGB: Int, ipaBits: Int?) -> Int {
-        if let b = ipaBits, b < highPCIWindowBits { return lowWindowHostmemMB }
+        if let b = ipaBits, b < highPCIWindowBits {
+            guard let w = highWindowGB(vmMemoryGB: vmMemoryGB, ipaBits: b) else { return lowWindowHostmemMB }
+            return min(usualHostmemMB(macMemoryGB: macMemoryGB, vmMemoryGB: vmMemoryGB), w * 1024 / 2)
+        }
+        return usualHostmemMB(macMemoryGB: macMemoryGB, vmMemoryGB: vmMemoryGB)
+    }
+
+    static func usualHostmemMB(macMemoryGB: Int, vmMemoryGB: Int) -> Int {
         let reserve = macMemoryGB <= 16 ? 4 : macMemoryGB <= 36 ? 6 : 8
         let free = min(max(macMemoryGB - vmMemoryGB - reserve, 1), 32)
         var p = 1
@@ -171,6 +185,23 @@ enum Graphics {
     /// QEMU virt's high PCI window ends at 1 TB (40 bits).
     static let highPCIWindowBits = 40
     static let lowWindowHostmemMB = 256
+    static let smallHighWindowMaxGB = 16
+
+    /// The high PCI window for a Mac under 40 bits, in GB: the largest power
+    /// of two up to 16 GB that fits the address space. QEMU puts it on its
+    /// own size's boundary after RAM (from 1 GB) and the other high regions
+    /// (under 512 MB), so it starts at vmMemoryGB + 3 GB at the latest.
+    /// M2 Air, 4 GB VM: 16 GB at 16-32 GB. nil: none fits (or not needed).
+    static func highWindowGB(vmMemoryGB: Int, ipaBits: Int?) -> Int? {
+        guard let b = ipaBits, b < highPCIWindowBits, b > 30 else { return nil }
+        let top = 1 << (b - 30), start = vmMemoryGB + 3
+        var w = smallHighWindowMaxGB
+        while w >= 1 {
+            if (start + w - 1) / w * w + w <= top { return w }
+            w /= 2
+        }
+        return nil
+    }
 
     /// The plan for one start. `forced`: the vulkan feature (the VM's
     /// `vulkan` file: OmacVM's Mesa for WebGPU and OpenCL, which apply only
@@ -182,13 +213,15 @@ enum Graphics {
                      forced: Bool, macMemoryGB: Int, vmMemoryGB: Int, ipaBits: Int? = nil,
                      fallback: String? = nil) -> GraphicsPlan {
         let mem = hostmemMB(macMemoryGB: macMemoryGB, vmMemoryGB: vmMemoryGB, ipaBits: ipaBits)
+        let window = highWindowGB(vmMemoryGB: vmMemoryGB, ipaBits: ipaBits)
         let driver = macOSMajor >= 26 && kosmicKrisp ? "KosmicKrisp" : "MoltenVK"
         func p(_ venus: Bool, _ why: String) -> GraphicsPlan {
             if venus, let f = fallback {
                 return GraphicsPlan(choice: choice, venus: false, hostmemMB: mem,
                                     why: "\(didNotStart) (\(f); choose Vulkan again to try once more)")
             }
-            return GraphicsPlan(choice: choice, venus: venus, hostmemMB: mem, why: why)
+            return GraphicsPlan(choice: choice, venus: venus, hostmemMB: mem,
+                                highWindowGB: venus ? window : nil, why: why)
         }
         if forced { return p(true, "WebGPU and GPU compute (vulkan feature) need Vulkan, \(driver)") }
         switch choice {
