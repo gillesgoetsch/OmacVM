@@ -514,6 +514,9 @@ readable whatever a VM sends:
   THIRD_PARTY_NOTICES), never a family the guest names (a symbol font could
   hide the command).
 - Light or dark comes from the background's luminance, not from `mode`.
+- The softer second lines and the command box's fill are moved back to
+  4.5:1 when a theme only just passes; with Increase Contrast they use the
+  text colour itself.
 
 ### Security
 
@@ -531,6 +534,17 @@ readable whatever a VM sends:
   (`not-front`, not a miss).
 - It cannot be moved or placed by the guest: position comes from the Mac's
   window list only.
+- Cancel stops the evaluation at once and wins over a finger that matches in
+  the same moment.
+- The command never draws outside its box (stacked combining marks cannot
+  cover the title or the hint).
+- VoiceOver: the panel is a dialog with its title; its words and "Touch ID
+  to allow" are announced when it shows, since the Bridge never becomes the
+  active app. Reduce Motion: the notch card shows without sliding.
+- Several VMs of the same app: the panel goes over the front window of the
+  app in front, which may be another VM's, drawn in the asking VM's colours.
+  The title names the asking VM (as the alert does); that name is what to
+  read.
 
 ### Tests
 

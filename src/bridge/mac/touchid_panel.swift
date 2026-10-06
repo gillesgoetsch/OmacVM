@@ -32,10 +32,6 @@ extension ThemeRGB {
   func alpha(_ a: CGFloat) -> NSColor {
     NSColor(srgbRed: CGFloat(r) / 255, green: CGFloat(g) / 255, blue: CGFloat(b) / 255, alpha: a)
   }
-  func mix(_ o: ThemeRGB, _ t: Double) -> ThemeRGB {
-    func m(_ a: UInt8, _ b: UInt8) -> UInt8 { UInt8(max(0, min(255, (Double(a) + (Double(b) - Double(a)) * t).rounded()))) }
-    return ThemeRGB(m(r, o.r), m(g, o.g), m(b, o.b))
-  }
 }
 
 // ---- the card ----
@@ -120,8 +116,12 @@ final class TouchIDPanelView: NSView {
     _ = layout(place: true)
     setAccessibilityElement(true)
     setAccessibilityRole(.group)
-    setAccessibilityLabel([text.title, text.line, text.box].compactMap { $0 }.joined(separator: ": "))
+    setAccessibilityLabel(spoken)
   }
+  /// What VoiceOver reads, and announces when the panel shows.
+  var spoken: String { [text.title, text.line, text.box].compactMap { $0 }.joined(separator: ": ") + ". " + Self.hint }
+  /// System setting Increase Contrast: the second lines in the full text colour.
+  private let more = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
   required init?(coder: NSCoder) { fatalError("not used") }
   override var isFlipped: Bool { true }
 
@@ -135,13 +135,13 @@ final class TouchIDPanelView: NSView {
     [.font: TouchIDPanelFonts.mono(14, bold: true), .foregroundColor: theme.foreground.ns, .paragraphStyle: Self.para(.center)]
   }
   private var lineAttr: [NSAttributedString.Key: Any] {
-    [.font: TouchIDPanelFonts.mono(12), .foregroundColor: theme.foreground.alpha(0.78), .paragraphStyle: Self.para(.center)]
+    [.font: TouchIDPanelFonts.mono(12), .foregroundColor: theme.softText(0.78, increaseContrast: more).ns, .paragraphStyle: Self.para(.center)]
   }
   private var boxAttr: [NSAttributedString.Key: Any] {
     [.font: TouchIDPanelFonts.mono(12), .foregroundColor: theme.foreground.ns, .paragraphStyle: Self.para(.left, chars: true)]
   }
   private var hintAttr: [NSAttributedString.Key: Any] {
-    [.font: TouchIDPanelFonts.mono(11), .foregroundColor: theme.foreground.alpha(0.66), .paragraphStyle: Self.para(.center)]
+    [.font: TouchIDPanelFonts.mono(11), .foregroundColor: theme.softText(0.66, increaseContrast: more).ns, .paragraphStyle: Self.para(.center)]
   }
   private func h(_ s: String, _ a: [NSAttributedString.Key: Any], _ w: CGFloat) -> CGFloat {
     ceil(NSAttributedString(string: s, attributes: a).boundingRect(with: NSSize(width: w, height: 2000),
@@ -225,11 +225,16 @@ final class TouchIDPanelView: NSView {
       y += 10
       let bh = h(box, boxAttr, inner - 20) + 14
       let bp = NSBezierPath(roundedRect: NSRect(x: x0, y: y, width: inner, height: bh), xRadius: t.radius, yRadius: t.radius)
-      t.background.mix(t.foreground, 0.07).ns.setFill(); bp.fill()
-      t.foreground.alpha(0.18).setStroke(); bp.lineWidth = 1; bp.stroke()
+      t.boxFill.ns.setFill(); bp.fill()
+      t.foreground.alpha(more ? 0.5 : 0.18).setStroke(); bp.lineWidth = 1; bp.stroke()
+      // The command never draws outside its box (stacked combining marks
+      // would otherwise reach up over the title or down over the hint).
+      NSGraphicsContext.saveGraphicsState()
+      NSBezierPath(rect: NSRect(x: x0, y: y, width: inner, height: bh)).addClip()
       y += 7
       put(box, boxAttr, x: x0 + 10, w: inner - 20)
       y += 7
+      NSGraphicsContext.restoreGraphicsState()
     }
     y += 14 + m.glyph + 6
     put(Self.hint, hintAttr, x: x0, w: inner)
@@ -281,6 +286,8 @@ final class TouchIDPanelWindow: NSPanel {
     animationBehavior = .none
     appearance = NSAppearance(named: view.theme.dark ? .darkAqua : .aqua)
     contentView = view
+    setAccessibilitySubrole(.dialog)
+    setAccessibilityTitle(view.text.title)
   }
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { false }
@@ -318,7 +325,7 @@ final class TouchIDPanel {
   }
 
   func show() {
-    if placement.style == .notch {
+    if placement.style == .notch && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
       // Slides down from the strip.
       var from = placement.frame
       from.origin.y += min(24, from.height)
@@ -336,6 +343,10 @@ final class TouchIDPanel {
       window.orderFrontRegardless()
       window.makeKey()
     }
+    // The Bridge never becomes the active app, so VoiceOver would not move
+    // to the panel by itself: say what it asks.
+    NSAccessibility.post(element: window, notification: .announcementRequested,
+                         userInfo: [.announcement: view.spoken, .priority: NSAccessibilityPriorityLevel.high.rawValue])
   }
 
   func close() {
@@ -412,15 +423,23 @@ final class TouchIDPanelFlow {
   private(set) var panel: TouchIDPanel?
 
   private let lock = NSLock()
-  private var cancelled = false
+  private var cancelled = false, stopped = false
 
   init(theme: OmarchyTheme, text: TouchIDPanelText, icon: NSImage?, marker: Int64) {
     self.theme = theme; self.text = text; self.icon = icon; self.marker = marker
   }
 
-  /// Cancel, Esc, Cmd-.: from the panel, on the main thread.
-  func cancel() { lock.lock(); cancelled = true; lock.unlock() }
+  /// Cancel, Esc, Cmd-.: from the panel, on the main thread. Stops the
+  /// evaluation at once, and wins over a finger that lands after it.
+  func cancel() {
+    lock.lock(); cancelled = true; lock.unlock()
+    stopOnce()
+  }
   private var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+  private func stopOnce() {
+    lock.lock(); let first = !stopped; stopped = true; lock.unlock()
+    if first { stop() }
+  }
 
   func run(timeout: Double, gone: @escaping () -> Bool) -> TouchIDPanelResult {
     let shown: Bool = DispatchQueue.main.sync {
@@ -443,10 +462,13 @@ final class TouchIDPanelFlow {
     while done.wait(timeout: .now() + poll) == .timedOut {
       let why: TouchIDNo? = isCancelled ? .cancelled : Date() >= deadline ? .timeout : gone() ? .cancelled : interrupt()
       guard let why else { continue }
-      stop()   // closes Apple's view; its callback comes with a cancel
+      stopOnce()   // closes Apple's view; its callback comes with a cancel
       _ = done.wait(timeout: .now() + 2)
       return .done(.no(why))
     }
+    // Cancel pressed: no, even when a finger matched in the same moment (or
+    // the evaluation failed because Cancel came before it started).
+    if isCancelled { return .done(.no(.cancelled)) }
     lock.lock(); defer { lock.unlock() }
     return .ended(end, after: Date().timeIntervalSince(began))
   }

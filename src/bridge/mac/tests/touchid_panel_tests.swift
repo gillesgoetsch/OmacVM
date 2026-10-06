@@ -220,6 +220,26 @@ struct FrontMac: TouchIDMacState { var locked = false; var frontType: String? = 
     check(pa.prompts.count == 1 && pa.prompts[0].request == r && pa.prompts[0].vmType == "app" && pa.prompts[0].theme == vm
           && pa.prompts[0].vmLabel == "Work" && pa.prompts[0].reason == touchIDReason(r, vm: "Work"), "prompt")
 
+    // ---- second lines and the command box stay readable ----
+    // A theme that only just passes 4.5:1: the softened lines and the box fill are moved back to 4.5:1.
+    if let edge = theme(["background": "#000000", "foreground": "#767676"]) {
+      check(edge.foreground.contrast(edge.background) >= 4.5, "edge theme passes")
+      for a in [0.0, 0.5, 0.66, 0.78] {
+        check(edge.softText(a).contrast(edge.background) >= OmarchyTheme.textContrast, "soft text at \(a) readable")
+      }
+      check(edge.foreground.contrast(edge.boxFill) >= OmarchyTheme.textContrast, "the command on its box readable")
+      check(edge.softText(0.3, increaseContrast: true) == edge.foreground, "Increase Contrast: the text colour")
+    } else { check(false, "edge theme") }
+    // Tokyo Night keeps its soft look (the colour is not just the text colour).
+    let tk = OmarchyTheme.tokyoNight
+    check(tk.softText(0.66) != tk.foreground && tk.softText(0.66).contrast(tk.background) >= 4.5, "Tokyo Night: soft and readable")
+    check(tk.boxFill != tk.background, "Tokyo Night: the box has its fill")
+    for line in tsv.split(separator: "\n") where !line.hasPrefix("#") {
+      let f = line.split(separator: "\t").map(String.init)
+      guard f.count == 6, let t = theme(["background": f[1], "foreground": f[2], "accent": f[3], "error": f[4], "radius": 0]) else { continue }
+      check(t.softText(0.66).contrast(t.background) >= 4.5 && t.foreground.contrast(t.boxFill) >= 4.5, "\(f[0]): second lines readable")
+    }
+
     print("touchid-panel: \(tPassed) passed, \(tFailures) failed")
     exit(tFailures == 0 ? 0 : 1)
   }

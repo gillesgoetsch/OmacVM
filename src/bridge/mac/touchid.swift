@@ -98,7 +98,7 @@ final class LAPanelTouchID: TouchIDAuthenticator {
     c.touchIDAuthenticationAllowableReuseDuration = 0
     c.localizedFallbackTitle = ""   // no "Use Password" (that needs the alert)
     let flow = TouchIDPanelFlow(theme: theme, text: touchIDPanelText(p.request, vm: p.vmLabel),
-                                icon: NSApp.applicationIconImage, marker: VMKeys.marker)
+                                icon: DispatchQueue.main.sync { NSApp.applicationIconImage }, marker: VMKeys.marker)
     flow.place = { size in
       // The VM's app is in front (the decider checked): its frontmost window.
       guard let app = NSWorkspace.shared.frontmostApplication, let w = touchIDFrontWindow(pid: app.processIdentifier),

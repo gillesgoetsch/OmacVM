@@ -131,6 +131,20 @@ func mock(_ out: String?) {
   (f, stops) = flow(.yes)
   f.place = { _ in nil }
   check(f.run(timeout: 5, gone: { false }) == .noWindow, "no VM window: the alert")
+  // Cancel stops the evaluation at once, not at the next poll.
+  (f, stops) = flow(nil)
+  f.poll = 1
+  whileUp(f) { _ = $0.view.cancel.accessibilityPerformPress() }
+  let tc = Date()
+  check(f.run(timeout: 5, gone: { false }) == .done(.no(.cancelled)) && stops() == 1 && Date().timeIntervalSince(tc) < 0.8,
+        "Cancel stops the evaluation at once")
+  // Cancel wins over a finger that matches right after it.
+  var stops0 = 0
+  (f, stops) = flow(.yes, after: 0.3)
+  f.poll = 1
+  f.stop = { stops0 += 1 }   // this evaluation does not end on its stop: the finger comes anyway
+  whileUp(f) { _ = $0.view.cancel.accessibilityPerformPress() }
+  check(f.run(timeout: 5, gone: { false }) == .done(.no(.cancelled)) && stops0 == 1, "Cancel, then a finger: no")
   // Cancel twice, and a Cancel after the end: one end.
   (f, stops) = flow(nil)
   whileUp(f) { p in _ = p.view.cancel.accessibilityPerformPress(); _ = p.view.cancel.accessibilityPerformPress() }
@@ -145,7 +159,8 @@ func mock(_ out: String?) {
     check(p.window.level.rawValue == 28 && !p.window.isMovable && p.window.hasShadow && p.window.canBecomeKey && !p.window.canBecomeMain, "level, key, not main")
     check(p.window.collectionBehavior.contains(.fullScreenAuxiliary) && p.window.collectionBehavior.contains(.moveToActiveSpace), "over full screen")
     check(!p.window.isVisible, "never on screen in the mock")
-    check(v.accessibilityLabel() == "Touch ID in Omarchy: sudo in pts/3 wants to run: pacman -Syu", "VoiceOver reads the words")
+    check(v.accessibilityLabel() == "Touch ID in Omarchy: sudo in pts/3 wants to run: pacman -Syu. Touch ID to allow", "VoiceOver reads the words")
+    check(p.window.accessibilitySubrole() == .dialog && p.window.accessibilityTitle() == "Touch ID in Omarchy", "VoiceOver: a dialog with its title")
     let n = TouchIDPanelView(theme: stockTheme("catppuccin-latte"), text: touchIDPanelText(sudo, vm: nil), style: .notch, icon: icon, auth: TouchIDGlyphStandIn())
     let pn = TouchIDPanel(view: n, placement: TouchIDPanelPlacement(style: .notch, frame: n.frame, screen: 0), marker: marker) {}
     check(!pn.window.hasShadow && pn.window.appearance?.name == .aqua, "notch card: no shadow; light theme, light appearance")
@@ -171,6 +186,9 @@ func mock(_ out: String?) {
       shot(stockTheme("gruvbox"), TouchIDRequest(kind: .polkit, user: "v", detail: "", action: ""), nil, .window, "snap-polkit-generic.png")
       shot(.tokyoNight, sudo, nil, .notch, "snap-notch.png")
       shot(stockTheme("rose-pine"), sudo, nil, .notch, "snap-notch-light.png")
+      // Stacked combining marks stay inside the command's box.
+      shot(.tokyoNight, TouchIDRequest(kind: .sudo, user: "v", detail: "ls a" + String(repeating: "\u{0301}", count: 60) + " b",
+                                       action: "", tty: "pts/3"), nil, .window, "snap-combining.png")
     }
   }
 }

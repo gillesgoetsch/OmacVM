@@ -46,6 +46,11 @@ struct ThemeRGB: Equatable {
     let a = luminance, b = o.luminance
     return (max(a, b) + 0.05) / (min(a, b) + 0.05)
   }
+  /// This colour moved `t` (0...1) of the way to `o`.
+  func mix(_ o: ThemeRGB, _ t: Double) -> ThemeRGB {
+    func m(_ a: UInt8, _ b: UInt8) -> UInt8 { UInt8(max(0, min(255, (Double(a) + (Double(b) - Double(a)) * t).rounded()))) }
+    return ThemeRGB(m(r, o.r), m(g, o.g), m(b, o.b))
+  }
 }
 
 /// What the panel draws with.
@@ -67,6 +72,28 @@ struct OmarchyTheme: Equatable {
   /// the others fall back to the text colour.
   static let textContrast = 4.5, accentContrast = 3.0, borderContrast = 1.5
   static let radiusMax = 12.0
+
+  /// The text colour softened to `alpha` over the background, as a solid
+  /// colour, but never under the text contrast: a theme that only just
+  /// passes keeps its second lines readable (with Increase Contrast: the
+  /// text colour itself).
+  func softText(_ alpha: Double, increaseContrast: Bool = false) -> ThemeRGB {
+    if increaseContrast { return foreground }
+    var a = max(0, min(1, alpha))
+    while a < 1 {
+      let c = background.mix(foreground, a)
+      if c.contrast(background) >= OmarchyTheme.textContrast { return c }
+      a += 0.02
+    }
+    return foreground
+  }
+
+  /// The command box's fill: a little lighter or darker than the card, only
+  /// as long as the command on it keeps the text contrast.
+  var boxFill: ThemeRGB {
+    let f = background.mix(foreground, 0.07)
+    return foreground.contrast(f) >= OmarchyTheme.textContrast ? f : background
+  }
 
   /// For the Mac's copy (the same keys the VM sends).
   var json: [String: Any] {
