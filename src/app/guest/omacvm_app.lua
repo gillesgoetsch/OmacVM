@@ -20,8 +20,8 @@ do
       local rule = f:read("l")
       f:close()
       if rule and rule:match('^hl%.monitor%(%{ output = "Virtual%-' .. n .. '", [^\n]*%}%)$') then
-        local chunk = load(rule, "=omacvm-display-sync", "t", { hl = { monitor = hl.monitor } })
-        if chunk then pcall(chunk) end
+        local ok, chunk = pcall(load, rule, "=omacvm-display-sync", "t", { hl = { monitor = hl.monitor } })
+        if ok and chunk then pcall(chunk) end
       end
     end
   end
