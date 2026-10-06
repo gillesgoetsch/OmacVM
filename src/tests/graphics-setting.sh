@@ -2,7 +2,8 @@
 # OmacVM.app's Graphics setting: the app (app/app/Sources/OmacVM/Graphics.swift)
 # and the Mac side of omacvm (src/lib/graphics.sh) decide the same for every
 # case (macOS version, KosmicKrisp in the app, the VM's Venus driver, the
-# vulkan feature, Mac and VM memory), plus the rules themselves. No VM.
+# vulkan feature, Mac and VM memory, the Mac's VM address space, a Vulkan
+# start that fell back), plus the rules themselves. No VM.
 set -u
 R=$(cd "$(dirname "$0")/../.." && pwd)
 fail=0
@@ -20,40 +21,116 @@ app_bundle() { return 1; }
 n=0; diff=0
 export OMACVM_TEST_VENUS_SWITCH=0
 while IFS='|' read -r left want_s; do
-  read -r c macos kk ready forced mac vm _ want_v want_m <<<"$left"; want_s=${want_s# }
+  read -r c macos kk ready forced mac vm ipa fb _ want_v want_m want_w <<<"$left"; want_s=${want_s# }
   d=$T/vm; rm -rf "$d"; mkdir -p "$d"
   echo "$c" > "$d/graphics"
   (( ready )) && : > "$d/venus-ready"
   (( forced )) && : > "$d/vulkan"
+  (( fb )) && echo "the firmware found no devices" > "$d/graphics-fallback"
   got_v=$(OMACVM_TEST_MACOS_MAJOR=$macos OMACVM_TEST_KOSMICKRISP=$kk graphics_next_start "$d")
   got_s=$(OMACVM_TEST_MACOS_MAJOR=$macos OMACVM_TEST_KOSMICKRISP=$kk graphics_summary "$d")
-  got_m=$(graphics_hostmem_gb "$mac" "$vm")
+  got_m=$(graphics_hostmem_mb "$mac" "$vm" "$ipa")
+  got_w=-; [[ $got_v == vulkan ]] && got_w=$(graphics_high_window_gb "$vm" "$ipa") && [[ -n $got_w ]] || got_w=-
   n=$((n + 1))
-  if [[ $got_v != "$want_v" || $got_m != "$want_m" || $got_s != "$want_s" ]]; then
-    diff=$((diff + 1)); (( diff <= 5 )) && echo "  differs: $c macOS $macos kk $kk ready $ready forced $forced $mac/$vm GB: app $want_v $want_m '$want_s', omacvm $got_v $got_m '$got_s'"
+  if [[ $got_v != "$want_v" || $got_m != "$want_m" || $got_w != "$want_w" || $got_s != "$want_s" ]]; then
+    diff=$((diff + 1)); (( diff <= 5 )) && echo "  differs: $c macOS $macos kk $kk ready $ready forced $forced $mac/$vm GB ipa $ipa fallback $fb: app $want_v $want_m $want_w '$want_s', omacvm $got_v $got_m $got_w '$got_s'"
   fi
 done < "$T/swift.txt"
 (( diff == 0 )) && ok "app and omacvm agree on $n cases" || bad "app and omacvm differ in $diff of $n cases"
 
-line() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $(NF-1) }'; }
-mem() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $NF }'; }
+line() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $(NF-2) }'; }
+mem() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $(NF-1) }'; }
+win() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f1 | awk '{ print $NF }'; }
 summ() { grep "^$1 -> " "$T/swift.txt" | cut -d'|' -f2- | sed 's/^ //'; }
-# The rules (choice macOS kk ready forced macGB vmGB).
-expect "OpenGL: no Vulkan"                          opengl "$(line 'opengl 27 1 1 0 16 8')"
-expect "Vulkan with the driver: Vulkan"             vulkan "$(line 'vulkan 15 0 1 0 16 8')"
-expect "Vulkan without the driver: OpenGL"          opengl "$(line 'vulkan 15 0 0 0 16 8')"
-expect "  ... and says so" "Vulkan (driver not built yet: runs on OpenGL until the next apply)" "$(summ 'vulkan 27 1 0 0 16 8')"
-expect "Automatic, macOS 27 + KosmicKrisp + driver: OpenGL (3.0.0)" opengl "$(line 'auto 27 1 1 0 16 8')"
-expect "Automatic waits for the VM's driver"        opengl "$(line 'auto 27 1 0 0 16 8')"
-expect "Automatic, macOS 26 without KosmicKrisp"    opengl "$(line 'auto 26 0 1 0 16 8')"
-expect "Automatic, macOS 15 (MoltenVK)"             opengl "$(line 'auto 15 1 1 0 16 8')"
-expect "vulkan feature keeps Vulkan under OpenGL"   vulkan "$(line 'opengl 15 0 0 1 16 8')"
+# The rules (choice macOS kk ready forced macGB vmGB ipaBits fallback).
+expect "OpenGL: no Vulkan"                          opengl "$(line 'opengl 27 1 1 0 16 8 42 0')"
+expect "Vulkan with the driver: Vulkan"             vulkan "$(line 'vulkan 15 0 1 0 16 8 42 0')"
+expect "Vulkan without the driver: OpenGL"          opengl "$(line 'vulkan 15 0 0 0 16 8 42 0')"
+expect "  ... and says so" "Vulkan (driver not built yet: runs on OpenGL until the next apply)" "$(summ 'vulkan 27 1 0 0 16 8 42 0')"
+expect "Automatic, macOS 27 + KosmicKrisp + driver: OpenGL (3.0.0)" opengl "$(line 'auto 27 1 1 0 16 8 42 0')"
+expect "Automatic waits for the VM's driver"        opengl "$(line 'auto 27 1 0 0 16 8 42 0')"
+expect "Automatic, macOS 26 without KosmicKrisp"    opengl "$(line 'auto 26 0 1 0 16 8 42 0')"
+expect "Automatic, macOS 15 (MoltenVK)"             opengl "$(line 'auto 15 1 1 0 16 8 42 0')"
+expect "vulkan feature keeps Vulkan under OpenGL"   vulkan "$(line 'opengl 15 0 0 1 16 8 42 0')"
 # The host memory window: what the Mac has beyond the VM and macOS's reserve.
-expect "8 GB Mac, 4 GB VM: 1 GB"    1  "$(mem 'auto 15 0 0 0 8 4')"
-expect "16 GB Mac, 8 GB VM: 4 GB"   4  "$(mem 'auto 15 0 0 0 16 8')"
-expect "36 GB Mac, 16 GB VM: 8 GB"  8  "$(mem 'auto 15 0 0 0 36 16')"
-expect "128 GB Mac, 16 GB VM: 32 GB (most)" 32 "$(mem 'auto 15 0 0 0 128 16')"
-expect "128 GB Mac, 48 GB VM: 64 -> 32 GB"  32 "$(mem 'auto 15 0 0 0 128 48')"
+expect "8 GB Mac, 4 GB VM: 1 GB"    1024  "$(mem 'auto 15 0 0 0 8 4 42 0')"
+expect "16 GB Mac, 8 GB VM: 4 GB"   4096  "$(mem 'auto 15 0 0 0 16 8 42 0')"
+expect "36 GB Mac, 16 GB VM: 8 GB"  8192  "$(mem 'auto 15 0 0 0 36 16 42 0')"
+expect "128 GB Mac, 16 GB VM: 32 GB (most)" 32768 "$(mem 'auto 15 0 0 0 128 16 42 0')"
+expect "128 GB Mac, 48 GB VM: 64 -> 32 GB"  32768 "$(mem 'auto 15 0 0 0 128 48 42 0')"
+# M1/M2 (36-bit VM address space): QEMU's own high PCI window does not fit,
+# so the app asks for a small one right above RAM (16 GB at most); the host
+# memory window takes at most half of it. A 1 GB BAR never fits below 1 GB.
+expect "M2 Air, 8 GB Mac, 4 GB VM: 1 GB"    1024 "$(mem 'vulkan 26 1 1 0 8 4 36 0')"
+expect "  ... in a 16 GB PCI window"        16   "$(win 'vulkan 26 1 1 0 8 4 36 0')"
+expect "M2, 128 GB Mac, 16 GB VM: 8 GB (half of 16)" 8192 "$(mem 'vulkan 26 1 1 0 128 16 36 0')"
+expect "M2, 128 GB Mac, 48 GB VM: 8 GB window" 8   "$(win 'vulkan 26 1 1 0 128 48 36 0')"
+expect "  ... 4 GB host memory"             4096 "$(mem 'vulkan 26 1 1 0 128 48 36 0')"
+expect "M2, 96 GB Mac, 60 GB VM: 1 GB window, 512 MB" 512 "$(mem 'vulkan 26 1 1 0 96 60 36 0')"
+expect "M2, 128 GB Mac, 62 GB VM: no window fits, 256 MB" 256 "$(mem 'vulkan 26 1 1 0 128 62 36 0')"
+expect "  ... and no window asked for"      -    "$(win 'vulkan 26 1 1 0 128 62 36 0')"
+expect "M4: QEMU's own window"              -    "$(win 'vulkan 26 1 1 0 8 4 42 0')"
+expect "OpenGL: no window asked for"        -    "$(win 'opengl 26 1 1 0 8 4 36 0')"
+expect "M2: Vulkan stays on"                vulkan "$(line 'vulkan 26 1 1 0 8 4 36 0')"
+# A Vulkan start that showed nothing: OpenGL from then on, and it says so.
+expect "fallback: OpenGL"                   opengl "$(line 'vulkan 26 1 1 0 8 4 36 1')"
+expect "  ... and says so" "Vulkan did not start on this Mac: using OpenGL (the firmware found no devices; choose Vulkan again to try once more)" "$(summ 'vulkan 26 1 1 0 8 4 36 1')"
+expect "fallback: the vulkan feature too"   opengl "$(line 'opengl 27 1 1 1 16 8 42 1')"
+expect "fallback: OpenGL VM unchanged"      "OpenGL" "$(summ 'opengl 27 1 1 0 16 8 42 1')"
+expect "fallback waits behind the driver"   "Vulkan (driver not built yet: runs on OpenGL until the next apply)" "$(summ 'vulkan 27 1 0 0 16 8 42 1')"
+
+# The start watch (VenusStartWatch): the Air hang falls back 25 s after QMP
+# first answered and stays on OpenGL, a normal start never falls back, a stall
+# after the firmware is only noted, the Mac's sleep does not count.
+"$T/graphics" watch > "$T/watch.txt"
+wv() { grep "^$1 " "$T/watch.txt" | cut -d' ' -f2-; }
+expect "watch: the Air hang -> OpenGL at once, kept" "fallback now keep the firmware found no devices in 25 s: no boot disk, no picture" "$(wv air-hang)"
+expect "watch: a normal start is fine"          fine "$(wv normal)"
+expect "watch: firmware at 24 s is no hang"     wait "$(wv normal-24s)"
+expect "watch: paused does not count"           wait "$(wv paused)"
+expect "watch: QEMU silent 30 s after the firmware: a note, no fallback" "note QEMU did not answer for 30 s after the firmware ran: no fallback for that" "$(wv silent)"
+expect "watch: QEMU silent 15 s is no hang"     wait "$(wv silent-short)"
+expect "watch: ... the watch goes on after the note" "1 fine" "$(wv silent-then-fine)"
+expect "watch: QEMU silent before the firmware -> OpenGL, kept" "fallback now keep QEMU stopped answering before the firmware found its devices" "$(wv silent-early)"
+expect "watch: QMP never reachable, console ok: no fallback" wait "$(wv no-qmp-console)"
+expect "watch: QMP never reachable: no firmware verdict" wait "$(wv no-qmp-nothing)"
+expect "watch: QMP late: 25 s from its first answer" wait "$(wv late-qmp)"
+expect "watch: QMP late, then no devices -> OpenGL" "fallback now keep the firmware found no devices in 25 s: no boot disk, no picture" "$(wv late-qmp-hang)"
+expect "watch: no picture after the firmware -> shut down first, this start only" "fallback graceful once no picture from the VM after 90 s" "$(wv no-picture)"
+expect "watch: console output counts as firmware" wait "$(wv console-only)"
+expect "watch: the Mac's wake resets the silence" wait "$(wv woke)"
+expect "watch: info pci mapped / not mapped"    "true false" "$(wv pci-mapped)"
+expect "watch: hostmem by address bits"         "1024 1024 1024 256 MB 4 GB" "$(wv bits)"
+expect "qemu.log line on the Air" "vulkan -> vulkan (chosen, KosmicKrisp), host memory window 1 GB, PCI window 16 GB" "$(wv record)"
+expect "qemu.log line after a kept fallback (one pair of brackets)" "vulkan -> opengl (Vulkan did not start on this Mac: the firmware found no devices; choose Vulkan again to try once more)" "$(wv record-kept)"
+expect "  ... and its summary" "Vulkan did not start on this Mac: using OpenGL (the firmware found no devices; choose Vulkan again to try once more)" "$(wv summary-kept)"
+expect "qemu.log line after a fallback for one start" "vulkan -> opengl (Vulkan did not start on this Mac: no picture from the VM after 90 s; the next start tries Vulkan again)" "$(wv record-once)"
+expect "  ... and its summary" "Vulkan did not start on this Mac: using OpenGL (no picture from the VM after 90 s; the next start tries Vulkan again)" "$(wv summary-once)"
+expect "QEMU without the small window: 256 MB on M2, none asked; M4 unchanged" "true 256 - 4096 -" "$(wv old-runtime)"
+# The runtime marker: the app looks for the patch's text in QEMU's binary.
+marker=$(sed -n 's/.*static let smallHighWindowMarker = "\(.*\)"$/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
+grep -qF "$marker" "$R/app/runtime/patches/qemu-virt-small-high-window.patch" &&
+  grep -qF "'$marker'" "$R/app/runtime/prepare-qemu-gpu-runtime.sh" &&
+  ok "small window marker: in the patch and checked in the runtime" || bad "small window marker '$marker' not in the patch or the runtime check"
+printf 'ELF\0%s\0' "$marker" > "$T/qemu-new"; printf 'ELF\0highmem-mmio-size cannot be set to a lower value\0' > "$T/qemu-old"
+expect "small window: patched QEMU yes, unpatched no, missing no" "true false false" \
+  "$("$T/graphics" smallwindow "$T/qemu-new") $("$T/graphics" smallwindow "$T/qemu-old") $("$T/graphics" smallwindow "$T/none")"
+# The fallback file: the app and omacvm read it the same way; a choice made by hand removes it.
+fd=$T/fb; mkdir -p "$fd"; echo vulkan > "$fd/graphics"
+expect "fallback: none (app)" - "$("$T/graphics" fallback "$fd")"
+graphics_fallback "$fd" >/dev/null; expect "fallback: none (omacvm)" 1 "$?"
+echo "the firmware found no devices in 25 s" > "$fd/graphics-fallback"
+expect "fallback: why (app)"    "the firmware found no devices in 25 s" "$("$T/graphics" fallback "$fd")"
+expect "fallback: why (omacvm)" "the firmware found no devices in 25 s" "$(graphics_fallback "$fd")"
+"$T/graphics" write vulkan "$fd"
+expect "fallback: choosing again removes it (app)" no "$([[ -e $fd/graphics-fallback ]] && echo yes || echo no)"
+expect "fallback text: same" "$("$T/graphics" didnotstart)" "$GRAPHICS_DID_NOT_START"
+s_bits=$(sed -n 's/.*static let highPCIWindowBits = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
+s_low=$(sed -n 's/.*static let lowWindowHostmemMB = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
+expect "high PCI window bits: same" "$s_bits" "$GRAPHICS_HIGH_PCI_WINDOW_BITS"
+expect "low window hostmem: same" "$s_low" "$GRAPHICS_LOW_WINDOW_HOSTMEM_MB"
+s_win=$(sed -n 's/.*static let smallHighWindowMaxGB = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
+expect "small high window: same" "$s_win" "$GRAPHICS_SMALL_HIGH_WINDOW_MAX_GB"
 
 # The hidden venus switch of 2.9 (moved once): a VM without its own choice
 # gets Vulkan, one set to OpenGL keeps it; omacvm reads the switch the same way
@@ -112,12 +189,47 @@ expect "omacvm graphics: vulkan with the driver" vulkan "$(cli --json | j next_s
 expect "omacvm graphics: auto on macOS 27 + KK with the driver: OpenGL (3.0.0)" opengl "$(cli auto --json >/dev/null; MAJ=27 KK=1 cli --json | j next_start)"
 echo "OmacVM: graphics: auto -> vulkan (macOS 27, KosmicKrisp), host memory window 4 GB" > "$H/OmacVM/Test VM/logs/qemu.log"
 expect "omacvm graphics: the last start" "auto -> vulkan (macOS 27, KosmicKrisp), host memory window 4 GB" "$(MAJ=27 KK=1 cli --json | j this_start)"
+echo "QEMU stopped answering for 30 s while Vulkan started" > "$H/OmacVM/Test VM/graphics-fallback"
+cli vulkan >/dev/null
+expect "omacvm graphics: vulkan after a fallback" vulkan "$(cli --json | j next_start)"
+expect "omacvm graphics: ... after a fallback (removed by the choice)" no "$([[ -e "$H/OmacVM/Test VM/graphics-fallback" ]] && echo yes || echo no)"
+grep -q 'watchVenusStart()' "$R/app/app/Sources/OmacVM/Runner.swift" && grep -q 'r?.venusFallback' "$R/app/app/Sources/OmacVM/main.swift" &&
+  ok "the app watches Vulkan starts and starts again on OpenGL" || bad "no Vulkan start watch in the app"
+grep -q 'kill(pid, SIGKILL)' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  ok "a QEMU that ignores SIGTERM is killed (forceStop)" || bad "forceStop sends no SIGKILL"
+grep -q 'self?.noteEarlyExit(status: status, reason: reason)' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  grep -q 'r.openGLOnce = openGLOnce' "$R/app/app/Sources/OmacVM/main.swift" &&
+  ok "a Vulkan start whose QEMU stops at once starts again on OpenGL" || bad "no OpenGL retry after an early QEMU exit"
+grep -q 'smallHighWindow: small' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  grep -q 'runtimeHasSmallHighWindow = Graphics.qemuTakesSmallHighWindow(binary: Paths.qemu)' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  ok "highmem-mmio-size only with a QEMU that takes it" || bad "the small window is not gated on the runtime"
+
+# omacvm check's Graphics row (the block from src/cmd/check.sh, with stubs).
+awk '/^if \[\[ \$TYPE == app \]\] && gd=\$\(app_dir "\$VM" 2>\/dev\/null\); then$/ { on = 1 } on { print } on && /^fi$/ { exit }' \
+  "$R/src/cmd/check.sh" > "$T/check-graphics.sh"
+grep -q 'skip "Graphics"' "$T/check-graphics.sh" || bad "check.sh: Graphics block not found"
+cg=$T/cg; mkdir -p "$cg/logs"; echo vulkan > "$cg/graphics"; : > "$cg/venus-ready"
+crow() { ( TYPE=app VM="Test VM"; app_dir() { echo "$cg"; }
+           ok() { echo "ok $1: $2"; }; warn() { echo "warn $1: $2"; }; skip() { echo "skip $1: $2"; }
+           OMACVM_TEST_MACOS_MAJOR=27 OMACVM_TEST_KOSMICKRISP=1 source "$T/check-graphics.sh" ); }
+echo "OmacVM: graphics: $(wv record)" > "$cg/logs/qemu.log"
+expect "check: Vulkan running" "ok Graphics: Vulkan: $(wv record)" "$(crow)"
+echo "OmacVM: graphics: $(wv record-kept)" > "$cg/logs/qemu.log"; echo "the firmware found no devices" > "$cg/graphics-fallback"
+expect "check: Vulkan fell back (kept): warn, one pair of brackets" \
+  "warn Graphics: Vulkan did not start on this Mac: using OpenGL (the firmware found no devices; choose Vulkan again to try once more: omacvm graphics --vm \"Test VM\" vulkan)" "$(crow)"
+rm -f "$cg/graphics-fallback"; echo "OmacVM: graphics: $(wv record-once)" > "$cg/logs/qemu.log"
+expect "check: Vulkan fell back for this start: warn" "warn Graphics: this start: $(wv record-once)" "$(crow)"
 cli metal >/dev/null 2>&1; expect "omacvm graphics: unknown value refused" 2 "$?"
 cli --vm-type utm >/dev/null 2>&1; expect "omacvm graphics: app VMs only" 2 "$?"
 
 # Wired in: the app uses the plan for QEMU's Venus options; apply passes it to the VM.
-grep -q 'g.venus ? ",blob=true,venus=true,hostmem=\\(g.hostmemGB)G"' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+grep -q 'g.venus ? ",blob=true,venus=true,hostmem=\\(g.hostmemMB)M"' "$R/app/app/Sources/OmacVM/Runner.swift" &&
   ok "Runner's Venus options come from the plan" || bad "Runner.swift does not use the plan"
+grep -q '"virt,gic-version=3" + (g.highWindowGB.map { ",highmem-mmio-size=\\($0)G" }' "$R/app/app/Sources/OmacVM/Runner.swift" &&
+  ok "Runner asks for the small PCI window from the plan" || bad "Runner.swift does not pass highmem-mmio-size"
+grep -q ' qemu-virt-small-high-window.patch$' "$R/app/runtime/patches/SHA256SUMS" &&
+  grep -q 'patches/qemu-virt-small-high-window.patch"' "$R/app/runtime/build-qemu-gpu-runtime.sh" &&
+  ok "the runtime takes a small highmem-mmio-size (patch pinned and applied)" || bad "small high window patch not in the runtime build"
 grep -q 'GI_ARGS+=" --graphics $GRAPHICS"' "$R/src/cmd/apply.sh" && ok "apply passes --graphics" || bad "apply.sh: no --graphics"
 grep -q 'vulkan-virtio.sh --ready' "$R/src/cmd/apply.sh" && ok "apply writes venus-ready from the VM" || bad "apply.sh: no venus-ready"
 # Vulkan windows on the GPU (omacvm.vkwindows): MoltenVK yes, KosmicKrisp not yet (untested there).

@@ -285,6 +285,14 @@ enum Mac {
         return Int(value)
     }
     static var memoryGB: Int { sysctlInt("hw.memsize") / 1_073_741_824 }
+    /// The address space macOS gives a VM, in bits (M1/M2: 36, M4: 40-42;
+    /// nil when macOS does not say). The smaller of the two page sizes' values,
+    /// as QEMU may use either. Graphics.hostmemMB needs it.
+    static var vmAddressBits: Int? {
+        let sizes = ["kern.hv.ipa_size_16k", "kern.hv.ipa_size_4k"].map(sysctlInt).filter { $0 > 0 }
+        guard let s = sizes.min() else { return nil }
+        return Int.bitWidth - 1 - s.leadingZeroBitCount
+    }
     static var performanceCores: Int { max(2, sysctlInt("hw.perflevel0.physicalcpu")) }
     static var efficiencyCores: Int { sysctlInt("hw.perflevel1.physicalcpu") }
     static var cores: Int { max(2, sysctlInt("hw.ncpu")) }

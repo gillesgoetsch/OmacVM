@@ -701,6 +701,11 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virtio-gpu-blob-align
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-on-flush.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-iosurface.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-virgl-blob-subregion.patch"
+# OmacVM: a small high PCI window right above RAM (highmem-mmio-size from
+# 1 GiB), so M1/M2 (36-bit VM address space) get a Venus window of 1 GB and more.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virt-small-high-window.patch"
+grep -q 'highmem-mmio-size cannot be smaller than 1 GiB' "$source_dir/hw/arm/virt.c" || \
+  die "hw/arm/virt.c does not take a small highmem-mmio-size"
 # Frames on the display's refresh: one per refresh, no judder.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-vsync.patch"
 # Colour-space tagged frames; 10-bit scanouts in half float; HDR (PQ) with EDR.

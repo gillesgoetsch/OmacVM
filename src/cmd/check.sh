@@ -392,6 +392,12 @@ if [[ $TYPE == app ]] && gd=$(app_dir "$VM" 2>/dev/null); then
   gc=$(graphics_choice "$gd"); gn=$(graphics_next_start "$gd"); gs=$(graphics_summary "$gd")
   if [[ -z $gl ]]; then
     skip "Graphics" "$(graphics_title "$gc"): $gs from the VM's next start (an app from before 3.0.0 has OpenGL only)"
+  elif gf=$(graphics_fallback "$gd") && [[ $(graphics_wants "$gd") == vulkan ]]; then
+    # Vulkan fell back and stays off until chosen again (graphics-fallback).
+    warn "Graphics" "$GRAPHICS_DID_NOT_START ($gf; choose Vulkan again to try once more: omacvm graphics --vm \"$VM\" vulkan)"
+  elif [[ $gl == *"(${GRAPHICS_DID_NOT_START%%:*}"* ]]; then
+    # Vulkan fell back for this start only; the next start tries it again.
+    warn "Graphics" "this start: $gl"
   elif [[ ${gl%% *} != "$gc" || $gl != *"-> $gn "* ]]; then
     skip "Graphics" "this start: $gl; $(graphics_title "$gc") gives $gs from the VM's next start"
   elif graphics_waiting_for_driver "$gd"; then

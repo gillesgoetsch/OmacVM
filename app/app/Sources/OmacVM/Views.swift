@@ -335,6 +335,18 @@ struct ReadyView: View {
             keyAccess
             GraphicsPicker(choice: $graphics, plan: Runner.graphicsPlan(state.config))
                 .onChange(of: graphics) { _, v in setGraphics(v) }
+            // Vulkan fell back and stays off (graphics-fallback): the picker
+            // already shows Vulkan, so choosing it again needs a button.
+            if Graphics.fallback(folder: state.config.folder) != nil {
+                Button("Try Vulkan again") {
+                    do {
+                        try Graphics.write(graphics, folder: state.config.folder)
+                        graphicsNote = "Vulkan is tried again from the next start."
+                    } catch {
+                        graphicsNote = "Could not save: \(error.localizedDescription)"
+                    }
+                }
+            }
             if let n = graphicsNote {
                 Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
             }
