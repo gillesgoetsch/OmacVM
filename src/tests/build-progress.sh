@@ -66,6 +66,14 @@ OMACVM_SRC=src
 check "no progress line unless asked" "[[ -z \$(unset OMACVM_PROGRESS; progress_line download x 1 2; bytes_watch x 2 /dev/null) ]]"
 check "progress line when asked" "OMACVM_PROGRESS=1 progress_line download x 1 2 | grep -q '^{\"omacvm_progress\": 1, '"
 check "progress.sh sent only when asked" "[[ \$(unset OMACVM_PROGRESS; vm_script base-install.sh | grep -c '^pac_progress()') == 0 && \$(OMACVM_PROGRESS=1 vm_script base-install.sh | grep -c '^pac_progress()') == 1 ]]"
+# prebuilt-vm.sh's download step under set -e, without OMACVM_PROGRESS (omacvm
+# build --prebuilt): bytes_watch returns at once, so stopping it must not end the
+# script (3.0.1 RC: it died right after "part-ab: checked").
+dl=$(sed -n '/^bytes_watch "prebuilt VM"/,/^progress_line download "prebuilt VM"/p' app/scripts/prebuilt-vm.sh)
+stubs="$(fn progress_line app/scripts/vm-common.sh; fn bytes_watch app/scripts/vm-common.sh)
+prebuilt_download() { sleep 0.3; }; PB_SIZE=2; parts=(/dev/null)"
+check "prebuilt download step goes on without OMACVM_PROGRESS" \
+  "[[ \$(unset OMACVM_PROGRESS; bash -c 'set -euo pipefail; eval \"\$1\"; eval \"\$2\"; echo went-on' _ \"\$stubs\" \"\$dl\") == went-on ]]"
 # omacvm build --vm-type app drops them anyway (an app of another version).
 f=$(grep -m1 "omacvm_progress\"/d" src/cmd/build.sh); f=${f% |}
 printf '%s\n' '{"omacvm_progress": 1, "phase": "download", "now": "x", "done": 1, "total": 2}' '| raw' 'STEP 2/7 Base' > "$t/cli"
