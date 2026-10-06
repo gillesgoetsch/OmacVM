@@ -49,8 +49,7 @@ final class Runner {
             "-drive", "if=pflash,format=raw,readonly=on,file=\(q(Paths.firmware.path))",
             "-drive", "if=pflash,format=raw,file=\(q(c.efiVars.path))",
             "-drive", "if=none,id=disk,file=\(q(c.disk.path)),format=raw,cache=writeback,discard=unmap",
-            "-device", "nvme,serial=omacvm,drive=disk,bootindex=0",
-        ] + networkArguments() + [
+        ] + Runner.diskDevice(bus: c.diskBus) + networkArguments() + [
             // One output per Mac display in full screen (Virtual-1 is the window;
             // QEMU's window code opens the others): the built-in and four more.
             // Venus (Vulkan: the VM's Graphics setting, see Graphics.swift)
@@ -122,6 +121,18 @@ final class Runner {
         // so no other device moves.
         if network.vmnet { a += ["-device", "pcie-root-port,id=netfb"] }
         return a
+    }
+
+    /// The system disk's device. virtio-blk with its own I/O thread: 4k random
+    /// I/O ~40 % faster and 26 % less latency than QEMU's NVMe, whose requests
+    /// wait for the main loop (src/bench/disk-speed.sh, docs/adr/0038).
+    /// The guest finds its disk by UUID and boots from GRUB's partition entry,
+    /// so the same VM boots on either bus (DISK_BUS in vm.env).
+    static func diskDevice(bus: String) -> [String] {
+        bus == "virtio"
+            ? ["-object", "iothread,id=iodisk",
+               "-device", "virtio-blk-pci,drive=disk,iothread=iodisk,bootindex=0,romfile="]
+            : ["-device", "nvme,serial=omacvm,drive=disk,bootindex=0"]
     }
 
     /// The display for the VM's window: under the pointer, else the one with
@@ -254,6 +265,7 @@ final class Runner {
         if Settings.firmwareWait > 0 {
             log.write(Data("OmacVM: the firmware waits \(Settings.firmwareWait) s for a key (firmwareWait)\n".utf8))
         }
+        log.write(Data("OmacVM: disk: \(c.diskBus == "virtio" ? "virtio-blk, own I/O thread" : "nvme")\n".utf8))
         try? Data("\(network.record)\n".utf8).write(to: c.folder.appendingPathComponent("logs/network"))
         if !Runner.micAllowed {
             log.write(Data("OmacVM: no microphone permission yet: the VM records nothing until its next start\n".utf8))

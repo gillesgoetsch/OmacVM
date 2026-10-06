@@ -116,6 +116,9 @@ struct VMConfig: Equatable {
     var timeZone = "UTC"
     var language = "en_US.UTF-8"
     var keyboard = "us"
+    /// The system disk's bus: "virtio" (virtio-blk with its own I/O thread; new
+    /// VMs, create-vm.sh and prebuilt-vm.sh write it) or "nvme" (VMs made before 3.0.1).
+    var diskBus = "nvme"
     // Omanotch off: its released Mac app does not listen on 127.0.0.1 yet,
     // so an app VM (10.0.2.2) never reaches it.
     var features = "bridge=on wallpaper=on gestures=on scroll-momentum=on omanotch=off mac-clock=on camera=on battery=\(Mac.hasBattery ? "on" : "off") external-brightness=on chromium-video=on idle-lock=on autologin=off thp-kernel=off"
@@ -247,6 +250,7 @@ struct VMConfig: Equatable {
         c.language = values["VM_LANG"] ?? c.language
         c.keyboard = values["KEYBOARD"] ?? c.keyboard
         c.features = values["FEATURES"] ?? c.features
+        c.diskBus = values["DISK_BUS"] == "virtio" ? "virtio" : "nvme"
         return c
     }
 

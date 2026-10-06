@@ -158,4 +158,5 @@ step 7 "Shutting down"
 vssh "systemctl poweroff" < /dev/null 2>/dev/null || true
 qemu_wait_exit 120 || qemu_quit
 rm -f "$SEED"
+disk_bus_virtio
 echo "READY $NAME"

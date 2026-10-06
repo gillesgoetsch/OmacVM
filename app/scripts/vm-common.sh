@@ -57,6 +57,13 @@ clt_ok() { xcode-select -p >/dev/null 2>&1 && xcrun -f swiftc >/dev/null 2>&1 &&
 # Grow (or create) a sparse file to SIZE bytes.
 truncate_file() { dd if=/dev/null of="$1" bs=1 seek="$2" 2>/dev/null; }
 
+# A new VM is installed on NVMe (base-install.sh looks for it) and then runs
+# with its system disk on virtio-blk (the app's Runner.diskDevice): faster.
+# VMs made before keep NVMe; DISK_BUS='virtio' in their vm.env switches them.
+disk_bus_virtio() {
+  grep -q '^DISK_BUS=' "$VM_DIR/vm.env" || echo "DISK_BUS='virtio'" >> "$VM_DIR/vm.env"
+}
+
 efi_vars_create() { [[ -f $VM_DIR/efi-vars.fd ]] || mkfile -n 64m "$VM_DIR/efi-vars.fd"; }
 
 # try-omarchy's release: kernel, initramfs and its Arch Linux ARM root file
