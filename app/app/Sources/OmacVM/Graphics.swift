@@ -111,19 +111,6 @@ enum Graphics {
     }
 
     /// What Automatic picks on this Mac, without the VM (the setup's caption).
-    /// Whether Vulkan windows go to Hyprland as dma-bufs (Mesa's normal WSI):
-    /// virgl-set-type-without-egl.patch fills an OpenGL texture from the Venus
-    /// memory, tested with MoltenVK's placement heaps. KosmicKrisp (macOS 26
-    /// and newer) keeps the CPU copy until its exported memory is tested.
-    /// `driver`: OMACVM_VULKAN_DRIVER, which picks the driver by hand.
-    static func vulkanWindowsOnGPU(macOSMajor: Int, kosmicKrisp: Bool, driver: String?) -> Bool {
-        switch driver {
-        case "moltenvk": return true
-        case "kosmickrisp": return false
-        default: return !(macOSMajor >= 26 && kosmicKrisp)
-        }
-    }
-
     static func autoPicksVulkan(macOSMajor: Int, kosmicKrisp: Bool) -> Bool {
         autoVulkan && ((macOSMajor >= autoVulkanFromMacOS && kosmicKrisp) || autoVulkanOnMoltenVK)
     }

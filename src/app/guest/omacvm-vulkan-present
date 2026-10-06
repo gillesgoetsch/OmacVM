@@ -4,8 +4,8 @@
 # desktop session starts.
 # An app with virgl-set-type-without-egl.patch shows a Venus image that
 # Hyprland imports as a dma-buf (on the GPU, Mesa's normal WSI) and says so at
-# start (OEM string omacvm.vkwindows=1 -> /run/omacvm/host.env, omacvm-app-host);
-# for now only with MoltenVK (Graphics.vulkanWindowsOnGPU).
+# start (OEM string omacvm.vkwindows=1 -> /run/omacvm/host.env, omacvm-app-host),
+# with MoltenVK (macOS 15) and KosmicKrisp (macOS 26 and newer).
 # An older app ended Hyprland's GPU context on that import (black desktop for
 # good), so without the flag Vulkan apps present through a CPU copy (Mesa's
 # software WSI).

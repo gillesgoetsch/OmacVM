@@ -235,8 +235,7 @@ rm -rf "$d"
 grep -q 'user-environment-generators/90-omacvm-vulkan-present' src/app/guest/install.sh &&
   grep -q 'rm -f /etc/environment.d/90-omacvm-vulkan.conf' src/app/guest/install.sh && pass "installed as a session generator" ||
   fail "generator not installed (or the old fixed file kept)"
-grep -q 'value=omacvm.vkwindows=1' app/app/Sources/OmacVM/Runner.swift &&
-  grep -q 'Graphics.vulkanWindowsOnGPU' app/app/Sources/OmacVM/Runner.swift && pass "the app sends omacvm.vkwindows (MoltenVK only)" ||
+grep -q 'value=omacvm.vkwindows=1' app/app/Sources/OmacVM/Runner.swift && pass "the app sends omacvm.vkwindows" ||
   fail "the app does not send omacvm.vkwindows"
 grep -q '^Before=systemd-user-sessions.service' src/app/guest/omacvm-app-host.service && pass "host.env is written before sessions" ||
   fail "host.env may come after the session starts"
