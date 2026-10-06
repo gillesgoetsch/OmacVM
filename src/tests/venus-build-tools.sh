@@ -58,7 +58,7 @@ run() {   # MISSING(build tools the VM lacks) MESON(ok|fail) -> sets OUT, CODE, 
   cp -R "$R/src/app/guest/venus/." "$V/venus/"
   sed -E "s#/(opt|etc|usr|var)/#$V/\1/#g" "$R/src/app/guest/venus/install.sh" > "$V/venus/install.sh"
   : > "$T/calls"
-  OUT=$(CALLS=$T/calls MISSING=$1 MESON=$2 PFX=$V/opt/omacvm-mesa PATH="$T/bin:$PATH" \
+  OUT=$(CALLS=$T/calls MISSING=$1 MESON=$2 PFX=$V/opt/omacvm-mesa PATH="$T/bin:$PATH" OMACVM_WEBGPU_ROOT=$V \
     OMACVM_PKG_ADD="$R/src/guest/pkg-add" OMACVM_PKG_LOG=$T/pkg.log \
     bash "$V/venus/install.sh" --force 2>&1); CODE=$?
 }
@@ -70,6 +70,7 @@ expect "stock VM: build ok" 0 "$CODE"; [[ $CODE == 0 ]] || echo "$OUT"
 expect "stock VM: missing tools installed as dependencies" "meson ninja rust rust-bindgen cbindgen" "$(asdeps)"
 expect "stock VM: the same tools removed after the build" "meson ninja rust rust-bindgen cbindgen" "$(removed)"
 expect "stock VM: Vulkan manifest written" yes "$([[ -f $T/vm/etc/vulkan/icd.d/omacvm_venus_icd.json ]] && echo yes)"
+expect "stock VM: Chromium (WebGPU) launcher" yes "$([[ -f $T/vm/usr/local/bin/omacvm-chromium-webgpu ]] && echo yes)"
 expect "stock VM: build folder gone" no "$([[ -e $T/vm/var/cache/omacvm/mesa-build ]] && echo yes || echo no)"
 expect "Mesa's libraries are not removed" no \
   "$(removed | grep -qwE 'clang|libclc|spirv-llvm-translator|spirv-tools|llvm-libs' && echo yes || echo no)"

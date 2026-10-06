@@ -93,12 +93,16 @@ VM runs, and goes back by itself when a new version does not start
   MoltenVK when KosmicKrisp cannot run on that Mac, logged).
   The VM needs a Venus driver that sizes GPU memory to the Mac's 16 KiB
   pages (Mesa 26.2.4 or newer; with Arch Linux ARM's 26.2.3 every Vulkan app
-  fails with `ERROR_OUT_OF_HOST_MEMORY`). While Arch Linux ARM has 26.2.3,
-  apply builds Mesa 26.2.4's Venus driver as Arch's own `vulkan-virtio`
-  package ([`src/app/guest/venus`](../../src/app/guest/venus), a few
-  minutes the first time) when the setting gives the VM Vulkan (also
-  `omacvm graphics --vm NAME vulkan` on a running VM). Arch's 26.2.4
-  replaces it on an update. Until the driver is there the VM starts with
+  fails with `ERROR_OUT_OF_HOST_MEMORY`). Apply builds Mesa 26.2.4's Venus
+  driver as Arch's own `vulkan-virtio` package, with OmacVM's patch for the
+  shared semaphores Chrome's WebGPU needs (version `26.2.4.omacvm1`,
+  [`src/app/guest/venus`](../../src/app/guest/venus), a few minutes the
+  first time) when the setting gives the VM Vulkan (also
+  `omacvm graphics --vm NAME vulkan` on a running VM). Arch's own builds of
+  26.2.4 do not replace it; a newer Mesa from Arch does (Vulkan keeps
+  working, WebGPU in Chrome waits for OmacVM's next build of it; the check
+  says so). VMs from 3.0.0 rebuild it once, after the next start or with
+  `omacvm apply`. Until the driver is there the VM starts with
   OpenGL only, and the app, `omacvm graphics` and the control centre say
   "Vulkan (driver not built yet: runs on OpenGL until the next apply)". In the
   VM `omacvm-venus-driver.timer` checks again 90 s after boot, after the
@@ -112,8 +116,12 @@ VM runs, and goes back by itself when a new version does not start
   OpenGL turns the switch off again). That works on KosmicKrisp (macOS 26
   and newer). On MoltenVK Zink refuses the device (no `nullDescriptor`):
   there OpenCL needs the vulkan feature below. `omacvm check` has an
-  "OpenCL (rusticl on Zink)" row. WebGPU in Chrome needs the feature too
-  (its Venus driver has the semaphores Chrome's WebGPU asks for).
+  "OpenCL (rusticl on Zink)" row. WebGPU in Chromium comes with it too: a
+  "Chromium (WebGPU)" menu entry ([`venus/webgpu.sh`](../../src/app/guest/venus/webgpu.sh))
+  starts Chromium (`omacvm-chrome-webgpu`: Google Chrome) with its
+  compositor on Vulkan, which Chrome needs before it gives pages the Mac's
+  GPU for WebGPU; the normal Chromium entry stays as it is (that mode costs
+  WebGL about a fifth). `omacvm check` has a "WebGPU in Chromium" row.
   Vulkan's host memory window (Venus' `hostmem`) comes from the VM's memory
   plan: what the Mac has beyond the VM's memory and macOS's reserve (4 GB up
   to 16 GB of memory, 6 GB up to 36 GB, 8 GB above), 1 to 32 GB; what Vulkan

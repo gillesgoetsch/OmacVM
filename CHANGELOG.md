@@ -39,6 +39,14 @@ in more words.
   Mac: using OpenGL" with the reason. When the firmware found no devices,
   OpenGL stays until Vulkan is chosen again ("Try Vulkan again" in the
   app); otherwise the next start tries Vulkan again.
+- Graphics Vulkan: WebGPU in Chromium on the Mac's GPU, without the
+  experimental vulkan feature. The VM's Venus driver (OmacVM's build of
+  Mesa 26.2.4) now shares the semaphores Chrome asks for before it offers
+  pages a WebGPU adapter (before: "no adapter"), and a "Chromium (WebGPU)"
+  menu entry starts Chromium with its compositor on Vulkan. VMs set to
+  Vulkan rebuild the driver once (a few minutes, in the background after
+  the next start, or with `omacvm apply`). `omacvm check` has a "WebGPU in
+  Chromium" row.
 
 ## 3.0.0
 

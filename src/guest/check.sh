@@ -362,6 +362,14 @@ app)
     else
       bad "OpenCL (rusticl on Zink)" "no device: on MoltenVK (macOS 15) Zink needs OmacVM's Mesa (omacvm enable vulkan)"
     fi
+    # WebGPU in Chromium: the launcher, on a Venus driver with shared semaphores (OmacVM's vulkan-virtio build).
+    if [[ ! -x /usr/local/bin/omacvm-chromium-webgpu ]]; then
+      bad "WebGPU in Chromium" "no \"Chromium (WebGPU)\" launcher: omacvm apply"
+    elif [[ $(pacman -Q vulkan-virtio 2>/dev/null) == *omacvm* ]]; then
+      ok "WebGPU in Chromium" "\"Chromium (WebGPU)\" in the menu (omacvm-chromium-webgpu)"
+    else
+      skip "WebGPU in Chromium" "after OmacVM's Venus driver build ($(pacman -Q vulkan-virtio 2>/dev/null || echo "no vulkan-virtio") now; the VM builds it after its next start)"
+    fi
   else skip "Vulkan, WebGPU, GPU compute" "off (experimental: omacvm enable vulkan)"; fi
   FEATURE=""
   if user_active omacvm-clipboard.service; then ok "clipboard" "both ways (omacvm-clipboard)"
@@ -410,6 +418,8 @@ app)
     omacvm) ;;
     ok) if v=$(vulkaninfo --summary 2>/dev/null | sed -n 's/^[[:space:]]*deviceName[[:space:]]*= //p' | grep -m1 Venus); then ok "Vulkan (Venus)" "$v, ${vk#* }"
         else bad "Vulkan (Venus)" "${vk#* }, but vulkaninfo finds no Venus device"; fi ;;
+    update) if v=$(vulkaninfo --summary 2>/dev/null | sed -n 's/^[[:space:]]*deviceName[[:space:]]*= //p' | grep -m1 Venus); then ok "Vulkan (Venus)" "$v, ${vk#* } (built after the VM's next start, or omacvm apply)"
+            else bad "Vulkan (Venus)" "${vk#* }, but vulkaninfo finds no Venus device"; fi ;;
     needed) bad "Vulkan (Venus)" "${vk#* }: omacvm apply" ;;
     no-venus|no-pages) skip "Vulkan (Venus)" "${vk#* }" ;;
     *) skip "Vulkan (Venus)" "not known (an OmacVM from before this check: omacvm apply)" ;;

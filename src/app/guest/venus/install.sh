@@ -14,8 +14,8 @@
 #   /etc/environment.d/90-omacvm-venus.conf     RUSTICL_ENABLE=zink, distro venus off
 #   Firefox: omacvm-webgpu.js                   WebGPU on
 #   omacvm-chromium-webgpu (+ omacvm-chrome-webgpu) and a "Chromium (WebGPU)"
-#   menu entry: Chromium with its compositor on Vulkan, which WebGPU needs
-# ./install.sh --remove undoes all of it.
+#   menu entry (webgpu.sh): Chromium with its compositor on Vulkan, which WebGPU needs
+# ./install.sh --remove undoes all of it (the launcher stays with Graphics Vulkan).
 set -euo pipefail
 cd "$(dirname "$0")"
 # Packages only through guest/pkg-add: never an update of one the VM has.
@@ -27,14 +27,11 @@ ICD=/etc/vulkan/icd.d/omacvm_venus_icd.json
 CLICD=/etc/OpenCL/vendors/omacvm-rusticl.icd
 ENVF=/etc/environment.d/90-omacvm-venus.conf
 FFPREF=/usr/lib/firefox/defaults/pref/omacvm-webgpu.js
-LAUNCH=/usr/local/bin/omacvm-chromium-webgpu
-LAUNCH2=/usr/local/bin/omacvm-chrome-webgpu
-DESK=/usr/share/applications/omacvm-chromium-webgpu.desktop
 LOG=/var/log/omacvm-mesa-build.log      # the last failed build's log
 
 remove() {
-  rm -rf "$PREFIX" "$ICD" "$CLICD" "$ENVF" "$FFPREF" "$LAUNCH" "$LAUNCH2" "$DESK" "$LOG" \
-    /var/cache/omacvm/mesa-build
+  rm -rf "$PREFIX" "$ICD" "$CLICD" "$ENVF" "$FFPREF" "$LOG" /var/cache/omacvm/mesa-build
+  ./webgpu.sh --off
   echo "OmacVM Venus extras removed"
 }
 
@@ -110,7 +107,5 @@ VK_LOADER_DRIVERS_DISABLE=virtio_icd.json
 CONF
 # Also before Firefox is installed (as the app's video pref): it reads it once it is.
 install -Dm644 omacvm-webgpu.js "$FFPREF"
-install -Dm755 omacvm-chromium-webgpu "$LAUNCH"
-ln -sf omacvm-chromium-webgpu "$LAUNCH2"
-[[ -x /usr/bin/chromium ]] && install -Dm644 omacvm-chromium-webgpu.desktop "$DESK"
+./webgpu.sh >/dev/null || echo "OmacVM Venus extras: the Chromium (WebGPU) launcher is not installed"
 echo "OmacVM Venus extras: Mesa $MESA_VERSION in $PREFIX (Vulkan, OpenCL); WebGPU in Firefox and omacvm-chromium-webgpu"

@@ -56,6 +56,9 @@ if [[ -n $SET && $(graphics_wants "$d") == vulkan ]] && { $CHANGED || [[ ! -e $d
       # OpenCL on it (an older guest side has no opencl.sh: omacvm apply brings it).
       gssh "$ip" "f=/usr/local/share/omacvm/app/guest/venus/opencl.sh; [ ! -x \$f ] || \$f" < /dev/null >&2 ||
         NOTE="${NOTE:+$NOTE; }OpenCL is not set up (see /var/log/omacvm-opencl.log in the VM)"
+      # WebGPU in Chromium (the launcher; an older guest side has no webgpu.sh).
+      gssh "$ip" "f=/usr/local/share/omacvm/app/guest/venus/webgpu.sh; [ ! -x \$f ] || \$f" < /dev/null >&2 ||
+        NOTE="${NOTE:+$NOTE; }WebGPU in Chromium is not set up"
     else
       rm -f "$d/venus-ready"
       NOTE="${NOTE:+$NOTE; }its Vulkan driver did not build (the VM tries again at each start)"

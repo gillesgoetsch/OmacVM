@@ -71,6 +71,9 @@ decides whether Vulkan apps get the Mac's GPU, not how the desktop draws.
 - MoltenVK users who want Vulkan pick Vulkan; Automatic does not expose
   MoltenVK's gaps (no `VK_EXT_provoking_vertex`, no zero-initialised
   workgroup memory, five failing CTS cases) to everyone.
-- The `vulkan-virtio` step goes once Arch Linux ARM ships Mesa >= 26.2.4.
+- The `vulkan-virtio` step goes once Arch Linux ARM ships a Mesa with both
+  blob alignment (>= 26.2.4) and Venus' OPAQUE_FD semaphores (not upstream
+  yet; OmacVM's build carries the patch so Chrome's WebGPU works with
+  Graphics Vulkan, 3.0.1).
 - KosmicKrisp needs Xcode 26 and Homebrew's LLVM and SPIR-V tools on the
   release Mac (`build-kosmickrisp.sh --check`); CI builds without it.

@@ -416,6 +416,11 @@ Switch: the VM's Graphics setting (ADR 0035; up to 2.9 the hidden `venus`
 default, moved into it at the first 3.0.0 launch) adds
 `blob=true,venus=true,hostmem=<plan>G` to the GPU device, once the VM has a
 Venus driver with blob rounding (`venus-ready`). Automatic is OpenGL in 3.0.0.
+That driver is OmacVM's build of the distro's `vulkan-virtio` (Mesa 26.2.4
+with `mesa-venus-opaque-fd-semaphores.patch`, version `26.2.4.omacvm1`:
+it sorts after Arch's 26.2.4-x and before 26.2.5), so Chrome's WebGPU works
+with the setting alone, through the `omacvm-chromium-webgpu` launcher
+(`venus/webgpu.sh`; next section for why Chrome needs both).
 
 M1/M2: macOS gives their VMs 36 address bits (64 GB), and QEMU's high PCI
 window (512 GB at 512 GB) does not fit. Every BAR then shares the 751 MB
