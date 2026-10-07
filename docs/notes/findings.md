@@ -50,6 +50,16 @@ Small things that cost time the first time.
 - **Where:** `src/cmd/build.sh` (refuses `--vm-dir` with `--vm-type utm`),
   `src/vm/utm.sh` (`utm_drop_live` uses AppleScript before the icon is set,
   `utm_set_icon` edits `config.plist`).
+- **Later (2026-10-07, MacBook Air with a small internal disk):** `--vm-dir`
+  works for UTM after all, without moving a registered VM: UTM makes the VM
+  with only an empty NVMe disk, `export`s it into the folder, `delete`s its
+  own copy (the bookmark points at the original, not at the export) and the
+  export is opened with `open -a UTM`, which registers it by a new bookmark.
+  The installer disk is added after that (`update configuration` with a
+  `source`; UTM converts it to qcow2 inside the VM, on the drive). A UTM
+  library moved as a whole (its `Documents` as a link) stops UTM from
+  starting: secinitd "(AppContainer) Documents is not a directory".
+  `src/vm/utm.sh` (`utm_move`, `utm_add_live`), `src/cmd/build.sh`.
 
 ## 13. Security review of the Fusion route (PR #1)
 

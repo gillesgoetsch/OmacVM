@@ -39,9 +39,9 @@ Return to confirm):
    within its limits ([Parallels](routes/parallels.md)).
 
    Then **where the VM goes**: the app's own folder, or any folder you pick,
-   an external drive for example (APFS or Mac OS Extended; Parallels and
-   Fusion; UTM keeps its VMs in its own library, OmacVM.app in the folder set
-   in the app). With `--vm-dir PATH` for scripts.
+   an external drive for example (APFS or Mac OS Extended; Parallels, UTM
+   and Fusion; OmacVM.app keeps its VMs in the folder set in the app). With
+   `--vm-dir PATH` for scripts.
 4. **Features**, one checklist with the recommended ones on:
 
    | | Default |

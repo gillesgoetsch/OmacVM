@@ -449,11 +449,13 @@ utm_start() {   # <vm name>: UTM must run in the foreground (open -g makes the V
 # UTM's default SPICE audio), for VMs built without one. The VM must be
 # stopped. UTM keeps the configuration it read at its start (it would start
 # the VM without the card), so it is quit when no UTM VM runs (utm_start opens
-# it again); otherwise the card comes with UTM's next start. VMs outside UTM's
-# own folder: unchanged.
-utm_add_sound() {
-  local c="$UTM_DATA/Documents/$1.utm/config.plist" i
-  [[ $(utm_data plutil -extract Sound json -o - "$c" 2>/dev/null) == "[]" ]] || return 0
+# it again); otherwise the card comes with UTM's next start. BUNDLE: a VM
+# outside UTM's own folder (omacvm build --vm-dir); others there: unchanged.
+utm_add_sound() {   # NAME [BUNDLE]
+  local c="$UTM_DATA/Documents/$1.utm/config.plist" i s
+  if [[ -n ${2:-} ]]; then c="$2/config.plist"; s=$(plutil -extract Sound json -o - "$c" 2>/dev/null)
+  else s=$(utm_data plutil -extract Sound json -o - "$c" 2>/dev/null); fi
+  [[ $s == "[]" ]] || return 0
   if pgrep -xq UTM; then
     if "$UTMCTL" list 2>/dev/null | awk 'NR > 1 && $2 == "started"' | grep -q .; then
       log "UTM: '$1' gets its sound card (speakers and microphone) when UTM starts next"

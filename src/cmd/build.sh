@@ -13,7 +13,8 @@
 # password then comes from OMACVM_PASSWORD):
 #   --vm-type parallels|utm|fusion|app   --vm-name NAME   --hostname NAME
 #   --resources low|balanced|high|best   --cpus N   --memory-gb N   --disk-gb N
-#   --vm-dir PATH   where the VM goes (Parallels, Fusion; default: the app's own folder)
+#   --vm-dir PATH   where the VM goes, an external drive for example (Parallels, UTM, Fusion;
+#                   default: the app's own folder or library)
 #   --graphics-gb N   VMware Fusion: graphics memory, part of the VM's memory (1-8)
 #   --user NAME   --full-name "NAME"
 #   --parallels-edition standard|pro   only while Parallels has no licence yet
@@ -222,6 +223,13 @@ APP_OLD=0
 # The version the image must fit: the app's when it makes the VM (it may be
 # older or newer than this omacvm), so both find the same image.
 PB_FOR=$(cat "$R/src/VERSION")
+if [[ $TYPE == utm && -n ${VM_DIR:-} ]]; then
+  (( IMAGE )) && usage "--vm-dir: an image VM for UTM goes into UTM's library"
+  if [[ $SOURCE == prebuilt ]] && ! (( PLAN && JSON )); then
+    info "A prebuilt UTM VM goes into UTM's library: building it here instead, so it can go into $VM_DIR (about $(build_minutes) minutes)."
+  fi
+  SOURCE=build
+fi
 if [[ $SOURCE != build ]] && ! (( IMAGE || APP_OLD )); then
   if [[ $TYPE == app && -n ${APP:-} ]]; then
     PB_FOR=$(app_version "$APP" || cat "$R/src/VERSION")
@@ -322,8 +330,9 @@ if [[ $TYPE == fusion ]]; then
 fi
 
 # ---------- where the VM goes ----------
-# Parallels and Fusion take any folder (an external drive, say); UTM keeps its
-# VMs in its own library (moving one there is not safe through its scripting).
+# Any folder (an external drive, say). UTM keeps its VMs in its own library on
+# the Mac's disk; with a folder, the build has UTM move the new VM there
+# (utm_move). A prebuilt UTM VM goes into UTM's library (prebuilt_make_vm).
 default_dir() { case $TYPE in parallels) echo "$HOME/Parallels" ;; fusion) echo "$FUSION_DIR" ;; utm) echo "UTM's library" ;; app) app_vms_root ;; esac; }
 vm_dir_problem() {   # DIR -> a reason it does not work, or nothing
   local fs dev
@@ -335,9 +344,8 @@ vm_dir_problem() {   # DIR -> a reason it does not work, or nothing
   local g; g=$(free_gb_at "$1")
   (( g >= SPACE_VM_GB )) || echo "only $g GB free on $(drive_name "$1") (the VM needs about $SPACE_VM_GB)"
 }
-if [[ -n ${VM_DIR:-} && $TYPE == utm ]]; then usage "--vm-dir: UTM keeps its VMs in its own library"; fi
 if [[ -n ${VM_DIR:-} && $TYPE == app ]]; then usage "--vm-dir: OmacVM.app keeps its VMs in the folder set in the app"; fi
-if [[ -z ${VM_DIR:-} && $TYPE != utm && $TYPE != app ]] && (( ! YES )); then
+if [[ -z ${VM_DIR:-} && $TYPE != app ]] && (( ! YES )) && ! [[ $TYPE == utm && $SOURCE == prebuilt ]]; then
   ui_select loc "Where should the VM go?" 0 "Default|$(default_dir | sed "s|^$HOME|~|")" \
     "Another folder…|an external drive, for example (a Finder window opens)"
   while (( loc == 1 )); do
@@ -367,6 +375,7 @@ VM_DIR_GIVEN=${VM_DIR:-}
 case $TYPE in
   parallels) [[ ! -e $VM_DIR/$VM.pvm ]] || usage "$VM_DIR/$VM.pvm already exists (choose another --vm-name)" ;;
   fusion) [[ ! -e $(fusion_bundle "$VM") ]] || usage "$(fusion_bundle "$VM") already exists (choose another --vm-name)" ;;
+  utm) [[ -z ${VM_DIR:-} || ! -e $VM_DIR/$VM.utm ]] || usage "$VM_DIR/$VM.utm already exists (choose another --vm-name)" ;;
   app) if d=$(app_missing_drive "$VM_DIR"); then
          needs_person "$d is not connected, and OmacVM.app's VMs folder is on it ($VM_DIR): connect it, or pick another folder in the app"
        fi
@@ -382,7 +391,7 @@ if [[ $TYPE == app && -n ${APP:-} ]] && ! grep -q downloads_dir "$APP/Contents/R
 fi
 if ! space_problem "$TYPE" "${VM_DIR:-}" "$SOURCE"; then
   case $TYPE in
-    parallels|fusion) [[ -n $VM_DIR_GIVEN ]] || SPACE_WHY+=" (or put the VM on another drive with --vm-dir)" ;;
+    parallels|fusion|utm) [[ -n $VM_DIR_GIVEN ]] || SPACE_WHY+=" (or put the VM on another drive with --vm-dir)" ;;
     app) if [[ $SPACE_APP_CACHE == mac && $SPACE_WHY == *"the download"* ]]; then
            SPACE_WHY+=" (omacvm update updates OmacVM.app, which then keeps its downloads on the VMs folder's drive)"
          else SPACE_WHY+=" (or pick a VMs folder on another drive in OmacVM.app)"; fi ;;
@@ -567,6 +576,7 @@ if [[ $TYPE == parallels ]]; then
   APP_LINE+=" ($(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM.pvm"))"
 elif [[ $TYPE == utm ]]; then
   APP_LINE="UTM $(defaults read /Applications/UTM.app/Contents/Info CFBundleShortVersionString 2>/dev/null)"
+  [[ -n ${VM_DIR:-} ]] && APP_LINE+=" ($(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM.utm"))"
 elif [[ $TYPE == app ]]; then
   APP_LINE="OmacVM.app $( [[ -n $APP ]] && app_version "$APP" || echo "$(cat "$R/src/VERSION"), downloaded first") ($(sed "s|^$HOME|~|" <<<"$VM_DIR/$VM"))"
 else
@@ -629,6 +639,8 @@ build_end() {
   local rc=$1
   if [[ $SOURCE == prebuilt ]]; then prebuilt_exit; fi   # the seed and an unused unpacked image go
   (( rc == 0 && DONE )) && return
+  # UTM with --vm-dir: the installer image and build-live's work folder on that drive
+  if [[ $TYPE == utm && -n ${VM_DIR:-} ]]; then rm -f "$VM_DIR/.$VM-live.img"; rm -rf "$VM_DIR/.omacvm-build-live"; fi
   (( rc )) || rc=1
   printf '\n\033[1;31mThe build stopped\033[0m in step %s of %s. The whole log:\n  open "%s"\n' "$STEP" "$STEPS" "$BUILD_LOG"
   printf 'Fix what it says and run omacvm again (a half-built VM can be deleted in %s first).\n' \
@@ -718,12 +730,28 @@ elif [[ $TYPE == fusion ]]; then
   fusion_start "$VM"
   ui_spin_val IP "The live installer gets its address" fusion_ip "$VM" 300 || die "the live installer got no IP address"
 else
-  LIVE="$HOME/Library/Caches/omacvm/build-live/$VM-live.img"
-  "$R/src/vm/live/build-live.sh" --root-size-gib 16 --raw-image "$LIVE" --ssh-key "$KEY.pub"
+  # --vm-dir: the installer image and the VM go to that folder; UTM makes the
+  # VM in its own folder (empty disk only), then moves it there.
+  if [[ -n ${VM_DIR:-} ]]; then
+    LIVE="$VM_DIR/.$VM-live.img"
+    "$R/src/vm/live/build-live.sh" --root-size-gib 16 --raw-image "$LIVE" --ssh-key "$KEY.pub" --workdir "$VM_DIR/.omacvm-build-live"
+    rm -rf "$VM_DIR/.omacvm-build-live"   # its leftovers (kernel, boot files): not needed after
+  else
+    LIVE="$HOME/Library/Caches/omacvm/build-live/$VM-live.img"
+    "$R/src/vm/live/build-live.sh" --root-size-gib 16 --raw-image "$LIVE" --ssh-key "$KEY.pub"
+  fi
   utm_tune_app
   log "UTM VM with a ${DISK_GB} GB NVMe disk"
   pgrep -xq UTM || { open -a UTM; sleep 3; }
-  utm_create "$VM" "$CPUS" $((MEM_GB * 1024)) "$LIVE" $((DISK_GB * 1024)) >/dev/null
+  if [[ -n ${VM_DIR:-} ]]; then
+    utm_create "$VM" "$CPUS" $((MEM_GB * 1024)) "" $((DISK_GB * 1024)) >/dev/null
+    utm_move "$VM" "$VM_DIR"
+    UTM_BUNDLE="$VM_DIR/$VM.utm"
+    log "UTM VM in $UTM_BUNDLE"
+    utm_add_live "$VM" "$LIVE"
+  else
+    utm_create "$VM" "$CPUS" $((MEM_GB * 1024)) "$LIVE" $((DISK_GB * 1024)) >/dev/null
+  fi
   rm -f "$LIVE"
   utm_start "$VM"
   ui_spin_val IP "The live installer gets its address" utm_ip "$VM" 300 || die "the live installer got no IP address"
@@ -767,8 +795,8 @@ step "Booting from the new disk"
 if [[ $TYPE == utm ]]; then
   ui_spin "The live installer shuts down" utm_wait_stopped "$VM"
   utm_drop_live "$VM"
-  utm_set_icon "$VM"
-  utm_add_sound "$VM"
+  utm_set_icon "$VM" ${UTM_BUNDLE:+"$UTM_BUNDLE"}
+  utm_add_sound "$VM" ${UTM_BUNDLE:+"$UTM_BUNDLE"}
   utm_start "$VM"
   sleep 20
   ui_spin_val IP "The new system starts and gets its address" utm_ip "$VM" 300 || die "the new system got no IP address"

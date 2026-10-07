@@ -223,6 +223,9 @@ jobs:
       - name: omacvm build checks free space on the drive the VM goes to (every route, no VM)
         run: src/tests/build-space.sh
 
+      - name: UTM VM on another drive (--vm-dir; a stand-in UTM, no VM)
+        run: src/tests/utm-vm-dir.sh
+
       - name: omacvm-netd offline tests
         run: src/net/mac/test.sh
 

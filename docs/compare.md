@@ -55,7 +55,7 @@ Each app has its own page: [OmacVM.app](routes/app.md), [UTM](routes/utm.md),
 | **Setup** | | | | |
 | Get it | `omacvm build --vm-type app`, or the zip from the releases | `brew install --cask utm@beta` | download after a Broadcom sign-in | buy it or start the trial |
 | Before first use | allow Accessibility for OmacVM | start UTM from the Dock | allow Accessibility for Fusion | one Parallels setting |
-| Where the VM goes | **any folder, external drives too** | UTM's own library | **any folder, external drives too** | **any folder, external drives too** |
+| Where the VM goes | **any folder, external drives too** | **any folder, external drives too** | **any folder, external drives too** | **any folder, external drives too** |
 
 <p align="center">
   <img src="images/benchmarks.svg" alt="Bar chart: each route as a share of the Mac, OmacVM.app first, then UTM, VMware Fusion, Parallels. CPU all cores (Geekbench 7): 99, 89, 99, 96 percent. Web apps (Speedometer 3.1): 64, 52, 71, 67. Browser graphics (WebGL Aquarium): 18, 26, 38, 25. Browser overall (Basemark Web 3.0): 76, 67, 78, 75. GPU compute (Geekbench 7 GPU, OpenCL): OmacVM.app 45 percent with the vulkan feature on, not available in the others." width="100%">
