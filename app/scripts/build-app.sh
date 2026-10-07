@@ -26,10 +26,14 @@
 #                Screen Recording) across rebuilds: tests use only this identity.
 #     --install  with --test-identity: copy it over ~/Applications/OmacVM Test.app
 #                (always that path; refused while it runs)
+#   scripts/build-app.sh --runtime-inputs [--release]
+#                prints the hash of what the QEMU runtime is built from (the
+#                runtime/.build/inputs.sha256 this build wants) and builds nothing:
+#                CI keeps runtimes under it (.github/app-runtime-cache.sh)
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 REPO=$(cd "$ROOT/.." && pwd)
-NAME=OmacVM; ID=org.omacvm.app; RELEASE=0; TEST=${OMACVM_TEST_IDENTITY:-0}; INSTALL=0
+NAME=OmacVM; ID=org.omacvm.app; RELEASE=0; TEST=${OMACVM_TEST_IDENTITY:-0}; INSTALL=0; INPUTS_ONLY=0
 while (( $# )); do
   case $1 in
     --name) NAME=$2; shift 2 ;;
@@ -37,7 +41,8 @@ while (( $# )); do
     --release) RELEASE=1; shift ;;
     --test-identity) TEST=1; shift ;;
     --install) INSTALL=1; shift ;;
-    *) echo "usage: build-app.sh [--name NAME] [--id BUNDLE_ID] [--release] | --test-identity [--install]" >&2; exit 2 ;;
+    --runtime-inputs) INPUTS_ONLY=1; shift ;;
+    *) echo "usage: build-app.sh [--name NAME] [--id BUNDLE_ID] [--release] | --test-identity [--install] | --runtime-inputs [--release]" >&2; exit 2 ;;
   esac
 done
 [[ $TEST == [01] ]] || { echo "OMACVM_TEST_IDENTITY is 0 or 1" >&2; exit 2; }
@@ -64,12 +69,12 @@ fi
 # OmacVM's VM side as committed (git archive of HEAD), so the app always says
 # which commit it carries. Uncommitted changes in src/ would not be in it:
 # stop. A release build takes nothing that is not committed.
-COMMIT=$(git -C "$REPO" rev-parse HEAD)
-if [[ -n $(git -C "$REPO" status --porcelain -- src) ]]; then
+(( INPUTS_ONLY )) || COMMIT=$(git -C "$REPO" rev-parse HEAD)
+if (( ! INPUTS_ONLY )) && [[ -n $(git -C "$REPO" status --porcelain -- src) ]]; then
   echo "src/ has uncommitted changes: commit them first (the app takes OmacVM as committed)" >&2
   exit 1
 fi
-if (( RELEASE )) && [[ -n $(git -C "$REPO" status --porcelain) ]]; then
+if (( RELEASE && ! INPUTS_ONLY )) && [[ -n $(git -C "$REPO" status --porcelain) ]]; then
   echo "a release build needs a clean tree: commit or stash first" >&2
   git -C "$REPO" status --short >&2
   exit 1
@@ -91,6 +96,7 @@ fi
 INPUTS=$(cd "$ROOT/runtime" && { shasum -a 256 ./*.sh runtime-files.txt patches/* Tests/firmware/*.py Tests/virgl/*.py Tests/virgl/*.c Tests/virgl/*.h Tests/display/* Tests/keys/* Tests/net/* boot-logo/*.py
   echo "firmware=${OMACVM_FIRMWARE:-omacvm}"
   echo "kosmickrisp=${OMACVM_RUNTIME_KOSMICKRISP:-0}${KK_STAMP:+ $KK_STAMP}"; } | shasum -a 256 | cut -d' ' -f1)
+if (( INPUTS_ONLY )); then echo "$INPUTS"; exit 0; fi
 # A runtime built with OMACVM_RUNTIME_TEST_HOOKS=1 (test hooks) is never shipped.
 if [[ ! -x $RT/qemu-gpu-runtime/bin/qemu-system-aarch64 || ! -f $RT/firmware/edk2-aarch64-code.fd
       || -e $RT/qemu-gpu-runtime.test-hooks

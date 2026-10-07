@@ -70,6 +70,7 @@ src/bridge/mac/test-models.sh && src/bridge/mac/test-hid.sh
 src/tests/venus-driver.sh
 src/tests/vulkan-feature.sh && src/tests/venus-build-tools.sh && src/tests/graphics-setting.sh && src/tests/pkg-safe.sh
 src/tests/app-paths.sh
+src/tests/ci-app-build.sh
 app/runtime/Tests/display/test-pointer-guard.sh
 app/runtime/Tests/display/test-pointer-start.sh
 src/tests/app-fullscreen-space.sh

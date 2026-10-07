@@ -1,6 +1,7 @@
 # Quick checks on every pull request and on main: syntax, ShellCheck errors,
 # the app's and the Mac helpers' builds and offline tests (the guest agents'
 # also on Linux) and the control centre's tests. No signing beyond ad hoc, no VMs.
+# On the Mac mini also OmacVM.app as a release puts it together (job app).
 #
 # Where the macOS job runs: pushes to main and pull requests from branches of
 # this repository run on the maintainer's Mac mini (self-hosted, label
@@ -378,12 +379,97 @@ jobs:
       - name: Sound does not hang on Chromium's video decoder (WirePlumber rule, install order, off); its device starts the daemon
         run: src/tests/vdec-wireplumber.sh
 
+      - name: CI builds OmacVM.app on the mini (the app job, its runtime cache)
+        run: src/tests/ci-app-build.sh
+
       - name: Clean up (build folders, the job's temp folder)
         if: always()
         run: |
           [ -z "${JOB_TMP:-}" ] || rm -rf "$JOB_TMP"
           # SwiftPM's .build, the helpers' builds, __pycache__: nothing of this
           # job stays on a self-hosted runner's disk until the next checkout.
+          git clean -ffdxq 2>/dev/null || true
+
+  # OmacVM.app as app/scripts/build-app.sh puts it together for a release (the
+  # launcher and Touch ID panel built for release, the QEMU runtime, the Mac
+  # helpers, its python3, an ad hoc signature), so a break shows on the pull
+  # request, not at release time. Only on the mini, where the QEMU runtime
+  # comes from a cache kept per runner (.github/app-runtime-cache.sh); a new
+  # runtime (its patches or build scripts changed) is built once there. Forks
+  # and a manual run (macos-15, no cache) skip this job.
+  app:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","ARM64","omacvm-mini"]') || 'macos-15' }}
+    # A cache hit takes a few minutes; a runtime built from source up to ~30.
+    timeout-minutes: 45
+    defaults:
+      run:
+        # bash -eo pipefail: a build that fails fails the step through tee.
+        shell: bash
+    env:
+      # Its own name and id: no app on the mini can be taken for this copy.
+      APP_NAME: OmacVM CI
+      APP_ID: org.omacvm.app.ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Where this runs; a temp folder of the job's own
+        run: |
+          echo "runner: ${RUNNER_NAME:-?} (${{ runner.environment }}), $(sw_vers -productVersion), $(xcrun swift --version 2>/dev/null | head -1)"
+          tmp=${TMPDIR:-/tmp}; job_tmp=$(mktemp -d "${tmp%/}/j.XXXXXX")
+          echo "TMPDIR=$job_tmp" >> "$GITHUB_ENV"
+          echo "JOB_TMP=$job_tmp" >> "$GITHUB_ENV"
+          # Beside the runner's tool cache: kept between jobs, never in the checkout.
+          echo "OMACVM_CI_RUNTIME_CACHE=${RUNNER_TOOL_CACHE:?}/omacvm-runtime" >> "$GITHUB_ENV"
+
+      - name: QEMU runtime from the cache
+        run: |
+          key=$(app/scripts/build-app.sh --runtime-inputs)
+          echo "runtime inputs $key"
+          .github/app-runtime-cache.sh restore app/runtime/.build "$key"
+
+      - name: OmacVM.app builds (build-app.sh, not a release)
+        run: |
+          start=$(date +%s)
+          app/scripts/build-app.sh --name "$APP_NAME" --id "$APP_ID" 2>&1 | tee "$JOB_TMP/build.log"
+          echo "build-app.sh took $(( $(date +%s) - start )) s"
+          # The runtime's build tests, when it was built from source.
+          if grep -nw FAIL "$JOB_TMP/build.log"; then echo "::error::a runtime build test failed"; exit 1; fi
+
+      - name: The app is complete (commit, id, version, signature, its parts)
+        run: |
+          app="app/dist/$APP_NAME.app"; c=$app/Contents; p=$c/Info.plist
+          pb() { /usr/libexec/PlistBuddy -c "Print $1" "$p"; }
+          fail=0
+          want() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "::error::$1: want '$2', got '$3'"; fail=1; fi; }
+          want OmacVMCommit "$(git rev-parse HEAD)" "$(pb OmacVMCommit)"
+          want CFBundleIdentifier "$APP_ID" "$(pb CFBundleIdentifier)"
+          want CFBundleShortVersionString "$(cat src/VERSION)" "$(pb CFBundleShortVersionString)"
+          for f in MacOS/OmacVM Resources/runtime/bin/OmacVM Resources/firmware/edk2-aarch64-code.fd \
+                   Resources/runtime/lib/OmacVMTouchIDPanel.dylib Library/LaunchServices/org.omacvm.netd \
+                   Resources/omacvm/omacvm Helpers; do
+            [ -e "$c/$f" ] && echo "ok   $f" || { echo "::error::no $f in the app"; fail=1; }
+          done
+          # Since 3.0.5 the app carries its own python3 (app/scripts/fetch-python.sh).
+          if [ -x app/scripts/fetch-python.sh ]; then
+            "$c/Resources/python/bin/python3" -I -c 'import hashlib, json, plistlib; print("ok   python3")' || { echo "::error::the app's python3 does not run"; fail=1; }
+          fi
+          codesign --verify --deep --strict "$app" && echo "ok   signature" || fail=1
+          du -sh "$app"
+          exit $fail
+
+      - name: Keep the runtime for the next run (also when the app part failed)
+        if: ${{ !cancelled() }}
+        run: |
+          if grep -qw FAIL "$JOB_TMP/build.log" 2>/dev/null; then echo "skip (a runtime build test failed)"
+          else .github/app-runtime-cache.sh save app/runtime/.build; fi
+
+      - name: Clean up (the app, build folders, the job's temp folder)
+        if: always()
+        run: |
+          [ -z "${JOB_TMP:-}" ] || rm -rf "$JOB_TMP"
           git clean -ffdxq 2>/dev/null || true
 
   # The guest agents are Linux programs: their inotify and pidfd waits only
