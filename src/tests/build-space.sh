@@ -90,6 +90,7 @@ has() { [[ $2 == *"$1"* ]] && echo yes || echo "$2"; }
 
 # The real helpers: a folder not made yet counts on its drive.
 (
+  source "$R/src/lib/tools.sh"
   source "$R/src/lib/space.sh"
   expect "a folder not made yet: its drive" "$(stat -L -f %d "$T")" "$(drive_id "$T/no/such/VMs")"
   g=$(free_gb_at "$T/no/such")
@@ -100,12 +101,12 @@ has() { [[ $2 == *"$1"* ]] && echo yes || echo "$2"; }
 
 # ---------- (2) build.sh --plan: Parallels, the VM on another folder ----------
 mkdir -p "$T/bin" "$T/home" "$T/ext"
-# swift: the free space probe says 100 GB for $T/ext, 10 for anything else;
-# the notch probe: none.
+# swift: the free space probe (mac-free-gb.swift DIR, or swift -e) says 100 GB
+# for $T/ext, 10 for anything else; the notch probe: none.
 cat > "$T/bin/swift" <<EOF
 #!/bin/bash
-[[ \$1 == -e ]] || { echo none; exit 0; }
-[[ \${3:-} == "$T/ext"* ]] && echo 100 || echo 10
+case \$1 in -e) d=\${3:-} ;; */mac-free-gb.swift) d=\${2:-} ;; *) echo none; exit 0 ;; esac
+[[ \$d == "$T/ext"* ]] && echo 100 || echo 10
 EOF
 # Parallels Desktop Pro, its default shared network, no VMs.
 printf '#!/bin/bash\n[[ $1 == list ]] && echo "STATUS NAME"\nexit 0\n' > "$T/bin/prlctl"
@@ -122,7 +123,7 @@ expect "build --plan: the plan names the folder" yes "$(has "$T/ext" "$out")"
 # $T/ext, so that drive alone counts. A full one is refused, naming it.
 cat > "$T/bin/swift" <<'EOF'
 #!/bin/bash
-[[ $1 == -e ]] && echo 12 || echo none
+[[ $1 == -e || $1 == */mac-free-gb.swift ]] && echo 12 || echo none
 EOF
 out=$(plan "$T/ext"); rc=$?
 expect "build --plan, --vm-dir with 12 GB: needs a person" 3 "$rc"

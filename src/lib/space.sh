@@ -24,7 +24,7 @@ space_existing() {
 # needed; df leaves those out), else df's.
 free_gb_at() {
   local d g; d=$(space_existing "$1")
-  g=$(swift -e 'import Foundation; let v = try? URL(fileURLWithPath: CommandLine.arguments[1]).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]); print((v?.volumeAvailableCapacityForImportantUsage ?? 0) / 1_000_000_000)' "$d" 2>/dev/null)
+  g=$(mac_tool mac-free-gb "$d" 2>/dev/null)   # src/lib/tools.sh: no Command Line Tools needed
   [[ $g =~ ^[0-9]+$ && $g -gt 0 ]] || g=$(df -g "$d" | awk 'END { print $4 }')
   echo "$g"
 }
