@@ -49,6 +49,15 @@ in more words.
   there too and the VM went black, as in 3.0.3. The log now says "apps'
   share reached" when an app stops at its share, not "budget reached".
 
+- OmacVM.app: browser pages that draw many objects one by one (WebGL
+  Aquarium) are faster: on the Mac's OpenGL a draw no longer sets its
+  vertex buffers and selects its shaders again when nothing changed.
+
+- Graphics: browser pages that draw many objects with the same indices (WebGL
+  Aquarium, one draw per fish) no longer read those indices back from the
+  GPU on every draw; the safety check reads them once per change
+  (`OMACVM_VIRGL_INDEX_RANGE_CACHE=0` turns it off).
+
 ## 3.0.5 (unreleased)
 
 - With OmacVM.app and the test app OmacVM Test.app on one Mac, each one's
