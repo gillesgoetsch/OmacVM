@@ -1,7 +1,7 @@
 // The VM window's rules (OmacVMWindow), without a VM or the app:
 //   cd app/app && swift run window-tests
-// Custom resources, disk Grow/Compact, "omacvm in Terminal", the keyboard
-// note. Exit 0 when all pass. CI runs it on every pull request.
+// Custom resources, disk Grow/Compact, "omacvm in Terminal", the window's
+// height, the keyboard note. Exit 0 when all pass. CI runs it on every pull request.
 import Foundation
 import OmacVMWindow
 
@@ -132,6 +132,17 @@ for (name, script) in [("grow", DiskSize.growScript), ("compact", DiskSize.compa
     try? sh.run(); sh.waitUntilExit()
     expect(sh.terminationStatus == 0, "\(name) script: sh -n")
 }
+
+// MARK: Window height (the window itself: OmacVM --render-vm-window, a CI step)
+
+expect(WindowFit.fitsSmallScreen(content: 700, titleBar: 28) && !WindowFit.fitsSmallScreen(content: 740, titleBar: 28),
+       "13-inch MacBook: 760 pt with the title bar")
+expect(WindowFit.contentHeight(content: 650, visible: 860, titleBar: 28) == 650, "fits: the whole content, no scrolling")
+expect(WindowFit.contentHeight(content: 900, visible: 700, titleBar: 28) == 672, "too tall: stops at the screen, the rest scrolls")
+expect(WindowFit.contentHeight(content: 900, visible: 200, titleBar: 28) == WindowFit.minimumContent, "a tiny screen: a few rows stay")
+expect(CommandLineInstall.shortText(.installed(at: "/x")) == "Installed"
+       && CommandLineInstall.shortText(.available(target: "/x", needsAdmin: true)) == "Not installed",
+       "omacvm in Terminal: short text in the row, the rest in its (i)")
 
 // MARK: Keyboard note
 

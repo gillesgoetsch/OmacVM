@@ -6,17 +6,20 @@ work, which do not and why, and how to turn it on.
 
 ## Turn it on
 
-In the app's VM window: **USB devices (experimental)**. Each device you can
-give to the VM has a switch; the devices macOS keeps are named below the
-list (point at it to see why). Switch a device on, then start the VM.
+In the app's VM window: switch **USB devices (experimental)** on, then
+**Devices…**. Each device you can give to the VM has a switch there; the
+devices macOS keeps are named below the list (point at it to see why).
+Switch a device on, then start the VM.
 
-- Per VM. Off by default: with no device on, the VM has no USB controller at
-  all, exactly as before.
+- Per VM. Off by default: switched off, or with no device on, the VM has no
+  USB controller at all, exactly as before. Switching it off keeps the
+  devices for the next time.
 - The device goes to the VM whenever it is plugged in while the VM runs (also
   after the start), and back to the Mac when the VM stops.
 - Up to four devices per VM.
 - The choice is the file `usb` in the VM's folder, one device a line
-  (`0483:3748 STM32 STLink`). Delete the file to turn it off.
+  (`0483:3748 STM32 STLink`); the switch is the file `usb-enabled` (`on` or
+  `off`). A VM with devices chosen before the switch came counts as on.
 - `omacvm check` on the Mac shows which devices this start passed. QEMU's log
   (`logs/qemu.log`) has the line `OmacVM: USB devices: ...`, and
   `usb-host: VVVV:PPPP ... is in use on the host: not taken` when macOS had a

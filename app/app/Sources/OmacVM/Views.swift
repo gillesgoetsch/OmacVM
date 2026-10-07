@@ -141,14 +141,26 @@ final class AppState: ObservableObject {
 
 struct RootView: View {
     @ObservedObject var state: AppState
+    /// False: the whole content, never scrolling (the window pictures).
+    var scrolls = true
+    /// The window pictures (RenderVMWindow).
+    var preview: RenderVMWindow.Preview? = nil
 
     var body: some View {
+        if scrolls {
+            FitScroll { content }.frame(width: 568)
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         Group {
             switch state.screen {
             case .install: InstallView(onDone: { state.installDone() })
             case .setup: SetupView(state: state)
             case .building: BuildView(state: state, creator: state.creator)
-            case .ready: ReadyView(state: state)
+            case .ready: ReadyView(state: state, preview: preview)
             case .driveMissing: DriveMissingView(state: state)
             case .unavailable: UnavailableView(state: state)
             }
@@ -426,6 +438,9 @@ struct BuildLogView: View {
     }
 }
 
+/// The VM window before Start: a header, the settings as a two-column form
+/// (switches for what is on or off; each long explanation behind an (i)),
+/// then Delete… and Start. Fits a 13-inch MacBook whole (WindowFit).
 struct ReadyView: View {
     @ObservedObject var state: AppState
     @State private var fullScreen = Settings.startFullScreen
@@ -444,8 +459,11 @@ struct ReadyView: View {
     @State private var macFolder: String?
     @State private var macFolderNote: String?
     @State private var customResources = false
-    /// Counts the app's activations: the keyboard note is drawn anew on each.
-    @State private var activations = 0
+    /// What the window says about the keyboard (KeyNote).
+    @State private var keyNote = KeyNote.none
+    /// The window pictures (--render-vm-window): this keyboard note and this
+    /// "omacvm in Terminal" state instead of the Mac's.
+    var preview: RenderVMWindow.Preview? = nil
 
     /// The create screen's tiers; resources set some other way show as
     /// Custom (-1); Custom… (-2) opens the steppers.
@@ -476,88 +494,55 @@ struct ReadyView: View {
 
     /// VM memory and graphics memory side by side: the VM's RAM is fixed,
     /// its graphics come from the Mac on top, as needed (GPUMemory).
-    private var graphicsMemory: some View {
-        TimelineView(.periodic(from: .now, by: 2)) { _ in
-            let vm = "VM memory: \(state.config.memoryMB / 1024) GB"
-            let gpu = GPUMemory.read(for: state.config).map {
-                "graphics memory last run: peak \(GPUMemory.gb($0.peakMB)), from the Mac on top"
-            } ?? "graphics memory: from the Mac on top, as the VM needs it"
-            Text("\(vm); \(gpu)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .help(GPUMemory.explanation)
-        }
+    private var memoryText: String {
+        let vm = "VM memory: \(state.config.memoryMB / 1024) GB"
+        let gpu = GPUMemory.read(for: state.config).map {
+            "graphics memory last run: peak \(GPUMemory.gb($0.peakMB)), from the Mac on top"
+        } ?? "graphics memory: from the Mac on top, as the VM needs it"
+        return "\(vm); \(gpu).\n\n\(GPUMemory.explanation)"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(state.config.name).font(.title2.bold())
-            Text("\(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB memory, \(state.config.diskGB) GB disk, user \(state.config.user)")
-                .foregroundStyle(.secondary)
-            graphicsMemory
-            Picker("Resources", selection: tier) {
-                ForEach(0..<4) { t in
-                    let v = Mac.tier(t)
-                    Text("\(Mac.tierNames[t]): \(v.cpus) CPUs, \(v.memoryGB) GB").tag(t)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.config.name).font(.title2.bold())
+                HStack(spacing: 4) {
+                    Text("\(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB memory, \(state.config.diskGB) GB disk, user \(state.config.user)")
+                        .foregroundStyle(.secondary)
+                    InfoButton(topic: "memory", text: memoryText)
                 }
-                if Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) == nil {
-                    Text("Custom: \(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB").tag(-1)
-                }
-                Divider()
-                Text("Custom…").tag(-2)
             }
-            .sheet(isPresented: $customResources) {
-                CustomResourcesSheet(cpus: state.config.cpus, memoryMB: state.config.memoryMB,
-                                     onSave: { setResources(cpus: $0, memoryGB: $1); customResources = false },
-                                     onCancel: { customResources = false })
-            }
-            if let n = resourcesNote {
-                Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
-            }
-            Toggle("Start in full screen", isOn: $fullScreen)
-                .onChange(of: fullScreen) { _, v in Settings.startFullScreen = v }
-            Toggle("Keep the Dock and hot corners away in full screen", isOn: $keepDockAway)
-                .onChange(of: keepDockAway) { _, v in Settings.keepDockAway = v }
-            Picker("Escape combo (⌃⌥ Esc)", selection: $escape) {
-                ForEach(EscapeSetting.Choice.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .help("In a full-screen VM, Control-Option-Esc moves the monitor under the pointer (or all monitors) to the Space beside the VM's with macOS's own animation; the VM stays full screen. Pressed in macOS, it goes back into the VM. The keyboard follows the pointer's monitor.")
-            .onChange(of: escape) { _, v in EscapeSetting.set(v) }
-            if mouse.connected { MagicMouseRow(inForm: false) }
-            keyAccess
-            GraphicsPicker(choice: $graphics, plan: Runner.graphicsPlan(state.config))
-                .onChange(of: graphics) { _, v in setGraphics(v) }
-            // Vulkan fell back and stays off (graphics-fallback): the picker
-            // already shows Vulkan, so choosing it again needs a button.
-            if Graphics.fallback(folder: state.config.folder) != nil {
-                Button("Try Vulkan again") {
-                    do {
-                        try Graphics.write(graphics, folder: state.config.folder)
-                        graphicsNote = "Vulkan is tried again from the next start."
-                    } catch {
-                        graphicsNote = "Could not save: \(error.localizedDescription)"
+            Form {
+                Section { vmRows }
+                Section {
+                    SwitchRow("Start in full screen", isOn: $fullScreen)
+                        .onChange(of: fullScreen) { _, v in Settings.startFullScreen = v }
+                    SwitchRow("Keep the Dock and hot corners away", isOn: $keepDockAway) {
+                        InfoButton(topic: "the Dock and hot corners", text: "In full screen, neither the Dock nor a hot corner comes up from inside the VM, and the menu bar stays hidden on every display. Off: macOS's own full screen.")
                     }
+                    .onChange(of: keepDockAway) { _, v in Settings.keepDockAway = v }
                 }
+                Section {
+                    fastNetwork
+                    USBRow(folder: state.config.folder)
+                    macFolderRows
+                }
+                Section {
+                    DiskRow(state: state)
+                    CommandLineRow(preview: preview?.terminal)
+                    StorageRows(storage: state.storage, selected: state.config.location == nil ? nil : state.config.folder)
+                }
+                Section { UpdateRow(updater: Updater.shared) }
             }
-            if let n = graphicsNote {
-                Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
-            }
-            fastNetwork
-            USBSection(folder: state.config.folder)
-            macFolderRow
-            DiskSection(state: state)
-            CommandLineRow()
-            Divider()
-            StorageSection(storage: state.storage, selected: state.config.location == nil ? nil : state.config.folder)
-            Divider()
-            if let m = state.message { Text(m).foregroundStyle(.red) }
+            .formStyle(.columns)
+            if let m = state.message { Text(m).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             if let p = state.config.filesProblem {
                 Text(p).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
-            UpdateSection(updater: Updater.shared)
             if let app = OmacVMVersion.app, OmacVMVersion.vmIsBehind(state.config.guestVersion, app: app) {
                 guestUpdate(app: app)
             }
+            UpdateBanner(updater: Updater.shared)
             HStack {
                 Button("Delete…") { state.storage.delete(state.config) }
                     .disabled(state.storage.moving != nil)
@@ -570,32 +555,101 @@ struct ReadyView: View {
         .onAppear {
             refreshFastNetwork(); graphics = Graphics.read(folder: state.config.folder)
             macFolder = MacFolder.path(state.config)
+            refreshKeyNote()
         }
         .onChange(of: state.config) { _, c in
             refreshFastNetwork(); graphics = Graphics.read(folder: c.folder); graphicsNote = nil
             macFolder = MacFolder.path(c); macFolderNote = nil
+            refreshKeyNote()
+        }
+        // Every 3 s while the window shows. A task, not a Timer publisher
+        // kept in this struct: each redraw of the window (a storage change,
+        // a move's progress) makes a new publisher and starts its 3 s again,
+        // so it would never fire.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                refreshKeyNote()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshKeyNote()
         }
     }
 
+    /// Resources, Graphics, the escape combo, the Magic Mouse and the keyboard.
+    @ViewBuilder private var vmRows: some View {
+        Picker("Resources", selection: tier) {
+            ForEach(0..<4) { t in
+                let v = Mac.tier(t)
+                Text("\(Mac.tierNames[t]): \(v.cpus) CPUs, \(v.memoryGB) GB").tag(t)
+            }
+            if Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) == nil {
+                Text("Custom: \(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB").tag(-1)
+            }
+            Divider()
+            Text("Custom…").tag(-2)
+        }
+        .fixedSize()
+        .sheet(isPresented: $customResources) {
+            CustomResourcesSheet(cpus: state.config.cpus, memoryMB: state.config.memoryMB,
+                                 onSave: { setResources(cpus: $0, memoryGB: $1); customResources = false },
+                                 onCancel: { customResources = false })
+        }
+        if let n = resourcesNote { RowNote(n, error: n.hasPrefix("Could not")) }
+        GraphicsPicker(choice: $graphics, plan: Runner.graphicsPlan(state.config))
+            .onChange(of: graphics) { _, v in setGraphics(v) }
+        // Vulkan fell back and stays off (graphics-fallback): the picker
+        // already shows Vulkan, so choosing it again needs a button.
+        if Graphics.fallback(folder: state.config.folder) != nil {
+            LabeledContent("") {
+                Button("Try Vulkan again") {
+                    do {
+                        try Graphics.write(graphics, folder: state.config.folder)
+                        graphicsNote = "Vulkan is tried again from the next start."
+                    } catch {
+                        graphicsNote = "Could not save: \(error.localizedDescription)"
+                    }
+                }
+            }
+        }
+        if let n = graphicsNote { RowNote(n, error: n.hasPrefix("Could not")) }
+        LabeledContent("Escape combo (⌃⌥ Esc)") {
+            HStack(spacing: 8) {
+                Picker("Escape combo (⌃⌥ Esc)", selection: $escape) {
+                    ForEach(EscapeSetting.Choice.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .onChange(of: escape) { _, v in EscapeSetting.set(v) }
+                InfoButton(topic: "the escape combo", text: "In a full-screen VM, Control-Option-Esc moves the monitor under the pointer (or all monitors) to the Space beside the VM's with macOS's own animation; the VM stays full screen. Pressed in macOS, it goes back into the VM. The keyboard follows the pointer's monitor.")
+            }
+        }
+        if mouse.connected { MagicMouseRow() }
+        keyAccess
+    }
+
     /// One folder of the Mac at ~/Mac in the VM (MacFolder), off by default.
-    private var macFolderRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Mac folder")
-                Spacer()
-                if macFolder != nil { Button("Turn Off") { setMacFolder(nil) } }
-                Button(macFolder == nil ? "Choose…" : "Change…") {
+    /// Switching it on asks for the folder.
+    @ViewBuilder private var macFolderRows: some View {
+        SwitchRow("Mac folder", isOn: Binding(get: { macFolder != nil }, set: { on in
+            if !on { setMacFolder(nil) } else if let url = MacFolder.choose(current: macFolder) { setMacFolder(url) }
+        })) {
+            if macFolder != nil {
+                Button("Choose…") {
                     if let url = MacFolder.choose(current: macFolder) { setMacFolder(url) }
                 }
             }
-            Text(macFolder.map { "\($0) at ~/Mac in the VM. The VM can read and change everything in it." }
-                 ?? "Off. On: one folder of the Mac at ~/Mac in the VM.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let n = macFolderNote {
-                Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
-            }
+            InfoButton(topic: "the Mac folder", text: "One folder of the Mac at ~/Mac in the VM. The VM can read and change everything in it. Applies on the next start.")
         }
+        if let p = macFolder {
+            Text("\(StorageModel.short(URL(fileURLWithPath: p))) at ~/Mac in the VM")
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: RowNote.width, alignment: .leading)
+                .help(p)
+        }
+        if let n = macFolderNote { RowNote(n, error: n.hasPrefix("Could not")) }
     }
 
     private func setMacFolder(_ url: URL?) {
@@ -612,45 +666,42 @@ struct ReadyView: View {
     /// offer to bring it up to this app's (the control centre in Omarchy only
     /// exists from 3.0.0 on, so an older VM cannot ask for it itself).
     private func guestUpdate(app: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("OmacVM in this VM: \(state.config.guestVersion ?? "from an older app")")
-                Spacer()
-                Button("Update VM") {
-                    state.message = nil
-                    state.creator.update(config: state.config)
-                    state.screen = .building
-                }
-                .disabled(state.storage.moving != nil || state.config.filesProblem != nil)
+        HStack(spacing: 6) {
+            Text("OmacVM in this VM: \(state.config.guestVersion ?? "from an older app")")
+            InfoButton(topic: "Update VM", text: "This app has OmacVM \(app). Update VM starts the VM without a window, updates OmacVM in it and its helpers on the Mac (a few minutes) and shuts it down. Your files and settings in Omarchy stay.")
+            Spacer()
+            Button("Update VM") {
+                state.message = nil
+                state.creator.update(config: state.config)
+                state.screen = .building
             }
-            Text("This app has OmacVM \(app). Update VM starts the VM without a window, updates OmacVM in it and its helpers on the Mac (a few minutes) and shuts it down. Your files and settings in Omarchy stay.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            .disabled(state.storage.moving != nil || state.config.filesProblem != nil)
         }
     }
 
     /// Shown when the VM's keyboard tap is refused (KeyAccess); checked
     /// again every few seconds and when OmacVM comes to the front (back from
     /// System Settings). Allowed since the VM's last start: a grey line.
-    private var keyAccess: some View {
-        TimelineView(.periodic(from: .now, by: 3)) { _ in
-            switch KeyAccess.note(folder: state.config.folder) {
-            case .none:
-                EmptyView()
-            case .allowedNextStart:
-                Text(KeyNote.allowedText).font(.caption).foregroundStyle(.secondary)
-            case .needsUser:
-                HStack {
-                    Text("Keyboard: \(KeyAccess.shortText)").foregroundStyle(.red)
-                    KeyStepsButton()
-                    Spacer()
+    @ViewBuilder private var keyAccess: some View {
+        if keyNote == .needsUser {
+            LabeledContent("Keyboard") {
+                HStack(spacing: 8) {
+                    Text("Not allowed").foregroundStyle(.red)
                     Button("Allow…") { KeyAccess.request() }
+                    InfoButton(topic: "the keyboard", text: KeyAccess.missingText)
                 }
             }
+        } else if keyNote == .allowedNextStart {
+            LabeledContent("Keyboard") {
+                Text(KeyNote.allowedText).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: RowNote.width, alignment: .leading)
+            }
         }
-        .id(activations)
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            activations += 1
-        }
+    }
+
+    private func refreshKeyNote() {
+        keyNote = preview?.keyNote ?? KeyAccess.note(folder: state.config.folder)
     }
 
     private func setGraphics(_ g: GraphicsChoice) {
@@ -668,41 +719,40 @@ struct ReadyView: View {
         }
     }
 
-    /// The fast network (experimental): a button, never automatic. Turning it
+    /// The fast network (experimental): a switch, never automatic. Turning it
     /// on installs a small system service, so macOS asks for the password once.
-    private var fastNetwork: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Fast network (experimental)")
-                Spacer()
-                if fastNetBusy { ProgressView().controlSize(.small) }
-                if let fix = fastNetFix, fastNetOn {
-                    Button(fix) { updateFastNetwork() }.disabled(fastNetBusy)
-                }
-                Button(fastNetOn ? "Turn Off…" : "Turn On…") { toggleFastNetwork() }
-                    .disabled(fastNetBusy)
+    @ViewBuilder private var fastNetwork: some View {
+        SwitchRow("Fast network (experimental)",
+                  isOn: Binding(get: { fastNetOn }, set: { on in if on != fastNetOn { toggleFastNetwork() } }),
+                  enabled: !fastNetBusy) {
+            if fastNetBusy { ProgressView().controlSize(.small) }
+            if let fix = fastNetFix, fastNetOn {
+                Button(fix) { updateFastNetwork() }.disabled(fastNetBusy)
             }
-            Text(fastNetStatus).font(.caption).foregroundStyle(.secondary)
-            if let n = fastNetNote { Text(n).font(.caption).foregroundStyle(.red) }
+            InfoButton(topic: "the fast network", text: Self.fastNetworkInfo)
         }
+        if !fastNetStatus.isEmpty { RowNote(fastNetStatus) }
+        if let n = fastNetNote { RowNote(n, error: true) }
     }
 
-    /// What the switch says, worked out off the main thread (the service
+    static let fastNetworkInfo = "Off: QEMU's own network. On: macOS's VM network (as Parallels and UTM), faster to and from the Mac; macOS asks for your password once."
+
+    /// The line under the switch, worked out off the main thread (the service
     /// check verifies QEMU's code signature, which reads the whole binary).
-    /// The service is checked as the installer checks it (an older build of
+    /// Off says nothing: the (i) explains. The service is checked as the installer checks it (an older build of
     /// the same protocol is fine; another protocol after an app update needs
     /// an update): its button then, Update… or Install…
     nonisolated private static func fastNetworkStatus(_ c: VMConfig) -> (on: Bool, text: String, fix: String?) {
         guard FastNetwork.isOn(c) else {
-            return (false, "Off: QEMU's own network. On: macOS's VM network (as Parallels and UTM), faster to and from the Mac; macOS asks for your password once.", nil)
+            return (false, "", nil)
         }
         let status = FastNetwork.serviceStatus()
         if status == "stopped" { return (true, "On, but \(FastNetwork.stoppedText); until then the VM starts on the normal network.", nil) }
         if let need = FastNetwork.serviceNeeds(status) {
             return (true, "On. \(need.why) \(need.button) fixes it (macOS asks for your password once); until then the VM starts on the normal network.", need.button)
         }
-        if let why = FastNetwork.serviceProblem() { return (true, "On, but \(why): Turn Off, then On again.", nil) }
-        return (true, FastNetwork.lastRecord(c) == "vmnet" ? "On." : "On from the VM's next start.", nil)
+        if let why = FastNetwork.serviceProblem() { return (true, "On, but \(why): switch it off, then on again.", nil) }
+        return (true, FastNetwork.lastRecord(c) == "vmnet" ? "" : "On from the VM's next start.", nil)
     }
 
     private func refreshFastNetwork() {
@@ -766,82 +816,63 @@ extension KeyAccess {
     }
 }
 
-/// The keyboard note's (i): the steps in System Settings (KeyAccess).
-private struct KeyStepsButton: View {
-    @State private var shown = false
+/// The weekly-check switch (shared with the control centre), Check Now and
+/// what the last check found: a row of the VM window's form.
+struct UpdateRow: View {
+    @ObservedObject var updater: Updater
 
     var body: some View {
-        Button { shown.toggle() } label: {
-            Image(systemName: "info.circle").foregroundStyle(.secondary)
+        SwitchRow("Check for updates once a week", isOn: Binding(get: { updater.enabled }, set: { updater.setEnabled($0) })) {
+            Button("Check Now") { Task { await updater.checkNow() } }
+                .disabled(updater.checking || updater.restarting)
+            InfoButton(topic: "update checks", text: "Off: no checks and no messages. Check Now still works. The same switch as in the control centre in Omarchy.")
+            if updater.checking {
+                ProgressView().controlSize(.small)
+                Text("Checking…").foregroundStyle(.secondary)
+            }
         }
-        .buttonStyle(.borderless)
-        .help("How to allow it")
-        .accessibilityLabel("How to allow it")
-        .popover(isPresented: $shown, arrowEdge: .bottom) {
-            Text(KeyAccess.missingText)
+        if !updater.checking, let o = updater.lastOutcome, let line = Updater.outcomeLine(o, current: updater.currentVersion) {
+            Text(line)
+                .font(.caption).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(width: 320, alignment: .leading)
-                .padding(12)
+                .frame(maxWidth: RowNote.width, alignment: .leading)
         }
     }
 }
 
-/// The self-update in the window: a ready update (never while update checks
-/// are off), what the last update did, and the weekly-check switch, shared
-/// with the control centre.
-struct UpdateSection: View {
+/// The self-update below the form: a ready update (never while update checks
+/// are off) and what the last update did.
+struct UpdateBanner: View {
     @ObservedObject var updater: Updater
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider()
-            // Weekly checks on, or a check by hand in this session.
-            let banner = updater.staged != nil && (updater.enabled || updater.lastOutcome != nil)
-            if banner, let s = updater.staged {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("\(Product.name) \(s.version) is ready", systemImage: "arrow.down.circle.fill")
-                        .font(.headline)
-                    Text(bannerText)
-                        .font(.callout).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        if let n = s.notes { Button("What's New") { NSWorkspace.shared.open(n) } }
-                        Button("Skip This Version") { updater.skip() }.disabled(updater.restarting)
-                        Spacer()
-                        if !updater.installWhenIdle && !updater.restarting {
-                            Button("Update to \(s.version)…") { update(s.version) }.keyboardShortcut(.defaultAction)
-                        }
+        // Weekly checks on, or a check by hand in this session.
+        let banner = updater.staged != nil && (updater.enabled || updater.lastOutcome != nil)
+        if banner, let s = updater.staged {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("\(Product.name) \(s.version) is ready", systemImage: "arrow.down.circle.fill")
+                    .font(.headline)
+                Text(bannerText)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    if let n = s.notes { Button("What's New") { NSWorkspace.shared.open(n) } }
+                    Button("Skip This Version") { updater.skip() }.disabled(updater.restarting)
+                    Spacer()
+                    if !updater.installWhenIdle && !updater.restarting {
+                        Button("Update to \(s.version)…") { update(s.version) }.keyboardShortcut(.defaultAction)
                     }
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
             }
-            // While it waits for the VM the banner says so already.
-            if let n = updater.notice, !(banner && updater.installWhenIdle) {
-                Label(n, systemImage: "info.circle")
-                    .font(.callout).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
-                Toggle("Check for updates once a week", isOn: Binding(get: { updater.enabled }, set: { updater.setEnabled($0) }))
-                Spacer()
-                if updater.checking {
-                    ProgressView().controlSize(.small)
-                    Text("Checking…").font(.callout).foregroundStyle(.secondary)
-                }
-                Button("Check Now") { Task { await updater.checkNow() } }
-                    .disabled(updater.checking || updater.restarting)
-            }
-            if !updater.checking, let o = updater.lastOutcome, let line = Updater.outcomeLine(o, current: updater.currentVersion) {
-                Text(line)
-                    .font(.callout).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Text("Off: no checks and no messages. Check Now still works. The same switch as in the control centre in Omarchy.")
-                .font(.caption).foregroundStyle(.secondary)
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        }
+        // While it waits for the VM the banner says so already.
+        if let n = updater.notice, !(banner && updater.installWhenIdle) {
+            Label(n, systemImage: "info.circle")
+                .font(.callout).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            Divider()
         }
     }
 
@@ -883,18 +914,34 @@ struct GraphicsPicker: View {
         return Graphics.autoPicksVulkan(macOSMajor: major, kosmicKrisp: kk) ? "Vulkan on this Mac" : "OpenGL on this Mac"
     }
 
+    static let help = "OpenGL: the VM's apps and browsers draw with OpenGL on the Mac's GPU. Vulkan: the same, plus Vulkan apps on the Mac's GPU (KosmicKrisp on macOS 26 and newer, MoltenVK before); Vulkan windows reach the screen by a copy on the Mac. Automatic: OpenGL on every Mac in this version."
+
+    private var picker: some View {
+        Picker("Graphics", selection: $choice) {
+            Text("Automatic (\(autoText))").tag(GraphicsChoice.auto)
+            Text("OpenGL").tag(GraphicsChoice.opengl)
+            Text("Vulkan (experimental)").tag(GraphicsChoice.vulkan)
+        }
+    }
+
+    /// "Next start: OpenGL (why)", as the window said it before the (i).
+    static func nextStart(_ p: GraphicsPlan) -> String {
+        p.choice == .vulkan && !p.venus ? "Next start: \(p.summary)" : "Next start: \(p.summary) (\(p.why))"
+    }
+
+    /// In the setup the picker alone; in the VM window with the (i) and a
+    /// line for the next start (two rows of the form).
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Picker("Graphics", selection: $choice) {
-                Text("Automatic (\(autoText))").tag(GraphicsChoice.auto)
-                Text("OpenGL").tag(GraphicsChoice.opengl)
-                Text("Vulkan (experimental)").tag(GraphicsChoice.vulkan)
+        if let p = plan {
+            LabeledContent("Graphics") {
+                HStack(spacing: 8) {
+                    picker.labelsHidden().fixedSize()
+                    InfoButton(topic: "graphics", text: "\(Self.nextStart(p)).\n\n\(Self.help)")
+                }
             }
-            .help("OpenGL: the VM's apps and browsers draw with OpenGL on the Mac's GPU. Vulkan: the same, plus Vulkan apps on the Mac's GPU (KosmicKrisp on macOS 26 and newer, MoltenVK before); Vulkan windows reach the screen by a copy on the Mac. Automatic: OpenGL on every Mac in this version.")
-            if let p = plan {
-                Text(p.choice == .vulkan && !p.venus ? "Next start: \(p.summary)." : "Next start: \(p.summary) (\(p.why)).")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+            RowNote("Next start: \(p.summary)")
+        } else {
+            picker.help(Self.help)
         }
     }
 }

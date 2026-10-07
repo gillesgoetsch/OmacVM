@@ -125,65 +125,81 @@ enum VMDisk {
     }
 }
 
-/// Disk in the VM window: used / max, Grow… and Compact….
-struct DiskSection: View {
+/// Disk in the VM window's form: what it takes of its size, and Change….
+struct DiskRow: View {
     @ObservedObject var state: AppState
     @State private var info: VMDisk.Info?
     @State private var jobs: [DiskSize.Job] = []
-    @State private var growing = false
-    @State private var newGB = 0
-    @State private var note: String?
-
-    private var currentGB: Int { Int((info?.maxBytes ?? 0) / DiskSize.gib) }
+    @State private var changing = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        LabeledContent("Disk") {
+            HStack(spacing: 8) {
                 if let i = info {
-                    Text("Disk: \(DiskSize.text(i.usedBytes)) used on the Mac of \(DiskSize.text(i.maxBytes)) max")
+                    Text("\(DiskSize.text(i.usedBytes)) used of \(DiskSize.text(i.maxBytes))")
                 } else {
-                    Text("Disk: no disk.img").foregroundStyle(.secondary)
+                    Text("No disk.img").foregroundStyle(.secondary)
                 }
-                Spacer()
-                Button("Grow…") {
-                    newGB = DiskSize.firstGrowGB(currentGB: currentGB)
-                    growing = true
-                }
-                .disabled(info == nil || state.vmRunning() || state.storage.moving != nil)
-                Button("Compact…") { compact() }
-                    .disabled(info == nil || jobs.contains(.compact))
-                    .help("Gives the Mac back the space the VM no longer uses. The max size stays.")
+                Button("Change…") { changing = true }
+                    .disabled(info == nil || state.storage.moving != nil)
             }
-            if !jobs.isEmpty {
-                Text(jobs.map { $0 == .grow ? "Omarchy grows into the new size at the next start." : "Free space goes back to the Mac at the next start." }
-                    .joined(separator: " "))
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if state.vmRunning() {
-                Text("Grow: shut the VM down first.").font(.caption).foregroundStyle(.secondary)
-            }
-            if let n = note { Text(n).font(.caption).foregroundStyle(.red) }
         }
         .onAppear(perform: refresh)
         .onChange(of: state.config) { _, _ in refresh() }
-        .sheet(isPresented: $growing) { growSheet }
+        .sheet(isPresented: $changing, onDismiss: refresh) {
+            if let i = info {
+                DiskChangeSheet(state: state, info: i, jobs: jobs) { changing = false }
+            }
+        }
+        if !jobs.isEmpty {
+            RowNote(jobs.map { $0 == .grow ? "Omarchy grows into the new size at the next start." : "Free space goes back to the Mac at the next start." }
+                .joined(separator: " "))
+        }
     }
 
-    private var growSheet: some View {
+    private func refresh() {
+        info = VMDisk.info(state.config)
+        jobs = VMDisk.jobs(state.config)
+    }
+}
+
+/// Behind Disk › Change…: a larger size (the VM off), or the space the VM no
+/// longer uses back to the Mac.
+struct DiskChangeSheet: View {
+    @ObservedObject var state: AppState
+    let info: VMDisk.Info
+    let jobs: [DiskSize.Job]
+    var done: () -> Void
+    @State private var newGB = 0
+    @State private var note: String?
+
+    private var currentGB: Int { Int(info.maxBytes / DiskSize.gib) }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Grow the Disk").font(.title3.bold())
-            Text("The disk takes space on the Mac only as Omarchy fills it. Omarchy grows into the new size at the next start. A disk cannot be made smaller again.")
+            Text("Change the Disk").font(.title3.bold())
+            Text("The disk takes space on the Mac only as Omarchy fills it: \(DiskSize.text(info.usedBytes)) now. Omarchy grows into a new size at the next start. A disk cannot be made smaller again.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Stepper("New max: \(newGB) GB (now \(currentGB) GB)", value: $newGB,
+            Stepper("New size: \(newGB) GB (now \(currentGB) GB)", value: $newGB,
                     in: min(currentGB + 1, DiskSize.maxGB)...DiskSize.maxGB, step: DiskSize.stepGB)
-            if let w = DiskSize.growWarning(newGB: newGB, allocatedBytes: info?.usedBytes ?? 0, freeBytes: info?.freeBytes) {
+            if let w = DiskSize.growWarning(newGB: newGB, allocatedBytes: info.usedBytes, freeBytes: info.freeBytes) {
                 Text(w).font(.caption).foregroundStyle(.orange)
             }
             if let p = DiskSize.growProblem(currentGB: currentGB, newGB: newGB, vmRunning: state.vmRunning()) {
                 Text(p).font(.caption).foregroundStyle(.red)
             }
+            Divider()
+            HStack {
+                Text("Give the Mac back the space the VM no longer uses. The size stays.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Compact…") { compact() }
+                    .disabled(jobs.contains(.compact))
+            }
+            if let n = note { Text(n).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()
-                Button("Cancel") { growing = false }.keyboardShortcut(.cancelAction)
+                Button("Cancel", action: done).keyboardShortcut(.cancelAction)
                 Button("Grow") { grow() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(DiskSize.growProblem(currentGB: currentGB, newGB: newGB, vmRunning: state.vmRunning()) != nil)
@@ -191,15 +207,10 @@ struct DiskSection: View {
         }
         .padding(20)
         .frame(width: 420)
-    }
-
-    private func refresh() {
-        info = VMDisk.info(state.config)
-        jobs = VMDisk.jobs(state.config)
+        .onAppear { newGB = DiskSize.firstGrowGB(currentGB: currentGB) }
     }
 
     private func grow() {
-        growing = false
         // Checked again: the VM may have started meanwhile.
         if let p = DiskSize.growProblem(currentGB: currentGB, newGB: newGB, vmRunning: state.vmRunning()) {
             note = p
@@ -207,27 +218,25 @@ struct DiskSection: View {
         }
         do {
             try VMDisk.grow(state.config, to: newGB)
-            note = nil
             if let c = VMConfig.load(from: state.config.folder) { state.config = c }
+            done()
         } catch {
             note = "Could not grow: \(error.localizedDescription)"
         }
-        refresh()
     }
 
     private func compact() {
         let alert = NSAlert()
         alert.messageText = "Compact the disk?"
-        alert.informativeText = "At the VM's next start Omarchy tells the Mac which space it no longer uses, and disk.img gives it back. Nothing in the VM changes, and the max size stays \(currentGB) GB."
+        alert.informativeText = "At the VM's next start Omarchy tells the Mac which space it no longer uses, and disk.img gives it back. Nothing in the VM changes, and the size stays \(currentGB) GB."
         alert.addButton(withTitle: "Compact")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             try VMDisk.compact(state.config)
-            note = nil
+            done()
         } catch {
             note = "Could not save: \(error.localizedDescription)"
         }
-        refresh()
     }
 }

@@ -36,6 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             buildMenu()
             RenderUpdateUI.run(into: URL(fileURLWithPath: args[i + 1]))
         }
+        // Test builds and `swift build`: pictures and heights of the VM window (RenderVMWindow.swift).
+        if let i = args.firstIndex(of: "--render-vm-window"), i + 1 < args.count,
+           RenderVMWindow.allowed(bundleID: Bundle.main.bundleIdentifier) {
+            buildMenu()
+            RenderVMWindow.run(into: URL(fileURLWithPath: args[i + 1]))
+        }
         // Started by update-swap.sh after an update: check that this build
         // works (else the previous version goes back), then start as usual.
         if let i = args.firstIndex(of: "--update-check"), i + 1 < args.count {

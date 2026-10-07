@@ -47,8 +47,8 @@ MainActor.assumeIsolated {
     MagicMouse.override = false
     RunLoop.main.run(until: Date().addingTimeInterval(3.5))
     check(!watch.connected, "watch: switched off: gone within 3 s")
-    let row = draw(MagicMouseRow(inForm: false).padding(8), "row", out, width: 520)
-    check(row.height >= 50, "row: picker and hint drawn (\(Int(row.height)) pt)")
+    let row = draw(Form { MagicMouseRow() }.formStyle(.columns).padding(8), "row", out, width: 520)
+    check(row.height >= 30, "row: label, picker and (i) drawn (\(Int(row.height)) pt)")
 
     var readyWith: CGFloat = 0, setupWith: CGFloat = 0
     let state = AppState()
@@ -56,13 +56,13 @@ MainActor.assumeIsolated {
     for (mouse, tag) in [(true, "mouse"), (false, "no-mouse")] {
         MagicMouse.override = mouse
         state.screen = .ready
-        let r = draw(RootView(state: state), "ready-\(tag)", out)
+        let r = draw(RootView(state: state, scrolls: false), "ready-\(tag)", out)
         state.screen = .setup
-        let s = draw(RootView(state: state), "setup-\(tag)", out)
+        let s = draw(RootView(state: state, scrolls: false), "setup-\(tag)", out)
         print("sizes \(tag): ready \(Int(r.height)), setup \(Int(s.height))")
         if mouse { readyWith = r.height; setupWith = s.height } else {
-            check(readyWith > r.height + 40, "VM window: the row shows with a Magic Mouse (\(Int(readyWith)) pt), not without (\(Int(r.height)) pt)")
-            check(setupWith > s.height + 40, "setup: the row shows with a Magic Mouse (\(Int(setupWith)) pt), not without (\(Int(s.height)) pt)")
+            check(readyWith > r.height + 16, "VM window: the row shows with a Magic Mouse (\(Int(readyWith)) pt), not without (\(Int(r.height)) pt)")
+            check(setupWith > s.height + 16, "setup: the row shows with a Magic Mouse (\(Int(setupWith)) pt), not without (\(Int(s.height)) pt)")
         }
     }
     exit(fail ? 1 : 0)

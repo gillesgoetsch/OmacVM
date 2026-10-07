@@ -115,6 +115,16 @@ try? USBChoice.save(parsed, folder: folder)
 expect(USBChoice.load(folder: folder) == parsed, "saved and loaded")
 try? USBChoice.save([], folder: folder)
 expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("usb").path), "no device: the file is gone")
+// The switch: off by default; a VM from before it keeps its devices.
+expect(!USBSwitch.isOn(fileText: nil, chosen: []), "no switch file, no device: off")
+expect(USBSwitch.isOn(fileText: nil, chosen: parsed), "no switch file, devices chosen (an older VM): on")
+expect(!USBSwitch.isOn(fileText: "off\n", chosen: parsed) && USBSwitch.isOn(fileText: "on\n", chosen: []), "the switch file decides")
+expect(!USBSwitch.isOn(fileText: "yes", chosen: parsed), "anything but on: off")
+try? USBChoice.save(parsed, folder: folder)
+try? USBSwitch.set(false, folder: folder)
+expect(USBSwitch.devices(folder: folder).isEmpty && USBChoice.load(folder: folder) == parsed, "off: no device for QEMU, the choice kept")
+try? USBSwitch.set(true, folder: folder)
+expect(USBSwitch.devices(folder: folder) == parsed, "on again: the same devices")
 try? FileManager.default.removeItem(at: folder)
 
 // The scan only reads the IORegistry; on any Mac it returns without opening anything.

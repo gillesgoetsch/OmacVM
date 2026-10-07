@@ -133,9 +133,10 @@ final class Runner {
         // should vmnet fail while the VM runs (useUserNetwork). Last,
         // so no other device moves.
         if network.vmnet { a += ["-device", "pcie-root-port,id=netfb"] }
-        // The VM's USB devices (off by default; docs/usb.md): only then an
-        // xHCI controller. After everything else, so no other device moves.
-        usb = USBChoice.load(folder: c.folder)
+        // The VM's USB devices (off by default; docs/usb.md): only with the
+        // switch on and a device chosen an xHCI controller. After everything
+        // else, so no other device moves.
+        usb = USBSwitch.devices(folder: c.folder)
         a += USBChoice.arguments(usb)
         // The Mac folder (off by default): last, so turning it on or off
         // moves no other device (the VM finds it by its tag, wherever it is).

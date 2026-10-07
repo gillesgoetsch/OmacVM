@@ -1,59 +1,103 @@
 import OmacVMUSB
 import SwiftUI
 
-/// The VM's USB devices (docs/usb.md): off by default. Lists the Mac's devices
-/// (read from the IORegistry, nothing opened); only a device nothing on the
-/// Mac uses can be switched on, the others say why they stay with the Mac.
-/// A device that is on goes to the VM whenever it is plugged in while the VM
-/// runs, and back to the Mac when the VM stops.
-struct USBSection: View {
+/// The VM's USB devices (docs/usb.md) in the VM window's form: a switch, off
+/// by default, and one line with what is on. Devices… opens the list.
+/// The USB lane builds the rest here: ask on plug-in, the remembered list.
+struct USBRow: View {
     let folder: URL
+    @State private var on = false
+    @State private var chosen: [USBChoice.Entry] = []
+    @State private var note: String?
+    @State private var showDevices = false
+
+    var body: some View {
+        SwitchRow("USB devices (experimental)", isOn: Binding(get: { on }, set: { setOn($0) })) {
+            if on { Button("Devices…") { showDevices = true } }
+            InfoButton(topic: "USB devices", text: USBDevicesSheet.explanation)
+        }
+        .sheet(isPresented: $showDevices, onDismiss: refresh) {
+            USBDevicesSheet(folder: folder) { showDevices = false }
+        }
+        .onAppear(perform: refresh)
+        .onChange(of: folder) { _, _ in note = nil; refresh() }
+        if on { RowNote(summary) }
+        if let n = note { RowNote(n, error: n.hasPrefix("Could not")) }
+    }
+
+    /// "ST-Link V2, HackRF One go to the VM" / "No device yet: Devices…"
+    private var summary: String {
+        guard !chosen.isEmpty else { return "No device chosen yet: Devices… lists them." }
+        return chosen.map { $0.name.isEmpty ? "\($0.id)" : $0.name }.joined(separator: ", ")
+            + (chosen.count == 1 ? " goes to the VM." : " go to the VM.")
+    }
+
+    private func setOn(_ value: Bool) {
+        do {
+            try USBSwitch.set(value, folder: folder)
+            note = "Applies on the next start."
+        } catch {
+            note = "Could not save: \(error.localizedDescription)"
+        }
+        refresh()
+    }
+
+    private func refresh() {
+        on = USBSwitch.isOn(folder: folder)
+        chosen = USBChoice.load(folder: folder)
+    }
+}
+
+/// The Mac's devices with a switch each (read from the IORegistry, nothing
+/// opened); only a device nothing on the Mac uses can be switched on, the
+/// others say why they stay with the Mac. A device that is on goes to the VM
+/// whenever it is plugged in while the VM runs, and back to the Mac when the
+/// VM stops.
+struct USBDevicesSheet: View {
+    let folder: URL
+    var done: () -> Void
     @State private var devices: [USBDevice] = []
     @State private var chosen: [USBChoice.Entry] = []
     @State private var note: String?
-    @State private var open = false
+
+    static let explanation = "A device that is on goes to the VM while it runs. macOS lets a VM have only devices it does not use itself: debug probes, SDR sticks, logic analysers, phones in fastboot. Keyboards, security keys, USB disks, serial adapters, audio and cameras stay with the Mac. If a Mac app has a device open when the VM looks for it, plug it in again once the app is done."
 
     var body: some View {
-        DisclosureGroup(isExpanded: $open) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("A device that is on goes to the VM while it runs. macOS lets a VM have only devices it does not use itself: debug probes, SDR sticks, logic analysers, phones in fastboot. Keyboards, security keys, USB disks, serial adapters, audio and cameras stay with the Mac. If a Mac app has a device open when the VM looks for it, plug it in again once the app is done.")
+        VStack(alignment: .leading, spacing: 10) {
+            Text("USB Devices").font(.title3.bold())
+            Text(Self.explanation)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(rows, id: \.id) { row in
+                VStack(alignment: .leading, spacing: 1) {
+                    Toggle("\(row.name) (\(row.id.description))", isOn: binding(row))
+                        .disabled(!row.canChoose && !row.on)
+                    if let why = row.why {
+                        Text(why).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if rows.isEmpty {
+                Text("No device a VM can have is plugged in.").font(.caption).foregroundStyle(.secondary)
+            }
+            if !kept.isEmpty {
+                Text("Kept by macOS: " + kept.map { $0.0 }.joined(separator: ", "))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                ForEach(rows, id: \.id) { row in
-                    VStack(alignment: .leading, spacing: 1) {
-                        Toggle("\(row.name) (\(row.id.description))", isOn: binding(row))
-                            .disabled(!row.canChoose && !row.on)
-                        if let why = row.why {
-                            Text(why).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if rows.isEmpty {
-                    Text("No device a VM can have is plugged in.").font(.caption).foregroundStyle(.secondary)
-                }
-                if !kept.isEmpty {
-                    Text("Kept by macOS: " + kept.map { $0.0 }.joined(separator: ", "))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .help(kept.map { "\($0.0): \($0.1)" }.joined(separator: "\n"))
-                }
-                HStack {
-                    Button("Refresh") { refresh() }
-                    if let n = note {
-                        Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
-                    }
-                }
+                    .help(kept.map { "\($0.0): \($0.1)" }.joined(separator: "\n"))
             }
-            .padding(.top, 4)
-        } label: {
             HStack {
-                Text("USB devices (experimental)")
+                Button("Refresh") { refresh() }
+                if let n = note {
+                    Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
+                }
                 Spacer()
-                Text(chosen.isEmpty ? "Off" : "\(chosen.count) on").foregroundStyle(.secondary)
+                Button("Done", action: done).keyboardShortcut(.defaultAction)
             }
         }
+        .padding(20)
+        .frame(width: 460)
         .onAppear { refresh() }
-        .onChange(of: folder) { _, _ in note = nil; refresh() }
     }
 
     private struct Row {
@@ -129,6 +173,5 @@ struct USBSection: View {
     private func refresh() {
         chosen = USBChoice.load(folder: folder)
         devices = USBScan.devices()
-        if !chosen.isEmpty { open = true }
     }
 }

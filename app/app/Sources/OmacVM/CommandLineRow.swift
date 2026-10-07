@@ -75,33 +75,32 @@ enum TerminalCommand {
     }
 }
 
-/// The row in the VM window (and once in the first setup).
+/// The row in the VM window (and once in the first setup): a row of a form.
 struct CommandLineRow: View {
+    /// The window pictures: this state, shown also where the app has no omacvm.
+    var preview: CommandLineInstall.State? = nil
     @State private var cli: CommandLineInstall.State?
     @State private var busy = false
     @State private var note: String?
 
     var body: some View {
-        if TerminalCommand.available {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("omacvm in Terminal")
-                    Spacer()
-                    if busy { ProgressView().controlSize(.small) }
-                    if let s = cli {
+        if TerminalCommand.available || preview != nil {
+            LabeledContent("omacvm in Terminal") {
+                HStack(spacing: 8) {
+                    if let s = preview ?? cli {
+                        Text(CommandLineInstall.shortText(s)).foregroundStyle(.secondary)
                         if case .available = s {
                             Button("Install") { install() }.disabled(busy)
-                        } else {
-                            Text(CommandLineInstall.text(s)).foregroundStyle(.secondary)
+                        }
+                        if CommandLineInstall.text(s) != CommandLineInstall.shortText(s) {
+                            InfoButton(topic: "omacvm in Terminal", text: CommandLineInstall.text(s))
                         }
                     }
+                    if busy { ProgressView().controlSize(.small) }
                 }
-                if let s = cli, case .available = s {
-                    Text(CommandLineInstall.text(s)).font(.caption).foregroundStyle(.secondary)
-                }
-                if let n = note { Text(n).font(.caption).foregroundStyle(.red) }
             }
-            .onAppear(perform: refresh)
+            .onAppear { if preview == nil { refresh() } }
+            if let n = note { RowNote(n, error: true) }
         }
     }
 

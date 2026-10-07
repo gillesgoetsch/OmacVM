@@ -324,8 +324,7 @@ struct VMsFolderRow: View {
 
     var body: some View {
         LabeledContent("VMs folder") {
-            HStack {
-                Spacer()
+            HStack(spacing: 8) {
                 Text(StorageModel.short(storage.root)).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
                 if let free = storage.free {
                     Text("\(Storage.format(free)) free").foregroundStyle(.secondary)
@@ -348,43 +347,43 @@ struct VMSizeRow: View {
             NSWorkspace.shared.activateFileViewerSelecting([vm.folder])
         } label: { Image(systemName: "folder") }
             .help("Show in Finder")
+            .accessibilityLabel("Show \(vm.name) in Finder")
     }
 }
 
-/// Settings: the VMs folder, the shown VM's size (All VMs… lists every one),
-/// moves, downloaded images.
-struct StorageSection: View {
+/// Storage in the VM window's form: the VMs folder, the shown VM's size
+/// (All VMs… lists every one), moves, downloaded images.
+struct StorageRows: View {
     @ObservedObject var storage: StorageModel
     /// The VM the window shows.
     var selected: URL?
     @State private var showAll = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Storage").font(.headline)
-            VMsFolderRow(storage: storage)
-            ForEach(storage.disconnected, id: \.self) { line in
-                Text(line).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
-            }
-            HStack {
+        VMsFolderRow(storage: storage)
+        ForEach(storage.disconnected, id: \.self) { line in RowNote(line, error: true) }
+        LabeledContent("Size on the Mac") {
+            HStack(spacing: 8) {
                 if let vm = storage.vms.first(where: { $0.folder.path == selected?.path }) {
-                    Text(vm.name)
-                    Spacer()
                     VMSizeRow(vm: vm)
-                } else {
-                    Spacer()
                 }
                 Button("All VMs…") { showAll = true }
                     .disabled(storage.vms.isEmpty)
             }
-            if !storage.legacyVMs.isEmpty && storage.moving == nil {
-                HStack {
-                    Text("2.9 and older kept VMs hidden in ~/Library.").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
+        }
+        .sheet(isPresented: $showAll) {
+            AllVMsView(storage: storage, selected: selected) { showAll = false }
+        }
+        if !storage.legacyVMs.isEmpty && storage.moving == nil {
+            LabeledContent("Older VMs") {
+                HStack(spacing: 8) {
                     Button("Move to \(StorageModel.short(storage.root))") { storage.moveLegacy() }
+                    InfoButton(topic: "older VMs", text: "2.9 and older kept VMs hidden in ~/Library.")
                 }
             }
-            if let m = storage.moving {
+        }
+        if let m = storage.moving {
+            LabeledContent("Moving") {
                 VStack(alignment: .leading, spacing: 4) {
                     if m.total > 0 {
                         ProgressView(value: Double(m.done), total: Double(m.total))
@@ -400,24 +399,18 @@ struct StorageSection: View {
                         Button("Cancel") { storage.cancelMove() }
                     }
                 }
+                .frame(width: RowNote.width)
             }
-            HStack {
-                Text("Downloaded images")
-                Image(systemName: "info.circle").foregroundStyle(.secondary)
-                Spacer()
+        }
+        LabeledContent("Downloaded images") {
+            HStack(spacing: 8) {
                 Text(storage.downloads.map { Storage.format($0) } ?? "…").foregroundStyle(.secondary)
                 Button("Remove…") { storage.removeImages() }
                     .disabled(storage.moving != nil || (storage.downloads ?? 0) == 0)
-            }
-            .help(StorageModel.imagesHelp)
-            if let n = storage.note {
-                Text(n).font(.caption).foregroundStyle(storage.noteIsError ? .red : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                InfoButton(topic: "downloaded images", text: StorageModel.imagesHelp)
             }
         }
-        .sheet(isPresented: $showAll) {
-            AllVMsView(storage: storage, selected: selected) { showAll = false }
-        }
+        if let n = storage.note { RowNote(n, error: storage.noteIsError) }
     }
 }
 
@@ -451,6 +444,7 @@ struct AllVMsView: View {
                         storage.delete(vm.config)
                     } label: { Image(systemName: "trash") }
                         .help("Delete…")
+                        .accessibilityLabel("Delete \(vm.name)…")
                         .disabled(storage.moving != nil)
                 }
             }

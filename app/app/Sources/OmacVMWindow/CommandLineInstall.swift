@@ -113,4 +113,13 @@ public enum CommandLineInstall {
         case .other(let at): "Another omacvm is installed at \(at): kept as it is"
         }
     }
+
+    /// The row's short text; `text` goes into its (i).
+    public static func shortText(_ s: State) -> String {
+        switch s {
+        case .installed: "Installed"
+        case .available: "Not installed"
+        case .other: "Another omacvm is installed"
+        }
+    }
 }

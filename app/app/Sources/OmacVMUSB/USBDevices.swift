@@ -208,6 +208,36 @@ public enum USBChoice {
     }
 }
 
+/// The VM's USB switch (off by default): the file `usb-enabled` in the VM's
+/// folder says "on" or "off". Only while it is on does a start give the VM a
+/// USB controller and the devices in `usb` (USBChoice). A VM from before the
+/// switch, with devices in `usb` and no switch file, counts as on, so it
+/// keeps its devices.
+public enum USBSwitch {
+    public static let fileName = "usb-enabled"
+
+    /// From the switch file's text (nil: no file) and the chosen devices.
+    public static func isOn(fileText: String?, chosen: [USBChoice.Entry]) -> Bool {
+        guard let t = fileText?.trimmingCharacters(in: .whitespacesAndNewlines) else { return !chosen.isEmpty }
+        return t == "on"
+    }
+
+    public static func isOn(folder: URL) -> Bool {
+        isOn(fileText: try? String(contentsOf: folder.appendingPathComponent(fileName), encoding: .utf8),
+             chosen: USBChoice.load(folder: folder))
+    }
+
+    /// The devices a start passes to QEMU: none while the switch is off.
+    public static func devices(folder: URL) -> [USBChoice.Entry] {
+        isOn(folder: folder) ? USBChoice.load(folder: folder) : []
+    }
+
+    /// Writes the switch; the chosen devices stay for the next time it is on.
+    public static func set(_ on: Bool, folder: URL) throws {
+        try Data((on ? "on" : "off").appending("\n").utf8).write(to: folder.appendingPathComponent(fileName), options: .atomic)
+    }
+}
+
 /// The Mac's USB devices now, from the IORegistry. Reads properties only:
 /// no device is opened, so nothing on the Mac notices.
 public enum USBScan {

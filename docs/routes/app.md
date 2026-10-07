@@ -413,8 +413,8 @@ the VM's SSH on `127.0.0.1:<port>`.
 
 ## Fast network (experimental, off by default)
 
-`omacvm enable fast-network --vm NAME`, or **Fast network (experimental) ›
-Turn On…** on the VM's screen in the app, puts the VM on macOS's own VM
+`omacvm enable fast-network --vm NAME`, or the **Fast network
+(experimental)** switch on the VM's screen in the app, puts the VM on macOS's own VM
 network (vmnet, shared mode, as Parallels and UTM) instead of QEMU's user
 network.
 The VM gets an address of its own on a network of its own, `192.168.77.0/24`
@@ -657,9 +657,9 @@ What is missing before it can become the default: [below](#fast-network-not-done
 
 ## Mac folder (off by default)
 
-**Mac folder › Choose…** in the VM's settings shares one folder of the Mac
-with the VM. From the VM's next start it is at `~/Mac` in Omarchy. **Turn
-Off** stops it from the next start.
+The **Mac folder** switch in the VM's settings asks for a folder and shares
+it with the VM (**Choose…** picks another). From the VM's next start it is at
+`~/Mac` in Omarchy. Switched off, it stops from the next start.
 
 - The VM can read and change everything in that folder, as your Mac user,
   and nothing outside it. Share a project folder: the app refuses your home

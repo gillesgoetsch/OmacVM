@@ -38,7 +38,7 @@ enum RenderUpdateUI {
         ]
         for (name, s, notice, enabled, waiting) in windows {
             u.showForRendering(staged: s, notice: notice, enabled: enabled, waiting: waiting, previous: "2.9.0")
-            draw(name, into: dir) { RootView(state: state) }
+            draw(name, into: dir) { RootView(state: state, scrolls: false) }
         }
         // Check Now: while it checks, and the results it leaves under the switch.
         let checks: [(String, Updater.Outcome?, Bool, Bool)] = [
@@ -52,12 +52,12 @@ enum RenderUpdateUI {
             let ready: Updater.Staged? = { if case .ready = outcome { return staged } else { return nil } }()
             u.showForRendering(staged: ready, notice: nil, enabled: name.hasSuffix("checking") || name.contains("macos"),
                                waiting: false, previous: nil, outcome: outcome, checking: checking)
-            draw(name, into: dir) { RootView(state: state) }
+            draw(name, into: dir) { RootView(state: state, scrolls: false) }
         }
         // A VM runs from this launcher: Update shuts it down and starts it again.
         u.runningVM = { (URL(fileURLWithPath: "/nonexistent"), "Omarchy") }
         u.showForRendering(staged: staged, notice: nil, enabled: true, waiting: false, previous: nil)
-        draw("window-14-ready-vm-runs", into: dir) { RootView(state: state) }
+        draw("window-14-ready-vm-runs", into: dir) { RootView(state: state, scrolls: false) }
         u.runningVM = { nil }
 
         // The app menu as the menu bar shows it (the app delegate built it).
@@ -84,7 +84,7 @@ enum RenderUpdateUI {
                 let a = make()
                 a.window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
                 a.layout()
-                if let v = a.window.contentView { write(v, "\(name)\(dark ? "-dark" : "")", into: dir) }
+                if let v = a.window.contentView { WindowPicture.write(v, "\(name)\(dark ? "-dark" : "")", into: dir) }
             }
         }
         print("rendered into \(dir.path)")
@@ -106,31 +106,9 @@ enum RenderUpdateUI {
             view.layoutSubtreeIfNeeded()
             // SwiftUI draws on the next pass of the run loop.
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-            write(view, "\(name)\(dark ? "-dark" : "")", into: dir)
+            WindowPicture.write(view, "\(name)\(dark ? "-dark" : "")", into: dir)
             w.contentView = nil
         }
-    }
-
-    /// On the window background of the view's appearance (an alert's
-    /// background is see-through when drawn on its own).
-    private static func write(_ view: NSView, _ name: String, into dir: URL) {
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: rep.pixelsWide, pixelsHigh: rep.pixelsHigh,
-                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                                   colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
-        guard let out else { return }
-        out.size = rep.size   // before the context: it draws in points
-        guard let ctx = NSGraphicsContext(bitmapImageRep: out) else { return }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = ctx
-        view.effectiveAppearance.performAsCurrentDrawingAppearance {
-            NSColor.windowBackgroundColor.setFill()
-            NSRect(origin: .zero, size: rep.size).fill()
-        }
-        rep.draw(in: NSRect(origin: .zero, size: rep.size), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-        NSGraphicsContext.restoreGraphicsState()
-        try? out.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("\(name).png"))
     }
 }
 
