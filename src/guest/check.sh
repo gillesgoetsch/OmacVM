@@ -116,6 +116,16 @@ if [[ $TYPE == app ]]; then
   if [[ $fw == *-omacvm ]]; then ok "firmware" "$fw (Omarchy boot logo)"
   else skip "firmware" "${fw:-unknown}: QEMU's own (TianoCore logo), from an older OmacVM.app or OMACVM_FIRMWARE=qemu"; fi
 fi
+# The Mac's proxy from the build (#122): what a login on this network gets (#232).
+if [[ -f /etc/environment.d/90-omacvm-proxy.conf ]] &&
+   [[ $(head -1 /etc/environment.d/90-omacvm-proxy.conf) == "# The Mac's proxy when this VM was built (OmacVM"* ]]; then
+  bad "the Mac's proxy" "fixed to the build's network in environment.d: omacvm apply makes it follow the network"
+elif [[ -s /etc/omacvm/proxy.env && -x /usr/local/bin/omacvm-proxy-env ]]; then
+  px_err=$(mktemp); px=$(/usr/local/bin/omacvm-proxy-env 2>"$px_err" | sed -nE 's|//[^/@]*@|//***@|; s/^(http|https|all)_proxy=/\1 /p' | paste -sd, - | sed 's/,/, /g')
+  if [[ -n $px ]]; then ok "the Mac's proxy" "$px (at each login, for the network the VM is on)"
+  else skip "the Mac's proxy" "none on this network: $(sed -n '1s/^omacvm-proxy-env: //p' "$px_err")"; fi
+  rm -f "$px_err"
+fi
 
 section "The Mac in the bar (Bridge)"
 FEATURE=bridge

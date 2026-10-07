@@ -1,0 +1,99 @@
+#!/bin/bash
+# omacvm-proxy-env: the Mac's proxy from when this VM was built (#122), for the
+# network the VM is on now (#232). Prints KEY=VALUE lines, nothing when the VM
+# is to use no proxy; says on stderr why a proxy is left out.
+#   omacvm-proxy-env [--wait SECONDS]
+# --wait: up to that long for a network (a login right after boot).
+# guest/install.sh installs it with two callers: a systemd user environment
+# generator (the desktop session, at each login) and /etc/profile.d (shells).
+#
+# The record, /etc/omacvm/proxy.env, is what the build used (src/lib/proxy.sh
+# proxy_guest_env): a proxy on the Mac's own 127.0.0.1 is in it as 10.0.2.2,
+# the Mac on OmacVM.app's QEMU network. On the network the VM is on now:
+# - QEMU's network (default gateway 10.0.2.2): 10.0.2.2:PORT if it answers
+#   there. The app lets the port through to the Mac's 127.0.0.1 at each start
+#   only while the Mac uses that proxy (MacProxy); else QEMU refuses it at once.
+# - The fast network (vmnet, the Mac is the gateway 192.168.77.1): the Mac's
+#   127.0.0.1 is out of reach. 192.168.77.1:PORT if the Mac answers there (a
+#   proxy that allows LAN connections); else none: the VM goes out through
+#   the Mac (and a VPN or TUN mode on it) without a proxy.
+# - Another network, or none: none.
+# A proxy on another host is passed on as it is, on every network.
+# Bash 3.2 (src/tests/proxy.sh runs it on the Mac). Tests: OMACVM_PROXY_RECORD
+# (the record), OMACVM_SYS_NET (/sys/class/net), OMACVM_PROXY_PROBE (a command
+# HOST PORT that says whether a proxy answers there), `ip` on the PATH.
+set -uo pipefail
+REC=${OMACVM_PROXY_RECORD:-/etc/omacvm/proxy.env}
+WAIT=0
+while (( $# )); do
+  case $1 in
+    --wait) WAIT=$2; shift 2 ;;
+    *) echo "usage: omacvm-proxy-env [--wait SECONDS]" >&2; exit 2 ;;
+  esac
+done
+case $WAIT in ''|*[!0-9]*) echo "omacvm-proxy-env: --wait takes whole seconds" >&2; exit 2 ;; esac
+[[ -s $REC ]] || exit 0
+BUILT=10.0.2.2   # the Mac in the record
+
+# The VM's default gateway, as Gestures' default_gateway() picks it: the
+# lowest metric among default routes whose card has a link. After the app
+# switches networks the old card's route stays listed (first) for seconds.
+SYS_NET=${OMACVM_SYS_NET:-/sys/class/net}
+default_gateway() {
+  local m via dev c
+  ip -4 route show default 2>/dev/null |
+    awk '{ v = d = ""; m = 0
+           for (i = 1; i < NF; i++) { if ($i == "via") v = $(i + 1); if ($i == "dev") d = $(i + 1); if ($i == "metric") m = $(i + 1) }
+           if (v != "") print m, v, d }' |
+    while read -r m via dev; do
+      c=$(cat "$SYS_NET/$dev/carrier" 2>/dev/null) || c=1   # no carrier to read: count it
+      if [[ $c == 1 ]]; then echo "$m $via"; fi
+    done | sort -n | awk '{ print $2; exit }'
+}
+# answers HOST PORT: something takes a TCP connection there (1 s at most).
+answers() {
+  if [[ -n ${OMACVM_PROXY_PROBE:-} ]]; then "$OMACVM_PROXY_PROBE" "$1" "$2"; return; fi
+  timeout 1 bash -c 'exec 3<>"/dev/tcp/$0/$1"' "$1" "$2" 2>/dev/null
+}
+why() { echo "omacvm-proxy-env: $*" >&2; }
+
+gw=$(default_gateway)
+i=0
+while [[ -z $gw ]] && (( i < WAIT * 4 )); do sleep 0.25; gw=$(default_gateway); i=$((i + 1)); done
+case $gw in
+  10.0.2.2) MAC=10.0.2.2; NET="QEMU's network" ;;
+  192.168.77.1) MAC=192.168.77.1; NET="the fast network" ;;
+  '') MAC=""; NET="no network (no default route)" ;;
+  *) MAC=""; NET="a network without the Mac's 127.0.0.1 (gateway $gw)" ;;
+esac
+
+out="" tried=""
+for v in http https all; do
+  u=$(sed -n "s/^${v}_proxy=//p" "$REC" | tail -1)
+  [[ -n $u ]] || continue
+  hp=${u#*://}; hp=${hp##*@}; host=${hp%:*}; port=${hp##*:}
+  if [[ $host == "$BUILT" ]]; then
+    if [[ -z $MAC ]]; then
+      why "${v}_proxy: the Mac's 127.0.0.1:$port, out of reach on $NET: left out"; continue
+    fi
+    # Each port once (http and https are often one proxy).
+    case " $tried " in
+      *" $port:yes "*) ;;
+      *" $port:no "*) continue ;;
+      *) if answers "$MAC" "$port"; then tried="$tried $port:yes"
+         else
+           tried="$tried $port:no"
+           if [[ $MAC == "$BUILT" ]]; then why "${v}_proxy: nothing answers on $MAC:$port on $NET (the Mac no longer uses that proxy): left out"
+           else why "${v}_proxy: the Mac's 127.0.0.1:$port is not reachable on $NET (only a proxy that allows LAN connections answers on $MAC:$port): left out"; fi
+           continue
+         fi ;;
+    esac
+    u=${u%"$hp"}$MAC:$port
+  fi
+  out="$out${v}_proxy=$u"$'\n'"$(tr '[:lower:]' '[:upper:]' <<<"$v")_PROXY=$u"$'\n'
+done
+[[ -n $out ]] || exit 0
+no=$(sed -n 's/^no_proxy=//p' "$REC" | tail -1)
+[[ -z $MAC ]] || case ,$no, in *,"$MAC",*) ;; *) no=${no:+$no,}$MAC ;; esac
+printf '%s' "$out"
+[[ -z $no ]] || printf 'no_proxy=%s\nNO_PROXY=%s\n' "$no" "$no"

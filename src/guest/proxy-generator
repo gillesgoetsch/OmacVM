@@ -1,0 +1,7 @@
+#!/bin/sh
+# OmacVM (guest/install.sh, #232): a systemd user environment generator. The
+# desktop session gets the Mac's proxy from when this VM was built for the
+# network it is on at login (omacvm-proxy-env; why one is left out: the
+# journal). Delete /etc/omacvm/proxy.env to stop using it.
+[ -x /usr/local/bin/omacvm-proxy-env ] || exit 0
+exec /usr/local/bin/omacvm-proxy-env --wait 10

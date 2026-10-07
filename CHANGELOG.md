@@ -74,6 +74,18 @@ in more words.
   switched on under 3.0.1 to 3.0.4 keep connecting by themselves and now
   show in the list.
 
+- A VM built behind a proxy on the Mac's 127.0.0.1 (Clash, V2Ray, Surge)
+  no longer keeps `10.0.2.2:<port>` as its proxy on the fast network, where
+  that address leads nowhere and apps failed (Helium could not install
+  1Password: Error 6, #232). The build's proxy is now worked out at each
+  login for the network the VM is on: `10.0.2.2` on QEMU's network while the
+  Mac still uses that proxy, `192.168.77.1` on the fast network only if the
+  proxy accepts LAN connections, else none (the VM then goes out through
+  the Mac and its VPN or TUN mode directly). A proxy on another host stays
+  as it was. `omacvm apply` moves a VM's existing proxy over (from its
+  next login); `omacvm-proxy-env` in the VM and `omacvm check` say what a
+  login gets.
+
 ## 3.0.4
 
 - Fast network after an app update: the service from an earlier app keeps

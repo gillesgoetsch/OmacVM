@@ -14,6 +14,8 @@
 # A proxy on the Mac's own 127.0.0.1 is reached from the VM through the Mac's
 # address on the VM network (OmacVM.app: 10.0.2.2, the patched libslirp lets
 # the port through, see proxy_ports); one on another host is used as it is.
+# After the install the VM picks at each login what the network it is on then
+# reaches (src/guest/proxy-env, #232): the fast network has no 10.0.2.2.
 
 proxy_none() { PROXY_HTTP="" PROXY_HTTPS="" PROXY_ALL="" PROXY_NO="" PROXY_FROM="" PROXY_NOTE=""; }
 

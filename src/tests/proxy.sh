@@ -334,4 +334,127 @@ GET http://mirror.example.invalid/core.db" "$(cat "$T/proxy.log" 2>/dev/null)"
     "$([[ -s $T/proxy.log ]] && echo yes || echo no)"
 fi
 
+# ---------- after the install: the proxy follows the VM's network (#232) ----------
+# guest/proxy-env with a stub `ip` (the VM's default routes), the cards' links
+# (OMACVM_SYS_NET) and a stub probe (which Mac address and port answer).
+PX=$R/src/guest/proxy-env
+mkdir -p "$T/pxbin" "$T/net/enp0s1" "$T/net/enp0s2"
+cat > "$T/pxbin/ip" <<'STUB'
+#!/bin/bash
+cat "$PX_ROUTES" 2>/dev/null
+STUB
+cat > "$T/pxbin/probe" <<'STUB'
+#!/bin/bash
+echo "$1:$2" >> "$PX_PROBED"
+grep -qx "$1:$2" "$PX_ANSWERS" 2>/dev/null
+STUB
+chmod +x "$T/pxbin/ip" "$T/pxbin/probe"
+printf '%s\n' "$g" > "$T/record"   # the clash build: http, https 7890, all 7891 on the Mac's 127.0.0.1
+slirp_route="default via 10.0.2.2 dev enp0s1 proto dhcp src 10.0.2.15 metric 100"
+fast_route="default via 192.168.77.1 dev enp0s2 proto dhcp src 192.168.77.2 metric 101"
+pxenv() {   # ROUTES ANSWERS [RECORD [ARGS]]: stdout; stderr in $T/px.why, probes in $T/px.probed
+  printf '%s\n' "$1" > "$T/px.routes"; printf '%s\n' $2 > "$T/px.answers"; rm -f "$T/px.probed"
+  PATH="$T/pxbin:$PATH" PX_ROUTES=$T/px.routes PX_ANSWERS=$T/px.answers PX_PROBED=$T/px.probed \
+    OMACVM_PROXY_RECORD=${3:-$T/record} OMACVM_SYS_NET=$T/net OMACVM_PROXY_PROBE=$T/pxbin/probe \
+    "$PX" ${4:-} 2>"$T/px.why"
+}
+echo 1 > "$T/net/enp0s1/carrier"; echo 1 > "$T/net/enp0s2/carrier"
+got=$(pxenv "$slirp_route" "10.0.2.2:7890 10.0.2.2:7891")
+expect "QEMU's network, the Mac's proxy on: as built" "$(grep -v '^#' <<<"$g")" "$got"
+expect "  each port probed once" "10.0.2.2:7890
+10.0.2.2:7891" "$(cat "$T/px.probed")"
+got=$(pxenv "$slirp_route" "10.0.2.2:7891")
+expect "QEMU's network, the Mac's HTTP proxy off: only all_proxy" "all_proxy=socks5h://10.0.2.2:7891
+ALL_PROXY=socks5h://10.0.2.2:7891
+no_proxy=localhost,127.0.0.1,::1,10.0.2.2,.local,169.254.0.0/16,10.0.0.0/8
+NO_PROXY=localhost,127.0.0.1,::1,10.0.2.2,.local,169.254.0.0/16,10.0.0.0/8" "$got"
+has "  says why" "nothing answers on 10.0.2.2:7890 on QEMU's network (the Mac no longer uses that proxy)" "$(cat "$T/px.why")"
+got=$(pxenv "$fast_route" "10.0.2.2:7890 10.0.2.2:7891")
+expect "fast network, a proxy only on the Mac's 127.0.0.1: none (the report of #232)" "" "$got"
+has "  says why" "the Mac's 127.0.0.1:7890 is not reachable on the fast network (only a proxy that allows LAN connections answers on 192.168.77.1:7890): left out" "$(cat "$T/px.why")"
+expect "  never 10.0.2.2 there" "192.168.77.1:7890
+192.168.77.1:7891" "$(cat "$T/px.probed")"
+got=$(pxenv "$fast_route" "192.168.77.1:7890")
+expect "fast network, the proxy allows LAN connections: the Mac's address there" "http_proxy=http://192.168.77.1:7890
+HTTP_PROXY=http://192.168.77.1:7890
+https_proxy=http://192.168.77.1:7890
+HTTPS_PROXY=http://192.168.77.1:7890
+no_proxy=localhost,127.0.0.1,::1,10.0.2.2,.local,169.254.0.0/16,10.0.0.0/8,192.168.77.1
+NO_PROXY=localhost,127.0.0.1,::1,10.0.2.2,.local,169.254.0.0/16,10.0.0.0/8,192.168.77.1" "$got"
+echo 0 > "$T/net/enp0s1/carrier"
+got=$(pxenv "$slirp_route
+$fast_route" "10.0.2.2:7890 10.0.2.2:7891")
+expect "moved to the fast network (QEMU's card without a link, its route still listed first): none" "" "$got"
+echo 1 > "$T/net/enp0s1/carrier"; echo 0 > "$T/net/enp0s2/carrier"
+got=$(pxenv "$fast_route
+$slirp_route" "10.0.2.2:7890 10.0.2.2:7891" | grep '^http_proxy=')
+expect "back on QEMU's network (the fast card without a link): as built" "http_proxy=http://10.0.2.2:7890" "$got"
+echo 1 > "$T/net/enp0s2/carrier"
+got=$(pxenv "" "10.0.2.2:7890")
+expect "no network yet: none" "" "$got"
+has "  says why" "no network (no default route)" "$(cat "$T/px.why")"
+got=$(pxenv "default via 10.211.55.1 dev enp0s1 metric 100" "10.211.55.1:7890")
+expect "another network: none, nothing probed" "|no" "$got|$([[ -e $T/px.probed ]] && echo yes || echo no)"
+( det pac-http; proxy_guest_env 10.0.2.2 ) > "$T/record-corp"
+got=$(pxenv "$fast_route" "" "$T/record-corp" | grep -i '^http_proxy=')
+expect "a proxy on another host: as it is, on the fast network too" "http_proxy=http://proxy.corp.example:3128
+HTTP_PROXY=http://proxy.corp.example:3128" "$got"
+expect "  and not probed" "no" "$([[ -e $T/px.probed ]] && echo yes || echo no)"
+( export https_proxy='http://me:p%40ss@127.0.0.1:7897/'; proxy_detect; proxy_guest_env 10.0.2.2 ) > "$T/record-cred"
+got=$(pxenv "$fast_route" "192.168.77.1:7897" "$T/record-cred" | grep '^https_proxy=')
+expect "credentials kept on the new address" "https_proxy=http://me:p%40ss@192.168.77.1:7897" "$got"
+expect "no record: nothing" "" "$(pxenv "$slirp_route" "10.0.2.2:7890" "$T/nothing")$(cat "$T/px.why")"
+expect "--wait waits for a network" "2" "$(pxenv "" "" "" "--wait x" >/dev/null; echo $?)"
+start=$SECONDS; pxenv "" "" "$T/record" "--wait 1" >/dev/null
+expect "--wait 1 without a network: about a second" "yes" "$( (( SECONDS - start <= 3 )) && echo yes || echo no)"
+
+# profile.d: exports what omacvm-proxy-env prints, in sh, a * in no_proxy as it is.
+printf '#!/bin/sh\nprintf "%%s\\n" "http_proxy=http://10.0.2.2:7890" "no_proxy=*.local,10.0.2.2" "# not exported"\necho "omacvm-proxy-env: left out" >&2\n' > "$T/pxbin/fake-env"
+chmod +x "$T/pxbin/fake-env"; touch "$T/x.local"
+sed "s|/usr/local/bin/omacvm-proxy-env|$T/pxbin/fake-env|g" "$R/src/guest/proxy-profile.sh" > "$T/profile.sh"
+got=$(cd "$T" && env -i /bin/sh -c ". '$T/profile.sh'; echo \"\$http_proxy|\$no_proxy|\${_omacvm_proxy-unset}\"" 2>&1)
+expect "profile.d: the variables, no stderr, its own names unset" "http://10.0.2.2:7890|*.local,10.0.2.2|unset" "$got"
+expect "profile.d: nothing when omacvm-proxy-env is gone" "|" \
+  "$(env -i /bin/sh -c ". '$R/src/guest/proxy-profile.sh'; echo \"\${http_proxy-}|\${no_proxy-}\"")"
+expect "the generator waits for the network, and is sh" "exec /usr/local/bin/omacvm-proxy-env --wait 10|0" \
+  "$(grep '^exec ' "$R/src/guest/proxy-generator")|$(sh -n "$R/src/guest/proxy-generator"; echo $?)"
+
+# guest/install.sh: a VM from before #232 (3.0.3) moves to the record, and
+# only OmacVM's own files are touched.
+GI=$R/src/guest/install.sh
+pblk=$(awk '/^# ---- the Mac.s proxy \(src\/tests\/proxy.sh runs this block\)/ { on = 1 } on { print } /^# ---- end of the Mac.s proxy/ { exit }' "$GI")
+has "guest/install.sh: the block is found" 'PX_REC=/etc/omacvm/proxy.env' "$pblk"
+G=$T/guest
+pinst() {   # the block, with / as $G
+  ( log() { :; }; system() { return 0; }; R=$R/src
+    install() { if [[ $1 == -D* ]]; then mkdir -p "$(dirname "${!#}")"; command install "-${1#-D}" "${@:2}"; else command install "$@"; fi; }
+    b=${pblk//\/etc\//$G/etc/}; b=${b//\/usr\/local\/bin\//$G/usr/local/bin/}
+    eval "$b" )
+}
+rm -rf "$G"; mkdir -p "$G/etc/environment.d" "$G/etc/profile.d" "$G/etc/omacvm"
+printf '%s\n' "$g" > "$G/etc/environment.d/90-omacvm-proxy.conf"
+{ echo "# The Mac's proxy when this VM was built (OmacVM). Delete this file,"; echo "export http_proxy='http://10.0.2.2:7890'"; } > "$G/etc/profile.d/omacvm-proxy.sh"
+pinst
+expect "3.0.3 VM: the record is environment.d's file" "$g" "$(cat "$G/etc/omacvm/proxy.env" 2>/dev/null)"
+expect "  environment.d's fixed copy is gone" "no" "$([[ -e $G/etc/environment.d/90-omacvm-proxy.conf ]] && echo yes || echo no)"
+expect "  profile.d asks omacvm-proxy-env" "$(cat "$R/src/guest/proxy-profile.sh")" "$(cat "$G/etc/profile.d/omacvm-proxy.sh")"
+expect "  the generator and omacvm-proxy-env, executable" "755 755" \
+  "$(stat -f %Lp "$G/etc/systemd/user-environment-generators/90-omacvm-proxy") $(stat -f %Lp "$G/usr/local/bin/omacvm-proxy-env")"
+expect "  record readable by the user's generator" "644" "$(stat -f %Lp "$G/etc/omacvm/proxy.env")"
+before=$(cd "$G" && find . -type f | sort | xargs shasum)
+pinst
+expect "  a second apply changes nothing" "$before" "$(cd "$G" && find . -type f | sort | xargs shasum)"
+printf 'http_proxy=http://mine:8080\n' > "$G/etc/environment.d/90-omacvm-proxy.conf"
+printf 'export http_proxy=http://mine:8080\n' > "$G/etc/profile.d/omacvm-proxy.sh"
+pinst
+expect "files of that name that are not OmacVM's stay" "http_proxy=http://mine:8080|export http_proxy=http://mine:8080" \
+  "$(cat "$G/etc/environment.d/90-omacvm-proxy.conf")|$(cat "$G/etc/profile.d/omacvm-proxy.sh")"
+rm -f "$G/etc/omacvm/proxy.env"; cp "$R/src/guest/proxy-profile.sh" "$G/etc/profile.d/omacvm-proxy.sh"
+pinst
+expect "record deleted: OmacVM's proxy files go" "" \
+  "$(find "$G/etc/profile.d" "$G/usr/local/bin" "$G/etc/systemd/user-environment-generators" -type f)"
+expect "  the person's environment.d file stays" "http_proxy=http://mine:8080" "$(cat "$G/etc/environment.d/90-omacvm-proxy.conf")"
+expect "omarchy-install.sh still reads the build's environment.d (before apply moves it)" \
+  "PROXY_ENV=/etc/environment.d/90-omacvm-proxy.conf" "$(grep '^PROXY_ENV=' "$OI")"
+
 exit $fail

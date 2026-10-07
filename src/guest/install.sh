@@ -241,6 +241,32 @@ if system; then
     install -Dm644 /dev/stdin /etc/systemd/resolved.conf.d/10-omacvm.conf
   systemctl try-restart systemd-resolved 2>/dev/null || true
 fi
+# ---- the Mac's proxy (src/tests/proxy.sh runs this block) ----
+# The Mac's proxy from the build (#122) follows the network the VM is on
+# (#232): base-install.sh left it in environment.d (for the install), a fixed
+# 10.0.2.2:PORT that only QEMU's network has. From here /etc/omacvm/proxy.env
+# keeps it and omacvm-proxy-env picks, at each login, what this network
+# reaches (guest/proxy-env). Only OmacVM's own files (their first line) move.
+PX_REC=/etc/omacvm/proxy.env PX_ENVD=/etc/environment.d/90-omacvm-proxy.conf PX_PROF=/etc/profile.d/omacvm-proxy.sh
+PX_GEN=/etc/systemd/user-environment-generators/90-omacvm-proxy PX_BIN=/usr/local/bin/omacvm-proxy-env
+PX_MINE="# The Mac's proxy when this VM was built (OmacVM"
+px_mine() { [[ -f $1 ]] && [[ $(head -1 "$1") == "$PX_MINE"* ]]; }
+if system; then
+  if px_mine "$PX_ENVD"; then
+    [[ -s $PX_REC ]] || install -Dm644 "$PX_ENVD" "$PX_REC"
+    rm -f "$PX_ENVD"
+  fi
+  if [[ -s $PX_REC ]]; then
+    log "the Mac's proxy from the build: for the network the VM is on, at each login"
+    install -Dm755 "$R/guest/proxy-env" "$PX_BIN"
+    install -Dm755 "$R/guest/proxy-generator" "$PX_GEN"
+    [[ -e $PX_PROF ]] && ! px_mine "$PX_PROF" || install -Dm644 "$R/guest/proxy-profile.sh" "$PX_PROF"
+  else
+    rm -f "$PX_BIN" "$PX_GEN"
+    ! px_mine "$PX_PROF" || rm -f "$PX_PROF"
+  fi
+fi
+# ---- end of the Mac's proxy ----
 if ! want autologin; then
   :
 elif [[ ${F[autologin]} == on ]]; then

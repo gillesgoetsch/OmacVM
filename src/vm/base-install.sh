@@ -24,7 +24,9 @@ retry() {
 
 # The Mac's proxy (#122): create-vm.sh or build.sh writes it when the Mac has
 # one. This script's downloads go through it, and the new system keeps it
-# (environment.d for the desktop, profile.d for shells, sudo passes it on).
+# (environment.d for the desktop, profile.d for shells, sudo passes it on)
+# while Omarchy installs; omacvm apply (guest/install.sh) then makes it follow
+# the network the VM is on (#232).
 PROXY_ENV=/root/omacvm-proxy.env
 PROXY_VARS="http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY"
 if [[ -s $PROXY_ENV ]]; then

@@ -85,22 +85,31 @@ changes without one.
   proxies in System Settings > Network > Details > Proxies (Web, Secure web,
   SOCKS, and the bypass list). `scutil --proxy` shows what macOS has.
   `OMACVM_PROXY=off omacvm build ...` builds without it.
-- **In the VM**: the same variables in `/etc/environment.d/90-omacvm-proxy.conf`
-  (the desktop), `/etc/profile.d/omacvm-proxy.sh` (shells) and
-  `/etc/sudoers.d/05-omacvm-proxy` (sudo keeps them). The build's pacman, git
-  and the Omarchy installer use them. Delete the three files to stop.
+- **In the VM**: while Omarchy installs, the same variables in
+  `/etc/environment.d/90-omacvm-proxy.conf` (the desktop) and
+  `/etc/profile.d/omacvm-proxy.sh` (shells); `/etc/sudoers.d/05-omacvm-proxy`
+  makes sudo keep them. The build's pacman, git and the Omarchy installer use
+  them. After the install `/etc/omacvm/proxy.env` keeps them and the VM uses
+  them only where the network it is on reaches the proxy, worked out at each
+  login (`omacvm-proxy-env` prints what a login gets, and why a proxy is left
+  out; `omacvm check` says it too). Delete `/etc/omacvm/proxy.env` to stop.
 - **A proxy on the Mac's 127.0.0.1** (Clash, V2Ray, Surge and the like):
-  OmacVM.app's VMs reach it as `10.0.2.2:<port>`; the app lets that port
-  through at the build and at every start (`qemu.log`: "Mac proxy"). On the
-  fast network, and in Parallels, UTM and Fusion, the VM cannot reach the
-  Mac's 127.0.0.1: let the proxy accept LAN connections and set
-  `http_proxy`/`https_proxy` to the Mac's address before building.
+  OmacVM.app's VMs reach it as `10.0.2.2:<port>` on QEMU's network; the app
+  lets that port through at the build and at every start while the Mac
+  still uses that proxy (`qemu.log`: "Mac proxy"). The fast network cannot
+  reach the Mac's 127.0.0.1: there the VM uses `192.168.77.1:<port>` if the
+  proxy accepts LAN connections (Clash: "Allow LAN"), else no proxy, and
+  goes out through the Mac (and its VPN or TUN mode, if one is on) directly.
+  Parallels, UTM and Fusion cannot reach the Mac's 127.0.0.1 either: let the
+  proxy accept LAN connections and set `http_proxy`/`https_proxy` to the
+  Mac's address before building.
 - **Not read**: proxy auto-config (PAC) files and automatic discovery (WPAD).
   The build says so; set `http_proxy` and `https_proxy` in the terminal.
 - **Flaky connections**: while Omarchy installs, pacman and `git clone` try
   a failed download again (3 tries, "Operation too slow" included).
-- **Proxy changed later**: edit the three files in the VM. The app follows
-  a new port on the Mac by itself from the next start.
+- **Proxy changed later**: edit `/etc/omacvm/proxy.env` in the VM (the
+  Mac's 127.0.0.1 is `10.0.2.2` in it), then log in again. The app follows a
+  new port on the Mac by itself from the next start.
 
 ## After the build
 
