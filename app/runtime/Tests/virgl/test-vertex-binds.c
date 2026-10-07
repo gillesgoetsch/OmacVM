@@ -17,16 +17,16 @@
  *  7 an index buffer freed and its GL name reused by another buffer (two submits);
  *  8 an index buffer written between two indexed draws (a transfer binds it to its
  *    target, which is the VAO's element buffer binding);
- *  9 points and triangles alternating;
- * 10 two texture buffer views swapped on one program, one with a swizzle the shader
- *    applies (L8 -> RRR1), one without: the shader key changes.
+ *  9 points and triangles alternating.
  * White-box (OMACVM_VIRGL_CACHE_STATS=1, set here: the renderer logs its counter totals
  * when a context ends):
- * 11 16 identical draws (8 plain, 8 indexed): one shader select, 15 vertex setups and 14
+ * 10 16 identical draws (8 plain, 8 indexed): one shader select, 15 vertex setups and 14
  *    element binds skipped (OMACVM_VIRGL_SELECT_CACHE=0: 16 selects;
  *    OMACVM_VIRGL_VERTEX_CACHE=0: nothing skipped);
- * 12 a sampler view with key bits unbound, the rasterizer unbound, the vertex elements
- *    unbound: each next draw selects the shaders again.
+ * 11 a sampler view with shader key bits unbound, the rasterizer unbound, the vertex
+ *    elements unbound: each next draw selects the shaders again.
+ * Sampler views whose key bits change are in test-view-key.c (a pixel case would need a
+ * program that samples a texture buffer: linking one crashes Apple's software renderer).
  * Run as is, with OMACVM_VIRGL_SELECT_CACHE=0 and with OMACVM_VIRGL_VERTEX_CACHE=0.
  * Usage: test-vertex-binds [case] */
 #include <OpenGL/OpenGL.h>
@@ -48,14 +48,14 @@ enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2, TEST_SHADER_VERTEX = 0,
        TEST_CLEAR_COLOR0 = 1 << 2 };
 
 /* RGBA8 pixels as read back (little endian: 0xAABBGGRR) */
-enum { RED = 0xff0000ff, GREEN = 0xff00ff00, BLUE = 0xffff0000, GREY = 0xff808080,
+enum { RED = 0xff0000ff, GREEN = 0xff00ff00, BLUE = 0xffff0000,
        MAGENTA = 0xffff00ff };
 
 /* resources of a context: handle = 1000 * ctx + R_* */
 enum { R_RT = 1, R_POS, R_COL, R_COL8, R_C0, R_IB, R_TBO, R_TMP, R_TMP2, R_COUNT };
 /* objects */
-enum { VS_COLOR = 10, VS_COLOR2, FS_VARYING, FS_TBO, VE_F = 20, VE_I, VE_RGBA8, VE_BGRA8,
-       VE_B, VE_3, VE_S, VIEW_L8 = 30, VIEW_RGBA8, SAMPLER = 35, SURFACE = 40, BLEND, RS };
+enum { VS_COLOR = 10, VS_COLOR2, FS_VARYING, VE_F = 20, VE_I, VE_RGBA8, VE_BGRA8, VE_B, VE_3,
+       VE_S, VIEW_L8 = 30, SURFACE = 40, BLEND, RS };
 
 static CGLContextObj main_ctx;
 static int failures;
@@ -291,9 +291,9 @@ static void emit_clear(struct cmds *c)
    emit(c, 0);                      /* stencil */
 }
 
-/* a buffer sampler view of elements [first, first] */
+/* a buffer sampler view of elements [first, last] */
 static void emit_buffer_view(struct cmds *c, uint32_t handle, uint32_t res, uint32_t format,
-                             uint32_t first)
+                             uint32_t first, uint32_t last)
 {
    emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW,
                       VIRGL_OBJ_SAMPLER_VIEW_SIZE));
@@ -301,7 +301,7 @@ static void emit_buffer_view(struct cmds *c, uint32_t handle, uint32_t res, uint
    emit(c, res);
    emit(c, format | TEST_PIPE_BUFFER << 24);
    emit(c, first);
-   emit(c, first);
+   emit(c, last);
    emit(c, 0 | 1 << 3 | 2 << 6 | 3 << 9);   /* identity swizzle */
 }
 
@@ -342,18 +342,6 @@ static const char *fs_varying =
    "  0: MOV OUT[0], IN[0]\n"
    "  1: END\n";
 
-/* element 0 of the texture buffer bound to sampler view 0 */
-static const char *fs_tbo =
-   "FRAG\n"
-   "DCL OUT[0], COLOR\n"
-   "DCL SAMP[0]\n"
-   "DCL SVIEW[0], BUFFER, FLOAT\n"
-   "DCL TEMP[0]\n"
-   "IMM[0] UINT32 {0, 0, 0, 0}\n"
-   "  0: TXF TEMP[0], IMM[0], SAMP[0], BUFFER\n"
-   "  1: MOV OUT[0], TEMP[0]\n"
-   "  2: END\n";
-
 static void make_buffer(int ctx, int r, uint32_t bind, uint32_t width)
 {
    struct virgl_renderer_resource_create_args a = {
@@ -381,8 +369,7 @@ static uint32_t gl_name(int ctx, int r)
  *  COL8: 7 colours (RGBA8 bytes 255, 0, 0, 255: red as RGBA, blue as BGRA);
  *  C0:   one RGBA32F colour (stride 0), red;
  *  IB:   uint16 indices 0-5;
- *  TBO:  bytes 0x80 0 0 0 | 0 255 0 255 (element 0 as L8 = grey, element 1 as RGBA8 =
- *        green). */
+ *  TBO:  a texture buffer and an L8 view of it (its shader key bits: RRR1). */
 static void setup(struct cmds *c, int ctx)
 {
    char name[16];
@@ -401,7 +388,7 @@ static void setup(struct cmds *c, int ctx)
    make_buffer(ctx, R_COL8, VIRGL_BIND_VERTEX_BUFFER, 7 * 4);
    make_buffer(ctx, R_C0, VIRGL_BIND_VERTEX_BUFFER, 16);
    make_buffer(ctx, R_IB, VIRGL_BIND_INDEX_BUFFER, 12);
-   make_buffer(ctx, R_TBO, VIRGL_BIND_SAMPLER_VIEW, 8);
+   make_buffer(ctx, R_TBO, VIRGL_BIND_SAMPLER_VIEW, 64);
 
    emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, VIRGL_OBJ_SURFACE_SIZE));
    emit(c, SURFACE);
@@ -430,20 +417,10 @@ static void setup(struct cmds *c, int ctx)
       emit(c, 0);
    emit(c, VIRGL_CMD0(VIRGL_CCMD_BIND_OBJECT, VIRGL_OBJECT_RASTERIZER, 1));
    emit(c, RS);
-   emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_STATE,
-                      VIRGL_OBJ_SAMPLER_STATE_SIZE));
-   emit(c, SAMPLER);
-   for (int i = 0; i < VIRGL_OBJ_SAMPLER_STATE_SIZE - 1; i++)
-      emit(c, 0);
-   emit(c, VIRGL_CMD0(VIRGL_CCMD_BIND_SAMPLER_STATES, 0, 3));
-   emit(c, TEST_SHADER_FRAGMENT);
-   emit(c, 0);
-   emit(c, SAMPLER);
 
    emit_shader(c, VS_COLOR, TEST_SHADER_VERTEX, vs_color);
    emit_shader(c, VS_COLOR2, TEST_SHADER_VERTEX, vs_color2);
    emit_shader(c, FS_VARYING, TEST_SHADER_FRAGMENT, fs_varying);
-   emit_shader(c, FS_TBO, TEST_SHADER_FRAGMENT, fs_tbo);
    emit_bind_shader(c, VS_COLOR, TEST_SHADER_VERTEX);
    emit_bind_shader(c, FS_VARYING, TEST_SHADER_FRAGMENT);
 
@@ -479,10 +456,7 @@ static void setup(struct cmds *c, int ctx)
    emit_write(c, res_id(ctx, R_C0), 0, col[0], 16);
    const uint16_t idx[6] = { 0, 1, 2, 3, 4, 5 };
    emit_write(c, res_id(ctx, R_IB), 0, idx, sizeof(idx));
-   const uint8_t tbo[8] = { 0x80, 0, 0, 0, 0, 255, 0, 255 };
-   emit_write(c, res_id(ctx, R_TBO), 0, tbo, sizeof(tbo));
-   emit_buffer_view(c, VIEW_L8, res_id(ctx, R_TBO), VIRGL_FORMAT_L8_UNORM, 0);
-   emit_buffer_view(c, VIEW_RGBA8, res_id(ctx, R_TBO), VIRGL_FORMAT_R8G8B8A8_UNORM, 1);
+   emit_buffer_view(c, VIEW_L8, res_id(ctx, R_TBO), VIRGL_FORMAT_L8_UNORM, 0, 63);
    emit_clear(c);
    check(submit(ctx, c) == 0, "setup");
 }
@@ -704,19 +678,6 @@ static void case_points(struct cmds *c, int ctx)
    check_stripes(ctx, 4, want, "triangles/points");
 }
 
-static void case_views(struct cmds *c, int ctx)
-{
-   static const uint32_t want[4] = { GREY, GREEN, GREY, GREEN };
-   emit_bind_shader(c, FS_TBO, TEST_SHADER_FRAGMENT);
-   for (int s = 0; s < 4; s++) {
-      emit_fs_view(c, s & 1 ? VIEW_RGBA8 : VIEW_L8);
-      emit_stripe(c, s);
-      emit_triangle(c, 0);
-   }
-   check(submit(ctx, c) == 0, "texture buffer views L8 and RGBA8 swapped on one program");
-   check_stripes(ctx, 4, want, "texture buffer views (L8 -> RRR1, RGBA8 as is)");
-}
-
 /* the counters the renderer logged when the case's context ended, less those before */
 static struct totals totals_before;
 
@@ -800,14 +761,13 @@ static void run_case(int n)
    case 7: case_name_reuse(&c, ctx, 1); break;
    case 8: case_index_write(&c, ctx); break;
    case 9: case_points(&c, ctx); break;
-   case 10: case_views(&c, ctx); break;
-   case 11: case_counts(&c, ctx); break;
-   case 12: case_unbinds(&c, ctx); break;
+   case 10: case_counts(&c, ctx); break;
+   case 11: case_unbinds(&c, ctx); break;
    }
    teardown(ctx);
-   if (n == 11)
+   if (n == 10)
       check_counts();
-   if (n == 12)
+   if (n == 11)
       check_unbinds();
    totals_before = last;
 }
@@ -842,7 +802,7 @@ int main(int argc, char **argv)
       return 1;
    }
 
-   for (int n = 1; n <= 12; n++)
+   for (int n = 1; n <= 11; n++)
       if (!only || only == n)
          run_case(n);
 
