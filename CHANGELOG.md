@@ -14,6 +14,9 @@ in more words.
 - Touch ID turned on while an OmacVM.app VM runs: the control centre says
   "on from the VM's next start: shut it down, then start it again" instead
   of a red x.
+- OmacVM.app: browser pages that draw many objects one by one (WebGL
+  Aquarium) are faster: on the Mac's OpenGL a draw no longer sets its
+  vertex buffers and selects its shaders again when nothing changed.
 
 ## 3.0.3
 

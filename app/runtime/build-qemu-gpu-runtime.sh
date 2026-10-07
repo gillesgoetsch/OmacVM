@@ -1074,6 +1074,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-set-type-without-e
 # OmacVM: a draw binds its GL program only when it changed (Apple's GL rebuilds its draw state
 # on every glUseProgram; WebGL pages with one draw per object paid that on each draw).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-use-program-cache.patch"
+# OmacVM: on Apple's GL (no ARB_vertex_attrib_binding) a draw sets its vertex attributes
+# and index buffer, and selects its shaders, only when they changed.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-legacy-vertex-cache.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

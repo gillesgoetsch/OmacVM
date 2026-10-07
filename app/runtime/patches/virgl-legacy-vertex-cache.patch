@@ -1,0 +1,511 @@
+virglrenderer: set the legacy vertex state and select shaders only when they change
+
+What: on a GL without ARB_vertex_attrib_binding (Apple's OpenGL 4.1),
+vrend_draw_bind_vertex_legacy now clears vbo_dirty like the GL 4.3 path does, so
+vrend_draw_vbo selects the shaders only when something marked them dirty. Per sub
+context it records what the last legacy vertex setup gave its VAO (program and
+vrend_program_bind_gen, vertex elements, each element's buffer name, stride and
+offset, the enabled mask) and skips the attribute loop when all of it is the same;
+an attribute with stride 0 (its value is read from the buffer on every draw) is
+never skipped. The element buffer is bound only when another one is asked for.
+vrend_vertex_state_gen drops every record when the VAO may have changed outside
+the draw path: an index buffer bound to its own target (transfers, map, create),
+a buffer deleted (its GL name can come back for another buffer), vertex elements
+freed, a video command. A draw whose setup the GL refused keeps no record.
+Shader key audit (the selects on every draw hid these): unbinding the vertex
+elements or the rasterizer, a framebuffer change that stops half way, and a
+sampler view slot whose key bits (emulated rectangle, buffer swizzle) change now
+mark the shaders dirty; a freed program selects again.
+OMACVM_VIRGL_SELECT_CACHE=0 leaves vbo_dirty set (shaders selected on every draw),
+OMACVM_VIRGL_VERTEX_CACHE=0 sets attributes and element buffer on every draw;
+both 0 send the GL calls of before. Each logs one line at start.
+OMACVM_VIRGL_CACHE_STATS=1 logs draws, selects and skips every 10 s and when a
+context ends.
+Why: WebGL Aquarium draws one fish per draw call (~31k draws a frame at 30k fish)
+and the render thread is the limit (~1.37 us per draw on an M4). Every draw selected
+the shaders again (3 key fills and compares, 6 % of the thread) and sent
+glBindBuffer + glVertexAttrib*Pointer + glVertexAttribDivisor for every attribute
+(4 %), after which Apple's GL rebuilds its vertex array state in the draw (part of
+11 %). Linux hosts with GL 4.3 already select only when dirty.
+Upstream: upstream behaviour on the legacy path; upstreamable; not sent.
+Test: Tests/virgl/test-vertex-binds.c (run as is and with each switch at 0) and
+the static check in Tests/virgl/run-regressions.py (every GL call that changes VAO
+state or frees a buffer must tell the cache or be reviewed).
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -865,6 +865,25 @@ struct vrend_sub_context {
+    struct pipe_index_buffer ib;
+ 
+    bool vbo_dirty;
++   /* OmacVM: what the last legacy vertex setup (vrend_draw_bind_vertex_legacy) gave
++    * this sub context's VAO, and its element buffer binding, so a draw that would send
++    * the same GL calls again skips them (virgl-legacy-vertex-cache.patch). */
++   struct vrend_vertex_setup_record {
++      bool valid;
++      bool reads_buffer_contents;      /* a stride-0 attribute: never skipped */
++      uint64_t state_gen;              /* vrend_vertex_state_gen when recorded */
++      uint64_t prog_gen;               /* vrend_program_bind_gen when recorded */
++      const struct vrend_linked_shader_program *prog;
++      const struct vrend_vertex_element_array *ve;
++      unsigned count;
++      uint32_t enabled_mask;
++      struct {
++         GLuint gl_id;
++         uint32_t stride, offset;
++      } attr[PIPE_MAX_ATTRIBS];
++   } last_vertex_setup;
++   uint64_t element_buffer_gen;        /* element_buffer_id holds while == vrend_vertex_state_gen */
++   GLuint element_buffer_id;
+    bool shader_dirty;
+    bool cs_shader_dirty;
+    bool stencil_state_dirty;
+@@ -2920,12 +2939,83 @@ static void vrend_destroy_so_target_object(void *obj_ptr)
+    vrend_so_target_reference(&target, NULL);
+ }
+ 
++/* OmacVM: bumped whenever the VAO state of some sub context may have changed outside
++ * the draw path: an index buffer bound to its own target for a transfer (that is the
++ * bound VAO's element buffer binding), a buffer deleted (its GL name can come back for
++ * another buffer, while a VAO that was not current still points at the old one), vertex
++ * elements freed (their address can come back), a video command. It makes every sub
++ * context's recorded vertex setup and element buffer binding stale. Starts at 1 so a
++ * zeroed sub context never matches; 64 bits never wrap. Render thread only. */
++static uint64_t vrend_vertex_state_gen = 1;
++
++/* OMACVM_VIRGL_SELECT_CACHE=0: the legacy vertex setup leaves vbo_dirty set, so every
++ * draw selects its shaders again (as before). OMACVM_VIRGL_VERTEX_CACHE=0: every draw
++ * sets its vertex attributes and its element buffer again (as before). */
++static bool vrend_select_cache_on = true;
++static bool vrend_vertex_cache_on = true;
++
++/* OMACVM_VIRGL_CACHE_STATS=1: draws, shader selects and skipped vertex setups, logged
++ * every 10 s while drawing and when a context is destroyed. */
++static struct {
++   bool on;
++   uint64_t draws, selects, vertex_skips, element_skips;
++   uint64_t last_ns, last_draws, last_selects, last_vertex_skips, last_element_skips;
++} vrend_vertex_stats;
++
++static void vrend_vertex_state_changed(void)
++{
++   vrend_vertex_state_gen++;
++}
++
++/* A buffer bound to its own target outside the draw path: for an index buffer
++ * (GL_ELEMENT_ARRAY_BUFFER) that changes the bound VAO's element buffer. */
++static void vrend_buffer_target_bound(GLenum target)
++{
++   if (target == GL_ELEMENT_ARRAY_BUFFER)
++      vrend_vertex_state_changed();
++}
++
++static uint64_t vrend_vertex_stats_now_ns(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
++}
++
++static void vrend_vertex_stats_log(const char *when)
++{
++   uint64_t now = vrend_vertex_stats_now_ns();
++   double s = vrend_vertex_stats.last_ns ? (now - vrend_vertex_stats.last_ns) / 1e9 : 0;
++   if (s > 0)
++      virgl_info("vertex binds (%s): %.0f draws/s, %.0f shader selects/s, %.0f vertex setups "
++                 "skipped/s, %.0f element binds skipped/s\n", when,
++                 (vrend_vertex_stats.draws - vrend_vertex_stats.last_draws) / s,
++                 (vrend_vertex_stats.selects - vrend_vertex_stats.last_selects) / s,
++                 (vrend_vertex_stats.vertex_skips - vrend_vertex_stats.last_vertex_skips) / s,
++                 (vrend_vertex_stats.element_skips - vrend_vertex_stats.last_element_skips) / s);
++   virgl_info("vertex binds (%s): totals draws %llu selects %llu vertex-skips %llu "
++              "element-skips %llu\n", when,
++              (unsigned long long)vrend_vertex_stats.draws,
++              (unsigned long long)vrend_vertex_stats.selects,
++              (unsigned long long)vrend_vertex_stats.vertex_skips,
++              (unsigned long long)vrend_vertex_stats.element_skips);
++   vrend_vertex_stats.last_ns = now;
++   vrend_vertex_stats.last_draws = vrend_vertex_stats.draws;
++   vrend_vertex_stats.last_selects = vrend_vertex_stats.selects;
++   vrend_vertex_stats.last_vertex_skips = vrend_vertex_stats.vertex_skips;
++   vrend_vertex_stats.last_element_skips = vrend_vertex_stats.element_skips;
++}
++
+ static void vrend_destroy_vertex_elements_object(void *obj_ptr)
+ {
+    struct vrend_vertex_element_array *v = obj_ptr;
+ 
+-   if (v == v->owning_sub->ve)
++   if (v == v->owning_sub->ve) {
+       v->owning_sub->ve = NULL;
++      /* OmacVM: the shader key reads the bound elements' integer formats */
++      v->owning_sub->vbo_dirty = true;
++   }
++   vrend_vertex_state_changed();
+ 
+    if (has_feature(feat_gles31_vertex_attrib_binding)) {
+       glDeleteVertexArrays(1, &v->id);
+@@ -3729,6 +3819,9 @@ void vrend_set_framebuffer_state(struct vrend_context *ctx,
+    struct vrend_sub_context *sub_ctx = ctx->sub;
+ 
+    glBindFramebuffer(GL_FRAMEBUFFER, sub_ctx->fb_id);
++   /* OmacVM: the shader key reads the colour buffers; set first, as the error returns
++    * below can leave some of them changed */
++   sub_ctx->shader_dirty = true;
+ 
+    if (zsurf_handle) {
+       zsurf = vrend_object_lookup(sub_ctx->object_hash, zsurf_handle, VIRGL_OBJECT_SURFACE);
+@@ -4024,6 +4117,9 @@ void vrend_bind_vertex_elements_state(struct vrend_context *ctx,
+    struct vrend_vertex_element_array *v;
+ 
+    if (!handle) {
++      /* OmacVM: the shader key reads the bound elements' integer formats */
++      if (ctx->sub->ve)
++         ctx->sub->vbo_dirty = true;
+       ctx->sub->ve = NULL;
+       return;
+    }
+@@ -4300,6 +4396,38 @@ static GLenum vrend_get_arb_format(enum virgl_formats format)
+    }
+ }
+ 
++static bool vrend_get_swizzle(struct vrend_sampler_view *view,
++                              enum pipe_swizzle swizzle[4]);
++
++/* OmacVM: what vrend_fill_shader_key() takes from a bound sampler view (an emulated
++ * rectangle, a buffer's swizzle lowering). Shadow and integer sampling come from the
++ * shader's own declarations, not from the view. */
++static uint32_t vrend_view_key_bits(struct vrend_sampler_view *view)
++{
++   enum pipe_swizzle swizzle[4];
++   uint32_t bits = 0;
++
++   if (!view || !view->texture)
++      return 0;
++   if (view->emulated_rect)
++      bits |= 1u << 0;
++   if (view->texture->target == GL_TEXTURE_BUFFER && vrend_get_swizzle(view, swizzle))
++      bits |= 1u << 1 | swizzle[0] << 2 | swizzle[1] << 5 | swizzle[2] << 8 | swizzle[3] << 11;
++   return bits;
++}
++
++/* A slot's key bits changed: its stage's shaders must be selected again. Before, every
++ * draw selected them on macOS anyway, which hid the slots that never said so. */
++static void vrend_view_key_changed(struct vrend_sub_context *sub, uint32_t shader_type,
++                                   uint32_t old_bits, uint32_t new_bits)
++{
++   if (old_bits == new_bits)
++      return;
++   sub->shader_dirty = true;
++   if (shader_type == PIPE_SHADER_COMPUTE)
++      sub->cs_shader_dirty = true;
++}
++
+ void vrend_set_single_sampler_view(struct vrend_context *ctx,
+                                    uint32_t shader_type,
+                                    uint32_t index,
+@@ -4308,11 +4436,13 @@ void vrend_set_single_sampler_view(struct vrend_context *ctx,
+    struct vrend_shader_view *shader_view = &ctx->sub->views[shader_type];
+    struct vrend_sampler_view *view = NULL;
+    struct vrend_texture *tex;
++   uint32_t old_key_bits = vrend_view_key_bits(shader_view->views[index]);
+ 
+    if (handle) {
+       view = vrend_object_lookup(ctx->sub->object_hash, handle, VIRGL_OBJECT_SAMPLER_VIEW);
+       if (!view) {
+          vrend_sampler_view_reference(&shader_view->views[index], NULL);
++         vrend_view_key_changed(ctx->sub, shader_type, old_key_bits, 0);
+          vrend_report_context_error(ctx, VIRGL_ERROR_CTX_ILLEGAL_HANDLE, handle);
+          return;
+       }
+@@ -4414,6 +4544,7 @@ void vrend_set_single_sampler_view(struct vrend_context *ctx,
+    }
+ 
+    vrend_sampler_view_reference(&shader_view->views[index], view);
++   vrend_view_key_changed(ctx->sub, shader_type, old_key_bits, vrend_view_key_bits(view));
+ }
+ 
+ void vrend_set_num_sampler_views(struct vrend_context *ctx,
+@@ -4425,8 +4556,11 @@ void vrend_set_num_sampler_views(struct vrend_context *ctx,
+    int i;
+ 
+    struct vrend_shader_view *shader_view = &ctx->sub->views[shader_type];
+-   for (i = last_slot; i < shader_view->max_num_views; i++)
++   for (i = last_slot; i < shader_view->max_num_views; i++) {
++      vrend_view_key_changed(ctx->sub, shader_type,
++                             vrend_view_key_bits(shader_view->views[i]), 0);
+       vrend_sampler_view_reference(&shader_view->views[i], NULL);
++   }
+ 
+    shader_view->max_num_views = last_slot;
+ }
+@@ -5762,6 +5896,84 @@ static GLenum get_xfb_mode(GLenum mode)
+    }
+ }
+ 
++/* OmacVM: whether the legacy vertex setup recorded for this sub context still holds:
++ * the same program (and not one freed with its address reused: vrend_program_bind_gen),
++ * the same vertex elements, the same buffer, stride and offset behind every element,
++ * nothing outside the draw path touched the VAO (vrend_vertex_state_gen), and no
++ * attribute takes its value from buffer contents (stride 0: glVertexAttrib*fv of what
++ * the buffer holds now). Every input of the setup is in this list. */
++static bool vrend_legacy_vertex_unchanged(const struct vrend_sub_context *sub,
++                                          const struct vrend_vertex_element_array *va)
++{
++   const struct vrend_vertex_setup_record *last = &sub->last_vertex_setup;
++
++   if (!vrend_vertex_cache_on || !last->valid || last->reads_buffer_contents ||
++       last->state_gen != vrend_vertex_state_gen ||
++       last->prog_gen != vrend_program_bind_gen ||
++       last->prog != sub->prog || last->ve != sub->ve || last->count != va->count ||
++       last->enabled_mask != sub->enabled_attribs_bitmask)
++      return false;
++
++   for (unsigned i = 0; i < va->count; i++) {
++      const struct vrend_vertex_buffer *vbo = &sub->vbo[va->elements[i].base.vertex_buffer_index];
++      const struct vrend_resource *res = (const struct vrend_resource *)vbo->base.buffer;
++
++      if (last->attr[i].gl_id != (res ? res->gl_id : 0) ||
++          last->attr[i].stride != vbo->base.stride ||
++          last->attr[i].offset != vbo->base.buffer_offset)
++         return false;
++   }
++   return true;
++}
++
++static void vrend_legacy_vertex_record(struct vrend_sub_context *sub,
++                                       const struct vrend_vertex_element_array *va)
++{
++   struct vrend_vertex_setup_record *last = &sub->last_vertex_setup;
++
++   last->valid = vrend_vertex_cache_on;
++   last->reads_buffer_contents = false;
++   last->state_gen = vrend_vertex_state_gen;
++   last->prog_gen = vrend_program_bind_gen;
++   last->prog = sub->prog;
++   last->ve = sub->ve;
++   last->count = va->count;
++   last->enabled_mask = sub->enabled_attribs_bitmask;
++   for (unsigned i = 0; i < va->count; i++) {
++      const struct vrend_vertex_buffer *vbo = &sub->vbo[va->elements[i].base.vertex_buffer_index];
++      const struct vrend_resource *res = (const struct vrend_resource *)vbo->base.buffer;
++
++      last->attr[i].gl_id = res ? res->gl_id : 0;
++      last->attr[i].stride = vbo->base.stride;
++      last->attr[i].offset = vbo->base.buffer_offset;
++      if (!vbo->base.stride)
++         last->reads_buffer_contents = true;
++   }
++}
++
++/* Drops the recorded vertex setup and element buffer binding of this sub context
++ * (a GL call of the setup was refused: the VAO kept older state). */
++static void vrend_forget_vertex_setup(struct vrend_sub_context *sub)
++{
++   sub->last_vertex_setup.valid = false;
++   sub->element_buffer_gen = 0;
++}
++
++/* Binds the draw's element buffer to this sub context's VAO, unless it already is.
++ * Only on the legacy path: there each sub context has one VAO (vaoid), while the
++ * vertex attrib binding path binds a VAO per vertex elements object. */
++static void vrend_bind_element_buffer(struct vrend_sub_context *sub, GLuint id)
++{
++   if (vrend_vertex_cache_on && !has_feature(feat_gles31_vertex_attrib_binding) &&
++       sub->element_buffer_gen == vrend_vertex_state_gen && sub->element_buffer_id == id) {
++      vrend_vertex_stats.element_skips++;
++      return;
++   }
++   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, id);
++   sub->element_buffer_gen = vrend_vertex_state_gen;
++   sub->element_buffer_id = id;
++}
++
+ static void vrend_draw_bind_vertex_legacy(struct vrend_context *ctx,
+                                           struct vrend_vertex_element_array *va)
+ {
+@@ -5769,6 +5981,16 @@ static void vrend_draw_bind_vertex_legacy(struct vrend_context *ctx,
+    uint32_t disable_bitmask;
+    int i;
+ 
++   /* OmacVM: the same setup as the last draw's: the VAO already holds it. Apple's GL
++    * rebuilds its vertex state on the next draw after any of these calls, even when
++    * they repeat what is set. */
++   if (vrend_legacy_vertex_unchanged(ctx->sub, va)) {
++      vrend_vertex_stats.vertex_skips++;
++      if (vrend_select_cache_on)
++         ctx->sub->vbo_dirty = false;
++      return;
++   }
++
+    enable_bitmask = 0;
+    disable_bitmask = ~((1ull << va->count) - 1);
+    for (i = 0; i < (int)va->count; i++) {
+@@ -5869,6 +6091,13 @@ static void vrend_draw_bind_vertex_legacy(struct vrend_context *ctx,
+ 
+       ctx->sub->enabled_attribs_bitmask = enable_bitmask;
+    }
++
++   vrend_legacy_vertex_record(ctx->sub, va);
++   /* OmacVM: as vrend_draw_bind_vertex_binding does: the vertex state is set, so the
++    * shaders are selected again only when something marks them dirty (the elements'
++    * integer formats are in the shader key; binding them sets vbo_dirty). */
++   if (vrend_select_cache_on)
++      ctx->sub->vbo_dirty = false;
+ }
+ 
+ static void vrend_draw_bind_vertex_binding(struct vrend_context *ctx,
+@@ -7138,9 +7367,12 @@ int vrend_draw_vbo(struct vrend_context *ctx,
+       sub_ctx->prim_mode = (int)info->mode;
+    }
+ 
++   /* OmacVM: no program (it was freed) also selects again */
+    if (sub_ctx->shader_dirty || sub_ctx->swizzle_output_rgb_to_bgr ||
+-       sub_ctx->needs_manual_srgb_encode_bitmask || sub_ctx->vbo_dirty)
++       sub_ctx->needs_manual_srgb_encode_bitmask || sub_ctx->vbo_dirty || !sub_ctx->prog) {
+       program_select_result = vrend_select_program(sub_ctx, info->vertices_per_patch);
++      vrend_vertex_stats.selects++;
++   }
+ 
+    if (!sub_ctx->prog || program_select_result == PROGRAMM_ERROR) {
+       vrend_report_dropped_draws(ctx, "Dropping rendering due to missing shaders");
+@@ -7217,9 +7449,9 @@ int vrend_draw_vbo(struct vrend_context *ctx,
+ 
+    if (info->indexed) {
+       struct vrend_resource *res = (struct vrend_resource *)sub_ctx->ib.buffer;
+-      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, res->gl_id);
++      vrend_bind_element_buffer(sub_ctx, res->gl_id);
+    } else
+-      glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++      vrend_bind_element_buffer(sub_ctx, 0);
+ 
+    if (sub_ctx->current_so) {
+       struct vrend_streamout_object *so = sub_ctx->current_so;
+@@ -7295,10 +7527,19 @@ int vrend_draw_vbo(struct vrend_context *ctx,
+       glEnable(GL_BLEND);
+    }
+ 
+-   for (uint32_t i = 0; i < num_draws && vrend_draw_state_ok(ctx); i++)
++   bool state_ok = true;
++   for (uint32_t i = 0; i < num_draws && (state_ok = vrend_draw_state_ok(ctx)); i++)
+       vrend_issue_direct_draw(sub_ctx, info, &draws[i]);
+    if (draws != &one_draw)
+       free(draws);
++   /* OmacVM: keep the vertex setup only when the GL took it: a refused call keeps older
++    * VAO state, and the next draw must set it again (its error check then skips it). */
++   if (!state_ok || !num_draws)
++      vrend_forget_vertex_setup(sub_ctx);
++   vrend_vertex_stats.draws++;
++   if (unlikely(vrend_vertex_stats.on) && !(vrend_vertex_stats.draws & 255) &&
++       vrend_vertex_stats_now_ns() - vrend_vertex_stats.last_ns >= 10000000000ull)
++      vrend_vertex_stats_log("10 s");
+ 
+    if (info->primitive_restart) {
+       if (vrend_state.use_gles) {
+@@ -8167,6 +8408,8 @@ void vrend_object_bind_rasterizer(struct vrend_context *ctx,
+ 
+    if (handle == 0) {
+       memset(&ctx->sub->rs_state, 0, sizeof(ctx->sub->rs_state));
++      /* OmacVM: flat shading, two-sided colour, point sprites are in the shader key */
++      ctx->sub->shader_dirty = true;
+       return;
+    }
+ 
+@@ -9056,6 +9299,21 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
+ 
+    vrend_state.use_integer = use_integer();
+ 
++   const char *select_cache = getenv("OMACVM_VIRGL_SELECT_CACHE");
++   const char *vertex_cache = getenv("OMACVM_VIRGL_VERTEX_CACHE");
++   const char *cache_stats = getenv("OMACVM_VIRGL_CACHE_STATS");
++   vrend_select_cache_on = !(select_cache && !strcmp(select_cache, "0"));
++   vrend_vertex_cache_on = !(vertex_cache && !strcmp(vertex_cache, "0"));
++   vrend_vertex_stats.on = cache_stats && !strcmp(cache_stats, "1");
++   virgl_info("shader selects: %s\n", vrend_select_cache_on ?
++              "a draw selects its shaders only when their state changed" :
++              "every draw selects its shaders (OMACVM_VIRGL_SELECT_CACHE=0)");
++   virgl_info("vertex setup: %s\n", vrend_vertex_cache_on ?
++              "a draw sets its vertex attributes and index buffer only when they changed" :
++              "every draw sets its vertex attributes and index buffer (OMACVM_VIRGL_VERTEX_CACHE=0)");
++   if (vrend_vertex_stats.on)
++      vrend_vertex_stats.last_ns = vrend_vertex_stats_now_ns();
++
+    init_features(gles ? 0 : gl_ver,
+                  gles ? gl_ver : 0);
+ 
+@@ -9288,6 +9546,7 @@ static void vrend_destroy_sub_context(struct vrend_sub_context *sub)
+       glDeleteFramebuffers(2, sub->blit_fb_ids);
+ 
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
++   vrend_forget_vertex_setup(sub);
+ 
+    if (!has_feature(feat_gles31_vertex_attrib_binding)) {
+       while (sub->enabled_attribs_bitmask) {
+@@ -9367,6 +9626,9 @@ static void destroy_active_markers_entry(struct hash_entry *entry)
+ 
+ void vrend_destroy_context(struct vrend_context *ctx)
+ {
++   if (vrend_vertex_stats.on)
++      vrend_vertex_stats_log("context destroyed");
++
+    bool switch_0 = (ctx == vrend_state.current_ctx);
+    struct vrend_context *cur = vrend_state.current_ctx;
+    if (switch_0) {
+@@ -9748,6 +10010,7 @@ static int vrend_create_buffer(struct vrend_resource *gr, uint32_t width, uint32
+    gr->storage_bits |= VREND_STORAGE_GL_BUFFER;
+    glGenBuffersARB(1, &gr->gl_id);
+    glBindBufferARB(gr->target, gr->gl_id);
++   vrend_buffer_target_bound(gr->target);
+ 
+    if (buffer_storage_flags) {
+       if (has_feature(feat_arb_buffer_storage) && !vrend_state.use_external_blob) {
+@@ -11029,6 +11292,7 @@ void vrend_renderer_resource_destroy(struct vrend_resource *res)
+       glDeleteTextures(1, &res->gl_id);
+    } else if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
+       glDeleteBuffers(1, &res->gl_id);
++      vrend_vertex_state_changed();
+       if (res->tbo_tex_id)
+          glDeleteTextures(1, &res->tbo_tex_id);
+    } else if (has_bit(res->storage_bits, VREND_STORAGE_HOST_SYSTEM_MEMORY)) {
+@@ -11455,6 +11719,7 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
+          map_flags |= GL_MAP_UNSYNCHRONIZED_BIT;
+ 
+       glBindBufferARB(res->target, res->gl_id);
++      vrend_buffer_target_bound(res->target);
+       data = glMapBufferRange(res->target, info->box->x, info->box->width, map_flags);
+       if (data == NULL) {
+          virgl_error("Map failed for element buffer\n");
+@@ -12113,6 +12378,7 @@ static int vrend_renderer_transfer_send_iov(struct vrend_context *ctx,
+ 
+    if (has_bit(res->storage_bits, VREND_STORAGE_GL_BUFFER)) {
+       glBindBufferARB(res->target, res->gl_id);
++      vrend_buffer_target_bound(res->target);
+       void *data = glMapBufferRange(res->target, info->box->x, info->box->width, GL_MAP_READ_BIT);
+       if (!data)
+          virgl_error("Unable to open buffer for reading %d\n", res->target);
+@@ -16301,6 +16567,7 @@ int vrend_renderer_resource_map(struct pipe_resource *pres, void **map, uint64_t
+       return -EINVAL;
+ 
+    glBindBufferARB(res->target, res->gl_id);
++   vrend_buffer_target_bound(res->target);
+    *map = glMapBufferRange(res->target, 0, res->size, res->buffer_storage_flags);
+    if (!*map)
+       return -EINVAL;
+@@ -16317,6 +16584,7 @@ int vrend_renderer_resource_unmap(struct pipe_resource *pres)
+       return -EINVAL;
+ 
+    glBindBufferARB(res->target, res->gl_id);
++   vrend_buffer_target_bound(res->target);
+    glUnmapBuffer(res->target);
+    glBindBufferARB(res->target, 0);
+    return 0;
+@@ -16505,6 +16773,9 @@ void vrend_context_emit_string_marker(struct vrend_context *ctx, GLsizei length,
+ #ifdef ENABLE_VIDEO
+ struct vrend_video_context *vrend_context_get_video_ctx(struct vrend_context *ctx)
+ {
++    /* OmacVM: a video command may bind the guest's coded buffer to its own target
++     * (vrend_video.c), which is the element buffer binding for an index buffer. */
++    vrend_vertex_state_changed();
+     return ctx->video;
+ }
+ #endif
