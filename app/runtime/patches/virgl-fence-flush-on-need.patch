@@ -426,16 +426,16 @@ run-regressions.py check_fence_flush_entries (the renderer calls that flush).
     vrend_memory_tick();
     if (vrend_state.use_async_fence_cb) {
        flush_eventfd(vrend_state.eventfd);
-@@ -8955,7 +9175,7 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
-    virgl_gl_context gl_context;
-    struct virgl_gl_ctx_param ctx_params = {0};
- 
--   vrend_clicbs = cbs;
+@@ -8963,6 +9183,8 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
+    virgl_info("program binds: %s\n", vrend_program_cache_on ?
+               "a draw binds its program only when it changed" :
+               "every draw binds its program (OMACVM_VIRGL_PROGRAM_CACHE=0)");
++   /* from here on vrend_clicbs holds the context hooks of fence_flush */
 +   fence_flush_init(cbs);
-    vrend_resource_budget_init();
  
-    const char *prog_cache = getenv("OMACVM_VIRGL_PROGRAM_CACHE");
-@@ -9232,6 +9452,8 @@ vrend_renderer_fini(void)
+    /* Give some defaults to be able to run the tests */
+    vrend_state.max_texture_2d_size =
+@@ -9232,6 +9454,8 @@ vrend_renderer_fini(void)
  
     vrend_state.current_ctx = NULL;
     vrend_state.current_hw_ctx = NULL;
@@ -444,7 +444,7 @@ run-regressions.py check_fence_flush_entries (the renderer calls that flush).
  
     vrend_state.finishing = false;
  }
-@@ -13712,7 +13934,7 @@ int vrend_renderer_create_fence(struct vrend_context *ctx,
+@@ -13712,7 +13936,7 @@ int vrend_renderer_create_fence(struct vrend_context *ctx,
     {
        fence->glsyncobj = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
@@ -453,7 +453,7 @@ run-regressions.py check_fence_flush_entries (the renderer calls that flush).
  
     if (fence->glsyncobj == NULL)
        goto fail;
-@@ -15595,7 +15817,10 @@ void vrend_renderer_force_ctx_0(void)
+@@ -15595,7 +15819,10 @@ void vrend_renderer_force_ctx_0(void)
     TRACE_FUNC();
     vrend_state.current_ctx = NULL;
     vrend_state.current_hw_ctx = NULL;
