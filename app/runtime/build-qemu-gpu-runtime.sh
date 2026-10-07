@@ -1092,6 +1092,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-use-program-cache.
 # OmacVM: a lost app's dropped buffer keeps an empty 1x1 stand-in, so the compositor that shows it
 # is not lost too (a black VM); the log names the apps' share when an app stops there.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-gpu-guard-dropped-placeholder.patch"
+# OmacVM: on Apple's GL (no ARB_vertex_attrib_binding) a draw sets its vertex attributes
+# and index buffer, and selects its shaders, only when they changed.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-legacy-vertex-cache.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

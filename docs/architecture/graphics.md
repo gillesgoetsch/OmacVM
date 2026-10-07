@@ -278,6 +278,32 @@ Basemark the same within its noise; WebGL 1 and 2 conformance identical.
 `OMACVM_VIRGL_PROGRAM_CACHE=0` binds on every draw again. Test:
 `test-program-binds`.
 
+Vertex binds (`virgl-legacy-vertex-cache.patch`): Apple's GL 4.1 has no
+`ARB_vertex_attrib_binding`, so vrend takes its legacy vertex path, which never
+cleared `vbo_dirty`. Every draw therefore selected the shaders again (three
+shader key fills and compares) and sent `glBindBuffer`,
+`glVertexAttrib*Pointer` and `glVertexAttribDivisor` for every attribute and
+`glBindBuffer(GL_ELEMENT_ARRAY_BUFFER)`; Apple's GL then rebuilt its vertex
+state in the draw. Now the legacy path clears `vbo_dirty` like the GL 4.3 path,
+and each sub context (one VAO each) records its last vertex setup: program,
+vertex elements, and each element's buffer name, stride and offset. A draw with
+the same setup skips the calls, and the element buffer is bound only when it
+changes. An attribute with stride 0 (its value is read from the buffer) is
+never skipped. `vrend_vertex_state_gen` drops every record when the VAO may
+have changed outside a draw: an index buffer bound to its own target (transfer,
+map, create), a buffer deleted (its GL name can come back), vertex elements
+freed, a video command; a draw the GL refused keeps no record. A static check
+in `run-regressions.py` fails the build when a GL call that changes VAO state
+or frees a buffer is in a function that does not tell the cache and is not
+reviewed. The selects on every draw had hidden missing dirty flags, now set:
+unbinding the vertex elements or the rasterizer, a framebuffer change that
+stops half way, and a sampler view slot whose shader key bits (emulated
+rectangle, buffer swizzle) change. `OMACVM_VIRGL_SELECT_CACHE=0` selects on
+every draw again, `OMACVM_VIRGL_VERTEX_CACHE=0` sets the attributes and index
+buffer on every draw again (both 0: the GL calls of before);
+`OMACVM_VIRGL_CACHE_STATS=1` logs draws, selects and skips every 10 s. Test:
+`test-vertex-binds` (run as is and with each switch at 0).
+
 ### Where the time goes
 
 - Light frames (glmark2, the desktop): the fence round trip. Fixed above.
