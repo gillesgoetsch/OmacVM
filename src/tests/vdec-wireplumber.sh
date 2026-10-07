@@ -1,8 +1,11 @@
 #!/bin/bash
-# Sound keeps working when Chromium's video decoder (omacvm-vdec) comes while
-# WirePlumber runs and no omacvm-vdecd is ready to open it (the module built
-# by DKMS at the first boot of a new kernel, loaded after the desktop
-# started). WirePlumber 0.5 hung on that V4L2 device and linked no sound;
+# Sound keeps working when WirePlumber meets Chromium's video decoder
+# (omacvm-vdec) while no omacvm-vdecd is ready to open it: the module loaded
+# while the desktop runs (omacvm apply turns Chromium video on, or builds it
+# once a new kernel's headers are there), or WirePlumber starting while the
+# daemon still waits for the GPU. A kernel update alone does not do it: DKMS
+# builds the module during the update and it loads early at the next start.
+# WirePlumber 0.5 hung on that V4L2 device and linked no sound;
 # 50-omacvm-vdec.conf has it leave the decoder alone. And the decoder's
 # device starts omacvm-vdecd when it comes late (70-omacvm-vdec.rules).
 #   src/tests/vdec-wireplumber.sh                  offline: the rule matches the
@@ -20,7 +23,10 @@
 #                                                  decoder loaded without its
 #                                                  daemon; a stream must be linked
 #                                                  to the sound card before and
-#                                                  after; loaded again, the device
+#                                                  after, and after WirePlumber
+#                                                  starts again with the decoder
+#                                                  there (the order at a VM start);
+#                                                  loaded again, the device
 #                                                  starts the daemon by itself
 #   src/tests/vdec-wireplumber.sh --in-vm          the same, as root inside the VM
 # Exits 1 when a check fails.
@@ -78,6 +84,12 @@ print(sinks[0] if sinks else "")'
   s=$(linked)
   if [[ -n $s ]]; then ok "sound linked after the decoder came without its daemon ($s)"
   else bad "sound not linked after the decoder came: WirePlumber hangs on /dev/video* (is /etc/wireplumber/wireplumber.conf.d/50-omacvm-vdec.conf there?)"; fi
+  # The order at a VM start: WirePlumber starts while the decoder is there
+  # and its daemon is not ready yet (still starting, or waiting for the GPU).
+  us systemctl --user restart wireplumber; sleep 2
+  s=$(linked)
+  if [[ -n $s ]]; then ok "sound linked when WirePlumber starts with the decoder there and no daemon ($s)"
+  else bad "sound not linked when WirePlumber starts with the decoder there and no daemon (is /etc/wireplumber/wireplumber.conf.d/50-omacvm-vdec.conf there?)"; fi
   # Late again, now free to start: nobody but the device starts the daemon.
   rm -f "$hold"; systemctl daemon-reload
   systemctl stop omacvm-vdecd 2>/dev/null
@@ -142,12 +154,12 @@ case ${1:-} in
     VM=${2:-}
     # shellcheck disable=SC2034
     if [[ ${3:-} == --vm-type ]]; then TYPE=${4:-}; else TYPE=""; fi
-    [[ -n $VM ]] || { sed -n '8,25s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+    [[ -n $VM ]] || { sed -n '11,32s/^# \{0,1\}//p' "$0" >&2; exit 2; }
     source "$R/src/lib/mac.sh"
     source "$R/src/lib/vm.sh"
     resolve_vm
     [[ -n $IP ]] || { echo "vdec-wireplumber: '$VM' is not running" >&2; exit 1; }
     gssh "$IP" "bash -s -- --in-vm" < "$0"; exit $? ;;
-  *) sed -n '8,25s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
+  *) sed -n '11,32s/^# \{0,1\}//p' "$0" >&2; exit 2 ;;
 esac
 exit $fail

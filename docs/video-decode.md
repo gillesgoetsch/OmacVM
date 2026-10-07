@@ -229,13 +229,15 @@ Limits:
 - **An update while a video plays**: the new module loads at the next VM
   start; until then the old one keeps working and `omacvm check` says an
   update waits. `omacvm apply` restarts the daemon only when it changed.
-- **A new kernel** without its headers in Arch Linux ARM's repository yet:
-  Chromium decodes on the CPU until `omacvm apply` finds them.
-- **A module that comes late** (DKMS builds it at the first start of a new
-  kernel, after the services started): its device starts the daemon
+- **A new kernel**: pacman's DKMS hook builds the module during the update
+  (with the new kernel's headers), and it loads early at the next start.
+  Without the headers in Arch Linux ARM's repository yet, Chromium decodes
+  on the CPU until `omacvm apply` finds them.
+- **A module that comes late** (`omacvm apply` loads it while the VM runs,
+  after the services started): its device starts the daemon
   (`70-omacvm-vdec.rules`); a Chromium already open decodes on the CPU until
   it starts again. WirePlumber leaves the decoder alone
-  (`50-omacvm-vdec.conf`, [troubleshooting 29](troubleshooting.md#29-app-no-sound-at-all-after-a-kernel-update)).
+  (`50-omacvm-vdec.conf`, [troubleshooting 29](troubleshooting.md#29-app-no-sound-at-all-after-a-start)).
 
 ## Limits
 

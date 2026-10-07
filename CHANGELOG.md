@@ -3,6 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.0.6 (unreleased)
+
+- Troubleshooting 29 (no sound at all after a start, fixed in 3.0.4) names
+  the real cause: WirePlumber meeting Chromium's video decoder before its
+  daemon is ready. A kernel update alone never did it: the module is built
+  during the update and loads early at the next start. The VM test for it
+  (`src/tests/vdec-wireplumber.sh --vm NAME`) also checks WirePlumber
+  starting with the decoder there.
+
 ## 3.0.5 (unreleased)
 
 - With OmacVM.app and the test app OmacVM Test.app on one Mac, each one's
