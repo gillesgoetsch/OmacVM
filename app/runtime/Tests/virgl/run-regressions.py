@@ -10,7 +10,9 @@ import sys
 build, output = map(lambda value: Path(value).resolve(), sys.argv[1:3])
 output.mkdir(parents=True, exist_ok=True)
 entries = json.loads((build / "compile_commands.json").read_text())
-def run_test(name, implementation):
+def run_test(name, implementation, oracle=False, envs=(None,), sources=()):
+    """Compile the test with the implementation's own flags (tests that include it), with
+    more renderer sources if asked (paths under src/); run it once per environment."""
     entry = next(item for item in entries if item["file"].endswith("/" + implementation))
     command = entry.get("arguments") or shlex.split(entry["command"])
     directory = Path(entry["directory"])
@@ -29,12 +31,14 @@ def run_test(name, implementation):
     link_args = sys.argv[3:]
     if link_args[:1] == ["--"]:
         link_args = link_args[1:]
+    extra = oracle_link_args(command[0]) if oracle else []
     subprocess.run([command[0], *flags, "-I" + str(source),
-                    str(Path(__file__).with_name(name + ".c")),
+                    str(Path(__file__).with_name(name + ".c")), *[str(source / s) for s in sources],
                     str(build / "src/libvirgl.a"), str(build / "src/gallium/libgallium.a"),
-                    str(build / "src/mesa/libmesa.a"), *link_args, "-o", str(binary)],
+                    str(build / "src/mesa/libmesa.a"), *link_args, *extra, "-o", str(binary)],
                    cwd=directory, check=True)
-    subprocess.run([str(binary)], check=True)
+    for env in envs:
+        subprocess.run([str(binary)], check=True, env={**os.environ, **(env or {})})
 
 
 def oracle_link_args(compiler):
@@ -80,6 +84,15 @@ def run_api_test(name, frameworks=(), oracle=False, vulkan_stub=False, env=None)
     subprocess.run([str(binary)], check=True, env={**os.environ, **(env or {})})
 
 
+def run_write_guard():
+    """Every GL call in the renderer that can write a buffer is on the index range cache's
+    reviewed list (index-range-writes.py)."""
+    entry = next(item for item in entries if item["file"].endswith("/vrend_renderer.c"))
+    source = (Path(entry["directory"]) / entry["file"]).resolve().parents[2]
+    subprocess.run([sys.executable, str(Path(__file__).with_name("index-range-writes.py")),
+                    str(source)], check=True)
+
+
 def run_fuzz_replay():
     """Every input the fuzzer once crashed on, through the same harness, without libFuzzer."""
     entry = next(item for item in entries if item["file"].endswith("/virglrenderer.c"))
@@ -121,3 +134,6 @@ run_api_test("test-sampler-limit")
 run_api_test("test-set-type-no-egl")
 run_api_test("test-program-binds")
 run_api_test("test-program-binds", env={"OMACVM_VIRGL_PROGRAM_CACHE": "0"})
+run_write_guard()
+run_test("test-index-range-cache", "vrend_renderer.c", oracle=True, sources=("virglrenderer.c",),
+         envs=(None, {"OMACVM_VIRGL_INDEX_RANGE_CACHE": "0"}))

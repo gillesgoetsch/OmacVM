@@ -29,6 +29,10 @@ in more words.
 - Chromium video after a kernel update: when the decoder came late, its
   service stayed down until the next start and videos played on the CPU.
   The decoder now starts its service when it comes.
+- Graphics: browser pages that draw many objects with the same indices (WebGL
+  Aquarium, one draw per fish) no longer read those indices back from the
+  GPU on every draw; the safety check reads them once per change
+  (`OMACVM_VIRGL_INDEX_RANGE_CACHE=0` turns it off).
 
 ## 3.0.3
 
