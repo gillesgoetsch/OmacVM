@@ -48,6 +48,10 @@ cmd=${1:-}; [[ $# -gt 0 ]] && shift
 if [[ $R == */Contents/Resources/omacvm && -f $R/COMMIT && -z ${OMACVM_APP_COPY:-} ]]; then
   app=${R%/Resources/omacvm}
   export OMACVM_APP_CLI=$R/omacvm OMACVM_HELPERS=$app/Helpers OMACVM_APP_RUNTIME=$app/Resources/runtime
+  # "OmacVM Test"'s omacvm run by hand: the test identity, as when the app
+  # runs it (else it installs the normal helpers from the test app).
+  source "$R/src/lib/identity.sh"
+  app_test_identity "$app"
   case $cmd in
     build|apply|update|enable|disable|uninstall|features)
       if [[ $cmd != features || " $* " != *" --json "* ]]; then

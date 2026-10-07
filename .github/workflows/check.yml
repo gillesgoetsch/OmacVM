@@ -237,6 +237,9 @@ jobs:
       - name: Only OmacVM writes the Bridge's cli file (test copies keep away)
         run: src/tests/app-cli-file.sh
 
+      - name: The test app's own omacvm run by hand is the test identity
+        run: src/tests/app-cli-identity.sh
+
       - name: The desktop restarts by itself after a lost GPU context (app rules, VM script)
         run: src/tests/app-desktop-recovery.sh
 

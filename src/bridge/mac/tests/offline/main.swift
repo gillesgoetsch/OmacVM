@@ -234,6 +234,11 @@ check(!VMOwner.ours(appID: "org.omacvm.app", testBridge: true), "test Bridge: no
 check(VMOwner.ours(appID: "org.omacvm.app.test", testBridge: true), "test Bridge: OmacVM Test.app's VM")
 check(!VMOwner.ours(appID: "org.omacvm.app.test", testBridge: false),
       "normal Bridge: not OmacVM Test.app's VM (Air 2026-10-06: it took the keys, no OSD in the VM)")
+check(VMOwner.ours(appID: "org.omacvm.app.test.fixid", testBridge: true) &&
+      !VMOwner.ours(appID: "org.omacvm.app.test.fixid", testBridge: false),
+      "a lane's copy (org.omacvm.app.test.<lane>): the test Bridge's, as the app's TestIdentity")
+check(VMOwner.ours(appID: "org.omacvm.app.tester", testBridge: false) &&
+      !VMOwner.ours(appID: "org.omacvm.app.tester", testBridge: true), "org.omacvm.app.tester: not the test app (only the dot form)")
 check(VMOwner.ours(appID: "com.example.omacvm", testBridge: false), "normal Bridge: a build with another bundle id")
 check(VMOwner.ours(appID: nil, testBridge: false) && VMOwner.ours(appID: nil, testBridge: true), "unknown app (development build): every Bridge's, as before")
 

@@ -309,18 +309,23 @@ app_start() {
   # app_bundle finds, not any copy LaunchServices knows (an older one, say).
   local a
   if a=$(app_bundle); then open -n "$a" --args --start --vm "$1" || return 1
-  else open -n -b org.omacvm.app --args --start --vm "$1" || return 1; fi
+  # The test identity never opens OmacVM.app (the user's app).
+  else open -n -b "$APP_BUNDLE_ID" --args --start --vm "$1" || return 1; fi
   app_ip "$1" 60
 }
 
 app_bundle() {   # the app whose own copy of omacvm runs, else in ~/Applications, else /Applications, by its bundle id
-  local a
+  local a id
   # OmacVM.app's bundled omacvm (and its apply-vm.sh) set OMACVM_APP_RUNTIME
   # to the app's runtime: that app, wherever it is (another drive, Downloads).
+  # The test identity: also a lane's copy (org.omacvm.app.test.<lane>), as
+  # src/lib/identity.sh, so its own omacvm uses that copy, not OmacVM Test.app.
   if [[ ${OMACVM_APP_RUNTIME:-} == */Contents/Resources/runtime ]]; then
     a=${OMACVM_APP_RUNTIME%/Contents/Resources/runtime}
-    [[ -f $a/Contents/Resources/scripts/create-vm.sh &&
-       $(defaults read "$a/Contents/Info" CFBundleIdentifier 2>/dev/null) == "$APP_BUNDLE_ID" ]] && { echo "$a"; return 0; }
+    id=$(defaults read "$a/Contents/Info" CFBundleIdentifier 2>/dev/null) || id=
+    [[ -f $a/Contents/Resources/scripts/create-vm.sh ]] &&
+      [[ $id == "$APP_BUNDLE_ID" || ( ${OMACVM_TEST_IDENTITY:-} == 1 && $id == "$APP_BUNDLE_ID".* ) ]] &&
+      { echo "$a"; return 0; }
   fi
   for a in "$HOME"/Applications/*.app /Applications/*.app; do
     [[ -f $a/Contents/Resources/scripts/create-vm.sh ]] || continue
