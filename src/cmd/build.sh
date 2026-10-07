@@ -41,6 +41,7 @@ source "$R/src/lib/prereq.sh"
 source "$R/src/prebuilt/lib.sh"
 source "$R/src/prebuilt/vm.sh"
 source "$R/src/lib/proxy.sh"
+source "$R/src/lib/space.sh"
 features_load
 # Bash 3.2 gives the EXIT trap status 0 after a set -u abort: only DONE=1 (set
 # right before each successful exit) counts as success.
@@ -131,10 +132,7 @@ macos=$(sw_vers -productVersion 2>/dev/null)
 onoff() { (( $1 )) && echo on || echo off; }
 
 mac_specs
-# Free space as Finder counts it (macOS frees caches and purgeable files when
-# needed; df leaves those out), else df's.
-free_gb=$(mac_tool mac-free-gb 2>/dev/null)
-[[ $free_gb =~ ^[0-9]+$ && $free_gb -gt 0 ]] || free_gb=$(df -g "$HOME" | awk 'END { print $4 }')
+free_gb=$(free_gb_at "$HOME")   # the disk size's default; the room to build is checked once the VM's folder is known
 NOTCH=$(mac_tool mac-notch 2>/dev/null || echo none)
 [[ -n $OMANOTCH ]] || { [[ $NOTCH == notch ]] && OMANOTCH=1 || OMANOTCH=0; }
 
@@ -142,11 +140,6 @@ if (( ! JSON )); then
   printf '\n  \033[1;36m⌘\033[0m \033[1mOmacVM %s\033[0m  Omarchy in a VM on your Mac, feeling native\n' "$(cat "$R/src/VERSION")"
   (( YES )) || prereq_screen
 fi
-
-# A build peaks at about 25 GB (download, temporary installer, new disk); a
-# finished VM takes 10-12 GB and grows as it is used.
-(( free_gb >= 30 )) || needs_person "OmacVM needs about 30 GB free disk space to build (this Mac has $free_gb GB free)"
-(( free_gb >= 50 )) || info "$free_gb GB free: enough to build; the VM grows as you use it, so keep some room."
 
 
 # ---------- 1. Parallels, UTM, VMware Fusion or OmacVM.app ----------
@@ -332,12 +325,6 @@ fi
 # Parallels and Fusion take any folder (an external drive, say); UTM keeps its
 # VMs in its own library (moving one there is not safe through its scripting).
 default_dir() { case $TYPE in parallels) echo "$HOME/Parallels" ;; fusion) echo "$FUSION_DIR" ;; utm) echo "UTM's library" ;; app) app_vms_root ;; esac; }
-free_gb_at() {   # free GB on the drive of a folder, as Finder counts it
-  local g
-  g=$(mac_tool mac-free-gb "$1" 2>/dev/null)
-  [[ $g =~ ^[0-9]+$ && $g -gt 0 ]] || g=$(df -g "$1" | awk 'END { print $4 }')
-  echo "$g"
-}
 vm_dir_problem() {   # DIR -> a reason it does not work, or nothing
   local fs dev
   [[ -d $1 && -w $1 ]] || { echo "not a folder you can write to"; return; }
@@ -345,7 +332,8 @@ vm_dir_problem() {   # DIR -> a reason it does not work, or nothing
   dev=$(df -P "$1" | awk 'END { print $1 }')
   fs=$(diskutil info -plist "$dev" 2>/dev/null | plutil -extract FilesystemType raw -o - - 2>/dev/null)
   case $fs in apfs|hfs) ;; *) echo "its drive is ${fs:-unknown}: a VM disk needs APFS or Mac OS Extended (Disk Utility can erase it as APFS)"; return ;; esac
-  (( $(free_gb_at "$1") >= 30 )) || echo "only $(free_gb_at "$1") GB free on that drive (the VM needs about 30)"
+  local g; g=$(free_gb_at "$1")
+  (( g >= SPACE_VM_GB )) || echo "only $g GB free on $(drive_name "$1") (the VM needs about $SPACE_VM_GB)"
 }
 if [[ -n ${VM_DIR:-} && $TYPE == utm ]]; then usage "--vm-dir: UTM keeps its VMs in its own library"; fi
 if [[ -n ${VM_DIR:-} && $TYPE == app ]]; then usage "--vm-dir: OmacVM.app keeps its VMs in the folder set in the app"; fi
@@ -374,6 +362,7 @@ if [[ -n ${VM_DIR:-} ]]; then
   fi
   [[ $TYPE == fusion ]] && FUSION_DIR=$VM_DIR
 fi
+VM_DIR_GIVEN=${VM_DIR:-}
 [[ -n ${VM_DIR:-} || $TYPE == utm ]] || VM_DIR=$(default_dir)
 case $TYPE in
   parallels) [[ ! -e $VM_DIR/$VM.pvm ]] || usage "$VM_DIR/$VM.pvm already exists (choose another --vm-name)" ;;
@@ -384,6 +373,23 @@ case $TYPE in
        [[ ! -e $VM_DIR/$VM ]] || usage "$VM_DIR/$VM already exists (choose another --vm-name)"
        if [[ -d $VM_DIR ]]; then p=$(vm_dir_problem "$VM_DIR"); [[ -z $p ]] || needs_person "$VM_DIR (OmacVM.app's VMs): $p"; fi ;;
 esac
+# Room to build on the drives the build writes to: the VM's folder, and the
+# downloads folder when it is on another drive (not this Mac's disk when the
+# VM goes to an external one).
+SPACE_APP_CACHE=""
+if [[ $TYPE == app && -n ${APP:-} ]] && ! grep -q downloads_dir "$APP/Contents/Resources/scripts/vm-common.sh" 2>/dev/null; then
+  SPACE_APP_CACHE=mac   # OmacVM.app before 3.0.2: its downloads stay in the Mac's caches
+fi
+if ! space_problem "$TYPE" "${VM_DIR:-}" "$SOURCE"; then
+  case $TYPE in
+    parallels|fusion) [[ -n $VM_DIR_GIVEN ]] || SPACE_WHY+=" (or put the VM on another drive with --vm-dir)" ;;
+    app) if [[ $SPACE_APP_CACHE == mac && $SPACE_WHY == *"the download"* ]]; then
+           SPACE_WHY+=" (omacvm update updates OmacVM.app, which then keeps its downloads on the VMs folder's drive)"
+         else SPACE_WHY+=" (or pick a VMs folder on another drive in OmacVM.app)"; fi ;;
+  esac
+  needs_person "$SPACE_WHY"
+fi
+[[ -z $SPACE_NOTE ]] || (( PLAN && JSON )) || info "$SPACE_NOTE"
 
 # ---------- 3. features ----------
 # The build's switches by feature name (src/features.tsv).

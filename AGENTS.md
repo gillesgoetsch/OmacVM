@@ -182,7 +182,7 @@ A build is done when all of this holds:
 | VMware Fusion route (new) | VMware Fusion 13+ (verified 26.0.1). Needs Hyprland with the vmwgfx fix (`src/fusion/guest/`); see `docs/routes/vmware-fusion.md` (and the build log `docs/experiments/vmware-fusion.md`). `vmcli VM Create`, `vmware-vdiskmanager`, `vmrun start/list` from `VMware Fusion.app/Contents/Library`; the rest is the `.vmx` (`src/vm/fusion.sh`). VMs in `~/Virtual Machines.localized` or `$OMACVM_FUSION_DIR` |
 | Tools | UTM, Fusion, Parallels: Xcode Command Line Tools (swiftc, clang, swift, python3, git), Homebrew `zstd` + `e2fsprogs` (live installer), openssl. OmacVM.app: none (it carries python3, its Mac helpers and the Swift answers: `src/lib/tools.sh`); never run a Command Line Tools stub (`/usr/bin/python3`, `swift`, `git` ...) on its route: on a Mac without them each one opens macOS's install window (`src/tests/no-clt.sh`) |
 | Network | ~1.4 GB try-omarchy download (live installer) + Arch Linux ARM and Omarchy packages |
-| Disk | ~30 GB free for the build (peaks about 25 GB); the VM's disk is expanding and grows as it is used |
+| Disk | ~30 GB free for the build (peaks about 25 GB) on the VM's drive, plus ~15 GB on the Mac's disk for the download when the VM goes to another drive (Parallels, Fusion; `src/lib/space.sh`); the VM's disk is expanding and grows as it is used |
 
 ## 3. Repository map
 

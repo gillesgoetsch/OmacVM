@@ -207,6 +207,9 @@ jobs:
       - name: Ctrl-C in omacvm build stops the running step (a terminal, no VM)
         run: src/tests/build-ctrlc.sh
 
+      - name: omacvm build checks free space on the drive the VM goes to (every route, no VM)
+        run: src/tests/build-space.sh
+
       - name: omacvm-netd offline tests
         run: src/net/mac/test.sh
 

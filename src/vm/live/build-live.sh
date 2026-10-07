@@ -88,9 +88,13 @@ if [[ -z "$RAW_IMAGE" ]]; then
 else
   info "host: macOS $MACOS_VER, writing a raw disk image (UTM)"
 fi
-FREE_GB="$(df -g "$HOME" 2>/dev/null | tail -1 | awk '{print $4}')"
-if [[ -n "$FREE_GB" && "$FREE_GB" -lt 15 ]]; then
-  die "need ~15 GB free (found ${FREE_GB} GB)"
+# On the work folder's drive (--workdir can be on another drive than the home
+# folder); the nearest folder that exists, as it may not be made yet.
+FREE_AT="$WORKDIR"
+until [[ -e "$FREE_AT" || "$FREE_AT" == / ]]; do FREE_AT="$(dirname "$FREE_AT")"; done
+FREE_GB="$(df -g "$FREE_AT" 2>/dev/null | tail -1 | awk '{print $4}')"
+if [[ "$FREE_GB" =~ ^[0-9]+$ && "$FREE_GB" -lt 15 ]]; then
+  die "need ~15 GB free for the work folder $WORKDIR (found ${FREE_GB} GB)"
 fi
 if [[ -n "${SSH_KEY:-}" && ! -f "$SSH_KEY" ]]; then
   die "--ssh-key file not found: $SSH_KEY"
