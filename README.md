@@ -110,7 +110,7 @@ Only OmacVM.app? Its window's "omacvm in Terminal" Install adds the command.
 - An Apple Silicon Mac, M1 or newer, with macOS 15 for OmacVM.app or macOS 14
   for the others. (On an M1 or M2, [Asahi Linux](https://asahilinux.org) can
   also run Omarchy natively.)
-- About 30 GB of free disk space and a decent connection.
+- About 30 GB of free disk space on the drive the VM goes to, and a decent connection.
 - One of the apps: OmacVM.app (`omacvm` downloads it), UTM 5 (beta), VMware
   Fusion 13 or Parallels Desktop 19, or newer. How to get each:
   [docs/routes/](docs/routes/).
