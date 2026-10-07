@@ -110,6 +110,15 @@ elif [[ $mon == 1160x768* ]]; then bad "display" "$mon: still the firmware mode 
 else ok "display" "$mon"; fi
 bg=$H/.local/state/omarchy/current/background
 if [[ -L $bg && ! -e $bg ]]; then bad "desktop background" "$(readlink "$bg") is missing: omacvm apply, then log in again"; fi
+# Omarchy's default keyring: without one Chromium asks for a keyring password.
+# The one gnome-keyring takes: named in "default", else "login" (as
+# default-keyring.sh; the Mac sends this file alone, over SSH).
+kd=$H/.local/share/keyrings; kr=login
+[[ -s $kd/default ]] && kr=$(head -1 "$kd/default")
+if [[ $kr =~ ^[A-Za-z0-9_.-]+$ && -f $kd/$kr.keyring ]]; then ok "keyring" "$kr (default)"
+elif compgen -G "$kd/*.keyring" >/dev/null; then
+  bad "keyring" "none is the default: apps like Chromium ask for a keyring password (pick one in Passwords and Keys)" human
+else bad "keyring" "none: Chromium asks for a keyring password at its first start; omacvm apply makes Omarchy's default keyring"; fi
 if [[ $TYPE == app ]]; then
   # Which UEFI firmware OmacVM.app started the VM with (SMBIOS BIOS version).
   fw=$(cat /sys/class/dmi/id/bios_version 2>/dev/null)

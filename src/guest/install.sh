@@ -177,6 +177,11 @@ if system && [[ $OLD =~ ^[a-z_][a-z0-9_-]*$ && $OLD != "$U" && ! -e /home/$OLD ]
   done < <(find "$H" -xdev -type l \( -lname "/home/$OLD" -o -lname "/home/$OLD/*" \) -print0 2>/dev/null)
   if (( n )); then log "links from the prebuilt image: $n now point into $H (the wallpaper shows after the next login)"; fi
 fi
+# Omarchy's default keyring (no password), which VMs from older prebuilt
+# images lack: Chromium would ask for a keyring password at its first start.
+if system && ! "$R/guest/default-keyring.sh" status "$H" >/dev/null; then
+  log "keyring: $("$R/guest/default-keyring.sh" setup "$U" "$H" 2>&1 || true)"
+fi
 
 if system; then
   log "system: SSH from the Mac, bootable snapshots, DNS fallback"

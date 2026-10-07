@@ -19,6 +19,12 @@ in more words.
   the app and Gestures do, and such a copy's omacvm starts VMs in that copy.
   The test app's omacvm never opens OmacVM.app.
 
+- A VM made from a prebuilt image had no default keyring, so the first start
+  of Chromium or Chrome stopped at "Choose password for new keyring". The
+  first boot now makes Omarchy's default keyring (no password) for the new
+  user, as a full build does; `omacvm apply` makes it in VMs from older
+  images, and `omacvm check` has a "keyring" line.
+
 ## 3.0.5 (unreleased)
 
 - With OmacVM.app and the test app OmacVM Test.app on one Mac, each one's

@@ -135,6 +135,11 @@ G2=/home/$NAME/.gitconfig
 [[ -f $G2 ]] && sed -i "s/^\(\s*name = \)OmacVM User$/\1$(sed 's/[\/&]/\\&/g' <<<"$FULL")/" "$G2"
 chown -R -h "$NAME:$NAME" "/home/$NAME"
 chmod 700 "/home/$NAME"
+# Omarchy's default keyring (its installer makes it for a full build; the
+# image's home has none): without it Chromium asks for a keyring password.
+if [[ -x $S/guest/default-keyring.sh ]]; then
+  log "keyring: $("$S/guest/default-keyring.sh" setup "$NAME" "/home/$NAME" 2>&1)"
+fi
 sed -i "s/^OMACVM_USER=.*/OMACVM_USER=$NAME/" /etc/omacvm/env 2>/dev/null || true
 # Omarchy's login screen logs in as SDDM's last user.
 if [[ -d /var/lib/sddm ]]; then
