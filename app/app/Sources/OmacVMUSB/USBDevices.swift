@@ -1,8 +1,9 @@
 import Foundation
 import IOKit
 
-// USB devices for a VM (docs/usb.md): off by default, per VM, a device at a
-// time. QEMU takes a device through libusb, and on macOS libusb can only take
+// USB devices for a VM (docs/usb.md): off by default, per VM. While the VM
+// runs, the app asks for each device plugged in (USBSession) and gives it to
+// QEMU by its bus and address (USBQMP). QEMU takes a device through libusb, and on macOS libusb can only take
 // an interface no macOS driver or app uses: taking one from macOS needs the
 // com.apple.vm.device-access entitlement (Apple grants it per developer team;
 // OmacVM has not got it) or root. So the app offers only devices nothing on
@@ -10,8 +11,8 @@ import IOKit
 // fastboot/ADB, ...), and says why the others (keyboards, security keys,
 // storage, serial adapters, audio, cameras) stay with the Mac.
 
-/// A device's vendor and product: what the VM's setting stores and what QEMU
-/// matches, so a device goes to the VM whenever it is plugged in.
+/// A device's vendor and product (with its serial number, what the remembered
+/// choices match: USBMemory).
 public struct USBDeviceID: Hashable, Comparable, Sendable, CustomStringConvertible {
     public var vendor: UInt16
     public var product: UInt16
@@ -61,13 +62,36 @@ public struct USBDevice: Equatable, Sendable {
     /// read it, like a browser's WebUSB list).
     public var drivers: [String]
     public var interfaces: [Interface]
+    /// Its serial number ("" when it has none): two identical boards differ here.
+    public var serial: String
+    /// Its maker, as the device names it ("" when it does not).
+    public var maker: String
+    /// Where it is plugged in (IORegistry locationID): the same port gives
+    /// the same number, also after the device reconnects.
+    public var location: UInt32
+    /// Its address on that bus ("USB Address"; libusb's device address on macOS).
+    public var address: Int
 
-    public init(id: USBDeviceID, name: String, deviceClass: Int, drivers: [String] = [], interfaces: [Interface]) {
+    public init(id: USBDeviceID, name: String, deviceClass: Int, drivers: [String] = [], interfaces: [Interface],
+                serial: String = "", maker: String = "", location: UInt32 = 0, address: Int = 0) {
         self.id = id
         self.name = name
         self.deviceClass = deviceClass
         self.drivers = drivers
         self.interfaces = interfaces
+        self.serial = serial
+        self.maker = maker
+        self.location = location
+        self.address = address
+    }
+
+    /// libusb's bus number on macOS: the top byte of the locationID.
+    public var bus: Int { Int(location >> 24) }
+
+    /// The name to show: the device's own, else "USB device".
+    public var displayName: String {
+        let n = USBChoice.clean(name)
+        return n.isEmpty ? "USB device" : n
     }
 
     public enum Availability: Equatable, Sendable {
@@ -98,6 +122,7 @@ public struct USBDevice: Equatable, Sendable {
     public static func reason(_ user: String) -> String {
         let u = user.lowercased()
         func has(_ words: String...) -> Bool { words.contains { u.contains($0) } }
+        if has("qemu", "omacvm") { return "a VM has it" }
         if has("usbmuxd", "ptpcamerad", "iosdevice") { return "macOS uses it (iPhone, iPad or photo import)" }
         if has("hid") { return "macOS uses it as a keyboard, mouse or security key" }
         if has("audio") { return "macOS uses it for sound" }
@@ -120,12 +145,10 @@ public struct USBDevice: Equatable, Sendable {
     }
 }
 
-/// The VM's USB devices: the file `usb` in its folder, one device a line,
-/// "0483:3748 ST-Link V2". No file, or no device: no USB controller at all
-/// (the VM is as before).
+/// The `usb` file of 3.0.1 to 3.0.3 (one device a line, "0483:3748 ST-Link
+/// V2"; each went to the VM whenever it was plugged in). Read once, when
+/// USBMemory moves it into usb.json.
 public enum USBChoice {
-    /// QEMU's xHCI controller has four ports of each speed.
-    public static let maxDevices = 4
     public static let fileName = "usb"
 
     public struct Entry: Equatable, Sendable {
@@ -138,8 +161,8 @@ public enum USBChoice {
     }
 
     /// From the file's text: lines that are not a device are skipped, a
-    /// device named twice counts once, at most maxDevices. Spaces or tabs
-    /// part the id from the name.
+    /// device named twice counts once, at most four (as 3.0.3 read it).
+    /// Spaces or tabs part the id from the name.
     public static func parse(_ text: String) -> [Entry] {
         var out: [Entry] = []
         for line in text.split(whereSeparator: \.isNewline) {
@@ -149,18 +172,13 @@ public enum USBChoice {
             guard let first = parts.first, let id = USBDeviceID(text: String(first)),
                   !out.contains(where: { $0.id == id }) else { continue }
             out.append(Entry(id: id, name: parts.count > 1 ? clean(String(parts[1])) : ""))
-            if out.count == maxDevices { break }
+            if out.count == 4 { break }
         }
         return out
     }
 
-    public static func format(_ entries: [Entry]) -> String {
-        entries.prefix(maxDevices).map { $0.name.isEmpty ? "\($0.id)" : "\($0.id) \(clean($0.name))" }
-            .joined(separator: "\n") + (entries.isEmpty ? "" : "\n")
-    }
-
-    /// A name for the file: one line, printable, short.
-    static func clean(_ s: String) -> String {
+    /// A name for a file or a line: one line, printable, short.
+    public static func clean(_ s: String) -> String {
         let printable = String(String.UnicodeScalarView(s.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }))
         return String(printable.prefix(60)).trimmingCharacters(in: .whitespaces)
     }
@@ -171,70 +189,37 @@ public enum USBChoice {
         }
         return parse(text)
     }
-
-    /// Writes the choice; no device removes the file (USB off).
-    public static func save(_ entries: [Entry], folder: URL) throws {
-        let url = folder.appendingPathComponent(fileName)
-        if entries.isEmpty {
-            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-            return
-        }
-        try Data(format(entries).utf8).write(to: url, options: .atomic)
-    }
-
-    /// QEMU's arguments: an xHCI controller and one usb-host per device,
-    /// matched by vendor and product, so QEMU takes the device when it is
-    /// plugged in (also later, while the VM runs) and gives it back when the
-    /// VM stops. The guest may reset the device (QEMU's default: DFU and
-    /// firmware tools need it); qemu-usb-host-busy-device.patch sends a reset
-    /// only to a device QEMU really has, since on macOS it re-enumerates it.
-    /// Last on the command line, so no other device moves.
-    public static func arguments(_ entries: [Entry]) -> [String] {
-        let list = Array(entries.prefix(maxDevices))
-        guard !list.isEmpty else { return [] }
-        var a = ["-device", "qemu-xhci,id=usb0"]
-        for (i, e) in list.enumerated() {
-            a += ["-device", String(format: "usb-host,bus=usb0.0,vendorid=0x%04x,productid=0x%04x,id=usbhost%d",
-                                    e.id.vendor, e.id.product, i)]
-        }
-        return a
-    }
-
-    /// For qemu.log, which omacvm check reads: "off" or "0483:3748 ST-Link V2, ...".
-    public static func record(_ entries: [Entry]) -> String {
-        let list = entries.prefix(maxDevices)
-        guard !list.isEmpty else { return "off" }
-        return list.map { $0.name.isEmpty ? "\($0.id)" : "\($0.id) \($0.name)" }.joined(separator: ", ")
-    }
 }
 
 /// The VM's USB switch (off by default): the file `usb-enabled` in the VM's
-/// folder says "on" or "off". Only while it is on does a start give the VM a
-/// USB controller and the devices in `usb` (USBChoice). A VM from before the
-/// switch, with devices in `usb` and no switch file, counts as on, so it
-/// keeps its devices.
+/// folder says "on" or "off". Only while it is on does a start give the VM an
+/// (empty) USB controller and does the app ask about devices plugged in.
 public enum USBSwitch {
     public static let fileName = "usb-enabled"
 
-    /// From the switch file's text (nil: no file) and the chosen devices.
-    public static func isOn(fileText: String?, chosen: [USBChoice.Entry]) -> Bool {
-        guard let t = fileText?.trimmingCharacters(in: .whitespacesAndNewlines) else { return !chosen.isEmpty }
+    /// From the switch file's text (nil: no file) and whether the VM has
+    /// devices from before the switch (3.0.1 to 3.0.3: those count as on).
+    public static func isOn(fileText: String?, olderDevices: Bool) -> Bool {
+        guard let t = fileText?.trimmingCharacters(in: .whitespacesAndNewlines) else { return olderDevices }
         return t == "on"
     }
 
     public static func isOn(folder: URL) -> Bool {
         isOn(fileText: try? String(contentsOf: folder.appendingPathComponent(fileName), encoding: .utf8),
-             chosen: USBChoice.load(folder: folder))
+             olderDevices: !USBChoice.load(folder: folder).isEmpty)
     }
 
-    /// The devices a start passes to QEMU: none while the switch is off.
-    public static func devices(folder: URL) -> [USBChoice.Entry] {
-        isOn(folder: folder) ? USBChoice.load(folder: folder) : []
-    }
-
-    /// Writes the switch; the chosen devices stay for the next time it is on.
+    /// Writes the switch; the remembered devices stay for the next time it is on.
     public static func set(_ on: Bool, folder: URL) throws {
         try Data((on ? "on" : "off").appending("\n").utf8).write(to: folder.appendingPathComponent(fileName), options: .atomic)
+    }
+
+    /// QEMU's arguments for a start: an xHCI controller with no device on it
+    /// (the app adds each device the user gives the VM, by its bus and
+    /// address: USBQMP), or nothing while the switch is off (the VM is as
+    /// before). Last on the command line, so no other device moves.
+    public static func arguments(on: Bool) -> [String] {
+        on ? ["-device", "qemu-xhci,id=\(USBQMP.controller)"] : []
     }
 }
 
@@ -255,7 +240,7 @@ public enum USBScan {
         return out.sorted { ($0.name.lowercased(), $0.id) < ($1.name.lowercased(), $1.id) }
     }
 
-    static func device(_ dev: io_registry_entry_t) -> USBDevice? {
+    public static func device(_ dev: io_registry_entry_t) -> USBDevice? {
         guard let v = int(dev, "idVendor"), let p = int(dev, "idProduct") else { return nil }
         let id = USBDeviceID(vendor: UInt16(truncatingIfNeeded: v), product: UInt16(truncatingIfNeeded: p))
         let name = string(dev, "USB Product Name") ?? string(dev, "kUSBProductString") ?? registryName(dev)
@@ -277,7 +262,11 @@ public enum USBScan {
             }
         }
         return USBDevice(id: id, name: name, deviceClass: int(dev, "bDeviceClass") ?? 0,
-                         drivers: drivers, interfaces: interfaces.sorted { $0.number < $1.number })
+                         drivers: drivers, interfaces: interfaces.sorted { $0.number < $1.number },
+                         serial: USBChoice.clean(string(dev, "USB Serial Number") ?? string(dev, "kUSBSerialNumberString") ?? ""),
+                         maker: USBChoice.clean(string(dev, "USB Vendor Name") ?? string(dev, "kUSBVendorString") ?? ""),
+                         location: UInt32(truncatingIfNeeded: int(dev, "locationID") ?? 0),
+                         address: int(dev, "USB Address") ?? 0)
     }
 
     /// An app or service that opened it (its name), else the driver's class.

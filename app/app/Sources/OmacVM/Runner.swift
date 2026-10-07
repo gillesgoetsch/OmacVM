@@ -133,11 +133,13 @@ final class Runner {
         // should vmnet fail while the VM runs (useUserNetwork). Last,
         // so no other device moves.
         if network.vmnet { a += ["-device", "pcie-root-port,id=netfb"] }
-        // The VM's USB devices (off by default; docs/usb.md): only with the
-        // switch on and a device chosen an xHCI controller. After everything
-        // else, so no other device moves.
-        usb = USBSwitch.devices(folder: c.folder)
-        a += USBChoice.arguments(usb)
+        // The VM's USB devices (off by default; docs/usb.md): with the switch
+        // on, an empty xHCI controller; the app adds a device only when the
+        // user says so (USBRun). After everything else, so no other device moves.
+        let usbMemory = USBMemory.load(folder: c.folder)
+        usbOn = USBSwitch.isOn(folder: c.folder)
+        usbRecord = usbOn ? "on (asks" + (usbMemory.devices.isEmpty ? ")" : "; remembered: \(usbMemory.record))") : "off"
+        a += USBSwitch.arguments(on: usbOn)
         // The Mac folder (off by default): last, so turning it on or off
         // moves no other device (the VM finds it by its tag, wherever it is).
         let share = MacFolder.plan(c)
@@ -146,8 +148,11 @@ final class Runner {
         return a
     }
 
-    /// The USB devices this start passes to QEMU (USBChoice).
-    private(set) var usb: [USBChoice.Entry] = []
+    /// The USB switch at this start (USBSwitch), and its qemu.log record.
+    private(set) var usbOn = false
+    private var usbRecord = "off"
+    /// The devices while the VM runs (switch on only).
+    private var usb: USBRun?
 
     /// What the last start did with the Mac folder (MacFolderPlan's record).
     private(set) var macFolder = "off"
@@ -369,6 +374,9 @@ final class Runner {
             env["OMACVM_TOUCHID_PANEL"] = panel.path
             env["OMACVM_TOUCHID_PANEL_SOCKET"] = c.touchIDPanelSocket.path
         }
+        // "USB Devices…" in QEMU's app menu (a runtime with that item) opens
+        // the list while the VM runs (USBRun.requestName).
+        if usbOn { env["OMACVM_USB_REQUEST"] = USBRun.requestName() }
         // The VM's graphics memory on the Mac, for this app and omacvm check (GPUMemory).
         env["OMACVM_GPU_MEMORY_STATUS"] = GPUMemory.file(for: c).path
         try? FileManager.default.removeItem(at: GPUMemory.file(for: c))
@@ -412,7 +420,7 @@ final class Runner {
         log.write(Data("OmacVM: Mac proxy: \(proxy.record(fastNetwork: network.vmnet))\n".utf8))
         log.write(Data("OmacVM: Mac folder: \(macFolder)\n".utf8))
         if let g = graphics { log.write(Data("OmacVM: graphics: \(g.record)\n".utf8)) }
-        log.write(Data("OmacVM: USB devices: \(USBChoice.record(usb))\n".utf8))
+        log.write(Data("OmacVM: USB devices: \(usbRecord)\n".utf8))
         if Settings.firmwareWait > 0 {
             log.write(Data("OmacVM: the firmware waits \(Settings.firmwareWait) s for a key (firmwareWait)\n".utf8))
         }
@@ -448,6 +456,8 @@ final class Runner {
                 self?.audioLatency?.stop()
                 self?.audioLatency = nil
                 self?.auth?.stop()
+                self?.usb?.stop()
+                self?.usb = nil
                 self?.onExit?(status)
             }
         }
@@ -463,6 +473,9 @@ final class Runner {
         }
         try p.run()
         process = p
+        if usbOn {
+            usb = USBRun(config: c, qemuPID: p.processIdentifier) { [weak self] line in self?.appendLog(line) }
+        }
         driveWatch = DriveWatch(folder: c.folder) { [weak self] name in
             MainActor.assumeIsolated { self?.driveLost(name) }
         }
@@ -489,6 +502,11 @@ final class Runner {
         audioLatency = audioDelay
         // Touch ID's port, relayed for every VM (the Bridge decides on or off per request).
         startAuth()
+        // USB devices (switch on): asked about as they are plugged in, once QMP answers.
+        if let u = usb {
+            u.listen()
+            u.start()
+        }
         // Held while QEMU runs, so qemu-ga in the VM sleeps (GuestAgent).
         Thread.detachNewThread { GuestAgent.hold(socketPath: agentPath) }
         // Grow or Compact asked for in the window (VMDisk), once the guest answers.

@@ -670,18 +670,30 @@ if [[ $TYPE == app ]] && d=$(app_dir "$VM" 2>/dev/null); then
     else ok "Mac links (app)" "$lv"; fi
   fi
 fi
-# OmacVM.app's USB devices (off by default, docs/usb.md): which ones this
-# start passed, and a chosen one macOS kept (QEMU leaves it alone). Per
-# device the last line counts: one QEMU took after a replug is no warning.
+# OmacVM.app's USB devices (off by default, docs/usb.md): the switch at this
+# start, the devices the VM has now (the app logs each connect and
+# disconnect), and one the user wanted that macOS or a Mac app had. Per
+# device the last line counts.
 if [[ $TYPE == app ]] && d=$(app_dir "$VM" 2>/dev/null); then
   u=$(sed -n 's/^OmacVM: USB devices: //p' "$d/logs/qemu.log" 2>/dev/null | tail -1)
-  busy=$(sed -n -e 's/.*usb-host: \([0-9a-f]\{4\}:[0-9a-f]\{4\}\) .* is in use on the host: not taken.*/\1 busy/p' \
-    -e 's/.*usb-host: \([0-9a-f]\{4\}:[0-9a-f]\{4\}\) (bus [0-9]*, addr [0-9]*) taken$/\1 taken/p' \
-    "$d/logs/qemu.log" 2>/dev/null | awk '{ s[$1] = $2 } END { for (i in s) if (s[i] == "busy") print i }' \
-    | sort | tr '\n' ' ')
+  usb_now=$(awk '
+    /^OmacVM: USB: [0-9a-f][0-9a-f][0-9a-f][0-9a-f]:[0-9a-f][0-9a-f][0-9a-f][0-9a-f]/ {
+      l = substr($0, 14)
+      if (match(l, / connected \(/)) { k = substr(l, 1, RSTART - 1); s[k] = "on"; if (!(k in o)) { o[k] = ++n; ks[n] = k } }
+      else if (match(l, / (disconnected|kept on the Mac|not connected)/)) {
+        k = substr(l, 1, RSTART - 1); s[k] = (l ~ /not connected: in use on the Mac/) ? "busy" : "off"
+        if (!(k in o)) { o[k] = ++n; ks[n] = k }
+      }
+    }
+    END {
+      for (i = 1; i <= n; i++) { k = ks[i]; if (s[k] == "on") on = on (on ? ", " : "") k; if (s[k] == "busy") b = b (b ? ", " : "") k }
+      print on "|" b
+    }' "$d/logs/qemu.log" 2>/dev/null)
   if [[ -n $u && $u != off ]]; then
-    if [[ -n $busy ]]; then warn "USB devices (app)" "$u; macOS uses ${busy% }: not passed (docs/usb.md)"
-    else ok "USB devices (app)" "$u"; fi
+    m="$u"
+    [[ -n ${usb_now%%|*} ]] && m+="; with the VM now: ${usb_now%%|*}"
+    if [[ -n ${usb_now#*|} ]]; then warn "USB devices (app)" "$m; a Mac app had ${usb_now#*|}: not connected (docs/usb.md)"
+    else ok "USB devices (app)" "$m"; fi
   fi
 fi
 FEATURE=""

@@ -57,7 +57,8 @@ enum RenderVMWindow {
         // Everything on: the lines under the switches, a disk job, a check's result.
         try? Data("on\n".utf8).write(to: folder.appendingPathComponent("fast-network"))
         try? USBSwitch.set(true, folder: folder)
-        try? USBChoice.save([USBChoice.Entry(id: USBDeviceID(text: "0483:3748")!, name: "STM32 STLink")], folder: folder)
+        try? USBMemory(devices: [.init(vendor: "0483", product: "3748", name: "STM32 STLink", maker: "STMicroelectronics",
+                                       choice: .omarchy, since: "2026-10-07")]).save(folder: folder)
         try? MacFolder.set(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents"), for: config)
         try? VMDisk.setJobs([.grow], config)
         u.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil, outcome: .upToDate)
@@ -86,12 +87,67 @@ enum RenderVMWindow {
         draw("vm-window-6-disk-size", into: dir) { DiskSizeSheet(state: state, info: info, done: {}, preview: need) }
         draw("vm-window-7-disk-smaller", into: dir) { DiskSizeSheet(state: state, info: info, done: {}, preview: need, previewGB: 96) }
 
+        // USB devices: the list before a start and while the VM runs, and the question.
+        usbPictures(folder: folder, into: dir, lines: &lines)
+
         try? FileManager.default.removeItem(at: tmp)
         let text = lines.joined(separator: "\n") + "\n"
         try? text.write(to: dir.appendingPathComponent("heights.txt"), atomically: true, encoding: .utf8)
         print(text, terminator: "")
         print("rendered into \(dir.path)")
         exit(failed ? 1 : 0)
+    }
+
+    /// Made-up devices: two remembered (one plugged in), one new, two macOS keeps.
+    static let usbDevices: [USBDevice] = {
+        typealias I = USBDevice.Interface
+        return [
+            USBDevice(id: USBDeviceID(vendor: 0x0483, product: 0x3748), name: "STM32 STLink", deviceClass: 0,
+                      interfaces: [I(number: 0, interfaceClass: 0xff, users: [])], maker: "STMicroelectronics",
+                      location: 0x0110_0000, address: 3),
+            USBDevice(id: USBDeviceID(vendor: 0x0bda, product: 0x2838), name: "RTL2838UHIDIR", deviceClass: 0,
+                      interfaces: [I(number: 0, interfaceClass: 0xff, users: [])], maker: "Realtek",
+                      location: 0x0120_0000, address: 4),
+            USBDevice(id: USBDeviceID(vendor: 0x1050, product: 0x0407), name: "YubiKey OTP+FIDO+CCID", deviceClass: 0,
+                      interfaces: [I(number: 0, interfaceClass: 3, users: ["AppleUserUSBHostHIDDevice"])],
+                      location: 0x0130_0000, address: 5),
+            USBDevice(id: USBDeviceID(vendor: 0x0781, product: 0x5581), name: "Ultra", deviceClass: 0,
+                      interfaces: [I(number: 0, interfaceClass: 8, users: ["IOUSBMassStorageInterfaceNub"])],
+                      location: 0x0140_0000, address: 6),
+        ]
+    }()
+
+    private static func usbPictures(folder: URL, into dir: URL, lines: inout [String]) {
+        let memory = USBMemory(devices: [
+            .init(vendor: "0483", product: "3748", name: "STM32 STLink", maker: "STMicroelectronics", choice: .omarchy, since: "2026-10-07"),
+            .init(vendor: "1d50", product: "6089", name: "HackRF One", maker: "Great Scott Gadgets", choice: .mac, since: "2026-10-07"),
+        ])
+        let before = USBListRows.make(memory: memory, devices: usbDevices, states: nil, vmName: "Omarchy")
+        let h1 = draw("usb-list-1-before-start", into: dir) {
+            USBDeviceList(source: .picture(before, running: false), vmName: "Omarchy") {}
+        }
+        let running = USBListRows.make(memory: memory, devices: usbDevices,
+                                       states: [0x0110_0000: .connected, 0x0120_0000: .onMac(remembered: false)], vmName: "Omarchy")
+        let h2 = draw("usb-list-2-running", into: dir) {
+            USBDeviceList(source: .picture(running, running: true), vmName: "Omarchy") {}
+        }
+        let h3 = draw("usb-list-3-empty", into: dir) {
+            USBDeviceList(source: .picture(USBListRows(), running: false), vmName: "Omarchy") {}
+        }
+        lines.append("usb-list: before start \(Int(h1.rounded())) pt, running \(Int(h2.rounded())) pt, empty \(Int(h3.rounded())) pt")
+        // The question, as USBAlertAsker shows it (light and dark).
+        let q = USBQuestion(device: usbDevices[0], vmName: "Omarchy", waiting: 0)
+        for dark in [false, true] {
+            let a = USBAlertAsker.alert(q)
+            a.window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            a.layout()
+            if let v = a.window.contentView {
+                v.layoutSubtreeIfNeeded()
+                RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+                WindowPicture.write(v, "usb-ask\(dark ? "-dark" : "")", into: dir)
+            }
+        }
+        lines.append("usb-ask: \(q.title) [\(q.connect)] [\(q.keep)] [ ] \(q.always)")
     }
 
     /// A VM folder as a build leaves it: vm.env, a 64 GB sparse disk.img,
