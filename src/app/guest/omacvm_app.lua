@@ -28,7 +28,9 @@ if mac then pcall(hl.config, { cursor = { use_cpu_buffer = 1 } }) end
 -- Virtual-N.rule), after monitors.lua: Hyprland then sees no change at all.
 -- Only an hl.monitor call for a Virtual-N output runs, with nothing else in
 -- reach. No file (first start, a user rule for that output): nothing to do.
-do
+-- All in pcall, like mac_pointer: a Hyprland without io, os or load just
+-- skips it.
+local function declare_kept_rules()
   local dir = (os.getenv("XDG_RUNTIME_DIR") or "") .. "/omacvm/display-sync/"
   for n = 1, 16 do
     local f = io.open(dir .. "Virtual-" .. n .. ".rule", "r")
@@ -36,12 +38,13 @@ do
       local rule = f:read("l")
       f:close()
       if rule and rule:match('^hl%.monitor%(%{ output = "Virtual%-' .. n .. '", [^\n]*%}%)$') then
-        local ok, chunk = pcall(load, rule, "=omacvm-display-sync", "t", { hl = { monitor = hl.monitor } })
-        if ok and chunk then pcall(chunk) end
+        local chunk = load(rule, "=omacvm-display-sync", "t", { hl = { monitor = hl.monitor } })
+        if chunk then pcall(chunk) end
       end
     end
   end
 end
+pcall(declare_kept_rules)
 
 -- A reload can still bring back a cached mode (a window size the sync has not
 -- seen yet): look at the window's again.
