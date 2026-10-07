@@ -835,6 +835,11 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-tap-permissio
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-borderless-no-rim.patch"
 "$native_dir/Tests/display/test-borderless-rim.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: a borderless window keeps its shadow and macOS 26's rim (test-borderless-rim.sh)"
+# OmacVM: held fences (virgl-fence-flush-on-need.patch) go to the GPU before every
+# command that is not a command buffer and when the command queue ends.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virtio-gpu-fence-flush-on-need.patch"
+"$native_dir/Tests/virgl/test-qemu-fence-flush.sh" "$source_dir/hw/display/virtio-gpu-virgl.c" || \
+  die "hw/display/virtio-gpu-virgl.c: held virgl fences are not handed to the GPU (test-qemu-fence-flush.sh)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
@@ -1084,6 +1089,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-set-type-without-e
 # OmacVM: a draw binds its GL program only when it changed (Apple's GL rebuilds its draw state
 # on every glUseProgram; WebGL pages with one draw per object paid that on each draw).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-use-program-cache.patch"
+# OmacVM: a fence's glFlush (which ends Apple's Metal render pass) only when something
+# needs the work: another GL context, QEMU between commands, or the fence is 2 ms old.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-fence-flush-on-need.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

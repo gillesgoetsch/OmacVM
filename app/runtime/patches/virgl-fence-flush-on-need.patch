@@ -1,0 +1,477 @@
+virglrenderer: flush a fence's GL work only when something needs it
+
+What: vrend_renderer_create_fence() no longer calls glFlush() for every fence.
+While the same GL context goes on with its next command buffer, the flush is
+held, and done before any other GL context is made current or the context is
+destroyed (the hop to vrend's own context that QEMU makes before every command
+excepted), when QEMU asks (new virgl_renderer_flush_fences(): before every
+command that is not a command buffer, after the last one of its queue), at the
+start of every renderer call that may read guest work outside a GL command
+buffer (poll, transfers, resource create/unref/map/info, scanout, cursor, a
+Venus command buffer, a wait on another context's fence), and at the next fence
+once the oldest held one is OMACVM_VIRGL_FENCE_FLUSH_US old (default 2000).
+vrend's GL context callbacks are wrapped for this (render thread only).
+OMACVM_VIRGL_FENCE_FLUSH=0 flushes every fence at once again;
+OMACVM_VIRGL_FENCE_FLUSH_STATS=1 logs the counts every 10 s.
+Why: every guest command buffer comes with a fence, and Mesa sends one each
+time its 64K-dword buffer is full: WebGL Aquarium at 30k fish sends ~41 a
+frame. Each glFlush ends Apple's Metal render pass and commits a command
+buffer: vrend_renderer_create_fence was ~6 % of the render thread (mini, M4).
+The guest learns of a fence only between QEMU's commands, so a fence held while
+QEMU still has commands to run delays nothing the guest sees.
+Upstream: not sent (depends on QEMU's batch hook, Apple GL behaviour).
+Test: Tests/virgl/test-fence-flush.c (no GL: every place a held fence must be
+flushed, in which context, and that nothing else flushes); test-fence-flush-gl.c
+(the public API the way QEMU drives it, on the Mac's GL with the sync thread: on
+an M4 Max a fence never flushed does not signal, and without the flush on a
+context switch a copy in another context reads the old colour; both are cases);
+run-regressions.py check_fence_flush_entries (the renderer calls that flush).
+
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -160,9 +160,32 @@ static int virgl_renderer_resource_create_internal(struct virgl_renderer_resourc
+    return 0;
+ }
+ 
++/* OmacVM: the work of a held fence's GL context reaches the GPU before anything
++ * outside that context's command buffers can read it (virgl-fence-flush-on-need.patch). */
++static void flush_held_fences(void)
++{
++   if (state.vrend_initialized)
++      vrend_renderer_flush_fences();
++}
++
++void virgl_renderer_flush_fences(void)
++{
++   TRACE_FUNC();
++   flush_held_fences();
++}
++
++/* A command buffer of a context that is not a GL one (Venus) may read GL work. */
++static void flush_held_fences_for(const struct virgl_context *ctx)
++{
++   if (ctx->capset_id != VIRTGPU_DRM_CAPSET_VIRGL &&
++       ctx->capset_id != VIRTGPU_DRM_CAPSET_VIRGL2)
++      flush_held_fences();
++}
++
+ int virgl_renderer_resource_create(struct virgl_renderer_resource_create_args *args,
+                                    struct iovec *iov, uint32_t num_iovs)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    return virgl_renderer_resource_create_internal(args, iov, num_iovs, NULL);
+ }
+@@ -200,6 +223,7 @@ static bool detach_resource(struct virgl_context *ctx, void *data)
+ 
+ void virgl_renderer_resource_unref(uint32_t res_handle)
+ {
++   flush_held_fences();
+    struct virgl_resource *res = virgl_resource_lookup(res_handle);
+    struct virgl_context_foreach_args args;
+ 
+@@ -351,6 +375,7 @@ int virgl_renderer_context_create(uint32_t handle, uint32_t nlen, const char *na
+ 
+ void virgl_renderer_context_destroy(uint32_t handle)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    virgl_context_remove(handle);
+    if (state.vrend_initialized)
+@@ -372,6 +397,7 @@ int virgl_renderer_submit_cmd(void *buffer,
+    if (((uintptr_t)buffer & 3) != 0)
+       return EFAULT;
+ 
++   flush_held_fences_for(ctx);
+    vrend_renderer_submit_begin();
+    int ret = ctx->submit_cmd(ctx, buffer, (uint32_t)ndw * sizeof(uint32_t));
+    vrend_renderer_submit_end();
+@@ -388,6 +414,7 @@ int virgl_renderer_transfer_write_iov(uint32_t handle,
+                                       struct iovec *iovec,
+                                       unsigned int iovec_cnt)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+ 
+    struct virgl_resource *res = virgl_resource_lookup(handle);
+@@ -433,6 +460,7 @@ int virgl_renderer_transfer_read_iov(uint32_t handle, uint32_t ctx_id,
+                                      uint64_t offset, struct iovec *iovec,
+                                      int iovec_cnt)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    struct virgl_resource *res = virgl_resource_lookup(handle);
+    struct vrend_transfer_info transfer_info;
+@@ -610,6 +638,7 @@ static int virgl_renderer_resource_get_info_common(int res_handle,
+ int virgl_renderer_resource_get_info(int res_handle,
+                                      struct virgl_renderer_resource_info *info)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    int ret;
+ 
+@@ -631,6 +660,7 @@ int virgl_renderer_resource_get_info(int res_handle,
+ int virgl_renderer_resource_get_info_ext(int res_handle,
+                                          struct virgl_renderer_resource_info_ext *info_ext)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    int ret;
+ 
+@@ -657,6 +687,7 @@ int virgl_renderer_resource_get_info_ext(int res_handle,
+ int virgl_renderer_borrow_texture_for_scanout(int res_handle,
+                                               struct virgl_renderer_resource_info_ext *info)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    struct virgl_resource *res = virgl_resource_lookup(res_handle);
+  
+@@ -839,6 +870,7 @@ static const struct proxy_renderer_cbs proxy_cbs = {
+ 
+ void *virgl_renderer_get_cursor_data(uint32_t resource_id, uint32_t *width, uint32_t *height)
+ {
++   flush_held_fences();
+    struct virgl_resource *res = virgl_resource_lookup(resource_id);
+    if (!res || !res->pipe_resource)
+       return NULL;
+@@ -1252,6 +1284,7 @@ int virgl_renderer_execute(void *execute_args, uint32_t execute_size)
+ 
+ int virgl_renderer_resource_create_blob(const struct virgl_renderer_resource_create_blob_args *args)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    struct virgl_resource *res;
+    struct virgl_context *ctx;
+@@ -1348,6 +1381,7 @@ int virgl_renderer_resource_create_blob(const struct virgl_renderer_resource_cre
+ 
+ int virgl_renderer_resource_map(uint32_t res_handle, void **out_map, uint64_t *out_size)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    int ret = 0;
+    void *map = NULL;
+@@ -1415,6 +1449,7 @@ int virgl_renderer_resource_map(uint32_t res_handle, void **out_map, uint64_t *o
+ 
+ int virgl_renderer_resource_map_fixed(uint32_t res_handle, void *addr)
+ {
++   flush_held_fences();
+    void *map = NULL;
+    struct virgl_context *ctx = NULL;
+    struct virgl_resource *res = virgl_resource_lookup(res_handle);
+@@ -1469,6 +1504,7 @@ int virgl_renderer_resource_map_fixed(uint32_t res_handle, void *addr)
+ 
+ int virgl_renderer_resource_unmap(uint32_t res_handle)
+ {
++   flush_held_fences();
+    TRACE_FUNC();
+    int ret = 0;
+    struct virgl_resource *res = virgl_resource_lookup(res_handle);
+@@ -1771,6 +1807,11 @@ int virgl_renderer_submit_cmd2(void *buffer,
+    if (ndw < 0 || (unsigned)ndw > UINT32_MAX / sizeof(uint32_t))
+       return EINVAL;
+ 
++   /* a wait on another context's fence: that fence must be flushed */
++   if (num_in_fences)
++      flush_held_fences();
++   else
++      flush_held_fences_for(ctx);
+    if (num_in_fences) {
+       int err = virgl_renderer_context_attach_in_fences(ctx, in_fence_ids, num_in_fences);
+       if (err)
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -337,6 +337,9 @@ VIRGL_EXPORT void virgl_renderer_resource_detach_iov(int res_handle, struct iove
+ VIRGL_EXPORT int virgl_renderer_create_fence(int client_fence_id, uint32_t ctx_id);
+ 
+ VIRGL_EXPORT void virgl_renderer_force_ctx_0(void);
++/* OmacVM: hand every fence whose glFlush was held to the GPU (before a command
++ * that is not a command buffer, and when the command queue is empty). */
++VIRGL_EXPORT void virgl_renderer_flush_fences(void);
+ 
+ VIRGL_EXPORT void virgl_renderer_ctx_attach_resource(int ctx_id, int res_handle);
+ VIRGL_EXPORT void virgl_renderer_ctx_detach_resource(int ctx_id, int res_handle);
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -533,6 +533,225 @@ struct sysval_uniform_block {
+ 
+ static struct global_renderer_state vrend_state;
+ 
++/* OmacVM: a fence's glFlush only when something needs it
++ * (virgl-fence-flush-on-need.patch).
++ *
++ * Every guest command buffer comes with a fence, and Mesa sends one each time
++ * its 64K-dword buffer is full: a WebGL page with ~30k draws a frame sends ~40.
++ * Each glFlush ends Apple's Metal render pass and commits a command buffer
++ * (~6 % of the render thread at Aquarium 30k).
++ *
++ * The flush is there for two things. The fence must signal: the sync thread
++ * waits on it in its own context, and a fence that was never flushed may never
++ * signal. And another GL context must see the work: Apple's GL does not flush
++ * on a context switch. So while the same GL context goes on with its next
++ * command buffer, the flush waits, and it is done
++ *  - before any other GL context is made current (another guest context or sub
++ *    context, the blitter, a query check, vrend's own context outside the hop
++ *    QEMU makes before every command) or the context is destroyed;
++ *  - when QEMU asks (virgl_renderer_flush_fences: before every command that is
++ *    not a command buffer, after the last command of its queue), and in every
++ *    renderer call that may read guest work outside a command buffer (poll,
++ *    transfers, resources, cursor, scanout, a Venus command buffer);
++ *  - at the next fence once the oldest waiting one is
++ *    OMACVM_VIRGL_FENCE_FLUSH_US old (default 2000).
++ * The guest learns of a fence only between QEMU's commands, so a fence held
++ * while QEMU still has commands to run delays nothing the guest sees; the age
++ * limit keeps the GPU working alongside the render thread.
++ * Render thread only (the thread that ran vrend_renderer_init); fences made on
++ * any other thread are flushed at once. OMACVM_VIRGL_FENCE_FLUSH=0 flushes
++ * every fence at once (as before); OMACVM_VIRGL_FENCE_FLUSH_STATS=1 logs the
++ * counts every 10 s. */
++static struct {
++   bool on;
++   uint64_t max_age_ns;
++   thrd_t thread;               /* the render thread */
++   bool have_thread;
++   virgl_gl_context cur;        /* what the render thread last made current through vrend */
++   virgl_gl_context gl;         /* holds fences not flushed yet; NULL: none */
++   uint64_t since;              /* when the first of them was made */
++   bool hop;                    /* vrend_renderer_force_ctx_0 switches to ctx0 */
++   struct vrend_if_cbs cbs;     /* what vrend_clicbs points to: the hooks below */
++   const struct vrend_if_cbs *real;
++   bool warned;
++   bool stats_on;
++   uint64_t stats_at;
++   struct {
++      uint64_t fences, held, age, other_ctx, switched, destroyed, asked;
++   } stats;
++} fence_flush;
++
++static uint64_t fence_flush_now(void)
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
++}
++
++static bool fence_flush_render_thread(void)
++{
++   return fence_flush.have_thread && thrd_equal(thrd_current(), fence_flush.thread);
++}
++
++/* Flush the context holding fences, whatever is current now (QEMU may have
++ * made its own context current between two calls). With restore, make the
++ * context vrend made current last current again; without, the caller
++ * switches next. */
++static void fence_flush_held(bool restore)
++{
++   virgl_gl_context gl = fence_flush.gl;
++   if (!gl)
++      return;
++   fence_flush.gl = NULL;
++   if (fence_flush.real->make_current(gl) && !fence_flush.warned) {
++      fence_flush.warned = true;
++      virgl_warn("fence flush: could not make the context with held fences current\n");
++   }
++   glFlush();
++   if (restore && fence_flush.cur != gl)
++      fence_flush.real->make_current(fence_flush.cur);
++}
++
++static int fence_flush_make_current(virgl_gl_context ctx)
++{
++   if (fence_flush_render_thread()) {
++      if (fence_flush.gl && ctx != fence_flush.gl && !fence_flush.hop) {
++         fence_flush.stats.switched++;
++         fence_flush_held(false);
++      }
++      fence_flush.cur = ctx;
++   }
++   return fence_flush.real->make_current(ctx);
++}
++
++static int fence_flush_make_current_surfaceless(virgl_gl_context ctx)
++{
++   if (fence_flush_render_thread()) {
++      if (fence_flush.gl && ctx != fence_flush.gl && !fence_flush.hop) {
++         fence_flush.stats.switched++;
++         fence_flush_held(false);
++      }
++      fence_flush.cur = ctx;
++   }
++   return fence_flush.real->make_current_surfaceless(ctx);
++}
++
++/* Work never flushed in a context that goes away may never run: its fences
++ * would never signal. */
++static void fence_flush_before_destroy(virgl_gl_context ctx)
++{
++   if (!fence_flush_render_thread())
++      return;
++   if (ctx == fence_flush.gl) {
++      fence_flush.stats.destroyed++;
++      fence_flush_held(true);
++   }
++   if (ctx == fence_flush.cur)
++      fence_flush.cur = NULL;
++}
++
++static void fence_flush_destroy(virgl_gl_context ctx)
++{
++   fence_flush_before_destroy(ctx);
++   fence_flush.real->destroy_gl_context(ctx);
++}
++
++static void fence_flush_destroy_surfaceless(virgl_gl_context ctx)
++{
++   fence_flush_before_destroy(ctx);
++   fence_flush.real->destroy_gl_context_surfaceless(ctx);
++}
++
++static void fence_flush_init(const struct vrend_if_cbs *cbs)
++{
++   const char *on = getenv("OMACVM_VIRGL_FENCE_FLUSH");
++   const char *us = getenv("OMACVM_VIRGL_FENCE_FLUSH_US");
++   const char *stats = getenv("OMACVM_VIRGL_FENCE_FLUSH_STATS");
++   char *end = NULL;
++   unsigned long age = us ? strtoul(us, &end, 10) : 0;
++
++   memset(&fence_flush, 0, sizeof(fence_flush));
++   fence_flush.on = !(on && !strcmp(on, "0"));
++   if (!us || !*us || *end || age < 1 || age > 1000000)
++      age = 2000;
++   fence_flush.max_age_ns = (uint64_t)age * 1000;
++   fence_flush.stats_on = stats && !strcmp(stats, "1");
++   fence_flush.thread = thrd_current();
++   fence_flush.have_thread = true;
++   fence_flush.real = cbs;
++   fence_flush.cbs = *cbs;
++   fence_flush.cbs.make_current = fence_flush_make_current;
++   fence_flush.cbs.make_current_surfaceless = fence_flush_make_current_surfaceless;
++   fence_flush.cbs.destroy_gl_context = fence_flush_destroy;
++   fence_flush.cbs.destroy_gl_context_surfaceless = fence_flush_destroy_surfaceless;
++   vrend_clicbs = &fence_flush.cbs;
++   if (fence_flush.on)
++      virgl_info("fence flush: when needed (a fence waits at most %lu us)\n", age);
++   else
++      virgl_info("fence flush: every fence at once (OMACVM_VIRGL_FENCE_FLUSH=0)\n");
++}
++
++static void fence_flush_log(uint64_t now)
++{
++   if (!fence_flush.stats_on)
++      return;
++   if (!fence_flush.stats_at)
++      fence_flush.stats_at = now;
++   if (now - fence_flush.stats_at < 10000000000ull)
++      return;
++   fence_flush.stats_at = now;
++   virgl_info("fence flush: %" PRIu64 " fences, %" PRIu64 " held; flushes: %" PRIu64
++              " age, %" PRIu64 " other context, %" PRIu64 " switch, %" PRIu64
++              " destroy, %" PRIu64 " asked\n",
++              fence_flush.stats.fences, fence_flush.stats.held, fence_flush.stats.age,
++              fence_flush.stats.other_ctx, fence_flush.stats.switched,
++              fence_flush.stats.destroyed, fence_flush.stats.asked);
++}
++
++/* After glFenceSync in the current context: flush now or hold the flush. */
++static void fence_flush_after_fence(void)
++{
++   fence_flush.stats.fences++;
++   if (!fence_flush.on || !fence_flush_render_thread() || !fence_flush.cur
++#ifdef HAVE_EPOXY_EGL_H
++       || vrend_state.use_egl_fence
++#endif
++      ) {
++      glFlush();
++      return;
++   }
++   uint64_t now = fence_flush_now();
++   fence_flush_log(now);
++   if (fence_flush.gl && fence_flush.gl != fence_flush.cur) {
++      /* Made in another context than the held ones (only vrend's own context
++       * can be current with fences held elsewhere): the older first. */
++      fence_flush.stats.other_ctx++;
++      fence_flush_held(true);
++      glFlush();
++      return;
++   }
++   if (!fence_flush.gl) {
++      fence_flush.gl = fence_flush.cur;
++      fence_flush.since = now;
++   }
++   if (now - fence_flush.since >= fence_flush.max_age_ns) {
++      fence_flush.stats.age++;
++      fence_flush.gl = NULL;
++      glFlush();
++      return;
++   }
++   fence_flush.stats.held++;
++}
++
++/* Render thread: every held fence to the GPU now. */
++void vrend_renderer_flush_fences(void)
++{
++   if (!fence_flush.gl || !fence_flush_render_thread())
++      return;
++   fence_flush.stats.asked++;
++   fence_flush_held(true);
++}
++
+ static void vrend_resource_budget_init(void);
+ /* OmacVM: the Mac's memory pressure and the status file (virgl-darwin-memory-pressure.patch) */
+ static void vrend_memory_init(void);
+@@ -8568,6 +8787,7 @@ static bool do_wait(struct vrend_fence *fence, bool can_block)
+ static void vrend_renderer_check_queries(void);
+ 
+ void vrend_renderer_poll(void) {
++   vrend_renderer_flush_fences();
+    vrend_memory_tick();
+    if (vrend_state.use_async_fence_cb) {
+       flush_eventfd(vrend_state.eventfd);
+@@ -8955,7 +9175,7 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
+    virgl_gl_context gl_context;
+    struct virgl_gl_ctx_param ctx_params = {0};
+ 
+-   vrend_clicbs = cbs;
++   fence_flush_init(cbs);
+    vrend_resource_budget_init();
+ 
+    const char *prog_cache = getenv("OMACVM_VIRGL_PROGRAM_CACHE");
+@@ -9232,6 +9452,8 @@ vrend_renderer_fini(void)
+ 
+    vrend_state.current_ctx = NULL;
+    vrend_state.current_hw_ctx = NULL;
++   fence_flush.gl = NULL;
++   fence_flush.cur = NULL;
+ 
+    vrend_state.finishing = false;
+ }
+@@ -13712,7 +13934,7 @@ int vrend_renderer_create_fence(struct vrend_context *ctx,
+    {
+       fence->glsyncobj = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
+-   glFlush();
++   fence_flush_after_fence();
+ 
+    if (fence->glsyncobj == NULL)
+       goto fail;
+@@ -15595,7 +15817,10 @@ void vrend_renderer_force_ctx_0(void)
+    TRACE_FUNC();
+    vrend_state.current_ctx = NULL;
+    vrend_state.current_hw_ctx = NULL;
++   /* Held fences stay held: ctx0 only becomes current here (see fence_flush). */
++   fence_flush.hop = true;
+    vrend_hw_switch_context(vrend_state.ctx0, true);
++   fence_flush.hop = false;
+ }
+ 
+ void vrend_renderer_get_rect(struct pipe_resource *pres,
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -549,6 +549,8 @@ bool vrend_renderer_resource_refused_by_budget(void);
+ void vrend_renderer_context_refused_resource(struct vrend_context *ctx, uint32_t res_handle);
+ void vrend_decode_ctx_refused_resource(struct virgl_context *ctx, uint32_t res_handle);
+ void vrend_renderer_flush_current(void);
++/* OmacVM: held fences to the GPU (virgl-fence-flush-on-need.patch) */
++void vrend_renderer_flush_fences(void);
+ 
+ void vrend_renderer_get_rect(struct pipe_resource *pres,
+                              const struct iovec *iov, unsigned int num_iovs,

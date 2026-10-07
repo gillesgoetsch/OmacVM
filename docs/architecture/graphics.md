@@ -278,6 +278,36 @@ Basemark the same within its noise; WebGL 1 and 2 conformance identical.
 `OMACVM_VIRGL_PROGRAM_CACHE=0` binds on every draw again. Test:
 `test-program-binds`.
 
+Fence flushes (`virgl-fence-flush-on-need.patch`,
+`qemu-virtio-gpu-fence-flush-on-need.patch`): vrend called `glFlush` after
+every fence, and every guest command buffer has one. Mesa sends a command
+buffer whenever its 64K-dword buffer is full, so WebGL Aquarium at 30k fish
+sent ~41 a frame, and each flush ends Apple's Metal render pass
+(`vrend_renderer_create_fence` was ~6 % of the render thread on the mini).
+The flush has two jobs, both checked on an M4 Max in `test-fence-flush-gl`: a
+fence that was never flushed does not signal (the sync thread tests it from
+its own context), and another GL context does not see work that was not
+flushed (Apple's GL does not flush on a context switch). Now the flush waits
+while the same GL context goes on with its next command buffer. It is done
+before any other GL context is made current (another guest context or sub
+context, the blitter, a query check, ctx0 for real work; not the hop to ctx0
+QEMU makes before every command), before the context is destroyed, when QEMU
+asks (`virgl_renderer_flush_fences`: before every command that is not
+`SUBMIT_3D`, after the last command of its queue or where the queue stops),
+at the start of every renderer call that may read guest work outside a GL
+command buffer (poll, transfers, resources, scanout, cursor, a Venus command
+buffer, a wait on another context's fence), and at the next fence once the
+oldest held one is 2 ms old (`OMACVM_VIRGL_FENCE_FLUSH_US`). The guest learns
+of a fence only after QEMU's command loop, which ends with a flush, so a held
+fence delays nothing it can see; the age limit keeps the GPU working
+alongside. The flush always runs in the context that holds the fences, also
+when QEMU's display made its own context current in between, and puts vrend's
+context back. Render thread only. `OMACVM_VIRGL_FENCE_FLUSH=0` flushes every
+fence at once again; `OMACVM_VIRGL_FENCE_FLUSH_STATS=1` logs the counts every
+10 s. Tests: `test-fence-flush` (no GL: every flush point and its context),
+`test-fence-flush-gl`, `test-qemu-fence-flush.sh`; 16 mutations, all caught.
+Numbers: see PR (Aquarium A/B on the mini).
+
 ### Where the time goes
 
 - Light frames (glmark2, the desktop): the fence round trip. Fixed above.

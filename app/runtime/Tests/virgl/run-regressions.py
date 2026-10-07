@@ -114,6 +114,36 @@ run_fuzz_replay()
 run_test("test-darwin-eventfd", "virgl_util.c")
 run_test("test-thread-sync-fallback", "vrend_renderer.c")
 run_test("test-fence-wait-busy", "vrend_renderer.c")
+run_test("test-fence-flush", "vrend_renderer.c")
+
+
+def check_fence_flush_entries():
+    """virgl-fence-flush-on-need.patch: every renderer call that may read guest work outside a
+    GL command buffer hands held fences to the GPU first (QEMU asks before its commands too;
+    this covers calls outside them, such as the cursor)."""
+    entry = next(item for item in entries if item["file"].endswith("/virglrenderer.c"))
+    text = (Path(entry["directory"]) / entry["file"]).resolve().read_text()
+    import re
+    missing = []
+    for name in ("resource_create", "resource_unref", "context_destroy", "transfer_write_iov",
+                 "transfer_read_iov", "resource_get_info", "resource_get_info_ext",
+                 "borrow_texture_for_scanout", "get_cursor_data", "resource_create_blob",
+                 "resource_map", "resource_map_fixed", "resource_unmap"):
+        m = re.search(r"^[^\n]*\bvirgl_renderer_%s\([^)]*\)\n\{\n   flush_held_fences\(\);" % name,
+                      text, re.M)
+        if not m:
+            missing.append(name)
+    for name in ("virgl_renderer_submit_cmd(", "virgl_renderer_submit_cmd2("):
+        body = text[text.index("\nint " + name):]
+        body = body[:body.index("\n}\n")]
+        if "flush_held_fences" not in body:
+            missing.append(name)
+    if missing:
+        sys.exit("fence flush: renderer calls without flush_held_fences(): " + ", ".join(missing))
+    print("fence flush: all renderer entry points flush held fences")
+
+
+check_fence_flush_entries()
 run_test("test-core-glsl-shaders", "vrend_shader.c")
 run_test("test-blitter-shaders", "vrend_blitter.c")
 run_api_test("test-empty-framebuffer")
@@ -121,3 +151,5 @@ run_api_test("test-sampler-limit")
 run_api_test("test-set-type-no-egl")
 run_api_test("test-program-binds")
 run_api_test("test-program-binds", env={"OMACVM_VIRGL_PROGRAM_CACHE": "0"})
+run_api_test("test-fence-flush-gl")
+run_api_test("test-fence-flush-gl", env={"OMACVM_VIRGL_FENCE_FLUSH": "0"})

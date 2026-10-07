@@ -5,6 +5,10 @@ in more words.
 
 ## 3.0.5 (unreleased)
 
+- WebGL in OmacVM.app: the Mac's GPU no longer breaks off its work after each
+  of the ~40 command buffers a heavy page (WebGL Aquarium) sends per frame;
+  it is handed the work when another context or QEMU needs it, or after
+  2 ms. `OMACVM_VIRGL_FENCE_FLUSH=0` goes back to the old way.
 - With OmacVM.app and the test app OmacVM Test.app on one Mac, each one's
   Gestures took the other app's VMs as its own too: both captured the
   trackpad and acted on Ctrl+Option+Esc. Each Gestures now takes only the

@@ -1,0 +1,64 @@
+virtio-gpu-virgl: hand held fences to the GPU between commands
+
+What: before every command that is not SUBMIT_3D, and after the last command
+of the queue (or where the queue stops: a suspended command, the display
+blocking the renderer), call virgl_renderer_flush_fences().
+Why: virglrenderer holds back the glFlush of a fence while the same GL context
+goes on with its next command buffer (virgl-fence-flush-on-need.patch). A
+held fence must reach the GPU before anything else reads its work (resource
+flush to the display, transfers, scanout) and before the guest can wait on it:
+the guest learns of fences only after QEMU's command loop ends.
+Upstream: not sent (needs the virglrenderer patch).
+Test: Tests/virgl/test-qemu-fence-flush.sh (build time, on the patched file);
+the virglrenderer side in Tests/virgl/test-fence-flush*.c. virgl_renderer_poll()
+flushes too, so QEMU's 1 ms fence timer is a second net.
+
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -1091,14 +1091,22 @@ static void virgl_cmd_set_scanout_blob(VirtIOGPU *g,
+ }
+ #endif
+ 
+-void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+-                                      struct virtio_gpu_ctrl_command *cmd)
++static void virgl_process_one_cmd(VirtIOGPU *g,
++                                  struct virtio_gpu_ctrl_command *cmd)
+ {
+     bool cmd_suspended = false;
+     int ret;
+ 
+     VIRTIO_GPU_FILL_CMD(cmd->cmd_hdr);
+ 
++    /*
++     * OmacVM: virglrenderer holds back the glFlush of a fence while the same
++     * GL context goes on with its next command buffer
++     * (virgl-fence-flush-on-need.patch). Anything else may read that work.
++     */
++    if (cmd->cmd_hdr.type != VIRTIO_GPU_CMD_SUBMIT_3D) {
++        virgl_renderer_flush_fences();
++    }
+     virgl_renderer_force_ctx_0();
+     switch (cmd->cmd_hdr.type) {
+     case VIRTIO_GPU_CMD_CTX_CREATE:
+@@ -1222,6 +1230,21 @@ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+     }
+ }
+ 
++void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
++                                      struct virtio_gpu_ctrl_command *cmd)
++{
++    virgl_process_one_cmd(g, cmd);
++    /*
++     * OmacVM: the queue ends or stops here (empty, a suspended command, the
++     * display blocks the renderer): the guest may now wait on any fence, so
++     * every held one goes to the GPU.
++     */
++    if (!QTAILQ_NEXT(cmd, next) || g->parent_obj.renderer_blocked ||
++        (!cmd->finished && !(cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_FENCE))) {
++        virgl_renderer_flush_fences();
++    }
++}
++
+ static void virgl_write_fence(void *opaque, uint32_t fence)
+ {
+     VirtIOGPU *g = opaque;
