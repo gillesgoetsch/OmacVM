@@ -460,6 +460,10 @@ for f in $(git grep -l '\$here/\.\./\.\./guest/pkg-add' -- 'src/**' ':!src/tests
   hit=$(git grep -nE '^[^#]*"\$[A-Za-z_]+/'"$n"'"( |$)' -- 'src/**' ':!src/tests/**' | grep -v '"\$here/'"$n"'"' | grep -v -- '--hook' || true)
   [[ -z $hit ]] || bad+="$hit"$'\n'
 done
-[[ -z $bad ]] && pass "scripts that use ../../guest/pkg-add run from OmacVM's folder" || { fail "a copy elsewhere runs pkg-add by a relative path:"; echo "$bad"; }
+# ... and set $here before they use it (build-open-vm-tools.sh did not: "here: unbound variable").
+for f in $(git grep -l '"\$here/' -- 'src/**' ':!src/tests/**'); do
+  grep -qE '(^|[[:space:];])here=' "$f" || bad+="$f uses \$here without setting it"$'\n'
+done
+[[ -z $bad ]] && pass "scripts that use ../../guest/pkg-add run from OmacVM's folder" || { fail "pkg-add by a relative path from a copy elsewhere, or \$here unset:"; echo "$bad"; }
 
 exit $fails

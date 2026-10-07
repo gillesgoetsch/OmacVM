@@ -31,7 +31,8 @@ in more words.
   The decoder now starts its service when it comes.
 - VMware Fusion: a new VM (build or `omacvm apply`) no longer stops at
   "failed during: VMware Fusion" ("guest/pkg-add: No such file or
-  directory"). Broken since 3.0.0.
+  directory", then "here: unbound variable" in VMware Tools' build).
+  Broken since 3.0.0.
 
 ## 3.0.3
 

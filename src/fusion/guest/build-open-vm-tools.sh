@@ -8,6 +8,7 @@
 # nothing when the installed build is complete and still starts (an update of
 # one of its libraries can break it; then it builds again). About 5 minutes.
 set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
 U=${1:?usage: build-open-vm-tools.sh <desktop-user>}
 W=/var/cache/omacvm/open-vm-tools
 RECIPE=https://gitlab.archlinux.org/archlinux/packaging/packages/open-vm-tools.git
