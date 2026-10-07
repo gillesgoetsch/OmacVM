@@ -250,6 +250,9 @@ jobs:
       - name: Only OmacVM writes the Bridge's cli file (test copies keep away)
         run: src/tests/app-cli-file.sh
 
+      - name: An older omacvm never takes a newer VM back (version order, apply/enable/disable/update stop first)
+        run: src/tests/version-guard.sh
+
       - name: The desktop restarts by itself after a lost GPU context (app rules, VM script)
         run: src/tests/app-desktop-recovery.sh
 

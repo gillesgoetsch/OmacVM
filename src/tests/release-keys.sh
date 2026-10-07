@@ -280,7 +280,7 @@ expect "an ad hoc app: refused (no team the feed names)" yes "$([[ $(download 9.
 tree() {   # DIR: src/ under DIR
   mkdir -p "$1/src/net/mac" "$1/src/lib" "$1/src/release"
   cp "$R/src/net/mac/install.sh" "$R/src/net/mac/omacvm-netd.c" "$1/src/net/mac/"
-  cp "$R"/src/lib/release-key*.pub "$1/src/lib/"
+  cp "$R"/src/lib/release-key*.pub "$R/src/lib/version.sh" "$1/src/lib/"
   cp "$KEYS" "$1/src/release/"
   sed "s|^APP_DOWNLOADS=.*|APP_DOWNLOADS=$APP_DOWNLOADS|" "$R/src/lib/app.sh" > "$1/src/lib/app.sh"
 }

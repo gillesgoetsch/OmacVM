@@ -37,6 +37,7 @@
 # Where OmacVM.app is published: OmacVM-VERSION.zip (and .sha256) in each
 # OmacVM release, the app's version the same as OmacVM's.
 APP_DOWNLOADS=https://github.com/gillesgoetsch/omacvm/releases/download
+source "$(dirname "${BASH_SOURCE[0]}")/version.sh"
 
 # The app's settings (OMACVM_APP_ID: another bundle id, for tests only).
 # The test identity (OMACVM_TEST_IDENTITY=1) is "OmacVM Test" (org.omacvm.app.test).

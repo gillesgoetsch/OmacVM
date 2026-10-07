@@ -1,5 +1,6 @@
 #!/bin/bash
-# omacvm update [--vm NAME [--vm-type T]] [--no-pull] [--commit C] [--transaction] [--yes]: OmacVM up to date everywhere. This
+# omacvm update [--vm NAME [--vm-type T]] [--no-pull] [--commit C] [--transaction] [--yes]
+# [--allow-downgrade]: OmacVM up to date everywhere. This
 # checkout (git pull, when it is a clean clone), the Mac side that is
 # installed (Omanotch with it), OmacVM.app when it is installed and a newer
 # one is published (not while it runs), then OmacVM in every running VM that
@@ -11,6 +12,9 @@
 # Bridge verified): this checkout moves to C, only forward, instead of git pull.
 # --transaction: each VM as omacvm apply --transaction (exit code 4: that VM
 # failed and went back to what it had). --yes: no questions (as apply --yes).
+# A VM with a newer OmacVM than this omacvm (after the pull): nothing is
+# updated, not the Mac side either (exit 3); --allow-downgrade puts this
+# version into it on purpose.
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -25,7 +29,8 @@ while (( $# )); do
               [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "omacvm update: --commit: 40 hex digits" >&2; exit 2; } ;;
     --transaction) APPLY_ARGS+=(--transaction); shift ;;
     --yes|-y) APPLY_ARGS+=(--yes); shift ;;
-    -h|--help) sed -n '2,17s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    --allow-downgrade) APPLY_ARGS+=(--allow-downgrade); export OMACVM_ALLOW_DOWNGRADE=1; shift ;;
+    -h|--help) sed -n '2,21s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) echo "omacvm update: unknown option $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -64,6 +69,34 @@ elif [[ -z $COMMIT ]] && (( PULL )) && git -C "$R" rev-parse --abbrev-ref '@{u}'
     fi
     info "already up to date ($(cat "$R/src/VERSION"))"
   fi
+fi
+
+# ---------- a VM with a newer OmacVM ----------
+# Each VM gets this omacvm's OmacVM (apply), and the Mac its helpers: never an
+# older one over a newer one by mistake (#233). Asked before anything changes,
+# of the VMs this run updates: the running ones OmacVM set up from this Mac,
+# or --vm NAME (stopped: an OmacVM.app VM's folder says its version; another
+# one is asked by apply once it runs).
+now=$(cat "$R/src/VERSION"); newer=()
+while IFS=$'\t' read -r name type state _; do
+  [[ -n $name ]] || continue
+  if [[ -n $VM ]]; then
+    [[ $name == "$VM" && ( -z $TYPE || $type == "$TYPE" ) ]] || continue
+  else
+    [[ $state == running ]] || continue
+  fi
+  v=""
+  if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""; fi
+  if [[ $state == running ]] && ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null); then
+    vm_pin "$name" "$type"
+    [[ -n $VM || -s $OMA_PIN ]] || vm_marked "$name" "$type" || continue
+    p=$(vm_probe "$ip" | sed -n 's/^OMACVM_VERSION=//p') && [[ -n $p ]] && v=$p
+  fi
+  if [[ -n $v ]] && omacvm_downgrade update "'$name'" "$v" "$now"; then newer+=("$name"); fi
+done < <(vms_list)
+if (( ${#newer[@]} )); then
+  failed_part "" "$(printf '%s, ' "${newer[@]}" | sed 's/, $//') has a newer OmacVM than this omacvm ($now): nothing was updated" mac
+  exit 3
 fi
 
 # ---------- the Mac ----------

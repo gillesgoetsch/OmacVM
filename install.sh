@@ -108,6 +108,12 @@ fi
 if [[ -z $bin ]]; then bin=$HOME/.local/bin; mkdir -p "$bin"; fi
 [[ $bin == /usr/local/bin && ! -w $bin ]] || ln -sf "$here/omacvm" "$bin/omacvm"
 say "omacvm $(cat "$here/src/VERSION") -> $bin/omacvm"
+# An OmacVM.app with a newer OmacVM on this Mac (a branch or tag above, or a
+# clone that is behind): its omacvm and this one would differ without a word.
+if [[ -f $here/src/lib/version.sh ]] && newer=$(source "$here/src/lib/app.sh" && omacvm_app_newer "$(cat "$here/src/VERSION")"); then
+  echo "    OmacVM.app ${newer#*$'\t'} on this Mac is newer than this omacvm: it does not change a VM that has a newer OmacVM."
+  echo "    The app's own: ${newer%%$'\t'*}/Contents/Resources/omacvm/omacvm"
+fi
 case ":$PATH:" in
   *":$bin:"*) ;;
   *) # ~/.local/bin on the PATH of new terminals, and of this run.

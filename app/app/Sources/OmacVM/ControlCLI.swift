@@ -1,11 +1,16 @@
 import Foundation
+#if canImport(OmacVMWindow)
+import OmacVMWindow   // CommandLineInstall's versions (src/tests/app-cli-file.sh compiles both files together)
+#endif
 
 /// The omacvm OmacVM Bridge runs for the control centre's Mac jobs (the file
 /// `cli` in OmacVM's support folder, read by src/bridge/mac/control.swift).
 /// Without a checkout on the Mac it is this app's own copy
 /// (Contents/Resources/omacvm/omacvm). Each start points the file at this app,
 /// so it follows an update or a move; a checkout that is still there keeps it
-/// (a CLI install). The same rule as cli_file_app in src/lib/mac.sh.
+/// (a CLI install), unless its OmacVM is older than this app's (#233: an old
+/// checkout ran the control centre's switches for a newer VM). The same rule
+/// as cli_file_app in src/lib/mac.sh.
 enum ControlCLI {
     static var supportFolder: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -14,11 +19,14 @@ enum ControlCLI {
     }
 
     /// The path to write, or nil to leave the file as it is.
-    static func choose(current: String?, app: String, exists: (String) -> Bool) -> String? {
+    /// - version: an omacvm's OmacVM version (its src/VERSION), nil when unknown.
+    static func choose(current: String?, app: String, exists: (String) -> Bool,
+                       version: (String) -> String? = CommandLineInstall.version(ofCLI:)) -> String? {
         guard app.hasPrefix("/"), app.hasSuffix("/Contents/Resources/omacvm/omacvm"), exists(app) else { return nil }
         let cur = (current ?? "").split(separator: "\n").first.map(String.init) ?? ""
         if cur == app { return nil }
-        if !cur.isEmpty, exists(cur), !cur.hasSuffix("/Contents/Resources/omacvm/omacvm") { return nil }
+        if !cur.isEmpty, exists(cur), !cur.hasSuffix("/Contents/Resources/omacvm/omacvm"),
+           !CommandLineInstall.older(version(cur), than: version(app)) { return nil }
         return app
     }
 

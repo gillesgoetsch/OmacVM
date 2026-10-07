@@ -294,6 +294,24 @@ expect(CommandLineInstall.linkCommand(target: "/usr/local/bin/omacvm", appCLI: "
        == "/bin/mkdir -p '/usr/local/bin' && /bin/ln -sfn '/A B/it'\\''s/omacvm' '/usr/local/bin/omacvm'", "link command quoted")
 expect(CommandLineInstall.appleScriptString("a \"b\" \\c") == "\"a \\\"b\\\" \\\\c\"", "AppleScript string quoted")
 
+// The order of OmacVM's versions (#233), the same as src/lib/version.sh's
+// version_cmp (src/tests/version-guard.sh has the shell's side).
+let vc = CommandLineInstall.compareVersions
+expect(vc("3.0.10", "3.0.9") == 1 && vc("3.0.9", "3.0.10") == -1, "3.0.10 is newer than 3.0.9")
+expect(vc("3.0", "3.0.0") == 0 && vc("v3.0.3", "3.0.3") == 0 && vc("3.0.3+abc", "3.0.3") == 0, "3.0 = 3.0.0; v and +build ignored")
+expect(vc("3.0.5-rc1", "3.0.5") == -1 && vc("3.0.5", "3.0.5-rc1") == 1, "a pre-release is older than its release")
+expect(vc("3.0.5-rc9", "3.0.5-rc10") == -1 && vc("3.0.5-beta", "3.0.5-rc1") == -1, "rc9 < rc10, beta < rc")
+expect(vc("3.0.0-RC14", "3.0.0-rc2") == 1 && vc("3.0.5-1", "3.0.5-rc") == -1, "labels: any case; numbers before words")
+expect(vc("3.0.5-inf", "3.0.5-1") == 1, "a word is no number (inf)")
+expect(vc("main", "3.0.3") == nil && vc("", "3.0.3") == nil, "no version: nil")
+expect(CommandLineInstall.older("2.9.1", than: "3.0.3") && !CommandLineInstall.older("3.0.3", than: "3.0.3")
+       && !CommandLineInstall.older(nil, than: "3.0.3"), "older")
+expect(CommandLineInstall.olderNote(.other(at: "/opt/homebrew/bin/omacvm"), other: "2.9.1", app: "3.0.3")?.contains("OmacVM 2.9.1, older than this app (3.0.3)") == true,
+       "an older omacvm first on the PATH: said")
+expect(CommandLineInstall.olderNote(.other(at: "/opt/homebrew/bin/omacvm"), other: "3.0.4", app: "3.0.3") == nil
+       && CommandLineInstall.olderNote(.installed(at: "/usr/local/bin/omacvm"), other: "2.9.1", app: "3.0.3") == nil,
+       "a newer one, or this app's own: nothing to say")
+
 // On a real disk: a throwaway HOME, the link made with linkCommand.
 do {
     let fm = FileManager.default

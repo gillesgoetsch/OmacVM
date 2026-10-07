@@ -6,6 +6,7 @@
 #                [--feature NAME=on|off]... [--FEATURE | --no-FEATURE]...
 #                [--keyboard "LAYOUT [VARIANT]"] [--display WxH@Hz] [--key PRIVATE_KEY] [--no-mac]
 #                [--reset-host-key] [--reinstall FEATURE]... [--transaction] [--yes]
+#                [--allow-downgrade]
 # Features: `omacvm features` lists them (src/features.tsv). Not given: what the
 # VM has (new to OmacVM: the defaults; a VM from before the control centre is
 # asked once whether it gets it, yes with --yes or without a terminal).
@@ -27,6 +28,9 @@
 # remembered the first time; --reset-host-key forgets it (a rebuilt VM).
 # Exit codes: 0 done, 1 failed, 2 usage, 3 needs a person (see the message),
 # 4 failed and rolled back (--transaction).
+# A VM with a newer OmacVM than this omacvm is not touched (exit 3, before
+# anything changes on the Mac or in the VM): an older copy would replace the
+# VM's. --allow-downgrade goes back to this version on purpose.
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -57,6 +61,7 @@ while (( $# )); do
     --reset-host-key) export OMA_PIN_RESET=1; NEWKEY=1; shift ;;
     --transaction) TRANSACTION=1; shift ;;
     --yes|-y) YES=1; shift ;;
+    --allow-downgrade) export OMACVM_ALLOW_DOWNGRADE=1; shift ;;
     --reinstall) f=$(feature_alias "${2:-}"); f=${f%% *}
                  feature_index "$f" >/dev/null || { echo "omacvm apply: --reinstall: unknown feature '${2:-}' (omacvm features lists them)" >&2; exit 2; }
                  REINSTALL+=("$f"); shift 2 ;;
@@ -64,7 +69,7 @@ while (( $# )); do
     --no-tools) TOOLS=0; shift ;;   # prebuilt images: no Parallels Tools
     --feature) set_feature "${2%%=*}" "${2#*=}"; shift 2 ;;
     --no-*) set_feature "${1#--no-}" off; shift ;;
-    -h|--help) sed -n '2,26s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,33s/^# \{0,1\}//p' "$0"; exit 0 ;;
     --*) f=$(feature_alias "${1#--}"); feature_index "${f%% *}" >/dev/null || { echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2; }
          set_feature "${1#--}" on; shift ;;
     *) echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2 ;;
@@ -111,6 +116,13 @@ probe=$(vm_probe "$IP")
 [[ -n $U ]] || die "no desktop user in '$VM' (pass --user NAME)"
 had=$(sed -n 's/^OMACVM_VERSION=//p' <<<"$probe")
 now=$(cat "$R/src/VERSION")
+# Never an older OmacVM over a newer one by mistake (an old checkout's omacvm
+# beside a newer OmacVM.app, #233): stop before the Mac side, the VM's copy,
+# its record or its firewall change.
+if omacvm_downgrade apply "$( (( NAMED )) && echo "'$VM'" || echo "$VM")" "$had" "$now"; then
+  failed_part "" "'$VM' has a newer OmacVM than this omacvm ($now): nothing was changed" mac
+  exit 3
+fi
 
 # ---------- the features it gets ----------
 features_read_env "$probe"

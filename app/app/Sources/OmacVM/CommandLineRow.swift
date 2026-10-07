@@ -45,6 +45,14 @@ enum TerminalCommand {
         CommandLineInstall.state(path: userPath(), home: VMsFolder.home.path, appCLI: appCLI)
     }
 
+    /// Another omacvm first on the PATH with an older OmacVM than this app's:
+    /// what to say, or nil (#233).
+    static func olderNote(_ s: CommandLineInstall.State) -> String? {
+        guard case .other(let at) = s else { return nil }
+        return CommandLineInstall.olderNote(s, other: CommandLineInstall.version(ofCLI: at),
+                                            app: CommandLineInstall.version(ofCLI: appCLI))
+    }
+
     /// Makes the link; nil when it worked, else why not. Looks again first:
     /// never over another omacvm.
     static func install() -> String? {
@@ -82,6 +90,7 @@ struct CommandLineRow: View {
     @State private var cli: CommandLineInstall.State?
     @State private var busy = false
     @State private var note: String?
+    @State private var older: String?
 
     var body: some View {
         if TerminalCommand.available || preview != nil {
@@ -100,6 +109,11 @@ struct CommandLineRow: View {
                 }
             }
             .onAppear { if preview == nil { refresh() } }
+            if let o = older {
+                Text(o).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: RowNote.width, alignment: .leading)
+            }
             if let n = note { RowNote(n, error: true) }
         }
     }
@@ -107,7 +121,8 @@ struct CommandLineRow: View {
     private func refresh() {
         Task.detached {
             let s = TerminalCommand.state()
-            await MainActor.run { cli = s }
+            let o = TerminalCommand.olderNote(s)
+            await MainActor.run { cli = s; older = o }
         }
     }
 
@@ -117,10 +132,12 @@ struct CommandLineRow: View {
         Task.detached {
             let err = TerminalCommand.install()
             let s = TerminalCommand.state()
+            let o = TerminalCommand.olderNote(s)
             await MainActor.run {
                 busy = false
                 note = err
                 cli = s
+                older = o
             }
         }
     }

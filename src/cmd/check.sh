@@ -188,7 +188,10 @@ if [[ -n $(sed -n 's/^OMACVM_VERSION=//p' <<<"$probe") ]]; then
   features_read_record "$rd"; REC=("${FV[@]}")
   features_real "$probe" "$rd"
   if [[ -n ${DRIFT[*]+x} ]]; then
-    if features_record_fix "$IP" "$rd"; then fx="fixed the record"; else fx="could not fix the VM's copy (/etc/omacvm/env)"; fi
+    # A newer OmacVM's record is not this one's to write (it knows other features, #233).
+    if version_lt "$(cat "$R/src/VERSION")" "$(sed -n 's/^OMACVM_VERSION=//p' <<<"$probe")"; then
+      fx="not fixed: the VM has a newer OmacVM than this omacvm"
+    elif features_record_fix "$IP" "$rd"; then fx="fixed the record"; else fx="could not fix the VM's copy (/etc/omacvm/env)"; fi
     for d in "${DRIFT[@]}"; do
       FEATURE=${d%%$'\t'*}
       if [[ $fx == fixed* ]]; then ok "record" "$(DRIFT=("$d"); features_drift_lines "$fx")"

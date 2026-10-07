@@ -5,6 +5,7 @@ die() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 # python3 and the Swift answers without Xcode's Command Line Tools (src/lib/tools.sh).
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tools.sh"
 tools_path
+source "$(dirname "${BASH_SOURCE[0]}")/version.sh"
 
 # Progress for the control centre's jobs (OMACVM_PROGRESS=json, set by the
 # Bridge): one JSON line per step, "step n of m". A command that runs another
@@ -69,17 +70,22 @@ cli_for_bridge() {
   (( ! links ))
 }
 
+# cli_version OMACVM: the OmacVM version of that omacvm (its src/VERSION).
+cli_version() { head -n1 "$(dirname "$(realpath "$1" 2>/dev/null || echo "$1")")/src/VERSION" 2>/dev/null; }
+
 # cli_file_app OMACVM: OmacVM.app's copy of omacvm (OMACVM, inside the app)
 # becomes what the Bridge runs, unless the file names a checkout that is still
-# there (a CLI install keeps its own). So the app's setup, and each app start
-# (app/app/Sources/OmacVM/ControlCLI.swift, the same rule), point it at the
-# current app after an update or a move.
+# there (a CLI install keeps its own) and is not older than the app (#233: an
+# old checkout ran the control centre's switches for a newer VM). So the
+# app's setup, and each app start (app/app/Sources/OmacVM/ControlCLI.swift,
+# the same rule), point it at the current app after an update or a move.
 cli_file_app() {
   local f="$OMA_SUPPORT/cli" cur
   [[ $1 == /*/Contents/Resources/omacvm/omacvm && -f $1 ]] || return 0
   cur=$(head -n1 "$f" 2>/dev/null || true)
   [[ $cur == "$1" ]] && return 0
-  if [[ -n $cur && -f $cur && $cur != */Contents/Resources/omacvm/omacvm ]]; then return 0; fi
+  if [[ -n $cur && -f $cur && $cur != */Contents/Resources/omacvm/omacvm ]] &&
+     ! version_lt "$(cli_version "$cur")" "$(cli_version "$1")"; then return 0; fi
   mkdir -p "$OMA_SUPPORT"
   (umask 077; printf '%s\n' "$1" > "$f.new" && mv -f "$f.new" "$f")
 }

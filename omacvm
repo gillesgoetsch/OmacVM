@@ -58,6 +58,18 @@ if [[ $R == */Contents/Resources/omacvm && -f $R/COMMIT && -z ${OMACVM_APP_COPY:
       fi ;;
   esac
 fi
+# A checkout's omacvm (install.sh) older than the OmacVM.app on this Mac: say
+# so, once per run, with the app's own omacvm (#233: an old ~/.omacvm on the
+# PATH took a feature switch for a newer app's VM back to its version; apply
+# stops before going back, this says why the versions differ).
+if [[ $R != */Contents/Resources/omacvm && -z ${OMACVM_APP_COPY:-} && -z ${OMACVM_APP_NEWER_SAID:-} ]]; then
+  export OMACVM_APP_NEWER_SAID=1
+  source "$R/src/lib/app.sh"
+  if newer=$(omacvm_app_newer "$(cat "$R/src/VERSION")"); then
+    printf 'omacvm: this omacvm (%s) is OmacVM %s, older than OmacVM.app %s on this Mac. Use the app'"'"'s: %s, or bring this one up to date: omacvm update\n' \
+      "$R/omacvm" "$(cat "$R/src/VERSION")" "${newer#*$'\t'}" "${newer%%$'\t'*}/Contents/Resources/omacvm/omacvm" >&2
+  fi
+fi
 case $cmd in
   "") exec "$C/home.sh" ;;
   build|apply|check|vms|update|resources|graphics) exec "$C/$cmd.sh" "$@" ;;

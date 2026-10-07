@@ -8,7 +8,7 @@ set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/src/mac" "$T/src/lib" "$T/src/icon" "$T/home"
-cp "$R/src/mac/install.sh" "$T/src/mac/"; cp "$R/src/lib/mac.sh" "$R/src/lib/tools.sh" "$R/src/lib/sign.sh" "$R/src/lib/app.sh" "$R/src/lib/helpers.sh" "$T/src/lib/"
+cp "$R/src/mac/install.sh" "$T/src/mac/"; cp "$R/src/lib/mac.sh" "$R/src/lib/tools.sh" "$R/src/lib/sign.sh" "$R/src/lib/app.sh" "$R/src/lib/version.sh" "$R/src/lib/helpers.sh" "$T/src/lib/"
 for h in bridge gestures clipboard omanotch; do
   mkdir -p "$T/src/$h/mac"
   printf '#!/bin/bash\necho run >> "%s/ran-%s"\n[[ ! -e "%s/fail-%s" ]]\n' "$T" "$h" "$T" "$h" > "$T/src/$h/mac/install.sh"

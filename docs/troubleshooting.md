@@ -124,6 +124,13 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   after it starts.
 - **"answers with another SSH host key"**: OmacVM remembers each VM's SSH key.
   After rebuilding or reinstalling the VM: `omacvm apply --vm NAME --reset-host-key`.
+- **"has OmacVM 3.0.3, this omacvm is 2.9.1 ... does not go back"**: the
+  `omacvm` Terminal runs is older than the VM's OmacVM, usually an old
+  command line install (`~/.omacvm`) first on the PATH beside a newer
+  OmacVM.app (`omacvm --version` says so too). Nothing was changed. Run the
+  app's own (`~/Applications/OmacVM.app/Contents/Resources/omacvm/omacvm`,
+  or its "omacvm in Terminal" link), or bring the old one up to date with
+  `omacvm update`. `--allow-downgrade` takes the VM back on purpose.
 - **Scrolling feels too fast or slow in one app**: Chromium-based apps get their
   own factor; tell us the app (window class from `hyprctl clients`) in an
   issue. The scroll momentum's settings are in `src/gestures/guest/omacvm-gestures`

@@ -25,7 +25,7 @@ default: exit(2)
 }
 SWIFT
 swiftc -O -o "$T/cli" "$R/app/app/Sources/OmacVM/MacLinks.swift" "$R/app/app/Sources/OmacVM/ControlCLI.swift" \
-  "$T/main.swift" 2>"$T/cc.log" || { cat "$T/cc.log"; exit 1; }
+  "$R/app/app/Sources/OmacVMWindow/CommandLineInstall.swift" "$T/main.swift" 2>"$T/cc.log" || { cat "$T/cc.log"; exit 1; }
 expect "org.omacvm.app.test is the test identity" test "$("$T/cli" test org.omacvm.app.test)"
 expect "a lane copy org.omacvm.app.test.final301 is too" test "$("$T/cli" test org.omacvm.app.test.final301)"
 expect "OmacVM itself is not" not "$("$T/cli" test org.omacvm.app)"
@@ -45,4 +45,16 @@ expect "OmacVM writes it" "$T/rel.app/Contents/Resources/omacvm/omacvm" "$(cat "
 run org.omacvm.sutest su2
 expect "then a test build leaves it as it was" "$T/rel.app/Contents/Resources/omacvm/omacvm" "$(cat "$F" 2>/dev/null)"
 grep -q "is not OmacVM: the Bridge's cli file stays" "$T/err.log" && echo "ok   it says why" || { echo "FAIL no reason in stderr"; fail=1; }
+
+# A checkout keeps the file, unless its OmacVM is older than the app's (#233;
+# cli_file_app in src/lib/mac.sh, src/tests/version-guard.sh, has the same rule).
+ver() { mkdir -p "$(dirname "$1")/src"; echo "$2" > "$(dirname "$1")/src/VERSION"; }
+co=$T/checkout/omacvm; mkdir -p "$T/checkout"; : > "$co"
+mkdir -p "$T/v303.app/Contents/Resources/omacvm"; ver "$T/v303.app/Contents/Resources/omacvm/omacvm" 3.0.3
+for c in "2.9.1 app $T/v303.app/Contents/Resources/omacvm/omacvm" "3.0.3 checkout $co" "3.0.4 checkout $co"; do
+  read -r v who want <<<"$c"
+  ver "$co" "$v"; printf '%s\n' "$co" > "$F"
+  run org.omacvm.app v303
+  expect "checkout $v, OmacVM.app 3.0.3: the $who's omacvm runs" "$want" "$(cat "$F" 2>/dev/null)"
+done
 exit $fail

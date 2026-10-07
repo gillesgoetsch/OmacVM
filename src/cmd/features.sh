@@ -4,8 +4,8 @@
 #   omacvm features [--vm NAME] --in-vm      open the control centre on the VM's desktop
 #                                            (one window; in front if it is open already)
 #   (--vm-type parallels|utm|fusion|app when two apps have a VM of that name)
-#   omacvm enable FEATURE... [--vm NAME] [--yes] [--transaction]
-#   omacvm disable FEATURE... [--vm NAME] [--yes] [--transaction]
+#   omacvm enable FEATURE... [--vm NAME] [--yes] [--transaction] [--allow-downgrade]
+#   omacvm disable FEATURE... [--vm NAME] [--yes] [--transaction] [--allow-downgrade]
 # Features (src/features.tsv): bridge wallpaper gestures scroll-momentum omanotch
 # mac-clock camera battery external-brightness chromium-video no-idle-lock autologin thp-kernel control-centre
 # fast-network vulkan x86-apps (idle-lock, its name before 3.0.1, still works the other way round:
@@ -25,6 +25,9 @@
 # one runs, else the defaults ("vm": null).
 # --in-vm: the VM must run with someone logged in to its desktop, and have the
 # control centre (on by default); else it says what is missing (exit 3).
+# A VM with a newer OmacVM than this omacvm: no switch (exit 3, nothing
+# changed; the switch would put this older OmacVM into it), and its record is
+# not fixed. --allow-downgrade switches anyway, with this version.
 # Exit codes: 0 done, 1 failed, 2 usage, 3 needs a person, 4 failed and
 # rolled back.
 set -euo pipefail
@@ -45,7 +48,8 @@ while (( $# )); do
     --in-vm) INVM=1; shift ;;
     --yes|-y) YES=1; shift ;;
     --transaction) APPLY_ARGS+=(--transaction); shift ;;
-    -h|--help) sed -n '2,29s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    --allow-downgrade) APPLY_ARGS+=(--allow-downgrade); export OMACVM_ALLOW_DOWNGRADE=1; shift ;;
+    -h|--help) sed -n '2,32s/^# \{0,1\}//p' "$0"; exit 0 ;;
     -*) usage "unknown option $1 (see --help)" ;;
     *) read -r f v <<<"$(feature_alias "$1" "$( [[ $MODE == enable ]] && echo on || echo off)")"
        feature_index "$f" >/dev/null || usage "unknown feature '$1' (omacvm features lists them)"
@@ -84,6 +88,21 @@ else
 fi
 probe=""; [[ -z $IP ]] || probe=$(vm_probe "$IP") || true
 version=$(sed -n 's/^OMACVM_VERSION=//p' <<<"$probe")
+# A switch goes through apply, which puts this omacvm's OmacVM into the VM: an
+# older one than the VM's only on purpose (#233). Stopped before anything
+# changes, the record too. A list (--json, or without a terminal) goes on,
+# but leaves the newer OmacVM's record alone.
+newer=0
+if [[ -n $version ]] && version_lt "$(cat "$R/src/VERSION")" "$version"; then
+  if [[ $MODE != features ]] || { (( ! JSON )) && { : < "$TTY"; } 2>/dev/null && [[ -t 1 ]]; }; then
+    if omacvm_downgrade "$MODE" "'$VM'" "$version" "$(cat "$R/src/VERSION")"; then
+      failed_part "" "'$VM' has a newer OmacVM than this omacvm ($(cat "$R/src/VERSION")): nothing was changed" mac
+      exit 3
+    fi
+  else
+    newer=1
+  fi
+fi
 features_read_env "$probe"
 DRIFT=(); FIXED=""
 if [[ -z $version ]]; then   # not an OmacVM VM yet: what it would get
@@ -94,7 +113,9 @@ else
   rd=""; [[ $TYPE == app && -n $VM ]] && { rd=$(app_dir "$VM" 2>/dev/null) || rd=""; }
   features_read_record "$rd"
   features_real "$probe" "$rd"
-  if [[ -n ${DRIFT[*]+x} ]]; then
+  if [[ -n ${DRIFT[*]+x} ]] && (( newer )); then
+    FIXED="the record was not fixed (the VM has a newer OmacVM than this omacvm)"
+  elif [[ -n ${DRIFT[*]+x} ]]; then
     features_record_fix "$IP" "$rd" && FIXED="fixed the record" || FIXED="the record could not be fixed"
   fi
 fi
