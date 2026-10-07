@@ -35,18 +35,72 @@ utm_scripting() (
 # A QEMU VM like the one ggalancs/omarchy-arm-utm and OmacVM were tested with:
 # HVF, UEFI, virtio-gpu-gl (native resolution, dynamic resolution), virtio-net
 # on UTM's shared network, the live installer as a VirtIO disk and the system
-# disk as NVMe (the base install looks for the NVMe disk).
+# disk as NVMe (the base install looks for the NVMe disk). LIVE_IMAGE "": the
+# NVMe disk only (utm_add_live adds the installer later).
 utm_create() {
   local name=$1 cpus=$2 mem=$3 live=$4 disk=$5 out
   out=$(utm_osa \
     -e 'on run argv' \
+    -e '  set f to missing value' \
+    -e '  if (item 4 of argv) is not "" then set f to POSIX file (item 4 of argv)' \
     -e '  tell application "UTM"' \
-    -e '    set vm to make new virtual machine with properties {backend:qemu, configuration:{name:(item 1 of argv), architecture:"aarch64", memory:((item 3 of argv) as integer), cpu cores:((item 2 of argv) as integer), hypervisor:true, uefi:true, icon:"arch-linux", notes:"Omarchy (omarchy-mac) on Arch Linux ARM, built by OmacVM", drives:{{interface:VirtIO, removable:false, source:(POSIX file (item 4 of argv))}, {interface:NVMe, guest size:((item 5 of argv) as integer)}}, network interfaces:{{hardware:"virtio-net-pci", mode:shared}}, displays:{{hardware:"virtio-gpu-gl-pci", dynamic resolution:true, native resolution:true}}}}' \
+    -e '    set ds to {{interface:NVMe, guest size:((item 5 of argv) as integer)}}' \
+    -e '    if f is not missing value then set ds to {{interface:VirtIO, removable:false, source:f}} & ds' \
+    -e '    set vm to make new virtual machine with properties {backend:qemu, configuration:{name:(item 1 of argv), architecture:"aarch64", memory:((item 3 of argv) as integer), cpu cores:((item 2 of argv) as integer), hypervisor:true, uefi:true, icon:"arch-linux", notes:"Omarchy (omarchy-mac) on Arch Linux ARM, built by OmacVM", drives:ds, network interfaces:{{hardware:"virtio-net-pci", mode:shared}}, displays:{{hardware:"virtio-gpu-gl-pci", dynamic resolution:true, native resolution:true}}}}' \
     -e '    return id of vm' \
     -e '  end tell' \
     -e 'end run' "$name" "$cpus" "$mem" "$live" "$disk")
   [[ $out =~ ^[0-9A-F-]{36}$ ]] || die "UTM could not create the VM: $out"
   echo "$out"
+}
+
+# utm_move NAME DIR: put a new (stopped) VM in DIR instead of UTM's own
+# folder, which is in UTM's container on the Mac's internal disk. UTM's
+# scripting exports it there, deletes the original and opens the copy, which
+# UTM keeps in its list (by a bookmark, as File > Open does). Only UTM touches
+# its container. The copy is opened through UTM's scripting: on the Mac mini
+# (macOS 27, UTM 5.0.6) a UTM started by an Apple event ignored `open -a UTM
+# bundle`; LaunchServices' open is only the fallback.
+utm_move() {
+  local name=$1 b="$2/$1.utm" out i
+  [[ ! -e $b ]] || die "$b already exists"
+  out=$(utm_osa \
+    -e 'on run argv' \
+    -e '  set f to POSIX file (item 2 of argv)' \
+    -e '  tell application "UTM"' \
+    -e '    export (virtual machine named (item 1 of argv)) to f' \
+    -e '  end tell' \
+    -e 'end run' "$name" "$b") || true   # build.sh runs with set -e: the check below says why
+  [[ -f $b/config.plist ]] || die "UTM could not put the VM into $2: $out"
+  out=$(utm_osa -e 'on run argv' -e 'tell application "UTM" to delete (virtual machine named (item 1 of argv))' -e 'end run' "$name") ||
+    die "UTM could not delete its own copy of the VM ($out): delete '$name' in UTM, then open $b in UTM"
+  utm_osa -e 'on run argv' -e 'tell application "UTM" to open (POSIX file (item 1 of argv))' -e 'end run' "$b" >/dev/null || true
+  for ((i = 0; i < 30; i++)); do
+    "$UTMCTL" list 2>/dev/null | awk 'NR > 1 { $1 = ""; $2 = ""; sub(/^  /, ""); print }' | grep -qxF "$name" && return 0
+    (( i == 10 )) && open -a UTM "$b"
+    sleep 1
+  done
+  die "UTM did not open the VM in $b: open it in UTM (File > Open) and run omacvm build again"
+}
+
+# utm_add_live NAME LIVE_IMAGE: the live installer as the first disk (VirtIO);
+# UTM copies it into the VM's bundle. The VM must be stopped.
+utm_add_live() {
+  local out
+  out=$(utm_osa \
+    -e 'on run argv' \
+    -e '  set f to POSIX file (item 2 of argv)' \
+    -e '  tell application "UTM"' \
+    -e '    set vm to virtual machine named (item 1 of argv)' \
+    -e '    copy (configuration of vm) to c' \
+    -e '    set drives of c to {{interface:VirtIO, removable:false, source:f}} & (drives of c)' \
+    -e '    update configuration of vm with c' \
+    -e '    copy (configuration of vm) to c2' \
+    -e '    set ds to drives of c2' \
+    -e '    return length of ds' \
+    -e '  end tell' \
+    -e 'end run' "$1" "$2") || true
+  [[ $out == 2 ]] || die "UTM could not add the live installer disk: $out"
 }
 
 # utm_import BUNDLE: add a .utm bundle to UTM's library (UTM copies it into
@@ -85,11 +139,12 @@ utm_drop_live() {
   [[ $out == 1 ]] || die "could not remove the live installer disk: $out"
 }
 
-# utm_set_icon NAME: OmacVM's icon in UTM's library (the VM must be stopped).
-# UTM's scripting only takes its built-in icon names; a custom icon is a PNG in
-# the VM's bundle plus two keys in its config.plist, which UTM reloads.
+# utm_set_icon NAME [BUNDLE]: OmacVM's icon in UTM's library (the VM must be
+# stopped). UTM's scripting only takes its built-in icon names; a custom icon is
+# a PNG in the VM's bundle plus two keys in its config.plist, which UTM reloads.
+# BUNDLE: a VM outside UTM's folder (utm_move).
 utm_set_icon() {
-  local b="$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/$1.utm"
+  local b=${2:-"$HOME/Library/Containers/com.utmapp.UTM/Data/Documents/$1.utm"}
   [[ -f $b/config.plist ]] || { info "UTM VM bundle not in UTM's default folder: icon unchanged"; return 0; }
   "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/icon/make-icns.sh" "$b/Data/omacvm.png" 512
   plutil -replace Information.Icon -string omacvm.png "$b/config.plist"
@@ -100,8 +155,12 @@ utm_set_icon() {
 # AGENTS.md): no Vulkan driver, so UTM stops forcing a 4K stage-2 page size
 # (2x slower on memory-heavy work); the default renderer (ANGLE on Metal):
 # with "Apple Core OpenGL" Chrome in the guest gets no GPU; no App Nap for UTM.
+# They live in UTM's container: when macOS keeps this terminal app out of other
+# apps' data (the "access data from other apps" question was answered Don't
+# Allow), the VM is still built, with UTM's settings as they are.
 utm_tune_app() {
-  defaults write com.utmapp.UTM QEMUVulkanDriver -int 1
-  defaults write com.utmapp.UTM QEMURendererBackend -int 0
-  defaults write com.utmapp.UTM NSAppSleepDisabled -bool YES
+  { defaults write com.utmapp.UTM QEMUVulkanDriver -int 1 &&
+    defaults write com.utmapp.UTM QEMURendererBackend -int 0 &&
+    defaults write com.utmapp.UTM NSAppSleepDisabled -bool YES; } 2>/dev/null && return 0
+  info "UTM's settings unchanged: macOS does not let this terminal app change UTM's data (it asked whether it may access data from other apps). The VM works; it is faster with them."
 }

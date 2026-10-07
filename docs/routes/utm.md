@@ -45,7 +45,46 @@ Homebrew, `zstd` and `e2fsprogs` (see the README's
 omacvm build --vm-type utm
 ```
 
-The VM goes into UTM's own library; UTM has no `--vm-dir`.
+The VM goes into UTM's own library, which is inside UTM's data folder on the
+Mac's internal disk. To put it somewhere else, an external drive for example
+(APFS or Mac OS Extended), answer the build's "Where should the VM go?" with
+another folder, or pass `--vm-dir PATH`:
+
+```bash
+omacvm build --vm-type utm --vm-dir /Volumes/MyDrive/VMs
+```
+
+### UTM on an external drive
+
+UTM is sandboxed: it cannot keep its whole library elsewhere (with its
+`Documents` folder replaced by a link to another drive, UTM does not start:
+"Documents is not a directory"). But UTM runs any VM you open from another
+place (File > Open, or `open -a UTM Name.utm`) and keeps it in its list, by a
+bookmark. That is what `--vm-dir` uses:
+
+1. The installer image and its work files are written into that folder
+   (not into `~/Library/Caches`) and removed when they are done.
+2. UTM makes the VM in its own folder with only an empty system disk (a few
+   hundred KB), exports it into that folder, deletes its own copy and opens
+   the exported one.
+3. The installer image is added to that VM (UTM copies it into the VM, on
+   the drive), and the build goes on as usual.
+
+What you need:
+
+- **About 30 GB free on the drive** (the build checks it and stops before
+  anything is made). The VM, its installer and the work files all go
+  there, not on the Mac's own disk.
+- The drive formatted **APFS or Mac OS Extended** (Disk Utility can erase it
+  as APFS). exFAT and FAT drives are refused.
+- The drive connected before you open UTM, and never unplugged while the VM
+  runs. If UTM shows the VM as missing, the drive is not connected: connect
+  it and start the VM again.
+- On a removable drive (an SD card, a USB stick) macOS asks once whether
+  Terminal may access files on it: allow it.
+
+A prebuilt UTM VM always goes into UTM's library; with `--vm-dir` the build
+makes the VM here instead.
 
 Run the build in Terminal on the Mac, not over SSH: OmacVM drives UTM
 through AppleScript, and macOS asks once whether Terminal may control UTM.
@@ -56,7 +95,8 @@ before another app reads there. OmacVM reads it only when you run omacvm in
 a terminal (or act on a UTM VM), never from the Bridge or a script, and
 gives up after 2 seconds. If macOS asks whether Terminal may access data
 from other apps, allow it; until then a stopped UTM VM shows as
-"unknown (UTM data not readable)". OmacVM lists UTM VMs only once you use
+"unknown (UTM data not readable)". If it was answered Don't Allow, a build
+still makes the VM, but cannot set UTM's speed settings (it says so). OmacVM lists UTM VMs only once you use
 UTM with it on this Mac (`OMACVM_UTM=1` lists them anyway).
 
 ## Keep UTM in the foreground
