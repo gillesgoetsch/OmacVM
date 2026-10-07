@@ -50,8 +50,9 @@ What happens:
    root (`~/.ssh/omacvm.pub`), hostname, keyboard, timezone, language, display
    mode, the Mac's network for SSH. It is attached before the first boot.
 5. In the VM, `omacvm-firstboot.service` runs once before the login screen:
-   it grows the disk, creates your user from the image's home template, sets
-   the rest from the seed and disables itself. SSH host keys and the machine
+   it grows the disk, creates your user from the image's home template with
+   Omarchy's default keyring (no password, as a full build has; the template
+   has no keyrings), sets the rest from the seed and disables itself. SSH host keys and the machine
    id are new.
 6. On the Mac: `omacvm apply` with your features (Parallels: also Parallels
    Tools from your own Parallels Desktop). Then the VM shuts down once, the
