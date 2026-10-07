@@ -85,10 +85,12 @@ ms/min. No drift.
 Two things that are not this fix, seen on the way:
 - WirePlumber came up broken in both boots of the fresh clone: no stream
   linked to the sink, every player silent, until WirePlumber was restarted.
-  Both times DKMS built `omacvm_vdec` at boot (the clone's kernel had no
-  module yet) and loaded it 18 s after WirePlumber started; WirePlumber's
-  V4L2 monitor logged "Cannot open '/dev/video0': No such device" at that
-  moment. A user VM could hit this on the first boot after a kernel update
-  (chromium-video on). `review.sh` checks and restarts WirePlumber.
+  Both times the kit's `setup.sh` installed Chromium video while the
+  desktop ran (the clone had none), so `omacvm_vdec` loaded 18 s after
+  WirePlumber started; WirePlumber's V4L2 monitor logged "Cannot open
+  '/dev/video0': No such device" at that moment. Not a kernel update: DKMS
+  builds the module during the update and it loads early at the next start.
+  Fixed in 3.0.4 ([troubleshooting 29](../../../../docs/troubleshooting.md#29-app-no-sound-at-all-after-a-start)).
+  `review.sh` checks and restarts WirePlumber.
 - Chromium's loop of the 180 s H.264 clip with hardware decode hung at its
   end (t=180.000, not paused), so long runs use a 700 s clip.

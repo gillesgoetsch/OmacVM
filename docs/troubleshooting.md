@@ -160,7 +160,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 | 24 | app | [A scale like 1.6 on a 5K display turns the VM black and flickering](#24-app-a-scale-like-16-on-a-5k-display-turns-the-vm-black-and-flickering) |
 | 25 | app | [The sound crackles while the VM or the Mac is busy](#25-app-the-sound-crackles-while-the-vm-or-the-mac-is-busy) |
 | 26 | app | [The VM does not start (no window), or freezes when sound starts](#26-app-the-vm-does-not-start-no-window-or-freezes-when-sound-starts) |
-| 29 | app | [No sound at all after a kernel update](#29-app-no-sound-at-all-after-a-kernel-update) |
+| 29 | app | [No sound at all after a start](#29-app-no-sound-at-all-after-a-start) |
 
 Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 [notes/findings.md](notes/findings.md).
@@ -722,7 +722,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/app/guest/omacvm-audio-latency`, the measurement tools in
   `app/runtime/Tests/av-sync/`.
 
-## 29. app: no sound at all after a kernel update
+## 29. app: no sound at all after a start
 
 - **Symptom:** in an OmacVM.app VM with Chromium video on, every app is
   silent after a start; the sound card is there (`wpctl status` lists it)
@@ -730,11 +730,13 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   brings the sound back. The user journal has
   `spa.v4l2: Cannot open '/dev/video0': 19, No such device`.
 - **Cause:** Chromium's video decoder (`omacvm-vdec`, a V4L2 device) opens
-  only while `omacvm-vdecd` is ready. When the module comes after
-  WirePlumber started (DKMS builds it at the first start of a new kernel,
-  or `omacvm apply` turns Chromium video on) WirePlumber 0.5 tries to open
-  it as a camera, fails, and its event queue waits forever for that
-  device: nothing is linked any more.
+  only while `omacvm-vdecd` is ready. When WirePlumber meets the decoder
+  before that (the module loaded while the desktop runs, as `omacvm apply`
+  does, or WirePlumber starting while the daemon still waits for the GPU)
+  WirePlumber 0.5 tries to open it as a camera, fails, and its event queue
+  waits forever for that device: nothing is linked any more. A kernel
+  update alone does not cause it: DKMS builds the module during the update
+  and it loads early at the next start, before the daemon and WirePlumber.
 - **Fix (3.0.4):** a WirePlumber rule leaves the decoder alone
   (`/etc/wireplumber/wireplumber.conf.d/50-omacvm-vdec.conf`; the journal
   says "V4L2 device v4l2_device.platform-omacvm-vdec disabled"). Chromium
