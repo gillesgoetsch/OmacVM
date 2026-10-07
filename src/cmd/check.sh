@@ -373,11 +373,11 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     reserve=$(gmv reserve_mb)
     [[ ${reserve:-0} != 0 ]] && what="$what; apps up to $(gb "$(gmv apps_mb)"), the last $(gb "$reserve") kept for the desktop"
     if (( ${refused:-0} > 0 )); then
-      bad "graphics memory" "$what; $refused allocation(s) refused this run ($(grep -o -e 'budget of [0-9]* MB reached' -e 'macOS is short of memory' -e "past the apps' share" "$miclog" | sort -u | paste -sd, - | sed 's/,/, /g')): an app may have lost its GPU context"
+      bad "graphics memory" "$what; $refused allocation(s) refused this run ($(grep -o -e 'budget of [0-9]* MB reached' -e "apps' share of [0-9]* MB reached" -e 'macOS is short of memory' -e "past the apps' share" "$miclog" | sort -u | paste -sd, - | sed 's/,/, /g')): an app may have lost its GPU context"
     else ok "graphics memory" "$what"; fi
   elif [[ -n $budget ]]; then
     peak=$(grep -o 'guest GPU memory in use: [0-9]* MB' "$miclog" | tail -1 | grep -o '[0-9]*')
-    if grep -q -e 'guest GPU memory budget of [0-9]* MB reached' -e 'macOS is short of memory' "$miclog"; then
+    if grep -q -e 'guest GPU memory budget of [0-9]* MB reached' -e "apps' share of [0-9]* MB reached" -e 'macOS is short of memory' "$miclog"; then
       bad "graphics memory" "refused this run (budget $budget MB or macOS short of memory): an app may have lost its GPU context (restart the VM)"
     else ok "graphics memory" "${peak:+peak about $(gb "$peak"), }no fixed limit (runaway guard $(gb "$budget"))"; fi
   fi

@@ -43,6 +43,12 @@ in more words.
   request and push to main (on the Mac mini, QEMU runtime from its cache), so
   a break in the app build shows on the pull request, not at release time.
 
+- Graphics memory guard: when an app in the VM is stopped for taking too
+  much graphics memory, Hyprland can still show the app's last buffer (an
+  empty window now) and keeps drawing. Before, Hyprland lost its GPU context
+  there too and the VM went black, as in 3.0.3. The log now says "apps'
+  share reached" when an app stops at its share, not "budget reached".
+
 ## 3.0.5 (unreleased)
 
 - With OmacVM.app and the test app OmacVM Test.app on one Mac, each one's

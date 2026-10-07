@@ -104,7 +104,7 @@ for s in $scales; do
   applies=$(ssh_vm "awk -v t=$t0 '\$1 >= t' $state/Virtual-1.history 2>/dev/null | wc -l")
   held=$(( $(ssh_vm "cat $state/held 2>/dev/null | wc -l") - held0 ))
   gpu=""
-  [[ -f $qlog ]] && gpu=$(tail -n +"$((qlines + 1))" "$qlog" | grep -E 'budget of [0-9]+ MB reached|macOS is short of memory|is lost|context error reported' | head -1)
+  [[ -f $qlog ]] && gpu=$(tail -n +"$((qlines + 1))" "$qlog" | grep -E "budget of [0-9]+ MB reached|apps' share of [0-9]+ MB reached|macOS is short of memory|is lost|context error reported" | head -1)
   peak=$(status_mb peak_mb)
   [[ -n $peak ]] || peak=$([[ -f $qlog ]] && grep -o 'guest GPU memory in use: [0-9]* MB' "$qlog" | tail -1 | grep -o '[0-9]*')
   now=$(status_mb in_use_mb)

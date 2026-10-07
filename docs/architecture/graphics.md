@@ -394,7 +394,10 @@ Rules:
   makes a resource before it names its context, so one past the apps'
   share (or one macOS has no room for) is made for the desktop only and the
   first GL context that attaches it decides: Hyprland, quickshell or hyprlock keep
-  it, an app's context is lost. Venus memory is an app's.
+  it, an app's context is lost. Venus memory is an app's. The lost app's buffer
+  keeps an empty 1x1 stand-in (`virgl-gpu-guard-dropped-placeholder.patch`):
+  if the app already handed it to Hyprland, Hyprland still finds it and shows
+  an empty window instead of losing its own context.
 
 ## 6. Vulkan: Venus (built: `gpu-venus`)
 

@@ -174,6 +174,12 @@ commit 82927e9. Changes here:
   context is lost. The status file says why each context was lost (ADR 0034).
   Checked by `Tests/virgl/test-gpu-guard-policy.sh` (CI) and
   `Tests/virgl/test-resource-budget.c`
+- `patches/virgl-gpu-guard-dropped-placeholder.patch`: the buffer a lost app
+  made past its share gives its memory back but keeps an empty 1x1 stand-in,
+  so Hyprland can still show it (the app may have handed it over already)
+  and is not lost too. A refusal at the apps' share is logged as "apps' share
+  of N MB reached", not as the whole budget. Checked by
+  `Tests/virgl/test-resource-budget.c` (modes dropped, wording)
 - `patches/qemu-virgl-2d-resource-scanout.patch`: QEMU makes 2D resources
   (the guest's dumb buffers: console, plymouth, dumb screens and cursors)
   with the SCANOUT bind, so the budget's screen reserve covers them; the

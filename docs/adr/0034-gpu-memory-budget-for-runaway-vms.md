@@ -113,6 +113,10 @@ the guard. The guest's kernel makes a resource before it says for which
 context and attaches it right after, so a resource past the apps' share is
 made "for the desktop only" and the first GL context that attaches it
 decides: the desktop keeps it, an app's context is lost at once and told.
+Its memory comes back at once; the handle keeps an empty 1x1 stand-in
+(`virgl-gpu-guard-dropped-placeholder.patch`), because the app may already
+have handed the buffer to Hyprland, and a command of Hyprland's that names a
+missing resource would lose Hyprland too (3.0.3 did that with refused handles).
 macOS's memory pressure follows the same path: a big resource macOS has no
 room for is for the desktop only; the desktop's own resources wait only for
 the guard. Venus memory is an app's. QEMU's status file says why each

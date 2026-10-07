@@ -1,0 +1,241 @@
+virglrenderer: a lost app's dropped buffer keeps an empty stand-in; the log names the apps' share
+
+What: virgl-gpu-guard-desktop-reserve.patch drops the storage of a buffer an app made past
+its share (the app's context is lost, the buffer gives its memory back). But the app may
+already have handed that buffer to the compositor (a Wayland buffer; a lost app whose guest
+driver was not told goes on and hands over new ones). Hyprland then imports it (attach) and
+draws it (a sampler view): the handle had no storage, the command named a resource that was
+not there, and Hyprland's context was lost too: a black VM, the same as 3.0.3 with a refused
+handle. Now a dropped buffer keeps an empty 1x1 stand-in with the same target, format and
+layers (vrend_renderer_resource_stand_in), charged nothing: Hyprland's commands find a
+resource, the window shows empty, nothing else changes. Transfers that name the old size
+fail on the stand-in as they did on the missing storage (no context is lost by ctx 0).
+Also: an app's own resource refused at the apps' share was logged as "budget of N MB
+reached" (the whole budget). It now says "apps' share of N MB reached (the last M MB of the
+B MB budget are kept for the desktop)", with the context; Venus memory the same.
+Tests: Tests/virgl/test-resource-budget.c modes dropped and wording (fail without this patch).
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 3ff9e14..ba6453e 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -590,7 +590,16 @@ vkr_memory_charge_create(uint64_t bytes, const char *what)
+    uint64_t n;
+    struct virgl_gpu_charge *charge = virgl_gpu_charge_create(bytes, &n);
+    /* the 1st, 2nd, 4th, 8th ... refusal: a guest in a loop cannot flood the log */
+-   if (!charge && n && !(n & (n - 1)))
++   /* Venus memory is an app's: it stops at the apps' share (virgl_gpu_guard.h) */
++   if (!charge && n && !(n & (n - 1)) && virgl_gpu_budget_apps_share_full(bytes))
++      vkr_log("guest GPU memory: apps' share of %" PRIu64 " MB reached (the last %" PRIu64
++              " MB of the %" PRIu64 " MB budget are kept for the desktop): refused %" PRIu64
++              " KB of %s with %" PRIu64 " MB in use (%" PRIu64 " refused so far)",
++              virgl_gpu_budget_apps_limit() >> 20,
++              (virgl_gpu_budget_limit() - virgl_gpu_budget_apps_limit()) >> 20,
++              virgl_gpu_budget_limit() >> 20, bytes >> 10, what,
++              virgl_gpu_budget_in_use() >> 20, n);
++   else if (!charge && n && !(n & (n - 1)))
+       vkr_log("guest GPU memory budget of %" PRIu64 " MB reached: refused %" PRIu64
+               " KB of %s with %" PRIu64 " MB in use (%" PRIu64 " refused so far)",
+               virgl_gpu_budget_limit() >> 20, bytes >> 10, what,
+diff --git a/src/virgl_gpu_budget.h b/src/virgl_gpu_budget.h
+index 35d295d..49303f0 100644
+--- a/src/virgl_gpu_budget.h
++++ b/src/virgl_gpu_budget.h
+@@ -17,6 +17,11 @@ uint64_t virgl_gpu_budget_charge(uint64_t bytes, bool display);
+ void virgl_gpu_budget_uncharge(uint64_t bytes);
+ uint64_t virgl_gpu_budget_in_use(void);
+ uint64_t virgl_gpu_budget_limit(void);
++/* how far apps may go: the budget less the desktop's reserve
++ * (virgl-gpu-guard-dropped-placeholder.patch) */
++uint64_t virgl_gpu_budget_apps_limit(void);
++/* would an app's BYTES be refused by the apps' share only (the whole budget has room)? */
++bool virgl_gpu_budget_apps_share_full(uint64_t bytes);
+ 
+ /*
+  * A charge that goes with a piece of storage (Venus device memory, a shm blob): every
+diff --git a/src/virgl_resource.c b/src/virgl_resource.c
+index 268fbe3..e767c14 100644
+--- a/src/virgl_resource.c
++++ b/src/virgl_resource.c
+@@ -119,12 +119,17 @@ virgl_resource_create(uint32_t res_id)
+ }
+ 
+ void
+-virgl_resource_drop_pipe(struct virgl_resource *res)
++virgl_resource_drop_pipe(struct virgl_resource *res, struct pipe_resource *stand_in)
+ {
+-   if (res->pipe_resource && !res->mapped_from_pipe_resource) {
+-      pipe_callbacks.unref(res->pipe_resource, pipe_callbacks.data);
+-      res->pipe_resource = NULL;
++   if (!res->pipe_resource || res->mapped_from_pipe_resource) {
++      if (stand_in)
++         pipe_callbacks.unref(stand_in, pipe_callbacks.data);
++      return;
+    }
++   pipe_callbacks.unref(res->pipe_resource, pipe_callbacks.data);
++   res->pipe_resource = stand_in;
++   if (stand_in && res->iov)
++      pipe_callbacks.attach_iov(stand_in, res->iov, res->iov_count, pipe_callbacks.data);
+ }
+ 
+ struct virgl_resource *
+diff --git a/src/virgl_resource.h b/src/virgl_resource.h
+index af935e2..c63ea1f 100644
+--- a/src/virgl_resource.h
++++ b/src/virgl_resource.h
+@@ -193,9 +193,10 @@ void
+ virgl_resource_detach_iov(struct virgl_resource *res);
+ 
+ /* OmacVM: drop the resource's host storage (virgl-gpu-guard-desktop-reserve.patch); the
+- * resource stays, without a pipe resource, until the guest frees it */
++ * resource stays until the guest frees it, with STAND_IN (taken over, may be NULL) as its
++ * pipe resource (virgl-gpu-guard-dropped-placeholder.patch) */
+ void
+-virgl_resource_drop_pipe(struct virgl_resource *res);
++virgl_resource_drop_pipe(struct virgl_resource *res, struct pipe_resource *stand_in);
+ 
+ enum virgl_resource_fd_type
+ virgl_resource_export_fd(struct virgl_resource *res, int *fd);
+diff --git a/src/virglrenderer.c b/src/virglrenderer.c
+index f9db06e..19cc6a8 100644
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -588,13 +588,20 @@ void virgl_renderer_ctx_attach_resource(int ctx_id, int res_handle)
+     * decides: the desktop's keeps it. An app's GL context is lost, and the resource
+     * gives its memory back at once (as if it had been refused), so an app that goes on
+     * after its loss (a guest driver that is not told) cannot use up the desktop's
+-    * part. Another kind of context (Venus) keeps it, inside the budget. */
++    * part. Another kind of context (Venus) keeps it, inside the budget.
++    * The app may already have handed the buffer to the compositor (a Wayland buffer):
++    * it keeps an empty 1x1 stand-in, so Hyprland's commands that name it still find a
++    * resource and Hyprland is not lost too (virgl-gpu-guard-dropped-placeholder.patch). */
+    if (ctx && res) {
+       int why = desktop_only_take(res_handle);
+       if (why && (ctx->capset_id == VIRTGPU_DRM_CAPSET_VIRGL ||
+                   ctx->capset_id == VIRTGPU_DRM_CAPSET_VIRGL2) &&
+           !vrend_decode_ctx_desktop_only_resource(ctx, res_handle, why)) {
+-         virgl_resource_drop_pipe(res);
++         struct pipe_resource *stand_in = NULL;
++         if (res->pipe_resource && !res->mapped_from_pipe_resource)
++            stand_in = vrend_renderer_resource_stand_in(res->pipe_resource);
++         virgl_resource_drop_pipe(res, stand_in);
++         vrend_renderer_flush_current();
+          return;
+       }
+    }
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+index 241840d..2672cda 100644
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -488,6 +488,9 @@ struct global_renderer_state {
+    /* a pipe resource's context while it is made (its maker is known), else NULL */
+    struct vrend_context *resource_creator;
+    uint64_t resource_desktop_only_made, resource_desktop_kept, resource_desktop_dropped;
++   /* OmacVM: a stand-in for a dropped resource is being made: it is charged nothing
++    * (virgl-gpu-guard-dropped-placeholder.patch) */
++   bool resource_stand_in;
+ 
+    uint32_t max_draw_buffers;
+    uint32_t max_texture_buffer_size;
+@@ -10903,6 +10906,20 @@ uint64_t virgl_gpu_budget_limit(void)
+    return vrend_state.resource_budget;
+ }
+ 
++uint64_t virgl_gpu_budget_apps_limit(void)
++{
++   return virgl_gpu_guard_limit(vrend_state.resource_budget, vrend_state.resource_reserve,
++                                VIRGL_GPU_GUARD_APP);
++}
++
++bool virgl_gpu_budget_apps_share_full(uint64_t bytes)
++{
++   uint64_t budget = vrend_state.resource_budget;
++
++   return budget && virgl_gpu_budget_apps_limit() < budget &&
++          virgl_gpu_guard_fits(virgl_gpu_budget_in_use(), bytes, budget);
++}
++
+ uint64_t virgl_gpu_budget_in_use(void)
+ {
+    return __atomic_load_n(&vrend_state.resource_bytes, __ATOMIC_RELAXED);
+@@ -10985,6 +11002,11 @@ void virgl_gpu_charge_unref(struct virgl_gpu_charge *charge)
+ static bool vrend_resource_charge(struct vrend_resource *gr,
+                                   const struct vrend_renderer_resource_create_args *args)
+ {
++   if (vrend_state.resource_stand_in) {
++      gr->budget_bytes = 0;
++      return true;
++   }
++
+    uint64_t size = vrend_resource_estimated_size(args);
+    struct vrend_context *maker = vrend_state.resource_creator;
+    enum virgl_gpu_guard_who who =
+@@ -11010,7 +11032,20 @@ static bool vrend_resource_charge(struct vrend_resource *gr,
+    if (v == VIRGL_GPU_GUARD_REFUSED) {
+       n = __atomic_add_fetch(&vrend_state.resource_refusals, 1, __ATOMIC_RELAXED);
+       /* logged at the 1st, 2nd, 4th, 8th ... refusal: a guest in a loop cannot flood the log */
+-      if (!(n & (n - 1)))
++      /* an app's own resource stops at the apps' share: say that, not the whole budget */
++      if (!(n & (n - 1)) && who == VIRGL_GPU_GUARD_APP && virgl_gpu_budget_apps_share_full(size))
++         virgl_warn("guest GPU memory: apps' share of %llu MB reached (the last %llu MB of the "
++                    "%llu MB budget are kept for the desktop): refused a %ux%ux%u resource of "
++                    "%llu KB for context %d (%s) with %llu MB in use (%llu refused so far)\n",
++                    (unsigned long long)(virgl_gpu_budget_apps_limit() >> 20),
++                    (unsigned long long)((vrend_state.resource_budget -
++                                          virgl_gpu_budget_apps_limit()) >> 20),
++                    (unsigned long long)(vrend_state.resource_budget >> 20), args->width,
++                    args->height, MAX2(args->depth, args->array_size),
++                    (unsigned long long)(size >> 10), maker->ctx_id, maker->debug_name,
++                    (unsigned long long)(virgl_gpu_budget_in_use() >> 20),
++                    (unsigned long long)n);
++      else if (!(n & (n - 1)))
+          virgl_warn("guest GPU memory budget of %llu MB reached: refused a %ux%ux%u resource "
+                     "of %llu KB with %llu MB in use (%llu refused so far)\n",
+                     (unsigned long long)(vrend_state.resource_budget >> 20), args->width,
+@@ -11170,6 +11205,35 @@ bool vrend_renderer_context_desktop_only_resource(struct vrend_context *ctx, uin
+    return false;
+ }
+ 
++/*
++ * OmacVM: an empty 1x1 stand-in for PRES (same target, format and layers), charged
++ * nothing; NULL when it cannot be made. A lost app's dropped buffer gets one
++ * (virglrenderer.c): the app may already have handed the buffer to the compositor,
++ * and Hyprland's commands that name it (a sampler view to draw the window) must still
++ * find a resource, or Hyprland is lost too (a black VM). The window shows empty.
++ */
++struct pipe_resource *vrend_renderer_resource_stand_in(struct pipe_resource *pres)
++{
++   struct vrend_resource *old = (struct vrend_resource *)pres;
++   struct vrend_renderer_resource_create_args args = {
++      .target = old->base.target,
++      .format = old->base.format,
++      .bind = old->base.bind,
++      .width = 1,
++      .height = 1,
++      .depth = 1,
++      .array_size = old->base.array_size ? old->base.array_size : 1,
++      .nr_samples = old->base.nr_samples,
++      .last_level = 0,
++      .flags = old->y_0_top ? VIRGL_RESOURCE_Y_0_TOP : 0,
++   };
++
++   vrend_state.resource_stand_in = true;
++   struct pipe_resource *stand_in = vrend_renderer_resource_create(&args, NULL);
++   vrend_state.resource_stand_in = false;
++   return stand_in;
++}
++
+ static struct vrend_resource *
+ vrend_resource_create(const struct vrend_renderer_resource_create_args *args)
+ {
+diff --git a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
+index 73656f8..779ebad 100644
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -549,6 +549,7 @@ bool vrend_renderer_resource_refused_by_budget(void);
+ void vrend_renderer_context_refused_resource(struct vrend_context *ctx, uint32_t res_handle);
+ void vrend_decode_ctx_refused_resource(struct virgl_context *ctx, uint32_t res_handle);
+ int vrend_renderer_resource_desktop_only(void);
++struct pipe_resource *vrend_renderer_resource_stand_in(struct pipe_resource *pres);
+ bool vrend_renderer_context_desktop_only_resource(struct vrend_context *ctx, uint32_t res_handle,
+                                                   int why);
+ bool vrend_decode_ctx_desktop_only_resource(struct virgl_context *ctx, uint32_t res_handle, int why);

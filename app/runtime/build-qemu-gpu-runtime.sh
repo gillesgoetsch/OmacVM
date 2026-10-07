@@ -1089,6 +1089,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-set-type-without-e
 # OmacVM: a draw binds its GL program only when it changed (Apple's GL rebuilds its draw state
 # on every glUseProgram; WebGL pages with one draw per object paid that on each draw).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-use-program-cache.patch"
+# OmacVM: a lost app's dropped buffer keeps an empty 1x1 stand-in, so the compositor that shows it
+# is not lost too (a black VM); the log names the apps' share when an app stops there.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-gpu-guard-dropped-placeholder.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
