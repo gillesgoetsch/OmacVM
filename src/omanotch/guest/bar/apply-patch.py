@@ -25,12 +25,16 @@ What the patch adds:
   * notchcast's last word on parking (~/.local/state/omanotch/park), read at
     startup and every few seconds: a shell that (re)starts while the strip
     shows parks at once, and a lost IPC call cannot leave two bars.
+  * The right bar from the first frame after login: when the strip showed at
+    the end of the last session (~/.local/state/omanotch/expect), the bar
+    starts parked, with the notch geometry it had then (geom), and only
+    comes back if Omanotch does not confirm within a few seconds.
 """
 import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 15
+VERSION = 17
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -207,6 +211,7 @@ def main():
 
     function setParked(on: bool): string {
       root.notchLastBeat = Date.now()
+      root.notchBootPark = false
       root.notchParked = on
       return root.notchParked ? "parked" : "unparked"
     }
@@ -233,7 +238,17 @@ def main():
     }
     function heartbeat(): string {
       root.notchLastBeat = Date.now()
+      root.notchBootPark = false
       return root.notchParked ? "parked" : "unparked"
+    }
+    // Omanotch saw the VM full screen on the built-in display when it
+    // connected: the strip is coming. Parked now, as with the boot hint, so
+    // the display shows no bar of its own in the meantime (after a windowed
+    // session the hint said "0").
+    function bootPark(name: string): string {
+      if (root.notchParked && !root.notchBootPark) return "parked"
+      root.notchBootParkOn(name)
+      return "boot-parked"
     }
     function click(x: real, y: real, button: int): string {
       // bar-off or fullscreen: nothing is shown in the strip
@@ -270,10 +285,13 @@ def main():
   // starts a `qs` process each time.)
   readonly property string notchStateDir: home + "/.local/state/omanotch"
   readonly property real notchStartedAt: Date.now()
+  // blockAllReads: text() right after reload() waits for the new content
+  // (with blockLoading alone it returns the previous load's text).
   FileView {
     id: notchBeatFile
     path: root.notchStateDir + "/beat"
     blockLoading: true
+    blockAllReads: true
     printErrors: false
   }
   FileView {
@@ -300,20 +318,113 @@ def main():
     id: notchParkFile
     path: root.notchStateDir + "/park"
     blockLoading: true
+    blockAllReads: true
     printErrors: false
   }
   function notchFollowParkFile() {
     notchBeatFile.reload()
     var beat = parseFloat(String(notchBeatFile.text()).trim())
     if (!(beat > 0) || Date.now() - beat > 15000) return
-    if (beat > notchLastBeat) notchLastBeat = beat
     notchParkFile.reload()
     var p = String(notchParkFile.text()).trim().split(/\\s+/)
+    // "w <output>": notchcast is connected and waits for Omanotch's word
+    // (often since before this shell started). Keeps a boot-parked bar
+    // parked up to 15 s after that beat (the strip's first frame can take a
+    // few seconds); changes nothing else.
+    if (p[0] === "w") {
+      if (notchBootPark && beat > notchLastBeat) {
+        notchLastBeat = beat
+        notchArmExpiry()
+      }
+      return
+    }
+    if (beat > notchLastBeat) notchLastBeat = beat
+    notchBootPark = false
     if (p[0] === "1" && p.length === 2 && /^[A-Za-z0-9_.-]+$/.test(p[1])) {
       if (notchParkedScreen !== p[1]) notchParkedScreen = p[1]
       if (!notchParked) notchParked = true
     } else if (p[0] === "0" && p.length === 1 && notchParked) {
       notchParked = false
+    }
+  }
+
+  // notchcast's word on the strip that outlives a reboot: "1 <output>" when
+  // it showed at the end of the last session, "0" when it was hidden or
+  // Omanotch went away. With "1" the shell starts parked, so the first frame
+  // after login already has the bar in the strip only (no bar on the display
+  // that then disappears, no windows that jump). If Omanotch does not confirm
+  // within notchBootGraceMs (windowed now, or Omanotch not running), the bar
+  // comes back and the file says "0", so the next start does not guess again.
+  // The notch geometry of the last session (geom, "left right strip bar")
+  // lays out the NOTCH copy right from its first frame.
+  readonly property real notchBootGraceMs: 8000
+  property bool notchBootPark: false
+  // OmacVM.app with external displays: the built-in display may be another
+  // output than in the last session; this file names it (when it is there yet).
+  FileView {
+    id: notchBuiltinFile
+    path: Quickshell.env("XDG_RUNTIME_DIR") + "/omacvm/builtin"
+    blockLoading: true
+    blockAllReads: true
+    printErrors: false
+  }
+  function notchBootParkOn(name) {
+    notchBuiltinFile.reload()
+    var b = String(notchBuiltinFile.text()).trim()
+    if (/^Virtual-[0-9]+$/.test(b)) name = b
+    if (!/^[A-Za-z0-9_.-]+$/.test(name)) return
+    notchParkedScreen = name
+    notchLastBeat = Date.now() - 15000 + notchBootGraceMs
+    notchBootPark = true
+    notchParked = true
+    notchArmExpiry()
+  }
+  // Brings a guessed bar back on time when nothing confirms the guess (the
+  // 3 s timer alone would make it up to 3 s later).
+  Timer {
+    id: notchBootExpiry
+    onTriggered: root.notchWatchdog()
+  }
+  function notchArmExpiry() {
+    notchBootExpiry.interval = Math.max(50, notchLastBeat + 15000 - Date.now() + 50)
+    notchBootExpiry.restart()
+  }
+  FileView {
+    id: notchExpectFile
+    path: root.notchStateDir + "/expect"
+    blockLoading: true
+    blockAllReads: true
+    printErrors: false
+  }
+  FileView {
+    id: notchGeomFile
+    path: root.notchStateDir + "/geom"
+    blockLoading: true
+    blockAllReads: true
+    printErrors: false
+  }
+  function notchBoot() {
+    var g = String(notchGeomFile.text()).trim().split(/\\s+/).map(Number)
+    if (g.length === 4 && g.every(isFinite) && g[0] > 0 && g[1] > g[0]) {
+      notchLeft = g[0]
+      notchRight = g[1]
+      notchHeight = g[2] > 0 && g[2] < 200 ? g[2] : 0
+      notchBarHeight = g[3] > 0 && g[3] < 200 ? g[3] : 0
+    }
+    // The hint first, then notchcast's word if it has one already (a fresh
+    // beat: notchcast removes a beat it did not write itself when it starts).
+    var e = String(notchExpectFile.text()).trim().split(/\\s+/)
+    if (e[0] === "1" && e.length === 2 && /^[A-Za-z0-9_.-]+$/.test(e[1])) notchBootParkOn(e[1])
+    notchFollowParkFile()
+  }
+  property bool notchBooted: false
+  function notchWatchdog() {
+    if (notchParked && Date.now() - notchLastBeat > 15000) {
+      notchParked = false
+      if (notchBootPark) {
+        notchBootPark = false
+        notchExpectFile.setText("0\\n")
+      }
     }
   }
 
@@ -329,8 +440,13 @@ def main():
     running: true
     triggeredOnStart: true
     onTriggered: {
-      root.notchFollowParkFile()
-      if (root.notchParked && Date.now() - root.notchLastBeat > 15000) root.notchParked = false
+      if (!root.notchBooted) {
+        root.notchBooted = true
+        root.notchBoot()
+      } else {
+        root.notchFollowParkFile()
+      }
+      root.notchWatchdog()
     }
   }
 

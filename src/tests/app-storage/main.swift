@@ -258,6 +258,103 @@ do {
     try Storage.clear(caches)
     expect("clear: folder empty, folder kept", fm.fileExists(atPath: caches.path) && ((try? fm.contentsOfDirectory(atPath: caches.path)) ?? ["?"]).isEmpty)
 
+    // Downloads follow the VMs folder's drive
+    let dlHome = work.appendingPathComponent("dlhome")
+    let macCache = dlHome.appendingPathComponent("Library/Caches/omacvm")
+    try fm.createDirectory(at: dlHome, withIntermediateDirectories: true)
+    let extRoot = drive.appendingPathComponent("VMs"), extDl = extRoot.appendingPathComponent(".downloads")
+    expect("downloads: VMs on the Mac's drive, the Mac's cache",
+           Storage.downloadsFolder(vmsRoot: dlHome.appendingPathComponent("OmacVM"), home: dlHome).path == macCache.path)
+    expect("downloads: a VMs folder not made yet on the Mac's drive",
+           Storage.downloadsFolder(vmsRoot: work.appendingPathComponent("not/yet"), home: dlHome).path == macCache.path)
+    expect("downloads: VMs on another drive, next to them",
+           Storage.downloadsFolder(vmsRoot: extRoot, home: dlHome).path == extDl.path)
+    let gone = URL(fileURLWithPath: "/Volumes/OmacVM-no-such-drive/VMs")
+    expect("downloads: a drive not connected is never the Mac's cache",
+           Storage.downloadsFolder(vmsRoot: gone, home: dlHome).path == gone.appendingPathComponent(".downloads").path)
+    let folders = Storage.downloadsFolders(vmsRoots: [extRoot, dlHome.appendingPathComponent("OmacVM"), extRoot], home: dlHome)
+    expect("downloads folders: each once, the Mac's own always", folders.map(\.path) == [extDl.path, macCache.path], "\(folders)")
+    let withOld = Storage.downloadsFolders(vmsRoots: [extRoot], home: dlHome, old: [gone.appendingPathComponent(".downloads"), extDl])
+    expect("downloads folders: old ones last, each once",
+           withOld.map(\.path) == [extDl.path, macCache.path, gone.appendingPathComponent(".downloads").path], "\(withOld)")
+    // For app-storage.sh: vm-common.sh's downloads_dir must say the same.
+    try fm.createDirectory(at: extRoot, withIntermediateDirectories: true)
+    try fm.createDirectory(at: dlHome.appendingPathComponent("OmacVM"), withIntermediateDirectories: true)
+    let linkedRoot = dlHome.appendingPathComponent("LinkedVMs")
+    try fm.createSymbolicLink(at: linkedRoot, withDestinationURL: extRoot)
+    expect("downloads: a linked VMs folder counts where it points",
+           Storage.downloadsFolder(vmsRoot: linkedRoot, home: dlHome).path == linkedRoot.appendingPathComponent(".downloads").path)
+    try [extRoot, dlHome.appendingPathComponent("OmacVM"), linkedRoot, work.appendingPathComponent("not/yet")]
+        .map { "\($0.path)\t\(Storage.downloadsFolder(vmsRoot: $0, home: dlHome).path)\n" }.joined()
+        .write(to: work.appendingPathComponent("downloads-rule.tsv"), atomically: true, encoding: .utf8)
+
+    // Only the downloads are counted and removed
+    func file(_ u: URL, _ bytes: Int) throws {
+        try fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 1, count: bytes).write(to: u)
+    }
+    try file(macCache.appendingPathComponent("live/rootfs.ext4"), 1 << 20)
+    try file(macCache.appendingPathComponent("prebuilt/app/part-aa"), 1 << 20)
+    try file(macCache.appendingPathComponent("prebuilt-out/app/image.tar.zst"), 2 << 20)
+    try file(macCache.appendingPathComponent("build-live/x-live.img"), 1 << 20)
+    let size = Storage.downloadsSize(macCache)
+    expect("downloads size: live and prebuilt only", size >= 2 << 20 && size < 3 << 20, "\(size)")
+    try Storage.clearDownloads(macCache)
+    expect("clear downloads: live and prebuilt gone",
+           !fm.fileExists(atPath: macCache.appendingPathComponent("live").path) && !fm.fileExists(atPath: macCache.appendingPathComponent("prebuilt").path))
+    expect("clear downloads: the omacvm command's work stays",
+           fm.fileExists(atPath: macCache.appendingPathComponent("prebuilt-out/app/image.tar.zst").path)
+           && fm.fileExists(atPath: macCache.appendingPathComponent("build-live/x-live.img").path))
+    try Storage.clearDownloads(work.appendingPathComponent("no-such-folder"))
+    let withVM = work.appendingPathComponent("dlvm")
+    _ = try makeVM(withVM, "live", dataMB: 1)
+    do { try Storage.clearDownloads(withVM); expect("clear downloads: a folder with a VM refused", false) }
+    catch { expect("clear downloads: a folder with a VM refused", error.localizedDescription.contains("holds a VM")
+                   && fm.fileExists(atPath: withVM.appendingPathComponent("live/disk.img").path), error.localizedDescription) }
+    let target = work.appendingPathComponent("dltarget")
+    try file(target.appendingPathComponent("live/keep"), 10)
+    let dlLink = work.appendingPathComponent("dllink")
+    try fm.createSymbolicLink(at: dlLink, withDestinationURL: target)
+    do { try Storage.clearDownloads(dlLink); expect("clear downloads: a link refused", false) }
+    catch { expect("clear downloads: a link refused", fm.fileExists(atPath: target.appendingPathComponent("live/keep").path), error.localizedDescription) }
+
+    // A VMs folder left without VMs: its downloads move along on one drive, else stay listed
+    let oldRoot = drive.appendingPathComponent("Old"), newRoot = drive.appendingPathComponent("New")
+    let oldDl = oldRoot.appendingPathComponent(".downloads")
+    try file(oldDl.appendingPathComponent("live/rootfs.ext4"), 4096)
+    var left = Storage.dropDownloads(ofRoot: oldRoot, to: newRoot.appendingPathComponent(".downloads"), lines: [])
+    expect("old downloads: renamed on the same drive", left == nil
+           && fm.fileExists(atPath: newRoot.appendingPathComponent(".downloads/live/rootfs.ext4").path)
+           && !fm.fileExists(atPath: oldDl.path))
+    try file(oldDl.appendingPathComponent("live/rootfs.ext4"), 4096)
+    try fm.moveItem(at: newRoot.appendingPathComponent(".downloads"), to: newRoot.appendingPathComponent("away"))
+    left = Storage.dropDownloads(ofRoot: oldRoot, to: newRoot.appendingPathComponent(".downloads"), lines: ["/bin/bash /x/create-vm.sh /y/Omarchy"])
+    expect("old downloads: not renamed while a build runs, kept and listed",
+           left?.path == oldDl.path && fm.fileExists(atPath: oldDl.appendingPathComponent("live/rootfs.ext4").path))
+    left = Storage.dropDownloads(ofRoot: oldRoot, to: macCache, lines: [])
+    expect("old downloads: the new place on another drive: kept and listed (a build takes the live system)",
+           left?.path == oldDl.path && fm.fileExists(atPath: oldDl.appendingPathComponent("live/rootfs.ext4").path))
+    try fm.moveItem(at: newRoot.appendingPathComponent("away"), to: newRoot.appendingPathComponent(".downloads"))
+    left = Storage.dropDownloads(ofRoot: oldRoot, to: newRoot.appendingPathComponent(".downloads"), lines: [])
+    expect("old downloads: the new place has its own: both kept, the old one listed",
+           left?.path == oldDl.path && fm.fileExists(atPath: oldDl.appendingPathComponent("live/rootfs.ext4").path)
+           && fm.fileExists(atPath: newRoot.appendingPathComponent(".downloads/live/rootfs.ext4").path))
+    expect("old downloads: none there, nothing listed", Storage.dropDownloads(ofRoot: drive.appendingPathComponent("Never"), to: macCache, lines: []) == nil)
+    expect("old downloads: a drive not connected, listed",
+           Storage.dropDownloads(ofRoot: gone, to: macCache, lines: [])?.path == gone.appendingPathComponent(".downloads").path)
+    let stillThere = Storage.oldDownloadsKept([oldDl, drive.appendingPathComponent("Never/.downloads"), gone.appendingPathComponent(".downloads")])
+    expect("old downloads: listed while there or on a drive not connected",
+           stillThere.map(\.path) == [oldDl.path, gone.appendingPathComponent(".downloads").path], "\(stillThere)")
+    try file(oldDl.appendingPathComponent("notes.txt"), 10)
+    try Storage.clearDownloads(oldDl)
+    Storage.removeIfEmpty(oldDl)
+    expect("old downloads removed: anything else in the folder stays",
+           !fm.fileExists(atPath: oldDl.appendingPathComponent("live").path) && fm.fileExists(atPath: oldDl.appendingPathComponent("notes.txt").path))
+    try fm.removeItem(at: oldDl.appendingPathComponent("notes.txt"))
+    Storage.removeIfEmpty(oldDl)
+    expect("old downloads removed: the empty folder goes", !fm.fileExists(atPath: oldDl.path))
+    try fm.removeItem(at: newRoot); try fm.removeItem(at: oldRoot)
+
     // Sizes and Time Machine
     expect("size of a VM counts what the disk holds", Storage.allocatedSize(of: back) < 64 << 20 && Storage.allocatedSize(of: back) > 3 << 20)
     Storage.excludeFromBackup(back)

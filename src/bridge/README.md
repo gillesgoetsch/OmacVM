@@ -10,7 +10,7 @@ VM network (Parallels, UTM or VMware Fusion) and pushes every change as Server-S
 | Mac app | `mac/*.swift` → `~/Applications/OmacVMBridge.app` (agent app, keyboard icon in the menu bar), LaunchAgent `org.omacvm.bridge`, log `~/Library/Logs/omacvm-bridge.log` |
 | Listens on | port 47831 of the Mac's address on each VM network: `10.211.55.2` (Parallels' shared network), `192.168.64.1` (UTM's) and the `.1` of VMware Fusion's NAT network (`VNET_8_HOSTONLY_SUBNET` in `/Library/Preferences/VMware Fusion/networking`), and for OmacVM.app `127.0.0.1` and `192.168.77.1` (its fast network), never `0.0.0.0`. Waits for an address while its VM app is not running and re-binds after wake |
 | Token | Mac `~/Library/Application Support/omacvm-bridge/token` (0600, made on first start); VM `~/.config/omacvm-bridge/token` (copied by `omacvm apply`) |
-| Config | `~/Library/Application Support/omacvm-bridge/config.json`: `capture_keys`, `menu_bar_icon`, `keyboard_low_steps`, `external_brightness` (read again within 2 s of a change; `omacvm apply` sets it from the feature) |
+| Config | `~/Library/Application Support/omacvm-bridge/config.json`: `capture_keys`, `menu_bar_icon`, `keyboard_low_steps`, `external_brightness`, `brightness_steps` (read again within 2 s of a change; `omacvm apply` sets it from the feature) |
 | VM client | `guest/omacvm-bridge` (bash + curl; the token never shows in `ps`, and goes only to a Bridge that proved it knows it, see API) |
 | VM popups | `guest/omacvm-bridge-osd`, user service: the Mac's volume/brightness changes as Omarchy's own OSD |
 | Shared event stream | `guest/omacvm-bridge-events`, user socket `omacvm-bridge-events.socket` (`$XDG_RUNTIME_DIR/omacvm-bridge-events.sock`): one `/events` connection to the Mac per VM; `omacvm-bridge events` reads from it, so the widgets and the OSD keep their interface (see Events) |
@@ -333,7 +333,7 @@ are strict JSON up to 4 KB, unknown keys refused.
 |---|---|
 | `GET /omacvm/hello` | `{"proto", "proto_min", "omacvm", "requests", "features", "macos", "chip"}` |
 | `GET /omacvm/status` | the Mac's view of this VM: per feature on/available/reason, the Mac-side checks (`omacvm features --json` and `omacvm check --json --mac-only`, cached 30 s) |
-| `GET /omacvm/gpu-memory` | an OmacVM.app VM's graphics memory on the Mac, from `logs/gpu-memory` in its folder (QEMU writes it; the folder from `omacvm vms --json`): `{"measured", "in_use_mb", "peak_mb", "budget_mb", "pressure": "normal"\|"warn"\|"critical"\|"unknown", "refused", "lost"}`, numbers only (no app names, no paths); `measured` false before QEMU's first numbers; 409 `not-app` for other VMs. The control centre asks at most every 2 s while it is open; 200 answers are not logged, and it never starts a new `omacvm vms` run for a VM the list already has |
+| `GET /omacvm/gpu-memory` | an OmacVM.app VM's graphics memory on the Mac, from `logs/gpu-memory` in its folder (QEMU writes it; OmacVM.app sends it with the relayed request as `X-OmacVM-GPU-Memory`, base64 or `-` for none, so the Bridge never reads an external drive; from an older app, the folder from `omacvm vms --json`): `{"measured", "in_use_mb", "peak_mb", "budget_mb", "pressure": "normal"\|"warn"\|"critical"\|"unknown", "refused", "lost"}`, numbers only (no app names, no paths); `measured` false before QEMU's first numbers; 409 `not-app` for other VMs. The control centre asks at most every 2 s while it is open; 200 answers are not logged, and it never starts a new `omacvm vms` run for a VM the list already has |
 | `GET /omacvm/updates` | the last update check: `checks_enabled`, `checked_at`, `ok`, `offline`, `error`, the verified manifest |
 | `POST /omacvm/updates/check` | fetch and verify the manifest now (once a minute) |
 | `POST /omacvm/settings/update-checks` `{"enabled": bool}` | the one switch for update checks and notices |
@@ -359,7 +359,15 @@ with the VM and the answer; refusals (and 401s) once a minute per address, VM
 and reason, with the count left out.
 
 Which VM asked comes from `omacvm vms --json`, cached: a request never waits
-for it. It is read again in the background, one run at a time, when the list
+for it. OmacVM.app's VMs come from a second run, `omacvm vms --json
+--app-only`, through the app's own executable (`OmacVM --control-run`, when
+the CLI is the app's copy and its Info.plist has `OmacVMControlRun`); so do
+the status runs and jobs for an app VM. The Bridge spawns omacvm with its
+responsibility disclaimed (Local Network privacy), and macOS refuses such a
+program a VMs folder on an external drive without asking (Removable
+Volumes): through the app, the run is the app's, with the access the person
+gave the app. The app runs only the Bridge's commands, only for OmacVM Bridge
+of its own identity and signer (app/app/Sources/OmacVM/ControlRun.swift). It is read again in the background, one run at a time, when the list
 is a minute old, after a job, and for an address the list does not have (a
 VM that just started) at most once a minute, since any guest can add
 addresses. Also when a request does not prove with the key of the VM the
@@ -377,6 +385,44 @@ own 12 and the 16 unknown places) leaves the other VMs and the relay all
 theirs. Long requests (`POST /wallpaper` with its 120 s body,
 `GET /wifi/password` waiting on the dialog) at most two at once per VM (429).
 
+### Touch ID (`/omacvm/touchid`, feature `touch-id`)
+
+The VM's sudo and polkit ask the Mac's Touch ID first (ADR 0041; off by
+default, `omacvm enable touch-id`). The VM's PAM client
+(`guest/omacvm-touchid`, root) posts `{"kind", "user", "detail", "tty", "action"}`
+signed with the VM's Touch ID key (`vm-keys/<vm>.touchid` on the Mac,
+`/etc/omacvm/touchid-key` in the VM) under the label
+`omacvm-touchid-request 1`; the answer, signed back
+(`omacvm-touchid-answer 1`), is `{"result": "yes"}` or `{"result": "no",
+"reason": ...}`. No key on the Mac: 403 `off`, no dialog. The Bridge asks
+macOS with a fresh `LAContext` each time, biometrics only;
+`"touch_id_password_fallback": true` in `config.json` also offers the Mac's
+password (macOS then also takes an Apple Watch's approval). It says no
+without a dialog when the Mac is locked, the VM's app is not in front or
+the Mac has no Touch ID; one dialog at a time, per VM one request every
+2 s and 10 a minute; after 3 misses (cancelled, failed, not answered) no
+for 60 s, then 5 min, then 30 min, until a yes. The log has the VM, the
+kind and the result, never the command. In the VM the client asks only
+for the person at the VM's screen (logind's display session; sudo from a
+terminal of theirs, not over SSH) and only for a sudo command it can show
+whole. OmacVM.app's VMs ask through the virtio port `org.omacvm.auth` (only
+with `touch-id=on` at the VM's start); the app passes the request on to
+the relay socket with the relay key and the VM's name, the guest's
+signature along, and the signed answer back unchanged (`AuthRelay`).
+
+For OmacVM.app's VMs the Mac asks in a panel in the VM's Omarchy theme
+(from 3.0.2), shown by QEMU, the VM window's own process: macOS reads the
+finger only for the app in front. The Bridge decides as always, then sends
+the panel's words and the VM's theme to the app in an interim
+`103 Touch ID Panel` answer on the relay connection and gets the panel's end
+back as one line (`touchIDAskAppPanel`); it signs the final answer.
+macOS's dialog stays for Parallels, UTM and Fusion, the password fallback,
+`"touch_id_panel": false` in `config.json`, and whenever the panel could not
+show. The VM sends its theme with `POST /omacvm/theme` (control key; only
+with Touch ID on; `#rrggbb` colours checked for contrast:
+`touchid_theme.swift`), kept per VM in `touchid-theme/`. Tests:
+`tests/run.sh`; the panel itself: `swift run touchid-panel-tests` in app/app.
+
 ### Not built: Wi-Fi control
 
 `POST /power`, `/join`, `/disconnect` answer `501`. Design: CoreWLAN
@@ -391,7 +437,8 @@ While **a VM is in front** (an OmacVM.app VM, full screen or in a window;
 Parallels, UTM or VMware Fusion with the VM covering a whole display), volume
 up/down/mute, display brightness and keyboard-light keys are swallowed (no
 macOS popup), applied on the Mac in macOS's 1/16 steps (Shift+Option: 1/64),
-and shown by Omarchy's own OSD in the VM. Which key goes where is one tested
+display brightness in 1/32 steps (see Brightness steps), and shown by Omarchy's
+own OSD in the VM. Which key goes where is one tested
 rule, `MediaRoute` in `mac/keys-model.swift` (`mac/test-models.sh`):
 
 - volume and mute on an output without a software volume (an audio interface
@@ -430,14 +477,32 @@ Switch it off in the menu-bar icon or with `"capture_keys": false`.
 
 With the VM in front on an external display, the display brightness keys
 set that display instead (see External displays): OmacVM.app's VMs also in a
-window, Parallels, UTM and Fusion in full screen; 16 steps (Option: 64),
-read from the display first, writes at most every 50 ms (the latest level),
-never waiting in the key path; Omarchy's popup shows the level (not the
+window, Parallels, UTM and Fusion in full screen; 32 steps (Option: 64, see
+Brightness steps), read from the display first, writes at most every 50 ms
+(the latest level; a jump of more than two steps ramps there), never waiting
+in the key path; Omarchy's popup shows the level (not the
 display's name). A Mac mini
 whose only display macOS dims itself (LG UltraFine, Studio Display) has it set
 also while the display is not looked at yet (the Bridge's own DisplayServices
 call). A display without DDC/CI keeps the keys as before (the Mac's built-in
 display, in full screen), and the log says once why. `"external_brightness": false` in `config.json` switches it off.
+
+### Brightness steps
+
+The display brightness keys step 1/32 by default, half of macOS's 1/16:
+the built-in display, Apple displays (DisplayServices) and DDC/CI monitors
+alike, while a VM is in front. Option (or Shift+Option) steps 1/64, macOS's
+quarter step. One setting: `"brightness_steps": 32` in `config.json` (8 to
+100; Option then gives twice that, at least 64, at most 100), read again
+within 2 s, no restart. `BrightnessStep` in `mac/external-model.swift`.
+On a DDC/CI monitor every press moves its raw value (a monitor with a
+coarse range steps on until it does), and a jump of more than two steps
+(presses that piled up while the monitor was busy, a held key) goes out as
+a ramp: one write per 50 ms gap, at most two steps each, the latest level
+winning (`Ramp`). Writes the VM asks for are not ramped (one per 250 ms).
+Omarchy's popup shows each level (3-4 points apart). Volume and the keyboard
+light keep macOS's 1/16. Omarchy's own `+5%` inside the VM is unchanged: the
+Mac's keys never reach the VM.
 
 The keyboard light has four more steps below macOS's lowest (1/16): 0.001,
 0.01, 0.02 and 0.04 (`KeyboardSteps` in `mac/keylight.swift`). Measured on a

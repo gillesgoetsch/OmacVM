@@ -336,14 +336,24 @@ class Idle(unittest.TestCase):
         a.events = object() if events else None
         a.check_at = 0.0
         a.last_check = 1000.0
+        a.last_report = 1000.0
+        a.follow_until = 0.0
         a.looks = []
         a.repair = None
         a.config_watch = mock.Mock(ok=watch_ok)
         return a
 
-    def test_idle_sleeps_until_the_safety_report(self):
-        self.assertEqual(self.agent().timeout(1000.0), od.SAFETY_WITH_EVENTS)
-        self.assertEqual(self.agent().timeout(1010.0), od.SAFETY_WITH_EVENTS - 10)
+    def test_idle_sleeps_until_the_layout_compare(self):
+        self.assertEqual(self.agent().timeout(1000.0), od.REPORT_EVERY)
+        self.assertEqual(self.agent().timeout(1004.0), od.REPORT_EVERY - 4)
+        self.assertGreater(od.REPORT_EVERY, 5.0)   # no frequent wake-up on an idle desktop
+
+    def test_following_a_change_twice_a_second(self):
+        a = self.agent()
+        a.follow_until = 1000.0 + od.FOLLOW
+        self.assertEqual(a.timeout(1000.0), od.FOLLOW_EVERY)
+        a.last_report = 1000.0 + od.FOLLOW                   # the last compare while following
+        self.assertEqual(a.timeout(1000.0 + od.FOLLOW + 1), od.REPORT_EVERY - 1)
 
     def test_without_hyprland_events_more_often(self):
         self.assertEqual(self.agent(events=False).timeout(1000.0), od.SAFETY_WITHOUT_EVENTS)
@@ -371,6 +381,141 @@ class Idle(unittest.TestCase):
         self.assertTrue(od.shell_event(b"activewindow>>a,b\nopenlayer>>omarchy-background\n"))
         self.assertFalse(od.shell_event(b"closelayer>>notifications\nworkspace>>2\n"))
         self.assertFalse(od.layout_event(b"openlayer>>omarchy-background\n"))
+
+
+class StaleLayout(unittest.TestCase):
+    """The Air, 3.0.0: a config reload moved Virtual-1 "auto" right of NOTCH,
+    then display-sync and Omanotch moved them back with hyprctl eval (no
+    socket2 event). The agent's report from the middle of that stayed for
+    30 s, and QEMU kept the pointer in the left half of the screen."""
+
+    MID = [{"name": "NOTCH", "x": 1470, "y": -33, "width": 1470.0, "height": 33.0},
+           {"name": "Virtual-1", "x": 0, "y": 0, "width": 1470.0, "height": 923.0}]
+    BACK = [{"name": "NOTCH", "x": 0, "y": -33, "width": 1470.0, "height": 33.0},
+            {"name": "Virtual-1", "x": 0, "y": 0, "width": 1470.0, "height": 923.0}]
+
+    def setUp(self):
+        self.clock = [1000.0]
+        self.layout = list(self.MID)
+        self.sent = []
+        a = od.Agent.__new__(od.Agent)
+        a.events = object()
+        a.check_at = 0.0
+        a.last_check = 0.0
+        a.last_report = 0.0
+        a.follow_until = 0.0
+        a.reported = None
+        a.looks = []
+        a.suspect = None
+        a.repair = None
+        a.config_watch = mock.Mock(ok=True)
+        a.send = self.sent.append
+        a.watch_shell = lambda: None
+        a.check_desktop = lambda: None
+        self.agent = a
+        for patcher in (mock.patch.object(od.time, "monotonic", lambda: self.clock[0]),
+                        mock.patch.object(od, "monitors", lambda: list(self.layout))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_until(self, end):
+        """The agent's loop without select: sleep its timeout, do what is due."""
+        while self.clock[0] < end:
+            self.clock[0] = min(end, self.clock[0] + max(self.agent.timeout(self.clock[0]), 0.01))
+            self.agent.due()
+
+    def reported_at(self, layout, start, limit):
+        while self.clock[0] < start + limit:
+            self.run_until(self.clock[0] + 0.05)
+            if self.sent and self.sent[-1] == {"monitors": layout}:
+                return self.clock[0] - start
+        return None
+
+    def test_move_after_a_restart_mid_reload(self):
+        # The agent restarts and reports the passing layout at once ...
+        self.agent.follow()
+        self.agent.due()
+        self.assertEqual(self.sent, [{"monitors": self.MID}])
+        # ... then NOTCH moves back with no event: reported within a second.
+        self.run_until(1000.4)
+        self.layout = list(self.BACK)
+        took = self.reported_at(self.BACK, 1000.4, 2.0)
+        self.assertIsNotNone(took)
+        self.assertLessEqual(took, od.FOLLOW_EVERY + 0.06)
+
+    def test_move_after_a_reload_event(self):
+        self.agent.due()
+        self.run_until(1020.0)
+        self.agent.layout_changed()          # socket2 configreloaded
+        self.agent.soon(0.3)
+        self.run_until(1022.0)
+        self.layout = list(self.BACK)        # moved back 2 s later, no event
+        took = self.reported_at(self.BACK, 1022.0, 2.0)
+        self.assertIsNotNone(took)
+        self.assertLessEqual(took, od.FOLLOW_EVERY + 0.06)
+
+    def test_move_on_an_idle_desktop_is_reported_too(self):
+        self.agent.due()
+        self.run_until(1100.0)               # long after any change
+        sends = len(self.sent)
+        self.layout = list(self.BACK)
+        took = self.reported_at(self.BACK, 1100.0, od.REPORT_EVERY + 1)
+        self.assertIsNotNone(took)
+        self.assertLessEqual(took, od.REPORT_EVERY + 0.06)
+        self.assertEqual(len(self.sent), sends + 1)
+
+    def test_same_layout_sends_nothing(self):
+        self.agent.follow()
+        self.run_until(1060.0)
+        self.assertEqual(self.sent, [{"monitors": self.MID}])
+
+
+class PokeTest(unittest.TestCase):
+    def test_poke_wakes_the_agent(self):
+        import select
+        import tempfile
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            path = pathlib.Path(tmp) / "omacvm" / "displays.poke"
+            od.poke(path)                                # no agent: nothing happens
+            p = od.Poke(path)
+            self.addCleanup(p.close)
+            self.assertTrue(p.ok)
+            self.assertEqual(select.select([p], [], [], 0)[0], [])
+            self.assertFalse(p.drain())
+            od.poke(path)
+            od.poke(path)
+            self.assertEqual(select.select([p], [], [], 1)[0], [p])
+            self.assertTrue(p.drain())                   # both read at once
+            self.assertEqual(select.select([p], [], [], 0)[0], [])
+            p2 = od.Poke(path)                           # a restarted agent takes the path over
+            self.addCleanup(p2.close)
+            self.assertTrue(p2.ok)
+            od.poke(path)
+            self.assertEqual(select.select([p2], [], [], 1)[0], [p2])
+
+    def test_lua_hook_pokes(self):
+        lua = (HERE.parent / "omacvm_app.lua").read_text()
+        self.assertIn('hl.on("monitor.layout_changed"', lua)
+        self.assertIn("/usr/local/bin/omacvm-displays poke", lua)
+
+
+class RefreshWidget(unittest.TestCase):
+    def test_installer_rewriting_the_widget_does_not_stop_the_agent(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            widget = tmp / "omacvm.monitor"
+            widget.mkdir()
+            (widget / ".source-sha256").mkdir()          # read_text fails like a file gone midway
+            build = tmp / "build.py"
+            build.write_text("")
+            panel = tmp / "Panel.qml"
+            panel.write_text("x")
+            with mock.patch.object(od, "WIDGET", widget), mock.patch.object(od, "WIDGET_BUILD", build), \
+                    mock.patch.object(od, "OMARCHY_PANEL", panel), \
+                    mock.patch.object(od.subprocess, "run") as run, mock.patch.object(od, "log"):
+                od.refresh_widget()
+                run.assert_not_called()
 
 
 class ConfigWatchTest(unittest.TestCase):

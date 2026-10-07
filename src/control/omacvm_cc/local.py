@@ -20,12 +20,103 @@ def env_file() -> str:
     return os.environ.get("OMACVM_ENV", "/etc/omacvm/env")
 
 
+def sddm_root() -> str:
+    return os.environ.get("OMACVM_SDDM_ROOT", "")
+
+
+def sddm_texts() -> list[str] | None:
+    """SDDM's config files in the order it reads them; None: no SDDM here."""
+    import glob
+    r = sddm_root()
+    if not (os.path.isdir(r + "/etc/sddm.conf.d") or os.path.isfile(r + "/etc/sddm.conf")):
+        return None
+    paths = (sorted(glob.glob(r + "/usr/lib/sddm/sddm.conf.d/*.conf")) +
+             sorted(glob.glob(r + "/etc/sddm.conf.d/*.conf")) + [r + "/etc/sddm.conf"])
+    return [read(p) for p in paths]
+
+
 def installed_file() -> str:
     return os.environ.get("OMACVM_INSTALLED", "/etc/omacvm/installed.json")
 
 
 def check_socket() -> str:
     return os.environ.get("OMACVM_CHECK_SOCKET", "/run/omacvm/check.sock")
+
+
+def resume_file() -> str:
+    """Written before OmacVM.app restarts this VM for an update: after the
+    restart, this VM's part follows (the control centre, opened by omacvm notify)."""
+    return os.path.join(os.path.dirname(cache_file()), "update-after-restart")
+
+
+RESUME_SECONDS = 3600
+
+
+def boot_id() -> str:
+    """This boot of the VM (OMACVM_BOOT_ID for tests)."""
+    if os.environ.get("OMACVM_BOOT_ID"):
+        return os.environ["OMACVM_BOOT_ID"]
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def write_resume(version: str, boot: str | None = None) -> None:
+    os.makedirs(os.path.dirname(resume_file()), exist_ok=True)
+    with open(resume_file(), "w", encoding="utf-8") as f:
+        json.dump({"version": version, "at": time.time(), "boot": boot_id() if boot is None else boot}, f)
+
+
+def drop_resume() -> None:
+    try:
+        os.remove(resume_file())
+    except OSError:
+        pass
+
+
+def take_resume(remove: bool = True) -> str | None:
+    """The version from a marker under an hour old, written before this boot
+    (removed: it is used once), else None. In the boot that wrote it the VM has
+    not restarted yet: the marker stays."""
+    d = read_json(resume_file())
+    if d and d.get("boot") == boot_id():
+        return None
+    if remove:
+        try:
+            os.remove(resume_file())
+        except OSError:
+            pass
+    at, v = d.get("at"), d.get("version")
+    if not isinstance(at, (int, float)) or not isinstance(v, str) or not -60 < time.time() - at < RESUME_SECONDS:
+        return None
+    return v
+
+
+def restart_file() -> str:
+    """Written after an update in this VM: kernel, memory and keyboard
+    changes wait for a restart (only in this boot)."""
+    return os.path.join(os.path.dirname(cache_file()), "restart-needed")
+
+
+def write_restart_needed(version: str) -> None:
+    try:
+        os.makedirs(os.path.dirname(restart_file()), exist_ok=True)
+        with open(restart_file(), "w", encoding="utf-8") as f:
+            json.dump({"version": version, "boot": boot_id()}, f)
+    except OSError:
+        pass
+
+
+def restart_needed() -> str | None:
+    """The version an update in this boot brought in, if the VM has not
+    restarted since (None: nothing waits for a restart)."""
+    d = read_json(restart_file())
+    if not d or d.get("boot") != boot_id() or not boot_id():
+        return None
+    v = d.get("version")
+    return v if isinstance(v, str) else None
 
 
 def cache_file() -> str:
@@ -67,6 +158,10 @@ class Local:
         self.version = read(os.path.join(share(), "VERSION")).strip() or "?"
         self.env = S.parse_env(read(env_file()))
         self.on = S.desired(self.features, self.env)
+        # Autologin as SDDM does it, whoever wrote the file (the Mac fixes the record to match).
+        texts = sddm_texts()
+        if texts is not None and "autologin" in self.on:
+            self.on["autologin"] = bool(S.sddm_autologin_user(texts))
         self.vm_type = self.env.get("OMACVM_VM_TYPE", "")
         self.installed = read_json(installed_file())
         self.cache = read_json(cache_file())

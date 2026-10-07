@@ -19,6 +19,8 @@ from a listener without the proof is acted on. Then it reads lines:
   A <dx> <dy>, W <dx> <dy>, P       scroll momentum: macOS's scroll while touching, its
                                     momentum (points), a pinch macOS recognized
   K <code> <value>                  UTM: a key on the virtual keyboard
+  N <why>                           the escape combo found no way out to macOS
+                                    (space-shortcut-off, space-unchanged, no-spaces)
 
 Without macOS-native scroll momentum (the scroll-momentum feature; "Glide"
 in the code, after the glide that follows a flick) the helper sends 3+-finger frames and 2-finger pinches; pointer,
@@ -601,6 +603,21 @@ def escape_notice(keys):
     notify("Trackpad gestures → macOS (⌃⌥ Esc to take them back)")
 
 
+# The escape combo found no way out to macOS ("N <why>"): the Mac did
+# nothing else (no Mission Control), so the user is told here, in the VM
+# that is still on screen.
+NO_WAY_OUT = {
+    "space-shortcut-off": "No way to macOS: turn on “Move left/right a space” "
+                          "(System Settings › Keyboard › Keyboard Shortcuts › Mission Control)",
+    "space-unchanged": "macOS did not switch the Space: still in the VM (swipe with the trackpad)",
+    "no-spaces": "macOS gave no Spaces information: still in the VM (swipe with the trackpad)",
+}
+
+
+def no_way_out(why):
+    notify(NO_WAY_OUT.get(why, NO_WAY_OUT["space-unchanged"]), 6000)
+
+
 def bridge_token():
     try:
         home = pwd.getpwnam(os.environ.get("OMACVM_USER") or desktop_user() or "").pw_dir
@@ -775,6 +792,8 @@ def handle(p, pad, keys, glide):
             keys.release()
         if state == "esc":
             escape_notice(p[2].decode() if len(p) > 2 else None)
+    elif p[0] == b"N":
+        no_way_out(p[1].decode())
 
 
 def main():

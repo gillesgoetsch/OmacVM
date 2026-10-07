@@ -1,0 +1,96 @@
+From: OmacVM
+Subject: [PATCH] ui/cocoa: a display leaving the VM's Space stays left
+
+What: a click in an extra display's window hands the keyboard back to the
+main window (only while the main window's Space shows). The extra
+window no longer does that when it merely becomes key.
+
+Why: with two displays, the escape combo moved the pointer's display to
+the macOS Space beside the VM's, then it flicked straight back (user
+report, 3.0.0 candidate, 2026-10-06). When the main window's Space leaves
+its display, macOS makes the app's other window (on the other display)
+key; that window gave the key back to the main window, which is on a Space
+not shown, and macOS switched the display back to it to show it. Checking
+the Space when the window became key depended on the order in which macOS
+changes the key window and the Space (independent review, 2026-10-06); at
+the click there is no such order.
+
+Upstream: not applicable (OmacVM's omacvm-cocoa-displays.patch).
+Test: Tests/display/test-fullscreen-space.sh (build time) and the live
+two-display check on the Mac mini (tracks: fullscreen-space). Applies
+after omacvm-cocoa-fullscreen-own-space.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -6427,19 +6427,46 @@ - (void)mouseMoved:(NSEvent *)e { [self send:e button:-1 down:false]; }
+ - (void)mouseDragged:(NSEvent *)e { [self send:e button:-1 down:false]; }
+ - (void)rightMouseDragged:(NSEvent *)e { [self send:e button:-1 down:false]; }
+ - (void)otherMouseDragged:(NSEvent *)e { [self send:e button:-1 down:false]; }
+-- (void)mouseDown:(NSEvent *)e { [self send:e button:INPUT_BUTTON_LEFT down:true]; }
++/*
++ * A click here made this window key. The keyboard and the main window's
++ * pointer tracking belong to the main window: hand it back, at the click
++ * (not when this window becomes key: macOS also makes it key when the escape
++ * combo or a swipe moves the main window's display to another Space, and
++ * making the main window key then switched that display straight back).
++ * Only while the main window's Space shows. The click still goes to the VM.
++ */
++- (void)handKeyBack
++{
++    NSWindow *main = [cocoaView window];
++    if ([main isVisible] && [main isOnActiveSpace] && [NSApp isActive] && ![main isKeyWindow]) {
++        [main makeKeyWindow];
++    }
++}
++- (void)mouseDown:(NSEvent *)e
++{
++    [self handKeyBack];
++    [self send:e button:INPUT_BUTTON_LEFT down:true];
++}
+ - (void)mouseUp:(NSEvent *)e
+ {
+     [self send:e button:INPUT_BUTTON_LEFT down:false];
+     [cocoaView omacvmUngrabAfterDrag];
+ }
+-- (void)rightMouseDown:(NSEvent *)e { [self send:e button:INPUT_BUTTON_RIGHT down:true]; }
++- (void)rightMouseDown:(NSEvent *)e
++{
++    [self handKeyBack];
++    [self send:e button:INPUT_BUTTON_RIGHT down:true];
++}
+ - (void)rightMouseUp:(NSEvent *)e
+ {
+     [self send:e button:INPUT_BUTTON_RIGHT down:false];
+     [cocoaView omacvmUngrabAfterDrag];
+ }
+-- (void)otherMouseDown:(NSEvent *)e { [self send:e button:INPUT_BUTTON_MIDDLE down:true]; }
++- (void)otherMouseDown:(NSEvent *)e
++{
++    [self handKeyBack];
++    [self send:e button:INPUT_BUTTON_MIDDLE down:true];
++}
+ - (void)otherMouseUp:(NSEvent *)e
+ {
+     [self send:e button:INPUT_BUTTON_MIDDLE down:false];
+@@ -6546,21 +6573,6 @@ - (NSApplicationPresentationOptions)window:(NSWindow *)window
+                                 NSApplicationPresentationAutoHideMenuBar)) |
+            NSApplicationPresentationHideDock | NSApplicationPresentationHideMenuBar;
+ }
+-
+-/*
+- * A click on another display's window makes it key. The keyboard and the
+- * main window's pointer tracking belong to the main window: hand it back.
+- * The click itself still reaches this window's view.
+- */
+-- (void)windowDidBecomeKey:(NSNotification *)note
+-{
+-    dispatch_async(dispatch_get_main_queue(), ^{
+-        NSWindow *main = [cocoaView window];
+-        if ([main isVisible] && [NSApp isActive] && ![main isKeyWindow]) {
+-            [main makeKeyWindow];
+-        }
+-    });
+-}
+ @end
+ 
+ static OmacVMHeadDelegate *omacvm_head_delegate;

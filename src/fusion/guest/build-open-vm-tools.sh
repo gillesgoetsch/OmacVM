@@ -31,7 +31,7 @@ else
   grep -q -- '--without-gtkmm4' PKGBUILD || { echo "build-open-vm-tools: the recipe changed, GTK 3 not set" >&2; exit 1; }
   # Dependencies as makepkg reads them, without running the recipe as root.
   deps=$(as_u makepkg --printsrcinfo | sed -n 's/^\t\(make\)\{0,1\}depends = //p' | sed 's/[<>=].*//' | sort -u)
-  pacman -S --needed --noconfirm base-devel $deps >/dev/null
+  "$here/../../guest/pkg-add" base-devel $deps
   echo "building open-vm-tools for aarch64 (about 5 minutes)"
   sudo -u "$U" env MAKEFLAGS="-j$(nproc)" makepkg -A --nodeps --noconfirm > "$W/build.log" 2>&1 ||
     { tail -20 "$W/build.log" >&2; echo "build-open-vm-tools: the build failed, full log: $W/build.log" >&2; exit 1; }

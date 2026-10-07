@@ -207,7 +207,7 @@ class Bridge:
             return answer
         msg = str(answer.get("error") or f"HTTP {status}")
         if status == 404 and path.startswith("/omacvm/hello"):
-            raise BridgeError("old", "the Mac's OmacVM has no control centre yet: run omacvm update on the Mac", status)
+            raise BridgeError("old", "the Mac's OmacVM has no control centre yet: update OmacVM on the Mac", status)
         if status == 401:
             raise BridgeError("unproven", "the Mac refused this VM's token: omacvm apply on the Mac", status)
         raise BridgeError("refused", msg, status, str(answer.get("code", "")), answer.get("looking") is True)
@@ -280,8 +280,21 @@ class Bridge:
     def check_updates(self) -> dict:
         return self.call("POST", "/omacvm/updates/check", {}, timeout=30.0)
 
+    def app_update(self) -> dict:
+        """OmacVM.app (this VM's app) updates itself: the Mac answers once it
+        has the update (a download may take minutes), then shuts this VM down,
+        updates and starts it again."""
+        return self.call("POST", "/omacvm/app-update", {}, timeout=300.0)
+
     def set_update_checks(self, enabled: bool) -> dict:
         return self.call("POST", "/omacvm/settings/update-checks", {"enabled": bool(enabled)})
+
+    def mouse_swipe(self) -> dict:
+        """The Mac's Magic Mouse swipe: {"magic_mouse": bool, "fingers": 3|4}."""
+        return self.call("GET", "/omacvm/settings/mouse-swipe", timeout=3.0)
+
+    def set_mouse_swipe(self, fingers: int) -> dict:
+        return self.call("POST", "/omacvm/settings/mouse-swipe", {"fingers": 3 if fingers == 3 else 4})
 
     def start_job(self, action: str, features: list[str] | tuple[str, ...] = ()) -> dict:
         body: dict = {"action": action}

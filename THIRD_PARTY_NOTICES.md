@@ -34,6 +34,10 @@ each file taken from them:
   (`src/icon/omacvm.svg`) uses Omarchy's mark; OmacVM.app's boot logo (the
   firmware's, and the window's while the VM starts) and the start animation
   are Omarchy's `logo.svg`.
+- **JetBrains Mono** 2.305 (github.com/JetBrains/JetBrainsMono), SIL Open
+  Font License 1.1, (c) 2020 The JetBrains Mono Project Authors,
+  `app/fonts/OFL.txt`: the font of the Touch ID panel (`app/fonts`, bundled
+  unchanged in OmacVM.app's Contents/Resources/fonts).
 - **Omanotch** (`src/omanotch/`) has its own README and licence.
 - In the VM, nothing else is bundled: Arch Linux ARM and Omarchy
   (omarchy-mac) come from their own servers, v4l2loopback too (built in the

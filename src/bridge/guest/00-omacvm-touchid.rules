@@ -1,0 +1,19 @@
+// OmacVM Touch ID (ADR 0041): notes which action a user at the VM's own
+// screen is checked for (/run/omacvm-touchid/<user>), so the Mac's Touch ID
+// dialog can name it, and so the PAM client asks the Mac only right after
+// such a check. Decides nothing: polkit's own rules do. 00-: before any rule
+// that answers, so every check is noted.
+// Checks of anyone else (an SSH login, another seat) go to one shared note:
+// while one is fresh, nobody gets Touch ID, so such a check never borrows a
+// dialog meant for the person at the screen. root is never asked: no note.
+polkit.addRule(function (action, subject) {
+  if (subject.user != "root") {
+    try {
+      polkit.spawn(["/usr/lib/omacvm/omacvm-touchid-note",
+                    subject.local && subject.active ? subject.user : "--other", action.id]);
+    } catch (e) {
+      // no note: no Touch ID for this one, the password prompt as before
+    }
+  }
+  return polkit.Result.NOT_HANDLED;
+});

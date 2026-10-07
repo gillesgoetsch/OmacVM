@@ -10,8 +10,9 @@
 //
 // Threading: every transfer runs on one serial queue (`io`), one at a time and
 // at least `gap` apart; writes are coalesced (a held key sends the latest
-// level only). The key path (main thread, event tap) only reads the cache under
-// `lock` and queues work: it never waits for a display.
+// level only; a key's jump of more than two steps ramps there: Ramp). The
+// key path (main thread, event tap) only reads the cache under `lock` and
+// queues work: it never waits for a display.
 //
 // Off (external_brightness false): no DDC traffic at all, not even reads: no
 // look at start, after a display change or for omacvm check.
@@ -73,13 +74,17 @@ final class ExternalBrightness {
   private var generation = 0                                // lock: bumped by a display change
   private var services: [CGDirectDisplayID: CFTypeRef] = [:]   // io
   private var servicesLoaded = false                           // io
-  private var pending: [CGDirectDisplayID: Int] = [:]          // io: raw levels to write
+  private var pending: [CGDirectDisplayID: Pending] = [:]      // io: raw levels to write
+  private var lastRaw: [CGDirectDisplayID: Int] = [:]          // io: the raw level last read or written
   private var flushQueued = false                              // io
   private var lastTransfer = Date.distantPast                  // io
   private var lastWrite = Date.distantPast                     // io
   private var pendingFromVM = false                            // io: a queued write the VM asked for
   private var lookCount = 0                                    // io: probes so far
   private var failures: [CGDirectDisplayID: Int] = [:]         // io
+
+  /// A raw level on its way; `ramp`: at most this much per write (a key's), nil = in one write (the VM's).
+  private struct Pending { var raw: Int; var ramp: Int? }
 
   private func locked<T>(_ f: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return f() }
 
@@ -97,7 +102,7 @@ final class ExternalBrightness {
   func displaysChanged() {
     let g: Int = locked { known = [:]; generation += 1; return generation }
     io.async {
-      self.services = [:]; self.servicesLoaded = false; self.pending = [:]; self.failures = [:]
+      self.services = [:]; self.servicesLoaded = false; self.pending = [:]; self.lastRaw = [:]; self.failures = [:]
     }
     io.asyncAfter(deadline: .now() + 2) {
       if self.locked({ self.generation }) == g, self.enabled() { self.probeAll() }
@@ -158,6 +163,7 @@ final class ExternalBrightness {
     case .native: d = Display(method: .apple, name: name, level: native, readAt: Date())
     case .ddc:
       if let av = services[id], let (cur, max) = ddcRead(av) {
+        lastRaw[id] = cur
         d = Display(method: .ddc, name: name, max: max, level: BrightnessStep.level(cur, max: max), readAt: Date())
       } else {
         d = Display(method: .none(NotSettable.noAnswer), name: name)
@@ -275,8 +281,8 @@ final class ExternalBrightness {
     return ok
   }
 
-  private func queueWrite(_ id: CGDirectDisplayID, _ raw: Int, fromVM: Bool) {
-    pending[id] = raw
+  private func queueWrite(_ id: CGDirectDisplayID, _ raw: Int, ramp: Int?, fromVM: Bool) {
+    pending[id] = Pending(raw: raw, ramp: fromVM ? nil : ramp)
     pendingFromVM = pendingFromVM || fromVM
     guard !flushQueued else { return }
     flushQueued = true
@@ -295,9 +301,16 @@ final class ExternalBrightness {
     flushQueued = false; pendingFromVM = false
     let work = pending
     pending = [:]
-    for (id, raw) in work {
+    for (id, p) in work {
       guard let av = services[id] else { continue }
-      if ddcWrite(av, raw) { failures[id] = 0; continue }
+      let raw = p.ramp.map { Ramp.next(from: lastRaw[id], to: p.raw, limit: $0) } ?? p.raw
+      if ddcWrite(av, raw) {
+        failures[id] = 0; lastRaw[id] = raw
+        // Not there yet: the rest after the next gap (a newer level queued meanwhile replaces it).
+        if raw != p.raw { queueWrite(id, p.raw, ramp: p.ramp, fromVM: false) }
+        continue
+      }
+      lastRaw[id] = nil   // unknown now: the next write goes straight
       failures[id, default: 0] += 1
       if failures[id] == 3 {
         log("external brightness: display \(id) stopped taking DDC/CI writes; looking again")
@@ -326,6 +339,7 @@ final class ExternalBrightness {
     case .ddc:
       guard let av = services[id], let (cur, max) = ddcRead(av) else { return nil }
       d.max = max; d.level = BrightnessStep.level(cur, max: max)
+      if pending[id] == nil { lastRaw[id] = cur }
     case .none:
       return nil
     }
@@ -333,13 +347,14 @@ final class ExternalBrightness {
     return d.level
   }
 
-  private func write(_ id: CGDirectDisplayID, _ d: inout Display, _ v: Double, fromVM: Bool) -> Bool {
+  private func write(_ id: CGDirectDisplayID, _ d: inout Display, _ v: Double, steps: Int = BrightnessStep.defaultSteps,
+                     fromVM: Bool) -> Bool {
     switch d.method {
     case .apple:
       guard let dsSet, dsSet(id, Float(v)) == 0 else { return false }
     case .ddc:
       guard services[id] != nil else { return false }
-      queueWrite(id, BrightnessStep.raw(v, max: d.max), fromVM: fromVM)
+      queueWrite(id, BrightnessStep.raw(v, max: d.max), ramp: Ramp.limit(max: d.max, steps: steps), fromVM: fromVM)
     case .none:
       return false
     }
@@ -349,8 +364,9 @@ final class ExternalBrightness {
 
   private func store(_ id: CGDirectDisplayID, _ d: Display) { locked { if known[id] != nil { known[id] = d } } }
 
-  /// A brightness key (main thread): one step on that display, queued.
-  func step(_ id: CGDirectDisplayID, up: Bool, fine: Bool) {
+  /// A brightness key (main thread): one step of 1/`steps` on that display
+  /// (BrightnessStep.steps / .fine), queued.
+  func step(_ id: CGDirectDisplayID, up: Bool, steps: Int, fine: Bool = false) {
     io.async {
       guard self.enabled() else { return }
       var d = self.entry(id)
@@ -358,8 +374,8 @@ final class ExternalBrightness {
       guard let now = self.level(id, &d, maxAge: Self.fresh) else {
         self.keyFailed(d.name, "it did not answer (asleep, or the read failed)"); return
       }
-      let to = BrightnessStep.next(now, up: up, fine: fine)
-      guard self.write(id, &d, to, fromVM: false) else {
+      let to = BrightnessStep.next(now, up: up, steps: steps, max: d.method == .ddc ? d.max : nil)
+      guard self.write(id, &d, to, steps: steps, fromVM: false) else {
         self.keyFailed(d.name, "it did not take the new level"); return
       }
       self.failedSaid.remove(d.name)
@@ -435,11 +451,32 @@ enum VMApp {
 
   /// The app's executable: OmacVM.app runs each VM as Contents/Resources/runtime/bin/OmacVM
   /// (a development build as qemu-system-aarch64); its launcher has no VM windows.
+  /// A VM of the other identity's app (test or normal, VMOwner) is not ours: nil.
+  /// The kernel's path first: LaunchServices reports OmacVM.app's own
+  /// executable for its QEMU (the app's DockIdentity, 3.0.1).
   static func of(_ app: NSRunningApplication?) -> VMApp? {
-    guard let app, let exe = app.executableURL?.path ?? pidPath(app.processIdentifier) else { return nil }
+    guard let app, let exe = pidPath(app.processIdentifier) ?? app.executableURL?.path else { return nil }
     let name = (exe as NSString).lastPathComponent
-    if exe.hasSuffix("/runtime/bin/OmacVM") || name == "qemu-system-aarch64" { return .omacvm }
+    if exe.hasSuffix("/runtime/bin/OmacVM") || name == "qemu-system-aarch64" {
+      return VMOwner.ours(appID: appID(exe), testBridge: testBridge) ? .omacvm : nil
+    }
     return ["prl_client_app", "UTM", "VMware Fusion"].contains(name) ? .other : nil
+  }
+
+  private static let testBridge = Bundle.main.bundleIdentifier == VMOwner.testBridge
+  private static var ids: [String: String] = [:]   // app path -> bundle id, under idsLock
+  private static let idsLock = NSLock()   // the key tap (main thread) and the server's threads ask
+
+  /// The bundle id of the app a VM process runs from (read once per app path).
+  /// A failed read is not kept: during an update swap or before an external
+  /// volume is ready, the next key press reads it again.
+  private static func appID(_ exe: String) -> String? {
+    guard let path = VMOwner.app(executable: exe) else { return nil }
+    idsLock.lock(); defer { idsLock.unlock() }
+    if let id = ids[path] { return id }
+    guard let id = Bundle(path: path)?.bundleIdentifier else { return nil }
+    ids[path] = id
+    return id
   }
 }
 

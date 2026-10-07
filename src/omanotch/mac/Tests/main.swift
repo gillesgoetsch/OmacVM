@@ -89,6 +89,18 @@ var st2 = ParkState()
 apply(st2.activate(1))
 check(st2.activate(2).count, 0, "switching away from an unparked guest sends nothing")
 
+// A guest that connects is told at once what the Mac sees: full screen, the
+// strip is coming (it parks now); no full-screen window, the strip is hidden
+// (it may have started parked); another Space: nothing, it keeps its guess.
+var s4 = ParkState()
+check(s4.connected(1, seen: .none).map { "\($0.guest) \($0.line)" }, ["1 park 0"], "windowed: park 0 at once")
+apply(s4.activate(1))
+check(s4.connected(1, seen: .fullScreen).map(\.line), ["hint 1"], "full screen: hint 1, park 1 with the strip")
+check(s4.connected(1, seen: .otherSpace).count, 0, "full screen on another Space: nothing")
+s4.reset(1, gone: false)
+check(s4.connected(1, seen: .none).map(\.line), ["park 0"], "reconnect while windowed: park 0")
+check(s4.parked, false, "a hint is no park: the strip's park 1 still goes out")
+
 // The whole loop with fake windows: at most one bar parked, always the front VM's.
 var s3 = ParkState()
 parkedGuests = []

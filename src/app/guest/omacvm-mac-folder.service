@@ -1,0 +1,13 @@
+[Unit]
+Description=OmacVM.app: the Mac folder at ~/Mac
+After=local-fs.target systemd-modules-load.service
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/omacvm-mac-folder
+ExecStop=/usr/local/bin/omacvm-mac-folder --stop
+
+[Install]
+WantedBy=multi-user.target

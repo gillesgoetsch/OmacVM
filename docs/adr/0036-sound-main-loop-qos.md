@@ -64,3 +64,31 @@ fix for 2.9.x (troubleshooting finding 25).
 - The main loop may take a P-core from a vCPU while it renders; it is one
   thread, and the guest's GPU work waits for it anyway.
 - Remove the switch once a release has run without anyone needing it.
+
+## 3.0.1: the guest side
+
+The rest of the glitches under full load were put down to the VM's own
+sound threads starved of CPU. Measured on a Mac mini M4 (VM with 8 CPUs):
+with RTKit working, PipeWire's data loops already run real-time (SCHED_RR
+20, RTKit's cap) and its main threads at nice -11, and a full load in the
+VM leaves the tone almost clean (0 sink / 3 app xruns, 2 breaks at the
+start in 5 minutes). They fall to normal priority only when RTKit's
+watchdog demotes them: it takes a stretch of more than 10 s in which the
+VM's threads did not run but its clock went on (QEMU stopped from
+outside) for a runaway thread, demotes every real-time thread for the rest
+of the session and refuses new ones for 5 minutes (`kill -STOP` of QEMU
+for 15 s does it every time; a QMP stop does not). Breaks in 5 minutes:
+real-time 2, 6, 2, 0; demoted 81 (the mini busy with two builds as well)
+and 0. The VM's slices already give PipeWire its share of the CPUs, so
+real-time matters when the Mac is busy too. With the drop-in, PipeWire
+stayed real-time after a 15 s stop, a reboot and an RTKit restart.
+
+Options: (1) RTKit without the watchdog (`--no-canary`); (2) Arch's
+`realtime-privileges` and the realtime group, so PipeWire sets real-time
+itself (gives every process of the user real-time up to 98 and needs a new
+login); (3) a bigger quantum or headroom (adds latency, does not touch the
+cause). Chosen: (1), a drop-in for `rtkit-daemon.service`. RTKit's other
+limits stay (priority cap 20, RLIMIT_RTTIME); the kernel's fair server
+keeps normal threads running next to real-time ones. `omacvm check` shows
+"sound priority" (real-time or not). Undo: remove
+`/etc/systemd/system/rtkit-daemon.service.d/90-omacvm-no-canary.conf`.

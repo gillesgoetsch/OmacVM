@@ -28,7 +28,7 @@ SYNC = HERE.parent / "omacvm-display-sync"
 
 def guest_bash() -> str | None:
     """A bash 4 or newer, as the VM has (macOS's own is 3.2)."""
-    for b in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", shutil.which("bash")):
+    for b in (os.environ.get("GUEST_BASH", ""), "/opt/homebrew/bin/bash", "/usr/local/bin/bash", shutil.which("bash")):
         if b and os.access(b, os.X_OK):
             r = subprocess.run([b, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True)
             if r.stdout.strip().isdigit() and int(r.stdout) >= 4:
@@ -96,6 +96,8 @@ if args and args[0] == "eval":
     if os.path.exists(os.path.join(state, "refuse")):
         print("error: refused"); raise SystemExit(0)
     out = re.search(r'output = "([^"]+)"', rule)[1]
+    if 'mode = "preferred"' in rule:      # a gone output's parked rule: kept, nothing shown
+        print("ok"); raise SystemExit(0)
     m = re.search(r'mode = "modeline (\d+) (\d+) \d+ \d+ (\d+) (\d+) \d+ \d+ (\d+)', rule)
     clock, w, ht, h, vt = map(int, m.groups())
     scale = re.search(r'scale = "([0-9.]+|auto)"', rule)[1]
@@ -108,6 +110,14 @@ if args and args[0] == "eval":
                  "x": int(pos[1]) if pos else 0, "y": int(pos[2]) if pos else 0,
                  "disabled": False, "transform": 0})
     json.dump(data, open(mons, "w"))
+    # Hyprland's "Monitor X overlaps with other monitor(s)" after each rule.
+    box = lambda d: (d["x"], d["y"], d["width"] / d["scale"], d["height"] / d["scale"])
+    for i, a in enumerate(data):
+        for b in data[i + 1:]:
+            A, B = box(a), box(b)
+            if A[0] < B[0] + B[2] and B[0] < A[0] + A[2] and A[1] < B[1] + B[3] and B[1] < A[1] + A[3]:
+                with open(os.path.join(state, "overlaps"), "a") as f:
+                    f.write(f"{a['name']} {b['name']} after {out}\n")
     print("ok"); raise SystemExit(0)
 raise SystemExit(1)
 '''
@@ -379,6 +389,144 @@ class Guard(SyncCase):
         self.run_sync()
         self.assertEqual(self.shown()["width"], 3840)
 
+
+class TwoDisplays(SyncCase):
+    """The user's MacBook (2026-10-06): built-in below a 6K, full screen."""
+
+    def setUp(self):
+        super().setUp()
+        layout = {"layout": [
+            {"output": "Virtual-1", "x": 0, "y": 38, "width": 2056, "height": 1291, "scale": 2},
+            {"output": "Virtual-2", "x": -476, "y": -1692, "width": 3008, "height": 1692, "scale": 2}]}
+        (self.tmp / "no-layout.json").write_text(json.dumps(layout))
+
+    def test_no_overlap_on_the_way(self):
+        self.set_window(4112, 2582)
+        self.set_window(6016, 3384, output="Virtual-2")
+        # Hyprland's own first places: the main one at 0x0, the 6K to its right.
+        (self.hypr / "monitors.json").write_text(json.dumps([
+            {"name": "Virtual-1", "x": 0, "y": 0, "width": 4112, "height": 2582, "scale": 2.0,
+             "refreshRate": 60.0, "disabled": False, "transform": 0},
+            {"name": "Virtual-2", "x": 2056, "y": 0, "width": 6016, "height": 3384, "scale": 2.0,
+             "refreshRate": 60.0, "disabled": False, "transform": 0}]))
+        r = self.run_sync()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.hypr / "overlaps").exists(),
+                         (self.hypr / "overlaps").read_text() if (self.hypr / "overlaps").exists() else "")
+        self.assertEqual([re.search(r'output = "([^"]+)"', e)[1] for e in self.evals()],
+                         ["Virtual-1", "Virtual-2"])
+        self.assertEqual((self.shown("Virtual-2")["x"], self.shown("Virtual-2")["y"]), (0, 0))
+        self.assertEqual((self.shown("Virtual-1")["x"], self.shown("Virtual-1")["y"]), (476, 1730))
+
+    def test_gone_output_is_parked(self):
+        self.set_window(4112, 2582)
+        self.set_window(6016, 3384, output="Virtual-2")
+        self.run_sync()
+        # The 6K leaves (window mode): its connector and Hyprland's output go.
+        (self.drm / "card0-Virtual-2" / "status").write_text("disconnected\n")
+        data = [m for m in json.loads((self.hypr / "monitors.json").read_text()) if m["name"] != "Virtual-2"]
+        (self.hypr / "monitors.json").write_text(json.dumps(data))
+        self.run_sync()
+        parked = [e for e in self.evals() if 'output = "Virtual-2"' in e and "auto-right" in e]
+        self.assertEqual(len(parked), 1, self.evals())
+        self.run_sync()
+        self.assertEqual(len([e for e in self.evals() if "auto-right" in e]), 1, "parked once")
+
+
+def script_python(function: str) -> str:
+    """The Python inside one of the script's shell functions (no bash 4 needed)."""
+    text = SYNC.read_text()
+    start = text.index(f"{function}() {{")
+    body = text[start:]
+    return body[body.index("<<'PY'\n") + 7:body.index("\nPY\n")]
+
+
+def overlap(a, b) -> bool:
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+class Placement(unittest.TestCase):
+    """Where the outputs go (output_positions) and in which order the rules
+    are sent (apply_order): never one output over another, not even for one
+    rule (Hyprland: "Monitor Virtual-2 overlaps with other monitor(s)")."""
+
+    def places(self, layout: list[dict], sizes: dict[str, tuple[int, int, float]]) -> dict:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"layout": layout}, f)
+        try:
+            args = [f"{n}:{w}:{h}:{s}" for n, (w, h, s) in sizes.items()]
+            out = subprocess.run(["python3", "-c", script_python("output_positions"), f.name, *args],
+                                 capture_output=True, text=True, check=True).stdout
+        finally:
+            os.unlink(f.name)
+        places = {}
+        for line in out.splitlines():
+            name, pos = line.split()
+            x, y = map(int, pos.split("x"))
+            w, h, s = sizes[name]
+            places[name] = (x, y, w / s, h / s)
+        return places
+
+    def assert_apart(self, places: dict):
+        names = sorted(places)
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                self.assertFalse(overlap(places[a], places[b]), f"{a} {places[a]} over {b} {places[b]}")
+
+    # The user's MacBook (2026-10-06): built-in 2056x1329 points at 2x, the
+    # VM below the camera (38 points), a 6K (3008x1692 points at 2x) above.
+    BUILTIN = {"output": "Virtual-1", "x": 0, "y": 38, "width": 2056, "height": 1291, "scale": 2}
+    SIXK = {"output": "Virtual-2", "x": -476, "y": -1692, "width": 3008, "height": 1692, "scale": 2}
+
+    def test_macbook_with_6k_above(self):
+        p = self.places([self.BUILTIN, self.SIXK],
+                        {"Virtual-1": (4112, 2582, 2.0), "Virtual-2": (6016, 3384, 2.0)})
+        self.assert_apart(p)
+        self.assertEqual(p["Virtual-2"][:2], (0, 0))
+        self.assertGreaterEqual(p["Virtual-1"][1], p["Virtual-2"][3], "the built-in below the 6K")
+        self.assertEqual(p["Virtual-1"][0], 476)
+
+    def test_zoomed_main_output(self):
+        for scale in (1.0, 1.25, 1.6, 2.0, 3.0, 4.0):
+            with self.subTest(scale=scale):
+                p = self.places([self.BUILTIN, self.SIXK],
+                                {"Virtual-1": (4112, 2582, scale), "Virtual-2": (6016, 3384, 2.0)})
+                self.assert_apart(p)
+
+    def test_two_externals_above_a_zoomed_main(self):
+        # Proportional places above a main output at scale 4 pushed them into each other.
+        left = {"output": "Virtual-2", "x": -1000, "y": -1692, "width": 3008, "height": 1692, "scale": 2}
+        right = {"output": "Virtual-3", "x": 2008, "y": -1080, "width": 1920, "height": 1080, "scale": 1}
+        p = self.places([self.BUILTIN, left, right],
+                        {"Virtual-1": (4112, 2582, 4.0), "Virtual-2": (6016, 3384, 2.0),
+                         "Virtual-3": (1920, 1080, 1.0)})
+        self.assert_apart(p)
+
+    def order(self, shown: list[dict], items: list[str]) -> list[str]:
+        out = subprocess.run(["python3", "-c", script_python("apply_order"), json.dumps(shown), *items],
+                             capture_output=True, text=True, check=True).stdout
+        return out.split()
+
+    SHOWN = [{"name": "Virtual-1", "x": 0, "y": 0, "width": 4112, "height": 2582, "scale": 2.0},
+             {"name": "Virtual-2", "x": 2056, "y": 0, "width": 6016, "height": 3384, "scale": 2.0}]
+
+    def test_order_never_overlaps_for_a_moment(self):
+        # Hyprland put the 6K at the built-in's right (auto). The built-in goes
+        # down under the 6K's new place, the 6K to 0x0: the 6K first would
+        # land on the built-in, still at 0x0.
+        items = ["Virtual-1:4112:2582:2:476x1730", "Virtual-2:6016:3384:2:0x0"]
+        self.assertEqual(self.order(self.SHOWN, items), ["Virtual-1", "Virtual-2"])
+
+    def test_order_moves_the_blocker_first(self):
+        shown = json.loads(json.dumps(self.SHOWN))
+        shown[1].update(x=0, y=1291)      # the 6K below the built-in now
+        # The built-in moves down into the 6K's place; the 6K goes right first.
+        items = ["Virtual-1:4112:2582:2:0x500", "Virtual-2:6016:3384:2:2056x0"]
+        self.assertEqual(self.order(shown, items), ["Virtual-2", "Virtual-1"])
+
+    def test_a_swap_still_sends_both(self):
+        items = ["Virtual-1:4112:2582:2:3008x0", "Virtual-2:6016:3384:2:0x0"]
+        self.assertEqual(self.order(self.SHOWN, items), ["Virtual-1", "Virtual-2"])
 
 if __name__ == "__main__":
     unittest.main()

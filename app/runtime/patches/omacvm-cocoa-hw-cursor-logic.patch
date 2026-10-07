@@ -1,0 +1,153 @@
+From: OmacVM
+Subject: [PATCH] ui: when the Mac's cursor carries the guest's pointer
+
+ui/omacvm-hw-cursor.h holds the rules of the experimental hardware cursor
+(omacvm-cocoa-hw-cursor.patch) without AppKit: when the Mac's cursor shows
+the guest's pointer image (absolute pointer, an image since the guest's
+last reset), when it is empty (the guest hides its pointer on every
+output), when QEMU's own pointer layer shows, and the checks on the
+guest's image (size, hot spot, scale) before the Mac makes a cursor of it.
+app/runtime/Tests/display/test-hw-cursor.sh applies this patch to an empty
+folder (at build time and in CI).
+
+Upstream: not applicable (OmacVM's pointer policy).
+Test: app/runtime/Tests/display/test-hw-cursor.c.
+
+diff --git a/ui/omacvm-hw-cursor.h b/ui/omacvm-hw-cursor.h
+new file mode 100644
+index 0000000..cb10652
+--- /dev/null
++++ b/ui/omacvm-hw-cursor.h
+@@ -0,0 +1,132 @@
++/*
++ * OmacVM: the guest's pointer as the Mac's own cursor (experimental, off by
++ * default: OMACVM_HW_CURSOR=1, the app's "Mac pointer for the VM").
++ *
++ * No AppKit in here, so it is tested on its own
++ * (app/runtime/Tests/display/test-hw-cursor.c); ui/cocoa.m feeds it.
++ *
++ * Omarchy draws its pointer into the picture (a software cursor) and the
++ * Mac's cursor is hidden over the VM. A move then waits for the guest to
++ * draw a whole frame and for the present to show it, and where the VM's
++ * window meets the notch strip, Omanotch or another display, one pointer
++ * hides while the other one is still a frame behind: the pointer flickers.
++ * With this on, the guest puts its pointer on virtio-gpu's cursor plane
++ * (Hyprland's hardware cursor) and QEMU makes that image the Mac's cursor:
++ * the pointer moves with the Mac's own (no frame to wait for), and it is the
++ * same cursor over the VM, Omanotch and every display; only its shape
++ * changes at the window's edge.
++ *
++ * Only for an absolute pointer (virtio-tablet), and only once the guest
++ * gave an image since its last reset: before that (firmware, boot, a guest
++ * that kept its software cursor) everything stays as without it. A guest
++ * that hides its pointer on every output (typing, a full-screen video) gets
++ * an empty Mac cursor over the VM. A relative pointer (games) keeps QEMU's
++ * own way: the Mac's cursor held and hidden, the image drawn where the guest
++ * puts it.
++ *
++ * The image comes from the guest: its size and hot spot are checked here
++ * before the Mac makes a cursor of it.
++ */
++#ifndef OMACVM_HW_CURSOR_H
++#define OMACVM_HW_CURSOR_H
++
++#include <math.h>
++#include <stdbool.h>
++#include <stdint.h>
++
++#define OMACVM_HWC_MAX_SIDE 256         /* virtio-gpu's cursors are 64x64 */
++
++typedef struct OmacVMHwCursor {
++    bool on;            /* OMACVM_HW_CURSOR=1 */
++    bool shape;         /* the guest gave an image since its reset */
++    uint32_t shown;     /* one bit per output: the guest shows its pointer there */
++} OmacVMHwCursor;
++
++/* The guest gave a pointer image on output o (a cursor plane update with a buffer). */
++static inline void omacvm_hwc_define(OmacVMHwCursor *c, int o)
++{
++    if (c->on && o >= 0 && o < 32) {
++        c->shape = true;
++    }
++}
++
++/* The guest shows (a buffer on the plane) or hides its pointer on output o. */
++static inline void omacvm_hwc_show(OmacVMHwCursor *c, int o, bool on)
++{
++    if (o < 0 || o >= 32) {
++        return;
++    }
++    if (on) {
++        c->shown |= 1u << o;
++    } else {
++        c->shown &= ~(1u << o);
++    }
++}
++
++/* A guest reset: its firmware and boot draw no pointer of their own. */
++static inline void omacvm_hwc_reset(OmacVMHwCursor *c)
++{
++    c->shape = false;
++    c->shown = 0;
++}
++
++/* Does the Mac's cursor carry the guest's pointer now? */
++static inline bool omacvm_hwc_active(const OmacVMHwCursor *c, bool absolute)
++{
++    return c->on && c->shape && absolute;
++}
++
++/*
++ * The Mac's cursor over the VM while active: the guest's image when the
++ * guest shows its pointer on any output (moving to another output, Hyprland
++ * shows it on the new one and hides it on the old), else an empty one.
++ */
++static inline bool omacvm_hwc_visible(const OmacVMHwCursor *c)
++{
++    return c->shown != 0;
++}
++
++/*
++ * QEMU's own pointer layer (the image drawn where the guest says): not
++ * while the Mac's cursor carries the image (it would be a second pointer,
++ * a frame behind); as before otherwise (also when no image was taken).
++ */
++static inline bool omacvm_hwc_layer_hidden(const OmacVMHwCursor *c, bool absolute)
++{
++    return omacvm_hwc_active(c, absolute);
++}
++
++/* The guest's image as a Mac cursor: size and hot spot in points. */
++typedef struct OmacVMHwcImage {
++    bool ok;
++    double w, h;        /* points */
++    double hot_x, hot_y;
++} OmacVMHwcImage;
++
++/*
++ * w x h guest pixels with the hot spot at (hot_x, hot_y); points: how many
++ * points of the window one guest pixel takes (the window's width in points
++ * over the output's width in pixels). A size out of range or a scale that
++ * makes no sense gives no cursor (the caller keeps the last one); the hot
++ * spot is kept inside the image (AppKit refuses one outside).
++ */
++static inline OmacVMHwcImage omacvm_hwc_image(int w, int h, int hot_x, int hot_y,
++                                              double points)
++{
++    OmacVMHwcImage r = { false, 0, 0, 0, 0 };
++
++    if (w < 1 || h < 1 || w > OMACVM_HWC_MAX_SIDE || h > OMACVM_HWC_MAX_SIDE ||
++        !isfinite(points) || points < 0.05 || points > 8) {
++        return r;
++    }
++    hot_x = hot_x < 0 ? 0 : hot_x >= w ? w - 1 : hot_x;
++    hot_y = hot_y < 0 ? 0 : hot_y >= h ? h - 1 : hot_y;
++    r.ok = true;
++    r.w = w * points;
++    r.h = h * points;
++    r.hot_x = hot_x * points;
++    r.hot_y = hot_y * points;
++    return r;
++}
++
++#endif

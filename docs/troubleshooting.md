@@ -33,8 +33,8 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   the VM's on that monitor (System Settings › Desktop & Dock › Mission
   Control: "Displays have separate Spaces" decides whether each monitor has
   its own) and macOS's "Move left/right a space" shortcuts (System Settings ›
-  Keyboard › Keyboard Shortcuts › Mission Control). Without them, OmacVM
-  tries a Dock swipe, then opens Mission Control so you pick a Space (below).
+  Keyboard › Keyboard Shortcuts › Mission Control). Without them, Omarchy
+  shows a notice ("No way to macOS: turn on ...") and nothing else happens.
   The Gestures log (`~/Library/Logs/omacvm-gestures.log`, lines
   "escape combo: ...") says which way it took.
 - **A macOS shortcut still does its macOS thing in the VM** (a screenshot,
@@ -42,9 +42,22 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   experimental (`defaults write org.omacvm.app macShortcuts -bool false` and
   a VM restart). With it on, the VM's window must have the keyboard (click
   into it). `omacvm check` shows "macOS shortcuts"; `logs/qemu.log` in the
-  VM's folder says "macOS shortcuts off" while the VM has them. Keys macOS
-  handles below every app stay macOS's: the power / Touch ID key, and the
-  globe key on its own.
+  VM's folder says "macOS shortcuts off" while the VM has them. The power /
+  Touch ID key stays macOS's (macOS handles it below every app).
+- **The globe (fn) key opens Emoji & Symbols over the VM**: since 3.0.1 a
+  lone globe press in OmacVM.app goes to the VM while its window has the
+  keyboard (Omarchy's emoji picker; the key is XF86Launch3 there, for your
+  own bindings). Only that one macOS shortcut is switched off, only while the
+  VM has the keyboard; fn+F1..F12 and fn as a modifier work as before.
+  `qemu.log` says "globe key goes to the VM", and for the first presses
+  how macOS showed them ("globe key pressed: fn alone" or "key code 0xb3";
+  none at all means the press never reached the VM; "fn with a key, click
+  or scroll the VM window did not see" means fn was used as a modifier).
+  The globe key reaches the VM but nothing opens: the VM was set up before
+  3.0.1, run `omacvm update`. To leave it with macOS:
+  `defaults write org.omacvm.app globeKeyToVM -bool false` and a VM restart.
+  If the globe key ever does nothing in macOS after a VM crashed: start and
+  quit any OmacVM VM (it gives macOS's shortcut back), or log out and in.
 - **macOS's shortcuts (⌘Tab, ⌘Space, brightness) do not work after leaving
   the VM** (only with the experimental `macShortcuts` false): they come back
   the moment the VM's window loses the keyboard, and macOS restores them by
@@ -59,14 +72,15 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   click OmacVM in the Dock, hold Option, choose Force Quit (or Activity
   Monitor › OmacVM › Force Quit; Activity Monitor opens from Finder ›
   Applications › Utilities). The shortcuts work again at once. From the
-  Terminal: `pkill -9 -f 'Contents/Resources/runtime/bin/OmacVM'`.
-- **⌃⌥ Esc opened Mission Control instead of moving to the next Space**:
-  neither macOS's "Move left/right a space" shortcut nor a Dock swipe moved
-  the Space, so OmacVM opened Mission Control to let you pick one (the VM
-  stays full screen). Check that the shortcuts are on in System Settings ›
-  Keyboard › Keyboard Shortcuts › Mission Control. The Gestures log
-  (`~/Library/Logs/omacvm-gestures.log`) says which step did what
-  ("escape combo: ..."); please send those lines.
+  Terminal: `pkill -9 -f 'Contents/(MacOS/OmacVM-VM|Resources/runtime/bin/OmacVM) '`.
+- **⌃⌥ Esc showed "macOS did not switch the Space"**: neither macOS's "Move
+  left/right a space" shortcut nor the swipe after it moved the Space (the
+  VM stays full screen; Mission Control only opens when you press the combo
+  twice). Check that the shortcuts are
+  on in System Settings › Keyboard › Keyboard Shortcuts › Mission Control;
+  a trackpad swipe works meanwhile. The Gestures log
+  (`~/Library/Logs/omacvm-gestures.log`) says what happened ("escape combo:
+  ..."); please send those lines.
 - **Brightness keys do nothing with the VM in front**: OmacVM Bridge reads
   them from the keyboard and needs Input Monitoring (System Settings › Privacy
   & Security › Input Monitoring › OmacVM Bridge). Its log says
@@ -545,6 +559,25 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `omacvm check` shows both ("sound timing");
   `defaults write org.omacvm.app audioClassic -bool true` goes back to
   2.9.1's timing.
+- **In the VM (3.0.1):** PipeWire's sound threads run real-time through
+  RTKit, so a busy VM does not starve them. But RTKit's watchdog (its
+  "canary") takes 10 seconds in which the VM's threads did not run while
+  its clock went on for a runaway real-time thread, and demotes every one
+  of them for the rest of the session (`journalctl -u rtkit-daemon`: "The
+  canary thread is apparently starving"). Seen when QEMU itself was
+  stopped (`kill -STOP` for 15 s, as test locks do; once in a test VM's
+  history); the app's own pause keeps the VM's clock and does not do it. PipeWire then runs at normal priority, and the
+  sound can break when the VM is busy. Measured on a Mac mini M4, VM with
+  8 CPUs, its CPUs and GPU busy and 2 busy threads on the Mac, 5 minutes
+  each, breaks in a test tone: real-time PipeWire 2, 6, 2, 0 (guest xruns
+  0-4); demoted 81 (22 / 68 xruns, the mini also busy with two builds) and
+  0 (mini less busy). In the VM, systemd's slices already give PipeWire its
+  share of the CPUs; real-time matters when the VM's CPUs get less time
+  from a busy Mac. From 3.0.1 `omacvm apply` runs
+  RTKit without the watchdog (`src/guest/sound/rtkit-no-canary.conf`;
+  RTKit's other limits stay), and `omacvm check` shows "sound priority".
+  By hand: `systemctl --user restart pipewire pipewire-pulse wireplumber`
+  makes PipeWire real-time again until the next stop.
 - **For 2.9.0 and 2.9.1:** a bigger safety buffer in the VM. As root in
   the VM (USER = your user):
 
@@ -562,7 +595,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 - **Where:** `app/runtime/patches/qemu-darwin-main-loop-qos.patch`,
   `app/runtime/patches/qemu-hda-no-catch-up.patch`,
   `app/app/Sources/OmacVM/Runner.swift` (`audioClassic`), `src/cmd/check.sh`,
-  the measurement tools in `app/runtime/Tests/audio/`, ADR 0036.
+  the measurement tools in `app/runtime/Tests/audio/`, ADR 0036; in the
+  VM `src/guest/sound/rtkit-no-canary.conf`, `src/guest/install.sh`,
+  `src/guest/check.sh` ("sound priority").
 
 ## 26. app: the VM does not start (no window), or freezes when sound starts
 
@@ -589,3 +624,78 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 - **Where:** `app/runtime/patches/qemu-sdl-audio-playback-thread.patch`,
   `src/cmd/check.sh`, the test stub
   `app/runtime/Tests/audio/wedged-output-start.c`.
+
+## 27. All routes: black screen after an update or an OmacVM job
+
+- **Symptom:** the VM starts to a black screen (no login screen, no desktop);
+  over SSH, `journalctl -b | grep -i gbm` shows Hyprland's
+  `Couldn't open a GBM device` / `Cannot create a GBM Allocator` /
+  `Cannot open backend: no allocator available`.
+- **Cause:** a partial update. Mesa was updated on its own, without the
+  libraries it was built for. Arch Linux ARM's Mesa 26.2.4 needs LLVM 23
+  (`libLLVM.so.23.1`); next to LLVM 22 its GBM backend cannot load, so
+  Hyprland stops. Seen 2026-10-06: a `pacman -Sy` (a newer package list, no
+  update) and then OmacVM's `pacman -S --needed ... mesa` (Chromium video)
+  updated Mesa alone. Mesa 26.2.4 itself is fine: a full update (Mesa and
+  LLVM together) starts the desktop.
+- **Fix (3.0.0):** OmacVM installs only packages the VM does not have and
+  never updates one it has (`src/guest/pkg-add`); when an install would
+  update others, it stops and says to update the whole system first. It no
+  longer runs `pacman -Sy`. Every guest install checks at the end that GBM
+  still opens and, if this install broke it, puts the changed packages back
+  from pacman's cache (`src/guest/gbm-guard`). The Vulkan (Venus) driver
+  check runs only when the VM's Graphics gives it Vulkan.
+- **Recover a VM that already shows the black screen:** SSH in (or
+  Ctrl+Alt+F3 for a text console) as root, then either
+  1. update the whole system, which brings the matching LLVM:
+     `pacman -Syu` (Omarchy's `omarchy update` does the same and more), or
+  2. go back to the Mesa from before:
+     `pacman -U /var/cache/pacman/pkg/mesa-<old version>-aarch64.pkg.tar.*`
+     (`grep 'upgraded mesa' /var/log/pacman.log` names it).
+  Then `/usr/local/share/omacvm/guest/gbm-guard test` must say "GBM opens";
+  `systemctl restart sddm` (or restart the VM) brings the desktop back. Do
+  not pin Mesa with `IgnorePkg`: the next `omarchy update` then brings LLVM
+  23 and keeps the old Mesa, which needs LLVM 22 (`libLLVM.so.22.1`): the
+  same black screen. If you pinned it, remove the pin in the same sitting
+  as the full update.
+- **3.0.1:** Graphics -> Vulkan on a VM whose package list is older than
+  the mirrors (a prebuilt VM a day later) runs the whole update first
+  (`src/guest/system-update`: `omarchy update -y` as the desktop user, then
+  `gbm-guard test`), never `pacman -Sy` alone. `omacvm graphics` asks first
+  (the control centre asks in its own dialog); `omacvm apply` never runs it.
+  An update that shows nothing new for 10 minutes or runs over 40 is
+  stopped.
+- **Where:** `src/guest/pkg-add`, `src/guest/gbm-guard`,
+  `src/guest/system-update`, `src/guest/install.sh` (runs both),
+  `src/tests/pkg-safe.sh`.
+
+## 28. app: the sound is late in videos (YouTube looks out of sync)
+
+- **Symptom:** in a video in the VM (YouTube in Chromium, a film in mpv)
+  the sound comes a bit after the picture: lips move before the words.
+  Worse with AirPods or other Bluetooth headphones.
+- **Cause:** players hold the picture back by the sound delay the system
+  tells them. In the VM, PipeWire only knows the VM's own buffers. After
+  the VM's sound card come QEMU's buffers (110-150 ms: the card's buffer,
+  QEMU's ring, SDL's queue; the fill moves from run to run) and the Mac's
+  output device (about 13 ms wired, about 170 ms for AirPods), and nothing
+  told the VM about them. Not new in 3.0.0: with `audioClassic` (the old
+  sound timing) the sound was as late. After the VM stalls (heavy GPU
+  load) the sound comes up to the stall's length earlier for a few seconds,
+  then back.
+- **Fix (3.0.2):** the app works out that delay (QEMU's part plus what
+  CoreAudio says about the Mac's default output) and sends it to the VM at
+  the start and whenever the output changes. In the VM,
+  `omacvm-audio-latency` sets it as PipeWire's latency offset on the sound
+  card's output (pavucontrol shows it under Output Devices, "Latency
+  offset"); Chromium, Firefox and mpv then wait with the picture.
+  `qemu.log` says what was sent ("OmacVM: sound delay for the VM: ...");
+  in the VM `omacvm-audio-latency --show` says what is set.
+- **Still off a little?** `defaults write org.omacvm.app audioDelayExtraMs
+  -int N` (ms, -500 to 500): negative when the sound now comes early,
+  positive when it is still late; it applies at the next VM start or output
+  change.
+- **Where:** `app/app/Sources/OmacVMAudio/AudioDelay.swift`,
+  `app/app/Sources/OmacVM/AudioLatencyWatch.swift`,
+  `src/app/guest/omacvm-audio-latency`, the measurement tools in
+  `app/runtime/Tests/av-sync/`.

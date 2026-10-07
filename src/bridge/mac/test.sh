@@ -43,9 +43,9 @@ now=$("$L" get "$id" | jq -r .brightness)
 echo "display $id: set $to %, read back $now %"
 (( now == to )) || { echo "FAIL: read back $now, wanted $to"; exit 1; }
 # Brightness keys held: 4 steps up, 4 down, at key-repeat speed (coalesced writes):
-# back on macOS's step grid at the level it started from.
+# back on the keys' step grid (32 steps) at the level it started from.
 "$L" keys "$id" 4
-grid=$(( (to * 16 + 50) / 100 )); want=$(( (grid * 100 + 8) / 16 ))
+grid=$(( (to * 32 + 50) / 100 )); want=$(( (grid * 100 + 16) / 32 ))
 now=$("$L" get "$id" | jq -r .brightness)
 echo "display $id: 4 up, 4 down from $to %: $now % (want $want %)"
 (( now == want )) || { echo "FAIL: keys ended at $now, wanted $want"; exit 1; }

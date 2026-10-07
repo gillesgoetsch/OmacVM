@@ -1,0 +1,254 @@
+From: OmacVM
+Subject: [PATCH] usb-host: leave a device the Mac uses alone (no reset)
+
+What: usb-host opens a matched device, and if one of its interfaces keeps a
+host driver (detach fails), it closes the device again without a reset,
+logs once per plug "usb-host: VVVV:PPPP (bus B, addr A) is in use on the
+host: not taken", and retries at most three times until it is unplugged
+(QEMU's errcount). A device it takes logs "... taken" (omacvm check reads
+the last of the two). Only the active configuration's interface numbers are
+asked, the first busy one ends the check, and only an interface whose
+driver was really detached is marked detached, so only that one is attached
+again on close. On macOS a reset (for the guest, after a failed open, on
+close and when QEMU exits) goes only to a device QEMU really has: an
+interface claimed or detached.
+
+Why: on macOS a VM may take an interface from a macOS driver or app only
+with the com.apple.vm.device-access entitlement or as root (libusb's
+darwin_detach_kernel_driver). OmacVM has neither, so for a device macOS
+uses (audio, HID keys, storage, serial adapters, cameras) detach fails.
+QEMU went on anyway, failed later and then called libusb_reset_device,
+which on macOS re-enumerates the device: a mounted USB disk would be
+yanked, an audio interface drops out. A driver on the device itself (not on
+an interface) is not seen by the busy check; such a device is never claimed,
+so the reset rule keeps it from being re-enumerated too. Marking interfaces
+without a driver as detached also made close call
+libusb_attach_kernel_driver for each, which on macOS (capture count 0)
+re-enumerates the device once per interface and drives libusb's capture
+count below zero. Asking every interface after the first busy one only
+repeated libusb's capture warning (capture is per device on macOS).
+
+Upstream: not sent (the busy check is general; the macOS reasons are in
+libusb 1.0.30 os/darwin_usb.c). Applies after
+qemu-usb-host-exact-bus.patch.
+
+Test: app/app usb-tests (the app never passes a device macOS uses);
+docs/usb.md "How it was tested" (QEMU refuses a device macOS uses and its
+IORegistry id stays the same: no re-enumeration).
+
+--- a/hw/usb/host-libusb.c
++++ b/hw/usb/host-libusb.c
+@@ -98,6 +98,7 @@
+     /* state */
+     QTAILQ_ENTRY(USBHostDevice)      next;
+     int                              seen, errcount;
++    bool                             busy_logged;
+     int                              bus_num;
+     int                              addr;
+     char                             port[16];
+@@ -158,8 +159,9 @@
+ static void usb_host_auto_check(void *unused);
+ static void usb_host_release_interfaces(USBHostDevice *s);
+ static void usb_host_nodev(USBHostDevice *s);
+-static void usb_host_detach_kernel(USBHostDevice *s);
++static int usb_host_detach_kernel(USBHostDevice *s);
+ static void usb_host_attach_kernel(USBHostDevice *s);
++static bool usb_host_may_reset(USBHostDevice *s);
+ 
+ /* ------------------------------------------------------------------------ */
+ 
+@@ -997,7 +999,27 @@
+     s->bus_num = bus_num;
+     s->addr    = addr;
+ 
+-    usb_host_detach_kernel(s);
++    if (usb_host_detach_kernel(s) < 0) {
++        /*
++         * A driver or app on the host has the device (macOS lets a VM take
++         * it only with the com.apple.vm.device-access entitlement or as
++         * root). Leave it alone: no reset, which on macOS re-enumerates the
++         * device (a mounted disk would be yanked). Logged once per plug.
++         */
++        struct libusb_device_descriptor dd = { 0 };
++        libusb_get_device_descriptor(dev, &dd);
++        if (!s->busy_logged) {
++            warn_report("usb-host: %04x:%04x (bus %d, addr %d) is in use on "
++                        "the host: not taken", dd.idVendor, dd.idProduct,
++                        bus_num, addr);
++            s->busy_logged = true;
++        }
++        usb_host_attach_kernel(s);
++        libusb_close(s->dh);
++        s->dh = NULL;
++        s->dev = NULL;
++        return -1;
++    }
+ 
+     libusb_get_device_descriptor(dev, &s->ddesc);
+     usb_host_get_port(s->dev, s->port, sizeof(s->port));
+@@ -1060,13 +1082,20 @@
+     }
+ 
+     trace_usb_host_open_success(bus_num, addr);
++    /* Pairs with "in use on the host" for omacvm check: the last line wins. */
++    info_report("usb-host: %04x:%04x (bus %d, addr %d) taken",
++                s->ddesc.idVendor, s->ddesc.idProduct, bus_num, addr);
+     return 0;
+ 
+ fail:
+     trace_usb_host_open_failure(bus_num, addr);
+     if (s->dh != NULL) {
++        bool reset = usb_host_may_reset(s);
++
+         usb_host_release_interfaces(s);
+-        libusb_reset_device(s->dh);
++        if (reset) {
++            libusb_reset_device(s->dh);
++        }
+         usb_host_attach_kernel(s);
+         libusb_close(s->dh);
+         s->dh = NULL;
+@@ -1108,6 +1137,7 @@
+ static int usb_host_close(USBHostDevice *s)
+ {
+     USBDevice *udev = USB_DEVICE(s);
++    bool reset;
+ 
+     if (s->dh == NULL) {
+         return -1;
+@@ -1122,8 +1152,11 @@
+         usb_device_detach(udev);
+     }
+ 
++    reset = usb_host_may_reset(s);
+     usb_host_release_interfaces(s);
+-    libusb_reset_device(s->dh);
++    if (reset) {
++        libusb_reset_device(s->dh);
++    }
+     usb_host_attach_kernel(s);
+     libusb_close(s->dh);
+     s->dh = NULL;
+@@ -1158,9 +1191,13 @@
+     USBHostDevice *s = container_of(n, USBHostDevice, exit);
+ 
+     if (s->dh) {
++        bool reset = usb_host_may_reset(s);
++
+         usb_host_abort_xfers(s);
+         usb_host_release_interfaces(s);
+-        libusb_reset_device(s->dh);
++        if (reset) {
++            libusb_reset_device(s->dh);
++        }
+         usb_host_attach_kernel(s);
+         libusb_close(s->dh);
+     }
+@@ -1302,30 +1339,81 @@
+     }
+ }
+ 
+-static void usb_host_detach_kernel(USBHostDevice *s)
++/*
++ * Detach the host's drivers from the active configuration's interfaces.
++ * Returns -1 when one stays attached (the device is in use on the host).
++ * Only the configuration's own interface numbers are asked: asking all 16
++ * logged NOT_FOUND for every missing one. Only an interface whose driver
++ * was really detached is marked, so only that one is attached again.
++ */
++static int usb_host_detach_kernel(USBHostDevice *s)
+ {
+     struct libusb_config_descriptor *conf;
+-    int rc, i;
++    int rc, i, k, busy = 0;
+ 
+     rc = libusb_get_active_config_descriptor(s->dev, &conf);
+     if (rc != 0) {
+-        return;
++        return 0;
+     }
+-    for (i = 0; i < USB_MAX_INTERFACES; i++) {
++    for (k = 0; k < conf->bNumInterfaces; k++) {
++        if (conf->interface[k].num_altsetting < 1) {
++            continue;
++        }
++        i = conf->interface[k].altsetting[0].bInterfaceNumber;
++        if (i >= USB_MAX_INTERFACES) {
++            continue;
++        }
+         rc = libusb_kernel_driver_active(s->dh, i);
+         usb_host_libusb_error("libusb_kernel_driver_active", rc);
+         if (rc != 1) {
+-            if (rc == 0) {
+-                s->ifs[i].detached = true;
+-            }
++            /*
++             * No driver: nothing to attach again later. (Marked detached,
++             * close called libusb_attach_kernel_driver, which on macOS
++             * re-enumerates the device once per interface.)
++             */
+             continue;
+         }
+         trace_usb_host_detach_kernel(s->bus_num, s->addr, i);
+         rc = libusb_detach_kernel_driver(s->dh, i);
+-        usb_host_libusb_error("libusb_detach_kernel_driver", rc);
++        if (rc != 0) {
++            /*
++             * Busy. Ask no further interface: on macOS the capture is for
++             * the whole device, so each one fails the same way and libusb
++             * logs a warning for each.
++             */
++            busy = 1;
++            break;
++        }
+         s->ifs[i].detached = true;
+     }
+     libusb_free_config_descriptor(conf);
++    return busy ? -1 : 0;
++}
++
++/*
++ * Whether QEMU may reset the host device. On macOS libusb's reset
++ * re-enumerates the device unless QEMU captured it (which needs the
++ * com.apple.vm.device-access entitlement or root): every macOS driver on it
++ * is unloaded and loaded again. So there only a device QEMU really has (an
++ * interface claimed, or taken from a host driver) is reset. One a host
++ * driver holds as a whole (no interface driver for the busy check to see)
++ * is never claimed, so neither the guest, nor a failed open, nor closing
++ * the device or QEMU disturbs it.
++ */
++static bool usb_host_may_reset(USBHostDevice *s)
++{
++#ifdef CONFIG_DARWIN
++    int i;
++
++    for (i = 0; i < USB_MAX_INTERFACES; i++) {
++        if (s->ifs[i].claimed || s->ifs[i].detached) {
++            return true;
++        }
++    }
++    return false;
++#else
++    return true;
++#endif
+ }
+ 
+ static void usb_host_attach_kernel(USBHostDevice *s)
+@@ -1655,6 +1743,9 @@
+         return;
+     }
+     if (!s->allow_all_guest_resets && udev->addr == 0) {
++        return;
++    }
++    if (!usb_host_may_reset(s)) {
+         return;
+     }
+ 
+@@ -1912,6 +2003,7 @@
+                     usb_host_close(s);
+                 }
+                 s->errcount = 0;
++                s->busy_logged = false;
+             }
+             s->seen = 0;
+         }

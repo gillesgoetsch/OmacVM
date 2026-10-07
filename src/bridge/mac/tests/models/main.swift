@@ -163,6 +163,22 @@ let parFull = FrontVM(omacvm: false, fullScreen: true, display: 1, builtin: true
 let parWin = FrontVM(omacvm: false, fullScreen: false, display: 1, builtin: true, vmKeys: false)
 check(route(.volumeUp, parFull) == .mac && route(.volumeUp, parWin) == .macOS(nil), "Parallels: the Mac's volume in full screen only")
 check(route(.play, parFull) == .macOS(nil), "Parallels: play stays as it was (its own)")
+// Command + a volume key (Cmd+F10/F11/F12 on Apple keyboards): Omarchy's
+// screenshot keys (Super + mute/volume down/volume up), whatever the output.
+func cmd(_ k: MediaKey, _ vm: FrontVM?, volume: Bool = true, mute: Bool = true) -> KeyRoute {
+  MediaRoute.route(k, vm: vm, volumeSettable: volume, muteSettable: mute, macBrightness: 1, external: .unknown,
+                   keyboardLight: true, command: true)
+}
+for (vm, how) in [(builtinFull, "MacBook full screen"), (builtinWin, "MacBook windowed"), (miniFull, "mini full screen")] {
+  check(cmd(.volumeDown, vm) == .vm("volumedown") && cmd(.mute, vm) == .vm("audiomute") && cmd(.volumeUp, vm) == .vm("volumeup"),
+        "\(how): Command + mute/volume down/up go to the VM (Super + the key), not the Mac's volume")
+  check(cmd(.volumeDown, vm, volume: false, mute: false) == .vm("volumedown"), "\(how): Command + volume down, output without a volume: the VM's too")
+}
+check(cmd(.volumeDown, noKeys) == .mac, "Command + volume, VM without a control socket: the Mac's volume as before")
+check(cmd(.volumeDown, parFull) == .mac && cmd(.volumeDown, parWin) == .macOS(nil), "Command + volume on Parallels: as without Command")
+check(cmd(.volumeDown, nil) == .macOS(nil), "Command + volume, no VM in front: macOS's")
+check(cmd(.brightnessUp, builtinFull) == .mac && cmd(.play, builtinFull) == .vm("audioplay"),
+      "Command + brightness / play: unchanged")
 
 var once = OnceLog()
 check(once.first("a") && !once.first("a") && once.first("b"), "a reason is logged once")

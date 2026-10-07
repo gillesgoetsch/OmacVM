@@ -2,7 +2,7 @@
 # `omacvm enable/disable`, the VM installer (guest/install.sh) and the checks
 # follow. One feature per line, tab-separated:
 #   name  default (on|off|notch: on with a notch|laptop: on with a battery, not on Parallels)  sides (mac,vm)  tags  needs  title  summary
-# Tags: experimental, slow (adds build/update time), notch (needs a MacBook with a notch),
+# Tags: experimental, slow (switching it on is a build in the VM: minutes to over an hour, by CPUs; shown in words while off, never as "slow"), notch (needs a MacBook with a notch),
 # laptop (needs a Mac with a battery), not-parallels (Parallels does it itself),
 # app-only (OmacVM.app's VMs only).
 bridge	on	mac,vm	-	-	OmacVM Bridge	the Mac's Wi-Fi, Bluetooth, audio, Night Shift and media keys in Omarchy's bar
@@ -15,9 +15,11 @@ camera	on	mac,vm	-	-	The Mac's camera	Linux apps and video calls in the browser 
 battery	laptop	mac,vm	laptop,not-parallels	-	The Mac's battery	its charge and charging state in Omarchy's bar, as on a laptop (UTM, VMware Fusion, OmacVM.app; Parallels shows it itself)
 external-brightness	on	mac,vm	-	bridge	External display brightness	the brightness keys set the external display the VM is in front on, over DDC/CI (a Studio Display or Pro Display XDR as macOS does), and so do Omarchy's own brightness keys and monitor panel; the built-in display as before (OmacVM.app also in a window; Parallels, UTM and VMware Fusion in full screen)
 chromium-video	on	vm	app-only	-	Chromium video on the Mac	Arch Linux ARM's Chromium decodes H.264 and VP9 on the Mac's media engine, like Chrome and Brave do on their own (OmacVM.app)
-idle-lock	on	vm	-	-	Screensaver and lock	Omarchy's own, after idle in the VM (off: the Mac's lock protects the VM)
+no-idle-lock	off	vm	-	-	Screensaver and lock disabled	Omarchy's own screensaver and lock after idle stay off in the VM, the Mac's lock protects it (called idle-lock before 3.0.1, with on and off the other way round)
 autologin	off	vm	-	-	Autologin	straight into Omarchy, without its login screen
-thp-kernel	off	vm	slow	-	Memory-optimized kernel	Arch Linux ARM's kernel with transparent huge pages and MGLRU, for memory-heavy work (about 10 minutes per build and update)
+thp-kernel	off	vm	slow	-	Memory-optimized kernel	Arch Linux ARM's kernel with transparent huge pages and MGLRU, for memory-heavy work (a kernel build in the VM to switch it on and for each new kernel: about 10 minutes with 16 CPUs, over an hour with 4)
 control-centre	on	mac,vm	-	-	OmacVM control centre	omacvm in Omarchy: switch, repair and update these features, and report a problem, from the menu or the bar
 fast-network	off	mac,vm	experimental,app-only	-	Fast network	the VM on macOS's own VM network (vmnet, as Parallels and UTM) instead of QEMU's built-in one: faster to and from the Mac, steady latency, an address of its own; a small system service, so macOS asks for your password once (OmacVM.app only)
 vulkan	off	vm	experimental,app-only	-	WebGPU and GPU compute	WebGPU (Firefox, and Chromium from its "Chromium (WebGPU)" menu entry) and OpenCL (darktable, ffmpeg, Geekbench) on the Mac's GPU, with OmacVM's own Mesa; gives the VM Vulkan whatever its Graphics setting; the first time the VM builds that Mesa (about 3 minutes, a 140 MB download) (OmacVM.app only)
+x86-apps	off	vm	experimental,slow	-	x86 Linux apps	x86_64 Linux programs and AppImages run in the VM through box64, which translates them to ARM (slower than native ARM apps; the first time box64 builds in the VM, a few minutes)
+touch-id	off	mac,vm	experimental	bridge	Touch ID	unlock 1Password, sudo and system prompts in Omarchy with the Mac's Touch ID; your password keeps working (Parallels, UTM, VMware Fusion, OmacVM.app; on OmacVM.app from the VM's next start)

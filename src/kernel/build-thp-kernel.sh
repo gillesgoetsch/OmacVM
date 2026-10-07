@@ -2,7 +2,7 @@
 # Build and install linux-aarch64-thp: Arch Linux ARM's current linux-aarch64,
 # with transparent huge pages "always" and MGLRU on (see thp-pkgbuild.py).
 # Run as root inside the VM: ./build-thp-kernel.sh <desktop-user>
-# Takes ~10 min on 16 vCPUs. The stock kernel stays installed as the fallback
+# Takes ~10 min on 16 vCPUs, over an hour on 4 (an M2 MacBook Air). The stock kernel stays installed as the fallback
 # entry in GRUB's advanced menu; GRUB boots the THP kernel by default.
 # Re-run it to follow a new ALARM kernel release; when the installed one is
 # already ALARM's current release it does nothing (OMACVM_REBUILD_KERNEL=1
@@ -37,7 +37,7 @@ if [[ $have == "$latest" && -z ${OMACVM_REBUILD_KERNEL:-} ]]; then
   grub_default_thp
   exit 0
 fi
-pacman -S --needed --noconfirm xmlto docbook-xsl kmod inetutils bc git dtc python pahole cpio base-devel >/dev/null 2>&1
+"$here/../guest/pkg-add" xmlto docbook-xsl kmod inetutils bc git dtc python pahole cpio base-devel
 # Built in fresh folders of root's (root never follows a link the user put
 # there), under /home: root's snapshots (subvolume @) leave it out, so the
 # GBs of build files never end up in one. makepkg runs as the user; the

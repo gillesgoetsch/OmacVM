@@ -25,7 +25,11 @@ control centre has to ask the Mac to do that. The guest is untrusted
 Option 2. Requests under `/omacvm/`: `hello`, `status`, `updates`,
 `updates/check`, `settings/update-checks`, `jobs` (actions `enable`,
 `disable`, `reinstall`, `update`) and `jobs/<id>`. Nothing else. (Later:
-`graphics` jobs and `gpu-memory`, read-only numbers for OmacVM.app VMs, 3.0.0.)
+`graphics` jobs and `gpu-memory`, read-only numbers for OmacVM.app VMs, 3.0.0;
+`settings/mouse-swipe`, Gestures' Magic Mouse swipe: GET says whether the
+Mac has a Magic Mouse and 3 or 4 fingers, POST takes `{"fingers": 3|4}`
+only, 3.0.2. It is a Mac-wide setting: a switch from one VM applies to all
+VMs and to OmacVM.app.)
 
 - The Mac decides which VM: the peer address must match exactly one running
   VM that OmacVM set up (pinned host key); otherwise 409 and nothing runs.
@@ -92,6 +96,34 @@ Option 2. Requests under `/omacvm/`: `hello`, `status`, `updates`,
   127.0.0.1 to a Bridge older than the socket. The Bridge applies the same
   list; without the relay key 127.0.0.1 still gets `hello` only (the app's
   guests reach the Mac from there too).
+- `app-update` (3.0.2, `POST`, empty body; listed in `hello`): OmacVM.app
+  updates itself for its own VM, so `u` in the control centre updates the
+  Mac and the VM in one step. The Bridge only says yes (200 `{"go": true,
+  "release", "mac"}`), and only when the request came through the app's
+  relay from one of its VMs (409 `not-app`), the Mac's `omacvm` is the app's
+  own copy (409 `not-app-copy`: a checkout updates with the `update` job), a
+  verified release is newer than the Mac's (409 `no-update`, `not-newer`;
+  never down), the checks-off rule holds (`stale-update`), no job runs for
+  the VM and the job rate allows it. The VM never names a version. On the
+  yes the app's relay (never the 127.0.0.1 fallback: 409 `old-bridge`)
+  checks its own signed feed and Developer ID as for any update (ADR 0033)
+  and downloads; then it answers 202 `restarting` and shuts the VM down 5 s
+  later, or answers `busy`, `app-cannot-update`, `not-newer`, `needs-macos`
+  or `app-check` with the next step in plain words. The control centre
+  waits up to 5 minutes; past 4 the app answers "try again" and nothing
+  shuts down. Before asking, the control centre writes
+  `~/.cache/omacvm/update-after-restart`; after the restart `omacvm notify`
+  (30 s after login) opens it and it runs the VM's `update` job without
+  asking again (the marker counts for an hour), or says the app was not
+  updated. While it runs the control centre shows the four steps (the Mac
+  gets the app, the VM shuts down, the app installs and starts the VM again,
+  the VM updates) and, for a job, step n of N from its progress lines with
+  the latest log line (GET /omacvm/jobs/<id>); at the end "Updated to X" or
+  the error with the next step, and R restarts the VM (only in the boot of
+  the update: `~/.cache/omacvm/restart-needed` holds the boot id).
+  `updates` answers `mac_app` so the control centre knows the plan
+  before it asks. A 3.0.0 Mac knows none of this: the control centre then
+  says to update OmacVM.app on the Mac first.
 
 ## Consequences
 
@@ -109,6 +141,19 @@ Option 2. Requests under `/omacvm/`: `hello`, `status`, `updates`,
   on SSH). The Bridge spawns the CLI with its responsibility disclaimed
   (`responsibility_spawnattrs_setdisclaim`, looked up at run time; Terminal
   does the same for its shells), so the CLI answers for itself.
+- That disclaimed bash is then refused a VMs folder on an external drive,
+  with no prompt (Removable Volumes): the app's VMs there were "no such
+  OmacVM.app VM" (3.0.0, found on a MacBook Air with an SD card). For the
+  app's VMs the Bridge runs omacvm through the app's executable
+  (`OmacVM --control-run`, also spawned disclaimed), so the run is the
+  app's, with the grants the person gave the app. The app runs only its own
+  omacvm, only the Bridge's commands, and only when its parent is OmacVM
+  Bridge of the same identity and signer. A program can pass that parent
+  check (start the app, then exec the signed Bridge in its own place), so
+  the app takes nothing from its caller that changes what runs: it sets
+  PATH, HOME and TMPDIR itself, keeps only a job status file of the
+  Bridge's shape, and refuses `--ip`, `--key` and `--user`. Its access is
+  not lent to any other program.
 - A job can outlive the Bridge: an update reinstalls the Bridge, which stops
   it mid-job. Jobs run in their own session and write their output and exit
   code to `omacvm-bridge/jobs/`; a restarted Bridge reports them from there

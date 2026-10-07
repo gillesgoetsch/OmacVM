@@ -196,7 +196,10 @@ untouched() {   # the file outside, and nothing written next to it
 
 for route in parallels utm fusion; do
   image "$route" good
-  expect "$route: a good image" ok "$(try_install "$route")"
+  r=$(try_install "$route")
+  expect "$route: a good image" ok "$r"
+  # It flaked on CI runners now and then (fusion): say why when it happens.
+  [[ $r == ok ]] || sed "s/^/       /" "$T/why"
 done
 image parallels good
 try_install parallels > /dev/null

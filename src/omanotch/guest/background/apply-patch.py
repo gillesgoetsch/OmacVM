@@ -11,9 +11,14 @@ over the notch strip and the built-in display together, the way macOS lays out
 a full-screen app that uses the notch area: the strip shows the top rows and
 the built-in display the rest, so the image runs through behind the bar.
 
-The built-in display is the output that shares its top-left corner with the
-NOTCH output (both sit at the same position in Hyprland's layout). Without a
-NOTCH output every screen draws the wallpaper exactly as before.
+The built-in display is the output with the NOTCH output's x and width that
+sits either at the NOTCH output's own place (it overlaps the display's top
+edge: Parallels, UTM, Fusion) or right below it (OmacVM.app puts NOTCH right
+above the display, where the strip is on the Mac; notchcast/notch-place.h).
+v5 only knew the first place, so under OmacVM.app every output drew its own
+copy again: the display's centred for itself, the strip a zoomed crop of the
+image's middle. Without a NOTCH output every screen draws the wallpaper
+exactly as before.
 
 The patch also remaps the wallpaper when its output moves: Hyprland leaves a
 mapped layer surface at the output's old place (the display then shows only
@@ -36,7 +41,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 5
+VERSION = 6
 VERSION_LINE = f"// omarchy-notch-bar background patch v{VERSION}"
 
 
@@ -71,13 +76,21 @@ def main():
   function notchIsStrip(s) {{
     return !!s && String(s.name || "").indexOf("NOTCH") === 0
   }}
+  // The built-in display under the strip: same x and width, at the strip's
+  // own place (over its top edge) or right below it (strip above it). One
+  // logical px of slack for fractional scales.
+  function notchUnder(strip, o) {{
+    if (Math.abs(o.x - strip.x) > 1 || Math.abs(o.width - strip.width) > 1) return false
+    return Math.abs(o.y - strip.y) <= 1 || Math.abs(o.y - (strip.y + strip.height)) <= 1
+  }}
   function notchPeerOf(s) {{
     if (!s) return null
     var screens = Quickshell.screens
+    var strip = notchIsStrip(s)
     for (var i = 0; i < screens.length; i++) {{
       var o = screens[i]
-      if (o === s || notchIsStrip(o) === notchIsStrip(s)) continue
-      if (o.x === s.x && o.y === s.y && o.width === s.width) return o
+      if (o === s || notchIsStrip(o) === strip) continue
+      if (strip ? notchUnder(s, o) : notchUnder(o, s)) return o
     }}
     return null
   }}

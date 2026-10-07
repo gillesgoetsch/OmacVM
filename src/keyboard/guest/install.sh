@@ -2,7 +2,8 @@
 # Keyboard, guest side. Run as root inside the VM:
 #   ./install.sh <desktop-user> <xkb-layout> [xkb-variant]
 # (build.sh passes the layout read from the Mac by ../mac-layout.sh)
-# Sets the layout in Hyprland and the console, and makes Cmd+V paste everywhere.
+# Sets the layout in Hyprland and the console, makes Cmd+V paste everywhere,
+# and the Mac's globe key (XF86Launch3 from OmacVM.app) open the emoji picker.
 set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user> <layout> [variant]}; L=${2:?layout}; V=${3:-}
@@ -26,5 +27,6 @@ localectl set-x11-keymap "$L" "" "$V" 2>/dev/null || true
 
 B=$H/.config/hypr/bindings.lua
 grep -q '"Universal paste"' "$B" 2>/dev/null || cat mac-paste.lua >> "$B"
+grep -q '"Emojis (Mac globe key)"' "$B" 2>/dev/null || cat globe-key.lua >> "$B"
 chown "$U:$U" "$B"
-echo "keyboard: $L${V:+ ($V)}, Cmd+V paste"
+echo "keyboard: $L${V:+ ($V)}, Cmd+V paste, globe key: emoji picker"

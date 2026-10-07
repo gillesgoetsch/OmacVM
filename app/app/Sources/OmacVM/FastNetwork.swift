@@ -1,4 +1,5 @@
 import Foundation
+import OmacVMNet
 import Security
 
 /// The fast network (feature fast-network, off by default): the VM on macOS's
@@ -85,12 +86,23 @@ enum FastNetwork {
     static func turnOn(_ c: VMConfig) -> String? {
         if serviceProblem() != nil, let err = runInstaller([]) { return err }
         let file = c.folder.appendingPathComponent("fast-network")
-        if isOn(c) { return nil }
+        if isOn(c) { record(c, on: true); return nil }
         let b = (0..<3).map { _ in String(format: "%02x", Int.random(in: 0...255)) }
         do { try Data("mac=52:54:00:\(b.joined(separator: ":"))\n".utf8).write(to: file) } catch {
             return "could not write \(file.path): \(error.localizedDescription)"
         }
+        record(c, on: true)
         return nil
+    }
+
+    /// The VM's record of its features (its features file, which the VM's
+    /// first apply writes) says what the button did. The VM's own copy
+    /// follows with the next omacvm check, features or apply.
+    private static func record(_ c: VMConfig, on: Bool) {
+        let url = c.folder.appendingPathComponent("features")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let new = FeaturesRecord.set(text, "fast-network", on: on)
+        if new != text { try? new.write(to: url, atomically: true, encoding: .utf8) }
     }
 
     /// Turns it off for VM `c`, and takes the service off this Mac user when
@@ -106,6 +118,7 @@ enum FastNetwork {
         do { try FileManager.default.removeItem(at: c.folder.appendingPathComponent("fast-network")) } catch {
             if isOn(c) { return "could not remove the VM's fast-network file: \(error.localizedDescription)" }
         }
+        record(c, on: false)
         return nil
     }
 

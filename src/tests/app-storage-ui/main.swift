@@ -23,6 +23,36 @@ func render(_ state: AppState, _ name: String, _ out: URL) {
     }
 }
 
+/// A view of its own (the All VMs sheet), light and dark.
+@MainActor
+func render<V: View>(_ name: String, _ out: URL, _ content: () -> V) {
+    for (suffix, look) in [("", NSAppearance.Name.aqua), ("-dark", NSAppearance.Name.darkAqua)] {
+        let view = NSHostingView(rootView: content().background(Color(nsColor: .windowBackgroundColor)))
+        view.appearance = NSAppearance(named: look)
+        view.setFrameSize(view.fittingSize)
+        view.layoutSubtreeIfNeeded()
+        let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("\(name)\(suffix).png"))
+        print("rendered \(name)\(suffix).png \(Int(view.bounds.width))x\(Int(view.bounds.height))")
+    }
+}
+
+/// An alert's window, as the app shows it (never on screen here).
+@MainActor
+func render(_ alert: NSAlert, _ name: String, _ out: URL) {
+    for (suffix, look) in [("", NSAppearance.Name.aqua), ("-dark", NSAppearance.Name.darkAqua)] {
+        alert.window.appearance = NSAppearance(named: look)
+        alert.layout()
+        guard let view = alert.window.contentView else { continue }
+        view.layoutSubtreeIfNeeded()
+        let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        view.cacheDisplay(in: view.bounds, to: rep)
+        try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("\(name)\(suffix).png"))
+        print("rendered \(name)\(suffix).png \(Int(view.bounds.width))x\(Int(view.bounds.height))")
+    }
+}
+
 @MainActor
 func settle() { RunLoop.main.run(until: Date().addingTimeInterval(1.5)) }
 
@@ -33,6 +63,9 @@ MainActor.assumeIsolated {
     let state = AppState()
     state.storage.refresh(); settle()
     render(state, "1-ready-two-folders", out)
+    render("7-all-vms", out) { AllVMsView(storage: state.storage, selected: state.config.folder) {} }
+    render(state.storage.removeImagesAlert(), "8-remove-images", out)
+    render(state.storage.deleteAlert(VMConfig.named("Work")!), "9-delete-vm", out)
 
     Paths.otherVMsRoots = [URL(fileURLWithPath: "/Volumes/SD4TB-not-here/OmacVM")]
     state.storage.refresh(); settle()

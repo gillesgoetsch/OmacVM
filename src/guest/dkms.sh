@@ -12,7 +12,7 @@
 
 dkms_tools() {
   local t
-  pacman -S --needed --noconfirm dkms make gcc "$@" >/dev/null 2>&1 || true
+  "$(dirname "${BASH_SOURCE[0]}")/pkg-add" dkms make gcc "$@" || true
   for t in dkms make gcc; do
     command -v "$t" >/dev/null && continue
     say "not installed: pacman could not install $t (no network, or omarchy update first), then omacvm apply"

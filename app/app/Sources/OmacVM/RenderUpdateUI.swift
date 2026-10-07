@@ -14,7 +14,7 @@ enum RenderUpdateUI {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let u = Updater.shared
         let current = u.currentVersion
-        let next = "2.10.0"
+        let next = "3.0.2"
         let notes = URL(string: "https://github.com/gillesgoetsch/omacvm/releases/tag/v\(next)")
         let staged = Updater.Staged(version: next, app: URL(fileURLWithPath: "/nonexistent.app"), notes: notes, teams: [])
         let state = AppState()
@@ -40,6 +40,25 @@ enum RenderUpdateUI {
             u.showForRendering(staged: s, notice: notice, enabled: enabled, waiting: waiting, previous: "2.9.0")
             draw(name, into: dir) { RootView(state: state) }
         }
+        // Check Now: while it checks, and the results it leaves under the switch.
+        let checks: [(String, Updater.Outcome?, Bool, Bool)] = [
+            ("window-9-checking", nil, true, false),
+            ("window-10-up-to-date", .upToDate, false, false),
+            ("window-11-check-failed", .failed("no connection to the update feed (The Internet connection appears to be offline.)"), false, false),
+            ("window-12-needs-macos", .needsMacOS(next, "26.0"), true, false),
+            ("window-13-ready-checks-off", .ready(next), false, false),
+        ]
+        for (name, outcome, checking, _) in checks {
+            let ready: Updater.Staged? = { if case .ready = outcome { return staged } else { return nil } }()
+            u.showForRendering(staged: ready, notice: nil, enabled: name.hasSuffix("checking") || name.contains("macos"),
+                               waiting: false, previous: nil, outcome: outcome, checking: checking)
+            draw(name, into: dir) { RootView(state: state) }
+        }
+        // A VM runs from this launcher: Update shuts it down and starts it again.
+        u.runningVM = { (URL(fileURLWithPath: "/nonexistent"), "Omarchy") }
+        u.showForRendering(staged: staged, notice: nil, enabled: true, waiting: false, previous: nil)
+        draw("window-14-ready-vm-runs", into: dir) { RootView(state: state) }
+        u.runningVM = { nil }
 
         // The app menu as the menu bar shows it (the app delegate built it).
         u.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: "2.9.0")
@@ -50,13 +69,15 @@ enum RenderUpdateUI {
 
         // A new alert per picture: an alert's view does not draw twice.
         let alerts: [(String, () -> NSAlert)] = [
-            ("alert-1-ready", { AppDelegate.checkAlert(.ready(next), current: current, busy: nil) }),
-            ("alert-2-ready-vm-runs", { AppDelegate.checkAlert(.ready(next), current: current, busy: "A VM runs from \(Product.name)") }),
-            ("alert-3-up-to-date", { AppDelegate.checkAlert(.upToDate, current: current, busy: nil) }),
-            ("alert-4-needs-macos", { AppDelegate.checkAlert(.needsMacOS(next, "26.0"), current: current, busy: nil) }),
-            ("alert-5-failed", { AppDelegate.checkAlert(.failed("no connection to the update feed (The Internet connection appears to be offline.)"),
+            ("alert-1-ready", { Updater.checkAlert(.ready(next), current: current, busy: nil) }),
+            ("alert-2-ready-vm-runs", { Updater.checkAlert(.ready(next), current: current, busy: "A VM runs from \(Product.name)") }),
+            ("alert-3-up-to-date", { Updater.checkAlert(.upToDate, current: current, busy: nil) }),
+            ("alert-4-needs-macos", { Updater.checkAlert(.needsMacOS(next, "26.0"), current: current, busy: nil) }),
+            ("alert-5-failed", { Updater.checkAlert(.failed("no connection to the update feed (The Internet connection appears to be offline.)"),
                                                         current: current, busy: nil) }),
             ("alert-6-go-back", { AppDelegate.goBackAlert("2.9.0", current: current) }),
+            ("alert-7-restart-vm", { Updater.checkAlert(.ready(next), current: current, busy: "The VM runs", restart: true) }),
+            ("alert-8-shutdown-timeout", { Updater.shutdownTimeoutAlert() }),
         ]
         for (name, make) in alerts {
             for dark in [false, true] {

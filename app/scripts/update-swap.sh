@@ -76,7 +76,13 @@ if kill -0 "$OLD_PID" 2>/dev/null; then
   result "aborted the app did not quit"
   exit 1
 fi
-[[ -z $(running_from "$APP") ]] || abort "a VM runs from $BASE: the update waits until it is shut down"
+# A VM that was just stopped (forced off) can take a few seconds to go
+# with its helper processes: wait up to 10 s.
+for ((i = 0; i < 20; i++)); do [[ -z $(running_from "$APP") ]] && break; sleep 0.5; done
+if [[ -n $(running_from "$APP") ]]; then
+  log "still running from $BASE: $(ps -o pid=,comm= -p "$(running_from "$APP" | paste -sd, -)" | tr '\n' ' ')"
+  abort "a VM runs from $BASE: the update waits until it is shut down"
+fi
 # Renames only: the work folder (and the new app in it) on APP's volume.
 mkdir -p "$WORK_DIR" || abort "could not make $WORK_DIR"
 [[ -n $(volume "$WORK_DIR") && $(volume "$WORK_DIR") == "$(volume "$(dirname "$APP")")" ]] ||
@@ -119,7 +125,7 @@ log "swapped $OLD_V -> $NEW_V, starting it"
 # The result goes first: the new app reads it right after its check, while
 # this script may not have seen the marker yet. A failure overwrites it.
 if [[ $MODE == install ]]; then result "installed $OLD_V $NEW_V"; else result "went-back $OLD_V"; fi
-rm -f "$MARKER"
+rm -f "$MARKER" "$HOME_DIR/restart-vm.taken"
 why="no answer within ${WAIT} s"
 CHECK=(--update-check "$TOKEN")
 (( QUIET )) && CHECK+=(--update-quiet)
@@ -158,6 +164,10 @@ fi
 "$LSREGISTER" -f "$APP" >/dev/null 2>&1 || true
 keep_old
 rm -rf "$FAILED" "$WORK_DIR/incoming"
+# An update with a VM restart: the new app may have taken the VM to start
+# before it was stopped (its copy restart-vm.taken, from this launch: the
+# old one was removed before it). The old app starts the VM instead.
+[[ -f $HOME_DIR/restart-vm.taken && ! -e $HOME_DIR/restart-vm ]] && mv "$HOME_DIR/restart-vm.taken" "$HOME_DIR/restart-vm"
 result "rolled-back $NEW_V $why"
 reopen
 exit 1

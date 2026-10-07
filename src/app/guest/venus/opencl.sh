@@ -24,8 +24,8 @@ esac
 # The vulkan feature's Mesa brings its own rusticl and switch.
 if [[ -f $OURS ]]; then rm -f "$ENVF"; echo "OpenCL: OmacVM's Mesa (feature vulkan)"; exit 0; fi
 (( EUID == 0 )) || { echo "opencl.sh: run as root" >&2; exit 1; }
-pacman -S --needed --noconfirm opencl-mesa clinfo > "$LOG" 2>&1 ||
-  { echo "OpenCL: pacman could not install opencl-mesa (details in $LOG)" >&2; exit 1; }
+"${OMACVM_PKG_ADD:-$(dirname "$0")/../../../guest/pkg-add}" opencl-mesa clinfo ||
+  { echo "OpenCL: opencl-mesa not installed (see above)" >&2; exit 1; }
 mkdir -p "$(dirname "$ENVF")"
 echo RUSTICL_ENABLE=zink > "$ENVF"
 echo "OpenCL: rusticl on Zink (Vulkan) for apps started after the next login"

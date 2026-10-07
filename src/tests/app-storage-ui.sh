@@ -1,6 +1,6 @@
 #!/bin/bash
-# Renders OmacVM.app's storage screens to PNGs from a fixture home (two VMs:
-# one in ~/OmacVM, one in 2.9's hidden folder). Nothing opens on screen; the
+# Renders OmacVM.app's storage screens to PNGs from a fixture home (three VMs:
+# two in ~/OmacVM, one in 2.9's hidden folder). Nothing opens on screen; the
 # real home, the app's settings and VMs are not read or touched (a binary of
 # its own name keeps its own settings, removed after).
 #   src/tests/app-storage-ui.sh OUT_DIR
@@ -18,10 +18,20 @@ vm() {   # FOLDER
   mkfile -n 64m "$1/efi-vars.fd"; : > "$1/ready"
 }
 vm "$H/OmacVM/Omarchy"
+vm "$H/OmacVM/Work"
 vm "$H/Library/Application Support/OmacVM/VMs/Old VM"
 mkdir -p "$H/Library/Caches/omacvm/live"; mkfile 300m "$H/Library/Caches/omacvm/live/TryOmarchy.dmg"
 defaults delete "$BIN" >/dev/null 2>&1 || true
 srcs=()
-for f in "$R"/app/app/Sources/OmacVM/*.swift; do [[ $(basename "$f") == main.swift ]] || srcs+=("$f"); done
-swiftc -swift-version 5 -o "$T/$BIN" "${srcs[@]}" "$R/src/tests/app-storage-ui/main.swift"
+# main.swift (the app delegate) and the update UI renderer, which needs it, stay out.
+for f in "$R"/app/app/Sources/OmacVM/*.swift; do
+  case $(basename "$f") in main.swift|RenderUpdateUI.swift) ;; *) srcs+=("$f") ;; esac
+done
+libs=()
+for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio; do   # the app's library targets (Package.swift)
+  swiftc -swift-version 5 -parse-as-library -static -emit-library -emit-module -module-name $m \
+    -emit-module-path "$T/$m.swiftmodule" -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift
+  libs+=(-l$m)
+done
+swiftc -swift-version 5 -I "$T" -L "$T" "${libs[@]}" -o "$T/$BIN" "${srcs[@]}" "$R/src/tests/app-storage-ui/main.swift"
 HOME=$H CFFIXED_USER_HOME=$H OMACVM_RESOURCES=$R/app "$T/$BIN" "$OUT"

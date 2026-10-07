@@ -1,0 +1,569 @@
+#!/usr/bin/python3 -I
+"""omacvm-touchid: the Mac's Touch ID for sudo and polkit in the VM (ADR 0041).
+
+PAM runs it as root, in the sudo, sudo-i and polkit-1 services only:
+  auth sufficient pam_exec.so quiet seteuid stdout /usr/lib/omacvm/omacvm-touchid
+Exit 0 only for a "yes" the Mac signed for this very request. Anything else
+is 1, and PAM asks for the password as before.
+
+It asks only for the person at the VM's own screen: PAM_USER must be the
+user of the active local display session (logind); sudo must run in a
+terminal of that user's and not from an SSH login; polkit only right after
+the polkit rule noted a check for that user (omacvm-touchid-note).
+
+Keys (root, 0600, put there by omacvm apply): /etc/omacvm/touchid-key (this
+VM's Touch ID key, the Mac has the same) and /etc/omacvm/touchid-token (the
+Bridge token, only sent to a Bridge that proved it knows it).
+
+Parallels, UTM, Fusion: TCP to the Bridge. OmacVM.app: the virtio port
+/dev/virtio-ports/org.omacvm.auth (root, 0600; the VM has it from the first
+start with touch-id on), which the app passes on to the Bridge; there the
+app adds the token. Lines, one JSON object each (app/app/Sources/OmacVMAuth).
+"""
+import base64
+import errno
+import hashlib
+import hmac
+import http.client
+import json
+import os
+import pwd
+import re
+import secrets
+import select
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import threading
+import time
+
+# Tests only (not as root): other folders for the files, a fake loginctl,
+# the Bridge's address. PAM's own runs take nothing from the environment
+# but the PAM_* items.
+TEST = os.environ.get("OMACVM_TOUCHID_TEST") == "1" and os.geteuid() != 0
+E = os.environ if TEST else {}
+ETC = E.get("OMACVM_TOUCHID_ETC", "/etc/omacvm")
+RUN = E.get("OMACVM_TOUCHID_RUN", "/run/omacvm-touchid")
+PROC = E.get("OMACVM_TOUCHID_PROC", "/proc")
+DEV = E.get("OMACVM_TOUCHID_DEV", "/dev")
+AUTH_PORT = E.get("OMACVM_TOUCHID_AUTH_PORT", "/dev/virtio-ports/org.omacvm.auth")   # OmacVM.app
+ACTIONS = E.get("OMACVM_TOUCHID_ACTIONS", "/usr/share/polkit-1/actions")
+LOGINCTL = E.get("OMACVM_TOUCHID_LOGINCTL", "/usr/bin/loginctl")
+PORT = int(E.get("OMACVM_TOUCHID_PORT", "47831"))
+CONNECT_TIMEOUT = 1.0
+ANSWER_TIMEOUT = 35.0
+DEADLINE = int(E.get("OMACVM_TOUCHID_DEADLINE", "40"))   # the whole request, whatever the Bridge sends
+NOTE_AGE = 5           # polkit: the rule's note for this request is this fresh
+NOTE_WINDOW = 15       # ... and the only action noted in this time, else no label
+COMMAND_MAX = 120      # sudo: longer commands are not shown cut, the password comes
+UID_MIN = int(E.get("OMACVM_TOUCHID_UID_MIN", "1000"))   # people, not system users or root
+USER_RE = r"[A-Za-z_][A-Za-z0-9_.-]{0,31}"
+ACTION_RE = r"[A-Za-z0-9._-]{1,128}"
+WHY = {"locked": "Mac locked", "not-front": "VM not in front", "no-touch-id": "no Touch ID",
+       "lockout": "too many tries", "rate": "too many tries", "busy": "another Touch ID prompt is open",
+       "off": "Touch ID off", "clock": "VM clock off",
+       "restart": "shut the VM down and start it again once", "app": "OmacVM.app does not answer"}
+PING = 0.5             # OmacVM.app's port: the app drops the request when the pings stop
+ACK_TIMEOUT = 2.0      # ... and says within this that it relays
+
+
+class Deadline(Exception):
+    pass
+
+
+def say(s):
+    print(s, flush=True)
+
+
+def read(path, limit=4096):
+    with open(path, "rb") as f:
+        return f.read(limit)
+
+
+def env_file():
+    out = {}
+    try:
+        for line in read(ETC + "/env", 65536).decode(errors="replace").splitlines():
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return out
+
+
+def secret(name):
+    p = f"{ETC}/{name}"
+    st = os.lstat(p)
+    if not TEST and (st.st_uid != 0 or st.st_mode & 0o077):
+        raise PermissionError(p)
+    k = read(p, 256).strip()
+    if len(k) < 32:
+        raise ValueError(p)
+    return k
+
+
+def mac(key, text):
+    return hmac.new(key, text.encode(), hashlib.sha256).hexdigest()
+
+
+def uid_of(user):
+    if TEST:
+        return int(E.get("OMACVM_TOUCHID_UID", os.getuid()))
+    return pwd.getpwnam(user).pw_uid
+
+
+def logind(*args):
+    """loginctl show-... as {Key: Value}; {} when logind does not know it."""
+    try:
+        r = subprocess.run([LOGINCTL, "--no-pager", *args], capture_output=True, text=True, timeout=2,
+                           env={**E, "LC_ALL": "C"})
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if r.returncode != 0:
+        return {}
+    return dict(line.partition("=")[::2] for line in r.stdout.splitlines() if "=" in line)
+
+
+SESSION = ["-p", "Name", "-p", "Remote", "-p", "Active", "-p", "Seat", "-p", "Class"]
+
+
+def at_the_screen(user, uid):
+    """The user owns the active, local display session on a seat (the person
+    at the VM's screen; as polkit and logind see "local active")."""
+    if uid < UID_MIN or uid == 65534:
+        return False
+    disp = logind("show-user", str(uid), "-p", "Display").get("Display", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", disp):
+        return False
+    s = logind("show-session", disp, *SESSION)
+    return (s.get("Name") == user and s.get("Remote") == "no" and s.get("Active") == "yes"
+            and s.get("Seat", "") != "" and s.get("Class") == "user")
+
+
+def caller_ok(user, sid):
+    """The caller's own login session (audit session of sudo, or of a
+    setuid polkit helper): never an SSH login or another user's. Omarchy's
+    terminals run under the user's service manager (uwsm), whose session
+    has no seat (Class=manager); cron and other background sessions are
+    refused, and so is an audit session logind does not know (cronie
+    sets one without logind). No audit session at all (polkit 127's
+    socket-started helper, a kernel without audit) leaves it to
+    at_the_screen."""
+    if not sid or sid == "4294967295":
+        return True
+    s = logind("show-session", sid, *SESSION) if sid.isdigit() else {}
+    return (s.get("Name") == user and s.get("Remote") == "no"
+            and (s.get("Seat", "") != "" or s.get("Class") == "manager"))
+
+
+def own_tty(uid):
+    """sudo's terminal (PAM_TTY), when it is a terminal the user owns:
+    "pts/3". None without one: sudo -n from a cron job or a program in the
+    background never reaches the Mac."""
+    t = os.environ.get("PAM_TTY", "")
+    t = t[5:] if t.startswith("/dev/") else t
+    if not re.fullmatch(r"pts/[0-9]{1,4}|tty[0-9]{1,4}", t):
+        return None
+    try:
+        st = os.stat(f"{DEV}/{t}")
+    except OSError:
+        return None
+    if not (stat.S_ISCHR(st.st_mode) or (TEST and stat.S_ISREG(st.st_mode))) or st.st_uid != uid:
+        return None
+    return t
+
+
+def printable(text):
+    """Only plain ASCII the dialog shows as it is; anything else is "?"."""
+    return "".join(c if " " <= c <= "~" else "?" for c in text)
+
+
+def sudo_command(argv):
+    """The command sudo runs, as the dialog shows it; None when it cannot be
+    shown whole and honestly: variables set on the command line
+    (sudo NAME=value ...: LD_PRELOAD hides well), or longer than COMMAND_MAX."""
+    words = [w.decode("utf-8", errors="replace") for w in argv]
+    if not words:
+        return None
+    if any(re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w) for w in words[1:]):
+        return None
+    prog = os.path.basename(words[0])
+    text = printable(" ".join(([] if prog == "sudo" else [prog]) + words[1:]))
+    return text if len(text) <= COMMAND_MAX else None
+
+
+def can_prompt(action, defaults):
+    """False when the action's own file says an active local user is never
+    asked (allow_active yes or no): the desktop checks those all the time
+    (NetworkManager, systemd), they never lead to a password prompt."""
+    return defaults.get(action, "auth") not in ("yes", "no")
+
+
+def action_defaults(ids):
+    """allow_active of these actions from polkit's action files."""
+    out = {}
+    if not ids:
+        return out
+    import xml.etree.ElementTree as ET   # here: polkit only, and it takes a moment to load
+    try:
+        names = sorted(os.listdir(ACTIONS))
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith(".policy"):
+            continue
+        try:
+            root = ET.parse(f"{ACTIONS}/{n}").getroot()
+        except (OSError, ET.ParseError):
+            continue
+        for a in root.iter("action"):
+            i = a.get("id", "")
+            if i in ids:
+                out[i] = (a.findtext("defaults/allow_active") or "").strip()
+    return out
+
+
+def polkit_notes(name):
+    """[(age, action)] the polkit rule noted in /run/omacvm-touchid/NAME (a
+    user, or .other: anyone not at the screen) in the last NOTE_WINDOW s."""
+    p = f"{RUN}/{name}"
+    try:
+        st = os.lstat(p)
+        if not TEST:
+            owners = {0}
+            try:
+                owners.add(pwd.getpwnam("polkitd").pw_uid)
+            except KeyError:
+                pass
+            if st.st_uid not in owners or not stat.S_ISREG(st.st_mode):
+                return []
+        lines = read(p, 8192).decode(errors="replace").splitlines()
+    except OSError:
+        return []
+    now, out = time.time(), []
+    for line in lines:
+        t, _, action = line.strip().partition(" ")
+        try:
+            age = now - int(t)
+        except ValueError:
+            continue
+        if 0 <= age < NOTE_WINDOW and re.fullmatch(ACTION_RE, action):
+            out.append((age, action))
+    return out
+
+
+def polkit_action(user):
+    """None: no fresh check of an action that asks (do not ask the Mac).
+    Else the action to name: one action only in the window, or "" (the
+    dialog then says "a system request"; a second action, even a harmless
+    pkcheck, never lends its name to the first)."""
+    notes, other = polkit_notes(user), polkit_notes(".other")
+    d = action_defaults({a for _, a in notes + other})
+    notes = [(age, a) for age, a in notes if can_prompt(a, d)]
+    if any(can_prompt(a, d) for _, a in other):
+        return None   # someone else (SSH) was just checked too: this may be theirs
+    if not any(age < NOTE_AGE for age, _ in notes):
+        return None
+    names = {a for _, a in notes}
+    return names.pop() if len(names) == 1 else ""
+
+
+# Ctrl+C, Ctrl+\, a closed terminal, a kill: pending at the caller.
+STOP_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGQUIT, signal.SIGTERM)
+
+
+def interrupted(pid):
+    """pam_exec starts this client in a session of its own, so the terminal's
+    Ctrl+C never reaches it, and sudo blocks SIGINT and SIGQUIT while PAM
+    runs: the Ctrl+C waits at sudo (its /proc status, SigPnd or ShdPnd)."""
+    mask = sum(1 << (int(n) - 1) for n in STOP_SIGNALS)
+    try:
+        for line in read(f"{PROC}/{pid}/status", 4096).decode(errors="replace").splitlines():
+            k, _, v = line.partition(":")
+            if k in ("SigPnd", "ShdPnd") and int(v.strip() or "0", 16) & mask:
+                return True
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def watch_parent():
+    """The PAM caller went away (the agent's Cancel kills the helper): stop,
+    so the closed connection takes the Mac's dialog down with it. Ctrl+C in
+    sudo's terminal (pending at sudo): the same, through the deadline's path,
+    so the Mac's dialog is cancelled at once."""
+    parent, main = os.getppid(), threading.main_thread().ident
+
+    def run():
+        while True:
+            time.sleep(0.25)
+            if os.getppid() != parent:
+                os._exit(1)
+            if interrupted(parent):
+                signal.pthread_kill(main, signal.SIGALRM)   # Deadline: the cancel goes out, then the password
+                time.sleep(1)
+                os._exit(1)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def signed(key, data):
+    """A fresh nonce and the X-OmacVM-Auth value for POST /omacvm/touchid."""
+    t, nonce = int(time.time()), secrets.token_hex(16)
+    sig = mac(key, "\n".join(["omacvm-touchid-request 1", "POST", "/omacvm/touchid", str(t), nonce, "1",
+                              hashlib.sha256(data).hexdigest()]))
+    return nonce, f"1 {t} {nonce} {sig}"
+
+
+def open_port():
+    """OmacVM.app's port, non-blocking. Tests: a Unix socket stands in."""
+    if TEST and stat.S_ISSOCK(os.stat(AUTH_PORT).st_mode):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(AUTH_PORT)
+        s.setblocking(False)
+        return s.detach()
+    return os.open(AUTH_PORT, os.O_RDWR | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
+
+
+def port_write(fd, line, wait):
+    """The whole line, or False (the app is not there: a virtio port blocks
+    writes until the Mac end is connected, and says POLLHUP)."""
+    end = time.monotonic() + wait
+    while line:
+        left = end - time.monotonic()
+        if left <= 0:
+            return False
+        p = select.poll()
+        p.register(fd, select.POLLOUT)
+        ev = p.poll(left * 1000)
+        if not ev or ev[0][1] & (select.POLLHUP | select.POLLERR | select.POLLNVAL):
+            return False
+        try:
+            line = line[os.write(fd, line):]
+        except BlockingIOError:
+            continue
+        except OSError:
+            return False
+    return True
+
+
+def over_port(key, data):
+    """OmacVM.app: the request on org.omacvm.auth, pings while the Mac's
+    dialog is up, the answer for this nonce (older lines are skipped)."""
+    try:
+        fd = open_port()
+    except FileNotFoundError:
+        # The VM started before touch-id was on: the port comes with its next start.
+        say(f"Touch ID not available ({WHY['restart']}), use your password")
+        return 1
+    except OSError as e:
+        if e.errno == errno.EBUSY:   # one opener at a time: another prompt is open
+            say(f"Touch ID not available ({WHY['busy']}), use your password")
+        return 1
+    nonce, auth = signed(key, data)
+    stop, writing, sent, pinger = threading.Event(), threading.Lock(), False, None
+
+    def send(o, wait):
+        with writing:   # whole lines: the pings and the cancel never interleave
+            return port_write(fd, json.dumps(o, separators=(",", ":")).encode() + b"\n", wait)
+
+    def pings():
+        while not stop.wait(PING):
+            send({"op": "ping", "id": nonce}, 0.2)
+    try:
+        req = {"op": "touchid", "id": nonce, "auth": auth, "proto": 1, "body": base64.b64encode(data).decode()}
+        if not send(req, CONNECT_TIMEOUT):
+            say(f"Touch ID not available ({WHY['app']}), use your password")
+            return 1
+        sent = True
+        pinger = threading.Thread(target=pings, daemon=True)
+        pinger.start()
+        # The app says at once that it relays (a virtio port takes writes even
+        # with nobody at the Mac end): no ack within ACK_TIMEOUT, the password.
+        acked, buf = False, b""
+        ack_end, end = time.monotonic() + ACK_TIMEOUT, time.monotonic() + ANSWER_TIMEOUT + 5
+        p = select.poll()
+        p.register(fd, select.POLLIN)
+        while True:
+            left = (end if acked else ack_end) - time.monotonic()
+            if left <= 0:
+                if not acked:
+                    say(f"Touch ID not available ({WHY['app']}), use your password")
+                return 1
+            ev = p.poll(left * 1000)
+            if not ev:
+                continue
+            try:
+                chunk = os.read(fd, 8192)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                return 1   # the app went away (POLLHUP): the password
+            buf += chunk
+            while b"\n" in buf:
+                one, buf = buf.split(b"\n", 1)
+                try:
+                    o = json.loads(one)
+                except ValueError:
+                    continue
+                if not isinstance(o, dict) or o.get("id") != nonce:
+                    continue   # an answer for an earlier client of the port
+                if o.get("ack") is True:
+                    if not acked:
+                        acked = True
+                        say("Touch ID on your Mac, or wait for the password prompt")
+                    continue
+                status = o.get("status")
+                if not isinstance(status, int) or status == 0:
+                    return 1   # the Bridge did not answer: the password
+                try:
+                    answer = base64.b64decode(o.get("body", ""), validate=True)
+                except (ValueError, TypeError):
+                    return 1
+                return answered(key, nonce, status, answer, o.get("answer", ""))
+            if len(buf) > 16384:
+                buf = b""
+    finally:
+        stop.set()
+        if pinger:
+            pinger.join(0.5)   # no ping after the close
+        if sent:   # the Mac's dialog goes at once too (deadline, Ctrl+C; after an answer the app ignores it)
+            send({"op": "cancel", "id": nonce}, 0.2)
+        os.close(fd)
+
+
+def request():
+    def timeout(*_):
+        raise Deadline()
+    signal.signal(signal.SIGALRM, timeout)
+    signal.alarm(DEADLINE)   # one deadline for all of it: a dripping "Bridge" cannot hold sudo
+    watch_parent()
+    user, service = os.environ.get("PAM_USER", ""), os.environ.get("PAM_SERVICE", "")
+    if os.environ.get("PAM_TYPE", "auth") != "auth" or not re.fullmatch(USER_RE, user) or user == "root":
+        return 1
+    if service not in ("sudo", "sudo-i", "polkit-1"):
+        return 1
+    try:
+        key = secret("touchid-key")
+    except (OSError, ValueError):
+        return 1   # the feature is off here
+    try:
+        uid = uid_of(user)
+    except (KeyError, ValueError):
+        return 1
+    ppid = os.getppid()
+    try:
+        sid = read(f"{PROC}/{ppid}/sessionid", 32).decode().strip()
+    except OSError:
+        sid = ""
+    if not caller_ok(user, sid) or not at_the_screen(user, uid):
+        return 1
+    body = {"user": user}
+    if service in ("sudo", "sudo-i"):
+        tty = own_tty(uid)
+        if not tty:
+            return 1
+        try:
+            argv = read(f"{PROC}/{ppid}/cmdline", 8192).split(b"\0")
+        except OSError:
+            return 1
+        cmd = sudo_command(argv[:-1] if argv and argv[-1] == b"" else argv)
+        if cmd is None:
+            say("Touch ID not used for this command (too long or sets variables), use your password")
+            return 1
+        body["kind"], body["detail"], body["tty"] = "sudo", cmd, tty
+    else:
+        action = polkit_action(user)
+        if action is None:
+            return 1
+        if action.startswith("com.1password."):
+            body["kind"] = "1password"
+        else:
+            body["kind"] = "polkit"
+            if action:
+                body["action"] = action
+    env = env_file()
+    data = json.dumps(body, separators=(",", ":")).encode()
+    if env.get("OMACVM_VM_TYPE") == "app":
+        return over_port(key, data)
+    try:
+        token = secret("touchid-token")
+    except (OSError, ValueError):
+        return 1
+    host = E.get("OMACVM_TOUCHID_HOST") or env.get("OMACVM_HOST") or "10.211.55.2"
+    if not re.fullmatch(r"[0-9.]{7,15}", host):
+        return 1
+
+    # The Bridge proves it knows the token before the token goes out (as omacvm-bridge).
+    n = secrets.token_hex(16)
+    c = http.client.HTTPConnection(host, PORT, timeout=CONNECT_TIMEOUT)
+    try:
+        c.request("GET", f"/proof?nonce={n}")
+        r = c.getresponse()
+        proof = json.loads(r.read(4096) or b"{}").get("proof", "") if r.status == 200 else ""
+    except (OSError, ValueError, AttributeError, http.client.HTTPException):
+        return 1
+    finally:
+        c.close()
+    if not isinstance(proof, str) or not hmac.compare_digest(mac(token, f"omacvm-bridge mac {host} {n}"), proof):
+        return 1
+
+    say("Touch ID on your Mac, or wait for the password prompt")
+    path = "/omacvm/touchid"
+    nonce, auth = signed(key, data)
+    c = http.client.HTTPConnection(host, PORT, timeout=CONNECT_TIMEOUT)
+    try:
+        c.connect()
+        c.sock.settimeout(ANSWER_TIMEOUT)
+        c.request("POST", path, body=data, headers={
+            "Authorization": "Bearer " + token.decode(), "Content-Type": "application/json",
+            "X-OmacVM-Proto": "1", "X-OmacVM-Auth": auth})
+        r = c.getresponse()
+        answer = r.read(4096)
+        got = r.getheader("X-OmacVM-Answer") or ""
+        status = r.status
+    except (OSError, http.client.HTTPException):
+        return 1
+    finally:
+        c.close()
+    return answered(key, nonce, status, answer, got)
+
+
+def answered(key, nonce, status, answer, got):
+    """Exit code for the Bridge's answer (status, body bytes, X-OmacVM-Answer)."""
+    try:
+        o = json.loads(answer)
+    except ValueError:
+        return 1
+    if not isinstance(o, dict) or not isinstance(got, str):
+        return 1
+    want = mac(key, "\n".join(["omacvm-touchid-answer 1", nonce, str(status), hashlib.sha256(answer).hexdigest()]))
+    if not hmac.compare_digest(want, got):
+        # The Bridge cannot sign "off" (it has no key for this VM then): only
+        # that message is taken unsigned, never anything that lets in.
+        if status == 403 and not got and o.get("code") == "off":
+            say(f"Touch ID not available ({WHY['off']}), use your password")
+        return 1   # else: not the Mac that has this VM's key
+    if status == 200 and o.get("result") == "yes":
+        return 0
+    why = WHY.get(o.get("reason") if status == 200 else o.get("code"))
+    if why:
+        say(f"Touch ID not available ({why}), use your password")
+    return 1
+
+
+def main():
+    if len(sys.argv) != 1:
+        return 2
+    try:
+        return request()
+    except (KeyboardInterrupt, Deadline):
+        return 1
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:   # never more than a "no": the password prompt follows
+        sys.exit(1)

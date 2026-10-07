@@ -1,6 +1,8 @@
 #!/bin/bash
-# omacvm vms [--json]: your Parallels and UTM VMs and their OmacVM state (asks
-# the running ones over SSH; stopped VMs are not started).
+# omacvm vms [--json] [--app-only]: your Parallels and UTM VMs and their OmacVM
+# state (asks the running ones over SSH; stopped VMs are not started).
+# --app-only: only OmacVM.app's VMs (the Bridge runs this through the app, so a
+# VMs folder on an external drive can be read: src/bridge/mac/control.swift).
 # --json: {"omacvm", "vms": [{"name", "type", "state", "ip", "omacvm",
 # "reachable", "setup", "features": {NAME: true|false}, "dir", "note"}]}; omacvm = the version in the
 # VM (null: none, or stopped), reachable = OmacVM's SSH key gets in, setup =
@@ -9,7 +11,7 @@
 # control UTM yet, or over SSH), with note "UTM data not readable" when UTM's
 # own files were not read either (macOS guards them: lib/mac.sh utm_data);
 # dir = an OmacVM.app VM's folder (null for the others: the Bridge reads its
-# logs/gpu-memory for the control centre). UTM is listed only once it is used
+# logs/gpu-memory for the control centre when an older app does not send it). UTM is listed only once it is used
 # with OmacVM on this Mac (OMACVM_UTM=1: always).
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -17,13 +19,16 @@ source "$R/src/lib/mac.sh"
 source "$R/src/lib/vm.sh"
 source "$R/src/lib/features.sh"
 features_load
-JSON=0
-case ${1:-} in
-  --json) JSON=1 ;;
-  -h|--help) sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 0 ;;
-  "") ;;
-  *) echo "omacvm vms: unknown option $1" >&2; exit 2 ;;
-esac
+JSON=0; APP_ONLY=0
+while (( $# )); do
+  case $1 in
+    --json) JSON=1 ;;
+    --app-only) APP_ONLY=1 ;;
+    -h|--help) sed -n '2,15s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    *) echo "omacvm vms: unknown option $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 export OMA_KEY=~/.ssh/omacvm
 NOTCH=$(swift "$R/src/display/mac-notch.swift" 2>/dev/null || echo none)
 first=1
@@ -42,6 +47,8 @@ while IFS=$'\t' read -r name type state note; do
       version=$(sed -n 's/^OMACVM_VERSION=//p' <<<"$probe")
       if [[ -n $version ]]; then
         TYPE=$type; features_read_env "$probe"   # TYPE: the defaults of features it does not name
+        # The record, and what was switched outside OmacVM as it is (omacvm features and check fix the record).
+        features_read_record "$dir"; features_real "$probe" "$dir"
         for ((i = 0; i < ${#FN[@]}; i++)); do
           feats+="${feats:+, }\"${FN[$i]}\": $( [[ ${FV[$i]} == on ]] && echo true || echo false)"
         done
@@ -64,6 +71,6 @@ while IFS=$'\t' read -r name type state note; do
     printf '  %-24s %-10s %-8s %-15s %s\n' "$name" "$type" "$state" "${ip:--}" "$what"
   fi
   first=0
-done < <(vms_list)
+done < <(if (( APP_ONLY )); then app_list; else vms_list; fi)
 (( JSON )) && printf '\n]}\n'
 exit 0

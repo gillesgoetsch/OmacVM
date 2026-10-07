@@ -37,10 +37,12 @@ features_load
 VM=""; IP=""; TYPE=""; U=""; KEY=~/.ssh/omacvm; KB=""; MODE=""; MAC=1; NAMED=1; TOKEN=1; TOOLS=1; TRANSACTION=0
 YES=0; NEWKEY=0; REINSTALL=()
 SETN=(); SETV=()
-set_feature() {   # NAME on|off
-  feature_index "$1" >/dev/null || { echo "omacvm apply: unknown feature '$1' (omacvm features lists them)" >&2; exit 2; }
+set_feature() {   # NAME on|off (an old name too: idle-lock=off is no-idle-lock=on)
+  local n v
   [[ $2 == on || $2 == off ]] || { echo "omacvm apply: --feature $1=$2: on or off" >&2; exit 2; }
-  SETN+=("$1"); SETV+=("$2")
+  read -r n v <<<"$(feature_alias "$1" "$2")"
+  feature_index "$n" >/dev/null || { echo "omacvm apply: unknown feature '$1' (omacvm features lists them)" >&2; exit 2; }
+  SETN+=("$n"); SETV+=("$v")
 }
 while (( $# )); do
   case $1 in
@@ -55,15 +57,16 @@ while (( $# )); do
     --reset-host-key) export OMA_PIN_RESET=1; NEWKEY=1; shift ;;
     --transaction) TRANSACTION=1; shift ;;
     --yes|-y) YES=1; shift ;;
-    --reinstall) feature_index "${2:-}" >/dev/null || { echo "omacvm apply: --reinstall: unknown feature '${2:-}' (omacvm features lists them)" >&2; exit 2; }
-                 REINSTALL+=("$2"); shift 2 ;;
+    --reinstall) f=$(feature_alias "${2:-}"); f=${f%% *}
+                 feature_index "$f" >/dev/null || { echo "omacvm apply: --reinstall: unknown feature '${2:-}' (omacvm features lists them)" >&2; exit 2; }
+                 REINSTALL+=("$f"); shift 2 ;;
     --no-token) TOKEN=0; shift ;;   # prebuilt images: no Bridge token in the VM
     --no-tools) TOOLS=0; shift ;;   # prebuilt images: no Parallels Tools
     --feature) set_feature "${2%%=*}" "${2#*=}"; shift 2 ;;
     --no-*) set_feature "${1#--no-}" off; shift ;;
     -h|--help) sed -n '2,26s/^# \{0,1\}//p' "$0"; exit 0 ;;
-    --*) f=${1#--}; feature_index "$f" >/dev/null || { echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2; }
-         set_feature "$f" on; shift ;;
+    --*) f=$(feature_alias "${1#--}"); feature_index "${f%% *}" >/dev/null || { echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2; }
+         set_feature "${1#--}" on; shift ;;
     *) echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -112,16 +115,27 @@ now=$(cat "$R/src/VERSION")
 # ---------- the features it gets ----------
 features_read_env "$probe"
 PREV=("${FV[@]}")   # what the VM has now: --transaction goes back to it
-notch_had=$(sed -n 's/^OMACVM_FEATURE_omanotch=//p' <<<"$probe" | tail -1)   # OmacVM.app: see below
 # New to OmacVM (or a prebuilt VM before its first apply): the defaults,
 # Omanotch with a notch.
 if [[ -z $had ]] || grep -q '^OMACVM_PREBUILT_FRESH=1' <<<"$probe"; then
   for ((i = 0; i < ${#FN[@]}; i++)); do FV[$i]=$(feature_default "$i"); done
 fi
-# OmacVM.app: the VM's fast-network file is the switch (the app's button sets
-# it too), so an apply without --feature fast-network keeps what it says.
-if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
-  [[ -s $d/fast-network ]] && FV[$(feature_index fast-network)]=on || FV[$(feature_index fast-network)]=off
+# OmacVM.app: the VM's record (its features file) over the VM's copy.
+rd=""
+if [[ $TYPE == app ]] && (( NAMED )) && rd=$(app_dir "$VM"); then
+  [[ -z $had ]] || features_read_record "$rd"
+fi
+# What was switched outside OmacVM keeps its real state: the fast network
+# (the app's button writes the fast-network file) and autologin (SDDM, also an
+# Omarchy install's own file). An apply without --feature for them keeps it.
+features_real "$probe" "$rd"
+if [[ -n $had ]]; then
+  while IFS= read -r l; do [[ -z $l ]] || info "$l"; done < <(features_drift_lines "kept, the record follows")
+  # What the VM has now is the real state: a rollback goes back to it, not
+  # to the record's mistake (it would set an autologin file aside).
+  for x in ${DRIFT[@]+"${DRIFT[@]}"}; do
+    IFS=$'\t' read -r n v _ <<<"$x"; PREV[$(feature_index "$n")]=$v
+  done
 fi
 # A VM from before the control centre: one question (yes without a terminal).
 cc=$(feature_index control-centre)
@@ -165,6 +179,9 @@ helper_of() {
 }
 if (( MAC )); then
   step mac "the Mac side"
+  # OmacVM.app's apply (apply-vm.sh, or the app's omacvm the Bridge runs):
+  # the Bridge runs the app's own omacvm for the control centre (cli_file_app).
+  [[ -n ${OMACVM_APP_CLI:-} ]] && cli_file_app "$OMACVM_APP_CLI"
   args=(--quiet)
   # A repair builds that feature's Mac helper again (the others stay as they are).
   for f in ${REINSTALL[@]+"${REINSTALL[@]}"}; do
@@ -186,9 +203,8 @@ if (( MAC )); then
   needs_bridge || args+=(--no-bridge)
   on gestures || args+=(--skip-gestures)
   [[ $TYPE == parallels ]] || args+=(--skip-clip)   # the VM -> Mac clipboard of Parallels' shared folder
-  # Omanotch from src/omanotch. OmacVM.app too, as for the other routes (the
-  # app's own notch-strip mode is a separate switch in the app, which apply
-  # leaves alone).
+  # Omanotch from src/omanotch. OmacVM.app too, as for the other routes: its
+  # full screen sits below the camera and Omanotch fills the strip.
   on omanotch && args+=(--omanotch)
   MAC_FAILED=$(mktemp -t omacvm-mac)
   mrc=0; OMACVM_MAC_FAILED_FILE=$MAC_FAILED "$R/src/mac/install.sh" "${args[@]}" || mrc=$?
@@ -274,6 +290,23 @@ if (( TOKEN && NAMED )) && on control-centre; then
     install -d -m700 -o '$U' -g '$U' \"\$H/.config/omacvm-bridge\"
     install -m600 -o '$U' -g '$U' /dev/stdin \"\$H/.config/omacvm-bridge/vm-key\"" < "$vk"
 fi
+# Touch ID (ADR 0041): its own key, root's alone in the VM (PAM asks as
+# root), and for Parallels/UTM/Fusion the Bridge token (they reach the Bridge
+# over the network). OmacVM.app's VMs ask through the app's port: no Bridge
+# token in them. Off: the Mac's copy goes (the VM's goes in guest/install.sh).
+if (( TOKEN && NAMED )) && on touch-id; then
+  tk=$(touchid_key_ensure "$TYPE" "$VM" "$( (( NEWKEY )) && echo new)")
+  gssh "$IP" "set -e; install -d -m755 /etc/omacvm; install -m600 -o root -g root /dev/stdin /etc/omacvm/touchid-key" < "$tk"
+  if [[ $TYPE == app ]]; then gssh "$IP" "rm -f /etc/omacvm/touchid-token" < /dev/null
+  else gssh "$IP" "set -e; install -m600 -o root -g root /dev/stdin /etc/omacvm/touchid-token" < "$T"; fi
+else
+  # The key, and the theme the VM sent for the Bridge's Touch ID panel.
+  if (( NAMED )); then
+    rm -f "$(vm_key_file "$TYPE" "$VM").touchid" "$OMA_BRIDGE_SUPPORT/touchid-theme/$(basename "$(vm_key_file "$TYPE" "$VM")").json"
+  fi
+  # On without a key: the VM's PAM line gets 403 and the password comes.
+  if on touch-id; then log "Touch ID: not set up (it needs the VM by name and the Bridge token: not --ip, not --no-token)"; fi
+fi
 step copy "OmacVM into the VM"
 log "OmacVM -> $IP:/usr/local/share/omacvm"
 # Unpacked beside the one there; swapped in only once it is all there. The
@@ -292,7 +325,12 @@ GI_ARGS=""; KNOWN=""
 guest_install() {
   local fargs="" i v=("$@")
   for ((i = 0; i < ${#FN[@]}; i++)); do
-    [[ -z $KNOWN || $'\n'$KNOWN$'\n' == *$'\n'${FN[$i]}$'\n'* ]] || continue
+    if [[ -n $KNOWN && $'\n'$KNOWN$'\n' != *$'\n'${FN[$i]}$'\n'* ]]; then
+      # A copy from before 3.0.1 knows no-idle-lock by its old name.
+      [[ ${FN[$i]} == no-idle-lock && $'\n'$KNOWN$'\n' == *$'\n'idle-lock$'\n'* ]] &&
+        fargs+=" --feature idle-lock=$(feature_flip "${v[$i]}")"
+      continue
+    fi
     fargs+=" --feature ${FN[$i]}=${v[$i]}"
   done
   [[ $TYPE == fusion ]] && fargs+=" --host $(fusion_host)"
@@ -318,6 +356,28 @@ if (( ${#REINSTALL[@]} )); then
     info "'$VM' has OmacVM $had: all of OmacVM $now goes in, $(IFS=,; echo "${REINSTALL[*]}") installed again"
   else
     ONLY=$(IFS=,; echo "${REINSTALL[*]}"); GI_ARGS+=" --only $ONLY"
+  fi
+# A feature switch (--feature that changes what the VM has) on a VM with
+# this OmacVM: only the parts of the features that change (and parts this
+# copy changed), not the whole VM side, which reloads Hyprland and its
+# displays (lib/features.sh, feature_switch_parts). The same features again
+# (apply-vm.sh passes them all) is a whole apply, as before; so is a switch
+# while the VM's Graphics changed (the app step builds its Vulkan driver).
+elif (( ${#SETN[@]} )) && [[ -n $had && $had == "$now" ]] && ! grep -q '^OMACVM_PREBUILT_FRESH=1' <<<"$probe" &&
+     [[ $(sed -n 's/^OMACVM_GRAPHICS=//p' <<<"$probe" | tail -1) == "$GRAPHICS" ]]; then
+  sw=""; switched=0
+  for ((i = 0; i < ${#FN[@]}; i++)); do
+    [[ ${FV[$i]} != "${PREV[$i]}" ]] || continue
+    sw+=" ${FN[$i]}"
+    [[ " ${SETN[*]} " == *" ${FN[$i]} "* ]] && switched=1
+  done
+  if (( switched )); then
+    inst=$(gssh "$IP" "cat /etc/omacvm/installed.json 2>/dev/null" < /dev/null) || inst=""
+    if ONLY=$(feature_switch_parts "$inst" "$("$R/src/release/manifest.py" digests --src "$R/src")" "$sw" "${FN[*]}"); then
+      GI_ARGS+=" --only $ONLY"
+    else
+      ONLY=""
+    fi
   fi
 fi
 # changed_features: the features whose part the VM has another digest of (its
@@ -395,8 +455,22 @@ step finish "finishing"
 # hid Omarchy's pointer and need the Mac's until they get this apply.
 if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
   echo omarchy > "$d/guest-pointer"
+  # Which OmacVM the VM has now: the app offers "Update VM" while it has
+  # an older one (or none recorded: made by an app before 3.0.1).
+  echo "$now" > "$d/omacvm-version"
   # The app reads them at each start of the VM: a feature that is off gets
   # no port to the Mac's helpers and nothing on its virtio port (MacLinks.swift).
+  # Vulkan without OmacVM's Mesa in the VM is off, in the record too: else it
+  # says on, and `omacvm enable vulkan` finds nothing to change. Without it
+  # the distro's venus (Mesa 26.2.3) gets the device, and every Vulkan app
+  # fails with ERROR_OUT_OF_HOST_MEMORY.
+  # (Only when the VM says it is missing: a failed SSH call changes nothing.)
+  vk=0; on vulkan && { gssh "$IP" "test -f /etc/vulkan/icd.d/omacvm_venus_icd.json" < /dev/null 2>/dev/null || vk=$?; }
+  if (( vk == 1 )); then
+    info "Vulkan: not turned on, OmacVM's Mesa did not build in the VM (see above; the VM keeps OpenGL)"
+    FV[$(feature_index vulkan)]=off
+    gssh "$IP" "f=/etc/omacvm/env; [ ! -f \$f ] || sed -i 's/^OMACVM_FEATURE_vulkan=.*/OMACVM_FEATURE_vulkan=off/' \$f" < /dev/null 2>/dev/null || true
+  fi
   feats=$(for ((i = 0; i < ${#FN[@]}; i++)); do printf '%s=%s ' "${FN[$i]}" "${FV[$i]}"; done)
   # The app reads them only when the VM starts: say which ones wait for that.
   app_features_write "$d" "${feats% }" || true   # 1 = unchanged (set -e)
@@ -428,14 +502,9 @@ if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
       info "fast network: off from the VM's next start"
     fi
   fi
-  # Vulkan (Venus) from the VM's next start: the app reads the vulkan file.
-  # Only with OmacVM's Mesa in the VM: without it the distro's venus (Mesa
-  # 26.2.3) gets the device, and every Vulkan app fails with
-  # ERROR_OUT_OF_HOST_MEMORY.
-  if on vulkan && ! gssh "$IP" "test -f /etc/vulkan/icd.d/omacvm_venus_icd.json" < /dev/null 2>/dev/null; then
-    info "Vulkan: not turned on, OmacVM's Mesa did not build in the VM (see above; the VM keeps OpenGL)"
-    rm -f "$d/vulkan"
-  elif on vulkan; then
+  # Vulkan (Venus) from the VM's next start: the app reads the vulkan file
+  # (on only with OmacVM's Mesa in the VM, see above).
+  if on vulkan; then
     [[ -e $d/vulkan ]] || { : > "$d/vulkan"; [[ -z $(app_pid_dir "$d" 2>/dev/null) ]] ||
       info "WebGPU and GPU compute (Vulkan): from the VM's next start (shut it down, then start it again)"; }
   elif [[ -e $d/vulkan ]]; then

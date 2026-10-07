@@ -16,13 +16,20 @@ HY=$H/.config/hypr
 LINE='require("hypr.omacvm_glide")'
 MARK=$H/.local/state/omacvm/glide-flags
 FLAG=--disable-smooth-scrolling
+# Hyprland's config is touched (and reloaded below) only when it changes: a
+# reload moves the displays, a flicker on every apply.
+changed=0
 if [[ $ON == on ]]; then
   # In one step: hyprland.lua requires it and Omarchy reloads on every change.
-  install -o "$U" -g "$U" -m644 omacvm_glide.lua "$HY/.omacvm_glide.lua.new"
-  mv -f "$HY/.omacvm_glide.lua.new" "$HY/omacvm_glide.lua"
+  if ! cmp -s omacvm_glide.lua "$HY/omacvm_glide.lua"; then
+    install -o "$U" -g "$U" -m644 omacvm_glide.lua "$HY/.omacvm_glide.lua.new"
+    mv -f "$HY/.omacvm_glide.lua.new" "$HY/omacvm_glide.lua"
+    changed=1
+  fi
   if ! grep -qxF "$LINE" "$HY/hyprland.lua"; then
     printf -- '-- OmacVM Glide (experimental): scrolling settings for the virtual trackpad.\n%s\n' "$LINE" >> "$HY/hyprland.lua"
     chown "$U:$U" "$HY/hyprland.lua"
+    changed=1
   fi
   install -d -o "$U" -g "$U" "$(dirname "$MARK")"
   for f in "$H/.config/chromium-flags.conf" "$H/.config/chrome-flags.conf" "$H/.config/brave-flags.conf"; do
@@ -34,9 +41,12 @@ if [[ $ON == on ]]; then
   [[ -f $MARK ]] && chown "$U:$U" "$MARK"
   echo "scroll momentum: on (restart Chromium-based apps once)"
 else
-  sed -i '/^-- OmacVM Glide (experimental): scrolling settings for the virtual trackpad.$/d' "$HY/hyprland.lua" 2>/dev/null || true
-  sed -i "/^require(\"hypr.omacvm_glide\")$/d" "$HY/hyprland.lua" 2>/dev/null || true
-  rm -f "$HY/omacvm_glide.lua"
+  if grep -qxF "$LINE" "$HY/hyprland.lua" 2>/dev/null || [[ -e $HY/omacvm_glide.lua ]]; then
+    sed -i '/^-- OmacVM Glide (experimental): scrolling settings for the virtual trackpad.$/d' "$HY/hyprland.lua" 2>/dev/null || true
+    sed -i "/^require(\"hypr.omacvm_glide\")$/d" "$HY/hyprland.lua" 2>/dev/null || true
+    rm -f "$HY/omacvm_glide.lua"
+    changed=1
+  fi
   if [[ -f $MARK ]]; then
     while IFS= read -r f; do
       [[ -f $f ]] && sed -i "/^$FLAG\$/d" "$f"
@@ -46,6 +56,7 @@ else
   echo "scroll momentum: off"
 fi
 # A running Hyprland picks the change up now.
+(( changed )) || exit 0
 RUN=/run/user/$(id -u "$U")
 # (No session yet, e.g. during a build: no hypr folder, nothing to reload.)
 sig=$(ls -t "$RUN/hypr" 2>/dev/null | head -1 || true)

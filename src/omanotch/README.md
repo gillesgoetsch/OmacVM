@@ -52,8 +52,12 @@ have shown.
    off screen. It is not gone, though — your clicks are pressed on that hidden
    copy, so Omarchy opens its panels (clock, audio, network, …) on the visible
    display, right below the notch. The wallpaper is patched the same way: it is
-   laid out once across the strip and the display, so with the bar hidden
-   (Super+Shift+Space) the image runs straight through the notch strip.
+   laid out once across the strip and the display (as one screen, the strip
+   on top), so with the bar hidden (Super+Shift+Space) the image runs straight
+   through the notch strip, wherever NOTCH sits (over the display's top edge
+   or, in OmacVM.app, right above it).
+   Omarchy's display panel gets a patched copy too (`omanotch.monitor`), so
+   `NOTCH` is not listed there as a display to scale or switch off.
 3. **Streaming only what changes.** `notchcast`, a small C program in the VM,
    captures `NOTCH` with Wayland's `ext-image-copy-capture`. A capture only
    completes when Hyprland actually repaints, so an idle bar costs zero CPU. It
@@ -121,7 +125,8 @@ Mac app — `defaults write ch.gillesgoetsch.omanotch <key> <value>`, then
 | `vmInterfacePrefixes` | `bridge`, `vnic` | VM network interfaces the Mac listens on … |
 | `vmSubnets` | `192.168.64.0/24`, `10.211.55.0/24`, `10.37.129.0/24` | … if their network is one of these (UTM, Parallels shared, Parallels host-only); guests are accepted only from that network |
 | `listenHost` | *(automatic)* | listen on this one IPv4 address instead |
-| `port` | `47811` | |
+| `port` | `47811` | OmacVM's test identity ("OmacVM Test") sends its VMs to `47911`: a test Omanotch sets `port` 47911 and `bridgeDir` |
+| `bridgeDir` | `omacvm-bridge` | the folder in `~/Library/Application Support` with the Bridge's token; `omacvm-test-bridge` for a test Omanotch |
 | `flush` | `false` | `true`: the bar is exactly as tall as the camera housing, as in OmacVM.app's notch-strip mode; the few points of the strip below it show the wallpaper. `false`: the bar fills the strip (macOS's menu bar height). Taken up within two seconds, no restart needed |
 
 VM — `systemctl --user edit notchcast`, `Environment=…`:
@@ -152,7 +157,9 @@ VM — `systemctl --user edit notchcast`, `Environment=…`:
   in the strip.
 - The bar and background clones are forks of Omarchy's plugins. After an
   Omarchy update that changes them, re-clone and run `./guest/install.sh`
-  again — the patches are versioned and refuse to apply blindly.
+  again — the patches are versioned and refuse to apply blindly. The display
+  panel copy is built again by itself when Omarchy's panel changed (at the next
+  notchcast start); if the patch no longer fits, Omarchy's own panel comes back.
 - Hyprland warns about overlapping monitors after layout changes. The overlap
   is deliberate; `notchbar.lua` dismisses that one warning and nothing else.
 - Several VMs at once: the strip shows the bar of the VM whose window is full
@@ -198,10 +205,11 @@ up by itself.
 | Strip stays black | `~/Library/Logs/omanotch.log` ("listening on …", "guest connected"?) · in the VM: `systemctl --user status notchcast` |
 | UTM: the pointer never reaches the strip | UTM's automatic input capture is on (see Requirements), or press ⌃⌥ to release the mouse |
 | UTM: with capture off the VM's cursor does not move | a SPICE agent (`spice-vdagentd`) takes UTM's absolute mouse positions: it must run with a real uinput device (not `-f`) and a session agent that reports the screen size — or not at all, then QEMU's USB tablet is used |
-| Bar in the VM *and* in the strip | `omarchy-shell notchbar state` → `parked` should be `true` and `screen` the built-in display · `~/.local/state/omanotch/park` is what notchcast asked for (`1 <output>`); the bar follows it within 3 s, also after a shell restart |
+| Bar in the VM *and* in the strip | `omarchy-shell notchbar state` → `parked` should be `true` and `screen` the built-in display · `~/.local/state/omanotch/park` is what notchcast asked for (`1 <output>`; `w <output>`: connected, Omanotch's word still to come); the bar follows it within 3 s, also after a shell restart |
+| No bar for a few seconds after login | the strip showed at the end of the last session, so the bar started in the strip (`~/.local/state/omanotch/expect` says `1 <output>`). With the VM windowed now, Omanotch gives the bar back as soon as it connects; an older Omanotch, or none running, after 8 s, and the next login starts normally. A Mac restart or an Omanotch quit with the VM running keeps the hint |
 | OmacVM.app: the strip stays black | `~/Library/Logs/omanotch.log` ("refused a connection on 127.0.0.1: …", or on 192.168.77.1 on the fast network) · in the VM: `journalctl --user -u notchcast` ("answered no proof": the Mac's Omanotch is older than the VM's, update it) |
 | Strip shows another VM's bar | two VMs of one app are connected: Omanotch tells apps apart, not VMs of one app (`~/Library/Logs/omanotch.log`: "strip serves guest …"); stop the other VM or restart its `notchcast` |
-| Mouse lands in the wrong place | `hyprctl monitors` → `NOTCH` must sit at the built-in display's position and width |
+| Mouse lands in the wrong place | `hyprctl monitors` → `NOTCH` must have the built-in display's x and width, and sit at its position (OmacVM.app: right above it, touching its top edge) |
 | Panels open on the wrong screen | `NOTCHBAR_SCREEN` must name the built-in display (OmacVM.app: `$XDG_RUNTIME_DIR/omacvm/builtin` does, `omacvm check` → "notch display") |
 
 ## Credits
@@ -209,8 +217,8 @@ up by itself.
 - [Omarchy](https://omarchy.org) by DHH and contributors — the bar, the
   shell, the whole beautiful thing
 - [Hyprland](https://hyprland.org) and [Quickshell](https://quickshell.org)
-- Not affiliated with Omarchy, Parallels, UTM or Apple. Omarchy's bar and
-  background code is not included here: it is cloned from your own Omarchy
+- Not affiliated with Omarchy, Parallels, UTM or Apple. Omarchy's bar,
+  background and display panel code is not included here: it is cloned from your own Omarchy
   installation and patched at install time.
 
 ## License

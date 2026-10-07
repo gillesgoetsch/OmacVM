@@ -23,7 +23,9 @@ them (`out.buffer-count=8`, 93 ms).
   scene changes) and optionally the Mac (`yes` loops), takes QEMU's mixer
   output with HMP `wavcapture` and prints guest xruns (`pw-top` ERR), tone
   glitches and how late QEMU's audio timer ran (QEMU started with
-  `-trace audio_timer_delayed -trace hda_audio_full_recovery`).
+  `-trace audio_timer_delayed -trace hda_audio_full_recovery`). `LOAD_AS=user` runs
+  `stress-ng` in the desktop user's `app.slice` (where a browser or a build
+  runs) instead of root's SSH session.
 - `sdlprobe.c`: a library injected into a test copy of the runtime (re-signed
   with the test identity plus `allow-dyld-environment-variables` and
   `disable-library-validation`) that records what QEMU really hands SDL, and

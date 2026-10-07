@@ -1,0 +1,15 @@
+# OmacVM.app, Chromium video: after a library update (FFmpeg, Mesa, libva or
+# one under them), omacvm-vdecd is built again when a library it links to is
+# gone (a new soname), and started when it is down or still waits for the
+# GPU. When nothing changed it only runs ldd and systemctl.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Path
+Target = usr/lib/*.so*
+
+[Action]
+Description = OmacVM: Chromium's video decoder after a library update
+When = PostTransaction
+Exec = /usr/local/share/omacvm/vdec/guest/vdecd.sh hook

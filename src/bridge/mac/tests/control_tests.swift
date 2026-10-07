@@ -33,6 +33,12 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
            == .startJob(JobRequest(action: .reinstall, features: ["bridge"])), "reinstall")
     expect(ok(route("POST", "/omacvm/jobs", #"{"action": "update"}"#)) == .startJob(JobRequest(action: .update, features: [])), "update")
     expect(ok(route("GET", "/omacvm/jobs/0123456789abcdef")) == .job("0123456789abcdef"), "job")
+    expect(ok(route("GET", "/omacvm/settings/mouse-swipe")) == .mouseSwipe, "mouse swipe")
+    expect(ok(route("POST", "/omacvm/settings/mouse-swipe", #"{"fingers": 3}"#)) == .setMouseSwipe(3), "mouse swipe 3")
+    expect(ok(route("POST", "/omacvm/settings/mouse-swipe", #"{"fingers": 4}"#)) == .setMouseSwipe(4), "mouse swipe 4")
+    // The Touch ID panel's colours: the body goes to touchid_theme.swift's rules (tests/touchid_panel_tests.swift).
+    expect(ok(route("POST", "/omacvm/theme", ##"{"background": "#1a1b26"}"##)) == .theme(Data(##"{"background": "#1a1b26"}"##.utf8)), "theme")
+    expect(err(route("GET", "/omacvm/theme"))?.status == 405, "theme: POST only")
     for g in ["opengl", "vulkan", "auto"] {
       expect(ok(route("POST", "/omacvm/jobs", #"{"action": "graphics", "graphics": "\#(g)"}"#))
              == .startJob(JobRequest(action: .graphics, features: [g])), "graphics \(g)")
@@ -47,6 +53,12 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["bridge"], "graphics": "auto"}"#))?.code == "bad-body", "graphics on another action")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "run", "features": ["bridge"]}"#))?.code == "bad-action", "unknown action")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["rm"]}"#))?.code == "unknown-feature", "unknown feature")
+    // A control centre from before 3.0.1 says idle-lock for no-idle-lock.
+    let renamed = controlRoute(method: "POST", path: "/omacvm/jobs", body: Data(#"{"action": "disable", "features": ["idle-lock"]}"#.utf8),
+                               known: known.union(["no-idle-lock"]))
+    expect(renamed == .success(.startJob(JobRequest(action: .disable, features: ["idle-lock"]))), "the old name of a renamed feature")
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "disable", "features": ["idle-lock"]}"#))?.code == "unknown-feature",
+           "the old name only when the Mac has the new one")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["bridge; rm -rf ~"]}"#))?.code == "bad-features", "shell metacharacters")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["$(id)"]}"#))?.code == "bad-features", "substitution")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["--vm"]}"#))?.code == "bad-features", "an option as a name")
@@ -65,12 +77,37 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(err(route("POST", "/omacvm/settings/update-checks", #"{"enabled": 1}"#))?.code == "bad-body", "1 is not true")
     expect(err(route("POST", "/omacvm/settings/update-checks", #"{"enabled": "false"}"#))?.code == "bad-body", "a string is not a bool")
     expect(err(route("POST", "/omacvm/updates/check", #"{"url": "http://evil"}"#))?.code == "unknown-key", "check from another feed")
+    for b in [#"{"fingers": 5}"#, #"{"fingers": 2}"#, #"{"fingers": 3.0}"#, #"{"fingers": 3.5}"#, #"{"fingers": "3"}"#,
+              #"{"fingers": true}"#, #"{"fingers": null}"#, "{}", ""] {
+      expect(err(route("POST", "/omacvm/settings/mouse-swipe", b))?.code == "bad-body", "mouse swipe: \(b) is not 3 or 4")
+    }
+    expect(err(route("POST", "/omacvm/settings/mouse-swipe", #"{"fingers": 3, "domain": "com.apple.dock"}"#))?.code == "unknown-key",
+           "mouse swipe: no other key")
+    expect(err(route("GET", "/omacvm/settings/mouse-swipe", #"{"fingers": 3}"#))?.code == "body", "mouse swipe: GET with a body")
+    expect(err(route("DELETE", "/omacvm/settings/mouse-swipe"))?.status == 405, "mouse swipe: method")
     expect(err(route("GET", "/omacvm/jobs/../../etc"))?.status == 404, "job path")
     expect(err(route("GET", "/omacvm/jobs/ABCDEF0123456789"))?.status == 404, "job id upper case")
     expect(err(route("GET", "/omacvm/run"))?.status == 404, "no other requests")
     expect(err(route("DELETE", "/omacvm/jobs"))?.status == 405, "method")
     expect(err(route("GET", "/omacvm/hello", "{}"))?.code == "body", "GET with a body")
     expect(err(route("GET", "/state"))?.status == 404, "outside /omacvm/")
+
+    // ---- Magic Mouse swipe: Gestures' rules ----
+    expect(mouseSwipeFingers(stored: nil) == 4, "not set: 4")
+    expect(mouseSwipeFingers(stored: NSNumber(value: 3)) == 3 && mouseSwipeFingers(stored: "3") == 3, "3 as a number or text")
+    expect(mouseSwipeFingers(stored: NSNumber(value: 5)) == 4 && mouseSwipeFingers(stored: "three") == 4
+           && mouseSwipeFingers(stored: NSNumber(value: 3.5)) == 4, "anything else: 4")
+    expect(mouseSwipeFingers(stored: kCFBooleanTrue) == 4, "a bool: 4")
+    expect(isMagicMouse(vendor: nil, product: nil, family: 112), "multitouch family 112")
+    expect(isMagicMouse(vendor: 0x004c, product: 0x0269, family: nil), "Magic Mouse 2 over Bluetooth")
+    expect(isMagicMouse(vendor: 0x05ac, product: 0x0323, family: nil), "Magic Mouse USB-C over USB")
+    expect(isMagicMouse(vendor: 0x05ac, product: 0x030d, family: nil), "first Magic Mouse")
+    expect(!isMagicMouse(vendor: 0x05ac, product: 0x0265, family: nil), "Magic Trackpad 2 is no mouse")
+    expect(!isMagicMouse(vendor: 0x046d, product: 0x0269, family: nil), "another vendor's 0x0269")
+    expect(!isMagicMouse(vendor: nil, product: 0x0269, family: nil), "no vendor")
+    let ms = mouseSwipeAnswer(magicMouse: true, fingers: 3)
+    expect(ms["magic_mouse"] as? Bool == true && ms["fingers"] as? Int == 3 && ms.count == 2, "answer: two keys")
+    expect(mouseSwipeAnswer(magicMouse: false, fingers: 7)["fingers"] as? Int == 4, "answer: never another number")
 
     // ---- protocol ----
     if case .success(let p) = negotiateProto(nil) { expect(p == 1, "no header: 1") } else { expect(false, "no header") }
@@ -283,6 +320,22 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
            "versions compare as numbers")
     expect(versionLess("1.x", "2.0.0") == nil, "not a version")
     // Updates only go forward.
+    // ---- app-update: OmacVM.app updates itself for its own VM ----
+    expect(ok(route("POST", "/omacvm/app-update")) == .appUpdate, "app-update, no body")
+    expect(ok(route("POST", "/omacvm/app-update", "{}")) == .appUpdate, "app-update, {}")
+    expect(err(route("POST", "/omacvm/app-update", #"{"version": "9.9.9"}"#))?.code == "unknown-key", "app-update names no version")
+    expect(err(route("GET", "/omacvm/app-update"))?.status == 405, "app-update: POST only")
+    expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: "3.0.2", mac: "3.0.1") == nil, "app-update: newer")
+    expect(appUpdateGate(viaApp: false, vmType: "app", macAppCopy: true, release: "3.0.2", mac: "3.0.1")?.code == "not-app", "not through the app")
+    expect(appUpdateGate(viaApp: true, vmType: "parallels", macAppCopy: true, release: "3.0.2", mac: "3.0.1")?.code == "not-app", "not an app VM")
+    expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: false, release: "3.0.2", mac: "3.0.1")?.code == "not-app-copy", "a checkout")
+    expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: nil, mac: "3.0.1")?.code == "no-update", "no manifest")
+    expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: "3.0.1", mac: "3.0.1")?.code == "not-newer", "same")
+    expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: "3.0.0", mac: "3.0.1")?.code == "not-newer", "never down")
+    expect(appUpdateGate(viaApp: true, vmType: "app", macAppCopy: true, release: "x", mac: "3.0.1")?.code == "not-newer", "bad version")
+    expect(cliIsAppCopy("/Users/a/Applications/OmacVM.app/Contents/Resources/omacvm/omacvm", hasGit: false), "app copy")
+    expect(!cliIsAppCopy("/Users/a/Applications/OmacVM.app/Contents/Resources/omacvm/omacvm", hasGit: true), "app copy with .git")
+    expect(!cliIsAppCopy("/Users/a/omacvm/omacvm", hasGit: true), "checkout")
     expect(forwardGate(release: "2.9.1", mac: "2.9.0", vm: "2.9.0") == nil, "a newer release")
     expect(forwardGate(release: "2.9.1", mac: "2.9.1", vm: "2.9.0") == nil, "retry after a VM went back")
     expect(forwardGate(release: "2.9.1", mac: "2.9.0", vm: "") == nil, "a VM without a version")
@@ -528,6 +581,49 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(feedFetch(manifest: some, manifestError: nil, sig: nil, sigError: "The request timed out.") == .offline("The request timed out."), ".sig timed out: offline")
     expect(feedFetch(manifest: some, manifestError: nil, sig: nil, sigError: "HTTP 503") == .offline("HTTP 503"), ".sig 503: offline")
     expect(feedFetch(manifest: nil, manifestError: "HTTP 404", sig: nil, sigError: "HTTP 404") == .offline("HTTP 404"), "no manifest: offline")
+
+    // ---- OmacVM.app's VMs through the app (an external drive) ----
+    let appCLI = "/Users/max/Applications/OmacVM.app/Contents/Resources/omacvm/omacvm"
+    let info: [String: Any] = ["OmacVMControlRun": true, "CFBundleExecutable": "OmacVM", "CFBundleIdentifier": "org.omacvm.app"]
+    let tApp = "org.omacvm.app.test"
+    expect(appRunnerPath(cli: appCLI, info: info, testIdentity: false, testApp: tApp)
+           == "/Users/max/Applications/OmacVM.app/Contents/MacOS/OmacVM", "the app's own omacvm: its executable")
+    expect(appRunnerPath(cli: "/Users/max/omacvm/omacvm", info: info, testIdentity: false, testApp: tApp) == nil, "a checkout: on its own")
+    expect(appRunnerPath(cli: appCLI, info: nil, testIdentity: false, testApp: tApp) == nil, "no Info.plist")
+    var old = info; old["OmacVMControlRun"] = nil
+    expect(appRunnerPath(cli: appCLI, info: old, testIdentity: false, testApp: tApp) == nil, "an older app (no key): would open its window")
+    var one = info; one["OmacVMControlRun"] = 1
+    expect(appRunnerPath(cli: appCLI, info: one, testIdentity: false, testApp: tApp) == nil, "the key must be a plist true")
+    var slash = info; slash["CFBundleExecutable"] = "../../bin/sh"
+    expect(appRunnerPath(cli: appCLI, info: slash, testIdentity: false, testApp: tApp) == nil, "an executable name with a path")
+    expect(appRunnerPath(cli: appCLI, info: info, testIdentity: true, testApp: tApp) == nil, "the test Bridge: not the installed app")
+    var test = info; test["CFBundleIdentifier"] = tApp
+    expect(appRunnerPath(cli: appCLI, info: test, testIdentity: false, testApp: tApp) == nil, "the installed Bridge: not the test app")
+    expect(appRunnerPath(cli: appCLI, info: test, testIdentity: true, testApp: tApp) != nil, "the test Bridge: the test app")
+    expect(appRunnerPath(cli: "/a/../b/OmacVM.app/Contents/Resources/omacvm/omacvm", info: info, testIdentity: false, testApp: tApp) == nil, "..")
+    expect(appRunnerPath(cli: "Applications/OmacVM.app/Contents/Resources/omacvm/omacvm", info: info, testIdentity: false, testApp: tApp) == nil, "relative")
+
+    let prl = VMEntry(name: "P", type: "parallels", state: "running", ip: "10.211.55.5", omacvm: "3.0.1", setup: true)
+    let inside = VMEntry(name: "In", type: "app", state: "running", ip: "127.0.0.1:52000", omacvm: "3.0.1", setup: true, dir: "/Users/max/VMs/In")
+    let ext = VMEntry(name: "SD", type: "app", state: "running", ip: "127.0.0.1:52612", omacvm: "3.0.1", setup: true, dir: "/Volumes/SD/VMs/SD")
+    let stale = VMEntry(name: "In", type: "app", state: "running", ip: "127.0.0.1:52000", omacvm: "3.0.0", setup: false, dir: "/Users/max/VMs/In")
+    expect(mergeVMLists(all: [prl, stale], app: [inside, ext]) == [prl, inside, ext], "app VMs from the app's run, the others from the Bridge's")
+    expect(mergeVMLists(all: [prl, inside], app: nil) == [prl, inside], "the app's run failed: the Bridge's list as it is")
+    expect(mergeVMLists(all: nil, app: [ext]) == nil, "the Bridge's run failed: none (asked again)")
+    expect(mergeVMLists(all: [prl], app: []) == [prl], "the app has no VM")
+    expect(mergeVMLists(all: [prl], app: [prl, ext]) == [prl, ext], "the app's run lists only app VMs")
+
+    expect(gpuMemoryFromApp(nil) == nil, "no header (an older app): the Bridge reads the file")
+    expect(gpuMemoryFromApp("-") == .some(nil), "-: the app has no file")
+    expect(gpuMemoryFromApp(Data("in_use_mb=12\n".utf8).base64EncodedString()) == .some("in_use_mb=12\n"), "the file's text")
+    expect(gpuMemoryFromApp("not base64!") == nil, "not base64: read it here")
+    expect(gpuMemoryFromApp(Data(repeating: 65, count: 4097).base64EncodedString()) == nil, "over 4 KB: no")
+    expect(gpuMemoryAnswer(gpuMemoryFromApp("-") ?? "x") as NSDictionary == ["measured": false] as NSDictionary, "no file: not measured")
+
+    var c4 = VMListCache()
+    _ = c4.shouldRefresh(known: false, now: t0); _ = c4.finished([ext], now: t0)
+    _ = c4.jobEnded(vm: "app/SD", version: "3.0.2")
+    expect(c4.list.first?.dir == "/Volumes/SD/VMs/SD" && c4.list.first?.omacvm == "3.0.2", "a job ended: the folder stays")
 
     print("control policy: \(passed) passed, \(failures) failed")
     exit(failures == 0 ? 0 : 1)

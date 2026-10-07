@@ -22,7 +22,7 @@ H=$(getent passwd "$U" | cut -d: -f6)
 as_user() { sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" "$@"; }
 
 # python: omacvm-bridge checks the Bridge's proof with it (no key on a command line).
-pacman -S --needed --noconfirm python >/dev/null 2>&1 || true
+../../guest/pkg-add python || true
 install -m755 omacvm-bridge omacvm-bridge-osd omacvm-bridge-events omarchy-toggle-nightlight \
   omarchy-network-qr omarchy-network-password /usr/local/bin/
 install -m644 omacvm-bridge-osd.service omacvm-bridge-events.socket omacvm-bridge-events.service /etc/systemd/user/

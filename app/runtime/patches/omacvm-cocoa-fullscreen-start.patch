@@ -1,0 +1,140 @@
+From: OmacVM
+Subject: [PATCH] ui/cocoa: a full-screen start shows nothing until it is there
+
+What: with full-screen=on (macOS's own full screen, not the tests'
+borderless kind) the main window is transparent from its creation until
+windowDidEnterFullScreen (or windowDidFailToEnterFullScreen; 4 s safety
+net). Its background is black. The other displays' windows likewise stay
+transparent until macOS has each in full screen (shown as they are if it
+gives up).
+
+Why: the window opened at its windowed size first (grey, title bar), then
+macOS animated it into its full-screen Space with the menu bar still drawn
+over it, then the strip beside the camera turned black: several odd frames
+before the boot splash (user recording, 2026-10-06). Now the Space slides
+in and the first frame the user sees is the splash in full screen, the menu
+bar hidden.
+
+Upstream: not applicable (OmacVM's start). Test:
+Tests/display/test-fullscreen-start.sh (build time, on the patched
+ui/cocoa.m; --self-test catches the old code). Applies after
+omacvm-cocoa-shutdown-events.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -501,6 +501,41 @@ - (void) omacvmUngrabAfterDrag;
+ 
+ QemuCocoaView *cocoaView;
+ 
++/*
++ * OmacVM: a VM that starts in full screen shows nothing until it is there.
++ * Before, the window opened at its windowed size (grey, with a title bar),
++ * then macOS animated it into full screen with its menu bar still drawn: a
++ * few odd frames before the splash. Now the window stays transparent until
++ * macOS says it is in full screen (or could not get there), with a safety
++ * net of a few seconds. Main thread only.
++ */
++static bool omacvm_start_full;     /* -full-screen on: set before the window exists */
++static bool omacvm_start_hidden;
++
++static void omacvm_start_reveal(const char *why)
++{
++    if (!omacvm_start_hidden) {
++        return;
++    }
++    omacvm_start_hidden = false;
++    [[cocoaView window] setAlphaValue:1.0];
++    fprintf(stderr, "omacvm: full screen start: window shown (%s)\n", why);
++}
++
++static void omacvm_start_hide(NSWindow *w)
++{
++    if (!omacvm_start_full || !w || getenv("OMACVM_COCOA_HIDDEN") || getenv("OMACVM_BACKGROUND")) {
++        return;
++    }
++    omacvm_start_hidden = true;
++    [w setBackgroundColor:[NSColor blackColor]];
++    [w setAlphaValue:0.0];
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 4 * NSEC_PER_SEC),
++                   dispatch_get_main_queue(), ^{
++        omacvm_start_reveal("no full screen after 4 s");
++    });
++}
++
+ /*
+  * OmacVM: macOS's own shortcuts go to the VM while it has the keyboard:
+  * screenshots, Mission Control, Spotlight, Cmd+Tab, input sources, Show
+@@ -2369,6 +2404,7 @@ - (id) init
+             ? [NSString stringWithUTF8String:qemu_name]
+             : @"QEMU"];
+         [window setContentView:cocoaView];
++        omacvm_start_hide(window);   /* before it is on screen */
+         if (getenv("OMACVM_COCOA_HIDDEN")) {
+             [window orderOut:self];
+         } else if (getenv("OMACVM_BACKGROUND")) {
+@@ -2513,6 +2549,7 @@ - (NSSize)window:(NSWindow *)window willUseFullScreenContentSize:(NSSize)propose
+ - (void)windowDidFailToEnterFullScreen:(NSWindow *)window
+ {
+     omacvm_main_full_settled = false;
++    omacvm_start_reveal("full screen refused");
+ }
+ 
+ - (void)windowWillExitFullScreen:(NSNotification *)notification
+@@ -2524,6 +2561,7 @@ - (void)windowWillExitFullScreen:(NSNotification *)notification
+ - (void)windowDidEnterFullScreen:(NSNotification *)notification
+ {
+     omacvm_main_full_settled = true;
++    omacvm_start_reveal("in full screen");
+     omacvm_dock_edge_cache = -1;
+     [fullScreenMenuItem setTitle:@"Exit Full Screen"];
+     [cocoaView updateScale];
+@@ -6525,6 +6563,7 @@ - (void)windowDidEnterFullScreen:(NSNotification *)note
+     if (hd) {
+         hd->full = true;
+         hd->want_full = false;
++        [[note object] setAlphaValue:1.0];
+         [[hd->view layer] setContentsScale:[[note object] backingScaleFactor]];
+         omacvm_heads_moved();
+     }
+@@ -6685,6 +6724,13 @@ static void omacvm_head_on(OmacVMHead *hd, NSScreen *s)
+         [hd->window orderFront:nil];
+         hd->want_full = false;
+     } else {
++        /*
++         * Transparent until macOS has it in full screen, as the main window
++         * at a full-screen start: no windowed frame on that display first.
++         */
++        if (!([hd->window styleMask] & NSWindowStyleMaskFullScreen)) {
++            [hd->window setAlphaValue:0.0];
++        }
+         [hd->window setFrame:NSInsetRect([s visibleFrame], 60, 60) display:NO];
+         [hd->window orderFront:nil];
+         hd->want_full = true;
+@@ -6727,10 +6773,13 @@ static void omacvm_full_next(void)
+         if ([hd->window styleMask] & NSWindowStyleMaskFullScreen) {
+             hd->full = true;
+             hd->want_full = false;
++            [hd->window setAlphaValue:1.0];
+             continue;
+         }
+         if (++hd->full_tries > 5) {
++            /* macOS would not: the display shows the window as it is. */
+             hd->want_full = false;
++            [hd->window setAlphaValue:1.0];
+             continue;
+         }
+         omacvm_full_busy = true;
+@@ -7301,6 +7350,13 @@ static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
+     kbd = qkbd_state_init(dcl.con);
+     surface = qemu_console_surface(dcl.con);
+ 
++    /*
++     * OmacVM: starting in macOS's own full screen (not the tests' borderless
++     * kind): the window stays transparent until it is there.
++     */
++    omacvm_start_full = opts->has_full_screen && opts->full_screen &&
++                        !omacvm_test_mode();
++
+     // Create an Application controller
+ #ifdef CONFIG_OPENGL
+     controller = [[QemuCocoaAppController alloc] initWithCGL:display_opengl &&

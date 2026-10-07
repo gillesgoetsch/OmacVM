@@ -1,0 +1,160 @@
+From: OmacVM
+Subject: [PATCH] cocoa: "Restart the Desktop…" in the app menu after Later
+
+What: when the VM's desktop loses its GPU context and OmacVM.app asks ("The
+VM's desktop stopped drawing", Restart the Desktop / Later), Later used to
+leave no way back. Now the app writes logs/desktop-lost (OMACVM_DESKTOP_LOST)
+on Later; while that file is there the app menu shows "Restart the Desktop…"
+under "Graphics memory". A click posts a distributed notification under the
+name the app gave (OMACVM_DESKTOP_RESTART_REQUEST: its bundle id and process
+id), as "Features…" does; the app shows its window again, so the restart
+still needs a yes. Checked when the menu opens (the memory menu's
+menuNeedsUpdate:), no timer. Without both variables (QEMU not started by
+OmacVM.app) the menu is unchanged.
+Why: after Later the screen stayed black until the VM was shut down (MacBook
+Air M2 stress test, 2026-10-06).
+Safety: nothing is read from the file, only whether it is a plain file
+(lstat). The click sends no data and reads no reply; another process of the
+same user posting the name can only bring up the app's window, and only while
+the desktop is lost.
+Upstream: not applicable (OmacVM.app's launcher).
+Test: app/runtime/Tests/display/test-restart-desktop.sh (the header, build time
+and CI); app/app `swift run desktop-tests` (the app's side).
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 42bc596..33991b3 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -44,6 +44,7 @@
+ #include "ui/omacvm-pointer-start.h"
+ #include "ui/omacvm-shortcuts.h"
+ #include "ui/omacvm-gpu-memory.h"
++#include "ui/omacvm-desktop-restart.h"
+ #include "hw/core/boards.h"
+ #include "system/system.h"
+ #include "system/runstate.h"
+@@ -2885,6 +2886,62 @@ static bool powerdownPending;
+ }
+ @end
+ 
++/*
++ * OmacVM: "Restart the Desktop…" in the app menu, only after the user picked
++ * Later on OmacVM.app's "desktop stopped drawing" window
++ * (omacvm-cocoa-restart-desktop.patch). Like "Features…", QEMU only passes
++ * the click on (a distributed notification under the name the app gave); the
++ * app shows its window again and restarts the desktop through the VM's agent.
++ */
++@interface OmacvmRestartDesktop : NSObject
++{
++@public
++    NSMenuItem *item;
++}
++- (void)restart:(id)sender;
++@end
++
++static OmacvmRestartDesktop *omacvm_restart_desktop;
++
++@implementation OmacvmRestartDesktop
++- (void)restart:(id)sender
++{
++    const char *name = omacvm_desktop_restart_request();
++    if (!name) {
++        return;
++    }
++    [[NSDistributedNotificationCenter defaultCenter]
++        postNotificationName:[NSString stringWithUTF8String:name]
++                      object:nil
++                    userInfo:nil
++          deliverImmediately:YES];
++}
++@end
++
++/* Shown while the app's desktop-lost file is there; checked when the menu opens. */
++static void omacvm_restart_desktop_update(void)
++{
++    if (omacvm_restart_desktop) {
++        [omacvm_restart_desktop->item setHidden:!omacvm_desktop_lost()];
++    }
++}
++
++static void omacvm_add_restart_desktop_item(NSMenu *menu)
++{
++    if (!omacvm_desktop_restart_request()) {
++        return; /* not started by OmacVM.app: nobody to ask */
++    }
++    omacvm_restart_desktop = [[OmacvmRestartDesktop alloc] init];
++    NSMenuItem *item = [[[NSMenuItem alloc] initWithTitle:@"Restart the Desktop\u2026"
++                                                   action:@selector(restart:)
++                                            keyEquivalent:@""] autorelease];
++    [item setTarget:omacvm_restart_desktop];
++    [item setToolTip:@"The VM's desktop stopped drawing. Restarting it closes the apps open in the VM."];
++    [item setHidden:YES];
++    [menu addItem:item];
++    omacvm_restart_desktop->item = item;
++}
++
+ /*
+  * OmacVM: "VM memory" and "Graphics memory" in the app menu while the VM runs
+  * (omacvm-cocoa-graphics-memory.patch). The lines are read when the menu
+@@ -2929,6 +2986,7 @@ static NSString *const omacvm_memory_explanation =
+         omacvm_vm_memory_line(current_machine->ram_size, line, sizeof(line));
+         [vmItem setTitle:[NSString stringWithUTF8String:line]];
+     }
++    omacvm_restart_desktop_update();
+ }
+ 
+ - (void)explain:(id)sender
+@@ -3022,6 +3080,7 @@ static void create_initial_menus(void)
+     [menu addItemWithTitle:[NSString stringWithFormat:@"About %@", omacvm_product_name()] action:@selector(do_about_menu_item:) keyEquivalent:@""];
+     omacvm_add_features_item(menu);
+     omacvm_add_memory_items(menu);
++    omacvm_add_restart_desktop_item(menu);
+     [menu addItem:[NSMenuItem separatorItem]]; //Separator
+     menuItem = [menu addItemWithTitle:@"Services" action:nil keyEquivalent:@""];
+     [menuItem setSubmenu:[NSApp servicesMenu]];
+diff --git a/ui/omacvm-desktop-restart.h b/ui/omacvm-desktop-restart.h
+new file mode 100644
+index 0000000..e3000a8
+--- /dev/null
++++ b/ui/omacvm-desktop-restart.h
+@@ -0,0 +1,40 @@
++/*
++ * OmacVM: "Restart the Desktop…" in the app menu (omacvm-cocoa-restart-desktop.patch).
++ *
++ * OmacVM.app writes OMACVM_DESKTOP_LOST when the user picks Later on its
++ * "The VM's desktop stopped drawing" window; while that file is there the
++ * menu item shows. A click posts the notification named in
++ * OMACVM_DESKTOP_RESTART_REQUEST and the app shows its window again
++ * (DesktopRestart.swift). Only whether the file is there counts: nothing is
++ * read from it. No AppKit here, so it is unit tested
++ * (Tests/display/test-restart-desktop.sh).
++ */
++#ifndef OMACVM_DESKTOP_RESTART_H
++#define OMACVM_DESKTOP_RESTART_H
++
++#include <stdlib.h>
++#include <sys/stat.h>
++
++static inline const char *omacvm_desktop_env(const char *name)
++{
++    const char *v = getenv(name);
++    return v && *v ? v : NULL;
++}
++
++/* The notification to post, or NULL: not started by OmacVM.app, no menu item. */
++static inline const char *omacvm_desktop_restart_request(void)
++{
++    return omacvm_desktop_env("OMACVM_DESKTOP_LOST")
++        ? omacvm_desktop_env("OMACVM_DESKTOP_RESTART_REQUEST") : NULL;
++}
++
++/* 1 while the app's desktop-lost file is there (a plain file, not a link). */
++static inline int omacvm_desktop_lost(void)
++{
++    const char *path = omacvm_desktop_env("OMACVM_DESKTOP_LOST");
++    struct stat st;
++    return path && omacvm_desktop_restart_request() &&
++           lstat(path, &st) == 0 && S_ISREG(st.st_mode);
++}
++
++#endif

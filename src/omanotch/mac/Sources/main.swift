@@ -90,6 +90,9 @@ final class Controller: NSObject, NSApplicationDelegate, StripInputDelegate {
     /// The VM's full-screen window on the built-in display, tracked across Spaces.
     private var vmWindow: CGWindowID?
     private var misses = 0
+    /// The guest a full-screen VM window on the built-in display was found
+    /// for in the last evaluate() (nil: none).
+    private var frontGuest: Int?
     /// Set when the pointer left the strip; the guest cursor is shown again
     /// where the pointer lands in a VM window.
     private var pendingGuestCursor = false
@@ -156,6 +159,7 @@ final class Controller: NSObject, NSApplicationDelegate, StripInputDelegate {
                 front = nil  // none of the guests runs in this app
             }
         }
+        frontGuest = front != nil ? state.active : nil
         let ready = state.active.map { link.isConnected($0) } == true && activeStream?.hasImage == true
         let visibleNow = ready ? front : nil
 
@@ -307,6 +311,11 @@ final class Controller: NSObject, NSApplicationDelegate, StripInputDelegate {
             geometry = nil
         }
         evaluate()
+        if connected {
+            let seen: ParkState.Seen = frontGuest == id ? .fullScreen
+                : StripDetector.detect(vmOwners: settings.vmOwners, onScreenOnly: false) != nil ? .otherSpace : .none
+            for c in state.connected(id, seen: seen) { link.send(c.line, to: c.guest) }
+        }
     }
 
     private func handle(_ messages: [GuestMessage], from id: Int) {

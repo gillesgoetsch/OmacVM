@@ -1,0 +1,191 @@
+From: OmacVM
+Subject: [PATCH] ui: the guest's size, picked so Omarchy's scale presets fit
+
+What: a header with no AppKit in it: Omarchy's scale panel for an output
+size (its presets 1, 1.25, 1.6, 2, 3, 4 rounded up to scales Hyprland
+takes), the guest's size for the VM's view (in full screen below a notch
+up to 6 points fewer rows, the height whose panel has the most presets,
+then the closest), the black rows when a frame is shown at the top of the
+view, and a window's 20 point steps. Used by omacvm-cocoa-clean-size.patch (which
+explains the why).
+
+Why its own file: so the size picking is tested on every height and every
+window step without QEMU or a display
+(app/runtime/Tests/display/test-clean-size.sh applies this patch to an
+empty folder; at build time and in CI).
+
+Upstream: not applicable (OmacVM's display sizes).
+Test: app/runtime/Tests/display/test-clean-size.c.
+
+diff --git a/ui/omacvm-clean-size.h b/ui/omacvm-clean-size.h
+new file mode 100644
+index 0000000..7fc8713
+--- /dev/null
++++ b/ui/omacvm-clean-size.h
+@@ -0,0 +1,166 @@
++/*
++ * OmacVM: the guest's size, picked so Omarchy's scale presets fit.
++ *
++ * No AppKit in here, so it is tested on its own
++ * (app/runtime/Tests/display/test-clean-size.c); ui/cocoa.m feeds it.
++ *
++ * Hyprland takes a scale only when the output's width and height divide
++ * into whole logical pixels by it (scales in 1/120 steps). Omarchy's scale
++ * panel rounds each preset (1, 1.25, 1.6, 2, 3, 4) up to the next scale that
++ * fits and drops doubles. The MacBook Air's full-screen area below the notch
++ * is 2940x1846 pixels: only 1 and 2 fit, so the panel offered just those.
++ *
++ * Full screen below a notch: the guest gets up to 6 points fewer rows: the
++ * height whose panel has the most presets, then the one closest to them,
++ * then the least cut. The window shows the guest pixel for pixel at the top
++ * of the area; the rows left over stay black at the bottom. Air 2940x1846
++ * -> 2940x1840 (1, 1.25, 1.67, 2, 3.33, 4); 14-inch MacBook Pro 3024x1890
++ * -> 3024x1888; 16-inch 3456x2160 as it is. ui/cocoa.m asks for this only
++ * on a display with a notch; elsewhere nothing is cut.
++ *
++ * A window: its content snaps to 20 point steps while it is resized (40
++ * pixels at 2x, 20 at 1x: 1.25, 1.6 and 2 always fit). Its guest is the
++ * view's own size, as before.
++ */
++#ifndef OMACVM_CLEAN_SIZE_H
++#define OMACVM_CLEAN_SIZE_H
++
++#include <math.h>
++#include <stdbool.h>
++#include <stdint.h>
++
++/* Omarchy's scale presets, in 1/120 (Hyprland's step). */
++#define OMACVM_SCALE_PRESETS 6
++static const uint32_t omacvm_scale_presets[OMACVM_SCALE_PRESETS] = {
++    120, 150, 192, 240, 360, 480
++};
++
++/* At most this many points of black at the bottom in full screen. */
++#define OMACVM_TRIM_MAX_PT 6
++
++/* A window's content grows and shrinks in these steps (points). */
++#define OMACVM_WINDOW_STEP_PT 20
++
++typedef struct OmacVMSize {
++    uint32_t w, h;
++} OmacVMSize;
++
++static inline uint64_t omacvm_gcd(uint64_t a, uint64_t b)
++{
++    while (b) {
++        uint64_t t = a % b;
++        a = b;
++        b = t;
++    }
++    return a;
++}
++
++/*
++ * Omarchy's panel for a w x h output: each preset rounded up to the next
++ * scale that fits, doubles dropped, in 1/120. Returns how many; *over (if
++ * given) is how far the presets were rounded up in all.
++ */
++static inline int omacvm_scale_panel(uint32_t w, uint32_t h,
++                                     uint32_t out[OMACVM_SCALE_PRESETS],
++                                     uint32_t *over)
++{
++    uint64_t g = omacvm_gcd((uint64_t)w * 120, (uint64_t)h * 120);
++    int n = 0;
++
++    if (over) {
++        *over = 0;
++    }
++
++    for (int i = 0; g && i < OMACVM_SCALE_PRESETS; i++) {
++        uint64_t want = omacvm_scale_presets[i], best = 0;
++
++        /* The smallest divisor of g that is at least the preset. */
++        for (uint64_t d = 1; d * d <= g; d++) {
++            if (g % d) {
++                continue;
++            }
++            if (d >= want && (!best || d < best)) {
++                best = d;
++            }
++            if (g / d >= want && (!best || g / d < best)) {
++                best = g / d;
++            }
++        }
++        if (!best) {
++            continue;
++        }
++        if (over) {
++            *over += (uint32_t)(best - want);
++        }
++        if (n && out[n - 1] == best) {
++            continue;
++        }
++        out[n++] = (uint32_t)best;
++    }
++    return n;
++}
++
++/* Pixels per step, so 1x, 2x (or 1.5x) stays whole: as before. */
++static inline uint32_t omacvm_size_step(double backing)
++{
++    return backing > 1.75 ? 2 : backing > 1.25 ? 3 : 1;
++}
++
++/*
++ * The guest's size for a view of w x h pixels at this backing scale. With
++ * cut (full screen below a notch) it may be up to OMACVM_TRIM_MAX_PT points
++ * shorter; the width is never cut (black at the sides would show).
++ */
++static inline OmacVMSize omacvm_clean_size(double w, double h, double backing,
++                                           bool cut)
++{
++    uint32_t step = omacvm_size_step(backing);
++    uint32_t pw = w > step ? (uint32_t)w / step * step : step;
++    uint32_t ph = h > step ? (uint32_t)h / step * step : step;
++    OmacVMSize s = { pw, ph };
++    uint32_t out[OMACVM_SCALE_PRESETS];
++    uint32_t max_trim, best_over, over;
++    int best;
++
++    if (!cut) {
++        return s;
++    }
++    max_trim = (uint32_t)(OMACVM_TRIM_MAX_PT * (backing > 1 ? backing : 1)) / step * step;
++    best = omacvm_scale_panel(pw, ph, out, &best_over);
++    for (uint32_t t = step; t <= max_trim && t + 64 <= ph; t += step) {
++        int n = omacvm_scale_panel(pw, ph - t, out, &over);
++
++        if (n > best || (n == best && over < best_over)) {
++            best = n;
++            best_over = over;
++            s.h = ph - t;
++        }
++    }
++    return s;
++}
++
++/*
++ * Rows of black below the guest (pixels) when a frame of sw x sh is shown at
++ * the top of a view of vw x vh pixels: as wide, at most OMACVM_TRIM_MAX_PT
++ * points shorter. 0: any other frame, shown filling the view.
++ */
++static inline uint32_t omacvm_top_band(long vw, long vh, long sw, long sh,
++                                       double backing)
++{
++    long max = lround(OMACVM_TRIM_MAX_PT * (backing > 1 ? backing : 1));
++
++    if (sw <= 0 || sw != vw || sh <= 0 || sh >= vh || vh - sh > max) {
++        return 0;
++    }
++    return (uint32_t)(vh - sh);
++}
++
++/* A window's content size (points) on its 20 point steps, never below one. */
++static inline double omacvm_window_step(double pt)
++{
++    double n = floor(pt / OMACVM_WINDOW_STEP_PT);
++
++    return (n < 1 ? 1 : n) * OMACVM_WINDOW_STEP_PT;
++}
++
++#endif

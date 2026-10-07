@@ -209,6 +209,9 @@ final class GuestLink {
         // Keepalive finds a guest that vanished without closing (a VM that was
         // suspended or force-stopped) within about ten seconds.
         let tcp = NWProtocolTCP.Options()
+        // The strip's "cursor 0/1" lines must not wait for the guest's ACK of
+        // the line before (Nagle): they hand the pointer over at the edge.
+        tcp.noDelay = true
         tcp.enableKeepalive = true
         tcp.keepaliveIdle = 5
         tcp.keepaliveInterval = 2

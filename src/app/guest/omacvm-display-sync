@@ -300,6 +300,10 @@ user_rule() {
 # which differ when an output has its own scale (Omarchy's zoom on the main
 # one): displays beside the main one stay beside it, the rest keep their
 # offset, scaled. Without an arrangement: Virtual-1 at 0x0, the rest to its right.
+# The places never overlap (Hyprland warns "Monitor Virtual-2 overlaps with
+# other monitor(s)" and the pointer can get lost there): an output that would
+# overlap one placed before it moves away from the main one, on the axis it
+# sits beside it on the Mac, until it only touches.
 output_positions() {
   python3 - "$@" <<'PY'
 import json
@@ -337,6 +341,30 @@ for name, (lw, lh) in outputs.items():
         axis(box["x"], box["width"], lw, main["x"], main["width"], mw),
         axis(box["y"], box["height"], lh, main["y"], main["height"], mh),
     )
+
+
+def overlaps(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+settled = []
+for name in sorted(places, key=lambda n: (n != "Virtual-1", n)):
+    x, y = (round(v) for v in places[name])
+    w, h = outputs[name]
+    box = layout[name]
+    vertical = (box["y"] >= main["y"] + main["height"] or
+                box["y"] + box["height"] <= main["y"])
+    for _ in range(len(settled) + 1):
+        hit = next((r for r in settled if overlaps((x, y, w, h), r)), None)
+        if not hit:
+            break
+        if vertical:
+            y = hit[1] - h if box["y"] < main["y"] else hit[1] + hit[3]
+        else:
+            x = hit[0] - w if box["x"] < main["x"] else hit[0] + hit[2]
+        x, y = round(x), round(y)
+    places[name] = (x, y)
+    settled.append((x, y, w, h))
 minx = min(x for x, _ in places.values())
 miny = min(y for _, y in places.values())
 for name in outputs:
@@ -345,6 +373,61 @@ for name in outputs:
         print(name, f"{round(x - minx)}x{round(y - miny)}")
     else:
         print(name, "auto-right")
+PY
+}
+
+# apply_order SHOWN OUTPUT:WIDTH:HEIGHT:SCALE:POSITION ...: the outputs, one a
+# line, in an order where no rule puts its output over another one's current
+# place (SHOWN: Hyprland's j/monitors). Each rule is its own monitor reload in
+# Hyprland: moving the main output down under an external above it before the
+# external went up overlapped them for a moment, and Hyprland put up its
+# overlap warning. No such order (a swap): the given order.
+apply_order() {
+  python3 - "$@" <<'PY'
+import json
+import re
+import sys
+
+
+def overlaps(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+try:
+    shown = json.loads(sys.argv[1])
+except ValueError:
+    shown = []
+now = {}
+for m in shown if isinstance(shown, list) else []:
+    try:
+        if m.get("disabled"):
+            continue
+        s = float(m["scale"]) or 1.0
+        w, h = m["width"] / s, m["height"] / s
+        if int(m.get("transform", 0)) % 2:
+            w, h = h, w
+        now[m["name"]] = (m["x"], m["y"], w, h)
+    except (AttributeError, KeyError, TypeError, ValueError, ZeroDivisionError):
+        continue
+names, targets = [], {}
+for item in sys.argv[2:]:
+    name, w, h, scale, pos = item.split(":", 4)
+    names.append(name)
+    place = re.fullmatch(r"(-?\d+)x(-?\d+)", pos)
+    try:
+        s = float(scale) if scale not in ("", "auto") else 1.0
+        if place:
+            targets[name] = (int(place[1]), int(place[2]), int(w) / s, int(h) / s)
+    except (ValueError, ZeroDivisionError):
+        pass
+left = list(names)
+while left:
+    pick = next((n for n in left if n not in targets or
+                 not any(overlaps(targets[n], r) for k, r in now.items() if k != n)), left[0])
+    print(pick)
+    left.remove(pick)
+    if pick in targets:
+        now[pick] = targets[pick]
 PY
 }
 
@@ -481,6 +564,28 @@ keep_rule() {
   fi
 }
 
+# park_gone SHOWN OUTPUT...: an output this script placed that is gone now
+# (the Mac's other display left full screen) gets a rule with an automatic
+# place. Hyprland keeps the last rule per output: when the display comes back
+# (full screen again) the old place could overlap where the main output is
+# now, and Hyprland warned before this script could move anything.
+park_gone() {
+  local shown=$1 sent name
+  shift
+  local -A here=()
+  for name in "$@"; do here[$name]=1; done
+  for sent in "$state_dir"/Virtual-*.sent; do
+    [[ -f $sent ]] || continue
+    name=${sent##*/}; name=${name%.sent}
+    [[ -z ${here[$name]:-} && $name != Virtual-1 ]] || continue
+    # Still shown (its connector is not read yet): leave it.
+    grep -q "\"name\": *\"$name\"" <<<"$shown" && continue
+    if [[ $(hyprctl eval "hl.monitor({ output = \"$name\", mode = \"preferred\", position = \"auto-right\", scale = \"auto\" })" 2>&1) == ok ]]; then
+      rm -f "$sent" "$state_dir/$name.hdr"
+    fi
+  done
+}
+
 apply_preferred_modes() {
   local connector
   local connector_name
@@ -530,10 +635,25 @@ apply_preferred_modes() {
   local shown
   shown=$(hyprctl -j monitors 2>/dev/null) || shown='[]'
 
+  local -a items=() order=()
+  local -A index=()
   for i in "${!outputs[@]}"; do
-    output=${outputs[$i]} mode=${modes[$i]} scale=${scales[$i]}
+    output=${outputs[$i]}
     position=${placed[$output]:-}
     [[ -n $position ]] || { [[ $output == Virtual-1 ]] && position=0x0 || position=auto-right; }
+    placed[$output]=$position
+    index[$output]=$i
+    items+=("${sizes[$i]}:$position")
+  done
+  mapfile -t order < <(apply_order "$shown" "${items[@]}" 2>/dev/null)
+  ((${#order[@]} == ${#outputs[@]})) || order=("${outputs[@]}")
+
+  park_gone "$shown" "${outputs[@]}"
+
+  for output in "${order[@]}"; do
+    i=${index[$output]}
+    mode=${modes[$i]} scale=${scales[$i]}
+    position=${placed[$output]}
 
     # Aquamarine 0.14 does not refresh its mode cache when an existing DRM
     # connector's EDID or physical size changes. A complete modeline bypasses
@@ -586,10 +706,11 @@ apply_preferred_modes() {
   [[ -z ${lock_fd:-} ]] || exec {lock_fd}>&-
 }
 
-# OmacVM.app: when the window covers the strip beside the notch (full screen
-# in notch mode), Omarchy's bar gets that strip's height, so nothing but the
+# OmacVM.app before 3.0.0: when the window covers the strip beside the notch
+# (full screen in notch mode), Omarchy's bar gets that strip's height, so nothing but the
 # bar sits beside the camera. Elsewhere the bar keeps its own size. Writes only
 # lines marked "omacvm-notch" in ~/.config/omarchy/shell.toml (watched live).
+# A 3.0.0 app sends no omacvm.notch: the marked lines are taken out.
 notch_bar() {
   local mode=$1 scale=$2 w h want="" f=${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/shell.toml
   read -r _ _ w _ _ _ h _ <<<"$mode"

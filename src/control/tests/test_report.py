@@ -806,3 +806,26 @@ def test_json_web_tokens_go():
     out, counts = R.redact(f"session {jwt} refreshed; OmacVM 2.9.2 stays", known())
     assert out == "session <secret> refreshed; OmacVM 2.9.2 stays", out
     assert counts["secret"] == 1
+
+
+def test_sudo_working_folder_is_no_secret():
+    """The e2e: sudo's PWD=/ came out as PWD=<secret> and counted as a secret
+    taken out. The working folder stays (a home in it still goes)."""
+    k = R.Known()
+    k.add("user", "zorro")
+    out, counts = R.redact("sudo[812]:    zorro : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/true", k)
+    assert out == "sudo[812]:    <user> : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/true", out
+    assert "secret" not in counts, counts
+    out, counts = R.redact("sudo:    zorro : PWD=/home/zorro/src ; USER=root", k)
+    assert out == "sudo:    <user> : PWD=~/src ; USER=root", out
+    assert "secret" not in counts, counts
+    # Only the shell's own PWD, and only a path.
+    for line, gone in (("PWD=hunter2", "PWD=<secret>"), ("pwd=/etc/x", "pwd=<secret>"), ("db_pwd: s3cr3t!", "db_pwd: <secret>")):
+        out, counts = R.redact(line, k)
+        assert out == gone and counts.get("secret") == 1, (line, out, counts)
+
+
+def test_a_match_left_as_it_is_is_not_counted():
+    out, counts = R.redact("key: none; token: (null); Using key: /etc/ssh/ssh_host_ed25519_key", known())
+    assert out == "key: none; token: (null); Using key: /etc/ssh/ssh_host_ed25519_key", out
+    assert "secret" not in counts, counts

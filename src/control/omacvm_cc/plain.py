@@ -49,9 +49,41 @@ def status(as_json: bool, fallback: bool = False) -> int:
     mac = f"the Mac: OmacVM {c.hello.omacvm}" if c.hello else f"the Mac: {c.mac_problem()}"
     print(f"OmacVM {c.local.version} · {c.local.vm_type or '?'} · {mac}\n")
     print(table(c, color))
-    print("\n  Switch, repair, update: the control centre (omacvm), or on the Mac:")
-    print("    omacvm enable FEATURE · omacvm disable FEATURE · omacvm update")
+    if c.local.vm_type == "app":   # OmacVM.app alone has no omacvm command on the Mac
+        print("\n  Switch, repair, update: the control centre (omacvm in a terminal, or the Omarchy menu).")
+    else:
+        print("\n  Switch, repair, update: the control centre (omacvm), or on the Mac:")
+        print("    omacvm enable FEATURE · omacvm disable FEATURE · omacvm update")
     if fallback:
-        print("\n  The control centre needs Textual: sudo pacman -S python-textual")
+        print("\n  " + textual_fix(c))
     bad = [r for r in rows if r.status in (Status.FAILING, Status.NEEDS_PERSON)]
     return 1 if bad else 0
+
+
+def textual_fix(c: Controller, ask=input, wait: float = 1.0) -> str:
+    """Textual is missing: the Mac installs it (a repair of the control
+    centre, as r in the control centre does), never sudo in the VM. In a
+    terminal it offers to start that now; the line says how it went."""
+    import time
+    if not c.linked:
+        return ("The control centre needs Textual (python-textual). Once the Mac answers, "
+                "omacvm offers to install it from there.")
+    if not sys.stdin.isatty():
+        return "The control centre needs Textual: open omacvm in a terminal, it installs it from the Mac."
+    try:
+        yes = ask("\n  The control centre needs Textual (python-textual). Install it from the Mac now? [Y/n] ").strip().lower() in ("", "y", "yes")
+    except EOFError:
+        yes = False
+    if not yes:
+        return "The control centre needs Textual: omacvm asks again next time."
+    try:
+        job = c.start("reinstall", ["control-centre"])
+        while job.active:
+            time.sleep(wait)
+            job = c.poll(job.id)
+    except Exception as e:   # BridgeError and friends: say it, nothing else to do here
+        return f"The Mac could not install Textual: {e}"
+    if job.state == "done":
+        return "Textual is installed: open omacvm again for the control centre."
+    return (f"The Mac could not install Textual ({job.state}). "
+            "Is the VM online? omacvm offers it again next time.")

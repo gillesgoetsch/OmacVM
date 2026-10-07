@@ -1,0 +1,12 @@
+[Unit]
+Description=OmacVM: the Omarchy theme's colours for the Mac's Touch ID panel
+# A theme switch rewrites many files, each one triggers the path unit.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# Waits 2 s for the switch to finish (and Hyprland to load the theme's rounding).
+ExecStart=/usr/lib/omacvm/omacvm-touchid-theme
+
+[Install]
+WantedBy=default.target

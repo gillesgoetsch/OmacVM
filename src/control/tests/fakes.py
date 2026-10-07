@@ -37,6 +37,7 @@ class FakeMac:
         self.job_end = ("done", "done")   # (state, text) a job ends with
         self.job_extra: dict = {}         # more fields of the ended job (failed_part, mac_omacvm)
         self.job_polls_to_end = 2
+        self.on_job_end = None            # called once with the job when it ends (a VM side that changed)
         self.requests: list[tuple[str, str, dict]] = []
         self.jobs: dict[str, dict] = {}
         self.checks_enabled = True
@@ -56,6 +57,11 @@ class FakeMac:
         self.graphics: dict | None = None   # an OmacVM.app VM's Graphics (omacvm graphics --json)
         self.gpu_memory: dict | None = None  # an OmacVM.app VM's graphics memory (None: an older Mac without it)
         self.gpu_memory_at: list[float] = []  # when each gpu-memory request came
+        self.mouse_swipe: dict | None = None   # {"magic_mouse", "fingers"} (None: an older Mac without it)
+        self.notch = False   # a MacBook with a notch: Omanotch can go on
+        self.mac_app: bool | None = None  # the Mac's omacvm is OmacVM.app's copy (None: an older Mac says nothing)
+        self.app_update: tuple | None = None  # (status, body) for POST /omacvm/app-update (None: an older Mac)
+        self.refuse_theme: tuple | None = None   # (status, code, error) for POST /omacvm/theme (Touch ID off: 403 off)
         fake = self
 
         class H(BaseHTTPRequestHandler):
@@ -126,9 +132,13 @@ class FakeMac:
                     time.sleep(fake.hello_delay)
                     names = [l.split("\t")[0] for l in open(os.path.join(SRC, "features.tsv"), encoding="utf-8")
                              if l.strip() and not l.startswith("#")]
-                    reqs = ["hello", "status", "updates", "jobs"] + (["gpu-memory"] if fake.gpu_memory is not None else [])
+                    reqs = ["hello", "status", "updates", "jobs"] + (["gpu-memory"] if fake.gpu_memory is not None else []) \
+                        + (["app-update"] if fake.app_update is not None else [])
+                    reqs += ["settings/mouse-swipe"] if fake.mouse_swipe is not None else []
                     return self.send(200, {"proto": 1, "proto_min": 1, "omacvm": fake.version, "features": names,
                                            "requests": reqs, "macos": "15.7.4", "chip": "Apple M4 Max"})
+                if p == "/omacvm/settings/mouse-swipe" and fake.mouse_swipe is not None:
+                    return self.send(200, fake.mouse_swipe)
                 if p == "/omacvm/gpu-memory" and fake.gpu_memory is not None:
                     fake.gpu_memory_at.append(time.monotonic())
                     return self.send(200, fake.gpu_memory)
@@ -140,7 +150,8 @@ class FakeMac:
                     return self.send(200, {"omacvm": fake.version, "features": [], "checks": [], "graphics": fake.graphics})
                 if p == "/omacvm/status":
                     return self.send(200, {"omacvm": fake.version, "features": [
-                        {"name": "omanotch", "on": False, "available": False, "reason": "needs a MacBook with a notch"}],
+                        {"name": "omanotch", "on": False, "available": fake.notch,
+                         "reason": "" if fake.notch else "needs a MacBook with a notch"}],
                         "checks": [{"status": "fail", "name": "keyboard/trackpad access", "detail":
                                     "waiting for Accessibility: System Settings > Privacy & Security", "needs_human": True,
                                     "feature": "gestures"}]})
@@ -157,6 +168,9 @@ class FakeMac:
                     if j["polls"] >= fake.job_polls_to_end:
                         j["state"], j["text"] = fake.job_end
                         j.update(fake.job_extra)
+                        if fake.on_job_end and not j.get("ended"):
+                            j["ended"] = True
+                            fake.on_job_end(j)
                     return self.send(200, {k: v for k, v in j.items() if k != "polls"})
                 if p in ("/state", "/scan?cached=1", "/bluetooth"):
                     return self.send(200, {"ssid": "ZorroNet 5G", "bssid": "a4:2b:b0:11:22:33",
@@ -182,9 +196,21 @@ class FakeMac:
                                       "state": "running", "step": 1, "of": 4, "text": "the Mac side",
                                       "lines": ["==> OmacVM Bridge on the Mac"], "polls": 0}
                     return self.send(202, {k: v for k, v in fake.jobs[jid].items() if k != "polls"})
+                if self.path == "/omacvm/app-update" and fake.app_update is not None:
+                    return self.send(*fake.app_update)
                 if self.path == "/omacvm/settings/update-checks":
                     fake.checks_enabled = bool(b["enabled"])
                     return self.send(200, fake.updates())
+                if self.path == "/omacvm/settings/mouse-swipe" and fake.mouse_swipe is not None:
+                    if b.get("fingers") not in (3, 4) or set(b) != {"fingers"}:
+                        return self.send(400, {"error": "send {\"fingers\": 3|4}", "code": "bad-body"})
+                    fake.mouse_swipe = dict(fake.mouse_swipe, fingers=b["fingers"])
+                    return self.send(200, fake.mouse_swipe)
+                if self.path == "/omacvm/theme":   # the Touch ID panel's colours (touchid_theme.swift)
+                    if fake.refuse_theme:
+                        st, code, err = fake.refuse_theme
+                        return self.send(st, {"error": err, "code": code})
+                    return self.send(200, {"ok": True, "dark": True})
                 if self.path == "/omacvm/updates/check":
                     fake.checked_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                     return self.send(200, fake.updates())
@@ -195,8 +221,11 @@ class FakeMac:
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def updates(self) -> dict:
-        return {"checks_enabled": self.checks_enabled, "omacvm": self.version, "checked_at": self.checked_at,
-                "ok": self.manifest is not None, "offline": False, "error": None, "manifest": self.manifest}
+        u = {"checks_enabled": self.checks_enabled, "omacvm": self.version, "checked_at": self.checked_at,
+             "ok": self.manifest is not None, "offline": False, "error": None, "manifest": self.manifest}
+        if self.mac_app is not None:
+            u["mac_app"] = self.mac_app
+        return u
 
     def stop(self) -> None:
         self.server.shutdown()
@@ -234,7 +263,7 @@ def vm_env(tmp: str, mac_port: int, check_sock: str, extra: str = "") -> dict:
         f.write("OMACVM_VM_TYPE=parallels\nOMACVM_HOST=127.0.0.1\nOMACVM_USER=zorro\n"
                 "OMACVM_FEATURE_bridge=on\nOMACVM_FEATURE_wallpaper=on\nOMACVM_FEATURE_gestures=off\n"
                 "OMACVM_FEATURE_scroll_momentum=off\nOMACVM_FEATURE_omanotch=off\nOMACVM_FEATURE_mac_clock=on\n"
-                "OMACVM_FEATURE_camera=on\nOMACVM_FEATURE_battery=off\nOMACVM_FEATURE_idle_lock=on\n"
+                "OMACVM_FEATURE_camera=on\nOMACVM_FEATURE_battery=off\nOMACVM_FEATURE_no_idle_lock=off\n"
                 "OMACVM_FEATURE_autologin=off\nOMACVM_FEATURE_thp_kernel=off\nOMACVM_FEATURE_control_centre=on\n" + extra)
     token = os.path.join(tmp, "token")
     with open(token, "wb") as f:
@@ -255,4 +284,5 @@ def vm_env(tmp: str, mac_port: int, check_sock: str, extra: str = "") -> dict:
         f.write("2.9.0\n")
     return {"OMACVM_SHARE": share, "OMACVM_ENV": env_file, "OMACVM_INSTALLED": installed,
             "OMACVM_CHECK_SOCKET": check_sock, "OMACVM_BRIDGE_URL": f"http://127.0.0.1:{mac_port}",
-            "OMACVM_BRIDGE_TOKEN_FILE": token, "OMACVM_VM_KEY_FILE": vm_key, "XDG_CACHE_HOME": os.path.join(tmp, "cache")}
+            "OMACVM_BRIDGE_TOKEN_FILE": token, "OMACVM_VM_KEY_FILE": vm_key, "XDG_CACHE_HOME": os.path.join(tmp, "cache"),
+            "OMACVM_SDDM_ROOT": os.path.join(tmp, "sddm-root")}   # no SDDM there unless a test makes it

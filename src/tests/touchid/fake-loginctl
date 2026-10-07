@@ -1,0 +1,11 @@
+#!/bin/sh
+# A fake loginctl for src/tests/touchid-client.sh: show-user UID / show-session ID
+# print $OMACVM_TOUCHID_LOGIND/user-UID or session-ID (Key=Value lines); none: exit 1.
+[ "$1" = --no-pager ] && shift
+case $1 in
+  show-user) f=$OMACVM_TOUCHID_LOGIND/user-$2 ;;
+  show-session) f=$OMACVM_TOUCHID_LOGIND/session-$2 ;;
+  *) exit 1 ;;
+esac
+[ -f "$f" ] || { echo "Failed to get session: No session '$2' known" >&2; exit 1; }
+cat "$f"

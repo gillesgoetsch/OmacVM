@@ -10,6 +10,12 @@ This service writes the Mac's frames into it, 1280x720 NV12, and asks the Mac
 for them only while an app reads the camera (v4l2loopback's client-usage
 events), so the Mac's camera and its green light are off otherwise.
 
+Frame times: v4l2loopback gives a new reader the last frame first. With the
+time the kernel put on it, that frame is as old as the camera's last use, and
+ffmpeg fills the gap with copies of it (all black; `-t 10` ends at once). So
+the frames go in through mmap buffers with their own time (FrameClock): the
+monotonic clock, stopped while no app reads.
+
 Where the frames come from (OMACVM_VM_TYPE in /etc/omacvm/env):
   app        OmacVM.app, the virtio port org.omacvm.camera
   utm|fusion OmacVM Bridge on the Mac, GET /camera on port 47831, connected
@@ -28,6 +34,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import mmap
 import os
 from pathlib import Path
 import select
@@ -41,6 +48,7 @@ from typing import Any
 PORT = Path("/dev/virtio-ports/org.omacvm.camera")
 CAMERA = Path("/dev/video42")
 TOKEN = Path.home() / ".config/omacvm-bridge/token"
+CLOCK_STATE = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "omacvm-camera-clock"
 BRIDGE_PORT = 47831
 MAGIC = b"TOCM"
 VERSION = 1
@@ -62,6 +70,9 @@ V4L2_EVENT_PRIVATE_START = 0x08000000
 V4L2LOOPBACK_EVENT_OFFSET = 0x08E00000
 V4L2_EVENT_PRI_CLIENT_USAGE = V4L2_EVENT_PRIVATE_START + V4L2LOOPBACK_EVENT_OFFSET + 1
 V4L2_EVENT_SUB_FL_SEND_INITIAL = 0x0001
+V4L2_MEMORY_MMAP = 1
+V4L2_BUF_FLAG_TIMESTAMP_COPY = 0x00004000
+FRAME_TIME = 1 / 30
 
 
 def log(message: str) -> None:
@@ -136,11 +147,49 @@ class V4L2Event(ctypes.Structure):
     ]
 
 
+class TimeVal(ctypes.Structure):
+    _fields_ = [("seconds", ctypes.c_long), ("microseconds", ctypes.c_long)]
+
+
+class V4L2TimeCode(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("frames", ctypes.c_uint8),
+        ("seconds", ctypes.c_uint8), ("minutes", ctypes.c_uint8), ("hours", ctypes.c_uint8),
+        ("userbits", ctypes.c_uint8 * 4),
+    ]
+
+
+class V4L2BufferMemory(ctypes.Union):
+    _fields_ = [("offset", ctypes.c_uint32), ("userptr", ctypes.c_ulong), ("fd", ctypes.c_int32)]
+
+
+class V4L2Buffer(ctypes.Structure):
+    _fields_ = [
+        ("index", ctypes.c_uint32), ("type", ctypes.c_uint32), ("bytesused", ctypes.c_uint32),
+        ("flags", ctypes.c_uint32), ("field", ctypes.c_uint32), ("timestamp", TimeVal),
+        ("timecode", V4L2TimeCode), ("sequence", ctypes.c_uint32), ("memory", ctypes.c_uint32),
+        ("m", V4L2BufferMemory), ("length", ctypes.c_uint32), ("reserved2", ctypes.c_uint32),
+        ("request_fd", ctypes.c_int32),
+    ]
+
+
+class V4L2RequestBuffers(ctypes.Structure):
+    _fields_ = [
+        ("count", ctypes.c_uint32), ("type", ctypes.c_uint32), ("memory", ctypes.c_uint32),
+        ("capabilities", ctypes.c_uint32), ("flags", ctypes.c_uint8), ("reserved", ctypes.c_uint8 * 3),
+    ]
+
+
 def ioctl_number(direction: int, kind: str, number: int, size: int) -> int:
     return (direction << 30) | (size << 16) | (ord(kind) << 8) | number
 
 
 VIDIOC_S_FMT = ioctl_number(3, "V", 5, ctypes.sizeof(V4L2Format))
+VIDIOC_REQBUFS = ioctl_number(3, "V", 8, ctypes.sizeof(V4L2RequestBuffers))
+VIDIOC_QUERYBUF = ioctl_number(3, "V", 9, ctypes.sizeof(V4L2Buffer))
+VIDIOC_QBUF = ioctl_number(3, "V", 15, ctypes.sizeof(V4L2Buffer))
+VIDIOC_DQBUF_BUFFER = ioctl_number(3, "V", 17, ctypes.sizeof(V4L2Buffer))
+VIDIOC_STREAMON = ioctl_number(1, "V", 18, ctypes.sizeof(ctypes.c_int))
 VIDIOC_DQEVENT = ioctl_number(2, "V", 89, ctypes.sizeof(V4L2Event))
 VIDIOC_SUBSCRIBE_EVENT = ioctl_number(1, "V", 90, ctypes.sizeof(V4L2EventSubscription))
 
@@ -158,7 +207,141 @@ def write_frame(descriptor: int, frame: bytes | bytearray | memoryview) -> None:
         raise RuntimeError(f"the camera took {written} of {FRAME_BYTES} bytes")
 
 
-def configure_camera(descriptor: int) -> None:
+class FrameClock:
+    """The time each frame carries: the monotonic clock, stopped while no app
+    reads. A new reader's first frame is the one left from the last use; the
+    next one then comes FRAME_TIME after it, not hours later. It never runs
+    ahead of the monotonic clock (after a short stop it just goes on), and
+    its offset outlives a restart of the service (CLOCK_STATE), so an app
+    that keeps reading sees no jump either way."""
+
+    def __init__(self, offset: float = 0.0) -> None:
+        self.offset = offset
+        self.stopped_at: float | None = None
+
+    def time(self, now: float) -> float:
+        return self.stopped_at if self.stopped_at is not None else now - self.offset
+
+    def stop(self, now: float) -> None:
+        if self.stopped_at is None:
+            self.stopped_at = now - self.offset
+
+    def go(self, now: float) -> None:
+        if self.stopped_at is not None:
+            self.offset = max(self.offset, now - self.stopped_at - FRAME_TIME)
+            self.stopped_at = None
+
+
+def boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
+
+
+def load_offset(now: float) -> float:
+    """The FrameClock offset an earlier run of the service left (same boot:
+    the monotonic clock is per boot), else 0."""
+    try:
+        boot, value = CLOCK_STATE.read_text().split()
+        offset = float(value)
+    except (OSError, ValueError):
+        return 0.0
+    return offset if boot == boot_id() and 0.0 <= offset <= now else 0.0
+
+
+def save_offset(offset: float) -> None:
+    try:
+        part = CLOCK_STATE.with_name(CLOCK_STATE.name + ".part")
+        part.write_text(f"{boot_id() or '-'} {offset:.6f}\n")
+        part.replace(CLOCK_STATE)
+    except OSError:
+        pass
+
+
+def timeval(seconds: float) -> TimeVal:
+    micro = max(1, round(seconds * 1_000_000))   # 0 would mean "the kernel's time" to v4l2loopback
+    return TimeVal(micro // 1_000_000, micro % 1_000_000)
+
+
+class NoBuffers(Exception):
+    """v4l2loopback's mmap buffers did not work on this descriptor."""
+
+
+class Frames:
+    """Puts frames into /dev/video42: mmap buffers queued with the FrameClock
+    time (V4L2_BUF_FLAG_TIMESTAMP_COPY), or plain write() (the kernel's time)
+    when the module does not take that."""
+
+    def __init__(self, descriptor: int, buffers: bool, offset: float = 0.0) -> None:
+        self.fd = descriptor
+        self.clock = FrameClock(offset)
+        self.maps: list[mmap.mmap] = []
+        if not buffers:
+            return
+        try:
+            request = V4L2RequestBuffers(count=2, type=V4L2_BUF_TYPE_VIDEO_OUTPUT, memory=V4L2_MEMORY_MMAP)
+            fcntl.ioctl(descriptor, VIDIOC_REQBUFS, request, True)
+            if request.count < 1:
+                raise OSError(errno.ENOMEM, "v4l2loopback gave no buffers")
+            for index in range(request.count):
+                buffer = V4L2Buffer(index=index, type=V4L2_BUF_TYPE_VIDEO_OUTPUT, memory=V4L2_MEMORY_MMAP)
+                fcntl.ioctl(descriptor, VIDIOC_QUERYBUF, buffer, True)
+                if buffer.length < FRAME_BYTES:
+                    raise OSError(errno.EINVAL, f"a buffer of {buffer.length} bytes is too small")
+                self.maps.append(mmap.mmap(descriptor, buffer.length, mmap.MAP_SHARED,
+                                           mmap.PROT_READ | mmap.PROT_WRITE, offset=buffer.m.offset))
+            fcntl.ioctl(descriptor, VIDIOC_STREAMON, ctypes.c_int(V4L2_BUF_TYPE_VIDEO_OUTPUT), True)
+        except (OSError, ValueError) as error:
+            self.close()
+            if isinstance(error, OSError) and error.errno == errno.ENODEV:
+                raise
+            raise NoBuffers(str(error)) from error
+
+    def put(self, frame: bytes | bytearray | memoryview) -> tuple[int, TimeVal] | None:
+        """Puts one frame in; with buffers: which buffer and the time it got."""
+        if not self.maps:
+            write_frame(self.fd, frame)
+            return None
+        buffer = V4L2Buffer(type=V4L2_BUF_TYPE_VIDEO_OUTPUT, memory=V4L2_MEMORY_MMAP)
+        fcntl.ioctl(self.fd, VIDIOC_DQBUF_BUFFER, buffer, True)
+        if buffer.index >= len(self.maps):
+            raise RuntimeError(f"v4l2loopback gave buffer {buffer.index} of {len(self.maps)}")
+        self.maps[buffer.index][:FRAME_BYTES] = frame
+        stamp = timeval(self.clock.time(time.monotonic()))
+        buffer.bytesused = FRAME_BYTES
+        buffer.field = V4L2_FIELD_NONE
+        buffer.flags = V4L2_BUF_FLAG_TIMESTAMP_COPY
+        buffer.timestamp = stamp
+        fcntl.ioctl(self.fd, VIDIOC_QBUF, buffer, True)
+        return buffer.index, stamp
+
+    def first(self) -> None:
+        """The first frame: black. It makes the exclusive-caps device a
+        capture device, so browsers list it before anything reads it. With
+        buffers it also tells whether they work and keep our time."""
+        if not self.maps:
+            self.put(BLACK)
+            return
+        try:
+            index, stamp = self.put(BLACK) or (0, TimeVal())
+            buffer = V4L2Buffer(index=index, type=V4L2_BUF_TYPE_VIDEO_OUTPUT, memory=V4L2_MEMORY_MMAP)
+            fcntl.ioctl(self.fd, VIDIOC_QUERYBUF, buffer, True)
+        except (OSError, RuntimeError) as error:
+            self.close()
+            if isinstance(error, OSError) and error.errno == errno.ENODEV:
+                raise
+            raise NoBuffers(str(error)) from error
+        if (buffer.timestamp.seconds, buffer.timestamp.microseconds) != (stamp.seconds, stamp.microseconds):
+            log("v4l2loopback puts its own time on the frames: ffmpeg may get old frames first")
+
+    def close(self) -> None:
+        for m in self.maps:
+            m.close()
+        self.maps = []
+
+
+def configure_camera(descriptor: int, buffers: bool = True) -> Frames:
     value = V4L2Format()
     value.type = V4L2_BUF_TYPE_VIDEO_OUTPUT
     value.value.pix = V4L2PixFormat(
@@ -171,13 +354,38 @@ def configure_camera(descriptor: int) -> None:
     got = value.value.pix
     if got.width != WIDTH or got.height != HEIGHT or got.pixelformat != fourcc("NV12") or got.sizeimage < FRAME_BYTES:
         raise RuntimeError("v4l2loopback did not take 1280x720 NV12")
-    # The first frame makes the exclusive-caps device a capture device, so
-    # browsers list it before anything reads it.
-    write_frame(descriptor, BLACK)
-    sub = V4L2EventSubscription()
-    sub.type = V4L2_EVENT_PRI_CLIENT_USAGE
-    sub.flags = V4L2_EVENT_SUB_FL_SEND_INITIAL
-    fcntl.ioctl(descriptor, VIDIOC_SUBSCRIBE_EVENT, sub, True)
+    frames = Frames(descriptor, buffers, load_offset(time.monotonic()))
+    try:
+        frames.first()
+        frames.clock.stop(time.monotonic())   # until an app reads
+        sub = V4L2EventSubscription()
+        sub.type = V4L2_EVENT_PRI_CLIENT_USAGE
+        sub.flags = V4L2_EVENT_SUB_FL_SEND_INITIAL
+        fcntl.ioctl(descriptor, VIDIOC_SUBSCRIBE_EVENT, sub, True)
+    except BaseException:
+        frames.close()
+        raise
+    return frames
+
+
+def setup_camera() -> tuple[int, Frames]:
+    """Opens and configures /dev/video42. When its mmap buffers do not work,
+    once more with write() (frames then carry the kernel's time)."""
+    camera = open_camera()
+    try:
+        return camera, configure_camera(camera)
+    except NoBuffers as error:
+        log(f"frames without their own time ({error}): ffmpeg may get old frames first")
+        os.close(camera)
+    except BaseException:
+        os.close(camera)
+        raise
+    camera = open_camera()
+    try:
+        return camera, configure_camera(camera, buffers=False)
+    except BaseException:
+        os.close(camera)
+        raise
 
 
 def readers(descriptor: int) -> int:
@@ -189,14 +397,35 @@ def readers(descriptor: int) -> int:
 
 
 class Parser:
+    """Splits the Mac's bytes into messages. Until the first good message it
+    skips to the next header: a run of the service that stopped while an app
+    read the camera leaves the rest of a frame in the virtio port, and the
+    next run must not choke on it (it did: exit, restart, the same again)."""
+
     def __init__(self) -> None:
         self.buffer = bytearray()
+        self.synced = False
+        self.skipped = 0
+
+    @staticmethod
+    def known(magic: bytes, version: int, kind: int, reserved: int, size: int) -> bool:
+        return magic == MAGIC and version == VERSION and reserved == 0 and (
+            (kind == KIND_FRAME and size == FRAME_BYTES) or (kind == KIND_STATUS and size <= MAX_STATUS_BYTES))
 
     def feed(self, chunk: bytes) -> list[tuple[int, bytes]]:
         self.buffer.extend(chunk)
         out: list[tuple[int, bytes]] = []
         while len(self.buffer) >= HEADER.size:
             magic, version, kind, reserved, size, _ = HEADER.unpack_from(self.buffer)
+            if not self.synced and not self.known(magic, version, kind, reserved, size):
+                at = self.buffer.find(MAGIC, 1)
+                drop = at if at > 0 else len(self.buffer) - (len(MAGIC) - 1)
+                if not self.skipped:   # once: a Mac of another version would be skipped forever
+                    log("skipping bytes that are no message (left from an earlier run, "
+                        "or the Mac speaks another version: omacvm update)")
+                self.skipped += drop
+                del self.buffer[:drop]
+                continue
             if magic != MAGIC or version != VERSION or reserved != 0:
                 raise ValueError("the Mac sent a message this camera does not know")
             if (kind == KIND_FRAME and size != FRAME_BYTES) or (kind == KIND_STATUS and size > MAX_STATUS_BYTES) \
@@ -204,6 +433,7 @@ class Parser:
                 raise ValueError("the Mac sent a message of the wrong size")
             if len(self.buffer) < HEADER.size + size:
                 break
+            self.synced = True
             out.append((kind, bytes(self.buffer[HEADER.size:HEADER.size + size])))
             del self.buffer[:HEADER.size + size]
         return out
@@ -373,8 +603,7 @@ def main() -> int:
     else:
         log(f"nothing to do on {kind or 'this VM'} (Parallels passes the camera itself)")
         return 0
-    camera = open_camera()
-    configure_camera(camera)
+    camera, frames = setup_camera()
     parser = Parser()
     active = False       # an app reads the camera
     streaming = False    # the Mac sends frames
@@ -388,7 +617,7 @@ def main() -> int:
         for kind_, payload in parser.feed(chunk):
             if kind_ == KIND_FRAME:
                 if active:
-                    write_frame(camera, payload)
+                    frames.put(payload)
                 continue
             status: Any = json.loads(payload)
             state = status.get("status") if isinstance(status, dict) else None
@@ -419,7 +648,7 @@ def main() -> int:
             # Waiting for the Mac (its permission prompt, a reconnect): black
             # frames, so the app shows black instead of stalling.
             if active and not streaming and now >= black_at:
-                write_frame(camera, BLACK)
+                frames.put(BLACK)
                 black_at = now + 0.2
             poller = select.poll()
             poller.register(camera, select.POLLPRI)
@@ -433,13 +662,16 @@ def main() -> int:
                     active = n > 0
                     log("an app reads the camera: asking the Mac" if active else "no app reads the camera any more: Mac camera off")
                     if active:
+                        frames.clock.go(time.monotonic())
+                        save_offset(frames.clock.offset)   # for a restart while it reads
                         retry = 0.0
                         if isinstance(link, Port) and not link.want(True):
                             log(f"no {PORT}: start the VM from an OmacVM.app with the camera (omacvm update)")
                     else:
                         streaming = False
                         link.want(False)
-                        write_frame(camera, BLACK)
+                        frames.put(BLACK)   # what the next app sees first
+                        frames.clock.stop(time.monotonic())
                     continue
                 chunk = b""
                 if events & select.POLLIN:
@@ -464,6 +696,7 @@ def main() -> int:
         except OSError:
             pass
         link.close()
+        frames.close()
         os.close(camera)
 
 

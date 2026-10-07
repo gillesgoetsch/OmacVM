@@ -135,7 +135,7 @@ ui_checklist() {
       else mark="[ ]"; fi
       tag=""
       [[ ${UI_TAG[$i]} == experimental ]] && tag=" ${UEXP}experimental$UR"
-      [[ ${UI_TAG[$i]} == slow ]] && tag=" ${UD}slow to build$UR"
+      [[ ${UI_TAG[$i]} == slow ]] && tag=" ${UD}adds about 10 minutes to the build$UR"
       [[ -n ${UI_OFF_REASON[$i]} ]] && tag=" $UD${UI_OFF_REASON[$i]}$UR"
       line="${UI_LABELS[$i]}"
       if (( i == cur )); then printf '\r\033[2K  %s❯%s %s %s%s%s%s\n' "$UACC" "$UR" "$mark" "$UB" "$(ui_fit "$line")" "$UR" "$tag" > "$TTY"

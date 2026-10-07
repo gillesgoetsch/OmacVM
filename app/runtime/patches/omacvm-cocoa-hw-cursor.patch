@@ -1,0 +1,352 @@
+From: OmacVM
+Subject: [PATCH] cocoa: the guest's pointer as the Mac's cursor (experimental)
+
+What: with OMACVM_HW_CURSOR=1 (OmacVM.app: the hidden macPointer
+setting, off by default) the image the guest puts on virtio-gpu's cursor plane
+becomes the Mac's own cursor over the VM's windows (an NSCursor in the
+image's size in points, hot spot from the guest). The Mac's cursor is not
+hidden then; an empty cursor stands in while the guest hides its pointer
+on every output; the arrow comes back when the VM lets go of the pointer.
+The extra outputs' windows (one per display) report their cursor plane
+too. QEMU's own pointer layer (the image drawn where the guest says) stays
+off while the Mac's cursor carries it. Rules: ui/omacvm-hw-cursor.h.
+
+Why: Omarchy draws its pointer into the picture (software cursor), so a
+move waits for a whole guest frame and its present, and where the VM's
+window meets the notch strip, Omanotch or another display one pointer
+hides while the other is still a frame behind (the pointer flickers).
+The guest asks for its hardware cursor only with the app's setting
+(SMBIOS omacvm.hwcursor=1 -> /run/omacvm/host.env -> omacvm_app.lua).
+
+Until the guest's first image after a reset, and with a relative pointer
+(games), nothing changes: the hello of Omarchy's display agent and
+show-cursor decide as before. The full-screen pointer guard sees a shown
+Mac cursor and follows the guest's pointer (as with show-cursor=on).
+Image updates are coalesced: only the newest queued one makes a cursor.
+Known limits: a guest that warps its pointer (Hyprland's warps are off in
+Omarchy) is back under the Mac's cursor at the next motion. Hyprland 0.56.2
+in Omarchy does not use the cursor plane on virtio-gpu yet (no cursor
+command reaches QEMU: Linux hides a virtual GPU's cursor plane from atomic
+clients without DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT, which aquamarine does
+not set), so with it this changes nothing today.
+
+Upstream: not sent (OmacVM's pointer policy; upstream draws the image in
+a layer at the guest's place).
+Test: Tests/display/test-hw-cursor.sh (the rules, build time and CI);
+src/tests/input-latency-vm.sh --hw-cursor (a VM: the image arrives, the
+Mac's cursor carries it, pointer latency). Applies after
+omacvm-cocoa-boot-splash.patch.
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 26d2d12..2c7084e 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -42,6 +42,7 @@
+ #include "ui/kbd-state.h"
+ #include "ui/omacvm-pointer-guard.h"
+ #include "ui/omacvm-pointer-start.h"
++#include "ui/omacvm-hw-cursor.h"
+ #include "ui/omacvm-shortcuts.h"
+ #include "ui/omacvm-gpu-memory.h"
+ #include "hw/core/boards.h"
+@@ -650,6 +651,20 @@ static bool omacvm_map_pointer(int output, double u, double v,
+ static bool omacvm_mac_cursor_hidden;    /* by us, once ([NSCursor hide] counts) */
+ static bool omacvm_test_pointer;         /* OMACVM_TEST_POINTER (test mode only) */
+ static bool omacvm_pointer_debug;        /* OMACVM_POINTER_DEBUG=1 or the test */
++/*
++ * The guest's pointer as the Mac's cursor (ui/omacvm-hw-cursor.h; main
++ * thread): the guest's last image as a Mac cursor, an empty one for while
++ * the guest hides its pointer, and whether one of them is set now (the
++ * arrow comes back when that ends). omacvm_hwc_seq: only the newest queued
++ * image update makes a cursor (atomic; QEMU's thread counts).
++ */
++static OmacVMHwCursor omacvm_hwc;
++static NSCursor *omacvm_hwc_cursor;
++static NSCursor *omacvm_hwc_empty;
++static bool omacvm_hwc_ours;
++static unsigned omacvm_hwc_seq;
++static void omacvm_hwc_apply(bool active);
++static bool omacvm_hwc_on_ours(void);
+ static bool omacvm_guard_place;          /* this event's place is the guard's */
+ /* The displays and our windows the guard last saw (main thread). */
+ static OmacVMGuardScreens omacvm_guard_scr;
+@@ -875,9 +890,12 @@ - (void) selectConsoleLocked:(unsigned int)index
+  */
+ - (void) omacvmUpdateMacCursor
+ {
+-    bool hide = omacvm_pointer_hide_mac(&omacvm_ptr, cursor_hide, isMouseGrabbed,
+-                                        isAbsoluteEnabled);
++    /* OmacVM: while the Mac's cursor carries the guest's pointer it is never hidden. */
++    bool hw = isMouseGrabbed && omacvm_hwc_active(&omacvm_hwc, isAbsoluteEnabled);
++    bool hide = !hw && omacvm_pointer_hide_mac(&omacvm_ptr, cursor_hide, isMouseGrabbed,
++                                               isAbsoluteEnabled);
+ 
++    omacvm_hwc_apply(hw);
+     if (hide == omacvm_mac_cursor_hidden) {
+         return;
+     }
+@@ -987,7 +1005,8 @@ - (void)updateCursorLayout
+         [cursorLayer setPosition:position];
+     }
+ 
+-    [cursorLayer setHidden:!mouseOn];
++    [cursorLayer setHidden:!mouseOn ||
++                           omacvm_hwc_layer_hidden(&omacvm_hwc, isAbsoluteEnabled)];
+     [CATransaction commit];
+ }
+ 
+@@ -1917,6 +1936,9 @@ - (void) handleMouseEvent:(NSEvent *)event
+     if (isAbsoluteEnabled && !omacvm_test_pointer) {
+         omacvm_guard_corners(event);
+     }
++    if (omacvm_hwc_ours) {
++        omacvm_hwc_apply(true);
++    }
+ 
+     with_bql(^{
+         if (isAbsoluteEnabled &&
+@@ -2083,6 +2105,9 @@ - (void) notifyMouseModeChange {
+     }
+ 
+     isAbsoluteEnabled = tIsAbsoluteEnabled;
++    if (omacvm_hwc.on) {
++        [self updateCursorLayout];
++    }
+ 
+     if (isMouseGrabbed) {
+         if (isAbsoluteEnabled) {
+@@ -2203,6 +2228,9 @@ - (void) omacvmHeadEvent:(NSEvent *)event view:(NSView *)view output:(int)output
+     if (isAbsoluteEnabled) {
+         omacvm_guard_corners(event);
+     }
++    if (omacvm_hwc_ours) {
++        omacvm_hwc_apply(true);
++    }
+     with_bql(^{
+         if (button >= 0) {
+             qemu_input_queue_btn(dcl.con, button, down);
+@@ -3334,14 +3362,123 @@ static void cocoa_mouse_set(DisplayChangeListener *dcl, int x, int y, bool on)
+ {
+     dispatch_async(dispatch_get_main_queue(), ^{
+         [cocoaView setMouseX:x y:y on:on];
++        if (omacvm_hwc.on) {
++            omacvm_hwc_show(&omacvm_hwc, 0, on);
++            [cocoaView omacvmUpdateMacCursor];
++        }
+     });
+ }
+ 
++/*
++ * OmacVM: the guest's new pointer image on output o as the Mac's cursor
++ * (main thread, BQL). width: the output's width in guest pixels, view: the
++ * window that shows it (their ratio is the image's size in points). The
++ * image is copied: QEMU frees or reuses the guest's.
++ */
++static void omacvm_hwc_take(int o, QEMUCursor *c, NSView *view, int width)
++{
++    static bool warned;
++    double points = width > 0 && view ? [view bounds].size.width / width : 0;
++    OmacVMHwcImage im;
++    CFDataRef data;
++    CGDataProviderRef provider;
++    CGColorSpaceRef space;
++    CGImageRef cg;
++    NSImage *image;
++    NSCursor *cursor;
++
++    if (!c) {
++        return;
++    }
++    im = omacvm_hwc_image(c->width, c->height, c->hot_x, c->hot_y, points);
++    if (!im.ok) {
++        if (!warned) {
++            warned = true;
++            warn_report("cocoa: the guest's pointer image (%dx%d at %.2f points a pixel) "
++                        "is not used for the Mac's cursor", c->width, c->height, points);
++        }
++        return;
++    }
++    data = CFDataCreate(NULL, (const UInt8 *)c->data, (CFIndex)c->width * c->height * 4);
++    provider = CGDataProviderCreateWithCFData(data);
++    space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
++    /* virtio-gpu's cursor is premultiplied BGRA (Xcursor themes are premultiplied). */
++    cg = CGImageCreate(c->width, c->height, 8, 32, c->width * 4, space,
++                       kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst,
++                       provider, NULL, false, kCGRenderingIntentDefault);
++    CGColorSpaceRelease(space);
++    CGDataProviderRelease(provider);
++    CFRelease(data);
++    if (!cg) {
++        return;
++    }
++    image = [[NSImage alloc] initWithCGImage:cg size:NSMakeSize(im.w, im.h)];
++    CGImageRelease(cg);
++    cursor = [[NSCursor alloc] initWithImage:image hotSpot:NSMakePoint(im.hot_x, im.hot_y)];
++    [image release];
++    [omacvm_hwc_cursor release];
++    omacvm_hwc_cursor = cursor;
++    if (!omacvm_hwc.shape) {
++        info_report("cocoa: the guest's pointer is the Mac's cursor now (%dx%d, output %d)",
++                    c->width, c->height, o);
++    }
++    omacvm_hwc_define(&omacvm_hwc, o);
++    [cocoaView omacvmUpdateMacCursor];
++    [cocoaView updateCursorLayout];     /* QEMU's layer hides now */
++}
++
++/*
++ * The Mac's cursor while it carries the guest's pointer: the guest's image,
++ * or an empty one while the guest hides its pointer; the arrow again when
++ * that ends (main thread). Set again on each motion: AppKit puts its own
++ * cursor back at a window's edge. Test mode never sets the real cursor.
++ */
++static void omacvm_hwc_apply(bool active)
++{
++    static NSCursor *logged;
++    NSCursor *want = nil;
++
++    if (active) {
++        if (!omacvm_hwc_empty) {
++            NSImage *none = [[NSImage alloc] initWithSize:NSMakeSize(1, 1)];
++            omacvm_hwc_empty = [[NSCursor alloc] initWithImage:none hotSpot:NSZeroPoint];
++            [none release];
++        }
++        want = omacvm_hwc_visible(&omacvm_hwc) && omacvm_hwc_cursor ?
++               omacvm_hwc_cursor : omacvm_hwc_empty;
++    }
++    if (!want && !omacvm_hwc_ours) {
++        return;
++    }
++    if (omacvm_pointer_debug && want != logged) {
++        info_report("omacvm-pointer: Mac cursor is %s", !want ? "the arrow again" :
++                    want == omacvm_hwc_empty ? "empty (the guest hides its pointer)" :
++                    "the guest's pointer");
++        logged = want;
++    }
++    omacvm_hwc_ours = want != nil;
++    if (omacvm_test_pointer) {
++        return;     /* test: never the real cursor (the user works meanwhile) */
++    }
++    if (!want) {
++        [[NSCursor arrowCursor] set];
++    } else if ([NSCursor currentCursor] != want && omacvm_hwc_on_ours()) {
++        /* Not over another app's window (Omanotch's strip sets its own). */
++        [want set];
++    }
++}
++
+ static void cocoa_cursor_define(DisplayChangeListener *dcl, QEMUCursor *cursor)
+ {
++    unsigned seq = omacvm_hwc.on ? qatomic_fetch_inc(&omacvm_hwc_seq) + 1 : 0;
++
+     dispatch_async(dispatch_get_main_queue(), ^{
+         BQL_LOCK_GUARD();
+         [cocoaView setCursor:qemu_console_get_cursor(dcl->con)];
++        if (seq && qatomic_read(&omacvm_hwc_seq) == seq) {
++            omacvm_hwc_take(0, qemu_console_get_cursor(dcl->con), cocoaView,
++                            qemu_console_get_width(dcl->con, 0));
++        }
+     });
+ }
+ 
+@@ -5911,6 +6048,23 @@ static bool omacvm_pointer_over_ours(void)
+     return false;
+ }
+ 
++/* The pointer is on one of our windows with nothing above it (any app's). */
++static bool omacvm_hwc_on_ours(void)
++{
++    NSInteger n = [NSWindow windowNumberAtPoint:[NSEvent mouseLocation]
++                    belowWindowWithWindowNumber:0];
++
++    if (n == [[cocoaView window] windowNumber]) {
++        return true;
++    }
++    for (int i = 1; i < omacvm_outputs; i++) {
++        if (omacvm_heads[i].window && n == [omacvm_heads[i].window windowNumber]) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ static bool omacvm_main_full_screen(void)
+ {
+     return notchFull ||
+@@ -6281,8 +6435,43 @@ static void omacvm_head_scanout_flush(DisplayChangeListener *dcl,
+     cocoa_refresh_activity();
+ }
+ 
++/* The guest's pointer on this output (hardware cursor only, see omacvm_hwc_take). */
++static void omacvm_head_mouse_set(DisplayChangeListener *dcl, int x, int y, bool on)
++{
++    int output = ((OmacVMHead *)dcl)->output;
++
++    if (!omacvm_hwc.on) {
++        return;
++    }
++    dispatch_async(dispatch_get_main_queue(), ^{
++        omacvm_hwc_show(&omacvm_hwc, output, on);
++        [cocoaView omacvmUpdateMacCursor];
++    });
++}
++
++static void omacvm_head_cursor_define(DisplayChangeListener *dcl, QEMUCursor *cursor)
++{
++    int output = ((OmacVMHead *)dcl)->output;
++    QemuConsole *con = dcl->con;
++    unsigned seq;
++
++    if (!omacvm_hwc.on) {
++        return;
++    }
++    seq = qatomic_fetch_inc(&omacvm_hwc_seq) + 1;
++    dispatch_async(dispatch_get_main_queue(), ^{
++        BQL_LOCK_GUARD();
++        if (qatomic_read(&omacvm_hwc_seq) == seq) {
++            omacvm_hwc_take(output, qemu_console_get_cursor(con),
++                            omacvm_heads[output].view, qemu_console_get_width(con, 0));
++        }
++    });
++}
++
+ static const DisplayChangeListenerOps omacvm_head_gl_ops = {
+     .dpy_name               = "cocoa-gl-head",
++    .dpy_mouse_set          = omacvm_head_mouse_set,
++    .dpy_cursor_define      = omacvm_head_cursor_define,
+     .dpy_gfx_update         = omacvm_head_gfx_update,
+     .dpy_gfx_switch         = omacvm_head_gfx_switch,
+     .dpy_gfx_check_format   = console_gl_check_format,
+@@ -7092,6 +7281,10 @@ static void omacvm_pointer_reset(void *opaque)
+ {
+     dispatch_async(dispatch_get_main_queue(), ^{
+         omacvm_pointer_guest_reset(&omacvm_ptr);
++        omacvm_hwc_reset(&omacvm_hwc);
++        if (omacvm_hwc.on) {
++            [cocoaView updateCursorLayout];
++        }
+         [cocoaView omacvmUpdateMacCursor];
+     });
+ }
+@@ -7138,8 +7331,10 @@ static void omacvm_pointer_init(void)
+ {
+     const char *v = getenv("OMACVM_POINTER_START");
+     const char *test = getenv("OMACVM_TEST_POINTER");
++    const char *hw = getenv("OMACVM_HW_CURSOR");
+ 
+     omacvm_ptr.off = v && !strcmp(v, "0");
++    omacvm_hwc.on = hw && !strcmp(hw, "1");
+     omacvm_test_pointer = test && atoi(test) > 0 && omacvm_test_mode();
+     omacvm_pointer_debug = omacvm_test_pointer ||
+                            (getenv("OMACVM_POINTER_DEBUG") &&
+@@ -7148,6 +7343,10 @@ static void omacvm_pointer_init(void)
+     info_report("cocoa: pointer: %s", omacvm_ptr.off ?
+                 "taken on enter or click (OMACVM_POINTER_START=0)" :
+                 "taken without a click when it is on the VM");
++    if (omacvm_hwc.on) {
++        info_report("cocoa: pointer: the Mac's cursor carries the guest's pointer once the "
++                    "guest puts it on the cursor plane (OMACVM_HW_CURSOR=1, experimental)");
++    }
+     if (omacvm_test_pointer) {
+         int ticks = atoi(test) * 4;
+         dispatch_async(dispatch_get_main_queue(), ^{ omacvm_test_motion(0, ticks); });

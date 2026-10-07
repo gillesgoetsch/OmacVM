@@ -505,6 +505,7 @@ verify_runtime_tree() {
     OMARCHY_SDL_INPUT_DEVICE_NAME \
     OMARCHY_SDL_OUTPUT_DEVICE_NAME \
     'HVF free-page backing replacement failed' \
+    'highmem-mmio-size cannot be smaller than 1 GiB' \
     guest_owner_uid \
     guest_owner_gid; do
     LC_ALL=C grep -aFq "$marker" "$qemu" || \

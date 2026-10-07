@@ -1,0 +1,236 @@
+virglrenderer: bind a GL program only when it changes
+
+What: vrend_use_program() remembers, per sub context (one GL context each),
+which program or pipeline is bound and skips the GL calls when the same one is
+asked for again. Anything that may change bindings behind its back drops every
+remembered binding: deleting a program or pipeline (names get reused), the GL
+blitter, and binds from paths that do not know the current sub context
+(transfers, read-back). OMACVM_VIRGL_PROGRAM_CACHE=0 binds on every draw again.
+Why: vrend_draw_vbo calls vrend_use_program on every draw, so a WebGL page that
+draws each object on its own (WebGL Aquarium: one draw per fish) binds the same
+program hundreds of thousands of times a second. Apple's GL treats each
+glUseProgram as a program change and rebuilds its draw state on the next draw:
+measured on an M4, 0.39 us extra per draw (the draw rate drops 38 %).
+Test: Tests/virgl/test-program-binds.c (colours after program switches, the
+same program with new constants, a read-back, a destroyed shader, two sub
+contexts; the cache really skips).
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -921,6 +921,14 @@
+ 
+    struct pipe_clip_state ucp_state;
+ 
++   /* OmacVM: the program or pipeline this sub context's GL context has bound, so
++    * vrend_use_program() skips binding it again (Apple's GL rebuilds its program
++    * state on every glUseProgram, even for the bound program). Valid while
++    * bound_prog_gen == vrend_program_bind_gen. */
++   uint64_t bound_prog_gen;
++   GLuint bound_prog_id;
++   bool bound_prog_is_pipeline;
++
+    bool depth_test_enabled;
+    bool alpha_test_enabled;
+    bool stencil_test_enabled;
+@@ -1542,6 +1550,20 @@
+    virgl_debug("%s: %d GLSL:\n", prefix, shader->id);
+    strarray_dump_with_line_numbers(&shader->glsl_strings);
+    virgl_debug("\n");
++}
++
++/* OmacVM: bumped whenever program bindings may have changed outside
++ * vrend_use_program() (a program or pipeline deleted, the blitter, a bind in an
++ * unknown context); it makes every sub context's bound_prog stale. Starts at 1 so
++ * a zeroed sub context never matches; 64 bits never wrap. Render thread only. */
++static uint64_t vrend_program_bind_gen = 1;
++
++/* OMACVM_VIRGL_PROGRAM_CACHE=0: bind the program on every draw again (as before). */
++static bool vrend_program_cache_on = true;
++
++static void vrend_program_bindings_changed(void)
++{
++   vrend_program_bind_gen++;
+ }
+ 
+ static void vrend_shader_destroy(struct vrend_shader *shader)
+@@ -1549,8 +1571,10 @@
+    list_for_each_entry_safe(struct vrend_linked_shader_program, ent, &shader->programs, sl[shader->sel->type])
+       vrend_destroy_program(ent);
+ 
+-   if (shader->sel->sinfo.separable_program)
++   if (shader->sel->sinfo.separable_program) {
+        glDeleteProgram(shader->program_id);
++       vrend_program_bindings_changed();
++   }
+    glDeleteShader(shader->id);
+    strarray_free(&shader->glsl_strings, true);
+    free(shader);
+@@ -1717,12 +1741,22 @@
+       gltype == GL_TIME_ELAPSED;
+ }
+ 
+-static void vrend_use_program(struct vrend_linked_shader_program *program)
++/* sub_ctx is the sub context whose GL context is current, or NULL when the caller
++ * cannot tell: then the program is always bound and every cache is dropped. */
++static void vrend_use_program(struct vrend_sub_context *sub_ctx,
++                              struct vrend_linked_shader_program *program)
+ {
++   bool is_pipeline = program && program->is_pipeline;
+    GLuint id = !program ? 0 :
+                           program->is_pipeline ? program->id.pipeline :
+                                                  program->id.program;
+-   if (program && program->is_pipeline) {
++
++   if (vrend_program_cache_on && sub_ctx &&
++       sub_ctx->bound_prog_gen == vrend_program_bind_gen &&
++       sub_ctx->bound_prog_id == id && sub_ctx->bound_prog_is_pipeline == is_pipeline)
++      return;
++
++   if (is_pipeline) {
+       glUseProgram(0);
+       glBindProgramPipeline(id);
+    } else {
+@@ -1730,6 +1764,14 @@
+           glBindProgramPipeline(0);
+        glUseProgram(id);
+    }
++
++   if (sub_ctx) {
++      sub_ctx->bound_prog_gen = vrend_program_bind_gen;
++      sub_ctx->bound_prog_id = id;
++      sub_ctx->bound_prog_is_pipeline = is_pipeline;
++   } else {
++      vrend_program_bindings_changed();
++   }
+ }
+ 
+ static void vrend_depth_test_enable(struct vrend_sub_context *sub_ctx, bool depth_test_enable)
+@@ -2312,6 +2354,7 @@
+       if (vrend_report_shader_failure(ctx, "compute link"))
+          vrend_shader_dump(cs);
+       glDeleteProgram(prog_id);
++      vrend_program_bindings_changed();
+       free(sprog);
+       return NULL;
+    }
+@@ -2321,7 +2364,7 @@
+    sprog->id.program = prog_id;
+    list_addtail(&sprog->head, &ctx->sub->cs_programs);
+ 
+-   vrend_use_program(sprog);
++   vrend_use_program(ctx->sub, sprog);
+ 
+    vrend_park_blocks(&prog_id, 1);
+    bind_sampler_locs(sprog, PIPE_SHADER_COMPUTE, 0);
+@@ -2489,6 +2532,7 @@
+       } else {
+          glDeleteProgram(prog_id);
+       }
++      vrend_program_bindings_changed();
+ 
+       vrend_remember_failed_program(vs, fs, gs, tcs, tes, sprog->dual_src_linked);
+       free(sprog);
+@@ -2553,7 +2597,7 @@
+    sprog->ubo_sysval_buffer_id = GL_INVALID_INDEX;
+    sprog->sysvalue_data_cookie = UINT32_MAX;
+ 
+-   vrend_use_program(sprog);
++   vrend_use_program(sub_ctx, sprog);
+ 
+    for (enum pipe_shader_type shader_type = PIPE_SHADER_VERTEX;
+         shader_type <= last_shader;
+@@ -2657,6 +2701,7 @@
+        glDeleteProgramPipelines(1, &ent->id.pipeline);
+    else
+        glDeleteProgram(ent->id.program);
++   vrend_program_bindings_changed();
+ 
+    list_del(&ent->head);
+ 
+@@ -2703,9 +2748,9 @@
+ 
+    if (has_feature(feat_transform_feedback2))
+       glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, obj->id);
+-   vrend_use_program(obj->begin_prog);
++   vrend_use_program(sub_ctx, obj->begin_prog);
+    glEndTransformFeedback();
+-   vrend_use_program(sub_ctx->prog);
++   vrend_use_program(sub_ctx, sub_ctx->prog);
+    if (has_feature(feat_transform_feedback2))
+       glBindTransformFeedback(GL_TRANSFORM_FEEDBACK,
+                               sub_ctx->current_so ? sub_ctx->current_so->id : 0);
+@@ -5449,7 +5494,7 @@
+    if (sub_ctx->viewport_state_dirty)
+       vrend_update_viewport_state(sub_ctx);
+ 
+-   vrend_use_program(NULL);
++   vrend_use_program(sub_ctx, NULL);
+ 
+    glDisable(GL_SCISSOR_TEST);
+ 
+@@ -6519,7 +6564,7 @@
+           }
+ 
+           if (need_rebind) {
+-             vrend_use_program(prog);
++             vrend_use_program(sub_ctx, prog);
+              rebind_ubo_and_sampler_locs(prog, last_shader);
+           }
+       }
+@@ -7126,7 +7171,7 @@
+       return 0;
+    }
+ 
+-   vrend_use_program(sub_ctx->prog);
++   vrend_use_program(sub_ctx, sub_ctx->prog);
+ 
+    if (has_feature(feat_draw_parameters) &&
+        sub_ctx->prog->reads_drawid &&
+@@ -7345,7 +7390,7 @@
+       return;
+    }
+ 
+-   vrend_use_program(sub_ctx->prog);
++   vrend_use_program(sub_ctx, sub_ctx->prog);
+ 
+    vrend_set_active_pipeline_stage(sub_ctx->prog, PIPE_SHADER_COMPUTE);
+    vrend_draw_bind_ubo_shader(sub_ctx, PIPE_SHADER_COMPUTE, 0);
+@@ -8913,6 +8958,12 @@
+    vrend_clicbs = cbs;
+    vrend_resource_budget_init();
+ 
++   const char *prog_cache = getenv("OMACVM_VIRGL_PROGRAM_CACHE");
++   vrend_program_cache_on = !(prog_cache && !strcmp(prog_cache, "0"));
++   virgl_info("program binds: %s\n", vrend_program_cache_on ?
++              "a draw binds its program only when it changed" :
++              "every draw binds its program (OMACVM_VIRGL_PROGRAM_CACHE=0)");
++
+    /* Give some defaults to be able to run the tests */
+    vrend_state.max_texture_2d_size =
+          vrend_state.max_texture_3d_size =
+@@ -11429,7 +11480,7 @@
+       uint32_t stride = info->stride;
+       uint32_t layer_stride = info->layer_stride;
+ 
+-      vrend_use_program(NULL);
++      vrend_use_program(NULL, NULL);
+ 
+       if (!stride)
+          stride = util_format_get_nblocksx(res->base.format, u_minify(res->base.width0, info->level)) * elsize;
+@@ -11863,7 +11914,7 @@
+    int row_stride = info->stride / elsize;
+    GLint old_fbo;
+ 
+-   vrend_use_program(NULL);
++   vrend_use_program(NULL, NULL);
+ 
+    enum virgl_formats fmt = res->base.format;
+ 
+@@ -13469,6 +13520,7 @@
+       VREND_DEBUG(dbg_blit, ctx, "BLIT_INT: use GL fallback\n");
+       vrend_renderer_blit_gl(ctx, src_res, dst_res, &blit_info);
+       vrend_sync_make_current(ctx->sub->gl_context);
++      vrend_program_bindings_changed();
+    }
+ 
+    if (blit_info.src_view != src_res->gl_id)

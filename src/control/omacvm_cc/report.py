@@ -346,8 +346,26 @@ NO_VALUE = {"", "none", "null", "(null)", "nil", "<null>", "true", "false", "yes
 def not_a_secret(name: str, v: str) -> bool:
     if v.casefold() in NO_VALUE:
         return True
+    # The shell's working folder in sudo's and the journal's lines
+    # ("PWD=/home/x ; USER=root"): a path, no password (homes go apart).
+    if name == "PWD" and re.fullmatch(r"(?:~|/)[\w./~-]*", v):
+        return True
     # A key's file, not the key ("key: /home/x/.ssh/id_ed25519"; homes go apart).
     return name.casefold().endswith("key") and re.fullmatch(r"(?:~|\.{0,2})/[\w./~-]*", v) is not None
+
+
+def sub_changed(rx: re.Pattern, repl, text: str) -> tuple:
+    """rx.subn, counting only the matches the replacement changed: a match
+    left as it is ("PWD=/", "key: none") is not something taken out."""
+    n = 0
+
+    def one(m: re.Match) -> str:
+        nonlocal n
+        r = repl(m) if callable(repl) else m.expand(repl)
+        if r != m.group(0):
+            n += 1
+        return r
+    return rx.sub(one, text), n
 
 
 PATTERNS = [
@@ -650,7 +668,7 @@ def redact(text: str, known: Known, mac_addrs: dict | None = None) -> tuple[str,
     bump("home", n)
     # Keys, URL logins and e-mail addresses whole, before their parts match a name.
     for kind, rx, repl in PATTERNS[:5]:
-        text, n = rx.subn(repl, text)
+        text, n = sub_changed(rx, repl, text)
         bump(kind, n)
     # The names in the Bridge's own log lines, known or not.
     text, c = bridge_lines(text)
@@ -675,7 +693,7 @@ def redact(text: str, known: Known, mac_addrs: dict | None = None) -> tuple[str,
     text, n = device_owners(text)
     bump("user", n)
     for kind, rx, repl in PATTERNS[5:]:
-        text, n = rx.subn(repl, text)
+        text, n = sub_changed(rx, repl, text)
         bump(kind, n)
 
     def b64(m: re.Match) -> str:

@@ -30,7 +30,7 @@ Small things that cost time the first time.
   screensaver and lock can also start in the middle of a run.
 - **Fix:** always benchmark Google Chrome, on the Mac and in the VM, with the
   same flags Omarchy uses. Turn the screensaver and lock off
-  (`omacvm disable idle-lock`).
+  (`omacvm enable no-idle-lock`).
 - **Where:** `src/bench/install-chrome.sh` (Chrome for Linux ARM in the VM),
   `src/bench/bench.sh`. The full method: [benchmarks/](../benchmarks/README.md).
 

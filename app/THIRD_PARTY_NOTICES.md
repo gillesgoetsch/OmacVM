@@ -55,3 +55,8 @@ OmacVM.app's own code is MIT (`LICENSE`). It ships or uses:
   On Venus VMs `src/app/guest/venus/install.sh` downloads Mesa 26.2.4 (MIT,
   archive.mesa3d.org) and builds it in the VM with OmacVM's patches (MIT, in
   `src/app/guest/venus/patches`).
+
+- **JetBrains Mono** 2.305 (github.com/JetBrains/JetBrainsMono), SIL Open
+  Font License 1.1, (c) 2020 The JetBrains Mono Project Authors: the Touch
+  ID panel's font, in Contents/Resources/fonts unchanged with its licence
+  (`OFL.txt`).

@@ -139,18 +139,13 @@ final class StripView: NSView {
             guestPerPoint = k
             DispatchQueue.main.async { [weak self] in self?.onGuestScaleChange?() }
         }
-        // Full width, the height following the image's aspect (it equals the
-        // strip once the guest has sized NOTCH to it), centred. A bar taller
-        // than the strip (its minimum height) is shrunk to fit instead.
-        // A few guest px too tall only means the hidden output was rounded up
-        // to whole pixels (fractional scales): keep the full width and trim
-        // that padding top and bottom. Only a really taller bar is shrunk.
-        let excess = barHeight - bounds.height * k
-        drawScale = bounds.height > 0 && excess > 4 ? max(k, barHeight / bounds.height) : k
+        let place = StripLayout.place(barWidth: barWidth, barHeight: barHeight,
+                                      width: bounds.width, height: bounds.height)
+        drawScale = place.scale
+        drawLeft = place.left
+        drawTop = place.top
         let w = barWidth > 0 ? barWidth / drawScale : bounds.width
         let h = barHeight / drawScale
-        drawLeft = ((bounds.width - w) / 2).rounded(.down)
-        drawTop = ((bounds.height - h) / 2).rounded(.down)
         // Layer geometry is bottom-left based even in a flipped view.
         barLayer.frame = CGRect(x: drawLeft, y: bounds.height - drawTop - h, width: w, height: h)
         lockLayer.frame = bounds
@@ -210,7 +205,18 @@ final class StripView: NSView {
         // (the guest draws its own cursor). Parallels does not reliably reset
         // the cursor when the pointer comes from another app's window, which
         // would leave a macOS arrow on top of the guest cursor.
-        if let screenPoint = window?.convertPoint(toScreen: event.locationInWindow),
+        // Down: the strip is only shown right on top of the VM's full-screen
+        // window (StripDetector), so that is where the pointer is now. The
+        // window list is not asked: in macOS's full screen its (hidden) menu
+        // bar window covers the strip and, with the 2-point slack, the first
+        // row below it, so the test said "not the VM" and a macOS arrow stayed
+        // over the guest's own cursor until the VM app reset it.
+        // (Only straight down out of the strip's bottom edge: sideways may be
+        // another display that shows macOS.)
+        let straightDown = p.y >= bounds.height - 1 && p.x >= 0 && p.x < bounds.width
+        if straightDown, activeOwner != nil {
+            BackgroundCursor.transparent.set()
+        } else if let screenPoint = window?.convertPoint(toScreen: event.locationInWindow),
            let owner = activeOwner, StripView.isOverVMWindow(screenPoint, vmOwners: [owner]) {
             BackgroundCursor.transparent.set()
         } else {

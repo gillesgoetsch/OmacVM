@@ -9,12 +9,18 @@ Before=display-manager.service getty@tty1.service
 
 [Service]
 ExecStart=/usr/local/bin/omacvm-vdecd
-# Exit 0 = no VA-API decoding here (another hypervisor, or OMACVM_VIDEO_DECODE=0
-# on the Mac): stay down, Chromium decodes on the CPU. Exit 3 = the module
-# loaded is from another build: it loads at the next VM start.
+# Exit 0 = VA-API offers no decoding (OMACVM_VIDEO_DECODE=0 on the Mac): stay
+# down, Chromium decodes on the CPU. Exit 3 = the module loaded is from
+# another build: it loads at the next VM start. Exit 127 = a library it links
+# to is gone: the pacman hook (vdecd.sh hook) or omacvm apply builds it again
+# and starts it. Exit 4 = the GPU is not usable (a broken Mesa): the daemon
+# waits longer each time before it exits (2 s up to 2 minutes; it never hits
+# the start limit) and the pacman hook starts it at once after an update.
+# Only set up for OmacVM.app (install.sh): another hypervisor's GPU would be
+# tried again every 2 minutes.
 Restart=on-failure
 RestartSec=2
-RestartPreventExitStatus=3
+RestartPreventExitStatus=3 127
 # A daemon stuck as a whole (the GPU, VA-API) stops pinging: killed and
 # restarted, the module fails the open videos and apps decode on the CPU.
 WatchdogSec=5
@@ -24,6 +30,8 @@ User=omacvm-vdec
 Group=omacvm-vdec
 SupplementaryGroups=render
 RuntimeDirectory=omacvm-vdec
+# Keeps the GPU try count across restarts (the daemon removes stale status).
+RuntimeDirectoryPreserve=restart
 Environment=LIBVA_DRIVER_NAME=omacvm LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri MESA_SHADER_CACHE_DISABLE=true
 # It parses video from web pages: keep it small. Devices: its control
 # device and the render node, nothing else.

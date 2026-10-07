@@ -35,6 +35,20 @@ mac_helper_feature() {
   esac
 }
 
+# media_keys_state LINE: the Bridge's last "media keys: event tap|waiting|cannot"
+# log line -> "ok|warn|fail<TAB>detail". The tap is created again whenever an
+# OmacVM VM comes to the front or macOS invalidated it: that is how it works,
+# not a failure. A failed re-creation keeps the old tap (works, so warn).
+media_keys_state() {
+  local m=${1#media keys: }
+  case $m in
+    "event tap installed"*|"event tap created again"*) printf 'ok\tevent tap installed\n' ;;
+    *"keeping the old one"*) printf 'warn\t%s\n' "$m" ;;
+    "") printf 'fail\tno event tap yet\n' ;;
+    *) printf 'fail\t%s\n' "$m" ;;
+  esac
+}
+
 # cli_for_bridge OMACVM: true when OMACVM (a checkout's omacvm, resolved) is
 # the one the omacvm command runs: install.sh links it into one of these. So
 # another clone or worktree that runs src/mac/install.sh never becomes what
@@ -50,6 +64,21 @@ cli_for_bridge() {
     [[ $(realpath "$b" 2>/dev/null) == "$1" ]] && return 0
   done
   (( ! links ))
+}
+
+# cli_file_app OMACVM: OmacVM.app's copy of omacvm (OMACVM, inside the app)
+# becomes what the Bridge runs, unless the file names a checkout that is still
+# there (a CLI install keeps its own). So the app's setup, and each app start
+# (app/app/Sources/OmacVM/ControlCLI.swift, the same rule), point it at the
+# current app after an update or a move.
+cli_file_app() {
+  local f="$OMA_SUPPORT/cli" cur
+  [[ $1 == /*/Contents/Resources/omacvm/omacvm && -f $1 ]] || return 0
+  cur=$(head -n1 "$f" 2>/dev/null || true)
+  [[ $cur == "$1" ]] && return 0
+  if [[ -n $cur && -f $cur && $cur != */Contents/Resources/omacvm/omacvm ]]; then return 0; fi
+  mkdir -p "$OMA_SUPPORT"
+  (umask 077; printf '%s\n' "$1" > "$f.new" && mv -f "$f.new" "$f")
 }
 
 PRLCTL=${PRLCTL:-/usr/local/bin/prlctl}   # tests: a stand-in
@@ -124,6 +153,18 @@ VM_KEYS="$OMA_SUPPORT/vm-keys"
 vm_key_file() { printf '%s/%s' "$VM_KEYS" "$(printf '%s/%s' "$1" "$2" | shasum -a 256 | cut -c1-32)"; }
 vm_key_ensure() {   # TYPE NAME [new] -> the key's file
   local f; f=$(vm_key_file "$1" "$2")
+  if [[ ${3:-} == new || ! -s $f ]]; then
+    mkdir -p "$VM_KEYS" && chmod 700 "$VM_KEYS"
+    (umask 077; openssl rand -hex 32 > "$f.tmp") && mv -f "$f.tmp" "$f"
+  fi
+  echo "$f"
+}
+
+# Touch ID's key for one VM (ADR 0041), beside its control key: the Bridge
+# shows a Touch ID dialog only for a VM whose request carries it. In the VM
+# it is root's alone (/etc/omacvm/touchid-key). Gone when the feature is off.
+touchid_key_ensure() {   # TYPE NAME [new] -> the key's file
+  local f; f=$(vm_key_file "$1" "$2").touchid
   if [[ ${3:-} == new || ! -s $f ]]; then
     mkdir -p "$VM_KEYS" && chmod 700 "$VM_KEYS"
     (umask 077; openssl rand -hex 32 > "$f.tmp") && mv -f "$f.tmp" "$f"

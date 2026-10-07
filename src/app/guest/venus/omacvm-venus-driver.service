@@ -10,6 +10,10 @@ ConditionPathExists=/usr/local/share/omacvm/app/guest/venus/vulkan-virtio.sh
 
 [Service]
 Type=oneshot
+# Only when the VM's Graphics gives it Vulkan or the vulkan feature is on
+# (app/guest/install.sh enables the timer only then; this covers a setting
+# changed since).
+ExecCondition=/bin/sh -c 'grep -qxE "OMACVM_GRAPHICS=vulkan|OMACVM_FEATURE_vulkan=on" /etc/omacvm/env'
 Environment=OMACVM_VENUS_BOOT=1
 ExecStart=/usr/local/share/omacvm/app/guest/venus/vulkan-virtio.sh
 Nice=19

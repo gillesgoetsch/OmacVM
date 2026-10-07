@@ -16,6 +16,7 @@ we found along the way. To set OmacVM up, start with the
 | [routes/parallels.md](routes/parallels.md) | Everything about the Parallels route: editions, the Cmd setting, what Parallels does itself |
 | [architecture/graphics.md](architecture/graphics.md) | OmacVM.app's graphics and display stack: the chain, threads, fences, memory, settings, security, tests; what is shipped, built or planned |
 | [adr/](adr/) | Decision records for the graphics stack (IOSurface present, async fences, Venus, MoltenVK/KosmicKrisp, VideoToolbox, a window per display) |
+| [usb.md](usb.md) | USB devices in OmacVM.app: which ones a VM can have, which stay with the Mac and why |
 | [prebuilt.md](prebuilt.md) | Prebuilt VMs: using one, downloading one by hand, how they are made and checked, licences |
 | [benchmarks/README.md](benchmarks/README.md) | How we benchmark the routes against the Mac, step by step, and the results so far |
 | [troubleshooting.md](troubleshooting.md) | Common problems and what to do, then the non-obvious problems we hit, each as symptom, cause, fix and where in the code |

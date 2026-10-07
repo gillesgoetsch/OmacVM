@@ -55,9 +55,9 @@ Return to confirm):
    | The Mac's clock: at the far right of the bar, in your Mac's menu bar format | on |
    | The Mac's camera as *Mac Camera*, on only while a Linux app uses it (UTM and Fusion: through OmacVM Bridge, also with the Bridge off) | on |
    | External display brightness: the brightness keys (and Omarchy's own) set the external display the VM is on, over DDC/CI (needs the Bridge) | on |
-   | Omarchy's own screensaver and lock after idle (off: the Mac's lock protects the VM) | on |
+   | Screensaver and lock disabled: Omarchy's own screensaver and lock after idle stay off, the Mac's lock protects the VM | off |
    | Autologin | off |
-   | Memory-optimized kernel: Arch Linux ARM's kernel rebuilt with transparent huge pages and MGLRU (its own has neither), for memory-heavy work; adds about 10 minutes to the build | off |
+   | Memory-optimized kernel: Arch Linux ARM's kernel rebuilt with transparent huge pages and MGLRU (its own has neither), for memory-heavy work; a kernel build in the VM: about 10 minutes with 16 CPUs, over an hour with 4 | off |
    | The OmacVM control centre: `omacvm` in Omarchy, also in the Omarchy menu and the bar | on |
 
 5. **Your user name, full name and password.** Omarchy's own first-boot setup
@@ -74,6 +74,33 @@ build waits.
 `omacvm build --dry-run` asks everything and stops at the summary;
 `omacvm build --help` lists the options for unattended builds. Your keyboard
 layout, timezone and language come from the Mac.
+
+## Behind a proxy
+
+When the Mac goes through a proxy, the build passes it on to the VM; nothing
+changes without one.
+
+- **Where it comes from**: `http_proxy`, `https_proxy`, `all_proxy` and
+  `no_proxy` (either case) in the terminal you build from, else the fixed
+  proxies in System Settings > Network > Details > Proxies (Web, Secure web,
+  SOCKS, and the bypass list). `scutil --proxy` shows what macOS has.
+  `OMACVM_PROXY=off omacvm build ...` builds without it.
+- **In the VM**: the same variables in `/etc/environment.d/90-omacvm-proxy.conf`
+  (the desktop), `/etc/profile.d/omacvm-proxy.sh` (shells) and
+  `/etc/sudoers.d/05-omacvm-proxy` (sudo keeps them). The build's pacman, git
+  and the Omarchy installer use them. Delete the three files to stop.
+- **A proxy on the Mac's 127.0.0.1** (Clash, V2Ray, Surge and the like):
+  OmacVM.app's VMs reach it as `10.0.2.2:<port>`; the app lets that port
+  through at the build and at every start (`qemu.log`: "Mac proxy"). On the
+  fast network, and in Parallels, UTM and Fusion, the VM cannot reach the
+  Mac's 127.0.0.1: let the proxy accept LAN connections and set
+  `http_proxy`/`https_proxy` to the Mac's address before building.
+- **Not read**: proxy auto-config (PAC) files and automatic discovery (WPAD).
+  The build says so; set `http_proxy` and `https_proxy` in the terminal.
+- **Flaky connections**: while Omarchy installs, pacman and `git clone` try
+  a failed download again (3 tries, "Operation too slow" included).
+- **Proxy changed later**: edit the three files in the VM. The app follows
+  a new port on the Mac by itself from the next start.
 
 ## After the build
 
@@ -108,7 +135,11 @@ omacvm disable gestures --vm "Omarchy ARM"
 ```
 
 Or in Omarchy itself: `omacvm` (or OmacVM in the Omarchy menu, or the OmacVM
-item in the bar) opens the control centre. Space switches the feature under
+item in the bar) opens the control centre. From the Mac, *Features…* in
+OmacVM.app's menu (beside the Apple menu, while the VM runs) or
+`omacvm features --vm NAME --in-vm` opens it on the VM's desktop (one
+window, brought to the front if it is open already; someone must be logged
+in there). Space switches the feature under
 the cursor; the Mac does the same as `omacvm enable/disable` there, and macOS
 still asks for its permissions on the Mac. `r` repairs the feature under the
 cursor (only that one). If a change fails, the VM goes back to what it had
@@ -119,8 +150,8 @@ default yes; `--yes` takes the default without asking).
 Every feature can be switched on or off later, one at a time, and the VM keeps
 your choices across updates. OmacVM installs what a feature needs on the Mac
 too, and switching one takes well under a minute (the memory-optimized kernel
-takes about 10 minutes the first time). A feature that needs another brings it
-along: the scroll momentum needs the trackpad gestures, the wallpaper needs
+is a kernel build: about 10 minutes with 16 CPUs, over an hour with 4). A
+feature that needs another brings it along: the scroll momentum needs the trackpad gestures, the wallpaper needs
 the Bridge.
 
 Off means off: nothing of the feature keeps running in the VM, the VM no
@@ -176,6 +207,12 @@ turns the checks and the update notice off entirely: no marks and no prompts,
 and an update is installed only right after `c` checked again. (Releases do
 not carry their signed update list yet: until then the control centre says
 "no release key yet" and `omacvm update` on the Mac is the way.)
+
+The VM's own system (Omarchy and its Arch packages) is a separate update:
+`o` on the same screen, or `omacvm update-system` in the VM. It runs
+`omarchy update` in its own window and then checks that the graphics still
+start, before you restart. Do not run `pacman -Sy` alone: a partial update
+can leave the VM at a black screen.
 
 ## Check
 

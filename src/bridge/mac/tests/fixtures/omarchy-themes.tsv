@@ -1,0 +1,23 @@
+# Omarchy 4.0.3's stock themes (colors.toml): name, background, foreground, accent, red, mode, green, muted. For the Touch ID panel's theme tests.
+catppuccin-latte	#eff1f5	#4c4f69	#1e66f5	#d20f39	light	#40a02b	#acb0be
+catppuccin	#1e1e2e	#cdd6f4	#89b4fa	#f38ba8	dark	#a6e3a1	#585b70
+ethereal	#060B1E	#ffcead	#7d82d9	#ED5B5A	dark	#92a593	#6d7db6
+everforest	#2d353b	#d3c6aa	#7fbbb3	#e67e80	dark	#a7c080	#475258
+flexoki-light	#FFFCF0	#100F0F	#205EA6	#D14D41	light	#879A39	#B7B5AC
+gruvbox	#282828	#d4be98	#7daea3	#ea6962	dark	#a9b665	#665c54
+hackerman	#0B0C16	#ddf7ff	#82FB9C	#50f872	dark	#4fe88f	#2d3450
+kanagawa	#1f1f28	#dcd7ba	#dcd7ba	#c34043	dark	#76946a	#54546D
+last-horizon	#0c0b0c	#FAFCFB	#b59790	#c38b7b	dark	#87a9b0	#584e51
+lumon	#16242d	#d6e2ee	#8bc9eb	#4d86b0	dark	#5e95bc	#304860
+lupine	#fafafa	#212121	#3264eb	#c900c4	light	#4a2fd0	#9e9e9e
+matte-black	#121212	#bebebe	#e68e0d	#D35F5F	dark	#FFC107	#333333
+miasma	#222222	#c2c2b0	#78824b	#685742	dark	#5f875f	#666666
+nord	#2e3440	#d8dee9	#81a1c1	#bf616a	dark	#a3be8c	#4c566a
+osaka-jade	#111c18	#C1C497	#509475	#FF5345	dark	#549e6a	#53685B
+retro-82	#05182e	#f6dcac	#faa968	#f85525	dark	#028391	#2a6b78
+ristretto	#2c2525	#e6d9db	#f38d70	#fd6883	dark	#adda78	#72696a
+rose-pine	#faf4ed	#575279	#56949f	#b4637a	light	#286983	#cecacd
+solitude	#101315	#cacccc	#798186	#565d60	dark	#9fa5a9	#4b4e55
+tokyo-night	#1a1b26	#a9b1d6	#7aa2f7	#f7768e	dark	#9ece6a	#414868
+vantablack	#000000	#ffffff	#8d8d8d	#a4a4a4	dark	#b6b6b6	#7a7a7a
+white	#ffffff	#000000	#6e6e6e	#2a2a2a	light	#3a3a3a	#808080

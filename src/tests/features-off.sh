@@ -29,11 +29,13 @@ battery:battery/guest/install.sh off on every apply; OmacVM.app does not serve t
 external-brightness:install.sh removes OmacVM's ddcutil on every apply; apply sets the Bridge's external_brightness false, so no DDC (src/tests/external-brightness.sh)
 chromium-video:vdec/guest/install.sh off on every apply of an app VM; never on the other routes; nothing of it talks to the Mac
 control-centre:control/guest/install.sh off removes omacvm, its check socket, menu row and bar item (install.sh runs it while any of them is there); nothing left in the VM asks the Mac
-idle-lock:nothing of it talks to the Mac
+no-idle-lock:nothing of it talks to the Mac; off is Omarchy's own screensaver and lock
 autologin:nothing of it talks to the Mac
 thp-kernel:nothing of it talks to the Mac
 fast-network:apply takes the Mac's service off when no VM has it (src/net/mac/test.sh)
 vulkan:apply removes the VM's vulkan file (no Venus device from the next start) and venus/install.sh --remove; nothing of it talks to the Mac (src/tests/vulkan-feature.sh)
+x86-apps:x86/guest/install.sh off removes OmacVM's box64 package and its binfmt rule on every apply; nothing of it talks to the Mac (src/tests/x86-apps.sh)
+touch-id:apply deletes the Mac's Touch ID key (the Bridge then says off, no dialog); install.sh runs touchid.sh off: PAM lines, polkit rule, drop-in and the VM's keys gone (src/tests/touchid-client.sh)
 "
 while IFS=$'\t' read -r name _; do
   [[ -z $name || $name == \#* ]] && continue
@@ -63,6 +65,8 @@ run_off() {   # FUNCTION [SESSION=0|1] [SERVICE=enabled|active|none]
     chown() { :; }
     restart_shell_later() { echo "restart-shell" >> "$CALLS"; }
     /repo/guest/omanotch-notifications.sh() { :; }
+    # /repo's Python helpers run from this checkout.
+    SRC=$R/src; python3() { echo "python3 $*" >> "$CALLS"; command python3 "${@/#\/repo\//$SRC/}"; }
     # shellcheck source=../guest/off.sh
     source "$R/src/guest/off.sh"
     R=/repo   # this copy of src/ in the VM
@@ -94,19 +98,23 @@ expect "omanotch off, queued: disabled" yes "$(called "systemctl --global disabl
 
 # Omanotch built and running, nobody logged in (its uninstall needs the session).
 reset_root
-file "$H/.local/bin/notchcast"; file "$H/.config/systemd/user/notchcast.service"
+file "$H/.local/bin/notchcast"; file "$H/.local/bin/omanotch-display-panel"; file "$H/.config/systemd/user/notchcast.service"
 file "$H/.config/systemd/user/notchcast.service.d/omacvm-host.conf"
 link "$H/.config/systemd/user/graphical-session.target.wants/notchcast.service" "$H/.config/systemd/user/notchcast.service"
-file "$H/.config/hypr/notchbar.lua"; file "$H/.local/state/omacvm/omanotch"
+file "$H/.config/hypr/notchbar.lua"; file "$H/.local/state/omacvm/omanotch"; file "$H/.local/state/omanotch/expect"
 file /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook
+file "$H/.config/omarchy/plugins/omanotch.monitor/manifest.json" '{"id": "omanotch.monitor", "omarchy": {"clonedFrom": "omarchy.monitor"}}'
+file "$H/.config/omarchy/shell.json" '{"bar": {"layout": {"right": [{"id": "omanotch.monitor"}, {"id": "omarchy.clock"}]}}}'
 printf '%s\n' 'require("hypr.other")' '' '-- omarchy-notch-bar: hidden output for the macOS notch helper.' 'require("hypr.notchbar")' > "$ROOT$H/.config/hypr/hyprland.lua"
 run_off omanotch_off 0
 expect "omanotch off, built: its uninstall tried in the session" yes "$(called "in_session bash /repo/omanotch/guest/uninstall.sh")"
-for p in "$H/.local/bin/notchcast" "$H/.config/systemd/user/notchcast.service" "$H/.config/systemd/user/notchcast.service.d" \
+for p in "$H/.local/bin/notchcast" "$H/.local/bin/omanotch-display-panel" "$H/.config/systemd/user/notchcast.service" "$H/.config/systemd/user/notchcast.service.d" \
          "$H/.config/systemd/user/graphical-session.target.wants/notchcast.service" "$H/.config/hypr/notchbar.lua" \
-         /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook; do
+         "$H/.local/state/omanotch/expect" /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook "$H/.config/omarchy/plugins/omanotch.monitor"; do
   expect "omanotch off, built, no session: $p gone" no "$(has "$p")"
 done
+expect "omanotch off, no session: Omarchy's display panel back in the bar" "omarchy.monitor omarchy.clock" \
+  "$(jq -r '[.bar.layout.right[].id] | join(" ")' "$ROOT$H/.config/omarchy/shell.json")"
 expect "omanotch off: hyprland.lua no longer loads notchbar" "$(printf '%s\n' 'require("hypr.other")' '')" "$(cat "$ROOT$H/.config/hypr/hyprland.lua")"
 expect "omanotch off: notchcast stopped" yes "$(called "user_ctl disable --now notchcast.service")"
 : > "$OUT"; : > "$CALLS"; run_off omanotch_off 0
@@ -254,17 +262,22 @@ if command -v swiftc >/dev/null; then
 import Foundation
 let a = CommandLine.arguments
 let l = a.count > 1 ? MacLinks.load(folder: URL(fileURLWithPath: a[1])) : MacLinks()
-print("ports=\(l.hostPorts) battery=\(l.battery) camera=\(l.camera) test=\(l.hostPorts(test: true))")
+print("ports=\(l.hostPorts) battery=\(l.battery) camera=\(l.camera) test=\(l.hostPorts(test: true))" + (a.count > 2 ? " touchid=\(l.touchID) record=\(l.record)" : ""))
 EOF
   if swiftc -O -o "$T/links" "$R/app/app/Sources/OmacVM/MacLinks.swift" "$T/main.swift" 2>"$T/swiftc.log"; then
     expect "app: only gestures' port, camera served, battery not" "ports=47830 battery=false camera=true test=47830>47930" "$("$T/links" "$T/vm")"
     app_features_write "$T/vm" "bridge=off wallpaper=off gestures=off omanotch=off battery=off camera=off"
     expect "app: all off: no port to the Mac, no battery, no camera" "ports= battery=false camera=false test=" "$("$T/links" "$T/vm")"
     app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on"
-    # The test identity: its own helpers' ports, never Omanotch (it has none).
-    expect "app: all on" "ports=47811,47830,47831 battery=true camera=true test=47830>47930,47831>47931" "$("$T/links" "$T/vm")"
+    # The test identity: its own helpers' ports; Omanotch to a test Omanotch's 47911.
+    expect "app: all on" "ports=47811,47830,47831 battery=true camera=true test=47811>47911,47830>47930,47831>47931" "$("$T/links" "$T/vm")"
+    expect "app: Touch ID's port off unless named on" "touchid=false" "$("$T/links" "$T/vm" x | grep -o 'touchid=[a-z]*')"
+    app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on touch-id=on"
+    expect "app: touch-id=on: its port, and named in the record" "touchid=true record=Omanotch on, Gestures on, Bridge on, battery on, camera on, Touch ID on" \
+      "$("$T/links" "$T/vm" x | sed 's/.* touchid=/touchid=/')"
     mkdir -p "$T/old"
-    expect "app: a VM from before (no features file): as before" "ports=47811,47830,47831 battery=true camera=true test=47830>47930,47831>47931" "$("$T/links" "$T/old")"
+    expect "app: a VM from before: no Touch ID port" "touchid=false" "$("$T/links" "$T/old" x | grep -o 'touchid=[a-z]*')"
+    expect "app: a VM from before (no features file): as before" "ports=47811,47830,47831 battery=true camera=true test=47811>47911,47830>47930,47831>47931" "$("$T/links" "$T/old")"
   else
     echo "FAIL MacLinks.swift does not compile:"; cat "$T/swiftc.log"; fail=1
   fi
@@ -312,7 +325,7 @@ ck=$(awk '/^# OmacVM.app: what of the Mac this start of the VM may use/ {on = 1}
 check_app() {   # FEATURES -> the row
   ( TYPE=app VM=x F=" $1 "
     app_dir() { echo "$V"; }
-    feat() { [[ $F == *" $1=off "* ]] && echo off || echo on; }
+    feat() { if [[ $F == *" $1=off "* ]]; then echo off; elif [[ $F == *" $1=on "* ]]; then echo on; else echo "${2:-on}"; fi; }
     ok() { echo "ok: $2"; }
     bad() { echo "fail: $2"; }
     skip() { echo "skip: $2"; }
@@ -329,6 +342,20 @@ expect "check, app: camera turned off while it runs: fails, says restart" \
 expect "check, app: both: one row with both" \
   "fail: off for this VM, but the app still serves it: camera; on, but closed to the VM since its start: Omanotch (shut the VM down and start it again)" \
   "$(check_app "bridge=off battery=off camera=off")"
+# Touch ID (off by default): its port only when touch-id=on at the start.
+printf '%s\n' "OmacVM: Mac links: Omanotch off, Gestures on, Bridge on, battery off, camera on, Touch ID off" > "$V/logs/qemu.log"
+expect "app: Touch ID turned on while it runs: restart" "Touch ID" "$(app_links_stale "$V" "omanotch=off battery=off touch-id=on" on)"
+expect "app: Touch ID not named: off, nothing to say" "" "$(app_links_stale "$V" "omanotch=off battery=off" on)$(app_links_stale "$V" "omanotch=off battery=off" off)"
+expect "check, app: Touch ID turned on while it runs: fails, says restart" \
+  "fail: on, but closed to the VM since its start: Touch ID (shut the VM down and start it again)" \
+  "$(check_app "omanotch=off battery=off touch_id=on")"
+printf '%s\n' "OmacVM: Mac links: Omanotch off, Gestures on, Bridge on, battery off, camera on, Touch ID on" > "$V/logs/qemu.log"
+expect "app: Touch ID turned off while it runs: still served" "Touch ID" "$(app_links_stale "$V" "omanotch=off battery=off touch-id=off" off)"
+expect "check, app: Touch ID on as at the start: ok" "ok: Omanotch off, Gestures on, Bridge on, battery off, camera on, Touch ID on" \
+  "$(check_app "omanotch=off battery=off touch_id=on")"
+printf '%s\n' "OmacVM: Mac links: Omanotch off, Gestures on, Bridge on, battery off, camera on" > "$V/logs/qemu.log"
+expect "app from before Touch ID: Touch ID on means a restart (with the new app)" "Touch ID" "$(app_links_stale "$V" "omanotch=off battery=off touch-id=on" on)"
+expect "app from before Touch ID: off, nothing to say" "" "$(app_links_stale "$V" "omanotch=off battery=off touch-id=off" off)"
 expect "check, app from before the line: skip" "skip: this OmacVM.app serves every feature to every VM (older than 3.0.0: omacvm update)" "$(V=$T/older check_app "")"
 
 # In the VM: the rows that find no link to the Mac hint at the restart on

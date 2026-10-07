@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user>}
 H=$(getent passwd "$U" | cut -d: -f6)
 
-pacman -S --needed --noconfirm python-evdev >/dev/null 2>&1
+../../guest/pkg-add python-evdev
 install -m755 omacvm-gestures /usr/local/bin/omacvm-gestures
 install -m644 omacvm-gestures.service /etc/systemd/system/omacvm-gestures.service
 systemctl daemon-reload

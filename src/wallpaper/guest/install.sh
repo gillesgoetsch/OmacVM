@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user>}
-pacman -S --needed --noconfirm imagemagick file >/dev/null 2>&1
+../../guest/pkg-add imagemagick file
 install -m755 omacvm-wallpaper /usr/local/bin/omacvm-wallpaper
 install -m644 omacvm-wallpaper.service omacvm-wallpaper.path /etc/systemd/user/
 systemctl --user -M "$U@" daemon-reload

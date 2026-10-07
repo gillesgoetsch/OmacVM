@@ -1,5 +1,7 @@
 import Darwin
 import Foundation
+import OmacVMAuth
+import OmacVMUpdate
 
 /// The control centre for this app's VMs (docs/adr/0031): the virtio port
 /// org.omacvm.control carries the VM's requests, one JSON line each
@@ -25,14 +27,28 @@ final class NativeControlBridge: @unchecked Sendable {
 
     private let descriptor: Int32
     private let vmName: String
+    /// The VM's logs/gpu-memory (GPUMemory.swift): sent with its requests.
+    private let gpuMemoryFile: URL?
     private let writeLock = NSLock()
     private let slots = DispatchSemaphore(value: 4)
     private let stopLock = NSLock()
     private var stopped = false
 
-    init(socketPath: String, vmName: String) throws {
+    init(socketPath: String, vmName: String, gpuMemoryFile: URL? = nil) throws {
         descriptor = try NativeBridgeSocket.connectSecure(path: socketPath, label: "control port")
         self.vmName = vmName
+        self.gpuMemoryFile = gpuMemoryFile
+    }
+
+    /// GET /omacvm/gpu-memory: the app reads the VM's graphics memory file and
+    /// sends it along (base64; "-": none), as the Bridge may not read the VM's
+    /// folder itself (an external drive: macOS asks the app, not the Bridge).
+    static func gpuMemoryHeader(path: String, file: URL?) -> String? {
+        guard let file, path.split(separator: "?").first == "/omacvm/gpu-memory" else { return nil }
+        guard let fh = try? FileHandle(forReadingFrom: file) else { return "-" }
+        defer { try? fh.close() }
+        let d = (try? fh.read(upToCount: 4097)) ?? Data()
+        return d.count > 4096 ? "-" : (d.isEmpty ? "-" : d.base64EncodedString())
     }
 
     deinit { stop() }
@@ -126,24 +142,35 @@ final class NativeControlBridge: @unchecked Sendable {
     private let fallbackLock = NSLock()
     private var saidFallback = false
 
+    /// The app's own headers for a request it passes on: the Bridge token,
+    /// the relay key and the VM's name. Nil: the Bridge is not set up.
+    static func relayHeaders(vmName: String) -> [(String, String)]? {
+        guard let token = secret("token"), let relayKey = secret("relay-key") else { return nil }
+        return [("Authorization", "Bearer " + token), ("X-OmacVM-Relay", relayKey),
+                ("X-OmacVM-App-VM", Data(vmName.utf8).base64EncodedString())]
+    }
+
     /// The request to the Bridge, with the app's headers only.
     private func relay(_ r: Request) -> (Int, [String: Any]) {
-        guard let token = Self.secret("token"), let relayKey = Self.secret("relay-key") else {
-            return (0, ["error": "OmacVM Bridge is not set up on this Mac (or is older): omacvm update on the Mac"])
+        guard var headers = Self.relayHeaders(vmName: vmName) else {
+            return (0, ["error": "OmacVM Bridge is not set up on this Mac: open OmacVM on the Mac once"])
         }
-        var headers: [(String, String)] = [
-            ("Authorization", "Bearer " + token),
-            ("X-OmacVM-Relay", relayKey),
-            ("X-OmacVM-App-VM", Data(vmName.utf8).base64EncodedString()),
-            ("X-OmacVM-Proto", String(r.proto)),
-        ]
+        headers.append(("X-OmacVM-Proto", String(r.proto)))
         if !r.version.isEmpty { headers.append(("X-OmacVM-Version", r.version)) }
+        if let g = Self.gpuMemoryHeader(path: r.path, file: gpuMemoryFile) { headers.append(("X-OmacVM-GPU-Memory", g)) }
         if r.body != nil { headers.append(("Content-Type", "application/json")) }
         // Once connected, the answer comes from there: a request is never sent
         // twice (a job must not start twice).
         if let fd = try? NativeBridgeSocket.connectSecure(path: Self.relaySocketPath, label: "Bridge relay") {
             defer { Darwin.close(fd) }
-            return Self.exchange(fd, Self.httpRequest(method: r.method, path: r.path, headers: headers, body: r.body))
+            let (status, body) = Self.exchange(fd, Self.httpRequest(method: r.method, path: r.path, headers: headers, body: r.body))
+            if Self.isAppUpdate(r) { return Self.appUpdate(status, body, vmName: vmName) }
+            return (status, body)
+        }
+        // The app updates itself only on the Bridge's yes over the relay socket.
+        if Self.isAppUpdate(r) {
+            return (409, ["code": "old-bridge",
+                          "error": "the Mac's OmacVM Bridge cannot ask for this yet: shut this VM down, open OmacVM on the Mac and click Check Now"])
         }
         fallbackLock.lock()
         if !saidFallback {
@@ -171,31 +198,48 @@ final class NativeControlBridge: @unchecked Sendable {
         return result
     }
 
+    static func isAppUpdate(_ r: Request) -> Bool { r.method == "POST" && r.path == "/omacvm/app-update" }
+
+    private final class Box: @unchecked Sendable { var check: RestartCheck = .busy("no answer") }
+
+    /// The Bridge said yes to POST /omacvm/app-update (docs/adr/0031): the app
+    /// checks its own signed feed and downloads (the answer waits for that),
+    /// then answers the VM and shuts it down a few seconds later; the update
+    /// and the VM's restart follow (Updater.swift). A refusal of the Bridge
+    /// goes back as it is.
+    static func appUpdate(_ status: Int, _ body: [String: Any], vmName: String) -> (Int, [String: Any]) {
+        guard status == 200, (body["go"] as? Bool) == true else { return (status, body) }
+        let started = Date(), box = Box(), done = DispatchSemaphore(value: 0)
+        Task { @MainActor in
+            box.check = await Updater.shared.prepareRestart(vmName: vmName)
+            done.signal()
+        }
+        done.wait()
+        var check = box.check
+        if case .ready = check, Date().timeIntervalSince(started) > RestartVM.answerWithin {
+            // The control centre may have given up: nothing shuts down. The
+            // download is kept, so the next try is quick.
+            DispatchQueue.main.sync { MainActor.assumeIsolated { Updater.shared.cancelRestart("the check took too long") } }
+            check = .slow
+        }
+        let a = check.answer
+        guard case .ready(let version) = check else { return (a.status, ["code": a.code, "error": a.text]) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + RestartVM.shutdownDelay) {
+            MainActor.assumeIsolated { Updater.shared.shutDownForRestart() }
+        }
+        return (a.status, ["state": a.code, "code": a.code, "text": a.text, "version": version,
+                           "shutdown_in": Int(RestartVM.shutdownDelay)])
+    }
+
     /// One HTTP/1.1 request; the Bridge answers with Content-Length and closes.
     static func httpRequest(method: String, path: String, headers: [(String, String)], body: Data?) -> Data {
-        var head = "\(method) \(path) HTTP/1.1\r\nHost: omacvm-bridge\r\n"
-        for (k, v) in headers { head += "\(k): \(v)\r\n" }
-        head += "Content-Length: \(body?.count ?? 0)\r\nConnection: close\r\n\r\n"
-        return Data(head.utf8) + (body ?? Data())
+        BridgeHTTP.request(method: method, path: path, headers: headers, body: body)
     }
 
     /// Status and JSON body of the Bridge's answer, or nil (not one).
     static func parseResponse(_ data: Data) -> (Int, [String: Any])? {
-        guard let end = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
-        let lines = String(decoding: data[..<end.lowerBound], as: UTF8.self).components(separatedBy: "\r\n")
-        let first = lines[0].split(separator: " ")
-        guard first.count >= 2, first[0].hasPrefix("HTTP/1."), let status = Int(first[1]), (100...599).contains(status) else { return nil }
-        var body = data[end.upperBound...]
-        for l in lines.dropFirst() {
-            let kv = l.split(separator: ":", maxSplits: 1)
-            if kv.count == 2, kv[0].lowercased() == "content-length",
-               let n = Int(kv[1].trimmingCharacters(in: .whitespaces)), n >= 0 {
-                guard body.count >= n else { return nil }   // cut short
-                body = body.prefix(n)
-            }
-        }
-        let o = (try? JSONSerialization.jsonObject(with: Data(body))) as? [String: Any] ?? [:]
-        return (status, o)
+        guard let r = BridgeHTTP.parse(data) else { return nil }
+        return (r.status, (try? JSONSerialization.jsonObject(with: r.body)) as? [String: Any] ?? [:])
     }
 
     /// Sends the request on the relay socket and reads the answer until the

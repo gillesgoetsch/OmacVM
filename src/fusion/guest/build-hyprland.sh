@@ -33,7 +33,7 @@ stock=$BIN
 commit=$("$stock" --version 2>/dev/null | grep -o '\b[0-9a-f]\{40\}\b' | head -1 || true)
 [[ -n $commit ]] || { echo "build-hyprland: $stock does not say its source commit" >&2; exit 1; }
 
-if (( ! HOOK )); then pacman -S --needed --noconfirm "${DEPS[@]}" >/dev/null 2>&1; fi
+if (( ! HOOK )); then "$here/../../guest/pkg-add" "${DEPS[@]}"; fi
 rm -rf "$W"; install -d -o "$U" -g "$U" "$W"; mkdir -p "$(dirname "$STATE")"
 as_u() { sudo -u "$U" env HOME="$W" "$@"; }
 cd "$W"

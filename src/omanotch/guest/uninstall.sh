@@ -1,6 +1,6 @@
 #!/bin/bash
 # Remove the guest side of Omanotch. Run inside the Omarchy VM as the
-# desktop user. Omarchy's own background and notification plugins are switched
+# desktop user. Omarchy's own background, display and notification plugins are switched
 # back on and the patched clones removed. The bar clone in ~/.config/omarchy/plugins/$USER.bar
 # is kept (switch back with `omarchy bar use omarchy.bar`, then delete it if
 # you like), unless you pass --remove-bar-clone.
@@ -12,6 +12,8 @@ say() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 say "stopping notchcast"
 systemctl --user disable --now notchcast.service >/dev/null 2>&1 || true
 rm -f "$HOME/.config/systemd/user/notchcast.service" "$HOME/.local/bin/notchcast"
+# The bar clone stays patched: it must not start parked at the next login.
+rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/omanotch/expect"
 systemctl --user daemon-reload
 
 say "removing Hyprland config"
@@ -29,6 +31,12 @@ if [[ -d $HOME/.config/omarchy/plugins/$USER.background ]]; then
   rm -rf "$HOME/.config/omarchy/plugins/$USER.background"
   omarchy-shell -q shell rescanPlugins >/dev/null 2>&1 || true
 fi
+
+say "restoring Omarchy's display panel"
+if [[ -x $HOME/.local/bin/omanotch-display-panel ]]; then
+  "$HOME/.local/bin/omanotch-display-panel" --remove || true
+fi
+rm -f "$HOME/.local/bin/omanotch-display-panel"
 
 say "restoring Omarchy's notifications"
 if [[ -d $HOME/.config/omarchy/plugins/$USER.notifications ]]; then

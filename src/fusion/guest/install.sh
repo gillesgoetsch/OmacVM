@@ -45,7 +45,7 @@ systemctl --user -M "$U@" enable omacvm-fusion-displays.service >/dev/null 2>&1
 # Copy and paste: VMware's agent on a private X display, synced with Wayland's
 # clipboard (omacvm-fusion-clipboard). The tools' own autostart entry would
 # start a second agent on Hyprland's X11 display, where it cannot work.
-pacman -S --needed --noconfirm xorg-server-xvfb xorg-xauth xsel wl-clipboard libxfixes >/dev/null
+"$here/../../guest/pkg-add" xorg-server-xvfb xorg-xauth xsel wl-clipboard libxfixes
 install -Dm644 /dev/stdin "$H/.config/autostart/vmware-user.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application

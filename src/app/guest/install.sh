@@ -5,6 +5,10 @@
 #  * Quit on the Mac (the VM's power button) shuts Omarchy down
 #  * the clipboard, both ways (omacvm-clipboard, from try-omarchy)
 #  * the QEMU guest agent
+#  * the Mac's sound delay for A/V sync in videos (omacvm-audio-latency)
+#  * the Mac folder at ~/Mac, when the app shares one (omacvm-mac-folder)
+#  * the desktop starts again by itself when the Mac lost its GPU context
+#    (omacvm-desktop-recover, run by the app; the new session says so)
 #  * video decoding on the Mac's media engine (VA-API: vainfo, a driver shim
 #    so Firefox gets NV12 surfaces, Firefox's VA-API switch)
 #  * video encoding on it: Chrome's and Brave's VA-API encoder for WebRTC
@@ -19,9 +23,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user>}
 H=$(getent passwd "$U" | cut -d: -f6)
-pacman -S --needed --noconfirm qemu-guest-agent python >/dev/null 2>&1 || true
-systemctl enable --now qemu-guest-agent >/dev/null 2>&1 || true
-install -m755 omacvm-display-sync omacvm-app-host omacvm-clipboard omacvm-displays /usr/local/bin/
+../../guest/pkg-add qemu-guest-agent python || true
+# Started without waiting: a VM without the agent's port (the headless QEMU
+# of a build or an update) would hold this step 60-90 s for the device.
+systemctl enable qemu-guest-agent >/dev/null 2>&1 || true
+systemctl start --no-block qemu-guest-agent >/dev/null 2>&1 || true
+install -m755 omacvm-display-sync omacvm-app-host omacvm-clipboard omacvm-displays omacvm-desktop-recover /usr/local/bin/
 # HDR (off until the user runs omacvm-virtio-gpu-build): the 10-bit virtio-gpu
 # module's builder, and a pacman hook that rebuilds it for new kernels.
 install -Dm755 virtio-gpu/omacvm-virtio-gpu-build /usr/local/lib/omacvm/virtio-gpu/omacvm-virtio-gpu-build
@@ -29,7 +36,7 @@ install -Dm644 virtio-gpu/linux-virtio-gpu-deep-color.patch /usr/local/lib/omacv
 ln -sf /usr/local/lib/omacvm/virtio-gpu/omacvm-virtio-gpu-build /usr/local/bin/omacvm-virtio-gpu-build
 install -Dm644 virtio-gpu/95-omacvm-virtio-gpu.hook /etc/pacman.d/hooks/95-omacvm-virtio-gpu.hook
 # Clipboard both ways, over a virtio port (the agent is try-omarchy's).
-pacman -S --needed --noconfirm wl-clipboard >/dev/null 2>&1 || true
+../../guest/pkg-add wl-clipboard || true
 # uaccess: the logged-in user may open the port (before 73-seat-late.rules).
 install -m644 70-omacvm-clipboard.rules /etc/udev/rules.d/
 udevadm control --reload 2>/dev/null; udevadm trigger --subsystem-match=virtio-ports 2>/dev/null || true
@@ -48,22 +55,37 @@ if python3 monitor-widget/build.py "$W/omacvm.monitor"; then
   ../../lib/install-plugin.sh "$U" "$W/omacvm.monitor" || echo "WARN: the display widget did not install"
 fi
 rm -rf "$W"
+# The Mac's sound delay (QEMU's buffers and the Mac's output), sent by the
+# app over the guest agent: PipeWire's latency offset on the card's output,
+# so videos keep the picture in step with the sound.
+install -m755 omacvm-audio-latency /usr/local/bin/
+install -m644 omacvm-audio-latency.service /etc/systemd/user/
+systemctl --global enable omacvm-audio-latency.service >/dev/null 2>&1 || true
 install -m644 omacvm-app-host.service /etc/systemd/system/
 systemctl enable --now omacvm-app-host.service >/dev/null 2>&1 || true
+# The Mac folder at ~/Mac, when the app shares one (its setting; off by default).
+install -m755 omacvm-mac-folder /usr/local/bin/
+install -m644 omacvm-mac-folder.service /etc/systemd/system/
+systemctl enable omacvm-mac-folder.service >/dev/null 2>&1 || true
 install -Dm644 90-omacvm-app.conf /etc/environment.d/90-omacvm-app.conf
 # Omarchy ignores the power key; here it comes only from the Mac's Quit.
 install -Dm644 90-omacvm-app-power.conf /etc/systemd/logind.conf.d/90-omacvm-app-power.conf
-# Only when it changed: every write makes Hyprland reload its config.
-cmp -s omacvm_app.lua "$H/.config/hypr/omacvm_app.lua" ||
-  install -o "$U" -g "$U" -m644 omacvm_app.lua "$H/.config/hypr/omacvm_app.lua"
+# Only when it changed: Hyprland reloads its config on every write, and a
+# reload moves the displays (a flicker on each apply).
+if ! cmp -s omacvm_app.lua "$H/.config/hypr/omacvm_app.lua"; then
+  install -o "$U" -g "$U" -m644 omacvm_app.lua "$H/.config/hypr/.omacvm_app.lua.new"
+  mv -f "$H/.config/hypr/.omacvm_app.lua.new" "$H/.config/hypr/omacvm_app.lua"
+fi
 B=$H/.config/hypr/hyprland.lua
 grep -qxF 'require("hypr.omacvm_app")' "$B" || {
   printf -- '-- OmacVM.app: the display follows the Mac window.\nrequire("hypr.omacvm_app")\n' >> "$B"; chown "$U:$U" "$B"; }
 A=$H/.config/hypr/autostart.lua
 grep -q omacvm-display-sync "$A" 2>/dev/null || { echo 'o.launch_on_start("omacvm-display-sync")' >> "$A"; chown "$U:$U" "$A"; }
+# After the app restarted a desktop that lost its GPU context: say so, and which apps closed.
+grep -q omacvm-desktop-recover "$A" 2>/dev/null || { echo 'o.launch_on_start("omacvm-desktop-recover notify")' >> "$A"; chown "$U:$U" "$A"; }
 # Video decoding on the Mac's media engine (the app's QEMU passes VA-API to
 # VideoToolbox): vainfo, the driver shim for Firefox, and Firefox's switch.
-pacman -S --needed --noconfirm libva-utils >/dev/null 2>&1 || true
+../../guest/pkg-add libva-utils || true
 T=$(mktemp -d)
 if cc -shared -fPIC -O2 -o "$T/omacvm_drv_video.so" omacvm_drv_video.c -ldl 2>/dev/null; then
   install -Dm755 "$T/omacvm_drv_video.so" /usr/local/lib/dri/omacvm_drv_video.so
@@ -87,19 +109,16 @@ venus/vulkan-virtio.sh $want || echo "WARN: Vulkan (Venus) is not set up; OpenGL
 # OpenCL (GPU compute) on that Vulkan: the distro's rusticl on Zink (venus/opencl.sh says where it works).
 if [[ $graphics == vulkan ]]; then venus/opencl.sh || echo "WARN: OpenCL is not set up; Vulkan and OpenGL are unaffected"
 elif [[ $graphics == opengl ]]; then venus/opencl.sh --off; fi
+# WebGPU in Chromium on that Vulkan: the "Chromium (WebGPU)" launcher (venus/webgpu.sh).
+if [[ $graphics == vulkan ]]; then venus/webgpu.sh || echo "WARN: WebGPU in Chromium is not set up; Vulkan and OpenGL are unaffected"
+elif [[ $graphics == opengl ]]; then venus/webgpu.sh --off; fi
 # Vulkan windows: on the GPU when the Mac's app can show them, else through a
 # CPU copy (omacvm-vulkan-present says why). It replaces 3.0.0 RC's fixed
 # environment.d file.
 rm -f /etc/environment.d/90-omacvm-vulkan.conf
 install -Dm755 omacvm-vulkan-present /usr/lib/systemd/user-environment-generators/90-omacvm-vulkan-present
-# Up to 3.0.0 RC2 the service itself was wanted by multi-user.target, after
-# network-online.target: the boot (and the desktop) waited for a build.
-# Now a timer starts it after the desktop is up.
-rm -f /etc/systemd/system/multi-user.target.wants/omacvm-venus-driver.service
-install -Dm644 venus/omacvm-venus-driver.service /etc/systemd/system/omacvm-venus-driver.service
-install -Dm644 venus/omacvm-venus-driver.timer /etc/systemd/system/omacvm-venus-driver.timer
-systemctl daemon-reload
-systemctl enable omacvm-venus-driver.timer >/dev/null 2>&1 || true
+# The Venus driver check after each boot (a timer, only with Vulkan).
+venus/timer.sh || true
 # Video encoding on the Mac's media engine (FFmpeg's h264_vaapi/hevc_vaapi need
 # nothing): Chrome's and Brave's WebRTC encoder, when this app offers encoding.
 if vainfo --display drm 2>/dev/null | grep -q VAEntrypointEncSlice; then

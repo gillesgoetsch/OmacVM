@@ -17,12 +17,13 @@ final class Config {
   var menuBarIcon = true
   var keyboardLowSteps = true  // keyboard light: KeyboardSteps.low below macOS's lowest step (keylight.swift)
   var externalBrightness = true  // brightness keys set the external display a VM is on (external-brightness.swift)
+  var brightnessSteps = BrightnessStep.defaultSteps   // display brightness keys: 1/N per press (external-model.swift)
   var onExternalBrightness: (() -> Void)?   // external_brightness switched in the file
   private var stamp: Date?
 
   init() {
     guard load() else { save(); return }
-    if !has("keyboard_low_steps") || !has("external_brightness") { save() }   // shows the switches in the file
+    if !has("keyboard_low_steps") || !has("external_brightness") || !has("brightness_steps") { save() }   // shows the switches in the file
   }
 
   private var object: [String: Any]? {
@@ -39,6 +40,7 @@ final class Config {
     menuBarIcon = o["menu_bar_icon"] as? Bool ?? menuBarIcon
     keyboardLowSteps = o["keyboard_low_steps"] as? Bool ?? keyboardLowSteps
     externalBrightness = o["external_brightness"] as? Bool ?? externalBrightness
+    brightnessSteps = BrightnessStep.steps((o["brightness_steps"] as? NSNumber)?.intValue ?? brightnessSteps)
     return true
   }
 
@@ -46,16 +48,20 @@ final class Config {
   func reloadIfChanged() {
     let now = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
     guard now != stamp else { return }
-    let was = externalBrightness
+    let was = externalBrightness, steps = brightnessSteps
     _ = load()
+    if steps != brightnessSteps { log("config: brightness_steps=\(brightnessSteps)") }
     guard was != externalBrightness else { return }
     log("config: external_brightness=\(externalBrightness)")
     onExternalBrightness?()
   }
 
   func save() {
-    let o: [String: Any] = ["capture_keys": captureKeys, "menu_bar_icon": menuBarIcon, "keyboard_low_steps": keyboardLowSteps,
-                            "external_brightness": externalBrightness]
+    // Keys this class does not know stay (touch_id_password_fallback, touchid.swift).
+    var o = object ?? [:]
+    let mine: [String: Any] = ["capture_keys": captureKeys, "menu_bar_icon": menuBarIcon, "keyboard_low_steps": keyboardLowSteps,
+                               "external_brightness": externalBrightness, "brightness_steps": brightnessSteps]
+    o.merge(mine) { _, new in new }
     if let d = try? JSONSerialization.data(withJSONObject: o, options: [.prettyPrinted, .sortedKeys]) {
       FileManager.default.createFile(atPath: path, contents: d)
     }
@@ -327,7 +333,8 @@ final class MediaKeys {
                                  muteSettable: key == .mute && audio.outputMuteSettable,
                                  macBrightness: brightness ? Brightness.displayID : nil,
                                  external: brightness ? externalState(vm) : .unknown,
-                                 keyboardLight: [.keyboardUp, .keyboardDown, .keyboardToggle].contains(key) && KeyboardLight.get() != nil)
+                                 keyboardLight: [.keyboardUp, .keyboardDown, .keyboardToggle].contains(key) && KeyboardLight.get() != nil,
+                                 command: flags.contains(.maskCommand))
     return (vm, key, route, option)
   }
 
@@ -351,7 +358,7 @@ final class MediaKeys {
       let brightness = pressed == .brightnessUp || pressed == .brightnessDown
       if down, brightness, !brightnessOnce.take(.tap, pressed, at: ProcessInfo.processInfo.systemUptime) { return true }
       if case .external(let id) = route {
-        if down { ownSteps.stepped(id, at: ProcessInfo.processInfo.systemUptime); externalBrightness.step(id, up: key == .brightnessUp, fine: option) }
+        if down { ownSteps.stepped(id, at: ProcessInfo.processInfo.systemUptime); externalBrightness.step(id, up: key == .brightnessUp, steps: brightnessSteps(option), fine: option) }
       } else if down {
         if brightness, let id = Brightness.displayID { ownSteps.stepped(id, at: ProcessInfo.processInfo.systemUptime) }
         work.async { self.apply(key, fine: option) }   // key-up is swallowed too
@@ -359,6 +366,9 @@ final class MediaKeys {
     case .vm(let qcode):
       guard down else { return true }
       guard let pid = front.app?.processIdentifier, let path = vmKeys.socket(for: pid) else { return false }
+      if event.flags.contains(.maskCommand), once.first("command \(key)") {
+        log("media key \(key) with Command: to the VM as Super + \(qcode) (Omarchy's screenshot keys), not the Mac's volume")
+      }
       work.async {
         let ok = VMKeys.press(qcode, socket: path)
         DispatchQueue.main.async { self.typed(key, into: pid, ok) }
@@ -386,7 +396,7 @@ final class MediaKeys {
     guard brightnessOnce.take(.keyboard, pressed, at: ProcessInfo.processInfo.systemUptime) else { return }
     if once.first("keyboard brightness") { log("brightness keys: read from the keyboard while an OmacVM VM is in front (macOS gives no key event for them)") }
     let act = { [self] in
-      if case .external(let id) = route { externalBrightness.step(id, up: key == .brightnessUp, fine: fine) }
+      if case .external(let id) = route { externalBrightness.step(id, up: key == .brightnessUp, steps: brightnessSteps(fine), fine: fine) }
       else { work.async { self.apply(key, fine: fine) } }
     }
     // macOS may still handle the key itself (it reaches no tap, so it cannot be
@@ -429,8 +439,13 @@ final class MediaKeys {
     }
   }
 
+  /// The display brightness keys' steps (config.json brightness_steps, 32 by default; Option: finer).
+  private func brightnessSteps(_ fine: Bool) -> Int {
+    fine ? BrightnessStep.fine(config.brightnessSteps) : config.brightnessSteps
+  }
+
   private func apply(_ key: MediaKey, fine: Bool) {
-    let steps: Float = fine ? 64 : 16   // macOS: 16 steps, Shift+Option = quarter steps
+    let steps: Float = fine ? 64 : 16   // volume, keyboard light: macOS's 16 steps, Shift+Option = quarter steps
     func step(_ v: Float, _ up: Bool) -> Float { max(0, min(1, ((v * steps).rounded() + (up ? 1 : -1)) / steps)) }
     var result = "failed"
     switch key {
@@ -441,8 +456,10 @@ final class MediaKeys {
     case .mute:
       if let r = try? audio.setMute(input: false, muted: nil) { osdEvents.volumeSet(kind: "mute", source: "keys"); result = "muted=\(r.muted)" }
     case .brightnessUp, .brightnessDown:
-      if let v = Brightness.get(), Brightness.set(step(v, key == .brightnessUp)) {
-        osdEvents.brightnessSet(source: "keys"); result = "\(step(v, key == .brightnessUp))"
+      let n = brightnessSteps(fine)
+      if let v = Brightness.get() {
+        let to = Float(BrightnessStep.next(Double(v), up: key == .brightnessUp, steps: n))
+        if Brightness.set(to) { osdEvents.brightnessSet(source: "keys"); result = "\(to) (1/\(n))" }
       }
     case .keyboardUp, .keyboardDown:
       // Option: 1/64 steps as before; else macOS's 1/16 steps and the low ones below.

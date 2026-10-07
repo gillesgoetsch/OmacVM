@@ -40,6 +40,7 @@ cp -c "$LIVE_ROOTFS" "$LIVE_IMG" 2>/dev/null || cp "$LIVE_ROOTFS" "$LIVE_IMG"
 truncate_file "$LIVE_IMG" $((16 * 1024 * 1024 * 1024))   # the live system grows into it
 [[ -f $VM_DIR/disk.img ]] || truncate_file "$VM_DIR/disk.img" $((DISK_GB * 1024 * 1024 * 1024))
 efi_vars_create
+proxy_setup                        # the Mac's proxy, if it has one (#122)
 
 log "starting the live system"
 key_b64=$(base64 < "$KEY.pub" | tr -d '\n')
@@ -49,6 +50,7 @@ qemu_headless live "${QEMU_UEFI[@]}" -kernel "$LIVE_KERNEL" -initrd "$LIVE_INITR
   -drive "if=none,id=live,file=$(qe "$LIVE_IMG"),format=raw,cache=unsafe" -device virtio-blk-pci,drive=live \
   -drive "$DISK_OPT" -device nvme,serial=omacvm,drive=disk
 wait_ssh 300 || die "the live system did not answer on SSH (log: $LOG/live-console.log)"
+proxy_to_vm || die "could not pass the Mac's proxy to the live system"
 
 # ---------- 2. Arch Linux ARM ----------
 step 2 "Installing Arch Linux ARM onto the disk"
@@ -59,7 +61,12 @@ printf 'OMA_USER=%q\nOMA_FULLNAME=%q\nOMA_HASH=%q\nOMA_TZ=%q\nOMA_LANG=%q\nOMA_H
   "$VM_USER" "$VM_FULLNAME" "$HASH" "$VM_TZ" "$VM_LANG" "$VM_HOSTNAME" "$kb_layout" "${kb_variant:-}" |
   vssh "umask 077; cat > /root/omacvm.env"
 vssh "cat > /root/omacvm.pub" < "$KEY.pub"
-if ! run_logged "$LOG/base-install.log" vssh "bash -s" < "$OMACVM_SRC/vm/base-install.sh"; then
+# progress.sh first when the app asks: its package progress lines.
+vm_script() {
+  if [[ ${OMACVM_PROGRESS:-} == 1 ]]; then cat "$OMACVM_SRC/vm/progress.sh"; fi
+  cat "$OMACVM_SRC/vm/$1"
+}
+if ! run_logged "$LOG/base-install.log" vssh "bash -s" < <(vm_script base-install.sh); then
   # pacstrap's full output is only in the live system: keep it with the log.
   { echo "---- /root/pacstrap.log ----"; vssh "cat /root/pacstrap.log" < /dev/null; } >> "$LOG/base-install.log" 2>&1 || true
   die "the Arch Linux ARM install failed (log: $LOG/base-install.log)"
@@ -75,9 +82,9 @@ qemu_headless system "${QEMU_UEFI[@]}" \
 wait_ssh 300 || die "the new system did not answer on SSH (log: $LOG/system-console.log)"
 
 # ---------- 4. Omarchy ----------
-step 4 "Installing Omarchy (omarchy-mac, 20-40 minutes)"
+step 4 "Installing Omarchy (omarchy-mac)"   # the window says how long it usually takes
 CHANNEL=$(omarchy_channel)
-run_logged "$LOG/omarchy-install.log" vssh "OMARCHY_MAC_CHANNEL=$CHANNEL bash -s" < "$OMACVM_SRC/vm/omarchy-install.sh" ||
+run_logged "$LOG/omarchy-install.log" vssh "OMARCHY_MAC_CHANNEL=$CHANNEL bash -s" < <(vm_script omarchy-install.sh) ||
   die "Omarchy did not install (log: $LOG/omarchy-install.log)"
 vssh "rm -f /root/omacvm.env"   # it holds the password hash
 

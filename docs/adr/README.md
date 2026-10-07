@@ -23,5 +23,10 @@ a new record replaces it and says so.
 | [0034](0034-gpu-memory-budget-for-runaway-vms.md) | The GPU memory budget stops a runaway VM, never a desktop | accepted, built (`fractional-scale`) |
 | [0035](0035-graphics-setting.md) | A Graphics setting per VM: OpenGL, Vulkan or Automatic; KosmicKrisp in release builds | accepted, built (`vk300`, 3.0.0) |
 | [0036](0036-sound-main-loop-qos.md) | Sound on a busy Mac: main loop at user-interactive QoS, no HDA catch-up | accepted, built (`audio-crackle`) |
+| [0037](0037-no-instant-resume-yet.md) | No save-to-disk resume while the VM uses the Mac's GPU; a faster cold start instead | accepted, start part built (`instant-resume`) |
+| [0038](0038-desktop-restarts-after-lost-gpu-context.md) | The desktop restarts by itself after a lost GPU context (once in 10 min, then the app asks) | accepted, built (`gpu-auto-recovery`, 3.0.1) |
+| [0039](0039-system-disk-options.md) | The app VM's disk stays NVMe, writeback, discard (virtio-blk + iothread hangs after a pause) | accepted (`disk-speed`) |
+| [0040](0040-x86-apps-box64.md) | x86_64 Linux apps through box64, built in the VM | accepted, built (`x86-apps`, 3.0.1) |
+| [0041](0041-touch-id.md) | Touch ID in the VM: pam_exec asks the Bridge, the Mac answers yes or no | accepted (`touch-id`, 3.0.2) |
 
 The whole chain: [../architecture/graphics.md](../architecture/graphics.md).

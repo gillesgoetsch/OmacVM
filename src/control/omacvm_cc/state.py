@@ -19,6 +19,11 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 # env does not name it (as features_read_env in src/lib/features.sh).
 OFF_WHEN_UNNAMED = {"omanotch", "scroll-momentum", "autologin", "thp-kernel", "control-centre"}
 
+# Renamed features: new name -> the old one, whose on and off are the other
+# way round (as feature_old_value in src/lib/features.sh). idle-lock (on:
+# Omarchy's screensaver and lock) became no-idle-lock in 3.0.1.
+FLIPPED_OLD_NAMES = {"no-idle-lock": "idle-lock"}
+
 
 class Status(str, Enum):
     BUSY = "busy"
@@ -124,10 +129,75 @@ def desired(features: list[Feature], env: dict[str, str]) -> dict[str, bool]:
     out = {}
     for f in features:
         v = env.get(env_key(f.name))
+        old = env.get(env_key(FLIPPED_OLD_NAMES[f.name])) if f.name in FLIPPED_OLD_NAMES else None
+        if v is None and old in ("on", "off"):
+            v = "off" if old == "on" else "on"
         if v is None:
             v = "off" if f.name in OFF_WHEN_UNNAMED or f.default != "on" else "on"
         out[f.name] = v == "on"
     return out
+
+
+def sddm_autologin_user(texts: list[str]) -> str:
+    """Who SDDM logs in, from its config files in the order SDDM reads them
+    (/usr/lib/sddm/sddm.conf.d, /etc/sddm.conf.d, /etc/sddm.conf): the last
+    User= of an [Autologin] section; "" nobody. The same rule as
+    src/guest/autologin.sh, whoever wrote the file."""
+    user, section = "", False
+    for text in texts:
+        for line in text.splitlines():
+            t = line.strip()
+            if t.startswith("["):
+                section = t.startswith("[Autologin]")
+            elif section and t.split("=", 1)[0].strip() == "User" and "=" in t:
+                user = t.split("=", 1)[1].strip()
+    return user
+
+
+# What a tag means, in words (never a bare tag; src/lib/features.sh says the
+# same in feature_slow_hint). NOTE: short, for the table's note column.
+# "slow" is about switching it on: nothing is said about it while it is on.
+TAG_NOTES = {"experimental": "experimental", "slow": "a build to switch on, up to 1 h+"}
+TAG_HINTS = {"experimental": "experimental: it may change or be removed",
+             "slow": "a build in the VM to switch it on, then a restart: minutes to over an hour, faster with more CPUs"}
+ON_SILENT = {"slow"}
+
+
+def tag_note(f: Feature, on: bool = False) -> str:
+    return ", ".join(TAG_NOTES[t] for t in f.tags if t in TAG_NOTES and not (on and t in ON_SILENT))
+
+
+def tag_hints(f: Feature, on: bool = False) -> list[str]:
+    return [TAG_HINTS[t] for t in f.tags if t in TAG_HINTS and not (on and t in ON_SILENT)]
+
+
+def fixed_note(on: bool) -> str:
+    """The table's note for a feature whose record the Mac just fixed."""
+    return f"OmacVM's record said {'off' if on else 'on'}: fixed"
+
+
+def feature_about(f: Feature, macos: str = "") -> str:
+    """More than the summary, for the details screen ("" nothing more).
+    macos: the Mac's macOS version as the Bridge says it ("" not known)."""
+    if f.name != "vulkan":
+        return ""
+    major = version_tuple(macos)
+    kk = ("macOS 26 or newer: Vulkan goes through KosmicKrisp, Mesa's Vulkan on Metal 4, "
+          "the fuller driver (more Vulkan features, faster).")
+    mvk = ("macOS 15: Vulkan goes through MoltenVK (KosmicKrisp needs macOS 26). WebGPU and OpenCL work, "
+           "with fewer Vulkan features, so some WebGPU pages and compute jobs may not run; "
+           "after an update to macOS 26 the VM gets KosmicKrisp by itself.")
+    if major is None:
+        mac = "On this Mac: " + kk + "\nOn " + mvk
+    elif major[0] >= 26:
+        mac = f"On this Mac (macOS {macos}): " + kk[len("macOS 26 or newer: "):]
+    else:
+        mac = f"On this Mac (macOS {macos}): " + mvk[len("macOS 15: "):]
+    return ("Needs an OmacVM.app VM; works with every Graphics setting.\n" + mac + "\n"
+            "Switching on: the VM builds OmacVM's Mesa (about 3 minutes, a 140 MB download), then "
+            "WebGPU and GPU compute from the VM's next start (shut it down and start it again).\n"
+            "Switching off: OpenGL only again from the next start; OmacVM's Mesa is removed. "
+            "You can switch it on again at any time (the build again, about 3 minutes).")
 
 
 def parse_check_tsv(text: str, side: str = "vm") -> list[Check]:
@@ -219,6 +289,86 @@ def update_offered(release, vm, mac=None) -> bool:
     return m is None or r >= m
 
 
+# What u does (Controller.update_plan): nothing, this VM only (the Mac is
+# current), OmacVM.app first and then this VM (the app restarts the VM once),
+# the app only, a Mac checkout and this VM in one job, or the app by hand.
+PLANS = ("none", "vm", "app+vm", "app", "mac-checkout", "manual")
+
+
+def update_plan(release, vm, mac, mac_app: bool, app_vm: bool, app_update: bool) -> str:
+    """mac_app: the Mac's omacvm is OmacVM.app's copy (the app updates it).
+    app_vm: this VM runs in OmacVM.app. app_update: the Mac takes
+    POST /omacvm/app-update (3.0.2 on). Forward only."""
+    r, v, m = version_tuple(release), version_tuple(vm), version_tuple(mac)
+    if r is None or (m is not None and r < m):
+        return "none"   # no release, or the Mac is ahead of it
+    vm_older = v is None or v < r
+    mac_older = m is None or m < r
+    if not mac_older:
+        return "vm" if vm_older else "none"
+    if not mac_app:
+        return "mac-checkout"
+    if app_vm and app_update:
+        return "app+vm" if vm_older else "app"
+    return "manual"
+
+
+def update_line(plan: str, version) -> str:
+    """The top line when an update is there ("" for none)."""
+    who = {"vm": "this VM", "app+vm": "Mac app and this VM", "app": "Mac app",
+           "mac-checkout": "the Mac and this VM", "manual": "Mac app and this VM"}.get(plan)
+    return f"Update available: {version} ({who}) · u updates" if who else ""
+
+
+# ---- progress while an update runs ----
+
+# The one-key update through OmacVM.app: four steps, the first two before the
+# VM shuts down, the last two after it started again ({v}: the release).
+APP_STEPS = ("the Mac gets OmacVM.app {v}", "shutting down this VM",
+             "OmacVM.app {v} installs and starts this VM again", "updating this VM")
+
+
+def bar(fraction: float, width: int = 30) -> str:
+    """A progress bar of block characters."""
+    n = max(0, min(width, round(fraction * width)))
+    return "█" * n + "░" * (width - n)
+
+
+def latest_line(lines) -> str:
+    """The last line a job wrote ("" none), without the "==> " of a step."""
+    for line in reversed(list(lines or [])):
+        s = str(line).strip()
+        if s:
+            return s[4:] if s.startswith("==> ") else s
+    return ""
+
+
+def job_step(job: Job) -> str:
+    """ "step 3 of 9: text" for a running job ("starting" before its first step)."""
+    text = job.text.strip() or "starting"
+    return f"step {job.step} of {job.of}: {text}" if job.of else text
+
+
+def progress_lines(title: str, job: Job | None, lines=(), *, steps: tuple[str, ...] = (),
+                   at: int = 0, version: str = "", waiting: str = "") -> list[tuple[str, str]]:
+    """What an update shows while it runs, as (text, style) lines: the title,
+    with steps (the app path) each step marked done, now or to come; the
+    job's step and a bar; the job's latest log line. at: the step now (1..);
+    waiting: why the job's answers are late (the Mac restarts its Bridge)."""
+    out: list[tuple[str, str]] = [(title, "bold")]
+    for i, s in enumerate(steps, 1):
+        mark, style = ("✓", "green") if i < at else ("›", "bold") if i == at else (" ", "bright_black")
+        out.append((f"  {mark} {i} of {len(steps)}  {s.format(v=version)}", style))
+    if job is not None:
+        frac = job.step / job.of if job.of else 0.0
+        indent = "      " if steps else "  "
+        out.append((f"{indent}{bar(frac)}  {job_step(job)}", ""))
+        last = waiting or latest_line(lines)
+        if last and last != job.text.strip():
+            out.append((f"{indent}{last}", "bright_black"))
+    return out
+
+
 def part_changed(name: str, installed: dict, offer: dict) -> bool:
     """An update changes this part: the offered digest is not the installed one."""
     o = (offer or {}).get(name)
@@ -232,11 +382,13 @@ def build_rows(features: list[Feature], on: dict[str, bool], *, vm_type: str = "
                avail: dict[str, Avail] | None = None, checks: list[Check] | None = None,
                jobs: list[Job] | None = None, installed: dict | None = None,
                offer: dict | None = None, mac_features: set[str] | None = None,
-               show_updates: bool = True) -> list[Row]:
+               show_updates: bool = True, fixed: dict[str, str] | None = None) -> list[Row]:
     """The features screen. mac_features: what the Mac's OmacVM knows (None:
     not known); a feature it lacks is unavailable until the Mac is updated.
     show_updates False (update checks off): no update marks, but an update
-    that runs still shows on the features it changes."""
+    that runs still shows on the features it changes. fixed: the features
+    whose record the Mac fixed to their real state (omacvm features --json
+    "fixed"); on must already say that state."""
     active = [j for j in (jobs or []) if j.active]
     rows = []
     for f in features:
@@ -248,6 +400,8 @@ def build_rows(features: list[Feature], on: dict[str, bool], *, vm_type: str = "
         job = next((j for j in active if f.name in j.features or (j.action == "update" and update)), None)
         mine = None if checks is None else [c for c in checks if c.feature == f.name]
         st, note = status_of(f, on.get(f.name, False), a, mine, job)
+        if (fixed or {}).get(f.name) and st in (Status.WORKS, Status.OFF, Status.UNKNOWN):
+            note = fixed_note(on.get(f.name, False))
         rows.append(Row(feature=f, on=on.get(f.name, False), status=st, note=note,
                         update=update and show_updates, checks=tuple(mine or ())))
     return rows
@@ -290,15 +444,18 @@ def counts(rows: list[Row]) -> dict[str, int]:
 # ---- OmacVM.app's Graphics setting (src/cmd/graphics.sh) ----
 GRAPHICS_CHOICES = ("auto", "opengl", "vulkan")
 GRAPHICS_TITLES = {"auto": "Automatic", "opengl": "OpenGL", "vulkan": "Vulkan"}
+# The Mac's words when Vulkan fell back (Graphics.didNotStart, src/lib/graphics.sh).
+GRAPHICS_DID_NOT_START = "Vulkan did not start on this Mac: using OpenGL"
 GRAPHICS_FEATURE = Feature(
     name="graphics", default="auto", sides=("mac",), tags=(), needs=None, title="Graphics",
     summary="OpenGL, Vulkan, or Automatic (OpenGL on every Mac in 3.0.0); from the VM's next start")
 
 
 def graphics_row(status: dict | None, vm_type: str, jobs: list[Job] | None = None,
-                 checks: list[Check] | None = None) -> Row | None:
+                 checks: list[Check] | None = None, offline: bool = False) -> Row | None:
     """The Graphics row of an OmacVM.app VM, from the Mac's status (its
-    `graphics`: omacvm graphics --json); None on the other routes."""
+    `graphics`: omacvm graphics --json); None on the other routes. offline:
+    the Mac does not answer or refused this VM (no status: not its age)."""
     if vm_type != "app":
         return None
     # "graphics memory" has its own row (older 3.0.0 RCs sent it with FEATURE=graphics).
@@ -308,6 +465,8 @@ def graphics_row(status: dict | None, vm_type: str, jobs: list[Job] | None = Non
     if job is not None:
         return Row(GRAPHICS_FEATURE, True, Status.BUSY, f"to {GRAPHICS_TITLES.get(job.features[0] if job.features else '', '?')}…",
                    checks=mine)
+    if not isinstance(status, dict):
+        return Row(GRAPHICS_FEATURE, True, Status.UNKNOWN, "needs the Mac" if offline else "asking the Mac", checks=mine)
     if not isinstance(g, dict) or g.get("graphics") not in GRAPHICS_CHOICES:
         return Row(GRAPHICS_FEATURE, True, Status.UNKNOWN, "the Mac's OmacVM does not say (older than 3.0.0?)", checks=mine)
     title = GRAPHICS_TITLES[g["graphics"]]
@@ -319,6 +478,10 @@ def graphics_row(status: dict | None, vm_type: str, jobs: list[Job] | None = Non
         # Vulkan chosen, no Venus driver for the Mac's pages yet: OpenGL until
         # an apply (or Space on this row while the VM runs) builds it.
         note = str(g.get("summary") or "Vulkan (driver not built yet: runs on OpenGL until the next apply)")
+    elif str(g.get("summary") or "").startswith(GRAPHICS_DID_NOT_START):
+        # A Vulkan start showed nothing on this Mac; the app started it on
+        # OpenGL and stays there until Vulkan is chosen again (Space here).
+        note = str(g["summary"])
     if any(c.status == "fail" for c in mine):
         bad = next(c for c in mine if c.status == "fail")
         return Row(GRAPHICS_FEATURE, True, Status.NEEDS_PERSON if bad.human else Status.FAILING,
@@ -379,3 +542,32 @@ def gpu_memory_row(answer: dict | None, vm_type: str, supported: bool | None = T
     if warn:
         return Row(GPU_MEMORY_FEATURE, True, Status.NEEDS_PERSON, "; ".join([note] + warn), checks=mine)
     return Row(GPU_MEMORY_FEATURE, True, Status.WORKS, note, checks=mine)
+
+
+# ---- the Mac's Magic Mouse swipe (GET/POST /omacvm/settings/mouse-swipe) ----
+# The same words as OmacVM.app's row (MouseSwipeSetting.swift).
+MOUSE_SWIPE_FEATURE = Feature(
+    name="mouse-swipe", default="4", sides=("mac",), tags=(), needs="gestures", title="Magic Mouse swipe",
+    summary="What a two-finger swipe on the mouse does in the VM: the same as this many fingers on a trackpad. "
+            "Omarchy switches workspaces with 4.")
+
+
+def mouse_swipe_row(answer: dict | None, gestures_on: bool = True, offline: bool = False) -> Row | None:
+    """The Magic Mouse swipe row: only while the Mac has a Magic Mouse (its
+    last answer says so). Gestures off: the setting stays, the row says why
+    nothing swipes. offline: the Mac does not answer right now."""
+    if not isinstance(answer, dict) or answer.get("magic_mouse") is not True:
+        return None
+    n = answer.get("fingers")
+    if n not in (3, 4) or isinstance(n, bool):
+        return None
+    if offline:
+        return Row(MOUSE_SWIPE_FEATURE, True, Status.UNKNOWN, f"{n} fingers (needs the Mac)")
+    if not gestures_on:
+        return Row(MOUSE_SWIPE_FEATURE, False, Status.OFF, f"{n} fingers (Trackpad gestures is off)")
+    return Row(MOUSE_SWIPE_FEATURE, True, Status.WORKS, f"{n} fingers")
+
+
+def next_fingers(n) -> int:
+    """Space on the Magic Mouse swipe row: 4 -> 3 -> 4."""
+    return 4 if n == 3 else 3

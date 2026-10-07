@@ -1,0 +1,140 @@
+From: OmacVM
+Subject: [PATCH] ui/cocoa: Touch ID's panel in the VM window's own process
+
+What: with OMACVM_TOUCHID_PANEL (the path of OmacVM.app's
+OmacVMTouchIDPanel.dylib) and OMACVM_TOUCHID_PANEL_SOCKET, QEMU loads the
+panel at launch and gives it two hooks: before it shows, QEMU lets go of
+the pointer and of the guest's held keys; while it is up, the guest gets no
+input (keys go to the panel, the key window; the full-grab tap lets them
+through; clicks, moves and scrolls on the VM's windows wait; the pointer is
+not taken).
+
+Why: Touch ID in the VM (ADR 0041) asks in an Omarchy-style panel with
+Apple's embedded Touch ID view. macOS reads the finger for that view only
+in the app in front, which is QEMU while the VM's window is in front: the
+same panel from OmacVM Bridge (an app in the background) needed a click
+first (MacBook Air, 2026-10-06). Without the variables, or when the dylib
+does not load, nothing changes and the Bridge shows the Mac's own dialog.
+
+Upstream: not applicable (OmacVM's own panel).
+Test: app/app (swift run touchid-panel-tests: the panel's protocol, words,
+theme, states, never on screen); the build checks the hooks are in
+ui/cocoa.m. Applies after omacvm-cocoa-fullscreen-start.patch.
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index d1f3834..f6a50db 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -735,6 +735,51 @@ static bool omacvm_key_for_macos(NSEvent *event)
+                       OMACVM_MAC_KEY_MARKER;
+ }
+ 
++/*
++ * OmacVM: Touch ID's panel (docs/adr/0041-touch-id.md). macOS reads a finger
++ * for an embedded Touch ID view only in the app in front, and that is this
++ * process while the VM's window is in front. So OmacVM.app has QEMU load its
++ * panel (OMACVM_TOUCHID_PANEL: OmacVMTouchIDPanel.dylib in the app, signed
++ * like QEMU) and asks it over OMACVM_TOUCHID_PANEL_SOCKET. While the panel
++ * is up the guest gets no input: keys go to the panel (the key window), the
++ * full-grab tap lets them through, and clicks on the VM's windows wait.
++ */
++static bool omacvm_touchid_up;   /* main thread */
++
++static void omacvm_touchid_will_show(void)
++{
++    omacvm_touchid_up = true;
++    if ([cocoaView isMouseGrabbed]) {
++        [cocoaView ungrabMouse];
++    }
++    [cocoaView raiseAllKeys];
++}
++
++static void omacvm_touchid_did_close(void)
++{
++    omacvm_touchid_up = false;
++}
++
++static void omacvm_touchid_load(void)
++{
++    const char *lib = getenv("OMACVM_TOUCHID_PANEL");
++    const char *sock = getenv("OMACVM_TOUCHID_PANEL_SOCKET");
++    if (!lib || !*lib || !sock || !*sock) {
++        return;
++    }
++    void *handle = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
++    if (!handle) {
++        warn_report("OmacVM Touch ID panel: %s", dlerror());
++        return;
++    }
++    int (*start)(const char *, void (*)(void), void (*)(void)) =
++        (int (*)(const char *, void (*)(void), void (*)(void)))
++            dlsym(handle, "omacvm_touchid_panel_start");
++    if (!start || start(sock, omacvm_touchid_will_show, omacvm_touchid_did_close) != 0) {
++        warn_report("OmacVM Touch ID panel: did not start (the Mac's own dialog instead)");
++    }
++}
++
+ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef cgEvent, void *userInfo)
+ {
+     QemuCocoaView *view = userInfo;
+@@ -752,6 +797,10 @@ static CGEventRef handleTapEvent(CGEventTapProxy proxy, CGEventType type, CGEven
+         [view reenableEventTap];
+         return cgEvent;
+     }
++    /* OmacVM: Touch ID's panel is up: its keys, not the guest's. */
++    if (omacvm_touchid_up) {
++        return cgEvent;
++    }
+ 
+     /*
+      * OmacVM: the escape combo (ui/omacvm-shortcuts.h) is OmacVM Gestures'.
+@@ -2084,6 +2133,9 @@ - (void) otherMouseUp:(NSEvent *)event
+ - (void) grabMouse
+ {
+     COCOA_DEBUG("QemuCocoaView: grabMouse\n");
++    if (omacvm_touchid_up) {
++        return;
++    }
+ 
+     if (qemu_name)
+         [[self window] setTitle:[NSString stringWithFormat:@"%s - (Press  " UC_CTRL_KEY " " UC_ALT_KEY " G  to release Mouse)", qemu_name]];
+@@ -2445,6 +2497,7 @@ - (void)applicationDidFinishLaunching: (NSNotification *) note
+ {
+     COCOA_DEBUG("QemuCocoaAppController: applicationDidFinishLaunching\n");
+     allow_events = true;
++    omacvm_touchid_load();
+ }
+ 
+ - (void)applicationWillTerminate:(NSNotification *)aNotification
+@@ -2923,6 +2976,31 @@ @implementation QemuApplication
+ - (void)sendEvent:(NSEvent *)event
+ {
+     COCOA_DEBUG("QemuApplication: sendEvent\n");
++    if (omacvm_touchid_up) {
++        /* OmacVM: Touch ID's panel is up; the VM's windows get no clicks. */
++        switch ([event type]) {
++        case NSEventTypeLeftMouseDown:
++        case NSEventTypeLeftMouseUp:
++        case NSEventTypeLeftMouseDragged:
++        case NSEventTypeRightMouseDown:
++        case NSEventTypeRightMouseUp:
++        case NSEventTypeRightMouseDragged:
++        case NSEventTypeOtherMouseDown:
++        case NSEventTypeOtherMouseUp:
++        case NSEventTypeOtherMouseDragged:
++        case NSEventTypeMouseMoved:
++        case NSEventTypeScrollWheel:
++        case NSEventTypeMagnify:
++            if (omacvm_is_our_window([event window])) {
++                return;
++            }
++            break;
++        default:
++            break;
++        }
++        [super sendEvent:event];
++        return;
++    }
+     if (![cocoaView handleEvent:event]) {
+         [super sendEvent: event];
+     }

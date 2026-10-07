@@ -5,6 +5,7 @@ hint file in a temp folder. No VM, no uinput.
   "S esc"               (Mac helper before 3.0.0)  -> ⌃⌥⌘ Esc to take them back
   "S esc ctrl-opt"                                  -> ⌃⌥ Esc to take them back
   "S esc ctrl-opt-cmd"  (the old combo)             -> once per VM "New shortcut: ⌃⌥ Esc"
+  "N <why>"             (no way out to macOS)       -> what to turn on, or "still in the VM"
 """
 import importlib.machinery
 import importlib.util
@@ -99,4 +100,11 @@ else:
     first, again = send(g, b"S esc ctrl-opt-cmd"), send(g, b"S esc ctrl-opt-cmd")
     check(first == [HINT] and again == [NEW], "escape notice: hint file not writable: shown once while running, logged")
 os.chmod(locked, stat.S_IRWXU)
+off = send(g, b"N space-shortcut-off")
+check(len(off) == 1 and "Move left/right a space" in off[0][0] and off[0][1] == 6000,
+      "no way out: the Space shortcut is off: names the setting")
+check(len(send(g, b"N space-unchanged")) == 1 and "did not switch" in send(g, b"N space-unchanged")[0][0],
+      "no way out: the Space did not change: said once")
+check(len(send(g, b"N no-spaces")) == 1, "no way out: no Spaces information: said once")
+check(len(send(g, b"N some-new-word")) == 1, "no way out: a word from a newer helper: the general notice")
 sys.exit(1 if fails else 0)

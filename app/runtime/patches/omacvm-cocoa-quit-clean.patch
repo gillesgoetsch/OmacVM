@@ -1,0 +1,146 @@
+From: OmacVM
+Subject: [PATCH] cocoa: no quit by itself; a quit while the guest starts presses again
+
+A hidden full-screen run (OMACVM_COCOA_HIDDEN, tests) quit after a minute:
+AppKit closed its full-screen mouse detection window, saw no other visible
+window and quit (applicationShouldTerminateAfterLastWindowClosed); the quit
+pressed the power button while the guest still booted, the press was lost
+and the guest was stopped 60 s later. Now:
+  - no quit when AppKit's last window goes; the VM window's close button
+    (windowShouldClose) or the VM window closing any other way
+    (windowWillClose) still quits;
+  - a quit within 2 min of the guest's start or reset presses the power
+    button again every 10 s up to 40 s and stops the guest at 70 s, so a
+    guest that was still booting shuts down cleanly. A guest that is up gets
+    one press and 60 s, as before (Omarchy's Hyprland opens its power menu
+    on the key). A paused VM is resumed before each press. qemu.log gets a
+    line for each press and for the stop.
+Applies after omacvm-cocoa-globe-key.patch (the last Cocoa patch).
+Upstream: the last-window part could go upstream; the presses are OmacVM's.
+Test: Tests/display/test-quit-clean.sh (build time on the patched ui/cocoa.m;
+--self-test in CI); a hidden full-screen VM keeps running past 60 s, and a
+Quit right after the start shuts the guest down cleanly.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -2493,9 +2493,17 @@
+     [NSThread sleepForTimeInterval:INFINITY];
+ }
+ 
++/*
++ * OmacVM: no quit because AppKit saw its last window go. The VM window's close
++ * button quits through windowShouldClose (below); the other windows that go
++ * are AppKit's own (the full-screen mouse detection window) or a display's,
++ * and with a hidden VM window (OMACVM_COCOA_HIDDEN) one of those going was
++ * the "last window": a hidden full-screen run quit by itself. The VM window
++ * closed any other way still quits (windowWillClose).
++ */
+ - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)theApplication
+ {
+-    return YES;
++    return NO;
+ }
+ 
+ /*
+@@ -2503,10 +2511,48 @@
+  * power button, and the quit waits (NSTerminateLater): QEMU exits by itself
+  * once the guest is off (-action shutdown=poweroff). A guest that does not
+  * shut down within a minute is stopped. A VM paused (by the Mac's sleep) is
+- * resumed first, so it can shut down.
++ * resumed before each press, so it can shut down.
++ * While the guest still starts (within 2 min of its start or reset) a press
++ * can come before systemd-logind listens and is lost: then the button is
++ * pressed again every 10 s up to 40 s, and the stop waits 70 s. A press while
++ * the guest already shuts down does nothing (logind: "action already in
++ * progress"). A guest that has been up longer gets one press, as before:
++ * Omarchy's Hyprland opens its power menu on the key, more presses would open
++ * and close it. Each step goes to qemu.log.
+  */
++#define OMACVM_QUIT_WAIT_S 60
++#define OMACVM_QUIT_BOOT_S 120
++#define OMACVM_QUIT_BOOT_WAIT_S 70
++#define OMACVM_QUIT_PRESS_EVERY_S 10
++#define OMACVM_QUIT_PRESS_UNTIL_S 40
+ static bool powerdownPending;
++static int64_t omacvm_quit_boot_ms;   /* the guest's start or last reset; BQL */
+ 
++static void omacvm_quit_guest_reset(void *opaque)
++{
++    omacvm_quit_boot_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++}
++
++/* Main thread. after: seconds since the first press (0: the first). */
++static void omacvm_quit_press(int after, int wait, bool booting)
++{
++    with_bql(^{   /* skipped once the display is cleaned up (QEMU exits) */
++        if (runstate_check(RUN_STATE_PAUSED)) {
++            qmp_cont(NULL);
++        }
++        if (!runstate_is_running()) {
++            return;
++        }
++        qemu_system_powerdown_request();
++        if (after) {
++            fprintf(stderr, "omacvm: quit: guest still on after %d s, power button pressed again\n", after);
++        } else {
++            fprintf(stderr, "omacvm: quit: power button pressed%s, waiting up to %d s for the guest\n",
++                    booting ? " (the guest still starts: again every 10 s)" : "", wait);
++        }
++    });
++}
++
+ - (NSApplicationTerminateReply)applicationShouldTerminate:
+                                                          (NSApplication *)sender
+ {
+@@ -2521,17 +2567,39 @@
+     }
+     if (!powerdownPending) {
+         powerdownPending = true;
++        __block bool booting = false;
+         with_bql(^{
+-            qemu_system_powerdown_request();
++            booting = qemu_clock_get_ms(QEMU_CLOCK_REALTIME) - omacvm_quit_boot_ms <
++                      OMACVM_QUIT_BOOT_S * 1000;
+         });
++        int wait = booting ? OMACVM_QUIT_BOOT_WAIT_S : OMACVM_QUIT_WAIT_S;
++        omacvm_quit_press(0, wait, booting);
+         [[cocoaView window] setTitle:[NSString stringWithFormat:@"%@ (shutting down)", omacvm_product_name()]];
+-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
++        for (int t = OMACVM_QUIT_PRESS_EVERY_S; booting && t <= OMACVM_QUIT_PRESS_UNTIL_S;
++             t += OMACVM_QUIT_PRESS_EVERY_S) {
++            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, t * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
++                omacvm_quit_press(t, wait, booting);
++            });
++        }
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, wait * NSEC_PER_SEC),
++                       dispatch_get_main_queue(), ^{
++            fprintf(stderr, "omacvm: quit: guest still on after %d s, stopping it\n", wait);
+             [NSApp replyToApplicationShouldTerminate:YES];
+         });
+     }
+     return NSTerminateLater;
+ }
+ 
++/* OmacVM: the VM window closed other than by its close button: quit (see above). */
++- (void)windowWillClose:(NSNotification *)notification
++{
++    if ([notification object] == [cocoaView window] && !powerdownPending) {
++        dispatch_async(dispatch_get_main_queue(), ^{
++            [NSApp terminate:self];
++        });
++    }
++}
++
+ - (void)windowDidChangeScreen:(NSNotification *)notification
+ {
+     [cocoaView updateScale];
+@@ -7710,6 +7778,9 @@
+     }
+ 
+     omacvm_displays_init();
++    /* OmacVM: a quit while the guest still starts presses the power button again. */
++    omacvm_quit_boot_ms = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++    qemu_register_reset(omacvm_quit_guest_reset, NULL);
+ 
+     full_grab_enabled = opts->u.cocoa.has_full_grab &&
+                         opts->u.cocoa.full_grab;

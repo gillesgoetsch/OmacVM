@@ -85,12 +85,21 @@ enum MediaRoute {
   /// neither). `macBrightness`: the display the Bridge's own brightness call
   /// sets (the built-in one, else the display macOS dims itself, the main one
   /// first; nil: none). `external`: what is known about the VM's display when
-  /// it is external. `keyboardLight`: this Mac has one.
+  /// it is external. `keyboardLight`: this Mac has one. `command`: Command
+  /// is held.
   static func route(_ key: MediaKey, vm: FrontVM?, volumeSettable: Bool, muteSettable: Bool,
-                    macBrightness: UInt32?, external: ExternalState, keyboardLight: Bool) -> KeyRoute {
+                    macBrightness: UInt32?, external: ExternalState, keyboardLight: Bool,
+                    command: Bool = false) -> KeyRoute {
     guard let vm, vm.omacvm || vm.fullScreen else { return .macOS(nil) }   // no VM in front: macOS's keys
     switch key {
     case .volumeUp, .volumeDown, .mute:
+      // Command + a volume key is a shortcut, not a volume change: Omarchy's
+      // Super + mute / volume down / volume up are its screenshot keys on Mac
+      // keyboards (window, region, display; Super + Option + volume up records).
+      // QEMU already holds Super in the VM for the Command key, so only the key
+      // itself is typed. Without this a Mac output with a volume (the MacBook's
+      // speakers) took the key and Omarchy never saw it.
+      if command && vm.omacvm && vm.vmKeys, let q = key.qcode { return .vm(q) }
       if key == .mute ? muteSettable : volumeSettable { return .mac }
       // No software volume on the Mac's output: the VM's own volume (its
       // popup), never macOS's greyed-out panel.

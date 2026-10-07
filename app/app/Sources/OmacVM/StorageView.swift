@@ -2,13 +2,14 @@ import AppKit
 import SwiftUI
 
 /// The VMs folder, each VM's size and place, moves between folders and the
-/// downloads. Shared by the setup, the settings and the start-up offers.
+/// downloaded images. Shared by the setup, the settings and the start-up offers.
 @MainActor
 final class StorageModel: ObservableObject {
     struct Entry: Identifiable {
         var id: String { folder.path }
-        var name: String
-        var folder: URL
+        var config: VMConfig
+        var name: String { config.name }
+        var folder: URL { config.folder }
         var size: Int64?
         /// In the hidden folder of 2.9 and older.
         var legacy: Bool
@@ -25,6 +26,8 @@ final class StorageModel: ObservableObject {
     @Published var free: Int64?
     @Published var vms: [Entry] = []
     @Published var downloads: Int64?
+    /// The downloads folders with something in them (for the Remove alert).
+    @Published var downloadFolders: [URL] = []
     /// One line per VMs folder on a drive that is not connected.
     @Published var disconnected: [String] = []
     @Published var moving: Moving?
@@ -35,7 +38,7 @@ final class StorageModel: ObservableObject {
     var appBusy: () -> Bool = { false }
     /// This app builds a VM (its downloads are in use).
     var building: () -> Bool = { false }
-    /// A VM moved: the app reloads the one it shows.
+    /// A VM moved or was deleted: the app reloads the one it shows.
     var onMoved: () -> Void = {}
     private var mover: FolderMover?
     private var refreshRun = 0
@@ -47,21 +50,25 @@ final class StorageModel: ObservableObject {
         }
         let legacy = Paths.vmsRoot.standardizedFileURL.path == Paths.legacyVMsRoot.path ? "" : Paths.legacyVMsRoot.path
         vms = VMConfig.all().map {
-            Entry(name: $0.name, folder: $0.folder, size: nil,
+            Entry(config: $0, size: nil,
                   legacy: $0.folder.deletingLastPathComponent().path == legacy)
         }
         refreshRun += 1
         let run = refreshRun, folders = vms.map(\.folder), root = root
+        let dlFolders = Paths.allDownloads, old = Paths.oldDownloads
         DispatchQueue.global(qos: .utility).async {
             let free = Storage.freeBytes(at: root)
             let sizes = folders.map { Storage.allocatedSize(of: $0) }
-            let downloads = Storage.allocatedSize(of: Paths.downloads)
+            let dlSizes = dlFolders.map { Storage.downloadsSize($0) }
+            let gone = Set(old.map(\.path)).subtracting(Storage.oldDownloadsKept(old).map(\.path))
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
+                    if !gone.isEmpty { Paths.oldDownloads = Paths.oldDownloads.filter { !gone.contains($0.path) } }
                     guard run == self.refreshRun else { return }
                     self.free = Storage.missingDrive(for: root) == nil ? free : nil
                     for (i, s) in sizes.enumerated() where i < self.vms.count { self.vms[i].size = s }
-                    self.downloads = downloads
+                    self.downloads = dlSizes.reduce(0, +)
+                    self.downloadFolders = zip(dlFolders, dlSizes).filter { $0.1 > 0 }.map(\.0)
                 }
             }
         }
@@ -128,7 +135,23 @@ final class StorageModel: ObservableObject {
             r.path != new.standardizedFileURL.path && r.path != legacy
                 && (Storage.missingDrive(for: r) != nil || VMsFolder.hasVMs(r, fm: .default))
         }
+        // A folder left without VMs: its downloads go along on the same
+        // drive, else they stay listed there (off the main thread: ps, drives).
+        let kept = Set(Paths.vmsRoots.map(\.path))
+        let left = old.filter { !kept.contains($0.path) }, to = Paths.downloads
         refresh()
+        guard !left.isEmpty else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let lines = Storage.processLines()
+            let stay = left.compactMap { Storage.dropDownloads(ofRoot: $0, to: to, lines: lines) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let known = Set(Paths.oldDownloads.map(\.path))
+                    Paths.oldDownloads += stay.filter { !known.contains($0.path) }
+                    self.refresh()
+                }
+            }
+        }
     }
 
     /// The VMs in 2.9's hidden folder (none while that is the VMs folder:
@@ -215,27 +238,84 @@ final class StorageModel: ObservableObject {
 
     func cancelMove() { mover?.cancel() }
 
-    // MARK: Downloads
+    // MARK: Deleting a VM
 
-    func clearDownloads() {
-        if building() || Storage.downloadsInUse(Paths.downloads) {
-            say("A build is using the downloads; clear them once it is done.", error: true)
+    /// Moves a VM's folder to the Trash after a plain confirmation. A VM in
+    /// use (running, or omacvm working on it) is not deleted.
+    func delete(_ vm: VMConfig) {
+        guard moving == nil else { return }
+        guard Storage.busyFolders([vm.folder]).isEmpty else {
+            say("\(vm.name) is in use: shut it down first, then delete it.", error: true)
             return
         }
-        let alert = NSAlert()
-        alert.messageText = "Clear \(Product.name)'s downloads?"
-        alert.informativeText = "\(Storage.format(downloads ?? 0)) in \(Self.short(Paths.downloads)): the live system and prebuilt VMs that builds start from. The next new VM downloads what it needs again. Your VMs are not touched."
-        alert.addButton(withTitle: "Clear Downloads")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            try Storage.clear(Paths.downloads)
-            say("Downloads cleared.")
-        } catch {
-            say("Could not clear all downloads: \(error.localizedDescription)", error: true)
+        guard deleteAlert(vm).runModal() == .alertSecondButtonReturn else { return }
+        guard vm.folderIsSafe else {
+            say("Not deleted: \(vm.folder.path) is not a VM folder of this app.", error: true)
+            return
         }
-        refresh()
+        do {
+            try FileManager.default.trashItem(at: vm.folder, resultingItemURL: nil)
+            say("\(vm.name) is in the Trash.")
+        } catch {
+            say("Could not delete \(vm.name): \(error.localizedDescription)", error: true)
+        }
+        onMoved()
     }
+
+    func deleteAlert(_ vm: VMConfig) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Delete \(vm.name)?"
+        let size = vms.first { $0.folder.path == vm.folder.path }?.size.map { " (\(Storage.format($0)))" } ?? ""
+        alert.informativeText = "The VM's disk\(size) and everything in Omarchy goes to the Trash."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete")
+        alert.buttons[1].hasDestructiveAction = true
+        return alert
+    }
+
+    // MARK: Downloaded images
+
+    /// Empties the app's caches of Omarchy images (Paths.allDownloads). Never
+    /// the Mac's Downloads folder.
+    func removeImages() {
+        let lines = Storage.processLines()
+        if building() || Paths.allDownloads.contains(where: { Storage.downloadsInUse($0, lines: lines) }) {
+            say("A VM is being set up from these images; remove them once it is done.", error: true)
+            return
+        }
+        let size = Storage.format(downloads ?? 0)
+        guard removeImagesAlert().runModal() == .alertFirstButtonReturn else { return }
+        let folders = Paths.allDownloads, old = Set(Paths.oldDownloads.map(\.path))
+        DispatchQueue.global(qos: .utility).async {
+            var failure: String?
+            for f in folders where Storage.missingDrive(for: f) == nil {
+                do {
+                    try Storage.clearDownloads(f)
+                    if old.contains(f.path) { Storage.removeIfEmpty(f) }
+                } catch { failure = failure ?? error.localizedDescription }
+            }
+            let failed = failure
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if let failed { self.say("Could not remove all downloaded images: \(failed)", error: true) }
+                    else { self.say("Downloaded images removed (\(size)).") }
+                    self.refresh()
+                }
+            }
+        }
+    }
+
+    func removeImagesAlert() -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Remove the downloaded images (\(Storage.format(downloads ?? 0)))?"
+        alert.informativeText = "These are the Omarchy images \(Product.name) downloaded to set up VMs, in \((downloadFolders.isEmpty ? [Paths.downloads] : downloadFolders).map { Self.short($0) }.joined(separator: " and ")). Your VMs keep everything; a new VM downloads them again.\n\nYour Mac's Downloads folder is not touched."
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        return alert
+    }
+
+    /// What the downloaded images are (the row's tooltip).
+    static let imagesHelp = "Omarchy images the app downloaded to set up VMs. Your VMs keep everything; a new VM downloads them again. Not your Mac's Downloads folder."
 }
 
 /// The VMs folder with its free space and a Change button (setup and settings).
@@ -258,9 +338,26 @@ struct VMsFolderRow: View {
     }
 }
 
-/// Settings: the VMs folder, every VM's size, moves, downloads.
+/// One VM's size with Show in Finder.
+struct VMSizeRow: View {
+    let vm: StorageModel.Entry
+
+    var body: some View {
+        Text(vm.size.map { Storage.format($0) } ?? "…").foregroundStyle(.secondary)
+        Button {
+            NSWorkspace.shared.activateFileViewerSelecting([vm.folder])
+        } label: { Image(systemName: "folder") }
+            .help("Show in Finder")
+    }
+}
+
+/// Settings: the VMs folder, the shown VM's size (All VMs… lists every one),
+/// moves, downloaded images.
 struct StorageSection: View {
     @ObservedObject var storage: StorageModel
+    /// The VM the window shows.
+    var selected: URL?
+    @State private var showAll = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -269,19 +366,16 @@ struct StorageSection: View {
             ForEach(storage.disconnected, id: \.self) { line in
                 Text(line).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(storage.vms) { vm in
-                HStack {
+            HStack {
+                if let vm = storage.vms.first(where: { $0.folder.path == selected?.path }) {
                     Text(vm.name)
-                    if vm.legacy {
-                        Text("in the old hidden folder").font(.caption).foregroundStyle(.secondary)
-                    }
                     Spacer()
-                    Text(vm.size.map { Storage.format($0) } ?? "…").foregroundStyle(.secondary)
-                    Button {
-                        NSWorkspace.shared.activateFileViewerSelecting([vm.folder])
-                    } label: { Image(systemName: "folder") }
-                        .help("Show in Finder")
+                    VMSizeRow(vm: vm)
+                } else {
+                    Spacer()
                 }
+                Button("All VMs…") { showAll = true }
+                    .disabled(storage.vms.isEmpty)
             }
             if !storage.legacyVMs.isEmpty && storage.moving == nil {
                 HStack {
@@ -308,17 +402,79 @@ struct StorageSection: View {
                 }
             }
             HStack {
-                Text("Downloads")
+                Text("Downloaded images")
+                Image(systemName: "info.circle").foregroundStyle(.secondary)
                 Spacer()
                 Text(storage.downloads.map { Storage.format($0) } ?? "…").foregroundStyle(.secondary)
-                Button("Clear Downloads") { storage.clearDownloads() }
+                Button("Remove…") { storage.removeImages() }
                     .disabled(storage.moving != nil || (storage.downloads ?? 0) == 0)
             }
+            .help(StorageModel.imagesHelp)
             if let n = storage.note {
                 Text(n).font(.caption).foregroundStyle(storage.noteIsError ? .red : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .sheet(isPresented: $showAll) {
+            AllVMsView(storage: storage, selected: selected) { showAll = false }
+        }
+    }
+}
+
+/// Every VM with its size, Show in Finder and Delete.
+struct AllVMsView: View {
+    @ObservedObject var storage: StorageModel
+    var selected: URL?
+    var done: () -> Void
+
+    /// Nil while a size is still counted.
+    private var total: Int64? {
+        let sizes = storage.vms.compactMap(\.size)
+        return sizes.count == storage.vms.count ? sizes.reduce(0, +) : nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("All VMs").font(.headline)
+            ForEach(storage.vms) { vm in
+                HStack {
+                    Text(vm.name)
+                    if vm.folder.path == selected?.path {
+                        Text("this one").font(.caption).foregroundStyle(.secondary)
+                    }
+                    if vm.legacy {
+                        Text("in the old hidden folder").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    VMSizeRow(vm: vm)
+                    Button {
+                        storage.delete(vm.config)
+                    } label: { Image(systemName: "trash") }
+                        .help("Delete…")
+                        .disabled(storage.moving != nil)
+                }
+            }
+            if storage.vms.isEmpty {
+                Text("No VMs.").foregroundStyle(.secondary)
+            }
+            Divider()
+            HStack {
+                Text("Total").foregroundStyle(.secondary)
+                Spacer()
+                Text(total.map { Storage.format($0) } ?? "…").foregroundStyle(.secondary)
+            }
+            if let n = storage.note {
+                Text(n).font(.caption).foregroundStyle(storage.noteIsError ? .red : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("Done") { done() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
     }
 }
 

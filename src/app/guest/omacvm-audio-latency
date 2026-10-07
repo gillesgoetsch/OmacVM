@@ -1,0 +1,166 @@
+#!/usr/bin/python3
+"""OmacVM.app: how late the Mac plays the VM's sound, told to the VM's players.
+
+Chromium, Firefox and mpv hold the picture back by the sound delay PipeWire
+reports. Without this that is the VM's own buffers only; QEMU's buffers and
+the Mac's output device come on top (110-150 ms wired, about 170 ms
+more with AirPods), so the sound was late in every video. The app sends the whole
+delay at the VM's start and whenever the Mac's output changes; it goes on
+the sound card's output ports as PipeWire's latency offset (the "latency
+offset" pavucontrol shows; WirePlumber keeps it across logins).
+
+  omacvm-audio-latency MS        root, from the app (guest agent): keeps MS
+                                 in /var/lib/omacvm/audio-latency and sets it
+                                 in every running desktop session
+  omacvm-audio-latency --apply   the desktop user (omacvm-audio-latency.service
+                                 at login): sets the kept value
+  omacvm-audio-latency --show    what is kept and set
+"""
+import json
+import os
+import pwd
+import subprocess
+import sys
+import time
+
+STATE = os.environ.get("OMACVM_AUDIO_LATENCY_FILE", "/var/lib/omacvm/audio-latency")
+RUN_USER = os.environ.get("OMACVM_AUDIO_LATENCY_RUN", "/run/user")
+MAX_MS = 1000
+WAIT_S = 30
+
+
+def parse_ms(text):
+    """The delay in ms, or None when it is not a whole number in 0 ... MAX_MS."""
+    text = text.strip()
+    if not (text.isascii() and text.isdigit()):
+        return None
+    ms = int(text)
+    return ms if ms <= MAX_MS else None
+
+
+def read_state():
+    try:
+        with open(STATE) as f:
+            return parse_ms(f.read())
+    except OSError:
+        return None
+
+
+def write_state(ms):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(f"{ms}\n")
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, STATE)
+
+
+def output_ports(cards):
+    """(card, port) for each output port of the VM's own sound card: the PCI
+    one (QEMU's Intel HDA). A USB device the VM was given plays on its own,
+    not through the Mac: left alone."""
+    found = []
+    for card in cards:
+        name = card.get("name", "")
+        if not name.startswith("alsa_card.pci-"):
+            continue
+        ports = card.get("ports") or {}
+        names = ports.keys() if isinstance(ports, dict) else [p.get("name", "") for p in ports]
+        for port in names:
+            if "output" in port:
+                found.append((name, port))
+    return found
+
+
+def pactl(*args, capture=False):
+    return subprocess.run(["pactl", *args], check=False, timeout=10, text=True,
+                          stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL)
+
+
+def cards():
+    r = pactl("-f", "json", "list", "cards", capture=True)
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        return None
+
+
+def apply(ms, wait_s=WAIT_S, latest=None):
+    """Sets MS on the card's output ports; waits up to WAIT_S for PipeWire and
+    the card (at login). LATEST, when given, reads the kept value again once
+    the card is there: the app may have sent a new one while this waited (the
+    login unit and the app's send can run at the same time). True when it
+    was set."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        c = cards()
+        ports = output_ports(c) if c is not None else []
+        if ports:
+            if latest is not None:
+                now = latest()
+                ms = ms if now is None else now
+            ok = True
+            for card, port in ports:
+                ok &= pactl("set-port-latency-offset", card, port, str(ms * 1000)).returncode == 0
+            return ok
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1)
+
+
+def sessions():
+    """(user, runtime dir) of each running desktop session with PipeWire's
+    PulseAudio socket."""
+    out = []
+    try:
+        uids = sorted(os.listdir(RUN_USER))
+    except OSError:
+        return out
+    for uid in uids:
+        if not uid.isdigit() or int(uid) < 1000:
+            continue
+        run = os.path.join(RUN_USER, uid)
+        if not os.path.exists(os.path.join(run, "pulse", "native")):
+            continue
+        try:
+            out.append((pwd.getpwuid(int(uid)).pw_name, run))
+        except KeyError:
+            continue
+    return out
+
+
+def main(argv):
+    if len(argv) == 2 and argv[1] == "--apply":
+        ms = read_state()
+        if ms is None:
+            return 0
+        return 0 if apply(ms, latest=read_state) else 1
+    if len(argv) == 2 and argv[1] == "--show":
+        print(f"kept: {read_state()} ms")
+        c = cards() or []
+        for card in c:
+            for name, port in output_ports([card]):
+                p = card["ports"][port] if isinstance(card.get("ports"), dict) else {}
+                print(f"{name} {port}: {p.get('latency_offset', '?')}")
+        return 0
+    if len(argv) == 2 and parse_ms(argv[1]) is not None:
+        if os.geteuid() != 0:
+            print("omacvm-audio-latency: MS is for root (the app); a user runs --apply", file=sys.stderr)
+            return 2
+        ms = parse_ms(argv[1])
+        write_state(ms)
+        for user, run in sessions():
+            subprocess.run(["runuser", "-u", user, "--", "env", f"XDG_RUNTIME_DIR={run}",
+                            os.path.abspath(argv[0]), "--apply"],
+                           check=False, timeout=WAIT_S + 15,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

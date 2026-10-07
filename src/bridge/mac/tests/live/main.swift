@@ -29,7 +29,7 @@ do {
     externalBrightness.onKey = { _, _ in presses += 1 }
     let t0 = Date()
     for up in [true, false] {
-      for _ in 0..<n { externalBrightness.step(id, up: up, fine: false); usleep(33_000) }   // ~30 repeats a second
+      for _ in 0..<n { externalBrightness.step(id, up: up, steps: BrightnessStep.defaultSteps); usleep(33_000) }   // ~30 repeats a second
     }
     let queued = Date().timeIntervalSince(t0)
     usleep(500_000)   // the last coalesced write

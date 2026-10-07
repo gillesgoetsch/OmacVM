@@ -3,6 +3,8 @@
 #   GUEST_LOAD: none | cpu (stress-ng on every vCPU) | gpu (glmark2, scene changes every 10 s) | both
 #   MAC_THREADS: busy `yes` loops on the Mac (default 0)
 # Env: SSH_PORT (the VM's SSH on 127.0.0.1), KEY (~/.ssh/omacvm), GUSER (the desktop user),
+#      LOAD_AS (root: stress-ng in root's SSH session, as before; user: in the desktop user's
+#      app.slice, where a browser or a build runs and where it competes with PipeWire),
 #      QMP (QEMU's QMP socket), QEMU_LOG (QEMU's log, started with -trace audio_timer_delayed
 #      -trace hda_audio_full_recovery), SDLPROBE_PCM (optional: sdlprobe.c's stream file).
 # The guest plays a 30 Hz tone through PipeWire's PulseAudio part (as Spotify does) from
@@ -54,7 +56,13 @@ read -r e0 a0 <<<"$(errs)"
 hmp "wavcapture $T/qemu.wav snd0 44100 16 2"
 [ -n "${SDLPROBE_PCM:-}" ] && : > "$SDLPROBE_PCM"
 T0=$(date -u +%Y-%m-%dT%H:%M:%S)
-case $G in cpu|both) "${SSH[@]}" "nohup stress-ng --cpu 0 --timeout ${S}s >/dev/null 2>&1 &" ;; esac
+case $G in cpu|both)
+  if [ "${LOAD_AS:-root}" = user ]; then
+    "${SSH[@]}" "systemd-run --user -M $GUSER@ --slice=app.slice --collect -q stress-ng --cpu 0 --timeout ${S}s"
+  else
+    "${SSH[@]}" "nohup stress-ng --cpu 0 --timeout ${S}s >/dev/null 2>&1 &"
+  fi ;;
+esac
 case $G in gpu|both) "${SSH[@]}" "SIG=\$(ls -t /run/user/\$(id -u $GUSER)/hypr | head -1); sudo -u $GUSER env XDG_RUNTIME_DIR=/run/user/\$(id -u $GUSER) WAYLAND_DISPLAY=wayland-1 HYPRLAND_INSTANCE_SIGNATURE=\$SIG nohup glmark2-wayland --run-forever -b terrain >/dev/null 2>&1 &" ;; esac
 for ((i = 0; i < M; i++)); do (exec yes >/dev/null) & pids+=($!); done
 sleep "$S"
@@ -69,4 +77,4 @@ late=$(awk -v a="$T0" -v b="$T1" 'substr($1, 1, 19) >= a && substr($1, 1, 19) <=
   END { printf "{\"5-9\":%d,\"10-19\":%d,\"20-49\":%d,\"50-99\":%d,\">=100\":%d,\"worst_ms\":%d,\"hda_full_recovery\":%d}", c["5-9"], c["10-19"], c["20-49"], c["50-99"], c[">=100"], w, r }' "$QEMU_LOG")
 qemu=$(python3 "$H/glitches.py" "$T/qemu.wav")
 sdl=null; [ -s "$T/sdl.raw" ] && sdl=$(python3 "$H/glitches.py" "$T/sdl.raw")
-echo "{\"start\":\"$T0\",\"seconds\":$S,\"guest_load\":\"$G\",\"mac_threads\":$M,\"guest_xruns\":{\"sink\":$((e1 - e0)),\"app\":$((a1 - a0))},\"main_loop_late_ms\":$late,\"qemu_out\":$qemu,\"sdl_in\":$sdl}"
+echo "{\"start\":\"$T0\",\"seconds\":$S,\"guest_load\":\"$G\",\"load_as\":\"${LOAD_AS:-root}\",\"mac_threads\":$M,\"guest_xruns\":{\"sink\":$((e1 - e0)),\"app\":$((a1 - a0))},\"main_loop_late_ms\":$late,\"qemu_out\":$qemu,\"sdl_in\":$sdl}"

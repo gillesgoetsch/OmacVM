@@ -34,8 +34,10 @@ source "$HERE/vm-common.sh"
 R=$(cd "$OMACVM_SRC/.." && pwd)
 info() { log "$*"; }
 source "$OMACVM_SRC/prebuilt/lib.sh"
+PREBUILT_CACHE=$CACHE/prebuilt   # the downloads folder (vm-common.sh)
 
 if [[ ${1:-} == --lookup ]]; then
+  cache_ready || exit 1
   prebuilt_lookup app 2>/dev/null || exit 1
   echo "$PB_TAG $PB_SIZE ${PB_OMARCHY%% *} $PB_VERSION"
   exit 0
@@ -43,6 +45,7 @@ fi
 
 VM_DIR=${1:?usage: prebuilt-vm.sh VM_DIR | --lookup}
 vm_load "$VM_DIR"
+cache_ready || die "could not make $CACHE"
 IFS= read -r PASSWORD || true
 [[ -n $PASSWORD ]] || die "no password on stdin"
 # OmacVM's Mac helpers and the clock format are built with Apple's tools.
@@ -59,7 +62,9 @@ MADE_DISK=0 MADE_VARS=0
 # However this ends: QEMU stops and the seed (it holds the password hash)
 # goes. Until the VM is ready, so do the disk and NVRAM this run made: the app's
 # Back and Build (or omacvm build again) can start over.
+watch=
 cleanup() {
+  if [[ -n $watch ]]; then kill "$watch" 2>/dev/null || true; fi
   if qemu_running; then qemu_quit; fi
   rm -f "$SEED"; rm -rf "$VM_DIR/.unpack"
   [[ -e $VM_DIR/ready ]] && return 0
@@ -89,7 +94,15 @@ unset PASSWORD
 # ---------- 2. download ----------
 step 2 "Downloading the prebuilt VM ($(pb_gb "$PB_SIZE") GB)"
 t0=$(date +%s)
+# The parts' bytes so far, every second, for the app's progress bar.
+parts=()
+while read -r name _; do parts+=("$(dirname "$PB_MANIFEST")/$name"); done < <(python3 "$OMACVM_SRC/prebuilt/manifest.py" parts "$PB_MANIFEST")
+bytes_watch "prebuilt VM" "$PB_SIZE" "${parts[@]}" & watch=$!
 prebuilt_download
+# The watcher is already gone in a terminal (no OMACVM_PROGRESS): kill fails.
+kill "$watch" 2>/dev/null || true; wait "$watch" 2>/dev/null || true
+watch=
+progress_line download "prebuilt VM" "$PB_SIZE" "$PB_SIZE"
 log "downloaded and checked in $(( $(date +%s) - t0 )) s"
 
 # ---------- 3. unpack ----------

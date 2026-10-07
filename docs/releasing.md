@@ -37,7 +37,8 @@ the app through the signed feed); 2.9.x apps do not check by themselves.
 - The release text in `~/omacvm-work/release-X.Y.Z/release-text.md`
   (`OMACVM_RELEASE_NOTES`). Lines between `<!-- if-unnotarized -->` and
   `<!-- end-if -->` are dropped when the app is notarized. No "pending" left,
-  in it or in the CHANGELOG section.
+  in it, in the CHANGELOG section or in the README ("(pending #N)" marks an
+  item whose PR is not merged yet; take the mark out when it is).
 
 ## Dry run
 
@@ -61,7 +62,7 @@ src/release/release.sh X.Y.Z
 
 | Step | What it does |
 |---|---|
-| check | tools, keys, Developer ID, notary profile, KosmicKrisp, the release PR (`OMACVM_RELEASE_PR`, 77) open with CI green, CHANGELOG and release text without "pending" |
+| check | tools, keys, Developer ID, notary profile, KosmicKrisp, the release PR (`OMACVM_RELEASE_PR`, 77) open with CI green, CHANGELOG, README and release text without "pending" |
 | bump | release commit on the PR's branch: `src/VERSION`, CHANGELOG heading; merges `main` in if it moved; pushes |
 | merge | waits for CI, merges the PR with a merge commit M |
 | build | `build-app.sh --release` in a worktree at M; build tests pass, OmacVMCommit = M, helpers signed and timestamped |

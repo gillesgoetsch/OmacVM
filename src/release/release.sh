@@ -146,6 +146,10 @@ step_check() {
   if grep -qi 'pending' <<<"$w"; then
     (( DRY )) && note "CHANGELOG $VERSION still marks items as pending" || fail "CHANGELOG $VERSION still marks items as pending"
   fi
+  # README items marked "(pending #N)" (or "(pending, no PR yet ...)") until their PR is in.
+  if gitr show "origin/$head:README.md" | grep -qi '(pending'; then
+    (( DRY )) && note "README still marks items as pending" || fail "README still marks items as pending"
+  fi
   if [[ -f $NOTES ]]; then
     grep -qi 'pending' "$NOTES" && { (( DRY )) && note "release text still marks items as pending" || fail "release text still has pending items ($NOTES)"; }
   else

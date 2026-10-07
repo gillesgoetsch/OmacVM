@@ -61,7 +61,7 @@ hypervisor (and, for OmacVM.app, the SSH port is that VM's).
 
 Each VM: 16 CPUs, 48 GB, Google Chrome installed (pacman/AUR, or
 `src/bench/install-chrome.sh`: fine here, these are our VMs), the screensaver
-and lock off (`omacvm disable idle-lock --vm NAME`), the same dark wallpaper
+and lock off (`omacvm enable no-idle-lock --vm NAME`), the same dark wallpaper
 as the Mac (the built-in display dims per zone, so a bright desktop draws
 more power). On Fusion, `--ignore-gpu-blocklist` in `/etc/chrome-flags.conf`,
 or Chrome draws in software and the page says "software renderer (check

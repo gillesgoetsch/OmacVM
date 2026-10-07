@@ -9,6 +9,8 @@ import Foundation
 /// One connection, one command at a time (`lock`).
 enum GuestAgent {
     private static let lock = NSLock()
+    /// The longest reply read (guest-exec-status with 4 KB of output is far shorter).
+    private static let maxReply = 64 * 1024
     private static var held: (path: String, fd: Int32)?
 
     /// Connects to the agent's socket and keeps the connection (QEMU accepts
@@ -61,29 +63,133 @@ enum GuestAgent {
     /// Arguments are passed as they are, no shell in between.
     @discardableResult
     static func run(socketPath: String, _ path: String, _ args: [String]) -> Bool {
-        let body: [String: Any] = ["execute": "guest-exec", "arguments": ["path": path, "arg": args]]
-        guard let json = try? JSONSerialization.data(withJSONObject: body),
-              let command = String(data: json, encoding: .utf8) else { return false }
-        return execute(socketPath: socketPath, command)?.contains("\"return\"") == true
+        start(socketPath: socketPath, path, args) == .started
     }
 
-    /// Sends one command and waits up to two seconds for its one-line reply.
-    /// On the held connection when there is one (a broken one is replaced
-    /// once), else on a connection of its own.
+    enum Start { case started, refused, noAnswer }
+
+    /// As `run`, and tells a refusal (the agent answered with an error, such
+    /// as no such program in the VM) from no answer (the program may still
+    /// have started). A reply that comes too late for the 2 s wait, or only
+    /// in part, counts as no answer, not as a refusal.
+    static func start(socketPath: String, _ path: String, _ args: [String]) -> Start {
+        let body: [String: Any] = ["execute": "guest-exec", "arguments": ["path": path, "arg": args]]
+        guard let json = try? JSONSerialization.data(withJSONObject: body),
+              let command = String(data: json, encoding: .utf8) else { return .refused }
+        guard let reply = execute(socketPath: socketPath, command) else { return .noAnswer }
+        if reply.contains("\"return\"") { return .started }
+        if reply.contains("\"error\"") { return .refused }
+        return .noAnswer
+    }
+
+    /// What `runAndWait` saw.
+    enum Outcome: Equatable {
+        case noAgent                 // no agent answered (the VM is starting, or has none)
+        case refused(String)         // the agent did not start it: its error, shortened
+        case running                 // started (or sent), no result when the wait ended
+        case exited(Int32, String)   // its exit code and the start of its output
+        case badReply                // a reply that cannot be read (too long, not JSON); never sent again
+    }
+
+    /// Runs a program in the VM as root (guest-exec, its output captured) and
+    /// waits up to `seconds` for it to end. The guest is untrusted: only the
+    /// fields named here are read, numbers within range, at most 4 KB of output.
+    /// A ping first: no answer to it means no agent, and nothing was started.
+    /// The start itself is never sent twice.
+    static func runAndWait(socketPath: String, _ path: String, _ args: [String], seconds: Double) -> Outcome {
+        let body: [String: Any] = ["execute": "guest-exec",
+                                   "arguments": ["path": path, "arg": args, "capture-output": true]]
+        guard let json = try? JSONSerialization.data(withJSONObject: body),
+              let command = String(data: json, encoding: .utf8) else { return .noAgent }
+        guard case .line(let pong) = send(socketPath, "{\"execute\":\"guest-ping\"}"),
+              object(pong)?["return"] != nil else { return .noAgent }
+        let deadline = Date().addingTimeInterval(seconds)
+        let started: [String: Any]
+        switch send(socketPath, command, wait: seconds, resend: false) {
+        case .line(let reply):
+            guard let o = object(reply) else { return .badReply }
+            started = o
+        case .noReply: return .running      // sent: it may run, the agent is slow
+        case .tooLong: return .badReply
+        case .broken: return .noAgent
+        }
+        if let error = started["error"] as? [String: Any] {
+            return .refused(String(String(describing: error["desc"] ?? "error").prefix(200)))
+        }
+        guard let ret = started["return"] as? [String: Any], let pid = ret["pid"] as? Int,
+              pid > 0, pid <= Int(Int32.max) else { return .badReply }
+        let status = "{\"execute\":\"guest-exec-status\",\"arguments\":{\"pid\":\(pid)}}"
+        while Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.2)
+            let reply = send(socketPath, status)
+            if case .tooLong = reply { return .badReply }
+            guard case .line(let line) = reply,
+                  let st = object(line)?["return"] as? [String: Any],
+                  st["exited"] as? Bool == true else { continue }
+            let code = (st["exitcode"] as? Int).map { Int32(clamping: $0) } ?? -1   // none: ended by a signal
+            var out = ""
+            if let b64 = st["out-data"] as? String, let data = Data(base64Encoded: String(b64.prefix(8192))) {
+                out = String(decoding: data.prefix(4096), as: UTF8.self)
+            }
+            return .exited(code, out)
+        }
+        return .running
+    }
+
+    private static func object(_ reply: String?) -> [String: Any]? {
+        guard let reply, let data = reply.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// Sends one command and waits up to two seconds for its one-line reply:
+    /// "" when none came in time, nil when the connection broke or the reply
+    /// was too long.
     static func execute(socketPath: String, _ command: String) -> String? {
+        switch send(socketPath, command) {
+        case .line(let reply): return reply
+        case .noReply: return ""
+        case .tooLong, .broken: return nil
+        }
+    }
+
+    /// What one command got back.
+    private enum Reply {
+        case line(String)
+        case noReply              // none within the wait; the connection stays
+        case tooLong              // longer than `maxReply`: not sent again
+        case broken(sent: Bool)   // the connection broke, before or after the command went out
+    }
+
+    /// Sends one command and waits up to `wait` seconds for its reply. On the
+    /// held connection when there is one, else on a connection of its own.
+    /// A broken held connection is replaced once and the command sent again,
+    /// unless it went out already and `resend` is false. After a reply too
+    /// long the held connection is replaced too (the rest of that reply would
+    /// come in on it), but the command is not sent again.
+    private static func send(_ socketPath: String, _ command: String,
+                             wait: Double = 2, resend: Bool = true) -> Reply {
         lock.lock()
         defer { lock.unlock() }
         if let h = held, h.path == socketPath {
-            if let reply = exchange(h.fd, command) { return reply }
-            close(h.fd)
-            held = nil
-            guard let fd = connect(socketPath) else { return nil }
-            held = (socketPath, fd)
-            return exchange(fd, command)
+            let reply = exchange(h.fd, command, wait: wait)
+            switch reply {
+            case .line, .noReply:
+                return reply
+            case .tooLong:
+                close(h.fd)
+                held = connect(socketPath).map { (path: socketPath, fd: $0) }
+                return reply
+            case .broken(let sent):
+                close(h.fd)
+                held = nil
+                guard let fd = connect(socketPath) else { return reply }
+                held = (socketPath, fd)
+                return sent && !resend ? reply : exchange(fd, command, wait: wait)
+            }
         }
-        guard let fd = connect(socketPath) else { return nil }
+        guard let fd = connect(socketPath) else { return .broken(sent: false) }
         defer { close(fd) }
-        return exchange(fd, command)
+        return exchange(fd, command, wait: wait)
     }
 
     private static func connect(_ socketPath: String) -> Int32? {
@@ -109,24 +215,31 @@ enum GuestAgent {
         return fd
     }
 
-    /// One command, one reply line. A late reply to an earlier command (it
-    /// timed out) is thrown away first. nil: the connection is broken.
-    private static func exchange(_ fd: Int32, _ command: String) -> String? {
+    /// One command, one reply line, within `wait` seconds. A late reply to an
+    /// earlier command (it timed out) is thrown away first.
+    private static func exchange(_ fd: Int32, _ command: String, wait: Double) -> Reply {
         var chunk = [UInt8](repeating: 0, count: 4096)
         var stale = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         while Darwin.poll(&stale, 1, 0) > 0, stale.revents & Int16(POLLIN) != 0 {
-            if read(fd, &chunk, chunk.count) <= 0 { return nil }
+            if read(fd, &chunk, chunk.count) <= 0 { return .broken(sent: false) }
             stale.revents = 0
         }
         let line = command + "\n"
-        guard line.withCString({ write(fd, $0, strlen($0)) }) > 0 else { return nil }
+        guard line.withCString({ write(fd, $0, strlen($0)) }) > 0 else { return .broken(sent: false) }
+        let deadline = Date().addingTimeInterval(wait)
         var reply = Data()
         while !reply.contains(0x0A) {
             let n = read(fd, &chunk, chunk.count)
-            if n == 0 { return nil }
-            if n < 0 { break }          // no reply in time: the connection stays
+            if n == 0 { return .broken(sent: true) }
+            if n < 0 {
+                if errno == EINTR { continue }
+                guard errno == EAGAIN || errno == EWOULDBLOCK else { return .broken(sent: true) }
+                if Date() < deadline { continue }   // reads time out after 2 s (SO_RCVTIMEO)
+                return .noReply
+            }
             reply.append(contentsOf: chunk[0..<n])
+            if reply.count > maxReply { return .tooLong }
         }
-        return String(data: reply, encoding: .utf8) ?? ""
+        return .line(String(data: reply, encoding: .utf8) ?? "")
     }
 }

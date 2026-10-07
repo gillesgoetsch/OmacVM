@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 U=${1:?usage: install.sh <desktop-user> <WxH@Hz>}; MODE=${2:?display mode}
 H=$(getent passwd "$U" | cut -d: -f6)
-pacman -S --needed --noconfirm spice-vdagent qemu-guest-agent wl-clipboard python >/dev/null 2>&1
+../../guest/pkg-add spice-vdagent qemu-guest-agent wl-clipboard python
 systemctl enable --now qemu-guest-agent spice-vdagentd >/dev/null 2>&1 || true
 install -m755 omacvm-vdagent /usr/local/bin/omacvm-vdagent
 install -m644 omacvm-vdagent.service /etc/systemd/user/omacvm-vdagent.service
@@ -29,7 +29,7 @@ install -Dm644 90-omacvm-utm.conf /etc/environment.d/90-omacvm-utm.conf
 
 # GPU in the browsers: see virgl-msaa.c. Built here, as
 # the kernel headers it needs come with the VM.
-pacman -S --needed --noconfirm gcc >/dev/null 2>&1
+../../guest/pkg-add gcc
 L=/usr/local/lib/omacvm/virgl-msaa.so
 install -d /usr/local/lib/omacvm
 if gcc -shared -fPIC -O2 -o "$L.new" virgl-msaa.c -ldl; then mv -f "$L.new" "$L"

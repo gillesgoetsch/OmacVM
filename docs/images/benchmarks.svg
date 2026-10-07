@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 530" width="1000" height="530" role="img" aria-labelledby="t d">
 <title id="t">How fast Omarchy runs in OmacVM.app, UTM, VMware Fusion and Parallels, as a share of macOS itself</title>
-<desc id="d">CPU, all cores (Geekbench 7): OmacVM.app 99 percent, UTM 89 percent, VMware Fusion 99 percent, Parallels 96 percent. Web apps (Speedometer 3.1): OmacVM.app 70 percent, UTM 52 percent, VMware Fusion 71 percent, Parallels 67 percent. Browser graphics (WebGL Aquarium): OmacVM.app 18 percent (2.9.0 RC), UTM 26 percent, VMware Fusion 38 percent, Parallels 25 percent. Browser overall (Basemark Web 3.0): OmacVM.app no full-screen run yet, UTM 67 percent, VMware Fusion 78 percent, Parallels 75 percent. GPU compute (Geekbench 7 GPU, OpenCL): OmacVM.app 45 percent (not released yet), UTM not available (no OpenCL or Vulkan), VMware Fusion not available (no OpenCL or Vulkan), Parallels not available (no OpenCL or Vulkan). macOS itself is 100 percent.</desc>
+<desc id="d">CPU, all cores (Geekbench 7): OmacVM.app 99 percent, UTM 89 percent, VMware Fusion 99 percent, Parallels 96 percent. Web apps (Speedometer 3.1): OmacVM.app 64 percent, UTM 52 percent, VMware Fusion 71 percent, Parallels 67 percent. Browser graphics (WebGL Aquarium): OmacVM.app 18 percent, UTM 26 percent, VMware Fusion 38 percent, Parallels 25 percent. Browser overall (Basemark Web 3.0): OmacVM.app 76 percent, UTM 67 percent, VMware Fusion 78 percent, Parallels 75 percent. GPU compute (Geekbench 7 GPU, OpenCL): OmacVM.app 45 percent, UTM not available (no OpenCL or Vulkan), VMware Fusion not available (no OpenCL or Vulkan), Parallels not available (no OpenCL or Vulkan). macOS itself is 100 percent.</desc>
 <defs><pattern id="dots" width="40" height="40" patternUnits="userSpaceOnUse"><rect x="20" y="20" width="2" height="2" fill="#26233a"/></pattern>
 <pattern id="hatch-app" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#ebbcba" fill-opacity="0.25"/><rect width="3" height="6" fill="#ebbcba"/></pattern>
 <pattern id="hatch-utm" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="#c4a7e7" fill-opacity="0.25"/><rect width="3" height="6" fill="#c4a7e7"/></pattern>
@@ -36,8 +36,8 @@
 <text x="833.6" y="160" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" stroke="#191724" stroke-width="4" paint-order="stroke">96 %</text>
 <text x="40" y="207.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#e0def4" font-weight="600">Web apps</text>
 <text x="40" y="224.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86">Speedometer 3.1</text>
-<rect x="230" y="182.0" width="431.7" height="11" rx="3" fill="#ebbcba"/>
-<text x="669.7" y="191" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" font-weight="600" stroke="#191724" stroke-width="4" paint-order="stroke">70 %</text>
+<rect x="230" y="182.0" width="399.2" height="11" rx="3" fill="#ebbcba"/>
+<text x="637.2" y="191" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" font-weight="600" stroke="#191724" stroke-width="4" paint-order="stroke">64 %</text>
 <rect x="230" y="197.0" width="324.3" height="11" rx="3" fill="#c4a7e7"/>
 <text x="562.3" y="206" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" stroke="#191724" stroke-width="4" paint-order="stroke">52 %</text>
 <rect x="230" y="212.0" width="437.6" height="11" rx="3" fill="#f6c177"/>
@@ -46,10 +46,8 @@
 <text x="655.9" y="236" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" stroke="#191724" stroke-width="4" paint-order="stroke">67 %</text>
 <text x="40" y="283.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#e0def4" font-weight="600">Browser graphics</text>
 <text x="40" y="300.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86">WebGL Aquarium</text>
-<rect x="230" y="258.0" width="109.4" height="11" rx="3" fill="url(#hatch-app)"/>
+<rect x="230" y="258.0" width="109.4" height="11" rx="3" fill="#ebbcba"/>
 <text x="347.4" y="267" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" font-weight="600" stroke="#191724" stroke-width="4" paint-order="stroke">18 %</text>
-<rect x="389.4" y="257" width="66" height="13" rx="6.5" fill="none" stroke="#ebbcba" stroke-opacity="0.7"/>
-<text x="422.6" y="267" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#ebbcba" text-anchor="middle">2.9.0 RC</text>
 <rect x="230" y="273.0" width="161.8" height="11" rx="3" fill="#c4a7e7"/>
 <text x="399.8" y="282" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" stroke="#191724" stroke-width="4" paint-order="stroke">26 %</text>
 <rect x="230" y="288.0" width="233.7" height="11" rx="3" fill="#f6c177"/>
@@ -58,7 +56,8 @@
 <text x="391.7" y="312" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" stroke="#191724" stroke-width="4" paint-order="stroke">25 %</text>
 <text x="40" y="359.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#e0def4" font-weight="600">Browser overall</text>
 <text x="40" y="376.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86">Basemark Web 3.0</text>
-<text x="230" y="342" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e6a86">– OmacVM.app: no full-screen run yet</text>
+<rect x="230" y="334.0" width="469.0" height="11" rx="3" fill="#ebbcba"/>
+<text x="707.0" y="343" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" font-weight="600" stroke="#191724" stroke-width="4" paint-order="stroke">76 %</text>
 <rect x="230" y="349.0" width="416.6" height="11" rx="3" fill="#c4a7e7"/>
 <text x="654.6" y="358" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" stroke="#191724" stroke-width="4" paint-order="stroke">67 %</text>
 <rect x="230" y="364.0" width="481.6" height="11" rx="3" fill="#f6c177"/>
@@ -67,13 +66,11 @@
 <text x="705.1" y="388" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" stroke="#191724" stroke-width="4" paint-order="stroke">75 %</text>
 <text x="40" y="435.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" fill="#e0def4" font-weight="600">GPU compute</text>
 <text x="40" y="452.0" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86">Geekbench 7 GPU, OpenCL</text>
-<rect x="230" y="410.0" width="276.2" height="11" rx="3" fill="url(#hatch-app)"/>
+<rect x="230" y="410.0" width="276.2" height="11" rx="3" fill="#ebbcba"/>
 <text x="514.2" y="419" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="12" fill="#e0def4" font-weight="600" stroke="#191724" stroke-width="4" paint-order="stroke">45 %</text>
-<rect x="556.2" y="409" width="86" height="13" rx="6.5" fill="none" stroke="#ebbcba" stroke-opacity="0.7"/>
-<text x="599.1" y="419" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10" fill="#ebbcba" text-anchor="middle">not released</text>
 <text x="230" y="433" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e6a86">– UTM: not available (no OpenCL or Vulkan)</text>
 <text x="230" y="448" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e6a86">– VMware Fusion: not available (no OpenCL or Vulkan)</text>
 <text x="230" y="463" font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="11" fill="#6e6a86">– Parallels: not available (no OpenCL or Vulkan)</text>
-<text x="500.0" y="500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86" text-anchor="middle">2.9.0 RC: the release candidate in a window, 8 CPUs, another VM running; the full-screen run at release replaces it.</text>
-<text x="500.0" y="516" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86" text-anchor="middle">Not released: OmacVM.app with Vulkan and OpenCL in the VM. glmark2 and vkmark have no macOS version: see docs/benchmarks.</text>
+<text x="500.0" y="500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86" text-anchor="middle">OmacVM.app 3.0.0 in the browser rows: Mac mini M4 next to Parallels, scaled by Parallels' result on this Mac.</text>
+<text x="500.0" y="516" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#6e6a86" text-anchor="middle">GPU compute: omacvm enable vulkan (experimental). glmark2 and vkmark have no macOS version: see docs/benchmarks.</text>
 </svg>

@@ -1,0 +1,11 @@
+[Unit]
+Description=OmacVM.app: the Mac's sound delay for the VM's players (A/V sync)
+After=pipewire.service pipewire-pulse.service wireplumber.service
+ConditionPathExists=/var/lib/omacvm/audio-latency
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omacvm-audio-latency --apply
+
+[Install]
+WantedBy=default.target

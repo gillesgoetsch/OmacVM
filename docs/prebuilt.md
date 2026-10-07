@@ -39,8 +39,9 @@ What happens:
 2. The image for this app is downloaded from a GitHub release whose tag
    starts with `prebuilt-` (see below which one), in parts of at most 1.9 GB, each checked against the
    manifest's SHA-256. Interrupted downloads resume. The parts go to
-   `~/Library/Caches/omacvm/prebuilt/` and are deleted after unpacking
-   (`OMACVM_PREBUILT_KEEP=1` keeps them).
+   `~/Library/Caches/omacvm/prebuilt/` (OmacVM.app with its VMs folder on
+   another drive: `.downloads/prebuilt/` in that folder) and are deleted
+   after unpacking (`OMACVM_PREBUILT_KEEP=1` keeps them).
 3. The VM is unpacked into the usual place (`--vm-dir` and the folder question
    work as for a build), gets a new VM id, new MAC addresses and your name,
    CPUs, memory and disk size.

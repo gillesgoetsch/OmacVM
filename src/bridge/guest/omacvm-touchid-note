@@ -1,0 +1,26 @@
+#!/bin/sh
+# omacvm-touchid-note USER|--other ACTION: the polkit rule
+# (00-omacvm-touchid.rules, as polkitd) notes that USER, at the VM's screen,
+# was just checked for ACTION: one line "<time> <action>" added to
+# /run/omacvm-touchid/USER; --other: anyone else (.other). The
+# PAM client (omacvm-touchid) names the action in the Mac's dialog only when
+# it is the only one noted in the last seconds (ADR 0041). Plain sh: polkitd
+# runs its rules one at a time, so this must be quick.
+PATH=/usr/bin:/bin
+RUN=/run/omacvm-touchid
+[ "${OMACVM_TOUCHID_TEST:-}" = 1 ] && [ "$(id -u)" != 0 ] && RUN=${OMACVM_TOUCHID_RUN:-$RUN}
+[ $# -eq 2 ] || exit 2
+case $2 in ''|*[!A-Za-z0-9._-]*) exit 1 ;; esac
+[ ${#2} -le 128 ] || exit 1
+if [ "$1" = --other ]; then
+  f=$RUN/.other
+else
+  case $1 in ''|[!A-Za-z_]*|*[!A-Za-z0-9_.-]*) exit 1 ;; esac
+  [ ${#1} -le 32 ] || exit 1
+  f=$RUN/$1
+fi
+# Keep it short: the client reads only the last seconds.
+if [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 4096 ]; then
+  tail -n 16 "$f" > "$f.$$" && mv -f "$f.$$" "$f"
+fi
+printf '%s %s\n' "$(date +%s)" "$2" >> "$f"

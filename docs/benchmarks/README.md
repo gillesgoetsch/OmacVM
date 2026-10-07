@@ -42,7 +42,7 @@ Do all of this, or the numbers won't compare:
 | Each VM | 16 CPUs, 48 GB memory. On Parallels that needs Pro or the trial: Standard stops at 4 CPUs and 8 GB |
 | One VM at a time | the VM under test runs alone. Quit the other VM apps, Parallels' background service included: `pgrep -l prl_` should print nothing while you test UTM or Fusion |
 | Full screen | the VM app in full screen on the built-in display. `bench.sh` also starts Chrome full screen, on the Mac without the toolbar, so the page is the same size everywhere (1728x1080 at 2x on a 16" MacBook Pro). In a VM that also has an external display (Parallels, Fusion), Chrome must open on the built-in one: move the focus there first (`hyprctl dispatch focusmonitor Virtual-1`) |
-| No screensaver | Omarchy's screensaver and lock off: `omacvm disable idle-lock --vm NAME`. It can start in the middle of a run otherwise |
+| No screensaver | Omarchy's screensaver and lock off: `omacvm enable no-idle-lock --vm NAME`. It can start in the middle of a run otherwise |
 | Google Chrome everywhere | Google Chrome on the Mac and in the VM. Arch's Chromium is much slower than Chrome (Parallels: 35.4 with Chromium 153 vs about 45 with Chrome), so it would not compare |
 | Chrome's flags | in a VM, `bench.sh` starts Chrome with the flags in `/etc/chrome-flags.conf` and Omarchy's `~/.config/chrome-flags.conf`. On Fusion one of them must have `--ignore-gpu-blocklist` (OmacVM puts it in `/etc`), or Chrome draws in software ([why](../troubleshooting.md#2-fusion-browsers-draw-everything-in-software)) |
 | Runs | 3 of each test (`bench.sh`'s default), report the median. Single runs land within 2 to 3 % of each other. The published [results](#results) say where they are single runs |
@@ -214,17 +214,18 @@ cd ~/bench
 - The chart's input is [`chart.json`](chart.json): the medians from
   `results.json` with the GPU rounds added. CPU and Speedometer come from the
   2026-10-03 round, Aquarium and Basemark from the 2026-10-04 GPU round, both
-  in [Results](#results). Numbers from a build that is not released yet are
-  listed under `"unreleased"`; the chart stripes those bars and tags them.
-- GPU compute in the chart: OmacVM.app with Vulkan in the VM (Venus on
-  MoltenVK, OpenCL through rusticl), not released yet. Geekbench 7 GPU OpenCL,
+  in [Results](#results). OmacVM.app's Speedometer, Aquarium and Basemark are
+  3.0.0's, from the Mac mini run below (OmacVM.app 3.0.0). 3.0.1, measured
+  the same way on 2026-10-07, did not change them
+  ([OmacVM.app 3.0.1](#omacvmapp-301-2026-10-07)). Numbers from a
+  build that is not released yet are listed under `"unreleased"`; the chart
+  stripes those bars and tags them.
+- GPU compute in the chart: OmacVM.app with the vulkan feature (Venus on
+  MoltenVK, OpenCL through rusticl; experimental in 3.0.0). Geekbench 7 GPU OpenCL,
   one locked batch on 2026-10-04: Mac 95,380
   ([252722](https://browser.geekbench.com/v7/gpu/252722)), OmacVM.app 42,486
   ([252731](https://browser.geekbench.com/v7/gpu/252731)), 45 %. Parallels, UTM
   and Fusion offer no OpenCL or Vulkan to the VM.
-- OmacVM.app's Basemark has no full-screen run yet (2157 in a window, not
-  comparable), so its bar is empty. The 2.9.0 candidate (not released) gives
-  the same Aquarium as before on a quiet Mac, 21 to 23 fps in a window.
 
 **About Geekbench.** The free version uploads every result to
 browser.geekbench.com and prints only a link. `bench.sh` saves the link;
@@ -346,12 +347,160 @@ left out), range in brackets.
 | QEMU CPU during the session | 106 % | 130 % |
 | testufo on a virtual 120 Hz display, new frames a second | 88.8-90.6 | 116.6-119.6 |
 
-The chart in the README shows RC2's Aquarium against the Mac's full-screen
-numbers above, tagged "2.9.0 RC", because it is not taken the same way. RC2's
-Basemark is not in the chart: in a window it came out above the other apps'
-full-screen numbers, and that is not a fair comparison (the page size was not
-recorded; see the 2157 run above). The release run in full screen, with the
-VM alone, fills both.
+RC2's numbers are not in the chart: in a window, with another VM running,
+they are not taken the same way as the others. The 3.0.0 run below, in full
+screen with the VM alone, replaced them.
+
+### OmacVM.app 3.0.0 (2026-10-06)
+
+The chart's Speedometer, Aquarium and Basemark for OmacVM.app. Mac mini M4
+(macOS 27, LG 5K display at 60 Hz), Google Chrome, `bench.sh`, median of 3.
+Each VM alone in native full screen (guest 5120x2880, Chrome's page 2560x1440
+at 2x), 6 CPUs and 8 GB. OmacVM.app with v3.0.0's runtime and GPU path
+(test build 33fa0079), Graphics on Automatic (OpenGL). Parallels ran in the
+same session because it is also in the MacBook rounds above.
+
+| | Mac mini | OmacVM.app 3.0.0 | Parallels | OmacVM.app in the chart |
+|---|---|---|---|---|
+| Speedometer 3.1 | 56.95 | 33.9 (33.9, 34.3, 30.6) | 35.5 (36.5, 35.5, 35.5) | 40.5 (64 %) |
+| WebGL Aquarium, 30,000 fish (fps) | 60.0 | 19.1 (14.0, 19.1, 19.1) | 26.9 (21.0, 26.9, 26.9) | 19.0 (18 %) |
+| Basemark Web 3.0 | 2481 | 1730 (1730, 1650, 1743) | 1723 (1723, 1789, 1720) | 2456 (76 %) |
+
+The chart's number is Parallels' MacBook result times OmacVM.app / Parallels
+on the mini, for Speedometer 42.4 × 33.9 / 35.5 = 40.5. Scaling by the mini's
+own Chrome does not work: its Aquarium stops at the display's 60 Hz, and the
+6-CPU VMs lose more on the 10-core mini. Scaled that way, Parallels would get
+48.3 fps in Aquarium against the 26.7 it got on the MacBook.
+
+- Aquarium did not change: 19.1, the same as 2.9.0 RC2. UTM and Parallels
+  stay ahead.
+- Basemark: OmacVM.app's first full-screen run, level with Parallels.
+- The Mac mini's Speedometer is the median of 6 runs, 3 before the VMs and 3
+  after.
+- Geekbench 7 multi-core and GPU OpenCL in the chart are from the MacBook
+  rounds (2026-10-03 and 2026-10-04). The mini has no Geekbench, and the CPU
+  path did not change in 3.0.0. OpenCL needs `omacvm enable vulkan`.
+
+### OmacVM.app 3.0.1 (2026-10-07)
+
+OmacVM.app 3.0.1 as released (tag v3.0.1, 4384af39), built with a test app
+id so it runs next to the user's own app. Its QEMU, virglrenderer, MoltenVK,
+KosmicKrisp and firmware are the release zip's (QEMU and virglrenderer differ
+only in the build paths inside them). The same Mac mini, LG 5K display, VM
+("Bench OmacVM", 6 CPUs, 8 GB) and scripts as the 3.0.0 run above: Google
+Chrome 154, `bench.sh`, median of 3, each VM alone in native full screen
+(guest 5120x2880, Chrome's page 2560x1440 at 2x), Graphics on Automatic
+(OpenGL in 3.0.1), brightness 50 %, display sleep off. Parallels ran in the
+same session.
+
+| | Mac mini (before / after the VMs) | OmacVM.app 3.0.1 | Parallels | 3.0.1 scaled as in the chart | 3.0.0 in the chart |
+|---|---|---|---|---|---|
+| Speedometer 3.1 | 59.3 / 58.4 | 38.3 (38.3, 38.6, 38.3) | 38.6 (36.9, 38.6, 38.6) | 42.1 (67 %) | 40.5 (64 %) |
+| WebGL Aquarium, 30,000 fish (fps) | 60.0 / 60.0 | 20.0 (20.0, 19.9, 20.0) | 26.6 (26.9, 26.4, 26.6) | 20.1 (19 %) | 19.0 (18 %) |
+| Basemark Web 3.0 | 1968 / 2562 | 1761 (1761, 1710, 1781) | 1582 (1795, 1582, 1559) | 2723 (84 %) | 2456 (76 %) |
+
+**The chart keeps 3.0.0's numbers.** None of the three moved because of
+3.0.1:
+
+- Speedometer: Parallels rose about as much in the same session (35.5 on
+  2026-10-06, 38.6 now). OmacVM.app against Parallels went from 0.95 to
+  0.99. 3.0.1 changed nothing on the CPU or in the browser.
+- Aquarium: 20.0 here, but 18.85 (18.4 to 19.0) with the same app and VM an
+  hour later, in the OpenGL rows of the A/B below. 3.0.0 had 19.1.
+- Basemark: OmacVM.app 1761 against 1730 for 3.0.0. The scaled number jumps
+  because Parallels' three runs spread from 1559 to 1795.
+- The Mac's own Basemark before the VMs (1836 to 2024) ran right after
+  another test on the mini had finished; after the VMs it gave 2499 to 2771.
+  The chart does not use the mini's Mac numbers.
+
+A build with #173 that is not released yet (int-302 at 5c7fc40b; virgl binds
+a GL program only when it changes), the same VM and session: WebGL Aquarium
+24.1 fps (24.1, 24.1, 24.2), +20 % on 3.0.1, and Basemark 1836 (1879, 1818,
+1836), within the noise.
+
+**OpenGL against Vulkan on KosmicKrisp, with 3.0.1.** The 3.0.1 app on the
+same VM in full screen at 5120x2880, booted with Graphics OpenGL, Vulkan,
+Vulkan, OpenGL. Medians over both boots of each mode:
+
+| Mac mini M4, macOS 27 | OpenGL | Vulkan |
+|---|---|---|
+| glmark2 2023.01, full screen (6 runs) | 845 | 839 (99 %) |
+| WebGL Aquarium 30k, Chrome 154 (6 runs) | 18.85 fps | 18.85 fps (100 %) |
+| GPU throughput page, wall time: ray march / ALU / fill | 50.0 Gunits/s / 3,721 GFLOPS / 136.6 Gpixels/s | the same |
+| QEMU at the idle desktop: CPU | 1.05 % | 1.2 % |
+| QEMU memory at the end of the runs | 3.5 GB | 3.2 GB |
+| Lost GPU contexts, Mac GPU restarts | 0, 0 | 0, 0 |
+| vkmark, full screen | - | 311 |
+
+With Vulkan on, the OpenGL desktop and Chrome lose nothing on KosmicKrisp.
+vkcube ran; QEMU's log says the Vulkan image went to the screen by a CPU
+copy. The earlier A/B with the 3.0.0 runtime is in
+[Graphics: Automatic](#graphics-automatic-2026-10-05).
+
+### Power, OmacVM.app 3.0.1 (2026-10-07)
+
+The same 3.0.1 build as above. Each number is the whole Mac's draw from
+`power.sh` (`AccumulatedSystemLoad`, display included), measured over 3
+minutes that start and end on a battery update (4 minutes in practice),
+after time to settle (30 seconds on the MacBook Pro, 2 minutes on the Air).
+Brightness 50 %, read back at the start and the end of every window; the
+display stayed on; nothing polled the Mac during a window. Median of 3, range
+in brackets. The VM ran alone in native full screen on the built-in display.
+
+MacBook Pro 16" M4 Max, macOS 15.7.4, 01:36 to 02:45. The VM: a copy of the
+benchmark VM with its guest updated to 3.0.1, 16 CPUs, 48 GB, Graphics
+Automatic (OpenGL), 3456x2160 at 120 Hz, no external display. macOS and VM
+runs took turns, 3 rounds. Hours are 100 Wh over the draw.
+
+| Load | macOS | OmacVM.app 3.0.1 | OmacVM.app against macOS |
+|---|---|---|---|
+| Idle | 6.80 W (6.67-7.15), 14.7 h | 5.85 W (5.82-5.86), 17.1 h | 86 % |
+| Light: Google Chrome scrolling `reading.html` | 7.71 W (7.67-8.30), 13.0 h | 8.27 W (8.17-8.61), 12.1 h | 107 % |
+
+- On the charger: AlDente held the battery at 89 %, not charging.
+  `power.sh` reads what the system uses, not what the charger gives.
+- The VM's idle is below the Mac's for the same reason as on 2026-10-03:
+  Omarchy's dark desktop against the Mac's desktop, and the mini-LED display
+  draws less for dark content.
+- Background on the Mac: Photos analysis (`mediaanalysisd`, about 65 % CPU)
+  ran until about 01:40, the start of the first VM idle run, and Contacts
+  synced right after the first VM light run. Each window's load before and
+  after is in the run's log.
+- macOS drew more than on 2026-10-03 on the same Mac (idle 6.8 against
+  6.1 W, light 7.7 against 6.6 W). Compare numbers within one round only.
+- Only idle and light were run. YouTube 4K, every core busy and WebGL were
+  not repeated; the 2026-10-03 table above has them (OmacVM.app preview).
+
+MacBook Air M2, 8 GB, macOS 26.6.2, 01:13 to 02:55. The VM: made new with
+the app's own setup from the 3.0.0 image and updated to 3.0.1, 4 CPUs,
+4 GB, the app's default features for a Mac with a notch, Omarchy's
+screensaver and lock off. In full screen
+Omarchy got 2940x1846 next to the notch. Hours are 52.6 Wh (the Air M2's
+design capacity) over the draw.
+
+| | Median W | Range | Against macOS idle | Hours |
+|---|---|---|---|---|
+| macOS idle | 4.54 | 4.52-4.55 | - | 11.6 |
+| OmacVM.app 3.0.1 idle | 5.37 | 5.32-5.44 | +18 % | 9.8 |
+| OmacVM.app 3.0.1 light: Google Chrome 155 in the VM scrolling `reading.html` | 5.61 | 5.60-5.61 | +24 % | 9.4 |
+| OmacVM.app 2.9.1 idle, same disk | 5.47 | 5.43-5.47 | +20 % | 9.6 |
+| macOS idle again at the end (1 run) | 4.44 | - | -2 % | 11.8 |
+
+- On the charger, at 100 % and charged. Running from the battery without
+  unplugging it needs an SMC write, which we did not do. `power.sh` reads
+  what the system uses either way.
+- 3.0.1 against 2.9.1 at idle: 0.10 W less, as much as macOS idle moved
+  over the 1.5 hours (4.54 to 4.44 W). Call them the same.
+- 2.9.1 uses the whole panel in full screen (2940x1912) and starts no
+  Bridge or Gestures helper. 3.0.1 ran both.
+- The external SSD with the VMs stayed plugged in, and Terminal and a
+  status window were on screen in every row.
+- No macOS light row: this round compared each VM row with macOS idle. No
+  UTM row: the Air has no UTM.
+
+The Mac mini ran no power tests: it has no battery for `power.sh` to read,
+and its disk setup differs from the MacBooks', so its numbers would not
+compare.
 
 ## Fast network (OmacVM.app)
 
@@ -450,10 +599,11 @@ which MoltenVK lacks. With Vulkan on, OpenGL stays on virgl (Zink is slower
 and ES 2.0 only) and Chrome keeps ANGLE on GL, so on macOS 26 and newer
 Vulkan adds Vulkan apps on the better driver and changes nothing else.
 
-**Automatic = OpenGL on every Mac in 3.0.0.** On macOS 26 and newer
-(KosmicKrisp) Vulkan windows still go through the slow CPU copy below, and
-the GPU path for them is not tested there yet, so Vulkan is the user's
-choice. Turning Automatic to Vulkan on macOS 26 and newer is one constant
+**Automatic = OpenGL on every Mac in 3.0.0.** In 3.0.0 Vulkan windows on
+macOS 26 and newer (KosmicKrisp) went through the slow CPU copy below; 3.0.1
+gives them the same path as MoltenVK (numbers below). What Vulkan costs the
+OpenGL desktop on KosmicKrisp is not measured yet, so Vulkan stays the
+user's choice. Turning Automatic to Vulkan on macOS 26 and newer is one constant
 (`Graphics.autoVulkan`, `GRAPHICS_AUTO_VULKAN`).
 
 Vulkan windows: a Venus image handed to Hyprland as a dma-buf cannot be
@@ -474,11 +624,15 @@ display's refresh; that was not measured here (the hidden test window paces
 Hyprland at ~12 Hz for both paths). With vkmark's headless output, no window:
 4,700-5,200.
 
-The GPU path is on only with MoltenVK (macOS 15): the app sends
-`omacvm.vkwindows=1` only there. With KosmicKrisp (macOS 26 and newer) and
-with an older app, Vulkan windows still go through the CPU copy (vkmark full
-screen with it on a Mac mini M4 at 5K, macOS 27: 203; another run, not the
-table's scene set).
+3.0.0 sent `omacvm.vkwindows=1` only with MoltenVK (macOS 15); with
+KosmicKrisp Vulkan windows went through the CPU copy (vkmark full screen on
+a Mac mini M4 at 5K, macOS 27: 203; another run, not the table's scene set).
+3.0.1 sends it with KosmicKrisp too. Mac mini M4, macOS 27, KosmicKrisp,
+Mesa's normal WSI, 2026-10-06: vkcube windowed and full screen at 5K; then
+10 minutes of vkmark (shading and texture, 20 s each) in turns full screen
+at 5120x2880 (8 runs: 252-272) and in a 1280x800 window (7 runs:
+1279-1777), with vkcube in a window the whole time. No context lost, the
+desktop answered and showed at the end, QEMU's memory stayed at 2.7-2.9 GB.
 
 ## GPU compute with Venus (2026-10-04)
 

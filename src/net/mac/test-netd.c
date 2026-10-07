@@ -273,6 +273,32 @@ static void natTests(void) {
     u5 = natFind(&want, "utun5");
     struct natIf *w0 = natFind(&want, "en0");
     expect(u5 && u5->v4 && !u5->v6 && want.n == 1 && !w0, "VPN NAT: no IPv6 prefix on the fast network: IPv4 only");
+    // Routing messages that can change the NAT, as the service saw them on macOS 27 (Mac mini, 2026-10-06):
+    // for an IPv4 address on an up ipsec0 or lo0 only RTM_ADD of its local route (0x200005), for its removal
+    // RTM_DELETE; ARP entries (RTF_LLINFO), per-destination copies (RTF_WASCLONED) and failed requests
+    // (rtm_errno) change nothing.
+    struct { int type, flags, want; } rtm[] = {
+        { RTM_ADD, 0x200005, 1 }, { RTM_DELETE, 0x2200004, 1 }, { RTM_ADD, 0x841, 1 }, { RTM_CHANGE, 0x101, 1 },
+        { RTM_IFINFO, 0x8051, 1 }, { RTM_NEWADDR, 0x100, 1 }, { RTM_DELADDR, 0x100, 1 }, { RTM_IFINFO2, 0, 1 },
+        { RTM_ADD, 0x1200405, 0 }, { RTM_DELETE, 0x3200004 | RTF_LLINFO, 0 }, { RTM_ADD, 0x20045 | RTF_WASCLONED, 0 },
+        { RTM_GET, 0x5, 0 }, { RTM_MISS, 0x5, 0 }, { RTM_NEWMADDR, 0, 0 },
+    };
+    int rtmOk = 1;
+    for (size_t i = 0; i < sizeof rtm / sizeof *rtm; i++) {
+        struct rt_msghdr m = { .rtm_msglen = sizeof m, .rtm_version = RTM_VERSION, .rtm_type = (unsigned char)rtm[i].type, .rtm_flags = rtm[i].flags };
+        if (natChange(&m, sizeof m) != rtm[i].want) { rtmOk = 0; fprintf(stderr, "natChange type %d flags %#x: want %d\n", rtm[i].type, rtm[i].flags, rtm[i].want); }
+    }
+    struct rt_msghdr shortMsg = { .rtm_type = RTM_ADD, .rtm_flags = 0x200005 };
+    rtmOk &= !natChange(&shortMsg, 4) && !natChange(&shortMsg, -1);
+    struct rt_msghdr failed = { .rtm_type = RTM_ADD, .rtm_flags = 0x200005, .rtm_errno = EEXIST };
+    rtmOk &= !natChange(&failed, sizeof failed);
+    // An IPv4 address message (ifa_msghdr and its sockaddrs) is shorter than an rt_msghdr: it still counts.
+    struct ifa_msghdr ifam = { .ifam_msglen = 80, .ifam_version = RTM_VERSION, .ifam_type = RTM_NEWADDR };
+    char addrMsg[80] = { 0 }; memcpy(addrMsg, &ifam, sizeof ifam);
+    rtmOk &= natChange(addrMsg, sizeof addrMsg) && !natChange(addrMsg, 3);
+    ifam.ifam_type = RTM_DELADDR; memcpy(addrMsg, &ifam, sizeof ifam);
+    rtmOk &= natChange(addrMsg, sizeof addrMsg);
+    expect(rtmOk, "VPN NAT: an address on an up interface (only RTM_ADD of its route) counts; ARP and cloned routes do not");
     // pfctl's notes are not what the log says.
     char noisy[] = "No ALTQ support in kernel\nALTQ related functions disabled\npfctl: Use of -f option, could result in flushing of rules\n"
                    "present in the main ruleset added by the system at startup.\nSee /etc/pf.conf for further details.\n\n"

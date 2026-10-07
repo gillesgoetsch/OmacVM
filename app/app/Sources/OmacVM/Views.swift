@@ -1,7 +1,10 @@
 import AppKit
 import ApplicationServices
 import Combine
+import OmacVMFeatures
+import OmacVMWindow
 import SwiftUI
+import OmacVMBuildProgress
 
 /// What the launcher window shows.
 enum Screen: Equatable {
@@ -17,22 +20,16 @@ final class AppState: ObservableObject {
     @Published var screen: Screen = .setup
     @Published var config: VMConfig
     @Published var message: String?
-    /// This Mac's built-in display has a notch right now (follows displays
-    /// being plugged in, the lid and resolution changes).
-    @Published var hasNotch = Mac.hasNotch
     let creator = Creator()
     let storage = StorageModel()
     var startVM: () -> Void = {}
-    private var screensObserver: NSObjectProtocol?
+    /// This app's VM runs (main.swift sets it).
+    var vmRunning: () -> Bool = { false }
 
     init() {
         (config, screen) = Self.start()
         afterInstall = screen
         if !Installer.isInstalled { screen = .install }
-        screensObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.hasNotch = Mac.hasNotch }
-        }
         storage.onMoved = { [weak self] in self?.reload() }
         // The views read the storage through this state too (Start waits for a move).
         storageChanges = storage.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
@@ -105,6 +102,8 @@ struct SetupView: View {
     @State private var prebuilt = PrebuiltImage.Lookup.checking
     @State private var usePrebuilt = true
     @State private var graphics = GraphicsChoice.auto
+    @StateObject private var mouse = MagicMouseWatch()
+    @State private var offerCLI = !UserDefaults.standard.bool(forKey: "offeredCLI")
 
     private var userOK: Bool {
         state.config.user.range(of: "^[a-z_][a-z0-9_-]{0,31}$", options: .regularExpression) != nil
@@ -162,12 +161,15 @@ struct SetupView: View {
                 }
                 Toggle("OmacVM Bridge: the Mac's Wi-Fi, Bluetooth, audio and media keys in Omarchy's bar", isOn: $bridge)
                 Toggle("Trackpad gestures in full screen", isOn: $gestures)
+                if gestures && mouse.connected { MagicMouseRow() }
                 Toggle("Log in automatically (the Mac's own lock protects Omarchy)", isOn: $autologin)
                 GraphicsPicker(choice: $graphics)
                 Picker("Disk", selection: $state.config.diskGB) {
                     ForEach([64, 128, 256, 512], id: \.self) { Text("\($0) GB (grows as it fills)").tag($0) }
                 }
                 VMsFolderRow(storage: state.storage)
+                // Offered once, in the first setup; later in the VM window.
+                if offerCLI { CommandLineRow() }
                 if let n = state.storage.note, state.storage.noteIsError {
                     Text(n).font(.caption).foregroundStyle(.red)
                 }
@@ -207,10 +209,12 @@ struct SetupView: View {
         state.config.memoryMB = t.memoryGB * 1024
         state.config.sshPort = Mac.freePort(from: 52222)
         state.config.hostname = "omarchy"
-        let on = { (b: Bool) in b ? "on" : "off" }
-        // Omanotch off for now: see VMConfig.features.
-        state.config.features = "bridge=\(on(bridge)) wallpaper=\(on(bridge)) gestures=\(on(gestures)) scroll-momentum=\(on(gestures)) omanotch=off mac-clock=on camera=on battery=\(on(Mac.hasBattery)) external-brightness=\(on(bridge)) chromium-video=on idle-lock=on autologin=\(on(autologin)) thp-kernel=off"
+        // Omanotch on with a notch: full screen sits below the camera and
+        // Omanotch fills the strip beside it.
+        state.config.features = NewVMFeatures.string(bridge: bridge, gestures: gestures, autologin: autologin,
+                                                     hasBattery: Mac.hasBattery, hasNotch: Mac.hasNotch)
         locationProblem = nil
+        UserDefaults.standard.set(true, forKey: "offeredCLI")
         // A new VM goes into the VMs folder as it is now, under its name; the
         // folder is kept (a default that changes later must not hide the VM).
         Paths.vmsRoot = Paths.vmsRoot
@@ -227,21 +231,32 @@ struct SetupView: View {
 struct BuildView: View {
     @ObservedObject var state: AppState
     @ObservedObject var creator: Creator
+    @State private var showDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Building \(state.config.name)").font(.title2.bold())
+            Text(creator.job == .build ? "Building \(state.config.name)" : "Updating OmacVM in \(state.config.name)")
+                .font(.title2.bold())
             ProgressView(value: Double(max(creator.step - 1, 0)), total: Double(creator.steps))
             Text(creator.step > 0 ? "Step \(creator.step) of \(creator.steps): \(creator.title)" : creator.title)
-            Text(creator.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            if creator.failed == nil {
+                BuildNowView(creator: creator)
+            } else {
+                Text(creator.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
+            DisclosureGroup(isExpanded: $showDetails) {
+                BuildLogView(creator: creator)
+            } label: {
+                Text("Show details").font(.caption)
+            }
             if let error = creator.failed {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
                 HStack {
                     Button("Show Log") {
-                        NSWorkspace.shared.open(state.config.folder.appendingPathComponent("create.log"))
+                        NSWorkspace.shared.open(creator.log ?? state.config.folder.appendingPathComponent("create.log"))
                     }
                     Spacer()
-                    Button("Back") { state.screen = .setup }
+                    Button("Back") { state.screen = creator.job == .build ? .setup : .ready }
                 }
             } else {
                 Text("You can use your Mac meanwhile. Keep it awake and online.")
@@ -249,44 +264,106 @@ struct BuildView: View {
             }
         }
         .onChange(of: creator.finished) { _, done in
-            if done {
-                state.message = creator.warning
-                state.screen = .ready
-            }
+            guard done else { return }
+            let updated = creator.job == .update
+            state.screen = .ready
+            if updated { state.reload() }   // its sizes; the VM stays the one shown
+            state.message = creator.warning
+                ?? (updated ? state.config.guestVersion.map { "OmacVM in \(state.config.name) is now \($0)." } : nil)
         }
     }
 }
 
-extension ReadyView {
-    /// Moves the VM's folder to the Trash after a plain confirmation.
-    func deleteVM() {
-        let alert = NSAlert()
-        alert.messageText = "Delete \(state.config.name)?"
-        alert.informativeText = "The VM's disk and everything in Omarchy goes to the Trash."
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Delete")
-        alert.buttons[1].hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
-        guard state.config.folderIsSafe else {
-            state.message = "Not deleted: \(state.config.folder.path) is not a VM folder of this app."
-            return
+/// What the build does right now: the current part, a download's bar with
+/// speed and time left (or the package count), the step's time, and a
+/// heartbeat so a quiet part does not look frozen.
+struct BuildNowView: View {
+    @ObservedObject var creator: Creator
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            VStack(alignment: .leading, spacing: 6) {
+                if let a = creator.activity {
+                    Text(a.text).lineLimit(1).truncationMode(.middle)
+                    if let f = a.fraction { ProgressView(value: f).controlSize(.small) }
+                    if let line = downloadLine(a) {
+                        Text(line).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                } else if !creator.detail.isEmpty {
+                    Text(creator.detail.prefix(1).uppercased() + creator.detail.dropFirst()).lineLimit(2)
+                }
+                if creator.step > 0 {
+                    Text(stepTime(at: ctx.date)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(BuildText.heartbeat(quietFor: ctx.date.timeIntervalSince(creator.lastOutput)))
+                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
+            }
+            // Room for the tallest case (a download): the window keeps its
+            // height as lines come and go.
+            .frame(minHeight: 116, alignment: .topLeading)
         }
-        do {
-            try FileManager.default.trashItem(at: state.config.folder, resultingItemURL: nil)
-            state.config.location = nil
-            state.reload()
-        } catch {
-            state.message = "Could not delete: \(error.localizedDescription)"
+    }
+
+    /// "412 MB of 1.4 GB, 11.2 MB/s, about 2 min left"
+    private func downloadLine(_ a: ProgressUpdate) -> String? {
+        guard a.total > 0 else { return nil }
+        var parts = ["\(BuildText.bytes(a.done)) of \(BuildText.bytes(a.total))"]
+        if a.complete { return parts[0] }
+        if let s = creator.speed { parts.append(BuildText.speed(s)) }
+        parts.append(creator.secondsLeft.map(BuildText.left) ?? "measuring speed")
+        return parts.joined(separator: ", ")
+    }
+
+    /// "This step: 3 min 10 s so far, usually 15-40 min on this Mac (last time 22 min). Build: 9 min."
+    private func stepTime(at now: Date) -> String {
+        var s = "This step: \(BuildText.duration(now.timeIntervalSince(creator.stepStarted))) so far"
+        // An update has its own steps: no build times for them.
+        guard creator.job == .build else {
+            return s + ". Whole update: \(BuildText.duration(now.timeIntervalSince(creator.buildStarted)))."
         }
+        if let last = StepTimes.last(route: creator.route, step: creator.step) {
+            s += ", last time \(BuildText.duration(last)) on this Mac"
+        } else if let u = StepTimes.usual(route: creator.route, step: creator.step, performanceCores: Mac.performanceCores) {
+            s += ", \(StepTimes.usualText(u)) on a Mac like this"
+        }
+        return s + ". Whole build: \(BuildText.duration(now.timeIntervalSince(creator.buildStarted)))."
+    }
+}
+
+/// The last lines of the build's newest log, as they come.
+struct BuildLogView: View {
+    @ObservedObject var creator: Creator
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(creator.logName.isEmpty ? "No log yet." : creator.logName)
+                .font(.caption).foregroundStyle(.secondary)
+            // The newest line stays in view.
+            ScrollView {
+                Text(creator.logTail.joined(separator: "\n"))
+                    .font(.system(size: 10, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(6)
+            }
+            .defaultScrollAnchor(.bottom)
+            .frame(height: 220)
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .padding(.top, 4)
     }
 }
 
 struct ReadyView: View {
     @ObservedObject var state: AppState
     @State private var fullScreen = Settings.startFullScreen
-    @State private var notch = Settings.useNotch
     @State private var keepDockAway = Settings.keepDockAway
     @State private var escape = EscapeSetting.current()
+    @StateObject private var mouse = MagicMouseWatch()
     @State private var resourcesNote: String?
     @State private var fastNetOn = false
     @State private var fastNetBusy = false
@@ -294,19 +371,29 @@ struct ReadyView: View {
     @State private var fastNetStatus = ""
     @State private var graphics = GraphicsChoice.auto
     @State private var graphicsNote: String?
+    @State private var macFolder: String?
+    @State private var macFolderNote: String?
+    @State private var customResources = false
+    /// Counts the app's activations: the keyboard note is drawn anew on each.
+    @State private var activations = 0
 
-    /// The create screen's tiers; resources set some other way show as Custom.
+    /// The create screen's tiers; resources set some other way show as
+    /// Custom (-1); Custom… (-2) opens the steppers.
     private var tier: Binding<Int> {
         Binding(get: { Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) ?? -1 },
-                set: { setTier($0) })
+                set: { if $0 == -2 { customResources = true } else { setTier($0) } })
     }
 
     private func setTier(_ t: Int) {
         guard Mac.tierNames.indices.contains(t) else { return }
         let v = Mac.tier(t)
+        setResources(cpus: v.cpus, memoryGB: v.memoryGB)
+    }
+
+    private func setResources(cpus: Int, memoryGB: Int) {
         var c = state.config
-        c.cpus = v.cpus
-        c.memoryMB = v.memoryGB * 1024
+        c.cpus = cpus
+        c.memoryMB = memoryGB * 1024
         guard c != state.config else { return }
         do {
             try c.writeResources()
@@ -346,6 +433,13 @@ struct ReadyView: View {
                 if Mac.tierIndex(cpus: state.config.cpus, memoryMB: state.config.memoryMB) == nil {
                     Text("Custom: \(state.config.cpus) CPUs, \(state.config.memoryMB / 1024) GB").tag(-1)
                 }
+                Divider()
+                Text("Custom…").tag(-2)
+            }
+            .sheet(isPresented: $customResources) {
+                CustomResourcesSheet(cpus: state.config.cpus, memoryMB: state.config.memoryMB,
+                                     onSave: { setResources(cpus: $0, memoryGB: $1); customResources = false },
+                                     onCancel: { customResources = false })
             }
             if let n = resourcesNote {
                 Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
@@ -359,27 +453,43 @@ struct ReadyView: View {
             }
             .help("In a full-screen VM, Control-Option-Esc moves the monitor under the pointer (or all monitors) to the Space beside the VM's with macOS's own animation; the VM stays full screen. Pressed in macOS, it goes back into the VM. The keyboard follows the pointer's monitor.")
             .onChange(of: escape) { _, v in EscapeSetting.set(v) }
-            if state.hasNotch {
-                Toggle("Use the notch for the menu bar", isOn: $notch)
-                    .help("Full screen also covers the strip beside the notch and Omarchy's bar goes there. That full screen has no Space of its own.")
-                    .onChange(of: notch) { _, v in Settings.useNotch = v }
-            }
+            if mouse.connected { MagicMouseRow(inForm: false) }
+            keyAccess
             GraphicsPicker(choice: $graphics, plan: Runner.graphicsPlan(state.config))
                 .onChange(of: graphics) { _, v in setGraphics(v) }
+            // Vulkan fell back and stays off (graphics-fallback): the picker
+            // already shows Vulkan, so choosing it again needs a button.
+            if Graphics.fallback(folder: state.config.folder) != nil {
+                Button("Try Vulkan again") {
+                    do {
+                        try Graphics.write(graphics, folder: state.config.folder)
+                        graphicsNote = "Vulkan is tried again from the next start."
+                    } catch {
+                        graphicsNote = "Could not save: \(error.localizedDescription)"
+                    }
+                }
+            }
             if let n = graphicsNote {
                 Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
             }
             fastNetwork
+            USBSection(folder: state.config.folder)
+            macFolderRow
+            DiskSection(state: state)
+            CommandLineRow()
             Divider()
-            StorageSection(storage: state.storage)
+            StorageSection(storage: state.storage, selected: state.config.location == nil ? nil : state.config.folder)
             Divider()
             if let m = state.message { Text(m).foregroundStyle(.red) }
             if let p = state.config.filesProblem {
                 Text(p).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             }
             UpdateSection(updater: Updater.shared)
+            if let app = OmacVMVersion.app, OmacVMVersion.vmIsBehind(state.config.guestVersion, app: app) {
+                guestUpdate(app: app)
+            }
             HStack {
-                Button("Delete…") { deleteVM() }
+                Button("Delete…") { state.storage.delete(state.config) }
                     .disabled(state.storage.moving != nil)
                 Spacer()
                 Button("Start") { state.startVM() }
@@ -387,8 +497,93 @@ struct ReadyView: View {
                     .disabled(state.storage.moving != nil || state.config.filesProblem != nil)
             }
         }
-        .onAppear { refreshFastNetwork(); graphics = Graphics.read(folder: state.config.folder) }
-        .onChange(of: state.config) { _, c in refreshFastNetwork(); graphics = Graphics.read(folder: c.folder); graphicsNote = nil }
+        .onAppear {
+            refreshFastNetwork(); graphics = Graphics.read(folder: state.config.folder)
+            macFolder = MacFolder.path(state.config)
+        }
+        .onChange(of: state.config) { _, c in
+            refreshFastNetwork(); graphics = Graphics.read(folder: c.folder); graphicsNote = nil
+            macFolder = MacFolder.path(c); macFolderNote = nil
+        }
+    }
+
+    /// One folder of the Mac at ~/Mac in the VM (MacFolder), off by default.
+    private var macFolderRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Mac folder")
+                Spacer()
+                if macFolder != nil { Button("Turn Off") { setMacFolder(nil) } }
+                Button(macFolder == nil ? "Choose…" : "Change…") {
+                    if let url = MacFolder.choose(current: macFolder) { setMacFolder(url) }
+                }
+            }
+            Text(macFolder.map { "\($0) at ~/Mac in the VM. The VM can read and change everything in it." }
+                 ?? "Off. On: one folder of the Mac at ~/Mac in the VM.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let n = macFolderNote {
+                Text(n).font(.caption).foregroundStyle(n.hasPrefix("Could not") ? .red : .secondary)
+            }
+        }
+    }
+
+    private func setMacFolder(_ url: URL?) {
+        do {
+            try MacFolder.set(url, for: state.config)
+            macFolder = MacFolder.path(state.config)
+            macFolderNote = "Applies on the next start."
+        } catch {
+            macFolderNote = "Could not share: \(error.localizedDescription)"
+        }
+    }
+
+    /// A VM made by an older app keeps its OmacVM when the app is replaced:
+    /// offer to bring it up to this app's (the control centre in Omarchy only
+    /// exists from 3.0.0 on, so an older VM cannot ask for it itself).
+    private func guestUpdate(app: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("OmacVM in this VM: \(state.config.guestVersion ?? "from an older app")")
+                Spacer()
+                Button("Update VM") {
+                    state.message = nil
+                    state.creator.update(config: state.config)
+                    state.screen = .building
+                }
+                .disabled(state.storage.moving != nil || state.config.filesProblem != nil)
+            }
+            Text("This app has OmacVM \(app). Update VM starts the VM without a window, updates OmacVM in it and its helpers on the Mac (a few minutes) and shuts it down. Your files and settings in Omarchy stay.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Shown when the VM's keyboard tap is refused (KeyAccess); checked
+    /// again every few seconds and when OmacVM comes to the front (back from
+    /// System Settings). Allowed since the VM's last start: a grey line.
+    private var keyAccess: some View {
+        TimelineView(.periodic(from: .now, by: 3)) { _ in
+            switch KeyAccess.note(folder: state.config.folder) {
+            case .none:
+                EmptyView()
+            case .allowedNextStart:
+                Text(KeyNote.allowedText).font(.caption).foregroundStyle(.secondary)
+            case .needsUser:
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Keyboard: OmacVM is not allowed to read it").foregroundStyle(.red)
+                        Spacer()
+                        Button("Allow…") { KeyAccess.request() }
+                    }
+                    Text(KeyAccess.missingText).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .id(activations)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            activations += 1
+        }
     }
 
     private func setGraphics(_ g: GraphicsChoice) {
@@ -461,6 +656,16 @@ struct ReadyView: View {
     }
 }
 
+extension KeyAccess {
+    /// What the window says (KeyNote): the red note, nothing, or "allowed,
+    /// takes effect at the next start" when the refusal is from a start
+    /// before OmacVM was allowed. (Here, not in KeyAccess.swift, which
+    /// src/tests/app-key-access.sh compiles on its own.)
+    static func note(folder: URL) -> KeyNote {
+        KeyNote.decide(allowedNow: listen || post, lastLog: lastLog(folder: folder))
+    }
+}
+
 /// The self-update in the window: a ready update (never while update checks
 /// are off), what the last update did, and the weekly-check switch, shared
 /// with the control centre.
@@ -470,21 +675,22 @@ struct UpdateSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
-            let banner = updater.enabled && updater.staged != nil
+            // Weekly checks on, or a check by hand in this session.
+            let banner = updater.staged != nil && (updater.enabled || updater.lastOutcome != nil)
             if banner, let s = updater.staged {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("\(Product.name) \(s.version) is ready", systemImage: "arrow.down.circle.fill")
                         .font(.headline)
-                    Text(updater.installWhenIdle
-                         ? "You have \(updater.currentVersion). It goes in once the VM has shut down; your VMs are not changed."
-                         : "You have \(updater.currentVersion). \(Product.name) restarts with the new version; your VMs are not changed.")
+                    Text(bannerText)
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         if let n = s.notes { Button("What's New") { NSWorkspace.shared.open(n) } }
-                        Button("Skip This Version") { updater.skip() }
+                        Button("Skip This Version") { updater.skip() }.disabled(updater.restarting)
                         Spacer()
-                        if !updater.installWhenIdle { Button("Update and Relaunch") { updater.install() } }
+                        if !updater.installWhenIdle && !updater.restarting {
+                            Button("Update to \(s.version)…") { update(s.version) }.keyboardShortcut(.defaultAction)
+                        }
                     }
                 }
                 .padding(12)
@@ -497,12 +703,49 @@ struct UpdateSection: View {
                     .font(.callout).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Toggle("Check for updates once a week", isOn: Binding(get: { updater.enabled }, set: { updater.setEnabled($0) }))
-            Text("Off: no checks and no messages. The same switch as in OmacVM's control centre in Omarchy. \(Product.name) › Check for Updates… still works.")
+            HStack {
+                Toggle("Check for updates once a week", isOn: Binding(get: { updater.enabled }, set: { updater.setEnabled($0) }))
+                Spacer()
+                if updater.checking {
+                    ProgressView().controlSize(.small)
+                    Text("Checking…").font(.callout).foregroundStyle(.secondary)
+                }
+                Button("Check Now") { Task { await updater.checkNow() } }
+                    .disabled(updater.checking || updater.restarting)
+            }
+            if !updater.checking, let o = updater.lastOutcome, let line = Updater.outcomeLine(o, current: updater.currentVersion) {
+                Text(line)
+                    .font(.callout).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Off: no checks and no messages. Check Now still works. The same switch as in the control centre in Omarchy.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Divider()
         }
+    }
+
+    private var bannerText: String {
+        if updater.restarting { return "The VM shuts down for the update; it starts again with the new version." }
+        if updater.installWhenIdle {
+            return "You have \(updater.currentVersion). It goes in once the VM has shut down; your VMs are not changed."
+        }
+        if updater.runningVM() != nil {
+            return "You have \(updater.currentVersion). Your VM shuts down cleanly, \(Product.name) updates and restarts, then starts the VM again."
+        }
+        return "You have \(updater.currentVersion). \(Product.name) restarts with the new version; your VMs are not changed."
+    }
+
+    /// One confirm, then the update: with a VM restart when this launcher runs the VM.
+    private func update(_ version: String) {
+        let current = updater.currentVersion
+        if updater.runningVM() != nil {
+            guard Updater.restartAlert(version, current: current).runModal() == .alertFirstButtonReturn else { return }
+            Task { await updater.restartFromMac() }
+            return
+        }
+        let alert = Updater.checkAlert(.ready(version), current: current, busy: updater.busyNow)
+        if alert.runModal() == .alertFirstButtonReturn { updater.install() }
     }
 }
 
@@ -527,7 +770,7 @@ struct GraphicsPicker: View {
                 Text("OpenGL").tag(GraphicsChoice.opengl)
                 Text("Vulkan (experimental)").tag(GraphicsChoice.vulkan)
             }
-            .help("OpenGL: the VM's apps and browsers draw with OpenGL on the Mac's GPU. Vulkan: the same, plus Vulkan apps on the Mac's GPU (KosmicKrisp on macOS 26 and newer, MoltenVK before); Vulkan windows are copied through the CPU. Automatic: OpenGL on every Mac in this version.")
+            .help("OpenGL: the VM's apps and browsers draw with OpenGL on the Mac's GPU. Vulkan: the same, plus Vulkan apps on the Mac's GPU (KosmicKrisp on macOS 26 and newer, MoltenVK before); Vulkan windows reach the screen by a copy on the Mac. Automatic: OpenGL on every Mac in this version.")
             if let p = plan {
                 Text(p.choice == .vulkan && !p.venus ? "Next start: \(p.summary)." : "Next start: \(p.summary) (\(p.why)).")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

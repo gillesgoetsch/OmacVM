@@ -1,0 +1,172 @@
+#!/usr/bin/python3 -I
+"""omacvm-touchid-theme: the Omarchy theme's colours for the Mac's Touch ID
+panel (ADR 0041, addendum 3.0.2). Runs as the desktop user: from
+omacvm-touchid-theme.path when the theme changes, and once at login.
+
+Sends colours and a corner radius only, signed with this VM's control key
+(POST /omacvm/theme, through the control centre's client): the panel's words
+never come from the VM. The Mac checks them again and keeps the last good
+theme per VM; until one arrives it draws Tokyo Night.
+
+From ~/.local/state/omarchy/current/theme: shell.toml's [polkit] (what
+Omarchy's own password prompt draws with), else colors.toml; Hyprland's
+decoration:rounding and general:col.active_border (the border).
+
+  omacvm-touchid-theme            send it when it changed since the last time
+  omacvm-touchid-theme --force    send it anyway
+  omacvm-touchid-theme --print    print it, send nothing
+"""
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import tomllib
+
+E = os.environ
+HOME = os.path.expanduser("~")
+THEME = E.get("OMACVM_TOUCHID_THEME_DIR", HOME + "/.local/state/omarchy/current/theme")
+STATE = E.get("OMACVM_TOUCHID_THEME_STATE", E.get("XDG_STATE_HOME", HOME + "/.local/state") + "/omacvm/touchid-theme-sent")
+SHARE = E.get("OMACVM_SHARE", "/usr/local/share/omacvm")
+HYPRCTL = E.get("OMACVM_HYPRCTL", "hyprctl")
+DELAY = float(E.get("OMACVM_TOUCHID_THEME_DELAY", "2"))   # a theme switch writes many files: one send after it
+HEX = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def toml(name: str) -> dict:
+    try:
+        with open(os.path.join(THEME, name), "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def colour(v) -> str | None:
+    """'#rrggbb' (an '#rrggbbaa' loses its alpha: the Mac's card is opaque)."""
+    if isinstance(v, str) and HEX.fullmatch(v[:7]) and len(v) in (7, 9):
+        return v[:7].lower()
+    return None
+
+
+def hypr_env() -> dict:
+    """hyprctl needs the session's instance; a user service may not have it."""
+    env = dict(E)
+    if not env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        run = env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        socks = sorted(glob.glob(run + "/hypr/*/.socket.sock"), key=os.path.getmtime)
+        if socks:
+            env["HYPRLAND_INSTANCE_SIGNATURE"] = os.path.basename(os.path.dirname(socks[-1]))
+            env.setdefault("XDG_RUNTIME_DIR", run)
+    return env
+
+
+def hypr_option(name: str) -> dict:
+    try:
+        out = subprocess.run([HYPRCTL, "-j", "getoption", name], capture_output=True, timeout=3, env=hypr_env(), check=False).stdout
+        o = json.loads(out)
+        return o if isinstance(o, dict) else {}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {}
+
+
+def hypr_border(o: dict) -> tuple[list[str], float] | None:
+    """Hyprland's 'ff7aa2f7 ffbb9af7 45deg' (ARGB) -> (['#7aa2f7', '#bb9af7'], 45)."""
+    g = o.get("gradient")
+    if not isinstance(g, str):
+        return None
+    cols, angle = [], 0.0
+    for tok in g.split():
+        if re.fullmatch(r"[0-9a-fA-F]{8}", tok):
+            cols.append("#" + tok[2:].lower())
+        elif re.fullmatch(r"-?[0-9.]+deg", tok):
+            try:
+                angle = float(tok[:-3])
+            except ValueError:
+                pass
+    return (cols[:2], angle) if cols else None
+
+
+def theme() -> dict | None:
+    colors, shell = toml("colors.toml"), toml("shell.toml")
+    polkit = shell.get("polkit") if isinstance(shell.get("polkit"), dict) else {}
+    hypr = shell.get("hyprland") if isinstance(shell.get("hyprland"), dict) else {}
+
+    def ref(v):
+        if v == "hyprland.active-border":
+            return colour(hypr.get("active-border"))
+        return colour(v)
+
+    bg = ref(polkit.get("background")) or colour(colors.get("background"))
+    fg = ref(polkit.get("text")) or colour(colors.get("foreground"))
+    if not bg or not fg:
+        return None
+    accent = colour(colors.get("accent")) or ref(hypr.get("active-border")) or fg
+    out = {"background": bg, "foreground": fg, "accent": accent,
+           "error": ref(polkit.get("text-error")) or colour(colors.get("red")) or fg}
+    # The panel's "done" and its lines (the Mac checks their contrast).
+    for key, name in (("success", "green"), ("muted", "muted")):
+        c = colour(colors.get(name))
+        if c:
+            out[key] = c
+    border = hypr_border(hypr_option("general:col.active_border"))
+    if border:
+        out["border"], out["border_angle"] = border[0], border[1]
+    else:
+        out["border"] = [ref(polkit.get("border")) or accent]
+    r = hypr_option("decoration:rounding").get("int")
+    out["radius"] = r if isinstance(r, int) and not isinstance(r, bool) else 0
+    return out
+
+
+def main(argv: list[str]) -> int:
+    if DELAY > 0 and "--print" not in argv:
+        time.sleep(DELAY)
+    t = theme()
+    if t is None:
+        print("omacvm-touchid-theme: no Omarchy theme found", file=sys.stderr)
+        return 0
+    body = json.dumps(t, sort_keys=True, separators=(",", ":"))
+    if "--print" in argv:
+        print(body)
+        return 0
+    try:
+        with open(STATE, encoding="utf-8") as f:
+            if f.read() == body and "--force" not in argv:
+                return 0
+    except OSError:
+        pass
+    sys.path.insert(0, os.path.join(SHARE, "control"))
+    try:
+        from omacvm_cc.bridge import Bridge, BridgeError
+        from omacvm_cc import state as S
+    except ImportError:
+        print("omacvm-touchid-theme: OmacVM's control client is missing (omacvm apply on the Mac)", file=sys.stderr)
+        return 0
+    try:
+        with open(E.get("OMACVM_ENV", "/etc/omacvm/env"), encoding="utf-8", errors="replace") as f:
+            env = S.parse_env(f.read())
+    except OSError:
+        env = {}
+    try:
+        with open(os.path.join(SHARE, "VERSION"), encoding="utf-8") as f:
+            version = f.read().strip() or "?"
+    except OSError:
+        version = "?"
+    try:
+        Bridge(env, version).call("POST", "/omacvm/theme", t, timeout=5.0)
+    except BridgeError as e:
+        # Retried at the next theme change or login; the Mac keeps the last theme meanwhile.
+        print(f"omacvm-touchid-theme: not sent: {e}", file=sys.stderr)
+        return 0
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE + ".new", "w", encoding="utf-8") as f:
+        f.write(body)
+    os.replace(STATE + ".new", STATE)
+    print(f"omacvm-touchid-theme: {t['background']} on {t['foreground']} -> the Mac")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -32,7 +32,7 @@ fi
 
 # Omanotch's build tools (Mac-independent): omacvm apply only has to clone
 # and build it when the Mac has a notch.
-pacman -S --needed --noconfirm base-devel lz4 wayland wayland-protocols git >/dev/null 2>&1 || true
+"$here/../../guest/pkg-add" base-devel lz4 wayland wayland-protocols git || true
 
 if [[ -n $H ]]; then
 log "stopping $U's session"
@@ -82,6 +82,8 @@ rm -f /var/lib/dbus/machine-id
 rm -f /etc/NetworkManager/system-connections/* /var/lib/NetworkManager/* 2>/dev/null || true
 rm -f /var/lib/systemd/random-seed /var/lib/systemd/credential.secret
 rm -f /etc/sudoers.d/zz-omacvm-install
+# Touch ID is off in an image (src/prebuilt/lib.sh): its per-VM keys never ship in one.
+rm -f /etc/omacvm/touchid-key /etc/omacvm/touchid-token
 rm -rf /var/lib/systemd/coredump/* /var/tmp/* /tmp/* 2>/dev/null || true
 
 log "logs and caches"

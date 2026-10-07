@@ -2,10 +2,10 @@
  "baseline": "mac",
  "sources": {
   "geekbench-cpu-multi": "2026-10-03 round, single runs",
-  "speedometer": "2026-10-03 round, median of 3",
-  "aquarium": "2026-10-04 GPU round, median of 3, full screen; OmacVM.app: 2.9.0 RC2, 2026-10-05, median of 6, bench lock, window on the MacBook display, VM 8 CPUs / 16 GB, one other VM running",
-  "basemark": "2026-10-04 GPU round, median of 3, full screen",
-  "geekbench-gpu-opencl": "2026-10-04, one locked batch (Mac 252722, VM 252731 on browser.geekbench.com)"
+  "speedometer": "2026-10-03 round, median of 3; OmacVM.app: 3.0.0, 2026-10-06, median of 3, full screen, alone, on a Mac mini M4 next to Parallels, scaled by Parallels' result here",
+  "aquarium": "2026-10-04 GPU round, median of 3, full screen; OmacVM.app: 3.0.0, 2026-10-06, median of 3, full screen, alone, on a Mac mini M4 next to Parallels, scaled by Parallels' result here",
+  "basemark": "2026-10-04 GPU round, median of 3, full screen; OmacVM.app: 3.0.0, 2026-10-06, median of 3, full screen, alone, on a Mac mini M4 next to Parallels, scaled by Parallels' result here",
+  "geekbench-gpu-opencl": "2026-10-04, one locked batch (Mac 252722, VM 252731 on browser.geekbench.com); OmacVM.app with omacvm enable vulkan (experimental in 3.0.0)"
  },
  "medians": {
   "mac": {
@@ -17,8 +17,9 @@
   },
   "app": {
    "geekbench-cpu-multi": 26984,
-   "speedometer": 43.8,
+   "speedometer": 40.5,
    "aquarium": 19.0,
+   "basemark": 2456,
    "geekbench-gpu-opencl": 42486
   },
   "utm": {
@@ -40,20 +41,11 @@
    "basemark": 2446
   }
  },
- "unreleased": {
-  "app": {
-   "aquarium": "2.9.0 RC",
-   "geekbench-gpu-opencl": "not released"
-  }
- },
  "note": [
-  "2.9.0 RC: the release candidate in a window, 8 CPUs, another VM running; the full-screen run at release replaces it.",
-  "Not released: OmacVM.app with Vulkan and OpenCL in the VM. glmark2 and vkmark have no macOS version: see docs/benchmarks."
+  "OmacVM.app 3.0.0 in the browser rows: Mac mini M4 next to Parallels, scaled by Parallels' result on this Mac.",
+  "GPU compute: omacvm enable vulkan (experimental). glmark2 and vkmark have no macOS version: see docs/benchmarks."
  ],
  "missing": {
-  "app": {
-   "basemark": "no full-screen run yet"
-  },
   "utm": {
    "geekbench-gpu-opencl": "not available (no OpenCL or Vulkan)"
   },

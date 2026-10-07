@@ -1,0 +1,84 @@
+From: OmacVM
+Subject: [PATCH] cocoa: "Features…" in the app menu opens the control centre in the VM
+
+What: while OmacVM.app runs the VM, the app menu (the one named after the VM's
+app) has "Features…" under "About". A click posts a distributed notification
+under the name the launcher put in OMACVM_FEATURES_REQUEST (its bundle id and
+process id); the launcher (ControlCentreRoute.swift) runs the VM's
+src/control/guest/open.sh through the guest agent, which opens OmacVM's
+control centre on the VM's desktop (one window, in front), and says in an
+alert what is missing when it cannot (nobody logged in, control centre off,
+an older OmacVM in the VM). Without OMACVM_FEATURES_REQUEST (QEMU not started
+by OmacVM.app) the menu is unchanged.
+Why: the launcher's own menu is not shown while the VM runs (QEMU's window is
+in front), and the control centre had no route from the Mac's side
+(design: one UI, in the VM; user 2026-10-05 00:15).
+Safety: QEMU sends nothing but the click: no data, no reply read. Any process
+of the same user could post the same name; all it does is open the control
+centre in the VM.
+Upstream: not applicable (OmacVM's launcher).
+Test: build time, the patched ui/cocoa.m must call omacvm_add_features_item
+(build-qemu-gpu-runtime.sh); the guest side in src/tests/cc-open.sh; the menu
+itself in the test app on the Mac mini (tracks: cc-routes).
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -2795,6 +2795,49 @@
+     [menu setDelegate:omacvm_memory_menu];
+ }
+ 
++/*
++ * OmacVM: "Features…" in the app menu (omacvm-cocoa-features-menu.patch)
++ * opens OmacVM's control centre on the VM's desktop. QEMU only passes the
++ * click on: a distributed notification under the name OmacVM.app gave
++ * (OMACVM_FEATURES_REQUEST, its own bundle id and process id); the app runs
++ * the VM's script for it through the guest agent and says what is missing.
++ */
++@interface OmacvmFeaturesItem : NSObject
++- (void)open:(id)sender;
++@end
++
++static OmacvmFeaturesItem *omacvm_features_item;
++
++@implementation OmacvmFeaturesItem
++- (void)open:(id)sender
++{
++    const char *name = getenv("OMACVM_FEATURES_REQUEST");
++    if (!name || !*name) {
++        return;
++    }
++    [[NSDistributedNotificationCenter defaultCenter]
++        postNotificationName:[NSString stringWithUTF8String:name]
++                      object:nil
++                    userInfo:nil
++          deliverImmediately:YES];
++}
++@end
++
++static void omacvm_add_features_item(NSMenu *menu)
++{
++    const char *name = getenv("OMACVM_FEATURES_REQUEST");
++    if (!name || !*name) {
++        return; /* not started by OmacVM.app: nobody to ask */
++    }
++    omacvm_features_item = [[OmacvmFeaturesItem alloc] init];
++    NSMenuItem *item = [[[NSMenuItem alloc] initWithTitle:@"Features…"
++                                                   action:@selector(open:)
++                                            keyEquivalent:@""] autorelease];
++    [item setTarget:omacvm_features_item];
++    [item setToolTip:@"OmacVM's control centre in the VM: features on or off, repair, updates"];
++    [menu addItem:item];
++}
++
+ static void create_initial_menus(void)
+ {
+     // Add menus
+@@ -2807,6 +2850,7 @@ static void create_initial_menus(void)
+     // Application menu
+     menu = [[NSMenu alloc] initWithTitle:@""];
+     [menu addItemWithTitle:[NSString stringWithFormat:@"About %@", omacvm_product_name()] action:@selector(do_about_menu_item:) keyEquivalent:@""];
++    omacvm_add_features_item(menu);
+     omacvm_add_memory_items(menu);
+     [menu addItem:[NSMenuItem separatorItem]]; //Separator
+     menuItem = [menu addItemWithTitle:@"Services" action:nil keyEquivalent:@""];

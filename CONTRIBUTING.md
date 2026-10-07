@@ -59,6 +59,7 @@ src/omanotch/mac/test.sh
 src/bridge/mac/test.sh && src/tests/external-brightness.sh
 src/tests/install-defaults.sh
 src/tests/vm-names.sh
+src/tests/proxy.sh
 src/tests/mac-install.sh
 src/tests/release-keys.sh && src/tests/release-script.sh
 src/tests/prebuilt-manifest.sh && src/tests/prebuilt-routes.sh
@@ -66,11 +67,11 @@ src/net/mac/test.sh
 src/gestures/mac/test.sh
 src/bridge/mac/test-models.sh && src/bridge/mac/test-hid.sh
 src/tests/venus-driver.sh
-src/tests/vulkan-feature.sh && src/tests/venus-build-tools.sh && src/tests/graphics-setting.sh
+src/tests/vulkan-feature.sh && src/tests/venus-build-tools.sh && src/tests/graphics-setting.sh && src/tests/pkg-safe.sh
 src/tests/app-paths.sh
 app/runtime/Tests/display/test-pointer-guard.sh
 app/runtime/Tests/display/test-pointer-start.sh
-src/tests/app-notch.sh
+src/tests/app-fullscreen-space.sh
 src/tests/keyboard-light.sh
 src/tests/features-off.sh
 src/tests/app-storage.sh
@@ -82,6 +83,7 @@ src/tests/app-idle.sh
 src/tests/app-battery.sh
 python3 src/app/guest/tests/test_omacvm_displays.py
 python3 src/app/guest/tests/test_idle_waits.py
+python3 src/camera/guest/tests/test_frames.py
 src/tests/audio-timing.sh
 ```
 

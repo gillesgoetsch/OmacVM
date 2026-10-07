@@ -11,9 +11,10 @@ ID=org.omacvm.bridge; NAME="OmacVM Bridge"
 [[ ${OMACVM_HELPER_TEST:-0} == 1 ]] && { ID=org.omacvm.test.bridge; NAME="OmacVM Test Bridge"; }
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 ../../icon/make-icns.sh "$APP/Contents/Resources/OmacVM.icns"
-swiftc -O -swift-version 5 -target arm64-apple-macos13.0 -o "$APP/Contents/MacOS/omacvm-bridge" main.swift wifi.swift audio.swift server.swift keys.swift keylight.swift display.swift wallpaper.swift bluetooth.swift battery.swift camera.swift control.swift control_policy.swift \
+swiftc -O -swift-version 5 -target arm64-apple-macos13.0 -o "$APP/Contents/MacOS/omacvm-bridge" main.swift wifi.swift audio.swift server.swift keys.swift keylight.swift display.swift wallpaper.swift bluetooth.swift battery.swift camera.swift control.swift control_policy.swift touchid.swift touchid_policy.swift \
+  touchid_theme.swift touchid_panel_model.swift \
   external-model.swift external-brightness.swift keys-model.swift wifi-model.swift vm-keys.swift hid-keys.swift \
-  -framework AppKit -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework CoreWLAN -framework CoreLocation -framework CoreAudio -framework AudioToolbox -framework ApplicationServices -framework Security -framework SystemConfiguration -framework IOBluetooth -framework CoreBluetooth -framework IOKit
+  -framework AppKit -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework CoreWLAN -framework CoreLocation -framework CoreAudio -framework AudioToolbox -framework ApplicationServices -framework Security -framework SystemConfiguration -framework IOBluetooth -framework CoreBluetooth -framework IOKit -framework LocalAuthentication
 WHY="OmacVM Bridge reads the name of the Wi-Fi network this Mac is on, and of nearby networks, to show them in your Linux VM's status bar. macOS only reveals Wi-Fi network names to apps with Location Services access. No location is ever read or stored."
 cat > "$APP/Contents/Info.plist" <<PL
 <?xml version="1.0" encoding="UTF-8"?>

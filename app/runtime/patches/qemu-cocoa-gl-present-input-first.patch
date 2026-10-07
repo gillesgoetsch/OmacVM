@@ -1,0 +1,153 @@
+From: OmacVM
+Subject: [PATCH] cocoa: while input comes, the newest frame goes on screen
+
+What: the vsync present (qemu-cocoa-gl-present-vsync.patch) keeps finished
+frames in a short queue and shows the oldest at each refresh. With
+OMACVM_GL_INPUT_FIRST=1 (off by default), while input goes to the guest
+(a key, a click, the pointer moving: any input event in the last 150 ms,
+QEMU_CLOCK_REALTIME, recorded in ui/input.c), a tick that finds more than
+one frame shows the newest and drops the older ones. Without input
+nothing changes. QEMU's log says when it is on. Dropped frames count in
+cocoa_present_skips (dropped).
+
+Why: with frames coming steadily (the pointer moving, an animation, a
+video) the queue often held one frame, so the frame that answered a key
+or a move waited a refresh behind an older one. Measured on the Mac mini
+(60 Hz, src/tests/input-latency-vm.sh qmpkeymove: keys typed into a
+terminal while the pointer moves), on vs off in the same build: queue 2
+deep behind a new frame in 4 % vs 26 % of frames; key to screen median
+34.8 vs 35.1 ms (n=30) and 34.3 vs 39.5 ms (n=60), p90 46.7 vs 51.3 and
+41.4 vs 49.9 ms. Off by default: the gain is mostly in the tail, and
+frames dropped while scrolling (also input) could cost the pacing ADR 0020
+won; that is not measured yet.
+
+Upstream: not sent (depends on OmacVM's IOSurface/vsync present).
+Test: src/tests/input-latency-vm.sh (keymove/qmpkeymove, with and without
+OMACVM_GL_INPUT_FIRST=1). Applies after omacvm-cocoa-hw-cursor.patch.
+
+diff --git a/include/ui/input.h b/include/ui/input.h
+index fc5984d..ffcbb5c 100644
+--- a/include/ui/input.h
++++ b/include/ui/input.h
+@@ -58,6 +58,8 @@ void qemu_input_event_send(QemuConsole *src, QemuInputEvent *evt);
+ void qemu_input_event_send_impl(QemuConsole *src, QemuInputEvent *evt);
+ void qemu_input_event_sync(void);
+ void qemu_input_event_sync_impl(void);
++/* OmacVM: when the last input events went to the guest (QEMU_CLOCK_REALTIME ns, any thread). */
++int64_t qemu_input_last_event_ns(void);
+ 
+ void qemu_input_event_send_key_linux(QemuConsole *src, unsigned int lnx,
+                                      bool down);
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 2c7084e..9d58525 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -4679,6 +4679,13 @@ static void cocoa_gl_render(void)
+  */
+ #define PRESENT_QUEUE 3
+ #define PRESENT_IDLE_S 0.25            /* no frame for this long: link stops */
++/*
++ * OmacVM, OMACVM_GL_INPUT_FIRST=1 (off by default): input to the guest this
++ * recently (a key, a click, the pointer moving): the newest queued frame
++ * goes on screen and older ones are dropped, so the frame that answers
++ * waits for no frame before it.
++ */
++#define PRESENT_INPUT_NS (150 * SCALE_MS)
+ #define PRESENT_CLOSE_S (1.25 / 24)    /* frames closer than this are paced */
+ 
+ @interface QemuPresentLink : NSObject
+@@ -4723,6 +4730,7 @@ the one before (slowed link) */
+ static os_unfair_lock present_lock = OS_UNFAIR_LOCK_INIT;
+ static bool present_vsync;
+ static bool present_fixed;              /* OMACVM_GL_REFRESH=fixed */
++static bool present_input_first;        /* OMACVM_GL_INPUT_FIRST=1 */
+ static QEMUBH *present_bh;
+ static CADisplayLink *present_link;     /* created on the main thread */
+ static QemuPresentLink *present_link_target;
+@@ -4798,6 +4806,8 @@ static bool cocoa_gl_present_init(void)
+     const char *r = getenv("OMACVM_GL_REFRESH");
+     present_vsync = !(v && !strcmp(v, "0"));
+     present_fixed = r && !strcmp(r, "fixed");
++    const char *in = getenv("OMACVM_GL_INPUT_FIRST");
++    present_input_first = present_vsync && in && !strcmp(in, "1");
+     present_nsurf = present_vsync ? PRESENT_SURFACES : 3;
+     if (present_vsync) {
+         present_bh = qemu_bh_new(cocoa_gl_present_bh, NULL);
+@@ -4806,6 +4816,10 @@ static bool cocoa_gl_present_init(void)
+                 !present_vsync ? "when drawn" :
+                 present_fixed ? "on the display's refresh, full rate" :
+                 "on the display's refresh, rate follows the guest");
++    if (present_input_first) {
++        info_report("cocoa: while input comes, the newest frame goes on screen "
++                    "(OMACVM_GL_INPUT_FIRST=1)");
++    }
+     return true;
+ }
+ 
+@@ -5466,7 +5480,11 @@ static double present_wanted_hz(void)
+  */
+ static bool cocoa_gl_present_vsync(double T)
+ {
+-    PresentFrame show = { 0 }, drop = { 0 };
++    PresentFrame show = { 0 }, drop = { 0 }, stale[PRESENT_QUEUE] = { { 0 } };
++    int nstale = 0;
++    bool input = present_input_first &&
++                 qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - qemu_input_last_event_ns() <
++                 PRESENT_INPUT_NS;
+     double now = CACurrentMediaTime();
+     bool rate = false, idle = false;
+ 
+@@ -5477,6 +5495,18 @@ static bool cocoa_gl_present_vsync(double T)
+     present_sync.win_ticks++;
+     present_sync.ticks++;
+     if (present_sync.queued) {
++        /*
++         * Input is coming: frames that wait behind a newer one are old news
++         * (the newer answers the input). Show the newest at this refresh.
++         */
++        if (input && present_sync.queued > 1) {
++            nstale = present_sync.queued - 1;
++            memcpy(stale, present_sync.queue, sizeof(PresentFrame) * nstale);
++            memmove(&present_sync.queue[0], &present_sync.queue[nstale],
++                    sizeof(PresentFrame));
++            present_sync.queued = 1;
++            present_sync.dropped += nstale;
++        }
+         show = present_sync.queue[0];
+         present_sync.queued--;
+         memmove(&present_sync.queue[0], &present_sync.queue[1],
+@@ -5565,6 +5595,9 @@ static bool cocoa_gl_present_vsync(double T)
+     if (drop.surf) {
+         surface_put(drop.surf);
+     }
++    for (int i = 0; i < nstale; i++) {
++        surface_put(stale[i].surf);
++    }
+     if (show.surf) {
+         cocoa_gl_present_show(show.surf, show.filter);
+         surface_put(show.surf);
+diff --git a/ui/input.c b/ui/input.c
+index 857dd90..97d139c 100644
+--- a/ui/input.c
++++ b/ui/input.c
+@@ -369,11 +369,20 @@ void qemu_input_event_send(QemuConsole *src, QemuInputEvent *evt)
+     replay_input_event(src, evt);
+ }
+ 
++/* OmacVM: the displays answer input sooner while it comes (ui/cocoa.m's present). */
++static int64_t input_last_event_ns;
++
++int64_t qemu_input_last_event_ns(void)
++{
++    return qatomic_read(&input_last_event_ns);
++}
++
+ void qemu_input_event_sync_impl(void)
+ {
+     QemuInputHandlerState *s;
+ 
+     trace_input_event_sync();
++    qatomic_set(&input_last_event_ns, qemu_clock_get_ns(QEMU_CLOCK_REALTIME));
+ 
+     QTAILQ_FOREACH(s, &handlers, node) {
+         if (!s->events) {

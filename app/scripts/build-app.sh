@@ -119,6 +119,12 @@ SWIFT_MODULECACHE_PATH=$PWD/.build/mc/swift CLANG_MODULE_CACHE_PATH=$PWD/.build/
   { echo "launcher build failed" >&2; exit 1; }
 LAUNCHER=$ROOT/app/.build/release/OmacVM
 [[ -x $LAUNCHER ]] || { echo "launcher build failed" >&2; exit 1; }
+# Touch ID's panel, which QEMU loads (omacvm-cocoa-touchid-panel.patch, ADR 0041).
+SWIFT_MODULECACHE_PATH=$PWD/.build/mc/swift CLANG_MODULE_CACHE_PATH=$PWD/.build/mc/clang \
+  MACOSX_DEPLOYMENT_TARGET=15.0 swift build --disable-sandbox -c release -debug-info-format none --product OmacVMTouchIDPanel 2>&1 | { grep -v '^\[' || true; } ||
+  { echo "Touch ID panel build failed" >&2; exit 1; }
+TOUCHID_PANEL=$ROOT/app/.build/release/libOmacVMTouchIDPanel.dylib
+[[ -f $TOUCHID_PANEL ]] || { echo "Touch ID panel build failed" >&2; exit 1; }
 
 ICON=$ROOT/.build/OmacVM.icns
 if [[ ! -f $ICON ]]; then
@@ -136,11 +142,24 @@ install -m755 "$LAUNCHER" "$C/MacOS/OmacVM"
 install -m644 "$ICON" "$C/Resources/OmacVM.icns"
 ditto "$RT/qemu-gpu-runtime" "$C/Resources/runtime"
 mv "$C/Resources/runtime/bin/qemu-system-aarch64" "$C/Resources/runtime/bin/OmacVM"
+install -m644 "$TOUCHID_PANEL" "$C/Resources/runtime/lib/OmacVMTouchIDPanel.dylib"
+install_name_tool -id @rpath/OmacVMTouchIDPanel.dylib "$C/Resources/runtime/lib/OmacVMTouchIDPanel.dylib"
+mkdir -p "$C/Resources/fonts"
+install -m644 "$ROOT/fonts/JetBrainsMono-Regular.ttf" "$ROOT/fonts/JetBrainsMono-Bold.ttf" "$ROOT/fonts/OFL.txt" "$C/Resources/fonts/"
+# The app starts QEMU through this link, so macOS counts it as this app: one
+# icon in the Dock (DockIdentity.swift). The kernel still names it OmacVM.
+ln -s ../Resources/runtime/bin/OmacVM "$C/MacOS/OmacVM-VM"
 install -m644 "$RT/firmware/edk2-aarch64-code.fd" "$RT/firmware/firmware-source" "$C/Resources/firmware/"
 install -m755 "$ROOT/scripts/create-vm.sh" "$ROOT/scripts/prebuilt-vm.sh" "$ROOT/scripts/apply-vm.sh" "$ROOT/scripts/vm-common.sh" \
+  "$ROOT/scripts/update-vm.sh" \
   "$ROOT/scripts/update-swap.sh" "$C/Resources/scripts/"
-git -C "$REPO" archive "$COMMIT" src | tar -x -C "$C/Resources/omacvm"
+# The complete omacvm (entry script + src, as a release checkout): apply-vm.sh
+# runs its src/, and the Bridge runs it for the control centre when there is no
+# checkout (src/lib/mac.sh cli_file_app). The Bridge runs it only when nobody
+# else can write it (control.swift controlCLI): no group/other write bits.
+git -C "$REPO" archive "$COMMIT" omacvm src | tar -x -C "$C/Resources/omacvm"
 echo "$COMMIT" > "$C/Resources/omacvm/COMMIT"
+chmod -R go-w "$C/Resources/omacvm"
 install -m644 "$ROOT/LICENSE" "$C/Resources/licenses/LICENSE.omacvm-app"
 install -m644 "$ROOT/THIRD_PARTY_NOTICES.md" "$C/Resources/licenses/"
 install -m644 "$ROOT/runtime/LICENSE.try-omarchy" "$C/Resources/licenses/"
@@ -182,12 +201,36 @@ ditto "$HB/src/bridge/mac/build/OmacVMBridge.app" "$C/Helpers/$BRIDGE_APP"
 ditto "$HB/src/gestures/mac/build/OmacVMGestures.app" "$C/Helpers/$GESTURES_APP"
 rm -rf "$HB"
 
+# Every program in the app must start on the macOS the app says it needs
+# (LSMinimumSystemVersion 15.0 below): a helper built without a minimum takes
+# the build Mac's macOS (Gestures built on macOS 27 did not start on 26).
+MIN_MACOS=15.0
+while IFS= read -r -d '' f; do
+  file -b "$f" | grep -q '^Mach-O' || continue
+  # KosmicKrisp is loaded only on macOS 26 and newer (Graphics.swift).
+  [[ $f == */libvulkan_kosmickrisp.dylib ]] && continue
+  m=$(otool -l "$f" 2>/dev/null | awk '/LC_BUILD_VERSION/ {b = 1} b && $1 == "minos" {print $2; exit}')
+  [[ -z $m ]] && m=$(otool -l "$f" 2>/dev/null | awk '/LC_VERSION_MIN_MACOSX/ {b = 1} b && $1 == "version" {print $2; exit}')
+  if [[ -n $m ]] && [[ $(printf '%s\n%s\n' "$m" "$MIN_MACOS" | sort -V | tail -1) != "$MIN_MACOS" ]]; then
+    echo "${f#"$C/"} needs macOS $m, newer than the app's $MIN_MACOS: build it with a -target / deployment target" >&2
+    exit 1
+  fi
+done < <(find "$C" -type f -perm -u+x -print0)
+
 # The app carries the version of the OmacVM it is part of.
+# OmacVMControlRun: OmacVM Bridge may run the control centre's omacvm through
+# this app (OmacVM --control-run, ControlRun.swift); an older app has no key.
 # Bluetooth: macOS charges Bluetooth, the camera and the microphone of a
 # helper run from inside this bundle (Contents/Helpers) to the app, and kills
 # the helper if the app's Info.plist has no reason for it (OS_REASON_TCC).
 # The installed Bridge runs from ~/Applications and has its own; this keeps
 # a Bridge started in place alive (src/tests/prebuilt-helpers.sh checks).
+# NSPrefersDisplaySafeAreaCompatibilityMode false: macOS never shrinks the
+# whole display below the camera for the launcher's windows (no "Scale to fit
+# below built-in camera" box in Get Info). Since 3.0.1 it holds for the VM's
+# windows too: QEMU, started as Contents/MacOS/OmacVM-VM, counts as this app
+# (DockIdentity.swift), so AppKit reads this file for it as well; its full
+# screen is macOS's own and sits below the camera.
 VERSION=$(cat "$REPO/src/VERSION")
 cat > "$C/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -203,11 +246,19 @@ cat > "$C/Info.plist" <<EOF
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>OmacVMCommit</key><string>$COMMIT</string>
-  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>OmacVMControlRun</key><true/>
+  <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSPrefersDisplaySafeAreaCompatibilityMode</key><false/>
+  <key>NSLocalNetworkUsageDescription</key><string>OmacVM reaches your VM on the Mac's own VM network: to set it up, for the control centre and for the fast network.</string>
   <key>NSMicrophoneUsageDescription</key><string>The VM can use your Mac's microphone.</string>
   <key>NSCameraUsageDescription</key><string>Linux apps in the VM can use your Mac's camera. It is on only while one of them uses it.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>Your Mac folder setting shares this folder with the VM at ~/Mac.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>Your Mac folder setting shares this folder with the VM at ~/Mac.</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>Your Mac folder setting shares this folder with the VM at ~/Mac.</string>
+  <key>NSRemovableVolumesUsageDescription</key><string>Your Mac folder setting shares a folder on this drive with the VM at ~/Mac.</string>
+  <key>NSNetworkVolumesUsageDescription</key><string>Your Mac folder setting shares a folder on this network drive with the VM at ~/Mac.</string>
   <key>NSBluetoothAlwaysUsageDescription</key><string>OmacVM Bridge shows this Mac's Bluetooth devices in your Linux VM's status bar, and connects, disconnects or forgets them when you ask there.</string>$( (( TEST )) && printf '\n  <key>OmacVMGesturesDomain</key><string>%s</string>' "$GESTURES_ID")
 </dict>
 </plist>

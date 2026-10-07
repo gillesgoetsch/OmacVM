@@ -19,6 +19,14 @@ org.omacvm.display, one JSON object per line:
                 where Hyprland put its outputs (logical pixels), so the
                 Mac points the pointer at the right one.
 
+Hyprland's event socket has no event when an output only moves (display-sync
+and Omanotch move them with hyprctl eval, a config reload puts them back to
+"auto" for a moment). A stale report leaves the pointer in part of the screen
+(only the left half, say), so the agent learns of moves three ways: the Lua
+hook monitor.layout_changed (omacvm_app.lua) runs `omacvm-displays poke`; for
+15 s after any change it compares the layout twice a second; and it compares
+it every 10 s anyway.
+
 The layout goes to $XDG_RUNTIME_DIR/omacvm/displays.json, where
 omacvm-display-sync takes the positions from, and the built-in display's
 output to $XDG_RUNTIME_DIR/omacvm/builtin (missing: none of them), which
@@ -32,6 +40,7 @@ The switch "Use external displays" is ~/.config/omacvm/displays.conf
   omacvm-displays state             "on" or "off" (nothing without the port)
   omacvm-displays status            the switch and the outputs, as JSON
   omacvm-displays desktop           displays that show no desktop, as JSON
+  omacvm-displays poke              tell the agent the layout moved (Hyprland's hook)
 
 A display can come up without wallpaper or bar, only Hyprland's dark grey:
 when the shell lost its GPU context (QEMU refused a large texture's memory,
@@ -70,6 +79,7 @@ CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "oma
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 STATE = RUNTIME / "omacvm/displays.json"
 BUILTIN = RUNTIME / "omacvm/builtin"
+POKE = RUNTIME / "omacvm/displays.poke"
 SYNC = "/usr/local/bin/omacvm-display-sync"
 WIDGET = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omarchy/plugins/omacvm.monitor"
 WIDGET_BUILD = Path("/usr/local/share/omacvm/app/guest/monitor-widget/build.py")
@@ -438,13 +448,19 @@ def run_sync() -> None:
 
 
 def refresh_widget() -> None:
-    """Rebuild omacvm.monitor when an Omarchy update changed its display panel."""
+    """Rebuild omacvm.monitor when an Omarchy update changed its display panel.
+    The installer may be rewriting the widget right now: a file gone midway
+    is not an error (it used to stop the agent)."""
     stamp = WIDGET / ".source-sha256"
-    if not stamp.exists() or not WIDGET_BUILD.exists() or not OMARCHY_PANEL.exists():
-        return
     import hashlib
-    digest = hashlib.sha256(OMARCHY_PANEL.read_bytes()).hexdigest()
-    if stamp.read_text().strip() == digest:
+    try:
+        if not stamp.exists() or not WIDGET_BUILD.exists() or not OMARCHY_PANEL.exists():
+            return
+        digest = hashlib.sha256(OMARCHY_PANEL.read_bytes()).hexdigest()
+        if stamp.read_text().strip() == digest:
+            return
+    except OSError as error:
+        log(f"display widget not checked: {error}")
         return
     try:
         subprocess.run([sys.executable, str(WIDGET_BUILD), str(WIDGET)], timeout=30, check=True)
@@ -478,6 +494,66 @@ SHELL_LOOKS = (10.0, 25.0)  # seconds after a shell (re)start to look
 # slipped by: rarely while Hyprland's events come in, more often without.
 SAFETY_WITH_EVENTS = 30.0
 SAFETY_WITHOUT_EVENTS = 5.0
+# Hyprland sends no event when an output only moves, so the agent also
+# compares the layout itself (one IPC call; a report goes out only when it
+# changed): twice a second for FOLLOW seconds after any change (a config
+# reload moves outputs for a few seconds), else every REPORT_EVERY seconds.
+FOLLOW = 15.0
+FOLLOW_EVERY = 0.5
+REPORT_EVERY = 10.0
+
+
+class Poke:
+    """The datagram socket `omacvm-displays poke` writes to (Hyprland's Lua
+    hook monitor.layout_changed). Not available: ok is False; the agent then
+    relies on its own comparing."""
+
+    def __init__(self, path: Path) -> None:
+        self.sock: socket.socket | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.unlink(missing_ok=True)
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            s.bind(str(path))
+            s.setblocking(False)
+            self.sock = s
+        except OSError:
+            pass
+
+    @property
+    def ok(self) -> bool:
+        return self.sock is not None
+
+    def fileno(self) -> int:
+        return self.sock.fileno() if self.sock else -1
+
+    def drain(self) -> bool:
+        """Reads the pending pokes; True when there was one."""
+        got = False
+        while self.sock:
+            try:
+                self.sock.recv(64)
+                got = True
+            except BlockingIOError:
+                break
+            except OSError:
+                break
+        return got
+
+    def close(self) -> None:
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+
+
+def poke(path: Path = POKE) -> None:
+    """Tells a running agent the layout moved. Nothing listening: nothing to do."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.setblocking(False)
+            s.sendto(b"layout\n", str(path))
+    except OSError:
+        pass
 
 
 class Agent:
@@ -491,6 +567,8 @@ class Agent:
         self.events: socket.socket | None = None
         self.check_at = 0.0
         self.last_check = 0.0
+        self.last_report = 0.0
+        self.follow_until = 0.0
         self.looks: list[float] = []   # when to look at the displays
         self.shell: int | None = None
         self.suspect: tuple[list[str], float] | None = None
@@ -502,6 +580,7 @@ class Agent:
         self.repaired_for: list[str] = []
         self.said: list[str] = []
         self.config_watch = ConfigWatch(CONFIG.parent)
+        self.poke = Poke(POKE)
 
     def send(self, message: dict) -> None:
         self.outbox += json.dumps(message, separators=(",", ":")).encode() + b"\n"
@@ -534,7 +613,16 @@ class Agent:
         if not self.check_at or when < self.check_at:
             self.check_at = when
 
+    def follow(self) -> None:
+        """Compare the layout often for a while: outputs keep moving for a few
+        seconds after a change, without events."""
+        self.follow_until = time.monotonic() + FOLLOW
+
+    def report_every(self, now: float) -> float:
+        return FOLLOW_EVERY if now < self.follow_until else min(REPORT_EVERY, self.safety_every())
+
     def report(self) -> None:
+        self.last_report = time.monotonic()
         current = monitors()
         if current is not None and current != self.reported:
             self.reported = current
@@ -549,6 +637,7 @@ class Agent:
         self.looks = [t for t in self.looks if not now < t <= now + SETTLE]
         self.look_in(SETTLE)
         self.suspect = None
+        self.follow()
 
     def watch_shell(self) -> None:
         pid = shell_pid()
@@ -652,7 +741,7 @@ class Agent:
         """Seconds until the agent has something to do. Idle on the desktop
         that is the safety report: the agent does not wake the VM every
         second (events and the Mac's lines wake it)."""
-        due = [self.last_check + self.safety_every()]
+        due = [self.last_check + self.safety_every(), self.last_report + self.report_every(now)]
         if self.check_at:
             due.append(self.check_at)
         if self.looks:
@@ -663,15 +752,23 @@ class Agent:
 
     def run(self) -> None:
         self.send({"hello": 1, "external": self.external})
+        # Started in the middle of a change (a config reload restarts it):
+        # the first report may be a passing layout.
+        self.follow()
         while True:
             self.connect_events()
             readers = [self.fd] + ([self.events] if self.events else [])
             if self.config_watch.ok:
                 readers.append(self.config_watch)
+            if self.poke.ok:
+                readers.append(self.poke)
             writers = [self.fd] if self.outbox else []
             ready, writable, _ = select.select(readers, writers, [], self.timeout(time.monotonic()))
             if self.config_watch in ready:
                 self.config_watch.drain()
+            if self.poke in ready and self.poke.drain():
+                self.layout_changed()
+                self.soon(0.05)
             if writable:
                 self.flush()
             if self.fd in ready:
@@ -715,14 +812,21 @@ class Agent:
                 if on != self.external:
                     self.external = on
                     self.send({"external": on})
-            now = time.monotonic()
-            if (self.check_at and now >= self.check_at) or now - self.last_check >= self.safety_every():
-                self.check_at = 0.0
-                self.last_check = now
-                self.report()
-                self.watch_shell()
-            self.repair_done()
-            self.check_desktop()
+            self.due()
+
+    def due(self) -> None:
+        """What is due now: the report (and a look for the shell), the
+        layout compare, the desktop check."""
+        now = time.monotonic()
+        if (self.check_at and now >= self.check_at) or now - self.last_check >= self.safety_every():
+            self.check_at = 0.0
+            self.last_check = now
+            self.report()
+            self.watch_shell()
+        elif now - self.last_report >= self.report_every(now):
+            self.report()
+        self.repair_done()
+        self.check_desktop()
 
 
 def notify(text: str) -> None:
@@ -766,6 +870,9 @@ def main(argv: list[str]) -> int:
                           "misplaced": misplaced_wallpapers(hypr_json("j/monitors"),
                                                             hypr_json("j/layers")),
                           "repairs": repairs}, indent=2))
+        return 0
+    if len(argv) >= 2 and argv[1] == "poke":
+        poke()
         return 0
     if len(argv) >= 2 and argv[1] not in ("run",):
         print(__doc__.strip(), file=sys.stderr)

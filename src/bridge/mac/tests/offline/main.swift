@@ -8,17 +8,64 @@ func check(_ ok: Bool, _ what: String, line: Int = #line) {
   if !ok { failed += 1; print("FAIL (line \(line)): \(what)") }
 }
 
-// ---- steps: macOS's 16 (fine 64), on the grid, clamped ----
-check(BrightnessStep.next(0.5, up: true, fine: false) == 9.0 / 16, "0.5 up = 9/16")
-check(BrightnessStep.next(0.5, up: false, fine: false) == 7.0 / 16, "0.5 down = 7/16")
-check(BrightnessStep.next(0.35, up: true, fine: false) == 7.0 / 16, "off the grid: snaps (0.35 -> 6/16) then steps")
-check(BrightnessStep.next(1, up: true, fine: false) == 1, "top stays 1")
-check(BrightnessStep.next(0, up: false, fine: false) == 0, "bottom stays 0")
-check(BrightnessStep.next(0.5, up: true, fine: true) == 33.0 / 64, "fine: 1/64")
+// ---- steps: 32 by default (macOS: 16), Option finer, on the grid, clamped ----
+let n = BrightnessStep.defaultSteps
+check(n == 32, "32 steps by default (user 2026-10-06: 16 too rough)")
+check(BrightnessStep.steps(nil) == 32 && BrightnessStep.steps(16) == 16, "config: unset = 32, 16 = macOS's")
+check(BrightnessStep.steps(0) == 8 && BrightnessStep.steps(-5) == 8 && BrightnessStep.steps(1000) == 100, "config clamps to 8...100")
+check(BrightnessStep.fine(32) == 64 && BrightnessStep.fine(16) == 64 && BrightnessStep.fine(48) == 96 && BrightnessStep.fine(100) == 100,
+      "Option: at least macOS's quarter steps (64), twice the normal ones, at most 100")
+check(BrightnessStep.next(0.5, up: true, steps: n) == 17.0 / 32, "0.5 up = 17/32")
+check(BrightnessStep.next(0.5, up: false, steps: n) == 15.0 / 32, "0.5 down = 15/32")
+check(BrightnessStep.next(0.35, up: true, steps: n) == 12.0 / 32, "off the grid: snaps (0.35 -> 11/32) then steps")
+check(BrightnessStep.next(1, up: true, steps: n) == 1, "top stays 1")
+check(BrightnessStep.next(0, up: false, steps: n) == 0, "bottom stays 0")
+check(BrightnessStep.next(0.5, up: true, steps: 16) == 9.0 / 16, "16 (macOS's) still works: 0.5 up = 9/16")
+check(BrightnessStep.next(0.5, up: true, steps: BrightnessStep.fine(n)) == 33.0 / 64, "fine: 1/64")
 var v = 0.0
-for _ in 0..<16 { v = BrightnessStep.next(v, up: true, fine: false) }
-check(v == 1, "16 steps from 0 reach 1")
-check(BrightnessStep.raw(0.4375, max: 100) == 44, "raw: 7/16 of 100 = 44")
+for _ in 0..<32 { v = BrightnessStep.next(v, up: true, steps: n) }
+check(v == 1, "32 steps from 0 reach 1")
+// Every press moves the monitor's raw value (until it is at its end), also on a coarse monitor.
+for m in [100, 50, 10, 255] {
+  for steps in [n, BrightnessStep.fine(n), 100] {
+    var x = BrightnessStep.level(m / 3, max: m), moved = true, presses = 0
+    while x < 1 && presses < 200 {
+      let to = BrightnessStep.next(x, up: true, steps: steps, max: m)
+      if BrightnessStep.raw(to, max: m) == BrightnessStep.raw(x, max: m), BrightnessStep.raw(x, max: m) < m { moved = false }
+      x = to; presses += 1
+    }
+    check(moved && x == 1, "max \(m), \(steps) steps: every press up moves the raw value, ends at the top")
+    while x > 0 && presses < 400 {
+      let to = BrightnessStep.next(x, up: false, steps: steps, max: m)
+      if BrightnessStep.raw(to, max: m) == BrightnessStep.raw(x, max: m), BrightnessStep.raw(x, max: m) > 0 { moved = false }
+      x = to; presses += 1
+    }
+    check(moved && x == 0, "max \(m), \(steps) steps: every press down moves the raw value, ends at 0")
+  }
+}
+// Max 100, 32 steps: the popup shows each step as its own percent (3-4 points apart).
+var pcts: [Int] = [], w = 0.0
+for _ in 0..<32 { w = BrightnessStep.next(w, up: true, steps: n, max: 100); pcts.append(BrightnessStep.percent(w)) }
+check(Set(pcts).count == 32 && zip(pcts, pcts.dropFirst()).allSatisfy { (3...4).contains($1 - $0) }, "32 percents, 3-4 apart: \(pcts)")
+
+// ---- ramp: a key's jump of more than two steps goes out in parts, at most two steps a write ----
+check(Ramp.limit(max: 100, steps: 32) == 6 && Ramp.limit(max: 10, steps: 32) == 1 && Ramp.limit(max: 65535, steps: 32) == 4096,
+      "ramp limit: two steps of raw")
+check(Ramp.next(from: nil, to: 80, limit: 6) == 80, "level unknown: straight")
+check(Ramp.next(from: 30, to: 33, limit: 6) == 33, "one press (3 points): one write")
+check(Ramp.next(from: 30, to: 80, limit: 6) == 36 && Ramp.next(from: 80, to: 30, limit: 6) == 74, "a jump: two steps at a time, both ways")
+var r = 13, rampWrites = 0
+while r != 63 && rampWrites < 50 { r = Ramp.next(from: r, to: 63, limit: 6); rampWrites += 1 }
+check(r == 63 && rampWrites == 9, "13 -> 63: 9 writes, ends exactly there (\(rampWrites))")
+// A held key at 30 repeats a second (3.1 points each) against one write per ~60 ms: the ramp keeps up.
+var target = 20.0, at = 20, t = 0.0, nextWrite = 0.0, lag = 0.0
+while t < 1.0 {
+  target = min(100, 20 + (t / 0.033).rounded(.down) * 100 / 32)
+  if t >= nextWrite { at = Ramp.next(from: at, to: Int(target.rounded()), limit: 6); nextWrite = t + 0.06 }
+  lag = max(lag, target - Double(at)); t += 0.001
+}
+check(lag <= 10, "held key for 1 s: the monitor stays within 10 points of the keys (\(lag))")
+check(BrightnessStep.raw(0.4375, max: 100) == 44, "raw: 14/32 of 100 = 44")
 check(BrightnessStep.raw(1.5, max: 100) == 100 && BrightnessStep.raw(-1, max: 100) == 0, "raw clamps")
 check(BrightnessStep.level(35, max: 100) == 0.35, "level 35/100")
 check(BrightnessStep.level(5, max: 0) == 0, "max 0: level 0, no division")
@@ -175,6 +222,20 @@ check(WindowList.rects(list, pid: 7) == [fullExternal, windowOnExternal], "pid 7
 check(WindowList.rects(list, pid: 9).isEmpty, "another pid: none")
 check(DisplayPick.spansOne(WindowList.rects(list, pid: 7), displays.map(\.bounds)), "the media keys' full-screen rule from the same list")
 check(!DisplayPick.spansOne([windowOnExternal], displays.map(\.bounds)), "...a window is not full screen")
+
+// ---- which Bridge an OmacVM.app VM belongs to (test identity vs normal) ----
+let rt = "/Contents/Resources/runtime/bin/OmacVM"
+check(VMOwner.app(executable: "/Applications/OmacVM.app" + rt) == "/Applications/OmacVM.app", "the VM's app from its QEMU")
+check(VMOwner.app(executable: "/Volumes/SD/apps/OmacVM Test.app" + rt) == "/Volumes/SD/apps/OmacVM Test.app", "...also on another drive, with a space")
+check(VMOwner.app(executable: "/opt/homebrew/bin/qemu-system-aarch64") == nil, "a development build's QEMU: no app")
+check(VMOwner.app(executable: "/Applications/OmacVM.app/Contents/MacOS/OmacVM") == nil, "the launcher is no VM")
+check(VMOwner.ours(appID: "org.omacvm.app", testBridge: false), "normal Bridge: OmacVM.app's VM")
+check(!VMOwner.ours(appID: "org.omacvm.app", testBridge: true), "test Bridge: not OmacVM.app's VM")
+check(VMOwner.ours(appID: "org.omacvm.app.test", testBridge: true), "test Bridge: OmacVM Test.app's VM")
+check(!VMOwner.ours(appID: "org.omacvm.app.test", testBridge: false),
+      "normal Bridge: not OmacVM Test.app's VM (Air 2026-10-06: it took the keys, no OSD in the VM)")
+check(VMOwner.ours(appID: "com.example.omacvm", testBridge: false), "normal Bridge: a build with another bundle id")
+check(VMOwner.ours(appID: nil, testBridge: false) && VMOwner.ours(appID: nil, testBridge: true), "unknown app (development build): every Bridge's, as before")
 
 if failed > 0 { print("\(failed) failed"); exit(1) }
 print("external brightness: all offline tests passed")

@@ -60,7 +60,7 @@ def vulkan_stub_link_args(compiler):
     return ["-Wl,-rpath," + str(stub)]
 
 
-def run_api_test(name, frameworks=(), oracle=False, vulkan_stub=False):
+def run_api_test(name, frameworks=(), oracle=False, vulkan_stub=False, env=None):
     """Link against the built libvirglrenderer and drive it through its public API.
     The tests run on Apple's software renderer (soft-gl.h), never on the GPU."""
     entry = next(item for item in entries if item["file"].endswith("/virglrenderer.c"))
@@ -77,7 +77,7 @@ def run_api_test(name, frameworks=(), oracle=False, vulkan_stub=False):
                     "-framework", "OpenGL", *[a for f in frameworks for a in ("-framework", f)],
                     "-Wno-deprecated-declarations", "-o", str(binary)],
                    cwd=directory, check=True)
-    subprocess.run([str(binary)], check=True)
+    subprocess.run([str(binary)], check=True, env={**os.environ, **(env or {})})
 
 
 def run_fuzz_replay():
@@ -119,3 +119,5 @@ run_test("test-blitter-shaders", "vrend_blitter.c")
 run_api_test("test-empty-framebuffer")
 run_api_test("test-sampler-limit")
 run_api_test("test-set-type-no-egl")
+run_api_test("test-program-binds")
+run_api_test("test-program-binds", env={"OMACVM_VIRGL_PROGRAM_CACHE": "0"})

@@ -1,0 +1,80 @@
+#!/bin/bash
+# pkg-add [--asdeps] PACKAGE...: installs the PACKAGEs this VM does not have
+# yet, and nothing else. Every OmacVM guest script installs through this.
+#
+# OmacVM never updates a package the VM already has. One package newer than
+# the rest of the system is a partial update, which Arch does not support:
+# on 2026-10-06 `pacman -S --needed ... mesa` after a `pacman -Sy` put Mesa
+# 26.2.4 (built for LLVM 23) beside LLVM 22, GBM could not load, Hyprland
+# stopped and the VM showed a black screen. Updates are the user's
+# `omarchy update` (all packages at once).
+#
+# A package counts as there in any version. When installing the missing ones
+# would also change a package the VM has (pacman's package list is newer than
+# the system, or a dependency needs a newer version), nothing is installed and
+# one line on stderr says so: update the whole system first, then
+# `omacvm apply`. Never runs `pacman -Sy`.
+# Exit: 0 all there now, 1 not (one line on stderr), 3 not because the VM
+# needs a full system update first (an old package list, or a partial update
+# refused): guest/system-update, then try again. pacman's own output goes to
+# /var/log/omacvm-pacman.log.
+# Tests: src/tests/pkg-safe.sh.
+set -uo pipefail
+# pacman's English words below ("Depends On", "[installed: "): with the
+# VM's locale (German, say) the checks would find nothing and let it in.
+export LC_ALL=C
+LOG=${OMACVM_PKG_LOG:-/var/log/omacvm-pacman.log}
+asdeps=()
+[[ ${1:-} == --asdeps ]] && { asdeps=(--asdeps); shift; }
+(( $# )) || exit 0
+# pacman -T prints what is not installed (status 127 then).
+missing=$(pacman -T "$@") || true
+[[ -n $missing ]] || exit 0
+read -r -d '' -a want <<<"$missing" || true
+names=${want[*]}
+# What pacman would install for them, dependencies included.
+if ! targets=$(pacman -S --print --print-format '%n %v' --noconfirm "${want[@]}" 2>>"$LOG"); then
+  echo "OmacVM: $names not installed: pacman does not find them (no network, or an old package list: update the system with omarchy update, then omacvm apply)" >&2
+  exit 1
+fi
+change=""
+while read -r n v; do
+  [[ -n $n && -n ${v:-} ]] || continue
+  have=$(pacman -Q "$n" 2>/dev/null | awk '{ print $2 }') || have=""
+  [[ -n $have && $have != "$v" ]] && change+=", $n $have -> $v"
+done <<<"$targets"
+# A new package built against newer libraries than the VM has is a partial
+# update too, though pacman lets it in (unversioned dependencies: lldb 23
+# beside LLVM 22). So: none of the new packages may depend on an installed
+# package that has a newer version waiting in the package list.
+waiting=$(pacman -Sl 2>/dev/null | awk '/\[installed: / { print $2 }')
+if [[ -n $waiting && -z $change ]]; then
+  # shellcheck disable=SC2046 # one package per word
+  deps=$(pacman -Si $(awk '{ print $1 }' <<<"$targets") 2>/dev/null |
+    awk '/^Depends On/ { f = 1; sub(/^Depends On *: */, ""); print; next } f && /^ / { print; next } { f = 0 }' |
+    tr ' ' '\n' | sed 's/[<>=].*//' | grep -v '^None$' | grep -v '^$' | sort -u)
+  for d in $(grep -Fxf <(echo "$waiting") <<<"$deps"); do
+    change+=", $d $(pacman -Q "$d" 2>/dev/null | awk '{ print $2 }') -> $(pacman -Sl 2>/dev/null | awk -v n="$d" '$2 == n { print $3; exit }')"
+  done
+fi
+if [[ -n $change ]]; then
+  echo "OmacVM: $names not installed: it goes with newer versions of what the VM has (${change#, }); alone it would be a partial update, which can break the desktop. Update the system with omarchy update, then omacvm apply" >&2
+  exit 3
+fi
+{ echo "== $(date '+%F %T') pkg-add ${asdeps[*]-} $names"; } >>"$LOG" 2>/dev/null || true
+out=$(mktemp) || out=/dev/null
+if ! pacman -S --noconfirm ${asdeps[@]+"${asdeps[@]}"} "${want[@]}" >"$out" 2>&1; then
+  cat "$out" >>"$LOG" 2>/dev/null
+  # The package list names versions the mirrors no longer have (a VM, often a
+  # fresh prebuilt one, not updated for a while): every download is a 404.
+  if grep -q "failed retrieving file .* error: 404" "$out" 2>/dev/null; then
+    echo "OmacVM: $names not installed: the VM's package list is older than the mirrors (they no longer have those versions). Update the system with omarchy update, then omacvm apply" >&2
+    [[ $out == /dev/null ]] || rm -f "$out"
+    exit 3
+  else
+    echo "OmacVM: $names not installed: pacman failed (details in $LOG)" >&2
+  fi
+  [[ $out == /dev/null ]] || rm -f "$out"
+  exit 1
+fi
+cat "$out" >>"$LOG" 2>/dev/null; [[ $out == /dev/null ]] || rm -f "$out"

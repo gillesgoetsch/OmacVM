@@ -36,7 +36,14 @@ OMA_STEPS=$(( ${#COMMIT} ? 3 : 2 ))
 
 # ---------- this checkout ----------
 [[ -n $COMMIT ]] && step release "the release"
-if [[ -n $COMMIT && $(git -C "$R" rev-parse HEAD) != "$COMMIT" ]]; then
+# OmacVM.app's copy (no checkout; COMMIT from build-app.sh): the app updates
+# itself, and this copy with it.
+if [[ ! -e $R/.git && -f $R/COMMIT ]]; then
+  if [[ -n $COMMIT && $(cat "$R/COMMIT") != "$COMMIT" ]]; then
+    failed_part "" "update OmacVM.app first: u in the control centre does it, or Check Now in OmacVM on the Mac" mac
+    die "this Mac's OmacVM is OmacVM.app's own: update OmacVM.app first (u in the control centre, or Check Now in OmacVM on the Mac)"
+  fi
+elif [[ -n $COMMIT && $(git -C "$R" rev-parse HEAD) != "$COMMIT" ]]; then
   [[ -z $(git -C "$R" status --porcelain --untracked-files=no) ]] || die "this checkout has local changes: not moved to the release ($R)"
   log "OmacVM: the release (${COMMIT:0:12})"
   git -C "$R" fetch -q origin || die "git fetch failed in $R"
@@ -92,7 +99,9 @@ mac_failure() {   # the failed line for the control centre, last (it shows the l
 step app "OmacVM.app"
 # The version that goes with this OmacVM, from its release (curl: no
 # quarantine). Not while the app is open: it may run a VM.
-if app=$(app_bundle); then
+# Not from OmacVM.app's own copy: the app updates itself (Check Now, or u in
+# the control centre), and app_bundle may name another copy of it.
+if [[ -z ${OMACVM_APP_COPY:-} ]] && app=$(app_bundle); then
   have=$(app_version "$app"); want=$(cat "$R/src/VERSION")
   if app_version_lt "$have" "$want"; then
     # awk reads to the end: an early exit would stop app_list with SIGPIPE.

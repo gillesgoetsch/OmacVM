@@ -5,6 +5,8 @@
 #    (OMACVM_MAIN_LOOP_QOS=default, hda-micro pace=off; "main loop QoS: ...", "HDA sound pacing on|off")
 #  - a Mac audio device that does not answer: the playback-thread patch is built in, its
 #    log lines match omacvm check's "sound" line, the test stub builds
+#  - the guest: RTKit's drop-in without the canary is installed, and omacvm check tells a
+#    real-time PipeWire from a demoted one
 # Exit 0 when every check passes.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -73,5 +75,18 @@ check "check.sh: a device that does not answer warns with the fix" grep -q "^war
 check "check.sh: one that works again is ok" grep -q "^ok:.*works again" <<<"$(sound "$NA" "$WA")"
 check "check.sh: stuck again after that warns" grep -q "^warn:" <<<"$(sound "$NA" "$WA" "$NA")"
 check "check.sh: a run without either line prints nothing" test -z "$(sound "OmacVM: HDA sound pacing on")"
+# The guest: RTKit keeps PipeWire real-time after the VM was stopped (src/guest/sound/rtkit-no-canary.conf).
+NC=$R/src/guest/sound/rtkit-no-canary.conf
+GI=$R/src/guest/install.sh
+GC=$R/src/guest/check.sh
+check "RTKit drop-in clears ExecStart, then starts it without the canary" \
+  test "$(grep '^ExecStart=' "$NC" | tr '\n' ' ')" = "ExecStart= ExecStart=/usr/lib/rtkit-daemon --no-canary "
+check "guest install puts the drop-in under rtkit-daemon.service.d" \
+  grep -qF 'install -Dm644 "$R/guest/sound/rtkit-no-canary.conf" /etc/systemd/system/rtkit-daemon.service.d/' "$GI"
+rt_awk=$(grep -o "awk '\$2 ~ /^data-loop/[^']*'" "$GC")
+prio() { eval "$rt_awk" && echo rt || echo normal; }   # ps -L -o cls=,comm= lines -> rt | normal
+check "check.sh: a real-time data loop is ok" test "$(printf 'TS pipewire\nTS module-rt\nRR data-loop.0\n' | prio)" = rt
+check "check.sh: a demoted data loop is not" test "$(printf 'TS pipewire\nTS module-rt\nTS data-loop.0\n' | prio)" = normal
+check "check.sh: a real-time thread that is not the data loop does not count" test "$(printf 'RR pipewire\nTS data-loop.0\n' | prio)" = normal
 echo "audio-timing: $((N - FAIL))/$N ok"
 exit $(( FAIL > 0 ))

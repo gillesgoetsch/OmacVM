@@ -1,0 +1,97 @@
+#!/bin/bash
+# gbm-guard begin|end|test (root, in the VM): the desktop's graphics (GBM)
+# still open after an OmacVM install. Hyprland (aquamarine) needs GBM; when it
+# cannot open, the VM boots to a black screen.
+#   test   exit 0 when GBM opens (or the VM has no GPU to test), 1 when not,
+#          with one line why
+#   begin  notes whether GBM opens now and the version of every package
+#   end    GBM opened at begin and not now: puts the packages that changed
+#          since begin back to their old versions (from pacman's cache) and
+#          tests again. Exit 0 = GBM as good as at begin, 1 = still broken
+#          (the line says how to recover)
+#   rebase after a full system update with GBM open (guest/system-update):
+#          the install's start is now (end does not undo the update).
+#          Nothing without a begin
+# guest/install.sh runs begin before its first pacman and end when it stops.
+# Tests: src/tests/pkg-safe.sh (OMACVM_GBM_TEST stands in for the test).
+set -uo pipefail
+D=${OMACVM_GBM_GUARD_DIR:-/run/omacvm-gbm-guard}
+CACHE=${OMACVM_PKG_CACHE:-/var/cache/pacman/pkg}
+
+# One line why GBM does not open; nothing when it does.
+gbm_problem() {
+  if [[ -n ${OMACVM_GBM_TEST:-} ]]; then $OMACVM_GBM_TEST; return; fi
+  local f miss
+  # A library the GBM backend needs is missing (a partial update: Mesa built
+  # for another LLVM than the one installed). ldd follows libgallium too.
+  for f in /usr/lib/gbm/dri_gbm.so /usr/lib/libgbm.so.1; do
+    [[ -e $f ]] || continue
+    miss=$(ldd "$f" 2>/dev/null | awk '/not found/ { print $1 }' | sort -u | tr '\n' ' ')
+    [[ -z $miss ]] || { echo "$f needs ${miss% } (not installed)"; return; }
+  done
+  command -v python3 >/dev/null || return 0
+  # What aquamarine does first: a GBM device on the GPU.
+  python3 - <<'EOF'
+import ctypes, glob, os, sys
+nodes = sorted(glob.glob("/dev/dri/card*")) + sorted(glob.glob("/dev/dri/renderD*"))
+if not nodes:
+    sys.exit(0)  # no GPU to test (nothing to compare)
+try:
+    g = ctypes.CDLL("libgbm.so.1")
+except OSError as e:
+    print(f"libgbm does not load: {e}"); sys.exit(0)
+g.gbm_create_device.restype = ctypes.c_void_p
+g.gbm_create_device.argtypes = [ctypes.c_int]
+g.gbm_device_destroy.argtypes = [ctypes.c_void_p]
+fd = os.open(nodes[0], os.O_RDWR | os.O_CLOEXEC)
+dev = g.gbm_create_device(fd)
+if not dev:
+    print(f"no GBM device on {nodes[0]} (gbm_create_device failed)")
+else:
+    g.gbm_device_destroy(dev)
+os.close(fd)
+EOF
+}
+
+case ${1:-} in
+  test)
+    p=$(gbm_problem)
+    [[ -z $p ]] && { echo "GBM opens"; exit 0; }
+    echo "GBM does not open: $p"; exit 1 ;;
+  begin)
+    mkdir -p "$D" && chmod 700 "$D"
+    p=$(gbm_problem)
+    if [[ -z $p ]]; then : > "$D/ok"; else rm -f "$D/ok"; fi
+    pacman -Q > "$D/packages" 2>/dev/null
+    exit 0 ;;
+  rebase)
+    [[ -f $D/packages ]] || exit 0
+    exec "$0" begin ;;
+  end) ;;
+  *) echo "usage: gbm-guard begin|end|test|rebase" >&2; exit 2 ;;
+esac
+
+[[ -f $D/packages ]] || { echo "gbm-guard: no begin" >&2; exit 0; }
+p=$(gbm_problem)
+if [[ -z $p ]]; then rm -rf "$D"; exit 0; fi
+if [[ ! -f $D/ok ]]; then
+  # Broken before this install too: not OmacVM's change, nothing to undo.
+  echo "OmacVM: the desktop's graphics (GBM) do not open: $p. It was so before this install too; see docs/troubleshooting.md, \"Black screen after an update\"" >&2
+  rm -rf "$D"; exit 0
+fi
+# What changed since begin: name old-version (upgraded or downgraded).
+changed=$(pacman -Q 2>/dev/null | awk 'NR == FNR { old[$1] = $2; next } ($1 in old) && old[$1] != $2 { print $1, old[$1] }' "$D/packages" -)
+files=(); lost=""
+while read -r n v; do
+  [[ -n $n ]] || continue
+  f=$(ls "$CACHE/$n-$v"-*.pkg.tar.* 2>/dev/null | grep -v '\.sig$' | head -1) || f=""
+  if [[ -n $f ]]; then files+=("$f"); else lost+=" $n-$v"; fi
+done <<<"$changed"
+list=$(tr '\n' ' ' <<<"$changed" | sed 's/ *$//')
+echo "OmacVM: this install broke the desktop's graphics ($p): putting back: ${list:-nothing changed}" >&2
+if (( ${#files[@]} )) && [[ -z $lost ]] && pacman -U --noconfirm "${files[@]}" >/dev/null 2>&1 && [[ -z $(gbm_problem) ]]; then
+  echo "OmacVM: graphics work again (the packages are back to their versions from before)" >&2
+  rm -rf "$D"; exit 0
+fi
+echo "OmacVM: graphics still do not open${lost:+ (not in the package cache:$lost)}. Do not restart the VM: update the whole system (omarchy update), or see docs/troubleshooting.md, \"Black screen after an update\"" >&2
+rm -rf "$D"; exit 1

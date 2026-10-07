@@ -69,6 +69,32 @@ struct ParkState {
         return [(a, "park \(on ? 1 : 0)")]
     }
 
+    /// Where a guest that just connected is seen on the Mac.
+    enum Seen {
+        /// Its VM is full screen on the built-in display, on the active Space.
+        case fullScreen
+        /// A VM window is full screen on the built-in display on another Space.
+        case otherSpace
+        /// No full-screen VM window on the built-in display.
+        case none
+    }
+
+    /// What a guest that just connected is told at once (bar patch v17).
+    /// Full screen: "hint 1", the strip is coming; the guest parks its bar now,
+    /// so the display shows no bar that then moves into the strip (after a
+    /// windowed session its boot hint said "0"). No full-screen window:
+    /// "park 0", the strip is hidden; a guest whose strip showed at the end of
+    /// its last session started parked and gets its bar back at once instead
+    /// of after its own grace time. Another Space: nothing; the guest keeps its
+    /// own guess (park 0 would clear its boot hint for when the user is back).
+    func connected(_ guest: Int, seen: Seen) -> [(guest: Int, line: String)] {
+        switch seen {
+        case .fullScreen: return [(guest, "hint 1")]
+        case .otherSpace: return []
+        case .none: return [(guest, "park 0")]
+        }
+    }
+
     /// The guest's session started over (it starts unparked) or ended.
     mutating func reset(_ guest: Int, gone: Bool) {
         guard guest == active else { return }

@@ -1,0 +1,113 @@
+From: OmacVM
+Subject: [PATCH] ui/cocoa: no events into QEMU after the display's cleanup
+
+What: cocoa_display_cleanup marks the display closed (under the BQL);
+with_bql and bool_with_bql then skip their block. The clipboard event is
+set and left alive instead of destroyed, and the pasteboard owner is kept,
+since AppKit may still ask it for data. The second qkbd_state_init (after
+the identity patch's early one) no longer leaks the first.
+
+Why: on Quit or a guest shutdown QEMU's thread runs qemu_cleanup with the
+BQL, frees kbd, unlocks and only then exits. The main thread keeps running
+AppKit meanwhile: a key or mouse event waiting for the BQL went on with kbd
+NULL and crashed in qkbd_state_modifier_get (EXC_BAD_ACCESS at 0x70, the
+mods bitmap; user report 2026-10-06, "the app quit unexpectedly" on
+shutdown). The same window let a paste wait on a destroyed QemuEvent and
+let AppKit call a released pasteboard owner. The same code is upstream.
+
+handleEventLocked: also returns at once once the display is closed (kbd
+freed), whatever path calls it.
+
+Upstream: candidate (same race in upstream ui/cocoa.m). Test:
+Tests/display/test-shutdown-events.sh (build time, on the patched
+ui/cocoa.m; --self-test catches the old code). Applies after
+omacvm-cocoa-head-key-same-space.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -141,6 +141,13 @@ static void cocoa_switch(DisplayChangeListener *dcl,
+ static NSTextField *pauseLabel;
+ 
+ static bool allow_events;
++/*
++ * OmacVM: QEMU's thread ran cocoa_display_cleanup (kbd, the clipboard and the
++ * listener are gone) and is about to exit. AppKit still delivers events and
++ * runs blocks until then: they must not touch that state. Set and read with
++ * the BQL held.
++ */
++static bool cocoa_display_closed;
+ 
+ static NSInteger cbchangecount = -1;
+ static QemuClipboardInfo *cbinfo;
+@@ -304,7 +311,9 @@ static void with_bql(CodeBlock block)
+     if (!locked) {
+         bql_lock();
+     }
+-    block();
++    if (!cocoa_display_closed) {
++        block();
++    }
+     if (!locked) {
+         bql_unlock();
+     }
+@@ -318,7 +327,7 @@ static bool bool_with_bql(BoolCodeBlock block)
+     if (!locked) {
+         bql_lock();
+     }
+-    val = block();
++    val = cocoa_display_closed ? false : block();
+     if (!locked) {
+         bql_unlock();
+     }
+@@ -1577,6 +1586,10 @@ - (bool) handleEventLocked:(NSEvent *)event
+ {
+     /* Return true if we handled the event, false if it should be given to OSX */
+     COCOA_DEBUG("QemuCocoaView: handleEvent\n");
++    /* OmacVM: the display is closed (kbd freed): macOS keeps the event. */
++    if (cocoa_display_closed || !kbd) {
++        return false;
++    }
+     InputButton button;
+     unsigned int keycode;
+     NSUInteger modifiers = [event modifierFlags];
+@@ -7411,7 +7424,10 @@ static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
+ 
+     qemu_console_register_listener(qemu_console_lookup_default(),
+                                    &dcl, dcl.ops);
+-    kbd = qkbd_state_init(dcl.con);
++    /* OmacVM: made earlier already (the identity patch); a second one leaked it. */
++    if (!kbd) {
++        kbd = qkbd_state_init(dcl.con);
++    }
+     qemu_add_mouse_mode_change_notifier(&mouse_mode_change_notifier);
+     [cocoaView notifyMouseModeChange];
+     [cocoaView updateUIInfo];
+@@ -7437,15 +7453,25 @@ static void cocoa_display_cleanup(void)
+         return;
+     }
+ 
++    /*
++     * OmacVM: from here on the main thread's BQL blocks (with_bql) do nothing:
++     * an event AppKit delivers before QEMU exits found kbd freed (crash in
++     * qkbd_state_modifier_get on Quit/shutdown, 2026-10-06).
++     */
++    cocoa_display_closed = true;
+     qemu_console_unregister_listener(&dcl);
+     g_clear_pointer(&kbd, qkbd_state_free);
+     qemu_del_vm_change_state_handler(pinch_vm_change);
+     qemu_remove_mouse_mode_change_notifier(&mouse_mode_change_notifier);
+     qemu_clipboard_peer_unregister(&cbpeer);
+     g_clear_pointer(&cbinfo, qemu_clipboard_info_unref);
+-    qemu_event_destroy(&cbevent);
+-    [cbowner release];
+-    cbowner = nil;
++    /*
++     * A paste on the main thread may wait on cbevent with the BQL dropped:
++     * wake it (cbinfo is gone, so it stops) and leave the event alive; the
++     * process exits next.
++     */
++    qemu_event_set(&cbevent);
++    /* cbowner: AppKit may still ask it for data; it stays (a no-op now). */
+ }
+ 
+ static QemuDisplay qemu_display_cocoa = {

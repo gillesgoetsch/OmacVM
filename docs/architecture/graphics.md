@@ -263,6 +263,21 @@ spin and naps above. `OMACVM_VIRGL_FENCE_BUSY=0` turns it off. Bench lock,
 shipped, ADR 0026) 19.9 fps, glmark2 short set 1160 / 2986 / 3168, testufo
 unchanged.
 
+Program binds (`virgl-use-program-cache.patch`): vrend called `glUseProgram`
+before every draw, also when that program was already bound, and Apple's GL
+rebuilds its draw state after each one. WebGL Aquarium makes one draw per
+fish, so it paid that about 590,000 times a second. vrend now remembers the
+bound program per sub context (one GL context each) and skips the repeat.
+Deleting a program or pipeline, the GL blitter, and binds from paths that do
+not know their sub context (transfers, read-back) drop what it remembers.
+`bench-program-binds` (vrend through its API, one draw with new constants
+per object, mini, no lock): 0.83 -> 0.64 us per draw. In a VM, the same
+runtime with the cache off and on: Aquarium 30k fish 20.85 -> 25.45 fps
+(MacBook Pro M4 Max) and 19.65 -> 24.2 fps (Mac mini M4, macOS 27);
+Basemark the same within its noise; WebGL 1 and 2 conformance identical.
+`OMACVM_VIRGL_PROGRAM_CACHE=0` binds on every draw again. Test:
+`test-program-binds`.
+
 ### Where the time goes
 
 - Light frames (glmark2, the desktop): the fence round trip. Fixed above.
@@ -408,14 +423,48 @@ Patches (all in `app/runtime/patches`, one per concern):
   texture, filled from the heap when a draw samples it (Metal blit into a
   shared buffer, then `glTexSubImage2D`, once per command buffer); memory
   that cannot be read leaves it blank. The app says so at start (OEM string
-  `omacvm.vkwindows=1`, only with MoltenVK: KosmicKrisp's exported memory is
-  not tested yet); the guest then keeps Mesa's normal WSI, otherwise (older
-  app, KosmicKrisp) it sets `MESA_VK_WSI_DEBUG=sw` (`omacvm-vulkan-present`).
+  `omacvm.vkwindows=1`, with MoltenVK and with KosmicKrisp since 3.0.1:
+  KosmicKrisp's heaps are shared memory, so the texture is filled straight
+  from them, without the blit); the guest then keeps Mesa's normal WSI,
+  otherwise (older app) it sets `MESA_VK_WSI_DEBUG=sw` (`omacvm-vulkan-present`).
 
 Switch: the VM's Graphics setting (ADR 0035; up to 2.9 the hidden `venus`
 default, moved into it at the first 3.0.0 launch) adds
-`blob=true,venus=true,hostmem=<plan>G` to the GPU device, once the VM has a
+`blob=true,venus=true,hostmem=<n>M` to the GPU device, once the VM has a
 Venus driver with blob rounding (`venus-ready`). Automatic is OpenGL in 3.0.0.
+That driver is OmacVM's build of the distro's `vulkan-virtio` (Mesa 26.2.4
+with `mesa-venus-opaque-fd-semaphores.patch`, version `26.2.4.omacvm1`:
+it sorts after Arch's 26.2.4-x and before 26.2.5), so Chrome's WebGPU works
+with the setting alone, through the `omacvm-chromium-webgpu` launcher
+(`venus/webgpu.sh`; next section for why Chrome needs both).
+
+M1/M2: macOS gives their VMs 36 address bits (64 GB), and QEMU's high PCI
+window (512 GB at 512 GB) does not fit. Every BAR then shares the 751 MB
+window below 1 GB, where a 1 GB host memory window never fits and the
+firmware maps no device at all (3.0.0: a Vulkan start there never boots).
+From 3.0.1 the app adds `highmem-mmio-size=<n>G` to the machine there
+(`Graphics.highWindowGB`, 16 GB at most) and
+`qemu-virt-small-high-window.patch` puts that window right above RAM; the
+host memory window takes at most half of it (M2 Air, 4 GB VM: 1 GB in
+16-32 GB). If no window fits (a VM near 64 GB), or the app's QEMU lacks the
+patch (the app looks for the patch's error text in the binary), it is
+256 MB, which fits below 1 GB.
+
+A start with Vulkan is watched for 3 minutes (`VenusStartWatch`). No PCI
+BAR mapped 25 s after QMP first answered (the firmware found no devices),
+or QMP silent before that: the app stops QEMU (SIGTERM, SIGKILL after 5 s)
+and starts the VM on OpenGL, and keeps OpenGL (`graphics-fallback`) until
+Vulkan is chosen again: that failure repeats on every start on this Mac.
+The window's "no picture" line, or QEMU exiting with an error within 15 s:
+OpenGL for that start only, the next start tries Vulkan again. No picture
+after the firmware ran falls back only on Macs under 40 bits (M1/M2); on M3
+and newer it is only logged, so a slow boot never gets the power button.
+QMP silent after the firmware ran is only logged. The app deletes
+`logs/console.log` before QEMU starts (QEMU empties it only when it opens
+it), so the last boot's text never counts as "the firmware ran". A Shut
+Down or Force Stop from the app ends the watch: no OpenGL start follows.
+qemu.log of the failed start stays as `logs/qemu-vulkan-fallback.log`;
+`omacvm check` warns on the Graphics row.
 
 Limits: MoltenVK has no `nullDescriptor`, no geometry shaders, no logicOp,
 no float64, no `VK_EXT_provoking_vertex`. So Zink as a GL driver and
@@ -873,6 +922,48 @@ second with no VM), so it does not show the panel's rate; that needs
 WindowServer's frame times on that display (with the power matrix). The Mac's power in that 10-minute check (14.4-20.7 W
 with the VM, 26.9 W without) was set by other tracks' VMs, not by this:
 the power comparison needs a quiet Mac (end of the pipeline).
+
+### Input latency (3.0.1 lane `input-latency-cursor`)
+
+From an event on the Mac to the first changed picture of the VM's window on
+screen (WindowServer's display time, ScreenCaptureKit), Mac mini M4, a 60 Hz
+virtual display, a 1440x900 window, `foot` in Omarchy, 30 events per row,
+median (p10-p90) in ms. `src/tests/input-latency-vm.sh`
+(`tests/graphics/pacing/inputlat.swift`); the native row is a plain AppKit
+window on the same display (`nativelat.swift`), the floor macOS itself sets.
+
+| | Mac to screen | Mac to QEMU's input | QEMU's input to the guest's flush | flush to screen |
+|---|---|---|---|---|
+| native AppKit window, key | 16.0-19.0 (9-24) | - | - | - |
+| VM, key on an idle screen | 24.1-26.7 (18-36) | 0.7-1.0 | 5.2-8.1 | 16.2-17.5 |
+| VM, pointer move (software cursor, QMP) | 23.3-27.2 (16-33) | 1.4-1.6 (QMP) | 3.4-5.1 | 17.9-19.7 |
+| VM, key while the pointer moves | 34.3-44.7 (26-52) | 0.5-1.5 | 7.6-9.7 | 19.6-30.7 |
+
+- Where the VM's time goes: the present itself costs what macOS costs any
+  app (flush to screen 16-18 ms on an idle screen = the native floor); the
+  guest's own part (Hyprland and the app, through virgl) is 3-10 ms; QEMU's
+  input path under 1 ms. While frames come steadily (the pointer moving, an
+  animation) the flush-to-screen part grows by up to a refresh: frames wait
+  in the jitter buffer (ADR 0020), and the guest's vblank phase is free.
+- Opt-in, `OMACVM_GL_INPUT_FIRST=1` (`qemu-cocoa-gl-present-input-first.patch`):
+  while input comes, the newest queued frame goes on screen and older ones
+  are dropped. The queue behind a new frame shrank (2 deep in 4 % of frames
+  instead of 26 %); keys while the pointer moved: median 34.8 vs 35.1 ms
+  (n=30) and 34.3 vs 39.5 ms (n=60), p90 46.7 vs 51.3 and 41.4 vs 49.9 ms.
+  Off by default until scrolling's pacing with it is measured (scrolling is
+  input too). Showing frames when drawn (`OMACVM_GL_VSYNC=0`) was no faster
+  (43.9 vs 44.7 ms).
+- The pointer is the biggest single delay: with Omarchy's software cursor a
+  move waits for a whole guest frame and its present (about 25 ms at 60 Hz;
+  the Mac's own cursor is not in a frame at all). The Mac pointer setting
+  (`omacvm-cocoa-hw-cursor.patch`, hidden, off) makes the guest's cursor
+  plane image the Mac's cursor; Hyprland 0.56.2 does not use the cursor
+  plane on virtio-gpu yet (Linux hides a virtual GPU's cursor plane from
+  atomic clients without DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT, and
+  aquamarine does not ask for it), so it waits for the guest side.
+- Posted mouse moves (`CGEventPostToPid`) reach no app's view, so pointer
+  rows go in through QMP (no AppKit; AppKit's part for keys is under 1 ms).
+
 ## 13. Merging the tracks
 
 The tracks share one runtime. Order and overlaps known today:

@@ -24,6 +24,29 @@ for bad in ["", "v2.7.0", "2.9.0 RC", "2.9.0-rc2", "1.2.3.4.5", "2..1", " ", "12
     expect(Version(bad) == nil, "'\(bad)' is not a version")
 }
 
+// Update with a VM restart: the state file and the relay's answers
+do {
+    let at = Date(timeIntervalSince1970: 1_800_000_000)
+    let r = RestartVM(folder: "/Users/a/VMs/Omarchy", version: "3.0.2", at: at)
+    expect(RestartVM.parse(r.line) == r, "restart-vm: the line reads back")
+    expect(RestartVM.parse(r.line + "\n") == r, "restart-vm: with a newline")
+    expect(r.fresh(now: at.addingTimeInterval(60)), "restart-vm: a minute old is fresh")
+    expect(!r.fresh(now: at.addingTimeInterval(16 * 60)), "restart-vm: 16 minutes old is stale")
+    expect(!r.fresh(now: at.addingTimeInterval(-3600)), "restart-vm: from the future is stale")
+    for bad in ["", "relative\t3.0.2\t2027-01-15T08:00:00Z", "/a\tx\t2027-01-15T08:00:00Z", "/a\t3.0.2\tyesterday", "/a\t3.0.2"] {
+        expect(RestartVM.parse(bad) == nil, "restart-vm: '\(bad)' is refused")
+    }
+    expect(RestartCheck.ready("3.0.2").answer.status == 202, "ready: 202 restarting")
+    expect(RestartCheck.ready("3.0.2").answer.code == "restarting", "ready: code")
+    expect(RestartCheck.upToDate("3.0.1").answer.code == "not-newer", "up to date: not-newer")
+    expect(RestartCheck.busy("a VM is being built").answer.code == "busy", "busy")
+    expect(RestartCheck.cannot("no key").answer.code == "app-cannot-update", "cannot update")
+    expect(RestartCheck.needsMacOS("3.0.2", "26.0").answer.text.contains("macOS 26.0"), "needs macOS")
+    expect(RestartCheck.failed("offline").answer.status == 502, "failed: 502")
+    expect(RestartCheck.slow.answer.status == 504, "slow: 504, nothing shuts down")
+    expect(RestartVM.answerWithin < 300, "the relay answers before the control centre gives up")
+}
+
 // When to check
 let now = Date()
 let day: TimeInterval = 24 * 3600

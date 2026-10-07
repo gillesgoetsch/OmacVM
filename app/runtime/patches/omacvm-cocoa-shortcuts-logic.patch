@@ -4,9 +4,10 @@ Subject: [PATCH] ui: when macOS's shortcuts go to the VM, and Apple's own key co
 What: a header with no AppKit in it: when macOS's global shortcuts are off
 (the VM has the keyboard, and nothing says otherwise), which Linux key
 Apple's own top-row key codes become (Mission Control, Spotlight, Dictation,
-Do Not Disturb, Launchpad, Dashboard: the F-key they sit on), and the escape
-combo. Used by omacvm-cocoa-system-shortcuts.patch (which explains the why)
-and omacvm-cocoa-escape-combo-tap.patch.
+Do Not Disturb, Launchpad, Dashboard: the F-key they sit on), when macOS's
+globe-key shortcut is off and which Linux key the globe key becomes, and the
+escape combo. Used by omacvm-cocoa-system-shortcuts.patch (which explains the
+why), omacvm-cocoa-escape-combo-tap.patch and omacvm-cocoa-globe-key.patch.
 
 Why its own file: so the logic is tested against macOS's whole shortcut list
 without QEMU or a display (app/runtime/Tests/keys/test-shortcuts.sh applies
@@ -15,12 +16,13 @@ this patch to an empty folder; at build time and in CI).
 Upstream: not applicable (OmacVM's keyboard policy).
 Test: app/runtime/Tests/keys/test-shortcuts.c.
 
+
 diff --git a/ui/omacvm-shortcuts.h b/ui/omacvm-shortcuts.h
 new file mode 100644
-index 0000000..5f66de0
+index 0000000..57dac82
 --- /dev/null
 +++ b/ui/omacvm-shortcuts.h
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,228 @@
 +/*
 + * OmacVM: macOS's own shortcuts while the VM has the keyboard.
 + *
@@ -34,6 +36,7 @@ index 0000000..5f66de0
 +#define OMACVM_SHORTCUTS_H
 +
 +#include <stdbool.h>
++#include <stdint.h>
 +
 +/* macOS's global shortcut switch (CGSSetGlobalHotKeyOperatingMode). */
 +enum { OMACVM_HOTKEYS_ON = 0, OMACVM_HOTKEYS_OFF = 1 };
@@ -54,10 +57,153 @@ index 0000000..5f66de0
 +}
 +
 +/*
++ * The globe (fn) key pressed on its own. macOS turns that press into key
++ * code 0xb3 and its own shortcut 188 (no modifiers), which does what System
++ * Settings > Keyboard > "Press globe key to" says: Emoji & Symbols, input
++ * source, dictation. While the VM has the keyboard OmacVM switches that one
++ * shortcut off (in default mode too, where macOS keeps all its others), so
++ * the press reaches the VM, as KEY_PROG3 (XF86Launch3 in XKB; OmacVM's guest
++ * part binds it to Omarchy's emoji picker). A key below KEY_REPLY (232):
++ * QEMU's virtio keyboard offers no higher ones. fn as a modifier (fn+F1, fn
++ * plus an arrow) is no lone press and stays as it is.
++ * OMACVM_GLOBE_KEY=mac leaves the shortcut with macOS.
++ */
++#define OMACVM_GLOBE_HOTKEY 188
++#define OMACVM_GLOBE_LINUX_KEY 202      /* KEY_PROG3 */
++
++static inline bool omacvm_globe_to_vm(bool app_active, bool keyboard_captured,
++                                      bool mac_keeps, bool stalled)
++{
++    return app_active && keyboard_captured && !mac_keeps && !stalled;
++}
++
++/*
++ * What to do with macOS's globe shortcut now. `want_vm`: the above.
++ * `mac_on`: the shortcut is on in macOS right now. `ours`: this VM switched
++ * it off. It is only ever given back by the VM that took it, so one a user
++ * switched off stays off; another VM that gave it back while this one has
++ * the keyboard gets it switched off again.
++ */
++enum { OMACVM_GLOBE_KEEP = 0, OMACVM_GLOBE_TAKE = 1, OMACVM_GLOBE_GIVE_BACK = 2 };
++
++static inline int omacvm_globe_action(bool want_vm, bool mac_on, bool ours)
++{
++    if (want_vm) {
++        return mac_on ? OMACVM_GLOBE_TAKE : OMACVM_GLOBE_KEEP;
++    }
++    return ours ? OMACVM_GLOBE_GIVE_BACK : OMACVM_GLOBE_KEEP;
++}
++
++/*
++ * One globe press, one KEY_PROG3. With macOS's shortcut off, an app may see
++ * the press as fn going down and up with nothing between (a flagsChanged
++ * pair), as key code 0xb3, or as both. So a lone fn tap is sent as a
++ * KEY_PROG3 tap, a 0xb3 is passed on as KEY_PROG3, and when both come for
++ * one press only one goes to the VM: a 0xb3 while fn is held, or just before
++ * it went down, makes the fn tap no lone tap; a 0xb3 just after a sent fn
++ * tap (and its key-up) is dropped. fn with another key, modifier or click
++ * (fn+F1, fn+arrow) is no tap, and neither is fn with something our window
++ * never sees: media, volume and brightness keys (the Bridge takes them),
++ * shortcuts macOS keeps (fn+C), a scroll (ui/cocoa.m sends that as
++ * OMACVM_GLOBE_EV_OTHER, from macOS's event counters). fn held longer than
++ * OMACVM_GLOBE_TAP_MAX_MS is no tap either: held, then not used. Only while
++ * the VM has the globe key (macOS's shortcut off).
++ */
++typedef struct OmacVMGlobeTap {
++    bool fn_down;       /* fn is held */
++    bool spoiled;       /* something else came while fn was held */
++    bool got_b3;        /* a 0xb3 came while fn was held */
++    bool b3_dropped;    /* the last 0xb3 down was dropped: drop its up too */
++    int64_t tap_ms;     /* when a fn tap was sent; -1: none waiting */
++    int64_t down_ms;    /* when fn went down */
++    int64_t b3_ms;      /* when a 0xb3 was last passed on; -1: none */
++} OmacVMGlobeTap;
++
++#define OMACVM_GLOBE_TAP_INIT { false, false, false, false, -1, 0, -1 }
++#define OMACVM_GLOBE_SAME_PRESS_MS 500
++#define OMACVM_GLOBE_B3_FIRST_MS 200    /* a 0xb3 this soon before fn down: same press */
++#define OMACVM_GLOBE_TAP_MAX_MS 700
++
++enum {
++    OMACVM_GLOBE_EV_FN_DOWN, OMACVM_GLOBE_EV_FN_UP,
++    OMACVM_GLOBE_EV_B3_DOWN, OMACVM_GLOBE_EV_B3_UP,
++    OMACVM_GLOBE_EV_OTHER,  /* another key down, modifier, click, scroll, media key */
++    OMACVM_GLOBE_EV_RESET,  /* the VM lost the globe key */
++};
++enum {
++    OMACVM_GLOBE_DO_NOTHING,  /* the event goes on as it would */
++    OMACVM_GLOBE_DO_TAP,      /* send a KEY_PROG3 down and up */
++    OMACVM_GLOBE_DO_PASS,     /* the 0xb3 goes on as KEY_PROG3 */
++    OMACVM_GLOBE_DO_DROP,     /* the 0xb3 is used up: nothing to the VM */
++};
++
++/*
++ * What our window never sees but macOS counts (CGEventSourceCounterForEventType,
++ * HID level, also for events a tap took): ui/cocoa.m compares their counts at
++ * fn down and fn up, and a change is OMACVM_GLOBE_EV_OTHER. CGEventType
++ * numbers: key down 10, NX_SYSDEFINED 14 (media, volume, brightness keys),
++ * mouse downs 1, 3, 25, scroll 22. Not flags changed (12, fn itself) nor key
++ * up (11).
++ */
++static const int omacvm_globe_unseen_types[] = { 10, 14, 1, 3, 25, 22 };
++
++static inline int omacvm_globe_tap_step(OmacVMGlobeTap *t, int ev, int64_t now_ms)
++{
++    switch (ev) {
++    case OMACVM_GLOBE_EV_FN_DOWN:
++        t->fn_down = true;
++        t->spoiled = false;
++        t->down_ms = now_ms;
++        /* The 0xb3 of this press came first. */
++        t->got_b3 = t->b3_ms >= 0 && now_ms - t->b3_ms < OMACVM_GLOBE_B3_FIRST_MS;
++        return OMACVM_GLOBE_DO_NOTHING;
++    case OMACVM_GLOBE_EV_FN_UP:
++        if (!t->fn_down) {
++            return OMACVM_GLOBE_DO_NOTHING;
++        }
++        t->fn_down = false;
++        if (t->spoiled || t->got_b3 || now_ms - t->down_ms > OMACVM_GLOBE_TAP_MAX_MS) {
++            return OMACVM_GLOBE_DO_NOTHING;
++        }
++        t->tap_ms = now_ms;
++        return OMACVM_GLOBE_DO_TAP;
++    case OMACVM_GLOBE_EV_B3_DOWN:
++        if (t->fn_down) {
++            t->got_b3 = true;
++            t->b3_dropped = false;
++            return OMACVM_GLOBE_DO_PASS;
++        }
++        if (t->tap_ms >= 0 && now_ms - t->tap_ms < OMACVM_GLOBE_SAME_PRESS_MS) {
++            t->tap_ms = -1;
++            t->b3_dropped = true;
++            return OMACVM_GLOBE_DO_DROP;
++        }
++        t->b3_dropped = false;
++        t->b3_ms = now_ms;
++        return OMACVM_GLOBE_DO_PASS;
++    case OMACVM_GLOBE_EV_B3_UP:
++        if (t->b3_dropped) {
++            t->b3_dropped = false;
++            return OMACVM_GLOBE_DO_DROP;
++        }
++        return OMACVM_GLOBE_DO_PASS;
++    case OMACVM_GLOBE_EV_OTHER:
++        if (t->fn_down) {
++            t->spoiled = true;
++        }
++        return OMACVM_GLOBE_DO_NOTHING;
++    default:
++        *t = (OmacVMGlobeTap)OMACVM_GLOBE_TAP_INIT;
++        return OMACVM_GLOBE_DO_NOTHING;
++    }
++}
++
++/*
 + * Keys of Apple keyboards that macOS knows by their own key code (the top
 + * row without fn, older keyboards' Dashboard and Launchpad keys). With the
-+ * shortcuts off they reach the VM as the F-key they sit on. 0: no key for
-+ * the guest (the globe key, the power key; brightness, which the Bridge
++ * shortcuts off they reach the VM as the F-key they sit on. The globe key
++ * pressed on its own (key code 0xb3, below) is OMACVM_GLOBE_LINUX_KEY.
++ * 0: no key for the guest (the power key; brightness, which the Bridge
 + * handles). -1: not one of these, the normal table applies.
 + * The Linux codes are the kernel's (input-event-codes.h): F3 61, F4 62,
 + * F5 63, F6 64.
@@ -76,10 +222,11 @@ index 0000000..5f66de0
 +        return 63;
 +    case 0xb2:          /* Do Not Disturb (F6) */
 +        return 64;
++    case 0xb3:          /* the globe key on its own */
++        return OMACVM_GLOBE_LINUX_KEY;
 +    case 0x7f:          /* the power key */
 +    case 0x90:          /* brightness up as a key code */
 +    case 0x91:          /* brightness down as a key code */
-+    case 0xb3:          /* globe */
 +        return 0;
 +    default:
 +        return -1;

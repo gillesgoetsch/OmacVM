@@ -16,9 +16,12 @@ import Foundation
 /// listener fetched from Omanotch on another address fails.
 enum GuestAuth {
     /// The Bridge's token, or nil when there is none (or it is too short).
+    /// The setting `bridgeDir` (a folder name in Application Support) points a
+    /// test Omanotch at the test Bridge's token (omacvm-test-bridge).
     static func token() -> [UInt8]? {
+        let dir = UserDefaults.standard.string(forKey: "bridgeDir").flatMap { $0.isEmpty || $0.contains("/") ? nil : $0 } ?? "omacvm-bridge"
         let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/omacvm-bridge/token").path
+            .appendingPathComponent("Library/Application Support/\(dir)/token").path
         guard let s = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
         let tok = Array(s.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
         return tok.count >= 32 ? tok : nil

@@ -77,7 +77,7 @@ print(ids[0..<Int(n)].map(String.init).joined(separator: ","))' 2>/dev/null | tr
 echo "virtual display $VD; left alone: $SKIP; full screen: $FULL; pointer start: $( ((OFF)) && echo off || echo on)"
 
 RUN=$W/run; mkdir -p "$RUN"
-env OMACVM_PRODUCT_NAME="$NAME" OMACVM_SLIRP_HOST_PORTS=1 OMACVM_NOTCH=0 \
+env OMACVM_PRODUCT_NAME="$NAME" OMACVM_SLIRP_HOST_PORTS=1 \
   OMACVM_TEST_SKIP_DISPLAYS="$SKIP" OMACVM_TEST_MAIN_DISPLAY="$VD" OMACVM_BACKGROUND=1 \
   OMACVM_TEST_POINTER=1800 OMACVM_DISPLAY_SOCKET="$RUN/display" \
   $( ((OFF)) && echo OMACVM_POINTER_START=0 ) \

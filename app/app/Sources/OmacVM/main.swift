@@ -8,9 +8,15 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let state = AppState()
     var window: NSWindow?
+    private var centring: CentredWindow?
     var runner: Runner?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // M1/M2: read QEMU's binary for the small PCI window now, off the
+        // main thread, so the window never waits for it (Runner.graphicsPlan).
+        if (Mac.vmAddressBits ?? Graphics.highPCIWindowBits) < Graphics.highPCIWindowBits {
+            DispatchQueue.global(qos: .utility).async { _ = RuntimeQEMU.takesSmallHighWindow }
+        }
         // Scripted install: --install-as NAME [--into FOLDER]
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--install-as"), i + 1 < args.count {
@@ -48,11 +54,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let installer = args.firstIndex(of: "--installed-by").flatMap { $0 + 1 < args.count ? pid_t(args[$0 + 1]) : nil }
         if let id = Bundle.main.bundleIdentifier,
            let other = NSRunningApplication.runningApplications(withBundleIdentifier: id).first(where: {
+               // The VM's QEMU has this bundle id too (DockIdentity): it is no launcher.
                $0 != me && !$0.isTerminated && $0.processIdentifier != installer
+                   && !Running.isQEMU($0.processIdentifier)
            }) {
             if args.contains("--update-now") {
                 DistributedNotificationCenter.default().postNotificationName(
                     Self.updateRequest, object: nil, userInfo: nil, deliverImmediately: true)
+                NSApp.terminate(nil)
+                return
+            }
+            // Test builds (self-update-test.sh): an update with a VM restart, as Shut Down and Update does.
+            if args.contains("--update-restart"), TestHooks.allowed(bundleID: Bundle.main.bundleIdentifier) {
+                DistributedNotificationCenter.default().postNotificationName(
+                    Self.restartRequest, object: nil, userInfo: nil, deliverImmediately: true)
                 NSApp.terminate(nil)
                 return
             }
@@ -75,9 +90,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // From `--update-now` of a second launcher: this one stays open.
             Task { @MainActor in await Updater.shared.runScripted(quitWhenDone: false) }
         }
+        if TestHooks.allowed(bundleID: Bundle.main.bundleIdentifier) {
+            DistributedNotificationCenter.default().addObserver(
+                forName: Self.restartRequest, object: nil, queue: .main) { _ in
+                Task { @MainActor in await Updater.shared.restartFromMac() }
+            }
+        }
         // Before any VM start reads the Graphics setting.
         Settings.migrateVenusSwitch()
+        // The control centre's Mac jobs run this app's omacvm when there is no checkout.
+        ControlCLI.refresh()
         state.startVM = { [weak self] in self?.startVM() }
+        state.vmRunning = { [weak self] in self?.runner?.isRunning == true || Self.qemuApp != nil }
         state.storage.appBusy = { [weak self] in
             guard let self else { return false }
             return self.runner?.isRunning == true || self.state.screen == .building || Self.qemuApp != nil
@@ -98,7 +122,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.quitting { return "Quitting" }
             return nil
         }
-        let starting = state.config.isReady && args.contains("--start")
+        // Update with a VM restart (Updater.swift): the launcher's VM and its controls.
+        let u = Updater.shared
+        u.runningVM = { [weak self] in
+            guard let r = self?.runner, r.isRunning else { return nil }
+            return (r.config.folder, r.config.name)
+        }
+        u.powerDownVM = { [weak self] in self?.runner?.powerDown() }
+        u.forceStopVM = { [weak self] in self?.runner?.forceStop() }
+        u.startVMAgain = { [weak self] folder in self?.startAgain(folder) }
+        u.restartBlocker = { [weak self] in
+            guard let self else { return nil }
+            if self.state.screen == .building { return "a VM is being built" }
+            if self.state.storage.moving != nil { return "a VM is being moved" }
+            if self.quitting { return "it is quitting" }
+            return nil
+        }
+        // A restart-update shut a VM down for this version (or the old one
+        // came back): start it again, once.
+        let again = args.contains("--update-now") ? nil : u.takeRestartVM(afterSwap: args.contains("--update-check"))
+        let starting = again != nil || (state.config.isReady && args.contains("--start"))
         Updater.shared.start(pending: args.contains("--update-now") || args.contains("--update-check") ? .leave
                              : starting ? .waitUntilIdle : .installNow)
         buildMenu()
@@ -107,9 +150,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { await Updater.shared.runScripted(quitWhenDone: true) }
             return
         }
-        if starting {
+        if let again {
+            startAgain(again)
+        } else if starting {
             startVM()
         } else {
+            showWindow()
+        }
+    }
+
+    /// Starts the VM in this folder (after a restart-update), else the window.
+    private func startAgain(_ folder: URL) {
+        guard runner?.isRunning != true else { return }
+        if let c = VMConfig.load(from: folder), c.isReady {
+            state.config = c
+            state.screen = .ready
+            startVM()
+        } else {
+            state.message = "The VM at \(folder.path) could not be started again after the update: start it here."
             showWindow()
         }
     }
@@ -118,19 +176,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// installed app's start requests.
     static let startRequest = Notification.Name("\(Bundle.main.bundleIdentifier ?? "org.omacvm.app").start")
     static let updateRequest = Notification.Name("\(Bundle.main.bundleIdentifier ?? "org.omacvm.app").update-now")
+    static let restartRequest = Notification.Name("\(Bundle.main.bundleIdentifier ?? "org.omacvm.app").update-restart")
     /// The VM's window belongs to QEMU's process: the one from this app
     /// (another copy of OmacVM may run a VM of its own).
+    /// By the kernel's path: LaunchServices reports this app's own executable
+    /// for it (DockIdentity).
     static var qemuApp: NSRunningApplication? {
-        let mine = Running.realPath(Bundle.main.bundleURL) + "/"
-        return NSWorkspace.shared.runningApplications.first {
-            guard let p = $0.executableURL.map(Running.realPath) else { return false }
-            return p.hasPrefix(mine) && p.hasSuffix("/runtime/bin/OmacVM")
+        NSWorkspace.shared.runningApplications.first {
+            !$0.isTerminated && Running.isQEMU($0.processIdentifier, of: Bundle.main.bundleURL)
         }
     }
 
     /// Another launcher (or `omacvm`) asks to start a VM.
     private func startRequested(_ name: String) {
         if runner?.isRunning == true { Self.qemuApp?.activate(); return }
+        // A build or an update runs a VM without a window; the screen stays on
+        // it (startVM checks the same, but only after the lines below).
+        if state.screen == .building { showWindow(); return }
         if !name.isEmpty, let c = VMConfig.named(name) { state.config = c; state.screen = c.isReady ? .ready : .setup }
         if state.config.isReady { startVM() } else { showWindow() }
     }
@@ -161,12 +223,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runner?.powerDown()
             DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in
                 guard let self, self.quitting else { return }
+                // QEMU's exit replies (see the termination handler); forceStop
+                // kills it after 5 s if SIGTERM does nothing, so the app does
+                // not leave a hung QEMU behind. Quit anyway 10 s later.
                 self.runner?.forceStop()
-                NSApp.reply(toApplicationShouldTerminate: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                    guard let self, self.quitting else { return }
+                    self.quitting = false
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                }
             }
             return .terminateLater
         }
         if state.screen == .building {
+            if state.creator.job == .update {
+                // Stopping the update script would leave its apply running in
+                // the user's VM while the VM shuts down: quit once the script
+                // has ended (it shuts the VM down itself, also after an error).
+                showWindow()
+                func wait() {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                        guard let c = self?.state.creator, c.running else {
+                            NSApp.reply(toApplicationShouldTerminate: true)
+                            return
+                        }
+                        wait()
+                    }
+                }
+                wait()
+                return .terminateLater
+            }
             state.creator.cancel()
         }
         return .terminateNow
@@ -196,14 +282,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.title = Product.name
             w.contentViewController = NSHostingController(rootView: RootView(state: state))
             w.isReleasedWhenClosed = false
-            w.center()
+            w.isRestorable = false
             window = w
+            centring = CentredWindow(w)
         }
+        // Each time it opens (first open, after closing it, after the VM):
+        // centred on the built-in display, and kept centred while SwiftUI
+        // sizes it. Left where the user put it while it stays open, sits in
+        // the Dock, or the app was hidden (Cmd-H).
+        if let w = window, let c = centring, c.needsPlace, !w.isMiniaturized { c.place() }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate()
     }
 
-    private func startVM() {
+    private func startVM(openGLOnce: String? = nil) {
+        // A build or an update runs the VM without a window: a second QEMU on
+        // its disk (a start from the Dock or `omacvm start`) would corrupt it.
+        if state.screen == .building {
+            showWindow()
+            return
+        }
+        // Start in the window while an update with a VM restart waits: it stops.
+        Updater.shared.vmStarting()
         reloadConfig()
         if state.storage.moving != nil {
             state.message = "A VM is being moved; start once that is done."
@@ -216,11 +316,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let r = Runner(config: state.config)
-        r.onExit = { [weak self] status in
+        r.openGLOnce = openGLOnce
+        r.onExit = { [weak self, weak r] status in
             guard let self else { return }
+            let fellBack = r?.venusFallback
             self.runner = nil
+            // An update with a VM restart: it installs now; the new app starts the VM.
+            if !self.quitting, Updater.shared.vmEndedForRestart() { return }
+            // Vulkan showed nothing (Runner.watchVenusStart, or QEMU stopped
+            // at once): start once more on OpenGL. keep: from now on OpenGL
+            // until Vulkan is chosen again; else for that start only. The
+            // plan then has no Venus, so no second watch and no loop.
+            if let fb = fellBack {
+                let folder = self.state.config.folder
+                if fb.keep { Graphics.recordFallback(fb.why, folder: folder) }
+                // The next start empties qemu.log: keep this one's.
+                let logs = folder.appendingPathComponent("logs")
+                try? FileManager.default.removeItem(at: logs.appendingPathComponent("qemu-vulkan-fallback.log"))
+                try? FileManager.default.copyItem(at: logs.appendingPathComponent("qemu.log"),
+                                                  to: logs.appendingPathComponent("qemu-vulkan-fallback.log"))
+                if !self.quitting {
+                    self.startVM(openGLOnce: fb.keep ? nil : fb.why)
+                    if self.runner != nil {
+                        self.state.message = fb.keep
+                            ? "\(Graphics.didNotStart) (\(fb.why)). \"Try Vulkan again\" under Graphics tries it once more."
+                            : "\(Graphics.didNotStart) for this start (\(fb.why)). The next start tries Vulkan again."
+                        self.tellFallback(fb.keep
+                            ? "\(fb.why). \(Product.name) started the VM again on OpenGL and keeps OpenGL until you click \"Try Vulkan again\" under Graphics."
+                            : "\(fb.why). \(Product.name) started the VM again on OpenGL for this start; the next start tries Vulkan again.")
+                    }
+                    return
+                }
+            }
             if self.quitting {
                 self.quitting = false
+                // Quit during an update with a VM restart: no VM starts by itself later.
+                Updater.shared.cancelRestart("quitting")
                 // An update asked for while the VM ran goes in now, quietly:
                 // the user is quitting.
                 if Updater.shared.installWhenIdle { Updater.shared.install(quit: false, quiet: true) }
@@ -239,17 +370,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         let wasActive = NSApp.isActive
+        // QEMU's window takes this app's own Dock icon (DockIdentity), so this
+        // launcher steps out of the Dock first. If QEMU came up while the
+        // launcher still held the icon, the Dock gave QEMU a second one beside
+        // a pinned OmacVM (MacBook Air, macOS 26.6.2).
+        window?.orderOut(nil)
+        centring?.taken()
+        NSApp.setActivationPolicy(.accessory)
         do {
             try r.start()
             runner = r
             state.message = nil
-            window?.orderOut(nil)
-            // QEMU's window carries the app's name and icon in the Dock.
-            NSApp.setActivationPolicy(.accessory)
             if let pid = r.process?.processIdentifier { handFocus(to: pid, wasActive: wasActive) }
         } catch {
             state.message = "Could not start the VM: \(error.localizedDescription)"
             showWindow()
+        }
+    }
+
+    /// The app's window is hidden while the VM runs: say why the VM just
+    /// started again, then give the VM its window back.
+    private func tellFallback(_ text: String) {
+        if ProcessInfo.processInfo.environment["OMACVM_COCOA_HIDDEN"] != nil { return }
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = Graphics.didNotStartOnMac
+            alert.informativeText = text
+            alert.addButton(withTitle: "OK")
+            NSApp.activate()
+            alert.runModal()
+            Self.qemuApp?.activate()
         }
     }
 
@@ -394,41 +544,13 @@ extension AppDelegate: NSMenuDelegate {
     @objc func checkForUpdates(_ sender: Any?) {
         let u = Updater.shared
         Task { @MainActor in
-            let outcome = await u.check(manual: true)
-            let alert = Self.checkAlert(outcome, current: u.currentVersion, busy: u.busyNow)
-            if alert.runModal() == .alertFirstButtonReturn, case .ready = outcome { u.install() }
+            let outcome = await u.checkNow()
+            // This launcher runs the VM: it can shut it down, update and start it again.
+            let restart = u.runningVM() != nil
+            let alert = Updater.checkAlert(outcome, current: u.currentVersion, busy: u.busyNow, restart: restart)
+            guard alert.runModal() == .alertFirstButtonReturn, case .ready = outcome else { return }
+            if restart { await u.restartFromMac() } else { u.install() }
         }
-    }
-
-    /// What Check for Updates… says. busy: why the app cannot be replaced
-    /// right now (a VM runs from it): the update then waits for it.
-    static func checkAlert(_ outcome: Updater.Outcome, current: String, busy: String?) -> NSAlert {
-        let alert = NSAlert()
-        switch outcome {
-        case .ready(let v):
-            alert.messageText = "\(Product.name) \(v) is ready to install"
-            if let busy {
-                alert.informativeText = "You have \(current). \(busy), so \(v) goes in once it has shut down. Your VMs are not changed."
-                alert.addButton(withTitle: "Update After Shutdown")
-            } else {
-                alert.informativeText = "You have \(current). \(Product.name) restarts with the new version; your VMs are not changed. If it does not start, \(current) comes back by itself."
-                alert.addButton(withTitle: "Update and Relaunch")
-            }
-            alert.addButton(withTitle: "Later")
-        case .upToDate:
-            alert.messageText = "\(Product.name) is up to date"
-            alert.informativeText = "\(current) is the newest version."
-        case .skipped(let v):
-            alert.messageText = "\(Product.name) \(v) is skipped"
-        case .needsMacOS(let v, let m):
-            alert.messageText = "\(Product.name) \(v) needs macOS \(m)"
-            alert.informativeText = "This Mac stays on \(current). Update macOS to get \(v)."
-        case .failed(let why):
-            alert.messageText = "Could not check for updates"
-            // The reasons are log lines ("no connection to ..."): as a sentence.
-            alert.informativeText = why.prefix(1).uppercased() + why.dropFirst() + (why.hasSuffix(".") ? "" : ".")
-        }
-        return alert
     }
 
     @objc func goBack(_ sender: Any?) {
@@ -447,6 +569,12 @@ extension AppDelegate: NSMenuDelegate {
         alert.addButton(withTitle: "Cancel")
         return alert
     }
+}
+
+// `OmacVM --control-run CLI ...`: OmacVM Bridge runs the control centre's
+// omacvm for this app's VMs through the app (ControlRun.swift). No window.
+if CommandLine.arguments.dropFirst().first == ControlRun.flag {
+    ControlRun.main(Array(CommandLine.arguments.dropFirst(2)), test: TestIdentity.isOn)
 }
 
 // `OmacVM --vms-folder`: print where the VMs are and quit (no window), for

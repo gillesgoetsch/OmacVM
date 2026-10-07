@@ -82,11 +82,14 @@ The app updates itself ([ADR 0033](../docs/adr/0033-app-self-update.md)):
   OmacVM's main or spare release key). A newer version is downloaded and
   checked: size and SHA-256 from the feed, then the app and its QEMU signed
   with a Developer ID of a team the feed names. The window then offers it: What's New,
-  Skip This Version, Update and Relaunch. *OmacVM › Check for Updates…* asks
-  right away.
-- Nothing is replaced while a VM runs from the app: the update waits until
-  nothing runs from it any more (after a shutdown or a crash, or at the next
-  start of the app).
+  Skip This Version, Update to X…. **Check Now** next to the weekly switch (or
+  *OmacVM › Check for Updates…*) asks right away, also with weekly checks off.
+- A VM that runs from the app is never replaced under it. With the VM
+  running, *Update to X…* (or `u` in the VM's control centre) shuts the VM
+  down cleanly, updates, restarts the app and starts the VM again, after one
+  confirm. A VM that is still running after 3 minutes stops the update;
+  forcing it off needs a second confirm. A VM started another way (the CLI)
+  makes the update wait until nothing runs from the app any more.
 - The new version must start (its QEMU too) within 90 s, or the old one
   comes back by itself and that version is skipped. The previous version is
   kept for one step back: *OmacVM › Go Back to <version>…*.
@@ -115,7 +118,7 @@ nothing in /Applications.
 
 Works: setup, VM build (10 to 30 minutes, 8 on an M4 Max, plus a 1.4 GB
 download the first time), window that Omarchy follows (native resolution,
-120 Hz), full screen with the bar beside the notch (on by default, a switch in the app), clipboard both ways, sound and the microphone,
+120 Hz), full screen in its own Space with the bar beside the notch (Omanotch), clipboard both ways, sound and the microphone,
 the Mac's camera (on only while a Linux app reads it), WebGL in Chromium,
 Chrome, Brave and Firefox, video decoding on the Mac's media engine (Google
 Chrome, Brave, Firefox, mpv, FFmpeg, GStreamer apps; [docs](../docs/video-decode.md)), clean shutdown on Quit, pause on Mac sleep,

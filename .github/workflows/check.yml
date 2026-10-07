@@ -18,7 +18,7 @@ concurrency:
 jobs:
   check:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -53,8 +53,11 @@ jobs:
           "$RUNNER_TEMP/venv/bin/pip" install -q "textual==8.2.8" pytest
           cd src/control && "$RUNNER_TEMP/venv/bin/python" -m pytest -q tests
 
-      - name: Bridge's control centre requests (allow-list, limits, manifest signatures)
+      - name: Bridge's control centre and Touch ID requests (allow-list, limits, manifest signatures, LocalAuthentication mocked)
         run: src/bridge/mac/tests/run.sh
+
+      - name: Touch ID's PAM client against a fake Bridge, and its PAM lines in and out
+        run: src/tests/touchid-client.sh
 
       - name: Update parts cover src/
         run: python3 src/release/manifest.py parts > /dev/null
@@ -70,6 +73,44 @@ jobs:
         working-directory: app/app
         run: swift run net-tests
 
+      - name: OmacVM.app USB device tests (which devices a VM may have, QEMU arguments)
+        working-directory: app/app
+        run: swift run usb-tests
+
+      - name: OmacVM.app Mac folder arguments
+        working-directory: app/app
+        run: swift run folder-tests
+
+      - name: OmacVM.app build window tests (progress lines from the VM, speed, time left, log tail)
+        working-directory: app/app
+        run: swift run build-progress-tests
+
+      - name: Package progress filter (src/vm/progress.sh on pacman output)
+        run: src/tests/build-progress.sh
+
+      - name: OmacVM.app new VM features (Omanotch on with a notch)
+        working-directory: app/app
+        run: swift run features-tests
+
+      - name: OmacVM.app Touch ID port relay (org.omacvm.auth, no Bridge, no dialog)
+        working-directory: app/app
+        run: swift run auth-tests
+
+      - name: OmacVM.app Touch ID panel (never on screen, no LAContext)
+        working-directory: app/app
+        run: swift run touchid-panel-tests
+
+      - name: OmacVM.app window rules (custom resources, disk, omacvm in Terminal, keyboard note)
+        working-directory: app/app
+        run: swift run window-tests
+
+      - name: OmacVM.app Restart the Desktop after Later (the app's side)
+        working-directory: app/app
+        run: swift run desktop-tests
+      - name: OmacVM.app sound delay for the VM (QEMU's part, the Mac's output, limits)
+        working-directory: app/app
+        run: swift run audio-tests
+
       - name: Install dialog defaults (previous copy, Run Without Installing)
         run: src/tests/install-defaults.sh
 
@@ -82,16 +123,29 @@ jobs:
           src/gestures/mac/build.sh
           src/bridge/mac/build.sh
 
+      - name: Omanotch wallpaper runs through the notch strip (patch on Omarchy's file, both NOTCH places)
+        run: src/tests/notch-wallpaper.sh
+
       - name: Omanotch offline tests
-        run: src/omanotch/mac/test.sh
+        run: |
+          src/omanotch/mac/test.sh
+          src/omanotch/guest/tests/test.sh
 
       - name: External display brightness offline tests (Bridge and VM side)
         run: |
           src/bridge/mac/test.sh
           src/tests/external-brightness.sh
 
+      - name: Building behind a proxy (scutil samples, the VM's variables, sudo, systemd-run, retries, a stub proxy)
+        run: src/tests/proxy.sh
+
       - name: Which VM --vm NAME means
         run: src/tests/vm-names.sh
+
+      - name: The control centre opened from the Mac (the VM's script, a made-up Hyprland)
+        run: src/tests/cc-open.sh
+      - name: omacvm check's media keys line (normal Bridge log lines are not failures)
+        run: src/tests/media-keys-check.sh
 
       - name: omacvm vms never waits on UTM's data
         run: src/tests/vms-no-container.sh < /dev/null
@@ -107,6 +161,9 @@ jobs:
 
       - name: Vulkan (Venus) driver step for app VMs (when it builds Mesa's vulkan-virtio)
         run: src/tests/venus-driver.sh
+
+      - name: Guest packages never update one alone (no partial update), GBM guard undoes a broken install
+        run: src/tests/pkg-safe.sh
 
       - name: Prebuilt manifests are checked (untrusted input)
         run: src/tests/prebuilt-manifest.sh
@@ -137,11 +194,32 @@ jobs:
       - name: Escape combo setting and where a VM window opens
         run: src/tests/app-escape-window.sh
 
+      - name: Magic Mouse swipe setting (3 or 4 fingers) and its row, only with a Magic Mouse
+        run: src/tests/app-mouse-swipe.sh
+
+      - name: The note when macOS refuses the VM's keyboard tap
+        run: src/tests/app-key-access.sh
+
+      - name: Only OmacVM writes the Bridge's cli file (test copies keep away)
+        run: src/tests/app-cli-file.sh
+
+      - name: The desktop restarts by itself after a lost GPU context (app rules, VM script)
+        run: src/tests/app-desktop-recovery.sh
+
       - name: The vulkan feature (VM folder file, guest Mesa step)
         run: src/tests/vulkan-feature.sh
 
+      - name: Feature state truth (the record against the fast network and SDDM autologin)
+        run: src/tests/feature-truth.sh
+
+      - name: A feature switch runs only its parts (no Hyprland reload for the rest)
+        run: src/tests/feature-switch.sh
+
       - name: The vulkan feature's Mesa build (build tools come and go)
         run: src/tests/venus-build-tools.sh
+
+      - name: The x86-apps feature (box64 package, binfmt rule, off)
+        run: src/tests/x86-apps.sh
 
       - name: Graphics setting (OpenGL, Vulkan, Automatic; app and omacvm agree)
         run: src/tests/graphics-setting.sh
@@ -151,6 +229,9 @@ jobs:
 
       - name: Where the app and its VMs are (omacvm and the app agree)
         run: src/tests/app-paths.sh
+
+      - name: The Bridge runs omacvm for the app's VMs through the app (only the Bridge, only the app's omacvm)
+        run: src/tests/app-control-run.sh
 
       - name: Display sync (scales at 4K and 5K, nothing sent twice, the loop guard)
         run: |
@@ -164,20 +245,34 @@ jobs:
       - name: App menu memory lines (VM memory, graphics memory)
         run: app/runtime/Tests/display/test-gpu-memory-menu.sh
 
+      - name: App menu Restart the Desktop after Later (QEMU's side)
+        run: app/runtime/Tests/display/test-restart-desktop.sh
+
       - name: The VM takes the pointer without a click; the Mac's cursor hides once the guest draws its own
         run: app/runtime/Tests/display/test-pointer-start.sh
+
+      - name: Mac pointer for the VM (experimental hardware cursor rules, guest image checks)
+        run: app/runtime/Tests/display/test-hw-cursor.sh
+      - name: Guest sizes that fit Omarchy's scale presets (full screen, window steps)
+        run: app/runtime/Tests/display/test-clean-size.sh
 
       - name: macOS's shortcuts go to the VM while it has the keyboard (the whole list)
         run: app/runtime/Tests/keys/test-shortcuts.sh
 
-      - name: OmacVM.app notch switch (default on, choice kept, off without a notch)
-        run: src/tests/app-notch.sh
+      - name: OmacVM.app full screen always in its own Space (no notch cover; escape combo stays out)
+        run: src/tests/app-fullscreen-space.sh
+
+      - name: One OmacVM in the Dock (QEMU started as the app, found by its kernel path)
+        run: src/tests/app-dock-one-app.sh
 
       - name: Keyboard light steps (offline)
         run: src/tests/keyboard-light.sh
 
       - name: A feature that is off is off on every route (VM side, checks, Mac side)
         run: src/tests/features-off.sh
+
+      - name: Guest check accepts NOTCH right above the built-in display (offline)
+        run: src/tests/notch-check.sh
 
       - name: OmacVM.app moves VM folders safely (fixtures, small disk images)
         run: src/tests/app-storage.sh
@@ -188,16 +283,23 @@ jobs:
       - name: OmacVM.app while the VM idles (guest agent connection, clipboard poll)
         run: src/tests/app-idle.sh
 
-      - name: Guest agents offline tests (desktop check, idle waits)
+      - name: Guest agents offline tests (desktop check, idle waits, display panel, camera frame times)
         run: |
           python3 src/app/guest/tests/test_omacvm_displays.py
           python3 src/app/guest/tests/test_idle_waits.py
+          python3 src/app/guest/tests/test_monitor_widget.py
+          python3 src/omanotch/guest/tests/test_display_panel.py
+          python3 src/camera/guest/tests/test_frames.py
+          python3 src/app/guest/tests/test_audio_latency.py
 
       - name: Final-round benchmark kit offline tests (one timing method per row, what is left out, preflight)
         run: tests/bench/final-round/test.sh
 
       - name: Sound on a busy Mac and a Mac audio device that does not answer (log lines, check, test stub)
         run: src/tests/audio-timing.sh
+
+      - name: Chromium's video decoder comes back (GPU retry, pacman hook, check says why)
+        run: src/tests/vdecd-down.sh
 
   # The guest agents are Linux programs: their inotify and pidfd waits only
   # run here (on the Mac those tests skip). Arm, like the guest.
@@ -211,3 +313,24 @@ jobs:
         run: |
           python3 src/app/guest/tests/test_omacvm_displays.py -v
           python3 src/app/guest/tests/test_idle_waits.py -v
+          python3 src/app/guest/tests/test_monitor_widget.py -v
+          python3 src/omanotch/guest/tests/test_display_panel.py -v
+          python3 src/camera/guest/tests/test_frames.py -v
+
+      - name: A feature switch on Linux (GNU sed, glide off path)
+        run: src/tests/feature-switch.sh
+
+      - name: Touch ID's PAM client on Linux, as in the VM (fake Bridge and logind)
+        run: src/tests/touchid-client.sh
+
+      - name: Hyprland Lua files parse (omacvm_app.lua)
+        run: |
+          sudo apt-get install -y -qq lua5.4 >/dev/null
+          luac5.4 -p src/app/guest/omacvm_app.lua
+
+      - name: Chromium's video decoder builds, and waits for a GPU that is not usable (no render node here)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends pkg-config gcc libva-dev libgbm-dev libegl-dev \
+            libgles-dev libdrm-dev libavcodec-dev libavutil-dev libsystemd-dev
+          OMACVM_VDECD_SYSTEMD=1 src/tests/vdecd-down.sh

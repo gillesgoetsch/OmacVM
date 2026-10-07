@@ -189,7 +189,7 @@ foreign_vms() {
   { prlctl list 2>/dev/null | awk 'NR > 1 { $1 = $2 = $3 = ""; print }'
     [ -x "$UTMCTL" ] && pgrep -x UTM >/dev/null && "$UTMCTL" list 2>/dev/null | awk '$2 == "started" { $1 = $2 = ""; print }'
     "$VMRUN" list 2>/dev/null | grep '\.vmx$' | sed 's|.*/||; s|\.vmx$||'
-    ps -axww -o args= | grep -E '(qemu-system-aarch64|/runtime/bin/OmacVM) .*-name ' | grep -v grep | sed 's/.* -name \(.*\) -machine.*/\1/'
+    ps -axww -o args= | grep -E '(qemu-system-aarch64|/runtime/bin/OmacVM|/MacOS/OmacVM-VM) .*-name ' | grep -v grep | sed 's/.* -name \(.*\) -machine.*/\1/'
   } | sed 's/^ *//' | grep -v '^Bench ' | grep . | paste -sd, - | sed 's/,/, /g'
 }
 HOST=""

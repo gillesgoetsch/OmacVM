@@ -14,7 +14,8 @@
 #   app_start NAME      start it in the app (its window opens)
 #   app_other_running NAME  another app VM that runs, if any
 #   app_bundle          the installed OmacVM.app (any name it was installed under;
-#                       ~/Applications first, then /Applications)
+#                       the app whose bundled omacvm runs first, then
+#                       ~/Applications, then /Applications)
 #   app_create [--prebuilt] DIR KEY=VALUE...  a new VM in DIR through the app's
 #                       own create script (the password on stdin), as when built
 #                       in the app; --prebuilt: from a prebuilt image
@@ -85,7 +86,13 @@ app_same_dir() {
 app_vm_dirs() {   # every app VM folder (with vm.env), one per line
   local r d
   while IFS= read -r r; do
-    for d in "$r"/*; do [[ -f $d/vm.env ]] && echo "$d"; done
+    # ls, not a glob: on macOS 26 a glob in a forked bash (this runs in a
+    # process substitution) can see a folder on an external drive as empty
+    # until a program it starts has read it (the removable-volume check).
+    # macOS's own ls, without the colours a terminal may force (CLICOLOR_FORCE).
+    while IFS= read -r d; do
+      [[ -f $r/$d/vm.env ]] && echo "$r/$d"
+    done < <(env -u CLICOLOR -u CLICOLOR_FORCE /bin/ls -1 "$r" 2>/dev/null)
   done < <(app_vms_roots)
 }
 
@@ -132,12 +139,19 @@ app_list() {
   done < <(app_vm_dirs)
 }
 
-# app_features_write DIR "bridge=on gestures=off ...": the VM's features for
-# the app, which reads them at each start of the VM (MacLinks.swift: a
-# feature that is off gets nothing of the Mac). Status 0 if they changed.
+# app_features_write DIR "bridge=on gestures=off ...": the VM's features, its
+# record (src/lib/features.sh), which the app reads at each start of the VM
+# (MacLinks.swift: a feature that is off gets nothing of the Mac). vm.env's
+# FEATURES (the setup's choice, for the first apply) goes once the record is
+# there: a second list would only go stale. Status 0 if they changed.
 app_features_write() {
-  [[ $(cat "$1/features" 2>/dev/null) != "$2" ]] || return 1
-  printf '%s\n' "$2" > "$1/features"
+  local same=0
+  if [[ $(cat "$1/features" 2>/dev/null) == "$2" ]]; then same=1
+  else printf '%s\n' "$2" > "$1/features.tmp" && mv -f "$1/features.tmp" "$1/features" || return 1; fi
+  if [[ -f $1/vm.env ]] && grep -q '^FEATURES=' "$1/vm.env"; then
+    grep -v '^FEATURES=' "$1/vm.env" > "$1/vm.env.tmp" && mv -f "$1/vm.env.tmp" "$1/vm.env"
+  fi
+  return $same
 }
 
 # app_links_stale DIR "bridge=on gestures=off ..." on|off: the Mac links the
@@ -149,9 +163,15 @@ app_links_stale() {
   local l x k n v out=""
   l=$(sed -n 's/^OmacVM: Mac links: //p' "$1/logs/qemu.log" 2>/dev/null | tail -1)
   [[ -n $l ]] || return 0
-  for x in omanotch:Omanotch gestures:Gestures bridge:Bridge battery:battery camera:camera; do
+  for x in omanotch:Omanotch gestures:Gestures bridge:Bridge battery:battery camera:camera touch-id:Touch\ ID; do
     k=${x%%:*} n=${x#*:} v=on
     [[ " $2 " == *" $k=off "* ]] && v=off
+    # Touch ID is off unless named on (its port is there only then); an app
+    # whose line does not name it never serves it.
+    if [[ $k == touch-id ]]; then
+      [[ " $2 " == *" $k=on "* ]] || v=off
+      [[ ", $l, " == *", Touch ID "* ]] || l+=", Touch ID off"
+    fi
     [[ $v == "$3" && ", $l, " != *", $n $3, "* ]] && out+="${out:+, }$n"
   done
   echo "$out"
@@ -214,8 +234,15 @@ app_start() {
   app_ip "$1" 60
 }
 
-app_bundle() {   # in ~/Applications, else /Applications, by its bundle id
+app_bundle() {   # the app whose own copy of omacvm runs, else in ~/Applications, else /Applications, by its bundle id
   local a
+  # OmacVM.app's bundled omacvm (and its apply-vm.sh) set OMACVM_APP_RUNTIME
+  # to the app's runtime: that app, wherever it is (another drive, Downloads).
+  if [[ ${OMACVM_APP_RUNTIME:-} == */Contents/Resources/runtime ]]; then
+    a=${OMACVM_APP_RUNTIME%/Contents/Resources/runtime}
+    [[ -f $a/Contents/Resources/scripts/create-vm.sh &&
+       $(defaults read "$a/Contents/Info" CFBundleIdentifier 2>/dev/null) == "$APP_BUNDLE_ID" ]] && { echo "$a"; return 0; }
+  fi
   for a in "$HOME"/Applications/*.app /Applications/*.app; do
     [[ -f $a/Contents/Resources/scripts/create-vm.sh ]] || continue
     [[ $(defaults read "$a/Contents/Info" CFBundleIdentifier 2>/dev/null) == "$APP_BUNDLE_ID" ]] && { echo "$a"; return 0; }
@@ -247,7 +274,8 @@ app_create() {
   for kv in "$@"; do
     v=${kv#*=}; printf "%s='%s'\n" "${kv%%=*}" "${v//$q/$q\\$q$q}"
   done > "$dir/vm.env"
-  /bin/bash "$a/Contents/Resources/scripts/$script" "$dir"
+  # The downloads go to the drive of the VMs folder, as in the app.
+  OMACVM_VMS_ROOT=$(dirname "$dir") /bin/bash "$a/Contents/Resources/scripts/$script" "$dir"
 }
 
 app_has_prebuilt() { [[ -f $1/Contents/Resources/scripts/prebuilt-vm.sh ]]; }
@@ -256,7 +284,7 @@ app_has_prebuilt() { [[ -f $1/Contents/Resources/scripts/prebuilt-vm.sh ]]; }
 # downloads (the app looks with its version, not this omacvm's).
 app_prebuilt_lookup() {
   local out
-  out=$(/bin/bash "$1/Contents/Resources/scripts/prebuilt-vm.sh" --lookup 2>/dev/null < /dev/null) || return 1
+  out=$(OMACVM_VMS_ROOT=$(app_vms_root) /bin/bash "$1/Contents/Resources/scripts/prebuilt-vm.sh" --lookup 2>/dev/null < /dev/null) || return 1
   read -r PB_TAG PB_SIZE PB_OMARCHY PB_VERSION <<<"$out"
   [[ $PB_TAG =~ ^[A-Za-z0-9._-]{1,80}$ && $PB_SIZE =~ ^[0-9]{1,15}$ && $PB_OMARCHY =~ ^[!-~]{1,80}$ &&
      ${PB_VERSION:-} =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]

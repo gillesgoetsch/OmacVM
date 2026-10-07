@@ -155,6 +155,23 @@ Developer ID is a feed signed with our key that names the old and the new
 team. The staged update keeps its signed feed and is checked against it again
 at the next launch.
 
+**Check Now and updates with a running VM** (3.0.2). The window has a
+Check Now button next to the weekly switch; it works with weekly checks off
+(a check by hand always does) and its result stays for the session. When
+this launcher runs a VM, an update shuts it down cleanly (power button, then
+the guest agent), installs, and the new app starts the VM again: one confirm
+on the Mac ("Shut Down and Update"), or `u` in the VM's control centre
+(`app-update`, ADR 0031). The state file `restart-vm` (VM folder, version,
+time) names the VM; the new app, or the old one after a rollback or an
+aborted swap, starts it once and only within 15 minutes, so a stray launch
+never starts a VM by surprise. If the VM still runs after 3 minutes the
+update stops and nothing is forced: the Mac asks, with OK as the default and
+"Force Off and Update" as the second confirm. Quitting the app meanwhile
+cancels it. It refuses while a check, another update, a build or a disk move
+runs. While a VM runs, QEMU owns the menu bar and has no update item, so the
+control centre is the way to update then (a menu item there needs a QEMU
+patch: later). `update-swap.sh` is unchanged.
+
 **Release channel.** A release is published as a pre-release first and its
 zip tried by hand; installed apps see it only once it is marked latest.
 Release builds ignore `OMACVM_APPCAST_URL` (see test hooks below), so the

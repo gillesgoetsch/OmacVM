@@ -27,7 +27,8 @@ int main(int argc, char **argv) {
     CGVirtualDisplayDescriptor *d = [[CGVirtualDisplayDescriptor alloc] init];
     d.queue = dispatch_get_main_queue(); d.name = [NSString stringWithFormat:@"OmacVM pacing %.0f Hz", hz];
     d.maxPixelsWide = w * 2; d.maxPixelsHigh = h * 2; d.sizeInMillimeters = CGSizeMake(600, 340);
-    d.productID = 0x1234; d.vendorID = 0x3456; d.serialNum = 0x0001;
+    /* A new serial each time: macOS keeps a saved arrangement per display set (STANDARDS 32). */
+    d.productID = 0x1234; d.vendorID = 0x3456; d.serialNum = arc4random() | 1;
     CGVirtualDisplay *v = [[CGVirtualDisplay alloc] initWithDescriptor:d];
     CGVirtualDisplaySettings *s = [[CGVirtualDisplaySettings alloc] init];
     s.hiDPI = 1;

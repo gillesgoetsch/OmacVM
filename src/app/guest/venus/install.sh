@@ -14,10 +14,12 @@
 #   /etc/environment.d/90-omacvm-venus.conf     RUSTICL_ENABLE=zink, distro venus off
 #   Firefox: omacvm-webgpu.js                   WebGPU on
 #   omacvm-chromium-webgpu (+ omacvm-chrome-webgpu) and a "Chromium (WebGPU)"
-#   menu entry: Chromium with its compositor on Vulkan, which WebGPU needs
-# ./install.sh --remove undoes all of it.
+#   menu entry (webgpu.sh): Chromium with its compositor on Vulkan, which WebGPU needs
+# ./install.sh --remove undoes all of it (the launcher stays with Graphics Vulkan).
 set -euo pipefail
 cd "$(dirname "$0")"
+# Packages only through guest/pkg-add: never an update of one the VM has.
+PKG_ADD=${OMACVM_PKG_ADD:-$PWD/../../../guest/pkg-add}
 MESA_VERSION=26.2.4
 MESA_SHA256=bce5f7fbebb934373b86c999a064d52fb5065878dc57f287f95346648ec832e9
 PREFIX=/opt/omacvm-mesa
@@ -25,14 +27,11 @@ ICD=/etc/vulkan/icd.d/omacvm_venus_icd.json
 CLICD=/etc/OpenCL/vendors/omacvm-rusticl.icd
 ENVF=/etc/environment.d/90-omacvm-venus.conf
 FFPREF=/usr/lib/firefox/defaults/pref/omacvm-webgpu.js
-LAUNCH=/usr/local/bin/omacvm-chromium-webgpu
-LAUNCH2=/usr/local/bin/omacvm-chrome-webgpu
-DESK=/usr/share/applications/omacvm-chromium-webgpu.desktop
 LOG=/var/log/omacvm-mesa-build.log      # the last failed build's log
 
 remove() {
-  rm -rf "$PREFIX" "$ICD" "$CLICD" "$ENVF" "$FFPREF" "$LAUNCH" "$LAUNCH2" "$DESK" "$LOG" \
-    /var/cache/omacvm/mesa-build
+  rm -rf "$PREFIX" "$ICD" "$CLICD" "$ENVF" "$FFPREF" "$LOG" /var/cache/omacvm/mesa-build
+  ./webgpu.sh --off
   echo "OmacVM Venus extras removed"
 }
 
@@ -56,7 +55,7 @@ case ${1:-} in
 esac
 
 # The loader and the tools omacvm check uses (small; also when Mesa is built).
-pacman -S --needed --noconfirm vulkan-icd-loader vulkan-tools ocl-icd clinfo >/dev/null 2>&1 ||
+"$PKG_ADD" vulkan-icd-loader vulkan-tools ocl-icd clinfo ||
   echo "OmacVM Venus extras: vulkan-tools/clinfo not installed (omacvm check cannot test Vulkan)"
 # Rusticl and Zink link the distro's LLVM: a new LLVM major version (an Arch
 # update) needs a rebuild, which the next omacvm apply does.
@@ -66,8 +65,8 @@ if [[ $(cat "$PREFIX/omacvm-mesa-version" 2>/dev/null) != "$STAMP" ]]; then
   # What the built Mesa links stays; build tools this VM lacks (on a stock
   # Omarchy: Rust, meson, ninja, bindgen) come for the build and go after it.
   # A rebuild (an LLVM update) downloads them again.
-  pacman -S --needed --noconfirm spirv-tools spirv-llvm-translator llvm-libs clang libclc \
-    libdrm wayland libx11 libxext libxrandr libxshmfence libxxf86vm ocl-icd zstd expat >/dev/null 2>&1 ||
+  "$PKG_ADD" spirv-tools spirv-llvm-translator llvm-libs clang libclc \
+    libdrm wayland libx11 libxext libxrandr libxshmfence libxxf86vm ocl-icd zstd expat ||
     { echo "OmacVM Venus extras: pacman could not install Mesa's libraries"; exit 1; }
   BUILD_TOOLS=$(pacman -T meson ninja pkgconf python-mako python-yaml python-packaging glslang \
     wayland-protocols llvm rust rust-bindgen cbindgen || true)
@@ -77,7 +76,7 @@ if [[ $(cat "$PREFIX/omacvm-mesa-version" 2>/dev/null) != "$STAMP" ]]; then
     echo "OmacVM Venus extras: build tools left installed (pacman -Rns did not take them all)"' EXIT
   if [[ -n $BUILD_TOOLS ]]; then
     # shellcheck disable=SC2086
-    pacman -S --needed --noconfirm --asdeps $BUILD_TOOLS >/dev/null 2>&1 ||
+    "$PKG_ADD" --asdeps $BUILD_TOOLS ||
       { echo "OmacVM Venus extras: pacman could not install Mesa's build tools"; exit 1; }
   fi
   rm -rf "$B"; mkdir -p "$B"
@@ -92,7 +91,8 @@ if [[ $(cat "$PREFIX/omacvm-mesa-version" 2>/dev/null) != "$STAMP" ]]; then
     -Dplatforms=wayland,x11 -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Degl=disabled \
     -Dglx=disabled -Dgbm=disabled -Dvideo-codecs= -Dvalgrind=disabled -Dlibunwind=disabled \
     > "$B/build.log" 2>&1 || { tail -30 "$B/build.log"; cp "$B/build.log" "$LOG"; exit 1; }
-  ninja -C "$S/build" install >> "$B/build.log" 2>&1 || { tail -30 "$B/build.log"; cp "$B/build.log" "$LOG"; exit 1; }
+  # At the lowest priority: the desktop keeps its frames while it builds.
+  nice -n 19 ninja -C "$S/build" install >> "$B/build.log" 2>&1 || { tail -30 "$B/build.log"; cp "$B/build.log" "$LOG"; exit 1; }
   echo "$STAMP" > "$PREFIX/omacvm-mesa-version"
 fi
 
@@ -108,7 +108,5 @@ VK_LOADER_DRIVERS_DISABLE=virtio_icd.json
 CONF
 # Also before Firefox is installed (as the app's video pref): it reads it once it is.
 install -Dm644 omacvm-webgpu.js "$FFPREF"
-install -Dm755 omacvm-chromium-webgpu "$LAUNCH"
-ln -sf omacvm-chromium-webgpu "$LAUNCH2"
-[[ -x /usr/bin/chromium ]] && install -Dm644 omacvm-chromium-webgpu.desktop "$DESK"
+./webgpu.sh >/dev/null || echo "OmacVM Venus extras: the Chromium (WebGPU) launcher is not installed"
 echo "OmacVM Venus extras: Mesa $MESA_VERSION in $PREFIX (Vulkan, OpenCL); WebGPU in Firefox and omacvm-chromium-webgpu"

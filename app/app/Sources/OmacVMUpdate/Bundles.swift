@@ -114,6 +114,21 @@ public enum Running {
         return out
     }
 
+    /// The kernel's path of a process's executable (links resolved). Not
+    /// NSRunningApplication.executableURL: LaunchServices reports the app's
+    /// own executable for the VM's QEMU (DockIdentity).
+    public static func path(of pid: pid_t) -> String? {
+        var buf = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard pid > 0, proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return nil }
+        return String(cString: buf)
+    }
+
+    /// A QEMU of the app at BUNDLE (any app when nil): its VM, not a launcher.
+    public static func isQEMU(_ pid: pid_t, of bundle: URL? = nil) -> Bool {
+        guard let p = path(of: pid), p.hasSuffix("/Contents/Resources/runtime/bin/OmacVM") else { return false }
+        return bundle.map { p.hasPrefix(realPath($0) + "/") } ?? true
+    }
+
     /// The path as the kernel reports executables: links resolved, /private
     /// kept (URL.resolvingSymlinksInPath drops it).
     public static func realPath(_ url: URL) -> String {

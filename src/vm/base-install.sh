@@ -11,6 +11,29 @@ set -euo pipefail
 source /root/omacvm.env
 log() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+# retry CMD...: a download step again after a failure (a flaky mirror, network
+# or proxy: "Operation too slow"), 3 tries.
+retry() {
+  local i
+  for i in 1 2 3; do
+    "$@" && return 0
+    if (( i < 3 )); then echo "failed (try $i of 3), again in $((i * 10)) s: $*" >&2; sleep $((i * 10)); fi
+  done
+  return 1
+}
+
+# The Mac's proxy (#122): create-vm.sh or build.sh writes it when the Mac has
+# one. This script's downloads go through it, and the new system keeps it
+# (environment.d for the desktop, profile.d for shells, sudo passes it on).
+PROXY_ENV=/root/omacvm-proxy.env
+PROXY_VARS="http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY"
+if [[ -s $PROXY_ENV ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$PROXY_ENV"
+  set +a
+  echo "proxy: $(sed -nE 's|//[^/@]*@|//***@|; s/^(http|https|all)_proxy=//p' "$PROXY_ENV" | tr '\n' ' ')"
+fi
 
 D=$(lsblk -dnpo NAME,TRAN | awk '$2 == "nvme" { print $1; exit }')
 [[ -b ${D:-} ]] || { echo "base-install: no NVMe disk found" >&2; exit 1; }
@@ -61,11 +84,12 @@ if [[ ! -s $G/trustdb.gpg ]] || [[ ! -s $G/pubring.gpg && ! -s $G/pubring.kbx ]]
   pacman-key --init || die "pacman-key --init failed"
   pacman-key --populate archlinuxarm || die "pacman-key --populate archlinuxarm failed"
 fi
-pacman -Sy --noconfirm --needed archlinuxarm-keyring ||
+retry pacman -Sy --noconfirm --needed archlinuxarm-keyring ||
   die "could not update archlinuxarm-keyring (mirror, network or clock; see the lines above)"
 
 log "tools for the install"
-pacman -S --noconfirm --needed arch-install-scripts dosfstools btrfs-progs gptfdisk >/dev/null
+retry pacman -S --noconfirm --needed arch-install-scripts dosfstools btrfs-progs gptfdisk >/dev/null ||
+  die "could not install the tools for the install (see the lines above)"
 
 log "partitions on $D"
 sgdisk --zap-all "$D" >/dev/null
@@ -109,9 +133,19 @@ EOF
 PACLOG=/root/pacstrap.log
 PKGS=(base base-devel linux-aarch64 linux-aarch64-headers archlinuxarm-keyring
   btrfs-progs dosfstools grub efibootmgr openssh sudo git networkmanager nano vim man-db)
+# OmacVM.app sends progress.sh first: then its progress lines go to the Mac too.
+declare -F pac_progress >/dev/null || pac_progress() { cat > "$1"; }
+declare -F cache_watch >/dev/null || cache_watch() { :; }
 pacstrap_run() {   # try number; output to $PACLOG.try, appended to $PACLOG
-  local rc=0
-  pacstrap -C /root/pacman.alarm.conf /mnt "${PKGS[@]}" > "$PACLOG.try" 2>&1 || rc=$?
+  local rc
+  set +e
+  # sed -u passes whole lines only: pacman writes in blocks, and cache_watch's
+  # lines must not land in the middle of one (seen in a real build).
+  ( cache_watch /mnt/var/cache/pacman/pkg & w=$!
+    pacstrap -C /root/pacman.alarm.conf /mnt "${PKGS[@]}" 2>&1 | sed -u ''; rc=${PIPESTATUS[0]}
+    kill "$w" 2>/dev/null; exit "$rc" ) | pac_progress "$PACLOG.try"
+  rc=${PIPESTATUS[0]}
+  set -e
   { echo "---- pacstrap, try $1, exit $rc ----"; cat "$PACLOG.try"; } >> "$PACLOG"
   return "$rc"
 }
@@ -147,6 +181,15 @@ sed -i 's/^\[options\]/[options]\nColor\nVerbosePkgLists/' /mnt/etc/pacman.conf
 cp /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
 genfstab -U /mnt > /mnt/etc/fstab
 install -m644 "$PACLOG" /mnt/var/log/omacvm-pacstrap.log
+if [[ -s $PROXY_ENV ]]; then
+  log "the Mac's proxy, kept in the new system"
+  install -Dm644 "$PROXY_ENV" /mnt/etc/environment.d/90-omacvm-proxy.conf
+  { echo "# The Mac's proxy when this VM was built (OmacVM). Delete this file,"
+    echo "# /etc/environment.d/90-omacvm-proxy.conf and /etc/sudoers.d/05-omacvm-proxy to stop using it."
+    sed -n "s/^\([A-Za-z_]*\)=\(.*\)$/export \1='\2'/p" "$PROXY_ENV"; } > /mnt/etc/profile.d/omacvm-proxy.sh
+  printf 'Defaults env_keep += "%s"\n' "$PROXY_VARS" > /mnt/etc/sudoers.d/05-omacvm-proxy
+  chmod 440 /mnt/etc/sudoers.d/05-omacvm-proxy
+fi
 
 log "base system: $OMA_TZ, $OMA_LANG, keyboard $OMA_XKB_LAYOUT${OMA_XKB_VARIANT:+ ($OMA_XKB_VARIANT)}, user $OMA_USER"
 install -m600 /root/omacvm.env /mnt/root/omacvm.env

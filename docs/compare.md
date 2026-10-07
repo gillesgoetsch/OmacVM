@@ -26,15 +26,15 @@ Each app has its own page: [OmacVM.app](routes/app.md), [UTM](routes/utm.md),
 | **Speed** (the Mac itself = 100 %) | | | | |
 | CPU, all cores: Geekbench 7 | **99 %** | 89 % | **99 %** | 96 % |
 | CPU, one core: Geekbench 7 | **97 %** | 90 % | 93 % | **97 %** |
-| Web apps: Speedometer 3.1 | 70 % | 52 % | **71 %** | 67 % |
+| Web apps: Speedometer 3.1 | 64 % | 52 % | **71 %** | 67 % |
 | Animations in the browser: MotionMark 1.3.1 | no stable result | no stable result | **40 %** | no stable result |
-| GPU, share of the Mac: Basemark Web 3.0 · WebGL Aquarium | no full-screen run yet · 22 % (2.6.0)<br>2.9.0 RC in a window, another VM running, not comparable: 82 % · 18 % | 67 % · 26 % | **78 % · 38 %** | 75 % · 25 % |
+| GPU, share of the Mac: Basemark Web 3.0 · WebGL Aquarium | 76 % · 18 % | 67 % · 26 % | **78 % · 38 %** | 75 % · 25 % |
 | 3D: glmark2 (score) | 1017 (2.9.0 RC in a window: 2856) | 964 | 1813 | **7306** |
 | **Graphics and video** | | | | |
 | GPU path | virgl | virgl | vmwgfx, with a Hyprland fix OmacVM builds | virgl |
 | GPU in Chrome, Chromium, Brave, Firefox | ✓ | ✓ | ✓ | ✓ |
 | YouTube 4K at 60 fps | **✓ decoded by the Mac's media engine** in Google Chrome, Brave and Firefox ([which apps](video-decode.md)) | ✓ decoded by the CPU | ✓ decoded by the CPU | ✓ decoded by the CPU |
-| GPU compute (Vulkan, OpenCL; Geekbench 7 GPU) | 45 %, not released yet | ✗ | ✗ | ✗ |
+| GPU compute (Vulkan, OpenCL; Geekbench 7 GPU) | 45 %, with `omacvm enable vulkan` (experimental) | ✗ | ✗ | ✗ |
 | **Battery** (power draw, and hours on a full 100 Wh battery) | | | | |
 | Idle desktop | 6.2 W · 16 h | being re-measured | **5.5 W · 18 h** | 5.7 W · 18 h |
 | Reading, scrolling a page | 6.8 W · 15 h | being re-measured | **5.9 W · 17 h** | 7.3 W · 14 h |
@@ -58,7 +58,7 @@ Each app has its own page: [OmacVM.app](routes/app.md), [UTM](routes/utm.md),
 | Where the VM goes | **any folder, external drives too** | UTM's own library | **any folder, external drives too** | **any folder, external drives too** |
 
 <p align="center">
-  <img src="images/benchmarks.svg" alt="Bar chart: each route as a share of the Mac, OmacVM.app first, then UTM, VMware Fusion, Parallels. CPU all cores (Geekbench 7): 99, 89, 99, 96 percent. Web apps (Speedometer 3.1): 70, 52, 71, 67. Browser graphics (WebGL Aquarium): 18 (2.9.0 release candidate, in a window with another VM running), 26, 38, 25. Browser overall (Basemark Web 3.0): OmacVM.app no full-screen run yet, 67, 78, 75. GPU compute (Geekbench 7 GPU, OpenCL): OmacVM.app 45 percent (not released yet), not available in the others." width="100%">
+  <img src="images/benchmarks.svg" alt="Bar chart: each route as a share of the Mac, OmacVM.app first, then UTM, VMware Fusion, Parallels. CPU all cores (Geekbench 7): 99, 89, 99, 96 percent. Web apps (Speedometer 3.1): 64, 52, 71, 67. Browser graphics (WebGL Aquarium): 18, 26, 38, 25. Browser overall (Basemark Web 3.0): 76, 67, 78, 75. GPU compute (Geekbench 7 GPU, OpenCL): OmacVM.app 45 percent with the vulkan feature on, not available in the others." width="100%">
 </p>
 
 ## The Mac itself, and video
@@ -86,7 +86,10 @@ whole Mac's draw from its battery telemetry, 3 minutes per load; hours are
 100 Wh over that draw, whole hours from 13 h up, one decimal below. The GPU
 row is from 2026-10-04 (OmacVM 2.6.0, median of 3, brightness at its lowest,
 an external display connected); on the Mac, Geekbench 7 GPU gives 204241 with
-Metal and 117456 with OpenCL.
+Metal and 117456 with OpenCL. OmacVM.app's Speedometer and GPU row are
+3.0.0's, from 2026-10-06: run on a Mac mini M4 in the same session as
+Parallels, then scaled by Parallels' result on the MacBook
+([how](benchmarks/README.md#omacvmapp-300-2026-10-06)).
 
 Every step, the raw numbers and how to run the same tests yourself:
 [benchmarks](benchmarks/README.md).

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """omacvm in Omarchy: the OmacVM control centre.
 
-  omacvm                     the control centre (in its own terminal window
-                             from the Omarchy menu or the bar's OmacVM item)
+  omacvm                     the control centre: a floating window in the
+                             middle of the display (also from the Omarchy
+                             menu and the bar's OmacVM item); Escape or q closes it
+  omacvm --here              the control centre in this terminal
   omacvm status [--json]     the features and how they are, as text
   omacvm report [--print | --save FILE]
                              report a problem: what goes into the GitHub issue,
                              without personal data, shown before the browser opens
+  omacvm update-system [--yes]
+                             update the VM's own system (omarchy update, not
+                             OmacVM), then check the graphics before a restart
   omacvm --version
   omacvm --window            what the menu, the bar item and the launcher run:
                              as omacvm, and the window waits for Return before
@@ -99,6 +104,13 @@ def notify() -> int:
     from omacvm_cc.controller import Controller
     from omacvm_cc.local import cache_file
 
+    from omacvm_cc.local import take_resume
+
+    # OmacVM.app restarted this VM for an update: the control centre opens and
+    # does this VM's part (it takes the marker; nothing is asked again).
+    if take_resume(remove=False):
+        subprocess.Popen(["omarchy-launch-or-focus-tui", "omacvm", "--window"], start_new_session=True)
+        return 0
     c = Controller()
     try:
         c.hello = c.bridge.hello()
@@ -124,7 +136,7 @@ def notify() -> int:
     n = sum(1 for r in c.rows() if r.update)
     r = subprocess.run(["notify-send", "-a", "OmacVM", "-A", "open=Open", "-i", "system-software-update",
                         f"OmacVM {m['version']} is out",
-                        f"{n} feature{'s' if n != 1 else ''} change. Open OmacVM to install it."],
+                        f"{n} feature{'s' if n != 1 else ''} change. Open OmacVM and press u to update."],
                        capture_output=True, text=True)
     if r.stdout.strip() == "open":
         subprocess.Popen(["omarchy-launch-or-focus-tui", "omacvm", "--window"], start_new_session=True)
@@ -133,17 +145,63 @@ def notify() -> int:
 
 def wait_in_window() -> None:
     """Opened from the menu, the bar or the launcher: the window would close
-    with the text in it. It waits instead."""
-    if os.environ.get("OMACVM_WINDOW") == "1" and sys.stdin.isatty():
+    with the text in it. It waits for Return, Escape or q instead."""
+    if os.environ.get("OMACVM_WINDOW") != "1" or not sys.stdin.isatty():
+        return
+    prompt = "\nPress Return, Escape or q to close."
+    try:
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        # Key by key from before the prompt shows (TCSANOW: a key typed early is kept).
+        tty.setcbreak(fd, termios.TCSANOW)
+    except Exception:   # no termios or not a real terminal: a line will do
         try:
-            input("\nPress Return to close.")
+            input(prompt)
         except EOFError:
             pass
+        return
+    try:
+        print(prompt, end="", flush=True)
+        while os.read(fd, 1) not in (b"\r", b"\n", b"\x1b", b"q", b""):
+            pass
+    except OSError:
+        pass
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def open_window() -> bool:
+    """Typed in a terminal on the desktop: the control centre opens in its own
+    window, as from the menu or the bar (the window rules float and centre it).
+    Not over ssh or outside Hyprland, and not with --here."""
+    import shutil
+    import subprocess
+
+    if not (os.environ.get("WAYLAND_DISPLAY") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")):
+        return False
+    if os.environ.get("SSH_CONNECTION"):
+        return False
+    launcher = shutil.which("omarchy-launch-or-focus-tui")
+    if not launcher:
+        return False
+    try:
+        subprocess.Popen([launcher, "omacvm", "--window"], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return False
+    print("OmacVM opens in its own window (omacvm --here keeps it in this terminal).")
+    return True
 
 
 def main(args: list) -> int:
+    here = False
     if args[:1] == ["--window"]:
         os.environ["OMACVM_WINDOW"] = "1"
+        args = args[1:]
+    elif args[:1] == ["--here"]:
+        here = True
         args = args[1:]
     cmd = args[0] if args else ""
     if cmd in ("-h", "--help", "help"):
@@ -164,12 +222,19 @@ def main(args: list) -> int:
     if cmd == "status":
         from omacvm_cc import plain
         return plain.status("--json" in args)
+    if cmd == "update-system":
+        from omacvm_cc import system
+        rc = system.run(yes="--yes" in args)
+        wait_in_window()
+        return rc
     if cmd:
         print(f"omacvm: no command '{cmd}' here (omacvm --help); the Mac's omacvm has the others", file=sys.stderr)
         return 2
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         from omacvm_cc import plain
         return plain.status(False)
+    if not here and os.environ.get("OMACVM_WINDOW") != "1" and open_window():
+        return 0
     try:
         from omacvm_cc import tui
     except Exception:   # Textual missing or broken: the same table as text, never an empty window

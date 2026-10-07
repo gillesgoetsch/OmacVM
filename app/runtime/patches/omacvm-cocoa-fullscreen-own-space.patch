@@ -1,0 +1,121 @@
+From: OmacVM
+Subject: [PATCH] ui/cocoa: full screen always in its own Space
+
+What: full screen is macOS's own on every display, the MacBook's notched
+display too, so the VM always gets a Space of its own. The borderless
+window over the display (the "notch" full screen, OMACVM_NOTCH=1) is gone
+from real use; it stays only as the test mode's full screen
+(OMACVM_TEST_SKIP_DISPLAYS: no Space, no focus). On a notched display the
+VM sits below the camera, like Parallels and UTM; Omanotch fills the strip
+beside it with Omarchy's bar. The guest is sized from the safe area there.
+
+Why: the borderless window lay on the Space the user was on, over the
+other windows: another app's window could share the VM's Space, and the
+escape combo had no VM Space to leave, so it fell back to Mission Control
+and showed every window (user report, 3.0.0 candidate, 2026-10-06).
+macOS keeps a full-screen window below the camera (it draws the strip
+itself), so a native full screen cannot cover the strip.
+
+Upstream: not applicable (undoes OmacVM's own omacvm-cocoa-notch.patch for
+real use). Test: Tests/display/test-fullscreen-space.sh (build time: the
+toggle has no other way into the borderless kind; no OMACVM_NOTCH left),
+and the live check on the Mac mini (tracks: fullscreen-space). Applies
+after omacvm-cocoa-boot-splash.patch (last of the cocoa patches).
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -1154,19 +1154,9 @@ - (NSSize)fixAspectRatio:(NSSize)max
+  */
+ static CGFloat omacvm_main_full_top = -1;
+ 
+-/* OmacVM: with OMACVM_NOTCH=1, full screen covers the strip beside the notch too. */
+-static bool omacvm_notch_mode(void)
+-{
+-    const char *v = getenv("OMACVM_NOTCH");
+-    return v && !strcmp(v, "1");
+-}
+-
+ - (NSSize) screenSafeAreaSize
+ {
+     NSSize size = [[[self window] screen] frame].size;
+-    if (omacvm_notch_mode()) {
+-        return size;
+-    }
+     NSEdgeInsets insets = [[[self window] screen] safeAreaInsets];
+     size.width -= insets.left + insets.right;
+     size.height -= insets.top + insets.bottom;
+@@ -2248,10 +2238,9 @@ - (void)adjustSpeed:(id)sender;
+ @end
+ 
+ /*
+- * OmacVM notch mode: macOS full screen keeps windows below the notch. Instead,
+- * on a display with a notch a borderless window covers the whole display, the
+- * menu bar and the Dock hidden; Omarchy's bar sits in the strip beside the
+- * camera. Other displays get macOS's own full screen.
++ * OmacVM tests (OMACVM_TEST_SKIP_DISPLAYS): full screen is a borderless window
++ * over the display, with no Space of its own and no focus. Real full screen is
++ * always macOS's own (doToggleFullScreen:).
+  */
+ @interface QemuWindow : NSWindow
+ @end
+@@ -2277,7 +2266,11 @@ static void omacvm_full_screen_take(void)
+ }
+ static NSWindowStyleMask notchSavedMask;
+ 
+-/* Enters notch full screen on the window's display, or leaves it. */
++/*
++ * OmacVM tests only (OMACVM_TEST_SKIP_DISPLAYS): the borderless full screen,
++ * over the window's display, or back. No Space, no focus, no menu bar or Dock
++ * change. Real full screen is macOS's own (doToggleFullScreen:).
++ */
+ static void omacvm_toggle_notch_full_screen(void)
+ {
+     NSWindow *w = [cocoaView window];
+@@ -2287,16 +2280,8 @@ static void omacvm_toggle_notch_full_screen(void)
+         notchSavedFrame = [w frame];
+         notchSavedMask = [w styleMask];
+         [w setStyleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable];
+-        if (omacvm_test_mode()) {
+-            /* OmacVM test: no menu bar or Dock change, no focus. */
+-            [w setFrame:[target frame] display:YES];
+-            [w orderFront:nil];
+-        } else {
+-            [NSApp setPresentationOptions:NSApplicationPresentationHideDock |
+-                                          NSApplicationPresentationHideMenuBar];
+-            [w setFrame:[target frame] display:YES];
+-            [w makeKeyAndOrderFront:nil];
+-        }
++        [w setFrame:[target frame] display:YES];
++        [w orderFront:nil];
+         [fullScreenMenuItem setTitle:@"Exit Full Screen"];
+         [cocoaView updateScale];
+         [cocoaView updateUIInfo];
+@@ -2304,9 +2289,6 @@ static void omacvm_toggle_notch_full_screen(void)
+         omacvm_displays_update();
+     } else {
+         notchFull = NO;
+-        if (!omacvm_test_mode()) {
+-            [NSApp setPresentationOptions:NSApplicationPresentationDefault];
+-        }
+         [w setStyleMask:notchSavedMask];
+         [w setFrame:notchSavedFrame display:YES];
+         [fullScreenMenuItem setTitle:@"Enter Full Screen"];
+@@ -2612,11 +2594,13 @@ - (void) windowDidBecomeKey: (NSNotification *)aNotification
+ - (void) doToggleFullScreen:(id)sender
+ {
+     NSWindow *w = [cocoaView window];
+-    /* Notch full screen only on a display with a notch; elsewhere macOS's own. */
+-    /* OmacVM test mode: always the borderless kind (no Space). */
+-    if (notchFull || omacvm_test_mode() ||
+-        (omacvm_notch_mode() && !([w styleMask] & NSWindowStyleMaskFullScreen) &&
+-         [[w screen] safeAreaInsets].top > 0)) {
++    /*
++     * macOS's own full screen on every display, in a Space of its own, beside
++     * a notch too (below the camera). Never a window over a Space other
++     * windows share. The borderless kind is for tests only (notchFull is
++     * only ever set there).
++     */
++    if (notchFull || omacvm_test_mode()) {
+         omacvm_toggle_notch_full_screen();
+         return;
+     }

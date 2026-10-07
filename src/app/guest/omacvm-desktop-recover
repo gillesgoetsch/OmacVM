@@ -1,0 +1,103 @@
+#!/bin/bash
+# OmacVM.app: a GPU context of the VM's desktop was lost on the Mac. QEMU
+# names it in logs/gpu-memory; the app sees it there and runs this through
+# the guest agent, as root. Nothing in the VM knows otherwise: its Mesa does
+# not report the loss, and Hyprland 0.56 would only stop if it did.
+#   omacvm-desktop-recover desktop graphics|memory
+#       Hyprland lost its context: it draws black from then on. The login
+#       manager starts again, which ends the session: every app open in it
+#       closes and what was not saved in them is lost. A note for the new
+#       session names those apps. With autologin off, the login screen comes.
+#       Was the session locked, the new one locks itself again (autologin
+#       must not bring back an unlocked desktop with nobody at the Mac).
+#   omacvm-desktop-recover shell
+#       The shell lost its context (Omarchy's bar and launcher, Quickshell):
+#       only the shell starts again, no app closes.
+#   omacvm-desktop-recover notify
+#       In the new session (Hyprland's autostart, as the user): shows the note.
+# Logs to the journal (journalctl -t omacvm-desktop-recover).
+set -uo pipefail
+ENV=${OMACVM_RECOVER_ENV:-/etc/omacvm/env}
+NOTE=${OMACVM_RECOVER_NOTE:-/run/omacvm/desktop/restarted}
+say() { logger -t omacvm-desktop-recover -- "$*" 2>/dev/null; echo "$*"; }
+
+U=$(sed -n 's/^OMACVM_USER=//p' "$ENV" 2>/dev/null | tail -1)
+# A command in the desktop user's session (Hyprland's and Omarchy's environment).
+in_session() {
+  local uid run
+  uid=$(id -u "$U") || return 1
+  run=/run/user/$uid
+  sudo -u "$U" env HOME="$(getent passwd "$U" | cut -d: -f6)" XDG_RUNTIME_DIR="$run" WAYLAND_DISPLAY=wayland-1 \
+    HYPRLAND_INSTANCE_SIGNATURE="$(ls -t "$run/hypr" 2>/dev/null | head -1)" \
+    bash -c 'source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null; exec "$@"' _ "$@"
+}
+
+# The apps with a window now, by name, once each ("chromium, Alacritty").
+open_apps() {
+  in_session timeout 3 hyprctl clients -j 2>/dev/null | python3 -c '
+import json, sys
+seen = []
+try:
+    for c in json.load(sys.stdin):
+        n = " ".join(str(c.get("class") or c.get("initialClass") or "").split())[:40]
+        if n and n not in seen:
+            seen.append(n)
+except Exception:
+    pass
+print(", ".join(seen))' 2>/dev/null
+}
+
+case ${1:-} in
+desktop)
+  why=${2:-graphics}
+  [[ $why == memory ]] || why=graphics
+  apps=""; locked=0
+  [[ -n $U ]] && apps=$(open_apps)
+  [[ -n $U ]] && in_session timeout 3 omarchy-hyprland-session-locked >/dev/null 2>&1 && locked=1
+  # Written as the user: root never writes into a folder the user owns.
+  if [[ -n $U ]] && install -d -m 700 -o "$U" -g "$(id -gn "$U")" "$(dirname "$NOTE")"; then
+    printf 'why=%s\napps=%s\nat=%s\nlocked=%s\n' "$why" "$apps" "$(date +%H:%M)" "$locked" |
+      sudo -u "$U" sh -c 'cat > "$1.tmp" && mv -f "$1.tmp" "$1"' _ "$NOTE"
+  fi
+  say "the desktop lost its GPU context on the Mac ($why): restarting the session; closing: ${apps:-no app windows}"
+  # The login manager logs the user in again (autologin) or shows its screen.
+  exec systemctl restart sddm
+  ;;
+shell)
+  [[ -n $U ]] || { say "no desktop user in $ENV"; exit 1; }
+  say "the shell (Quickshell) lost its GPU context on the Mac: restarting it"
+  in_session setsid -f omarchy-restart-shell >/dev/null 2>&1 < /dev/null
+  ;;
+notify)
+  [[ -r $NOTE ]] || exit 0
+  why=$(sed -n 's/^why=//p' "$NOTE"); apps=$(sed -n 's/^apps=//p' "$NOTE"); at=$(sed -n 's/^at=//p' "$NOTE")
+  locked=$(sed -n 's/^locked=//p' "$NOTE")
+  rm -f "$NOTE"
+  # Locked before: lock again first. The shell may not take a lock yet this
+  # early in the session: ask until Hyprland holds one, for half a minute.
+  if [[ $locked == 1 ]]; then
+    for _ in $(seq 30); do
+      omarchy-hyprland-session-locked >/dev/null 2>&1 && break
+      omarchy-system-lock >/dev/null 2>&1
+      sleep 1
+    done
+    omarchy-hyprland-session-locked >/dev/null 2>&1 || say "could not lock the new session again"
+  fi
+  if [[ $why == memory ]]; then cause="macOS ran short of memory for the VM's graphics"
+  else cause="the VM's graphics on the Mac failed"; fi
+  if [[ -n $apps ]]; then closed="These apps were closed: $apps. Anything not saved in them is lost."
+  else closed="Apps that were open were closed; anything not saved in them is lost."; fi
+  # What was lost first: the popup shows only the first lines.
+  text="$closed At ${at:-?} $cause and the screen went black, so OmacVM restarted the desktop."
+  # The notification daemon comes up with the session: try for half a minute.
+  for _ in $(seq 15); do
+    notify-send -a OmacVM -u critical "The desktop was restarted" "$text" 2>/dev/null && exit 0
+    sleep 2
+  done
+  say "could not show the note: $text"
+  ;;
+*)
+  echo "usage: omacvm-desktop-recover desktop graphics|memory | shell | notify" >&2
+  exit 2
+  ;;
+esac

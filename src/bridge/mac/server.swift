@@ -399,6 +399,10 @@ func handle(_ fd: Int32, peer: String) {
   deadline = Date().addingTimeInterval(path == "/wallpaper" ? 120 : 5)
   while buf.count - headEnd.upperBound < wanted, readMore() {}
   let body = buf[headEnd.upperBound...].prefix(wanted)
+  if path == touchIDPath {   // Touch ID for the VM's sudo and polkit (touchid.swift)
+    touchIDRequest(fd: fd, peer: peer, method: method, path: path, headers: headers, body: Data(body))
+    return
+  }
   if path.hasPrefix("/omacvm/") {   // the control centre's fixed list (control.swift)
     control.handle(fd: fd, peer: peer, method: method, path: path, headers: headers, body: Data(body))
     return

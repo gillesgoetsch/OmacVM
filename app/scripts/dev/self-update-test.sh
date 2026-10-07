@@ -11,6 +11,8 @@
 # silence switch, update held back while a VM runs and applied after (shut
 # down, crash, a QEMU without its launcher, next launch), rollback of both
 # broken builds, the one step back, a renamed copy (its own update folder),
+# an update with a VM restart (clean, a VM that does not shut down, forced,
+# a broken build: the VM starts again each time),
 # an app started during a swap, no window after an update at shutdown, an
 # app on another disk (a disk image: copied next to it, renamed in place).
 # Exit 0 when all pass.
@@ -86,14 +88,16 @@ make_version() {   # VERSION -> $WORK/v/VERSION/NAME.app
   mkdir -p "$d"; ditto "$SRC" "$d/$NAME.app"
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $1" -c "Set :CFBundleVersion $1" "$d/$NAME.app/Contents/Info.plist"
 }
-for v in 2.7.0 2.7.1 2.7.2 2.7.3 2.7.4 2.7.5; do make_version $v; done
+for v in 2.7.0 2.7.1 2.7.2 2.7.3 2.7.4 2.7.5 2.7.6 2.7.7 2.7.8 2.7.9; do make_version $v; done
 # 2.7.2: QEMU misses a library (dyld stops it).
 rm "$WORK/v/2.7.2/$NAME.app/Contents/Resources/runtime/lib/libvirglrenderer.1.dylib"
+# 2.7.8: the same, newer than 2.7.6 (the rollback of an update with a VM restart).
+rm "$WORK/v/2.7.8/$NAME.app/Contents/Resources/runtime/lib/libvirglrenderer.1.dylib"
 # 2.7.3: a launcher that exits at once.
 printf 'int main(void) { return 3; }\n' > "$WORK/v/exit3.c"
 cc -o "$WORK/v/2.7.3/$NAME.app/Contents/MacOS/OmacVM" "$WORK/v/exit3.c"
 codesign --force --sign "$SIGN_ID" --options runtime --timestamp=none "$WORK/v/2.7.3/$NAME.app/Contents/MacOS/OmacVM"
-for v in 2.7.0 2.7.1 2.7.2 2.7.3 2.7.4 2.7.5; do resign "$WORK/v/$v/$NAME.app" || die "signing $v"; done
+for v in 2.7.0 2.7.1 2.7.2 2.7.3 2.7.4 2.7.5 2.7.6 2.7.7 2.7.8 2.7.9; do resign "$WORK/v/$v/$NAME.app" || die "signing $v"; done
 # The team of the identity the test versions are signed with: the feed names it.
 TEAM=$(codesign -dv "$WORK/v/2.7.0/$NAME.app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
 [[ $TEAM =~ ^[A-Z0-9]{10}$ ]] || die "OMACVM_SIGN_ID is not a Developer ID (no team)"
@@ -133,7 +137,9 @@ days_ago() { mkdir -p "$UPD"; date -u -v-"$1"d '+%Y-%m-%dT%H:%M:%SZ' > "$UPD/las
 ENV=(--env "OMACVM_APPCAST_URL=http://127.0.0.1:$PORT/OmacVM-appcast.json" --env "OMACVM_APPCAST_KEY=$(cat "$WORK/test-key.pub") $(cat "$WORK/spare-key.pub")"
      --env "OMACVM_SETTINGS_DIR=$SETTINGS" --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_UPDATE_WAIT=20)
 start_app() { open -n "${ENV[@]}" "$1" --args "${@:2}"; }
-launcher_pid() { pgrep -f "$1/Contents/MacOS/OmacVM" | head -1; }
+# QEMU, started as Contents/MacOS/OmacVM-VM (3.0.1, DockIdentity) or by its own path.
+QEMU_RE='(MacOS/OmacVM-VM|Resources/runtime/bin/OmacVM) '
+launcher_pid() { pgrep -f "$1/Contents/MacOS/OmacVM( |\$)" | head -1; }
 # A swap that is still on (waiting for the new app's answer) ends first.
 wait_swaps() { local i; for ((i = 0; i < 180; i++)); do pgrep -f "update-swap.sh .*$WORK/" >/dev/null || return 0; sleep 0.5; done; return 1; }
 quit_app() { local p; wait_swaps; p=$(launcher_pid "$1"); [[ -z $p ]] || { kill "$p"; sleep 1; }; }
@@ -202,12 +208,12 @@ EOF
 dd if=/dev/null of="$VM/disk.img" bs=1 seek=$((1 << 30)) 2>/dev/null
 mkfile -n 64m "$VM/efi-vars.fd"; touch "$VM/ready"
 start_app "$APP" --start --vm SU-test-vm
-check "the test VM's QEMU runs from the app" 'wait_for 20 "pgrep -f \"\$APP/Contents/Resources/runtime/bin/OmacVM\" >/dev/null"'
+check "the test VM's QEMU runs from the app" 'wait_for 20 "pgrep -f \"\$APP/Contents/$QEMU_RE\" >/dev/null"'
 start_app "$APP" --update-now
 check "update asked for: held back" 'wait_for 30 "grep -q \"install 2.7.1 deferred\" \"\$UPD/update.log\""'
 sleep 3
 check "still 2.7.0 while the VM runs" '[[ $(version "$APP") == 2.7.0 ]]'
-check "the VM still runs" 'pgrep -f "$APP/Contents/Resources/runtime/bin/OmacVM" >/dev/null'
+check "the VM still runs" 'pgrep -f "$APP/Contents/$QEMU_RE" >/dev/null'
 # Shut the VM down (QMP quit: QEMU ends with 0, as after a guest power-off).
 QMP=$(getconf DARWIN_USER_TEMP_DIR)omacvm/$(printf '%s' "$VM" | shasum | cut -c1-8).qmp
 qmp_quit() {
@@ -219,7 +225,7 @@ for c in ("qmp_capabilities", "quit"):
     f.write(json.dumps({"execute": c}) + "\n"); f.flush(); time.sleep(0.3)
 EOF
 }
-qemu_runs() { pgrep -f "$APP/Contents/Resources/runtime/bin/OmacVM" >/dev/null; }
+qemu_runs() { pgrep -f "$APP/Contents/$QEMU_RE" >/dev/null; }
 qmp_quit
 check "after the VM stopped: 2.7.1 in place" 'wait_for 60 "[[ \$(version \"\$APP\") == 2.7.1 ]]"'
 check "swap result: installed" 'wait_for 30 "grep -q \"result: installed 2.7.0 2.7.1\" \"\$UPD/update.log\""'
@@ -300,7 +306,7 @@ start_app "$APP" --start --vm SU-test-vm
 check "the test VM runs" 'wait_for 20 qemu_runs'
 start_app "$APP" --update-now
 check "update asked for: held back" 'wait_for 30 "grep -q \"install 2.7.4 deferred\" \"\$UPD/update.log\""'
-pkill -9 -f "$APP/Contents/Resources/runtime/bin/OmacVM"
+pkill -9 -f "$APP/Contents/$QEMU_RE"
 check "after the crash: 2.7.4 in place" 'wait_for 60 "[[ \$(version \"\$APP\") == 2.7.4 ]]"'
 check "swap result: installed" 'wait_for 30 "grep -q \"result: installed 2.7.0 2.7.4\" \"\$UPD/update.log\""'
 check "2.7.4 runs" 'wait_for 10 "[[ -n \$(launcher_pid \"\$APP\") ]]"'
@@ -376,6 +382,53 @@ check "work folder on another disk: refused" 'grep -q "result: aborted .* is on 
 check "2.7.1 still in place, nothing moved" '[[ $(version "$EXT") == 2.7.1 && $(version "$UPD_EXT/incoming/$NAME.app") == 2.7.4 && $(version "$EXT_WORK/previous/$NAME.app") == 2.7.0 ]]'
 quit_app "$EXT"
 hdiutil detach -quiet "$MNT" || hdiutil detach -force -quiet "$MNT"
+
+# ---- 12. update with a VM restart (Shut Down and Update; u in the control centre) ----
+log "12. update with a VM restart: shut down, install, the VM starts again; a VM that does not shut down stops it"
+quit_app "$APP"
+rm -rf "$APP" "$UPD"; ditto "$WORK/v/2.7.0/$NAME.app" "$APP"
+printf '{"update_checks": true}\n' > "$SETTINGS/settings.json"
+publish 2.7.6
+# The VM has no OS: the power button does nothing, so the 15 s timeout comes; OK, nothing forced.
+ENV+=(--env OMACVM_RESTART_TIMEOUT=15 --env OMACVM_RESTART_FORCE=0)
+start_app "$APP" --start --vm SU-test-vm
+check "the test VM runs" 'wait_for 20 qemu_runs'
+start_app "$APP" --update-restart
+check "restart-update: checked and ready" 'wait_for 60 "grep -q \"restart-update 2.7.6 for SU-test-vm: ready\" \"\$UPD/update.log\""'
+check "the VM to start again is noted" '[[ -e "$UPD/restart-vm" ]]'
+check "timeout: the update stopped" 'wait_for 40 "grep -q \"restart-update stopped: the VM still runs\" \"\$UPD/update.log\""'
+check "nothing forced: the VM still runs" 'qemu_runs'
+check "still 2.7.0" '[[ $(version "$APP") == 2.7.0 ]]'
+check "restart-vm removed" '[[ ! -e "$UPD/restart-vm" ]]'
+# Again; this time the VM shuts down (QMP quit plays the guest's power-off).
+start_app "$APP" --update-restart
+check "restart-update ready again" 'wait_for 60 "[[ \$(grep -c \"restart-update 2.7.6 for SU-test-vm: ready\" \"\$UPD/update.log\") -ge 2 ]]"'
+sleep 2; qmp_quit
+check "after the shutdown: 2.7.6 in place" 'wait_for 60 "[[ \$(version \"\$APP\") == 2.7.6 ]]"'
+check "2.7.6 starts the VM again" 'wait_for 60 "grep -q \"starting the VM again after the update\" \"\$UPD/update.log\"" && wait_for 30 qemu_runs'
+check "restart-vm used once" '[[ ! -e "$UPD/restart-vm" ]]'
+check "the VM runs from 2.7.6" 'wait_for 10 "[[ \$(version \"\$APP\") == 2.7.6 ]] && qemu_runs"'
+# A broken build newer than 2.7.6 (QEMU misses a library): 2.7.6 comes back and starts the VM again.
+publish 2.7.8
+quit_app "$APP"; pkill -f "$APP/Contents/Resources/runtime/bin/OmacVM"; sleep 2
+start_app "$APP" --start --vm SU-test-vm
+check "the test VM runs from 2.7.6" 'wait_for 20 qemu_runs'
+start_app "$APP" --update-restart
+check "restart-update 2.7.8 ready" 'wait_for 60 "grep -q \"restart-update 2.7.8 for SU-test-vm: ready\" \"\$UPD/update.log\""'
+sleep 2; qmp_quit
+check "rolled back to 2.7.6" 'wait_for 90 "grep -q \"result: rolled-back 2.7.8\" \"\$UPD/update.log\""'
+check "2.7.6 started the VM again after the rollback" 'wait_for 60 "[[ \$(grep -c \"starting the VM again after the update\" \"\$UPD/update.log\") -ge 2 ]]" && wait_for 30 qemu_runs'
+check "still 2.7.6" '[[ $(version "$APP") == 2.7.6 ]]'
+# Forced (the second confirm said Force Off and Update): 2.7.9 goes in (2.7.8 is skipped now), the VM starts again.
+quit_app "$APP"; pkill -f "$APP/Contents/Resources/runtime/bin/OmacVM"; sleep 2
+publish 2.7.9
+ENV+=(--env OMACVM_RESTART_FORCE=1)
+start_app "$APP" --start --vm SU-test-vm
+check "the test VM runs" 'wait_for 20 qemu_runs'
+start_app "$APP" --update-restart
+check "forced off after the timeout: 2.7.9 in place" 'wait_for 120 "[[ \$(version \"\$APP\") == 2.7.9 ]]"'
+check "2.7.9 starts the VM again" 'wait_for 60 "[[ \$(grep -c \"starting the VM again after the update\" \"\$UPD/update.log\") -ge 3 ]]" && wait_for 30 qemu_runs'
+quit_app "$APP"; pkill -f "$APP/Contents/Resources/runtime/bin/OmacVM"; logtail
 
 log "the installed OmacVM and the shared settings untouched"
 check "fingerprint unchanged" '[[ $(fingerprint) == "$FP_BEFORE" ]]'

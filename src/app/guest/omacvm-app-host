@@ -2,8 +2,10 @@
 # OmacVM.app: what the Mac tells the VM at start (QEMU SMBIOS OEM strings
 # "omacvm.KEY=VALUE") -> /run/omacvm/host.env, readable by the desktop user.
 # Today: omacvm.notch (rows beside the notch, in pixels, when the window
-# covers them), omacvm.screen (that full-screen size), omacvm.hdr and
-# omacvm.vkwindows (the app shows Vulkan windows Hyprland imports).
+# covers them; only an OmacVM.app before 3.0.0 sends it), omacvm.screen
+# (that full-screen size), omacvm.hdr, omacvm.vkwindows (the app shows Vulkan
+# windows Hyprland imports) and omacvm.hwcursor (the Mac's cursor shows the
+# pointer: omacvm_app.lua).
 set -euo pipefail
 out=/run/omacvm/host.env
 install -d -m755 /run/omacvm

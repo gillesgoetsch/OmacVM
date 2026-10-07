@@ -34,10 +34,13 @@ and OmacVM.app's QEMU let it through; macOS animates it as its own swipe
 that shows the VM, the pointer visiting each). The keyboard follows the
 pointer's display. Pressed there again in macOS, it moves back. The VM is
 never taken out of full screen and never hidden. Every move is checked: the
-shortcut off or the Space unchanged -> a Dock swipe (as three or four fingers
-make it) -> still in the VM's Space, or no Spaces information -> Mission
-Control (its shortcut, 32, for OmacVM.app; else its app), so the user picks
-a Space. Back in, a shortcut that does not land brings the VM's window to the
+shortcut off or the Space unchanged -> a Dock swipe (macOS 15 ignores the
+shortcut from the notched built-in display's full-screen Space); still
+unchanged, or no Spaces information -> one log line and a notice in Omarchy
+(`N <why>` to the guest), nothing else. A change that lands late is looked for
+twice more before the next step, so one press never moves two Spaces. Mission
+Control only on a double press (twice within 0.4 s; the second press drops
+what the first has not posted yet). Back in, a shortcut that does not land brings the VM's window to the
 front instead. In an OmacVM.app window the combo gives the keyboard to the
 app from before (else Finder) and brings the window back. It re-arms when you
 come back to the full-screen VM, or press the combo again.

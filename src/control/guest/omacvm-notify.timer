@@ -2,7 +2,7 @@
 Description=OmacVM update notice, after login and every 6 hours
 
 [Timer]
-OnStartupSec=2min
+OnStartupSec=30s
 OnUnitActiveSec=6h
 
 [Install]

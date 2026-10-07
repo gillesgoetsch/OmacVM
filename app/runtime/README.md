@@ -47,6 +47,31 @@ commit 82927e9. Changes here:
   (`boot-logo/make-logo-bmp.py logo.svg --rows`), the animation's table is
   `boot-logo/make-splash-morph.py`'s; the build checks both, the
   animation's core and its fade (`Tests/display/`, also `check-boot-splash.sh` in CI)
+- `patches/omacvm-cocoa-fullscreen-own-space.patch`: full screen is always
+  macOS's own, in a Space of its own on every display (beside a notch it sits
+  below the camera; Omanotch fills the strip). The borderless kind of
+  `omacvm-cocoa-notch.patch` is left for tests only.
+  `patches/omacvm-cocoa-head-key-same-space.patch`: another display's window
+  hands the keyboard back to the main window only while the main window's
+  Space shows, so the escape combo's move to macOS is not undone.
+  `Tests/display/test-fullscreen-space.sh` checks both in the patched
+  `ui/cocoa.m` at build time.
+- `patches/omacvm-cocoa-shutdown-events.patch`: once QEMU's thread has
+  cleaned up the display (Quit, guest shutdown), AppKit events and blocks no
+  longer reach QEMU (they crashed on the freed keyboard state).
+  `patches/omacvm-cocoa-fullscreen-start.patch`: a VM that starts in full
+  screen stays invisible until macOS has it there (no windowed frame, no
+  menu bar over it). `Tests/display/test-shutdown-events.sh` and
+  `test-fullscreen-start.sh` check them at build time.
+- `patches/omacvm-cocoa-quit-clean.patch`: QEMU no longer quits when AppKit
+  sees its last window go (a hidden full-screen test run quit after a minute
+  when AppKit closed its full-screen mouse detection window); the close
+  button, or the VM window closing any other way, still quits. A quit within
+  2 minutes of the guest's start or reset presses the power button again
+  every 10 s up to 40 s (a press while the guest boots is lost) and stops the
+  guest at 70 s; a guest that is up gets one press and 60 s, as before
+  (Omarchy's power menu opens on the key). qemu.log gets a line for each.
+  `Tests/display/test-quit-clean.sh` checks it at build time.
 - `patches/virgl-texture-integer-samplers.patch`: shaders that read integer
   textures (`usampler2D`) compile on the Mac's OpenGL. Before, Apple's
   compiler refused them and the guest's GL context stopped for good: Chrome's

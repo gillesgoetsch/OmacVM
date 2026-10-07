@@ -9,14 +9,17 @@
 // (caches, jobs, limiter) is only touched on `q`; CLI runs and downloads
 // happen outside it.
 import Foundation
+import IOKit
 
 /// The test identity's Bridge (org.omacvm.test.bridge, from app/scripts/build-app.sh
 /// --test-identity) keeps its own port and folders: it never meets the installed Bridge
 /// or runs the installed omacvm.
-let testIdentity = Bundle.main.bundleIdentifier == "org.omacvm.test.bridge"
+let testIdentity = Bundle.main.bundleIdentifier == VMOwner.testBridge
 let omacvmSupport = FileManager.default.homeDirectoryForCurrentUser.path
   + (testIdentity ? "/Library/Application Support/omacvm-test" : "/Library/Application Support/omacvm")
 let jobsDir = supportDir + "/jobs"
+/// OmacVM Gestures' settings (Magic Mouse swipe): the test identity's own Gestures.
+let gesturesDomain = (testIdentity ? "org.omacvm.test.gestures" : "org.omacvm.gestures") as CFString
 let feedDefault = "https://github.com/gillesgoetsch/omacvm/releases/latest/download/omacvm-manifest.json"
 
 /// What a spawned CLI run gets: a fixed, small environment.
@@ -32,8 +35,10 @@ func cliEnvironment(extra: [String: String] = [:]) -> [String: String] {
 }
 
 /// posix_spawn with a fixed argv: stdin /dev/null, stdout and stderr to `out`,
-/// every other descriptor closed, its own session.
-func spawn(_ argv: [String], env: [String: String], out: Int32) -> pid_t? {
+/// every other descriptor closed, its own session. `app`: run it through
+/// OmacVM.app's executable (appRunner), which answers for it.
+func spawn(_ argv: [String], env: [String: String], out: Int32, app: String? = nil) -> pid_t? {
+  let argv = app.map { [$0, "--control-run"] + argv } ?? argv
   var fa: posix_spawn_file_actions_t?
   var attr: posix_spawnattr_t?
   posix_spawn_file_actions_init(&fa); defer { posix_spawn_file_actions_destroy(&fa) }
@@ -49,7 +54,8 @@ func spawn(_ argv: [String], env: [String: String], out: Int32) -> pid_t? {
   // The CLI answers for itself, not as part of the Bridge app: otherwise
   // macOS counts its ssh to the VM as the Bridge reaching the local network
   // (Local Network privacy) and refuses it. Terminal does the same for its
-  // shells. Missing on a macOS without it: spawned as before.
+  // shells. Missing on a macOS without it: spawned as before. Through the
+  // app (`app`), the app answers for it (control_policy.swift appRunnerPath).
   if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") {
     typealias Disclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
     _ = unsafeBitCast(sym, to: Disclaim.self)(&attr, 1)
@@ -62,10 +68,11 @@ func spawn(_ argv: [String], env: [String: String], out: Int32) -> pid_t? {
 }
 
 /// A read-only CLI run: its output, or nil after `timeout` (then killed).
-func runCLI(_ argv: [String], timeout: Double) -> (Int32, Data)? {
+/// `app`: through OmacVM.app (appRunner).
+func runCLI(_ argv: [String], timeout: Double, app: String? = nil) -> (Int32, Data)? {
   var p: [Int32] = [0, 0]
   guard pipe(&p) == 0 else { return nil }
-  guard let pid = spawn(argv, env: cliEnvironment(), out: p[1]) else { close(p[0]); close(p[1]); return nil }
+  guard let pid = spawn(argv, env: cliEnvironment(), out: p[1], app: app) else { close(p[0]); close(p[1]); return nil }
   close(p[1])
   var data = Data(), buf = [UInt8](repeating: 0, count: 65536)
   let deadline = Date().addingTimeInterval(timeout)
@@ -92,7 +99,7 @@ func controlCLI() -> Result<String, PolicyError> {
   let raw = env["OMACVM_CONTROL_CLI"] ?? (try? String(contentsOfFile: omacvmSupport + "/cli", encoding: .utf8)) ?? ""
   let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
   guard path.hasPrefix("/"), !path.contains("/../") else {
-    return .failure(PolicyError(503, "no-cli", "the Mac's OmacVM is not set up for the control centre: omacvm update on the Mac"))
+    return .failure(PolicyError(503, "no-cli", "the Mac's OmacVM is not set up for the control centre: open OmacVM on the Mac once"))
   }
   let root = (path as NSString).deletingLastPathComponent
   for p in [path, root, root + "/src", root + "/src/cmd", root + "/src/lib"] {
@@ -107,12 +114,30 @@ func controlCLI() -> Result<String, PolicyError> {
 
 func cliRoot(_ cli: String) -> String { (cli as NSString).deletingLastPathComponent }
 
+/// OmacVM.app's executable that runs `cli` for its VMs (appRunnerPath), when
+/// it is this user's alone like the CLI; nil: the CLI runs on its own.
+func appRunner(_ cli: String) -> String? {
+  let tail = "/Contents/Resources/omacvm/omacvm"
+  guard cli.hasSuffix(tail) else { return nil }
+  let app = String(cli.dropLast(tail.count))
+  let info = NSDictionary(contentsOfFile: app + "/Contents/Info.plist") as? [String: Any]
+  guard let exe = appRunnerPath(cli: cli, info: info, testIdentity: testIdentity, testApp: VMOwner.testApp) else { return nil }
+  var st = stat()
+  guard lstat(exe, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), st.st_mode & 0o022 == 0 else { return nil }
+  return exe
+}
+
 func macFeatures(_ cli: String) -> [String] {
   let tsv = (try? String(contentsOfFile: cliRoot(cli) + "/src/features.tsv", encoding: .utf8)) ?? ""
   return tsv.split(separator: "\n").compactMap { line in
     let name = String(line.split(separator: "\t", maxSplits: 1).first ?? "")
     return validFeatureName(name) ? name : nil
   }
+}
+
+/// The Mac's omacvm is OmacVM.app's own copy: the app updates it.
+func macIsAppCopy(_ cli: String) -> Bool {
+  cliIsAppCopy(cli, hasGit: FileManager.default.fileExists(atPath: cliRoot(cli) + "/.git"))
 }
 
 func macVersion(_ cli: String) -> String {
@@ -159,6 +184,10 @@ final class Control {
   private var requests = RequestLimiter()
   private var nonceFD: Int32 = -1, nonceAppended = 0
   private var lastCheck = Date.distantPast
+  /// The app ran the last VM list for the Bridge (appRunner): its status
+  /// runs and jobs go through it too. False after it refused or failed
+  /// (another signer, say): they run as before until a list works again.
+  private var runnerOK = true
   private var timer: DispatchSourceTimer?
 
   func start() {
@@ -215,7 +244,8 @@ final class Control {
     let proto: Int
     switch negotiateProto(headers["x-omacvm-proto"]) { case .success(let p): proto = p; case .failure(let e): return refuse(e) }
     let version = macVersion(cli)
-    quiet = route == .gpuMemory
+    // Graphics memory and the Magic Mouse swipe are asked while the control centre is open.
+    quiet = route == .gpuMemory || route == .mouseSwipe
     // The VM list as it is for graphics memory (asked every 2 s): a new run of
     // omacvm vms only when the VM is not in it, not each minute.
     let fresh = route != .gpuMemory
@@ -224,7 +254,7 @@ final class Control {
       let v = ProcessInfo.processInfo.operatingSystemVersion
       return answer(200, ["proto": proto, "proto_min": controlProtoMin, "omacvm": version,
                           "requests": ["hello", "status", "updates", "updates/check", "settings/update-checks", "jobs",
-                                       "gpu-memory"],
+                                       "gpu-memory", "settings/mouse-swipe", "app-update", "theme"],
                           "features": known.sorted(), "macos": "\(v.majorVersion).\(v.minorVersion).\(v.patchVersion)",
                           "chip": chipName()])
     }
@@ -235,7 +265,9 @@ final class Control {
     // VM's control port (relay key; the app names the VM): on the relay
     // socket (server.swift), or on 127.0.0.1 from an app older than it.
     let vm: VMEntry
-    if peer == relayPeer || fromThisMac(fd, peer: peer) {
+    let relayed = peer == relayPeer || fromThisMac(fd, peer: peer)
+    var viaApp = false
+    if relayed {
       guard relayAuthorized(headers["x-omacvm-relay"]), let b64 = headers["x-omacvm-app-vm"],
             let d = Data(base64Encoded: b64), let name = String(data: d, encoding: .utf8), !name.isEmpty, name.count <= 200 else {
         return refuse(PolicyError(403, "app-vm", "OmacVM.app's VMs ask through the app's control port: update OmacVM.app"))
@@ -244,6 +276,7 @@ final class Control {
       case .success(let v): vm = v
       case .failure(let e): return refuse(lookingAgain(e), looking(e))
       }
+      viaApp = true
       if let e = q.sync(execute: { requests.admit(vmKey(vm)) }) { return refuse(e) }
     } else {
       switch vmForPeer(peer, vmList(cli, fresh: fresh) { if case .success = vmForPeer(peer, $0) { return true }; return false }) {
@@ -277,7 +310,22 @@ final class Control {
     }
     vmName = vm.name
     switch route {
-    case .updates: return answer(200, updatesAnswer(version))
+    case .updates: return answer(200, updatesAnswer(version, cli))
+    case .appUpdate:
+      // OmacVM.app asks this for its VM, then checks its own signed feed and
+      // updates itself (it shuts the VM down cleanly first). The Bridge gates
+      // as for an update job: a verified release, newer than the Mac's.
+      let m = verifiedManifest()
+      if let e = appUpdateGate(viaApp: viaApp, vmType: vm.type, macAppCopy: macIsAppCopy(cli), release: m?.version, mac: version) {
+        return refuse(e)
+      }
+      let at = (lastResult()["checked_at"] as? String).flatMap { isoFormat.date(from: $0) }
+      if let e = updateGate(checksEnabled: updateChecks(), checkedAt: at) { return refuse(e) }
+      if runningOnDisk(vmKey(vm)) { return refuse(PolicyError(409, "busy", "a job runs for this VM: wait for it")) }
+      // Counts toward the jobs per hour; nothing runs here, so it is free again at once.
+      if let e = q.sync(execute: { limiter.admit(vmKey(vm)) }) { return refuse(e) }
+      q.sync { limiter.finished(vmKey(vm)) }
+      return answer(200, ["go": true, "release": m?.version ?? "", "mac": version], "app-update for \(vm.name)")
     case .updatesCheck:
       let wait = q.sync { () -> Double in
         let w = 60 - Date().timeIntervalSince(lastCheck)
@@ -286,15 +334,33 @@ final class Control {
       }
       if wait > 0 { return refuse(PolicyError(429, "rate", "checked a moment ago: try again in \(Int(wait) + 1) s")) }
       _ = checkFeed()
-      return answer(200, updatesAnswer(version))
+      return answer(200, updatesAnswer(version, cli))
     case .setUpdateChecks(let on):
       setUpdateChecks(on)
-      return answer(200, updatesAnswer(version), on ? "checks on" : "checks off")
+      return answer(200, updatesAnswer(version, cli), on ? "checks on" : "checks off")
+    case .mouseSwipe:
+      answer(200, mouseSwipeAnswer(magicMouse: magicMouseConnected(), fingers: mouseSwipeNow()))
+    case .setMouseSwipe(let n):
+      setMouseSwipe(n)
+      answer(200, mouseSwipeAnswer(magicMouse: magicMouseConnected(), fingers: mouseSwipeNow()), "mouse swipe \(n) fingers")
     case .status:
       answer(200, statusAnswer(cli, vm, version))
     case .gpuMemory:
       guard vm.type == "app" else { return refuse(PolicyError(409, "not-app", "graphics memory is measured for OmacVM.app's VMs")) }
-      answer(200, gpuMemoryAnswer(gpuMemoryText(vm)))
+      // The app sends the file with the request: the Bridge does not read an external drive itself.
+      let fromApp = relayed ? gpuMemoryFromApp(headers["x-omacvm-gpu-memory"]) : nil
+      answer(200, gpuMemoryAnswer(fromApp ?? gpuMemoryText(vm)))
+    case .theme(let b):
+      // The Touch ID panel's colours: only from a VM with Touch ID on (its key on the Mac).
+      guard touchIDKey(vm) != nil else { return refuse(PolicyError(403, "off", "Touch ID is off for this VM")) }
+      let name = vmKeyName(type: vm.type, name: vm.name)
+      if let e = touchIDThemes.admit(name, now: Date()) { return refuse(e) }
+      switch parseTouchIDTheme(b) {
+      case .failure(let e): return refuse(e)
+      case .success(let t):
+        guard touchIDThemes.save(t, for: name) else { return refuse(PolicyError(500, "not-kept", "the Mac could not keep the theme")) }
+        answer(200, ["ok": true, "dark": t.dark], "theme \(t.background.hex) \(t.dark ? "dark" : "light")")
+      }
     case .job(let id):
       guard let j = job(id), j.vm == vmKey(vm) else { return refuse(PolicyError(404, "not-found", "no such job")) }
       answer(200, jobAnswer(j))
@@ -317,7 +383,7 @@ final class Control {
       if runningOnDisk(vmKey(vm)) { return refuse(PolicyError(409, "busy", "a job runs for this VM: wait for it")) }
       if let e = q.sync(execute: { limiter.admit(vmKey(vm)) }) { return refuse(e) }
       let argv = jobArgv(cli: cli, r, vm: vm.name, type: vm.type, commit: commit)
-      guard let j = startJob(argv, vm: vm, request: r) else {
+      guard let j = startJob(argv, vm: vm, request: r, app: appRunnerFor(cli, vm)) else {
         q.sync { limiter.finished(vmKey(vm)) }
         return refuse(PolicyError(500, "spawn", "the job did not start"))
       }
@@ -350,6 +416,13 @@ final class Control {
     if nonceAppended > 2 * nonces.perVMLimit { compactNonces() }
   }
 
+  /// The app's executable for this VM's CLI runs, or nil (not an app VM, no
+  /// runner, or it did not work for the last VM list).
+  private func appRunnerFor(_ cli: String, _ vm: VMEntry) -> String? {
+    guard vm.type == "app", q.sync(execute: { runnerOK }) else { return nil }
+    return appRunner(cli)
+  }
+
   // ---- which VM ----
   private func vmKey(_ v: VMEntry) -> String { VMListCache.key(v) }
 
@@ -376,23 +449,39 @@ final class Control {
     return list
   }
 
-  /// One run of `omacvm vms --json` in the background (the cache says when).
+  /// `omacvm vms --json ...`: the list, or nil.
+  private func listVMs(_ argv: [String], app: String? = nil) -> [VMEntry]? {
+    guard let (rc, out) = runCLI(argv, timeout: 90, app: app), rc == 0,
+          let o = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any],
+          let list = o["vms"] as? [[String: Any]] else { return nil }
+    return list.map { v in
+      VMEntry(name: v["name"] as? String ?? "", type: v["type"] as? String ?? "", state: v["state"] as? String ?? "",
+              ip: v["ip"] as? String ?? "", omacvm: v["omacvm"] as? String ?? "",
+              // Set up by OmacVM, and its remembered SSH host key answered at that address just now.
+              setup: (strictBool(v["setup"]) ?? false) && (strictBool(v["reachable"]) ?? false),
+              dir: v["dir"] as? String ?? "")
+    }
+  }
+
+  /// One run of `omacvm vms --json` in the background (the cache says when),
+  /// and one of OmacVM.app's VMs through the app at the same time (an
+  /// external drive: control_policy.swift appRunnerPath).
   private func refreshVMs(_ cli: String) {
     DispatchQueue.global(qos: .utility).async { [self] in
-      var fresh: [VMEntry]?
-      if let (rc, out) = runCLI([cli, "vms", "--json"], timeout: 90), rc == 0,
-         let o = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any],
-         let list = o["vms"] as? [[String: Any]] {
-        fresh = list.map { v in
-          VMEntry(name: v["name"] as? String ?? "", type: v["type"] as? String ?? "", state: v["state"] as? String ?? "",
-                  ip: v["ip"] as? String ?? "", omacvm: v["omacvm"] as? String ?? "",
-                  // Set up by OmacVM, and its remembered SSH host key answered at that address just now.
-                  setup: (strictBool(v["setup"]) ?? false) && (strictBool(v["reachable"]) ?? false),
-                  dir: v["dir"] as? String ?? "")
+      var all: [VMEntry]?, app: [VMEntry]?
+      let runner = appRunner(cli)
+      let g = DispatchGroup()
+      if let runner {
+        DispatchQueue.global(qos: .utility).async(group: g) { [self] in
+          app = listVMs([cli, "vms", "--json", "--app-only"], app: runner)
+          if app == nil { log("control: OmacVM.app's VM list through the app gave none (the Bridge's own list counts)") }
+          q.sync { runnerOK = app != nil }
         }
-      } else {
-        log("control: omacvm vms --json gave no list (asked again in 10 s at the earliest)")
       }
+      all = listVMs([cli, "vms", "--json"])
+      g.wait()
+      let fresh = mergeVMLists(all: all, app: app)
+      if fresh == nil { log("control: omacvm vms --json gave no list (asked again in 10 s at the earliest)") }
       let again = q.sync { () -> Bool in
         let r = vms.finished(fresh, now: Date())
         for k in r.changed { status[k] = nil }   // asked again with the VM's new state
@@ -437,6 +526,54 @@ final class Control {
     return ("address " + peer, false)
   }
 
+  /// Touch ID (touchid.swift): the VM that asks, found as for the control
+  /// centre's requests, and its Touch ID key and checked nonce. `key` nil:
+  /// the feature is off for that VM (no key on the Mac). The nonce is also
+  /// given back with an error once the signature checked out, so the
+  /// refusal can be signed.
+  func touchIDCaller(fd: Int32, peer: String, method: String, path: String, headers: [String: String], body: Data)
+      -> (vm: VMEntry?, key: String?, nonce: String?, error: PolicyError?) {
+    let cli: String
+    switch controlCLI() { case .success(let c): cli = c; case .failure(let e): return (nil, nil, nil, e) }
+    let vm: VMEntry
+    let found: Result<VMEntry, PolicyError>
+    if peer == relayPeer || fromThisMac(fd, peer: peer) {
+      guard relayAuthorized(headers["x-omacvm-relay"]), let b64 = headers["x-omacvm-app-vm"],
+            let d = Data(base64Encoded: b64), let name = String(data: d, encoding: .utf8), !name.isEmpty, name.count <= 200 else {
+        return (nil, nil, nil, PolicyError(403, "app-vm", "OmacVM.app's VMs ask through the app's auth port"))
+      }
+      found = vmForApp(name, vmList(cli) { if case .success = vmForApp(name, $0) { return true }; return false })
+    } else {
+      found = vmForPeer(peer, vmList(cli) { if case .success = vmForPeer(peer, $0) { return true }; return false })
+    }
+    switch found { case .success(let v): vm = v; case .failure(let e): return (nil, nil, nil, lookingAgain(e)) }
+    guard let key = touchIDKey(vm) else { return (vm, nil, nil, nil) }
+    let checked = q.sync { () -> Result<String, AuthFailure> in
+      let r = verifyControlAuth(header: headers["x-omacvm-auth"], key: key, vm: vmKeyName(type: vm.type, name: vm.name),
+                                method: method, path: path, proto: headers["x-omacvm-proto"] ?? "", body: body,
+                                now: Date(), nonces: &nonces, label: touchIDRequestLabel)
+      keepNonces()
+      return r
+    }
+    switch checked {
+    case .success(let n): return (vm, key, n, nil)
+    case .failure(let f): return (vm, key, f.nonce, f.error)
+    }
+  }
+
+  /// The VM's Touch ID key on the Mac (lib/mac.sh touchid_key_ensure), only
+  /// when this user's alone; nil: Touch ID is off for it.
+  func touchIDKey(_ vm: VMEntry) -> String? {
+    let path = omacvmSupport + "/vm-keys/" + touchIDKeyName(type: vm.type, name: vm.name)
+    var st = stat()
+    guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid(), st.st_mode & 0o077 == 0, st.st_size < 256,
+          let raw = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+    return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  /// How many VMs this Mac has set up (the dialog names the VM when more than one).
+  func setUpVMCount() -> Int { q.sync { vms.list.filter { $0.setup }.count } }
+
   /// An address the cache does not have was turned away for the limits: a
   /// VM that just started may be one, so look again (at most once a minute).
   func unknownTurnedAway() {
@@ -453,15 +590,18 @@ final class Control {
     guard mine else { return q.sync { status[key]?.body } ?? ["omacvm": version, "pending": true] }
     defer { _ = q.sync { statusRunning.remove(key) } }
     var feats: Any = NSNull(), checks: Any = NSNull()
+    let app = appRunnerFor(cli, vm)
     let g = DispatchGroup()
     DispatchQueue.global().async(group: g) {
-      if let (_, out) = runCLI([cli, "features", "--vm", vm.name, "--vm-type", vm.type, "--json"], timeout: 60),
+      if let (_, out) = runCLI([cli, "features", "--vm", vm.name, "--vm-type", vm.type, "--json"], timeout: 60, app: app),
          let o = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any], let f = o["features"] as? [[String: Any]] {
-        feats = f.map { ["name": $0["name"] ?? "", "on": $0["on"] ?? false, "available": $0["available"] ?? true, "reason": $0["reason"] ?? ""] }
+        // fixed: what OmacVM's record had wrong about this feature, now fixed (omacvm features --json).
+        feats = f.map { ["name": $0["name"] ?? "", "on": $0["on"] ?? false, "available": $0["available"] ?? true, "reason": $0["reason"] ?? "",
+                         "fixed": $0["fixed"] ?? ""] }
       }
     }
     DispatchQueue.global().async(group: g) {
-      if let (_, out) = runCLI([cli, "check", "--vm", vm.name, "--vm-type", vm.type, "--json", "--mac-only"], timeout: 60),
+      if let (_, out) = runCLI([cli, "check", "--vm", vm.name, "--vm-type", vm.type, "--json", "--mac-only"], timeout: 60, app: app),
          let o = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any], let c = o["checks"] as? [[String: Any]] {
         checks = c.map { c -> [String: Any] in
           var d: [String: Any] = [:]
@@ -475,7 +615,7 @@ final class Control {
     if vm.type == "app" {
       DispatchQueue.global().async(group: g) {
         // OmacVM.app's Graphics setting (src/cmd/graphics.sh); a Mac older than 3.0.0 has none.
-        if let (rc, out) = runCLI([cli, "graphics", "--vm", vm.name, "--vm-type", "app", "--json"], timeout: 30), rc == 0,
+        if let (rc, out) = runCLI([cli, "graphics", "--vm", vm.name, "--vm-type", "app", "--json"], timeout: 30, app: app), rc == 0,
            let o = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any] {
           var d: [String: Any] = [:]
           for k in ["graphics", "next_start", "summary", "this_start", "driver_ready", "waiting_for_driver"] { d[k] = o[k] ?? NSNull() }
@@ -508,7 +648,7 @@ final class Control {
   }
 
   // ---- jobs ----
-  private func startJob(_ argv: [String], vm: VMEntry, request r: JobRequest) -> JobRun? {
+  private func startJob(_ argv: [String], vm: VMEntry, request r: JobRequest, app: String?) -> JobRun? {
     var b = [UInt8](repeating: 0, count: 8)
     guard SecRandomCopyBytes(kSecRandomDefault, b.count, &b) == errSecSuccess else { return nil }
     let id = b.map { String(format: "%02x", $0) }.joined()
@@ -517,7 +657,7 @@ final class Control {
     guard fd >= 0 else { return nil }
     defer { close(fd) }
     // omacvm writes its exit code there, also when the Bridge restarts meanwhile (an update).
-    guard let pid = spawn(argv, env: cliEnvironment(extra: ["OMACVM_JOB_STATUS": j.rcPath, "OMACVM_PROGRESS": "json"]), out: fd) else { return nil }
+    guard let pid = spawn(argv, env: cliEnvironment(extra: ["OMACVM_JOB_STATUS": j.rcPath, "OMACVM_PROGRESS": "json"]), out: fd, app: app) else { return nil }
     j.pid = pid
     let meta: [String: Any] = ["id": id, "vm": j.vm, "action": j.action, "features": j.features,
                                "started": isoFormat.string(from: j.started), "pid": Int(pid)]
@@ -525,8 +665,9 @@ final class Control {
     q.sync { jobs[id] = j }
     DispatchQueue.global(qos: .utility).async { [self] in
       var st: Int32 = 0
-      // A whole thp-kernel build is about 10 minutes; nothing takes an hour.
-      let deadline = Date().addingTimeInterval(3600)
+      // The longest job is the memory-optimized kernel's build: about 10
+      // minutes with 16 CPUs, over an hour with 4 (an M2 MacBook Air's VM).
+      let deadline = Date().addingTimeInterval(4 * 3600)
       while waitpid(pid, &st, WNOHANG) == 0 {
         if Date() > deadline { kill(-pid, SIGTERM); sleep(5); kill(-pid, SIGKILL) }
         usleep(250_000)
@@ -610,6 +751,34 @@ final class Control {
     o["update_checks"] = on
     try? FileManager.default.createDirectory(atPath: omacvmSupport, withIntermediateDirectories: true)
     try? jsonData(o).write(to: URL(fileURLWithPath: settingsPath), options: .atomic)
+  }
+
+  // ---- Magic Mouse swipe: Gestures' own setting, read at each swipe ----
+  private func mouseSwipeNow() -> Int {
+    CFPreferencesAppSynchronize(gesturesDomain)
+    return mouseSwipeFingers(stored: CFPreferencesCopyAppValue("MouseSwipeFingers" as CFString, gesturesDomain))
+  }
+
+  private func setMouseSwipe(_ n: Int) {
+    CFPreferencesSetAppValue("MouseSwipeFingers" as CFString, (n == 3 ? 3 : 4) as CFNumber, gesturesDomain)
+    CFPreferencesAppSynchronize(gesturesDomain)
+  }
+
+  /// A Magic Mouse connected now (Bluetooth or USB), looked for as the app does.
+  private func magicMouseConnected() -> Bool {
+    for cls in ["AppleMultitouchDevice", "IOHIDDevice"] {
+      var it: io_iterator_t = 0
+      guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(cls), &it) == KERN_SUCCESS else { continue }
+      defer { IOObjectRelease(it) }
+      while case let s = IOIteratorNext(it), s != 0 {
+        defer { IOObjectRelease(s) }
+        func num(_ k: String) -> Int? {
+          (IORegistryEntryCreateCFProperty(s, k as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber)?.intValue
+        }
+        if isMagicMouse(vendor: num("VendorID"), product: num("ProductID"), family: num("Family ID")) { return true }
+      }
+    }
+    return false
   }
 
   private func lastResult() -> [String: Any] {
@@ -708,9 +877,10 @@ final class Control {
     if Date().timeIntervalSince(at) > 7 * 86400 { checkFeed() }
   }
 
-  private func updatesAnswer(_ version: String) -> [String: Any] {
+  private func updatesAnswer(_ version: String, _ cli: String) -> [String: Any] {
     let r = lastResult()
-    var a: [String: Any] = ["checks_enabled": updateChecks(), "omacvm": version,
+    // mac_app: the Mac's omacvm is OmacVM.app's copy (the app updates it: app-update).
+    var a: [String: Any] = ["checks_enabled": updateChecks(), "omacvm": version, "mac_app": macIsAppCopy(cli),
                             "checked_at": r["checked_at"] ?? NSNull(), "ok": r["ok"] ?? false,
                             "offline": r["offline"] ?? false, "unsigned": r["unsigned"] ?? false,
                             "error": r["error"] ?? NSNull(), "manifest": NSNull()]

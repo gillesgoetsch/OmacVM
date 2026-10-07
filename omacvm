@@ -5,6 +5,7 @@
 #                                its features, update, check
 #   omacvm build                 a new Omarchy VM in Parallels, UTM, VMware Fusion or OmacVM.app, from nothing
 #   omacvm features [--vm NAME]  a VM's features: see them, switch them
+#                                (--in-vm: open the control centre on the VM's desktop)
 #   omacvm enable FEATURE...     switch features on (omacvm enable scroll-momentum)
 #   omacvm disable FEATURE...    ... or off
 #   omacvm resources --vm NAME   a VM's CPUs and memory: see them, change them
@@ -40,6 +41,23 @@ done
 R=$(cd "$(dirname "$src")" && pwd)
 C=$R/src/cmd
 cmd=${1:-}; [[ $# -gt 0 ]] && shift
+# OmacVM.app's own copy (Contents/Resources/omacvm, what the Bridge runs for
+# the control centre when there is no checkout): the app's signed helpers and
+# runtime, and commands that change things run from a copy, as the app's
+# apply-vm.sh does, so nothing is ever written inside the signed app.
+if [[ $R == */Contents/Resources/omacvm && -f $R/COMMIT && -z ${OMACVM_APP_COPY:-} ]]; then
+  app=${R%/Resources/omacvm}
+  export OMACVM_APP_CLI=$R/omacvm OMACVM_HELPERS=$app/Helpers OMACVM_APP_RUNTIME=$app/Resources/runtime
+  case $cmd in
+    build|apply|update|enable|disable|uninstall|features)
+      if [[ $cmd != features || " $* " != *" --json "* ]]; then
+        tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+        cp -R "$R" "$tmp/omacvm"
+        rc=0; OMACVM_APP_COPY=1 "$tmp/omacvm/omacvm" "$cmd" "$@" || rc=$?
+        exit "$rc"
+      fi ;;
+  esac
+fi
 case $cmd in
   "") exec "$C/home.sh" ;;
   build|apply|check|vms|update|resources|graphics) exec "$C/$cmd.sh" "$@" ;;
@@ -49,7 +67,7 @@ case $cmd in
   --version|-v|version) echo "OmacVM $(cat "$R/src/VERSION")"; exit 0 ;;
   help|-h|--help)
     case ${1:-} in
-      "") sed -n '2,24s/^# \{0,1\}//p' "$0" ;;
+      "") sed -n '2,25s/^# \{0,1\}//p' "$0" ;;
       features|enable|disable) exec "$C/features.sh" "$1" --help ;;
       build|apply|check|vms|update|resources|graphics) exec "$C/$1.sh" --help ;;
       uninstall) exec "$R/src/mac/uninstall.sh" --help ;;

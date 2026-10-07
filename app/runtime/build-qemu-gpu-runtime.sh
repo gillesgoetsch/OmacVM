@@ -622,10 +622,14 @@ patch -d "$source_dir" -p1 -f -i "$precise_scroll_patch"
 patch -d "$source_dir" -p1 -f -i "$iso_swap_patch"
 patch -d "$source_dir" -p1 -f -i "$injected_text_patch"
 patch -d "$source_dir" -p1 -f -i "$usb_exact_bus_patch"
+# OmacVM: usb-host leaves a device the Mac uses alone (no reset: on macOS that
+# re-enumerates it); the app's USB devices (docs/usb.md).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-usb-host-busy-device.patch"
 # OmacVM: a main loop stall > 2 s is logged with its place.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-main-loop-stall-watchdog.patch"
 # OmacVM: app name and icon from the launcher; Quit shuts the guest down;
-# full screen beside the notch; the window keeps its size; full screen at the
+# a borderless full screen (tests only: see omacvm-cocoa-fullscreen-own-space);
+# the window keeps its size; full screen at the
 # window's real size; modifiers only from input events; the recording device
 # opens off the BQL.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-identity.patch"
@@ -697,6 +701,11 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virtio-gpu-blob-align
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-on-flush.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-iosurface.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-virgl-blob-subregion.patch"
+# OmacVM: a small high PCI window right above RAM (highmem-mmio-size from
+# 1 GiB), so M1/M2 (36-bit VM address space) get a Venus window of 1 GB and more.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virt-small-high-window.patch"
+grep -q 'highmem-mmio-size cannot be smaller than 1 GiB' "$source_dir/hw/arm/virt.c" || \
+  die "hw/arm/virt.c does not take a small highmem-mmio-size"
 # Frames on the display's refresh: one per refresh, no judder.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-vsync.patch"
 # Colour-space tagged frames; 10-bit scanouts in half float; HDR (PQ) with EDR.
@@ -735,6 +744,17 @@ OMACVM_IDLE_REFRESH=0 "$display_tests/test-idle-refresh" off
 # OmacVM: VM memory and graphics memory in the app menu (read when it opens).
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-graphics-memory.patch"
 "$native_dir/Tests/display/test-gpu-memory-menu.sh"
+# OmacVM: "Features…" in the app menu: the launcher opens the control centre
+# in the VM (ControlCentreRoute.swift, src/control/guest/open.sh).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-features-menu.patch"
+grep -q '^    omacvm_add_features_item(menu);$' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m has no Features... item in the app menu (features-menu patch)"
+# OmacVM: "Restart the Desktop…" in the app menu after Later on the app's
+# "desktop stopped drawing" window (shown in the memory menu's update).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-restart-desktop.patch"
+"$native_dir/Tests/display/test-restart-desktop.sh"
+grep -q '^    omacvm_restart_desktop_update();$' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m does not update Restart the Desktop when the menu opens (restart-desktop patch)"
 # OmacVM: the start animation (OMACVM becomes Omarchy's logo), then Omarchy's
 # logo until the guest's desktop, and instead of "Display output is not
 # active."; the cells must be the firmware's logo, the animation's table the
@@ -755,6 +775,56 @@ cc -fobjc-arc -Wall -Wextra -Werror -Wno-deprecated-declarations -I"$display_tes
   "$native_dir/Tests/display/test-boot-splash-fade.m" -framework Foundation -framework QuartzCore \
   -framework OpenGL -o "$display_tests/test-boot-splash-fade"
 "$display_tests/test-boot-splash-fade"
+# OmacVM: full screen is always macOS's own, in a Space of its own (beside the
+# notch too: Omanotch fills the strip); a display the escape combo moved off
+# the VM's Space is not pulled back by the VM's other window.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullscreen-own-space.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-head-key-same-space.patch"
+"$native_dir/Tests/display/test-fullscreen-space.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: full screen without a Space of its own (test-fullscreen-space.sh)"
+# OmacVM: no events into QEMU once the display is cleaned up (the crash on
+# Quit/shutdown); a full-screen start shows nothing until it is there.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-shutdown-events.patch"
+"$native_dir/Tests/display/test-shutdown-events.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: events into QEMU after the display's cleanup (test-shutdown-events.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullscreen-start.patch"
+"$native_dir/Tests/display/test-fullscreen-start.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a full-screen start shows its windowed frame (test-fullscreen-start.sh)"
+# Experimental: the guest's pointer as the Mac's cursor (OMACVM_HW_CURSOR=1, the
+# app's hidden macPointer setting), and its rules' test.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hw-cursor-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hw-cursor.patch"
+"$native_dir/Tests/display/test-hw-cursor.sh"
+grep -q 'omacvm_hwc_take(0, qemu_console_get_cursor(dcl->con), cocoaView,' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m does not hand the guest's pointer image to the Mac's cursor (hw-cursor patch)"
+# Opt-in (OMACVM_GL_INPUT_FIRST=1): while input comes, the newest frame goes on screen.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-present-input-first.patch"
+# The globe key on its own goes to the VM (not Emoji & Symbols) while it has the keyboard.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-globe-key.patch"
+grep -q '^    omacvm_globe_init();$' "$source_dir/ui/cocoa.m" && grep -q 'if (omacvm_globe_event(event)) {' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m does not hand the globe key to the VM (globe-key patch)"
+# OmacVM: no quit when AppKit's last window goes (a hidden full-screen run quit
+# after a minute); a quit while the guest starts presses the power button again.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-quit-clean.patch"
+"$native_dir/Tests/display/test-quit-clean.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: quits by itself or presses the power button once (test-quit-clean.sh)"
+# OmacVM: guest sizes that fit Omarchy's scale presets (full screen a few
+# rows shorter, black at the bottom of a window that still fills the area,
+# so Omanotch finds it; a window in 20 point steps); last of the cocoa
+# patches, and its logic's test.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-clean-size-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-clean-size.patch"
+"$native_dir/Tests/display/test-clean-size.sh"
+grep -q 'OmacVMSize clean = omacvm_clean_size(' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m does not size the guest for Omarchy's scales (clean-size patch)"
+grep -q '\[\[self window\] setContentSize:area\];' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the full-screen window must fill the area (Omanotch), clean-size patch"
+grep -q 'full = isFullscreen && omacvm_present_layer() &&' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: rows may be cut only with the IOSurface layer below a notch, clean-size patch"
+# Touch ID's panel in the VM window's own process (OmacVM.app's dylib, ADR 0041).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-touchid-panel.patch"
+grep -q 'dlsym(handle, "omacvm_touchid_panel_start")' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m does not load the Touch ID panel (touchid-panel patch)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
@@ -1001,6 +1071,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-darwin-memory-pres
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-darwin-venus-moltenvk-zero-init.patch"
 # OmacVM: a compositor's dma-buf import (a Vulkan window) no longer ends its context on macOS OpenGL.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-set-type-without-egl.patch"
+# OmacVM: a draw binds its GL program only when it changed (Apple's GL rebuilds its draw state
+# on every glUseProgram; WebGL pages with one draw per object paid that on each draw).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-use-program-cache.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

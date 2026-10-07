@@ -1,0 +1,9 @@
+[Unit]
+Description=OmacVM: send the Omarchy theme to the Mac's Touch ID panel when it changes
+
+[Path]
+PathModified=%h/.local/state/omarchy/current
+Unit=omacvm-touchid-theme.service
+
+[Install]
+WantedBy=default.target
