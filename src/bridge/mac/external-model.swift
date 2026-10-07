@@ -162,12 +162,18 @@ enum VMOwner {
     return app.hasSuffix(".app") ? app : nil
   }
 
+  /// OmacVM Test.app (org.omacvm.app.test) or a lane's copy of it re-signed as
+  /// org.omacvm.app.test.<lane>, as the app's own TestIdentity.isTest.
+  static func isTestApp(_ id: String) -> Bool {
+    id == testApp || id.hasPrefix(testApp + ".")
+  }
+
   /// `appID`: the bundle id of the VM's app (nil: unknown, e.g. a development
   /// build; such a VM stays every Bridge's, as before). The test Bridge takes
-  /// only OmacVM Test.app's VMs, every other Bridge all the others.
+  /// only the test app's VMs (isTestApp), every other Bridge all the others.
   static func ours(appID: String?, testBridge: Bool) -> Bool {
     guard let appID else { return true }
-    return (appID == testApp) == testBridge
+    return isTestApp(appID) == testBridge
   }
 }
 

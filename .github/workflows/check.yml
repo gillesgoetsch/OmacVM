@@ -253,6 +253,9 @@ jobs:
       - name: An older omacvm never takes a newer VM back (version order, apply/enable/disable/update stop first)
         run: src/tests/version-guard.sh
 
+      - name: The test app's own omacvm run by hand is the test identity
+        run: src/tests/app-cli-identity.sh
+
       - name: The desktop restarts by itself after a lost GPU context (app rules, VM script)
         run: src/tests/app-desktop-recovery.sh
 

@@ -61,6 +61,9 @@ def test_app_copy_runs_changes_from_a_copy(tmp_path):
     with open(os.path.join(REPO, "omacvm")) as f:
         (res / "omacvm").write_text(f.read())
     (res / "omacvm").chmod(0o755)
+    (res / "src" / "lib").mkdir()
+    with open(os.path.join(REPO, "src", "lib", "identity.sh")) as f:
+        (res / "src" / "lib" / "identity.sh").write_text(f.read())
     (res / "COMMIT").write_text("x\n")
     probe = '#!/bin/bash\necho "R=$(cd "$(dirname "$0")/../.." && pwd) H=$OMACVM_HELPERS CLI=$OMACVM_APP_CLI"\n'
     for c in ("apply", "vms"):

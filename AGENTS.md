@@ -480,11 +480,12 @@ a copy of the checkout, not from one you edit (bash reads scripts as it goes).
   `Contents/Helpers` are "OmacVM Test Bridge" (`org.omacvm.test.bridge`, port 47931,
   `~/Library/Application Support/omacvm-test-bridge`) and "OmacVM Test Gestures" (`org.omacvm.test.gestures`,
   port 47930, settings domain `org.omacvm.test.gestures`). The test Bridge and Gestures take only OmacVM
-  Test.app's VMs, the normal ones only the others (the Bridge reads the app a VM runs from, Gestures the VM's
+  Test.app's VMs (and a lane's copy re-signed as `org.omacvm.app.test.<lane>`), the normal ones only the others (the Bridge reads the app a VM runs from, Gestures the VM's
   code signature `<bundle id>.qemu`; a development build's QEMU is every helper's). Its VMs reach Omanotch on 47911 only: a test Omanotch
   (src/omanotch/mac build, `port` 47911, `bridgeDir` omacvm-test-bridge) on a Mac without the user's. Start a helper with `open` (so macOS checks its own
   grant, not the Terminal's); small tools without a bundle run as children of your shell (the Terminal's grants).
-  Never `src/mac/install.sh` from a test: that installs over the user's helpers.
+  Never `src/mac/install.sh` from a test: that installs over the user's helpers. The test app's own
+  `Contents/Resources/omacvm/omacvm` (and its VM scripts) run by hand is the test identity too (src/lib/identity.sh).
 - **Logs**: `~/Library/Logs/omacvm-{bridge,gestures}.log`; guest
   `journalctl --user -u omacvm-bridge-osd` (and `-u omacvm-bridge-events`, the shared event stream), `journalctl -u omacvm-gestures`,
   Omarchy shell `/run/user/1000/quickshell/by-id/*/log.log`.

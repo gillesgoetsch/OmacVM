@@ -720,6 +720,11 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     var test = info; test["CFBundleIdentifier"] = tApp
     expect(appRunnerPath(cli: appCLI, info: test, testIdentity: false, testApp: tApp) == nil, "the installed Bridge: not the test app")
     expect(appRunnerPath(cli: appCLI, info: test, testIdentity: true, testApp: tApp) != nil, "the test Bridge: the test app")
+    var lane = info; lane["CFBundleIdentifier"] = tApp + ".fixid"
+    expect(appRunnerPath(cli: appCLI, info: lane, testIdentity: true, testApp: tApp) != nil, "the test Bridge: a lane's copy of the test app")
+    expect(appRunnerPath(cli: appCLI, info: lane, testIdentity: false, testApp: tApp) == nil, "the installed Bridge: not a lane's copy")
+    var tester = info; tester["CFBundleIdentifier"] = "org.omacvm.app.tester"
+    expect(appRunnerPath(cli: appCLI, info: tester, testIdentity: true, testApp: tApp) == nil, "the test Bridge: not org.omacvm.app.tester")
     expect(appRunnerPath(cli: "/a/../b/OmacVM.app/Contents/Resources/omacvm/omacvm", info: info, testIdentity: false, testApp: tApp) == nil, "..")
     expect(appRunnerPath(cli: "Applications/OmacVM.app/Contents/Resources/omacvm/omacvm", info: info, testIdentity: false, testApp: tApp) == nil, "relative")
 

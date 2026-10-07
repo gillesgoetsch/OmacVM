@@ -217,13 +217,15 @@ struct VMEntry: Equatable {
 /// an app's own copy (<app>/Contents/Resources/omacvm/omacvm, as the app
 /// writes it) and that app's Info.plist (`info`) says it can
 /// (OmacVMControlRun: an older app would open its window instead). The app
-/// is of this Bridge's identity (`testApp`: the test identity's app id).
+/// is of this Bridge's identity (`testApp`: the test identity's app id; a
+/// lane's copy, `testApp`.<lane>, is the test identity too).
 func appRunnerPath(cli: String, info: [String: Any]?, testIdentity: Bool, testApp: String) -> String? {
   let tail = "/Contents/Resources/omacvm/omacvm"
   guard cli.hasPrefix("/"), cli.hasSuffix(tail), !cli.contains("/../"), !cli.utf8.contains(0),
         let info, strictBool(info["OmacVMControlRun"]) == true,
         let exe = info["CFBundleExecutable"] as? String, !exe.isEmpty, !exe.contains("/"), exe != "..",
-        let id = info["CFBundleIdentifier"] as? String, (id == testApp) == testIdentity else { return nil }
+        let id = info["CFBundleIdentifier"] as? String,
+        (id == testApp || id.hasPrefix(testApp + ".")) == testIdentity else { return nil }
   return String(cli.dropLast(tail.count)) + "/Contents/MacOS/" + exe
 }
 

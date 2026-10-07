@@ -51,14 +51,12 @@ cache_ready() {
 }
 KEY=${OMACVM_KEY:-$HOME/.ssh/omacvm}
 source "$OMACVM_SRC/vm/live/release.sh"
-# A script of "OmacVM Test" run by hand (apply-vm.sh from a shell) is the
-# test identity too, not only when the app sets OMACVM_TEST_IDENTITY: else its
-# apply installs the normal Bridge next to the test one, and that Bridge takes
-# the test VM's media keys (MacBook Air, 2026-10-06).
-if [[ -z ${OMACVM_TEST_IDENTITY:-} && -f $_root/../Info.plist ]] &&
-   [[ $(plutil -extract CFBundleIdentifier raw -o - "$_root/../Info.plist" 2>/dev/null) == org.omacvm.app.test ]]; then
-  export OMACVM_TEST_IDENTITY=1
-fi
+# A script of "OmacVM Test" (or a lane's copy) run by hand (apply-vm.sh from a
+# shell) is the test identity too, not only when the app sets
+# OMACVM_TEST_IDENTITY: else its apply installs the normal Bridge next to the
+# test one, and that Bridge takes the test VM's media keys (MacBook Air, 2026-10-06).
+source "$OMACVM_SRC/lib/identity.sh"
+app_test_identity "$_root/.."
 # The Mac's 127.0.0.1 ports the VM may reach as 10.0.2.2: Omanotch, Gestures, Bridge.
 # OMACVM_HOST_PORTS= (empty): none (image builds and test VMs leave the Mac's helpers alone).
 # The test identity (OMACVM_TEST_IDENTITY=1, from "OmacVM Test"): its own Gestures and
