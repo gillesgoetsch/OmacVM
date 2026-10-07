@@ -31,7 +31,9 @@ Description = OmacVM: Hyprland with the vmwgfx fix for VMware Fusion (10 to 20 m
 When = PostTransaction
 Exec = /usr/local/lib/omacvm/fusion/build-hyprland.sh --hook
 HOOK
-"$L/build-hyprland.sh" "$U"
+# This first build runs from OmacVM's own folder: it installs its build tools with
+# ../../guest/pkg-add, which the copy in $L cannot reach (the hook needs none).
+"$here/build-hyprland.sh" "$U"
 
 # Displays: VMware Tools brings Fusion's layout (every Mac display in full
 # screen, the window size in a window) to vmwgfx; omacvm-fusion-displays puts

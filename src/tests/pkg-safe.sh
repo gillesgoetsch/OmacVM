@@ -451,4 +451,15 @@ grep -q "^ExecCondition=.*OMACVM_GRAPHICS=vulkan" src/app/guest/venus/omacvm-ven
   grep -q 'systemctl disable --now omacvm-venus-driver.timer' src/app/guest/venus/timer.sh &&
   pass "Venus driver unit only with Graphics Vulkan (or the vulkan feature)" || fail "Venus driver unit also runs with OpenGL"
 
+# A guest script that reaches pkg-add as $here/../../guest/pkg-add must run from
+# OmacVM's folder, not from a copy elsewhere (2026-10-07: Fusion's install.sh ran
+# its copy in /usr/local/lib/omacvm/fusion -> "../../guest/pkg-add: No such file").
+bad=""
+for f in $(git grep -l '\$here/\.\./\.\./guest/pkg-add' -- 'src/**' ':!src/tests/**'); do
+  n=$(basename "$f")
+  hit=$(git grep -nE '^[^#]*"\$[A-Za-z_]+/'"$n"'"( |$)' -- 'src/**' ':!src/tests/**' | grep -v '"\$here/'"$n"'"' | grep -v -- '--hook' || true)
+  [[ -z $hit ]] || bad+="$hit"$'\n'
+done
+[[ -z $bad ]] && pass "scripts that use ../../guest/pkg-add run from OmacVM's folder" || { fail "a copy elsewhere runs pkg-add by a relative path:"; echo "$bad"; }
+
 exit $fails

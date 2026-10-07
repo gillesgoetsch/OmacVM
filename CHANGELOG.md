@@ -29,6 +29,9 @@ in more words.
 - Chromium video after a kernel update: when the decoder came late, its
   service stayed down until the next start and videos played on the CPU.
   The decoder now starts its service when it comes.
+- VMware Fusion: a new VM (build or `omacvm apply`) no longer stops at
+  "failed during: VMware Fusion" ("guest/pkg-add: No such file or
+  directory"). Broken since 3.0.0.
 
 ## 3.0.3
 
