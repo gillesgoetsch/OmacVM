@@ -36,6 +36,19 @@ VM runs, and goes back by itself when a new version does not start
 
 - Setup in the app: VM name, user, password, resources, disk size, the VMs
   folder (any APFS or Mac OS Extended drive).
+- The disk's size: Disk › Change… in the VM window (the VM shut down). The
+  slider goes from what Omarchy needs (btrfs' chunks plus 10 % or 5 GB,
+  never under 64 GB; read from the VM while it runs, else from disk.img)
+  to the Mac's free space plus the size now, less 10 GB. Larger: Omarchy
+  grows into it at the next start. Smaller: an APFS clone of disk.img
+  first (`disk-before-resize.img`), then the VM starts and shrinks btrfs,
+  shuts down, the app writes the smaller partition table and cuts
+  disk.img, and at the next start a read-only scrub checks every block.
+  The clone goes when the check passes; on a failed step the window
+  offers Go Back. The steps are in the VM folder's `disk-resize`, the
+  results in `logs/disk`. Space Omarchy frees goes back to the Mac by
+  itself (btrfs `discard=async`, `fstrim.timer`, disk.img sparse:
+  [disk options](../adr/0039-system-disk-options.md)).
 - Where things are: the app in `~/Applications`, the VMs in
   `~/OmacVM/<VM name>/`; moves, other drives, sizes and downloads:
   [where things are](#where-things-are).
