@@ -4,13 +4,15 @@ What: an indexed draw reads its indices back from the GL buffer and scans them f
 the smallest and largest index (virgl-draw-range-checks.patch). Each index buffer
 now keeps its last four ranges (offset, count, index size, restart, restart index ->
 min, max) with the buffer's write count (content_gen) at the read. Every write vrend
-makes to a buffer goes through vrend_resource_contents_changed() (transfers, inline
-writes and copy transfers in vrend_renderer_transfer_write_iov, buffer copies, video
-encode output), which makes the old ranges stale. A buffer the GPU may write or the
-guest may map is marked with vrend_resource_no_index_range_cache() where it is bound
-or mapped (stream output targets, storage buffers, images, atomic counters, query
-results, blob resources, resource_map) and is read back on every draw from then on;
-the mark is never cleared. Only plain GL buffers are cached: no persistent, coherent,
+makes to a buffer from the CPU goes through vrend_resource_contents_changed()
+(transfers, inline writes and copy transfers in vrend_renderer_transfer_write_iov,
+video encode output), which makes the old ranges stale. A buffer the GPU writes or
+the guest may map is marked with vrend_resource_no_index_range_cache() where it is
+written, bound or mapped (buffer copies, stream output targets, storage buffers,
+images, atomic counters, query results, blob resources, resource_map) and is read
+back on every draw from then on; the mark is never cleared. A GPU write runs in its
+own GL context's order, so another GL context (a guest's second context or sub
+context) could read the indices back before it lands; it is never cached. Only plain GL buffers are cached: no persistent, coherent,
 immutable, memory-object, GBM, host-memory, blob or imported storage. A read is kept
 only when no GL error is pending after it (a refused read skips the draw, as the
 check before the GL draw call would, and is read again next time).
@@ -225,15 +227,17 @@ buffer is on a reviewed list and bumps or marks), Tests/virgl/mutate-index-range
     if ((is_only_bit(res->storage_bits, VREND_STORAGE_GUEST_MEMORY) ||
         has_bit(res->storage_bits, VREND_STORAGE_HOST_SYSTEM_MEMORY)) && res->iov) {
        return vrend_copy_iovec(iov, num_iovs, info->offset,
-@@ -12708,6 +12836,7 @@ static void vrend_resource_buffer_copy(UNUSED struct vrend_context *ctx,
+@@ -12708,6 +12836,9 @@ static void vrend_resource_buffer_copy(UNUSED struct vrend_context *ctx,
                                         uint32_t dstx, uint32_t srcx,
                                         uint32_t width)
  {
-+   vrend_resource_contents_changed(dst_res);
++   /* the GPU does the copy, in this GL context's order: like the GPU's other writes, the
++    * buffer is never cached from now on (another GL context may read it before the copy) */
++   vrend_resource_no_index_range_cache(dst_res);
     glBindBuffer(GL_COPY_READ_BUFFER, src_res->gl_id);
     glBindBuffer(GL_COPY_WRITE_BUFFER, dst_res->gl_id);
  
-@@ -14259,6 +14388,8 @@ int vrend_get_query_result_qbo(struct vrend_context *ctx, uint32_t handle,
+@@ -14259,6 +14390,8 @@ int vrend_get_query_result_qbo(struct vrend_context *ctx, uint32_t handle,
    }
  
    VREND_DEBUG(dbg_query, ctx, "Get query result from Query:%d\n", q->id);
@@ -242,7 +246,7 @@ buffer is on a reviewed list and bumps or marks), Tests/virgl/mutate-index-range
  
    GLenum qtype;
  
-@@ -14427,6 +14558,7 @@ int vrend_create_so_target(struct vrend_context *ctx,
+@@ -14427,6 +14560,7 @@ int vrend_create_so_target(struct vrend_context *ctx,
     if (!target)
        return ENOMEM;
  
@@ -250,7 +254,7 @@ buffer is on a reviewed list and bumps or marks), Tests/virgl/mutate-index-range
     pipe_reference_init(&target->reference, 1);
     target->res_handle = res_handle;
     target->buffer_offset = buffer_offset;
-@@ -15950,6 +16082,7 @@ int vrend_renderer_pipe_resource_create(struct vrend_context *ctx, uint32_t blob
+@@ -15950,6 +16084,7 @@ int vrend_renderer_pipe_resource_create(struct vrend_context *ctx, uint32_t blob
        return EINVAL;
  
     res->blob_id = blob_id;
@@ -258,7 +262,7 @@ buffer is on a reviewed list and bumps or marks), Tests/virgl/mutate-index-range
     list_addtail(&res->head, &ctx->vrend_resources);
     return 0;
  }
-@@ -16300,6 +16433,7 @@ int vrend_renderer_resource_map(struct pipe_resource *pres, void **map, uint64_t
+@@ -16300,6 +16435,7 @@ int vrend_renderer_resource_map(struct pipe_resource *pres, void **map, uint64_t
     if (!has_bits(res->storage_bits, VREND_STORAGE_GL_BUFFER | VREND_STORAGE_GL_IMMUTABLE))
        return -EINVAL;
  
@@ -268,7 +272,7 @@ buffer is on a reviewed list and bumps or marks), Tests/virgl/mutate-index-range
     if (!*map)
 --- a/src/vrend/vrend_renderer.h
 +++ b/src/vrend/vrend_renderer.h
-@@ -129,8 +129,42 @@ struct vrend_resource {
+@@ -129,8 +129,43 @@ struct vrend_resource {
     struct virgl_metal_heap_reader *heap_reader;
     uint32_t heap_stride;
     uint64_t heap_serial;
@@ -291,17 +295,18 @@ buffer is on a reviewed list and bumps or marks), Tests/virgl/mutate-index-range
 +   } index_ranges[4];
  };
  
-+/* OmacVM: before every write vrend makes to a resource's contents (transfers, copies,
-+ * query results, video output): index ranges read before it no longer count. */
++/* OmacVM: before every write vrend makes to a resource's contents from the CPU
++ * (transfers, video output): index ranges read before it no longer count. */
 +static inline void vrend_resource_contents_changed(struct vrend_resource *res)
 +{
 +   if (res)
 +      res->content_gen++;
 +}
 +
-+/* OmacVM: the resource is bound where the GPU writes it (stream output, storage buffer,
++/* OmacVM: the GPU writes the resource (a buffer copy, stream output, storage buffer,
 + * image, atomic counter, query result) or the guest can map it: its index ranges are
-+ * read back on every draw from now on. */
++ * read back on every draw from now on. A GPU write runs in one GL context's order, and
++ * another GL context could read the indices back before it lands. */
 +static inline void vrend_resource_no_index_range_cache(struct vrend_resource *res)
 +{
 +   if (res)

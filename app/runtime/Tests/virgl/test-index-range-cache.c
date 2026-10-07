@@ -478,7 +478,7 @@ static void run_change_case(int n)
       emit(c, VIRGL_COPY_TRANSFER3D_FLAGS_SYNCHRONIZED);
       break;
    case 4:
-      what = "indices changed by a copy from another buffer";
+      what = "indices changed by a copy from another buffer (by the GPU)";
       emit(c, VIRGL_CMD0(VIRGL_CCMD_RESOURCE_COPY_REGION, 0, VIRGL_CMD_RESOURCE_COPY_REGION_SIZE));
       emit(c, ib);
       emit(c, 0); emit(c, 0); emit(c, 0); emit(c, 0);

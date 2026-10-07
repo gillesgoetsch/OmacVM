@@ -20,7 +20,7 @@ import sys
 MUTANTS = [
     ("transfer write bump",
      r"\n   vrend_resource_contents_changed\(res\);\n(?=   if \(\(is_only_bit)"),
-    ("buffer copy bump", r"\n   vrend_resource_contents_changed\(dst_res\);\n(?=   glBindBuffer\(GL_COPY_READ)"),
+    ("buffer copy flag", r"\n   vrend_resource_no_index_range_cache\(dst_res\);(?=\n   glBindBuffer\(GL_COPY_READ)"),
     ("stream output flag",
      r"\n   vrend_resource_no_index_range_cache\(res\);(?=\n   pipe_reference_init\(&target)"),
     ("storage buffer flag",

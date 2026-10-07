@@ -5,8 +5,10 @@ A cached index range is right only while nothing writes the index buffer behind 
 cache's back. This lists every GL call in the patched renderer (src/) that can write a
 buffer object, or bind one where the GPU writes it, and checks each against the reviewed
 list below:
-  bumps     - the function calls vrend_resource_contents_changed() (the cache sees it);
-  flags     - a draw-time bind of a buffer whose set_* entry point (named) marks it with
+  bumps     - a write from the CPU: the function calls vrend_resource_contents_changed()
+              (older ranges no longer count);
+  flags     - a write by the GPU, or a mapping: the named function (the write itself, or the
+              set_* entry point of a draw-time bind) marks the buffer with
               vrend_resource_no_index_range_cache() (never cached again);
   via       - a helper, callback or macro used only by the named functions, which bump
               or flag;
@@ -29,8 +31,10 @@ REVIEWED = {
     ("vrend/vrend_renderer.c", "vrend_renderer_transfer_write_iov", "glMapBufferRange"): ("bumps", None),
     ("vrend/vrend_renderer.c", "iov_buffer_upload", "glBufferSubData"):
         ("via", ["vrend_renderer_transfer_write_iov"]),
-    ("vrend/vrend_renderer.c", "vrend_resource_buffer_copy", "glBindBuffer"): ("bumps", None),
-    ("vrend/vrend_renderer.c", "vrend_resource_buffer_copy", "glCopyBufferSubData"): ("bumps", None),
+    ("vrend/vrend_renderer.c", "vrend_resource_buffer_copy", "glBindBuffer"):
+        ("flags", ["vrend_resource_buffer_copy"]),
+    ("vrend/vrend_renderer.c", "vrend_resource_buffer_copy", "glCopyBufferSubData"):
+        ("flags", ["vrend_resource_buffer_copy"]),
     ("vrend/vrend_renderer.c", "COPY_QUERY_RESULT_TO_BUFFER", "glBindBuffer"):
         ("via", ["vrend_get_query_result_qbo"]),
     ("vrend/vrend_renderer.c", "COPY_QUERY_RESULT_TO_BUFFER", "glMapBufferRange"):
