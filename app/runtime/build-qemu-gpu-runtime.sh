@@ -1095,6 +1095,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-gpu-guard-dropped-
 # OmacVM: on Apple's GL (no ARB_vertex_attrib_binding) a draw sets its vertex attributes
 # and index buffer, and selects its shaders, only when they changed.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-legacy-vertex-cache.patch"
+# OmacVM: an index buffer's index range is read back once per write, not on every indexed
+# draw (the range check read the same indices tens of thousands of times a frame).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-index-range-cache.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

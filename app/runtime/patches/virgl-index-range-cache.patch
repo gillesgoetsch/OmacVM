@@ -1,0 +1,328 @@
+virglrenderer: remember the index range of an index buffer until it is written
+
+What: an indexed draw reads its indices back from the GL buffer and scans them for
+the smallest and largest index (virgl-draw-range-checks.patch). Each index buffer
+now keeps its last four ranges (offset, count, index size, restart, restart index ->
+min, max) with the buffer's write count (content_gen) at the read. Every write vrend
+makes to a buffer from the CPU goes through vrend_resource_contents_changed()
+(transfers, inline writes and copy transfers in vrend_renderer_transfer_write_iov,
+video encode output), which makes the old ranges stale. A buffer the GPU writes or
+the guest may map is marked with vrend_resource_no_index_range_cache() where it is
+written, bound or mapped (buffer copies, stream output targets, storage buffers,
+images, atomic counters, query results, blob resources, resource_map) and is read
+back on every draw from then on; the mark is never cleared. A GPU write runs in its
+own GL context's order, so another GL context (a guest's second context or sub
+context) could read the indices back before it lands; it is never cached. Only plain GL buffers are cached: no persistent, coherent,
+immutable, memory-object, GBM, host-memory, blob or imported storage. A read is kept
+only when no GL error is pending after it (a refused read skips the draw, as the
+check before the GL draw call would, and is read again next time).
+OMACVM_VIRGL_INDEX_RANGE_CACHE=0 reads back on every draw again (the code path from
+before); qemu.log says which at start. OMACVM_VIRGL_CACHE_STATS=1 logs hits, misses
+and uncached draws every 10 s.
+Why: pages that draw each object on its own read the same indices tens of thousands
+of times a frame. WebGL Aquarium at 30,000 fish makes ~31,000 indexed draws a frame;
+the read-back (two binds, glGetBufferSubData, the scan) was 9 % of QEMU's render
+thread on a Mac mini M4.
+Upstream: depends on virgl-draw-range-checks.patch (OmacVM only); not sent.
+Tests: Tests/virgl/test-index-range-cache.c (soft GL + gl-oracle; every write path,
+each GPU-write binding, each part of the key, a refused read; run with the switch on
+and off), Tests/virgl/index-range-writes.py (every GL call in src/ that can write a
+buffer is on a reviewed list and bumps or marks), Tests/virgl/mutate-index-range-cache.py
+(manual: each bump, mark, check and key compare taken out alone fails the test).
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -4471,6 +4471,7 @@ int vrend_set_single_image_view(struct vrend_context *ctx,
+       }
+ 
+ 
++      vrend_resource_no_index_range_cache(res);
+       vrend_resource_reference(&iview->texture, res);
+       iview->vformat = format;
+       iview->format = tex_conv_table[format].internalformat;
+@@ -4510,6 +4511,7 @@ void vrend_set_single_ssbo(struct vrend_context *ctx,
+          return;
+       }
+ 
++      vrend_resource_no_index_range_cache(res);
+       vrend_resource_reference(&ssbo->res, res);
+       ssbo->buffer_offset = offset;
+       ssbo->buffer_size = length;
+@@ -4545,6 +4547,7 @@ void vrend_set_single_abo(struct vrend_context *ctx,
+          return;
+       }
+ 
++      vrend_resource_no_index_range_cache(res);
+       vrend_resource_reference(&abo->res, res);
+       abo->buffer_offset = offset;
+       abo->buffer_size = length;
+@@ -6823,6 +6826,130 @@ static bool vrend_draw_index_range(const struct vrend_resource *ib, uint32_t ind
+    return true;
+ }
+ 
++/* OmacVM: the index range cache (virgl-index-range-cache.patch). The read-back above
++ * runs for every indexed draw; WebGL pages that draw each object on its own read the
++ * same indices tens of thousands of times a frame. Each buffer remembers its last four
++ * ranges, valid until vrend writes the buffer (content_gen). Buffers the GPU may write
++ * or the guest may map are never cached (index_range_never). OMACVM_VIRGL_INDEX_RANGE_CACHE=0
++ * reads back on every draw again; OMACVM_VIRGL_CACHE_STATS=1 logs hits every 10 s.
++ * Render thread only. */
++static bool vrend_index_range_cache_on = true;
++static bool vrend_index_range_stats_on;
++static uint64_t vrend_index_range_clock;
++static struct {
++   uint64_t hits, misses, uncached;
++   struct timespec since;
++} vrend_index_range_stats;
++
++static void vrend_index_range_cache_init(void)
++{
++   const char *env = getenv("OMACVM_VIRGL_INDEX_RANGE_CACHE");
++   const char *stats = getenv("OMACVM_VIRGL_CACHE_STATS");
++
++   vrend_index_range_cache_on = !(env && !strcmp(env, "0"));
++   vrend_index_range_stats_on = stats && !strcmp(stats, "1");
++   clock_gettime(CLOCK_MONOTONIC, &vrend_index_range_stats.since);
++   virgl_info("index range cache: %s\n", vrend_index_range_cache_on ?
++              "on (indices are read back once per buffer write)" :
++              "off (OMACVM_VIRGL_INDEX_RANGE_CACHE=0): every indexed draw reads its indices back");
++}
++
++static void vrend_index_range_count(uint64_t *counter)
++{
++   struct timespec now;
++
++   (*counter)++;
++   if (!vrend_index_range_stats_on || (vrend_index_range_clock & 1023))
++      return;
++   clock_gettime(CLOCK_MONOTONIC, &now);
++   double secs = (double)(now.tv_sec - vrend_index_range_stats.since.tv_sec) +
++                 (now.tv_nsec - vrend_index_range_stats.since.tv_nsec) / 1e9;
++   if (secs < 10)
++      return;
++   uint64_t all = vrend_index_range_stats.hits + vrend_index_range_stats.misses +
++                  vrend_index_range_stats.uncached;
++   virgl_info("index range cache: %llu hits, %llu misses, %llu not cacheable in %.0f s "
++              "(%.1f %% hits)\n", (unsigned long long)vrend_index_range_stats.hits,
++              (unsigned long long)vrend_index_range_stats.misses,
++              (unsigned long long)vrend_index_range_stats.uncached, secs,
++              all ? 100.0 * vrend_index_range_stats.hits / all : 0.0);
++   vrend_index_range_stats.hits = vrend_index_range_stats.misses = 0;
++   vrend_index_range_stats.uncached = 0;
++   vrend_index_range_stats.since = now;
++}
++
++/* Only plain GL buffers that nothing but vrend writes: no persistent, coherent, blob,
++ * imported or memory-object storage, never bound where the GPU writes. */
++static bool vrend_index_range_cacheable(const struct vrend_resource *ib)
++{
++   return vrend_index_range_cache_on && !ib->index_range_never &&
++          ib->base.target == PIPE_BUFFER &&
++          (ib->storage_bits & ~VREND_STORAGE_GUEST_MEMORY) == VREND_STORAGE_GL_BUFFER &&
++          !ib->buffer_storage_flags && !ib->blob_id && !ib->is_imported;
++}
++
++static bool vrend_draw_state_ok(struct vrend_context *ctx);
++
++/* vrend_draw_index_range through the buffer's cache. A miss is remembered only when no
++ * GL error is pending after the read: a read the GL refused (or an error of the draw's
++ * setup) skips the draw, as the check right before the GL draw call would, and is
++ * read again next time. */
++static bool vrend_draw_index_range_cached(struct vrend_context *ctx, struct vrend_resource *ib,
++                                          uint32_t index_size, uint64_t offset,
++                                          uint32_t count, bool restart,
++                                          uint32_t restart_index, uint32_t *min_index,
++                                          uint32_t *max_index, const char **why)
++{
++   vrend_index_range_clock++;
++   if (!vrend_index_range_cacheable(ib)) {
++      vrend_index_range_count(&vrend_index_range_stats.uncached);
++      if (!vrend_draw_index_range(ib, index_size, offset, count, restart, restart_index,
++                                  min_index, max_index)) {
++         *why = "indices that could not be read back";
++         return false;
++      }
++      return true;
++   }
++
++   if (!restart)
++      restart_index = 0; /* not used by the scan */
++   const uint64_t gen = ib->content_gen + 1;
++   struct vrend_index_range *slot = &ib->index_ranges[0];
++   for (unsigned i = 0; i < ARRAY_SIZE(ib->index_ranges); i++) {
++      struct vrend_index_range *e = &ib->index_ranges[i];
++      if (e->gen == gen && e->offset == offset && e->count == count &&
++          e->index_size == index_size && e->restart == restart &&
++          e->restart_index == restart_index) {
++         e->used = vrend_index_range_clock;
++         *min_index = e->min_index;
++         *max_index = e->max_index;
++         vrend_index_range_count(&vrend_index_range_stats.hits);
++         return true;
++      }
++      /* replace a stale or empty slot first, else the least recently used */
++      if (slot->gen == gen && (e->gen != gen || e->used < slot->used))
++         slot = e;
++   }
++
++   vrend_index_range_count(&vrend_index_range_stats.misses);
++   if (!vrend_draw_index_range(ib, index_size, offset, count, restart, restart_index,
++                               min_index, max_index) ||
++       !vrend_draw_state_ok(ctx)) {
++      *why = "indices that could not be read back";
++      return false;
++   }
++   slot->gen = gen;
++   slot->used = vrend_index_range_clock;
++   slot->offset = offset;
++   slot->count = count;
++   slot->index_size = index_size;
++   slot->restart = restart;
++   slot->restart_index = restart_index;
++   slot->min_index = *min_index;
++   slot->max_index = *max_index;
++   return true;
++}
++
+ /* Checks one direct draw; fills in the index range of indexed draws. Returns false when
+  * it would read past a buffer (why: a short reason for the log). */
+ static bool vrend_check_direct_draw(struct vrend_sub_context *sub_ctx,
+@@ -6837,7 +6964,7 @@ static bool vrend_check_direct_draw(struct vrend_sub_context *sub_ctx,
+    }
+ 
+    if (info->indexed) {
+-      const struct vrend_resource *ib = (struct vrend_resource *)sub_ctx->ib.buffer;
++      struct vrend_resource *ib = (struct vrend_resource *)sub_ctx->ib.buffer;
+       const uint32_t isize = sub_ctx->ib.index_size;
+       uint32_t restart_index = info->restart_index;
+ 
+@@ -6866,11 +6993,10 @@ static bool vrend_check_direct_draw(struct vrend_sub_context *sub_ctx,
+       }
+       if (vrend_state.use_gles)
+          restart_index = isize == 1 ? 0xff : isize == 2 ? 0xffff : 0xffffffff;
+-      if (!vrend_draw_index_range(ib, isize, d->ib_offset, d->count, info->primitive_restart,
+-                                  restart_index, &d->min_index, &d->max_index)) {
+-         *why = "indices that could not be read back";
++      if (!vrend_draw_index_range_cached(sub_ctx->parent, ib, isize,
++                                         d->ib_offset, d->count, info->primitive_restart,
++                                         restart_index, &d->min_index, &d->max_index, why))
+          return false;
+-      }
+       d->empty = d->max_index < d->min_index;
+       if (!d->empty) {
+          min_vertex = (int64_t)d->min_index + d->index_bias;
+@@ -8956,6 +9082,7 @@ int vrend_renderer_init(const struct vrend_if_cbs *cbs, uint32_t flags)
+    struct virgl_gl_ctx_param ctx_params = {0};
+ 
+    vrend_clicbs = cbs;
++   vrend_index_range_cache_init();
+    vrend_resource_budget_init();
+ 
+    const char *prog_cache = getenv("OMACVM_VIRGL_PROGRAM_CACHE");
+@@ -11431,6 +11558,7 @@ static int vrend_renderer_transfer_write_iov(struct vrend_context *ctx,
+ {
+    void *data;
+ 
++   vrend_resource_contents_changed(res);
+    if ((is_only_bit(res->storage_bits, VREND_STORAGE_GUEST_MEMORY) ||
+        has_bit(res->storage_bits, VREND_STORAGE_HOST_SYSTEM_MEMORY)) && res->iov) {
+       return vrend_copy_iovec(iov, num_iovs, info->offset,
+@@ -12708,6 +12836,9 @@ static void vrend_resource_buffer_copy(UNUSED struct vrend_context *ctx,
+                                        uint32_t dstx, uint32_t srcx,
+                                        uint32_t width)
+ {
++   /* the GPU does the copy, in this GL context's order: like the GPU's other writes, the
++    * buffer is never cached from now on (another GL context may read it before the copy) */
++   vrend_resource_no_index_range_cache(dst_res);
+    glBindBuffer(GL_COPY_READ_BUFFER, src_res->gl_id);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, dst_res->gl_id);
+ 
+@@ -14259,6 +14390,8 @@ int vrend_get_query_result_qbo(struct vrend_context *ctx, uint32_t handle,
+   }
+ 
+   VREND_DEBUG(dbg_query, ctx, "Get query result from Query:%d\n", q->id);
++  /* the GPU writes the result when the query ends: never cached from now on */
++  vrend_resource_no_index_range_cache(res);
+ 
+   GLenum qtype;
+ 
+@@ -14427,6 +14560,7 @@ int vrend_create_so_target(struct vrend_context *ctx,
+    if (!target)
+       return ENOMEM;
+ 
++   vrend_resource_no_index_range_cache(res);
+    pipe_reference_init(&target->reference, 1);
+    target->res_handle = res_handle;
+    target->buffer_offset = buffer_offset;
+@@ -15950,6 +16084,7 @@ int vrend_renderer_pipe_resource_create(struct vrend_context *ctx, uint32_t blob
+       return EINVAL;
+ 
+    res->blob_id = blob_id;
++   vrend_resource_no_index_range_cache(res);
+    list_addtail(&res->head, &ctx->vrend_resources);
+    return 0;
+ }
+@@ -16300,6 +16435,7 @@ int vrend_renderer_resource_map(struct pipe_resource *pres, void **map, uint64_t
+    if (!has_bits(res->storage_bits, VREND_STORAGE_GL_BUFFER | VREND_STORAGE_GL_IMMUTABLE))
+       return -EINVAL;
+ 
++   vrend_resource_no_index_range_cache(res);
+    glBindBufferARB(res->target, res->gl_id);
+    *map = glMapBufferRange(res->target, 0, res->size, res->buffer_storage_flags);
+    if (!*map)
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -129,8 +129,43 @@ struct vrend_resource {
+    struct virgl_metal_heap_reader *heap_reader;
+    uint32_t heap_stride;
+    uint64_t heap_serial;
++   /* OmacVM: index ranges of this buffer that indexed draws read back
++    * (virgl-index-range-cache.patch). content_gen counts the writes vrend makes to the
++    * buffer (vrend_resource_contents_changed); a range counts only for the generation it
++    * was read at. index_range_never is set, and never cleared, once the GPU may write
++    * the buffer or the guest may map it: then every draw reads its indices back. */
++   uint64_t content_gen;
++   bool index_range_never;
++   struct vrend_index_range {
++      uint64_t gen; /* content_gen + 1 at the read; 0: an empty slot */
++      uint64_t used; /* for least recently used replacement */
++      uint64_t offset;
++      uint32_t count;
++      uint32_t restart_index; /* 0 without primitive restart */
++      uint32_t min_index, max_index;
++      uint8_t index_size;
++      bool restart;
++   } index_ranges[4];
+ };
+ 
++/* OmacVM: before every write vrend makes to a resource's contents from the CPU
++ * (transfers, video output): index ranges read before it no longer count. */
++static inline void vrend_resource_contents_changed(struct vrend_resource *res)
++{
++   if (res)
++      res->content_gen++;
++}
++
++/* OmacVM: the GPU writes the resource (a buffer copy, stream output, storage buffer,
++ * image, atomic counter, query result) or the guest can map it: its index ranges are
++ * read back on every draw from now on. A GPU write runs in one GL context's order, and
++ * another GL context could read the indices back before it lands. */
++static inline void vrend_resource_no_index_range_cache(struct vrend_resource *res)
++{
++   if (res)
++      res->index_range_never = true;
++}
++
+ #define VIRGL_TEXTURE_NEED_SWIZZLE        (1 << 0)
+ #define VIRGL_TEXTURE_CAN_TEXTURE_STORAGE (1 << 1)
+ #define VIRGL_TEXTURE_CAN_READBACK        (1 << 2)
+--- a/src/vrend/vrend_video.c
++++ b/src/vrend/vrend_video.c
+@@ -741,6 +741,7 @@ static void vrend_video_encode_completed(
+     }
+     if (num_coded_bufs && data_size != UINT32_MAX &&
+         has_bit(cdc->dest_res->storage_bits, VREND_STORAGE_GL_BUFFER) && cdc->dest_res->gl_id) {
++        vrend_resource_contents_changed(cdc->dest_res);
+         glBindBufferARB(cdc->dest_res->target, cdc->dest_res->gl_id);
+         buf = glMapBufferRange(cdc->dest_res->target, 0,
+                                cdc->dest_res->base.width0, GL_MAP_WRITE_BIT);

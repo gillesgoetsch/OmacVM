@@ -304,6 +304,26 @@ buffer on every draw again (both 0: the GL calls of before);
 `OMACVM_VIRGL_CACHE_STATS=1` logs draws, selects and skips every 10 s. Test:
 `test-vertex-binds` (run as is and with each switch at 0).
 
+Index ranges (`virgl-index-range-cache.patch`): the range check reads every
+indexed draw's indices back from the GL buffer (`glGetBufferSubData`) to find
+the largest index; at Aquarium 30k fish that was ~31,000 read-backs a frame
+and 9 % of the render thread. Each index buffer now keeps its last four
+ranges (offset, count, index size, primitive restart) together with its write
+count. Every write vrend makes to a buffer from the CPU (transfers, inline
+writes, copy transfers, video encode output) goes through one helper that
+bumps the count, so an older range no longer counts. Buffers the GPU writes
+(buffer copies, stream output, storage buffers, images, atomic counters,
+query results) or the guest can map (blob, persistent or coherent storage)
+are marked when they are written, bound or mapped and read back on every
+draw from then on; the mark is never cleared. (A GPU write runs in its own
+GL context's order; another GL context could read the indices back before it
+lands.) Only plain GL buffers are cached, and a read the GL refused is
+not kept. `index-range-writes.py` fails the build when a GL call that can
+write a buffer is added without that review. `OMACVM_VIRGL_INDEX_RANGE_CACHE=0`
+reads back on every draw again; `OMACVM_VIRGL_CACHE_STATS=1` logs the hit rate
+every 10 s. Tests: `test-index-range-cache` (switch on and off),
+`mutate-index-range-cache.py` (manual: every check taken out alone fails it).
+
 ### Where the time goes
 
 - Light frames (glmark2, the desktop): the fence round trip. Fixed above.
