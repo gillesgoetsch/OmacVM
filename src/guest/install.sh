@@ -508,11 +508,18 @@ elif [[ ${F[omanotch]} == on ]]; then
   # Fusion the gateway is Fusion's NAT, not the Mac).
   install -d -o "$U" -g "$U" "$H/.config/systemd/user/notchcast.service.d"
   # OmacVM.app: its display sync already follows the window.
-  { printf '[Service]\nEnvironment=NOTCHBAR_HOST=%s\n' "$HOST"
+  # Also no start while notchcast is being built again: an older unit file
+  # crash-looped into its start limit at the first login (3.0.6).
+  { printf '[Unit]\nConditionFileIsExecutable=%%h/.local/bin/notchcast\nStartLimitIntervalSec=60\nStartLimitBurst=10\n'
+    printf '[Service]\nEnvironment=NOTCHBAR_HOST=%s\n' "$HOST"
     [[ $TYPE == app ]] && printf 'Environment=NOTCHBAR_FOLLOW_MODE=0\n'; } > "$H/.config/systemd/user/notchcast.service.d/omacvm-host.conf"
   chown "$U:$U" "$H/.config/systemd/user/notchcast.service.d/omacvm-host.conf"
   user_ctl daemon-reload 2>/dev/null || true
-  user_ctl try-restart notchcast.service 2>/dev/null || true
+  # A notchcast stuck in its start limit (3.0.6) runs again, no reboot needed.
+  user_ctl reset-failed notchcast.service 2>/dev/null || true
+  if pgrep -u "$U" -x Hyprland >/dev/null && user_ctl -q is-enabled notchcast.service 2>/dev/null; then
+    user_ctl restart notchcast.service 2>/dev/null || true
+  fi
   # Notifications right under the strip, not a bar's height lower (see the script).
   install -Dm755 "$R/guest/omanotch-notifications.sh" /usr/local/lib/omacvm/omanotch-notifications.sh
   install -Dm644 /dev/stdin /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook <<'HOOK'

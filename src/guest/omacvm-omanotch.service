@@ -10,6 +10,8 @@ ConditionFileNotEmpty=!%h/.local/bin/notchcast
 Type=oneshot
 # Omanotch's installer needs the running session and Omarchy's commands.
 ExecStartPre=/bin/sleep 5
+# notchcast's old unit may have hit its start limit while notchcast was missing.
+ExecStartPre=-/usr/bin/systemctl --user reset-failed notchcast.service
 ExecStart=/bin/bash -c 'source /usr/share/omarchy/default/bash/env-bootstrap; exec bash /usr/local/share/omacvm/omanotch/guest/install.sh'
 
 [Install]

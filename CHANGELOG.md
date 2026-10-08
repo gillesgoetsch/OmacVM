@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.0.7 (unreleased)
+## 3.0.8 (unreleased)
 
 - Capture mode no longer makes the VM lag or the sound crackle
   ([troubleshooting 32](docs/troubleshooting.md#32-app-the-vm-lags-and-the-sound-crackles-while-recording-the-screen-or-taking-a-screenshot)).
@@ -18,6 +18,17 @@ in more words.
   screen once instead of on every frame (Hyprland 41 % to 11 % of a vCPU while
   picking), and big texture uploads from the VM take half the main loop's
   time.
+
+## 3.0.7
+
+- Omanotch: after Update VM to 3.0.6 the bar could be missing from the notch
+  strip. The update builds notchcast again at the next login; until then the
+  old service kept trying to start the missing program and ran into systemd's
+  start limit, so the installer's own start was refused
+  ("start of the service was attempted too often"). The service now waits
+  for notchcast to be built, the installer starts it once with the limit
+  cleared, and Update VM starts a notchcast stuck like this again without a
+  reboot.
 
 ## 3.0.6
 
