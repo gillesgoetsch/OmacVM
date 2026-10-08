@@ -108,7 +108,10 @@ say "installing the notchcast service"
 mkdir -p "$units"
 install -m 644 "$here/systemd/notchcast.service" "$units/notchcast.service"
 systemctl --user daemon-reload
-systemctl --user enable --now notchcast.service >/dev/null 2>&1
+systemctl --user enable notchcast.service >/dev/null 2>&1
+# One start, with the start limit cleared: an older unit may have hit it
+# while notchcast was being built again.
+systemctl --user reset-failed notchcast.service 2>/dev/null || true
 systemctl --user restart notchcast.service
 
 sleep 2

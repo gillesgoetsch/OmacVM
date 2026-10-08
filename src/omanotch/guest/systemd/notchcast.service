@@ -3,10 +3,16 @@ Description=Omanotch: stream the Omarchy bar to the macOS notch helper
 Documentation=https://github.com/gillesgoetsch/omacvm/tree/main/src/omanotch
 After=graphical-session.target
 PartOf=graphical-session.target
+# Not built yet (an update builds it again at the next login): skip, do not
+# crash-loop into systemd's start limit before the installer is done.
+ConditionFileIsExecutable=%h/.local/bin/notchcast
+# Room for an install's restart plus a config reload; still stops a real loop.
+StartLimitIntervalSec=60
+StartLimitBurst=10
 
 [Service]
 ExecStart=%h/.local/bin/notchcast
-Restart=always
+Restart=on-failure
 RestartSec=2
 # The display panel without NOTCH, built again when an Omarchy update changed it.
 ExecStartPost=-%h/.local/bin/omanotch-display-panel --refresh
