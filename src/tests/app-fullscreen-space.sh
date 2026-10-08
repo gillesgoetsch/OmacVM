@@ -21,7 +21,8 @@ has() { grep -rqE "$1" "${@:2}" && echo yes || echo no; }
 
 S="$R/app/app/Sources/OmacVM"
 expect "the app sets no OMACVM_NOTCH" no "$(has 'OMACVM_NOTCH' "$S")"
-expect "the app sends no omacvm.notch" no "$(has 'omacvm\.notch' "$S")"
+# (omacvm.notchpointer, the pointer park in NOTCH, is another key)
+expect "the app sends no omacvm.notch" no "$(has 'omacvm\.notch([^a-z]|$)' "$S")"
 expect "no notch switch in the app" no "$(has 'useNotch|Use the notch for the menu bar' "$S")"
 expect "omacvm check does not read the old switch" no "$(has 'useNotch' "$R/src/cmd/check.sh")"
 
