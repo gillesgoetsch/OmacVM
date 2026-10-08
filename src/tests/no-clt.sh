@@ -40,6 +40,9 @@ for s in $STUBS; do
 done
 printf '#!/bin/bash\necho "xcode-select: error: unable to get active developer directory" >&2\nexit 2\n' > "$B/xcode-select"
 printf '#!/bin/bash\nexit 1\n' > "$B/launchctl"   # nothing installed, nothing running
+# The app's download for this version counts as published: the test does not ask
+# GitHub (on a release branch the new version is not out yet).
+printf '#!/bin/bash\ncase "$*" in *OmacVM-appcast.json.sig*) exit 0;; esac\nexec /usr/bin/curl "$@"\n' > "$B/curl"
 chmod +x "$B"/*
 : > "$T/calls"
 NOCLT=(env "PATH=$B:/usr/bin:/bin:/usr/sbin:/sbin" "HOME=$T/home" "OMACVM_STUB_BIN=$B")
