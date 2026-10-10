@@ -32,12 +32,18 @@ grep -q 'full = omacvm_fp_cut_rows(isFullscreen, omacvm_present_layer(),' "$m" |
 [[ $(grep -c 'omacvm_fullpanel_prepare_window(self);' "$m") == 2 ]] || fail "QemuWindow and OmacVMHeadWindow are not both prepared"
 [[ $(grep -c 'if (omacvm_fullpanel_keep_frame(self, ' "$m") == 10 ]] || fail "not every frame setter of both windows goes through omacvm_fullpanel_keep_frame"
 # The decisions are the tested ones.
-for f in omacvm_fp_display_ok omacvm_fp_cut_rows omacvm_fp_frame omacvm_fp_keep omacvm_fp_strip_lost omacvm_fp_reveal_allowed; do
+for f in omacvm_fp_display_ok omacvm_fp_cut_rows omacvm_fp_frame omacvm_fp_keep omacvm_fp_strip_lost omacvm_fp_reveal_allowed omacvm_fp_presentation; do
   grep -q "$f(" "$m" || fail "$f is not used"
 done
 # Private interfaces only looked up at run time (no link to SkyLight).
 grep -q 'dlopen(' "$m" && grep -q '"SLSTransactionSetMenuBarSystemOverrideAlpha"' "$m" || fail "SkyLight is not looked up at run time"
 grep -q '"_frameForFullScreenMode"' "$m" || fail "the frame hook is not looked up by name"
+# SLSTransactionCommit returns nothing (macOS 27: w0 left over): never read as a status.
+grep -q 'typedef void (\*OmacVMSLSTransactionCommitFn)(CFTypeRef, int32_t);' "$m" || fail "SLSTransactionCommit is not declared void"
+! grep -q '= omacvm_fullpanel_sls_transaction_commit(' "$m" || fail "SLSTransactionCommit's leftover w0 is read as a status"
+# The menu bar's presentation goes through the tested rule, AppKit's bits checked.
+grep -q 'if (!omacvm_fp_presentation(&in, &options)) {' "$m" || fail "the presentation options are not omacvm_fp_presentation's"
+[[ $(grep -c 'QEMU_BUILD_BUG_ON(NSApplicationPresentation' "$m") == 5 ]] || fail "the presentation bits are not checked against AppKit's"
 # What omacvm check reads.
 grep -q '"omacvm: full panel: strip covered: ' "$m" || fail "no 'strip covered' line for omacvm check"
 echo "test-fullpanel: $m: wiring ok"

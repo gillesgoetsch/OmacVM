@@ -11,7 +11,11 @@ window has the display to itself, and stays so for that full screen;
 frame changes AppKit tries during relayouts are refused, Split View still
 goes through. The full-screen Space's menu bar is made transparent
 (SkyLight, that Space only) and comes down from the display's top row as
-usual; AppKit's full-screen toolbar window is hidden with it. The guest's
+usual, also with "Keep the Dock away" (QEMU's immersive=on, whose own
+options hide the menu bar for good: while the pointer is at the top row
+the menu bar is auto-hidden instead); AppKit's full-screen toolbar window
+is hidden with it. SLSTransactionCommit returns nothing (macOS 27: w0 is
+left over), so it is not read as a status. The guest's
 size, the full-screen area and the display arrangement sent to the guest
 then start at the display's top edge, and the guest is the whole panel:
 no rows cut for Omarchy's scale presets (omacvm-cocoa-clean-size.patch
@@ -31,7 +35,9 @@ Fallbacks: without OMACVM_FULLPANEL=1 nothing of it runs. External
 displays (no camera housing), macOS's "Always show the menu bar in full
 screen", and any private class, selector, function or type encoding that
 is missing or changed give normal full screen, logged once ("using normal
-full screen"). A full screen that loses the strip is not forced back.
+full screen"); so do no menu bar transaction from SkyLight and
+presentation options AppKit refuses (logged once). A full screen that
+loses the strip is not forced back.
 
 Credit: Brian Merchant's FullPanel branch for OmacVM (#339): the frame
 hook, the reveal handling and the fallbacks follow it. That work follows
@@ -95,7 +101,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  
          if (!CVDisplayLinkCreateWithCGDisplay(display, &displayLink)) {
              CVTime period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink);
-@@ -2969,9 +2980,951 @@
+@@ -2969,9 +2980,994 @@
  @interface QemuWindow : NSWindow
  @end
  
@@ -160,9 +166,13 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +typedef int32_t (*OmacVMSLSSpaceGetTypeFn)(int32_t, uint64_t);
 +typedef CFTypeRef (*OmacVMSLSTransactionCreateFn)(int32_t);
 +typedef void (*OmacVMSLSTransactionSetMenuBarAlphaFn)(CFTypeRef, uint64_t, float);
-+/* Private: UTM's VMDisplayWindow.swift and yabai's src/misc/extern.h agree
-+ * that commit returns a CGError and its second argument means synchronous. */
-+typedef int32_t (*OmacVMSLSTransactionCommitFn)(CFTypeRef, int32_t);
++/*
++ * Private; the second argument means synchronous. It returns nothing: on
++ * macOS 27 w0 is left over from its last call (yabai's extern.h and UTM
++ * declare a CGError, and every commit there "failed" with a different
++ * large number). Nothing to check after it.
++ */
++typedef void (*OmacVMSLSTransactionCommitFn)(CFTypeRef, int32_t);
 +
 +static void *omacvm_fullpanel_skylight;
 +static int omacvm_fullpanel_skylight_state;
@@ -258,23 +268,29 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +           OMACVM_FP_SPACE_FULL_SCREEN ? space : 0;
 +}
 +
-+static void omacvm_fullpanel_set_menu_alpha(uint64_t space, float alpha, const char *why)
++/*
++ * Set once SkyLight gave no transaction for the menu bar: from then on
++ * the menu bar is left as macOS has it (normal full screen's), logged once.
++ */
++static bool omacvm_fullpanel_menu_failed;
++
++static bool omacvm_fullpanel_set_menu_alpha(uint64_t space, float alpha, const char *why)
 +{
-+    if (!space || !omacvm_fullpanel_load_skylight()) {
-+        return;
++    if (!space || omacvm_fullpanel_menu_failed || !omacvm_fullpanel_load_skylight()) {
++        return false;
 +    }
-+    CFTypeRef transaction = omacvm_fullpanel_sls_transaction_create(omacvm_fullpanel_sls_main());
++    int32_t cid = omacvm_fullpanel_sls_main();
++    CFTypeRef transaction = omacvm_fullpanel_sls_transaction_create(cid);
 +    if (!transaction) {
-+        fprintf(stderr, "omacvm: full panel: no menu bar transaction (%s)\n", why);
-+        return;
++        omacvm_fullpanel_menu_failed = true;
++        fprintf(stderr, "omacvm: full panel: SkyLight gave no menu bar transaction (%s, connection %d); the menu bar stays as macOS has it\n",
++                why, (int)cid);
++        return false;
 +    }
 +    omacvm_fullpanel_sls_menu_alpha(transaction, space, alpha);
-+    int32_t result = omacvm_fullpanel_sls_transaction_commit(transaction, 1);
-+    if (result) {
-+        fprintf(stderr, "omacvm: full panel: menu bar transaction failed (%s): %d\n",
-+                why, (int)result);
-+    }
++    omacvm_fullpanel_sls_transaction_commit(transaction, 1);
 +    CFRelease(transaction);
++    return true;
 +}
 +
 +static Method omacvm_fullpanel_private_method(const char *class_name,
@@ -323,6 +339,8 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    id top_edge_monitor;
 +    bool workspace_observing;
 +    bool refresh_pending;
++    bool reveal_logged;
++    bool presentation_logged;
 +}
 +- (id)initWithWindow:(NSWindow *)w;
 +- (bool)usable;
@@ -506,6 +524,13 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    return true;
 +}
 +
++/* The rules' bits are AppKit's (ui/omacvm-fullpanel.h). */
++QEMU_BUILD_BUG_ON(NSApplicationPresentationAutoHideDock != OMACVM_FP_AUTO_HIDE_DOCK);
++QEMU_BUILD_BUG_ON(NSApplicationPresentationHideDock != OMACVM_FP_HIDE_DOCK);
++QEMU_BUILD_BUG_ON(NSApplicationPresentationAutoHideMenuBar != OMACVM_FP_AUTO_HIDE_MENU_BAR);
++QEMU_BUILD_BUG_ON(NSApplicationPresentationHideMenuBar != OMACVM_FP_HIDE_MENU_BAR);
++QEMU_BUILD_BUG_ON(NSApplicationPresentationFullScreen != OMACVM_FP_FULL_SCREEN);
++
 +@implementation OmacVMFullPanelState
 +
 +- (id)initWithWindow:(NSWindow *)w
@@ -559,7 +584,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +        return false;
 +    }
 +    return omacvm_fullpanel_class_hooked([window class]) &&
-+           omacvm_fullpanel_load_skylight() &&
++           omacvm_fullpanel_load_skylight() && !omacvm_fullpanel_menu_failed &&
 +           omacvm_fullpanel_install_reveal_observer();
 +}
 +
@@ -672,24 +697,33 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +
 +- (void)updatePresentationOptions
 +{
-+    if (!revealable_presentation_valid) {
++    OmacVMFPPresentIn in = {
++        .valid = revealable_presentation_valid,
++        .covered = menu_bar_hidden_space != 0,
++        .allowed = menu_bar_reveal_allowed,
++        .key = [window isKeyWindow],
++        .changed = presentation_forced,
++        .own = revealable_presentation,
++    };
++    uint64_t options;
++
++    if (!omacvm_fp_presentation(&in, &options)) {
 +        return;
 +    }
-+    NSApplicationPresentationOptions options = 0;
-+    bool have_options = false;
-+    if (!menu_bar_reveal_allowed && [window isKeyWindow]) {
-+        options = NSApplicationPresentationFullScreen |
-+                  NSApplicationPresentationHideMenuBar |
-+                  NSApplicationPresentationHideDock;
-+        presentation_forced = true;
-+        have_options = true;
-+    } else if (presentation_forced) {
-+        options = revealable_presentation;
-+        presentation_forced = false;
-+        have_options = true;
++    presentation_forced = options != (uint64_t)revealable_presentation;
++    if ((uint64_t)[NSApp presentationOptions] == options) {
++        return;
 +    }
-+    if (have_options && [NSApp presentationOptions] != options) {
-+        [NSApp setPresentationOptions:options];
++    @try {
++        [NSApp setPresentationOptions:(NSApplicationPresentationOptions)options];
++    } @catch (NSException *exception) {
++        /* AppKit refuses a combination: leave its own (normal full screen). */
++        presentation_forced = false;
++        if (!presentation_logged) {
++            presentation_logged = true;
++            fprintf(stderr, "omacvm: full panel: AppKit refused presentation options 0x%llx: %s; normal full screen menu bar\n",
++                    (unsigned long long)options, [[exception reason] UTF8String]);
++        }
 +    }
 +}
 +
@@ -698,8 +732,12 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    if (!menu_bar_hidden_space) {
 +        return;
 +    }
-+    omacvm_fullpanel_set_menu_alpha(menu_bar_hidden_space, menu_bar_revealed ? 1.0f : 0.0f,
-+                                    "reveal");
++    if (!omacvm_fullpanel_set_menu_alpha(menu_bar_hidden_space,
++                                         menu_bar_revealed ? 1.0f : 0.0f, "reveal")) {
++        /* No transaction: macOS's own menu bar (logged once). */
++        [self showMenuBar];
++        return;
++    }
 +    [self setToolbarHidden:!toolbar_revealed];
 +}
 +
@@ -720,6 +758,8 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +
 +- (void)showMenuBar
 +{
++    uint64_t space = menu_bar_hidden_space;
++
 +    if (top_edge_monitor) {
 +        [NSEvent removeMonitor:top_edge_monitor];
 +        top_edge_monitor = nil;
@@ -732,14 +772,15 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +        }
 +        presentation_observing = false;
 +    }
++    [self setToolbarHidden:false];
++    /* Not covered any more: the full screen's own options again. */
++    menu_bar_hidden_space = 0;
 +    menu_bar_reveal_allowed = true;
 +    [self updatePresentationOptions];
 +    revealable_presentation_valid = false;
-+    [self setToolbarHidden:false];
-+    if (menu_bar_hidden_space) {
-+        omacvm_fullpanel_set_menu_alpha(menu_bar_hidden_space, 1.0f, "menu bar back");
++    if (space) {
++        omacvm_fullpanel_set_menu_alpha(space, 1.0f, "menu bar back");
 +    }
-+    menu_bar_hidden_space = 0;
 +}
 +
 +- (void)updateMenuBarHidden
@@ -793,6 +834,9 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    toolbar_revealed = false;
 +    [self updatePresentationOptions];
 +    [self applyMenuBarReveal];
++    if (!menu_bar_hidden_space) {
++        return;   /* no menu bar transaction: normal full screen (logged) */
++    }
 +    /* omacvm check reads this line: the strip beside the notch shows the VM. */
 +    fprintf(stderr, "omacvm: full panel: strip covered: full-screen Space %llu, display %.0fx%.0f, notch %.0f\n",
 +            (unsigned long long)space, [screen frame].size.width, [screen frame].size.height,
@@ -808,6 +852,10 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    toolbar_revealed = toolbar;
 +    if (!menu_bar_hidden_space) {
 +        return;
++    }
++    if (menu && !reveal_logged) {
++        reveal_logged = true;
++        fprintf(stderr, "omacvm: full panel: menu bar came down at the top edge\n");
 +    }
 +    [self applyMenuBarReveal];
 +    if (!menu_bar_revealed) {
@@ -846,6 +894,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    safe_tile_logged = false;
 +    reject_logged = false;
 +    display_logged = false;
++    reveal_logged = false;
 +    in_full_screen_space = false;
 +    area_lost = false;
 +    menu_bar_revealed = false;
@@ -1047,7 +1096,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  @end
  
  static BOOL notchFull;
-@@ -3290,6 +4243,11 @@
+@@ -3290,6 +4286,11 @@
  /* OmacVM: macOS says how big the full-screen area is: remember where it starts. */
  - (NSSize)window:(NSWindow *)window willUseFullScreenContentSize:(NSSize)proposedSize
  {
@@ -1059,7 +1108,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      NSSize display = [[window screen] frame].size;
      CGFloat top = display.height - proposedSize.height;
  
-@@ -7432,7 +8390,7 @@
+@@ -7432,7 +8433,7 @@
      CGRect r = CGDisplayBounds(omacvm_screen_id(s));
      OmacVMBox b = { r.origin.x, r.origin.y, r.size.width, r.size.height };
  
@@ -1068,7 +1117,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          NSEdgeInsets in = [s safeAreaInsets];
          b.x += in.left;
          b.y += in.top;
-@@ -7840,6 +8798,55 @@
+@@ -7840,6 +8841,55 @@
  @implementation OmacVMHeadWindow
  - (BOOL)canBecomeKeyWindow { return YES; }
  - (BOOL)canBecomeMainWindow { return NO; }

@@ -7,9 +7,10 @@ housing, macOS's "Always show the menu bar in full screen" off), what
 AppKit's full-screen frame becomes (the whole display, kept over AppKit's
 camera-safe re-ask, or AppKit's own: Split View, a smaller tile, an
 external display), when a frame change is refused, when the strip is lost
-for the rest of a full screen, and when macOS's menu bar may come down
-from the top row. Used by omacvm-cocoa-fullpanel.patch (which explains the
-why).
+for the rest of a full screen, whether the guest may be a few rows
+shorter (never over the whole panel), when macOS's menu bar may come down
+from the top row and the app's presentation options for it. Used by
+omacvm-cocoa-fullpanel.patch (which explains the why).
 
 Why its own file: so the rules are tested on the sizes of every notched
 MacBook, external displays and a window moving between them, without QEMU,
@@ -23,7 +24,7 @@ diff --git a/ui/omacvm-fullpanel.h b/ui/omacvm-fullpanel.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-fullpanel.h
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,222 @@
 +/*
 + * OmacVM: FullPanel, the VM's full-screen window over the whole notched
 + * display, the strip beside the camera housing included (experimental,
@@ -40,6 +41,7 @@ new file mode 100644
 +
 +#include <math.h>
 +#include <stdbool.h>
++#include <stdint.h>
 +#include <string.h>
 +
 +typedef struct {
@@ -179,6 +181,66 @@ new file mode 100644
 +        return false;
 +    }
 +    return allowed;
++}
++
++/*
++ * AppKit's NSApplicationPresentationOptions bits (public values; ui/cocoa.m
++ * checks them against AppKit's at build time).
++ */
++#define OMACVM_FP_AUTO_HIDE_DOCK     (1ull << 0)
++#define OMACVM_FP_HIDE_DOCK          (1ull << 1)
++#define OMACVM_FP_AUTO_HIDE_MENU_BAR (1ull << 2)
++#define OMACVM_FP_HIDE_MENU_BAR      (1ull << 3)
++#define OMACVM_FP_FULL_SCREEN        (1ull << 10)
++
++typedef struct {
++    bool valid;      /* the full screen's own options were read */
++    bool covered;    /* the window covers the strip (its menu bar is transparent) */
++    bool allowed;    /* omacvm_fp_reveal_allowed: the pointer touched the top row */
++    bool key;        /* the window is the key window */
++    bool changed;    /* options other than the own ones are set */
++    uint64_t own;    /* the full screen's own options */
++} OmacVMFPPresentIn;
++
++/*
++ * The app's presentation options while the window covers the strip, or
++ * false to leave them as they are.
++ *
++ * Held back: the menu bar (and the Dock) hidden for good, so the top rows
++ * are the VM's. Allowed: the full screen's own options with the menu bar
++ * auto-hidden, so macOS brings it down at the top edge as in other
++ * full-screen apps. "Keep the Dock away" (QEMU's immersive=on, the app's
++ * default) makes the own options hide the menu bar for good: given back
++ * as they were, the menu bar never came down. The Dock stays as it was
++ * (AppKit wants it hidden or auto-hidden with an auto-hidden menu bar).
++ * Not covered any more, or not key: the own options, once, if they were
++ * changed.
++ */
++static inline bool omacvm_fp_presentation(const OmacVMFPPresentIn *in, uint64_t *out)
++{
++    uint64_t o;
++
++    if (!in->valid) {
++        return false;
++    }
++    if (in->covered && in->key && !in->allowed) {
++        *out = OMACVM_FP_FULL_SCREEN | OMACVM_FP_HIDE_MENU_BAR | OMACVM_FP_HIDE_DOCK;
++        return true;
++    }
++    if (in->covered && in->key) {
++        o = (in->own & ~(OMACVM_FP_HIDE_MENU_BAR | OMACVM_FP_AUTO_HIDE_MENU_BAR)) |
++            OMACVM_FP_AUTO_HIDE_MENU_BAR;
++        if (!(o & (OMACVM_FP_HIDE_DOCK | OMACVM_FP_AUTO_HIDE_DOCK))) {
++            o |= OMACVM_FP_AUTO_HIDE_DOCK;
++        }
++        *out = o;
++        return true;
++    }
++    if (in->changed) {
++        *out = in->own;
++        return true;
++    }
++    return false;
 +}
 +
 +/* SkyLight's Space types: 0 a desktop, 4 an app's full-screen Space. */
