@@ -1042,7 +1042,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      NSSize display = [[window screen] frame].size;
      CGFloat top = display.height - proposedSize.height;
  
-@@ -7457,7 +8413,7 @@
+@@ -7432,7 +8388,7 @@
      CGRect r = CGDisplayBounds(omacvm_screen_id(s));
      OmacVMBox b = { r.origin.x, r.origin.y, r.size.width, r.size.height };
  
@@ -1051,7 +1051,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          NSEdgeInsets in = [s safeAreaInsets];
          b.x += in.left;
          b.y += in.top;
-@@ -7865,6 +8821,55 @@
+@@ -7840,6 +8796,55 @@
  @implementation OmacVMHeadWindow
  - (BOOL)canBecomeKeyWindow { return YES; }
  - (BOOL)canBecomeMainWindow { return NO; }
