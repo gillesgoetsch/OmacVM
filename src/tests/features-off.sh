@@ -318,6 +318,12 @@ expect "app: mac-ime off, no port: nothing" "" "$(app_links_stale "$V" "mac-ime=
 printf '%s\n' "OmacVM: Mac links: Omanotch on, Gestures on, Bridge on, battery on, camera on, Mac input methods on" > "$V/logs/qemu.log"
 expect "app: mac-ime off, port still there this start" "the Mac's input methods" "$(app_links_stale "$V" "mac-ime=off" off)"
 expect "app: mac-ime on with its port: nothing" "" "$(app_links_stale "$V" "mac-ime=on" on)"
+# FullPanel (src/lib/notch.sh): that start has no Omanotch link on purpose.
+printf '%s\n' "OmacVM: Mac links: Omanotch off, Gestures on, Bridge on, battery on, camera on" \
+  "OmacVM: notch area: fullpanel (Omanotch off for this start; notch 640.5-829.5, strip 37.0 of 1470x956 points)" > "$V/logs/qemu.log"
+expect "app: FullPanel start, omanotch on: not stale" "" "$(app_links_stale "$V" "omanotch=on" on)"
+printf '%s\n' "OmacVM: Mac links: Omanotch off, Gestures on, Bridge on, battery on, camera on" "OmacVM: notch area: native" > "$V/logs/qemu.log"
+expect "app: native start without the link, omanotch on: stale" "Omanotch" "$(app_links_stale "$V" "omanotch=on" on)"
 printf '%s\n' "OmacVM: Mac links: Omanotch on, Gestures on, Bridge on, battery on, camera on" > "$V/logs/qemu.log"
 expect "app: mac-ime off, an app from before it: nothing" "" "$(app_links_stale "$V" "mac-ime=off" off)"
 printf '%s\n' "OmacVM: Mac links: Omanotch on, Gestures on, Bridge on, battery on, camera on" \

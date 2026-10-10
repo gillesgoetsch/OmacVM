@@ -9,6 +9,7 @@
 #   app_dir NAME        the VM's folder
 #   app_features_write DIR FEATURES  the VM's features, for the app's Mac links
 #   app_links_stale DIR FEATURES on|off  links that differ from this start of the VM
+#                       (not Omanotch's on a FullPanel start: src/lib/notch.sh)
 #   app_touchid_port DIR                 this start of the VM has Touch ID's port
 #   app_ip NAME         127.0.0.1:PORT while it runs (fast network: its vmnet address,
 #                       from the MAC the running QEMU has: app_vm_mac)
@@ -212,8 +213,13 @@ app_links_stale() {
   local l x k n v out=""
   l=$(sed -n 's/^OmacVM: Mac links: //p' "$1/logs/qemu.log" 2>/dev/null | tail -1)
   [[ -n $l ]] || return 0
+  # A FullPanel start (src/lib/notch.sh) has no Omanotch link on purpose: the
+  # VM draws the strip itself; the next native start has it again.
+  local fp=0
+  [[ $(sed -n 's/^OmacVM: notch area: //p' "$1/logs/qemu.log" 2>/dev/null | tail -1) == fullpanel* ]] && fp=1
   for x in omanotch:Omanotch gestures:Gestures bridge:Bridge battery:battery camera:camera; do
     k=${x%%:*} n=${x#*:} v=on
+    [[ $k == omanotch ]] && (( fp )) && continue
     [[ " $2 " == *" $k=off "* ]] && v=off
     [[ $v == "$3" && ", $l, " != *", $n $3, "* ]] && out+="${out:+, }$n"
   done
