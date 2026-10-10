@@ -1,0 +1,169 @@
+From: OmacVM
+Subject: [PATCH] ui/cocoa: the start animation waits until the window shows
+
+What: the start animation's clock (OMACVM holds 2.5 s, then the morph to
+Omarchy's logo) starts at the first display-link frame of a window that
+shows. While a full-screen start keeps the window transparent
+(omacvm-cocoa-fullscreen-start.patch: until macOS has it in full screen,
+4 s at most) every frame is OMACVM at 0 s. The rule is in
+ui/omacvm-intro-clock.h. qemu.log says when the animation started:
+"boot logo animation starts as the window shows, N s after it came up"
+(only when it waited) and "... started N s after the window opened" in the
+line at its end. The logo's fade when the animation got no frames
+(-fadeIfStalled) counts from that start too.
+
+Why: the display link gives frames while the window is transparent, and
+the clock started at the first of them. A normal full-screen start on the
+Mac mini used 0.4 s of OMACVM's hold that way; "Full screen including
+notch" (FullPanel) on a MacBook Air took longer to get into full screen and
+the user saw no animation at all (2026-10-10, build 1aa5f6b3 = 3.0.16).
+
+Upstream: not applicable (OmacVM's start). Test:
+Tests/display/test-splash-after-reveal.sh (build time, on the patched
+ui/cocoa.m: the wiring, and test-splash-after-reveal.c: the timeline the
+user sees for windows that show after 0, 0.4, 2, 4 and 6 s; --self-test
+catches the old code). Applies after omacvm-cocoa-boot-splash.patch and
+omacvm-cocoa-fullscreen-start.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -3634,24 +3634,25 @@
+  * under the logo says so and where the logs are, and qemu.log gets a warning.
+  * OMACVM_BOOT_SPLASH=0: QEMU's text, as before, and no animation.
+  *
+  * The logo is as big as the firmware's 1920 x 1080 frame stretched to the
+  * view would have it (810 x 190 there), with square cells, in the middle.
+  *
+  * Threads: the state below is used with the BQL (QEMU's thread, and the
+  * layers' draws on the main thread take it); the hint label and the
+  * animation's layer are main thread only.
+  */
+ #include "hw/virtio/virtio-serial.h"
+ #include "ui/omacvm-splash.h"   /* the logo's cells, the animation's core */
++#include "ui/omacvm-intro-clock.h"   /* its clock: from the first frame that shows */
+ 
+ static int omacvm_splash_on = -1;       /* OMACVM_BOOT_SPLASH */
+ static GLuint omacvm_splash_tex;        /* the logo; gl_view_ctx's group */
+ static bool omacvm_guest_drew;          /* a picture of the guest's since the last reset */
+ static bool omacvm_desktop_up;          /* its desktop since the last reset */
+ /* The display agent said hello since the last reset (main thread sets, BQL clears; atomic). */
+ static bool omacvm_display_hello;
+ static bool omacvm_splash_hint_up;
+ static QEMUTimer *omacvm_splash_timer;
+ static NSTextField *omacvm_splash_hint; /* main thread */
+ /* The main scanout's place in its texture (the texture may not know its size). */
+ static uint32_t gl_scanout_x, gl_scanout_y, gl_scanout_w, gl_scanout_h;
+@@ -4362,62 +4363,72 @@
+         [self removeFromSuperlayer];
+         [self release];   /* the alloc in omacvm_intro_show */
+     }];
+     [self addAnimation:a forKey:@"fade"];
+     [self setOpacity:0];
+     [CATransaction commit];
+ }
+ 
+ - (void)tick:(CADisplayLink *)l
+ {
+     CFTimeInterval now = [l targetTimestamp];
+     CFTimeInterval at = CACurrentMediaTime();
++    bool waiting;
+ 
+     if (last_tick) {
+         longest = MAX(longest, at - last_tick);
+     }
+     last_tick = at;
+     frames++;
+-    if (!start) {
+-        start = now;
++    /*
++     * A full-screen start keeps the window transparent until macOS has it
++     * in full screen (omacvm_start_hidden): OMACVM waits there, the clock
++     * starts with the first frame that shows.
++     */
++    waiting = !start;
++    t = omacvm_intro_clock(now, !omacvm_start_hidden, &start);
++    if (waiting && start && frames > 1) {
++        info_report("cocoa: boot logo animation starts as the window shows, %.2f s after "
++                    "it came up (%u frames while it was hidden)", at - opened, frames - 1);
+     }
+-    t = now - start;
+     if (t >= INTRO_END) {
+         t = INTRO_END;
+         [self dropLink];
+-        info_report("cocoa: boot logo animation: %u frames, at most %.0f ms apart%s", frames,
+-                    longest * 1000, relinks ? " (after a new display link)" : "");
++        info_report("cocoa: boot logo animation: %u frames, at most %.0f ms apart, started %.2f s "
++                    "after the window opened%s", frames, longest * 1000, start - opened,
++                    relinks ? " (after a new display link)" : "");
+         if (ready) {
+             [self fade];
+         }
+     }
+     [self render];
+ }
+ 
+ /* The guest was reset before the logo faded: wait for the desktop again. */
+ - (void)hold
+ {
+     ready = false;
+ }
+ 
+ /*
+  * Ready, and the display link still runs the animation: it fades at the
+  * animation's end. A window that is not visible gets no frames from it
+  * (another Space, hidden), so once the animation is over by the clock and
+  * no frame came for a while, fade without it: else the logo would stay over
+  * the desktop until the window shows again.
+  */
+ - (void)fadeIfStalled
+ {
+-    CFTimeInterval left = opened + INTRO_END - CACurrentMediaTime();
++    /* Its own clock: it starts when the window shows (omacvm_intro_clock). */
++    CFTimeInterval left = (start ? start : opened) + INTRO_END - CACurrentMediaTime();
+ 
+     if (!ready || fading || !link) {
+         return;
+     }
+     if (left <= 0 && CACurrentMediaTime() - last_tick > 0.25) {
+         info_report("cocoa: boot logo: the animation got no frames for a while, fading without it");
+         [self fade];
+         return;
+     }
+     [self retain];
+     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(left, 0.25) * NSEC_PER_SEC)),
+                    dispatch_get_main_queue(), ^{
+--- /dev/null
++++ b/ui/omacvm-intro-clock.h
+@@ -0,0 +1,32 @@
++/*
++ * OmacVM start animation: when its clock starts (omacvm-cocoa-splash-after-
++ * reveal.patch). Only C, no Cocoa or QEMU, so that
++ * Tests/display/test-splash-after-reveal.c builds it on its own.
++ *
++ * The display link gives frames while a full-screen start keeps the window
++ * transparent (omacvm-cocoa-fullscreen-start.patch: until macOS has it in
++ * full screen, 4 s at most). The animation's clock started at the first of
++ * those frames, so a slow way into full screen played OMACVM's hold and the
++ * morph where nobody could see them. Now it starts at the first frame of a
++ * window that shows: until then every frame is OMACVM at 0 s.
++ */
++#ifndef OMACVM_INTRO_CLOCK_H
++#define OMACVM_INTRO_CLOCK_H
++
++/*
++ * The animation's time (s) at the display-link frame at `frame` (s), the
++ * window shown or not. *start is 0 until the clock runs, then the time of
++ * its first frame.
++ */
++static inline double omacvm_intro_clock(double frame, int shown, double *start)
++{
++    if (*start <= 0) {
++        if (!shown) {
++            return 0;
++        }
++        *start = frame;
++    }
++    return frame - *start;
++}
++
++#endif
