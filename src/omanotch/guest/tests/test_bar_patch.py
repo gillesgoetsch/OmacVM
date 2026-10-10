@@ -505,6 +505,30 @@ class FullPanel(unittest.TestCase):
         self.assertAlmostEqual(r["root"]["notchRight"], 829.5 * k)
         self.assertAlmostEqual(r["root"]["notchHeight"], 37 * k)
 
+    def test_pro_and_air_at_2x_and_1_6x(self):
+        # The housing differs per model (a 16-inch Pro's strip is taller than
+        # an Air's): never one height, always the numbers of this start, in
+        # the guest's logical pixels at its own scale (2x and 1.6x here).
+        pro = "OMACVM_FULLPANEL=765.0x963.0x43.0x1728.0x1117.0"
+        cases = [(AIR, 1470, 956, 2.0), (AIR, 1470, 956, 1.6), (pro, 1728, 1117, 2.0), (pro, 1728, 1117, 1.6)]
+        strips = {}
+        for env, w, d, scale in cases:
+            g = [float(x) for x in env.split("=")[1].split("x")]
+            px_w = w * 2                      # the Mac's pixels (Retina)
+            lw = px_w / scale                 # Omarchy's scale in the guest
+            r = self.run_js({"hostenv": env + "\n", "layout": layout(width=w, height=d - 4)}, self.ticks(1),
+                            screens=[{"name": "Virtual-1", "width": lw, "height": d * 2 / scale}])
+            k = lw / g[3]
+            self.assertTrue(r["panels"][0]["on"], (env, scale))
+            self.assertAlmostEqual(r["root"]["notchLeft"], g[0] * k, msg=(env, scale))
+            self.assertAlmostEqual(r["root"]["notchRight"], g[1] * k, msg=(env, scale))
+            self.assertAlmostEqual(r["root"]["notchHeight"], g[2] * k, msg=(env, scale))
+            strips[(g[2], scale)] = r["root"]["notchHeight"]
+        # The Pro's strip is taller than the Air's at the same scale, and a
+        # smaller scale makes the same strip more logical pixels.
+        self.assertGreater(strips[(43.0, 2.0)], strips[(37.0, 2.0)])
+        self.assertGreater(strips[(37.0, 1.6)], strips[(37.0, 2.0)])
+
     def test_never_guesses_a_park(self):
         # The last native session ended with Omanotch's strip: a FullPanel
         # boot does not park the bar for a strip that will not come.
