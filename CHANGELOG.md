@@ -3,19 +3,25 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## Unreleased
+## 3.0.16 (unreleased)
+
+Full screen including the notch, without Omanotch: a new, experimental way to start a VM in OmacVM.app.
 
 - OmacVM.app: **Full screen including notch, no Omanotch needed**, experimental and off by
-  default. The VM uses the whole built-in display, including the strip beside the camera notch,
-  and Omarchy's bar sits there, split around the notch, as tall as this MacBook's menu bar.
-  Omanotch is not needed for this and stays idle for that start. The VM window's **Start in**
-  picker has it, with **Window** and **Full screen, notch via Omanotch** (only one can be active,
-  so it is one setting now; on a Mac without a notch the choices are Window and Full screen).
-  Also `omacvm fullscreen --vm NAME notch|standard` (or `omacvm notch --vm NAME
-  fullpanel|native`) and the control centre's Full screen row. From the VM's next start;
-  external displays stay as they are; `omacvm check` says whether the strip is covered. Notch
-  via Omanotch stays the default and the way on UTM, VMware Fusion and Parallels. Proposed and
-  first built by @brianmerchant (#339).
+  default. The VM uses the whole built-in display, top to bottom, including the strip beside the
+  camera notch, and Omarchy's bar sits there, split around the notch, as tall as this MacBook's
+  menu bar. macOS's menu bar comes down from the top edge as in other full-screen apps, also with
+  Keep the Dock away. Omanotch is not needed for this and stays idle for that start. The VM
+  window's **Start in** picker has it, with **Window** and **Full screen, notch via Omanotch**
+  (only one can be active, so it is one setting now; on a Mac without a notch the choices are
+  Window and Full screen). Also `omacvm fullscreen --vm NAME notch|standard` (or `omacvm notch
+  --vm NAME fullpanel|native`) and the control centre's Full screen row. From the VM's next
+  start; external displays stay as they are; `omacvm check` says whether the strip is covered.
+  Notch via Omanotch stays the default and the way on UTM, VMware Fusion and Parallels. Proposed
+  and first built by @brianmerchant (#339).
+- Known trade-off: at the full panel height Hyprland offers the scales 1, 1.33, 2 and 4 (1 and 2
+  on a 16-inch MacBook Pro), so a saved 1.67 becomes 2 in this mode. With the notch via Omanotch
+  the scales stay as they were.
 
 ## 3.0.15
 
