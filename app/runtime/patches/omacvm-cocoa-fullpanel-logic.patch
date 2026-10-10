@@ -1,0 +1,172 @@
+From: OmacVM
+Subject: [PATCH] ui: FullPanel's decisions, tested without a notched Mac
+
+What: a header with no AppKit in it: whether a start asked for FullPanel
+(OMACVM_FULLPANEL=1), whether a window's display can have it (a camera
+housing, macOS's "Always show the menu bar in full screen" off), what
+AppKit's full-screen frame becomes (the whole display, kept over AppKit's
+camera-safe re-ask, or AppKit's own: Split View, a smaller tile, an
+external display), when a frame change is refused, when the strip is lost
+for the rest of a full screen, and when macOS's menu bar may come down
+from the top row. Used by omacvm-cocoa-fullpanel.patch (which explains the
+why).
+
+Why its own file: so the rules are tested on the sizes of every notched
+MacBook, external displays and a window moving between them, without QEMU,
+a display or a notch (app/runtime/Tests/display/test-fullpanel.sh applies
+this patch to an empty folder; at build time and in CI).
+
+Upstream: not applicable (OmacVM's notch strip).
+Test: app/runtime/Tests/display/test-fullpanel.c.
+
+diff --git a/ui/omacvm-fullpanel.h b/ui/omacvm-fullpanel.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-fullpanel.h
+@@ -0,0 +1,146 @@
++/*
++ * OmacVM: FullPanel, the VM's full-screen window over the whole notched
++ * display, the strip beside the camera housing included (experimental,
++ * OMACVM_FULLPANEL=1 from OmacVM.app for one start).
++ *
++ * The decisions only, no AppKit in here, so they are tested on their own
++ * (app/runtime/Tests/display/test-fullpanel.c); ui/cocoa.m feeds them
++ * (omacvm-cocoa-fullpanel.patch).
++ *
++ * Rects are in points, AppKit's bottom-left origin, as NSRect.
++ */
++#ifndef OMACVM_FULLPANEL_H
++#define OMACVM_FULLPANEL_H
++
++#include <math.h>
++#include <stdbool.h>
++#include <string.h>
++
++typedef struct {
++    double x, y, w, h;
++} OmacVMFPRect;
++
++/* Asked for this start: OMACVM_FULLPANEL=1, nothing else. */
++static inline bool omacvm_fp_requested(const char *env)
++{
++    return env && !strcmp(env, "1");
++}
++
++static inline bool omacvm_fp_rect_equal(OmacVMFPRect a, OmacVMFPRect b)
++{
++    return fabs(a.x - b.x) < 0.5 && fabs(a.y - b.y) < 0.5 &&
++           fabs(a.w - b.w) < 0.5 && fabs(a.h - b.h) < 0.5;
++}
++
++/*
++ * A window may use the strip on this display: asked, the display has a
++ * camera housing (a top safe-area inset; external displays have none), and
++ * macOS's "Always show the menu bar in full screen" is off (the menu bar
++ * would sit on the VM's top rows).
++ */
++static inline bool omacvm_fp_display_ok(bool requested, double notch_inset,
++                                        bool menu_bar_always_shown)
++{
++    return requested && notch_inset > 0 && !menu_bar_always_shown;
++}
++
++/* What AppKit's full-screen frame for the window becomes. */
++typedef enum {
++    OMACVM_FP_APPKIT,        /* AppKit's own frame (below the notch, Split View, ...) */
++    OMACVM_FP_DISPLAY,       /* the whole display: AppKit's tile is the whole display */
++    OMACVM_FP_DISPLAY_KEPT,  /* the whole display kept over AppKit's camera-safe re-ask */
++} OmacVMFPFrame;
++
++typedef struct {
++    bool usable;            /* omacvm_fp_display_ok and the private parts are there */
++    bool area_lost;         /* this full screen lost the strip once: no second try */
++    bool accepted;          /* the whole display was given out in this full screen */
++    bool kept;              /* entering or in full screen (not leaving) */
++    bool full_screen_style; /* NSWindowStyleMaskFullScreen */
++    double notch;           /* the display's top safe-area inset */
++    OmacVMFPRect tile;      /* AppKit's tile for this window in full screen */
++    OmacVMFPRect display;   /* the display's frame */
++} OmacVMFPFrameIn;
++
++/*
++ * The whole display only for a window that has the display to itself in
++ * full screen (AppKit's tile is the whole display). Once given, AppKit may
++ * ask again while its tile is briefly the camera-safe one (same x, y and
++ * width, the inset shorter): the whole display stays. Anything else (Split
++ * View, a smaller tile, no notch) keeps AppKit's frame.
++ */
++static inline OmacVMFPFrame omacvm_fp_frame(const OmacVMFPFrameIn *in)
++{
++    OmacVMFPRect d = in->display, t = in->tile;
++
++    if (!in->usable || in->area_lost) {
++        return OMACVM_FP_APPKIT;
++    }
++    if (omacvm_fp_rect_equal(t, d)) {
++        return OMACVM_FP_DISPLAY;
++    }
++    if (in->accepted && in->kept && in->full_screen_style && in->notch > 0 &&
++        fabs(t.x - d.x) < 0.5 && fabs(t.y - d.y) < 0.5 &&
++        fabs(t.w - d.w) < 0.5 && fabs(t.h - (d.h - in->notch)) < 0.5) {
++        return OMACVM_FP_DISPLAY_KEPT;
++    }
++    return OMACVM_FP_APPKIT;
++}
++
++typedef struct {
++    bool kept, accepted, full_screen_style, usable, area_lost;
++    OmacVMFPRect frame;     /* the window's frame now */
++    OmacVMFPRect display;
++    OmacVMFPRect tile;
++} OmacVMFPKeepIn;
++
++/*
++ * A frame change is refused (the window keeps the whole display) while it
++ * has the whole display in full screen: AppKit tries the camera-safe frame
++ * during relayouts. A horizontal change of the tile (Split View) still
++ * goes through.
++ */
++static inline bool omacvm_fp_keep(const OmacVMFPKeepIn *in)
++{
++    if (!in->kept || !in->accepted || !in->full_screen_style || !in->usable ||
++        in->area_lost || !omacvm_fp_rect_equal(in->frame, in->display)) {
++        return false;
++    }
++    return fabs(in->tile.x - in->display.x) <= 1 &&
++           fabs(in->tile.w - in->display.w) <= 1;
++}
++
++/*
++ * The strip is gone for this full screen: a window that may have it, in
++ * full screen, no longer covers the display (AppKit moved it below the
++ * notch after all). The menu bar comes back and nothing forces the frame
++ * again. A window on a display without a notch never had it to lose.
++ */
++static inline bool omacvm_fp_strip_lost(bool usable, bool in_full_screen,
++                                        OmacVMFPRect frame, OmacVMFPRect display)
++{
++    return usable && in_full_screen && !omacvm_fp_rect_equal(frame, display);
++}
++
++/*
++ * macOS's menu bar over the strip: transparent, and allowed to come down
++ * only after the pointer touched the display's top row; once the pointer is
++ * below the strip again (and the menu is not open) it is held back again.
++ * y and top in global points (bottom-left origin).
++ */
++static inline bool omacvm_fp_reveal_allowed(bool allowed, bool revealed, double y,
++                                            double top, double notch)
++{
++    if (!allowed && y >= top - 1) {
++        return true;
++    }
++    if (allowed && !revealed && y < top - notch) {
++        return false;
++    }
++    return allowed;
++}
++
++/* SkyLight's Space types: 0 a desktop, 4 an app's full-screen Space. */
++#define OMACVM_FP_SPACE_FULL_SCREEN 4
++
++#endif

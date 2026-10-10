@@ -381,6 +381,8 @@ jobs:
         run: app/runtime/Tests/display/test-notch-park.sh
       - name: Guest sizes that fit Omarchy's scale presets (full screen, window steps)
         run: app/runtime/Tests/display/test-clean-size.sh
+      - name: FullPanel's rules (every notched MacBook, external displays, moves between them)
+        run: app/runtime/Tests/display/test-fullpanel.sh
 
       - name: macOS's shortcuts go to the VM while it has the keyboard (the whole list)
         run: app/runtime/Tests/keys/test-shortcuts.sh

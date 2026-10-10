@@ -857,6 +857,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-logic.pat
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime.patch"
 "$native_dir/Tests/keys/test-ime.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the Mac's input methods are not wired as tested (test-ime.sh)"
+# Experimental FullPanel (issue #339), off unless OmacVM.app asks for one
+# start (OMACVM_FULLPANEL=1: the VM's notch setting): full screen over the
+# strip beside the notch on a display with one; external displays as before.
+# After the other cocoa patches but App Nap's (it hooks their full-screen
+# sizes); its rules' test, then the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel.patch"
+"$native_dir/Tests/display/test-fullpanel.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: FullPanel is not wired as tested (test-fullpanel.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
