@@ -208,9 +208,10 @@ VM runs, and goes back by itself when a new version does not start
   "Use the notch for the menu bar", whose full screen covered the strip
   but had no Space of its own: other windows could share it and the
   escape combo had nothing to leave. It is gone.
-  FullPanel (experimental, off by default, per VM): the full screen keeps
-  its own Space and also covers the strip, and the VM draws its bar there;
-  Omanotch is idle for such a start ([details](../features.md#the-notch-area-fullpanel),
+  Full screen including notch, no Omanotch needed (experimental, off by
+  default, per VM; the VM window's **Start in**): the full screen keeps its
+  own Space and also covers the strip, and the VM draws its bar there;
+  Omanotch is idle for such a start ([details](../features.md#full-screen-including-notch),
   [ADR 0044](../adr/0044-fullpanel.md)).
   One pointer at the strip's edge: leaving the VM up into the strip, QEMU
   moves the guest's pointer into the hidden NOTCH output (right above the

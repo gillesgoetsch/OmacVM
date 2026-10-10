@@ -5,7 +5,7 @@ The short version is the grid at the top of the [README](../README.md).
 | Feature | What it does |
 |---|---|
 | **The bar beside the notch** | With [Omanotch](../src/omanotch/README.md), Omarchy's real bar moves into the black strip beside the MacBook's notch, and your windows get the full height of the screen. The bar is as tall as macOS's menu bar, or exactly as tall as the notch (`defaults write ch.gillesgoetsch.omanotch flush -bool true`). OmacVM.app too: its full screen has a Space of its own, below the camera, and Omanotch fills the strip (on by default for new VMs on a Mac with a notch) |
-| **The notch area (FullPanel)** *(experimental, OmacVM.app, off by default)* | The VM's full screen also covers the strip beside the camera housing, and Omarchy's own bar sits there, split around the notch; Omanotch is not needed then. Per VM: **Use the notch area (experimental)** in the app's VM window (below Start in full screen), `omacvm notch --vm NAME fullpanel` or the control centre. External displays stay as they are. Proposed and first built by [@brianmerchant](https://github.com/brianmerchant) ([#339](https://github.com/gillesgoetsch/OmacVM/issues/339)) ([details](#the-notch-area-fullpanel)) |
+| **Full screen including notch** *(experimental, OmacVM.app, off by default)* | The VM uses the whole built-in display, including the strip beside the camera notch, and draws its bar there itself, split around the notch; Omanotch is not needed for this. Per VM: **Start in** > **Full screen including notch, no Omanotch needed (experimental)** in the app's VM window, `omacvm fullscreen --vm NAME notch` or the control centre. External displays stay as they are ([more](#full-screen-including-notch)) |
 | **Trackpad gestures** | Three- and four-finger swipes switch workspaces and pinch zooms while the VM is full screen; macOS's own Spaces swipe is off meanwhile. ⌃⌥ Esc takes you back to macOS, and from macOS back into the VM. The MacBook's trackpad, or a Magic Trackpad on a Mac mini, iMac or Studio |
 | **macOS-native scroll momentum** *(experimental, but awesome)* | Two-finger scrolling on a trackpad in every direction with your Mac's own acceleration and momentum, pinch included; mice scroll one to one. On by default ([how it works](#macos-native-scroll-momentum)) |
 | **The Mac's Wi-Fi in the bar** | Real network name and signal, nearby networks, and Omarchy's QR card to share the password (macOS asks you first). Joining a network and switching Wi-Fi stay on the Mac for now |
@@ -43,13 +43,17 @@ The short version is the grid at the top of the [README](../README.md).
   <img src="images/displays.svg" alt="The macOS display arrangement and the Omarchy VM's monitors: when a display is moved in macOS, the VM's monitor moves the same way." width="100%">
 </p>
 
-## The notch area (FullPanel)
+## Full screen including notch
 
-Experimental, OmacVM.app only, off by default. Native (the default) keeps
-the VM's full screen below the camera housing, and Omanotch streams
-Omarchy's bar into the strip beside it, as on UTM, VMware Fusion and
-Parallels. With FullPanel the VM's own full screen covers the strip too,
-and the VM draws its bar there itself:
+Experimental, OmacVM.app only, off by default. The app's **Start in**
+picker has three choices: **Window**, **Full screen, notch via Omanotch**
+(the default; on a Mac without a notch just **Full screen**) and, on a
+MacBook with a notch, **Full screen including notch, no Omanotch needed
+(experimental)**. Via Omanotch the VM's full screen stays below the camera
+notch, and Omanotch streams Omarchy's bar into the strip beside it, as on
+UTM, VMware Fusion and Parallels. Including notch, the VM uses the whole
+built-in display, including the strip beside the camera notch, and draws
+its bar there itself:
 
 - the bar is as tall as macOS's menu bar on this MacBook (measured at each
   VM start, so a MacBook Pro and a MacBook Air each get their own), its
@@ -63,34 +67,37 @@ and the VM draws its bar there itself:
 - macOS's menu bar stays hidden over the strip and comes down from the
   display's top edge, as in other full-screen apps;
 - Omanotch has nothing to do and stays idle for that start; its switch
-  stays on, and the next native start has it again.
+  stays on, and the next start with the notch via Omanotch has it again.
 
-**Turn it on** while the VM is stopped or running (it applies from the next
-start): **Use the notch area (experimental)** in the app's VM window, right
-below Start in full screen (shown only on a Mac whose built-in display has
-a notch), `omacvm notch --vm NAME fullpanel`, or the control centre's
-**Notch area** row (space). `omacvm notch --vm NAME native` goes back.
+**Choose it** while the VM is stopped or running (it applies from the next
+start): **Start in** in the app's VM window (the choice is listed only on a
+Mac whose built-in display has a notch), `omacvm fullscreen --vm NAME
+notch`, or the control centre's **Full screen** row (space). `omacvm
+fullscreen --vm NAME standard` goes back (`omacvm notch --vm NAME
+fullpanel|native` is the same). Window or full screen is for every VM; the
+notch choice is per VM.
 
-**What it needs:** Start in full screen; the VM on the MacBook's own
-display; Omanotch on in the VM and the VM updated to this version (Update
-VM or `omacvm apply`), since the bar's FullPanel mode is part of
-Omanotch's bar. Without one of them the VM starts native, and `omacvm
-notch --vm NAME` says why.
+**What it needs:** the app starting VMs in full screen (Start in, not
+Window); the VM on the MacBook's own display; Omanotch on in the VM and the
+VM updated to this version (Update VM or `omacvm apply`), since the bar's
+mode for it is part of Omanotch's bar. Without one of them the VM starts
+with the notch via Omanotch, and `omacvm fullscreen --vm NAME` says why. On
+a Mac without a notch such a VM shows **Full screen** and starts that way.
 
-**Several displays:** only the MacBook's display gets FullPanel. External
-displays keep their full screen as before, also when the VM's main window
-is on an external display (the MacBook's display is then another of the
-VM's outputs). Plugging a display in or out while the VM runs moves the bar
-with the MacBook's display within a few seconds.
+**Several displays:** only the MacBook's display includes the notch.
+External displays keep their full screen as before, also when the VM's
+main window is on an external display (the MacBook's display is then
+another of the VM's outputs). Plugging a display in or out while the VM
+runs moves the bar with the MacBook's display within a few seconds.
 
 **When it falls back:** macOS's "Always show the menu bar in full screen"
-(Control Center settings), a macOS that changed the private interfaces
-FullPanel uses, or macOS moving the window below the notch after all: the
-VM then runs in normal full screen, and the bar is the normal one. Omanotch
-comes back with the next native start. `omacvm check --vm NAME` names the
-mode, and for FullPanel whether the strip is covered ("strip covered") and
-that Omanotch is idle. Changing the Mac's display resolution while the VM
-runs: restart the VM.
+(Control Center settings), a macOS that changed the private interfaces it
+uses, or macOS moving the window below the notch after all: the VM then
+runs in normal full screen, and the bar is the normal one. Omanotch comes
+back with the next start via Omanotch. `omacvm check --vm NAME` says which
+one this start is, and when it includes the notch whether the strip is
+covered ("strip covered") and that Omanotch is idle. Changing the Mac's
+display resolution while the VM runs: restart the VM.
 
 Why it is an addition and not a replacement: [ADR 0044](adr/0044-fullpanel.md).
 
