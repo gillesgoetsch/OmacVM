@@ -553,6 +553,73 @@ def next_graphics(current: str) -> str:
     return GRAPHICS_CHOICES[(i + 1) % len(GRAPHICS_CHOICES)]
 
 
+# ---- OmacVM.app's notch area (src/cmd/notch.sh, FullPanel #339) ----
+NOTCH_CHOICES = ("native", "fullpanel")
+NOTCH_TITLES = {"native": "Native", "fullpanel": "FullPanel"}
+# What the Omanotch row says while this start is FullPanel (its features
+# keep Omanotch on; the next native start has it again).
+OMANOTCH_FULLPANEL_NOTE = "not needed (notch area in use)"
+NOTCH_FEATURE = Feature(
+    name="notch-area", default="native", sides=("mac",), tags=("experimental",), needs=None,
+    title="Notch area",
+    summary=("Experimental, OmacVM.app only. Native: full screen below the camera housing, Omanotch "
+             "streams the bar into the strip. FullPanel: the VM's full screen also covers the strip on "
+             "the MacBook's own display and Omarchy's bar sits there, split around the notch; Omanotch "
+             "is not needed then. External displays stay as they are. From the VM's next start, only "
+             "with Start in full screen in the app."))
+
+
+def notch_fullpanel_now(status: dict | None) -> bool:
+    """This start of the VM is a FullPanel start (the Mac's word)."""
+    n = (status or {}).get("notch")
+    return isinstance(n, dict) and str(n.get("this_start") or "").startswith("fullpanel")
+
+
+def notch_row(status: dict | None, vm_type: str, jobs: list[Job] | None = None,
+              offline: bool = False) -> Row | None:
+    """The notch area row of an OmacVM.app VM on a Mac with a notch (or one
+    set to FullPanel), from the Mac's status (`notch`: omacvm notch --json);
+    None elsewhere. Notes stay within an 80-column window; the whole story
+    under enter."""
+    if vm_type != "app":
+        return None
+    n = (status or {}).get("notch")
+    job = next((j for j in (jobs or []) if j.active and j.action == "notch"), None)
+    if job is not None:
+        return Row(NOTCH_FEATURE, True, Status.BUSY, f"to {NOTCH_TITLES.get(job.features[0] if job.features else '', '?')}…")
+    if not isinstance(status, dict):
+        return None if offline else Row(NOTCH_FEATURE, True, Status.UNKNOWN, "asking the Mac")
+    if not isinstance(n, dict) or n.get("notch") not in NOTCH_CHOICES:
+        return None   # a Mac older than FullPanel: no such setting
+    mode = n["notch"]
+    if mode == "native" and n.get("mac_has_notch") is not True:
+        return None   # no notch on this Mac: nothing to choose
+    this, nxt = str(n.get("this_start") or ""), str(n.get("next_start") or "")
+    now_fp = this.startswith("fullpanel")
+    if mode == "native":
+        if now_fp:
+            return Row(NOTCH_FEATURE, False, Status.NEXT_START, "Native from the VM's next start",
+                       detail="This start is FullPanel; the next one is native again, with Omanotch.")
+        return Row(NOTCH_FEATURE, False, Status.OFF, "Native: Omanotch fills the strip",
+                   detail="Native: full screen below the camera housing; Omanotch streams the bar into the strip.")
+    if now_fp:
+        return Row(NOTCH_FEATURE, True, Status.WORKS, "FullPanel: the bar in the strip",
+                   detail=f"This start: {this}. Omanotch is not needed while it is on.")
+    if nxt == "fullpanel":
+        return Row(NOTCH_FEATURE, True, Status.NEXT_START, "FullPanel from the next start",
+                   detail="FullPanel from the VM's next start: shut it down, then start it again.")
+    why = nxt[nxt.find("(") + 1:nxt.rfind(")")] if "(" in nxt else nxt
+    short = ("needs full screen" if "full screen" in why else "no notch now" if "no notch" in why
+             else "VM not ready" if "not ready" in why else "native")
+    return Row(NOTCH_FEATURE, True, Status.NEEDS_PERSON, f"FullPanel set, {short}",
+               detail=f"FullPanel is set, but the next start is native: {why or 'not known'}.")
+
+
+def next_notch(current: str) -> str:
+    """Space on the notch area row: Native <-> FullPanel."""
+    return "native" if current == "fullpanel" else "fullpanel"
+
+
 # ---- OmacVM.app: the VM's graphics memory on the Mac (GET /omacvm/gpu-memory) ----
 # The same words as the VM's app menu (omacvm-cocoa-graphics-memory.patch).
 GPU_MEMORY_EXPLAINER = (

@@ -300,6 +300,8 @@ class Bridge:
         body: dict = {"action": action}
         if action == "graphics":
             body["graphics"] = list(features)[0]   # opengl | vulkan | auto
+        elif action == "notch":
+            body["notch"] = list(features)[0]      # native | fullpanel
         elif action != "update":
             body["features"] = list(features)
         return self.call("POST", "/omacvm/jobs", body, timeout=10.0)
