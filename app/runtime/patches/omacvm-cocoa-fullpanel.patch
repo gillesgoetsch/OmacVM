@@ -13,10 +13,14 @@ goes through. The full-screen Space's menu bar is made transparent
 (SkyLight, that Space only) and comes down from the display's top row as
 usual; AppKit's full-screen toolbar window is hidden with it. The guest's
 size, the full-screen area and the display arrangement sent to the guest
-then start at the display's top edge. Rules in ui/omacvm-fullpanel.h
-(omacvm-cocoa-fullpanel-logic.patch). qemu.log: "omacvm: full panel:
-strip covered: ..." per full screen that has it (omacvm check reads it),
-"strip lost" when AppKit moved the window below the notch after all.
+then start at the display's top edge, and the guest is the whole panel:
+no rows cut for Omarchy's scale presets (omacvm-cocoa-clean-size.patch
+does that below a notch; over the strip the cut rows were a black band at
+the bottom, 2940x1900 on a 2940x1912 MacBook Air). Rules in
+ui/omacvm-fullpanel.h (omacvm-cocoa-fullpanel-logic.patch). qemu.log:
+"omacvm: full panel: strip covered: ..." per full screen that has it
+(omacvm check reads it), "strip lost" when AppKit moved the window below
+the notch after all.
 
 Why: OmacVM.app's own full screen can draw beside the camera itself, so on
 that route the guest's bar can sit in the strip without Omanotch's stream
@@ -77,11 +81,24 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      NSEdgeInsets insets = [[[self window] screen] safeAreaInsets];
      size.width -= insets.left + insets.right;
      size.height -= insets.top + insets.bottom;
-@@ -2968,10 +2977,952 @@
-  */
+@@ -1775,9 +1784,11 @@
+         /*
+          * Rows are cut only below a notch, and only where the guest can be
+          * drawn at the top of a window that fills the area (Omanotch).
++         * FullPanel: the guest is the whole panel, nothing cut.
+          */
+-        full = isFullscreen && omacvm_present_layer() &&
+-               [[[self window] screen] safeAreaInsets].top > 0;
++        full = omacvm_fp_cut_rows(isFullscreen, omacvm_present_layer(),
++                                  [[[self window] screen] safeAreaInsets].top,
++                                  omacvm_fullpanel_window_usable([self window]));
+ 
+         if (!CVDisplayLinkCreateWithCGDisplay(display, &displayLink)) {
+             CVTime period = CVDisplayLinkGetNominalOutputVideoRefreshPeriod(displayLink);
+@@ -2969,9 +2980,951 @@
  @interface QemuWindow : NSWindow
  @end
-+
+ 
 +/*
 + * ---------------------------------------------------------------------------
 + * OmacVM FullPanel (experimental): the full-screen window over the whole
@@ -118,7 +135,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 + *
 + * Main thread (AppKit), as all of cocoa.m's window code.
 + */
- 
++
 +static bool omacvm_fullpanel_requested(void)
 +{
 +    return omacvm_fp_requested(getenv("OMACVM_FULLPANEL"));
@@ -1030,7 +1047,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  @end
  
  static BOOL notchFull;
-@@ -3290,6 +4241,11 @@
+@@ -3290,6 +4243,11 @@
  /* OmacVM: macOS says how big the full-screen area is: remember where it starts. */
  - (NSSize)window:(NSWindow *)window willUseFullScreenContentSize:(NSSize)proposedSize
  {
@@ -1042,7 +1059,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      NSSize display = [[window screen] frame].size;
      CGFloat top = display.height - proposedSize.height;
  
-@@ -7432,7 +8388,7 @@
+@@ -7432,7 +8390,7 @@
      CGRect r = CGDisplayBounds(omacvm_screen_id(s));
      OmacVMBox b = { r.origin.x, r.origin.y, r.size.width, r.size.height };
  
@@ -1051,7 +1068,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          NSEdgeInsets in = [s safeAreaInsets];
          b.x += in.left;
          b.y += in.top;
-@@ -7840,6 +8796,55 @@
+@@ -7840,6 +8798,55 @@
  @implementation OmacVMHeadWindow
  - (BOOL)canBecomeKeyWindow { return YES; }
  - (BOOL)canBecomeMainWindow { return NO; }

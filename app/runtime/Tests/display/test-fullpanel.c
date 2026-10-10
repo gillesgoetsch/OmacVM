@@ -6,14 +6,16 @@
  * reports (points, bottom-left origin): MacBook Air 13" 1470x956 and 15"
  * 1710x1112, MacBook Pro 14" 1512x982 and 16" 1728x1117 (a top inset
  * around 32-38), and external displays without an inset. Then a window
- * that moves between them, Split View, AppKit's camera-safe re-asks and
- * the menu bar's reveal at the top edge.
+ * that moves between them, Split View, AppKit's camera-safe re-asks, the
+ * guest's size over the whole panel and the menu bar's reveal at the top
+ * edge.
  *
  * cc -Wall -Werror -I<qemu>/ui test-fullpanel.c -o t && ./t
  */
 #include <stdio.h>
 
 #include "omacvm-fullpanel.h"
+#include "omacvm-clean-size.h"
 
 static int failures, checks;
 
@@ -218,6 +220,51 @@ static void test_moves(void)
     }
 }
 
+/*
+ * The guest's size in full screen (ui/omacvm-clean-size.h picks it; the
+ * rule here says whether it may cut rows). Over the whole panel it is the
+ * whole panel in pixels: on the MacBook Air the cut made 2940x1900 of a
+ * 2940x1912 panel, 12 black rows across the bottom. Below the notch
+ * (native) the cut stays, as before.
+ */
+static void test_guest_size(void)
+{
+    for (size_t i = 0; i < 4; i++) {
+        const Display *d = &builtins[i];
+        double backing = 2;
+        double pw = d->frame.w * backing, ph = d->frame.h * backing;
+        bool usable = omacvm_fp_display_ok(true, d->notch, false);
+        bool cut = omacvm_fp_cut_rows(true, true, d->notch, usable);
+        OmacVMSize s = omacvm_clean_size(pw, ph, backing, cut);
+
+        CHECK(!cut, "%s FullPanel: no rows cut", d->name);
+        CHECK(s.w == (uint32_t)pw && s.h == (uint32_t)ph,
+              "%s FullPanel: guest %ux%u, want the whole panel %.0fx%.0f",
+              d->name, s.w, s.h, pw, ph);
+
+        /* Native: the area below the notch, a few rows cut for the presets. */
+        double nh = (d->frame.h - d->notch) * backing;
+        cut = omacvm_fp_cut_rows(true, true, d->notch, false);
+        s = omacvm_clean_size(pw, nh, backing, cut);
+        CHECK(cut, "%s native: rows may be cut", d->name);
+        CHECK(s.w == (uint32_t)pw && s.h <= (uint32_t)nh &&
+              s.h + OMACVM_TRIM_MAX_PT * backing >= nh,
+              "%s native: guest %ux%u in %.0fx%.0f", d->name, s.w, s.h, pw, nh);
+    }
+
+    /* The bug: the cut over the whole Air panel gave 2940x1900. */
+    OmacVMSize old = omacvm_clean_size(2940, 1912, 2, true);
+    CHECK(old.h == 1900, "Air panel with the cut: %u rows (the black band)", old.h);
+    OmacVMSize air = omacvm_clean_size(2940, 1912, 2,
+                                       omacvm_fp_cut_rows(true, true, 32, true));
+    CHECK(air.w == 2940 && air.h == 1912, "Air FullPanel: %ux%u", air.w, air.h);
+
+    /* No cut without the layer (GPU safe mode), in a window, or without a notch. */
+    CHECK(!omacvm_fp_cut_rows(true, false, 32, false), "no layer: nothing cut");
+    CHECK(!omacvm_fp_cut_rows(false, true, 32, false), "window: nothing cut");
+    CHECK(!omacvm_fp_cut_rows(true, true, 0, false), "no notch: nothing cut");
+}
+
 static void test_reveal(void)
 {
     const Display *d = &builtins[0];
@@ -246,6 +293,7 @@ int main(void)
     test_keep();
     test_strip_lost();
     test_moves();
+    test_guest_size();
     test_reveal();
     if (failures) {
         printf("test-fullpanel: %d of %d checks failed\n", failures, checks);
