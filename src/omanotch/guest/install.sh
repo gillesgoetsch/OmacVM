@@ -112,6 +112,12 @@ systemctl --user enable notchcast.service >/dev/null 2>&1
 # One start, with the start limit cleared: an older unit may have hit it
 # while notchcast was being built again.
 systemctl --user reset-failed notchcast.service 2>/dev/null || true
+# OmacVM.app's FullPanel start: the bar sits in the strip itself and
+# notchcast stays off for this boot (the unit's ExecCondition).
+if grep -qs '^OMACVM_FULLPANEL=' /run/omacvm/host.env; then
+  say "done: FullPanel start, notchcast stays off until the next native start"
+  exit 0
+fi
 systemctl --user restart notchcast.service
 
 sleep 2
