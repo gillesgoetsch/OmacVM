@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## Unreleased
+
+- OmacVM.app: **FullPanel**, experimental and off by default. In full screen on the MacBook's own
+  display, the VM can also cover the strip beside the camera housing, and Omarchy's bar sits there,
+  split around the notch, as tall as this MacBook's menu bar. Omanotch is not needed then and stays
+  idle for that start. Per VM: **Use the notch area (experimental)** in the app's VM window, right
+  below Start in full screen (only on a Mac with a notch), `omacvm notch --vm NAME fullpanel|native`,
+  or the control centre's Notch area row. From the VM's next start; external displays stay as they
+  are; `omacvm check` says whether the strip is covered. Native with Omanotch stays the default and
+  the way on UTM, VMware Fusion and Parallels. Proposed and first built by @brianmerchant (#339).
+
 ## 3.0.15
 
 - OmacVM.app: the control centre showed **OmacVM Bridge and Touch ID as failing** ("OmacVM Bridge

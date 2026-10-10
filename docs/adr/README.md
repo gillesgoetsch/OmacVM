@@ -30,5 +30,6 @@ a new record replaces it and says so.
 | [0041](0041-touch-id.md) | Touch ID in the VM: pam_exec asks the Bridge, the Mac answers yes or no | accepted (`touch-id`, 3.0.2) |
 | [0042](0042-encoder-beside-the-main-loop.md) | Capture mode: the video encoder works beside QEMU's main loop, guest fences wait for its frames | accepted, built (`capture-perf`, 3.0.8) |
 | [0043](0043-mac-ime.md) | The Mac's input methods in the VM: macOS composes, Fcitx5 inserts (#273) | accepted, built (`mac-ime`, 3.0.8, off by default) |
+| [0044](0044-fullpanel.md) | Omanotch is the shared notch integration; FullPanel is OmacVM.app only, experimental (#339) | accepted, built (off by default) |
 
 The whole chain: [../architecture/graphics.md](../architecture/graphics.md).
