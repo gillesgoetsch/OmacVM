@@ -137,7 +137,7 @@ expect(fp.fullPanel && fp.record.hasPrefix("fullpanel (Omanotch off"), "start: F
 expect(NotchArea.start(mode: .native, fullScreen: true, notch: air, guestReady: true) == NotchStart(fullPanel: false, record: "native"),
        "start: native: native")
 let windowed = NotchArea.start(mode: .fullpanel, fullScreen: false, notch: air, guestReady: true)
-expect(!windowed.fullPanel && windowed.record.hasPrefix("native (") && windowed.record.contains("full screen"),
+expect(!windowed.fullPanel && windowed.record.hasPrefix("native (") && windowed.record.contains("in a window"),
        "start: FullPanel windowed: native, says why")
 let fpNoNotch = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: nil, guestReady: true)
 expect(!fpNoNotch.fullPanel && fpNoNotch.record.contains("no notch"), "start: FullPanel on a Mac without a notch (lid closed): native")
@@ -159,8 +159,33 @@ expect(NotchArea.geometry(test: "640.5x829.5x37x1470x956") == NotchGeometry(left
 expect(NotchArea.geometry(test: nil) == nil && NotchArea.geometry(test: "1") == nil &&
        NotchArea.geometry(test: "640x830x4x1470x956") == nil && NotchArea.geometry(test: "axbxcxdxe") == nil,
        "test geometry: malformed or impossible: none")
-expect(NotchArea.disabledReason(fullScreen: true) == nil && NotchArea.disabledReason(fullScreen: false) != nil,
-       "the switch: disabled only while Start in full screen is off")
+// "Start in": one picker onto startFullScreen + the VM's notch-mode.
+expect(StartIn.choices(hasNotch: true) == [.window, .fullScreen, .fullScreenNotch], "Start in: three choices with a notch")
+expect(StartIn.choices(hasNotch: false) == [.window, .fullScreen], "Start in: no notch, no including-notch choice")
+expect(StartIn.fullScreen.title(hasNotch: true) == "Full screen, notch via Omanotch" &&
+       StartIn.fullScreen.title(hasNotch: false) == "Full screen" &&
+       StartIn.fullScreenNotch.title(hasNotch: true) == "Full screen including notch, no Omanotch needed (experimental)" &&
+       StartIn.window.title(hasNotch: true) == "Window", "Start in: the titles")
+expect(StartIn.current(fullScreen: false, mode: .fullpanel, hasNotch: true) == .window &&
+       StartIn.current(fullScreen: false, mode: .native, hasNotch: false) == .window, "Start in: window whatever the notch")
+expect(StartIn.current(fullScreen: true, mode: .native, hasNotch: true) == .fullScreen, "Start in: full screen + native")
+expect(StartIn.current(fullScreen: true, mode: .fullpanel, hasNotch: true) == .fullScreenNotch, "Start in: full screen + fullpanel")
+expect(StartIn.current(fullScreen: true, mode: .fullpanel, hasNotch: false) == .fullScreen,
+       "Start in: fullpanel on a Mac without a notch shows Full screen")
+expect(!StartIn.window.fullScreen && StartIn.window.mode == nil, "Start in: Window = startFullScreen off, notch-mode kept")
+expect(StartIn.fullScreen.fullScreen && StartIn.fullScreen.mode == .native, "Start in: Full screen = on + native")
+expect(StartIn.fullScreenNotch.fullScreen && StartIn.fullScreenNotch.mode == .fullpanel, "Start in: including notch = on + fullpanel")
+expect(StartIn.fullScreenNotch.shortTitle(hasNotch: true) == "Full screen including notch" &&
+       StartIn.fullScreen.shortTitle(hasNotch: true) == StartIn.fullScreen.title(hasNotch: true) &&
+       StartIn.notchNote.contains("No Omanotch needed") && StartIn.notchNote.contains("Experimental"),
+       "Start in: the closed picker's short title, the rest in the note")
+for c in StartIn.allCases {
+    let m = c.mode ?? .fullpanel
+    expect(StartIn.current(fullScreen: c.fullScreen, mode: m, hasNotch: true) == c, "Start in: \(c) round trip")
+}
+expect(StartIn.info(hasNotch: true).contains("The VM uses the whole built-in display, including the strip beside the camera notch, and draws its bar there itself. Omanotch is not needed for this. Experimental."),
+       "Start in: the (i) says what including notch does")
+expect(!StartIn.info(hasNotch: false).contains("notch"), "Start in: no notch words on a Mac without one")
 
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
