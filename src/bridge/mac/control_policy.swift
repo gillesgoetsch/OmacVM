@@ -11,11 +11,15 @@ let controlBodyMax = 4096
 let controlFeaturesMax = 16
 let jobsPerHour = 20
 
-enum ControlAction: String { case enable, disable, reinstall, update, graphics }
+enum ControlAction: String { case enable, disable, reinstall, update, graphics, notch }
 
 /// OmacVM.app's Graphics setting (src/cmd/graphics.sh): the only values a
 /// graphics job takes.
 let graphicsChoices: Set<String> = ["opengl", "vulkan", "auto"]
+
+/// OmacVM.app's notch area (src/cmd/notch.sh, FullPanel #339): the only
+/// values a notch job takes.
+let notchChoices: Set<String> = ["native", "fullpanel"]
 
 struct JobRequest: Equatable { let action: ControlAction; let features: [String] }
 
@@ -96,12 +100,19 @@ func controlRoute(method: String, path: String, body: Data, known: Set<String>) 
       }
       return .success(.setMouseSwipe(n))
     case ("POST", "jobs"):
-      guard let o = try strictObject(body, allowed: ["action", "features", "graphics"]),
+      guard let o = try strictObject(body, allowed: ["action", "features", "graphics", "notch"]),
             let a = o["action"] as? String, let action = ControlAction(rawValue: a) else {
-        throw PolicyError(400, "bad-action", "action: enable, disable, reinstall, update or graphics")
+        throw PolicyError(400, "bad-action", "action: enable, disable, reinstall, update, graphics or notch")
       }
+      if action == .notch {
+        guard o["features"] == nil, o["graphics"] == nil, let n = o["notch"] as? String, notchChoices.contains(n) else {
+          throw PolicyError(400, "bad-body", "send {\"action\": \"notch\", \"notch\": \"native\"|\"fullpanel\"}")
+        }
+        return .success(.startJob(JobRequest(action: .notch, features: [n])))
+      }
+      guard o["notch"] == nil else { throw PolicyError(400, "bad-body", "notch only with the notch action") }
       if action == .graphics {
-        guard o["features"] == nil, let g = o["graphics"] as? String, graphicsChoices.contains(g) else {
+        guard o["features"] == nil, o["notch"] == nil, let g = o["graphics"] as? String, graphicsChoices.contains(g) else {
           throw PolicyError(400, "bad-body", "send {\"action\": \"graphics\", \"graphics\": \"opengl\"|\"vulkan\"|\"auto\"}")
         }
         return .success(.startJob(JobRequest(action: .graphics, features: [g])))
@@ -544,6 +555,9 @@ func jobArgv(cli: String, _ r: JobRequest, vm: String, type: String, commit: Str
   case .graphics:
     // The value is one of graphicsChoices (controlRoute); OmacVM.app VMs only.
     return [cli, "graphics", r.features.first ?? "auto"] + which + ["--yes"]
+  case .notch:
+    // The value is one of notchChoices (controlRoute); OmacVM.app VMs only.
+    return [cli, "notch", r.features.first ?? "native"] + which + ["--yes"]
   }
 }
 
@@ -642,7 +656,7 @@ func versionGate(_ r: JobRequest, mac: String, vm: String) -> PolicyError? {
   if versionLess(mac, vm) == true {
     return PolicyError(409, "mac-older", "this VM has OmacVM \(vm), the Mac \(mac): update the Mac first (u in the control centre)")
   }
-  if r.action == .disable || r.action == .reinstall || r.action == .graphics { return nil }
+  if r.action == .disable || r.action == .reinstall || r.action == .graphics || r.action == .notch { return nil }
   return PolicyError(409, "update-first", "the Mac has OmacVM \(mac), this VM \(vm.isEmpty ? "none" : vm): update first")
 }
 
