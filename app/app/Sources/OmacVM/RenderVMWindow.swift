@@ -20,7 +20,7 @@ enum RenderVMWindow {
         var terminal: CommandLineInstall.State?
         /// The app's OmacVM: "OmacVM in this VM" and Update VM when the VM's is older.
         var appVersion: String? = nil
-        /// Draw the window as on a Mac with a notch (the notch area switch).
+        /// Draw the window as on a Mac with a notch (Start in lists including notch).
         var notch = false
     }
 
@@ -72,7 +72,7 @@ enum RenderVMWindow {
 
         // The usual state: everything at its default, no update waiting.
         u.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil)
-        // As on a MacBook Air 13": its notch adds the notch area switch.
+        // As on a MacBook Air 13": its notch adds "including notch" to Start in.
         picture("vm-window-1-usual", Preview(keyNote: KeyNote.none, terminal: terminal, notch: true), mustFit: true)
         picture("vm-window-2-keyboard", Preview(keyNote: .needsUser, terminal: terminal, notch: true), mustFit: true)
 

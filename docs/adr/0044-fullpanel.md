@@ -24,10 +24,15 @@ the strip, with no stream.
 - **Omanotch stays the default and the shared integration** for all four
   routes. Nothing in it is removed.
 - **FullPanel is an addition for OmacVM.app**, experimental, off by default,
-  per VM (the VM folder's `notch-mode` file, like Graphics): the app's
-  switch "Use the notch area (experimental)" (only on a Mac with a notch,
-  only with "Start in full screen"), `omacvm notch --vm NAME
-  fullpanel|native`, the control centre's Notch area row.
+  per VM (the VM folder's `notch-mode` file, like Graphics). Its name for
+  people: **Full screen including notch, no Omanotch needed
+  (experimental)**, one of the VM window's **Start in** choices with
+  **Window** and **Full screen, notch via Omanotch** (only one can be
+  active, so one setting: Window = the app's `startFullScreen` off, the
+  other two = on with `notch-mode` native or fullpanel; the third listed
+  only on a Mac with a notch). Also `omacvm fullscreen --vm NAME
+  notch|standard` (= `omacvm notch --vm NAME fullpanel|native`) and the
+  control centre's Full screen row. "FullPanel" stays the name in the code.
 - **One start, one mode.** The app decides at each start
   (`NotchArea.start`): FullPanel only with the setting, a full-screen start,
   a notch now, and the VM ready for it (`fullpanel-ready` from `omacvm

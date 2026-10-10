@@ -588,9 +588,7 @@ struct ReadyView: View {
             Form {
                 Section { vmRows }
                 Section {
-                    SwitchRow("Start in full screen", isOn: $fullScreen)
-                        .onChange(of: fullScreen) { _, v in Settings.startFullScreen = v }
-                    NotchAreaRow(folder: state.config.folder, fullScreen: fullScreen, previewNotch: preview?.notch)
+                    StartInRow(folder: state.config.folder, fullScreen: $fullScreen, previewNotch: preview?.notch)
                     SwitchRow("Keep the Dock and hot corners away", isOn: $keepDockAway) {
                         InfoButton(topic: "the Dock and hot corners", text: "In full screen, neither the Dock nor a hot corner comes up from inside the VM, and the menu bar stays hidden on every display. Off: macOS's own full screen.")
                     }

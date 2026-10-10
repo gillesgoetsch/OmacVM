@@ -1,5 +1,6 @@
-"""The notch area row (OmacVM.app's FullPanel, #339): the rules, and the
-row and the Omanotch row against a fake Mac."""
+"""The Full screen row (OmacVM.app: notch via Omanotch or including notch,
+FullPanel #339): the rules, and the row and the Omanotch row against a fake
+Mac."""
 import os
 import sys
 
@@ -32,24 +33,24 @@ def test_only_app_vms_with_a_notch_or_the_setting():
 
 def test_states():
     r = S.notch_row(notch(), "app")
-    assert (r.on, r.status, r.note) == (False, S.Status.OFF, "Native: Omanotch fills the strip")
+    assert (r.on, r.status, r.note) == (False, S.Status.OFF, "notch via Omanotch")
     r = S.notch_row(notch(notch="fullpanel", next_start="fullpanel", this_start=FP_THIS), "app")
-    assert (r.on, r.status, r.note) == (True, S.Status.WORKS, "FullPanel: the bar in the strip")
+    assert (r.on, r.status, r.note) == (True, S.Status.WORKS, "incl. notch, no Omanotch")
     r = S.notch_row(notch(notch="fullpanel", next_start="fullpanel"), "app")
     assert r.status is S.Status.NEXT_START and "next start" in r.note
     r = S.notch_row(notch(notch="native", this_start=FP_THIS), "app")
-    assert r.status is S.Status.NEXT_START and r.note.startswith("Native")
-    for why, short in (("needs Start in full screen", "needs full screen"),
+    assert r.status is S.Status.NEXT_START and r.note.startswith("via Omanotch")
+    for why, short in (("the app starts VMs in a window", "starts in a window"),
                        ("this Mac's built-in display has no notch now", "no notch now"),
                        ("the VM is not ready for it: Omanotch on, then Update VM or omacvm apply", "VM not ready")):
-        r = S.notch_row(notch(notch="fullpanel", next_start=f"native (FullPanel is set, but {why})"), "app")
+        r = S.notch_row(notch(notch="fullpanel", next_start=f"native (including notch is set, but {why})"), "app")
         assert r.status is S.Status.NEEDS_PERSON and r.note.endswith(short), r.note
         assert why in r.detail
 
 
 def test_busy():
     job = S.Job(id="1", action="notch", features=("fullpanel",), state="running")
-    assert S.notch_row(notch(), "app", jobs=[job]).note == "to FullPanel…"
+    assert S.notch_row(notch(), "app", jobs=[job]).note == "to incl. notch, no Omanotch…"
 
 
 def test_notes_fit_an_80_column_row():
@@ -58,13 +59,20 @@ def test_notes_fit_an_80_column_row():
     room = 80 - 13 - max(len(t) for t in titles) - 5
     cases = [notch(), notch(notch="fullpanel", next_start="fullpanel", this_start=FP_THIS),
              notch(notch="fullpanel", next_start="fullpanel"), notch(this_start=FP_THIS)]
-    cases += [notch(notch="fullpanel", next_start=f"native (FullPanel is set, but {w})")
-              for w in ("needs Start in full screen", "this Mac's built-in display has no notch now",
+    cases += [notch(notch="fullpanel", next_start=f"native (including notch is set, but {w})")
+              for w in ("the app starts VMs in a window", "this Mac's built-in display has no notch now",
                         "the VM is not ready for it: Omanotch on, then Update VM or omacvm apply")]
     for st in cases:
         r = S.notch_row(st, "app")
         assert len(r.note) <= room, (r.note, len(r.note), room)
     assert len(S.OMANOTCH_FULLPANEL_NOTE) <= room
+
+
+def test_the_row_reads_full_screen_within_80_columns():
+    r = S.notch_row(notch(notch="fullpanel", next_start="fullpanel", this_start=FP_THIS), "app")
+    assert f"{r.feature.title}: {r.note}" == "Full screen: incl. notch, no Omanotch"
+    assert len(S.NOTCH_FEATURE.title) + 2 + len(r.note) <= 80
+    assert "Full screen including notch" in S.NOTCH_FEATURE.summary or "Including notch" in S.NOTCH_FEATURE.summary
 
 
 def test_space_switches():
@@ -93,7 +101,7 @@ def test_rows_with_a_fake_mac(app_world):
     assert "notch-area" in names
     assert names.index("notch-area") == names.index("omanotch") + 1   # right after Omanotch
     na = rows[names.index("notch-area")]
-    assert na.note == "FullPanel: the bar in the strip"
+    assert na.note == "incl. notch, no Omanotch"
     om = rows[names.index("omanotch")]
     if om.status in (S.Status.WORKS, S.Status.FAILING, S.Status.UNKNOWN):
         assert om.note == S.OMANOTCH_FULLPANEL_NOTE
@@ -104,7 +112,7 @@ def test_rows_with_a_fake_mac(app_world):
     rows = c.rows()
     om = next(r for r in rows if r.feature.name == "omanotch")
     assert om.note != S.OMANOTCH_FULLPANEL_NOTE
-    assert next(r for r in rows if r.feature.name == "notch-area").note.startswith("Native")
+    assert next(r for r in rows if r.feature.name == "notch-area").note == "notch via Omanotch"
 
 
 def test_job_body(app_world):

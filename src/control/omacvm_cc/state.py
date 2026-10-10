@@ -553,34 +553,39 @@ def next_graphics(current: str) -> str:
     return GRAPHICS_CHOICES[(i + 1) % len(GRAPHICS_CHOICES)]
 
 
-# ---- OmacVM.app's notch area (src/cmd/notch.sh, FullPanel #339) ----
+# ---- OmacVM.app's full screen and the notch (src/cmd/notch.sh, FullPanel #339) ----
+# notch-mode native: "Full screen, notch via Omanotch"; fullpanel: "Full screen
+# including notch, no Omanotch needed (experimental)". The row is "Full screen".
 NOTCH_CHOICES = ("native", "fullpanel")
-NOTCH_TITLES = {"native": "Native", "fullpanel": "FullPanel"}
-# What the Omanotch row says while this start is FullPanel (its features
-# keep Omanotch on; the next native start has it again).
-OMANOTCH_FULLPANEL_NOTE = "not needed (notch area in use)"
+NOTCH_TITLES = {"native": "notch via Omanotch", "fullpanel": "incl. notch, no Omanotch"}
+# What the Omanotch row says while this start includes the notch (its
+# features keep Omanotch on; the next start via Omanotch has it again).
+# omacvm check says "not needed (full screen including notch)"; here it has
+# to fit the row's 33 columns.
+OMANOTCH_FULLPANEL_NOTE = "not needed (incl. notch)"
 NOTCH_FEATURE = Feature(
     name="notch-area", default="native", sides=("mac",), tags=("experimental",), needs=None,
-    title="Notch area",
-    summary=("Experimental, OmacVM.app only. Native: full screen below the camera housing, Omanotch "
-             "streams the bar into the strip. FullPanel: the VM's full screen also covers the strip on "
-             "the MacBook's own display and Omarchy's bar sits there, split around the notch; Omanotch "
-             "is not needed then. External displays stay as they are. From the VM's next start, only "
-             "with Start in full screen in the app."))
+    title="Full screen",
+    summary=("OmacVM.app only, on a MacBook with a notch. Notch via Omanotch (the default): full "
+             "screen below the camera notch, Omanotch streams the bar into the strip. Including "
+             "notch, no Omanotch needed (experimental): the VM uses the whole built-in display, "
+             "including the strip beside the camera notch, and draws its bar there itself. Omanotch "
+             "is not needed for this. External displays stay as they are. From the VM's next start, "
+             "only when the app starts VMs in full screen (Start in, not Window)."))
 
 
 def notch_fullpanel_now(status: dict | None) -> bool:
-    """This start of the VM is a FullPanel start (the Mac's word)."""
+    """This start of the VM includes the notch (the Mac's word: "fullpanel")."""
     n = (status or {}).get("notch")
     return isinstance(n, dict) and str(n.get("this_start") or "").startswith("fullpanel")
 
 
 def notch_row(status: dict | None, vm_type: str, jobs: list[Job] | None = None,
               offline: bool = False) -> Row | None:
-    """The notch area row of an OmacVM.app VM on a Mac with a notch (or one
-    set to FullPanel), from the Mac's status (`notch`: omacvm notch --json);
-    None elsewhere. Notes stay within an 80-column window; the whole story
-    under enter."""
+    """The Full screen row of an OmacVM.app VM on a Mac with a notch (or one
+    set to include the notch), from the Mac's status (`notch`: omacvm notch
+    --json); None elsewhere. Notes stay within an 80-column window; the whole
+    story under enter."""
     if vm_type != "app":
         return None
     n = (status or {}).get("notch")
@@ -598,25 +603,26 @@ def notch_row(status: dict | None, vm_type: str, jobs: list[Job] | None = None,
     now_fp = this.startswith("fullpanel")
     if mode == "native":
         if now_fp:
-            return Row(NOTCH_FEATURE, False, Status.NEXT_START, "Native from the VM's next start",
-                       detail="This start is FullPanel; the next one is native again, with Omanotch.")
-        return Row(NOTCH_FEATURE, False, Status.OFF, "Native: Omanotch fills the strip",
-                   detail="Native: full screen below the camera housing; Omanotch streams the bar into the strip.")
+            return Row(NOTCH_FEATURE, False, Status.NEXT_START, "via Omanotch from the next start",
+                       detail="This start includes the notch; the next one has the notch via Omanotch again.")
+        return Row(NOTCH_FEATURE, False, Status.OFF, NOTCH_TITLES["native"],
+                   detail="Full screen below the camera notch; Omanotch streams the bar into the strip.")
     if now_fp:
-        return Row(NOTCH_FEATURE, True, Status.WORKS, "FullPanel: the bar in the strip",
-                   detail=f"This start: {this}. Omanotch is not needed while it is on.")
+        return Row(NOTCH_FEATURE, True, Status.WORKS, NOTCH_TITLES["fullpanel"],
+                   detail=f"This start: {this}. Omanotch is not needed for this.")
     if nxt == "fullpanel":
-        return Row(NOTCH_FEATURE, True, Status.NEXT_START, "FullPanel from the next start",
-                   detail="FullPanel from the VM's next start: shut it down, then start it again.")
+        return Row(NOTCH_FEATURE, True, Status.NEXT_START, "incl. notch from the next start",
+                   detail="Full screen including notch from the VM's next start: shut it down, then start it again.")
     why = nxt[nxt.find("(") + 1:nxt.rfind(")")] if "(" in nxt else nxt
-    short = ("needs full screen" if "full screen" in why else "no notch now" if "no notch" in why
-             else "VM not ready" if "not ready" in why else "native")
-    return Row(NOTCH_FEATURE, True, Status.NEEDS_PERSON, f"FullPanel set, {short}",
-               detail=f"FullPanel is set, but the next start is native: {why or 'not known'}.")
+    why = why.removeprefix("including notch is set, but ")
+    short = ("starts in a window" if "window" in why else "no notch now" if "no notch" in why
+             else "VM not ready" if "not ready" in why else "via Omanotch")
+    return Row(NOTCH_FEATURE, True, Status.NEEDS_PERSON, f"incl. notch: {short}",
+               detail=f"Full screen including notch is set, but the next start has the notch via Omanotch: {why or 'not known'}.")
 
 
 def next_notch(current: str) -> str:
-    """Space on the notch area row: Native <-> FullPanel."""
+    """Space on the Full screen row: notch via Omanotch <-> including notch."""
     return "native" if current == "fullpanel" else "fullpanel"
 
 

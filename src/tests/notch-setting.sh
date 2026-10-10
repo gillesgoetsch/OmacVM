@@ -2,7 +2,7 @@
 # OmacVM.app's notch setting (FullPanel, #339): the app
 # (app/app/Sources/OmacVMFeatures/NotchArea.swift) and the Mac side of omacvm
 # (src/lib/notch.sh) decide the same for every case (setting, the VM's side
-# ready, "Start in full screen", a notch on the Mac), and `omacvm notch` reads
+# ready, Start in Window or full screen, a notch on the Mac), and `omacvm notch` reads
 # and writes the VM folder's file the app reads. No VM, no notch needed.
 set -u
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -44,18 +44,18 @@ expect "the file says fullpanel" fullpanel "$(cat "$d/notch-mode")"
 notch_set "$d" native; [[ ! -e $d/notch-mode ]] && ok "native removes the file" || bad "native left the file"
 notch_set "$d" bogus; expect "a bad value: usage" 2 "$?"
 notch_set "$d" fullpanel
-expect "not ready: native, says why" "native (FullPanel is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)" "$(notch_next_start "$d" notch 1)"
+expect "not ready: native, says why" "native (including notch is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)" "$(notch_next_start "$d" notch 1)"
 : > "$d/fullpanel-ready"
 expect "ready, full screen, notch: fullpanel" fullpanel "$(notch_next_start "$d" notch 1)"
 echo "bridge=on omanotch=off" > "$d/features"
-expect "Omanotch off in the VM: not ready" "native (FullPanel is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)" "$(notch_next_start "$d" notch 1)"
+expect "Omanotch off in the VM: not ready" "native (including notch is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)" "$(notch_next_start "$d" notch 1)"
 echo "bridge=on omanotch=on" > "$d/features"
-expect "windowed: native" "native (FullPanel is set, but needs Start in full screen)" "$(notch_next_start "$d" notch 0)"
-expect "no notch: native" "native (FullPanel is set, but this Mac's built-in display has no notch now)" "$(notch_next_start "$d" none 1)"
+expect "windowed: native" "native (including notch is set, but the app starts VMs in a window)" "$(notch_next_start "$d" notch 0)"
+expect "no notch: native" "native (including notch is set, but this Mac's built-in display has no notch now)" "$(notch_next_start "$d" none 1)"
 mkdir -p "$d/logs"
 printf '%s\n' "OmacVM: notch area: native" "OmacVM: notch area: fullpanel (Omanotch off for this start; notch 640.5-829.5, strip 37.0 of 1470x956 points)" > "$d/logs/qemu.log"
 notch_fullpanel_this_start "$d" && ok "this start: FullPanel (the last line)" || bad "this start not read as FullPanel"
-echo "OmacVM: notch area: native (FullPanel is set, but needs Start in full screen)" > "$d/logs/qemu.log"
+echo "OmacVM: notch area: native (including notch is set, but the app starts VMs in a window)" > "$d/logs/qemu.log"
 notch_fullpanel_this_start "$d" && bad "a native start read as FullPanel" || ok "this start: native"
 rm -f "$d/logs/qemu.log"
 notch_fullpanel_this_start "$d" && bad "no log read as FullPanel" || ok "no log: not FullPanel"
@@ -77,12 +77,22 @@ expect "  again: unchanged" False "$(run --vm "Test notch" fullpanel --json | j 
 expect "  the VM is not ready yet" False "$(run --vm "Test notch" --json | j vm_ready)"
 : > "$V/fullpanel-ready"
 defaults write "$OMACVM_APP_ID" startFullScreen -bool false
-expect "  windowed in the app: native next start" "native (FullPanel is set, but needs Start in full screen)" "$(run --vm "Test notch" --json | j next_start)"
+expect "  windowed in the app: native next start" "native (including notch is set, but the app starts VMs in a window)" "$(run --vm "Test notch" --json | j next_start)"
 defaults delete "$OMACVM_APP_ID" startFullScreen
 echo "OmacVM: notch area: fullpanel (Omanotch off for this start; notch 640.5-829.5, strip 37.0 of 1470x956 points)" > "$V/logs/qemu.log"
 expect "  this start from qemu.log" "fullpanel (Omanotch off for this start; notch 640.5-829.5, strip 37.0 of 1470x956 points)" "$(run --vm "Test notch" --json | j this_start)"
 out=$(run --vm "Test notch" native)
-[[ $out == *"notch area Native (from the VM's next start)"* && ! -e $V/notch-mode ]] && ok "omacvm notch native" || bad "native: $out"
+[[ $out == *"Full screen, notch via Omanotch (from the VM's next start)"* && ! -e $V/notch-mode ]] && ok "omacvm notch native" || bad "native: $out"
+fs() { HOME=$H "$R/omacvm" fullscreen "$@" 2>&1; }
+expect "omacvm fullscreen notch: the same file" True "$(fs --vm "Test notch" notch --json --yes | j changed)"
+expect "  notch-mode fullpanel" fullpanel "$(cat "$V/notch-mode")"
+expect "  its title" "Full screen including notch, no Omanotch needed (experimental)" "$(fs --vm "Test notch" --json | j title)"
+out=$(fs --vm "Test notch" standard)
+[[ $out == *"Full screen, notch via Omanotch (from the VM's next start)"* && ! -e $V/notch-mode ]] && ok "omacvm fullscreen standard" || bad "standard: $out"
+defaults write "$OMACVM_APP_ID" startFullScreen -bool false
+out=$(fs --vm "Test notch"); [[ $out == *"Start in: Window"* ]] && ok "Window in the app: says so" || bad "window: $out"
+defaults delete "$OMACVM_APP_ID" startFullScreen
+out=$(fs --vm "Test notch" notch standard); [[ $out == *"one setting"* ]] && ok "two settings: usage" || bad "two: $out"
 out=$(run --vm "Test notch" auto); [[ $? == 2 || $out == *usage* || $out == *"unknown option"* ]] && ok "a bad value: usage" || bad "bad value: $out"
 out=$(run --vm "No such VM" --json); [[ $out == *"no OmacVM.app VM named"* ]] && ok "unknown VM: says so" || bad "unknown VM: $out"
 out=$(run --vm "Test notch" --vm-type utm); [[ $out == *"OmacVM.app's setting"* ]] && ok "another route: says Omanotch fills the strip there" || bad "utm: $out"
