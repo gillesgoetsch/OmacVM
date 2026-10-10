@@ -23,7 +23,7 @@ diff --git a/ui/omacvm-fullpanel.h b/ui/omacvm-fullpanel.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-fullpanel.h
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,161 @@
 +/*
 + * OmacVM: FullPanel, the VM's full-screen window over the whole notched
 + * display, the strip beside the camera housing included (experimental,
@@ -134,6 +134,21 @@ new file mode 100644
 +    }
 +    return fabs(in->tile.x - in->display.x) <= 1 &&
 +           fabs(in->tile.w - in->display.w) <= 1;
++}
++
++/*
++ * Whether the guest may be a few rows shorter than the full-screen area
++ * (ui/omacvm-clean-size.h: so Omarchy's scale presets fit, the rows left
++ * over black at the bottom). Only below a notch, with the IOSurface layer
++ * that draws the guest at the top. A window over the whole display has the
++ * strip at the top and the panel's bottom edge below it: the guest is the
++ * whole panel (2940x1912 on a 13-inch MacBook Air), never cut, or the
++ * left-over rows show as a black band at the bottom.
++ */
++static inline bool omacvm_fp_cut_rows(bool full_screen, bool layer,
++                                      double notch_inset, bool usable)
++{
++    return full_screen && layer && notch_inset > 0 && !usable;
 +}
 +
 +/*

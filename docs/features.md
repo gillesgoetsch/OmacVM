@@ -54,6 +54,10 @@ and the VM draws its bar there itself:
 - the bar is as tall as macOS's menu bar on this MacBook (measured at each
   VM start, so a MacBook Pro and a MacBook Air each get their own), its
   widgets split around the notch, at whatever scale Omarchy uses;
+- the VM gets the whole panel, top to bottom (2940x1912 pixels on a
+  13-inch MacBook Air), so Omarchy's scale panel offers the scales that fit
+  that size: 1, 1.33, 2 and 4 on an Air or a 14-inch MacBook Pro, 1 and 2
+  on a 16-inch; a saved 1.67 becomes 2 there;
 - windows start below the strip; a full-screen window (a video, Super+F)
   and a hidden bar leave the strip black, so nothing sits behind the notch;
 - macOS's menu bar stays hidden over the strip and comes down from the
