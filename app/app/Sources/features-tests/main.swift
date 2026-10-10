@@ -154,6 +154,11 @@ expect(NotchArea.guestReady(folder: readyDir, features: "bridge=on omanotch=on")
        "ready: file and Omanotch on (or not named): ready")
 expect(!NotchArea.guestReady(folder: readyDir, features: "bridge=on omanotch=off\n"), "ready: Omanotch off: not ready")
 try? FileManager.default.removeItem(at: readyDir)
+expect(NotchArea.geometry(test: "640.5x829.5x37x1470x956") == NotchGeometry(left: 640.5, right: 829.5, strip: 37, width: 1470, height: 956),
+       "test geometry: parsed")
+expect(NotchArea.geometry(test: nil) == nil && NotchArea.geometry(test: "1") == nil &&
+       NotchArea.geometry(test: "640x830x4x1470x956") == nil && NotchArea.geometry(test: "axbxcxdxe") == nil,
+       "test geometry: malformed or impossible: none")
 expect(NotchArea.disabledReason(fullScreen: true) == nil && NotchArea.disabledReason(fullScreen: false) != nil,
        "the switch: disabled only while Start in full screen is off")
 

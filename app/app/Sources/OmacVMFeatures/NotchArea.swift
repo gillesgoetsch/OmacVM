@@ -113,6 +113,16 @@ public enum NotchArea {
         fullScreen ? nil : "Needs \u{201C}Start in full screen\u{201D}."
     }
 
+    /// A made-up notch for tests on a Mac without one ("LxRxHxWxD" in points,
+    /// as the SMBIOS string; the app's OMACVM_TEST_NOTCH_GEOMETRY, test builds
+    /// only); nil when malformed or not a notch a MacBook can have.
+    public static func geometry(test text: String?) -> NotchGeometry? {
+        guard let parts = text?.split(separator: "x").map({ Double($0) }), parts.count == 5,
+              let l = parts[0], let r = parts[1], let h = parts[2], let w = parts[3], let d = parts[4] else { return nil }
+        let g = NotchGeometry(left: l, right: r, strip: h, width: w, height: d)
+        return g.valid ? g : nil
+    }
+
     /// What the VM window says under the switch while FullPanel is set but
     /// the VM's side is not ready (guestReady); nil: nothing to say.
     public static let notReady = "The VM needs Omanotch on and an update first (Update VM); until then it starts as before."

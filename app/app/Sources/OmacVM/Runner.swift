@@ -355,7 +355,9 @@ final class Runner {
         // VM's setting, a full-screen start and a notch now. Then QEMU covers
         // the strip and the guest's bar sits in it: no Omanotch link for this
         // start (the VM's features keep it; the next native start has it again).
-        notchGeometry = Mac.notchGeometry
+        // A test build on a Mac without a notch may be given one (OMACVM_TEST_NOTCH_GEOMETRY).
+        notchGeometry = NotchArea.geometry(test: TestHooks.value("OMACVM_TEST_NOTCH_GEOMETRY",
+                                                                 bundleID: Bundle.main.bundleIdentifier)) ?? Mac.notchGeometry
         notchStart = NotchArea.start(mode: NotchArea.read(folder: c.folder),
                                      fullScreen: Settings.startFullScreen, notch: notchGeometry,
                                      guestReady: NotchArea.guestReady(folder: c.folder, features: try? String(
