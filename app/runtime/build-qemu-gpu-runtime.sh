@@ -862,6 +862,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime.patch"
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
 grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
+# Experimental FullPanel (issue #339), off unless OmacVM.app asks for one
+# start (OMACVM_FULLPANEL=1: the VM's notch setting): full screen over the
+# strip beside the notch on a display with one; external displays as before.
+# After the other cocoa patches (it hooks their full-screen sizes); its rules'
+# test, then the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel.patch"
+"$native_dir/Tests/display/test-fullpanel.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: FullPanel is not wired as tested (test-fullpanel.sh)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
