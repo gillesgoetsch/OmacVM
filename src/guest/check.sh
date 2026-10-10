@@ -684,6 +684,21 @@ if [[ $OMANOTCH == off ]]; then
 elif [[ $OMANOTCH == on && ! -x $H/.local/bin/notchcast ]]; then
   if [[ -f /etc/systemd/user/omacvm-omanotch.service ]]; then bad "Omanotch" "chosen, not installed yet: it installs at the next login"
   else bad "Omanotch" "chosen, not set up (omacvm enable omanotch)"; fi
+elif [[ $TYPE == app ]] && grep -qs '^OMACVM_FULLPANEL=' /run/omacvm/host.env; then
+  # OmacVM.app's FullPanel start (#339): the VM's full screen covers the
+  # strip and its bar sits there itself; notchcast stays off for this boot.
+  if user_active notchcast.service || pgrep -u "$U" -x notchcast >/dev/null || connected_to "$HOST" 47811; then
+    bad "Omanotch" "notchcast runs on a FullPanel start: it would stream a second bar (omacvm apply brings the unit that stays off)"
+  else ok "Omanotch" "not needed (notch area in use): notchcast idle until the next native start"; fi
+  st=$(as_user omarchy-shell notchbar state 2>/dev/null)
+  fp=$(jq -r '.fullpanel // empty' <<<"$st" 2>/dev/null)
+  bars=$(jq -r '[.bars[]? | select(.[1] == "fullpanel") | "\(.[0]) (\(.[3]) px)"] | join(", ")' <<<"$st" 2>/dev/null)
+  case $fp in
+    strip) ok "notch area" "FullPanel: the bar sits in the strip beside the notch on ${bars:-the built-in display}" ;;
+    waiting) skip "notch area" "FullPanel: the bar waits for full screen on the MacBook's display (windowed now, or macOS kept the window below the notch: omacvm check on the Mac says)" ;;
+    off) bad "notch area" "FullPanel start, but the bar is Omanotch's older one or did not read host.env (omacvm apply, then omarchy-restart-shell)" ;;
+    *) skip "notch area" "the bar does not answer (is the Omarchy shell running? is Omanotch's bar the one in use?)" ;;
+  esac
 elif systemctl --user -M "$U@" list-unit-files notchcast.service 2>/dev/null | grep -q notchcast; then
   if connected_to "$HOST" 47811; then ok "Omanotch" "streaming the bar to the Mac"
   elif [[ $TYPE == app ]]; then bad "Omanotch" "notchcast is not connected to $HOST:47811 (is Omanotch running on the Mac, and new enough for OmacVM.app? omacvm check on the Mac says$(restart_hint port))"

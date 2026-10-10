@@ -309,6 +309,16 @@ class Controller:
                             fixed=fixed, next_start=next_start(self.local.vm_type, on))
         g = S.graphics_row(self.mac_status, self.local.vm_type, list(self.jobs.values()), checks,
                            offline=self.mac_error is not None)
+        # The notch area (FullPanel): right after Omanotch, whose row says it
+        # is not needed while this start is FullPanel.
+        na = S.notch_row(self.mac_status, self.local.vm_type, list(self.jobs.values()),
+                         offline=self.mac_error is not None)
+        if S.notch_fullpanel_now(self.mac_status):
+            rows = [dataclasses.replace(r, note=S.OMANOTCH_FULLPANEL_NOTE) if r.feature.name == "omanotch" and r.on
+                    and r.status in (S.Status.WORKS, S.Status.FAILING, S.Status.UNKNOWN) else r for r in rows]
+        if na is not None:
+            at = next((i + 1 for i, r in enumerate(rows) if r.feature.name == "omanotch"), len(rows))
+            rows.insert(at, na)
         m = S.gpu_memory_row(self.gpu_memory, self.local.vm_type, self.gpu_memory_supported(), checks,
                              offline=self.mac_error is not None)
         # A Mac setting: the last answer stays while the Mac is away for a moment.
@@ -325,6 +335,11 @@ class Controller:
             if isinstance(f, dict) and f.get("name") == name and f.get("fixed"):
                 return str(f["fixed"])
         return ""
+
+    def notch(self) -> str:
+        """This VM's notch area setting as the Mac last said it ("" unknown)."""
+        n = (self.mac_status or {}).get("notch")
+        return str(n.get("notch") or "") if isinstance(n, dict) else ""
 
     def graphics(self) -> str:
         """This VM's Graphics setting as the Mac last said it ("" unknown)."""

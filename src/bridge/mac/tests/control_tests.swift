@@ -51,6 +51,18 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "graphics", "graphics": "auto", "features": ["bridge"]}"#))?.code == "bad-body", "graphics with features")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "graphics", "graphics": true}"#))?.code == "bad-body", "graphics: not a string")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["bridge"], "graphics": "auto"}"#))?.code == "bad-body", "graphics on another action")
+    // The notch area (FullPanel, #339): two values, nothing else.
+    for n in ["native", "fullpanel"] {
+      expect(ok(route("POST", "/omacvm/jobs", #"{"action": "notch", "notch": "\#(n)"}"#))
+             == .startJob(JobRequest(action: .notch, features: [n])), "notch \(n)")
+    }
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "notch", "notch": "omanotch"}"#))?.code == "bad-body", "notch: unknown value")
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "notch", "notch": "native; rm -rf ~"}"#))?.code == "bad-body", "notch: shell")
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "notch"}"#))?.code == "bad-body", "notch: no value")
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "notch", "notch": "native", "features": ["omanotch"]}"#))?.code == "bad-body", "notch with features")
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "notch", "notch": "native", "graphics": "auto"}"#))?.code == "bad-body", "notch with graphics")
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "graphics", "graphics": "auto", "notch": "native"}"#))?.code == "bad-body", "graphics with notch")
+    expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["bridge"], "notch": "native"}"#))?.code == "bad-body", "notch on another action")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "run", "features": ["bridge"]}"#))?.code == "bad-action", "unknown action")
     expect(err(route("POST", "/omacvm/jobs", #"{"action": "enable", "features": ["rm"]}"#))?.code == "unknown-feature", "unknown feature")
     // A control centre from before 3.0.1 says idle-lock for no-idle-lock.
@@ -140,6 +152,8 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
            == ["--reinstall", "gestures", "--reinstall", "mac-clock"], "reinstall two")
     expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .graphics, features: ["vulkan"]), vm: "My VM", type: "app", commit: nil)
            == ["/c/omacvm", "graphics", "vulkan", "--vm", "My VM", "--vm-type", "app", "--yes"], "graphics argv")
+    expect(jobArgv(cli: "/c/omacvm", JobRequest(action: .notch, features: ["fullpanel"]), vm: "My VM", type: "app", commit: nil)
+           == ["/c/omacvm", "notch", "fullpanel", "--vm", "My VM", "--vm-type", "app", "--yes"], "notch argv")
 
     // ---- the VM's own key: requests signed with it, never sent ----
     let k = String(repeating: "5a", count: 32)
@@ -314,6 +328,7 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(versionGate(JobRequest(action: .enable, features: ["camera"]), mac: "2.9.1", vm: "2.9.0")?.code == "update-first", "on: update first")
     expect(versionGate(JobRequest(action: .graphics, features: ["vulkan"]), mac: "3.0.0", vm: "2.9.1") == nil, "graphics: the Mac's setting")
     expect(versionGate(JobRequest(action: .graphics, features: ["vulkan"]), mac: "2.9.1", vm: "3.0.0")?.code == "mac-older", "graphics: Mac older")
+    expect(versionGate(JobRequest(action: .notch, features: ["fullpanel"]), mac: "3.0.16", vm: "3.0.15") == nil, "notch: the Mac's setting")
     expect(versionGate(JobRequest(action: .disable, features: ["camera"]), mac: "2.9.0", vm: "2.9.1")?.code == "mac-older", "a newer VM: the Mac first")
     expect(versionGate(JobRequest(action: .disable, features: ["camera"]), mac: "2.9.0", vm: "1.x") == nil, "a 1.x VM may turn off")
     expect(versionLess("2.9.0", "2.10.0") == true && versionLess("2.10.0", "2.9.9") == false && versionLess("2.9", "2.9.0") == false,

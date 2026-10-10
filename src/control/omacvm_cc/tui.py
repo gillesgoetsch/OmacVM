@@ -954,6 +954,8 @@ class ControlCentre(App):
         names = ", ".join(titles.get(n, n) for n in features)
         if action == "graphics":
             return f"Graphics: {S.GRAPHICS_TITLES.get(features[0] if features else '', '?')}"
+        if action == "notch":
+            return f"Notch area: {S.NOTCH_TITLES.get(features[0] if features else '', '?')}"
         return {"update": "Update", "reinstall": f"Repair {names}", "enable": f"{names} on",
                 "disable": f"{names} off"}.get(action, action)
 
@@ -1027,6 +1029,9 @@ class ControlCentre(App):
     def toggle(self, r: S.Row, asked_again: bool = False) -> None:
         if r.feature.name == "graphics":
             self.choose_graphics()
+            return
+        if r.feature.name == "notch-area":
+            self.choose_notch()
             return
         if r.feature.name == "gpu-memory":
             self.notify(f"Graphics memory is measured, not switched. {S.GPU_MEMORY_EXPLAINER}")
@@ -1138,7 +1143,28 @@ class ControlCentre(App):
                                        text + "\nFrom the VM's next start (shut it down, then start it again)."),
                          lambda yes: yes and self.run_job("graphics", [nxt]))
 
+    def choose_notch(self) -> None:
+        """Space on Notch area: Native <-> FullPanel, asked first (from the
+        VM's next start)."""
+        if not self.can_ask():
+            return
+        cur = self.c.notch()
+        if not cur:
+            self.notify("Notch area: the Mac's OmacVM does not say this VM's setting (omacvm update on the Mac)", severity="warning")
+            return
+        nxt = S.next_notch(cur)
+        text = {"fullpanel": ("Experimental. In full screen on the MacBook's own display the VM also covers the strip "
+                              "beside the camera housing, and Omarchy's bar sits there, split around the notch. "
+                              "Omanotch is not needed then. Needs Start in full screen in the app."),
+                "native": "Full screen below the camera housing; Omanotch fills the strip, as before."}[nxt]
+        self.push_screen(ConfirmScreen(f"Notch area: {S.NOTCH_TITLES[cur]} -> {S.NOTCH_TITLES[nxt]}",
+                                       text + "\nFrom the VM's next start (shut it down, then start it again)."),
+                         lambda yes: yes and self.run_job("notch", [nxt]))
+
     def repair(self, r: S.Row) -> None:
+        if r.feature.name == "notch-area":
+            self.notify("Notch area is a setting: space switches Native and FullPanel")
+            return
         if r.feature.name == "mouse-swipe":
             self.notify("Magic Mouse swipe is a setting: space switches 3 and 4 fingers")
             return

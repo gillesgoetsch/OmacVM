@@ -376,6 +376,9 @@ final class Control {
       if r.action == .graphics && vm.type != "app" {
         return refuse(PolicyError(409, "not-app", "Graphics is OmacVM.app's setting"))
       }
+      if r.action == .notch && vm.type != "app" {
+        return refuse(PolicyError(409, "not-app", "the notch area is OmacVM.app's setting (Omanotch fills the strip on the other routes)"))
+      }
       if let e = versionGate(r, mac: version, vm: vm.omacvm) { return refuse(e) }
       var commit: String?
       if r.action == .update {
@@ -666,7 +669,17 @@ final class Control {
       }
     }
     var graphics: Any = NSNull()
+    var notch: Any = NSNull()
     if vm.type == "app" {
+      DispatchQueue.global().async(group: g) {
+        // OmacVM.app's notch area (src/cmd/notch.sh, FullPanel); a Mac older than it has none.
+        if let (rc, out) = runCLI([cli, "notch", "--vm", vm.name, "--vm-type", "app", "--json"], timeout: 30, app: app), rc == 0,
+           let o = (try? JSONSerialization.jsonObject(with: out)) as? [String: Any] {
+          var d: [String: Any] = [:]
+          for k in ["notch", "next_start", "this_start", "mac_has_notch", "full_screen", "vm_ready"] { d[k] = o[k] ?? NSNull() }
+          notch = d
+        }
+      }
       DispatchQueue.global().async(group: g) {
         // OmacVM.app's Graphics setting (src/cmd/graphics.sh); a Mac older than 3.0.0 has none.
         if let (rc, out) = runCLI([cli, "graphics", "--vm", vm.name, "--vm-type", "app", "--json"], timeout: 30, app: app), rc == 0,
@@ -679,7 +692,7 @@ final class Control {
     }
     g.wait()
     let body: [String: Any] = ["omacvm": version, "vm_omacvm": vm.omacvm, "type": vm.type, "features": feats,
-                               "checks": checks, "graphics": graphics, "checked_at": isoFormat.string(from: Date())]
+                               "checks": checks, "graphics": graphics, "notch": notch, "checked_at": isoFormat.string(from: Date())]
     q.sync { status[key] = (Date(), body) }
     return body
   }

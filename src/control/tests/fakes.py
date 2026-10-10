@@ -57,6 +57,7 @@ class FakeMac:
         self.stale_looking = True         # False: the Mac is not looking (a key that is really wrong)
         self.nonces: set = set()
         self.graphics: dict | None = None   # an OmacVM.app VM's Graphics (omacvm graphics --json)
+        self.notch_area: dict | None = None  # an OmacVM.app VM's notch area (omacvm notch --json), with graphics
         self.gpu_memory: dict | None = None  # an OmacVM.app VM's graphics memory (None: an older Mac without it)
         self.gpu_memory_at: list[float] = []  # when each gpu-memory request came
         self.mouse_swipe: dict | None = None   # {"magic_mouse", "fingers"} (None: an older Mac without it)
@@ -153,7 +154,10 @@ class FakeMac:
                     return self.send(409, {"error": "no running VM that OmacVM set up has this address (the Mac is "
                                                     "looking at its VMs again: try in a moment)", "code": "unknown-vm"})
                 if p == "/omacvm/status" and fake.graphics is not None:
-                    return self.send(200, {"omacvm": fake.version, "features": [], "checks": [], "graphics": fake.graphics})
+                    st = {"omacvm": fake.version, "features": [], "checks": [], "graphics": fake.graphics}
+                    if fake.notch_area is not None:
+                        st["notch"] = fake.notch_area
+                    return self.send(200, st)
                 if p == "/omacvm/status":
                     return self.send(200, {"omacvm": fake.version, "features": [
                         {"name": "omanotch", "on": False, "available": fake.notch,
@@ -201,7 +205,8 @@ class FakeMac:
                 if self.path == "/omacvm/jobs":
                     jid = f"{len(fake.jobs) + 1:016x}"
                     fake.jobs[jid] = {"id": jid, "action": b["action"],
-                                      "features": b.get("features", [b["graphics"]] if "graphics" in b else []),
+                                      "features": b.get("features", [b["graphics"]] if "graphics" in b
+                                                        else [b["notch"]] if "notch" in b else []),
                                       "state": "running", "step": 1, "of": 4, "text": "the Mac side",
                                       "lines": ["==> OmacVM Bridge on the Mac"], "polls": 0}
                     return self.send(202, {k: v for k, v in fake.jobs[jid].items() if k != "polls"})
