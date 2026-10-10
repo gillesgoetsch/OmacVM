@@ -10,6 +10,7 @@
 #   omacvm disable FEATURE...    ... or off
 #   omacvm resources --vm NAME   a VM's CPUs and memory: see them, change them
 #   omacvm graphics --vm NAME    an OmacVM.app VM's graphics: OpenGL, Vulkan or Automatic
+#   omacvm notch --vm NAME       an OmacVM.app VM's notch area: Native or FullPanel (experimental)
 #   omacvm apply [--vm NAME]     OmacVM onto a VM, also one installed by hand
 #   omacvm update                this checkout, the Mac side and your VMs
 #   omacvm check [--vm NAME]     is everything working, on the Mac and in the VM
@@ -20,7 +21,7 @@
 #   omacvm help COMMAND          the options of a command (or COMMAND --help)
 #   omacvm --version
 #
-# For scripts and coding agents: --json on vms, features, check, resources, graphics and build
+# For scripts and coding agents: --json on vms, features, check, resources, graphics, notch and build
 # --plan; --yes (or no terminal) never asks; exit codes 0 done, 1 failed,
 # 2 usage, 3 needs a person, 4 failed and rolled back (--transaction). See AGENTS.md.
 set -euo pipefail
@@ -79,16 +80,16 @@ if [[ $R != */Contents/Resources/omacvm && -z ${OMACVM_APP_COPY:-} && -z ${OMACV
 fi
 case $cmd in
   "") exec "$C/home.sh" ;;
-  build|apply|check|vms|update|resources|graphics) exec "$C/$cmd.sh" "$@" ;;
+  build|apply|check|vms|update|resources|graphics|notch) exec "$C/$cmd.sh" "$@" ;;
   features|enable|disable) exec "$C/features.sh" "$cmd" "$@" ;;
   uninstall) exec "$R/src/mac/uninstall.sh" "$@" ;;
   report) exec "$C/report.sh" "$@" ;;
   --version|-v|version) echo "OmacVM $(cat "$R/src/VERSION")"; exit 0 ;;
   help|-h|--help)
     case ${1:-} in
-      "") sed -n '2,25s/^# \{0,1\}//p' "$0" ;;
+      "") sed -n '2,26s/^# \{0,1\}//p' "$0" ;;
       features|enable|disable) exec "$C/features.sh" "$1" --help ;;
-      build|apply|check|vms|update|resources|graphics) exec "$C/$1.sh" --help ;;
+      build|apply|check|vms|update|resources|graphics|notch) exec "$C/$1.sh" --help ;;
       uninstall) exec "$R/src/mac/uninstall.sh" --help ;;
       report) exec "$C/report.sh" --help ;;
       *) echo "omacvm help: no command '$1'" >&2; exit 2 ;;

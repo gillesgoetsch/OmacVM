@@ -3,6 +3,7 @@ import OmacVMUSB
 import OmacVMUpdate
 import OmacVMWindow
 import SwiftUI
+import OmacVMFeatures
 
 /// --render-vm-window DIR (test builds and `swift build`, never the released
 /// app): draws the VM window before Start for a made-up VM in a temporary
@@ -19,6 +20,8 @@ enum RenderVMWindow {
         var terminal: CommandLineInstall.State?
         /// The app's OmacVM: "OmacVM in this VM" and Update VM when the VM's is older.
         var appVersion: String? = nil
+        /// Draw the window as on a Mac with a notch (the notch area switch).
+        var notch = false
     }
 
     static func allowed(bundleID: String?) -> Bool {
@@ -69,8 +72,9 @@ enum RenderVMWindow {
 
         // The usual state: everything at its default, no update waiting.
         u.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil)
-        picture("vm-window-1-usual", Preview(keyNote: KeyNote.none, terminal: terminal), mustFit: true)
-        picture("vm-window-2-keyboard", Preview(keyNote: .needsUser, terminal: terminal), mustFit: true)
+        // As on a MacBook Air 13": its notch adds the notch area switch.
+        picture("vm-window-1-usual", Preview(keyNote: KeyNote.none, terminal: terminal, notch: true), mustFit: true)
+        picture("vm-window-2-keyboard", Preview(keyNote: .needsUser, terminal: terminal, notch: true), mustFit: true)
 
         // Everything on: the lines under the switches, a disk job, a check's result.
         try? Data("on\n".utf8).write(to: folder.appendingPathComponent("fast-network"))
@@ -80,7 +84,9 @@ enum RenderVMWindow {
         try? MacFolder.set(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents"), for: config)
         try? VMDisk.setJobs([.grow], config)
         u.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil, outcome: .upToDate)
-        picture("vm-window-3-all-on", Preview(keyNote: .allowedNextStart, terminal: .installed(at: "/usr/local/bin/omacvm")), mustFit: false)
+        try? NotchArea.write(.fullpanel, folder: folder)
+        picture("vm-window-3-all-on", Preview(keyNote: .allowedNextStart, terminal: .installed(at: "/usr/local/bin/omacvm"), notch: true), mustFit: false)
+        try? NotchArea.write(.native, folder: folder)
 
         // An update waits: the banner above Start.
         let staged = Updater.Staged(version: "3.0.5", app: URL(fileURLWithPath: "/nonexistent.app"),

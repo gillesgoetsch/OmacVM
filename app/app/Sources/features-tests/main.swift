@@ -103,5 +103,64 @@ expect(MacIME.row(record: "mac-ime=on", pending: nil, running: true, busy: false
 expect(!MacIME.row(record: nil, pending: nil, running: true, busy: false, cli: false).enabled, "row running: needs the app's omacvm")
 expect(!MacIME.row(record: nil, pending: nil, running: false, busy: true, cli: true).enabled, "row busy: not switchable")
 
+// FullPanel (#339): the VM folder's notch-mode file and what a start does.
+expect(NotchArea.mode(nil) == .native && NotchArea.mode("") == .native && NotchArea.mode("native\n") == .native,
+       "notch-mode: none or native is native")
+expect(NotchArea.mode("fullpanel\n") == .fullpanel && NotchArea.mode(" fullpanel ") == .fullpanel,
+       "notch-mode: fullpanel")
+expect(NotchArea.mode("FullPanel") == .native && NotchArea.mode("on") == .native, "notch-mode: anything else is native")
+let fpDir = FileManager.default.temporaryDirectory.appendingPathComponent("notch-\(getpid())")
+try? FileManager.default.createDirectory(at: fpDir, withIntermediateDirectories: true)
+try? NotchArea.write(.fullpanel, folder: fpDir)
+expect(NotchArea.read(folder: fpDir) == .fullpanel, "write fullpanel, read fullpanel")
+try? NotchArea.write(.native, folder: fpDir)
+expect(NotchArea.read(folder: fpDir) == .native &&
+       !FileManager.default.fileExists(atPath: fpDir.appendingPathComponent(NotchArea.fileName).path),
+       "native removes the file")
+try? FileManager.default.removeItem(at: fpDir)
+// Made-up notches with the sizes macOS reports (points): Air 13", Pro 16".
+let air = NotchGeometry(left: 640.5, right: 829.5, strip: 37, width: 1470, height: 956)
+let pro16 = NotchGeometry(left: 765, right: 963, strip: 43, width: 1728, height: 1117)
+expect(air.valid && pro16.valid, "notch geometry: an Air and a 16-inch Pro are valid")
+expect(!NotchGeometry(left: 0, right: 100, strip: 37, width: 1470, height: 956).valid, "geometry: housing at the edge: invalid")
+expect(!NotchGeometry(left: 700, right: 600, strip: 37, width: 1470, height: 956).valid, "geometry: right before left: invalid")
+expect(!NotchGeometry(left: 100, right: 1400, strip: 37, width: 1470, height: 956).valid, "geometry: housing a third of the width: invalid")
+expect(!NotchGeometry(left: 640, right: 830, strip: 4, width: 1470, height: 956).valid, "geometry: no strip: invalid")
+expect(!NotchGeometry(left: 640, right: 830, strip: .nan, width: 1470, height: 956).valid, "geometry: NaN: invalid")
+expect(NotchGeometry.strip(menuBar: 37, safeTop: 32) == 37, "strip: the menu bar's height")
+expect(NotchGeometry.strip(menuBar: 0, safeTop: 32) == 33.5, "strip: menu bar hidden: the housing and a little")
+expect(air.smbios == "omacvm.fullpanel=640.5x829.5x37.0x1470.0x956.0", "SMBIOS string: digits, dots and x only")
+let allowed = Set("0123456789.x")
+expect(pro16.smbios.split(separator: "=")[1].allSatisfy { allowed.contains($0) }, "SMBIOS value passes omacvm-app-host's filter")
+let fp = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: air, guestReady: true)
+expect(fp.fullPanel && fp.record.hasPrefix("fullpanel (Omanotch off"), "start: FullPanel, full screen, notch: FullPanel")
+expect(NotchArea.start(mode: .native, fullScreen: true, notch: air, guestReady: true) == NotchStart(fullPanel: false, record: "native"),
+       "start: native: native")
+let windowed = NotchArea.start(mode: .fullpanel, fullScreen: false, notch: air, guestReady: true)
+expect(!windowed.fullPanel && windowed.record.hasPrefix("native (") && windowed.record.contains("full screen"),
+       "start: FullPanel windowed: native, says why")
+let fpNoNotch = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: nil, guestReady: true)
+expect(!fpNoNotch.fullPanel && fpNoNotch.record.contains("no notch"), "start: FullPanel on a Mac without a notch (lid closed): native")
+let bad = NotchArea.start(mode: .fullpanel, fullScreen: true,
+                          notch: NotchGeometry(left: 640, right: 830, strip: 4, width: 1470, height: 956), guestReady: true)
+expect(!bad.fullPanel, "start: FullPanel with odd numbers: native")
+let notReady = NotchArea.start(mode: .fullpanel, fullScreen: true, notch: air, guestReady: false)
+expect(!notReady.fullPanel && notReady.record.contains("not ready"), "start: FullPanel, VM not ready (older VM or Omanotch off): native")
+let readyDir = FileManager.default.temporaryDirectory.appendingPathComponent("notch-ready-\(getpid())")
+try? FileManager.default.createDirectory(at: readyDir, withIntermediateDirectories: true)
+expect(!NotchArea.guestReady(folder: readyDir, features: "omanotch=on"), "ready: no file: not ready")
+FileManager.default.createFile(atPath: readyDir.appendingPathComponent(NotchArea.readyFileName).path, contents: Data())
+expect(NotchArea.guestReady(folder: readyDir, features: "bridge=on omanotch=on") && NotchArea.guestReady(folder: readyDir, features: nil),
+       "ready: file and Omanotch on (or not named): ready")
+expect(!NotchArea.guestReady(folder: readyDir, features: "bridge=on omanotch=off\n"), "ready: Omanotch off: not ready")
+try? FileManager.default.removeItem(at: readyDir)
+expect(NotchArea.geometry(test: "640.5x829.5x37x1470x956") == NotchGeometry(left: 640.5, right: 829.5, strip: 37, width: 1470, height: 956),
+       "test geometry: parsed")
+expect(NotchArea.geometry(test: nil) == nil && NotchArea.geometry(test: "1") == nil &&
+       NotchArea.geometry(test: "640x830x4x1470x956") == nil && NotchArea.geometry(test: "axbxcxdxe") == nil,
+       "test geometry: malformed or impossible: none")
+expect(NotchArea.disabledReason(fullScreen: true) == nil && NotchArea.disabledReason(fullScreen: false) != nil,
+       "the switch: disabled only while Start in full screen is off")
+
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)

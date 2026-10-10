@@ -317,6 +317,8 @@ jobs:
 
       - name: Graphics setting (OpenGL, Vulkan, Automatic; app and omacvm agree)
         run: src/tests/graphics-setting.sh
+      - name: OmacVM.app's notch area (FullPanel or native, the app and omacvm agree, omacvm notch)
+        run: src/tests/notch-setting.sh
 
       - name: App VMs skip routes of a card without a link (network moves without a gap)
         run: src/tests/net-linkdown.sh

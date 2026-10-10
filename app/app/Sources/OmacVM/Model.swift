@@ -589,6 +589,22 @@ extension Mac {
         }
     }
 
+    /// The built-in display's camera housing in points, for FullPanel
+    /// (NotchArea): nil without a notch now (lid closed, a Mac without one,
+    /// a resolution below the notch). Main thread (NSScreen).
+    static var notchGeometry: NotchGeometry? {
+        guard let s = NSScreen.screens.first(where: { s in
+            guard let id = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID else { return false }
+            return CGDisplayIsBuiltin(id) != 0
+        }), let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea, s.safeAreaInsets.top > 0 else { return nil }
+        let f = s.frame
+        let g = NotchGeometry(left: Double(l.maxX - f.minX), right: Double(r.minX - f.minX),
+                              strip: NotchGeometry.strip(menuBar: Double(max(0, f.maxY - s.visibleFrame.maxY)),
+                                                         safeTop: Double(s.safeAreaInsets.top)),
+                              width: Double(f.width), height: Double(f.height))
+        return g.valid ? g : nil
+    }
+
     /// A display that can show HDR (EDR headroom above SDR white: the XDR
     /// panel of a MacBook Pro, a Pro Display XDR, an HDR external). Macs
     /// without one (MacBook Air, SDR monitors) keep the 8-bit SDR path.
