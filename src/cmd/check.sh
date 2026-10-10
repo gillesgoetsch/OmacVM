@@ -665,7 +665,7 @@ fp_start=0
 if [[ $(feat omanotch off) == off ]]; then
   skip "Omanotch" "off for this VM (chosen at setup)"
 elif (( fp_start )); then
-  ok "Omanotch (Mac)" "not needed (notch area in use): this start of the VM is FullPanel, no link to Omanotch"
+  ok "Omanotch (Mac)" "not needed (full screen including notch): this start of the VM has no link to Omanotch"
 elif pgrep -xq omanotch; then
   # Omanotch's own setting (defaults write ch.gillesgoetsch.omanotch flush -bool true|false).
   [[ $(defaults read ch.gillesgoetsch.omanotch flush 2>/dev/null) == 1 ]] && h="the notch's (flush)" || h="the menu bar's"
@@ -766,17 +766,17 @@ if [[ $TYPE == app ]]; then
     nq=$(grep -E '^omacvm: full panel: (strip covered|strip lost|.*normal full screen)' "$nd/logs/qemu.log" 2>/dev/null | tail -1)
     nq=${nq#omacvm: full panel: }
     case $nq in
-      "strip covered"*) ok "notch area (app)" "FullPanel (experimental): $nq; Omanotch idle" ;;
-      "strip lost"*) warn "notch area (app)" "FullPanel set, but macOS moved the window below the notch: normal full screen until the next one ($nq)" ;;
-      "") skip "notch area (app)" "FullPanel start, not in full screen on the MacBook's display yet" ;;
-      *) warn "notch area (app)" "FullPanel set, but QEMU uses normal full screen: $nq" ;;
+      "strip covered"*) ok "full screen (app)" "including notch (experimental): $nq; Omanotch idle" ;;
+      "strip lost"*) warn "full screen (app)" "including notch set, but macOS moved the window below the notch: normal full screen until the next one ($nq)" ;;
+      "") skip "full screen (app)" "including notch this start, not in full screen on the MacBook's display yet" ;;
+      *) warn "full screen (app)" "including notch set, but QEMU uses normal full screen: $nq" ;;
     esac
-  elif [[ ${notch:=$(mac_tool mac-notch 2>/dev/null || echo none)} != notch && $nmode != fullpanel ]]; then skip "notch area (app)" "no notch on this Mac"
+  elif [[ ${notch:=$(mac_tool mac-notch 2>/dev/null || echo none)} != notch && $nmode != fullpanel ]]; then skip "full screen (app)" "no notch on this Mac"
   elif [[ $nmode == fullpanel ]]; then
     full=0; notch_app_full_screen && full=1
-    skip "notch area (app)" "FullPanel is set; this start: ${nlast:-not known}; next start: $(notch_next_start "$nd" "$notch" "$full")"
-  elif [[ $(feat omanotch off) == on ]]; then skip "notch area (app)" "native: full screen in its own Space, Omanotch fills the strip"
-  else skip "notch area (app)" "native: full screen in its own Space; the strip stays black (Omanotch is off for this VM: omacvm enable omanotch)"; fi
+    skip "full screen (app)" "including notch is set; this start: ${nlast:-not known}; next start: $(notch_next_start "$nd" "$notch" "$full")"
+  elif [[ $(feat omanotch off) == on ]]; then skip "full screen (app)" "notch via Omanotch: full screen in its own Space, Omanotch fills the strip"
+  else skip "full screen (app)" "notch via Omanotch: full screen in its own Space; the strip stays black (Omanotch is off for this VM: omacvm enable omanotch)"; fi
 fi
 (( fails )) && mac_failed=1 || mac_failed=0
 if (( MAC_ONLY )); then

@@ -955,7 +955,7 @@ class ControlCentre(App):
         if action == "graphics":
             return f"Graphics: {S.GRAPHICS_TITLES.get(features[0] if features else '', '?')}"
         if action == "notch":
-            return f"Notch area: {S.NOTCH_TITLES.get(features[0] if features else '', '?')}"
+            return f"Full screen: {S.NOTCH_TITLES.get(features[0] if features else '', '?')}"
         return {"update": "Update", "reinstall": f"Repair {names}", "enable": f"{names} on",
                 "disable": f"{names} off"}.get(action, action)
 
@@ -1144,26 +1144,27 @@ class ControlCentre(App):
                          lambda yes: yes and self.run_job("graphics", [nxt]))
 
     def choose_notch(self) -> None:
-        """Space on Notch area: Native <-> FullPanel, asked first (from the
-        VM's next start)."""
+        """Space on Full screen: notch via Omanotch <-> including notch, asked
+        first (from the VM's next start)."""
         if not self.can_ask():
             return
         cur = self.c.notch()
         if not cur:
-            self.notify("Notch area: the Mac's OmacVM does not say this VM's setting (omacvm update on the Mac)", severity="warning")
+            self.notify("Full screen: the Mac's OmacVM does not say this VM's setting (omacvm update on the Mac)", severity="warning")
             return
         nxt = S.next_notch(cur)
-        text = {"fullpanel": ("Experimental. In full screen on the MacBook's own display the VM also covers the strip "
-                              "beside the camera housing, and Omarchy's bar sits there, split around the notch. "
-                              "Omanotch is not needed then. Needs Start in full screen in the app."),
-                "native": "Full screen below the camera housing; Omanotch fills the strip, as before."}[nxt]
-        self.push_screen(ConfirmScreen(f"Notch area: {S.NOTCH_TITLES[cur]} -> {S.NOTCH_TITLES[nxt]}",
+        text = {"fullpanel": ("Full screen including notch, no Omanotch needed (experimental). The VM uses the "
+                              "whole built-in display, including the strip beside the camera notch, and draws "
+                              "its bar there itself. Omanotch is not needed for this. Needs the app to start "
+                              "VMs in full screen (Start in, not Window)."),
+                "native": "Full screen, notch via Omanotch: below the camera notch; Omanotch fills the strip, as before."}[nxt]
+        self.push_screen(ConfirmScreen(f"Full screen: {S.NOTCH_TITLES[cur]} -> {S.NOTCH_TITLES[nxt]}",
                                        text + "\nFrom the VM's next start (shut it down, then start it again)."),
                          lambda yes: yes and self.run_job("notch", [nxt]))
 
     def repair(self, r: S.Row) -> None:
         if r.feature.name == "notch-area":
-            self.notify("Notch area is a setting: space switches Native and FullPanel")
+            self.notify("Full screen is a setting: space switches notch via Omanotch and including notch")
             return
         if r.feature.name == "mouse-swipe":
             self.notify("Magic Mouse swipe is a setting: space switches 3 and 4 fingers")

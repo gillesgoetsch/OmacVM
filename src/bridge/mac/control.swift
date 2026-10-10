@@ -377,7 +377,7 @@ final class Control {
         return refuse(PolicyError(409, "not-app", "Graphics is OmacVM.app's setting"))
       }
       if r.action == .notch && vm.type != "app" {
-        return refuse(PolicyError(409, "not-app", "the notch area is OmacVM.app's setting (Omanotch fills the strip on the other routes)"))
+        return refuse(PolicyError(409, "not-app", "full screen including notch is OmacVM.app's setting (Omanotch fills the strip on the other routes)"))
       }
       if let e = versionGate(r, mac: version, vm: vm.omacvm) { return refuse(e) }
       var commit: String?

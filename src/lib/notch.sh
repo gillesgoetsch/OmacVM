@@ -18,8 +18,8 @@ notch_choice() {   # DIR -> native|fullpanel
   [[ $c == fullpanel ]] && echo fullpanel || echo native
 }
 
-notch_title() {   # MODE
-  case $1 in fullpanel) echo "FullPanel (experimental)" ;; *) echo "Native" ;; esac
+notch_title() {   # MODE (NotchMode.title)
+  case $1 in fullpanel) echo "Full screen including notch, no Omanotch needed (experimental)" ;; *) echo "Full screen, notch via Omanotch" ;; esac
 }
 
 notch_set() {   # DIR MODE: fullpanel writes the file, native removes it
@@ -39,7 +39,7 @@ notch_guest_ready() {   # DIR
   [[ " $(printf '%s' "$f" | tr '\n\t' '  ') " != *" omanotch=off "* ]]
 }
 
-# The app's "Start in full screen" (app-wide; Settings.startFullScreen, default on).
+# The app's "Start in" not Window (app-wide; Settings.startFullScreen, default on).
 notch_app_full_screen() {
   [[ $(defaults read "${APP_ID:-org.omacvm.app}" startFullScreen 2>/dev/null) != 0 ]]
 }
@@ -50,11 +50,11 @@ notch_app_full_screen() {
 notch_next_start() {   # DIR MAC_NOTCH FULL
   [[ $(notch_choice "$1") == fullpanel ]] || { echo native; return; }
   if ! notch_guest_ready "$1"; then
-    echo "native (FullPanel is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)"
+    echo "native (including notch is set, but the VM is not ready for it: Omanotch on, then Update VM or omacvm apply)"
   elif [[ $3 != 1 ]]; then
-    echo "native (FullPanel is set, but needs Start in full screen)"
+    echo "native (including notch is set, but the app starts VMs in a window)"
   elif [[ $2 != notch ]]; then
-    echo "native (FullPanel is set, but this Mac's built-in display has no notch now)"
+    echo "native (including notch is set, but this Mac's built-in display has no notch now)"
   else
     echo fullpanel
   fi

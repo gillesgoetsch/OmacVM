@@ -309,8 +309,8 @@ class Controller:
                             fixed=fixed, next_start=next_start(self.local.vm_type, on))
         g = S.graphics_row(self.mac_status, self.local.vm_type, list(self.jobs.values()), checks,
                            offline=self.mac_error is not None)
-        # The notch area (FullPanel): right after Omanotch, whose row says it
-        # is not needed while this start is FullPanel.
+        # Full screen (including notch or via Omanotch): right after Omanotch,
+        # whose row says it is not needed while this start includes the notch.
         na = S.notch_row(self.mac_status, self.local.vm_type, list(self.jobs.values()),
                          offline=self.mac_error is not None)
         if S.notch_fullpanel_now(self.mac_status):
@@ -337,7 +337,7 @@ class Controller:
         return ""
 
     def notch(self) -> str:
-        """This VM's notch area setting as the Mac last said it ("" unknown)."""
+        """This VM's notch-mode as the Mac last said it ("" unknown)."""
         n = (self.mac_status or {}).get("notch")
         return str(n.get("notch") or "") if isinstance(n, dict) else ""
 
