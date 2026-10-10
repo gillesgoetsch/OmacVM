@@ -194,9 +194,12 @@ static void test_keep(void)
 static void test_strip_lost(void)
 {
     const Display *d = &builtins[0];
-    CHECK(!omacvm_fp_strip_lost(true, d->frame, d->frame), "covering: not lost");
-    CHECK(omacvm_fp_strip_lost(true, below_notch(d), d->frame), "below the notch: lost");
-    CHECK(!omacvm_fp_strip_lost(false, below_notch(d), d->frame), "windowed: not a loss");
+    CHECK(!omacvm_fp_strip_lost(true, true, d->frame, d->frame), "covering: not lost");
+    CHECK(omacvm_fp_strip_lost(true, true, below_notch(d), d->frame), "below the notch: lost");
+    CHECK(!omacvm_fp_strip_lost(true, false, below_notch(d), d->frame), "windowed: not a loss");
+    /* An external display (or the Mac mini's): letterboxed full screen is no loss. */
+    OmacVMFPRect boxed = { 0, 150, 800, 450 }, ext = { 0, 0, 800, 600 };
+    CHECK(!omacvm_fp_strip_lost(false, true, boxed, ext), "no notch: nothing to lose");
 }
 
 /*

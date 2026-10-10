@@ -728,7 +728,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +- (void)updateMenuBarHidden
 +{
 +    NSScreen *screen = [window screen];
-+    if (screen && omacvm_fp_strip_lost(in_full_screen_space,
++    if (screen && omacvm_fp_strip_lost([self usable], in_full_screen_space,
 +                                       omacvm_fullpanel_rect([window frame]),
 +                                       omacvm_fullpanel_rect([screen frame]))) {
 +        if (!area_lost) {

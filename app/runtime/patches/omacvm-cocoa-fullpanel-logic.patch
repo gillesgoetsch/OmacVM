@@ -23,7 +23,7 @@ diff --git a/ui/omacvm-fullpanel.h b/ui/omacvm-fullpanel.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-fullpanel.h
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,146 @@
 +/*
 + * OmacVM: FullPanel, the VM's full-screen window over the whole notched
 + * display, the strip beside the camera housing included (experimental,
@@ -137,14 +137,15 @@ new file mode 100644
 +}
 +
 +/*
-+ * The strip is gone for this full screen: in full screen, but the window
-+ * no longer covers the display (AppKit moved it below the notch after all).
-+ * The menu bar comes back and nothing forces the frame again.
++ * The strip is gone for this full screen: a window that may have it, in
++ * full screen, no longer covers the display (AppKit moved it below the
++ * notch after all). The menu bar comes back and nothing forces the frame
++ * again. A window on a display without a notch never had it to lose.
 + */
-+static inline bool omacvm_fp_strip_lost(bool in_full_screen, OmacVMFPRect frame,
-+                                        OmacVMFPRect display)
++static inline bool omacvm_fp_strip_lost(bool usable, bool in_full_screen,
++                                        OmacVMFPRect frame, OmacVMFPRect display)
 +{
-+    return in_full_screen && !omacvm_fp_rect_equal(frame, display);
++    return usable && in_full_screen && !omacvm_fp_rect_equal(frame, display);
 +}
 +
 +/*
