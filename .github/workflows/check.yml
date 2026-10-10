@@ -95,6 +95,9 @@ jobs:
       - name: Boot splash and start animation (offline, from the patch)
         run: app/runtime/Tests/display/check-boot-splash.sh
 
+      - name: The start animation waits until the window shows (full-screen starts)
+        run: app/runtime/Tests/display/test-splash-after-reveal.sh
+
       - name: OmacVM.app builds
         working-directory: app/app
         run: swift build

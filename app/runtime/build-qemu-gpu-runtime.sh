@@ -797,6 +797,12 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-shutdown-even
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullscreen-start.patch"
 "$native_dir/Tests/display/test-fullscreen-start.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: a full-screen start shows its windowed frame (test-fullscreen-start.sh)"
+# OmacVM: the start animation's clock starts when the window shows (a slow
+# way into full screen, "Full screen including notch" on a MacBook, played it
+# while the window was still transparent).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-splash-after-reveal.patch"
+"$native_dir/Tests/display/test-splash-after-reveal.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the start animation runs while the window is hidden (test-splash-after-reveal.sh)"
 # Experimental: the guest's pointer as the Mac's cursor (OMACVM_HW_CURSOR=1, the
 # app's hidden macPointer setting), and its rules' test.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hw-cursor-logic.patch"

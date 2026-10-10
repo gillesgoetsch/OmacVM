@@ -63,6 +63,11 @@ commit 82927e9. Changes here:
   screen stays invisible until macOS has it there (no windowed frame, no
   menu bar over it). `Tests/display/test-shutdown-events.sh` and
   `test-fullscreen-start.sh` check them at build time.
+- `patches/omacvm-cocoa-splash-after-reveal.patch`: the start animation
+  (OMACVM becomes Omarchy's logo) starts its clock with the first frame of a
+  window that shows, so a slow way into full screen ("Full screen including
+  notch") no longer plays it while the window is still invisible.
+  `Tests/display/test-splash-after-reveal.sh` checks it at build time and in CI.
 - `patches/omacvm-cocoa-quit-clean.patch`: QEMU no longer quits when AppKit
   sees its last window go (a hidden full-screen test run quit after a minute
   when AppKit closed its full-screen mouse detection window); the close
