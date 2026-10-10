@@ -33,6 +33,7 @@ source "$R/src/lib/mac.sh"
 source "$R/src/lib/vm.sh"
 source "$R/src/lib/features.sh"
 source "$R/src/lib/graphics.sh"
+source "$R/src/lib/notch.sh"
 export OMA_KEY=$KEY
 # stop RC MESSAGE: no VM to check. With --json also the JSON, one failed check.
 stop() {
@@ -657,15 +658,21 @@ utm)
   esac ;;
 esac
 FEATURE=omanotch
+# OmacVM.app's FullPanel start (src/lib/notch.sh): the VM draws the strip
+# itself, so Omanotch has nothing to do for it.
+fp_start=0
+[[ $TYPE == app ]] && fp_dir=$(app_dir "$VM" 2>/dev/null) && notch_fullpanel_this_start "$fp_dir" && fp_start=1
 if [[ $(feat omanotch off) == off ]]; then
   skip "Omanotch" "off for this VM (chosen at setup)"
+elif (( fp_start )); then
+  ok "Omanotch (Mac)" "not needed (notch area in use): this start of the VM is FullPanel, no link to Omanotch"
 elif pgrep -xq omanotch; then
   # Omanotch's own setting (defaults write ch.gillesgoetsch.omanotch flush -bool true|false).
   [[ $(defaults read ch.gillesgoetsch.omanotch flush 2>/dev/null) == 1 ]] && h="the notch's (flush)" || h="the menu bar's"
   ok "Omanotch (Mac)" "running, bar height: $h"
 elif [[ ${notch:=$(mac_tool mac-notch 2>/dev/null || echo none)} != notch ]]; then skip "Omanotch (Mac)" "no notch on this Mac"
 else skip "Omanotch (Mac)" "not running (omacvm update)"; fi
-if [[ $TYPE == app && $(feat omanotch off) == on ]]; then
+if [[ $TYPE == app && $(feat omanotch off) == on ]] && (( ! fp_start )); then
   rc=0; omanotch_serves_app || rc=$?
   (( rc != 1 )) || bad "Omanotch for OmacVM.app" "too old: it does not serve 127.0.0.1, so this VM's strip stays empty (omacvm update)"
   if (( rc == 0 )) && [[ $FAST_NET == on ]]; then
@@ -747,11 +754,29 @@ if [[ $TYPE == app ]] && d=$(app_dir "$VM" 2>/dev/null); then
 fi
 FEATURE=""
 if [[ $TYPE == app ]]; then
-  # OmacVM.app's full screen is macOS's own, in its own Space, below the notch;
-  # Omanotch fills the strip beside it.
-  if [[ ${notch:=$(mac_tool mac-notch 2>/dev/null || echo none)} != notch ]]; then skip "notch strip (app)" "no notch on this Mac"
-  elif [[ $(feat omanotch off) == on ]]; then skip "notch strip (app)" "full screen in its own Space; Omanotch fills the strip"
-  else skip "notch strip (app)" "full screen in its own Space; the strip stays black (Omanotch is off for this VM: omacvm enable omanotch)"; fi
+  # OmacVM.app's full screen is macOS's own, in its own Space. Native: below
+  # the notch, Omanotch fills the strip beside it. FullPanel (experimental,
+  # src/lib/notch.sh): QEMU's window covers the strip and the VM's bar sits
+  # there; QEMU logs "strip covered" once it has it, "strip lost" or "using
+  # normal full screen" when it fell back.
+  nd=$(app_dir "$VM" 2>/dev/null) || nd=""
+  nmode=native; [[ -n $nd ]] && nmode=$(notch_choice "$nd")
+  nlast=""; [[ -n $nd ]] && nlast=$(notch_this_start "$nd")
+  if (( fp_start )); then
+    nq=$(grep -E '^omacvm: full panel: (strip covered|strip lost|.*normal full screen)' "$nd/logs/qemu.log" 2>/dev/null | tail -1)
+    nq=${nq#omacvm: full panel: }
+    case $nq in
+      "strip covered"*) ok "notch area (app)" "FullPanel (experimental): $nq; Omanotch idle" ;;
+      "strip lost"*) warn "notch area (app)" "FullPanel set, but macOS moved the window below the notch: normal full screen until the next one ($nq)" ;;
+      "") skip "notch area (app)" "FullPanel start, not in full screen on the MacBook's display yet" ;;
+      *) warn "notch area (app)" "FullPanel set, but QEMU uses normal full screen: $nq" ;;
+    esac
+  elif [[ ${notch:=$(mac_tool mac-notch 2>/dev/null || echo none)} != notch && $nmode != fullpanel ]]; then skip "notch area (app)" "no notch on this Mac"
+  elif [[ $nmode == fullpanel ]]; then
+    full=0; notch_app_full_screen && full=1
+    skip "notch area (app)" "FullPanel is set; this start: ${nlast:-not known}; next start: $(notch_next_start "$nd" "$notch" "$full")"
+  elif [[ $(feat omanotch off) == on ]]; then skip "notch area (app)" "native: full screen in its own Space, Omanotch fills the strip"
+  else skip "notch area (app)" "native: full screen in its own Space; the strip stays black (Omanotch is off for this VM: omacvm enable omanotch)"; fi
 fi
 (( fails )) && mac_failed=1 || mac_failed=0
 if (( MAC_ONLY )); then
