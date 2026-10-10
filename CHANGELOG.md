@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.0.16 (unreleased)
+## 3.0.16
 
 Full screen including the notch, without Omanotch: a new, experimental way to start a VM in OmacVM.app.
 
