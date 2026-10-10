@@ -29,12 +29,20 @@ What the patch adds:
     the end of the last session (~/.local/state/omanotch/expect), the bar
     starts parked, with the notch geometry it had then (geom), and only
     comes back if Omanotch does not confirm within a few seconds.
+  * FullPanel (OmacVM.app, experimental, #339): when the app's full screen
+    covers the strip itself (/run/omacvm/host.env: OMACVM_FULLPANEL, the
+    camera housing in Mac points), the bar on the built-in display sits in
+    the strip, as tall as it, split around the housing, and reserves it
+    (windows start below it; black over full-screen windows and while the
+    bar is hidden). Only while the app says that output covers the whole
+    display in full screen ($XDG_RUNTIME_DIR/omacvm/displays.json); else
+    the bar is the normal one. notchcast does not run in such a boot.
 """
 import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 19
+VERSION = 20
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -179,11 +187,56 @@ def main():
         notchFullscreenDebounce.restart()
     }
   }
+  // FullPanel (OmacVM.app): the camera housing from host.env, in Mac points
+  // [left, right, strip, width, height]; [] when this boot is not one.
+  property var notchPanel: []
+  // The built-in display's output covers the whole display in full screen
+  // (displays.json): the bar on it sits in the strip.
+  property bool notchPanelOn: false
+  property string notchPanelScreen: "Virtual-1"
+  // host.env's OMACVM_FULLPANEL=LxRxHxWxD -> the five numbers, [] if none or odd
+  // (the same limits as the app's NotchGeometry.valid).
+  function notchPanelParse(text) {
+    var m = String(text).match(/^OMACVM_FULLPANEL=([0-9.]+)x([0-9.]+)x([0-9.]+)x([0-9.]+)x([0-9.]+)$/m)
+    if (!m) return []
+    var g = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5])]
+    if (!g.every(isFinite) || !(g[0] > 0 && g[1] > g[0] && g[1] < g[3] && g[1] - g[0] < g[3] / 3 &&
+        g[2] >= 10 && g[2] <= 100 && g[3] >= 800 && g[4] > g[2] * 5)) return []
+    return g
+  }
+  // From the app's layout message (displays.json) and the geometry: the
+  // built-in display's output, and whether it covers the strip now (full
+  // screen, at least the display's height less half the strip: the app's
+  // clean size cuts a few rows at the bottom, below the notch it would be a
+  // whole strip shorter).
+  function notchPanelState(layoutText, g) {
+    var out = { on: false, screen: "" }
+    if (!g || g.length !== 5) return out
+    try {
+      var m = JSON.parse(String(layoutText))
+      if (!m || typeof m.builtin !== "string" || !/^Virtual-[0-9]+$/.test(m.builtin)) return out
+      out.screen = m.builtin
+      if (m.fullscreen !== true || !Array.isArray(m.layout)) return out
+      for (var i = 0; i < m.layout.length; i++) {
+        var o = m.layout[i]
+        if (o && o.output === m.builtin && Number(o.height) >= g[4] - g[2] / 2 &&
+            Number(o.width) >= g[3] - 1) out.on = true
+      }
+    } catch (e) {}
+    return out
+  }
+  // The housing and the strip in the output's logical pixels (the guest's
+  // scale need not be the Mac's): [left, right, strip].
+  function notchPanelBox(g, logicalWidth) {
+    var k = logicalWidth > 0 ? logicalWidth / g[3] : 0
+    return [g[0] * k, g[1] * k, g[2] * k]
+  }
   function notchRoleFor(s) {
     // Only a bar along the top edge can live in the notch strip.
     if (position !== "top") return ""
     var n = s && s.name ? String(s.name) : ""
     if (n.indexOf("NOTCH") === 0) return "notch"
+    if (notchPanelOn && n === notchPanelScreen) return "fullpanel"
     if (notchParked && n === notchParkedScreen) return "parked"
     return ""
   }
@@ -307,6 +360,7 @@ def main():
     }
     function state(): string {
       return JSON.stringify({ parked: root.notchParked, screen: root.notchParkedScreen,
+                              fullpanel: root.notchPanel.length ? (root.notchPanelOn ? "strip" : "waiting") : "off",
                               notch: [root.notchLeft, root.notchRight], notchHeight: root.notchHeight, notchBarHeight: root.notchBarHeight, barSize: root.barSize,
                               beatAgeMs: root.notchLastBeat ? Date.now() - root.notchLastBeat : -1,
                               bars: notchBarVariants.instances.map(function(p) {
@@ -338,9 +392,11 @@ def main():
   }
   function notchWriteState() {
     if (!notchStateFile.path) return  // still being created; the timer below writes it
-    notchStateFile.setText(JSON.stringify({ parked: notchParked, barSize: barSize, started: notchStartedAt }) + "\n")
+    notchStateFile.setText(JSON.stringify({ parked: notchParked, barSize: barSize, started: notchStartedAt,
+                                            fullpanel: notchPanel.length ? (notchPanelOn ? "strip" : "waiting") : "off" }) + "\n")
   }
   onNotchParkedChanged: notchWriteState()
+  onNotchPanelOnChanged: notchWriteState()
   onBarSizeChanged: notchWriteState()
   Timer {
     interval: 500
@@ -440,7 +496,49 @@ def main():
     blockAllReads: true
     printErrors: false
   }
+  // FullPanel: what the app said at this start (fixed for the boot) and its
+  // layout message (each display change).
+  FileView {
+    id: notchHostEnvFile
+    path: "/run/omacvm/host.env"
+    blockLoading: true
+    blockAllReads: true
+    printErrors: false
+  }
+  FileView {
+    id: notchLayoutFile
+    path: Quickshell.env("XDG_RUNTIME_DIR") + "/omacvm/displays.json"
+    blockLoading: true
+    blockAllReads: true
+    printErrors: false
+  }
+  function notchPanelUpdate() {
+    if (!notchPanel.length) return
+    notchLayoutFile.reload()
+    var st = notchPanelState(notchLayoutFile.text(), notchPanel)
+    if (st.screen && st.screen !== notchPanelScreen) notchPanelScreen = st.screen
+    var on = false
+    var ss = Quickshell.screens
+    for (var i = 0; st.on && i < ss.length; i++) {
+      if (String(ss[i].name) !== notchPanelScreen) continue
+      var b = notchPanelBox(notchPanel, ss[i].width)
+      if (b[1] > b[0] && b[2] > 0) {
+        if (notchLeft !== b[0]) notchLeft = b[0]
+        if (notchRight !== b[1]) notchRight = b[1]
+        if (notchHeight !== b[2]) notchHeight = b[2]
+        // Fullscreen windows on it paint the strip black (notchWorkspaceId).
+        if (notchParkedScreen !== notchPanelScreen) notchParkedScreen = notchPanelScreen
+        on = true
+      }
+    }
+    if (on !== notchPanelOn) notchPanelOn = on
+  }
   function notchBoot() {
+    notchPanel = notchPanelParse(notchHostEnvFile.text())
+    if (notchPanel.length) {
+      notchPanelUpdate()
+      return
+    }
     var g = String(notchGeomFile.text()).trim().split(/\\s+/).map(Number)
     if (g.length === 4 && g.every(isFinite) && g[0] > 0 && g[1] > g[0]) {
       notchLeft = g[0]
@@ -480,6 +578,8 @@ def main():
       if (!root.notchBooted) {
         root.notchBooted = true
         root.notchBoot()
+      } else if (root.notchPanel.length) {
+        root.notchPanelUpdate()
       } else {
         root.notchFollowParkFile()
       }
@@ -502,8 +602,10 @@ def main():
     // omarchy-notch-bar: role of this copy ("notch", "parked" or "").
     readonly property string notchRole: root.notchRoleFor(screen)
     // Over fullscreen the NOTCH copy stays mapped, even with the bar off, to
-    // paint the strip black.
-    readonly property bool notchBlack: notchRole === "notch" && root.notchFullscreen
+    // paint the strip black. FullPanel's bar too, and while the bar is hidden
+    // it stays as a black strip, so the windows never go under the notch.
+    readonly property bool notchBlack: (notchRole === "notch" && root.notchFullscreen) ||
+                                       (notchRole === "fullpanel" && (root.notchFullscreen || root.barHidden))
     readonly property bool parked: (root.barHidden && !notchBlack) || notchRole === "parked"
     readonly property bool notchLayout: notchRole !== ""
     // The parked copy is 1 px tall: panels open at its height + gap, so they
@@ -515,10 +617,15 @@ def main():
     readonly property var notchFit: root.notchBox(screen ? Math.ceil(screen.height) : 0, root.notchHeight,
                                                   notchBlack ? 0 : root.notchBarHeight, root.barSize,
                                                   screen ? screen.devicePixelRatio : 1)
+    // FullPanel: the bar is the strip's height, its content centred, so its
+    // exclusive zone keeps the strip beside the notch free of windows.
+    readonly property var notchPanelFit: root.notchBox(0, root.notchHeight, 0, root.barSize,
+                                                       screen ? screen.devicePixelRatio : 1)
     readonly property int parkedSize: notchRole === "parked" ? 1
-      : notchRole === "notch" ? notchFit[0] : root.barSize
-    readonly property real notchPadTop: notchRole === "notch" ? notchFit[1] : 0
-    readonly property real notchPadBottom: notchRole === "notch" ? parkedSize - root.barSize - notchPadTop : 0
+      : notchRole === "notch" ? notchFit[0] : notchRole === "fullpanel" ? notchPanelFit[0] : root.barSize
+    readonly property real notchPadTop: notchRole === "notch" ? notchFit[1] : notchRole === "fullpanel" ? notchPanelFit[1] : 0
+    readonly property real notchPadBottom: notchRole === "notch" || notchRole === "fullpanel"
+      ? parkedSize - root.barSize - notchPadTop : 0
     exclusionMode: barWindow.parked ? ExclusionMode.Ignore : ExclusionMode.Auto
 
     // omarchy-notch-bar: Hyprland leaves a mapped layer surface at its old
@@ -544,7 +651,7 @@ def main():
       Component.onCompleted: note()
       Connections {
         target: barWindow.screen
-        function onGeometryChanged() { notchRemap.note() }
+        function onGeometryChanged() { notchRemap.note(); root.notchPanelUpdate() }
       }
       // Let a layout change settle, then unmap for a moment (long enough
       // that the compositor sees the unmap before the new map).
@@ -681,7 +788,8 @@ def main():
     // omarchy-notch-bar: on the NOTCH output the bar sits on the overlay
     // layer, above Omarchy's notification popups (overlay too; notchbar.lua
     // orders them), which would otherwise show their top edge in the strip.
-    WlrLayershell.layer: barWindow.notchRole === "notch" ? WlrLayer.Overlay : WlrLayer.Top
+    // FullPanel's bar likewise: above full-screen windows, to paint the strip black.
+    WlrLayershell.layer: barWindow.notchRole === "notch" || barWindow.notchRole === "fullpanel" ? WlrLayer.Overlay : WlrLayer.Top
 
     // omarchy-notch-bar: repaint trigger, see notchPokeSerial.
     Rectangle {
@@ -689,12 +797,14 @@ def main():
       color: root.transparent ? "transparent" : root.background
       opacity: root.notchPokeSerial % 2 ? 0.999 : 1
     }
-    // omarchy-notch-bar: black strip over fullscreen windows.
+    // omarchy-notch-bar: black strip over fullscreen windows (FullPanel: also
+    // while the bar is hidden; it takes the clicks the hidden bar would get).
     Rectangle {
       anchors.fill: parent
       z: 1000
       visible: barWindow.notchBlack
       color: "black"
+      MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons; enabled: barWindow.notchRole === "fullpanel" }
     }
 ''')
 

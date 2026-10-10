@@ -634,6 +634,16 @@ if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
   # go to the Mac's decoder): the app may offer AV1 to this VM.
   gssh "$IP" "test -x /usr/local/lib/dri/omacvm_drv_video.so" < /dev/null 2>/dev/null &&
     echo av1 > "$d/video-decode"
+  # FullPanel (src/lib/notch.sh, #339): the VM's side can put its bar in the
+  # strip itself: Omanotch on, and its copy in the VM has the bar's FullPanel
+  # mode and a notchcast that stays off for such a start (its bar is set up
+  # at the next login at the latest). The app starts FullPanel only then.
+  if on omanotch && gssh "$IP" "grep -qs notchPanelParse $S/omanotch/guest/bar/apply-patch.py &&
+       grep -qs OMACVM_FULLPANEL $S/omanotch/guest/systemd/notchcast.service" < /dev/null 2>/dev/null; then
+    : > "$d/fullpanel-ready"
+  else
+    rm -f "$d/fullpanel-ready"
+  fi
 fi
 
 if [[ $TYPE == parallels ]]; then

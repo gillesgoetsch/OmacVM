@@ -10,3 +10,4 @@ cc -std=c11 -Wall -Wextra -Werror -I../notchcast -o "$out/test_notchrule" test_n
 "$out/test_notchrule"
 python3 test_bar_patch.py
 bash start-limit.sh
+bash fullpanel-skip.sh

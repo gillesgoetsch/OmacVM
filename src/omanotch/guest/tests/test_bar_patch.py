@@ -134,7 +134,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertIn("// omarchy-notch-bar patch v19", self.text)
+        self.assertIn("// omarchy-notch-bar patch v20", self.text)
 
     def test_state_files_read_fresh_after_reload(self):
         # blockLoading alone: text() right after reload() gives the old content
@@ -154,7 +154,7 @@ class Patch(unittest.TestCase):
             f = d / "Bar.qml"
             f.write_text(self.text)
             out = subprocess.run([sys.executable, str(PATCH), str(f)], check=True, capture_output=True, text=True)
-            self.assertIn("already patched (v19)", out.stdout)
+            self.assertIn("already patched (v20)", out.stdout)
             self.assertEqual(f.read_text(), self.text)
         finally:
             shutil.rmtree(d)
@@ -179,6 +179,9 @@ const root = {
   notchBeatFile: fv("beat"), notchParkFile: fv("park"), notchExpectFile: fv("expect"), notchGeomFile: fv("geom"),
   notchBuiltinFile: fv("builtin"), notchBootExpiry: { interval: 0, restart() { root.expiryAt = now + this.interval; } },
   expiryAt: null,
+  notchHostEnvFile: fv("hostenv"), notchLayoutFile: fv("layout"),
+  notchPanel: [], notchPanelOn: false, notchPanelScreen: "Virtual-1",
+  Quickshell: { screens: %(screens)s },
 };
 const Date_ = { now: () => now };
 const scope = new Proxy(root, {
@@ -191,9 +194,14 @@ root.notchBoot = function () { with (scope) { %(boot)s } };
 root.notchBootParkOn = function (name) { with (scope) { %(bootparkon)s } };
 root.notchWatchdog = function () { with (scope) { %(watchdog)s } };
 root.notchArmExpiry = function () { with (scope) { %(armexpiry)s } };
+root.notchPanelParse = function (text) { with (scope) { %(panelparse)s } };
+root.notchPanelState = function (layoutText, g) { with (scope) { %(panelstate)s } };
+root.notchPanelBox = function (g, logicalWidth) { with (scope) { %(panelbox)s } };
+root.notchPanelUpdate = function () { with (scope) { %(panelupdate)s } };
 function bootPark(name) { with (scope) { %(bootpark)s } }
 function tick() { with (scope) { %(tick)s } }
 const seen = [];
+const panels = [];
 for (const step of %(steps)s) {
   if (step.files) Object.assign(files, step.files);
   if (step.at !== undefined) now = step.at;
@@ -201,11 +209,13 @@ for (const step of %(steps)s) {
   if (step.ipc === "bootPark") bootPark(step.name);
   // The one-shot grace timer fires when its time has come.
   if (root.expiryAt !== null && now >= root.expiryAt) { root.expiryAt = null; root.notchWatchdog(); }
+  if (step.screens) root.Quickshell.screens = step.screens;
   if (step.tick) tick();
   seen.push({ parked: root.notchParked, screen: root.notchParkedScreen });
+  panels.push({ on: root.notchPanelOn, screen: root.notchPanelScreen });
 }
 console.log(JSON.stringify({ seen, root: { notchLeft: root.notchLeft, notchRight: root.notchRight,
-  notchHeight: root.notchHeight, notchBarHeight: root.notchBarHeight }, written }));
+  notchHeight: root.notchHeight, notchBarHeight: root.notchBarHeight }, panel: root.notchPanel, panels, written }));
 '''
 
 
@@ -215,11 +225,14 @@ class Behaviour(unittest.TestCase):
 
     START = 100000
 
-    def run_js(self, files, steps):
+    def run_js(self, files, steps, screens=None):
         text = patched()
         tick = timer_body(text)
         js = HARNESS % {
             "files": json.dumps(files), "now": self.START, "steps": json.dumps(steps),
+            "screens": json.dumps(screens or [{"name": "Virtual-1", "width": 1470, "height": 956}]),
+            "panelparse": function(text, "notchPanelParse"), "panelstate": function(text, "notchPanelState"),
+            "panelbox": function(text, "notchPanelBox"), "panelupdate": function(text, "notchPanelUpdate"),
             "grace": re.search(r"notchBootGraceMs: (\d+)", text).group(1),
             "follow": function(text, "notchFollowParkFile"), "boot": function(text, "notchBoot"), "tick": tick,
             "bootparkon": function(text, "notchBootParkOn"), "watchdog": function(text, "notchWatchdog"),
@@ -446,6 +459,166 @@ var out = [];
 %s.forEach(function(x) { calls = []; out.push([root.notchHover(x), calls]) });
 console.log(JSON.stringify(out));
 """
+
+
+AIR = "OMACVM_FULLPANEL=640.5x829.5x37.0x1470.0x956.0"
+
+
+def layout(builtin="Virtual-1", height=950, width=1470, fullscreen=True, others=()):
+    outs = [{"output": builtin, "x": 0, "y": 0, "width": width, "height": height, "scale": 2}]
+    outs += [{"output": o, "x": -1920, "y": 0, "width": 1920, "height": 1080, "scale": 1} for o in others]
+    return json.dumps({"layout": outs, "external": True, "fullscreen": fullscreen, "builtin": builtin})
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class FullPanel(unittest.TestCase):
+    """OmacVM.app's FullPanel (#339): the bar on the built-in display sits in
+    the strip when the app's full screen covers it. No notched Mac needed:
+    host.env and the app's layout message are made up (a MacBook Air 13")."""
+
+    START = Behaviour.START
+    run_js = Behaviour.run_js
+    ticks = Behaviour.ticks
+
+    def test_parse(self):
+        r = self.run_js({"hostenv": "OMACVM_HDR=1\n" + AIR + "\nOMACVM_NOTCHPOINTER=1\n", "layout": layout()}, self.ticks(1))
+        self.assertEqual(r["panel"], [640.5, 829.5, 37, 1470, 956])
+        for bad in ("OMACVM_FULLPANEL=1", "OMACVM_FULLPANEL=0x829.5x37x1470x956", "OMACVM_FULLPANEL=900x800x37x1470x956",
+                    "OMACVM_FULLPANEL=640x830x5x1470x956", "OMACVM_FULLPANEL=100x1300x37x1470x956",
+                    "OMACVM_FULLPANEL=640x830x37x1470", "OMACVM_FULLPANEL=640x830x37x1470x956x1", "XOMACVM_FULLPANEL=640x830x37x1470x956"):
+            r = self.run_js({"hostenv": bad + "\n", "layout": layout()}, self.ticks(1))
+            self.assertEqual(r["panel"], [], bad)
+            self.assertFalse(r["panels"][0]["on"], bad)
+
+    def test_in_the_strip_at_the_macs_scale(self):
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout()}, self.ticks(1))
+        self.assertEqual(r["panels"][0], {"on": True, "screen": "Virtual-1"})
+        self.assertEqual((r["root"]["notchLeft"], r["root"]["notchRight"], r["root"]["notchHeight"]), (640.5, 829.5, 37))
+
+    def test_in_the_strip_at_another_guest_scale(self):
+        # Omarchy at 1.25 on the Air's 2940 px: 2352 logical pixels wide.
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout()}, self.ticks(1),
+                        screens=[{"name": "Virtual-1", "width": 2352, "height": 1520}])
+        k = 2352 / 1470
+        self.assertTrue(r["panels"][0]["on"])
+        self.assertAlmostEqual(r["root"]["notchLeft"], 640.5 * k)
+        self.assertAlmostEqual(r["root"]["notchRight"], 829.5 * k)
+        self.assertAlmostEqual(r["root"]["notchHeight"], 37 * k)
+
+    def test_pro_and_air_at_2x_and_1_6x(self):
+        # The housing differs per model (a 16-inch Pro's strip is taller than
+        # an Air's): never one height, always the numbers of this start, in
+        # the guest's logical pixels at its own scale (2x and 1.6x here).
+        pro = "OMACVM_FULLPANEL=765.0x963.0x43.0x1728.0x1117.0"
+        cases = [(AIR, 1470, 956, 2.0), (AIR, 1470, 956, 1.6), (pro, 1728, 1117, 2.0), (pro, 1728, 1117, 1.6)]
+        strips = {}
+        for env, w, d, scale in cases:
+            g = [float(x) for x in env.split("=")[1].split("x")]
+            px_w = w * 2                      # the Mac's pixels (Retina)
+            lw = px_w / scale                 # Omarchy's scale in the guest
+            r = self.run_js({"hostenv": env + "\n", "layout": layout(width=w, height=d - 4)}, self.ticks(1),
+                            screens=[{"name": "Virtual-1", "width": lw, "height": d * 2 / scale}])
+            k = lw / g[3]
+            self.assertTrue(r["panels"][0]["on"], (env, scale))
+            self.assertAlmostEqual(r["root"]["notchLeft"], g[0] * k, msg=(env, scale))
+            self.assertAlmostEqual(r["root"]["notchRight"], g[1] * k, msg=(env, scale))
+            self.assertAlmostEqual(r["root"]["notchHeight"], g[2] * k, msg=(env, scale))
+            strips[(g[2], scale)] = r["root"]["notchHeight"]
+        # The Pro's strip is taller than the Air's at the same scale, and a
+        # smaller scale makes the same strip more logical pixels.
+        self.assertGreater(strips[(43.0, 2.0)], strips[(37.0, 2.0)])
+        self.assertGreater(strips[(37.0, 1.6)], strips[(37.0, 2.0)])
+
+    def test_never_guesses_a_park(self):
+        # The last native session ended with Omanotch's strip: a FullPanel
+        # boot does not park the bar for a strip that will not come.
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout(), "expect": "1 Virtual-1\n",
+                         "park": "1 Virtual-1\n", "beat": str(self.START - 500)}, self.ticks(3))
+        self.assertFalse(any(x["parked"] for x in r["seen"]), r["seen"])
+        self.assertTrue(all(p["on"] for p in r["panels"]))
+        self.assertNotIn("expect", r["written"])
+
+    def test_below_the_notch_is_the_normal_bar(self):
+        # QEMU fell back (a private part missing, the menu bar always shown):
+        # the window is a whole strip shorter. The clean size's few rows are not.
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout(height=956 - 37 - 4)}, self.ticks(1))
+        self.assertFalse(r["panels"][0]["on"])
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout(height=956 - 6)}, self.ticks(1))
+        self.assertTrue(r["panels"][0]["on"])
+
+    def test_windowed_is_the_normal_bar(self):
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout(fullscreen=False, height=956, width=1470)}, self.ticks(1))
+        self.assertFalse(r["panels"][0]["on"])
+
+    def test_no_layout_yet_waits(self):
+        r = self.run_js({"hostenv": AIR + "\n"}, self.ticks(1))
+        self.assertFalse(r["panels"][0]["on"])
+        r = self.run_js({"hostenv": AIR + "\n", "layout": "{not json"}, self.ticks(1))
+        self.assertFalse(r["panels"][0]["on"])
+
+    def test_external_display_holds_the_main_window(self):
+        # The MacBook's display is Virtual-2; Virtual-1 is the external one.
+        screens = [{"name": "Virtual-1", "width": 1920, "height": 1080}, {"name": "Virtual-2", "width": 1470, "height": 956}]
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout(builtin="Virtual-2", others=("Virtual-1",))},
+                        self.ticks(1), screens=screens)
+        self.assertEqual(r["panels"][0], {"on": True, "screen": "Virtual-2"})
+        self.assertEqual(r["root"]["notchLeft"], 640.5)  # Virtual-2's width, not Virtual-1's
+
+    def test_plug_and_unplug_while_running(self):
+        screens1 = [{"name": "Virtual-1", "width": 1470, "height": 956}]
+        screens2 = [{"name": "Virtual-1", "width": 1920, "height": 1080}, {"name": "Virtual-2", "width": 1470, "height": 956}]
+        steps = self.ticks(1) + [
+            # An external display comes and takes the main window: the MacBook's is Virtual-2.
+            {"tick": True, "at": self.START + 3000, "screens": screens2,
+             "files": {"layout": layout(builtin="Virtual-2", others=("Virtual-1",))}},
+            # For a moment the MacBook's output is not in full screen yet.
+            {"tick": True, "at": self.START + 6000, "files": {"layout": layout(builtin="Virtual-2", fullscreen=False)}},
+            {"tick": True, "at": self.START + 9000, "files": {"layout": layout(builtin="Virtual-2", others=("Virtual-1",))}},
+            # Unplugged: back to Virtual-1 alone.
+            {"tick": True, "at": self.START + 12000, "screens": screens1, "files": {"layout": layout()}},
+            # Lid closed with an external display: no built-in output at all.
+            {"tick": True, "at": self.START + 15000, "screens": [{"name": "Virtual-1", "width": 1920, "height": 1080}],
+             "files": {"layout": json.dumps({"layout": [{"output": "Virtual-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1}],
+                                             "external": True, "fullscreen": True})}},
+        ]
+        r = self.run_js({"hostenv": AIR + "\n", "layout": layout()}, steps, screens=screens1)
+        self.assertEqual([(p["on"], p["screen"]) for p in r["panels"]],
+                         [(True, "Virtual-1"), (True, "Virtual-2"), (False, "Virtual-2"), (True, "Virtual-2"),
+                          (True, "Virtual-1"), (False, "Virtual-1")])
+
+    def test_native_boot_ignores_the_layout(self):
+        # No OMACVM_FULLPANEL: Omanotch's behaviour as before.
+        r = self.run_js({"layout": layout(height=956), "expect": "1 Virtual-1\n"}, self.ticks(1))
+        self.assertFalse(r["panels"][0]["on"])
+        self.assertEqual(r["seen"][0], {"parked": True, "screen": "Virtual-1"})
+
+
+class FullPanelLayout(unittest.TestCase):
+    """The bar's QML for FullPanel (structure: no Quickshell here)."""
+
+    def setUp(self):
+        self.text = patched()
+
+    def test_role_before_parked(self):
+        body = function(self.text, "notchRoleFor")
+        self.assertLess(body.index('"fullpanel"'), body.index('"parked"'))
+        self.assertIn('notchPanelOn && n === notchPanelScreen', body)
+
+    def test_strip_height_and_reserved(self):
+        # The bar is the strip's height (not the output's: outH 0), so its
+        # exclusive zone keeps the strip free; parked never in FullPanel
+        # (a hidden bar is a black strip, still reserved).
+        self.assertIn("root.notchBox(0, root.notchHeight, 0, root.barSize,", self.text)
+        self.assertIn('notchRole === "fullpanel" ? notchPanelFit[0]', self.text)
+        self.assertIn('(notchRole === "fullpanel" && (root.notchFullscreen || root.barHidden))', self.text)
+        self.assertIn("readonly property bool parked: (root.barHidden && !notchBlack) || notchRole === \"parked\"", self.text)
+
+    def test_above_fullscreen_windows(self):
+        self.assertIn('barWindow.notchRole === "notch" || barWindow.notchRole === "fullpanel" ? WlrLayer.Overlay', self.text)
+
+    def test_state_says_fullpanel(self):
+        self.assertIn('fullpanel: root.notchPanel.length ? (root.notchPanelOn ? "strip" : "waiting") : "off"', self.text)
+        self.assertIn('fullpanel: notchPanel.length ? (notchPanelOn ? "strip" : "waiting") : "off"', self.text)
 
 
 class Hover(unittest.TestCase):
