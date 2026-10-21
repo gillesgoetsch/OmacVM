@@ -160,3 +160,44 @@ How: Geekbench and the first Speedometer runs by hand; later Speedometer runs
 driven over Chrome's DevTools protocol; memory with a small C program (1 GiB
 random reads, first-touch faults); wake-ups with two processes ping-ponging a
 byte over pipes, pinned to the same or different CPUs.
+
+## GPU work in an OmacVM.app VM: where the time goes (October 2026)
+
+Measured on a Mac mini M4 (10-core GPU, macOS 27.0) with 3.1.27, a VM with 4 CPUs and 6 GB, Vulkan on Venus
+with KosmicKrisp, OpenCL on rusticl and Zink. Same program versions on the Mac and in the VM (llama.cpp b11760,
+Llama 3.2 3B Instruct Q4_K_M, whisper.cpp v1.9.5 base.en, darktable 5.6.1, Geekbench 7.1.0), medians of 3, nothing
+else running. "VM %" is the VM's speed against the Mac's.
+
+| Work | Mac | VM | VM % |
+|---|---|---|---|
+| llama.cpp prompt (pp512, t/s) | Metal 550; Vulkan: MoltenVK 423, KosmicKrisp 160 | 159 | 29 % of Metal, 99 % of KosmicKrisp |
+| llama.cpp generation (tg128, t/s) | Metal 46.3; KosmicKrisp 45.8 | 45.2 | 98 % |
+| whisper.cpp encoder (ms) | Metal 47 | 104 | 45 % |
+| Geekbench 7 GPU (one run each) | Metal 52630, OpenCL 33795 | OpenCL 17879 | 53 % of OpenCL |
+| darktable RAW export (s) | OpenCL 3.5, CPU 3.7 | OpenCL 5.8, CPU 2.0 | OpenCL slower than the VM's own CPU |
+| one dispatch, submit + wait (us) | KosmicKrisp 101, Metal 158 | 185 | 55 % |
+| OpenCL kernel + clFinish (us) | Apple's OpenCL 165 | 229 | 72 % |
+
+- **The loss is in KosmicKrisp's shader translation, not in Venus.** llama.cpp's prompt processing runs at 99 % of
+  the same driver on the Mac; that driver itself is at 29 % of Metal and 38 % of MoltenVK. KosmicKrisp never
+  unrolls a loop, so llama.cpp's matmul keeps its accumulators in scratch memory and its caches in if-else trees.
+  Unrolling loops of up to 32 iterations before local arrays are lowered gives llama.cpp's prompt +22 % on an M4
+  (160 -> 196 t/s natively, 159 -> 194 in the VM), but on an M2 it costs Dawn's WebGPU matmul 19 to 45 %
+  (likely register pressure, which M3 and newer hide; the M4 kept 1162 GFLOPS), so it is not shipped yet. Next
+  step: turn it on for M3 and newer GPUs only. Also: KosmicKrisp scalarizes every ALU operation and never merges
+  loads into vectors, where MoltenVK's MSL keeps `half2` fma and vector loads (look with `MESA_KK_DEBUG=msl`).
+- **MoltenVK is the faster driver for llama.cpp** (VM: pp512 432 t/s against 159, tg128 42.6 against 45.2) but has
+  no OpenCL (Zink needs nullDescriptor), its pipeline barriers cost 38 us each (64 dispatches with barriers:
+  1.3 ms against 0.36 ms) and it has no copy-free Vulkan windows. `OMACVM_VULKAN_DRIVER=moltenvk` for the app
+  picks it for a test.
+- **Each GPU round trip costs ~85 us more in the VM** (submit + wait 185 against 101 us). Polling the fence in the
+  guest instead of sleeping saves only ~19 us: most of it is on the Mac (the Venus ring thread's wake-up, the fence
+  through the render server, QEMU's main loop and the interrupt). The ring thread's naps end late on macOS
+  (`virgl-darwin-venus-ring-spin.patch`: 185 -> 170 us, OpenCL 229 -> 208 us; QEMU's CPU +10 % while the GPU
+  works, no change with the VM idle). Token generation and big kernels do not notice it.
+- KosmicKrisp re-records a command buffer that is submitted again (Metal's are one-shot): 77 us per
+  `vkQueueSubmit` of the same buffer, MoltenVK 6 us.
+- Geekbench 7's Linux ARM preview lists no Vulkan device, only OpenCL. Arch Linux ARM's darktable 5.6.1 (October
+  2026) is linked against OpenEXR 3.4 while the repo has 3.5; the measurement used OpenEXR 3.4.16 built next to it.
+- **Where:** `src/bench/gpu/` (`vklaunch`, `cllaunch`, `mtllaunch`)
+  measure a dispatch's round trip; `MESA_KK_DEBUG=msl` prints KosmicKrisp's MSL.

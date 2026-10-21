@@ -1211,6 +1211,8 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-darwin-venus-ext-t
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-darwin-venus-host-pages.patch"
 # OmacVM Venus: a KosmicKrisp without a usable device falls back to MoltenVK.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-darwin-kosmickrisp-fallback.patch"
+# OmacVM Venus: the ring thread looks for the next command 200 us before it naps (macOS ends naps late).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-darwin-venus-ring-spin.patch"
 # OmacVM: where virglrenderer and Apple's core profile disagree (ADR 0019). Each gap made
 # one shader or draw stop the guest's whole GL context: the app drew black from then on.
 verify_file_sha "Core profile GLSL version patch" "$virgl_shader_core_glsl_version_patch" "$virgl_shader_core_glsl_version_patch_sha256"

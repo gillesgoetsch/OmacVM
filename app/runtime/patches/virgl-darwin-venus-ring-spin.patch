@@ -1,0 +1,98 @@
+From: OmacVM
+Subject: [PATCH] venus: the ring thread looks for the next command a little longer (macOS)
+
+What: on macOS the Venus ring thread keeps looking for the guest's next
+command for 200 us after the last one (yielding the CPU between looks)
+before it starts upstream's naps (10, 20, 40 us ...). The ring still goes
+idle after the guest's idle timeout (1 ms in Mesa's Venus driver), so a VM
+that does no Vulkan work costs the same. OMACVM_VENUS_RING_SPIN_US sets the
+time (at most 1 s; 0: upstream's 16 yields, then naps); it is read once per
+process (call_once, no shared state between ring threads) and logged
+("vkr: OMACVM_VENUS_RING_SPIN_US: ...", in qemu.log) when set.
+Why: those naps end late on macOS (nanosleep's 10 us take 16, 160 take 243
+on a Mac mini M4, macOS 27), and every late wake-up delays the guest's next
+GPU job. A program that submits and waits (a Vulkan compute loop, OpenCL's
+clFinish through rusticl on Zink, llama.cpp per graph) pays it every time.
+Numbers (Mac mini M4, macOS 27.0, VM 4 CPU / 6 GB, Venus on KosmicKrisp, one
+dispatch submit + wait, medians of 3 runs of 2000; starts in A B A B order,
+nothing else running on the Mac): Vulkan submit + wait 185 / 185 ->
+170 / 170 us, with the fence polled 166 / 165 -> 151 / 152 us, OpenCL kernel +
+clFinish 229 / 229 -> 209 / 208 us, 64 dispatches recorded + submit + wait
+366 / 365 -> 358 / 354 us; llama.cpp b11760 (Llama 3.2 3B Q4_K_M) pp512
+156 / 158 -> 160 / 162 t/s, tg128 45.0 / 44.9 -> 45.3 / 45.4 t/s. QEMU's CPU
+time during those runs +10 % (18.2 / 17.2 s -> 19.6 / 19.8 s). With the VM's
+desktop idle (MacBook Pro M4 Max, A B A B, 120 s each) QEMU used 2.04 / 2.42 s
+-> 2.29 / 2.59 s of CPU, rising with every start: no difference beyond that
+drift (at most 0.2 s in 2 minutes).
+Upstream: macOS-specific (the naps are fine with Linux's timers).
+Test: src/bench/gpu (vklaunch, cllaunch) and llama-bench as above.
+
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -6,6 +6,7 @@
+ #include "vkr_ring.h"
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <sys/resource.h>
+ #include <time.h>
+ 
+@@ -207,6 +208,34 @@ vkr_ring_relax(uint32_t *iter)
+    clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+ }
+ 
++#ifdef __APPLE__
++/* OmacVM: for this long after a command the ring thread keeps looking for the
++ * guest's next one (yielding between looks) before it starts to sleep. Its
++ * naps of 10, 20, 40 us ... end late on macOS (10 us take 16), and the
++ * guest's next GPU job waits for the wake-up. 200 us covers the gap between a
++ * job and the next one in a submit-and-wait loop. The ring still goes idle
++ * (no CPU) after the guest's idle timeout, so an idle VM costs the same.
++ * OMACVM_VENUS_RING_SPIN_US sets it (0: upstream's 16 yields, then naps); it
++ * is read once per process (call_once) and logged when set. */
++static uint64_t vkr_ring_spin_ns = 200 * 1000;
++static once_flag vkr_ring_spin_once = ONCE_FLAG_INIT;
++
++static void
++vkr_ring_spin_init(void)
++{
++   const char *v = getenv("OMACVM_VENUS_RING_SPIN_US");
++   if (!v || !*v)
++      return;
++   uint64_t us = strtoull(v, NULL, 10);
++   if (us > 1000000)
++      us = 1000000;
++   vkr_ring_spin_ns = us * 1000;
++   vkr_log("OMACVM_VENUS_RING_SPIN_US: the ring thread looks for the next command for %" PRIu64
++           " us before it naps",
++           us);
++}
++#endif
++
+ static bool
+ vkr_ring_submit_cmd(struct vkr_ring *ring,
+                     const uint8_t *buffer,
+@@ -259,6 +288,10 @@ vkr_ring_thread(void *arg)
+ #endif
+    }
+ 
++#ifdef __APPLE__
++   call_once(&vkr_ring_spin_once, vkr_ring_spin_init);
++   const uint64_t spin_ns = vkr_ring_spin_ns;
++#endif
+    uint64_t last_submit = vkr_ring_now();
+    uint32_t relax_iter = 0;
+    int ret = 0;
+@@ -324,6 +357,12 @@ vkr_ring_thread(void *arg)
+             }
+          }
+ 
++#ifdef __APPLE__
++         if (vkr_ring_now() - last_submit < spin_ns) {
++            thrd_yield();
++            continue;
++         }
++#endif
+          vkr_ring_relax(&relax_iter);
+       }
+    }

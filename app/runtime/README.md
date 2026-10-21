@@ -148,6 +148,12 @@ commit 82927e9. Changes here:
   does), whatever the guest asked for
 - `patches/virgl-venus-lost-context-fences.patch`: a Venus context the render
   server ended signals its fences, so the guest app ends instead of hanging
+- `patches/virgl-darwin-venus-ring-spin.patch`: the Venus ring thread looks for
+  the guest's next command for 200 us before it starts upstream's naps, which
+  end late on macOS; a submit-and-wait loop gets ~15 us faster per round trip
+  (185 -> 170 us on a Mac mini M4). The ring still goes idle after the guest's
+  1 ms timeout. `OMACVM_VENUS_RING_SPIN_US` sets the time (0 = upstream; read
+  once per process, a line in qemu.log when set)
 - `patches/qemu-cocoa-gl-view-flush.patch`: QEMU's view context is flushed
   after surface texture work. Apple's GL kept every large surface texture
   made there until a flush that never came, so each guest mode change left a
