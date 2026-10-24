@@ -17,7 +17,7 @@ S=$T/bin; mkdir -p "$S"
 # pacman -Q omarchy: the version in $T/version (none: not installed)
 printf '#!/bin/sh\n[ "$1 $2" = "-Q omarchy" ] && [ -s "%s/version" ] && { echo "omarchy $(cat "%s/version")"; exit 0; }\nexit 1\n' "$T" "$T" > "$S/pacman"
 printf '#!/bin/sh\necho "$2:x:%s:%s::%s/home:/bin/bash"\n' "$(id -u)" "$(id -g)" "$T" > "$S/getent"
-printf '#!/bin/sh\nshift 2\nexec "$@"\n' > "$S/runuser"
+printf '#!/bin/sh\nshift 2; [ "$1" = -- ] && shift\nexec "$@"\n' > "$S/runuser"   # runuser -u USER -- CMD
 chmod 755 "$S"/*
 C=$T/pacman.conf M=$T/mirrorlist
 o() { PATH="$S:$PATH" OMACVM_TEST_OMARCHY=4.5 OMACVM_PACMAN_CONF=$C OMACVM_PACMAN_MIRRORS=$M OMARCHY_PATH=$T/omarchy "$O" "$@"; }
