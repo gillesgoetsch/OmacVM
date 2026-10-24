@@ -309,8 +309,13 @@ if system && command -v grub-mkconfig >/dev/null; then
   # Snapshots (snapper, set up by omarchy-mac) appear in the GRUB menu.
   "$R/guest/pkg-add" grub-btrfs inotify-tools
   # Read-only snapshots picked in GRUB boot with a temporary writable overlay
-  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB).
-  printf '%s\n' '[[ " ${HOOKS[*]} " == *" grub-btrfs-overlayfs "* ]] || HOOKS+=(grub-btrfs-overlayfs)' \
+  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB). Omarchy
+  # 4.5's baseline (00-omarchy-hooks.conf) names Limine's btrfs-overlayfs,
+  # which a GRUB VM does not have (mkinitcpio: "Hook cannot be found"): out.
+  printf '%s\n' \
+    '_omacvm_h=(); for _omacvm_x in "${HOOKS[@]}"; do [[ $_omacvm_x == btrfs-overlayfs && ! -e /usr/lib/initcpio/install/btrfs-overlayfs ]] || _omacvm_h+=("$_omacvm_x"); done' \
+    'HOOKS=("${_omacvm_h[@]}"); unset _omacvm_h _omacvm_x' \
+    '[[ " ${HOOKS[*]} " == *" grub-btrfs-overlayfs "* ]] || HOOKS+=(grub-btrfs-overlayfs)' \
     > /etc/mkinitcpio.conf.d/zz-omacvm.conf
   systemctl enable --now grub-btrfsd >/dev/null 2>&1 || true
   # Arch Linux ARM's kernel under a name GRUB pairs with its initramfs.
