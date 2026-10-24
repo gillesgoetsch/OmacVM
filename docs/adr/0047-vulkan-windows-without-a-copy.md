@@ -71,7 +71,9 @@ instead of commit timing (it keeps the app's thread from waiting).
 ### Synchronization
 
 Venus finished the buffer before the guest handed it to Hyprland (its
-present waits). The re-stride reads it in the blitter's context;
+present waits). The fix for #499 relies on that: a guest Mesa that presents
+before the frame is done would bring stale frames back, and the build test
+(no guest in it) would not see that. The re-stride reads it in the blitter's context;
 `vrend_sync_make_current` puts a GPU wait for it into the guest's context, so
 the fence of that command buffer, made in the guest's context afterwards,
 covers the read, and the guest writes the buffer again only after that fence

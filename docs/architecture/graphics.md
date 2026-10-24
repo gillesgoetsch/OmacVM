@@ -378,8 +378,11 @@ shaders too, `=0` keeps uniforms (the GL calls of before); qemu.log says which.
 `OMACVM_VIRGL_CACHE_STATS=1` logs uploads, binds, index draws and window binds.
 Test: `test-const-ubo` (all three modes).
 
-Context switches: on CGL, every handover between GL contexts flushes the
-context it leaves. A `glWaitSync` in another context waits only for a fence
+Context switches: on CGL, every handover through `vrend_sync_make_current`
+flushes the context it leaves. Plain `make_current` calls (switching,
+creating and destroying guest contexts) do not; work across guest contexts
+is ordered by the guest's fences, which are flushed when they are made.
+A `glWaitSync` in another context waits only for a fence
 that was flushed (ARB_sync); `eglMakeCurrent` and `glXMakeCurrent` flush the
 context they leave, and upstream relies on that, but `CGLSetCurrentContext`
 (QEMU's Cocoa make-current) does not, and Apple's `glWaitSync` on an
