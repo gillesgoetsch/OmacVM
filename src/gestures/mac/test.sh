@@ -27,7 +27,10 @@
 #    or the shortcut off -> a Dock swipe; still not moved, or no Spaces
 #    information -> a notice in Omarchy, nothing else (never Mission
 #    Control); never out of full screen, never hidden; the keyboard follows the pointer's display; pressed in
-#    Mission Control (after the double press) it closes it and goes back into the VM; the posted key's
+#    Mission Control (after the double press) it closes it and goes back into the VM; with the VM on
+#    two displays "Focused monitor" is the display with the VM's own focus (the guest answers "Q"
+#    with "D", test-focus.py), else the pointer's, and back in also on a display that shows a
+#    second VM window; a second press before the move out drops it; the posted key's
 #    shape and marker (test-escape.c, a made-up world of displays and Spaces:
 #    nothing posted, swiped or activated). The marker is the same in
 #    Gestures, the Bridge and QEMU's patch. The guest names the combo pressed,
@@ -334,6 +337,9 @@ grep -E '^(ok|FAIL|skip) ' "$T/notice"
 # Swipe out to macOS in the guest, against a made-up Hyprland (#342).
 python3 "$HERE/../guest/test-swipe-out.py" "$HERE/../guest/omacvm-gestures" > "$T/swipe-out" 2>&1 || fail=1
 grep -E '^(ok|FAIL|skip) ' "$T/swipe-out"
+# The escape combo's question: Hyprland's focused output, where it sits on the Mac.
+python3 "$HERE/../guest/test-focus.py" "$HERE/../guest/omacvm-gestures" > "$T/focus" 2>&1 || fail=1
+grep -E '^(ok|FAIL|skip) ' "$T/focus"
 # The guest's reconnects without the Mac's helper: 2 s, then 10 s, one log line per outage.
 python3 "$HERE/../guest/test-retry.py" "$HERE/../guest/omacvm-gestures" > "$T/retry" 2>&1 || fail=1
 grep -E '^(ok|FAIL|skip) ' "$T/retry"

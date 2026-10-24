@@ -2,7 +2,7 @@
 # omacvm gestures: the Mac's gesture settings, for every route (OmacVM Gestures'
 # own, the same as OmacVM.app's window and the control centre):
 #   omacvm gestures                       what they are now
-#   omacvm gestures escape pointer|all    ⌃⌥ Esc moves the monitor under the pointer (the default) or
+#   omacvm gestures escape pointer|all    ⌃⌥ Esc moves the focused monitor (the default) or
 #                                         every monitor that shows the VM (all)
 #   omacvm gestures swipe-out on|off      Swipe out to macOS: past the first or last workspace to the
 #                                         macOS Space beside the VM (off by default)

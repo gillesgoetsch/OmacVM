@@ -349,7 +349,7 @@ struct EscapeRow: View {
     var tick = 0
     @State private var choice = EscapeSetting.current()
 
-    static let info = "In a full-screen VM, Control-Option-Esc moves the monitor under the pointer (or all monitors) to the Space beside the VM's with macOS's own animation; the VM stays full screen. Pressed in macOS, it goes back into the VM. The keyboard follows the pointer's monitor."
+    static let info = "In a full-screen VM, Control-Option-Esc moves the focused monitor (the one you work on in the VM; else the one under the pointer) or all monitors to the Space beside the VM's with macOS's own animation; the VM stays full screen. Pressed in macOS, it goes back into the VM. The keyboard follows the monitor that moved."
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

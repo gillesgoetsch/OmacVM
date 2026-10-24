@@ -3,6 +3,23 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.1.32 (unreleased)
+
+- **⌃⌥ Esc on an external display.** With the VM full screen on the MacBook and an external
+  display, ⌃⌥ Esc moved the display under the Mac's pointer. Omarchy does not move the pointer when
+  you go to the other display with the keyboard, so often the other display went to macOS and the
+  one you worked on stayed on the VM, and you had to swipe it out by hand. ⌃⌥ Esc now moves the
+  display that has the VM's focus ("Focused monitor"), and the keyboard goes there. Back in from
+  macOS also works on the external now: before, after you left it with a swipe, ⌃⌥ Esc there
+  brought the MacBook's display back into the VM instead. Needs the VM's update (Update VM);
+  until then the display under the pointer, as before.
+- **⌃⌥ Esc with "All monitors".** With the VM full screen on two displays, ⌃⌥ Esc moved only the
+  display under the pointer with macOS's shortcut; the other one needed a Dock swipe to go out and
+  stayed on macOS on the way back in. Both displays now move, out and back in.
+- **⌃⌥ Esc pressed again quickly.** A second ⌃⌥ Esc right after the first (while Control and
+  Option were still down) set the trackpad back to the VM but still moved to macOS. Now it keeps
+  you in the VM.
+
 ## 3.1.31
 
 - **Trackpad gestures after sleep.** After the Mac woke from a longer sleep (Power Nap's short

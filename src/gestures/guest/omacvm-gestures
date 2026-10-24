@@ -23,6 +23,12 @@ from a listener without the proof is acted on. Then it reads lines:
                                     Mac takes such a swipe itself and follows the fingers
   N <why>                           (Mac helpers up to 3.0.18) the escape combo found no way
                                     out to macOS: ignored, no notice any more
+  Q                                 the escape combo was pressed (OmacVM.app): which display is
+                                    Hyprland's focused one? Answered at once with
+  D <x> <y> <w> <h> | D -           where Hyprland's focused output sits on the Mac (OmacVM.app's
+                                    arrangement of the VM's outputs, points, top-left origin, as
+                                    the display agent got it); "-": not known (one output, another
+                                    route, Hyprland not answering)
 and sends, after "X on 2":
   G <n><ways>... | G -              which swipes switch workspaces (Hyprland's gestures): e.g.
                                     "G 4lr" = 4 fingers going left and right, "G -" = none;
@@ -968,6 +974,74 @@ EDGE_BURST = 0.2         # ... for at most this long
 EDGE_RECHECK = 30.0      # s: looked at again without an event (a missed one)
 
 
+LAYOUT_MAX = 65536   # bytes: the display agent's file is a few hundred
+RUN_DIR = "/run/user"   # the users' runtime folders (the offline test points it elsewhere)
+
+
+def mac_layout(uid):
+    """OmacVM.app's arrangement of the VM's outputs on the Mac, {output: (x, y, w, h)}
+    in points (top-left origin), from the display agent's file in the desktop
+    user's runtime folder (omacvm-displays); {} without one (another route, no
+    full screen yet). Root reads it only as the user's own plain file."""
+    try:
+        fd = os.open(f"{RUN_DIR}/{uid}/omacvm/displays.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return {}
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != uid or st.st_size > LAYOUT_MAX:
+            return {}
+        data = os.read(fd, LAYOUT_MAX)
+    except OSError:
+        return {}
+    finally:
+        os.close(fd)
+    try:
+        msg = json.loads(data)
+    except ValueError:
+        return {}
+    layout = msg.get("layout") if isinstance(msg, dict) else None
+    out = {}
+    for o in layout if isinstance(layout, list) else []:
+        if not isinstance(o, dict) or not isinstance(o.get("output"), str):
+            continue
+        try:
+            box = tuple(float(o[k]) for k in ("x", "y", "width", "height"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if all(math.isfinite(v) and abs(v) < 1e6 for v in box) and box[2] > 0 and box[3] > 0:
+            out[o["output"]] = box
+    return out
+
+
+def focus_line(sock=None):
+    """The answer to "Q": "D x y w h" for Hyprland's focused output on the Mac,
+    "D -" when that is not known. Only with two or more outputs on the Mac: with
+    one, the Mac's pointer says it as well."""
+    user = desktop_user()
+    try:
+        uid = pwd.getpwnam(user).pw_uid if user else None
+    except KeyError:
+        uid = None
+    monitors = hypr("j/monitors", sock) if uid is not None else None
+    m = next((m for m in monitors if isinstance(m, dict) and m.get("focused")), None) if isinstance(monitors, list) else None
+    layout = mac_layout(uid) if m else {}
+    box = layout.get(m.get("name")) if m and len(layout) > 1 else None
+    return "D %.0f %.0f %.0f %.0f\n" % box if box else "D -\n"
+
+
+def answer_focus(send):
+    """"Q" from the Mac: the focused output, off the frame loop's thread."""
+    def run():
+        try:
+            line = focus_line()
+            if send:
+                send(line.encode())
+        except OSError:
+            pass   # the connection is going
+    threading.Thread(target=run, daemon=True).start()
+
+
 class SwipeOut:
     def __init__(self):
         self.on = False
@@ -1355,6 +1429,8 @@ def handle(p, pad, keys, glide):
             escape_notice(p[2].decode() if len(p) > 2 else None)
     elif p[0] == b"X":
         SWIPE.set(p[1] == b"on", int(p[2]) if len(p) > 2 and p[2].isdigit() else 1)
+    elif p[0] == b"Q":
+        answer_focus(SWIPE.send)
 
 
 def main():

@@ -1,8 +1,9 @@
 import Foundation
 
 /// "Escape combo" (Ctrl+Option+Esc in a full-screen VM): move only the
-/// monitor under the pointer between the VM and macOS (the default), or all
-/// monitors that show the VM. OmacVM Gestures does the swipe and reads this
+/// focused monitor between the VM and macOS (the default: the one with the
+/// VM's focus, which Gestures asks the guest for, else the one under the
+/// pointer), or all monitors that show the VM. OmacVM Gestures does the swipe and reads this
 /// from its own settings domain, so `defaults write org.omacvm.gestures
 /// EscapeSwipe all` sets it for the other routes (Parallels, UTM, Fusion) too.
 ///
@@ -26,7 +27,7 @@ enum EscapeSetting {
     }
 
     /// What Gestures does with a stored value: "all" (any case) swipes all
-    /// monitors, anything else the one under the pointer.
+    /// monitors, anything else the focused one.
     static func choice(stored: Any?) -> Choice {
         (stored as? String)?.lowercased() == Choice.all.rawValue ? .all : .pointer
     }

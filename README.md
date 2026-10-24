@@ -171,7 +171,7 @@ Add `--vm NAME` for a VM other than the default. Have an Omarchy VM from
 omarchy-mac already? `omacvm apply --vm NAME` adds OmacVM to it.
 
 Put the VM in full screen for the gestures. **⌃⌥ Esc** moves the monitor
-under the pointer one Space over to macOS, with macOS's own animation; the VM
+you work on one Space over to macOS, with macOS's own animation; the VM
 stays full screen in its Space. Press it there again to go back into the VM;
 twice quickly opens Mission Control
 ([more](docs/features.md#full-screen-and-the-escape-keys)).

@@ -149,7 +149,7 @@ globeKeyToVM -bool false` and a VM restart leave it with macOS.
 
 **⌃⌥ Esc** (Control + Option + Escape) in the VM takes you
 straight back to macOS: the trackpad and keys go back to macOS and the
-monitor under the pointer moves to the Space beside the VM's, toward the one
+focused monitor moves to the Space beside the VM's, toward the one
 you came from, with macOS's own "Move left/right a space" shortcut (System
 Settings › Keyboard › Keyboard Shortcuts › Mission Control; ⌃← and ⌃→
 unless you changed them) and its own animation. The VM stays full screen in
@@ -161,8 +161,11 @@ a swipe or Mission Control works as well. Press **⌃⌥ Esc twice** quickly
 Mission Control, Esc closes it, and one **⌃⌥ Esc** closes it and takes you
 back into the VM.
 
-OmacVM.app's **Escape combo** setting: *Focused monitor* (the one under the
-pointer, the default) or *All monitors*, every monitor that shows the VM. For
+OmacVM.app's **Escape combo** setting: *Focused monitor* (the default) or
+*All monitors*, every monitor that shows the VM. The focused monitor is the
+one you work on in the VM: with the VM full screen on several monitors in
+OmacVM.app, the one with Omarchy's focus (also when you moved there with the
+keyboard and the pointer stayed behind), else the one under the pointer. For
 every route also in the control centre (the VM's `omacvm`, rows *Escape
 combo*, *Magic Mouse swipe*, *Swipe out to macOS*) and on the Mac with
 `omacvm gestures escape all` (or `pointer`); the same setting everywhere.
