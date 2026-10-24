@@ -222,6 +222,11 @@ run_test("test-multisample-formats", "vrend_formats.c")
 run_test("test-native-shader-inputs", "vrend_renderer.c")
 run_test("test-integer-sampler-shader", "vrend_shader.c")
 run_api_test("test-video-decode", ("VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"))
+# The rows and columns past a decoded picture (virgl-video-plane-edge.patch): both copy paths,
+# and without the fill the test must see the bar.
+for video_env in (None, {"OMACVM_VIDEO_COPY": "1"}, {"OMACVM_VIDEO_EDGE_FILL": "0"}):
+    run_api_test("test-video-padding", ("VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"),
+                 env=video_env)
 run_test("test-transfer-row-size", "vrend_formats.c")
 run_api_test("test-video-encode", ("VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"))
 # the same with QEMU's fences: reported by the sync thread, held for encoder frames there

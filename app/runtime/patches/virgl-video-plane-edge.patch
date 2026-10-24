@@ -1,0 +1,149 @@
+virglrenderer: decoded video fills the guest's whole plane textures
+
+What: after a decoded picture is copied into the guest's plane textures, the
+rows and columns past it get the picture's last row and column: three more
+small blits per plane on the GPU path, a few glTexSubImage2D calls on the CPU
+path (OMACVM_VIDEO_COPY, ANGLE, a failed blit). The picture itself is not
+touched. Only padding is filled: a plane more than 64 texels wider or taller
+than the picture (a surface the guest crops itself) is left as it is, like the
+encoder's copy does. OMACVM_VIDEO_EDGE_FILL=0 turns it off (one info line in
+the log says so).
+Why: a green bar at the bottom of some videos (VP9 and AV1 at 1080p, 540p,
+360p, 180p) and on the right of others (854 and 426 wide), in YouTube and in
+video calls. Mesa makes a VA surface's planes with width and height rounded up
+to 16 (vl_video_buffer_create: 1920x1080 -> Y 1920x1088, UV 960x544);
+VideoToolbox returns the picture's own size, so only that much was copied.
+Mesa's clear of a new surface does nothing on virgl (the surface is never a
+bound colour buffer), so the rest kept the host texture's first content:
+zeroes, which is green (Y = Cb = Cr = 0). A guest that shows the surface
+(Chrome, Firefox, mpv through dma-buf) samples the whole texture, so the bottom
+8 of 1088 rows (0.7 %; 360p: 8 of 368, 2.2 %; 180p: 12 of 192, 6.25 %) were
+that strip. Now the strip repeats the picture's edge: no colour bar, but the
+picture is still squeezed by that much and its last row is stretched over the
+strip. At 1080p that is not visible; at call-tile sizes it can be. The exact
+fix is for the guest to crop to the picture (a later change).
+H.264 from Chrome and FFmpeg (slices only) was not affected: the host rebuilds
+its SPS without the crop, so VideoToolbox returns all 1088 rows.
+Upstream: virglrenderer's own VA-API backend (EGL dma-buf import) has the same
+gap in theory; this backend is ours. Not sent.
+Tests: Tests/virgl/test-video-padding.c: VP9 profile 0 and 2 (10-bit, P010),
+AV1 and H.264 with SPS/PPS in band, at 320x180, 426x240, 854x480, 330x182,
+321x181 and 320x240, planes made as Mesa makes them and marked: every texel
+past the picture repeats its edge, the picture is bit for bit FFmpeg's software
+decode (H.264: VideoToolbox's own decode), on the GPU and the CPU path; with
+OMACVM_VIDEO_EDGE_FILL=0 the marker is still there (the bar before the fix);
+planes 160 bigger than the picture keep the marker.
+--- a/src/vrend/vrend_video.c
++++ b/src/vrend/vrend_video.c
+@@ -194,6 +194,92 @@
+ 
+ 
+ #ifdef ENABLE_VIDEO_VIDEOTOOLBOX
++/* OmacVM: the guest's plane textures can be bigger than the decoded picture.
++ * Mesa rounds a VA surface's planes up to 16 (1920x1080 -> 1920x1088), while
++ * VideoToolbox returns the picture's own size; a guest that shows the surface
++ * samples the whole texture, so rows and columns nobody writes show at the
++ * bottom or right edge (zeroes = a green bar). They get the picture's last row
++ * and column instead. OMACVM_VIDEO_EDGE_FILL=0 leaves them as they are. */
++static bool edge_fill_on(void)
++{
++    static int on = -1;
++    if (on < 0) {
++        const char *env = getenv("OMACVM_VIDEO_EDGE_FILL");
++        on = !(env && !strcmp(env, "0"));
++        if (!on)
++            virgl_info("video: OMACVM_VIDEO_EDGE_FILL=0, planes past the picture are not filled\n");
++    }
++    return on;
++}
++
++/* Only padding: a plane more than 64 texels wider or taller than the picture
++ * (as the encoder's copy allows) is a surface the guest crops itself, and
++ * filling it would cost up to a whole large texture per frame. */
++static bool edge_fits(uint32_t w, uint32_t h, uint32_t pw, uint32_t ph)
++{
++    return w && h && pw <= w + 64 && ph <= h + 64;
++}
++
++/* The draw framebuffer holds the plane, the read framebuffer the picture
++ * (W x H of it copied to the plane's origin); the plane is PW x PH. */
++static void blit_edge(GLint w, GLint h, GLint pw, GLint ph)
++{
++    if (w <= 0 || h <= 0 || !edge_fits((uint32_t)w, (uint32_t)h, (uint32_t)pw, (uint32_t)ph))
++        return;
++    if (h < ph)
++        glBlitFramebuffer(0, h - 1, w, h, 0, h, w, ph, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++    if (w < pw)
++        glBlitFramebuffer(w - 1, 0, w, h, w, 0, pw, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++    if (w < pw && h < ph)
++        glBlitFramebuffer(w - 1, h - 1, w, h, w, h, pw, ph, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++}
++
++/* The same for the CPU copy: the bound 2D texture got W x H texels of TEXEL
++ * bytes from BASE (ROW bytes per row) at its origin and is PW x PH. Uploads
++ * in pieces of at most 16 plane rows' size; GL_UNPACK_ROW_LENGTH is left at 0
++ * (the caller puts its own back). Plain 2D planes only, like the CPU copy
++ * itself (the GPU path also writes layer 0 of an array). */
++static void upload_edge(uint32_t w, uint32_t h, uint32_t pw, uint32_t ph, unsigned texel,
++                        size_t row, const uint8_t *base, GLenum format, GLenum type)
++{
++    size_t cap = (size_t)pw * texel * 16;
++    uint8_t *tmp;
++
++    if (!edge_fits(w, h, pw, ph) || (w >= pw && h >= ph))
++        return;
++    tmp = malloc(cap);
++    if (!tmp)
++        return;
++    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
++    if (w < pw) {
++        uint32_t cols = pw - w, step = (uint32_t)(cap / ((size_t)cols * texel));
++        for (uint32_t y0 = 0; y0 < h; y0 += step) {
++            uint32_t n = h - y0 < step ? h - y0 : step;
++            for (uint32_t y = 0; y < n; y++)
++                for (uint32_t x = 0; x < cols; x++)
++                    memcpy(tmp + ((size_t)y * cols + x) * texel,
++                           base + (size_t)(y0 + y) * row + (size_t)(w - 1) * texel, texel);
++            glTexSubImage2D(GL_TEXTURE_2D, 0, (GLint)w, (GLint)y0, (GLsizei)cols, (GLsizei)n,
++                            format, type, tmp);
++        }
++    }
++    if (h < ph) {
++        const uint8_t *last = base + (size_t)(h - 1) * row;
++        uint32_t n = ph - h < 16 ? ph - h : 16;
++        memcpy(tmp, last, (size_t)w * texel);
++        for (uint32_t x = w; x < pw; x++)
++            memcpy(tmp + (size_t)x * texel, last + (size_t)(w - 1) * texel, texel);
++        for (uint32_t y = 1; y < n; y++)
++            memcpy(tmp + (size_t)y * pw * texel, tmp, (size_t)pw * texel);
++        for (uint32_t y0 = h; y0 < ph; y0 += n) {
++            uint32_t m = ph - y0 < n ? ph - y0 : n;
++            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, (GLint)y0, (GLsizei)pw, (GLsizei)m,
++                            format, type, tmp);
++        }
++    }
++    free(tmp);
++}
++
+ /* Zero-copy path: bind the decoded frame's IOSurface planes as rectangle
+  * textures and let the GPU copy them into the guest's plane textures.
+  * GL state touched here is put back exactly as it was. */
+@@ -279,6 +365,8 @@
+             break;
+         }
+         glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
++        if (edge_fill_on())
++            blit_edge(w, h, (GLint)res->base.width0, (GLint)res->base.height0);
+         if (glGetError() != GL_NO_ERROR)
+             ok = false;
+     }
+@@ -374,6 +462,9 @@
+         glPixelStorei(GL_UNPACK_ROW_LENGTH, row / texel);
+         glTexSubImage2D(res->target, 0, 0, 0, w, h, rg ? GL_RG : GL_RED,
+                         sixteen ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE, base);
++        if (edge_fill_on() && res->target == GL_TEXTURE_2D)
++            upload_edge(w, h, res->base.width0, res->base.height0, texel, row, base,
++                        rg ? GL_RG : GL_RED, sixteen ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE);
+     }
+ 
+     glPixelStorei(GL_UNPACK_ROW_LENGTH, old_row);

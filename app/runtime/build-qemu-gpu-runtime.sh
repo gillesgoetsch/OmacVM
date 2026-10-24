@@ -1263,6 +1263,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-index-range-cache.
 # the media engine on every frame: screen recording took the VM's sound and display with it);
 # a guest fence waits for the frames closed before it.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-videotoolbox-encode-async.patch"
+# OmacVM: decoded video fills the guest's whole plane textures (Mesa rounds them up to 16): the
+# rows past the picture repeat its last row instead of staying zero, a green bar at the bottom.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-video-plane-edge.patch"
 # OmacVM: big texture uploads go through a pixel unpack buffer (one CPU copy instead of three
 # steps: a frozen screen in screenshot mode uploads a whole display per frame).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-transfer-upload-pbo.patch"

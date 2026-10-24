@@ -15,6 +15,12 @@ in more words.
   `MESA_VK_WSI_DEBUG=sw,nowlts` to `~/.config/environment.d/50-vulkan-present.conf` to get around
   it, take that line out after the update and log in again: Vulkan windows then go through the
   GPU again. The VM needs no update.
+- **No green bar under videos.** Some videos played with the Mac's video decoder had a thin
+  green strip at the bottom (VP9 and AV1 at 1080p, 540p and 360p: YouTube, and video in calls)
+  or on the right (480p and 240p). The VM's video surfaces are a few rows and columns bigger
+  than the picture, and those were never written; they now repeat the picture's last row and
+  column. In small call tiles that strip can still show as a stretched edge instead of green.
+  The VM needs no update.
 
 ## 3.1.31
 

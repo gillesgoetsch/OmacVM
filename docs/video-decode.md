@@ -104,6 +104,18 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   either could drop it without an error and leave the old picture. (Apple's
   software OpenGL, which the build-time test runs on, copies either way, so
   the test guards the path but cannot show the GPU's behaviour.)
+- The guest's textures can be bigger than the picture: Mesa rounds a VA
+  surface's planes up to 16 (1920x1080 has 1088 rows, 854 wide has 864
+  columns), and apps that show the surface (Chrome, Firefox, mpv) sample all
+  of it. The copy fills the rows and columns past the picture with its last
+  row and column (`virgl-video-plane-edge.patch`); before 3.1.32 they stayed
+  zero and showed as a green bar at the bottom or right of VP9 and AV1
+  videos at 1080p, 540p, 360p, 480p and 240p. The app still shows the
+  rounded size, so the picture is squeezed by those rows (1080p: 8 of 1088,
+  invisible; a 320x180 call tile: 12 of 192) and the strip is its stretched
+  edge. Planes more than 64 bigger than the picture are surfaces the guest
+  crops itself and are left alone. `OMACVM_VIDEO_EDGE_FILL=0` turns the fill
+  off. Test: `Tests/virgl/test-video-padding.c`.
 - In the VM, `src/app/guest/install.sh` adds `vainfo` and a small VA-API driver
   shim (`omacvm_drv_video.c`, used through `LIBVA_DRIVER_NAME=omacvm`): Mesa's
   driver unchanged, but it offers only NV12 surfaces (Firefox cannot show the

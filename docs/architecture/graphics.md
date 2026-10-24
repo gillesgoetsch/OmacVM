@@ -756,6 +756,7 @@ falls back and logs once.
 | `OMACVM_VIDEO_AV1=1` | set by the app when the VM has the shim | offer AV1 | built |
 | `OMACVM_VIDEO_NO_VP9`, `OMACVM_VIDEO_NO_HEVC` | off | hide one codec | built |
 | `OMACVM_VIDEO_COPY` | off | CPU copy instead of IOSurface blit | built |
+| `OMACVM_VIDEO_EDGE_FILL=0` | on | rows and columns of the guest's video planes past the picture stay unwritten (the green bar before 3.1.32) | built (`green-bar`) |
 | `OMACVM_VIDEO_NO_REALTIME` | off | no real-time VT session | built |
 | `OMACVM_VIRGL_VIDEO_ABI=legacy` | Mesa 26 numbers | profile numbers of older guests | built |
 | `OMACVM_VIDEO_DEBUG=1` | off | log decode details | built |
