@@ -288,6 +288,9 @@ jobs:
       - name: Bridge offline tests (media-key tap, where each media key goes, Wi-Fi state)
         run: src/bridge/mac/test-models.sh
 
+      - name: Camera picked again after the lid closed, an unplug or no picture (a camera stand-in)
+        run: src/bridge/mac/test-camera.sh
+
       - name: Bridge wallpaper store (embedded image URLs, no desktop changes)
         run: src/bridge/mac/test-wallpaper.sh
 

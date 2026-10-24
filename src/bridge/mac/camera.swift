@@ -16,6 +16,10 @@
 // its camera. A frame is dropped for a VM that has not taken the last one yet.
 // OMACVM_CAMERA=test: a moving test picture instead of the camera (no
 // permission needed; for checking the way to the VM).
+// The camera is picked again at every start (pickCamera), and a start comes
+// after every loss: the lid closed (the built-in camera is suspended), the
+// camera unplugged, or no picture from it for 5 s. So a VM that still reads
+// gets the next camera there is, or the same one once it is back.
 import AVFoundation
 import CoreMedia
 import CoreVideo
@@ -50,27 +54,78 @@ func cameraPermission() -> String {
   }
 }
 
-/// The camera the VM gets: the built-in one, else the system's default.
+/// A camera macOS lists, as pickCamera sees it. usable: connected, and not
+/// suspended (a MacBook's own camera with the lid closed).
+struct CameraChoice: Equatable {
+  let id: String, builtIn: Bool, usable: Bool
+}
+
+/// The camera the VM gets: the built-in one while it can be used, else
+/// macOS's default camera, else the first one that can be used; nil: none.
+func pickCamera(_ cameras: [CameraChoice], systemDefault: String?) -> String? {
+  if let c = cameras.first(where: { $0.builtIn && $0.usable }) { return c.id }
+  if let d = systemDefault, cameras.contains(where: { $0.id == d && $0.usable }) { return d }
+  return cameras.first { $0.usable }?.id
+}
+
+/// Every video camera macOS lists now (built-in, USB and display cameras, Continuity Camera).
+func cameraDevices() -> [AVCaptureDevice] {
+  var types: [AVCaptureDevice.DeviceType] = [.builtInWideAngleCamera]
+  if #available(macOS 14.0, *) { types += [.external, .continuityCamera] } else { types.append(.externalUnknown) }
+  return AVCaptureDevice.DiscoverySession(deviceTypes: types, mediaType: .video, position: .unspecified).devices
+}
+
+func cameraUsable(_ d: AVCaptureDevice) -> Bool {
+  guard d.isConnected else { return false }
+  if #available(macOS 14.0, *), d.isSuspended { return false }
+  return true
+}
+
+/// The camera the VM gets now (pickCamera).
 func cameraDevice() -> AVCaptureDevice? {
-  AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .unspecified)
-    ?? AVCaptureDevice.default(for: .video)
+  let devices = cameraDevices()
+  let choices = devices.map { CameraChoice(id: $0.uniqueID, builtIn: $0.deviceType == .builtInWideAngleCamera, usable: cameraUsable($0)) }
+  guard let id = pickCamera(choices, systemDefault: AVCaptureDevice.default(for: .video)?.uniqueID) else { return nil }
+  return devices.first { $0.uniqueID == id }
 }
 
 struct CameraError: Error {
   let reason: String, message: String   // reason: permission, no-camera, capture
 }
 
+/// What CameraHub needs of a camera: CameraCapture, or a stand-in in the offline test.
+protocol CameraSource: AnyObject {
+  var test: Bool { get }
+  var onFrame: ((Data) -> Void)? { get set }
+  var onFailure: ((String) -> Void)? { get set }
+  /// A camera was connected (to try again at once while one is missing).
+  var onCameraAdded: (() -> Void)? { get set }
+  func start(_ done: @escaping (Result<String, CameraError>) -> Void)
+  func stop()
+}
+
 /// One capture session (or the test picture). CameraHub starts and stops it.
-final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+/// Each start makes a new session with the camera picked then; stop ends it.
+final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, CameraSource, @unchecked Sendable {
   private let queue = DispatchQueue(label: "omacvm.camera.session")
   private let frames = DispatchQueue(label: "omacvm.camera.frames", qos: .userInitiated)
   private var session: AVCaptureSession?
   private var observers: [NSObjectProtocol] = []
+  private var suspendWatch: NSKeyValueObservation?
+  private var addedWatch: NSObjectProtocol?
   private var timer: DispatchSourceTimer?
   private var reportedBadFrame = false
   let test = ProcessInfo.processInfo.environment["OMACVM_CAMERA"] == "test"
   var onFrame: ((Data) -> Void)?
   var onFailure: ((String) -> Void)?
+  var onCameraAdded: (() -> Void)?
+
+  override init() {
+    super.init()
+    addedWatch = NotificationCenter.default.addObserver(forName: AVCaptureDevice.wasConnectedNotification, object: nil, queue: nil) {
+      [weak self] _ in self?.onCameraAdded?()
+    }
+  }
 
   /// Starts capturing; done gets the camera's name. Asks for the permission
   /// first when macOS has not asked yet (its prompt shows now).
@@ -92,17 +147,26 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
   }
 
+  /// Ends the session: the next start picks the camera again (the lid may
+  /// have closed, a camera gone or come since).
   func stop() {
-    queue.async {
-      self.timer?.cancel(); self.timer = nil
-      self.session?.stopRunning()
-    }
+    queue.async { self.endSession() }
+  }
+
+  private func endSession() {   // on queue
+    timer?.cancel(); timer = nil
+    session?.stopRunning()
+    session = nil
+    observers.forEach { NotificationCenter.default.removeObserver($0) }
+    observers = []
+    suspendWatch?.invalidate(); suspendWatch = nil
   }
 
   private func startSession(_ done: (Result<String, CameraError>) -> Void) {
     do {
-      if session == nil { session = try makeSession() }
-      guard let s = session else { return }
+      endSession()
+      let s = try makeSession()
+      session = s
       s.startRunning()
       guard s.isRunning else { throw CameraError(reason: "capture", message: "the camera did not start") }
       reportedBadFrame = false
@@ -153,6 +217,16 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
       observers.append(NotificationCenter.default.addObserver(forName: name, object: s, queue: nil) { [weak self] n in
         self?.onFailure?(n.name == AVCaptureSession.runtimeErrorNotification ? "the camera reported an error" : "the camera was taken away")
       })
+    }
+    // Unplugged, or (a MacBook's own camera) the lid closed.
+    let name = device.localizedName
+    observers.append(NotificationCenter.default.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification, object: device, queue: nil) {
+      [weak self] _ in self?.onFailure?("\(name) is gone")
+    })
+    if #available(macOS 14.0, *) {
+      suspendWatch = device.observe(\.isSuspended, options: [.new]) { [weak self] d, _ in
+        if d.isSuspended { self?.onFailure?("\(name) is suspended (the lid closed?)") }
+      }
     }
     return s
   }
@@ -272,16 +346,27 @@ final class CameraHub: @unchecked Sendable {
   private var state = "idle"   // idle, starting, streaming
   private var cameraName = ""
   private var sequence: UInt32 = 0
-  private var retryDelay = 2.0     // seconds; doubles up to 30, back to 2 with the first frame
+  private var retryDelay: Double   // seconds; doubles up to 30, back to the first with the first frame
+  private let firstRetry: Double
   private var problem = ""         // the last failure, logged once
-  private let capture = CameraCapture()
+  private let capture: CameraSource
   private let log: (String) -> Void
+  // Streaming with no frame for this long (a camera that stopped without a
+  // word): picked and started again.
+  private let frameTimeout: Double
+  private var lastFrame = Date.distantPast
+  private var watchdog: DispatchSourceTimer?
   let maxConnections = 8
 
-  init(log: @escaping (String) -> Void) {
+  init(log: @escaping (String) -> Void, source: CameraSource = CameraCapture(), firstRetry: Double = 2, frameTimeout: Double = 5) {
     self.log = log
+    self.capture = source
+    self.firstRetry = firstRetry
+    self.retryDelay = firstRetry
+    self.frameTimeout = frameTimeout
     capture.onFrame = { [weak self] in self?.frame($0) }
     capture.onFailure = { [weak self] in self?.failed($0) }
+    capture.onCameraAdded = { [weak self] in self?.retryNow() }
   }
 
   var canAttach: Bool { lock.lock(); defer { lock.unlock() }; return channels.count < maxConnections }
@@ -375,8 +460,10 @@ final class CameraHub: @unchecked Sendable {
       switch result {
       case .success(let name):
         state = "streaming"; cameraName = name
+        lastFrame = Date()
         let retrying = !problem.isEmpty   // "back" comes with the first frame
         lock.unlock()
+        watch()
         if !retrying { log("on (\(name))") }
         targets.forEach { $0.send(streaming(name)) }
       case .failure(let e):
@@ -391,7 +478,7 @@ final class CameraHub: @unchecked Sendable {
   }
 
   private func stopCapture() {
-    lock.lock(); let was = state; state = "idle"; retryDelay = 2; problem = ""; lock.unlock()
+    lock.lock(); let was = state; state = "idle"; retryDelay = firstRetry; problem = ""; lock.unlock()
     guard was != "idle" else { return }
     capture.stop()
     log("off (no VM reads it)")
@@ -411,10 +498,37 @@ final class CameraHub: @unchecked Sendable {
     targets.forEach { $0.send(CameraWire.status(["status": "unavailable", "reason": "capture"])) }
   }
 
+  /// Streaming: once a second, whether frames still come.
+  private func watch() {
+    let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+    let every = min(1.0, frameTimeout / 3)
+    t.schedule(deadline: .now() + every, repeating: every)
+    t.setEventHandler { [weak self, weak t] in
+      guard let self else { t?.cancel(); return }
+      self.lock.lock()
+      let streaming = self.state == "streaming", quiet = -self.lastFrame.timeIntervalSinceNow, name = self.cameraName
+      self.lock.unlock()
+      if !streaming { t?.cancel(); return }
+      if quiet > self.frameTimeout { self.failed("no picture from \(name) for \(Int(self.frameTimeout.rounded())) s") }
+    }
+    lock.lock(); watchdog?.cancel(); watchdog = t; lock.unlock()
+    t.resume()
+  }
+
+  /// A camera was connected: while VMs want one and none runs, try at once.
+  private func retryNow() {
+    lock.lock()
+    let go = state == "idle" && !wanting.isEmpty
+    if go { state = "starting"; retryDelay = firstRetry }
+    lock.unlock()
+    if go { log("a camera was connected: trying again"); startCapture() }
+  }
+
   /// The camera failed while VMs still want it (another app took it, the
-  /// permission is not given yet): tries again after 2 s, then up to every
-  /// 30 s, until it works or no VM wants it. The VMs show black meanwhile and
-  /// get "streaming" when it is back. Lock held.
+  /// permission is not given yet, the lid closed, it was unplugged): tries
+  /// again after 2 s, then up to every 30 s, with the camera picked then,
+  /// until it works or no VM wants it. The VMs show black meanwhile and get
+  /// "streaming" when it is back. Lock held.
   private func retryLater() {
     let delay = retryDelay
     retryDelay = min(retryDelay * 2, 30)
@@ -430,9 +544,10 @@ final class CameraHub: @unchecked Sendable {
   private func frame(_ payload: Data) {
     lock.lock()
     guard state == "streaming" else { lock.unlock(); return }
-    if retryDelay != 2 || !problem.isEmpty {   // it works again
+    lastFrame = Date()
+    if retryDelay != firstRetry || !problem.isEmpty {   // it works again
       if !problem.isEmpty { log("back: \(cameraName)") }
-      retryDelay = 2; problem = ""
+      retryDelay = firstRetry; problem = ""
     }
     sequence &+= 1
     let seq = sequence, targets = wanting.compactMap { channels[$0] }
