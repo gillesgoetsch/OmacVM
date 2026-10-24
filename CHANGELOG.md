@@ -15,6 +15,11 @@ in more words.
   `MESA_VK_WSI_DEBUG=sw,nowlts` to `~/.config/environment.d/50-vulkan-present.conf` to get around
   it, take that line out after the update and log in again: Vulkan windows then go through the
   GPU again. The VM needs no update.
+- **Faster canvas and SVG drawing in Chrome and Chromium.** In OmacVM.app VMs, Chrome no longer
+  draws every canvas stroke and clip path on the CPU: it now sees "OmacVM-GPU" as its GL renderer
+  instead of "virgl", the name for which Chrome's Skia turns instanced drawing off. MotionMark's
+  Paths and Suits ran at 29-48 fps and now hold the display's rate (75 fps in the test VM). Only
+  Chrome and Chromium get the new name.
 
 ## 3.1.31
 

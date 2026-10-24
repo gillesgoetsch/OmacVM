@@ -112,6 +112,23 @@ on CGL, not on ANGLE.
 | Frames on the display's refresh (jitter buffer, display link thread) | built: `pacing-hdr` | `qemu-cocoa-gl-present-vsync.patch`, ADR 0020 |
 | Colour-tagged frames, 10-bit scanout, HDR (PQ, EDR) | built: `pacing-hdr`, `hdr` (the app's switch, off by default; the guest tone-maps into the display's headroom) | `qemu-cocoa-gl-present-color.patch`, `omacvm-cocoa-hdr-headroom*.patch`, `src/app/guest/virtio-gpu/`, ADR 0021, 0049 |
 | Guest paced by the host's vsync | planned | ADR 0020 option 1 |
+| Chrome's GL renderer without "virgl" (Skia keeps instanced drawing) | built: `gpu-browser` (3.1.32) | `src/app/guest/50-omacvm-chrome.drirc` |
+
+Chrome's renderer string: Skia turns instanced drawing off when the GL
+renderer names virgl (`GrGLCaps.cpp`, 2021, no public reason). Without it
+Chrome's GL path has no path atlas, and every canvas stroke and clip path
+becomes a CPU mask, an upload and a draw of its own in every frame. App VMs
+get a Mesa drirc (`/usr/share/drirc.d/50-omacvm-chrome.conf`) that gives the
+programs `chrome` and `chromium` the renderer "OmacVM-GPU" (`force_gl_renderer`);
+every other program keeps the real string. MotionMark at a fixed complexity
+in a VM on the M4 Max (3 alternating rounds): Paths 29-35 -> 75 fps, Suits
+40-48 -> 75 fps (75 = the hidden VM display's rate), Canvas Arcs 75 both.
+chrome://gpu lists the same features and driver workarounds. A static page
+of strokes, arcs, clips, rounded rects and SVG paths matches Chrome's
+Graphite render; it differs from Chrome's CPU raster only inside one thick
+self-overlapping stroke, which GPU tessellation fills. dEQP-GLES3
+`functional.instanced` 45/45 and `functional.draw` 324/324 pass on virgl.
+The WebGL renderer string that pages can read changes the same way.
 
 ## 2. Processes and threads
 

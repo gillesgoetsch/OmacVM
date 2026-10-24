@@ -1,0 +1,22 @@
+<?xml version="1.0" standalone="yes"?>
+<!--
+OmacVM.app (installed as /usr/share/drirc.d/50-omacvm-chrome.conf): Chrome and
+Chromium get "OmacVM-GPU" as the GL renderer instead of "virgl (<Mac GPU>)".
+
+Skia turns instanced drawing off when the renderer names virgl (GrGLCaps.cpp,
+2021, no public reason). Without it Chrome has no path atlas: every canvas
+stroke and clip path becomes a CPU mask, an upload and a draw of its own, in
+every frame. The app's host GL has instancing. With this string, MotionMark
+at a fixed complexity in the VM (M4 Max): Paths 29-35 -> 75 fps, Suits 40-48 ->
+75 fps (75 = the VM display's rate); the pictures match Chrome's Graphite.
+
+Only these two programs (the GPU process is "chrome" or "chromium"); every
+other program keeps the real string. Without this file Chrome draws as before.
+-->
+<driconf>
+  <device driver="virtio_gpu">
+    <application name="Chrome and Chromium" executable_regexp="^(chrome|chromium)$">
+      <option name="force_gl_renderer" value="OmacVM-GPU"/>
+    </application>
+  </device>
+</driconf>

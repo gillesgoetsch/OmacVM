@@ -516,6 +516,7 @@ jobs:
           python3 src/omanotch/guest/tests/test_display_panel.py
           python3 src/camera/guest/tests/test_frames.py
           python3 src/app/guest/tests/test_audio_latency.py
+          python3 src/app/guest/tests/test_chrome_drirc.py
 
       - name: Final-round benchmark kit offline tests (one timing method per row, what is left out, preflight)
         run: tests/bench/final-round/test.sh
