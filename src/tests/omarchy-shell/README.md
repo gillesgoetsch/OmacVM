@@ -9,5 +9,10 @@ switch and tooltip of OmacVM.app's Extra brightness row):
   a06ec133 (2026-10-13), upstream's newer shell: a notch floor from
   display-cutouts.json, a bar thickness per screen, the wallpaper decoded at the
   display's size, `Commons.Color` (omacom/omarchy#14553).
+- `omarchy-03ff1eff/`: https://github.com/omacom/omarchy tag `v4.5.0-rc1`
+  (03ff1eff, 2026-10-20), Omarchy 4.5's first release candidate (branch
+  omarchy-45 only: 4.5 is not supported yet). Its notifications ask the bar
+  for its room in `Delivery.js`. Omanotch's bar patch has no 4.5 form yet, so
+  `test_bar_patch.py` leaves this `Bar.qml` out.
 
 Same paths as in Omarchy (`shell/plugins/...`). Omarchy's MIT licence: `LICENSE`.

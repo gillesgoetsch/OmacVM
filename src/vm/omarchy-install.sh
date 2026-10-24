@@ -4,6 +4,9 @@
 # installer itself runs as the desktop user, unattended, with a temporary
 # password-less sudo that is removed again at the end.
 #   OMARCHY_MAC_CHANNEL  rc (default) or stable, passed to `install.sh --channel`
+#   OMACVM_OMARCHY=4.5   test only (omarchy_route): upstream Omarchy 4.5 from its
+#                        packages instead, as its ISO sets a machine up
+#                        (guest/omarchy-45.sh); OMARCHY_CHANNEL its channel
 set -euo pipefail
 source /root/omacvm.env
 U=$OMA_USER; H=$(getent passwd "$U" | cut -d: -f6)
@@ -83,6 +86,67 @@ remove_helpers() {
 install_helpers
 trap remove_helpers EXIT
 
+# Omarchy turns on its firewall (deny inbound). This SSH session survives, the
+# next ones from the Mac would not: let the Mac's VM network reach SSH. ufw may
+# fail to apply the rule live right after the install ("problem running"); it
+# is stored and active from the next boot, which is what counts.
+allow_mac_ssh() {
+  local net="${SSH_CLIENT%% *}"; net="${net%.*}.0/24"
+  ufw allow from "$net" to any port 22 proto tcp comment "omacvm: ssh from the Mac" >/dev/null 2>&1 || true
+  ufw show added 2>/dev/null | grep -q "omacvm: ssh from the Mac" || { echo "could not add the SSH firewall rule" >&2; exit 1; }
+}
+
+# Omarchy 4.5 (test only): its packages, then its own target setup, the way
+# its ISO runs them after archinstall (omacom/omarchy-iso, phases_impl.py):
+# omarchy-settings first (it fills /etc/skel), the runtime with the
+# platform's default package set, omarchy-apply-system as root,
+# omarchy-provision-user as the user. The disk, GRUB and the kernel stay
+# base-install.sh's (the ISO's Limine is not used in a VM).
+omarchy45_install() {
+  local O45=/usr/local/lib/omacvm/omarchy-45.sh c=${OMARCHY_CHANNEL:-rc} pkgs
+  export OMACVM_TEST_OMARCHY=4.5
+  [[ -x $O45 ]] || { echo "omarchy-45.sh is missing" >&2; return 1; }
+  log "Omarchy 4.5 (test only), channel $c"
+  "$O45" keyring && "$O45" repos "$c" || return 1
+  log "system update from Omarchy's repos"
+  pacman -Syuu --noconfirm --ask 4 || return 1
+  log "Omarchy's packages"
+  # snapper: Omarchy's setup configures it (the ISO adds it with Limine on aarch64).
+  pacman -S --needed --noconfirm --ask 4 base-devel git omarchy-keyring archlinuxarm-keyring omarchy-settings lua51 luarocks omarchy-nvim snapper &&
+    pacman -S --needed --noconfirm --ask 4 omarchy || return 1
+  pkgs=$(OMARCHY_PATH=/usr/share/omarchy /usr/share/omarchy/bin/omarchy-pkg-defaults aarch64) || return 1
+  # shellcheck disable=SC2086 # one package name per word
+  pacman -S --needed --noconfirm --ask 4 $pkgs || return 1
+  # The user was made before /etc/skel had Omarchy's files: the home gets
+  # them now, as useradd -m would have given them (as the user).
+  runuser -u "$U" -- cp -af /etc/skel/. "$H/" || return 1
+  log "Omarchy's system setup"
+  env OMARCHY_PATH=/usr/share/omarchy OMARCHY_INSTALL=/usr/share/omarchy/install OMARCHY_INSTALL_USER="$U" \
+    OMARCHY_USER_NAME="$OMA_FULLNAME" OMARCHY_USER_EMAIL="${OMA_EMAIL:-}" OMARCHY_MIRROR="$c" \
+    OMARCHY_INSTALL_LOG_FILE=/var/log/omarchy-install.log OMARCHY_LOG_TO_STDOUT=1 \
+    /usr/bin/omarchy-apply-system --install-user "$U" --first-install || return 1
+  # 4.5.0-rc1 has aarch64 templates for edge only and falls back to it.
+  "$O45" repos "$c" || return 1
+  log "Omarchy's user setup"
+  systemctl reset-failed omacvm-omarchy-user 2>/dev/null || true
+  systemd-run --wait --pipe --quiet --uid="$U" --gid="$U" --unit=omacvm-omarchy-user -p WorkingDirectory="$H" \
+    -E HOME="$H" -E USER="$U" -E LOGNAME="$U" -E SHELL=/bin/bash -E LANG=en_US.UTF-8 -E TERM=xterm-256color \
+    -E OMARCHY_PATH=/usr/share/omarchy -E OMARCHY_INSTALL=/usr/share/omarchy/install \
+    -E OMARCHY_USER_NAME="$OMA_FULLNAME" -E OMARCHY_USER_EMAIL="${OMA_EMAIL:-}" -E OMARCHY_LOG_TO_STDOUT=1 \
+    ${SETENV[@]+"${SETENV[@]}"} /usr/bin/omarchy-provision-user --first-install < /dev/null || return 1
+  # Animations stay on in OmacVM's VMs (4.5 turns them off in a VM).
+  "$O45" animations "$U" || return 1
+}
+if [[ ${OMACVM_OMARCHY:-} == 4.5 ]]; then
+  L=/var/log/omacvm-omarchy-install.log
+  declare -F pac_progress >/dev/null || pac_progress() { sed -u 's/\x1b\[[0-9;]*m//g' | grep --line-buffered -E '^==>' || true; }
+  set +e; omarchy45_install 2>&1 | tee "$L" | pac_progress /dev/null; rc=${PIPESTATUS[0]}; set -e
+  (( rc == 0 )) || { tail -30 "$L"; echo "Omarchy 4.5 install failed, full log: $L" >&2; exit 1; }
+  allow_mac_ssh
+  log "Omarchy installed ($(pacman -Q omarchy | cut -d' ' -f2), test only)"
+  exit 0
+fi
+
 log "system update"
 pacman -Syu --noconfirm >/dev/null 2>&1 || true
 
@@ -139,11 +203,5 @@ declare -F cache_watch >/dev/null || cache_watch() { :; }
 rm -f /run/omacvm-install-tail.pid
 mv "$H/.omacvm-install.log" "$L"; rm -f "$H/.omacvm-install.sh"
 grep -q 'INSTALL-EXIT=0' "$L" || { tail -30 "$L"; echo "omarchy-mac install failed, full log: $L" >&2; exit 1; }
-# Omarchy turns on its firewall (deny inbound). This SSH session survives, the
-# next ones from the Mac would not: let the Mac's VM network reach SSH. ufw may
-# fail to apply the rule live right after the install ("problem running"); it
-# is stored and active from the next boot, which is what counts.
-net="${SSH_CLIENT%% *}"; net="${net%.*}.0/24"
-ufw allow from "$net" to any port 22 proto tcp comment "omacvm: ssh from the Mac" >/dev/null 2>&1 || true
-ufw show added 2>/dev/null | grep -q "omacvm: ssh from the Mac" || { echo "could not add the SSH firewall rule" >&2; exit 1; }
+allow_mac_ssh
 log "Omarchy installed ($(cat "$H/.local/share/omarchy/version" 2>/dev/null))"

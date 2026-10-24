@@ -332,6 +332,12 @@ echo OMACVM_GRAPHICS=opengl > "$M/etc/omacvm/env"; mkdir -p "$M/etc/vulkan/icd.d
 [[ $(lines) == 'vo=gpu gpu-api=opengl ' ]] && pass "mpv.sh: gpu-api=opengl while OmacVM's Venus driver is there" || fail "mpv.sh with the Venus ICD: $(lines)"
 rm -f "$M/etc/vulkan/icd.d/omacvm_venus_icd.json"; printf 'OMACVM_VM_TYPE=utm\nOMACVM_FEATURE_vulkan=off\n' > "$M/etc/omacvm/env"; mp
 [[ $(blocks) == 1 && $(lines) == 'vo=gpu ' ]] && pass "mpv.sh in a UTM VM: vo=gpu only" || fail "mpv.sh in a UTM VM wrote: $(lines)"
+# Omarchy 4.5's omarchy-settings ships mpv.conf and its updates replace it: a pacman hook runs
+# mpv.sh again after them (inert on 4.0, where nothing ships the file).
+HK=$M/etc/pacman.d/hooks/zz-omacvm-mpv.hook
+[[ $(grep -cxE 'Target = etc/mpv/mpv.conf|When = PostTransaction|Operation = (Install|Upgrade)' "$HK" 2>/dev/null) == 4 ]] &&
+  grep -qxF "Exec = /bin/sh -c '[ ! -x /usr/local/share/omacvm/app/guest/venus/mpv.sh ] || /usr/local/share/omacvm/app/guest/venus/mpv.sh >/dev/null'" "$HK" &&
+  pass "mpv.sh: pacman hook for mpv.conf from a package (Omarchy 4.5)" || fail "mpv.sh: hook missing or wrong: $(cat "$HK" 2>&1)"
 OMACVM_MPV_ROOT=$M "$D/mpv.sh" --nonsense >/dev/null 2>&1; [[ $? == 2 ]] && pass "mpv.sh: unknown option: usage" || fail "mpv.sh: unknown option accepted"
 if (( EUID != 0 )); then
   out=$("$D/mpv.sh" 2>&1); rc=$?
