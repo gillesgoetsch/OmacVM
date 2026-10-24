@@ -139,14 +139,14 @@ cmd_move() {
   pacman -Q omarchy-keyring >/dev/null 2>&1 || cmd_keyring
   cmd_repos "$c"
   # One transaction: the new repos' omarchy and omarchy-settings with the whole
-  # system (-uu: Omarchy's mirror may be a little behind Arch Linux ARM). Never
+  # system (-u twice: Omarchy's mirror may be a little behind Arch Linux ARM). Never
   # -Sy alone (guest/pkg-add). OMARCHY_UPDATE_PACMAN: Omarchy's pacman guard
   # lets an Omarchy update through; --ask 4: replacements without overwrites.
   # 4.5's omarchy-settings owns /etc/mpv/mpv.conf (hwdec=auto-safe), which
   # OmacVM wrote before (app/guest/venus/mpv.sh): the package's file replaces
   # it, and mpv.sh puts its block back into it right after.
   say "omarchy + omarchy-settings from channel $c (with the whole system)"
-  if ! OMARCHY_UPDATE_PACMAN=1 pacman -Syuu --noconfirm --ask 4 --overwrite /etc/mpv/mpv.conf omarchy omarchy-settings; then
+  if ! OMARCHY_UPDATE_PACMAN=1 pacman -Syu --sysupgrade --noconfirm --ask 4 --overwrite /etc/mpv/mpv.conf omarchy omarchy-settings; then
     cmd_back; die "the package switch failed; the 4.0 repo files are back"
   fi
   [[ ! -x $G/../app/guest/venus/mpv.sh ]] || "$G/../app/guest/venus/mpv.sh" >/dev/null || say "mpv's defaults are not set again"
