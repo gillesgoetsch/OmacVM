@@ -111,7 +111,8 @@ omarchy45_install() {
   log "system update from Omarchy's repos"
   pacman -Syuu --noconfirm --ask 4 || return 1
   log "Omarchy's packages"
-  pacman -S --needed --noconfirm --ask 4 base-devel git omarchy-keyring archlinuxarm-keyring omarchy-settings lua51 luarocks omarchy-nvim &&
+  # snapper: Omarchy's setup configures it (the ISO adds it with Limine on aarch64).
+  pacman -S --needed --noconfirm --ask 4 base-devel git omarchy-keyring archlinuxarm-keyring omarchy-settings lua51 luarocks omarchy-nvim snapper &&
     pacman -S --needed --noconfirm --ask 4 omarchy || return 1
   pkgs=$(OMARCHY_PATH=/usr/share/omarchy /usr/share/omarchy/bin/omarchy-pkg-defaults aarch64) || return 1
   # shellcheck disable=SC2086 # one package name per word
