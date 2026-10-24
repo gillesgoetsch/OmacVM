@@ -641,6 +641,9 @@ jobs:
       - name: Per-display workspaces step aside on Omarchy 4.5 and keep the rest of bindings.lua (test only, #506)
         run: src/tests/workspaces-45.sh
 
+      - name: Omarchy 4.5's repo files, status and initramfs drop-in (test only, #506)
+        run: src/tests/omarchy-45.sh
+
       - name: OmacVM.app moves VM folders safely (fixtures, small disk images)
         run: src/tests/app-storage.sh
 
@@ -878,6 +881,9 @@ jobs:
 
       - name: Per-display workspaces step aside on Omarchy 4.5 on Linux (GNU awk, as in the VM)
         run: src/tests/workspaces-45.sh
+
+      - name: Omarchy 4.5's repo files, status and initramfs drop-in on Linux (bash 5, GNU tools, as in the VM)
+        run: src/tests/omarchy-45.sh
 
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh
