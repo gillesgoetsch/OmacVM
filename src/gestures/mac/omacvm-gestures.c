@@ -276,6 +276,9 @@ static int tpW = 15600, tpH = 9600;   // built-in trackpad, 1/100 mm
 static FILE *rec;                 // --record: trackpad frames and macOS's scroll, for analysis
 static double unixNow(void) { return CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970; }
 static volatile int fingers;      // contacts in the touching trackpad's last frame
+// macOS's Three Finger Drag as last read (threeDragLook): 1 = three fingers on
+// a trackpad drag in macOS, so a three-finger touch stays macOS's.
+static volatile int threeDrag;
 // The trackpads (built-in, Magic Trackpads, also ones connected later): the
 // one touching now has its frames sent; scroll momentum takes only scrolling
 // that a trackpad's fingers make (scroll-model.h), never a mouse's.
@@ -476,7 +479,9 @@ static int frameCb(MTDeviceRef dev, MTTouch *touches, int n, double ts, int fram
     fprintf(rec, "F\t%.4f\t%d\t%.5f\t%.5f\t%d\n", unixNow(), k, sx / k, sy / k, capturing);
   }
   if (capturing && gesturesOn()) {
-    if (k >= 3 || (k == 2 && glideOn())) send = 1;
+    // Three Finger Drag on: three fingers are macOS's drag (it reaches the
+    // VM app as the pointer's), only four or more are the guest's.
+    if ((k >= 3 && !(k == 3 && threeDrag)) || (k == 2 && glideOn())) send = 1;
     else if (k == 2) {
       float dx = c[0]->normalized.pos.x - c[1]->normalized.pos.x, dy = c[0]->normalized.pos.y - c[1]->normalized.pos.y;
       float d = sqrtf(dx * dx + dy * dy);
@@ -1330,6 +1335,7 @@ static void logPermissions(void) {
 }
 
 static void swipeOutLook(void);
+static void threeDragLook(void);
 static void takeLook(void);
 static void replayLook(void);
 static int takeOn(void);
@@ -1337,6 +1343,7 @@ static void updateCapture(CFRunLoopTimerRef t, void *info) {
   (void)info;
   logPermissions();
   swipeOutLook();
+  threeDragLook();
   // While a swipe out is the Mac's, macOS's own Space move shows other
   // windows and apps: the capture stays as it is until it is over.
   if (takeOn()) {
@@ -2244,6 +2251,45 @@ static int restTapSetting(void) {
   return !valid || on;
 }
 
+// macOS's Three Finger Drag (System Settings > Accessibility > Pointer
+// Control > Trackpad Options > Dragging style): three fingers on a trackpad
+// drag, and macOS moves its own Space and Mission Control swipes to four
+// fingers. Then a three-finger touch is left to macOS (its drag reaches the
+// VM app as the pointer's) and only four or more fingers go to the VM, so a
+// drag never switches workspaces too. Read where macOS keeps it,
+// TrackpadThreeFingerDrag of the built-in trackpad's domain and of the Magic
+// Trackpad's (System Settings writes both), with the capture check (at most
+// once a second), so a change counts at once. Off (the default): three and
+// four fingers both go to the VM, as before.
+#ifndef THREE_DRAG_DOMAINS
+#define THREE_DRAG_DOMAINS { CFSTR("com.apple.AppleMultitouchTrackpad"), CFSTR("com.apple.driver.AppleBluetoothMultitouch.trackpad") }
+#endif
+static int threeDragSetting(void) {
+  CFStringRef domains[] = THREE_DRAG_DOMAINS;
+  int on = 0;
+  for (size_t i = 0; i < sizeof domains / sizeof *domains && !on; i++) {
+    CFPreferencesAppSynchronize(domains[i]);
+    Boolean valid = false;
+    on = CFPreferencesGetAppBooleanValue(CFSTR("TrackpadThreeFingerDrag"), domains[i], &valid) && valid;
+  }
+  return on;
+}
+static int (*threeDragFn)(void) = threeDragSetting;
+static double threeDragLooked = -1;
+static double threeDragEvery = 1.0;   // s between two looks (the offline test sets 0)
+
+static void threeDragLook(void) {
+  double now = monoNow();
+  if (threeDragLooked >= 0 && now - threeDragLooked < threeDragEvery) return;
+  int first = threeDragLooked < 0;
+  threeDragLooked = now;
+  int on = threeDragFn() ? 1 : 0;
+  if (on == threeDrag && !first) return;
+  threeDrag = on;
+  logf_("three finger drag (macOS) %s", on ? "on: three fingers stay macOS's drag, four and more go to the VM"
+                                           : "off: three and four fingers go to the VM");
+}
+
 static int swipeOutSetting(void) {
   CFPreferencesAppSynchronize(GESTURES_DOMAIN);
   Boolean valid = false;
@@ -2897,11 +2943,15 @@ static void takeLook(void) {
 // same; 0 = the guest's), only toward a macOS Space, with k fingers: only a
 // count the guest switches workspaces with that way ("G"; a guest that did
 // not say: any 3 or more). k = 0: with any count (worth holding back?).
-static void takeSides(int *sl, int *sr, int k) {
+// pad: the trackpad's fingers (a Magic Mouse's virtual ones are never macOS's drag).
+static void takeSides(int *sl, int *sr, int k, int pad) {
   *sl = *sr = 0;
   if (swipeOut != 1) return;
   int e[2] = { 0, 0 }, n = 0, all = 1;
-  unsigned ok[2] = { ~0u << 3, ~0u << 3 };   // fingers allowed per way: 3 and more
+  // Fingers allowed per way: 3 and more, 4 and more with Three Finger Drag
+  // (three are macOS's drag).
+  int least = pad && threeDrag ? 4 : 3;
+  unsigned ok[2] = { ~0u << least, ~0u << least };
   pthread_mutex_lock(&sendLock);
   for (int i = 0; i < MAX_CLIENTS; i++) {
     if (clients[i].fd < 0 || !clients[i].target) continue;
@@ -2912,7 +2962,7 @@ static void takeSides(int *sl, int *sr, int k) {
   }
   pthread_mutex_unlock(&sendLock);
   if (!n || !all) return;
-  for (int w = 0; w < 2; w++) if (k > 0 ? k > 31 || !(ok[w] & 1u << k) : !(ok[w] & ~7u)) e[w] = 0;
+  for (int w = 0; w < 2; w++) if (k > 0 ? k > 31 || !(ok[w] & 1u << k) : !(ok[w] & ~0u << least)) e[w] = 0;
   pthread_mutex_lock(&takeLock);
   TakeDisplay t = takeDisp; int busy = takeRun.on;
   pthread_mutex_unlock(&takeLock);
@@ -3089,8 +3139,8 @@ static int takePadFrame(MTTouch **c, int k) {
   if (k) spread /= k;
   static int spreadK;
   int wl = 0, wr = 0, sl = 0, sr = 0;
-  if (padTake.state == TAKE_IDLE && k >= 3) takeSides(&wl, &wr, 0);
-  if ((padTake.state == TAKE_IDLE || padTake.state == TAKE_WATCH) && k >= 3) takeSides(&sl, &sr, k);
+  if (padTake.state == TAKE_IDLE && k >= 3) takeSides(&wl, &wr, 0, 1);
+  if ((padTake.state == TAKE_IDLE || padTake.state == TAKE_WATCH) && k >= 3) takeSides(&sl, &sr, k, 1);
   int was = padTake.state;
   int tk = takeFrame(&padTake, k, wl, wr, sl, sr, ddx, ddy, takeTravel, takeClock());
   // Still not clear which way: fingers spreading or closing (a pinch) are no
@@ -3116,7 +3166,7 @@ static int takePadFrame(MTTouch **c, int k) {
 static int takeMouseFrame(SwipeTake *t, int k, double step) {
   if (!(capturing && gesturesOn())) return takeAbort(t, k);
   int sl = 0, sr = 0;   // its virtual fingers (MouseSwipeFingers): as many as the guest gets
-  if ((t->state == TAKE_IDLE || t->state == TAKE_WATCH) && k >= 3) takeSides(&sl, &sr, k);
+  if ((t->state == TAKE_IDLE || t->state == TAKE_WATCH) && k >= 3) takeSides(&sl, &sr, k, 0);
   int tk = takeFrame(t, k, sl, sr, sl, sr, step, 0, takeTravel * TAKE_MOUSE_TRAVEL, takeClock());
   takeAct(t, tk, "Magic Mouse");
   return tk;
@@ -3391,6 +3441,8 @@ static CGEventRef tapCb(CGEventTapProxy p, CGEventType type, CGEventRef e, void 
   }
   // A gesture event type. Also just after a swipe the Mac took (TAKE_QUIET):
   // the trackpad's own end of it must not reach the Dock's swipe.
+  // A three-finger touch with Three Finger Drag is macOS's drag: its events pass.
+  if (threeDrag && fingers == 3) return e;
   return (capturing && gesturesOn()) || monoNow() < takeQuietUntil ? NULL : e;
 }
 

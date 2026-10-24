@@ -71,6 +71,10 @@
 #    is not; beside a Magic Trackpad touched last, the built-in one's new device
 #    does not take over, so the guest hears its size when it is touched next
 #    (test-trackpads.c, made-up devices).
+# 12. macOS's Three Finger Drag on (read live): three fingers stay macOS's drag
+#    (nothing to the guest, macOS's gesture events pass, no swipe out with
+#    three), four still go to the VM; off (the default): three and four go to
+#    the VM as before (test-three-drag.c, made-up frames).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 T=$(mktemp -d)
@@ -79,7 +83,8 @@ killtree() { local p; for p in "$@"; do pkill -P "$p" 2>/dev/null || true; kill 
 # Its own settings domain per run: two runs at once on one Mac (CI) keep apart.
 MOUSE_DOMAIN=org.omacvm.test.mouse-fingers.$$
 SHARE_DOMAIN=org.omacvm.test.share-keyboard.$$
-trap 'killtree ${PIDS:-}; rm -rf "$T"; defaults delete "$MOUSE_DOMAIN" >/dev/null 2>&1 || true; defaults delete "$SHARE_DOMAIN" >/dev/null 2>&1 || true; rm -f "$HOME/Library/Preferences/$SHARE_DOMAIN.plist"' EXIT
+DRAG_DOMAIN=org.omacvm.test.three-drag.$$
+trap 'killtree ${PIDS:-}; rm -rf "$T"; for d in "$MOUSE_DOMAIN" "$SHARE_DOMAIN" "$DRAG_DOMAIN"; do defaults delete "$d" >/dev/null 2>&1 || true; rm -f "$HOME/Library/Preferences/$d.plist"; done' EXIT
 trap 'exit 130' INT TERM
 clang -O1 -Wall -Wno-unused-function -o "$T/test-gestures" "$HERE/test-gestures.c" "$HERE/scroll_ns.m" \
   -F/System/Library/PrivateFrameworks -framework MultitouchSupport -framework ApplicationServices -framework Carbon \
@@ -374,6 +379,14 @@ clang -O1 -Wall -Wno-unused-function -o "$T/test-wait" "$HERE/test-wait.c" "$HER
   -framework CoreFoundation -framework AppKit -framework IOKit
 "$T/test-wait" > "$T/wait" 2>&1 || fail=1
 grep -E '^(ok|FAIL) ' "$T/wait"
+# 12. macOS's Three Finger Drag (its setting in a throwaway domain, deleted after).
+clang -O1 -Wall -Wno-unused-function "-DTHREE_DRAG_DOMAIN=\"$DRAG_DOMAIN\"" -o "$T/test-three-drag" "$HERE/test-three-drag.c" "$HERE/scroll_ns.m" \
+  -F/System/Library/PrivateFrameworks -framework MultitouchSupport -framework ApplicationServices -framework Carbon \
+  -framework CoreFoundation -framework AppKit -framework IOKit
+"$T/test-three-drag" > "$T/three-drag" 2>&1 || fail=1
+grep -E '^(ok|FAIL) ' "$T/three-drag"
+n=$(grep -c "three finger drag (macOS) on: three fingers stay macOS's drag" "$T/three-drag" || true)
+if [[ $n == 1 ]]; then echo "ok   Three Finger Drag turned on is logged once"; else echo "FAIL logged $n times, want 1" >&2; fail=1; fi
 # 11. Devices macOS made anew: a wake from deep sleep makes the built-in trackpad's.
 clang -O1 -Wall -Wno-unused-function -o "$T/test-trackpads" "$HERE/test-trackpads.c" "$HERE/scroll_ns.m" \
   -F/System/Library/PrivateFrameworks -framework MultitouchSupport -framework ApplicationServices -framework Carbon \

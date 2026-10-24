@@ -5,6 +5,11 @@ in more words.
 
 ## 3.1.32 (unreleased)
 
+- **Three Finger Drag.** With macOS's Three Finger Drag on (System Settings > Accessibility >
+  Pointer Control > Trackpad Options > Dragging style), dragging with three fingers in the
+  full-screen VM also switched Omarchy's workspaces. Three fingers now stay macOS's drag and only
+  four-finger swipes go to the VM, as macOS itself does then. The setting is read live; with it
+  off (the default) three and four fingers both switch workspaces as before.
 - **Vulkan windows show each new frame at once.** With "Vulkan windows without a copy" on (the
   default since 3.1.26, macOS 26 and newer), a Vulkan app's window showed its previous frame for
   one screen refresh after each new one: in Zed the caret jumped back a character for a moment on
