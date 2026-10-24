@@ -80,6 +80,14 @@ render_mirrors() {   # CHANNEL: upstream's default/pacman/aarch64/mirrorlist-CHA
   printf '%s\n%s\nServer = https://%s/$arch/$repo\n' \
     "# Omarchy's mirror of Arch Linux ARM, over HTTPS since the repository databases" \
     "# are unsigned. It keeps Arch Linux ARM's \$arch/\$repo layout." "$host"
+  # Then the VM's own HTTPS mirrors of Arch Linux ARM (base-install.sh picked
+  # them), for a file Omarchy's mirror lists but does not have yet (2026-10-24:
+  # luajit 404 on arm-rc-mirror while its database already named it).
+  # Packages are signed; the database still comes from the first server.
+  if grep -qs '^Server = https://[a-z0-9.-]*archlinuxarm\.org/' "$MIRRORS.omacvm-40"; then
+    echo "# OmacVM: Arch Linux ARM's own mirrors when Omarchy's lacks a file"
+    grep '^Server = https://[a-z0-9.-]*archlinuxarm\.org/' "$MIRRORS.omacvm-40"
+  fi
 }
 
 cmd_repos() {
