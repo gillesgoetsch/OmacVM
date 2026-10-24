@@ -589,7 +589,7 @@ firmware maps no device at all (3.0.0: a Vulkan start there never boots).
 From 3.0.1 the app adds `highmem-mmio-size=<n>G` to the machine there
 (`Graphics.highWindowGB`, 16 GB at most) and
 `qemu-virt-small-high-window.patch` puts that window right above RAM; the
-host memory window takes at most half of it (M2 Air, 4 GB VM: 1 GB in
+host memory window takes at most half of it (M2 Air, 4 GB VM: 4 GB in
 16-32 GB). If no window fits (a VM near 64 GB), or the app's QEMU lacks the
 patch (the app looks for the patch's error text in the binary), it is
 256 MB, which fits below 1 GB.

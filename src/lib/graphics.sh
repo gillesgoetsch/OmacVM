@@ -14,6 +14,7 @@ GRAPHICS_WAITING_FOR_DRIVER="driver not built yet: runs on OpenGL until it is bu
 GRAPHICS_DID_NOT_START="Vulkan did not start on this Mac: using OpenGL"   # Graphics.didNotStart
 GRAPHICS_HIGH_PCI_WINDOW_BITS=40     # Graphics.highPCIWindowBits
 GRAPHICS_LOW_WINDOW_HOSTMEM_MB=256   # Graphics.lowWindowHostmemMB
+GRAPHICS_MIN_HOSTMEM_GB=4            # Graphics.minHostmemGB
 GRAPHICS_SMALL_HIGH_WINDOW_MAX_GB=16 # Graphics.smallHighWindowMaxGB
 
 graphics_choice() {   # DIR -> opengl|vulkan|auto
@@ -102,9 +103,9 @@ graphics_high_window_gb() {   # VM_GB [VM_ADDRESS_BITS]
   done
 }
 
-# Venus's host memory window in MB: Graphics.hostmemMB (on a Mac whose VMs
-# get less than 40 address bits, M1/M2: at most half the small high PCI
-# window, or 256 MB when none fits).
+# Venus's host memory window in MB: Graphics.hostmemMB, at least
+# GRAPHICS_MIN_HOSTMEM_GB (on a Mac whose VMs get less than 40 address bits,
+# M1/M2: at most half the small high PCI window, or 256 MB when none fits).
 graphics_hostmem_mb() {   # MAC_GB VM_GB [VM_ADDRESS_BITS]
   local reserve=8 free p=1 w m
   if [[ -n ${3:-} ]] && (( $3 < GRAPHICS_HIGH_PCI_WINDOW_BITS )); then
@@ -117,7 +118,7 @@ graphics_hostmem_mb() {   # MAC_GB VM_GB [VM_ADDRESS_BITS]
   (( $1 <= 36 )) && reserve=6
   (( $1 <= 16 )) && reserve=4
   free=$(( $1 - $2 - reserve ))
-  (( free < 1 )) && free=1
+  (( free < GRAPHICS_MIN_HOSTMEM_GB )) && free=$GRAPHICS_MIN_HOSTMEM_GB
   (( free > 32 )) && free=32
   while (( p * 2 <= free )); do p=$(( p * 2 )); done
   echo $(( p * 1024 ))

@@ -15,6 +15,10 @@ in more words.
   `MESA_VK_WSI_DEBUG=sw,nowlts` to `~/.config/environment.d/50-vulkan-present.conf` to get around
   it, take that line out after the update and log in again: Vulkan windows then go through the
   GPU again. The VM needs no update.
+- **Local AI models load with Vulkan on smaller Macs.** The VM's Vulkan memory window is now at
+  least 4 GB. It was 1 GB for a 4 GB VM on an 8 GB Mac and 2 GB for a 24 GB VM on a 32 GB Mac,
+  too small for a 3B language model's weights. The window is only address space: what Vulkan
+  really uses still counts against the GPU memory budget, which follows macOS's memory pressure.
 
 ## 3.1.31
 

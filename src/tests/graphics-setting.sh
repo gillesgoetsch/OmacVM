@@ -54,16 +54,19 @@ expect "Automatic waits for the VM's driver"        opengl "$(line 'auto 27 1 0 
 expect "Automatic, macOS 26 without KosmicKrisp"    opengl "$(line 'auto 26 0 1 0 16 8 42 0')"
 expect "Automatic, macOS 15 (MoltenVK)"             opengl "$(line 'auto 15 1 1 0 16 8 42 0')"
 expect "vulkan feature keeps Vulkan under OpenGL"   vulkan "$(line 'opengl 15 0 0 1 16 8 42 0')"
-# The host memory window: what the Mac has beyond the VM and macOS's reserve.
-expect "8 GB Mac, 4 GB VM: 1 GB"    1024  "$(mem 'auto 15 0 0 0 8 4 42 0')"
+# The host memory window: what the Mac has beyond the VM and macOS's reserve, at least 4 GB.
+expect "8 GB Mac, 4 GB VM: 4 GB (floor)"    4096  "$(mem 'auto 15 0 0 0 8 4 42 0')"
 expect "16 GB Mac, 8 GB VM: 4 GB"   4096  "$(mem 'auto 15 0 0 0 16 8 42 0')"
 expect "36 GB Mac, 16 GB VM: 8 GB"  8192  "$(mem 'auto 15 0 0 0 36 16 42 0')"
+expect "32 GB Mac, 24 GB VM: 4 GB (floor, was 2)" 4096 "$(graphics_hostmem_mb 32 24)"
+expect "16 GB Mac, 12 GB VM: 4 GB (floor, was 1)" 4096 "$(graphics_hostmem_mb 16 12)"
+expect "64 GB Mac, 16 GB VM: 32 GB (cap)" 32768 "$(graphics_hostmem_mb 64 16)"
 expect "128 GB Mac, 16 GB VM: 32 GB (most)" 32768 "$(mem 'auto 15 0 0 0 128 16 42 0')"
 expect "128 GB Mac, 48 GB VM: 64 -> 32 GB"  32768 "$(mem 'auto 15 0 0 0 128 48 42 0')"
 # M1/M2 (36-bit VM address space): QEMU's own high PCI window does not fit,
 # so the app asks for a small one right above RAM (16 GB at most); the host
 # memory window takes at most half of it. A 1 GB BAR never fits below 1 GB.
-expect "M2 Air, 8 GB Mac, 4 GB VM: 1 GB"    1024 "$(mem 'vulkan 26 1 1 0 8 4 36 0')"
+expect "M2 Air, 8 GB Mac, 4 GB VM: 4 GB (floor; half the window is 8)" 4096 "$(mem 'vulkan 26 1 1 0 8 4 36 0')"
 expect "  ... in a 16 GB PCI window"        16   "$(win 'vulkan 26 1 1 0 8 4 36 0')"
 expect "M2, 128 GB Mac, 16 GB VM: 8 GB (half of 16)" 8192 "$(mem 'vulkan 26 1 1 0 128 16 36 0')"
 expect "M2, 128 GB Mac, 48 GB VM: 8 GB window" 8   "$(win 'vulkan 26 1 1 0 128 48 36 0')"
@@ -104,8 +107,8 @@ expect "watch: no picture before the firmware -> OpenGL at once, this start only
 expect "watch: console output counts as firmware" wait "$(wv console-only)"
 expect "watch: the Mac's wake resets the silence" wait "$(wv woke)"
 expect "watch: info pci mapped / not mapped"    "true false" "$(wv pci-mapped)"
-expect "watch: hostmem by address bits"         "1024 1024 1024 256 MB 4 GB" "$(wv bits)"
-expect "qemu.log line on the Air" "vulkan -> vulkan (chosen, KosmicKrisp), host memory window 1 GB, PCI window 16 GB" "$(wv record)"
+expect "watch: hostmem by address bits"         "4096 4096 4096 256 MB 4 GB" "$(wv bits)"
+expect "qemu.log line on the Air" "vulkan -> vulkan (chosen, KosmicKrisp), host memory window 4 GB, PCI window 16 GB" "$(wv record)"
 expect "qemu.log line after a kept fallback (one pair of brackets)" "vulkan -> opengl (Vulkan did not start on this Mac: the firmware found no devices; choose Vulkan again to try once more)" "$(wv record-kept)"
 expect "  ... and its summary" "Vulkan did not start on this Mac: using OpenGL (the firmware found no devices; choose Vulkan again to try once more)" "$(wv summary-kept)"
 expect "qemu.log line after a fallback for one start" "vulkan -> opengl (Vulkan did not start on this Mac: no picture from the VM after 90 s; the next start tries Vulkan again)" "$(wv record-once)"
@@ -139,6 +142,8 @@ s_bits=$(sed -n 's/.*static let highPCIWindowBits = \([0-9]*\).*/\1/p' "$R/app/a
 s_low=$(sed -n 's/.*static let lowWindowHostmemMB = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
 expect "high PCI window bits: same" "$s_bits" "$GRAPHICS_HIGH_PCI_WINDOW_BITS"
 expect "low window hostmem: same" "$s_low" "$GRAPHICS_LOW_WINDOW_HOSTMEM_MB"
+s_min=$(sed -n 's/.*static let minHostmemGB = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
+expect "host memory window floor: same" "$s_min" "$GRAPHICS_MIN_HOSTMEM_GB"
 s_win=$(sed -n 's/.*static let smallHighWindowMaxGB = \([0-9]*\).*/\1/p' "$R/app/app/Sources/OmacVM/Graphics.swift")
 expect "small high window: same" "$s_win" "$GRAPHICS_SMALL_HIGH_WINDOW_MAX_GB"
 

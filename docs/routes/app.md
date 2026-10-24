@@ -167,7 +167,7 @@ VM runs, and goes back by itself when a new version does not start
   in Chromium" row.
   Vulkan's host memory window (Venus' `hostmem`) comes from the VM's memory
   plan: what the Mac has beyond the VM's memory and macOS's reserve (4 GB up
-  to 16 GB of memory, 6 GB up to 36 GB, 8 GB above), 1 to 32 GB; what Vulkan
+  to 16 GB of memory, 6 GB up to 36 GB, 8 GB above), 4 to 32 GB; what Vulkan
   allocates counts against the VM's GPU memory budget.
   The hidden `venus` switch of 2.9 is gone: the app's first 3.0.0 launch
   moves it into the setting (Vulkan for each VM without its own choice).

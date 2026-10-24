@@ -65,6 +65,12 @@ decides whether Vulkan apps get the Mac's GPU, not how the desktop draws.
   design): Mac memory minus the VM's minus macOS's reserve (4/6/8 GB),
   a power of two from 1 to 32 GB. It is address space; allocations count
   against the GPU memory budget (`virgl-venus-memory-budget.patch`).
+  Amended for 3.1.32: at least 4 GB (`Graphics.minHostmemGB`). The budget
+  follows macOS's memory pressure (ADR 0034), so the reserve in the plan
+  only keeps big Macs from getting a needlessly large window; with 1 or 2 GB
+  (a 4 GB VM on an 8 GB Mac, a 24 GB VM on a 32 GB Mac) a 3B language
+  model could not map its weights. M1/M2 keep the cap of half the small
+  high PCI window.
 
 ## Consequences
 
