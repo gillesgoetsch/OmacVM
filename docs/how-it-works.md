@@ -84,9 +84,11 @@ Gestures, `notchcast` in the VM.
 - **The memory-optimized kernel** (`src/kernel/`, opt-in) is Arch Linux ARM's
   own `linux-aarch64`, rebuilt with transparent huge pages always on and
   MGLRU; the stock kernel stays in GRUB as a fallback.
-- **Memory** (`src/memory/`): the VM never hands back memory it touched while
-  it runs, so the guest keeps a small zram and reclaims smoothly instead of
-  hoarding.
+- **Memory** (`src/memory/`): Parallels and Fusion never hand back memory the
+  VM touched while it runs, so the guest keeps a small zram and reclaims
+  smoothly instead of hoarding. In OmacVM.app the VM gives freed memory back
+  in 256 KiB blocks (`page_reporting_order` 6; the kernel's default is 2 MiB
+  blocks, which leaves most of a freed page cache with the VM).
 
 ## The wallpaper
 

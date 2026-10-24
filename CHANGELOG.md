@@ -15,6 +15,11 @@ in more words.
   `MESA_VK_WSI_DEBUG=sw,nowlts` to `~/.config/environment.d/50-vulkan-present.conf` to get around
   it, take that line out after the update and log in again: Vulkan windows then go through the
   GPU again. The VM needs no update.
+- **More memory back to the Mac.** OmacVM.app's VM now gives memory Linux frees back to the Mac in
+  256 KiB blocks, not only in whole 2 MiB ones. After a build and a dropped file cache, a 4 GB VM
+  held 1.1-1.4 GB less of the Mac's memory, for about 0.5 % more CPU during the build; bigger VMs get
+  more back. Takes effect with Update VM (no restart needed); `omacvm check` shows it as
+  "memory back to the Mac".
 
 ## 3.1.31
 

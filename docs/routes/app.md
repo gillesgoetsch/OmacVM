@@ -1093,7 +1093,8 @@ apps, the GPU. A VM takes two kinds from it:
 - **VM memory** is the VM's RAM, the number you pick for the VM ("Resources"
   in the app, `omacvm resources`). Linux sees exactly that much. The Mac
   gives it as the VM touches it, and the VM gives back what Linux frees
-  (QEMU's balloon device with free page reporting).
+  (QEMU's balloon device with free page reporting, in blocks of 256 KiB and
+  up: `src/memory/guest/90-omacvm-mm.tmpfiles`).
 - **Graphics memory** is extra, on top: the textures and buffers the VM's
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
   grows and shrinks with what is on screen: Omarchy alone at 5K about

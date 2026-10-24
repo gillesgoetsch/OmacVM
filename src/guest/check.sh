@@ -718,6 +718,13 @@ if [[ -n $lru && $lru != 0x0000 ]]; then ok "MGLRU" "$lru"
 elif [[ $k == *thp* ]]; then bad "MGLRU" "${lru:-unavailable}"
 else skip "MGLRU" "${lru:-not in this kernel} (part of the memory-optimized kernel)"; fi
 FEATURE=""
+# OmacVM.app: freed memory goes back to the Mac in 256 KiB blocks (memory/guest/90-omacvm-mm.tmpfiles).
+if [[ $TYPE == app ]]; then
+  o=$(cat /sys/module/page_reporting/parameters/page_reporting_order 2>/dev/null)
+  if [[ -z $o ]]; then skip "memory back to the Mac" "this kernel has no free page reporting"
+  elif [[ $o == 6 ]]; then ok "memory back to the Mac" "freed memory in 256 KiB blocks and up"
+  else warn "memory back to the Mac" "only in blocks of order $o (Update VM / omacvm apply sets 256 KiB)"; fi
+fi
 z=$(swapon --show=NAME,SIZE --noheadings 2>/dev/null | awk '/zram/ { print $2; exit }')
 [[ -n $z ]] && ok "zram swap" "$z" || bad "zram swap" "none (reboot after omacvm apply?)"
 if command -v grub-mkconfig >/dev/null; then
