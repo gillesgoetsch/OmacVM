@@ -282,6 +282,9 @@ jobs:
       - name: Battery watts and time left (Mac snapshot, VM agent, module on a kernel stand-in)
         run: src/tests/battery.sh
 
+      - name: The VM's time zone follows the Mac's (agent on a stand-in for /, a zone set by hand kept)
+        run: src/tests/timezone.sh
+
       - name: Gestures offline test (which VM gets them)
         run: src/gestures/mac/test.sh
 

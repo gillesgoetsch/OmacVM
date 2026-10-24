@@ -1,0 +1,14 @@
+[Unit]
+Description=OmacVM: the VM's time zone follows the Mac's
+After=network-online.target
+Wants=network-online.target
+# It retries by itself while the Mac's side is away (asleep, Bridge restarting).
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/omacvm-timezone
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

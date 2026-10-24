@@ -210,6 +210,14 @@ if [[ $BRIDGE == on ]]; then
   else bad "shared event stream" "$n connections to the Mac (widgets from before it: log out and in)"; fi
   if user_active omacvm-bridge-osd.service; then ok "media keys OSD" "omacvm-bridge-osd"
   else bad "media keys OSD" "omacvm-bridge-osd.service not running"; fi
+  # The VM's time zone follows the Mac's (omacvm-timezone); one set by hand is kept.
+  read -r tzm tzv tzmac < <(/usr/local/bin/omacvm-timezone --status 2>/dev/null || echo "none - -")
+  if [[ ! -x /usr/local/bin/omacvm-timezone ]]; then bad "time zone" "omacvm-timezone missing (omacvm apply)"
+  elif ! systemctl is-active -q omacvm-timezone; then bad "time zone" "omacvm-timezone.service not running (omacvm apply)"
+  elif [[ $tzm == follows ]]; then ok "time zone" "$tzv, the Mac's"
+  elif [[ $tzm == by-hand ]]; then ok "time zone" "$tzv, set in the VM (the Mac's is $tzmac; set the Mac's and it follows again)"
+  elif [[ $tzm == waiting ]]; then bad "time zone" "could not set $tzmac (journalctl -u omacvm-timezone)"
+  else skip "time zone" "no zone from the Mac yet (an older Bridge: omacvm update on the Mac)"; fi
   # Omarchy's brightness commands reach the external Mac display an output is on.
   FEATURE=external-brightness
   if [[ $EXT_BRIGHTNESS != on ]]; then skip "external brightness" "off (omacvm enable external-brightness)"

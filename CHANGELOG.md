@@ -5,6 +5,11 @@ in more words.
 
 ## 3.1.32 (unreleased)
 
+- **The VM's time zone follows the Mac's.** The VM took the Mac's time zone only when it was set
+  up, so after a trip its clock was off by the time difference. The Bridge now sends the Mac's
+  zone, and the VM follows it at every start and within seconds of a change on the Mac. A zone
+  you set in the VM yourself (Omarchy's menu, `timedatectl`) is kept; set it back to the Mac's
+  and it follows again. `omacvm check` shows which (line "time zone").
 - **Vulkan windows show each new frame at once.** With "Vulkan windows without a copy" on (the
   default since 3.1.26, macOS 26 and newer), a Vulkan app's window showed its previous frame for
   one screen refresh after each new one: in Zed the caret jumped back a character for a moment on

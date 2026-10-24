@@ -109,9 +109,13 @@ bridge_off() {
   local b=/usr/local/bin e=/etc/systemd/user p q=$H/.local/state/omacvm/pending-plugins
   local nl=$ROOT$H/.local/state/omacvm/nightlight-indicator c=$ROOT$H/.config/omarchy/shell.json tmp
   off_any $b/omacvm-bridge $b/omacvm-bridge-osd $b/omacvm-bridge-events $e/omacvm-bridge-osd.service \
-    $e/omacvm-bridge-events.socket $e/omacvm-bridge-events.service $b/omarchy-toggle-nightlight ||
+    $e/omacvm-bridge-events.socket $e/omacvm-bridge-events.service $b/omarchy-toggle-nightlight \
+    $b/omacvm-timezone /etc/systemd/system/omacvm-timezone.service ||
     bridge_widgets_in_bar || return 0
   log "bridge: off"
+  # The time zone stays as it is now; it no longer follows the Mac.
+  systemctl disable --now omacvm-timezone.service >/dev/null 2>&1 || true
+  rm -f "$ROOT$b/omacvm-timezone" "$ROOT/etc/systemd/system/omacvm-timezone.service" "$ROOT/run/omacvm/timezone"
   user_units_off omacvm-bridge-osd.service omacvm-bridge-events.socket omacvm-bridge-events.service
   # shellcheck disable=SC2086
   off_lines "$q" $BRIDGE_WIDGETS

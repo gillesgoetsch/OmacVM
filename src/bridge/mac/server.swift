@@ -439,6 +439,8 @@ func handle(_ fd: Int32, peer: String) {
     respond(fd, 200, hub.current("bluetooth"))
   case ("GET", "/battery"):
     respond(fd, 200, hub.current("battery"))
+  case ("GET", "/timezone"):
+    respond(fd, 200, hub.current("timezone"))
   case ("POST", let p) where p.hasPrefix("/bluetooth/"):
     guard let obj = (body.isEmpty ? [:] : try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
       respond(fd, 400, ["error": "body must be a JSON object"]); return
@@ -503,7 +505,7 @@ func handle(_ fd: Int32, peer: String) {
     camera.attach(fd: fd, label: peer, leftover: Data(buf[headEnd.upperBound...]))
   case ("POST", "/power"), ("POST", "/join"), ("POST", "/disconnect"):
     respond(fd, 501, ["error": "Wi-Fi control is not implemented yet (stage 2)"])
-  case (_, "/state"), (_, "/scan"), (_, "/audio"), (_, "/display"), (_, "/bluetooth"), (_, "/battery"), (_, "/wifi/password"), (_, "/events"),
+  case (_, "/state"), (_, "/scan"), (_, "/audio"), (_, "/display"), (_, "/bluetooth"), (_, "/battery"), (_, "/timezone"), (_, "/wifi/password"), (_, "/events"),
        (_, "/camera"), (_, "/camera/status"), (_, "/display/external"), (_, "/display/external-brightness"):
     respond(fd, 405, ["error": "method not allowed"])
   default:

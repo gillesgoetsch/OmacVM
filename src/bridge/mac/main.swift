@@ -31,6 +31,7 @@
 //   POST /bluetooth/settings   opens the Mac's Bluetooth settings (pairing)
 //   POST /wallpaper        image body: the Mac's wallpaper (and lock-screen background)
 //   GET  /battery          the Mac's battery (battery.swift), for UTM and VMware Fusion VMs
+//   GET  /timezone         {"zone": "Europe/Zurich"}: the Mac's time zone, which the VM follows (omacvm-timezone)
 //   GET  /camera           the connection then carries the Mac's camera (camera.swift): the VM
 //                          sends {"type":"start"|"stop"} lines, the Bridge 1280x720 NV12 frames
 //                          while started (macOS asks for the camera permission the first time)
@@ -39,7 +40,7 @@
 //   /omacvm/...            the control centre's requests (control.swift, docs/adr/0031): hello, status,
 //                          updates, updates/check, settings/update-checks, jobs, jobs/<id>; OmacVM.app
 //                          relays its VMs' ones on the Unix socket omacvm-bridge/relay.sock (owner only)
-//   GET  /events           Server-Sent Events: "wifi", "audio", "display", "bluetooth" and "battery" on every change
+//   GET  /events           Server-Sent Events: "wifi", "audio", "display", "bluetooth", "battery" and "timezone" on every change
 //                          (RSSI is re-read every 5 s), "scan" when new scan
 //                          results exist, "osd" on volume/mute/brightness/keyboard
 //                          light changes (keys.swift), ": ping" every 15 s
@@ -144,6 +145,17 @@ func jsonString(_ obj: Any) -> String { String(decoding: jsonData(obj), as: UTF8
 
 func same(_ a: Any?, _ b: Any?) -> Bool { jsonData([nn(a)]) == jsonData([nn(b)]) }
 
+/// The Mac's time zone as its IANA name (what /etc/localtime names), read
+/// fresh each time: Foundation keeps the zone it read first.
+func timeZoneState() -> [String: Any] {
+  NSTimeZone.resetSystemTimeZone()
+  return ["zone": NSTimeZone.system.identifier]
+}
+
+func describeTimeZone(_ old: [String: Any], _ new: [String: Any]) -> String? {
+  "\(old["zone"] as? String ?? "none") -> \(new["zone"] as? String ?? "none")"
+}
+
 // ---- main ----
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
@@ -161,6 +173,8 @@ let hub = Hub([
   Feed(event: "display", delay: 0.1, read: { displayState() }, describe: describeDisplay),
   Feed(event: "bluetooth", delay: 0.3, read: { bluetooth.state() }, describe: describeBluetooth),
   Feed(event: "battery", delay: 0.3, read: { batteryState() }, describe: describeBattery, coarse: coarseBattery),
+  // Also re-read every tick while a VM listens: a change macOS did not tell about.
+  Feed(event: "timezone", delay: 0.1, read: { timeZoneState() }, describe: describeTimeZone),
 ])
 let scanner = Scanner(wifi: wifi, hub: hub, location: location)
 let servers = listenAddrs.map { addr in Server(addr: addr) { fd, peer in handle(fd, peer: peer) } }
@@ -180,6 +194,9 @@ audio.onChange = { why in hub.changed("audio", why: why); osdEvents.audioChanged
 NightShift.onChange { hub.changed("display", why: "night-shift") }
 bluetooth.onChange = { why in hub.changed("bluetooth", why: why) }
 watchPowerSources { hub.changed("battery", why: "power") }
+NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main) { _ in
+  hub.changed("timezone", why: "zone")
+}
 wifi.start()
 audio.start()
 location.start()

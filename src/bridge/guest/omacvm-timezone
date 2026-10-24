@@ -1,0 +1,231 @@
+#!/usr/bin/python3
+"""omacvm-timezone: the VM's time zone follows the Mac's (root, omacvm-timezone.service).
+
+The Bridge sends the Mac's time zone (an IANA name such as "Europe/Zurich")
+as "timezone" events of `omacvm-bridge events`: once when the stream opens
+(so at every start of the VM) and whenever the Mac's zone changes. This agent
+sets it with `timedatectl set-timezone`.
+
+A zone set by hand in the VM (Omarchy's menu, timedatectl) is kept: the agent
+remembers the zone it set last (/var/lib/omacvm/timezone); when the VM's zone
+is another one, someone else chose it, and the agent leaves it until the VM
+is on the Mac's zone again (set it back to the Mac's, and it follows again).
+Without a record (the first run) it follows: the setup took the zone from the
+Mac. For `omacvm check`: /run/omacvm/timezone keeps the Mac's last zone;
+`omacvm-timezone --status` says "<mode> <the VM's zone> <the Mac's zone>",
+mode follows, by-hand or waiting (not on the Mac's zone yet, or refused).
+
+Only a name of the zone database is taken (letters, digits, "_+-", up to
+three parts, a file under /usr/share/zoneinfo); anything else is ignored.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pwd
+import re
+import select
+import subprocess
+import sys
+import time
+
+# OMACVM_TZ_ROOT: a test's stand-in for / (zoneinfo, localtime, the record).
+ROOT = os.environ.get("OMACVM_TZ_ROOT", "")
+ZONEINFO = ROOT + "/usr/share/zoneinfo"
+LOCALTIME = ROOT + "/etc/localtime"
+RECORD = ROOT + "/var/lib/omacvm/timezone"
+STATE = ROOT + "/run/omacvm/timezone"
+ENV_FILE = ROOT + "/etc/omacvm/env"
+CLIENT = os.environ.get("OMACVM_TZ_CLIENT", "/usr/local/share/omacvm/bridge/guest/omacvm-bridge")
+SET = os.environ.get("OMACVM_TZ_SET", "timedatectl set-timezone").split()
+ZONE = re.compile(r"[A-Za-z0-9_+-]{1,32}(/[A-Za-z0-9_+-]{1,32}){0,2}")
+SILENCE_SECONDS = 45   # the Bridge pings every 15 s
+
+
+def log(message: str) -> None:
+    print(f"omacvm-timezone: {message}", file=sys.stderr, flush=True)
+
+
+def valid(zone: object) -> bool:
+    return isinstance(zone, str) and ZONE.fullmatch(zone) is not None and \
+        os.path.isfile(os.path.join(ZONEINFO, zone))
+
+
+def current_zone() -> str | None:
+    """The VM's zone, from /etc/localtime's link (as timedatectl reads it)."""
+    try:
+        target = os.readlink(LOCALTIME)
+    except OSError:
+        return None
+    marker = "zoneinfo/"
+    i = target.rfind(marker)
+    return target[i + len(marker):] if i >= 0 else None
+
+
+def read_record() -> str | None:
+    try:
+        with open(RECORD) as f:
+            zone = f.read().strip()
+    except OSError:
+        return None
+    return zone if valid(zone) else None
+
+
+def write_file(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def decide(mac: str, current: str | None, record: str | None) -> tuple[str, str | None]:
+    """What to do with the Mac's zone: ("set", zone), ("keep", None) when the
+    VM is on it already, ("by-hand", None) when someone chose another one."""
+    if record is not None and current is not None and current != record and current != mac:
+        return "by-hand", None
+    if current == mac:
+        return "keep", None
+    return "set", mac
+
+
+class Follower:
+    def __init__(self) -> None:
+        self.said: set[str] = set()
+
+    def say(self, message: str) -> None:
+        if message not in self.said:
+            self.said.add(message)
+            log(message)
+
+    def mac_zone(self, mac: object) -> None:
+        if not valid(mac):
+            self.say(f"ignored a time zone from the Mac: {str(mac)[:80]!r}")
+            return
+        assert isinstance(mac, str)
+        current, record = current_zone(), read_record()
+        action, zone = decide(mac, current, record)
+        mode = "follows"
+        if action == "by-hand":
+            mode = "by-hand"
+            self.say(f"the VM's time zone {current} was set by hand: kept, not following the Mac's")
+        elif action == "set" and zone:
+            r = subprocess.run(SET + [zone], capture_output=True, text=True)
+            if r.returncode != 0:
+                mode = "waiting"
+                self.say(f"could not set the time zone {zone}: {(r.stderr or r.stdout).strip()[:200]}")
+            else:
+                log(f"time zone {current or 'none'} -> {zone} (the Mac's)")
+                current = zone
+        if mode == "follows" and record != current and current:
+            write_file(RECORD, current + "\n")
+        write_file(STATE, f"{mode} {current or '-'} {mac}\n")
+
+
+def env_value(text: str, key: str) -> str:
+    value = ""
+    for line in text.splitlines():
+        if line.startswith(key + "="):
+            value = line[len(key) + 1:]
+    return value
+
+
+def from_bridge(follower: Follower) -> bool:
+    """The Bridge's event stream through OmacVM's own client, run as the
+    desktop user (it reads the token in the user's home). True: it was
+    connected."""
+    user = env_value(open(ENV_FILE).read(), "OMACVM_USER")
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        follower.say(f"no desktop user ({user!r}) in {ENV_FILE}")
+        return False
+    home = ROOT + pw.pw_dir
+    token = f"{home}/.config/omacvm-bridge/token"
+    if not os.path.isfile(token):
+        follower.say(f"no Bridge token yet ({token}; omacvm apply puts it there)")
+        return False
+    env = dict(os.environ, HOME=home, OMACVM_BRIDGE_TOKEN_FILE=token)
+    as_user = dict(user=pw.pw_uid, group=pw.pw_gid, extra_groups=[], cwd="/") if os.geteuid() == 0 else {}
+    # Through the session's shared stream when it runs (one connection to the
+    # Mac per VM); before the login straight to the Mac, until the session's
+    # stream is there.
+    shared = f"{ROOT}/run/user/{pw.pw_uid}/omacvm-bridge-events.sock"
+    direct = not os.path.exists(shared)
+    proc = subprocess.Popen([CLIENT, "events"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, **as_user)
+    event, buffer, seen, got = "", b"", time.monotonic(), False
+    try:
+        while True:
+            ready, _, _ = select.select([proc.stdout], [], [], 5)
+            if ready:
+                chunk = os.read(proc.stdout.fileno(), 65536)
+                if not chunk:
+                    break
+                seen = time.monotonic()
+                buffer += chunk
+                while b"\n" in buffer:
+                    raw, buffer = buffer.split(b"\n", 1)
+                    raw = raw.rstrip(b"\r")
+                    if raw.startswith(b"event: "):
+                        event = raw[7:].decode(errors="replace")
+                    elif raw.startswith(b"data: ") and event == "timezone":
+                        got = True
+                        try:
+                            msg = json.loads(raw[6:])
+                        except ValueError:
+                            follower.say("the Bridge sent a time zone that is not JSON")
+                            continue
+                        follower.mac_zone(msg.get("zone") if isinstance(msg, dict) else None)
+                if len(buffer) > 1 << 20:
+                    log("the Bridge sent a line that is too long")
+                    break
+            elif time.monotonic() - seen > SILENCE_SECONDS:
+                follower.say("no word from the Bridge: reconnecting")
+                break
+            if direct and os.path.exists(shared):
+                break   # the session's stream is up: over to it
+    finally:
+        proc.kill()
+        _, err = proc.communicate()
+        if err.strip():
+            follower.say(err.decode(errors="replace").strip().splitlines()[-1])
+    return got
+
+
+def status() -> int:
+    """For omacvm check: "<mode> <the VM's zone> <the Mac's zone>", the mode
+    worked out now (a zone set by hand since the Mac's last word counts)."""
+    try:
+        mode, _, mac = open(STATE).read().split()[:3]
+    except (OSError, ValueError):
+        print("none - -")
+        return 0
+    current = current_zone()
+    if valid(mac):
+        action, _ = decide(mac, current, read_record())
+        mode = {"keep": "follows", "by-hand": "by-hand"}.get(action, "waiting")
+    print(f"{mode} {current or '-'} {mac}")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--status"]:
+        return status()
+    if sys.argv[1:2] == ["--zone"]:   # one zone, as from the Mac (tests)
+        Follower().mac_zone(sys.argv[2] if len(sys.argv) > 2 else None)
+        return 0
+    follower, delay = Follower(), 2
+    while True:
+        try:
+            if from_bridge(follower):
+                delay = 2
+        except OSError as error:
+            follower.say(f"the Bridge failed: {error}")
+        time.sleep(delay)
+        delay = min(delay * 2, 30)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -158,6 +158,11 @@ reset_root; file /usr/local/bin/omacvm-bridge
 run_off bridge_off 1
 expect "bridge off, session: widgets disabled now" yes "$(called "in_session bash -c")"
 expect "bridge off, session: nothing queued" no "$(has "$H/.local/state/omacvm/pending-plugins-off")"
+# Its time zone agent (a system service): stopped and gone, the zone stays as it is.
+reset_root; file /usr/local/bin/omacvm-timezone; file /etc/systemd/system/omacvm-timezone.service
+run_off bridge_off 0
+expect "bridge off: the time zone agent stopped" yes "$(called "systemctl disable --now omacvm-timezone.service")"
+expect "bridge off: the time zone agent gone" "no no" "$(has /usr/local/bin/omacvm-timezone) $(has /etc/systemd/system/omacvm-timezone.service)"
 reset_root; run_off bridge_off 0
 expect "bridge off, no Bridge: nothing" "" "$(cat "$OUT" "$CALLS")"
 grep -q 'pending-plugins-off' "$R/src/lib/omacvm-plugins" && echo "ok   omacvm-plugins disables the queued widgets" ||

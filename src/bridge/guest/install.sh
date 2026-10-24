@@ -14,6 +14,7 @@
 #   omacvm.nightshift)
 #   Omarchy's own night light out of the way (indicator hidden, hyprsunset
 #   stopped): the Mac's Night Shift tints the whole screen, never both
+#   system service omacvm-timezone (the VM's time zone follows the Mac's)
 # The token (~/.config/omacvm-bridge/token) comes from the Mac, see push-guest.sh.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -36,6 +37,13 @@ systemctl --user -M "$U@" try-restart omacvm-bridge-events.service 2>/dev/null |
 pkill -u "$U" -f -- "-N http://[^ ]*:47831/events" 2>/dev/null || true
 systemctl --user -M "$U@" enable omacvm-bridge-osd.service >/dev/null 2>&1
 systemctl --user -M "$U@" restart omacvm-bridge-osd.service
+
+# The time zone follows the Mac's (a zone set by hand in the VM is kept).
+install -m755 omacvm-timezone /usr/local/bin/
+install -m644 omacvm-timezone.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable omacvm-timezone.service >/dev/null 2>&1
+systemctl restart omacvm-timezone.service || true
 
 # Audio (PipeWire's parts come from ../../guest/install.sh): the Mac owns
 # loudness (the bridge sets the Mac's volume), so the VM's own levels stay at full.

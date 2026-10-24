@@ -1,6 +1,6 @@
 #!/bin/bash
 # omacvm-bridge (guest side): small client for the OmacVM Bridge on the Mac.
-#   omacvm-bridge state | scan [--cached] | audio | display | bluetooth | battery | events [--external] [--direct]
+#   omacvm-bridge state | scan [--cached] | audio | display | bluetooth | battery | timezone | events [--external] [--direct]
 #     (--external: osd events also for brightness changed on the Mac itself;
 #      events come from the session's omacvm-bridge-events when it runs,
 #      --direct: straight from the Mac)
@@ -88,6 +88,7 @@ case ${1:-} in
   audio) req "$URL/audio" ;;
   display) req "$URL/display" ;;
   battery) req "$URL/battery" ;;
+  timezone) req "$URL/timezone" ;;
   bluetooth)
     case ${2:-} in
       "") req "$URL/bluetooth" ;;
