@@ -146,7 +146,7 @@ cmd_status() {
 }
 
 cmd_move() {
-  local c v pk vv gone; c=$(channel "${1:-}") || exit 1
+  local c v pk vv nv gone; c=$(channel "${1:-}") || exit 1
   v=$(version)
   [[ -n $v ]] || die "no omarchy package here (not an Omarchy VM?)"
   if [[ $v != 4.0* ]] && cmd_status >/dev/null; then say "already on Omarchy $v"; return 0; fi
@@ -170,8 +170,9 @@ cmd_move() {
   # One transaction: the new repos' omarchy and omarchy-settings with the whole
   # system. -u twice (Omarchy's mirror may be a little behind Arch Linux ARM)
   # also takes a newer package back to the mirror's version: OmacVM's own
-  # vulkan-virtio build among them (below). Never -Sy alone (guest/pkg-add).
-  # OMARCHY_UPDATE_PACMAN: Omarchy's pacman guard lets an Omarchy update
+  # vulkan-virtio build when the mirror has the same Mesa without our fixes
+  # (vulkan-virtio.sh's boot timer builds ours again; a newer Mesa stays, as
+  # on 4.0). Never -Sy alone (guest/pkg-add). OMARCHY_UPDATE_PACMAN: Omarchy's pacman guard lets an Omarchy update
   # through. --ask 4 answers yes to "remove the conflicting package": a package
   # that conflicts with one of 4.5's goes (listed after).
   say "omarchy + omarchy-settings from channel $c (with the whole system)"
@@ -180,8 +181,10 @@ cmd_move() {
   fi
   gone=$(comm -23 <(sort <<< "$pk") <(pacman -Qq | sort) | tr '\n' ' ')
   [[ -z $gone ]] || say "packages gone (replaced by 4.5's or in conflict with them): $gone"
-  [[ $vv != *omacvm* || $(pacman -Q vulkan-virtio 2>/dev/null) == *omacvm* ]] ||
-    say "Vulkan: OmacVM's vulkan-virtio went back to the mirror's; vulkan-virtio.sh builds it again at the next boot"
+  nv=$(pacman -Q vulkan-virtio 2>/dev/null | awk '{print $2}')
+  if [[ $vv == *omacvm* && -n $nv && $nv != *omacvm* ]] && (( $(vercmp "$nv" "$vv") < 0 )); then
+    say "Vulkan: OmacVM's vulkan-virtio $vv went back to the mirror's $nv; vulkan-virtio.sh builds OmacVM's again at the next boot"
+  fi
   [[ -f /etc/mpv/mpv.conf.omacvm-40 ]] && say "the old /etc/mpv/mpv.conf is /etc/mpv/mpv.conf.omacvm-40"
   "$S/../app/guest/venus/mpv.sh" >/dev/null || say "mpv's defaults are not set again"
   # Omarchy's own update: its migrations for every 4.x step, the shell restart.
