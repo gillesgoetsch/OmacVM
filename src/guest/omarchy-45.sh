@@ -19,6 +19,10 @@
 #                                   system (pacman -Syuu), then omarchy update
 #                                   as the user (guest/system-update)
 #   omarchy-45.sh back              the 4.0 repo files again (before the packages)
+#   omarchy-45.sh animations USER   once, after a fresh 4.5 install: animations
+#                                   and see-through windows on again (4.5 turns
+#                                   them off in any VM; OmacVM's VMs have the
+#                                   Mac's GPU)
 #   omarchy-45.sh status            omarchy's version, the channel, the repos;
 #                                   exit 0 = on 4.5
 # CHANNEL: rc (default while 4.5 is a release candidate), stable, edge.
@@ -99,6 +103,24 @@ cmd_back() {
   say "repos: back to the 4.0 ones"
 }
 
+# Omarchy's install (install/user/hardware/vm-no-animations.sh) copies its
+# no-animations and window-opaque flags into the user's toggles in a VM. They
+# go when they are still Omarchy's copies, once (a marker): turning
+# animations off later in Omarchy's menu stays off.
+cmd_animations() {
+  local u=${1:?user} h d f mark
+  h=$(getent passwd "$u" | cut -d: -f6); [[ -d $h ]] || die "no home for $u"
+  d=$h/.local/state/omarchy/toggles/hypr; mark=$h/.local/state/omacvm/animations-on
+  [[ -e $mark ]] && return 0
+  for f in no-animations.lua window-opaque.lua; do
+    if [[ -f $d/$f ]] && cmp -s "$d/$f" "/usr/share/omarchy/default/hypr/toggles/$f"; then
+      runuser -u "$u" -- rm -f "$d/$f" || die "could not remove $f"
+    fi
+  done
+  runuser -u "$u" -- mkdir -p "${mark%/*}" && runuser -u "$u" -- touch "$mark"
+  say "animations on (Omarchy's VM default turned off once)"
+}
+
 version() { pacman -Q omarchy 2>/dev/null | awk '{print $2}'; }
 
 cmd_status() {
@@ -138,6 +160,7 @@ case ${1:-} in
   keyring) cmd_keyring ;;
   move) cmd_move "${2:-}" ;;
   back) cmd_back ;;
+  animations) cmd_animations "${2:-}" ;;
   status) cmd_status ;;
-  *) echo "usage: omarchy-45.sh repos|keyring|move|back|status [CHANNEL]" >&2; exit 2 ;;
+  *) echo "usage: omarchy-45.sh repos|keyring|move|back|status [CHANNEL] | animations USER" >&2; exit 2 ;;
 esac
