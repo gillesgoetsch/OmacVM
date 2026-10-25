@@ -40,6 +40,6 @@ a new record replaces it and says so.
 | [0051](0051-partial-present.md) | Partial present: QEMU draws only the box the guest changed since a surface's last draw | accepted, built (`frame-path`), off by default |
 | [0052](0052-lossless-window-surfaces.md) | The VM window's 8-bit surfaces are lossless-compressed: fewer bytes for QEMU's draw and WindowServer's composite | accepted, built (`window-path`), on by default on macOS 27 |
 | [0053](0053-disk-flush-barrier.md) | A guest disk flush is a write barrier on the Mac's drive (F_BARRIERFSYNC), so the VM's file system is safer at a power cut | accepted, built (`disk`, 3.2.1) |
-| [0055](0055-vcpu-group.md) | The vCPU threads in a thread group of their own, so macOS sets their clock by their own load, not the window's | accepted, built (`vcpuGroup`), off by default |
+| [0055](0055-vcpu-group.md) | The vCPU threads in a thread group of their own, so macOS sets their clock by their own load, not the window's | rejected (drops frames), not merged (draft #541) |
 
 The whole chain: [../architecture/graphics.md](../architecture/graphics.md).
