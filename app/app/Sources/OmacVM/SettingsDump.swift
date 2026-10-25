@@ -21,6 +21,7 @@ enum SettingsDump {
             "keepDockAway": Settings.keepDockAway,
             "audioThread": Settings.audioThread,
             "gpuOffMainLoop": Settings.gpuOffMainLoop,
+            "vcpuGroup": Settings.vcpuGroup,
             "shareKeyboard": Settings.shareKeyboard,
             "vkWindowsNoCopy": Settings.vkWindowsNoCopy,
             "hdr": Settings.hdr,

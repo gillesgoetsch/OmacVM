@@ -68,6 +68,7 @@ expect "fresh: Keep the Dock and hot corners away on" true "$(val app.keepDockAw
 expect "fresh: Sound on its own thread on" true "$(val app.audioThread)"
 expect "fresh: Graphics without QEMU's lock on (gpuOffMainLoop)" true "$(val app.gpuOffMainLoop)"
 expect "fresh: Keyboard sharing apps off" false "$(val app.shareKeyboard)"
+expect "fresh: CPU clock by the VM's own work off (vcpuGroup)" false "$(val app.vcpuGroup)"
 expect "fresh: Vulkan windows without a copy on (vkWindowsNoCopy)" true "$(val app.vkWindowsNoCopy)"
 expect "fresh: HDR and 10-bit colour off" false "$(val app.hdr)"
 expect "fresh: Extra brightness off" false "$(val app.extraBrightness)"

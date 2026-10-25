@@ -294,6 +294,25 @@ struct GPUOffMainLoopRow: View {
     }
 }
 
+/// The VM's CPUs at the clock their own work needs (Settings.vcpuGroup,
+/// experimental, ADR 0055): read by each start of the VM.
+struct VCPUGroupRow: View {
+    var tick = 0
+    @State private var on = Settings.vcpuGroup
+
+    static let info = "Saves battery while the VM is light. macOS runs every thread of the app in front at a high CPU clock while it shows frames, and so far the VM's CPUs got that too, also for a video or a terminal. With this on they get the clock their own work needs, like a Mac app's background work: low while the VM is light, full speed as soon as it is busy. Frame rates, animations, 120 Hz and the speed of heavy work stay as they are. Counts from the next start of the VM. Experimental: if the VM ever feels slower, turn it off."
+
+    var body: some View {
+        SettingRow(title: "CPU clock by the VM's own work", badge: "experimental",
+                   subtitle: "Less battery while the VM is light. From the next start of the VM.",
+                   info: Self.info, probe: "vcpu-group") {
+            RowSwitch(title: "CPU clock by the VM's own work", isOn: $on)
+        }
+        .onChange(of: on) { _, v in if v != Settings.vcpuGroup { Settings.vcpuGroup = v } }
+        .onChange(of: tick) { _, _ in on = Settings.vcpuGroup }
+    }
+}
+
 /// Keyboard sharing apps (Settings.shareKeyboard, #350): OmacVM's key taps
 /// at the end of macOS's chain; read by each start of the VM.
 struct ShareKeyboardRow: View {

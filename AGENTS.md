@@ -498,6 +498,7 @@ reads them; `src/tests/app-settings.sh` checks defaults, relaunches, two VMs,
 | Resources | `vm.env` `CPUS`, `MEM_MB` (`omacvm resources`) | the tier chosen at setup (Balanced) | VM |
 | Graphics | `graphics`: `auto`, `opengl`, `vulkan` (`omacvm graphics`) | `auto` (no file) | VM |
 | WebGPU and GPU compute (with Vulkan) | `features` `gpu-compute=on\|off` (`omacvm enable\|disable gpu-compute`, the control centre); switched while the VM is stopped: + `gpu-compute-pending`, set up at the next start (as Mac input) | on (no word = on) | VM |
+| CPU clock by the VM's own work | `vcpuGroup` (bool, experimental; read at each start; QEMU env `OMACVM_VCPU_GROUP=1`: the vCPU threads in a work interval of their own, so macOS sets their clock by their load, not the window's; qemu.log `OmacVM: vCPU group: on\|off\|why`; ADR 0055) | `false` | app |
 | Graphics without QEMU's lock | `gpuOffMainLoop` (bool; hidden `gpuMainLoop` and `gpuSafeMode` force it off; read at each start; ADR 0046) | `true` (3.1.18 to 3.1.25: `false`, experimental; switch from 3.1.19) | app |
 | Vulkan windows without a copy | `vkWindowsNoCopy` (bool; hidden `vkWindowsCopy` and `gpuSafeMode` force it off; read at each start; QEMU env `OMACVM_VK_WINDOWS=iosurface`, KosmicKrisp only; ADR 0047) | `true` (3.1.24 and 3.1.25: `false`, experimental) | app |
 | Closing the window | `closeAction`: `shutdown`, `keepRunning`, `ask` (QEMU: `OMACVM_CLOSE_ACTION`) | `shutdown` | app |

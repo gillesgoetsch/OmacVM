@@ -518,6 +518,13 @@ final class Runner {
         if Settings.vkWindowsNoCopy {
             env["OMACVM_VK_WINDOWS"] = "iosurface"
         }
+        // The VM's CPUs at the clock of their own work (vcpuGroup, ADR 0055;
+        // qemu-hvf-vcpu-group.patch): QEMU says in its log which way it went.
+        if Settings.vcpuGroup {
+            env["OMACVM_VCPU_GROUP"] = "1"
+        } else {
+            env.removeValue(forKey: "OMACVM_VCPU_GROUP")
+        }
         if Settings.gpuSafeMode {
             env["OMACVM_VIRGL_POLL_FENCES"] = "1"
             env["OMACVM_GL_PRESENT"] = "layer"

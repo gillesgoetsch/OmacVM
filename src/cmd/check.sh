@@ -460,6 +460,15 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     "virgl runs with the BQL"*) ok "GPU lock" "virgl runs with QEMU's big lock (Graphics without QEMU's lock is off)" ;;
   esac
 fi
+# The vCPUs' clock by their own work this run (ADR 0055, vcpuGroup: experimental,
+# off by default): QEMU's vCPU 0 says which way it went; nothing from older runtimes.
+if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
+  case $(grep -o 'OmacVM: vCPU group: .*' "$miclog" | tail -1) in
+    "OmacVM: vCPU group: on") ok "vCPU clock" "the VM's CPUs run at the clock of their own work (vcpuGroup)" ;;
+    "OmacVM: vCPU group: off") ;;
+    "OmacVM: vCPU group: "*) warn "vCPU clock" "vcpuGroup is on, but $(grep -o 'OmacVM: vCPU group: .*' "$miclog" | tail -1 | sed 's/^OmacVM: vCPU group: //'): the CPUs run as before" ;;
+  esac
+fi
 # Vulkan windows without a copy this run (ADR 0047, vkWindowsNoCopy: on by default
 # after 3.1.25). virglrenderer says so once Venus made its device; nothing when
 # the switch is off. MoltenVK (macOS 15) always copies: that is no warning.

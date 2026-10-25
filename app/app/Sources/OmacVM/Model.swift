@@ -564,6 +564,16 @@ enum Settings {
             UserDefaults.standard.set(newValue, forKey: "vkWindowsNoCopy")
         }
     }
+    /// The VM's CPUs at the clock their own work needs (ADR 0055,
+    /// experimental, off by default): QEMU puts its vCPU threads in a thread
+    /// group of their own, so macOS no longer runs them at the clock it gives
+    /// the app in front. The VM window's switch (VCPUGroupRow) or
+    /// defaults write org.omacvm.app vcpuGroup -bool true. Read at each start
+    /// of the VM.
+    static var vcpuGroup: Bool {
+        get { UserDefaults.standard.bool(forKey: "vcpuGroup") }
+        set { UserDefaults.standard.set(newValue, forKey: "vcpuGroup") }
+    }
     /// Added to the sound delay the app tells the VM (AudioLatencyWatch), in
     /// ms, -500 ... 500: negative when the sound comes early in the VM's
     /// videos, positive when it still comes late (a device that under-reports).
