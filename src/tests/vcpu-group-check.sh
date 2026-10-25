@@ -27,6 +27,8 @@ expect() {   # what, want (a prefix of the line, or "" for none), log lines...
   else echo "FAIL $what: got '$got', want '$want'"; fail=1; fi
 }
 expect "on" "ok   | vCPU clock | the VM's CPUs run at the clock of their own work" "OmacVM: vCPU group: on"
+expect "on (always): ok, not a warning" "ok   | vCPU clock | the VM's CPUs run at the clock of their own work" \
+  "OmacVM: vCPU group: on (always)"
 expect "off: nothing" "" "OmacVM: vCPU group: off"
 expect "an older runtime: nothing" "" "OmacVM: network: user"
 expect "refused: says why" "warn | vCPU clock | vcpuGroup is on, but the work interval was refused: the CPUs run as before" \

@@ -464,7 +464,7 @@ fi
 # off by default): QEMU's vCPU 0 says which way it went; nothing from older runtimes.
 if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   case $(grep -o 'OmacVM: vCPU group: .*' "$miclog" | tail -1) in
-    "OmacVM: vCPU group: on") ok "vCPU clock" "the VM's CPUs run at the clock of their own work (vcpuGroup)" ;;
+    "OmacVM: vCPU group: on"|"OmacVM: vCPU group: on (always)") ok "vCPU clock" "the VM's CPUs run at the clock of their own work (vcpuGroup)" ;;
     "OmacVM: vCPU group: off") ;;
     "OmacVM: vCPU group: "*) warn "vCPU clock" "vcpuGroup is on, but $(grep -o 'OmacVM: vCPU group: .*' "$miclog" | tail -1 | sed 's/^OmacVM: vCPU group: //'): the CPUs run as before" ;;
   esac
