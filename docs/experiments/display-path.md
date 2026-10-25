@@ -64,13 +64,17 @@ hidden); the present and WindowServer together are about 0.5 W at 30 frames a se
 the whole frame every frame: 3.5-3.6 ms of QEMU GPU time per frame at 60 and at 120 Hz, the present's draw
 ~0.19 / ~0.47 W of it (rows above), the rest is Chrome's drawing and Hyprland's two passes.
 
-## Partial present (done: PR #519, ADR 0051)
+## Partial present (built, off by default: PR #519, ADR 0051)
 
 Each present surface keeps what it showed, so only the box the guest flushed since that surface's last
-draw is drawn into it again. It acts only when the guest sends real flush rects: Linux up to 7.3 sends
-the whole plane on every page flip (`virtgpu_plane.c`, `ignore_damage_clips`); Linux 7.4 keeps the
-compositor's damage (upstream 730f8554f35c, a9cc9905ddb7). Saves up to the difference of the rows above
-while little changes (pointer, typing, a caret, clocks): -0.13 W at 60 frames a second, -0.45 W at 120.
+draw is drawn into it again. It stays off until a VM run in a composited window shows it draws right. It
+acts only when the guest sends real flush rects: Linux up to 7.3 sends the whole plane on every page flip
+(`virtgpu_plane.c`, `ignore_damage_clips`), so on today's 7.2 guests only a buffer flushed again (boot
+console, TTYs) gets partial draws; Linux 7.4 keeps the compositor's damage (upstream 730f8554f35c,
+a9cc9905ddb7; OmacVM's driver with that fix: draft PR #520). In the offscreen bench (no VM) the draw
+costs 0.13 W less at 60 frames a second and 0.45 W less at 120 when only a 64x64 box changes on every
+frame (noise about 0.04 W). That is the most it can save, and only at that frame rate: typing (~9
+flushes a second) would save about 0.02 W. On today's guests the desktop's frames save 0 W. No VM A/B yet.
 
 ## Direct scanout (spike)
 
