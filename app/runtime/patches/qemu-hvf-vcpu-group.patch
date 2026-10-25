@@ -1,10 +1,12 @@
 From: OmacVM
 Subject: [PATCH] hvf: vCPU threads in a group of their own (OMACVM_VCPU_GROUP)
 
-What: each vCPU thread joins the vCPU group at its start and leaves it
-before it ends (qemu-hvf-vcpu-group-logic.patch has the rules); vCPU 0
-writes "OmacVM: vCPU group: on|off|why not" to QEMU's log. Without
-OMACVM_VCPU_GROUP=1 nothing changes.
+What: a thread "vcpu-group" looks at each vCPU every 25 ms (its CPU time,
+the last input event) and kicks a vCPU whose place changed; each vCPU joins
+or leaves the vCPU group on its own thread (at its start and on every pass
+of its loop) and leaves before it ends (qemu-hvf-vcpu-group-logic.patch has
+the rules); vCPU 0 writes "OmacVM: vCPU group: on|off|why not" to QEMU's
+log. Without OMACVM_VCPU_GROUP nothing changes.
 
 Why: the vCPUs' clock by their own load, not the clock macOS gives the
 window in front (ADR 0055).
@@ -14,35 +16,135 @@ Test: app/runtime/Tests/cpu/test-vcpu-group.sh with the patched file.
 
 --- a/accel/hvf/hvf-accel-ops.c
 +++ b/accel/hvf/hvf-accel-ops.c
-@@ -59,6 +59,7 @@
+@@ -59,6 +59,9 @@
  #include "system/hvf.h"
  #include "system/hvf_int.h"
  #include <mach/mach_time.h>
++#include <mach/mach.h>
++#include "ui/input.h"
 +#include "qemu/omacvm-vcpu-group.h"
  
  HVFState *hvf_state;
  
-@@ -153,6 +154,7 @@
+@@ -147,12 +150,97 @@
+ }
+ 
+ /*
++ * OmacVM: the vCPUs' clock by their own load (ADR 0055). With
++ * OMACVM_VCPU_GROUP=1 a thread of its own ("vcpu-group") looks at every vCPU
++ * each OMACVM_VG_TICK_MS and says whether it belongs in the vCPU group now
++ * (omacvm_vcpu_group_decide: light and no input); a vCPU whose answer
++ * changed is kicked and joins or leaves on its own thread.
++ */
++#define OMACVM_VG_MAX_CPUS 256
++static bool omacvm_vg_want[OMACVM_VG_MAX_CPUS];
++
++static int64_t omacvm_vg_cpu_ns(thread_t t)
++{
++    thread_basic_info_data_t info;
++    mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
++
++    if (thread_info(t, THREAD_BASIC_INFO, (thread_info_t)&info, &n) != KERN_SUCCESS) {
++        return -1;
++    }
++    return (info.user_time.seconds + info.system_time.seconds) * 1000000000LL +
++           (info.user_time.microseconds + info.system_time.microseconds) * 1000LL;
++}
++
++static void *omacvm_vg_thread_fn(void *arg)
++{
++    static int64_t last_cpu[OMACVM_VG_MAX_CPUS], out_until[OMACVM_VG_MAX_CPUS];
++    int64_t last = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    CPUState *cpu;
++
++    rcu_register_thread();
++    for (;;) {
++        g_usleep(OMACVM_VG_TICK_MS * 1000);
++        RCU_READ_LOCK_GUARD();
++        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME), wall = now - last;
++        int64_t input = qemu_input_last_event_ns();
++
++        last = now;
++        CPU_FOREACH(cpu) {
++            int i = cpu->cpu_index;
++            int64_t c, used;
++            bool want;
++
++            if (i < 0 || i >= OMACVM_VG_MAX_CPUS || !cpu->thread || !cpu->created) {
++                continue;
++            }
++            c = omacvm_vg_cpu_ns(pthread_mach_thread_np(cpu->thread->thread));
++            used = c >= 0 && last_cpu[i] > 0 ? c - last_cpu[i] : 0;
++            if (c >= 0) {
++                last_cpu[i] = c;
++            }
++            want = omacvm_vcpu_group_decide(used, wall, now, input, &out_until[i]);
++            if (want != qatomic_read(&omacvm_vg_want[i])) {
++                qatomic_set(&omacvm_vg_want[i], want);
++                qemu_cpu_kick(cpu);
++            }
++        }
++    }
++    return NULL;
++}
++
++/* Once, before the first vCPU thread: every vCPU starts in the group. */
++static void omacvm_vg_start(void)
++{
++    static bool started;
++    static QemuThread t;
++
++    if (started) {
++        return;
++    }
++    started = true;
++    for (int i = 0; i < OMACVM_VG_MAX_CPUS; i++) {
++        omacvm_vg_want[i] = true;
++    }
++    if (omacvm_vcpu_group_mode() == OMACVM_VG_ADAPTIVE) {
++        qemu_thread_create(&t, "vcpu-group", omacvm_vg_thread_fn, NULL, QEMU_THREAD_DETACHED);
++    }
++}
++
++static bool omacvm_vg_wants(CPUState *cpu)
++{
++    int i = cpu->cpu_index;
++
++    return i >= 0 && i < OMACVM_VG_MAX_CPUS && qatomic_read(&omacvm_vg_want[i]);
++}
++
++/*
+  * The HVF-specific vCPU thread function. This one should only run when the host
+  * CPU supports the VMX "unrestricted guest" feature.
+  */
  static void *hvf_cpu_thread_fn(void *arg)
  {
      CPUState *cpu = arg;
-+    OmacvmVcpuGroup group;
++    OmacvmVcpuGroup group = { .joined = false };
  
      int r;
  
-@@ -167,6 +169,11 @@
+@@ -167,6 +255,11 @@
      current_cpu = cpu;
  
      hvf_init_vcpu(cpu);
 +    /* OmacVM: the vCPUs' clock by their own load (ADR 0055). */
-+    omacvm_vcpu_group_join(&group);
++    omacvm_vcpu_group_follow(&group, omacvm_vg_wants(cpu));
 +    if (cpu->cpu_index == 0) {
 +        fprintf(stderr, "OmacVM: vCPU group: %s\n", omacvm_vcpu_group_state());
 +    }
  
      /* signal CPU creation */
      cpu_thread_signal_created(cpu);
-@@ -182,6 +189,7 @@
+@@ -174,6 +267,7 @@
+ 
+     do {
+         qemu_process_cpu_events(cpu);
++        omacvm_vcpu_group_follow(&group, omacvm_vg_wants(cpu));
+         if (cpu_can_run(cpu)) {
+             r = hvf_arch_vcpu_exec(cpu);
+             if (r == EXCP_DEBUG) {
+@@ -182,6 +276,7 @@
          }
      } while (!cpu->unplug || cpu_can_run(cpu));
  
@@ -50,3 +152,14 @@ Test: app/runtime/Tests/cpu/test-vcpu-group.sh with the patched file.
      hvf_vcpu_destroy(cpu);
      cpu_thread_signal_destroyed(cpu);
      bql_unlock();
+@@ -193,6 +288,10 @@
+ {
+     char thread_name[VCPU_THREAD_NAME_SIZE];
+ 
++    if (omacvm_vcpu_group_wanted()) {
++        omacvm_vg_start();
++    }
++
+     /*
+      * HVF currently does not support TCG, and only runs in
+      * unrestricted-guest mode.
