@@ -300,7 +300,7 @@ struct VCPUGroupRow: View {
     var tick = 0
     @State private var on = Settings.vcpuGroup
 
-    static let info = "Saves battery while the VM is light. macOS runs every thread of the app in front at a high CPU clock while it shows frames, and so far the VM's CPUs got that too, also for a video or a terminal. With this on they get the clock their own work needs, like a Mac app's background work: low while the VM is light, full speed as soon as it is busy. Frame rates, animations, 120 Hz and the speed of heavy work stay as they are. Counts from the next start of the VM. Experimental: if the VM ever feels slower, turn it off."
+    static let info = "Saves battery while the VM is light. macOS runs every thread of the app in front at a high CPU clock while it shows frames, and so far the VM's CPUs got that too, also for a video or a terminal. With this on, a VM CPU that is light gets the clock its own work needs, like a Mac app's background work. A VM CPU that gets busy, and every VM CPU while you type, click or move the pointer, runs as before. Counts from the next start of the VM. Experimental: if the VM ever feels slower or a video stutters, turn it off."
 
     var body: some View {
         SettingRow(title: "CPU clock by the VM's own work", badge: "experimental",

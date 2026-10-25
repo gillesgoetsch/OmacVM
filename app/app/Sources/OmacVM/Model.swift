@@ -565,9 +565,9 @@ enum Settings {
         }
     }
     /// The VM's CPUs at the clock their own work needs (ADR 0055,
-    /// experimental, off by default): QEMU puts its vCPU threads in a thread
-    /// group of their own, so macOS no longer runs them at the clock it gives
-    /// the app in front. The VM window's switch (VCPUGroupRow) or
+    /// experimental, off by default): QEMU puts a light vCPU thread in a
+    /// thread group of its own, so macOS no longer runs it at the clock it
+    /// gives the app in front; busy vCPUs and input keep the old clock. The VM window's switch (VCPUGroupRow) or
     /// defaults write org.omacvm.app vcpuGroup -bool true. Read at each start
     /// of the VM.
     static var vcpuGroup: Bool {
