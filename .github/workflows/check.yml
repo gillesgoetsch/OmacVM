@@ -489,6 +489,11 @@ jobs:
       - name: The window's surfaces lossless-compressed (the checks catch code without it)
         run: app/runtime/Tests/display/test-present-lossless.sh
 
+      - name: The vCPU threads in a group of their own (ADR 0055; join, QoS kept, leave before they end; omacvm check line)
+        run: |
+          app/runtime/Tests/cpu/test-vcpu-group.sh
+          src/tests/vcpu-group-check.sh
+
       - name: OmacVM.app full screen always in its own Space (no notch cover; escape combo stays out)
         run: src/tests/app-fullscreen-space.sh
 

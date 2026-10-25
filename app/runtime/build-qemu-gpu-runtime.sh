@@ -1017,6 +1017,13 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-lossl
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
 grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
+# OmacVM: with OMACVM_VCPU_GROUP=1 the vCPU threads go into a thread group of
+# their own, so macOS sets their clock by their own load, not the window's
+# (ADR 0055); the rules in their own header, tested here on the patched file.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-vcpu-group-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-vcpu-group.patch"
+"$native_dir/Tests/cpu/test-vcpu-group.sh" "$source_dir/accel/hvf/hvf-accel-ops.c" || \
+  die "accel/hvf/hvf-accel-ops.c: the vCPU group is not wired as tested (test-vcpu-group.sh)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"

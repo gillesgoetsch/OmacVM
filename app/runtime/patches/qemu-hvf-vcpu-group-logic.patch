@@ -1,0 +1,120 @@
+From: OmacVM
+Subject: [PATCH] hvf: the vCPU group's rules in a header of their own
+
+What: include/qemu/omacvm-vcpu-group.h: whether the vCPU threads go into a
+work interval of their own (OMACVM_VCPU_GROUP=1), the group (made once),
+join at a vCPU thread's start, leave before it ends, and the state for
+QEMU's log. qemu-hvf-vcpu-group.patch wires it into the vCPU threads.
+
+Why: macOS sets the CPU clock of the app in front, which shows frames, for
+all of its threads: QEMU's vCPU threads ran at 2.55 GHz on an M1 Max for a
+video the guest needs 1.56 GHz for (the same work with the window hidden).
+In a thread group of their own macOS sets their clock by their own load.
+ADR 0055.
+
+Upstream: not sent (a Darwin scheduling choice).
+Test: app/runtime/Tests/cpu/test-vcpu-group.sh (the rules, in CI; with the
+patched hvf-accel-ops.c also the wiring, in the runtime build).
+
+--- /dev/null
++++ b/include/qemu/omacvm-vcpu-group.h
+@@ -0,0 +1,99 @@
++/*
++ * OmacVM: the vCPU threads in a group of their own (ADR 0055).
++ *
++ * macOS sets the CPU clock for a whole process while it is the app in
++ * front and shows frames: QEMU's vCPU threads then run at the clock of the
++ * window, also while the guest only plays a video (M1 Max: 2.55 GHz in
++ * front, 1.56 GHz with the window hidden, the same work). A work interval
++ * of their own puts the vCPU threads in their own thread group, so macOS
++ * sets their clock by their own load: high when the guest is busy, low
++ * when it is light. Their priority (QoS) stays as it is, so no timer of
++ * the guest waits longer (utility QoS coalesces timers and drops frames).
++ *
++ * OMACVM_VCPU_GROUP=1 turns it on (the app's switch); without it nothing
++ * changes. Each vCPU thread joins at its start and leaves before it ends
++ * (libdispatch stops a thread that ends while joined).
++ */
++#ifndef OMACVM_VCPU_GROUP_H
++#define OMACVM_VCPU_GROUP_H
++
++#include <os/workgroup.h>
++#include <dlfcn.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdlib.h>
++#include <string.h>
++
++typedef struct OmacvmVcpuGroup {
++    os_workgroup_join_token_s token;
++    bool joined;
++} OmacvmVcpuGroup;
++
++static os_workgroup_t omacvm_vcpu_group_wg;
++static const char *omacvm_vcpu_group_why = "off";
++
++static bool omacvm_vcpu_group_wanted(void)
++{
++    const char *v = getenv("OMACVM_VCPU_GROUP");
++
++    return v && strcmp(v, "1") == 0;
++}
++
++/*
++ * The group, made once. The only public way to a work interval with a
++ * thread group of its own is AudioToolbox's AudioWorkIntervalCreate (looked
++ * up at run time: QEMU does not link AudioToolbox). No interval is ever
++ * started: the vCPUs have no deadline, the group only separates them.
++ */
++static void omacvm_vcpu_group_make(void)
++{
++    typedef os_workgroup_t (*create_fn)(const char *, os_clockid_t, os_workgroup_attr_t);
++    void *h = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox",
++                     RTLD_LAZY | RTLD_LOCAL);
++    create_fn create = h ? (create_fn)dlsym(h, "AudioWorkIntervalCreate") : NULL;
++
++    if (!create) {
++        omacvm_vcpu_group_why = "no work interval on this macOS";
++        return;
++    }
++    omacvm_vcpu_group_wg = create("QEMU vCPUs", OS_CLOCK_MACH_ABSOLUTE_TIME, NULL);
++    omacvm_vcpu_group_why = omacvm_vcpu_group_wg ? "on" : "the work interval was refused";
++}
++
++/* On the vCPU's own thread, at its start. False: it stays as before. */
++static bool omacvm_vcpu_group_join(OmacvmVcpuGroup *g)
++{
++    static pthread_once_t once = PTHREAD_ONCE_INIT;
++
++    g->joined = false;
++    if (!omacvm_vcpu_group_wanted()) {
++        return false;
++    }
++    pthread_once(&once, omacvm_vcpu_group_make);
++    if (!omacvm_vcpu_group_wg) {
++        return false;
++    }
++    if (os_workgroup_join(omacvm_vcpu_group_wg, &g->token) != 0) {
++        omacvm_vcpu_group_why = "a vCPU could not join";
++        return false;
++    }
++    g->joined = true;
++    return true;
++}
++
++/* On the same thread, before it ends. */
++static void omacvm_vcpu_group_leave(OmacvmVcpuGroup *g)
++{
++    if (g->joined) {
++        os_workgroup_leave(omacvm_vcpu_group_wg, &g->token);
++        g->joined = false;
++    }
++}
++
++/* For QEMU's log line: on, off or why not. */
++static const char *omacvm_vcpu_group_state(void)
++{
++    return omacvm_vcpu_group_wanted() ? omacvm_vcpu_group_why : "off";
++}
++
++#endif

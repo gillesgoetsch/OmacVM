@@ -1,0 +1,52 @@
+From: OmacVM
+Subject: [PATCH] hvf: vCPU threads in a group of their own (OMACVM_VCPU_GROUP)
+
+What: each vCPU thread joins the vCPU group at its start and leaves it
+before it ends (qemu-hvf-vcpu-group-logic.patch has the rules); vCPU 0
+writes "OmacVM: vCPU group: on|off|why not" to QEMU's log. Without
+OMACVM_VCPU_GROUP=1 nothing changes.
+
+Why: the vCPUs' clock by their own load, not the clock macOS gives the
+window in front (ADR 0055).
+
+Upstream: not sent.
+Test: app/runtime/Tests/cpu/test-vcpu-group.sh with the patched file.
+
+--- a/accel/hvf/hvf-accel-ops.c
++++ b/accel/hvf/hvf-accel-ops.c
+@@ -59,6 +59,7 @@
+ #include "system/hvf.h"
+ #include "system/hvf_int.h"
+ #include <mach/mach_time.h>
++#include "qemu/omacvm-vcpu-group.h"
+ 
+ HVFState *hvf_state;
+ 
+@@ -153,6 +154,7 @@
+ static void *hvf_cpu_thread_fn(void *arg)
+ {
+     CPUState *cpu = arg;
++    OmacvmVcpuGroup group;
+ 
+     int r;
+ 
+@@ -167,6 +169,11 @@
+     current_cpu = cpu;
+ 
+     hvf_init_vcpu(cpu);
++    /* OmacVM: the vCPUs' clock by their own load (ADR 0055). */
++    omacvm_vcpu_group_join(&group);
++    if (cpu->cpu_index == 0) {
++        fprintf(stderr, "OmacVM: vCPU group: %s\n", omacvm_vcpu_group_state());
++    }
+ 
+     /* signal CPU creation */
+     cpu_thread_signal_created(cpu);
+@@ -182,6 +189,7 @@
+         }
+     } while (!cpu->unplug || cpu_can_run(cpu));
+ 
++    omacvm_vcpu_group_leave(&group);
+     hvf_vcpu_destroy(cpu);
+     cpu_thread_signal_destroyed(cpu);
+     bql_unlock();
