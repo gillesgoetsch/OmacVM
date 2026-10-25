@@ -300,11 +300,11 @@ struct VCPUGroupRow: View {
     var tick = 0
     @State private var on = Settings.vcpuGroup
 
-    static let info = "Saves battery while the VM is light. macOS runs every thread of the app in front at a high CPU clock while it shows frames, and so far the VM's CPUs got that too, also for a video or a terminal. With this on, a VM CPU that is light gets the clock its own work needs, like a Mac app's background work. A VM CPU that gets busy, and every VM CPU while you type, click or move the pointer, runs as before. Counts from the next start of the VM. Experimental: if the VM ever feels slower or a video stutters, turn it off."
+    static let info = "A test switch: it can drop frames. macOS runs every thread of the app in front at a high CPU clock while it shows frames, and the VM's CPUs get that too, also for a video or a terminal. With this on, a VM CPU that is light gets the clock its own work needs. A VM CPU that gets busy, and every VM CPU while you type, click or move the pointer, runs as before. Trackpad scrolling and gestures do not count as input here. With every VM CPU in (not this way), an M1 Max took about 3 W less for a video, but dropped 1 to 3 frames in 12,000. This way is not measured on an M1 Max yet. Counts from the next start of the VM."
 
     var body: some View {
         SettingRow(title: "CPU clock by the VM's own work", badge: "experimental",
-                   subtitle: "Less battery while the VM is light. From the next start of the VM.",
+                   subtitle: "Can drop frames. From the next start of the VM.",
                    info: Self.info, probe: "vcpu-group") {
             RowSwitch(title: "CPU clock by the VM's own work", isOn: $on)
         }
