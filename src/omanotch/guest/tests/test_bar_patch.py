@@ -594,7 +594,10 @@ class Behaviour(unittest.TestCase):
             self.assertEqual(r["root"]["notchLeft"], 918, geom)
 
 
-SHELLS = sorted((ROOT / "src/tests/omarchy-shell").glob("*/shell/plugins/bar/Bar.qml"))
+# Omarchy 4.5's bar (omarchy-03ff1eff, branch omarchy-45) is left out: the
+# patch has no 4.5 form yet (work/tracks/omarchy-45.md).
+SHELLS = sorted(p for p in (ROOT / "src/tests/omarchy-shell").glob("*/shell/plugins/bar/Bar.qml")
+                if "omarchy-03ff1eff" not in str(p))
 
 
 def patch_file(path):

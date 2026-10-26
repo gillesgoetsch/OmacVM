@@ -8,6 +8,7 @@
 # Omarchy from about October 2026 asks the bar for its room on each display
 # (barClearanceFor -> the bar's barSizeFor), which Omanotch's bar patch
 # answers for the parked display: then there is nothing to patch here.
+# Omarchy 4.5 asks it through Delivery.barThickness (bar.barSizeFor).
 # Run as root:  omanotch-notifications.sh on|off [FILE]   (prints "changed" if it did)
 set -euo pipefail
 F=${2:-/usr/share/omarchy/shell/plugins/notifications/Service.qml}
@@ -25,7 +26,8 @@ new = ("NotificationLogic.popupPlacement(\n        service.barPosition,\n"
        "        Style.gapsOut)")
 if mode == "on":
     if new in s: sys.exit(0)
-    if s.count(old) != 1 and "service.barClearanceFor(" in s: sys.exit(0)  # the bar answers (see above)
+    asks = "service.barClearanceFor(" in s or "Delivery.barThickness(" in s
+    if s.count(old) != 1 and asks: sys.exit(0)  # the bar answers (see above)
     if s.count(old) != 1: sys.exit("omanotch-notifications: Omarchy's notification service changed, not patched")
     s = s.replace(old, new)
 elif mode == "off":

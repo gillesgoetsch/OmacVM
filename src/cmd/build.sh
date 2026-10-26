@@ -591,7 +591,7 @@ box=("OmacVM will build this VM" ""
      "user       $U ($FULL), hostname $HOST"
      "keyboard   $KB_SHOWN"
      "timezone   $TZ_MAC, language $LANG_VM"
-     "Omarchy    $( [[ $SOURCE == prebuilt ]] && echo "prebuilt VM: Omarchy $PB_OMARCHY ($(pb_gb "$PB_SIZE") GB download, release $PB_TAG)" || echo "omarchy-mac, $CHANNEL packages, built here")" "")
+     "Omarchy    $( [[ $SOURCE == prebuilt ]] && echo "prebuilt VM: Omarchy $PB_OMARCHY ($(pb_gb "$PB_SIZE") GB download, release $PB_TAG)" || { [[ $(omarchy_route) == 4.5 ]] && echo "Omarchy 4.5 (test only), $(omarchy45_channel) packages, built here"; } || echo "omarchy-mac, $CHANNEL packages, built here")" "")
 while IFS= read -r l; do box+=("${l#    }"); done < <(explain_features)
 if (( UI_FANCY )) && ! (( YES )); then ui_box "${box[@]}"
 else printf '\n'; for l in "${box[@]}"; do printf '  %s\n' "$l"; done; fi
@@ -845,10 +845,16 @@ ui_spin "Waiting for SSH on $IP" wait_ssh "$IP" || die "no SSH on $IP"
 # ---------- 4. Omarchy + Parallels Tools ----------
 step "Omarchy from omarchy-mac (the longest step)"
 [[ $TYPE == fusion ]] && gssh "$IP" "bash -s" < "$R/src/fusion/guest/dns.sh"   # Fusion's own DNS fails the install
+if [[ $(omarchy_route) == 4.5 ]]; then   # test only (omarchy_route)
+  gssh "$IP" "install -Dm755 /dev/stdin /usr/local/lib/omacvm/omarchy-45.sh" < "$R/src/guest/omarchy-45.sh" ||
+    die "could not copy omarchy-45.sh into the VM"
+  gssh "$IP" "OMACVM_OMARCHY=4.5 OMARCHY_CHANNEL=$(omarchy45_channel) bash -s" < "$R/src/vm/omarchy-install.sh" 2>&1 | ui_follow "Installing Omarchy (20-40 minutes)"
+else
 # Omarchy's ARM package targets its repo has (omacom/omarchy-mac#741): omarchy-install.sh uses it.
 gssh "$IP" "install -Dm755 /dev/stdin /usr/local/lib/omacvm/omarchy-targets.sh" < "$R/src/guest/omarchy-targets.sh" ||
   die "could not copy omarchy-targets.sh into the VM"
 gssh "$IP" "OMARCHY_MAC_CHANNEL=$CHANNEL bash -s" < "$R/src/vm/omarchy-install.sh" 2>&1 | ui_follow "Installing Omarchy (20-40 minutes)"
+fi
 # Parallels Tools come from this Mac's Parallels; never in a prebuilt image.
 if [[ $TYPE == parallels ]] && ! (( IMAGE )); then
   step "Parallels Tools"

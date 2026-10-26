@@ -284,9 +284,9 @@ if system && command -v grub-mkconfig >/dev/null; then
   # Snapshots (snapper, set up by omarchy-mac) appear in the GRUB menu.
   "$R/guest/pkg-add" grub-btrfs inotify-tools
   # Read-only snapshots picked in GRUB boot with a temporary writable overlay
-  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB).
-  printf '%s\n' '[[ " ${HOOKS[*]} " == *" grub-btrfs-overlayfs "* ]] || HOOKS+=(grub-btrfs-overlayfs)' \
-    > /etc/mkinitcpio.conf.d/zz-omacvm.conf
+  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB); Omarchy
+  # 4.5's Limine hook out (the file says why).
+  install -Dm644 "$R/guest/mkinitcpio-omacvm.conf" /etc/mkinitcpio.conf.d/zz-omacvm.conf
   systemctl enable --now grub-btrfsd >/dev/null 2>&1 || true
   # Arch Linux ARM's kernel under a name GRUB pairs with its initramfs.
   "$R/kernel/stock-kernel.sh"

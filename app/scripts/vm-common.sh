@@ -356,6 +356,16 @@ run_logged() {
   return "$rc"
 }
 
+# Which Omarchy a new VM gets: "4.0" (omarchy-mac, the supported one) or,
+# for tests only, "4.5" (upstream Omarchy 4.5, which merges omarchy-mac;
+# guest/omarchy-45.sh) when OMACVM_TEST_OMARCHY=4.5. Nothing in OmacVM sets
+# it, and no option or setting offers it: 4.5 waits for its release.
+# OMACVM_TEST_OMARCHY_CHANNEL: 4.5's package channel (rc until 4.5 is out).
+omarchy_route() { [[ ${OMACVM_TEST_OMARCHY:-} == 4.5 ]] && echo 4.5 || echo 4.0; }
+omarchy45_channel() {
+  case ${OMACVM_TEST_OMARCHY_CHANNEL:-rc} in stable|rc|edge) echo "${OMACVM_TEST_OMARCHY_CHANNEL:-rc}" ;; *) echo rc ;; esac
+}
+
 # omarchy-mac's release lane: stable once published, else rc.
 omarchy_channel() {
   local code
