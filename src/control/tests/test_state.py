@@ -349,7 +349,8 @@ def test_gpu_memory_row_warn_alone_works():
     with a calm note; not "needs you"."""
     r = S.gpu_memory_row(dict(GM, pressure="warn"), "app")
     assert r.status is S.Status.WORKS
-    assert r.note == "1.1 GB (peak 1.6 GB); macOS memory is tight, the VM gives back what it can"
+    assert r.note == "1.1 GB (peak 1.6 GB); macOS memory is tight, the VM drops its file cache"
+    assert "gives back" not in r.note
     assert "short of memory" not in r.note and "close apps" not in r.note
 
 

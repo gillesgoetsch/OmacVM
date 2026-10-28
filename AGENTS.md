@@ -708,7 +708,7 @@ The less obvious ones, with causes and where the fix lives, are in
   memory capped. OmacVM.app's QEMU takes what Linux frees out of its
   footprint (free page reporting, ADR 0059), but up to 3.2.11 macOS keeps
   holding those pages until the VM stops (`qemu-hvf-free-page-reclaim.patch`
-  only maps new memory over them; the fix, ADR 0062, is a later release).
+  only maps new memory over them; the fix comes with #603, a later release).
   Do not count a smaller footprint (Activity Monitor) as memory back to the
   Mac. The file cache stays on the Mac, which can only compress it, and
   macOS's pressure stays "normal" while it does; the app's give-back of the

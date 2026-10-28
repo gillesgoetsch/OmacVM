@@ -1260,8 +1260,8 @@ apps, the GPU. A VM takes two kinds from it:
   the number Activity Monitor shows (QEMU's balloon device with free page
   reporting, in blocks of 256 KiB and up:
   `src/memory/guest/90-omacvm-mm.tmpfiles`), but with this QEMU macOS can
-  keep holding those pages until the VM stops (ADR 0059; the fix: ADR 0062,
-  a later release). When macOS warns that memory is short, the VM drops its file
+  keep holding those pages until the VM stops (ADR 0059; the fix comes with
+  #603, a later release). When macOS warns that memory is short, the VM drops its file
   cache (below).
 - **Graphics memory** is extra, on top: the textures and buffers the VM's
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
@@ -1286,7 +1286,7 @@ same disk image. macOS's memory pressure stays "normal" while it compresses
 (it counts every page it can still compress as available), so a VM of 42 GB
 on a 64 GB Mac held 15.5 GB of cache while macOS compressed the VM. The app
 has a give-back for this, but in 3.2.11 it is off: it runs only with a QEMU
-that gives the pages the VM frees back to macOS (ADR 0062, a later release).
+that gives the pages the VM frees back to macOS (#603, a later release).
 3.2.11's QEMU keeps them held (Mac mini, 3 GB VM: of the given-back memory
 the Mac still held, 1345 of 1346 MB and 1721 of 1721 MB stayed held), and a
 file the VM reads again takes new pages, so the give-back would make the

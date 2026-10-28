@@ -1,5 +1,5 @@
 #!/bin/bash
-# OmacVM.app gives the VM's cold file cache back to the Mac while macOS is
+# OmacVM.app gives the VM's cold file cache back to QEMU while macOS is
 # compressing the VM (src/memory/guest/giveback.sh, ADR 0059), without a VM:
 # the script against a fake /proc and /sys. It takes Inactive(file) less
 # min(1 GB, an eighth of the VM) through memory.reclaim (swappiness=0: file

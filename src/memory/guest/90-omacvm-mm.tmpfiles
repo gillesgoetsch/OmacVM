@@ -3,9 +3,11 @@
 w /sys/kernel/mm/transparent_hugepage/defrag - - - - defer+madvise
 # MGLRU: protect the working set for 1 s so reclaim does not thrash.
 w /sys/kernel/mm/lru_gen/min_ttl_ms - - - - 1000
-# Free page reporting (OmacVM.app's balloon): give freed memory back to the Mac
+# Free page reporting (OmacVM.app's balloon): freed memory leaves QEMU's footprint
 # in 256 KiB blocks, not only in whole 2 MiB ones (the kernel's default, which
 # keeps huge pages whole on a Linux host; macOS does not back the VM with them).
-# 4 GB VM, a build then a cache drop: 1.1-1.4 GB more back, +0.5 % CPU.
+# 4 GB VM, a build then a cache drop: a footprint 1.1-1.4 GB smaller, +0.5 % CPU.
+# The footprint, not memory back to the Mac: 3.2.11's QEMU keeps holding the
+# pages (ADR 0059).
 # Nothing changes where the balloon does not report free pages.
 w /sys/module/page_reporting/parameters/page_reporting_order - - - - 6

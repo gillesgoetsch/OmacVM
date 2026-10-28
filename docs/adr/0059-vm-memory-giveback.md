@@ -2,7 +2,7 @@
 
 Status: accepted, built (`vm-memory-giveback`), no setting. The give-back
 while macOS compresses the VM runs only with a QEMU that gives the pages back
-to macOS (ADR 0062, a later release); 3.2.11's QEMU does not, so in 3.2.11 it
+to macOS (the fix comes with #603, a later release); 3.2.11's QEMU does not, so in 3.2.11 it
 is off and the warning's drop works as in 3.2.10 (below, "3.2.11: off until
 QEMU gives the pages back"). Notes, the spike and the reviews:
 work/tracks/vm-memory-giveback.md, work/tracks/vm-memory-gap.md. Sizes are
@@ -122,7 +122,7 @@ Activity Monitor's number smaller while the Mac holds as much or more, and on
 the memory-optimized kernel it takes nearly all of the VM's file cache.
 
 - The give-back while macOS compresses the VM runs only when the app's QEMU
-  carries the fix (ADR 0062): its binary has the fix's text
+  carries the fix (#603): its binary has the fix's text
   (`MemoryGiveBack.reclaimMarker`, read once per app run off the main thread,
   as for `qemu-virt-small-high-window.patch`), and `OMACVM_RECLAIM_REUSABLE`
   is not 0. Otherwise it never fires (`desktop-tests`).
