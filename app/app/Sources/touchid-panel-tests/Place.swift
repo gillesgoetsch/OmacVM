@@ -8,7 +8,9 @@
 //   --head ID          a second VM window (QEMU's window for another display) there
 //   --head-full        that window in full screen too
 //   --key vm|head|none which of ours is key when the panel shows (default vm)
+//   --pointer ID       the Mac's pointer in the middle of that display when the panel shows (a warp, no event)
 //   --row NAME         a name for the row
+// After the panel closed: which window is key and each display's current Space ("after").
 import AppKit
 import Foundation
 @testable import OmacVMTouchIDPanel
@@ -75,7 +77,7 @@ func describe(_ w: NSWindow?) -> Any {
 }
 
 func runPlace(_ args: [String]) -> Never {
-    var out = "", vmDisplay: UInt32?, full = false, head: UInt32?, headFull = false, key = "vm", row = "row"
+    var out = "", vmDisplay: UInt32?, full = false, head: UInt32?, headFull = false, key = "vm", row = "row", pointer: UInt32?
     var i = 0
     while i < args.count {
         switch args[i] {
@@ -86,6 +88,7 @@ func runPlace(_ args: [String]) -> Never {
         case "--head-full": headFull = true
         case "--key": key = args[i + 1]; i += 1
         case "--row": row = args[i + 1]; i += 1
+        case "--pointer": pointer = UInt32(args[i + 1]); i += 1
         default: FileHandle.standardError.write(Data("place: unknown \(args[i])\n".utf8)); exit(2)
         }
         i += 1
@@ -144,8 +147,13 @@ func runPlace(_ args: [String]) -> Never {
     }
     let controller = PanelController(evaluator: { CueEvaluator(.cancelled, after: 3.0) })
     steps.append {
+        if let pointer {
+            let b = CGDisplayBounds(pointer)
+            CGWarpMouseCursorPosition(CGPoint(x: b.midX, y: b.midY))
+        }
         log["before"] = ["active": app.isActive, "key_window": describe(app.keyWindow), "main_window": describe(app.mainWindow),
-                         "ns_main_screen": displayID(NSScreen.main), "screens": NSScreen.screens.map { ["id": displayID($0), "frame": rect($0.frame), "visible": rect($0.visibleFrame)] },
+                         "ns_main_screen": displayID(NSScreen.main), "pointer": [NSEvent.mouseLocation.x, NSEvent.mouseLocation.y],
+                         "pointer_screen": displayID(NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }), "screens": NSScreen.screens.map { ["id": displayID($0), "frame": rect($0.frame), "visible": rect($0.visibleFrame)] },
                          "spaces": spacesByDisplay()]
         var answer: String?
         controller.show(TouchIDPanelPrompt(title: "Touch ID in Omarchy", line: "sudo in pts/1 wants to run", box: "pacman -Syu", timeout: 30, colors: [:])) { r in
@@ -156,16 +164,21 @@ func runPlace(_ args: [String]) -> Never {
             log["shown"] = ["answer_so_far": answer ?? NSNull(), "panel": describe(panel), "vm": describe(vm), "head": describe(hw),
                             "key_window": describe(app.keyWindow), "spaces": spacesByDisplay(), "ns_main_screen": displayID(NSScreen.main)]
             controller.cancel()
-            if let d = try? JSONSerialization.data(withJSONObject: log, options: [.sortedKeys]), let h = FileHandle(forWritingAtPath: out) ?? {
-                FileManager.default.createFile(atPath: out, contents: nil); return FileHandle(forWritingAtPath: out) }() {
-                h.seekToEndOfFile(); h.write(d); h.write(Data("\n".utf8)); h.closeFile()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                log["after"] = ["answer": answer ?? NSNull(), "key_window": describe(app.keyWindow), "spaces": spacesByDisplay(),
+                                "panel_on_screen": app.windows.contains { $0 is PanelWindow && $0.isVisible }]
+                if let d = try? JSONSerialization.data(withJSONObject: log, options: [.sortedKeys]), let h = FileHandle(forWritingAtPath: out) ?? {
+                    FileManager.default.createFile(atPath: out, contents: nil); return FileHandle(forWritingAtPath: out) }() {
+                    h.seekToEndOfFile(); h.write(d); h.write(Data("\n".utf8)); h.closeFile()
+                }
+                let p = log["shown"] as? [String: Any]
+                let pd = (p?["panel"] as? [String: Any])
+                let ak = (log["after"] as? [String: Any])?["key_window"] as? [String: Any]
+                print("place \(row): panel screen \(pd?["screen"] ?? "none") cg_displays \(pd?["cg_displays"] ?? "-") on_screen \(pd?["on_screen"] ?? "-") key \(pd?["key"] ?? "-"); vm screen \((p?["vm"] as? [String: Any])?["screen"] ?? "-"); after: key \(ak?["title"] ?? "none")")
+                // Leave full screen before quitting so the Space goes cleanly.
+                for w in [vm, hw].compactMap({ $0 }) where w.styleMask.contains(.fullScreen) { w.toggleFullScreen(nil) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { exit(0) }
             }
-            let p = log["shown"] as? [String: Any]
-            let pd = (p?["panel"] as? [String: Any])
-            print("place \(row): panel screen \(pd?["screen"] ?? "none") cg_displays \(pd?["cg_displays"] ?? "-") on_screen \(pd?["on_screen"] ?? "-"); vm screen \((p?["vm"] as? [String: Any])?["screen"] ?? "-")")
-            // Leave full screen before quitting so the Space goes cleanly.
-            for w in [vm, hw].compactMap({ $0 }) where w.styleMask.contains(.fullScreen) { w.toggleFullScreen(nil) }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { exit(0) }
         }
     }
     next(after: 0.5)
