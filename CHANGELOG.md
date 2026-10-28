@@ -3,6 +3,29 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.11 (unreleased)
+
+An OmacVM.app VM gives memory back to the Mac while macOS compresses it. Needs only the app
+update.
+
+- **The VM gives its old file cache back while macOS compresses it (#590).** Linux keeps every
+  file it read in its page cache. To the Mac that is the VM's own memory, which macOS can
+  compress but never drop, although its own file cache already has the same files. The app
+  dropped the VM's cache only when macOS warned that memory was short, and macOS says
+  "normal" while it compresses, so a large VM could keep many GB of old cache compressed while
+  the Mac slowed down and Activity Monitor showed far more than the VM used. Now the app looks
+  every 5 seconds at how much of the VM macOS holds compressed and how much macOS compresses;
+  when macOS is compressing the VM, the VM gives back the file cache it has not used lately.
+  The newest part of it (up to 1 GB), programs' memory and zram stay; at most once in 10
+  minutes, less often when little comes back. On a MacBook Air (8 GB, a 4 GB VM, memory
+  pressure "normal" all along), after the VM read 2.6 GB of files: 3.2.10 left the VM's
+  footprint at 6.6 GB for 10 minutes while macOS compressed it; now the app asked 3 seconds
+  after macOS started compressing the VM, the VM gave back 1.2 GB, and its footprint fell from
+  6.7 to 5.7 GB within 5 seconds. Chrome's first start after that: 0.62 s (0.63 s without a
+  give-back). `omacvm check` has a "VM memory" line, `logs/qemu.log` two lines per give-back.
+  Needs only the new app, from the VM's next start; no Update VM. UTM, Parallels and Fusion:
+  nothing changes.
+
 ## 3.2.10
 
 Apps in an OmacVM.app VM that draw with OpenGL program pipelines now draw. Needs only the app
