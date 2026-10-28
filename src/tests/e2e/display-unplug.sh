@@ -44,7 +44,8 @@
 #                   (default: all but fullpanel-builtin)
 #     --sleep       fullpanel-builtin also puts the displays to sleep and wakes them
 #     --out DIR     summary.tsv and the logs (default ~/omacvm-e2e/unplug-<time>)
-# Needs: ~/Applications/"OmacVM Test.app" (org.omacvm.app.test), NAME stopped in
+# Needs: ~/Applications/"OmacVM Test.app" (org.omacvm.app.test; OMACVM_E2E_APP=PATH
+# for another copy of it), NAME stopped in
 # its VMs folder, clang (builds the display tool), and the test Mac to itself:
 # the caller holds its lock (cc-switches.sh does), nobody uses it, no other VM
 # runs (a display going changes every window on the Mac). The test app's
@@ -75,7 +76,7 @@ done
 want() { [[ -z $ONLY || $ONLY == *",$1,"* ]]; }
 
 export OMACVM_TEST_IDENTITY=1
-APP="$HOME/Applications/OmacVM Test.app"
+APP=${OMACVM_E2E_APP:-"$HOME/Applications/OmacVM Test.app"}   # another copy of the test identity: OMACVM_E2E_APP
 APPID=org.omacvm.app.test
 KEY=$HOME/.ssh/omacvm
 NOTCH=645.5x824.5x34x1470x956   # a 14" MacBook Pro's notch, in points
