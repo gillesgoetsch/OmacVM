@@ -10,17 +10,23 @@ in more words.
   for them; the others run on, and in the VM it looks like a freeze (the kernel logs an RCU
   stall, the video daemon misses its watchdog, "no word from the Mac for 15 s"). On a Mac mini
   short of memory three of ten processors stood still for 1.2, 2.1 and 2.4 s. QEMU now writes
-  one line per stall of 1 s or more, which processors, how long and the Mac's free memory,
-  for example "OmacVM: stall: vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in macOS's
-  kernel waiting for memory (Mac: 0.3 GB free, pressure normal; the VM holds 51 GB, 20 GB of
-  it compressed by macOS)", or "waited 2.1 s for a Mac core" when the Mac's processors were
-  busy, and keeps the count in `logs/vm-stalls`. The app menu (beside the Apple menu) then says
-  "The VM stood still 2 times (longest 58 s): the Mac ran out of memory" under Graphics
-  memory. It looks when QEMU's stall watchdog wakes anyway (every 2 s, every 250 ms while a
-  processor stands): no new timer. Its "main loop stalled" line now says "in a GPU run without
-  the BQL" when QEMU's graphics thread waited in a call to the Mac while the processors ran on;
-  it said "with the BQL held (the VM waits)" there. Needs only the new app, from the VM's next
-  start.
+  one line per stall of 1 s or more: which processors, about how long, and why: "blocked in
+  macOS's kernel waiting for memory" only when the Mac was paging then (compressing or
+  swapping 16 MB/s or more, or memory pressure warn or critical), else just "blocked in
+  macOS's kernel", or "waited for a Mac core" when the Mac's processors were busy. QEMU's main
+  loop holding the VM 2 s or more is counted too (the mini once held it 2.2 s while freeing a
+  display surface's memory). For example (the format, not a measurement): "OmacVM: stall:
+  vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in macOS's kernel waiting for memory
+  (Mac: compressor and swap 900 MB/s, 0.3 GB free, pressure normal; the VM holds 51 GB, 20 GB
+  of it compressed by macOS)". The counts go to `logs/vm-stalls`, and the app menu (beside the
+  Apple menu) then says, for example, "The VM stood still 2 times (longest 58 s): the Mac ran
+  out of memory" under Graphics memory. QEMU looks when its stall watchdog wakes anyway (every
+  2 s, every 250 ms while a processor stands): no new timer, so short stalls can be missed: one
+  in macOS's kernel under about 2.25 s (3.25 s for a processor that was nearly idle before), one
+  without a Mac core under about 4 s. The watchdog's "main loop stalled" line now says "in a
+  GPU run without the BQL" when QEMU's graphics thread waited in a call to the Mac while the
+  processors ran on (it said "with the BQL held (the VM waits)" there), and a line says when
+  the watchdog itself woke more than 1 s late. Needs only the new app, from the VM's next start.
 
 ## 3.2.11
 
