@@ -438,7 +438,8 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   # to drop its file cache when macOS warns, and for its cold file cache while
   # macOS compresses the VM only with a QEMU that gives the pages back to
   # macOS (qemu.log's "give-back while macOS compresses: on|off" line;
-  # logs/memory-giveback, ADR 0059). The numbers are what the VM freed and
+  # logs/memory-giveback, ADR 0059), until that QEMU finds macOS keeping them
+  # anyway (kept=1, ADR 0062). The numbers are what the VM freed and
   # QEMU's footprint, not what the Mac got back. Never a failure: a hint when
   # macOS holds much compressed and the VM had little left to give.
   vmm=$(app_env "$(dirname "$(dirname "$miclog")")" MEM_MB); [[ $vmm =~ ^[0-9]+$ ]] || vmm=""
@@ -448,7 +449,9 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   # The app's own line: the first one (the app writes it within a second of the start, before the VM
   # boots; later QEMU lines can carry text from the VM). The words are check's.
   case $(LC_ALL=C grep -a -o -E 'OmacVM: VM memory: give-back while macOS compresses: (on|off)' "$miclog" 2>/dev/null | head -1) in
-    *": on") what="${what:+$what; }give-back while macOS compresses: on" ;;
+    *": on") if [[ $(mgv kept) == 1 ]]; then
+               what="${what:+$what; }give-back while macOS compresses: off for the rest of this run (macOS kept the pages QEMU gave back)"
+             else what="${what:+$what; }give-back while macOS compresses: on"; fi ;;
     *": off") what="${what:+$what; }give-back while macOS compresses: off (this QEMU keeps given-back pages)" ;;
   esac
   # What the VM said it freed (given_mb); for the warning's drop, which says

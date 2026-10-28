@@ -153,6 +153,38 @@ expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "3
 try? Data(MemoryGiveBack.reclaimMarker.dropLast().utf8).write(to: qemuBin)
 expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "part of the text is not the text")
 expect(!MemoryGiveBack.qemuGivesPagesBack(binary: logs.appendingPathComponent("none"), environment: [:]), "no binary: keeps them")
+// The fix built in is not the fix working: QEMU says when macOS keeps the pages anyway (a refused or skipped advice;
+// logs/memory-reclaim, OMACVM_RECLAIM_STATUS), and the give-back while macOS compresses goes off for the run.
+expect(MemoryGiveBack.qemuKeeps(status: nil) == nil && MemoryGiveBack.qemuKeeps(status: "") == nil,
+       "QEMU said nothing (no file, empty): not kept")
+expect(MemoryGiveBack.qemuKeeps(status: "reclaim=gives\nwhy=x\n") == nil && MemoryGiveBack.qemuKeeps(status: "why=x\nreclaim=keeps\n") == nil,
+       "  another word, or not first: not kept")
+expect(MemoryGiveBack.qemuKeeps(status: "reclaim=keeps\nwhy=madvise refused: Operation not permitted\n") == "madvise refused: Operation not permitted",
+       "QEMU's file (test-reclaim --keeps writes the same): kept, with the reason")
+expect(MemoryGiveBack.qemuKeeps(status: "reclaim=keeps\n") == "no reason given", "  no reason: still kept")
+let longWhy = MemoryGiveBack.qemuKeeps(status: "reclaim=keeps\nwhy=\u{1b}[2J" + String(repeating: "x", count: 500) + "\n")
+expect(longWhy?.count == 120 && longWhy?.contains("\u{1b}") == false, "  the reason: printable, 120 characters at most")
+func compressingSession(_ m: inout MemoryGiveBack, from t0: Double) -> Bool {
+    _ = m.compressing(sample(t0, fp: 30, res: 30, comp: 100))
+    var fired = false
+    for i in 1...240 { fired = fired || m.compressing(sample(t0 + Double(i) * 5, fp: 30 + Double(i) * 0.1, res: 28, comp: 100 + Double(i) * 0.1)) }
+    return fired
+}
+var heard = MemoryGiveBack(ram: 64 * GB, pagesGoBack: true)
+expect(compressingSession(&heard, from: 0), "a QEMU with the fix, nothing heard: the give-back while macOS compresses fires")
+var told = MemoryGiveBack(ram: 64 * GB, pagesGoBack: true)
+told.qemuKept()
+expect(!told.pagesGoBack && !compressingSession(&told, from: 0) && !told.allowed(.compressing, at: 9000),
+       "QEMU says macOS keeps the pages: the same session never gives back")
+told.started(.warning, at: 10000)
+told.answered(nil)
+expect(told.allowed(.critical, at: 10600) && !told.allowed(.warning, at: 10599), "  the warning's drop stays, once per 10 minutes")
+expect(MemoryGiveBack.keptLine("why") == "OmacVM: VM memory: give-back while macOS compresses: off for the rest of this run: "
+       + "QEMU says macOS keeps the pages the VM gives back (why)", "the qemu.log line when QEMU said so")
+var kst = MemoryGiveBack.Status()
+expect(kst.text.contains("\nkept=0\n"), "the status file says kept=0")
+kst.kept = true
+expect(kst.text.contains("\nkept=1\n"), "  kept=1 once QEMU said so (omacvm check's row)")
 // qemu.log's line at each start; omacvm check's "VM memory" row reads "compresses: on|off" from it.
 expect(MemoryGiveBack.startLine(pagesGoBack: false) == "OmacVM: VM memory: give-back while macOS compresses: off "
        + "(this QEMU keeps given-back pages); macOS's memory warning still drops the VM's file cache", "the line when off")
@@ -384,7 +416,7 @@ expect(bad == 0, "5000 random answers: every number within range, act letters on
 var st = MemoryGiveBack.Status()
 st.count = 3; st.at = 1_793_177_520; st.trigger = "compressing"; st.act = "reclaim"; st.givenMB = 11900; st.returnedMB = 11200
 expect(st.text.hasPrefix("count=3\nat=1793177520\ntrigger=compressing\nact=reclaim\ngiven_mb=11900\nreturned_mb=11200\n")
-       && st.text.hasSuffix("off=0\n"), "status file: key=value lines")
+       && st.text.hasSuffix("off=0\nkept=0\n"), "status file: key=value lines")
 st.givenMB = nil
 expect(st.text.contains("\ngiven_mb=\n"), "the warning's drop: no count from the VM, given_mb empty")
 expect(MemoryGiveBack.gb(900 * MB) == "900 MB" && MemoryGiveBack.gb(11900 * MB) == "11.6 GB", "sizes as the log says them")

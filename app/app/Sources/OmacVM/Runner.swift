@@ -505,6 +505,10 @@ final class Runner {
         // The VM's graphics memory on the Mac, for this app and omacvm check (GPUMemory).
         env["OMACVM_GPU_MEMORY_STATUS"] = GPUMemory.file(for: c).path
         try? FileManager.default.removeItem(at: GPUMemory.file(for: c))
+        // QEMU's reclaim fix says there when macOS keeps the pages the VM gives
+        // back (GPUMemoryWatch turns its give-back while macOS compresses off).
+        env["OMACVM_RECLAIM_STATUS"] = MemoryGiveBack.reclaimFile(for: c).path
+        try? FileManager.default.removeItem(at: MemoryGiveBack.reclaimFile(for: c))
         // The window opens on the display the user is using (WindowPlacement).
         // QEMU's hook for that (omacvm-cocoa-displays.patch) still has the name
         // its first user, the display tests, gave it; it is no test mode.
