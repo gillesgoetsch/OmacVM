@@ -1,4 +1,4 @@
-# 0059: Video surfaces at their own size: the Mac samples a texture at the size the guest says
+# 0061: Video surfaces at their own size: the Mac samples a texture at the size the guest says
 
 Status: accepted, built (`video-edge`, 3.2.11), on by default: the app sends
 `omacvm.valogical=1`; `OMACVM_VIDEO_LOGICAL=0` on the Mac and

@@ -143,7 +143,7 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   at a size that is not a multiple of 16 (a NOP with a private payload,
   only when the app says `omacvm.valogical=1`), and every shader that
   samples such a texture scales its coordinates and size queries to it
-  (`virgl-resource-logical-size.patch`, [ADR 0059](adr/0059-video-surfaces-at-their-own-size.md)).
+  (`virgl-resource-logical-size.patch`, [ADR 0061](adr/0061-video-surfaces-at-their-own-size.md)).
   No copy: two more operations per lookup in those shaders. Texel reads
   are as before and bit-exact (`vaGetImage` into the surface's own format,
   FFmpeg's `hwdownload`, Chromium's V4L2 daemon). Mesa's own reads through

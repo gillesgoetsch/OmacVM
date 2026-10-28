@@ -3,7 +3,7 @@
 #                   [--output 2560x1600] [--chrome PATH] [--out FILE.jsonl]
 # Where hardware-decoded video's rows and columns land on an OmacVM.app VM's screen, per app
 # (guest/video-geometry.py): the test card's last 8 rows and columns must stay 8 (OmacVM 3.2.10 and older showed the
-# picture squeezed with its last row repeated below it, ADR 0059). Copies the guest script and the DevTools helpers
+# picture squeezed with its last row repeated below it, ADR 0061). Copies the guest script and the DevTools helpers
 # (src/bench/video-bench.py, browser-bench.py) into the VM, makes the clips there with FFmpeg (once), runs each app
 # in the desktop user's Hyprland session (grim), prints a verdict per clip; exit 1 when a row that must be exact is
 # not (known cases: guest/video-geometry.py's check). Defaults: apps mpv mpvnext chrome chromium firefox; codecs

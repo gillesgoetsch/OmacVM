@@ -11,7 +11,7 @@ The card: grey ground, white lines 2 rows high every 64 rows and 2 columns wide 
 8 blue then 8 red, the same for the last 16 columns. Shown exactly, the red band is 8 source rows and columns and
 the lines sit where they are in the source (line ratio 1.0). Mesa rounds a VA-API surface's planes up to 16; an app
 that samples them whole shows the band 8 + padding rows high (1080p: 16) and the picture squeezed (ratio 0.9926):
-the strip OmacVM 3.2.10 and older showed below hardware-decoded video (ADR 0059).
+the strip OmacVM 3.2.10 and older showed below hardware-decoded video (ADR 0061).
 
 APP: chrome (Google Chrome, VA-API through OmacVM's shim; --chrome PATH, flags from chrome-flags.conf plus
 VIDEO_GEOMETRY_CHROME_FLAGS / VIDEO_GEOMETRY_CHROME_FEATURES), chromium (Arch's, V4L2 through omacvm-vdecd), firefox (VA-API), mpv
