@@ -31,7 +31,6 @@ unsigned long sysval_block_faults(void);
 unsigned long sysval_block_draws(void);
 unsigned long sysval_block_queries(void);
 void gl_status_fault(int mode);
-void gl_pervertex_redeclare(int on);
 unsigned long gl_status_faults(void);
 
 enum { TEST_SHADER_VERTEX = 0, TEST_SHADER_FRAGMENT = 1, TEST_PRIM_TRIANGLES = 4,
@@ -250,8 +249,7 @@ static const char *fs_green =
    "  0: MOV OUT[0], IMM[0]\n"
    "  1: END\n";
 
-/* The same as separable programs (vrend links each stage alone, into a pipeline); linked
- * with gl_pervertex_redeclare on (sysval-block-gl.c: Apple's GL wants gl_PerVertex). */
+/* The same as separable programs (vrend links each stage alone, into a pipeline). */
 static const char *vs_separable =
    "VERT\n"
    "PROPERTY SEPARABLE_PROGRAM 1\n"
@@ -319,7 +317,6 @@ static int draw_with(int ctx_id, struct cmds *c, uint32_t vs, uint32_t fs)
  * draw binds again and draws. */
 static void separable_rebind(struct cmds *c)
 {
-   gl_pervertex_redeclare(1);
    emit_shader(c, 50, TEST_SHADER_VERTEX, vs_separable);
    emit_shader(c, 51, TEST_SHADER_FRAGMENT, fs_separable_green);
    emit_shader(c, 52, TEST_SHADER_FRAGMENT, fs_separable_blue);
@@ -349,7 +346,6 @@ static void separable_rebind(struct cmds *c)
          "separable: the next draw binds the pipeline's blocks again");
    check(sysval_block_draws() == draws + 3 && read_middle() == GREEN,
          "separable: and draws (green)");
-   gl_pervertex_redeclare(0);
 }
 
 /* Status queries that write nothing, in their own context (a context logs the details
@@ -384,12 +380,10 @@ static void unwritten_status(void)
 
    faults = gl_status_faults();
    ctx_error_lines = 0;
-   gl_pervertex_redeclare(1);
    gl_status_fault(2);
    fill_stack(0);
    r = draw_with_new_shaders_in(2, &c, 30, vs_separable, fs_separable_green);
    gl_status_fault(0);
-   gl_pervertex_redeclare(0);
    check(gl_status_faults() > faults, "validate status unwritten: the pipeline was validated");
    check(r == 0 && ctx_error_lines == 0,
          "validate status unwritten: no context error (ILLEGAL_PROGRAM_PIPELINE)");

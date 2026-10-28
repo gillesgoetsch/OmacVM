@@ -7,18 +7,13 @@
  *  1 a shader's compile status and its info log;
  *  2 a program pipeline's validate status;
  *  3 a program's link status and its info log.
- * gl_pervertex_redeclare(1): a vertex shader that writes gl_Position without redeclaring
- * gl_PerVertex gets the redeclaration. Apple's GL refuses to link such a separable shader
- * (GLSL 4.10; Mesa's GL does not insist) and vrend's last vertex stage never redeclares
- * it, so without this no separable pipeline links on the Mac at all (#567).
  * It also counts the glDrawArrays calls that reach the GL and every VirglBlock size
  * query. Test-only; never shipped. */
 #define GL_SILENCE_DEPRECATION 1
 #include <OpenGL/gl3.h>
-#include <stdlib.h>
 #include <string.h>
 
-static int fault, status_fault, pervertex;
+static int fault, status_fault;
 static unsigned long faults_done, draws, block_queries, status_faults_done;
 
 void sysval_block_fault(int mode)
@@ -39,11 +34,6 @@ unsigned long sysval_block_draws(void)
 unsigned long sysval_block_queries(void)
 {
    return block_queries;
-}
-
-void gl_pervertex_redeclare(int on)
-{
-   pervertex = on;
 }
 
 void gl_status_fault(int mode)
@@ -131,42 +121,6 @@ static void stand_in_GetProgramPipelineiv(GLuint pipeline, GLenum pname, GLint *
    glGetProgramPipelineiv(pipeline, pname, params);
 }
 
-static void stand_in_ShaderSource(GLuint shader, GLsizei count, const GLchar *const *strings,
-                                  const GLint *lengths)
-{
-   static const char decl[] = "out gl_PerVertex { vec4 gl_Position; };\n";
-   size_t total = 0;
-   for (GLsizei i = 0; pervertex && i < count; i++)
-      total += lengths && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]);
-   char *all = pervertex ? malloc(total + sizeof(decl)) : NULL;
-   if (!all) {
-      glShaderSource(shader, count, strings, lengths);
-      return;
-   }
-   size_t n = 0;
-   for (GLsizei i = 0; i < count; i++) {
-      size_t len = lengths && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]);
-      memcpy(all + n, strings[i], len);
-      n += len;
-   }
-   all[n] = 0;
-   if (strstr(all, "gl_Position") && !strstr(all, "gl_PerVertex")) {
-      /* before the first line that is not a preprocessor line */
-      char *at = all;
-      while (*at == '#' || *at == '\n') {
-         char *eol = strchr(at, '\n');
-         if (!eol)
-            break;
-         at = eol + 1;
-      }
-      memmove(at + sizeof(decl) - 1, at, strlen(at) + 1);
-      memcpy(at, decl, sizeof(decl) - 1);
-   }
-   const GLchar *one = all;
-   glShaderSource(shader, 1, &one, NULL);
-   free(all);
-}
-
 static void stand_in_DrawArrays(GLenum mode, GLint first, GLsizei count)
 {
    draws++;
@@ -179,7 +133,6 @@ __attribute__((used)) static const struct {
 } interposers[] __attribute__((section("__DATA,__interpose"))) = {
    { (const void *)stand_in_GetActiveUniformBlockiv, (const void *)glGetActiveUniformBlockiv },
    { (const void *)stand_in_DrawArrays, (const void *)glDrawArrays },
-   { (const void *)stand_in_ShaderSource, (const void *)glShaderSource },
    { (const void *)stand_in_GetShaderiv, (const void *)glGetShaderiv },
    { (const void *)stand_in_GetShaderInfoLog, (const void *)glGetShaderInfoLog },
    { (const void *)stand_in_GetProgramiv, (const void *)glGetProgramiv },

@@ -35,7 +35,9 @@
  *    block of 4 do not compile); a window must not let it read the other draws' constants;
  * 15 separable shaders linked early (LINK_SHADER): the vertex window still works (the index
  *    attribute is bound before that link), not only a fallback to uniforms; skipped where
- *    the host refuses the separable link in every mode (Apple's GL, gl_PerVertex);
+ *    the host refuses the separable link in every mode. With a range per draw (=1) only
+ *    stripe 0 is checked: Apple's software renderer keeps a bound pipeline's uniform buffer
+ *    ranges until the pipeline is bound again (the Mac's GPU takes each new range);
  * 16 a submit of a pattern, then small vertex and fragment constants: the buffer the GPU
  *    reads holds those constants and zeros, nothing of the earlier submit (the gaps between
  *    entries and the window pad are zeroed);
@@ -102,8 +104,8 @@ static void check(int ok, const char *what)
 static struct totals {
    unsigned long long uploads, bytes, binds, own, index, windows;
 } last;
-/* the host refused a separable link (Apple's GL: a separable vertex shader must redeclare
- * gl_PerVertex, which vrend does not: separable vertex programs never draw on macOS) */
+/* the host refused a separable link (Apple's GL before virgl-shader-separable-pervertex.patch:
+ * a separable vertex shader must redeclare gl_PerVertex) */
 static int separable_refused;
 
 static void log_cb(enum virgl_log_level_flags level, const char *message, void *data)
@@ -1137,7 +1139,8 @@ static void case_separable(struct cmds *c, int ctx)
       printf("skip: the host refused the separable link (as with uniforms)\n");
       return;
    }
-   check_stripes(ctx, 4, colours, "separable shaders");
+   /* Apple's software renderer: a new range for a pipeline that stays bound is not seen */
+   check_stripes(ctx, const_ubo == 1 ? 1 : 4, colours, "separable shaders");
 }
 
 static void check_separable_counts(void)

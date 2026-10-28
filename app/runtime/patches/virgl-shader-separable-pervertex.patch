@@ -1,0 +1,150 @@
+virglrenderer: separable shaders redeclare the gl_PerVertex blocks they use
+
+What: a shader of a separable program (TGSI PROPERTY SEPARABLE_PROGRAM, desktop GL)
+redeclares its gl_PerVertex blocks. The vertex, tessellation evaluation and geometry
+shaders always write "out gl_PerVertex { vec4 gl_Position; ... };", the tessellation
+control shader "... } gl_out[];", and the tessellation and geometry shaders read through
+"in gl_PerVertex { ... } gl_in[];". Members: gl_Position; gl_PointSize where the shader
+writes (or reads) it; the clip and cull distance arrays the shader declared on their own
+before, now inside the block; gl_ClipDistance[8] where the user clip planes are written.
+Before, only a stage that was not the last one wrote the block, and only when its next
+stage asked for it, which separable neighbours never do. Non-separable programs get the
+same GLSL as before.
+Why: GLSL 4.10 (ARB_separate_shader_objects) wants a separable shader to redeclare a
+built-in block before it uses its members. Apple's GL (the software renderer and the GPU)
+refuses to link it otherwise: "Built-in variable '<out gl_PerVertex.gl_Position>' must be
+redeclared before use, with separate shader objects". Mesa's GL does not insist. The host
+says VIRGL_CAP_V2_SSO (GL 4.1), so the guest's Mesa sends separable programs for apps that
+use program pipelines (glCreateShaderProgramv, GL_PROGRAM_SEPARABLE): every one was refused
+and its draws skipped (virgl-shader-failure-skip-draws.patch), #567. A loose
+gl_ClipDistance beside a redeclared block crashes Apple's GLSL compiler (glpCGAssign), so
+the arrays go into the block, never beside it.
+Upstream: the same conditions in virglrenderer main (checked 2026-10-28); not sent.
+Test: Tests/virgl/test-separable-pervertex.c: separable pipelines on Apple's software
+renderer (vertex + fragment with a varying, gl_PointSize, + geometry, + tessellation,
++ tessellation + geometry) draw their colour and nothing is refused; each row fails
+without this patch. Tests/virgl/test-sysval-block.c's separable rows now run on these
+blocks (its GL stand-in that added the block is gone).
+
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -2639,6 +2639,15 @@
+    }
+ }
+ 
++/* OmacVM: emit_clip_dist_movs() writes the user clip planes' distances: the last vertex
++ * stage without clip distance outputs, on a GL with cull distances (its callers' test). */
++static bool writes_ucp_clip_dist(const struct dump_ctx *ctx)
++{
++   return ctx->cfg->has_cull_distance && ctx->num_out_clip_dist == 0 &&
++          ctx->is_last_vertex_stage && ctx->num_outputs + 2 <= MAX_VARYING &&
++          (ctx->prog_type != TGSI_PROCESSOR_GEOMETRY || ctx->key->gs.emit_clip_distance);
++}
++
+ static void emit_clip_dist_movs(const struct dump_ctx *ctx,
+                                 struct vrend_glsl_strbufs *glsl_strbufs)
+ {
+@@ -2658,9 +2667,7 @@
+    if (ctx->prog_type == TGSI_PROCESSOR_TESS_CTRL)
+       prefix = "gl_out[gl_InvocationID].";
+ 
+-   if (ctx->num_out_clip_dist == 0 &&
+-       ctx->is_last_vertex_stage &&
+-       ctx->num_outputs + 2 <= MAX_VARYING) {
++   if (writes_ucp_clip_dist(ctx)) {
+       emit_buff(glsl_strbufs, "if (clip_plane_enabled) {\n");
+       for (i = 0; i < 8; i++) {
+          emit_buff(glsl_strbufs, "  %sgl_ClipDistance[%d] = dot(%s, clipp[%d]);\n",
+@@ -7585,7 +7592,9 @@
+       if (num_cull_dists)
+          snprintf(cull_buf, 64, "out float gl_CullDistance[%d];\n", num_cull_dists);
+ 
+-      if (ctx->is_last_vertex_stage) {
++      /* OmacVM: a separable stage has them in its gl_PerVertex block below (both at
++       * once crashed Apple's GLSL compiler) */
++      if (ctx->is_last_vertex_stage && !ctx->separable_program) {
+          emit_hdrf(glsl_strbufs, "%s%s", clip_buf, cull_buf);
+       }
+ 
+@@ -7594,7 +7603,12 @@
+ 
+    const char *psize_buf = ctx->has_pointsize_output ? "out float gl_PointSize;\n" : "";
+ 
+-   if (!ctx->is_last_vertex_stage && ctx->key->use_pervertex_in) {
++   /* OmacVM: a separable program redeclares the block it writes, also as the last stage
++    * (Apple's GL does not link it otherwise, #567) */
++   if (ctx->separable_program && !clip_buf[0] && writes_ucp_clip_dist(ctx))
++      snprintf(clip_buf, 64, "out float gl_ClipDistance[%d];\n", VIRGL_NUM_CLIP_PLANES);
++
++   if ((!ctx->is_last_vertex_stage && ctx->key->use_pervertex_in) || ctx->separable_program) {
+       emit_hdrf(glsl_strbufs, "out gl_PerVertex {\n vec4 gl_Position;\n %s%s%s};\n", clip_buf, cull_buf, psize_buf);
+    }
+ }
+@@ -7782,7 +7796,10 @@
+          snprintf(clip_var, 64, "float gl_ClipDistance[%d];\n", clip_dist);
+       if (cull_dist)
+          snprintf(cull_var, 64, "float gl_CullDistance[%d];\n", cull_dist);
++   }
+ 
++   /* OmacVM: a separable program redeclares the block it reads (#567) */
++   if (ctx->num_in_clip_dist || ctx->separable_program) {
+       (*has_pervertex) = true;
+       emit_hdrf(glsl_strbufs, "in gl_PerVertex {\n vec4 gl_Position; \n %s%s%s\n} gl_in[];\n",
+                 clip_var, cull_var, ctx->has_pointsize_input ? "float gl_PointSize;\n" : "");
+@@ -7802,13 +7819,16 @@
+    if (ctx->num_out_clip_dist && !num_clip_cull)
+       clip_dist = ctx->num_out_clip_dist;
+ 
+-   if (ctx->key->use_pervertex_in) {
++   /* OmacVM: a separable program redeclares the block it writes (#567) */
++   if (ctx->key->use_pervertex_in || ctx->separable_program) {
+       char clip_var[64] = "", cull_var[64] = "";
+       if (cull_dist)
+          snprintf(cull_var, 64, "float gl_CullDistance[%d];\n", cull_dist);
+ 
+       if (clip_dist)
+          snprintf(clip_var, 64, "float gl_ClipDistance[%d];\n", clip_dist);
++      else if (writes_ucp_clip_dist(ctx))
++         snprintf(clip_var, 64, "float gl_ClipDistance[%d];\n", VIRGL_NUM_CLIP_PLANES);
+ 
+       emit_hdrf(glsl_strbufs, "out gl_PerVertex {\n vec4 gl_Position; \n %s%s%s\n} %s;\n",
+                 clip_var, cull_var,
+@@ -7883,6 +7903,9 @@
+       emit_hdrf(glsl_strbufs, "%svec4 clipv_tmp;\n", ctx->has_clipvertex_so ? "out " : "");
+    }
+ 
++   char cull_buf[64] = "";
++   char clip_buf[64] = "";
++
+    if (ctx->num_out_clip_dist) {
+       bool has_clip_or_cull_prop = ctx->num_clip_dist_prop + ctx->num_cull_dist_prop > 0;
+ 
+@@ -7890,17 +7913,24 @@
+                                                    (ctx->num_out_clip_dist ? ctx->num_out_clip_dist : 8);
+       int num_cull_dists = has_clip_or_cull_prop ? ctx->num_cull_dist_prop : 0;
+ 
+-      char cull_buf[64] = "";
+-      char clip_buf[64] = "";
+-
+       if (num_clip_dists)
+          snprintf(clip_buf, 64, "out float gl_ClipDistance[%d];\n", num_clip_dists);
+       if (num_cull_dists)
+          snprintf(cull_buf, 64, "out float gl_CullDistance[%d];\n", num_cull_dists);
+ 
+-      emit_hdrf(glsl_strbufs, "%s%s\n", clip_buf, cull_buf);
++      /* OmacVM: a separable stage has them in its gl_PerVertex block below */
++      if (!ctx->separable_program)
++         emit_hdrf(glsl_strbufs, "%s%s\n", clip_buf, cull_buf);
+       emit_hdrf(glsl_strbufs, "vec4 clip_dist_temp[2];\n");
+    }
++
++   /* OmacVM: a separable program redeclares the block it writes (#567) */
++   if (ctx->separable_program) {
++      if (!clip_buf[0] && writes_ucp_clip_dist(ctx))
++         snprintf(clip_buf, 64, "out float gl_ClipDistance[%d];\n", VIRGL_NUM_CLIP_PLANES);
++      emit_hdrf(glsl_strbufs, "out gl_PerVertex {\n vec4 gl_Position;\n %s%s%s};\n",
++                clip_buf, cull_buf, ctx->has_pointsize_output ? "out float gl_PointSize;\n" : "");
++   }
+ }
+ 
+ 

@@ -1391,6 +1391,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-query-results-init
 # OmacVM: a query result the GL does not answer (never begun, still running, a GL refusing
 # calls) reaches the guest as done with 0; it got host stack bytes, or a wait for ever.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-query-result-unanswered.patch"
+# OmacVM: separable shaders redeclare the gl_PerVertex blocks they use: Apple's GL linked none
+# of them, so every draw of an app that uses program pipelines was skipped (#567).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-pervertex.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
