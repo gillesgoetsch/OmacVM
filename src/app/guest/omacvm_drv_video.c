@@ -82,6 +82,14 @@
  * long as at most one such process decodes. OMACVM_VA_DEBUG=1 prints the
  * limits.
  *
+ * Decoding into an imported surface: Mesa's virgl driver cannot decode into a surface
+ * made from the app's memory (vaCreateSurfaces2 with a descriptor): such a surface has no
+ * video buffer on the Mac, and Mesa's vaRenderPicture crashes the process (Chrome's GPU
+ * process, 2026-10-27: virgl_encode_begin_frame on a NULL buffer). The shim refuses
+ * vaBeginPicture on a decoding context whose target is such a surface
+ * (VA_STATUS_ERROR_INVALID_SURFACE, logged once): the app decodes that video on the CPU.
+ * Video processing and encoding into or from imports stay as they are.
+ *
  * Images in another YUV layout: vaGetImage and vaPutImage between an NV12
  * surface and an I420 or YV12 image (or back) are done here on the CPU, a
  * plain reshuffle of the planes, so the picture is bit for bit the decoded
@@ -328,29 +336,35 @@ static int decode_wait_on(void)
     return on;
 }
 
-/* Decoding contexts of this process (their vaEndPicture waits). */
+/* Decoding contexts of this process: whether their vaEndPicture waits, and (all of them)
+ * whether a target may be decoded into (see the top). */
 static pthread_mutex_t dec_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct decoding {
     VADriverContextP drv;
     VAContextID id;
-} decoding[64];
+    int wait;
+} decoding[128];
 static unsigned ndecoding;
 
-static void decoding_add(VADriverContextP ctx, VAContextID id)
+static void decoding_add(VADriverContextP ctx, VAContextID id, int wait)
 {
     pthread_mutex_lock(&dec_lock);
     if (ndecoding < sizeof(decoding) / sizeof(decoding[0]))
-        decoding[ndecoding++] = (struct decoding){ ctx, id };
+        decoding[ndecoding++] = (struct decoding){ ctx, id, wait };
     pthread_mutex_unlock(&dec_lock);
 }
 
-static int decoding_has(VADriverContextP ctx, VAContextID id)
+/* Is ID a decoding context (*WAIT: its vaEndPicture waits)? */
+static int decoding_get(VADriverContextP ctx, VAContextID id, int *wait)
 {
     int found = 0;
 
     pthread_mutex_lock(&dec_lock);
     for (unsigned i = 0; i < ndecoding && !found; i++)
-        found = decoding[i].drv == ctx && decoding[i].id == id;
+        if (decoding[i].drv == ctx && decoding[i].id == id) {
+            *wait = decoding[i].wait;
+            found = 1;
+        }
     pthread_mutex_unlock(&dec_lock);
     return found;
 }
@@ -398,10 +412,90 @@ static VAStatus (*mesa_end_picture)(VADriverContextP, VAContextID);
 static VAStatus end_picture(VADriverContextP ctx, VAContextID context)
 {
     VAStatus st = mesa_end_picture(ctx, context);
+    int wait = 0;
 
-    if (st == VA_STATUS_SUCCESS && decoding_has(ctx, context))
+    if (st == VA_STATUS_SUCCESS && decoding_get(ctx, context, &wait) && wait)
         wait_for_host(ctx);
     return st;
+}
+
+/* ---- Surfaces: one record each ---- */
+
+/* What the shim knows of each surface of this process: made from the app's memory (an import:
+ * Mesa cannot decode into it), Mesa's layout (asked once, by an export) and, for Chromium's RGB
+ * frames (see the top), whether a 4:2:0 surface has planes rounded up to 16 or an RGB import
+ * was made at the rounded size. An ID that comes back is a new surface; a full table forgets
+ * the oldest (that surface then counts as Mesa's own, its pictures as before). */
+enum { SURF_IMPORTED = 1, SURF_ROUNDED420 = 2, SURF_BUMPED = 4 };
+static pthread_mutex_t surf_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct surf {
+    VADriverContextP drv;
+    VASurfaceID id;
+    uint32_t flags;
+    uint32_t fourcc;            /* Mesa's layout (0: not asked yet) */
+    uint32_t width, height;     /* the size the app asked for (SURF_BUMPED: not Mesa's) */
+} surfs[1024];
+static unsigned nsurfs, next_surf;
+
+/* called with surf_lock held */
+static struct surf *surf_find(VADriverContextP ctx, VASurfaceID id)
+{
+    for (unsigned i = 0; i < nsurfs; i++)
+        if (surfs[i].drv == ctx && surfs[i].id == id)
+            return &surfs[i];
+    return NULL;
+}
+
+static void surf_add(VADriverContextP ctx, const VASurfaceID *ids, unsigned n, uint32_t w,
+                     uint32_t h, uint32_t flags)
+{
+    pthread_mutex_lock(&surf_lock);
+    for (unsigned i = 0; i < n; i++) {
+        struct surf *s = surf_find(ctx, ids[i]);
+
+        if (!s && nsurfs < sizeof(surfs) / sizeof(surfs[0])) {
+            s = &surfs[nsurfs++];
+        } else if (!s) {
+            s = &surfs[next_surf];
+            next_surf = (next_surf + 1) % nsurfs;
+        }
+        *s = (struct surf){ ctx, ids[i], flags, 0, w, h };
+    }
+    pthread_mutex_unlock(&surf_lock);
+}
+
+/* SURFACE's record into *OUT (0: none) */
+static int surf_get(VADriverContextP ctx, VASurfaceID id, struct surf *out)
+{
+    struct surf *s;
+
+    pthread_mutex_lock(&surf_lock);
+    s = surf_find(ctx, id);
+    if (s)
+        *out = *s;
+    pthread_mutex_unlock(&surf_lock);
+    return s != NULL;
+}
+
+/* N IDs gone (N < 0: every surface of a display that closes). */
+static void surf_forget(VADriverContextP ctx, const VASurfaceID *ids, int n)
+{
+    unsigned i = 0;
+
+    pthread_mutex_lock(&surf_lock);
+    while (i < nsurfs) {
+        int hit = n < 0;
+
+        for (int k = 0; k < n && !hit; k++)
+            hit = surfs[i].id == ids[k];
+        if (hit && surfs[i].drv == ctx) {
+            surfs[i] = surfs[--nsurfs];
+            next_surf = 0;
+        } else {
+            i++;
+        }
+    }
+    pthread_mutex_unlock(&surf_lock);
 }
 
 static VAStatus (*mesa_create_surfaces2)(VADriverContextP, unsigned int, unsigned int,
@@ -414,8 +508,6 @@ static int import_rounded(VADriverContextP ctx, unsigned int format, unsigned in
 static int fill_on(void);
 static int import420_rounded(unsigned int width, unsigned int height, VASurfaceAttrib *attribs,
                              unsigned int num_attribs);
-static void own420_add(VADriverContextP ctx, const VASurfaceID *ids, unsigned n, uint32_t w,
-                       uint32_t h);
 
 /* A new surface that Mesa allocates (no buffer of the app's, no memory type
  * of its own) gets the export hint added. */
@@ -430,24 +522,26 @@ static VAStatus create_surfaces2(VADriverContextP ctx, unsigned int format, unsi
                                  unsigned int num_attribs)
 {
     unsigned int i;
-    int imported = 0;
+    uint32_t flags = 0;
     VAStatus st;
 
     if (num_surfaces == 1 && fill_on() &&
         import_rounded(ctx, format, width, height, surfaces, attribs, num_attribs, &st))
         return st;
     for (i = 0; attribs && i < num_attribs; i++)
-        imported |= attribs[i].type == VASurfaceAttribExternalBufferDescriptor;
+        if (attribs[i].type == VASurfaceAttribExternalBufferDescriptor)
+            flags = SURF_IMPORTED;
     st = create_surfaces_plain(ctx, format, width, height, surfaces, num_surfaces, attribs,
                                num_attribs);
+    if (st != VA_STATUS_SUCCESS)
+        return st;
     /* 4:2:0 surfaces with planes rounded up to 16 (see render_picture): Mesa's
      * own, and imports whose buffer is laid out that way (Chrome's decoder
      * imports its own GBM buffers) */
-    if (st == VA_STATUS_SUCCESS && fill_on() &&
-        (format & (VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV420_10)) &&
-        (!imported || (num_surfaces == 1 &&
-                       import420_rounded(width, height, attribs, num_attribs))))
-        own420_add(ctx, surfaces, num_surfaces, width, height);
+    if (fill_on() && (format & (VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV420_10)) &&
+        (!flags || (num_surfaces == 1 && import420_rounded(width, height, attribs, num_attribs))))
+        flags |= SURF_ROUNDED420;
+    surf_add(ctx, surfaces, num_surfaces, width, height, flags);
     return st;
 }
 
@@ -499,92 +593,35 @@ static int is_420(uint32_t fourcc)
     return fourcc == VA_FOURCC_NV12 || fourcc == VA_FOURCC_I420 || fourcc == VA_FOURCC_YV12;
 }
 
-/* Each surface's layout, as Mesa made it (asked once, by an export). */
-static pthread_mutex_t fmt_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct fmt {
-    VADriverContextP drv;
-    VASurfaceID id;
-    uint32_t fourcc;
-    uint32_t width, height;     /* the surface's own size (its planes: rounded up to 16) */
-} fmts[256];
-static unsigned nfmts, next_fmt;
-
-/* A surface's fourcc (0: not known) and size, from Mesa's export, kept per surface. */
-static uint32_t surface_info(VADriverContextP ctx, VASurfaceID surface, uint32_t *w, uint32_t *h)
+/* A surface's layout as Mesa made it (0: not known), from Mesa's export the first time,
+ * kept in its record. */
+static uint32_t surface_fourcc(VADriverContextP ctx, VASurfaceID surface)
 {
     VADRMPRIMESurfaceDescriptor desc;
-    uint32_t fourcc = 0;
-    unsigned i;
+    struct surf rec, *s;
 
-    *w = *h = 0;
-    pthread_mutex_lock(&fmt_lock);
-    for (i = 0; i < nfmts; i++)
-        if (fmts[i].drv == ctx && fmts[i].id == surface) {
-            fourcc = fmts[i].fourcc;
-            *w = fmts[i].width;
-            *h = fmts[i].height;
-        }
-    pthread_mutex_unlock(&fmt_lock);
-    if (fourcc || !ctx->vtable->vaExportSurfaceHandle)
-        return fourcc;
+    if (surf_get(ctx, surface, &rec) && rec.fourcc)
+        return rec.fourcc;
+    if (!ctx->vtable->vaExportSurfaceHandle)
+        return 0;
     memset(&desc, 0, sizeof(desc));
     if (ctx->vtable->vaExportSurfaceHandle(ctx, surface, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                                            VA_EXPORT_SURFACE_READ_ONLY |
                                            VA_EXPORT_SURFACE_SEPARATE_LAYERS,
                                            &desc) != VA_STATUS_SUCCESS)
         return 0;
-    for (i = 0; i < desc.num_objects && i < 4; i++)
+    for (unsigned i = 0; i < desc.num_objects && i < 4; i++)
         close(desc.objects[i].fd);
-    fourcc = desc.fourcc;
-    *w = desc.width;
-    *h = desc.height;
-    pthread_mutex_lock(&fmt_lock);
-    if (nfmts < sizeof(fmts) / sizeof(fmts[0])) {
-        fmts[nfmts++] = (struct fmt){ ctx, surface, fourcc, desc.width, desc.height };
-    } else {
-        fmts[next_fmt] = (struct fmt){ ctx, surface, fourcc, desc.width, desc.height };
-        next_fmt = (next_fmt + 1) % nfmts;
-    }
-    pthread_mutex_unlock(&fmt_lock);
-    return fourcc;
+    pthread_mutex_lock(&surf_lock);
+    if ((s = surf_find(ctx, surface)))
+        s->fourcc = desc.fourcc;
+    pthread_mutex_unlock(&surf_lock);
+    return desc.fourcc;
 }
-
-static uint32_t surface_fourcc(VADriverContextP ctx, VASurfaceID surface)
-{
-    uint32_t w, h;
-
-    return surface_info(ctx, surface, &w, &h);
-}
-
-/* A surface ID may come back for a new surface: forget the old one's (or,
- * with n < 0, every surface of a display that closes). */
-static void forget_surfaces(VADriverContextP ctx, const VASurfaceID *ids, int n)
-{
-    unsigned i = 0;
-    int k;
-
-    pthread_mutex_lock(&fmt_lock);
-    while (i < nfmts) {
-        int hit = n < 0;
-
-        for (k = 0; k < n && !hit; k++)
-            hit = fmts[i].id == ids[k];
-        if (hit && fmts[i].drv == ctx) {
-            fmts[i] = fmts[--nfmts];
-            next_fmt = 0;
-        } else {
-            i++;
-        }
-    }
-    pthread_mutex_unlock(&fmt_lock);
-}
-
-static void bumped_forget(VADriverContextP ctx, const VASurfaceID *ids, int n);
 
 static VAStatus destroy_surfaces(VADriverContextP ctx, VASurfaceID *list, int n)
 {
-    forget_surfaces(ctx, list, n);
-    bumped_forget(ctx, list, n);
+    surf_forget(ctx, list, n);
     return mesa_destroy_surfaces(ctx, list, n);
 }
 
@@ -681,95 +718,17 @@ static void target_forget(VADriverContextP ctx, VAContextID context, int all)
     pthread_mutex_unlock(&tgt_lock);
 }
 
-/* RGB imports made at the rounded size: their size as the app gave it. */
-static struct bumped {
-    VADriverContextP drv;
-    VASurfaceID id;
-    uint32_t width, height;
-} bumped[256];
-static unsigned nbumped, next_bumped;
-
-/* 4:2:0 surfaces with planes rounded up to 16 (Mesa's own, and imports laid out
- * so): their own size. A full table forgets the oldest (its pictures then as before). */
-static struct bumped own420[512];
-static unsigned nown420, next_own420;
-
-static void own420_add(VADriverContextP ctx, const VASurfaceID *ids, unsigned n, uint32_t w,
-                       uint32_t h)
+/* A surface with flag WHAT in its record: its size as the app gave it. */
+static int surf_size(VADriverContextP ctx, VASurfaceID id, uint32_t what, uint32_t *w,
+                     uint32_t *h)
 {
-    pthread_mutex_lock(&tgt_lock);
-    for (unsigned i = 0; i < n; i++) {
-        if (nown420 < sizeof(own420) / sizeof(own420[0])) {
-            own420[nown420++] = (struct bumped){ ctx, ids[i], w, h };
-        } else {
-            own420[next_own420] = (struct bumped){ ctx, ids[i], w, h };
-            next_own420 = (next_own420 + 1) % nown420;
-        }
-    }
-    pthread_mutex_unlock(&tgt_lock);
-}
+    struct surf s;
 
-static int own420_size(VADriverContextP ctx, VASurfaceID id, uint32_t *w, uint32_t *h)
-{
-    int found = 0;
-
-    pthread_mutex_lock(&tgt_lock);
-    for (unsigned i = 0; i < nown420 && !found; i++)
-        if (own420[i].drv == ctx && own420[i].id == id) {
-            *w = own420[i].width;
-            *h = own420[i].height;
-            found = 1;
-        }
-    pthread_mutex_unlock(&tgt_lock);
-    return found;
-}
-
-static int bumped_size(VADriverContextP ctx, VASurfaceID id, uint32_t *w, uint32_t *h)
-{
-    int found = 0;
-
-    pthread_mutex_lock(&tgt_lock);
-    for (unsigned i = 0; i < nbumped && !found; i++)
-        if (bumped[i].drv == ctx && bumped[i].id == id) {
-            *w = bumped[i].width;
-            *h = bumped[i].height;
-            found = 1;
-        }
-    pthread_mutex_unlock(&tgt_lock);
-    return found;
-}
-
-/* N IDs gone (N < 0: every surface of CTX). */
-static void bumped_forget(VADriverContextP ctx, const VASurfaceID *ids, int n)
-{
-    unsigned i = 0;
-
-    pthread_mutex_lock(&tgt_lock);
-    while (i < nbumped) {
-        int hit = n < 0;
-
-        for (int k = 0; k < n && !hit; k++)
-            hit = bumped[i].id == ids[k];
-        if (hit && bumped[i].drv == ctx) {
-            bumped[i] = bumped[--nbumped];
-            next_bumped = 0;
-        } else {
-            i++;
-        }
-    }
-    for (i = 0; i < nown420;) {
-        int hit = n < 0;
-
-        for (int k = 0; k < n && !hit; k++)
-            hit = own420[i].id == ids[k];
-        if (hit && own420[i].drv == ctx) {
-            own420[i] = own420[--nown420];
-            next_own420 = 0;
-        } else {
-            i++;
-        }
-    }
-    pthread_mutex_unlock(&tgt_lock);
+    if (!surf_get(ctx, id, &s) || !(s.flags & what))
+        return 0;
+    *w = s.width;
+    *h = s.height;
+    return 1;
 }
 
 /* A 4:2:0 import of WIDTH x HEIGHT (height not a multiple of 16): is its Y plane
@@ -901,27 +860,41 @@ static int import_rounded(VADriverContextP ctx, unsigned int format, unsigned in
     *st = mesa_create_surfaces2(ctx, format, aw, ah, surfaces, 1, list, num_attribs);
     if (*st != VA_STATUS_SUCCESS) {
         *st = mesa_create_surfaces2(ctx, format, width, height, surfaces, 1, attribs, num_attribs);
+        if (*st == VA_STATUS_SUCCESS)
+            surf_add(ctx, surfaces, 1, width, height, SURF_IMPORTED);
         return 1;
     }
-    pthread_mutex_lock(&tgt_lock);
-    if (nbumped < sizeof(bumped) / sizeof(bumped[0])) {
-        bumped[nbumped++] = (struct bumped){ ctx, surfaces[0], width, height };
-    } else {
-        bumped[next_bumped] = (struct bumped){ ctx, surfaces[0], width, height };
-        next_bumped = (next_bumped + 1) % nbumped;
-    }
-    pthread_mutex_unlock(&tgt_lock);
+    surf_add(ctx, surfaces, 1, width, height, SURF_IMPORTED | SURF_BUMPED);
     return 1;
 }
 
 static VAStatus (*mesa_begin_picture)(VADriverContextP, VAContextID, VASurfaceID);
 static VAStatus (*mesa_render_picture)(VADriverContextP, VAContextID, VABufferID *, int);
 
+/* Decoding into an imported surface (see the top): said once per process. */
+static void say_import_refused(void)
+{
+    static int said;
+
+    if (!__atomic_exchange_n(&said, 1, __ATOMIC_RELAXED))
+        fprintf(stderr, "omacvm_drv_video: decoding into a surface made from the app's memory "
+                "is not supported here (Mesa's virgl driver would crash); refused (the app "
+                "decodes on the CPU then)\n");
+}
+
 static VAStatus begin_picture(VADriverContextP ctx, VAContextID context, VASurfaceID target)
 {
-    VAStatus st = mesa_begin_picture(ctx, context, target);
+    struct surf s;
+    int wait;
+    VAStatus st;
 
-    if (st == VA_STATUS_SUCCESS)
+    if (decoding_get(ctx, context, &wait) && surf_get(ctx, target, &s) &&
+        (s.flags & SURF_IMPORTED)) {
+        say_import_refused();
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+    }
+    st = mesa_begin_picture(ctx, context, target);
+    if (st == VA_STATUS_SUCCESS && mesa_render_picture)
         target_set(ctx, context, target);
     return st;
 }
@@ -966,10 +939,8 @@ static VAStatus render_picture(VADriverContextP ctx, VAContextID context, VABuff
      * conversion to fill); the app asks for its own size. The table first: an
      * export per decoding target is not needed. */
     if (target != VA_INVALID_SURFACE && ctx->vtable->vaBufferInfo &&
-        bumped_size(ctx, target, &w, &h)) {
-        uint32_t tw, th;
-
-        fourcc = surface_info(ctx, target, &tw, &th);
+        surf_size(ctx, target, SURF_BUMPED, &w, &h)) {
+        fourcc = surface_fourcc(ctx, target);
         fill = is_rgb(fourcc) && w && h && w <= 16384 && h <= 16384 && ((w | h) & 15);
     }
     full = (VARectangle){ .x = 0, .y = 0, .width = (uint16_t)((w + 15) & ~15u),
@@ -990,8 +961,8 @@ static VAStatus render_picture(VADriverContextP ctx, VAContextID context, VABuff
             continue;
         pp = data;
         /* only 4:2:0 surfaces with rounded planes: an exact-size import keeps its region */
-        src_fix = own420_size(ctx, pp->surface, &sw, &sh) && sw && sh && sw <= 16384 &&
-                  sh <= 16384 && ((sw | sh) & 15);
+        src_fix = surf_size(ctx, pp->surface, SURF_ROUNDED420, &sw, &sh) && sw && sh &&
+                  sw <= 16384 && sh <= 16384 && ((sw | sh) & 15);
         out_fix = fill && (!pp->output_region ||
                            (!pp->output_region->x && !pp->output_region->y &&
                             pp->output_region->width == w && pp->output_region->height == h));
@@ -1099,6 +1070,7 @@ static VAStatus convert_image(VADriverContextP ctx, const VAImage *from, const V
  * recorded at vaCreateImage, dropped at vaDestroyImage. */
 static VAStatus (*mesa_create_image)(VADriverContextP, VAImageFormat *, int, int, VAImage *);
 static VAStatus (*mesa_destroy_image)(VADriverContextP, VAImageID);
+static pthread_mutex_t img_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct img {
     VADriverContextP drv;
     VAImage image;
@@ -1111,10 +1083,10 @@ static VAStatus create_image(VADriverContextP ctx, VAImageFormat *format, int wi
     VAStatus st = mesa_create_image(ctx, format, width, height, image);
 
     if (st == VA_STATUS_SUCCESS && is_420(image->format.fourcc)) {
-        pthread_mutex_lock(&fmt_lock);
+        pthread_mutex_lock(&img_lock);
         if (nimgs < sizeof(imgs) / sizeof(imgs[0]))
             imgs[nimgs++] = (struct img){ ctx, *image };
-        pthread_mutex_unlock(&fmt_lock);
+        pthread_mutex_unlock(&img_lock);
     }
     return st;
 }
@@ -1123,14 +1095,14 @@ static void forget_image(VADriverContextP ctx, VAImageID id, int all)
 {
     unsigned i = 0;
 
-    pthread_mutex_lock(&fmt_lock);
+    pthread_mutex_lock(&img_lock);
     while (i < nimgs) {
         if (imgs[i].drv == ctx && (all || imgs[i].image.image_id == id))
             imgs[i] = imgs[--nimgs];
         else
             i++;
     }
-    pthread_mutex_unlock(&fmt_lock);
+    pthread_mutex_unlock(&img_lock);
 }
 
 static VAStatus destroy_image(VADriverContextP ctx, VAImageID id)
@@ -1144,13 +1116,13 @@ static int find_image(VADriverContextP ctx, VAImageID id, VAImage *out)
     unsigned i;
     int found = 0;
 
-    pthread_mutex_lock(&fmt_lock);
+    pthread_mutex_lock(&img_lock);
     for (i = 0; i < nimgs && !found; i++)
         if (imgs[i].drv == ctx && imgs[i].image.image_id == id) {
             *out = imgs[i].image;
             found = 1;
         }
-    pthread_mutex_unlock(&fmt_lock);
+    pthread_mutex_unlock(&img_lock);
     return found;
 }
 
@@ -1436,9 +1408,8 @@ static VAStatus create_context(VADriverContextP ctx, VAConfigID config, int widt
     VAStatus st = create_context_limited(ctx, config, width, height, flag, targets,
                                          num_targets, context);
 
-    if (st == VA_STATUS_SUCCESS && mesa_end_picture && decode_wait_on() &&
-        config_entrypoint(ctx, config) == VAEntrypointVLD)
-        decoding_add(ctx, *context);
+    if (st == VA_STATUS_SUCCESS && config_entrypoint(ctx, config) == VAEntrypointVLD)
+        decoding_add(ctx, *context, mesa_end_picture && decode_wait_on());
     return st;
 }
 
@@ -1476,8 +1447,7 @@ static VAStatus terminate(VADriverContextP ctx)
     release(ctx, 0, 1);
     decoding_forget(ctx, 0, 1);
     target_forget(ctx, 0, 1);
-    bumped_forget(ctx, NULL, -1);
-    forget_surfaces(ctx, NULL, -1);
+    surf_forget(ctx, NULL, -1);
     forget_image(ctx, 0, 1);
     return mesa_terminate(ctx);
 }
@@ -1537,29 +1507,36 @@ static VAStatus shim_init(VADriverContextP ctx)
             read_limits(ctx);
         pthread_mutex_unlock(&lim_lock);
     }
+    if (st == VA_STATUS_SUCCESS && ctx->vtable && ctx->vtable->vaDestroySurfaces) {
+        mesa_destroy_surfaces = ctx->vtable->vaDestroySurfaces;
+        ctx->vtable->vaDestroySurfaces = destroy_surfaces;
+    }
     if (st == VA_STATUS_SUCCESS && ctx->vtable && ctx->vtable->vaGetImage &&
         ctx->vtable->vaPutImage && ctx->vtable->vaCreateImage && ctx->vtable->vaDestroyImage &&
-        ctx->vtable->vaDestroySurfaces && ctx->vtable->vaMapBuffer && ctx->vtable->vaUnmapBuffer) {
+        ctx->vtable->vaMapBuffer && ctx->vtable->vaUnmapBuffer) {
         mesa_get_image = ctx->vtable->vaGetImage;
         mesa_put_image = ctx->vtable->vaPutImage;
         mesa_create_image = ctx->vtable->vaCreateImage;
         mesa_destroy_image = ctx->vtable->vaDestroyImage;
-        mesa_destroy_surfaces = ctx->vtable->vaDestroySurfaces;
         ctx->vtable->vaGetImage = get_image;
         ctx->vtable->vaPutImage = put_image;
         ctx->vtable->vaCreateImage = create_image;
         ctx->vtable->vaDestroyImage = destroy_image;
-        ctx->vtable->vaDestroySurfaces = destroy_surfaces;
     }
-    /* needs vaExportSurfaceHandle (surface_info) and the buffer calls */
+    /* the fill: needs vaExportSurfaceHandle (surface_fourcc) and the buffer calls */
     if (st == VA_STATUS_SUCCESS && fill_on() && ctx->vtable && ctx->vtable->vaBeginPicture &&
         ctx->vtable->vaRenderPicture && ctx->vtable->vaBufferInfo && ctx->vtable->vaMapBuffer &&
         ctx->vtable->vaUnmapBuffer && ctx->vtable->vaExportSurfaceHandle &&
         ctx->vtable->vaDestroyContext == destroy_context) {
-        mesa_begin_picture = ctx->vtable->vaBeginPicture;
         mesa_render_picture = ctx->vtable->vaRenderPicture;
-        ctx->vtable->vaBeginPicture = begin_picture;
         ctx->vtable->vaRenderPicture = render_picture;
+    }
+    /* every process: no decoding into an import (needs the context and surface records) */
+    if (st == VA_STATUS_SUCCESS && ctx->vtable && ctx->vtable->vaBeginPicture &&
+        ctx->vtable->vaDestroyContext == destroy_context &&
+        ctx->vtable->vaCreateSurfaces2 == create_surfaces2) {
+        mesa_begin_picture = ctx->vtable->vaBeginPicture;
+        ctx->vtable->vaBeginPicture = begin_picture;
     }
     return st;
 }
