@@ -5,13 +5,14 @@ in more words.
 
 ## 3.2.11 (unreleased)
 
-- **Google Chrome no longer loses its GPU drawing after a crash in a video call.** In an
-  OmacVM.app VM, Chrome's GPU process could crash during video calls or when a video
-  changed its stream at the same size, and Chrome then drew on the CPU, slow, until it was
-  restarted. Mesa's VA-API driver crashes when it is asked to decode into, or encode from, a
-  video frame the app made itself and handed in, and Chrome does that after such a stream
-  change. The VM's VA-API driver shim now refuses those frames: Chrome decodes (or encodes)
-  that one video on the CPU and keeps its GPU. Needs Update VM, then quit Chrome fully once.
+- **Google Chrome's GPU process no longer crashes on video it receives in calls.** In an
+  OmacVM.app VM, Chrome's GPU process could crash in video calls while it decoded the
+  incoming video; after repeated crashes Chrome can stop using the GPU until it is
+  restarted. Mesa's VA-API driver crashes when it is asked to decode into a video frame the
+  app made itself and handed in, and Chrome on Wayland does that at times (both crash dumps
+  we read show it; why Chrome hands the frame in is not proven yet). The VM's VA-API driver
+  shim now refuses those frames, and encoding from one too: Chrome gets an error for that
+  one video instead of a crash. Needs Update VM, then quit Chrome fully once.
 
 ## 3.2.10
 

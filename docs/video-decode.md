@@ -176,8 +176,8 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   import): Mesa's virgl driver has no video buffer on the Mac for such a
   surface and crashed the process (Chrome's GPU process); the app gets
   `VA_STATUS_ERROR_INVALID_SURFACE` for that picture's `vaBeginPicture`,
-  `vaRenderPicture` and `vaEndPicture` and decodes (encodes) that video on
-  the CPU. The shim remembers every import until the app destroys it.
+  `vaRenderPicture` and `vaEndPicture` instead of a crash. The shim
+  remembers every import until the app destroys it.
   `OMACVM_VA_IMPORT_GUARD=0` turns this off (tests only).
   Test: `src/app/guest/tests/va-shim-import-decode.sh`.
   Its folder `/usr/local/lib/dri` goes into `/etc/ld.so.conf.d`: Firefox
