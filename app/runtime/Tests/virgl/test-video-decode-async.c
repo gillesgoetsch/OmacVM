@@ -14,17 +14,32 @@
  *   read straight from the GL texture once it signalled (no vrend in between);
  * - a buffer and a decoder destroyed with pictures in flight: the other pictures land;
  * - a picture the media engine never gives back (OMACVM_TEST_VIDEO_LOSE): the
- *   fence after it signals once the picture is given up after 1 s, also polled;
+ *   fence after it signals once the picture is given up after the time limit
+ *   (OMACVM_VIDEO_GIVEUP_MS, 250 ms), also polled;
+ * - a session that breaks (OMACVM_TEST_VIDEO_BREAK) is made again on the
+ *   decoder's queue: the next END_FRAME does not wait for it (the new session
+ *   takes 50 ms more to start here, OMACVM_TEST_VIDEO_CREATE_DELAY_MS);
+ * - a session that takes 1.6 s to start (as on a Mac short of memory):
+ *   END_FRAME still returns in under 10 ms, another context's fence signals
+ *   within the time limit + 50 ms, and the pictures given up never land later;
+ *   the decoder decodes once its session is there;
+ * - a decoder destroyed, and a buffer destroyed, while the session starts;
+ * - an H.264 SPS change and a VP9 resolution change sent back to back keep
+ *   their pictures in order (VP9: FFmpeg's pictures bit for bit), and VP9
+ *   profile 2 (P010) stays bit for bit;
  * - a context destroyed while the sync thread waits for its fence's picture:
  *   that fence is not reported (the context is gone).
  * OMACVM_TEST_THREAD_SYNC=1: fences reported by the sync thread (QEMU's way).
- * OMACVM_VIDEO_DECODE_SYNC=1 (END_FRAME waits, as before): the timing check is
- * skipped, everything else must hold the same.
+ * OMACVM_VIDEO_DECODE_SYNC=1 (END_FRAME waits, as before): the timing checks and
+ * the session's queue cases are skipped, everything else must hold the same.
+ * Build it with -fsanitize=address against an ASan virglrenderer for the
+ * lifetimes (the codec is freed on its queue after Invalidate).
  * Runs on Apple's software OpenGL (soft-gl.h); the decoder is the Mac's media engine.
  * Skips when the Mac has no H.264 encoder or decoder. */
 #include <CoreMedia/CoreMedia.h>
 #include <OpenGL/OpenGL.h>
 #include <VideoToolbox/VideoToolbox.h>
+#include <libgen.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -192,6 +207,8 @@ struct stream {
    CMFormatDescriptionRef fmt;
 };
 static struct stream avc;
+/* the same pictures as Main profile: another SPS */
+static struct stream avc_main;
 
 static void put_nal(uint8_t **out, size_t *n, const uint8_t *nal, size_t len)
 {
@@ -246,7 +263,7 @@ static void enc_cb(void *ref, void *frame_ref, OSStatus st, VTEncodeInfoFlags fl
    s->au_size[s->count++] = n;
 }
 
-static int make_stream(struct stream *s)
+static int make_stream_profile(struct stream *s, CFStringRef profile_level)
 {
    VTCompressionSessionRef vt = NULL;
    if (VTCompressionSessionCreate(NULL, W, H, kCMVideoCodecType_H264, NULL, NULL, NULL,
@@ -254,8 +271,7 @@ static int make_stream(struct stream *s)
       return 0;
    VTSessionSetProperty(vt, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
    VTSessionSetProperty(vt, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
-   VTSessionSetProperty(vt, kVTCompressionPropertyKey_ProfileLevel,
-                        kVTProfileLevel_H264_High_AutoLevel);
+   VTSessionSetProperty(vt, kVTCompressionPropertyKey_ProfileLevel, profile_level);
    static uint8_t uv[W * H / 2];
    for (int f = 0; f < FRAMES; f++) {
       CVPixelBufferRef pix = NULL;
@@ -278,6 +294,11 @@ static int make_stream(struct stream *s)
    VTCompressionSessionInvalidate(vt);
    CFRelease(vt);
    return s->count == FRAMES;
+}
+
+static int make_stream(struct stream *s)
+{
+   return make_stream_profile(s, kVTProfileLevel_H264_High_AutoLevel);
 }
 
 /* --- how long VideoToolbox takes for a picture when it is waited for --------------- */
@@ -399,12 +420,17 @@ static void destroy_buffer(unsigned b)
 static unsigned pictures_sent;
 /* the picture whose output the host drops (test hook, numbered from 1) */
 #define LOST_PICTURE 29
+/* the picture that finds its session broken (test hook, numbered from 1) */
+#define BREAK_PICTURE 32
+/* the time limit for a decoded picture (OMACVM_VIDEO_GIVEUP_MS's default) */
+#define LIMIT_MS 250
 
-static uint64_t send_picture(uint32_t codec, unsigned b, int f)
+/* Picture F of stream ST into buffer B with CODEC (see send_picture). */
+static uint64_t send_au(uint32_t codec, unsigned b, const struct stream *st, int f)
 {
    pictures_sent++;
    clear_plane(R_Y(b), 1, W, H, 1);
-   memcpy(bits, avc.au[f], avc.au_size[f]);
+   memcpy(bits, st->au[f], st->au_size[f]);
    memset(&desc, 0, sizeof(desc));
    desc.h264.base.profile = G_AVC_HIGH;
    desc.h264.base.entry_point = G_ENTRYPOINT_BITSTREAM;
@@ -420,13 +446,18 @@ static uint64_t send_picture(uint32_t codec, unsigned b, int f)
    emit(BUF(b));
    emit(R_DESC);
    emit(R_BITS);
-   emit((uint32_t)avc.au_size[f]);
+   emit((uint32_t)st->au_size[f]);
    emit(VIRGL_CMD0(VIRGL_CCMD_END_FRAME, 0, 2));
    emit(codec);
    emit(BUF(b));
    uint64_t t0 = now_ns();
    submit(1);
    return now_ns() - t0;
+}
+
+static uint64_t send_picture(uint32_t codec, unsigned b, int f)
+{
+   return send_au(codec, b, &avc, f);
 }
 
 static double psnr(const uint8_t *got, int f)
@@ -508,6 +539,209 @@ static uint32_t fbits(float f)
    return u;
 }
 
+/* QEMU's main loop for MS: polls, as it does on the renderer's fd */
+static void poll_for(int ms)
+{
+   for (int i = 0; i < ms; i += 5) {
+      virgl_renderer_poll();
+      usleep(5000);
+   }
+}
+
+/* a fence of context CTX after what was submitted: ms until it signals (polling
+ * as QEMU's main loop does), -1 after 5 s */
+static double ctx_fence_ms(uint32_t ctx, uint64_t id)
+{
+   uint64_t t0 = now_ns();
+
+   virgl_renderer_context_create_fence(ctx, 0, 0, id);
+   while (now_ns() - t0 < 5000000000ull) {
+      virgl_renderer_poll();
+      if (__atomic_load_n(&ctx_fence_last[ctx], __ATOMIC_ACQUIRE) >= id)
+         return (now_ns() - t0) / 1e6;
+      usleep(500);
+   }
+   return -1;
+}
+
+/* the share of the luma plane of RES that is 0 (cleared), straight from GL */
+static double zero_share_gl(uint32_t res)
+{
+   long n = 0;
+   read_luma_gl(res, 0);
+   for (int i = 0; i < W * H; i++)
+      n += got[i] == 0;
+   return (double)n / (W * H);
+}
+
+/* --- VP9 clips (Tests/virgl/video-padding, made by FFmpeg: see its README) ---------- */
+enum { G_VP9_P0 = 24, G_VP9_P2 = 25, VFRAMES = 3 };
+struct clip {
+   const char *name;
+   uint32_t profile;
+   int w, h, ten_bit;
+   uint64_t hash;              /* FFmpeg's last picture: FNV-1a of Y, then UV (P010) */
+   const uint8_t *frame[VFRAMES * 2];
+   size_t size[VFRAMES * 2];
+   int count;
+   uint8_t *data;
+   uint32_t res[2], buf;       /* its planes and video buffer */
+};
+
+/* IVF: 32-byte header, 12-byte frame headers; superframes split as Chrome does */
+static int clip_load(struct clip *c)
+{
+   char here[1024], path[1200];
+   snprintf(here, sizeof(here), "%s", __FILE__);
+   snprintf(path, sizeof(path), "%s/video-padding/%s", dirname(here), c->name);
+   FILE *f = fopen(path, "rb");
+   if (!f)
+      return 0;
+   fseek(f, 0, SEEK_END);
+   long n = ftell(f);
+   fseek(f, 0, SEEK_SET);
+   c->data = malloc((size_t)n);
+   size_t rd = fread(c->data, 1, (size_t)n, f);
+   fclose(f);
+   if (rd != (size_t)n || n < 32)
+      return 0;
+   for (size_t p = 32; p + 12 <= (size_t)n && c->count < VFRAMES * 2;) {
+      size_t len = c->data[p] | c->data[p + 1] << 8 | c->data[p + 2] << 16 |
+                   (size_t)c->data[p + 3] << 24;
+      p += 12;
+      if (len < 2 || p + len > (size_t)n)
+         break;
+      const uint8_t *d = c->data + p;
+      uint8_t last = d[len - 1];
+      int frames = (last & 7) + 1, mag = ((last >> 3) & 3) + 1;
+      size_t idx = 2 + (size_t)mag * (size_t)frames;
+      if ((last & 0xe0) == 0xc0 && len >= idx && d[len - idx] == last) {
+         size_t off = 0;
+         for (int i = 0; i < frames && c->count < VFRAMES * 2; i++) {
+            size_t sz = 0;
+            for (int j = 0; j < mag; j++)
+               sz |= (size_t)d[len - idx + 1 + (size_t)(i * mag + j)] << (8 * j);
+            c->frame[c->count] = d + off;
+            c->size[c->count++] = sz;
+            off += sz;
+         }
+      } else {
+         c->frame[c->count] = d;
+         c->size[c->count++] = len;
+      }
+      p += len;
+   }
+   return c->count > 0;
+}
+
+static uint32_t clip_res = 60;
+
+/* its planes, rounded up to 16 as Mesa makes them, and its video buffer (context 1) */
+static void clip_planes(struct clip *c, uint32_t buf)
+{
+   uint32_t aw = ((uint32_t)c->w + 15) & ~15u, ah = ((uint32_t)c->h + 15) & ~15u;
+   for (int p = 0; p < 2; p++) {
+      c->res[p] = clip_res++;
+      make_res(c->res[p], TEST_PIPE_TEXTURE_2D,
+               c->ten_bit ? (p ? VIRGL_FORMAT_R16G16_UNORM : VIRGL_FORMAT_R16_UNORM) :
+                            (p ? VIRGL_FORMAT_R8G8_UNORM : VIRGL_FORMAT_R8_UNORM),
+               VIRGL_BIND_SAMPLER_VIEW | VIRGL_BIND_RENDER_TARGET,
+               p ? aw / 2 : aw, p ? ah / 2 : ah, NULL, 0);
+      virgl_renderer_ctx_attach_resource(1, (int)c->res[p]);
+   }
+   c->buf = buf;
+   emit(VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_BUFFER, 0, 6));
+   emit(buf);
+   emit(c->ten_bit ? VIRGL_FORMAT_X6Y10_X6U10X6V10_420_UNORM : VIRGL_FORMAT_Y8_U8V8_420_UNORM);
+   emit(aw);
+   emit(ah);
+   emit(c->res[0]);
+   emit(c->res[1]);
+   submit(1);
+}
+
+/* the clip's frames into its buffer with CODEC, one submit each */
+static void clip_send(uint32_t codec, struct clip *c)
+{
+   for (int f = 0; f < c->count; f++) {
+      pictures_sent++;
+      memset(&desc, 0, sizeof(desc));
+      memcpy(bits, c->frame[f], c->size[f]);
+      desc.base.profile = c->profile;
+      desc.base.entry_point = G_ENTRYPOINT_BITSTREAM;
+      desc.vp9.picture_parameter.frame_width = (uint16_t)c->w;
+      desc.vp9.picture_parameter.frame_height = (uint16_t)c->h;
+      desc.vp9.picture_parameter.profile = c->ten_bit ? 2 : 0;
+      desc.vp9.picture_parameter.bit_depth = c->ten_bit ? 10 : 8;
+      desc.vp9.slice_parameter.slice_data_size = (uint32_t)c->size[f];
+      emit(VIRGL_CMD0(VIRGL_CCMD_BEGIN_FRAME, 0, 2));
+      emit(codec);
+      emit(c->buf);
+      emit(VIRGL_CMD0(VIRGL_CCMD_DECODE_BITSTREAM, 0, 5));
+      emit(codec);
+      emit(c->buf);
+      emit(R_DESC);
+      emit(R_BITS);
+      emit((uint32_t)c->size[f]);
+      emit(VIRGL_CMD0(VIRGL_CCMD_END_FRAME, 0, 2));
+      emit(codec);
+      emit(c->buf);
+      submit(1);
+   }
+}
+
+/* the picture in its planes, read as the guest does: bit for bit FFmpeg's? */
+static int clip_exact(const struct clip *c, uint64_t *sum)
+{
+   static uint8_t plane[2][512 * 256 * 4];
+   uint32_t aw = ((uint32_t)c->w + 15) & ~15u, ah = ((uint32_t)c->h + 15) & ~15u;
+   uint32_t bpp = c->ten_bit ? 2 : 1;
+   uint64_t hash = 1469598103934665603ull;
+   for (int p = 0; p < 2; p++) {
+      uint32_t pw = p ? aw / 2 : aw, ph = p ? ah / 2 : ah, t = p ? 2 * bpp : bpp;
+      uint32_t ew = p ? ((uint32_t)c->w + 1) / 2 : (uint32_t)c->w;
+      uint32_t eh = p ? ((uint32_t)c->h + 1) / 2 : (uint32_t)c->h;
+      size_t row = (size_t)pw * t;
+      struct virgl_box box = { 0, 0, 0, pw, ph, 1 };
+      struct iovec io = { plane[p], row * ph };
+      if (row * ph > sizeof(plane[p]) ||
+          virgl_renderer_transfer_read_iov(c->res[p], 1, 0, (uint32_t)row, 0, &box, 0, &io, 1))
+         return 0;
+      for (uint32_t y = 0; y < eh; y++)
+         for (size_t i = 0; i < (size_t)ew * t; i++)
+            hash = (hash ^ plane[p][y * row + i]) * 1099511628211ull;
+   }
+   *sum = hash;
+   return hash == c->hash;
+}
+
+static int vp9_offered(uint32_t profile)
+{
+   uint32_t max_ver = 0, max_size = 0;
+   int found = 0;
+   virgl_renderer_get_cap_set(2, &max_ver, &max_size);
+   union virgl_caps *caps = calloc(1, max_size > sizeof(*caps) ? max_size : sizeof(*caps));
+   virgl_renderer_fill_caps(2, 2, caps);
+   for (unsigned i = 0; i < caps->v2.num_video_caps && i < 32; i++)
+      found |= caps->v2.video_caps[i].profile == profile &&
+               caps->v2.video_caps[i].entrypoint == G_ENTRYPOINT_BITSTREAM;
+   free(caps);
+   return found;
+}
+
+static void create_codec_as(uint32_t handle, uint32_t profile, uint32_t w, uint32_t h)
+{
+   emit(VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_CODEC, 0, 8));
+   emit(handle);
+   emit(profile);
+   emit(G_ENTRYPOINT_BITSTREAM);
+   emit(1);                    /* chroma 4:2:0 */
+   emit(41);
+   emit(w);
+   emit(h);
+   emit(4);
+}
+
 int main(void)
 {
    char line[300];
@@ -516,6 +750,9 @@ int main(void)
    char lose[16];
    snprintf(lose, sizeof(lose), "%d", LOST_PICTURE);
    setenv("OMACVM_TEST_VIDEO_LOSE", lose, 1);
+   char brk[16];
+   snprintf(brk, sizeof(brk), "%d", BREAK_PICTURE);
+   setenv("OMACVM_TEST_VIDEO_BREAK", brk, 1);
    const char *ds = getenv("OMACVM_VIDEO_DECODE_SYNC");
    sync_mode = ds && *ds == '1';
    main_ctx = soft_gl_context(NULL);
@@ -539,6 +776,8 @@ int main(void)
       printf("skip: no H.264 encoder to make the test stream (%d pictures)\n", avc.count);
       return 0;
    }
+   if (!make_stream_profile(&avc_main, kVTProfileLevel_H264_Main_AutoLevel))
+      printf("skip: no H.264 Main stream (%d pictures): no SPS change case\n", avc_main.count);
    uint64_t own = own_decode_ns();
    if (!own) {
       printf("skip: no H.264 decoder for the test stream\n");
@@ -699,7 +938,8 @@ int main(void)
    check(p > 30, line);
 
    /* 6: the media engine never gives a picture back: the fence after it waits for
-    * the give-up after 1 s, not 2 s (sync thread) or for ever (polled) */
+    * the give-up after the time limit (250 ms), not 2 s (sync thread) or for ever
+    * (polled) */
    if (!sync_mode) {
       check(pictures_sent + 1 == LOST_PICTURE, "the lost picture is the next one");
       send_picture(11, 1, 1);
@@ -707,12 +947,173 @@ int main(void)
       int r = wait_fence();
       double s = (now_ns() - t0) / 1e9;
       snprintf(line, sizeof(line), "a picture that never comes back: the fence after it "
-               "signals after %.2f s (given up after 1 s)", s);
-      check(!r && s < 1.6, line);
+               "signals after %.2f s (given up after %d ms)", s, LIMIT_MS);
+      check(!r && s < (LIMIT_MS + 100) / 1e3, line);
       send_picture(11, 2, 2);
       p = read_luma(R_Y(2), 1, 2);
       snprintf(line, sizeof(line), "the decoder goes on after it (luma PSNR %.1f dB)", p);
       check(p > 30, line);
+   }
+
+   /* 8: a session that breaks is made again on the decoder's queue (50 ms
+    * slower here): the next END_FRAME does not wait for it, and its picture (a
+    * key frame) lands. Pictures 31-33. */
+   create_buffer(4);                    /* case 5 destroyed it */
+   submit(1);
+   if (!sync_mode) {
+      setenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS", "50", 1);
+      create_codec(17);
+      submit(1);
+      send_picture(17, 0, 0);
+      double first = read_luma(R_Y(0), 1, 0);
+      check(pictures_sent + 1 == BREAK_PICTURE, "the picture that breaks its session is the next one");
+      send_picture(17, 1, 1);
+      uint64_t t = send_picture(17, 2, 0);
+      double p2 = read_luma(R_Y(2), 1, 0);
+      unsetenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS");
+      snprintf(line, sizeof(line), "a broken session is made again on the decoder's queue: "
+               "first picture %.1f dB, the END_FRAME after the break %.2f ms (the new session "
+               "takes 50 ms more), its picture %.1f dB", first, t / 1e6, p2);
+      check(first > 30 && t < 10000000ull && p2 > 30, line);
+      destroy_codec(17);
+      submit(1);
+   }
+
+   /* 9: the Mac's video service takes 1.6 s to start a session (as when macOS is
+    * short of memory): END_FRAME does not wait, another context's fence signals
+    * within the time limit + 50 ms, the pictures given up never land later, and
+    * the decoder decodes once its session is there */
+   if (!sync_mode) {
+      setenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS", "1600", 1);
+      create_codec(12);
+      submit(1);
+      uint64_t worst = 0, t0 = now_ns();
+      for (unsigned b = 0; b < NBUF; b++) {
+         uint64_t t = send_picture(12, b, (int)b);
+         if (t > worst)
+            worst = t;
+      }
+      unsetenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS");
+      double fence_ms = ctx_fence_ms(2, 90);
+      snprintf(line, sizeof(line), "a session that takes 1.6 s to start: END_FRAME at most "
+               "%.2f ms (%d pictures, more than in flight), another context's fence after "
+               "%.0f ms (time limit %d ms)", worst / 1e6, NBUF, fence_ms, LIMIT_MS);
+      check(worst < 10000000ull && fence_ms >= 0 && fence_ms <= LIMIT_MS + 50, line);
+      /* the session is there after 1.6 s: the pictures that were given up stay out */
+      while (now_ns() - t0 < 2200000000ull)
+         poll_for(50);
+      double kept = 1;
+      for (unsigned b = 0; b < NBUF; b++) {
+         double z = zero_share_gl(R_Y(b));
+         if (z < kept)
+            kept = z;
+      }
+      snprintf(line, sizeof(line), "the pictures given up never land later: the planes "
+               "keep what the guest left (%.1f %% cleared at least)", kept * 100);
+      check(kept > 0.999, line);
+      send_picture(12, 0, 6);
+      double p6 = read_luma(R_Y(0), 1, 6);
+      snprintf(line, sizeof(line), "once its session is there the decoder decodes (luma "
+               "PSNR %.1f dB)", p6);
+      check(p6 > 30, line);
+      destroy_codec(12);
+      submit(1);
+   }
+
+   /* 10: a decoder destroyed while its session starts, and a buffer destroyed
+    * while its picture waits for it: nothing waits, nothing is used after it
+    * went (ASan), and decoding goes on */
+   if (!sync_mode) {
+      setenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS", "1600", 1);
+      create_codec(13);
+      create_codec(14);
+      submit(1);
+      send_picture(13, 4, 0);
+      send_picture(14, 3, 0);
+      unsetenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS");
+      uint64_t t0 = now_ns();
+      destroy_codec(13);
+      destroy_buffer(3);
+      submit(1);
+      double gone_ms = (now_ns() - t0) / 1e6;
+      while (now_ns() - t0 < 2200000000ull)
+         poll_for(50);
+      create_buffer(3);
+      submit(1);
+      send_picture(14, 3, 0);
+      double p3 = read_luma(R_Y(3), 1, 0);
+      create_codec(13);
+      submit(1);
+      send_picture(13, 4, 0);
+      double p4 = read_luma(R_Y(4), 1, 0);
+      snprintf(line, sizeof(line), "a decoder and a buffer destroyed while the session starts: "
+               "%.2f ms; afterwards both decode again (%.1f / %.1f dB)", gone_ms, p3, p4);
+      check(gone_ms < 10 && p3 > 30 && p4 > 30, line);
+      destroy_codec(13);
+      destroy_codec(14);
+      submit(1);
+   }
+
+   /* 11: an H.264 SPS change (High -> Main), sent back to back: the new
+    * format goes to the decoder's queue between the pictures, and the pictures
+    * before and after it land in order */
+   if (!sync_mode && avc_main.count == FRAMES) {
+      create_codec(16);
+      submit(1);
+      send_au(16, 0, &avc, 0);
+      send_au(16, 1, &avc, 1);
+      send_au(16, 2, &avc_main, 0);
+      send_au(16, 3, &avc_main, 1);
+      double q[4];
+      for (unsigned b = 0; b < 4; b++)
+         q[b] = read_luma(R_Y(b), 1, (int)(b & 1));
+      snprintf(line, sizeof(line), "an SPS change keeps the order: "
+               "%.1f / %.1f dB (High), %.1f / %.1f dB (Main)", q[0], q[1], q[2], q[3]);
+      check(q[0] > 30 && q[1] > 30 && q[2] > 30 && q[3] > 30, line);
+      destroy_codec(16);
+      submit(1);
+   }
+
+   /* 12: VP9: a resolution change (a key frame of another size: a new session
+    * on the queue), sent back to back, keeps the order, and profile 2 (P010)
+    * stays bit for bit; both as FFmpeg decodes the clips. (No slow start here:
+    * pictures waiting more than the time limit are given up, by design.) */
+   if (!sync_mode && vp9_offered(G_VP9_P0)) {
+      static struct clip a = { "vp9p0-320x180.ivf", G_VP9_P0, 320, 180, 0, 0x43273c816ba2b012ull };
+      static struct clip b = { "vp9p0-426x240.ivf", G_VP9_P0, 426, 240, 0, 0xad2bf90b325d9f65ull };
+      static struct clip c10 = { "vp9p2-330x182.ivf", G_VP9_P2, 330, 182, 1, 0x2174241ece435612ull };
+      uint64_t ha = 0, hb = 0, hc = 0;
+      int ok_a = 0, ok_b = 0, ok_c = 0;
+      if (clip_load(&a) && clip_load(&b) && clip_load(&c10)) {
+         clip_planes(&a, 120);
+         clip_planes(&b, 121);
+         create_codec_as(18, G_VP9_P0, 320, 180);
+         submit(1);
+         clip_send(18, &a);
+         clip_send(18, &b);
+         ok_a = clip_exact(&a, &ha);
+         ok_b = clip_exact(&b, &hb);
+         if (vp9_offered(G_VP9_P2)) {
+            clip_planes(&c10, 122);
+            create_codec_as(19, G_VP9_P2, 330, 182);
+            submit(1);
+            clip_send(19, &c10);
+            ok_c = clip_exact(&c10, &hc);
+         } else {
+            printf("skip: no VP9 profile 2 decoder offered\n");
+            ok_c = 1;
+         }
+      }
+      snprintf(line, sizeof(line), "VP9 320x180 then 426x240 (a new session): bit for "
+               "bit as FFmpeg: %s / %s; profile 2 (P010) 330x182: %s (%016llx %016llx %016llx)",
+               ok_a ? "yes" : "no", ok_b ? "yes" : "no", ok_c ? "yes" : "no",
+               (unsigned long long)ha, (unsigned long long)hb, (unsigned long long)hc);
+      check(ok_a && ok_b && ok_c, line);
+      emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+      emit(18);
+      emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
+      emit(19);
+      submit(1);
    }
 
    /* 7: the decoding context goes away while its fence waits for a picture: the

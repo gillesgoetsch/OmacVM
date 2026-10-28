@@ -227,7 +227,9 @@ off, `OMACVM_VIDEO_DECODE_SYNC=1` has the GPU thread wait for each picture
 stays at 1080p in the VM), `OMACVM_VIDEO_DEBUG=1` logs each stream and the time per
 frame (and how many pictures were in flight),
 `OMACVM_VIDEO_AV1=1` offers AV1 (the app sets it for VMs whose `omacvm apply`
-put the shim in: the VM folder's `video-decode` file). In the VM:
+put the shim in: the VM folder's `video-decode` file),
+`OMACVM_VIDEO_GIVEUP_MS=N` sets how long a decoded picture may take before it
+is given up (default 250, 50-500; [below](#when-the-macs-video-service-is-slow)). In the VM:
 `OMACVM_VA_EXPORT=1` or `0` in an app's environment turns the shim's
 exportable surfaces on or off for it; `OMACVM_VA_MAX=N` sets the largest
 size Chromium decodes in hardware (default: none with an app that says
@@ -237,6 +239,27 @@ sizes); `OMACVM_VA_DECODE_WAIT=0` or `1` turns the shim's wait after
 `vaEndPicture` off or on (default: on in Chromium's processes with such an
 app); `OMACVM_VA_FILL=0` keeps Chromium's
 converted frames as Mesa makes them (above).
+
+## When the Mac's video service is slow
+
+Every decoder's VideoToolbox session is made, changed (a new format), made
+again after it broke, and ended on that decoder's own queue, in order with its
+pictures; QEMU's graphics thread, which every guest app, the display and their
+fences wait for, never waits for it
+(`virgl-videotoolbox-session-queue.patch`). Starting a session is an XPC call
+to the Mac's video service: usually 10-300 ms, but on a Mac out of free memory
+it took 1.6 s (2026-10-28, `tracks/vm-stall.md`), and before this the whole VM's
+graphics stood still that long, at every new video stream (a call's tiles
+switch streams every few seconds). Now a picture sent meanwhile waits on the
+queue; one not in within `OMACVM_VIDEO_GIVEUP_MS` (250 ms) after its END_FRAME
+is given up: that video shows its last picture until its decoder is there,
+and everything else goes on. The picture is still decoded once the session is
+there (a later picture may refer to it), but never written into the guest's
+planes: the fence the guest waited on has let them go. qemu.log says when a
+start took that long or longer ("the Mac's video decoder took 1.6 s to start
+(H.264 320x180): 3 pictures skipped", at most every 10 s). A closed decoder
+counts against the 48 until its session has ended on its queue. What the Mac
+decodes and encodes is asked once when QEMU starts, beside its graphics thread.
 
 ## Chrome's converted frames
 
