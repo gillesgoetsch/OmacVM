@@ -25,11 +25,24 @@
 #              than at the start, the main window on the remaining display,
 #              the display's window back in full screen with one try once
 #              the display is back.
+#   fullpanel-builtin  "Full screen including notch" on the Mac's own notched
+#              built-in display (a real notch, not made up), the VM's second
+#              display on a virtual one (2560x1440, not main): unplugged and
+#              plugged in again --rounds rounds; with --sleep also the displays
+#              asleep and awake once (not on a Mac that locks at display
+#              sleep). After each: the last FullPanel line omacvm check reads is
+#              "strip covered", no "strip lost" or "strip not back" since the
+#              event, the main window covers the built-in display, the
+#              full-screen Spaces and the built-in's current Space as before.
+#              Skipped on a Mac without a notched built-in display; not in the
+#              default list (--only fullpanel-builtin).
 # After each unplug: the same QEMU still runs 8 s later, the VM answers over
 # SSH, and no new crash report of the app's QEMU.
 #
-#   src/tests/e2e/display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only LIST] [--out DIR]
-#     --only LIST   cases (comma list): full,fullpanel,window,head (default: all)
+#   src/tests/e2e/display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only LIST] [--sleep] [--out DIR]
+#     --only LIST   cases (comma list): full,fullpanel,window,head,fullpanel-builtin
+#                   (default: all but fullpanel-builtin)
+#     --sleep       fullpanel-builtin also puts the displays to sleep and wakes them
 #     --out DIR     summary.tsv and the logs (default ~/omacvm-e2e/unplug-<time>)
 # Needs: ~/Applications/"OmacVM Test.app" (org.omacvm.app.test), NAME stopped in
 # its VMs folder, clang (builds the display tool), and the test Mac to itself:
@@ -45,15 +58,16 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/person.sh"
 R=$(cd "$HERE/../../.." && pwd)
 
-VM=""; ROUNDS=3; FLAPS=10; ONLY=""; OUT=""
+VM=""; ROUNDS=3; FLAPS=10; ONLY=""; OUT=""; SLEEP=0
 while (( $# )); do
   case $1 in
+    --sleep) SLEEP=1; shift ;;
     --vm) VM=$2; shift 2 ;;
     --rounds) ROUNDS=$2; shift 2 ;;
     --flap-rounds) FLAPS=$2; shift 2 ;;
     --only) ONLY=",$2,"; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
-    *) echo "usage: display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only full,fullpanel,window,head] [--out DIR]" >&2; exit 2 ;;
+    *) echo "usage: display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only full,fullpanel,window,head,fullpanel-builtin] [--sleep] [--out DIR]" >&2; exit 2 ;;
   esac
 done
 [[ -n $VM ]] || { echo "display-unplug: --vm NAME (a test VM)" >&2; exit 2; }
@@ -149,7 +163,7 @@ restore() {
 }
 trap restore EXIT
 
-start() {   # window|full|fullpanel, on the virtual display; head: full on the other one
+start() {   # window|full|fullpanel, on the virtual display; head: full on the other one; fullpanel-builtin
   local mode=$1 i env=(--env "OMACVM_TEST_MAIN_DISPLAY=$VD_ID" --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.e2e)
   rm -f "$VMD/notch-mode"
   case $mode in
@@ -160,6 +174,9 @@ start() {   # window|full|fullpanel, on the virtual display; head: full on the o
                --env OMACVM_TEST_LOCK_HOOK=1) ;;
     fullpanel) defaults write "$APPID" startFullScreen -bool true; echo fullpanel > "$VMD/notch-mode"
                env+=(--env "OMACVM_TEST_NOTCH_GEOMETRY=$NOTCH") ;;
+    fullpanel-builtin) defaults write "$APPID" startFullScreen -bool true; echo fullpanel > "$VMD/notch-mode"
+               env=(--env "OMACVM_TEST_MAIN_DISPLAY=$BUILTIN_ID" --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.e2e
+                    --env OMACVM_TEST_LOCK_HOOK=1) ;;
   esac
   (source "$HERE/test-vms.sh" && e2e_vm_guard "$APPID" "$VM") >/dev/null || return 1
   # A QEMU that crashed (an earlier round) left the run marker: the start would ask "Start Anyway".
@@ -324,10 +341,86 @@ case_head() {   # #428's layout, one VM start for every head case
   sleep 3
 }
 
+# fullpanel-builtin: the strip beside the real notch after display changes.
+fp_line() { grep -E '^omacvm: full panel: (strip covered|strip lost|.*normal full screen)' "$VMD/logs/qemu.log" | tail -1; }
+builtin_size() { awk -v id="$BUILTIN_ID" '$1 == "display" && $2 == id {print $NF; exit}' <<<"$1"; }
+builtin_space() { awk -v id="$BUILTIN_ID" '$1 == "current" && $2 == id {print $3 " " $4; exit}' <<<"$1"; }
+# NAME L0 WANT_F: alive, the strip covered again since qemu.log line L0, the main window over the
+# whole built-in, WANT_F full-screen Spaces, the built-in's current Space as at the start.
+fp_check() {
+  local name=$1 l0=$2 want_f=$3 a i since last size full
+  for ((i = 0; i < 30; i++)); do
+    since=$(tail -n +$((l0 + 1)) "$VMD/logs/qemu.log")
+    last=$(fp_line)
+    [[ $last == *"strip covered"* && $since != *"strip lost"* && $since != *"strip not back"* ]] && break
+    sleep 1
+  done
+  tail -n +$((l0 + 1)) "$VMD/logs/qemu.log" | grep -i 'full panel\|omacvm: display' > "$OUT/$name.qemu.log"
+  if ! kill -0 "$HPID" 2>/dev/null; then res "$name" FAIL "QEMU ended"; return 1; fi
+  gssh true || { res "$name" FAIL "QEMU runs, but the VM does not answer over SSH"; return 1; }
+  (( $(crashes) > C0 )) && { res "$name" FAIL "a new crash report"; return 1; }
+  a=$(census); echo "$a" > "$OUT/$name.census"
+  size=$(builtin_size "$a"); full=$(fullspaces "$a")
+  if [[ $since == *"strip lost"* || $since == *"strip not back"* ]]; then
+    res "$name" FAIL "$(grep -h 'strip lost\|strip not back' "$OUT/$name.qemu.log" | tail -1 | cut -c1-140)"
+  elif [[ $last != *"strip covered"* ]]; then res "$name" FAIL "the last line check reads: ${last:-none}"
+  elif ! grep -q "^window .* ${BUILTIN_ORIGIN} ${size} display $BUILTIN_ID\$" <<<"$a"; then
+    res "$name" FAIL "no VM window over the whole built-in display ($BUILTIN_ORIGIN $size)"
+  elif (( full != want_f )); then res "$name" FAIL "full-screen Spaces $full, want $want_f (at the start $F0)"
+  elif [[ $(builtin_space "$a") != "$S0" ]]; then res "$name" FAIL "the built-in's current Space $(builtin_space "$a"), at the start $S0"
+  else res "$name" ok "$(cut -c1-90 <<<"${last#omacvm: full panel: }"); Spaces $full, current as at the start"; return 0; fi
+  return 1
+}
+case_fullpanel_builtin() {
+  local r l0 a st area
+  BUILTIN_ID=$("$CENSUS" | awk '$1 == "builtin" {print $2; exit}')
+  if [[ -z $BUILTIN_ID || $("$APP/Contents/Resources/tools/mac-notch" 2>/dev/null) != notch ]]; then
+    res fullpanel-builtin skip "this Mac has no built-in display with a notch"; return
+  fi
+  BUILTIN_ORIGIN=$("$CENSUS" | awk -v id="$BUILTIN_ID" '$1 == "display" && $2 == id {print $(NF - 1); exit}')
+  log "fullpanel-builtin: including notch on built-in display $BUILTIN_ID, the second display on a virtual one"
+  "$VD" 2560x1440 --name "OmacVM Notch Test $RANDOM" --serial $((0x4290000 + RANDOM)) > "$VD_OUT" 2>&1 &
+  VD_PID=$!
+  for ((r = 0; r < 30; r++)); do VD_ID=$(sed -n 's/^id=//p' "$VD_OUT"); [[ -n $VD_ID ]] && break; sleep 0.5; done
+  [[ -n $VD_ID ]] || { unplug; res fullpanel-builtin FAIL "no virtual display"; return; }
+  sleep 3
+  start fullpanel-builtin || { res fullpanel-builtin FAIL "the VM did not come up"; unplug; stop; return; }
+  HPID=$(qemu_pid); C0=$(crashes); sleep 10
+  area=$(grep -h 'OmacVM: notch area:' "$VMD/logs/qemu.log" | tail -1)
+  if [[ $area != *"notch area: fullpanel"* ]]; then
+    res fullpanel-builtin skip "the VM did not start in Full screen including notch (Omanotch on and Update VM give it): ${area:-no notch area line}"
+    unplug; stop; return
+  fi
+  a=$(census); echo "$a" > "$OUT/fullpanel-builtin-start.census"
+  F0=$(fullspaces "$a"); S0=$(builtin_space "$a")
+  if [[ $(fp_line) != *"strip covered"* ]]; then
+    res fullpanel-builtin-start FAIL "no strip covered at the start: $(fp_line)"; unplug; stop; return
+  fi
+  res fullpanel-builtin-start ok "$(cut -c1-100 <<<"$(fp_line)"); full-screen Spaces $F0"
+  for ((r = 1; r <= ROUNDS; r++)); do
+    l0=$(wc -l < "$VMD/logs/qemu.log"); st=$(vd_signal USR1); sleep 8
+    fp_check "fullpanel-builtin-unplug-$r" "$l0" $((F0 - 1)) || break
+    l0=$(wc -l < "$VMD/logs/qemu.log"); st=$(vd_signal USR2); VD_ID=$(sed -n 's/.* id=\([0-9]*\).*/\1/p' <<<"$st"); sleep 15
+    fp_check "fullpanel-builtin-replug-$r" "$l0" "$F0" || break
+  done
+  if (( SLEEP )); then
+    if [[ $(sysadminctl -screenLock status 2>&1) != *"screenLock is off"* ]]; then
+      res fullpanel-builtin-sleep skip "this Mac locks at display sleep (the rest would need a password)"
+    else
+      l0=$(wc -l < "$VMD/logs/qemu.log"); pmset displaysleepnow; sleep 10; caffeinate -u -t 3; sleep 20
+      fp_check fullpanel-builtin-sleep "$l0" "$F0"
+    fi
+  fi
+  unplug
+  stop || res fullpanel-builtin-stop FAIL "the VM did not shut down"
+  sleep 3
+}
+
 person_watch_start
 want full && gate full && case_run full full "$ROUNDS"
 want fullpanel && gate fullpanel && case_run fullpanel fullpanel 2
 want window && gate window && case_run window window 1
+[[ -n $ONLY && $ONLY == *",fullpanel-builtin,"* ]] && gate fullpanel-builtin && case_fullpanel_builtin
 if { want head || want head-unplug || want head-flap || want head-tiny || want head-locked; } && gate head; then
   [[ -n $ONLY && $ONLY != *",head,"* ]] || ONLY=",head-unplug,head-flap,head-tiny,head-locked,"
   OTHER_ID=$("$CENSUS" | awk '$1 == "display" && $4 == "active" {print $2; exit}')

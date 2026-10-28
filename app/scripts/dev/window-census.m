@@ -10,14 +10,20 @@
 //
 // Prints, one per line:
 //   display ID main|- active|inactive asleep? X,Y WxH
+//   builtin ID                            (the Mac's built-in display, when online)
 //   spaces N fullscreen F                 (all displays)
+//   current ID SPACE TYPE                 (each display's current Space: its id, 4 = full screen;
+//                                          ID the display's, or SkyLight's name for it, e.g. Main)
 //   windows N layer0 L big B              (PID's: all, layer 0, layer 0 >= 100x100)
 //   window NUMBER onscreen|offscreen alpha A X,Y WxH display ID   (each big one)
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
+#include <dlfcn.h>
 
 extern int CGSMainConnectionID(void);
 extern CFArrayRef CGSCopyManagedDisplaySpaces(int cid);
+/* ColorSync's (it was CoreGraphics'): the UUID SkyLight names a display by; looked up at run time. */
+typedef CFUUIDRef (*DisplayUUIDFn)(uint32_t display);
 
 int main(int argc, const char **argv)
 {
@@ -33,6 +39,11 @@ int main(int argc, const char **argv)
                    CGDisplayIsAsleep(ids[i]) ? " asleep" : "",
                    b.origin.x, b.origin.y, b.size.width, b.size.height);
         }
+        for (uint32_t i = 0; i < n; i++) {
+            if (CGDisplayIsBuiltin(ids[i])) {
+                printf("builtin %u\n", ids[i]);
+            }
+        }
 
         int spaces = 0, full = 0;
         NSArray *displays = CFBridgingRelease(CGSCopyManagedDisplaySpaces(CGSMainConnectionID()));
@@ -43,6 +54,26 @@ int main(int argc, const char **argv)
             }
         }
         printf("spaces %d fullscreen %d\n", spaces, full);
+        void *colorsync = dlopen("/System/Library/Frameworks/ColorSync.framework/ColorSync", RTLD_LAZY);
+        DisplayUUIDFn uuid_of = colorsync ? (DisplayUUIDFn)dlsym(colorsync, "CGDisplayCreateUUIDFromDisplayID") : NULL;
+        for (NSDictionary *d in displays) {
+            NSDictionary *cur = d[@"Current Space"];
+            NSString *name = [d[@"Display Identifier"] description];
+            for (uint32_t i = 0; i < n; i++) {
+                CFUUIDRef u = uuid_of ? uuid_of(ids[i]) : NULL;
+                NSString *us = u ? CFBridgingRelease(CFUUIDCreateString(NULL, u)) : nil;
+                if (u) {
+                    CFRelease(u);
+                }
+                if ((us && [us caseInsensitiveCompare:name] == NSOrderedSame) ||
+                    ([name isEqualToString:@"Main"] && CGDisplayIsMain(ids[i]))) {
+                    name = [NSString stringWithFormat:@"%u", ids[i]];
+                    break;
+                }
+            }
+            printf("current %s %lld %d\n", [name UTF8String], [cur[@"id64"] longLongValue],
+                   [cur[@"type"] intValue]);
+        }
 
         if (argc < 2) {
             return 0;
