@@ -98,7 +98,12 @@ a Mac without a notch such a VM shows **Full screen** and starts that way.
 External displays keep their full screen as before, also when the VM's
 main window is on an external display (the MacBook's display is then
 another of the VM's outputs). Plugging a display in or out while the VM
-runs moves the bar with the MacBook's display within a few seconds.
+runs moves the bar with the MacBook's display within a few seconds. When
+the MacBook's own display goes and comes back (the lid shut and opened with
+an external display on, or the external display waking first after sleep),
+the VM covers the strip again once the displays settle and the Mac is
+unlocked, without leaving full screen (before 3.2.11 it stayed below the
+notch until full screen was entered again).
 
 **When it falls back:** macOS's "Always show the menu bar in full screen"
 (Control Center settings) while **Keep the Dock and hot corners away** is
@@ -109,7 +114,9 @@ after all: the VM then
 runs in normal full screen, and the bar is the normal one. Omanotch comes
 back with the next start via Omanotch. `omacvm check --vm NAME` says which
 one this start is, and when it includes the notch whether the strip is
-covered ("strip covered") and that Omanotch is idle. Changing the Mac's
+covered ("strip covered") and that Omanotch is idle. If macOS keeps the
+window below the notch after a display change ("strip not back" in
+`omacvm check`), leave full screen and enter it again. Changing the Mac's
 display resolution while the VM runs: restart the VM.
 
 Why it is an addition and not a replacement: [ADR 0044](adr/0044-fullpanel.md).
