@@ -9,13 +9,16 @@
  * and 300 random ones), memory vs CPU wording, "still" lines at 10 s and then
  * every 30 s, the status file's keys, and the app menu's line
  * (ui/omacvm-vm-stalls.h, omacvm-cocoa-vm-stalls-menu.patch); which thread
- * this is (include/qemu/omacvm-thread.h, qemu-main-loop-stall-gpu-run.patch).
+ * this is (include/qemu/omacvm-thread.h, qemu-main-loop-stall-gpu-run.patch);
+ * the status between the main loop and the watchdog's thread (only the
+ * watchdog writes the file, outside the lock).
  */
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include "qemu/omacvm-stall.h"
 #include "qemu/omacvm-thread.h"
@@ -157,6 +160,40 @@ static void run(const Sim *v, int n, int64_t first, int64_t end, int64_t late_at
         }
         t += wait > 0 ? wait : 2 * S;
     }
+}
+
+/* The watchdog's thread for case 16: takes the status when it changed and
+ * "writes" it after the take, on a slow disk (1.5 s a write). */
+static OmacvmStallStore store = OMACVM_STALL_STORE_INIT;
+static int writing, writes, lock_free_in_write, stop_writer;
+static char written[1024];
+
+static void *watchdog_writer(void *arg)
+{
+    (void)arg;
+    while (!__atomic_load_n(&stop_writer, __ATOMIC_ACQUIRE)) {
+        OmacvmStallStatus st;
+        if (omacvm_stall_store_take(&store, &st)) {
+            if (pthread_mutex_trylock(&store.lock) == 0) {
+                lock_free_in_write++;
+                pthread_mutex_unlock(&store.lock);
+            }
+            __atomic_store_n(&writing, 1, __ATOMIC_RELEASE);
+            usleep(1500000);
+            omacvm_stall_status_text(&st, written, sizeof(written));
+            __atomic_add_fetch(&writes, 1, __ATOMIC_RELEASE);
+            __atomic_store_n(&writing, 0, __ATOMIC_RELEASE);
+        }
+        usleep(10000);
+    }
+    return NULL;
+}
+
+static int64_t mono_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * S + ts.tv_nsec;
 }
 
 static void *other_thread(void *arg)
@@ -422,6 +459,35 @@ int main(void)
              theirs[2] == (uintptr_t)getpid() ? "yes" : "no");
     check(mine && theirs[0] && mine != theirs[0] && theirs[0] == theirs[1] &&
           mine == omacvm_thread_self(), what);
+
+    /* 16: the status between threads: the main loop (which may hold the BQL)
+     * records a GPU-run stall in memory and returns at once while the
+     * watchdog's thread writes the file on a slow disk; that write runs with
+     * the lock let go; only the watchdog's takes write, the zeros first */
+    pthread_t w;
+    int64_t t0, rec_ns, copy_ns;
+    OmacvmStallStatus copy;
+    check(!pthread_create(&w, NULL, watchdog_writer, NULL), "the watchdog's writer runs");
+    for (int i = 0; i < 300 && !__atomic_load_n(&writing, __ATOMIC_ACQUIRE); i++) {
+        usleep(10000);
+    }
+    t0 = mono_ns();
+    omacvm_stall_store_gpu(&store, 2548, "g_usleep (from virtio_gpu_process_cmdq)");
+    rec_ns = mono_ns() - t0;
+    t0 = mono_ns();
+    omacvm_stall_store_copy(&store, &copy);
+    copy_ns = mono_ns() - t0;
+    for (int i = 0; i < 500 && __atomic_load_n(&writes, __ATOMIC_ACQUIRE) < 2; i++) {
+        usleep(10000);
+    }
+    __atomic_store_n(&stop_writer, 1, __ATOMIC_RELEASE);
+    pthread_join(w, NULL);
+    snprintf(what, sizeof(what), "while the watchdog writes (1.5 s): the main loop's record "
+             "took %.2f ms, a copy %.2f ms; %d writes (the zeros, then the stall), %d with the "
+             "lock free", rec_ns / 1e6, copy_ns / 1e6, writes, lock_free_in_write);
+    check(rec_ns < 50 * MS && copy_ns < 50 * MS && copy.gpu_stalls == 1 && writes == 2 &&
+          lock_free_in_write == 2 && strstr(written, "gpu_stalls=1\n") &&
+          strstr(written, "gpu_longest_ms=2548\n"), what);
 
     if (failures) {
         printf("vcpu stall: %d checks FAILED\n", failures);
