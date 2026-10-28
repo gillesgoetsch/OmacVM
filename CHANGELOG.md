@@ -86,6 +86,14 @@ VM's next start.
   fragment shader) links and draws. Values passed per patch between tessellation shaders still
   draw nothing.
 
+- **Correction to 3.1.32: the smaller blocks made QEMU's footprint smaller, not what the Mac
+  holds (#606).** 3.1.32 said a 4 GB VM held 1.1-1.4 GB less of the Mac's memory after a
+  build and a dropped file cache, and `omacvm check` called its row "memory back to the Mac".
+  What was measured was QEMU's footprint, the number Activity Monitor shows: memory Linux
+  frees leaves it, but this release's QEMU keeps holding those pages on the Mac until the VM
+  stops (the "VM memory" item above). The row is now called "free page reporting". Needs
+  Update VM.
+
 ## 3.2.10
 
 Apps in an OmacVM.app VM that draw with OpenGL program pipelines now draw. Needs only the app
