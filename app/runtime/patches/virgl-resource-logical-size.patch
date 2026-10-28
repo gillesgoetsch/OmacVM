@@ -83,7 +83,7 @@ index 8c23bec..4d1a327 100644
     [VIRGL_CCMD_BIND_OBJECT] = vrend_decode_bind_object,
     [VIRGL_CCMD_DESTROY_OBJECT] = vrend_decode_destroy_object,
 diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
-index cdb3482..a673117 100644
+index cdb3482..b56bab6 100644
 --- a/src/vrend/vrend_renderer.c
 +++ b/src/vrend/vrend_renderer.c
 @@ -625,6 +625,10 @@ struct vrend_linked_shader_program {
@@ -216,7 +216,7 @@ index cdb3482..a673117 100644
        sampler_index++;
        next_sampler_id++;
     }
-@@ -17341,6 +17415,43 @@ struct vrend_resource *vrend_renderer_ctx_res_lookup(struct vrend_context *ctx,
+@@ -17341,6 +17415,45 @@ struct vrend_resource *vrend_renderer_ctx_res_lookup(struct vrend_context *ctx,
     return vrend_ctx_resource_lookup(ctx->res_hash, res_handle);
  }
  
@@ -243,9 +243,11 @@ index cdb3482..a673117 100644
 +       (res->target != GL_TEXTURE_2D && res->target != GL_TEXTURE_2D_ARRAY) ||
 +       res->base.last_level || res->base.nr_samples > 1 || !width || !height ||
 +       width > res->base.width0 || height > res->base.height0) {
-+      if (!refused++)
++      if (!refused) {
++         refused = 1;
 +         virgl_warn("logical size: %ux%u for resource %u does not fit it, ignored (logged once)\n",
 +                    width, height, handle);
++      }
 +      return false;
 +   }
 +   if (width == res->base.width0 && height == res->base.height0)
