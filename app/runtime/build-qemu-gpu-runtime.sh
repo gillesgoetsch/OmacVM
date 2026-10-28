@@ -999,6 +999,9 @@ grep -q 'getenv("OMACVM_GPU_UNLOCKED")' "$source_dir/hw/display/virtio-gpu-virgl
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-main-loop-stall-gpu-run.patch"
 grep -q 'in a GPU run without the BQL' "$source_dir/util/main-loop.c" || \
   die "util/main-loop.c: the stall watchdog does not know GPU runs (main-loop-stall-gpu-run patch)"
+# ... and tells threads apart by their Mach port (qemu_get_thread_id() is getpid() on macOS).
+grep -q 'uintptr_t self = omacvm_thread_self();' "$source_dir/hw/display/virtio-gpu.c" || \
+  die "hw/display/virtio-gpu.c: GPU runs are not kept to one thread (main-loop-stall-gpu-run patch)"
 # OmacVM: a line in qemu.log and logs/vm-stalls when a vCPU stands still:
 # blocked in macOS's kernel waiting for memory, or no Mac core for it (the
 # user's 60 s freeze, 2026-10-28). Its logic and text are tested here.

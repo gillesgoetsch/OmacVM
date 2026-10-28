@@ -741,10 +741,10 @@ index da3ec52..52490d5 100644
          bql_lock();
          switch (r) {
 diff --git a/util/main-loop.c b/util/main-loop.c
-index f757634..0351ba1 100644
+index 6e0512a..695952a 100644
 --- a/util/main-loop.c
 +++ b/util/main-loop.c
-@@ -316,6 +316,25 @@ static void glib_pollfds_poll(void)
+@@ -318,6 +318,25 @@ static void glib_pollfds_poll(void)
  #define MAIN_LOOP_STALL_NS (2 * NANOSECONDS_PER_SECOND)
  #define MAIN_LOOP_STALL_FRAMES 24
  
@@ -770,7 +770,7 @@ index f757634..0351ba1 100644
  static int64_t main_loop_busy_since; /* 0 while polling */
  static bool main_loop_has_bql;
  static bool main_loop_gpu_run;       /* in a GPU run, without the BQL */
-@@ -372,51 +391,147 @@ static int stall_stack(void **pcs, int max)
+@@ -374,51 +393,147 @@ static int stall_stack(void **pcs, int max)
      return n;
  }
  
@@ -926,7 +926,7 @@ index f757634..0351ba1 100644
          wait = MAIN_LOOP_STALL_NS;
          since = qatomic_read(&main_loop_busy_since);
          if (!since || since == qatomic_read(&stall_reported)) {
-@@ -430,11 +545,14 @@ static void *stall_watchdog(void *opaque)
+@@ -432,11 +547,14 @@ static void *stall_watchdog(void *opaque)
          has_bql = qatomic_read(&main_loop_has_bql);
          gpu_run = qatomic_read(&main_loop_gpu_run);
          where = g_string_new(NULL);
@@ -943,10 +943,10 @@ index f757634..0351ba1 100644
          warn_report("main loop stalled for %.1f s %s; where: %s",
                      (get_clock() - since) / 1e9,
                      gpu_run ? "in a GPU run without the BQL (vCPUs run; "
-@@ -456,6 +574,14 @@ static void stall_watchdog_start(void)
+@@ -458,6 +576,14 @@ static void stall_watchdog_start(void)
          return;
      }
-     main_loop_qemu_thread = qemu_get_thread_id();
+     main_loop_owner = omacvm_thread_self();
 +    env = g_getenv("OMACVM_LOGS");
 +    if (env && *env) {
 +        /* this run's status only: the last run's goes (nothing counted yet) */
@@ -958,7 +958,7 @@ index f757634..0351ba1 100644
  #ifdef __APPLE__
      pthread_t self = pthread_self();
      main_loop_thread = pthread_mach_thread_np(self);
-@@ -475,9 +601,16 @@ static void stall_watchdog_poll(void)
+@@ -477,9 +603,16 @@ static void stall_watchdog_poll(void)
      if (stall_watchdog_state == 0) {
          stall_watchdog_start();
      }

@@ -8,13 +8,17 @@
  * within 1.25 s of the truth (the mini's 2.4 / 2.1 / 1.2 s stall of 2026-10-28,
  * and 300 random ones), memory vs CPU wording, "still" lines at 10 s and then
  * every 30 s, the status file's keys, and the app menu's line
- * (ui/omacvm-vm-stalls.h, omacvm-cocoa-vm-stalls-menu.patch).
+ * (ui/omacvm-vm-stalls.h, omacvm-cocoa-vm-stalls-menu.patch); which thread
+ * this is (include/qemu/omacvm-thread.h, qemu-main-loop-stall-gpu-run.patch).
  */
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "qemu/omacvm-stall.h"
+#include "qemu/omacvm-thread.h"
 #include "ui/omacvm-vm-stalls.h"
 
 static int failures;
@@ -153,6 +157,16 @@ static void run(const Sim *v, int n, int64_t first, int64_t end, int64_t late_at
         }
         t += wait > 0 ? wait : 2 * S;
     }
+}
+
+static void *other_thread(void *arg)
+{
+    uintptr_t *ids = arg;
+
+    ids[0] = omacvm_thread_self();
+    ids[1] = omacvm_thread_self();
+    ids[2] = (uintptr_t)getpid();
+    return NULL;
 }
 
 int main(void)
@@ -394,6 +408,20 @@ int main(void)
     check(omacvm_stall_menu_line(&st, menu, sizeof(menu)) &&
           !strcmp(menu, "The VM's graphics stood still 1 time (longest 2.5 s)"),
           "menu line: graphics only");
+
+    /* 15: which thread this is (the watchdog's notes, virtio-gpu's runs): the
+     * main loop's id differs from another thread's, stays the same within one;
+     * getpid() (qemu_get_thread_id() on macOS) is the same for both */
+    uintptr_t mine = omacvm_thread_self(), theirs[3] = { 0, 0, 0 };
+    pthread_t th;
+    check(!pthread_create(&th, NULL, other_thread, theirs) && !pthread_join(th, NULL),
+          "a second thread ran");
+    snprintf(what, sizeof(what), "thread ids: this %#lx, the other %#lx (twice %#lx), "
+             "getpid() %ld in both: %s", (unsigned long)mine, (unsigned long)theirs[0],
+             (unsigned long)theirs[1], (long)getpid(),
+             theirs[2] == (uintptr_t)getpid() ? "yes" : "no");
+    check(mine && theirs[0] && mine != theirs[0] && theirs[0] == theirs[1] &&
+          mine == omacvm_thread_self(), what);
 
     if (failures) {
         printf("vcpu stall: %d checks FAILED\n", failures);
