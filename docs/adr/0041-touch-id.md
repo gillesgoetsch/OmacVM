@@ -867,7 +867,7 @@ the VM's next start".
 ## Addendum (3.2.11): the panel on the display you work on
 
 Status: built (`touchid-external-screen`, 2026-10-28); the rule passes the CI
-rows, the on-screen rows (real QEMU on two displays) are pending. Only
+rows and the on-screen rows on the Mac mini (real QEMU on two displays). Only
 `OmacVMTouchIDPanel.dylib` changes.
 
 ### What went wrong (3.2.9, the user's MacBook Pro M4 Max with an LG UltraFine 5K, 2026-10-28)
@@ -912,14 +912,15 @@ on that display, so the pointer is where the person works.
   which owns it under QEMU's hand-back), and only while that window's Space
   shows, as QEMU's own hand-back does.
 - The panel window keeps its level (28) and collection behaviour
-  (`.moveToActiveSpace`, `.fullScreenAuxiliary`). It should join the current
-  Space of the display its frame is on, also a full-screen one: pending the
-  on-screen rows (if not, `.canJoinAllSpaces` instead of `.moveToActiveSpace`).
+  (`.moveToActiveSpace`, `.fullScreenAuxiliary`). It joins the current Space
+  of the display its frame is on, also another display's full-screen Space,
+  and no display's Space moves (on-screen rows); `.canJoinAllSpaces` is not
+  needed.
 
 `panelCanHost`, `panelHost`, `panelArea` and `panelPlace` in
 `PanelModel.swift` are the rule without a window; `Panel.swift` only feeds
-them QEMU's windows and the screens. CI checks the rule; how it plays with
-QEMU's real windows, Spaces and key window is pending the on-screen rows.
+them QEMU's windows and the screens. CI checks the rule; the on-screen rows
+check it with QEMU's real windows, Spaces and key window.
 
 Not the main display (`NSScreen.main` is the key window's screen: the same
 bug), and not the output Hyprland has focused: exact also for a `sudo` typed
@@ -959,8 +960,24 @@ a VM that runs across the update keeps the old place until it is shut down.
   screen, never CI): the real controller and window with stand-in VM windows
   and a stand-in evaluator; records the panel's display, Space and key state,
   and the key window and Spaces after it closed.
-- On-screen rows on the Mac mini, pending (it was screen-locked): two virtual
-  displays, the stand-in and the real QEMU with this dylib; the panel's
-  display, key while up, on its display's current Space, no Space moved, the
-  key window back after the close, and coreauthd arming the sensor for QEMU's
-  request ("will start matching"; the mini's Magic Keyboard has Touch ID).
+- On-screen rows on the Mac mini (2026-10-28 16:47-17:01): two virtual
+  displays (A 1728x1117 HiDPI main, B 2560x1440 HiDPI right, left and above
+  A), 31 rows with the stand-in and 25 with the 3.2.9 test QEMU and this
+  dylib (the real panel, closed after 1.5 s, no finger): all pass. Each row
+  checks the panel's display, the panel key while up, on its display's current
+  Space, no Space moved, the key window back after the close, the reply
+  `cancelled` (none early), and for QEMU coreauthd arming the sensor for
+  QEMU's request ("will start matching" for QEMU's pid; the mini's Magic
+  Keyboard has Touch ID).
+  - The user's case: main window full screen on A and key, its window for B
+    full screen on B, pointer on B: the panel on B (3.2.9: on A), on B's
+    full-screen Space, key; after the close the main window is key again.
+  - Pointer on A, or the main window on B with the pointer on either display:
+    the display under the pointer. A switched to a macOS desktop and a click
+    on B: on B.
+  - A VM in one window or full screen on one display, pointer on that display
+    or the other: over the VM, on its display, as in 3.2.9. A 1x display
+    (2560x1440, scale 1): 280 pt there.
+  - FullPanel did not engage on the virtual displays (no camera housing):
+    those two rows ran as plain full screen.
+  - No permission prompt (tccd), no other app's window moved.
