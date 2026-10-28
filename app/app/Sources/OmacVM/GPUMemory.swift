@@ -233,7 +233,7 @@ final class GPUMemoryWatch {
         settling = nil
         let before = w.before?.footprint ?? s.footprint
         let drop = before > s.footprint ? before - s.footprint : 0
-        giveBack.settled(guest: w.result.map { UInt64($0.gotMB) * MemoryGiveBack.mib }, footprintDrop: drop, at: s.time)
+        giveBack.settled(w.trigger, guest: w.result.map { UInt64($0.gotMB) * MemoryGiveBack.mib }, footprintDrop: drop, at: s.time)
         let r = w.result
         status.count += 1
         status.at = Int(Date().timeIntervalSince1970)

@@ -22,14 +22,13 @@ import Foundation
 /// - macOS itself compressed at least 1 GB since then (graphics that grow
 ///   on a Mac with room do not count).
 /// One 10-minute gap for every give-back (also macOS's warning, the drop it
-/// always did); 30 s when the VM's agent did not answer. A give-back that
-/// returned under 256 MB (by the VM's own count; QEMU's footprint 60 s later
-/// only when the VM gave none, as for the warning's drop: a VM that goes on
-/// reading files grows it again in that minute) doubles the next gap for this
-/// trigger (up to 2 h:
-/// what macOS compresses then is the VM's own programs' memory); 1 GB or
-/// more puts it back to 10 minutes. macOS's warning may follow a cold-only
-/// give-back after 2 minutes. Foundation only: `swift run desktop-tests`.
+/// always did); 30 s when the VM's agent did not answer. A give-back for
+/// "compressing" that returned under 256 MB (by the VM's own count; QEMU's
+/// footprint 60 s later only when the VM's answer could not be read) doubles
+/// the next gap for it (up to 2 h: what macOS compresses then is the VM's
+/// own programs' memory); 1 GB or more puts it back to 10 minutes. The
+/// warning's drop leaves that gap as it is. macOS's warning may follow a
+/// cold-only give-back after 2 minutes. Foundation only: `swift run desktop-tests`.
 public struct MemoryGiveBack: Sendable {
     public static let mib: UInt64 = 1 << 20
     public static let gib: UInt64 = 1 << 30
@@ -132,15 +131,18 @@ public struct MemoryGiveBack: Sendable {
         if r?.act == "norep" { off = true }
     }
 
-    /// 60 s after the VM answered: what came back sets the next gap, and the
-    /// baseline starts again from now. What the VM says it gave counts; the
-    /// footprint only when it said nothing.
-    public mutating func settled(guest: UInt64?, footprintDrop: UInt64, at t: TimeInterval) {
-        let back = guest ?? footprintDrop
-        if back < Self.small {
-            backoff = min(backoff * 2, Self.longestGap / Self.gap)
-        } else if back >= Self.large {
-            backoff = 1
+    /// 60 s after the VM answered: the baseline starts again from now, and for
+    /// "compressing" what came back sets the next gap. What the VM says it
+    /// gave counts; QEMU's footprint only when its answer could not be read.
+    /// The warning's drop (`trigger` warning or critical) leaves the gap as it is.
+    public mutating func settled(_ trigger: Trigger, guest: UInt64?, footprintDrop: UInt64, at t: TimeInterval) {
+        if trigger == .compressing {
+            let back = guest ?? footprintDrop
+            if back < Self.small {
+                backoff = min(backoff * 2, Self.longestGap / Self.gap)
+            } else if back >= Self.large {
+                backoff = 1
+            }
         }
         baseline = nil
         baselineFrom = t
