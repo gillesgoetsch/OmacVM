@@ -250,7 +250,7 @@ final class GPUMemoryWatch {
         status.backoff = Int(giveBack.backoff)
         writeStatus()
         var line = "QEMU's footprint \(MemoryGiveBack.gb(before)) -> \(MemoryGiveBack.gb(s.footprint)) 60 s later"
-        if giveBack.backoff > 1 {
+        if w.trigger == .compressing && giveBack.backoff > 1 {
             line += "; little came back: the next give-back for this in \(Int(min(MemoryGiveBack.gap * giveBack.backoff, MemoryGiveBack.longestGap) / 60)) minutes at the earliest"
         }
         let g = MemoryGiveBack.gb(mb:)
