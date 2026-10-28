@@ -17,7 +17,9 @@ APP: chrome (Google Chrome, VA-API through OmacVM's shim; --chrome PATH, flags f
 VIDEO_GEOMETRY_CHROME_FLAGS / VIDEO_GEOMETRY_CHROME_FEATURES), chromium (Arch's, V4L2 through omacvm-vdecd), firefox (VA-API), mpv
 (--hwdec=vaapi, vo=gpu), mpvnext (vo=gpu-next), mpvsw (CPU decoding: the reference). MODE: fit (the output, aspect
 kept) or 1to1 (the video's own size). Each line: decoder, rectangle, yratio/xratio (fitted line spacing over the
-rectangle's), red_rows/red_cols (source rows/columns the red band covers), blue_rows/blue_cols, green pixels.
+rectangle's), red_rows/red_cols (source rows/columns the red band covers), blue_rows/blue_cols, green pixels;
+Chrome and Chromium: path, from the browser's log for that clip ("no ImageProcessor": the decoder's NV12 frames are
+drawn as they are, as on Wayland with GL; "ImageProcessor": converted to RGB first).
 
 check: exact = red 7.4 to 8.5 rows and columns (the band's first row blends) and the lines within half a source row
 or column of their place (ratio 1 +- 0.5 / size, at least +- 0.001; a 1080p squeeze is 0.0074). Known, not
@@ -322,6 +324,7 @@ def run():
             res = {"app": app, "mode": mode, "clip": c["name"], "codec": c["codec"], "w": c["w"], "h": c["h"]}
             if tab:
                 tab.events = []
+                logpos = os.path.getsize(log) if os.path.exists(log) else 0
                 tab.call("Page.navigate", url=srv.url)
                 ok = False
                 for _ in range(40):
@@ -338,6 +341,11 @@ def run():
                         for p in e["params"]["properties"]:
                             props[p["name"]] = p["value"]
                 dec = props.get("kVideoDecoderName", "")
+                with open(log, errors="replace") as f:
+                    f.seek(logpos)
+                    new = f.read()
+                res["path"] = ("no ImageProcessor" if "No ImageProcessor needed" in new else
+                               "ImageProcessor" if "Initializing ImageProcessor" in new else "")
                 if not ok:
                     res["error"] = "not playing"
             elif app == "firefox":
@@ -441,8 +449,9 @@ def check():
             why = None if exact else known(d)
             verdict = "exact" if exact else (f"known: {why}" if why else "WRONG")
             bad += verdict == "WRONG"
+            path = f' [{d["path"]}]' if d.get("path") else ""
             print(f'{d.get("app",""):8} {d.get("mode",""):5} {d.get("clip",""):16} {str(d.get("decoder",""))[:20]:20} '
-                  f'red {rr}/{rc} ratio {yr}/{xr} {d.get("error","")}: {verdict}')
+                  f'red {rr}/{rc} ratio {yr}/{xr} {d.get("error","")}{path}: {verdict}')
     print(f"video-geometry: {bad} wrong")
     return 1 if bad else 0
 
