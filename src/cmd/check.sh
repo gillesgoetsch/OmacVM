@@ -445,8 +445,9 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   mg="$(dirname "$miclog")/memory-giveback"
   mgv() { sed -n "s/^$1=//p" "$mg" 2>/dev/null | head -1; }
   what="${vmm:+$(gb "$vmm")}"
-  # The app's own line, at the start of a line (QEMU's lines can carry text from the VM); the words are check's.
-  case $(LC_ALL=C grep -a -o -E '^OmacVM: VM memory: give-back while macOS compresses: (on|off)' "$miclog" 2>/dev/null | tail -1) in
+  # The app's own line: the first one (the app writes it within a second of the start, before the VM
+  # boots; later QEMU lines can carry text from the VM). The words are check's.
+  case $(LC_ALL=C grep -a -o -E 'OmacVM: VM memory: give-back while macOS compresses: (on|off)' "$miclog" 2>/dev/null | head -1) in
     *": on") what="${what:+$what; }give-back while macOS compresses: on" ;;
     *": off") what="${what:+$what; }give-back while macOS compresses: off (this QEMU keeps given-back pages)" ;;
   esac
@@ -464,7 +465,8 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     esac
     # How many this run, and what the last one freed (not that many times as much).
     if [[ $mgn == 1 ]]; then mgl="the VM freed file cache once this run, at"; else mgl="the VM freed file cache $mgn times this run, the last at"; fi
-    if (( mgf )); then mgr="QEMU's footprint $(gb "$mgb") smaller a minute later"; else mgr="$(gb "$mgb")"; fi
+    if (( mgf && mgb == 0 )); then mgr="QEMU's footprint no smaller a minute later"
+    elif (( mgf )); then mgr="QEMU's footprint $(gb "$mgb") smaller a minute later"; else mgr="$(gb "$mgb")"; fi
     what="${what:+$what; }$mgl $(date -r "$mga" +%H:%M)${mgw:+ ($mgw)}: $mgr"
     pgsz=$(sysctl -n hw.pagesize 2>/dev/null) ram=$(sysctl -n hw.memsize 2>/dev/null)
     stored=$(vm_stat 2>/dev/null | awk -F: '$1 == "Pages stored in compressor" { gsub(/[ .]/, "", $2); print $2 }')
