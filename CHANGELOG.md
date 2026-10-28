@@ -14,9 +14,11 @@ in more words.
   View and gave up the strip for the rest of that full screen. Now that counts as a display
   change: once the displays settle and the Mac is unlocked, the VM covers the strip again,
   without leaving full screen (macOS is asked to lay its full screen out again, at most 3
-  times per display change). Until then `omacvm check` warns that a display change moved the
-  window below the notch; if macOS still keeps it there after the tries, check says so and to
-  leave full screen and enter it again. Needs only the app update, from the VM's next start (a
+  times per display change; every later display change gets its own tries). Until then
+  `omacvm check` warns that a display change moved the window below the notch; if macOS still
+  keeps it there, check says so and what to do: leave full screen and enter it again (when
+  macOS shows its menu bar in full screen: its menu bar setting or Keep the Dock and hot
+  corners away first). Needs only the app update, from the VM's next start (a
   VM that runs across the update keeps the old behaviour until it is shut down); no Update VM.
 
 ## 3.2.11 (unreleased)

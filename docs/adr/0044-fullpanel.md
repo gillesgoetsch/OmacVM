@@ -254,9 +254,21 @@ yes (its Space's display has a housing), a frame of the display's width
 and bottom at most the housing's height (and 8 points) shorter (never a
 tile), on the active Space, visible, WindowServer's frame in place, the
 reservation still ours, SkyLight there, the menu bar not always shown. At
-most 3 tries per display change (they start again once the strip is
-covered: a full screen kept for days meets many display changes) and one
-per settle. A wait that ends by itself with no trigger of its own
+most 3 tries per display change and one per settle: each new display
+change (the window laid out for another display again after it was back
+inside its own, a display without a housing, a loss that went with one)
+starts its own 3, also after a "strip not back" for an earlier one (a full
+screen kept for days meets many display changes); the settle of the last
+try stays, so a new change in that settle waits for the next one. Below
+a band taller than that (the same shape, more than the housing and 8
+points) there is no try, but once the displays settled the line says so
+with both heights ("strip not back ... (AppKit keeps a band taller than
+the camera housing: N pt, the housing N pt)") instead of check repeating
+"comes back once the displays settle". With the menu bar always shown
+(turned on during the full screen, Keep the Dock away off) the line says
+"menu bar always shown" and check names the remedy: the menu bar setting
+"In Full Screen Only" or Keep the Dock and hot corners away, then leave
+full screen and enter it again. A wait that ends by itself with no trigger of its own
 (WindowServer still moving the window, the displays' windows moving, the
 window not visible yet) asks again 0.5 s later, at most 3 times after each
 trigger. The four methods
@@ -298,8 +310,10 @@ is stale, the 3 s rule both ways and never for a tile, Split View staying
 lost (also during a display change), the menu bar always shown, a Space on
 a display without a housing, locked, moving windows, another Space, the
 ask again after a wait and its limit, 3 tries per display change and one
-per settle, four display changes in one full screen, a missing selector,
-display modes; with `--self-test` the user's rows fail on 3.2.10's
+per settle, four display changes in one full screen, a later display
+change after "strip not back" (also one NSScreen never sees) getting its
+own tries, a taller band said once settled, a missing selector, display
+modes; with `--self-test` the user's rows fail on 3.2.10's
 decisions and the wiring checks fail on 3.2.10's methods (copied; its whole
 patched `ui/cocoa.m` fails them too). In the runtime build also the wiring
 (the retake only from its three triggers and its own ask again, nothing in
@@ -308,8 +322,9 @@ it that moves a window, a Space or the menu bar).
 
 **Not yet seen on a notched Mac.** Owed before release, on a MacBook with
 its own test VM in "Full screen including notch":
-`src/tests/e2e/display-unplug.sh --only fullpanel-builtin --sleep` (a
-virtual display unplugged and plugged in, display sleep and wake; 3.2.10
-passes these too, so they show only that nothing broke), and the built-in
-display switched off for 10 s and back (the user's trigger), which 3.2.10
-fails and this must pass.
+`src/tests/e2e/display-unplug.sh --only fullpanel-builtin --sleep
+--builtin-off` (a virtual display unplugged and plugged in, display sleep
+and wake: 3.2.10 passes these too, so they show only that nothing broke;
+and the built-in display switched off for 10 s and back, the user's
+trigger, which 3.2.10 fails and this must pass), and a Split View made from
+a FullPanel full screen, which must stay "strip lost" with nothing tried.

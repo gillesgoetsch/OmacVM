@@ -117,7 +117,8 @@ one this start is, and when it includes the notch whether the strip is
 covered ("strip covered") and that Omanotch is idle, or that a display
 change moved the window below the notch for now. If macOS keeps it there
 after a display change ("strip not back" in `omacvm check`), leave full
-screen and enter it again. Changing the Mac's
+screen and enter it again (when check names macOS's menu bar setting,
+change that or turn on Keep the Dock and hot corners away first). Changing the Mac's
 display resolution while the VM runs: restart the VM.
 
 Why it is an addition and not a replacement: [ADR 0044](adr/0044-fullpanel.md).
