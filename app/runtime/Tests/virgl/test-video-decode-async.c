@@ -29,7 +29,10 @@
  *   their pictures in order (VP9: FFmpeg's pictures bit for bit), and VP9
  *   profile 2 (P010) stays bit for bit;
  * - a context destroyed while the sync thread waits for its fence's picture:
- *   that fence is not reported (the context is gone).
+ *   that fence is not reported (the context is gone);
+ * - (sync-thread fences) a fence whose picture left its slot but is still
+ *   being written into its planes (OMACVM_TEST_VIDEO_SLOW_DELIVER) waits for
+ *   it, also past the time limit.
  * OMACVM_TEST_VIDEO_PROBE_HANG_MS=N (the Mac's video service hangs N ms at
  * start): only case 0 runs: one caps query waits at most 10 s, once; the next
  * query and a decoder's create do not wait.
@@ -93,13 +96,19 @@ static void check(int ok, const char *what)
 static volatile uint32_t fence_done;
 static uint32_t fence_next;
 static volatile uint64_t ctx_fence_last[4];
+static volatile uint64_t ctx_fence_ns[4];     /* when the last one was reported */
+static int thread_sync;
+
+static uint64_t now_ns(void);
 
 static void write_ctx_fence(void *cookie, uint32_t ctx_id, uint32_t ring_idx, uint64_t fence_id)
 {
    (void)cookie;
    (void)ring_idx;
-   if (ctx_id < 4)
+   if (ctx_id < 4) {
+      __atomic_store_n(&ctx_fence_ns[ctx_id], now_ns(), __ATOMIC_RELEASE);
       __atomic_store_n(&ctx_fence_last[ctx_id], fence_id, __ATOMIC_RELEASE);
+   }
 }
 
 static void write_fence(void *cookie, uint32_t fence)
@@ -788,7 +797,10 @@ int main(void)
    static int cookie;
    int flags = VIRGL_RENDERER_USE_VIDEO;
    const char *ts = getenv("OMACVM_TEST_THREAD_SYNC");
+   /* the slow-copy hook of case 13 is read only when set at the start */
+   setenv("OMACVM_TEST_VIDEO_SLOW_DELIVER", "0", 1);
    if (ts && !strcmp(ts, "1")) {
+      thread_sync = 1;
       flags |= VIRGL_RENDERER_THREAD_SYNC | VIRGL_RENDERER_ASYNC_FENCE_CB;
       printf("fences: reported by the sync thread\n");
    }
@@ -1207,6 +1219,45 @@ int main(void)
       emit(18);
       emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
       emit(19);
+      submit(1);
+   }
+
+   /* 13: the sync thread's fence for a picture that left its slot while vrend's
+    * thread still writes it into the planes (OMACVM_TEST_VIDEO_SLOW_DELIVER:
+    * that copy takes the time limit + 50 ms here): the fence waits until the
+    * picture is in, not only until the time limit (it signalled before) */
+   if (!sync_mode && thread_sync) {
+      create_codec(21);
+      submit(1);
+      uint64_t sent = now_ns(), p0 = 0;
+      send_picture(21, 0, 0);
+      virgl_renderer_context_create_fence(1, 0, 0, 96);
+      char slow[16];
+      snprintf(slow, sizeof(slow), "%d", LIMIT_MS + 50);
+      setenv("OMACVM_TEST_VIDEO_SLOW_DELIVER", slow, 1);
+      /* polls until one gives the picture back (that poll takes the slow copy) */
+      while (!p0 && now_ns() - sent < 2000000000ull) {
+         uint64_t t = now_ns();
+         virgl_renderer_poll();
+         if (now_ns() - t >= (uint64_t)LIMIT_MS * 1000000ull)
+            p0 = t;
+         else
+            usleep(2000);
+      }
+      setenv("OMACVM_TEST_VIDEO_SLOW_DELIVER", "0", 1);
+      uint64_t in = now_ns();
+      while (__atomic_load_n(&ctx_fence_last[1], __ATOMIC_ACQUIRE) < 96 && now_ns() - sent < 3000000000ull)
+         usleep(1000);
+      uint64_t fence = __atomic_load_n(&ctx_fence_ns[1], __ATOMIC_ACQUIRE);
+      double p = read_luma(R_Y(0), 1, 0);
+      snprintf(line, sizeof(line), "a fence while its picture is still being copied in: the copy "
+               "from %.0f to %.0f ms, the fence at %.0f ms (time limit %d ms); the picture %.1f dB",
+               p0 ? (p0 - sent) / 1e6 : -1, (in - sent) / 1e6,
+               __atomic_load_n(&ctx_fence_last[1], __ATOMIC_ACQUIRE) >= 96 ? (fence - sent) / 1e6 : -1,
+               LIMIT_MS, p);
+      check(p0 && __atomic_load_n(&ctx_fence_last[1], __ATOMIC_ACQUIRE) >= 96 &&
+            fence + 5000000ull >= in && p > 30, line);
+      destroy_codec(21);
       submit(1);
    }
 
