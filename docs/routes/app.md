@@ -1113,6 +1113,16 @@ window per guest screen:
   The other displays' windows take the pointer (and with it the keyboard)
   only while OmacVM.app is in front, or on a click; another app coming to
   the front gets both back.
+- With one display switched to macOS (its Space) and a Mac app in front, a
+  move over the VM on another display still moves the VM's pointer: hover,
+  scrolling where the pointer is. Only the pointer's place goes to the VM:
+  the keyboard stays with the Mac app, the Mac's arrow shows over the VM's
+  pointer (as while the VM boots) and nothing comes to the front; a click
+  takes the pointer and the keyboard as before. Only on two or more
+  displays, in full screen, with nothing above the VM's window under the
+  pointer (`omacvm-cocoa-pointer-hover*.patch`; 3.2.10 and older left the
+  pointer standing until a click). `OMACVM_POINTER_HOVER=0` in QEMU's
+  environment keeps the old way.
 - A drag keeps the pointer from one display to the next, also across the
   menu bar strip above a full-screen window on a MacBook with a notch, so
   ⌘-dragging a window moves it to the other display. QEMU reads the

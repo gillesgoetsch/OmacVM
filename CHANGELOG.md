@@ -30,6 +30,15 @@ in more words.
   picture with its grain); the Mac wrote only the first, so Chrome showed a buffer that held
   an older picture, or nothing (green). The picture now goes into both. Needs only the new
   app, from the VM's next start.
+- **The VM's pointer works on the external display while the MacBook's display shows macOS.**
+  With the VM in full screen on the MacBook's display and an external one, switching the
+  MacBook's display to macOS left the VM without pointer events on the external display: the
+  VM's pointer stood still there, nothing reacted to hovering, scrolling went to where the
+  pointer had been, and only a click brought it back. A move over the VM on the other display
+  now moves the VM's pointer. The Mac app in front keeps the keyboard, and the Mac's arrow shows
+  over the VM's pointer until you click, which takes the pointer and the keyboard as before.
+  Needs the app update and a restart of the VM (shut it down and start it again); with Pause
+  drawing while hidden on, Update VM too (next item).
 - **Pause drawing while hidden: the hidden display stays off while you work in the VM on
   another one.** With the VM in full screen on two displays and the main one switched to
   macOS, every pointer move or key in the VM on the other display turned the paused display

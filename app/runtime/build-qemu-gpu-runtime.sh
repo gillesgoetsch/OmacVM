@@ -1077,6 +1077,18 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-heads
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-heads.patch"
 "$native_dir/Tests/display/test-pointer-heads.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the pointer is not on every display's window as tested (test-pointer-heads.sh)"
+# OmacVM: on two or more displays, a move over the VM while another app is in
+# front gives the guest the pointer's place (no grab: the keyboard stays with
+# that app). Its rule's test, a check that the wiring checks fail on the code
+# before, the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover-logic.patch"
+"$native_dir/Tests/display/test-pointer-hover.sh" || \
+  die "the pointer's place while another app is in front fails its test (test-pointer-hover.sh)"
+"$native_dir/Tests/display/test-pointer-hover.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a pointer-hover wiring check passes without the patch (test-pointer-hover.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover.patch"
+"$native_dir/Tests/display/test-pointer-hover.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the pointer's place while another app is in front is not wired as tested (test-pointer-hover.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"

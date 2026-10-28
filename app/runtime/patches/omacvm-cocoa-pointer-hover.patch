@@ -1,0 +1,219 @@
+From: OmacVM
+Subject: [PATCH] cocoa: the pointer's place to the guest while another app is in front
+
+What: with the VM in full screen on two or more displays, a move over one
+of its windows while another app is in front gives the guest the pointer's
+place, and nothing else (ui/omacvm-pointer-hover.h says when). The app in
+front keeps the pointer and the keyboard: no grab, no corner guard (it
+detaches and moves the Mac's cursor), the Mac's cursor stays as it is (shown,
+over the guest's pointer, as at boot), no window becomes key and nothing is
+activated. A click still takes the pointer and brings OmacVM.app to the
+front, as before. The windows of the other displays already see moves while
+another app is in front (their tracking area is active always): their early
+return for such a move now gives the place first. The main window's
+tracking area is only active in the key window, so its view gets a second
+one, active always, with its own owner (omacvmHoverMain): it goes through
+the same rule, which needs OmacVM not in front, so no move comes twice.
+That area sees every move over the main view, also with the pointer
+grabbed: a grabbed pointer, OmacVM in front and one display are dropped
+first, before the rule's input (which asks the WindowServer).
+OMACVM_POINTER_HOVER=0: as before. qemu.log at start: "cocoa: pointer: a
+move over the VM on two or more displays while another app is in front:
+its place to the guest (...)" or "dropped (OMACVM_POINTER_HOVER=0)"; with
+OMACVM_POINTER_DEBUG=1 "omacvm-pointer: hover (output N): ..." at most every
+10 s.
+
+Why: the user had the VM in full screen on the MacBook's display and an LG
+monitor and switched the MacBook's display to macOS. A Mac app came to the
+front there and QEMU let go of the pointer (as it should). From then on the
+LG's window dropped every move (837b4a88: a move over another display's
+window takes the pointer only while OmacVM is in front, so a pointer that
+only passes over the VM does not take the keyboard from the Mac app): no
+hover and the guest's pointer stood still on the LG, scrolls went to the
+old place, only a click brought it back (2026-10-28, with the pointer
+layer on; it is not about the layer).
+
+Pause drawing while hidden: each move now reaches the guest while the
+main window's display is paused; the VM's display agent holds Hyprland's
+wake on moves off meanwhile (same release), else every move would wake the
+paused display.
+
+Upstream: not applicable (OmacVM's display windows).
+Test: app/runtime/Tests/display/test-pointer-hover.sh (the rule; the wiring
+on the patched ui/cocoa.m; --self-test: every wiring check fails on the code
+without it).
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -58,6 +58,7 @@
+ #include "ui/omacvm-bright.h"
+ #include "ui/omacvm-pointer-bright.h"
+ #include "ui/omacvm-pointer-heads.h"
++#include "ui/omacvm-pointer-hover.h"
+ #include "ui/omacvm-present-tiles.h"
+ #include "ui/omacvm-present-damage.h"
+ #include "ui/omacvm-guest-pause.h"
+@@ -584,6 +585,10 @@
+ - (bool) omacvmQueuePointer:(NSEvent *)event view:(NSView *)view output:(int)output;
+ - (void) omacvmHeadEvent:(NSEvent *)event view:(NSView *)view output:(int)output
+                   button:(int)button down:(bool)down;
++- (bool) omacvmHoverWanted:(NSEvent *)event view:(NSView *)view output:(int)output
++                    button:(int)button;
++- (void) omacvmHover:(NSEvent *)event view:(NSView *)view output:(int)output;
++- (void) omacvmHoverMain:(NSEvent *)event;
+ - (void) omacvmUngrabAfterDrag;
+ - (void) omacvmParkInNotch:(NSEvent *)event view:(NSView *)view output:(int)output;
+ - (void) omacvmGuestAtTop:(bool)top;
+@@ -1112,6 +1117,16 @@
+ static void omacvm_cursor_watch(bool on);
+ static bool omacvm_hwc_on_ours(void);
+ static bool omacvm_guard_place;          /* this event's place is the guard's */
++/*
++ * A move while another app is in front: the place only (ui/omacvm-pointer-hover.h;
++ * main thread). The main view's second tracking area has its own owner.
++ */
++static bool omacvm_main_full_screen(void);
++static bool omacvm_hover_off;            /* OMACVM_POINTER_HOVER=0 */
++static double omacvm_hover_logged = -1;  /* OMACVM_POINTER_DEBUG's last hover line */
++@interface OmacVMHoverWatch : NSObject
++@end
++static OmacVMHoverWatch *omacvm_hover_watch;
+ /* The displays and our windows the guard last saw (main thread). */
+ static OmacVMGuardScreens omacvm_guard_scr;
+ static OmacVMRect omacvm_guard_displays[16];
+@@ -1307,6 +1322,24 @@
+ 
+         [self addTrackingArea:trackingArea];
+         [trackingArea release];
++        /*
++         * OmacVM: the area above sees moves only in the key window. This one
++         * also while another app is in front, for the pointer's place only
++         * (omacvmHoverMain). Its own owner, so the view gets no second
++         * mouseMoved: while it is the key window.
++         */
++        if (!omacvm_hover_watch) {
++            omacvm_hover_watch = [[OmacVMHoverWatch alloc] init];
++        }
++        NSTrackingArea *hoverArea =
++            [[NSTrackingArea alloc] initWithRect:CGRectZero
++                                         options:NSTrackingActiveAlways |
++                                                 NSTrackingMouseMoved |
++                                                 NSTrackingInVisibleRect
++                                           owner:omacvm_hover_watch
++                                        userInfo:nil];
++        [self addTrackingArea:hoverArea];
++        [hoverArea release];
+         screen.width = frameRect.size.width;
+         screen.height = frameRect.size.height;
+         colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+@@ -3156,8 +3189,73 @@
+     qemu_input_queue_abs(dcl.con, INPUT_AXIS_Y, lround(ny * INPUT_EVENT_ABS_MAX),
+                          0, INPUT_EVENT_ABS_MAX);
+     return true;
++}
++
++/*
++ * OmacVM: may this event over one of the VM's windows give the guest the
++ * pointer's place without taking the pointer (ui/omacvm-pointer-hover.h)?
++ * button < 0: a move. Main thread.
++ */
++- (bool) omacvmHoverWanted:(NSEvent *)event view:(NSView *)view output:(int)output
++                    button:(int)button
++{
++    NSWindow *w = [view window];
++    OmacVMHoverIn in = {
++        .off = omacvm_hover_off,
++        .absolute = isAbsoluteEnabled,
++        .grabbed = isMouseGrabbed,
++        .active = [NSApp isActive],
++        .move = button < 0,
++        .buttons = [NSEvent pressedMouseButtons] != 0,
++        .touchid = omacvm_touchid_up,
++        .displays = omacvm_active_outputs(),
++        .full = output > 0 || omacvm_main_full_screen(),
++        .top = w && [NSWindow windowNumberAtPoint:[NSEvent mouseLocation]
++                      belowWindowWithWindowNumber:0] == [w windowNumber],
++    };
++
++    return omacvm_pointer_hover(&in);
+ }
+ 
++/*
++ * OmacVM: only the pointer's place to the guest, while another app is in
++ * front. That app keeps the pointer and the keyboard: no grab, no corner
++ * guard (it detaches and moves the Mac's cursor), the Mac's cursor as it is,
++ * no window made key, nothing activated. Main thread.
++ */
++- (void) omacvmHover:(NSEvent *)event view:(NSView *)view output:(int)output
++{
++    /* A place the corner guard kept from the last grab is not this move's. */
++    omacvm_guard_place = false;
++    if (omacvm_pointer_debug &&
++        omacvm_hover_log_due(CACurrentMediaTime(), &omacvm_hover_logged)) {
++        info_report("omacvm-pointer: hover (output %d): the place only, another app in front",
++                    output);
++    }
++    with_bql(^{
++        if ([self omacvmQueuePointer:event view:view output:output]) {
++            qemu_input_event_sync();
++        }
++    });
++}
++
++/*
++ * OmacVM: a move over the main window from its second tracking area. That
++ * area is active always, so every move over the main view comes here, also
++ * in normal use with the pointer grabbed. The cheap checks first, before the
++ * rule's input (it asks the WindowServer which window is on top): they drop
++ * only moves the rule drops too.
++ */
++- (void) omacvmHoverMain:(NSEvent *)event
++{
++    if (isMouseGrabbed || [NSApp isActive] || omacvm_active_outputs() < 2) {
++        return;
++    }
++    if ([self omacvmHoverWanted:event view:self output:0 button:-1]) {
++        [self omacvmHover:event view:self output:0];
++    }
++}
++
+ /* OmacVM: mouse events from the window of another output (button < 0: a move). */
+ - (void) omacvmHeadEvent:(NSEvent *)event view:(NSView *)view output:(int)output
+                   button:(int)button down:(bool)down
+@@ -3166,9 +3264,13 @@
+         /*
+          * The pointer just passing over this display while another app is
+          * in front must not take the pointer and keyboard from that app.
+-         * Only a click does (it also brings OmacVM.app to the front).
++         * Only a click does (it also brings OmacVM.app to the front). The
++         * guest still gets the pointer's place (omacvmHover).
+          */
+         if (button < 0 && (!isAbsoluteEnabled || ![NSApp isActive])) {
++            if ([self omacvmHoverWanted:event view:view output:output button:button]) {
++                [self omacvmHover:event view:view output:output];
++            }
+             return;
+         }
+         [self grabMouse];
+@@ -3190,6 +3292,11 @@
+         qemu_input_event_sync();
+     });
+ }
++@end
++
++/* OmacVM: the owner of the main view's second tracking area (omacvmHoverMain). */
++@implementation OmacVMHoverWatch
++- (void)mouseMoved:(NSEvent *)e { [cocoaView omacvmHoverMain:e]; }
+ @end
+ 
+ /*
+@@ -13826,6 +13933,10 @@
+     info_report("cocoa: pointer: %s", omacvm_ptr.off ?
+                 "taken on enter or click (OMACVM_POINTER_START=0)" :
+                 "taken without a click when it is on the VM");
++    omacvm_hover_off = omacvm_pointer_hover_off(getenv("OMACVM_POINTER_HOVER"));
++    info_report("cocoa: pointer: a move over the VM on two or more displays while another app "
++                "is in front: %s", omacvm_hover_off ? "dropped (OMACVM_POINTER_HOVER=0)" :
++                "its place to the guest (no grab, the keyboard stays with that app)");
+     if (omacvm_hwc.on) {
+         info_report("cocoa: pointer: the Mac's cursor carries the guest's pointer once the "
+                     "guest puts it on the cursor plane (OMACVM_HW_CURSOR=1, experimental)");

@@ -522,6 +522,10 @@ jobs:
         run: |
           app/runtime/Tests/display/test-pointer-heads.sh
           app/runtime/Tests/display/test-pointer-heads.sh --self-test
+      - name: The pointer's place to the VM while another app is in front, on two or more displays (the checks catch code without it)
+        run: |
+          app/runtime/Tests/display/test-pointer-hover.sh
+          app/runtime/Tests/display/test-pointer-hover.sh --self-test
       - name: Tiled present, only the changed tiles to WindowServer (the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-present-tiles.sh

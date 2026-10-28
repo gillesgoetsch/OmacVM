@@ -42,3 +42,33 @@ bounding box of all monitors the guest reported.
 - Up to 5 outputs (`max_outputs=5`).
 - Heads use `CAOpenGLLayer` today; with [0010](0010-iosurface-present.md)
   merged they should use the IOSurface present too.
+
+## Addendum (2026-10-28): the pointer's place while another app is in front
+
+In full screen on two displays the person can switch one display to macOS
+(its Space) while the other still shows the VM. A Mac app is then in front
+and QEMU lets go of the pointer. "Only grab while the app is active" above
+made a move over the other display's window do nothing at all: the VM's
+pointer stood still there until a click (no hover, scrolls at the old
+place).
+
+Options: take the pointer at the first move (takes the keyboard from the
+Mac app every time the pointer crosses the VM: what the rule was for); hide
+the Mac's cursor from the background (a missed exit leaves the Mac app
+without a cursor); give the guest the pointer's place only.
+
+Decision: the place only (`omacvm-cocoa-pointer-hover*.patch`,
+`ui/omacvm-pointer-hover.h`). With OmacVM not in front, the VM on two or more
+displays, an absolute pointer, no button held, Touch ID's panel down and the
+window in full screen with nothing above it under the pointer, a move goes
+to the guest's tablet and nothing else happens: no grab, no corner guard,
+no key window, no activation. The keyboard stays with the Mac app. Both
+pointers show on that display (the Mac's arrow over the guest's), as at
+boot. A click takes the pointer as before. The main window's view gets a
+second tracking area, active always, so the same holds when the main window
+is the one still shown. `OMACVM_POINTER_HOVER=0` keeps the old way.
+
+With "Pause drawing while hidden" each such move reaches the guest while the
+other display is paused, and Omarchy's `misc:mouse_move_enables_dpms` woke
+it at every move. The display agent holds that option (and key presses')
+off while it holds a display off; both ship in the same release.
