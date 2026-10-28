@@ -2,7 +2,8 @@
 # OmacVM.app gives the VM's cold file cache back to the Mac while macOS is
 # compressing the VM (src/memory/guest/giveback.sh, ADR 0059), without a VM:
 # the script against a fake /proc and /sys. It takes Inactive(file) less
-# 256 MB through memory.reclaim (swappiness=0: file pages only) in 1 GB steps,
+# min(1 GB, an eighth of the VM) through memory.reclaim (swappiness=0: file
+# pages only) in 1 GB steps,
 # nothing when that is under 64 MB or the balloon does not report free pages,
 # the whole cache (drop_caches) only when the kernel has no cold-only way,
 # and never touches compaction, the reporting order, swap or zram. Also: the
@@ -41,12 +42,12 @@ untouched() {   # DIR: what the script must never write
   echo "$(cat "$1/proc/sys/vm/compact_memory") $(cat "$1/sys/module/page_reporting/parameters/page_reporting_order") $(cat "$1/sys/block/zram0/disksize") $(cat "$1/proc/swaps")"
 }
 
-# The user's VM (42 GB, 2.8 GB active and 12.4 GB cold file cache): 12.4 GB back in 1 GB steps.
+# The user's VM (42 GB, 2.8 GB active and 12.4 GB cold file cache): all but the newest 1 GB, in 1 GB steps.
 mkroot "$T/u" 2850 12700
 out=$(run "$T/u" compressing)
-expect "cold cache less 256 MB is asked for" "reclaim 12444" "$(key "$out" act) $(key "$out" want_mb)"
-expect "in 1 GB steps (13)" 13 "$(key "$out" steps)"
-expect "the last step is the rest, file pages only" "$((156 * 1048576)) swappiness=0" "$(cat "$T/u/sys/fs/cgroup/memory.reclaim")"
+expect "cold cache less 1 GB is asked for" "reclaim 11676" "$(key "$out" act) $(key "$out" want_mb)"
+expect "in 1 GB steps (12)" 12 "$(key "$out" steps)"
+expect "the last step is the rest, file pages only" "$((412 * 1048576)) swappiness=0" "$(cat "$T/u/sys/fs/cgroup/memory.reclaim")"
 expect "no full cache drop" 0 "$(cat "$T/u/proc/sys/vm/drop_caches")"
 expect "compaction, reporting order, zram, swap untouched" "keep 6 keep keep" "$(untouched "$T/u")"
 pages=$((200000 + 100000 * 2 + 50000 * 4 + 10000 * 8 + 1000 * 16 + 100 * 32))
@@ -56,10 +57,16 @@ expect "cache before and after, the VM's size, reporting on" "15550 15550 42035 
 expect "one line of key=value, at most 200 characters" "1 yes" \
   "$(printf '%s\n' "$out" | wc -l | tr -d ' ') $([[ ${#out} -le 200 && $out =~ ^[a-z_]+=[a-z0-9-]+( [a-z_]+=[a-z0-9-]+)*$ ]] && echo yes)"
 
+# A 4 GB VM (the MacBook Air row): the newest eighth of it stays, 487 MB of 3.9 GB.
+mkroot "$T/f" 891 1875
+sed -i.bak "s/^MemTotal:.*/MemTotal:       $((3899 * 1024)) kB/" "$T/f/proc/meminfo"
+out=$(run "$T/f" compressing)
+expect "a 4 GB VM keeps its newest eighth" "reclaim 1388 2" "$(key "$out" act) $(key "$out" want_mb) $(key "$out" steps)"
+
 # Little cold cache: nothing (under 64 MB to take).
-mkroot "$T/s" 900 300
+mkroot "$T/s" 900 1068
 out=$(run "$T/s" compressing)
-expect "under 64 MB of cold cache beyond 256 MB: nothing" "none 44" "$(key "$out" act) $(key "$out" want_mb)"
+expect "under 64 MB of cold cache beyond the newest 1 GB: nothing" "none 44" "$(key "$out" act) $(key "$out" want_mb)"
 expect "  memory.reclaim and drop_caches not written" "|0" "$(cat "$T/s/sys/fs/cgroup/memory.reclaim")|$(cat "$T/s/proc/sys/vm/drop_caches")"
 
 # The balloon does not report free pages: freed memory would stay on the Mac anyway.

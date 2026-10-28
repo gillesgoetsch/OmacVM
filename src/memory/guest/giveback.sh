@@ -5,7 +5,8 @@
 # compressing: macOS is compressing the VM; report: numbers only.
 # Prints one line of key=value (sizes in MB).
 # Takes only file cache that was not used lately (memory.reclaim with
-# swappiness=0, oldest first): never programs' memory, zram, swap,
+# swappiness=0, oldest first), all but the newest min(1 GB, an eighth of the
+# VM): files read in the last minutes stay. Never programs' memory, zram, swap,
 # compaction or the balloon. Linux reports the freed pages to QEMU, which
 # gives them back to the Mac (free page reporting).
 R=${OMACVM_GIVEBACK_ROOT:-}   # tests: a fake /proc and /sys
@@ -31,7 +32,8 @@ total=$(mb MemTotal); inact=$(mb 'Inactive(file)'); before=$(cache)
 t0=$(date +%s); act=$mode; want=0; steps=0
 case $mode in compressing|report) ;; *) echo "act=usage"; exit 2 ;; esac
 if [ "$mode" = compressing ]; then
-  want=$(( inact - 256 )); [ "$want" -ge 0 ] || want=0   # the last 256 MB of cold cache stay
+  keep=$(( total / 8 )); [ "$keep" -le 1024 ] || keep=1024   # the newest cold cache stays
+  want=$(( inact - keep )); [ "$want" -ge 0 ] || want=0
   if [ "$rep" = 0 ]; then act=norep
   elif [ "$want" -lt 64 ]; then act=none
   else
