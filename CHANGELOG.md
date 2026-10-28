@@ -5,15 +5,15 @@ in more words.
 
 ## 3.2.12 (unreleased)
 
-- **When the VM stood still, the VM and `omacvm check` say so.** From the counts QEMU's stall
-  note keeps in `logs/vm-stalls`: after a stall of 10 s or more that QEMU put down to memory
-  (the Mac was paging then), the VM shows a note with what helps (a smaller VM memory:
-  `omacvm resources`), at most once per 30 minutes; for example (the format, not a
-  measurement) "The VM stood still for 58 s: macOS ran out of free memory (the VM uses 51 GB of
-  this Mac's 64 GB), so the VM's processors had to wait ...". `omacvm check` has a "VM stalls"
-  line: a warning with how often, how long and why (the Mac's memory, blocked in macOS's
-  kernel, no free Mac processor, QEMU itself), never a failure, and "no stall seen this run"
-  otherwise (short stalls can be missed). The note needs Update VM; the rest only the new app.
+- **When the VM stood still, the VM and `omacvm check` say so (#597).** From the counts QEMU's
+  stall note keeps in `logs/vm-stalls`: after a stall of 10 s or more that QEMU put down to
+  memory (the Mac was paging then), the VM shows a note with what helps (a smaller VM memory:
+  `omacvm resources`), at most once per 30 minutes; for example (the format, not a measurement)
+  "The VM stood still for 58 s: macOS ran out of free memory (the VM uses 51 GB of this Mac's
+  64 GB), so the VM's processors had to wait ...". `omacvm check` has a "VM stalls" line: a
+  warning with how often, how long and why (the Mac's memory, blocked in macOS's kernel, no
+  free Mac processor, QEMU itself), never a failure, and "no stall seen this run" otherwise
+  (short stalls can be missed). The note needs Update VM; the rest only the new app.
 
 ## 3.2.11
 
