@@ -478,26 +478,34 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   fi
   [[ -n $what ]] && ok "VM memory" "$what"
   # When the VM stood still this run (logs/vm-stalls, QEMU's stall note, ADR
-  # 0060): its vCPUs blocked in macOS's kernel waiting for memory, or waiting
-  # for a Mac core; QEMU's graphics thread in a call to the Mac. A warning,
-  # never a failure. A runtime without the note writes no file: no line.
+  # 0060): its vCPUs blocked in macOS's kernel waiting for memory (the Mac
+  # paged then), blocked there while the Mac did not page, or waiting for a
+  # Mac core; QEMU's main loop with the BQL (the VM waited); QEMU's graphics
+  # thread in a call to the Mac. A warning, never a failure. Short stalls can
+  # be missed (ADR 0060), so ok says only that none was seen. A runtime
+  # without the note writes no file: no line.
   vs="$(dirname "$miclog")/vm-stalls"
   if [[ -f $vs && ! -L $vs ]]; then
     vsv() { v=$(sed -n "s/^$1=//p" "$vs" 2>/dev/null | head -1); [[ $v =~ ^[0-9]{1,12}$ ]] && echo "$v" || echo 0; }
+    vsw() { sed -n "s/^$1=//p" "$vs" | head -1 | LC_ALL=C tr -cd 'A-Za-z0-9_ .,:()+-' | cut -c1-100; }
     secs() { awk -v m="$1" 'BEGIN { printf (m < 10000 ? "%.1f s" : "%d s"), m / 1000 }'; }
     n=$(vsv stalls) longest=$(vsv longest_ms) gn=$(vsv gpu_stalls) gl=$(vsv gpu_longest_ms)
+    mn=$(vsv main_stalls) ml=$(vsv main_longest_ms)
     cause=$(sed -n 's/^longest_cause=//p' "$vs" | head -1)
-    where=$(sed -n 's/^gpu_last_where=//p' "$vs" | head -1 | LC_ALL=C tr -cd 'A-Za-z0-9_ .,:()+-' | cut -c1-100)
-    gpu=""
-    (( gn > 0 )) && gpu="QEMU's graphics thread stood still $gn time(s) (longest $(secs "$gl")${where:+, in $where})"
+    where=$(vsw gpu_last_where) mwhere=$(vsw main_last_where)
+    more=""
+    (( mn > 0 )) && more="QEMU's main loop held the VM $mn time(s) (longest $(secs "$ml")${mwhere:+, in $mwhere})"
+    (( gn > 0 )) && more="${more:+$more; }QEMU's graphics thread stood still $gn time(s) (longest $(secs "$gl")${where:+, in $where})"
     if (( n > 0 )) && [[ $cause == cpu ]]; then
-      warn "VM stalls" "waited for the Mac's CPUs $n time(s) this run (longest $(secs "$longest"))${gpu:+; $gpu}"
+      warn "VM stalls" "waited for the Mac's CPUs $n time(s) this run (longest $(secs "$longest"))${more:+; $more}"
+    elif (( n > 0 )) && [[ $cause == kernel ]]; then
+      warn "VM stalls" "stood still $n time(s) this run (longest $(secs "$longest")), blocked in macOS's kernel while the Mac was not paging (logs/qemu.log has each)${more:+; $more}"
     elif (( n > 0 )); then
       mac=$(sysctl -n hw.memsize 2>/dev/null); mac=${mac:+$(( mac / 1073741824 )) GB}
-      warn "VM stalls" "stood still $n time(s) this run (longest $(secs "$longest")): the Mac ran out of memory (${vmm:+VM memory $(gb "$vmm"), }${peak:+graphics peak $(gb "$peak"), }Mac ${mac:-?}); give the VM less: omacvm resources --vm \"$VM\"${gpu:+; $gpu}"
-    elif [[ -n $gpu ]]; then
-      warn "VM stalls" "$gpu"
-    else ok "VM stalls" "the VM did not stand still this run"; fi
+      warn "VM stalls" "stood still $n time(s) this run (longest $(secs "$longest")): the Mac ran out of memory (${vmm:+VM memory $(gb "$vmm"), }${peak:+graphics peak $(gb "$peak"), }Mac ${mac:-?}); give the VM less: omacvm resources --vm \"$VM\"${more:+; $more}"
+    elif [[ -n $more ]]; then
+      warn "VM stalls" "$more"
+    else ok "VM stalls" "no stall seen this run"; fi
   fi
 fi
 # The GPU path an app VM took this run (qemu.log starts fresh with each run):

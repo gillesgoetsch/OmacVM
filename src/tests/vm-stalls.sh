@@ -1,8 +1,9 @@
 #!/bin/bash
 # omacvm check's "VM stalls" row (src/cmd/check.sh) from QEMU's logs/vm-stalls
 # (qemu-hvf-vcpu-stall-note.patch, ADR 0060): a warning when the VM stood
-# still this run (macOS out of memory, no Mac core, or QEMU's graphics thread),
-# ok when it did not, no line without the file (a runtime without the note),
+# still this run (macOS out of memory, blocked in macOS's kernel without
+# paging, no Mac core, QEMU's main loop with the BQL, or QEMU's graphics
+# thread), ok when none was seen, no line without the file (a runtime without the note),
 # never a failure, nothing taken from the file but numbers and a short where.
 # The app's side (VMStalls) is in desktop-tests, the VM's note in
 # app-desktop-recovery.sh. No VM. macOS only.
@@ -30,7 +31,7 @@ stallrow() {   # VMDIR: the row's text ("" when none)
 V=$T/vm; mkdir -p "$V/logs"; : > "$V/logs/qemu.log"
 expect "no file (a runtime without the note): no line" "" "$(stallrow "$V")"
 printf 'stalls=0\nlongest_ms=0\nlongest_cause=none\nlast_ms=0\nlast_cause=none\nlast_vcpus=\nlast_at=0\nlast_vm_mb=0\nlast_free_mb=0\nlast_compressed_mb=0\ngpu_stalls=0\ngpu_longest_ms=0\ngpu_last_where=\n' > "$V/logs/vm-stalls"
-expect "QEMU's start, nothing since: ok" "ok VM stalls: the VM did not stand still this run" "$(stallrow "$V")"
+expect "QEMU's start, nothing since: ok (only that none was seen)" "ok VM stalls: no stall seen this run" "$(stallrow "$V")"
 cat > "$V/logs/vm-stalls" <<'S'
 stalls=2
 longest_ms=58000
@@ -54,6 +55,16 @@ expect "no Mac core: a warning about the CPUs" "WARN VM stalls: waited for the M
 printf 'stalls=0\ngpu_stalls=3\ngpu_longest_ms=2500\ngpu_last_where=VTDecompressionSessionCreate (from session_create)\n' > "$V/logs/vm-stalls"
 expect "only the graphics thread: a warning that names the call" \
   "WARN VM stalls: QEMU's graphics thread stood still 3 time(s) (longest 2.5 s, in VTDecompressionSessionCreate (from session_create))" \
+  "$(stallrow "$V")"
+# the 2.2 s close() with the BQL (idle row on the swapping mini, 2026-10-28): main_stalls
+printf 'stalls=0\nlongest_ms=0\nlongest_cause=none\ngpu_stalls=0\ngpu_longest_ms=0\ngpu_last_where=\nmain_stalls=1\nmain_longest_ms=2214\nmain_last_where=close (from qemu_memfd_free)\n' > "$V/logs/vm-stalls"
+expect "QEMU's main loop with the BQL 2.2 s: a warning, not ok" \
+  "WARN VM stalls: QEMU's main loop held the VM 1 time(s) (longest 2.2 s, in close (from qemu_memfd_free))" \
+  "$(stallrow "$V")"
+# blocked in macOS's kernel while the Mac did not page: no word of memory, no resources advice
+printf 'stalls=1\nlongest_ms=2390\nlongest_cause=kernel\nlast_ms=2390\nlast_cause=kernel\nmain_stalls=0\n' > "$V/logs/vm-stalls"
+expect "blocked in the kernel, the Mac not paging: says so, no memory" \
+  "WARN VM stalls: stood still 1 time(s) this run (longest 2.4 s), blocked in macOS's kernel while the Mac was not paging (logs/qemu.log has each)" \
   "$(stallrow "$V")"
 printf 'stalls=$(id)\nlongest_ms=x;rm -rf /\ngpu_stalls=1\ngpu_longest_ms=99999999999999999\ngpu_last_where=\033[31m`id`$(rm -rf /)\n' > "$V/logs/vm-stalls"
 expect "a file that is not numbers: nothing from it runs or prints raw" \

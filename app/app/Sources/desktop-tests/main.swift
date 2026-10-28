@@ -426,18 +426,25 @@ var short = s!; short.lastMs = 9999
 expect(!VMStalls.noteDue(short, seen: 1, lastNote: nil, now: now), "under 10 s: no note")
 var cpu = s!; cpu.lastCause = "cpu"
 expect(!VMStalls.noteDue(cpu, seen: 1, lastNote: nil, now: now), "waiting for a Mac core: no note")
+let kernel = VMStalls.parse("stalls=1\nlongest_ms=58000\nlongest_cause=kernel\nlast_ms=58000\nlast_cause=kernel\nlast_vm_mb=52224\n")
+expect(kernel?.lastCause == "kernel" && kernel?.longestCause == "kernel" && kernel.map { !VMStalls.noteDue($0, seen: 0, lastNote: nil, now: now) } == true,
+       "58 s blocked in macOS's kernel while the Mac did not page: no memory note")
+let main = VMStalls.parse("stalls=0\nmain_stalls=1\nmain_longest_ms=2214\nmain_last_where=close (from qemu_memfd_free)\n")
+expect(main?.mainStalls == 1 && main?.mainLongestMs == 2214 && main.map { !VMStalls.noteDue($0, seen: 0, lastNote: nil, now: now) } == true,
+       "QEMU's main loop held the VM 2.2 s: read, no note")
 expect(VMStalls.noteArguments(s!, macBytes: 64 << 30) == ["stall", "58", "51", "64"], "the note's arguments: 58 s, 51 of 64 GB")
 var stallSeed: UInt64 = 0x5eed_0060
 func nextStall() -> UInt64 { stallSeed = stallSeed &* 6364136223846793005 &+ 1442695040888963407; return stallSeed >> 33 }
 var fuzzBad = 0
 for _ in 0..<3000 {
     var text = ""
-    let parts = ["stalls=", "last_ms=", "last_cause=", "memory", "cpu", "last_vm_mb=", "\n", "=", "-", "9", "999999999999999",
-                 "\u{0}", "é", "x", "last_at=", "gpu_stalls="]
+    let parts = ["stalls=", "last_ms=", "last_cause=", "memory", "kernel", "cpu", "last_vm_mb=", "\n", "=", "-", "9", "999999999999999",
+                 "\u{0}", "é", "x", "last_at=", "gpu_stalls=", "main_stalls="]
     for _ in 0..<Int(nextStall() % 30) { text += parts[Int(nextStall() % UInt64(parts.count))] }
     guard let x = VMStalls.parse(text) else { continue }
-    let nums = [x.stalls, x.longestMs, x.lastMs, x.lastAt, x.lastVMMB, x.lastFreeMB, x.gpuStalls, x.gpuLongestMs]
-    if nums.contains(where: { $0 < 0 || $0 > VMStalls.most }) || !["", "memory", "cpu"].contains(x.lastCause) { fuzzBad += 1 }
+    let nums = [x.stalls, x.longestMs, x.lastMs, x.lastAt, x.lastVMMB, x.lastFreeMB, x.gpuStalls, x.gpuLongestMs, x.mainStalls,
+                x.mainLongestMs]
+    if nums.contains(where: { $0 < 0 || $0 > VMStalls.most }) || !["", "memory", "kernel", "cpu"].contains(x.lastCause) { fuzzBad += 1 }
     _ = VMStalls.noteArguments(x, macBytes: 8 << 30)
 }
 expect(fuzzBad == 0, "3000 random files: every number within range, causes from the list")

@@ -2,14 +2,15 @@ import Foundation
 
 /// When the VM stood still this run (ADR 0060): QEMU's logs/vm-stalls, which
 /// the stall note writes (qemu-hvf-vcpu-stall-note.patch). A vCPU stands
-/// still when its thread is blocked in macOS's kernel (a page fault waiting
-/// while macOS makes memory free) or gets no Mac core; QEMU's graphics thread
-/// stands still in a call to the Mac (a video decoder starting, a Metal
-/// submit). QEMU writes all zeros at its start and the totals after each
-/// episode of 1 s or more.
+/// still when its thread is blocked in macOS's kernel ("memory" when the Mac
+/// was paging then: a page fault waiting while macOS makes memory free;
+/// "kernel" when it was not) or gets no Mac core ("cpu"); QEMU's main loop
+/// holds the VM with the BQL (main_*), and its graphics thread stands still
+/// in a call to the Mac (gpu_*: a video decoder starting, a Metal submit).
+/// QEMU writes all zeros at its start and the totals after each stall.
 ///
 /// The app reads it in its 5 s look (GPUMemoryWatch) and, after a stall of
-/// 10 s or more for memory, puts a note in the VM: at most once per 30
+/// 10 s or more for memory (never "kernel"), puts a note in the VM: at most once per 30
 /// minutes, through the guest agent (omacvm-desktop-recover stall; a VM
 /// from before has no such note and nothing else happens). omacvm check
 /// reads it for its "VM stalls" line. The text is QEMU's, so it is read as
@@ -24,7 +25,7 @@ public struct VMStalls: Equatable, Sendable {
     /// vCPU episodes of 1 s or more, the longest and the last.
     public var stalls = 0
     public var longestMs = 0
-    public var longestCause = ""        // "memory", "cpu" or ""
+    public var longestCause = ""        // "memory", "kernel", "cpu" or ""
     public var lastMs = 0
     public var lastCause = ""
     public var lastAt = 0               // seconds since 1970
@@ -33,6 +34,9 @@ public struct VMStalls: Equatable, Sendable {
     /// QEMU's graphics thread: stalls of 2 s or more in a call to the Mac.
     public var gpuStalls = 0
     public var gpuLongestMs = 0
+    /// QEMU's main loop: stalls of 2 s or more with the BQL (the VM waited).
+    public var mainStalls = 0
+    public var mainLongestMs = 0
 
     public init() {}
 
@@ -44,7 +48,7 @@ public struct VMStalls: Equatable, Sendable {
             guard let eq = line.firstIndex(of: "=") else { continue }
             let key = String(line[..<eq]), value = String(line[line.index(after: eq)...])
             let n = value.count <= 12 ? min(max(Int(value) ?? 0, 0), most) : 0
-            let cause = ["memory", "cpu"].contains(value) ? value : ""
+            let cause = ["memory", "kernel", "cpu"].contains(value) ? value : ""
             switch key {
             case "stalls": s.stalls = n; seen = true
             case "longest_ms": s.longestMs = n
@@ -56,6 +60,8 @@ public struct VMStalls: Equatable, Sendable {
             case "last_free_mb": s.lastFreeMB = n
             case "gpu_stalls": s.gpuStalls = n
             case "gpu_longest_ms": s.gpuLongestMs = n
+            case "main_stalls": s.mainStalls = n
+            case "main_longest_ms": s.mainLongestMs = n
             default: break
             }
         }
@@ -63,7 +69,8 @@ public struct VMStalls: Equatable, Sendable {
     }
 
     /// The VM gets a note now: a stall it has not heard of (more than SEEN),
-    /// for memory, 10 s or more, and none told in the last 30 minutes.
+    /// for memory (QEMU saw the Mac paging then; "kernel" is not enough), 10 s
+    /// or more, and none told in the last 30 minutes.
     public static func noteDue(_ s: VMStalls, seen: Int, lastNote: Date?, now: Date) -> Bool {
         guard s.stalls > seen, s.lastCause == "memory", s.lastMs >= noteAfterMs else { return false }
         guard let last = lastNote else { return true }
