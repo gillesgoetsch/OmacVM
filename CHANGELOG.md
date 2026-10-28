@@ -5,13 +5,13 @@ in more words.
 
 ## 3.2.11 (unreleased)
 
-- **Decoding into an imported video frame no longer crashes the app.** In an OmacVM.app VM,
-  Mesa's VA-API driver cannot decode into a frame the app made itself and handed in (a
-  "surface from the app's memory"): it crashed the app's process, for Google Chrome its GPU
-  process, after which Chrome drew on the CPU until it was restarted. Chrome can do this after
-  some changes of a video's stream at the same size. The VM's VA-API driver shim now refuses
-  such a frame, and the app decodes that video on the CPU (Chrome falls back by itself).
-  Needs Update VM.
+- **Google Chrome no longer loses its GPU drawing after a crash in a video call.** In an
+  OmacVM.app VM, Chrome's GPU process could crash during video calls or when a video
+  changed its stream at the same size, and Chrome then drew on the CPU, slow, until it was
+  restarted. Mesa's VA-API driver crashes when it is asked to decode into, or encode from, a
+  video frame the app made itself and handed in, and Chrome does that after such a stream
+  change. The VM's VA-API driver shim now refuses those frames: Chrome decodes (or encodes)
+  that one video on the CPU and keeps its GPU. Needs Update VM, then quit Chrome fully once.
 
 ## 3.2.10
 
