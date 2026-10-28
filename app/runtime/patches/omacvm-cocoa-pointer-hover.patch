@@ -194,7 +194,7 @@ without it).
  @end
  
  /*
-@@ -13851,6 +13949,10 @@
+@@ -13826,6 +13924,10 @@
      info_report("cocoa: pointer: %s", omacvm_ptr.off ?
                  "taken on enter or click (OMACVM_POINTER_START=0)" :
                  "taken without a click when it is on the VM");
