@@ -121,7 +121,7 @@ expect "the command the app sends stays small (under 3 KB)" yes "$( (( $(grep -v
 # omacvm check's "VM memory" row (src/cmd/check.sh) from the app's logs/memory-giveback; never a failure. The Mac side: macOS only.
 if [[ $(uname -s) == Darwin ]]; then
   C=$R/src/cmd/check.sh
-  row=$(sed -n '/^  # The VM.s memory, and what it gave back to the Mac this run/,/^  \[\[ -n \$what \]\] && ok "VM memory"/p' "$C")
+  row=$(sed -n '/^  # The VM.s memory, and the VM.s file cache this run/,/^  \[\[ -n \$what \]\] && ok "VM memory"/p' "$C")
   expect "check.sh has the row, and it is never bad" "yes 0" "$([[ -n $row ]] && echo yes) $(grep -c '\(bad\|warn\) ' <<< "$row")"
   vmrow() {   # VMDIR [STORED_PAGES]: the row's text
     ( sp=${2:-1000}; ok() { echo "$1: $2"; }; app_env() { sed -n "s/^$2=//p" "$1/vm.env"; }
@@ -131,21 +131,32 @@ if [[ $(uname -s) == Darwin ]]; then
       miclog=$1/logs/qemu.log; eval "$row" )
   }
   V=$T/vm; mkdir -p "$V/logs"; echo "MEM_MB=43008" > "$V/vm.env"; : > "$V/logs/qemu.log"
-  expect "no give-back yet" "VM memory: 42.0 GB; nothing given back this run" "$(vmrow "$V")"
+  expect "an app before this line, nothing yet" "VM memory: 42.0 GB; the VM freed no file cache this run" "$(vmrow "$V")"
+  # The app's start line (MemoryGiveBack.startLine), as 3.2.11's QEMU (no reclaim fix) gives it.
+  echo "OmacVM: VM memory: give-back while macOS compresses: off (this QEMU keeps given-back pages); macOS's memory warning still drops the VM's file cache" >> "$V/logs/qemu.log"
+  expect "the app's line says the words check reads" "2" "$(grep -c -e '"OmacVM: VM memory: give-back while macOS compresses: " + (pagesGoBack' -e '? "on (this QEMU gives the pages back to macOS)"' "$M")"
+  OFF="give-back while macOS compresses: off (this QEMU keeps given-back pages)"
+  expect "a QEMU that keeps given-back pages: off, nothing freed" "VM memory: 42.0 GB; $OFF; the VM freed no file cache this run" "$(vmrow "$V")"
+  echo "omacvm: context error reported 3 \"x OmacVM: VM memory: give-back while macOS compresses: on\"" >> "$V/logs/qemu.log"
+  expect "the words inside another line (a name from the VM) do not count" "VM memory: 42.0 GB; $OFF; the VM freed no file cache this run" "$(vmrow "$V")"
   at=$(date -j -f '%Y-%m-%d %H:%M' '2026-10-28 10:12' +%s)
-  printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\ngiven_mb=12186\nreturned_mb=0\noff=0\n' "$at" > "$V/logs/memory-giveback"
-  expect "a give-back while macOS compressed the VM" "VM memory: 42.0 GB; 3 give-backs this run, the last 11.9 GB at 10:12 (macOS was compressing the VM)" "$(vmrow "$V")"
-  sed -i.bak 's/^trigger=.*/trigger=warning/; s/^given_mb=.*/given_mb=/; s/^returned_mb=.*/returned_mb=100/' "$V/logs/memory-giveback"
+  printf 'count=1\nat=%s\ntrigger=warning\nact=drop\ngiven_mb=\nreturned_mb=100\noff=0\n' "$at" > "$V/logs/memory-giveback"
+  expect "the warning's drop: QEMU's footprint, not memory back to the Mac" \
+    "VM memory: 42.0 GB; $OFF; the VM freed file cache once this run, at 10:12 (macOS was short of memory): QEMU's footprint 100 MB smaller a minute later" "$(vmrow "$V" 1000)"
+  sed -i.bak 's/^count=.*/count=3/' "$V/logs/memory-giveback"
   expect "little back, macOS holds a quarter of the Mac compressed: the hint" \
-    "VM memory: 42.0 GB; 3 give-backs this run, the last 100 MB at 10:12 (macOS was short of memory); macOS holds 17.0 GB compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)" \
+    "VM memory: 42.0 GB; $OFF; the VM freed file cache 3 times this run, the last at 10:12 (macOS was short of memory): QEMU's footprint 100 MB smaller a minute later; macOS holds 17.0 GB compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)" \
     "$(vmrow "$V" $((17 << 16)))"
-  expect "little back, macOS holds little compressed: no hint" "VM memory: 42.0 GB; 3 give-backs this run, the last 100 MB at 10:12 (macOS was short of memory)" "$(vmrow "$V" 1000)"
-  sed -i.bak 's/^count=.*/count=1/' "$V/logs/memory-giveback"
-  expect "one give-back" "VM memory: 42.0 GB; 1 give-back this run: 100 MB at 10:12 (macOS was short of memory)" "$(vmrow "$V" 1000)"
+  # A QEMU with the reclaim fix (a later release): on, and what the VM said it freed.
+  echo "OmacVM: VM memory: give-back while macOS compresses: on (this QEMU gives the pages back to macOS)" >> "$V/logs/qemu.log"
+  printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\ngiven_mb=12186\nreturned_mb=0\noff=0\n' "$at" > "$V/logs/memory-giveback"
+  expect "the last line counts; a give-back while macOS compressed the VM: what the VM freed" \
+    "VM memory: 42.0 GB; give-back while macOS compresses: on; the VM freed file cache 3 times this run, the last at 10:12 (macOS was compressing the VM): 11.9 GB" "$(vmrow "$V")"
   printf 'count=0\ntrigger=off\noff=1\n' > "$V/logs/memory-giveback"
-  expect "a balloon that does not report" "VM memory: 42.0 GB; its balloon does not report free pages: what it frees stays on the Mac this run" "$(vmrow "$V")"
+  expect "a balloon that does not report" "VM memory: 42.0 GB; give-back while macOS compresses: on; its balloon does not report free pages: what it frees stays on the Mac this run" "$(vmrow "$V")"
   printf 'count=1\nat=x;rm -rf /\nreturned_mb=$(id)\n' > "$V/logs/memory-giveback"
-  expect "a file that is not numbers: nothing read from it" "VM memory: 42.0 GB; nothing given back this run" "$(vmrow "$V")"
+  : > "$V/logs/qemu.log"
+  expect "a file that is not numbers: nothing read from it" "VM memory: 42.0 GB; the VM freed no file cache this run" "$(vmrow "$V")"
 fi
 
 # The app runs it from its bundle on "compressing" (GPUMemory.swift), and nothing in the VM by itself.
