@@ -372,43 +372,62 @@ int main(void)
     run(v, 1, 0, 100 * S, 0, 0, 0, &r, NULL);
     check(r.over == 0 && r.still == 0, "a vCPU waiting in WFI for 60 s: no line");
 
-    /* 10: 300 random memory stalls of 2.25-20 s at random times, one at a time,
-     * random vCPUs of 10: every one found, each within 1.25 s. (One of 2-2.25 s
-     * can end before the 250 ms look that would see it stand: a gap of 2 s
-     * between two wakes hides at most 2.25 s.) */
+    /* 10: the detection limits, 1000 random stalls each, one at a time, random
+     * vCPUs of 10 (the others busy 1-95 %), random start against the 2 s wakes.
+     * A vCPU blocked in the kernel that ran 10 % of a core or more before is
+     * always found from 2.25 s (a gap of 2 s between two wakes and the 250 ms
+     * look hide up to 2.25 s), its time within 0.25 s; one that ran less than
+     * 10 % before has no rate to date its start by, so its time is up to 2.1 s
+     * short and it is always found from 3.25 s; a vCPU without a Mac core
+     * (runnable) is looked at fast only when it got under a quarter of the
+     * window before, so it is always found from 4 s. No time is ever more than
+     * 0.15 s longer than the stall. (A 20 000-stall sweep: longest missed 2.21 s
+     * busy, 2.71 s mostly idle, 3.91 s without a core.) */
+    struct { const char *what; int state; double busy_lo, busy_hi; int64_t min_len;
+             double short_by; } lim[] = {
+        { "blocked in the kernel, 2.25-20 s, vCPU busy 10-95 %", 4, 0.10, 0.95, 2250 * MS, 0.25 },
+        { "blocked in the kernel, 3.25-20 s, vCPU busy 1-10 %", 4, 0.01, 0.10, 3250 * MS, 2.1 },
+        { "no Mac core, 4-20 s, vCPU busy 1-95 %", 1, 0.01, 0.95, 4000 * MS, 2.1 },
+    };
     srand(42);
-    int found = 0, close_enough = 0;
-    double worst = 0;
-    for (int k = 0; k < 300; k++) {
-        memset(v, 0, sizeof(v));
-        for (int i = 0; i < 10; i++) {
-            v[i].busy = 0.05 + (rand() % 90) / 100.0;
-            v[i].exits = rand() & 1;
-        }
-        int c = rand() % 10;
-        int64_t s0 = 30 * S + (int64_t)(rand() % 4000) * MS;
-        int64_t len = 2250 * MS + (int64_t)(rand() % 17750) * MS;
-        v[c].s0[0] = s0; v[c].s1[0] = s0 + len; v[c].stall_state[0] = 4; v[c].nstall = 1;
-        run(v, 10, (int64_t)(rand() % 2000) * MS, s0 + len + 10 * S, 0, 0, 0, &r, NULL);
-        char want[8];
-        snprintf(want, sizeof(want), "%d", c);
-        if (r.over != 1 || strcmp(r.vcpus[0], want)) {
-            printf("  missed: vCPU %d (busy %.2f, exits %d) stalled %.3f s from %.3f s: %d lines%s%s\n",
-                   c, v[c].busy, v[c].exits, len / 1e9, s0 / 1e9, r.over,
-                   r.over ? ", vCPUs " : "", r.over ? r.vcpus[0] : "");
-        }
-        if (r.over == 1 && !strcmp(r.vcpus[0], want)) {
-            double err = fabs((r.span[0] - len) / 1e9);
+    for (unsigned l = 0; l < sizeof(lim) / sizeof(lim[0]); l++) {
+        int found = 0, close_enough = 0;
+        double worst = 0, longer = 0;
+        for (int k = 0; k < 1000; k++) {
+            memset(v, 0, sizeof(v));
+            for (int i = 0; i < 10; i++) {
+                v[i].busy = 0.01 + (rand() % 95) / 100.0;
+                v[i].exits = rand() & 1;
+            }
+            int c = rand() % 10;
+            v[c].busy = lim[l].busy_lo + (lim[l].busy_hi - lim[l].busy_lo) * (rand() % 1000) / 1000.0;
+            int64_t s0 = 30 * S + (int64_t)(rand() % 4000) * MS;
+            int64_t len = lim[l].min_len + (int64_t)(rand() % (int)((20 * S - lim[l].min_len) / MS)) * MS;
+            v[c].s0[0] = s0; v[c].s1[0] = s0 + len; v[c].stall_state[0] = lim[l].state; v[c].nstall = 1;
+            run(v, 10, (int64_t)(rand() % 2000) * MS, s0 + len + 10 * S, 0, 0, 0, &r, NULL);
+            char want[8];
+            snprintf(want, sizeof(want), "%d", c);
+            if (r.over != 1 || strcmp(r.vcpus[0], want)) {
+                printf("  missed: vCPU %d (busy %.2f, exits %d) stalled %.3f s from %.3f s: %d lines%s%s\n",
+                       c, v[c].busy, v[c].exits, len / 1e9, s0 / 1e9, r.over,
+                       r.over ? ", vCPUs " : "", r.over ? r.vcpus[0] : "");
+                continue;
+            }
+            double err = (len - r.span[0]) / 1e9;   /* > 0: shorter than the stall */
             found++;
-            close_enough += err <= 1.25;
-            if (err > worst) {
-                worst = err;
+            close_enough += err <= lim[l].short_by && err >= -0.15;
+            if (fabs(err) > worst) {
+                worst = fabs(err);
+            }
+            if (-err > longer) {
+                longer = -err;
             }
         }
+        snprintf(what, sizeof(what), "1000 random stalls, %s: %d found with the right vCPU, %d "
+                 "within %.2f s short / 0.15 s long (worst %.2f s, longest over %.2f s)",
+                 lim[l].what, found, close_enough, lim[l].short_by, worst, longer);
+        check(found == 1000 && close_enough == 1000, what);
     }
-    snprintf(what, sizeof(what), "300 random stalls of 2.25-20 s: %d found with the right vCPU, %d within "
-             "1.25 s (worst %.2f s)", found, close_enough, worst);
-    check(found == 300 && close_enough == 300, what);
 
     /* 12: paging that is not a stall: 14 vCPUs (busy 20-100 %, idle in WFI,
      * exiting), each with 8 waits for memory of 5-400 ms at random times over
