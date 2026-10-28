@@ -11,11 +11,21 @@ when it wakes anyway (every 2 s at most), reads every vCPU thread's CPU time and
 Mach state with thread_info(); a vCPU that is still in the same call, got no
 CPU time since, and is uninterruptible (blocked in macOS's kernel) or runnable
 (no Mac core) stands still. While one stands, the watchdog looks every 250 ms;
-a vCPU idle in the guest's WFI (waiting) never counts. One line per episode of
-1 s or more (and one at 10 s, then every 30 s while it lasts):
+a vCPU idle in the guest's WFI (waiting) never counts. Blocked in the kernel is
+put down to memory only when the Mac was paging at that time: from the second
+look before the episode was seen to its end, macOS's compressor and swap moved
+16 MB/s or more, swapped 1 MB or more, or the pressure level was warn or
+critical (host_statistics64 and one sysctl each round; a healthy idle MacBook
+Air moves about 0.03 MB/s, the swapping mini about 4 GB/s). Otherwise the line
+says only "blocked in macOS's kernel" (another macOS version may block a vCPU
+there for other reasons) and the app sends no note. One line per episode of
+1 s or more (and one at 10 s, then every 30 s while it lasts); for example
+(the format, not a measurement):
   OmacVM: stall: vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in
-  macOS's kernel waiting for memory (Mac: 0.3 GB free, pressure normal; the
-  VM holds 51 GB, 20 GB of it compressed by macOS)
+  macOS's kernel waiting for memory (Mac: compressor and swap 900 MB/s, 0.3 GB
+  free, pressure normal; the VM holds 51 GB, 20 GB of it compressed by macOS)
+  OmacVM: stall: vCPU 3 stood still for about 2.4 s, blocked in macOS's kernel
+  (the Mac was not paging: compressor and swap 0 MB/s, pressure normal)
   OmacVM: stall: vCPU 5 waited 2.1 s for a Mac core (the Mac's CPUs are busy:
   load average 30)
 vCPU numbers are the guest's CPU numbers. When it started is taken from the
@@ -27,7 +37,7 @@ logs/vm-stalls ($OMACVM_LOGS/vm-stalls, key=value lines, all zeros from the
 watchdog's start, replaced in one rename, no fsync): only the watchdog's thread
 writes it, after the status lock is let go; the main loop, which may hold the
 BQL, only records its own stalls in memory. Keys: stalls, longest_ms,
-longest_cause, last_ms, last_cause, last_vcpus, last_at, last_vm_mb,
+longest_cause, last_ms, last_cause (memory, kernel, cpu), last_vcpus, last_at, last_vm_mb,
 last_free_mb, last_compressed_mb, and the main loop's stalls of 2 s or more in
 a GPU run: gpu_stalls, gpu_longest_ms, gpu_last_where (the Mac's call and the
 frame of QEMU or virglrenderer that made it), and outside one, with the BQL
@@ -71,10 +81,10 @@ index d2276d8..cb46f43 100644
  }
 diff --git a/accel/hvf/hvf-stall.c b/accel/hvf/hvf-stall.c
 new file mode 100644
-index 0000000..6233968
+index 0000000..8f21fd8
 --- /dev/null
 +++ b/accel/hvf/hvf-stall.c
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,176 @@
 +/*
 + * OmacVM: the vCPU stall note (qemu-hvf-vcpu-stall-note.patch).
 + *
@@ -116,21 +126,53 @@ index 0000000..6233968
 +static int hvf_stall_count;     /* highest registered index + 1 */
 +static OmacvmStallMonitor hvf_stall_monitor;    /* the watchdog's thread only */
 +
-+static void hvf_stall_mac(OmacvmMacMemory *mac)
++static mach_port_t hvf_stall_host(void)
 +{
 +    static mach_port_t host;
-+    vm_statistics64_data_t vs;
-+    task_vm_info_data_t ti;
-+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-+    int level = 0;
-+    size_t size = sizeof(level);
-+    double load[1];
 +
-+    memset(mac, 0, sizeof(*mac));
 +    if (!host) {
 +        host = mach_host_self();
 +    }
-+    if (host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&vs, &count) ==
++    return host;
++}
++
++static int hvf_stall_pressure(void)
++{
++    int level = 0;
++    size_t size = sizeof(level);
++
++    return sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, NULL, 0) ?
++           0 : level;
++}
++
++/* The Mac's paging counters (one host_statistics64, one sysctl): each round. */
++static void hvf_stall_paging(OmacvmPagingLook *look, int64_t now)
++{
++    vm_statistics64_data_t vs;
++    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
++    uint64_t page = vm_kernel_page_size;
++
++    memset(look, 0, sizeof(*look));
++    if (host_statistics64(hvf_stall_host(), HOST_VM_INFO64, (host_info64_t)&vs, &count) !=
++        KERN_SUCCESS) {
++        return;
++    }
++    look->valid = true;
++    look->at = now;
++    look->swapped = (vs.swapins + vs.swapouts) * page;
++    look->moved = (vs.compressions + vs.decompressions) * page + look->swapped;
++    look->pressure = hvf_stall_pressure();
++}
++
++static void hvf_stall_mac(OmacvmMacMemory *mac)
++{
++    vm_statistics64_data_t vs;
++    task_vm_info_data_t ti;
++    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
++    double load[1];
++
++    memset(mac, 0, sizeof(*mac));
++    if (host_statistics64(hvf_stall_host(), HOST_VM_INFO64, (host_info64_t)&vs, &count) ==
 +        KERN_SUCCESS) {
 +        mac->free_mb = ((uint64_t)vs.free_count * vm_kernel_page_size) >> 20;
 +    }
@@ -140,9 +182,7 @@ index 0000000..6233968
 +        mac->vm_mb = ti.phys_footprint >> 20;
 +        mac->vm_compressed_mb = ti.compressed >> 20;
 +    }
-+    if (!sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, NULL, 0)) {
-+        mac->pressure = level;
-+    }
++    mac->pressure = hvf_stall_pressure();
 +    mac->load = getloadavg(load, 1) == 1 ? load[0] : -1;
 +}
 +
@@ -152,6 +192,7 @@ index 0000000..6233968
 +    OmacvmVcpuSample s[OMACVM_STALL_MAX_VCPUS];
 +    OmacvmStallMonitor *m = &hvf_stall_monitor;
 +    OmacvmMacMemory mac;
++    OmacvmPagingLook look;
 +    int n = qatomic_read(&hvf_stall_count);
 +    int64_t wait = 0;
 +    char line[600];
@@ -179,7 +220,8 @@ index 0000000..6233968
 +                      bi.system_time.microseconds;
 +        s[i].state = bi.run_state;
 +    }
-+    what = omacvm_stall_step(m, s, n, now, &wait);
++    hvf_stall_paging(&look, now);
++    what = omacvm_stall_step(m, s, n, now, &look, &wait);
 +    if (what == OMACVM_STALL_NOTHING) {
 +        return wait;
 +    }
@@ -231,10 +273,10 @@ index 6e2dcc4..8820ccb 100644
  ))
 diff --git a/include/qemu/omacvm-stall.h b/include/qemu/omacvm-stall.h
 new file mode 100644
-index 0000000..5c1e9aa
+index 0000000..891a958
 --- /dev/null
 +++ b/include/qemu/omacvm-stall.h
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,651 @@
 +/*
 + * OmacVM: the vCPU stall note and the VM's stall status file
 + * (qemu-hvf-vcpu-stall-note.patch).
@@ -244,9 +286,15 @@ index 0000000..5c1e9aa
 + * the vCPU's hv_vcpu_run count, its CPU time and its Mach state
 + * (accel/hvf/hvf-stall.c). A vCPU "stands" when it is still in the same
 + * hv_vcpu_run, got no CPU time since the sample before, and is
-+ * uninterruptible (4: blocked in macOS's kernel, a stage-2 page fault waiting
-+ * for memory) or runnable (1: no Mac core for it). Waiting (3) is a vCPU
-+ * idle in the guest's WFI: never counted. An episode runs from the first vCPU
++ * uninterruptible (4: blocked in macOS's kernel) or runnable (1: no Mac core
++ * for it). Waiting (3) is a vCPU idle in the guest's WFI: never counted.
++ * Blocked in the kernel is called "waiting for memory" only when the Mac was
++ * paging at that time (the compressor and swap moving 16 MB/s or more, any
++ * swap of 1 MB or more, or a pressure level of warn or critical, from the
++ * second look before the episode was seen to its end): a stage-2 page fault waiting while
++ * macOS decompresses, swaps in or frees a page. Otherwise it is only "blocked
++ * in macOS's kernel" (another macOS version may block a vCPU there for other
++ * reasons), and the app sends no note. An episode runs from the first vCPU
 + * that stands until none does; one of 1 s or more gets a line in qemu.log
 + * (and one at 10 s, then every 30 s while it lasts) and goes into the status
 + * file (logs/vm-stalls, key=value lines) that OmacVM.app and omacvm check read.
@@ -282,8 +330,24 @@ index 0000000..5c1e9aa
 +enum {
 +    OMACVM_STALL_CAUSE_NONE,
 +    OMACVM_STALL_CAUSE_CPU,         /* runnable, no Mac core */
-+    OMACVM_STALL_CAUSE_MEMORY,      /* blocked in macOS's kernel */
++    OMACVM_STALL_CAUSE_KERNEL,      /* blocked in macOS's kernel, the Mac not paging */
++    OMACVM_STALL_CAUSE_MEMORY,      /* blocked in macOS's kernel while the Mac paged */
 +};
++
++/* Paging at that time: the compressor and swap together this fast, or swap
++ * this much (a healthy idle MacBook Air: about 0.03 MB/s; the swapping mini:
++ * about 4 GB/s), or a pressure level of warn (2) or critical (4). */
++#define OMACVM_PAGING_RATE (16LL << 20)     /* bytes per second */
++#define OMACVM_PAGING_SWAP (1LL << 20)      /* bytes */
++
++/* The Mac's paging counters at one look (host_statistics64), so far. */
++typedef struct OmacvmPagingLook {
++    bool valid;
++    int64_t at;                     /* the look's time (CLOCK_UPTIME_RAW ns) */
++    uint64_t moved;                 /* bytes compressed, decompressed, swapped in or out */
++    uint64_t swapped;               /* bytes swapped in or out */
++    int pressure;                   /* kern.memorystatus_vm_pressure_level: 1, 2, 4 */
++} OmacvmPagingLook;
 +
 +/* What omacvm_stall_step() says happened. */
 +enum {
@@ -317,13 +381,36 @@ index 0000000..5c1e9aa
 +    int64_t longest;                /* the longest one vCPU stood (so far) */
 +    int64_t next_still;             /* when the longest standing earns a "still" line */
 +    uint64_t vcpus[OMACVM_STALL_MAX_VCPUS / 64]; /* the vCPUs that stood 1 s or more */
-+    int cause;                      /* MEMORY when any of them stood uninterruptible */
++    int cause;                      /* KERNEL when any of them stood uninterruptible,
++                                     * MEMORY when the Mac paged then too */
++    OmacvmPagingLook base;          /* the Mac's counters before it began */
++    bool paging;                    /* the Mac paged during it */
++    int64_t paging_rate;            /* its compressor and swap rate (bytes/s, highest) */
 +} OmacvmStallEpisode;
 +
 +typedef struct OmacvmStallMonitor {
 +    OmacvmVcpuTrack t[OMACVM_STALL_MAX_VCPUS];
 +    OmacvmStallEpisode ep;          /* the open one, or the last one that ended */
++    OmacvmPagingLook last, prev;    /* the Mac's counters at the last two looks */
 +} OmacvmStallMonitor;
++
++/* Did the Mac page between looks A and B? RATE gets the compressor and swap
++ * rate (bytes/s; 0 when not known). */
++static inline bool omacvm_stall_paged(const OmacvmPagingLook *a, const OmacvmPagingLook *b,
++                                      int64_t *rate)
++{
++    *rate = 0;
++    if (!b || !b->valid) {
++        return false;
++    }
++    if (a && a->valid && b->at > a->at && b->moved >= a->moved && b->swapped >= a->swapped) {
++        *rate = (int64_t)((double)(b->moved - a->moved) * 1e9 / (double)(b->at - a->at));
++        if (b->swapped - a->swapped >= (uint64_t)OMACVM_PAGING_SWAP || *rate >= OMACVM_PAGING_RATE) {
++            return true;
++        }
++    }
++    return b->pressure >= 2;
++}
 +
 +/* The Mac's memory when a line is written (0 / -1: not known). */
 +typedef struct OmacvmMacMemory {
@@ -416,20 +503,42 @@ index 0000000..5c1e9aa
 +    omacvm_stall_vcpu_stood(m, i, t->end);
 +}
 +
++/* The open episode: did the Mac page from the look before it to LOOK? */
++static inline void omacvm_stall_paging(OmacvmStallMonitor *m, const OmacvmPagingLook *look)
++{
++    OmacvmStallEpisode *ep = &m->ep;
++    int64_t rate;
++
++    if (!ep->open) {
++        return;
++    }
++    if (omacvm_stall_paged(&ep->base, look, &rate)) {
++        ep->paging = true;
++    }
++    if (rate > ep->paging_rate) {
++        ep->paging_rate = rate;
++    }
++}
++
 +/*
-+ * One round of samples S[0..N) at NOW. Returns what happened; *WAIT gets
-+ * OMACVM_STALL_FAST_NS when the watchdog should look again in 250 ms (a vCPU
-+ * stands or may), else 0 (its own 2 s).
++ * One round of samples S[0..N) at NOW, with the Mac's paging counters LOOK
++ * (NULL or not valid: not known, so no stall is put down to memory). Returns
++ * what happened; *WAIT gets OMACVM_STALL_FAST_NS when the watchdog should
++ * look again in 250 ms (a vCPU stands or may), else 0 (its own 2 s).
 + */
 +static inline int omacvm_stall_step(OmacvmStallMonitor *m, const OmacvmVcpuSample *s,
-+                                    int n, int64_t now, int64_t *wait)
++                                    int n, int64_t now, const OmacvmPagingLook *look,
++                                    int64_t *wait)
 +{
 +    OmacvmStallEpisode *ep = &m->ep;
 +    bool any_standing = false, any_suspect = false;
++    int what;
 +
 +    if (n > OMACVM_STALL_MAX_VCPUS) {
 +        n = OMACVM_STALL_MAX_VCPUS;
 +    }
++    /* an episode already open: the Mac's paging since the look before it */
++    omacvm_stall_paging(m, look);
 +    for (int i = 0; i < n; i++) {
 +        OmacvmVcpuTrack *t = &m->t[i];
 +        const OmacvmVcpuSample *v = &s[i];
@@ -495,10 +604,14 @@ index 0000000..5c1e9aa
 +                memset(ep, 0, sizeof(*ep));
 +                ep->open = true;
 +                ep->next_still = OMACVM_STALL_STILL_NS;
++                /* a vCPU is found standing a look or two after it stopped
++                 * (it ran since the look before last): from there on */
++                ep->base = m->prev.valid ? m->prev : m->last;
++                omacvm_stall_paging(m, look);
 +            }
 +        }
 +        if (v->state == OMACVM_TH_UNINTERRUPTIBLE) {
-+            t->cause = OMACVM_STALL_CAUSE_MEMORY;
++            t->cause = OMACVM_STALL_CAUSE_KERNEL;
 +        }
 +        omacvm_stall_vcpu_stood(m, i, now);
 +        any_standing = true;
@@ -507,19 +620,26 @@ index 0000000..5c1e9aa
 +        any_standing |= m->t[i].standing;
 +    }
 +    *wait = any_standing || any_suspect ? OMACVM_STALL_FAST_NS : 0;
++    if (look && look->valid) {
++        m->prev = m->last;
++        m->last = *look;
++    }
 +    if (!ep->open) {
 +        return OMACVM_STALL_NOTHING;
 +    }
++    what = OMACVM_STALL_NOTHING;
 +    if (!any_standing) {
 +        ep->open = false;
-+        return ep->longest >= OMACVM_STALL_REPORT_NS ? OMACVM_STALL_OVER : OMACVM_STALL_NOTHING;
-+    }
-+    if (ep->longest >= ep->next_still) {
++        what = ep->longest >= OMACVM_STALL_REPORT_NS ? OMACVM_STALL_OVER : OMACVM_STALL_NOTHING;
++    } else if (ep->longest >= ep->next_still) {
 +        /* at most one line per 10 s: the next one 30 s on from this one */
 +        ep->next_still = ep->longest + OMACVM_STALL_AGAIN_NS;
-+        return OMACVM_STALL_STILL;
++        what = OMACVM_STALL_STILL;
 +    }
-+    return OMACVM_STALL_NOTHING;
++    if (ep->cause == OMACVM_STALL_CAUSE_KERNEL && ep->paging) {
++        ep->cause = OMACVM_STALL_CAUSE_MEMORY;
++    }
++    return what;
 +}
 +
 +/* "1, 2, 3, 8" (SEP ", ") or "1,2,3,8" (SEP ","); returns how many. */
@@ -584,7 +704,7 @@ index 0000000..5c1e9aa
 +                                     const OmacvmMacMemory *mac, char *out, size_t n)
 +{
 +    const OmacvmStallEpisode *ep = &m->ep;
-+    char list[400], dur[32], free_s[32], vm[32], comp[32], memory[200];
++    char list[400], dur[32], free_s[32], vm[32], comp[32], memory[240];
 +    int count = omacvm_stall_vcpu_list(ep, ", ", list, sizeof(list));
 +    const char *who = count == 1 ? "vCPU" : "vCPUs";
 +
@@ -607,8 +727,23 @@ index 0000000..5c1e9aa
 +    omacvm_stall_gb(mac->free_mb, free_s, sizeof(free_s));
 +    omacvm_stall_gb(mac->vm_mb, vm, sizeof(vm));
 +    omacvm_stall_gb(mac->vm_compressed_mb, comp, sizeof(comp));
-+    snprintf(memory, sizeof(memory), "Mac: %s free, pressure %s; the VM holds %s, %s of "
-+             "it compressed by macOS", free_s, omacvm_stall_pressure(mac->pressure), vm, comp);
++    if (ep->cause == OMACVM_STALL_CAUSE_KERNEL) {
++        /* blocked in the kernel, but the Mac did not page then: no word of memory */
++        snprintf(memory, sizeof(memory), "the Mac was not paging: compressor and swap "
++                 "%.0f MB/s, pressure %s", ep->paging_rate / 1048576.0,
++                 omacvm_stall_pressure(mac->pressure));
++        if (what == OMACVM_STALL_STILL) {
++            snprintf(out, n, "OmacVM: stall: %s %s still %s (%s so far), blocked in macOS's "
++                     "kernel (%s)", who, list, count == 1 ? "stands" : "stand", dur, memory);
++        } else {
++            snprintf(out, n, "OmacVM: stall: %s %s stood still for about %s, blocked in "
++                     "macOS's kernel (%s)", who, list, dur, memory);
++        }
++        return;
++    }
++    snprintf(memory, sizeof(memory), "Mac: compressor and swap %.0f MB/s, %s free, pressure %s; "
++             "the VM holds %s, %s of it compressed by macOS", ep->paging_rate / 1048576.0,
++             free_s, omacvm_stall_pressure(mac->pressure), vm, comp);
 +    if (what == OMACVM_STALL_STILL) {
 +        snprintf(out, n, "OmacVM: stall: %s %s still %s (%s so far), blocked in macOS's "
 +                 "kernel waiting for memory (%s)", who, list,
@@ -678,6 +813,7 @@ index 0000000..5c1e9aa
 +static inline const char *omacvm_stall_cause_name(int cause)
 +{
 +    return cause == OMACVM_STALL_CAUSE_MEMORY ? "memory" :
++           cause == OMACVM_STALL_CAUSE_KERNEL ? "kernel" :
 +           cause == OMACVM_STALL_CAUSE_CPU ? "cpu" : "none";
 +}
 +

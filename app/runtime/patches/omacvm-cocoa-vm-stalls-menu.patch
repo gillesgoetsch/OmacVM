@@ -5,12 +5,14 @@ What: under "VM memory" and "Graphics memory" in the app menu (omacvm-cocoa-
 graphics-memory.patch), a line once the VM stood still this run, from what the
 stall note counted (qemu-hvf-vcpu-stall-note.patch, main_loop_stall_status):
   The VM stood still 2 times (longest 58 s): the Mac ran out of memory
+  The VM stood still 1 time (longest 2.4 s): its processors waited in macOS
   The VM waited for the Mac's processors 1 time (longest 2.1 s)
   The VM stood still 1 time (longest 2.2 s): QEMU was busy
   The VM's graphics stood still 1 time (longest 2.5 s)
-(examples of the format; the second when the longest was a vCPU without a Mac
-core, the third when QEMU's main loop held the BQL 2 s or more, the fourth
-when only QEMU's graphics thread stood still). Filled in when the menu opens, as the
+(examples of the format; the first when the longest vCPU stall was blocked in
+macOS's kernel while the Mac paged, the second when the Mac did not page then,
+the third a vCPU without a Mac core, the fourth QEMU's main loop holding the
+BQL 2 s or more, the fifth only QEMU's graphics thread). Filled in when the menu opens, as the
 other two lines: no timer. A click, and the tooltip, explain what it was and
 what helps (a smaller VM memory, omacvm resources; qemu.log's lines). Hidden
 while nothing stood still, and without OMACVM_GPU_MEMORY_STATUS (QEMU not
@@ -97,10 +99,10 @@ index 6194804..217dffc 100644
  
 diff --git a/ui/omacvm-vm-stalls.h b/ui/omacvm-vm-stalls.h
 new file mode 100644
-index 0000000..a42ea1d
+index 0000000..aae53e7
 --- /dev/null
 +++ b/ui/omacvm-vm-stalls.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,63 @@
 +/*
 + * OmacVM: the app menu's stall line (omacvm-cocoa-vm-stalls-menu.patch), under
 + * "Graphics memory": what the stall note (qemu-hvf-vcpu-stall-note.patch)
@@ -126,6 +128,10 @@ index 0000000..a42ea1d
 +        if (st->longest_cause == OMACVM_STALL_CAUSE_CPU) {
 +            snprintf(out, n, "The VM waited for the Mac's processors %u time%s (longest %s)",
 +                     st->stalls, st->stalls == 1 ? "" : "s", longest);
++        } else if (st->longest_cause == OMACVM_STALL_CAUSE_KERNEL) {
++            /* blocked in macOS's kernel while the Mac was not paging */
++            snprintf(out, n, "The VM stood still %u time%s (longest %s): its processors "
++                     "waited in macOS", st->stalls, st->stalls == 1 ? "" : "s", longest);
 +        } else {
 +            snprintf(out, n, "The VM stood still %u time%s (longest %s): the Mac ran out of "
 +                     "memory", st->stalls, st->stalls == 1 ? "" : "s", longest);

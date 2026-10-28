@@ -10,6 +10,7 @@
  * every 30 s, the status file's keys, and the app menu's line
  * (ui/omacvm-vm-stalls.h, omacvm-cocoa-vm-stalls-menu.patch); which thread
  * this is (include/qemu/omacvm-thread.h, qemu-main-loop-stall-gpu-run.patch);
+ * blocked in macOS's kernel is memory only when the Mac paged then;
  * the status between the main loop and the watchdog's thread (only the
  * watchdog writes the file, outside the lock); main loop stalls with the BQL
  * (main_*) apart from those in a GPU run (gpu_*).
@@ -103,6 +104,38 @@ static OmacvmVcpuSample sim_sample(const Sim *v, int64_t t)
     return s;
 }
 
+/* The Mac's paging in the simulation: the compressor and swap move RATE
+ * bytes/s and swap SWAP bytes/s from P0 to P1 (else a healthy Mac's 0.03 MB/s),
+ * with the pressure level PRESSURE then (else normal). */
+static struct {
+    int64_t p0, p1, rate, swap;
+    int pressure;
+} paging;
+
+static void paging_set(int64_t p0, int64_t p1, int64_t rate, int64_t swap, int pressure)
+{
+    paging.p0 = p0;
+    paging.p1 = p1;
+    paging.rate = rate;
+    paging.swap = swap;
+    paging.pressure = pressure;
+}
+
+static OmacvmPagingLook sim_look(int64_t t)
+{
+    OmacvmPagingLook l = { .valid = true, .at = t, .pressure = 1 };
+    int64_t a = paging.p0 < t ? paging.p0 : t, b = paging.p1 < t ? paging.p1 : t;
+    double in = b > a ? (double)(b - a) / 1e9 : 0;
+
+    l.moved = (uint64_t)(0.03 * 1048576 * (double)t / 1e9 + (double)paging.rate * in);
+    l.swapped = (uint64_t)((double)paging.swap * in);
+    l.moved += l.swapped;
+    if (t >= paging.p0 && t < paging.p1) {
+        l.pressure = paging.pressure;
+    }
+    return l;
+}
+
 typedef struct Result {
     int over, still;
     int64_t span[16];
@@ -142,7 +175,8 @@ static void run(const Sim *v, int n, int64_t first, int64_t end, int64_t late_at
             for (int i = 0; i < n; i++) {
                 s[i] = sim_sample(&v[i], t);
             }
-            what = omacvm_stall_step(&m, s, n, t, &wait);
+            OmacvmPagingLook look = sim_look(t);
+            what = omacvm_stall_step(&m, s, n, t, &look, &wait);
             if (what != OMACVM_STALL_NOTHING && r->over + r->still < 16) {
                 int k = r->over + r->still;
                 omacvm_stall_line(&m, what, &mac, r->line[k], sizeof(r->line[k]));
@@ -213,6 +247,9 @@ int main(void)
     Result r;
     char what[600];
 
+    /* unless a case says otherwise, the Mac pages the whole time (200 MB/s) */
+    paging_set(0, 1LL << 62, 200LL << 20, 0, 1);
+
     /* 1: an idle VM (14 vCPUs in WFI), 30 min: nothing, no fast wakes */
     memset(v, 0, sizeof(v));
     for (int i = 0; i < 14; i++) {
@@ -253,9 +290,10 @@ int main(void)
           fabs(r.span[0] / 1e9 - 2.39) <= 1.25 && r.cause[0] == OMACVM_STALL_CAUSE_MEMORY, what);
     printf("  line: %s\n", r.line[0]);
     check(strstr(r.line[0], "OmacVM: stall: vCPUs 2, 6, 7 stood still for about ") &&
-          strstr(r.line[0], ", blocked in macOS's kernel waiting for memory (Mac: 0.3 GB free, "
-                 "pressure normal; the VM holds 51 GB, 20 GB of it compressed by macOS)"),
-          "the memory line names the vCPUs, the cause and the Mac's memory");
+          strstr(r.line[0], ", blocked in macOS's kernel waiting for memory (Mac: compressor and "
+                 "swap 200 MB/s, 0.3 GB free, pressure normal; the VM holds 51 GB, 20 GB of it "
+                 "compressed by macOS)"),
+          "the memory line names the vCPUs, the cause, the Mac's paging and memory");
     char text[1024];
     omacvm_stall_status_text(&st, text, sizeof(text));
     check(strstr(text, "stalls=1\n") && strstr(text, "last_cause=memory\n") &&
@@ -511,6 +549,55 @@ int main(void)
     check(st17.main_stalls == 1 && st17.gpu_stalls == 1 && omacvm_stall_menu_line(&st17, menu, sizeof(menu)) &&
           !strcmp(menu, "The VM stood still 1 time (longest 2.2 s): QEMU was busy"),
           "a GPU run's stall goes to gpu_*; the menu names the VM's wait first");
+
+    /* 18: blocked in macOS's kernel is "memory" only when the Mac paged then.
+     * The mini's stall shape (vCPUs 7, 6, 2 uninterruptible 2.39 / 2.07 /
+     * 1.23 s) on a Mac that does not page: "blocked in macOS's kernel", cause
+     * kernel, no word of memory (no note in the VM); paging only during the
+     * stall, a pressure level of warn alone, 2 MB of swap alone: memory;
+     * paging that ended 10 s before: kernel */
+    memset(v, 0, sizeof(v));
+    for (int i = 0; i < 10; i++) {
+        v[i].busy = 0.6;
+    }
+    v[7].s0[0] = at; v[7].s1[0] = at + 2390 * MS; v[7].stall_state[0] = 4; v[7].nstall = 1;
+    v[6].s0[0] = at + 150 * MS; v[6].s1[0] = at + 2220 * MS; v[6].stall_state[0] = 4; v[6].nstall = 1;
+    v[2].s0[0] = at + 900 * MS; v[2].s1[0] = at + 2130 * MS; v[2].stall_state[0] = 4; v[2].nstall = 1;
+    paging_set(0, 0, 0, 0, 1);
+    memset(&st, 0, sizeof(st));
+    run(v, 10, 0, 1100 * S, 0, 0, 0, &r, &st);
+    printf("  line: %s\n", r.over ? r.line[0] : "(none)");
+    omacvm_stall_status_text(&st, text, sizeof(text));
+    check(r.over == 1 && r.cause[0] == OMACVM_STALL_CAUSE_KERNEL && !strcmp(r.vcpus[0], "2,6,7") &&
+          strstr(r.line[0], "OmacVM: stall: vCPUs 2, 6, 7 stood still for about ") &&
+          strstr(r.line[0], ", blocked in macOS's kernel (the Mac was not paging: compressor and "
+                 "swap 0 MB/s, pressure normal)") && !strstr(r.line[0], "memory") &&
+          strstr(text, "last_cause=kernel\n") && strstr(text, "longest_cause=kernel\n"),
+          "no paging on the Mac: \"blocked in macOS's kernel\", cause kernel, no word of memory");
+    check(omacvm_stall_menu_line(&st, menu, sizeof(menu)) && !strstr(menu, "memory") &&
+          strstr(menu, "The VM stood still 1 time (longest ") &&
+          strstr(menu, "): its processors waited in macOS"), "menu line: blocked in macOS, no memory");
+    paging_set(at - 100 * MS, at + 2400 * MS, 120LL << 20, 0, 1);
+    run(v, 10, 0, 1100 * S, 0, 0, 0, &r, NULL);
+    check(r.over == 1 && r.cause[0] == OMACVM_STALL_CAUSE_MEMORY,
+          "the Mac paging 120 MB/s during the stall only: memory");
+    paging_set(at, at + 2400 * MS, 0, 0, 2);
+    run(v, 10, 0, 1100 * S, 0, 0, 0, &r, NULL);
+    check(r.over == 1 && r.cause[0] == OMACVM_STALL_CAUSE_MEMORY,
+          "pressure warn during the stall (no rate): memory");
+    paging_set(at, at + 2400 * MS, 0, 1LL << 20, 1);
+    run(v, 10, 0, 1100 * S, 0, 0, 0, &r, NULL);
+    check(r.over == 1 && r.cause[0] == OMACVM_STALL_CAUSE_MEMORY,
+          "about 2.4 MB swapped during the stall (rate under 16 MB/s): memory");
+    paging_set(at - 20 * S, at - 10 * S, 500LL << 20, 1LL << 30, 4);
+    run(v, 10, 0, 1100 * S, 0, 0, 0, &r, NULL);
+    check(r.over == 1 && r.cause[0] == OMACVM_STALL_CAUSE_KERNEL,
+          "paging (critical, swap) that ended 10 s before the stall: kernel");
+    paging_set(0, 1LL << 62, 10LL << 20, 0, 1);
+    run(v, 10, 0, 1100 * S, 0, 0, 0, &r, NULL);
+    check(r.over == 1 && r.cause[0] == OMACVM_STALL_CAUSE_KERNEL,
+          "a Mac compressing 10 MB/s the whole time (under 16 MB/s): kernel");
+    paging_set(0, 1LL << 62, 200LL << 20, 0, 1);
 
     if (failures) {
         printf("vcpu stall: %d checks FAILED\n", failures);
