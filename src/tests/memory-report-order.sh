@@ -1,5 +1,5 @@
 #!/bin/bash
-# OmacVM.app's VM gives freed memory back to the Mac in 256 KiB blocks
+# OmacVM.app's VM reports freed memory (it leaves QEMU's footprint) in 256 KiB blocks
 # (src/memory/guest/90-omacvm-mm.tmpfiles), without a VM: the tmpfiles lines
 # applied to a stand-in /sys set page_reporting_order from the kernel's 9 to 6
 # and leave a kernel built without free page reporting alone (tmpfiles' "w"
@@ -38,4 +38,6 @@ expect "the order is 2 (16 KiB, the Mac's page) to 8 (1 MiB)" yes "$([[ -n $o ]]
 expect "install.sh installs the file" 1 "$(grep -c 'install -m644 90-omacvm-mm.tmpfiles /etc/tmpfiles.d/90-omacvm-mm.conf' "$I")"
 expect "install.sh applies it at once" 1 "$(grep -c 'systemd-tmpfiles --create /etc/tmpfiles.d/90-omacvm-mm.conf' "$I")"
 expect "omacvm check reads the order on the app route" 1 "$(grep -c "cat $P" "$C")"
+expect "the check row is \"free page reporting\", never memory back to the Mac" "5 0" \
+  "$(grep -c '"free page reporting" "' "$C") $(grep -ci 'memory back to the Mac"' "$C")"
 exit $fail

@@ -209,7 +209,7 @@ jobs:
       - name: Freeing disk space (2 update snapshots kept, a trim at apply, omacvm check's line)
         run: src/tests/disk-space.sh
 
-      - name: Freed memory back to the Mac in 256 KiB blocks (page_reporting_order 6, omacvm check's line)
+      - name: Free page reporting in 256 KiB blocks (page_reporting_order 6, omacvm check's line)
         run: src/tests/memory-report-order.sh
 
       - name: The VM gives its cold file cache back while macOS compresses it (giveback.sh, the app's trigger, omacvm check's row)
