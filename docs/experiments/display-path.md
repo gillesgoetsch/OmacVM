@@ -13,11 +13,10 @@ measured and dropped, and the gap that is left. The bench tool is
   the process's AGX `accumulatedGPUTime`.
 - MacBook Air M2: brightness 0, the 60 Hz panel, unless a row says 120 Hz (a virtual display).
 - MacBook Pro M1 Max (XDR panel, 120 Hz): a test VM like a real one (10 vCPUs, 24 GB, full screen
-  3024x1896 at 120 Hz, HDR on, animations on). Two sets that are never mixed: the night of 2026-10-25 at
-  brightness 0.000, where the panel has no EDR headroom, and from the evening of 2026-10-25 at brightness
-  0.500, with checks before and after every row (display on, nobody at the Mac, no remote session, nothing
-  above the measured window, the VM in its full HDR mode). Only the 0.500 rows are used below unless a table
-  says otherwise.
+  3024x1896 at 120 Hz, HDR on, animations on), brightness 0.500, with checks before and after every row
+  (display on, nobody at the Mac, no remote session, the VM in its full HDR mode), from the evening of
+  2026-10-25 on. Earlier M1 Max rows (the night and morning of 2026-10-25, brightness 0.000) ran without
+  these checks; the run voided them, and this page gives no numbers from them.
 - **The same panel state on both sides.** A VM with HDR on puts the XDR panel into EDR (headroom 11.43 at
   0.500); Chrome on macOS with SDR content leaves it at 1.00, which costs less by itself. An HDR VM row and
   an SDR macOS row are not comparable, so this page gives no ratio of them. VM/macOS ratios on the M1 Max
@@ -126,14 +125,6 @@ Round-to-round spread in the VM: up to 0.19 W. With SDR content macOS leaves the
 the same day (Refresh Floor quit too) macOS idled at 4.58 W, so the panel's HDR mode alone costs about 0.9 W at
 idle (macOS against macOS, two sets).
 
-**Where the M1 Max's watts go** (the night set at brightness 0.000, one window per row; measurements of where
-the cost is, not options: HDR, 120 Hz and a visible window stay as they are). QEMU's GPU time was 6.5 ms per
-guest frame with HDR on and 2.0 ms with it off (AV1 clip); the same output in SDR drew 2.78 W less on the clip
-and 6.50 W less on the app mix; 60 Hz instead of 120 Hz 0.74 W (clip, with 1.7 % of the frames dropped) and
-6.99 W (mix); a hidden window 3.54 W (clip) and 6.42 W (mix), part of it because the app in the background also
-gets lower CPU clocks. The vCPUs ran at 2.7-3.0 GHz on the performance cores where macOS ran the same work at
-1.5-1.7 GHz; 4 vCPUs instead of 10 drew more, not less (+0.54 W clip, +2.37 W mix).
-
 ## What shipped
 
 | Change | Release | Default | Measured (whole Mac) |
@@ -163,8 +154,9 @@ gets lower CPU clocks. The vCPUs ran at 2.7-3.0 GHz on the performance cores whe
 - **Surface properties of CAMetalLayer's drawables** (IsDisplayable, cache mode) on our IOSurfaces: no change.
 - **10-bit window surfaces**: WindowServer +10 % on the Air; on the XDR the picture differed from the half
   float one (colours outside P3), so #536 keeps half float.
-- **vCPU threads in a thread group of their own** (#541): M1 Max clip -2.4 to -3.1 W, but frames dropped (3
-  and 1 of ~12k vs 0 and 0). Closed.
+- **vCPU threads in a thread group of their own** (#541): the vCPUs ran at lower clocks, but the guest dropped
+  frames it did not drop without it (lab rows on the M1 Max and the Air). Its M1 Max watt rows are from the
+  morning of 2026-10-25, before the row checks: not proven, no number here. Closed.
 - **Fence answer naps** (#530): no gain in the browser A/B. Closed.
 - **Hyprland direct scanout** for a full-screen client: never engaged in a test VM; blocked by the primary
   plane offering only XRGB8888 (Linux 7.4 adds ARGB8888) and by the software cursor while it shows.
@@ -179,10 +171,11 @@ gets lower CPU clocks. The vCPUs ran at 2.7-3.0 GHz on the performance cores whe
 
 - **The guest's own passes, per frame.** Scrolling at 120 Hz on the Air: QEMU 430 GPU ms/s for Chrome's
   drawing and Hyprland's two passes, while WindowServer for our window is already below Chrome's own (184-190
-  vs 229 ms/s). On the M1 Max with HDR every guest frame costs several ms of GPU time.
+  vs 229 ms/s). On the M1 Max with HDR at 120 Hz: QEMU 206-208 GPU ms/s scrolling, 326-328 on the AV1 clip
+  (fair reference).
 - **Video.** WindowServer composites our full-size RGB window (77 GPU ms/s on the Air at 1080p30) where Chrome
   hands it a 1080p YUV video layer (40). Only a zero-copy video layer from the guest would close that (design
-  below, not done). AV1 on M1/M2 runs in software on the vCPUs, at their higher clocks.
+  below, not done). AV1 on M1/M2 runs in software on the vCPUs.
 - **Video on the M1 Max** is the biggest gap left with both panels in HDR: the AV1 clip at 1.52x (QEMU's GPU
   work per frame on top of the software decode both sides do), against 1.00x at idle and 1.07x scrolling.
 - **Idle and typing** are close to native: Air 1.06x and 1.07x; M1 Max idle 1.00x with both panels in HDR
