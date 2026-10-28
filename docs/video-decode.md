@@ -257,7 +257,9 @@ The VM's fences finish in one order, so the frames of other apps that come
 after that picture wait for it too, up to those 250 ms; nothing waits longer.
 The picture is still decoded once the session is there (a later picture may
 refer to it), but never written into the guest's planes: the fence the guest
-waited on has let them go. A fence whose pictures are in but still being
+waited on has let them go. An AV1 picture with film grain goes into two
+buffers (the decoder's and the one Chrome shows): a read of either waits for
+it, and a picture given up is written into neither. A fence whose pictures are in but still being
 copied into their planes waits for the copy. qemu.log says when a start took
 that long or longer ("the Mac's video decoder took 1.6 s to start (H.264
 320x180): 3 pictures skipped", at most every 10 s).
