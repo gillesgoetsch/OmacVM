@@ -144,7 +144,7 @@ final class GPUMemoryWatch {
         let before = lastSample
         let socket = config.agentSocket.path
         let level = critical ? "critical" : "warning"
-        log("OmacVM: macOS memory pressure \(level): asking the VM to drop its file cache")
+        if giveBack.misses == 0 { log("OmacVM: macOS memory pressure \(level): asking the VM to drop its file cache") }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let ok = GuestAgent.run(socketPath: socket, "/bin/sh", ["-c", "sync; echo 1 > /proc/sys/vm/drop_caches"])
             Task { @MainActor in self?.trimmed(ok, trigger, before) }
@@ -152,16 +152,30 @@ final class GPUMemoryWatch {
     }
 
     /// Done once per 10 minutes when the VM did it; when its agent did not
-    /// answer (still starting, busy), tried again in 30 seconds.
+    /// answer (still starting, busy), tried again later (noAnswer).
     private func trimmed(_ ok: Bool, _ trigger: MemoryGiveBack.Trigger, _ before: MemoryGiveBack.Sample?) {
         givingBack = false
         if ok {
+            answeredAgain(giveBack.answered(nil))
             log("OmacVM: the VM dropped its file cache")
             settling = Settling(due: Self.now + MemoryGiveBack.settle, trigger: trigger, result: nil, before: before)
         } else {
-            giveBack.noAnswer(at: Self.now)
-            log("OmacVM: the VM's agent did not answer: trying again in 30 s")
+            noAnswer()
         }
+    }
+
+    /// The VM's agent did not answer: tried again in 30 s, then less often
+    /// (MemoryGiveBack.retryAfter, at most every 10 minutes). One line in
+    /// qemu.log for the first; the asks in between log nothing until it answers.
+    private func noAnswer() {
+        giveBack.noAnswer(at: Self.now)
+        if giveBack.misses == 1 {
+            log("OmacVM: the VM's agent did not answer: trying again in 30 s, then less often (at most every 10 minutes; no more lines until it answers)")
+        }
+    }
+
+    private func answeredAgain(_ missed: Int) {
+        if missed > 0 { log("OmacVM: the VM's agent answers again (it had not answered \(missed) times in a row)") }
     }
 
     /// Every 5 s (the only place QEMU's and macOS's numbers are read), before
@@ -188,9 +202,11 @@ final class GPUMemoryWatch {
         let base = giveBack.baseline ?? (s.taken, s.compressed)
         givingBack = true
         giveBack.started(.compressing, at: s.time)
-        log("OmacVM: macOS is compressing the VM: QEMU has \(MemoryGiveBack.gb(s.taken)) outside its resident memory, "
-            + "\(MemoryGiveBack.gb(s.taken &- base.taken)) more than at its lowest, and macOS compressed "
-            + "\(MemoryGiveBack.gb(s.compressed &- base.compressed)) since; asking the VM for its cold file cache")
+        if giveBack.misses == 0 {
+            log("OmacVM: macOS is compressing the VM: QEMU has \(MemoryGiveBack.gb(s.taken)) outside its resident memory, "
+                + "\(MemoryGiveBack.gb(s.taken &- base.taken)) more than at its lowest, and macOS compressed "
+                + "\(MemoryGiveBack.gb(s.compressed &- base.compressed)) since; asking the VM for its cold file cache")
+        }
         let socket = config.agentSocket.path
         let cap = config.memoryMB
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -204,8 +220,7 @@ final class GPUMemoryWatch {
         var result: MemoryGiveBack.Result?
         switch outcome {
         case .noAgent:
-            giveBack.noAnswer(at: Self.now)
-            log("OmacVM: the VM's agent did not answer: trying again in 30 s")
+            noAnswer()
             return
         case .exited(_, let out):
             result = MemoryGiveBack.Result.parse(out, maxMB: cap)
@@ -217,7 +232,7 @@ final class GPUMemoryWatch {
         case .badReply:
             log("OmacVM: the VM's answer to the give-back could not be read")
         }
-        giveBack.answered(result)
+        answeredAgain(giveBack.answered(result))
         if giveBack.off {
             log("OmacVM: the VM's balloon does not report free pages, so what it frees stays on the Mac: no more give-backs this run")
             status.trigger = "off"

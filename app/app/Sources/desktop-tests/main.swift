@@ -209,7 +209,34 @@ n.noAnswer(at: 102)
 expect(n.last == nil, "no answer: not counted")
 expect(!n.allowed(.warning, at: 131) && n.allowed(.warning, at: 132) && n.allowed(.compressing, at: 132), "again in 30 s")
 n.started(.warning, at: 132)
+expect(n.answered(nil) == 1 && n.misses == 0, "it answers: one miss before, none now")
 expect(!n.allowed(.warning, at: 500), "an answered start counts again")
+
+// An agent that stays down while macOS compresses the VM: not asked (and logged) every 30 s for ever. Again in
+// 30 s, 1, 2, 4, 8 minutes, then every 10 minutes; the app logs only the first miss (misses == 1).
+var q = MemoryGiveBack(ram: 64 * GB)
+var qt = 0.0, waits: [Double] = [], firsts = 0
+for _ in 0..<9 {
+    q.started(.compressing, at: qt)
+    q.noAnswer(at: qt)
+    if q.misses == 1 { firsts += 1 }
+    var next = qt + 1
+    while !q.allowed(.compressing, at: next) { next += 1 }
+    waits.append(next - qt)
+    qt = next
+}
+expect(waits == [30, 60, 120, 240, 480, 600, 600, 600, 600], "no answer: 30 s, 1, 2, 4, 8 min, then every 10 min (\(waits))")
+expect(q.misses == 9 && firsts == 1, "9 misses in a row, one of them the first (the only one logged)")
+var qAsks = 0, qAt = 0.0
+while qAt < 3600 { qAsks += 1; qAt += MemoryGiveBack.retryAfter(misses: qAsks) }
+expect(qAsks == 10, "an hour of a silent agent: 10 asks, not 120 (\(qAsks))")
+q.started(.compressing, at: qt)
+expect(q.answered(MemoryGiveBack.Result.parse("act=reclaim got_mb=2000", maxMB: 43008)) == 9 && q.misses == 0,
+       "it answers again: the streak ends")
+q.noAnswer(at: qt + 700)
+expect(!q.allowed(.compressing, at: qt + 729) && q.allowed(.compressing, at: qt + 730) && q.misses == 1,
+       "a new miss later: 30 s again, and logged again")
+expect(MemoryGiveBack.retryAfter(misses: 0) == 30 && MemoryGiveBack.retryAfter(misses: 1000) == 600, "retryAfter's ends")
 
 // Backoff: under 256 MB back doubles the gap for "compressing" (up to 2 h); 1 GB or more resets it.
 var k = MemoryGiveBack(ram: 64 * GB)

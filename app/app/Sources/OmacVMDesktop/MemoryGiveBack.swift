@@ -22,7 +22,8 @@ import Foundation
 /// - macOS itself compressed at least 1 GB since then (graphics that grow
 ///   on a Mac with room do not count).
 /// One 10-minute gap for every give-back (also macOS's warning, the drop it
-/// always did); 30 s when the VM's agent did not answer. A give-back for
+/// always did); when the VM's agent does not answer, again in 30 s, then
+/// 1, 2, 4 and 8 minutes, then every 10 minutes. A give-back for
 /// "compressing" that returned under 256 MB (by the VM's own count; QEMU's
 /// footprint 60 s later only when the VM's answer could not be read) doubles
 /// the next gap for it (up to 2 h: what macOS compresses then is the VM's
@@ -74,6 +75,8 @@ public struct MemoryGiveBack: Sendable {
     public private(set) var last: (time: TimeInterval, trigger: Trigger, coldOnly: Bool)?
     private var previous: (time: TimeInterval, trigger: Trigger, coldOnly: Bool)?
     private var retryAt: TimeInterval?
+    /// The VM's agent did not answer this many times in a row (0 once it answers).
+    public private(set) var misses = 0
     /// The gap for "compressing" is 10 minutes times this.
     public private(set) var backoff: Double = 1
     /// No more give-backs for "compressing" in this run (the VM's balloon does
@@ -118,17 +121,32 @@ public struct MemoryGiveBack: Sendable {
         retryAt = nil
     }
 
-    /// The VM's agent did not answer: as if it had not started; again in 30 s.
+    /// The VM's agent did not answer: as if it had not started. Again in 30 s,
+    /// then twice as long each time, at most every 10 minutes (an agent that
+    /// is down while macOS compresses the VM is not asked every 30 s).
     public mutating func noAnswer(at t: TimeInterval) {
         last = previous
-        retryAt = t + Self.retry
+        misses += 1
+        retryAt = t + Self.retryAfter(misses: misses)
     }
 
-    /// The VM answered (nil: no answer that could be read). It dropped its
-    /// whole cache when its kernel had no cold-only way: not cold-only then.
-    public mutating func answered(_ r: Result?) {
+    /// The wait after `misses` answers in a row that did not come: 30 s, 1, 2,
+    /// 4, 8 minutes, then 10.
+    public static func retryAfter(misses: Int) -> TimeInterval {
+        min(retry * Double(1 << min(max(misses, 1) - 1, 10)), gap)
+    }
+
+    /// The VM answered (nil: no answer that could be read; also the warning's
+    /// drop, which has none). It dropped its whole cache when its kernel had
+    /// no cold-only way: not cold-only then. Returns how many times in a row
+    /// before it had not answered.
+    @discardableResult
+    public mutating func answered(_ r: Result?) -> Int {
+        let missed = misses
+        misses = 0
         if r?.act == "drop", let l = last { last = (l.time, l.trigger, false) }
         if r?.act == "norep" { off = true }
+        return missed
     }
 
     /// 60 s after the VM answered: the baseline starts again from now, and for

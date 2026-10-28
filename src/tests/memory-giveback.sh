@@ -150,6 +150,8 @@ G=$R/app/app/Sources/OmacVM/GPUMemory.swift
 expect "the app carries the script from its bundle" 1 "$(grep -c '"Contents/Resources/omacvm/src/memory/guest/giveback.sh"' "$G")"
 expect "the app runs it with \"compressing\" through runAndWait" "1 1" \
   "$(grep -c '\["-c", script, "giveback", "compressing"\]' "$G") $(grep -c 'GuestAgent.runAndWait' "$G")"
+expect "a silent agent: one line in qemu.log, not one per 30 s (the policy: desktop-tests)" "1 1 1" \
+  "$(grep -c "did not answer: trying again" "$G") $(grep -B1 "did not answer: trying again" "$G" | grep -c 'if giveBack.misses == 1 {') $(grep -c 'giveBack.noAnswer(at:' "$G")"
 expect "no unit, timer or install line in the VM runs it" "" \
   "$(grep -rl giveback "$R/src" | grep -v -e '^'"$R"'/src/memory/guest/giveback.sh$' -e '^'"$R"'/src/tests/memory-giveback.sh$' -e '^'"$R"'/src/cmd/check.sh$')"
 exit $fail
