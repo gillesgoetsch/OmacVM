@@ -91,9 +91,10 @@ public struct GPUMemory: Equatable {
     public var line: String { "Graphics memory: \(GPUMemory.gb(inUseMB)) (peak \(GPUMemory.gb(peakMB)))" }
 
     public static let explanation = """
-        VM memory is the Mac memory the VM gets as its RAM (set above). The VM gives back \
-        what Linux frees, and while macOS compresses the VM also file cache read once \
-        and not again (all but the newest 1 GB). Graphics memory is extra: the textures and buffers the VM's \
+        VM memory is the Mac memory the VM gets as its RAM (set above). What Linux frees \
+        leaves QEMU's footprint, the number Activity Monitor shows for the VM, but macOS \
+        can keep holding those pages until the VM stops. When macOS warns that memory is \
+        short, the VM drops its file cache. Graphics memory is extra: the textures and buffers the VM's \
         desktop and apps draw with, taken from the Mac's memory as they need it (a 5K \
         desktop with a browser: about 2 GB). \
         New ones for apps are refused when macOS itself runs short, or when all of them \

@@ -10,9 +10,18 @@ import Foundation
 /// every page it can still compress as available), so the warning that
 /// drops the VM's cache (since 2.9) came too late or never.
 ///
+/// Only with a QEMU that gives the pages of a free page report back to macOS
+/// (`pagesGoBack`: the reclaim fix of a later release, read from QEMU's
+/// binary). 3.2.11's QEMU keeps holding what the VM gives back (Mac mini, 3 GB
+/// VM: 1345 of 1346 MB and 1721 of 1721 MB still held; work/tracks/vm-memory-gap.md),
+/// and a file the VM reads again then takes fresh pages: the give-back would
+/// make Activity Monitor's number smaller while the Mac holds as much or more.
+/// Without it "compressing" never fires and macOS's warning drops the VM's
+/// cache as in 3.2.10.
+///
 /// The app looks every 5 s (GPUMemoryWatch) and asks the VM for its cold
-/// file cache (src/memory/guest/giveback.sh: read once and not again, except
-/// the newest 1 GB) when macOS is compressing the VM: all three of
+/// file cache (src/memory/guest/giveback.sh: the file cache not used lately,
+/// except the newest 1 GB) when macOS is compressing the VM: all three of
 /// - what macOS holds of QEMU outside its resident memory (`Sample.taken`,
 ///   footprint less resident size: compressed pages, and graphics that count
 ///   in the footprint only) is at least min(2 GB, a quarter of the Mac),
@@ -83,12 +92,48 @@ public struct MemoryGiveBack: Sendable {
     /// No more give-backs for "compressing" in this run (the VM's balloon does
     /// not report free pages, or the app has no script). The warning's drop stays.
     public private(set) var off = false
+    /// This QEMU gives the pages of a free page report back to macOS
+    /// (`qemuGivesPagesBack`). false: "compressing" never fires.
+    public var pagesGoBack: Bool
 
-    public init(ram: UInt64) { self.ram = ram }
+    public init(ram: UInt64, pagesGoBack: Bool = false) {
+        self.ram = ram
+        self.pagesGoBack = pagesGoBack
+    }
+
+    /// The text the reclaim fix puts into QEMU's binary
+    /// (qemu-hvf-free-page-reclaim-reusable.patch, PR #603);
+    /// prepare-qemu-gpu-runtime.sh checks that a runtime with the fix has it.
+    public static let reclaimMarker = "OmacVM: free page reclaim gives the pages back to macOS"
+
+    /// Whether the QEMU at `binary` gives given-back pages back to macOS: its
+    /// binary has `reclaimMarker` and the fix's own switch is not off
+    /// (`OMACVM_RECLAIM_REUSABLE=0`; QEMU gets the app's environment). A
+    /// binary that cannot be read: no. Tens of MB: call it off the main thread.
+    public static func qemuGivesPagesBack(binary: URL, environment: [String: String]) -> Bool {
+        if environment["OMACVM_RECLAIM_REUSABLE"] == "0" { return false }
+        guard let d = try? Data(contentsOf: binary, options: .alwaysMapped) else { return false }
+        let marker = Array(reclaimMarker.utf8)
+        return d.withUnsafeBytes { b in
+            marker.withUnsafeBytes { m in
+                guard let bp = b.baseAddress, let mp = m.baseAddress else { return false }
+                return memmem(bp, b.count, mp, m.count) != nil
+            }
+        }
+    }
+
+    /// qemu.log's line at each start; omacvm check's "VM memory" row reads
+    /// "compresses: on" or "off" from it.
+    public static func startLine(pagesGoBack: Bool) -> String {
+        "OmacVM: VM memory: give-back while macOS compresses: " + (pagesGoBack
+            ? "on (this QEMU gives the pages back to macOS)"
+            : "off (this QEMU keeps given-back pages); macOS's memory warning still drops the VM's file cache")
+    }
 
     /// Every look: true when the VM should give back now because macOS is
-    /// compressing it.
+    /// compressing it. Never with a QEMU that keeps given-back pages.
     public mutating func compressing(_ s: Sample) -> Bool {
+        guard pagesGoBack else { return false }
         if s.time >= baselineFrom {
             if let b = baseline, s.taken > b.taken + Self.near {
                 // grown: the baseline and macOS's count stay where they were
@@ -104,6 +149,7 @@ public struct MemoryGiveBack: Sendable {
 
     /// Whether a give-back for `trigger` may start now.
     public func allowed(_ trigger: Trigger, at t: TimeInterval) -> Bool {
+        if trigger == .compressing && !pagesGoBack { return false }
         if let r = retryAt { return t >= r }
         guard let l = last else { return true }
         let since = t - l.time

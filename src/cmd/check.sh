@@ -434,19 +434,27 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     else ok "graphics memory" "${peak:+peak about $(gb "$peak"), }no fixed limit (runaway guard $(gb "$budget"))"; fi
   fi
   FEATURE=""
-  # The VM's memory, and what it gave back to the Mac this run: OmacVM.app
-  # asks the VM for its cold file cache when macOS compresses the VM, and for
-  # its whole file cache when macOS warns (logs/memory-giveback, ADR 0059).
-  # Never a failure: a hint when macOS holds much compressed and the VM had
-  # little left to give.
+  # The VM's memory, and the VM's file cache this run: OmacVM.app asks the VM
+  # to drop its file cache when macOS warns, and for its cold file cache while
+  # macOS compresses the VM only with a QEMU that gives the pages back to
+  # macOS (qemu.log's "give-back while macOS compresses: on|off" line;
+  # logs/memory-giveback, ADR 0059). The numbers are what the VM freed and
+  # QEMU's footprint, not what the Mac got back. Never a failure: a hint when
+  # macOS holds much compressed and the VM had little left to give.
   vmm=$(app_env "$(dirname "$(dirname "$miclog")")" MEM_MB); [[ $vmm =~ ^[0-9]+$ ]] || vmm=""
   mg="$(dirname "$miclog")/memory-giveback"
   mgv() { sed -n "s/^$1=//p" "$mg" 2>/dev/null | head -1; }
   what="${vmm:+$(gb "$vmm")}"
-  # What the VM said it gave (given_mb); for the warning's drop, which says
+  # The app's own line: the first one (the app writes it within a second of the start, before the VM
+  # boots; later QEMU lines can carry text from the VM). The words are check's.
+  case $(LC_ALL=C grep -a -o -E 'OmacVM: VM memory: give-back while macOS compresses: (on|off)' "$miclog" 2>/dev/null | head -1) in
+    *": on") what="${what:+$what; }give-back while macOS compresses: on" ;;
+    *": off") what="${what:+$what; }give-back while macOS compresses: off (this QEMU keeps given-back pages)" ;;
+  esac
+  # What the VM said it freed (given_mb); for the warning's drop, which says
   # nothing, how much QEMU's footprint fell in the minute after.
-  mgn=$(mgv count) mgb=$(mgv given_mb) mga=$(mgv at) mgw=$(mgv trigger)
-  [[ $mgb =~ ^[0-9]+$ ]] || mgb=$(mgv returned_mb)
+  mgn=$(mgv count) mgb=$(mgv given_mb) mga=$(mgv at) mgw=$(mgv trigger) mgf=0
+  [[ $mgb =~ ^[0-9]+$ ]] || { mgb=$(mgv returned_mb); mgf=1; }
   if [[ $(mgv off) == 1 ]]; then
     what="${what:+$what; }its balloon does not report free pages: what it frees stays on the Mac this run"
   elif [[ $mgn =~ ^[1-9][0-9]*$ && $mgb =~ ^[0-9]+$ && $mga =~ ^[0-9]+$ ]]; then
@@ -455,16 +463,18 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
       warning|critical) mgw="macOS was short of memory" ;;
       *) mgw="" ;;
     esac
-    # How many this run, and what the last one gave (not that many times as much).
-    if [[ $mgn == 1 ]]; then mgl="1 give-back this run: $(gb "$mgb")"; else mgl="$mgn give-backs this run, the last $(gb "$mgb")"; fi
-    what="${what:+$what; }$mgl at $(date -r "$mga" +%H:%M)${mgw:+ ($mgw)}"
+    # How many this run, and what the last one freed (not that many times as much).
+    if [[ $mgn == 1 ]]; then mgl="the VM freed file cache once this run, at"; else mgl="the VM freed file cache $mgn times this run, the last at"; fi
+    if (( mgf && mgb == 0 )); then mgr="QEMU's footprint no smaller a minute later"
+    elif (( mgf )); then mgr="QEMU's footprint $(gb "$mgb") smaller a minute later"; else mgr="$(gb "$mgb")"; fi
+    what="${what:+$what; }$mgl $(date -r "$mga" +%H:%M)${mgw:+ ($mgw)}: $mgr"
     pgsz=$(sysctl -n hw.pagesize 2>/dev/null) ram=$(sysctl -n hw.memsize 2>/dev/null)
     stored=$(vm_stat 2>/dev/null | awk -F: '$1 == "Pages stored in compressor" { gsub(/[ .]/, "", $2); print $2 }')
     if (( mgb < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then
       what="$what; macOS holds $(gb $(( stored * pgsz / 1048576 ))) compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)"
     fi
   else
-    what="${what:+$what; }nothing given back this run"
+    what="${what:+$what; }the VM freed no file cache this run"
   fi
   [[ -n $what ]] && ok "VM memory" "$what"
 fi

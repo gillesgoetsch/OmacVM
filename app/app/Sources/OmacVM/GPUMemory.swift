@@ -36,16 +36,21 @@ extension MemoryGiveBack {
 
     /// "900 MB", "11.6 GB" from the VM's MB.
     static func gb(mb: Int) -> String { gb(UInt64(max(mb, 0)) * mib) }
+
+    /// This app's QEMU gives given-back pages back to macOS (the reclaim fix):
+    /// read once per app run from its binary, off the main thread.
+    static let thisQEMUGivesPagesBack = qemuGivesPagesBack(binary: Paths.qemu, environment: ProcessInfo.processInfo.environment)
 }
 
 /// While a VM runs: follows its graphics memory and macOS's memory pressure.
-/// - When macOS compresses the VM (MemoryGiveBack says when), the VM gives
-///   back its cold file cache (src/memory/guest/giveback.sh, from this app's
-///   bundle); when macOS warns that memory is short, the VM drops its whole
-///   file cache. One give-back per 10 minutes at most: Linux then reports the
-///   pages free and the Mac gets them back (virtio-balloon free page
-///   reporting). qemu.log has two lines per give-back, logs/memory-giveback
-///   the last one (omacvm check).
+/// - When macOS warns that memory is short, the VM drops its whole file
+///   cache. When macOS compresses the VM (MemoryGiveBack says when), the VM
+///   gives back its cold file cache (src/memory/guest/giveback.sh, from this
+///   app's bundle), but only with a QEMU that gives the pages back to macOS
+///   (MemoryGiveBack.pagesGoBack; one qemu.log line at the start says which).
+///   One per 10 minutes at most: Linux then reports the pages free (virtio-balloon
+///   free page reporting), and they leave QEMU's footprint. qemu.log has two
+///   lines per give-back, logs/memory-giveback the last one (omacvm check).
 /// - When the desktop's GPU context is lost (the VM would stay black), the
 ///   desktop session starts again by itself, or a window says so and offers
 ///   to restart it (DesktopRecovery says which). After Later, QEMU's app menu
@@ -121,6 +126,18 @@ final class GPUMemoryWatch {
         }
         source.resume()
         pressure = source
+        // "compressing" stays off until QEMU's binary is read (off the main
+        // thread), and for good with a QEMU that keeps given-back pages.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let on = MemoryGiveBack.thisQEMUGivesPagesBack
+            Task { @MainActor in self?.qemuRead(givesPagesBack: on) }
+        }
+    }
+
+    private func qemuRead(givesPagesBack on: Bool) {
+        guard !stopped else { return }
+        giveBack.pagesGoBack = on
+        log(MemoryGiveBack.startLine(pagesGoBack: on))
     }
 
     func stop() {
