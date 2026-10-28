@@ -45,13 +45,19 @@ check "every range moved aside is queued for the worker" grep -q '^+        omac
 check "the old comment against MADV_FREE_REUSABLE is gone" \
   bash -c '! grep -q "^+.*Unlike MADV_FREE_REUSABLE" "$1"' _ "$P"
 check "OMACVM_RECLAIM_REUSABLE=0 turns it off" grep -q 'getenv("OMACVM_RECLAIM_REUSABLE")' "$P"
-check "a refused madvise is logged once and the replacement goes on" \
-  grep -q '^+    if (!__atomic_exchange_n(&omacvm_reclaim_refused, true, __ATOMIC_RELAXED)) {' "$P"
+# macOS keeping the pages (a refused madvise, or an advice skipped without an error: the worker's window rule)
+# stops the move aside for the run, once, and tells the app (MemoryGiveBack.qemuKeeps; test-reclaim.sh --keeps).
+check "macOS keeping the pages stops the move aside, said once a run" \
+  grep -q '^+    if (__atomic_exchange_n(&omacvm_reclaim_kept, true, __ATOMIC_RELAXED)) {' "$P"
+check "  a refused madvise counts" grep -q '^+    omacvm_reclaim_keeps(why);' "$P"
+check "  the worker judges every release" grep -q '^+        if (!omacvm_reclaim_takes(&judge, before, left, why, sizeof(why))) {' "$P"
+check "  the app's status file: OMACVM_RECLAIM_STATUS, reclaim=keeps" \
+  bash -c 'grep -q "getenv(\"OMACVM_RECLAIM_STATUS\")" "$1" && grep -qF "\"reclaim=keeps\\nwhy=%s\\n\"" "$1"' _ "$P"
 # The text the app looks for in QEMU's binary (MemoryGiveBack.reclaimMarker), in a line QEMU keeps.
 check "the worker's first line has the app's marker" \
   grep -q '^+    info_report("OmacVM: free page reclaim gives the pages back to macOS "$' "$P"
 check "OMACVM_RECLAIM_CHECK=1 for tests" grep -q 'getenv("OMACVM_RECLAIM_CHECK")' "$P"
-for line in "free page reporting %s:" "main lock held p99" "reclaim check:" "macOS refused to drop"; do
+for line in "free page reporting %s:" "main lock held p99" "reclaim check:" "macOS keeps the pages the VM" "madvise refused: %s"; do
   check "patch logs '$line'" grep -qF "$line" "$P"
 done
 check "the balloon closes each report for the counters" grep -q '^+            hvf_report_free_pages_done();' "$P"

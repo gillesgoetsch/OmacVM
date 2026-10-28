@@ -13,13 +13,18 @@ its compressed copies at once and takes its resident pages first, without
 compressing them. Pages macOS is compressing at that very moment are
 skipped; the worker looks again 20 ms later and advises once more (twice at
 most). A full queue (4096 ranges) releases in place; a range that cannot
-move aside is advised in place; a refused madvise is logged once per run
-and the replacement goes on as before. OMACVM_RECLAIM_REUSABLE=0: the
-replacement alone, as up to 3.2.11.
+move aside is advised in place. OMACVM_RECLAIM_REUSABLE=0: the replacement
+alone, as up to 3.2.11.
+If macOS keeps the pages anyway, the move aside stops for the run (the
+replacement alone): on a refused madvise, or when the releases of 64 MB the
+Mac held leave half or more of it held (XNU skips the advice without an
+error on memory it does not take as copy-delay; the worker measures what
+each release leaves). One qemu.log line says why, and the file
+OMACVM_RECLAIM_STATUS names gets "reclaim=keeps" and the reason: the app
+then turns off its give-back while macOS compresses the VM for the run.
 The worker's first qemu.log line carries the text the app looks for in
-QEMU's binary to turn its give-back while macOS compresses the VM on
-(MemoryGiveBack.reclaimMarker; prepare-qemu-gpu-runtime.sh checks a runtime
-has it).
+QEMU's binary to turn that give-back on (MemoryGiveBack.reclaimMarker;
+prepare-qemu-gpu-runtime.sh checks a runtime has it).
 qemu.log gets a line an hour while the guest reports, and one at exit:
 reports, MB back to the Mac, blocks, how long the replacements held the
 main lock per report (p99, longest), and what the releases left on the Mac.
@@ -49,7 +54,10 @@ compressed, but for those macOS was compressing at that very moment (up to
 5 % allowed), and the pages around keep their data. main's helper and
 OMACVM_RECLAIM_REUSABLE=0 fail it (Mac mini, macOS 27, real hv_vm_map,
 region compressed first: main left 4832 of 4848 pages compressed, the
-advice 0). The runtime build runs it on the patched source, CI on this file.
+advice 0). Its --keeps part: a refused madvise (a read-only range) and an
+advice XNU skips (memory a child process shares) stop the move aside and
+write the status file; releases that work do neither. The runtime build
+runs it on the patched source, CI on this file.
 
 --- a/accel/hvf/hvf-all.c
 +++ b/accel/hvf/hvf-all.c
@@ -72,7 +80,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  bool hvf_allowed;
  bool hvf_kernel_irqchip;
  bool hvf_nested_virt;
-@@ -160,6 +165,403 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
+@@ -160,6 +165,483 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
      g_hash_table_add(hvf_mapped_sections, g_memdup2(&gpa, sizeof(gpa)));
  }
  
@@ -101,31 +109,104 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
 + * fresh mapping takes the range before that, so the reusable state stays on
 + * pages that no guest mapping reaches again. Order: the stage-2 unmap (no
 + * vCPU reaches the range), the move aside, the new backing, the stage-2 map.
-+ * OMACVM_RECLAIM_REUSABLE=0: the new backing alone, as up to 3.2.10.
++ * OMACVM_RECLAIM_REUSABLE=0: the new backing alone, as up to 3.2.11.
++ *
++ * If macOS keeps the pages anyway (a refused madvise, or an advice it skips
++ * without an error: memory it does not take as copy-delay), the move aside
++ * stops for the run (omacvm_reclaim_keeps()): one qemu.log line, and the
++ * file OMACVM_RECLAIM_STATUS names says "reclaim=keeps", so the app turns
++ * off its give-back while macOS compresses the VM (ADR 0062).
 + */
 +typedef struct OmacvmReclaimPages {
 +    uint64_t resident, compressed;       /* bytes the Mac still holds */
 +} OmacvmReclaimPages;
 +
++/* 1: move aside and advise; 0: the new backing alone (switched off, or macOS keeps the pages) */
 +static int omacvm_reclaim_reusable = -1;
-+static bool omacvm_reclaim_refused;
++static bool omacvm_reclaim_kept;
 +
++/* Under the BQL. The worker may set it to 0 (omacvm_reclaim_keeps()). */
 +static bool omacvm_reclaim_on(void)
 +{
-+    if (omacvm_reclaim_reusable < 0) {
++    int on = __atomic_load_n(&omacvm_reclaim_reusable, __ATOMIC_RELAXED);
++
++    if (on < 0) {
 +        const char *v = getenv("OMACVM_RECLAIM_REUSABLE");
-+        omacvm_reclaim_reusable = !(v && !strcmp(v, "0"));
++        on = !(v && !strcmp(v, "0"));
++        __atomic_store_n(&omacvm_reclaim_reusable, on, __ATOMIC_RELAXED);
 +    }
-+    return omacvm_reclaim_reusable;
++    return on;
++}
++
++/*
++ * macOS keeps the pages the guest gives back: no more moves aside this run,
++ * once. The app reads OMACVM_RECLAIM_STATUS's file every 5 s.
++ */
++static void omacvm_reclaim_keeps(const char *why)
++{
++    const char *path = getenv("OMACVM_RECLAIM_STATUS");
++    char text[256];
++    int fd, n;
++
++    if (__atomic_exchange_n(&omacvm_reclaim_kept, true, __ATOMIC_RELAXED)) {
++        return;
++    }
++    __atomic_store_n(&omacvm_reclaim_reusable, 0, __ATOMIC_RELAXED);
++    warn_report("OmacVM: free page reclaim: macOS keeps the pages the VM "
++                "gives back (%s): the new backing alone from now on, as up "
++                "to 3.2.11", why);
++    if (!path || !*path) {
++        return;
++    }
++    n = snprintf(text, sizeof(text), "reclaim=keeps\nwhy=%s\n", why);
++    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
++    if (fd < 0) {
++        return;                             /* qemu.log has it */
++    }
++    if (write(fd, text, n < (int)sizeof(text) ? n : (int)sizeof(text) - 1) < 0) {
++        /* qemu.log has it */
++    }
++    close(fd);
 +}
 +
 +static void omacvm_reclaim_refusal(int err)
 +{
-+    if (!__atomic_exchange_n(&omacvm_reclaim_refused, true, __ATOMIC_RELAXED)) {
-+        warn_report("OmacVM: free page reporting: macOS refused to drop the "
-+                    "old pages (%s); they stay on the Mac until QEMU quits",
-+                    strerror(err));
++    char why[96];
++
++    snprintf(why, sizeof(why), "madvise refused: %s", strerror(err));
++    omacvm_reclaim_keeps(why);
++}
++
++/*
++ * An advice macOS skips returns no error, so the worker also looks: once the
++ * releases of a window found 64 MB the Mac held, half or more of it still
++ * held after them means macOS keeps the pages (the advice leaves none but
++ * pages it was compressing at that moment: 0-2 % in the tests; no advice:
++ * all of them). false then, with the reason in why.
++ */
++#define OMACVM_RECLAIM_WINDOW (64ull << 20)
++
++typedef struct OmacvmReclaimJudge {
++    uint64_t held, left;                 /* bytes, this window */
++} OmacvmReclaimJudge;
++
++static bool omacvm_reclaim_takes(OmacvmReclaimJudge *j, OmacvmReclaimPages before,
++                                 OmacvmReclaimPages left, char *why, size_t len)
++{
++    bool ok;
++
++    j->held += before.resident + before.compressed;
++    j->left += left.resident + left.compressed;
++    if (j->held < OMACVM_RECLAIM_WINDOW) {
++        return true;
 +    }
++    ok = j->left * 2 < j->held;
++    if (!ok) {
++        snprintf(why, len, "%" PRIu64 " of %" PRIu64 " MB the Mac held stayed "
++                 "after the advice", j->left >> 20, j->held >> 20);
++    }
++    j->held = j->left = 0;
++    return ok;
 +}
 +
 +/* What the Mac still holds of [at, at + size): resident and not reusable, or compressed. */
@@ -300,8 +381,10 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
 +{
 +    OmacvmReclaimItem it;
 +    OmacvmReclaimPages before = { 0, 0 }, left, rb = { 0, 0 }, rl = { 0, 0 };
++    OmacvmReclaimJudge judge = { 0, 0 };
 +    uint64_t blocks = 0, bytes = 0;
 +    bool check = omacvm_reclaim_check_on();
++    char why[128];
 +
 +    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 +    /* The app looks for this text in QEMU's binary (MemoryGiveBack.reclaimMarker). */
@@ -331,7 +414,10 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
 +            rb = rl = (OmacvmReclaimPages) { 0, 0 };
 +            continue;
 +        }
-+        left = omacvm_reclaim_release(it.aside, it.size, true, check ? &before : NULL);
++        left = omacvm_reclaim_release(it.aside, it.size, true, &before);
++        if (!omacvm_reclaim_takes(&judge, before, left, why, sizeof(why))) {
++            omacvm_reclaim_keeps(why);
++        }
 +        qemu_mutex_lock(&omacvm_reclaim_w.lock);
 +        omacvm_reclaim_w.released += it.size;
 +        omacvm_reclaim_w.left_resident += left.resident;
@@ -424,7 +510,9 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
 +                "back to the Mac (%" PRIu64 " blocks%s); main lock held p99 "
 +                "%.1f ms, longest %.1f ms%s", when, s->reports,
 +                omacvm_reclaim_mb(s->bytes), s->blocks,
-+                omacvm_reclaim_reusable == 0 ?
++                __atomic_load_n(&omacvm_reclaim_kept, __ATOMIC_RELAXED) ?
++                ", old pages left in place since macOS kept them" :
++                __atomic_load_n(&omacvm_reclaim_reusable, __ATOMIC_RELAXED) == 0 ?
 +                ", old pages left in place: OMACVM_RECLAIM_REUSABLE=0" : "",
 +                (step + 1) * OMACVM_RECLAIM_STEP_NS / 1e6,
 +                s->longest_ns / 1e6, left ? left : "");
@@ -476,7 +564,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
  {
      MemoryRegionSection section;
-@@ -167,7 +569,8 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -167,7 +649,8 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
      RAMBlock *rb;
      size_t page_size = qemu_real_host_page_size();
      hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
@@ -486,7 +574,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  
      assert(bql_locked());
      if (!size || !QEMU_IS_ALIGNED(gpa | (uintptr_t)host | size, page_size)) {
-@@ -195,28 +598,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -195,28 +678,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
          return;
      }
  

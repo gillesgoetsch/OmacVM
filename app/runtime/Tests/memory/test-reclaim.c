@@ -18,6 +18,7 @@
  * between QEMU's acknowledgement and the release.
  *
  *   test-reclaim [--hv] [--compressed SECONDS]
+ *   test-reclaim --keeps
  *
  * Without --hv a second mapping of the region stands in for the hypervisor's
  * (mach_vm_remap, no copy: what XNU makes of hv_vm_map), and the helper's
@@ -30,11 +31,21 @@
  *
  * Built two ways by test-reclaim.sh: the patch's helper (must pass; with
  * OMACVM_RECLAIM_REUSABLE=0 it must fail) and -DHELPER_MAIN (main's helper up
- * to 3.2.10, the replacement alone: must fail, so the test catches the leak).
+ * to 3.2.11, the replacement alone: must fail, so the test catches the leak).
+ *
+ * --keeps (the patch's helper): when macOS keeps the pages anyway, the move
+ * aside stops for the run and the file OMACVM_RECLAIM_STATUS names says so
+ * (the app then turns its give-back while macOS compresses off). The window
+ * rule on numbers; then real pages: releases the advice works on (no word),
+ * releases of memory a child process shares (XNU skips the advice there
+ * without an error: the window rule must see it), and a read-only range
+ * (madvise refuses it).
  */
 #include <Hypervisor/Hypervisor.h>
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <stdbool.h>
@@ -43,7 +54,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <signal.h>
 #include <sys/sysctl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 typedef uint64_t hwaddr;
@@ -99,10 +112,15 @@ static hv_return_t test_hv_vm_map(void *addr, hv_ipa_t ipa, size_t size, hv_memo
 #define trace_hvf_vm_unmap(...) ((void)0)
 #define trace_hvf_vm_map(...) ((void)0)
 #define error_report(...) (fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
+#if defined(HELPER_MAIN)
 #define warn_report(...) (fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
+#else
+static unsigned warnings;    /* qemu.log lines the helper wrote */
+#define warn_report(...) (warnings++, fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
+#endif
 
 #if defined(HELPER_MAIN)
-/* main up to 3.2.10 (qemu-hvf-free-page-reclaim.patch): the replacement alone */
+/* main up to 3.2.11 (qemu-hvf-free-page-reclaim.patch): the replacement alone */
 static const char *helper_name = "main's helper (MAP_FIXED alone)";
 static mach_vm_address_t omacvm_reclaim_backing(hwaddr gpa, void *host, size_t size, hv_memory_flags_t flags)
 {
@@ -330,11 +348,198 @@ static void report(uint64_t off, uint64_t len, const char *what)
            kept ? "LEFT ON THE MAC" : flight ? "ok, some were on their way into the compressor" : "ok");
 }
 
+#if !defined(HELPER_MAIN)
+static const char *status_path;
+
+static void expect(bool ok, const char *what)
+{
+    printf("  %s %s\n", ok ? "ok  " : "FAIL", what);
+    failures += !ok;
+}
+
+/* The status file: "" when there is none. */
+static const char *status_text(void)
+{
+    static char buf[512];
+    int fd = open(status_path, O_RDONLY);
+    ssize_t n = fd < 0 ? 0 : read(fd, buf, sizeof(buf) - 1);
+    if (fd >= 0) {
+        close(fd);
+    }
+    buf[n > 0 ? n : 0] = 0;
+    return buf;
+}
+
+/* A new run: the fix on, nothing said yet. */
+static void fresh_run(void)
+{
+    omacvm_reclaim_reusable = -1;
+    omacvm_reclaim_kept = false;
+    warnings = 0;
+    unlink(status_path);
+}
+
+/* QEMU's worker on BLOCKS blocks of 4 MiB at host: each moved aside (as
+ * omacvm_reclaim_backing does) and released, the window rule after each. */
+static void worker_releases(uint8_t *host, unsigned blocks)
+{
+    OmacvmReclaimJudge judge = { 0, 0 };
+    char why[128];
+    for (unsigned b = 0; b < blocks; b++) {
+        mach_vm_address_t aside = 0;
+        vm_prot_t cur, max;
+        kern_return_t kr = mach_vm_remap(mach_task_self(), &aside, BLOCK, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
+                                         (mach_vm_address_t)(host + b * BLOCK), FALSE, &cur, &max, VM_INHERIT_NONE);
+        if (kr != KERN_SUCCESS) {
+            die("mach_vm_remap (aside)", kr);
+        }
+        void *fresh = mmap(host + b * BLOCK, BLOCK, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
+        assert(fresh == host + b * BLOCK);
+        OmacvmReclaimPages before, left = omacvm_reclaim_release(aside, BLOCK, true, &before);
+        if (!omacvm_reclaim_takes(&judge, before, left, why, sizeof(why))) {
+            omacvm_reclaim_keeps(why);
+        }
+    }
+}
+
+static uint8_t *filled(size_t len)
+{
+    uint8_t *m = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (m == MAP_FAILED) {
+        perror("mmap");
+        exit(1);
+    }
+    for (size_t o = 0; o < len; o += KB) {
+        *(volatile uint64_t *)(m + o) = o | 1;
+    }
+    return m;
+}
+
+static int keeps_test(void)
+{
+    static char path[] = "/tmp/omacvm-test-reclaim-status.XXXXXX";
+    OmacvmReclaimJudge j = { 0, 0 };
+    OmacvmReclaimPages held4 = { BLOCK, 0 }, none = { 0, 0 }, half4 = { BLOCK / 2, 0 }, quarter4 = { 0, BLOCK / 4 };
+    char why[128] = "";
+    bool ok;
+    int fd = mkstemp(path);
+
+    if (fd < 0) {
+        perror("mkstemp");
+        return 1;
+    }
+    close(fd);
+    status_path = path;
+    setenv("OMACVM_RECLAIM_STATUS", path, 1);
+    printf("test-reclaim: --keeps: macOS keeping the pages stops the move aside and the app hears it\n");
+
+    /* The window rule on numbers: 16 releases of 4 MiB held fill 64 MB. */
+    ok = true;
+    for (int i = 0; i < 16; i++) {
+        ok = ok && omacvm_reclaim_takes(&j, held4, none, why, sizeof(why));
+    }
+    expect(ok && !j.held, "64 MB held, none left: the advice takes (the window starts again)");
+    ok = true;
+    for (int i = 0; i < 16; i++) {
+        ok = ok && omacvm_reclaim_takes(&j, held4, quarter4, why, sizeof(why));
+    }
+    expect(ok, "a quarter left (compressed): still takes");
+    for (int i = 0; i < 15; i++) {
+        ok = ok && omacvm_reclaim_takes(&j, held4, half4, why, sizeof(why));
+    }
+    expect(ok, "half left, window not full yet (60 MB): no verdict");
+    ok = omacvm_reclaim_takes(&j, held4, half4, why, sizeof(why));
+    expect(!ok && strstr(why, "32 of 64 MB") != NULL, "half left over 64 MB: macOS keeps them, with the numbers");
+    j = (OmacvmReclaimJudge) { 0, 0 };
+    ok = true;
+    for (int i = 0; i < 1000; i++) {
+        ok = ok && omacvm_reclaim_takes(&j, none, none, why, sizeof(why));
+    }
+    expect(ok, "ranges the Mac never held (untouched): no verdict");
+
+    /* Real pages the advice works on (one map, moved aside: copy-delay). */
+    fresh_run();
+    expect(omacvm_reclaim_on(), "a new run: on");
+    uint8_t *works = filled(20 * BLOCK);
+    worker_releases(works, 20);
+    expect(omacvm_reclaim_on() && !omacvm_reclaim_kept && !warnings && !*status_text(),
+           "80 MB released, the advice takes: still on, no line, no status file");
+    munmap(works, 20 * BLOCK);
+
+    /* Real pages a child process shares (copy-on-write since fork): XNU skips
+     * the advice there and madvise says nothing. */
+    fresh_run();
+    uint8_t *shared = filled(20 * BLOCK);
+    uint64_t skipped0 = sysctl_u64("vm.reusable_pages_shared");
+    pid_t child = fork();
+    if (child == 0) {
+        for (;;) {
+            pause();
+        }
+    }
+    if (child < 0) {
+        perror("fork");
+        return 1;
+    }
+    worker_releases(shared, 20);
+    uint64_t skipped1 = sysctl_u64("vm.reusable_pages_shared");
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+    munmap(shared, 20 * BLOCK);
+    printf("  (XNU skipped shared pages %" PRIu64 " times meanwhile)\n", skipped1 - skipped0);
+    expect(!omacvm_reclaim_on() && omacvm_reclaim_kept, "advice skipped without an error: the move aside stops");
+    expect(warnings == 1, "  one qemu.log line");
+    expect(strncmp(status_text(), "reclaim=keeps\nwhy=", 18) == 0 && strstr(status_text(), "MB the Mac held stayed"),
+           "  the status file says reclaim=keeps and why");
+    printf("  status file: %s", status_text());
+    omacvm_reclaim_keeps("again");
+    expect(warnings == 1 && !strstr(status_text(), "again"), "  said once a run");
+
+    /* A range madvise refuses (read-only): at once, from the release itself. */
+    fresh_run();
+    expect(omacvm_reclaim_on(), "a new run: on");
+    uint8_t *ro = filled(BLOCK);
+    mprotect(ro, BLOCK, PROT_READ);
+    mach_vm_address_t aside = 0;
+    vm_prot_t cur, max;
+    kern_return_t kr = mach_vm_remap(mach_task_self(), &aside, BLOCK, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
+                                     (mach_vm_address_t)ro, FALSE, &cur, &max, VM_INHERIT_NONE);
+    if (kr != KERN_SUCCESS) {
+        die("mach_vm_remap (read-only)", kr);
+    }
+    omacvm_reclaim_release(aside, BLOCK, true, NULL);
+    munmap(ro, BLOCK);
+    expect(!omacvm_reclaim_on() && warnings == 1 && strstr(status_text(), "why=madvise refused: "),
+           "madvise refused: the move aside stops, one line, the status file says why");
+    printf("  status file: %s", status_text());
+
+    /* No status file named (an older app): the line only. */
+    fresh_run();
+    unsetenv("OMACVM_RECLAIM_STATUS");
+    omacvm_reclaim_keeps("test");
+    expect(!omacvm_reclaim_on() && warnings == 1 && !*status_text(), "no OMACVM_RECLAIM_STATUS: the qemu.log line only");
+    unlink(path);
+    if (failures) {
+        printf("test-reclaim: FAILED (%u)\n", failures);
+        return 1;
+    }
+    printf("test-reclaim: all ok\n");
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
     int wait_s = 0;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--hv")) {
+        if (!strcmp(argv[i], "--keeps")) {
+#if defined(HELPER_MAIN)
+            printf("test-reclaim: --keeps is for the patch's helper\n");
+            return 2;
+#else
+            return keeps_test();
+#endif
+        } else if (!strcmp(argv[i], "--hv")) {
             use_hv = true;
         } else if (!strcmp(argv[i], "--compressed") && i + 1 < argc) {
             wait_s = atoi(argv[++i]);

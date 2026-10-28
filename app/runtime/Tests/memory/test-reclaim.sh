@@ -5,9 +5,11 @@
 # With a source dir (the runtime build): the helper from the patched
 # accel/hvf/hvf-all.c, and it must be wired in. Without (CI): the helper from
 # the patch itself. Runs the patch's helper (must pass), the same with
-# OMACVM_RECLAIM_REUSABLE=0 and main's helper up to 3.2.10 (both must fail:
+# OMACVM_RECLAIM_REUSABLE=0 and main's helper up to 3.2.11 (both must fail:
 # the test sees the leak), each with a stand-in for the hypervisor's map and,
-# where this Mac lets a process make a VM, with a real one (--hv).
+# where this Mac lets a process make a VM, with a real one (--hv). Then
+# --keeps: macOS keeping the pages (a refused or a skipped advice) stops the
+# move aside for the run and writes the app's status file.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src= work= compressed=()
@@ -37,6 +39,14 @@ if [[ -n $src ]]; then
     { echo "FAIL: hvf_report_free_pages() still replaces the backing itself"; exit 1; }
   grep -q 'hvf_report_free_pages_done();' "$src/hw/virtio/virtio-balloon.c" || \
     { echo "FAIL: virtio-balloon.c does not call hvf_report_free_pages_done"; exit 1; }
+  # The worker judges every release and stops the move aside when macOS keeps
+  # the pages; its first line has the text the app looks for in the binary.
+  work_fn=$(awk '/^static void \*omacvm_reclaim_work\(/ { on = 1 } on { print } on && /^}$/ { exit }' "$f")
+  [[ $work_fn == *"left = omacvm_reclaim_release(it.aside, it.size, true, &before);"* &&
+     $work_fn == *"if (!omacvm_reclaim_takes(&judge, before, left, why, sizeof(why))) {"* &&
+     $work_fn == *"omacvm_reclaim_keeps(why);"* &&
+     $work_fn == *'"OmacVM: free page reclaim gives the pages back to macOS "'* ]] || \
+    { echo "FAIL: the worker does not judge its releases or lacks the marker line"; exit 1; }
 else
   p=$here/../../patches/qemu-hvf-free-page-reclaim-reusable.patch
   B=$begin E=$end awk '{ l = $0; if (substr(l, 1, 1) != "+") { if (on) exit; next }; l = substr(l, 2) }
@@ -75,4 +85,10 @@ for hv in "" --hv; do
   run fail test-patch OMACVM_RECLAIM_REUSABLE=0 ${hv:+"$hv"}
   run fail test-main ${hv:+"$hv"}
 done
+rc=0; out=$("$work/test-patch" --keeps 2>&1) || rc=$?
+if (( rc == 0 )); then
+  echo "  test-patch --keeps: passed as it should ($(grep -c '^  ok' <<< "$out") rows)"
+else
+  echo "FAIL test-patch --keeps (exit $rc):"; grep -v '^  ok' <<< "$out" | sed 's/^/    /' | tail -20; fail=1
+fi
 (( fail == 0 )) && echo "test-reclaim: all ok" || { echo "test-reclaim: FAILED"; exit 1; }
