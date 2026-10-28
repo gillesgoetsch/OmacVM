@@ -296,6 +296,9 @@ jobs:
       - name: omacvm-netd offline tests
         run: src/net/mac/test.sh
 
+      - name: Bridged LAN and private management networking
+        run: src/tests/bridged-network.sh
+
       - name: App battery bridge's notification thread ends on stop
         run: src/tests/app-battery.sh
 

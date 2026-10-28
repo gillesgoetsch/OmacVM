@@ -67,6 +67,7 @@ src/tests/feature-truth.sh && src/tests/upgrade-path.sh
 src/tests/release-keys.sh && src/tests/release-script.sh
 src/tests/prebuilt-manifest.sh && src/tests/prebuilt-routes.sh && src/tests/build-ctrlc.sh && src/tests/build-space.sh
 src/net/mac/test.sh
+src/tests/bridged-network.sh
 src/gestures/mac/test.sh
 src/bridge/mac/test-models.sh && src/bridge/mac/test-hid.sh
 src/bridge/mac/test-wallpaper.sh

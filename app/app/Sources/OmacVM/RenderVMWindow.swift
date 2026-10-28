@@ -97,6 +97,16 @@ enum RenderVMWindow {
         noNotch.notch = false
         page("page-2-no-notch", state, noNotch)
 
+        try? Data("interface=en0\nmac=52:54:00:ab:cd:ef\n".utf8)
+            .write(to: folder.appendingPathComponent("bridged-network"))
+        var bridged = usual
+        bridged.section = "sharing"
+        window("window-bridged-network", state, bridged)
+        try? Data("interface=en0\nmac=invalid\n".utf8)
+            .write(to: folder.appendingPathComponent("bridged-network"))
+        window("window-invalid-network", state, bridged)
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent("bridged-network"))
+
         // Everything on: notes under the switches, a disk job, a Magic Mouse,
         // custom resources, "including notch" chosen, keyboard not allowed.
         try? Data("on\n".utf8).write(to: folder.appendingPathComponent("fast-network"))

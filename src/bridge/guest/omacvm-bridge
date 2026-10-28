@@ -40,8 +40,9 @@ default_gateway() {
 }
 # OmacVM.app on its fast network (vmnet, the app picks it at each start and
 # may switch while the VM runs): the Mac is the gateway 192.168.77.1.
-if [[ ${OMACVM_VM_TYPE:-} == app && -z ${OMACVM_BRIDGE_URL:-} && $(default_gateway) == 192.168.77.1 ]]; then
-  OMACVM_HOST=192.168.77.1
+if [[ ${OMACVM_VM_TYPE:-} == app && -z ${OMACVM_BRIDGE_URL:-} ]]; then
+  if [[ -e /run/omacvm/bridged-network ]]; then OMACVM_HOST=10.0.2.2
+  elif [[ $(default_gateway) == 192.168.77.1 ]]; then OMACVM_HOST=192.168.77.1; fi
 fi
 URL=${OMACVM_BRIDGE_URL:-http://${OMACVM_HOST:-10.211.55.2}:47831}
 TOKEN_FILE=${OMACVM_BRIDGE_TOKEN_FILE:-$HOME/.config/omacvm-bridge/token}

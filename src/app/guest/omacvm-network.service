@@ -1,0 +1,14 @@
+[Unit]
+Description=OmacVM private management and bridged LAN profiles
+DefaultDependencies=no
+After=local-fs.target
+Before=NetworkManager.service network-pre.target omacvm-gestures.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/omacvm/omacvm-network
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=NetworkManager.service

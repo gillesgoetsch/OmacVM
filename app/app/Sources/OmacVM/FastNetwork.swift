@@ -240,7 +240,7 @@ enum FastNetwork {
 
     /// The app's copy of src/net/mac/install.sh with `args` (`gui`: macOS's
     /// password dialog when it needs root). nil when it could not run.
-    private static func runScript(_ args: [String], gui: Bool) -> (status: Int32, out: String, err: String)? {
+    static func runScript(_ args: [String], gui: Bool) -> (status: Int32, out: String, err: String)? {
         guard FileManager.default.isExecutableFile(atPath: installer.path) else { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")

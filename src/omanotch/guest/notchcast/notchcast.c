@@ -1309,11 +1309,13 @@ static uint32_t default_gateway(void) {
 // OmacVM.app's fast network (vmnet): the Mac is its gateway, 192.168.77.1.
 #define FAST_NET_MAC 0xC0A84D01u  // 192.168.77.1, host byte order
 
-static int on_fast_network(void) { return default_gateway() == htonl(FAST_NET_MAC); }
+static int bridged_management(void) { return access("/run/omacvm/bridged-network", F_OK) == 0; }
+static int on_fast_network(void) { return !bridged_management() && default_gateway() == htonl(FAST_NET_MAC); }
 
 // The app moved the VM to the other network: a default route again, through
 // the other gateway (none for a moment, as while DHCP renews, is no move).
 static int moved_network(int fast) {
+    if (bridged_management()) return fast;
     uint32_t gw = default_gateway();
     return gw && (gw == htonl(FAST_NET_MAC)) != fast;
 }
@@ -1321,6 +1323,10 @@ static int moved_network(int fast) {
 // Candidate addresses of the Mac, in the order they are tried.
 static int host_candidates(struct in_addr *out, int max, int app) {
     int n = 0;
+    if (app && max > 0 && bridged_management()) {
+        out[n++].s_addr = htonl(0x0A000202u);  // QEMU's private Mac address, 10.0.2.2
+        return n;
+    }
     // OmacVM.app on its fast network: the gateway is the Mac. Else QEMU's
     // user network, where NOTCHBAR_HOST (10.0.2.2) is the Mac's 127.0.0.1.
     if (app && max > 0 && on_fast_network()) {

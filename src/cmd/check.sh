@@ -213,7 +213,7 @@ if [[ -n $(sed -n 's/^OMACVM_VERSION=//p' <<<"$probe") ]]; then
   rd=""; [[ $TYPE == app && -n ${VM:-} ]] && { rd=$(app_dir "$VM" 2>/dev/null) || rd=""; }
   features_read_env "$probe"; COPY=("${FV[@]}")
   features_read_record "$rd"; REC=("${FV[@]}")
-  features_real "$probe" "$rd"
+  features_real "$probe" "$rd" || exit $?
   if [[ -n ${DRIFT[*]+x} ]]; then
     # A newer OmacVM's record is not this one's to write (it knows other features, #233).
     if version_lt "$(cat "$R/src/VERSION")" "$(sed -n 's/^OMACVM_VERSION=//p' <<<"$probe")"; then
@@ -252,7 +252,9 @@ if [[ $TYPE == app ]]; then
   d=$(app_dir "$VM" 2>/dev/null); net=$(head -1 "$d/logs/network" 2>/dev/null)
   # The switch (fast-network) says how the NEXT start goes; this start keeps
   # the network it took (logs/network).
-  if [[ $FAST_NET == on ]]; then
+  if [[ -s $d/bridged-network ]]; then
+    skip "fast network" "overridden by bridged LAN from the next start; the prior shared-network choice is retained"
+  elif [[ $FAST_NET == on ]]; then
     st=$("$R/src/net/mac/install.sh" --status 2>/dev/null)
     upd="omacvm enable fast-network --vm \"$VM\", or Update… under Fast network in OmacVM (macOS asks for your password once); until then the VM starts on QEMU's own network"
     case $(head -1 <<<"$st") in
@@ -281,6 +283,28 @@ if [[ $TYPE == app ]]; then
     elif [[ $net == vmnet ]]; then ok "VPN NAT" "not needed: macOS's sharing covers every network that is up"; fi
   elif [[ $net == vmnet ]]; then ok "fast network" "off from the VM's next start; this start runs on it (vmnet), the VM is $IP"
   else skip "fast network" "off (experimental: omacvm enable fast-network)"; fi
+fi
+
+FEATURE=bridged-network
+if [[ $TYPE == app ]]; then
+  d=$(app_dir "$VM" 2>/dev/null)
+  if [[ -e $d/bridged-network ]]; then
+    if ! network_read "$d"; then
+      bad "bridged LAN" "malformed setting: omacvm network --vm \"$VM\" shared, then select bridged with --interface IF"
+    else
+      st=$("$R/src/net/mac/install.sh" --status --bridged-interface "$NETWORK_INTERFACE" 2>/dev/null) || st=missing
+      case ${st%%$'\n'*} in
+        ok) ok "bridged LAN service" "dedicated vmnet bridge on $NETWORK_INTERFACE; no shared NAT" ;;
+        *) bad "bridged LAN service" "needs installation or update: omacvm network --vm \"$VM\" bridged --interface \"$NETWORK_INTERFACE\" (macOS asks for administrator permission)" human ;;
+      esac
+      net=$(head -1 "$d/logs/bridged-network" 2>/dev/null)
+      case $net in
+        "bridged $NETWORK_INTERFACE $NETWORK_MAC") ok "bridged LAN" "$NETWORK_INTERFACE, $NETWORK_MAC; private management on QEMU's user network" ;;
+        bridged*) warn "bridged LAN" "the selected interface/MAC applies next start; this start: $net" ;;
+        *) warn "bridged LAN" "on from the VM's next start; shut down, then start it again" ;;
+      esac
+    fi
+  else skip "bridged LAN" "off (experimental: omacvm network --vm \"$VM\" bridged --interface IF)"; fi
 fi
 
 # OmacVM.app: is this Mac set up for the VM (src/lib/mac-setup.sh; the app

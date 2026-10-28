@@ -72,7 +72,8 @@ default_gateway() {
 }
 # OmacVM.app on its fast network (vmnet): the Mac is the gateway 192.168.77.1.
 GW=$(default_gateway)
-[[ $TYPE == app && $GW == 192.168.77.1 ]] && HOST=$GW
+if [[ $TYPE == app && -f /run/omacvm/bridged-network ]]; then HOST=10.0.2.2
+elif [[ $TYPE == app && $GW == 192.168.77.1 ]]; then HOST=$GW; fi
 # OmacVM.app gives the VM a feature's link to the Mac only when the VM starts
 # (its port, or the battery/camera port): one turned on while the VM ran waits
 # for the next start. "port": a port on the Mac's 127.0.0.1, which the fast
@@ -550,8 +551,17 @@ app)
   section "OmacVM.app"
   check "display follows the window" "omacvm-display-sync" pgrep -u "$U" -f omacvm-display-sync
   check "QEMU guest agent" "clean shutdown fallback" systemctl is-active -q qemu-guest-agent
+  FEATURE=bridged-network
+  if [[ -f /run/omacvm/bridged-network ]]; then
+    check "bridged LAN" "LAN DHCP and separate private management; no NAT fallback" /usr/local/lib/omacvm/omacvm-network --check
+  elif [[ ${OMACVM_FEATURE_bridged_network:-off} == on ]]; then
+    skip "bridged LAN" "on from the next start (shut down, then start the VM)"
+  else skip "bridged LAN" "off (experimental: omacvm network --vm NAME bridged --interface IF)"; fi
+  FEATURE=fast-network
   # Fast network (vmnet through omacvm-netd on the Mac), else QEMU's user network.
-  if [[ $GW == 192.168.77.1 ]]; then
+  if [[ -f /run/omacvm/bridged-network ]]; then
+    skip "fast network" "overridden by bridged LAN; private management stays on QEMU's user network"
+  elif [[ $GW == 192.168.77.1 ]]; then
     a=$(ip -4 -o addr show scope global 2>/dev/null | awk '{ print $4; exit }')
     # On here or turned on with the app's button (no apply since then).
     ok "fast network" "vmnet, ${a%/*}"
@@ -559,6 +569,7 @@ app)
     # The app's button may have turned it off since; the Mac's check knows.
     skip "fast network" "not this start: QEMU's user network (omacvm check on the Mac says why)"
   else skip "fast network" "off (experimental: omacvm enable fast-network)"; fi
+  FEATURE=""
   check "power key" "Quit on the Mac shuts down" test -f /etc/systemd/logind.conf.d/90-omacvm-app-power.conf
   # Idle power: virtio-gpu's vblank timer stops 100 ms after a frame (DRM's default: 5 s).
   vb=$(cat /sys/module/drm/parameters/vblankoffdelay 2>/dev/null)

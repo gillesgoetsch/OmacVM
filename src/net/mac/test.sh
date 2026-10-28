@@ -148,3 +148,173 @@ rc=0; PATH="$S/bin:$PATH" OMACVM_ADMIN_PROMPT=none OMACVM_NETD_TEST_ROOT=$S/root
 if [[ $rc == 3 && ! -e $S/sudo-called && -e $S/root/Library/LaunchDaemons/org.omacvm.netd.plist ]] && grep -q "on the Mac" "$S/err"; then
   echo "ok   a VM's job (OMACVM_ADMIN_PROMPT=none): exit 3, no sudo, nothing removed"
 else echo "FAIL a VM's job became root or did not stop: rc=$rc sudo: $(cat "$S/sudo-called" 2>/dev/null) err: $(cat "$S/err")"; exit 1; fi
+
+# Bridge instances use their own installed binary, plist, socket and back-off.
+# These fixtures never install or run a root service.
+bridge_plist() {   # IF UID... (empty IF argument in plist: an old/wrong instance)
+  local iface=$1; shift
+  python3 - "$S/root/Library/LaunchDaemons/org.omacvm.netd.bridge.$iface.plist" "$iface" "$QREQ" "$@" <<'PY'
+import plistlib, sys
+path, iface, requirement, *users = sys.argv[1:]
+args = ["/Library/PrivilegedHelperTools/org.omacvm.netd.bridge." + iface, "--requirement", requirement]
+for uid in users:
+    args += ["--user", uid]
+args += ["--bridged-interface", iface]
+with open(path, "wb") as f:
+    plistlib.dump({"Label": "org.omacvm.netd.bridge." + iface, "ProgramArguments": args}, f)
+PY
+}
+bridge_status_is() {   # WANT IF WHAT
+  local got
+  got=$(PATH="$S/bin:$PATH" OMACVM_NETD_TEST_ROOT=$S/root "$HERE/install.sh" --status --app "$APP" --bridged-interface "$2")
+  [[ $got == "$1" ]] && echo "ok   bridge status $1: $3" ||
+    { echo "FAIL bridge status: $3: '$got', want '$1'"; exit 1; }
+}
+plist "$QREQ" "$(id -u)"; daemon "$NOW" "$PROTO"
+for iface in en0 en7; do
+  cp "$T/omacvm-netd" "$S/root/Library/PrivilegedHelperTools/org.omacvm.netd.bridge.$iface"
+  bridge_plist "$iface" "$(id -u)"
+  python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])' "$S/root/var/run/org.omacvm.netd.bridge.$iface.sock"
+done
+bridge_status_is ok en0 "the selected instance supports bridge mode"
+bridge_status_is ok en7 "another physical interface has a separate instance"
+cp "$S/root/Library/PrivilegedHelperTools/org.omacvm.netd" "$S/root/Library/PrivilegedHelperTools/org.omacvm.netd.bridge.en0"
+bridge_status_is old en0 "shared protocol alone does not claim bridged support"
+cp "$T/omacvm-netd" "$S/root/Library/PrivilegedHelperTools/org.omacvm.netd.bridge.en0"
+python3 - "$S/root/Library/LaunchDaemons/org.omacvm.netd.bridge.en0.plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    p = plistlib.load(f)
+p["ProgramArguments"][-1] = "en7"
+with open(sys.argv[1], "wb") as f:
+    plistlib.dump(p, f)
+PY
+bridge_status_is old en0 "a daemon configured for another interface is not usable"
+bridge_plist en0 "$(id -u)"
+boot=$(sysctl -n kern.boottime | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p')
+printf '%s 99 0 0\n' "$boot" > "$S/root/var/run/org.omacvm.netd.bridge.en0.state"
+bridge_status_is stopped en0 "only the selected interface's failure state applies"
+bridge_status_is ok en7 "another interface is unaffected by that back-off"
+status_is ok "shared service is unaffected by bridge back-off"
+
+for iface in ../en0 en0/../en7 en12345 utun0 'en0;id' ''; do
+  rc=0
+  PATH="$S/bin:$PATH" OMACVM_NETD_TEST_ROOT=$S/root "$HERE/install.sh" --remove --bridged-interface "$iface" 2>"$S/err" || rc=$?
+  [[ $rc == 2 && ! -e $S/sudo-called ]] || { echo "FAIL unsafe bridge instance accepted: '$iface'"; exit 1; }
+done
+echo "ok   installer refuses unsafe and non-physical interface names before privileges"
+
+# A syntactically safe name still has to be supported by vmnet. Stand in
+# only for source compilation, producing the helper above with a made-up
+# interface list; signature and app-selection checks remain the real ones.
+cat > "$S/bin/xcrun" <<'SH'
+#!/bin/bash
+[[ $1 == -f && $2 == clang ]] && { echo /usr/bin/clang; exit 0; }
+[[ $1 == clang ]] || exit 1
+while (( $# )); do
+  if [[ $1 == -o ]]; then cp "$NETD_FIXTURE" "$2"; exit 0; fi
+  shift
+done
+exit 1
+SH
+chmod +x "$S/bin/xcrun"
+rc=0
+NETD_FIXTURE=$T/test-netd PATH="$S/bin:$PATH" OMACVM_ADMIN_PROMPT=none \
+  "$HERE/install.sh" --app "$APP" --bridged-interface en9999 2>"$S/err" || rc=$?
+[[ $rc == 1 && ! -e $S/sudo-called ]] && grep -q "unsupported bridged interface en9999" "$S/err" ||
+  { echo "FAIL installer trusted an unsupported vmnet interface: rc=$rc $(cat "$S/err")"; exit 1; }
+rm "$S/bin/xcrun"
+echo "ok   installer refuses a physical interface vmnet does not support, without privileges"
+
+# --interfaces executes only the helper's unprivileged listing operation.
+mkdir -p "$APP/Contents/Library/LaunchServices"
+cat > "$APP/Contents/Library/LaunchServices/org.omacvm.netd" <<'SH'
+#!/bin/bash
+case $1 in --bridge-protocol) echo 1 ;; --interfaces) printf 'en0\nen7\n' ;; *) exit 2 ;; esac
+SH
+chmod +x "$APP/Contents/Library/LaunchServices/org.omacvm.netd"
+got=$(PATH="$S/bin:$PATH" OMACVM_ADMIN_PROMPT=none "$HERE/install.sh" --interfaces --app "$APP")
+[[ $got == $'en0\nen7' && ! -e $S/sudo-called ]] || { echo "FAIL interface listing needed privileges or changed the list"; exit 1; }
+echo "ok   interface listing needs no administrator, source build or service"
+
+# The remove operation for another user must retain the selected bridge mode
+# in the replacement launchd job. Capture the privilege boundary, do not install.
+bridge_plist en0 "$(id -u)" 4242
+cat > "$S/bin/sudo" <<'SH'
+#!/bin/bash
+[[ $1 == -n ]] && exit 0
+[[ $3 != *pfctl* ]] || exit 1
+cp "$5" "$NETD_CAPTURE"
+SH
+NETD_CAPTURE=$S/rewritten.plist PATH="$S/bin:$PATH" OMACVM_NETD_TEST_ROOT=$S/root "$HERE/install.sh" --remove --bridged-interface en0
+python3 - "$S/rewritten.plist" "$S/root" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as f:
+    p = plistlib.load(f)
+args = p["ProgramArguments"]
+assert p["Label"] == "org.omacvm.netd.bridge.en0"
+assert args[0] == sys.argv[2] + "/Library/PrivilegedHelperTools/org.omacvm.netd.bridge.en0"
+assert args[args.index("--bridged-interface") + 1] == "en0"
+assert args.count("--user") == 1 and args[args.index("--user") + 1] == "4242"
+assert p["Sockets"]["omacvm-netd"]["SockPathName"] == sys.argv[2] + "/var/run/org.omacvm.netd.bridge.en0.sock"
+assert p["StandardErrorPath"] == sys.argv[2] + "/var/log/org.omacvm.netd.bridge.en0.log"
+PY
+echo "ok   removing one user preserves bridge mode and independent launchd paths"
+
+# Last-user removal executes against only disposable files. Refuse any PF
+# command at the privilege boundary: this test must never touch the Mac's PF.
+bridge_plist en0 "$(id -u)"
+printf 'shared-state\n' > "$S/root/var/run/org.omacvm.netd.state"
+printf 'shared-nat\n' > "$S/root/var/run/org.omacvm.netd.nat"
+cat > "$S/bin/sudo" <<'SH'
+#!/bin/bash
+[[ $1 == -n ]] && exit 0
+[[ $3 != *pfctl* ]] || exit 1
+exec "$@"
+SH
+PATH="$S/bin:$PATH" OMACVM_NETD_TEST_ROOT=$S/root "$HERE/install.sh" --remove --bridged-interface en0
+[[ ! -e $S/root/Library/PrivilegedHelperTools/org.omacvm.netd.bridge.en0 &&
+   ! -e $S/root/Library/LaunchDaemons/org.omacvm.netd.bridge.en0.plist &&
+   ! -e $S/root/var/run/org.omacvm.netd.bridge.en0.sock &&
+   ! -e $S/root/var/run/org.omacvm.netd.bridge.en0.state &&
+   -e $S/root/Library/PrivilegedHelperTools/org.omacvm.netd &&
+   -e $S/root/Library/LaunchDaemons/org.omacvm.netd.plist &&
+   $(cat "$S/root/var/run/org.omacvm.netd.state") == shared-state &&
+   $(cat "$S/root/var/run/org.omacvm.netd.nat") == shared-nat ]] ||
+  { echo "FAIL bridge removal touched shared service state or left its own instance"; exit 1; }
+bridge_status_is ok en7 "removing en0 leaves en7 installed and loaded"
+echo "ok   last-user bridge removal leaves shared service and VPN PF state untouched"
+
+# The app's own installer may trust its bundled helper, but a shared-only
+# release helper is not usable for a bridged instance. Exercise actual CLI
+# selection without compiling, installing or requesting administrator access.
+OWN=$S/Selection.app
+OWN_SRC=$OWN/Contents/Resources/omacvm/src
+mkdir -p "$OWN_SRC/net/mac" "$OWN_SRC/lib" "$OWN/Contents/Library/LaunchServices" "$OWN/Contents/Resources/runtime/bin"
+cp "$HERE/install.sh" "$HERE/omacvm-netd.c" "$OWN_SRC/net/mac/"
+cp "$HERE/../../lib/app.sh" "$HERE/../../lib/version.sh" "$OWN_SRC/lib/"
+cp "$APP/Contents/Resources/runtime/bin/OmacVM" "$OWN/Contents/Resources/runtime/bin/OmacVM"
+cat > "$S/bin/xcode-select" <<'SH'
+#!/bin/bash
+[[ ${NETD_HAS_CLT:-0} == 1 ]]
+SH
+chmod +x "$S/bin/xcode-select"
+selection_is() {   # WANT CLT [--bridged-interface IF]
+  local want=$1 clt=$2 got; shift 2
+  got=$(NETD_HAS_CLT=$clt PATH="$S/bin:$PATH" "$OWN_SRC/net/mac/install.sh" --trust --app "$OWN" "$@")
+  [[ $got == $'exact build\n'"daemon: $want" ]] ||
+    { echo "FAIL bundled helper selection: got '$got', want daemon: $want"; exit 1; }
+}
+cp "$S/root/Library/PrivilegedHelperTools/org.omacvm.netd" "$OWN/Contents/Library/LaunchServices/org.omacvm.netd"
+selection_is app 0
+selection_is source 1 --bridged-interface en0
+selection_is refused 0 --bridged-interface en0
+rc=0
+NETD_HAS_CLT=0 PATH="$S/bin:$PATH" OMACVM_ADMIN_PROMPT=none \
+  "$OWN_SRC/net/mac/install.sh" --app "$OWN" --bridged-interface en0 2>"$S/err" || rc=$?
+[[ $rc == 3 ]] && grep -q "update OmacVM.app or install the tools" "$S/err" ||
+  { echo "FAIL old bundled helper did not explain the bridge prerequisite: rc=$rc $(cat "$S/err")"; exit 1; }
+cp "$T/omacvm-netd" "$OWN/Contents/Library/LaunchServices/org.omacvm.netd"
+selection_is app 0 --bridged-interface en0
+selection_is app 1 --bridged-interface en0
+echo "ok   old bundled helper stays usable for shared mode; bridging selects current helper, source fallback or app-update prerequisite"

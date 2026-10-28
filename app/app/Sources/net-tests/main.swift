@@ -133,5 +133,23 @@ expect(FeaturesRecord.set("bridge=on\n", "fast-network", on: true) == "bridge=on
 expect(FeaturesRecord.set("bridge=on fast-network-x=on\n", "fast-network", on: true) == "bridge=on fast-network-x=on fast-network=on\n",
        "record: only that name, not one that starts with it")
 
+// A malformed network record must not inject QEMU options or duplicate the private NIC.
+for invalid in [
+    "interface=en0,server=on\nmac=52:54:00:ab:cd:ef\n",
+    "interface=../../en0\nmac=52:54:00:ab:cd:ef\n",
+    "interface=en0\nmac=52:54:00:12:34:56\n",
+    "interface=en0\nmac=52:54:00:ab:cd:ef\ninterface=en1\n",
+    "interface=en0\nmac=ff:ff:ff:ff:ff:ff\n",
+    "interface=en0\nmac=52:54:00:ab:cd:ef\nextra=untrusted\n",
+    "interface=en0\n\nmac=52:54:00:ab:cd:ef\n",
+] {
+    do {
+        _ = try BridgedNetworkConfig(text: invalid)
+        expect(false, "unsafe bridged network record rejected")
+    } catch {
+        expect(true, "unsafe bridged network record rejected")
+    }
+}
+
 if failures > 0 { print("\(failures) failed"); exit(1) }
 print("all passed")

@@ -1,0 +1,194 @@
+#!/usr/bin/python3
+"""Prepare OmacVM's two NICs before NetworkManager starts.
+
+Only our named, signed-by-header keyfiles are replaced or removed. The LAN
+marker comes from SMBIOS, not the feature record (a change waits for restart).
+Management uses slirp's fixed private address: it must remain usable even if
+LAN DHCP fails, without ever becoming an internet/DNS fallback.
+"""
+import argparse
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+HEADER = "# Managed by OmacVM bridged networking\n"
+MANAGEMENT = "52:54:00:12:34:56"
+PROFILES = {
+    "management": ("omacvm-management.nmconnection", "e54bb0c1-2201-4523-87c0-011562b8d001"),
+    "lan": ("omacvm-lan.nmconnection", "e54bb0c1-2201-4523-87c0-011562b8d002"),
+}
+
+
+def bridged_mac(entries):
+    markers = []
+    for raw in sorted(entries.glob("11-*/raw")):
+        data = raw.read_bytes()
+        if len(data) < 2 or data[1] < 4 or data[1] > len(data):
+            continue
+        for value in data[data[1]:].split(b"\0"):
+            if value.startswith(b"omacvm.bridged="):
+                markers.append(value[len(b"omacvm.bridged="):].decode("ascii"))
+    if not markers:
+        return None
+    if len(markers) != 1 or not re.fullmatch(r"52:54:00(?::[0-9a-f]{2}){3}", markers[0]) or markers[0] == MANAGEMENT:
+        raise ValueError("invalid or duplicate bridged LAN MAC in SMBIOS")
+    return markers[0]
+
+
+def profile(kind, mac):
+    _, uuid = PROFILES[kind]
+    management = kind == "management"
+    return HEADER + f"""[connection]
+id=OmacVM {'management' if management else 'LAN'}
+uuid={uuid}
+type=ethernet
+autoconnect=true
+autoconnect-priority=999
+autoconnect-retries=0
+
+[ethernet]
+mac-address={mac}
+
+[ipv4]
+method={'manual' if management else 'auto'}
+""" + ("address1=10.0.2.15/24\n" if management else "") + f"""never-default={'true' if management else 'false'}
+ignore-auto-dns={'true' if management else 'false'}
+may-fail={'false' if management else 'true'}
+
+[ipv6]
+method=auto
+never-default={'true' if management else 'false'}
+ignore-auto-dns={'true' if management else 'false'}
+may-fail=true
+"""
+
+
+def owned(path):
+    if path.is_symlink():
+        raise ValueError(f"refusing symlink at {path}")
+    if not path.exists():
+        return False
+    if not path.is_file() or not path.read_bytes().startswith(HEADER.encode()):
+        raise ValueError(f"not an OmacVM profile: {path}")
+    return True
+
+
+def configure(root, mac):
+    directory = root / "etc/NetworkManager/system-connections"
+    marker = root / "run/omacvm/bridged-network"
+    paths = [directory / value[0] for value in PROFILES.values()]
+    # Check all ownership before changing anything. Never remove somebody's
+    # connection just because its name happens to match ours.
+    if mac is None:
+        for path in paths:
+            if not path.is_symlink() and path.is_file() and path.read_bytes().startswith(HEADER.encode()):
+                path.unlink()
+        marker.unlink(missing_ok=True)
+        return
+    for path in paths:
+        owned(path)
+    directory.mkdir(parents=True, exist_ok=True)
+    for kind, (name, _) in PROFILES.items():
+        path = directory / name
+        text = profile(kind, MANAGEMENT if kind == "management" else mac)
+        with tempfile.NamedTemporaryFile(mode="w", dir=directory, prefix=".omacvm-", delete=False) as stream:
+            temporary = Path(stream.name)
+            try:
+                stream.write(text)
+                stream.flush()
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+
+def interfaces(sys_net):
+    return {device.joinpath("address").read_text().strip().lower(): device.name
+            for device in sys_net.iterdir() if device.joinpath("address").is_file()}
+
+
+def activate(mac, sys_net):
+    # Called only for an apply on a VM already booted with its LAN NIC.
+    # Management first removes a possible stale NAT default; DHCP failures
+    # on LAN never change management's never-default profile.
+    devices = interfaces(sys_net)
+    subprocess.run(["nmcli", "connection", "reload"], check=True)
+    for kind, address in (("management", MANAGEMENT), ("lan", mac)):
+        device = devices.get(address)
+        if not device:
+            raise ValueError(f"{kind} NIC is missing")
+        subprocess.run(["nmcli", "connection", "up", "uuid", PROFILES[kind][1], "ifname", device], check=True)
+
+
+def check(mac, sys_net):
+    devices = interfaces(sys_net)
+    management = devices.get(MANAGEMENT)
+    lan = devices.get(mac)
+    if not management or not lan:
+        raise ValueError("management or LAN NIC is missing")
+    for kind, device in (("management", management), ("lan", lan)):
+        active = subprocess.check_output(["nmcli", "-g", "GENERAL.CON-UUID", "device", "show", device], text=True).strip()
+        if active != PROFILES[kind][1]:
+            raise ValueError(f"{kind} NIC is not using its OmacVM profile")
+    for setting in ("ipv4.never-default", "ipv4.ignore-auto-dns", "ipv6.never-default", "ipv6.ignore-auto-dns"):
+        value = subprocess.check_output(["nmcli", "-g", setting, "connection", "show", "uuid", PROFILES["management"][1]], text=True).strip()
+        if value not in ("yes", "true"):
+            raise ValueError(f"management {setting} must stay enabled")
+    lan_default = False
+    ready = []
+    for family, label in (("-4", "IPv4 DHCP"), ("-6", "IPv6 DHCP/RA")):
+        routes = subprocess.check_output(["ip", family, "route", "show", "default"], text=True)
+        if any(re.search(rf"\bdev {re.escape(management)}(?:\s|$)", line) for line in routes.splitlines()):
+            raise ValueError("management NIC has a default route (NAT fallback)")
+        if not any(re.search(rf"\bdev {re.escape(lan)}(?:\s|$)", line) for line in routes.splitlines()):
+            continue
+        lan_default = True
+        addresses = subprocess.check_output(["ip", "-o", family, "address", "show", "dev", lan, "scope", "global"], text=True)
+        if any(not {"tentative", "dadfailed"}.intersection(line.split())
+               for line in addresses.splitlines() if line.strip()):
+            ready.append(label)
+    if not lan_default:
+        raise ValueError("LAN has no DHCP/RA default route; management is deliberately not an internet fallback")
+    if not ready:
+        raise ValueError("LAN has no usable global address matching its DHCP/RA default route (addresses may be tentative or DAD failed); management is deliberately not an internet fallback")
+    print(f"LAN ready on {lan} ({'; '.join(ready)}); private Mac 10.0.2.2 on {management}, no NAT default/DNS fallback")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path("/"), help="profile filesystem root (fixtures)")
+    parser.add_argument("--entries", type=Path, default=Path("/sys/firmware/dmi/entries"))
+    parser.add_argument("--sys-net", type=Path, default=Path("/sys/class/net"))
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--live", action="store_true")
+    action.add_argument("--check", action="store_true")
+    action.add_argument("--off", action="store_true", help="defer cleanup if this start still has a bridged NIC")
+    args = parser.parse_args()
+    mac = bridged_mac(args.entries)
+    if args.check:
+        if mac is None:
+            print("not this start (restart to apply the bridged setting)")
+            return
+        check(mac, args.sys_net)
+        return
+    if args.off and mac is not None:
+        print("bridged networking: off from the next start; current routes unchanged")
+        return
+    configure(args.root, mac)
+    if args.live and mac is not None:
+        activate(mac, args.sys_net)
+    if mac is not None:
+        marker = args.root / "run/omacvm/bridged-network"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(mac + "\n")
+        marker.chmod(0o644)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError, UnicodeError) as error:
+        print(f"omacvm-network: {error}", file=sys.stderr)
+        sys.exit(1)

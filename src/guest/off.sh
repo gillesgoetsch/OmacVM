@@ -19,6 +19,13 @@ off_any() {
   return 1
 }
 
+# Keep this start's routes intact; the always-installed app boot service
+# removes its own profiles at the next start without a bridged SMBIOS marker.
+bridged_network_off() {
+  [[ ! -x $ROOT/usr/local/lib/omacvm/omacvm-network ]] ||
+    "$ROOT/usr/local/lib/omacvm/omacvm-network" --off
+}
+
 # off_lines FILE LINE...: FILE (in the home) without those lines (owner and
 # mode kept)
 off_lines() {

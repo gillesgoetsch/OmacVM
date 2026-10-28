@@ -84,6 +84,7 @@ feature_flag() {   # NAME on|off
     x86-apps) X86=$v ;;
     control-centre) CONTROL=$v ;;
     fast-network) [[ $2 == off ]] || usage "the fast network goes on after the build: omacvm enable fast-network --vm NAME" ;;
+    bridged-network) [[ $2 == off ]] || usage "bridged LAN goes on after the build: omacvm network --vm NAME bridged --interface IF (omacvm network --interfaces lists them)" ;;
     vulkan) [[ $2 == off ]] || usage "Vulkan goes on after the build: omacvm enable vulkan --vm NAME" ;;
     mac-ime) [[ $2 == off ]] || usage "the Mac's input methods go on after the build: omacvm enable mac-ime --vm NAME" ;;
     *) usage "unknown feature '$1' (omacvm features lists them)" ;;

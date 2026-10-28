@@ -26,6 +26,10 @@
 #                                        then where the daemon would come from:
 #                                        "daemon: app", "daemon: source" or
 #                                        "daemon: refused"
+#   Add --bridged-interface enN to install, --status or --remove for a
+#   separate LAN bridge instance. The shared service is never changed.
+#   --interfaces lists vmnet's bridge-capable physical interface names
+#   without administrator privileges.
 # The daemon comes built and signed inside OmacVM.app (Contents/Library/
 # LaunchServices, Developer ID for published apps): no Xcode needed. It is
 # used only when OmacVM's release key vouches for the app's team (below) or
@@ -57,22 +61,7 @@
 # for), 4 the person cancelled the password dialog.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-LABEL=org.omacvm.netd
-BIN=/Library/PrivilegedHelperTools/$LABEL
-PLIST=/Library/LaunchDaemons/$LABEL.plist
-SOCK=/var/run/$LABEL.sock
-LOG=/var/log/$LABEL.log
-STATE=/var/run/$LABEL.state   # the daemon's vmnet back-off (omacvm-netd.c)
-NAT=/var/run/$LABEL.nat       # its VPN NAT: "boot pf-reference interface..." (omacvm-netd.c)
-# After launchctl bootout (as root): the daemon takes its VPN NAT out of pf when
-# launchd stops it; if it could not (killed), its own anchor is emptied and its
-# pf reference given back here. Nothing else in pf is touched.
-NAT_CLEAN='if [ -f '"$NAT"' ]; then
-    /sbin/pfctl -a com.apple/org.omacvm.netd -f /dev/null >/dev/null 2>&1 || true
-    read -r _ t _ < '"$NAT"' || true
-    case $t in ""|0|*[!0-9]*) ;; *) /sbin/pfctl -X "$t" >/dev/null 2>&1 || true ;; esac
-    rm -f '"$NAT"'
-  fi'
+BASE_LABEL=org.omacvm.netd   # also the signed binary's identifier, for every instance
 # Developer ID Application of TEAM, issued by Apple, with the identifier ID
 # (the same text as before teams came from the app: installed daemons stay "ok").
 devid() { devid_of "$1" "identifier \"$2\""; }   # TEAM ID
@@ -88,19 +77,42 @@ TEST_QEMU_ID=org.omacvm.app.test.qemu
 # same team is served too.
 devid_qemus() { devid_of "$1" "(identifier \"$QEMU_ID\" or identifier \"$TEST_QEMU_ID\")"; }   # TEAM
 
-MODE=install APP=""
+MODE=install APP="" BRIDGED_INTERFACE=""
 while (( $# )); do
   case $1 in
     --app) APP=$2; shift 2 ;;
+    --bridged-interface)
+      [[ $# -ge 2 && $2 =~ ^en[0-9]{1,4}$ ]] || { echo "net/mac/install.sh: --bridged-interface needs a physical interface name (enN)" >&2; exit 2; }
+      BRIDGED_INTERFACE=$2; shift 2 ;;
+    --interfaces) MODE=interfaces; shift ;;
     --status) MODE=status; shift ;;
     --remove) MODE=remove; shift ;;
     --trust) MODE=trust; shift ;;
-    -h|--help) sed -n '2,57s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,61s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) echo "net/mac/install.sh: unknown option $1" >&2; exit 2 ;;
   esac
 done
+LABEL=$BASE_LABEL
+[[ -z $BRIDGED_INTERFACE ]] || LABEL=$BASE_LABEL.bridge.$BRIDGED_INTERFACE
+BIN=/Library/PrivilegedHelperTools/$LABEL
+PLIST=/Library/LaunchDaemons/$LABEL.plist
+SOCK=/var/run/$LABEL.sock
+LOG=/var/log/$LABEL.log
+STATE=/var/run/$LABEL.state
+NAT=/var/run/$BASE_LABEL.nat
+# Only the shared daemon owns this PF anchor and enable reference.
+NAT_CLEAN=:
+if [[ -z $BRIDGED_INTERFACE ]]; then
+  NAT_CLEAN='if [ -f '"$NAT"' ]; then
+    /sbin/pfctl -a com.apple/org.omacvm.netd -f /dev/null >/dev/null 2>&1 || true
+    read -r _ t _ < '"$NAT"' || true
+    case $t in ""|0|*[!0-9]*) ;; *) /sbin/pfctl -X "$t" >/dev/null 2>&1 || true ;; esac
+    rm -f '"$NAT"'
+  fi'
+fi
 if [[ $MODE == status || $MODE == remove ]] && [[ -n ${OMACVM_NETD_TEST_ROOT:-} ]]; then
   BIN=$OMACVM_NETD_TEST_ROOT$BIN PLIST=$OMACVM_NETD_TEST_ROOT$PLIST SOCK=$OMACVM_NETD_TEST_ROOT$SOCK
+  LOG=$OMACVM_NETD_TEST_ROOT$LOG
   STATE=$OMACVM_NETD_TEST_ROOT$STATE NAT=$OMACVM_NETD_TEST_ROOT$NAT
 fi
 
@@ -164,6 +176,8 @@ VERSION=$(shasum -a 256 "$HERE/omacvm-netd.c" | cut -c1-16)
 # (and no password).
 PROTOCOL=$(sed -n 's/^#define NETD_PROTOCOL  *\([0-9][0-9]*\).*/\1/p' "$HERE/omacvm-netd.c" | head -1)
 [[ -n $PROTOCOL ]] || { echo "no NETD_PROTOCOL in $HERE/omacvm-netd.c" >&2; exit 1; }
+BRIDGE_PROTOCOL=$(sed -n 's/^#define NETD_BRIDGE_PROTOCOL  *\([0-9][0-9]*\).*/\1/p' "$HERE/omacvm-netd.c" | head -1)
+[[ -n $BRIDGE_PROTOCOL ]] || { echo "no NETD_BRIDGE_PROTOCOL in $HERE/omacvm-netd.c" >&2; exit 1; }
 # Builds from before --protocol (they answer it with their usage): their
 # source's hash and protocol. 3.0.1 to 3.0.3. Older ones are installed again:
 # 3.0.0's (its VPN NAT does not follow a route change) and 2.9's (no VPN NAT).
@@ -176,9 +190,17 @@ daemon_protocol() {   # BIN -> its protocol, nothing for a build it cannot tell
   return 0
 }
 # The installed daemon is this source's build, or one of the same protocol.
-serves() { [[ $("$BIN" --version 2>/dev/null) == "$VERSION" || $(daemon_protocol "$BIN") == "$PROTOCOL" ]]; }
+serves() {
+  if [[ -n $BRIDGED_INTERFACE ]]; then
+    [[ $("$BIN" --bridge-protocol 2>/dev/null) == "$BRIDGE_PROTOCOL" ]] &&
+      [[ $(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$PLIST" 2>/dev/null |
+        awk '{ sub(/^[ \t]+/, "") } b { print; exit } { b = $0 == "--bridged-interface" }') == "$BRIDGED_INTERFACE" ]]
+  else
+    [[ $("$BIN" --version 2>/dev/null) == "$VERSION" || $(daemon_protocol "$BIN") == "$PROTOCOL" ]]
+  fi
+}
 # The daemon inside APP (build-app.sh builds and signs it), if it has one.
-bundled() { [[ -x $1/Contents/Library/LaunchServices/$LABEL ]] && echo "$1/Contents/Library/LaunchServices/$LABEL"; }
+bundled() { [[ -x $1/Contents/Library/LaunchServices/$BASE_LABEL ]] && echo "$1/Contents/Library/LaunchServices/$BASE_LABEL"; }
 # Its code's hash: the same daemon signed again (another app build of the
 # same source) needs no new install, and no password.
 cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p' | head -1; }
@@ -195,6 +217,7 @@ installed_users() {   # the uids it takes connections from, one per line
 status() {
   [[ -x $BIN && -f $PLIST ]] || { echo missing; return 0; }
   local have h s
+  if [[ -n $BRIDGED_INTERFACE ]] && ! serves; then echo old; return 0; fi
   installed_users | grep -qx "$(id -u)" || { echo missing; return 0; }   # only for other Mac users
   if [[ -n $APP ]] || APP=$(app_bundle); then
     # Installed for the team of the app's QEMU (vouched for then; for a
@@ -265,6 +288,8 @@ x() { local s=$1; s=${s//&/&amp;}; s=${s//</&lt;}; printf '%s' "${s//>/&gt;}"; }
 # many as the daemon takes).
 make_plist() {
   local f=$1 req=$2 users; shift 2
+  local bridge_args=""
+  [[ -z $BRIDGED_INTERFACE ]] || bridge_args="    <string>--bridged-interface</string><string>$BRIDGED_INTERFACE</string>"
   users=$(printf '%s\n' "$@" | grep -E '^[0-9]+$' | head -16 |
     while read -r u; do printf '    <string>--user</string><string>%s</string>\n' "$u"; done)
   cat > "$f" <<EOF
@@ -279,6 +304,7 @@ make_plist() {
     <string>--requirement</string>
     <string>$(x "$req")</string>
 $users
+$bridge_args
   </array>
   <!-- launchd holds the socket and starts the daemon on the first connection;
        anyone may connect, the daemon checks the caller's user (- -user) and
@@ -309,6 +335,7 @@ ME=$(id -u)
 # the fast network's addresses on itself, as macOS's sharing does not), or nothing.
 nat_status() {
   local boot b t ifs
+  [[ -z $BRIDGED_INTERFACE ]] || return 0
   boot=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p')
   [[ -r $NAT ]] && read -r b t ifs < "$NAT" || return 0
   [[ $b == "$boot" && -n $ifs && $ifs =~ ^[a-z0-9\ ]+$ ]] && echo "vpn-nat: $ifs"
@@ -328,7 +355,7 @@ decide() {
   DREQ=""
   if QTEAM=$(qemu_team "$APP"); then
     if own_copy "$APP" || feed_lists "$APP" "$QTEAM"; then
-      REQ=$(team_req "$APP") && DREQ=$(devid "$QTEAM" "$LABEL")
+      REQ=$(team_req "$APP") && DREQ=$(devid "$QTEAM" "$BASE_LABEL")
       return 0
     fi
     echo "==> not trusting all of team $QTEAM (above): the fast network takes only this exact build of $(basename "$APP")'s QEMU" >&2
@@ -340,14 +367,35 @@ decide() {
 # the release key vouches for APP's team or this is APP's own copy (the app
 # vouches for itself); else "source" (built here from this source) when
 # Xcode's Command Line Tools are there; else "refused".
+bundled_usable() {
+  local h
+  h=$(bundled "$APP") || return 1
+  [[ -z $BRIDGED_INTERFACE ]] || [[ $("$h" --bridge-protocol 2>/dev/null) == "$BRIDGE_PROTOCOL" ]]
+}
 have_clang() { xcode-select -p >/dev/null 2>&1 && xcrun -f clang >/dev/null 2>&1; }
 daemon_from() {
-  if bundled "$APP" >/dev/null && { [[ -n $QTEAM ]] || own_copy "$APP"; }; then echo app
+  if bundled_usable && { [[ -n $QTEAM ]] || own_copy "$APP"; }; then echo app
   elif have_clang; then echo source
   else echo refused; fi
 }
 
 case $MODE in
+  interfaces)
+    [[ -z $BRIDGED_INTERFACE ]] || { echo "--interfaces does not take --bridged-interface" >&2; exit 2; }
+    # Listing grants no privileges and runs no service. Prefer a built helper,
+    # so published apps do not need Command Line Tools just to show a picker.
+    h=""
+    if [[ -n $APP ]] || APP=$(app_bundle); then h=$(bundled "$APP") || h=""; fi
+    if [[ -z $h || $("$h" --bridge-protocol 2>/dev/null) != "$BRIDGE_PROTOCOL" ]]; then
+      h=/Library/PrivilegedHelperTools/$BASE_LABEL
+      if [[ ! -x $h || $("$h" --bridge-protocol 2>/dev/null) != "$BRIDGE_PROTOCOL" ]]; then
+        have_clang || { echo "listing bridge interfaces needs a current OmacVM.app or Xcode Command Line Tools" >&2; exit 3; }
+        h=$T/omacvm-netd
+        xcrun clang -O2 -Wall -mmacosx-version-min=14.0 -o "$h" "$HERE/omacvm-netd.c" \
+          -framework vmnet -framework Security -framework CoreFoundation -lbsm
+      fi
+    fi
+    "$h" --interfaces; exit $? ;;
   status) status; nat_status; exit 0 ;;
   trust)
     [[ -n $APP ]] || APP=$(app_bundle) || { echo "no OmacVM.app installed (in /Applications or ~/Applications)" >&2; exit 1; }
@@ -391,6 +439,10 @@ case $(status) in
 esac
 decide
 FROM=$(daemon_from)
+if [[ $FROM == refused && -n $BRIDGED_INTERFACE ]] && ! bundled_usable; then
+  echo "this app's network service does not support the required bridge protocol, and building it here needs Xcode's Command Line Tools: update OmacVM.app or install the tools (xcode-select --install)" >&2
+  exit 3
+fi
 if [[ $FROM == refused ]] && bundled "$APP" >/dev/null; then
   echo "the fast network service inside $(basename "$APP") is not run as root: OmacVM's release key does not vouch for this app (no signed update feed lists its team) and this is not the app's own copy of install.sh. Use the app's Fast Network button, or install Xcode's Command Line Tools (xcode-select --install) to build the service from this source" >&2
   exit 3
@@ -406,8 +458,19 @@ if [[ $FROM == app ]]; then
   fi
 else
   [[ $FROM == source ]] || { echo "this OmacVM.app has no fast network service built in, and building it here needs Xcode's Command Line Tools: xcode-select --install (or update the app)" >&2; exit 3; }
+  # A locally compiled fallback is not Developer ID signed by the app's team.
+  # Pin its exact compiled code below instead of carrying the bundled requirement.
+  DREQ=""
   xcrun clang -O2 -Wall -mmacosx-version-min=14.0 -DNETD_VERSION="\"$VERSION\"" -o "$T/omacvm-netd" "$HERE/omacvm-netd.c" \
     -framework vmnet -framework Security -framework CoreFoundation -lbsm
+fi
+if [[ -n $BRIDGED_INTERFACE ]]; then
+  [[ $("$T/omacvm-netd" --bridge-protocol 2>/dev/null) == "$BRIDGE_PROTOCOL" ]] || {
+    echo "this app's network service does not support bridging: update OmacVM.app" >&2; exit 3;
+  }
+  "$T/omacvm-netd" --interfaces | grep -Fxq "$BRIDGED_INTERFACE" || {
+    echo "unsupported bridged interface $BRIDGED_INTERFACE (see --interfaces)" >&2; exit 1;
+  }
 fi
 if [[ -z $DREQ ]]; then
   h=$(cdhash "$T/omacvm-netd")
@@ -428,9 +491,12 @@ as_root 'set -e
   if ! /usr/bin/codesign --verify --strict ${3:+-R="$3"} '"$BIN"' 2>/dev/null; then
     rm -f '"$BIN"'; echo "the installed omacvm-netd failed its signature check: removed" >&2; exit 1
   fi
+  if [ -n "$4" ] && ! '"$BIN"' --interfaces | /usr/bin/grep -Fxq "$4"; then
+    rm -f '"$BIN"'; echo "the selected interface does not support bridging" >&2; exit 1
+  fi
   install -o root -g wheel -m 644 "$2" '"$PLIST"'
   rm -f '"$STATE"'
-  launchctl bootstrap system '"$PLIST" _ "$T/omacvm-netd" "$T/$LABEL.plist" "$DREQ"
+  launchctl bootstrap system '"$PLIST" _ "$T/omacvm-netd" "$T/$LABEL.plist" "$DREQ" "$BRIDGED_INTERFACE"
 # launchd makes the socket a moment after the bootstrap.
 for _ in 1 2 3 4 5 6 7 8 9 10; do [[ $(status) == ok ]] && break; sleep 0.5; done
 [[ $(status) == ok ]] || { echo "the fast network did not start (launchctl print system/$LABEL; $LOG)" >&2; exit 1; }

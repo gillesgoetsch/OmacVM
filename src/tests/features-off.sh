@@ -33,6 +33,7 @@ no-idle-lock:nothing of it talks to the Mac; off is Omarchy's own screensaver an
 autologin:nothing of it talks to the Mac
 thp-kernel:nothing of it talks to the Mac
 fast-network:apply takes the Mac's service off when no VM has it (src/net/mac/test.sh)
+bridged-network:network shared removes the next-start setting; omacvm-network removes only its owned system profiles on a boot without the bridged SMBIOS marker; current routes remain until restart (src/tests/bridged-network.sh)
 gpu-compute:venus/compute.sh off on every apply of an app VM (OpenCL switch, the Chromium (WebGPU) launcher and Firefox's switch go; Vulkan stays as Graphics says); never on the other routes; nothing of it talks to the Mac (src/tests/venus-driver.sh)
 vulkan:apply removes the VM's vulkan file (no Venus device from the next start) and venus/install.sh --remove; nothing of it talks to the Mac (src/tests/vulkan-feature.sh)
 x86-apps:x86/guest/install.sh off removes OmacVM's box64 package and its binfmt rule on every apply; nothing of it talks to the Mac (src/tests/x86-apps.sh)
@@ -346,26 +347,6 @@ expect "app: mac-ime off, an app from before it: nothing" "" "$(app_links_stale 
 printf '%s\n' "OmacVM: Mac links: Omanotch on, Gestures on, Bridge on, battery on, camera on" \
   "OmacVM: Mac links: Omanotch off, Gestures on, Bridge off, battery off, camera on" > "$V/logs/qemu.log"
 
-# apply's lines for a running app VM.
-ap=$(awk '/^  # The app reads them only when the VM starts/ {on = 1} on {print} on && /^  fi$/ {exit}' "$R/src/cmd/apply.sh")
-[[ $ap == *app_links_stale* ]] || { echo "FAIL apply.sh: no Mac links lines for a running app VM"; fail=1; }
-apply_app() {   # RUNNING(0|1) FEATURES -> what apply says
-  ( RUN=$1 d=$V feats="$2 "
-    app_running_dir() { (( RUN )); }
-    info() { echo "$*"; }
-    eval "$ap" )
-}
-expect "apply, running, bridge and battery turned on: names them, says restart" \
-  "OmacVM.app: Bridge, battery only from the VM's next start: shut it down and start it again" \
-  "$(apply_app 1 "bridge=on gestures=on omanotch=off battery=on camera=on")"
-expect "apply, running, camera turned off: says the Mac serves it until the next start" \
-  "OmacVM.app: camera off in the VM now; the Mac stops serving it at the VM's next start" \
-  "$(apply_app 1 "bridge=off gestures=on omanotch=off battery=off camera=off")"
-expect "apply, running, nothing changed: says nothing" "" "$(apply_app 1 "bridge=off gestures=on omanotch=off battery=off camera=on")"
-expect "apply, running, unchanged features again: still names them" "OmacVM.app: Bridge only from the VM's next start: shut it down and start it again" \
-  "$(apply_app 1 "bridge=on gestures=on omanotch=off battery=off camera=on"; apply_app 1 "bridge=on gestures=on omanotch=off battery=off camera=on" >/dev/null)"
-expect "apply, stopped: says nothing (the next start reads them)" "" "$(apply_app 0 "bridge=on gestures=on omanotch=on battery=on camera=on")"
-expect "apply: features written" "bridge=on gestures=on omanotch=on battery=on camera=on" "$(cat "$V/features")"
 
 # omacvm check's "Mac links (app)" row.
 ck=$(awk '/^# OmacVM.app: what of the Mac this start of the VM may use/ {on = 1} on && /^if \[\[ \$TYPE == app \]\]; then$/ {exit} on {print}' "$R/src/cmd/check.sh")

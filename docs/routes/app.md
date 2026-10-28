@@ -741,6 +741,77 @@ from the VM:
   It needs the control centre (on by default). In the VM's terminal:
   `omacvm extra-brightness [on|off]`.
 
+## Bridged LAN (experimental, off by default)
+
+Shared networking remains the default. Bridged mode gives the VM its own LAN
+address instead of sending its LAN traffic through macOS Internet Sharing NAT.
+The selected network must permit an additional machine and DHCP lease.
+Only interfaces vmnet reports as bridge-capable are offered; do not assume
+every Wi-Fi, Ethernet, VPN or managed network supports it.
+
+In the app, choose **Sharing & Devices → Network → Bridged: interface** and
+confirm the LAN exposure. Or, on the Mac:
+
+```sh
+omacvm network --interfaces
+omacvm network --vm NAME bridged --interface IF
+```
+
+The first setup needs the VM running on its existing shared network so OmacVM
+can install the guest's network service. The command never starts a stopped VM.
+macOS asks for administrator approval to install a separate, signed-caller-only
+network service for the selected interface. After successful preparation, a
+stopped VM can change interfaces without being started. Shut down and start
+the VM to apply the choice; neither command restarts it for you.
+
+Two NICs keep LAN traffic and host integration separate:
+
+- **LAN:** vmnet bridged mode on the selected physical interface, a stable
+  per-VM MAC and DHCP/IPv6 router advertisements from that LAN. LAN services
+  reach the VM subject to its firewall. Existing guest firewall policy is
+  retained; OmacVM does not open SSH to the LAN.
+- **Management:** QEMU's private user network, static guest address
+  `10.0.2.15/24`, Mac services at `10.0.2.2`, and the existing localhost-only
+  SSH forward. This NIC supplies neither a default route nor DNS, including
+  when LAN DHCP fails. The router's address is not treated as the Mac.
+
+Bridged traffic does not automatically inherit the Mac's VPN routing or NAT.
+Use shared networking when that behavior is required. An unavailable bridge
+service, malformed setting or unprepared guest blocks startup with a reason;
+OmacVM does not silently change the requested mode to NAT. Losing LAN
+connectivity does not turn the private management NIC into an internet fallback.
+Use the Network row's **Repair…** button to prepare the guest or update the
+selected interface's service again.
+
+Read the pending choice and the last start with:
+
+```sh
+omacvm network --vm NAME --json
+omacvm check --vm NAME
+```
+
+The guest check requires a usable global address and a LAN default route in
+the same address family. Tentative or DAD-failed addresses do not qualify.
+An IPv6-only network can be ready without an IPv4 DHCP lease; the reported
+families make that distinction. Readiness does not prove end-to-end LAN
+connectivity or DNS reachability.
+
+Restore the prior shared-network choice:
+
+```sh
+omacvm network --vm NAME shared
+```
+
+This takes effect on the next start. It preserves the earlier Fast network
+preference and both NICs' saved MAC identities. While bridged mode is selected,
+Fast network is overridden, not removed. The guest removes only OmacVM's own
+bridged profiles on a boot without the bridged NIC. `omacvm uninstall` removes
+this user's per-interface services, retaining other Mac users' grants.
+
+Each interface's helper has its own launchd job, binary, socket, log and back-off
+state (`org.omacvm.netd.bridge.IF`). It does not change Internet Sharing's PF
+rules, the existing shared helper, or other interfaces' bridge instances.
+
 ## Fast network (experimental, off by default)
 
 `omacvm enable fast-network --vm NAME`, or the **Fast network

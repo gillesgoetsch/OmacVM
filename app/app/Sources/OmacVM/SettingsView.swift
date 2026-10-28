@@ -228,6 +228,7 @@ struct SettingsSections: View {
                 MacFolderRow(state: state)
                 USBRow(state: state)
                 FastNetworkRow(state: state)
+                BridgedNetworkRow(state: state)
             }
         }
         .spySection("sharing")

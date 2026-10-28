@@ -39,7 +39,7 @@ final class Runner {
     /// virtio-gpu outputs: the window and up to four more Mac displays.
     static let maxOutputs = 5
 
-    func arguments() -> [String] {
+    func arguments() throws -> [String] {
         let c = config
         // QEMU option values split at commas; a comma in a value is written twice.
         func q(_ s: String) -> String { s.replacingOccurrences(of: ",", with: ",,") }
@@ -70,7 +70,7 @@ final class Runner {
             "-drive", "if=pflash,format=raw,file=\(q(c.efiVars.path))",
             "-drive", "if=none,id=disk,file=\(q(c.disk.path)),format=raw,cache=writeback,discard=unmap",
             "-device", "nvme,serial=omacvm,drive=disk,bootindex=0",
-        ] + networkArguments() + [
+        ] + (try networkArguments()) + [
             // One output per Mac display in full screen (Virtual-1 is the window;
             // QEMU's window code opens the others): the built-in and four more.
             // Venus (Vulkan: the VM's Graphics setting, see Graphics.swift)
@@ -363,6 +363,7 @@ final class Runner {
 
     /// The path the network took at the last start (FastNetwork).
     private(set) var network = FastNetwork.Choice(vmnet: false, mac: FastNetwork.defaultMAC, record: "slirp off")
+    private(set) var bridgedNetwork: BridgedNetworkConfig?
     /// This start on QEMU's user network although the fast network is on, and
     /// why (its service needs an update the person did not make now).
     var userNetwork: String?
@@ -373,8 +374,14 @@ final class Runner {
     /// (a restart of the same start).
     var helpersNote: String?
 
-    private func networkArguments() -> [String] {
+    private func networkArguments() throws -> [String] {
         let c = config
+        bridgedNetwork = try BridgedNetwork.prepare(c)
+        if let bridged = bridgedNetwork {
+            network = FastNetwork.Choice(vmnet: false, mac: FastNetwork.defaultMAC,
+                                         record: "slirp management; bridged \(bridged.interface)")
+            return bridged.arguments(sshPort: c.sshPort)
+        }
         let choice = FastNetwork.choose(for: c, userNetwork: userNetwork)
         network = choice
         if choice.vmnet {
@@ -431,7 +438,7 @@ final class Runner {
         extraBright = Settings.extraBrightnessStart()
         // Draw only what changed: one answer for the guest, QEMU and qemu.log.
         tiles = Settings.presentTilesStart()
-        p.arguments = arguments()
+        p.arguments = try arguments()
         var env = ProcessInfo.processInfo.environment
         env["OMACVM_PRODUCT_NAME"] = Product.name
         // QEMU's FullPanel (omacvm-cocoa-fullpanel.patch): only for this start.
@@ -596,6 +603,8 @@ final class Runner {
             log.write(Data("OmacVM: the firmware waits \(Settings.firmwareWait) s for a key (firmwareWait)\n".utf8))
         }
         try? Data("\(network.record)\n".utf8).write(to: c.folder.appendingPathComponent("logs/network"))
+        let bridgedRecord = bridgedNetwork.map { "bridged \($0.interface) \($0.mac)" } ?? "off"
+        try? Data("\(bridgedRecord)\n".utf8).write(to: c.folder.appendingPathComponent("logs/bridged-network"))
         if !Runner.micAllowed {
             log.write(Data("OmacVM: no microphone permission yet: the VM records nothing until its next start\n".utf8))
         }

@@ -17,6 +17,13 @@ done
 # OmacVM.app's fast network (a system service: macOS asks for the password):
 # off for this Mac user; off the Mac when no other user has it.
 "$R/net/mac/install.sh" --remove || echo "the fast network's service stays (src/net/mac/install.sh --remove takes it off)" >&2
+for plist in /Library/LaunchDaemons/org.omacvm.netd.bridge.en[0-9]*.plist; do
+  [[ -f $plist ]] || continue
+  interface=${plist##*/org.omacvm.netd.bridge.}; interface=${interface%.plist}
+  [[ $interface =~ ^en[0-9]{1,4}$ ]] || continue
+  "$R/net/mac/install.sh" --remove --bridged-interface "$interface" ||
+    echo "the bridged service for $interface stays (src/net/mac/install.sh --remove --bridged-interface $interface takes it off)" >&2
+done
 tccutil reset Accessibility org.omacvm.gestures >/dev/null 2>&1 || true
 tccutil reset ListenEvent org.omacvm.gestures >/dev/null 2>&1 || true
 S="$HOME/Library/Application Support/omacvm"

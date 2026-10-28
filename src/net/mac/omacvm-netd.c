@@ -69,6 +69,9 @@
 //          -framework Security -framework CoreFoundation -lbsm
 // Test without launchd (as root): omacvm-netd --requirement REQ --user UID --socket PATH
 // [--state FILE] (both in a directory only root can write).
+// --bridged-interface enN selects a separate LAN-only instance. --interfaces
+// lists vmnet's supported physical interfaces without root. Bridged instances
+// never watch InternetSharing or own any PF rules or shared subnet.
 
 #include <bsm/libbsm.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -118,6 +121,9 @@
 // change here breaks that, or when a fix must reach every Mac that has it.
 // Builds from before --protocol (3.0.0 to 3.0.3) are protocol 1 (install.sh).
 #define NETD_PROTOCOL 1
+// Optional bridged instances have their own arguments and lifecycle. Shared
+// protocol 1 remains usable by existing apps and installed shared daemons.
+#define NETD_BRIDGE_PROTOCOL 1
 #define MAX_CONNS 32
 #define MAX_PER_UID 16
 #define MAX_USERS 16
@@ -158,6 +164,37 @@ static int vmnetFailures;         // failed starts in a row
 static int liveIfaces;            // our interfaces that are up (or did not answer a stop)
 static int inherited;             // the daemon before us left interfaces up
 static const char *statePath = STATE_FILE;
+static const char *bridgeInterface;
+static char bridgeState[128];
+
+// Only physical Ethernet-style names may become instance paths. vmnet is the
+// authority on whether one of those interfaces actually supports bridging.
+static int bridgeName(const char *name) {
+    if (!name || strncmp(name, "en", 2)) return 0;
+    size_t n = strlen(name);
+    if (n < 3 || n > 6) return 0;
+    for (size_t i = 2; i < n; i++) if (name[i] < '0' || name[i] > '9') return 0;
+    return 1;
+}
+
+static xpc_object_t (*bridgeInterfaces)(void) = vmnet_copy_shared_interface_list;
+static int bridgeInterfacesQuery(const char *wanted) {
+    xpc_object_t list = bridgeInterfaces();
+    if (!list || xpc_get_type(list) != XPC_TYPE_ARRAY) {
+        if (list) xpc_release(list);
+        fprintf(stderr, "omacvm-netd: cannot list bridge-capable interfaces\n");
+        return -1;
+    }
+    int found = 0;
+    for (size_t i = 0; i < xpc_array_get_count(list); i++) {
+        const char *name = xpc_array_get_string(list, i);
+        if (!bridgeName(name)) continue;
+        if (!wanted) puts(name);
+        else if (!strcmp(name, wanted)) found = 1;
+    }
+    xpc_release(list);
+    return wanted ? found : 0;
+}
 static struct conn *live[MAX_CONNS];   // connections with an interface up
 static uid_t users[MAX_USERS];
 static int nusers;
@@ -332,6 +369,7 @@ static pid_t (*findSharing)(void);   // macOS's vmnet service's pid, 0 when not 
 // the service left behind when it stopped (removed when it starts again,
 // for our next start) must not keep us from starting it.
 static int foreignBridge(char *ifname, size_t len) {
+    if (bridgeInterface) return 0;
     pthread_mutex_lock(&lock);
     int ours = liveIfaces > 0 || inherited, failed = vmnetFailures > 0;
     pthread_mutex_unlock(&lock);
@@ -412,6 +450,7 @@ static pid_t (*findSharing)(void) = sharingPid;   // the offline test puts its o
 // bridge stays behind with 192.168.77.1 until the service runs again (for
 // our next start): ours, not another program's.
 static void sharingGone(void) {
+    if (bridgeInterface) return;
     int n = 0;
     pthread_mutex_lock(&lock);
     for (int i = 0; i < MAX_CONNS; i++)
@@ -426,6 +465,7 @@ static void sharingGone(void) {
 // saw counts: a service it cannot find (another name in a later macOS) is
 // looked for again each second, and connections are never closed on a guess.
 static void *watchSharing(void *arg) {
+    if (bridgeInterface) return NULL;
     (void)arg;
     int kq = kqueue();
     pid_t watched = 0;
@@ -819,6 +859,7 @@ static int natStillThere(void) {
 
 // Sets NAT_ANCHOR to what is needed now.
 static void natSync(void) {
+    if (bridgeInterface) return;
     pthread_mutex_lock(&natLock);
     struct natSet want = { 0 };
     char p6[64] = "";
@@ -872,11 +913,13 @@ out:
 
 // Something changed for the NAT (a VM came or left, the service stopped).
 static void natPoke(void) {
+    if (bridgeInterface) return;
     if (natWake[1] >= 0 && write(natWake[1], "x", 1) < 0) { /* full: a wake is pending anyway */ }
 }
 
 // The daemon stops: nothing of ours stays in pf.
 static void natStop(const char *why) {
+    if (bridgeInterface) return;
     pthread_mutex_lock(&natLock);
     natDone = 1;
     natOff(why);
@@ -885,6 +928,7 @@ static void natStop(const char *why) {
 
 // What a daemon before us left (it crashed or was killed): removed.
 static void natStart(void) {
+    if (bridgeInterface) return;
     char b[64 + NAT_MAX * (IFNAMSIZ + 1)] = "";
     int fd = open(natPath, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return;
@@ -1036,12 +1080,17 @@ static int stopInterface(struct conn *c) {
 // time and may still call back on c->q: the caller keeps c alive.
 static int startInterface(struct conn *c) {
     xpc_object_t desc = xpc_dictionary_create(NULL, NULL, 0);
-    xpc_dictionary_set_uint64(desc, vmnet_operation_mode_key, VMNET_SHARED_MODE);
-    xpc_dictionary_set_string(desc, vmnet_start_address_key, NET_FIRST);
-    xpc_dictionary_set_string(desc, vmnet_end_address_key, NET_LAST);
-    xpc_dictionary_set_string(desc, vmnet_subnet_mask_key, NET_MASK);
-    // A VM cannot reach another VM's interface: no ARP games between them.
-    xpc_dictionary_set_bool(desc, vmnet_enable_isolation_key, true);
+    if (bridgeInterface) {
+        xpc_dictionary_set_uint64(desc, vmnet_operation_mode_key, VMNET_BRIDGED_MODE);
+        xpc_dictionary_set_string(desc, vmnet_shared_interface_name_key, bridgeInterface);
+    } else {
+        xpc_dictionary_set_uint64(desc, vmnet_operation_mode_key, VMNET_SHARED_MODE);
+        xpc_dictionary_set_string(desc, vmnet_start_address_key, NET_FIRST);
+        xpc_dictionary_set_string(desc, vmnet_end_address_key, NET_LAST);
+        xpc_dictionary_set_string(desc, vmnet_subnet_mask_key, NET_MASK);
+        // A shared VM cannot reach another VM's interface.
+        xpc_dictionary_set_bool(desc, vmnet_enable_isolation_key, true);
+    }
     // The VM keeps the MAC address QEMU gives it (OmacVM picks one per VM).
     xpc_dictionary_set_bool(desc, vmnet_allocate_mac_address_key, false);
     uuid_t id; uuid_generate_random(id);
@@ -1064,7 +1113,7 @@ static int startInterface(struct conn *c) {
             status = st;
             if (st == VMNET_SUCCESS && param) {
                 maxPacket = (size_t)xpc_dictionary_get_uint64(param, vmnet_max_packet_size_key);
-                natPrefix(xpc_dictionary_get_string(param, vmnet_nat66_prefix_key), natVmnet6, sizeof natVmnet6);
+                if (!bridgeInterface) natPrefix(xpc_dictionary_get_string(param, vmnet_nat66_prefix_key), natVmnet6, sizeof natVmnet6);
             }
         }
         pthread_mutex_unlock(&lock);
@@ -1265,9 +1314,12 @@ static int listenOn(const char *path) {
 
 int main(int argc, char **argv) {
     const char *req = NULL, *path = NULL;
+    int listInterfaces = 0, explicitState = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--version")) { puts(NETD_VERSION); return 0; }
         if (!strcmp(argv[i], "--protocol")) { printf("%d\n", NETD_PROTOCOL); return 0; }
+        if (!strcmp(argv[i], "--bridge-protocol")) { printf("%d\n", NETD_BRIDGE_PROTOCOL); return 0; }
+        if (!strcmp(argv[i], "--interfaces")) { listInterfaces = 1; continue; }
         if (!strcmp(argv[i], "--requirement") && i + 1 < argc) req = argv[++i];
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) {
             const char *arg = argv[++i];
@@ -1277,8 +1329,26 @@ int main(int argc, char **argv) {
             else logf_("more than %d users: uid %ld left out", MAX_USERS, u);
         }
         else if (!strcmp(argv[i], "--socket") && i + 1 < argc) path = argv[++i];
-        else if (!strcmp(argv[i], "--state") && i + 1 < argc) statePath = argv[++i];
-        else { fprintf(stderr, "usage: omacvm-netd --requirement REQ --user UID... [--socket PATH] [--state FILE]\n"); return 2; }
+        else if (!strcmp(argv[i], "--state") && i + 1 < argc) { statePath = argv[++i]; explicitState = 1; }
+        else if (!strcmp(argv[i], "--bridged-interface") && i + 1 < argc) {
+            bridgeInterface = argv[++i];
+            if (!bridgeName(bridgeInterface)) { fprintf(stderr, "omacvm-netd: invalid bridged interface\n"); return 2; }
+        }
+        else { fprintf(stderr, "usage: omacvm-netd --interfaces | --requirement REQ --user UID... [--bridged-interface IF] [--socket PATH] [--state FILE]\n"); return 2; }
+    }
+    if (listInterfaces) {
+        if (req || nusers || bridgeInterface || path || explicitState) return 2;
+        return bridgeInterfacesQuery(NULL) < 0 ? 1 : 0;
+    }
+    if (bridgeInterface) {
+        if (bridgeInterfacesQuery(bridgeInterface) != 1) {
+            fprintf(stderr, "omacvm-netd: unsupported bridged interface %s (see --interfaces)\n", bridgeInterface);
+            return 1;
+        }
+        if (!explicitState) {
+            snprintf(bridgeState, sizeof bridgeState, "/var/run/org.omacvm.netd.bridge.%s.state", bridgeInterface);
+            statePath = bridgeState;
+        }
     }
     if (!req || !nusers) { fprintf(stderr, "omacvm-netd: --requirement and --user are needed\n"); return 2; }
     if (geteuid() != 0) { fprintf(stderr, "omacvm-netd: vmnet needs root\n"); return 1; }
@@ -1290,13 +1360,15 @@ int main(int argc, char **argv) {
     CFRelease(rs);
     signal(SIGPIPE, SIG_IGN);
     loadState();
-    natStart();
-    pthread_t w;
-    if (pthread_create(&w, NULL, watchSharing, NULL) == 0) pthread_detach(w);
-    if (pipe(natWake) == 0) {
-        for (int i = 0; i < 2; i++) { fcntl(natWake[i], F_SETFL, O_NONBLOCK); fcntl(natWake[i], F_SETFD, FD_CLOEXEC); }
-        if (pthread_create(&w, NULL, natWatch, NULL) == 0) pthread_detach(w);
-    } else logf_("VPN NAT: no pipe (%s): off", strerror(errno));
+    if (!bridgeInterface) {
+        natStart();
+        pthread_t w;
+        if (pthread_create(&w, NULL, watchSharing, NULL) == 0) pthread_detach(w);
+        if (pipe(natWake) == 0) {
+            for (int i = 0; i < 2; i++) { fcntl(natWake[i], F_SETFL, O_NONBLOCK); fcntl(natWake[i], F_SETFD, FD_CLOEXEC); }
+            if (pthread_create(&w, NULL, natWatch, NULL) == 0) pthread_detach(w);
+        } else logf_("VPN NAT: no pipe (%s): off", strerror(errno));
+    }
     if (pipe(stopPipe) == 0) {
         for (int i = 0; i < 2; i++) { fcntl(stopPipe[i], F_SETFL, O_NONBLOCK); fcntl(stopPipe[i], F_SETFD, FD_CLOEXEC); }
         struct sigaction sa = { .sa_handler = onStop };

@@ -28,9 +28,18 @@ void fake_freeifaddrs(struct ifaddrs *);
 static enum { ANSWER, LATE, NEVER, FAIL } startMode, stopMode;
 static volatile int stops, lateStops;
 static struct { int dummy; } fakeIface;
+static uint64_t startedMode;
+static int startedSharedKeys, startedIsolation;
+static char startedBridge[IFNAMSIZ];
 
 interface_ref fake_start(xpc_object_t desc, dispatch_queue_t q, vmnet_start_interface_completion_handler_t h) {
-    (void)desc;
+    startedMode = xpc_dictionary_get_uint64(desc, vmnet_operation_mode_key);
+    startedSharedKeys = xpc_dictionary_get_value(desc, vmnet_start_address_key) != NULL ||
+        xpc_dictionary_get_value(desc, vmnet_end_address_key) != NULL ||
+        xpc_dictionary_get_value(desc, vmnet_subnet_mask_key) != NULL;
+    startedIsolation = xpc_dictionary_get_value(desc, vmnet_enable_isolation_key) != NULL;
+    const char *name = xpc_dictionary_get_string(desc, vmnet_shared_interface_name_key);
+    snprintf(startedBridge, sizeof startedBridge, "%s", name ? name : "");
     if (startMode == NEVER) return (interface_ref)&fakeIface;
     if (startMode == FAIL) { dispatch_async(q, ^{ h(VMNET_SHARING_SERVICE_BUSY, NULL); }); return (interface_ref)&fakeIface; }
     xpc_object_t p = xpc_dictionary_create(NULL, NULL, 0);
@@ -402,11 +411,78 @@ static void natTests(void) {
     expect(r == -1 && time(NULL) - t0 <= PFCTL_WAIT + 1 && strstr(out, "took over"), "pfctl hanging: stopped after PFCTL_WAIT");
 }
 
-int main(void) {
+static xpc_object_t fakeBridgeInterfaces(void) {
+    xpc_object_t a = xpc_array_create(NULL, 0);
+    const char *names[] = { "en0", "en7", "utun1", "en0/../../bad", "en12345" };
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) xpc_array_set_string(a, XPC_ARRAY_APPEND, names[i]);
+    return a;
+}
+
+static void bridgeTests(void) {
+    bridgeInterfaces = fakeBridgeInterfaces;
+    expect(bridgeName("en0") && bridgeName("en9999") && !bridgeName("en") &&
+           !bridgeName("en12345") && !bridgeName("en0\n") && !bridgeName("../en0") &&
+           !bridgeName("utun0") && !bridgeName("bridge100"),
+           "bridge instance names: only bounded physical interface names");
+    expect(bridgeInterfacesQuery("en0") == 1 && bridgeInterfacesQuery("en7") == 1 &&
+           bridgeInterfacesQuery("en1") == 0 && bridgeInterfacesQuery("utun1") == 0,
+           "bridging accepts only physical interfaces in vmnet's supported list");
+    char *bad[] = { "netd", "--bridged-interface", "en0/../en1", NULL };
+    char *unsupported[] = { "netd", "--bridged-interface", "en1", NULL };
+    expect(netd_main(3, bad) == 2 && netd_main(3, unsupported) == 1,
+           "invalid and unsupported bridge selections refused before service startup");
+    bridgeInterface = NULL;
+    int out[2]; pipe(out); fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    dup2(out[1], STDOUT_FILENO); close(out[1]);
+    char *listing[] = { "netd", "--interfaces", NULL };
+    int listed = netd_main(2, listing);
+    fflush(stdout); dup2(saved, STDOUT_FILENO); close(saved);
+    char names[128] = ""; ssize_t n = read(out[0], names, sizeof names - 1); close(out[0]);
+    expect(listed == 0 && n > 0 && !strcmp(names, "en0\nen7\n"),
+           "--interfaces lists supported physical names without root or caller authorization");
+    bridgeInterface = "en7";
+    startMode = stopMode = ANSWER;
+    ifName = "bridge100"; ifAddr = NET_FIRST; vmnetFailures = 1;
+    findSharing = sharingRuns;
+    stops = 0;
+    oneConnection();
+    expect(startedMode == VMNET_BRIDGED_MODE && !strcmp(startedBridge, "en7") &&
+           !startedSharedKeys && !startedIsolation && stops == 1 && nconns == 0,
+           "bridged connection: selected LAN interface, no shared subnet or isolation, normal cleanup");
+    char natFile[PATH_MAX];
+    snprintf(natFile, sizeof natFile, "%s.bridge-nat", statePath);
+    const char *oldNatPath = natPath;
+    natPath = natFile;
+    FILE *f = fopen(natPath, "w");
+    fprintf(f, "%ld 4242 en0\n", bootTime()); fclose(f);
+    pfRun = fakePf; pfLog[0] = 0;
+    vmnetFailures = 2; inherited = 3;
+    natStart(); natSync(); natPoke(); natStop("bridge exits"); sharingGone();
+    expect(!pfLog[0] && !natDone && slurp(natPath) && strstr(slurp(natPath), "4242") &&
+           vmnetFailures == 2 && inherited == 3 && watchSharing(NULL) == NULL,
+           "bridged lifecycle never touches shared NAT state, PF anchors or InternetSharing");
+    unlink(natPath); natPath = oldNatPath;
+    bridgeInterface = NULL;
+    ifName = "en0"; ifAddr = "192.168.1.5"; inherited = 0;
+    resetBackoff();
+    stops = 0;
+}
+
+int main(int argc, char **argv) {
+    // Also serve as a deterministic vmnet interface-list helper for installer
+    // tests. This path never starts a real interface or a privileged service.
+    if (argc > 1) {
+        bridgeInterfaces = fakeBridgeInterfaces;
+        return netd_main(argc, argv);
+    }
     if (getenv("NETD_STATE")) statePath = getenv("NETD_STATE");
+    bridgeTests();
     startMode = ANSWER; stopMode = ANSWER;
     double t = oneConnection();
     expect(t >= 0 && t < 1 && nconns == 0 && stops == 1, "vmnet answers: started, stopped, slot freed");
+    expect(startedMode == VMNET_SHARED_MODE && startedSharedKeys && startedIsolation && !startedBridge[0],
+           "default connection keeps shared mode, subnet and isolation");
 
     startMode = NEVER; stops = 0;
     t = oneConnection();

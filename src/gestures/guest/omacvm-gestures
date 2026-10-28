@@ -1282,6 +1282,8 @@ def mac_host():
     Mac is the gateway 192.168.77.1."""
     if os.environ.get("OMACVM_VM_TYPE") != "app":
         return HOST, HOST
+    if not os.environ.get("OMACVM_GESTURES_HOST") and os.path.exists("/run/omacvm/bridged-network"):
+        return "10.0.2.2", "127.0.0.1"
     if not os.environ.get("OMACVM_GESTURES_HOST") and default_gateway() == "192.168.77.1":
         return "192.168.77.1", "192.168.77.1"
     return HOST, "127.0.0.1"

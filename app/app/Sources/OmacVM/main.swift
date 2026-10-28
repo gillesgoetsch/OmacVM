@@ -487,7 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The fast network on, and its service not for this app (after an app
         // update): asked first, never a start that cannot work.
         guard case .decided(let userNetwork) = network else {
-            if FastNetwork.isOn(state.config) {
+            if FastNetwork.isOn(state.config) && !BridgedNetwork.isOn(state.config) {
                 askFastNetwork { [weak self] why in self?.startVM(openGLOnce: openGLOnce, network: .decided(why)) }
             } else {
                 startVM(openGLOnce: openGLOnce, network: .decided(nil))

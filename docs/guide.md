@@ -59,6 +59,7 @@ Return to confirm):
    | Autologin | off |
    | Memory-optimized kernel: Arch Linux ARM's kernel rebuilt with transparent huge pages and MGLRU (its own has neither), for memory-heavy work; a kernel build in the VM: about 10 minutes with 16 CPUs, over an hour with 4 | off |
    | The OmacVM control centre: `omacvm` in Omarchy, also in the Omarchy menu and the bar | on |
+   | Bridged LAN *(experimental, OmacVM.app; choose the physical interface after building with `omacvm network`)* | off |
 
 5. **Your user name, full name and password.** Omarchy's own first-boot setup
    is not used.

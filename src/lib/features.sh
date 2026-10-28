@@ -27,6 +27,7 @@
 # file) and autologin (SDDM's [Autologin] in the VM, also a file OmacVM did
 # not write).
 FEATURES_TSV="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/features.tsv"
+source "$(dirname "${BASH_SOURCE[0]}")/network.sh"
 
 features_load() {
   FN=(); FDEF=(); FSIDES=(); FTAGS=(); FNEEDS=(); FTITLE=(); FSUM=()
@@ -152,8 +153,14 @@ features_real() {
   local real
   DRIFT=()
   if [[ -n ${2:-} ]]; then   # OmacVM.app: the fast-network file is the switch
+    if ! network_read "$2"; then
+      echo "omacvm: invalid bridged-network setting; explicitly select shared networking to clear it" >&2
+      return 2
+    fi
     [[ -s $2/fast-network ]] && real=on || real=off
     feature_drift "$1" fast-network "$real" "the app's Fast network setting"
+    [[ $NETWORK_MODE == bridged ]] && real=on || real=off
+    feature_drift "$1" bridged-network "$real" "the app's bridged LAN setting"
   fi
   real=$(sed -n 's/^OMACVM_REAL_autologin=//p' <<<"$1" | tail -1)
   [[ $real == on || $real == off ]] && feature_drift "$1" autologin "$real" "SDDM's autologin in the VM"

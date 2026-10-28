@@ -164,6 +164,7 @@ esac
 [[ $TYPE == parallels ]] && F[battery]=off
 # The fast network is OmacVM.app's (the other apps have vmnet themselves).
 [[ $TYPE == app ]] || F[fast-network]=off
+[[ $TYPE == app ]] || F[bridged-network]=off
 # Chromium's video through V4L2 needs OmacVM.app's VA-API decoding.
 [[ $TYPE == app ]] || F[chromium-video]=off
 [[ $TYPE == app ]] || F[vulkan]=off
@@ -399,6 +400,22 @@ system && case $TYPE in
   fusion)
     log "VMware Fusion"; "$R/fusion/guest/install.sh" "$U" "$MODE" ${DSCALE:+"$DSCALE"} ;;
 esac
+# The boot-time network service is present in every app VM: a setting may
+# change while it is off. It follows this start's SMBIOS, never next start's
+# feature record; disabling a running bridged VM must not expose a NAT route.
+if [[ $TYPE == app ]] && { system || want bridged-network; }; then
+  install -Dm755 "$R/app/guest/omacvm-network" /usr/local/lib/omacvm/omacvm-network
+  install -Dm644 "$R/app/guest/omacvm-network.service" /etc/systemd/system/omacvm-network.service
+  systemctl daemon-reload
+  systemctl enable omacvm-network.service >/dev/null 2>&1
+  if [[ ${F[bridged-network]} == on ]]; then
+    /usr/local/lib/omacvm/omacvm-network --live || not_set_up bridged-network "bridged LAN profiles"
+  else
+    bridged_network_off || not_set_up bridged-network "bridged LAN profiles (off)"
+  fi
+elif [[ ${F[bridged-network]} == off ]]; then
+  bridged_network_off || not_set_up bridged-network "bridged LAN profiles (off)"
+fi
 # Chromium's video through V4L2: OmacVM.app VMs only (off on the other routes
 # above). Its own step, so the control centre can repair it alone.
 if want chromium-video && [[ $TYPE == app ]]; then

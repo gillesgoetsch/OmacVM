@@ -60,12 +60,16 @@ why() { echo "omacvm-proxy-env: $*" >&2; }
 gw=$(default_gateway)
 i=0
 while [[ -z $gw ]] && (( i < WAIT * 4 )); do sleep 0.25; gw=$(default_gateway); i=$((i + 1)); done
-case $gw in
+# A bridged LAN gateway is not the Mac. The second NIC leaves the private
+# management link available even when LAN DHCP has no default route yet.
+if [[ -f ${OMACVM_BRIDGED_MARKER:-/run/omacvm/bridged-network} ]]; then
+  MAC=10.0.2.2; NET="bridged LAN with private management"
+else case $gw in
   10.0.2.2) MAC=10.0.2.2; NET="QEMU's network" ;;
   192.168.77.1) MAC=192.168.77.1; NET="the fast network" ;;
   '') MAC=""; NET="no network (no default route)" ;;
   *) MAC=""; NET="a network without the Mac's 127.0.0.1 (gateway $gw)" ;;
-esac
+esac; fi
 
 out="" tried=""
 for v in http https all; do

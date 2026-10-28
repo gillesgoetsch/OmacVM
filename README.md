@@ -32,6 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/gillesgoetsch/omacvm/main/install.s
 | ☀️ **HDR and Extra brightness on XDR displays**<br>OmacVM.app on a MacBook Pro's XDR display: HDR and 10-bit colour, and Extra brightness up to twice the Mac's normal white (up to about 1000 nits at full brightness). Extra brightness switches live from Omarchy's Display panel or the app and keeps your setting. Both experimental and off until you turn them on; they use more battery. | 🩺 **One check for everything**<br>`omacvm check` tells you what works and what to fix. |
 | 📷 **Camera and microphone**<br>Video calls in the VM. | 🔄 **Updates in one step**<br>`u` in the control centre updates the Mac and the VM, OmacVM.app included. Checked once a week, signed with OmacVM's release key, with a way back. |
 | 📋 **Copy and paste, both ways**<br>Plus a Mac folder at `~/Mac` (OmacVM.app, off by default), Night Shift, True Tone and the Mac's clock format. | 🔐 **Token-secured bridge to the Mac**<br>Only your own VM can talk to the Mac side, proven with a secret token. |
+| **Bridged LAN networking** *(experimental, OmacVM.app, off by default)*<br>The VM gets its own LAN address through a selected physical interface, without Internet Sharing NAT. | **Separate private management**<br>SSH and Mac integrations retain a private link. [Setup and security implications](docs/routes/app.md#bridged-lan-experimental-off-by-default). |
 
 **[See the full compatibility list per app below](#which-app), or [every feature in detail](docs/features.md).**
 

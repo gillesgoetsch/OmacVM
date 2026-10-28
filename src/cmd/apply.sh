@@ -83,6 +83,16 @@ while (( $# )); do
     *) echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2 ;;
   esac
 done
+# Only network's explicit interface selection can prepare a guest before its
+# bridged file exists. Reject other enables before resolving/starting a VM.
+for ((k = 0; k < ${#SETN[@]}; k++)); do
+  if [[ ${SETN[$k]} == bridged-network && ${SETV[$k]} == on && ${OMACVM_NETWORK_PREPARE:-0} != 1 ]]; then
+    if [[ -z $VM ]] || ! nd=$(app_dir "$VM" 2>/dev/null) || ! network_read "$nd" || [[ $NETWORK_MODE != bridged ]]; then
+      echo "omacvm apply: choose the LAN interface with: omacvm network --vm NAME bridged --interface IF (omacvm network --interfaces lists them)" >&2
+      exit 2
+    fi
+  fi
+done
 # Steps for the control centre's progress (step, lib/mac.sh).
 (( OMA_STEPS )) || OMA_STEPS=$(( MAC ? 4 : 3 ))
 macos=$(sw_vers -productVersion 2>/dev/null)
@@ -167,7 +177,7 @@ fi
 # What was switched outside OmacVM keeps its real state: the fast network
 # (the app's button writes the fast-network file) and autologin (SDDM, also an
 # Omarchy install's own file). An apply without --feature for them keeps it.
-features_real "$probe" "$rd"
+features_real "$probe" "$rd" || exit $?
 if [[ -n $had ]]; then
   while IFS= read -r l; do [[ -z $l ]] || info "$l"; done < <(features_drift_lines "kept, the record follows")
   # What the VM has now is the real state: a rollback goes back to it, not
@@ -680,6 +690,10 @@ if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
   feats=$(for ((i = 0; i < ${#FN[@]}; i++)); do printf '%s=%s ' "${FN[$i]}" "${FV[$i]}"; done)
   # The app reads them only when the VM starts: say which ones wait for that.
   app_features_write "$d" "${feats% }" || true   # 1 = unchanged (set -e)
+  if ! on bridged-network && [[ -e $d/bridged-network ]]; then
+    network_disable "$d"
+    info "bridged LAN: off from the VM's next start; this start's routes stay unchanged"
+  fi
   if app_running_dir "$d"; then
     l=$(app_links_stale "$d" "${feats% }" on)
     [[ -z $l ]] || info "OmacVM.app: $l only from the VM's next start: shut it down and start it again"

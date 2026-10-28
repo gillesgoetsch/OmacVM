@@ -267,6 +267,12 @@ app_ssh_key() {
 
 app_dir() {
   local d
+  if [[ -n ${OMACVM_APP_VM_DIR:-} ]]; then
+    d=$OMACVM_APP_VM_DIR
+    [[ -f $d/vm.env && $(app_env "$d" NAME) == "$1" ]] || return 1
+    echo "$d"
+    return 0
+  fi
   while IFS= read -r d; do
     [[ $(app_env "$d" NAME) == "$1" || $(basename "$d") == "$1" ]] && { echo "$d"; return 0; }
   done < <(app_vm_dirs)

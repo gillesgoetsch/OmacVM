@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## Unreleased
+
+- **Bridged LAN for OmacVM.app (experimental, off by default).** Select a
+  bridge-capable physical interface for a per-VM LAN NIC, with its own DHCP
+  address and stable MAC. SSH and Mac integrations keep a separate private
+  management link, never an internet or DNS fallback. Existing shared networking
+  stays unchanged. Initial setup needs the VM running and administrator approval;
+  changes apply at the next start. `omacvm network` and the app's Network row
+  configure it; `omacvm check` reports the selected and running paths.
+  Guest readiness requires a usable global address matching a LAN default route;
+  IPv6-only readiness is reported separately from IPv4 DHCP.
+
 ## 3.2.9
 
 AirPods, Control Center and the play keys play and pause what plays in the VM. In an HDR VM,

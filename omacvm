@@ -10,6 +10,7 @@
 #   omacvm disable FEATURE...    ... or off
 #   omacvm resources --vm NAME   a VM's CPUs and memory: see them, change them
 #   omacvm graphics --vm NAME    an OmacVM.app VM's graphics: OpenGL, Vulkan or Automatic
+#   omacvm network --vm NAME     shared or bridged LAN networking (OmacVM.app)
 #   omacvm fullscreen --vm NAME  an OmacVM.app VM's full screen: notch via Omanotch (standard)
 #                                or including notch, no Omanotch needed (experimental; = omacvm notch)
 #   omacvm gestures              the Mac's ⌃⌥ Esc, Swipe out to macOS and Magic Mouse swipe (every route)
@@ -82,7 +83,7 @@ if [[ $R != */Contents/Resources/omacvm && -z ${OMACVM_APP_COPY:-} && -z ${OMACV
 fi
 case $cmd in
   "") exec "$C/home.sh" ;;
-  build|apply|check|vms|update|resources|graphics|notch|gestures) exec "$C/$cmd.sh" "$@" ;;
+  build|apply|check|vms|update|resources|graphics|network|notch|gestures) exec "$C/$cmd.sh" "$@" ;;
   fullscreen) exec "$C/notch.sh" "$@" ;;
   features|enable|disable) exec "$C/features.sh" "$cmd" "$@" ;;
   uninstall) exec "$R/src/mac/uninstall.sh" "$@" ;;
@@ -92,7 +93,7 @@ case $cmd in
     case ${1:-} in
       "") sed -n '2,28s/^# \{0,1\}//p' "$0" ;;
       features|enable|disable) exec "$C/features.sh" "$1" --help ;;
-      build|apply|check|vms|update|resources|graphics|notch|gestures) exec "$C/$1.sh" --help ;;
+      build|apply|check|vms|update|resources|graphics|network|notch|gestures) exec "$C/$1.sh" --help ;;
       fullscreen) exec "$C/notch.sh" --help ;;
       uninstall) exec "$R/src/mac/uninstall.sh" --help ;;
       report) exec "$C/report.sh" --help ;;

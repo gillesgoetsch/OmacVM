@@ -16,6 +16,7 @@ battery	battery/**
 thp-kernel	kernel/build-thp-kernel.sh kernel/thp-pkgbuild.py kernel/alarm.sh
 control-centre	control/**
 fast-network	net/**
+bridged-network	app/guest/omacvm-network*
 chromium-video	vdec/**
 gpu-compute	app/guest/venus/compute.sh app/guest/venus/opencl.sh app/guest/venus/webgpu.sh app/guest/venus/omacvm-chromium-webgpu* app/guest/venus/omacvm-webgpu.js
 vulkan	app/guest/venus/**

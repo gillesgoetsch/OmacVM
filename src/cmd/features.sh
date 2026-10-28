@@ -64,6 +64,15 @@ done
 [[ $MODE != features || ${#WANT[@]} == 0 ]] || usage "features takes no feature names (enable/disable do)"
 (( ! INVM )) || [[ $MODE == features ]] || usage "--in-vm goes with omacvm features"
 (( ! INVM || ! JSON )) || usage "--in-vm or --json, not both"
+# LAN selection is explicit and never inferred from a default interface.
+# Do this before resolve_vm start: a usage error must not boot a VM.
+if [[ $MODE == enable && " ${WANT[*]:-} " == *" bridged-network "* ]]; then
+  usage "choose a LAN interface: omacvm network --vm NAME bridged --interface IF (omacvm network --interfaces lists them)"
+fi
+if [[ $MODE == disable && ${#WANT[@]} == 1 && ${WANT[0]} == bridged-network ]]; then
+  [[ -n $VM ]] || usage "which VM? --vm NAME"
+  exec "$R/src/cmd/network.sh" --vm "$VM" --vm-type "${TYPE:-app}" shared
+fi
 export OMA_KEY=~/.ssh/omacvm
 # The control centre in the VM (src/control/guest/open.sh): opened in the
 # desktop session of a running VM; a stopped one is not started (nobody would
@@ -132,7 +141,7 @@ else
   # The record (an OmacVM.app VM's features file), then what was switched
   # outside OmacVM as it really is; the record is fixed to match.
   features_read_record "$rd"
-  features_real "$probe" "$rd"
+  features_real "$probe" "$rd" || exit $?
   if [[ -n ${DRIFT[*]+x} ]] && (( newer )); then
     FIXED="the record was not fixed (the VM has a newer OmacVM than this omacvm)"
   elif [[ -n ${DRIFT[*]+x} ]]; then
@@ -154,6 +163,9 @@ available() { feature_available "$1"; }   # INDEX -> status 0 if this Mac and VM
 # set_on INDEX on|off, with what it needs or what needs it
 set_on() {
   local i=$1 v=$2 j
+  if [[ ${FN[$i]} == bridged-network && $v == on && ${OLD[$i]} != on ]]; then
+    usage "choose a LAN interface: omacvm network --vm \"$VM\" bridged --interface IF (omacvm network --interfaces lists them)"
+  fi
   FV[$i]=$v
   if [[ $v == on && ${FNEEDS[$i]} != - ]]; then
     j=$(feature_index "${FNEEDS[$i]}") && [[ ${FV[$j]} == off ]] && set_on "$j" on
