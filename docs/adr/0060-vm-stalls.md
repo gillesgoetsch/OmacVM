@@ -52,12 +52,19 @@ the guest, under a call-like load, found:
    freed there after `Invalidate`. What the Mac decodes and encodes is asked
    once when QEMU starts, beside the GPU thread.
 3. **Bound what a picture can hold up.** One time limit per decoded picture,
-   250 ms (at least 4 times the slowest picture seen at normal pressure, at
-   most 500 ms): given up by the poll, waited for that long at most, and the
-   sync thread lets a fence go at its pictures' limit, marking them dropped
-   so that they are never written into planes the guest may already use
-   again. That video keeps its last picture while its decoder starts; the
-   desktop goes on.
+   250 ms (`OMACVM_VIDEO_GIVEUP_MS`, at most 500): given up by the poll,
+   waited for that long at most, and the sync thread lets a fence go at its
+   pictures' limit, marking them dropped so that they are never written into
+   planes the guest may already use again. That video keeps its last picture
+   while its decoder starts; the desktop goes on. Up to 16 pictures per
+   decoder are on their way (was 4), so a stream's first pictures wait for
+   its session instead of being given up, and the Mac's video decoder
+   service is connected once when QEMU starts (its first connection took
+   230-390 ms on the mini). Calibration (Mac mini M4, a call row, pressure
+   warn and normal): each of 212 streams' slowest picture, END_FRAME to
+   picture in, its session's start included: median 3.2 ms, p99 29 ms, max
+   47 ms, so the limit is more than 5 times the slowest seen; 0 pictures
+   given up. Not measured on an M4 Max or a MacBook Air.
 4. **The cause itself** is the Mac's memory: the app gives the VM's cold
    file cache back while macOS compresses it (ADR 0059).
 
