@@ -3,6 +3,21 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+- **A video that starts no longer holds up the VM's whole display.** Starting a hardware video
+  decoder asks the Mac's video service, and QEMU did that on its graphics thread, which every
+  app in the VM, the desktop and their frames wait for: 80-110 ms per new video on a Mac mini
+  in a video call (a call's tiles start new decoders every few seconds), 1.6 s when the Mac
+  was short of memory. Each decoder now starts, changes and ends its session on its own
+  queue, beside the graphics thread. A decoded picture that is not in within 250 ms
+  (`OMACVM_VIDEO_GIVEUP_MS`) is given up: that video keeps its last picture until its decoder
+  is there, everything else goes on, and a picture given up is never written later into a
+  surface the app may already use again. In a test where a decoder took 1.6 s to start, the
+  app's frame commands returned in 0.07 ms and another app's frame was done after 250 ms
+  (before: the whole graphics thread waited the 1.6 s). Needs only the new app, from the VM's
+  next start.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
