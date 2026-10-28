@@ -928,12 +928,13 @@ a VM that runs across the update keeps the old place until it is shut down.
 ### Limits
 
 - macOS's own dialog (a command too long for the panel, the Mac-password
-  fallback if turned on, `"touch_id_panel": false`) cannot be placed by OmacVM. coreauthd
-  shows it on the display of the front app's key window, not the pointer's
-  or the main display's (measured, `docs/notes/findings.md`): with the VM in
-  full screen on two displays, on the main window's display. Making the
-  pointer's window key before the dialog would move it, but changes who
-  holds the keyboard; not done.
+  fallback if turned on, `"touch_id_panel": false`) cannot be placed by
+  OmacVM. coreauthd shows it on the display of QEMU's key (= main) window,
+  not the pointer's or the main display's (measured, `docs/notes/findings.md`;
+  no row yet tells key and main window apart): with the VM in full screen on
+  two displays, on the main window's display. Making the pointer's window key
+  before the dialog might move it, but changes who holds the keyboard; not
+  done.
 - Focus moved with the keyboard only (Hyprland's focus to another output, the
   Mac's pointer left where it was): the panel shows where the Mac's pointer
   is.

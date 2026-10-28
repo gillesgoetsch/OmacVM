@@ -308,17 +308,19 @@ else running. "VM %" is the VM's speed against the Mac's.
 
 coreauthd puts its own Touch ID dialog (an `LAContext` evaluated by a process
 without a window, as OmacVM Bridge does; its window is coreautha's, layer
-1000) on the display of the front app's key window. Not the display under the
-pointer, and not the main display. Mac mini (macOS 27), two virtual displays
-(A main, B), OmacVM.app 3.2.9's QEMU in front: QEMU's main window full screen
-on A and its window for B full screen on B, pointer on B: the dialog on A;
-main window on B: on B; one window on B, pointer on A or on B: on B.
+1000) on the display of QEMU's key window. In every row below that was also
+QEMU's main window (QEMU hands the keyboard back to it), so these rows do not
+tell key and main window apart. Not the display under the pointer, and not
+the main display. Mac mini (macOS 27), two virtual displays (A main, B),
+OmacVM.app 3.2.9's QEMU in front: QEMU's main window full screen on A and its
+window for B full screen on B, pointer on B: the dialog on A; main window on
+B: on B; one window on B, pointer on A or on B: on B.
 
 So for an OmacVM.app VM in full screen on two displays, macOS's dialog (the
 fallback when the command is too long for OmacVM's panel, the Mac-password
 fallback if turned on, the panel turned off) shows on the main window's
-display, which is the
-display the VM started on. OmacVM's own panel follows the pointer instead
-(ADR 0041, 3.2.11 addendum). Moving the dialog would mean making the
-pointer's window key before asking, which changes who holds the keyboard.
+display, which is the display the VM started on. OmacVM's own panel follows
+the pointer instead (ADR 0041, 3.2.11 addendum). Moving the dialog would at
+least mean making the pointer's window key before asking, which changes who
+holds the keyboard.
 
