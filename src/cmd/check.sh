@@ -434,6 +434,39 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     else ok "graphics memory" "${peak:+peak about $(gb "$peak"), }no fixed limit (runaway guard $(gb "$budget"))"; fi
   fi
   FEATURE=""
+  # The VM's memory, and what it gave back to the Mac this run: OmacVM.app
+  # asks the VM for its cold file cache when macOS compresses the VM, and for
+  # its whole file cache when macOS warns (logs/memory-giveback, ADR 0059).
+  # Never a failure: a hint when macOS holds much compressed and the VM had
+  # little left to give.
+  vmm=$(app_env "$(dirname "$(dirname "$miclog")")" MEM_MB); [[ $vmm =~ ^[0-9]+$ ]] || vmm=""
+  mg="$(dirname "$miclog")/memory-giveback"
+  mgv() { sed -n "s/^$1=//p" "$mg" 2>/dev/null | head -1; }
+  what="${vmm:+$(gb "$vmm")}"
+  # What the VM said it gave (given_mb); for the warning's drop, which says
+  # nothing, how much QEMU's footprint fell in the minute after.
+  mgn=$(mgv count) mgb=$(mgv given_mb) mga=$(mgv at) mgw=$(mgv trigger)
+  [[ $mgb =~ ^[0-9]+$ ]] || mgb=$(mgv returned_mb)
+  if [[ $(mgv off) == 1 ]]; then
+    what="${what:+$what; }its balloon does not report free pages: what it frees stays on the Mac this run"
+  elif [[ $mgn =~ ^[1-9][0-9]*$ && $mgb =~ ^[0-9]+$ && $mga =~ ^[0-9]+$ ]]; then
+    case $mgw in
+      compressing) mgw="macOS was compressing the VM" ;;
+      warning|critical) mgw="macOS was short of memory" ;;
+      *) mgw="" ;;
+    esac
+    # How many this run, and what the last one gave (not that many times as much).
+    if [[ $mgn == 1 ]]; then mgl="1 give-back this run: $(gb "$mgb")"; else mgl="$mgn give-backs this run, the last $(gb "$mgb")"; fi
+    what="${what:+$what; }$mgl at $(date -r "$mga" +%H:%M)${mgw:+ ($mgw)}"
+    pgsz=$(sysctl -n hw.pagesize 2>/dev/null) ram=$(sysctl -n hw.memsize 2>/dev/null)
+    stored=$(vm_stat 2>/dev/null | awk -F: '$1 == "Pages stored in compressor" { gsub(/[ .]/, "", $2); print $2 }')
+    if (( mgb < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then
+      what="$what; macOS holds $(gb $(( stored * pgsz / 1048576 ))) compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)"
+    fi
+  else
+    what="${what:+$what; }nothing given back this run"
+  fi
+  [[ -n $what ]] && ok "VM memory" "$what"
 fi
 # The GPU path an app VM took this run (qemu.log starts fresh with each run):
 # fences from the sync thread or polled, frames as IOSurfaces or with a

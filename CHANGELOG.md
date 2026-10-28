@@ -5,6 +5,9 @@ in more words.
 
 ## 3.2.11 (unreleased)
 
+An OmacVM.app VM gives memory back to the Mac while macOS compresses it. Needs only the app
+update.
+
 - **No repeated last row at the bottom of videos.** In an OmacVM.app VM, Google Chrome on
   Wayland (as Omarchy starts it) draws hardware-decoded video straight from the decoder's
   frames, and so does mpv with `hwdec=vaapi`: the picture came out slightly squeezed, with its
@@ -45,6 +48,27 @@ in more words.
   on again (Omarchy has Hyprland wake every display at any input), and the Mac turned it off
   again a few seconds later, over and over. While a display is paused the VM's display agent
   now holds that wake-up off and puts it back as it was afterwards. Needs Update VM.
+- **The VM gives its old file cache back while macOS compresses it (#590).** Linux keeps every
+  file it read in its page cache. To the Mac that is the VM's own memory, which macOS can
+  compress but never drop, although its own file cache already has the same files. The app
+  dropped the VM's cache only when macOS warned that memory was short, and macOS says "normal"
+  while it compresses, so the cache stayed while macOS compressed it. Now the app looks every
+  5 seconds at how much of the VM macOS holds compressed and how much macOS compresses; when
+  macOS is compressing the VM, the VM gives back its file cache read once and not again,
+  except the newest 1 GB (an eighth of a VM under 8 GB). With the memory-optimized kernel,
+  which sorts its cache by age instead, that is nearly all of its file cache. Programs' memory
+  and zram stay; at most once in 10 minutes, less often when little comes back. On a MacBook
+  Air (8 GB, a 4 GB VM, memory pressure "normal" all along), after the VM read 2.6 GB of
+  files: 3.2.10 left the VM's footprint at 6.6 GB for 10 minutes while macOS compressed it;
+  now the app asked about 6 seconds after macOS began compressing the VM, the VM gave back
+  1.2 GB, and its footprint fell from 6.7 to 5.7 GB within 5 seconds. Chrome, its files read
+  once 30 seconds before a give-back: on the Mac mini it started in 1.02 s with and without
+  the give-back, on the Air in 349 ms instead of 310 ms (median of 3). `omacvm check` has a
+  "VM memory" line, `logs/qemu.log` two lines per give-back. Needs only the new app, from the
+  VM's next start; no Update VM. UTM, Parallels and Fusion: nothing changes.
+  This does not explain all of the 40-50 GB of the report. Read again later, that VM showed
+  40 GB in Activity Monitor while Linux in it used about 22 GB, 8.2 GB of that the cache this
+  gives back (but for the newest 1 GB). Where the rest of the 40 GB goes is being looked into.
 
 ## 3.2.10
 
