@@ -1152,6 +1152,14 @@ int main(void)
       submit(1);
       send_picture(13, 4, 0);
       double p4 = read_luma(R_Y(4), 1, 0);
+      /* a fresh session that took longer than the time limit to start (the
+       * runtime build's mini, swapping: 506 ms) gives its first picture up:
+       * the key frame once more, its session is there by then */
+      if (p4 <= 30) {
+         printf("  the new decoder's first picture was given up (%.1f dB): once more\n", p4);
+         send_picture(13, 4, 0);
+         p4 = read_luma(R_Y(4), 1, 0);
+      }
       snprintf(line, sizeof(line), "a decoder and a buffer destroyed while the session starts: "
                "%.2f ms; afterwards both decode again (%.1f / %.1f dB)", gone_ms, p3, p4);
       check(gone_ms < FRAME_MS && p3 > 30 && p4 > 30, line);
