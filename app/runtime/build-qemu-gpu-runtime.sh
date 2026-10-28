@@ -1397,6 +1397,10 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 # OmacVM: a program pipeline the GL finds invalid in the current state (sampler units not
 # set yet, an incomplete framebuffer) is logged; it ended the guest app's whole context.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-log.patch"
+# OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
+# driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
+# squeezed with its last row repeated as a strip at the bottom.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-resource-logical-size.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
