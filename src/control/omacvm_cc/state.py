@@ -727,7 +727,7 @@ def gpu_memory_row(answer: dict | None, vm_type: str, supported: bool | None = T
     note = f"{gb(now)} (peak {gb(peak)})"
     # macOS's "warn" alone is no problem of the VM's: a Mac that gives a VM
     # half its memory sits there for good (a 16 GB Mac mini with an 8 GB VM,
-    # 34 % free, 2026-10-08), and the app already hands the VM's cache back.
+    # 34 % free, 2026-10-08), and the app already drops the VM's file cache.
     # Something for the person only once macOS is critical or graphics
     # memory was refused or lost.
     warn = []
@@ -743,7 +743,7 @@ def gpu_memory_row(answer: dict | None, vm_type: str, supported: bool | None = T
         return Row(GPU_MEMORY_FEATURE, True, Status.NEEDS_PERSON, "; ".join([note] + warn), checks=mine)
     if answer.get("pressure") == "warn":
         return Row(GPU_MEMORY_FEATURE, True, Status.WORKS,
-                   f"{note}; macOS memory is tight, the VM gives back what it can", checks=mine)
+                   f"{note}; macOS memory is tight, the VM drops its file cache", checks=mine)
     return Row(GPU_MEMORY_FEATURE, True, Status.WORKS, note, checks=mine)
 
 
