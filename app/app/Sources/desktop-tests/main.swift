@@ -158,6 +158,11 @@ expect(MemoryGiveBack.startLine(pagesGoBack: false) == "OmacVM: VM memory: give-
        + "(this QEMU keeps given-back pages); macOS's memory warning still drops the VM's file cache", "the line when off")
 expect(MemoryGiveBack.startLine(pagesGoBack: true) == "OmacVM: VM memory: give-back while macOS compresses: on "
        + "(this QEMU gives the pages back to macOS)", "the line when on")
+// The settings' words (GPUMemory.explanation) promise QEMU's footprint, not memory back to the Mac, and no give-back
+// while macOS compresses (off with 3.2.11's QEMU).
+let says = GPUMemory.explanation
+expect(says.contains("QEMU's footprint") && says.contains("macOS can keep holding those pages")
+       && !says.contains("gives back") && !says.contains("compresses"), "the settings' words: the footprint, no give-back")
 
 // The user's report: 64 GB Mac, 42 GB VM; footprint 51 GB, resident 27-30 GB, macOS compressing at "normal".
 var u = withFix(64 * GB)
