@@ -215,6 +215,9 @@ jobs:
       - name: The VM gives its cold file cache back while macOS compresses it (giveback.sh, the app's trigger, omacvm check's row)
         run: src/tests/memory-giveback.sh
 
+      - name: omacvm check says when the VM stood still (logs/vm-stalls)
+        run: src/tests/vm-stalls.sh
+
       - name: apply's SSH key in the VM (the user's ~/.ssh written as the user)
         run: src/tests/ssh-key.sh
 
