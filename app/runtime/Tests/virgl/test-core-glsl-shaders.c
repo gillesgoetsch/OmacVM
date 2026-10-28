@@ -105,6 +105,23 @@ int main(void)
                      "VERT\nPROPERTY SEPARABLE_PROGRAM 1\nDCL IN[0]\nDCL OUT[0], POSITION\n"
                      "DCL OUT[1], GENERIC[0]\nMOV OUT[0], IN[0]\nMOV OUT[1], IN[0]\nEND\n",
                      &key, "layout", NULL, have_gl);
+   /* and redeclares the gl_PerVertex blocks it uses, also as the last stage: Apple's GL
+    * links a separable shader only then (#567, virgl-shader-separable-pervertex.patch) */
+   memset(&key, 0, sizeof(key));
+   failed |= convert("separable vertex shader, last stage: gl_PerVertex",
+                     "VERT\nPROPERTY SEPARABLE_PROGRAM 1\nDCL IN[0]\nDCL OUT[0], POSITION\n"
+                     "DCL OUT[1], PSIZE\nMOV OUT[0], IN[0]\nMOV OUT[1].x, IN[0].xxxx\nEND\n",
+                     &key, "out gl_PerVertex {\n vec4 gl_Position;\n out float gl_PointSize;\n};",
+                     NULL, have_gl);
+   memset(&key, 0, sizeof(key));
+   failed |= convert("separable geometry shader: gl_PerVertex in and out",
+                     "GEOM\nPROPERTY GS_INPUT_PRIMITIVE TRIANGLES\n"
+                     "PROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+                     "PROPERTY GS_MAX_OUTPUT_VERTICES 1\nPROPERTY GS_INVOCATIONS 1\n"
+                     "PROPERTY SEPARABLE_PROGRAM 1\n"
+                     "DCL IN[][0], POSITION\nDCL OUT[0], POSITION\n"
+                     "IMM[0] UINT32 {0, 0, 0, 0}\nMOV OUT[0], IN[0][0]\nEMIT IMM[0].xxxx\nEND\n",
+                     &key, "} gl_in[];\nout gl_PerVertex {\n vec4 gl_Position;\n };", NULL, have_gl);
 
    /* Integer render target written from a flat input. */
    memset(&key, 0, sizeof(key));

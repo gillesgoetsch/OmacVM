@@ -1,0 +1,78 @@
+virglrenderer: a program pipeline that fails validation is logged, the context lives
+
+What: when glValidateProgramPipeline says invalid, vrend logs the GL's reason in one line
+(three lines per context) and keeps the pipeline; a draw the GL then refuses is skipped
+like any refused GL call (virgl-gl-error-skip-command.patch).
+OMACVM_VIRGL_SHADER_FAILURES=lose keeps upstream's way: the context error
+ILLEGAL_PROGRAM_PIPELINE. This also changes virgl-query-results-init.patch's "a real
+validate failure still reports it": only with "lose" now.
+Why: vrend validates a new pipeline at its first draw, against the GL state of that
+moment, and a failure ended the guest app's whole GL context. The state is often not the
+draw's yet: vrend sets the sampler units only after validating, so every sampler is on
+unit 0 then, and a fragment shader with a 2D and a cube sampler fails ("Samplers of
+different types use the same texture image unit"; the GL spec asks every GL to fail
+that). Apple's GL also fails it while the draw framebuffer is incomplete ("Validation
+Failed: Current draw framebuffer is invalid."). Neither says anything about the pipeline.
+The path never ran on the Mac before virgl-shader-separable-pervertex.patch: no separable
+program linked (#567).
+Upstream: upstream reports the context error (so Linux hosts likely lose such contexts
+too; not checked there); not sent.
+Test: Tests/virgl/test-separable-pervertex.c: a separable fragment shader with a 2D and
+a cube sampler draws the sum of both textures; a new separable pipeline's first draw into
+a framebuffer with a 4-sample second colour buffer is lost, the next one with a complete
+framebuffer draws; each logs one line and reports no context error, and a context logs
+its own three lines (another context's lines do not use them up). With
+OMACVM_VIRGL_SHADER_FAILURES=lose both report the context error, as upstream. Fails
+without this patch (with virgl-shader-separable-pervertex.patch in).
+Tests/virgl/test-sysval-block.c: a validate status the GL leaves unwritten logs no such
+line (virgl-query-results-init.patch).
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -1156,6 +1156,8 @@
+    bool dropped_draws_logged;
+    unsigned gl_errors;
+    unsigned range_drops;
++   /* OmacVM: program pipelines the GL found invalid at their first draw */
++   unsigned invalid_pipelines;
+ 
+ #ifdef ENABLE_TRACING
+    struct hash_table *active_markers;
+@@ -2799,8 +2801,36 @@
+         * invalid pipeline; the error would stop the guest's whole context */
+        GLint validation_status = GL_TRUE;
+        glGetProgramPipelineiv(pipeline_id, GL_VALIDATE_STATUS, &validation_status);
+-       if (!validation_status) {
++       /* OmacVM: validation judges the GL state of this moment, not the pipeline. It runs
++        * before the draw sets the sampler units, so all samplers are on unit 0 and a 2D
++        * sampler beside a cube sampler fails ("Samplers of different types use the same
++        * texture image unit"); Apple's GL also fails it while the draw framebuffer is
++        * incomplete. Logged (three lines per context), the pipeline is kept, and a draw the
++        * GL then refuses is skipped like any refused GL call */
++       if (!validation_status && vrend_shader_failures_lose()) {
+            vrend_report_context_error(sub_ctx->parent, VIRGL_ERROR_CTX_ILLEGAL_PROGRAM_PIPELINE, 0);
++       } else if (!validation_status) {
++           struct vrend_context *ctx = sub_ctx->parent;
++           if (++ctx->invalid_pipelines <= 3) {
++               char log[256] = "";
++               glGetProgramPipelineInfoLog(pipeline_id, sizeof(log), NULL, log);
++               /* one line: the GL's lines joined, runs of white space as one space */
++               char *out = log;
++               for (const char *in = log; *in; in++) {
++                  bool space = *in == ' ' || *in == '\t' || *in == '\n' || *in == '\r';
++                  if (!space)
++                     *out++ = *in;
++                  else if (out > log && out[-1] != ' ')
++                     *out++ = ' ';
++               }
++               if (out > log && out[-1] == ' ')
++                  out--;
++               *out = 0;
++               virgl_error("context %d (%s): the host GL found a program pipeline invalid in "
++                           "the current state (%s), drawing on%s\n", ctx->ctx_id,
++                           ctx->debug_name, log,
++                           ctx->invalid_pipelines == 3 ? "; further ones are not logged" : "");
++           }
+        }
+    }
+ 

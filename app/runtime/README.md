@@ -117,6 +117,19 @@ commit 82927e9. Changes here:
   into the guest's query buffer, or left the query "not ready" for ever. A query
   still waiting when its context is lost is done with 0 too (it was dropped
   unanswered). Checked by `Tests/virgl/test-query-result.c`
+- `patches/virgl-shader-separable-pervertex.patch`: a shader of a separable
+  program (an app's program pipeline) redeclares the gl_PerVertex blocks it
+  writes and reads. Apple's GL links a separable shader only then, so every
+  such pipeline was refused and its draws skipped (#567). Clip distance arrays
+  go inside the block: one beside it crashed Apple's GLSL compiler. Checked by
+  `Tests/virgl/test-separable-pervertex.c`
+- `patches/virgl-pipeline-validate-log.patch`: a program pipeline the GL finds
+  invalid at its first draw is logged (three lines per context) and kept; it
+  ended the guest app's whole context. The check runs before the draw sets the
+  sampler units (a 2D and a cube sampler then fail), and Apple's GL also fails
+  it while the framebuffer is incomplete.
+  `OMACVM_VIRGL_SHADER_FAILURES=lose` keeps upstream's context error. Checked
+  by `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once

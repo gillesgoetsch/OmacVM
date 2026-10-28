@@ -15,7 +15,9 @@
  * second context, with the stack filled first so an unset value shows:
  *  - a shader's compile status and info log: the "Shader failed to compile" line has an
  *    empty log, not stack bytes; the same for a program's link;
- *  - a pipeline's validate status: no ILLEGAL_PROGRAM_PIPELINE, the context draws on. */
+ *  - a pipeline's validate status: no ILLEGAL_PROGRAM_PIPELINE and no "program pipeline
+ *    invalid" line (virgl-pipeline-validate-log.patch logged an unset status read as 0),
+ *    the context draws on. */
 #include <OpenGL/OpenGL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,7 +33,6 @@ unsigned long sysval_block_faults(void);
 unsigned long sysval_block_draws(void);
 unsigned long sysval_block_queries(void);
 void gl_status_fault(int mode);
-void gl_pervertex_redeclare(int on);
 unsigned long gl_status_faults(void);
 
 enum { TEST_SHADER_VERTEX = 0, TEST_SHADER_FRAGMENT = 1, TEST_PRIM_TRIANGLES = 4,
@@ -39,7 +40,7 @@ enum { TEST_SHADER_VERTEX = 0, TEST_SHADER_FRAGMENT = 1, TEST_PRIM_TRIANGLES = 4
 enum { GREEN = 0xff00ff00, BLUE = 0xffff0000, GREY = 0xff808080 };
 
 static CGLContextObj main_ctx;
-static int failures, refused_lines, block_lines, ctx_error_lines;
+static int failures, refused_lines, block_lines, ctx_error_lines, invalid_lines;
 static char compile_line[256], link_line[256];
 
 static void keep_first(char *dst, size_t size, const char *message, const char *start)
@@ -55,6 +56,7 @@ static void count_log(enum virgl_log_level_flags level, const char *message, voi
    refused_lines += strstr(message, "refused a shader (link)") != NULL;
    block_lines += strstr(message, "VirglBlock") != NULL;
    ctx_error_lines += strstr(message, "context error reported") != NULL;
+   invalid_lines += strstr(message, "program pipeline invalid") != NULL;
    keep_first(compile_line, sizeof(compile_line), message, "Shader failed to compile");
    keep_first(link_line, sizeof(link_line), message, "Error linking program");
    fputs(message, stderr);
@@ -250,8 +252,7 @@ static const char *fs_green =
    "  0: MOV OUT[0], IMM[0]\n"
    "  1: END\n";
 
-/* The same as separable programs (vrend links each stage alone, into a pipeline); linked
- * with gl_pervertex_redeclare on (sysval-block-gl.c: Apple's GL wants gl_PerVertex). */
+/* The same as separable programs (vrend links each stage alone, into a pipeline). */
 static const char *vs_separable =
    "VERT\n"
    "PROPERTY SEPARABLE_PROGRAM 1\n"
@@ -319,7 +320,6 @@ static int draw_with(int ctx_id, struct cmds *c, uint32_t vs, uint32_t fs)
  * draw binds again and draws. */
 static void separable_rebind(struct cmds *c)
 {
-   gl_pervertex_redeclare(1);
    emit_shader(c, 50, TEST_SHADER_VERTEX, vs_separable);
    emit_shader(c, 51, TEST_SHADER_FRAGMENT, fs_separable_green);
    emit_shader(c, 52, TEST_SHADER_FRAGMENT, fs_separable_blue);
@@ -349,7 +349,6 @@ static void separable_rebind(struct cmds *c)
          "separable: the next draw binds the pipeline's blocks again");
    check(sysval_block_draws() == draws + 3 && read_middle() == GREEN,
          "separable: and draws (green)");
-   gl_pervertex_redeclare(0);
 }
 
 /* Status queries that write nothing, in their own context (a context logs the details
@@ -384,15 +383,15 @@ static void unwritten_status(void)
 
    faults = gl_status_faults();
    ctx_error_lines = 0;
-   gl_pervertex_redeclare(1);
+   invalid_lines = 0;
    gl_status_fault(2);
    fill_stack(0);
    r = draw_with_new_shaders_in(2, &c, 30, vs_separable, fs_separable_green);
    gl_status_fault(0);
-   gl_pervertex_redeclare(0);
    check(gl_status_faults() > faults, "validate status unwritten: the pipeline was validated");
    check(r == 0 && ctx_error_lines == 0,
          "validate status unwritten: no context error (ILLEGAL_PROGRAM_PIPELINE)");
+   check(invalid_lines == 0, "validate status unwritten: not taken as an invalid pipeline");
    check(sysval_block_draws() == draws + 3 && read_middle() == GREEN,
          "validate status unwritten: the pipeline draws (green)");
 
