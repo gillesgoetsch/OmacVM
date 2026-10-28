@@ -626,6 +626,15 @@ it on, a VM whose window nobody can see stops drawing, as a macOS app does:
   "omacvm-displays: drawing paused on Virtual-1" / "drawing again".
 - Only the main window (Virtual-1); the windows on other displays in full
   screen keep drawing.
+- While the display is paused, Hyprland's own wake on a pointer move or a
+  key (`misc:mouse_move_enables_dpms`, `misc:key_press_enables_dpms`, both
+  on in Omarchy) is off: it turns every display on, also the paused one
+  while you work in the VM on another display, and the Mac then turned it
+  off again a few seconds later. Only options that were on are touched;
+  they are back as they were once the window is seen again (also after a
+  restart of the agent), and while another display is off by itself
+  (Omarchy's idle) so input wakes it. `omacvm check` says "Hyprland's wake
+  on moves and keys held off meanwhile".
 
 ## AirPods and media controls (on by default)
 
