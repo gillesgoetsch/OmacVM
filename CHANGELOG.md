@@ -10,8 +10,9 @@ in more words.
   on the display the VM started on, often the MacBook's built-in screen, while you worked on
   the external one. It now shows on the display under the Mac's pointer, over the VM there; a
   VM in a window keeps it over its window, as before. macOS's own Touch ID dialog (for a
-  command too long for the panel, the Mac password, or with the panel turned off) still shows
-  on the display the VM started on. Needs only the app update, from the VM's next start.
+  command too long for the panel, the Mac-password fallback if you turned it on, or with the
+  panel turned off) still shows on the display the VM started on. Needs only the app update,
+  from the VM's next start.
 
 ## 3.2.10
 

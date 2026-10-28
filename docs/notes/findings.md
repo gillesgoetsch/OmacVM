@@ -315,8 +315,9 @@ on A and its window for B full screen on B, pointer on B: the dialog on A;
 main window on B: on B; one window on B, pointer on A or on B: on B.
 
 So for an OmacVM.app VM in full screen on two displays, macOS's dialog (the
-fallback when the command is too long for OmacVM's panel, the Mac password,
-the panel turned off) shows on the main window's display, which is the
+fallback when the command is too long for OmacVM's panel, the Mac-password
+fallback if turned on, the panel turned off) shows on the main window's
+display, which is the
 display the VM started on. OmacVM's own panel follows the pointer instead
 (ADR 0041, 3.2.11 addendum). Moving the dialog would mean making the
 pointer's window key before asking, which changes who holds the keyboard.

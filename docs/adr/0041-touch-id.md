@@ -927,8 +927,8 @@ a VM that runs across the update keeps the old place until it is shut down.
 
 ### Limits
 
-- macOS's own dialog (a command too long for the panel, the Mac password
-  fallback, `"touch_id_panel": false`) cannot be placed by OmacVM. coreauthd
+- macOS's own dialog (a command too long for the panel, the Mac-password
+  fallback if turned on, `"touch_id_panel": false`) cannot be placed by OmacVM. coreauthd
   shows it on the display of the front app's key window, not the pointer's
   or the main display's (measured, `docs/notes/findings.md`): with the VM in
   full screen on two displays, on the main window's display. Making the
