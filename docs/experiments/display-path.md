@@ -75,7 +75,7 @@ changes below; Chromium full screen, guest 2940x1840 at 60 Hz; the same task nat
 
 | Task | macOS | VM | QEMU GPU ms/s | WindowServer GPU ms/s (macOS) |
 |---|---|---|---|---|
-| Idle | 2.00 W | 2.11 W | 0 | 0 |
+| Idle | 2.00 W | 2.11 W | - | - |
 | 1080p30 video, window in view | 2.60 W | 3.89-3.97 W | 157-173 | 59-77 (40) |
 | The same, VM window hidden (no present, no composite) | | 3.37 W | 153 | 0 |
 | Page scrolling, 60 Hz | 2.74 W | 4.67 W | 213 | 151 (111) |
@@ -106,8 +106,9 @@ in HDR mode.
 | App mix (Orca with 4 agents, Chrome, chat pages) | 24.87 W | 22.31 W | -10.3 % |
 
 Round-to-round spread: up to 0.43 W for 3.2.0, 0.17 W for the stack; the guest's frame rates were the
-same on both builds. Frame times in the same set: a 120 Hz animation 119.07 frames/s with
-24 long frames (3.2.0) vs 119.94 with 1 (stack); Chrome's smooth scroll 116.5-120.1 frames/s on both; Speedometer 3.1 29.9 on both.
+same on both builds. Frame times in the same set: a 120 Hz animation 119.07 frames/s with 24 long frames
+(3.2.0) vs 119.94 with 1 (stack); Chrome's smooth scroll 116.5-119.6 frames/s (3.2.0) vs 119.9-120.1
+(stack); Speedometer 3.1 29.9 on both.
 
 **Fair reference, M1 Max, brightness 0.500** (2026-10-26, A/B/B/A = macOS, VM, VM, macOS, means of 2 rounds,
 12 of 12 rows valid; Refresh Floor quit and nothing above any window; EDR 11.43 at every window's start and end on
@@ -230,7 +231,7 @@ stay as they are.
   vdecd). Tests: bit-exact compares for every codec and odd size (the existing padding test set), plus
   every guest app that samples video surfaces.
 - Risk **high**: it changes how every video texture is sampled, in a part of virglrenderer that already had
-  three shader bugs this month (sampler swizzle, 2D view of a 2D array, const buffer 0); a mistake shows as
+  three shader bugs in October 2026 (sampler swizzle, 2D view of a 2D array, const buffer 0); a mistake shows as
   wrong or black video for everyone. The fallback (the copy) has to stay for ANGLE, MoltenVK-only hosts and
   formats the variant does not cover.
 - Not done: the gain is one GPU pass of the video's size, below the per-frame cost of the guest's own
