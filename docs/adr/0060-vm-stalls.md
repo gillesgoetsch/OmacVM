@@ -70,9 +70,12 @@ the guest, under a call-like load, found:
 
 ## Not done (each waits for its evidence)
 
-- No change to which calls hold the BQL: none held it long in any row.
-  Surface creation and detach backing touch memory with the BQL (up to
-  71 ms here); moved off it only if field notes show holds of 250 ms or more.
+- No change to which calls hold the BQL. Surface creation and freeing and
+  detach backing touch memory with the BQL: up to 71 ms in the probe's rows,
+  but once 2.2 s in an idle row on the swapping mini (close() of the old
+  display surface's memfd in `qemu_free_displaysurface`, the watchdog's line
+  "with the BQL held"). Freeing a surface off the BQL is the first follow-up;
+  it waits for field notes with holds of 250 ms or more.
 - Extra displays take the GPU lock on the AppKit thread with a plain wait;
   a bounded try only if a hang report or a two-display full-screen row shows
   the AppKit thread waiting there.
