@@ -101,8 +101,10 @@ the guest, under a call-like load, found:
   the AppKit thread waiting there.
 - The encoder's `VTCompressionSessionCreate` stays on the GPU thread until a
   VA-encode row shows 100 ms or more under pressure.
-- No guest tuning: the stock kernel has no THP or MGLRU; khugepaged's
-  `max_ptes_none` matters only on the opt-in THP kernel, after a measured row.
+- No guest tuning yet. The reported VM runs the memory-optimized kernel
+  (`--thp-kernel`: THP and MGLRU; 2.0 GB of transparent huge pages in its
+  guest on 2026-10-28), so khugepaged's `max_ptes_none` and MGLRU's settings
+  can matter there; they change only after a measured row on that kernel.
 - A GPU thread of its own (ADR 0046 option 2): only if field notes show main
   loop stalls of 1 s or more outside the calls named above.
 
