@@ -816,9 +816,10 @@ jobs:
             libgles-dev libdrm-dev libavcodec-dev libavutil-dev libsystemd-dev
           OMACVM_VDECD_SYSTEMD=1 src/tests/vdecd-down.sh
 
-      - name: The VA driver shim gives Chromium surfaces of their real size and waits for its pictures (a stand-in for Mesa's driver)
+      - name: The VA driver shim gives Chromium surfaces of their real size, waits for its pictures and never decodes into an import (a stand-in for Mesa's driver)
         run: |
           sudo apt-get install -yq --no-install-recommends gcc libva-dev
           src/app/guest/tests/va-shim-surfaces.sh
           src/app/guest/tests/va-shim-decode-wait.sh
           src/app/guest/tests/va-shim-vpp-fill.sh
+          src/app/guest/tests/va-shim-import-decode.sh

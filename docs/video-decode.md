@@ -171,7 +171,12 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   they stay bit for bit the decoded ones; Mesa would convert on the GPU
   through RGB.
   In Chromium's processes it also asks Mesa for exportable surfaces
-  ([below](#chromes-converted-frames)).
+  ([below](#chromes-converted-frames)). In every process it refuses to
+  decode into a surface made from the app's memory (an import): Mesa's
+  virgl driver has no video buffer on the Mac for such a surface and
+  crashed the process (Chrome's GPU process); the app gets
+  `VA_STATUS_ERROR_INVALID_SURFACE` and decodes that video on the CPU.
+  Test: `src/app/guest/tests/va-shim-import-decode.sh`.
   Its folder `/usr/local/lib/dri` goes into `/etc/ld.so.conf.d`: Firefox
   decodes in a sandboxed process that may load libraries only from the paths
   ld.so knows, so without it YouTube in Firefox falls back to the CPU.
