@@ -11,7 +11,8 @@
  * (ui/omacvm-vm-stalls.h, omacvm-cocoa-vm-stalls-menu.patch); which thread
  * this is (include/qemu/omacvm-thread.h, qemu-main-loop-stall-gpu-run.patch);
  * the status between the main loop and the watchdog's thread (only the
- * watchdog writes the file, outside the lock).
+ * watchdog writes the file, outside the lock); main loop stalls with the BQL
+ * (main_*) apart from those in a GPU run (gpu_*).
  */
 #include <math.h>
 #include <pthread.h>
@@ -472,7 +473,7 @@ int main(void)
         usleep(10000);
     }
     t0 = mono_ns();
-    omacvm_stall_store_gpu(&store, 2548, "g_usleep (from virtio_gpu_process_cmdq)");
+    omacvm_stall_store_loop(&store, true, 2548, "g_usleep (from virtio_gpu_process_cmdq)");
     rec_ns = mono_ns() - t0;
     t0 = mono_ns();
     omacvm_stall_store_copy(&store, &copy);
@@ -488,6 +489,28 @@ int main(void)
     check(rec_ns < 50 * MS && copy_ns < 50 * MS && copy.gpu_stalls == 1 && writes == 2 &&
           lock_free_in_write == 2 && strstr(written, "gpu_stalls=1\n") &&
           strstr(written, "gpu_longest_ms=2548\n"), what);
+
+    /* 17: a main loop stall with the BQL held (the idle row of 2026-10-28 on the
+     * swapping mini: "main loop stalled for 2.1 s with the BQL held (the VM
+     * waits); where: close < qemu_memfd_free < ... < qemu_free_displaysurface",
+     * over after 2.2 s): counted apart from GPU runs, in the file and the menu */
+    OmacvmStallStore s17 = OMACVM_STALL_STORE_INIT;
+    OmacvmStallStatus st17;
+    omacvm_stall_store_loop(&s17, false, 2214, "close (from qemu_memfd_free)");
+    check(omacvm_stall_store_take(&s17, &st17), "a main loop stall changes the status");
+    omacvm_stall_status_text(&st17, text, sizeof(text));
+    check(strstr(text, "main_stalls=1\n") && strstr(text, "main_longest_ms=2214\n") &&
+          strstr(text, "main_last_where=close (from qemu_memfd_free)\n") &&
+          strstr(text, "gpu_stalls=0\n") && !strncmp(text, "stalls=0\n", 9),
+          "the 2.2 s close() with the BQL: main_stalls=1, main_longest_ms=2214, its where");
+    check(omacvm_stall_menu_line(&st17, menu, sizeof(menu)) &&
+          !strcmp(menu, "The VM stood still 1 time (longest 2.2 s): QEMU was busy"),
+          "menu line: QEMU's main loop with the BQL");
+    omacvm_stall_store_loop(&s17, true, 2500, "glFinish");
+    omacvm_stall_store_copy(&s17, &st17);
+    check(st17.main_stalls == 1 && st17.gpu_stalls == 1 && omacvm_stall_menu_line(&st17, menu, sizeof(menu)) &&
+          !strcmp(menu, "The VM stood still 1 time (longest 2.2 s): QEMU was busy"),
+          "a GPU run's stall goes to gpu_*; the menu names the VM's wait first");
 
     if (failures) {
         printf("vcpu stall: %d checks FAILED\n", failures);

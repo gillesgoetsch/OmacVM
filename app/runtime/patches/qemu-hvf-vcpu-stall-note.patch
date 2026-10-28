@@ -30,7 +30,10 @@ BQL, only records its own stalls in memory. Keys: stalls, longest_ms,
 longest_cause, last_ms, last_cause, last_vcpus, last_at, last_vm_mb,
 last_free_mb, last_compressed_mb, and the main loop's stalls of 2 s or more in
 a GPU run: gpu_stalls, gpu_longest_ms, gpu_last_where (the Mac's call and the
-frame of QEMU or virglrenderer that made it). OmacVM.app and omacvm check read it.
+frame of QEMU or virglrenderer that made it), and outside one, with the BQL
+held or waited for, so the vCPUs waited too: main_stalls, main_longest_ms,
+main_last_where (e.g. "close (from qemu_memfd_free)": 2.2 s on the swapping
+mini). OmacVM.app and omacvm check read it.
 OMACVM_STALL_WATCHDOG=0 turns it off with the watchdog (no thread_info at all).
 Why: the user's VM froze on 2026-10-28 (RCU stall of ~60 s on CPUs 1, 2, 3, 8,
 "no word from the Mac for 15 s"); on the Mac mini at critical memory pressure
@@ -228,10 +231,10 @@ index 6e2dcc4..8820ccb 100644
  ))
 diff --git a/include/qemu/omacvm-stall.h b/include/qemu/omacvm-stall.h
 new file mode 100644
-index 0000000..e71a297
+index 0000000..5c1e9aa
 --- /dev/null
 +++ b/include/qemu/omacvm-stall.h
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,557 @@
 +/*
 + * OmacVM: the vCPU stall note and the VM's stall status file
 + * (qemu-hvf-vcpu-stall-note.patch).
@@ -344,6 +347,9 @@ index 0000000..e71a297
 +    unsigned gpu_stalls;            /* main loop stalls of 2 s or more in a GPU run */
 +    int64_t gpu_longest_ms;
 +    char gpu_last_where[128];
++    unsigned main_stalls;           /* ... outside one: with the BQL, or waiting for it */
++    int64_t main_longest_ms;
++    char main_last_where[128];
 +} OmacvmStallStatus;
 +
 +static inline void omacvm_stall_reset(OmacvmStallMonitor *m)
@@ -633,20 +639,40 @@ index 0000000..e71a297
 +    st->last_compressed_mb = mac->vm_compressed_mb;
 +}
 +
-+/* A main loop stall of MS in a GPU run, at WHERE (any text: made printable). */
-+static inline void omacvm_stall_status_gpu(OmacvmStallStatus *st, int64_t ms, const char *where)
++/* WHERE (any text) into OUT as one printable line */
++static inline void omacvm_stall_where_copy(char *out, size_t n, const char *where)
 +{
 +    size_t i = 0;
 +
++    for (; where && where[i] && i + 1 < n; i++) {
++        char c = where[i];
++        out[i] = c >= 0x20 && c < 0x7f ? c : '?';
++    }
++    out[i] = '\0';
++}
++
++/* A main loop stall of MS in a GPU run, at WHERE (any text: made printable). */
++static inline void omacvm_stall_status_gpu(OmacvmStallStatus *st, int64_t ms, const char *where)
++{
 +    st->gpu_stalls++;
 +    if (ms > st->gpu_longest_ms) {
 +        st->gpu_longest_ms = ms;
 +    }
-+    for (; where && where[i] && i + 1 < sizeof(st->gpu_last_where); i++) {
-+        char c = where[i];
-+        st->gpu_last_where[i] = c >= 0x20 && c < 0x7f ? c : '?';
++    omacvm_stall_where_copy(st->gpu_last_where, sizeof(st->gpu_last_where), where);
++}
++
++/*
++ * A main loop stall of MS outside a GPU run, at WHERE: it held the BQL (or
++ * waited for it), so every vCPU that left the guest waited too (the 2.2 s
++ * close() of a display surface's memfd on the swapping mini, 2026-10-28).
++ */
++static inline void omacvm_stall_status_main(OmacvmStallStatus *st, int64_t ms, const char *where)
++{
++    st->main_stalls++;
++    if (ms > st->main_longest_ms) {
++        st->main_longest_ms = ms;
 +    }
-+    st->gpu_last_where[i] = '\0';
++    omacvm_stall_where_copy(st->main_last_where, sizeof(st->main_last_where), where);
 +}
 +
 +static inline const char *omacvm_stall_cause_name(int cause)
@@ -671,13 +697,17 @@ index 0000000..e71a297
 +             "last_compressed_mb=%llu\n"
 +             "gpu_stalls=%u\n"
 +             "gpu_longest_ms=%lld\n"
-+             "gpu_last_where=%s\n",
++             "gpu_last_where=%s\n"
++             "main_stalls=%u\n"
++             "main_longest_ms=%lld\n"
++             "main_last_where=%s\n",
 +             st->stalls, (long long)st->longest_ms, omacvm_stall_cause_name(st->longest_cause),
 +             (long long)st->last_ms, omacvm_stall_cause_name(st->last_cause), st->last_vcpus,
 +             (long long)st->last_at, (unsigned long long)st->last_vm_mb,
 +             (unsigned long long)st->last_free_mb,
 +             (unsigned long long)st->last_compressed_mb, st->gpu_stalls,
-+             (long long)st->gpu_longest_ms, st->gpu_last_where);
++             (long long)st->gpu_longest_ms, st->gpu_last_where, st->main_stalls,
++             (long long)st->main_longest_ms, st->main_last_where);
 +}
 +
 +/*
@@ -709,11 +739,17 @@ index 0000000..e71a297
 +    pthread_mutex_unlock(&s->lock);
 +}
 +
-+/* The main loop: a stall of MS in a GPU run at WHERE (memory only). */
-+static inline void omacvm_stall_store_gpu(OmacvmStallStore *s, int64_t ms, const char *where)
++/* The main loop: one of its stalls of MS at WHERE ended (memory only): in a
++ * GPU run (GPU_RUN: the vCPUs ran on) or not (the BQL held or waited for). */
++static inline void omacvm_stall_store_loop(OmacvmStallStore *s, bool gpu_run, int64_t ms,
++                                           const char *where)
 +{
 +    pthread_mutex_lock(&s->lock);
-+    omacvm_stall_status_gpu(&s->st, ms, where);
++    if (gpu_run) {
++        omacvm_stall_status_gpu(&s->st, ms, where);
++    } else {
++        omacvm_stall_status_main(&s->st, ms, where);
++    }
 +    s->changes++;
 +    pthread_mutex_unlock(&s->lock);
 +}
@@ -807,10 +843,10 @@ index da3ec52..52490d5 100644
          bql_lock();
          switch (r) {
 diff --git a/util/main-loop.c b/util/main-loop.c
-index 6e0512a..d4e2490 100644
+index 6e0512a..8db035c 100644
 --- a/util/main-loop.c
 +++ b/util/main-loop.c
-@@ -318,6 +318,25 @@ static void glib_pollfds_poll(void)
+@@ -318,6 +318,26 @@ static void glib_pollfds_poll(void)
  #define MAIN_LOOP_STALL_NS (2 * NANOSECONDS_PER_SECOND)
  #define MAIN_LOOP_STALL_FRAMES 24
  
@@ -818,7 +854,8 @@ index 6e0512a..d4e2490 100644
 + * The vCPU stall note (qemu-hvf-vcpu-stall-note.patch) runs on this
 + * watchdog's thread too, through stall_check_hook: each time the watchdog
 + * wakes (every 2 s at most), and every 250 ms while a vCPU stands. The status
-+ * (stall_store: vCPU episodes, and main loop stalls in a GPU run, gpu_*) goes
++ * (stall_store: vCPU episodes; main loop stalls in a GPU run, gpu_*, and
++ * outside one, main_*) goes
 + * to logs/vm-stalls ($OMACVM_LOGS/vm-stalls, key=value lines, replaced in one
 + * rename; all 0 when the watchdog's thread starts). Only the watchdog's thread
 + * writes the file, after the store's lock is let go; the main loop, which may
@@ -830,13 +867,13 @@ index 6e0512a..d4e2490 100644
 +static int64_t (*stall_check_hook)(int64_t now, bool late);
 +static OmacvmStallStore stall_store = OMACVM_STALL_STORE_INIT;
 +static char *stall_status_path;      /* set before the watchdog thread starts */
-+static bool stall_reported_gpu;      /* the stall logged was in a GPU run ... */
++static bool stall_reported_gpu;      /* the stall logged was in a GPU run (or not) ... */
 +static char stall_reported_where[128]; /* ... at this call */
 +
  static int64_t main_loop_busy_since; /* 0 while polling */
  static bool main_loop_has_bql;
  static bool main_loop_gpu_run;       /* in a GPU run, without the BQL */
-@@ -374,51 +393,153 @@ static int stall_stack(void **pcs, int max)
+@@ -374,51 +394,153 @@ static int stall_stack(void **pcs, int max)
      return n;
  }
  
@@ -998,7 +1035,7 @@ index 6e0512a..d4e2490 100644
          wait = MAIN_LOOP_STALL_NS;
          since = qatomic_read(&main_loop_busy_since);
          if (!since || since == qatomic_read(&stall_reported)) {
-@@ -432,11 +553,14 @@ static void *stall_watchdog(void *opaque)
+@@ -432,11 +554,14 @@ static void *stall_watchdog(void *opaque)
          has_bql = qatomic_read(&main_loop_has_bql);
          gpu_run = qatomic_read(&main_loop_gpu_run);
          where = g_string_new(NULL);
@@ -1015,7 +1052,7 @@ index 6e0512a..d4e2490 100644
          warn_report("main loop stalled for %.1f s %s; where: %s",
                      (get_clock() - since) / 1e9,
                      gpu_run ? "in a GPU run without the BQL (vCPUs run; "
-@@ -458,6 +582,11 @@ static void stall_watchdog_start(void)
+@@ -458,6 +583,11 @@ static void stall_watchdog_start(void)
          return;
      }
      main_loop_owner = omacvm_thread_self();
@@ -1027,7 +1064,7 @@ index 6e0512a..d4e2490 100644
  #ifdef __APPLE__
      pthread_t self = pthread_self();
      main_loop_thread = pthread_mach_thread_np(self);
-@@ -477,9 +606,14 @@ static void stall_watchdog_poll(void)
+@@ -477,9 +607,13 @@ static void stall_watchdog_poll(void)
      if (stall_watchdog_state == 0) {
          stall_watchdog_start();
      }
@@ -1038,10 +1075,9 @@ index 6e0512a..d4e2490 100644
 +        int64_t ns = get_clock() - since;
 +
 +        warn_report("main loop stall over after %.1f s", ns / 1e9);
-+        if (stall_reported_gpu) {
-+            /* in memory only (the BQL is held here): the watchdog writes it */
-+            omacvm_stall_store_gpu(&stall_store, ns / SCALE_MS, stall_reported_where);
-+        }
++        /* in memory only (the BQL is held here): the watchdog writes it */
++        omacvm_stall_store_loop(&stall_store, stall_reported_gpu, ns / SCALE_MS,
++                                stall_reported_where);
      }
      qatomic_set(&main_loop_has_bql, false);
      qatomic_set(&main_loop_gpu_run, false);

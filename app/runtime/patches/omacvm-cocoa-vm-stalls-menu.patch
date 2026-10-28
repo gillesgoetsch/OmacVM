@@ -6,9 +6,11 @@ graphics-memory.patch), a line once the VM stood still this run, from what the
 stall note counted (qemu-hvf-vcpu-stall-note.patch, main_loop_stall_status):
   The VM stood still 2 times (longest 58 s): the Mac ran out of memory
   The VM waited for the Mac's processors 1 time (longest 2.1 s)
+  The VM stood still 1 time (longest 2.2 s): QEMU was busy
   The VM's graphics stood still 1 time (longest 2.5 s)
-(the second when the longest was a vCPU without a Mac core, the third when
-only QEMU's graphics thread stood still). Filled in when the menu opens, as the
+(examples of the format; the second when the longest was a vCPU without a Mac
+core, the third when QEMU's main loop held the BQL 2 s or more, the fourth
+when only QEMU's graphics thread stood still). Filled in when the menu opens, as the
 other two lines: no timer. A click, and the tooltip, explain what it was and
 what helps (a smaller VM memory, omacvm resources; qemu.log's lines). Hidden
 while nothing stood still, and without OMACVM_GPU_MEMORY_STATUS (QEMU not
@@ -95,10 +97,10 @@ index 6194804..217dffc 100644
  
 diff --git a/ui/omacvm-vm-stalls.h b/ui/omacvm-vm-stalls.h
 new file mode 100644
-index 0000000..48cf646
+index 0000000..a42ea1d
 --- /dev/null
 +++ b/ui/omacvm-vm-stalls.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,59 @@
 +/*
 + * OmacVM: the app menu's stall line (omacvm-cocoa-vm-stalls-menu.patch), under
 + * "Graphics memory": what the stall note (qemu-hvf-vcpu-stall-note.patch)
@@ -112,7 +114,8 @@ index 0000000..48cf646
 +
 +/*
 + * "The VM stood still 2 times (longest 58 s): the Mac ran out of memory";
-+ * 0: nothing to show (no line).
++ * the vCPUs' stalls first, then QEMU's main loop with the BQL ("QEMU was
++ * busy"), then its graphics thread alone. 0: nothing to show (no line).
 + */
 +static inline int omacvm_stall_menu_line(const OmacvmStallStatus *st, char *out, size_t n)
 +{
@@ -129,6 +132,13 @@ index 0000000..48cf646
 +        }
 +        return 1;
 +    }
++    if (st->main_stalls) {
++        /* QEMU's main loop with the BQL (or waiting for it): the vCPUs waited */
++        omacvm_stall_secs(st->main_longest_ms * 1000000LL, longest, sizeof(longest));
++        snprintf(out, n, "The VM stood still %u time%s (longest %s): QEMU was busy",
++                 st->main_stalls, st->main_stalls == 1 ? "" : "s", longest);
++        return 1;
++    }
 +    if (st->gpu_stalls) {
 +        omacvm_stall_secs(st->gpu_longest_ms * 1000000LL, longest, sizeof(longest));
 +        snprintf(out, n, "The VM's graphics stood still %u time%s (longest %s)",
@@ -142,8 +152,9 @@ index 0000000..48cf646
 +#define OMACVM_STALL_MENU_EXPLANATION \
 +    "The VM stood still: its processors waited in macOS while macOS made memory " \
 +    "free for them (compressing or swapping the VM's memory), or waited for a " \
-+    "free Mac processor. The VM's clock ran on, so apps in the VM may say they " \
-+    "missed a deadline.\n\n" \
++    "free Mac processor, or QEMU itself was busy (qemu.log's \"main loop " \
++    "stalled\" line says where). The VM's clock ran on, so apps in the VM may " \
++    "say they missed a deadline.\n\n" \
 +    "A smaller VM memory leaves the Mac more (omacvm resources --vm NAME), as " \
 +    "does quitting big apps on the Mac. qemu.log in the VM's logs folder has a " \
 +    "line for each time, with the Mac's free memory then."
