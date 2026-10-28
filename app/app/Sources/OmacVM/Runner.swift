@@ -114,6 +114,13 @@ final class Runner {
         if ProcessInfo.processInfo.environment["OMACVM_VIDEO_DECODE_SYNC"] != "1" {
             a += ["-smbios", "type=11,value=omacvm.vadecasync=1"]
         }
+        // This runtime samples a texture at the size the guest says (virgl-resource-logical-size.patch):
+        // the shim then tells it each video surface's own size (Mesa rounds the planes up to 16), so
+        // apps that show the surface draw exactly the picture. OMACVM_VIDEO_LOGICAL=0 (the runtime
+        // ignores those sizes) leaves the marker out, so the guest is as in 3.2.10 too.
+        if ProcessInfo.processInfo.environment["OMACVM_VIDEO_LOGICAL"] != "0" {
+            a += ["-smbios", "type=11,value=omacvm.valogical=1"]
+        }
         // FullPanel (NotchArea): the camera housing for the guest's bar, which
         // then sits in the strip beside the notch (omacvm-app-host -> host.env;
         // the bar and notchcast read it). Native starts send nothing.
@@ -684,7 +691,7 @@ final class Runner {
         if network.vmnet { watchFastNetwork() }
         if graphics?.venus == true { watchVenusStart() }
         observeSleep()
-        let watch = GPUMemoryWatch(config: c) { [weak self] line in self?.appendLog(line) }
+        let watch = GPUMemoryWatch(config: c, qemuPID: p.processIdentifier) { [weak self] line in self?.appendLog(line) }
         watch.start()
         gpuMemory = watch
         observeActivation()

@@ -1077,6 +1077,18 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-heads
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-heads.patch"
 "$native_dir/Tests/display/test-pointer-heads.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the pointer is not on every display's window as tested (test-pointer-heads.sh)"
+# OmacVM: on two or more displays, a move over the VM while another app is in
+# front gives the guest the pointer's place (no grab: the keyboard stays with
+# that app). Its rule's test, a check that the wiring checks fail on the code
+# before, the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover-logic.patch"
+"$native_dir/Tests/display/test-pointer-hover.sh" || \
+  die "the pointer's place while another app is in front fails its test (test-pointer-hover.sh)"
+"$native_dir/Tests/display/test-pointer-hover.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a pointer-hover wiring check passes without the patch (test-pointer-hover.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover.patch"
+"$native_dir/Tests/display/test-pointer-hover.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the pointer's place while another app is in front is not wired as tested (test-pointer-hover.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
@@ -1382,6 +1394,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-video-picture-size
 # OmacVM: decoded pictures finish beside QEMU's GPU thread (it waited for the media engine on every
 # picture: Chrome's 4K hardware decoding dropped frames); planes and fences wait for their pictures.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-videotoolbox-decode-async.patch"
+# OmacVM: an AV1 picture with film grain also goes into the buffer the guest shows (Chrome shows
+# another buffer than it decodes into: on M3/M4 Macs it showed one the Mac never wrote).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-video-av1-film-grain.patch"
 # OmacVM: a program whose VirglBlock the GL reports too small (or whose size query fails) is
 # refused like a failed link, its draws skipped; an assert aborted QEMU there (#547).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-sysval-block-check.patch"
@@ -1397,6 +1412,10 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 # OmacVM: a program pipeline the GL finds invalid in the current state (sampler units not
 # set yet, an incomplete framebuffer) is logged; it ended the guest app's whole context.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-log.patch"
+# OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
+# driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
+# squeezed with its last row repeated as a strip at the bottom.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-resource-logical-size.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

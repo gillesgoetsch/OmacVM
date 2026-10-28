@@ -212,6 +212,9 @@ jobs:
       - name: Freed memory back to the Mac in 256 KiB blocks (page_reporting_order 6, omacvm check's line)
         run: src/tests/memory-report-order.sh
 
+      - name: The VM gives its cold file cache back while macOS compresses it (giveback.sh, the app's trigger, omacvm check's row)
+        run: src/tests/memory-giveback.sh
+
       - name: apply's SSH key in the VM (the user's ~/.ssh written as the user)
         run: src/tests/ssh-key.sh
 
@@ -522,6 +525,10 @@ jobs:
         run: |
           app/runtime/Tests/display/test-pointer-heads.sh
           app/runtime/Tests/display/test-pointer-heads.sh --self-test
+      - name: The pointer's place to the VM while another app is in front, on two or more displays (the checks catch code without it)
+        run: |
+          app/runtime/Tests/display/test-pointer-hover.sh
+          app/runtime/Tests/display/test-pointer-hover.sh --self-test
       - name: Tiled present, only the changed tiles to WindowServer (the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-present-tiles.sh
@@ -741,6 +748,9 @@ jobs:
           sudo apt-get install -y -qq python3-gi dbus >/dev/null   # Omarchy's base has python-gobject and dbus
           OMACVM_MEDIA_NEED_DBUS=1 python3 src/app/guest/tests/test_omacvm_media.py -v
 
+      - name: The VM's cold file cache give-back on Linux (bash, GNU tools as in the VM; a kernel that refuses swappiness=)
+        run: src/tests/memory-giveback.sh
+
       - name: A feature switch on Linux (GNU sed, glide off path)
         run: src/tests/feature-switch.sh
 
@@ -816,9 +826,11 @@ jobs:
             libgles-dev libdrm-dev libavcodec-dev libavutil-dev libsystemd-dev
           OMACVM_VDECD_SYSTEMD=1 src/tests/vdecd-down.sh
 
-      - name: The VA driver shim gives Chromium surfaces of their real size and waits for its pictures (a stand-in for Mesa's driver)
+      - name: The VA driver shim gives Chromium surfaces of their real size, waits for its pictures, never decodes into an import and says each surface's own size (a stand-in for Mesa's driver)
         run: |
           sudo apt-get install -yq --no-install-recommends gcc libva-dev
           src/app/guest/tests/va-shim-surfaces.sh
           src/app/guest/tests/va-shim-decode-wait.sh
           src/app/guest/tests/va-shim-vpp-fill.sh
+          src/app/guest/tests/va-shim-import-decode.sh
+          src/app/guest/tests/va-shim-logical.sh

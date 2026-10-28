@@ -250,3 +250,67 @@ public func panelFrame(window: CGRect, visible: CGRect, size: CGSize) -> CGRect 
     y = min(max(y, visible.minY), visible.maxY - size.height)
     return CGRect(origin: CGPoint(x: x, y: y), size: size)
 }
+
+/// One of QEMU's windows, as the panel's placement sees it.
+public struct PanelWindowFacts: Equatable {
+    public var frame: CGRect
+    public var visible: Bool      // ordered in and not occluded (occlusionState .visible)
+    public var shownSpace: Bool   // on a Space shown now (isOnActiveSpace)
+    public var isPanel: Bool      // an NSPanel: the Touch ID panel itself, alerts, About
+    public var alpha: Double
+    public init(frame: CGRect, visible: Bool = true, shownSpace: Bool = true, isPanel: Bool = false, alpha: Double = 1) {
+        self.frame = frame; self.visible = visible; self.shownSpace = shownSpace; self.isPanel = isPanel; self.alpha = alpha
+    }
+}
+
+/// A VM window the panel may go over: on screen now, not see-through (AppKit's
+/// title-bar strip over a full-screen window is there at alpha 0), not a
+/// panel, and at least the panel's size (the menu bar's 30 pt windows).
+public func panelCanHost(_ w: PanelWindowFacts, size: CGSize) -> Bool {
+    w.visible && w.shownSpace && !w.isPanel && w.alpha > 0.01 && w.frame.width >= size.width && w.frame.height >= size.height
+}
+
+/// The pointer is on `r`. NSEvent.mouseLocation counts a display's columns
+/// from minX and its rows from maxY down (the top row is y == maxY), so a
+/// point on the edge between two displays belongs to one of them only.
+func panelHolds(_ r: CGRect, _ p: CGPoint) -> Bool {
+    p.x >= r.minX && p.x < r.maxX && p.y > r.minY && p.y <= r.maxY
+}
+
+/// Where the panel goes with several displays: the display under the Mac's
+/// pointer and, on it, the VM window under the pointer, else the VM window
+/// with the most of its area there. Nil: the pointer is on no display, or
+/// no VM window shows on it (then the key window, as before 3.2.11).
+/// `windows` are the ones panelCanHost takes; Cocoa coordinates.
+public func panelHost(pointer: CGPoint, screens: [CGRect], windows: [CGRect]) -> (window: Int, screen: Int)? {
+    // Edges included as a last resort (the outer edge of the outermost display).
+    guard let s = screens.firstIndex(where: { panelHolds($0, pointer) }) ?? screens.firstIndex(where: {
+        pointer.x >= $0.minX && pointer.x <= $0.maxX && pointer.y >= $0.minY && pointer.y <= $0.maxY
+    }) else { return nil }
+    let screen = screens[s]
+    if let w = windows.firstIndex(where: { panelHolds($0, pointer) && $0.intersects(screen) }) { return (w, s) }
+    // Not over a VM window (the menu-bar band over a full-screen one, another app's window): the one with the
+    // most of its area on this display.
+    let areas = windows.map { w -> CGFloat in let r = w.intersection(screen); return r.isNull ? 0 : r.width * r.height }
+    guard let w = areas.indices.max(by: { areas[$0] < areas[$1] }), areas[w] > 0 else { return nil }
+    return (w, s)
+}
+
+/// The part of the host window the panel centres on: all of it, or its part
+/// on the pointer's display when it reaches onto another display.
+public func panelArea(window: CGRect, screen: Int, screens: [CGRect]) -> CGRect {
+    let others = screens.indices.contains { $0 != screen && screens[$0].intersects(window) }
+    let part = window.intersection(screens[screen])
+    return others && !part.isNull ? part : window
+}
+
+/// The panel's frame: over the VM window on the pointer's display
+/// (panelHost), else over `fallback` (the key window) as before.
+public func panelPlace(pointer: CGPoint, screens: [CGRect], visible: [CGRect], windows: [CGRect],
+                       fallback: CGRect, fallbackVisible: CGRect, size: CGSize) -> CGRect {
+    guard let h = panelHost(pointer: pointer, screens: screens, windows: windows) else {
+        return panelFrame(window: fallback, visible: fallbackVisible, size: size)
+    }
+    return panelFrame(window: panelArea(window: windows[h.window], screen: h.screen, screens: screens),
+                      visible: visible[h.screen], size: size)
+}

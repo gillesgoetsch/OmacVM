@@ -1,0 +1,89 @@
+From: OmacVM
+Subject: [PATCH] ui: when a move over the VM gives the guest only the pointer's place, tested without AppKit
+
+What: a header with no AppKit in it: the rule for a move over one of the
+VM's windows while another app is in front. The guest gets the pointer's
+place (and nothing else) when the guest's pointer is absolute, the VM does
+not have the pointer, OmacVM is not the app in front, it is a move with no
+button held, Touch ID's panel is down, the VM shows on two or more Mac
+displays, the window is in full screen and nothing is above it under the
+pointer; OMACVM_POINTER_HOVER=0 turns it off. Also how often the debug line
+may come. Used by omacvm-cocoa-pointer-hover.patch (which explains the why).
+
+Why its own file: so the rule is tested without QEMU or a window
+(app/runtime/Tests/display/test-pointer-hover.sh applies this patch to an
+empty folder; at build time and in CI).
+
+Upstream: with omacvm-cocoa-pointer-hover.patch; not sent.
+Test: app/runtime/Tests/display/test-pointer-hover.c.
+
+--- a/ui/omacvm-pointer-hover.h
++++ b/ui/omacvm-pointer-hover.h
+@@ -0,0 +1,67 @@
++/*
++ * OmacVM: the pointer's place to the guest while another app is in front.
++ *
++ * No AppKit in here, so it is tested on its own
++ * (app/runtime/Tests/display/test-pointer-hover.c); ui/cocoa.m uses it.
++ *
++ * In full screen on two or more displays one display can show macOS (the
++ * person switched its Space) with a Mac app in front, while another one
++ * still shows the VM. QEMU let go of the pointer when that app came to the
++ * front, and a move over a VM window took the pointer only while OmacVM was
++ * the app in front: a pointer just passing over the VM must not take the
++ * keyboard from the Mac app. So on the display that still showed the VM the
++ * guest's pointer stood still until a click: no hover, scrolls at the old
++ * place (2026-10-28). Now such a move gives the guest the pointer's place
++ * and nothing else. The keyboard stays with the Mac app, the Mac's cursor
++ * stays as it is (shown, as at boot), no window becomes key and nothing
++ * comes to the front. A click still takes the pointer as before.
++ */
++#ifndef OMACVM_POINTER_HOVER_H
++#define OMACVM_POINTER_HOVER_H
++
++#include <stdbool.h>
++#include <string.h>
++
++typedef struct OmacVMHoverIn {
++    bool off;       /* OMACVM_POINTER_HOVER=0: as before, such moves dropped */
++    bool absolute;  /* the guest's pointer is absolute (its tablet) */
++    bool grabbed;   /* the VM has the pointer: the normal path */
++    bool active;    /* OmacVM is the app in front: the normal path */
++    bool move;      /* a move, not a click */
++    bool buttons;   /* a mouse button is held (a drag that started in a Mac app) */
++    bool touchid;   /* Touch ID's panel is up: the VM gets no input then */
++    int displays;   /* Mac displays the VM shows an output on */
++    bool full;      /* the window is in full screen (another display's window always is) */
++    bool top;       /* the pointer is on that window, nothing above it */
++} OmacVMHoverIn;
++
++/*
++ * Only with two or more displays: on one display the VM shows nowhere else
++ * while another app is in front, and that case stays as it was.
++ */
++static inline bool omacvm_pointer_hover(const OmacVMHoverIn *in)
++{
++    return !in->off && in->absolute && !in->grabbed && !in->active && in->move &&
++           !in->buttons && !in->touchid && in->displays >= 2 && in->full && in->top;
++}
++
++/* OMACVM_POINTER_HOVER: "0" turns it off; unset or anything else: on. */
++static inline bool omacvm_pointer_hover_off(const char *env)
++{
++    return env && !strcmp(env, "0");
++}
++
++/* With OMACVM_POINTER_DEBUG=1: one line at most this often while it hovers. */
++#define OMACVM_HOVER_LOG_S 10.0
++
++/* last < 0: never logged. */
++static inline bool omacvm_hover_log_due(double now, double *last)
++{
++    if (*last >= 0 && now >= *last && now - *last < OMACVM_HOVER_LOG_S) {
++        return false;
++    }
++    *last = now;
++    return true;
++}
++
++#endif /* OMACVM_POINTER_HOVER_H */

@@ -472,7 +472,8 @@ by default; this only changes what the Mac shows once it is on.
 ### What
 
 For OmacVM.app's VMs the Mac asks in its own panel instead of macOS's
-dialog: a 280 pt square centred on the VM's window, framed and coloured as
+dialog: a 280 pt square centred on the VM's window (3.2.11: the one on the
+display under the Mac's pointer, see the addendum at the end), framed and coloured as
 Omarchy frames its own password prompt for the VM's theme (3.0.4: its
 background, text and accent, a 2 pt border in Hyprland's active border
 colours, a gradient too, and Hyprland's rounding): "Touch ID in Omarchy",
@@ -862,3 +863,121 @@ the VM's next start".
 - pytest `test_touchid_ready.py`: the control centre's banner after "Touch ID
   on" (ready with 1Password's switch; restart once without the port; ready
   with it) in Textual's headless driver.
+
+## Addendum (3.2.11): the panel on the display you work on
+
+Status: built (`touchid-external-screen`, 2026-10-28); the rule passes the CI
+rows and the on-screen rows on the Mac mini (real QEMU on two displays). Only
+`OmacVMTouchIDPanel.dylib` changes.
+
+### What went wrong (3.2.9, the user's MacBook Pro M4 Max with an LG UltraFine 5K, 2026-10-28)
+
+The VM in full screen with "Use external displays" (both defaults), the person
+at the LG: 1Password's unlock showed the panel on the built-in screen. The
+Bridge's log said the app's panel showed and the finger counted, so only the
+place was wrong.
+
+The panel centred itself on QEMU's key window. With "Use external displays"
+QEMU's main window (Virtual-1) stays on the display the VM started on, and
+QEMU hands the keyboard back to it at every click in another display's window
+(`omacvm-cocoa-head-key-same-space.patch`): the key window is always the main
+window, on the built-in here. A VM in a window (one window) was right on any
+display. Reproduced on the Mac mini with two virtual displays of our own, the
+3.2.9 test QEMU and its panel (results in the lane's notes, rows `heads1`):
+main window on A, pointer on B: the panel on A.
+
+### Decision
+
+The panel goes over the VM window QEMU shows on the display under the Mac's
+pointer. Omarchy's focus follows the mouse, and 1Password's unlock is a click
+on that display, so the pointer is where the person works.
+
+- QEMU lets go of the pointer first (`willShow`), then the panel reads
+  `NSEvent.mouseLocation`. With the default absolute pointer the Mac's
+  pointer is where the guest's is; a grabbed relative pointer does not
+  follow the guest's.
+- The display: the one holding the pointer (its top row is `y == maxY` in
+  `mouseLocation`; a point on the edge between two displays belongs to one).
+- The window: among QEMU's windows that show now (visible and not covered, on
+  a Space shown, not see-through: AppKit's title-bar strip over a full-screen
+  window is there at alpha 0; not a panel; at least 280 pt square: the menu
+  bar's 30 pt windows), the one under the pointer, else the one with the most
+  of its area on that display (the pointer in the menu-bar band over a
+  full-screen window). Centred on its part on that display when it reaches
+  onto another one; else on all of it, as before.
+- That display shows no window of the VM's (a windowed VM on the other
+  display, the display switched to another Space): the key window and its
+  display, exactly as before.
+- The keyboard still goes back to the window that had it (the main window,
+  which owns it under QEMU's hand-back), and only while that window's Space
+  shows, as QEMU's own hand-back does.
+- The panel window keeps its level (28) and collection behaviour
+  (`.moveToActiveSpace`, `.fullScreenAuxiliary`). It joins the current Space
+  of the display its frame is on, also another display's full-screen Space,
+  and no display's Space moves (on-screen rows); `.canJoinAllSpaces` is not
+  needed.
+
+`panelCanHost`, `panelHost`, `panelArea` and `panelPlace` in
+`PanelModel.swift` are the rule without a window; `Panel.swift` only feeds
+them QEMU's windows and the screens. CI checks the rule; the on-screen rows
+check it with QEMU's real windows, Spaces and key window.
+
+Not the main display (`NSScreen.main` is the key window's screen: the same
+bug), and not the output Hyprland has focused: exact also for a `sudo` typed
+with the pointer elsewhere, but it needs the guest, QEMU and the panel to
+change; a follow-up if the pointer is not enough.
+
+From the VM's next start: QEMU loads the dylib from the app at its start, so
+a VM that runs across the update keeps the old place until it is shut down.
+
+### Limits
+
+- macOS's own dialog (a command too long for the panel, the Mac-password
+  fallback if turned on, `"touch_id_panel": false`) cannot be placed by
+  OmacVM. coreauthd shows it on the display of QEMU's key (= main) window,
+  not the pointer's or the main display's (measured, `docs/notes/findings.md`;
+  no row yet tells key and main window apart): with the VM in full screen on
+  two displays, on the main window's display. Making the pointer's window key
+  before the dialog might move it, but changes who holds the keyboard; not
+  done.
+- Focus moved with the keyboard only (Hyprland's focus to another output, the
+  Mac's pointer left where it was): the panel shows where the Mac's pointer
+  is.
+
+### Tests
+
+- `swift run touchid-panel-tests` (CI), "place": two displays (A 1728x1117
+  main, B 2560x1440 to the right, left and above), QEMU's main window in full
+  screen on A and key, its window for B in full screen on B: the pointer on B
+  gives B (it gave A before: written first against a stub, 13 FAIL), on A
+  gives A as before, in B's menu-bar band and on its top row B; only a window
+  on A with the pointer on B, the pointer on no display, no window: the key
+  window as before; the edge between A and B; a window across A and B; one
+  display with the pointer anywhere: the same frame as before; which windows
+  may host it (the alpha-0 strip, a 30 pt window, a panel, a Space not shown,
+  a hidden window: none).
+- `touchid-panel-tests --place OUT.jsonl --pointer ID ...` (a test Mac's
+  screen, never CI): the real controller and window with stand-in VM windows
+  and a stand-in evaluator; records the panel's display, Space and key state,
+  and the key window and Spaces after it closed.
+- On-screen rows on the Mac mini (2026-10-28 16:47-17:01): two virtual
+  displays (A 1728x1117 HiDPI main, B 2560x1440 HiDPI right, left and above
+  A), 31 rows with the stand-in and 25 with the 3.2.9 test QEMU and this
+  dylib (the real panel, closed after 1.5 s, no finger): all pass. Each row
+  checks the panel's display, the panel key while up, on its display's current
+  Space, no Space moved, the key window back after the close, the reply
+  `cancelled` (none early), and for QEMU coreauthd arming the sensor for
+  QEMU's request ("will start matching" for QEMU's pid; the mini's Magic
+  Keyboard has Touch ID).
+  - The user's case: main window full screen on A and key, its window for B
+    full screen on B, pointer on B: the panel on B (3.2.9: on A), on B's
+    full-screen Space, key; after the close the main window is key again.
+  - Pointer on A, or the main window on B with the pointer on either display:
+    the display under the pointer. A switched to a macOS desktop and a click
+    on B: on B.
+  - A VM in one window or full screen on one display, pointer on that display
+    or the other: over the VM, on its display, as in 3.2.9. A 1x display
+    (2560x1440, scale 1): 280 pt there.
+  - FullPanel did not engage on the virtual displays (no camera housing):
+    those two rows ran as plain full screen.
+  - No permission prompt (tccd), no other app's window moved.

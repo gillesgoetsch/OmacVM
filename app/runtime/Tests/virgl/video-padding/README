@@ -7,6 +7,9 @@ FFmpeg 8 (libvpx 1.15, SVT-AV1 4.2):
   ffmpeg -f lavfi -i "$src" -frames:v 3 -c:v libsvtav1 -preset 12 -g 3 -crf 50 \
     -svtav1-params "pred-struct=1:enable-overlays=0" -f ivf av1-320x180.ivf
   321x181: testsrc2 at 322x182, then format=yuv420p,crop=321:181:0:0:exact=1
+  av1fg-320x180.ivf (film grain): as av1-320x180.ivf with
+    -svtav1-params "pred-struct=1:enable-overlays=0:film-grain=10:film-grain-denoise=0"
+    and its hash from FFmpeg's libdav1d with the grain applied (its default)
 
 The test's hashes are FNV-1a over the last picture as FFmpeg's software decoder makes it
 (libvpx-vp9 / dav1d), Y rows then UV interleaved, 10-bit as P010 (value << 6, little

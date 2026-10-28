@@ -619,7 +619,8 @@ app)
     n=$(as_user hyprctl monitors -j 2>/dev/null | jq '[.[] | select(.name | test("^Virtual-"))] | length' 2>/dev/null || echo "?")
     # Pause drawing while hidden (the app's switch): whether the agent can, and what it turned off now.
     pz=$(as_user omacvm-displays pause 2>/dev/null)
-    pz=$(jq -r 'if .able then "pause while hidden: ready" + (if (.paused | length) > 0 then " (drawing paused on " + (.paused | join(", ")) + ": its Mac window is out of sight)" else "" end) else empty end' <<<"$pz" 2>/dev/null)
+    # While one is paused the agent holds Hyprland's wake on moves/keys off (wake_off; older agents: none).
+    pz=$(jq -r 'if .able then "pause while hidden: ready" + (if (.paused | length) > 0 then " (drawing paused on " + (.paused | join(", ")) + ": its Mac window is out of sight" + (if ((.wake_off // []) | length) > 0 then "; Hyprland'"'"'s wake on moves and keys held off meanwhile" else "" end) + ")" else "" end) else empty end' <<<"$pz" 2>/dev/null)
     ok "every Mac display" "external displays $(as_user omacvm-displays state 2>/dev/null || echo "?"), $n output(s) now${pz:+, $pz}"
     # What each display really shows (a small screenshot): only Hyprland's grey
     # where the desktop should be means no wallpaper and no bar were drawn.

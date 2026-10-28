@@ -626,6 +626,15 @@ it on, a VM whose window nobody can see stops drawing, as a macOS app does:
   "omacvm-displays: drawing paused on Virtual-1" / "drawing again".
 - Only the main window (Virtual-1); the windows on other displays in full
   screen keep drawing.
+- While the display is paused, Hyprland's own wake on a pointer move or a
+  key (`misc:mouse_move_enables_dpms`, `misc:key_press_enables_dpms`, both
+  on in Omarchy) is off: it turns every display on, also the paused one
+  while you work in the VM on another display, and the Mac then turned it
+  off again a few seconds later. Only options that were on are touched;
+  they are back as they were once the window is seen again (also after a
+  restart of the agent), and while another display is off by itself
+  (Omarchy's idle) so input wakes it. `omacvm check` says "Hyprland's wake
+  on moves and keys held off meanwhile".
 
 ## AirPods and media controls (on by default)
 
@@ -1104,6 +1113,16 @@ window per guest screen:
   The other displays' windows take the pointer (and with it the keyboard)
   only while OmacVM.app is in front, or on a click; another app coming to
   the front gets both back.
+- With one display switched to macOS (its Space) and a Mac app in front, a
+  move over the VM on another display still moves the VM's pointer: hover,
+  scrolling where the pointer is. Only the pointer's place goes to the VM:
+  the keyboard stays with the Mac app, the Mac's arrow shows over the VM's
+  pointer (as while the VM boots) and nothing comes to the front; a click
+  takes the pointer and the keyboard as before. Only on two or more
+  displays, in full screen, with nothing above the VM's window under the
+  pointer (`omacvm-cocoa-pointer-hover*.patch`; 3.2.10 and older left the
+  pointer standing until a click). `OMACVM_POINTER_HOVER=0` in QEMU's
+  environment keeps the old way.
 - A drag keeps the pointer from one display to the next, also across the
   menu bar strip above a full-screen window on a MacBook with a notch, so
   ⌘-dragging a window moves it to the other display. QEMU reads the
@@ -1239,7 +1258,8 @@ apps, the GPU. A VM takes two kinds from it:
   in the app, `omacvm resources`). Linux sees exactly that much. The Mac
   gives it as the VM touches it, and the VM gives back what Linux frees
   (QEMU's balloon device with free page reporting, in blocks of 256 KiB and
-  up: `src/memory/guest/90-omacvm-mm.tmpfiles`).
+  up: `src/memory/guest/90-omacvm-mm.tmpfiles`), and its cold file cache
+  while macOS compresses the VM (below).
 - **Graphics memory** is extra, on top: the textures and buffers the VM's
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
   grows and shrinks with what is on screen: Omarchy alone at 5K about
@@ -1256,6 +1276,45 @@ macOS's memory pressure. So does the control centre in the VM (`omacvm`):
 open (nothing while it is closed), with a warning (!) while macOS is short of
 memory or after refused allocations.
 
+**When macOS compresses the VM** (ADR 0059). Linux keeps every file it
+read in its page cache, and to the Mac that is the VM's memory: macOS can
+compress it but never drop it, although its own file cache already holds the
+same disk image. macOS's memory pressure stays "normal" while it compresses
+(it counts every page it can still compress as available), so a VM of 42 GB
+on a 64 GB Mac held 15.5 GB of cache while macOS compressed the VM. So the
+app looks every 5 s at QEMU's footprint and resident size and at what macOS
+compressed. When QEMU has at least min(2 GB, a quarter of the Mac) outside
+its resident memory, min(1 GB, an eighth of the Mac) more than at its
+lowest, and macOS itself compressed 1 GB or more since (in all processes:
+growing graphics trigger it only when macOS compresses 1 GB elsewhere
+meanwhile), the app runs `src/memory/guest/giveback.sh` from its own bundle
+in the VM (guest agent; no Update VM needed): the VM gives back its file
+cache read once and not again, except the newest min(1 GB, an eighth of the
+VM) (`memory.reclaim` with `swappiness=0` on Inactive(file), in 1 GB steps,
+at most 20 s; the memory-optimized kernel counted nearly all its file cache
+as inactive in the VM read), and free page reporting takes it out of QEMU's footprint
+(pages macOS had compressed for it stay held on the Mac, ADR 0059). The newest part
+stays, so the files read last are not read again (on the Mac mini, Chrome
+started in 1.02 s after a give-back that followed reading its files, the
+same as without one); a file read again later comes from the Mac's file
+cache (345 MB of Chrome's files: 0.2 s instead of 0.02 s). Programs'
+memory, zram and the VM's memory setting are never touched. One give-back
+per 10 minutes at most (the warning's drop below included); after one that
+brought back under 256 MB the next waits twice as long, up to 2 hours (what
+macOS compresses then is the programs' own memory); the warning's drop does
+not change that wait. When the VM's agent does not answer: again in 30 s,
+then 1, 2, 4, 8 minutes, then every 10 (one line in qemu.log). A kernel
+without a cold-only way (before Linux 6.11) drops its whole cache instead.
+`logs/qemu.log` has two lines per give-back ("macOS is compressing the VM
+...", then what came back and QEMU's footprint 60 s later); `omacvm check`
+has a "VM memory" row: the VM's memory, how many give-backs this run and
+what the last one gave, and when macOS still holds a quarter of the Mac
+compressed and the VM had little left to give, that a smaller VM memory
+leaves the Mac more (`omacvm resources`). This is the VM's cache only: a
+large VM's footprint can still be well above what Linux uses (ADR 0059,
+"What this does not explain"). UTM, Parallels and Fusion: nothing changes
+(their balloons do not report free pages).
+
 **No fixed limit.** QEMU asks macOS how much memory it can give
 (`virgl-darwin-memory-pressure.patch`):
 
@@ -1264,10 +1323,11 @@ memory or after refused allocations.
 - When macOS warns (yellow), QEMU lets the Mac's GPU driver free what it
   still holds for deleted textures (measured: nothing, as QEMU already
   flushes after every resource command; `logs/qemu.log` says "freed N MB"),
-  and the app asks the VM to drop its file cache (at most every 10 minutes,
-  again after 30 s if the VM did not answer), which Linux then gives back to
-  the Mac (the cache it dropped: 0.1 GB on a fresh VM, 1 GB after a long
-  session).
+  and the app asks the VM to drop its whole file cache (at most every 10
+  minutes, also counting the give-backs above, or 2 minutes after one of
+  them; again after 30 s, then less often, if the VM did not answer), which
+  Linux then gives back to the Mac (the cache it dropped: 0.1 GB on a fresh
+  VM, 1 GB after a long session).
   QEMU keeps no cache of its own for the VM's graphics: everything it holds
   belongs to a live buffer of an app in the VM.
   Everything still goes through, unless a new big buffer (16 MB or more)

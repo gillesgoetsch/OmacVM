@@ -224,8 +224,15 @@ enum GuestAgent {
             if read(fd, &chunk, chunk.count) <= 0 { return .broken(sent: false) }
             stale.revents = 0
         }
-        let line = command + "\n"
-        guard line.withCString({ write(fd, $0, strlen($0)) }) > 0 else { return .broken(sent: false) }
+        // Every byte (a long command, such as giveback.sh, can go out in parts).
+        let bytes = Array((command + "\n").utf8)
+        var sent = 0
+        while sent < bytes.count {
+            let n = bytes[sent...].withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            if n < 0 && errno == EINTR { continue }
+            guard n > 0 else { return .broken(sent: sent > 0) }
+            sent += n
+        }
         let deadline = Date().addingTimeInterval(wait)
         var reply = Data()
         while !reply.contains(0x0A) {

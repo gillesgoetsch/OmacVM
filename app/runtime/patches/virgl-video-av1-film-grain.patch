@@ -1,0 +1,254 @@
+virglrenderer: AV1 film grain pictures also go into the buffer the guest shows
+
+What: an AV1 picture whose description names a film grain target (Mesa sends
+one only with apply_grain) is delivered into that buffer too, not only into the
+decode target: the same picture (VideoToolbox applies the grain), the same
+copy and edge fill, both marked pending until the picture is in (and cleared
+when the guest destroys either). The backend keeps a list of its buffers to
+find the target by the ID vrend_video.c puts into the description. One more
+GPU copy per picture, only for AV1 with film grain.
+Why: Chrome decodes an AV1 picture with film grain into its reconstruction
+surface and shows another one, current_display_picture, which Mesa sends as
+film_grain_target (picture_av1.c). The backend wrote only the decode target,
+so on Macs that decode AV1 on the media engine (M3, M4) Chrome showed a buffer
+the Mac never wrote for that picture: an older picture of its pool, or zeros
+(green). VideoToolbox's picture is bit for bit dav1d's decode with the grain.
+Upstream: this backend is OmacVM's; virglrenderer's own VA-API backend passes
+film_grain_target to the host's VA-API. Not sent.
+Tests: Tests/virgl/test-video-padding.c, the av1fg-320x180.ivf case (SVT-AV1
+with film grain, decoded into one buffer, shown from another as Mesa sends
+Chrome's pictures): the shown buffer must hold dav1d's picture with the grain
+bit for bit and its padding the picture's edge; before, it kept the marker in
+every texel. Runs with the GPU and CPU copy, the fill off and
+OMACVM_VIDEO_DECODE_SYNC=1.
+diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
+index 04d4aa2..27cef47 100644
+--- a/src/vrend/virgl_video_vt.c
++++ b/src/vrend/virgl_video_vt.c
+@@ -190,6 +190,7 @@ struct virgl_video_buffer {
+     uint32_t height;
+     uint32_t id;
+     void *opaque;
++    struct virgl_video_buffer *next;    /* every buffer (buffer_by_id) */
+ };
+ 
+ struct vt_bytes {
+@@ -225,6 +226,7 @@ struct enc_job {
+ struct dec_job {
+     uint64_t seq;                       /* its number; 0: slot free (or given up) */
+     struct virgl_video_buffer *target;  /* NULL: the guest destroyed it meanwhile */
++    struct virgl_video_buffer *shown;   /* AV1 film grain: the picture also goes here (NULL: no) */
+     uint32_t frame_w, frame_h;          /* VP9's/AV1's picture size (0: the frame's) */
+     uint64_t sent_ns;
+     bool out;                           /* the output callback came */
+@@ -247,6 +249,7 @@ struct virgl_video_codec {
+     struct vt_bytes bits;               /* compressed data of this picture */
+     union virgl_picture_desc desc;      /* last picture description */
+     bool have_desc;
++    bool grain_said;                    /* OMACVM_VIDEO_DEBUG: the film grain line was logged */
+ 
+     VTDecompressionSessionRef session;
+     CMVideoFormatDescriptionRef format;
+@@ -321,6 +324,17 @@ static struct virgl_video_callbacks *callbacks;
+ static bool vt_initialized;
+ static bool vt_debug;
+ static uint32_t next_buffer_id = 1;
++/* every buffer (made and destroyed on vrend's thread only) */
++static struct virgl_video_buffer *buffers;
++
++/* The buffer the guest's picture description names by its ID (NULL: none). */
++static struct virgl_video_buffer *buffer_by_id(uint32_t id)
++{
++    for (struct virgl_video_buffer *b = buffers; b; b = b->next)
++        if (b->id == id)
++            return b;
++    return NULL;
++}
+ static unsigned live_encoders;   /* encode codecs alive (vrend's thread only) */
+ 
+ #define vt_log(...) do { if (vt_debug) virgl_info("vt-video: " __VA_ARGS__); } while (0)
+@@ -794,9 +808,10 @@ static void picture_size(CVPixelBufferRef pix, uint32_t fw, uint32_t fh,
+ static void deliver_picture(struct virgl_video_codec *codec, struct virgl_video_buffer *target,
+                             CVPixelBufferRef pix, uint32_t fw, uint32_t fh);
+ 
+-/* Hand the decoded picture to vrend, which copies it into the plane textures. */
++/* Hand the decoded picture to vrend, which copies it into the plane textures (and into
++ * SHOWN's, an AV1 film grain target; NULL: none). */
+ static void deliver_output(struct virgl_video_codec *codec,
+-                           struct virgl_video_buffer *target)
++                           struct virgl_video_buffer *target, struct virgl_video_buffer *shown)
+ {
+     CVPixelBufferRef pix = codec->output;
+     uint32_t fw, fh;
+@@ -806,6 +821,8 @@ static void deliver_output(struct virgl_video_codec *codec,
+         return;
+     frame_size(codec, &fw, &fh);
+     deliver_picture(codec, target, pix, fw, fh);
++    if (shown)
++        deliver_picture(codec, shown, pix, fw, fh);
+     CVPixelBufferRelease(pix);
+ }
+ 
+@@ -963,7 +980,7 @@ static void dec_deadline(struct timespec *ts, uint64_t sent_ns)
+ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
+ {
+     struct dec_job *job = &codec->djobs[codec->dj_head];
+-    struct virgl_video_buffer *target;
++    struct virgl_video_buffer *target, *shown;
+     CVPixelBufferRef pix;
+     OSStatus status;
+     uint32_t fw, fh;
+@@ -986,6 +1003,7 @@ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
+     pix = job->pix;
+     status = job->status;
+     target = job->target;
++    shown = job->shown;
+     fw = job->frame_w;
+     fh = job->frame_h;
+     took = out ? job->out_ns - job->sent_ns : 0;
+@@ -1006,11 +1024,15 @@ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
+             codec->ns_decode_max = took;
+         if (target)
+             deliver_picture(codec, target, pix, fw, fh);
++        if (shown)
++            deliver_picture(codec, shown, pix, fw, fh);
+     }
+     if (pix)
+         CVPixelBufferRelease(pix);
+     if (target && callbacks && callbacks->decode_pending)
+         callbacks->decode_pending(codec, target, false);
++    if (shown && callbacks && callbacks->decode_pending)
++        callbacks->decode_pending(codec, shown, false);
+     return true;
+ }
+ 
+@@ -1034,16 +1056,17 @@ static void dec_deliver(struct virgl_video_codec *codec, bool block)
+ }
+ 
+ /* One picture's compressed data to the media engine; its picture goes into
+- * TARGET's planes now (OMACVM_VIDEO_DECODE_SYNC=1) or when it is in. */
++ * TARGET's planes now (OMACVM_VIDEO_DECODE_SYNC=1) or when it is in, and into SHOWN's
++ * as well (an AV1 film grain target; NULL: none). */
+ static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data, size_t size,
+-                           struct virgl_video_buffer *target)
++                           struct virgl_video_buffer *target, struct virgl_video_buffer *shown)
+ {
+     struct dec_job *job;
+     uint32_t fw, fh;
+ 
+     if (!dec_async()) {
+         if (decode_sample(codec, data, size, NULL))
+-            deliver_output(codec, target);
++            deliver_output(codec, target, shown);
+         return;
+     }
+     dec_deliver(codec, false);
+@@ -1060,6 +1083,7 @@ static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data,
+     memset(job, 0, sizeof(*job));
+     job->seq = ++dec_seq_last;
+     job->target = target;
++    job->shown = shown;
+     job->frame_w = fw;
+     job->frame_h = fh;
+     job->sent_ns = now_ns();
+@@ -1067,8 +1091,11 @@ static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data,
+     codec->dj_count++;
+     if (codec->dj_count > codec->in_flight_max)
+         codec->in_flight_max = codec->dj_count;
+-    if (callbacks && callbacks->decode_pending)
++    if (callbacks && callbacks->decode_pending) {
+         callbacks->decode_pending(codec, target, true);
++        if (shown)
++            callbacks->decode_pending(codec, shown, true);
++    }
+     if (!decode_sample(codec, data, size, job)) {
+         /* refused at once: no output comes */
+         pthread_mutex_lock(&dec_lock);
+@@ -1458,7 +1485,7 @@ static int h264_end_frame(struct virgl_video_codec *codec,
+         }
+     }
+ 
+-    decode_picture(codec, au.sample.data, au.sample.size, target);
++    decode_picture(codec, au.sample.data, au.sample.size, target, NULL);
+     bytes_free(&au.sample);
+     return 0;
+ }
+@@ -2209,7 +2236,7 @@ static int hevc_end_frame(struct virgl_video_codec *codec,
+         if (!set_format(codec, fmt))
+             goto done;
+     }
+-    decode_picture(codec, au.sample.data, au.sample.size, target);
++    decode_picture(codec, au.sample.data, au.sample.size, target, NULL);
+     ret = 0;
+ done:
+     bytes_free(&au.sample);
+@@ -2343,7 +2370,7 @@ static int vp9_end_frame(struct virgl_video_codec *codec,
+     /* One frame per sample, hidden ones too: VideoToolbox returns a picture
+      * for hidden frames as well, which a later show_existing_frame shows
+      * from the guest's surface. */
+-    decode_picture(codec, codec->bits.data, codec->bits.size, target);
++    decode_picture(codec, codec->bits.data, codec->bits.size, target, NULL);
+     return 0;
+ }
+ 
+@@ -2506,6 +2533,7 @@ static int av1_end_frame(struct virgl_video_codec *codec,
+                          struct virgl_video_buffer *target)
+ {
+     const struct virgl_av1_picture_desc *d = &codec->desc.av1;
++    struct virgl_video_buffer *shown;
+     const uint8_t *data = codec->bits.data;
+     struct av1_obu obus[64];
+     unsigned n = av1_split(data, codec->bits.size, obus, 64), i, first = 0, last = 0;
+@@ -2557,7 +2585,19 @@ static int av1_end_frame(struct virgl_video_codec *codec,
+     if (seq >= 0 && (unsigned)seq < first)
+         bytes_append(&sample, data + obus[seq].start, obus[seq].end - obus[seq].start);
+     bytes_append(&sample, data + obus[first].start, obus[last].end - obus[first].start);
+-    decode_picture(codec, sample.data, sample.size, target);
++    /* OmacVM: with film grain the guest shows another buffer than the one it decodes
++     * into (Mesa sends Chrome's current_display_picture as film_grain_target);
++     * VideoToolbox's picture has the grain applied: it goes into both */
++    shown = d->film_grain_target &&
++            d->picture_parameter.film_grain_info.film_grain_info_fields.apply_grain ?
++            buffer_by_id(d->film_grain_target) : NULL;
++    if (shown == target)
++        shown = NULL;
++    if (shown && vt_debug && !codec->grain_said) {
++        codec->grain_said = true;
++        virgl_info("vt-video: AV1 film grain: pictures also into the guest's display buffer\n");
++    }
++    decode_picture(codec, sample.data, sample.size, target, shown);
+     bytes_free(&sample);
+     return 0;
+ }
+@@ -3968,6 +4008,8 @@ struct virgl_video_buffer *virgl_video_create_buffer(
+     buffer->height = args->height;
+     buffer->opaque = args->opaque;
+     buffer->id = next_buffer_id++;
++    buffer->next = buffers;
++    buffers = buffer;
+     return buffer;
+ }
+ 
+@@ -3977,12 +4019,22 @@ void virgl_video_destroy_buffer(struct virgl_video_buffer *buffer)
+     for (struct virgl_video_codec *c = dec_list; c && buffer; c = c->dec_next)
+         for (unsigned i = 0; i < c->dj_count; i++) {
+             struct dec_job *job = &c->djobs[(c->dj_head + i) % VT_DEC_MAX_JOBS];
++            if (job->shown == buffer) {
++                job->shown = NULL;
++                if (callbacks && callbacks->decode_pending)
++                    callbacks->decode_pending(c, buffer, false);
++            }
+             if (job->target != buffer)
+                 continue;
+             job->target = NULL;
+             if (callbacks && callbacks->decode_pending)
+                 callbacks->decode_pending(c, buffer, false);
+         }
++    for (struct virgl_video_buffer **p = &buffers; buffer && *p; p = &(*p)->next)
++        if (*p == buffer) {
++            *p = buffer->next;
++            break;
++        }
+     free(buffer);
+ }
+ 

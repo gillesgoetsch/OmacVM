@@ -791,6 +791,7 @@ falls back and logs once.
 | `OMACVM_VIDEO_NO_VP9`, `OMACVM_VIDEO_NO_HEVC` | off | hide one codec | built |
 | `OMACVM_VIDEO_COPY` | off | CPU copy instead of IOSurface blit | built |
 | `OMACVM_VIDEO_EDGE_FILL=0` | on | rows and columns of the guest's video planes past the picture stay unwritten (the green bar before 3.1.32) | built (`green-bar`) |
+| `OMACVM_VIDEO_LOGICAL=0` | on | the runtime ignores the sizes the guest declares for its video planes (and the app leaves `omacvm.valogical` out): apps sample the rounded planes whole again, the picture squeezed with its last row repeated below it (3.2.10 and older) | built (`video-edge`) |
 | `OMACVM_VIDEO_NO_REALTIME` | off | no real-time VT session | built |
 | `OMACVM_VIDEO_DECODE_SYNC=1` | off | END_FRAME waits for each picture on QEMU's GPU thread (before 3.2.1); default: the pictures finish beside it and planes and fences wait for theirs | built (`chrome-4k`) |
 | `OMACVM_VIRGL_VIDEO_ABI=legacy` | Mesa 26 numbers | profile numbers of older guests | built |

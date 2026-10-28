@@ -3,6 +3,102 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.11 (unreleased)
+
+In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
+videos lose the repeated last row at their bottom, the VM's pointer works on an external
+display while the MacBook's display shows macOS, and the Touch ID panel shows on the display
+you work on. While macOS compresses the VM, the VM gives its old file cache back, which makes
+QEMU's footprint smaller. Needs the app update and Update VM, then shut the VM down and start
+it again; the Touch ID panel and the give-back need only the app update, from the VM's next
+start.
+
+- **No repeated last row at the bottom of VP9, AV1 and most HEVC videos (#594).** In an
+  OmacVM.app VM, Google Chrome on Wayland (as Omarchy starts it) draws hardware-decoded video
+  straight from the decoder's frames, and so does mpv with `hwdec=vaapi`: the picture came out
+  slightly squeezed, with its last row stretched over a strip below it (8 rows of a 1080p
+  video, about 11 pixels when it fills 1440 screen rows; the green bar of 3.1.31 and older was
+  the same strip, unwritten), and 854-wide and portrait 360x640 videos, as in video calls, had
+  the strip on the right. The Mac now samples each video surface at the picture's own size, as
+  the VM's VA-API driver tells it, with no copy: VP9 and AV1 videos no longer show the strip,
+  nor HEVC at sizes that are a multiple of 8. Not yet for H.264 at sizes that are not a
+  multiple of 16, 1080p among them, or HEVC at other sizes: there the decoder itself asks for
+  a larger surface, VA-API does not say where the picture ends, and the stream's own padding
+  rows still show. Omarchy's Chromium and Firefox were already exact. Needs the app update and
+  Update VM, then shut the VM down and start it again.
+
+- **Google Chrome's GPU process no longer crashes on video it receives in calls (#591,
+  #592).** In an OmacVM.app VM, Chrome's GPU process could crash in video calls while it
+  decoded the incoming video; after repeated crashes Chrome can stop using the GPU until it is
+  restarted. Mesa's VA-API driver crashes when it is asked to decode into a video frame the
+  app made itself and handed in, and Chrome on Wayland does that at times (both crash dumps
+  read so far show it; why Chrome hands the frame in is not proven yet). The VM's VA-API
+  driver shim now refuses those frames, and encoding from one too: Chrome gets an error for
+  that one video instead of a crash. Needs Update VM, then quit Chrome fully once.
+
+- **AV1 videos with film grain show the right picture in Google Chrome on Macs with an AV1
+  decoder (M3 and newer) (#593).** Chrome decodes such a picture into one buffer and shows
+  another (the picture with its grain); the Mac wrote only the first, so Chrome showed a
+  buffer that held an older picture, or nothing (green). The picture now goes into both. Needs
+  only the new app, from the VM's next start.
+
+- **The VM's pointer works on the external display while the MacBook's display shows macOS
+  (#601).** With the VM in full screen on the MacBook's display and an external one, switching
+  the MacBook's display to macOS left the VM without pointer events on the external display:
+  the VM's pointer stood still there, nothing reacted to hovering, scrolling went to where the
+  pointer had been, and only a click brought it back. A move over the VM on the other display
+  now moves the VM's pointer. The Mac app in front keeps the keyboard, and the Mac's arrow
+  shows over the VM's pointer until you click, which takes the pointer and the keyboard as
+  before. Needs the app update and a restart of the VM (shut it down and start it again); with
+  Pause drawing while hidden on, Update VM too (next item).
+
+- **Pause drawing while hidden: the hidden display stays off while you work in the VM on
+  another one (#600).** With the VM in full screen on two displays and the main one switched
+  to macOS, every pointer move or key in the VM on the other display turned the paused display
+  on again (Omarchy has Hyprland wake every display at any input), and the Mac turned it off
+  again a few seconds later, over and over. While a display is paused the VM's display agent
+  now holds that wake-up off and puts it back as it was afterwards. Needs Update VM.
+
+- **The Touch ID panel shows on the display you work on (#599).** With an OmacVM.app VM in
+  full screen on two displays ("Use external displays", on by default), the Touch ID panel
+  showed on the display the VM started on, often the MacBook's built-in screen, while you
+  worked on the external one. It now shows on the display under the Mac's pointer, over the VM
+  there; a VM in a window keeps it over its window, as before. macOS's own Touch ID dialog
+  (for a command too long for the panel, the Mac-password fallback if you turned it on, or
+  with the panel turned off) still shows on the display the VM started on. Needs only the app
+  update, from the VM's next start.
+
+- **The VM gives its old file cache back while macOS compresses it (#590).** Linux keeps every
+  file it read in its page cache. To the Mac that is the VM's own memory, which macOS can
+  compress but never drop, although its own file cache already has the same files. The app
+  dropped the VM's cache only when macOS warned that memory was short, and macOS says "normal"
+  while it compresses, so the cache stayed while macOS compressed it. Now the app looks every
+  5 seconds at how much of the VM macOS holds compressed and how much macOS compresses; when
+  macOS is compressing the VM, the VM gives back its file cache read once and not again,
+  except the newest 1 GB (an eighth of a VM under 8 GB). With the memory-optimized kernel,
+  which sorts its cache by age instead, that is nearly all of its file cache. Programs' memory
+  and zram stay; at most once in 10 minutes, less often when little comes back. On a MacBook
+  Air (8 GB, a 4 GB VM, memory pressure "normal" all along), after the VM read 2.6 GB of
+  files: 3.2.10 left the VM's footprint at 6.6 GB for 10 minutes while macOS compressed it;
+  now the app asked about 6 seconds after macOS began compressing the VM, the VM gave back
+  1.2 GB, and its footprint fell from 6.7 to 5.7 GB within 5 seconds. That is QEMU's
+  footprint, not memory back to the Mac: macOS's compressed memory fell only from 2184 to
+  1845 MB, as the pages macOS still held for what the VM gave back (compressed ones too) stay
+  held, outside the footprint. Chrome, its files read once 30 seconds before a give-back: on
+  the Mac mini it started in 1.02 s with and without the give-back, on the Air in 349 ms
+  instead of 310 ms (median of 3). `omacvm check` has a "VM memory" line, `logs/qemu.log` two
+  lines per give-back. Needs only the new app, from the VM's next start; no Update VM. UTM,
+  Parallels and Fusion: nothing changes. This does not explain all of the 40-50 GB of the
+  report. Read again later, that VM showed 40 GB in Activity Monitor while Linux in it used
+  about 22 GB, 8.2 GB of that the cache this gives back (but for the newest 1 GB). Where the
+  rest of the 40 GB goes is being looked into.
+
+- **Correction to 3.2.10: arrays passed between shader stages do draw (#589).** 3.2.10 said
+  arrays passed between stages still draw nothing: true only on Apple's software renderer. On
+  the GPUs of a Mac mini M4 and a MacBook Air M2, the tested shape (vec4[2], vertex to
+  fragment shader) links and draws. Values passed per patch between tessellation shaders still
+  draw nothing.
+
 ## 3.2.10
 
 Apps in an OmacVM.app VM that draw with OpenGL program pipelines now draw. Needs only the app

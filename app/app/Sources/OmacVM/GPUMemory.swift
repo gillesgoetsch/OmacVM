@@ -14,10 +14,38 @@ extension GPUMemory {
     }
 }
 
+/// The VM folder's logs/memory-giveback (MemoryGiveBack.Status, for omacvm check),
+/// and the VM's part of it from this app's bundle.
+extension MemoryGiveBack {
+    static func file(for config: VMConfig) -> URL {
+        config.folder.appendingPathComponent("logs/memory-giveback")
+    }
+
+    /// src/memory/guest/giveback.sh as this app carries it (build-app.sh puts
+    /// OmacVM's src in the bundle), so the VM needs no update for it; comment
+    /// lines left out, so the guest agent's command stays small. nil in a
+    /// build without it.
+    static let script: String? = {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/omacvm/src/memory/guest/giveback.sh")
+        guard let data = try? Data(contentsOf: url), data.count < 16384,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return text.split(separator: "\n")
+            .filter { !$0.drop(while: { $0 == " " || $0 == "\t" }).hasPrefix("#") }
+            .joined(separator: "\n")
+    }()
+
+    /// "900 MB", "11.6 GB" from the VM's MB.
+    static func gb(mb: Int) -> String { gb(UInt64(max(mb, 0)) * mib) }
+}
+
 /// While a VM runs: follows its graphics memory and macOS's memory pressure.
-/// - When macOS warns that memory is short, the VM is asked to drop its file
-///   cache (at most every 10 minutes): Linux then reports the pages free and
-///   the Mac gets them back (virtio-balloon free page reporting).
+/// - When macOS compresses the VM (MemoryGiveBack says when), the VM gives
+///   back its cold file cache (src/memory/guest/giveback.sh, from this app's
+///   bundle); when macOS warns that memory is short, the VM drops its whole
+///   file cache. One give-back per 10 minutes at most: Linux then reports the
+///   pages free and the Mac gets them back (virtio-balloon free page
+///   reporting). qemu.log has two lines per give-back, logs/memory-giveback
+///   the last one (omacvm check).
 /// - When the desktop's GPU context is lost (the VM would stay black), the
 ///   desktop session starts again by itself, or a window says so and offers
 ///   to restart it (DesktopRecovery says which). After Later, QEMU's app menu
@@ -29,11 +57,18 @@ extension GPUMemory {
 @MainActor
 final class GPUMemoryWatch {
     private let config: VMConfig
+    private let qemuPID: pid_t
     private let log: (String) -> Void
     private var timer: Timer?
     private var pressure: DispatchSourceMemoryPressure?
-    private var lastTrim = Date.distantPast
-    private var trimming = false
+    private var giveBack = MemoryGiveBack(ram: ProcessInfo.processInfo.physicalMemory)
+    /// A give-back (or the warning's drop) is under way: no second one.
+    private var givingBack = false
+    /// After the VM answered: QEMU's footprint is looked at 60 s later.
+    private var settling: Settling?
+    private var status = MemoryGiveBack.Status()
+    /// The last 5 s look: QEMU's footprint before the warning's drop.
+    private var lastSample: MemoryGiveBack.Sample?
     private var lostSeen = 0
     private var alert: NSAlert?
     private var lastDesktopRestart: Date?
@@ -48,15 +83,26 @@ final class GPUMemoryWatch {
     /// closed, a restart answered late).
     private var stopped = false
 
-    init(config: VMConfig, log: @escaping (String) -> Void) {
+    private struct Settling {
+        var due: TimeInterval
+        var trigger: MemoryGiveBack.Trigger
+        var result: MemoryGiveBack.Result?
+        var before: MemoryGiveBack.Sample?
+    }
+
+    init(config: VMConfig, qemuPID: pid_t, log: @escaping (String) -> Void) {
         self.config = config
+        self.qemuPID = qemuPID
         self.log = log
         restart = DesktopRestart(for: config)
     }
 
+    private static var now: TimeInterval { Date().timeIntervalSinceReferenceDate }
+
     func start() {
         stopped = false
         restart.clear()
+        try? FileManager.default.removeItem(at: MemoryGiveBack.file(for: config))
         restartObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name(restart.requestName), object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.restartChosen() }
@@ -90,31 +136,161 @@ final class GPUMemoryWatch {
     }
 
     private func macOSShort(critical: Bool) {
-        guard !trimming, Date().timeIntervalSince(lastTrim) > 600 else { return }
-        trimming = true
+        let now = Self.now
+        let trigger: MemoryGiveBack.Trigger = critical ? .critical : .warning
+        guard !givingBack, giveBack.allowed(trigger, at: now) else { return }
+        givingBack = true
+        giveBack.started(trigger, at: now)
+        let before = lastSample
         let socket = config.agentSocket.path
         let level = critical ? "critical" : "warning"
-        log("OmacVM: macOS memory pressure \(level): asking the VM to drop its file cache")
+        if giveBack.misses == 0 { log("OmacVM: macOS memory pressure \(level): asking the VM to drop its file cache") }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let ok = GuestAgent.run(socketPath: socket, "/bin/sh", ["-c", "sync; echo 1 > /proc/sys/vm/drop_caches"])
-            Task { @MainActor in self?.trimmed(ok) }
+            Task { @MainActor in self?.trimmed(ok, trigger, before) }
         }
     }
 
     /// Done once per 10 minutes when the VM did it; when its agent did not
-    /// answer (still starting, busy), tried again in 30 seconds.
-    private func trimmed(_ ok: Bool) {
-        trimming = false
+    /// answer (still starting, busy), tried again later (noAnswer).
+    private func trimmed(_ ok: Bool, _ trigger: MemoryGiveBack.Trigger, _ before: MemoryGiveBack.Sample?) {
+        givingBack = false
         if ok {
-            lastTrim = Date()
+            answeredAgain(giveBack.answered(nil))
             log("OmacVM: the VM dropped its file cache")
+            settling = Settling(due: Self.now + MemoryGiveBack.settle, trigger: trigger, result: nil, before: before)
         } else {
-            lastTrim = Date().addingTimeInterval(-600 + 30)
-            log("OmacVM: the VM's agent did not answer: trying again in 30 s")
+            noAnswer()
         }
     }
 
+    /// The VM's agent did not answer: tried again in 30 s, then less often
+    /// (MemoryGiveBack.retryAfter, at most every 10 minutes). One line in
+    /// qemu.log for the first; the asks in between log nothing until it answers.
+    private func noAnswer() {
+        giveBack.noAnswer(at: Self.now)
+        if giveBack.misses == 1 {
+            log("OmacVM: the VM's agent did not answer: trying again in 30 s, then less often (at most every 10 minutes; no more lines until it answers)")
+        }
+    }
+
+    private func answeredAgain(_ missed: Int) {
+        if missed > 0 { log("OmacVM: the VM's agent answers again (it had not answered \(missed) times in a row)") }
+    }
+
+    /// Every 5 s (the only place QEMU's and macOS's numbers are read), before
+    /// the graphics file (a QEMU that writes none still gets its memory
+    /// back): the footprint after a give-back, and whether macOS is
+    /// compressing the VM.
+    private func lookAtMemory() {
+        guard let p = HostMemory.process(qemuPID), let c = HostMemory.compressed() else { return }
+        let s = MemoryGiveBack.Sample(time: Self.now, footprint: p.footprint, resident: p.resident, compressed: c)
+        lastSample = s
+        if let w = settling, s.time >= w.due { settled(w, s) }
+        guard !givingBack, giveBack.compressing(s) else { return }
+        giveBackCache(s)
+    }
+
+    /// Asks the VM for its cold file cache (giveback.sh compressing): it
+    /// answers within 20 s with what it gave.
+    private func giveBackCache(_ s: MemoryGiveBack.Sample) {
+        guard let script = MemoryGiveBack.script else {
+            giveBack.stop()
+            log("OmacVM: macOS is compressing the VM, but this app has no giveback.sh in its bundle: no give-backs this run")
+            return
+        }
+        let base = giveBack.baseline ?? (s.taken, s.compressed)
+        givingBack = true
+        giveBack.started(.compressing, at: s.time)
+        if giveBack.misses == 0 {
+            log("OmacVM: macOS is compressing the VM: QEMU has \(MemoryGiveBack.gb(s.taken)) outside its resident memory, "
+                + "\(MemoryGiveBack.gb(s.taken &- base.taken)) more than at its lowest, and macOS compressed "
+                + "\(MemoryGiveBack.gb(s.compressed &- base.compressed)) since; asking the VM for its cold file cache")
+        }
+        let socket = config.agentSocket.path
+        let cap = config.memoryMB
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let outcome = GuestAgent.runAndWait(socketPath: socket, "/bin/sh", ["-c", script, "giveback", "compressing"], seconds: 30)
+            Task { @MainActor in self?.gaveBack(outcome, s, cap) }
+        }
+    }
+
+    private func gaveBack(_ outcome: GuestAgent.Outcome, _ before: MemoryGiveBack.Sample, _ cap: Int) {
+        givingBack = false
+        var result: MemoryGiveBack.Result?
+        switch outcome {
+        case .noAgent:
+            noAnswer()
+            return
+        case .exited(_, let out):
+            result = MemoryGiveBack.Result.parse(out, maxMB: cap)
+            if result == nil { log("OmacVM: the VM's answer to the give-back could not be read") }
+        case .running:
+            log("OmacVM: the VM did not finish its give-back within 30 s")
+        case .refused(let why):
+            log("OmacVM: the VM's agent did not run the give-back (\(ControlCentreRoute.line(why)))")
+        case .badReply:
+            log("OmacVM: the VM's answer to the give-back could not be read")
+        }
+        answeredAgain(giveBack.answered(result))
+        if giveBack.off {
+            log("OmacVM: the VM's balloon does not report free pages, so what it frees stays on the Mac: no more give-backs this run")
+            status.trigger = "off"
+            status.off = true
+            writeStatus()
+            return
+        }
+        settling = Settling(due: Self.now + MemoryGiveBack.settle, trigger: .compressing, result: result, before: before)
+    }
+
+    /// 60 s after the VM answered: the second line, the status file, the next gap.
+    private func settled(_ w: Settling, _ s: MemoryGiveBack.Sample) {
+        settling = nil
+        let before = w.before?.footprint ?? s.footprint
+        let drop = before > s.footprint ? before - s.footprint : 0
+        giveBack.settled(w.trigger, guest: w.result.map { UInt64($0.gotMB) * MemoryGiveBack.mib }, footprintDrop: drop, at: s.time)
+        let r = w.result
+        status.count += 1
+        status.at = Int(Date().timeIntervalSince1970)
+        status.trigger = w.trigger.rawValue
+        status.act = r?.act ?? (w.trigger == .compressing ? "unknown" : "drop")
+        status.givenMB = r?.gotMB
+        status.returnedMB = Int(drop / MemoryGiveBack.mib)
+        status.cacheMB = r?.cacheMB ?? 0
+        status.cacheAfterMB = r?.cacheAfterMB ?? 0
+        status.smallFreeMB = r?.smallFreeMB ?? 0
+        status.footprintMB = Int(before / MemoryGiveBack.mib)
+        status.footprintAfterMB = Int(s.footprint / MemoryGiveBack.mib)
+        status.takenMB = Int((w.before?.taken ?? 0) / MemoryGiveBack.mib)
+        status.backoff = Int(giveBack.backoff)
+        writeStatus()
+        var line = "QEMU's footprint \(MemoryGiveBack.gb(before)) -> \(MemoryGiveBack.gb(s.footprint)) 60 s later"
+        if w.trigger == .compressing && giveBack.backoff > 1 {
+            line += "; little came back: the next give-back for this in \(Int(min(MemoryGiveBack.gap * giveBack.backoff, MemoryGiveBack.longestGap) / 60)) minutes at the earliest"
+        }
+        let g = MemoryGiveBack.gb(mb:)
+        switch (w.trigger, r?.act) {
+        case (.compressing, "reclaim"?):
+            log("OmacVM: the VM gave back \(g(r!.gotMB)) of cold file cache (\(g(r!.cacheMB)) -> \(g(r!.cacheAfterMB)); "
+                + "\(g(r!.smallFreeMB)) free in blocks too small to give back); \(line)")
+        case (.compressing, "drop"?):
+            log("OmacVM: the VM dropped its whole file cache, \(g(r!.gotMB)) (its kernel has no cold-only way); \(line)")
+        case (.compressing, _?):
+            log("OmacVM: the VM had no cold file cache to give (\(g(r!.cacheMB)) of file cache, "
+                + "\(g(r!.smallFreeMB)) free in blocks too small to give back); \(line)")
+        case (.compressing, nil):
+            log("OmacVM: the give-back's result is not known; \(line)")
+        default:
+            log("OmacVM: after the drop: \(line)")
+        }
+    }
+
+    private func writeStatus() {
+        try? Data(status.text.utf8).write(to: MemoryGiveBack.file(for: config), options: .atomic)
+    }
+
     private func poll() {
+        lookAtMemory()
         guard let m = GPUMemory.read(for: config) else { return }
         // macOS tells only some processes about a warning, one at a time; QEMU
         // also looks for itself once a second and writes what it sees.

@@ -1,0 +1,417 @@
+virglrenderer: a texture the guest samples at a smaller size than it is
+
+What: the guest may say, per texture, the size it samples it at: a private
+payload on VIRGL_CCMD_NOP ("OMLS", version 1, then up to 8 entries of resource,
+width, height). Hosts without this patch skip it like any NOP. The payload is
+checked: the resource must be one of the sending context's, a one-level,
+single-sample 2D or 2D-array GL texture, and 0 < width <= its width, 0 < height
+<= its height; anything else is ignored (one warning line) and the context goes
+on; its own size takes the logical size away again. A sampler view of such a
+texture (2D or 2D array, level 0) sets a bit in its slot's shader key
+(sampler_views_logical_mask); that shader variant gets uniform vec4
+<prefix>logical<i> = (scale, hi) and its lookups (TEX, TXP, TXB, TXL, TXD with
+its gradients, TG4) use min(coord.xy * scale, hi): scale is the logical size
+over the texture's, hi the centre of the last logical texel, so sampling stops
+there as at a texture's own edge. TXQ returns the logical size. texelFetch,
+transfers, copies, blits and images are unchanged. The uniform is set at a draw
+only when it changed; there is one shader variant for "has a logical size", not
+one per size. Not for samplers indexed indirectly, shadow, rectangle or cube
+lookups. OMACVM_VIDEO_LOGICAL=0 in QEMU's environment ignores every
+declaration (the app then also leaves out the marker that tells the guest).
+Why: Mesa rounds a VA-API surface's planes up to 16 (1920x1080: Y 1920x1088, UV
+960x544), and an app that shows the surface imports its planes and samples them
+by normalized coordinates (mpv with hwdec=vaapi, Chrome when NV12 is
+renderable, GStreamer, Hyprland for vo=dmabuf-wayland): virgl drops the size the
+import asks for, so the whole texture was squeezed into the picture's place and
+its rows past the picture showed as a strip at the bottom (the green bar before
+virgl-video-plane-edge.patch, the picture's last row stretched since then; 1080p:
+8 of 1088 rows, about 14 pixels on a 3456-wide screen; 360p call tiles 8 of 368,
+854 wide 10 of 864 columns). The guest's VA-API driver shim declares each
+surface it lets Mesa allocate (omacvm_drv_video.c, only when the app says
+omacvm.valogical=1): every app then samples exactly the picture, with no copy.
+Mesa's own compositor normalizes a YUV surface by its own size too, so Chrome's
+conversions are exact the same way.
+Upstream: virglrenderer has no way to honour the size of a dma-buf import; this
+is OmacVM's private protocol. A real fix (a view or import of the asked size)
+needs Mesa and virglrenderer; not sent.
+Tests: Tests/virgl/test-video-logical-size.c (two contexts: the owner declares,
+the other samples; every lookup nearest and at 1.8x linear against a texture of
+the picture's own size, TXQ, R8/RG8 planes, a 2D array, a 2D texture through a
+2D_ARRAY sampler, TG4 with the edge fill, transparent padding, sizes changing
+under one program, readback of every texel, refused declarations with the
+context alive; run again with OMACVM_VIDEO_LOGICAL=0, where it must see the
+squeezed picture), fuzz-regressions/seed-nop-logical*.
+diff --git a/src/vrend/vrend_decode.c b/src/vrend/vrend_decode.c
+index 8c23bec..4d1a327 100644
+--- a/src/vrend/vrend_decode.c
++++ b/src/vrend/vrend_decode.c
+@@ -1992,8 +1992,35 @@ static int vrend_decode_dummy(struct vrend_context *ctx, const uint32_t *buf, ui
+    return 0;
+ }
+ 
++/* OmacVM (virgl-resource-logical-size.patch): a NOP may carry a private payload that older
++ * hosts skip like any NOP: "OMLS", version 1, then up to 8 x (resource, width, height), the
++ * size the guest samples each texture at (its VA-API driver's video planes, rounded up to
++ * 16). Anything else in a NOP is ignored, as before; a declaration that does not fit its
++ * resource is ignored on its own. Never an error: the context goes on. */
++#define VREND_NOP_LOGICAL_MAGIC 0x534c4d4fu   /* "OMLS" */
++#define VREND_NOP_LOGICAL_VERSION 1u
++#define VREND_NOP_LOGICAL_MAX 8u
++
++static int vrend_decode_nop(struct vrend_context *ctx, const uint32_t *buf, uint32_t length)
++{
++   uint32_t n;
++
++   if (length < 2 || buf[1] != VREND_NOP_LOGICAL_MAGIC)
++      return 0;
++   n = (length - 2) / 3;
++   if (buf[2] != VREND_NOP_LOGICAL_VERSION || (length - 2) % 3 || !n || n > VREND_NOP_LOGICAL_MAX) {
++      virgl_debug("logical size: a payload of %u words, version %u, ignored\n", length,
++                  buf[2]);
++      return 0;
++   }
++   for (uint32_t i = 0; i < n; i++)
++      vrend_renderer_resource_set_logical_size(ctx, buf[3 + 3 * i], buf[4 + 3 * i],
++                                               buf[5 + 3 * i]);
++   return 0;
++}
++
+ static const vrend_decode_callback decode_table[VIRGL_MAX_COMMANDS] = {
+-   [VIRGL_CCMD_NOP] = vrend_decode_dummy,
++   [VIRGL_CCMD_NOP] = vrend_decode_nop,
+    [VIRGL_CCMD_CREATE_OBJECT] = vrend_decode_create_object,
+    [VIRGL_CCMD_BIND_OBJECT] = vrend_decode_bind_object,
+    [VIRGL_CCMD_DESTROY_OBJECT] = vrend_decode_destroy_object,
+diff --git a/src/vrend/vrend_renderer.c b/src/vrend/vrend_renderer.c
+index cdb3482..b56bab6 100644
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -625,6 +625,10 @@ struct vrend_linked_shader_program {
+    // ignore elements corresponding to unset bits of shadow_samp_mask
+    GLuint *shadow_samp_mask_locs[PIPE_SHADER_TYPES];
+    GLuint *shadow_samp_add_locs[PIPE_SHADER_TYPES];
++   /* OmacVM: <prefix>logical<i> of each used sampler whose view has a logical size in this
++    * variant's key (-1: none), and the value last set (virgl-resource-logical-size.patch) */
++   GLint *logical_locs[PIPE_SHADER_TYPES];
++   GLfloat (*logical_vals[PIPE_SHADER_TYPES])[4];
+ 
+    GLint const_location[PIPE_SHADER_TYPES];
+    /* a stage whose constants are the uniform block <prefix>constblk: its binding + 1
+@@ -2121,6 +2125,22 @@ static int bind_sampler_locs(struct vrend_linked_shader_program *sprog,
+             sprog->shadow_samp_add_locs[shader_type][sampler_index] =
+                vrend_get_uniform_location(sprog, name, shader_type);
+          }
++         /* OmacVM: a view sampled at its logical size (this variant's key) */
++         if (i < 32 && (sprog->ss[shader_type]->key.sampler_views_logical_mask & (1u << i))) {
++            if (!sprog->logical_locs[shader_type]) {
++               sprog->logical_locs[shader_type] = malloc(nsamp * sizeof(GLint));
++               sprog->logical_vals[shader_type] = calloc(nsamp, sizeof(GLfloat[4]));
++               for (unsigned k = 0; sprog->logical_locs[shader_type] && k < nsamp; k++)
++                  sprog->logical_locs[shader_type][k] = -1;
++            }
++            snprintf(name, 32, "%slogical%d", prefix, i);
++            if (sprog->logical_locs[shader_type] && sprog->logical_vals[shader_type]) {
++               sprog->logical_locs[shader_type][sampler_index] =
++                  vrend_get_uniform_location(sprog, name, shader_type);
++               /* not a value a draw computes: the first draw sets it */
++               sprog->logical_vals[shader_type][sampler_index][0] = -1.0f;
++            }
++         }
+          sampler_index++;
+       }
+    } else {
+@@ -2990,6 +3010,8 @@ static void vrend_destroy_program(struct vrend_linked_shader_program *ent)
+       free(ent->sampler_locs[i]);
+       free(ent->shadow_samp_mask_locs[i]);
+       free(ent->shadow_samp_add_locs[i]);
++      free(ent->logical_locs[i]);
++      free(ent->logical_vals[i]);
+       free(ent->img_locs[i]);
+ 
+    }
+@@ -4979,6 +5001,18 @@ static uint16_t vrend_view_packed_swizzle(const struct vrend_sampler_view *view)
+           vrend_pipe_swizzle(view->gl_swizzle[2]) << 6 | vrend_pipe_swizzle(view->gl_swizzle[3]) << 9;
+ }
+ 
++/* OmacVM: a view the guest samples at a logical size (virgl-resource-logical-size.patch): a
++ * one-level 2D or 2D-array texture the guest declared smaller than it is. The shader then
++ * scales its normalized coordinates and size queries (sampler_views_logical_mask). */
++static bool vrend_view_logical(const struct vrend_sampler_view *view)
++{
++   const struct vrend_resource *res = view ? view->texture : NULL;
++
++   return res && res->logical_width && res->logical_height &&
++          (view->target == GL_TEXTURE_2D || view->target == GL_TEXTURE_2D_ARRAY) &&
++          !view->u.tex.first_level;
++}
++
+ /* OmacVM: a slot's key bits with the stage's bound shader: also whether a plain 2D view sits
+  * where the shader declares a 2D_ARRAY sampler (sampler_views_2d_for_array_mask). */
+ static uint32_t vrend_slot_key_bits(struct vrend_sub_context *sub, uint32_t shader_type,
+@@ -4994,6 +5028,9 @@ static uint32_t vrend_slot_key_bits(struct vrend_sub_context *sub, uint32_t shad
+     * slot's bits change too when this one comes or goes) */
+    if (vrend_view_swizzle_shared(&sub->views[shader_type], index, view))
+       bits |= 1u << 15 | (uint32_t)vrend_view_packed_swizzle(view) << 16;
++   /* sampled at its logical size */
++   if (index < 32 && vrend_view_logical(view))
++      bits |= 1u << 28;
+    return bits;
+ }
+ 
+@@ -5714,6 +5751,10 @@ static inline void vrend_fill_shader_key(struct vrend_sub_context *sub_ctx,
+       if (view->target == GL_TEXTURE_2D && i < 32 && (sel->sinfo.samplers_2d_array_mask & (1u << i)))
+          key->sampler_views_2d_for_array_mask |= 1u << i;
+ 
++      /* OmacVM: sampled at the size the guest declared */
++      if (i < 32 && vrend_view_logical(view))
++         key->sampler_views_logical_mask |= 1u << i;
++
+       /* Native GL already applies alpha swizzles in sampler state. Applying
+        * OOOR again in the shader would read zero instead of glyph coverage. */
+       if (view->texture->target == GL_TEXTURE_BUFFER) {
+@@ -6824,6 +6865,35 @@ static void vrend_resource_heap_refresh(struct vrend_sub_context *sub_ctx,
+ 
+ #endif
+ 
++/* OmacVM (virgl-resource-logical-size.patch): a sampler the shader reads at its view's logical
++ * size gets vec4(scale, hi): normalized coordinates c become min(c * scale, hi), scale the
++ * logical size over the texture's, hi the centre of the last logical texel (sampling stops
++ * there, as at a texture's own edge). A view without one (its key bit not dropped yet)
++ * reads the whole texture. Set only when it changed: Apple's GL redoes much of its draw
++ * setup after a glUniform call. */
++static void vrend_set_logical_uniform(struct vrend_linked_shader_program *sprog,
++                                      int shader_type, int sampler_index,
++                                      const struct vrend_sampler_view *view)
++{
++   const struct vrend_resource *res = view ? view->texture : NULL;
++   GLfloat *cur = sprog->logical_vals[shader_type][sampler_index];
++   GLfloat v[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
++
++   if (res && res->base.width0 && res->base.height0) {
++      float w = res->base.width0, h = res->base.height0;
++      float lw = vrend_view_logical(view) ? res->logical_width : w;
++      float lh = vrend_view_logical(view) ? res->logical_height : h;
++      v[0] = lw / w;
++      v[1] = lh / h;
++      v[2] = (lw - 0.5f) / w;
++      v[3] = (lh - 0.5f) / h;
++   }
++   if (!memcmp(cur, v, sizeof(v)))
++      return;
++   glUniform4f(sprog->logical_locs[shader_type][sampler_index], v[0], v[1], v[2], v[3]);
++   memcpy(cur, v, sizeof(v));
++}
++
+ static GLuint vrend_draw_bind_samplers_shader(struct vrend_sub_context *sub_ctx,
+                                               int shader_type,
+                                               GLuint next_sampler_id)
+@@ -6925,6 +6995,10 @@ static GLuint vrend_draw_bind_samplers_shader(struct vrend_sub_context *sub_ctx,
+             }
+          }
+       }
++      /* OmacVM: the slot's logical size for this draw (set when it changed) */
++      if (sprog->logical_locs[shader_type] &&
++          sprog->logical_locs[shader_type][sampler_index] != -1)
++         vrend_set_logical_uniform(sprog, shader_type, sampler_index, tview);
+       sampler_index++;
+       next_sampler_id++;
+    }
+@@ -17341,6 +17415,45 @@ struct vrend_resource *vrend_renderer_ctx_res_lookup(struct vrend_context *ctx,
+    return vrend_ctx_resource_lookup(ctx->res_hash, res_handle);
+ }
+ 
++/* OmacVM (virgl-resource-logical-size.patch): the size the guest samples a texture at. The
++ * guest is untrusted: the resource must be one of this context's, a one-level, single-sample
++ * 2D or 2D-array GL texture, and 0 < width <= its width, 0 < height <= its height; its own
++ * size takes the logical size away again. Anything else is ignored (logged once).
++ * OMACVM_VIDEO_LOGICAL=0 in QEMU's environment ignores every declaration. */
++bool vrend_renderer_resource_set_logical_size(struct vrend_context *ctx, uint32_t handle,
++                                              uint32_t width, uint32_t height)
++{
++   static int on = -1, refused;
++   struct vrend_resource *res;
++
++   if (on < 0) {
++      const char *env = getenv("OMACVM_VIDEO_LOGICAL");
++      on = !(env && !strcmp(env, "0"));
++   }
++   if (!on)
++      return false;
++   res = handle ? vrend_renderer_ctx_res_lookup(ctx, (int)handle) : NULL;
++   if (!res || !has_bit(res->storage_bits, VREND_STORAGE_GL_TEXTURE) ||
++       (res->base.target != PIPE_TEXTURE_2D && res->base.target != PIPE_TEXTURE_2D_ARRAY) ||
++       (res->target != GL_TEXTURE_2D && res->target != GL_TEXTURE_2D_ARRAY) ||
++       res->base.last_level || res->base.nr_samples > 1 || !width || !height ||
++       width > res->base.width0 || height > res->base.height0) {
++      if (!refused) {
++         refused = 1;
++         virgl_warn("logical size: %ux%u for resource %u does not fit it, ignored (logged once)\n",
++                    width, height, handle);
++      }
++      return false;
++   }
++   if (width == res->base.width0 && height == res->base.height0)
++      width = height = 0;
++   virgl_debug("logical size: resource %u (%ux%u) sampled at %ux%u\n", handle,
++               res->base.width0, res->base.height0, width, height);
++   res->logical_width = width;
++   res->logical_height = height;
++   return true;
++}
++
+ void vrend_context_set_debug_flags(struct vrend_context *ctx, const char *flagstring)
+ {
+    if (vrend_debug_can_override()) {
+diff --git a/src/vrend/vrend_renderer.h b/src/vrend/vrend_renderer.h
+index 9d3e184..9f95855 100644
+--- a/src/vrend/vrend_renderer.h
++++ b/src/vrend/vrend_renderer.h
+@@ -159,6 +159,11 @@ struct vrend_resource {
+       uint8_t index_size;
+       bool restart;
+    } index_ranges[4];
++   /* OmacVM: the size the guest samples this texture at, smaller than the texture (0: its
++    * own). The guest's VA-API driver gives a video surface's planes a size rounded up to
++    * 16 and says the picture's size (virgl-resource-logical-size.patch): sampling at
++    * normalized coordinates and size queries then cover only that part. */
++   uint32_t logical_width, logical_height;
+ };
+ 
+ /* OmacVM: before every write vrend makes to a resource's contents from the CPU
+@@ -704,6 +709,11 @@ extern const struct vrend_if_cbs *vrend_clicbs;
+ 
+ bool vrend_renderer_video_available(void);
+ 
++/* OmacVM: the guest says the size it samples a texture at (a VIRGL_CCMD_NOP payload,
++ * virgl-resource-logical-size.patch); checked here, ignored when it does not fit. */
++bool vrend_renderer_resource_set_logical_size(struct vrend_context *ctx, uint32_t handle,
++                                              uint32_t width, uint32_t height);
++
+ int vrend_renderer_export_query(struct pipe_resource *pres,
+                                 struct virgl_renderer_export_query *export_query);
+ 
+diff --git a/src/vrend/vrend_shader.c b/src/vrend/vrend_shader.c
+index 8c851a4..b0720bf 100644
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -1129,6 +1129,25 @@ static bool sampler_2d_for_array(const struct dump_ctx *ctx, int i)
+           !(ctx->info.indirect_files & (1 << TGSI_FILE_SAMPLER));
+ }
+ 
++/* OmacVM: sampler view i is read at the logical size the guest declared for its texture
++ * (the key; virgl-resource-logical-size.patch): uniform vec4 <prefix>logical<i> = (scale,
++ * hi). Not for samplers indexed indirectly (one uniform per view). */
++static bool sampler_logical(const struct dump_ctx *ctx, int i)
++{
++   return i >= 0 && i < 32 && (ctx->key->sampler_views_logical_mask & (1u << i)) &&
++          !(ctx->info.indirect_files & (1 << TGSI_FILE_SAMPLER));
++}
++
++/* ... for a lookup of this texture type (2D and 2D arrays: the video planes) */
++static bool tex_logical(const struct dump_ctx *ctx, const struct tgsi_full_instruction *inst,
++                        int i)
++{
++   return sampler_logical(ctx, i) &&
++          (inst->Texture.Texture == TGSI_TEXTURE_2D ||
++           inst->Texture.Texture == TGSI_TEXTURE_2D_ARRAY) &&
++          !vrend_shader_sampler_views_mask_get(ctx->key->sampler_views_emulated_rect_mask, i);
++}
++
+ // TODO Consider exposing non-const ctx-> members as args to make *ctx const
+ static bool add_samplers(struct dump_ctx *ctx, int first, int last, int sview_type, enum tgsi_return_type sview_rtype)
+ {
+@@ -3125,6 +3144,22 @@ static void emit_txq(struct dump_ctx *ctx,
+          writemask = wm_buffer;
+       }
+ 
++      /* OmacVM: a texture read at a logical size has that size (level 0: such
++       * textures have one level) */
++      if (tex_logical(ctx, inst, sreg_index)) {
++         const char *pre = tgsi_proc_to_prefix(ctx->prog_type);
++         if (inst->Texture.Texture == TGSI_TEXTURE_2D)
++            emit_buff(&ctx->glsl_strbufs, "%s%s = %s(ivec2(round(vec2(textureSize(%s%s)) * "
++                      "%slogical%u.xy)))%s;\n", dst, get_wm_string(twm),
++                      get_string(dtypeprefix), srcs[sampler_index], bias, pre, sreg_index,
++                      txq_returns_vec ? writemask : "");
++         else
++            emit_buff(&ctx->glsl_strbufs, "%s%s = %s(ivec3(ivec2(round(vec2(textureSize(%s%s).xy) "
++                      "* %slogical%u.xy)), textureSize(%s%s).z))%s;\n", dst, get_wm_string(twm),
++                      get_string(dtypeprefix), srcs[sampler_index], bias, pre, sreg_index,
++                      srcs[sampler_index], bias, txq_returns_vec ? writemask : "");
++         return;
++      }
+       emit_buff(&ctx->glsl_strbufs, "%s%s = %s(textureSize(%s%s))%s;\n", dst,
+                 get_wm_string(twm), get_string(dtypeprefix),
+                 srcs[sampler_index], bias, txq_returns_vec ? writemask : "");
+@@ -3416,6 +3451,10 @@ static void translate_tex(struct dump_ctx *ctx,
+    }
+ 
+    is_shad = samplertype_is_shadow(inst->Texture.Texture);
++   /* OmacVM: read at the logical size the guest declared (not texelFetch: texels stay) */
++   const bool logical = inst->Instruction.Opcode != TGSI_OPCODE_TXF &&
++                        tex_logical(ctx, inst, sinfo->sreg_index);
++   const char *lpre = tgsi_proc_to_prefix(ctx->prog_type);
+ 
+    switch (ctx->samplers[sinfo->sreg_index].tgsi_sampler_return) {
+    case TGSI_RETURN_TYPE_SINT:
+@@ -3546,7 +3585,11 @@ static void translate_tex(struct dump_ctx *ctx,
+       case TGSI_TEXTURE_SHADOW2D_ARRAY:
+       case TGSI_TEXTURE_RECT:
+       case TGSI_TEXTURE_SHADOWRECT:
+-         strbuf_appendf(&bias_buf, ", %s.xy, %s.xy", srcs[1], srcs[2]);
++         if (logical) /* OmacVM: the gradients in the texture's own coordinates too */
++            strbuf_appendf(&bias_buf, ", %s.xy * %slogical%d.xy, %s.xy * %slogical%d.xy",
++                           srcs[1], lpre, sinfo->sreg_index, srcs[2], lpre, sinfo->sreg_index);
++         else
++            strbuf_appendf(&bias_buf, ", %s.xy, %s.xy", srcs[1], srcs[2]);
+          break;
+       case TGSI_TEXTURE_3D:
+       case TGSI_TEXTURE_CUBE:
+@@ -3688,6 +3731,22 @@ static void translate_tex(struct dump_ctx *ctx,
+       srcs = new_srcs;
+    }
+ 
++   /* OmacVM: normalized coordinates over the logical size: c.xy * scale, at most the centre
++    * of the last logical texel (as a texture's own edge clamps); a projected lookup is
++    * divided first (its own min would come after the divide) */
++   char lbuf[512];
++   const char *lsrcs[4] = { lbuf, srcs[1], srcs[2], srcs[3] };
++   if (logical) {
++      if (inst->Instruction.Opcode == TGSI_OPCODE_TXP && inst->Texture.Texture == TGSI_TEXTURE_2D)
++         snprintf(lbuf, sizeof(lbuf), "vec4(min((%s).xy / (%s).w * %slogical%d.xy, %slogical%d.zw), "
++                  "(%s).z, 1.0)", srcs[0], srcs[0], lpre, sinfo->sreg_index, lpre,
++                  sinfo->sreg_index, srcs[0]);
++      else
++         snprintf(lbuf, sizeof(lbuf), "vec4(min((%s).xy * %slogical%d.xy, %slogical%d.zw), (%s).zw)",
++                  srcs[0], lpre, sinfo->sreg_index, lpre, sinfo->sreg_index, srcs[0]);
++      srcs = lsrcs;
++   }
++
+    if (inst->Instruction.Opcode == TGSI_OPCODE_TXF) {
+       if (ctx->cfg->use_gles &&
+           (inst->Texture.Texture == TGSI_TEXTURE_1D ||
+@@ -6800,6 +6859,9 @@ static void emit_sampler_decl(const struct dump_ctx *ctx,
+       emit_hdrf(glsl_strbufs, "uniform %s %csampler%s %ssamp%d[%d];\n", precision, ptc, stc, sname, i, range);
+    else
+       emit_hdrf(glsl_strbufs, "uniform %s %csampler%s %ssamp%d;\n", precision, ptc, stc, sname, i);
++   /* OmacVM: (scale, hi) of a view read at its logical size */
++   if (!range && sampler_logical(ctx, i))
++      emit_hdrf(glsl_strbufs, "uniform %s vec4 %slogical%d;\n", precision, sname, i);
+ 
+    if (is_shad) {
+       emit_hdrf(glsl_strbufs, "uniform %s vec4 %sshadmask%d;\n", precision, sname, i);
+diff --git a/src/vrend/vrend_shader.h b/src/vrend/vrend_shader.h
+index 0ac21ed..6cd7eec 100644
+--- a/src/vrend/vrend_shader.h
++++ b/src/vrend/vrend_shader.h
+@@ -230,6 +230,10 @@ struct vrend_shader_key {
+    /* OmacVM: samplers the shader declares 2D_ARRAY whose bound view is a plain 2D texture
+     * (the first 32 views): they are sampled as 2D, layer 0 */
+    uint32_t sampler_views_2d_for_array_mask;
++   /* OmacVM: views (the first 32) sampled at the logical size the guest declared for their
++    * texture: normalized coordinates and size queries are scaled by <prefix>logical<i>
++    * (virgl-resource-logical-size.patch) */
++   uint32_t sampler_views_logical_mask;
+    uint16_t tex_swizzle[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+ 
+    uint8_t ssbo_binding_offset;

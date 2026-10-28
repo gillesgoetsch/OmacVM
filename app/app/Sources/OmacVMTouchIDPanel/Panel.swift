@@ -417,6 +417,20 @@ final class PanelController: NSObject {
             .max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
     }
 
+    /// The panel's frame: over the VM window QEMU shows on the display under
+    /// the Mac's pointer, where the person works (with "Use external
+    /// displays" the key window is always the main window, on the display
+    /// the VM started on); else over `vm` on its screen, as before.
+    private func placement(_ vm: NSWindow, screen: NSScreen, size: CGSize) -> CGRect {
+        let screens = NSScreen.screens
+        let hosts = ([vm] + NSApp.windows.filter { $0 !== vm }).filter { w in
+            panelCanHost(PanelWindowFacts(frame: w.frame, visible: w.isVisible && w.occlusionState.contains(.visible),
+                                          shownSpace: w.isOnActiveSpace, isPanel: w is NSPanel, alpha: Double(w.alphaValue)), size: size)
+        }
+        return panelPlace(pointer: NSEvent.mouseLocation, screens: screens.map(\.frame), visible: screens.map(\.visibleFrame),
+                          windows: hosts.map(\.frame), fallback: vm.frame, fallbackVisible: screen.visibleFrame, size: size)
+    }
+
     func show(_ prompt: TouchIDPanelPrompt, reply: @escaping (TouchIDPanelResult) -> Void) {
         if busy {
             // The last one is only playing its end: it goes now. Else the app
@@ -430,6 +444,10 @@ final class PanelController: NSObject {
         guard let vm = vmWindow(), let screen = vm.screen ?? NSScreen.main else { return reply(.error) }
         let c = makeEvaluator()
         if let why = c.unavailable() { return reply(why == .lockout ? .no("lockout") : .no("no-touch-id")) }
+        // Nothing below can fail (didClose always follows). QEMU lets go of the
+        // pointer first; with the default absolute pointer the Mac's pointer is
+        // then where the guest's is.
+        willShow()
         once = PanelOnce()
         generation += 1
         self.reply = reply
@@ -438,7 +456,7 @@ final class PanelController: NSObject {
         reduce = reduceMotion()
         released = false
         let size = CGSize(width: PanelMetrics.side, height: PanelMetrics.side)
-        let frame = panelFrame(window: vm.frame, visible: screen.visibleFrame, size: size)
+        let frame = placement(vm, screen: screen, size: size)
         let v = PanelView(prompt: prompt, theme: theme, authView: c.view, reduceMotion: reduce)
         let w = PanelWindow(frame: frame)
         w.contentView = v
@@ -447,8 +465,7 @@ final class PanelController: NSObject {
         v.cancel.action = #selector(cancelClicked)
         window = w
         view = v
-        previousKey = vm
-        willShow()
+        previousKey = vm   // the keyboard's window, also when the panel shows on another display
         w.makeKeyAndOrderFront(nil)
         began = Date()
         let center = NotificationCenter.default
@@ -505,13 +522,15 @@ final class PanelController: NSObject {
     }
 
     /// The VM's window gets the keyboard back and QEMU its input (didClose);
-    /// the panel, if it still shows its end, takes no clicks.
+    /// the panel, if it still shows its end, takes no clicks. Only while that
+    /// window's Space shows (QEMU's handKeyBack rule): else macOS would switch
+    /// its display back to it.
     private func release() {
         guard let w = window, !released else { return }
         released = true
         w.ignoresMouseEvents = true
         didClose()
-        if NSApp.isActive, let k = previousKey, k.isVisible { k.makeKey() }
+        if NSApp.isActive, let k = previousKey, k.isVisible, k.isOnActiveSpace { k.makeKey() }
         previousKey = nil
     }
 

@@ -130,18 +130,51 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   the test guards the path but cannot show the GPU's behaviour.)
 - The guest's textures can be bigger than the picture: Mesa rounds a VA
   surface's planes up to 16 (1920x1080 has 1088 rows, 854 wide has 864
-  columns), and apps that show the surface (Chrome, Firefox, mpv) sample all
-  of it. The copy fills the rows and columns past the picture with its last
-  row and column (`virgl-video-plane-edge.patch`); before 3.1.32 they stayed
-  zero and showed as a green bar at the bottom or right of VP9 and AV1
-  videos at 1080p, 540p, 360p, 480p and 240p. Apps that show the planes
-  themselves (mpv, Firefox) still show the rounded size, so the picture is
-  squeezed by those rows (1080p: 8 of 1088, invisible; a 320x180 call tile:
-  12 of 192) and the strip is its stretched edge. Planes more than 64 bigger
-  than the picture are surfaces the guest crops itself and are left alone.
-  `OMACVM_VIDEO_EDGE_FILL=0` turns the fill off. Test:
-  `Tests/virgl/test-video-padding.c`.
-- Chrome's hardware frames (3.2.1): Chrome converts each picture into an
+  columns), and apps that show the surface (mpv with `hwdec=vaapi`, Chrome
+  on Wayland, which draws the decoder's NV12 frames itself, GStreamer,
+  Hyprland for mpv's `vo=dmabuf-wayland`) import its planes and sample them
+  whole: virgl drops the size an import asks for. So the picture came out
+  squeezed and the rows past it showed below it: a green bar before 3.1.32
+  (they stayed zero), the picture's last row repeated from 3.1.32 to 3.2.10
+  (1080p: 8 of 1088 rows, 10.7 pixels when the video fills a 1440-high
+  screen; a 320x180 call tile: 12 of 192; 854-wide and portrait 360x640
+  videos the same at the right). Since 3.2.11 the Mac samples each such surface at its own size:
+  the VM's VA-API shim tells it the size of every 4:2:0 surface Mesa makes
+  at a size that is not a multiple of 16 (a NOP with a private payload,
+  only when the app says `omacvm.valogical=1`), and every shader that
+  samples such a texture scales its coordinates and size queries to it
+  (`virgl-resource-logical-size.patch`, [ADR 0061](adr/0061-video-surfaces-at-their-own-size.md)).
+  No copy: two more operations per lookup in those shaders. Texel reads
+  are as before and bit-exact (`vaGetImage` into the surface's own format,
+  FFmpeg's `hwdownload`, Chromium's V4L2 daemon). Mesa's own reads through
+  its video compositor (VA-API video processing: FFmpeg's `scale_vaapi`,
+  mpv's `vavpp`, GStreamer's `vapostproc`, Chrome's conversion on X11; and
+  `vaGetImage` into another format) take a source region in parts of the
+  size Mesa has for the surface, which the Mac would scale again: the shim
+  scales a declared source's region by Mesa's size over the declared one,
+  and a converting `vaGetImage` reads an import of the planes at the
+  picture's size. Not covered: surfaces the decoder itself asks for larger
+  than the picture, at the stream's coded size (FFmpeg in mpv, Chrome on
+  Wayland; H.264 at every size that is not a multiple of 16: 1080p in 1088
+  rows, 360p in 368; HEVC at sizes that are not a multiple of 8, such as
+  1000x562 in 1000x568): VA-API carries no crop, so the app shows the
+  stream's own padding rows as before (fewer than before where Mesa's
+  rounding added to them). Measured in Chrome 154 on Wayland (no
+  ImageProcessor): VP9, AV1 and HEVC exact at 1080p, 360p, 854x480 and
+  360x640 (3.2.10: the strip at all of them), H.264 unchanged (its 1080p
+  surface has 1088 rows), HEVC 854x480 with 2 coded columns.
+  The copy still fills the rows and columns past the picture with its last
+  row and column (`virgl-video-plane-edge.patch`): for an older VM side or
+  app, surfaces the shim did not declare, and lookups at the very edge.
+  Planes more than 64 bigger than the picture are surfaces the guest crops
+  itself and are left alone. `OMACVM_VIDEO_EDGE_FILL=0` turns the fill off,
+  `OMACVM_VIDEO_LOGICAL=0` (Mac) and `OMACVM_VA_LOGICAL=0` (an app in the
+  VM) the sizes. Tests: `Tests/virgl/test-video-padding.c`,
+  `Tests/virgl/test-video-logical-size.c`,
+  `src/app/guest/tests/va-shim-logical.sh`, and in a test VM
+  `tests/video/video-geometry.sh` (a test card in mpv, Chrome, Chromium and
+  Firefox: where its rows and columns land on the screen).
+- Chrome's hardware frames (3.2.1): on X11 Chrome converts each picture into an
   ARGB frame of its own and shows that frame by its own size, but Mesa
   rounds that frame's planes up to 16 too, and its conversion read the
   picture's planes by the surface's size while they are rounded. A 320x180
@@ -155,7 +188,11 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   frame of its real size, keeps its region): the tile shows every
   row where Chrome's CPU decoders put it (WebRTC loopback, VP9, AV1 and
   H.264 at 320x180, 480x270, 640x360, 854x480 and 1920x1080: off by 0.4 to
-  2 rows on average, as on the CPU). It relies on how Mesa rounds and reads
+  2 rows on average, as on the CPU). With a runtime that samples surfaces
+  at their own size (above), the shim declares the decoder's surfaces, and
+  the conversion's source region gets the declared size's scaling instead
+  of this one; the RGB frames keep this fill (Mesa converts an RGB surface
+  to YUV by its texture's size, so a declared size would squeeze those). It relies on how Mesa rounds and reads
   those planes, so it runs only with a Mesa it was checked with (up to 26.2,
   from Mesa's vendor string; a newer Mesa: off, with one line in Chrome's
   log, until it is checked again). `OMACVM_VA_FILL=0` or `1` in Chrome's
@@ -171,7 +208,15 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   they stay bit for bit the decoded ones; Mesa would convert on the GPU
   through RGB.
   In Chromium's processes it also asks Mesa for exportable surfaces
-  ([below](#chromes-converted-frames)).
+  ([below](#chromes-converted-frames)). In every process it refuses to
+  decode into, or encode from, a surface made from the app's memory (an
+  import): Mesa's virgl driver has no video buffer on the Mac for such a
+  surface and crashed the process (Chrome's GPU process); the app gets
+  `VA_STATUS_ERROR_INVALID_SURFACE` for that picture's `vaBeginPicture`,
+  `vaRenderPicture` and `vaEndPicture` instead of a crash. The shim
+  remembers every import until the app destroys it.
+  `OMACVM_VA_IMPORT_GUARD=0` turns this off (tests only).
+  Test: `src/app/guest/tests/va-shim-import-decode.sh`.
   Its folder `/usr/local/lib/dri` goes into `/etc/ld.so.conf.d`: Firefox
   decodes in a sandboxed process that may load libraries only from the paths
   ld.so knows, so without it YouTube in Firefox falls back to the CPU.
@@ -196,13 +241,17 @@ converted frames as Mesa makes them (above).
 ## Chrome's converted frames
 
 Google Chrome (and, by the same code, Brave and Electron apps: tested in
-Chrome 156 only) with Skia on OpenGL shows a
-hardware-decoded frame only as ARGB: NV12 counts as renderable only with
-Vulkan or when GBM can make NV12 buffers, which virgl cannot. So Chrome
-converts each frame on the GPU (VA-API video processing, Mesa's video
-compositor: one shader pass on the Mac's GPU) into an ARGB surface of its
-own, and hands that surface back to VA-API. Six things stood in the way,
-all fixed in 3.2.0:
+Chrome 156 only) with Skia on OpenGL on X11 shows a hardware-decoded frame
+only as ARGB: there NV12 counts as renderable only with Vulkan or when GBM
+can make NV12 buffers, which virgl cannot. On Wayland
+(`--ozone-platform=wayland`, as Omarchy starts it) Chrome 154 counts NV12 as
+renderable with OpenGL too (its zero-copy GL path, on by default, imports
+the planes with EGL): it decodes without converting ("No ImageProcessor
+needed" in its log) and draws the NV12 planes itself, so the planes' size
+above is what it shows. On X11 Chrome converts each frame on the GPU
+(VA-API video processing, Mesa's video compositor: one shader pass on the
+Mac's GPU) into an ARGB surface of its own, and hands that surface back to
+VA-API. Six things stood in the way, all fixed in 3.2.0:
 
 - Chrome first checks each plane against its dma-buf's size
   (`vaapi_wrapper.cc`, `ValidateAndGetPlaneInfo`). Mesa's virgl gives a
@@ -241,6 +290,13 @@ all fixed in 3.2.0:
   as picture. The copy now takes AV1's and VP9's frame size from the
   picture description (`virgl-video-picture-size.patch`;
   `OMACVM_VIDEO_DEBUG=1` logs "output WxH, picture WxH").
+- AV1 with film grain (3.2.11): Chrome decodes such a picture into one
+  buffer and shows another, which Mesa sends as the film grain target;
+  VideoToolbox's picture has the grain applied, and it now goes into both
+  (`virgl-video-av1-film-grain.patch`, one more GPU copy per picture for
+  such videos only). Before, on Macs that decode AV1 on the media engine
+  (M3, M4), Chrome showed a buffer the Mac had not written for that
+  picture. Test: `test-video-padding.c` (av1fg-320x180.ivf).
 
 How well it plays: *Big Buck Bunny* 60 fps, Chrome 156, test VMs with 4 CPUs
 and 4 GB without a window, busy cores of the VM and of QEMU on the Mac (the
