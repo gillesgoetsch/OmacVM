@@ -953,7 +953,10 @@ if [[ $TYPE == app ]]; then
   # the notch, Omanotch fills the strip beside it. FullPanel (experimental,
   # src/lib/notch.sh): QEMU's window covers the strip and the VM's bar sits
   # there; QEMU logs "strip covered" once it has it, "strip lost" or "using
-  # normal full screen" when it fell back.
+  # normal full screen" when it fell back, "strip not back after a display
+  # change" when macOS kept the window below the notch after the MacBook's
+  # display went and came back (omacvm-cocoa-fullpanel-retake.patch). Its
+  # "display change: ..." and "strip taken again" lines are not read.
   nd=$(app_dir "$VM" 2>/dev/null) || nd=""
   nmode=native; [[ -n $nd ]] && nmode=$(notch_choice "$nd")
   nlast=""; [[ -n $nd ]] && nlast=$(notch_this_start "$nd")
@@ -963,6 +966,7 @@ if [[ $TYPE == app ]]; then
     case $nq in
       "strip covered"*) ok "full screen (app)" "including notch (experimental): $nq; Omanotch idle" ;;
       "strip lost"*) warn "full screen (app)" "including notch set, but macOS moved the window below the notch: normal full screen until the next one ($nq)" ;;
+      "strip not back"*) warn "full screen (app)" "including notch set, but after a display change macOS kept the window below the notch ($nq); leave full screen and enter it again to cover the strip" ;;
       "") skip "full screen (app)" "including notch this start, not in full screen on the MacBook's display yet" ;;
       *) warn "full screen (app)" "including notch set, but QEMU uses normal full screen: $nq" ;;
     esac

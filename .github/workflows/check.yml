@@ -568,6 +568,9 @@ jobs:
       - name: Guest check accepts NOTCH right above the built-in display (offline)
         run: src/tests/notch-check.sh
 
+      - name: omacvm check's full screen including notch row (strip not back after a display change; offline)
+        run: src/tests/fullpanel-check.sh
+
       - name: Omarchy's shell colours on Qt 6.12 (the fix on made-up shell files, the check's row; issue 376)
         run: src/tests/shell-colors.sh
 
