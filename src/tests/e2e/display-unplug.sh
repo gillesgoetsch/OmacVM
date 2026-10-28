@@ -31,8 +31,9 @@
 #              plugged in again --rounds rounds; with --sleep also the displays
 #              asleep and awake once (not on a Mac that locks at display
 #              sleep). After each: the last FullPanel line omacvm check reads is
-#              "strip covered", no "strip lost" or "strip not back" since the
-#              event, the main window covers the built-in display, the
+#              "strip covered", no "strip not back" and no "strip lost" (but
+#              one that "went with" the display change) since the event, the
+#              main window covers the built-in display, the
 #              full-screen Spaces and the built-in's current Space as before.
 #              Skipped on a Mac without a notched built-in display; not in the
 #              default list (--only fullpanel-builtin).
@@ -343,7 +344,13 @@ case_head() {   # #428's layout, one VM start for every head case
 }
 
 # fullpanel-builtin: the strip beside the real notch after display changes.
-fp_line() { grep -E '^omacvm: full panel: (strip covered|strip lost|.*normal full screen)' "$VMD/logs/qemu.log" | tail -1; }
+fp_line() { grep -E '^omacvm: full panel: (strip covered|strip lost|display change:|.*normal full screen)' "$VMD/logs/qemu.log" | tail -1; }
+# The lines since the event hold a strip lost for good, or a strip not back (a loss the next
+# line turns into a display change, "the strip lost ... went with it", is none).
+fp_bad() {
+  [[ $1 == *"strip not back"* ]] ||
+    (( $(grep -c 'full panel: strip lost:' <<<"$1") > $(grep -c 'full panel: display change: the strip lost' <<<"$1") ))
+}
 builtin_size() { awk -v id="$BUILTIN_ID" '$1 == "display" && $2 == id {print $NF; exit}' <<<"$1"; }
 builtin_space() { awk -v id="$BUILTIN_ID" '$1 == "current" && $2 == id {print $3 " " $4; exit}' <<<"$1"; }
 # NAME L0 WANT_F: alive, the strip covered again since qemu.log line L0, the main window over the
@@ -353,7 +360,7 @@ fp_check() {
   for ((i = 0; i < 30; i++)); do
     since=$(tail -n +$((l0 + 1)) "$VMD/logs/qemu.log")
     last=$(fp_line)
-    [[ $last == *"strip covered"* && $since != *"strip lost"* && $since != *"strip not back"* ]] && break
+    [[ $last == *"strip covered"* ]] && ! fp_bad "$since" && break
     sleep 1
   done
   tail -n +$((l0 + 1)) "$VMD/logs/qemu.log" | grep -i 'full panel\|omacvm: display' > "$OUT/$name.qemu.log"
@@ -362,7 +369,7 @@ fp_check() {
   (( $(crashes) > C0 )) && { res "$name" FAIL "a new crash report"; return 1; }
   a=$(census); echo "$a" > "$OUT/$name.census"
   size=$(builtin_size "$a"); full=$(fullspaces "$a")
-  if [[ $since == *"strip lost"* || $since == *"strip not back"* ]]; then
+  if fp_bad "$since"; then
     res "$name" FAIL "$(grep -h 'strip lost\|strip not back' "$OUT/$name.qemu.log" | tail -1 | cut -c1-140)"
   elif [[ $last != *"strip covered"* ]]; then res "$name" FAIL "the last line check reads: ${last:-none}"
   elif ! grep -q "^window .* ${BUILTIN_ORIGIN} ${size} display $BUILTIN_ID\$" <<<"$a"; then
