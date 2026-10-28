@@ -303,3 +303,21 @@ else running. "VM %" is the VM's speed against the Mac's.
   2026) is linked against OpenEXR 3.4 while the repo has 3.5; the measurement used OpenEXR 3.4.16 built next to it.
 - **Where:** `src/bench/gpu/` (`vklaunch`, `cllaunch`, `mtllaunch`)
   measure a dispatch's round trip; `MESA_KK_DEBUG=msl` prints KosmicKrisp's MSL.
+
+## macOS's Touch ID dialog: which display it shows on (October 2026)
+
+coreauthd puts its own Touch ID dialog (an `LAContext` evaluated by a process
+without a window, as OmacVM Bridge does; its window is coreautha's, layer
+1000) on the display of the front app's key window. Not the display under the
+pointer, and not the main display. Mac mini (macOS 27), two virtual displays
+(A main, B), OmacVM.app 3.2.9's QEMU in front: QEMU's main window full screen
+on A and its window for B full screen on B, pointer on B: the dialog on A;
+main window on B: on B; one window on B, pointer on A or on B: on B.
+
+So for an OmacVM.app VM in full screen on two displays, macOS's dialog (the
+fallback when the command is too long for OmacVM's panel, the Mac password,
+the panel turned off) shows on the main window's display, which is the
+display the VM started on. OmacVM's own panel follows the pointer instead
+(ADR 0041, 3.2.11 addendum). Moving the dialog would mean making the
+pointer's window key before asking, which changes who holds the keyboard.
+

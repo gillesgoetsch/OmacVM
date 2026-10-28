@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.11 (unreleased)
+
+- **The Touch ID panel shows on the display you work on.** With an OmacVM.app VM in full
+  screen on two displays ("Use external displays", on by default), the Touch ID panel showed
+  on the display the VM started on, often the MacBook's built-in screen, while you worked on
+  the external one. It now shows on the display under the Mac's pointer, over the VM there; a
+  VM in a window keeps it over its window, as before. macOS's own Touch ID dialog (for a
+  command too long for the panel, the Mac password, or with the panel turned off) still shows
+  on the display the VM started on. Needs only the app update, from the VM's next start.
+
 ## 3.2.10
 
 Apps in an OmacVM.app VM that draw with OpenGL program pipelines now draw. Needs only the app
