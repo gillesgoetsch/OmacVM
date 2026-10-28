@@ -126,6 +126,68 @@ expect(panelFrame(window: CGRect(x: 100, y: 100, width: 1000, height: 700), visi
 expect(panelFrame(window: CGRect(x: -900, y: 0, width: 1000, height: 300), visible: vis, size: CGSize(width: 280, height: 280)).minX == 0,
        "place: kept on the screen")
 
+// Two displays (Cocoa coordinates, y up): A = a laptop's 1728x1117 at 0,0 (main), B = an external 2560x1440 to
+// its right (tops aligned), left or above. The VM in full screen with "Use external displays": QEMU's main window
+// in full screen on A (the key window: QEMU hands the keyboard back to it), its window for B in full screen on B;
+// both below the menu bar's 30 pt band, as on the mini (immersive off).
+let side = CGSize(width: 280, height: 280)
+let dispA = CGRect(x: 0, y: 0, width: 1728, height: 1117), visA = CGRect(x: 0, y: 0, width: 1728, height: 1087)
+func within(_ r: CGRect, _ v: CGRect) -> Bool { v.contains(r) }
+for (name, dispB) in [("right", CGRect(x: 1728, y: -323, width: 2560, height: 1440)),
+                      ("left", CGRect(x: -2560, y: -323, width: 2560, height: 1440)),
+                      ("above", CGRect(x: 0, y: 1117, width: 2560, height: 1440))] {
+    let visB = CGRect(x: dispB.minX, y: dispB.minY, width: dispB.width, height: dispB.height - 30)
+    let mainA = visA, headB = visB
+    let screens = [dispA, dispB], visible = [visA, visB], wins = [mainA, headB]
+    let today = panelFrame(window: mainA, visible: visA, size: side)
+    func place(_ p: CGPoint, _ w: [CGRect] = wins) -> CGRect {
+        panelPlace(pointer: p, screens: screens, visible: visible, windows: w, fallback: mainA, fallbackVisible: visA, size: side)
+    }
+    let onB = place(CGPoint(x: dispB.midX, y: dispB.midY))
+    expect(panelHost(pointer: CGPoint(x: dispB.midX, y: dispB.midY), screens: screens, windows: wins).map { [$0.window, $0.screen] } == [1, 1]
+           && onB == panelFrame(window: headB, visible: visB, size: side),
+           "place (B \(name)): main window key on A, pointer on B -> centred on B (the user's LG; before 3.2.11: on A)")
+    expect(place(CGPoint(x: dispA.midX, y: dispA.midY)) == today, "place (B \(name)): pointer on A -> A, as before")
+    expect(within(place(CGPoint(x: dispB.midX, y: dispB.maxY - 10)), visB), "place (B \(name)): pointer in B's menu-bar band -> B")
+    expect(within(place(CGPoint(x: dispB.midX, y: dispB.maxY)), visB), "place (B \(name)): pointer on B's top row (y == maxY) -> B")
+    expect(place(CGPoint(x: dispB.midX, y: dispB.midY), [mainA]) == today
+           && panelHost(pointer: CGPoint(x: dispB.midX, y: dispB.midY), screens: screens, windows: [mainA]) == nil,
+           "place (B \(name)): only a window on A (windowed VM), pointer on B -> the key window, as before")
+}
+// The shared edge: x == 1728 is B's first column, 1727.5 still A's.
+let edgeScreens = [dispA, CGRect(x: 1728, y: -323, width: 2560, height: 1440)]
+let edgeWins = [visA, CGRect(x: 1728, y: -323, width: 2560, height: 1410)]
+expect(panelHost(pointer: CGPoint(x: 1728, y: 500), screens: edgeScreens, windows: edgeWins).map { $0.screen } == 1
+       && panelHost(pointer: CGPoint(x: 1727.5, y: 500), screens: edgeScreens, windows: edgeWins).map { $0.screen } == 0,
+       "place: the pointer on the edge between A and B -> the display it is on")
+// A window over both displays (windowed, dragged across): the panel on its part on the pointer's display.
+let spanning = CGRect(x: 1200, y: 200, width: 1400, height: 800)
+let spanB = panelPlace(pointer: CGPoint(x: 2400, y: 500), screens: edgeScreens, visible: [visA, edgeWins[1]], windows: [spanning],
+                       fallback: spanning, fallbackVisible: visA, size: side)
+expect(within(spanB, edgeWins[1]) && spanB.midX == (1728 + spanning.maxX) / 2, "place: a window across A and B, pointer on B -> its part on B")
+expect(panelArea(window: spanning, screen: 1, screens: edgeScreens) == CGRect(x: 1728, y: 200, width: 872, height: 800),
+       "place: the part of a window on the pointer's display")
+// One display: the same frame as before wherever the pointer is (over another app, the menu bar, the VM window).
+let one = [vis], winOne = CGRect(x: 100, y: 100, width: 1000, height: 700), offEdge = CGRect(x: -300, y: 100, width: 1000, height: 700)
+for p in [CGPoint(x: 1400, y: 900), CGPoint(x: 400, y: 400), CGPoint(x: 700, y: 944)] {
+    for w in [winOne, offEdge] {
+        expect(panelPlace(pointer: p, screens: one, visible: one, windows: [w], fallback: w, fallbackVisible: vis, size: side)
+               == panelFrame(window: w, visible: vis, size: side), "place: one display, pointer at \(p) -> the same frame as before")
+    }
+}
+expect(panelHost(pointer: CGPoint(x: -5000, y: -5000), screens: edgeScreens, windows: edgeWins) == nil, "place: pointer on no display -> as before")
+expect(panelHost(pointer: CGPoint(x: 100, y: 100), screens: edgeScreens, windows: []) == nil, "place: no VM window shows -> as before")
+// Which windows may host it.
+let big = CGRect(x: 0, y: 0, width: 1728, height: 1087)
+expect(panelCanHost(PanelWindowFacts(frame: big), size: side), "host: a VM window on screen")
+expect(!panelCanHost(PanelWindowFacts(frame: CGRect(x: 0, y: 1055, width: 1728, height: 32), alpha: 0), size: side),
+       "host: not the full-screen title-bar strip (alpha 0)")
+expect(!panelCanHost(PanelWindowFacts(frame: big, alpha: 0), size: side), "host: not a window still at alpha 0")
+expect(!panelCanHost(PanelWindowFacts(frame: CGRect(x: 0, y: 1087, width: 1728, height: 30)), size: side), "host: not a 30 pt menu-bar window")
+expect(!panelCanHost(PanelWindowFacts(frame: big, isPanel: true), size: side), "host: not a panel (the Touch ID panel, an alert, About)")
+expect(!panelCanHost(PanelWindowFacts(frame: big, shownSpace: false), size: side), "host: not a window on a Space not shown")
+expect(!panelCanHost(PanelWindowFacts(frame: big, visible: false), size: side), "host: not a hidden or covered window")
+
 // MARK: Drawn off screen (never on screen)
 
 let prompt = TouchIDPanelPrompt(title: "Touch ID in Omarchy", line: "sudo in pts/1 wants to run", box: "pacman -Syu", timeout: 30, colors: [:])
