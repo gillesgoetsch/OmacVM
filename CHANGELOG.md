@@ -30,11 +30,16 @@ app update.
   above it runs: when macOS compresses the VM, the VM gives back the file cache it has not
   used lately, all but the newest 1 GB (an eighth of a smaller VM); on the memory-optimized
   kernel nearly all of its file cache counts as not used lately. At most once per 10
-  minutes; macOS's memory warning still drops the whole cache. If macOS keeps the pages
-  anyway on a Mac (it refuses QEMU's advice, or half or more of what it held stays held),
-  QEMU goes back to the old way for that run and the app turns this give-back off until
-  the VM's next start: `logs/qemu.log` and `omacvm check`'s "VM memory" line say so. Needs
-  only the app update, from the VM's next start.
+  minutes; macOS's memory warning still drops the whole cache. On a MacBook Pro M1 Max (a
+  4 GB VM with 2.6 GB of files read, then a program taking the Mac's memory): the give-back
+  came within 30 s, while macOS still called its memory pressure normal; the VM gave back
+  1.2 GB of file cache, and of the 3.2 GB the Mac still held of what the VM gave back in
+  that run, none stayed. The same row without the fix waited for macOS's warning, 1.5
+  minutes in, to drop the cache. If macOS keeps the pages anyway on a Mac (it refuses QEMU's
+  advice, or half or more of what it held stays held), QEMU goes back to the old way for
+  that run and the app turns this give-back off until the VM's next start: `logs/qemu.log`
+  and `omacvm check`'s "VM memory" line say so. Needs only the app update, from the VM's
+  next start.
 
 ## 3.2.11
 
