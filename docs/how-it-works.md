@@ -94,9 +94,9 @@ Gestures, `notchcast` in the VM.
   smoothly instead of hoarding. In OmacVM.app what the VM frees leaves QEMU's
   footprint, the number Activity Monitor shows, in 256 KiB blocks
   (`page_reporting_order` 6; the kernel's default is 2 MiB blocks, which
-  leaves most of a freed page cache in it). That is not memory back to the
-  Mac: 3.2.11's QEMU keeps holding those pages until the VM stops (ADR 0059;
-  the fix comes with #603, a later release).
+  leaves most of a freed page cache in it). From 3.2.12 it also goes back to
+  the Mac: QEMU tells macOS it may take those pages (ADR 0062). 3.2.11's QEMU
+  kept holding them until the VM stopped (ADR 0059).
 
 ## The wallpaper
 

@@ -20,8 +20,9 @@ adds up to less than that footprint; this decision covers the cache (see
 
 - Free page reporting makes QEMU's footprint smaller: memory Linux frees
   leaves it within 10-20 s (2 GB filled and freed in the guest, on the Mac
-  mini and on that Mac). That is the footprint, not memory back to the Mac:
-  QEMU's reclaim maps fresh memory over each reported block, and the pages
+  mini and on that Mac). Up to 3.2.11 that is the footprint, not memory back
+  to the Mac (ADR 0062 fixes it in 3.2.12): QEMU's reclaim maps fresh memory
+  over each reported block, and the pages
   macOS still held for the old block, compressed ones too, stay held outside
   the footprint (a host test: 1.0 of 1.0 GB stayed; on a MacBook Air, 4 GB
   VM, a give-back took the footprint from 6.7 to 5.7 GB while the compressor
