@@ -891,8 +891,10 @@ The panel goes over the VM window QEMU shows on the display under the Mac's
 pointer. Omarchy's focus follows the mouse, and 1Password's unlock is a click
 on that display, so the pointer is where the person works.
 
-- QEMU lets go of the pointer first (`willShow`: a grabbed pointer goes back
-  to where the guest's is), then the panel reads `NSEvent.mouseLocation`.
+- QEMU lets go of the pointer first (`willShow`), then the panel reads
+  `NSEvent.mouseLocation`. With the default absolute pointer the Mac's
+  pointer is where the guest's is; a grabbed relative pointer does not
+  follow the guest's.
 - The display: the one holding the pointer (its top row is `y == maxY` in
   `mouseLocation`; a point on the edge between two displays belongs to one).
 - The window: among QEMU's windows that show now (visible and not covered, on

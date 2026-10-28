@@ -445,7 +445,8 @@ final class PanelController: NSObject {
         let c = makeEvaluator()
         if let why = c.unavailable() { return reply(why == .lockout ? .no("lockout") : .no("no-touch-id")) }
         // Nothing below can fail (didClose always follows). QEMU lets go of the
-        // pointer first: the Mac's pointer is then where the guest's is.
+        // pointer first; with the default absolute pointer the Mac's pointer is
+        // then where the guest's is.
         willShow()
         once = PanelOnce()
         generation += 1
