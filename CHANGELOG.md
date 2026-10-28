@@ -6,11 +6,12 @@ in more words.
 ## 3.2.11 (unreleased)
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
-videos lose the repeated last row at their bottom, the VM's pointer works on an external
-display while the MacBook's display shows macOS, and the Touch ID panel shows on the display
-you work on. `omacvm check` shows the VM's memory. Needs the app update and Update VM, then
-shut the VM down and start it again; the Touch ID panel needs only the app update, from the
-VM's next start.
+videos lose the repeated last row at their bottom, AV1 videos with film grain show the right
+picture, the VM's pointer works on an external display while the MacBook's display shows
+macOS (a paused display stays off meanwhile), and the Touch ID panel shows on the display you
+work on. `omacvm check` shows the VM's memory. Needs the app update and Update VM, then shut
+the VM down and start it again; the Touch ID panel needs only the app update, from the VM's
+next start.
 
 - **No repeated last row at the bottom of VP9, AV1 and most HEVC videos (#594).** In an
   OmacVM.app VM, Google Chrome on Wayland (as Omarchy starts it) draws hardware-decoded video
