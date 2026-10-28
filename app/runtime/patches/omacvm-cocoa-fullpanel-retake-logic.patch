@@ -1,0 +1,254 @@
+From: OmacVM
+Subject: [PATCH] ui: FullPanel after a display change, its decisions, tested without a notched Mac
+
+What: a header with no AppKit in it: what a frame change of a full screen
+that covers the strip means (it still covers; a display change is on its
+way: the window laid out for another display than NSScreen still names, or
+that display off or asleep; the strip lost to Split View; or nothing yet,
+as for a new display mode); when a strip taken as lost went with a display
+change after all (the display changed within 3 s); the claim on the strip
+without waiting for the resume after a display without a camera housing;
+whether a full screen sits below the menu bar's band (never a Split View
+tile); and whether to have AppKit lay a full screen out again that a
+display change left below the notch, or why not (now, wait, no, or given
+up with a line): never Split View, never locked, asleep, on another Space
+or while the displays' windows move, at most 3 tries per full screen and
+one per settle. Used by omacvm-cocoa-fullpanel-retake.patch (which
+explains the why).
+
+Why its own file: so the rules are tested, with the user's qemu.log
+replayed in every order, without QEMU, a display or a notch
+(app/runtime/Tests/display/test-fullpanel-retake.sh applies this patch to
+an empty folder with the FullPanel and display-settle logic patches; at
+build time and in CI).
+
+Upstream: not applicable (OmacVM's notch strip).
+Test: app/runtime/Tests/display/test-fullpanel-retake.c.
+
+diff --git a/ui/omacvm-fullpanel-retake.h b/ui/omacvm-fullpanel-retake.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-fullpanel-retake.h
+@@ -0,0 +1,222 @@
++/*
++ * OmacVM: FullPanel takes the strip beside the notch again after a display
++ * change (the built-in display gone and back: a lid shut and opened, an
++ * external display waking before it), without leaving full screen.
++ *
++ * The decisions only, no AppKit in here, so they are tested on their own
++ * (app/runtime/Tests/display/test-fullpanel-retake.c); ui/cocoa.m feeds them
++ * (omacvm-cocoa-fullpanel-retake.patch).
++ *
++ * Rects are in points, AppKit's bottom-left origin, as NSRect.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef OMACVM_FULLPANEL_RETAKE_H
++#define OMACVM_FULLPANEL_RETAKE_H
++
++#include <stdbool.h>
++#include <stddef.h>
++
++#include "omacvm-fullpanel.h"
++#include "omacvm-display-settle.h"
++
++/* Tries per full screen to have AppKit lay the window out again. */
++#define OMACVM_FP_RETAKE_TRIES 3
++/* How long a try waits for the window to cover its display (s). */
++#define OMACVM_FP_RETAKE_CHECK_S 2.0
++/* The menu bar's band AppKit keeps free: at most the housing's height and this (points). */
++#define OMACVM_FP_BAND_SLACK 8.0
++
++/* The frame lies inside the display (half a point of slack). */
++static inline bool omacvm_fp_inside(OmacVMFPRect f, OmacVMFPRect d)
++{
++    return f.x >= d.x - 0.5 && f.y >= d.y - 0.5 &&
++           f.x + f.w <= d.x + d.w + 0.5 && f.y + f.h <= d.y + d.h + 0.5;
++}
++
++/*
++ * What a frame change of an accepted full screen means.
++ *
++ * DISPLACED: CoreGraphics says the window's display is off or asleep, or
++ * AppKit laid the window out for another display than NSScreen still names
++ * (not inside it while it did not change: 0,-323 2560x1440 on the 1728x1117
++ * built-in, the user's M4 Max, 2026-10-28). A display change is on its way:
++ * the strip comes back once the displays settle (omacvm_fp_retake).
++ * LOST: inside a display that is on and did not change, and no display
++ * change on its way (changing): AppKit moved the window itself (Split View).
++ * It keeps AppKit's layout until the next full screen (ADR 0044).
++ * WAIT: anything else (a new display mode, which CoreGraphics has before
++ * NSScreen: the window follows; a frame on the way back while a display
++ * change is on its way): nothing yet.
++ */
++typedef enum {
++    OMACVM_FP_FRAME_COVERS,
++    OMACVM_FP_FRAME_DISPLACED,
++    OMACVM_FP_FRAME_LOST,
++    OMACVM_FP_FRAME_WAIT,
++} OmacVMFPFrameKind;
++
++static inline OmacVMFPFrameKind omacvm_fp_frame_kind(bool covers, bool inside, bool display_live,
++                                                     bool same_display, bool changing)
++{
++    if (covers) {
++        return OMACVM_FP_FRAME_COVERS;
++    }
++    if (!display_live) {
++        return OMACVM_FP_FRAME_DISPLACED;
++    }
++    if (!inside) {
++        return same_display ? OMACVM_FP_FRAME_DISPLACED : OMACVM_FP_FRAME_WAIT;
++    }
++    return same_display && !changing ? OMACVM_FP_FRAME_LOST : OMACVM_FP_FRAME_WAIT;
++}
++
++/*
++ * A strip taken as lost (Split View) that was a display change after all:
++ * the window's display changed, or the one it covered went off, within
++ * OMACVM_DS_MAX_WAIT_S of the loss. since: seconds since the loss.
++ */
++static inline bool omacvm_fp_lost_to_display_change(bool lost, double since, bool display_changed)
++{
++    return lost && display_changed && since >= 0 && since <= OMACVM_DS_MAX_WAIT_S;
++}
++
++/*
++ * The reservation answer's question: does this window's full screen take
++ * the strip? Not while it is (still) on a display without a camera housing
++ * (notch), but as soon as its display has one again: AppKit may lay it out
++ * there before NSWindowDidChangeScreen comes, and only says no to a band
++ * when its own answer was yes (the Space's display has a housing).
++ */
++static inline bool omacvm_fp_claims(bool inside, bool armed, bool rejected, bool lost,
++                                    bool menu_failed, bool notch)
++{
++    return inside && armed && !rejected && !lost && !menu_failed && notch;
++}
++
++/*
++ * The window is in a full screen below the menu bar's band (macOS's own full
++ * screen on a notched display): the display's width and bottom, at most the
++ * housing's height (and some slack) shorter. Never a Split View tile.
++ */
++static inline bool omacvm_fp_band_kept(OmacVMFPRect frame, OmacVMFPRect display, double notch)
++{
++    double band = display.h - frame.h;
++
++    return fabs(frame.x - display.x) < 0.5 && fabs(frame.y - display.y) < 0.5 &&
++           fabs(frame.w - display.w) < 0.5 && band > 0.5 && band <= notch + OMACVM_FP_BAND_SLACK;
++}
++
++/* What is known when a trigger asks whether to have AppKit lay the window out again. */
++typedef struct {
++    /* This full screen. */
++    bool inside;            /* willEnterFullScreen .. willExitFullScreen, in full screen */
++    bool armed;             /* FullPanel's parts were there at the way in */
++    bool entered;           /* didEnterFullScreen with the strip */
++    bool rejected;          /* AppKit's layout at the way in (Split View) */
++    bool lost;              /* AppKit moved the window later (Split View) */
++    bool display_changed;   /* a display change took the strip (displaced, released) */
++    bool given_up;          /* "strip not back" said for good */
++    int tries;              /* tries this full screen */
++    bool tried_this_settle; /* a try since the displays last settled */
++    bool pending;           /* a try's check runs */
++    /* The window and its display. */
++    bool notch;             /* its NSScreen has a camera housing */
++    bool covers;            /* it covers that display */
++    bool band_kept;         /* omacvm_fp_band_kept */
++    bool display_live;      /* CoreGraphics: active, awake, a real size */
++    bool same_size;         /* CoreGraphics' size of it is NSScreen's */
++    bool on_space;          /* its Space is the active one */
++    bool visible;           /* not covered, not minimised */
++    bool in_place;          /* WindowServer has it at AppKit's frame */
++    /* The Mac. */
++    bool locked;            /* screen locked, displays asleep, another user */
++    bool moving;            /* display updates or other windows' full screens still running */
++    bool menu_bar_in_the_way;   /* omacvm_fp_menu_bar_in_the_way, now */
++    bool parts;             /* the reservation answer is FullPanel's, SkyLight is there */
++    bool reshape;           /* AppKit's tile relayout and its Space's question are there */
++    bool appkit_band;       /* AppKit: the Space's display keeps the band (has a housing) */
++} OmacVMFPRetakeFacts;
++
++typedef enum {
++    OMACVM_FP_RETAKE_NOW,       /* ask AppKit to lay the window out again */
++    OMACVM_FP_RETAKE_WAIT,      /* not yet: the next trigger looks again */
++    OMACVM_FP_RETAKE_NO,        /* nothing to take again */
++    OMACVM_FP_RETAKE_GIVE_UP,   /* the strip stays away for this full screen: said once */
++} OmacVMFPRetake;
++
++/*
++ * Whether to have AppKit lay a full screen out again that a display change
++ * left below the notch, and why not (*why, for the line or a test). Never a
++ * Split View (rejected, lost), never a tile or another shape, never while
++ * locked, asleep, another Space or the displays' windows still move, at most
++ * OMACVM_FP_RETAKE_TRIES per full screen and one per settle.
++ */
++static inline OmacVMFPRetake omacvm_fp_retake(OmacVMFPRetakeFacts f, const char **why)
++{
++    const char *w;
++    OmacVMFPRetake r = OMACVM_FP_RETAKE_NO;
++
++    if (!f.inside || !f.armed || !f.entered) {
++        w = "not a full screen with the strip";
++    } else if (f.rejected || f.lost) {
++        w = "Split View: AppKit's layout until the next full screen";
++    } else if (!f.display_changed) {
++        w = "no display change took the strip";
++    } else if (f.given_up) {
++        w = "given up for this full screen";
++    } else if (!f.notch) {
++        w = "the window's display has no camera housing";
++    } else if (f.covers) {
++        w = "the window covers its display";
++    } else if (!f.band_kept) {
++        w = "not a full screen below the menu bar's band";
++    } else {
++        r = OMACVM_FP_RETAKE_WAIT;
++        if (f.locked) {
++            w = "locked or asleep";
++        } else if (!f.display_live || !f.same_size) {
++            w = "the display is not settled";
++        } else if (f.moving) {
++            w = "the displays' windows still move";
++        } else if (!f.on_space || !f.visible) {
++            w = "not on screen";
++        } else if (!f.in_place) {
++            w = "WindowServer still moves the window";
++        } else if (f.pending) {
++            w = "a try is being checked";
++        } else {
++            r = OMACVM_FP_RETAKE_GIVE_UP;
++            if (f.menu_bar_in_the_way) {
++                w = "menu bar always shown";
++            } else if (!f.parts) {
++                w = "the menu bar reservation or SkyLight is not there";
++            } else if (!f.reshape) {
++                w = "selector missing";
++            } else if (f.tries >= OMACVM_FP_RETAKE_TRIES) {
++                w = "AppKit kept the band";
++            } else if (!f.appkit_band) {
++                r = OMACVM_FP_RETAKE_WAIT;
++                w = "AppKit has the Space on a display without a camera housing";
++            } else if (f.tried_this_settle) {
++                r = OMACVM_FP_RETAKE_WAIT;
++                w = "one try per settle";
++            } else {
++                r = OMACVM_FP_RETAKE_NOW;
++                w = "now";
++            }
++        }
++    }
++    if (why) {
++        *why = w;
++    }
++    return r;
++}
++
++/* After a try's check: the window covers its display (taken again), or the line says which try. */
++static inline bool omacvm_fp_retake_final(int tries)
++{
++    return tries >= OMACVM_FP_RETAKE_TRIES;
++}
++
++#endif /* OMACVM_FULLPANEL_RETAKE_H */
