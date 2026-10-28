@@ -14,6 +14,9 @@ return for such a move now gives the place first. The main window's
 tracking area is only active in the key window, so its view gets a second
 one, active always, with its own owner (omacvmHoverMain): it goes through
 the same rule, which needs OmacVM not in front, so no move comes twice.
+That area sees every move over the main view, also with the pointer
+grabbed: a grabbed pointer, OmacVM in front and one display are dropped
+first, before the rule's input (which asks the WindowServer).
 OMACVM_POINTER_HOVER=0: as before. qemu.log at start: "cocoa: pointer: a
 move over the VM on two or more displays while another app is in front:
 its place to the guest (...)" or "dropped (OMACVM_POINTER_HOVER=0)"; with
@@ -102,7 +105,7 @@ without it).
          screen.width = frameRect.size.width;
          screen.height = frameRect.size.height;
          colorspace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-@@ -3156,8 +3189,64 @@
+@@ -3156,8 +3189,73 @@
      qemu_input_queue_abs(dcl.con, INPUT_AXIS_Y, lround(ny * INPUT_EVENT_ABS_MAX),
                           0, INPUT_EVENT_ABS_MAX);
      return true;
@@ -156,9 +159,18 @@ without it).
 +    });
 +}
 +
-+/* OmacVM: a move over the main window from its second tracking area. */
++/*
++ * OmacVM: a move over the main window from its second tracking area. That
++ * area is active always, so every move over the main view comes here, also
++ * in normal use with the pointer grabbed. The cheap checks first, before the
++ * rule's input (it asks the WindowServer which window is on top): they drop
++ * only moves the rule drops too.
++ */
 +- (void) omacvmHoverMain:(NSEvent *)event
 +{
++    if (isMouseGrabbed || [NSApp isActive] || omacvm_active_outputs() < 2) {
++        return;
++    }
 +    if ([self omacvmHoverWanted:event view:self output:0 button:-1]) {
 +        [self omacvmHover:event view:self output:0];
 +    }
@@ -167,7 +179,7 @@ without it).
  /* OmacVM: mouse events from the window of another output (button < 0: a move). */
  - (void) omacvmHeadEvent:(NSEvent *)event view:(NSView *)view output:(int)output
                    button:(int)button down:(bool)down
-@@ -3166,9 +3255,13 @@
+@@ -3166,9 +3264,13 @@
          /*
           * The pointer just passing over this display while another app is
           * in front must not take the pointer and keyboard from that app.
@@ -182,7 +194,7 @@ without it).
              return;
          }
          [self grabMouse];
-@@ -3190,6 +3283,11 @@
+@@ -3190,6 +3292,11 @@
          qemu_input_event_sync();
      });
  }
@@ -194,7 +206,7 @@ without it).
  @end
  
  /*
-@@ -13826,6 +13924,10 @@
+@@ -13826,6 +13933,10 @@
      info_report("cocoa: pointer: %s", omacvm_ptr.off ?
                  "taken on enter or click (OMACVM_POINTER_START=0)" :
                  "taken without a click when it is on the VM");

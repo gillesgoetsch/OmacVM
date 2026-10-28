@@ -6,7 +6,8 @@
 #   - with a patched ui/cocoa.m: the wiring (the other displays' windows give
 #     the place before their early return; the main view has a second
 #     tracking area, active always, with its own owner, through the same
-#     rule; the hover sends only the place: no grab, no corner guard, no
+#     rule, the cheap checks first (every move over the main view comes
+#     there); the hover sends only the place: no grab, no corner guard, no
 #     cursor change, no key window, nothing activated; the switch and the
 #     qemu.log line at start);
 #   - with --self-test [<ui/cocoa.m without the patch>]: every wiring check
@@ -85,6 +86,8 @@ checks() {
   chk "its moves go to the main view's hover" has "$watch" '[cocoaView omacvmHoverMain:e];'
   chk "the main view's hover goes only through the same rule" \
     before "$main" 'if ([self omacvmHoverWanted:event view:self output:0 button:-1]) {' '[self omacvmHover:event view:self output:0];'
+  chk "the main view's hover drops a grabbed pointer, OmacVM in front and one display before the rule's input" \
+    before "$main" 'if (isMouseGrabbed || [NSApp isActive] || omacvm_active_outputs() < 2) {' 'if ([self omacvmHoverWanted:event view:self output:0 button:-1]) {'
   chk "the main view's hover sends only the place" only_place "$main"
   chk "OMACVM_POINTER_HOVER read at start" has "$pinit" 'omacvm_hover_off = omacvm_pointer_hover_off(getenv("OMACVM_POINTER_HOVER"));'
   chk "qemu.log says at start whether it is on" has "$pinit" 'is in front: %s", omacvm_hover_off ? "dropped (OMACVM_POINTER_HOVER=0)"'
