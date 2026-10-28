@@ -11,16 +11,17 @@ import Foundation
 /// drops the VM's cache (since 2.9) came too late or never.
 ///
 /// The app looks every 5 s (GPUMemoryWatch) and asks the VM for its cold
-/// file cache (src/memory/guest/giveback.sh) when macOS is compressing the
-/// VM: all three of
+/// file cache (src/memory/guest/giveback.sh: read once and not again, except
+/// the newest 1 GB) when macOS is compressing the VM: all three of
 /// - what macOS holds of QEMU outside its resident memory (`Sample.taken`,
 ///   footprint less resident size: compressed pages, and graphics that count
 ///   in the footprint only) is at least min(2 GB, a quarter of the Mac),
 /// - it grew at least min(1 GB, an eighth of the Mac) above its lowest
 ///   (the baseline: since the VM started, or since 60 s after the last
 ///   give-back; it only moves down),
-/// - macOS itself compressed at least 1 GB since then (graphics that grow
-///   on a Mac with room do not count).
+/// - macOS itself compressed at least 1 GB since then. macOS counts every
+///   process, so graphics that grow the footprint trigger nothing as long as
+///   macOS compresses under 1 GB while they grow.
 /// One 10-minute gap for every give-back (also macOS's warning, the drop it
 /// always did); when the VM's agent does not answer, again in 30 s, then
 /// 1, 2, 4 and 8 minutes, then every 10 minutes. A give-back for

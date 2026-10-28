@@ -138,6 +138,16 @@ for i in 1...120 {   // 10 minutes of a graphics-heavy session: +8.7 GB of graph
     fired = fired || g.compressing(sample(t, fp: 20 + 8.7 * t / 600, res: 19, comp: 50 + 0.3 * t / 600))
 }
 expect(!fired, "8.7 GB of graphics growth without compressions: nothing")
+// The limit of that rule: macOS's count covers every process. The same growth while macOS compresses 1 GB or more
+// (another app, say) does trigger it.
+var g2 = MemoryGiveBack(ram: 64 * GB)
+_ = g2.compressing(sample(0, fp: 20, res: 19, comp: 50))
+var fired2 = false
+for i in 1...120 {
+    let t = Double(i) * 5
+    fired2 = fired2 || g2.compressing(sample(t, fp: 20 + 8.7 * t / 600, res: 19, comp: 50 + 1.5 * t / 600))
+}
+expect(fired2, "the same graphics growth while macOS compresses 1.5 GB elsewhere: gives back (the rule's limit)")
 
 // A 4 GB VM on an 8 GB Mac: the thresholds scale (a quarter, an eighth of the Mac).
 var a = MemoryGiveBack(ram: 8 * GB)
