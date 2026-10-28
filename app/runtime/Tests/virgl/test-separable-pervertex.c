@@ -11,9 +11,14 @@
  *  - vertex + geometry + fragment, the geometry shader reads gl_in[] (yellow);
  *  - vertex + tessellation control + evaluation + fragment (magenta);
  *  - vertex + tessellation + geometry + fragment (cyan);
- * and no shader is refused, no context error. */
+ * and no shader is refused, no context error. The last row: a new separable pipeline whose
+ * first draw meets an incomplete framebuffer (the GL's pipeline validation fails there): that
+ * draw is lost, the context is not; the next draw with a complete framebuffer draws
+ * (virgl-pipeline-validate-log.patch). With OMACVM_VIRGL_SHADER_FAILURES=lose the context is
+ * lost there, as upstream. */
 #include <OpenGL/OpenGL.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
 #include "soft-gl.h"
@@ -30,7 +35,7 @@ enum { GREEN = 0xff00ff00, BLUE = 0xffff0000, YELLOW = 0xff00ffff, MAGENTA = 0xf
 enum { RS_TRIANGLES = 41, RS_POINTS = 42 };
 
 static CGLContextObj main_ctx;
-static int failures, refused_lines, ctx_error_lines;
+static int failures, refused_lines, ctx_error_lines, invalid_lines, pipeline_error_lines;
 
 static void count_log(enum virgl_log_level_flags level, const char *message, void *data)
 {
@@ -40,6 +45,9 @@ static void count_log(enum virgl_log_level_flags level, const char *message, voi
    refused_lines += strstr(message, "refused a shader") || strstr(message, "Error linking") ||
                     strstr(message, "failed to compile");
    ctx_error_lines += strstr(message, "context error reported") != NULL;
+   invalid_lines += strstr(message, "program pipeline invalid") != NULL;
+   pipeline_error_lines += strstr(message, "context error reported") &&
+                           strstr(message, "Illegal shader program pipeline");
    fputs(message, stderr);
 }
 
@@ -421,6 +429,53 @@ static void row(const char *what, const struct stage *stages, uint32_t mode, uin
    check(refused_lines == refused && ctx_error_lines == errors, text);
 }
 
+/* A new separable pipeline whose first draw has an incomplete framebuffer (a second colour
+ * buffer with 4 samples): Apple's pipeline validation fails there. */
+static void incomplete_framebuffer(int lose)
+{
+   struct virgl_renderer_resource_create_args msaa = {
+      .handle = 7, .target = TEXTURE_2D, .format = VIRGL_FORMAT_R8G8B8A8_UNORM,
+      .bind = VIRGL_BIND_RENDER_TARGET, .width = 16, .height = 16, .depth = 1,
+      .array_size = 1, .nr_samples = 4,
+   };
+   check(!virgl_renderer_resource_create(&msaa, NULL, 0), "incomplete framebuffer: 4-sample buffer");
+   virgl_renderer_ctx_attach_resource(1, 7);
+   struct cmds c = { .n = 0 };
+   emit(&c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, VIRGL_OBJ_SURFACE_SIZE));
+   emit(&c, 8);
+   emit(&c, 7);
+   emit(&c, VIRGL_FORMAT_R8G8B8A8_UNORM);
+   emit(&c, 0);
+   emit(&c, 0);
+   emit_clear_grey(&c);
+   emit_framebuffer(&c, 2, (const uint32_t[]){ 6, 8 });
+   emit_shader(&c, 90, SHADER_VERTEX, vs_triangle_green);
+   emit_bind(&c, 90, SHADER_VERTEX);
+   emit_shader(&c, 91, SHADER_FRAGMENT, fs_varying);
+   emit_bind(&c, 91, SHADER_FRAGMENT);
+   emit_draw(&c, PRIM_TRIANGLES, 3);
+   int errors = ctx_error_lines;
+   int r = submit(1, &c);
+   if (lose) {
+      check(pipeline_error_lines == 1,
+            "incomplete framebuffer, failures 'lose': the pipeline's context error (as upstream)");
+      virgl_renderer_ctx_detach_resource(1, 7);
+      virgl_renderer_resource_unref(7);
+      return;
+   }
+   check(r == 0, "incomplete framebuffer: the submit runs");
+   check(ctx_error_lines == errors, "incomplete framebuffer: no context error");
+   check(invalid_lines == 1, "incomplete framebuffer: the failed validation is logged");
+
+   emit_framebuffer(&c, 1, (const uint32_t[]){ 6 });
+   emit_clear_grey(&c);
+   emit_draw(&c, PRIM_TRIANGLES, 3);
+   check(submit(1, &c) == 0 && read_pixel(8, 8) == GREEN,
+         "incomplete framebuffer: the next draw with a complete one draws (green)");
+   virgl_renderer_ctx_detach_resource(1, 7);
+   virgl_renderer_resource_unref(7);
+}
+
 int main(void)
 {
    setvbuf(stdout, NULL, _IONBF, 0);
@@ -475,6 +530,9 @@ int main(void)
           { 52, SHADER_TESS_EVAL, tes_cyan }, { 53, SHADER_GEOMETRY, gs_pass },
           { 54, SHADER_FRAGMENT, fs_varying }, { 0 } },
        PRIM_PATCHES, 3, 8, 8, CYAN);
+
+   const char *policy = getenv("OMACVM_VIRGL_SHADER_FAILURES");
+   incomplete_framebuffer(policy && !strcmp(policy, "lose"));
 
    virgl_renderer_ctx_detach_resource(1, 5);
    virgl_renderer_context_destroy(1);

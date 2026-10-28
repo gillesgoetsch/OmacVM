@@ -123,6 +123,11 @@ commit 82927e9. Changes here:
   such pipeline was refused and its draws skipped (#567). Clip distance arrays
   go inside the block: one beside it crashed Apple's GLSL compiler. Checked by
   `Tests/virgl/test-separable-pervertex.c`
+- `patches/virgl-pipeline-validate-log.patch`: a program pipeline the GL finds
+  invalid at its first draw (Apple's GL: while the framebuffer is incomplete)
+  is logged and kept; it ended the guest app's whole context.
+  `OMACVM_VIRGL_SHADER_FAILURES=lose` keeps upstream's context error. Checked
+  by `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once

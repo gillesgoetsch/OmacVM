@@ -259,8 +259,11 @@ run_api_test("test-sysval-block", interposer="sysval-block-gl")
 # Query results the GL does not answer reach the guest as done with 0, not stack bytes
 # (virgl-query-result-unanswered.patch).
 run_api_test("test-query-result", interposer="query-result-gl")
-# Separable programs link on Apple's GL (virgl-shader-separable-pervertex.patch).
+# Separable programs link on Apple's GL (virgl-shader-separable-pervertex.patch), and a failed
+# pipeline validation is logged, not a lost context (virgl-pipeline-validate-log.patch);
+# "lose" keeps upstream's context error.
 run_api_test("test-separable-pervertex")
+run_api_test("test-separable-pervertex", env={"OMACVM_VIRGL_SHADER_FAILURES": "lose"})
 run_api_test("test-transform-feedback")
 run_api_test("test-gpu-ranges", oracle=True)
 run_api_test("test-resource-budget")
