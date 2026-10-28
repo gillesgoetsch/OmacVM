@@ -9,14 +9,17 @@ in more words.
   decoder asks the Mac's video service, and QEMU did that on its graphics thread, which every
   app in the VM, the desktop and their frames wait for. On a Mac mini in a video call (its
   tiles start a new decoder every few seconds) most starts took under 20 ms and some up to
-  110 ms; when the Mac was short of memory one took 1.6 s. Each decoder now starts, changes and ends its session on its own
-  queue, beside the graphics thread. A decoded picture that is not in within 250 ms
-  (`OMACVM_VIDEO_GIVEUP_MS`) is given up: that video keeps its last picture until its decoder
-  is there, everything else goes on, and a picture given up is never written later into a
-  surface the app may already use again. In a test where a decoder took 1.6 s to start, the
-  app's frame commands returned in 0.07 ms and another app's frame was done after 250 ms
-  (before: the whole graphics thread waited the 1.6 s). Needs only the new app, from the VM's
-  next start.
+  110 ms; when the Mac was short of memory one took 1.6 s. Each decoder now starts, changes and
+  ends its session on its own queue, beside the graphics thread. A decoded picture that is not
+  in within 250 ms (`OMACVM_VIDEO_GIVEUP_MS`) is given up: that video keeps its last picture
+  until its decoder is there, and a picture given up is never written later into a surface the
+  app may already use again. Other apps' frames still wait for a late picture, up to those
+  250 ms (the VM's frames finish in one order). In a test where a decoder took 1.6 s to start,
+  the app's frame commands returned in 0.02 ms (median of 20, 19 within 0.06 ms) and another
+  app's frame was done after 250 ms; before, the whole graphics thread waited the 1.6 s. When
+  the Mac's video service does not answer at QEMU's start, the first question for what it can
+  decode waits once, 10 s at most (before: 10 s for each codec asked, 60 s in all). Needs only
+  the new app, from the VM's next start.
 
 ## 3.2.11
 

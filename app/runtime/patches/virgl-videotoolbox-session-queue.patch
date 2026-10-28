@@ -31,13 +31,15 @@ call or waits for a decoder's queue:
   for that alone.
 One time limit for a decoded picture, OMACVM_VIDEO_GIVEUP_MS (250 ms; 50-500):
 a picture not in that long after its END_FRAME is given up by vrend's poll; a
-wait for it (the guest reads or writes its planes, or 4 pictures are in flight)
+wait for it (the guest reads or writes its planes, or 16 are on their way)
 waits that long at most, and END_FRAME does not wait at all for one still on
 the queue (its session is starting; with 16 on their way the oldest is given
 up). The sync thread waits for a fence's
 pictures until the last of them runs out of time (at most the limit + 100 ms)
 and then marks the ones not in dropped: they are never written later, so planes
-the guest uses again once the fence is out stay as the guest left them. A fence
+the guest uses again once the fence is out stay as the guest left them. Fences
+are one timeline: another context's fence made after a late picture waits for
+it too, up to the limit (its frames wait up to 250 ms). A fence
 whose pictures all left their slots while vrend's thread still writes the last
 of them into its planes waits for that too (until dec_open passes it, 1 s at
 most past the limit + 100 ms; before, it could signal before the copy). A wait
@@ -47,7 +49,10 @@ A session that takes the limit or longer to start is logged (at most every
 10 s): "vt-video: the Mac's video decoder took 1.6 s to start (H.264 320x180):
 3 pictures skipped". The queue takes up to 64 pictures not handed over yet
 (was 8): each is decoded once its session is there, given up or not, since a
-later picture may refer to it. OMACVM_VIDEO_DECODE_SYNC=1: no queue, all of it
+later picture may refer to it. A session start of more than about 1 s at
+60 fps fills it: pictures past the 64th are refused at once (not decoded), and
+the pictures after them that refer to them can show errors until the stream's
+next key frame. OMACVM_VIDEO_DECODE_SYNC=1: no queue, all of it
 on vrend's thread and END_FRAME waits, as before.
 Test hooks: OMACVM_TEST_VIDEO_CREATE_DELAY_MS=N (each session start waits N ms
 first), OMACVM_TEST_VIDEO_BREAK=N (picture N finds its session broken),
@@ -59,10 +64,11 @@ Why: the user's VM froze on 2026-10-28 (the guest's video daemon missed its
 critical memory pressure, QEMU's main loop stood 1586 ms in
 VTDecompressionSessionCreate (the XPC look-up of the media engine's service),
 13 starts of 20 ms or more in a call-like load, while every fence of every
-context waited behind it; tracks/vm-stall.md. With the queue, END_FRAME took at
-most 0.08 ms while a session took 1.6 s to start, and another context's fence
-signalled after 250 ms (on main: END_FRAME 25-35 ms at every session start, a
-lost picture held the fences 1 s).
+context waited behind it; tracks/vm-stall.md. With the queue, while a session
+took 1.6 s to start: END_FRAME median 0.02 ms, 19 of 20 within 0.06 ms, another
+context's fence after 250 ms (the test at normal priority on the mini,
+2026-10-28, its log kept with tracks/vm-stall.md; on main: END_FRAME 25-35 ms
+at every session start, a lost picture held the fences 1 s).
 Applies on top of virgl-videotoolbox-decode-async.patch and every virgl patch
 of the runtime before it (last in the list).
 Upstream: OmacVM's own backend. Not sent.

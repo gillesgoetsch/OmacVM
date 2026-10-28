@@ -252,14 +252,26 @@ it took 1.6 s (2026-10-28, `tracks/vm-stall.md`), and before this the whole VM's
 graphics stood still that long, at every new video stream (a call's tiles
 switch streams every few seconds). Now a picture sent meanwhile waits on the
 queue; one not in within `OMACVM_VIDEO_GIVEUP_MS` (250 ms) after its END_FRAME
-is given up: that video shows its last picture until its decoder is there,
-and everything else goes on. The picture is still decoded once the session is
-there (a later picture may refer to it), but never written into the guest's
-planes: the fence the guest waited on has let them go. qemu.log says when a
-start took that long or longer ("the Mac's video decoder took 1.6 s to start
-(H.264 320x180): 3 pictures skipped", at most every 10 s). A closed decoder
-counts against the 48 until its session has ended on its queue. What the Mac
-decodes and encodes is asked once when QEMU starts, beside its graphics thread.
+is given up: that video shows its last picture until its decoder is there.
+The VM's fences finish in one order, so the frames of other apps that come
+after that picture wait for it too, up to those 250 ms; nothing waits longer.
+The picture is still decoded once the session is there (a later picture may
+refer to it), but never written into the guest's planes: the fence the guest
+waited on has let them go. A fence whose pictures are in but still being
+copied into their planes waits for the copy. qemu.log says when a start took
+that long or longer ("the Mac's video decoder took 1.6 s to start (H.264
+320x180): 3 pictures skipped", at most every 10 s).
+
+Limits: a decoder keeps up to 16 pictures on their way; with a 17th the oldest
+is given up if its session is still starting. Its queue holds up to 64 pictures
+not handed to VideoToolbox yet, so a session start of more than about 1 s at
+60 fps fills it: pictures past the 64th are refused at once (not decoded), and
+the pictures after them that refer to them can show errors until the stream's
+next key frame. A closed decoder counts against the 48 until its session has
+ended on its queue. What the Mac decodes and encodes is asked once when QEMU
+starts, beside its graphics thread; if the guest asks before the answer is in,
+the graphics thread waits for it once, 10 s at most, and after that only looks
+(no hardware video until the answer comes).
 
 ## Chrome's converted frames
 
