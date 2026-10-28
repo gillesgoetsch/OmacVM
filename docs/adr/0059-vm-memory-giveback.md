@@ -13,8 +13,14 @@ free. On the Mac: 0.3 GB free, macOS compressing the VM from 13 to 20 GB in
 adds up to less than that footprint; this decision covers the cache (see
 "What this does not explain").
 
-- Free page reporting works: memory Linux frees comes back to the Mac within
-  10-20 s (2 GB filled and freed in the guest, on the Mac mini and on that Mac).
+- Free page reporting makes QEMU's footprint smaller: memory Linux frees
+  leaves it within 10-20 s (2 GB filled and freed in the guest, on the Mac
+  mini and on that Mac). That is the footprint, not memory back to the Mac:
+  QEMU's reclaim maps fresh memory over each reported block, and the pages
+  macOS still held for the old block, compressed ones too, stay held outside
+  the footprint (a host test: 1.0 of 1.0 GB stayed; on a MacBook Air, 4 GB
+  VM, a give-back took the footprint from 6.7 to 5.7 GB while the compressor
+  fell only from 2184 to 1845 MB).
 - Linux keeps every file it read in its page cache. To the Mac that is the
   VM's own memory: macOS can compress it, never drop it, although its own
   file cache already holds the same disk image (QEMU's disk runs

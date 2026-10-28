@@ -1292,7 +1292,8 @@ in the VM (guest agent; no Update VM needed): the VM gives back its file
 cache read once and not again, except the newest min(1 GB, an eighth of the
 VM) (`memory.reclaim` with `swappiness=0` on Inactive(file), in 1 GB steps,
 at most 20 s; the memory-optimized kernel counted nearly all its file cache
-as inactive in the VM read), and free page reporting hands it to the Mac. The newest part
+as inactive in the VM read), and free page reporting takes it out of QEMU's footprint
+(pages macOS had compressed for it stay held on the Mac, ADR 0059). The newest part
 stays, so the files read last are not read again (on the Mac mini, Chrome
 started in 1.02 s after a give-back that followed reading its files, the
 same as without one); a file read again later comes from the Mac's file
