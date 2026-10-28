@@ -3,6 +3,25 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+- **qemu.log says when the VM stood still, and why.** When macOS runs out of free memory, the
+  processors of an OmacVM.app VM can wait in macOS for seconds while macOS makes memory free
+  for them; the others run on, and in the VM it looks like a freeze (the kernel logs an RCU
+  stall, the video daemon misses its watchdog, "no word from the Mac for 15 s"). On a Mac mini
+  short of memory three of ten processors stood still for 1.2, 2.1 and 2.4 s. QEMU now writes
+  one line per stall of 1 s or more, which processors, how long and the Mac's free memory,
+  for example "OmacVM: stall: vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in macOS's
+  kernel waiting for memory (Mac: 0.3 GB free, pressure normal; the VM holds 51 GB, 20 GB of
+  it compressed by macOS)", or "waited 2.1 s for a Mac core" when the Mac's processors were
+  busy, and keeps the count in `logs/vm-stalls`. The app menu (beside the Apple menu) then says
+  "The VM stood still 2 times (longest 58 s): the Mac ran out of memory" under Graphics
+  memory. It looks when QEMU's stall watchdog wakes anyway (every 2 s, every 250 ms while a
+  processor stands): no new timer. Its "main loop stalled" line now says "in a GPU run without
+  the BQL" when QEMU's graphics thread waited in a call to the Mac while the processors ran on;
+  it said "with the BQL held (the VM waits)" there. Needs only the new app, from the VM's next
+  start.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
