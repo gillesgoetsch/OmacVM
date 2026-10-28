@@ -191,7 +191,7 @@ and 27.0 (the Mac mini).
 
 ## Retake after a display change
 
-Status: accepted for 3.2.12 once its rows pass on a notched MacBook (below);
+Status: accepted for 3.2.12 (rows on a notched MacBook below);
 `omacvm-cocoa-fullpanel-retake*.patch`, applied after
 `omacvm-cocoa-display-settle.patch`.
 
@@ -320,11 +320,19 @@ patched `ui/cocoa.m` fails them too). In the runtime build also the wiring
 it that moves a window, a Space or the menu bar).
 `src/tests/fullpanel-check.sh`: check's row.
 
-**Not yet seen on a notched Mac.** Owed before release, on a MacBook with
-its own test VM in "Full screen including notch":
-`src/tests/e2e/display-unplug.sh --only fullpanel-builtin --sleep
---builtin-off` (a virtual display unplugged and plugged in, display sleep
-and wake: 3.2.10 passes these too, so they show only that nothing broke;
-and the built-in display switched off for 10 s and back, the user's
-trigger, which 3.2.10 fails and this must pass), and a Split View made from
-a FullPanel full screen, which must stay "strip lost" with nothing tried.
+**Seen on a notched Mac** (MacBook Pro M1 Max, notch 32 pt, macOS 27.0.1,
+2026-10-29; a test VM in "Full screen including notch" on the built-in, a
+virtual 2560x1440 display as the second one; 3.2.10's test app against
+this one). `src/tests/e2e/display-unplug.sh --only fullpanel-builtin`: a
+virtual display unplugged and plugged in (3 rounds) and display sleep and
+wake pass on both, with the same QEMU lines (no `display change:` line).
+The built-in display off for 10 s and back (`--builtin-off`, the user's
+trigger): 3.2.10 fails 3 of 3 with `strip lost: frame (0 0 1512x952)`
+(the band kept; the guest 3024x1896, check warns); this passes 3 of 3,
+`strip covered` 10.4 s after the built-in went off, same Space, the guest
+3024x1964 with its bar beside the notch, check ok. AppKit laid the window
+out full height on the way back each time, so the retake itself did not
+run there; it stays covered by the replay rows. A Split View made from the
+full screen in Mission Control (macOS 27 greys out Window > Full Screen
+Tile for a window already in full screen) stays `strip lost: frame (766 0
+746x982)`, and a display change after it tries nothing.
