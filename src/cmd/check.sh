@@ -455,7 +455,9 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
       warning|critical) mgw="macOS was short of memory" ;;
       *) mgw="" ;;
     esac
-    what="${what:+$what; }gave back $(gb "$mgb") at $(date -r "$mga" +%H:%M)${mgw:+ ($mgw)}, $mgn times this run"
+    # How many this run, and what the last one gave (not that many times as much).
+    if [[ $mgn == 1 ]]; then mgl="1 give-back this run: $(gb "$mgb")"; else mgl="$mgn give-backs this run, the last $(gb "$mgb")"; fi
+    what="${what:+$what; }$mgl at $(date -r "$mga" +%H:%M)${mgw:+ ($mgw)}"
     pgsz=$(sysctl -n hw.pagesize 2>/dev/null) ram=$(sysctl -n hw.memsize 2>/dev/null)
     stored=$(vm_stat 2>/dev/null | awk -F: '$1 == "Pages stored in compressor" { gsub(/[ .]/, "", $2); print $2 }')
     if (( mgb < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then

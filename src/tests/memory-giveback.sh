@@ -133,12 +133,14 @@ if [[ $(uname -s) == Darwin ]]; then
   expect "no give-back yet" "VM memory: 42.0 GB; nothing given back this run" "$(vmrow "$V")"
   at=$(date -j -f '%Y-%m-%d %H:%M' '2026-10-28 10:12' +%s)
   printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\ngiven_mb=12186\nreturned_mb=0\noff=0\n' "$at" > "$V/logs/memory-giveback"
-  expect "a give-back while macOS compressed the VM" "VM memory: 42.0 GB; gave back 11.9 GB at 10:12 (macOS was compressing the VM), 3 times this run" "$(vmrow "$V")"
+  expect "a give-back while macOS compressed the VM" "VM memory: 42.0 GB; 3 give-backs this run, the last 11.9 GB at 10:12 (macOS was compressing the VM)" "$(vmrow "$V")"
   sed -i.bak 's/^trigger=.*/trigger=warning/; s/^given_mb=.*/given_mb=/; s/^returned_mb=.*/returned_mb=100/' "$V/logs/memory-giveback"
   expect "little back, macOS holds a quarter of the Mac compressed: the hint" \
-    "VM memory: 42.0 GB; gave back 100 MB at 10:12 (macOS was short of memory), 3 times this run; macOS holds 17.0 GB compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)" \
+    "VM memory: 42.0 GB; 3 give-backs this run, the last 100 MB at 10:12 (macOS was short of memory); macOS holds 17.0 GB compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)" \
     "$(vmrow "$V" $((17 << 16)))"
-  expect "little back, macOS holds little compressed: no hint" "VM memory: 42.0 GB; gave back 100 MB at 10:12 (macOS was short of memory), 3 times this run" "$(vmrow "$V" 1000)"
+  expect "little back, macOS holds little compressed: no hint" "VM memory: 42.0 GB; 3 give-backs this run, the last 100 MB at 10:12 (macOS was short of memory)" "$(vmrow "$V" 1000)"
+  sed -i.bak 's/^count=.*/count=1/' "$V/logs/memory-giveback"
+  expect "one give-back" "VM memory: 42.0 GB; 1 give-back this run: 100 MB at 10:12 (macOS was short of memory)" "$(vmrow "$V" 1000)"
   printf 'count=0\ntrigger=off\noff=1\n' > "$V/logs/memory-giveback"
   expect "a balloon that does not report" "VM memory: 42.0 GB; its balloon does not report free pages: what it frees stays on the Mac this run" "$(vmrow "$V")"
   printf 'count=1\nat=x;rm -rf /\nreturned_mb=$(id)\n' > "$V/logs/memory-giveback"
