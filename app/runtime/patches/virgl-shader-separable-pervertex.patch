@@ -22,9 +22,15 @@ the arrays go into the block, never beside it.
 Upstream: the same conditions in virglrenderer main (checked 2026-10-28); not sent.
 Test: Tests/virgl/test-separable-pervertex.c: separable pipelines on Apple's software
 renderer (vertex + fragment with a varying, gl_PointSize, + geometry, + tessellation,
-+ tessellation + geometry) draw their colour and nothing is refused; each row fails
-without this patch. Tests/virgl/test-sysval-block.c's separable rows now run on these
-blocks (its GL stand-in that added the block is gone).
++ tessellation + geometry; blocks that differ between stages, gl_in[].gl_PointSize, clip
+distance arrays inside the blocks, a flat integer varying, transform feedback, separable
+and whole stages linked as one program) draw their colour and nothing is refused; each
+row fails without this patch. Tests/virgl/test-sysval-block.c's separable rows now run on
+these blocks (its GL stand-in that added the block is gone).
+Not fixed here (other IO of separable programs, upstream code): Apple's GL refuses a
+layout location on a patch variable, which vrend gives every separable patch varying, and
+vrend puts a separable varying array at location 31 - its first, past the last location.
+Such pipelines are still refused and their draws skipped (rows in the same test).
 
 --- a/src/vrend/vrend_shader.c
 +++ b/src/vrend/vrend_shader.c

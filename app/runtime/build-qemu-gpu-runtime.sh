@@ -1394,8 +1394,8 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-query-result-unans
 # OmacVM: separable shaders redeclare the gl_PerVertex blocks they use: Apple's GL linked none
 # of them, so every draw of an app that uses program pipelines was skipped (#567).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-pervertex.patch"
-# OmacVM: a program pipeline the GL finds invalid in the current state (an incomplete
-# framebuffer) is logged; it ended the guest app's whole context.
+# OmacVM: a program pipeline the GL finds invalid in the current state (sampler units not
+# set yet, an incomplete framebuffer) is logged; it ended the guest app's whole context.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-log.patch"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"

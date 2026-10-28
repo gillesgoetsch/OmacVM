@@ -124,8 +124,10 @@ commit 82927e9. Changes here:
   go inside the block: one beside it crashed Apple's GLSL compiler. Checked by
   `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-pipeline-validate-log.patch`: a program pipeline the GL finds
-  invalid at its first draw (Apple's GL: while the framebuffer is incomplete)
-  is logged and kept; it ended the guest app's whole context.
+  invalid at its first draw is logged (three lines per context) and kept; it
+  ended the guest app's whole context. The check runs before the draw sets the
+  sampler units (a 2D and a cube sampler then fail), and Apple's GL also fails
+  it while the framebuffer is incomplete.
   `OMACVM_VIRGL_SHADER_FAILURES=lose` keeps upstream's context error. Checked
   by `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
