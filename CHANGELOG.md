@@ -68,7 +68,7 @@ VM's next start.
   update, from the VM's next start.
 
 - **`omacvm check` has a "VM memory" line; the file cache give-back waits for a QEMU fix
-  (#590, #NNN).** In an OmacVM.app VM the line shows the VM's memory, whether the give-back
+  (#590, #605).** In an OmacVM.app VM the line shows the VM's memory, whether the give-back
   below is on, and when the VM last freed its file cache in this run. When macOS warns that
   memory is short, the VM drops its file cache, as before. New but off in this release: while
   macOS compresses the VM, the app would ask the VM for its file cache not used lately (all but
