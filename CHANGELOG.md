@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.10 (unreleased)
+
+- **Apps that use OpenGL program pipelines draw again (#567).** Apps that build their shaders as
+  separate programs (`glCreateShaderProgramv`, program pipelines) drew nothing where they used
+  them: the Mac's OpenGL refused every such shader, because it wants each one to declare the
+  `gl_PerVertex` block it writes, and the VM's graphics stack never did for the last stage. Now
+  each shader of such a program declares it, with geometry and tessellation shaders too. A
+  pipeline the Mac's OpenGL finds invalid at its first draw (for example while the app draws
+  into an incomplete framebuffer) no longer ends the app's whole OpenGL context: qemu.log says
+  so and the app draws on. Needs only the new app; no Update VM.
+
 ## 3.2.9
 
 AirPods, Control Center and the play keys play and pause what plays in the VM. In an HDR VM,
