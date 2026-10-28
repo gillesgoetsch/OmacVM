@@ -28,22 +28,28 @@
 #   fullpanel-builtin  "Full screen including notch" on the Mac's own notched
 #              built-in display (a real notch, not made up), the VM's second
 #              display on a virtual one (2560x1440, not main): unplugged and
-#              plugged in again --rounds rounds; with --sleep also the displays
-#              asleep and awake once (not on a Mac that locks at display
-#              sleep). After each: the last FullPanel line omacvm check reads is
+#              plugged in again --rounds rounds; with --builtin-off also the
+#              built-in display off for 10 s and back (the lid shut and opened
+#              with another display on: app/scripts/dev/builtin-display.m),
+#              with --sleep also the displays asleep and awake once (not on a
+#              Mac that locks at display sleep); a session found locked after
+#              either ends the case (BLOCKED: nobody can unlock it). After
+#              each: the last FullPanel line omacvm check reads is
 #              "strip covered", no "strip not back" and no "strip lost" (but
 #              one that "went with" the display change) since the event, the
 #              main window covers the built-in display, the
-#              full-screen Spaces and the built-in's current Space as before.
-#              Skipped on a Mac without a notched built-in display; not in the
-#              default list (--only fullpanel-builtin).
+#              full-screen Spaces and the built-in's current Space as before,
+#              the built-in's mode unchanged. Skipped on a Mac without a
+#              notched built-in display; not in the default list (--only
+#              fullpanel-builtin).
 # After each unplug: the same QEMU still runs 8 s later, the VM answers over
 # SSH, and no new crash report of the app's QEMU.
 #
-#   src/tests/e2e/display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only LIST] [--sleep] [--out DIR]
+#   src/tests/e2e/display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only LIST] [--sleep] [--builtin-off] [--out DIR]
 #     --only LIST   cases (comma list): full,fullpanel,window,head,fullpanel-builtin
 #                   (default: all but fullpanel-builtin)
 #     --sleep       fullpanel-builtin also puts the displays to sleep and wakes them
+#     --builtin-off fullpanel-builtin also switches the built-in display off for 10 s
 #     --out DIR     summary.tsv and the logs (default ~/omacvm-e2e/unplug-<time>)
 # Needs: ~/Applications/"OmacVM Test.app" (org.omacvm.app.test; OMACVM_E2E_APP=PATH
 # for another copy of it), NAME stopped in
@@ -60,16 +66,17 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/person.sh"
 R=$(cd "$HERE/../../.." && pwd)
 
-VM=""; ROUNDS=3; FLAPS=10; ONLY=""; OUT=""; SLEEP=0
+VM=""; ROUNDS=3; FLAPS=10; ONLY=""; OUT=""; SLEEP=0; BOFF=0
 while (( $# )); do
   case $1 in
     --sleep) SLEEP=1; shift ;;
+    --builtin-off) BOFF=1; shift ;;
     --vm) VM=$2; shift 2 ;;
     --rounds) ROUNDS=$2; shift 2 ;;
     --flap-rounds) FLAPS=$2; shift 2 ;;
     --only) ONLY=",$2,"; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
-    *) echo "usage: display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only full,fullpanel,window,head,fullpanel-builtin] [--sleep] [--out DIR]" >&2; exit 2 ;;
+    *) echo "usage: display-unplug.sh --vm NAME [--rounds N] [--flap-rounds N] [--only full,fullpanel,window,head,fullpanel-builtin] [--sleep] [--builtin-off] [--out DIR]" >&2; exit 2 ;;
   esac
 done
 [[ -n $VM ]] || { echo "display-unplug: --vm NAME (a test VM)" >&2; exit 2; }
@@ -147,6 +154,14 @@ LOCKTOOL="$OUT/test-lock"
 clang -fobjc-arc -framework Foundation "$R/app/scripts/dev/test-lock.m" -o "$LOCKTOOL" >> "$OUT/build-tool.log" 2>&1 ||
   { echo "display-unplug: could not build the lock tool ($OUT/build-tool.log)" >&2; exit 3; }
 lockhook() { "$LOCKTOOL" "$1"; }
+# The built-in display off and back (fullpanel-builtin --builtin-off).
+BDISP="$OUT/builtin-display"
+if (( BOFF )); then
+  clang -fobjc-arc -framework AppKit -framework CoreGraphics "$R/app/scripts/dev/builtin-display.m" -o "$BDISP" \
+    >> "$OUT/build-tool.log" 2>&1 || { echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log)" >&2; exit 3; }
+fi
+# The Mac's session locked (the screen lock): nobody can unlock it from here.
+session_locked() { [[ $(ioreg -n Root -d1 -k IOConsoleUsers 2>/dev/null) == *'"CGSSessionScreenIsLocked"=Yes'* ]]; }
 
 # Put back what this changes, also on Ctrl-C.
 FS_BEFORE=$(defaults read "$APPID" startFullScreen 2>/dev/null || echo unset)
@@ -411,12 +426,32 @@ case_fullpanel_builtin() {
     l0=$(wc -l < "$VMD/logs/qemu.log"); st=$(vd_signal USR2); VD_ID=$(sed -n 's/.* id=\([0-9]*\).*/\1/p' <<<"$st"); sleep 15
     fp_check "fullpanel-builtin-replug-$r" "$l0" "$F0" || break
   done
+  if (( BOFF )); then
+    # The user's trigger: the built-in leaves the display set and comes back (macOS puts it back
+    # when the tool ends). Its mode must be the same after (macOS keeps one per set of displays).
+    local m0 m1
+    m0=$("$BDISP" mode); l0=$(wc -l < "$VMD/logs/qemu.log")
+    if "$BDISP" off 10 > "$OUT/fullpanel-builtin-off.tool" 2>&1; then
+      sleep 12
+      fp_check fullpanel-builtin-off "$l0" "$F0"
+    else
+      res fullpanel-builtin-off FAIL "the built-in display did not go off and back: $(tail -1 "$OUT/fullpanel-builtin-off.tool")"
+    fi
+    m1=$("$BDISP" mode)
+    [[ $m1 == "$m0" ]] || res fullpanel-builtin-off-mode FAIL "the built-in's mode changed ($m0 -> $m1): left as it is, tell the person"
+    if session_locked; then
+      res fullpanel-builtin-off-session BLOCKED "the session is locked after the built-in display went off: no further rows"
+      SLEEP=0
+    fi
+  fi
   if (( SLEEP )); then
     if [[ $(sysadminctl -screenLock status 2>&1) != *"screenLock is off"* ]]; then
       res fullpanel-builtin-sleep skip "this Mac locks at display sleep (the rest would need a password)"
     else
-      l0=$(wc -l < "$VMD/logs/qemu.log"); pmset displaysleepnow; sleep 10; caffeinate -u -t 3; sleep 20
+      # The wake is ours (person.sh: not someone at the Mac).
+      l0=$(wc -l < "$VMD/logs/qemu.log"); pmset displaysleepnow; sleep 10; person_posted 5; caffeinate -u -t 3; sleep 20
       fp_check fullpanel-builtin-sleep "$l0" "$F0"
+      session_locked && res fullpanel-builtin-sleep-session BLOCKED "the session is locked after display sleep: no further rows"
     fi
   fi
   unplug
