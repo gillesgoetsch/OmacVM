@@ -14,7 +14,8 @@
  * that very moment may stay (XNU skips a page in the compressor's queue; the
  * release advises again 20 ms later): up to 5 % of the reported pages,
  * counted apart. The pages next to each report keep their data; the reported
- * ones read 0.
+ * ones read 0, or, for every other report, what the guest wrote into the range
+ * between QEMU's acknowledgement and the release.
  *
  *   test-reclaim [--hv] [--compressed SECONDS]
  *
@@ -116,12 +117,19 @@ static const char *helper_name = "the patch's helper";
 #include "reclaim.inc"
 #endif
 
+static void fill(uint64_t off, uint64_t len, unsigned round);
+
 /* A report as QEMU handles it: the new backing under the BQL, then the old
- * range's release (QEMU's worker thread does it; here right after). */
-static void reclaim(uint64_t off, uint64_t len)
+ * range's release (QEMU's worker thread does it; here right after). With
+ * round > 0 the guest uses the range again in between (QEMU acknowledged the
+ * report, the worker has not got to it yet): that data must stay. */
+static void reclaim_using(uint64_t off, uint64_t len, unsigned round)
 {
     mach_vm_address_t aside = omacvm_reclaim_backing(RAM_IPA + off, ram + off, len,
                                                      HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC);
+    if (round) {
+        fill(off, len, round);
+    }
 #if !defined(HELPER_MAIN)
     if (aside) {
         omacvm_reclaim_release(aside, len, true, NULL);
@@ -129,6 +137,11 @@ static void reclaim(uint64_t off, uint64_t len)
 #else
     (void)aside;
 #endif
+}
+
+static void reclaim(uint64_t off, uint64_t len)
+{
+    reclaim_using(off, len, 0);
 }
 
 /* Data: one word per 1 KiB, from the page's guest address and a round. */
@@ -254,9 +267,11 @@ static Pages sum_before, sum_after;
 static unsigned reports;
 static unsigned long reported_pages, kept_compressed, in_flight;
 
-/* One free page report of [off, off + len), with its observer. */
+/* One free page report of [off, off + len), with its observer. Every other
+ * report, the guest writes the range again before the release. */
 static void report(uint64_t off, uint64_t len, const char *what)
 {
+    unsigned reuse = reports % 2 ? 2 : 0;
     unsigned min_ref, nent;
     vm_prot_t cur, max;
     mach_vm_address_t obs = 0;
@@ -272,9 +287,18 @@ static void report(uint64_t off, uint64_t len, const char *what)
     }
     Pages b, a;
     int *before = query(obs, len, &b);
-    reclaim(off, len);
+    reclaim_using(off, len, reuse);
     int *after = query(obs, len, &a);
     mach_vm_deallocate(mach_task_self(), obs, len);
+    if (reuse) {   /* what the guest wrote since must not be up for grabs */
+        Pages now;
+        free(query((mach_vm_address_t)(ram + off), len, &now));
+        if (now.reusable) {
+            printf("FAIL %s: %lu pages the guest wrote after the report are marked reusable: LEFT ON THE MAC\n",
+                   what, now.reusable);
+            failures++;
+        }
+    }
     /* A page compressed before the report must be gone. One resident before
      * and still on the Mac after was on its way into the compressor (macOS
      * skips pages it is compressing at that moment): counted apart. */
@@ -291,7 +315,7 @@ static void report(uint64_t off, uint64_t len, const char *what)
     kept_compressed += kept;
     in_flight += flight;
     for (uint64_t p = off / pg; p < (off + len) / pg; p++) {
-        round_of[p] = 0xff;
+        round_of[p] = reuse ? reuse : 0xff;
     }
     reports++;
     reported_pages += len / pg;
