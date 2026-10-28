@@ -18,10 +18,11 @@ measured and dropped, and the gap that is left. The bench tool is
   0.500, with checks before and after every row (display on, nobody at the Mac, no remote session, nothing
   above the measured window, the VM in its full HDR mode). Only the 0.500 rows are used below unless a table
   says otherwise.
-- **HDR VM vs SDR macOS.** A VM with HDR on puts the XDR panel into EDR (headroom 11.43 at 0.500); Chrome on
-  macOS with SDR content leaves it at 1.00. A ratio of those two rows compares two panel states, not only
-  the same task, and is marked "HDR VM vs SDR macOS". The fair reference rows hold the macOS panel in HDR
-  mode too (a 16 px HDR dot on screen), so both sides run at EDR 11.43.
+- **The same panel state on both sides.** A VM with HDR on puts the XDR panel into EDR (headroom 11.43 at
+  0.500); Chrome on macOS with SDR content leaves it at 1.00, which costs less by itself. An HDR VM row and
+  an SDR macOS row are not comparable, so this page gives no ratio of them. VM/macOS ratios on the M1 Max
+  come only from the fair reference, where macOS holds the panel in HDR mode too (a small HDR picture on
+  screen), both sides at EDR 11.43.
 - Ratios are taken within one set (A/B/A/B or A/B/B/A); a number from another set is marked as such.
 
 ## The passes
@@ -88,23 +89,25 @@ the whole frame every frame: 3.5-3.6 ms of QEMU GPU time per frame at 60 and at 
 ~0.19 / ~0.47 W of it (rows above), the rest is Chrome's drawing and Hyprland's two passes.
 
 **In a VM, MacBook Pro M1 Max, brightness 0.500** (2026-10-25 evening, A/B/B/A, means of 2 rounds, every
-row valid; the user's Refresh Floor app, a 1x1 pt window above every app, ran on both sides). VM rows are
-HDR (EDR 11.43), macOS rows SDR (EDR 1.00): **HDR VM vs SDR macOS**. "Stack" is a lab build of 3.2.0 with
-the changes below that were ready then, not a release: #531, #533, the pointer layer (#534) and the tiled
-present switched on, plus two pieces dropped later (#536's first form with 10-bit surfaces, #530's fence naps):
+row valid; the user's Refresh Floor app, a 1x1 pt window above every app, ran on both sides). Both VM builds
+with HDR on (EDR 11.43). "Stack" is a lab build of 3.2.0 with the changes below that were ready then, not a
+release: #531, #533, the pointer layer (#534) and the tiled present switched on, plus two pieces dropped
+later (#536's first form with 10-bit surfaces, #530's fence naps). The macOS rows of this set had SDR content
+(EDR 1.00): not comparable with the HDR VM rows, so not shown; the fair reference below compares with macOS
+in HDR mode.
 
-| Task | macOS | 3.2.0 | Stack | 3.2.0 / macOS | Stack / macOS | Stack vs 3.2.0 |
-|---|---|---|---|---|---|---|
-| Idle | 6.50 W | 7.58 W | 7.60 W | 1.17 | 1.17 | +0.1 %, within the spread |
-| Typing | 6.51 W | 7.69 W | 7.54 W | 1.18 | 1.16 | -2.0 %, within the spread |
-| Scrolling | 7.41 W | 13.11 W | 12.46 W | 1.77 | 1.68 | -5.0 % |
-| AV1 1080p60 clip (software on both sides) | 9.89 W | 19.66 W | 18.88 W | 1.99 | 1.91 | -4.0 % |
-| VP9 4K60 clip | 8.73 W | 17.34 W | 16.91 W | 1.99 | 1.94 | -2.5 % |
-| Video call (720p30 VP8 both ways) | 9.20 W | 19.73 W | 19.01 W | 2.14 | 2.07 | -3.6 % |
-| App mix (Orca with 4 agents, Chrome, chat pages) | 13.50 W | 24.87 W | 22.31 W | 1.84 | 1.65 | -10.3 % |
+| Task | 3.2.0 | Stack | Stack vs 3.2.0 |
+|---|---|---|---|
+| Idle | 7.58 W | 7.60 W | +0.1 %, within the spread |
+| Typing | 7.69 W | 7.54 W | -2.0 %, within the spread |
+| Scrolling | 13.11 W | 12.46 W | -5.0 % |
+| AV1 1080p60 clip (software decode) | 19.66 W | 18.88 W | -4.0 % |
+| VP9 4K60 clip | 17.34 W | 16.91 W | -2.5 % |
+| Video call (720p30 VP8 both ways) | 19.73 W | 19.01 W | -3.6 % |
+| App mix (Orca with 4 agents, Chrome, chat pages) | 24.87 W | 22.31 W | -10.3 % |
 
-Round-to-round spread: up to 0.48 W on macOS, 0.43 W for 3.2.0, 0.17 W for the stack; the guest's frame
-rates were the same on both builds. Frame times in the same set: a 120 Hz animation 119.07 frames/s with
+Round-to-round spread: up to 0.43 W for 3.2.0, 0.17 W for the stack; the guest's frame rates were the
+same on both builds. Frame times in the same set: a 120 Hz animation 119.07 frames/s with
 24 long frames (3.2.0) vs 119.94 with 1 (stack); Chrome's smooth scroll 116.5-120.1 frames/s on both; Speedometer 3.1 29.9 on both.
 
 **Fair reference, M1 Max, brightness 0.500** (2026-10-26, A/B/B/A = macOS, VM, VM, macOS, means of 2 rounds,
@@ -121,7 +124,7 @@ VM: a test build of 3.2.2 with the tiled present (#520), Pointer on its own laye
 
 Round-to-round spread in the VM: up to 0.19 W. With SDR content macOS leaves the panel out of EDR: in another set
 the same day (Refresh Floor quit too) macOS idled at 4.58 W, so the panel's HDR mode alone costs about 0.9 W at
-idle, and the HDR VM idles at 1.19x SDR macOS.
+idle (macOS against macOS, two sets).
 
 **Where the M1 Max's watts go** (the night set at brightness 0.000, one window per row; measurements of where
 the cost is, not options: HDR, 120 Hz and a visible window stay as they are). QEMU's GPU time was 6.5 ms per
@@ -182,8 +185,8 @@ gets lower CPU clocks. The vCPUs ran at 2.7-3.0 GHz on the performance cores whe
   below, not done). AV1 on M1/M2 runs in software on the vCPUs, at their higher clocks.
 - **Video on the M1 Max** is the biggest gap left with both panels in HDR: the AV1 clip at 1.52x (QEMU's GPU
   work per frame on top of the software decode both sides do), against 1.00x at idle and 1.07x scrolling.
-- **Idle and typing** are close to native (Air 1.06x and 1.07x; M1 Max idle 1.00x with both panels in HDR,
-  1.17x and 1.16x HDR VM vs SDR macOS with Refresh Floor running).
+- **Idle and typing** are close to native: Air 1.06x and 1.07x; M1 Max idle 1.00x with both panels in HDR
+  (typing was not in the fair reference).
 
 ## Zero-copy video: design, size, risk (not done)
 
