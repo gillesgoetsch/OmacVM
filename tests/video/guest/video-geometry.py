@@ -27,7 +27,7 @@ counted as failures: FFmpeg itself asks for a surface larger than the picture wh
 when the height is not a multiple of 16, HEVC when width or height is not a multiple of 8) in mpv; Chromium's V4L2
 decoder offers no HEVC; Chrome decodes very small videos on the CPU.
 """
-import glob, http.server, importlib.util, json, os, re, signal, subprocess, sys, threading, time, urllib.request
+import glob, http.server, importlib.util, json, os, re, shutil, signal, subprocess, sys, threading, time, urllib.request
 
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -275,6 +275,11 @@ def run():
     clips = json.load(open(os.path.join(clipdir, "geo.json")))
     if only:
         clips = [c for c in clips if any(s in c["name"] for s in only)]
+    exe0 = {"chrome": arg("--chrome", "/opt/google/chrome/chrome"), "chromium": "/usr/bin/chromium",
+            "firefox": "firefox"}.get(app, "mpv")
+    if not shutil.which(exe0):
+        print(json.dumps({"app": app, "mode": mode, "error": "not installed"}), file=out, flush=True)
+        return
     srv = Server()
     srv.mode = mode
     proc, tab = None, None
@@ -302,52 +307,66 @@ def run():
             exe += [f"--remote-debugging-port={port}", f"--user-data-dir={ud}", "--no-first-run",
                     "--no-default-browser-check", "--password-store=basic", "--kiosk", "--autoplay-policy=no-user-gesture-required",
                     "--enable-logging=stderr", "--v=0", "--vmodule=video_decoder_pipeline=2,vaapi_video_decoder=2,gpu_init=1", "about:blank"]
-            proc = subprocess.Popen(exe, stdout=open(log, "w"), stderr=subprocess.STDOUT, start_new_session=True)
-            for _ in range(60):
-                time.sleep(0.5)
-                try:
-                    tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list"))
-                    pages = [t for t in tabs if t.get("type") == "page"]
-                    if pages:
-                        tab = vb.Tab(pages[0]["webSocketDebuggerUrl"])
-                        break
-                except OSError:
-                    pass
+
+            def start(mode_):
+                p = subprocess.Popen(exe, stdout=open(log, mode_), stderr=subprocess.STDOUT, start_new_session=True)
+                for _ in range(60):
+                    time.sleep(0.5)
+                    try:
+                        tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list"))
+                        pages = [t for t in tabs if t.get("type") == "page"]
+                        if pages:
+                            t = vb.Tab(pages[0]["webSocketDebuggerUrl"])
+                            t.call("Media.enable"); t.call("Page.enable")
+                            return p, t
+                    except OSError:
+                        pass
+                return p, None
+
+            proc, tab = start("w")
             if not tab:
                 print(json.dumps({"app": app, "error": "no DevTools"}), file=out, flush=True)
                 return
-            tab.call("Media.enable"); tab.call("Page.enable")
         for c in clips:
             path = os.path.join(clipdir, c["file"])
             srv.clip, srv.size = path, (c["w"], c["h"])
             dec = ""
             res = {"app": app, "mode": mode, "clip": c["name"], "codec": c["codec"], "w": c["w"], "h": c["h"]}
             if tab:
-                tab.events = []
-                logpos = os.path.getsize(log) if os.path.exists(log) else 0
-                tab.call("Page.navigate", url=srv.url)
-                ok = False
-                for _ in range(40):
-                    time.sleep(0.5)
-                    t = tab.js("(() => { const v = document.querySelector('video'); return v ? v.currentTime : -1 })()")
-                    if t and t > 1.2:
-                        ok = True
-                        break
-                time.sleep(1.0)
-                tab.call("Runtime.evaluate", expression="1")
-                props = {}
-                for e in tab.events:
-                    if e["method"] == "Media.playerPropertiesChanged":
-                        for p in e["params"]["properties"]:
-                            props[p["name"]] = p["value"]
-                dec = props.get("kVideoDecoderName", "")
-                with open(log, errors="replace") as f:
-                    f.seek(logpos)
-                    new = f.read()
-                res["path"] = ("no ImageProcessor" if "No ImageProcessor needed" in new else
-                               "ImageProcessor" if "Initializing ImageProcessor" in new else "")
-                if not ok:
-                    res["error"] = "not playing"
+                try:
+                    tab.events = []
+                    logpos = os.path.getsize(log) if os.path.exists(log) else 0
+                    tab.call("Page.navigate", url=srv.url)
+                    ok = False
+                    for _ in range(40):
+                        time.sleep(0.5)
+                        t = tab.js("(() => { const v = document.querySelector('video'); return v ? v.currentTime : -1 })()")
+                        if t and t > 1.2:
+                            ok = True
+                            break
+                    time.sleep(1.0)
+                    tab.call("Runtime.evaluate", expression="1")
+                    props = {}
+                    for e in tab.events:
+                        if e["method"] == "Media.playerPropertiesChanged":
+                            for p in e["params"]["properties"]:
+                                props[p["name"]] = p["value"]
+                    dec = props.get("kVideoDecoderName", "")
+                    with open(log, errors="replace") as f:
+                        f.seek(logpos)
+                        new = f.read()
+                    res["path"] = ("no ImageProcessor" if "No ImageProcessor needed" in new else
+                                   "ImageProcessor" if "Initializing ImageProcessor" in new else "")
+                    if not ok:
+                        res["error"] = "not playing"
+                except (OSError, TimeoutError, ValueError) as e:     # the browser stopped answering
+                    res["error"] = f"browser stopped answering ({type(e).__name__}); started again"
+                    kill(proc)
+                    proc, tab = start("a")
+                    print(json.dumps(res), file=out, flush=True)
+                    if not tab:
+                        return
+                    continue
             elif app == "firefox":
                 prof = "/tmp/video-geometry-ff"
                 os.makedirs(prof, exist_ok=True)
@@ -432,6 +451,8 @@ def known(d):
         return "not offered by Chromium's V4L2 decoder"
     if app in ("chrome", "chromium") and d.get("error") == "not playing" and codec == "av1":
         return "AV1 not decoded here"
+    if d.get("error") == "not installed":
+        return "not installed in this VM"
     return None
 
 
