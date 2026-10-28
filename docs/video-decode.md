@@ -158,7 +158,9 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   `OMACVM_VIDEO_LOGICAL=0` (Mac) and `OMACVM_VA_LOGICAL=0` (an app in the
   VM) the sizes. Tests: `Tests/virgl/test-video-padding.c`,
   `Tests/virgl/test-video-logical-size.c`,
-  `src/app/guest/tests/va-shim-logical.sh`.
+  `src/app/guest/tests/va-shim-logical.sh`, and in a test VM
+  `tests/video/video-geometry.sh` (a test card in mpv, Chrome, Chromium and
+  Firefox: where its rows and columns land on the screen).
 - Chrome's hardware frames (3.2.1): Chrome converts each picture into an
   ARGB frame of its own and shows that frame by its own size, but Mesa
   rounds that frame's planes up to 16 too, and its conversion read the

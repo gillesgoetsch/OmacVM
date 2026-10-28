@@ -101,5 +101,7 @@ Option 5.
   still be sampled at the owner's size (one size per resource); Chrome
   imports at the size it allocated.
 - Tests: `Tests/virgl/test-video-logical-size.c`, the fuzz seeds
-  `seed-nop-logical*`, `src/app/guest/tests/va-shim-logical.sh`, and the VM
-  rows in work/tracks/video-bottom-edge.md.
+  `seed-nop-logical*`, `src/app/guest/tests/va-shim-logical.sh`, and in a
+  test VM `tests/video/video-geometry.sh` (mpv, Chrome, Chromium, Firefox
+  on a test card; 3.2.10 fails it, 3.2.11 passes with the known cases
+  above).
