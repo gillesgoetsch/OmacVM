@@ -298,3 +298,7 @@ run_api_test("test-const-ubo", oracle=True)
 run_api_test("test-const-ubo", oracle=True, env={"OMACVM_VIRGL_CONST_UBO": "1"})
 run_api_test("test-const-ubo", oracle=True, env={"OMACVM_VIRGL_CONST_UBO": "0"})
 run_const_ubo_random(seeds=24)
+# Its separable case with a range per draw and a program bind per draw: all four stripes
+# (Apple's software renderer sees a new range only once the pipeline is bound again).
+subprocess.run([str(output / "test-const-ubo"), "15"], check=True,
+               env={**os.environ, "OMACVM_VIRGL_CONST_UBO": "1", "OMACVM_VIRGL_PROGRAM_CACHE": "0"})
