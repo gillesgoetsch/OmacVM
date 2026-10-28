@@ -31,7 +31,7 @@ adds up to less than that footprint; this decision covers the cache (see
   mini. Compaction makes it reportable but moves pages in use (12 s of a
   guest core for 8 GB) and decompresses on the Mac what macOS compressed. It
   does not explain the reported VM: read again later (below), almost all of
-  its free memory was in 4 MB blocks, under 70 MB in smaller ones.
+  its free memory was in 4 MB blocks, about 70 MB in blocks under 256 KiB.
 
 ## Decision
 
@@ -121,7 +121,7 @@ but still held, graphics, QEMU's own memory) and is looked into separately.
 
 Each give-back line has `small_free_mb` (from `/proc/buddyinfo`), so field
 numbers decide between compaction and a smaller reporting order. In the
-reported VM they would gain little (under 70 MB in small blocks).
+reported VM they would gain little (about 70 MB in blocks under 256 KiB).
 
 ## Routes
 

@@ -1272,8 +1272,8 @@ meanwhile), the app runs `src/memory/guest/giveback.sh` from its own bundle
 in the VM (guest agent; no Update VM needed): the VM gives back its file
 cache read once and not again, except the newest min(1 GB, an eighth of the
 VM) (`memory.reclaim` with `swappiness=0` on Inactive(file), in 1 GB steps,
-at most 20 s; the memory-optimized kernel counts nearly all its file cache
-as inactive), and free page reporting hands it to the Mac. The newest part
+at most 20 s; the memory-optimized kernel counted nearly all its file cache
+as inactive in the VM read), and free page reporting hands it to the Mac. The newest part
 stays, so the files read last are not read again (on the Mac mini, Chrome
 started in 1.02 s after a give-back that followed reading its files, the
 same as without one); a file read again later comes from the Mac's file
@@ -1305,9 +1305,9 @@ large VM's footprint can still be well above what Linux uses (ADR 0059,
   flushes after every resource command; `logs/qemu.log` says "freed N MB"),
   and the app asks the VM to drop its whole file cache (at most every 10
   minutes, also counting the give-backs above, or 2 minutes after one of
-  them; again after 30 s, then less often, if the VM did not answer), which Linux then gives
-  back to the Mac (the cache it dropped: 0.1 GB on a fresh VM, 1 GB after a
-  long session).
+  them; again after 30 s, then less often, if the VM did not answer), which
+  Linux then gives back to the Mac (the cache it dropped: 0.1 GB on a fresh
+  VM, 1 GB after a long session).
   QEMU keeps no cache of its own for the VM's graphics: everything it holds
   belongs to a live buffer of an app in the VM.
   Everything still goes through, unless a new big buffer (16 MB or more)
