@@ -67,6 +67,8 @@ final class GPUMemoryWatch {
     /// After the VM answered: QEMU's footprint is looked at 60 s later.
     private var settling: Settling?
     private var status = MemoryGiveBack.Status()
+    /// The last 5 s look: QEMU's footprint before the warning's drop.
+    private var lastSample: MemoryGiveBack.Sample?
     private var lostSeen = 0
     private var alert: NSAlert?
     private var lastDesktopRestart: Date?
@@ -139,7 +141,7 @@ final class GPUMemoryWatch {
         guard !givingBack, giveBack.allowed(trigger, at: now) else { return }
         givingBack = true
         giveBack.started(trigger, at: now)
-        let before = sample(at: now)
+        let before = lastSample
         let socket = config.agentSocket.path
         let level = critical ? "critical" : "warning"
         log("OmacVM: macOS memory pressure \(level): asking the VM to drop its file cache")
@@ -162,17 +164,14 @@ final class GPUMemoryWatch {
         }
     }
 
-    /// QEMU's footprint and resident size, and macOS's compressions, now.
-    private func sample(at now: TimeInterval) -> MemoryGiveBack.Sample? {
-        guard let p = HostMemory.process(qemuPID), let c = HostMemory.compressed() else { return nil }
-        return MemoryGiveBack.Sample(time: now, footprint: p.footprint, resident: p.resident, compressed: c)
-    }
-
-    /// Every 5 s, before the graphics file (a QEMU that writes none still
-    /// gets its memory back): the footprint after a give-back, and whether
-    /// macOS is compressing the VM.
+    /// Every 5 s (the only place QEMU's and macOS's numbers are read), before
+    /// the graphics file (a QEMU that writes none still gets its memory
+    /// back): the footprint after a give-back, and whether macOS is
+    /// compressing the VM.
     private func lookAtMemory() {
-        guard let s = sample(at: Self.now) else { return }
+        guard let p = HostMemory.process(qemuPID), let c = HostMemory.compressed() else { return }
+        let s = MemoryGiveBack.Sample(time: Self.now, footprint: p.footprint, resident: p.resident, compressed: c)
+        lastSample = s
         if let w = settling, s.time >= w.due { settled(w, s) }
         guard !givingBack, giveBack.compressing(s) else { return }
         giveBackCache(s)
