@@ -521,13 +521,15 @@ final class PanelController: NSObject {
     }
 
     /// The VM's window gets the keyboard back and QEMU its input (didClose);
-    /// the panel, if it still shows its end, takes no clicks.
+    /// the panel, if it still shows its end, takes no clicks. Only while that
+    /// window's Space shows (QEMU's handKeyBack rule): else macOS would switch
+    /// its display back to it.
     private func release() {
         guard let w = window, !released else { return }
         released = true
         w.ignoresMouseEvents = true
         didClose()
-        if NSApp.isActive, let k = previousKey, k.isVisible { k.makeKey() }
+        if NSApp.isActive, let k = previousKey, k.isVisible, k.isOnActiveSpace { k.makeKey() }
         previousKey = nil
     }
 
