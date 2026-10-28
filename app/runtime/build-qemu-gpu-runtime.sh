@@ -92,6 +92,7 @@ audio_recovery_patch="$native_dir/patches/qemu-hda-full-ring-recovery.patch"
 shared_folder_patch="$native_dir/patches/qemu-9p-guest-owner.patch"
 memory_reclaim_patch="$native_dir/patches/qemu-hvf-free-page-reclaim.patch"
 mapped_sections_patch="$native_dir/patches/qemu-hvf-mapped-sections.patch"
+reclaim_reusable_patch="$native_dir/patches/qemu-hvf-free-page-reclaim-reusable.patch"
 strchrnul_patch="$native_dir/patches/qemu-darwin-strchrnul-compat.patch"
 usb_exact_bus_patch="$native_dir/patches/qemu-usb-host-exact-bus.patch"
 slirp_patch="$native_dir/patches/libslirp-darwin-icmp-matching.patch"
@@ -160,6 +161,7 @@ audio_recovery_patch_sha256=d1e93fd303777f424d7b11522fcf44bf726058901e85de3920c3
 shared_folder_patch_sha256=41247692501655393ae3a40f56915472ab29b6e89c5173e33db1f62cca56632f
 memory_reclaim_patch_sha256=5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf
 mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0
+reclaim_reusable_patch_sha256=d8de5f2fcbfa4250a21905f2a69db15eceffedce90b7ccdbaadcd4aff7f30c5f
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
 virgl_int_tex_patch_sha256=5336df08e7096fb0e4b977ebedf36aac29c6c053df7edbdea7ff5e45273f57e4
@@ -338,6 +340,8 @@ macos_major=$(sw_vers -productVersion | awk -F. '{ print $1 }')
   die "missing HVF free-page reclaim patch: $memory_reclaim_patch"
 [[ -f $mapped_sections_patch && ! -L $mapped_sections_patch ]] || \
   die "missing HVF mapped-sections patch: $mapped_sections_patch"
+[[ -f $reclaim_reusable_patch && ! -L $reclaim_reusable_patch ]] || \
+  die "missing HVF free-page reclaim (reusable) patch: $reclaim_reusable_patch"
 [[ -f $strchrnul_patch && ! -L $strchrnul_patch ]] || \
   die "missing Darwin strchrnul compatibility patch: $strchrnul_patch"
 [[ -f $usb_exact_bus_patch && ! -L $usb_exact_bus_patch ]] || \
@@ -600,6 +604,8 @@ verify_file_sha "Try Omarchy HVF free-page reclaim patch" \
   "$memory_reclaim_patch" "$memory_reclaim_patch_sha256"
 verify_file_sha "Try Omarchy HVF mapped-sections patch" \
   "$mapped_sections_patch" "$mapped_sections_patch_sha256"
+verify_file_sha "OmacVM HVF free-page reclaim (reusable) patch" \
+  "$reclaim_reusable_patch" "$reclaim_reusable_patch_sha256"
 verify_file_sha "Try Omarchy Darwin GPU fence polling patch" \
   "$fence_poll_patch" "$fence_poll_patch_sha256"
 verify_file_sha "Try Omarchy Darwin strchrnul compatibility patch" \
@@ -627,6 +633,11 @@ patch -d "$source_dir" -p1 -f -i "$shared_folder_patch"
 patch -d "$source_dir" -p1 -f -i "$strchrnul_patch"
 patch -d "$source_dir" -p1 -f -i "$memory_reclaim_patch"
 patch -d "$source_dir" -p1 -f -i "$mapped_sections_patch"
+# OmacVM: a free page report gives the old pages back to macOS (madvise before
+# the new backing); counters in qemu.log. The test runs the patched helper on
+# guest RAM shared like QEMU's (a real hv_vm_map where this Mac allows one).
+patch -d "$source_dir" -p1 -f -i "$reclaim_reusable_patch"
+"$native_dir/Tests/memory/test-reclaim.sh" "$source_dir" "$work_dir/memory-tests"
 patch -d "$source_dir" -p1 -f -i "$fence_poll_patch"
 patch -d "$source_dir" -p1 -f -i "$pinch_patch"
 patch -d "$source_dir" -p1 -f -i "$precise_scroll_patch"

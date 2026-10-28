@@ -1,0 +1,555 @@
+From: OmacVM
+Subject: [PATCH] hvf: a free page report gives the old pages back to macOS
+
+Applies after qemu-hvf-free-page-reclaim.patch and
+qemu-hvf-mapped-sections.patch (both left as they are).
+
+What: hvf_report_free_pages() moves the reported range's old memory aside
+(mach_vm_remap: one more mapping of the same pages, none touched) before the
+fresh MAP_FIXED mapping takes its place (omacvm_reclaim_backing()). A
+worker thread ("omacvm-reclaim", utility QoS) then advises the old range
+MADV_FREE_REUSABLE and unmaps it (omacvm_reclaim_release()): macOS drops
+its compressed copies at once and takes its resident pages first, without
+compressing them. Pages macOS is compressing at that very moment are
+skipped; the worker looks again 20 ms later and advises once more (twice at
+most). A full queue (4096 ranges) releases in place; a range that cannot
+move aside is advised in place; a refused madvise is logged once per run
+and the replacement goes on as before. OMACVM_RECLAIM_REUSABLE=0: the
+replacement alone, as up to 3.2.10.
+qemu.log gets a line an hour while the guest reports, and one at exit:
+reports, MB back to the Mac, blocks, how long the replacements held the
+main lock per report (p99, longest), and what the releases left on the Mac.
+OMACVM_RECLAIM_CHECK=1 (tests only): a line per report with what its range
+held before the release and what it left after.
+
+Why: MAP_FIXED alone only drops QEMU's mapping. XNU frees the pages of an
+anonymous object when the whole object goes, and guest RAM is a few
+128 MB objects that stay mapped around a reported range: the old pages
+stayed resident or compressed, counted in no footprint, until QEMU quit.
+A host test kept 1.0 of 1.0 GB "freed" until exit; a 4 GB VM after a
+browser session still held 1.6 of the 3.3 GB it had reported, 88 % of it
+compressed. Activity Monitor's figure for the VM falls either way; this is
+memory it never showed. XNU applies the advice to a shared object only
+when it is copy-delay (vm_map_reusable_pages); hv_vm_map makes guest RAM
+exactly that (true share, ref >= 2), which the test checks first. The
+advice costs about 0.1 ms per MB the Mac still holds (MacBook Air M2): up
+to 10 ms per report when it ran under the main lock (MAP_FIXED alone:
+3.2 ms), so it runs on the worker.
+
+Upstream: OmacVM only (upstream QEMU discards a report with
+madvise(MADV_DONTNEED), which keeps guest-dirtied pages on macOS).
+Test: Tests/memory/test-reclaim.sh, no VM: guest RAM shared with a second
+map or a real hv_vm_map, split by earlier reports; after each report and
+its release the old pages are neither resident (unless reusable) nor
+compressed, but for those macOS was compressing at that very moment (up to
+5 % allowed), and the pages around keep their data. main's helper and
+OMACVM_RECLAIM_REUSABLE=0 fail it (Mac mini, macOS 27, real hv_vm_map,
+region compressed first: main left 4832 of 4848 pages compressed, the
+advice 0). The runtime build runs it on the patched source, CI on this file.
+
+--- a/accel/hvf/hvf-all.c
++++ b/accel/hvf/hvf-all.c
+@@ -17,13 +17,18 @@
+ #include "system/address-spaces.h"
+ #include "system/memory.h"
+ #include "system/ramblock.h"
++#include "system/system.h"
+ #include "qemu/main-loop.h"
++#include "qemu/timer.h"
+ #include "system/hvf.h"
+ #include "system/hvf_int.h"
+ #include "hw/core/cpu.h"
+ #include "hw/core/boards.h"
+ #include "trace.h"
+ 
++#include <mach/mach.h>
++#include <mach/mach_vm.h>
++
+ bool hvf_allowed;
+ bool hvf_kernel_irqchip;
+ bool hvf_nested_virt;
+@@ -160,6 +165,399 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
+     g_hash_table_add(hvf_mapped_sections, g_memdup2(&gpa, sizeof(gpa)));
+ }
+ 
++/* omacvm-reclaim: begin (app/runtime/Tests/memory/test-reclaim.sh builds this part alone) */
++/*
++ * Give the pages of a reported free range back to macOS.
++ *
++ * Darwin's MADV_DONTNEED keeps guest-dirtied RAM, so the range gets a fresh
++ * demand-zero mapping at the same address (MAP_FIXED: no unreserved gap).
++ * That alone only drops QEMU's mapping: macOS frees the pages of an
++ * anonymous object when the whole object goes, and guest RAM is a few large
++ * objects (128 MB each) that stay mapped around the range. The old pages
++ * stayed resident or compressed, counted in no footprint, until QEMU quit.
++ *
++ * So the old range first moves aside (one more mapping of the same memory,
++ * mach_vm_remap: no page is touched), and omacvm_reclaim_release() advises
++ * it MADV_FREE_REUSABLE and unmaps it, on a worker thread: macOS drops the
++ * compressed copies at once and takes the resident pages first, without
++ * compressing them. XNU does that for guest RAM, which the hypervisor's map
++ * shares (copy-delay, ref >= 2; Tests/memory/test-reclaim.c with a real
++ * hv_vm_map). The advice costs about 0.1 ms per MB the Mac still held (M2),
++ * up to 10 ms for one report: too long under the BQL. Pages macOS is
++ * compressing at that moment are skipped by the advice; the worker looks
++ * again 20 ms later and advises once more (twice at most). The guest
++ * touches none of these pages until QEMU acknowledges the report, and the
++ * fresh mapping takes the range before that, so the reusable state stays on
++ * pages that no guest mapping reaches again. Order: the stage-2 unmap (no
++ * vCPU reaches the range), the move aside, the new backing, the stage-2 map.
++ * OMACVM_RECLAIM_REUSABLE=0: the new backing alone, as up to 3.2.10.
++ */
++typedef struct OmacvmReclaimPages {
++    uint64_t resident, compressed;       /* bytes the Mac still holds */
++} OmacvmReclaimPages;
++
++static int omacvm_reclaim_reusable = -1;
++static bool omacvm_reclaim_refused;
++
++static bool omacvm_reclaim_on(void)
++{
++    if (omacvm_reclaim_reusable < 0) {
++        const char *v = getenv("OMACVM_RECLAIM_REUSABLE");
++        omacvm_reclaim_reusable = !(v && !strcmp(v, "0"));
++    }
++    return omacvm_reclaim_reusable;
++}
++
++static void omacvm_reclaim_refusal(int err)
++{
++    if (!__atomic_exchange_n(&omacvm_reclaim_refused, true, __ATOMIC_RELAXED)) {
++        warn_report("OmacVM: free page reporting: macOS refused to drop the "
++                    "old pages (%s); they stay on the Mac until QEMU quits",
++                    strerror(err));
++    }
++}
++
++/* What the Mac still holds of [at, at + size): resident and not reusable, or compressed. */
++static OmacvmReclaimPages omacvm_reclaim_held(mach_vm_address_t at, size_t size)
++{
++    OmacvmReclaimPages held = { 0, 0 };
++    size_t page = (size_t)getpagesize();
++    int disp[256];
++    mach_vm_size_t off = 0, n, i;
++
++    while (off < size) {
++        n = (size - off) / page < 256 ? (size - off) / page : 256;
++        if (mach_vm_page_range_query(mach_task_self(), at + off, n * page,
++                                     (mach_vm_address_t)disp, &n) != KERN_SUCCESS || !n) {
++            break;
++        }
++        for (i = 0; i < n; i++) {
++            if (disp[i] & VM_PAGE_QUERY_PAGE_PAGED_OUT) {
++                held.compressed += page;
++            } else if ((disp[i] & VM_PAGE_QUERY_PAGE_PRESENT) &&
++                       !(disp[i] & VM_PAGE_QUERY_PAGE_REUSABLE)) {
++                held.resident += page;
++            }
++        }
++        off += n * page;
++    }
++    return held;
++}
++
++/*
++ * Under the BQL: the new backing for a reported range. Returns the old range,
++ * moved aside, for omacvm_reclaim_release() (0: nothing to release).
++ */
++static mach_vm_address_t omacvm_reclaim_backing(hwaddr gpa, void *host,
++                                                size_t size,
++                                                hv_memory_flags_t flags)
++{
++    mach_vm_address_t aside = 0;
++    vm_prot_t cur, max;
++    void *replacement;
++
++    trace_hvf_vm_unmap(gpa, size);
++    assert_hvf_ok(hv_vm_unmap(gpa, size));
++    if (omacvm_reclaim_on() &&
++        mach_vm_remap(mach_task_self(), &aside, size, 0, VM_FLAGS_ANYWHERE,
++                      mach_task_self(), (mach_vm_address_t)host, FALSE,
++                      &cur, &max, VM_INHERIT_NONE) != KERN_SUCCESS) {
++        /* No room to move it aside: the advice here, under the BQL. */
++        aside = 0;
++        if (madvise(host, size, MADV_FREE_REUSABLE) != 0) {
++            omacvm_reclaim_refusal(errno);
++        }
++    }
++    replacement = mmap(host, size, PROT_READ | PROT_WRITE,
++                       MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
++    if (replacement == MAP_FAILED) {
++        error_report("HVF free-page backing replacement failed: %s",
++                     strerror(errno));
++        abort();
++    }
++    assert(replacement == host);
++    trace_hvf_vm_map(gpa, size, host, flags,
++                     flags & HV_MEMORY_READ ? 'R' : '-',
++                     flags & HV_MEMORY_WRITE ? 'W' : '-',
++                     flags & HV_MEMORY_EXEC ? 'X' : '-');
++    assert_hvf_ok(hv_vm_map(host, gpa, size, flags));
++    return aside;
++}
++
++/*
++ * The old range moved aside: advise it and unmap it. patient (the worker):
++ * pages still held 20 ms later are advised once more, twice at most. Returns
++ * what is still on the Mac after all; *before (when not NULL): what it held
++ * first.
++ */
++static OmacvmReclaimPages omacvm_reclaim_release(mach_vm_address_t aside,
++                                                 size_t size, bool patient,
++                                                 OmacvmReclaimPages *before)
++{
++    OmacvmReclaimPages left = { 0, 0 };
++    int tries;
++
++    if (before) {
++        *before = omacvm_reclaim_held(aside, size);
++    }
++    for (tries = 0; tries < (patient ? 3 : 1); tries++) {
++        if (tries) {
++            usleep(20000);
++        }
++        if (madvise((void *)aside, size, MADV_FREE_REUSABLE) != 0) {
++            omacvm_reclaim_refusal(errno);
++        }
++        if (!patient && !before) {
++            break;
++        }
++        left = omacvm_reclaim_held(aside, size);
++        if (!left.resident && !left.compressed) {
++            break;
++        }
++    }
++    munmap((void *)aside, size);
++    return left;
++}
++/* omacvm-reclaim: end */
++
++/*
++ * The worker: releases the ranges moved aside, in order, at utility QoS. A
++ * full queue (the guest reports faster than it releases) releases in place.
++ * A marker item (aside 0) closes a report for OMACVM_RECLAIM_CHECK's line.
++ */
++#define OMACVM_RECLAIM_QUEUE 4096
++
++typedef struct OmacvmReclaimItem {
++    mach_vm_address_t aside;
++    size_t size;
++    int64_t hold_ns;                    /* a marker: the report's hold */
++} OmacvmReclaimItem;
++
++static struct {
++    QemuMutex lock;
++    QemuCond more;
++    QemuThread thread;
++    bool started;
++    unsigned head, count;
++    OmacvmReclaimItem item[OMACVM_RECLAIM_QUEUE];
++    /* under lock: what the releases left (OMACVM_RECLAIM_CHECK: and held) */
++    uint64_t released, in_place, left_resident, left_compressed;
++    uint64_t held_before, compressed_before;
++} omacvm_reclaim_w;
++
++/*
++ * What free page reporting gave back, for qemu.log: a line an hour while the
++ * guest reports, and one at exit. A report is one virtqueue element (Linux
++ * sends up to 32 blocks and waits for each); its hold is the time its blocks'
++ * unmap, move aside, new backing and map kept the BQL. Under the BQL.
++ */
++#define OMACVM_RECLAIM_STEP_NS 100000     /* hold histogram: 0.1 ms steps */
++#define OMACVM_RECLAIM_STEPS 400          /* the last one counts 40 ms and up */
++
++typedef struct OmacvmReclaimStats {
++    uint64_t reports, blocks, bytes;
++    int64_t longest_ns;
++    uint32_t hold[OMACVM_RECLAIM_STEPS];
++} OmacvmReclaimStats;
++
++static struct {
++    uint64_t blocks, bytes, queued;
++    int64_t ns;
++} omacvm_reclaim_cur;
++static OmacvmReclaimStats omacvm_reclaim_hour, omacvm_reclaim_run;
++static int64_t omacvm_reclaim_hour_start;
++static int omacvm_reclaim_check = -1;
++static Notifier omacvm_reclaim_exit;
++
++/* OMACVM_RECLAIM_CHECK=1 (tests only): a line per report with what it left on the Mac. */
++static bool omacvm_reclaim_check_on(void)
++{
++    if (omacvm_reclaim_check < 0) {
++        const char *v = getenv("OMACVM_RECLAIM_CHECK");
++        omacvm_reclaim_check = v && !strcmp(v, "1");
++    }
++    return omacvm_reclaim_check;
++}
++
++static double omacvm_reclaim_mb(uint64_t bytes)
++{
++    return bytes / (1024.0 * 1024.0);
++}
++
++static void *omacvm_reclaim_work(void *opaque)
++{
++    OmacvmReclaimItem it;
++    OmacvmReclaimPages before, left, rb = { 0, 0 }, rl = { 0, 0 };
++    uint64_t blocks = 0, bytes = 0;
++    bool check = omacvm_reclaim_check_on();
++
++    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
++    for (;;) {
++        qemu_mutex_lock(&omacvm_reclaim_w.lock);
++        while (!omacvm_reclaim_w.count) {
++            qemu_cond_wait(&omacvm_reclaim_w.more, &omacvm_reclaim_w.lock);
++        }
++        it = omacvm_reclaim_w.item[omacvm_reclaim_w.head];
++        omacvm_reclaim_w.head = (omacvm_reclaim_w.head + 1) % OMACVM_RECLAIM_QUEUE;
++        omacvm_reclaim_w.count--;
++        qemu_mutex_unlock(&omacvm_reclaim_w.lock);
++        if (!it.aside) {
++            if (check && blocks) {
++                info_report("OmacVM: reclaim check: %" PRIu64 " blocks, %.1f MB: "
++                            "%.1f MB held before (%.1f MB compressed), %.1f MB "
++                            "left resident, %.1f MB left compressed; hold %.2f ms",
++                            blocks, omacvm_reclaim_mb(bytes),
++                            omacvm_reclaim_mb(rb.resident + rb.compressed),
++                            omacvm_reclaim_mb(rb.compressed),
++                            omacvm_reclaim_mb(rl.resident),
++                            omacvm_reclaim_mb(rl.compressed), it.hold_ns / 1e6);
++            }
++            blocks = bytes = 0;
++            rb = rl = (OmacvmReclaimPages) { 0, 0 };
++            continue;
++        }
++        left = omacvm_reclaim_release(it.aside, it.size, true, check ? &before : NULL);
++        qemu_mutex_lock(&omacvm_reclaim_w.lock);
++        omacvm_reclaim_w.released += it.size;
++        omacvm_reclaim_w.left_resident += left.resident;
++        omacvm_reclaim_w.left_compressed += left.compressed;
++        if (check) {
++            omacvm_reclaim_w.held_before += before.resident + before.compressed;
++            omacvm_reclaim_w.compressed_before += before.compressed;
++        }
++        qemu_mutex_unlock(&omacvm_reclaim_w.lock);
++        if (check) {
++            blocks++;
++            bytes += it.size;
++            rb.resident += before.resident;
++            rb.compressed += before.compressed;
++            rl.resident += left.resident;
++            rl.compressed += left.compressed;
++        }
++    }
++    return NULL;
++}
++
++/* Under the BQL. */
++static void omacvm_reclaim_queue(mach_vm_address_t aside, size_t size,
++                                 int64_t hold_ns)
++{
++    OmacvmReclaimItem *it;
++
++    if (!omacvm_reclaim_w.started) {
++        omacvm_reclaim_w.started = true;
++        qemu_mutex_init(&omacvm_reclaim_w.lock);
++        qemu_cond_init(&omacvm_reclaim_w.more);
++        qemu_thread_create(&omacvm_reclaim_w.thread, "omacvm-reclaim",
++                           omacvm_reclaim_work, NULL, QEMU_THREAD_DETACHED);
++    }
++    qemu_mutex_lock(&omacvm_reclaim_w.lock);
++    if (omacvm_reclaim_w.count == OMACVM_RECLAIM_QUEUE) {
++        omacvm_reclaim_w.in_place += aside ? 1 : 0;
++        qemu_mutex_unlock(&omacvm_reclaim_w.lock);
++        if (aside) {
++            omacvm_reclaim_release(aside, size, false, NULL);
++        }
++        return;
++    }
++    it = &omacvm_reclaim_w.item[(omacvm_reclaim_w.head + omacvm_reclaim_w.count) %
++                                OMACVM_RECLAIM_QUEUE];
++    it->aside = aside;
++    it->size = size;
++    it->hold_ns = hold_ns;
++    omacvm_reclaim_w.count++;
++    qemu_cond_signal(&omacvm_reclaim_w.more);
++    qemu_mutex_unlock(&omacvm_reclaim_w.lock);
++}
++
++static void omacvm_reclaim_log(const char *when, const OmacvmReclaimStats *s)
++{
++    uint64_t need = s->reports - s->reports / 100, seen = 0;
++    g_autofree char *left = NULL;
++    int step;
++
++    if (!s->reports) {
++        return;
++    }
++    for (step = 0; step < OMACVM_RECLAIM_STEPS - 1; step++) {
++        seen += s->hold[step];
++        if (seen >= need) {
++            break;
++        }
++    }
++    if (omacvm_reclaim_w.started) {
++        qemu_mutex_lock(&omacvm_reclaim_w.lock);
++        left = g_strdup_printf("; this run %.0f MB released, %.0f MB of it left "
++                               "on the Mac (%.0f resident, %.0f compressed)%s",
++                               omacvm_reclaim_mb(omacvm_reclaim_w.released),
++                               omacvm_reclaim_mb(omacvm_reclaim_w.left_resident +
++                                                 omacvm_reclaim_w.left_compressed),
++                               omacvm_reclaim_mb(omacvm_reclaim_w.left_resident),
++                               omacvm_reclaim_mb(omacvm_reclaim_w.left_compressed),
++                               omacvm_reclaim_w.in_place ? ", some released in place" : "");
++        if (omacvm_reclaim_check_on()) {
++            char *c = g_strdup_printf("%s; check: %.0f MB held before (%.0f MB "
++                                      "compressed)", left,
++                                      omacvm_reclaim_mb(omacvm_reclaim_w.held_before),
++                                      omacvm_reclaim_mb(omacvm_reclaim_w.compressed_before));
++            g_free(left);
++            left = c;
++        }
++        qemu_mutex_unlock(&omacvm_reclaim_w.lock);
++    }
++    info_report("OmacVM: free page reporting %s: %" PRIu64 " reports, %.0f MB "
++                "back to the Mac (%" PRIu64 " blocks%s); main lock held p99 "
++                "%.1f ms, longest %.1f ms%s", when, s->reports,
++                omacvm_reclaim_mb(s->bytes), s->blocks,
++                omacvm_reclaim_reusable == 0 ?
++                ", old pages left in place: OMACVM_RECLAIM_REUSABLE=0" : "",
++                (step + 1) * OMACVM_RECLAIM_STEP_NS / 1e6,
++                s->longest_ns / 1e6, left ? left : "");
++}
++
++static void omacvm_reclaim_at_exit(Notifier *n, void *data)
++{
++    omacvm_reclaim_log("this run", &omacvm_reclaim_run);
++}
++
++static void omacvm_reclaim_add(OmacvmReclaimStats *s, int step)
++{
++    s->reports++;
++    s->blocks += omacvm_reclaim_cur.blocks;
++    s->bytes += omacvm_reclaim_cur.bytes;
++    s->longest_ns = MAX(s->longest_ns, omacvm_reclaim_cur.ns);
++    s->hold[step]++;
++}
++
++void hvf_report_free_pages_done(void)
++{
++    int64_t now = get_clock();
++    int step;
++
++    assert(bql_locked());
++    if (!omacvm_reclaim_cur.blocks) {
++        return;
++    }
++    if (!omacvm_reclaim_hour_start) {
++        omacvm_reclaim_hour_start = now;
++        omacvm_reclaim_exit.notify = omacvm_reclaim_at_exit;
++        qemu_add_exit_notifier(&omacvm_reclaim_exit);
++    }
++    step = MIN(omacvm_reclaim_cur.ns / OMACVM_RECLAIM_STEP_NS,
++               OMACVM_RECLAIM_STEPS - 1);
++    omacvm_reclaim_add(&omacvm_reclaim_hour, step);
++    omacvm_reclaim_add(&omacvm_reclaim_run, step);
++    if (omacvm_reclaim_check_on() && omacvm_reclaim_cur.queued) {
++        omacvm_reclaim_queue(0, 0, omacvm_reclaim_cur.ns);
++    }
++    memset(&omacvm_reclaim_cur, 0, sizeof(omacvm_reclaim_cur));
++    if (now - omacvm_reclaim_hour_start >= 3600 * NANOSECONDS_PER_SECOND) {
++        omacvm_reclaim_log("in the last hour", &omacvm_reclaim_hour);
++        memset(&omacvm_reclaim_hour, 0, sizeof(omacvm_reclaim_hour));
++        omacvm_reclaim_hour_start = now;
++    }
++}
++
+ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+ {
+     MemoryRegionSection section;
+@@ -167,7 +565,8 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+     RAMBlock *rb;
+     size_t page_size = qemu_real_host_page_size();
+     hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
+-    void *replacement;
++    mach_vm_address_t aside;
++    int64_t start;
+ 
+     assert(bql_locked());
+     if (!size || !QEMU_IS_ALIGNED(gpa | (uintptr_t)host | size, page_size)) {
+@@ -195,28 +594,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+         return;
+     }
+ 
+-    /* Darwin MADV_DONTNEED does not discard guest-dirtied RAM. First remove
+-     * the stage-2 mapping, then replace its host backing with fresh demand-zero
+-     * pages at the same address. MAP_FIXED avoids any unreserved-address gap.
+-     * Unlike MADV_FREE_REUSABLE, this uses public APIs and leaves no reusable
+-     * accounting state on pages that the guest subsequently allocates again.
+-     * The guest owns none of these pages until we acknowledge its report.
+-     */
+-    trace_hvf_vm_unmap(gpa, size);
+-    assert_hvf_ok(hv_vm_unmap(gpa, size));
+-    replacement = mmap(host, size, PROT_READ | PROT_WRITE,
+-                       MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
+-    if (replacement == MAP_FAILED) {
+-        error_report("HVF free-page backing replacement failed: %s",
+-                     strerror(errno));
+-        abort();
++    /* The guest owns none of these pages until we acknowledge its report. */
++    start = get_clock();
++    aside = omacvm_reclaim_backing(gpa, host, size, flags);
++    omacvm_reclaim_cur.ns += get_clock() - start;
++    omacvm_reclaim_cur.blocks++;
++    omacvm_reclaim_cur.bytes += size;
++    if (aside) {
++        omacvm_reclaim_queue(aside, size, 0);
++        omacvm_reclaim_cur.queued++;
+     }
+-    assert(replacement == host);
+-    trace_hvf_vm_map(gpa, size, host, flags,
+-                     flags & HV_MEMORY_READ ? 'R' : '-',
+-                     flags & HV_MEMORY_WRITE ? 'W' : '-',
+-                     flags & HV_MEMORY_EXEC ? 'X' : '-');
+-    assert_hvf_ok(hv_vm_map(host, gpa, size, flags));
+     memory_region_unref(mr);
+ }
+ 
+--- a/accel/stubs/hvf-stub.c
++++ b/accel/stubs/hvf-stub.c
+@@ -14,6 +14,11 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+     g_assert_not_reached();
+ }
+ 
++void hvf_report_free_pages_done(void)
++{
++    g_assert_not_reached();
++}
++
+ bool hvf_allowed;
+ bool hvf_kernel_irqchip;
+ bool hvf_nested_virt;
+--- a/hw/virtio/virtio-balloon.c
++++ b/hw/virtio/virtio-balloon.c
+@@ -399,6 +399,9 @@ static void virtio_balloon_handle_report(VirtIODevice *vdev, VirtQueue *vq)
+                 ram_block_discard_range(rb, ram_offset, size);
+             }
+         }
++        if (hvf_enabled()) {
++            hvf_report_free_pages_done();
++        }
+ 
+ skip_element:
+         virtqueue_push(vq, elem, 0);
+--- a/include/system/hvf.h
++++ b/include/system/hvf.h
+@@ -41,6 +41,8 @@ void hvf_nested_virt_enable(bool nested_virt);
+ 
+ /* Discard a free-page report in the system address space, under the BQL. */
+ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size);
++/* After the blocks of one report: counts it for qemu.log, under the BQL. */
++void hvf_report_free_pages_done(void);
+ 
+ #define TYPE_HVF_ACCEL ACCEL_CLASS_NAME("hvf")
+ 

@@ -215,6 +215,9 @@ jobs:
       - name: The VM gives its cold file cache back while macOS compresses it (giveback.sh, the app's trigger, omacvm check's row)
         run: src/tests/memory-giveback.sh
 
+      - name: Freed memory leaves the Mac for real (QEMU's free page reclaim, no VM; a real hypervisor map where the runner allows one)
+        run: src/tests/memory-reclaim.sh
+
       - name: apply's SSH key in the VM (the user's ~/.ssh written as the user)
         run: src/tests/ssh-key.sh
 

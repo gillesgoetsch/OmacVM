@@ -1,0 +1,57 @@
+#!/bin/bash
+# Offline checks for the free page reclaim fix (no VM, no QEMU build): the
+# patch is pinned, applied after the two it builds on (both unchanged) and
+# tested by the runtime build, and its helper gives a report's old pages back
+# to macOS: app/runtime/Tests/memory/test-reclaim.sh, here on the helper taken
+# from the patch (the runtime build runs it on the patched QEMU source).
+set -uo pipefail
+R=$(cd "$(dirname "$0")/../.." && pwd)
+P=$R/app/runtime/patches/qemu-hvf-free-page-reclaim-reusable.patch
+B=$R/app/runtime/build-qemu-gpu-runtime.sh
+S=$R/app/runtime/patches/SHA256SUMS
+FAIL=0; N=0
+ok() { N=$((N + 1)); printf '  ok    %s\n' "$1"; }
+bad() { N=$((N + 1)); FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
+check() { local what=$1; shift; if "$@" >/dev/null 2>&1; then ok "$what"; else bad "$what"; fi; }
+
+check "patch is pinned in SHA256SUMS" grep -q " qemu-hvf-free-page-reclaim-reusable.patch$" "$S"
+# The two patches it applies after carry hvf_report_free_pages' old body: never edited.
+check "free-page-reclaim patch unchanged" \
+  grep -q "^5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf  qemu-hvf-free-page-reclaim.patch$" "$S"
+check "mapped-sections patch unchanged" \
+  grep -q "^2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0  qemu-hvf-mapped-sections.patch$" "$S"
+order=$(grep -n -e '-i "$memory_reclaim_patch"' -e '-i "$mapped_sections_patch"' -e '-i "$reclaim_reusable_patch"' "$B" |
+  cut -d: -f1 | tr '\n' ' ')
+check "runtime build applies it after free-page-reclaim and mapped-sections" \
+  awk -v o="$order" 'BEGIN { n = split(o, a, " "); exit !(n == 3 && a[1] < a[2] && a[2] < a[3]) }'
+check "runtime build checks its SHA-256" grep -q 'verify_file_sha .*"$reclaim_reusable_patch" "$reclaim_reusable_patch_sha256"' \
+  <<<"$(tr -d '\\\n' < "$B")"
+check "runtime build runs its test on the patched source" \
+  grep -q 'Tests/memory/test-reclaim.sh" "$source_dir"' "$B"
+check "the test's files are in the runtime inputs" grep -q 'Tests/memory/\*' "$R/app/scripts/build-app.sh"
+# Under the main lock: stage-2 unmap, the old range moved aside (or advised in place
+# when it cannot move), the new backing, stage-2 map. The worker: advice, then unmap.
+seq=$(awk '/^\+static mach_vm_address_t omacvm_reclaim_backing\(/ { on = 1 } on && /^\+}$/ { exit } on' "$P" |
+  grep -o -e 'hv_vm_unmap(' -e 'mach_vm_remap(' -e 'MADV_FREE_REUSABLE' -e 'MAP_FIXED' -e 'hv_vm_map(' | tr '\n' ' ')
+check "backing: unmap, move aside (else advice), MAP_FIXED, map (was: $seq)" \
+  test "$seq" = "hv_vm_unmap( mach_vm_remap( MADV_FREE_REUSABLE MAP_FIXED hv_vm_map( "
+seq=$(awk '/^\+static OmacvmReclaimPages omacvm_reclaim_release\(/ { on = 1 } on && /^\+}$/ { exit } on' "$P" |
+  grep -o -e 'MADV_FREE_REUSABLE' -e 'munmap(' | tr '\n' ' ')
+check "release: the advice, then unmap (was: $seq)" test "$seq" = "MADV_FREE_REUSABLE munmap( "
+check "the release runs on a worker thread at utility QoS" grep -q '^+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);' "$P"
+check "every range moved aside is queued for the worker" grep -q '^+        omacvm_reclaim_queue(aside, size, 0);' "$P"
+check "the old comment against MADV_FREE_REUSABLE is gone" \
+  bash -c '! grep -q "^+.*Unlike MADV_FREE_REUSABLE" "$1"' _ "$P"
+check "OMACVM_RECLAIM_REUSABLE=0 turns it off" grep -q 'getenv("OMACVM_RECLAIM_REUSABLE")' "$P"
+check "a refused madvise is logged once and the replacement goes on" \
+  grep -q '^+    if (!__atomic_exchange_n(&omacvm_reclaim_refused, true, __ATOMIC_RELAXED)) {' "$P"
+check "OMACVM_RECLAIM_CHECK=1 for tests" grep -q 'getenv("OMACVM_RECLAIM_CHECK")' "$P"
+for line in "free page reporting %s:" "main lock held p99" "reclaim check:" "macOS refused to drop"; do
+  check "patch logs '$line'" grep -qF "$line" "$P"
+done
+check "the balloon closes each report for the counters" grep -q '^+            hvf_report_free_pages_done();' "$P"
+out=$("$R/app/runtime/Tests/memory/test-reclaim.sh" 2>&1); rc=$?
+printf '%s\n' "$out" | sed 's/^/    /'
+check "test-reclaim.sh on the patch's helper" test "$rc" = 0
+echo "memory-reclaim: $((N - FAIL)) of $N ok"
+(( FAIL == 0 ))
