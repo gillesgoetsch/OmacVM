@@ -866,7 +866,8 @@ the VM's next start".
 
 ## Addendum (3.2.11): the panel on the display you work on
 
-Status: built (`touchid-external-screen`, 2026-10-28). Only
+Status: built (`touchid-external-screen`, 2026-10-28); the rule passes the CI
+rows, the on-screen rows (real QEMU on two displays) are pending. Only
 `OmacVMTouchIDPanel.dylib` changes.
 
 ### What went wrong (3.2.9, the user's MacBook Pro M4 Max with an LG UltraFine 5K, 2026-10-28)
@@ -910,12 +911,15 @@ on that display, so the pointer is where the person works.
 - The keyboard still goes back to the window that had it (the main window,
   which owns it under QEMU's hand-back), and only while that window's Space
   shows, as QEMU's own hand-back does.
-- The panel window keeps its level (28) and collection behaviour: it joins the
-  current Space of the display its frame is on, also a full-screen one.
+- The panel window keeps its level (28) and collection behaviour
+  (`.moveToActiveSpace`, `.fullScreenAuxiliary`). It should join the current
+  Space of the display its frame is on, also a full-screen one: pending the
+  on-screen rows (if not, `.canJoinAllSpaces` instead of `.moveToActiveSpace`).
 
 `panelCanHost`, `panelHost`, `panelArea` and `panelPlace` in
 `PanelModel.swift` are the rule without a window; `Panel.swift` only feeds
-them QEMU's windows and the screens.
+them QEMU's windows and the screens. CI checks the rule; how it plays with
+QEMU's real windows, Spaces and key window is pending the on-screen rows.
 
 Not the main display (`NSScreen.main` is the key window's screen: the same
 bug), and not the output Hyprland has focused: exact also for a `sudo` typed
@@ -955,3 +959,8 @@ a VM that runs across the update keeps the old place until it is shut down.
   screen, never CI): the real controller and window with stand-in VM windows
   and a stand-in evaluator; records the panel's display, Space and key state,
   and the key window and Spaces after it closed.
+- On-screen rows on the Mac mini, pending (it was screen-locked): two virtual
+  displays, the stand-in and the real QEMU with this dylib; the panel's
+  display, key while up, on its display's current Space, no Space moved, the
+  key window back after the close, and coreauthd arming the sensor for QEMU's
+  request ("will start matching"; the mini's Magic Keyboard has Touch ID).
