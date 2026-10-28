@@ -11,7 +11,8 @@
 # and omacvm.vaexport (the runtime draws VA-API's RGB frames: the VA driver
 # shim sizes Chromium's surfaces, omacvm_drv_video.c) and omacvm.vadecasync
 # (the runtime decodes beside its GPU thread: the shim lets Chromium's decoder
-# wait for each picture).
+# wait for each picture) and omacvm.valogical (the runtime samples a texture at
+# the size the guest says: the shim tells it each video surface's own size).
 set -euo pipefail
 out=/run/omacvm/host.env
 install -d -m755 /run/omacvm
