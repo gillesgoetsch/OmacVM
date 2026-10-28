@@ -23,7 +23,10 @@ import Foundation
 ///   on a Mac with room do not count).
 /// One 10-minute gap for every give-back (also macOS's warning, the drop it
 /// always did); 30 s when the VM's agent did not answer. A give-back that
-/// returned under 256 MB doubles the next gap for this trigger (up to 2 h:
+/// returned under 256 MB (by the VM's own count; QEMU's footprint 60 s later
+/// only when the VM gave none, as for the warning's drop: a VM that goes on
+/// reading files grows it again in that minute) doubles the next gap for this
+/// trigger (up to 2 h:
 /// what macOS compresses then is the VM's own programs' memory); 1 GB or
 /// more puts it back to 10 minutes. macOS's warning may follow a cold-only
 /// give-back after 2 minutes. Foundation only: `swift run desktop-tests`.
@@ -130,9 +133,10 @@ public struct MemoryGiveBack: Sendable {
     }
 
     /// 60 s after the VM answered: what came back sets the next gap, and the
-    /// baseline starts again from now.
+    /// baseline starts again from now. What the VM says it gave counts; the
+    /// footprint only when it said nothing.
     public mutating func settled(guest: UInt64?, footprintDrop: UInt64, at t: TimeInterval) {
-        let back = min(guest ?? footprintDrop, footprintDrop)
+        let back = guest ?? footprintDrop
         if back < Self.small {
             backoff = min(backoff * 2, Self.longestGap / Self.gap)
         } else if back >= Self.large {

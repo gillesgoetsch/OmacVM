@@ -232,10 +232,12 @@ k.settled(guest: nil, footprintDrop: 2 * GB, at: t + 95)
 expect(k.backoff == 1, "the warning's drop (no number from the VM): the footprint counts")
 
 var m = MemoryGiveBack(ram: 64 * GB)
-m.settled(guest: 3 * GB, footprintDrop: 100 * MB, at: 10)
-expect(m.backoff == 2, "3 GB from the VM but only 100 MB less footprint: small")
-m.settled(guest: 100 * MB, footprintDrop: 3 * GB, at: 20)
-expect(m.backoff == 4, "3 GB less footprint but the VM gave 100 MB: small (something else freed it)")
+m.settled(guest: 100 * MB, footprintDrop: 3 * GB, at: 10)
+expect(m.backoff == 2, "3 GB less footprint but the VM gave 100 MB: small (something else freed it)")
+m.settled(guest: 737 * MB, footprintDrop: 0, at: 20)
+expect(m.backoff == 2, "the VM gave 737 MB while it went on reading files (footprint up): not small (Air row 12:21)")
+m.settled(guest: nil, footprintDrop: 100 * MB, at: 30)
+expect(m.backoff == 4, "the warning's drop, 100 MB less footprint: small")
 
 // After a give-back the baseline starts again from 60 s later, not from the old lowest.
 var s = MemoryGiveBack(ram: 64 * GB)
