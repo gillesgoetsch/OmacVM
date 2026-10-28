@@ -7,13 +7,15 @@
  * wakes or a paused VM; one line per episode with the vCPUs and a duration
  * within 1.25 s of the truth (the mini's 2.4 / 2.1 / 1.2 s stall of 2026-10-28,
  * and 300 random ones), memory vs CPU wording, "still" lines at 10 s and then
- * every 30 s, and the status file's keys.
+ * every 30 s, the status file's keys, and the app menu's line
+ * (ui/omacvm-vm-stalls.h, omacvm-cocoa-vm-stalls-menu.patch).
  */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "qemu/omacvm-stall.h"
+#include "ui/omacvm-vm-stalls.h"
 
 static int failures;
 
@@ -370,6 +372,28 @@ int main(void)
     omacvm_stall_status_gpu(&st, 10, "a\nb\x01" "c");
     omacvm_stall_status_text(&st, text, sizeof(text));
     check(strstr(text, "gpu_last_where=a?b?c\n") != NULL, "a where with control characters stays one line");
+
+    /* 14: the app menu's line */
+    char menu[200];
+    memset(&st, 0, sizeof(st));
+    check(!omacvm_stall_menu_line(&st, menu, sizeof(menu)), "no stall: no menu line");
+    st.stalls = 2;
+    st.longest_ms = 58000;
+    st.longest_cause = OMACVM_STALL_CAUSE_MEMORY;
+    check(omacvm_stall_menu_line(&st, menu, sizeof(menu)) &&
+          !strcmp(menu, "The VM stood still 2 times (longest 58 s): the Mac ran out of memory"),
+          "menu line: memory");
+    st.stalls = 1;
+    st.longest_ms = 2100;
+    st.longest_cause = OMACVM_STALL_CAUSE_CPU;
+    check(omacvm_stall_menu_line(&st, menu, sizeof(menu)) &&
+          !strcmp(menu, "The VM waited for the Mac's processors 1 time (longest 2.1 s)"),
+          "menu line: no Mac core");
+    memset(&st, 0, sizeof(st));
+    omacvm_stall_status_gpu(&st, 2500, "glFinish");
+    check(omacvm_stall_menu_line(&st, menu, sizeof(menu)) &&
+          !strcmp(menu, "The VM's graphics stood still 1 time (longest 2.5 s)"),
+          "menu line: graphics only");
 
     if (failures) {
         printf("vcpu stall: %d checks FAILED\n", failures);

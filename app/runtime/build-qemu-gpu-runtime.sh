@@ -1005,6 +1005,10 @@ grep -q 'in a GPU run without the BQL' "$source_dir/util/main-loop.c" || \
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-vcpu-stall-note.patch"
 [[ $(grep -c 'hvf_stall_mark(cpu->accel);' "$source_dir/target/arm/hvf/hvf.c") == 2 ]] || \
   die "target/arm/hvf/hvf.c: hv_vcpu_run is not counted for the stall note (hvf-vcpu-stall-note patch)"
+# OmacVM: the app menu says when the VM stood still, under the memory lines (the stall note's count).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-vm-stalls-menu.patch"
+grep -q 'omacvm_stall_menu_line(&st, stall, sizeof(stall))' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the app menu's stall line is missing (cocoa-vm-stalls-menu patch)"
 "$native_dir/Tests/vcpu/test-vcpu-stall.sh"
 # OmacVM: the Mac's cursor stays hidden over the VM: an empty image while
 # hidden, set again on motion, and every 0.5 s while hidden, when another
