@@ -35,9 +35,10 @@ found from 2.25 s, from 3.25 s when it ran under 10 % of a core before; one
 without a Mac core from 4 s; shorter ones can be missed. A time is never more
 than 0.15 s longer than the stall, within 0.25 s for a vCPU that ran 10 % or
 more before, up to 2.1 s short for one that ran less (1000 random stalls each
-in the test; a 20 000-stall sweep missed none longer than 2.21 / 2.71 / 3.91 s). No line while the VM is not running,
-and none for a look that came more than 1 s late or after the Mac slept (App
-Nap, QEMU stopped): times are CLOCK_UPTIME_RAW, which stops while the Mac sleeps.
+in the test; a 20 000-stall sweep missed none longer than 2.21 / 2.71 / 3.91 s).
+No line while the VM is not running, and none for a look that came more than
+1 s late (App Nap, QEMU stopped) or after the Mac slept: times are
+CLOCK_UPTIME_RAW, which stops while the Mac sleeps.
 A watchdog wake more than 1 s late (not a Mac that slept) gets its own line, at
 most one per 10 minutes, the late wakes between counted in the next one:
   OmacVM: stall: the stall watchdog woke 3.2 s late: QEMU got no Mac core or
@@ -46,8 +47,8 @@ logs/vm-stalls ($OMACVM_LOGS/vm-stalls, key=value lines, all zeros from the
 watchdog's start, replaced in one rename, no fsync): only the watchdog's thread
 writes it, after the status lock is let go; the main loop, which may hold the
 BQL, only records its own stalls in memory. Keys: stalls, longest_ms,
-longest_cause, last_ms, last_cause (memory, kernel, cpu), last_vcpus, last_at, last_vm_mb,
-last_free_mb, last_compressed_mb, and the main loop's stalls of 2 s or more in
+longest_cause, last_ms, last_cause (memory, kernel, cpu), last_vcpus, last_at,
+last_vm_mb, last_free_mb, last_compressed_mb, and the main loop's stalls of 2 s or more in
 a GPU run: gpu_stalls, gpu_longest_ms, gpu_last_where (the Mac's call and the
 frame of QEMU or virglrenderer that made it), and outside one, with the BQL
 held or waited for, so the vCPUs waited too: main_stalls, main_longest_ms,
