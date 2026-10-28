@@ -266,6 +266,13 @@ screens and #428's Spaces loop. ADR 0044 keeps "not forced back". It is
 not a fallback either: without the AppKit call the user gets the check's
 warning with the remedy.
 
+**The call, tried** (Mac mini, macOS 27.0, a small window of a test tool,
+no VM): with the reservation forced to yes the full screen was 1920x1050 on
+the 1920x1080 display (the band kept); with it switched to no, one
+`updateTileShapeAndReshapeContents` made it 1920x1080 inside the call (36
+ms, two reservation questions, the resize posted at once, still in full
+screen); with yes again and one more call, 1920x1050 again.
+
 **Probe** (names only, no window; a temporary branch on GitHub-hosted runners, run
 40718433214): all four methods usable on macOS 15.7.9 (24G830), 26.6.2
 (25G83) and 27.0 (26A428, the Mac mini), with the reservation's two.
