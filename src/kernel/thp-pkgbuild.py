@@ -41,7 +41,9 @@ def array(name, text):
     m = re.search(rf"^{name}=\((.*?)\)", text, re.S | re.M)
     if not m:
         sys.exit(f"thp-pkgbuild: no {name}=() in PKGBUILD")
-    return m, re.findall(r"""['"]([^'"]+)['"]""", m.group(1))
+    # Lines ALARM commented out are no entries (7.3: a #"...patch-${pkgver}.xz" line in source=()).
+    body = "\n".join(l for l in m.group(1).split("\n") if not l.lstrip().startswith("#"))
+    return m, re.findall(r"""['"]([^'"]+)['"]""", body)
 
 
 def main(d):
