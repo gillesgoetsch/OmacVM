@@ -47,5 +47,6 @@ a new record replaces it and says so.
 | [0058](0058-now-playing.md) | AirPods and media controls: the launcher is the Mac's Now Playing app while the VM plays (own virtio port, the guest's MPRIS players through Gio) | accepted, built (`airpods-media`), on by default |
 | [0059](0059-vm-memory-giveback.md) | The VM gives its cold file cache back while macOS compresses it (the app sees it in QEMU's footprint and macOS's compressions; memory.reclaim, file pages only) | accepted, built (`vm-memory-giveback`); off in 3.2.11 (runs only with QEMU's free page reclaim fix, #603) |
 | [0061](0061-video-surfaces-at-their-own-size.md) | Video surfaces at their own size: the guest's VA-API shim declares each surface's size (a NOP payload), the Mac's shaders sample the rounded planes at it; no copy | accepted, built (`video-edge`, 3.2.11), on by default |
+| [0062](0062-free-page-reclaim.md) | Memory the VM gives back leaves the Mac: QEMU moves a reported range's old pages aside and a worker advises them `MADV_FREE_REUSABLE` (before, they stayed resident or compressed until QEMU quit) | accepted, built (`vm-memory-reclaim`), always on |
 
 The whole chain: [../architecture/graphics.md](../architecture/graphics.md).

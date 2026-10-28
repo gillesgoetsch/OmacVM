@@ -3,6 +3,26 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+Memory an OmacVM.app VM gives back now really leaves the Mac. Needs only the app update.
+
+- **Memory the VM gives back now leaves the Mac (#603).** When Linux in an OmacVM.app VM
+  frees memory, it tells QEMU, which puts fresh memory in its place. macOS kept the old
+  pages anyway, in memory or compressed, until the VM stopped: it frees such pages only
+  with the whole block of memory they belong to, and the rest of that block was still the
+  VM's. Activity Monitor did not show them, and the Mac could not use them either. Now
+  QEMU moves them aside and a thread of its own tells macOS they may go: macOS drops their
+  compressed copies at once and takes the others first, without compressing them. On the
+  Mac mini, a 3 GB VM after a browser session while macOS compressed it: the old way left
+  on the Mac all 1.3 GB it still held of the 2.1 GB the VM gave back (92 % of it
+  compressed); now none of 1.5 GB. After a cache drop: all 1.7 GB before, none of 1.6 GB
+  now. QEMU holds its main lock at most about 1 ms per give-back (the old way 0.4-0.7 ms),
+  and a timer in every VM CPU saw no stall. Activity Monitor's figure for the VM does not
+  change with this: those pages were never in it. `logs/qemu.log` says how much came back.
+  Needs only the new app, from the VM's next start; no Update VM. UTM, Parallels and
+  Fusion: nothing changes.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most

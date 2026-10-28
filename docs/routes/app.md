@@ -1411,6 +1411,32 @@ open on a 4K or 5K display the Mac is near its limit. macOS then compresses
 and swaps first, and only refuses new graphics when it says memory is
 critical. A smaller window or scale 2 needs the least.
 
+**Memory the VM gives back leaves the Mac** (ADR 0062). When Linux reports
+free memory, QEMU puts fresh memory in its place. Up to 3.2.10 the old
+pages stayed on the Mac anyway, resident or compressed, until the VM
+stopped: macOS frees such pages only with the whole block of memory they
+belong to (guest RAM is a few blocks of 128 MB), and the rest of the block
+was still the VM's. Activity Monitor did not count them, and macOS did not
+count them as free. Now QEMU moves the old pages aside and a thread of its
+own tells macOS they may go (`MADV_FREE_REUSABLE`): their compressed copies
+go at once, and macOS takes the resident ones first, without compressing
+them. Pages macOS is compressing at that very moment get the same once
+more 20 ms later. On the Mac mini (a 3 GB VM after a browser session,
+macOS compressing it), the old way left on the Mac all 1.3 GB it still held
+of the 2.1 GB the VM gave back; now none of 1.5 GB (90 % of it compressed).
+QEMU's main lock is held at most about 1 ms per give-back (the old way
+0.4-0.7 ms). `logs/qemu.log` has a line an hour while the VM gives memory
+back and one when it stops ("free page reporting this run: ... MB back to
+the Mac ...; main lock held p99 ..., longest ...; ... left on the Mac").
+`OMACVM_RECLAIM_REUSABLE=0` in the app's environment is the old way.
+
+Activity Monitor's Memory for the VM is QEMU's footprint. The pages that
+stayed were never in it, so it does not change with this. It can also show
+more than the VM holds: once QEMU's own threads touched a guest page (the
+disk, graphics, network) and macOS compressed it, macOS counts that page
+twice there (a 4 GB VM on the Mac mini after a browser session: 5.9 GB
+shown, 2.1 GB of it counted twice).
+
 **Other VM apps** (what we checked; their own documents may say more):
 
 - **UTM** runs the same QEMU and virglrenderer: graphics memory comes from
@@ -1424,5 +1450,8 @@ critical. A smaller window or scale 2 needs the least.
 
 Tests: `app/runtime/Tests/virgl/test-resource-budget.c` (build time: the
 budget, refusals at critical and warn, the status file, a lost context),
-`tests/graphics/fractional-scale.sh` (a running VM).
+`tests/graphics/fractional-scale.sh` (a running VM),
+`app/runtime/Tests/memory/test-reclaim.sh` (build time and CI: what a free
+page report leaves on the Mac, with a real `hv_vm_map` where the Mac allows
+one).
 
