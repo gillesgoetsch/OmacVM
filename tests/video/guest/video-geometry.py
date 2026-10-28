@@ -23,9 +23,10 @@ drawn as they are, as on Wayland with GL; "ImageProcessor": converted to RGB fir
 
 check: exact = red 7.4 to 8.5 rows and columns (the band's first row blends) and the lines within half a source row
 or column of their place (ratio 1 +- 0.5 / size, at least +- 0.001; a 1080p squeeze is 0.0074). Known, not
-counted as failures: FFmpeg itself asks for a surface larger than the picture where VA-API carries no crop (H.264
-when the height is not a multiple of 16, HEVC when width or height is not a multiple of 8) in mpv; Chromium's V4L2
-decoder offers no HEVC; Chrome decodes very small videos on the CPU.
+counted as failures: the decoder asks for a surface larger than the picture, at the stream's coded size, where VA-API
+carries no crop (H.264 when width or height is not a multiple of 16, HEVC when width or height is not a multiple of 8):
+FFmpeg in mpv, and Chrome when it draws the decoder's frames without converting them (Wayland); Chromium's V4L2 decoder
+offers no HEVC; Chrome 154 stops answering at 320x180 on an M4 (3.2.10 too); an app not installed in the VM.
 """
 import glob, http.server, importlib.util, json, os, re, shutil, signal, subprocess, sys, threading, time, urllib.request
 
@@ -445,8 +446,13 @@ def output(size):
 def known(d):
     """Why a row may be off without a fault here (None: it must be exact)."""
     app, codec, w, h, dec = d.get("app", ""), d.get("codec", ""), d.get("w", 0), d.get("h", 0), str(d.get("decoder", ""))
-    if app.startswith("mpv") and app != "mpvsw" and ((codec == "h264" and h % 16) or (codec == "hevc" and (w % 8 or h % 8))):
+    coded = (codec == "h264" and (w % 16 or h % 16)) or (codec == "hevc" and (w % 8 or h % 8))
+    if coded and app.startswith("mpv") and app != "mpvsw":
         return "FFmpeg's coded-size surface (VA-API has no crop)"
+    if coded and app == "chrome" and d.get("path") == "no ImageProcessor":
+        return "Chrome's coded-size surface, drawn whole (VA-API has no crop)"
+    if app == "chrome" and w * h <= 320 * 180 and str(d.get("error", "")).startswith("browser stopped answering"):
+        return "Chrome stops answering at 320x180 here (3.2.10 too)"
     if app == "chromium" and codec in ("hevc", "av1") and d.get("error"):
         return "not offered by Chromium's V4L2 decoder"
     if app in ("chrome", "chromium") and d.get("error") == "not playing" and codec == "av1":
