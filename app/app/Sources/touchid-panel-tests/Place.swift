@@ -38,6 +38,11 @@ func displayID(_ s: NSScreen?) -> UInt32 {
     (s?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
 }
 
+func displayUUID(_ id: UInt32) -> String {
+    guard let u = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return "" }
+    return CFUUIDCreateString(nil, u) as String
+}
+
 func rect(_ r: CGRect) -> [Double] { [r.minX, r.minY, r.width, r.height].map { Double($0) } }
 
 /// The displays a rectangle in CG (top-left) coordinates lies on.
@@ -68,9 +73,9 @@ func describe(_ w: NSWindow?) -> Any {
     var cg = CGRect.null
     if let b = list.first?[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) { cg = r }
     return ["class": String(describing: type(of: w)), "title": w.title, "number": w.windowNumber,
-            "frame": rect(w.frame), "screen": displayID(w.screen), "visible": w.isVisible,
+            "frame": rect(w.frame), "screen": displayID(w.screen), "screen_uuid": displayUUID(displayID(w.screen)), "visible": w.isVisible,
             "on_active_space": w.isOnActiveSpace, "full_screen": w.styleMask.contains(.fullScreen),
-            "key": w.isKeyWindow, "main": w.isMainWindow, "level": w.level.rawValue,
+            "key": w.isKeyWindow, "main": w.isMainWindow, "level": w.level.rawValue, "scale": Double(w.backingScaleFactor),
             "cg_bounds": cg.isNull ? NSNull() : rect(cg) as Any, "cg_displays": cg.isNull ? [] : cgDisplays(cg),
             "on_screen": (list.first?[kCGWindowIsOnscreen as String] as? Bool) ?? false,
             "spaces": spaces(of: w)]
