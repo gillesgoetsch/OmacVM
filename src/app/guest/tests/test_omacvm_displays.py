@@ -331,13 +331,23 @@ class Agent(unittest.TestCase):
         self.assertEqual(self.started, [])
 
 
-class FakeHypr:
-    """Hyprland's outputs with their DPMS, for Pause."""
+MOVE = "misc:mouse_move_enables_dpms"
+KEY = "misc:key_press_enables_dpms"
 
-    def __init__(self, *names, off=()):
+
+class FakeHypr:
+    """Hyprland's outputs with their DPMS, for Pause, and its two wake options
+    (Omarchy turns both on): as Hyprland 0.56.2, a pointer move (or a key) with
+    the option on turns EVERY output on while one is off."""
+
+    def __init__(self, *names, off=(), config=None):
         self.dpms = {n: n not in off for n in names}
         self.calls = []
         self.refuse = False
+        self.config = dict(config if config is not None else {MOVE: True, KEY: True})
+        self.options = dict(self.config)
+        self.answer = None        # j/getoption's answer instead of {"bool": value}
+        self.puts = []
 
     def monitors(self):
         return [{"name": n, "dpmsStatus": on} for n, on in self.dpms.items()]
@@ -349,22 +359,53 @@ class FakeHypr:
         self.dpms[name] = on
         return True
 
+    def get(self, name):
+        return self.answer if self.answer is not None else self.options.get(name)
 
-class PauseTest(unittest.TestCase):
-    """Pause drawing while hidden: the Mac's "unseen" list -> DPMS of those outputs."""
+    def put(self, name, on):
+        self.puts.append((name, on))
+        if self.refuse:
+            return False
+        self.options[name] = on
+        return True
 
-    def make(self, *names, off=()):
-        self.h = FakeHypr(*names, off=off)
+    def move(self, option=MOVE):
+        """A pointer move (or with KEY a key press) anywhere."""
+        if self.options.get(option) and not all(self.dpms.values()):
+            self.dpms = dict.fromkeys(self.dpms, True)
+
+    def reload(self, **config):
+        """hyprctl reload / a theme switch: the config's values again."""
+        self.config.update({MOVE if k == "move" else KEY: v for k, v in config.items()})
+        self.options = dict(self.config)
+
+
+class PauseCase(unittest.TestCase):
+    """A Pause on a FakeHypr, its files in a temporary folder."""
+
+    def make(self, *names, off=(), config=None):
+        self.h = FakeHypr(*names, off=off, config=config)
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         self.path = self.tmp / "omacvm/paused-displays"
+        self.wake = self.tmp / "omacvm/paused-wake"
         self.t = [1000.0]
-        p = od.Pause(set_dpms=self.h.set, monitors=self.h.monitors, path=self.path, clock=lambda: self.t[0])
+        # (an agent without the guard: the same tests show what it does)
+        extra = {"guard": self.guard()} if hasattr(od, "WakeGuard") else {}
+        p = od.Pause(set_dpms=self.h.set, monitors=self.h.monitors, path=self.path, clock=lambda: self.t[0],
+                     **extra)
         patcher = mock.patch.object(od, "log", lambda m: None)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.t[0] += od.CAST_SETTLE   # past the start's share settle
         return p
+
+    def guard(self):
+        return od.WakeGuard(get=self.h.get, put=self.h.put, path=self.wake)
+
+
+class PauseTest(PauseCase):
+    """Pause drawing while hidden: the Mac's "unseen" list -> DPMS of those outputs."""
 
     def test_unseen_off_seen_on(self):
         p = self.make("Virtual-1", "NOTCH")
@@ -493,9 +534,10 @@ class PauseTest(unittest.TestCase):
 
     def test_the_agent_says_it_can_pause(self):
         with mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out, \
-             mock.patch.object(od, "PAUSED", pathlib.Path("/nonexistent/omacvm-test/paused")):
+             mock.patch.object(od, "PAUSED", pathlib.Path("/nonexistent/omacvm-test/paused")), \
+             mock.patch.object(od, "WAKE", pathlib.Path("/nonexistent/omacvm-test/wake")):
             self.assertEqual(od.main(["omacvm-displays", "pause"]), 0)
-        self.assertEqual(json.loads(out.getvalue()), {"able": True, "paused": []})
+        self.assertEqual(json.loads(out.getvalue()), {"able": True, "paused": [], "wake_off": []})
         src = (HERE.parent / "omacvm-displays").read_text()
         self.assertEqual(src.count('self.send({"hello": 1, "external": self.external, "pause": 1})'), 2)
 
@@ -513,7 +555,7 @@ class PauseTest(unittest.TestCase):
         p = self.make("Virtual-1", "Virtual-2")
         p.mac(["Virtual-1"])
         p.apply()
-        q = od.Pause(set_dpms=self.h.set, monitors=self.h.monitors, path=self.path)
+        q = od.Pause(set_dpms=self.h.set, monitors=self.h.monitors, path=self.path, guard=self.guard())
         q.restore()
         self.assertTrue(self.h.dpms["Virtual-1"])
         self.assertFalse(self.path.exists())
@@ -546,6 +588,167 @@ class PauseTest(unittest.TestCase):
         a.pause.apply.assert_called_once_with()
         ws.assert_not_called()
         rs.assert_not_called()
+
+
+class WakeGuardTest(PauseCase):
+    """While the agent holds a display off, Hyprland's wake on moves and keys
+    is off (the user's 2026-10-28 two-display case: every move on the LG woke
+    the paused built-in output, the Mac's next "unseen" turned it off again)."""
+
+    def test_a_move_on_another_display_leaves_the_paused_one_off(self):
+        p = self.make("Virtual-1", "Virtual-2")
+        p.mac(["Virtual-1"])
+        p.apply()
+        for _ in range(10):
+            self.h.move()
+            self.h.move(KEY)
+            self.assertFalse(self.h.dpms["Virtual-1"])
+            self.assertTrue(self.h.dpms["Virtual-2"])
+            self.t[0] += 5
+            p.mac(["Virtual-1"])        # the Mac's lease
+            p.apply()
+        self.assertEqual(self.h.calls, [("Virtual-1", False)])   # one turn off, no fight
+        self.assertEqual(json.loads(self.wake.read_text()), {MOVE: True, KEY: True})
+
+    def test_options_back_as_found_when_seen_again(self):
+        # The person's own choice (key presses do not wake) stays theirs.
+        p = self.make("Virtual-1", "Virtual-2", config={MOVE: True, KEY: False})
+        p.mac(["Virtual-1"])
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: False, KEY: False})
+        self.assertEqual(self.h.puts, [(MOVE, False)])
+        p.mac([])
+        p.apply()
+        self.assertTrue(self.h.dpms["Virtual-1"])
+        self.assertEqual(self.h.options, {MOVE: True, KEY: False})
+        self.assertFalse(self.wake.exists())
+        self.h.move()   # back to Hyprland's normal: a move wakes displays again
+        self.assertEqual(self.h.puts, [(MOVE, False), (MOVE, True)])
+
+    def test_both_off_already_nothing_touched(self):
+        p = self.make("Virtual-1", config={MOVE: False, KEY: False})
+        p.mac(["Virtual-1"])
+        p.apply()
+        p.mac([])
+        p.apply()
+        self.assertEqual(self.h.puts, [])
+        self.assertFalse(self.wake.exists())
+
+    def test_an_unknown_answer_touches_nothing(self):
+        p = self.make("Virtual-1")
+        self.h.answer = "yes"
+        p.mac(["Virtual-1"])
+        p.apply()
+        self.assertFalse(self.h.dpms["Virtual-1"])
+        self.assertEqual(self.h.puts, [])
+
+    def test_a_config_reload_turns_them_off_again(self):
+        # A theme switch reloads Omarchy's config: its true is back.
+        p = self.make("Virtual-1", "Virtual-2")
+        p.mac(["Virtual-1"])
+        p.apply()
+        self.h.reload()
+        self.assertTrue(self.h.options[MOVE])
+        p.guard.recheck()
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: False, KEY: False})
+        self.h.move()
+        self.assertFalse(self.h.dpms["Virtual-1"])
+        p.mac([])
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: True, KEY: True})
+
+    def test_a_reload_that_turns_one_off_is_not_undone(self):
+        p = self.make("Virtual-1")
+        p.mac(["Virtual-1"])
+        p.apply()
+        self.h.reload(key=False)       # the person turned key wake off in their config
+        p.guard.recheck()
+        p.apply()
+        p.mac([])
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: True, KEY: False})
+
+    def test_a_restarted_agent_puts_them_back(self):
+        p = self.make("Virtual-1", "Virtual-2")
+        p.mac(["Virtual-1"])
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: False, KEY: False})
+        q = od.Pause(set_dpms=self.h.set, monitors=self.h.monitors, path=self.path, guard=self.guard())
+        q.restore()
+        self.assertEqual(self.h.options, {MOVE: True, KEY: True})
+        self.assertFalse(self.wake.exists())
+        self.assertTrue(self.h.dpms["Virtual-1"])
+
+    def test_not_taken_now_tried_again(self):
+        p = self.make("Virtual-1")
+        self.h.refuse = True
+        p.mac(["Virtual-1"])
+        p.apply()                      # DPMS refused too: nothing paused, nothing held
+        self.h.refuse = False
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: False, KEY: False})
+        self.h.refuse = True
+        p.mac([])
+        p.apply()                      # the put back refused: kept, the agent stays busy
+        self.assertEqual(self.h.options, {MOVE: False, KEY: False})
+        self.assertTrue(p.busy())
+        self.h.refuse = False
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: True, KEY: True})
+        self.assertFalse(p.busy())
+
+    def test_the_guests_idle_on_another_display_gets_its_wake(self):
+        # Omarchy's idle turned the LG's output off too: a move must wake it as usual.
+        p = self.make("Virtual-1", "Virtual-2")
+        p.mac(["Virtual-1"])
+        p.apply()
+        self.h.dpms["Virtual-2"] = False
+        self.t[0] += 5
+        p.mac(["Virtual-1"])
+        p.apply()
+        self.assertEqual(self.h.options, {MOVE: True, KEY: True})
+        self.h.move()                  # the person is back: everything on
+        self.assertTrue(self.h.dpms["Virtual-2"])
+        p.apply()                      # the next look: the paused one off again, held again
+        self.assertFalse(self.h.dpms["Virtual-1"])
+        self.assertEqual(self.h.options, {MOVE: False, KEY: False})
+
+    def test_the_agent_shows_what_it_holds(self):
+        p = self.make("Virtual-1")
+        p.mac(["Virtual-1"])
+        p.apply()
+        with mock.patch("sys.stdout", new_callable=__import__("io").StringIO) as out, \
+             mock.patch.object(od, "PAUSED", self.path), mock.patch.object(od, "WAKE", self.wake):
+            self.assertEqual(od.main(["omacvm-displays", "pause"]), 0)
+        self.assertEqual(json.loads(out.getvalue()),
+                         {"able": True, "paused": ["Virtual-1"], "wake_off": [KEY, MOVE]})
+
+    def test_getoption_bool_and_int(self):
+        for answer, value in (({"option": MOVE, "bool": True, "set": True}, True), ({"bool": False}, False),
+                              ({"int": 1}, True), ({"int": 0}, False), ({"int": 2}, None),
+                              ({"str": "1"}, None), ({"bool": "yes"}, None), (None, None), ([], None)):
+            with mock.patch.object(od, "hypr_json", lambda c, a=answer: a):
+                self.assertIs(od.hypr_bool(MOVE), value, answer)
+
+    def test_set_through_hyprlands_lua(self):
+        sent = []
+        with mock.patch.object(od, "hypr_request", lambda c: sent.append(c) or "ok"), \
+             mock.patch.object(od, "hypr_json", lambda c: {"bool": False}):
+            self.assertTrue(od.set_hypr_bool(MOVE, False))
+            self.assertFalse(od.set_hypr_bool(KEY, True))    # Hyprland still says false
+            self.assertFalse(od.set_hypr_bool("misc:x }) os.exit(", False))
+        self.assertEqual(sent, ["eval hl.config({ misc = { mouse_move_enables_dpms = false } })",
+                                "eval hl.config({ misc = { key_press_enables_dpms = true } })"])
+
+    def test_the_agent_hears_a_reload(self):
+        a = od.Agent.__new__(od.Agent)
+        a.pause = mock.Mock()
+        a.pause.busy.return_value = True
+        with mock.patch.object(od.Agent, "layout_changed"), mock.patch.object(od.Agent, "soon"):
+            a.on_events(b"activewindow>>x,y\nconfigreloaded>>\n")
+        a.pause.guard.recheck.assert_called_once_with()
+        a.pause.apply.assert_called_once_with()
 
 
 class Idle(unittest.TestCase):

@@ -30,6 +30,12 @@ in more words.
   picture with its grain); the Mac wrote only the first, so Chrome showed a buffer that held
   an older picture, or nothing (green). The picture now goes into both. Needs only the new
   app, from the VM's next start.
+- **Pause drawing while hidden: the hidden display stays off while you work in the VM on
+  another one.** With the VM in full screen on two displays and the main one switched to
+  macOS, every pointer move or key in the VM on the other display turned the paused display
+  on again (Omarchy has Hyprland wake every display at any input), and the Mac turned it off
+  again a few seconds later, over and over. While a display is paused the VM's display agent
+  now holds that wake-up off and puts it back as it was afterwards. Needs Update VM.
 
 ## 3.2.10
 

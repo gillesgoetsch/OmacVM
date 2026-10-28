@@ -39,6 +39,16 @@ org.omacvm.display, one JSON object per line:
                 line can get lost): with no word for 15 s the agent turns its
                 displays on. After a start or a lost event socket it waits
                 3 s for Hyprland's share events before it turns one off.
+                While a display is off this way, Hyprland's own wake-ups
+                (misc:mouse_move_enables_dpms, misc:key_press_enables_dpms,
+                on in Omarchy) are off too: they turn EVERY display on at
+                any move or key, also one on another display, and the Mac's
+                next "unseen" turned it off again. Only options that were on
+                are turned off; they are back once nothing is paused, when
+                another display goes off by itself (Omarchy's idle wakes it
+                the usual way), and at the agent's next start
+                ($XDG_RUNTIME_DIR/omacvm/paused-wake). A config reload puts
+                Omarchy's values back: they are turned off again.
 
 Hyprland's event socket has no event when an output only moves (display-sync
 and Omanotch move them with hyprctl eval, a config reload puts them back to
@@ -62,7 +72,8 @@ The switch "Use external displays" is ~/.config/omacvm/displays.conf
   omacvm-displays status            the switch and the outputs, as JSON
   omacvm-displays desktop           displays that show no desktop, as JSON
   omacvm-displays poke              tell the agent the layout moved (Hyprland's hook)
-  omacvm-displays pause             whether it can pause drawing, and the displays it turned off, as JSON
+  omacvm-displays pause             whether it can pause drawing, the displays it turned off and
+                                    Hyprland's wake options it holds off meanwhile, as JSON
   omacvm-displays fullpanel         the output in "Full screen including notch" (nothing otherwise)
   omacvm-displays scale SCALE       Omarchy's scale for the focused output (the display
                                     panel's buttons): in "Full screen including notch" the Mac
@@ -557,6 +568,12 @@ def layout_event(data: bytes) -> bool:
     return False
 
 
+def config_reloaded(data: bytes) -> bool:
+    """Hyprland read its config again (socket2 "configreloaded>>"): its
+    options are the config's again."""
+    return any(line.split(b">>", 1)[0] == b"configreloaded" for line in data.split(b"\n"))
+
+
 def shell_event(data: bytes) -> bool:
     """A layer surface opened (socket2 "openlayer>>namespace"): the shell may
     have (re)started; the agent then looks for it at once."""
@@ -634,6 +651,136 @@ def dpms(name: str, on: bool) -> bool:
     return hypr_request(f'dispatch hl.dsp.dpms({{ action = "{action}", monitor = "{name}" }})') == "ok"
 
 
+WAKE = RUNTIME / "omacvm/paused-wake"
+# Hyprland turns every display on at a pointer move or a key while one is off.
+WAKE_OPTIONS = ("misc:mouse_move_enables_dpms", "misc:key_press_enables_dpms")
+
+
+def hypr_bool(name: str) -> bool | None:
+    """A bool option (j/getoption): Hyprland 0.56 answers {"bool": true}, older
+    ones {"int": 1}. None: no answer, or not a bool (then it is left alone)."""
+    o = hypr_json(f"j/getoption {name}")
+    if not isinstance(o, dict):
+        return None
+    v = o.get("bool", o.get("int"))
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int) and v in (0, 1):
+        return v == 1
+    return None
+
+
+def set_hypr_bool(name: str, on: bool) -> bool:
+    """Sets a bool option until Hyprland reads its config again. True once
+    Hyprland reports the new value."""
+    section, _, key = name.partition(":")
+    if not re.fullmatch(r"[a-z_]+", section) or not re.fullmatch(r"[a-z_]+", key):
+        return False
+    hypr_request(f"eval hl.config({{ {section} = {{ {key} = {'true' if on else 'false'} }} }})")
+    return hypr_bool(name) is on
+
+
+class WakeGuard:
+    """Hyprland's own wake-ups off while the agent holds a display off.
+
+    With misc:mouse_move_enables_dpms (Omarchy turns it on) any pointer move
+    turns EVERY display on, also one paused while the person works on another
+    display; the Mac's next "unseen" turned it off again, a fight at every
+    move (key_press_enables_dpms the same for keys). follow(True) turns off
+    the options that are on, follow(False) puts them back. Only options that
+    were on are touched, one with an answer that is not a bool is left alone.
+    What was turned off is kept in paused-wake, so a restarted agent puts it
+    back (restore). A config reload puts the config's values back: the next
+    follow(True) turns them off again, and one the config itself turns off is
+    not put back later.
+    """
+
+    def __init__(self, get=hypr_bool, put=set_hypr_bool, path: Path = WAKE) -> None:
+        self.get = get
+        self.put = put
+        self.path = path
+        self.saved: dict[str, bool] = {}   # turned off, with the value they had
+        self.held = False
+        self.reloaded = False
+
+    def recheck(self) -> None:
+        """Hyprland may have its config's values again (a config reload, a
+        new Hyprland after a lost event socket): the next hold looks again."""
+        if self.held:
+            self.reloaded = True
+
+    def follow(self, hold: bool) -> None:
+        if hold:
+            self.hold()
+        elif self.held or self.saved:
+            self.release()
+
+    def hold(self) -> None:
+        if self.held and not self.reloaded:
+            return
+        reloaded, self.reloaded = self.reloaded, False
+        before = dict(self.saved)
+        done = True
+        for name in WAKE_OPTIONS:
+            value = self.get(name)
+            if value is True:
+                if self.put(name, False):
+                    self.saved[name] = True
+                else:
+                    done = False       # Hyprland did not take it: again at the next look
+            elif value is False and reloaded:
+                self.saved.pop(name, None)   # the config says off itself now
+        self.held = done
+        if self.saved != before:
+            if self.saved.keys() - before.keys():
+                log(f"Hyprland's wake on {self.words(self.saved)} off while a display is paused")
+            self.save()
+
+    def release(self) -> None:
+        for name in sorted(self.saved):
+            if self.put(name, self.saved[name]):
+                del self.saved[name]
+                log(f"Hyprland's wake on {self.words([name])} on again")
+        self.held = False
+        self.reloaded = False
+        self.save()
+
+    @staticmethod
+    def words(names) -> str:
+        return " and ".join("pointer moves" if "mouse" in n else "key presses" for n in sorted(names))
+
+    def save(self) -> None:
+        try:
+            if self.saved:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.path.with_suffix(".tmp")
+                tmp.write_text(json.dumps(self.saved, sort_keys=True) + "\n")
+                tmp.replace(self.path)
+            else:
+                self.path.unlink(missing_ok=True)
+        except OSError as error:
+            log(f"paused wake options not written: {error}")
+
+    def restore(self) -> None:
+        """At start: options a former agent turned off, back as they were."""
+        try:
+            data = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return
+        if isinstance(data, dict):
+            self.saved = {n: v for n, v in data.items() if n in WAKE_OPTIONS and isinstance(v, bool)}
+            self.release()
+
+
+def held_wake(path: Path | None = None) -> list[str]:
+    """The wake options a running agent holds off now (for `pause`)."""
+    try:
+        data = json.loads((path or WAKE).read_text())
+    except (OSError, ValueError):
+        return []
+    return sorted(n for n in data if n in WAKE_OPTIONS) if isinstance(data, dict) else []
+
+
 class Pause:
     """The outputs whose Mac window nobody can see: their display off (DPMS).
 
@@ -642,15 +789,18 @@ class Pause:
     on (and not shared), on again only for outputs this agent turned off.
     An output the guest had turned off itself before the pause (Omarchy's
     idle) is left as it is; one it turns off during the pause cannot be told
-    apart (it is off already) and comes on with the window.
+    apart (it is off already) and comes on with the window. While an output
+    is paused, Hyprland's wake on moves and keys is off (WakeGuard), unless
+    another output is off too (the guest's idle: input wakes it as usual).
     """
 
     def __init__(self, set_dpms=dpms, monitors=lambda: hypr_json("j/monitors"), path: Path = PAUSED,
-                 clock=time.monotonic) -> None:
+                 clock=time.monotonic, guard: WakeGuard | None = None) -> None:
         self.set_dpms = set_dpms
         self.monitors = monitors
         self.path = path
         self.clock = clock
+        self.guard = guard if guard is not None else WakeGuard()
         self.unseen: set[str] = set()
         self.paused: set[str] = set()
         self.casts: dict[tuple[str, str], int] = {}
@@ -698,7 +848,7 @@ class Pause:
         return {n for n in self.unseen if ("monitor", n) not in self.casts}
 
     def busy(self) -> bool:
-        return bool(self.unseen or self.paused)
+        return bool(self.unseen or self.paused or self.guard.saved)
 
     def apply(self) -> None:
         data = self.monitors()
@@ -716,15 +866,22 @@ class Pause:
                     log(f"drawing paused on {name}: its Mac window is out of sight")
                 self.paused.add(name)
                 changed = True
+        woke = set()
         for name in sorted(self.paused - off):
             m = state.get(name)
             if m is not None and m.get("dpmsStatus") is False and not self.set_dpms(name, True):
                 continue   # try again at the next look
             self.paused.discard(name)
+            woke.add(name)
             changed = True
             log(f"drawing again on {name}")
         if changed:
             self.save()
+        # Another output off that the agent did not turn off: the guest's own
+        # idle; Hyprland's wake on input must reach it.
+        dark = {n for n, m in state.items()
+                if m.get("dpmsStatus") is False and re.fullmatch(r"Virtual-[0-9]+", str(n))}
+        self.guard.follow(bool(self.paused) and not (dark - self.paused - woke))
 
     def save(self) -> None:
         try:
@@ -740,7 +897,9 @@ class Pause:
 
     def restore(self) -> None:
         """At start: displays a former agent turned off, on again (the Mac
-        says at the hello which are still out of sight)."""
+        says at the hello which are still out of sight), Hyprland's wake
+        options first."""
+        self.guard.restore()
         try:
             names = json.loads(self.path.read_text())
         except (OSError, ValueError):
@@ -1108,17 +1267,9 @@ class Agent:
                     self.events.close()
                     self.events = None
                     self.pause.casts_lost()
+                    self.pause.guard.recheck()
                 else:
-                    casts = screencasts(data)
-                    for on, kind, name in casts:
-                        self.pause.cast(on, kind, name)
-                    if casts and self.pause.busy():
-                        self.pause.apply()
-                    if layout_event(data):
-                        self.layout_changed()
-                        self.soon(0.3)
-                    if shell_event(data):
-                        self.watch_shell()
+                    self.on_events(data)
             mtime = config_mtime()
             if mtime != self.mtime:
                 self.mtime = mtime
@@ -1127,6 +1278,22 @@ class Agent:
                     self.external = on
                     self.send({"external": on})
             self.due()
+
+    def on_events(self, data: bytes) -> None:
+        """Lines from Hyprland's event socket."""
+        casts = screencasts(data)
+        for on, kind, name in casts:
+            self.pause.cast(on, kind, name)
+        reloaded = config_reloaded(data)
+        if reloaded:
+            self.pause.guard.recheck()
+        if (casts or reloaded) and self.pause.busy():
+            self.pause.apply()
+        if layout_event(data):
+            self.layout_changed()
+            self.soon(0.3)
+        if shell_event(data):
+            self.watch_shell()
 
     def due(self) -> None:
         """What is due now: the report (and a look for the shell), the
@@ -1201,7 +1368,8 @@ def main(argv: list[str]) -> int:
             paused = json.loads(PAUSED.read_text())
         except (OSError, ValueError):
             pass
-        print(json.dumps({"able": True, "paused": paused if isinstance(paused, list) else []}))
+        print(json.dumps({"able": True, "paused": paused if isinstance(paused, list) else [],
+                          "wake_off": held_wake()}))
         return 0
     if len(argv) >= 2 and argv[1] == "fullpanel":
         out = fullpanel_output()
