@@ -1400,6 +1400,32 @@ closes. `logs/qemu.log` says which app lost its context and why, and each
 restart the app made; `journalctl -t omacvm-desktop-recover` in the VM
 says what was closed (ADR 0038).
 
+**When the VM stands still.** When macOS runs out of free memory (a VM that
+holds most of the Mac, macOS compressing and swapping it), a vCPU's thread
+can wait in macOS's kernel for seconds while macOS makes a page free for it;
+the other vCPUs run on. In the VM that looks like a freeze: the guest kernel
+logs an RCU stall, its daemons miss their watchdogs, the display agent says
+"no word from the Mac for 15 s" (the user's M4 Max, 2026-10-28: vCPUs 1, 2,
+3 and 8 stood still for about 60 s; on a Mac mini at critical pressure three
+vCPUs stood 1.2-2.4 s; `tracks/vm-stall.md`). QEMU now says so
+(`qemu-hvf-vcpu-stall-note.patch`): the stall watchdog's thread, when it
+wakes anyway, looks at every vCPU thread's CPU time and state, and
+`logs/qemu.log` gets one line per stall of 1 s or more, "OmacVM: stall:
+vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in macOS's kernel
+waiting for memory (Mac: 0.3 GB free, pressure normal; the VM holds 51 GB,
+20 GB of it compressed by macOS)", or "vCPU 5 waited 2.1 s for a Mac core";
+`logs/vm-stalls` keeps the count. The app menu then has "The VM stood still
+2 times (longest 58 s): the Mac ran out of memory" under "Graphics memory",
+`omacvm check` a "VM stalls" warning with what helps, and after a stall of
+10 s or more for memory the VM shows a note ("The VM stood still for 58 s",
+at most once per 30 minutes; Update VM puts the note in). What helps: less
+VM memory (`omacvm resources --vm NAME`), or fewer big apps on the Mac; the
+app also gives the VM's cold file cache back while macOS compresses it.
+QEMU's graphics thread no longer waits for the Mac's video service when a
+video decoder starts ([video decoding](../video-decode.md#when-the-macs-video-service-is-slow)),
+and its stall watchdog says when a stall of its own was in a GPU run without
+the BQL (the vCPUs ran on) rather than with it (ADR 0060).
+
 The guard is not only for runaway VMs on an 8 GB Mac: on a MacBook Air M2
 (8 GB, 4 GB VM, 2026-10-06) Chromium with 7 windows of big WebGL pages
 (5K canvas and 512 MB of textures each) reached 6 GB while macOS still said
