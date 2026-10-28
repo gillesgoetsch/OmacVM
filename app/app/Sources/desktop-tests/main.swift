@@ -153,6 +153,20 @@ expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "3
 try? Data(MemoryGiveBack.reclaimMarker.dropLast().utf8).write(to: qemuBin)
 expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "part of the text is not the text")
 expect(!MemoryGiveBack.qemuGivesPagesBack(binary: logs.appendingPathComponent("none"), environment: [:]), "no binary: keeps them")
+// A real built QEMU (OMACVM_TEST_QEMU = an app's Contents/Resources/runtime/bin/OmacVM, or the runtime build's
+// qemu-system-aarch64): the app's own probe finds the fix's text in it. Not in CI (no runtime there).
+if let real = ProcessInfo.processInfo.environment["OMACVM_TEST_QEMU"], !real.isEmpty {
+    let url = URL(fileURLWithPath: real)
+    let t0 = Date()
+    let gives = MemoryGiveBack.qemuGivesPagesBack(binary: url, environment: [:])
+    let ms = Int(Date().timeIntervalSince(t0) * 1000)
+    let size = ((try? FileManager.default.attributesOfItem(atPath: real)[.size]) as? Int ?? 0) >> 20
+    expect(gives, "the built QEMU (\(real), \(size) MB) has the fix's text: gives the pages back (read in \(ms) ms)")
+    expect(!MemoryGiveBack.qemuGivesPagesBack(binary: url, environment: ["OMACVM_RECLAIM_REUSABLE": "0"]),
+           "  the same QEMU with OMACVM_RECLAIM_REUSABLE=0: keeps them")
+} else {
+    print("skip the built QEMU's text (OMACVM_TEST_QEMU not set: no runtime here)")
+}
 // The fix built in is not the fix working: QEMU says when macOS keeps the pages anyway (a refused or skipped advice;
 // logs/memory-reclaim, OMACVM_RECLAIM_STATUS), and the give-back while macOS compresses goes off for the run.
 expect(MemoryGiveBack.qemuKeeps(status: nil) == nil && MemoryGiveBack.qemuKeeps(status: "") == nil,
