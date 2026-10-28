@@ -806,6 +806,19 @@ app)
     check "WebRTC encoding" "Chrome, Brave: VA-API encoder features in their flags (missing: each start puts them back, or omacvm apply)" \
       python3 /usr/local/share/omacvm/app/guest/browser-video-encode.py "$U" check
   elif command -v vainfo >/dev/null; then skip "video encoding" "none offered (OmacVM.app older than the video encoding?)"; fi
+  # Chrome and Brave convert their decoded pictures before drawing (zero copy off): drawn
+  # directly, Mesa's rounded rows show under the picture, and a stream change at the same
+  # size decoded into imports, where Mesa's VA driver crashed (browser-video-encode.py decode).
+  bve=/usr/local/share/omacvm/app/guest/browser-video-encode.py
+  if [[ $drv == omacvm && -f $bve ]]; then
+    if zc=$(python3 "$bve" "$U" check decode 2>/dev/null); then
+      case $zc in
+        "no browser") ;;
+        *"user's own flags"*) warn "Chrome video path" "zero copy kept by the user's own flags (${zc#*flags: }): a strip of repeated rows can show under videos, and after a stream change such a video decodes on the CPU" ;;
+        *) ok "Chrome video path" "Chrome, Brave: decoded pictures converted before drawing (zero copy off)" ;;
+      esac
+    else bad "Chrome video path" "zero copy not off in ${zc#missing in: } (each start puts it back, or omacvm apply)"; fi
+  fi
   # The frozen screen of screenshots and the recording picker (hyprpicker -r -z): OmacVM's build
   # draws it once per display, the package's on every frame (app/guest/hyprpicker/build.sh).
   if hp=$(pacman -Q hyprpicker 2>/dev/null | awk '{ print $2 }') && [[ -n $hp ]]; then
