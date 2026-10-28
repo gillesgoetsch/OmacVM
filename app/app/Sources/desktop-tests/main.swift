@@ -390,5 +390,58 @@ expect(st.text.contains("\ngiven_mb=\n"), "the warning's drop: no count from the
 expect(MemoryGiveBack.gb(900 * MB) == "900 MB" && MemoryGiveBack.gb(11900 * MB) == "11.6 GB", "sizes as the log says them")
 }
 
+// When the VM stood still (VMStalls, ADR 0060): QEMU's logs/vm-stalls, and the note in the VM.
+do {
+let user = """
+stalls=2
+longest_ms=58000
+longest_cause=memory
+last_ms=58000
+last_cause=memory
+last_vcpus=1,2,3,8
+last_at=1761637419
+last_vm_mb=52224
+last_free_mb=300
+last_compressed_mb=20480
+gpu_stalls=1
+gpu_longest_ms=2500
+gpu_last_where=VTDecompressionSessionCreate (from session_create)
+"""
+let s = VMStalls.parse(user)
+expect(s?.stalls == 2 && s?.longestMs == 58000 && s?.longestCause == "memory" && s?.lastMs == 58000
+       && s?.lastCause == "memory" && s?.lastAt == 1761637419 && s?.lastVMMB == 52224 && s?.lastFreeMB == 300
+       && s?.gpuStalls == 1 && s?.gpuLongestMs == 2500, "logs/vm-stalls read (the user's 58 s)")
+expect(VMStalls.parse("gpu_stalls=1\n") == nil && VMStalls.parse("") == nil, "no stalls= line: not the file")
+let odd = VMStalls.parse("stalls=-3\nlast_ms=99999999999999999\nlast_cause=memory\u{1b}\nlongest_cause=cpu\nlast_vm_mb=x")
+expect(odd?.stalls == 0 && odd?.lastMs == 0 && odd?.lastCause == "" && odd?.longestCause == "cpu" && odd?.lastVMMB == 0,
+       "untrusted: numbers clamped (an overlong one is 0), causes from the list only")
+let zero = VMStalls.parse("stalls=0\nlongest_ms=0\nlongest_cause=none\n")
+expect(zero == VMStalls(), "QEMU's start: all zeros")
+let now = Date()
+expect(VMStalls.noteDue(s!, seen: 1, lastNote: nil, now: now), "a new 58 s stall for memory: a note")
+expect(!VMStalls.noteDue(s!, seen: 2, lastNote: nil, now: now), "the same stall again: no note")
+expect(!VMStalls.noteDue(s!, seen: 1, lastNote: now.addingTimeInterval(-600), now: now), "a note 10 min ago: none now")
+expect(VMStalls.noteDue(s!, seen: 1, lastNote: now.addingTimeInterval(-1801), now: now), "a note 30 min ago: a note")
+var short = s!; short.lastMs = 9999
+expect(!VMStalls.noteDue(short, seen: 1, lastNote: nil, now: now), "under 10 s: no note")
+var cpu = s!; cpu.lastCause = "cpu"
+expect(!VMStalls.noteDue(cpu, seen: 1, lastNote: nil, now: now), "waiting for a Mac core: no note")
+expect(VMStalls.noteArguments(s!, macBytes: 64 << 30) == ["stall", "58", "51", "64"], "the note's arguments: 58 s, 51 of 64 GB")
+var stallSeed: UInt64 = 0x5eed_0060
+func nextStall() -> UInt64 { stallSeed = stallSeed &* 6364136223846793005 &+ 1442695040888963407; return stallSeed >> 33 }
+var fuzzBad = 0
+for _ in 0..<3000 {
+    var text = ""
+    let parts = ["stalls=", "last_ms=", "last_cause=", "memory", "cpu", "last_vm_mb=", "\n", "=", "-", "9", "999999999999999",
+                 "\u{0}", "é", "x", "last_at=", "gpu_stalls="]
+    for _ in 0..<Int(nextStall() % 30) { text += parts[Int(nextStall() % UInt64(parts.count))] }
+    guard let x = VMStalls.parse(text) else { continue }
+    let nums = [x.stalls, x.longestMs, x.lastMs, x.lastAt, x.lastVMMB, x.lastFreeMB, x.gpuStalls, x.gpuLongestMs]
+    if nums.contains(where: { $0 < 0 || $0 > VMStalls.most }) || !["", "memory", "cpu"].contains(x.lastCause) { fuzzBad += 1 }
+    _ = VMStalls.noteArguments(x, macBytes: 8 << 30)
+}
+expect(fuzzBad == 0, "3000 random files: every number within range, causes from the list")
+}
+
 if failures > 0 { print("\(failures) failed"); exit(1) }
-print("desktop restart, graphics memory and memory give-back: all checks passed")
+print("desktop restart, graphics memory, memory give-back and VM stalls: all checks passed")
