@@ -17,6 +17,7 @@ for f in ["JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"] {
 
 if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--live" { runLive(CommandLine.arguments[2]) }
 if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--show" { runShow(CommandLine.arguments[2]) }
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--place" { runPlace(Array(CommandLine.arguments.dropFirst())) }
 
 var failures = 0
 func expect(_ ok: Bool, _ what: String, line: Int = #line) {
