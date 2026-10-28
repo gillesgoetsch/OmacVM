@@ -82,6 +82,22 @@
  * long as at most one such process decodes. OMACVM_VA_DEBUG=1 prints the
  * limits.
  *
+ * Pictures at their own size: Mesa rounds a video surface's planes up to 16 (1920x1080:
+ * Y 1920x1088, UV 960x544), and an app that shows the surface imports its planes and
+ * samples them whole (mpv, Chrome when NV12 is renderable, GStreamer): virgl drops the size
+ * the import asks for, so the picture came out squeezed, its last row repeated below it.
+ * When the Mac's runtime can sample a texture at a size the guest gives (it says
+ * omacvm.valogical=1 at start: /run/omacvm/host.env), the shim tells it each 4:2:0 surface's
+ * own size as Mesa makes the surface (a size not a multiple of 16): an export, the planes'
+ * resources (PRIME_FD_TO_HANDLE, RESOURCE_INFO) and one NOP with a private payload per
+ * call. Every app then samples exactly the picture, with no copy; vaGetImage and texel
+ * reads are as before. Only Mesa's own surfaces are declared (the owner), never imports
+ * (a camera frame of its own size); an import of a surface this process declared is
+ * sampled at that size too. Such surfaces need no source scaling for Chromium's RGB frames
+ * (below). RGB surfaces keep their rounded size: Mesa converts an RGB surface to YUV by
+ * its texture's size. In every process; a refused ioctl (a sandbox) leaves that process's
+ * surfaces as before. OMACVM_VA_LOGICAL=1 or 0 overrides.
+ *
  * Decoding into an imported surface: Mesa's virgl driver cannot decode into a surface
  * made from the app's memory (vaCreateSurfaces2 with a descriptor): such a surface has no
  * video buffer on the Mac, and Mesa's vaRenderPicture crashes the process (Chrome's GPU
@@ -469,7 +485,7 @@ static VAStatus end_picture(VADriverContextP ctx, VAContextID context)
  * frames (see the top), whether a 4:2:0 surface has planes rounded up to 16 or an RGB import
  * was made at the rounded size. An ID that comes back is a new surface. The table grows and
  * forgets a surface only when the app destroys it: a forgotten import would be decoded into. */
-enum { SURF_IMPORTED = 1, SURF_ROUNDED420 = 2, SURF_BUMPED = 4 };
+enum { SURF_IMPORTED = 1, SURF_ROUNDED420 = 2, SURF_BUMPED = 4, SURF_DECLARED = 8 };
 static pthread_mutex_t surf_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct surf {
     VADriverContextP drv;
@@ -477,6 +493,7 @@ static struct surf {
     uint32_t flags;
     uint32_t fourcc;            /* Mesa's layout (0: not asked yet) */
     uint32_t width, height;     /* the size the app asked for (SURF_BUMPED: not Mesa's) */
+    uint32_t res;               /* SURF_DECLARED: the Mac's resource of its Y plane */
 } *surfs;
 static unsigned nsurfs, surfs_room;
 
@@ -515,7 +532,7 @@ static int surf_add(VADriverContextP ctx, const VASurfaceID *ids, unsigned n, ui
 
         if (!s)
             s = &surfs[nsurfs++];
-        *s = (struct surf){ ctx, ids[i], flags, 0, w, h };
+        *s = (struct surf){ ctx, ids[i], flags, 0, w, h, 0 };
     }
     pthread_mutex_unlock(&surf_lock);
     return ok;
@@ -532,6 +549,37 @@ static int surf_get(VADriverContextP ctx, VASurfaceID id, struct surf *out)
         *out = *s;
     pthread_mutex_unlock(&surf_lock);
     return s != NULL;
+}
+
+/* SURFACE is sampled at its own size by the Mac (its Y plane: RES). */
+static void surf_declared(VADriverContextP ctx, VASurfaceID id, uint32_t res)
+{
+    struct surf *s;
+
+    pthread_mutex_lock(&surf_lock);
+    if ((s = surf_find(ctx, id))) {
+        s->flags |= SURF_DECLARED;
+        s->res = res;
+    }
+    pthread_mutex_unlock(&surf_lock);
+}
+
+/* Did this process declare the surface whose Y plane is the Mac's resource RES (any display:
+ * resources are the Mac's)? Its size into *W, *H. */
+static int surf_res_declared(uint32_t res, uint32_t *w, uint32_t *h)
+{
+    int found = 0;
+
+    pthread_mutex_lock(&surf_lock);
+    for (unsigned i = 0; i < nsurfs && !found; i++)
+        if ((surfs[i].flags & SURF_DECLARED) && !(surfs[i].flags & SURF_IMPORTED) &&
+            surfs[i].res == res) {
+            *w = surfs[i].width;
+            *h = surfs[i].height;
+            found = 1;
+        }
+    pthread_mutex_unlock(&surf_lock);
+    return found;
 }
 
 /* N IDs gone (N < 0: every surface of a display that closes). */
@@ -569,6 +617,204 @@ static VAStatus surf_record(VADriverContextP ctx, VASurfaceID *ids, unsigned n, 
     if (mesa_destroy_surfaces)
         mesa_destroy_surfaces(ctx, ids, (int)n);
     return VA_STATUS_ERROR_ALLOCATION_FAILED;
+}
+
+/* ---- Pictures at their own size (see the top) ---- */
+
+/* The Mac's runtime samples a texture at the size the guest says (read once, at the driver's
+ * start: Chromium's sandbox closes later). */
+static int logical_on(void)
+{
+    static int on = -1;
+    const char *env;
+
+    if (on < 0) {
+        env = getenv("OMACVM_VA_LOGICAL");
+        on = env && *env ? *env == '1' : host_says("OMACVM_VALOGICAL=1\n");
+    }
+    return on;
+}
+
+/* this process may not use the ioctls (a sandbox): its surfaces as before */
+static int logical_refused;
+
+static void logical_refuse(const char *what)
+{
+    int e = errno;
+
+    if (e != EPERM && e != EACCES && e != ENOSYS && e != ENOTTY)
+        return;   /* this buffer only */
+    if (!__atomic_exchange_n(&logical_refused, 1, __ATOMIC_RELAXED))
+        fprintf(stderr, "omacvm_drv_video: %s refused here (%s): this process's video surfaces "
+                "keep their rounded size\n", what, strerror(e));
+}
+
+/* The display's DRM file (-1: none). */
+static int drm_fd(VADriverContextP ctx)
+{
+    struct drm_state *drm = ctx->drm_state;
+
+    return drm ? drm->fd : -1;
+}
+
+/* The Mac's resource of the dma-buf PRIME (0: not known). The handle is the DRM file's own
+ * handle of a buffer Mesa already has (Mesa made or imported it): never closed here. */
+static uint32_t res_of_fd(int drm, int prime)
+{
+    struct drm_prime_handle ph = { .fd = prime };
+    struct drm_virtgpu_resource_info ri = { 0 };
+
+    if (prime < 0 || ioctl(drm, DRM_IOCTL_PRIME_FD_TO_HANDLE, &ph)) {
+        logical_refuse("DRM_IOCTL_PRIME_FD_TO_HANDLE");
+        return 0;
+    }
+    ri.bo_handle = ph.handle;
+    if (ioctl(drm, DRM_IOCTL_VIRTGPU_RESOURCE_INFO, &ri)) {
+        logical_refuse("DRM_IOCTL_VIRTGPU_RESOURCE_INFO");
+        return 0;
+    }
+    return ri.res_handle;
+}
+
+/* The Mac's resources of a 4:2:0 surface's Y and UV planes, from Mesa's export (1: both,
+ * each its own). */
+static int surface_planes(VADriverContextP ctx, VASurfaceID surface, uint32_t res[2])
+{
+    VADRMPRIMESurfaceDescriptor d;
+    int ok;
+
+    memset(&d, 0, sizeof(d));
+    if (ctx->vtable->vaExportSurfaceHandle(ctx, surface, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                           VA_EXPORT_SURFACE_READ_ONLY |
+                                           VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+                                           &d) != VA_STATUS_SUCCESS)
+        return 0;
+    ok = (d.fourcc == VA_FOURCC_NV12 || d.fourcc == VA_FOURCC_P010 ||
+          d.fourcc == VA_FOURCC_P016) && d.num_objects <= 4 && d.num_layers == 2 &&
+         d.layers[0].num_planes == 1 && d.layers[1].num_planes == 1 &&
+         d.layers[0].object_index[0] < d.num_objects &&
+         d.layers[1].object_index[0] < d.num_objects;
+    for (int l = 0; ok && l < 2; l++)
+        ok = (res[l] = res_of_fd(drm_fd(ctx),
+                                 d.objects[d.layers[l].object_index[0]].fd)) != 0;
+    for (unsigned i = 0; i < d.num_objects && i < 4; i++)
+        close(d.objects[i].fd);
+    return ok && res[0] != res[1];
+}
+
+#define LOGICAL_MAGIC 0x534c4d4fu   /* "OMLS": virgl-resource-logical-size.patch */
+#define LOGICAL_PER_NOP 8
+
+/* Tells the Mac the sizes in E (N entries: resource, width, height): NOPs with the payload,
+ * 8 entries each, in one submit (no fence: the Mac takes them before the planes' next use). */
+static int send_logical(VADriverContextP ctx, const uint32_t (*e)[3], unsigned n)
+{
+    uint32_t cmd[64 / LOGICAL_PER_NOP * (3 + 3 * LOGICAL_PER_NOP)];
+    unsigned c = 0;
+    struct drm_virtgpu_execbuffer eb = { .fence_fd = -1 };
+
+    if (!n || n > 64)
+        return 0;
+    for (unsigned i = 0; i < n; i += LOGICAL_PER_NOP) {
+        unsigned k = n - i < LOGICAL_PER_NOP ? n - i : LOGICAL_PER_NOP;
+
+        cmd[c++] = (2 + 3 * k) << 16;   /* VIRGL_CMD0(VIRGL_CCMD_NOP, 0, len) */
+        cmd[c++] = LOGICAL_MAGIC;
+        cmd[c++] = 1;                   /* version */
+        for (unsigned j = 0; j < k; j++) {
+            cmd[c++] = e[i + j][0];
+            cmd[c++] = e[i + j][1];
+            cmd[c++] = e[i + j][2];
+        }
+    }
+    eb.size = c * 4;
+    eb.command = (uintptr_t)cmd;
+    if (ioctl(drm_fd(ctx), DRM_IOCTL_VIRTGPU_EXECBUFFER, &eb)) {
+        logical_refuse("DRM_IOCTL_VIRTGPU_EXECBUFFER");
+        return 0;
+    }
+    return 1;
+}
+
+/* Mesa made these surfaces (4:2:0, W x H not a multiple of 16): the Mac samples each at its
+ * own size, Y W x H and UV half of it (rounded up). */
+static void declare_own(VADriverContextP ctx, const VASurfaceID *ids, unsigned n, uint32_t w,
+                        uint32_t h)
+{
+    uint32_t e[64][3], res[2], done_res[32];
+    VASurfaceID done[32];
+    unsigned k = 0, nd = 0;
+    struct surf rec;
+
+    /* only recorded surfaces: the shim must know which ones the Mac samples so */
+    for (unsigned i = 0; i < n && !logical_refused; i++) {
+        if (surf_get(ctx, ids[i], &rec) && surface_planes(ctx, ids[i], res)) {
+            e[k][0] = res[0], e[k][1] = w, e[k][2] = h, k++;
+            e[k][0] = res[1], e[k][1] = (w + 1) / 2, e[k][2] = (h + 1) / 2, k++;
+            done[nd] = ids[i];
+            done_res[nd++] = res[0];
+        }
+        if (nd && (nd == 32 || i == n - 1)) {
+            if (send_logical(ctx, (const uint32_t (*)[3])e, k))
+                for (unsigned j = 0; j < nd; j++)
+                    surf_declared(ctx, done[j], done_res[j]);
+            k = nd = 0;
+        }
+    }
+    if (getenv("OMACVM_VA_DEBUG"))
+        fprintf(stderr, "omacvm_drv_video: %u surface(s) of %ux%u: sampled at their own size: %s\n",
+                n, w, h, logical_refused ? "no (refused here)" : "asked");
+}
+
+/* An import (one surface) of a surface this process declared, at the same size: Chrome
+ * converts imports of its decoder's surfaces. Sampled at its own size as well. */
+static void declared_import(VADriverContextP ctx, VASurfaceID id, unsigned int width,
+                            unsigned int height, VASurfaceAttrib *attribs,
+                            unsigned int num_attribs)
+{
+    int mem = -1, fd = -1;
+    uint32_t res, w = 0, h = 0;
+    void *p = NULL;
+
+    for (unsigned int i = 0; attribs && i < num_attribs; i++) {
+        if (attribs[i].type == VASurfaceAttribMemoryType)
+            mem = attribs[i].value.value.i;
+        else if (attribs[i].type == VASurfaceAttribExternalBufferDescriptor)
+            p = attribs[i].value.value.p;
+    }
+    if (!p)
+        return;
+    if (mem == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2) {
+        const VADRMPRIMESurfaceDescriptor *d = p;
+
+        if (d->num_layers >= 1 && d->layers[0].num_planes >= 1 &&
+            d->layers[0].object_index[0] < d->num_objects && d->num_objects <= 4)
+            fd = d->objects[d->layers[0].object_index[0]].fd;
+    } else if (mem == VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME) {
+        const VASurfaceAttribExternalBuffers *b = p;
+
+        if (b->num_buffers >= 1 && b->buffers)
+            fd = (int)b->buffers[0];
+    }
+    if (fd >= 0 && (res = res_of_fd(drm_fd(ctx), fd)) &&
+        surf_res_declared(res, &w, &h) && w == width && h == height)
+        surf_declared(ctx, id, res);
+}
+
+/* After Mesa made NUM surfaces (FLAGS as recorded): the declarations above. */
+static void logical_after_create(VADriverContextP ctx, unsigned int format, unsigned int width,
+                                 unsigned int height, const VASurfaceID *surfaces,
+                                 unsigned int num, uint32_t flags, VASurfaceAttrib *attribs,
+                                 unsigned int num_attribs)
+{
+    if (!logical_on() || logical_refused || !((width | height) & 15) || !width || !height ||
+        width > 16384 || height > 16384 || !(format & (VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV420_10)) ||
+        drm_fd(ctx) < 0 || !ctx->vtable->vaExportSurfaceHandle)
+        return;
+    if (!(flags & SURF_IMPORTED))
+        declare_own(ctx, surfaces, num, width, height);
+    else if (num == 1)
+        declared_import(ctx, surfaces[0], width, height, attribs, num_attribs);
 }
 
 static int import_rounded(VADriverContextP ctx, unsigned int format, unsigned int width,
@@ -610,7 +856,11 @@ static VAStatus create_surfaces2(VADriverContextP ctx, unsigned int format, unsi
     if (fill_on() && (format & (VA_RT_FORMAT_YUV420 | VA_RT_FORMAT_YUV420_10)) &&
         (!flags || (num_surfaces == 1 && import420_rounded(width, height, attribs, num_attribs))))
         flags |= SURF_ROUNDED420;
-    return surf_record(ctx, surfaces, num_surfaces, width, height, flags);
+    st = surf_record(ctx, surfaces, num_surfaces, width, height, flags);
+    if (st == VA_STATUS_SUCCESS)
+        logical_after_create(ctx, format, width, height, surfaces, num_surfaces, flags, attribs,
+                             num_attribs);
+    return st;
 }
 
 /* Mesa's vaCreateSurfaces2, exportable at their real size where export_sized() says so. */
@@ -1060,9 +1310,11 @@ static VAStatus render_picture(VADriverContextP ctx, VAContextID context, VABuff
         if (ctx->vtable->vaMapBuffer(ctx, buffers[i], &data) != VA_STATUS_SUCCESS || !data)
             continue;
         pp = data;
-        /* only 4:2:0 surfaces with rounded planes: an exact-size import keeps its region */
+        /* only 4:2:0 surfaces with rounded planes the Mac samples whole: an exact-size
+         * import keeps its region, and so does a surface sampled at its own size */
         src_fix = surf_size(ctx, pp->surface, SURF_ROUNDED420, &sw, &sh) && sw && sh &&
-                  sw <= 16384 && sh <= 16384 && ((sw | sh) & 15);
+                  sw <= 16384 && sh <= 16384 && ((sw | sh) & 15) &&
+                  !surf_size(ctx, pp->surface, SURF_DECLARED, &sw, &sh);
         out_fix = fill && (!pp->output_region ||
                            (!pp->output_region->x && !pp->output_region->y &&
                             pp->output_region->width == w && pp->output_region->height == h));
@@ -1605,6 +1857,7 @@ static VAStatus shim_init(VADriverContextP ctx)
     if (st == VA_STATUS_SUCCESS && ctx->vtable && ctx->vtable->vaCreateSurfaces2) {
         export_sized();
         host_decodes_async();
+        logical_on();
         mesa_create_surfaces2 = ctx->vtable->vaCreateSurfaces2;
         ctx->vtable->vaCreateSurfaces2 = create_surfaces2;
     }
