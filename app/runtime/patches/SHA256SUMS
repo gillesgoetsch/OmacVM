@@ -115,7 +115,7 @@ d1e93fd303777f424d7b11522fcf44bf726058901e85de3920c33e9083f301ea  qemu-hda-full-
 9aa348a3766d2b8ac7cfa5bae55d74b323cec32402f4eee63dd104d38b862e59  qemu-hda-no-catch-up.patch
 5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf  qemu-hvf-free-page-reclaim.patch
 2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0  qemu-hvf-mapped-sections.patch
-17ddd0e797c6207d86a1a6e3fe39391fc3bc18c302bb12c4cf3e935033c755ba  qemu-hvf-vcpu-stall-note.patch
+2122487e0d6d637b26cf9eaa2664bd6640e9f43f5a38da5272c3c27ece742590  qemu-hvf-vcpu-stall-note.patch
 59b8ec2d9b57f9a7511501eb1ed98a11140133cf7a6bea729941705f4a2e05ce  qemu-hvf-virgl-blob-subregion.patch
 70d7ebc37d9189306890222d6a823e7b58c81d55bf58fa5ada5726e0b504fa17  qemu-main-loop-stall-gpu-run.patch
 98f48369acad127381d2c257064127f87152e7072e6811e84fa30ec4893e6fe2  qemu-main-loop-stall-watchdog.patch

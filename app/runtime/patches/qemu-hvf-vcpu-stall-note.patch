@@ -33,6 +33,10 @@ vCPU's CPU rate before (a vCPU mostly idle: the latest it can be), so a time is
 within about 1 s, never longer than seen. No line while the VM is not running,
 and none for a look that came more than 1 s late or after the Mac slept (App
 Nap, QEMU stopped): times are CLOCK_UPTIME_RAW, which stops while the Mac sleeps.
+A watchdog wake more than 1 s late (not a Mac that slept) gets its own line, at
+most one per 10 minutes, the late wakes between counted in the next one:
+  OmacVM: stall: the stall watchdog woke 3.2 s late: QEMU got no Mac core or
+  waited in macOS that long; vCPU stalls in that time are not counted
 logs/vm-stalls ($OMACVM_LOGS/vm-stalls, key=value lines, all zeros from the
 watchdog's start, replaced in one rename, no fsync): only the watchdog's thread
 writes it, after the status lock is let go; the main loop, which may hold the
@@ -273,10 +277,10 @@ index 6e2dcc4..8820ccb 100644
  ))
 diff --git a/include/qemu/omacvm-stall.h b/include/qemu/omacvm-stall.h
 new file mode 100644
-index 0000000..891a958
+index 0000000..924f777
 --- /dev/null
 +++ b/include/qemu/omacvm-stall.h
-@@ -0,0 +1,651 @@
+@@ -0,0 +1,699 @@
 +/*
 + * OmacVM: the vCPU stall note and the VM's stall status file
 + * (qemu-hvf-vcpu-stall-note.patch).
@@ -847,6 +851,54 @@ index 0000000..891a958
 +}
 +
 +/*
++ * The watchdog itself woke more than 1 s late (not because the Mac slept):
++ * QEMU's process got no Mac core, or waited in macOS, for that long, and the
++ * vCPUs were not looked at then (their stalls in that time are not counted).
++ * One line at most every 10 minutes; the late wakes between are counted in
++ * the next one.
++ */
++#define OMACVM_STALL_LATE_GAP_NS (600LL * 1000000000LL)
++
++typedef struct OmacvmStallLate {
++    bool said;
++    int64_t last;                   /* when the last line was written */
++    unsigned more;                  /* late wakes since, without a line */
++    int64_t more_longest;
++} OmacvmStallLate;
++
++/* A wake LATE_NS late at NOW: true and the line in OUT when one is due. */
++static inline bool omacvm_stall_late_line(OmacvmStallLate *l, int64_t now, int64_t late_ns,
++                                          char *out, size_t n)
++{
++    char d[32], m[32];
++
++    if (l->said && now - l->last < OMACVM_STALL_LATE_GAP_NS) {
++        l->more++;
++        if (late_ns > l->more_longest) {
++            l->more_longest = late_ns;
++        }
++        return false;
++    }
++    omacvm_stall_secs(late_ns, d, sizeof(d));
++    if (l->more) {
++        omacvm_stall_secs(l->more_longest, m, sizeof(m));
++        snprintf(out, n, "OmacVM: stall: the stall watchdog woke %s late (and %u time%s more "
++                 "since the last such line, up to %s): QEMU got no Mac core or waited in "
++                 "macOS that long; vCPU stalls in that time are not counted", d, l->more,
++                 l->more == 1 ? "" : "s", m);
++    } else {
++        snprintf(out, n, "OmacVM: stall: the stall watchdog woke %s late: QEMU got no Mac "
++                 "core or waited in macOS that long; vCPU stalls in that time are not "
++                 "counted", d);
++    }
++    l->said = true;
++    l->last = now;
++    l->more = 0;
++    l->more_longest = 0;
++    return true;
++}
++
++/*
 + * The status between threads. The main loop records its own stalls here in
 + * memory only: it may hold the BQL, so no file write and no fsync there. The
 + * watchdog's thread records vCPU episodes and is the only one that writes
@@ -979,7 +1031,7 @@ index da3ec52..52490d5 100644
          bql_lock();
          switch (r) {
 diff --git a/util/main-loop.c b/util/main-loop.c
-index 6e0512a..8db035c 100644
+index 6e0512a..333c510 100644
 --- a/util/main-loop.c
 +++ b/util/main-loop.c
 @@ -318,6 +318,26 @@ static void glib_pollfds_poll(void)
@@ -1009,7 +1061,7 @@ index 6e0512a..8db035c 100644
  static int64_t main_loop_busy_since; /* 0 while polling */
  static bool main_loop_has_bql;
  static bool main_loop_gpu_run;       /* in a GPU run, without the BQL */
-@@ -374,51 +394,153 @@ static int stall_stack(void **pcs, int max)
+@@ -374,51 +394,160 @@ static int stall_stack(void **pcs, int max)
      return n;
  }
  
@@ -1135,6 +1187,7 @@ index 6e0512a..8db035c 100644
 -    int64_t wait = MAIN_LOOP_STALL_NS;
 +    int64_t wait = MAIN_LOOP_STALL_NS, check_wait = 0;
 +    int64_t up_last = 0, cont_last = 0;
++    OmacvmStallLate late_lines = { 0 };
  
 +    stall_status_flush();       /* this run's zeros over the last run's file */
      for (;;) {
@@ -1144,7 +1197,8 @@ index 6e0512a..8db035c 100644
 +        g_autoptr(GString) brief = NULL;
 +        int64_t since, left, sleep_ns, planned, up, cont;
 +        int64_t (*check)(int64_t, bool);
-+        bool has_bql, gpu_run, late;
++        bool has_bql, gpu_run, late, woke_late;
++        char line[300];
  
          /*
           * Asleep until the loop could be 2 s out of its poll: 2 s while it
@@ -1159,9 +1213,14 @@ index 6e0512a..8db035c 100644
 +        g_usleep(sleep_ns / SCALE_US);
 +        up = stall_uptime();
 +        cont = stall_continuous();
-+        /* woke more than 1 s late (App Nap, QEMU stopped) or the Mac slept */
-+        late = up - planned > NANOSECONDS_PER_SECOND ||
++        /* woke more than 1 s late (no core, App Nap, QEMU stopped) or the Mac slept */
++        woke_late = up - planned > NANOSECONDS_PER_SECOND;
++        late = woke_late ||
 +               (cont_last && (cont - cont_last) - (up - up_last) > NANOSECONDS_PER_SECOND);
++        if (woke_late && omacvm_stall_late_line(&late_lines, up, up - planned, line,
++                                                sizeof(line))) {
++            warn_report("%s", line);
++        }
 +        up_last = up;
 +        cont_last = cont;
 +        check = qatomic_read(&stall_check_hook);
@@ -1171,7 +1230,7 @@ index 6e0512a..8db035c 100644
          wait = MAIN_LOOP_STALL_NS;
          since = qatomic_read(&main_loop_busy_since);
          if (!since || since == qatomic_read(&stall_reported)) {
-@@ -432,11 +554,14 @@ static void *stall_watchdog(void *opaque)
+@@ -432,11 +561,14 @@ static void *stall_watchdog(void *opaque)
          has_bql = qatomic_read(&main_loop_has_bql);
          gpu_run = qatomic_read(&main_loop_gpu_run);
          where = g_string_new(NULL);
@@ -1188,7 +1247,7 @@ index 6e0512a..8db035c 100644
          warn_report("main loop stalled for %.1f s %s; where: %s",
                      (get_clock() - since) / 1e9,
                      gpu_run ? "in a GPU run without the BQL (vCPUs run; "
-@@ -458,6 +583,11 @@ static void stall_watchdog_start(void)
+@@ -458,6 +590,11 @@ static void stall_watchdog_start(void)
          return;
      }
      main_loop_owner = omacvm_thread_self();
@@ -1200,7 +1259,7 @@ index 6e0512a..8db035c 100644
  #ifdef __APPLE__
      pthread_t self = pthread_self();
      main_loop_thread = pthread_mach_thread_np(self);
-@@ -477,9 +607,13 @@ static void stall_watchdog_poll(void)
+@@ -477,9 +614,13 @@ static void stall_watchdog_poll(void)
      if (stall_watchdog_state == 0) {
          stall_watchdog_start();
      }

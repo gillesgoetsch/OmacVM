@@ -13,7 +13,8 @@
  * blocked in macOS's kernel is memory only when the Mac paged then;
  * the status between the main loop and the watchdog's thread (only the
  * watchdog writes the file, outside the lock); main loop stalls with the BQL
- * (main_*) apart from those in a GPU run (gpu_*).
+ * (main_*) apart from those in a GPU run (gpu_*); the watchdog's own late
+ * wakes (one line per 10 minutes).
  */
 #include <math.h>
 #include <pthread.h>
@@ -598,6 +599,27 @@ int main(void)
     check(r.over == 1 && r.cause[0] == OMACVM_STALL_CAUSE_KERNEL,
           "a Mac compressing 10 MB/s the whole time (under 16 MB/s): kernel");
     paging_set(0, 1LL << 62, 200LL << 20, 0, 1);
+
+    /* 19: the watchdog woke late (QEMU got no core, or waited in macOS): one
+     * line, then at most one per 10 minutes with the count in between */
+    OmacvmStallLate late = { 0 };
+    char late_text[4][300];
+    int nl = 0;
+    for (int k = 0; k < 50; k++) {
+        /* a late wake every 36 s for 30 min, 1.2-6 s late */
+        int64_t when = 100 * S + k * 36 * S, by = 1200 * MS + (k % 5) * 1200 * MS;
+        if (omacvm_stall_late_line(&late, when, by, late_text[nl < 4 ? nl : 3], sizeof(late_text[0]))) {
+            nl++;
+        }
+    }
+    for (int k = 0; k < nl && k < 4; k++) {
+        printf("  line: %s\n", late_text[k]);
+    }
+    snprintf(what, sizeof(what), "50 late wakes in 30 min: %d lines (one per 10 min)", nl);
+    check(nl == 3 && !strcmp(late_text[0], "OmacVM: stall: the stall watchdog woke 1.2 s late: QEMU got "
+                             "no Mac core or waited in macOS that long; vCPU stalls in that time "
+                             "are not counted") &&
+          strstr(late_text[1], "(and 16 times more since the last such line, up to 6.0 s)"), what);
 
     if (failures) {
         printf("vcpu stall: %d checks FAILED\n", failures);
