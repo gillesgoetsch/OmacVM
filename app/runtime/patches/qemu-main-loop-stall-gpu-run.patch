@@ -1,0 +1,205 @@
+From: OmacVM
+Subject: [PATCH] main-loop: the stall watchdog tells a GPU run without the BQL apart
+
+What: virtio-gpu's unlocked runs (qemu-virtio-gpu-virgl-unlocked.patch) let
+go of the BQL on the main loop thread while virglrenderer works. The stall
+watchdog (qemu-main-loop-stall-watchdog.patch) did not know: a stall of 2 s or
+more inside a run (VideoToolbox starting a decoder, a Metal submit, a Venus
+reply) was logged "with the BQL held (the VM waits)", which is false: the
+vCPUs ran on, only the main loop's other work (display, disks, network) waited.
+Now virtio_gpu_run_begin/run_end tell it (main_loop_stall_note) and the line
+says where the thread is:
+  main loop stalled for 2.5 s in a GPU run without the BQL (vCPUs run;
+  display, disk and network wait); where: ...
+and still "with the BQL held (the VM waits)" or "waiting for the BQL" outside
+runs. Only the main loop thread's notes count; nothing when the watchdog is off.
+Test hook: OMACVM_TEST_GPU_RUN_STALL_MS=N[,S] holds one GPU run for N ms, the
+first one S seconds or more after the first run.
+Why: reading the user's qemu.log of 2026-10-28 (frozen VM), each such line
+needed its stack to tell whether the vCPUs waited (tracks/vm-stall.md).
+Upstream: OmacVM only (both patches it builds on are ours).
+Test: a test VM with OMACVM_TEST_GPU_RUN_STALL_MS=2500,20: qemu.log says "in a
+GPU run without the BQL" (work/vm-stall row "gpurun"); the text is in this patch.
+
+diff --git a/hw/display/virtio-gpu.c b/hw/display/virtio-gpu.c
+index 31dd3b5..ae2f035 100644
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -32,6 +32,7 @@
+ #include "qemu/module.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
++#include "qemu/main-loop.h"
+ 
+ #define VIRTIO_GPU_VM_VERSION 1
+ 
+@@ -1170,6 +1171,32 @@ static bool virtio_gpu_run_thread_ok(void)
+     return true;
+ }
+ 
++/*
++ * OmacVM test hook: OMACVM_TEST_GPU_RUN_STALL_MS=N[,S] holds one run for N ms
++ * (the first run S seconds or more after the first one), so a test sees the
++ * stall watchdog's line for a GPU run without the BQL.
++ */
++static void virtio_gpu_run_test_stall(void)
++{
++    static int64_t stall_ms = -1, after_ms, first_ms;
++    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++
++    if (stall_ms < 0) {
++        const char *e = getenv("OMACVM_TEST_GPU_RUN_STALL_MS");
++        const char *comma = e ? strchr(e, ',') : NULL;
++
++        stall_ms = e ? MAX(atoll(e), 0) : 0;
++        after_ms = comma ? MAX(atoll(comma + 1), 0) * 1000 : 0;
++        first_ms = now;
++    }
++    if (stall_ms > 0 && now - first_ms >= after_ms) {
++        warn_report("virtio-gpu: test hook: holding this GPU run for %" PRId64
++                    " ms", stall_ms);
++        g_usleep(stall_ms * 1000);
++        stall_ms = 0;
++    }
++}
++
+ static void virtio_gpu_run_begin(VirtIOGPU *g, bool *guard)
+ {
+     DeviceState *transport = qdev_get_parent_bus(DEVICE(g))->parent;
+@@ -1178,8 +1205,10 @@ static void virtio_gpu_run_begin(VirtIOGPU *g, bool *guard)
+     *guard = transport->mem_reentrancy_guard.engaged_in_io;
+     transport->mem_reentrancy_guard.engaged_in_io = false;
+     g->unlocked_run = true;
++    main_loop_stall_note(MAIN_LOOP_GPU_RUN);
+     bql_unlock();
+     qemu_console_gl_render_lock();
++    virtio_gpu_run_test_stall();
+ }
+ 
+ static void virtio_gpu_run_end(VirtIOGPU *g, bool guard)
+@@ -1189,7 +1218,9 @@ static void virtio_gpu_run_end(VirtIOGPU *g, bool guard)
+     VirtQueue *vq = NULL;
+ 
+     qemu_console_gl_render_unlock();
++    main_loop_stall_note(MAIN_LOOP_WAITS_BQL);
+     bql_lock();
++    main_loop_stall_note(MAIN_LOOP_HAS_BQL);
+     g->unlocked_run = false;
+     transport->mem_reentrancy_guard.engaged_in_io = guard;
+     while ((cmd = QTAILQ_FIRST(&g->donelist))) {
+diff --git a/include/qemu/main-loop.h b/include/qemu/main-loop.h
+index 8c1241a..cf5fc68 100644
+--- a/include/qemu/main-loop.h
++++ b/include/qemu/main-loop.h
+@@ -91,6 +91,20 @@ int qemu_init_main_loop(Error **errp);
+  */
+ void main_loop_wait(int nonblocking);
+ 
++/**
++ * main_loop_stall_note: OmacVM: where the main loop thread is between two
++ * polls, for the stall watchdog's line (qemu-main-loop-stall-gpu-run.patch).
++ * MAIN_LOOP_GPU_RUN: it let go of the BQL for a GPU run; MAIN_LOOP_WAITS_BQL:
++ * it waits for the BQL again; MAIN_LOOP_HAS_BQL: it has it. Calls from other
++ * threads are ignored.
++ */
++typedef enum MainLoopStallNote {
++    MAIN_LOOP_HAS_BQL,
++    MAIN_LOOP_WAITS_BQL,
++    MAIN_LOOP_GPU_RUN,
++} MainLoopStallNote;
++void main_loop_stall_note(MainLoopStallNote note);
++
+ /**
+  * qemu_get_aio_context: Return the main loop's AioContext
+  */
+diff --git a/util/main-loop.c b/util/main-loop.c
+index 8ccbd12..f757634 100644
+--- a/util/main-loop.c
++++ b/util/main-loop.c
+@@ -304,16 +304,24 @@ static void glib_pollfds_poll(void)
+  * aborted: it only leaves a trace for frozen-VM reports.
+  * OMACVM_STALL_WATCHDOG=0 turns it off.
+  *
+- * Threading: main_loop_busy_since and main_loop_has_bql are written only by
+- * the main loop thread, stall_reported only by the watchdog; all atomic.
++ * Threading: main_loop_busy_since, main_loop_has_bql and main_loop_gpu_run
++ * are written only by the main loop thread, stall_reported only by the
++ * watchdog; all atomic.
++ *
++ * virtio-gpu's unlocked runs (qemu-virtio-gpu-virgl-unlocked.patch) let go of
++ * the BQL on the main loop thread for a while: main_loop_stall_note() says
++ * so, and a stall in one is logged as "in a GPU run without the BQL" (vCPUs
++ * run on; the display, disks and network wait for the main loop).
+  */
+ #define MAIN_LOOP_STALL_NS (2 * NANOSECONDS_PER_SECOND)
+ #define MAIN_LOOP_STALL_FRAMES 24
+ 
+ static int64_t main_loop_busy_since; /* 0 while polling */
+ static bool main_loop_has_bql;
++static bool main_loop_gpu_run;       /* in a GPU run, without the BQL */
+ static int64_t stall_reported;       /* main_loop_busy_since already logged */
+ static int stall_watchdog_state;     /* 0 not started, 1 on, -1 off */
++static int main_loop_qemu_thread;    /* qemu_get_thread_id() of the main loop */
+ 
+ #ifdef __APPLE__
+ #include <dlfcn.h>
+@@ -401,7 +409,7 @@ static void *stall_watchdog(void *opaque)
+     for (;;) {
+         g_autoptr(GString) where = NULL;
+         int64_t since, left;
+-        bool has_bql;
++        bool has_bql, gpu_run;
+ 
+         /*
+          * Asleep until the loop could be 2 s out of its poll: 2 s while it
+@@ -420,6 +428,7 @@ static void *stall_watchdog(void *opaque)
+             continue;
+         }
+         has_bql = qatomic_read(&main_loop_has_bql);
++        gpu_run = qatomic_read(&main_loop_gpu_run);
+         where = g_string_new(NULL);
+         stall_where(where);
+         if (qatomic_read(&main_loop_busy_since) != since) {
+@@ -428,6 +437,8 @@ static void *stall_watchdog(void *opaque)
+         qatomic_set(&stall_reported, since);
+         warn_report("main loop stalled for %.1f s %s; where: %s",
+                     (get_clock() - since) / 1e9,
++                    gpu_run ? "in a GPU run without the BQL (vCPUs run; "
++                              "display, disk and network wait)" :
+                     has_bql ? "with the BQL held (the VM waits)"
+                             : "waiting for the BQL (another thread holds it)",
+                     where->str);
+@@ -444,6 +455,7 @@ static void stall_watchdog_start(void)
+         stall_watchdog_state = -1;
+         return;
+     }
++    main_loop_qemu_thread = qemu_get_thread_id();
+ #ifdef __APPLE__
+     pthread_t self = pthread_self();
+     main_loop_thread = pthread_mach_thread_np(self);
+@@ -468,9 +480,25 @@ static void stall_watchdog_poll(void)
+                     (get_clock() - since) / 1e9);
+     }
+     qatomic_set(&main_loop_has_bql, false);
++    qatomic_set(&main_loop_gpu_run, false);
+     qatomic_set(&main_loop_busy_since, 0);
+ }
+ 
++/*
++ * The main loop thread lets go of the BQL for a GPU run, waits for it again
++ * after one, or has it again (virtio-gpu's unlocked runs). Any other thread,
++ * or with the watchdog off: nothing.
++ */
++void main_loop_stall_note(MainLoopStallNote note)
++{
++    if (stall_watchdog_state <= 0 ||
++        qemu_get_thread_id() != main_loop_qemu_thread) {
++        return;
++    }
++    qatomic_set(&main_loop_gpu_run, note == MAIN_LOOP_GPU_RUN);
++    qatomic_set(&main_loop_has_bql, note == MAIN_LOOP_HAS_BQL);
++}
++
+ static int os_host_main_loop_wait(int64_t timeout)
+ {
+     GMainContext *context = g_main_context_default();
