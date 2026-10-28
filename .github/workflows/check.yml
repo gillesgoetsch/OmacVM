@@ -212,6 +212,9 @@ jobs:
       - name: Freed memory back to the Mac in 256 KiB blocks (page_reporting_order 6, omacvm check's line)
         run: src/tests/memory-report-order.sh
 
+      - name: The VM gives its cold file cache back while macOS compresses it (giveback.sh, the app's trigger, omacvm check's row)
+        run: src/tests/memory-giveback.sh
+
       - name: apply's SSH key in the VM (the user's ~/.ssh written as the user)
         run: src/tests/ssh-key.sh
 
@@ -740,6 +743,9 @@ jobs:
         run: |
           sudo apt-get install -y -qq python3-gi dbus >/dev/null   # Omarchy's base has python-gobject and dbus
           OMACVM_MEDIA_NEED_DBUS=1 python3 src/app/guest/tests/test_omacvm_media.py -v
+
+      - name: The VM's cold file cache give-back on Linux (bash, GNU tools as in the VM; a kernel that refuses swappiness=)
+        run: src/tests/memory-giveback.sh
 
       - name: A feature switch on Linux (GNU sed, glide off path)
         run: src/tests/feature-switch.sh
