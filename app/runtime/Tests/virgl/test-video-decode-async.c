@@ -30,6 +30,9 @@
  *   profile 2 (P010) stays bit for bit;
  * - a context destroyed while the sync thread waits for its fence's picture:
  *   that fence is not reported (the context is gone).
+ * OMACVM_TEST_VIDEO_PROBE_HANG_MS=N (the Mac's video service hangs N ms at
+ * start): only case 0 runs: one caps query waits at most 10 s, once; the next
+ * query and a decoder's create do not wait.
  * OMACVM_TEST_THREAD_SYNC=1: fences reported by the sync thread (QEMU's way).
  * OMACVM_VIDEO_DECODE_SYNC=1 (END_FRAME waits, as before): the timing checks and
  * the session's queue cases are skipped, everything else must hold the same.
@@ -829,6 +832,37 @@ int main(void)
    }
    virgl_renderer_ctx_attach_resource(1, R_DESC);
    virgl_renderer_ctx_attach_resource(1, R_BITS);
+
+   /* 0: the Mac's video service hangs (OMACVM_TEST_VIDEO_PROBE_HANG_MS: the
+    * caps probe's queue waits that long first). One caps query waits for it
+    * once, at most 10 s; the next query and a decoder's create only look (no
+    * wait), so the GPU thread is not held 10 s per codec asked */
+   const char *hang = getenv("OMACVM_TEST_VIDEO_PROBE_HANG_MS");
+   if (hang && atoi(hang) > 0) {
+      uint64_t t0 = now_ns();
+      int vp9 = vp9_offered(G_VP9_P0);
+      double first = (now_ns() - t0) / 1e9;
+      t0 = now_ns();
+      vp9 |= vp9_offered(G_VP9_P0);
+      double second = (now_ns() - t0) / 1e9;
+      create_codec(10);
+      t0 = now_ns();
+      submit(1);
+      double create = (now_ns() - t0) / 1e9;
+      snprintf(line, sizeof(line), "the Mac's video service hangs %d ms: the first caps query "
+               "%.2f s (waits once, 10 s at most), the next %.3f s, a decoder's create %.3f s "
+               "(VP9 offered: %s)", atoi(hang), first, second, create, vp9 ? "yes" : "no");
+      check(first < 11.5 && second < 0.1 && create < 0.1, line);
+      virgl_renderer_context_destroy(1);
+      virgl_renderer_context_destroy(2);
+      if (failures) {
+         printf("video decode async: %d checks FAILED\n", failures);
+         return 1;
+      }
+      printf("video decode async (hung video service): all checks passed\n");
+      return 0;
+   }
+
    for (unsigned b = 0; b < NBUF; b++)
       create_buffer(b);
    create_codec(10);
