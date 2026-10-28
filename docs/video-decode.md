@@ -196,13 +196,36 @@ converted frames as Mesa makes them (above).
 ## Chrome's converted frames
 
 Google Chrome (and, by the same code, Brave and Electron apps: tested in
-Chrome 156 only) with Skia on OpenGL shows a
-hardware-decoded frame only as ARGB: NV12 counts as renderable only with
-Vulkan or when GBM can make NV12 buffers, which virgl cannot. So Chrome
-converts each frame on the GPU (VA-API video processing, Mesa's video
-compositor: one shader pass on the Mac's GPU) into an ARGB surface of its
-own, and hands that surface back to VA-API. Six things stood in the way,
-all fixed in 3.2.0:
+Chrome 156 only) with Skia on OpenGL converts each hardware-decoded frame on
+the GPU (VA-API video processing, Mesa's video compositor: one shader pass
+on the Mac's GPU) into an ARGB surface of its own, hands that surface back
+to VA-API and shows the ARGB frame. OmacVM makes it do so (since 3.2.11):
+`omacvm apply` adds `--disable-features=AcceleratedVideoDecodeLinuxZeroCopyGL`
+to Chrome's and Brave's flags files (`browser-video-encode.py`, group
+`decode`; the same files, marker and rules as the
+[encoder's switches](video-encode.md#browser-switches)), and each VM start
+puts it back when it is missing. Without it, Chrome on Wayland (Omarchy)
+counts NV12 as renderable (the feature is on by default and EGL can import
+NV12 dma-bufs) and draws the decoded NV12 pictures directly ("zero copy",
+"No ImageProcessor needed" in its log). That path:
+
+- samples Mesa's whole planes, rounded up to 16 rows, so the rows below the
+  picture can show as a strip (the last row repeated) under the video;
+- keeps its frame pool across a stream change at the same size (another
+  H.264 profile or reference count, frequent in calls) and then decodes
+  into imports of those frames, where Mesa's virgl driver crashed Chrome's
+  GPU process (the VA-API shim refuses such pictures, see
+  [How it works](#how-it-works), and that video decodes on the CPU).
+
+What converting costs: the shader pass per frame, ARGB frames of 8.3 MB at
+1080p and 33 MB at 4K (Chrome keeps up to 16: about 133 and 530 MB of guest
+memory), and 10-bit video arrives as 8-bit ARGB. The CPU numbers below were
+measured on this path. A user's own last `--enable-features` that names
+`AcceleratedVideoDecodeLinuxZeroCopyGL` is kept (nothing is added);
+`omacvm check` says so in its *Chrome video path* line, which otherwise says
+whether the switch is there. Quit Chrome fully once after Update VM.
+
+Six things stood in the way of the converted frames, all fixed in 3.2.0:
 
 - Chrome first checks each plane against its dma-buf's size
   (`vaapi_wrapper.cc`, `ValidateAndGetPlaneInfo`). Mesa's virgl gives a

@@ -42,7 +42,11 @@ files already have one, so the features are added to the last
 user's files are written by a process running as the user. OmacVM remembers
 what it added in `/var/lib/omacvm/video-encode-flags.json` (root's) and
 removes only that. Omarchy's `omarchy install browser brave` replaces Brave's
-file: run `omacvm apply` afterwards. Quit the browser fully once.
+file: run `omacvm apply` afterwards. Quit the browser fully once. The same
+script and marker also turn Chrome's and Brave's zero-copy video drawing off
+(`--disable-features=AcceleratedVideoDecodeLinuxZeroCopyGL`, group `decode`,
+in the last `--disable-features`; [video-decode.md](video-decode.md#chromes-converted-frames));
+each group changes only its own entries.
 
 Check in the VM: `vainfo` lists `VAEntrypointEncSlice`; `omacvm check` shows
 *video encoding* and *WebRTC encoding* (Chrome and Brave when installed,

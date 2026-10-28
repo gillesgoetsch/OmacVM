@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.11 (unreleased)
+
+- **Chrome and Brave convert their hardware-decoded video before drawing it.** In an
+  OmacVM.app VM, Chrome on Omarchy (Wayland) drew decoded video frames directly. That way it
+  could show a strip of repeated rows under a video, and after a stream changed at the same
+  size, which happens in video calls, it decoded into its old frames, where the VM's video
+  driver crashed Chrome's GPU process: Chrome then drew everything on the CPU until it was
+  restarted. OmacVM now turns that path off in Chrome's and Brave's flags files
+  (`--disable-features=AcceleratedVideoDecodeLinuxZeroCopyGL`), so each frame is converted
+  first, as on X11. It costs one GPU pass per frame and more guest memory for the frames
+  (about 130 MB at 1080p). Your own `--enable-features` naming that feature is kept;
+  `omacvm check` shows a *Chrome video path* line. Needs Update VM, then quit Chrome fully
+  once.
+
 ## 3.2.10
 
 Apps in an OmacVM.app VM that draw with OpenGL program pipelines now draw. Needs only the app
