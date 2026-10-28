@@ -84,6 +84,14 @@ G=$T/src
 printf 'Module { Component { exports: ["QtQuick/Color 6.12"] } }\n' > "$T/qt.qmltypes"
 qml() { printf 'import QtQuick\nimport qs.Commons\nItem { color: Color.bar.text }\n'; }
 
+# video_flags on|off: Chrome's and Brave's video switches, both groups (its marker in the test's folder).
+video_flags() {
+  local g
+  for g in encode decode; do
+    OMACVM_VIDEO_FLAGS_MARK=$T/video-flags.json python3 "$G/app/guest/browser-video-encode.py" "$LU" "$1" $g >/dev/null 2>&1
+  done
+}
+
 # run_all: every guest script with a part in the home, as apply runs them (their
 # own failures are fine here: the links make the user's writes fail).
 run_all() {
@@ -97,6 +105,7 @@ run_all() {
   bash "$G/clock/guest/clock.sh" "$LU" off >/dev/null 2>&1
   bash "$G/lib/install-plugin.sh" "$LU" "$G/workspaces/plugins/omacvm.workspaces" >/dev/null 2>&1
   python3 "$G/guest/shell-colors.py" --user "$LU" --qmltypes "$T/qt.qmltypes" >/dev/null 2>&1
+  video_flags on; video_flags off
   # guest/off.sh, as guest/install.sh sources it.
   ( U=$LU R=$G ROOT=""
     log() { :; }; user_ctl() { return 1; }; in_session() { return 1; }; restart_shell_later() { :; }
@@ -135,6 +144,7 @@ plant "$H/.config/hypr/bindings.lua" "$S/secret"
 plant "$H/.config/hypr/monitors.lua" "$S/secret"
 for f in glide-flags pending-plugins pending-plugins-off pending-clock restart-shell; do plant "$H/.local/state/omacvm/$f" "$S/file"; done
 plant "$H/.config/chromium-flags.conf" "$S/file"
+plant "$H/.config/chrome-flags.conf" "$S/file"; plant "$H/.config/brave-flags.conf" "$S/secret"
 plant "$H/.config/omarchy/shell.json" "$S/json"
 plant "$H/.config/omacvm/clock-before.json" "$S/secret"
 plant "$H/.config/omacvm-bridge/token" "$S/secret"; plant "$H/.config/omacvm-bridge/vm-key" "$S/file"
@@ -163,6 +173,8 @@ fresh_home
 printf -- '-- hyprland\n' > "$H/.config/hypr/hyprland.lua"; : > "$H/.config/hypr/bindings.lua"; : > "$H/.config/hypr/autostart.lua"
 printf 'local omarchy_monitor_scale = 1.5\n' > "$H/.config/hypr/monitors.lua"
 cp "$S/json" "$H/.config/omarchy/shell.json"; echo "--old" > "$H/.config/chromium-flags.conf"
+echo "--disable-features=Foo" > "$H/.config/chrome-flags.conf"; : > "$H/.config/brave-flags.conf"
+chown "$LU:" "$H/.config/chrome-flags.conf" "$H/.config/brave-flags.conf"
 mkdir -p "$H/.config/omarchy/plugins/p"; qml > "$H/.config/omarchy/plugins/p/Bar.qml"
 # Left by older versions as root's: a folder above the user's units, a marker.
 mkdir -p "$H/.config/systemd/user"; chown root: "$H/.config/systemd" "$H/.config/systemd/user"
@@ -174,6 +186,7 @@ echo old > "$H/.local/state/omacvm/restart-shell"
 bash "$G/gestures/guest/glide.sh" "$LU" on >/dev/null 2>&1
 bash "$G/clock/guest/clock.sh" "$LU" on "HH:mm" >/dev/null 2>&1
 python3 "$G/guest/shell-colors.py" --user "$LU" --qmltypes "$T/qt.qmltypes" >/dev/null 2>&1
+video_flags on
 ( U=$LU IP=x; gssh() { shift; /bin/bash -c "$1"; }; die() { exit 1; }
   eval "$(sed -n '/^vm_user_file() {/,/^}/p' "$SRC/cmd/apply.sh")"
   echo tok > "$T/tok"; vm_user_file token < "$T/tok" ) >/dev/null 2>&1
@@ -187,6 +200,12 @@ expect "... monitors.lua keeps the scale, the user's, 644" "1 $LU 644" \
   "$(grep -c '^local omarchy_monitor_scale = 1.5$' "$H/.config/hypr/monitors.lua") $(owner "$H/.config/hypr/monitors.lua") $(stat -c %a "$H/.config/hypr/monitors.lua")"
 expect "... Glide in hyprland.lua and the flags file" "1 1" \
   "$(grep -c 'require("hypr.omacvm_glide")' "$H/.config/hypr/hyprland.lua") $(grep -c -- '--disable-smooth-scrolling' "$H/.config/chromium-flags.conf")"
+expect "... Chrome's video switches merged into its flags file (after Glide's line), the user's" \
+  "--disable-features=Foo,AcceleratedVideoDecodeLinuxZeroCopyGL --disable-smooth-scrolling --enable-features=AcceleratedVideoEncoder,VaapiVideoEncoder $LU" \
+  "$(tr '\n' ' ' < "$H/.config/chrome-flags.conf")$(owner "$H/.config/chrome-flags.conf")"
+expect "... Brave's (empty) flags file: both lines, still the user's" \
+  "--disable-smooth-scrolling --enable-features=AcceleratedVideoEncoder,VaapiVideoEncoder --disable-features=AcceleratedVideoDecodeLinuxZeroCopyGL $LU" \
+  "$(tr '\n' ' ' < "$H/.config/brave-flags.conf")$(owner "$H/.config/brave-flags.conf")"
 expect "... the clock moved in shell.json, the user's" "1 $LU" "$(jq '.bar.layout.right[-1].format == "HH:mm"' "$H/.config/omarchy/shell.json" | grep -c true) $(owner "$H/.config/omarchy/shell.json")"
 expect "... the plugin clone pinned, still the user's" "1 $LU" "$(grep -c '^import QtQuick 6.11 ' "$H/.config/omarchy/plugins/p/Bar.qml") $(owner "$H/.config/omarchy/plugins/p/Bar.qml")"
 expect "... the plugin's queue link, in a folder root had left" "yes $LU" \

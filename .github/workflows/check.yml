@@ -584,6 +584,7 @@ jobs:
           python3 src/app/guest/tests/test_audio_latency.py
           python3 src/app/guest/tests/test_chrome_drirc.py
           python3 src/app/guest/tests/test_omacvm_media.py
+          python3 src/app/guest/tests/test_browser_video_flags.py
 
       - name: Final-round benchmark kit offline tests (one timing method per row, what is left out, preflight)
         run: tests/bench/final-round/test.sh
@@ -621,7 +622,7 @@ jobs:
       - name: Chromium's no-AV1 extension survives an apply of other features (its place, 3.1.4's path moved, check)
         run: src/tests/chromium-no-av1.sh
 
-      - name: Chrome's WebRTC encoder flags survive Update VM and come back at a start
+      - name: Chrome's video flags (WebRTC encoder, converted decoding) survive Update VM and come back at a start
         run: src/tests/video-encode-flags.sh
 
       - name: CI builds OmacVM.app on the mini (the app job, its runtime cache)

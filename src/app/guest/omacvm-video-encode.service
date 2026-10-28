@@ -1,5 +1,5 @@
 [Unit]
-Description=OmacVM.app: Chrome's WebRTC encoder flags while the Mac offers an encoder
+Description=OmacVM.app: Chrome's video flags (WebRTC encoder while the Mac offers one, converted decoding)
 After=local-fs.target systemd-modules-load.service
 
 [Service]

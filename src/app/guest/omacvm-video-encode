@@ -1,6 +1,9 @@
 #!/bin/bash
-# OmacVM.app: Chrome's and Brave's WebRTC encoder flags follow what the Mac's
-# app offers (browser-video-encode.py). As root:
+# OmacVM.app: Chrome's and Brave's video flags (browser-video-encode.py). The
+# WebRTC encoder flags follow what the Mac's app offers; the decoded pictures
+# are always converted before drawing (zero copy off: its direct NV12 path
+# crashed Mesa's VA driver and shows Mesa's rounded rows), with or without a
+# GPU now, unless the user's own flags turn zero copy on. As root:
 #   omacvm-video-encode apply USER   app/guest/install.sh (omacvm apply, Update VM)
 #   omacvm-video-encode boot         each start (omacvm-video-encode.service)
 # What the VM's GPU offers now, from vainfo: "on" (an encoder), "off" (a GPU
@@ -24,9 +27,17 @@ offered() {
   grep -q VAEntrypointEncSlice <<<"$out" && echo on || echo off
 }
 
+# The decode group, whatever the GPU offers now: written at apply (also taken
+# out again where the user's own flags turned zero copy on since), put back at
+# a start when missing.
+decode_flags() {
+  python3 "$ENCODE" "$1" on decode && echo "video decoding: Chrome converts its decoded pictures (zero copy off)"
+}
+
 case ${1:-} in
 apply)
   U=${2:?usage: omacvm-video-encode apply USER}
+  decode_flags "$U" || true
   case $(offered) in
     on) python3 "$ENCODE" "$U" on && echo "video encoding: WebRTC encoder flags on" ;;
     off) python3 "$ENCODE" "$U" off && echo "video encoding: none offered, WebRTC encoder flags off" ;;
@@ -35,6 +46,7 @@ apply)
 boot)
   U=$(sed -n 's/^OMACVM_USER=//p' "$ENV" 2>/dev/null | tail -1)
   [[ -n $U ]] || exit 0
+  python3 "$ENCODE" "$U" check decode >/dev/null 2>&1 || decode_flags "$U" || true
   # The render node can come a moment after this unit starts: a few looks.
   state=unknown
   for ((i = 0; i < ${OMACVM_BOOT_LOOKS:-10}; i++)); do
