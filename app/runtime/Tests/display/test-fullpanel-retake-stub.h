@@ -15,6 +15,7 @@
 #define OMACVM_FP_RETAKE_CHECK_S 2.0
 #define OMACVM_FP_BAND_SLACK 8.0
 #define OMACVM_FP_RETAKE_REASK_S 0.5
+#define OMACVM_FP_WHY_BAND_TALL "3.2.10 has no band"
 /* 3.2.10's claim waited for -screenChanged:'s resume (!released). */
 #define OMACVM_FP_CLAIMS_WAIT_FOR_RESUME 1
 
@@ -79,10 +80,18 @@ static inline bool omacvm_fp_band_kept(OmacVMFPRect frame, OmacVMFPRect display,
     return false;
 }
 
+static inline bool omacvm_fp_band_tall(OmacVMFPRect frame, OmacVMFPRect display, double notch)
+{
+    (void)frame;
+    (void)display;
+    (void)notch;
+    return false;
+}
+
 typedef struct {
     bool inside, armed, entered, rejected, lost, display_changed, given_up;
     int tries;
-    bool tried_this_settle, pending, notch, covers, band_kept, display_live, same_size;
+    bool tried_this_settle, pending, notch, covers, band_kept, band_tall, display_live, same_size;
     bool on_space, visible, in_place, locked, moving, menu_bar_in_the_way, parts, reshape;
     bool appkit_band;
 } OmacVMFPRetakeFacts;

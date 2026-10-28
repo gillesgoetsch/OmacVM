@@ -20,7 +20,7 @@ flat() { tr -s ' \n' '  '; }
 
 # What the wiring must have; one line per problem.
 problems() {
-  local m=$1 claims frame screen facts retake ask again covered taken expired give reshape space own uses all soon fired moving locked engage release check_ret b f
+  local m=$1 claims frame screen facts retake ask again new taken expired give reshape space own uses all soon fired moving locked engage release check_ret b f
   grep -q '^#include "ui/omacvm-fullpanel-retake.h"$' "$m" || echo "the retake rules are not included"
   claims=$(body "$m" '- (bool)claimsStrip')
   grep -q 'omacvm_fp_claims(inside, armed, rejected, lost, omacvm_fullpanel_menu_failed,' <<<"$claims" &&
@@ -28,8 +28,11 @@ problems() {
   frame=$(body "$m" '- (void)frameChanged:(NSNotification *)notification')
   grep -q 'switch (omacvm_fp_frame_kind(omacvm_fullpanel_covers(window),' <<<"$frame" &&
     ! grep -q 'omacvm_fp_lost(' <<<"$frame" || echo "a frame change is not sorted by omacvm_fp_frame_kind (a display change taken for a lost strip)"
-  grep -q 'case OMACVM_FP_FRAME_DISPLACED:' <<<"$frame" && grep -q 'displaced = display_changed = true;' <<<"$frame" &&
+  awk '/case OMACVM_FP_FRAME_DISPLACED:/{d=1} d && /displaced = true;/{a=1} d && a && /\[self retakeNewChange\];/{ok=1} /case OMACVM_FP_FRAME_LOST:/{d=0} END{exit !ok}' <<<"$frame" &&
     grep -q '"omacvm: full panel: display change: frame ' <<<"$frame" || echo "a displaced frame does not note the display change"
+  # Back inside its live display (or on a display with a housing again): the next displacement is a new change.
+  awk '/case OMACVM_FP_FRAME_WAIT:/{w=1} w && /if \(within && live\) \{/{i=1} i && /displaced = false;/{ok=1; exit} END{exit !ok}' <<<"$frame" ||
+    echo "a frame back inside its display does not end the displacement (a later display change gets no tries)"
   grep -q 'lost_at = omacvm_ds_clock();' <<<"$frame" || echo "a lost strip does not note when"
   # The band after a display change is no Split View (also released, the resume before the resize); a tile is.
   grep -q 'bool tile = omacvm_fp_tile(omacvm_fullpanel_rect(actual), omacvm_fullpanel_rect(physical));' <<<"$frame" &&
@@ -42,13 +45,13 @@ problems() {
   grep -q 'omacvm_fp_lost_to_display_change(' <<<"$screen" || echo "a strip lost just before a display change stays lost"
   flat <<<"$screen" | grep -qF '!omacvm_fullpanel_same_display(screen, accepted_display), lost_tile))' ||
     echo "a Split View tile lost just before a display change is turned into one"
-  awk '/omacvm_fp_screen_releases\(/{r=1} r && /released = true;/{x=1} x && /display_changed = true;/{ok=1; exit} END{exit !ok}' <<<"$screen" ||
+  awk '/omacvm_fp_screen_releases\(/{r=1} r && /released = true;/{x=1} x && /\[self retakeNewChange\];/{ok=1; exit} END{exit !ok}' <<<"$screen" ||
     echo "a full screen on a display without a housing does not note the display change"
+  [[ $(grep -c '\[self retakeNewChange\];' <<<"$screen") == 2 ]] && grep -q 'released = displaced = false;' <<<"$screen" ||
+    echo "a strip lost to a display change or the resume does not note the display change"
   engage=$(body "$m" '- (bool)engage')
   grep -q 'bool taken = retake_pending && \[self retakeTaken\];' <<<"$engage" &&
     grep -q 'displaced = display_changed = false;' <<<"$engage" || echo "engage does not end the display change and say the try worked"
-  awk '/if \(display_changed\) \{/{d=1} d && /\[self retakeCovered\];/{ok=1; exit} END{exit !ok}' <<<"$engage" ||
-    echo "the strip back after a display change does not give the next one its own tries"
   awk '/\[self retakeTaken\]/{t=NR} /"omacvm: full panel: strip covered: /{c=NR} END{exit !(t && c && t < c)}' <<<"$engage" ||
     echo "'strip taken again' does not come before 'strip covered'"
   release=$(body "$m" '- (void)releaseSystemState')
@@ -60,7 +63,7 @@ problems() {
   retake=$(body "$m" '- (void)retake:(const char *)why')
   ask=$(body "$m" '- (void)retakeAsk:(const char *)why')
   again=$(body "$m" '- (void)retakeAgain')
-  covered=$(body "$m" '- (void)retakeCovered')
+  new=$(body "$m" '- (void)retakeNewChange')
   taken=$(body "$m" '- (bool)retakeTaken')
   expired=$(body "$m" '- (void)retakeExpired')
   give=$(body "$m" '- (void)retakeGiveUp:(const char *)reason')
@@ -69,11 +72,11 @@ problems() {
   b=$(body "$m" 'static bool omacvm_fullpanel_appkit_band(NSWindow *w)')
   all=$(body "$m" 'static void omacvm_fullpanel_retake_all(const char *why)')
   soon=$(body "$m" 'static void omacvm_fullpanel_retake_soon(void)')
-  for f in facts retake ask again covered taken expired give reshape space b all soon; do
+  for f in facts retake ask again new taken expired give reshape space b all soon; do
     [[ -n ${!f} ]] || { echo "no retake ($f)"; return; }
   done
   if grep -E 'toggleFullScreen|setFrame|makeKey|orderFront|orderOut|activate|setPresentationOptions|SLS|CGS|Space\(|omacvm_fullpanel_backdrop|method_setImplementation' \
-       <<<"$facts$retake$ask$again$covered$taken$expired$give$reshape$space$b$all$soon" >/dev/null; then
+       <<<"$facts$retake$ask$again$new$taken$expired$give$reshape$space$b$all$soon" >/dev/null; then
     echo "the retake moves a window, a Space or the menu bar itself"
   fi
   [[ $(grep -c 'method_setImplementation(' "$m") == 1 ]] || echo "more than the reservation method is replaced"
@@ -96,11 +99,13 @@ problems() {
   grep -q 'omacvm_fp_band_kept(' <<<"$facts" && grep -q 'omacvm_fullpanel_compositor(window) == 1' <<<"$facts" &&
     grep -q 'omacvm_fullpanel_displays_locked()' <<<"$facts" && grep -q 'omacvm_fullpanel_displays_moving()' <<<"$facts" &&
     grep -q 'omacvm_fp_menu_bar_in_the_way(always, immersive_mode_enabled)' <<<"$facts" &&
+    grep -q 'omacvm_fp_band_tall(' <<<"$facts" &&
     grep -q 'omacvm_fullpanel_hook_state() == OMACVM_FP_HOOK_USABLE' <<<"$facts" ||
     echo "a retake's facts miss the band, WindowServer, the lock, the moving windows, the menu bar or the reservation"
   awk '/omacvm_fp_retake\(f, &reason\)/{n++} /omacvm_fullpanel_appkit_band\(window\)/{a=NR; if (n != 1) bad=1} END{exit bad || !a}' <<<"$ask" ||
     echo "AppKit's Space is asked before the rules say now"
   grep -q 'retake_tries++;' <<<"$ask" && grep -q 'retake_settle = omacvm_fullpanel_settles;' <<<"$ask" &&
+    grep -q 'retake_tried = true;' <<<"$ask" &&
     grep -q 'performSelector:@selector(retakeExpired) withObject:nil afterDelay:OMACVM_FP_RETAKE_CHECK_S' <<<"$ask" ||
     echo "a try is not counted or not checked"
   # Asked again after a wait nothing else ends, as the rules say, bounded; a trigger drops a queued one.
@@ -109,8 +114,15 @@ problems() {
     grep -q '\[self retakeAsk:why\];' <<<"$retake" && grep -q 'retake_reasks++;' <<<"$again" &&
     grep -q '\[self retakeAsk:"a moment later"\];' <<<"$again" ||
     echo "a wait nothing else ends is not asked again as the rules say (or a trigger keeps a queued one)"
-  grep -q 'retake_tries = retake_reasks = 0;' <<<"$covered" && grep -q 'retake_given_up = false;' <<<"$covered" &&
-    [[ $(grep -c '\[self retakeCovered\];' "$m") == 2 ]] || echo "the tries do not start again once the strip is back"
+  # Tries per display change: every new one (displaced, released, a loss that went with it) starts them
+  # again, also after "strip not back"; one try per settle stays (its settle is not reset).
+  grep -q 'display_changed = true;' <<<"$new" && grep -q 'retake_tries = retake_reasks = 0;' <<<"$new" &&
+    grep -q 'retake_given_up = false;' <<<"$new" && ! grep -q 'retake_tried\|retake_settle' <<<"$new" &&
+    [[ $(grep -c '\[self retakeNewChange\];' "$m") == 3 && $(grep -c 'display_changed = true' "$m") == 1 ]] ||
+    echo "a new display change does not start its own tries (or not only there)"
+  grep -q '\.tried_this_settle = retake_tried && retake_settle == omacvm_fullpanel_settles,' <<<"$facts" ||
+    echo "one try per settle ends with the tries of a display change"
+  grep -q 'strcmp(reason, OMACVM_FP_WHY_BAND_TALL)' <<<"$give" || echo "'strip not back' below a taller band does not say both heights"
   # Called from the three triggers only: the settled update, the displays' windows done, a return.
   [[ $(grep -c 'omacvm_fullpanel_retake_all(' "$m") == 3 ]] && [[ $(grep -c '\[self retake:' "$m") == 1 ]] &&
     [[ $(grep -c 'omacvm_fullpanel_retake_soon();' "$m") == 1 ]] && [[ $(grep -c '\[self retakeAsk:' "$m") == 2 ]] &&

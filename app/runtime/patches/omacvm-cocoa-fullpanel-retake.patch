@@ -30,8 +30,11 @@ displays settle, without leaving full screen. Three parts:
   reservation again. Only after AppKit's own
   -alwaysReservesSpaceForMenuBarInFullScreen says the Space's display has a
   housing, on the active Space, visible, with WindowServer's frame in
-  place; never Split View; at most 3 tries per display change (they start
-  again once the strip is covered), one per settle. A wait that ends by
+  place; never Split View; at most 3 tries per display change (each new
+  display change starts them again, also after "strip not back"), one per
+  settle. Below a band taller than the camera housing's (+ 8 pt) no try:
+  "strip not back ... (AppKit keeps a band taller than the camera housing:
+  N pt, the housing N pt)" once the displays settled. A wait that ends by
   itself with no trigger of its own (WindowServer still moving the window,
   the displays' windows moving, the window not visible yet) asks again
   0.5 s later, at most 3 times after each trigger.
@@ -41,7 +44,8 @@ displays settle, without leaving full screen. Three parts:
   again after a display change (try N of 3)", "strip covered", and the
   guest's size and arrangement again. Not in 2 s: "strip not back after a
   display change (AppKit kept the band, try N of 3): normal full screen
-  ..." (omacvm check warns, with the remedy).
+  ..." (omacvm check warns, with the remedy: leave full screen and enter
+  it again).
 
 Why: the user's MacBook Pro M4 Max (OmacVM 3.2.9, 2026-10-28), FullPanel on
 the built-in with an LG UltraFine 5K: after unplugging, replugging and
@@ -60,8 +64,9 @@ nothing asked it to.
 Fallbacks: a missing or changed AppKit part (another macOS) gives today's
 behaviour with one line ("strip not back ... (selector missing: ...)");
 leaving and entering full screen again still covers the strip. With
-"Always show the menu bar in full screen" and Keep the Dock away off, no
-try ("menu bar always shown").
+"Always show the menu bar in full screen" turned on during the full screen
+and Keep the Dock away off, no try ("menu bar always shown": omacvm check
+names the menu bar setting and Keep the Dock away as the remedy).
 
 Upstream: not applicable (private AppKit, OmacVM's notch strip).
 Test: app/runtime/Tests/display/test-fullpanel-retake.sh (the rules, the
@@ -85,20 +90,21 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  #include "ui/omacvm-close.h"
  #include "ui/omacvm-modifiers.h"
  #include "ui/omacvm-display-settle.h"
-@@ -3519,14 +3520,43 @@ @interface OmacVMFullPanelState : NSObject
+@@ -3519,14 +3520,44 @@ @interface OmacVMFullPanelState : NSObject
      bool reveal_logged;
      bool fallback_logged;
      bool options_logged;
 +    /* A display change (omacvm-cocoa-fullpanel-retake.patch). */
-+    bool displaced;            /* AppKit laid the window out for another display */
-+    bool display_changed;      /* a display change took the strip in this full screen */
++    bool displaced;            /* laid out for another display (or that display off), not back inside it yet */
++    bool display_changed;      /* a display change took the strip, not covered since */
 +    double lost_at;            /* when the strip was lost (omacvm_ds_clock) */
 +    bool lost_tile;            /* the lost frame had a Split View tile's shape */
 +    bool retake_pending;       /* a try's check runs (-retakeExpired) */
 +    bool retake_asked;         /* this return's check asked for a try */
-+    bool retake_given_up;      /* "strip not back" for good */
-+    int retake_tries;          /* since the strip was last covered (this display change) */
++    bool retake_given_up;      /* "strip not back" for this display change */
++    int retake_tries;          /* since this display change began (-retakeNewChange) */
 +    int retake_reasks;         /* asked again after a wait since the last trigger */
++    bool retake_tried;         /* a try in this full screen: retake_settle is its settle */
 +    unsigned retake_settle;    /* omacvm_fullpanel_settles at the last try */
  }
  - (id)initWithWindow:(NSWindow *)w;
@@ -109,7 +115,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +- (void)retake:(const char *)why;
 +- (void)retakeAsk:(const char *)why;
 +- (void)retakeAgain;
-+- (void)retakeCovered;
++- (void)retakeNewChange;
 +- (bool)retakeTaken;
 +- (void)retakeExpired;
 +- (void)retakeGiveUp:(const char *)reason;
@@ -129,7 +135,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static char omacvm_fullpanel_state_key;
  static char omacvm_fullpanel_titlebar_context;
  static char omacvm_fullpanel_options_context;
-@@ -3737,6 +3767,172 @@ static bool omacvm_fullpanel_install_reservation(void)
+@@ -3737,6 +3768,172 @@ static bool omacvm_fullpanel_install_reservation(void)
  QEMU_BUILD_BUG_ON(NSApplicationPresentationHideMenuBar != OMACVM_FP_HIDE_MENU_BAR);
  QEMU_BUILD_BUG_ON(NSApplicationPresentationFullScreen != OMACVM_FP_FULL_SCREEN);
  
@@ -302,7 +308,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  @implementation OmacVMFullPanelState
  
  - (id)initWithWindow:(NSWindow *)w
-@@ -3804,11 +4000,15 @@ - (void)dealloc
+@@ -3804,11 +4001,15 @@ - (void)dealloc
      [super dealloc];
  }
  
@@ -321,30 +327,28 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  }
  
  /*
-@@ -3850,6 +4050,9 @@ - (void)endFullScreen
+@@ -3850,6 +4051,10 @@ - (void)endFullScreen
      inside = armed = entered = accepted = rejected = lost = released = reveal = false;
      own_known = false;
      covered_logged = reveal_logged = fallback_logged = options_logged = false;
 +    displaced = display_changed = lost_tile = retake_pending = retake_asked = retake_given_up = false;
++    retake_tried = false;
 +    retake_tries = retake_reasks = 0;
 +    lost_at = 0;
  }
  
  /* Whether AppKit gave this full screen the whole display (definitive: didEnterFullScreen). */
-@@ -3964,6 +4167,12 @@ - (bool)engage
+@@ -3964,6 +4169,9 @@ - (bool)engage
          [self releaseSystemState];
          return false;
      }
 +    /* The strip is back: a try made it so (said first), or AppKit by itself. */
 +    bool taken = retake_pending && [self retakeTaken];
-+    if (display_changed) {
-+        [self retakeCovered];
-+    }
 +    displaced = display_changed = false;
      if (!covered_logged) {
          covered_logged = true;
          /* omacvm check reads this line: the strip beside the notch shows the VM. */
-@@ -3972,6 +4181,10 @@ - (bool)engage
+@@ -3972,6 +4180,10 @@ - (bool)engage
                  [screen safeAreaInsets].top, immersive_mode_enabled ?
                  "menu bar hidden (Keep the Dock away)" : "menu bar at the top edge");
      }
@@ -355,7 +359,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      return true;
  }
  
-@@ -4267,6 +4480,11 @@ - (void)releaseSystemState
+@@ -4267,6 +4479,11 @@ - (void)releaseSystemState
  {
      [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkReturn)
                                                 object:nil];
@@ -367,7 +371,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      return_pending = false;
      return_from_away = false;
      reassert_scheduled = false;
-@@ -4281,11 +4499,15 @@ - (void)releaseSystemState
+@@ -4281,11 +4498,15 @@ - (void)releaseSystemState
      [self restoreOptions];
  }
  
@@ -385,7 +389,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  
      if (!armed || !inside || !omacvm_fullpanel_in_full_screen(window)) {
          return;
-@@ -4293,20 +4515,48 @@ - (void)frameChanged:(NSNotification *)notification
+@@ -4293,20 +4514,52 @@ - (void)frameChanged:(NSNotification *)notification
      if (!accepted) {
          [self verify:false];
      } else if (entered && !lost && !released && screen) {
@@ -398,6 +402,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +        NSRect actual = [window frame], physical = [screen frame];
 +        bool same_size, live = omacvm_fullpanel_display_live(screen, &same_size);
 +        bool tile = omacvm_fp_tile(omacvm_fullpanel_rect(actual), omacvm_fullpanel_rect(physical));
++        bool within = omacvm_fp_inside(omacvm_fullpanel_rect(actual), omacvm_fullpanel_rect(physical));
  
 +        /*
 +         * A display change took the strip in this full screen (laid out for
@@ -405,10 +410,8 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +         * the way back is no Split View, also when NSWindowDidChangeScreen
 +         * came first; a tile always is.
 +         */
-+        switch (omacvm_fp_frame_kind(omacvm_fullpanel_covers(window),
-+                                     omacvm_fp_inside(omacvm_fullpanel_rect(actual),
-+                                                      omacvm_fullpanel_rect(physical)),
-+                                     live, omacvm_fullpanel_same_display(screen, accepted_display),
++        switch (omacvm_fp_frame_kind(omacvm_fullpanel_covers(window), within, live,
++                                     omacvm_fullpanel_same_display(screen, accepted_display),
 +                                     display_changed, tile)) {
 +        case OMACVM_FP_FRAME_COVERS:
 +            accepted_display = physical;
@@ -416,7 +419,8 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +            break;
 +        case OMACVM_FP_FRAME_DISPLACED:
 +            if (!displaced) {
-+                displaced = display_changed = true;
++                displaced = true;
++                [self retakeNewChange];
 +                [self releaseSystemState];
 +                covered_logged = false;
 +                fprintf(stderr, "omacvm: full panel: display change: frame (%.0f %.0f %.0fx%.0f) on display (%.0f %.0f %.0fx%.0f), %s; the strip comes back once the displays settle\n",
@@ -436,11 +440,15 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
              [self relayout];
              return;
 +        case OMACVM_FP_FRAME_WAIT:
++            /* Back inside its display: the next displacement is a new display change. */
++            if (within && live) {
++                displaced = false;
++            }
 +            break;
          }
      }
      [self comeBack];
-@@ -4319,10 +4569,28 @@ - (void)frameChanged:(NSNotification *)notification
+@@ -4319,15 +4572,35 @@ - (void)frameChanged:(NSNotification *)notification
  - (void)screenChanged:(NSNotification *)notification
  {
      bool full = omacvm_fullpanel_in_full_screen(window);
@@ -459,17 +467,25 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +        fprintf(stderr, "omacvm: full panel: display change: the strip lost %.1f s ago went with it; the strip comes back once the displays settle\n",
 +                omacvm_ds_clock() - lost_at);
 +        lost = false;
-+        displaced = display_changed = true;
++        displaced = true;
++        [self retakeNewChange];
 +        covered_logged = false;
 +    }
      if (omacvm_fp_screen_releases(armed && inside, full, !omacvm_fullpanel_no_notch(window),
                                    released)) {
          released = true;
-+        display_changed = true;
++        [self retakeNewChange];
          [self releaseSystemState];
          fprintf(stderr, "omacvm: full panel: the full screen is on a display without a camera housing: normal full screen there\n");
          [self relayout];
-@@ -4438,6 +4706,7 @@ - (void)comeBack
+     } else if (omacvm_fp_screen_resumes(released, full, omacvm_fullpanel_notch(window))) {
+-        released = false;
++        /* On a display with a housing again: the next displacement is a new display change. */
++        released = displaced = false;
+         covered_logged = false;
+         [self relayout];
+         [self comeBack];
+@@ -4438,6 +4711,7 @@ - (void)comeBack
      }
      return_pending = true;
      return_again_done = false;
@@ -477,7 +493,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      return_from_away = was_away;
      return_checks = OMACVM_FP_RETURN_CHECKS;
      [self performSelector:@selector(checkReturn) withObject:nil afterDelay:0.016
-@@ -4471,6 +4740,16 @@ - (void)checkReturn
+@@ -4471,6 +4745,16 @@ - (void)checkReturn
          return_pending = false;
          return;
      }
@@ -494,7 +510,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      if (return_checks-- == 0) {
          return_pending = false;
          if ([window isOnActiveSpace] && [window isKeyWindow]) {
-@@ -4483,6 +4762,173 @@ - (void)checkReturn
+@@ -4483,6 +4767,188 @@ - (void)checkReturn
                    inModes:[NSArray arrayWithObject:NSRunLoopCommonModes]];
  }
  
@@ -525,7 +541,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +        .display_changed = display_changed,
 +        .given_up = retake_given_up,
 +        .tries = retake_tries,
-+        .tried_this_settle = retake_tries > 0 && retake_settle == omacvm_fullpanel_settles,
++        .tried_this_settle = retake_tried && retake_settle == omacvm_fullpanel_settles,
 +        .pending = retake_pending,
 +    };
 +
@@ -535,6 +551,9 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    f.notch = omacvm_fullpanel_notch(window);
 +    f.covers = omacvm_fullpanel_covers(window);
 +    f.band_kept = omacvm_fp_band_kept(omacvm_fullpanel_rect([window frame]),
++                                      omacvm_fullpanel_rect([screen frame]),
++                                      [screen safeAreaInsets].top);
++    f.band_tall = omacvm_fp_band_tall(omacvm_fullpanel_rect([window frame]),
 +                                      omacvm_fullpanel_rect([screen frame]),
 +                                      [screen safeAreaInsets].top);
 +    f.display_live = omacvm_fullpanel_display_live(screen, &f.same_size);
@@ -591,6 +610,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +        return;
 +    }
 +    retake_tries++;
++    retake_tried = true;
 +    retake_settle = omacvm_fullpanel_settles;
 +    retake_pending = true;
 +    fprintf(stderr, "omacvm: full panel: below the notch after a display change (%s): AppKit lays the window out again (try %d of %d)\n",
@@ -609,9 +629,15 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    }
 +}
 +
-+/* The strip is back after a display change: the next display change gets its own tries. */
-+- (void)retakeCovered
++/*
++ * A display change took the strip (laid out for another display, a display
++ * without a camera housing, a loss that went with it): its own
++ * OMACVM_FP_RETAKE_TRIES, also after a "strip not back" for an earlier one.
++ * The settle of the last try stays: still one try per settle.
++ */
++- (void)retakeNewChange
 +{
++    display_changed = true;
 +    retake_tries = retake_reasks = 0;
 +    retake_given_up = false;
 +}
@@ -640,7 +666,6 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    if (omacvm_fullpanel_covers(window)) {
 +        fprintf(stderr, "omacvm: full panel: strip taken again after a display change (try %d of %d); covered once the window is in front\n",
 +                retake_tries, OMACVM_FP_RETAKE_TRIES);
-+        [self retakeCovered];
 +        displaced = display_changed = false;
 +        [self relayout];
 +        return;
@@ -649,26 +674,32 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
 +    retake_given_up = last;
 +    /* omacvm check reads this line (warns, with the remedy); a later "strip covered" wins. */
 +    fprintf(stderr, "omacvm: full panel: strip not back after a display change (AppKit kept the band, try %d of %d): normal full screen %s\n",
-+            retake_tries, OMACVM_FP_RETAKE_TRIES, last ? "until the next one" : "for now");
++            retake_tries, OMACVM_FP_RETAKE_TRIES, last ? "until the next display change or full screen" : "for now");
 +}
 +
 +/* No try for the rest of this display change: said once, with why. */
 +- (void)retakeGiveUp:(const char *)reason
 +{
 +    bool parts = !strcmp(reason, "selector missing") && omacvm_fullpanel_tile_differs[0];
++    NSScreen *screen = [window screen];
++    char band[64] = "";
 +
 +    if (retake_given_up) {
 +        return;
 +    }
 +    retake_given_up = true;
-+    fprintf(stderr, "omacvm: full panel: strip not back after a display change (%s%s%s): normal full screen until the next one\n",
-+            reason, parts ? ": " : "", parts ? omacvm_fullpanel_tile_differs : "");
++    if (!strcmp(reason, OMACVM_FP_WHY_BAND_TALL) && screen) {
++        snprintf(band, sizeof(band), ": %.0f pt, the housing %.0f pt",
++                 [screen frame].size.height - [window frame].size.height, [screen safeAreaInsets].top);
++    }
++    fprintf(stderr, "omacvm: full panel: strip not back after a display change (%s%s%s%s): normal full screen until the next display change or full screen\n",
++            reason, parts ? ": " : "", parts ? omacvm_fullpanel_tile_differs : "", band);
 +}
 +
  /*
   * Once per return from away with the menu bar held back: release the
   * options for one main-queue turn, hold them again on the next, then the
-@@ -4571,6 +5017,40 @@ static bool omacvm_fullpanel_vm_window(id w)
+@@ -4571,6 +5037,40 @@ static bool omacvm_fullpanel_vm_window(id w)
             [w isKindOfClass:objc_getClass("OmacVMHeadWindow")];
  }
  
@@ -709,7 +740,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  /*
   * At the start, before any window goes full screen: the reservation answer
   * (AppKit asks during the way in) and, on every way into full screen of a
-@@ -9718,6 +10198,10 @@ - (void)windowDidEnterFullScreen:(NSNotification *)note
+@@ -9718,6 +10218,10 @@ - (void)windowDidEnterFullScreen:(NSNotification *)note
      }
      omacvm_full_busy = false;
      omacvm_full_next();
@@ -720,7 +751,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  }
  
  /* A display changed its resolution, or the window found its full-screen size. */
-@@ -10141,6 +10625,19 @@ static double omacvm_displays_apply(void)
+@@ -10141,6 +10645,19 @@ static double omacvm_displays_apply(void)
  static bool omacvm_ds_screen_locked, omacvm_ds_asleep, omacvm_ds_away, omacvm_ds_test_locked;
  static double omacvm_ds_locked_at;
  
@@ -740,7 +771,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static void omacvm_ds_fired(void);
  
  static void omacvm_ds_arm(double at)
-@@ -10168,6 +10665,15 @@ static void omacvm_ds_fired(void)
+@@ -10168,6 +10685,15 @@ static void omacvm_ds_fired(void)
      if (omacvm_ds_done(&omacvm_ds_timer, omacvm_ds_clock(), retry, &at)) {
          omacvm_ds_arm(at);
      }

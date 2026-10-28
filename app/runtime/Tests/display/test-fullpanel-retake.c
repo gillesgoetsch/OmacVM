@@ -7,7 +7,7 @@
  * of the window's FullPanel state (OmacVMFullPanelState in ui/cocoa.m,
  * method by method: willEnterFullScreen, verify:, frameChanged:,
  * screenChanged:, comeBack/checkReturn, engage, retake:, retakeAsk:,
- * retakeAgain, retakeExpired)
+ * retakeAgain, retakeNewChange, retakeExpired, retakeGiveUp:)
  * that decides with the header's rules. AppKit is modelled from the log:
  * its full-screen layout asks the reservation (its own yes only when the
  * Space's display has a camera housing; FullPanel's answer no while the
@@ -43,6 +43,8 @@ typedef struct {
 static const Disp BUILTIN = { "built-in", { 0, 0, 1728, 1117 }, 32, 33 };
 static const Disp BUILTIN_BIG = { "built-in at 2056x1329", { 0, 0, 2056, 1329 }, 38, 39 };
 static const Disp BUILTIN_SMALL = { "built-in at 1512x982", { 0, 0, 1512, 982 }, 28, 29 };
+/* The same panel with a taller band than the housing's (+ OMACVM_FP_BAND_SLACK): a macOS that keeps more. */
+static const Disp BUILTIN_TALL = { "built-in, a 44 pt band", { 0, 0, 1728, 1117 }, 32, 44 };
 static const Disp LG = { "LG 5K", { 0, 0, 2560, 1440 }, 0, 0 };
 static const Disp STANDIN = { "1920x1080 stand-in", { 0, 0, 1920, 1080 }, 0, 0 };
 static const Disp SMALL = { "1280x800 external", { 0, 0, 1280, 800 }, 0, 0 };
@@ -74,6 +76,7 @@ typedef struct {
     bool reask_due;           /* -retakeAgain is queued */
     double lost_at;
     int retake_tries, retake_reasks;
+    bool retake_tried;        /* a try in this full screen: retake_settle is its settle */
     unsigned retake_settle;
     OmacVMFPRect accepted_display;
     /* Lines. */
@@ -122,9 +125,10 @@ static void release_state(St *s)
     s->reask_due = false;
 }
 
-/* -retakeCovered: the strip is back after a display change, the next one gets its own tries. */
-static void retake_covered(St *s)
+/* -retakeNewChange: a display change took the strip, its own tries (the settle of the last try stays). */
+static void new_change(St *s)
 {
+    s->display_changed = true;
     s->retake_tries = s->retake_reasks = 0;
     s->retake_given_up = false;
 }
@@ -144,9 +148,6 @@ static bool engage(St *s)
         s->n_taken++;
         say(s, CHECK_NONE, "strip taken again after a display change (try %d of %d)",
             s->retake_tries, OMACVM_FP_RETAKE_TRIES);
-    }
-    if (s->display_changed) {
-        retake_covered(s);
     }
     s->displaced = s->display_changed = false;
     if (!s->covered_logged) {
@@ -188,16 +189,18 @@ static void frame_changed(St *s)
         verify(s, false);
     } else if (s->entered && !s->lost && !s->released) {
         bool tile = omacvm_fp_tile(s->frame, s->screen->f);
+        bool within = omacvm_fp_inside(s->frame, s->screen->f);
 
-        switch (omacvm_fp_frame_kind(covers(s), omacvm_fp_inside(s->frame, s->screen->f),
-                                     s->screen_live, same_display(s), s->display_changed, tile)) {
+        switch (omacvm_fp_frame_kind(covers(s), within, s->screen_live, same_display(s),
+                                     s->display_changed, tile)) {
         case OMACVM_FP_FRAME_COVERS:
             s->accepted_display = s->screen->f;
             s->displaced = false;
             break;
         case OMACVM_FP_FRAME_DISPLACED:
             if (!s->displaced) {
-                s->displaced = s->display_changed = true;
+                s->displaced = true;
+                new_change(s);
                 release_state(s);
                 s->covered_logged = false;
                 s->n_displaced++;
@@ -216,6 +219,9 @@ static void frame_changed(St *s)
                 s->frame.x, s->frame.y, s->frame.w, s->frame.h, s->screen->f.w, s->screen->f.h);
             return;
         case OMACVM_FP_FRAME_WAIT:
+            if (within && s->screen_live) {
+                s->displaced = false;
+            }
             break;
         }
     }
@@ -230,18 +236,19 @@ static void screen_changed(St *s, bool window_screen)
                                                     window_screen || !s->screen_live ||
                                                     !same_display(s), s->lost_tile)) {
         s->lost = false;
-        s->displaced = s->display_changed = true;
+        s->displaced = true;
+        new_change(s);
         s->covered_logged = false;
         s->n_moved++;
         say(s, CHECK_NONE, "display change: the strip lost %.1f s ago went with it", s->now - s->lost_at);
     }
     if (omacvm_fp_screen_releases(s->armed && s->inside, s->full, notch(s), s->released)) {
         s->released = true;
-        s->display_changed = true;
+        new_change(s);
         release_state(s);
         say(s, CHECK_NORMAL, "the full screen is on a display without a camera housing: normal full screen there");
     } else if (omacvm_fp_screen_resumes(s->released, s->full, notch(s))) {
-        s->released = false;
+        s->released = s->displaced = false;
         s->covered_logged = false;
         come_back(s);
     } else if (s->full) {
@@ -311,7 +318,6 @@ static void retake_expired(St *s)
     s->retake_pending = false;
     if (covers(s)) {
         s->n_taken++;
-        retake_covered(s);
         s->displaced = s->display_changed = false;
         say(s, CHECK_NONE, "strip taken again (try %d of %d); covered once the window is in front",
             s->retake_tries, OMACVM_FP_RETAKE_TRIES);
@@ -336,7 +342,7 @@ static void ask(St *s, const char *why)
         .display_changed = s->display_changed,
         .given_up = s->retake_given_up,
         .tries = s->retake_tries,
-        .tried_this_settle = s->retake_tries > 0 && s->retake_settle == s->settles,
+        .tried_this_settle = s->retake_tried && s->retake_settle == s->settles,
         .pending = s->retake_pending,
     };
     const char *reason = "";
@@ -346,6 +352,7 @@ static void ask(St *s, const char *why)
         f.notch = notch(s);
         f.covers = covers(s);
         f.band_kept = omacvm_fp_band_kept(s->frame, s->screen->f, s->screen->notch);
+        f.band_tall = omacvm_fp_band_tall(s->frame, s->screen->f, s->screen->notch);
         f.display_live = s->screen_live;
         f.same_size = s->screen_same_size;
         f.on_space = s->on_space;
@@ -379,6 +386,7 @@ static void ask(St *s, const char *why)
         return;
     }
     s->retake_tries++;
+    s->retake_tried = true;
     s->retake_settle = s->settles;
     s->retake_pending = true;
     s->n_tries++;
@@ -471,24 +479,29 @@ static void builtin_leaves(St *s, bool cg_knows)
     layout(s, false, NULL);
 }
 
-/* The built-in comes back. order 0: NSWindowDidChangeScreen first; 1: AppKit's band layout first; 2: both stale. */
-static void builtin_back(St *s, int order)
+/* The built-in (d) comes back. order 0: NSWindowDidChangeScreen first; 1: AppKit's band layout first; 2: both stale. */
+static void builtin_back_to(St *s, int order, const Disp *d)
 {
-    s->space = &BUILTIN;
+    s->space = d;
     layout(s, false, NULL);                /* "area 1728x1117 on a 1920x1080 display" */
     if (order == 0) {
-        s->screen = &BUILTIN;
+        s->screen = d;
         screen_changed(s, true);
         layout(s, true, NULL);
     } else if (order == 1) {
-        s->screen = &BUILTIN;
+        s->screen = d;
         layout(s, true, NULL);
         screen_changed(s, true);
     } else {
         layout(s, true, NULL);             /* asked while NSScreen still named the stand-in */
-        s->screen = &BUILTIN;
+        s->screen = d;
         screen_changed(s, true);
     }
+}
+
+static void builtin_back(St *s, int order)
+{
+    builtin_back_to(s, order, &BUILTIN);
 }
 
 /*
@@ -929,6 +942,90 @@ static void rows(void)
     row(&s, "... the fifth kept below the notch by AppKit: 3 tries, then 'strip not back'",
         s.n_tries == 7 && s.retake_given_up && s.check == CHECK_NOT_BACK, "tries %d given up %d check %d",
         s.n_tries, s.retake_given_up, s.check);
+
+    /*
+     * Tries per display change: after "strip not back" for good, a later display change in the
+     * same full screen gets its own (e6b7d292 started them again only once the strip was covered).
+     */
+    start(&s);
+    s.reshape_works = false;
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    for (int i = 0; i < 4; i++) {
+        settle(&s);
+    }
+    s.reshape_works = true;
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    settle(&s);
+    row(&s, "after 'strip not back' for good, the next display change (lid shut, opened): its own tries, the strip back",
+        back(&s) && s.n_tries == 4 && s.n_taken == 1, "check %d tries %d taken %d given up %d", s.check,
+        s.n_tries, s.n_taken, s.retake_given_up);
+
+    /* The same with a display change NSScreen never sees (the built-in asleep and back), twice. */
+    start(&s);
+    s.reshape_works = false;
+    for (int c = 0; c < 2; c++) {
+        s.screen_live = false;
+        layout(&s, false, &(OmacVMFPRect){ 0, -323, 2560, 1440 });
+        s.screen_live = true;
+        layout(&s, true, &(OmacVMFPRect){ 0, 0, 1728, 1084 });   /* below the band, AppKit's tile from before */
+        for (int i = 0; i < 4; i++) {
+            settle(&s);
+        }
+        s.reshape_works = true;
+    }
+    row(&s, "the built-in asleep and back twice (no screen change), 3 tries kept the band the first time: the strip back the second",
+        back(&s) && s.n_displaced == 2 && s.n_tries == 4, "check %d displaced %d tries %d", s.check,
+        s.n_displaced, s.n_tries);
+
+    /* Still one try per settle: a new display change in the settle of the last try waits for the next. */
+    start(&s);
+    s.reshape_works = false;
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    for (int i = 0; i < 3; i++) {
+        settle(&s);
+    }
+    s.reshape_works = true;
+    s.screen_live = false;
+    layout(&s, false, &(OmacVMFPRect){ 0, -323, 2560, 1440 });
+    s.screen_live = true;
+    layout(&s, true, &(OmacVMFPRect){ 0, 0, 1728, 1084 });
+    come_back(&s);
+    row(&s, "a new display change in the settle of the last try: nothing tried before the displays settle again",
+        s.n_tries == 3 && s.n_displaced == 2 && !covers(&s), "tries %d displaced %d covers %d", s.n_tries,
+        s.n_displaced, covers(&s));
+    settle(&s);
+    row(&s, "... the next settle: its first try, the strip back", back(&s) && s.n_tries == 4,
+        "check %d tries %d", s.check, s.n_tries);
+
+    /* A band taller than the housing's (+ 8 pt): no try, and the line says so (check: not back). */
+    start(&s);
+    s.screen = s.space = &BUILTIN_TALL;
+    s.accepted_display = BUILTIN_TALL.f;
+    builtin_leaves(&s, true);
+    builtin_back_to(&s, 2, &BUILTIN_TALL);
+    settle(&s);
+    settle(&s);
+    row(&s, "a band taller than the camera housing after a display change: nothing tried, 'strip not back' says why",
+        s.n_tries == 0 && s.n_give_up == 1 && s.check == CHECK_NOT_BACK && !covers(&s),
+        "tries %d give up %d check %d", s.n_tries, s.n_give_up, s.check);
+    /* ... while the displays still settle: no line yet (only once they did). */
+    start(&s);
+    s.screen = s.space = &BUILTIN_TALL;
+    builtin_leaves(&s, true);
+    s.locked = true;
+    builtin_back_to(&s, 2, &BUILTIN_TALL);
+    settle(&s);
+    s.moving = true;
+    s.locked = false;
+    settle(&s);
+    row(&s, "a taller band while locked or the displays' windows move: no line yet", s.n_give_up == 0 &&
+        s.n_tries == 0, "give up %d tries %d", s.n_give_up, s.n_tries);
+    heads_done(&s);
+    row(&s, "... once they are in place: 'strip not back' says why", s.n_give_up == 1 && s.n_tries == 0 &&
+        s.check == CHECK_NOT_BACK, "give up %d tries %d check %d", s.n_give_up, s.n_tries, s.check);
 }
 
 #ifndef OMACVM_RETAKE_STUB
@@ -1007,6 +1104,18 @@ static void rules(void)
     CHECK(!omacvm_fp_band_kept((OmacVMFPRect){ 0, 33, 1728, 1084 }, d, 32));
     CHECK(!omacvm_fp_band_kept((OmacVMFPRect){ 0, -323, 2560, 1440 }, d, 32));
     CHECK(!omacvm_fp_band_kept((OmacVMFPRect){ 0, 0, 1728, 1084 }, d, 0) || 33 <= OMACVM_FP_BAND_SLACK);
+    /* A taller band: the same shape, more than the housing + OMACVM_FP_BAND_SLACK. */
+    CHECK(omacvm_fp_band((OmacVMFPRect){ 0, 0, 1728, 1084 }, d) == 33);
+    CHECK(omacvm_fp_band((OmacVMFPRect){ 0, 0, 864, 1084 }, d) < 0);
+    CHECK(omacvm_fp_band((OmacVMFPRect){ 0, -323, 2560, 1440 }, d) < 0);
+    CHECK(omacvm_fp_band_tall((OmacVMFPRect){ 0, 0, 1728, 1073 }, d, 32));
+    CHECK(omacvm_fp_band_tall((OmacVMFPRect){ 0, 0, 1728, 1000 }, d, 32));
+    CHECK(!omacvm_fp_band_tall((OmacVMFPRect){ 0, 0, 1728, 1077 }, d, 32));
+    CHECK(!omacvm_fp_band_tall((OmacVMFPRect){ 0, 0, 1728, 1084 }, d, 32));
+    CHECK(!omacvm_fp_band_tall(d, d, 32));
+    CHECK(!omacvm_fp_band_tall((OmacVMFPRect){ 0, 0, 864, 1000 }, d, 32));
+    CHECK(!omacvm_fp_band_tall((OmacVMFPRect){ 0, 33, 1728, 1000 }, d, 32));
+    CHECK(!omacvm_fp_band_tall((OmacVMFPRect){ 0, -323, 2560, 1440 }, d, 32));
 
     CHECK(omacvm_fp_retake(now, &why) == OMACVM_FP_RETAKE_NOW);
 #define RETAKE(field, value, want) do { f = now; f.field = value; \
@@ -1055,6 +1164,26 @@ static void rules(void)
     f = now;
     f.tries = OMACVM_FP_RETAKE_TRIES;
     CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_GIVE_UP && !strcmp(why, "AppKit kept the band"));
+    /* Below a taller band: no try, said once settled (not while it still moves or is locked). */
+    f = now;
+    f.band_kept = false;
+    f.band_tall = true;
+    CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_GIVE_UP && !strcmp(why, OMACVM_FP_WHY_BAND_TALL));
+    f.locked = true;
+    CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_WAIT);
+    f.locked = false;
+    f.moving = true;
+    CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_WAIT);
+    f.moving = false;
+    f.in_place = false;
+    CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_WAIT);
+    f.in_place = true;
+    f.menu_bar_in_the_way = true;
+    CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_GIVE_UP && !strcmp(why, "menu bar always shown"));
+    f = now;
+    f.band_tall = true;
+    f.lost = true;
+    CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_NO);
     CHECK(omacvm_fp_retake(now, NULL) == OMACVM_FP_RETAKE_NOW);
     CHECK(!omacvm_fp_retake_final(OMACVM_FP_RETAKE_TRIES - 1) && omacvm_fp_retake_final(OMACVM_FP_RETAKE_TRIES));
 
