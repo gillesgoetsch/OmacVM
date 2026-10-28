@@ -39,32 +39,51 @@ the guest, under a call-like load, found:
    reads every vCPU thread's CPU time and Mach state (`thread_info`); a vCPU
    in the same `hv_vcpu_run` with no CPU time since, uninterruptible or
    runnable, stands still; while one does it looks every 250 ms. One
-   qemu.log line per stall of 1 s or more, with the Mac's free memory and how
-   much of the VM macOS compressed, and `logs/vm-stalls`. Uptime clock (no
-   lines for a Mac asleep), nothing for a look that came late (App Nap, QEMU
-   stopped) or while the VM is not running. The app menu, `omacvm check` and,
-   after 10 s or more for memory, a note in the VM (once per 30 minutes) say
-   the same in their words. The watchdog says when a stall of its own was in
-   a GPU run without the BQL.
+   qemu.log line per stall of 1 s or more, and `logs/vm-stalls`. A vCPU
+   blocked in macOS's kernel is put down to memory only when the Mac was
+   paging then (from the second look before the stall to its end: the
+   compressor and swap moving 16 MB/s or more, 1 MB swapped, or pressure warn
+   or critical; a healthy idle MacBook Air moves about 0.03 MB/s, the
+   swapping mini about 4 GB/s); otherwise the line says only "blocked in
+   macOS's kernel" (another macOS version may block a vCPU there for other
+   reasons) and the VM gets no note. Uptime clock (no lines for a Mac asleep),
+   nothing for a look that came late (App Nap, QEMU stopped; a line says the
+   watchdog woke late, once per 10 minutes) or while the VM is not running.
+   No timer of its own, so short stalls can be missed: in macOS's kernel
+   under about 2.25 s (3.25 s for a vCPU that ran under 10 % of a core before:
+   its start is dated late, up to 2.1 s short), without a Mac core under
+   about 4 s (a 20 000-stall simulation). The watchdog says when a stall of
+   its own was in a GPU run without the BQL, and counts its stalls with the
+   BQL (`main_stalls`: the VM waited). Only the watchdog's thread writes the
+   file; the main loop, which may hold the BQL, records in memory. The app
+   menu, `omacvm check` and, after 10 s or more for memory, a note in the VM
+   (once per 30 minutes) say the same in their words.
 2. **Keep the GPU thread off the Mac's video service.** Each decoder's
    VideoToolbox session is made, changed, made again and ended on the
    decoder's own serial queue, in order with its pictures; the codec is
    freed there after `Invalidate`. What the Mac decodes and encodes is asked
-   once when QEMU starts, beside the GPU thread.
+   once when QEMU starts, beside the GPU thread; if the guest asks first, the
+   GPU thread waits for the answer once, 10 s at most, then only looks.
 3. **Bound what a picture can hold up.** One time limit per decoded picture,
    250 ms (`OMACVM_VIDEO_GIVEUP_MS`, at most 500): given up by the poll,
    waited for that long at most, and the sync thread lets a fence go at its
    pictures' limit, marking them dropped so that they are never written into
-   planes the guest may already use again. That video keeps its last picture
-   while its decoder starts; the desktop goes on. Up to 16 pictures per
-   decoder are on their way (was 4), so a stream's first pictures wait for
-   its session instead of being given up, and the Mac's video decoder
-   service is connected once when QEMU starts (its first connection took
-   230-390 ms on the mini). Calibration (Mac mini M4, a call row, pressure
-   warn and normal): each of 212 streams' slowest picture, END_FRAME to
+   planes the guest may already use again (a fence whose pictures are in but
+   still being copied waits for the copy). That video keeps its last picture
+   while its decoder starts. The fences are one timeline, so other apps'
+   frames made after a late picture wait for it too, up to the 250 ms. Up to
+   16 pictures per decoder are on their way (was 4), so a stream's first
+   pictures wait for its session instead of being given up, and the Mac's
+   video decoder service is connected once when QEMU starts (its first
+   connection took 230-390 ms on the mini). A decoder's queue holds 64
+   pictures not handed over yet: a start of more than about 1 s at 60 fps
+   fills it, and the pictures past it are refused (errors until the next key
+   frame). Calibration, one call row on the Mac mini M4 at pressure warn
+   (the mini swapped all day: no row at normal pressure; none on an M4 Max
+   or a MacBook Air): each of 212 streams' slowest picture, END_FRAME to
    picture in, its session's start included: median 3.2 ms, p99 29 ms, max
    47 ms, so the limit is more than 5 times the slowest seen; 0 pictures
-   given up. Not measured on an M4 Max or a MacBook Air.
+   given up.
 4. **The cause itself** is the Mac's memory: the app gives the VM's cold
    file cache back while macOS compresses it (ADR 0059).
 
@@ -74,8 +93,9 @@ the guest, under a call-like load, found:
   detach backing touch memory with the BQL: up to 71 ms in the probe's rows,
   but once 2.2 s in an idle row on the swapping mini (close() of the old
   display surface's memfd in `qemu_free_displaysurface`, the watchdog's line
-  "with the BQL held"). Freeing a surface off the BQL is the first follow-up;
-  it waits for field notes with holds of 250 ms or more.
+  "with the BQL held"). That meets the gate of 250 ms or more in the lab:
+  freeing a surface off the BQL is the first follow-up, a change of its own;
+  until then `main_stalls` counts such holds.
 - Extra displays take the GPU lock on the AppKit thread with a plain wait;
   a bounded try only if a hang report or a two-display full-screen row shows
   the AppKit thread waiting there.
@@ -88,9 +108,12 @@ the guest, under a call-like load, found:
 
 ## Consequences
 
-- A user report with a freeze now names its cause in qemu.log, with the
-  numbers that tell whether the Mac or QEMU stood still.
-- No new timer: the watchdog's own wakes, two stores per `hv_vcpu_run`.
+- A user report with a freeze of more than a few seconds now names its cause
+  in qemu.log, with the numbers that tell whether the Mac or QEMU stood
+  still; shorter stalls can go unseen (the limits in 1).
+- No new timer: the watchdog's own wakes (one `host_statistics64` and one
+  sysctl each), two stores per `hv_vcpu_run`.
 - A video that starts while macOS is short of memory shows its first
-  pictures late (given up after 250 ms each) instead of freezing the VM's
-  whole display for the time the Mac's video service needs.
+  pictures late (given up after 250 ms each), and other apps' frames wait up
+  to those 250 ms, instead of the VM's whole display freezing for the time
+  the Mac's video service needs.

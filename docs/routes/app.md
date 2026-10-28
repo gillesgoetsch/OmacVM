@@ -1409,16 +1409,25 @@ logs an RCU stall, its daemons miss their watchdogs, the display agent says
 3 and 8 stood still for about 60 s; on a Mac mini at critical pressure three
 vCPUs stood 1.2-2.4 s; `tracks/vm-stall.md`). QEMU now says so
 (`qemu-hvf-vcpu-stall-note.patch`): the stall watchdog's thread, when it
-wakes anyway, looks at every vCPU thread's CPU time and state, and
-`logs/qemu.log` gets one line per stall of 1 s or more, "OmacVM: stall:
-vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in macOS's kernel
-waiting for memory (Mac: 0.3 GB free, pressure normal; the VM holds 51 GB,
-20 GB of it compressed by macOS)", or "vCPU 5 waited 2.1 s for a Mac core";
-`logs/vm-stalls` keeps the count. The app menu then has "The VM stood still
-2 times (longest 58 s): the Mac ran out of memory" under "Graphics memory",
-`omacvm check` a "VM stalls" warning with what helps, and after a stall of
-10 s or more for memory the VM shows a note ("The VM stood still for 58 s",
-at most once per 30 minutes; Update VM puts the note in). What helps: less
+wakes anyway, looks at every vCPU thread's CPU time and state and at the
+Mac's paging, and `logs/qemu.log` gets one line per stall of 1 s or more, in
+this format (the numbers are an example): "OmacVM: stall: vCPUs 1, 2, 3, 8
+stood still for about 58 s, blocked in macOS's kernel waiting for memory
+(Mac: compressor and swap 900 MB/s, 0.3 GB free, pressure normal; the VM
+holds 51 GB, 20 GB of it compressed by macOS)", "vCPU 3 stood still for
+about 2.4 s, blocked in macOS's kernel (the Mac was not paging ...)" or
+"vCPU 5 waited 2.1 s for a Mac core"; "waiting for memory" only when the
+Mac was compressing or swapping 16 MB/s or more, or its pressure was warn or
+critical, then. `logs/vm-stalls` keeps the counts, with QEMU's main loop
+stalls of 2 s or more (with the BQL: the VM waited; in a GPU run: only the
+display, disks and network). The app menu then has, for example, "The VM
+stood still 2 times (longest 58 s): the Mac ran out of memory" under
+"Graphics memory", `omacvm check` a "VM stalls" warning with what helps, and
+after a stall of 10 s or more for memory the VM shows a note ("The VM stood
+still for 58 s", at most once per 30 minutes; Update VM puts the note in).
+No new timer, so short stalls can be missed: a vCPU blocked in macOS's
+kernel under about 2.25 s (3.25 s if it was nearly idle before), one
+without a Mac core under about 4 s. What helps: less
 VM memory (`omacvm resources --vm NAME`), or fewer big apps on the Mac; the
 app also gives the VM's cold file cache back while macOS compresses it.
 QEMU's graphics thread no longer waits for the Mac's video service when a

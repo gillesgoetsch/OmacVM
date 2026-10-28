@@ -1280,19 +1280,26 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   (a 42 GB VM on a 64 GB Mac held 51 GB with its file cache and graphics)
   gets there with nothing else running. QEMU's graphics thread can stand
   still the same way in a call to the Mac.
-- **Check:** `logs/qemu.log` in the VM's folder has "OmacVM: stall: vCPUs
-  1, 2, 3, 8 stood still for about 58 s, blocked in macOS's kernel waiting
-  for memory (Mac: 0.3 GB free, ...)" for each stall of 1 s or more (or
-  "waited ... for a Mac core" when the Mac's CPUs were busy); the app menu
-  says "The VM stood still N times"; `omacvm check --vm NAME` has a "VM
-  stalls" warning. "main loop stalled for N s in a GPU run without the BQL"
-  is QEMU's graphics thread waiting in a call to the Mac (the vCPUs ran on);
-  "with the BQL held (the VM waits)" is the whole VM waiting for QEMU.
+- **Check:** `logs/qemu.log` in the VM's folder has a line for each stall
+  of 1 s or more, in this format (the numbers are an example): "OmacVM:
+  stall: vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in macOS's
+  kernel waiting for memory (Mac: compressor and swap 900 MB/s, 0.3 GB
+  free, ...)". It says "waiting for memory" only when the Mac was paging
+  then (compressing or swapping 16 MB/s or more, or pressure warn or
+  critical); "blocked in macOS's kernel (the Mac was not paging ...)" is
+  something else in macOS, and "waited ... for a Mac core" means the Mac's
+  CPUs were busy. The app menu says "The VM stood still N times";
+  `omacvm check --vm NAME` has a "VM stalls" warning. "main loop stalled for
+  N s in a GPU run without the BQL" is QEMU's graphics thread waiting in a
+  call to the Mac (the vCPUs ran on); "with the BQL held (the VM waits)" is
+  the whole VM waiting for QEMU (counted as `main_stalls`). Short stalls can
+  be missed: a vCPU blocked in macOS's kernel under about 2.25 s (3.25 s if
+  it was nearly idle before), one without a Mac core under about 4 s.
 - **Fix:** give the VM less memory (`omacvm resources --vm NAME --memory-gb
   N`, from its next start), or quit big apps on the Mac. OmacVM.app also
   asks the VM to give its cold file cache back while macOS compresses it
-  (ADR 0059). After a stall of 10 s or more the VM shows a note that says
-  so (once per 30 minutes; Update VM puts the note in).
+  (ADR 0059). After a stall of 10 s or more for memory the VM shows a note
+  that says so (once per 30 minutes; Update VM puts the note in).
 - **Where:** `app/runtime/patches/qemu-hvf-vcpu-stall-note.patch` (the
   lines, `logs/vm-stalls`), `qemu-main-loop-stall-gpu-run.patch`,
   `omacvm-cocoa-vm-stalls-menu.patch`, `app/app/Sources/OmacVMDesktop/VMStalls.swift`,
