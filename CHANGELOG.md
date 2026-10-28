@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+- **When the VM stood still, the VM and `omacvm check` say so.** QEMU now writes a line to
+  `logs/qemu.log` for each time the VM's processors stood still for 1 s or more because macOS
+  ran out of free memory (or had no free processor for them), and the count to
+  `logs/vm-stalls`. After a stall of 10 s or more for memory, the VM shows a note, "The VM
+  stood still for 58 s: macOS ran out of free memory (the VM uses 51 GB of this Mac's 64 GB),
+  ...", with what helps (a smaller VM memory: `omacvm resources`); at most once per 30
+  minutes. `omacvm check` has a "VM stalls" line: a warning with how often and how long,
+  never a failure. The note needs Update VM; the rest only the new app.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
