@@ -191,8 +191,9 @@ and 27.0 (the Mac mini).
 
 ## Retake after a display change
 
-Status: accepted (3.2.11, `omacvm-cocoa-fullpanel-retake*.patch`, applied
-after `omacvm-cocoa-display-settle.patch`).
+Status: accepted for 3.2.12 once its rows pass on a notched MacBook (below);
+`omacvm-cocoa-fullpanel-retake*.patch`, applied after
+`omacvm-cocoa-display-settle.patch`.
 
 **What happened.** On a MacBook Pro M4 Max (3.2.9, 2026-10-28) with an LG
 UltraFine 5K above the built-in display, the main window covered the strip
@@ -215,12 +216,17 @@ asked it to.
 still names (not inside it while it did not change), or on a display that
 CoreGraphics has off or asleep, is a display change on its way: the
 system state is released, no relayout (no guest resize churn), qemu.log
-"display change: ...; the strip comes back once the displays settle" (not
-read by `omacvm check`). It ends as soon as the window covers its display
-again. A loss taken for Split View that is followed within 3 s by the
-window's display changing, or the display it covered going off, is turned
-into a display change (the line says so). A Split View loss stays lost, as
-before, also through later display changes: nothing here clears it.
+"display change: ...; the strip comes back once the displays settle"
+(`omacvm check` warns until "strip covered"). It ends as soon as the window
+covers its display again. Until then, and after a full screen on a display
+without a housing, the band on the way back is no Split View either, also
+when `NSWindowDidChangeScreen` (the resume) comes before the resize. A
+Split View tile's shape (inside the display, on its bottom edge, narrower
+than it) is always a loss. A loss taken for Split View that is followed
+within 3 s by the window's display changing, or the display it covered
+going off, is turned into a display change (the line says so), never one
+with a tile's shape. A Split View loss stays lost, as before, also through
+later display changes: nothing here clears it.
 
 **The claim no longer waits for the resume.** The reservation answer used
 to wait for `-screenChanged:` to see the notched display again; AppKit may
@@ -248,7 +254,12 @@ yes (its Space's display has a housing), a frame of the display's width
 and bottom at most the housing's height (and 8 points) shorter (never a
 tile), on the active Space, visible, WindowServer's frame in place, the
 reservation still ours, SkyLight there, the menu bar not always shown. At
-most 3 tries per full screen and one per settle. The four methods
+most 3 tries per display change (they start again once the strip is
+covered: a full screen kept for days meets many display changes) and one
+per settle. A wait that ends by itself with no trigger of its own
+(WindowServer still moving the window, the displays' windows moving, the
+window not visible yet) asks again 0.5 s later, at most 3 times after each
+trigger. The four methods
 (`NSWindow -_fullScreenContentController @16@0:8`,
 `_NSFullScreenContentController -space @16@0:8`,
 `_NSFullScreenSpace -updateTileShapeAndReshapeContents v16@0:8` and
@@ -267,11 +278,12 @@ not a fallback either: without the AppKit call the user gets the check's
 warning with the remedy.
 
 **The call, tried** (Mac mini, macOS 27.0, a small window of a test tool,
-no VM): with the reservation forced to yes the full screen was 1920x1050 on
-the 1920x1080 display (the band kept); with it switched to no, one
-`updateTileShapeAndReshapeContents` made it 1920x1080 inside the call (36
-ms, two reservation questions, the resize posted at once, still in full
-screen); with yes again and one more call, 1920x1050 again.
+no VM, no notch, once): with the reservation forced to yes the full screen
+was 1920x1050 on the 1920x1080 display (the band kept); with it switched to
+no, one `updateTileShapeAndReshapeContents` made it 1920x1080 inside the
+call (36 ms, two reservation questions, the resize posted at once, still in
+full screen); with yes again and one more call, 1920x1050 again. That shows
+the call, not the strip on a notched display.
 
 **Probe** (names only, no window; a temporary branch on GitHub-hosted runners, run
 40718433214): all four methods usable on macOS 15.7.9 (24G830), 26.6.2
@@ -279,14 +291,25 @@ screen); with yes again and one more call, 1920x1050 again.
 
 **Tests.** `app/runtime/Tests/display/test-fullpanel-retake.sh`: the rules,
 the user's qemu.log in each order of AppKit's last layout and
-`NSWindowDidChangeScreen`, the lid shut and opened, the external display
-waking first, a smaller external display while NSScreen is stale, the 3 s
-rule both ways, Split View staying lost, the menu bar always shown, a
-Space on a display without a housing, locked, moving windows, another
-Space, 3 tries and one per settle, a missing selector, display modes; with
-`--self-test` the user's rows fail on 3.2.10's decisions and the wiring
-checks fail on 3.2.10's code. In the runtime build also the wiring (the
-retake only from its three triggers, nothing in it that moves a window, a
-Space or the menu bar). `src/tests/fullpanel-check.sh`: check's row.
-On a notched Mac: `src/tests/e2e/display-unplug.sh`'s `fullpanel-builtin`
-case (a virtual display unplugged and plugged in, display sleep).
+`NSWindowDidChangeScreen`, NSScreen going with the Space to the external
+display and the resume before the resize, the lid shut and opened, the
+external display waking first, a smaller external display while NSScreen
+is stale, the 3 s rule both ways and never for a tile, Split View staying
+lost (also during a display change), the menu bar always shown, a Space on
+a display without a housing, locked, moving windows, another Space, the
+ask again after a wait and its limit, 3 tries per display change and one
+per settle, four display changes in one full screen, a missing selector,
+display modes; with `--self-test` the user's rows fail on 3.2.10's
+decisions and the wiring checks fail on 3.2.10's methods (copied; its whole
+patched `ui/cocoa.m` fails them too). In the runtime build also the wiring
+(the retake only from its three triggers and its own ask again, nothing in
+it that moves a window, a Space or the menu bar).
+`src/tests/fullpanel-check.sh`: check's row.
+
+**Not yet seen on a notched Mac.** Owed before release, on a MacBook with
+its own test VM in "Full screen including notch":
+`src/tests/e2e/display-unplug.sh --only fullpanel-builtin --sleep` (a
+virtual display unplugged and plugged in, display sleep and wake; 3.2.10
+passes these too, so they show only that nothing broke), and the built-in
+display switched off for 10 s and back (the user's trigger), which 3.2.10
+fails and this must pass.
