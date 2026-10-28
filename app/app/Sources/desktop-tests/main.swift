@@ -148,6 +148,35 @@ expect(a.compressing(sample(120, fp: 5.6, res: 3.3, comp: 33)), "8 GB Mac, 2.3 G
 let b16 = MemoryGiveBack(ram: 16 * GB)
 expect(b16.minTaken == 2 * GB && b16.minGrowth == 1 * GB, "16 GB Mac: 2 GB, 1 GB")
 
+// A recorded row (MacBook Air M2 8 GB, 4 GB VM, 3.2.10, 2026-10-28 11:06-11:09, one look per 5 s): QEMU's footprint,
+// its resident size and macOS's compressions (MB) while the VM read 2.6 GB of files and macOS compressed it at
+// "normal". Replayed as it was, and as on a Mac with room (macOS compressing nothing): the same footprint growth,
+// which graphics can also give, must never trigger there.
+let air: [(Double, Double, Double)] = [
+    (4201, 2971, 33146985), (4224, 2848, 33147071), (4204, 2833, 33147071), (4190, 2821, 33147071),
+    (4184, 2817, 33147071), (6691, 3048, 33150741), (6690, 2860, 33150944), (6690, 2862, 33150944),
+    (6690, 2785, 33151013), (6690, 2693, 33151092), (6672, 2431, 33151333), (6672, 2400, 33151378),
+    (6672, 2402, 33151380), (6672, 2402, 33151380), (6672, 2402, 33151380), (6672, 2402, 33151380),
+    (6672, 2402, 33151380), (6611, 2442, 33151459), (6611, 2443, 33151459), (6611, 2445, 33151459),
+    (6611, 2445, 33151459), (6611, 2428, 33151505), (6614, 2371, 33151584), (6613, 2309, 33151640),
+    (6614, 2310, 33151640), (6614, 2311, 33151640), (6614, 2311, 33151640), (6614, 2311, 33151640),
+    (6614, 2311, 33151640), (6615, 2315, 33151640), (6616, 2317, 33151640), (6617, 2319, 33151640),
+    (6617, 2319, 33151640), (6617, 2319, 33151640), (6619, 2314, 33151649), (6618, 2290, 33151676)
+]
+var airLive = MemoryGiveBack(ram: 8 * GB), airRoomy = MemoryGiveBack(ram: 8 * GB)
+var firstLive: Int?, roomyFired = false
+for (i, x) in air.enumerated() {
+    let m = Double(MB)
+    let s = MemoryGiveBack.Sample(time: Double(i) * 5, footprint: UInt64(x.0 * m), resident: UInt64(x.1 * m),
+                                  compressed: UInt64(x.2 * m))
+    if airLive.compressing(s) && firstLive == nil { firstLive = i }
+    var r = s
+    r.compressed = UInt64(air[0].2 * m)
+    if airRoomy.compressing(r) { roomyFired = true }
+}
+expect(firstLive == 5, "the Air's recorded row: gives back at the first look after macOS compressed the VM")
+expect(!roomyFired, "the same row with nothing compressed (a Mac with room): never")
+
 // The baseline only moves down, and macOS's count starts again whenever the VM is near it.
 var d = MemoryGiveBack(ram: 64 * GB)
 _ = d.compressing(sample(0, fp: 10, res: 7, comp: 0))       // 3 GB outside RAM at the start
