@@ -4,11 +4,11 @@
 #   /bin/sh -c "$(cat giveback.sh)" giveback compressing|report
 # compressing: macOS is compressing the VM; report: numbers only.
 # Prints one line of key=value (sizes in MB).
-# Takes only file cache that was not used lately (memory.reclaim with
-# swappiness=0, oldest first), all but the newest min(1 GB, an eighth of the
-# VM): files read in the last minutes stay. Never programs' memory, zram, swap,
-# compaction or the balloon. Linux reports the freed pages to QEMU, which
-# gives them back to the Mac (free page reporting).
+# Takes only file cache read once and not again (Linux's inactive file list;
+# memory.reclaim with swappiness=0, oldest first), except the newest
+# min(1 GB, an eighth of the VM), so the files read last stay. Never
+# programs' memory, zram, swap, compaction or the balloon. Linux reports the
+# freed pages to QEMU, which gives them back to the Mac (free page reporting).
 R=${OMACVM_GIVEBACK_ROOT:-}   # tests: a fake /proc and /sys
 P=${OMACVM_GIVEBACK_PAUSE:-1}
 mode=${1:-report}
