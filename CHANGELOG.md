@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.10 (unreleased)
+## 3.2.10
 
 Apps in an OmacVM.app VM that draw with OpenGL program pipelines now draw. Needs only the app
 update.
