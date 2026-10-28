@@ -24,7 +24,11 @@
  * AV1 runs twice: with max_width/max_height one less than the frame, and as Mesa's VA
  * frontend sends them (picture_av1.c: the surface's size; Chrome's surfaces are its coded
  * size, rounded up to 16): VideoToolbox's frame is then larger than the picture, and only
- * the picture may be copied (virgl-video-picture-size.patch). */
+ * the picture may be copied (virgl-video-picture-size.patch). An AV1 clip with film grain
+ * runs as Mesa sends Chrome's pictures (picture_av1.c): decoded into one buffer, shown from
+ * another (film_grain_target, Chrome's current_display_picture); VideoToolbox's picture has
+ * the grain applied, and the shown buffer must get it too, its padding filled as well
+ * (virgl-video-av1-film-grain.patch); before, it kept the marker. */
 #include <CoreMedia/CoreMedia.h>
 #include <OpenGL/OpenGL.h>
 #include <VideoToolbox/VideoToolbox.h>
@@ -117,6 +121,7 @@ struct source {
    uint64_t hash;              /* of the reference picture; 0: compare with ref[] */
    int extra;                  /* planes this much bigger than Mesa's: past the fill's limit */
    int mesa_max;               /* AV1: max_width/height as Mesa sends them (the surface) */
+   int grain;                  /* AV1 with film grain: shown from a second buffer */
    struct unit u[FRAMES * 2];
    int count;
    uint8_t *store[FRAMES];
@@ -407,6 +412,47 @@ static void make_plane(uint32_t handle, uint32_t format, uint32_t w, uint32_t h,
 
 static uint8_t got[2][MAXW * MAXH * 4];
 
+/* What a buffer's planes RES hold after the last picture: its hash (FNV-1a over the
+ * picture's part), whether that is the reference, whether every texel past it repeats the
+ * last row/column, and how many of those there are and still have the marker. */
+struct planes_result { uint64_t hash; int exact, edge, past, marker; };
+
+static void planes_check(const struct source *s, const uint32_t res[2], const uint32_t pw[2],
+                         const uint32_t ph[2], const uint32_t texel[2], struct planes_result *r)
+{
+   *r = (struct planes_result){ 1469598103934665603ull, 1, 1, 0, 0 };
+   for (int p = 0; p < 2; p++) {
+      uint32_t t = texel[p], ew = p ? ((uint32_t)s->dw + 1) / 2 : (uint32_t)s->dw;
+      uint32_t eh = p ? ((uint32_t)s->dh + 1) / 2 : (uint32_t)s->dh;
+      size_t row = (size_t)pw[p] * t;
+      struct virgl_box box = { 0, 0, 0, pw[p], ph[p], 1 };
+      struct iovec io = { got[p], row * ph[p] };
+      ew = ew < pw[p] ? ew : pw[p];
+      eh = eh < ph[p] ? eh : ph[p];
+      memset(got[p], 0x5c, row * ph[p]);
+      if (virgl_renderer_transfer_read_iov(res[p], 1, 0, (uint32_t)row, 0, &box, 0, &io, 1)) {
+         r->exact = r->edge = 0;
+         continue;
+      }
+      for (uint32_t y = 0; y < eh; y++) {
+         r->hash = fnv(r->hash, got[p] + y * row, (size_t)ew * t);
+         if (!s->hash && (y >= (uint32_t)ref_h[p] || ew > (uint32_t)ref_w[p] ||
+                          memcmp(got[p] + y * row, ref[p] + y * ref_row[p], (size_t)ew * t)))
+            r->exact = 0;
+      }
+      for (uint32_t y = 0; y < ph[p]; y++)
+         for (uint32_t x = y < eh ? ew : 0; x < pw[p]; x++) {
+            const uint8_t *v = got[p] + y * row + x * t;
+            uint32_t sx = x < ew ? x : ew - 1, sy = y < eh ? y : eh - 1;
+            r->past++;
+            r->marker += v[0] == MARK && v[t - 1] == MARK;
+            r->edge &= !memcmp(v, got[p] + sy * row + sx * t, t);
+         }
+   }
+   if (s->hash)
+      r->exact = r->hash == s->hash;
+}
+
 static void run_case(struct source *s, int expect_marker)
 {
    char line[400];
@@ -439,6 +485,22 @@ static void run_case(struct source *s, int expect_marker)
    emit(ah);
    emit(res[0]);
    emit(res[1]);
+   /* film grain: the buffer Chrome shows (current_display_picture) */
+   uint32_t shown = 0, res2[2] = { 0, 0 };
+   if (s->grain) {
+      shown = next_obj++;
+      res2[0] = next_res++;
+      res2[1] = next_res++;
+      make_plane(res2[0], VIRGL_FORMAT_R8_UNORM, pw[0], ph[0], bpp);
+      make_plane(res2[1], VIRGL_FORMAT_R8G8_UNORM, pw[1], ph[1], 2 * bpp);
+      emit(VIRGL_CMD0(VIRGL_CCMD_CREATE_VIDEO_BUFFER, 0, 6));
+      emit(shown);
+      emit(VIRGL_FORMAT_Y8_U8V8_420_UNORM);
+      emit(aw);
+      emit(ah);
+      emit(res2[0]);
+      emit(res2[1]);
+   }
    submit();
 
    for (int f = 0; f < s->count; f++) {
@@ -462,6 +524,13 @@ static void run_case(struct source *s, int expect_marker)
          desc.av1.slice_parameter.slice_count = 1;
          desc.av1.slice_parameter.slice_data_offset[0] = (uint32_t)u->tile;
          desc.av1.slice_parameter.slice_data_size[0] = 1;
+         if (s->grain) {
+            /* as Mesa sends it for Chrome (picture_av1.c): film_grain_target set only with
+             * apply_grain, to the picture Chrome shows */
+            desc.av1.film_grain_target = shown;
+            desc.av1.picture_parameter.seq_info_fields.film_grain_params_present = 1;
+            desc.av1.picture_parameter.film_grain_info.film_grain_info_fields.apply_grain = 1;
+         }
       } else {
          desc.vp9.picture_parameter.frame_width = (uint16_t)s->w;
          desc.vp9.picture_parameter.frame_height = (uint16_t)s->h;
@@ -484,60 +553,42 @@ static void run_case(struct source *s, int expect_marker)
       submit();
    }
 
-   /* the picture (bit for bit), and past what the host decoded: its last row/column */
-   uint64_t hash = 1469598103934665603ull;
-   int exact = 1, edge = 1, past = 0, marker = 0;
-   for (int p = 0; p < 2; p++) {
-      uint32_t t = texel[p], ew = p ? ((uint32_t)s->dw + 1) / 2 : (uint32_t)s->dw;
-      uint32_t eh = p ? ((uint32_t)s->dh + 1) / 2 : (uint32_t)s->dh;
-      size_t row = (size_t)pw[p] * t;
-      struct virgl_box box = { 0, 0, 0, pw[p], ph[p], 1 };
-      struct iovec io = { got[p], row * ph[p] };
-      ew = ew < pw[p] ? ew : pw[p];
-      eh = eh < ph[p] ? eh : ph[p];
-      memset(got[p], 0x5c, row * ph[p]);
-      if (virgl_renderer_transfer_read_iov(res[p], 1, 0, (uint32_t)row, 0, &box, 0, &io, 1)) {
-         exact = edge = 0;
-         continue;
-      }
-      for (uint32_t y = 0; y < eh; y++) {
-         hash = fnv(hash, got[p] + y * row, (size_t)ew * t);
-         if (!s->hash && (y >= (uint32_t)ref_h[p] || ew > (uint32_t)ref_w[p] ||
-                          memcmp(got[p] + y * row, ref[p] + y * ref_row[p], (size_t)ew * t)))
-            exact = 0;
-      }
-      for (uint32_t y = 0; y < ph[p]; y++)
-         for (uint32_t x = y < eh ? ew : 0; x < pw[p]; x++) {
-            const uint8_t *v = got[p] + y * row + x * t;
-            uint32_t sx = x < ew ? x : ew - 1, sy = y < eh ? y : eh - 1;
-            past++;
-            marker += v[0] == MARK && v[t - 1] == MARK;
-            edge &= !memcmp(v, got[p] + sy * row + sx * t, t);
-         }
+   /* the picture (bit for bit), and past what the host decoded: its last row/column; with
+    * film grain the same for the buffer the guest shows */
+   for (int b = 0; b < (s->grain ? 2 : 1); b++) {
+      struct planes_result r;
+      planes_check(s, b ? res2 : res, pw, ph, texel, &r);
+      snprintf(line, sizeof(line), "%s%s %dx%d%s into planes %ux%u + %ux%u, %d pictures: the "
+               "picture bit for bit as %s: %s (%016llx); %d texels past it: %s",
+               b ? "film grain, the buffer shown: " : "", s->name, s->w,
+               s->h, s->ten_bit ? " 10-bit" : "", pw[0], ph[0], pw[1], ph[1], s->count,
+               s->hash ? "FFmpeg decodes it" : "VideoToolbox decodes it on its own",
+               r.exact ? "yes" : "no", (unsigned long long)r.hash, r.past,
+               s->extra ? (r.marker == r.past ? "never written (a surface, not padding)" :
+                           "written although it is past the fill's limit") :
+               expect_marker ? (r.marker == r.past ? "never written (as before the fix)" :
+                                "written although the fill is off") :
+               r.edge && !r.marker ? "its last row and column" :
+               r.marker ? "never written (the bar)" : "something else");
+      check(r.exact && (expect_marker ? r.marker == r.past : r.edge && !r.marker), line);
    }
-   if (s->hash)
-      exact = hash == s->hash;
-   snprintf(line, sizeof(line), "%s %dx%d%s into planes %ux%u + %ux%u, %d pictures: the "
-            "picture bit for bit as %s: %s (%016llx); %d texels past it: %s", s->name, s->w,
-            s->h, s->ten_bit ? " 10-bit" : "", pw[0], ph[0], pw[1], ph[1], s->count,
-            s->hash ? "FFmpeg decodes it" : "VideoToolbox decodes it on its own",
-            exact ? "yes" : "no", (unsigned long long)hash, past,
-            s->extra ? (marker == past ? "never written (a surface, not padding)" :
-                        "written although it is past the fill's limit") :
-            expect_marker ? (marker == past ? "never written (as before the fix)" :
-                             "written although the fill is off") :
-            edge && !marker ? "its last row and column" :
-            marker ? "never written (the bar)" : "something else");
-   check(exact && (expect_marker ? marker == past : edge && !marker), line);
 
    emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_BUFFER, 0, 1));
    emit(buf);
+   if (shown) {
+      emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_BUFFER, 0, 1));
+      emit(shown);
+   }
    emit(VIRGL_CMD0(VIRGL_CCMD_DESTROY_VIDEO_CODEC, 0, 1));
    emit(codec);
    submit();
    for (int p = 0; p < 2; p++) {
       virgl_renderer_ctx_detach_resource(1, (int)res[p]);
       virgl_renderer_resource_unref(res[p]);
+      if (shown) {
+         virgl_renderer_ctx_detach_resource(1, (int)res2[p]);
+         virgl_renderer_resource_unref(res2[p]);
+      }
    }
 }
 
@@ -595,6 +646,9 @@ int main(void)
         .dh = 180, .hash = 0xb72bd625932bd0a5ull, .mesa_max = 1 },
       /* a 480x352 surface for a 320x180 picture: more than padding, left alone */
       CLIP("vp9p0-320x180.ivf", G_VP9_P0, 320, 180, 0, 0x43273c816ba2b012ull, 160),
+      /* film grain, as Mesa sends Chrome's pictures (the reference: dav1d with the grain) */
+      { .name = "av1fg-320x180.ivf", .profile = G_AV1_MAIN, .w = 320, .h = 180, .dw = 320,
+        .dh = 180, .hash = 0x1bf505242c2eca9cull, .mesa_max = 1, .grain = 1 },
 #undef CLIP
    };
    for (unsigned i = 0; i < sizeof(clips) / sizeof(clips[0]); i++) {
