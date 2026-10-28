@@ -11,20 +11,24 @@ update.
 - **The VM gives its old file cache back while macOS compresses it (#590).** Linux keeps every
   file it read in its page cache. To the Mac that is the VM's own memory, which macOS can
   compress but never drop, although its own file cache already has the same files. The app
-  dropped the VM's cache only when macOS warned that memory was short, and macOS says
-  "normal" while it compresses, so a large VM could keep many GB of old cache compressed while
-  the Mac slowed down and Activity Monitor showed far more than the VM used. Now the app looks
-  every 5 seconds at how much of the VM macOS holds compressed and how much macOS compresses;
-  when macOS is compressing the VM, the VM gives back the file cache it has not used lately.
-  The newest part of it (up to 1 GB), programs' memory and zram stay; at most once in 10
-  minutes, less often when little comes back. On a MacBook Air (8 GB, a 4 GB VM, memory
-  pressure "normal" all along), after the VM read 2.6 GB of files: 3.2.10 left the VM's
-  footprint at 6.6 GB for 10 minutes while macOS compressed it; now the app asked 3 seconds
-  after macOS started compressing the VM, the VM gave back 1.2 GB, and its footprint fell from
-  6.7 to 5.7 GB within 5 seconds. Chrome's first start after that: 0.62 s (0.63 s without a
-  give-back). `omacvm check` has a "VM memory" line, `logs/qemu.log` two lines per give-back.
-  Needs only the new app, from the VM's next start; no Update VM. UTM, Parallels and Fusion:
-  nothing changes.
+  dropped the VM's cache only when macOS warned that memory was short, and macOS says "normal"
+  while it compresses, so the cache stayed while macOS compressed it. Now the app looks every
+  5 seconds at how much of the VM macOS holds compressed and how much macOS compresses; when
+  macOS is compressing the VM, the VM gives back its file cache read once and not again,
+  except the newest 1 GB (an eighth of a VM under 8 GB). With the memory-optimized kernel,
+  which sorts its cache by age instead, that is nearly all of its file cache. Programs' memory
+  and zram stay; at most once in 10 minutes, less often when little comes back. On a MacBook
+  Air (8 GB, a 4 GB VM, memory pressure "normal" all along), after the VM read 2.6 GB of
+  files: 3.2.10 left the VM's footprint at 6.6 GB for 10 minutes while macOS compressed it;
+  now the app asked about 6 seconds after macOS began compressing the VM, the VM gave back
+  1.2 GB, and its footprint fell from 6.7 to 5.7 GB within 5 seconds. Chrome, its files read
+  once 30 seconds before a give-back: on the Mac mini it started in 1.02 s with and without
+  the give-back, on the Air in 349 ms instead of 310 ms (median of 3). `omacvm check` has a
+  "VM memory" line, `logs/qemu.log` two lines per give-back. Needs only the new app, from the
+  VM's next start; no Update VM. UTM, Parallels and Fusion: nothing changes.
+  This does not explain all of the 40-50 GB of the report. Read again later, that VM showed
+  40 GB in Activity Monitor while Linux in it used about 22 GB, 8.2 GB of that the cache this
+  gives back (but for the newest 1 GB). Where the rest of the 40 GB goes is being looked into.
 
 ## 3.2.10
 
