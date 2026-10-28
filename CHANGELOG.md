@@ -6,10 +6,12 @@ in more words.
 ## 3.2.11 (unreleased)
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
-videos lose the repeated last row at their bottom, and the VM's pointer works on an external
-display while the MacBook's display shows macOS. While macOS compresses the VM, the VM gives
-its old file cache back, which makes QEMU's footprint smaller. Needs the app update and Update
-VM, then shut the VM down and start it again.
+videos lose the repeated last row at their bottom, the VM's pointer works on an external
+display while the MacBook's display shows macOS, and the Touch ID panel shows on the display
+you work on. While macOS compresses the VM, the VM gives its old file cache back, which makes
+QEMU's footprint smaller. Needs the app update and Update VM, then shut the VM down and start
+it again; the Touch ID panel and the give-back need only the app update, from the VM's next
+start.
 
 - **No repeated last row at the bottom of VP9, AV1 and most HEVC videos (#594).** In an
   OmacVM.app VM, Google Chrome on Wayland (as Omarchy starts it) draws hardware-decoded video
@@ -56,6 +58,15 @@ VM, then shut the VM down and start it again.
   on again (Omarchy has Hyprland wake every display at any input), and the Mac turned it off
   again a few seconds later, over and over. While a display is paused the VM's display agent
   now holds that wake-up off and puts it back as it was afterwards. Needs Update VM.
+
+- **The Touch ID panel shows on the display you work on (#599).** With an OmacVM.app VM in
+  full screen on two displays ("Use external displays", on by default), the Touch ID panel
+  showed on the display the VM started on, often the MacBook's built-in screen, while you
+  worked on the external one. It now shows on the display under the Mac's pointer, over the VM
+  there; a VM in a window keeps it over its window, as before. macOS's own Touch ID dialog
+  (for a command too long for the panel, the Mac-password fallback if you turned it on, or
+  with the panel turned off) still shows on the display the VM started on. Needs only the app
+  update, from the VM's next start.
 
 - **The VM gives its old file cache back while macOS compresses it (#590).** Linux keeps every
   file it read in its page cache. To the Mac that is the VM's own memory, which macOS can
