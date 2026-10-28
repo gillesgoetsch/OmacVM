@@ -10,16 +10,18 @@ investigation and the review: work/tracks/video-bottom-edge.md.
 Mesa rounds a VA-API surface's planes up to 16: a 1920x1080 surface has a
 1920x1088 Y and a 960x544 UV texture. An app that shows a decoded surface
 itself imports the planes (an EGL dma-buf import) and samples them by
-normalized coordinates: mpv with `hwdec=vaapi`, Chrome when NV12 is
-renderable (Vulkan, or its zero-copy GL path), GStreamer's sinks, Hyprland
-for mpv's `vo=dmabuf-wayland`. virgl drops the size an import asks for: the
+normalized coordinates: mpv with `hwdec=vaapi`, Chrome on Wayland (Omarchy's
+default; NV12 counts as renderable there, so Chrome draws the decoder's
+frames without converting them: "No ImageProcessor needed"), GStreamer's
+sinks, Hyprland for mpv's `vo=dmabuf-wayland`. virgl drops the size an import asks for: the
 import is the host's whole texture. So every such app drew the whole 1088
 rows into the picture's 1080: the picture squeezed, the rows past it below
 it. They were zero (a green bar) until 3.1.32 and the picture's last row
 since (`virgl-video-plane-edge.patch`), which a user saw as "the last pixel
-line stretched 10 px below". Chrome's usual GL path converts each picture to
-ARGB first; the VA-API shim made that exact at the bottom (3.2.1), not at
-the right edge of 854 or 360 wide videos.
+line stretched 10 px below" (in Chrome on Wayland: 8 rows of a 1080p
+video, 10.7 pixels when it fills a 1440-high screen). Chrome on X11 converts
+each picture to ARGB first; the VA-API shim made that exact at the bottom
+(3.2.1), not at the right edge of 854 or 360 wide videos.
 
 ## Options
 
@@ -66,8 +68,22 @@ Option 5.
   stays as it is), so two apps cannot fight over a size. RGB surfaces are
   not declared: Mesa converts an RGB surface to YUV by its texture's size
   (`vl_compositor.c`), which a declared size would squeeze; Chrome's ARGB
-  frames keep the 3.2.1 fill. Declared surfaces (and imports of them in the
-  same process) get no source-region scaling from that fill: never both.
+  frames keep the 3.2.1 fill.
+- Mesa's own reads through its compositor: VA-API video processing (FFmpeg's
+  `scale_vaapi`, mpv's `vavpp`, GStreamer's `vapostproc`, Chrome's
+  conversion on X11) takes the source region in parts of the size Mesa has
+  for the source (its own surface: the planes rounded up to 16; an import:
+  the size it was imported at), and the Mac then scales the lookup to the
+  declared size: twice. So the shim scales a declared source's region by
+  Mesa's size over the declared one, in every process (1920x1080: the
+  picture's 1080 rows are 1088 of Mesa's), and Chromium's fill leaves
+  declared sources alone: never both. Every import of a declared surface
+  counts as declared at that surface's size, whatever size it asks for (one
+  size per resource on the Mac). `vaGetImage` into another format (RGB,
+  packed YUV) converts with the same compositor; the shim has Mesa read an
+  import of the planes at the picture's size instead (same resources, no
+  copy). The first version of this change missed both (review): FFmpeg's
+  `scale_vaapi` from a 1080p decode lost its last 8 rows.
 - The edge fill stays on: for an older VM side or app, undeclared surfaces,
   lookups at the very edge (gather, offsets) and texel reads near it.
 - Gated by `omacvm.valogical=1` (host.env), read once when the driver loads.
@@ -79,21 +95,37 @@ Option 5.
 
 - Exact video geometry in every app that samples the planes, with no copy
   and no wait: two ALU operations per lookup in those shaders.
-- `vaGetImage`, `hwdownload`, the V4L2 daemon's texel reads and the
-  build-time decode tests stay bit-exact.
-- Not covered: surfaces FFmpeg asks for larger than the picture itself:
-  H.264 at 1080p (1088 rows) and HEVC at sizes that are not a multiple of
-  8 (its coded size: 1000x562 in 1000x568). VA-API carries no crop, so the
-  shim declares the surface's size and mpv shows the stream's padding
-  rows (a 1080p H.264 is not declared at all). A real fix would be virgl
+- Texel reads are unchanged and stay bit-exact: `vaGetImage` into the
+  surface's own format and FFmpeg's `hwdownload` (framemd5 equal to FFmpeg's
+  software decoding with the declarations on: VP9 at 1080p, 360p, 854x480,
+  360x640 and 1000x562, HEVC at 1080p and 854x480, H.264 at 1080p), `vaDeriveImage`, the shim's
+  I420/YV12 copies, the V4L2 daemon's texelFetch, the build-time decode
+  tests. Mesa's compositor reads (video processing, a converting
+  `vaGetImage`) resample by nature: on the test card they land exactly as
+  with 3.2.10 (red band 8 rows and columns, lines in place), not bit for
+  bit.
+- Not covered: surfaces the decoder asks for larger than the picture itself,
+  at the stream's coded size (FFmpeg in mpv, Chrome on Wayland): H.264 at every size that is not a multiple of 16
+  (1080p in 1088 rows, 360p in 368, 854 wide in 864) and HEVC at sizes that
+  are not a multiple of 8 (1000x562 in 1000x568). VA-API carries no crop,
+  so the shim declares the surface's size and the app shows the stream's
+  padding rows (a surface whose coded size is a multiple of 16, such as
+  1080p H.264's, is not declared at all): in Chrome on Wayland an H.264
+  1080p video keeps the 8-row strip (the encoder's padding rows, usually
+  the last row repeated). A real fix would be virgl
   honouring the import's size (a view of that size) and the app cropping,
   in Mesa and virglrenderer upstream.
-- Chrome's path without an image processor (NV12 renderable: Vulkan, or
-  zero-copy GL with NV12 buffers) samples the planes in its compositor; on
-  GL that is covered like mpv. In the test VMs Chrome 154 converted to
-  ARGB with every flag tried (GL, ZeroCopyGL, `--use-vulkan`), so that
-  path was not measured; a Vulkan compositor would sample through Venus,
-  which this does not reach.
+- Chrome on Wayland with GL (the user's command line: `--ozone-platform=wayland`,
+  no Vulkan) decodes without an image processor ("No ImageProcessor
+  needed") and draws the NV12 planes whole, like mpv. Measured on a test
+  VM (Chrome 154, M4, the user's switches): 3.2.10 showed the strip at
+  every size and codec (1080p red band 15.75 rows; 854x480 and 360x640 at
+  the right); with this change VP9, AV1 and HEVC are exact at 1080p, 360p,
+  854x480 and 360x640, except where the decoder's surface has the coded
+  size (below): H.264 is unchanged at all four sizes, HEVC 854x480 shows
+  2 coded columns. Without `--ozone-platform=wayland` (X11) Chrome converts
+  to ARGB and is exact. A Vulkan compositor would sample through Venus,
+  which this does not reach (not measured).
 - A wrap mode other than clamp-to-edge on a declared texture clamps at the
   logical edge; LOD queries (`textureQueryLOD`) are not scaled. No video
   path uses either.
@@ -101,7 +133,11 @@ Option 5.
   still be sampled at the owner's size (one size per resource); Chrome
   imports at the size it allocated.
 - Tests: `Tests/virgl/test-video-logical-size.c`, the fuzz seeds
-  `seed-nop-logical*`, `src/app/guest/tests/va-shim-logical.sh`, and in a
-  test VM `tests/video/video-geometry.sh` (mpv, Chrome, Chromium, Firefox
-  on a test card; 3.2.10 fails it, 3.2.11 passes with the known cases
-  above).
+  `seed-nop-logical*`, `src/app/guest/tests/va-shim-logical.sh` (also video
+  processing regions and a converting `vaGetImage`), and in a test VM
+  `tests/video/video-geometry.sh` (mpv, Chrome, Chromium, Firefox on a test
+  card, Chrome's path per row; 3.2.10 fails it, 3.2.11 passes with the
+  known cases above). Mesa's compositor paths were measured in a test VM
+  with FFmpeg (`scale_vaapi=format=bgra`, `hwdownload,format=bgra`): exact
+  with 3.2.10, with this change, and with `OMACVM_VA_LOGICAL=0`; the first
+  version of this change lost the red band at every declared size.
