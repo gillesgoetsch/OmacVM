@@ -684,7 +684,7 @@ final class Runner {
         if network.vmnet { watchFastNetwork() }
         if graphics?.venus == true { watchVenusStart() }
         observeSleep()
-        let watch = GPUMemoryWatch(config: c) { [weak self] line in self?.appendLog(line) }
+        let watch = GPUMemoryWatch(config: c, qemuPID: p.processIdentifier) { [weak self] line in self?.appendLog(line) }
         watch.start()
         gpuMemory = watch
         observeActivation()

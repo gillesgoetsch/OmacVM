@@ -110,7 +110,11 @@ expect "the script writes only memory.reclaim and drop_caches" "" \
   "$(grep -n -e compact_memory -e swapoff -e swapon -e zram -e 'page_reporting_order *"* *>' -e 'balloon.*>' "$S" | grep -v '^[0-9]*:#' | grep -v 'never programs')"
 expect "the command the app sends stays small (under 3 KB)" yes "$( (( $(grep -v '^[[:space:]]*#' "$S" | wc -c) < 3072 )) && echo yes)"
 
-# Nothing in the VM runs it by itself: an old app with a new VM does nothing new.
+# The app runs it from its bundle on "compressing" (GPUMemory.swift), and nothing in the VM by itself.
+G=$R/app/app/Sources/OmacVM/GPUMemory.swift
+expect "the app carries the script from its bundle" 1 "$(grep -c '"Contents/Resources/omacvm/src/memory/guest/giveback.sh"' "$G")"
+expect "the app runs it with \"compressing\" through runAndWait" "1 1" \
+  "$(grep -c '\["-c", script, "giveback", "compressing"\]' "$G") $(grep -c 'GuestAgent.runAndWait' "$G")"
 expect "no unit, timer or install line in the VM runs it" "" \
   "$(grep -rl giveback "$R/src" | grep -v -e '^'"$R"'/src/memory/guest/giveback.sh$' -e '^'"$R"'/src/tests/memory-giveback.sh$' -e '^'"$R"'/src/cmd/check.sh$')"
 exit $fail
