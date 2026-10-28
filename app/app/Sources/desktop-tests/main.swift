@@ -112,5 +112,156 @@ expect(GPUMemoryNotice.apps(lost: ["chromium"], why: ["guard"], lastTold: ["chro
        "told 90 s ago: again")
 expect(GPUMemoryNotice.apps(lost: ["chromium"], why: [], lastTold: [:], now: now).isEmpty, "an older runtime (no why): nothing")
 
+
+do {
+// Giving the VM's cold file cache back while macOS compresses the VM (MemoryGiveBack, ADR 0059).
+let GB = MemoryGiveBack.gib, MB = MemoryGiveBack.mib
+func sample(_ t: Double, fp: Double, res: Double, comp: Double) -> MemoryGiveBack.Sample {
+    MemoryGiveBack.Sample(time: t, footprint: UInt64(fp * Double(GB)), resident: UInt64(res * Double(GB)),
+                          compressed: UInt64(comp * Double(GB)))
+}
+// The user's report: 64 GB Mac, 42 GB VM; footprint 51 GB, resident 27-30 GB, macOS compressing at "normal".
+var u = MemoryGiveBack(ram: 64 * GB)
+expect(u.minTaken == 2 * GB && u.minGrowth == 1 * GB, "64 GB Mac: 2 GB taken, 1 GB growth")
+expect(!u.compressing(sample(0, fp: 30, res: 30, comp: 100)), "the VM's start: nothing")
+expect(!u.compressing(sample(300, fp: 40, res: 39.5, comp: 101)), "growing in RAM, nothing compressed: nothing")
+expect(u.compressing(sample(600, fp: 51, res: 28, comp: 108)), "the user's numbers (23 GB outside RAM, macOS compressed 7 GB): give back")
+u.started(.compressing, at: 600)
+expect(!u.compressing(sample(605, fp: 51, res: 28, comp: 108.5)), "a give-back under way counts: not again")
+
+// Graphics that grow on a Mac with room count in the footprint, not in the resident size: not compressing.
+var g = MemoryGiveBack(ram: 64 * GB)
+_ = g.compressing(sample(0, fp: 20, res: 19, comp: 50))
+var fired = false
+for i in 1...120 {   // 10 minutes of a graphics-heavy session: +8.7 GB of graphics, macOS compresses 0.3 GB
+    let t = Double(i) * 5
+    fired = fired || g.compressing(sample(t, fp: 20 + 8.7 * t / 600, res: 19, comp: 50 + 0.3 * t / 600))
+}
+expect(!fired, "8.7 GB of graphics growth without compressions: nothing")
+
+// A 4 GB VM on an 8 GB Mac: the thresholds scale (a quarter, an eighth of the Mac).
+var a = MemoryGiveBack(ram: 8 * GB)
+expect(a.minTaken == 2 * GB && a.minGrowth == 1 * GB, "8 GB Mac: 2 GB taken, 1 GB growth")
+_ = a.compressing(sample(0, fp: 4.2, res: 4.0, comp: 30))
+expect(!a.compressing(sample(60, fp: 5.0, res: 3.5, comp: 32)), "8 GB Mac, 1.5 GB outside RAM: not yet")
+expect(a.compressing(sample(120, fp: 5.6, res: 3.3, comp: 33)), "8 GB Mac, 2.3 GB outside RAM, 3 GB compressed: give back")
+let b16 = MemoryGiveBack(ram: 16 * GB)
+expect(b16.minTaken == 2 * GB && b16.minGrowth == 1 * GB, "16 GB Mac: 2 GB, 1 GB")
+
+// The baseline only moves down, and macOS's count starts again whenever the VM is near it.
+var d = MemoryGiveBack(ram: 64 * GB)
+_ = d.compressing(sample(0, fp: 10, res: 7, comp: 0))       // 3 GB outside RAM at the start
+_ = d.compressing(sample(5, fp: 10, res: 7.5, comp: 0.2))   // 2.5: the new lowest
+expect(d.baseline?.taken == UInt64(2.5 * Double(GB)), "the baseline moves down")
+expect(!d.compressing(sample(10, fp: 11, res: 7.6, comp: 1.5)), "3.4 GB: less than 1 GB above the lowest")
+expect(d.compressing(sample(15, fp: 11.5, res: 7.9, comp: 1.5)), "3.6 GB, macOS compressed 1.3 GB since: give back")
+var f = MemoryGiveBack(ram: 64 * GB)
+_ = f.compressing(sample(0, fp: 10, res: 9, comp: 0))
+for i in 1...60 { _ = f.compressing(sample(Double(i) * 5, fp: 10, res: 9, comp: Double(i) * 0.1)) }   // flat, others compressed 6 GB
+expect(!f.compressing(sample(305, fp: 13.2, res: 10, comp: 6.5)), "compressions while the VM sat at its lowest do not count")
+expect(f.compressing(sample(310, fp: 13.2, res: 10, comp: 7.2)), "1.2 GB compressed since it last sat there: give back")
+
+// One 10-minute gap across all triggers; macOS's warning may follow a cold-only give-back after 2 minutes.
+var w = MemoryGiveBack(ram: 64 * GB)
+expect(w.allowed(.warning, at: 0) && w.allowed(.compressing, at: 0), "nothing before: allowed")
+w.started(.compressing, at: 1000)
+expect(!w.allowed(.compressing, at: 1599) && w.allowed(.compressing, at: 1600), "compressing again after 10 minutes")
+expect(!w.allowed(.warning, at: 1119) && w.allowed(.critical, at: 1120), "warning 2 minutes after a cold-only give-back")
+w.answered(MemoryGiveBack.Result.parse("act=drop got_mb=900", maxMB: 8192))
+expect(!w.allowed(.warning, at: 1500) && w.allowed(.warning, at: 1600), "after a whole-cache drop: 10 minutes for the warning too")
+w.started(.warning, at: 2000)
+expect(!w.allowed(.compressing, at: 2300) && !w.allowed(.warning, at: 2300), "after the warning's drop: nothing for 10 minutes")
+expect(w.allowed(.compressing, at: 2600) && w.allowed(.warning, at: 2600), "then both again")
+
+// The VM's agent did not answer: as if nothing started, again in 30 s (as before).
+var n = MemoryGiveBack(ram: 64 * GB)
+n.started(.warning, at: 100)
+n.noAnswer(at: 102)
+expect(n.last == nil, "no answer: not counted")
+expect(!n.allowed(.warning, at: 131) && n.allowed(.warning, at: 132) && n.allowed(.compressing, at: 132), "again in 30 s")
+n.started(.warning, at: 132)
+expect(!n.allowed(.warning, at: 500), "an answered start counts again")
+
+// Backoff: under 256 MB back doubles the gap for "compressing" (up to 2 h); 1 GB or more resets it.
+var k = MemoryGiveBack(ram: 64 * GB)
+var t = 0.0
+for want in [2.0, 4, 8, 12, 12] {
+    k.started(.compressing, at: t)
+    k.answered(MemoryGiveBack.Result.parse("act=none got_mb=0", maxMB: 43008))
+    k.settled(guest: 0, footprintDrop: 100 * MB, at: t + 70)
+    expect(k.backoff == want, "small give-back: backoff x\(Int(want))")
+    t += 600 * want
+}
+expect(!k.allowed(.compressing, at: t - 600 * 12 + 7199) && k.allowed(.compressing, at: t - 600 * 12 + 7200), "at most 2 h")
+expect(k.allowed(.warning, at: t - 600 * 12 + 600), "the warning keeps its 10 minutes")
+k.started(.compressing, at: t)
+k.settled(guest: 600 * MB, footprintDrop: 600 * MB, at: t + 70)
+expect(k.backoff == 12, "256 MB to 1 GB back: backoff stays")
+k.settled(guest: 3 * GB, footprintDrop: 2 * GB, at: t + 90)
+expect(k.backoff == 1, "1 GB or more back: 10 minutes again")
+k.settled(guest: nil, footprintDrop: 2 * GB, at: t + 95)
+expect(k.backoff == 1, "the warning's drop (no number from the VM): the footprint counts")
+
+var m = MemoryGiveBack(ram: 64 * GB)
+m.settled(guest: 3 * GB, footprintDrop: 100 * MB, at: 10)
+expect(m.backoff == 2, "3 GB from the VM but only 100 MB less footprint: small")
+m.settled(guest: 100 * MB, footprintDrop: 3 * GB, at: 20)
+expect(m.backoff == 4, "3 GB less footprint but the VM gave 100 MB: small (something else freed it)")
+
+// After a give-back the baseline starts again from 60 s later, not from the old lowest.
+var s = MemoryGiveBack(ram: 64 * GB)
+_ = s.compressing(sample(0, fp: 10, res: 10, comp: 0))
+s.started(.compressing, at: 10)
+s.settled(guest: 2 * GB, footprintDrop: 2 * GB, at: 80)
+_ = s.compressing(sample(85, fp: 15, res: 10, comp: 5))
+expect(s.baseline?.taken == 5 * GB, "the new baseline: taken 60 s after the give-back")
+
+// A balloon that does not report: no more give-backs for "compressing"; the warning stays.
+var o = MemoryGiveBack(ram: 64 * GB)
+o.started(.compressing, at: 0)
+o.answered(MemoryGiveBack.Result.parse("mode=compressing act=norep reporting=0", maxMB: 8192))
+expect(o.off && !o.compressing(sample(5000, fp: 60, res: 20, comp: 900)), "not reporting: off for this run")
+expect(o.allowed(.warning, at: 5000), "the warning's drop still runs")
+
+// The VM's answer is untrusted.
+let line = "mode=compressing act=reclaim want_mb=12444 got_mb=12380 cache_mb=15550 cache_after_mb=3170 small_free_mb=900 total_mb=42035 reporting=1 order=6 steps=13 secs=19"
+let r = MemoryGiveBack.Result.parse("noise\n" + line + "\n", maxMB: 43008)
+expect(r?.act == "reclaim" && r?.gotMB == 12380 && r?.cacheMB == 15550 && r?.cacheAfterMB == 3170 && r?.smallFreeMB == 900
+       && r?.totalMB == 42035 && r?.reporting == true && r?.order == 6 && r?.seconds == 19, "giveback.sh's line read")
+let big = MemoryGiveBack.Result.parse("act=reclaim got_mb=99999999 cache_mb=-5 small_free_mb=x order=77 secs=99999", maxMB: 4096)
+expect(big?.gotMB == 4096 && big?.cacheMB == 0 && big?.smallFreeMB == 0 && big?.order == 10 && big?.seconds == 600,
+       "numbers clamped to 0 and the VM's memory")
+expect(MemoryGiveBack.Result.parse("act=re\u{1b}[31mcl\u{7}aim got_mb=5", maxMB: 100)?.act == "remclaim", "act: letters only")
+expect(MemoryGiveBack.Result.parse("got_mb=5 cache_mb=7", maxMB: 100) == nil, "no act: not an answer")
+expect(MemoryGiveBack.Result.parse("act=;; got_mb=5", maxMB: 100) == nil, "an act without letters: not an answer")
+expect(MemoryGiveBack.Result.parse(String(repeating: "x", count: 300) + " act=reclaim", maxMB: 100) == nil, "past 200 characters: cut")
+expect(MemoryGiveBack.Result.parse("", maxMB: 100) == nil && MemoryGiveBack.Result.parse("\n\n", maxMB: 100) == nil, "empty: nil")
+
+// Seeded fuzz: random answers never crash and never give a number out of range.
+var seed: UInt64 = 0x5eed_0059
+func next() -> UInt64 { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return seed >> 33 }
+let pieces = ["act=", "reclaim", "got_mb=", "cache_mb=", "cache_after_mb=", "small_free_mb=", "total_mb=", "order=", "secs=",
+              "reporting=", "=", " ", "\n", "\r", "-", "9", "99999999999999999999", "-1", "\u{0}", "\u{1b}", "é", "🙂", "\u{7f}", "a"]
+var bad = 0
+for _ in 0..<5000 {
+    var text = ""
+    for _ in 0..<Int(next() % 40) { text += pieces[Int(next() % UInt64(pieces.count))] }
+    let cap = Int(next() % 65536)
+    guard let x = MemoryGiveBack.Result.parse(text, maxMB: cap) else { continue }
+    let nums = [x.wantMB, x.gotMB, x.cacheMB, x.cacheAfterMB, x.smallFreeMB, x.totalMB]
+    if nums.contains(where: { $0 < 0 || $0 > cap }) || x.act.isEmpty || x.act.count > 12
+        || !x.act.unicodeScalars.allSatisfy({ $0.value >= 0x61 && $0.value <= 0x7A })
+        || !(-1...10).contains(x.order) || !(0...600).contains(x.seconds) { bad += 1 }
+}
+expect(bad == 0, "5000 random answers: every number within range, act letters only")
+
+// The status file for omacvm check.
+var st = MemoryGiveBack.Status()
+st.count = 3; st.at = 1_793_177_520; st.trigger = "compressing"; st.act = "reclaim"; st.returnedMB = 11900
+expect(st.text.hasPrefix("count=3\nat=1793177520\ntrigger=compressing\nact=reclaim\nreturned_mb=11900\n") && st.text.hasSuffix("off=0\n"),
+       "status file: key=value lines")
+expect(MemoryGiveBack.gb(900 * MB) == "900 MB" && MemoryGiveBack.gb(11900 * MB) == "11.6 GB", "sizes as the log says them")
+}
+
 if failures > 0 { print("\(failures) failed"); exit(1) }
-print("desktop restart and graphics memory: all checks passed")
+print("desktop restart, graphics memory and memory give-back: all checks passed")
