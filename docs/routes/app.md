@@ -1313,7 +1313,9 @@ own bundle in the VM (guest agent; no Update VM needed): the VM gives back
 its file cache not used lately, except the newest min(1 GB, an eighth of the
 VM) (`memory.reclaim` with `swappiness=0` on Inactive(file), in 1 GB steps,
 at most 20 s; the memory-optimized kernel counted nearly all its file cache
-as inactive in the VM read, so there it takes nearly all of it). The newest
+as inactive in the VM read, so there it asks for nearly all of it; a 4 GB VM
+on the MacBook Pro M1 Max gave back 1.1 of 2.5 GB, the stock kernel 1.2 of
+2.8 GB, and of what the Mac still held of it none stayed). The newest
 part stays, so the files read last are not read again (on the Mac mini,
 Chrome started in 1.02 s after a give-back that followed reading its files,
 the same as without one); a file read again later comes from the Mac's file
