@@ -68,7 +68,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  bool hvf_allowed;
  bool hvf_kernel_irqchip;
  bool hvf_nested_virt;
-@@ -160,6 +165,399 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
+@@ -160,6 +165,400 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
      g_hash_table_add(hvf_mapped_sections, g_memdup2(&gpa, sizeof(gpa)));
  }
  
@@ -213,12 +213,13 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
 +        }
 +        if (madvise((void *)aside, size, MADV_FREE_REUSABLE) != 0) {
 +            omacvm_reclaim_refusal(errno);
++            patient = false;            /* no point in asking again */
 +        }
 +        if (!patient && !before) {
 +            break;
 +        }
 +        left = omacvm_reclaim_held(aside, size);
-+        if (!left.resident && !left.compressed) {
++        if (!patient || (!left.resident && !left.compressed)) {
 +            break;
 +        }
 +    }
@@ -294,7 +295,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
 +static void *omacvm_reclaim_work(void *opaque)
 +{
 +    OmacvmReclaimItem it;
-+    OmacvmReclaimPages before, left, rb = { 0, 0 }, rl = { 0, 0 };
++    OmacvmReclaimPages before = { 0, 0 }, left, rb = { 0, 0 }, rl = { 0, 0 };
 +    uint64_t blocks = 0, bytes = 0;
 +    bool check = omacvm_reclaim_check_on();
 +
@@ -468,7 +469,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
  {
      MemoryRegionSection section;
-@@ -167,7 +565,8 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -167,7 +566,8 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
      RAMBlock *rb;
      size_t page_size = qemu_real_host_page_size();
      hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
@@ -478,7 +479,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  
      assert(bql_locked());
      if (!size || !QEMU_IS_ALIGNED(gpa | (uintptr_t)host | size, page_size)) {
-@@ -195,28 +594,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -195,28 +595,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
          return;
      }
  
