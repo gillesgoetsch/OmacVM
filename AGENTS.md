@@ -171,7 +171,10 @@ A build is done when all of this holds:
    Fusion: in full screen one monitor per Mac display, placed as in macOS
    (`omacvm-fusion-displays` user unit; `omacvm check` counts the outputs).
    OmacVM.app: the same in full screen (Virtual-2, ... at each display's size
-   and scale) while "Use external displays" is on; `omacvm-displays status`
+   and scale) while "Use external displays" is on (with one display switched
+   to macOS and a Mac app in front, a move over the VM on another display
+   still moves the VM's pointer, without taking the keyboard:
+   `omacvm-cocoa-pointer-hover*.patch`, ADR 0015's addendum); `omacvm-displays status`
    in the VM shows the switch, the Mac's arrangement and Hyprland's outputs;
    `$XDG_RUNTIME_DIR/omacvm/builtin` names the MacBook's output, which
    Omanotch (NOTCH, the parked bar) follows.
@@ -668,6 +671,7 @@ The less obvious ones, with causes and where the fix lives, are in
 | OmacVM.app: video still decodes on the CPU | the app predates video decoding, or `vainfo` lists nothing; in Arch's Chromium: `omacvm-vdecd` not running, no module for the running kernel, the flags not in `~/.config/chromium-flags.conf`, or the codec is AV1/HEVC/10-bit | `omacvm check` (video decoding, video decoding in Chromium: says why the daemon is down); `journalctl -u omacvm-vdecd`; `OMACVM_VIDEO_DEBUG=1` logs each stream in the VM's `logs/qemu.log` (`docs/video-decode.md`) |
 | UTM VM very slow | UTM started with `open -g` (background priority) or Vulkan driver on | start UTM normally; `QEMUVulkanDriver` 1 |
 | VM resumes a dead state after a hard kill (Parallels) | suspend files | delete `<pvm>/*.mem*` and `vm.lock` |
+| OmacVM.app in full screen on two displays, one switched to macOS: the VM's pointer stands still on the other display until a click (3.2.10 and older) | a Mac app in front; QEMU dropped moves over its windows while it was not in front (only a click took the pointer, so a passing pointer did not take the keyboard) | 3.2.11: such a move gives the guest only the pointer's place (`omacvm-cocoa-pointer-hover*.patch`, `OMACVM_POINTER_HOVER=0` turns it off; `OMACVM_POINTER_DEBUG=1`: `omacvm-pointer: hover (output N)`); with Pause drawing while hidden, Update VM too (the agent holds Hyprland's wake on moves off while a display is paused) |
 | The Mac's pointer shows over the full-screen VM | another app's window over the VM hit-test area (Bartender's menu-bar overlay brings it back) | the gestures helper hides the pointer by AppKit hit test (click-through overlays such as `screencaptureui`'s are skipped); quit such menu-bar tools |
 | OmacVM.app: the Mac's arrow over the VM beside Omarchy's pointer, until switching out and back (3.1.24 and older) | QEMU hid the cursor once; a background show (Gestures' own hider, also over app VMs then) or macOS showed it again | QEMU keeps the hidden cursor's image empty and sets it again on motion or, at rest, within 0.5 s (`omacvm-cocoa-cursor-stays-hidden.patch`, `src/tests/pointer-reveal-vm.sh`); Gestures leaves app VMs alone |
 | The Mac's wallpaper changes only on one Space | `NSWorkspace.setDesktopImageURL` sets only the current Space | the Bridge rewrites `~/Library/Application Support/com.apple.wallpaper/Store/Index.plist` for every Space (the `imageFile` URL inside each image choice's `Configuration` plist, which can come from an older Space, #388; `Files` as macOS writes them: none on macOS 27, whose WallpaperAgent refuses a choice with one and shows its default picture, else the URL) and restarts `WallpaperAgent` |
