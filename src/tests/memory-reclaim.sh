@@ -14,7 +14,9 @@ ok() { N=$((N + 1)); printf '  ok    %s\n' "$1"; }
 bad() { N=$((N + 1)); FAIL=$((FAIL + 1)); printf '  FAIL  %s\n' "$1"; }
 check() { local what=$1; shift; if "$@" >/dev/null 2>&1; then ok "$what"; else bad "$what"; fi; }
 
-check "patch is pinned in SHA256SUMS" grep -q " qemu-hvf-free-page-reclaim-reusable.patch$" "$S"
+sum=$(shasum -a 256 "$P" | cut -d' ' -f1)
+check "patch is pinned in SHA256SUMS" grep -q "^$sum  qemu-hvf-free-page-reclaim-reusable.patch$" "$S"
+check "runtime build pins the same SHA-256" grep -q "^reclaim_reusable_patch_sha256=$sum$" "$B"
 # The two patches it applies after carry hvf_report_free_pages' old body: never edited.
 check "free-page-reclaim patch unchanged" \
   grep -q "^5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf  qemu-hvf-free-page-reclaim.patch$" "$S"
@@ -45,6 +47,9 @@ check "the old comment against MADV_FREE_REUSABLE is gone" \
 check "OMACVM_RECLAIM_REUSABLE=0 turns it off" grep -q 'getenv("OMACVM_RECLAIM_REUSABLE")' "$P"
 check "a refused madvise is logged once and the replacement goes on" \
   grep -q '^+    if (!__atomic_exchange_n(&omacvm_reclaim_refused, true, __ATOMIC_RELAXED)) {' "$P"
+# The text the app looks for in QEMU's binary (MemoryGiveBack.reclaimMarker), in a line QEMU keeps.
+check "the worker's first line has the app's marker" \
+  grep -q '^+    info_report("OmacVM: free page reclaim gives the pages back to macOS "$' "$P"
 check "OMACVM_RECLAIM_CHECK=1 for tests" grep -q 'getenv("OMACVM_RECLAIM_CHECK")' "$P"
 for line in "free page reporting %s:" "main lock held p99" "reclaim check:" "macOS refused to drop"; do
   check "patch logs '$line'" grep -qF "$line" "$P"

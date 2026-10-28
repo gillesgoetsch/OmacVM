@@ -15,7 +15,11 @@ skipped; the worker looks again 20 ms later and advises once more (twice at
 most). A full queue (4096 ranges) releases in place; a range that cannot
 move aside is advised in place; a refused madvise is logged once per run
 and the replacement goes on as before. OMACVM_RECLAIM_REUSABLE=0: the
-replacement alone, as up to 3.2.10.
+replacement alone, as up to 3.2.11.
+The worker's first qemu.log line carries the text the app looks for in
+QEMU's binary to turn its give-back while macOS compresses the VM on
+(MemoryGiveBack.reclaimMarker; prepare-qemu-gpu-runtime.sh checks a runtime
+has it).
 qemu.log gets a line an hour while the guest reports, and one at exit:
 reports, MB back to the Mac, blocks, how long the replacements held the
 main lock per report (p99, longest), and what the releases left on the Mac.
@@ -68,7 +72,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  bool hvf_allowed;
  bool hvf_kernel_irqchip;
  bool hvf_nested_virt;
-@@ -160,6 +165,400 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
+@@ -160,6 +165,403 @@ static void hvf_set_phys_mem(MemoryRegionSection *section, bool add)
      g_hash_table_add(hvf_mapped_sections, g_memdup2(&gpa, sizeof(gpa)));
  }
  
@@ -300,6 +304,9 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
 +    bool check = omacvm_reclaim_check_on();
 +
 +    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
++    /* The app looks for this text in QEMU's binary (MemoryGiveBack.reclaimMarker). */
++    info_report("OmacVM: free page reclaim gives the pages back to macOS "
++                "(MADV_FREE_REUSABLE on its own thread)");
 +    for (;;) {
 +        qemu_mutex_lock(&omacvm_reclaim_w.lock);
 +        while (!omacvm_reclaim_w.count) {
@@ -469,7 +476,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
  {
      MemoryRegionSection section;
-@@ -167,7 +566,8 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -167,7 +569,8 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
      RAMBlock *rb;
      size_t page_size = qemu_real_host_page_size();
      hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
@@ -479,7 +486,7 @@ advice 0). The runtime build runs it on the patched source, CI on this file.
  
      assert(bql_locked());
      if (!size || !QEMU_IS_ALIGNED(gpa | (uintptr_t)host | size, page_size)) {
-@@ -195,28 +595,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -195,28 +598,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
          return;
      }
  
