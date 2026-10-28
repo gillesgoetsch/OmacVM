@@ -17,12 +17,20 @@ call or waits for a decoder's queue:
 - What the Mac decodes and encodes (VTIsHardwareDecodeSupported, the encoder
   check that makes a VTCompressionSession) is asked once, on a queue that
   virgl_video_init starts; the caps wait for it only if the guest asks before
-  it answered, 10 s at most.
+  it answered, 10 s at most. That queue also makes and ends one small VP9
+  session, so the Mac's video decoder service is connected before the guest's
+  first video (the first session of a process took 230-390 ms on the mini,
+  later ones 10-50 ms); qemu.log: "the Mac's video decoder service answered
+  in N ms".
+- Up to 16 pictures per decoder on their way (was 4): a stream's first
+  pictures wait on the queue while its session starts, and none is given up
+  for that alone.
 One time limit for a decoded picture, OMACVM_VIDEO_GIVEUP_MS (250 ms; 50-500):
 a picture not in that long after its END_FRAME is given up by vrend's poll; a
 wait for it (the guest reads or writes its planes, or 4 pictures are in flight)
 waits that long at most, and END_FRAME does not wait at all for one still on
-the queue (its session is starting). The sync thread waits for a fence's
+the queue (its session is starting; with 16 on their way the oldest is given
+up). The sync thread waits for a fence's
 pictures until the last of them runs out of time (at most the limit + 100 ms)
 and then marks the ones not in dropped: they are never written later, so planes
 the guest uses again once the fence is out stay as the guest left them. A wait
@@ -91,19 +99,25 @@ index 48f1b7b..a67a9a4 100644
  int virgl_video_end_frame(struct virgl_video_codec *codec,
                            struct virgl_video_buffer *target);
 diff --git a/src/vrend/virgl_video_vt.c b/src/vrend/virgl_video_vt.c
-index 04d4aa2..be6d032 100644
+index 04d4aa2..ffa1dbc 100644
 --- a/src/vrend/virgl_video_vt.c
 +++ b/src/vrend/virgl_video_vt.c
-@@ -219,15 +219,22 @@ struct enc_job {
+@@ -218,16 +218,26 @@ struct enc_job {
+     struct vt_bytes coded;      /* Annex B access unit */
  };
  
- /* One picture in the media engine (see "Decoding beside vrend's thread"). The
+-/* One picture in the media engine (see "Decoding beside vrend's thread"). The
 - * fields after `sent_ns` are written by VideoToolbox's output thread, under dec_lock. */
-+ * fields after `sent_ns` are written under dec_lock by the decoder's queue
-+ * (handed), VideoToolbox's output thread (out, status, pix, out_ns) and the
-+ * sync thread (dropped, out). `target` is vrend's thread's only. */
- #define VT_DEC_MAX_JOBS 4
+-#define VT_DEC_MAX_JOBS 4
 -#define VT_DEC_MAX_QUEUED 8
++/* One picture on its way (see "Decoding beside vrend's thread"). The fields
++ * after `sent_ns` are written under dec_lock by the decoder's queue (handed),
++ * VideoToolbox's output thread (out, status, pix, out_ns) and the sync thread
++ * (dropped, out). `target` is vrend's thread's only. Up to 16 per decoder (was
++ * 4): a stream's first pictures wait on the queue while its session starts
++ * (50-300 ms; a 60 fps stream sends that many in 250 ms), and none may be given
++ * up for that alone. */
++#define VT_DEC_MAX_JOBS 16
 +/* Pictures on a decoder's queue not handed to VideoToolbox yet: while its
 + * session starts, a stream at 60 fps sends this many in about 1 s (each one
 + * is decoded later, given up or not: a later picture may refer to it). */
@@ -120,7 +134,7 @@ index 04d4aa2..be6d032 100644
      OSStatus status;
      CVPixelBufferRef pix;
      uint64_t out_ns;
-@@ -248,9 +255,15 @@ struct virgl_video_codec {
+@@ -248,9 +258,15 @@ struct virgl_video_codec {
      union virgl_picture_desc desc;      /* last picture description */
      bool have_desc;
  
@@ -139,7 +153,13 @@ index 04d4aa2..be6d032 100644
      CVPixelBufferRef output;            /* set by the output callback */
      /* The GPU copies from the frames after we return: keep the last few
       * so VideoToolbox does not reuse them too early. */
-@@ -272,9 +285,12 @@ struct virgl_video_codec {
+@@ -267,14 +283,18 @@ struct virgl_video_codec {
+     uint64_t ns_gap_max;                /* longest wait between two frames */
+     uint64_t ns_last_end;
+     unsigned in_flight_max;             /* debug: most pictures in the media engine at once */
++    uint64_t ns_slowest;                /* debug: END_FRAME to picture in, its slowest picture */
+ 
+     /* Decoding beside vrend's thread: pictures sent, oldest at dj_head */
      struct dec_job djobs[VT_DEC_MAX_JOBS];
      unsigned dj_head, dj_count;
      struct virgl_video_codec *dec_next; /* the list of decoders (dec_list) */
@@ -154,7 +174,7 @@ index 04d4aa2..be6d032 100644
  
      /* H.264 */
      uint8_t sps[2048];                  /* H.264 SPS, AV1 sequence header, HEVC VPS+SPS+PPS */
-@@ -518,69 +534,92 @@ static void output_callback(void *ref_con, void *frame_ref_con, OSStatus status,
+@@ -518,69 +538,92 @@ static void output_callback(void *ref_con, void *frame_ref_con, OSStatus status,
      }
  }
  
@@ -289,7 +309,7 @@ index 04d4aa2..be6d032 100644
      spec = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
                                       &kCFTypeDictionaryKeyCallBacks,
                                       &kCFTypeDictionaryValueCallBacks);
-@@ -591,153 +630,285 @@ static bool session_create(struct virgl_video_codec *codec)
+@@ -591,153 +634,285 @@ static bool session_create(struct virgl_video_codec *codec)
      attrs = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
                                        &kCFTypeDictionaryKeyCallBacks,
                                        &kCFTypeDictionaryValueCallBacks);
@@ -463,8 +483,11 @@ index 04d4aa2..be6d032 100644
      }
 -    free(sub);
 +    free(it);
-+}
-+
+ }
+ 
+-/* JOB: send the picture and return (its output comes to dec_output); else wait for it. */
+-static bool decode_sample(struct virgl_video_codec *codec, const uint8_t *data, size_t size,
+-                          struct dec_job *job)
 +/* The decoder's last work, on its queue: the session ends (its last outputs
 + * come before Invalidate returns), then the codec goes. vrend's thread gave
 + * every job back before and touches the codec no more. */
@@ -489,11 +512,8 @@ index 04d4aa2..be6d032 100644
 +        return codec->q_session != NULL;
 +    return codec->fmt_gen &&
 +           __atomic_load_n(&codec->q_failed_gen, __ATOMIC_ACQUIRE) != codec->fmt_gen;
- }
- 
--/* JOB: send the picture and return (its output comes to dec_output); else wait for it. */
--static bool decode_sample(struct virgl_video_codec *codec, const uint8_t *data, size_t size,
--                          struct dec_job *job)
++}
++
 +/* A new format FMT for the decoder (vrend's thread; FMT's reference is taken):
 + * the session takes it when VideoToolbox can, else (always when FRESH) a new
 + * one is made, on the decoder's queue. False: no session (it waits). */
@@ -663,7 +683,7 @@ index 04d4aa2..be6d032 100644
      uint64_t dt = now_ns() - t0;
      codec->ns_decode += dt;
      if (dt > codec->ns_decode_max)
-@@ -752,8 +923,8 @@ static bool decode_sample(struct virgl_video_codec *codec, const uint8_t *data,
+@@ -752,8 +927,8 @@ static bool decode_sample(struct virgl_video_codec *codec, const uint8_t *data,
                         (int)codec->output_status);
          /* A broken session stays broken: start over at the next picture. */
          if (st == kVTInvalidSessionErr || st == kVTVideoDecoderMalfunctionErr) {
@@ -674,7 +694,7 @@ index 04d4aa2..be6d032 100644
          }
          return false;
      }
-@@ -861,23 +1032,32 @@ static void deliver_picture(struct virgl_video_codec *codec, struct virgl_video_
+@@ -861,23 +1036,32 @@ static void deliver_picture(struct virgl_video_codec *codec, struct virgl_video_
  /* ------------------------------------------------------------------------ */
  
  /* vrend's thread is QEMU's GPU thread: every guest context's commands wait
@@ -685,7 +705,7 @@ index 04d4aa2..be6d032 100644
 - * guest's planes are read or written (a draw samples them, a blit, a copy, a
 - * transfer), vrend gives every picture in flight back first, waiting for each
 + * while it waits. END_FRAME sends the picture to the decoder's queue and
-+ * returns (at most VT_DEC_MAX_JOBS per decoder in flight); the queue hands it
++ * returns (at most VT_DEC_MAX_JOBS per decoder on their way); the queue hands it
 + * to VideoToolbox, whose output callback marks the job and wakes vrend's
 + * thread (callbacks->encode_wake), whose poll copies the pictures that are in
 + * into the guest's planes, oldest first. Before the guest's planes are read or
@@ -717,7 +737,7 @@ index 04d4aa2..be6d032 100644
  static struct virgl_video_codec *dec_list;
  
  static bool dec_async(void)
-@@ -911,6 +1091,7 @@ static void dec_output(struct virgl_video_codec *codec, uint64_t seq, OSStatus s
+@@ -911,6 +1095,7 @@ static void dec_output(struct virgl_video_codec *codec, uint64_t seq, OSStatus s
      pthread_mutex_lock(&dec_lock);
      for (unsigned i = 0; i < VT_DEC_MAX_JOBS; i++) {
          struct dec_job *job = &codec->djobs[i];
@@ -725,7 +745,7 @@ index 04d4aa2..be6d032 100644
          if (job->seq == seq && !job->out) {
              job->out = true;
              job->status = status;
-@@ -924,7 +1105,6 @@ static void dec_output(struct virgl_video_codec *codec, uint64_t seq, OSStatus s
+@@ -924,7 +1109,6 @@ static void dec_output(struct virgl_video_codec *codec, uint64_t seq, OSStatus s
      if (found)
          pthread_cond_broadcast(&dec_cond);
      pthread_mutex_unlock(&dec_lock);
@@ -733,7 +753,7 @@ index 04d4aa2..be6d032 100644
      if (found && callbacks && callbacks->encode_wake)
          callbacks->encode_wake();
  }
-@@ -944,10 +1124,9 @@ static void dec_update_open(void)
+@@ -944,10 +1128,9 @@ static void dec_update_open(void)
      pthread_mutex_unlock(&dec_lock);
  }
  
@@ -746,7 +766,7 @@ index 04d4aa2..be6d032 100644
  
      clock_gettime(CLOCK_REALTIME, ts);
      ts->tv_sec += (time_t)(left / 1000000000ull);
-@@ -958,22 +1137,30 @@ static void dec_deadline(struct timespec *ts, uint64_t sent_ns)
+@@ -958,22 +1141,30 @@ static void dec_deadline(struct timespec *ts, uint64_t sent_ns)
      }
  }
  
@@ -784,7 +804,7 @@ index 04d4aa2..be6d032 100644
          while (!job->out)
              if (pthread_cond_timedwait(&dec_cond, &dec_lock, &ts))
                  break;
-@@ -988,15 +1175,20 @@ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
+@@ -988,15 +1179,20 @@ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
      target = job->target;
      fw = job->frame_w;
      fh = job->frame_h;
@@ -807,7 +827,16 @@ index 04d4aa2..be6d032 100644
      } else if (status != noErr || !pix) {
          if (codec->errors++ < 20)
              virgl_warn("vt-video: decode failed: %d\n", (int)status);
-@@ -1014,25 +1206,61 @@ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
+@@ -1004,6 +1200,8 @@ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
+         codec->ns_decode += took;
+         if (took > codec->ns_decode_max)
+             codec->ns_decode_max = took;
++        if (took > codec->ns_slowest)
++            codec->ns_slowest = took;
+         if (target)
+             deliver_picture(codec, target, pix, fw, fh);
+     }
+@@ -1014,25 +1212,61 @@ static bool dec_give_back(struct virgl_video_codec *codec, bool block)
      return true;
  }
  
@@ -873,7 +902,7 @@ index 04d4aa2..be6d032 100644
  /* One picture's compressed data to the media engine; its picture goes into
   * TARGET's planes now (OMACVM_VIDEO_DECODE_SYNC=1) or when it is in. */
  static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data, size_t size,
-@@ -1042,18 +1270,14 @@ static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data,
+@@ -1042,18 +1276,14 @@ static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data,
      uint32_t fw, fh;
  
      if (!dec_async()) {
@@ -896,7 +925,7 @@ index 04d4aa2..be6d032 100644
      frame_size(codec, &fw, &fh);
      job = &codec->djobs[(codec->dj_head + codec->dj_count) % VT_DEC_MAX_JOBS];
      pthread_mutex_lock(&dec_lock);
-@@ -1069,7 +1293,7 @@ static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data,
+@@ -1069,7 +1299,7 @@ static void decode_picture(struct virgl_video_codec *codec, const uint8_t *data,
          codec->in_flight_max = codec->dj_count;
      if (callbacks && callbacks->decode_pending)
          callbacks->decode_pending(codec, target, true);
@@ -905,7 +934,37 @@ index 04d4aa2..be6d032 100644
          /* refused at once: no output comes */
          pthread_mutex_lock(&dec_lock);
          if (!job->out) {
-@@ -2308,11 +2532,7 @@ static bool vp9_set_format(struct virgl_video_codec *codec, uint32_t width,
+@@ -2261,8 +2491,8 @@ static struct vp9_header vp9_parse(const uint8_t *data, size_t size)
+     return h;
+ }
+ 
+-static bool vp9_set_format(struct virgl_video_codec *codec, uint32_t width,
+-                           uint32_t height, uint32_t profile, uint32_t bit_depth)
++static CMVideoFormatDescriptionRef vp9_format(uint32_t width, uint32_t height, uint32_t profile,
++                                              uint32_t bit_depth)
+ {
+     CMVideoFormatDescriptionRef fmt = NULL;
+     CFMutableDictionaryRef ext, atoms;
+@@ -2297,8 +2527,16 @@ static bool vp9_set_format(struct virgl_video_codec *codec, uint32_t width,
+     st = CMVideoFormatDescriptionCreate(kCFAllocatorDefault, kCMVideoCodecType_VP9,
+                                         width, height, ext, &fmt);
+     CFRelease(ext);
+-    if (st != noErr) {
+-        virgl_error("vt-video: VP9 format description failed: %d\n", (int)st);
++    return st == noErr ? fmt : NULL;
++}
++
++static bool vp9_set_format(struct virgl_video_codec *codec, uint32_t width,
++                           uint32_t height, uint32_t profile, uint32_t bit_depth)
++{
++    CMVideoFormatDescriptionRef fmt = vp9_format(width, height, profile, bit_depth);
++
++    if (!fmt) {
++        virgl_error("vt-video: VP9 format description failed\n");
+         return false;
+     }
+ 
+@@ -2308,11 +2546,7 @@ static bool vp9_set_format(struct virgl_video_codec *codec, uint32_t width,
      codec->width = width;
      codec->height = height;
      /* A key frame resets the decoder anyway: always start a fresh session. */
@@ -918,7 +977,7 @@ index 04d4aa2..be6d032 100644
  }
  
  static int vp9_end_frame(struct virgl_video_codec *codec,
-@@ -2332,9 +2552,9 @@ static int vp9_end_frame(struct virgl_video_codec *codec,
+@@ -2332,9 +2566,9 @@ static int vp9_end_frame(struct virgl_video_codec *codec,
          height = codec->vp9_height ? codec->vp9_height : codec->height;
      }
  
@@ -930,7 +989,7 @@ index 04d4aa2..be6d032 100644
                          height != codec->vp9_height || bit_depth != codec->vp9_bit_depth)) {
          if (!vp9_set_format(codec, width, height, h.profile, bit_depth))
              return -1;
-@@ -2490,11 +2710,7 @@ static bool av1_set_format(struct virgl_video_codec *codec, const uint8_t *seq_o
+@@ -2490,11 +2724,7 @@ static bool av1_set_format(struct virgl_video_codec *codec, const uint8_t *seq_o
          virgl_error("vt-video: AV1 format description failed: %d\n", (int)st);
          return false;
      }
@@ -943,7 +1002,7 @@ index 04d4aa2..be6d032 100644
  }
  
  /* The guest sends the whole temporal unit (Chrome) once for every frame in
-@@ -2539,7 +2755,7 @@ static int av1_end_frame(struct virgl_video_codec *codec,
+@@ -2539,7 +2769,7 @@ static int av1_end_frame(struct virgl_video_codec *codec,
      if (seq >= 0) {
          const uint8_t *seq_obu = data + obus[seq].start;
          size_t seq_size = obus[seq].end - obus[seq].start;
@@ -952,7 +1011,7 @@ index 04d4aa2..be6d032 100644
              memcmp(codec->sps, seq_obu, seq_size)) {
              if (seq_size > sizeof(codec->sps))
                  return -1;
-@@ -2550,7 +2766,7 @@ static int av1_end_frame(struct virgl_video_codec *codec,
+@@ -2550,7 +2780,7 @@ static int av1_end_frame(struct virgl_video_codec *codec,
                  return -1;
          }
      }
@@ -961,7 +1020,7 @@ index 04d4aa2..be6d032 100644
          return 0;   /* no sequence header yet */
  
      bytes_append(&sample, td, sizeof(td));
-@@ -2566,9 +2782,37 @@ static int av1_end_frame(struct virgl_video_codec *codec,
+@@ -2566,9 +2796,37 @@ static int av1_end_frame(struct virgl_video_codec *codec,
  /* Interface (virgl_video.h)                                                 */
  /* ------------------------------------------------------------------------ */
  
@@ -1000,7 +1059,7 @@ index 04d4aa2..be6d032 100644
  }
  
  /* What this host offers. A codec the caps leave out is refused too, so a
-@@ -2656,37 +2900,56 @@ static CMVideoCodecType enc_codec_type(enum vt_codec_kind kind)
+@@ -2656,37 +2914,94 @@ static CMVideoCodecType enc_codec_type(enum vt_codec_kind kind)
  }
  
  /* Hardware encoders only: a software VideoToolbox encoder would just move the
@@ -1066,6 +1125,43 @@ index 04d4aa2..be6d032 100644
 +    return kind == VT_KIND_HEVC ? vt_enc_hevc : vt_enc_h264;
 +}
 +
++static void vt_warm_output(void *ref_con, void *frame_ref_con, OSStatus status,
++                           VTDecodeInfoFlags info_flags, CVImageBufferRef image,
++                           CMTime pts, CMTime duration)
++{
++    (void)ref_con; (void)frame_ref_con; (void)status; (void)info_flags; (void)image;
++    (void)pts; (void)duration;
++}
++
++/* One small hardware session made and ended: the Mac's video decoder service
++ * is connected before the guest's first video (that first connection took
++ * 230-390 ms on a Mac mini; later sessions 10-50 ms). */
++static void vt_decoder_warm(void)
++{
++    CMVideoFormatDescriptionRef fmt = vt_hw_vp9 ? vp9_format(64, 64, 0, 8) : NULL;
++    VTDecompressionOutputCallbackRecord cb = { vt_warm_output, NULL };
++    VTDecompressionSessionRef s = NULL;
++    CFMutableDictionaryRef spec;
++    uint64_t t0 = now_ns();
++    OSStatus st;
++
++    if (!fmt)
++        return;
++    spec = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
++                                     &kCFTypeDictionaryValueCallBacks);
++    CFDictionarySetValue(spec, kVTVideoDecoderSpecification_EnableHardwareAcceleratedVideoDecoder,
++                         kCFBooleanTrue);
++    st = VTDecompressionSessionCreate(kCFAllocatorDefault, fmt, spec, NULL, &cb, &s);
++    CFRelease(spec);
++    CFRelease(fmt);
++    if (st == noErr && s) {
++        VTDecompressionSessionInvalidate(s);
++        CFRelease(s);
++    }
++    virgl_info("vt-video: the Mac's video decoder service %s in %.0f ms\n",
++               st == noErr ? "answered" : "refused a session", (now_ns() - t0) / 1e6);
++}
++
 +/* The probe's queue: what the media engine decodes and encodes, once. */
 +static void vt_probe(void *unused)
 +{
@@ -1080,10 +1176,11 @@ index 04d4aa2..be6d032 100644
 +               abi_legacy ? "legacy" : "Mesa 26");
 +    vt_enc_h264 = vt_encoder_probe(VT_KIND_H264);
 +    vt_enc_hevc = vt_encoder_probe(VT_KIND_HEVC);
++    vt_decoder_warm();
  }
  
  /* Parameter set i of the stream (H.264: SPS, PPS; HEVC: VPS, SPS, PPS). */
-@@ -3604,17 +3867,19 @@ bool virgl_video_encode_wait(uint64_t seq, uint32_t timeout_ms)
+@@ -3604,17 +3919,19 @@ bool virgl_video_encode_wait(uint64_t seq, uint32_t timeout_ms)
   * with a GL context of its share group current). */
  void virgl_video_decode_poll(void)
  {
@@ -1113,7 +1210,7 @@ index 04d4aa2..be6d032 100644
      }
  }
  
-@@ -3626,13 +3891,29 @@ bool virgl_video_decode_busy(void)
+@@ -3626,13 +3943,29 @@ bool virgl_video_decode_busy(void)
      return false;
  }
  
@@ -1149,7 +1246,7 @@ index 04d4aa2..be6d032 100644
  }
  
  /* The last picture sent: a fence made now must wait for it (vrend's thread). */
-@@ -3641,7 +3922,7 @@ uint64_t virgl_video_decode_seq(void)
+@@ -3641,7 +3974,7 @@ uint64_t virgl_video_decode_seq(void)
      return dec_seq_last;
  }
  
@@ -1158,7 +1255,7 @@ index 04d4aa2..be6d032 100644
  bool virgl_video_decode_done(uint64_t seq)
  {
      bool done;
-@@ -3649,34 +3930,81 @@ bool virgl_video_decode_done(uint64_t seq)
+@@ -3649,34 +3982,81 @@ bool virgl_video_decode_done(uint64_t seq)
      if (!seq)
          return true;
      pthread_mutex_lock(&dec_lock);
@@ -1222,7 +1319,8 @@ index 04d4aa2..be6d032 100644
 +
 +        done = dec_open > seq || dec_dropped_upto >= seq;
 +        if (done)
-+            break;
+             break;
+-    done = dec_open > seq;
 +        due = dec_due_locked(seq);
 +        if (!due)
 +            break;              /* all back: vrend's poll moves dec_open on */
@@ -1241,8 +1339,7 @@ index 04d4aa2..be6d032 100644
 +                dec_dropped_upto = seq;
 +            pthread_cond_broadcast(&dec_cond);
 +            dropped = true;
-             break;
--    done = dec_open > seq;
++            break;
 +        }
 +        dec_abs_time(&ts, due);
 +        pthread_cond_timedwait(&dec_cond, &dec_lock, &ts);
@@ -1256,7 +1353,7 @@ index 04d4aa2..be6d032 100644
  }
  
  /* An encoder goes away: VideoToolbox finishes (its callback must not come
-@@ -3702,19 +4030,25 @@ int virgl_video_init(int drm_fd, struct virgl_video_callbacks *cbs,
+@@ -3702,19 +4082,25 @@ int virgl_video_init(int drm_fd, struct virgl_video_callbacks *cbs,
                       unsigned int flags)
  {
      const char *abi = getenv("OMACVM_VIRGL_VIDEO_ABI");
@@ -1288,7 +1385,7 @@ index 04d4aa2..be6d032 100644
      return 0;
  }
  
-@@ -3741,7 +4075,7 @@ void virgl_video_destroy(void)
+@@ -3741,7 +4127,7 @@ void virgl_video_destroy(void)
  #define VT_DEC_MAX_LIVE 48
  _Static_assert(VT_DEC_CAPS_LIMIT <= VT_DEC_MAX_LIVE && VT_DEC_CAPS_LIMIT <= 255,
                 "omacvm_max_open has 8 bits");
@@ -1297,7 +1394,7 @@ index 04d4aa2..be6d032 100644
  
  static void add_caps_entry(union virgl_caps *caps, enum pipe_video_profile p,
                             enum pipe_video_entrypoint entrypoint,
-@@ -3853,14 +4187,15 @@ struct virgl_video_codec *virgl_video_create_codec(
+@@ -3853,14 +4239,15 @@ struct virgl_video_codec *virgl_video_create_codec(
          return NULL;
      }
      if (args->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM &&
@@ -1315,7 +1412,7 @@ index 04d4aa2..be6d032 100644
          return NULL;
      }
  
-@@ -3892,35 +4227,56 @@ struct virgl_video_codec *virgl_video_create_codec(
+@@ -3892,35 +4279,57 @@ struct virgl_video_codec *virgl_video_create_codec(
             codec->kind == VT_KIND_HEVC ? "HEVC" : "AV1",
             args->width, args->height);
      if (codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM) {
@@ -1347,7 +1444,9 @@ index 04d4aa2..be6d032 100644
 -        live_decoders--;
      if (!codec)
          return;
-     vt_log("codec done: %u frames, %u errors\n", codec->frames, codec->errors);
+-    vt_log("codec done: %u frames, %u errors\n", codec->frames, codec->errors);
++    vt_log("codec done: %u frames, %u errors, slowest picture %.1f ms\n", codec->frames,
++           codec->errors, codec->ns_slowest / 1e6);
 +    if (codec->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM && codec->dec_q) {
 +        /* The guest may still show its last pictures: they go in as they come
 +         * (the poll), within the time limit; then its session ends on its

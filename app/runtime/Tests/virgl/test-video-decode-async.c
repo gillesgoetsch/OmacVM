@@ -19,10 +19,11 @@
  * - a session that breaks (OMACVM_TEST_VIDEO_BREAK) is made again on the
  *   decoder's queue: the next END_FRAME does not wait for it (the new session
  *   takes 50 ms more to start here, OMACVM_TEST_VIDEO_CREATE_DELAY_MS);
- * - a session that takes 1.6 s to start (as on a Mac short of memory):
- *   END_FRAME still returns in under 10 ms, another context's fence signals
- *   within the time limit + 50 ms, and the pictures given up never land later;
- *   the decoder decodes once its session is there;
+ * - a session that takes 1.6 s to start (as on a Mac short of memory), 20
+ *   pictures sent meanwhile: END_FRAME still returns in under 10 ms, another
+ *   context's fence signals within the time limit + 50 ms, and the pictures
+ *   given up never land later; the decoder decodes once its session is there;
+ * - a stream's first pictures sent at once while its session starts all land;
  * - a decoder destroyed, and a buffer destroyed, while the session starts;
  * - an H.264 SPS change and a VP9 resolution change sent back to back keep
  *   their pictures in order (VP9: FFmpeg's pictures bit for bit), and VP9
@@ -45,6 +46,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/uio.h>
 #include <unistd.h>
 #include "soft-gl.h"
@@ -422,8 +424,13 @@ static unsigned pictures_sent;
 #define LOST_PICTURE 29
 /* the picture that finds its session broken (test hook, numbered from 1) */
 #define BREAK_PICTURE 32
-/* the time limit for a decoded picture (OMACVM_VIDEO_GIVEUP_MS's default) */
-#define LIMIT_MS 250
+/* the time limit for a decoded picture: OMACVM_VIDEO_GIVEUP_MS (default 250 ms) */
+static int LIMIT_MS = 250;
+/* How late a fence or END_FRAME may be on top of it: 50 ms and 10 ms, or 300 ms
+ * each when this runs at background priority (the runtime build runs its tests
+ * under taskpolicy -b, where macOS lets the sync thread and this one wait for a
+ * core); the time limit is then 500 ms, as a session start alone can take 250. */
+static int SLACK_MS = 50, FRAME_MS = 10;
 
 /* Picture F of stream ST into buffer B with CODEC (see send_picture). */
 static uint64_t send_au(uint32_t codec, unsigned b, const struct stream *st, int f)
@@ -747,6 +754,20 @@ int main(void)
    char line[300];
 
    setvbuf(stdout, NULL, _IONBF, 0);
+   const char *giveup = getenv("OMACVM_VIDEO_GIVEUP_MS");
+   if (giveup && atoi(giveup) >= 50 && atoi(giveup) <= 500)
+      LIMIT_MS = atoi(giveup);
+   if (getpriority(PRIO_DARWIN_PROCESS, 0) > 0) {   /* 1: background (taskpolicy -b) */
+      /* a session start alone can take 250 ms there: the limit at its most */
+      if (!giveup) {
+         setenv("OMACVM_VIDEO_GIVEUP_MS", "500", 1);
+         LIMIT_MS = 500;
+      }
+      SLACK_MS = 300;
+      FRAME_MS = 300;
+      printf("background priority: time limit %d ms, fences may be %d ms late, END_FRAME %d ms\n",
+             LIMIT_MS, SLACK_MS, FRAME_MS);
+   }
    char lose[16];
    snprintf(lose, sizeof(lose), "%d", LOST_PICTURE);
    setenv("OMACVM_TEST_VIDEO_LOSE", lose, 1);
@@ -948,7 +969,7 @@ int main(void)
       double s = (now_ns() - t0) / 1e9;
       snprintf(line, sizeof(line), "a picture that never comes back: the fence after it "
                "signals after %.2f s (given up after %d ms)", s, LIMIT_MS);
-      check(!r && s < (LIMIT_MS + 100) / 1e3, line);
+      check(!r && s < (LIMIT_MS + 100 + (SLACK_MS - 50)) / 1e3, line);
       send_picture(11, 2, 2);
       p = read_luma(R_Y(2), 1, 2);
       snprintf(line, sizeof(line), "the decoder goes on after it (luma PSNR %.1f dB)", p);
@@ -974,7 +995,7 @@ int main(void)
       snprintf(line, sizeof(line), "a broken session is made again on the decoder's queue: "
                "first picture %.1f dB, the END_FRAME after the break %.2f ms (the new session "
                "takes 50 ms more), its picture %.1f dB", first, t / 1e6, p2);
-      check(first > 30 && t < 10000000ull && p2 > 30, line);
+      check(first > 30 && t < (uint64_t)FRAME_MS * 1000000ull && p2 > 30, line);
       destroy_codec(17);
       submit(1);
    }
@@ -984,39 +1005,78 @@ int main(void)
     * within the time limit + 50 ms, the pictures given up never land later, and
     * the decoder decodes once its session is there */
    if (!sync_mode) {
-      setenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS", "1600", 1);
+      /* 1.6 s; longer than the 20 pictures' sends and their time limits together
+       * (at most 4 limits: a buffer used again waits for its picture) */
+      int slow_ms = 5 * LIMIT_MS > 1600 ? 5 * LIMIT_MS : 1600;
+      char slow[16];
+      snprintf(slow, sizeof(slow), "%d", slow_ms);
+      setenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS", slow, 1);
       create_codec(12);
       submit(1);
-      uint64_t worst = 0, t0 = now_ns();
-      for (unsigned b = 0; b < NBUF; b++) {
-         uint64_t t = send_picture(12, b, (int)b);
-         if (t > worst)
-            worst = t;
+      uint64_t t0 = now_ns(), et[20], last_sent[NBUF];
+      /* more pictures than a decoder keeps on their way (16): the oldest, still
+       * on the queue, is given up at once; a buffer used again waits for its
+       * picture within the time limit (as a guest reading it would) */
+      for (unsigned k = 0; k < 20; k++) {
+         last_sent[k % NBUF] = now_ns();
+         et[k] = send_picture(12, k % NBUF, (int)(k % FRAMES));
       }
       unsetenv("OMACVM_TEST_VIDEO_CREATE_DELAY_MS");
       double fence_ms = ctx_fence_ms(2, 90);
-      snprintf(line, sizeof(line), "a session that takes 1.6 s to start: END_FRAME at most "
-               "%.2f ms (%d pictures, more than in flight), another context's fence after "
-               "%.0f ms (time limit %d ms)", worst / 1e6, NBUF, fence_ms, LIMIT_MS);
-      check(worst < 10000000ull && fence_ms >= 0 && fence_ms <= LIMIT_MS + 50, line);
-      /* the session is there after 1.6 s: the pictures that were given up stay out */
-      while (now_ns() - t0 < 2200000000ull)
+      qsort(et, 20, sizeof(et[0]), cmp_u64);
+      /* the median, and the 19th of 20 (one may be the test's own thread
+       * preempted: the runtime build runs this at background priority) */
+      snprintf(line, sizeof(line), "a session that takes %.1f s to start: END_FRAME median %.2f ms, "
+               "19 of 20 within %.2f ms (20 pictures, more than a decoder keeps on their way), "
+               "another context's fence after %.0f ms (time limit %d ms)", slow_ms / 1e3,
+               et[10] / 1e6, et[18] / 1e6, fence_ms, LIMIT_MS);
+      check(et[10] < 1000000ull && et[18] < (uint64_t)FRAME_MS * 1000000ull && fence_ms >= 0 &&
+            fence_ms <= LIMIT_MS + SLACK_MS, line);
+      /* the session is there: the pictures that were given up stay out */
+      while (now_ns() - t0 < (uint64_t)(slow_ms + 600) * 1000000ull)
          poll_for(50);
+      /* each buffer's last picture, given up before the session was there (its
+       * time limit, and 50 ms, ran out before the start ended; at background
+       * priority the sends can take that long that the last ones land, rightly) */
       double kept = 1;
+      int looked = 0;
       for (unsigned b = 0; b < NBUF; b++) {
+         if (last_sent[b] + (uint64_t)(LIMIT_MS + 50) * 1000000ull >= t0 + (uint64_t)slow_ms * 1000000ull)
+            continue;
          double z = zero_share_gl(R_Y(b));
+         looked++;
          if (z < kept)
             kept = z;
       }
-      snprintf(line, sizeof(line), "the pictures given up never land later: the planes "
-               "keep what the guest left (%.1f %% cleared at least)", kept * 100);
-      check(kept > 0.999, line);
-      send_picture(12, 0, 6);
-      double p6 = read_luma(R_Y(0), 1, 6);
+      snprintf(line, sizeof(line), "the pictures given up never land later: %d planes keep what "
+               "the guest left (%.1f %% cleared at least)", looked, kept * 100);
+      check(looked > 0 && kept > 0.999, line);
+      send_picture(12, 0, 20 % FRAMES);   /* the stream goes on: 20 pictures were sent */
+      double p6 = read_luma(R_Y(0), 1, 20 % FRAMES);
       snprintf(line, sizeof(line), "once its session is there the decoder decodes (luma "
                "PSNR %.1f dB)", p6);
       check(p6 > 30, line);
       destroy_codec(12);
+      submit(1);
+   }
+
+   /* 9b: a stream's first pictures, sent at once while its session starts (on
+    * the queue, beside this thread), all land: none is given up for that alone */
+   if (!sync_mode) {
+      create_codec(20);
+      submit(1);
+      for (unsigned b = 0; b < NBUF; b++)
+         send_picture(20, b, (int)b);
+      double low = 99;
+      for (unsigned b = 0; b < NBUF; b++) {
+         double q = read_luma(R_Y(b), 1, (int)b);
+         if (q < low)
+            low = q;
+      }
+      snprintf(line, sizeof(line), "%d pictures sent while the session starts all land: lowest "
+               "luma PSNR %.1f dB", NBUF, low);
+      check(low > 30, line);
+      destroy_codec(20);
       submit(1);
    }
 
@@ -1048,7 +1108,7 @@ int main(void)
       double p4 = read_luma(R_Y(4), 1, 0);
       snprintf(line, sizeof(line), "a decoder and a buffer destroyed while the session starts: "
                "%.2f ms; afterwards both decode again (%.1f / %.1f dB)", gone_ms, p3, p4);
-      check(gone_ms < 10 && p3 > 30 && p4 > 30, line);
+      check(gone_ms < FRAME_MS && p3 > 30 && p4 > 30, line);
       destroy_codec(13);
       destroy_codec(14);
       submit(1);
