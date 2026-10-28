@@ -150,7 +150,7 @@ if [[ $(uname -s) == Darwin ]]; then
   expect "little back, macOS holds a quarter of the Mac compressed: the hint" \
     "VM memory: 42.0 GB; $OFF; the VM freed file cache 3 times this run, the last at 10:12 (macOS was short of memory): QEMU's footprint 100 MB smaller a minute later; macOS holds 17.0 GB compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)" \
     "$(vmrow "$V" $((17 << 16)))"
-  # A QEMU with the reclaim fix (a later release): on, and what the VM said it freed.
+  # A QEMU with the reclaim fix (3.2.12): on, and what the VM said it freed.
   echo "OmacVM: VM memory: give-back while macOS compresses: on (this QEMU gives the pages back to macOS)" > "$V/logs/qemu.log"
   printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\ngiven_mb=12186\nreturned_mb=0\noff=0\n' "$at" > "$V/logs/memory-giveback"
   expect "a QEMU with the fix: on; a give-back while macOS compressed the VM: what the VM freed" \

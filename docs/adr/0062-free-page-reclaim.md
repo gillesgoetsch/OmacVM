@@ -1,9 +1,10 @@
 # 0062: Memory the VM gives back leaves the Mac (MADV_FREE_REUSABLE before the new backing)
 
 Status: accepted, built (`vm-memory-reclaim`, QEMU patch
-`qemu-hvf-free-page-reclaim-reusable.patch`), always on for OmacVM.app VMs;
-`OMACVM_RECLAIM_REUSABLE=0` is the old way. Notes, the spike and the review:
-work/tracks/vm-memory-gap.md.
+`qemu-hvf-free-page-reclaim-reusable.patch`, 3.2.12), always on for
+OmacVM.app VMs; `OMACVM_RECLAIM_REUSABLE=0` is the old way. With it the app's
+give-back while macOS compresses the VM (ADR 0059) runs. Notes, the spike and
+the review: work/tracks/vm-memory-gap.md.
 
 ## Context
 
@@ -77,9 +78,35 @@ Mac still holds of it (`mach_vm_page_range_query`), up to two more tries
 The reusable state stays on pages no guest mapping reaches again: the fresh
 mapping takes the range before QEMU acknowledges the report, and the guest
 touches none of these pages until then. A full queue (4096 ranges)
-releases in place; a range that cannot move aside is advised in place; a
-refused `madvise` is logged once per run and the replacement goes on as
-before. `OMACVM_RECLAIM_REUSABLE=0` is the old way.
+releases in place; a range that cannot move aside is advised in place.
+`OMACVM_RECLAIM_REUSABLE=0` is the old way.
+
+The app turns its give-back while macOS compresses the VM (ADR 0059) on only
+with this fix: its QEMU's binary has `MemoryGiveBack.reclaimMarker`, the text
+of the worker's first qemu.log line ("free page reclaim gives the pages back
+to macOS"; `prepare-qemu-gpu-runtime.sh` refuses a runtime without it). That
+says the fix is built in, not that it works on this Mac, and without it the
+give-back would make QEMU's footprint smaller while the Mac kept the pages
+(the harm that turned it off in 3.2.11). So the fix watches itself:
+
+- A refused `madvise` stops it at once.
+- An advice XNU skips returns no error (`vm_map_reusable_pages` passes over an
+  object it does not take as copy-delay). The worker measures what each
+  release found held (resident and not reusable, or compressed) and what it
+  left. Once the releases found 64 MB held, half or more of it still held
+  after them stops it. The advice leaves only pages macOS was compressing at
+  that moment (0-2 % in the tests); no advice leaves all of them.
+
+Stopped means: the replacement alone for the rest of the run (as 3.2.11), one
+qemu.log line with the reason ("macOS keeps the pages the VM gives back"), and
+"reclaim=keeps" with the reason in the file `OMACVM_RECLAIM_STATUS` names
+(the app: `logs/memory-reclaim`, removed before each start). The app reads
+that file every 5 s while its give-back is on and turns the give-back off for
+the rest of the run ("off for the rest of this run" in qemu.log; `omacvm
+check`'s "VM memory" row says it). macOS's warning still drops the VM's file
+cache. Showing instead that the refusal cannot happen was not enough: the
+skip needs no refusal, and what makes guest RAM copy-delay (the hypervisor's
+map) is macOS's to change.
 
 What it shows: `logs/qemu.log` gets a line an hour while the guest reports
 and one at exit (reports, MB back to the Mac, blocks, the main lock's hold per
@@ -106,9 +133,13 @@ held before the release and what they left after.
   (the old way's row: 26 against 12), no gap over 100 ms, no RCU or watchdog
   line. The advice under the lock (option 1) had held it 21.5 ms per report
   and stalled the guest 107-160 ms (MacBook Air).
+- The worker now looks at every range before and after the advice
+  (`mach_vm_page_range_query`, on its own thread at utility QoS; before only
+  with `OMACVM_RECLAIM_CHECK=1`).
 - Version mixes: the app's runtime only. Any guest works (any
-  `page_reporting_order`; QEMU sees only blocks). UTM, Parallels and Fusion:
-  unchanged.
+  `page_reporting_order`; QEMU sees only blocks). An older app with this
+  runtime does not exist (the runtime ships inside the app). UTM, Parallels
+  and Fusion: unchanged.
 
 ## Not now
 
@@ -128,6 +159,14 @@ held before the release and what they left after.
   split by earlier reports, reports of 256 KiB to 4 MiB: no compressed page
   left, at most 5 % of resident ones (in flight), the pages around keep their
   data. main's helper and `OMACVM_RECLAIM_REUSABLE=0` must fail it.
+  `--keeps`: the 64 MB rule on numbers; real pages the advice works on (no
+  word); memory a child process shares since `fork` (XNU skips the advice
+  there, `madvise` returns 0: the rule stops the fix, one line, the status
+  file); a read-only range (`madvise` refuses: the same at once).
+- `desktop-tests`: the app reads QEMU's word (`MemoryGiveBack.qemuKeeps`) and
+  the same session that gives back without it never does with it; the
+  warning's drop stays. `src/tests/memory-giveback.sh`: the wiring, the
+  marker in the patch and in prepare, check's row with `kept=1`.
 - VM rows (`OMACVM_RECLAIM_CHECK=1`; the old way = `OMACVM_RECLAIM_REUSABLE=0`
   on the first build, whose check mapped each range once more before its
   replacement): Mac mini, 3 GB clone of M-chw (stock kernel, order 6):

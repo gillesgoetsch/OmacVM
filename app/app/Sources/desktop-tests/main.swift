@@ -120,7 +120,7 @@ func sample(_ t: Double, fp: Double, res: Double, comp: Double) -> MemoryGiveBac
     MemoryGiveBack.Sample(time: t, footprint: UInt64(fp * Double(GB)), resident: UInt64(res * Double(GB)),
                           compressed: UInt64(comp * Double(GB)))
 }
-// "compressing" needs a QEMU that gives the pages back to macOS (the reclaim fix, a later release). 3.2.11's QEMU
+// "compressing" needs a QEMU that gives the pages back to macOS (the reclaim fix, 3.2.12). 3.2.11's QEMU
 // keeps what the VM gives back (Mac mini: 1345 of 1346 MB, 1721 of 1721 MB; vm-memory-gap), and a file read again
 // takes fresh pages: a give-back would only make Activity Monitor's number smaller. Without it: never; the warning's
 // drop as in 3.2.10 (once per 10 minutes). The rest of this block is a QEMU with the fix (behaviour unchanged).
@@ -190,11 +190,12 @@ expect(MemoryGiveBack.startLine(pagesGoBack: false) == "OmacVM: VM memory: give-
        + "(this QEMU keeps given-back pages); macOS's memory warning still drops the VM's file cache", "the line when off")
 expect(MemoryGiveBack.startLine(pagesGoBack: true) == "OmacVM: VM memory: give-back while macOS compresses: on "
        + "(this QEMU gives the pages back to macOS)", "the line when on")
-// The settings' words (GPUMemory.explanation) promise QEMU's footprint, not memory back to the Mac, and no give-back
-// while macOS compresses (off with 3.2.11's QEMU).
+// The settings' words (GPUMemory.explanation), true with the reclaim fix (3.2.12): freed memory goes back to the Mac,
+// the cold cache while macOS compresses the VM, the whole cache at macOS's warning. 3.2.11 said the Mac kept the pages.
 let says = GPUMemory.explanation
-expect(says.contains("QEMU's footprint") && says.contains("macOS can keep holding those pages")
-       && !says.contains("gives back") && !says.contains("compresses"), "the settings' words: the footprint, no give-back")
+expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !says.contains("keep holding")
+       && says.contains("While macOS compresses the VM, the VM gives back the file cache")
+       && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back while macOS compresses, the warning's drop")
 
 // The user's report: 64 GB Mac, 42 GB VM; footprint 51 GB, resident 27-30 GB, macOS compressing at "normal".
 var u = withFix(64 * GB)

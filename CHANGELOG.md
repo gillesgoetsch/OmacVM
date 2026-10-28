@@ -5,7 +5,9 @@ in more words.
 
 ## 3.2.12 (unreleased)
 
-Memory an OmacVM.app VM gives back now really leaves the Mac. Needs only the app update.
+Memory an OmacVM.app VM gives back now really leaves the Mac, and the VM gives back its
+file cache not used lately while macOS compresses it (3.2.11 had that off). Needs only the
+app update.
 
 - **Memory the VM gives back now leaves the Mac (#603).** When Linux in an OmacVM.app VM
   frees memory, it tells QEMU, which puts fresh memory in its place. macOS kept the old
@@ -22,6 +24,17 @@ Memory an OmacVM.app VM gives back now really leaves the Mac. Needs only the app
   change with this: those pages were never in it. `logs/qemu.log` says how much came back.
   Needs only the new app, from the VM's next start; no Update VM. UTM, Parallels and
   Fusion: nothing changes.
+
+- **The VM's file cache goes back to the Mac while macOS compresses the VM (#590, #603).**
+  3.2.11 brought this give-back but left it off, as its QEMU kept the pages. With the fix
+  above it runs: when macOS compresses the VM, the VM gives back the file cache it has not
+  used lately, all but the newest 1 GB (an eighth of a smaller VM); on the memory-optimized
+  kernel nearly all of its file cache counts as not used lately. At most once per 10
+  minutes; macOS's memory warning still drops the whole cache. If macOS keeps the pages
+  anyway on a Mac (it refuses QEMU's advice, or half or more of what it held stays held),
+  QEMU goes back to the old way for that run and the app turns this give-back off until
+  the VM's next start: `logs/qemu.log` and `omacvm check`'s "VM memory" line say so. Needs
+  only the app update, from the VM's next start.
 
 ## 3.2.11
 

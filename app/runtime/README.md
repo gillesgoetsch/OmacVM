@@ -264,9 +264,17 @@ commit 82927e9. Changes here:
   one at exit (reports, MB back to the Mac, the main lock's hold per report:
   p99 and longest). `OMACVM_RECLAIM_REUSABLE=0`: the old way;
   `OMACVM_RECLAIM_CHECK=1` (tests): a line per report with what it left on
-  the Mac. `Tests/memory/test-reclaim.sh` at build time (guest RAM shared
-  like QEMU's, with a real `hv_vm_map` where the Mac lets the build make a
-  VM) and in CI (`src/tests/memory-reclaim.sh`); ADR 0062
+  the Mac. The worker's first line ("free page reclaim gives the pages back
+  to macOS") is the text the app looks for in this binary to turn its
+  give-back while macOS compresses on (`prepare-qemu-gpu-runtime.sh` checks
+  it is there). When macOS keeps the pages anyway (a refused advice, or half
+  or more of 64 MB still held after it), QEMU goes back to the old way for
+  the run, says why in `logs/qemu.log` and writes "reclaim=keeps" into the
+  file `OMACVM_RECLAIM_STATUS` names (the app then turns that give-back
+  off). `Tests/memory/test-reclaim.sh` at build time (guest RAM shared like
+  QEMU's, with a real `hv_vm_map` where the Mac lets the build make a VM;
+  `--keeps`: a refused and a skipped advice) and in CI
+  (`src/tests/memory-reclaim.sh`); ADR 0062
 - `patches/mesa-kosmickrisp-*.patch`: changes to KosmicKrisp, applied by
   `build-kosmickrisp.sh` in name order (their hash is in its stamp).
   `mesa-kosmickrisp-shared-align.patch` declares a compute shader's shared
