@@ -4,17 +4,19 @@ Subject: [PATCH] ui: FullPanel after a display change, its decisions, tested wit
 What: a header with no AppKit in it: what a frame change of a full screen
 that covers the strip means (it still covers; a display change is on its
 way: the window laid out for another display than NSScreen still names, or
-that display off or asleep; the strip lost to Split View; or nothing yet,
-as for a new display mode); when a strip taken as lost went with a display
-change after all (the display changed within 3 s); the claim on the strip
-without waiting for the resume after a display without a camera housing;
-whether a full screen sits below the menu bar's band (never a Split View
-tile); and whether to have AppKit lay a full screen out again that a
-display change left below the notch, or why not (now, wait, no, or given
-up with a line): never Split View, never locked, asleep, on another Space
-or while the displays' windows move, at most 3 tries per full screen and
-one per settle. Used by omacvm-cocoa-fullpanel-retake.patch (which
-explains the why).
+that display off or asleep; the strip lost to Split View, a tile's shape
+always; or nothing yet, as for a new display mode or the band on the way
+back after a display change); when a strip taken as lost went with a
+display change after all (the display changed within 3 s, never a tile);
+the claim on the strip without waiting for the resume after a display
+without a camera housing; whether a full screen sits below the menu bar's
+band (never a Split View tile); whether to have AppKit lay a full screen
+out again that a display change left below the notch, or why not (now,
+wait, no, or given up with a line): never Split View, never locked,
+asleep, on another Space or while the displays' windows move, at most 3
+tries per display change and one per settle; and when a wait nothing else
+ends asks again (0.5 s later, at most 3 times after each trigger). Used by
+omacvm-cocoa-fullpanel-retake.patch (which explains the why).
 
 Why its own file: so the rules are tested, with the user's qemu.log
 replayed in every order, without QEMU, a display or a notch
@@ -29,7 +31,7 @@ diff --git a/ui/omacvm-fullpanel-retake.h b/ui/omacvm-fullpanel-retake.h
 new file mode 100644
 --- /dev/null
 +++ b/ui/omacvm-fullpanel-retake.h
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,258 @@
 +/*
 + * OmacVM: FullPanel takes the strip beside the notch again after a display
 + * change (the built-in display gone and back: a lid shut and opened, an
@@ -52,18 +54,31 @@ new file mode 100644
 +#include "omacvm-fullpanel.h"
 +#include "omacvm-display-settle.h"
 +
-+/* Tries per full screen to have AppKit lay the window out again. */
++/* Tries per display change to have AppKit lay the window out again. */
 +#define OMACVM_FP_RETAKE_TRIES 3
 +/* How long a try waits for the window to cover its display (s). */
 +#define OMACVM_FP_RETAKE_CHECK_S 2.0
 +/* The menu bar's band AppKit keeps free: at most the housing's height and this (points). */
 +#define OMACVM_FP_BAND_SLACK 8.0
++/* After a wait nothing else ends: ask again this much later (s), at most OMACVM_FP_RETAKE_TRIES times. */
++#define OMACVM_FP_RETAKE_REASK_S 0.5
 +
 +/* The frame lies inside the display (half a point of slack). */
 +static inline bool omacvm_fp_inside(OmacVMFPRect f, OmacVMFPRect d)
 +{
 +    return f.x >= d.x - 0.5 && f.y >= d.y - 0.5 &&
 +           f.x + f.w <= d.x + d.w + 0.5 && f.y + f.h <= d.y + d.h + 0.5;
++}
++
++/*
++ * A Split View tile's shape: inside the display, on its bottom edge,
++ * narrower than it (also while AppKit animates the window into the tile).
++ * A frame a display change left (the band below the notch, the display's
++ * width; or laid out for another display) never has it.
++ */
++static inline bool omacvm_fp_tile(OmacVMFPRect f, OmacVMFPRect d)
++{
++    return omacvm_fp_inside(f, d) && fabs(f.y - d.y) < 0.5 && f.w < d.w - 0.5;
 +}
 +
 +/*
@@ -74,12 +89,15 @@ new file mode 100644
 + * (not inside it while it did not change: 0,-323 2560x1440 on the 1728x1117
 + * built-in, the user's M4 Max, 2026-10-28). A display change is on its way:
 + * the strip comes back once the displays settle (omacvm_fp_retake).
-+ * LOST: inside a display that is on and did not change, and no display
-+ * change on its way (changing): AppKit moved the window itself (Split View).
-+ * It keeps AppKit's layout until the next full screen (ADR 0044).
++ * LOST: inside a display that is on and did not change, with a tile's shape
++ * or no display change in this full screen (display_changed: the window
++ * laid out for another display, or its full screen on a display without a
++ * camera housing, and not covering its display since): AppKit moved the
++ * window itself (Split View). It keeps AppKit's layout until the next full
++ * screen (ADR 0044).
 + * WAIT: anything else (a new display mode, which CoreGraphics has before
-+ * NSScreen: the window follows; a frame on the way back while a display
-+ * change is on its way): nothing yet.
++ * NSScreen: the window follows; the band on the way back after a display
++ * change, also when NSWindowDidChangeScreen came first): nothing yet.
 + */
 +typedef enum {
 +    OMACVM_FP_FRAME_COVERS,
@@ -89,7 +107,8 @@ new file mode 100644
 +} OmacVMFPFrameKind;
 +
 +static inline OmacVMFPFrameKind omacvm_fp_frame_kind(bool covers, bool inside, bool display_live,
-+                                                     bool same_display, bool changing)
++                                                     bool same_display, bool display_changed,
++                                                     bool tile)
 +{
 +    if (covers) {
 +        return OMACVM_FP_FRAME_COVERS;
@@ -100,17 +119,20 @@ new file mode 100644
 +    if (!inside) {
 +        return same_display ? OMACVM_FP_FRAME_DISPLACED : OMACVM_FP_FRAME_WAIT;
 +    }
-+    return same_display && !changing ? OMACVM_FP_FRAME_LOST : OMACVM_FP_FRAME_WAIT;
++    return same_display && (tile || !display_changed) ? OMACVM_FP_FRAME_LOST : OMACVM_FP_FRAME_WAIT;
 +}
 +
 +/*
 + * A strip taken as lost (Split View) that was a display change after all:
 + * the window's display changed, or the one it covered went off, within
-+ * OMACVM_DS_MAX_WAIT_S of the loss. since: seconds since the loss.
++ * OMACVM_DS_MAX_WAIT_S of the loss, and the lost frame had no tile's shape
++ * (tile: a real Split View stays lost, also when the display sleeps right
++ * after). since: seconds since the loss.
 + */
-+static inline bool omacvm_fp_lost_to_display_change(bool lost, double since, bool display_changed)
++static inline bool omacvm_fp_lost_to_display_change(bool lost, double since, bool display_changed,
++                                                    bool tile)
 +{
-+    return lost && display_changed && since >= 0 && since <= OMACVM_DS_MAX_WAIT_S;
++    return lost && display_changed && !tile && since >= 0 && since <= OMACVM_DS_MAX_WAIT_S;
 +}
 +
 +/*
@@ -149,7 +171,7 @@ new file mode 100644
 +    bool lost;              /* AppKit moved the window later (Split View) */
 +    bool display_changed;   /* a display change took the strip (displaced, released) */
 +    bool given_up;          /* "strip not back" said for good */
-+    int tries;              /* tries this full screen */
++    int tries;              /* tries since the strip was last covered (this display change) */
 +    bool tried_this_settle; /* a try since the displays last settled */
 +    bool pending;           /* a try's check runs */
 +    /* The window and its display. */
@@ -182,7 +204,7 @@ new file mode 100644
 + * left below the notch, and why not (*why, for the line or a test). Never a
 + * Split View (rejected, lost), never a tile or another shape, never while
 + * locked, asleep, another Space or the displays' windows still move, at most
-+ * OMACVM_FP_RETAKE_TRIES per full screen and one per settle.
++ * OMACVM_FP_RETAKE_TRIES per display change and one per settle.
 + */
 +static inline OmacVMFPRetake omacvm_fp_retake(OmacVMFPRetakeFacts f, const char **why)
 +{
@@ -243,6 +265,22 @@ new file mode 100644
 +        *why = w;
 +    }
 +    return r;
++}
++
++/*
++ * After a wait that ends by itself with no trigger of its own (WindowServer
++ * still moves the window, the displays' windows still move, the window not
++ * visible yet on its Space): ask again OMACVM_FP_RETAKE_REASK_S later, at
++ * most OMACVM_FP_RETAKE_TRIES times after each trigger (reasks: asked again
++ * since); a try it makes is one of the OMACVM_FP_RETAKE_TRIES. Not while
++ * locked, the display not settled, on another Space or a try's check runs:
++ * the settle, the return and the check end those.
++ */
++static inline bool omacvm_fp_retake_reask(OmacVMFPRetakeFacts f, OmacVMFPRetake r, int reasks)
++{
++    return r == OMACVM_FP_RETAKE_WAIT && reasks >= 0 && reasks < OMACVM_FP_RETAKE_TRIES &&
++           !f.locked && f.display_live && f.same_size && !f.pending &&
++           (f.moving || (f.on_space && (!f.visible || !f.in_place)));
 +}
 +
 +/* After a try's check: the window covers its display (taken again), or the line says which try. */

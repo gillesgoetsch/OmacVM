@@ -8,7 +8,7 @@
 #   test-fullpanel-retake.sh                the rules and the rows (CI)
 #   test-fullpanel-retake.sh <ui/cocoa.m>   also the wiring in the patched file (the runtime build)
 #   test-fullpanel-retake.sh --self-test    the user's rows fail with 3.2.10's decisions and the
-#                                           wiring checks fail on 3.2.10's code (CI)
+#                                           wiring checks fail on 3.2.10's methods (copied) (CI)
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 patches=$(cd "$here/../../patches" && pwd -P)
@@ -20,7 +20,7 @@ flat() { tr -s ' \n' '  '; }
 
 # What the wiring must have; one line per problem.
 problems() {
-  local m=$1 claims frame screen facts retake taken expired give reshape space own uses all soon fired moving locked engage release check_ret b f
+  local m=$1 claims frame screen facts retake ask again covered taken expired give reshape space own uses all soon fired moving locked engage release check_ret b f
   grep -q '^#include "ui/omacvm-fullpanel-retake.h"$' "$m" || echo "the retake rules are not included"
   claims=$(body "$m" '- (bool)claimsStrip')
   grep -q 'omacvm_fp_claims(inside, armed, rejected, lost, omacvm_fullpanel_menu_failed,' <<<"$claims" &&
@@ -31,23 +31,36 @@ problems() {
   grep -q 'case OMACVM_FP_FRAME_DISPLACED:' <<<"$frame" && grep -q 'displaced = display_changed = true;' <<<"$frame" &&
     grep -q '"omacvm: full panel: display change: frame ' <<<"$frame" || echo "a displaced frame does not note the display change"
   grep -q 'lost_at = omacvm_ds_clock();' <<<"$frame" || echo "a lost strip does not note when"
+  # The band after a display change is no Split View (also released, the resume before the resize); a tile is.
+  grep -q 'bool tile = omacvm_fp_tile(omacvm_fullpanel_rect(actual), omacvm_fullpanel_rect(physical));' <<<"$frame" &&
+    flat <<<"$frame" | grep -qF 'live, omacvm_fullpanel_same_display(screen, accepted_display), display_changed, tile))' &&
+    grep -q 'lost_tile = tile;' <<<"$frame" ||
+    echo "a frame change does not pass the display change and the tile shape (the band after a resume taken for Split View)"
   awk '/case OMACVM_FP_FRAME_DISPLACED:/{d=1} d && /relayout/{bad=1} /case OMACVM_FP_FRAME_LOST:/{d=0} END{exit bad}' <<<"$frame" ||
     echo "a displaced frame lays the guest out again (resize churn)"
   screen=$(body "$m" '- (void)screenChanged:(NSNotification *)notification')
   grep -q 'omacvm_fp_lost_to_display_change(' <<<"$screen" || echo "a strip lost just before a display change stays lost"
+  flat <<<"$screen" | grep -qF '!omacvm_fullpanel_same_display(screen, accepted_display), lost_tile))' ||
+    echo "a Split View tile lost just before a display change is turned into one"
   awk '/omacvm_fp_screen_releases\(/{r=1} r && /released = true;/{x=1} x && /display_changed = true;/{ok=1; exit} END{exit !ok}' <<<"$screen" ||
     echo "a full screen on a display without a housing does not note the display change"
   engage=$(body "$m" '- (bool)engage')
   grep -q 'bool taken = retake_pending && \[self retakeTaken\];' <<<"$engage" &&
     grep -q 'displaced = display_changed = false;' <<<"$engage" || echo "engage does not end the display change and say the try worked"
+  awk '/if \(display_changed\) \{/{d=1} d && /\[self retakeCovered\];/{ok=1; exit} END{exit !ok}' <<<"$engage" ||
+    echo "the strip back after a display change does not give the next one its own tries"
   awk '/\[self retakeTaken\]/{t=NR} /"omacvm: full panel: strip covered: /{c=NR} END{exit !(t && c && t < c)}' <<<"$engage" ||
     echo "'strip taken again' does not come before 'strip covered'"
   release=$(body "$m" '- (void)releaseSystemState')
   grep -q 'selector:@selector(retakeExpired)' <<<"$release" && grep -q 'retake_pending = false;' <<<"$release" ||
     echo "releaseSystemState leaves a try's check running"
+  grep -q 'selector:@selector(retakeAgain)' <<<"$release" || echo "releaseSystemState leaves an ask again queued"
   # The retake itself: AppKit's tile relayout only, checked; nothing that moves windows or Spaces.
   facts=$(body "$m" '- (OmacVMFPRetakeFacts)retakeFacts')
   retake=$(body "$m" '- (void)retake:(const char *)why')
+  ask=$(body "$m" '- (void)retakeAsk:(const char *)why')
+  again=$(body "$m" '- (void)retakeAgain')
+  covered=$(body "$m" '- (void)retakeCovered')
   taken=$(body "$m" '- (bool)retakeTaken')
   expired=$(body "$m" '- (void)retakeExpired')
   give=$(body "$m" '- (void)retakeGiveUp:(const char *)reason')
@@ -56,11 +69,11 @@ problems() {
   b=$(body "$m" 'static bool omacvm_fullpanel_appkit_band(NSWindow *w)')
   all=$(body "$m" 'static void omacvm_fullpanel_retake_all(const char *why)')
   soon=$(body "$m" 'static void omacvm_fullpanel_retake_soon(void)')
-  for f in facts retake taken expired give reshape space b all soon; do
+  for f in facts retake ask again covered taken expired give reshape space b all soon; do
     [[ -n ${!f} ]] || { echo "no retake ($f)"; return; }
   done
   if grep -E 'toggleFullScreen|setFrame|makeKey|orderFront|orderOut|activate|setPresentationOptions|SLS|CGS|Space\(|omacvm_fullpanel_backdrop|method_setImplementation' \
-       <<<"$facts$retake$taken$expired$give$reshape$space$b$all$soon" >/dev/null; then
+       <<<"$facts$retake$ask$again$covered$taken$expired$give$reshape$space$b$all$soon" >/dev/null; then
     echo "the retake moves a window, a Space or the menu bar itself"
   fi
   [[ $(grep -c 'method_setImplementation(' "$m") == 1 ]] || echo "more than the reservation method is replaced"
@@ -85,14 +98,23 @@ problems() {
     grep -q 'omacvm_fp_menu_bar_in_the_way(always, immersive_mode_enabled)' <<<"$facts" &&
     grep -q 'omacvm_fullpanel_hook_state() == OMACVM_FP_HOOK_USABLE' <<<"$facts" ||
     echo "a retake's facts miss the band, WindowServer, the lock, the moving windows, the menu bar or the reservation"
-  awk '/omacvm_fp_retake\(f, &reason\)/{n++} /omacvm_fullpanel_appkit_band\(window\)/{a=NR; if (n != 1) bad=1} END{exit bad || !a}' <<<"$retake" ||
+  awk '/omacvm_fp_retake\(f, &reason\)/{n++} /omacvm_fullpanel_appkit_band\(window\)/{a=NR; if (n != 1) bad=1} END{exit bad || !a}' <<<"$ask" ||
     echo "AppKit's Space is asked before the rules say now"
-  grep -q 'retake_tries++;' <<<"$retake" && grep -q 'retake_settle = omacvm_fullpanel_settles;' <<<"$retake" &&
-    grep -q 'performSelector:@selector(retakeExpired) withObject:nil afterDelay:OMACVM_FP_RETAKE_CHECK_S' <<<"$retake" ||
+  grep -q 'retake_tries++;' <<<"$ask" && grep -q 'retake_settle = omacvm_fullpanel_settles;' <<<"$ask" &&
+    grep -q 'performSelector:@selector(retakeExpired) withObject:nil afterDelay:OMACVM_FP_RETAKE_CHECK_S' <<<"$ask" ||
     echo "a try is not counted or not checked"
+  # Asked again after a wait nothing else ends, as the rules say, bounded; a trigger drops a queued one.
+  awk '/if \(omacvm_fp_retake_reask\(f, r, retake_reasks\)\) \{/{r=1} r && /performSelector:@selector\(retakeAgain\) withObject:nil afterDelay:OMACVM_FP_RETAKE_REASK_S/{ok=1; exit} END{exit !ok}' <<<"$ask" &&
+    grep -q 'selector:@selector(retakeAgain)' <<<"$retake" && grep -q 'retake_reasks = 0;' <<<"$retake" &&
+    grep -q '\[self retakeAsk:why\];' <<<"$retake" && grep -q 'retake_reasks++;' <<<"$again" &&
+    grep -q '\[self retakeAsk:"a moment later"\];' <<<"$again" ||
+    echo "a wait nothing else ends is not asked again as the rules say (or a trigger keeps a queued one)"
+  grep -q 'retake_tries = retake_reasks = 0;' <<<"$covered" && grep -q 'retake_given_up = false;' <<<"$covered" &&
+    [[ $(grep -c '\[self retakeCovered\];' "$m") == 2 ]] || echo "the tries do not start again once the strip is back"
   # Called from the three triggers only: the settled update, the displays' windows done, a return.
   [[ $(grep -c 'omacvm_fullpanel_retake_all(' "$m") == 3 ]] && [[ $(grep -c '\[self retake:' "$m") == 1 ]] &&
-    [[ $(grep -c 'omacvm_fullpanel_retake_soon();' "$m") == 1 ]] || echo "the retake is asked from somewhere else"
+    [[ $(grep -c 'omacvm_fullpanel_retake_soon();' "$m") == 1 ]] && [[ $(grep -c '\[self retakeAsk:' "$m") == 2 ]] &&
+    [[ $(grep -c '@selector(retakeAgain)' "$m") == 3 ]] || echo "the retake is asked from somewhere else"
   fired=$(body "$m" 'static void omacvm_ds_fired(void)')
   awk '/omacvm_ds_done\(/{d=NR} /omacvm_fullpanel_settles\+\+;/{s=NR} /if \(retry <= 0\) \{/{r=NR} /omacvm_fullpanel_retake_all\("the displays settled"\);/{a=NR} END{exit !(d && s && r && a && d < s && s < r && r < a)}' <<<"$fired" ||
     echo "the settled display update does not ask (after its done, when nothing is due)"
@@ -131,6 +153,8 @@ if [[ ${1:-} == --self-test ]]; then
     exit 1
   fi
   echo "ok   the user's rows fail with 3.2.10's decisions ($(grep -c '^FAIL' <<<"$out") rows)"
+  # 3.2.10's claimsStrip, frameChanged:, omacvm_ds_fired and the hook's line, copied verbatim from
+  # its patched ui/cocoa.m (the whole file fails these checks too: checked 2026-10-28).
   cat > "$work/old.m" <<'EOF'
 - (bool)claimsStrip
 {
@@ -139,24 +163,55 @@ if [[ ${1:-} == --self-test ]]; then
 }
 - (void)frameChanged:(NSNotification *)notification
 {
-    if (covers) {
-        accepted_display = [screen frame];
-    } else if (omacvm_fp_lost(accepted, true, covers,
-                              omacvm_fullpanel_same_display(screen, accepted_display))) {
-        lost = true;
+    NSScreen *screen = [window screen];
+    bool covers;
+
+    if (!armed || !inside || !omacvm_fullpanel_in_full_screen(window)) {
+        return;
     }
+    if (!accepted) {
+        [self verify:false];
+    } else if (entered && !lost && !released && screen) {
+        covers = omacvm_fullpanel_covers(window);
+        if (covers) {
+            accepted_display = [screen frame];
+        } else if (omacvm_fp_lost(accepted, true, covers,
+                                  omacvm_fullpanel_same_display(screen, accepted_display))) {
+            NSRect actual = [window frame], physical = [screen frame];
+
+            lost = true;
+            [self releaseSystemState];
+            fprintf(stderr, "omacvm: full panel: strip lost: frame (%.0f %.0f %.0fx%.0f) on display (%.0f %.0f %.0fx%.0f); normal full screen until the next one\n",
+                    actual.origin.x, actual.origin.y, actual.size.width, actual.size.height,
+                    physical.origin.x, physical.origin.y, physical.size.width, physical.size.height);
+            [self relayout];
+            return;
+        }
+    }
+    [self comeBack];
 }
 static void omacvm_ds_fired(void)
 {
+    double at, retry;
+
+    switch (omacvm_ds_fire(&omacvm_ds_timer, omacvm_ds_clock(), &at)) {
+    case OMACVM_DS_REARM:
+        omacvm_ds_arm(at);
+        return;
+    case OMACVM_DS_SKIP:
+        return;
+    case OMACVM_DS_RUN:
+        break;
+    }
     retry = omacvm_displays_apply();
     if (omacvm_ds_done(&omacvm_ds_timer, omacvm_ds_clock(), retry, &at)) {
         omacvm_ds_arm(at);
     }
 }
-method_setImplementation(reserves, omacvm_fullpanel_reservation);
+        method_setImplementation(reserves, omacvm_fullpanel_reservation);
 EOF
   if [[ -n $(problems "$work/old.m") ]]; then
-    echo "ok   the wiring checks fail on 3.2.10's code"
+    echo "ok   the wiring checks fail on 3.2.10's code (its methods, copied)"
     exit 0
   fi
   echo "FAIL the wiring checks pass on 3.2.10's code" >&2

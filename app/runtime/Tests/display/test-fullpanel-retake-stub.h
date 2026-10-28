@@ -14,6 +14,7 @@
 #define OMACVM_FP_RETAKE_TRIES 3
 #define OMACVM_FP_RETAKE_CHECK_S 2.0
 #define OMACVM_FP_BAND_SLACK 8.0
+#define OMACVM_FP_RETAKE_REASK_S 0.5
 /* 3.2.10's claim waited for -screenChanged:'s resume (!released). */
 #define OMACVM_FP_CLAIMS_WAIT_FOR_RESUME 1
 
@@ -21,6 +22,14 @@ static inline bool omacvm_fp_inside(OmacVMFPRect f, OmacVMFPRect d)
 {
     return f.x >= d.x - 0.5 && f.y >= d.y - 0.5 &&
            f.x + f.w <= d.x + d.w + 0.5 && f.y + f.h <= d.y + d.h + 0.5;
+}
+
+/* 3.2.10 had no tile shape. */
+static inline bool omacvm_fp_tile(OmacVMFPRect f, OmacVMFPRect d)
+{
+    (void)f;
+    (void)d;
+    return false;
 }
 
 typedef enum {
@@ -32,11 +41,13 @@ typedef enum {
 
 /* 3.2.10: omacvm_fp_lost(accepted, true, covers, display_unchanged). */
 static inline OmacVMFPFrameKind omacvm_fp_frame_kind(bool covers, bool inside, bool display_live,
-                                                     bool same_display, bool changing)
+                                                     bool same_display, bool display_changed,
+                                                     bool tile)
 {
     (void)inside;
     (void)display_live;
-    (void)changing;
+    (void)display_changed;
+    (void)tile;
     if (covers) {
         return OMACVM_FP_FRAME_COVERS;
     }
@@ -44,11 +55,13 @@ static inline OmacVMFPFrameKind omacvm_fp_frame_kind(bool covers, bool inside, b
                                                             : OMACVM_FP_FRAME_WAIT;
 }
 
-static inline bool omacvm_fp_lost_to_display_change(bool lost, double since, bool display_changed)
+static inline bool omacvm_fp_lost_to_display_change(bool lost, double since, bool display_changed,
+                                                    bool tile)
 {
     (void)lost;
     (void)since;
     (void)display_changed;
+    (void)tile;
     return false;
 }
 
@@ -89,6 +102,15 @@ static inline OmacVMFPRetake omacvm_fp_retake(OmacVMFPRetakeFacts f, const char 
         *why = "3.2.10 has no retake";
     }
     return OMACVM_FP_RETAKE_NO;
+}
+
+/* 3.2.10 never asked again. */
+static inline bool omacvm_fp_retake_reask(OmacVMFPRetakeFacts f, OmacVMFPRetake r, int reasks)
+{
+    (void)f;
+    (void)r;
+    (void)reasks;
+    return false;
 }
 
 static inline bool omacvm_fp_retake_final(int tries)

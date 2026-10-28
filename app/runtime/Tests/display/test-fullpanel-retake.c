@@ -6,7 +6,8 @@
  * stayed away until full screen was entered again) replayed through a C copy
  * of the window's FullPanel state (OmacVMFullPanelState in ui/cocoa.m,
  * method by method: willEnterFullScreen, verify:, frameChanged:,
- * screenChanged:, comeBack/checkReturn, engage, retake:, retakeExpired)
+ * screenChanged:, comeBack/checkReturn, engage, retake:, retakeAsk:,
+ * retakeAgain, retakeExpired)
  * that decides with the header's rules. AppKit is modelled from the log:
  * its full-screen layout asks the reservation (its own yes only when the
  * Space's display has a camera housing; FullPanel's answer no while the
@@ -69,13 +70,14 @@ typedef struct {
     /* OmacVMFullPanelState */
     bool inside, armed, entered, accepted, rejected, lost, released;
     bool displaced, display_changed, tracking, covered_logged;
-    bool retake_pending, retake_given_up;
+    bool retake_pending, retake_given_up, lost_tile;
+    bool reask_due;           /* -retakeAgain is queued */
     double lost_at;
-    int retake_tries;
+    int retake_tries, retake_reasks;
     unsigned retake_settle;
     OmacVMFPRect accepted_display;
     /* Lines. */
-    int n_covered, n_lost, n_displaced, n_moved, n_taken, n_tries, n_not_back, n_give_up;
+    int n_covered, n_lost, n_displaced, n_moved, n_taken, n_tries, n_not_back, n_give_up, n_reasks;
     int check;
 } St;
 
@@ -117,6 +119,14 @@ static void release_state(St *s)
 {
     s->tracking = false;
     s->retake_pending = false;
+    s->reask_due = false;
+}
+
+/* -retakeCovered: the strip is back after a display change, the next one gets its own tries. */
+static void retake_covered(St *s)
+{
+    s->retake_tries = s->retake_reasks = 0;
+    s->retake_given_up = false;
 }
 
 static void come_back(St *s);
@@ -134,6 +144,9 @@ static bool engage(St *s)
         s->n_taken++;
         say(s, CHECK_NONE, "strip taken again after a display change (try %d of %d)",
             s->retake_tries, OMACVM_FP_RETAKE_TRIES);
+    }
+    if (s->display_changed) {
+        retake_covered(s);
     }
     s->displaced = s->display_changed = false;
     if (!s->covered_logged) {
@@ -174,8 +187,10 @@ static void frame_changed(St *s)
     if (!s->accepted) {
         verify(s, false);
     } else if (s->entered && !s->lost && !s->released) {
+        bool tile = omacvm_fp_tile(s->frame, s->screen->f);
+
         switch (omacvm_fp_frame_kind(covers(s), omacvm_fp_inside(s->frame, s->screen->f),
-                                     s->screen_live, same_display(s), s->displaced)) {
+                                     s->screen_live, same_display(s), s->display_changed, tile)) {
         case OMACVM_FP_FRAME_COVERS:
             s->accepted_display = s->screen->f;
             s->displaced = false;
@@ -194,6 +209,7 @@ static void frame_changed(St *s)
         case OMACVM_FP_FRAME_LOST:
             s->lost = true;
             s->lost_at = s->now;
+            s->lost_tile = tile;
             release_state(s);
             s->n_lost++;
             say(s, CHECK_LOST, "strip lost: frame (%.0f %.0f %.0fx%.0f) on display %.0fx%.0f",
@@ -212,7 +228,7 @@ static void screen_changed(St *s, bool window_screen)
     s->due = true;    /* QEMU's handlers ask the display update for one */
     if (s->lost && omacvm_fp_lost_to_display_change(true, s->now - s->lost_at,
                                                     window_screen || !s->screen_live ||
-                                                    !same_display(s))) {
+                                                    !same_display(s), s->lost_tile)) {
         s->lost = false;
         s->displaced = s->display_changed = true;
         s->covered_logged = false;
@@ -295,6 +311,7 @@ static void retake_expired(St *s)
     s->retake_pending = false;
     if (covers(s)) {
         s->n_taken++;
+        retake_covered(s);
         s->displaced = s->display_changed = false;
         say(s, CHECK_NONE, "strip taken again (try %d of %d); covered once the window is in front",
             s->retake_tries, OMACVM_FP_RETAKE_TRIES);
@@ -307,8 +324,8 @@ static void retake_expired(St *s)
         s->retake_tries, OMACVM_FP_RETAKE_TRIES, last ? "until the next one" : "for now");
 }
 
-/* -retakeFacts and -retake: */
-static void retake(St *s, const char *why)
+/* -retakeFacts and -retakeAsk: */
+static void ask(St *s, const char *why)
 {
     OmacVMFPRetakeFacts f = {
         .inside = s->inside && s->full,
@@ -354,6 +371,10 @@ static void retake(St *s, const char *why)
         give_up(s, reason);
         return;
     }
+    if (omacvm_fp_retake_reask(f, r, s->retake_reasks)) {
+        s->reask_due = true;
+        return;
+    }
     if (r != OMACVM_FP_RETAKE_NOW) {
         return;
     }
@@ -368,6 +389,26 @@ static void retake(St *s, const char *why)
     }
     come_back(s);
     retake_expired(s);
+}
+
+/* -retake: a trigger asks (a queued ask again is dropped, its count starts again). */
+static void retake(St *s, const char *why)
+{
+    s->reask_due = false;
+    s->retake_reasks = 0;
+    ask(s, why);
+}
+
+/* OMACVM_FP_RETAKE_REASK_S later, no trigger in between: -retakeAgain. */
+static void later(St *s)
+{
+    if (!s->reask_due) {
+        return;
+    }
+    s->reask_due = false;
+    s->retake_reasks++;
+    s->n_reasks++;
+    ask(s, "a moment later");
 }
 
 /* omacvm_ds_fired's RUN, the update done, nothing due (retry <= 0). */
@@ -448,6 +489,29 @@ static void builtin_back(St *s, int order)
         s->screen = &BUILTIN;
         screen_changed(s, true);
     }
+}
+
+/*
+ * AppKit asks the reservation while NSScreen still names the old display,
+ * NSWindowDidChangeScreen comes, then the resize (review of #602: after a
+ * full screen released on a display without a housing).
+ */
+static void layout_after_screen_change(St *s, bool appkit_yes, const Disp *now)
+{
+    bool keeps = appkit_yes && !claims(s);
+    OmacVMFPRect f = s->space->f;
+
+    if (keeps) {
+        f.h -= s->space->band;
+    }
+    s->screen = now;
+    screen_changed(s, true);
+    s->frame = f;
+    if (verbose) {
+        printf("     | AppKit: %.0f %.0f %.0fx%.0f after the screen change (answer %s)\n", f.x, f.y, f.w,
+               f.h, keeps ? "yes" : "no");
+    }
+    frame_changed(s);
 }
 
 static int failures;
@@ -727,6 +791,144 @@ static void rows(void)
     row(&s, "a smaller display mode: no strip lost, covered",
         covers(&s) && s.tracking && s.n_displaced == 0 && s.n_lost == 0,
         "displaced %d lost %d", s.n_displaced, s.n_lost);
+
+    /*
+     * NSScreen goes with the Space to the LG at once (no stale frame: released, no
+     * "display change" line). Back: AppKit asks the reservation while NSScreen still
+     * names the LG (its yes kept: the band), NSWindowDidChangeScreen (the resume) comes
+     * before the 1728x1084 resize. c6b80695 took that for Split View for good.
+     */
+    start(&s);
+    s.space = &LG;
+    s.screen = &LG;
+    screen_changed(&s, true);
+    layout(&s, false, NULL);
+    s.space = &BUILTIN;
+    layout_after_screen_change(&s, true, &BUILTIN);
+    row(&s, "NSScreen went with the Space to the LG; back, the band after the resume: no strip lost",
+        !s.lost && s.n_lost == 0 && s.display_changed && s.check == CHECK_NORMAL, "lost %d check %d",
+        s.n_lost, s.check);
+    settle(&s);
+    row(&s, "... the strip back at the settle", back(&s) && s.n_lost == 0 && s.n_tries == 1,
+        "check %d lost %d tries %d", s.check, s.n_lost, s.n_tries);
+
+    /* A real Split View, the display asleep 1 s later (screen parameters): stays lost. */
+    start(&s);
+    s.now = 10;
+    s.frame = (OmacVMFPRect){ 0, 0, 864, 1084 };
+    frame_changed(&s);
+    s.now = 11;
+    s.screen_live = false;
+    screen_changed(&s, false);
+    s.screen_live = true;
+    settle(&s);
+    row(&s, "Split View, the display asleep 1 s later: stays lost (a tile is no display change)",
+        s.lost && s.n_moved == 0 && s.n_tries == 0 && !claims(&s), "lost %d moved %d tries %d", s.lost,
+        s.n_moved, s.n_tries);
+    /* ... and NSWindowDidChangeScreen 1 s after a Split View. */
+    start(&s);
+    s.now = 10;
+    s.frame = (OmacVMFPRect){ 864, 0, 864, 1084 };
+    frame_changed(&s);
+    s.now = 11;
+    screen_changed(&s, true);
+    row(&s, "Split View, the window's screen changed 1 s later: stays lost", s.lost && s.n_moved == 0,
+        "lost %d moved %d", s.lost, s.n_moved);
+
+    /* Split View while a display change still keeps the band: lost, never tried. */
+    start(&s);
+    builtin_leaves(&s, true);
+    s.locked = true;
+    builtin_back(&s, 2);
+    s.frame = (OmacVMFPRect){ 0, 0, 864, 1084 };
+    frame_changed(&s);
+    s.locked = false;
+    settle(&s);
+    row(&s, "Split View while a display change is pending: lost, nothing tried",
+        s.lost && s.n_lost == 1 && s.n_tries == 0 && !claims(&s), "lost %d tries %d", s.lost, s.n_tries);
+
+    /* A wait no trigger ends: WindowServer still moves the window at the settle. */
+    start(&s);
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    s.in_place = false;
+    settle(&s);
+    row(&s, "WindowServer still moves the window at the settle: nothing tried, asked again later",
+        s.n_tries == 0 && s.reask_due, "tries %d reask %d", s.n_tries, s.reask_due);
+    s.in_place = true;
+    later(&s);
+    row(&s, "... in place 0.5 s later, no trigger in between: the strip back",
+        back(&s) && s.n_tries == 1 && s.n_reasks == 1, "check %d tries %d reasks %d", s.check, s.n_tries,
+        s.n_reasks);
+
+    /* ... not visible yet. */
+    start(&s);
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    s.visible = false;
+    settle(&s);
+    s.visible = true;
+    later(&s);
+    row(&s, "not visible yet at the settle: the strip back 0.5 s later", back(&s) && s.n_tries == 1,
+        "check %d tries %d", s.check, s.n_tries);
+
+    /* ... a display's window still moving, and its full screen never reports done. */
+    start(&s);
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    s.moving = true;
+    settle(&s);
+    s.moving = false;
+    later(&s);
+    row(&s, "a display's window still moving at the settle: the strip back 0.5 s later",
+        back(&s) && s.n_tries == 1, "check %d tries %d", s.check, s.n_tries);
+
+    /* Asked again at most 3 times after a trigger; the next trigger asks afresh. */
+    start(&s);
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    s.in_place = false;
+    settle(&s);
+    for (int i = 0; i < 6; i++) {
+        later(&s);
+    }
+    row(&s, "WindowServer never in place: asked again 3 times, then quiet, nothing tried or given up",
+        s.n_reasks == OMACVM_FP_RETAKE_TRIES && !s.reask_due && s.n_tries == 0 && s.n_give_up == 0,
+        "reasks %d due %d tries %d give up %d", s.n_reasks, s.reask_due, s.n_tries, s.n_give_up);
+    s.in_place = true;
+    come_back(&s);
+    row(&s, "... back on its Space later: the strip back", back(&s) && s.n_tries == 1, "check %d tries %d",
+        s.check, s.n_tries);
+
+    /* Not asked again for what a trigger ends: locked (the settle after the unlock), another Space. */
+    start(&s);
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    s.on_space = false;
+    settle(&s);
+    row(&s, "on another Space: not asked again (the return asks)", !s.reask_due && s.n_tries == 0,
+        "due %d tries %d", s.reask_due, s.n_tries);
+
+    /* A full screen kept for days: every display change gets its tries. */
+    start(&s);
+    for (int i = 0; i < 4; i++) {
+        builtin_leaves(&s, true);
+        builtin_back(&s, 2);
+        settle(&s);
+    }
+    row(&s, "four display changes in one full screen: the strip back each time (3 tries each)",
+        back(&s) && s.n_tries == 4 && s.n_taken == 4 && s.n_give_up == 0, "check %d tries %d give up %d",
+        s.check, s.n_tries, s.n_give_up);
+    /* ... while one that AppKit never gives back still ends after 3 tries. */
+    s.reshape_works = false;
+    builtin_leaves(&s, true);
+    builtin_back(&s, 2);
+    for (int i = 0; i < 5; i++) {
+        settle(&s);
+    }
+    row(&s, "... the fifth kept below the notch by AppKit: 3 tries, then 'strip not back'",
+        s.n_tries == 7 && s.retake_given_up && s.check == CHECK_NOT_BACK, "tries %d given up %d check %d",
+        s.n_tries, s.retake_given_up, s.check);
 }
 
 #ifndef OMACVM_RETAKE_STUB
@@ -750,22 +952,41 @@ static void rules(void)
     CHECK(!omacvm_fp_inside((OmacVMFPRect){ 0, -323, 2560, 1440 }, d));
     CHECK(omacvm_fp_inside((OmacVMFPRect){ 0, 317, 1280, 800 }, d));
 
-    CHECK(omacvm_fp_frame_kind(true, true, true, true, false) == OMACVM_FP_FRAME_COVERS);
-    CHECK(omacvm_fp_frame_kind(true, false, false, false, true) == OMACVM_FP_FRAME_COVERS);
-    CHECK(omacvm_fp_frame_kind(false, false, true, true, false) == OMACVM_FP_FRAME_DISPLACED);
-    CHECK(omacvm_fp_frame_kind(false, true, false, true, false) == OMACVM_FP_FRAME_DISPLACED);
-    CHECK(omacvm_fp_frame_kind(false, false, false, false, false) == OMACVM_FP_FRAME_DISPLACED);
-    CHECK(omacvm_fp_frame_kind(false, false, true, false, false) == OMACVM_FP_FRAME_WAIT);
-    CHECK(omacvm_fp_frame_kind(false, true, true, false, false) == OMACVM_FP_FRAME_WAIT);
-    CHECK(omacvm_fp_frame_kind(false, true, true, true, false) == OMACVM_FP_FRAME_LOST);
-    CHECK(omacvm_fp_frame_kind(false, true, true, true, true) == OMACVM_FP_FRAME_WAIT);
+    /* A Split View tile's shape: inside, on the bottom edge, narrower; also while animating into it. */
+    CHECK(omacvm_fp_tile((OmacVMFPRect){ 0, 0, 864, 1084 }, d));
+    CHECK(omacvm_fp_tile((OmacVMFPRect){ 864, 0, 864, 1084 }, d));
+    CHECK(omacvm_fp_tile((OmacVMFPRect){ 100, 0, 1500, 1100 }, d));
+    CHECK(!omacvm_fp_tile((OmacVMFPRect){ 0, 0, 1728, 1084 }, d));
+    CHECK(!omacvm_fp_tile(d, d));
+    CHECK(!omacvm_fp_tile((OmacVMFPRect){ 0, 317, 1280, 800 }, d));
+    CHECK(!omacvm_fp_tile((OmacVMFPRect){ 0, -323, 2560, 1440 }, d));
 
-    CHECK(omacvm_fp_lost_to_display_change(true, 0, true));
-    CHECK(omacvm_fp_lost_to_display_change(true, OMACVM_DS_MAX_WAIT_S, true));
-    CHECK(!omacvm_fp_lost_to_display_change(true, OMACVM_DS_MAX_WAIT_S + 0.1, true));
-    CHECK(!omacvm_fp_lost_to_display_change(true, 1, false));
-    CHECK(!omacvm_fp_lost_to_display_change(false, 1, true));
-    CHECK(!omacvm_fp_lost_to_display_change(true, -1, true));
+    /* covers, inside, display live, same display, a display change in this full screen, tile */
+    CHECK(omacvm_fp_frame_kind(true, true, true, true, false, false) == OMACVM_FP_FRAME_COVERS);
+    CHECK(omacvm_fp_frame_kind(true, false, false, false, true, false) == OMACVM_FP_FRAME_COVERS);
+    CHECK(omacvm_fp_frame_kind(false, false, true, true, false, false) == OMACVM_FP_FRAME_DISPLACED);
+    CHECK(omacvm_fp_frame_kind(false, true, false, true, false, false) == OMACVM_FP_FRAME_DISPLACED);
+    CHECK(omacvm_fp_frame_kind(false, true, false, true, false, true) == OMACVM_FP_FRAME_DISPLACED);
+    CHECK(omacvm_fp_frame_kind(false, false, false, false, false, false) == OMACVM_FP_FRAME_DISPLACED);
+    CHECK(omacvm_fp_frame_kind(false, false, true, false, false, false) == OMACVM_FP_FRAME_WAIT);
+    CHECK(omacvm_fp_frame_kind(false, true, true, false, false, false) == OMACVM_FP_FRAME_WAIT);
+    CHECK(omacvm_fp_frame_kind(false, true, true, false, true, true) == OMACVM_FP_FRAME_WAIT);
+    CHECK(omacvm_fp_frame_kind(false, true, true, true, false, false) == OMACVM_FP_FRAME_LOST);
+    CHECK(omacvm_fp_frame_kind(false, true, true, true, false, true) == OMACVM_FP_FRAME_LOST);
+    /* The band after a display change (also released, the resume before the resize): no Split View. */
+    CHECK(omacvm_fp_frame_kind(false, true, true, true, true, false) == OMACVM_FP_FRAME_WAIT);
+    /* A tile is Split View's, also while a display change is on its way. */
+    CHECK(omacvm_fp_frame_kind(false, true, true, true, true, true) == OMACVM_FP_FRAME_LOST);
+
+    CHECK(omacvm_fp_lost_to_display_change(true, 0, true, false));
+    CHECK(omacvm_fp_lost_to_display_change(true, OMACVM_DS_MAX_WAIT_S, true, false));
+    CHECK(!omacvm_fp_lost_to_display_change(true, OMACVM_DS_MAX_WAIT_S + 0.1, true, false));
+    CHECK(!omacvm_fp_lost_to_display_change(true, 1, false, false));
+    CHECK(!omacvm_fp_lost_to_display_change(false, 1, true, false));
+    CHECK(!omacvm_fp_lost_to_display_change(true, -1, true, false));
+    /* A real Split View is never turned into a display change (the display asleep right after). */
+    CHECK(!omacvm_fp_lost_to_display_change(true, 0, true, true));
+    CHECK(!omacvm_fp_lost_to_display_change(true, 1, true, true));
 
     CHECK(omacvm_fp_claims(true, true, false, false, false, true));
     CHECK(!omacvm_fp_claims(true, true, true, false, false, true));
@@ -836,6 +1057,38 @@ static void rules(void)
     CHECK(omacvm_fp_retake(f, &why) == OMACVM_FP_RETAKE_GIVE_UP && !strcmp(why, "AppKit kept the band"));
     CHECK(omacvm_fp_retake(now, NULL) == OMACVM_FP_RETAKE_NOW);
     CHECK(!omacvm_fp_retake_final(OMACVM_FP_RETAKE_TRIES - 1) && omacvm_fp_retake_final(OMACVM_FP_RETAKE_TRIES));
+
+    /* Ask again after a wait that ends by itself: WindowServer, the displays' windows, not visible yet. */
+#define REASK(field, value, want) do { f = now; f.field = value; \
+        CHECK(omacvm_fp_retake_reask(f, omacvm_fp_retake(f, NULL), 0) == want); } while (0)
+    REASK(in_place, false, true);
+    REASK(moving, true, true);
+    REASK(visible, false, true);
+    /* Not for what a trigger or the check ends, nor for a now, a no or a give up. */
+    REASK(locked, true, false);
+    REASK(display_live, false, false);
+    REASK(same_size, false, false);
+    REASK(on_space, false, false);
+    REASK(pending, true, false);
+    REASK(appkit_band, false, false);
+    REASK(tried_this_settle, true, false);
+    REASK(lost, true, false);
+    REASK(covers, true, false);
+    REASK(reshape, false, false);
+    REASK(given_up, true, false);
+    CHECK(!omacvm_fp_retake_reask(now, OMACVM_FP_RETAKE_NOW, 0));
+    /* At most OMACVM_FP_RETAKE_TRIES times after a trigger. */
+    f = now;
+    f.in_place = false;
+    CHECK(omacvm_fp_retake_reask(f, OMACVM_FP_RETAKE_WAIT, OMACVM_FP_RETAKE_TRIES - 1));
+    CHECK(!omacvm_fp_retake_reask(f, OMACVM_FP_RETAKE_WAIT, OMACVM_FP_RETAKE_TRIES));
+    CHECK(!omacvm_fp_retake_reask(f, OMACVM_FP_RETAKE_WAIT, -1));
+    /* moving is asked again also when the window is on another Space (it waits there next time). */
+    f = now;
+    f.moving = true;
+    f.on_space = false;
+    CHECK(omacvm_fp_retake_reask(f, omacvm_fp_retake(f, NULL), 0));
+    CHECK(OMACVM_FP_RETAKE_REASK_S > 0 && OMACVM_FP_RETAKE_REASK_S < OMACVM_FP_RETAKE_CHECK_S);
     printf("ok   %d rule checks\n", checks);
 }
 #endif
