@@ -25,6 +25,11 @@ in more words.
   we read show it; why Chrome hands the frame in is not proven yet). The VM's VA-API driver
   shim now refuses those frames, and encoding from one too: Chrome gets an error for that
   one video instead of a crash. Needs Update VM, then quit Chrome fully once.
+- **AV1 videos with film grain show the right picture in Google Chrome on Macs with an AV1
+  decoder (M3, M4).** Chrome decodes such a picture into one buffer and shows another (the
+  picture with its grain); the Mac wrote only the first, so Chrome showed a buffer that held
+  an older picture, or nothing (green). The picture now goes into both. Needs only the new
+  app, from the VM's next start.
 
 ## 3.2.10
 

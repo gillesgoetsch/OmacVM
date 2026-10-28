@@ -1382,6 +1382,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-video-picture-size
 # OmacVM: decoded pictures finish beside QEMU's GPU thread (it waited for the media engine on every
 # picture: Chrome's 4K hardware decoding dropped frames); planes and fences wait for their pictures.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-videotoolbox-decode-async.patch"
+# OmacVM: an AV1 picture with film grain also goes into the buffer the guest shows (Chrome shows
+# another buffer than it decodes into: on M3/M4 Macs it showed one the Mac never wrote).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-video-av1-film-grain.patch"
 # OmacVM: a program whose VirglBlock the GL reports too small (or whose size query fails) is
 # refused like a failed link, its draws skipped; an assert aborted QEMU there (#547).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-sysval-block-check.patch"

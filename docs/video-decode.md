@@ -290,6 +290,13 @@ VA-API. Six things stood in the way, all fixed in 3.2.0:
   as picture. The copy now takes AV1's and VP9's frame size from the
   picture description (`virgl-video-picture-size.patch`;
   `OMACVM_VIDEO_DEBUG=1` logs "output WxH, picture WxH").
+- AV1 with film grain (3.2.11): Chrome decodes such a picture into one
+  buffer and shows another, which Mesa sends as the film grain target;
+  VideoToolbox's picture has the grain applied, and it now goes into both
+  (`virgl-video-av1-film-grain.patch`, one more GPU copy per picture for
+  such videos only). Before, on Macs that decode AV1 on the media engine
+  (M3, M4), Chrome showed a buffer the Mac had not written for that
+  picture. Test: `test-video-padding.c` (av1fg-320x180.ivf).
 
 How well it plays: *Big Buck Bunny* 60 fps, Chrome 156, test VMs with 4 CPUs
 and 4 GB without a window, busy cores of the VM and of QEMU on the Mac (the
