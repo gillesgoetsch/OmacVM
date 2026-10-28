@@ -130,17 +130,35 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   the test guards the path but cannot show the GPU's behaviour.)
 - The guest's textures can be bigger than the picture: Mesa rounds a VA
   surface's planes up to 16 (1920x1080 has 1088 rows, 854 wide has 864
-  columns), and apps that show the surface (Chrome, Firefox, mpv) sample all
-  of it. The copy fills the rows and columns past the picture with its last
-  row and column (`virgl-video-plane-edge.patch`); before 3.1.32 they stayed
-  zero and showed as a green bar at the bottom or right of VP9 and AV1
-  videos at 1080p, 540p, 360p, 480p and 240p. Apps that show the planes
-  themselves (mpv, Firefox) still show the rounded size, so the picture is
-  squeezed by those rows (1080p: 8 of 1088, invisible; a 320x180 call tile:
-  12 of 192) and the strip is its stretched edge. Planes more than 64 bigger
-  than the picture are surfaces the guest crops itself and are left alone.
-  `OMACVM_VIDEO_EDGE_FILL=0` turns the fill off. Test:
-  `Tests/virgl/test-video-padding.c`.
+  columns), and apps that show the surface (mpv with `hwdec=vaapi`, Chrome
+  when NV12 is renderable, GStreamer, Hyprland for mpv's
+  `vo=dmabuf-wayland`) import its planes and sample them whole: virgl drops
+  the size an import asks for. So the picture came out squeezed and the
+  rows past it showed below it: a green bar before 3.1.32 (they stayed
+  zero), the picture's last row repeated from 3.1.32 to 3.2.10 (1080p: 8 of
+  1088 rows, about 14 pixels on a 3456-wide screen; a 320x180 call tile: 12
+  of 192). Since 3.2.11 the Mac samples each such surface at its own size:
+  the VM's VA-API shim tells it the size of every 4:2:0 surface Mesa makes
+  at a size that is not a multiple of 16 (a NOP with a private payload,
+  only when the app says `omacvm.valogical=1`), and every shader that
+  samples such a texture scales its coordinates and size queries to it
+  (`virgl-resource-logical-size.patch`, [ADR 0059](adr/0059-video-surfaces-at-their-own-size.md)).
+  No copy: two more operations per lookup in those shaders. Reading the
+  surface back (`vaGetImage`, FFmpeg's `hwdownload`) and texel reads
+  (Chromium's V4L2 daemon) are as before. Not covered: surfaces FFmpeg
+  itself asks for larger than the picture (H.264 at 1080p: 1088 rows; HEVC
+  at sizes that are not a multiple of 8, such as 1000x562 in 1000x568):
+  VA-API carries no crop, so mpv shows the stream's own padding rows as
+  before (fewer than before: Mesa's rounding no longer adds to them).
+  The copy still fills the rows and columns past the picture with its last
+  row and column (`virgl-video-plane-edge.patch`): for an older VM side or
+  app, surfaces the shim did not declare, and lookups at the very edge.
+  Planes more than 64 bigger than the picture are surfaces the guest crops
+  itself and are left alone. `OMACVM_VIDEO_EDGE_FILL=0` turns the fill off,
+  `OMACVM_VIDEO_LOGICAL=0` (Mac) and `OMACVM_VA_LOGICAL=0` (an app in the
+  VM) the sizes. Tests: `Tests/virgl/test-video-padding.c`,
+  `Tests/virgl/test-video-logical-size.c`,
+  `src/app/guest/tests/va-shim-logical.sh`.
 - Chrome's hardware frames (3.2.1): Chrome converts each picture into an
   ARGB frame of its own and shows that frame by its own size, but Mesa
   rounds that frame's planes up to 16 too, and its conversion read the
@@ -155,7 +173,11 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   frame of its real size, keeps its region): the tile shows every
   row where Chrome's CPU decoders put it (WebRTC loopback, VP9, AV1 and
   H.264 at 320x180, 480x270, 640x360, 854x480 and 1920x1080: off by 0.4 to
-  2 rows on average, as on the CPU). It relies on how Mesa rounds and reads
+  2 rows on average, as on the CPU). With a runtime that samples surfaces
+  at their own size (above), the shim declares the decoder's surfaces and
+  leaves their source region as it is; the RGB frames keep this fill (Mesa
+  converts an RGB surface to YUV by its texture's size, so a declared size
+  would squeeze those). It relies on how Mesa rounds and reads
   those planes, so it runs only with a Mesa it was checked with (up to 26.2,
   from Mesa's vendor string; a newer Mesa: off, with one line in Chrome's
   log, until it is checked again). `OMACVM_VA_FILL=0` or `1` in Chrome's

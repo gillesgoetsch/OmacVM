@@ -5,6 +5,16 @@ in more words.
 
 ## 3.2.11 (unreleased)
 
+- **No repeated last row at the bottom of videos.** Hardware-decoded videos in apps that draw
+  the decoded picture themselves, such as mpv with `hwdec=vaapi`, showed it slightly squeezed,
+  with its last row stretched over a strip below it (about 14 pixels at 1080p on a 3456-wide
+  screen, 8 of 368 rows at 360p; the green bar of 3.1.31 and older was the same strip,
+  unwritten). Google Chrome showed the same strip on the right of 854-wide and portrait
+  360x640 videos, as in video calls. The Mac now samples each video surface at the picture's
+  own size, as the VM's VA-API driver tells it: no copy, no strip. Firefox and Omarchy's
+  Chromium were already exact. Where FFmpeg itself asks for a surface larger than the picture
+  (H.264 at 1080p, HEVC at sizes that are not a multiple of 8), mpv still shows the stream's
+  own padding rows. Needs the app update and Update VM.
 - **Google Chrome's GPU process no longer crashes on video it receives in calls.** In an
   OmacVM.app VM, Chrome's GPU process could crash in video calls while it decoded the
   incoming video; after repeated crashes Chrome can stop using the GPU until it is
