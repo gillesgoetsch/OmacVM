@@ -1,8 +1,10 @@
 #!/bin/bash
 # OmacVM's VA driver shim tells the Mac's runtime each video surface's own size
 # (omacvm_drv_video.c, "Pictures at their own size"): only when the runtime says
-# omacvm.valogical=1, only Mesa's own 4:2:0 surfaces whose size is not a multiple of 16, and
-# Chromium's fill then leaves such surfaces' source regions alone. The shim runs against a
+# omacvm.valogical=1, only Mesa's own 4:2:0 surfaces whose size is not a multiple of 16; video
+# processing from such a surface (or an import of it) gets its source region scaled for the
+# size the Mac samples it at (any process), and vaGetImage into another format reads an import
+# of it at the picture's size. The shim runs against a
 # stand-in for Mesa's driver and for the kernel's DRM ioctls (va-shim-logical.c), on Linux
 # with libva's headers (libva-dev) and the kernel's (linux-libc-dev).
 #   src/app/guest/tests/va-shim-logical.sh [SHIM_SOURCE]

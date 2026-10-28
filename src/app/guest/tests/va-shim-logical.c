@@ -10,12 +10,17 @@
  *   va-shim-logical SHIM STUB declare|none|refused [ARGS...]
  * declare: Mesa's own 4:2:0 surfaces whose size is not a multiple of 16 are declared (Y W x H,
  * UV half rounded up; NV12 and P010), 8 entries per NOP, one submit per vaCreateSurfaces2 and
- * no fence; 1280x720, RGB surfaces and imports are not; an import of a declared surface at its
- * size counts as declared. With Chromium's fill (OMACVM_VA_FILL=1), video processing from a
- * declared surface or such an import keeps the app's source region; from an undeclared rounded
- * import it is scaled as before. none: nothing is sent (no ioctl), regions as before.
- * refused: the submit fails, nothing counts as declared, regions as before, one line said, and
- * later surfaces send nothing.
+ * no fence; 1280x720, RGB surfaces and imports are not; an import of a declared surface counts
+ * as declared at that surface's size, whatever size it asks for. Video processing (any process)
+ * from a declared source gets its region scaled by the size Mesa takes it in parts of (its own
+ * surface: rounded up to 16; an import: the size asked) over the declared size, since the Mac
+ * scales again: Mesa's own 320x180 -> 320x192 (the stand-in models Mesa's compositor:
+ * region / Mesa's size, then the Mac: x declared / texture size). vaGetImage into another format
+ * from a declared surface reads an import of it at the picture's size (Mesa's converting path),
+ * into the surface's own format the surface itself. With Chromium's fill (OMACVM_VA_FILL=1 or
+ * --type=), an undeclared rounded source is scaled as before. none: nothing is sent (no ioctl),
+ * regions and images as before. refused: the submit fails, nothing counts as declared, regions
+ * as before, one line said, and later surfaces send nothing.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -38,11 +43,17 @@
 
 #ifdef STUB_DRIVER
 VARectangle seen_src;
+int seen_null;                  /* the source region was NULL */
+unsigned seen_b[2];             /* the size Mesa took the source region in parts of */
 int renders;
+/* the last vaGetImage: the surface's size in Mesa (B), its region, converted or not */
+unsigned got_b[2], got_region[4], got_imported;
+int got_convert, get_calls, destroyed;
 
 static struct surface {
     unsigned format, width, height, fourcc;
     int fd[2];          /* Mesa's own: the planes' files */
+    int imported;
 } surfaces[64];
 static unsigned nsurfaces;
 static struct buf { VABufferType type; unsigned size; void *data; } bufs[16];
@@ -73,7 +84,7 @@ static VAStatus create_surfaces2(VADriverContextP ctx, unsigned int format, unsi
         if (nsurfaces >= 64)
             return VA_STATUS_ERROR_ALLOCATION_FAILED;
         struct surface *x = &surfaces[nsurfaces];
-        *x = (struct surface){ format, w, h, fourcc, { -1, -1 } };
+        *x = (struct surface){ format, w, h, fourcc, { -1, -1 }, imported };
         if (!imported) {
             unsigned aw = (w + 15) & ~15u, ah = (h + 15) & ~15u;
             x->fd[0] = plane_file(aw * ah * (fourcc == VA_FOURCC_ARGB ? 4 : 1));
@@ -85,12 +96,21 @@ static VAStatus create_surfaces2(VADriverContextP ctx, unsigned int format, unsi
     return VA_STATUS_SUCCESS;
 }
 
-/* Mesa's export: one object per plane (the same files each time), a layer each */
+/* the size Mesa takes a region in parts of: its own surface's buffer is rounded up to 16
+ * (vl_video_buffer_create), an import's is the size asked (vl_video_buffer_create_ex2) */
+static void mesa_size(VASurfaceID s, unsigned b[2])
+{
+    b[0] = surfaces[s].imported ? surfaces[s].width : (surfaces[s].width + 15) & ~15u;
+    b[1] = surfaces[s].imported ? surfaces[s].height : (surfaces[s].height + 15) & ~15u;
+}
+
+/* Mesa's export: one object per plane (the same files each time), a layer each, or one layer
+ * of both planes (composed) */
 static VAStatus export_surface(VADriverContextP ctx, VASurfaceID s, uint32_t mem, uint32_t flags,
                                void *descriptor)
 {
     VADRMPRIMESurfaceDescriptor *d = descriptor;
-    (void)ctx; (void)mem; (void)flags;
+    (void)ctx; (void)mem;
     if (s >= nsurfaces || surfaces[s].fd[0] < 0)
         return VA_STATUS_ERROR_INVALID_SURFACE;
     memset(d, 0, sizeof(*d));
@@ -98,12 +118,69 @@ static VAStatus export_surface(VADriverContextP ctx, VASurfaceID s, uint32_t mem
     d->width = surfaces[s].width;
     d->height = surfaces[s].height;
     d->num_objects = surfaces[s].fd[1] >= 0 ? 2 : 1;
-    d->num_layers = d->num_objects;
+    d->num_layers = flags & VA_EXPORT_SURFACE_COMPOSED_LAYERS ? 1 : d->num_objects;
     for (unsigned i = 0; i < d->num_objects; i++) {
         d->objects[i].fd = dup(surfaces[s].fd[i]);
-        d->layers[i].num_planes = 1;
-        d->layers[i].object_index[0] = i;
+        if (d->num_layers == 1) {
+            d->layers[0].num_planes = d->num_objects;
+            d->layers[0].object_index[i] = i;
+        } else {
+            d->layers[i].num_planes = 1;
+            d->layers[i].object_index[0] = i;
+        }
     }
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus destroy_surfaces(VADriverContextP ctx, VASurfaceID *s, int n)
+{
+    (void)ctx; (void)s;
+    destroyed += n;
+    return VA_STATUS_SUCCESS;
+}
+
+static struct { VAImageID id; unsigned fourcc; } images[16];
+static unsigned nimages;
+
+static VAStatus create_image(VADriverContextP ctx, VAImageFormat *f, int w, int h, VAImage *img)
+{
+    (void)ctx;
+    if (nimages >= 16)
+        return VA_STATUS_ERROR_ALLOCATION_FAILED;
+    memset(img, 0, sizeof(*img));
+    img->image_id = 100 + nimages;
+    img->format = *f;
+    img->width = w;
+    img->height = h;
+    images[nimages].id = img->image_id;
+    images[nimages++].fourcc = f->fourcc;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus destroy_image(VADriverContextP ctx, VAImageID id) { (void)ctx; (void)id; return VA_STATUS_SUCCESS; }
+
+/* Mesa's vaGetImage: into another format through its compositor (the region in parts of the
+ * surface's Mesa size), into the same one a copy of the texels */
+static VAStatus get_image(VADriverContextP ctx, VASurfaceID s, int x, int y, unsigned int w,
+                          unsigned int h, VAImageID id)
+{
+    (void)ctx;
+    if (s >= nsurfaces || id < 100 || id - 100 >= nimages)
+        return VA_STATUS_ERROR_INVALID_SURFACE;
+    mesa_size(s, got_b);
+    got_region[0] = x, got_region[1] = y, got_region[2] = w, got_region[3] = h;
+    got_imported = surfaces[s].imported;
+    got_convert = images[id - 100].fourcc != surfaces[s].fourcc;
+    get_calls++;
+    return VA_STATUS_SUCCESS;
+}
+
+static VAStatus put_image(VADriverContextP ctx, VASurfaceID s, VAImageID id, int sx, int sy,
+                          unsigned int sw, unsigned int sh, int dx, int dy, unsigned int dw,
+                          unsigned int dh)
+{
+    (void)ctx; (void)s; (void)id; (void)sx; (void)sy; (void)sw; (void)sh; (void)dx; (void)dy;
+    (void)dw; (void)dh;
     return VA_STATUS_SUCCESS;
 }
 
@@ -174,6 +251,9 @@ static VAStatus render_picture(VADriverContextP ctx, VAContextID c, VABufferID *
             continue;
         const VAProcPipelineParameterBuffer *pp = bufs[ids[i]].data;
         seen_src = pp->surface_region ? *pp->surface_region : (VARectangle){ 0, 0, 0, 0 };
+        seen_null = !pp->surface_region;
+        if (pp->surface < nsurfaces)
+            mesa_size(pp->surface, seen_b);
         renders++;
     }
     return VA_STATUS_SUCCESS;
@@ -194,6 +274,11 @@ VAStatus __vaDriverInit_1_20(VADriverContextP ctx)
     ctx->vtable->vaUnmapBuffer = unmap_buffer;
     ctx->vtable->vaBeginPicture = begin_picture;
     ctx->vtable->vaRenderPicture = render_picture;
+    ctx->vtable->vaDestroySurfaces = destroy_surfaces;
+    ctx->vtable->vaCreateImage = create_image;
+    ctx->vtable->vaDestroyImage = destroy_image;
+    ctx->vtable->vaGetImage = get_image;
+    ctx->vtable->vaPutImage = put_image;
     return VA_STATUS_SUCCESS;
 }
 #else
@@ -278,6 +363,13 @@ int ioctl(int fd, unsigned long request, ...)
 
 static int failed;
 static struct VADriverVTable vt;
+
+static int *dlsym_int(void *lib, const char *name)
+{
+    static int none;
+    int *p = dlsym(lib, name);
+    return p ? p : &none;
+}
 static struct VADriverContext dc;
 static struct drm_state drm;
 
@@ -325,9 +417,9 @@ static void expect_plane(const char *name, VASurfaceID s, int p, uint32_t w, uin
     check(gw == w && gh == h, what);
 }
 
-/* an NV12 picture of 320x180 imported from FD (Y plane) and FD2 (UV), or from FD alone with
+/* an NV12 picture of 320 x H imported from FD (Y plane) and FD2 (UV), or from FD alone with
  * the UV plane after ROWS rows */
-static VASurfaceID import_nv12(int fd, int fd2, unsigned rows)
+static VASurfaceID import_nv12(int fd, int fd2, unsigned rows, unsigned h)
 {
     VADRMPRIMESurfaceDescriptor d;
     VASurfaceAttrib a[2];
@@ -336,7 +428,7 @@ static VASurfaceID import_nv12(int fd, int fd2, unsigned rows)
     memset(&d, 0, sizeof(d));
     d.fourcc = VA_FOURCC_NV12;
     d.width = 320;
-    d.height = 180;
+    d.height = h;
     d.num_objects = fd2 >= 0 ? 2 : 1;
     d.objects[0].fd = fd;
     d.objects[1].fd = fd2;
@@ -352,7 +444,7 @@ static VASurfaceID import_nv12(int fd, int fd2, unsigned rows)
     a[1] = (VASurfaceAttrib){ .type = VASurfaceAttribExternalBufferDescriptor,
                               .flags = VA_SURFACE_ATTRIB_SETTABLE,
                               .value = { .type = VAGenericValueTypePointer, .value.p = &d } };
-    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 320, 180, &s, 1, a, 2);
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 320, h, &s, 1, a, 2);
     return s;
 }
 
@@ -360,7 +452,8 @@ int main(int argc, char **argv)
 {
     VAStatus (*init)(VADriverContextP);
     VARectangle *seen_src;
-    int *renders;
+    int *renders, *seen_null;
+    unsigned *seen_b;
     char what[200];
 
     if (argc < 4)
@@ -376,12 +469,14 @@ int main(int argc, char **argv)
     }
     seen_src = dlsym(stub, "seen_src");
     renders = dlsym(stub, "renders");
+    seen_null = dlsym(stub, "seen_null");
+    seen_b = dlsym(stub, "seen_b");
     init = (VAStatus (*)(VADriverContextP))dlsym(shim, "__vaDriverInit_1_20");
     drm.fd = open("/dev/null", O_RDWR);
     dc.vtable = &vt;
     dc.drm_state = &drm;
     dc.max_attributes = 4;
-    if (!seen_src || !renders || !init || init(&dc) != VA_STATUS_SUCCESS) {
+    if (!seen_src || !renders || !seen_null || !seen_b || !init || init(&dc) != VA_STATUS_SUCCESS) {
         fprintf(stderr, "the shim did not load the stand-in driver\n");
         return 2;
     }
@@ -431,48 +526,98 @@ int main(int argc, char **argv)
     int cam = mkstemp(path);
     unlink(path);
     if (ftruncate(cam, 320 * 180 * 3 / 2)) { }
-    VASurfaceID icam = import_nv12(cam, -1, 180);
+    VASurfaceID icam = import_nv12(cam, -1, 180, 180);
     VADRMPRIMESurfaceDescriptor own;
     own.objects[0].fd = own.objects[1].fd = -1;
     vt.vaExportSurfaceHandle(&dc, s180, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                              VA_EXPORT_SURFACE_SEPARATE_LAYERS, &own);
-    VASurfaceID iown = import_nv12(own.objects[0].fd, own.objects[1].fd, 0);
+    VASurfaceID iown = import_nv12(own.objects[0].fd, own.objects[1].fd, 0, 180);
+    VASurfaceID iown192 = import_nv12(own.objects[0].fd, own.objects[1].fd, 0, 192);
     char path2[] = "/tmp/va-shim-logical-XXXXXX";
     int gbm = mkstemp(path2);
     unlink(path2);
     if (ftruncate(gbm, 320 * 192 * 3 / 2)) { }
-    VASurfaceID igbm = import_nv12(gbm, -1, 192);
+    VASurfaceID igbm = import_nv12(gbm, -1, 192, 180);
     check(ndecls == before, "imports declare nothing");
 
-    /* Chromium's fill (OMACVM_VA_FILL=1 in the environment): the source regions */
-    if (getenv("OMACVM_VA_FILL")) {
-        VAContextID proc;
-        VABufferID buf;
-        VARectangle in = { 0, 0, 320, 180 }, scaled = { 0, 0, 320, 169 };
-        VAProcPipelineParameterBuffer pp, *app = NULL;
-        memset(&pp, 0, sizeof(pp));
-        vt.vaCreateContext(&dc, 1, 320, 180, 0, NULL, 0, &proc);
-        vt.vaCreateBuffer(&dc, proc, VAProcPipelineParameterBufferType, sizeof(pp), 1, &pp, &buf);
-        vt.vaMapBuffer(&dc, buf, (void **)&app);
-        struct { const char *name; VASurfaceID src; VARectangle want; } cases[] = {
-            { "Mesa's own 320x180", s180, declare ? in : scaled },
-            { "an import of it", iown, declare ? in : scaled },
-            { "a 192-row import nobody declared", igbm, scaled },
-            { "a camera frame of its own size", icam, in },
-        };
-        for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
-            app->surface = cases[c].src;
-            app->surface_region = &in;
-            app->output_region = NULL;
-            vt.vaBeginPicture(&dc, proc, sargb);
-            vt.vaRenderPicture(&dc, proc, &buf, 1);
-            snprintf(what, sizeof(what), "video processing from %s: Mesa got source %d,%d %ux%u "
-                     "(expected %ux%u)", cases[c].name, seen_src->x, seen_src->y, seen_src->width,
-                     seen_src->height, cases[c].want.width, cases[c].want.height);
-            check(!memcmp(seen_src, &cases[c].want, sizeof(VARectangle)) &&
-                  app->surface_region == &in, what);
-        }
+    /* Video processing: the source region Mesa gets. Chromium's fill is on with OMACVM_VA_FILL=1
+     * or in a Chromium process (--type=), as the shim decides. */
+    const char *fe = getenv("OMACVM_VA_FILL");
+    int fill = fe && *fe ? *fe == '1' : argc > 4 && !strncmp(argv[4], "--type=", 7);
+    VAContextID proc;
+    VABufferID buf;
+    VAProcPipelineParameterBuffer pp, *app = NULL;
+    VARectangle in = { 0, 0, 320, 180 }, scaled = { 0, 0, 320, 169 }, up = { 0, 0, 320, 192 },
+                crop = { 0, 90, 320, 90 }, crop_up = { 0, 96, 320, 96 },
+                in480 = { 0, 0, 854, 480 }, up480 = { 0, 0, 864, 480 }, in720 = { 0, 0, 1280, 720 };
+    memset(&pp, 0, sizeof(pp));
+    vt.vaCreateContext(&dc, 1, 320, 180, 0, NULL, 0, &proc);
+    vt.vaCreateBuffer(&dc, proc, VAProcPipelineParameterBufferType, sizeof(pp), 1, &pp, &buf);
+    vt.vaMapBuffer(&dc, buf, (void **)&app);
+    struct { const char *name; VASurfaceID src; const VARectangle *region; VARectangle want; } cases[] = {
+        { "Mesa's own 320x180", s180, &in, declare ? up : fill ? scaled : in },
+        { "Mesa's own 320x180, no region", s180, NULL, declare ? up : fill ? scaled : (VARectangle){ 0, 0, 0, 0 } },
+        { "Mesa's own 320x180, rows 90-179", s180, &crop, declare ? crop_up : fill ? (VARectangle){ 0, 84, 320, 84 } : crop },
+        { "Mesa's own 854x480", s480, &in480, declare ? up480 : fill ? (VARectangle){ 0, 0, 844, 480 } : in480 },
+        { "Mesa's own 1280x720 (a multiple of 16)", s720, &in720, in720 },
+        { "an import of the 320x180 at its size", iown, &in, declare ? in : fill ? scaled : in },
+        { "an import of the 320x180 at 320x192", iown192, &in, declare ? up : in },
+        { "a 192-row import nobody declared", igbm, &in, fill ? scaled : in },
+        { "a camera frame of its own size", icam, &in, in },
+    };
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        app->surface = cases[c].src;
+        app->surface_region = cases[c].region;
+        app->output_region = NULL;
+        vt.vaBeginPicture(&dc, proc, sargb);
+        vt.vaRenderPicture(&dc, proc, &buf, 1);
+        int null_ok = cases[c].region || cases[c].want.width || *seen_null;
+        snprintf(what, sizeof(what), "video processing from %s: Mesa got source %d,%d %ux%u "
+                 "(expected %d,%d %ux%u)", cases[c].name, seen_src->x, seen_src->y, seen_src->width,
+                 seen_src->height, cases[c].want.x, cases[c].want.y, cases[c].want.width,
+                 cases[c].want.height);
+        check(!memcmp(seen_src, &cases[c].want, sizeof(VARectangle)) && null_ok &&
+              app->surface_region == cases[c].region, what);
     }
+    /* what the Mac samples for Mesa's own 1920x1080 picture, the whole of it: the region over
+     * Mesa's size, times the declared size over the texture's (1088), in texture rows */
+    app->surface = s1080;
+    VARectangle in1080 = { 0, 0, 1920, 1080 };
+    app->surface_region = &in1080;
+    vt.vaBeginPicture(&dc, proc, sargb);
+    vt.vaRenderPicture(&dc, proc, &buf, 1);
+    double rows = (double)seen_src->height / seen_b[1] * (declare ? 1080.0 / 1088.0 : 1.0) * 1088.0;
+    snprintf(what, sizeof(what), "video processing from Mesa's own 1920x1080: the Mac samples "
+             "%.2f texture rows (the picture: 1080)", rows);
+    /* (Chromium's fill without declarations scales Mesa's own sources as it scales imports;
+     * Chrome converts only imports, so that case is left as it was) */
+    if (declare || !fill)
+        check(rows > 1079.5 && rows < 1080.5, what);
+
+    /* vaGetImage: into another format (Mesa converts: the region in parts of Mesa's size), into
+     * the surface's own format (the texels) */
+    VAImageFormat bgra = { .fourcc = VA_FOURCC_BGRA, .byte_order = VA_LSB_FIRST, .bits_per_pixel = 32 };
+    VAImageFormat nv12 = { .fourcc = VA_FOURCC_NV12, .byte_order = VA_LSB_FIRST, .bits_per_pixel = 12 };
+    VAImage ib, in12;
+    vt.vaCreateImage(&dc, &bgra, 320, 180, &ib);
+    vt.vaCreateImage(&dc, &nv12, 320, 180, &in12);
+    int d0 = *dlsym_int(stub, "destroyed"), g0 = *dlsym_int(stub, "get_calls");
+    VAStatus gst = vt.vaGetImage(&dc, s180, 0, 0, 320, 180, ib.image_id);
+    unsigned *gb = dlsym(stub, "got_b"), *gimp = dlsym(stub, "got_imported");
+    int *gconv = dlsym(stub, "got_convert");
+    snprintf(what, sizeof(what), "vaGetImage BGRA from Mesa's own 320x180: Mesa converted from a "
+             "%s surface of %ux%u (expected %s)", *gimp ? "imported" : "Mesa's", gb[0], gb[1],
+             declare ? "an import of 320x180, destroyed after" : "the surface, 320x192");
+    check(gst == VA_STATUS_SUCCESS && *gconv && *dlsym_int(stub, "get_calls") == g0 + 1 &&
+          (declare ? *gimp && gb[0] == 320 && gb[1] == 180 && *dlsym_int(stub, "destroyed") == d0 + 1 :
+                     !*gimp && gb[1] == 192 && *dlsym_int(stub, "destroyed") == d0), what);
+    gst = vt.vaGetImage(&dc, s180, 0, 0, 320, 180, in12.image_id);
+    check(gst == VA_STATUS_SUCCESS && !*gconv && !*gimp && gb[1] == 192,
+          "vaGetImage NV12 from Mesa's own 320x180: the surface itself (its texels)");
+    gst = vt.vaGetImage(&dc, s720, 0, 0, 320, 180, ib.image_id);
+    check(gst == VA_STATUS_SUCCESS && *gconv && !*gimp,
+          "vaGetImage BGRA from Mesa's own 1280x720 (not declared): the surface itself");
+
     if (failed) {
         printf("va-shim-logical (%s): FAILED\n", mode);
         return 1;
