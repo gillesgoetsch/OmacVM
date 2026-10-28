@@ -120,8 +120,47 @@ func sample(_ t: Double, fp: Double, res: Double, comp: Double) -> MemoryGiveBac
     MemoryGiveBack.Sample(time: t, footprint: UInt64(fp * Double(GB)), resident: UInt64(res * Double(GB)),
                           compressed: UInt64(comp * Double(GB)))
 }
+// "compressing" needs a QEMU that gives the pages back to macOS (the reclaim fix, a later release). 3.2.11's QEMU
+// keeps what the VM gives back (Mac mini: 1345 of 1346 MB, 1721 of 1721 MB; vm-memory-gap), and a file read again
+// takes fresh pages: a give-back would only make Activity Monitor's number smaller. Without it: never; the warning's
+// drop as in 3.2.10 (once per 10 minutes). The rest of this block is a QEMU with the fix (behaviour unchanged).
+func withFix(_ ram: UInt64) -> MemoryGiveBack { MemoryGiveBack(ram: ram, pagesGoBack: true) }
+var keeps = MemoryGiveBack(ram: 64 * GB)
+expect(!keeps.pagesGoBack, "a QEMU not known to give the pages back: it keeps them (the default)")
+expect(!keeps.allowed(.compressing, at: 0) && keeps.allowed(.warning, at: 0) && keeps.allowed(.critical, at: 0),
+       "it keeps them: never allowed for compressing, the warning's drop is")
+_ = keeps.compressing(sample(0, fp: 30, res: 30, comp: 100))
+var keepsFired = false
+for i in 1...240 { keepsFired = keepsFired || keeps.compressing(sample(Double(i) * 5, fp: 30 + Double(i) * 0.1, res: 28, comp: 100 + Double(i) * 0.1)) }
+expect(!keepsFired && !keeps.compressing(sample(1300, fp: 51, res: 28, comp: 130)),
+       "it keeps them: the user's numbers (23 GB outside RAM, macOS compressing) never give back")
+keeps.started(.warning, at: 2000)
+keeps.answered(nil)
+expect(!keeps.allowed(.warning, at: 2599) && keeps.allowed(.critical, at: 2600) && !keeps.allowed(.compressing, at: 9000),
+       "it keeps them: the warning's drop once per 10 minutes, as in 3.2.10")
+keeps.started(.warning, at: 3000)
+keeps.noAnswer(at: 3001)
+expect(keeps.allowed(.warning, at: 3031) && !keeps.allowed(.compressing, at: 3031), "a silent agent's retry is the warning's only")
+// Which QEMU: the fix's text in its binary (like Graphics.qemuTakesSmallHighWindow); the fix's own switch off keeps them.
+let qemuBin = logs.appendingPathComponent("qemu-bin")
+try? Data(("\u{0}\u{1}junk" + MemoryGiveBack.reclaimMarker + "\u{0}more").utf8).write(to: qemuBin)
+expect(MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "a QEMU with the fix's text gives the pages back")
+expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: ["OMACVM_RECLAIM_REUSABLE": "0"]),
+       "the same QEMU with the fix switched off (OMACVM_RECLAIM_REUSABLE=0) keeps them")
+expect(MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: ["OMACVM_RECLAIM_REUSABLE": "1"]), "  =1: gives them back")
+try? Data("HVF free-page backing replacement failed: %s".utf8).write(to: qemuBin)
+expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "3.2.11's QEMU (the old reclaim patch only) keeps them")
+try? Data(MemoryGiveBack.reclaimMarker.dropLast().utf8).write(to: qemuBin)
+expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "part of the text is not the text")
+expect(!MemoryGiveBack.qemuGivesPagesBack(binary: logs.appendingPathComponent("none"), environment: [:]), "no binary: keeps them")
+// qemu.log's line at each start; omacvm check's "VM memory" row reads "compresses: on|off" from it.
+expect(MemoryGiveBack.startLine(pagesGoBack: false) == "OmacVM: VM memory: give-back while macOS compresses: off "
+       + "(this QEMU keeps given-back pages); macOS's memory warning still drops the VM's file cache", "the line when off")
+expect(MemoryGiveBack.startLine(pagesGoBack: true) == "OmacVM: VM memory: give-back while macOS compresses: on "
+       + "(this QEMU gives the pages back to macOS)", "the line when on")
+
 // The user's report: 64 GB Mac, 42 GB VM; footprint 51 GB, resident 27-30 GB, macOS compressing at "normal".
-var u = MemoryGiveBack(ram: 64 * GB)
+var u = withFix(64 * GB)
 expect(u.minTaken == 2 * GB && u.minGrowth == 1 * GB, "64 GB Mac: 2 GB taken, 1 GB growth")
 expect(!u.compressing(sample(0, fp: 30, res: 30, comp: 100)), "the VM's start: nothing")
 expect(!u.compressing(sample(300, fp: 40, res: 39.5, comp: 101)), "growing in RAM, nothing compressed: nothing")
@@ -130,7 +169,7 @@ u.started(.compressing, at: 600)
 expect(!u.compressing(sample(605, fp: 51, res: 28, comp: 108.5)), "a give-back under way counts: not again")
 
 // Graphics that grow on a Mac with room count in the footprint, not in the resident size: not compressing.
-var g = MemoryGiveBack(ram: 64 * GB)
+var g = withFix(64 * GB)
 _ = g.compressing(sample(0, fp: 20, res: 19, comp: 50))
 var fired = false
 for i in 1...120 {   // 10 minutes of a graphics-heavy session: +8.7 GB of graphics, macOS compresses 0.3 GB
@@ -140,7 +179,7 @@ for i in 1...120 {   // 10 minutes of a graphics-heavy session: +8.7 GB of graph
 expect(!fired, "8.7 GB of graphics growth without compressions: nothing")
 // The limit of that rule: macOS's count covers every process. The same growth while macOS compresses 1 GB or more
 // (another app, say) does trigger it.
-var g2 = MemoryGiveBack(ram: 64 * GB)
+var g2 = withFix(64 * GB)
 _ = g2.compressing(sample(0, fp: 20, res: 19, comp: 50))
 var fired2 = false
 for i in 1...120 {
@@ -150,12 +189,12 @@ for i in 1...120 {
 expect(fired2, "the same graphics growth while macOS compresses 1.5 GB elsewhere: gives back (the rule's limit)")
 
 // A 4 GB VM on an 8 GB Mac: the thresholds scale (a quarter, an eighth of the Mac).
-var a = MemoryGiveBack(ram: 8 * GB)
+var a = withFix(8 * GB)
 expect(a.minTaken == 2 * GB && a.minGrowth == 1 * GB, "8 GB Mac: 2 GB taken, 1 GB growth")
 _ = a.compressing(sample(0, fp: 4.2, res: 4.0, comp: 30))
 expect(!a.compressing(sample(60, fp: 5.0, res: 3.5, comp: 32)), "8 GB Mac, 1.5 GB outside RAM: not yet")
 expect(a.compressing(sample(120, fp: 5.6, res: 3.3, comp: 33)), "8 GB Mac, 2.3 GB outside RAM, 3 GB compressed: give back")
-let b16 = MemoryGiveBack(ram: 16 * GB)
+let b16 = withFix(16 * GB)
 expect(b16.minTaken == 2 * GB && b16.minGrowth == 1 * GB, "16 GB Mac: 2 GB, 1 GB")
 
 // A recorded row (MacBook Air M2 8 GB, 4 GB VM, 3.2.10, 2026-10-28 11:06-11:09, one look per 5 s): QEMU's footprint,
@@ -173,7 +212,7 @@ let air: [(Double, Double, Double)] = [
     (6614, 2311, 33151640), (6615, 2315, 33151640), (6616, 2317, 33151640), (6617, 2319, 33151640),
     (6617, 2319, 33151640), (6617, 2319, 33151640), (6619, 2314, 33151649), (6618, 2290, 33151676)
 ]
-var airLive = MemoryGiveBack(ram: 8 * GB), airRoomy = MemoryGiveBack(ram: 8 * GB)
+var airLive = withFix(8 * GB), airRoomy = withFix(8 * GB)
 var firstLive: Int?, roomyFired = false
 for (i, x) in air.enumerated() {
     let m = Double(MB)
@@ -186,22 +225,30 @@ for (i, x) in air.enumerated() {
 }
 expect(firstLive == 5, "the Air's recorded row: gives back at the first look after macOS compressed the VM")
 expect(!roomyFired, "the same row with nothing compressed (a Mac with room): never")
+var airKeeps = MemoryGiveBack(ram: 8 * GB)
+var airKeepsFired = false
+for (i, x) in air.enumerated() {
+    let m = Double(MB)
+    airKeepsFired = airKeeps.compressing(MemoryGiveBack.Sample(time: Double(i) * 5, footprint: UInt64(x.0 * m),
+                                                               resident: UInt64(x.1 * m), compressed: UInt64(x.2 * m))) || airKeepsFired
+}
+expect(!airKeepsFired, "the Air's recorded row with a QEMU that keeps given-back pages: never")
 
 // The baseline only moves down, and macOS's count starts again whenever the VM is near it.
-var d = MemoryGiveBack(ram: 64 * GB)
+var d = withFix(64 * GB)
 _ = d.compressing(sample(0, fp: 10, res: 7, comp: 0))       // 3 GB outside RAM at the start
 _ = d.compressing(sample(5, fp: 10, res: 7.5, comp: 0.2))   // 2.5: the new lowest
 expect(d.baseline?.taken == UInt64(2.5 * Double(GB)), "the baseline moves down")
 expect(!d.compressing(sample(10, fp: 11, res: 7.6, comp: 1.5)), "3.4 GB: less than 1 GB above the lowest")
 expect(d.compressing(sample(15, fp: 11.5, res: 7.9, comp: 1.5)), "3.6 GB, macOS compressed 1.3 GB since: give back")
-var f = MemoryGiveBack(ram: 64 * GB)
+var f = withFix(64 * GB)
 _ = f.compressing(sample(0, fp: 10, res: 9, comp: 0))
 for i in 1...60 { _ = f.compressing(sample(Double(i) * 5, fp: 10, res: 9, comp: Double(i) * 0.1)) }   // flat, others compressed 6 GB
 expect(!f.compressing(sample(305, fp: 13.2, res: 10, comp: 6.5)), "compressions while the VM sat at its lowest do not count")
 expect(f.compressing(sample(310, fp: 13.2, res: 10, comp: 7.2)), "1.2 GB compressed since it last sat there: give back")
 
 // One 10-minute gap across all triggers; macOS's warning may follow a cold-only give-back after 2 minutes.
-var w = MemoryGiveBack(ram: 64 * GB)
+var w = withFix(64 * GB)
 expect(w.allowed(.warning, at: 0) && w.allowed(.compressing, at: 0), "nothing before: allowed")
 w.started(.compressing, at: 1000)
 expect(!w.allowed(.compressing, at: 1599) && w.allowed(.compressing, at: 1600), "compressing again after 10 minutes")
@@ -213,7 +260,7 @@ expect(!w.allowed(.compressing, at: 2300) && !w.allowed(.warning, at: 2300), "af
 expect(w.allowed(.compressing, at: 2600) && w.allowed(.warning, at: 2600), "then both again")
 
 // The VM's agent did not answer: as if nothing started, again in 30 s (as before).
-var n = MemoryGiveBack(ram: 64 * GB)
+var n = withFix(64 * GB)
 n.started(.warning, at: 100)
 n.noAnswer(at: 102)
 expect(n.last == nil, "no answer: not counted")
@@ -224,7 +271,7 @@ expect(!n.allowed(.warning, at: 500), "an answered start counts again")
 
 // An agent that stays down while macOS compresses the VM: not asked (and logged) every 30 s for ever. Again in
 // 30 s, 1, 2, 4, 8 minutes, then every 10 minutes; the app logs only the first miss (misses == 1).
-var q = MemoryGiveBack(ram: 64 * GB)
+var q = withFix(64 * GB)
 var qt = 0.0, waits: [Double] = [], firsts = 0
 for _ in 0..<9 {
     q.started(.compressing, at: qt)
@@ -249,7 +296,7 @@ expect(!q.allowed(.compressing, at: qt + 729) && q.allowed(.compressing, at: qt 
 expect(MemoryGiveBack.retryAfter(misses: 0) == 30 && MemoryGiveBack.retryAfter(misses: 1000) == 600, "retryAfter's ends")
 
 // Backoff: under 256 MB back doubles the gap for "compressing" (up to 2 h); 1 GB or more resets it.
-var k = MemoryGiveBack(ram: 64 * GB)
+var k = withFix(64 * GB)
 var t = 0.0
 for want in [2.0, 4, 8, 12, 12] {
     k.started(.compressing, at: t)
@@ -271,7 +318,7 @@ k.settled(.critical, guest: nil, footprintDrop: 0, at: t + 95)
 k.settled(.warning, guest: nil, footprintDrop: 10 * MB, at: t + 96)
 expect(k.backoff == 1, "the warning's drop with nothing back: the gap for compressing stays too")
 
-var m = MemoryGiveBack(ram: 64 * GB)
+var m = withFix(64 * GB)
 m.settled(.compressing, guest: 100 * MB, footprintDrop: 3 * GB, at: 10)
 expect(m.backoff == 2, "3 GB less footprint but the VM gave 100 MB: small (something else freed it)")
 m.settled(.compressing, guest: 737 * MB, footprintDrop: 0, at: 20)
@@ -282,7 +329,7 @@ m.settled(.compressing, guest: nil, footprintDrop: 2 * GB, at: 40)
 expect(m.backoff == 1, "its answer could not be read, 2 GB less footprint: the footprint counts")
 
 // After a give-back the baseline starts again from 60 s later, not from the old lowest.
-var s = MemoryGiveBack(ram: 64 * GB)
+var s = withFix(64 * GB)
 _ = s.compressing(sample(0, fp: 10, res: 10, comp: 0))
 s.started(.compressing, at: 10)
 s.settled(.compressing, guest: 2 * GB, footprintDrop: 2 * GB, at: 80)
@@ -290,7 +337,7 @@ _ = s.compressing(sample(85, fp: 15, res: 10, comp: 5))
 expect(s.baseline?.taken == 5 * GB, "the new baseline: taken 60 s after the give-back")
 
 // A balloon that does not report: no more give-backs for "compressing"; the warning stays.
-var o = MemoryGiveBack(ram: 64 * GB)
+var o = withFix(64 * GB)
 o.started(.compressing, at: 0)
 o.answered(MemoryGiveBack.Result.parse("mode=compressing act=norep reporting=0", maxMB: 8192))
 expect(o.off && !o.compressing(sample(5000, fp: 60, res: 20, comp: 900)), "not reporting: off for this run")

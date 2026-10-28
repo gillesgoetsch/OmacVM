@@ -15,6 +15,7 @@
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 S=$R/src/memory/guest/giveback.sh
+M=$R/app/app/Sources/OmacVMDesktop/MemoryGiveBack.swift
 fail=0
 expect() {   # WHAT WANT GOT
   if [[ $2 == "$3" ]]; then echo "ok   $1"; else printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$1" "$2" "$3"; fail=1; fi
@@ -154,6 +155,24 @@ expect "the app runs it with \"compressing\" through runAndWait" "1 1" \
   "$(grep -c '\["-c", script, "giveback", "compressing"\]' "$G") $(grep -c 'GuestAgent.runAndWait' "$G")"
 expect "a silent agent: one line in qemu.log, not one per 30 s (the policy: desktop-tests)" "1 1 1" \
   "$(grep -c "did not answer: trying again" "$G") $(grep -B1 "did not answer: trying again" "$G" | grep -c 'if giveBack.misses == 1 {') $(grep -c 'giveBack.noAnswer(at:' "$G")"
+# While macOS compresses the VM, only with a QEMU that gives the pages back (MemoryGiveBack.pagesGoBack, read from
+# QEMU's binary at each start, one qemu.log line); the policy itself: desktop-tests.
+expect "the app reads its QEMU at the start, sets pagesGoBack and logs the line" "1 1 1 1" \
+  "$(grep -c 'qemuGivesPagesBack(binary: Paths.qemu, environment: ProcessInfo.processInfo.environment)' "$G") $(grep -c 'let on = MemoryGiveBack.thisQEMUGivesPagesBack' "$G") $(grep -c 'giveBack.pagesGoBack = on' "$G") $(grep -c 'log(MemoryGiveBack.startLine(pagesGoBack: on))' "$G")"
+expect "the app's give-back starts with pagesGoBack off" 1 "$(grep -c 'private var giveBack = MemoryGiveBack(ram: ProcessInfo.processInfo.physicalMemory)$' "$G")"
+# The marker: the text the reclaim fix (qemu-hvf-free-page-reclaim-reusable.patch, PR #603) must put into QEMU, and
+# that prepare-qemu-gpu-runtime.sh must find in a runtime with it (else the app keeps the give-back off). Without the
+# patch (3.2.11) no runtime patch has the text, so the app says off.
+mk=$(sed -n 's/.*public static let reclaimMarker = "\(.*\)"$/\1/p' "$M")
+RP=$R/app/runtime/patches/qemu-hvf-free-page-reclaim-reusable.patch PREP=$R/app/runtime/prepare-qemu-gpu-runtime.sh
+expect "the marker is set" yes "$([[ ${#mk} -ge 20 ]] && echo yes)"
+if [[ -f $RP ]]; then
+  expect "the reclaim fix puts the marker into QEMU" 1 "$(grep -c -F "$mk" "$RP" | awk '{ print ($1 > 0) }')"
+  expect "prepare-qemu-gpu-runtime.sh checks the runtime has the marker" 1 "$(grep -c -F "'$mk'" "$PREP")"
+else
+  expect "no reclaim fix: no runtime patch has the marker, prepare does not ask for it" "0 0" \
+    "$(cat "$R"/app/runtime/patches/*.patch | grep -c -F "$mk") $(grep -c -F "$mk" "$PREP")"
+fi
 expect "no unit, timer or install line in the VM runs it" "" \
   "$(grep -rl giveback "$R/src" | grep -v -e '^'"$R"'/src/memory/guest/giveback.sh$' -e '^'"$R"'/src/tests/memory-giveback.sh$' -e '^'"$R"'/src/cmd/check.sh$')"
 exit $fail
