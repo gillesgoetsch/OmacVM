@@ -110,6 +110,34 @@ expect "the script writes only memory.reclaim and drop_caches" "" \
   "$(grep -n -e compact_memory -e swapoff -e swapon -e zram -e 'page_reporting_order *"* *>' -e 'balloon.*>' "$S" | grep -v '^[0-9]*:#' | grep -v 'never programs')"
 expect "the command the app sends stays small (under 3 KB)" yes "$( (( $(grep -v '^[[:space:]]*#' "$S" | wc -c) < 3072 )) && echo yes)"
 
+# omacvm check's "VM memory" row (src/cmd/check.sh) from the app's logs/memory-giveback; never a failure. The Mac side: macOS only.
+if [[ $(uname -s) == Darwin ]]; then
+  C=$R/src/cmd/check.sh
+  row=$(sed -n '/^  # The VM.s memory, and what it gave back to the Mac this run/,/^  \[\[ -n \$what \]\] && ok "VM memory"/p' "$C")
+  expect "check.sh has the row, and it is never bad" "yes 0" "$([[ -n $row ]] && echo yes) $(grep -c '\(bad\|warn\) ' <<< "$row")"
+  vmrow() {   # VMDIR [STORED_PAGES]: the row's text
+    ( sp=${2:-1000}; ok() { echo "$1: $2"; }; app_env() { sed -n "s/^$2=//p" "$1/vm.env"; }
+      eval "$(grep -m1 '^  gb() {' "$C")"
+      sysctl() { case $2 in hw.pagesize) echo 16384 ;; hw.memsize) echo $((64 << 30)) ;; esac; }
+      vm_stat() { printf 'Pages free:     100.\nPages stored in compressor:     %s.\n' "$sp"; }
+      miclog=$1/logs/qemu.log; eval "$row" )
+  }
+  V=$T/vm; mkdir -p "$V/logs"; echo "MEM_MB=43008" > "$V/vm.env"; : > "$V/logs/qemu.log"
+  expect "no give-back yet" "VM memory: 42.0 GB; nothing given back this run" "$(vmrow "$V")"
+  at=$(date -j -f '%Y-%m-%d %H:%M' '2026-10-28 10:12' +%s)
+  printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\nreturned_mb=12186\noff=0\n' "$at" > "$V/logs/memory-giveback"
+  expect "a give-back while macOS compressed the VM" "VM memory: 42.0 GB; gave back 11.9 GB at 10:12 (macOS was compressing the VM), 3 times this run" "$(vmrow "$V")"
+  sed -i.bak 's/^trigger=.*/trigger=warning/; s/^returned_mb=.*/returned_mb=100/' "$V/logs/memory-giveback"
+  expect "little back, macOS holds a quarter of the Mac compressed: the hint" \
+    "VM memory: 42.0 GB; gave back 100 MB at 10:12 (macOS was short of memory), 3 times this run; macOS holds 17.0 GB compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)" \
+    "$(vmrow "$V" $((17 << 16)))"
+  expect "little back, macOS holds little compressed: no hint" "VM memory: 42.0 GB; gave back 100 MB at 10:12 (macOS was short of memory), 3 times this run" "$(vmrow "$V" 1000)"
+  printf 'count=0\ntrigger=off\noff=1\n' > "$V/logs/memory-giveback"
+  expect "a balloon that does not report" "VM memory: 42.0 GB; its balloon does not report free pages: what it frees stays on the Mac this run" "$(vmrow "$V")"
+  printf 'count=1\nat=x;rm -rf /\nreturned_mb=$(id)\n' > "$V/logs/memory-giveback"
+  expect "a file that is not numbers: nothing read from it" "VM memory: 42.0 GB; nothing given back this run" "$(vmrow "$V")"
+fi
+
 # The app runs it from its bundle on "compressing" (GPUMemory.swift), and nothing in the VM by itself.
 G=$R/app/app/Sources/OmacVM/GPUMemory.swift
 expect "the app carries the script from its bundle" 1 "$(grep -c '"Contents/Resources/omacvm/src/memory/guest/giveback.sh"' "$G")"

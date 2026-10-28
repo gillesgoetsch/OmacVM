@@ -434,6 +434,34 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     else ok "graphics memory" "${peak:+peak about $(gb "$peak"), }no fixed limit (runaway guard $(gb "$budget"))"; fi
   fi
   FEATURE=""
+  # The VM's memory, and what it gave back to the Mac this run: OmacVM.app
+  # asks the VM for its cold file cache when macOS compresses the VM, and for
+  # its whole file cache when macOS warns (logs/memory-giveback, ADR 0059).
+  # Never a failure: a hint when macOS holds much compressed and the VM had
+  # little left to give.
+  vmm=$(app_env "$(dirname "$(dirname "$miclog")")" MEM_MB); [[ $vmm =~ ^[0-9]+$ ]] || vmm=""
+  mg="$(dirname "$miclog")/memory-giveback"
+  mgv() { sed -n "s/^$1=//p" "$mg" 2>/dev/null | head -1; }
+  what="${vmm:+$(gb "$vmm")}"
+  n=$(mgv count) back=$(mgv returned_mb) at=$(mgv at) why=$(mgv trigger)
+  if [[ $(mgv off) == 1 ]]; then
+    what="${what:+$what; }its balloon does not report free pages: what it frees stays on the Mac this run"
+  elif [[ $n =~ ^[1-9][0-9]*$ && $back =~ ^[0-9]+$ && $at =~ ^[0-9]+$ ]]; then
+    case $why in
+      compressing) why="macOS was compressing the VM" ;;
+      warning|critical) why="macOS was short of memory" ;;
+      *) why="" ;;
+    esac
+    what="${what:+$what; }gave back $(gb "$back") at $(date -r "$at" +%H:%M)${why:+ ($why)}, $n times this run"
+    pgsz=$(sysctl -n hw.pagesize 2>/dev/null) ram=$(sysctl -n hw.memsize 2>/dev/null)
+    stored=$(vm_stat 2>/dev/null | awk -F: '$1 == "Pages stored in compressor" { gsub(/[ .]/, "", $2); print $2 }')
+    if (( back < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then
+      what="$what; macOS holds $(gb $(( stored * pgsz / 1048576 ))) compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)"
+    fi
+  else
+    what="${what:+$what; }nothing given back this run"
+  fi
+  [[ -n $what ]] && ok "VM memory" "$what"
 fi
 # The GPU path an app VM took this run (qemu.log starts fresh with each run):
 # fences from the sync thread or polled, frames as IOSurfaces or with a
