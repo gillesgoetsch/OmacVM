@@ -443,19 +443,22 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   mg="$(dirname "$miclog")/memory-giveback"
   mgv() { sed -n "s/^$1=//p" "$mg" 2>/dev/null | head -1; }
   what="${vmm:+$(gb "$vmm")}"
-  n=$(mgv count) back=$(mgv returned_mb) at=$(mgv at) why=$(mgv trigger)
+  # What the VM said it gave (given_mb); for the warning's drop, which says
+  # nothing, how much QEMU's footprint fell in the minute after.
+  mgn=$(mgv count) mgb=$(mgv given_mb) mga=$(mgv at) mgw=$(mgv trigger)
+  [[ $mgb =~ ^[0-9]+$ ]] || mgb=$(mgv returned_mb)
   if [[ $(mgv off) == 1 ]]; then
     what="${what:+$what; }its balloon does not report free pages: what it frees stays on the Mac this run"
-  elif [[ $n =~ ^[1-9][0-9]*$ && $back =~ ^[0-9]+$ && $at =~ ^[0-9]+$ ]]; then
-    case $why in
-      compressing) why="macOS was compressing the VM" ;;
-      warning|critical) why="macOS was short of memory" ;;
-      *) why="" ;;
+  elif [[ $mgn =~ ^[1-9][0-9]*$ && $mgb =~ ^[0-9]+$ && $mga =~ ^[0-9]+$ ]]; then
+    case $mgw in
+      compressing) mgw="macOS was compressing the VM" ;;
+      warning|critical) mgw="macOS was short of memory" ;;
+      *) mgw="" ;;
     esac
-    what="${what:+$what; }gave back $(gb "$back") at $(date -r "$at" +%H:%M)${why:+ ($why)}, $n times this run"
+    what="${what:+$what; }gave back $(gb "$mgb") at $(date -r "$mga" +%H:%M)${mgw:+ ($mgw)}, $mgn times this run"
     pgsz=$(sysctl -n hw.pagesize 2>/dev/null) ram=$(sysctl -n hw.memsize 2>/dev/null)
     stored=$(vm_stat 2>/dev/null | awk -F: '$1 == "Pages stored in compressor" { gsub(/[ .]/, "", $2); print $2 }')
-    if (( back < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then
+    if (( mgb < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then
       what="$what; macOS holds $(gb $(( stored * pgsz / 1048576 ))) compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)"
     fi
   else

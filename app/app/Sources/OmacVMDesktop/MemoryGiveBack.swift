@@ -213,6 +213,7 @@ public struct MemoryGiveBack: Sendable {
         public var at = 0               // when, seconds since 1970
         public var trigger = ""         // compressing, warning, critical, off
         public var act = ""             // the VM's answer (giveback.sh), or "drop" for the warning
+        public var givenMB: Int?        // what the VM said it gave; nil for the warning's drop
         public var returnedMB = 0       // QEMU's footprint, 60 s later, less than before
         public var cacheMB = 0
         public var cacheAfterMB = 0
@@ -231,6 +232,7 @@ public struct MemoryGiveBack: Sendable {
             at=\(at)
             trigger=\(trigger)
             act=\(act)
+            given_mb=\(givenMB.map(String.init) ?? "")
             returned_mb=\(returnedMB)
             cache_mb=\(cacheMB)
             cache_after_mb=\(cacheAfterMB)

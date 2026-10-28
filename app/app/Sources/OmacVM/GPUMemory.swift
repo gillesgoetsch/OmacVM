@@ -240,6 +240,7 @@ final class GPUMemoryWatch {
         status.at = Int(Date().timeIntervalSince1970)
         status.trigger = w.trigger.rawValue
         status.act = r?.act ?? (w.trigger == .compressing ? "unknown" : "drop")
+        status.givenMB = r?.gotMB
         status.returnedMB = Int(drop / MemoryGiveBack.mib)
         status.cacheMB = r?.cacheMB ?? 0
         status.cacheAfterMB = r?.cacheAfterMB ?? 0

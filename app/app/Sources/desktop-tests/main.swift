@@ -288,9 +288,11 @@ expect(bad == 0, "5000 random answers: every number within range, act letters on
 
 // The status file for omacvm check.
 var st = MemoryGiveBack.Status()
-st.count = 3; st.at = 1_793_177_520; st.trigger = "compressing"; st.act = "reclaim"; st.returnedMB = 11900
-expect(st.text.hasPrefix("count=3\nat=1793177520\ntrigger=compressing\nact=reclaim\nreturned_mb=11900\n") && st.text.hasSuffix("off=0\n"),
-       "status file: key=value lines")
+st.count = 3; st.at = 1_793_177_520; st.trigger = "compressing"; st.act = "reclaim"; st.givenMB = 11900; st.returnedMB = 11200
+expect(st.text.hasPrefix("count=3\nat=1793177520\ntrigger=compressing\nact=reclaim\ngiven_mb=11900\nreturned_mb=11200\n")
+       && st.text.hasSuffix("off=0\n"), "status file: key=value lines")
+st.givenMB = nil
+expect(st.text.contains("\ngiven_mb=\n"), "the warning's drop: no count from the VM, given_mb empty")
 expect(MemoryGiveBack.gb(900 * MB) == "900 MB" && MemoryGiveBack.gb(11900 * MB) == "11.6 GB", "sizes as the log says them")
 }
 

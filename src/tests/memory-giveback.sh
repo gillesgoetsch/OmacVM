@@ -132,9 +132,9 @@ if [[ $(uname -s) == Darwin ]]; then
   V=$T/vm; mkdir -p "$V/logs"; echo "MEM_MB=43008" > "$V/vm.env"; : > "$V/logs/qemu.log"
   expect "no give-back yet" "VM memory: 42.0 GB; nothing given back this run" "$(vmrow "$V")"
   at=$(date -j -f '%Y-%m-%d %H:%M' '2026-10-28 10:12' +%s)
-  printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\nreturned_mb=12186\noff=0\n' "$at" > "$V/logs/memory-giveback"
+  printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\ngiven_mb=12186\nreturned_mb=0\noff=0\n' "$at" > "$V/logs/memory-giveback"
   expect "a give-back while macOS compressed the VM" "VM memory: 42.0 GB; gave back 11.9 GB at 10:12 (macOS was compressing the VM), 3 times this run" "$(vmrow "$V")"
-  sed -i.bak 's/^trigger=.*/trigger=warning/; s/^returned_mb=.*/returned_mb=100/' "$V/logs/memory-giveback"
+  sed -i.bak 's/^trigger=.*/trigger=warning/; s/^given_mb=.*/given_mb=/; s/^returned_mb=.*/returned_mb=100/' "$V/logs/memory-giveback"
   expect "little back, macOS holds a quarter of the Mac compressed: the hint" \
     "VM memory: 42.0 GB; gave back 100 MB at 10:12 (macOS was short of memory), 3 times this run; macOS holds 17.0 GB compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)" \
     "$(vmrow "$V" $((17 << 16)))"
