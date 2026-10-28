@@ -70,8 +70,8 @@ GPU time per draw (the process's AGX `accumulatedGPUTime`): on the M2 it follows
 a whole draw into a 64x64 surface 422-441 us). An extra `glFlush` costs about 45 us; the edge-fill blits and
 the textures made per video frame cost nothing measurable.
 
-**In a VM, MacBook Air M2** (OmacVM 3.2.0, before the changes below; Chromium full screen, guest 2940x1840 at
-60 Hz; the same task natively in Chrome on macOS):
+**In a VM, MacBook Air M2** (2026-10-24/25: OmacVM 3.1.30 and a test build of that night's main, before the
+changes below; Chromium full screen, guest 2940x1840 at 60 Hz; the same task natively in Chrome on macOS):
 
 | Task | macOS | VM | QEMU GPU ms/s | WindowServer GPU ms/s (macOS) |
 |---|---|---|---|---|
@@ -112,8 +112,8 @@ same on both builds. Frame times in the same set: a 120 Hz animation 119.07 fram
 **Fair reference, M1 Max, brightness 0.500** (2026-10-26, A/B/B/A = macOS, VM, VM, macOS, means of 2 rounds,
 12 of 12 rows valid; Refresh Floor quit and nothing above any window; EDR 11.43 at every window's start and end on
 both sides). Here macOS holds the panel in HDR mode too (a 16 px HDR dot on screen), so both sides pay for EDR.
-VM: a test build of 3.2.2 with the tiled present (#520), Pointer on its own layer and Draw only what changed on
-(not #536):
+VM: a test build of 3.2.2 with #543, #544 and #520, Pointer on its own layer and Draw only what changed on
+(without #536):
 
 | Task | macOS, panel in HDR | VM | VM / macOS | GPU ms/s: VM (QEMU + WindowServer) vs macOS (WindowServer) |
 |---|---|---|---|---|
@@ -133,10 +133,10 @@ idle (macOS against macOS, two sets).
 | Window surfaces in the Mac's lossless-compressed format, 8-bit ([0052](../adr/0052-lossless-window-surfaces.md), #531) | 3.2.1 | on (macOS 27) | Air scrolling -0.20 W (-4 %) at 60 Hz, -0.37 W (-6 %) at 120 Hz; video about the same; same pixels |
 | Hyprland's SDR copy of each HDR frame only while something captures (#533) | 3.2.2 | on (Update VM) | QEMU GPU -10-19 % per frame; M1 Max HDR 120 Hz: clip -0.29 W (-1.5 %), scrolling -0.55 W (-4.6 %), app mix -1.16 W (-4.7 %); same frame rates |
 | Pointer on its own layer ([0054](../adr/0054-pointer-on-its-own-layer.md), #534) | 3.2.2 | experimental, off | Air pointer moving -0.26 W (-7 %); M1 Max HDR 120 Hz pointer moving -1.31 W (-6.3 %), scrolling -0.1 W |
-| Tiled present, "Draw only what changed" ([0055](../adr/0055-tiled-present.md), #520) | built 3.2.3, switch 3.2.4 | experimental, off | Air 60 Hz pointer moving 3.13-3.17 W instead of 3.55-3.75 W (-11 to -17 %), scrolling and typing the same. M1 Max watts not proven: the first rows had a macOS window above the VM on both sides, and the one clean pair after them (2026-10-26) disagreed with the gauge's own 2 s samples |
+| Tiled present, "Draw only what changed" ([0055](../adr/0055-tiled-present.md), #544, #520) | built 3.2.3 (#544), switch 3.2.4 (#520) | experimental, off | Air 60 Hz pointer moving 3.13-3.17 W instead of 3.55-3.75 W (-11 to -17 %), scrolling and typing the same. M1 Max watts not proven: the first rows had a macOS window above the VM on both sides, and the one clean pair after them (2026-10-26) disagreed with the gauge's own 2 s samples |
 | Pause drawing while hidden (#542) | 3.2.3 | experimental, off | Air, window minimised: 1080p video 3.5 -> 2.9 W (one clean row without the switch), a terminal scrolling 3.6 -> 2.5 W; M1 Max (HDR window): visible clip 19.99 W with the switch vs 20.01 W without (no cost while seen) |
-| Frames in step with the Mac (#543) | 3.2.3, removed in 3.2.7 (#564) | experimental, off | a latency change; Air power within 1 %; no gain worth its cost |
-| HDR and Extra brightness surfaces lossless-compressed, half float (#536) | for 3.2.6 | on | M1 Max HDR 120 Hz vs plain half float: clip 18.72 vs 19.34 W (-3.2 %), scrolling 11.30 vs 11.83 W (-4.5 %); Extra brightness clip -2.6 %, scrolling -4.0 % (one round); the same pixels on the XDR |
+| Frames in step with the Mac ([0056](../adr/0056-frames-in-step.md), #543) | 3.2.3, removed in 3.2.7 ([0057](../adr/0057-frames-in-step-removed.md), #564) | was experimental, off | a latency change; Air power within 1 %; no gain worth its cost |
+| HDR and Extra brightness surfaces lossless-compressed, half float (#536) | 3.2.6 | on | M1 Max HDR 120 Hz vs plain half float: clip 18.72 vs 19.34 W (-3.2 %), scrolling 11.30 vs 11.83 W (-4.5 %); Extra brightness clip -2.6 %, scrolling -4.0 % (one round); the same pixels on the XDR |
 
 ## Measured and dropped
 
