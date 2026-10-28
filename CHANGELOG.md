@@ -7,9 +7,9 @@ in more words.
 
 - **A video that starts no longer holds up the VM's whole display.** Starting a hardware video
   decoder asks the Mac's video service, and QEMU did that on its graphics thread, which every
-  app in the VM, the desktop and their frames wait for: 80-110 ms per new video on a Mac mini
-  in a video call (a call's tiles start new decoders every few seconds), 1.6 s when the Mac
-  was short of memory. Each decoder now starts, changes and ends its session on its own
+  app in the VM, the desktop and their frames wait for. On a Mac mini in a video call (its
+  tiles start a new decoder every few seconds) most starts took under 20 ms and some up to
+  110 ms; when the Mac was short of memory one took 1.6 s. Each decoder now starts, changes and ends its session on its own
   queue, beside the graphics thread. A decoded picture that is not in within 250 ms
   (`OMACVM_VIDEO_GIVEUP_MS`) is given up: that video keeps its last picture until its decoder
   is there, everything else goes on, and a picture given up is never written later into a
