@@ -5,14 +5,14 @@ in more words.
 
 ## 3.2.10 (unreleased)
 
-- **Apps that use OpenGL program pipelines draw again (#567).** Apps that build their shaders as
+- **Apps that use OpenGL program pipelines now draw (#567).** Apps that build their shaders as
   separate programs (`glCreateShaderProgramv`, program pipelines) drew nothing where they used
   them: the Mac's OpenGL refused every such shader, because it wants each one to declare the
-  `gl_PerVertex` block it writes, and the VM's graphics stack never did for the last stage. Now
-  each shader of such a program declares it, with geometry and tessellation shaders too. A
-  pipeline the Mac's OpenGL finds invalid at its first draw (for example while the app draws
-  into an incomplete framebuffer) no longer ends the app's whole OpenGL context: qemu.log says
-  so and the app draws on. Needs only the new app; no Update VM.
+  `gl_PerVertex` block it uses, and the VM's graphics stack never declared it for such shaders.
+  Now each of them does, geometry and tessellation shaders too. If the Mac's OpenGL finds such
+  a pipeline invalid at its first draw (for example a shader that reads a 2D and a cube
+  texture, or an incomplete framebuffer), qemu.log says so and the app draws on. Needs only
+  the new app; no Update VM.
 
 ## 3.2.9
 
