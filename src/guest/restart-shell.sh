@@ -1,5 +1,5 @@
 #!/bin/bash
-# restart-shell.sh [--after-unlock]: what an apply owes the running
+# restart-shell.sh [--after-unlock | --retire]: what an apply owes the running
 # Omarchy shell, done while the session is open: copies of bar widgets staged
 # under the lock go in place and queued ones are enabled (omacvm-plugins),
 # the colour fix reaches the user's clones of Omarchy's plugins
@@ -15,6 +15,13 @@
 # (omacvm-restart-shell) runs this again with --after-unlock, which does it
 # right after the unlock. It ends without doing anything when the shell is
 # gone (logout, shutdown): the files stay, and the next login does it.
+#
+# --retire (guest/install.sh, at its start): such a unit of an earlier apply
+# stops, so that it never works beside this apply: at once while the session
+# answers "locked" (it only waits then), else once it is done (90 s at most:
+# it may be restarting the shell, and stopped then, there would be no shell
+# and no lock screen). What it owed is in files; the end of the apply starts
+# one again, with the newest code.
 source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null
 # Update VM runs this without a locale. qs then prints Qt's locale warning
 # before each answer, which also broke omarchy-restart-shell's own lock check
@@ -60,6 +67,16 @@ run_owed() {
 }
 
 case ${1:-} in
+  --retire)
+    end=$((SECONDS + 90)) n=0
+    while (( SECONDS < end && n < 90 )); do
+      systemctl --user is-active --quiet "$UNIT" 2>/dev/null || exit 0
+      [[ $(lock_state) == locked ]] && break
+      n=$((n + 1))
+      sleep 1
+    done
+    systemctl --user stop "$UNIT" 2>/dev/null
+    exit 0 ;;
   --after-unlock)
     down=0 tries=0
     while owed; do

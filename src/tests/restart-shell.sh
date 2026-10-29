@@ -226,9 +226,28 @@ bash "$K" --after-unlock >/dev/null
 expect "restart refused: waits, then once" "sleep 2|$NOW|sleep 5|sleep 2|$NOW" "$(calls)"
 expect "  the note gone after it" "no" "$(has "$FLAG")"
 
-# 16. install.sh runs this script at the end when a shell runs and drops the note when none does; nothing
+# 16. --retire (install.sh's start): a waiter of an earlier apply stops at once
+#     while the session answers "locked", never while it restarts the shell.
+fresh; status true true true true > "$S/status"
+bash "$K" --retire; rc=$?
+expect "retire, no waiter: nothing" "0 " "$rc $(calls)"
+fresh; status true true true true > "$S/status"; touch "$S/active"
+bash "$K" --retire
+expect "retire, locked: stopped at once" "systemctl --user stop omacvm-restart-shell.service" "$(calls)"
+fresh; status true false false false > "$S/status"; touch "$S/active"; rm -f "$S/up"
+printf 'touch "%s/up"\n' "$S" > "$S/after-2"; printf 'rm -f "%s/active"\n' "$S" > "$S/after-3"
+bash "$K" --retire
+expect "retire, in its restart (busy, then open): never stopped" "sleep 1|sleep 1|sleep 1" "$(calls)"
+fresh; status true false false false > "$S/status"; touch "$S/active"
+bash "$K" --retire
+expect "retire, a waiter that does not end: stopped after 90 tries" "90 systemctl --user stop omacvm-restart-shell.service" \
+  "$(grep -c '^sleep 1' "$CALLS") $(grep -v -e '^sleep' "$CALLS" | grep -v -e '^omarchy-shell' -e 'is-active')"
+
+# 17. install.sh retires an earlier waiter at its start, runs this script at
+#     the end when a shell runs and drops the note when none does; nothing
 #     of OmacVM's asks isLocked first any more.
 I=$R/src/guest/install.sh
+expect "install.sh retires an earlier waiter" 1 "$(grep -c 'user_script "$R/guest/restart-shell.sh" --retire' "$I")"
 expect "install.sh runs restart-shell.sh when a shell runs" 1 "$(grep -c '^  user_script "$R/guest/restart-shell.sh" || true$' "$I")"
 expect "install.sh drops the note without a shell" 1 "$(grep -c '^  home_run rm -f "$RS"' "$I")"
 expect "no isLocked in install.sh" 0 "$(grep -c 'lock isLocked' "$I")"

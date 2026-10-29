@@ -106,6 +106,10 @@ user_script() { sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash 
 # What off means for the features with a part in the VM that talks to the Mac.
 ROOT=""
 source "$R/guest/off.sh"
+# A job an earlier apply left to run after the unlock never works beside this
+# one: it stops (guest/restart-shell.sh --retire), and the end of this run
+# starts one again with what both owe.
+user_script "$R/guest/restart-shell.sh" --retire 2>/dev/null || true
 
 # Earlier choices, then this run's.
 ENV=/etc/omacvm/env

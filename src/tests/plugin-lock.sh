@@ -220,8 +220,19 @@ expect "login, no shell: v2 in place, no restart" "v2 0" "$(ver "$P") $(grep -c 
 fresh yes; mkdir -p "$ST"; echo old > "$ST/restart-shell"; : > "$CALLS"; login
 expect "login, only a note from before: no restart" "0 no" "$(grep -c '^omarchy-restart-shell' "$CALLS") $(has "$ST/restart-shell")"
 
-# 16. Locked, nothing changed: the end of the apply starts no job.
+# 16. Two applies while locked: one job waits, then the newest copy and one restart.
 apply_end() { restart_shell >/dev/null; }
+fresh yes; locked
+install_plugin v2 >/dev/null; apply_end                                # apply 1
+restart_shell --retire >/dev/null; install_plugin v3 >/dev/null; apply_end   # apply 2
+expect "two locked applies: the first job stopped, one waits" "systemd-run|systemctl --user stop omacvm-restart-shell.service|systemd-run yes" \
+  "$(grep -E '^(systemd-run|systemctl --user stop)' "$CALLS" | paste -sd'|' -) $(has "$S/active")"
+expect "  under the lock: v1 in place, no restart, no rescan" "v1 0 0" "$(ver "$P") $(grep -c '^omarchy-restart-shell' "$CALLS") $(grep -c '^rescan' "$CALLS")"
+open; : > "$CALLS"; restart_shell --after-unlock >/dev/null
+expect "  after the unlock: v3 in place, one restart, nothing owed" "v3 1 no no" \
+  "$(ver "$P") $(grep -c '^omarchy-restart-shell' "$CALLS") $(has "$ST/plugins-staged/omacvm.t") $(has "$ST/restart-shell")"
+
+# 17. Locked, nothing changed: the end of the apply starts no job.
 fresh yes; locked; install_plugin v1 >/dev/null; : > "$CALLS"; apply_end
 expect "locked, nothing changed: no job, no restart" "" "$(calls)"
 
