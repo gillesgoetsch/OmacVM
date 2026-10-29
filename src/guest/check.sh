@@ -800,6 +800,22 @@ app)
     check "video decoding in Firefox" "the driver shim is on ld.so's path (Firefox's sandbox)" \
       grep -qx /usr/local/lib/dri /etc/ld.so.conf.d/omacvm-video.conf
   fi
+  # Videos at their own size where the decoder's surface is larger (H.264 1080p: 1088 rows):
+  # the EGL vendor library hands apps' video imports to the shim (ADR 0063).
+  if [[ $drv == omacvm ]]; then
+    egl=/etc/glvnd/egl_vendor.d/10_omacvm.json
+    if [[ -f $egl && -f /usr/local/lib/libEGL_omacvm.so.0 ]]; then
+      if grep -qx 'OMACVM_VALOGICAL=1' /run/omacvm/host.env 2>/dev/null; then
+        ok "video at its own size" "EGL vendor library in front of Mesa's: Chrome and mpv show H.264 1080p without 8 extra rows"
+      else
+        skip "video at its own size" "EGL vendor library installed; OmacVM.app 3.2.11 or newer uses it"
+      fi
+    elif [[ -f $egl ]]; then
+      bad "video at its own size" "glvnd's 10_omacvm.json names a library that is missing: omacvm apply"
+    else
+      warn "video at its own size" "no EGL vendor library (it did not build: EGL headers?): H.264 1080p shows 8 extra rows in Chrome and mpv"
+    fi
+  fi
   e=$(as_user env LIBVA_DRIVER_NAME=$drv LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri \
       vainfo --display drm 2>/dev/null | sed -n 's/^[[:space:]]*VAProfile\([A-Za-z0-9]*\)[[:space:]]*:[[:space:]]*VAEntrypointEncSlice$/\1/p' | tr '\n' ' ')
   if [[ -n $e ]]; then
