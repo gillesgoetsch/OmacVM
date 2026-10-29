@@ -19,7 +19,8 @@ VIDEO_GEOMETRY_CHROME_FLAGS / VIDEO_GEOMETRY_CHROME_FEATURES), chromium (Arch's,
 kept) or 1to1 (the video's own size). Each line: decoder, rectangle, yratio/xratio (fitted line spacing over the
 rectangle's), red_rows/red_cols (source rows/columns the red band covers), blue_rows/blue_cols, green pixels;
 Chrome and Chromium: path, from the browser's log for that clip ("no ImageProcessor": the decoder's NV12 frames are
-drawn as they are, as on Wayland with GL; "ImageProcessor": converted to RGB first).
+drawn as they are, as on Wayland with GL; "ImageProcessor": converted to RGB first). Chrome: chrome (its version)
+and sme (the CPU has SME). A stop in Chrome 155 or newer, or without SME, always counts.
 
 check: exact = red 7.4 to 8.5 rows and columns (the band's first row blends) and the lines within half a source row
 or column of their place (ratio 1 +- 0.5 / size, at least +- 0.001; a 1080p squeeze is 0.0074). Known, not
@@ -255,6 +256,27 @@ def flags_of(files):
     return out
 
 
+def chrome_info(exe):
+    """Chrome's version and whether the CPU has SME. Chrome 154 and older run libyuv's SME code, which starts with an
+    SVE instruction: on an M4 (SME, no SVE) the tab dies on every video Chrome decodes on the CPU (fixed in 155)."""
+    try:
+        v = re.search(r"\d+\.[\d.]+", subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20).stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        v = None
+    try:
+        sme = any(l.startswith("Features") and "sme" in l.split() for l in open("/proc/cpuinfo"))
+    except OSError:
+        sme = None
+    return {"chrome": v.group(0) if v else "", "sme": sme}
+
+
+def sme_crash_ruled_out(d):
+    """A Chrome line from Chrome 155 or newer, or from a CPU without SME: libyuv's SME crash cannot be why it
+    stopped. Lines without a version (from before it was kept): not ruled out."""
+    m = re.match(r"(\d+)\.", str(d.get("chrome", "")))
+    return d.get("app") == "chrome" and m is not None and (int(m.group(1)) >= 155 or d.get("sme") is False)
+
+
 def kill(p):
     if p and p.poll() is None:
         try:
@@ -281,6 +303,7 @@ def run():
     if not shutil.which(exe0):
         print(json.dumps({"app": app, "mode": mode, "error": "not installed"}), file=out, flush=True)
         return
+    info = chrome_info(exe0) if app == "chrome" else {}
     srv = Server()
     srv.mode = mode
     proc, tab = None, None
@@ -332,7 +355,7 @@ def run():
             path = os.path.join(clipdir, c["file"])
             srv.clip, srv.size = path, (c["w"], c["h"])
             dec = ""
-            res = {"app": app, "mode": mode, "clip": c["name"], "codec": c["codec"], "w": c["w"], "h": c["h"]}
+            res = {"app": app, "mode": mode, "clip": c["name"], "codec": c["codec"], "w": c["w"], "h": c["h"], **info}
             if tab:
                 try:
                     tab.events = []
@@ -474,6 +497,8 @@ def check():
             exact = not d.get("error") and all(v is not None for v in (yr, xr, rr, rc)) and abs(yr - 1) <= ty \
                 and abs(xr - 1) <= tx and 7.4 <= rr <= 8.5 and 7.4 <= rc <= 8.5
             why = None if exact else known(d)
+            if why and str(d.get("error", "")).startswith("browser stopped answering") and sme_crash_ruled_out(d):
+                why = None
             verdict = "exact" if exact else (f"known: {why}" if why else "WRONG")
             bad += verdict == "WRONG"
             path = f' [{d["path"]}]' if d.get("path") else ""
