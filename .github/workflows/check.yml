@@ -274,6 +274,9 @@ jobs:
       - name: Default keyring for prebuilt VMs (first boot, apply, check)
         run: src/tests/default-keyring.sh
 
+      - name: New bar widgets load after Update VM, also after an unlock (Omarchy's lock status, not isLocked)
+        run: src/tests/restart-shell.sh
+
       - name: Prebuilt manifests are checked (untrusted input)
         run: src/tests/prebuilt-manifest.sh
 

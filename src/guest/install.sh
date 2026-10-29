@@ -647,25 +647,13 @@ if want thp-kernel && [[ ${F[thp-kernel]} != on ]] && pacman -Q linux-aarch64-th
     pacman -Rn --noconfirm $(pacman -Qq linux-aarch64-thp linux-aarch64-thp-headers 2>/dev/null) >/dev/null
   fi
 fi
-# Updated bar widgets only load in a new shell: restart it once if any changed.
-# Never while the session is locked: Omarchy's lock screen lives in the shell,
-# and a restart leaves Hyprland's "lockscreen app died" screen behind. Locked:
-# a background job restarts it right after the next unlock.
+# Updated bar widgets only load in a new shell: restart it once if any changed,
+# never while the session is locked (guest/restart-shell.sh: then right after
+# the unlock).
 RS=$H/.local/state/omacvm/restart-shell
 if [[ -f $RS ]]; then
   home_run rm -f "$RS"
-  sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash -c '
-    source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null
-    omarchy-shell shell ping >/dev/null 2>&1 || exit 0
-    if [[ $(omarchy-shell lock isLocked 2>/dev/null) != true ]]; then
-      omarchy-restart-shell >/dev/null 2>&1
-    else
-      systemd-run --user --quiet --collect --unit=omacvm-restart-shell bash -c "
-        source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null
-        while [[ \$(omarchy-shell lock isLocked 2>/dev/null) == true ]]; do sleep 5; done
-        sleep 2; omarchy-restart-shell" 2>/dev/null || true
-      echo "the Omarchy shell restarts after the next unlock (new bar widgets)"
-    fi' || true
+  sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash "$R/guest/restart-shell.sh" || true
 fi
 # The initramfs and GRUB's menu: rebuilt only when what goes into them changed
 # (several seconds on every apply and update otherwise). Kernel and hook
