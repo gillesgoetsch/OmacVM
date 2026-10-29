@@ -249,7 +249,7 @@ if [[ -z ${1:-} ]]; then
     if [[ " $allowed " != *" $f "* ]]; then expect "rescanPlugins in $f: on the list" yes no; continue; fi
     case $f in omanotch/*) continue ;; esac   # Omanotch's own rule, its own change
     expect "rescanPlugins in $f: asks for the lock first" yes "$(grep -q 'session-lock\.sh' "$SRC/$f" && echo yes || echo no)"
-  done < <(grep -rl rescanPlugins "$SRC" | LC_ALL=C sort)
+  done < <(grep -rlI --exclude-dir=__pycache__ rescanPlugins "$SRC" | LC_ALL=C sort)
 fi
 
 exit $fail
