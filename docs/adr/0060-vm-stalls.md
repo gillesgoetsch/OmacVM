@@ -84,8 +84,9 @@ the guest, under a call-like load, found:
    picture in, its session's start included: median 3.2 ms, p99 29 ms, max
    47 ms, so the limit is more than 5 times the slowest seen; 0 pictures
    given up.
-4. **The cause itself** is the Mac's memory: the app gives the VM's cold
-   file cache back while macOS compresses it (ADR 0059).
+4. **The cause itself** is the Mac's memory. The app gives the VM's cold
+   file cache back while macOS compresses it (ADR 0059) only with a QEMU
+   that gives the pages back (#603); 3.2.11's does not, so it is off.
 
 ## Not done (each waits for its evidence)
 

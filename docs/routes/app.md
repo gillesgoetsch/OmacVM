@@ -1428,8 +1428,10 @@ still for 58 s", at most once per 30 minutes; Update VM puts the note in).
 No new timer, so short stalls can be missed: a vCPU blocked in macOS's
 kernel under about 2.25 s (3.25 s if it was nearly idle before), one
 without a Mac core under about 4 s. What helps: less
-VM memory (`omacvm resources --vm NAME`), or fewer big apps on the Mac; the
-app also gives the VM's cold file cache back while macOS compresses it.
+VM memory (`omacvm resources --vm NAME`), or fewer big apps on the Mac. The
+app's give-back of the VM's cold file cache while macOS compresses it runs
+only with a QEMU that gives the pages back (#603); 3.2.11's does not, so it
+is off.
 QEMU's graphics thread no longer waits for the Mac's video service when a
 video decoder starts ([video decoding](../video-decode.md#when-the-macs-video-service-is-slow)),
 and its stall watchdog says when a stall of its own was in a GPU run without

@@ -1296,9 +1296,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   be missed: a vCPU blocked in macOS's kernel under about 2.25 s (3.25 s if
   it was nearly idle before), one without a Mac core under about 4 s.
 - **Fix:** give the VM less memory (`omacvm resources --vm NAME --memory-gb
-  N`, from its next start), or quit big apps on the Mac. OmacVM.app also
-  asks the VM to give its cold file cache back while macOS compresses it
-  (ADR 0059). After a stall of 10 s or more for memory the VM shows a note
+  N`, from its next start), or quit big apps on the Mac. OmacVM.app's
+  give-back of the VM's cold file cache while macOS compresses it (ADR 0059)
+  runs only with a QEMU that gives the pages back (#603); 3.2.11's does not,
+  so it is off. After a stall of 10 s or more for memory the VM shows a note
   that says so (once per 30 minutes; Update VM puts the note in).
 - **Where:** `app/runtime/patches/qemu-hvf-vcpu-stall-note.patch` (the
   lines, `logs/vm-stalls`), `qemu-main-loop-stall-gpu-run.patch`,
