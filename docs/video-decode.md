@@ -582,6 +582,31 @@ Limits:
   of the next item). For interlaced video, let mpv deinterlace on the CPU
   (`--hwdec=vaapi-copy --deinterlace=yes`). Browsers do not use it. Measured
   on 3.2.11 (Mesa 26.2.5, Mac mini M4).
+- **H.264 coded interlaced decodes on the CPU** (field pictures or MBAFF
+  frames, as interlaced TV recordings and x264's interlaced mode write them;
+  interlaced video coded as progressive frames is not affected). The Mac's
+  hardware decoder does not take these streams: VideoToolbox refuses a
+  session that asks for the hardware (-12911,
+  `kVTVideoDecoderMalfunctionErr`), also with the stream's own SPS and PPS,
+  and FFmpeg's own `-hwaccel videotoolbox` on macOS refuses them the same
+  way. Checked on a Mac mini M4 (macOS 27.0) with x264's MBAFF at 1920x1080
+  and 720x576 and five interlaced conformance streams from FFmpeg's test
+  suite (MBAFF, PAFF, field pictures); the progressive ones decode in
+  hardware. Up to 3.2.12 the runtime then got VideoToolbox's software
+  decoder instead, which drops every picture once the runtime rebuilds the
+  PPS a few pictures in (QEMU's log: `vt-video: decode failed: 1`, then
+  `-8969`, its "bad data") and has the colours wrong at 1080 lines even
+  without that: green pictures in every VA-API path, with or without
+  deinterlacing. From 3.2.13 the shim refuses such a picture before it
+  reaches the Mac (`VA_STATUS_ERROR_UNIMPLEMENTED` at `vaRenderPicture`,
+  logged at most every 10 s), so the app gets an error instead of a green
+  picture: mpv (`--hwdec=vaapi`) switches to the CPU after 3 of them (its
+  `--hwdec-software-fallback`); with FFmpeg leave out `-hwaccel vaapi`.
+  Chromium from Arch (`omacvm-vdecd`) fails a video only when VA-API cannot
+  be used at all, so there such a video gets no pictures instead of green
+  ones (from the code; not checked in Chromium). `OMACVM_VA_INTERLACED=1`
+  sends them to the Mac anyway (tests);
+  `src/app/guest/tests/va-shim-interlaced.sh`.
 - **VA-API video processing from YUV to YUV loses vertical detail** (mpv's
   `vavpp` with `deint=bob` or `weave`, FFmpeg's `deinterlace_vaapi`,
   GStreamer's `vapostproc`; measured on copies at the same size, and in
