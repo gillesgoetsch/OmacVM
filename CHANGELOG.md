@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.13 (unreleased)
+## 3.2.13
 
 In an OmacVM.app VM, mpv's and FFmpeg's VA-API deinterlacer no longer shows a green picture
 (still open in 3.2.12), and H.264 coded interlaced decodes on the CPU instead of showing green
