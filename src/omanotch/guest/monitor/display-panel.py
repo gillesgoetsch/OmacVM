@@ -33,6 +33,7 @@ MARK = "omarchy-notch-bar"
 VERSION = 1
 VERSION_LINE = f"// omarchy-notch-bar display panel patch v{VERSION}"
 CLONE_ID = "omanotch.monitor"
+LOCKED = "the session is locked: at the next start"
 
 HELPERS = f"""  // --- omarchy-notch-bar ------------------------------------------------
   {VERSION_LINE}
@@ -99,6 +100,24 @@ def run(*cmd, timeout=10):
         return ""
 
 
+def session_locked():
+    """Omarchy's lock screen is up or on its way: its lock status, read at the
+    call (requested, sessionLocked or secure), as copies.py reads it. Under
+    the lock nothing is written in the plugins folder and nothing rescanned:
+    the shell of omarchy-mac 4.0.3 reloads every plugin then, its lock screen
+    too, and the new one has no password field. Not isLocked: with Quickshell
+    0.3.2 and older it answers true after the first unlock until the shell
+    restarts (omarchy-mac#738)."""
+    def last(text):
+        lines = text.strip().splitlines()   # in a C locale qs prints Qt's warning first
+        return lines[-1].strip() if lines else ""
+    try:
+        status = json.loads(last(run("omarchy-shell", "lock", "status")))
+        return any(status.get(k) is True for k in ("requested", "sessionLocked", "secure"))
+    except (ValueError, AttributeError):   # an Omarchy without the status call
+        return last(run("omarchy-shell", "lock", "isLocked")) == "true"
+
+
 def source_digest(source):
     """Omarchy's whole panel folder and this patch's version, as one hash."""
     h = hashlib.sha256(f"patch v{VERSION}\n".encode())
@@ -114,6 +133,11 @@ def staged(clone):
     return clone.with_name(f".{clone.name}.new"), clone.with_name(f".{clone.name}.old")
 
 
+def leftover(clone):
+    """A build was cut off: its stage or the old clone is still there."""
+    return any(p.exists() for p in staged(clone))
+
+
 def tidy(clone):
     """After a build that was cut off: the stage goes, and the old clone gets
     its place back if the new one never got there."""
@@ -126,11 +150,16 @@ def tidy(clone):
             old.rename(clone)
 
 
+def current(clone, source):
+    """The clone is built from Omarchy's panel as it is now."""
+    stamp = clone / ".source-sha256"
+    return stamp.exists() and stamp.read_text().strip() == source_digest(source)
+
+
 def build(clone, source):
     """Fill the clone from Omarchy's panel, patched. Returns what it did."""
     digest = source_digest(source)
-    stamp = clone / ".source-sha256"
-    if stamp.exists() and stamp.read_text().strip() == digest:
+    if current(clone, source):
         return "already patched"
     patched = patch((source / "Panel.qml").read_text())
     new, old = staged(clone)
@@ -242,7 +271,14 @@ def main(argv):
     plugins = plugins_dir()
     clone = plugins / CLONE_ID
     if mode in ("--remove", "--drop"):
+        if mode == "--remove" and (clone.exists() or leftover(clone)) and session_locked():
+            print(LOCKED)
+            return 0
         remove(clone, shell=mode == "--remove")
+        return 0
+    # tidy() can move the old clone back in place: a write in the plugins folder.
+    if leftover(clone) and session_locked():
+        print(LOCKED)
         return 0
     tidy(clone)
     if (plugins / "omacvm.monitor").is_dir():
@@ -260,8 +296,17 @@ def main(argv):
         return 0
     try:
         patch((source / "Panel.qml").read_text())
+        fits = None
     except ValueError as error:
-        print(f"Omarchy's display panel changed ({error}): Omarchy's own panel is used")
+        fits = error
+    # Anything to write or to ask the shell (--refresh: only after an Omarchy
+    # update): not while the session is locked.
+    if (fits or not current(clone, source) or (mode != "--refresh" and not enabled(CLONE_ID))) \
+            and session_locked():
+        print(LOCKED)
+        return 0
+    if fits:
+        print(f"Omarchy's display panel changed ({fits}): Omarchy's own panel is used")
         remove(clone)
         return 0
     result = build(clone, source)

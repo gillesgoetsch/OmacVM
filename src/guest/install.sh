@@ -101,9 +101,19 @@ in_session() {
 }
 # Updated bar widgets load in a new shell: restarted once at the end.
 restart_shell_later() { home_mkdir "$H/.local/state/omacvm"; home_put "$H/.local/state/omacvm/restart-shell" < /dev/null; }
+# A script of OmacVM's as the desktop user (its user units, Omarchy's shell).
+user_script() { sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash "$@"; }
+# The desktop session: down, busy, locked or open (guest/session-lock.sh).
+session_state() { user_script "$R/guest/session-lock.sh" 2>/dev/null || true; }
+# Locked, or the shell does not answer: nothing written in the plugins folder (off.sh).
+session_locked() { local s; s=$(session_state); [[ $s == locked || $s == busy ]]; }
 # What off means for the features with a part in the VM that talks to the Mac.
 ROOT=""
 source "$R/guest/off.sh"
+# A job an earlier apply left to run after the unlock never works beside this
+# one: it stops (guest/restart-shell.sh --retire), and the end of this run
+# starts one again with what both owe.
+user_script "$R/guest/restart-shell.sh" --retire 2>/dev/null || true
 
 # Earlier choices, then this run's.
 ENV=/etc/omacvm/env
@@ -216,7 +226,21 @@ Description = OmacVM: Omarchy's shell colours on Qt 6.12 (#376)
 When = PostTransaction
 Exec = /usr/local/lib/omacvm/shell-colors.py
 HOOK
-  r=$(/usr/local/lib/omacvm/shell-colors.py --user "$U" 2>&1) || r="not all fixed: $r"
+  st=$(session_state)
+  if [[ $st == locked || $st == busy ]]; then
+    # Under the lock only Omarchy's own files (the shell does not watch
+    # them): a write in the user's plugin folder would reload the lock
+    # screen without its password field. Those clones get it right after the
+    # unlock (guest/restart-shell.sh), and the shell restarts then.
+    r=$(/usr/local/lib/omacvm/shell-colors.py /usr/share/omarchy/shell 2>&1) || r="not all fixed: $r"
+    s=$(home_run /usr/local/lib/omacvm/shell-colors.py --status "$H/.config/omarchy/plugins" 2>/dev/null < /dev/null) || s=""
+    case $s in
+      ""|*"to patch 0, to restore 0") ;;
+      *) log "Omarchy shell colours: the plugin clones right after the next unlock"; restart_shell_later ;;
+    esac
+  else
+    r=$(/usr/local/lib/omacvm/shell-colors.py --user "$U" 2>&1) || r="not all fixed: $r"
+  fi
   case $r in
     nothing*) ;;
     patched*|restored*) log "Omarchy shell colours: $r"; restart_shell_later ;;
@@ -514,7 +538,8 @@ fi
 if want control-centre; then
   if [[ ${F[control-centre]} == on ]]; then log "control centre (omacvm)"
   elif [[ -e /usr/local/bin/omacvm || -f /etc/systemd/system/omacvm-check.socket ]]; then log "control centre: off"; fi
-  if [[ ${F[control-centre]} == on || -e /usr/local/bin/omacvm || -f /etc/systemd/system/omacvm-check.socket ]]; then
+  if [[ ${F[control-centre]} == on || -e /usr/local/bin/omacvm || -f /etc/systemd/system/omacvm-check.socket ||
+        -d $H/.config/omarchy/plugins/omacvm.control || -d $H/.local/state/omacvm/plugins-staged/omacvm.control ]]; then
     "$R/control/guest/install.sh" "$U" "${F[control-centre]}" "$TYPE" || not_set_up control-centre "control centre"
   fi
 fi
@@ -647,13 +672,15 @@ if want thp-kernel && [[ ${F[thp-kernel]} != on ]] && pacman -Q linux-aarch64-th
     pacman -Rn --noconfirm $(pacman -Qq linux-aarch64-thp linux-aarch64-thp-headers 2>/dev/null) >/dev/null
   fi
 fi
-# Updated bar widgets only load in a new shell: restart it once if any changed,
-# never while the session is locked (guest/restart-shell.sh: then right after
-# the unlock).
+# Updated bar widgets only load in a new shell: guest/restart-shell.sh puts
+# what this run staged in place and restarts the shell once if any it had
+# loaded changed, never while the session is locked (then right after the
+# unlock). No shell: the next one loads what is in place.
 RS=$H/.local/state/omacvm/restart-shell
-if [[ -f $RS ]]; then
-  home_run rm -f "$RS"
-  sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash "$R/guest/restart-shell.sh" || true
+if pgrep -u "$U" -x quickshell >/dev/null 2>&1; then
+  user_script "$R/guest/restart-shell.sh" || true
+else
+  home_run rm -f "$RS" < /dev/null
 fi
 # The initramfs and GRUB's menu: rebuilt only when what goes into them changed
 # (several seconds on every apply and update otherwise). Kernel and hook

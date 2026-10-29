@@ -5,7 +5,12 @@ PartOf=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/omacvm-plugins
+# A restart noted before this login is done: this shell loaded what is in place.
+ExecStartPre=-/bin/rm -f %h/.local/state/omacvm/restart-shell
+ExecStart=-/usr/local/bin/omacvm-plugins
+# Copies staged while the session was locked and moved in above: one restart
+# of the shell if it had loaded the old ones (never while locked).
+ExecStart=-/bin/bash /usr/local/share/omacvm/guest/restart-shell.sh
 
 [Install]
 WantedBy=graphical-session.target

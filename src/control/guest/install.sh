@@ -90,6 +90,32 @@ window_rule() {
 # 3.0.6 it came from python-textual, which a VM whose package list is older
 # than the mirrors cannot get (every download a 404), and the control centre
 # stayed plain text. Not fatal: omacvm unpacks it itself at its next start.
+# The bar item off: out of the bar, the folder gone, nothing queued. Under
+# Omarchy's lock the folder stays (a write in ~/.config/omarchy/plugins would
+# bring the lock screen back without its password field): out of the bar it
+# does nothing, and the next apply removes it (guest/install.sh runs this
+# while it is there).
+bar_item_off() {
+  local P=$H/.config/omarchy/plugins/omacvm.control C=$H/.config/omarchy/shell.json tmp st
+  local Q=$H/.local/state/omacvm/pending-plugins
+  # Neither a copy staged under the lock (lib/install-plugin.sh) nor a queued enable comes.
+  home_run rm -rf "$H/.local/state/omacvm/plugins-staged/omacvm.control" < /dev/null
+  if home_grep "$Q" -qxF omacvm.control; then { grep -vxF omacvm.control < <(home_cat "$Q") || true; } | home_put "$Q"; fi
+  [[ -d $P ]] || return 0
+  # Without a running shell, out of its bar settings by hand (it reads them when it starts).
+  if ! as_user omarchy plugin disable omacvm.control >/dev/null 2>&1 && [[ -f $C ]]; then
+    tmp=$(mktemp)
+    if jq '(.bar.layout[]?) |= map(select(.id != "omacvm.control")) | (.plugins // empty) |= map(select(.id != "omacvm.control"))' \
+         < <(home_cat "$C") > "$tmp"; then
+      home_write "$C" < "$tmp"
+    fi
+    rm -f "$tmp"
+  fi
+  st=$(as_user bash ../../guest/session-lock.sh 2>/dev/null) || st=down
+  if [[ $st == locked || $st == busy ]]; then return 0; fi
+  home_run rm -rf "$P" < /dev/null
+}
+
 textual() {
   local out why try
   command -v python3 >/dev/null || ../../guest/pkg-add python || true
@@ -143,19 +169,6 @@ else
   home_run rm -f "$H/.config/systemd/user/timers.target.wants/omacvm-notify.timer"
   menu_line off
   window_rule off
-  if [[ -d $H/.config/omarchy/plugins/omacvm.control ]]; then
-    # Without a running shell, out of its bar settings by hand (it reads them when it starts).
-    C=$H/.config/omarchy/shell.json
-    if ! as_user omarchy plugin disable omacvm.control >/dev/null 2>&1 && [[ -f $C ]]; then
-      tmp=$(mktemp)
-      if jq '(.bar.layout[]?) |= map(select(.id != "omacvm.control")) | (.plugins // empty) |= map(select(.id != "omacvm.control"))' \
-           < <(home_cat "$C") > "$tmp"; then
-        home_write "$C" < "$tmp"
-      fi
-      rm -f "$tmp"
-    fi
-    home_run rm -rf "$H/.config/omarchy/plugins/omacvm.control"
-    home_run sed -i '/^omacvm\.control$/d' "$H/.local/state/omacvm/pending-plugins" 2>/dev/null || true
-  fi
+  bar_item_off
   home_run rm -rf "$H/.cache/omacvm"
 fi

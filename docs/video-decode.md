@@ -564,24 +564,67 @@ Limits:
   in YUV (`hwdownload,format=nv12`); the other YUV layout comes from the shim
   (above), which outside the desktop session (SSH, sudo, services) is used
   only with `LIBVA_DRIVER_NAME=omacvm`.
-- **Motion-adaptive deinterlacing gives a green picture**: mpv's
+- **Motion-adaptive deinterlacing gave a green picture before 3.2.13**: mpv's
   `--vf=vavpp` with its default deinterlacer (or `--deinterlace=yes` with
   `--hwdec=vaapi`), FFmpeg's `deinterlace_vaapi` in its default or
-  `motion_adaptive` mode, GStreamer's `vapostproc` with motion-adaptive
-  deinterlacing. This is OmacVM's runtime, not Mesa. Mesa's deinterlacer
-  declares its samplers without views and reads the decoded pictures, plain
-  2D textures, with 2D-array lookups. `virgl-shader-array-sampler-2d-view.patch`
-  turns such lookups into 2D ones only where a shader declares the view (as
-  Mesa's video compositor does), so here the Mac's OpenGL got a 2D-array
-  sampler on a 2D texture and read zeros (QEMU's log, once:
+  `motion_adaptive` mode. That was OmacVM's runtime, not Mesa. Mesa's
+  deinterlacer declares its samplers without views and reads the decoded
+  pictures, plain 2D textures, with 2D-array lookups.
+  `virgl-shader-array-sampler-2d-view.patch`
+  turned such lookups into 2D ones only where a shader declares the view (as
+  Mesa's video compositor does), so the Mac's OpenGL got a 2D-array sampler
+  on a 2D texture and read zeros (QEMU's log, once:
   `GLD_TEXTURE_INDEX_2D_ARRAY is unloadable ... using zero texture`): Y, U
-  and V 0 are green. The same with Mesa's VA driver alone
-  (`LIBVA_DRIVER_NAME=virtio_gpu`), so not the shim. A runtime fix with its
-  test is in review (#615), not yet measured in a VM. Bob and weave draw, but
-  do not deinterlace: in Mesa 26.2 they are a plain copy (with the row pairs
-  of the next item). For interlaced video, let mpv deinterlace on the CPU
-  (`--hwdec=vaapi-copy --deinterlace=yes`). Browsers do not use it. Measured
-  on 3.2.11 (Mesa 26.2.5, Mac mini M4).
+  and V 0 are green, also with Mesa's VA driver alone. Since 3.2.13 (#615) a
+  2D-array lookup in a shader without sampler views counts as that
+  declaration. Measured on an interlaced 1080p test clip coded as frames
+  (Mac mini M4, Mesa 26.2.5, FFmpeg 9.0.2, mpv 0.41): FFmpeg's
+  `deinterlace_vaapi` 0 of 47 frames green (3.2.12: 47), 28.1 dB against
+  FFmpeg's CPU `bwdif` (3.2.12: 5.1 dB); mpv's `vavpp` shows the second
+  field without combing, 33.0 dB against the test pattern's own picture of
+  that field (mpv's CPU deinterlacer 34.2 dB on the first field; 3.2.12:
+  9.9 dB, all green); no `unloadable` line in QEMU's log. GStreamer's
+  `vadeinterlace` with `method=adaptive` takes the same Mesa path (not
+  measured). Bob and weave do not deinterlace: in Mesa 26.2 they are a plain
+  copy (with the YUV-to-YUV row pairs below).
+- **H.264 coded interlaced decodes on the CPU** (field pictures or MBAFF
+  frames, as interlaced TV recordings and x264's interlaced mode write them;
+  interlaced video coded as progressive frames is not affected). The Mac's
+  hardware decoder does not take these streams: VideoToolbox refuses a
+  session that asks for the hardware (-12911,
+  `kVTVideoDecoderMalfunctionErr`), also with the stream's own SPS and PPS,
+  and FFmpeg's own `-hwaccel videotoolbox` on macOS refuses them the same
+  way. Checked on a Mac mini M4 (macOS 27.0) with x264's MBAFF at 1920x1080
+  and 720x576 and five interlaced conformance streams from FFmpeg's test
+  suite (MBAFF, PAFF, field pictures); the progressive ones decode in
+  hardware. Up to 3.2.12 the runtime then got VideoToolbox's software
+  decoder instead, which drops every picture once the runtime rebuilds the
+  PPS a few pictures in (QEMU's log in the test VM: `vt-video: decode
+  failed: -8969`, its "bad data"; at 576 lines a `decode failed: 1` came
+  first) and has the colours wrong at 1080 lines even without that. In the
+  test VM on 3.2.12 that gave green or wrong pictures: mpv 99 % green at
+  1080i and wrong at 576i (24.3 dB against its CPU decoding), 100 % green
+  with `--deinterlace=yes`; FFmpeg's frames were not right (0 of 50 bit for
+  bit at 1080i, 2 of 50 at 576i; not measured for green). From 3.2.13 the
+  shim refuses such a picture before it reaches the Mac
+  (`VA_STATUS_ERROR_UNIMPLEMENTED` at `vaRenderPicture`, logged at most
+  every 10 s): Mesa gets only the picture's `vaBeginPicture`, none of its
+  parameters, slices or `vaEndPicture`, and nothing of it reaches the Mac,
+  so the app gets an error instead of a green picture. mpv
+  (`--hwdec=vaapi`, also with `--deinterlace=yes`) switches to the CPU after
+  3 of them (its `--hwdec-software-fallback`) and shows the same picture as
+  its CPU decoding (3.2.12: 99 % green at 1080i). FFmpeg
+  with `-hwaccel vaapi` prints an error for each picture and exits with 69,
+  after writing its last two pictures, which were never decoded: leave out
+  `-hwaccel vaapi` for these videos. Measured in a test VM (Mac mini M4,
+  Mesa 26.2.5, FFmpeg 9.0.2, mpv 0.41) on the 1080i and 576i clips above;
+  H.264 coded as frames decodes in hardware as before (50 of 50 frames bit
+  for bit) and no codec for the interlaced clips reaches the Mac.
+  Chromium from Arch (`omacvm-vdecd`) fails a video only when VA-API cannot
+  be used at all, so there such a video gets no pictures instead of green
+  ones (from the code; not checked in Chromium). `OMACVM_VA_INTERLACED=1`
+  sends them to the Mac anyway (tests);
+  `src/app/guest/tests/va-shim-interlaced.sh`.
 - **VA-API video processing from YUV to YUV loses vertical detail** (mpv's
   `vavpp` with `deint=bob` or `weave`, FFmpeg's `deinterlace_vaapi`,
   GStreamer's `vapostproc`; measured on copies at the same size, and in

@@ -940,6 +940,52 @@ class RefreshWidget(unittest.TestCase):
                 od.refresh_widget()
                 run.assert_not_called()
 
+    @staticmethod
+    def stale(tmp):
+        """A widget built from an older Omarchy panel: (widget, build, panel)."""
+        widget = tmp / "omacvm.monitor"
+        widget.mkdir()
+        (widget / ".source-sha256").write_text("old\n")
+        build = tmp / "build.py"
+        build.write_text("")
+        panel = tmp / "Panel.qml"
+        panel.write_text("x")
+        return widget, build, panel
+
+    def refresh(self, states):
+        """refresh_widget with the session in these states, one per look: the commands run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            widget, build, panel = self.stale(pathlib.Path(tmp))
+            with mock.patch.object(od, "WIDGET", widget), mock.patch.object(od, "WIDGET_BUILD", build), \
+                    mock.patch.object(od, "OMARCHY_PANEL", panel), \
+                    mock.patch.object(od, "session_state", side_effect=states), \
+                    mock.patch.object(od.time, "sleep"), \
+                    mock.patch.object(od.subprocess, "run") as run, mock.patch.object(od, "log"):
+                od.refresh_widget()
+                return [c.args[0] for c in run.call_args_list]
+
+    def test_not_while_the_session_is_locked(self):
+        # A write in the plugins folder or a rescan would reload Omarchy's
+        # lock screen without its password field (omarchy-mac 4.0.3).
+        self.assertEqual(self.refresh(["locked"]), [])
+        self.assertEqual(self.refresh(["busy"] * 21), [])          # never answered in 20 s
+
+    def test_open_no_shell_or_a_shell_that_answers_in_time(self):
+        for states in (["open"], ["down"], ["busy", "busy", "open"]):
+            ran = self.refresh(states)
+            self.assertEqual(len(ran), 2, states)
+            self.assertEqual(ran[1], ["omarchy-shell", "-q", "shell", "rescanPlugins"])
+
+    def test_session_state_reads_session_lock_sh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script = pathlib.Path(tmp) / "session-lock.sh"
+            with mock.patch.object(od, "SESSION_LOCK", script):
+                self.assertEqual(od.session_state(), "open")         # not there: as before
+                script.write_text("echo locked\n")
+                self.assertEqual(od.session_state(), "locked")
+                script.write_text("echo something else\n")
+                self.assertEqual(od.session_state(), "open")
+
 
 class ConfigWatchTest(unittest.TestCase):
     def test_wakes_on_a_change_or_falls_back(self):

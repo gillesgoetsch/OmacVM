@@ -61,7 +61,11 @@
  * 24 two views of one texture with different swizzles (RRR1 and GGG1, as the compositor
  *    reads U and V from one UV plane) in one draw: each reads its own channel, not the
  *    swizzle bound last (GL keeps one per texture; virgl-view-swizzle-shared-texture.patch);
- *    a draw with only the second view after it still gets that view's swizzle.
+ *    a draw with only the second view after it still gets that view's swizzle;
+ * 25 the same 2D_ARRAY lookup on a sampler declared without a view (SAMP only, as Mesa's
+ *    motion-adaptive deinterlacer samples the decoded pictures, vl_deint_filter.c) reads the
+ *    plain 2D view too; between two of its draws one with the declared view of case 23; then
+ *    a real 2D array in that slot: the lookup reads its layer 1.
  * Run as is, with OMACVM_VIRGL_CONST_UBO=1 and with OMACVM_VIRGL_CONST_UBO=0.
  * Usage: test-const-ubo [case] */
 #include <OpenGL/OpenGL.h>
@@ -77,19 +81,20 @@
 #include "virgl_protocol.h"
 
 enum { TEST_PIPE_BUFFER = 0, TEST_PIPE_TEXTURE_2D = 2, TEST_SHADER_VERTEX = 0,
-       TEST_SHADER_FRAGMENT = 1, TEST_PRIM_TRIANGLES = 4, TEST_CLEAR_COLOR0 = 1 << 2 };
+       TEST_SHADER_FRAGMENT = 1, TEST_PRIM_TRIANGLES = 4, TEST_CLEAR_COLOR0 = 1 << 2,
+       TEST_PIPE_TEXTURE_2D_ARRAY = 7 };
 
 /* RGBA8 pixels as read back (little endian: 0xAABBGGRR) */
 enum { RED = 0xff0000ff, GREEN = 0xff00ff00, BLUE = 0xffff0000, YELLOW = 0xff00ffff,
        WHITE = 0xffffffff, ZERO = 0x00000000 };
 
 /* resources of a context: handle = 1000 * ctx + R_* */
-enum { R_RT = 1, R_POS, R_UBO, R_TEX, R_COUNT };
+enum { R_RT = 1, R_POS, R_UBO, R_TEX, R_ARR, R_COUNT };
 /* objects */
 enum { VS_CONST = 10, VS_CONST8, VS_INDEX, VS_UBO, VS_PLAIN, VS_IN16, FS_VARYING, FS_CONST, FS_MUL,
        VE = 20, VS_FAR = 30, VS_SEP, FS_SEP, SURFACE = 40, BLEND, RS, GS_CONST = 50,
        FS_CONST1D = 60, FS_ARRAY_SAMPLER, VIEW_2D, SAMPLER, FS_TWO_VIEWS, VIEW_R, VIEW_G,
-       FS_ONE_VIEW };
+       FS_ONE_VIEW, FS_SAMP_ONLY, FS_SAMP_ONLY1, VIEW_ARR };
 
 static CGLContextObj main_ctx;
 static int failures;
@@ -433,6 +438,25 @@ static const char *fs_array_sampler =
    "  1: MUL OUT[0], TEMP[0], CONST[1]\n"
    "  2: END\n";
 
+/* the texel at (0.5, 0.5), layer 0, through a sampler declared without a view: Mesa's
+ * deinterlacer (vl_deint_filter.c) declares only SAMP[0..3] and looks up 2D_ARRAY */
+static const char *fs_samp_only =
+   "FRAG\n"
+   "DCL OUT[0], COLOR\n"
+   "DCL SAMP[0]\n"
+   "IMM[0] FLT32 {    0.5000,     0.5000,     0.0000,     0.0000}\n"
+   "  0: TEX OUT[0], IMM[0], SAMP[0], 2D_ARRAY\n"
+   "  1: END\n";
+
+/* the same, layer 1 */
+static const char *fs_samp_only1 =
+   "FRAG\n"
+   "DCL OUT[0], COLOR\n"
+   "DCL SAMP[0]\n"
+   "IMM[0] FLT32 {    0.5000,     0.5000,     1.0000,     0.0000}\n"
+   "  0: TEX OUT[0], IMM[0], SAMP[0], 2D_ARRAY\n"
+   "  1: END\n";
+
 /* red from view 0's x, green from view 1's x: two views of one texture */
 static const char *fs_two_views =
    "FRAG\n"
@@ -547,6 +571,8 @@ static void emit_state(struct cmds *c, int ctx)
    emit_shader(c, FS_ARRAY_SAMPLER, TEST_SHADER_FRAGMENT, fs_array_sampler);
    emit_shader(c, FS_TWO_VIEWS, TEST_SHADER_FRAGMENT, fs_two_views);
    emit_shader(c, FS_ONE_VIEW, TEST_SHADER_FRAGMENT, fs_one_view);
+   emit_shader(c, FS_SAMP_ONLY, TEST_SHADER_FRAGMENT, fs_samp_only);
+   emit_shader(c, FS_SAMP_ONLY1, TEST_SHADER_FRAGMENT, fs_samp_only1);
    emit_bind_shaders(c, VS_CONST, FS_VARYING);
 
    emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_VERTEX_ELEMENTS,
@@ -929,6 +955,71 @@ static void case_array_sampler(struct cmds *c, int ctx)
    check(submit(ctx, c) == 0, "a 2D_ARRAY sampler with a 2D view");
    const uint32_t want[2] = { GREEN, GREEN };
    check_stripes(ctx, 2, want, "a 2D view read through a 2D_ARRAY sampler");
+}
+
+/* a 4x4 2D array of two layers (red, blue) and a 2D_ARRAY view of it in slot 0 */
+static void emit_array_view(struct cmds *c, int ctx)
+{
+   struct virgl_renderer_resource_create_args arr = {
+      .handle = res_id(ctx, R_ARR), .target = TEST_PIPE_TEXTURE_2D_ARRAY,
+      .format = VIRGL_FORMAT_R8G8B8A8_UNORM, .bind = VIRGL_BIND_SAMPLER_VIEW, .width = 4,
+      .height = 4, .depth = 1, .array_size = 2,
+   };
+   virgl_renderer_resource_create(&arr, NULL, 0);
+   virgl_renderer_ctx_attach_resource(ctx, res_id(ctx, R_ARR));
+   uint32_t texels[32];
+   for (int i = 0; i < 32; i++)
+      texels[i] = i < 16 ? RED : BLUE;
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_RESOURCE_INLINE_WRITE, 0, 11 + 32));
+   emit(c, res_id(ctx, R_ARR));
+   emit(c, 0);                      /* level */
+   emit(c, 0);                      /* usage */
+   emit(c, 16);                     /* stride */
+   emit(c, 64);                     /* layer stride */
+   emit(c, 0);                      /* x, y, first layer */
+   emit(c, 0);
+   emit(c, 0);
+   emit(c, 4);                      /* w, h, layers */
+   emit(c, 4);
+   emit(c, 2);
+   memcpy(&c->dw[c->n], texels, sizeof(texels));
+   c->n += 32;
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW,
+                      VIRGL_OBJ_SAMPLER_VIEW_SIZE));
+   emit(c, VIEW_ARR);
+   emit(c, res_id(ctx, R_ARR));
+   emit(c, VIRGL_FORMAT_R8G8B8A8_UNORM | TEST_PIPE_TEXTURE_2D_ARRAY << 24);
+   emit(c, 0 | 1 << 16);            /* layers 0..1 */
+   emit(c, 0);                      /* levels 0..0 */
+   emit(c, 0 | 1 << 3 | 2 << 6 | 3 << 9);   /* identity swizzle */
+   emit(c, VIRGL_CMD0(VIRGL_CCMD_SET_SAMPLER_VIEWS, 0, VIRGL_SET_SAMPLER_VIEWS_SIZE(1)));
+   emit(c, TEST_SHADER_FRAGMENT);
+   emit(c, 0);
+   emit(c, VIEW_ARR);
+}
+
+static void case_samp_only(struct cmds *c, int ctx)
+{
+   emit_texture(c, ctx, GREEN);
+   emit_bind_shaders(c, VS_PLAIN, FS_SAMP_ONLY);
+   emit_stripe(c, 0);
+   emit_draw(c);
+   emit_bind_shaders(c, VS_PLAIN, FS_ARRAY_SAMPLER);
+   emit_colour_consts(c, TEST_SHADER_FRAGMENT, 2, 1, WHITE);
+   emit_stripe(c, 1);
+   emit_draw(c);
+   emit_bind_shaders(c, VS_PLAIN, FS_SAMP_ONLY);
+   emit_stripe(c, 2);
+   emit_draw(c);
+   /* a real 2D array in the same slot: the lookup stays 2D_ARRAY and reads its layer */
+   emit_array_view(c, ctx);
+   emit_bind_shaders(c, VS_PLAIN, FS_SAMP_ONLY1);
+   emit_stripe(c, 3);
+   emit_draw(c);
+   check(submit(ctx, c) == 0, "2D_ARRAY lookups on a sampler without a view");
+   const uint32_t want[4] = { GREEN, GREEN, GREEN, BLUE };
+   check_stripes(ctx, 4, want, "a SAMP-only 2D_ARRAY lookup (2D view, declared view, 2D view, "
+                 "a 2D array's layer 1)");
 }
 
 /* a 2D view of R_TEX with swizzle s (3 bits per channel, PIPE_SWIZZLE_*) */
@@ -1452,6 +1543,7 @@ static void run_case(int n)
    case 22: case_buffer0(&c, ctx); break;
    case 23: case_array_sampler(&c, ctx); break;
    case 24: case_shared_swizzle(&c, ctx); break;
+   case 25: case_samp_only(&c, ctx); break;
    }
    teardown(ctx);
    if (n == 4)
@@ -1494,7 +1586,7 @@ int main(int argc, char **argv)
       return 1;
    }
 
-   for (int n = 1; n <= 24; n++)
+   for (int n = 1; n <= 25; n++)
       if (!only || only == n)
          run_case(n);
 

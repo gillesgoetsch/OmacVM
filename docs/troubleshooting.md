@@ -171,6 +171,11 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   redraws once). OmacVM VMs have the idle lock on by default, so an idle VM
   stays open while it is stuck. `omacvm check` warns while it is stuck
   ("Omarchy's lock").
+- **The lock screen has no password field after an update of a locked VM**
+  (`omacvm update` or `omacvm apply` on a running VM whose screen was
+  locked, 3.2.12 and older): typing the password does nothing. Shut the VM
+  down and start it again. From 3.2.13 such an update waits for the unlock
+  (46).
 - **Touch ID asks for the password instead**: the line above the password
   prompt says why ("Touch ID not available (VM not in front), use your
   password", "the Mac is still starting: try again in a moment", ...).
@@ -1327,3 +1332,37 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/app/guest/omacvm-desktop-recover` (the note), `src/cmd/check.sh`;
   tests `app/runtime/Tests/vcpu/test-vcpu-stall.sh`, `src/tests/vm-stalls.sh`,
   `swift run desktop-tests`; ADR 0060.
+
+## 46. All routes: the lock screen has no password field after an update of a locked VM
+
+- **Symptom:** `omacvm update` or `omacvm apply` ran while the VM's Omarchy
+  session was locked (3.2.12 and older; also switching Omanotch off). The
+  lock screen comes back without its password field, and typing the password
+  does nothing. Omarchy's shell log (`journalctl --user -t omarchy-shell` in
+  the VM) has "Session lock object was destroyed without unlocking", then
+  "lock-stranded: recovering" and "lock-pending: screen-stabilizing".
+- **Cause:** the shell of omarchy-mac 4.0.3 reloads all its plugins, its own
+  lock screen too, whenever a file under `~/.config/omarchy/plugins` changes
+  or it is asked to rescan them. Every update wrote OmacVM's bar widgets
+  there again and asked for a rescan. The new lock screen never gets the
+  lock Hyprland still holds, so it waits without a password field. Upstream
+  Omarchy keeps its lock screen over such a reload (omacom/omarchy#9485);
+  omarchy-mac 4.0.3 does not have that yet. This is not Omarchy's other lock
+  bug above (omacom/omarchy-mac#738), which only stops the next lock.
+- **Fix:** shut the VM down and start it again (`omarchy-restart-shell`
+  refuses while the lock is asked for). From 3.2.13 an update of a locked VM
+  writes nothing there and asks for no rescan: changed widgets wait in
+  `~/.local/state/omacvm/plugins-staged`, and right after the unlock they go
+  in place and the shell restarts once. A widget that did not change is not
+  written again at all. `omacvm check` says "right after the next unlock" for
+  a widget that waits. Switching the control centre or Omanotch off while
+  the VM is locked does the same: the control centre leaves the bar at once
+  and its folder goes at the next update; Omanotch stops at once and removes
+  its copies of Omarchy's plugins right after the unlock.
+- **Where:** `src/guest/session-lock.sh` (the one lock check),
+  `src/lib/install-plugin.sh`, `src/lib/omacvm-plugins`,
+  `src/guest/restart-shell.sh`, `src/app/guest/omacvm-displays` (the display
+  widget), `src/omanotch/guest/monitor/display-panel.py` (Omanotch's display
+  panel), `src/guest/off.sh` and `src/control/guest/install.sh` (the offs);
+  tests `src/tests/plugin-lock.sh`, `src/tests/restart-shell.sh`,
+  `src/tests/features-off.sh`, `src/omanotch/guest/tests/test_display_panel.py`.

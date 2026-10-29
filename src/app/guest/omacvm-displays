@@ -125,6 +125,7 @@ SCALE_WAIT = 4.0
 WIDGET = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "omarchy/plugins/omacvm.monitor"
 WIDGET_BUILD = Path("/usr/local/share/omacvm/app/guest/monitor-widget/build.py")
 OMARCHY_PANEL = Path("/usr/share/omarchy/shell/plugins/panels/monitor/Panel.qml")
+SESSION_LOCK = Path("/usr/local/share/omacvm/guest/session-lock.sh")
 
 
 def log(message: str) -> None:
@@ -588,10 +589,25 @@ def run_sync() -> None:
         log(f"display sync failed: {error}")
 
 
+def session_state() -> str:
+    """The desktop session: down, busy, locked or open (guest/session-lock.sh;
+    open without it)."""
+    try:
+        out = subprocess.run(["bash", str(SESSION_LOCK)], capture_output=True, text=True,
+                             timeout=15, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "open"
+    return out if out in ("down", "busy", "locked", "open") else "open"
+
+
 def refresh_widget() -> None:
     """Rebuild omacvm.monitor when an Omarchy update changed its display panel.
     The installer may be rewriting the widget right now: a file gone midway
-    is not an error (it used to stop the agent)."""
+    is not an error (it used to stop the agent). Not while the session is
+    locked: a write in the plugins folder or a rescan reloads Omarchy's lock
+    screen without its password field (omarchy-mac 4.0.3); Update VM stages
+    its own copy then, else the agent's next start does it. A shell that is
+    starting gets 20 s to answer."""
     stamp = WIDGET / ".source-sha256"
     import hashlib
     try:
@@ -602,6 +618,15 @@ def refresh_widget() -> None:
             return
     except OSError as error:
         log(f"display widget not checked: {error}")
+        return
+    state = session_state()
+    for _ in range(20):
+        if state != "busy":
+            break
+        time.sleep(1)
+        state = session_state()
+    if state in ("locked", "busy"):
+        log("display widget not rebuilt while the session is locked (Update VM or the next start does it)")
         return
     try:
         subprocess.run([sys.executable, str(WIDGET_BUILD), str(WIDGET)], timeout=30, check=True)
