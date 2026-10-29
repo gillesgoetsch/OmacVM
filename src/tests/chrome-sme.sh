@@ -46,10 +46,14 @@ sed -n '/^# Google Chrome 154 and older on a Mac with SME/,/^esac$/p' "$check" |
 if ! grep -q 'chrome_sme_line' "$T/block"; then echo "FAIL the \"Google Chrome\" block was not found in src/guest/check.sh"; fail=1
 else
   mkdir -p "$T/bin" "$T/empty"
+  # Only the tools the block needs are on the rows' PATH (no /usr/bin): a Chrome
+  # the runner has installed never counts.
+  for t in sed grep head; do ln -s "$(command -v $t)" "$T/empty/$t"; done
   # macOS has no timeout (the VM has GNU's): a stand-in that runs the command.
-  command -v timeout >/dev/null || { printf '#!/bin/bash\nshift\nexec "$@"\n' > "$T/empty/timeout"; chmod +x "$T/empty/timeout"; }
+  if command -v timeout >/dev/null; then ln -s "$(command -v timeout)" "$T/empty/timeout"
+  else printf '#!/bin/bash\nshift\nexec "$@"\n' > "$T/empty/timeout"; chmod +x "$T/empty/timeout"; fi
   row() {   # PATH: the line the block says
-    env -i PATH="$1:$T/empty:/usr/bin:/bin" /bin/bash -c 'ok() { echo "ok|$1|$2|${3:-}"; }; warn() { echo "warn|$1|$2|${3:-}"; }
+    env -i PATH="$1:$T/empty" /bin/bash -c 'ok() { echo "ok|$1|$2|${3:-}"; }; warn() { echo "warn|$1|$2|${3:-}"; }
       bad() { echo "fail|$1|$2"; }; skip() { echo "skip|$1|$2"; }
       source "$0"' "$T/block"
   }
