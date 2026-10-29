@@ -78,12 +78,20 @@ the guest, under a call-like load, found:
    connection took 230-390 ms on the mini). A decoder's queue holds 64
    pictures not handed over yet: a start of more than about 1 s at 60 fps
    fills it, and the pictures past it are refused (errors until the next key
-   frame). Calibration, one call row on the Mac mini M4 at pressure warn
-   (the mini swapped all day: no row at normal pressure; none on an M4 Max
-   or a MacBook Air): each of 212 streams' slowest picture, END_FRAME to
-   picture in, its session's start included: median 3.2 ms, p99 29 ms, max
-   47 ms, so the limit is more than 5 times the slowest seen; 0 pictures
-   given up.
+   frame). Calibration (each stream's slowest picture, END_FRAME to picture
+   in, its session's start included):
+   - Mac mini M4, one call row at pressure warn (the mini swapped all day):
+     212 streams, median 3.2 ms, p99 29 ms, max 47 ms; 0 given up.
+   - MacBook Pro M1 Max (32 GB, macOS 27.0.1) at normal pressure: YouTube
+     4K60 (VP9 3840x2160, 600 s) 26.7 ms; a 600 s WebRTC call 7.7 ms; a
+     30 minute soak with a call load and a 4K60 clip 40.8 ms over 567
+     streams; 0 given up in each.
+   - The same M1 Max at pressure warn (a memory hog beside a 10 vCPU VM
+     with a call load; 155-223 s of warn, critical 0-2 s): pictures were
+     given up in 4 of 6 tries (3, 287, 258 and 144 "given up" lines), and
+     the pictures that came in took up to 249.9 ms. So at warn the limit
+     does cut pictures that would have come later.
+   - None on an M4 Max or a MacBook Air.
 4. **The cause itself** is the Mac's memory. The app gives the VM's cold
    file cache back while macOS compresses it (ADR 0059) only with a QEMU
    that gives the pages back (#603); 3.2.11's does not, so it is off.
