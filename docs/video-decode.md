@@ -544,11 +544,11 @@ Limits:
   fields of half the height. On surfaces whose height is a multiple of 16
   (854x480; 1080p in 1088 rows), and on all of them with Mesa's VA driver
   alone, each pair of rows comes out alike (rows 474-479 as 475 475 477 477
-  479 479). Surfaces of other heights, which the shim declares to the Mac at
-  their own size, come out with a pattern that depends on the height (rows
-  556-561 of 1000x562 as 556 557 558 559 560 560; of a 1000x568 surface as
-  556 557 559 559 561 561). In all of them every row is within one row of its
-  place. Edges of colour that start on an odd row of the chroma plane fringe:
+  479 479). With the shim, surfaces of other heights come out with a pattern
+  that depends on the height (rows 556-561 of 1000x562 as 556 557 558 559 560
+  560; of a 1000x568 surface as 556 557 559 559 561 561), and every row is
+  within one row of its place. With Mesa's driver alone the last chroma row
+  of a 1000x562 surface is far off. Edges of colour that start on an odd row of the chroma plane fringe:
   the test card's bottom band of an HEVC 1000x562 video in mpv with
   `deint=bob` looks one row off. Players that show the decoder's own frames
   (mpv without `vavpp`, Chrome, Firefox, Chromium) are not affected. Mesa's,
