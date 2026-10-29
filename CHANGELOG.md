@@ -16,7 +16,8 @@ in more words.
   and an Update VM that installs Omanotch again could wait hours for them. OmacVM reads Omarchy's
   lock status now; while the VM is locked, the shell restarts right after the unlock. Not
   OmacVM's: after the first unlock Omarchy does not lock the VM again (lock key, idle lock) until
-  its shell restarts (an open fix: omacom/omarchy-mac#752).
+  its shell restarts (an open fix: omacom/omarchy-mac#752). `omacvm check` warns while it is
+  stuck; `omarchy-restart-shell` after unlocking brings the lock back.
 
 ## 3.2.11
 
