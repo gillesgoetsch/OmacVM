@@ -594,13 +594,18 @@ Limits:
   suite (MBAFF, PAFF, field pictures); the progressive ones decode in
   hardware. Up to 3.2.12 the runtime then got VideoToolbox's software
   decoder instead, which drops every picture once the runtime rebuilds the
-  PPS a few pictures in (QEMU's log: `vt-video: decode failed: 1`, then
-  `-8969`, its "bad data") and has the colours wrong at 1080 lines even
-  without that: green pictures in every VA-API path, with or without
-  deinterlacing. From 3.2.13 the shim refuses such a picture before it
-  reaches the Mac (`VA_STATUS_ERROR_UNIMPLEMENTED` at `vaRenderPicture`,
-  logged at most every 10 s), so the app gets an error instead of a green
-  picture. mpv (`--hwdec=vaapi`, also with `--deinterlace=yes`) switches to
+  PPS a few pictures in (QEMU's log in the test VM: `vt-video: decode
+  failed: -8969`, its "bad data"; at 576 lines a `decode failed: 1` came
+  first) and has the colours wrong at 1080 lines even without that. In the
+  test VM on 3.2.12 that gave green or wrong pictures: mpv 99 % green at
+  1080i and wrong at 576i (24.3 dB against its CPU decoding), 100 % green
+  with `--deinterlace=yes`; FFmpeg's frames were not right (0 of 50 bit for
+  bit at 1080i, 2 of 50 at 576i; not measured for green). From 3.2.13 the
+  shim refuses such a picture before it reaches the Mac
+  (`VA_STATUS_ERROR_UNIMPLEMENTED` at `vaRenderPicture`, logged at most
+  every 10 s): Mesa gets only the picture's `vaBeginPicture`, none of its
+  parameters, slices or `vaEndPicture`, and nothing of it reaches the Mac,
+  so the app gets an error instead of a green picture. mpv (`--hwdec=vaapi`, also with `--deinterlace=yes`) switches to
   the CPU after 3 of them (its `--hwdec-software-fallback`) and shows the
   same picture as its CPU decoding (3.2.12: 99 % green at 1080i). FFmpeg
   with `-hwaccel vaapi` prints an error for each picture and exits with 69,

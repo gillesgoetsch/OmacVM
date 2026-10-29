@@ -5,18 +5,19 @@ in more words.
 
 ## 3.2.13 (unreleased)
 
-- **H.264 coded interlaced decodes on the CPU instead of showing green.** In an OmacVM.app VM,
-  H.264 video coded as fields or MBAFF frames (interlaced TV recordings, x264's interlaced mode)
-  came out green with hardware decoding in mpv and FFmpeg, with or without deinterlacing
-  (measured on 3.2.12). The Mac's hardware decoder does not take such streams, and
+- **H.264 coded interlaced decodes on the CPU instead of showing green or wrong pictures
+  (#619).** In an OmacVM.app VM, H.264 video coded as fields or MBAFF frames (interlaced TV
+  recordings, x264's interlaced mode) came out green or wrong with hardware decoding. Measured
+  on 3.2.12: in mpv 99 % green at 1080i, wrong at 576i (24.3 dB against its CPU decoding), 100 %
+  green with deinterlacing; FFmpeg's frames were not right either (0 and 2 of 50 bit for bit;
+  not measured for green). The Mac's hardware decoder does not take such streams, and
   VideoToolbox's software decoder, which it used instead, dropped every picture after the first
   few and got the colours wrong at 1080 lines. OmacVM's VA-API driver in the VM now refuses these
   pictures, so the app gets an error instead: mpv (`--hwdec=vaapi`) switches to the CPU by itself
-  and shows the same picture as its CPU decoding (3.2.12: 99 % green at 1080i); FFmpeg with
-  `-hwaccel vaapi` prints an error for each picture and exits with 69, so leave that option out
-  for these videos. Video coded as
+  and shows the same picture as its CPU decoding; FFmpeg with `-hwaccel vaapi` prints an error
+  for each picture and exits with 69, so leave that option out for these videos. Video coded as
   progressive frames decodes in hardware as before. Measured on a Mac mini M4 with macOS 27.0
-  (docs/video-decode.md). Needs Update VM.
+  (docs/video-decode.md). Needs Update VM, then quit and start the player again.
 
 ## 3.2.12
 
