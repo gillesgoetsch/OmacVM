@@ -7,19 +7,25 @@ key bit per view (sampler_views_2d_for_array_mask, the first 32 views) asks
 for it, set only where the shader declares 2D_ARRAY (shader info
 samplers_2d_array_mask), so other shaders' keys do not change; the view slot's
 key bits (vrend_slot_key_bits) include it, so a 2D view coming or going there
-selects the shaders again (virgl-legacy-vertex-cache.patch). Not for samplers
-indexed indirectly.
+selects the shaders again (virgl-legacy-vertex-cache.patch). A shader that
+declares no sampler views at all (SAMP only) has the target only in its
+lookups: there a 2D_ARRAY lookup counts as the 2D_ARRAY declaration of that
+sampler. Not for samplers indexed indirectly.
 Why: GL samples a 2D texture only through a sampler2D; a sampler2DArray on
 that unit reads nothing (black). Mesa's VA-API video compositor declares its
 plane samplers 2D_ARRAY while progressive video buffers are 2D textures, so
 every frame VA-API converted to RGB was black (Google Chrome converts each
 decoded frame so; FFmpeg's scale_vaapi gave Y=U=V=0 green with the colour
-matrix fixed).
+matrix fixed). Mesa's motion-adaptive deinterlacer (vl_deint_filter.c)
+declares SAMP[0..3] without views and reads the decoded pictures, plain 2D
+textures, with 2D_ARRAY lookups: every deinterlaced picture was Y=U=V=0,
+green (mpv's vavpp default, FFmpeg's deinterlace_vaapi).
 Upstreamable; not sent.
 Tests: Tests/virgl/test-const-ubo.c case 23 (a 2D view through a 2D_ARRAY
 sampler, alone and with constant buffer 0 as a guest buffer: black without
-the patch), test-view-key.c (dirty tracking and the key bit with such a
-shader bound).
+the patch), case 25 (the same lookup on a SAMP-only sampler, then a real 2D
+array in that slot reading its layer 1: black without the SAMP-only part),
+test-view-key.c (dirty tracking and the key bit with such a shader bound).
 --- a/src/vrend/vrend_shader.h
 +++ b/src/vrend/vrend_shader.h
 @@ -134,6 +134,8 @@
@@ -82,25 +88,32 @@ shader bound).
     }
  
     if (ctx->info.indirect_files & (1 << TGSI_FILE_SAMPLER)) {
-@@ -5884,6 +5902,17 @@
+@@ -5884,6 +5902,24 @@
                 ctx->inputs[i].invariant = 0;
           }
        }
 +   }
 +
 +   /* OmacVM: a 2D_ARRAY lookup on a sampler declared 2D for its plain 2D view (add_samplers)
-+    * takes the 2D form: the coordinate's x and y, layer 0 */
++    * takes the 2D form: the coordinate's x and y, layer 0. A shader that declares no sampler
++    * views (SAMP only: Mesa's deinterlacer, vl_deint_filter.c) has the target only in its
++    * lookups: a 2D_ARRAY lookup counts as a 2D_ARRAY declaration of that sampler. */
 +   if (inst->Instruction.Texture && inst->Texture.Texture == TGSI_TEXTURE_2D_ARRAY) {
-+      for (unsigned i = 0; i < inst->Instruction.NumSrcRegs; i++)
-+         if ((inst->Src[i].Register.File == TGSI_FILE_SAMPLER ||
-+              inst->Src[i].Register.File == TGSI_FILE_SAMPLER_VIEW) &&
-+             !inst->Src[i].Register.Indirect &&
-+             sampler_2d_for_array(ctx, inst->Src[i].Register.Index))
++      for (unsigned i = 0; i < inst->Instruction.NumSrcRegs; i++) {
++         const struct tgsi_src_register *reg = &inst->Src[i].Register;
++         if ((reg->File != TGSI_FILE_SAMPLER && reg->File != TGSI_FILE_SAMPLER_VIEW) ||
++             reg->Indirect)
++            continue;
++         if (reg->File == TGSI_FILE_SAMPLER && !ctx->info.file_count[TGSI_FILE_SAMPLER_VIEW] &&
++             reg->Index >= 0 && reg->Index < 32)
++            ctx->samplers_2d_array_declared |= 1u << reg->Index;
++         if (sampler_2d_for_array(ctx, reg->Index))
 +            inst->Texture.Texture = TGSI_TEXTURE_2D;
++      }
     }
- 
+
     if (!get_destination_info(ctx, inst, &dinfo, ctx->dst_bufs, fp64_dsts, writemask))
-@@ -8183,6 +8212,7 @@
+@@ -8183,6 +8219,7 @@
  {
     sinfo->use_pervertex_in = ctx->has_pervertex;
     sinfo->samplers_used_mask = ctx->samplers_used;
