@@ -10,6 +10,13 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 ## Common problems
 
 - **First stop**: `omacvm check` names what is wrong and what to do.
+- **Google Chrome's tab crashes ("Aw, Snap!") on videos, on a Mac with an M4
+  or newer** (OmacVM.app): update Chrome to 155 or newer. Chrome 154 and
+  older, and apps on Electron 44 or older, crash on every video they decode
+  on the CPU (small ones below 360 rows, or all with hardware decoding off).
+  The VM sees the chip's SME, and their libyuv was built for chips that also
+  have SVE, which the M4 does not (fixed in Chrome 155). `omacvm check` warns
+  about it ("Google Chrome").
 - **Screenshots or screen sharing of Chrome far too bright in an HDR VM**:
   Update VM
   ([44](#44-app-screenshots-and-screen-sharing-of-chrome-too-bright-in-an-hdr-vm)).
