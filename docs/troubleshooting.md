@@ -1336,11 +1336,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 ## 46. All routes: the lock screen has no password field after an update of a locked VM
 
 - **Symptom:** `omacvm update` or `omacvm apply` ran while the VM's Omarchy
-  session was locked (3.2.12 and older). The lock screen comes back without
-  its password field, and typing the password does nothing. Omarchy's shell
-  log (`journalctl --user -t omarchy-shell` in the VM) has "Session lock
-  object was destroyed without unlocking", then "lock-stranded: recovering"
-  and "lock-pending: screen-stabilizing".
+  session was locked (3.2.12 and older; also switching Omanotch off). The
+  lock screen comes back without its password field, and typing the password
+  does nothing. Omarchy's shell log (`journalctl --user -t omarchy-shell` in
+  the VM) has "Session lock object was destroyed without unlocking", then
+  "lock-stranded: recovering" and "lock-pending: screen-stabilizing".
 - **Cause:** the shell of omarchy-mac 4.0.3 reloads all its plugins, its own
   lock screen too, whenever a file under `~/.config/omarchy/plugins` changes
   or it is asked to rescan them. Every update wrote OmacVM's bar widgets
