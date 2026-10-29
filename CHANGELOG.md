@@ -17,6 +17,13 @@ in more words.
   omarchy-mac does not have it yet. Needs only the update to 3.2.13 (`omacvm update`, or the
   app's update and Update VM): that update already waits for the unlock.
 
+- **Switching the control centre or Omanotch off while the VM is locked no longer leaves the lock
+  screen without its password field either (#618).** The control centre leaves the bar at once
+  and its folder goes at the next update; Omanotch stops at once and removes its copies of
+  Omarchy's plugins right after the unlock. Omanotch's display panel (UTM, VMware Fusion,
+  Parallels) is no longer rebuilt under the lock after an Omarchy update; the next start of
+  Omanotch does it. Needs the update to 3.2.13.
+
 ## 3.2.12
 
 In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
