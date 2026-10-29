@@ -153,14 +153,15 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 - **An external display went black or vanished when the Bridge started**
   (3.1.16 and before, on the Mac's HDMI port): replug it, then update. Until
   then, `omacvm disable external-brightness --vm NAME` stops all DDC/CI.
-- **The VM does not lock again after the first unlock** (the lock key and
-  the idle lock do nothing): Omarchy's bug with Quickshell 0.3.2
+- **The VM does not lock again after an unlock** (the lock key and the
+  idle lock do nothing): Omarchy's bug with Quickshell 0.3.2
   (omarchy-mac 4.0.x,
   [omacom/omarchy-mac#738](https://github.com/omacom/omarchy-mac/issues/738);
-  an open fix: omacom/omarchy-mac#752). The lock works again once Omarchy's
-  shell restarts: after unlocking, run `omarchy-restart-shell` in a terminal
-  (the bar redraws once). OmacVM VMs have the idle lock on by default, so an
-  idle VM stays open until then. `omacvm check` warns while it is stuck
+  an open fix: omacom/omarchy-mac#752). It happens after every unlock. A
+  restart of Omarchy's shell brings the lock back for the next lock only:
+  after each unlock, run `omarchy-restart-shell` in a terminal (the bar
+  redraws once). OmacVM VMs have the idle lock on by default, so an idle VM
+  stays open while it is stuck. `omacvm check` warns while it is stuck
   ("Omarchy's lock").
 - **Touch ID asks for the password instead**: the line above the password
   prompt says why ("Touch ID not available (VM not in front), use your
