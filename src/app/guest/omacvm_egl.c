@@ -10,10 +10,11 @@
  * its own and tells the Mac. Everything else is Mesa's, unchanged.
  *
  * Kept small, and it fails open: if Mesa's library is missing or glvnd's vendor ABI is not
- * major 0, __egl_Main returns false and glvnd uses Mesa's own 50_mesa.json. The compositor,
- * Xwayland, the lock screen and the login screen run Mesa alone (they show no VA-API
- * surfaces). Mesa thus loads as two glvnd vendors in other processes; this one lists no
- * devices (glvnd would list every device twice), so displays opened on a device are Mesa's.
+ * major 0, __egl_Main returns false and glvnd uses Mesa's own 50_mesa.json. The compositor
+ * (Hyprland), Xwayland, Omarchy's shell (quickshell: the bar and Omarchy 4's lock screen),
+ * hyprlock and the login screen run Mesa alone (they show no VA-API surfaces). Mesa thus
+ * loads as two glvnd vendors in other processes; this one lists no devices (glvnd would list
+ * every device twice), so displays opened on a device are Mesa's.
  * One app: __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json; the VM:
  * delete the JSON file.
  *
@@ -185,7 +186,7 @@ static void *get_proc_address(const char *name)
     return p;
 }
 
-/* The compositor, Xwayland, the lock and login screens (see the top) */
+/* The compositor, Xwayland, Omarchy's shell and the lock and login screens (see the top) */
 static int desktop_process(void)
 {
     char exe[PATH_MAX];
@@ -197,8 +198,8 @@ static int desktop_process(void)
     exe[n] = 0;
     b = strrchr(exe, '/');
     b = b ? b + 1 : exe;
-    return !strcmp(b, "Hyprland") || !strcmp(b, "Xwayland") || !strcmp(b, "hyprlock") ||
-           !strncmp(b, "sddm-greeter", 12);
+    return !strcmp(b, "Hyprland") || !strcmp(b, "Xwayland") || !strcmp(b, "quickshell") ||
+           !strcmp(b, "hyprlock") || !strncmp(b, "sddm-greeter", 12);
 }
 
 __attribute__((visibility("default")))

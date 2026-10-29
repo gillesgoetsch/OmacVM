@@ -10,7 +10,8 @@
  * for an AB24 import, for another target or when Mesa makes no image; every other name is
  * Mesa's own pointer; eglQueryDevicesEXT is not offered (Mesa's own vendor lists the devices).
  * nomesa: no Mesa library: __egl_Main is false. abi1: glvnd's vendor ABI 1.x: false, Mesa not
- * loaded. desktop: run as an exe named Hyprland: false, Mesa not loaded.
+ * loaded. desktop: run as an exe named as one of the desktop's processes (Hyprland, Xwayland,
+ * quickshell, hyprlock, sddm-greeter-qt6): false, Mesa not loaded.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -101,7 +102,9 @@ int main(int argc, char **argv)
     void *mesa = dlopen(argv[2], RTLD_NOW | RTLD_NOLOAD);
 
     if (strcmp(mode, "main")) {
-        snprintf(what, sizeof(what), "%s: __egl_Main says %s, Mesa %s", mode,
+        const char *exe = strrchr(argv[0], '/');
+
+        snprintf(what, sizeof(what), "%s (%s): __egl_Main says %s, Mesa %s", mode, exe ? exe + 1 : argv[0],
                  ok ? "yes" : "no (glvnd uses 50_mesa.json)", mesa ? "loaded" : "not loaded");
         check(!ok && (!strcmp(mode, "nomesa") || !mesa), what);
         return failed;

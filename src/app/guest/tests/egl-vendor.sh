@@ -1,7 +1,8 @@
 #!/bin/bash
 # OmacVM's EGL vendor library (src/app/guest/omacvm_egl.c): Mesa's EGL with the app's video imports
 # handed to the VA driver shim, only when the shim is loaded; fails open (no Mesa, another glvnd
-# ABI) and stays out of the compositor. Runs against stand-ins for Mesa's EGL vendor library and
+# ABI) and stays out of the desktop's own processes (Hyprland, Xwayland, Omarchy's shell with its
+# lock screen, hyprlock, the login screen). Runs against stand-ins for Mesa's EGL vendor library and
 # the shim (egl-vendor.c), on Linux with the EGL and glvnd headers (libegl-dev, libglvnd-dev).
 #   src/app/guest/tests/egl-vendor.sh [EGL_SOURCE]
 # EGL_SOURCE: another omacvm_egl.c.
@@ -20,7 +21,7 @@ cc -shared -fPIC -O2 -Wall -Werror -fvisibility=hidden -Wl,-soname,libEGL_omacvm
 cc -shared -fPIC -O2 -Wall -Werror -fvisibility=hidden -DMESA_EGL="\"$T/none/libEGL_mesa.so.0\"" \
   -o "$T/nomesa.so" "$src" -ldl || exit 1
 cc -O2 -Wall -o "$T/egl-vendor" "$here/egl-vendor.c" -ldl || exit 1
-cp "$T/egl-vendor" "$T/Hyprland"
+for exe in Hyprland Xwayland quickshell hyprlock sddm-greeter-qt6; do cp "$T/egl-vendor" "$T/$exe"; done
 
 # run PROGRAM LIBRARY MODE
 run() {
@@ -36,7 +37,10 @@ run() {
 run "$T/egl-vendor" "$T/libEGL_omacvm.so.0" main
 run "$T/egl-vendor" "$T/nomesa.so" nomesa
 run "$T/egl-vendor" "$T/libEGL_omacvm.so.0" abi1
-run "$T/Hyprland" "$T/libEGL_omacvm.so.0" desktop
+# the desktop's own processes (Omarchy 4's lock screen is quickshell's)
+for exe in Hyprland Xwayland quickshell hyprlock sddm-greeter-qt6; do
+  run "$T/$exe" "$T/libEGL_omacvm.so.0" desktop
+done
 # the library exports only glvnd's entry point
 syms=$(nm -D --defined-only "$T/libEGL_omacvm.so.0" | awk '$2 == "T" { print $3 }' | tr '\n' ' ')
 if [[ $syms == "__egl_Main " ]]; then echo "ok: exports only __egl_Main"

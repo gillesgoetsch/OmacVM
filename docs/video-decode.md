@@ -166,8 +166,9 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   [ADR 0063](adr/0063-video-size-from-the-apps-import.md)) hands such
   imports to the shim when it is loaded in that process, and the shim tells
   the Mac the import's size for the planes of a surface the app exported
-  through it, when the size changes. Hyprland, Xwayland, hyprlock and the
-  login screen run Mesa's EGL alone. Not reached: Firefox (it decodes in
+  through it, when the size changes. Hyprland, Xwayland, Omarchy's shell
+  (quickshell, also its lock screen), hyprlock and the login screen run
+  Mesa's EGL alone. Not reached: Firefox (it decodes in
   its RDD process and shows the frames in another), mpv's
   `vo=dmabuf-wayland`, Vulkan importers. Off for one app:
   `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;

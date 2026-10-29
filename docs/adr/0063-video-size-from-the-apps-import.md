@@ -52,8 +52,10 @@ Option 6, with the VA shim deciding.
   is loaded in that process (found among the loaded objects, `RTLD_NOLOAD`,
   the handle kept). No DRM file, log, config file or environment variable.
 - It fails open: Mesa missing or another ABI major: `__egl_Main` is false and
-  glvnd uses `50_mesa.json`. Hyprland, Xwayland, hyprlock and sddm-greeter
-  get false before Mesa loads: they run Mesa alone, as before.
+  glvnd uses `50_mesa.json`. The desktop's own processes get false before
+  Mesa loads and run Mesa alone, as before: Hyprland, Xwayland, Omarchy's
+  shell (`quickshell`: the bar and Omarchy 4's lock screen), hyprlock and
+  sddm-greeter.
 - Mesa then loads as two glvnd vendors in other processes. glvnd lists the
   devices of every vendor without merging them (`QueryVendorDevices`), so
   each device would be listed twice; this library offers no
@@ -82,8 +84,10 @@ Option 6, with the VA shim deciding.
   as it takes the shim's own. An older app (no marker) or
   `OMACVM_VA_LOGICAL=0`: the shim sends nothing; the library still loads and
   passes everything through.
-- A library in every EGL process but the desktop's: kept to three calls at
-  load and a format check per dma-buf import.
+- A library in every EGL process but the desktop's own (the compositor,
+  Xwayland, the shell with its lock screen, the login screen): kept to three
+  calls at load and a format check per dma-buf import. A process is matched
+  by its executable's name (`/proc/self/exe`).
 - One size per resource on the Mac: if two importers in one process show the
   same surface at different sizes, the last one wins.
 - Not reached, because the import happens in a process without the shim or
@@ -97,6 +101,6 @@ Option 6, with the VA shim deciding.
 - Tests: `src/app/guest/tests/va-shim-logical.sh` (Chrome's and mpv's import
   patterns, HEVC, what sends nothing, the converting `vaGetImage`, video
   processing, after `vaTerminate`), `src/app/guest/tests/egl-vendor.sh` (a
-  stand-in Mesa and shim: what is handed on, fail-open, the skipped
-  processes, the device list), in a test VM `tests/video/video-geometry.sh`
+  stand-in Mesa and shim: what is handed on, fail-open, each skipped
+  process, the device list), in a test VM `tests/video/video-geometry.sh`
   (H.264 and HEVC at their coded size must be exact; 3.2.11's guest fails).

@@ -15,8 +15,8 @@ in more words.
   mpv 0.41, Mac mini M4): H.264 at 1920x1080, 1280x720, 854x480, 640x360, 426x240 (mpv) and
   1918x1078, HEVC at 854x480 and 1000x562 are exact in Chrome, mpv and mpv's gpu-next (3.2.11:
   the strip in 20 of these); VP9, 10-bit VP9 and AV1 stay exact; a video that really has 1088
-  rows keeps them all; FFmpeg's read-back stays bit for bit the software decode. Hyprland and
-  Xwayland do not load the library. Needs Update VM (the 3.2.11 app is enough), then quit and
+  rows keeps them all; FFmpeg's read-back stays bit for bit the software decode. Hyprland,
+  Xwayland and Omarchy's shell (with its lock screen) do not load the library. Needs Update VM (the 3.2.11 app is enough), then quit and
   start Chrome and mpv again, or restart the VM.
 
 ## 3.2.11
