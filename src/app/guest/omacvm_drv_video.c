@@ -1587,7 +1587,7 @@ static VAStatus render_picture(VADriverContextP ctx, VAContextID context, VABuff
         unsigned int size = 0, count = 0;
         void *data = NULL;
         VAProcPipelineParameterBuffer *pp;
-        uint32_t sw = 0, sh = 0, b[2], l[2];
+        uint32_t sw = 0, sh = 0, b[2] = { 0, 0 }, l[2] = { 0, 0 };
         int src_fix, out_fix, declared;
         struct surf rec;
 

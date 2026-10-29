@@ -19,7 +19,8 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 fail=0
 cc -shared -fPIC -O2 -Wall -DSTUB_DRIVER -o "$T/stub.so" "$here/va-shim-logical.c" || exit 1
-cc -shared -fPIC -O2 -Wall -DMESA_DRIVER="\"$T/stub.so\"" -o "$T/shim.so" "$shim_c" -ldl -lpthread || exit 1
+# the shim builds without a warning (GCC's -Wmaybe-uninitialized included)
+cc -shared -fPIC -O2 -Wall -Werror -DMESA_DRIVER="\"$T/stub.so\"" -o "$T/shim.so" "$shim_c" -ldl -lpthread || exit 1
 cc -O2 -Wall -rdynamic -o "$T/va-shim-logical" "$here/va-shim-logical.c" -ldl || exit 1
 printf 'OMACVM_VAEXPORT=1\nOMACVM_VADECASYNC=1\nOMACVM_VALOGICAL=1\n' > "$T/host-new.env"
 printf 'OMACVM_VAEXPORT=1\nOMACVM_VADECASYNC=1\n' > "$T/host-old.env"
