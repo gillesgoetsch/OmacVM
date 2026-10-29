@@ -137,6 +137,17 @@
  * as it is. The shim remembers every import until the app destroys it.
  * OMACVM_VA_IMPORT_GUARD=0 turns this off (tests).
  *
+ * H.264 coded interlaced (field pictures, MBAFF frames: frame_mbs_only_flag 0 in the SPS):
+ * the Mac's hardware decoder does not take it (VideoToolbox refuses a session that asks for
+ * the hardware, as in FFmpeg's own VideoToolbox decoding on macOS), so VideoToolbox decodes
+ * it with its software decoder, which gave green pictures in the VM. VA-API says the coding
+ * only in each picture's parameters, so the shim reads them at vaRenderPicture on an H.264
+ * decoder and refuses such a picture (VA_STATUS_ERROR_UNIMPLEMENTED, logged at most every
+ * 10 s), its slices and its vaEndPicture with it: nothing of it goes to the Mac. The app gets
+ * an error for every such picture instead of a green one (mpv then decodes on the CPU, after
+ * 3 errors). Pictures coded as frames decode as before.
+ * OMACVM_VA_INTERLACED=1 sends them to the Mac anyway (tests).
+ *
  * Images in another YUV layout: vaGetImage and vaPutImage between an NV12
  * surface and an I420 or YV12 image (or back) are done here on the CPU, a
  * plain reshuffle of the planes, so the picture is bit for bit the decoded
@@ -196,22 +207,32 @@ static int chromium_max(void)
     return v > INT_MAX ? INT_MAX : (int)v;
 }
 
-/* A config's entry point (VAEntrypointVLD: decoding), 0 when Mesa does not say. */
-static VAEntrypoint config_entrypoint(VADriverContextP ctx, VAConfigID config)
+/* A config's entry point (VAEntrypointVLD: decoding), 0 when Mesa does not say; its
+ * profile into *PROFILE (VAProfileNone then). */
+static VAEntrypoint config_query(VADriverContextP ctx, VAConfigID config, VAProfile *profile)
 {
-    VAProfile profile;
     VAEntrypoint entrypoint = 0;
     VAConfigAttrib *attribs;
     int n = 0;
 
+    *profile = VAProfileNone;
     if (!ctx->vtable->vaQueryConfigAttributes)
         return 0;
     attribs = calloc(ctx->max_attributes > 0 ? ctx->max_attributes : 1, sizeof(*attribs));
-    if (!attribs || ctx->vtable->vaQueryConfigAttributes(ctx, config, &profile, &entrypoint,
-                                                         attribs, &n) != VA_STATUS_SUCCESS)
+    if (!attribs || ctx->vtable->vaQueryConfigAttributes(ctx, config, profile, &entrypoint,
+                                                         attribs, &n) != VA_STATUS_SUCCESS) {
         entrypoint = 0;
+        *profile = VAProfileNone;
+    }
     free(attribs);
     return entrypoint;
+}
+
+static VAEntrypoint config_entrypoint(VADriverContextP ctx, VAConfigID config)
+{
+    VAProfile profile;
+
+    return config_query(ctx, config, &profile);
 }
 
 static VAStatus query_surface_attributes(VADriverContextP ctx, VAConfigID config,
@@ -384,9 +405,9 @@ static int decode_wait_on(void)
 }
 
 /* Decoding and encoding contexts of this process (the kinds of Mesa's codecs on the Mac):
- * whether their vaEndPicture waits, and whether their picture was refused because its
- * surface is an import (see the top). The table grows: a context it missed would not be
- * guarded. */
+ * whether their vaEndPicture waits, whether their picture was refused because its surface is
+ * an import or it is H.264 coded interlaced (see the top). The table grows: a context it
+ * missed would not be guarded. */
 enum { DEC, ENC, KINDS };
 static pthread_mutex_t dec_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct codec_ctx {
@@ -394,12 +415,13 @@ static struct codec_ctx {
     VAContextID id;
     int kind;                   /* DEC or ENC */
     int wait;                   /* vaEndPicture waits for the picture */
-    int refused;                /* this picture was refused: no render or end */
+    int h264;                   /* an H.264 decoder: interlaced pictures are refused */
+    VAStatus refused;           /* this picture was refused (with this): no render or end */
 } *codecs;
 static unsigned ncodecs, codecs_room;
 
 /* 0, or -1 when the table cannot grow */
-static int codec_add(VADriverContextP ctx, VAContextID id, int kind, int wait)
+static int codec_add(VADriverContextP ctx, VAContextID id, int kind, int wait, int h264)
 {
     int ok = 0;
 
@@ -414,7 +436,7 @@ static int codec_add(VADriverContextP ctx, VAContextID id, int kind, int wait)
         }
     }
     if (ncodecs < codecs_room)
-        codecs[ncodecs++] = (struct codec_ctx){ ctx, id, kind, wait, 0 };
+        codecs[ncodecs++] = (struct codec_ctx){ ctx, id, kind, wait, h264, VA_STATUS_SUCCESS };
     else
         ok = -1;
     pthread_mutex_unlock(&dec_lock);
@@ -436,8 +458,9 @@ static int codec_get(VADriverContextP ctx, VAContextID id, struct codec_ctx *out
     return found;
 }
 
-/* A picture of ID begins: refused or not. Its kind, -1 if ID is no such context. */
-static int codec_begin(VADriverContextP ctx, VAContextID id, int refused)
+/* A picture of ID begins, or is refused from now on (REFUSED: the status its calls get,
+ * VA_STATUS_SUCCESS: not refused). Its kind, -1 if ID is no such context. */
+static int codec_begin(VADriverContextP ctx, VAContextID id, VAStatus refused)
 {
     int kind = -1;
 
@@ -498,7 +521,7 @@ static VAStatus end_picture(VADriverContextP ctx, VAContextID context)
     VAStatus st;
 
     if (known && c.refused)
-        return VA_STATUS_ERROR_INVALID_SURFACE;
+        return c.refused;
     st = mesa_end_picture(ctx, context);
     if (st == VA_STATUS_SUCCESS && known && c.wait)
         wait_for_host(ctx);
@@ -1479,7 +1502,8 @@ static VAStatus begin_picture(VADriverContextP ctx, VAContextID context, VASurfa
 {
     struct surf s;
     int imported = import_guard_on() && surf_get(ctx, target, &s) && (s.flags & SURF_IMPORTED);
-    int kind = codec_begin(ctx, context, imported);
+    int kind = codec_begin(ctx, context,
+                           imported ? VA_STATUS_ERROR_INVALID_SURFACE : VA_STATUS_SUCCESS);
     VAStatus st;
 
     if (imported && kind >= 0) {
@@ -1645,15 +1669,91 @@ static VAStatus render_picture(VADriverContextP ctx, VAContextID context, VABuff
     return st;
 }
 
+/* H.264 coded interlaced (see the top): OMACVM_VA_INTERLACED=1 lets it through. */
+static int interlaced_guard_on(void)
+{
+    static int on = -1;
+    const char *env;
+
+    if (on < 0) {
+        env = getenv("OMACVM_VA_INTERLACED");
+        on = !(env && *env == '1');
+    }
+    return on;
+}
+
+static int h264_decoding(VAProfile profile)
+{
+    return profile == VAProfileH264ConstrainedBaseline || profile == VAProfileH264Main ||
+           profile == VAProfileH264High || profile == VAProfileH264MultiviewHigh ||
+           profile == VAProfileH264StereoHigh;
+}
+
+/* Do BUFFERS hold H.264 picture parameters that say frame_mbs_only_flag 0? */
+static int interlaced_picture(VADriverContextP ctx, VABufferID *buffers, int num)
+{
+    int i, found = 0;
+
+    if (!ctx->vtable->vaBufferInfo || !ctx->vtable->vaMapBuffer || !ctx->vtable->vaUnmapBuffer)
+        return 0;
+    for (i = 0; i < num && !found; i++) {
+        VABufferType type;
+        unsigned int size = 0, count = 0;
+        void *data = NULL;
+
+        if (ctx->vtable->vaBufferInfo(ctx, buffers[i], &type, &size, &count) !=
+                VA_STATUS_SUCCESS || type != VAPictureParameterBufferType ||
+            size < sizeof(VAPictureParameterBufferH264))
+            continue;
+        if (ctx->vtable->vaMapBuffer(ctx, buffers[i], &data) != VA_STATUS_SUCCESS || !data)
+            continue;
+        found = !((const VAPictureParameterBufferH264 *)data)->seq_fields.bits.frame_mbs_only_flag;
+        ctx->vtable->vaUnmapBuffer(ctx, buffers[i]);
+    }
+    return found;
+}
+
+/* The first refusal at once, then at most every 10 s with how many there were since. */
+static void say_interlaced_refused(void)
+{
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static struct timespec last;
+    static unsigned since;
+    struct timespec now;
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    pthread_mutex_lock(&lock);
+    if (last.tv_sec && now.tv_sec - last.tv_sec < 10) {
+        since++;
+    } else {
+        fprintf(stderr, "omacvm_drv_video: refused H.264 coded interlaced (fields or MBAFF): "
+                "the Mac's hardware decoder does not decode it; the app gets an error instead "
+                "and can decode it on the CPU");
+        if (since)
+            fprintf(stderr, " (%u more pictures refused in the last %ld s)", since,
+                    (long)(now.tv_sec - last.tv_sec));
+        fputc('\n', stderr);
+        last = now;
+        since = 0;
+    }
+    pthread_mutex_unlock(&lock);
+}
+
 /* Every vaRenderPicture: none for a refused picture (see the top), the fill where it is on,
  * declared sources' regions once this process declared a surface. */
 static VAStatus render_checked(VADriverContextP ctx, VAContextID context, VABufferID *buffers,
                                int num)
 {
     struct codec_ctx c;
+    int known = codec_get(ctx, context, &c);
 
-    if (codec_get(ctx, context, &c) && c.refused)
-        return VA_STATUS_ERROR_INVALID_SURFACE;
+    if (known && c.refused)
+        return c.refused;
+    if (known && c.h264 && interlaced_picture(ctx, buffers, num)) {
+        codec_begin(ctx, context, VA_STATUS_ERROR_UNIMPLEMENTED);
+        say_interlaced_refused();
+        return VA_STATUS_ERROR_UNIMPLEMENTED;
+    }
     return fill_hooked || (logical_hooked && __atomic_load_n(&declared_any, __ATOMIC_RELAXED)) ?
            render_picture(ctx, context, buffers, num) :
            mesa_render_picture(ctx, context, buffers, num);
@@ -2135,12 +2235,15 @@ static VAStatus create_context(VADriverContextP ctx, VAConfigID config, int widt
 {
     VAStatus st = create_context_limited(ctx, config, width, height, flag, targets,
                                          num_targets, context);
+    VAProfile profile;
     int k;
 
     if (st != VA_STATUS_SUCCESS || (k = config_kind(ctx, config)) < 0)
         return st;
+    config_query(ctx, config, &profile);
     /* a decoder or encoder the shim cannot record would not be guarded: none */
-    if (codec_add(ctx, *context, k, k == DEC && decode_wait_on()) < 0) {
+    if (codec_add(ctx, *context, k, k == DEC && decode_wait_on(),
+                  k == DEC && interlaced_guard_on() && h264_decoding(profile)) < 0) {
         destroy_context(ctx, *context);
         return VA_STATUS_ERROR_ALLOCATION_FAILED;
     }
@@ -2236,7 +2339,8 @@ static VAStatus shim_init(VADriverContextP ctx)
         ctx->vtable->vaDestroyContext = destroy_context;
         ctx->vtable->vaTerminate = terminate;
         /* read now: Chromium's sandbox closes later */
-        if (ctx->vtable->vaEndPicture && (decode_wait_on() || import_guard_on())) {
+        if (ctx->vtable->vaEndPicture &&
+            (decode_wait_on() || import_guard_on() || interlaced_guard_on())) {
             mesa_end_picture = ctx->vtable->vaEndPicture;
             ctx->vtable->vaEndPicture = end_picture;
         }
