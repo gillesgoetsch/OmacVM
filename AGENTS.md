@@ -711,7 +711,10 @@ The less obvious ones, with causes and where the fix lives, are in
   holding them until the VM stopped, as `qemu-hvf-free-page-reclaim.patch`
   only maps new memory over them). Do not count a smaller footprint
   (Activity Monitor) as memory back to the Mac: it never counted those
-  pages; the reclaim's own qemu.log lines say what came back. The file
+  pages; the reclaim's qemu.log lines say how much the VM reported and how
+  much of what the worker released is still held (reusable pages count as
+  given back: macOS takes them first, but on a Mac with room they stay
+  resident until it needs them). The file
   cache stays on the Mac, which can only compress it, and macOS's pressure
   stays "normal" while it does; the app's give-back of the cold cache while
   macOS compresses the VM (`src/memory/guest/giveback.sh`) runs only with a

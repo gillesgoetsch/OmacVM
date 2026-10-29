@@ -1,4 +1,4 @@
-# 0062: Memory the VM gives back leaves the Mac (MADV_FREE_REUSABLE before the new backing)
+# 0062: Memory the VM gives back leaves the Mac (moved aside, advised MADV_FREE_REUSABLE on a worker thread)
 
 Status: accepted, built (`vm-memory-reclaim`, QEMU patch
 `qemu-hvf-free-page-reclaim-reusable.patch`, 3.2.12), always on for
@@ -77,9 +77,12 @@ Mac still holds of it (`mach_vm_page_range_query`), up to two more tries
 20 ms apart for pages that were on their way into the compressor, `munmap`.
 The reusable state stays on pages no guest mapping reaches again: the fresh
 mapping takes the range before QEMU acknowledges the report, and the guest
-touches none of these pages until then. A full queue (4096 ranges)
-releases in place; a range that cannot move aside is advised in place.
-`OMACVM_RECLAIM_REUSABLE=0` is the old way.
+touches none of these pages until then. The advice never runs under the
+main lock: a range the worker has no room for (4096 ranges queued) or that
+cannot move aside (`mach_vm_remap` fails) gets the new backing alone, as in
+3.2.11, and qemu.log counts it with the reason. Only the main lock's holder
+adds to the queue, and it looks for room before the move aside, so a range
+moved aside always gets a place. `OMACVM_RECLAIM_REUSABLE=0` is the old way.
 
 The app turns its give-back while macOS compresses the VM (ADR 0059) on only
 with this fix: its QEMU's binary has `MemoryGiveBack.reclaimMarker`, the text
@@ -109,16 +112,30 @@ skip needs no refusal, and what makes guest RAM copy-delay (the hypervisor's
 map) is macOS's to change.
 
 What it shows: `logs/qemu.log` gets a line an hour while the guest reports
-and one at exit (reports, MB back to the Mac, blocks, the main lock's hold per
-report: p99 and longest, and what the releases left on the Mac).
-`OMACVM_RECLAIM_CHECK=1` (tests only) logs, per report, what its ranges
-held before the release and what they left after.
+and one at exit: reports, MB reported (what the guest gave QEMU), blocks, the
+main lock's hold per report (all of `hvf_report_free_pages`: p99, never above
+the longest, and longest), MB not moved aside and why (switched off, macOS
+keeps the pages, the worker's queue full, no room to move them aside), and
+what the worker released and how much of it is still on the Mac (held:
+resident and not reusable, or compressed). `OMACVM_RECLAIM_CHECK=1` (tests
+only) logs, per report, what its ranges held before the release and what
+they left after.
 
 ## Consequences
 
 - Pages macOS is compressing at the moment of the advice are skipped by XNU
   (busy, in the compressor's queue). The worker advises again 20 ms later.
   The gate test allows 5 % of a run's pages to stay that way.
+- Reusable pages count as given back: macOS takes them first, without
+  compressing, whenever it needs memory. On a Mac with room they stay
+  resident until then, or until QEMU quits (MacBook Pro M1 Max, 32 GB: after
+  each browser session with the fix 1.2-1.6 GB was still reusable and went
+  at the quit, 1.7-1.8 GB with the memory-optimized kernel, 0.6-0.8 GB
+  after an idle boot). "None stayed" in the rows below means none stayed
+  held.
+- While the worker falls behind (4096 ranges queued), new ranges get the
+  old way: what the Mac held of them stays until QEMU quits. qemu.log says
+  how much ("not moved aside ... the worker's queue was full").
 - QEMU's footprint (Activity Monitor) does not change: those pages were never
   in it. The fix shows in what the Mac has free and in its compressor, and in
   the qemu.log lines. Activity Monitor's figure for the VM can also show more
@@ -172,6 +189,16 @@ held before the release and what they left after.
   word); memory a child process shares since `fork` (XNU skips the advice
   there, `madvise` returns 0: the rule stops the fix, one line, the status
   file); a read-only range (`madvise` refuses: the same at once).
+  `--overflow`: QEMU's queue and worker with the worker held back until
+  4096 ranges wait. The next report, and later a range that cannot move
+  aside, get the new backing alone: no `madvise` under the BQL (the test's
+  stand-in sleeps 5 ms there, so a hold that misses it shows), counted with
+  the reason; every report's hold covers all it did under the BQL; the
+  worker then releases the 4097 ranges it was given; reported and
+  neighbouring pages read right; the run's qemu.log line says "MB reported",
+  what was not moved aside and why, and a p99 no higher than the longest
+  hold. The behaviour before (the full queue advised in place under the BQL,
+  outside the hold) fails 7 of its 13 rows.
 - `desktop-tests`: the app reads QEMU's word (`MemoryGiveBack.qemuKeeps`) and
   the same session that gives back without it never does with it; the
   warning's drop stays. `src/tests/memory-giveback.sh`: the wiring, the
@@ -192,14 +219,17 @@ held before the release and what they left after.
 - M1 Max rows (MacBook Pro M1 Max, 32 GB, macOS 27.0.1; the final build;
   hidden 4 GB clone of a 3.2.0 test VM through the test app; the Mac had
   room, nothing compressed): 3 browser sessions per mode and kernel. With
-  the fix every report's range left 0 MB on the Mac: 1673-2160 MB held
-  before (stock 7.2.11), 3253-3521 MB (memory-optimized 7.3, THP always,
-  MGLRU), 2705 MB with `page_reporting_order` 9. The old way has no check
-  on this build (it releases in place), so the Mac's counters around
-  QEMU's quit say it: what came back beyond QEMU's footprint, median of 3,
-  -783 MB the old way against -1998 MB with the fix and -1022 MB for a VM
-  with no session (stock); +51, -1696 and -1065 MB (memory-optimized). At
-  the quit the Mac got 1161 MB more held pages back after the old way's
+  the fix every report's range left 0 MB held on the Mac: 1673-2160 MB
+  held before (stock 7.2.11), 3253-3521 MB (memory-optimized 7.3, THP
+  always, MGLRU), 2705 MB with `page_reporting_order` 9; the Mac had room,
+  so those pages stayed resident as reusable (1.2-1.6 GB at each quit,
+  1.7-1.8 GB memory-optimized). The
+  old way has no check on this build (it moves nothing aside), so the
+  Mac's counters around QEMU's quit say it: what came back beyond QEMU's
+  footprint (the rise in free pages less the reusable pages freed), median
+  of 3, -783 MB the old way against -1998 MB with the fix and -1022 MB for a
+  VM with no session (stock); +51, -1696 and -1065 MB (memory-optimized).
+  At the quit the Mac got 1161 MB more held pages back after the old way's
   sessions than after the fix's (41 % of the 2821 MB they reported), 1752
   MB with the memory-optimized kernel (38 % of 4557 MB). (The offset
   is below 0 also with no session: QEMU's footprint counts more than comes

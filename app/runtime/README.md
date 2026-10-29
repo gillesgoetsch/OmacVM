@@ -254,15 +254,22 @@ commit 82927e9. Changes here:
   memory in its place (MAP_FIXED; Darwin's `MADV_DONTNEED` keeps what the
   guest wrote). `patches/qemu-hvf-free-page-reclaim-reusable.patch` (after
   `qemu-hvf-mapped-sections.patch`; both earlier patches stay as they are)
-  first tells macOS the range's old pages may go (`MADV_FREE_REUSABLE`):
-  macOS frees an anonymous object's pages only when the whole object goes,
-  and guest RAM is a few 128 MB objects, so without it the old pages stayed
-  resident or compressed, in no footprint, until QEMU quit. Now their
-  compressed copies go at once and macOS takes the resident ones first,
-  without compressing them; only pages macOS is compressing at that very
-  moment stay. `logs/qemu.log`: a line an hour while the guest reports and
-  one at exit (reports, MB back to the Mac, the main lock's hold per report:
-  p99 and longest). `OMACVM_RECLAIM_REUSABLE=0`: the old way;
+  moves the range's old pages aside under the main lock (`mach_vm_remap`,
+  no page touched) and has a worker thread tell macOS they may go
+  (`MADV_FREE_REUSABLE`, then unmap): macOS frees an anonymous object's
+  pages only when the whole object goes, and guest RAM is a few 128 MB
+  objects, so without it the old pages stayed resident or compressed, in no
+  footprint, until QEMU quit. Now their compressed copies go at once and
+  the resident ones are reusable: macOS takes them first, without
+  compressing them (on a Mac with room they stay resident until then); only
+  pages macOS is compressing at that very moment stay held. Nothing is
+  advised under the main lock: a range the worker has no room for (4096
+  queued) or that cannot move aside gets the old way, counted.
+  `logs/qemu.log`: a line an hour while the guest reports and one at exit
+  (reports, MB reported, the main lock's hold per report over all of
+  `hvf_report_free_pages`: p99 and longest, MB not moved aside and why,
+  what the worker released and what of it is still held on the Mac).
+  `OMACVM_RECLAIM_REUSABLE=0`: the old way;
   `OMACVM_RECLAIM_CHECK=1` (tests): a line per report with what it left on
   the Mac. The worker's first line ("free page reclaim gives the pages back
   to macOS") is the text the app looks for in this binary to turn its
@@ -273,7 +280,8 @@ commit 82927e9. Changes here:
   file `OMACVM_RECLAIM_STATUS` names (the app then turns that give-back
   off). `Tests/memory/test-reclaim.sh` at build time (guest RAM shared like
   QEMU's, with a real `hv_vm_map` where the Mac lets the build make a VM;
-  `--keeps`: a refused and a skipped advice) and in CI
+  `--keeps`: a refused and a skipped advice; `--overflow`: the worker
+  behind until its queue is full, no advice under the BQL) and in CI
   (`src/tests/memory-reclaim.sh`); ADR 0062
 - `patches/mesa-kosmickrisp-*.patch`: changes to KosmicKrisp, applied by
   `build-kosmickrisp.sh` in name order (their hash is in its stamp).
