@@ -238,6 +238,10 @@ run_api_test("test-video-decode", ("VideoToolbox", "CoreMedia", "CoreVideo", "Co
 for video_env in (None, {"OMACVM_TEST_THREAD_SYNC": "1"}, {"OMACVM_VIDEO_DECODE_SYNC": "1"}):
     run_api_test("test-video-decode-async", ("VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"),
                  env=video_env)
+# The Mac's video service hangs at QEMU's start (virgl-videotoolbox-session-queue.patch): the
+# caps wait for it once, 10 s at most; the next caps query and a decoder's create do not wait.
+run_api_test("test-video-decode-async", ("VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"),
+             env={"OMACVM_TEST_VIDEO_PROBE_HANG_MS": "300000"})
 run_api_test("test-video-decode", ("VideoToolbox", "CoreMedia", "CoreVideo", "CoreFoundation"),
              env={"OMACVM_VIDEO_DECODE_SYNC": "1"})
 # The rows and columns past a decoded picture (virgl-video-plane-edge.patch): both copy paths,

@@ -1416,6 +1416,12 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-resource-logical-size.patch"
+# OmacVM: a decoder's VideoToolbox session starts, changes and ends on its own queue, never on
+# QEMU's GPU thread (1.6 s there when macOS was short of memory, 2026-10-28), and a decoded
+# picture has one time limit (OMACVM_VIDEO_GIVEUP_MS, 250 ms) for the waits and fences behind it.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-videotoolbox-session-queue.patch"
+grep -q 'dispatch_async_f(codec->dec_q, codec, dec_end_on_queue)' "$virgl_source/src/vrend/virgl_video_vt.c" || \
+  die "virgl_video_vt.c: VideoToolbox sessions are not on the decoders' queues (session-queue patch)"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
