@@ -14,7 +14,8 @@
  * window. In a process whose executable is named ghostty, and only there, glvnd gets a wrapper
  * for eglInitialize, where Mesa picks its driver: LIBGL_ALWAYS_SOFTWARE=1 while Mesa's
  * eglInitialize runs (llvmpipe, OpenGL 4.6, on the VM's CPU), removed again right after, so
- * the programs Ghostty starts (a browser from its shell) keep the GPU. A LIBGL_ALWAYS_SOFTWARE,
+ * the programs Ghostty starts keep the GPU (with the variable on Ghostty's command line instead,
+ * eglinfo from its shell got llvmpipe). A LIBGL_ALWAYS_SOFTWARE,
  * MESA_LOADER_DRIVER_OVERRIDE or GALLIUM_DRIVER already set is left alone: that choice wins.
  * Set and removed under a mutex on every call, also when Mesa's call fails. Risk left: the
  * environment changes while another thread of Ghostty might read it (getenv is not safe against
