@@ -8,12 +8,13 @@ in more words.
 In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
 file cache while macOS compresses it; qemu.log, the app menu and `omacvm check` say when the
 VM stood still and why; a video that starts no longer holds up the whole display; H.264
-1080p and other such videos show at their own size; and in Full screen including notch the
-bar beside the notch comes back after a display change. The memory-optimized kernel builds
+1080p and other such videos show at their own size, in Chromium odd-size videos too; and in
+Full screen including notch the bar beside the notch comes back after a display change.
+Update VM no longer restarts the lock screen of a locked VM, the memory-optimized kernel builds
 again, and `omacvm check` warns about Google Chrome 154 or older on an M4. Needs the app
 update, then shut the VM down and start it again (memory, stalls, video starts, full
-screen), and Update VM (video sizes, the stall note in the VM, the kernel: then Build Now),
-then quit and start Chrome and mpv again.
+screen), and Update VM (video sizes, the lock screen, the stall note in the VM, the kernel:
+then Build Now), then quit and start Chrome, Chromium and mpv again.
 
 - **The memory-optimized kernel builds again (#608).** Arch Linux ARM's kernel 7.3 has a
   commented-out line in its list of sources, and OmacVM counted it, so the kernel build stopped
@@ -160,29 +161,28 @@ then quit and start Chrome and mpv again.
 
 - **Update VM no longer restarts Omarchy's lock screen while the VM is locked, and Omanotch
   follows Omarchy's updates again after an unlock (#612).** Before it restarts the Omarchy shell
-  for new bar widgets, OmacVM asks Omarchy whether the session is locked. In Update VM the answer
-  came with a warning in front, so a locked session read as unlocked: the shell, which draws the
-  lock screen, was restarted under the lock (the new shell locked again within about 2 seconds),
-  and Update VM waited 30 seconds longer. And Omarchy (omarchy-mac 4.0.x with Quickshell 0.3.2)
-  keeps answering "locked" after the first unlock (omacom/omarchy-mac#738): Omanotch's copies of
-  Omarchy's bar and background then stopped following Omarchy's updates until the next login,
-  and an Update VM that installs Omanotch again could wait hours for them. OmacVM reads Omarchy's
-  lock status now; while the VM is locked, the shell restarts right after the unlock. Not
-  OmacVM's: after every unlock Omarchy does not lock the VM again (lock key, idle lock) until its
-  shell restarts (an open fix: omacom/omarchy-mac#752).
-  `omacvm check` warns while it is stuck; `omarchy-restart-shell` after an unlock brings the lock
-  back for the next lock only.
+  for new bar widgets, OmacVM asks Omarchy whether the session is locked. In Update VM the
+  answer came with a warning in front, so a locked session read as unlocked: the shell, which
+  draws the lock screen, was restarted under the lock (the new shell locked again within about 2
+  seconds), and Update VM waited 30 seconds longer. And Omarchy (omarchy-mac 4.0.x with
+  Quickshell 0.3.2) keeps answering "locked" after the first unlock (omacom/omarchy-mac#738):
+  Omanotch's copies of Omarchy's bar and background then stopped following Omarchy's updates
+  until the next login, and an Update VM that installs Omanotch again could wait hours for them.
+  OmacVM reads Omarchy's lock status now; while the VM is locked, the shell restarts right after
+  the unlock. Not OmacVM's: after every unlock Omarchy does not lock the VM again (lock key,
+  idle lock) until its shell restarts (an open fix: omacom/omarchy-mac#752). `omacvm check`
+  warns while it is stuck; `omarchy-restart-shell` after an unlock brings the lock back for the
+  next lock only. Needs Update VM (`omacvm check`'s warning only the app update).
 
-- **Odd-size videos in Omarchy's Chromium are no longer one column narrower.** In an OmacVM.app
-  VM, Arch Linux ARM's Chromium (Omarchy's default browser) decodes on the Mac through OmacVM's
-  V4L2 decoder, whose buffers are the picture rounded up to even. A video of an odd width or
-  height (a VP9 video of 853x480 or 1001x563) came out squeezed by that extra column and row.
-  The decoder now tells the Mac the picture's size for such buffers. Measured in a test VM
-  (Chromium 153, Mac mini M4): 853x480 and 1001x563 line ratios exact (1.0002; 1.00005/1.00007),
-  as with CPU decoding (3.2.11: one column, and one column and one row, too many in their
-  place); 854x480, 720p, 1080p and 1000x562 were and stay exact. Needs Update VM (the 3.2.11
-  app is enough).
-
+- **Odd-size videos in Omarchy's Chromium are no longer one column narrower (#613).** In an
+  OmacVM.app VM, Arch Linux ARM's Chromium (Omarchy's default browser) decodes on the Mac
+  through OmacVM's V4L2 decoder, whose buffers are the picture rounded up to even. A video of an
+  odd width or height (a VP9 video of 853x480 or 1001x563) came out squeezed by that extra
+  column and row. The decoder now tells the Mac the picture's size for such buffers. Measured in
+  a test VM (Chromium 153, Mac mini M4): 853x480 and 1001x563 at their own size (ratio within
+  0.0005: 1.0002; 1.00005/1.00007), as with CPU decoding (3.2.11: one column, and one column and
+  one row, too many in their place); 854x480, 720p, 1080p and 1000x562 were and stay exact.
+  Needs Update VM (the 3.2.11 app is enough).
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
