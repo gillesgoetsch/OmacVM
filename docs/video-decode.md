@@ -505,15 +505,17 @@ Limits:
 - **AV1 in Firefox and mpv**: FFmpeg sends only the tile data of an AV1 frame,
   without its headers, and VideoToolbox needs the headers. Chrome sends the
   whole frame. So AV1 is offered to Chromium-based browsers only.
-- **VA-API conversions on the GPU give black pictures**: an image in RGB
-  (FFmpeg's `hwdownload,format=bgra`) and VA-API video processing
-  (`scale_vaapi`, GStreamer's `vapostproc`). Mesa does them with its video
-  compositor, whose shaders the Mac's OpenGL does not run as Mesa means
-  them (a swizzled sampler, 2D textures read as 2D arrays, two swizzles of
-  one texture). Read the picture out in YUV and convert or scale on the CPU
-  (`hwdownload,format=nv12,scale=...`). The other YUV layout comes from the
-  shim (above); outside the desktop session (SSH, sudo, services) it is used
-  only with `LIBVA_DRIVER_NAME=omacvm`, without it that one is black too.
+- **VA-API conversions on the GPU** (to RGB: FFmpeg's `hwdownload,format=bgra`
+  and `scale_vaapi=format=bgra`, GStreamer's `vapostproc`, Chrome's conversion
+  on X11) were black before 3.2.0; the compositor fixes of 3.2.0
+  ([above](#chromes-converted-frames)) made them draw. Measured on 3.2.11
+  (H.264 1920x1080, HEVC 1000x562): `hwdownload,format=bgra` and
+  `scale_vaapi=format=bgra` show the test card in place (its lines and bands
+  at their rows and columns). They are RGB, so not bit for bit; YUV to YUV
+  draws with the row pairs below. For bit-exact pictures read the picture out
+  in YUV (`hwdownload,format=nv12`); the other YUV layout comes from the shim
+  (above), which outside the desktop session (SSH, sudo, services) is used
+  only with `LIBVA_DRIVER_NAME=omacvm`.
 - **Motion-adaptive deinterlacing gives a green picture**: mpv's
   `--vf=vavpp` with its default deinterlacer (or `--deinterlace=yes` with
   `--hwdec=vaapi`), FFmpeg's `deinterlace_vaapi` in its default or
