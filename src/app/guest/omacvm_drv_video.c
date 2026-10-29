@@ -120,8 +120,8 @@
  * shim refuses vaBeginPicture on a decoding or encoding context whose target is such a
  * surface (VA_STATUS_ERROR_INVALID_SURFACE, logged at most every 10 s), and the context's
  * vaRenderPicture and vaEndPicture until its next picture begins in a surface Mesa made:
- * the app decodes (or encodes) that video on the CPU. Video processing into or from
- * imports stays as it is. The shim remembers every import until the app destroys it.
+ * the app gets an error instead of a crash. Video processing into or from imports stays
+ * as it is. The shim remembers every import until the app destroys it.
  * OMACVM_VA_IMPORT_GUARD=0 turns this off (tests).
  *
  * Images in another YUV layout: vaGetImage and vaPutImage between an NV12
@@ -1238,9 +1238,8 @@ static void say_import_refused(int kind)
         since++;
     } else {
         fprintf(stderr, "omacvm_drv_video: refused %s a surface made from the app's memory "
-                "(Mesa's virgl driver would crash there); the app %s that video on the CPU",
-                kind == ENC ? "encoding from" : "decoding into",
-                kind == ENC ? "encodes" : "decodes");
+                "(Mesa's virgl driver would crash there); the app gets an error instead of a "
+                "crash", kind == ENC ? "encoding from" : "decoding into");
         if (since)
             fprintf(stderr, " (%u more refused in the last %ld s)", since,
                     (long)(now.tv_sec - last.tv_sec));
