@@ -1,6 +1,8 @@
 import Foundation
 
-/// When the VM gives its cold file cache back to the Mac (ADR 0059).
+/// When the VM gives its cold file cache back to the Mac (ADR 0059). It
+/// reaches macOS only through QEMU's reclaim fix (`pagesGoBack`, ADR 0062);
+/// without it the cache leaves QEMU's footprint and the Mac keeps the pages.
 ///
 /// Linux keeps every file it read in its page cache. In a VM that is memory
 /// the Mac backs but cannot drop: to macOS it is the VM's own memory, so

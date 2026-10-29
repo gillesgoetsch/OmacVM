@@ -81,7 +81,9 @@ final class Runner {
             "-device", "virtio-tablet-pci,romfile=",
             "-object", "rng-random,id=rng0,filename=/dev/urandom",
             "-device", "virtio-rng-pci,rng=rng0",
-            // Linux reports free memory, so the Mac gets it back.
+            // Linux reports free memory; QEMU's reclaim fix gives those pages
+            // back to macOS (ADR 0062; OMACVM_RECLAIM_REUSABLE=0, or macOS
+            // keeping them, leaves them held until QEMU quits).
             "-device", "virtio-balloon-pci,free-page-reporting=on",
             // No recording without the microphone permission: QEMU's recording
             // would wait minutes for an answer (silence, and a sound that
