@@ -5,9 +5,19 @@ in more words.
 
 ## 3.2.12 (unreleased)
 
-- **The memory-optimized kernel builds again.** Arch Linux ARM's kernel 7.3 has a commented-out
-  line in its list of sources, and OmacVM counted it, so the kernel build stopped at once with
-  "thp-pkgbuild: source and md5sums differ in length" on every route: turning the
+In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
+file cache while macOS compresses it; qemu.log, the app menu and `omacvm check` say when the
+VM stood still and why; a video that starts no longer holds up the whole display; H.264
+1080p and other such videos show at their own size; and in Full screen including notch the
+bar beside the notch comes back after a display change. The memory-optimized kernel builds
+again, and `omacvm check` warns about Google Chrome 154 or older on an M4. Needs the app
+update, then shut the VM down and start it again (memory, stalls, video starts, full
+screen), and Update VM (video sizes, the stall note in the VM, the kernel: then Build Now),
+then quit and start Chrome and mpv again.
+
+- **The memory-optimized kernel builds again (#608).** Arch Linux ARM's kernel 7.3 has a
+  commented-out line in its list of sources, and OmacVM counted it, so the kernel build stopped
+  at once with "thp-pkgbuild: source and md5sums differ in length" on every route: turning the
   memory-optimized kernel on failed (the VM went back to what it had), and Build Now in Update
   VM kept the old kernel. It now skips such lines, as Arch's own tools do. After the update:
   Update VM and Build Now (`omacvm update --vm NAME --kernel`), or turn the kernel on again
@@ -15,6 +25,7 @@ in more words.
 
 - **`omacvm check` warns when Google Chrome 154 or older runs on an M4 or newer Mac (#611).** Those
   versions crash on every video they decode on the CPU there; Chrome 155 fixes it (update Chrome).
+  Needs only the app update (or `omacvm update`); no Update VM.
 
 - **H.264 1080p and other videos whose decoder works at a larger size show at their own size
   (#610).** In an OmacVM.app VM, Google Chrome on Wayland and mpv (`hwdec=vaapi`) still showed
@@ -41,15 +52,11 @@ in more words.
   until its decoder is there, and a picture given up is never written later into a surface the
   app may already use again. Other apps' frames still wait for a late picture, up to those 250
   ms (the VM's frames finish in one order). In a test where a decoder took 1.6 s to start, the
-  app's frame commands returned in 0.02 ms (median of 20, 19 within 0.06 ms) and another app's
-  frame was done after 250 ms; before, the whole graphics thread waited the 1.6 s. When the
+  app's frame commands returned in 0.02-0.5 ms (three runs) and another app's frame was done
+  after 250 ms; before, the whole graphics thread waited the 1.6 s. When the
   Mac's video service does not answer at QEMU's start, the first question for what it can
   decode waits once, 10 s at most (before: 10 s for each codec asked, 60 s in all). Needs only
   the new app, from the VM's next start.
-
-Memory an OmacVM.app VM gives back now really leaves the Mac, and the VM gives back its
-file cache not used lately while macOS compresses it (3.2.11 had that off). Needs only the
-app update.
 
 - **Memory the VM gives back now leaves the Mac (#603).** When Linux in an OmacVM.app VM
   frees memory, it tells QEMU, which puts fresh memory in its place. macOS kept the old
@@ -66,11 +73,11 @@ app update.
   4 GB VM after a browser session (3 runs each way): none of the 1.7-2.2 GB the Mac still
   held stayed held (3.3-3.5 GB with the memory-optimized kernel); that Mac had room, so
   1.2-1.6 GB of it stayed in memory, marked, until the VM stopped (1.7-1.8 GB with that
-  kernel). The old way held 1.2 GB more until the VM stopped (1.8 GB with that kernel). A drop of 4.1 GB of file cache that
-  macOS had compressed: none stayed held. QEMU's main lock per report of freed memory: about
-  1 ms on the mini (the old way 0.4-0.7 ms, and 16.5 ms in one run with 99 % of the pages
-  compressed); on the M1 Max up to 8 ms either way, and
-  2.2 ms at most in that drop (the old way up to 26 ms while macOS compressed). A timer in
+  kernel). The old way held 1.2 GB more until the VM stopped (1.8 GB with that kernel). A
+  drop of 4.1 GB of file cache that macOS had compressed: none stayed held. QEMU's main lock
+  per report of freed memory: about 1 ms on the mini (the old way 0.4-0.7 ms, and 16.5 ms in
+  one run with 99 % of the pages compressed); on the M1 Max up to 8 ms either way, and 2.2 ms
+  at most in that drop (the old way up to 26 ms while macOS compressed). A timer in
   every VM CPU saw no stall in either drop. Activity Monitor's figure for the VM does not
   change with this: those pages were never in it. `logs/qemu.log` says how much the VM
   reported and how much of it is still on the Mac. Needs only the new app, from the VM's
@@ -85,8 +92,8 @@ app update.
   give-back came within 30 s, while macOS still called its memory pressure normal; the VM
   gave back 1.2 GB of file cache (2.8 GB before), and of the 3.2 GB the Mac still held of
   what the VM gave back in that run, none stayed held. With the memory-optimized kernel:
-  1.1 of 2.5 GB, and none of 4.1 GB stayed held. The same row without the fix waited for macOS's
-  warning, 1.5 minutes in, to drop the cache, and so did 3.2.11's own app (no give-back in
+  1.1 of 2.5 GB, and none of 4.1 GB stayed held. The same row without the fix waited for
+  macOS's warning, 1.5 minutes in, to drop the cache, and so did 3.2.11's own app (no give-back in
   5 minutes). When the Mac ran short faster, macOS's warning came first and dropped the
   whole cache, as before. If macOS keeps the pages anyway on a Mac (it refuses QEMU's
   advice, or half or more of what it held stays held), QEMU goes back to the old way for
@@ -132,22 +139,24 @@ app update.
   (short stalls can be missed). The note comes only for that memory cause, which has so far
   been shown only in tests (#595). The note needs Update VM; the rest only the new app.
 
-- **Full screen including notch: the bar beside the notch comes back after a display change.**
-  With an OmacVM.app VM in "Full screen including notch" on a MacBook with an external display,
-  the bar beside the notch could stay away after unplugging and plugging in displays or sleep
-  (the MacBook's own display gone for a moment, or waking after the external one): the VM sat
-  below the notch until full screen was left and entered again. macOS had laid the window out
-  for the external display while it still named the MacBook's, and OmacVM took that for Split
-  View and gave up the strip for the rest of that full screen. Now that counts as a display
-  change: once the displays settle and the Mac is unlocked, the VM covers the strip again,
-  without leaving full screen (macOS is asked to lay its full screen out again, at most 3
-  times per display change; every later display change gets its own tries). Until then
-  `omacvm check` warns that a display change moved the window below the notch; if macOS still
-  keeps it there, check says so and what to do: leave full screen and enter it again (when
-  macOS shows its menu bar in full screen: its menu bar setting or Keep the Dock and hot
-  corners away first). Needs only the app update, from the VM's next start (a
-  VM that runs across the update keeps the old behaviour until it is shut down); no Update VM.
-
+- **Full screen including notch: the bar beside the notch comes back after a display change
+  (#602).** With an OmacVM.app VM in "Full screen including notch" on a MacBook with an external
+  display, the bar beside the notch could stay away after unplugging and plugging in displays or
+  sleep (the MacBook's own display gone for a moment, or waking after the external one): the VM
+  sat below the notch until full screen was left and entered again. macOS had laid the window
+  out for the external display while it still named the MacBook's, and OmacVM took that for
+  Split View and gave up the strip for the rest of that full screen. Now that counts as a
+  display change: once the displays settle and the Mac is unlocked, the VM covers the strip
+  again, without leaving full screen (macOS is asked to lay its full screen out again, at most 3
+  times per display change; every later display change gets its own tries). Until then `omacvm
+  check` warns that a display change moved the window below the notch; if macOS still keeps it
+  there, check says so and what to do: leave full screen and enter it again (when macOS shows
+  its menu bar in full screen: its menu bar setting or Keep the Dock and hot corners away
+  first). On a MacBook Pro M1 Max with its display switched off for 10 s, 3.2.10 lost the strip
+  3 times of 3 and this version covered it 3 of 3; in those rows macOS laid the window out again
+  by itself, so OmacVM's own request for that has run only in tests. Needs only the app update,
+  from the VM's next start (a VM that runs across the update keeps the old behaviour until it is
+  shut down); no Update VM.
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
