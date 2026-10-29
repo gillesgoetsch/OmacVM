@@ -1,49 +1,94 @@
 #!/bin/bash
-# restart-shell.sh [--after-unlock]: the Omarchy shell again, so the bar
-# widgets an update changed load (guest/install.sh runs it as the desktop
-# user, at the end of an apply). Never while the session is locked: Omarchy's
-# lock screen lives in the shell, and a restart leaves Hyprland's "lockscreen
-# app died" screen behind. Locked: a user unit (omacvm-restart-shell) runs
-# this again with --after-unlock, which restarts the shell right after the
-# unlock. It ends without one when the shell stops answering (the session
-# ended, or the shell restarted anyway: either way the next shell loads the
-# new widgets).
+# restart-shell.sh [--after-unlock]: what an apply owes the running
+# Omarchy shell, done while the session is open: copies of bar widgets staged
+# under the lock go in place and queued ones are enabled (omacvm-plugins),
+# the colour fix reaches the user's clones of Omarchy's plugins
+# (shell-colors.py), then the shell restarts once if a widget it had loaded
+# changed (the flag ~/.local/state/omacvm/restart-shell). Run as the desktop
+# user, at the end of an apply (guest/install.sh) and at login
+# (omacvm-plugins.service).
 #
-# Locked = Omarchy's lock status (requested, sessionLocked or secure, read at
-# the call). Not `omarchy-shell lock isLocked`: with Quickshell 0.3.2 and
-# older it answers true after the first unlock until the shell restarts
-# (omarchy-mac#738; Quickshell 18c95fae, Omarchy's own fix omacom/omarchy#14978).
+# Never while the session is locked (session-lock.sh; busy counts as locked):
+# Omarchy's lock screen lives in the shell. A restart leaves Hyprland's
+# "lockscreen app died" screen behind, and a plugin write or rescan brings
+# the lock screen back without its password field. Locked: a user unit
+# (omacvm-restart-shell) runs this again with --after-unlock, which does it
+# right after the unlock. It ends without doing anything when the shell is
+# gone (logout, shutdown): the files stay, and the next login does it.
 source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null
 # Update VM runs this without a locale. qs then prints Qt's locale warning
 # before each answer, which also broke omarchy-restart-shell's own lock check
 # (it took a live lock for a dead one: killed the lock screen and locked again).
 export LC_ALL=C.UTF-8
+here=$(cd "$(dirname "$0")" && pwd)
+self=$here/$(basename "$0")
+# shellcheck source=session-lock.sh
+source "$here/session-lock.sh"
+ST=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm
+FLAG=$ST/restart-shell
+UNIT=omacvm-restart-shell.service
+PLUGINS=/usr/local/bin/omacvm-plugins
+COLORS=/usr/local/lib/omacvm/shell-colors.py
 
-# The last line of an answer (in case the warning comes anyway).
-ask() { omarchy-shell lock "$1" 2>/dev/null | tail -n 1; }
-up() { omarchy-shell shell ping >/dev/null 2>&1; }
-locked() {
-  local s
-  s=$(ask status)
-  if [[ $s == "{"* ]]; then
-    [[ $s == *'"requested":true'* || $s == *'"sessionLocked":true'* || $s == *'"secure":true'* ]]
-  else
-    [[ $(ask isLocked) == true ]]   # an Omarchy without the status call
+owed() {
+  local d
+  [[ -e $FLAG || -s $ST/pending-plugins || -s $ST/pending-plugins-off || -s $ST/pending-clock ]] && return 0
+  for d in "$ST"/plugins-staged/*/; do [[ -d $d ]] && return 0; done
+  return 1
+}
+shell_pid() { pgrep -u "$(id -u)" -x quickshell 2>/dev/null | head -n 1; }
+
+# Everything owed, the session open. False when Omarchy refused the restart
+# (the session locked again meanwhile): the flag stays.
+run_owed() {
+  local r before
+  if [[ -x $PLUGINS ]]; then "$PLUGINS"; fi
+  if [[ -x $COLORS && -d $HOME/.config/omarchy/plugins ]]; then
+    r=$("$COLORS" "$HOME/.config/omarchy/plugins" 2>&1)
+    case $r in patched*|restored*) echo "Omarchy shell colours: $r"; : > "$FLAG" ;; esac
   fi
+  [[ -e $FLAG ]] || return 0
+  before=$(shell_pid)
+  if ! omarchy-restart-shell >/dev/null 2>&1 && [[ $(shell_pid) == "$before" ]]; then
+    return 1
+  fi
+  rm -f "$FLAG"
+  # An enable that came before the shell's rescan had read the new folder
+  # (it reads in the background): the new shell has it.
+  if [[ -s $ST/pending-plugins && -x $PLUGINS ]]; then "$PLUGINS"; fi
+  return 0
 }
 
-if [[ ${1:-} == --after-unlock ]]; then
-  while up && locked; do sleep 5; done
-  up || exit 0
-  sleep 2
-  exec omarchy-restart-shell
-fi
+case ${1:-} in
+  --after-unlock)
+    down=0 tries=0
+    while owed; do
+      case $(lock_state) in
+        open)
+          down=0
+          sleep 2
+          if [[ $(lock_state) == open ]]; then
+            run_owed && exit 0
+            tries=$((tries + 1))
+            (( tries < 3 )) || exit 0
+          fi ;;
+        down) down=$((down + 1)); (( down < 2 )) || exit 0 ;;   # twice: not a restart in between
+        *) down=0 ;;
+      esac
+      sleep 5
+    done
+    exit 0 ;;
+esac
 
-up || exit 0
-if ! locked; then
-  omarchy-restart-shell >/dev/null 2>&1
+owed || exit 0
+case $(lock_state) in
+  down) rm -f "$FLAG"; exit 0 ;;   # the next shell loads what is in place, the next login the rest
+  open) run_owed && exit 0 ;;
+esac
+if systemctl --user is-active --quiet "$UNIT" 2>/dev/null; then
+  # It reads the files when the session opens: this apply's are there.
+  echo "the Omarchy shell gets the new bar widgets right after the next unlock (already waiting)"
   exit 0
 fi
-self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-systemd-run --user --quiet --collect --unit=omacvm-restart-shell bash "$self" --after-unlock 2>/dev/null || true
-echo "the Omarchy shell restarts after the next unlock (new bar widgets)"
+systemd-run --user --quiet --collect --unit="${UNIT%.service}" bash "$self" --after-unlock 2>/dev/null || true
+echo "the Omarchy shell gets the new bar widgets right after the next unlock"

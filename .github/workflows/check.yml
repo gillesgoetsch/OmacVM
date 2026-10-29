@@ -283,6 +283,9 @@ jobs:
       - name: New bar widgets load after Update VM, also after an unlock (Omarchy's lock status, not isLocked)
         run: src/tests/restart-shell.sh
 
+      - name: Update VM on a locked VM writes no bar widget and asks no rescan until the unlock
+        run: src/tests/plugin-lock.sh
+
       - name: omacvm check warns when Omarchy does not lock again after an unlock
         run: src/tests/lock-stuck-check.sh
 
@@ -782,6 +785,9 @@ jobs:
 
       - name: Omarchy's shell colours on Qt 6.12 on Linux (GNU tools, the live shell's log by its pid)
         run: src/tests/shell-colors.sh
+
+      - name: Bar widgets under Omarchy's lock on Linux (GNU tools, flock, as in the VM)
+        run: src/tests/plugin-lock.sh
 
       - name: OmacVM's edits of Omarchy's shell on Linux (GNU tools, as in the VM)
         run: src/tests/omarchy-shell.sh
