@@ -31,17 +31,26 @@ check "runtime build checks its SHA-256" grep -q 'verify_file_sha .*"$reclaim_re
 check "runtime build runs its test on the patched source" \
   grep -q 'Tests/memory/test-reclaim.sh" "$source_dir"' "$B"
 check "the test's files are in the runtime inputs" grep -q 'Tests/memory/\*' "$R/app/scripts/build-app.sh"
-# Under the main lock: stage-2 unmap, the old range moved aside (or advised in place
-# when it cannot move), the new backing, stage-2 map. The worker: advice, then unmap.
+# Under the main lock: stage-2 unmap, the old range moved aside (only with room for it on
+# the worker's queue), the new backing, stage-2 map; never the advice. The worker: advice, then unmap.
 seq=$(awk '/^\+static mach_vm_address_t omacvm_reclaim_backing\(/ { on = 1 } on && /^\+}$/ { exit } on' "$P" |
   grep -o -e 'hv_vm_unmap(' -e 'mach_vm_remap(' -e 'MADV_FREE_REUSABLE' -e 'MAP_FIXED' -e 'hv_vm_map(' | tr '\n' ' ')
-check "backing: unmap, move aside (else advice), MAP_FIXED, map (was: $seq)" \
-  test "$seq" = "hv_vm_unmap( mach_vm_remap( MADV_FREE_REUSABLE MAP_FIXED hv_vm_map( "
+check "backing: unmap, move aside, MAP_FIXED, map, no advice (was: $seq)" \
+  test "$seq" = "hv_vm_unmap( mach_vm_remap( MAP_FIXED hv_vm_map( "
+advice=$(grep -c '^+.*madvise(' "$P")
+in_release=$(awk '/^\+static OmacvmReclaimPages omacvm_reclaim_release\(/ { on = 1 } on && /^\+}$/ { exit } on' "$P" |
+  grep -c 'madvise(')
+check "no advice under the main lock: madvise only in the worker's release ($in_release of $advice)" \
+  test "$advice/$in_release" = "1/1"
+check "a range moves aside only with room on the worker's queue" grep -q '^+    } else if (!omacvm_reclaim_room()) {$' "$P"
 seq=$(awk '/^\+static OmacvmReclaimPages omacvm_reclaim_release\(/ { on = 1 } on && /^\+}$/ { exit } on' "$P" |
   grep -o -e 'MADV_FREE_REUSABLE' -e 'munmap(' | tr '\n' ' ')
 check "release: the advice, then unmap (was: $seq)" test "$seq" = "MADV_FREE_REUSABLE munmap( "
 check "the release runs on a worker thread at utility QoS" grep -q '^+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);' "$P"
-check "every range moved aside is queued for the worker" grep -q '^+        omacvm_reclaim_queue(aside, size, 0);' "$P"
+check "every range moved aside is queued for the worker" \
+  grep -q '^+    } else if (aside && !omacvm_reclaim_queue(aside, size, 0)) {$' "$P"
+check "each report's hold is timed from the start of hvf_report_free_pages" \
+  bash -c 'grep -q "^+    int64_t start = get_clock();$" "$1" && grep -q "^+    omacvm_reclaim_report(start, gpa, host, size, flags);$" "$1"' _ "$P"
 check "the old comment against MADV_FREE_REUSABLE is gone" \
   bash -c '! grep -q "^+.*Unlike MADV_FREE_REUSABLE" "$1"' _ "$P"
 check "OMACVM_RECLAIM_REUSABLE=0 turns it off" grep -q 'getenv("OMACVM_RECLAIM_REUSABLE")' "$P"
@@ -57,9 +66,14 @@ check "  the app's status file: OMACVM_RECLAIM_STATUS, reclaim=keeps" \
 check "the worker's first line has the app's marker" \
   grep -q '^+    info_report("OmacVM: free page reclaim gives the pages back to macOS "$' "$P"
 check "OMACVM_RECLAIM_CHECK=1 for tests" grep -q 'getenv("OMACVM_RECLAIM_CHECK")' "$P"
-for line in "free page reporting %s:" "main lock held p99" "reclaim check:" "macOS keeps the pages the VM" "madvise refused: %s"; do
+for line in "free page reporting %s:" "reported in %" "main lock held per report p99" "MB not moved aside (%s)" \
+    "the worker released %.0f MB" "reclaim check:" "macOS keeps the pages the VM" "madvise refused: %s"; do
   check "patch logs '$line'" grep -qF "$line" "$P"
 done
+# Reported MB are what the guest gave QEMU; what the Mac got is the worker's number.
+check "no qemu.log line calls reported MB \"back to the Mac\"" bash -c '! grep -q "^+.*back to the Mac" "$1"' _ "$P"
+check "qemu.log's p99 is never above the longest hold" \
+  grep -qF '+    p99 = MIN((int64_t)(step + 1) * OMACVM_RECLAIM_STEP_NS, s->longest_ns);' "$P"
 check "the balloon closes each report for the counters" grep -q '^+            hvf_report_free_pages_done();' "$P"
 out=$("$R/app/runtime/Tests/memory/test-reclaim.sh" 2>&1); rc=$?
 printf '%s\n' "$out" | sed 's/^/    /'

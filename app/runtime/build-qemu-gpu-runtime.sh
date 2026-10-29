@@ -161,7 +161,7 @@ audio_recovery_patch_sha256=d1e93fd303777f424d7b11522fcf44bf726058901e85de3920c3
 shared_folder_patch_sha256=41247692501655393ae3a40f56915472ab29b6e89c5173e33db1f62cca56632f
 memory_reclaim_patch_sha256=5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf
 mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0
-reclaim_reusable_patch_sha256=b7504e6d48422073fd3daf163605380905a65818c3f9dbd53c8679bf0a2ce9d4
+reclaim_reusable_patch_sha256=4b86c2c3629dda457f0afe48a2e360341e85ccb499a9d5fd8e1abf7f8ea21cc8
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
 virgl_int_tex_patch_sha256=5336df08e7096fb0e4b977ebedf36aac29c6c053df7edbdea7ff5e45273f57e4
@@ -633,9 +633,11 @@ patch -d "$source_dir" -p1 -f -i "$shared_folder_patch"
 patch -d "$source_dir" -p1 -f -i "$strchrnul_patch"
 patch -d "$source_dir" -p1 -f -i "$memory_reclaim_patch"
 patch -d "$source_dir" -p1 -f -i "$mapped_sections_patch"
-# OmacVM: a free page report gives the old pages back to macOS (madvise before
-# the new backing); counters in qemu.log. The test runs the patched helper on
-# guest RAM shared like QEMU's (a real hv_vm_map where this Mac allows one).
+# OmacVM: a free page report gives the old pages back to macOS (the old range
+# moved aside under the main lock, advised MADV_FREE_REUSABLE and unmapped on a
+# worker thread); counters in qemu.log. The test runs the patched helper,
+# queue and worker on guest RAM shared like QEMU's (a real hv_vm_map where
+# this Mac allows one), the worker's queue overflowing included.
 patch -d "$source_dir" -p1 -f -i "$reclaim_reusable_patch"
 "$native_dir/Tests/memory/test-reclaim.sh" "$source_dir" "$work_dir/memory-tests"
 patch -d "$source_dir" -p1 -f -i "$fence_poll_patch"

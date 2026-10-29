@@ -9,7 +9,10 @@
 # the test sees the leak), each with a stand-in for the hypervisor's map and,
 # where this Mac lets a process make a VM, with a real one (--hv). Then
 # --keeps: macOS keeping the pages (a refused or a skipped advice) stops the
-# move aside for the run and writes the app's status file.
+# move aside for the run and writes the app's status file. And --overflow:
+# the worker falls behind until its queue is full; nothing is advised under
+# the BQL, what is not moved aside is counted, and each report's hold covers
+# all it did under the BQL.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src= work= compressed=()
@@ -29,12 +32,13 @@ if [[ -n $src ]]; then
   f=$src/accel/hvf/hvf-all.c
   B=$begin E=$end awk 'index($0, ENVIRON["B"]) == 1 { on = 1 } on { print } on && $0 == ENVIRON["E"] { exit }' \
     "$f" > "$work/reclaim.inc"
-  # Wired in: every report goes through the helper, no other replacement is
-  # left, and the balloon closes each report for the counters.
+  # Wired in: every report goes through the helper (timed from the start of
+  # hvf_report_free_pages), no other replacement is left, and the balloon
+  # closes each report for the counters.
   body=$(awk '/^void hvf_report_free_pages\(/ { on = 1 } on { print } on && /^}$/ { exit }' "$f")
-  [[ $body == *"aside = omacvm_reclaim_backing(gpa, host, size, flags);"* &&
-     $body == *"omacvm_reclaim_queue(aside, size, 0);"* ]] || \
-    { echo "FAIL: hvf_report_free_pages() does not call omacvm_reclaim_backing and queue the old range"; exit 1; }
+  [[ $body == *"int64_t start = get_clock();"* &&
+     $body == *"omacvm_reclaim_report(start, gpa, host, size, flags);"* ]] || \
+    { echo "FAIL: hvf_report_free_pages() does not hand each block to omacvm_reclaim_report, timed from its start"; exit 1; }
   [[ $body != *MAP_FIXED* && $body != *hv_vm_unmap* ]] || \
     { echo "FAIL: hvf_report_free_pages() still replaces the backing itself"; exit 1; }
   grep -q 'hvf_report_free_pages_done();' "$src/hw/virtio/virtio-balloon.c" || \
@@ -42,7 +46,7 @@ if [[ -n $src ]]; then
   # The worker judges every release and stops the move aside when macOS keeps
   # the pages; its first line has the text the app looks for in the binary.
   work_fn=$(awk '/^static void \*omacvm_reclaim_work\(/ { on = 1 } on { print } on && /^}$/ { exit }' "$f")
-  [[ $work_fn == *"left = omacvm_reclaim_release(it.aside, it.size, true, &before);"* &&
+  [[ $work_fn == *"left = omacvm_reclaim_release(it.aside, it.size, &before);"* &&
      $work_fn == *"if (!omacvm_reclaim_takes(&judge, before, left, why, sizeof(why))) {"* &&
      $work_fn == *"omacvm_reclaim_keeps(why);"* &&
      $work_fn == *'"OmacVM: free page reclaim gives the pages back to macOS "'* ]] || \
@@ -85,10 +89,12 @@ for hv in "" --hv; do
   run fail test-patch OMACVM_RECLAIM_REUSABLE=0 ${hv:+"$hv"}
   run fail test-main ${hv:+"$hv"}
 done
-rc=0; out=$("$work/test-patch" --keeps 2>&1) || rc=$?
-if (( rc == 0 )); then
-  echo "  test-patch --keeps: passed as it should ($(grep -c '^  ok' <<< "$out") rows)"
-else
-  echo "FAIL test-patch --keeps (exit $rc):"; grep -v '^  ok' <<< "$out" | sed 's/^/    /' | tail -20; fail=1
-fi
+for part in --keeps --overflow; do
+  rc=0; out=$("$work/test-patch" "$part" 2>&1) || rc=$?
+  if (( rc == 0 )); then
+    echo "  test-patch $part: passed as it should ($(grep -c '^  ok' <<< "$out") rows)"
+  else
+    echo "FAIL test-patch $part (exit $rc):"; grep -v '^  ok' <<< "$out" | sed 's/^/    /' | tail -20; fail=1
+  fi
+done
 (( fail == 0 )) && echo "test-reclaim: all ok" || { echo "test-reclaim: FAILED"; exit 1; }

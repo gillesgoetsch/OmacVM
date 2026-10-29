@@ -19,6 +19,7 @@
  *
  *   test-reclaim [--hv] [--compressed SECONDS]
  *   test-reclaim --keeps
+ *   test-reclaim --overflow
  *
  * Without --hv a second mapping of the region stands in for the hypervisor's
  * (mach_vm_remap, no copy: what XNU makes of hv_vm_map), and the helper's
@@ -40,6 +41,14 @@
  * releases of memory a child process shares (XNU skips the advice there
  * without an error: the window rule must see it), and a read-only range
  * (madvise refuses it).
+ *
+ * --overflow (the patch's helper, QEMU's queue and worker, a second map): the
+ * worker falls behind until its queue is full. No advice may run under the
+ * BQL (here: while the test's thread reports): a range the worker has no
+ * room for, or that cannot move aside, gets the new backing alone and is
+ * counted; each report's hold covers all it did under the BQL; the run's
+ * qemu.log line says "reported", what was not moved aside and why, and a
+ * p99 no higher than the longest hold.
  */
 #include <Hypervisor/Hypervisor.h>
 #include <assert.h>
@@ -48,6 +57,8 @@
 #include <inttypes.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <pthread.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -57,6 +68,7 @@
 #include <signal.h>
 #include <sys/sysctl.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 typedef uint64_t hwaddr;
@@ -122,7 +134,13 @@ static unsigned warnings;    /* qemu.log lines the helper wrote */
 #if defined(HELPER_MAIN)
 /* main up to 3.2.11 (qemu-hvf-free-page-reclaim.patch): the replacement alone */
 static const char *helper_name = "main's helper (MAP_FIXED alone)";
-static mach_vm_address_t omacvm_reclaim_backing(hwaddr gpa, void *host, size_t size, hv_memory_flags_t flags)
+static bool omacvm_reclaim_on(void)
+{
+    return false;
+}
+
+static mach_vm_address_t omacvm_reclaim_backing(hwaddr gpa, void *host, size_t size, hv_memory_flags_t flags,
+                                                bool aside)
 {
     assert_hvf_ok(hv_vm_unmap(gpa, size));
     void *replacement = mmap(host, size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -132,7 +150,118 @@ static mach_vm_address_t omacvm_reclaim_backing(hwaddr gpa, void *host, size_t s
 }
 #else
 static const char *helper_name = "the patch's helper";
+
+/* What the patch's part needs from QEMU, for this test. */
+typedef pthread_mutex_t QemuMutex;
+typedef pthread_cond_t QemuCond;
+typedef pthread_t QemuThread;
+#define QEMU_THREAD_DETACHED 1
+#define qemu_mutex_init(m) pthread_mutex_init((m), NULL)
+#define qemu_mutex_lock(m) pthread_mutex_lock(m)
+#define qemu_mutex_unlock(m) pthread_mutex_unlock(m)
+#define qemu_cond_init(c) pthread_cond_init((c), NULL)
+#define qemu_cond_wait(c, m) pthread_cond_wait((c), (m))
+#define qemu_cond_signal(c) pthread_cond_signal(c)
+#define NANOSECONDS_PER_SECOND 1000000000LL
+#undef MIN
+#undef MAX
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+typedef struct Notifier Notifier;
+struct Notifier {
+    void (*notify)(Notifier *n, void *data);
+};
+
+static void qemu_add_exit_notifier(Notifier *n)
+{
+    (void)n;
+}
+
+static int64_t get_clock(void)
+{
+    return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+}
+
+/* --overflow: the worker does not run until the test starts it (the guest
+ * reports faster than it releases). */
+static bool hold_worker;
+static void *(*held_worker)(void *);
+
+static void qemu_thread_create(QemuThread *t, const char *name, void *(*fn)(void *), void *arg, int mode)
+{
+    if (hold_worker) {
+        held_worker = fn;
+        return;
+    }
+    pthread_create(t, NULL, fn, arg);
+    pthread_detach(*t);
+}
+
+/* The test's thread holds "the BQL" while it reports (QEMU's main loop). */
+static __thread bool in_bql;
+static bool bql_locked(void)
+{
+    return in_bql;
+}
+
+/* qemu.log's info lines: the last one, for the --overflow checks. */
+static pthread_mutex_t info_lock = PTHREAD_MUTEX_INITIALIZER;
+static char last_info[1024];
+#define info_report(...) do { \
+        pthread_mutex_lock(&info_lock); \
+        snprintf(last_info, sizeof(last_info), __VA_ARGS__); \
+        fprintf(stderr, "%s\n", last_info); \
+        pthread_mutex_unlock(&info_lock); \
+    } while (0)
+
+static void test_autofree(void *p)
+{
+    free(*(void **)p);
+}
+#define g_autofree __attribute__((cleanup(test_autofree)))
+#define g_free free
+static char *g_strdup_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static char *g_strdup_printf(const char *fmt, ...)
+{
+    va_list ap;
+    char *s = NULL;
+    va_start(ap, fmt);
+    if (vasprintf(&s, fmt, ap) < 0) {
+        s = NULL;
+    }
+    va_end(ap);
+    return s;
+}
+
+/* madvise under "the BQL" is what the patch must never do; each one sleeps
+ * 5 ms there, so a hold that misses it shows. */
+static unsigned long advice_in_bql;
+static int test_madvise(void *addr, size_t len, int advice)
+{
+    if (in_bql) {
+        advice_in_bql++;
+        usleep(5000);
+    }
+    return madvise(addr, len, advice);
+}
+
+/* --overflow: no room to move a range aside. */
+static bool remap_fails;
+static kern_return_t test_mach_vm_remap(vm_map_t target, mach_vm_address_t *address, mach_vm_size_t size,
+                                        mach_vm_offset_t mask, int flags, vm_map_t src, mach_vm_address_t src_address,
+                                        boolean_t copy, vm_prot_t *cur, vm_prot_t *max, vm_inherit_t inherit)
+{
+    if (remap_fails) {
+        return KERN_NO_SPACE;
+    }
+    return mach_vm_remap(target, address, size, mask, flags, src, src_address, copy, cur, max, inherit);
+}
+
+#define madvise test_madvise
+#define mach_vm_remap test_mach_vm_remap
 #include "reclaim.inc"
+#undef madvise
+#undef mach_vm_remap
 #endif
 
 static void fill(uint64_t off, uint64_t len, unsigned round);
@@ -144,13 +273,14 @@ static void fill(uint64_t off, uint64_t len, unsigned round);
 static void reclaim_using(uint64_t off, uint64_t len, unsigned round)
 {
     mach_vm_address_t aside = omacvm_reclaim_backing(RAM_IPA + off, ram + off, len,
-                                                     HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC);
+                                                     HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC,
+                                                     omacvm_reclaim_on());
     if (round) {
         fill(off, len, round);
     }
 #if !defined(HELPER_MAIN)
     if (aside) {
-        omacvm_reclaim_release(aside, len, true, NULL);
+        omacvm_reclaim_release(aside, len, NULL);
     }
 #else
     (void)aside;
@@ -395,7 +525,7 @@ static void worker_releases(uint8_t *host, unsigned blocks)
         }
         void *fresh = mmap(host + b * BLOCK, BLOCK, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
         assert(fresh == host + b * BLOCK);
-        OmacvmReclaimPages before, left = omacvm_reclaim_release(aside, BLOCK, true, &before);
+        OmacvmReclaimPages before, left = omacvm_reclaim_release(aside, BLOCK, &before);
         if (!omacvm_reclaim_takes(&judge, before, left, why, sizeof(why))) {
             omacvm_reclaim_keeps(why);
         }
@@ -507,7 +637,7 @@ static int keeps_test(void)
     if (kr != KERN_SUCCESS) {
         die("mach_vm_remap (read-only)", kr);
     }
-    omacvm_reclaim_release(aside, BLOCK, true, NULL);
+    omacvm_reclaim_release(aside, BLOCK, NULL);
     munmap(ro, BLOCK);
     expect(!omacvm_reclaim_on() && warnings == 1 && strstr(status_text(), "why=madvise refused: "),
            "madvise refused: the move aside stops, one line, the status file says why");
@@ -526,25 +656,171 @@ static int keeps_test(void)
     printf("test-reclaim: all ok\n");
     return 0;
 }
+
+/* One report of one block under "the BQL", as hvf_report_free_pages() and
+ * the balloon make it: its hold as the patch counts it, and how long it
+ * really kept the BQL. */
+static void bql_report(uint64_t off, uint64_t len, int64_t *hold, int64_t *wall)
+{
+    int64_t t0;
+
+    in_bql = true;
+    t0 = get_clock();
+    omacvm_reclaim_report(t0, RAM_IPA + off, ram + off, len, HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC);
+    *wall = get_clock() - t0;
+    *hold = omacvm_reclaim_cur.ns;
+    hvf_report_free_pages_done();
+    in_bql = false;
+}
+
+/* Until the worker's queue is empty and it released at least want bytes. */
+static bool worker_done(uint64_t want, int seconds)
+{
+    for (int i = 0; i < seconds * 10; i++) {
+        pthread_mutex_lock(&omacvm_reclaim_w.lock);
+        bool done = !omacvm_reclaim_w.count && omacvm_reclaim_w.released >= want;
+        pthread_mutex_unlock(&omacvm_reclaim_w.lock);
+        if (done) {
+            return true;
+        }
+        usleep(100000);
+    }
+    return false;
+}
+
+/*
+ * --overflow: the worker falls behind. It does not run until the test starts
+ * it, so its queue fills (4096 ranges) and one more report comes: that range
+ * must get the new backing alone, with no advice under the BQL, counted as
+ * not moved aside. The worker then runs and releases what it was given; a
+ * range that finds no room to move aside gets what the overflow got. Every
+ * report's hold covers all it did under the BQL. The run's qemu.log line
+ * says "reported", what was not moved aside and why, and its p99 is never
+ * above the longest hold. Report i is page 2i; page 2i + 1 keeps its data.
+ */
+static int overflow_test(void)
+{
+    const uint64_t queue = OMACVM_RECLAIM_QUEUE, span = 2 * (queue + 3) * pg;
+    int64_t hold, wall, gap = 0;
+    unsigned long wrong = 0;
+    uint64_t i;
+    char line[1024];
+
+    printf("test-reclaim: --overflow: the worker falls behind; nothing is advised under the BQL\n");
+    ram = mmap(NULL, RAM_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (ram == MAP_FAILED) {
+        perror("mmap");
+        return 1;
+    }
+    mach_vm_address_t a = 0;
+    vm_prot_t cur, max;
+    kern_return_t kr = mach_vm_remap(mach_task_self(), &a, RAM_SIZE, 0, VM_FLAGS_ANYWHERE, mach_task_self(),
+                                     (mach_vm_address_t)ram, FALSE, &cur, &max, VM_INHERIT_NONE);
+    if (kr != KERN_SUCCESS) {
+        die("mach_vm_remap (hypervisor stand-in)", kr);
+    }
+    hvmap = (uint8_t *)a;
+    fill(0, span, 0);
+    unsetenv("OMACVM_RECLAIM_REUSABLE");
+    unsetenv("OMACVM_RECLAIM_CHECK");
+
+    hold_worker = true;
+    for (i = 0; i < queue; i++) {
+        bql_report(2 * i * pg, pg, &hold, &wall);
+        gap = MAX(gap, wall - hold);
+    }
+    expect(held_worker && omacvm_reclaim_w.count == queue && !omacvm_reclaim_run.in_place,
+           "4096 ranges moved aside wait for the worker, which does not run yet");
+    bql_report(2 * queue * pg, pg, &hold, &wall);
+    gap = MAX(gap, wall - hold);
+    expect(omacvm_reclaim_run.in_place == pg && (omacvm_reclaim_run.why & OMACVM_RECLAIM_WHY_FULL) &&
+           omacvm_reclaim_w.count == queue,
+           "the queue full: the next range gets the new backing alone, counted (the worker's queue was full)");
+    expect(!advice_in_bql, "  no advice under the BQL");
+
+    hold_worker = false;
+    pthread_t t;
+    if (!held_worker || pthread_create(&t, NULL, held_worker, NULL)) {
+        printf("FAIL: no worker to start\n");
+        return 1;
+    }
+    pthread_detach(t);
+    expect(worker_done(queue * pg, 60), "the worker, once it runs, releases all 4096 ranges");
+
+    remap_fails = true;
+    bql_report(2 * (queue + 1) * pg, pg, &hold, &wall);
+    remap_fails = false;
+    gap = MAX(gap, wall - hold);
+    expect(omacvm_reclaim_run.in_place == 2 * pg && (omacvm_reclaim_run.why & OMACVM_RECLAIM_WHY_NOROOM) &&
+           !advice_in_bql,
+           "no room to move a range aside: the new backing alone, counted, no advice under the BQL");
+    bql_report(2 * (queue + 2) * pg, pg, &hold, &wall);
+    gap = MAX(gap, wall - hold);
+    expect(worker_done((queue + 1) * pg, 10), "the next range with room goes to the worker again");
+
+    printf("  (largest time under the BQL a report's hold missed: %.3f ms)\n", gap / 1e6);
+    expect(gap < 2000000, "every report's hold covers all it did under the BQL");
+    pthread_mutex_lock(&omacvm_reclaim_w.lock);
+    uint64_t released = omacvm_reclaim_w.released;
+    uint64_t left = omacvm_reclaim_w.left_resident + omacvm_reclaim_w.left_compressed;
+    pthread_mutex_unlock(&omacvm_reclaim_w.lock);
+    printf("  (the worker released %.1f MB, %.1f MB of it still held)\n", released / (double)MB, left / (double)MB);
+    expect(released == (queue + 1) * pg && left * 20 <= released,
+           "what the worker released is no longer held (up to 5 % on its way into the compressor)");
+    for (i = 0; i < queue + 3; i++) {
+        uint64_t given = 2 * i * pg, kept = given + pg;
+        if (*(volatile uint64_t *)(ram + given) != 0 || *(volatile uint64_t *)(ram + kept) != word(kept, 0)) {
+            wrong++;
+        }
+    }
+    expect(!wrong, "every reported page reads 0, every page beside it keeps its data");
+
+    omacvm_reclaim_log("this run", &omacvm_reclaim_run);
+    pthread_mutex_lock(&info_lock);
+    snprintf(line, sizeof(line), "%s", last_info);
+    pthread_mutex_unlock(&info_lock);
+    printf("  qemu.log: %s\n", line);
+    double p99 = -1, longest = -1;
+    const char *at = strstr(line, "p99 ");
+    if (at) {
+        sscanf(at, "p99 %lf ms, longest %lf ms", &p99, &longest);
+    }
+    expect(strstr(line, " MB reported in ") && !strstr(line, "back to the Mac"),
+           "the run's line says MB reported (not \"back to the Mac\")");
+    expect(strstr(line, "MB not moved aside (the worker's queue was full, no room to move them aside)") != NULL,
+           "  and what was not moved aside, and why");
+    char want[96];
+    snprintf(want, sizeof(want), "this run the worker released %.0f MB, ", (queue + 1) * pg / (double)MB);
+    expect(strstr(line, want) && strstr(line, " MB of it left on the Mac ("),
+           "  and what the worker released and what of it is left on the Mac");
+    expect(p99 >= 0 && longest >= 0 && p99 <= longest, "  its p99 is never above the longest hold");
+    if (failures) {
+        printf("test-reclaim: FAILED (%u)\n", failures);
+        return 1;
+    }
+    printf("test-reclaim: all ok\n");
+    return 0;
+}
 #endif
 
 int main(int argc, char **argv)
 {
     int wait_s = 0;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--keeps")) {
+        if (!strcmp(argv[i], "--keeps") || !strcmp(argv[i], "--overflow")) {
 #if defined(HELPER_MAIN)
-            printf("test-reclaim: --keeps is for the patch's helper\n");
+            printf("test-reclaim: %s is for the patch's helper\n", argv[i]);
             return 2;
 #else
-            return keeps_test();
+            pg = (size_t)getpagesize();
+            return argv[i][2] == 'k' ? keeps_test() : overflow_test();
 #endif
         } else if (!strcmp(argv[i], "--hv")) {
             use_hv = true;
         } else if (!strcmp(argv[i], "--compressed") && i + 1 < argc) {
             wait_s = atoi(argv[++i]);
         } else {
-            fprintf(stderr, "usage: test-reclaim [--hv] [--compressed SECONDS]\n");
+            fprintf(stderr, "usage: test-reclaim [--hv] [--compressed SECONDS] | --keeps | --overflow\n");
             return 2;
         }
     }
