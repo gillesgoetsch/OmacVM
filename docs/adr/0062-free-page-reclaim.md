@@ -216,7 +216,9 @@ they left after.
   (Air, first build). One run per row: the mini went to critical memory
   pressure with a third VM start (fseventsd held 23 GB there) and the Air
   went offline.
-- M1 Max rows (MacBook Pro M1 Max, 32 GB, macOS 27.0.1; the final build;
+- M1 Max rows (MacBook Pro M1 Max, 32 GB, macOS 27.0.1; the build before
+  the review's fixup, whose release path is the same: the fixup changed the
+  full queue's path, the hold's timing and qemu.log's words;
   hidden 4 GB clone of a 3.2.0 test VM through the test app; the Mac had
   room, nothing compressed): 3 browser sessions per mode and kernel. With
   the fix every report's range left 0 MB held on the Mac: 1673-2160 MB
@@ -233,5 +235,11 @@ they left after.
   sessions than after the fix's (41 % of the 2821 MB they reported), 1752
   MB with the memory-optimized kernel (38 % of 4557 MB). (The offset
   is below 0 also with no session: QEMU's footprint counts more than comes
-  back at its quit.) Guest data, final runtime: 0 pages wrong in 10 rounds
+  back at its quit.) Guest data, that runtime: 0 pages wrong in 10 rounds
   of 2 GiB, stock and memory-optimized kernel.
+- Mac mini smoke on the fixup's build (c968f042; hidden 3 GB clone of
+  M-chw, stock 7.2.11; boot, 1.2 GB of files read, the cache dropped, 600 MB
+  filled and freed): the fix, 2238 MB reported, 1643 MB held before (99 %
+  compressed), 0.0 MB left, hold per report at most 0.79 ms;
+  `OMACVM_RECLAIM_REUSABLE=0`, 2458 MB reported, all of it "not moved aside
+  (OMACVM_RECLAIM_REUSABLE=0)", hold up to 16.5 ms (one run each).
