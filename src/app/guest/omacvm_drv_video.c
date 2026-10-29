@@ -935,7 +935,9 @@ static void logical_after_create(VADriverContextP ctx, unsigned int format, unsi
 
 /* The app exports a surface (to show it): for Mesa's own 4:2:0 surfaces the planes' dma-bufs
  * and the Mac's resources go into its record, the resources looked up only the first time
- * (mpv exports every frame). Only where the shim says sizes (see the top). */
+ * (mpv exports every frame). New resources (Mesa made the planes again) have no size on the
+ * Mac: the record says so, and the next import's size is sent for them. Only where the shim
+ * says sizes (see the top). */
 static VAStatus export_surface(VADriverContextP ctx, VASurfaceID surface, uint32_t mem_type,
                                uint32_t flags, void *descriptor)
 {
@@ -956,12 +958,17 @@ static VAStatus export_surface(VADriverContextP ctx, VASurfaceID surface, uint32
     if (!planes_of_fds(ctx, fd, res, fst))
         return st;
     pthread_mutex_lock(&surf_lock);
-    if ((s = surf_find(ctx, surface)) && !(s->flags & SURF_IMPORTED))
+    if ((s = surf_find(ctx, surface)) && !(s->flags & SURF_IMPORTED)) {
         for (int p = 0; p < 2; p++) {
+            if (s->res[p] != res[p])
+                s->lw[p] = s->lh[p] = 0;
             s->res[p] = res[p];
             s->dev[p] = fst[p].st_dev;
             s->ino[p] = fst[p].st_ino;
         }
+        if (!s->lw[0])
+            s->flags &= ~SURF_DECLARED;
+    }
     pthread_mutex_unlock(&surf_lock);
     return st;
 }

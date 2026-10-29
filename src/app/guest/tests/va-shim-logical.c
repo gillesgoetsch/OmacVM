@@ -25,10 +25,11 @@
  * mpv's R8 + GR88 imports after an export per frame (the resources looked up at the first
  * export only), HEVC's 1000x568 surface shown at 1000x562; nothing for an unknown dma-buf, an
  * offset, a plane of the wrong kind, a size past Mesa's plane, a full-size import of a plane
- * never declared, or after vaTerminate; 10-bit planes too (R16 + GR1616, one P010 image). A
- * converting vaGetImage of the whole 1920x1088 surface reads its 1080 rows (Mesa, like the
- * stand-in, refuses a region past the surface), and video processing from it, or from a VA
- * import made before the EGL import, is scaled by 1088/1080.
+ * never declared, or after vaTerminate; 10-bit planes too (R16 + GR1616, one P010 image); when
+ * Mesa makes a surface's planes again (new resources), the next import's size goes to the new
+ * planes. A converting vaGetImage of the whole 1920x1088 surface reads its 1080 rows (Mesa,
+ * like the stand-in, refuses a region past the surface), and video processing from it, or from
+ * a VA import made before the EGL import, is scaled by 1088/1080.
  * none: nothing is sent (no ioctl at all), regions and images as before. refused: the submit
  * fails, nothing counts as declared, regions as before, one line said, and later surfaces send
  * nothing.
@@ -148,6 +149,21 @@ static VAStatus destroy_surfaces(VADriverContextP ctx, VASurfaceID *s, int n)
     (void)ctx; (void)s;
     destroyed += n;
     return VA_STATUS_SUCCESS;
+}
+
+/* Mesa makes surface S's planes again (vlVaHandleSurfaceAllocate after a format or layout
+ * change): new files, so new resources on the Mac */
+void stub_remake(VASurfaceID s)
+{
+    unsigned aw, ah;
+
+    if (s >= nsurfaces || surfaces[s].imported || surfaces[s].fd[1] < 0)
+        return;
+    aw = (surfaces[s].width + 15) & ~15u, ah = (surfaces[s].height + 15) & ~15u;
+    for (int p = 0; p < 2; p++) {
+        close(surfaces[s].fd[p]);
+        surfaces[s].fd[p] = plane_file(p ? aw * ah / 2 : aw * ah);
+    }
 }
 
 static struct { VAImageID id; unsigned fourcc; } images[16];
@@ -851,6 +867,28 @@ int main(int argc, char **argv)
         expect_plane("P010 1920x1088 at GR1616 960x540", t1, 1, 960, 540);
         expect_plane("P010 1920x1088 as one P010 image of 1920x1080", t2, 0, 1920, 1080);
         expect_plane("P010 1920x1088 as one P010 image of 1920x1080", t2, 1, 960, 540);
+    }
+
+    /* (j) Mesa makes a declared surface's planes again: the Mac has no size for the new ones,
+     * so the next import at the same size is sent for them */
+    void (*remake)(VASurfaceID) = (void (*)(VASurfaceID))dlsym(stub, "stub_remake");
+    VASurfaceID rm;
+    int r1[2], r2[2];
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 1920, 1088, &rm, 1, NULL, 0);
+    app_export(rm, 0, r1);
+    egl_import(NV12, 1920, 1080, 2, r1, 0);
+    uint32_t old_y = res_of(rm, 0);
+    if (remake)
+        remake(rm);
+    app_export(rm, 0, r2);
+    int sj = submits;
+    egl_import(NV12, 1920, 1080, 2, r2, 0);
+    snprintf(what, sizeof(what), "Mesa made the planes of a 1920x1088 surface shown at 1920x1080 "
+             "again: the same import sends %d submit(s) for the new planes", submits - sj);
+    if (declare) {
+        check(remake && res_of(rm, 0) != old_y && submits - sj == 1, what);
+        expect_plane("the remade 1920x1088 at 1920x1080", rm, 0, 1920, 1080);
+        expect_plane("the remade 1920x1088 at 1920x1080", rm, 1, 960, 540);
     }
 
     /* (h) vaTerminate, then an import of the old dma-bufs: nothing */
