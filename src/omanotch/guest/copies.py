@@ -423,8 +423,22 @@ def shell_up():
     return run(["omarchy-shell", "shell", "ping"], 10)[0] == 0
 
 
+def last_line(text):
+    """An answer of the shell: in a C locale qs prints Qt's locale warning first."""
+    lines = text.splitlines()
+    return lines[-1].strip() if lines else ""
+
+
 def session_locked():
-    return run(["omarchy-shell", "lock", "isLocked"], 10)[1] == "true"
+    """Omarchy's lock screen is up or on its way: its lock status, read at the
+    call (requested, sessionLocked or secure). Not isLocked: with Quickshell
+    0.3.2 and older it answers true after the first unlock until the shell
+    restarts (omarchy-mac#738), and the copies would never follow again."""
+    try:
+        s = json.loads(last_line(run(["omarchy-shell", "lock", "status"], 10)[1]))
+        return any(s.get(k) is True for k in ("requested", "sessionLocked", "secure"))
+    except (ValueError, AttributeError):   # an Omarchy without the status call
+        return last_line(run(["omarchy-shell", "lock", "isLocked"], 10)[1]) == "true"
 
 
 def bar_answers():
