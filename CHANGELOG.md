@@ -20,9 +20,12 @@ in more words.
 - **Switching the control centre or Omanotch off while the VM is locked no longer leaves the lock
   screen without its password field either (#618).** The control centre leaves the bar at once
   and its folder goes at the next update; Omanotch stops at once and removes its copies of
-  Omarchy's plugins right after the unlock. Omanotch's display panel (UTM, VMware Fusion,
-  Parallels) is no longer rebuilt under the lock after an Omarchy update; the next start of
-  Omanotch does it. Needs the update to 3.2.13.
+  Omarchy's plugins right after the unlock (with 3.2.12 the lock screen stayed without its
+  password field until the VM was shut down and started again). Omanotch's display panel (UTM,
+  VMware Fusion, Parallels) is no longer rebuilt under the lock after an Omarchy update; the next
+  start of Omanotch does it. The update to 3.2.13 installs Omanotch's VM side again (its files
+  changed), also on a locked VM, and the lock screen keeps working there. Needs the update to
+  3.2.13.
 
 ## 3.2.12
 
