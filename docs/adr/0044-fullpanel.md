@@ -188,3 +188,151 @@ run-time checks (the controller class, the method with `B16@0:8`, `-window`
 with `@16@0:8`, AppKit's own implementation in AppKit's image, SkyLight's
 six functions) pass on macOS 15.7.9 and 26.6.2 (GitHub's arm64 runners)
 and 27.0 (the Mac mini).
+
+## Retake after a display change
+
+Status: accepted for 3.2.12 (rows on a notched MacBook below);
+`omacvm-cocoa-fullpanel-retake*.patch`, applied after
+`omacvm-cocoa-display-settle.patch`.
+
+**What happened.** On a MacBook Pro M4 Max (3.2.9, 2026-10-28) with an LG
+UltraFine 5K above the built-in display, the main window covered the strip
+until the displays changed (unplugged, plugged in, sleep). When the
+built-in left the display set, AppKit laid the window out for the LG while
+NSScreen still named the built-in: frame `0,-323 2560x1440` on display
+`0,0 1728x1117` (-323 = 1117 - 1440). The "display unchanged" test passed
+(same NSScreen frame, CoreGraphics' size of it), so FullPanel took it for
+a lost strip, the state meant for Split View. That blocked the resume, the
+return checks and the reservation answer for the rest of that full screen.
+The main window is never made again (the other displays' windows are), so
+when its Space came back to the built-in, AppKit kept the menu bar's band
+(`1728x1084`) for good. Leaving and entering full screen covered the strip
+at once. Even without the lost state, the strip came back only if AppKit
+laid the window out once more after `NSWindowDidChangeScreen`; nothing
+asked it to.
+
+**A display change is not a loss.** A frame change is sorted by
+`omacvm_fp_frame_kind`: a frame laid out for another display than NSScreen
+still names (not inside it while it did not change), or on a display that
+CoreGraphics has off or asleep, is a display change on its way: the
+system state is released, no relayout (no guest resize churn), qemu.log
+"display change: ...; the strip comes back once the displays settle"
+(`omacvm check` warns until "strip covered"). It ends as soon as the window
+covers its display again. Until then, and after a full screen on a display
+without a housing, the band on the way back is no Split View either, also
+when `NSWindowDidChangeScreen` (the resume) comes before the resize. A
+Split View tile's shape (inside the display, on its bottom edge, narrower
+than it) is always a loss. A loss taken for Split View that is followed
+within 3 s by the window's display changing, or the display it covered
+going off, is turned into a display change (the line says so), never one
+with a tile's shape. A Split View loss stays lost, as before, also through
+later display changes: nothing here clears it.
+
+**The claim no longer waits for the resume.** The reservation answer used
+to wait for `-screenChanged:` to see the notched display again; AppKit may
+lay the window out there first. It only turns AppKit's yes into no, and
+AppKit's yes means the Space's display has a housing, so an external
+display never loses its band through this.
+
+**The private call, and how it is checked.** Once the displays settle (the
+display update ran: unlocked, awake, on the console, nothing due), once the
+displays' windows are in full screen, and when the user comes back to the
+VM's Space, a full screen that a display change left below the band asks
+AppKit once to lay its tile out again:
+`[[[window _fullScreenContentController] space] updateTileShapeAndReshapeContents]`.
+On macOS 27 that is `_updateTileShapeAndReshapeContentsWithAckServer:YES`:
+the tile's content rect asks `reservesSpaceForMenuBarInFullScreen` again
+(our answer: no) and the window gets the whole display. It returns at once
+while a flag of the Space is set, so a try is judged by its result: the
+window covers its display within 2 s ("strip taken again after a display
+change (try N of 3)", then "strip covered", then the guest's size and the
+arrangement once more), else "strip not back after a display change
+(AppKit kept the band, try N of 3): normal full screen ...", which `omacvm
+check` reads as a warning with the remedy (leave full screen and enter it
+again). Only with AppKit's own `-alwaysReservesSpaceForMenuBarInFullScreen`
+yes (its Space's display has a housing), a frame of the display's width
+and bottom at most the housing's height (and 8 points) shorter (never a
+tile), on the active Space, visible, WindowServer's frame in place, the
+reservation still ours, SkyLight there, the menu bar not always shown. At
+most 3 tries per display change and one per settle: each new display
+change (the window laid out for another display again after it was back
+inside its own, a display without a housing, a loss that went with one)
+starts its own 3, also after a "strip not back" for an earlier one (a full
+screen kept for days meets many display changes); the settle of the last
+try stays, so a new change in that settle waits for the next one. Below
+a band taller than that (the same shape, more than the housing and 8
+points) there is no try, but once the displays settled the line says so
+with both heights ("strip not back ... (AppKit keeps a band taller than
+the camera housing: N pt, the housing N pt)") instead of check repeating
+"comes back once the displays settle". With the menu bar always shown
+(turned on during the full screen, Keep the Dock away off) the line says
+"menu bar always shown" and check names the remedy: the menu bar setting
+"In Full Screen Only" or Keep the Dock and hot corners away, then leave
+full screen and enter it again. A wait that ends by itself with no trigger of its own
+(WindowServer still moving the window, the displays' windows moving, the
+window not visible yet) asks again 0.5 s later, at most 3 times after each
+trigger. The four methods
+(`NSWindow -_fullScreenContentController @16@0:8`,
+`_NSFullScreenContentController -space @16@0:8`,
+`_NSFullScreenSpace -updateTileShapeAndReshapeContents v16@0:8` and
+`-alwaysReservesSpaceForMenuBarInFullScreen B16@0:8`) are looked up by
+name and type encoding, each the class's own method with its code in
+AppKit's image, and at each call the object's class must still use that
+code; main thread, `@try`. No frame is set, nothing toggled, no Space
+touched. Anything missing: the line says "selector missing" and what
+differs, and the full screen stays normal (as before this change).
+
+**Why no automatic leave and re-enter.** It is what fixed the user's Mac,
+but each time it makes a new full-screen Space, animates twice, can switch
+the user's Space and runs into the other displays' one-at-a-time full
+screens and #428's Spaces loop. ADR 0044 keeps "not forced back". It is
+not a fallback either: without the AppKit call the user gets the check's
+warning with the remedy.
+
+**The call, tried** (Mac mini, macOS 27.0, a small window of a test tool,
+no VM, no notch, once): with the reservation forced to yes the full screen
+was 1920x1050 on the 1920x1080 display (the band kept); with it switched to
+no, one `updateTileShapeAndReshapeContents` made it 1920x1080 inside the
+call (36 ms, two reservation questions, the resize posted at once, still in
+full screen); with yes again and one more call, 1920x1050 again. That shows
+the call, not the strip on a notched display.
+
+**Probe** (names only, no window; a temporary branch on GitHub-hosted runners, run
+40718433214): all four methods usable on macOS 15.7.9 (24G830), 26.6.2
+(25G83) and 27.0 (26A428, the Mac mini), with the reservation's two.
+
+**Tests.** `app/runtime/Tests/display/test-fullpanel-retake.sh`: the rules,
+the user's qemu.log in each order of AppKit's last layout and
+`NSWindowDidChangeScreen`, NSScreen going with the Space to the external
+display and the resume before the resize, the lid shut and opened, the
+external display waking first, a smaller external display while NSScreen
+is stale, the 3 s rule both ways and never for a tile, Split View staying
+lost (also during a display change), the menu bar always shown, a Space on
+a display without a housing, locked, moving windows, another Space, the
+ask again after a wait and its limit, 3 tries per display change and one
+per settle, four display changes in one full screen, a later display
+change after "strip not back" (also one NSScreen never sees) getting its
+own tries, a taller band said once settled, a missing selector, display
+modes; with `--self-test` the user's rows fail on 3.2.10's
+decisions and the wiring checks fail on 3.2.10's methods (copied; its whole
+patched `ui/cocoa.m` fails them too). In the runtime build also the wiring
+(the retake only from its three triggers and its own ask again, nothing in
+it that moves a window, a Space or the menu bar).
+`src/tests/fullpanel-check.sh`: check's row.
+
+**Seen on a notched Mac** (MacBook Pro M1 Max, notch 32 pt, macOS 27.0.1,
+2026-10-29; a test VM in "Full screen including notch" on the built-in, a
+virtual 2560x1440 display as the second one; 3.2.10's test app against
+this one). `src/tests/e2e/display-unplug.sh --only fullpanel-builtin`: a
+virtual display unplugged and plugged in (3 rounds) and display sleep and
+wake pass on both, with the same QEMU lines (no `display change:` line).
+The built-in display off for 10 s and back (`--builtin-off`, the user's
+trigger): 3.2.10 fails 3 of 3 with `strip lost: frame (0 0 1512x952)`
+(the band kept; the guest 3024x1896, check warns); this passes 3 of 3,
+`strip covered` 10.4 s after the built-in went off, same Space, the guest
+3024x1964 with its bar beside the notch, check ok. AppKit laid the window
+out full height on the way back each time, so the retake itself did not
+run there; it stays covered by the replay rows. A Split View made from the
+full screen in Mission Control (macOS 27 greys out Window > Full Screen
+Tile for a window already in full screen) stays `strip lost: frame (766 0
+746x982)`, and a display change after it tries nothing.

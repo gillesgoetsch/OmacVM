@@ -986,16 +986,25 @@ if [[ $TYPE == app ]]; then
   # the notch, Omanotch fills the strip beside it. FullPanel (experimental,
   # src/lib/notch.sh): QEMU's window covers the strip and the VM's bar sits
   # there; QEMU logs "strip covered" once it has it, "strip lost" or "using
-  # normal full screen" when it fell back.
+  # normal full screen" when it fell back, "display change: ..." while a
+  # display change keeps the window below the notch (until "strip covered"),
+  # "strip not back after a display change" when macOS kept it there after
+  # the MacBook's display went and came back
+  # (omacvm-cocoa-fullpanel-retake.patch; with "menu bar always shown" the
+  # remedy is the menu bar setting, else leaving and entering full screen).
+  # "strip taken again" is not read.
   nd=$(app_dir "$VM" 2>/dev/null) || nd=""
   nmode=native; [[ -n $nd ]] && nmode=$(notch_choice "$nd")
   nlast=""; [[ -n $nd ]] && nlast=$(notch_this_start "$nd")
   if (( fp_start )); then
-    nq=$(grep -E '^omacvm: full panel: (strip covered|strip lost|.*normal full screen)' "$nd/logs/qemu.log" 2>/dev/null | tail -1)
+    nq=$(grep -E '^omacvm: full panel: (strip covered|strip lost|display change:|.*normal full screen)' "$nd/logs/qemu.log" 2>/dev/null | tail -1)
     nq=${nq#omacvm: full panel: }
     case $nq in
       "strip covered"*) ok "full screen (app)" "including notch (experimental): $nq; Omanotch idle" ;;
       "strip lost"*) warn "full screen (app)" "including notch set, but macOS moved the window below the notch: normal full screen until the next one ($nq)" ;;
+      "display change:"*) warn "full screen (app)" "including notch set; a display change moved the window below the notch, the strip comes back once the displays settle and the Mac is unlocked ($nq)" ;;
+      "strip not back after a display change (menu bar always shown)"*) warn "full screen (app)" "including notch set, but after a display change macOS shows its menu bar over the strip, so the window stays below the notch ($nq): $MENU_HINT, or turn on Keep the Dock and hot corners away in OmacVM (from the next start); then leave full screen and enter it again" ;;
+      "strip not back"*) warn "full screen (app)" "including notch set, but after a display change macOS kept the window below the notch ($nq); leave full screen and enter it again to cover the strip" ;;
       "") skip "full screen (app)" "including notch this start, not in full screen on the MacBook's display yet" ;;
       *) warn "full screen (app)" "including notch set, but QEMU uses normal full screen: $nq" ;;
     esac

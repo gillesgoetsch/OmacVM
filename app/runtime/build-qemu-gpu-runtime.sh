@@ -984,6 +984,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-display-settl
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-display-settle.patch"
 "$native_dir/Tests/display/test-display-settle.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: display changes are not settled as tested (test-display-settle.sh)"
+# FullPanel after a display change: a full screen the change left below the
+# notch (the built-in gone and back, an external display waking first) gets
+# the strip again once the displays settle: one checked AppKit relayout of
+# its tile, never a frame, a full-screen toggle or a Space. After
+# display-settle (it waits for its updates). Its rules' test, then the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-retake-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-retake.patch"
+"$native_dir/Tests/display/test-fullpanel-retake.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: FullPanel does not take the strip again as tested (test-fullpanel-retake.sh)"
 # OmacVM: the sound on its own real-time thread (OMACVM_AUDIO_THREAD=1): the
 # HDA's DMA and the mixer no longer wait for the main loop (virgl).
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-audio-own-thread.patch"

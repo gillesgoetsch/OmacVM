@@ -324,3 +324,31 @@ the pointer instead (ADR 0041, 3.2.11 addendum). Moving the dialog would at
 least mean making the pointer's window key before asking, which changes who
 holds the keyboard.
 
+## Full screen including notch after a display change (October 2026)
+
+From the user's MacBook Pro M4 Max (3.2.9) and macOS 27's AppKit, read on
+the Mac mini (ADR 0044, "Retake after a display change").
+
+- **NSScreen lags a display change; AppKit's layout does not.** With the
+  built-in display leaving the set (lid shut, or an external display
+  waking first), AppKit laid the full-screen window out for the external
+  display while `[window screen]` still named the built-in, in coordinates
+  from the old primary height: frame `0,-323 2560x1440` on `0,0 1728x1117`.
+  A frame not inside its NSScreen, or one on a display CoreGraphics has
+  inactive or asleep, is a display change on its way, not a window AppKit
+  moved itself.
+- **AppKit lays a full-screen tile out only on its own occasions.** After a
+  Space returns to a display, nothing asks the content controller's
+  `reservesSpaceForMenuBarInFullScreen` again unless AppKit does a layout.
+  `-[_NSFullScreenSpace updateTileShapeAndReshapeContents]` is that layout
+  (`_updateTileShapeAndReshapeContentsWithAckServer:YES` ->
+  `tileContentRectForTileRect:`, which asks the reservation and takes
+  `_revealedMenuBarHeight` off), but it returns at once while a flag byte
+  of the Space (offset 0xa9 on 27.0) is set: judge a call by the window's
+  frame afterwards.
+- **`-[_NSFullScreenSpace alwaysReservesSpaceForMenuBarInFullScreen]`** is
+  AppKit's own "the Space's display has a camera housing"
+  (`[[space screen] _notchFrameForSpace:]` higher than 0), or a branch on
+  the app's presentation options; it does not depend on a stale NSScreen.
+- **Where:** the names and types are checked at
+  run time by `omacvm-cocoa-fullpanel-retake.patch`.

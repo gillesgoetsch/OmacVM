@@ -132,6 +132,22 @@ app update.
   (short stalls can be missed). The note comes only for that memory cause, which has so far
   been shown only in tests (#595). The note needs Update VM; the rest only the new app.
 
+- **Full screen including notch: the bar beside the notch comes back after a display change.**
+  With an OmacVM.app VM in "Full screen including notch" on a MacBook with an external display,
+  the bar beside the notch could stay away after unplugging and plugging in displays or sleep
+  (the MacBook's own display gone for a moment, or waking after the external one): the VM sat
+  below the notch until full screen was left and entered again. macOS had laid the window out
+  for the external display while it still named the MacBook's, and OmacVM took that for Split
+  View and gave up the strip for the rest of that full screen. Now that counts as a display
+  change: once the displays settle and the Mac is unlocked, the VM covers the strip again,
+  without leaving full screen (macOS is asked to lay its full screen out again, at most 3
+  times per display change; every later display change gets its own tries). Until then
+  `omacvm check` warns that a display change moved the window below the notch; if macOS still
+  keeps it there, check says so and what to do: leave full screen and enter it again (when
+  macOS shows its menu bar in full screen: its menu bar setting or Keep the Dock and hot
+  corners away first). Needs only the app update, from the VM's next start (a
+  VM that runs across the update keeps the old behaviour until it is shut down); no Update VM.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
