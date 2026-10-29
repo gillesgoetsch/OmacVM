@@ -18,9 +18,19 @@
  * region / Mesa's size, then the Mac: x declared / texture size). vaGetImage into another format
  * from a declared surface reads an import of it at the picture's size (Mesa's converting path),
  * into the surface's own format the surface itself. With Chromium's fill (OMACVM_VA_FILL=1 or
- * --type=), an undeclared rounded source is scaled as before. none: nothing is sent (no ioctl),
- * regions and images as before. refused: the submit fails, nothing counts as declared, regions
- * as before, one line said, and later surfaces send nothing.
+ * --type=), an undeclared rounded source is scaled as before.
+ * The app's EGL imports (omacvm_egl.c calls the shim's omacvm_va_dmabuf_imported_v1): planes of
+ * a surface the app exported through the shim are declared at the import's size when it
+ * changes: Chrome's NV12 import of a 1920x1088 surface at 1920x1080 (Y and UV in one submit),
+ * mpv's R8 + GR88 imports after an export per frame (the resources looked up at the first
+ * export only), HEVC's 1000x568 surface shown at 1000x562; nothing for an unknown dma-buf, an
+ * offset, a plane of the wrong kind, a size past Mesa's plane, a full-size import of a plane
+ * never declared, or after vaTerminate. A converting vaGetImage of the whole 1920x1088 surface
+ * reads its 1080 rows (Mesa, like the stand-in, refuses a region past the surface), and video
+ * processing from it, or from a VA import made before the EGL import, is scaled by 1088/1080.
+ * none: nothing is sent (no ioctl at all), regions and images as before. refused: the submit
+ * fails, nothing counts as declared, regions as before, one line said, and later surfaces send
+ * nothing.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -54,7 +64,7 @@ static struct surface {
     unsigned format, width, height, fourcc;
     int fd[2];          /* Mesa's own: the planes' files */
     int imported;
-} surfaces[64];
+} surfaces[96];
 static unsigned nsurfaces;
 static struct buf { VABufferType type; unsigned size; void *data; } bufs[16];
 static unsigned nbufs;
@@ -81,7 +91,7 @@ static VAStatus create_surfaces2(VADriverContextP ctx, unsigned int format, unsi
     for (unsigned k = 0; k < na; k++)
         imported |= a[k].type == VASurfaceAttribExternalBufferDescriptor;
     for (unsigned i = 0; i < n; i++) {
-        if (nsurfaces >= 64)
+        if (nsurfaces >= 96)
             return VA_STATUS_ERROR_ALLOCATION_FAILED;
         struct surface *x = &surfaces[nsurfaces];
         *x = (struct surface){ format, w, h, fourcc, { -1, -1 }, imported };
@@ -167,6 +177,8 @@ static VAStatus get_image(VADriverContextP ctx, VASurfaceID s, int x, int y, uns
     (void)ctx;
     if (s >= nsurfaces || id < 100 || id - 100 >= nimages)
         return VA_STATUS_ERROR_INVALID_SURFACE;
+    if (x < 0 || y < 0 || x + w > surfaces[s].width || y + h > surfaces[s].height)
+        return VA_STATUS_ERROR_INVALID_PARAMETER;
     mesa_size(s, got_b);
     got_region[0] = x, got_region[1] = y, got_region[2] = w, got_region[3] = h;
     got_imported = surfaces[s].imported;
@@ -284,7 +296,7 @@ VAStatus __vaDriverInit_1_20(VADriverContextP ctx)
 #else
 /* ---- the kernel's side (this program's ioctl) ---- */
 static int refuse;              /* EXECBUFFER fails with EPERM */
-static int ioctls, submits, nops, fenced, bad;
+static int ioctls, submits, nops, fenced, bad, lookups;
 static struct decl { uint32_t res, w, h; } decls[256];
 static unsigned ndecls;
 static ino_t handles[256];      /* handle - 1 -> the file */
@@ -315,6 +327,7 @@ int ioctl(int fd, unsigned long request, ...)
     arg = va_arg(ap, void *);
     va_end(ap);
     ioctls++;
+    lookups += request == DRM_IOCTL_PRIME_FD_TO_HANDLE || request == DRM_IOCTL_VIRTGPU_RESOURCE_INFO;
     if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE) {
         struct drm_prime_handle *ph = arg;
         ph->handle = handle_of(ph->fd);
@@ -446,6 +459,75 @@ static VASurfaceID import_nv12(int fd, int fd2, unsigned rows, unsigned h)
                               .value = { .type = VAGenericValueTypePointer, .value.p = &d } };
     vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 320, h, &s, 1, a, 2);
     return s;
+}
+
+/* an NV12 picture of W x H imported from the planes' files FD (Y) and FD2 (UV) */
+static VASurfaceID import_planes(int fd, int fd2, unsigned w, unsigned h)
+{
+    VADRMPRIMESurfaceDescriptor d;
+    VASurfaceAttrib a[2];
+    VASurfaceID s = VA_INVALID_SURFACE;
+
+    memset(&d, 0, sizeof(d));
+    d.fourcc = VA_FOURCC_NV12;
+    d.width = w;
+    d.height = h;
+    d.num_objects = 2;
+    d.objects[0].fd = fd;
+    d.objects[1].fd = fd2;
+    d.num_layers = 2;
+    d.layers[0].drm_format = 0x20203852;   /* R8 */
+    d.layers[0].num_planes = 1;
+    d.layers[0].pitch[0] = (w + 15) & ~15u;
+    d.layers[1].drm_format = 0x38385247;   /* GR88 */
+    d.layers[1].num_planes = 1;
+    d.layers[1].object_index[0] = 1;
+    d.layers[1].pitch[0] = (w + 15) & ~15u;
+    a[0] = (VASurfaceAttrib){ .type = VASurfaceAttribMemoryType, .flags = VA_SURFACE_ATTRIB_SETTABLE,
+                              .value = { .type = VAGenericValueTypeInteger,
+                                         .value.i = VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2 } };
+    a[1] = (VASurfaceAttrib){ .type = VASurfaceAttribExternalBufferDescriptor,
+                              .flags = VA_SURFACE_ATTRIB_SETTABLE,
+                              .value = { .type = VAGenericValueTypePointer, .value.p = &d } };
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, w, h, &s, 1, a, 2);
+    return s;
+}
+
+/* the app exports S as Chrome (separate layers) or mpv (COMPOSED) do: the planes' files into FD
+ * (closed by the caller) */
+static void app_export(VASurfaceID s, int composed, int fd[2])
+{
+    VADRMPRIMESurfaceDescriptor d;
+
+    fd[0] = fd[1] = -1;
+    memset(&d, 0, sizeof(d));
+    if (vt.vaExportSurfaceHandle(&dc, s, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+                                 VA_EXPORT_SURFACE_READ_ONLY | (composed ?
+                                 VA_EXPORT_SURFACE_COMPOSED_LAYERS :
+                                 VA_EXPORT_SURFACE_SEPARATE_LAYERS), &d) != VA_STATUS_SUCCESS ||
+        d.num_objects != 2)
+        return;
+    fd[0] = d.objects[0].fd;
+    fd[1] = d.objects[1].fd;
+}
+
+#define FCC(a, b, c, d) ((uint32_t)(a) | (uint32_t)(b) << 8 | (uint32_t)(c) << 16 | (uint32_t)(d) << 24)
+typedef void (*imported_fn)(uint32_t fourcc, uint32_t w, uint32_t h, unsigned int n,
+                            const int *fds, const uint32_t *offsets);
+static void no_entry(uint32_t f, uint32_t w, uint32_t h, unsigned int n, const int *fds,
+                     const uint32_t *o) { (void)f; (void)w; (void)h; (void)n; (void)fds; (void)o; }
+static imported_fn imported = no_entry;
+
+/* the app's EGL import of FOURCC W x H from N files FD at offset OFF (0 or more): the ioctls it
+ * caused */
+static int egl_import(uint32_t fourcc, uint32_t w, uint32_t h, unsigned n, const int *fd,
+                      uint32_t off)
+{
+    uint32_t offs[2] = { off, off };
+    int before = ioctls;
+
+    imported(fourcc, w, h, n, fd, offs);
+    return ioctls - before;
 }
 
 int main(int argc, char **argv)
@@ -618,6 +700,145 @@ int main(int argc, char **argv)
     check(gst == VA_STATUS_SUCCESS && *gconv && !*gimp,
           "vaGetImage BGRA from Mesa's own 1280x720 (not declared): the surface itself");
 
+    /* ---- the app's EGL imports ---- */
+    void *entry = dlsym(shim, "omacvm_va_dmabuf_imported_v1");
+    check(entry != NULL, "the shim has omacvm_va_dmabuf_imported_v1 (omacvm_egl.c calls it)");
+    if (entry)
+        imported = (imported_fn)entry;
+    const uint32_t NV12 = FCC('N', 'V', '1', '2'), R8 = FCC('R', '8', ' ', ' '),
+                   GR88 = FCC('G', 'R', '8', '8');
+    VASurfaceID c1, c2, hevc, full, early;
+    int f1[2], f2[2], fh[2], ff[2], fx[2], n;
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 1920, 1088, &c1, 1, NULL, 0);
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 1920, 1088, &c2, 1, NULL, 0);
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 1000, 568, &hevc, 1, NULL, 0);
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 1920, 1088, &full, 1, NULL, 0);
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420, 1920, 1088, &early, 1, NULL, 0);
+    unsigned dx0 = ndecls;
+    int s0 = submits;
+
+    /* (a) Chrome: a separate-layer export, then one NV12 image at the picture's size */
+    app_export(c1, 0, f1);
+    int sa = submits;
+    unsigned da = ndecls;
+    n = egl_import(NV12, 1920, 1080, 2, f1, 0);
+    int sa1 = submits - sa;
+    unsigned da1 = ndecls - da;
+    n += egl_import(NV12, 1920, 1080, 2, f1, 0);
+    snprintf(what, sizeof(what), "Chrome: NV12 import of a 1920x1088 surface at 1920x1080: %d "
+             "submit(s), %u entries, then the same import again: %d more ioctl(s)",
+             sa1, da1, n - (sa1 > 0));
+    if (declare) {
+        check(sa1 == 1 && da1 == 2 && n == 1 && !bad, what);
+        expect_plane("Chrome's 1920x1088 at 1920x1080", c1, 0, 1920, 1080);
+        expect_plane("Chrome's 1920x1088 at 1920x1080", c1, 1, 960, 540);
+    }
+
+    /* (b) mpv: an export (composed) and R8 + GR88 imports per frame */
+    int lk0 = lookups, lk1 = 0;
+    unsigned db = ndecls;
+    for (int frame = 0; frame < 3; frame++) {
+        app_export(c2, 1, f2);
+        if (!frame)
+            lk1 = lookups - lk0;
+        egl_import(R8, 1920, 1080, 1, &f2[0], 0);
+        egl_import(GR88, 960, 540, 1, &f2[1], 0);
+        close(f2[0]);
+        close(f2[1]);
+    }
+    snprintf(what, sizeof(what), "mpv: 3 frames of an export + R8 1920x1080 + GR88 960x540: %u "
+             "entries, resource lookups %d at the first export, %d after", ndecls - db, lk1,
+             lookups - lk0 - lk1);
+    if (declare) {
+        check(ndecls - db == 2 && lk1 == 4 && lookups - lk0 == lk1, what);
+        expect_plane("mpv's 1920x1088 at 1920x1080", c2, 0, 1920, 1080);
+        expect_plane("mpv's 1920x1088 at 1920x1080", c2, 1, 960, 540);
+    }
+
+    /* (c) HEVC: a 1000x568 surface (declared when made) shown at 1000x562 */
+    app_export(hevc, 0, fh);
+    int sc = submits;
+    egl_import(NV12, 1000, 562, 2, fh, 0);
+    snprintf(what, sizeof(what), "HEVC: NV12 import of the 1000x568 surface at 1000x562: %d "
+             "submit(s)", submits - sc);
+    if (declare) {
+        check(submits - sc == 1, what);
+        expect_plane("HEVC 1000x568 at 1000x562", hevc, 0, 1000, 562);
+        expect_plane("HEVC 1000x568 at 1000x562", hevc, 1, 500, 281);
+    }
+
+    /* (d) nothing at all for what is not such an import */
+    char path3[] = "/tmp/va-shim-logical-XXXXXX";
+    int other[2] = { mkstemp(path3), -1 };
+    unlink(path3);
+    other[1] = dup(other[0]);
+    app_export(full, 0, ff);
+    struct { const char *name; uint32_t fourcc, w, h; unsigned n; const int *fd; uint32_t off; } no[] = {
+        { "a dma-buf the shim does not know", NV12, 1920, 1000, 2, other, 0 },
+        { "R8 of a dma-buf the shim does not know", R8, 1920, 1000, 1, other, 0 },
+        { "an offset other than 0", R8, 1920, 1000, 1, f1, 4096 },
+        { "R8 of the UV plane", R8, 960, 500, 1, &f1[1], 0 },
+        { "GR88 of the Y plane", GR88, 960, 500, 1, &f1[0], 0 },
+        { "a size past Mesa's plane (1920x1104)", R8, 1920, 1104, 1, f1, 0 },
+        { "a size past Mesa's UV plane (976x544)", GR88, 976, 544, 1, &f1[1], 0 },
+        { "an NV12 image of only the Y plane", NV12, 1920, 1000, 1, f1, 0 },
+        { "a full-size import of a 1920x1088 surface never declared", NV12, 1920, 1088, 2, ff, 0 },
+        { "an AB24 import of the planes", FCC('A', 'B', '2', '4'), 1920, 1000, 2, f1, 0 },
+    };
+    for (unsigned i = 0; i < sizeof(no) / sizeof(no[0]); i++) {
+        snprintf(what, sizeof(what), "no ioctl for %s", no[i].name);
+        check(egl_import(no[i].fourcc, no[i].w, no[i].h, no[i].n, no[i].fd, no[i].off) == 0, what);
+    }
+
+    /* (f) a converting vaGetImage of the whole 1920x1088 surface shown at 1920x1080 */
+    VAImage ib2;
+    vt.vaCreateImage(&dc, &bgra, 1920, 1088, &ib2);
+    gst = vt.vaGetImage(&dc, c1, 0, 0, 1920, 1088, ib2.image_id);
+    unsigned *greg = dlsym(stub, "got_region");
+    snprintf(what, sizeof(what), "vaGetImage BGRA 0,0 1920x1088 of the 1920x1088 surface shown at "
+             "1920x1080: status %d, Mesa converted %u,%u %ux%u of a%s surface of %ux%u", gst,
+             greg[0], greg[1], greg[2], greg[3], *gimp ? "n imported" : "", gb[0], gb[1]);
+    if (declare)
+        check(gst == VA_STATUS_SUCCESS && *gconv && *gimp && gb[0] == 1920 && gb[1] == 1080 &&
+              !greg[0] && !greg[1] && greg[2] == 1920 && greg[3] == 1080, what);
+    else
+        check(gst == VA_STATUS_SUCCESS && !*gimp && gb[1] == 1088, what);
+
+    /* (g) video processing from it, and from a VA import of a surface made before its EGL
+     * import: the Mac samples the picture's 1080 rows */
+    app_export(early, 0, fx);
+    VASurfaceID iearly = import_planes(fx[0], fx[1], 1920, 1088);
+    egl_import(NV12, 1920, 1080, 2, fx, 0);
+    struct { const char *name; VASurfaceID src; } vpp[] = {
+        { "the 1920x1088 surface shown at 1920x1080", c1 },
+        { "a VA import (made before the EGL import) of a 1920x1088 surface shown at 1920x1080", iearly },
+    };
+    for (unsigned i = 0; i < sizeof(vpp) / sizeof(vpp[0]); i++) {
+        app->surface = vpp[i].src;
+        app->surface_region = &in1080;
+        vt.vaBeginPicture(&dc, proc, sargb);
+        vt.vaRenderPicture(&dc, proc, &buf, 1);
+        rows = (double)seen_src->height / seen_b[1] * (declare ? 1080.0 : 1088.0);
+        snprintf(what, sizeof(what), "video processing from %s: the Mac samples %.2f of its %s rows",
+                 vpp[i].name, rows, declare ? "1080" : "1088");
+        check(declare ? rows > 1079.5 && rows < 1080.5 : seen_src->height == 1080, what);
+    }
+    if (declare) {
+        snprintf(what, sizeof(what), "EGL imports: %u entries in %d submit(s), every NOP as the Mac "
+                 "reads it, no fence", ndecls - dx0, submits - s0);
+        check(!bad && !fenced, what);
+    }
+
+    /* (h) vaTerminate, then an import of the old dma-bufs: nothing */
+    vt.vaTerminate(&dc);
+    n = egl_import(NV12, 1920, 1000, 2, f1, 0);
+    check(n == 0, "no ioctl for an import after vaTerminate");
+
+    if (!declare) {
+        snprintf(what, sizeof(what), "nothing declared at all (%u entries; %d resource lookups, %d "
+                 "submits)", ndecls, lookups, submits);
+        check(!ndecls && (refuse || (!lookups && !submits)), what);
+    }
     if (failed) {
         printf("va-shim-logical (%s): FAILED\n", mode);
         return 1;
