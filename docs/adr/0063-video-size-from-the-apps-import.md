@@ -92,15 +92,18 @@ Option 6, with the VA shim deciding.
   same surface at different sizes, the last one wins.
 - Not reached, because the import happens in a process without the shim or
   outside EGL (as with 3.2.11): Firefox (decodes in its RDD process, shows the
-  frames in another), mpv `vo=dmabuf-wayland` and anything else Hyprland
-  samples, Chrome with out-of-process decoding or Wayland overlays, Vulkan
-  importers, GBM-pixmap imports. A registry shared across processes would be
-  the next step, only if one of them shows the strip.
+  frames in another; it needs none of this: Firefox 159 showed H.264, HEVC
+  and VP9 at 1080p, 854x480 and 1000x562 at their own size with and without
+  the library), mpv `vo=dmabuf-wayland` and anything else Hyprland samples,
+  Chrome with out-of-process decoding or Wayland overlays, Vulkan importers,
+  GBM-pixmap imports. A registry shared across processes would be the next
+  step, only if one of them shows the strip.
 - Off for one app: `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;
   for the VM: delete `/etc/glvnd/egl_vendor.d/10_omacvm.json`.
 - Tests: `src/app/guest/tests/va-shim-logical.sh` (Chrome's and mpv's import
-  patterns, HEVC, what sends nothing, the converting `vaGetImage`, video
-  processing, after `vaTerminate`), `src/app/guest/tests/egl-vendor.sh` (a
+  patterns, HEVC, 10-bit planes, planes Mesa made again, what sends nothing,
+  the converting `vaGetImage`, video processing, after `vaTerminate`; the shim
+  builds with `-Werror`), `src/app/guest/tests/egl-vendor.sh` (a
   stand-in Mesa and shim: what is handed on, fail-open, each skipped
   process, the device list), in a test VM `tests/video/video-geometry.sh`
   (H.264 and HEVC at their coded size must be exact; 3.2.11's guest fails).

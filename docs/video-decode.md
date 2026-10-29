@@ -169,8 +169,9 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   through it, when the size changes. Hyprland, Xwayland, Omarchy's shell
   (quickshell, also its lock screen), hyprlock and the login screen run
   Mesa's EGL alone. Not reached: Firefox (it decodes in
-  its RDD process and shows the frames in another), mpv's
-  `vo=dmabuf-wayland`, Vulkan importers. Off for one app:
+  its RDD process and shows the frames in another; it shows them at
+  their own size by itself), mpv's `vo=dmabuf-wayland`, Vulkan
+  importers. Off for one app:
   `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;
   for the VM: delete `10_omacvm.json`.
   The copy still fills the rows and columns past the picture with its last
