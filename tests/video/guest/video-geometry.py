@@ -25,8 +25,8 @@ check: exact = red 7.4 to 8.5 rows and columns (the band's first row blends) and
 or column of their place (ratio 1 +- 0.5 / size, at least +- 0.001; a 1080p squeeze is 0.0074). A decoder surface
 at the stream's coded size (H.264 when width or height is not a multiple of 16, HEVC when not a multiple of 8) must be
 exact too: the app's EGL import says the picture's size (ADR 0063; 3.2.11 and older show the strip there). Known, not
-counted as failures: Chromium's V4L2 decoder offers no HEVC; Chrome 154 stops answering at 320x180 on an M4 (3.2.10
-too); an app not installed in the VM.
+counted as failures: Chromium's V4L2 decoder offers no HEVC; Chrome 154 stops answering below 360 rows on an M4 (it
+decodes those on the CPU, and its libyuv crashes there on an M4; fixed in Chrome 155); an app not installed in the VM.
 """
 import glob, http.server, importlib.util, json, os, re, shutil, signal, subprocess, sys, threading, time, urllib.request
 
@@ -446,8 +446,8 @@ def output(size):
 def known(d):
     """Why a row may be off without a fault here (None: it must be exact)."""
     app, codec, w, h = d.get("app", ""), d.get("codec", ""), d.get("w", 0), d.get("h", 0)
-    if app == "chrome" and w * h <= 320 * 180 and str(d.get("error", "")).startswith("browser stopped answering"):
-        return "Chrome stops answering at 320x180 here (3.2.10 too)"
+    if app == "chrome" and h < 360 and str(d.get("error", "")).startswith("browser stopped answering"):
+        return "Chrome 154 stops on an M4 below 360 rows (CPU decoding, its libyuv; 3.2.10 too)"
     if app == "chromium" and codec in ("hevc", "av1") and d.get("error"):
         return "not offered by Chromium's V4L2 decoder"
     if app in ("chrome", "chromium") and d.get("error") == "not playing" and codec == "av1":
