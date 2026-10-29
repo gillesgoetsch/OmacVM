@@ -1336,11 +1336,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 ## 46. All routes: the lock screen has no password field after an update of a locked VM
 
 - **Symptom:** `omacvm update` or `omacvm apply` ran while the VM's Omarchy
-  session was locked (3.2.12 and older). The lock screen comes back without
-  its password field, and typing the password does nothing. Omarchy's shell
-  log (`journalctl --user -t omarchy-shell` in the VM) has "Session lock
-  object was destroyed without unlocking", then "lock-stranded: recovering"
-  and "lock-pending: screen-stabilizing".
+  session was locked (3.2.12 and older; also switching Omanotch off). The
+  lock screen comes back without its password field, and typing the password
+  does nothing. Omarchy's shell log (`journalctl --user -t omarchy-shell` in
+  the VM) has "Session lock object was destroyed without unlocking", then
+  "lock-stranded: recovering" and "lock-pending: screen-stabilizing".
 - **Cause:** the shell of omarchy-mac 4.0.3 reloads all its plugins, its own
   lock screen too, whenever a file under `~/.config/omarchy/plugins` changes
   or it is asked to rescan them. Every update wrote OmacVM's bar widgets
@@ -1355,8 +1355,14 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `~/.local/state/omacvm/plugins-staged`, and right after the unlock they go
   in place and the shell restarts once. A widget that did not change is not
   written again at all. `omacvm check` says "right after the next unlock" for
-  a widget that waits.
+  a widget that waits. Switching the control centre or Omanotch off while
+  the VM is locked does the same: the control centre leaves the bar at once
+  and its folder goes at the next update; Omanotch stops at once and removes
+  its copies of Omarchy's plugins right after the unlock.
 - **Where:** `src/guest/session-lock.sh` (the one lock check),
   `src/lib/install-plugin.sh`, `src/lib/omacvm-plugins`,
   `src/guest/restart-shell.sh`, `src/app/guest/omacvm-displays` (the display
-  widget); tests `src/tests/plugin-lock.sh`, `src/tests/restart-shell.sh`.
+  widget), `src/omanotch/guest/monitor/display-panel.py` (Omanotch's display
+  panel), `src/guest/off.sh` and `src/control/guest/install.sh` (the offs);
+  tests `src/tests/plugin-lock.sh`, `src/tests/restart-shell.sh`,
+  `src/tests/features-off.sh`, `src/omanotch/guest/tests/test_display_panel.py`.

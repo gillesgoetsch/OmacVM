@@ -66,6 +66,7 @@ run_off() {   # FUNCTION [SESSION=0|1] [SERVICE=enabled|active|none]
     pkill() { echo "pkill $*" >> "$CALLS"; }
     chown() { :; }
     restart_shell_later() { echo "restart-shell" >> "$CALLS"; }
+    session_locked() { (( ${LOCKED:-0} )); }   # LOCKED=1: Omarchy's session is locked
     /repo/guest/omanotch-notifications.sh() { :; }
     # /repo's Python helpers run from this checkout.
     SRC=$R/src; python3() { echo "python3 $*" >> "$CALLS"; command python3 "${@/#\/repo\//$SRC/}"; }
@@ -130,6 +131,27 @@ expect "omanotch off: hyprland.lua no longer loads notchbar" "$(printf '%s\n' 'r
 expect "omanotch off: notchcast stopped" yes "$(called "user_ctl disable --now notchcast.service")"
 : > "$OUT"; : > "$CALLS"; run_off omanotch_off 0
 expect "omanotch off again: nothing to do" "" "$(cat "$OUT" "$CALLS")"
+
+# Omanotch built and running, the session locked: its own uninstall (its
+# clones in ~/.config/omarchy/plugins, a rescan) would bring Omarchy's lock
+# screen back without its password field: it waits for the unlock
+# (guest/restart-shell.sh), the panel tool kept says it is owed. Nothing of
+# Omanotch runs or talks to the Mac meanwhile.
+reset_root
+file "$H/.local/bin/notchcast"; file "$H/.local/bin/omanotch-display-panel"; file "$H/.config/systemd/user/notchcast.service"
+file "$H/.config/hypr/notchbar.lua"; file /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook
+file "$H/.config/omarchy/plugins/omanotch.monitor/manifest.json" '{"id": "omanotch.monitor", "omarchy": {"clonedFrom": "omarchy.monitor"}}'
+file "$H/.config/omarchy/shell.json" '{"bar": {"layout": {"right": [{"id": "omanotch.monitor"}]}}}'
+LOCKED=1 run_off omanotch_off 1
+expect "omanotch off, locked: no uninstall in the session, nothing written in the plugins folder" "no no yes" \
+  "$(called "in_session bash /repo/omanotch/guest/uninstall.sh") $(called "display-panel.py") $(has "$H/.config/omarchy/plugins/omanotch.monitor")"
+expect "omanotch off, locked: notchcast stopped and gone, its hook gone" "yes no no" \
+  "$(called "user_ctl disable --now notchcast.service") $(has "$H/.local/bin/notchcast") $(has /etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook)"
+expect "omanotch off, locked: the panel tool kept (the uninstall is owed)" yes "$(has "$H/.local/bin/omanotch-display-panel")"
+expect "omanotch off, locked: says when" "Omanotch: off|Omanotch: its clones of Omarchy's plugins go right after the next unlock" "$(paste -sd'|' - < "$OUT")"
+: > "$OUT"; : > "$CALLS"; run_off omanotch_off 1
+expect "omanotch off, the next apply unlocked: the uninstall in the session, the panel tool gone" "yes no" \
+  "$(called "in_session bash /repo/omanotch/guest/uninstall.sh") $(has "$H/.local/bin/omanotch-display-panel")"
 
 # The Bridge, nobody logged in: services, client, queued widgets; the widgets
 # in the bar are disabled at the next login.
