@@ -5,11 +5,13 @@ in more words.
 
 ## 3.2.12 (unreleased)
 
-- **The memory-optimized kernel builds again.** Arch Linux ARM's kernel 7.3 lists a source it
-  commented out, and OmacVM's build of the memory-optimized kernel counted it, so the build
-  stopped at once ("source and md5sums differ in length"): turning the kernel on, or a newer
-  one from Update VM, failed on every route. It now reads the list as Arch's own tools do.
-  Needs the update and Update VM.
+- **The memory-optimized kernel builds again.** Arch Linux ARM's kernel 7.3 has a commented-out
+  line in its list of sources, and OmacVM counted it, so the kernel build stopped at once with
+  "thp-pkgbuild: source and md5sums differ in length" on every route: turning the
+  memory-optimized kernel on failed (the VM went back to what it had), and Build Now in Update
+  VM kept the old kernel. It now skips such lines, as Arch's own tools do. After the update:
+  Update VM and Build Now (`omacvm update --vm NAME --kernel`), or turn the kernel on again
+  where that failed.
 
 ## 3.2.11
 
