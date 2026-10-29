@@ -1432,10 +1432,16 @@ them. Pages macOS is compressing at that very moment get the same once
 more 20 ms later. On the Mac mini (a 3 GB VM after a browser session,
 macOS compressing it), the old way left on the Mac all 1.3 GB it still held
 of the 2.1 GB the VM gave back; now none of 1.5 GB (90 % of it compressed).
-QEMU's main lock is held at most about 1 ms per give-back (the old way
-0.4-0.7 ms). `logs/qemu.log` has a line an hour while the VM gives memory
-back and one when it stops ("free page reporting this run: ... MB back to
-the Mac ...; main lock held p99 ..., longest ...; ... left on the Mac").
+On a MacBook Pro M1 Max (a 4 GB VM, 3 browser sessions each way) none of
+the 1.7-2.2 GB stayed (3.3-3.5 GB with the memory-optimized kernel); the
+old way's runs gave the Mac 1.2 GB more back when the VM stopped (1.8 GB
+with that kernel). QEMU's main lock per give-back: about 1 ms on the mini
+(the old way 0.4-0.7 ms); on the M1 Max up to 8 ms either way, and 2.2 ms at
+most in a 4.1 GB drop of file cache macOS had compressed (the old way up to
+26 ms while macOS compressed). `logs/qemu.log` has a line an hour while
+the VM gives memory back and one when it stops ("free page reporting this
+run: ... MB back to the Mac ...; main lock held p99 ..., longest ...; ...
+left on the Mac").
 `OMACVM_RECLAIM_REUSABLE=0` in the app's environment is the old way. When
 macOS keeps the pages anyway (a refused advice, or the pages still held
 after it: half or more of 64 MB the Mac held), QEMU goes back to the old way

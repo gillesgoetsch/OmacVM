@@ -132,7 +132,16 @@ held before the release and what they left after.
   per-vCPU probe's worst 10 s window 8 ms against 5 ms before the give-back
   (the old way's row: 26 against 12), no gap over 100 ms, no RCU or watchdog
   line. The advice under the lock (option 1) had held it 21.5 ms per report
-  and stalled the guest 107-160 ms (MacBook Air).
+  and stalled the guest 107-160 ms (MacBook Air). MacBook Pro M1 Max, 6 GB
+  VM, a drop of 4092 MB of file cache macOS had compressed (3817 MB still
+  held, all of it compressed): hold per report p99 2.11 ms, longest 2.21 ms
+  (the old way, its cache dropped by macOS's warning while compressed: run
+  p99 19.1 ms, longest 25.7 ms); the probe's worst 10 s window 19 ms in the
+  drop against 27 ms in the minute before (18 ms before the fill), no gap
+  over 100 ms, no RCU or watchdog line. Over whole runs (boot included) the
+  M1 Max held it up to 7.9 ms per report with the fix and up to 8.0 ms the
+  old way without compression: unmapping 100-128 MB of resident pages costs
+  that either way.
 - The worker now looks at every range before and after the advice
   (`mach_vm_page_range_query`, on its own thread at utility QoS; before only
   with `OMACVM_RECLAIM_CHECK=1`).
@@ -180,3 +189,19 @@ held before the release and what they left after.
   (Air, first build). One run per row: the mini went to critical memory
   pressure with a third VM start (fseventsd held 23 GB there) and the Air
   went offline.
+- M1 Max rows (MacBook Pro M1 Max, 32 GB, macOS 27.0.1; the final build;
+  hidden 4 GB clone of a 3.2.0 test VM through the test app; the Mac had
+  room, nothing compressed): 3 browser sessions per mode and kernel. With
+  the fix every report's range left 0 MB on the Mac: 1673-2160 MB held
+  before (stock 7.2.11), 3253-3521 MB (memory-optimized 7.3, THP always,
+  MGLRU), 2705 MB with `page_reporting_order` 9. The old way has no check
+  on this build (it releases in place), so the Mac's counters around
+  QEMU's quit say it: what came back beyond QEMU's footprint, median of 3,
+  -783 MB the old way against -1998 MB with the fix and -1022 MB for a VM
+  with no session (stock); +51, -1696 and -1065 MB (memory-optimized). At
+  the quit the Mac got 1161 MB more held pages back after the old way's
+  sessions than after the fix's (41 % of the 2821 MB they reported), 1752
+  MB with the memory-optimized kernel (38 % of 4557 MB). (The offset
+  is below 0 also with no session: QEMU's footprint counts more than comes
+  back at its quit.) Guest data, final runtime: 0 pages wrong in 10 rounds
+  of 2 GiB, stock and memory-optimized kernel.
