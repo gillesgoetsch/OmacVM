@@ -680,6 +680,12 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-darwin-main-loop-qos.
 # the guest's file system half written.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-darwin-disk-flush-barrier.patch"
 "$native_dir/Tests/disk/test-flush.sh" "$source_dir" "$work_dir/disk-tests"
+# OmacVM: display surfaces in plain memory, not a temp file each
+# (OMACVM_SURFACE_MEMORY=file): no file made or deleted with the BQL held.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-darwin-surface-memory.patch"
+grep -q 'MAP_PRIVATE | MAP_ANON' "$source_dir/ui/qemu-pixman.c" ||
+  die "qemu-darwin-surface-memory.patch: ui/qemu-pixman.c has no anonymous surface memory"
+"$native_dir/Tests/display/test-surface-memory.sh" "$source_dir" "$work_dir/surface-tests"
 # OmacVM: a window per Mac display in full screen (Virtual-2, Virtual-3, ...).
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-displays.patch"
 # OmacVM tests: OMACVM_COCOA_HIDDEN=1 (no window), OMACVM_BACKGROUND=1 (window
@@ -1601,6 +1607,12 @@ if grep -Eq '^[[:space:]]*#define[[:space:]]+HAVE_STRCHRNUL([[:space:]]+1)?[[:sp
   "$config_host"; then
   die "QEMU incorrectly enabled the macOS 15.4-only strchrnul API"
 fi
+# qemu-darwin-surface-memory.patch acts only on macOS without a D-Bus display
+# (whose client maps the surface's file): a build with one would quietly keep
+# the temp files.
+grep -Eq '^#define[[:space:]]+CONFIG_DARWIN([[:space:]]+1)?[[:space:]]*$' "$config_host" &&
+  grep -Eq '^#undef[[:space:]]+CONFIG_DBUS_DISPLAY[[:space:]]*$' "$config_host" ||
+  die "qemu-darwin-surface-memory.patch needs CONFIG_DARWIN without CONFIG_DBUS_DISPLAY (config-host.h)"
 python3 - \
   "$build_dir/compile_commands.json" \
   "-mmacosx-version-min=$macos_deployment_target" \
