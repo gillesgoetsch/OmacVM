@@ -55,7 +55,7 @@ case "$1 $2" in
     echo "enable $3" >> "$CALLS"
     c=$HOME/.config/omarchy/shell.json
     jq --arg id "$3" '.bar.layout.right += [{id: $id}]' "$c" > "$c.new" && mv "$c.new" "$c" ;;
-  "plugin disable") echo "disable $3" >> "$CALLS" ;;
+  "plugin disable") [[ -e $S/up ]] || exit 1; echo "disable $3" >> "$CALLS"; echo "Disabled $3" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -236,7 +236,44 @@ expect "  after the unlock: v3 in place, one restart, nothing owed" "v3 1 no no"
 fresh yes; locked; install_plugin v1 >/dev/null; : > "$CALLS"; apply_end
 expect "locked, nothing changed: no job, no restart" "" "$(calls)"
 
-# 18. Every rescanPlugins caller asks for the lock first, or runs only from
+# 18. The control centre off (control/guest/install.sh's bar_item_off): out of
+#     the bar, the folder gone; under the lock the folder stays (out of the bar
+#     it does nothing; the next apply removes it). A copy staged under the lock
+#     and a queued enable never come.
+off_fn=$(awk '/^bar_item_off\(\) \{/ {on = 1} on {print} on && /^}$/ {exit}' "$SRC/control/guest/install.sh")
+if [[ -n $off_fn ]]; then
+  mkdir -p "$G/control/guest"
+  cc_off() {
+    ( cd "$G/control/guest" || exit 9
+      U=$(id -un)
+      as_user() { env HOME="$H" "$@"; }
+      source "$G/guest/home-files.sh"
+      eval "$off_fn"
+      bar_item_off )
+  }
+  cc_fresh() {
+    fresh; cp -R "$T/p/v1" "$H/.config/omarchy/plugins/omacvm.control"
+    mkdir -p "$ST/plugins-staged"; cp -R "$T/p/v2" "$ST/plugins-staged/omacvm.control"
+    printf '%s\n' omacvm.control omacvm.t > "$ST/pending-plugins"
+    printf '{"bar":{"layout":{"right":[{"id":"omacvm.control"},{"id":"omacvm.t"}]}}}\n' > "$H/.config/omarchy/shell.json"
+  }
+  C=$H/.config/omarchy/plugins/omacvm.control
+  cc_fresh; locked; i=$(ino "$C"); cc_off
+  expect "control centre off, locked: out of the bar, the folder untouched" "disable omacvm.control $i" "$(calls) $(ino "$C")"
+  expect "  the staged copy and the queued enable gone" "no omacvm.t" "$(has "$ST/plugins-staged/omacvm.control") $(queue)"
+  cc_fresh; cc_off
+  expect "control centre off, open: out of the bar, the folder gone" "disable omacvm.control no omacvm.t" "$(calls) $(has "$C") $(queue)"
+  cc_fresh; down; cc_off
+  expect "control centre off, no shell: out of shell.json by hand, the folder gone" "omacvm.t no" \
+    "$(jq -r '[.bar.layout.right[].id] | join(" ")' "$H/.config/omarchy/shell.json") $(has "$C")"
+  I=$SRC/guest/install.sh
+  expect "install.sh runs the control centre's off while its folder or a staged copy is there" 1 \
+    "$(grep -c 'd $H/.config/omarchy/plugins/omacvm.control || -d $H/.local/state/omacvm/plugins-staged/omacvm.control' "$I")"
+else
+  expect "control/guest/install.sh has bar_item_off" yes no
+fi
+
+# 19. Every rescanPlugins caller asks for the lock first, or runs only from
 #     omacvm-plugins (placement.sh). A new caller fails here until it does.
 if [[ -z ${1:-} ]]; then
   allowed="lib/omacvm-plugins app/guest/omacvm-displays omanotch/guest/monitor/display-panel.py omanotch/guest/uninstall.sh"
@@ -247,8 +284,13 @@ if [[ -z ${1:-} ]]; then
       */placement.sh) continue ;;   # run by omacvm-plugins after its lock check
     esac
     if [[ " $allowed " != *" $f "* ]]; then expect "rescanPlugins in $f: on the list" yes no; continue; fi
-    case $f in omanotch/*) continue ;; esac   # Omanotch's own rule, its own change
-    expect "rescanPlugins in $f: asks for the lock first" yes "$(grep -q 'session-lock\.sh' "$SRC/$f" && echo yes || echo no)"
+    case $f in
+      omanotch/guest/monitor/display-panel.py)   # Omanotch's own rule (as copies.py)
+        expect "rescanPlugins in $f: asks for the lock first" yes "$(grep -q 'def session_locked' "$SRC/$f" && echo yes || echo no)" ;;
+      omanotch/guest/uninstall.sh)   # run in the session only while it is open (guest/off.sh, restart-shell.sh)
+        expect "rescanPlugins in $f: off.sh runs it only unlocked" yes "$(grep -q 'off_locked' "$SRC/guest/off.sh" && echo yes || echo no)" ;;
+      *) expect "rescanPlugins in $f: asks for the lock first" yes "$(grep -q 'session-lock\.sh' "$SRC/$f" && echo yes || echo no)" ;;
+    esac
   done < <(grep -rlI --exclude-dir=__pycache__ rescanPlugins "$SRC" | LC_ALL=C sort)
 fi
 

@@ -24,7 +24,7 @@ mkdir -p "$T/bin" "$T/g"
 for f in "$K0" "$(dirname "$K0")/session-lock.sh"; do
   [[ -f $f ]] || continue
   s=$(sed -e "s#/usr/local/bin/omacvm-plugins#$T/bin/omacvm-plugins#g" \
-          -e "s#/usr/local/lib/omacvm/shell-colors.py#$T/bin/shell-colors.py#g" "$f")
+          -e "s#/usr/local/lib/omacvm/shell-colors.py#$T/bin/shell-colors.py#g" -e "s#/etc/omacvm/env#$T/env#g" "$f")
   printf '%s\n' "$s" > "$T/g/$(basename "$f")"
 done
 K=$T/g/$(basename "$K0")
@@ -76,6 +76,11 @@ echo "omacvm-plugins" >> "$CALLS"
 st=$HOME/.local/state/omacvm
 if [[ -d $st/plugins-staged ]]; then rm -rf "$st/plugins-staged"; [[ -e $S/replaces ]] && touch "$st/restart-shell"; fi
 exit 0
+EOF
+# Omanotch's uninstall, beside this copy as in the VM (../omanotch/guest).
+mkdir -p "$T/omanotch/guest"
+cat > "$T/omanotch/guest/uninstall.sh" <<'EOF'
+echo "omanotch-uninstall $WAYLAND_DISPLAY $HYPRLAND_INSTANCE_SIGNATURE" >> "$CALLS"
 EOF
 cat > "$T/bin/shell-colors.py" <<'EOF'
 #!/bin/bash
@@ -226,7 +231,24 @@ bash "$K" --after-unlock >/dev/null
 expect "restart refused: waits, then once" "sleep 2|$NOW|sleep 5|sleep 2|$NOW" "$(calls)"
 expect "  the note gone after it" "no" "$(has "$FLAG")"
 
-# 16. --retire (install.sh's start): a waiter of an earlier apply stops at once
+# 16. Omanotch switched off under the lock (guest/off.sh kept its panel tool):
+#     its own uninstall runs in the session right after the unlock, before the
+#     restart. Not while Omanotch is on (its notchcast is being built again).
+unset WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE
+export XDG_RUNTIME_DIR=$T/run
+notch_off() { rm -f "$FLAG"; mkdir -p "$HOME/.local/bin" "$XDG_RUNTIME_DIR/hypr/sig1"; touch "$HOME/.local/bin/omanotch-display-panel"; printf 'OMACVM_FEATURE_omanotch=on\nOMACVM_FEATURE_omanotch=%s\n' "$1" > "$T/env"; }
+fresh; notch_off off; status true true true true > "$S/status"
+bash "$K" >/dev/null
+expect "Omanotch off under the lock: waits for the unlock" "$QUEUED" "$(calls)"
+fresh; notch_off off; status false false false false > "$S/status"
+bash "$K" >/dev/null
+expect "  unlocked: its uninstall in the session, the panel tool gone" "omacvm-plugins|omanotch-uninstall wayland-1 sig1 no" "$(calls) $(has "$HOME/.local/bin/omanotch-display-panel")"
+fresh; notch_off on; status false false false false > "$S/status"
+bash "$K" >/dev/null
+expect "Omanotch on (rebuilding): nothing owed" "" "$(calls)"
+rm -f "$T/env"; unset XDG_RUNTIME_DIR
+
+# 17. --retire (install.sh's start): a waiter of an earlier apply stops at once
 #     while the session answers "locked", never while it restarts the shell.
 fresh; status true true true true > "$S/status"
 bash "$K" --retire; rc=$?
@@ -243,7 +265,7 @@ bash "$K" --retire
 expect "retire, a waiter that does not end: stopped after 90 tries" "90 systemctl --user stop omacvm-restart-shell.service" \
   "$(grep -c '^sleep 1' "$CALLS") $(grep -v -e '^sleep' "$CALLS" | grep -v -e '^omarchy-shell' -e 'is-active')"
 
-# 17. install.sh retires an earlier waiter at its start, runs this script at
+# 18. install.sh retires an earlier waiter at its start, runs this script at
 #     the end when a shell runs and drops the note when none does; nothing
 #     of OmacVM's asks isLocked first any more.
 I=$R/src/guest/install.sh

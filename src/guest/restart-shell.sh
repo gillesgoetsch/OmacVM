@@ -3,7 +3,8 @@
 # Omarchy shell, done while the session is open: copies of bar widgets staged
 # under the lock go in place and queued ones are enabled (omacvm-plugins),
 # the colour fix reaches the user's clones of Omarchy's plugins
-# (shell-colors.py), then the shell restarts once if a widget it had loaded
+# (shell-colors.py), Omanotch's own uninstall runs if Omanotch was switched
+# off under the lock, then the shell restarts once if a widget it had loaded
 # changed (the flag ~/.local/state/omacvm/restart-shell). Run as the desktop
 # user, at the end of an apply (guest/install.sh) and at login
 # (omacvm-plugins.service).
@@ -36,20 +37,35 @@ FLAG=$ST/restart-shell
 UNIT=omacvm-restart-shell.service
 PLUGINS=/usr/local/bin/omacvm-plugins
 COLORS=/usr/local/lib/omacvm/shell-colors.py
+ENV=/etc/omacvm/env
+NOTCH_TOOL=$HOME/.local/bin/omanotch-display-panel
 
+# Omanotch switched off while the session was locked (guest/off.sh): its own
+# uninstall (its clones of Omarchy's plugins, the shell's rescan) is owed.
+omanotch_owed() {
+  [[ -e $NOTCH_TOOL && $(sed -n 's/^OMACVM_FEATURE_omanotch=//p' "$ENV" 2>/dev/null | tail -n 1) == off ]]
+}
 owed() {
   local d
   [[ -e $FLAG || -s $ST/pending-plugins || -s $ST/pending-plugins-off || -s $ST/pending-clock ]] && return 0
   for d in "$ST"/plugins-staged/*/; do [[ -d $d ]] && return 0; done
-  return 1
+  omanotch_owed
 }
 shell_pid() { pgrep -u "$(id -u)" -x quickshell 2>/dev/null | head -n 1; }
 
 # Everything owed, the session open. False when Omarchy refused the restart
 # (the session locked again meanwhile): the flag stays.
 run_owed() {
-  local r before
+  local r before run=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
   if [[ -x $PLUGINS ]]; then "$PLUGINS"; fi
+  if omanotch_owed; then
+    # In the session, as off.sh's in_session runs it (Hyprland's variables).
+    WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-1} \
+      HYPRLAND_INSTANCE_SIGNATURE=${HYPRLAND_INSTANCE_SIGNATURE:-$(ls -t "$run/hypr" 2>/dev/null | head -n 1)} \
+      bash "$here/../omanotch/guest/uninstall.sh" >/dev/null 2>&1
+    echo "Omanotch: its clones of Omarchy's plugins removed"
+    rm -f "$NOTCH_TOOL"
+  fi
   if [[ -x $COLORS && -d $HOME/.config/omarchy/plugins ]]; then
     r=$("$COLORS" "$HOME/.config/omarchy/plugins" 2>&1)
     case $r in patched*|restored*) echo "Omarchy shell colours: $r"; : > "$FLAG" ;; esac

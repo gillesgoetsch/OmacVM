@@ -7,10 +7,17 @@
 # Needs from the caller: U, H (the desktop user and home), R (this copy of
 # src/), ROOT ("" in the VM; the tests' scratch folder), and the functions
 # log, user_ctl (systemctl --user for U), in_session (a command in U's
-# session) and restart_shell_later. What is in the home goes as the user
-# (home-files.sh), with ROOT in front of the path.
+# session) and restart_shell_later; session_locked if it has one (the
+# session is locked or its shell does not answer). What is in the home goes
+# as the user (home-files.sh), with ROOT in front of the path.
 # shellcheck source=home-files.sh
 source "$(dirname "${BASH_SOURCE[0]}")/home-files.sh"
+
+# off_locked: the caller says the desktop session is locked. Then nothing is
+# written in ~/.config/omarchy/plugins and the shell is not asked to rescan:
+# the shell of omarchy-mac 4.0.3 would reload its lock screen without the
+# password field (guest/session-lock.sh).
+off_locked() { declare -F session_locked >/dev/null && session_locked; }
 
 # off_any PATH...: one of them is there (a file, folder or link)
 off_any() {
@@ -73,25 +80,34 @@ gestures_off() {
 omanotch_off() {
   local n=$H/.local/bin/notchcast u=$H/.config/systemd/user/notchcast.service
   local q=/etc/systemd/user/omacvm-omanotch.service hook=/etc/pacman.d/hooks/zz-omacvm-omanotch-notifications.hook
-  local panel=$H/.config/omarchy/plugins/omanotch.monitor
+  local panel=$H/.config/omarchy/plugins/omanotch.monitor tool=$H/.local/bin/omanotch-display-panel
   local copies=$H/.config/systemd/user/omanotch-copies.service chook=/etc/pacman.d/hooks/zz-omacvm-omanotch-copies.hook
   off_any "$n" "$u" "$u.d" "$q" "$hook" "$H/.config/hypr/notchbar.lua" "$H/.local/state/omacvm/omanotch" "$panel" \
-    "$copies" "$chook" "$H/.local/lib/omanotch" || return 0
+    "$copies" "$chook" "$H/.local/lib/omanotch" "$tool" || return 0
   log "Omanotch: off"
   user_units_off omacvm-omanotch.service omanotch-copies.service
   rm -f "$ROOT$q" "$ROOT$hook" "$ROOT$chook" "$ROOT/usr/local/lib/omacvm/omanotch-copies-hook"
   home_run rm -rf "$ROOT$copies" "$ROOT$H/.local/lib/omanotch"
   [[ -z $("$R/guest/omanotch-notifications.sh" off 2>/dev/null || true) ]] || restart_shell_later
-  # Omanotch's own uninstall needs the session (Hyprland, the shell); the
-  # files go here too, so it is off also without one.
-  if off_any "$n" "$u"; then in_session bash "$R/omanotch/guest/uninstall.sh" >/dev/null 2>&1 || true; fi
-  # Its display panel clone (UTM, Fusion, Parallels): without the session,
-  # Omarchy's panel goes back in its place in shell.json itself (as the user).
-  if [[ -d $ROOT$panel ]]; then
-    XDG_CONFIG_HOME=$ROOT$H/.config home_run python3 "$R/omanotch/guest/monitor/display-panel.py" --drop >/dev/null 2>&1 < /dev/null || true
+  if off_locked; then
+    # Its own uninstall removes its clones of Omarchy's plugins and asks the
+    # shell to rescan: under the lock that waits for the unlock
+    # (guest/restart-shell.sh runs it then; the panel tool, kept until then,
+    # says it is owed). Nothing of it runs or talks to the Mac meanwhile.
+    log "Omanotch: its clones of Omarchy's plugins go right after the next unlock"
+  else
+    # Omanotch's own uninstall needs the session (Hyprland, the shell); the
+    # files go here too, so it is off also without one.
+    if off_any "$n" "$u" "$tool"; then in_session bash "$R/omanotch/guest/uninstall.sh" >/dev/null 2>&1 || true; fi
+    # Its display panel clone (UTM, Fusion, Parallels): without the session,
+    # Omarchy's panel goes back in its place in shell.json itself (as the user).
+    if [[ -d $ROOT$panel ]]; then
+      XDG_CONFIG_HOME=$ROOT$H/.config home_run python3 "$R/omanotch/guest/monitor/display-panel.py" --drop >/dev/null 2>&1 < /dev/null || true
+    fi
+    home_run rm -rf "$ROOT$tool"
   fi
   user_units_off notchcast.service
-  home_run rm -rf "$ROOT$u" "$ROOT$u.d" "$ROOT$n" "$ROOT$H/.local/bin/omanotch-display-panel" "$ROOT$H/.config/hypr/notchbar.lua" \
+  home_run rm -rf "$ROOT$u" "$ROOT$u.d" "$ROOT$n" "$ROOT$H/.config/hypr/notchbar.lua" \
     "$ROOT$H/.local/state/omacvm/omanotch" "$ROOT$H/.local/state/omanotch/expect"
   off_lines "$H/.config/hypr/hyprland.lua" '-- omarchy-notch-bar: hidden output for the macOS notch helper.' 'require("hypr.notchbar")'
 }

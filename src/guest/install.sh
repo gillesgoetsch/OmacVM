@@ -105,6 +105,8 @@ restart_shell_later() { home_mkdir "$H/.local/state/omacvm"; home_put "$H/.local
 user_script() { sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash "$@"; }
 # The desktop session: down, busy, locked or open (guest/session-lock.sh).
 session_state() { user_script "$R/guest/session-lock.sh" 2>/dev/null || true; }
+# Locked, or the shell does not answer: nothing written in the plugins folder (off.sh).
+session_locked() { local s; s=$(session_state); [[ $s == locked || $s == busy ]]; }
 # What off means for the features with a part in the VM that talks to the Mac.
 ROOT=""
 source "$R/guest/off.sh"
@@ -536,7 +538,8 @@ fi
 if want control-centre; then
   if [[ ${F[control-centre]} == on ]]; then log "control centre (omacvm)"
   elif [[ -e /usr/local/bin/omacvm || -f /etc/systemd/system/omacvm-check.socket ]]; then log "control centre: off"; fi
-  if [[ ${F[control-centre]} == on || -e /usr/local/bin/omacvm || -f /etc/systemd/system/omacvm-check.socket ]]; then
+  if [[ ${F[control-centre]} == on || -e /usr/local/bin/omacvm || -f /etc/systemd/system/omacvm-check.socket ||
+        -d $H/.config/omarchy/plugins/omacvm.control || -d $H/.local/state/omacvm/plugins-staged/omacvm.control ]]; then
     "$R/control/guest/install.sh" "$U" "${F[control-centre]}" "$TYPE" || not_set_up control-centre "control centre"
   fi
 fi
