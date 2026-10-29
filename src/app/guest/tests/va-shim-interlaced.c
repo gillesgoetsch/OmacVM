@@ -11,7 +11,8 @@
  * on: an H.264 decoder's picture whose picture parameters say frame_mbs_only_flag 0 (MBAFF
  * frames, field pictures) is refused at its vaRenderPicture with VA_STATUS_ERROR_UNIMPLEMENTED
  * before Mesa sees it, and so are its later vaRenderPicture (slices) and vaEndPicture: Mesa
- * gets none of it, nothing goes to the Mac. Its next progressive picture decodes. Parameters
+ * gets only its vaBeginPicture, none of its parameters, slices or vaEndPicture, and nothing
+ * goes to the Mac. Its next progressive picture decodes. Parameters
  * and slices in one vaRenderPicture (GStreamer) are refused together. HEVC decoders, H.264
  * encoders and video processing are not looked at. off (OMACVM_VA_INTERLACED=1): Mesa gets
  * the interlaced pictures (as before the shim refused them).

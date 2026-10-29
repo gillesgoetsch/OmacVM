@@ -140,12 +140,13 @@
  * H.264 coded interlaced (field pictures, MBAFF frames: frame_mbs_only_flag 0 in the SPS):
  * the Mac's hardware decoder does not take it (VideoToolbox refuses a session that asks for
  * the hardware, as in FFmpeg's own VideoToolbox decoding on macOS), so VideoToolbox decodes
- * it with its software decoder, which gave green pictures in the VM. VA-API says the coding
- * only in each picture's parameters, so the shim reads them at vaRenderPicture on an H.264
- * decoder and refuses such a picture (VA_STATUS_ERROR_UNIMPLEMENTED, logged at most every
- * 10 s), its slices and its vaEndPicture with it: nothing of it goes to the Mac. The app gets
- * an error for every such picture instead of a green one (mpv then decodes on the CPU, after
- * 3 errors). Pictures coded as frames decode as before.
+ * it with its software decoder, which gave green or wrong pictures in the VM. VA-API says
+ * the coding only in each picture's parameters, so the shim reads them at vaRenderPicture on
+ * an H.264 decoder and refuses such a picture (VA_STATUS_ERROR_UNIMPLEMENTED, logged at most
+ * every 10 s), its slices and its vaEndPicture with it: Mesa gets only its vaBeginPicture and
+ * nothing of it goes to the Mac. The app gets an error for every such picture instead of a
+ * green one (mpv then decodes on the CPU, after 3 errors). Pictures coded as frames decode as
+ * before.
  * OMACVM_VA_INTERLACED=1 sends them to the Mac anyway (tests).
  *
  * Images in another YUV layout: vaGetImage and vaPutImage between an NV12

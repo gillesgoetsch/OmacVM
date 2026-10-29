@@ -1,9 +1,10 @@
 #!/bin/bash
 # OmacVM's VA driver shim refuses H.264 coded interlaced (omacvm_drv_video.c, "H.264 coded
 # interlaced"): the Mac's hardware decoder does not take it, and VideoToolbox's software decoder
-# gave green pictures. An H.264 picture whose parameters say frame_mbs_only_flag 0 (MBAFF
-# frames, field pictures) gets VA_STATUS_ERROR_UNIMPLEMENTED at vaRenderPicture, its slices and
-# vaEndPicture too, and Mesa none of it; players then decode on the CPU. Pictures coded as
+# gave green or wrong pictures. An H.264 picture whose parameters say frame_mbs_only_flag 0
+# (MBAFF frames, field pictures) gets VA_STATUS_ERROR_UNIMPLEMENTED at vaRenderPicture, its
+# slices and vaEndPicture too: Mesa gets only its vaBeginPicture, none of its parameters, slices
+# or vaEndPicture, and nothing reaches the Mac; players then decode on the CPU. Pictures coded as
 # frames, HEVC, encoding and video processing pass on. Refusals are logged at most every 10 s.
 # The shim runs against a stand-in for Mesa's driver (va-shim-interlaced.c), on Linux with
 # libva's headers (libva-dev).
@@ -42,7 +43,7 @@ run "" on 1 --type=gpu-process
 run "OMACVM_VA_IMPORT_GUARD=0" on 1
 run "OMACVM_VA_DECODE_WAIT=1" on 1
 run "OMACVM_VA_FILL=0 OMACVM_VA_LOGICAL=0" on 1
-# The switch: Mesa gets them (green pictures, as before).
+# The switch: Mesa gets them (green or wrong pictures, as before).
 run "OMACVM_VA_INTERLACED=1" off 0
 (( fail )) && { echo "va-shim-interlaced: FAILED"; exit 1; }
 echo "va-shim-interlaced: all ok"
