@@ -13,7 +13,7 @@ in more words.
   player's import of the picture says where it ends. A small EGL library in the VM now passes that
   size to the VA-API driver, which tells the Mac. Measured in a test VM (Chrome 154, mpv 0.41, Mac
   mini M4): H.264 at 1920x1080, 1280x720, 854x480, 640x360, 426x240 (mpv) and 1918x1078, HEVC at
-  854x480 and 1000x562 (8- and 10-bit) are exact in Chrome, mpv and mpv's gpu-next (3.2.11: the
+  854x480 and 1000x562 (10-bit too at 1000x562) are exact in Chrome, mpv and mpv's gpu-next (3.2.11: the
   strip in 23 of these); VP9, 10-bit VP9 and AV1 stay exact, and so do Firefox and Chromium; a
   video that really has 1088 rows keeps them all; FFmpeg's read-back stays bit for bit the
   software decode. Hyprland, Xwayland and Omarchy's shell (with its lock screen) do not load the
