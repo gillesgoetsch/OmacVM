@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.12 (unreleased)
+## 3.2.12
 
 In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
 file cache while macOS compresses it; qemu.log, the app menu and `omacvm check` say when the
