@@ -7,7 +7,8 @@
 # - The VM's omacvm-desktop-recover with stand-ins for systemctl, sudo,
 #   hyprctl and notify-send: the note names the apps that closed, the login
 #   manager restarts, the new session shows the note once, the shell mode
-#   restarts only the shell; a locked session is locked again.
+#   restarts only the shell; a locked session is locked again; the stall note
+#   (the VM stood still: macOS out of memory) says how long and what helps.
 # - GuestAgent.start against a stand-in agent socket: a "return" reply is
 #   started, an "error" reply refused, no reply in time (or half a line) no
 #   answer, so the app never restarts the desktop a second time.
@@ -176,6 +177,19 @@ touch "$NOTIFY_FAILS"; : > "$CALLS"
 "$G" app chromium guard > /dev/null
 grep -q "could not show the note" "$CALLS" && expect "app note without a daemon: logged" yes yes || expect "app note without a daemon: logged" yes no
 rm -f "$NOTIFY_FAILS"
+# The VM stood still (QEMU's stall note): a note with the numbers, nothing restarts.
+: > "$CALLS"
+"$G" stall 58 51 64 > /dev/null
+expect "stall: nothing restarts"                 "" "$(grep -e '^systemctl' -e '^omarchy-restart-shell' "$CALLS")"
+grep -q "notify-send|-a|OmacVM|-u|normal|The VM stood still for 58 s|macOS ran out of free memory (the VM uses 51 GB of this Mac's 64 GB), so the VM's processors had to wait. A smaller VM memory leaves the Mac more" "$CALLS" \
+  && expect "stall: a note with the time and the memory" yes yes || { expect "stall: a note with the time and the memory" yes no; cat "$CALLS"; }
+: > "$CALLS"
+"$G" stall '12;id' 'x' 64 > /dev/null
+grep -q "The VM stood still for 12 s|macOS ran out of free memory, so" "$CALLS" \
+  && expect "stall: digits only; without the VM's size no numbers" yes yes || { expect "stall: digits only; without the VM's size no numbers" yes no; cat "$CALLS"; }
+: > "$CALLS"
+"$G" stall > /dev/null; rc=$?
+expect "stall without a time: refused, no note"  "2 0" "$rc $(grep -c '^notify-send' "$CALLS")"
 # The shell.
 : > "$CALLS"
 "$G" shell > /dev/null
