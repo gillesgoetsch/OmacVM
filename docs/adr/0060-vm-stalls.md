@@ -93,8 +93,8 @@ the guest, under a call-like load, found:
      does cut pictures that would have come later.
    - None on an M4 Max or a MacBook Air.
 4. **The cause itself** is the Mac's memory. The app gives the VM's cold
-   file cache back while macOS compresses it (ADR 0059) only with a QEMU
-   that gives the pages back (#603); 3.2.11's does not, so it is off.
+   file cache back while macOS compresses it (ADR 0059): on from 3.2.12
+   (QEMU's free page reclaim, ADR 0062); 3.2.11 had it off.
 
 ## Not done (each waits for its evidence)
 
@@ -116,6 +116,14 @@ the guest, under a call-like load, found:
   can matter there; they change only after a measured row on that kernel.
 - A GPU thread of its own (ADR 0046 option 2): only if field notes show main
   loop stalls of 1 s or more outside the calls named above.
+- A live row for the memory cause. The "waiting for memory" line and the
+  note in the VM have been shown only in tests (simulated stalls,
+  `test-vcpu-stall.sh`, `vm-stalls.sh`): the M1 Max never held critical
+  pressure for more than 2 s in 6 tries, and the mini's swap was full. Live,
+  on the mini with its processors busy, two runs gave 7 and 11 "waited for a
+  Mac core" lines (longest 5.8 s), each matching a pause the guest saw; one
+  of the 11 was 1.9 s longer than the vCPU's no-CPU window as macOS counted
+  it, within the guest's own pause.
 
 ## Consequences
 

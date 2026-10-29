@@ -1298,9 +1298,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 - **Fix:** give the VM less memory (`omacvm resources --vm NAME --memory-gb
   N`, from its next start), or quit big apps on the Mac. OmacVM.app's
   give-back of the VM's cold file cache while macOS compresses it (ADR 0059)
-  runs only with a QEMU that gives the pages back (#603); 3.2.11's does not,
-  so it is off. After a stall of 10 s or more for memory the VM shows a note
-  that says so (once per 30 minutes; Update VM puts the note in).
+  is on from 3.2.12 (QEMU's free page reclaim, ADR 0062); 3.2.11 had it off.
+  After a stall of 10 s or more for memory the VM shows a note that says so
+  (once per 30 minutes; Update VM puts the note in). The memory cause has
+  been shown only in tests so far (simulated stalls), so the note has not
+  yet been seen on a real Mac.
 - **Where:** `app/runtime/patches/qemu-hvf-vcpu-stall-note.patch` (the
   lines, `logs/vm-stalls`), `qemu-main-loop-stall-gpu-run.patch`,
   `omacvm-cocoa-vm-stalls-menu.patch`, `app/app/Sources/OmacVMDesktop/VMStalls.swift`,

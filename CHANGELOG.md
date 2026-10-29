@@ -13,7 +13,8 @@ in more words.
   64 GB), so the VM's processors had to wait ...". `omacvm check` has a "VM stalls" line: a
   warning with how often, how long and why (the Mac's memory, blocked in macOS's kernel, no
   free Mac processor, QEMU itself), never a failure, and "no stall seen this run" otherwise
-  (short stalls can be missed). The note needs Update VM; the rest only the new app.
+  (short stalls can be missed). The note comes only for that memory cause, which has so far
+  been shown only in tests (#595). The note needs Update VM; the rest only the new app.
 
 ## 3.2.11
 
