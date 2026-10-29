@@ -4,20 +4,28 @@
  * __egl_Main and getProcAddress; its eglCreateImage(KHR) make an image unless told to fail),
  * -DSTUB_SHIM (omacvm_va_dmabuf_imported_v1, counting its calls), and the program that calls the
  * library's __egl_Main as glvnd does.
- *   egl-vendor WRAPPER MESA SHIM main|nomesa|abi1|desktop
+ *   egl-vendor WRAPPER MESA SHIM main|ghostty|nomesa|abi1|desktop
  * main: dma-buf imports in a video format reach the shim once each, through eglCreateImageKHR
  * and eglCreateImage, with the import's size; nothing before the shim is loaded (and no crash),
- * for an AB24 import, for another target or when Mesa makes no image; every other name is
- * Mesa's own pointer; eglQueryDevicesEXT is not offered (Mesa's own vendor lists the devices).
+ * for an AB24 import, for another target or when Mesa makes no image; every other name, and
+ * eglInitialize, is Mesa's own pointer; eglQueryDevicesEXT is not offered (Mesa's own vendor
+ * lists the devices). Run as egl-vendor, foot and chromium.
+ * ghostty: run as an exe named ghostty: eglInitialize is wrapped; Mesa's stand-in sees
+ * LIBGL_ALWAYS_SOFTWARE=1 during its eglInitialize and the variable is gone afterwards, also on a
+ * second call, when Mesa's call fails and from two threads at once; a LIBGL_ALWAYS_SOFTWARE,
+ * MESA_LOADER_DRIVER_OVERRIDE or GALLIUM_DRIVER already set is left as it is.
  * nomesa: no Mesa library: __egl_Main is false. abi1: glvnd's vendor ABI 1.x: false, Mesa not
  * loaded. desktop: run as an exe named as one of the desktop's processes (Hyprland, Xwayland,
  * quickshell, hyprlock, sddm-greeter-qt6): false, Mesa not loaded.
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <glvnd/libeglabi.h>
@@ -36,7 +44,23 @@ static EGLImage create_image(EGLDisplay d, EGLContext c, EGLenum t, EGLClientBuf
     (void)d; (void)c; (void)t; (void)b; (void)a;
     return fail_next ? EGL_NO_IMAGE : (EGLImage)(uintptr_t)0x5678;
 }
-static EGLBoolean initialize(EGLDisplay d, EGLint *a, EGLint *b) { (void)d; (void)a; (void)b; return EGL_TRUE; }
+/* eglInitialize: what LIBGL_ALWAYS_SOFTWARE was at the end of each call ("-": not set) */
+int fail_init, slow_init;
+unsigned init_calls;
+char init_saw[16][8];
+static EGLBoolean initialize(EGLDisplay d, EGLint *a, EGLint *b)
+{
+    unsigned i = __atomic_fetch_add(&init_calls, 1, __ATOMIC_RELAXED);
+    const char *v;
+
+    (void)d; (void)a; (void)b;
+    if (slow_init)
+        usleep(100000);
+    v = getenv("LIBGL_ALWAYS_SOFTWARE");
+    if (i < 16)
+        snprintf(init_saw[i], sizeof(init_saw[i]), "%s", v ? v : "-");
+    return fail_init ? EGL_FALSE : EGL_TRUE;
+}
 static EGLBoolean query_devices(EGLint m, EGLDeviceEXT *d, EGLint *n) { (void)m; (void)d; *n = 1; return EGL_TRUE; }
 void *stub_gpa(const char *name)
 {
@@ -80,6 +104,97 @@ static void check(int ok, const char *what)
     failed |= !ok;
 }
 
+static PFNEGLINITIALIZEPROC init;
+static unsigned *init_calls;
+static char (*init_saw)[8];
+
+static const char *env(const char *name)
+{
+    const char *v = getenv(name);
+    return v ? v : "-";
+}
+
+/* One eglInitialize through the library: what Mesa's stand-in saw, and the variable afterwards */
+static void init_once(const char *what, EGLBoolean want, const char *want_saw, const char *want_after)
+{
+    char line[300];
+    unsigned i = *init_calls;
+    EGLint major, minor;
+    EGLBoolean r = init(EGL_NO_DISPLAY, &major, &minor);
+    const char *saw = *init_calls == i + 1 && i < 16 ? init_saw[i] : "?";
+
+    snprintf(line, sizeof(line), "%s: Mesa's eglInitialize %s with LIBGL_ALWAYS_SOFTWARE=%s, afterwards %s",
+             what, r ? "true" : "false", saw, env("LIBGL_ALWAYS_SOFTWARE"));
+    check(r == want && !strcmp(saw, want_saw) && !strcmp(env("LIBGL_ALWAYS_SOFTWARE"), want_after), line);
+}
+
+static void *init_thread(void *arg)
+{
+    EGLint major, minor;
+
+    (void)arg;
+    init(EGL_NO_DISPLAY, &major, &minor);
+    return NULL;
+}
+
+/* An exe named ghostty: Mesa's CPU renderer for its eglInitialize, nothing left behind */
+static int ghostty(void *mesa, void *(*gpa)(const char *))
+{
+    void *(*mesa_gpa)(const char *) = (void *(*)(const char *))dlsym(mesa, "stub_gpa");
+    int *fail_init = dlsym(mesa, "fail_init"), *slow_init = dlsym(mesa, "slow_init");
+    char what[200];
+
+    init_calls = dlsym(mesa, "init_calls");
+    init_saw = dlsym(mesa, "init_saw");
+    if (!mesa_gpa || !fail_init || !slow_init || !init_calls || !init_saw) {
+        fprintf(stderr, "no stand-in Mesa: %s\n", dlerror());
+        return 2;
+    }
+    init = (PFNEGLINITIALIZEPROC)gpa("eglInitialize");
+    check(init && (void *)init != mesa_gpa("eglInitialize"), "ghostty: eglInitialize is wrapped");
+    if (!init || (void *)init == mesa_gpa("eglInitialize"))
+        return 1;
+    check(gpa("eglCreateImageKHR") && gpa("eglCreateImageKHR") != mesa_gpa("eglCreateImageKHR") &&
+          !gpa("eglQueryDevicesEXT") && !gpa("eglNoSuchThing"),
+          "ghostty: video imports wrapped as in every app, no device list");
+    unsetenv("LIBGL_ALWAYS_SOFTWARE");
+    unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+    unsetenv("GALLIUM_DRIVER");
+    init_once("first call", EGL_TRUE, "1", "-");
+    init_once("second call", EGL_TRUE, "1", "-");
+    *fail_init = 1;
+    init_once("Mesa's call fails", EGL_FALSE, "1", "-");
+    *fail_init = 0;
+    setenv("LIBGL_ALWAYS_SOFTWARE", "0", 1);
+    init_once("LIBGL_ALWAYS_SOFTWARE=0 set before", EGL_TRUE, "0", "0");
+    unsetenv("LIBGL_ALWAYS_SOFTWARE");
+    setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
+    init_once("MESA_LOADER_DRIVER_OVERRIDE=zink set before", EGL_TRUE, "-", "-");
+    check(!strcmp(env("MESA_LOADER_DRIVER_OVERRIDE"), "zink"), "MESA_LOADER_DRIVER_OVERRIDE kept");
+    unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+    setenv("GALLIUM_DRIVER", "softpipe", 1);
+    init_once("GALLIUM_DRIVER=softpipe set before", EGL_TRUE, "-", "-");
+    check(!strcmp(env("GALLIUM_DRIVER"), "softpipe"), "GALLIUM_DRIVER kept");
+    unsetenv("GALLIUM_DRIVER");
+
+    /* two threads at once (Mesa takes 100 ms): each call sees the variable to its end */
+    pthread_t t[2];
+    unsigned i = *init_calls;
+    *slow_init = 1;
+    for (int k = 0; k < 2; k++) {
+        pthread_create(&t[k], NULL, init_thread, NULL);
+        usleep(20000);
+    }
+    for (int k = 0; k < 2; k++)
+        pthread_join(t[k], NULL);
+    *slow_init = 0;
+    snprintf(what, sizeof(what), "two threads at once: Mesa saw LIBGL_ALWAYS_SOFTWARE=%s and =%s, afterwards %s",
+             init_saw[i], init_saw[i + 1], env("LIBGL_ALWAYS_SOFTWARE"));
+    check(*init_calls == i + 2 && !strcmp(init_saw[i], "1") && !strcmp(init_saw[i + 1], "1") &&
+          !strcmp(env("LIBGL_ALWAYS_SOFTWARE"), "-"), what);
+    return failed;
+}
+
 int main(int argc, char **argv)
 {
     __EGLapiImports imports;
@@ -101,6 +216,10 @@ int main(int argc, char **argv)
     EGLBoolean ok = egl_main(abi, &exports, NULL, &imports);
     void *mesa = dlopen(argv[2], RTLD_NOW | RTLD_NOLOAD);
 
+    if (!strcmp(mode, "ghostty")) {
+        check(ok && mesa && imports.getProcAddress, "ghostty: __egl_Main loads Mesa's and says yes");
+        return ok && mesa && imports.getProcAddress ? ghostty(mesa, imports.getProcAddress) : 1;
+    }
     if (strcmp(mode, "main")) {
         const char *exe = strrchr(argv[0], '/');
 
@@ -121,7 +240,7 @@ int main(int argc, char **argv)
     check(cik && ci && (void *)cik != mesa_gpa("eglCreateImageKHR") &&
           (void *)ci != mesa_gpa("eglCreateImage"), "eglCreateImageKHR and eglCreateImage are wrapped");
     check(gpa("eglInitialize") == mesa_gpa("eglInitialize") && !gpa("eglNoSuchThing"),
-          "every other name is Mesa's own pointer");
+          "eglInitialize and every other name are Mesa's own pointers");
     check(!gpa("eglQueryDevicesEXT"), "eglQueryDevicesEXT is not offered (Mesa's own vendor lists the devices)");
 
     const EGLint nv12[] = { EGL_WIDTH, 1920, EGL_HEIGHT, 1080,
