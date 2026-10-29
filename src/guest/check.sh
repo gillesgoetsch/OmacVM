@@ -969,6 +969,15 @@ if [[ $NO_IDLE_LOCK == on ]]; then
   if [[ -f $H/.local/state/omarchy/indicators/stay-awake ]]; then ok "screensaver and lock disabled" "the Mac's lock protects the VM"
   else bad "screensaver and lock disabled" "chosen, but Omarchy's Stay Awake is not set"; fi
 else ok "screensaver and lock" "Omarchy's own, after idle"; fi
+# Omarchy's lock after an unlock: omarchy-mac 4.0.x with Quickshell 0.3.2
+# keeps "locked" true after the first unlock, and its lock call then does
+# nothing until the shell restarts (omacom/omarchy-mac#738). The status shows
+# it: locked, but not requested, sessionLocked or secure (a fixed Omarchy
+# reads locked afresh). Its last line: without a locale Qt warns first.
+st=$(as_user omarchy-shell lock status 2>/dev/null | tail -n 1)
+if [[ $st == *'"locked":true'* && $st != *'"requested":true'* && $st != *'"sessionLocked":true'* && $st != *'"secure":true'* ]]; then
+  warn "Omarchy's lock" "does not lock again since the last unlock (lock key, idle lock), Omarchy's bug (omacom/omarchy-mac#738): run omarchy-restart-shell in a terminal" human
+fi
 FEATURE=autologin
 # As SDDM does it, whoever wrote the file (the Mac's omacvm check fixes OmacVM's record to match).
 # Run with bash -s from the Mac: the VM's copy (an older one has OmacVM's own file only).

@@ -157,6 +157,22 @@ then quit and start Chrome and mpv again.
   by itself, so OmacVM's own request for that has run only in tests. Needs only the app update,
   from the VM's next start (a VM that runs across the update keeps the old behaviour until it is
   shut down); no Update VM.
+
+- **Update VM no longer restarts Omarchy's lock screen while the VM is locked, and Omanotch
+  follows Omarchy's updates again after an unlock (#612).** Before it restarts the Omarchy shell
+  for new bar widgets, OmacVM asks Omarchy whether the session is locked. In Update VM the answer
+  came with a warning in front, so a locked session read as unlocked: the shell, which draws the
+  lock screen, was restarted under the lock (the new shell locked again within about 2 seconds),
+  and Update VM waited 30 seconds longer. And Omarchy (omarchy-mac 4.0.x with Quickshell 0.3.2)
+  keeps answering "locked" after the first unlock (omacom/omarchy-mac#738): Omanotch's copies of
+  Omarchy's bar and background then stopped following Omarchy's updates until the next login,
+  and an Update VM that installs Omanotch again could wait hours for them. OmacVM reads Omarchy's
+  lock status now; while the VM is locked, the shell restarts right after the unlock. Not
+  OmacVM's: after every unlock Omarchy does not lock the VM again (lock key, idle lock) until its
+  shell restarts (an open fix: omacom/omarchy-mac#752).
+  `omacvm check` warns while it is stuck; `omarchy-restart-shell` after an unlock brings the lock
+  back for the next lock only.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most

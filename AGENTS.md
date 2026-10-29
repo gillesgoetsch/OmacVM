@@ -661,7 +661,7 @@ The less obvious ones, with causes and where the fix lives, are in
 | `OMARCHY_PATH is not set` from omarchy commands run as root/sudo | no Omarchy env | `source /usr/share/omarchy/default/bash/env-bootstrap` first |
 | A command replacement in `/usr/local/bin` is ignored by the bar | the Omarchy shell runs with `/usr/share/omarchy/bin` (symlinks to /usr/bin) first on PATH; Hyprland does not | call `/usr/local/bin/...` by full path from QML (see `omacvm.wifiqr`) |
 | `Target not found` / "handler will not be used" for a widget's IPC | a clone kept the stock widget's IPC target | give clones their own target (`omacvm.wifi`) |
-| Updated widget does not change | a running shell keeps loaded plugins | `src/lib/install-plugin.sh` flags changes; `src/guest/install.sh` runs `omarchy-restart-shell` |
+| Updated widget does not change | a running shell keeps loaded plugins | `src/lib/install-plugin.sh` flags changes; `src/guest/install.sh` restarts the shell (`guest/restart-shell.sh`; locked: right after the unlock) |
 | Disabling an old clone brings the stock widget back next to the new one | `clonedFrom` hand-back | rename ids in `shell.json` instead, or disable the stock widget |
 | SSIDs null, `location_authorized: false` | Location Services not granted (new bundle id or reset) | Privacy & Security › Location Services |
 | Media keys still show the macOS popup | Accessibility missing (`permissions:` line, `omacvm check`), no VM in front (Parallels/UTM/Fusion: not full screen), or capture switched off in the bridge menu | `media keys:` / `media key ...: to macOS:` lines in the bridge log |
@@ -758,6 +758,14 @@ The less obvious ones, with causes and where the fix lives, are in
   ("detritus not allowed"), and the Dock keeps showing the old icon of a
   pinned app until it restarts (macOS 27, 2026-10-13). The Dock tile plug-in
   draws the look instead.
+- Do not ask `omarchy-shell lock isLocked` whether the session is locked: with
+  Quickshell 0.3.2 and older it answers true after the first unlock until the
+  shell restarts (omarchy-mac#738), and omarchy-mac's `lock lock` then does
+  nothing. Read `omarchy-shell lock status` (`requested`, `sessionLocked`,
+  `secure`, read at the call), as `guest/restart-shell.sh` and Omanotch's
+  `copies.py` do. Root's `sudo -u` in an apply has no locale: there `qs ipc`
+  prints Qt's locale warning on stdout before every answer (Omarchy's own
+  scripts misread it too), so give Omarchy's commands `LC_ALL=C.UTF-8`.
 - Do not leave files in the desktop user's runtime folder (`/run/user/UID`,
   `XDG_RUNTIME_DIR`): it is a tmpfs of 10 % of the VM's memory, and when it is
   full, Hyprland and apps die of SIGBUS on their shared-memory buffers there
