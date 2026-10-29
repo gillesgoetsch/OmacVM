@@ -454,6 +454,8 @@ opens), `--early-drain` (a drain before the first picture), `--expect-fail`
 (a picture under 64 pixels fails at once), `--stall` (the daemon stopped
 mid-video: an error within seconds, then the next video decodes), `--flood`
 (1000 drain commands: the module fails that decoder instead of growing).
+`src/tests/vdecd-logical.sh` (CI) checks what the daemon tells the Mac for
+odd sizes, against a stand-in for the kernel's ioctls.
 
 Limits:
 
@@ -462,6 +464,17 @@ Limits:
 - **AV1**: not built into this Chromium. YouTube gets VP9 (the extension);
   another site that sends AV1 plays on the CPU.
 - **10-bit** (VP9 profile 2): on the CPU; the pictures are 8-bit ARGB.
+- **Odd sizes** (a VP9 video of 853x480 or 1001x563): the daemon's buffers
+  are the picture's size rounded up to even (the module's step), and Chromium
+  imports the picture's own part of each one. Mesa's virgl driver drops the
+  size of an import, so the Mac sampled the whole buffer and the picture came
+  out one column (and row) narrower than it is (3.2.11 and older). Since
+  3.2.12 the daemon tells the Mac the picture's size for such buffers, as the
+  VA-API shim does for its surfaces: a NOP with a private payload
+  (`src/vdec/guest/vdecd-logical.h`), only when the app's runtime says
+  `omacvm.valogical=1` (3.2.11 and newer; with an older app the column
+  stays). `OMACVM_VA_LOGICAL=0` in the service's environment turns it off.
+  Even sizes, every size YouTube sends among them, need nothing.
 - **Memory**: Chromium's buffers are pinned VM memory, about 33 MB each at
   4K and 10 per video (8 MB each at 1080p).
 - **At most 8 videos** decode this way at once; more play on the CPU. One

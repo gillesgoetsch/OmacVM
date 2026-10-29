@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+- **Odd-size videos in Omarchy's Chromium are no longer one column narrower.** In an OmacVM.app
+  VM, Arch Linux ARM's Chromium (Omarchy's default browser) decodes on the Mac through OmacVM's
+  V4L2 decoder, whose buffers are the picture rounded up to even. A video of an odd width or
+  height (a VP9 video of 853x480 or 1001x563) came out squeezed by that extra column and row.
+  The decoder now tells the Mac the picture's size for such buffers. Measured in a test VM
+  (Chromium 153, Mac mini M4): 853x480 and 1001x563 exact (3.2.11: one column, and one column
+  and one row, too many in their place); even sizes, every size YouTube sends among them, were
+  and stay exact. Needs Update VM (the 3.2.11 app is enough).
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
