@@ -14,8 +14,12 @@
 # older it answers true after the first unlock until the shell restarts
 # (omarchy-mac#738; Quickshell 18c95fae, Omarchy's own fix omacom/omarchy#14978).
 source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null
+# Update VM runs this without a locale. qs then prints Qt's locale warning
+# before each answer, which also broke omarchy-restart-shell's own lock check
+# (it took a live lock for a dead one: killed the lock screen and locked again).
+export LC_ALL=C.UTF-8
 
-# The last line of an answer: in a C locale qs prints Qt's locale warning first.
+# The last line of an answer (in case the warning comes anyway).
 ask() { omarchy-shell lock "$1" 2>/dev/null | tail -n 1; }
 up() { omarchy-shell shell ping >/dev/null 2>&1; }
 locked() {
