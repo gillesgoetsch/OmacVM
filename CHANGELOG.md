@@ -5,6 +5,15 @@ in more words.
 
 ## 3.2.13 (unreleased)
 
+In an OmacVM.app VM, mpv's and FFmpeg's VA-API deinterlacer no longer shows a green picture
+(still open in 3.2.12), and H.264 coded interlaced decodes on the CPU instead of showing green
+or wrong pictures. On every route, updating a running VM while its screen is locked, or
+switching the control centre or Omanotch off then, no longer leaves Omarchy's lock screen
+without its password field. Needs the app update (the deinterlacer, from the VM's next start),
+then Update VM or `omacvm update` (the lock screen, interlaced H.264), then quit and start the
+video players again. UTM, VMware Fusion and Parallels get only the lock screen fixes (#617,
+#618).
+
 - **Updating a running VM whose screen is locked no longer leaves Omarchy's lock screen without
   its password field (#617).** `omacvm update` and `omacvm apply` wrote OmacVM's bar widgets again and
   asked Omarchy's shell to rescan them. The shell of omarchy-mac 4.0.3 then reloads all its
@@ -37,11 +46,8 @@ in more words.
   FFmpeg 9.0.2, mpv 0.41) on an interlaced 1080p test clip coded as frames: FFmpeg 0 of 47
   frames green (3.2.12: 47), 28.1 dB against FFmpeg's CPU deinterlacer (3.2.12: 5.1 dB); mpv
   shows a field without combing, close to its CPU deinterlacer (33.0 and 34.2 dB against the
-  test pattern's own picture of the field each shows; 3.2.12: 9.9 dB, all green). Still green:
-  H.264 coded interlaced, with or without deinterlacing, in most frames (30 to 36 of 50 with
-  FFmpeg's bob); VideoToolbox returns errors on these streams, cause not known yet (3.2.12 the
-  same; docs/video-decode.md). Decode those on the CPU (`--hwdec=no --deinterlace=yes`). Needs
-  only the app update, from the VM's next start; no Update VM.
+  test pattern's own picture of the field each shows; 3.2.12: 9.9 dB, all green). Needs only
+  the app update, from the VM's next start; no Update VM.
 
 - **H.264 coded interlaced decodes on the CPU instead of showing green or wrong pictures
   (#619).** In an OmacVM.app VM, H.264 video coded as fields or MBAFF frames (interlaced TV
@@ -56,6 +62,10 @@ in more words.
   for each picture and exits with 69, so leave that option out for these videos. Video coded as
   progressive frames decodes in hardware as before. Measured on a Mac mini M4 with macOS 27.0
   (docs/video-decode.md). Needs Update VM, then quit and start the player again.
+
+- **Correction to 3.2.12: memory the VM gives back (#603).** Its notes said none of the 1.5 GB
+  the VM gave back stayed held. The VM gave back 2.4 GB, the Mac still held 1.5 GB of it, and
+  none of that stayed held.
 
 ## 3.2.12
 
