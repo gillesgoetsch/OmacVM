@@ -25,9 +25,10 @@
  * mpv's R8 + GR88 imports after an export per frame (the resources looked up at the first
  * export only), HEVC's 1000x568 surface shown at 1000x562; nothing for an unknown dma-buf, an
  * offset, a plane of the wrong kind, a size past Mesa's plane, a full-size import of a plane
- * never declared, or after vaTerminate. A converting vaGetImage of the whole 1920x1088 surface
- * reads its 1080 rows (Mesa, like the stand-in, refuses a region past the surface), and video
- * processing from it, or from a VA import made before the EGL import, is scaled by 1088/1080.
+ * never declared, or after vaTerminate; 10-bit planes too (R16 + GR1616, one P010 image). A
+ * converting vaGetImage of the whole 1920x1088 surface reads its 1080 rows (Mesa, like the
+ * stand-in, refuses a region past the surface), and video processing from it, or from a VA
+ * import made before the EGL import, is scaled by 1088/1080.
  * none: nothing is sent (no ioctl at all), regions and images as before. refused: the submit
  * fails, nothing counts as declared, regions as before, one line said, and later surfaces send
  * nothing.
@@ -827,6 +828,29 @@ int main(int argc, char **argv)
         snprintf(what, sizeof(what), "EGL imports: %u entries in %d submit(s), every NOP as the Mac "
                  "reads it, no fence", ndecls - dx0, submits - s0);
         check(!bad && !fenced, what);
+    }
+
+    /* (i) 10-bit: mpv's R16 + GR1616 imports of a P010 surface, Chrome's one P010 image */
+    const uint32_t R16 = FCC('R', '1', '6', ' '), GR32 = FCC('G', 'R', '3', '2'),
+                   P010 = FCC('P', '0', '1', '0');
+    VASurfaceID t1, t2;
+    int g1[2], g2[2];
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420_10, 1920, 1088, &t1, 1, NULL, 0);
+    vt.vaCreateSurfaces2(&dc, VA_RT_FORMAT_YUV420_10, 1920, 1088, &t2, 1, NULL, 0);
+    app_export(t1, 1, g1);
+    int si = submits;
+    egl_import(R16, 1920, 1080, 1, &g1[0], 0);
+    egl_import(GR32, 960, 540, 1, &g1[1], 0);
+    app_export(t2, 0, g2);
+    egl_import(P010, 1920, 1080, 2, g2, 0);
+    snprintf(what, sizeof(what), "10-bit: R16 + GR1616 imports and one P010 image of 1920x1088 "
+             "surfaces at 1920x1080: %d submit(s)", submits - si);
+    if (declare) {
+        check(submits - si == 3 && !bad, what);
+        expect_plane("P010 1920x1088 at R16 1920x1080", t1, 0, 1920, 1080);
+        expect_plane("P010 1920x1088 at GR1616 960x540", t1, 1, 960, 540);
+        expect_plane("P010 1920x1088 as one P010 image of 1920x1080", t2, 0, 1920, 1080);
+        expect_plane("P010 1920x1088 as one P010 image of 1920x1080", t2, 1, 960, 540);
     }
 
     /* (h) vaTerminate, then an import of the old dma-bufs: nothing */
