@@ -1442,7 +1442,8 @@ way) none of the 1.7-2.2 GB stayed held (3.3-3.5 GB with the
 memory-optimized kernel); that Mac had room, so 1.2-1.6 GB of it stayed in
 memory, marked, until the VM stopped (1.7-1.8 GB with that kernel). The old
 way held 1.2 GB more until the VM stopped (1.8 GB with that kernel). QEMU's main lock per report of
-freed memory: about 1 ms on the mini (the old way 0.4-0.7 ms); on the M1
+freed memory: about 1 ms on the mini (the old way 0.4-0.7 ms, and 16.5 ms
+in one run with 99 % of the pages compressed); on the M1
 Max up to 8 ms either way, and 2.2 ms at most in a 4.1 GB drop of file
 cache macOS had compressed (the old way up to 26 ms while macOS
 compressed). `logs/qemu.log` has a line an hour while the VM gives memory

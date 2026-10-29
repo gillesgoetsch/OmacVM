@@ -26,7 +26,8 @@ app update.
   1.2-1.6 GB of it stayed in memory, marked, until the VM stopped (1.7-1.8 GB with that
   kernel). The old way held 1.2 GB more until the VM stopped (1.8 GB with that kernel). A drop of 4.1 GB of file cache that
   macOS had compressed: none stayed held. QEMU's main lock per report of freed memory: about
-  1 ms on the mini (the old way 0.4-0.7 ms); on the M1 Max up to 8 ms either way, and
+  1 ms on the mini (the old way 0.4-0.7 ms, and 16.5 ms in one run with 99 % of the pages
+  compressed); on the M1 Max up to 8 ms either way, and
   2.2 ms at most in that drop (the old way up to 26 ms while macOS compressed). A timer in
   every VM CPU saw no stall in either drop. Activity Monitor's figure for the VM does not
   change with this: those pages were never in it. `logs/qemu.log` says how much the VM

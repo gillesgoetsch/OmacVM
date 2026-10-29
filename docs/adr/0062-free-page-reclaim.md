@@ -113,7 +113,7 @@ map) is macOS's to change.
 
 What it shows: `logs/qemu.log` gets a line an hour while the guest reports
 and one at exit: reports, MB reported (what the guest gave QEMU), blocks, the
-main lock's hold per report (all of `hvf_report_free_pages`: p99, never above
+main lock's hold per report (the work that holds the lock: p99, never above
 the longest, and longest), MB not moved aside and why (switched off, macOS
 keeps the pages, the worker's queue full, no room to move them aside), and
 what the worker released and how much of it is still on the Mac (held:
