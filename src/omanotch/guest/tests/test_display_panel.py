@@ -206,6 +206,32 @@ class Clone(unittest.TestCase):
         self.assertTrue(self.clone.exists())
         self.assertEqual(self.shell_calls(), [])
 
+    def test_locked_cut_off_between_renames(self):
+        # The old clone is not moved back under the lock (a write the shell sees).
+        self.main()
+        old = self.plugins / ".omanotch.monitor.old"
+        self.clone.rename(old)
+        self.lock()
+        self.calls.clear()
+        for mode in ("--refresh", "", "--remove"):
+            self.main(*([mode] if mode else []))
+            self.assertFalse(self.clone.exists(), mode)
+            self.assertTrue(old.is_dir(), mode)
+            self.assertEqual(self.shell_calls(), [], mode)
+        self.lock(False)                       # the next start, unlocked
+        self.main("--refresh")
+        self.assertTrue((self.clone / "Panel.qml").is_file())
+        self.assertFalse(old.exists())
+
+    def test_locked_leftover_stage_asks_once(self):
+        self.main()
+        (self.plugins / ".omanotch.monitor.new").mkdir()
+        self.lock()
+        self.calls.clear()
+        self.main("--refresh")
+        self.assertTrue((self.plugins / ".omanotch.monitor.new").is_dir())
+        self.assertEqual(self.calls, [("omarchy-shell", "lock", "status")])
+
     def test_lock_status_read_as_omarchy_says_it(self):
         warn = "  WARN: Detected locale \"C\" ...\nQt depends on a UTF-8 locale, and has switched to \"C.UTF-8\" instead.\n"
         for status, locked in (({"requested": True}, True), ({"sessionLocked": True}, True),

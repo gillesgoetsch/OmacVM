@@ -133,6 +133,11 @@ def staged(clone):
     return clone.with_name(f".{clone.name}.new"), clone.with_name(f".{clone.name}.old")
 
 
+def leftover(clone):
+    """A build was cut off: its stage or the old clone is still there."""
+    return any(p.exists() for p in staged(clone))
+
+
 def tidy(clone):
     """After a build that was cut off: the stage goes, and the old clone gets
     its place back if the new one never got there."""
@@ -266,10 +271,14 @@ def main(argv):
     plugins = plugins_dir()
     clone = plugins / CLONE_ID
     if mode in ("--remove", "--drop"):
-        if mode == "--remove" and clone.exists() and session_locked():
+        if mode == "--remove" and (clone.exists() or leftover(clone)) and session_locked():
             print(LOCKED)
             return 0
         remove(clone, shell=mode == "--remove")
+        return 0
+    # tidy() can move the old clone back in place: a write in the plugins folder.
+    if leftover(clone) and session_locked():
+        print(LOCKED)
         return 0
     tidy(clone)
     if (plugins / "omacvm.monitor").is_dir():
