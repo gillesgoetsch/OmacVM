@@ -376,7 +376,10 @@ def run():
                                  "browser.shell.checkDefaultBrowser": False, "browser.aboutwelcome.enabled": False,
                                  "datareporting.policy.dataSubmissionEnabled": False, "browser.startup.homepage_override.mstone": "ignore",
                                  "toolkit.telemetry.reportingpolicy.firstRun": False, "media.ffmpeg.vaapi.enabled": True,
-                                 "browser.tabs.warnOnClose": False, "browser.sessionstore.resume_from_crash": False}.items():
+                                 "browser.tabs.warnOnClose": False, "browser.sessionstore.resume_from_crash": False,
+                                 # Firefox 15x's first-run terms dialog dims the page under it
+                                 "browser.preonboarding.enabled": False, "termsofuse.bypassNotification": True,
+                                 "datareporting.policy.dataSubmissionPolicyBypassNotification": True}.items():
                         f.write(f"user_pref({json.dumps(k)}, {json.dumps(v)});\n")
                 env = dict(os.environ, MOZ_LOG="PlatformDecoderModule:5,FFmpegVideo:5,Dmabuf:5", MOZ_LOG_FILE="/tmp/video-geometry-moz.log")
                 for g in glob.glob("/tmp/video-geometry-moz.log*"):
