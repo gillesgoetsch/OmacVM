@@ -13,6 +13,9 @@ in more words.
   Update VM and Build Now (`omacvm update --vm NAME --kernel`), or turn the kernel on again
   where that failed.
 
+- **`omacvm check` warns when Google Chrome 154 or older runs on an M4 or newer Mac (#611).** Those
+  versions crash on every video they decode on the CPU there; Chrome 155 fixes it (update Chrome).
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most

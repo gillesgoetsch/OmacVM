@@ -162,6 +162,31 @@ if [[ $kr =~ ^[A-Za-z0-9_.-]+$ && -f $kd/$kr.keyring ]]; then ok "keyring" "$kr 
 elif compgen -G "$kd/*.keyring" >/dev/null; then
   bad "keyring" "none is the default: apps like Chromium ask for a keyring password (pick one in Passwords and Keys)" human
 else bad "keyring" "none: Chromium asks for a keyring password at its first start; omacvm apply makes Omarchy's default keyring"; fi
+# Google Chrome 154 and older on a Mac with SME: chrome_sme_line VERSION FEATURES
+# prints "status<TAB>detail" (nothing without a version: no Chrome). VERSION is
+# Chrome's --version, FEATURES /proc/cpuinfo's Features line. Chrome 154 and
+# older (Chromium 138-154) run libyuv's SME code built for Armv9-A, which starts
+# with an SVE instruction (cntd). Apple M4 and newer have SME but no SVE, and the
+# VM sees SME (OmacVM.app's QEMU 11), so Chrome's tab dies of SIGILL on every
+# video it decodes on the CPU. Fixed in Chrome 155 (libyuv fab11704).
+# src/tests/chrome-sme.sh.
+chrome_sme_line() {
+  local v
+  v=$(sed -n 's/^Google Chrome \([0-9][0-9]*\.[0-9.]*\).*/\1/p' <<<"$1" | head -1)
+  [[ -n $v ]] || return 0
+  if (( ${v%%.*} <= 154 )) && [[ " $2 " == *" sme "* ]]; then
+    printf 'warn\t%s\n' "Google Chrome $v crashes on videos it decodes on the CPU on this Mac: update Chrome (155 or newer)"
+  else printf 'ok\t%s\n' "$v"; fi
+}
+gcv=""
+for c in google-chrome-stable google-chrome /opt/google/chrome/google-chrome; do
+  if command -v "$c" >/dev/null; then gcv=$(timeout 10 "$c" --version 2>/dev/null); break; fi
+done
+IFS=$'\t' read -r gs gt < <(chrome_sme_line "$gcv" "$(grep -m1 '^Features' /proc/cpuinfo 2>/dev/null)")
+case $gs in
+  ok) ok "Google Chrome" "$gt" ;;
+  warn) warn "Google Chrome" "$gt" human ;;
+esac
 if [[ $TYPE == app ]]; then
   # Which UEFI firmware OmacVM.app started the VM with (SMBIOS BIOS version).
   fw=$(cat /sys/class/dmi/id/bios_version 2>/dev/null)
