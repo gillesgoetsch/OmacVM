@@ -67,7 +67,9 @@ adds up to less than that footprint; this decision covers the cache (see
   list. The memory-optimized kernel (`--thp-kernel`) sorts its cache by
   generation (MGLRU) instead: in the reported VM, which runs it, all file
   cache but shared memory counted as inactive (Active(file) 0 kB), so there
-  the give-back takes nearly all of it. The tool is `memory.reclaim` with
+  the give-back asks for nearly all of it. It got less: on a MacBook Pro M1
+  Max a 4 GB VM on that kernel (Inactive(file) 2457 of 2679 MB) gave back
+  1.1 of 2.5 GB, the stock kernel 1.2 of 2.8 GB. The tool is `memory.reclaim` with
   `swappiness=0` on the root cgroup (file pages only, the oldest first), in
   1 GB steps 1 s apart, at most 20 s. Each step is one write, so the time
   limit and a refusal (EAGAIN: nothing more to take) stop it between steps.
@@ -123,7 +125,8 @@ given-back memory the Mac still held, 1345 of 1346 MB stayed held after a
 browser session and 1721 of 1721 MB after a cache drop). A file the VM reads
 again then takes new pages on the Mac. So with that QEMU this give-back makes
 Activity Monitor's number smaller while the Mac holds as much or more, and on
-the memory-optimized kernel it takes nearly all of the VM's file cache.
+the memory-optimized kernel it asks for nearly all of the VM's file cache (a
+4 GB VM on the M1 Max gave back 1.1 of 2.5 GB with the fix, 3.2.12).
 
 - The give-back while macOS compresses the VM runs only when the app's QEMU
   carries the fix (ADR 0062): its binary has the fix's text
@@ -157,8 +160,9 @@ footprint 40 GB (top's MEM, what Activity Monitor shows; 25 GB resident,
 file cache 10.6 GB (2.4 GB of it shared memory, Inactive(file) 8.2 GB; the
 VM runs the memory-optimized kernel: 2 GB of transparent huge pages, which
 the stock kernel does not have). 24.7 GB was free, almost all in 4 MB
-blocks. With QEMU's fix this decision gives back those 8.2 GB less the
-newest 1 GB (3.2.11: off; from 3.2.12 on). Why
+blocks. With QEMU's fix this decision asks for those 8.2 GB less the
+newest 1 GB (3.2.11: off; from 3.2.12 on); how much it gets is not measured
+on that VM (the 4 GB row above got 1.1 of 2.5 GB). Why
 QEMU holds more than what Linux uses is not known yet (free pages reported
 but still held, graphics, QEMU's own memory) and is looked into separately.
 
