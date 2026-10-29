@@ -103,6 +103,8 @@ in_session() {
 restart_shell_later() { home_mkdir "$H/.local/state/omacvm"; home_put "$H/.local/state/omacvm/restart-shell" < /dev/null; }
 # A script of OmacVM's as the desktop user (its user units, Omarchy's shell).
 user_script() { sudo -u "$U" env XDG_RUNTIME_DIR="/run/user/$(id -u "$U")" bash "$@"; }
+# The desktop session: down, busy, locked or open (guest/session-lock.sh).
+session_state() { user_script "$R/guest/session-lock.sh" 2>/dev/null || true; }
 # What off means for the features with a part in the VM that talks to the Mac.
 ROOT=""
 source "$R/guest/off.sh"
@@ -222,7 +224,21 @@ Description = OmacVM: Omarchy's shell colours on Qt 6.12 (#376)
 When = PostTransaction
 Exec = /usr/local/lib/omacvm/shell-colors.py
 HOOK
-  r=$(/usr/local/lib/omacvm/shell-colors.py --user "$U" 2>&1) || r="not all fixed: $r"
+  st=$(session_state)
+  if [[ $st == locked || $st == busy ]]; then
+    # Under the lock only Omarchy's own files (the shell does not watch
+    # them): a write in the user's plugin folder would reload the lock
+    # screen without its password field. Those clones get it right after the
+    # unlock (guest/restart-shell.sh), and the shell restarts then.
+    r=$(/usr/local/lib/omacvm/shell-colors.py /usr/share/omarchy/shell 2>&1) || r="not all fixed: $r"
+    s=$(home_run /usr/local/lib/omacvm/shell-colors.py --status "$H/.config/omarchy/plugins" 2>/dev/null < /dev/null) || s=""
+    case $s in
+      ""|*"to patch 0, to restore 0") ;;
+      *) log "Omarchy shell colours: the plugin clones right after the next unlock"; restart_shell_later ;;
+    esac
+  else
+    r=$(/usr/local/lib/omacvm/shell-colors.py --user "$U" 2>&1) || r="not all fixed: $r"
+  fi
   case $r in
     nothing*) ;;
     patched*|restored*) log "Omarchy shell colours: $r"; restart_shell_later ;;
