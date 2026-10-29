@@ -126,6 +126,8 @@ class Clone(unittest.TestCase):
         self.enabled = []
         self.disabled = []
         self.no_shell = False
+        self.lock_status = ""     # Omarchy's lock status answer ("" = no such call)
+        self.is_locked = ""
         patcher = mock.patch.object(dp, "run", side_effect=self.fake_run)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -142,7 +144,79 @@ class Clone(unittest.TestCase):
             return f"Disabled {cmd[1]}\n"
         if cmd[0] == "omarchy-plugin-list":
             return json.dumps([{"id": i, "enabled": True} for i in self.enabled[-1:]])
+        if cmd == ("omarchy-shell", "lock", "status"):
+            return self.lock_status
+        if cmd == ("omarchy-shell", "lock", "isLocked"):
+            return self.is_locked
         return ""
+
+    def lock(self, locked=True):
+        self.lock_status = json.dumps({"locked": locked, "requested": locked, "sessionLocked": locked,
+                                       "secure": locked, "lastEvent": "x"}) + "\n"
+
+    def shell_calls(self):
+        """The calls that write through the shell or reload its plugins."""
+        return [c for c in self.calls if c[:2] != ("omarchy-shell", "lock")]
+
+    # Under Omarchy's lock nothing is written in the plugins folder and the
+    # shell is not asked to rescan: the shell of omarchy-mac 4.0.3 reloads its
+    # lock screen with them, and the new one has no password field.
+    def test_locked_first_install(self):
+        self.lock()
+        self.assertEqual(self.main(), 0)
+        self.assertFalse(self.clone.exists())
+        self.assertEqual(self.shell_calls(), [])
+        self.assertFalse(list(self.plugins.iterdir()))
+
+    def test_locked_refresh_after_omarchy_update(self):
+        self.main()
+        before = (self.clone / "Panel.qml").read_text()
+        (self.source / "Panel.qml").write_text(PANEL.replace('id: root', 'id: root\n  // new'))
+        self.lock()
+        self.calls.clear()
+        self.assertEqual(self.main("--refresh"), 0)
+        self.assertEqual((self.clone / "Panel.qml").read_text(), before)
+        self.assertEqual(self.shell_calls(), [])
+        self.assertEqual(sorted(p.name for p in self.plugins.iterdir()), ["omanotch.monitor"])
+        self.lock(False)                       # the next start, unlocked: rebuilt
+        self.main("--refresh")
+        self.assertIn("// new", (self.clone / "Panel.qml").read_text())
+
+    def test_locked_refresh_unchanged_asks_nothing(self):
+        self.main()
+        self.lock()
+        self.calls.clear()
+        self.main("--refresh")
+        self.assertEqual(self.calls, [])
+
+    def test_locked_panel_no_longer_fits(self):
+        self.main()
+        (self.source / "Panel.qml").write_text(PANEL.replace("Quickshell.screens.length", "screens.count"))
+        self.lock()
+        self.disabled.clear()
+        self.main("--refresh")
+        self.assertTrue(self.clone.exists())
+        self.assertEqual(self.disabled, [])
+
+    def test_locked_remove(self):
+        self.main()
+        self.lock()
+        self.calls.clear()
+        self.main("--remove")
+        self.assertTrue(self.clone.exists())
+        self.assertEqual(self.shell_calls(), [])
+
+    def test_lock_status_read_as_omarchy_says_it(self):
+        warn = "  WARN: Detected locale \"C\" ...\nQt depends on a UTF-8 locale, and has switched to \"C.UTF-8\" instead.\n"
+        for status, locked in (({"requested": True}, True), ({"sessionLocked": True}, True),
+                               ({"secure": True}, True), ({"locked": True, "requested": False}, False)):
+            self.lock_status = warn + json.dumps(status) + "\n"
+            self.assertEqual(dp.session_locked(), locked, status)
+        self.lock_status = ""                  # no status call: isLocked
+        self.is_locked = warn + "true\n"
+        self.assertTrue(dp.session_locked())
+        self.is_locked = ""                    # no shell
+        self.assertFalse(dp.session_locked())
 
     def main(self, *args):
         with mock.patch("builtins.print"):
