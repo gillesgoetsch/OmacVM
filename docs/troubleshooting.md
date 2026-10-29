@@ -161,7 +161,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   shell restarts: after unlocking, run `omarchy-restart-shell` in a terminal
   (the bar redraws once). OmacVM VMs have the idle lock on by default, so an
   idle VM stays open until then. `omacvm check` warns while it is stuck
-  ("Omarchy's lock", from 3.2.12).
+  ("Omarchy's lock").
 - **Touch ID asks for the password instead**: the line above the password
   prompt says why ("Touch ID not available (VM not in front), use your
   password", "the Mac is still starting: try again in a moment", ...).
