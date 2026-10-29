@@ -3,6 +3,22 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+- **H.264 1080p and other videos whose decoder works at a larger size show at their own size
+  (#610).** In an OmacVM.app VM, Google Chrome on Wayland and mpv (`hwdec=vaapi`) still showed
+  H.264 videos at sizes that are not a multiple of 16 (1080p, 360p, 854x480) and HEVC at sizes
+  that are not a multiple of 8 slightly squeezed, with the stream's padding rows in a strip
+  below or beside them (8 rows of a 1080p video). The decoder works at the larger size, and only
+  the player's import of the picture says where it ends. A small EGL library in the VM now
+  passes that size to the VA-API driver, which tells the Mac. Measured in a test VM (Chrome 154,
+  mpv 0.41, Mac mini M4): H.264 at 1920x1080, 1280x720, 854x480, 640x360, 426x240 (mpv) and
+  1918x1078, HEVC at 854x480 and 1000x562 are exact in Chrome, mpv and mpv's gpu-next (3.2.11:
+  the strip in 20 of these); VP9, 10-bit VP9 and AV1 stay exact; a video that really has 1088
+  rows keeps them all; FFmpeg's read-back stays bit for bit the software decode. Hyprland and
+  Xwayland do not load the library. Needs Update VM (the 3.2.11 app is enough), then quit and
+  start Chrome and mpv again, or restart the VM.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
