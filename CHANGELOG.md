@@ -47,6 +47,53 @@ in more words.
   decode waits once, 10 s at most (before: 10 s for each codec asked, 60 s in all). Needs only
   the new app, from the VM's next start.
 
+Memory an OmacVM.app VM gives back now really leaves the Mac, and the VM gives back its
+file cache not used lately while macOS compresses it (3.2.11 had that off). Needs only the
+app update.
+
+- **Memory the VM gives back now leaves the Mac (#603).** When Linux in an OmacVM.app VM
+  frees memory, it tells QEMU, which puts fresh memory in its place. macOS kept the old
+  pages anyway, in memory or compressed, until the VM stopped: it frees such pages only
+  with the whole block of memory they belong to, and the rest of that block was still the
+  VM's. Activity Monitor did not show them, and the Mac could not use them either. Now
+  QEMU moves them aside and a thread of its own tells macOS they may go: macOS drops their
+  compressed copies at once, and the others are marked for macOS to take first, without
+  compressing them. Marked pages count as given back below; on a Mac with room they stay
+  in memory until macOS needs it or the VM stops. On the Mac mini, a 3 GB VM after a
+  browser session while macOS compressed it: the old way left on the Mac all 1.3 GB it
+  still held of the 2.1 GB the VM gave back (92 % of it compressed); now none of 1.5 GB.
+  After a cache drop: all 1.7 GB before, none of 1.6 GB now. On a MacBook Pro M1 Max, a
+  4 GB VM after a browser session (3 runs each way): none of the 1.7-2.2 GB the Mac still
+  held stayed held (3.3-3.5 GB with the memory-optimized kernel); that Mac had room, so
+  1.2-1.6 GB of it stayed in memory, marked, until the VM stopped (1.7-1.8 GB with that
+  kernel). The old way held 1.2 GB more until the VM stopped (1.8 GB with that kernel). A drop of 4.1 GB of file cache that
+  macOS had compressed: none stayed held. QEMU's main lock per report of freed memory: about
+  1 ms on the mini (the old way 0.4-0.7 ms, and 16.5 ms in one run with 99 % of the pages
+  compressed); on the M1 Max up to 8 ms either way, and
+  2.2 ms at most in that drop (the old way up to 26 ms while macOS compressed). A timer in
+  every VM CPU saw no stall in either drop. Activity Monitor's figure for the VM does not
+  change with this: those pages were never in it. `logs/qemu.log` says how much the VM
+  reported and how much of it is still on the Mac. Needs only the new app, from the VM's
+  next start; no Update VM. UTM, Parallels and Fusion: nothing changes.
+
+- **The VM's file cache goes back to the Mac while macOS compresses the VM (#590, #603).**
+  3.2.11 brought this give-back but left it off, as its QEMU kept the pages. With the fix
+  above it runs: when macOS compresses the VM, the VM gives back the file cache it has not
+  used lately, all but the newest 1 GB (an eighth of a smaller VM). At most once per 10
+  minutes; macOS's memory warning still drops the whole cache. On a MacBook Pro M1 Max (a
+  4 GB VM with 2.6 GB of files read, then a program taking the Mac's memory): the
+  give-back came within 30 s, while macOS still called its memory pressure normal; the VM
+  gave back 1.2 GB of file cache (2.8 GB before), and of the 3.2 GB the Mac still held of
+  what the VM gave back in that run, none stayed held. With the memory-optimized kernel:
+  1.1 of 2.5 GB, and none of 4.1 GB stayed held. The same row without the fix waited for macOS's
+  warning, 1.5 minutes in, to drop the cache, and so did 3.2.11's own app (no give-back in
+  5 minutes). When the Mac ran short faster, macOS's warning came first and dropped the
+  whole cache, as before. If macOS keeps the pages anyway on a Mac (it refuses QEMU's
+  advice, or half or more of what it held stays held), QEMU goes back to the old way for
+  that run and the app turns this give-back off until the VM's next start: `logs/qemu.log`
+  and `omacvm check`'s "VM memory" line say so. Needs only the app update, from the VM's
+  next start.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most

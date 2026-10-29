@@ -120,7 +120,7 @@ func sample(_ t: Double, fp: Double, res: Double, comp: Double) -> MemoryGiveBac
     MemoryGiveBack.Sample(time: t, footprint: UInt64(fp * Double(GB)), resident: UInt64(res * Double(GB)),
                           compressed: UInt64(comp * Double(GB)))
 }
-// "compressing" needs a QEMU that gives the pages back to macOS (the reclaim fix, a later release). 3.2.11's QEMU
+// "compressing" needs a QEMU that gives the pages back to macOS (the reclaim fix, 3.2.12). 3.2.11's QEMU
 // keeps what the VM gives back (Mac mini: 1345 of 1346 MB, 1721 of 1721 MB; vm-memory-gap), and a file read again
 // takes fresh pages: a give-back would only make Activity Monitor's number smaller. Without it: never; the warning's
 // drop as in 3.2.10 (once per 10 minutes). The rest of this block is a QEMU with the fix (behaviour unchanged).
@@ -153,16 +153,63 @@ expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "3
 try? Data(MemoryGiveBack.reclaimMarker.dropLast().utf8).write(to: qemuBin)
 expect(!MemoryGiveBack.qemuGivesPagesBack(binary: qemuBin, environment: [:]), "part of the text is not the text")
 expect(!MemoryGiveBack.qemuGivesPagesBack(binary: logs.appendingPathComponent("none"), environment: [:]), "no binary: keeps them")
+// A real built QEMU (OMACVM_TEST_QEMU = an app's Contents/Resources/runtime/bin/OmacVM, or the runtime build's
+// qemu-system-aarch64): the app's own probe finds the fix's text in it. Not in CI (no runtime there).
+if let real = ProcessInfo.processInfo.environment["OMACVM_TEST_QEMU"], !real.isEmpty {
+    let url = URL(fileURLWithPath: real)
+    let t0 = Date()
+    let gives = MemoryGiveBack.qemuGivesPagesBack(binary: url, environment: [:])
+    let ms = Int(Date().timeIntervalSince(t0) * 1000)
+    let size = ((try? FileManager.default.attributesOfItem(atPath: real)[.size]) as? Int ?? 0) >> 20
+    expect(gives, "the built QEMU (\(real), \(size) MB) has the fix's text: gives the pages back (read in \(ms) ms)")
+    expect(!MemoryGiveBack.qemuGivesPagesBack(binary: url, environment: ["OMACVM_RECLAIM_REUSABLE": "0"]),
+           "  the same QEMU with OMACVM_RECLAIM_REUSABLE=0: keeps them")
+} else {
+    print("skip the built QEMU's text (OMACVM_TEST_QEMU not set: no runtime here)")
+}
+// The fix built in is not the fix working: QEMU says when macOS keeps the pages anyway (a refused or skipped advice;
+// logs/memory-reclaim, OMACVM_RECLAIM_STATUS), and the give-back while macOS compresses goes off for the run.
+expect(MemoryGiveBack.qemuKeeps(status: nil) == nil && MemoryGiveBack.qemuKeeps(status: "") == nil,
+       "QEMU said nothing (no file, empty): not kept")
+expect(MemoryGiveBack.qemuKeeps(status: "reclaim=gives\nwhy=x\n") == nil && MemoryGiveBack.qemuKeeps(status: "why=x\nreclaim=keeps\n") == nil,
+       "  another word, or not first: not kept")
+expect(MemoryGiveBack.qemuKeeps(status: "reclaim=keeps\nwhy=madvise refused: Operation not permitted\n") == "madvise refused: Operation not permitted",
+       "QEMU's file (test-reclaim --keeps writes the same): kept, with the reason")
+expect(MemoryGiveBack.qemuKeeps(status: "reclaim=keeps\n") == "no reason given", "  no reason: still kept")
+let longWhy = MemoryGiveBack.qemuKeeps(status: "reclaim=keeps\nwhy=\u{1b}[2J" + String(repeating: "x", count: 500) + "\n")
+expect(longWhy?.count == 120 && longWhy?.contains("\u{1b}") == false, "  the reason: printable, 120 characters at most")
+func compressingSession(_ m: inout MemoryGiveBack, from t0: Double) -> Bool {
+    _ = m.compressing(sample(t0, fp: 30, res: 30, comp: 100))
+    var fired = false
+    for i in 1...240 { fired = fired || m.compressing(sample(t0 + Double(i) * 5, fp: 30 + Double(i) * 0.1, res: 28, comp: 100 + Double(i) * 0.1)) }
+    return fired
+}
+var heard = MemoryGiveBack(ram: 64 * GB, pagesGoBack: true)
+expect(compressingSession(&heard, from: 0), "a QEMU with the fix, nothing heard: the give-back while macOS compresses fires")
+var told = MemoryGiveBack(ram: 64 * GB, pagesGoBack: true)
+told.qemuKept()
+expect(!told.pagesGoBack && !compressingSession(&told, from: 0) && !told.allowed(.compressing, at: 9000),
+       "QEMU says macOS keeps the pages: the same session never gives back")
+told.started(.warning, at: 10000)
+told.answered(nil)
+expect(told.allowed(.critical, at: 10600) && !told.allowed(.warning, at: 10599), "  the warning's drop stays, once per 10 minutes")
+expect(MemoryGiveBack.keptLine("why") == "OmacVM: VM memory: give-back while macOS compresses: off for the rest of this run: "
+       + "QEMU says macOS keeps the pages the VM gives back (why)", "the qemu.log line when QEMU said so")
+var kst = MemoryGiveBack.Status()
+expect(kst.text.contains("\nkept=0\n"), "the status file says kept=0")
+kst.kept = true
+expect(kst.text.contains("\nkept=1\n"), "  kept=1 once QEMU said so (omacvm check's row)")
 // qemu.log's line at each start; omacvm check's "VM memory" row reads "compresses: on|off" from it.
 expect(MemoryGiveBack.startLine(pagesGoBack: false) == "OmacVM: VM memory: give-back while macOS compresses: off "
        + "(this QEMU keeps given-back pages); macOS's memory warning still drops the VM's file cache", "the line when off")
 expect(MemoryGiveBack.startLine(pagesGoBack: true) == "OmacVM: VM memory: give-back while macOS compresses: on "
        + "(this QEMU gives the pages back to macOS)", "the line when on")
-// The settings' words (GPUMemory.explanation) promise QEMU's footprint, not memory back to the Mac, and no give-back
-// while macOS compresses (off with 3.2.11's QEMU).
+// The settings' words (GPUMemory.explanation), true with the reclaim fix (3.2.12): freed memory goes back to the Mac,
+// the cold cache while macOS compresses the VM, the whole cache at macOS's warning. 3.2.11 said the Mac kept the pages.
 let says = GPUMemory.explanation
-expect(says.contains("QEMU's footprint") && says.contains("macOS can keep holding those pages")
-       && !says.contains("gives back") && !says.contains("compresses"), "the settings' words: the footprint, no give-back")
+expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !says.contains("keep holding")
+       && says.contains("While macOS compresses the VM, the VM gives back the file cache")
+       && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back while macOS compresses, the warning's drop")
 
 // The user's report: 64 GB Mac, 42 GB VM; footprint 51 GB, resident 27-30 GB, macOS compressing at "normal".
 var u = withFix(64 * GB)
@@ -384,7 +431,7 @@ expect(bad == 0, "5000 random answers: every number within range, act letters on
 var st = MemoryGiveBack.Status()
 st.count = 3; st.at = 1_793_177_520; st.trigger = "compressing"; st.act = "reclaim"; st.givenMB = 11900; st.returnedMB = 11200
 expect(st.text.hasPrefix("count=3\nat=1793177520\ntrigger=compressing\nact=reclaim\ngiven_mb=11900\nreturned_mb=11200\n")
-       && st.text.hasSuffix("off=0\n"), "status file: key=value lines")
+       && st.text.hasSuffix("off=0\nkept=0\n"), "status file: key=value lines")
 st.givenMB = nil
 expect(st.text.contains("\ngiven_mb=\n"), "the warning's drop: no count from the VM, given_mb empty")
 expect(MemoryGiveBack.gb(900 * MB) == "900 MB" && MemoryGiveBack.gb(11900 * MB) == "11.6 GB", "sizes as the log says them")

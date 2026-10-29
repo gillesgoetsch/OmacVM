@@ -1256,13 +1256,13 @@ apps, the GPU. A VM takes two kinds from it:
 
 - **VM memory** is the VM's RAM, the number you pick for the VM ("Resources"
   in the app, `omacvm resources`). Linux sees exactly that much. The Mac
-  gives it as the VM touches it. What Linux frees leaves QEMU's footprint,
-  the number Activity Monitor shows (QEMU's balloon device with free page
-  reporting, in blocks of 256 KiB and up:
-  `src/memory/guest/90-omacvm-mm.tmpfiles`), but with this QEMU macOS can
-  keep holding those pages until the VM stops (ADR 0059; the fix comes with
-  #603, a later release). When macOS warns that memory is short, the VM drops its file
-  cache (below).
+  gives it as the VM touches it. What Linux frees goes back to the Mac
+  (QEMU's balloon device with free page reporting, in blocks of 256 KiB and
+  up: `src/memory/guest/90-omacvm-mm.tmpfiles`; QEMU tells macOS it may take
+  the old pages, ADR 0062) and leaves QEMU's footprint, the number Activity
+  Monitor shows. Up to 3.2.11 macOS kept holding those pages until the VM
+  stopped. When macOS compresses the VM or warns that memory is short, the VM
+  gives back its file cache (below).
 - **Graphics memory** is extra, on top: the textures and buffers the VM's
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
   grows and shrinks with what is on screen: Omarchy alone at 5K about
@@ -1285,19 +1285,25 @@ compress it but never drop it, although its own file cache already holds the
 same disk image. macOS's memory pressure stays "normal" while it compresses
 (it counts every page it can still compress as available), so a VM of 42 GB
 on a 64 GB Mac held 15.5 GB of cache while macOS compressed the VM. The app
-has a give-back for this, but in 3.2.11 it is off: it runs only with a QEMU
-that gives the pages the VM frees back to macOS (#603, a later release).
-3.2.11's QEMU keeps them held (Mac mini, 3 GB VM: of the given-back memory
+has a give-back for this (on from 3.2.12; 3.2.11 had it off). It runs only
+with a QEMU that gives the pages the VM frees back to macOS (ADR 0062):
+3.2.11's QEMU kept them held (Mac mini, 3 GB VM: of the given-back memory
 the Mac still held, 1345 of 1346 MB and 1721 of 1721 MB stayed held), and a
-file the VM reads again takes new pages, so the give-back would make the
-footprint smaller while the Mac holds as much or more. The app knows which
-QEMU it has from the fix's text in QEMU's binary
+file the VM reads again takes new pages, so there the give-back would make
+the footprint smaller while the Mac held as much or more. The app knows
+which QEMU it has from the fix's text in QEMU's binary
 (`MemoryGiveBack.reclaimMarker`, read once per app run, off the main thread);
 `OMACVM_RECLAIM_REUSABLE=0` (the fix's own switch) counts as without it.
 `logs/qemu.log` says at each start "VM memory: give-back while macOS
-compresses: on" or "off (this QEMU keeps given-back pages)".
+compresses: on" or "off (this QEMU keeps given-back pages)". The text shows
+that the fix is built in, not that it works on this Mac: if macOS keeps the
+pages anyway (it refuses QEMU's advice, or half or more of 64 MB the Mac
+held is still held after it), QEMU stops the fix for the run and writes
+`logs/memory-reclaim`; the app looks at that file every 5 s and turns the
+give-back off for the rest of the run ("off for the rest of this run" in
+`logs/qemu.log` and in `omacvm check`).
 
-With the fix, the app looks every 5 s at QEMU's footprint and resident size
+The app looks every 5 s at QEMU's footprint and resident size
 and at what macOS compressed. When QEMU has at least min(2 GB, a quarter of
 the Mac) outside its resident memory, min(1 GB, an eighth of the Mac) more
 than at its lowest, and macOS itself compressed 1 GB or more since (in all
@@ -1307,7 +1313,9 @@ own bundle in the VM (guest agent; no Update VM needed): the VM gives back
 its file cache not used lately, except the newest min(1 GB, an eighth of the
 VM) (`memory.reclaim` with `swappiness=0` on Inactive(file), in 1 GB steps,
 at most 20 s; the memory-optimized kernel counted nearly all its file cache
-as inactive in the VM read, so there it takes nearly all of it). The newest
+as inactive in the VM read, so there it asks for nearly all of it; a 4 GB VM
+on the MacBook Pro M1 Max gave back 1.1 of 2.5 GB, the stock kernel 1.2 of
+2.8 GB, and of what the Mac still held of it none stayed held). The newest
 part stays, so the files read last are not read again (on the Mac mini,
 Chrome started in 1.02 s after a give-back that followed reading its files,
 the same as without one); a file read again later comes from the Mac's file
@@ -1344,7 +1352,7 @@ Fusion: nothing changes (their balloons do not report free pages).
   minutes, also counting the give-backs above, or 2 minutes after one of
   them; again after 30 s, then less often, if the VM did not answer), which
   then leaves QEMU's footprint (the cache it dropped: 0.1 GB on a fresh VM,
-  1 GB after a long session; with 3.2.11's QEMU macOS can keep holding the
+  1 GB after a long session; up to 3.2.11 macOS could keep holding the
   pages, above).
   QEMU keeps no cache of its own for the VM's graphics: everything it holds
   belongs to a live buffer of an app in the VM.
@@ -1411,6 +1419,55 @@ open on a 4K or 5K display the Mac is near its limit. macOS then compresses
 and swaps first, and only refuses new graphics when it says memory is
 critical. A smaller window or scale 2 needs the least.
 
+**Memory the VM gives back leaves the Mac** (ADR 0062). When Linux reports
+free memory, QEMU puts fresh memory in its place. Up to 3.2.11 the old
+pages stayed on the Mac anyway, resident or compressed, until the VM
+stopped: macOS frees such pages only with the whole block of memory they
+belong to (guest RAM is a few blocks of 128 MB), and the rest of the block
+was still the VM's. Activity Monitor did not count them, and macOS did not
+count them as free. Now QEMU moves the old pages aside and a thread of its
+own tells macOS they may go (`MADV_FREE_REUSABLE`): their compressed copies
+go at once, and the resident ones are marked reusable: macOS takes them
+first, without compressing them. Pages macOS is compressing at that very
+moment get the same once more 20 ms later. "Held" below means in memory
+and not marked, or compressed: marked pages count as given back, though on
+a Mac with room they stay in memory until macOS needs it or the VM stops.
+The advice never runs under QEMU's main lock: a range the thread has no room
+for (4096 ranges waiting) or that cannot be moved aside gets the old way,
+and `logs/qemu.log` counts it. On the Mac mini (a 3 GB VM after a browser
+session, macOS compressing it), the old way left on the Mac all 1.3 GB it
+still held of the 2.1 GB the VM gave back; now none of 1.5 GB (90 % of it
+compressed). On a MacBook Pro M1 Max (a 4 GB VM, 3 browser sessions each
+way) none of the 1.7-2.2 GB stayed held (3.3-3.5 GB with the
+memory-optimized kernel); that Mac had room, so 1.2-1.6 GB of it stayed in
+memory, marked, until the VM stopped (1.7-1.8 GB with that kernel). The old
+way held 1.2 GB more until the VM stopped (1.8 GB with that kernel). QEMU's main lock per report of
+freed memory: about 1 ms on the mini (the old way 0.4-0.7 ms, and 16.5 ms
+in one run with 99 % of the pages compressed); on the M1
+Max up to 8 ms either way, and 2.2 ms at most in a 4.1 GB drop of file
+cache macOS had compressed (the old way up to 26 ms while macOS
+compressed). `logs/qemu.log` has a line an hour while the VM gives memory
+back and one when it stops: "free page reporting this run: N reports, X MB
+reported in B blocks; main lock held per report p99 ..., longest ...", then
+what was not moved aside and why, if any, and "this run the worker
+released R MB, L MB of it left on the Mac". X is what the VM gave QEMU; L is
+what the Mac still holds of R.
+`OMACVM_RECLAIM_REUSABLE=0` in the app's environment is the old way. When
+macOS keeps the pages anyway (a refused advice, or the pages still held
+after it: half or more of 64 MB the Mac held), QEMU goes back to the old way
+for the rest of the run, says why in `logs/qemu.log` ("macOS keeps the pages
+the VM gives back") and in `logs/memory-reclaim`, and the app turns off its
+give-back while macOS compresses (above). QEMU's first line of a run that
+gives memory back, "free page reclaim gives the pages back to macOS", shows
+the fix runs.
+
+Activity Monitor's Memory for the VM is QEMU's footprint. The pages that
+stayed were never in it, so it does not change with this. It can also show
+more than the VM holds: once QEMU's own threads touched a guest page (the
+disk, graphics, network) and macOS compressed it, macOS counts that page
+twice there (a 4 GB VM on the Mac mini after a browser session: 5.9 GB
+shown, 2.1 GB of it counted twice).
+
 **Other VM apps** (what we checked; their own documents may say more):
 
 - **UTM** runs the same QEMU and virglrenderer: graphics memory comes from
@@ -1424,5 +1481,8 @@ critical. A smaller window or scale 2 needs the least.
 
 Tests: `app/runtime/Tests/virgl/test-resource-budget.c` (build time: the
 budget, refusals at critical and warn, the status file, a lost context),
-`tests/graphics/fractional-scale.sh` (a running VM).
+`tests/graphics/fractional-scale.sh` (a running VM),
+`app/runtime/Tests/memory/test-reclaim.sh` (build time and CI: what a free
+page report leaves on the Mac, with a real `hv_vm_map` where the Mac allows
+one).
 

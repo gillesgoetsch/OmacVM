@@ -21,6 +21,12 @@ extension MemoryGiveBack {
         config.folder.appendingPathComponent("logs/memory-giveback")
     }
 
+    /// Where QEMU's reclaim fix says that macOS keeps the pages the VM gives
+    /// back (OMACVM_RECLAIM_STATUS; qemuKeeps).
+    static func reclaimFile(for config: VMConfig) -> URL {
+        config.folder.appendingPathComponent("logs/memory-reclaim")
+    }
+
     /// src/memory/guest/giveback.sh as this app carries it (build-app.sh puts
     /// OmacVM's src in the bundle), so the VM needs no update for it; comment
     /// lines left out, so the guest agent's command stays small. nil in a
@@ -47,7 +53,9 @@ extension MemoryGiveBack {
 ///   cache. When macOS compresses the VM (MemoryGiveBack says when), the VM
 ///   gives back its cold file cache (src/memory/guest/giveback.sh, from this
 ///   app's bundle), but only with a QEMU that gives the pages back to macOS
-///   (MemoryGiveBack.pagesGoBack; one qemu.log line at the start says which).
+///   (MemoryGiveBack.pagesGoBack; one qemu.log line at the start says which),
+///   and only until that QEMU says macOS keeps the pages anyway (its file
+///   logs/memory-reclaim, looked at every 5 s: off for the rest of the run).
 ///   One per 10 minutes at most: Linux then reports the pages free (virtio-balloon
 ///   free page reporting), and they leave QEMU's footprint. qemu.log has two
 ///   lines per give-back, logs/memory-giveback the last one (omacvm check).
@@ -200,12 +208,25 @@ final class GPUMemoryWatch {
     /// back): the footprint after a give-back, and whether macOS is
     /// compressing the VM.
     private func lookAtMemory() {
+        if giveBack.pagesGoBack { qemuKeepsPages() }
         guard let p = HostMemory.process(qemuPID), let c = HostMemory.compressed() else { return }
         let s = MemoryGiveBack.Sample(time: Self.now, footprint: p.footprint, resident: p.resident, compressed: c)
         lastSample = s
         if let w = settling, s.time >= w.due { settled(w, s) }
         guard !givingBack, giveBack.compressing(s) else { return }
         giveBackCache(s)
+    }
+
+    /// QEMU's reclaim fix found macOS keeping the pages the VM gives back (a
+    /// refused or skipped advice; it stopped for the run): no give-back while
+    /// macOS compresses from now on, one qemu.log line, check's row says it.
+    private func qemuKeepsPages() {
+        let text = try? String(contentsOf: MemoryGiveBack.reclaimFile(for: config), encoding: .utf8)
+        guard let why = MemoryGiveBack.qemuKeeps(status: text) else { return }
+        giveBack.qemuKept()
+        status.kept = true
+        writeStatus()
+        log(MemoryGiveBack.keptLine(why))
     }
 
     /// Asks the VM for its cold file cache (giveback.sh compressing): it

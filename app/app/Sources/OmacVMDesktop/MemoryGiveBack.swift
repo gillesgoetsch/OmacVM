@@ -1,6 +1,8 @@
 import Foundation
 
-/// When the VM gives its cold file cache back to the Mac (ADR 0059).
+/// When the VM gives its cold file cache back to the Mac (ADR 0059). It
+/// reaches macOS only through QEMU's reclaim fix (`pagesGoBack`, ADR 0062);
+/// without it the cache leaves QEMU's footprint and the Mac keeps the pages.
 ///
 /// Linux keeps every file it read in its page cache. In a VM that is memory
 /// the Mac backs but cannot drop: to macOS it is the VM's own memory, so
@@ -11,13 +13,15 @@ import Foundation
 /// drops the VM's cache (since 2.9) came too late or never.
 ///
 /// Only with a QEMU that gives the pages of a free page report back to macOS
-/// (`pagesGoBack`: the reclaim fix of a later release, read from QEMU's
-/// binary). 3.2.11's QEMU keeps holding what the VM gives back (Mac mini, 3 GB
-/// VM: 1345 of 1346 MB and 1721 of 1721 MB still held; work/tracks/vm-memory-gap.md),
-/// and a file the VM reads again then takes fresh pages: the give-back would
-/// make Activity Monitor's number smaller while the Mac holds as much or more.
-/// Without it "compressing" never fires and macOS's warning drops the VM's
-/// cache as in 3.2.10.
+/// (`pagesGoBack`: the reclaim fix, ADR 0062, read from QEMU's binary), and
+/// only until that QEMU says macOS keeps them anyway (`qemuKeeps`: a refused
+/// or skipped advice; it then stops for the run). 3.2.11's QEMU keeps holding
+/// what the VM gives back (Mac mini, 3 GB VM: 1345 of 1346 MB and 1721 of
+/// 1721 MB still held; work/tracks/vm-memory-gap.md), and a file the VM reads
+/// again then takes fresh pages: the give-back would make Activity Monitor's
+/// number smaller while the Mac holds as much or more. Without it
+/// "compressing" never fires and macOS's warning drops the VM's cache as in
+/// 3.2.10.
 ///
 /// The app looks every 5 s (GPUMemoryWatch) and asks the VM for its cold
 /// file cache (src/memory/guest/giveback.sh: the file cache not used lately,
@@ -101,8 +105,8 @@ public struct MemoryGiveBack: Sendable {
         self.pagesGoBack = pagesGoBack
     }
 
-    /// The text the reclaim fix puts into QEMU's binary
-    /// (qemu-hvf-free-page-reclaim-reusable.patch, PR #603);
+    /// The text the reclaim fix puts into QEMU's binary (the worker's first
+    /// qemu.log line, qemu-hvf-free-page-reclaim-reusable.patch);
     /// prepare-qemu-gpu-runtime.sh checks that a runtime with the fix has it.
     public static let reclaimMarker = "OmacVM: free page reclaim gives the pages back to macOS"
 
@@ -120,6 +124,33 @@ public struct MemoryGiveBack: Sendable {
                 return memmem(bp, b.count, mp, m.count) != nil
             }
         }
+    }
+
+    /// What the reclaim fix writes into the file OMACVM_RECLAIM_STATUS names
+    /// when macOS keeps the pages the VM gives back (a refused madvise, or the
+    /// pages still held after the advice): "reclaim=keeps", then "why=...".
+    /// It then gives no more pages back this run. Returns the reason
+    /// (printable, at most 120 characters), or nil while QEMU said nothing
+    /// (no file, another text).
+    public static func qemuKeeps(status text: String?) -> String? {
+        guard let text else { return nil }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true).prefix(4)
+        guard lines.first == "reclaim=keeps" else { return nil }
+        let why = lines.first { $0.hasPrefix("why=") }?.dropFirst(4) ?? ""
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: why.unicodeScalars.lazy.filter { $0.value >= 0x20 && $0.value < 0x7F }.prefix(120))
+        let clean = String(scalars)
+        return clean.isEmpty ? "no reason given" : clean
+    }
+
+    /// QEMU says macOS keeps what the VM gives back: no give-back while macOS
+    /// compresses for the rest of the run. The warning's drop stays.
+    public mutating func qemuKept() { pagesGoBack = false }
+
+    /// qemu.log's line when QEMU said so (`qemuKeeps`).
+    public static func keptLine(_ why: String) -> String {
+        "OmacVM: VM memory: give-back while macOS compresses: off for the rest of this run: "
+            + "QEMU says macOS keeps the pages the VM gives back (\(why))"
     }
 
     /// qemu.log's line at each start; omacvm check's "VM memory" row reads
@@ -290,6 +321,8 @@ public struct MemoryGiveBack: Sendable {
         public var takenMB = 0
         public var backoff = 1
         public var off = false
+        /// QEMU said macOS keeps the pages the VM gives back (`qemuKeeps`).
+        public var kept = false
 
         public init() {}
 
@@ -309,6 +342,7 @@ public struct MemoryGiveBack: Sendable {
             taken_mb=\(takenMB)
             backoff=\(backoff)
             off=\(off ? 1 : 0)
+            kept=\(kept ? 1 : 0)
 
             """
         }
