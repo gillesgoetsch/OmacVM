@@ -94,6 +94,33 @@ app update.
   and `omacvm check`'s "VM memory" line say so. Needs only the app update, from the VM's
   next start.
 
+- **qemu.log says when the VM stood still, and why (#595).** When macOS runs out of free
+  memory, the processors of an OmacVM.app VM can wait in macOS for seconds while macOS makes
+  memory free for them; the others run on, and in the VM it looks like a freeze (the kernel
+  logs an RCU stall, the video daemon misses its watchdog, "no word from the Mac for 15 s"). On
+  a Mac mini short of memory three of ten processors stood still for 1.2, 2.1 and 2.4 s. QEMU
+  now writes one line per stall of 1 s or more: which processors, about how long, and why:
+  "blocked in macOS's kernel waiting for memory" only when the Mac was paging then (compressing
+  or swapping 16 MB/s or more, or memory pressure warn or critical), else just "blocked in
+  macOS's kernel", or "waited for a Mac core" when the Mac's processors were busy. QEMU's main
+  loop holding the VM 2 s or more is counted too (the mini once held it 2.2 s while freeing a
+  display surface's memory). For example (the format, not a measurement): "OmacVM: stall: vCPUs
+  1, 2, 3, 8 stood still for about 58 s, blocked in macOS's kernel waiting for memory (Mac:
+  compressor and swap 900 MB/s, 0.3 GB free, pressure normal; the VM holds 51 GB, 20 GB of it
+  compressed by macOS)". The counts go to `logs/vm-stalls`, and the app menu (beside the Apple
+  menu) then says, for example, "The VM stood still 2 times (longest 58 s): the Mac ran out of
+  memory" under Graphics memory. QEMU looks when its stall watchdog wakes anyway (every 2 s,
+  every 250 ms while a processor stands): no new timer, so short stalls can be missed: one in
+  macOS's kernel under about 2.25 s (3.25 s for a processor that was nearly idle before), one
+  without a Mac core under about 4 s. The watchdog's "main loop stalled" line now says "in a
+  GPU run without the BQL" when QEMU's graphics thread waited in a call to the Mac while the
+  processors ran on (it said "with the BQL held (the VM waits)" there), and a line says when
+  the watchdog itself woke more than 1 s late. That a stall came from the Mac's memory has been
+  shown only in tests (simulated stalls). On a Mac mini with its processors busy, two runs gave
+  7 and 11 "waited for a Mac core" lines (longest 5.8 s), each matching a pause the VM saw
+  itself. Idle, sleep, YouTube 4K60, a 10-minute call and a 30-minute run gave no line. Needs
+  only the new app, from the VM's next start.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most

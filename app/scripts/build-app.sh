@@ -93,7 +93,7 @@ if [[ ${OMACVM_RUNTIME_KOSMICKRISP:-0} == 1 ]]; then
     KK_STAMP=$("$ROOT/runtime/build-kosmickrisp.sh" --stamp)
   fi
 fi
-INPUTS=$(cd "$ROOT/runtime" && { shasum -a 256 ./*.sh runtime-files.txt patches/* Tests/firmware/*.py Tests/virgl/*.py Tests/virgl/*.c Tests/virgl/*.h Tests/display/* Tests/disk/* Tests/memory/* Tests/keys/* Tests/net/* boot-logo/*.py
+INPUTS=$(cd "$ROOT/runtime" && { shasum -a 256 ./*.sh runtime-files.txt patches/* Tests/firmware/*.py Tests/virgl/*.py Tests/virgl/*.c Tests/virgl/*.h Tests/display/* Tests/disk/* Tests/memory/* Tests/keys/* Tests/net/* Tests/vcpu/* boot-logo/*.py
   echo "firmware=${OMACVM_FIRMWARE:-omacvm}"
   echo "kosmickrisp=${OMACVM_RUNTIME_KOSMICKRISP:-0}${KK_STAMP:+ $KK_STAMP}"; } | shasum -a 256 | cut -d' ' -f1)
 if (( INPUTS_ONLY )); then echo "$INPUTS"; exit 0; fi

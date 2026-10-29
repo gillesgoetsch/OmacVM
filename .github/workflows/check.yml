@@ -451,6 +451,9 @@ jobs:
       - name: App menu memory lines (VM memory, graphics memory)
         run: app/runtime/Tests/display/test-gpu-memory-menu.sh
 
+      - name: vCPU stall note (a vCPU blocked on the Mac's memory or without a core)
+        run: app/runtime/Tests/vcpu/test-vcpu-stall.sh
+
       - name: Graphics memory guard keeps a part for the desktop (the rules)
         run: app/runtime/Tests/virgl/test-gpu-guard-policy.sh
 
