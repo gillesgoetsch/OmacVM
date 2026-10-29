@@ -539,6 +539,18 @@ hdr_capture_line() {
     *) printf '%s\t%s\n' "$bad" "OmacVM's fix for screenshots and screen sharing of HDR apps (Chrome) is not in this VM: Update VM" ;;
   esac
 }
+# ghostty_line INSTALLED JSON LIBRARY: the "Ghostty" line, "status<TAB>detail" (nothing when
+# Ghostty is not installed). Ghostty 1.2 and newer need OpenGL 4.3, the VM's GPU gives 4.1, so
+# OmacVM's EGL vendor library starts Ghostty alone on Mesa's CPU renderer (ADR 0064). No GL call:
+# glvnd's file and the library, which has that part when it names the variable it sets.
+ghostty_line() {
+  [[ $1 == 1 ]] || return 0
+  if [[ -f $2 && -f $3 ]] && grep -qaF LIBGL_ALWAYS_SOFTWARE "$3"; then
+    printf 'ok\t%s\n' "draws on the VM's CPU (Mesa's llvmpipe): it needs OpenGL 4.3, the VM's GPU gives 4.1; fast output keeps several of the VM's cores busy, Alacritty and Kitty draw on the Mac's GPU"
+  else
+    printf 'fail\t%s\n' "opens no window: it needs OpenGL 4.3, the VM's GPU gives 4.1, and OmacVM's EGL vendor library that starts it on the CPU is missing or older: omacvm apply, then log out and in (until then: LIBGL_ALWAYS_SOFTWARE=1 ghostty)"
+  fi
+}
 # mpv's defaults in app and UTM VMs (app/guest/venus/mpv.sh): vo=gpu (gpu-next leaks a file per
 # frame on virgl and stops drawing after ~17 s), and OpenGL while the VM has Venus (on Vulkan mpv
 # shows no video yet).
@@ -846,6 +858,13 @@ app)
       warn "video at its own size" "no EGL vendor library (it did not build: EGL headers?): H.264 1080p shows 8 extra rows in Chrome and mpv"
     fi
   fi
+  # Ghostty needs OpenGL 4.3: on Mesa's CPU renderer, Ghostty alone (ADR 0064).
+  gi=0; command -v ghostty >/dev/null && gi=1
+  r=$(ghostty_line "$gi" /etc/glvnd/egl_vendor.d/10_omacvm.json /usr/local/lib/libEGL_omacvm.so.0)
+  case ${r%%$'\t'*} in
+    ok) ok "Ghostty" "${r#*$'\t'}" ;;
+    fail) bad "Ghostty" "${r#*$'\t'}" ;;
+  esac
   e=$(as_user env LIBVA_DRIVER_NAME=$drv LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri \
       vainfo --display drm 2>/dev/null | sed -n 's/^[[:space:]]*VAProfile\([A-Za-z0-9]*\)[[:space:]]*:[[:space:]]*VAEntrypointEncSlice$/\1/p' | tr '\n' ' ')
   if [[ -n $e ]]; then
