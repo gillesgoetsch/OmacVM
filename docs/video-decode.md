@@ -600,8 +600,15 @@ Limits:
   deinterlacing. From 3.2.13 the shim refuses such a picture before it
   reaches the Mac (`VA_STATUS_ERROR_UNIMPLEMENTED` at `vaRenderPicture`,
   logged at most every 10 s), so the app gets an error instead of a green
-  picture: mpv (`--hwdec=vaapi`) switches to the CPU after 3 of them (its
-  `--hwdec-software-fallback`); with FFmpeg leave out `-hwaccel vaapi`.
+  picture. mpv (`--hwdec=vaapi`, also with `--deinterlace=yes`) switches to
+  the CPU after 3 of them (its `--hwdec-software-fallback`) and shows the
+  same picture as its CPU decoding (3.2.12: 99 % green at 1080i). FFmpeg
+  with `-hwaccel vaapi` prints an error for each picture and exits with 69,
+  after writing its last two pictures, which were never decoded: leave out
+  `-hwaccel vaapi` for these videos. Measured in a test VM (Mac mini M4,
+  Mesa 26.2.5, FFmpeg 9.0.2, mpv 0.41) on the 1080i and 576i clips above;
+  H.264 coded as frames decodes in hardware as before (50 of 50 frames bit
+  for bit) and no codec for the interlaced clips reaches the Mac.
   Chromium from Arch (`omacvm-vdecd`) fails a video only when VA-API cannot
   be used at all, so there such a video gets no pictures instead of green
   ones (from the code; not checked in Chromium). `OMACVM_VA_INTERLACED=1`
