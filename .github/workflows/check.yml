@@ -855,6 +855,9 @@ jobs:
             libgles-dev libdrm-dev libavcodec-dev libavutil-dev libsystemd-dev
           OMACVM_VDECD_SYSTEMD=1 src/tests/vdecd-down.sh
 
+      - name: Chromium's video decoder tells the Mac an odd-size picture's own size (a stand-in for the kernel's ioctls)
+        run: src/tests/vdecd-logical.sh
+
       - name: The VA driver shim gives Chromium surfaces of their real size, waits for its pictures, never decodes into an import and says each surface's own size, also the size apps import it at through the EGL vendor library (stand-ins for Mesa's drivers)
         run: |
           sudo apt-get install -yq --no-install-recommends gcc libva-dev libegl-dev libglvnd-dev
