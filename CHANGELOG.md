@@ -78,6 +78,20 @@ does not lock the VM again after an unlock until its shell restarts (omacom/omar
   progressive frames decodes in hardware as before. Measured on a Mac mini M4 with macOS 27.0
   (docs/video-decode.md). Needs Update VM, then quit and start the player again.
 
+- **Ghostty opens and draws in OmacVM.app VMs (#598).** Ghostty 1.2 and newer need OpenGL 4.3, and
+  an OmacVM.app VM's OpenGL is 4.1 (virgl on the Mac's OpenGL), so Ghostty opened no window
+  ("Ghostty requires OpenGL 4.3"). OmacVM's EGL library in the VM now starts Ghostty, and only
+  Ghostty, on Mesa's CPU renderer (llvmpipe, OpenGL 4.6); the programs started inside it keep the
+  Mac's GPU, and a driver variable set by hand still wins. That costs the VM's CPU: 10 s of fast
+  output took Ghostty about 20 CPU-seconds in a 1272x640-pixel window at scale 2, about 2 of a
+  4-CPU VM's cores (foot 0.8, Alacritty 0.6), more in a bigger window (measured on a Mac mini M4).
+  Alacritty and Kitty draw on the Mac's GPU; Omarchy's default foot draws on the CPU by design and
+  costs little. With Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too
+  while it shows. `omacvm check` has a "Ghostty" line. Zink is no way around it for now: on the
+  Mac's Vulkan driver it gives OpenGL 2.1, and with a forced 4.3 it stopped the whole VM
+  (docs/troubleshooting.md, 47; ADR 0064). Reported by @benoitdepaire. Needs Update VM, then log
+  out and in (or `systemctl --user stop app-com.mitchellh.ghostty.service`).
+
 - **Correction to 3.2.12: memory the VM gives back (#603).** Its notes said none of the 1.5 GB
   the VM gave back stayed held. The VM gave back 2.4 GB, the Mac still held 1.5 GB of it, and
   none of that stayed held.
