@@ -106,7 +106,8 @@ on CGL, not on ANGLE.
 | Venus on MoltenVK | built: `gpu-venus`, merged into `gpu-native`, hidden switch | see section 6 |
 | KosmicKrisp on macOS 26 | built, in release builds (3.0.0, ADR 0035) | `virgl-darwin-vulkan-beside.patch` + `virgl-darwin-kosmickrisp-fallback.patch` |
 | OpenCL (rusticl on Zink), WebGPU in Firefox and Chromium | built: `webgpu-compute`; feature `vulkan` (`gpu-next`, opt-in) | section 6, ADR 0022 |
-| Zink as GL driver, ANGLE-on-Vulkan in Chrome | blocked on MoltenVK (GL 2.1, no `VK_EXT_provoking_vertex`) | - |
+| Zink as GL driver, ANGLE-on-Vulkan in Chrome | blocked: on KosmicKrisp (Mesa e5f0687) Zink gives GL 2.1 / ES 2.0 (no transform feedback, geometry shaders or float64), and a guest app on Zink with a forced 4.3, or `glxinfo` with `LIBGL_KOPPER_DISABLE=1`, aborts QEMU (a linear image Metal takes as a 2D array in KosmicKrisp's `vkBindImageMemory2`); on MoltenVK GL 2.1, no `VK_EXT_provoking_vertex` | ADR 0064 |
+| Ghostty (needs OpenGL 4.3; virgl gives 4.1) on Mesa's llvmpipe, Ghostty alone, its children on the GPU | built: `issue-598` (3.2.13) | `src/app/guest/omacvm_egl.c`, ADR 0064 |
 | VideoToolbox decode | built: `video-decode` | `virgl-videotoolbox-decode.patch` |
 | One window per display | built: `app-displays` | `omacvm-cocoa-displays.patch` |
 | Async ctrl queue (guest keeps encoding while the host runs) | planned | finding from `browser-gpu` |
@@ -710,7 +711,7 @@ With the sync thread's fences (`gpu-native`) the same runtime gives about
   compile zero-initialized workgroup memory, and such a WebGPU shader lost
   the whole Vulkan context.
 - GL stays on virgl. Zink as a GL driver is not installed (GL 2.1 only on
-  MoltenVK).
+  MoltenVK and on KosmicKrisp, where a forced 4.3 aborts QEMU: ADR 0064).
 - Chrome's two gates (ADR 0022): a Vulkan compositor, and Dawn's
   `SupportsExternalImages()` (OPAQUE_FD semaphores). The launcher passes
   `--ozone-platform=x11 --enable-skia-graphite
