@@ -520,17 +520,20 @@ Limits:
   `--vf=vavpp` with its default deinterlacer (or `--deinterlace=yes` with
   `--hwdec=vaapi`), FFmpeg's `deinterlace_vaapi` in its default or
   `motion_adaptive` mode, GStreamer's `vapostproc` with motion-adaptive
-  deinterlacing. Mesa's deinterlacer draws the two fields into a buffer of
-  its own, two layers of a 2D-array texture, and its video compositor weaves
-  them back; the Mac's OpenGL does not sample that texture (QEMU's log, once:
-  `GLD_TEXTURE_INDEX_2D_ARRAY is unloadable ... using zero texture`), so
-  every pixel comes back 0: Y, U and V 0 are green. The same with Mesa's VA
-  driver alone (`LIBVA_DRIVER_NAME=virtio_gpu`), so not the shim; 2D-array
-  textures a guest app uploads or draws into sample right. Bob and weave
-  draw, but do not deinterlace: in Mesa 26.2 they are a plain copy (and that
-  copy loses every other row, next item). For interlaced video, let mpv
-  deinterlace on the CPU (`--hwdec=vaapi-copy --deinterlace=yes`). Browsers
-  do not use it. Measured on 3.2.11 (Mesa 26.2.5, Mac mini M4).
+  deinterlacing. This is OmacVM's runtime, not Mesa. Mesa's deinterlacer
+  declares its samplers without views and reads the decoded pictures, plain
+  2D textures, with 2D-array lookups. `virgl-shader-array-sampler-2d-view.patch`
+  turns such lookups into 2D ones only where a shader declares the view (as
+  Mesa's video compositor does), so here the Mac's OpenGL got a 2D-array
+  sampler on a 2D texture and read zeros (QEMU's log, once:
+  `GLD_TEXTURE_INDEX_2D_ARRAY is unloadable ... using zero texture`): Y, U
+  and V 0 are green. The same with Mesa's VA driver alone
+  (`LIBVA_DRIVER_NAME=virtio_gpu`), so not the shim. A runtime fix with its
+  test is in review (#615), not yet measured in a VM. Bob and weave draw, but
+  do not deinterlace: in Mesa 26.2 they are a plain copy (with the row pairs
+  of the next item). For interlaced video, let mpv deinterlace on the CPU
+  (`--hwdec=vaapi-copy --deinterlace=yes`). Browsers do not use it. Measured
+  on 3.2.11 (Mesa 26.2.5, Mac mini M4).
 - **VA-API video processing from YUV to YUV halves the rows' detail** (mpv's
   `vavpp` with `deint=bob` or `weave`, FFmpeg's `deinterlace_vaapi`,
   GStreamer's `vapostproc`; measured on copies at the same size, scaling goes
