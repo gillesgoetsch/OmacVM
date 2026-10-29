@@ -513,6 +513,35 @@ Limits:
   (`hwdownload,format=nv12,scale=...`). The other YUV layout comes from the
   shim (above); outside the desktop session (SSH, sudo, services) it is used
   only with `LIBVA_DRIVER_NAME=omacvm`, without it that one is black too.
+- **Motion-adaptive deinterlacing gives a green picture**: mpv's
+  `--vf=vavpp` with its default deinterlacer (or `--deinterlace=yes` with
+  `--hwdec=vaapi`), FFmpeg's `deinterlace_vaapi` in its default or
+  `motion_adaptive` mode, GStreamer's `vapostproc` with motion-adaptive
+  deinterlacing. Mesa's deinterlacer draws the two fields into a buffer of
+  its own, two layers of a 2D-array texture, and its video compositor weaves
+  them back; the Mac's OpenGL does not sample that texture (QEMU's log, once:
+  `GLD_TEXTURE_INDEX_2D_ARRAY is unloadable ... using zero texture`), so
+  every pixel comes back 0: Y, U and V 0 are green. The same with Mesa's VA
+  driver alone (`LIBVA_DRIVER_NAME=virtio_gpu`), so not the shim; 2D-array
+  textures a guest app uploads or draws into sample right. Bob and weave
+  draw, but do not deinterlace: in Mesa 26.2 they are a plain copy (and that
+  copy loses every other row, next item). For interlaced video, let mpv
+  deinterlace on the CPU (`--hwdec=vaapi-copy --deinterlace=yes`). Browsers
+  do not use it. Measured on 3.2.11 (Mesa 26.2.5, Mac mini M4).
+- **VA-API video processing from YUV to YUV halves the rows' detail** (mpv's
+  `vavpp` with `deint=bob` or `weave`, FFmpeg's `deinterlace_vaapi`,
+  GStreamer's `vapostproc`; measured on copies at the same size, scaling goes
+  through the same shader): each pair of rows comes out alike, about their
+  average. Mesa's video compositor does YUV to YUV with its weave shader when
+  the driver has no compute path
+  for it, as virgl (`vl_compositor.c` in Mesa 26.2.5 and main: the
+  progressive case falls through to weave), and the weave shader reads the
+  picture as two fields of half the height. The same with Mesa's VA driver
+  alone. Edges of colour that start on an odd row of the chroma plane fringe:
+  the test card's bottom band of an HEVC 1000x562 video in mpv with
+  `deint=bob` looks one row off. Players that show the decoder's own frames
+  (mpv without `vavpp`, Chrome, Firefox, Chromium) are not affected. Mesa's,
+  not OmacVM's.
 - **HEVC**: Main and Main 10; long-term reference pictures from the SPS are
   not supported (rare).
 - **32 decoders at once per VM, 48 at most.** Each holds a session on the
