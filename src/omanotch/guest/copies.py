@@ -802,19 +802,24 @@ def main(argv):
         for st, name, d in check_lines():
             print(f"{st}\t{name}\t{d}")
         return 0
-    # One at a time (install.sh, the service).
+    # One at a time (install.sh, the service), but the service waits for a
+    # quiet moment without the lock: Omanotch's install (Update VM) would
+    # wait for that, up to 12 hours.
     os.makedirs(STATE, exist_ok=True)
-    lock = open(os.path.join(STATE, ".lock"), "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)
+
+    def follow_alone(install=False):
+        with open(os.path.join(STATE, ".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return follow(install=install)
     if "--wait" not in argv:
-        return follow(install="--install" in argv)
+        return follow_alone(install="--install" in argv)
     if not needs_work():
         print("copies: up to date")
         return 0
     for _ in range(3):
         if not wait_quiet():
             break
-        if follow() != 3:
+        if follow_alone() != 3:
             return 0   # a copy that went back is in its record (omacvm check), not a failed service
 
     print("copies: no quiet moment (an update or the lock screen): at the next login")
