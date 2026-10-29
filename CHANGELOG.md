@@ -3,6 +3,24 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.13 (unreleased)
+
+- **mpv's VA-API deinterlacer shows the right picture (#615).** In an OmacVM.app VM, mpv's
+  default VA-API deinterlacer (`--vf=vavpp`, or `--deinterlace=yes` with `--hwdec=vaapi`),
+  FFmpeg's `deinterlace_vaapi` (its default and `motion_adaptive`) and GStreamer's `vapostproc`
+  with motion-adaptive deinterlacing showed an all-green picture (3.2.11 and 3.2.12, where the
+  notes list it as still open). Mesa's deinterlacer reads the decoded pictures with 2D-array
+  lookups on samplers it declares without a view, and OmacVM's runtime turned such lookups into
+  2D ones only for samplers with a view, so the Mac's OpenGL read zeros. Now it does that for
+  these too. Measured in a test VM (Mac mini M4, Mesa 26.2.5, FFmpeg 9.0.2, mpv 0.41) on an
+  interlaced 1080p test clip coded as frames: FFmpeg 0 of 47 frames green (3.2.12: 47), 28.1 dB
+  against FFmpeg's CPU deinterlacer (3.2.12: 5.1 dB); mpv shows the deinterlaced field as its
+  CPU deinterlacer does (26.2 and 26.4 dB against the test picture; 3.2.12: 9.4 dB, all green).
+  Still green: H.264 coded interlaced, with or without deinterlacing, because the Mac's decoder
+  turns most of its pictures down (3.2.12 the same; docs/video-decode.md); decode those on the
+  CPU (`--hwdec=no --deinterlace=yes`). Needs only the app update, from the VM's next start; no
+  Update VM.
+
 ## 3.2.12
 
 In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
