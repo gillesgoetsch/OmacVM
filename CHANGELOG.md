@@ -9,14 +9,14 @@ in more words.
   follows Omarchy's updates again after an unlock (#612).** Before it restarts the Omarchy shell
   for new bar widgets, OmacVM asks Omarchy whether the session is locked. In Update VM the answer
   came with a warning in front, so a locked session read as unlocked: the shell, which draws the
-  lock screen, was restarted under the lock, and Omarchy locked again 30 seconds later. And
-  Omarchy (omarchy-mac 4.0.x with Quickshell 0.3.2) keeps answering "locked" after the first
-  unlock (omacom/omarchy-mac#738): Omanotch's copies of Omarchy's bar and background then stopped
-  following Omarchy's updates until the next login, and an Update VM that installs Omanotch again
-  could wait hours for them. OmacVM reads Omarchy's lock status now; while the VM is locked, the
-  shell restarts right after the unlock. Not OmacVM's: after the first unlock Omarchy does not
-  lock the VM again (lock key, idle lock) until its shell restarts (omacom/omarchy-mac#752 fixes
-  it).
+  lock screen, was restarted under the lock (the new shell locked again within about 2 seconds),
+  and Update VM waited 30 seconds longer. And Omarchy (omarchy-mac 4.0.x with Quickshell 0.3.2)
+  keeps answering "locked" after the first unlock (omacom/omarchy-mac#738): Omanotch's copies of
+  Omarchy's bar and background then stopped following Omarchy's updates until the next login,
+  and an Update VM that installs Omanotch again could wait hours for them. OmacVM reads Omarchy's
+  lock status now; while the VM is locked, the shell restarts right after the unlock. Not
+  OmacVM's: after the first unlock Omarchy does not lock the VM again (lock key, idle lock) until
+  its shell restarts (an open fix: omacom/omarchy-mac#752).
 
 ## 3.2.11
 
