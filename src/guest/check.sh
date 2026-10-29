@@ -40,6 +40,11 @@ as_user() {
     bash -c 'source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null; exec "$@"' _ "$@"
 }
 user_active() { systemctl --user -M "$U@" is-active "$1" >/dev/null 2>&1; }
+# When a queued bar widget comes: after the unlock while a job waits for it
+# (guest/restart-shell.sh), else at the next login.
+queued_when() {
+  if user_active omacvm-restart-shell.service; then echo "right after the next unlock"; else echo "log out and in"; fi
+}
 connected_to() { ss -Htn state established "dst $1:$2" | grep -q .; }
 ev_device() { grep -q "^N: Name=\"$1\"" /proc/bus/input/devices; }
 # missing_pkgs PKG...: why a feature is not set up when pacman could not
@@ -298,7 +303,7 @@ if [[ $BRIDGE == on ]]; then
   else bad "Bluetooth" "no answer from the Bridge"; fi
   for w in omacvm.bluetooth omacvm.wifi omacvm.audio omacvm.nightshift; do
     if [[ " $layout " == *" $w "* ]]; then ok "bar: $w" "in the bar"
-    elif [[ -s $H/.local/state/omacvm/pending-plugins ]]; then bad "bar: $w" "queued, not enabled yet (log out and in)"
+    elif [[ -s $H/.local/state/omacvm/pending-plugins ]]; then bad "bar: $w" "queued, not enabled yet ($(queued_when))"
     else bad "bar: $w" "not in the bar"; fi
   done
   for w in omarchy.bluetooth omarchy.network omarchy.audio; do
@@ -1080,7 +1085,7 @@ if [[ $CONTROL == on ]]; then
   else bad "Omarchy menu" "no OmacVM row in ~/.config/omarchy/extensions/omarchy-menu.jsonc (omacvm apply)"; fi
   layout=$(jq -r '[.bar.layout[]?[]?.id] | join(" ")' "$H/.config/omarchy/shell.json" 2>/dev/null)
   if [[ " $layout " == *" omacvm.control "* ]]; then ok "bar item" "omacvm.control"
-  elif grep -qx omacvm.control "$H/.local/state/omacvm/pending-plugins" 2>/dev/null; then bad "bar item" "queued, not enabled yet (log out and in)"
+  elif grep -qx omacvm.control "$H/.local/state/omacvm/pending-plugins" 2>/dev/null; then bad "bar item" "queued, not enabled yet ($(queued_when))"
   else skip "bar item" "omacvm.control is not in the bar (Omarchy's bar settings add it back)"; fi
 else skip "control centre" "off (on the Mac: omacvm enable control-centre)"; fi
 

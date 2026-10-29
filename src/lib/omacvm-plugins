@@ -2,15 +2,52 @@
 # Enable the OmacVM bar widgets queued in ~/.local/state/omacvm/pending-plugins,
 # disable the ones in pending-plugins-off (a feature switched off while nobody
 # was logged in) and set the clock queued in pending-clock, once the Omarchy
-# shell answers. Run as the desktop user (at login by
-# omacvm-plugins.service, or directly by lib/install-plugin.sh).
+# shell answers. Copies staged while the session was locked
+# (plugins-staged/<id>, lib/install-plugin.sh) go in place first. Run as the
+# desktop user (at login by omacvm-plugins.service, directly by
+# lib/install-plugin.sh, after an unlock by guest/restart-shell.sh).
+# Nothing of it while the session is locked (guest/session-lock.sh): a write
+# in the plugins folder or a rescan would reload Omarchy's lock screen without
+# its password field. It all stays queued for restart-shell.sh's job after
+# the unlock.
 set -uo pipefail
 [[ -n ${OMARCHY_PATH:-} ]] || source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null
-Q=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm/pending-plugins
-CL=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm/pending-clock
-OFF=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm/pending-plugins-off
-[[ -s $Q || -s $CL || -s $OFF ]] || exit 0
+ST=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm
+Q=$ST/pending-plugins
+CL=$ST/pending-clock
+OFF=$ST/pending-plugins-off
+STAGED=$ST/plugins-staged
+PL=$HOME/.config/omarchy/plugins
+staged() { local d; for d in "$STAGED"/*/; do [[ -d $d ]] && return 0; done; return 1; }
+[[ -s $Q || -s $CL || -s $OFF ]] || staged || exit 0
+# One run at a time (the login's and an after-unlock job can meet).
+if command -v flock >/dev/null; then exec 9>> "$ST/.plugins.lock"; flock -w 90 9 || exit 0; fi
 for _ in $(seq 60); do omarchy-shell shell ping >/dev/null 2>&1 && break; sleep 1; done
+state=open
+if [[ -r /usr/local/share/omacvm/guest/session-lock.sh ]]; then
+  # shellcheck source=../guest/session-lock.sh
+  source /usr/local/share/omacvm/guest/session-lock.sh
+  state=$(lock_state)
+fi
+case $state in
+  locked|busy) echo "bar widgets: after the next unlock (the session is locked)"; exit 0 ;;
+esac
+# Staged copies in place, each by renames (the old folder hidden first, which
+# the shell's watcher skips). A running shell has the old one loaded:
+# restart-shell.sh restarts it once.
+for d in "$STAGED"/*/; do
+  d=${d%/}; id=${d##*/}
+  [[ -d $d ]] || continue
+  dest=$PL/$id old=$PL/.$id.old
+  mkdir -p "$PL"; rm -rf "$old"
+  if [[ -e $dest ]]; then
+    mv "$dest" "$old" || continue
+    [[ $state == open ]] && : > "$ST/restart-shell"
+  fi
+  if mv "$d" "$dest"; then echo "plugin $id: the new copy in place"
+  elif [[ -e $old && ! -e $dest ]]; then mv "$old" "$dest"; fi
+  rm -rf "$old"
+done
 if [[ -s $OFF ]] && omarchy-shell shell ping >/dev/null 2>&1; then
   while read -r id; do
     [[ -n $id ]] && omarchy plugin disable "$id" >/dev/null 2>&1 && echo "plugin $id disabled"
@@ -25,10 +62,10 @@ omarchy-shell -q shell rescanPlugins
 left=()
 while read -r id; do
   [[ -n $id ]] || continue
-  dir=$HOME/.config/omarchy/plugins/$id
+  dir=$PL/$id
   if [[ -x $dir/placement.sh ]]; then (cd "$dir" && ./placement.sh) && ok=1 || ok=0
   else omarchy plugin enable "$id" >/dev/null && ok=1 || ok=0; fi
   if (( ok )); then echo "plugin $id enabled"; else left+=("$id"); fi
 done < "$Q"
-printf '%s\n' "${left[@]}" | grep . > "$Q.new" || true
+printf '%s\n' ${left[@]+"${left[@]}"} | grep . > "$Q.new" || true
 mv "$Q.new" "$Q"
