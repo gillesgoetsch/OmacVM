@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.12 (unreleased)
+## 3.2.12
 
 In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
 file cache while macOS compresses it; qemu.log, the app menu and `omacvm check` say when the
@@ -11,10 +11,12 @@ VM stood still and why; a video that starts no longer holds up the whole display
 1080p and other such videos show at their own size, in Chromium odd-size videos too; and in
 Full screen including notch the bar beside the notch comes back after a display change.
 Update VM no longer restarts the lock screen of a locked VM, the memory-optimized kernel builds
-again, and `omacvm check` warns about Google Chrome 154 or older on an M4. Needs the app
-update, then shut the VM down and start it again (memory, stalls, video starts, full
-screen), and Update VM (video sizes, the lock screen, the stall note in the VM, the kernel:
-then Build Now), then quit and start Chrome, Chromium and mpv again.
+again, and `omacvm check` warns about Google Chrome 154 or older on an M4 or newer Mac (update
+Chrome there). Needs the app update, then shut the VM down and start it again (memory, stalls,
+video starts, full screen), and Update VM (video sizes, the lock screen, the stall note in the
+VM, the kernel: then Build Now), then quit and start Chrome, Chromium and mpv again. Still
+open: mpv's default VA-API deinterlacer (`--vf=vavpp`) shows a green picture
+(docs/video-decode.md).
 
 - **The memory-optimized kernel builds again (#608).** Arch Linux ARM's kernel 7.3 has a
   commented-out line in its list of sources, and OmacVM counted it, so the kernel build stopped
