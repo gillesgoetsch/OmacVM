@@ -236,4 +236,20 @@ expect "  after the unlock: v3 in place, one restart, nothing owed" "v3 1 no no"
 fresh yes; locked; install_plugin v1 >/dev/null; : > "$CALLS"; apply_end
 expect "locked, nothing changed: no job, no restart" "" "$(calls)"
 
+# 18. Every rescanPlugins caller asks for the lock first, or runs only from
+#     omacvm-plugins (placement.sh). A new caller fails here until it does.
+if [[ -z ${1:-} ]]; then
+  allowed="lib/omacvm-plugins app/guest/omacvm-displays omanotch/guest/monitor/display-panel.py omanotch/guest/uninstall.sh"
+  while IFS= read -r f; do
+    f=${f#"$SRC"/}
+    case $f in
+      tests/*|*/tests/*) continue ;;
+      */placement.sh) continue ;;   # run by omacvm-plugins after its lock check
+    esac
+    if [[ " $allowed " != *" $f "* ]]; then expect "rescanPlugins in $f: on the list" yes no; continue; fi
+    case $f in omanotch/*) continue ;; esac   # Omanotch's own rule, its own change
+    expect "rescanPlugins in $f: asks for the lock first" yes "$(grep -q 'session-lock\.sh' "$SRC/$f" && echo yes || echo no)"
+  done < <(grep -rl rescanPlugins "$SRC" | LC_ALL=C sort)
+fi
+
 exit $fail
