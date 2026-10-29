@@ -380,9 +380,12 @@ int main(void)
      * 10 % before has no rate to date its start by, so its time is up to 2.1 s
      * short and it is always found from 3.25 s; a vCPU without a Mac core
      * (runnable) is looked at fast only when it got under a quarter of the
-     * window before, so it is always found from 4 s. No time is ever more than
-     * 0.15 s longer than the stall. (A 20 000-stall sweep: longest missed 2.21 s
-     * busy, 2.71 s mostly idle, 3.91 s without a core.) */
+     * window before, so it is always found from 4 s. In this simulation no time
+     * is ever more than 0.15 s longer than the stall; live (Mac mini, its cores
+     * busy) one line of 11 was 1.9 s longer than the vCPU's no-CPU window as
+     * macOS counted it, within the guest's own pause (the start is dated from
+     * the CPU rate before). (A 20 000-stall sweep: longest missed 2.21 s busy,
+     * 2.71 s mostly idle, 3.91 s without a core.) */
     struct { const char *what; int state; double busy_lo, busy_hi; int64_t min_len;
              double short_by; } lim[] = {
         { "blocked in the kernel, 2.25-20 s, vCPU busy 10-95 %", 4, 0.10, 0.95, 2250 * MS, 0.25 },

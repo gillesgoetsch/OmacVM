@@ -26,8 +26,11 @@ in more words.
   without a Mac core under about 4 s. The watchdog's "main loop stalled" line now says "in a
   GPU run without the BQL" when QEMU's graphics thread waited in a call to the Mac while the
   processors ran on (it said "with the BQL held (the VM waits)" there), and a line says when
-  the watchdog itself woke more than 1 s late. Needs only the new app, from the VM's next
-  start.
+  the watchdog itself woke more than 1 s late. That a stall came from the Mac's memory has been
+  shown only in tests (simulated stalls). On a Mac mini with its processors busy, two runs gave
+  7 and 11 "waited for a Mac core" lines (longest 5.8 s), each matching a pause the VM saw
+  itself. Idle, sleep, YouTube 4K60, a 10-minute call and a 30-minute run gave no line. Needs
+  only the new app, from the VM's next start.
 
 ## 3.2.11
 
