@@ -534,16 +534,21 @@ Limits:
   of the next item). For interlaced video, let mpv deinterlace on the CPU
   (`--hwdec=vaapi-copy --deinterlace=yes`). Browsers do not use it. Measured
   on 3.2.11 (Mesa 26.2.5, Mac mini M4).
-- **VA-API video processing from YUV to YUV halves the rows' detail** (mpv's
+- **VA-API video processing from YUV to YUV loses vertical detail** (mpv's
   `vavpp` with `deint=bob` or `weave`, FFmpeg's `deinterlace_vaapi`,
-  GStreamer's `vapostproc`; measured on copies at the same size, scaling goes
-  through the same shader): each pair of rows comes out alike, about their
-  average. Mesa's video compositor does YUV to YUV with its weave shader when
-  the driver has no compute path
-  for it, as virgl (`vl_compositor.c` in Mesa 26.2.5 and main: the
-  progressive case falls through to weave), and the weave shader reads the
-  picture as two fields of half the height. The same with Mesa's VA driver
-  alone. Edges of colour that start on an odd row of the chroma plane fringe:
+  GStreamer's `vapostproc`; measured on copies at the same size, and in
+  Mesa's source scaling takes the same shader). Mesa's video compositor does
+  YUV to YUV with its weave shader when the driver has no compute path for
+  it, as virgl (`vl_compositor.c` in Mesa 26.2.5 and main: the progressive
+  case falls through to weave), and the weave shader reads the picture as two
+  fields of half the height. On surfaces whose height is a multiple of 16
+  (854x480; 1080p in 1088 rows), and on all of them with Mesa's VA driver
+  alone, each pair of rows comes out alike (rows 474-479 as 475 475 477 477
+  479 479). Surfaces of other heights, which the shim declares to the Mac at
+  their own size, come out with a pattern that depends on the height (rows
+  556-561 of 1000x562 as 556 557 558 559 560 560; of a 1000x568 surface as
+  556 557 559 559 561 561). In all of them every row is within one row of its
+  place. Edges of colour that start on an odd row of the chroma plane fringe:
   the test card's bottom band of an HEVC 1000x562 video in mpv with
   `deint=bob` looks one row off. Players that show the decoder's own frames
   (mpv without `vavpp`, Chrome, Firefox, Chromium) are not affected. Mesa's,
