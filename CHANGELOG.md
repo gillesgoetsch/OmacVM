@@ -3,6 +3,11 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+- **`omacvm check` warns when Google Chrome 154 or older runs on an M4 or newer Mac (#611).** Those
+  versions crash on every video they decode on the CPU there; Chrome 155 fixes it (update Chrome).
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
