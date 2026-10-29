@@ -153,16 +153,27 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   size Mesa has for the surface, which the Mac would scale again: the shim
   scales a declared source's region by Mesa's size over the declared one,
   and a converting `vaGetImage` reads an import of the planes at the
-  picture's size. Not covered: surfaces the decoder itself asks for larger
-  than the picture, at the stream's coded size (FFmpeg in mpv, Chrome on
-  Wayland; H.264 at every size that is not a multiple of 16: 1080p in 1088
-  rows, 360p in 368; HEVC at sizes that are not a multiple of 8, such as
-  1000x562 in 1000x568): VA-API carries no crop, so the app shows the
-  stream's own padding rows as before (fewer than before where Mesa's
-  rounding added to them). Measured in Chrome 154 on Wayland (no
-  ImageProcessor): VP9, AV1 and HEVC exact at 1080p, 360p, 854x480 and
-  360x640 (3.2.10: the strip at all of them), H.264 unchanged (its 1080p
-  surface has 1088 rows), HEVC 854x480 with 2 coded columns.
+  picture's size. Surfaces the decoder itself asks for larger than the
+  picture, at the stream's coded size (FFmpeg in mpv, Chrome on Wayland;
+  H.264 at every size that is not a multiple of 16: 1080p in 1088 rows,
+  360p in 368; HEVC at sizes that are not a multiple of 8, such as 1000x562
+  in 1000x568): VA-API carries no crop, and the apps send no SPS, so the
+  picture's size is only in the app's EGL import of the planes (Chrome: one
+  NV12 image of 1920x1080; mpv: R8 1920x1080 and GR88 960x540), which
+  virgl drops. Up to 3.2.11 the app showed the stream's own padding rows
+  there. Since 3.2.12 an EGL vendor library in front of Mesa's
+  (`src/app/guest/omacvm_egl.c`, `/etc/glvnd/egl_vendor.d/10_omacvm.json`,
+  [ADR 0063](adr/0063-video-size-from-the-apps-import.md)) hands such
+  imports to the shim when it is loaded in that process, and the shim tells
+  the Mac the import's size for the planes of a surface the app exported
+  through it, when the size changes. Hyprland, Xwayland, Omarchy's shell
+  (quickshell, also its lock screen), hyprlock and the login screen run
+  Mesa's EGL alone. Not reached: Firefox (it decodes in
+  its RDD process and shows the frames in another; it shows them at
+  their own size by itself), mpv's `vo=dmabuf-wayland`, Vulkan
+  importers. Off for one app:
+  `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;
+  for the VM: delete `10_omacvm.json`.
   The copy still fills the rows and columns past the picture with its last
   row and column (`virgl-video-plane-edge.patch`): for an older VM side or
   app, surfaces the shim did not declare, and lookups at the very edge.

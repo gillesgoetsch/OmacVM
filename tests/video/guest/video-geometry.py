@@ -23,11 +23,11 @@ drawn as they are, as on Wayland with GL; "ImageProcessor": converted to RGB fir
 and sme (the CPU has SME). A stop in Chrome 155 or newer, or without SME, always counts.
 
 check: exact = red 7.4 to 8.5 rows and columns (the band's first row blends) and the lines within half a source row
-or column of their place (ratio 1 +- 0.5 / size, at least +- 0.001; a 1080p squeeze is 0.0074). Known, not
-counted as failures: the decoder asks for a surface larger than the picture, at the stream's coded size, where VA-API
-carries no crop (H.264 when width or height is not a multiple of 16, HEVC when width or height is not a multiple of 8):
-FFmpeg in mpv, and Chrome when it draws the decoder's frames without converting them (Wayland); Chromium's V4L2 decoder
-offers no HEVC; Chrome 154 stops answering at 320x180 on an M4 (3.2.10 too); an app not installed in the VM.
+or column of their place (ratio 1 +- 0.5 / size, at least +- 0.001; a 1080p squeeze is 0.0074). A decoder surface
+at the stream's coded size (H.264 when width or height is not a multiple of 16, HEVC when not a multiple of 8) must be
+exact too: the app's EGL import says the picture's size (ADR 0063; 3.2.11 and older show the strip there). Known, not
+counted as failures: Chromium's V4L2 decoder offers no HEVC; Chrome 154 stops answering below 360 rows on an M4 (it
+decodes those on the CPU, and its libyuv crashes there on an M4; fixed in Chrome 155); an app not installed in the VM.
 """
 import glob, http.server, importlib.util, json, os, re, shutil, signal, subprocess, sys, threading, time, urllib.request
 
@@ -399,7 +399,10 @@ def run():
                                  "browser.shell.checkDefaultBrowser": False, "browser.aboutwelcome.enabled": False,
                                  "datareporting.policy.dataSubmissionEnabled": False, "browser.startup.homepage_override.mstone": "ignore",
                                  "toolkit.telemetry.reportingpolicy.firstRun": False, "media.ffmpeg.vaapi.enabled": True,
-                                 "browser.tabs.warnOnClose": False, "browser.sessionstore.resume_from_crash": False}.items():
+                                 "browser.tabs.warnOnClose": False, "browser.sessionstore.resume_from_crash": False,
+                                 # Firefox 15x's first-run terms dialog dims the page under it
+                                 "browser.preonboarding.enabled": False, "termsofuse.bypassNotification": True,
+                                 "datareporting.policy.dataSubmissionPolicyBypassNotification": True}.items():
                         f.write(f"user_pref({json.dumps(k)}, {json.dumps(v)});\n")
                 env = dict(os.environ, MOZ_LOG="PlatformDecoderModule:5,FFmpegVideo:5,Dmabuf:5", MOZ_LOG_FILE="/tmp/video-geometry-moz.log")
                 for g in glob.glob("/tmp/video-geometry-moz.log*"):
@@ -468,14 +471,9 @@ def output(size):
 
 def known(d):
     """Why a row may be off without a fault here (None: it must be exact)."""
-    app, codec, w, h, dec = d.get("app", ""), d.get("codec", ""), d.get("w", 0), d.get("h", 0), str(d.get("decoder", ""))
-    coded = (codec == "h264" and (w % 16 or h % 16)) or (codec == "hevc" and (w % 8 or h % 8))
-    if coded and app.startswith("mpv") and app != "mpvsw":
-        return "FFmpeg's coded-size surface (VA-API has no crop)"
-    if coded and app == "chrome" and d.get("path") == "no ImageProcessor":
-        return "Chrome's coded-size surface, drawn whole (VA-API has no crop)"
-    if app == "chrome" and w * h <= 320 * 180 and str(d.get("error", "")).startswith("browser stopped answering"):
-        return "Chrome stops answering at 320x180 here (3.2.10 too)"
+    app, codec, w, h = d.get("app", ""), d.get("codec", ""), d.get("w", 0), d.get("h", 0)
+    if app == "chrome" and h < 360 and str(d.get("error", "")).startswith("browser stopped answering"):
+        return "Chrome 154 stops on an M4 below 360 rows (CPU decoding, its libyuv; 3.2.10 too)"
     if app == "chromium" and codec in ("hevc", "av1") and d.get("error"):
         return "not offered by Chromium's V4L2 decoder"
     if app in ("chrome", "chromium") and d.get("error") == "not playing" and codec == "av1":

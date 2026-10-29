@@ -47,5 +47,6 @@ a new record replaces it and says so.
 | [0058](0058-now-playing.md) | AirPods and media controls: the launcher is the Mac's Now Playing app while the VM plays (own virtio port, the guest's MPRIS players through Gio) | accepted, built (`airpods-media`), on by default |
 | [0059](0059-vm-memory-giveback.md) | The VM gives its cold file cache back while macOS compresses it (the app sees it in QEMU's footprint and macOS's compressions; memory.reclaim, file pages only) | accepted, built (`vm-memory-giveback`); off in 3.2.11 (runs only with QEMU's free page reclaim fix, #603) |
 | [0061](0061-video-surfaces-at-their-own-size.md) | Video surfaces at their own size: the guest's VA-API shim declares each surface's size (a NOP payload), the Mac's shaders sample the rounded planes at it; no copy | accepted, built (`video-edge`, 3.2.11), on by default |
+| [0063](0063-video-size-from-the-apps-import.md) | Videos at the size the app imports them: a glvnd EGL vendor library in front of Mesa's hands an app's video imports to the VA shim, which says the size for surfaces at the coded size (H.264 1080p: 1088 rows) | accepted, built (`h264-edge`, 3.2.12), on with the 3.2.11 app's marker |
 
 The whole chain: [../architecture/graphics.md](../architecture/graphics.md).

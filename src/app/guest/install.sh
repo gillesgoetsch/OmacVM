@@ -10,7 +10,8 @@
 #  * the desktop starts again by itself when the Mac lost its GPU context
 #    (omacvm-desktop-recover, run by the app; the new session says so)
 #  * video decoding on the Mac's media engine (VA-API: vainfo, a driver shim
-#    so Firefox gets NV12 surfaces, Firefox's VA-API switch)
+#    so Firefox gets NV12 surfaces, Firefox's VA-API switch; an EGL vendor
+#    library that tells the shim the size apps show a video at)
 #  * video encoding on it: Chrome's and Brave's VA-API encoder for WebRTC
 #    (browser-video-encode.py; omacvm-video-encode at apply and each start)
 #  * a hyprpicker that draws the frozen screen of screenshots only when it
@@ -131,6 +132,19 @@ if cc -shared -fPIC -O2 -o "$T/omacvm_drv_video.so" omacvm_drv_video.c -ldl 2>/d
   # library paths ld.so knows: without this vaInitialize fails there.
   echo /usr/local/lib/dri > /etc/ld.so.conf.d/omacvm-video.conf
   ldconfig
+  # Videos at their own size where the decoder's surface is larger (H.264 1080p: 1088
+  # rows): an EGL vendor library in front of Mesa's hands the app's video imports to the
+  # shim (omacvm_egl.c, ADR 0063). The library first, then glvnd's file; if it does not
+  # build, the file goes first (glvnd would skip a missing library anyway).
+  if cc -shared -fPIC -O2 -fvisibility=hidden -Wl,-soname,libEGL_omacvm.so.0 \
+       -o "$T/libEGL_omacvm.so.0" omacvm_egl.c -ldl 2>/dev/null; then
+    install -Dm755 "$T/libEGL_omacvm.so.0" /usr/local/lib/libEGL_omacvm.so.0
+    install -Dm644 10-omacvm-egl.json /etc/glvnd/egl_vendor.d/10_omacvm.json
+  else
+    rm -f /etc/glvnd/egl_vendor.d/10_omacvm.json
+    rm -f /usr/local/lib/libEGL_omacvm.so.0
+    echo "OmacVM.app: the EGL vendor library did not build (EGL or glvnd headers missing?): H.264 1080p keeps 8 extra rows in Chrome and mpv"
+  fi
 else
   echo "OmacVM.app: no C compiler, video decoding without the Firefox shim"
 fi
