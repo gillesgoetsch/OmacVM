@@ -1,0 +1,1288 @@
+From: OmacVM
+Subject: [PATCH] hvf: a line in qemu.log when a vCPU stands still (Mac memory, no core)
+
+What: when macOS runs out of free memory, a vCPU thread can stay blocked in
+hv_vcpu_run for seconds (a stage-2 page fault waiting while macOS decompresses
+or swaps in guest RAM, or for a free page) while the other vCPUs run on. The
+guest then logs RCU stalls, its watchdogs fire, and nothing on the Mac side said
+why. Each vCPU thread now counts its hv_vcpu_run calls (one relaxed store before
+and one after the call, odd while in the guest). The stall watchdog's thread,
+when it wakes anyway (every 2 s at most), reads every vCPU thread's CPU time and
+Mach state with thread_info(); a vCPU that is still in the same call, got no
+CPU time since, and is uninterruptible (blocked in macOS's kernel) or runnable
+(no Mac core) stands still. While one stands, the watchdog looks every 250 ms;
+a vCPU idle in the guest's WFI (waiting) never counts. Blocked in the kernel is
+put down to memory only when the Mac was paging at that time: from the second
+look before the episode was seen to its end, macOS's compressor and swap moved
+16 MB/s or more, swapped 1 MB or more, or the pressure level was warn or
+critical (host_statistics64 and one sysctl each round; a healthy idle MacBook
+Air moves about 0.03 MB/s, the swapping mini about 4 GB/s). Otherwise the line
+says only "blocked in macOS's kernel" (another macOS version may block a vCPU
+there for other reasons) and the app sends no note. One line per episode of
+1 s or more (and one at 10 s, then every 30 s while it lasts); for example
+(the format, not a measurement):
+  OmacVM: stall: vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in
+  macOS's kernel waiting for memory (Mac: compressor and swap 900 MB/s, 0.3 GB
+  free, pressure normal; the VM holds 51 GB, 20 GB of it compressed by macOS)
+  OmacVM: stall: vCPU 3 stood still for about 2.4 s, blocked in macOS's kernel
+  (the Mac was not paging: compressor and swap 0 MB/s, pressure normal)
+  OmacVM: stall: vCPU 5 waited 2.1 s for a Mac core (the Mac's CPUs are busy:
+  load average 30)
+vCPU numbers are the guest's CPU numbers. When it started is taken from the
+vCPU's CPU rate before (a vCPU mostly idle: the latest it can be). Limits (no
+timer of its own, 2 s between wakes): a vCPU blocked in the kernel is always
+found from 2.25 s, from 3.25 s when it ran under 10 % of a core before; one
+without a Mac core from 4 s; shorter ones can be missed. In the simulation a
+time is never more than 0.15 s longer than the stall, within 0.25 s for a vCPU
+that ran 10 % or more before, up to 2.1 s short for one that ran less (1000
+random stalls each in the test; a 20 000-stall sweep missed none longer than
+2.21 / 2.71 / 3.91 s). Live (Mac mini, its cores busy) one line of 11 was 1.9 s
+longer than the vCPU's no-CPU window as macOS counted it, within the guest's
+own pause (the start is dated from the vCPU's CPU rate before).
+No line while the VM is not running, and none for a look that came more than
+1 s late (App Nap, QEMU stopped) or after the Mac slept: times are
+CLOCK_UPTIME_RAW, which stops while the Mac sleeps.
+A watchdog wake more than 1 s late (not a Mac that slept) gets its own line, at
+most one per 10 minutes, the late wakes between counted in the next one:
+  OmacVM: stall: the stall watchdog woke 3.2 s late: QEMU got no Mac core or
+  waited in macOS that long; vCPU stalls in that time are not counted
+logs/vm-stalls ($OMACVM_LOGS/vm-stalls, key=value lines, all zeros from the
+watchdog's start, replaced in one rename, no fsync): only the watchdog's thread
+writes it, after the status lock is let go; the main loop, which may hold the
+BQL, only records its own stalls in memory. Keys: stalls, longest_ms,
+longest_cause, last_ms, last_cause (memory, kernel, cpu), last_vcpus, last_at,
+last_vm_mb, last_free_mb, last_compressed_mb, and the main loop's stalls of 2 s or more in
+a GPU run: gpu_stalls, gpu_longest_ms, gpu_last_where (the Mac's call and the
+frame of QEMU or virglrenderer that made it), and outside one, with the BQL
+held or waited for, so the vCPUs waited too: main_stalls, main_longest_ms,
+main_last_where (e.g. "close (from qemu_memfd_free)": 2.2 s on the swapping
+mini). OmacVM.app and omacvm check read it.
+OMACVM_STALL_WATCHDOG=0 turns it off with the watchdog (no thread_info at all).
+Why: the user's VM froze on 2026-10-28 (RCU stall of ~60 s on CPUs 1, 2, 3, 8,
+"no word from the Mac for 15 s"); on the Mac mini at critical memory pressure
+the same showed up as vCPU threads uninterruptible in hv_vcpu_run for 1.2-2.4 s
+with the BQL free (tracks/vm-stall.md). The line names that at once.
+Upstream: OmacVM only.
+Test: app/runtime/Tests/vcpu/test-vcpu-stall.sh (the logic and text in
+include/qemu/omacvm-stall.h against simulated vCPU threads: the mini's stall,
+the user's 60 s as a shape, 3 x 1000 random stalls at the limits above, paging
+noise, idle, late wakes, pauses; paging or not; the status between threads;
+build time and CI); the mini's repro row (work/vm-stall/kit/run-cpu.sh).
+
+diff --git a/accel/hvf/hvf-accel-ops.c b/accel/hvf/hvf-accel-ops.c
+index d2276d8..cb46f43 100644
+--- a/accel/hvf/hvf-accel-ops.c
++++ b/accel/hvf/hvf-accel-ops.c
+@@ -111,7 +111,10 @@ static void do_hvf_get_vcpu_exec_time(CPUState *cpu, run_on_cpu_data arg)
+ 
+ static void hvf_vcpu_destroy(CPUState *cpu)
+ {
+-    hv_return_t ret = hv_vcpu_destroy(cpu->accel->fd);
++    hv_return_t ret;
++
++    hvf_stall_vcpu_end(cpu);
++    ret = hv_vcpu_destroy(cpu->accel->fd);
+     assert_hvf_ok(ret);
+ 
+     hvf_arch_vcpu_destroy(cpu);
+@@ -142,6 +145,7 @@ static int hvf_init_vcpu(CPUState *cpu)
+ #endif
+     assert_hvf_ok(r);
+     cpu->vcpu_dirty = true;
++    hvf_stall_vcpu_begin(cpu);
+ 
+     return hvf_arch_init_vcpu(cpu);
+ }
+diff --git a/accel/hvf/hvf-stall.c b/accel/hvf/hvf-stall.c
+new file mode 100644
+index 0000000..8f21fd8
+--- /dev/null
++++ b/accel/hvf/hvf-stall.c
+@@ -0,0 +1,176 @@
++/*
++ * OmacVM: the vCPU stall note (qemu-hvf-vcpu-stall-note.patch).
++ *
++ * When macOS runs out of free memory, a vCPU thread can stay blocked inside
++ * hv_vcpu_run on a stage-2 page fault (the Mac decompressing or swapping in
++ * guest RAM, or waiting for a free page) for seconds, while other vCPUs run
++ * on: the guest logs RCU stalls and its watchdogs fire, and nothing in
++ * qemu.log said why. A vCPU thread that is runnable but gets no Mac core
++ * looks the same to the guest.
++ *
++ * Each vCPU thread counts its hv_vcpu_run calls (odd while in the guest: one
++ * relaxed store before and one after the call). The stall watchdog's thread
++ * (util/main-loop.c) runs hvf_stall_check() each time it wakes anyway, every
++ * 2 s at most and every 250 ms while a vCPU stands: thread_info() on each vCPU
++ * thread gives its CPU time and Mach state, and include/qemu/omacvm-stall.h
++ * decides and words it. No timer of its own, nothing in the vCPU's run loop
++ * but the two stores. Nothing while the VM is not running, and nothing for a
++ * round in which the watchdog woke more than 1 s late or the Mac slept (its
++ * own delay is not the vCPUs').
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ */
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/omacvm-stall.h"
++#include "hw/core/cpu.h"
++#include "system/hvf.h"
++#include "system/hvf_int.h"
++#include "system/runstate.h"
++#include <mach/mach.h>
++#include <sys/sysctl.h>
++
++typedef struct HvfStallVcpu {
++    mach_port_t port;           /* 0: no thread (yet, or any more) */
++    uint64_t runs;              /* hv_vcpu_run count, odd while in the guest */
++} HvfStallVcpu;
++
++static HvfStallVcpu hvf_stall_vcpus[OMACVM_STALL_MAX_VCPUS];
++static int hvf_stall_count;     /* highest registered index + 1 */
++static OmacvmStallMonitor hvf_stall_monitor;    /* the watchdog's thread only */
++
++static mach_port_t hvf_stall_host(void)
++{
++    static mach_port_t host;
++
++    if (!host) {
++        host = mach_host_self();
++    }
++    return host;
++}
++
++static int hvf_stall_pressure(void)
++{
++    int level = 0;
++    size_t size = sizeof(level);
++
++    return sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, NULL, 0) ?
++           0 : level;
++}
++
++/* The Mac's paging counters (one host_statistics64, one sysctl): each round. */
++static void hvf_stall_paging(OmacvmPagingLook *look, int64_t now)
++{
++    vm_statistics64_data_t vs;
++    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
++    uint64_t page = vm_kernel_page_size;
++
++    memset(look, 0, sizeof(*look));
++    if (host_statistics64(hvf_stall_host(), HOST_VM_INFO64, (host_info64_t)&vs, &count) !=
++        KERN_SUCCESS) {
++        return;
++    }
++    look->valid = true;
++    look->at = now;
++    look->swapped = (vs.swapins + vs.swapouts) * page;
++    look->moved = (vs.compressions + vs.decompressions) * page + look->swapped;
++    look->pressure = hvf_stall_pressure();
++}
++
++static void hvf_stall_mac(OmacvmMacMemory *mac)
++{
++    vm_statistics64_data_t vs;
++    task_vm_info_data_t ti;
++    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
++    double load[1];
++
++    memset(mac, 0, sizeof(*mac));
++    if (host_statistics64(hvf_stall_host(), HOST_VM_INFO64, (host_info64_t)&vs, &count) ==
++        KERN_SUCCESS) {
++        mac->free_mb = ((uint64_t)vs.free_count * vm_kernel_page_size) >> 20;
++    }
++    count = TASK_VM_INFO_COUNT;
++    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&ti, &count) ==
++        KERN_SUCCESS) {
++        mac->vm_mb = ti.phys_footprint >> 20;
++        mac->vm_compressed_mb = ti.compressed >> 20;
++    }
++    mac->pressure = hvf_stall_pressure();
++    mac->load = getloadavg(load, 1) == 1 ? load[0] : -1;
++}
++
++/* The stall watchdog's thread: one round of vCPU samples. */
++static int64_t hvf_stall_check(int64_t now, bool late)
++{
++    OmacvmVcpuSample s[OMACVM_STALL_MAX_VCPUS];
++    OmacvmStallMonitor *m = &hvf_stall_monitor;
++    OmacvmMacMemory mac;
++    OmacvmPagingLook look;
++    int n = qatomic_read(&hvf_stall_count);
++    int64_t wait = 0;
++    char line[600];
++    int what;
++
++    if (late || !runstate_is_running()) {
++        /* start over: what the watchdog missed is not the vCPUs' */
++        omacvm_stall_reset(m);
++        return 0;
++    }
++    for (int i = 0; i < n; i++) {
++        mach_port_t port = qatomic_read(&hvf_stall_vcpus[i].port);
++        thread_basic_info_data_t bi;
++        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
++
++        memset(&s[i], 0, sizeof(s[i]));
++        if (!port || thread_info(port, THREAD_BASIC_INFO, (thread_info_t)&bi, &count) !=
++            KERN_SUCCESS) {
++            continue;
++        }
++        s[i].valid = true;
++        s[i].runs = qatomic_read(&hvf_stall_vcpus[i].runs);
++        s[i].cpu_us = (uint64_t)bi.user_time.seconds * 1000000 + bi.user_time.microseconds +
++                      (uint64_t)bi.system_time.seconds * 1000000 +
++                      bi.system_time.microseconds;
++        s[i].state = bi.run_state;
++    }
++    hvf_stall_paging(&look, now);
++    what = omacvm_stall_step(m, s, n, now, &look, &wait);
++    if (what == OMACVM_STALL_NOTHING) {
++        return wait;
++    }
++    hvf_stall_mac(&mac);
++    omacvm_stall_line(m, what, &mac, line, sizeof(line));
++    warn_report("%s", line);
++    if (what == OMACVM_STALL_OVER) {
++        main_loop_stall_status_vcpus(m, &mac);
++    }
++    return wait;
++}
++
++/* The vCPU's own thread, once it has its Hypervisor vCPU. */
++void hvf_stall_vcpu_begin(CPUState *cpu)
++{
++    int i = cpu->cpu_index;
++
++    if (i < 0 || i >= OMACVM_STALL_MAX_VCPUS) {
++        cpu->accel->stall_runs = &cpu->accel->stall_runs_unwatched;
++        return;
++    }
++    cpu->accel->stall_runs = &hvf_stall_vcpus[i].runs;
++    qatomic_set(&hvf_stall_vcpus[i].runs, 0);
++    qatomic_set(&hvf_stall_vcpus[i].port, pthread_mach_thread_np(pthread_self()));
++    if (i >= qatomic_read(&hvf_stall_count)) {
++        qatomic_set(&hvf_stall_count, i + 1);
++    }
++    main_loop_stall_watchdog_hook(hvf_stall_check);
++}
++
++/* The vCPU's own thread, before it goes. */
++void hvf_stall_vcpu_end(CPUState *cpu)
++{
++    int i = cpu->cpu_index;
++
++    if (i >= 0 && i < OMACVM_STALL_MAX_VCPUS) {
++        qatomic_set(&hvf_stall_vcpus[i].port, 0);
++    }
++}
+diff --git a/accel/hvf/meson.build b/accel/hvf/meson.build
+index 6e2dcc4..8820ccb 100644
+--- a/accel/hvf/meson.build
++++ b/accel/hvf/meson.build
+@@ -1,4 +1,5 @@
+ system_ss.add(when: 'CONFIG_HVF', if_true: files(
+   'hvf-all.c',
+   'hvf-accel-ops.c',
++  'hvf-stall.c',
+ ))
+diff --git a/include/qemu/omacvm-stall.h b/include/qemu/omacvm-stall.h
+new file mode 100644
+index 0000000..924f777
+--- /dev/null
++++ b/include/qemu/omacvm-stall.h
+@@ -0,0 +1,699 @@
++/*
++ * OmacVM: the vCPU stall note and the VM's stall status file
++ * (qemu-hvf-vcpu-stall-note.patch).
++ *
++ * The stall watchdog's thread (util/main-loop.c) samples every vCPU thread
++ * when it wakes anyway (every 2 s at most), and every 250 ms while one stands:
++ * the vCPU's hv_vcpu_run count, its CPU time and its Mach state
++ * (accel/hvf/hvf-stall.c). A vCPU "stands" when it is still in the same
++ * hv_vcpu_run, got no CPU time since the sample before, and is
++ * uninterruptible (4: blocked in macOS's kernel) or runnable (1: no Mac core
++ * for it). Waiting (3) is a vCPU idle in the guest's WFI: never counted.
++ * Blocked in the kernel is called "waiting for memory" only when the Mac was
++ * paging at that time (the compressor and swap moving 16 MB/s or more, any
++ * swap of 1 MB or more, or a pressure level of warn or critical, from the
++ * second look before the episode was seen to its end): a stage-2 page fault waiting while
++ * macOS decompresses, swaps in or frees a page. Otherwise it is only "blocked
++ * in macOS's kernel" (another macOS version may block a vCPU there for other
++ * reasons), and the app sends no note. An episode runs from the first vCPU
++ * that stands until none does; one of 1 s or more gets a line in qemu.log
++ * (and one at 10 s, then every 30 s while it lasts) and goes into the status
++ * file (logs/vm-stalls, key=value lines) that OmacVM.app and omacvm check read.
++ * Times are CLOCK_UPTIME_RAW nanoseconds: they stop while the Mac sleeps.
++ *
++ * This header is the logic and the text only: no QEMU, no Mach calls, so it is
++ * unit tested (app/runtime/Tests/vcpu/test-vcpu-stall.sh, CI and the build).
++ */
++#ifndef OMACVM_STALL_H
++#define OMACVM_STALL_H
++
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#define OMACVM_STALL_MAX_VCPUS 128
++#define OMACVM_STALL_FAST_NS 250000000LL        /* checks while a vCPU stands */
++#define OMACVM_STALL_REPORT_NS 1000000000LL     /* episodes this long get a line */
++#define OMACVM_STALL_STILL_NS 10000000000LL     /* the first "still" line ... */
++#define OMACVM_STALL_AGAIN_NS 30000000000LL     /* ... then every 30 s */
++
++/* Mach thread run states (thread_basic_info.run_state) */
++enum {
++    OMACVM_TH_RUNNING = 1,          /* on a core, or runnable and waiting for one */
++    OMACVM_TH_STOPPED = 2,
++    OMACVM_TH_WAITING = 3,          /* interruptible wait (a vCPU idle in WFI) */
++    OMACVM_TH_UNINTERRUPTIBLE = 4,  /* blocked in the kernel (memory) */
++    OMACVM_TH_HALTED = 5,
++};
++
++enum {
++    OMACVM_STALL_CAUSE_NONE,
++    OMACVM_STALL_CAUSE_CPU,         /* runnable, no Mac core */
++    OMACVM_STALL_CAUSE_KERNEL,      /* blocked in macOS's kernel, the Mac not paging */
++    OMACVM_STALL_CAUSE_MEMORY,      /* blocked in macOS's kernel while the Mac paged */
++};
++
++/* Paging at that time: the compressor and swap together this fast, or swap
++ * this much (a healthy idle MacBook Air: about 0.03 MB/s; the swapping mini:
++ * about 4 GB/s), or a pressure level of warn (2) or critical (4). */
++#define OMACVM_PAGING_RATE (16LL << 20)     /* bytes per second */
++#define OMACVM_PAGING_SWAP (1LL << 20)      /* bytes */
++
++/* The Mac's paging counters at one look (host_statistics64), so far. */
++typedef struct OmacvmPagingLook {
++    bool valid;
++    int64_t at;                     /* the look's time (CLOCK_UPTIME_RAW ns) */
++    uint64_t moved;                 /* bytes compressed, decompressed, swapped in or out */
++    uint64_t swapped;               /* bytes swapped in or out */
++    int pressure;                   /* kern.memorystatus_vm_pressure_level: 1, 2, 4 */
++} OmacvmPagingLook;
++
++/* What omacvm_stall_step() says happened. */
++enum {
++    OMACVM_STALL_NOTHING,
++    OMACVM_STALL_STILL,             /* an episode goes on: a "still" line is due */
++    OMACVM_STALL_OVER,              /* an episode of 1 s or more ended */
++};
++
++typedef struct OmacvmVcpuSample {
++    bool valid;         /* a vCPU thread, and its thread_info answered */
++    uint64_t runs;      /* its hv_vcpu_run count: odd while in the guest */
++    uint64_t cpu_us;    /* its CPU time, user + system */
++    int state;          /* its Mach run state */
++} OmacvmVcpuSample;
++
++typedef struct OmacvmVcpuTrack {
++    bool have;          /* the fields below are from an earlier sample */
++    uint64_t runs, cpu_us;
++    int64_t at;         /* that sample's time */
++    int64_t ran_lo, ran_hi; /* it last ran in (ran_lo, ran_hi] */
++    int64_t ran_ns;     /* ... for this long: its CPU time in that window */
++    int64_t rate;       /* its CPU time per second of the window before (ns) */
++    bool suspect;       /* may stand: look again soon */
++    bool standing;
++    int64_t start, end; /* the estimates of when it stopped and ran again */
++    int cause;
++} OmacvmVcpuTrack;
++
++typedef struct OmacvmStallEpisode {
++    bool open;                      /* a vCPU stands */
++    int64_t longest;                /* the longest one vCPU stood (so far) */
++    int64_t next_still;             /* when the longest standing earns a "still" line */
++    uint64_t vcpus[OMACVM_STALL_MAX_VCPUS / 64]; /* the vCPUs that stood 1 s or more */
++    int cause;                      /* KERNEL when any of them stood uninterruptible,
++                                     * MEMORY when the Mac paged then too */
++    OmacvmPagingLook base;          /* the Mac's counters before it began */
++    bool paging;                    /* the Mac paged during it */
++    int64_t paging_rate;            /* its compressor and swap rate (bytes/s, highest) */
++} OmacvmStallEpisode;
++
++typedef struct OmacvmStallMonitor {
++    OmacvmVcpuTrack t[OMACVM_STALL_MAX_VCPUS];
++    OmacvmStallEpisode ep;          /* the open one, or the last one that ended */
++    OmacvmPagingLook last, prev;    /* the Mac's counters at the last two looks */
++} OmacvmStallMonitor;
++
++/* Did the Mac page between looks A and B? RATE gets the compressor and swap
++ * rate (bytes/s; 0 when not known). */
++static inline bool omacvm_stall_paged(const OmacvmPagingLook *a, const OmacvmPagingLook *b,
++                                      int64_t *rate)
++{
++    *rate = 0;
++    if (!b || !b->valid) {
++        return false;
++    }
++    if (a && a->valid && b->at > a->at && b->moved >= a->moved && b->swapped >= a->swapped) {
++        *rate = (int64_t)((double)(b->moved - a->moved) * 1e9 / (double)(b->at - a->at));
++        if (b->swapped - a->swapped >= (uint64_t)OMACVM_PAGING_SWAP || *rate >= OMACVM_PAGING_RATE) {
++            return true;
++        }
++    }
++    return b->pressure >= 2;
++}
++
++/* The Mac's memory when a line is written (0 / -1: not known). */
++typedef struct OmacvmMacMemory {
++    uint64_t free_mb;
++    uint64_t vm_mb;                 /* QEMU's footprint: what Activity Monitor shows */
++    uint64_t vm_compressed_mb;      /* the part of it macOS compressed */
++    int pressure;                   /* kern.memorystatus_vm_pressure_level: 1, 2, 4 */
++    double load;                    /* the Mac's 1-minute load average */
++} OmacvmMacMemory;
++
++/* What logs/vm-stalls says (OmacVM.app, omacvm check, the app menu). */
++typedef struct OmacvmStallStatus {
++    unsigned stalls;                /* vCPU episodes of 1 s or more this run */
++    int64_t longest_ms;
++    int longest_cause;
++    int64_t last_ms;
++    int last_cause;
++    char last_vcpus[96];            /* "1,2,3,8" */
++    int64_t last_at;                /* when it ended: seconds since 1970 */
++    uint64_t last_vm_mb, last_free_mb, last_compressed_mb;
++    unsigned gpu_stalls;            /* main loop stalls of 2 s or more in a GPU run */
++    int64_t gpu_longest_ms;
++    char gpu_last_where[128];
++    unsigned main_stalls;           /* ... outside one: with the BQL, or waiting for it */
++    int64_t main_longest_ms;
++    char main_last_where[128];
++} OmacvmStallStatus;
++
++static inline void omacvm_stall_reset(OmacvmStallMonitor *m)
++{
++    memset(m, 0, sizeof(*m));
++}
++
++static inline int64_t omacvm_stall_mid(int64_t lo, int64_t hi)
++{
++    return hi > lo ? lo + (hi - lo) / 2 : hi;
++}
++
++/*
++ * When did vCPU T stop? It last ran in (ran_lo, ran_hi], getting ran_ns of
++ * CPU there. At the rate it had in the window before, it ran until about
++ * ran_lo + ran_ns / rate; at full speed, not before ran_lo + ran_ns. A vCPU
++ * that was mostly idle (under 10 % of a core) says nothing about when: then
++ * ran_hi, the latest it can be (a stall is never made longer than seen).
++ */
++static inline int64_t omacvm_stall_stopped(const OmacvmVcpuTrack *t)
++{
++    int64_t lo = t->ran_lo + t->ran_ns < t->ran_hi ? t->ran_lo + t->ran_ns : t->ran_hi;
++    int64_t est;
++
++    if (t->rate < 100000000LL) {
++        return t->ran_hi;
++    }
++    est = t->ran_lo + (int64_t)((double)t->ran_ns * 1e9 / (double)t->rate);
++    return est < lo ? lo : est > t->ran_hi ? t->ran_hi : est;
++}
++
++static inline bool omacvm_stall_vcpu_in(const OmacvmStallEpisode *ep, int i)
++{
++    return (ep->vcpus[i / 64] >> (i % 64)) & 1;
++}
++
++/* vCPU I stood from its start until END (so far, or for good): into the episode. */
++static inline void omacvm_stall_vcpu_stood(OmacvmStallMonitor *m, int i, int64_t end)
++{
++    OmacvmVcpuTrack *t = &m->t[i];
++    int64_t d = end - t->start;
++
++    if (d > m->ep.longest) {
++        m->ep.longest = d;
++    }
++    if (d >= OMACVM_STALL_REPORT_NS) {
++        m->ep.vcpus[i / 64] |= 1ull << (i % 64);
++        if (t->cause > m->ep.cause) {
++            m->ep.cause = t->cause;
++        }
++    }
++}
++
++/* vCPU I ran again (or is gone): its standing ends at END. */
++static inline void omacvm_stall_vcpu_ends(OmacvmStallMonitor *m, int i, int64_t end)
++{
++    OmacvmVcpuTrack *t = &m->t[i];
++
++    if (!t->standing) {
++        return;
++    }
++    t->standing = false;
++    t->end = end > t->start ? end : t->start;
++    omacvm_stall_vcpu_stood(m, i, t->end);
++}
++
++/* The open episode: did the Mac page from the look before it to LOOK? */
++static inline void omacvm_stall_paging(OmacvmStallMonitor *m, const OmacvmPagingLook *look)
++{
++    OmacvmStallEpisode *ep = &m->ep;
++    int64_t rate;
++
++    if (!ep->open) {
++        return;
++    }
++    if (omacvm_stall_paged(&ep->base, look, &rate)) {
++        ep->paging = true;
++    }
++    if (rate > ep->paging_rate) {
++        ep->paging_rate = rate;
++    }
++}
++
++/*
++ * One round of samples S[0..N) at NOW, with the Mac's paging counters LOOK
++ * (NULL or not valid: not known, so no stall is put down to memory). Returns
++ * what happened; *WAIT gets OMACVM_STALL_FAST_NS when the watchdog should
++ * look again in 250 ms (a vCPU stands or may), else 0 (its own 2 s).
++ */
++static inline int omacvm_stall_step(OmacvmStallMonitor *m, const OmacvmVcpuSample *s,
++                                    int n, int64_t now, const OmacvmPagingLook *look,
++                                    int64_t *wait)
++{
++    OmacvmStallEpisode *ep = &m->ep;
++    bool any_standing = false, any_suspect = false;
++    int what;
++
++    if (n > OMACVM_STALL_MAX_VCPUS) {
++        n = OMACVM_STALL_MAX_VCPUS;
++    }
++    /* an episode already open: the Mac's paging since the look before it */
++    omacvm_stall_paging(m, look);
++    for (int i = 0; i < n; i++) {
++        OmacvmVcpuTrack *t = &m->t[i];
++        const OmacvmVcpuSample *v = &s[i];
++        bool in_guest = v->valid && (v->runs & 1);
++
++        if (!v->valid) {
++            omacvm_stall_vcpu_ends(m, i, t->have ? omacvm_stall_mid(t->at, now) : now);
++            t->have = false;
++            t->suspect = false;
++            continue;
++        }
++        if (!t->have || !in_guest || v->runs != t->runs || v->cpu_us != t->cpu_us) {
++            /* it ran (or left the guest) since the sample before */
++            int64_t ran = t->have && v->cpu_us > t->cpu_us ?
++                          (int64_t)(v->cpu_us - t->cpu_us) * 1000 : 0;
++
++            if (t->have && t->standing) {
++                /* it ran again in (at, now], and had RAN of CPU by now */
++                int64_t hi = now - ran > t->at ? now - ran : t->at;
++                int64_t back = t->rate >= 100000000LL ?
++                               now - (int64_t)((double)ran * 1e9 / (double)t->rate) : 0;
++                omacvm_stall_vcpu_ends(m, i, back > t->at && back < hi ? back :
++                                       omacvm_stall_mid(t->at, hi));
++            }
++            if (t->have && !t->standing && t->ran_hi > t->ran_lo) {
++                /* its CPU rate in the window before: when it stops, how long it ran */
++                t->rate = (int64_t)((double)t->ran_ns * 1e9 / (double)(t->ran_hi - t->ran_lo));
++            } else if (!t->have) {
++                t->rate = 0;
++            }
++            /*
++             * Runnable now, in the same call, with less than a quarter of the
++             * time since on a core: it may be waiting for one. Uninterruptible
++             * in the guest: it may be waiting for memory.
++             */
++            t->suspect = t->have && in_guest && v->runs == t->runs &&
++                         v->state == OMACVM_TH_RUNNING && ran * 4 < now - t->at;
++            t->suspect |= in_guest && v->state == OMACVM_TH_UNINTERRUPTIBLE;
++            t->ran_lo = t->have ? t->at : now;
++            t->ran_hi = now;
++            t->ran_ns = ran;
++            t->have = true;
++            t->runs = v->runs;
++            t->cpu_us = v->cpu_us;
++            t->at = now;
++            any_suspect |= t->suspect;
++            continue;
++        }
++        /* the same hv_vcpu_run, no CPU time since the sample before */
++        t->at = now;
++        t->suspect = false;
++        if (v->state != OMACVM_TH_RUNNING && v->state != OMACVM_TH_UNINTERRUPTIBLE) {
++            /* idle in the guest (WFI), or stopped by someone: not a stall */
++            omacvm_stall_vcpu_ends(m, i, now);
++            continue;
++        }
++        if (!t->standing) {
++            t->standing = true;
++            t->start = omacvm_stall_stopped(t);
++            t->end = 0;
++            t->cause = OMACVM_STALL_CAUSE_CPU;
++            if (!ep->open) {
++                memset(ep, 0, sizeof(*ep));
++                ep->open = true;
++                ep->next_still = OMACVM_STALL_STILL_NS;
++                /* a vCPU is found standing a look or two after it stopped
++                 * (it ran since the look before last): from there on */
++                ep->base = m->prev.valid ? m->prev : m->last;
++                omacvm_stall_paging(m, look);
++            }
++        }
++        if (v->state == OMACVM_TH_UNINTERRUPTIBLE) {
++            t->cause = OMACVM_STALL_CAUSE_KERNEL;
++        }
++        omacvm_stall_vcpu_stood(m, i, now);
++        any_standing = true;
++    }
++    for (int i = n; i < OMACVM_STALL_MAX_VCPUS; i++) {
++        any_standing |= m->t[i].standing;
++    }
++    *wait = any_standing || any_suspect ? OMACVM_STALL_FAST_NS : 0;
++    if (look && look->valid) {
++        m->prev = m->last;
++        m->last = *look;
++    }
++    if (!ep->open) {
++        return OMACVM_STALL_NOTHING;
++    }
++    what = OMACVM_STALL_NOTHING;
++    if (!any_standing) {
++        ep->open = false;
++        what = ep->longest >= OMACVM_STALL_REPORT_NS ? OMACVM_STALL_OVER : OMACVM_STALL_NOTHING;
++    } else if (ep->longest >= ep->next_still) {
++        /* at most one line per 10 s: the next one 30 s on from this one */
++        ep->next_still = ep->longest + OMACVM_STALL_AGAIN_NS;
++        what = OMACVM_STALL_STILL;
++    }
++    if (ep->cause == OMACVM_STALL_CAUSE_KERNEL && ep->paging) {
++        ep->cause = OMACVM_STALL_CAUSE_MEMORY;
++    }
++    return what;
++}
++
++/* "1, 2, 3, 8" (SEP ", ") or "1,2,3,8" (SEP ","); returns how many. */
++static inline int omacvm_stall_vcpu_list(const OmacvmStallEpisode *ep, const char *sep,
++                                         char *out, size_t n)
++{
++    int count = 0;
++    size_t used = 0;
++
++    if (n) {
++        out[0] = '\0';
++    }
++    for (int i = 0; i < OMACVM_STALL_MAX_VCPUS; i++) {
++        if (!omacvm_stall_vcpu_in(ep, i)) {
++            continue;
++        }
++        int w = snprintf(out + used, used < n ? n - used : 0, "%s%d", count ? sep : "", i);
++        if (w > 0 && used + (size_t)w < n) {
++            used += (size_t)w;
++        } else if (n > 4 && used < n) {
++            /* no room: end it with "..." */
++            snprintf(out + (used + 4 < n ? used : n - 4), 4, "...");
++            used = n;
++        }
++        count++;
++    }
++    return count;
++}
++
++/* "2.4 s", "58 s" */
++static inline void omacvm_stall_secs(int64_t ns, char *out, size_t n)
++{
++    double s = ns / 1e9;
++    if (s < 10) {
++        snprintf(out, n, "%.1f s", s);
++    } else {
++        snprintf(out, n, "%.0f s", s);
++    }
++}
++
++/* "0.3 GB", "51 GB" */
++static inline void omacvm_stall_gb(uint64_t mb, char *out, size_t n)
++{
++    double gb = mb / 1024.0;
++    if (gb < 10) {
++        snprintf(out, n, "%.1f GB", gb);
++    } else {
++        snprintf(out, n, "%.0f GB", gb);
++    }
++}
++
++static inline const char *omacvm_stall_pressure(int level)
++{
++    return level == 1 ? "normal" : level == 2 ? "warn" : level == 4 ? "critical" : "unknown";
++}
++
++/*
++ * The qemu.log line for the open episode (STILL) or the one that just ended
++ * (OVER): the vCPUs that stood 1 s or more, the longest one's time.
++ */
++static inline void omacvm_stall_line(const OmacvmStallMonitor *m, int what,
++                                     const OmacvmMacMemory *mac, char *out, size_t n)
++{
++    const OmacvmStallEpisode *ep = &m->ep;
++    char list[400], dur[32], free_s[32], vm[32], comp[32], memory[240];
++    int count = omacvm_stall_vcpu_list(ep, ", ", list, sizeof(list));
++    const char *who = count == 1 ? "vCPU" : "vCPUs";
++
++    omacvm_stall_secs(ep->longest, dur, sizeof(dur));
++    if (ep->cause == OMACVM_STALL_CAUSE_CPU) {
++        char load[48] = "";
++        if (mac->load >= 0) {
++            snprintf(load, sizeof(load), ": load average %.0f", mac->load);
++        }
++        if (what == OMACVM_STALL_STILL) {
++            snprintf(out, n, "OmacVM: stall: %s %s still %s for a Mac core (%s so far; "
++                     "the Mac's CPUs are busy%s)", who, list, count == 1 ? "waits" : "wait",
++                     dur, load);
++        } else {
++            snprintf(out, n, "OmacVM: stall: %s %s waited %s for a Mac core (the Mac's "
++                     "CPUs are busy%s)", who, list, dur, load);
++        }
++        return;
++    }
++    omacvm_stall_gb(mac->free_mb, free_s, sizeof(free_s));
++    omacvm_stall_gb(mac->vm_mb, vm, sizeof(vm));
++    omacvm_stall_gb(mac->vm_compressed_mb, comp, sizeof(comp));
++    if (ep->cause == OMACVM_STALL_CAUSE_KERNEL) {
++        /* blocked in the kernel, but the Mac did not page then: no word of memory */
++        snprintf(memory, sizeof(memory), "the Mac was not paging: compressor and swap "
++                 "%.0f MB/s, pressure %s", ep->paging_rate / 1048576.0,
++                 omacvm_stall_pressure(mac->pressure));
++        if (what == OMACVM_STALL_STILL) {
++            snprintf(out, n, "OmacVM: stall: %s %s still %s (%s so far), blocked in macOS's "
++                     "kernel (%s)", who, list, count == 1 ? "stands" : "stand", dur, memory);
++        } else {
++            snprintf(out, n, "OmacVM: stall: %s %s stood still for about %s, blocked in "
++                     "macOS's kernel (%s)", who, list, dur, memory);
++        }
++        return;
++    }
++    snprintf(memory, sizeof(memory), "Mac: compressor and swap %.0f MB/s, %s free, pressure %s; "
++             "the VM holds %s, %s of it compressed by macOS", ep->paging_rate / 1048576.0,
++             free_s, omacvm_stall_pressure(mac->pressure), vm, comp);
++    if (what == OMACVM_STALL_STILL) {
++        snprintf(out, n, "OmacVM: stall: %s %s still %s (%s so far), blocked in macOS's "
++                 "kernel waiting for memory (%s)", who, list,
++                 count == 1 ? "stands" : "stand", dur, memory);
++    } else {
++        snprintf(out, n, "OmacVM: stall: %s %s stood still for about %s, blocked in "
++                 "macOS's kernel waiting for memory (%s)", who, list, dur, memory);
++    }
++}
++
++/* The episode that just ended, into the status (AT: seconds since 1970). */
++static inline void omacvm_stall_status_add(OmacvmStallStatus *st, const OmacvmStallMonitor *m,
++                                           const OmacvmMacMemory *mac, int64_t at)
++{
++    int64_t ms = m->ep.longest / 1000000;
++
++    st->stalls++;
++    st->last_ms = ms;
++    st->last_cause = m->ep.cause;
++    if (ms >= st->longest_ms) {
++        st->longest_ms = ms;
++        st->longest_cause = m->ep.cause;
++    }
++    omacvm_stall_vcpu_list(&m->ep, ",", st->last_vcpus, sizeof(st->last_vcpus));
++    st->last_at = at;
++    st->last_vm_mb = mac->vm_mb;
++    st->last_free_mb = mac->free_mb;
++    st->last_compressed_mb = mac->vm_compressed_mb;
++}
++
++/* WHERE (any text) into OUT as one printable line */
++static inline void omacvm_stall_where_copy(char *out, size_t n, const char *where)
++{
++    size_t i = 0;
++
++    for (; where && where[i] && i + 1 < n; i++) {
++        char c = where[i];
++        out[i] = c >= 0x20 && c < 0x7f ? c : '?';
++    }
++    out[i] = '\0';
++}
++
++/* A main loop stall of MS in a GPU run, at WHERE (any text: made printable). */
++static inline void omacvm_stall_status_gpu(OmacvmStallStatus *st, int64_t ms, const char *where)
++{
++    st->gpu_stalls++;
++    if (ms > st->gpu_longest_ms) {
++        st->gpu_longest_ms = ms;
++    }
++    omacvm_stall_where_copy(st->gpu_last_where, sizeof(st->gpu_last_where), where);
++}
++
++/*
++ * A main loop stall of MS outside a GPU run, at WHERE: it held the BQL (or
++ * waited for it), so every vCPU that left the guest waited too (the 2.2 s
++ * close() of a display surface's memfd on the swapping mini, 2026-10-28).
++ */
++static inline void omacvm_stall_status_main(OmacvmStallStatus *st, int64_t ms, const char *where)
++{
++    st->main_stalls++;
++    if (ms > st->main_longest_ms) {
++        st->main_longest_ms = ms;
++    }
++    omacvm_stall_where_copy(st->main_last_where, sizeof(st->main_last_where), where);
++}
++
++static inline const char *omacvm_stall_cause_name(int cause)
++{
++    return cause == OMACVM_STALL_CAUSE_MEMORY ? "memory" :
++           cause == OMACVM_STALL_CAUSE_KERNEL ? "kernel" :
++           cause == OMACVM_STALL_CAUSE_CPU ? "cpu" : "none";
++}
++
++/* logs/vm-stalls: key=value lines. */
++static inline void omacvm_stall_status_text(const OmacvmStallStatus *st, char *out, size_t n)
++{
++    snprintf(out, n,
++             "stalls=%u\n"
++             "longest_ms=%lld\n"
++             "longest_cause=%s\n"
++             "last_ms=%lld\n"
++             "last_cause=%s\n"
++             "last_vcpus=%s\n"
++             "last_at=%lld\n"
++             "last_vm_mb=%llu\n"
++             "last_free_mb=%llu\n"
++             "last_compressed_mb=%llu\n"
++             "gpu_stalls=%u\n"
++             "gpu_longest_ms=%lld\n"
++             "gpu_last_where=%s\n"
++             "main_stalls=%u\n"
++             "main_longest_ms=%lld\n"
++             "main_last_where=%s\n",
++             st->stalls, (long long)st->longest_ms, omacvm_stall_cause_name(st->longest_cause),
++             (long long)st->last_ms, omacvm_stall_cause_name(st->last_cause), st->last_vcpus,
++             (long long)st->last_at, (unsigned long long)st->last_vm_mb,
++             (unsigned long long)st->last_free_mb,
++             (unsigned long long)st->last_compressed_mb, st->gpu_stalls,
++             (long long)st->gpu_longest_ms, st->gpu_last_where, st->main_stalls,
++             (long long)st->main_longest_ms, st->main_last_where);
++}
++
++/*
++ * The watchdog itself woke more than 1 s late (not because the Mac slept):
++ * QEMU's process got no Mac core, or waited in macOS, for that long, and the
++ * vCPUs were not looked at then (their stalls in that time are not counted).
++ * One line at most every 10 minutes; the late wakes between are counted in
++ * the next one.
++ */
++#define OMACVM_STALL_LATE_GAP_NS (600LL * 1000000000LL)
++
++typedef struct OmacvmStallLate {
++    bool said;
++    int64_t last;                   /* when the last line was written */
++    unsigned more;                  /* late wakes since, without a line */
++    int64_t more_longest;
++} OmacvmStallLate;
++
++/* A wake LATE_NS late at NOW: true and the line in OUT when one is due. */
++static inline bool omacvm_stall_late_line(OmacvmStallLate *l, int64_t now, int64_t late_ns,
++                                          char *out, size_t n)
++{
++    char d[32], m[32];
++
++    if (l->said && now - l->last < OMACVM_STALL_LATE_GAP_NS) {
++        l->more++;
++        if (late_ns > l->more_longest) {
++            l->more_longest = late_ns;
++        }
++        return false;
++    }
++    omacvm_stall_secs(late_ns, d, sizeof(d));
++    if (l->more) {
++        omacvm_stall_secs(l->more_longest, m, sizeof(m));
++        snprintf(out, n, "OmacVM: stall: the stall watchdog woke %s late (and %u time%s more "
++                 "since the last such line, up to %s): QEMU got no Mac core or waited in "
++                 "macOS that long; vCPU stalls in that time are not counted", d, l->more,
++                 l->more == 1 ? "" : "s", m);
++    } else {
++        snprintf(out, n, "OmacVM: stall: the stall watchdog woke %s late: QEMU got no Mac "
++                 "core or waited in macOS that long; vCPU stalls in that time are not "
++                 "counted", d);
++    }
++    l->said = true;
++    l->last = now;
++    l->more = 0;
++    l->more_longest = 0;
++    return true;
++}
++
++/*
++ * The status between threads. The main loop records its own stalls here in
++ * memory only: it may hold the BQL, so no file write and no fsync there. The
++ * watchdog's thread records vCPU episodes and is the only one that writes
++ * logs/vm-stalls: omacvm_stall_store_take() copies the status under the lock
++ * when it changed since the last copy, and the file is written after the lock
++ * is let go. Readers (the app menu) copy under the lock. The lock is held for
++ * one update or one copy, never for I/O. CHANGES starts at 1: the watchdog's
++ * first take writes the zeros of a new run.
++ */
++typedef struct OmacvmStallStore {
++    pthread_mutex_t lock;
++    OmacvmStallStatus st;
++    unsigned changes;               /* updates so far */
++    unsigned taken;                 /* the update the last copy to write had */
++} OmacvmStallStore;
++
++#define OMACVM_STALL_STORE_INIT { PTHREAD_MUTEX_INITIALIZER, { 0 }, 1, 0 }
++
++/* The watchdog's thread: a vCPU episode that just ended. */
++static inline void omacvm_stall_store_vcpus(OmacvmStallStore *s, const OmacvmStallMonitor *m,
++                                            const OmacvmMacMemory *mac, int64_t at)
++{
++    pthread_mutex_lock(&s->lock);
++    omacvm_stall_status_add(&s->st, m, mac, at);
++    s->changes++;
++    pthread_mutex_unlock(&s->lock);
++}
++
++/* The main loop: one of its stalls of MS at WHERE ended (memory only): in a
++ * GPU run (GPU_RUN: the vCPUs ran on) or not (the BQL held or waited for). */
++static inline void omacvm_stall_store_loop(OmacvmStallStore *s, bool gpu_run, int64_t ms,
++                                           const char *where)
++{
++    pthread_mutex_lock(&s->lock);
++    if (gpu_run) {
++        omacvm_stall_status_gpu(&s->st, ms, where);
++    } else {
++        omacvm_stall_status_main(&s->st, ms, where);
++    }
++    s->changes++;
++    pthread_mutex_unlock(&s->lock);
++}
++
++/* Any thread: a copy of the status. */
++static inline void omacvm_stall_store_copy(OmacvmStallStore *s, OmacvmStallStatus *out)
++{
++    pthread_mutex_lock(&s->lock);
++    *out = s->st;
++    pthread_mutex_unlock(&s->lock);
++}
++
++/* The watchdog's thread: true and a copy in OUT when the status changed since
++ * the last take; the caller writes it after this returns. */
++static inline bool omacvm_stall_store_take(OmacvmStallStore *s, OmacvmStallStatus *out)
++{
++    bool due;
++
++    pthread_mutex_lock(&s->lock);
++    due = s->changes != s->taken;
++    if (due) {
++        *out = s->st;
++        s->taken = s->changes;
++    }
++    pthread_mutex_unlock(&s->lock);
++    return due;
++}
++
++/*
++ * In QEMU (util/main-loop.c, the stall watchdog): CHECK runs on the watchdog's
++ * thread each time it wakes, with NOW (CLOCK_UPTIME_RAW ns) and LATE (the
++ * watchdog woke more than 1 s late, or the Mac slept since: start over); it
++ * returns how soon to look again (ns, 0: the watchdog's own 2 s).
++ */
++void main_loop_stall_watchdog_hook(int64_t (*check)(int64_t now, bool late));
++/* An episode of M just ended (the watchdog's thread): into the status; the
++ * watchdog writes logs/vm-stalls after its check. */
++void main_loop_stall_status_vcpus(const OmacvmStallMonitor *m, const OmacvmMacMemory *mac);
++/* A copy of the status (any thread). */
++void main_loop_stall_status(OmacvmStallStatus *out);
++
++#endif
+diff --git a/include/system/hvf_int.h b/include/system/hvf_int.h
+index a01691c..8823381 100644
+--- a/include/system/hvf_int.h
++++ b/include/system/hvf_int.h
+@@ -12,6 +12,7 @@
+ #define HVF_INT_H
+ 
+ #include "qemu/queue.h"
++#include "qemu/atomic.h"
+ #include "exec/vaddr.h"
+ #include "gdbstub/enums.h"
+ #include "qom/object.h"
+@@ -51,8 +52,23 @@ struct AccelCPUState {
+     bool guest_debug_enabled;
+     struct QEMUTimer *wfi_timer;
+ #endif
++    /* OmacVM: hv_vcpu_run count for the stall note (accel/hvf/hvf-stall.c) */
++    uint64_t *stall_runs;
++    uint64_t stall_runs_unwatched;
+ };
+ 
++/*
++ * OmacVM: the vCPU stall note (accel/hvf/hvf-stall.c). Begin and end on the
++ * vCPU's thread; hvf_stall_mark() just before and just after hv_vcpu_run
++ * (odd while in the guest): one relaxed store, read by the watchdog's thread.
++ */
++void hvf_stall_vcpu_begin(CPUState *cpu);
++void hvf_stall_vcpu_end(CPUState *cpu);
++static inline void hvf_stall_mark(AccelCPUState *accel)
++{
++    qatomic_set(accel->stall_runs, *accel->stall_runs + 1);
++}
++
+ void assert_hvf_ok_impl(hv_return_t ret, const char *file, unsigned int line,
+                         const char *exp);
+ #define assert_hvf_ok(EX) assert_hvf_ok_impl((EX), __FILE__, __LINE__, #EX)
+diff --git a/target/arm/hvf/hvf.c b/target/arm/hvf/hvf.c
+index da3ec52..52490d5 100644
+--- a/target/arm/hvf/hvf.c
++++ b/target/arm/hvf/hvf.c
+@@ -2608,7 +2608,9 @@ int hvf_arch_vcpu_exec(CPUState *cpu)
+ 
+         bql_unlock();
+         cpu_exec_start(cpu);
++        hvf_stall_mark(cpu->accel);
+         r = hv_vcpu_run(cpu->accel->fd);
++        hvf_stall_mark(cpu->accel);
+         cpu_exec_end(cpu);
+         bql_lock();
+         switch (r) {
+diff --git a/util/main-loop.c b/util/main-loop.c
+index 6e0512a..333c510 100644
+--- a/util/main-loop.c
++++ b/util/main-loop.c
+@@ -318,6 +318,26 @@ static void glib_pollfds_poll(void)
+ #define MAIN_LOOP_STALL_NS (2 * NANOSECONDS_PER_SECOND)
+ #define MAIN_LOOP_STALL_FRAMES 24
+ 
++/*
++ * The vCPU stall note (qemu-hvf-vcpu-stall-note.patch) runs on this
++ * watchdog's thread too, through stall_check_hook: each time the watchdog
++ * wakes (every 2 s at most), and every 250 ms while a vCPU stands. The status
++ * (stall_store: vCPU episodes; main loop stalls in a GPU run, gpu_*, and
++ * outside one, main_*) goes
++ * to logs/vm-stalls ($OMACVM_LOGS/vm-stalls, key=value lines, replaced in one
++ * rename; all 0 when the watchdog's thread starts). Only the watchdog's thread
++ * writes the file, after the store's lock is let go; the main loop, which may
++ * hold the BQL, only records in memory (include/qemu/omacvm-stall.h).
++ */
++#include "qemu/omacvm-stall.h"
++#include <pthread.h>
++
++static int64_t (*stall_check_hook)(int64_t now, bool late);
++static OmacvmStallStore stall_store = OMACVM_STALL_STORE_INIT;
++static char *stall_status_path;      /* set before the watchdog thread starts */
++static bool stall_reported_gpu;      /* the stall logged was in a GPU run (or not) ... */
++static char stall_reported_where[128]; /* ... at this call */
++
+ static int64_t main_loop_busy_since; /* 0 while polling */
+ static bool main_loop_has_bql;
+ static bool main_loop_gpu_run;       /* in a GPU run, without the BQL */
+@@ -374,51 +394,160 @@ static int stall_stack(void **pcs, int max)
+     return n;
+ }
+ 
+-static void stall_where(GString *out)
++/* Is this frame's image QEMU itself or virglrenderer (ours, not the Mac's)? */
++static bool stall_frame_ours(const Dl_info *info)
++{
++    static Dl_info self;
++
++    if (!self.dli_fbase) {
++        dladdr((void *)stall_frame_ours, &self);
++    }
++    return info->dli_fbase == self.dli_fbase ||
++           (info->dli_fname && strstr(info->dli_fname, "virglrenderer"));
++}
++
++/*
++ * OUT: the stack; BRIEF: the Mac's call the main loop waits in and the frame
++ * of ours that made it ("VTDecompressionSessionCreate (from session_create)"),
++ * for the status file.
++ */
++static void stall_where(GString *out, GString *brief)
+ {
+     void *pcs[MAIN_LOOP_STALL_FRAMES];
++    const char *callee = NULL;
+     int n = stall_stack(pcs, MAIN_LOOP_STALL_FRAMES);
+ 
+     for (int i = 0; i < n; i++) {
+         Dl_info info;
+         /* a return address points after the call: look up the call */
+         void *at = i ? (char *)pcs[i] - 1 : pcs[i];
++        bool known = dladdr(at, &info) && info.dli_sname;
+         if (i) {
+             g_string_append(out, " < ");
+         }
+-        if (dladdr(at, &info) && info.dli_sname) {
++        if (known) {
+             g_string_append_printf(out, "%s+%td", info.dli_sname,
+                                    (char *)pcs[i] - (char *)info.dli_saddr);
+         } else {
+             g_string_append_printf(out, "%p", pcs[i]);
+         }
++        if (!brief->len && known && stall_frame_ours(&info)) {
++            if (callee) {
++                g_string_append_printf(brief, "%s (from %s)", callee, info.dli_sname);
++            } else {
++                g_string_append(brief, info.dli_sname);
++            }
++        } else if (known) {
++            callee = info.dli_sname;
++        }
+     }
+     if (!n) {
+         g_string_append(out, "(stack not readable)");
+     }
+ }
+ #else
+-static void stall_where(GString *out)
++static void stall_where(GString *out, GString *brief)
+ {
+     g_string_append(out, "(no stack on this host)");
+ }
+ #endif
+ 
++/* Uptime (stops while the Mac sleeps) and a clock that does not stop, in ns. */
++static int64_t stall_uptime(void)
++{
++#ifdef __APPLE__
++    return (int64_t)clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++#else
++    return get_clock();
++#endif
++}
++
++static int64_t stall_continuous(void)
++{
++#ifdef __APPLE__
++    return (int64_t)clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW);
++#else
++    return get_clock();
++#endif
++}
++
++/*
++ * The watchdog's thread only: logs/vm-stalls when the status changed, written
++ * after the store's lock is let go: a temporary file renamed over the old one
++ * (readers see one or the other; no fsync, nothing waits for the disk).
++ */
++static void stall_status_flush(void)
++{
++    g_autofree char *tmp = NULL;
++    OmacvmStallStatus st;
++    char text[1024];
++
++    if (!stall_status_path || !omacvm_stall_store_take(&stall_store, &st)) {
++        return;
++    }
++    omacvm_stall_status_text(&st, text, sizeof(text));
++    tmp = g_strconcat(stall_status_path, ".tmp", NULL);
++    if (!g_file_set_contents_full(tmp, text, -1, G_FILE_SET_CONTENTS_NONE, 0644, NULL) ||
++        rename(tmp, stall_status_path)) {
++        warn_report_once("OmacVM: stall: could not write %s", stall_status_path);
++    }
++}
++
++void main_loop_stall_watchdog_hook(int64_t (*check)(int64_t now, bool late))
++{
++    qatomic_set(&stall_check_hook, check);
++}
++
++void main_loop_stall_status_vcpus(const OmacvmStallMonitor *m, const OmacvmMacMemory *mac)
++{
++    omacvm_stall_store_vcpus(&stall_store, m, mac, (int64_t)time(NULL));
++}
++
++void main_loop_stall_status(OmacvmStallStatus *out)
++{
++    omacvm_stall_store_copy(&stall_store, out);
++}
++
+ static void *stall_watchdog(void *opaque)
+ {
+-    int64_t wait = MAIN_LOOP_STALL_NS;
++    int64_t wait = MAIN_LOOP_STALL_NS, check_wait = 0;
++    int64_t up_last = 0, cont_last = 0;
++    OmacvmStallLate late_lines = { 0 };
+ 
++    stall_status_flush();       /* this run's zeros over the last run's file */
+     for (;;) {
+         g_autoptr(GString) where = NULL;
+-        int64_t since, left;
+-        bool has_bql, gpu_run;
++        g_autoptr(GString) brief = NULL;
++        int64_t since, left, sleep_ns, planned, up, cont;
++        int64_t (*check)(int64_t, bool);
++        bool has_bql, gpu_run, late, woke_late;
++        char line[300];
+ 
+         /*
+          * Asleep until the loop could be 2 s out of its poll: 2 s while it
+          * polls, else until 2 s after it left. Every stall of 2 s or more is
+-         * still caught, and an idle VM's QEMU is woken every 2 s at most.
++         * still caught, and an idle VM's QEMU is woken every 2 s at most
++         * (250 ms while a vCPU stands: check_wait).
+          */
+-        g_usleep(MAX(wait, 10 * SCALE_MS) / SCALE_US);
++        sleep_ns = MAX(check_wait > 0 ? MIN(wait, check_wait) : wait, 10 * SCALE_MS);
++        planned = stall_uptime() + sleep_ns;
++        g_usleep(sleep_ns / SCALE_US);
++        up = stall_uptime();
++        cont = stall_continuous();
++        /* woke more than 1 s late (no core, App Nap, QEMU stopped) or the Mac slept */
++        woke_late = up - planned > NANOSECONDS_PER_SECOND;
++        late = woke_late ||
++               (cont_last && (cont - cont_last) - (up - up_last) > NANOSECONDS_PER_SECOND);
++        if (woke_late && omacvm_stall_late_line(&late_lines, up, up - planned, line,
++                                                sizeof(line))) {
++            warn_report("%s", line);
++        }
++        up_last = up;
++        cont_last = cont;
++        check = qatomic_read(&stall_check_hook);
++        check_wait = check ? check(up, late) : 0;
++        /* what changed since the last wake, to the file */
++        stall_status_flush();
+         wait = MAIN_LOOP_STALL_NS;
+         since = qatomic_read(&main_loop_busy_since);
+         if (!since || since == qatomic_read(&stall_reported)) {
+@@ -432,11 +561,14 @@ static void *stall_watchdog(void *opaque)
+         has_bql = qatomic_read(&main_loop_has_bql);
+         gpu_run = qatomic_read(&main_loop_gpu_run);
+         where = g_string_new(NULL);
+-        stall_where(where);
++        brief = g_string_new(NULL);
++        stall_where(where, brief);
+         if (qatomic_read(&main_loop_busy_since) != since) {
+             continue; /* it moved on while we looked */
+         }
+-        qatomic_set(&stall_reported, since);
++        stall_reported_gpu = gpu_run;
++        g_strlcpy(stall_reported_where, brief->str, sizeof(stall_reported_where));
++        qatomic_store_release(&stall_reported, since);
+         warn_report("main loop stalled for %.1f s %s; where: %s",
+                     (get_clock() - since) / 1e9,
+                     gpu_run ? "in a GPU run without the BQL (vCPUs run; "
+@@ -458,6 +590,11 @@ static void stall_watchdog_start(void)
+         return;
+     }
+     main_loop_owner = omacvm_thread_self();
++    env = g_getenv("OMACVM_LOGS");
++    if (env && *env) {
++        /* this run's status only: the watchdog's thread writes the zeros first */
++        stall_status_path = g_build_filename(env, "vm-stalls", NULL);
++    }
+ #ifdef __APPLE__
+     pthread_t self = pthread_self();
+     main_loop_thread = pthread_mach_thread_np(self);
+@@ -477,9 +614,13 @@ static void stall_watchdog_poll(void)
+     if (stall_watchdog_state == 0) {
+         stall_watchdog_start();
+     }
+-    if (since && qatomic_read(&stall_reported) == since) {
+-        warn_report("main loop stall over after %.1f s",
+-                    (get_clock() - since) / 1e9);
++    if (since && qatomic_load_acquire(&stall_reported) == since) {
++        int64_t ns = get_clock() - since;
++
++        warn_report("main loop stall over after %.1f s", ns / 1e9);
++        /* in memory only (the BQL is held here): the watchdog writes it */
++        omacvm_stall_store_loop(&stall_store, stall_reported_gpu, ns / SCALE_MS,
++                                stall_reported_where);
+     }
+     qatomic_set(&main_loop_has_bql, false);
+     qatomic_set(&main_loop_gpu_run, false);

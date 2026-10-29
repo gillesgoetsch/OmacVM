@@ -21,6 +21,12 @@ extension MemoryGiveBack {
         config.folder.appendingPathComponent("logs/memory-giveback")
     }
 
+    /// Where QEMU's reclaim fix says that macOS keeps the pages the VM gives
+    /// back (OMACVM_RECLAIM_STATUS; qemuKeeps).
+    static func reclaimFile(for config: VMConfig) -> URL {
+        config.folder.appendingPathComponent("logs/memory-reclaim")
+    }
+
     /// src/memory/guest/giveback.sh as this app carries it (build-app.sh puts
     /// OmacVM's src in the bundle), so the VM needs no update for it; comment
     /// lines left out, so the guest agent's command stays small. nil in a
@@ -42,12 +48,21 @@ extension MemoryGiveBack {
     static let thisQEMUGivesPagesBack = qemuGivesPagesBack(binary: Paths.qemu, environment: ProcessInfo.processInfo.environment)
 }
 
+/// The VM folder's logs/vm-stalls, which QEMU's stall note writes (VMStalls).
+extension VMStalls {
+    static func file(for config: VMConfig) -> URL {
+        config.folder.appendingPathComponent("logs/vm-stalls")
+    }
+}
+
 /// While a VM runs: follows its graphics memory and macOS's memory pressure.
 /// - When macOS warns that memory is short, the VM drops its whole file
 ///   cache. When macOS compresses the VM (MemoryGiveBack says when), the VM
 ///   gives back its cold file cache (src/memory/guest/giveback.sh, from this
 ///   app's bundle), but only with a QEMU that gives the pages back to macOS
-///   (MemoryGiveBack.pagesGoBack; one qemu.log line at the start says which).
+///   (MemoryGiveBack.pagesGoBack; one qemu.log line at the start says which),
+///   and only until that QEMU says macOS keeps the pages anyway (its file
+///   logs/memory-reclaim, looked at every 5 s: off for the rest of the run).
 ///   One per 10 minutes at most: Linux then reports the pages free (virtio-balloon
 ///   free page reporting), and they leave QEMU's footprint. qemu.log has two
 ///   lines per give-back, logs/memory-giveback the last one (omacvm check).
@@ -59,6 +74,9 @@ extension MemoryGiveBack {
 ///   was full (past the apps' share; the rest is kept for the desktop) or
 ///   macOS was short of memory, the VM shows a note that says so
 ///   (GPUMemoryNotice; omacvm-desktop-recover app).
+/// - When the VM stood still 10 s or more because macOS ran out of free
+///   memory (QEMU's logs/vm-stalls), the VM shows a note that says so, at
+///   most once per 30 minutes (VMStalls; omacvm-desktop-recover stall).
 @MainActor
 final class GPUMemoryWatch {
     private let config: VMConfig
@@ -79,6 +97,9 @@ final class GPUMemoryWatch {
     private var lastDesktopRestart: Date?
     private var lastShellRestart: Date?
     private var appsTold: [String: Date] = [:]
+    /// The stalls already seen in logs/vm-stalls, and the last note about one.
+    private var stallsSeen = 0
+    private var stallNoteAt: Date?
     private let restart: DesktopRestart
     private var restartObserver: NSObjectProtocol?
     /// What the window said when the user picked Later: it says the same when
@@ -200,12 +221,25 @@ final class GPUMemoryWatch {
     /// back): the footprint after a give-back, and whether macOS is
     /// compressing the VM.
     private func lookAtMemory() {
+        if giveBack.pagesGoBack { qemuKeepsPages() }
         guard let p = HostMemory.process(qemuPID), let c = HostMemory.compressed() else { return }
         let s = MemoryGiveBack.Sample(time: Self.now, footprint: p.footprint, resident: p.resident, compressed: c)
         lastSample = s
         if let w = settling, s.time >= w.due { settled(w, s) }
         guard !givingBack, giveBack.compressing(s) else { return }
         giveBackCache(s)
+    }
+
+    /// QEMU's reclaim fix found macOS keeping the pages the VM gives back (a
+    /// refused or skipped advice; it stopped for the run): no give-back while
+    /// macOS compresses from now on, one qemu.log line, check's row says it.
+    private func qemuKeepsPages() {
+        let text = try? String(contentsOf: MemoryGiveBack.reclaimFile(for: config), encoding: .utf8)
+        guard let why = MemoryGiveBack.qemuKeeps(status: text) else { return }
+        giveBack.qemuKept()
+        status.kept = true
+        writeStatus()
+        log(MemoryGiveBack.keptLine(why))
     }
 
     /// Asks the VM for its cold file cache (giveback.sh compressing): it
@@ -308,6 +342,7 @@ final class GPUMemoryWatch {
 
     private func poll() {
         lookAtMemory()
+        lookAtStalls()
         guard let m = GPUMemory.read(for: config) else { return }
         // macOS tells only some processes about a warning, one at a time; QEMU
         // also looks for itself once a second and writes what it sees.
@@ -320,6 +355,24 @@ final class GPUMemoryWatch {
             lostSeen = m.lost
             tellApps(new, why, m)
             lost(new, m)
+        }
+    }
+
+    /// Every 5 s, before the graphics file: a new stall in QEMU's
+    /// logs/vm-stalls. One of 10 s or more for memory: a note in the VM (a VM
+    /// from before has no such note: one log line, nothing else happens).
+    private func lookAtStalls() {
+        guard let text = try? String(contentsOf: VMStalls.file(for: config), encoding: .utf8),
+              let s = VMStalls.parse(text), s.stalls > stallsSeen else { return }
+        defer { stallsSeen = s.stalls }
+        let now = Date()
+        guard VMStalls.noteDue(s, seen: stallsSeen, lastNote: stallNoteAt, now: now) else { return }
+        stallNoteAt = now
+        let args = VMStalls.noteArguments(s, macBytes: ProcessInfo.processInfo.physicalMemory)
+        log("OmacVM: the VM stood still for \(args[1]) s, macOS out of free memory (the VM held \(args[2]) GB of "
+            + "this Mac's \(args[3]) GB): a note in the VM")
+        guest("/usr/local/bin/omacvm-desktop-recover", args) { [weak self] result in
+            if result != .started { self?.log("OmacVM: the VM did not show the stall note (an older VM: Update VM puts it in)") }
         }
     }
 

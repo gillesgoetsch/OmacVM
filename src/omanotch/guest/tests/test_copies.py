@@ -509,5 +509,104 @@ class Copies(unittest.TestCase):
         self.assertIn("Cannot read property", bad[0])
 
 
+# Omarchy's `omarchy-shell lock status` as omarchy-mac's shell answers it.
+def status(locked, requested=False, sessionLocked=False, secure=False):
+    return json.dumps({"locked": locked, "requested": requested, "pending": False, "sessionLocked": sessionLocked,
+                       "secure": secure, "realScreens": 1, "passwordPam": True, "fingerprint": False,
+                       "authenticating": False, "lastEvent": "unlocked", "lastEventAt": ""}, separators=(",", ":"))
+
+
+WARN = ('\x1b[33m  WARN\x1b[0m: Detected locale "C" with character encoding "ANSI_X3.4-1968", which is not UTF-8.\n'
+        'Qt depends on a UTF-8 locale, and has switched to "C.UTF-8" instead.')
+
+
+class Locked(unittest.TestCase):
+    """session_locked() against the shell's answers (Quickshell 0.3.2's
+    isLocked stays true after the first unlock: omarchy-mac#738)."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("copies_lock", GUEST / "copies.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+        self.answers = {}
+        self.m.run = lambda cmd, timeout=30: self.answers.get(tuple(cmd[1:]), (1, ""))
+
+    def locked(self, status_answer, is_locked):
+        self.answers = {("lock", "status"): status_answer, ("lock", "isLocked"): (0, is_locked)}
+        return self.m.session_locked()
+
+    def test_unlocked_after_an_unlock(self):
+        self.assertFalse(self.locked((0, status(True)), "true"))
+
+    def test_lock_screen_up_or_coming(self):
+        self.assertTrue(self.locked((0, status(True, requested=True)), "true"))
+        self.assertTrue(self.locked((0, status(True, sessionLocked=True)), "true"))
+        self.assertTrue(self.locked((0, status(True, requested=True, sessionLocked=True, secure=True)), "true"))
+        self.assertTrue(self.locked((0, status(True, secure=True)), "true"))
+
+    def test_never_locked(self):
+        self.assertFalse(self.locked((0, status(False)), "false"))
+
+    def test_locale_warning_first(self):
+        self.assertFalse(self.locked((0, WARN + "\n" + status(True)), WARN + "\ntrue"))
+        self.assertTrue(self.locked((0, WARN + "\n" + status(True, requested=True)), WARN + "\ntrue"))
+
+    def test_without_the_status_call(self):
+        self.assertTrue(self.locked((1, ""), "true"))
+        self.assertTrue(self.locked((1, ""), WARN + "\ntrue"))
+        self.assertFalse(self.locked((1, ""), "false"))
+        self.assertFalse(self.locked((0, "Function not found."), "false"))
+
+    def test_shell_not_answering(self):
+        self.answers = {}
+        self.assertFalse(self.m.session_locked())
+
+
+class Waiting(unittest.TestCase):
+    """The service (--wait) waits for a quiet moment without its lock file
+    held: Omanotch's install (copies.py --install, from Update VM) would wait
+    for it, up to 12 hours."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.env = dict(os.environ)
+        os.environ.update(HOME=str(self.tmp), XDG_STATE_HOME=str(self.tmp / "state"),
+                          XDG_RUNTIME_DIR=str(self.tmp / "run"), OMARCHY_PATH=str(self.tmp / "omarchy"))
+        spec = importlib.util.spec_from_file_location("copies_wait", GUEST / "copies.py")
+        self.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.m)
+        self.m.print = lambda *a, **k: None
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.env)
+        shutil.rmtree(self.tmp)
+
+    def free(self):
+        """Another copies.py (Omanotch's install) can take the lock now."""
+        import fcntl
+        with open(os.path.join(self.m.STATE, ".lock"), "w") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                return False
+
+    def test_wait_does_not_hold_the_lock(self):
+        seen, follows = [], []
+        self.m.needs_work = lambda: True
+        self.m.wait_quiet = lambda limit=0: seen.append(self.free()) or True
+        self.m.follow = lambda install=False: follows.append(self.free()) or 0
+        self.assertEqual(self.m.main(["--wait"]), 0)
+        self.assertEqual(seen, [True])
+        self.assertEqual(follows, [False])   # following holds it
+
+    def test_install_holds_the_lock(self):
+        held = []
+        self.m.follow = lambda install=False: held.append((install, self.free())) or 0
+        self.assertEqual(self.m.main(["--install"]), 0)
+        self.assertEqual(held, [(True, False)])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

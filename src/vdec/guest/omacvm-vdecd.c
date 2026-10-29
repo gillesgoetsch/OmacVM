@@ -20,7 +20,9 @@
  * hangs as a whole stops pinging systemd's watchdog (WatchdogSec) and is
  * restarted; the module then fails every open video. Messages and answers:
  * omacvm-vdec.h. Environment: OMACVM_VDEC_DEBUG=1 logs every frame,
- * OMACVM_VDEC_HEVC=1 offers HEVC too (not to Chromium: see va_codecs).
+ * OMACVM_VDEC_HEVC=1 offers HEVC too (not to Chromium: see va_codecs),
+ * OMACVM_VA_LOGICAL=0 leaves odd-size pictures' buffers as they are
+ * (vdecd-logical.h).
  * Exit 3: the module is from another build (it loads at the next VM start).
  */
 #define _GNU_SOURCE
@@ -53,6 +55,7 @@
 #include <va/va_drmcommon.h>
 
 #include "omacvm-vdec.h"
+#include "vdecd-logical.h"
 
 #define RENDER_NODE "/dev/dri/renderD128"
 #define MAX_PENDING_FRAMES 3	/* decoded, waiting for a CAPTURE buffer */
@@ -381,6 +384,31 @@ static uint32_t cap_stride(int w, int h)
 	return stride;
 }
 
+/* An odd-size picture in buffers rounded up to even: the Mac samples them at
+ * the picture's size (vdecd-logical.h), told before the app gets them. */
+static void cap_logical(struct inst *in)
+{
+	static bool refused;
+	uint32_t handles[OVD_MAX_CAPTURE];
+	const char *why = "";
+	int r;
+
+	if (refused)
+		return;
+	for (int i = 0; i < in->ncap; i++)
+		handles[i] = gbm_bo_get_handle(in->cap[i].bo).u32;
+	r = vdecd_logical_declare(gbm_device_get_fd(gbm), handles, in->ncap, in->width, in->height,
+				  in->vis_width, in->vis_height, &why);
+	if (r < 0) {
+		refused = true;
+		log_msg("vdecd: the Mac is not told the picture's size (%s): odd-size videos keep "
+			"one more column or row", why);
+	} else if (r && debug) {
+		log_msg("vdecd: inst %u: CAPTURE buffers %dx%d sampled at %dx%d", in->id, in->width,
+			in->height, in->vis_width, in->vis_height);
+	}
+}
+
 static void cap_setup(struct inst *in, const struct ovd_msg *m)
 {
 	struct ovd_buffers b = { .inst = in->id };
@@ -400,6 +428,8 @@ static void cap_setup(struct inst *in, const struct ovd_msg *m)
 		ok = ok && b.fd[i] >= 0 &&
 		     plane_import(&c->pl, b.fd[i], DRM_FORMAT_ARGB8888, in->width, in->height, 0, in->stride);
 	}
+	if (ok)
+		cap_logical(in);
 	b.count = ok ? n : 0;
 	if (!ok)
 		log_msg("vdecd: inst %u: no CAPTURE buffers for %dx%d", in->id, in->width, in->height);

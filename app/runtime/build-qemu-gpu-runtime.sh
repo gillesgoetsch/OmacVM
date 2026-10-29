@@ -92,6 +92,7 @@ audio_recovery_patch="$native_dir/patches/qemu-hda-full-ring-recovery.patch"
 shared_folder_patch="$native_dir/patches/qemu-9p-guest-owner.patch"
 memory_reclaim_patch="$native_dir/patches/qemu-hvf-free-page-reclaim.patch"
 mapped_sections_patch="$native_dir/patches/qemu-hvf-mapped-sections.patch"
+reclaim_reusable_patch="$native_dir/patches/qemu-hvf-free-page-reclaim-reusable.patch"
 strchrnul_patch="$native_dir/patches/qemu-darwin-strchrnul-compat.patch"
 usb_exact_bus_patch="$native_dir/patches/qemu-usb-host-exact-bus.patch"
 slirp_patch="$native_dir/patches/libslirp-darwin-icmp-matching.patch"
@@ -160,6 +161,7 @@ audio_recovery_patch_sha256=d1e93fd303777f424d7b11522fcf44bf726058901e85de3920c3
 shared_folder_patch_sha256=41247692501655393ae3a40f56915472ab29b6e89c5173e33db1f62cca56632f
 memory_reclaim_patch_sha256=5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf
 mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0
+reclaim_reusable_patch_sha256=4b86c2c3629dda457f0afe48a2e360341e85ccb499a9d5fd8e1abf7f8ea21cc8
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
 virgl_int_tex_patch_sha256=5336df08e7096fb0e4b977ebedf36aac29c6c053df7edbdea7ff5e45273f57e4
@@ -338,6 +340,8 @@ macos_major=$(sw_vers -productVersion | awk -F. '{ print $1 }')
   die "missing HVF free-page reclaim patch: $memory_reclaim_patch"
 [[ -f $mapped_sections_patch && ! -L $mapped_sections_patch ]] || \
   die "missing HVF mapped-sections patch: $mapped_sections_patch"
+[[ -f $reclaim_reusable_patch && ! -L $reclaim_reusable_patch ]] || \
+  die "missing HVF free-page reclaim (reusable) patch: $reclaim_reusable_patch"
 [[ -f $strchrnul_patch && ! -L $strchrnul_patch ]] || \
   die "missing Darwin strchrnul compatibility patch: $strchrnul_patch"
 [[ -f $usb_exact_bus_patch && ! -L $usb_exact_bus_patch ]] || \
@@ -600,6 +604,8 @@ verify_file_sha "Try Omarchy HVF free-page reclaim patch" \
   "$memory_reclaim_patch" "$memory_reclaim_patch_sha256"
 verify_file_sha "Try Omarchy HVF mapped-sections patch" \
   "$mapped_sections_patch" "$mapped_sections_patch_sha256"
+verify_file_sha "OmacVM HVF free-page reclaim (reusable) patch" \
+  "$reclaim_reusable_patch" "$reclaim_reusable_patch_sha256"
 verify_file_sha "Try Omarchy Darwin GPU fence polling patch" \
   "$fence_poll_patch" "$fence_poll_patch_sha256"
 verify_file_sha "Try Omarchy Darwin strchrnul compatibility patch" \
@@ -627,6 +633,13 @@ patch -d "$source_dir" -p1 -f -i "$shared_folder_patch"
 patch -d "$source_dir" -p1 -f -i "$strchrnul_patch"
 patch -d "$source_dir" -p1 -f -i "$memory_reclaim_patch"
 patch -d "$source_dir" -p1 -f -i "$mapped_sections_patch"
+# OmacVM: a free page report gives the old pages back to macOS (the old range
+# moved aside under the main lock, advised MADV_FREE_REUSABLE and unmapped on a
+# worker thread); counters in qemu.log. The test runs the patched helper,
+# queue and worker on guest RAM shared like QEMU's (a real hv_vm_map where
+# this Mac allows one), the worker's queue overflowing included.
+patch -d "$source_dir" -p1 -f -i "$reclaim_reusable_patch"
+"$native_dir/Tests/memory/test-reclaim.sh" "$source_dir" "$work_dir/memory-tests"
 patch -d "$source_dir" -p1 -f -i "$fence_poll_patch"
 patch -d "$source_dir" -p1 -f -i "$pinch_patch"
 patch -d "$source_dir" -p1 -f -i "$precise_scroll_patch"
@@ -971,6 +984,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-display-settl
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-display-settle.patch"
 "$native_dir/Tests/display/test-display-settle.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: display changes are not settled as tested (test-display-settle.sh)"
+# FullPanel after a display change: a full screen the change left below the
+# notch (the built-in gone and back, an external display waking first) gets
+# the strip again once the displays settle: one checked AppKit relayout of
+# its tile, never a frame, a full-screen toggle or a Space. After
+# display-settle (it waits for its updates). Its rules' test, then the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-retake-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-fullpanel-retake.patch"
+"$native_dir/Tests/display/test-fullpanel-retake.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: FullPanel does not take the strip again as tested (test-fullpanel-retake.sh)"
 # OmacVM: the sound on its own real-time thread (OMACVM_AUDIO_THREAD=1): the
 # HDA's DMA and the mixer no longer wait for the main loop (virgl).
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-audio-own-thread.patch"
@@ -994,6 +1016,25 @@ grep -q 'bpp = qatomic_read(&gl_ctx_bpp);' "$source_dir/ui/cocoa.m" || \
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-virtio-gpu-virgl-unlocked.patch"
 grep -q 'getenv("OMACVM_GPU_UNLOCKED")' "$source_dir/hw/display/virtio-gpu-virgl.c" || \
   die "hw/display/virtio-gpu-virgl.c: the unlocked runs are missing (virtio-gpu-virgl-unlocked patch)"
+# OmacVM: the stall watchdog tells a stall in one of those runs (the vCPUs run
+# on) from one with the BQL held (the VM waits); it said "with the BQL held".
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-main-loop-stall-gpu-run.patch"
+grep -q 'in a GPU run without the BQL' "$source_dir/util/main-loop.c" || \
+  die "util/main-loop.c: the stall watchdog does not know GPU runs (main-loop-stall-gpu-run patch)"
+# ... and tells threads apart by their Mach port (qemu_get_thread_id() is getpid() on macOS).
+grep -q 'uintptr_t self = omacvm_thread_self();' "$source_dir/hw/display/virtio-gpu.c" || \
+  die "hw/display/virtio-gpu.c: GPU runs are not kept to one thread (main-loop-stall-gpu-run patch)"
+# OmacVM: a line in qemu.log and logs/vm-stalls when a vCPU stands still:
+# blocked in macOS's kernel waiting for memory, or no Mac core for it (the
+# user's 60 s freeze, 2026-10-28). Its logic and text are tested here.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-hvf-vcpu-stall-note.patch"
+[[ $(grep -c 'hvf_stall_mark(cpu->accel);' "$source_dir/target/arm/hvf/hvf.c") == 2 ]] || \
+  die "target/arm/hvf/hvf.c: hv_vcpu_run is not counted for the stall note (hvf-vcpu-stall-note patch)"
+# OmacVM: the app menu says when the VM stood still, under the memory lines (the stall note's count).
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-vm-stalls-menu.patch"
+grep -q 'omacvm_stall_menu_line(&st, stall, sizeof(stall))' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the app menu's stall line is missing (cocoa-vm-stalls-menu patch)"
+"$native_dir/Tests/vcpu/test-vcpu-stall.sh"
 # OmacVM: the Mac's cursor stays hidden over the VM: an empty image while
 # hidden, set again on motion, and every 0.5 s while hidden, when another
 # process or macOS showed it (the Mac's arrow over the guest's pointer,
@@ -1416,6 +1457,12 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-resource-logical-size.patch"
+# OmacVM: a decoder's VideoToolbox session starts, changes and ends on its own queue, never on
+# QEMU's GPU thread (1.6 s there when macOS was short of memory, 2026-10-28), and a decoded
+# picture has one time limit (OMACVM_VIDEO_GIVEUP_MS, 250 ms) for the waits and fences behind it.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-videotoolbox-session-queue.patch"
+grep -q 'dispatch_async_f(codec->dec_q, codec, dec_end_on_queue)' "$virgl_source/src/vrend/virgl_video_vt.c" || \
+  die "virgl_video_vt.c: VideoToolbox sessions are not on the decoders' queues (session-queue patch)"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

@@ -423,8 +423,22 @@ def shell_up():
     return run(["omarchy-shell", "shell", "ping"], 10)[0] == 0
 
 
+def last_line(text):
+    """An answer of the shell: in a C locale qs prints Qt's locale warning first."""
+    lines = text.splitlines()
+    return lines[-1].strip() if lines else ""
+
+
 def session_locked():
-    return run(["omarchy-shell", "lock", "isLocked"], 10)[1] == "true"
+    """Omarchy's lock screen is up or on its way: its lock status, read at the
+    call (requested, sessionLocked or secure). Not isLocked: with Quickshell
+    0.3.2 and older it answers true after the first unlock until the shell
+    restarts (omarchy-mac#738), and the copies would never follow again."""
+    try:
+        s = json.loads(last_line(run(["omarchy-shell", "lock", "status"], 10)[1]))
+        return any(s.get(k) is True for k in ("requested", "sessionLocked", "secure"))
+    except (ValueError, AttributeError):   # an Omarchy without the status call
+        return last_line(run(["omarchy-shell", "lock", "isLocked"], 10)[1]) == "true"
 
 
 def bar_answers():
@@ -788,19 +802,24 @@ def main(argv):
         for st, name, d in check_lines():
             print(f"{st}\t{name}\t{d}")
         return 0
-    # One at a time (install.sh, the service).
+    # One at a time (install.sh, the service), but the service waits for a
+    # quiet moment without the lock: Omanotch's install (Update VM) would
+    # wait for that, up to 12 hours.
     os.makedirs(STATE, exist_ok=True)
-    lock = open(os.path.join(STATE, ".lock"), "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)
+
+    def follow_alone(install=False):
+        with open(os.path.join(STATE, ".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return follow(install=install)
     if "--wait" not in argv:
-        return follow(install="--install" in argv)
+        return follow_alone(install="--install" in argv)
     if not needs_work():
         print("copies: up to date")
         return 0
     for _ in range(3):
         if not wait_quiet():
             break
-        if follow() != 3:
+        if follow_alone() != 3:
             return 0   # a copy that went back is in its record (omacvm check), not a failed service
 
     print("copies: no quiet moment (an update or the lock screen): at the next login")

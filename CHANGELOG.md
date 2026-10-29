@@ -3,6 +3,186 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
+file cache while macOS compresses it; qemu.log, the app menu and `omacvm check` say when the
+VM stood still and why; a video that starts no longer holds up the whole display; H.264
+1080p and other such videos show at their own size, in Chromium odd-size videos too; and in
+Full screen including notch the bar beside the notch comes back after a display change.
+Update VM no longer restarts the lock screen of a locked VM, the memory-optimized kernel builds
+again, and `omacvm check` warns about Google Chrome 154 or older on an M4. Needs the app
+update, then shut the VM down and start it again (memory, stalls, video starts, full
+screen), and Update VM (video sizes, the lock screen, the stall note in the VM, the kernel:
+then Build Now), then quit and start Chrome, Chromium and mpv again.
+
+- **The memory-optimized kernel builds again (#608).** Arch Linux ARM's kernel 7.3 has a
+  commented-out line in its list of sources, and OmacVM counted it, so the kernel build stopped
+  at once with "thp-pkgbuild: source and md5sums differ in length" on every route: turning the
+  memory-optimized kernel on failed (the VM went back to what it had), and Build Now in Update
+  VM kept the old kernel. It now skips such lines, as Arch's own tools do. After the update:
+  Update VM and Build Now (`omacvm update --vm NAME --kernel`), or turn the kernel on again
+  where that failed.
+
+- **`omacvm check` warns when Google Chrome 154 or older runs on an M4 or newer Mac (#611).** Those
+  versions crash on every video they decode on the CPU there; Chrome 155 fixes it (update Chrome).
+  Needs only the app update (or `omacvm update`); no Update VM.
+
+- **H.264 1080p and other videos whose decoder works at a larger size show at their own size
+  (#610).** In an OmacVM.app VM, Google Chrome on Wayland and mpv (`hwdec=vaapi`) still showed
+  H.264 videos at sizes that are not a multiple of 16 (1080p, 360p, 854x480) and HEVC at sizes
+  that are not a multiple of 8 slightly squeezed, with the stream's padding rows in a strip below
+  or beside them (8 rows of a 1080p video). The decoder works at the larger size, and only the
+  player's import of the picture says where it ends. A small EGL library in the VM now passes that
+  size to the VA-API driver, which tells the Mac. Measured in a test VM (Chrome 154, mpv 0.41, Mac
+  mini M4): H.264 at 1920x1080, 1280x720, 854x480, 640x360, 426x240 (mpv) and 1918x1078, HEVC at
+  854x480 and 1000x562 (10-bit too at 1000x562) are exact in Chrome, mpv and mpv's gpu-next (3.2.11: the
+  strip in 23 of these); VP9, 10-bit VP9 and AV1 stay exact, and so do Firefox and Chromium; a
+  video that really has 1088 rows keeps them all; FFmpeg's read-back stays bit for bit the
+  software decode. Hyprland, Xwayland and Omarchy's shell (with its lock screen) do not load the
+  library. Needs Update VM (the 3.2.11 app is enough), then quit and start Chrome and mpv again,
+  or restart the VM.
+
+- **A video that starts no longer holds up the VM's whole display (#596).** Starting a hardware
+  video decoder asks the Mac's video service, and QEMU did that on its graphics thread, which
+  every app in the VM, the desktop and their frames wait for. On a Mac mini in a video call
+  (its tiles start a new decoder every few seconds) most starts took under 20 ms and some up to
+  110 ms; when the Mac was short of memory one took 1.6 s. Each decoder now starts, changes and
+  ends its session on its own queue, beside the graphics thread. A decoded picture that is not
+  in within 250 ms (`OMACVM_VIDEO_GIVEUP_MS`) is given up: that video keeps its last picture
+  until its decoder is there, and a picture given up is never written later into a surface the
+  app may already use again. Other apps' frames still wait for a late picture, up to those 250
+  ms (the VM's frames finish in one order). In a test where a decoder took 1.6 s to start, the
+  app's frame commands returned in 0.02-0.5 ms (three runs) and another app's frame was done
+  after 250 ms; before, the whole graphics thread waited the 1.6 s. When the
+  Mac's video service does not answer at QEMU's start, the first question for what it can
+  decode waits once, 10 s at most (before: 10 s for each codec asked, 60 s in all). Needs only
+  the new app, from the VM's next start.
+
+- **Memory the VM gives back now leaves the Mac (#603).** When Linux in an OmacVM.app VM
+  frees memory, it tells QEMU, which puts fresh memory in its place. macOS kept the old
+  pages anyway, in memory or compressed, until the VM stopped: it frees such pages only
+  with the whole block of memory they belong to, and the rest of that block was still the
+  VM's. Activity Monitor did not show them, and the Mac could not use them either. Now
+  QEMU moves them aside and a thread of its own tells macOS they may go: macOS drops their
+  compressed copies at once, and the others are marked for macOS to take first, without
+  compressing them. Marked pages count as given back below; on a Mac with room they stay
+  in memory until macOS needs it or the VM stops. On the Mac mini, a 3 GB VM after a
+  browser session while macOS compressed it: the old way left on the Mac all 1.3 GB it
+  still held of the 2.1 GB the VM gave back (92 % of it compressed); now none of 1.5 GB.
+  After a cache drop: all 1.7 GB before, none of 1.6 GB now. On a MacBook Pro M1 Max, a
+  4 GB VM after a browser session (3 runs each way): none of the 1.7-2.2 GB the Mac still
+  held stayed held (3.3-3.5 GB with the memory-optimized kernel); that Mac had room, so
+  1.2-1.6 GB of it stayed in memory, marked, until the VM stopped (1.7-1.8 GB with that
+  kernel). The old way held 1.2 GB more until the VM stopped (1.8 GB with that kernel). A
+  drop of 4.1 GB of file cache that macOS had compressed: none stayed held. QEMU's main lock
+  per report of freed memory: about 1 ms on the mini (the old way 0.4-0.7 ms, and 16.5 ms in
+  one run with 99 % of the pages compressed); on the M1 Max up to 8 ms either way, and 2.2 ms
+  at most in that drop (the old way up to 26 ms while macOS compressed). A timer in
+  every VM CPU saw no stall in either drop. Activity Monitor's figure for the VM does not
+  change with this: those pages were never in it. `logs/qemu.log` says how much the VM
+  reported and how much of it is still on the Mac. Needs only the new app, from the VM's
+  next start; no Update VM. UTM, Parallels and Fusion: nothing changes.
+
+- **The VM's file cache goes back to the Mac while macOS compresses the VM (#590, #603).**
+  3.2.11 brought this give-back but left it off, as its QEMU kept the pages. With the fix
+  above it runs: when macOS compresses the VM, the VM gives back the file cache it has not
+  used lately, all but the newest 1 GB (an eighth of a smaller VM). At most once per 10
+  minutes; macOS's memory warning still drops the whole cache. On a MacBook Pro M1 Max (a
+  4 GB VM with 2.6 GB of files read, then a program taking the Mac's memory): the
+  give-back came within 30 s, while macOS still called its memory pressure normal; the VM
+  gave back 1.2 GB of file cache (2.8 GB before), and of the 3.2 GB the Mac still held of
+  what the VM gave back in that run, none stayed held. With the memory-optimized kernel:
+  1.1 of 2.5 GB, and none of 4.1 GB stayed held. The same row without the fix waited for
+  macOS's warning, 1.5 minutes in, to drop the cache, and so did 3.2.11's own app (no give-back in
+  5 minutes). When the Mac ran short faster, macOS's warning came first and dropped the
+  whole cache, as before. If macOS keeps the pages anyway on a Mac (it refuses QEMU's
+  advice, or half or more of what it held stays held), QEMU goes back to the old way for
+  that run and the app turns this give-back off until the VM's next start: `logs/qemu.log`
+  and `omacvm check`'s "VM memory" line say so. Needs only the app update, from the VM's
+  next start.
+
+- **qemu.log says when the VM stood still, and why (#595).** When macOS runs out of free
+  memory, the processors of an OmacVM.app VM can wait in macOS for seconds while macOS makes
+  memory free for them; the others run on, and in the VM it looks like a freeze (the kernel
+  logs an RCU stall, the video daemon misses its watchdog, "no word from the Mac for 15 s"). On
+  a Mac mini short of memory three of ten processors stood still for 1.2, 2.1 and 2.4 s. QEMU
+  now writes one line per stall of 1 s or more: which processors, about how long, and why:
+  "blocked in macOS's kernel waiting for memory" only when the Mac was paging then (compressing
+  or swapping 16 MB/s or more, or memory pressure warn or critical), else just "blocked in
+  macOS's kernel", or "waited for a Mac core" when the Mac's processors were busy. QEMU's main
+  loop holding the VM 2 s or more is counted too (the mini once held it 2.2 s while freeing a
+  display surface's memory). For example (the format, not a measurement): "OmacVM: stall: vCPUs
+  1, 2, 3, 8 stood still for about 58 s, blocked in macOS's kernel waiting for memory (Mac:
+  compressor and swap 900 MB/s, 0.3 GB free, pressure normal; the VM holds 51 GB, 20 GB of it
+  compressed by macOS)". The counts go to `logs/vm-stalls`, and the app menu (beside the Apple
+  menu) then says, for example, "The VM stood still 2 times (longest 58 s): the Mac ran out of
+  memory" under Graphics memory. QEMU looks when its stall watchdog wakes anyway (every 2 s,
+  every 250 ms while a processor stands): no new timer, so short stalls can be missed: one in
+  macOS's kernel under about 2.25 s (3.25 s for a processor that was nearly idle before), one
+  without a Mac core under about 4 s. The watchdog's "main loop stalled" line now says "in a
+  GPU run without the BQL" when QEMU's graphics thread waited in a call to the Mac while the
+  processors ran on (it said "with the BQL held (the VM waits)" there), and a line says when
+  the watchdog itself woke more than 1 s late. That a stall came from the Mac's memory has been
+  shown only in tests (simulated stalls). On a Mac mini with its processors busy, two runs gave
+  7 and 11 "waited for a Mac core" lines (longest 5.8 s), each matching a pause the VM saw
+  itself. Idle, sleep, YouTube 4K60, a 10-minute call and a 30-minute run gave no line. Needs
+  only the new app, from the VM's next start.
+
+- **When the VM stood still, the VM and `omacvm check` say so (#597).** From the counts QEMU's
+  stall note keeps in `logs/vm-stalls`: after a stall of 10 s or more that QEMU put down to
+  memory (the Mac was paging then), the VM shows a note with what helps (a smaller VM memory:
+  `omacvm resources`), at most once per 30 minutes; for example (the format, not a measurement)
+  "The VM stood still for 58 s: macOS ran out of free memory (the VM uses 51 GB of this Mac's
+  64 GB), so the VM's processors had to wait ...". `omacvm check` has a "VM stalls" line: a
+  warning with how often, how long and why (the Mac's memory, blocked in macOS's kernel, no
+  free Mac processor, QEMU itself), never a failure, and "no stall seen this run" otherwise
+  (short stalls can be missed). The note comes only for that memory cause, which has so far
+  been shown only in tests (#595). The note needs Update VM; the rest only the new app.
+
+- **Full screen including notch: the bar beside the notch comes back after a display change
+  (#602).** With an OmacVM.app VM in "Full screen including notch" on a MacBook with an external
+  display, the bar beside the notch could stay away after unplugging and plugging in displays or
+  sleep (the MacBook's own display gone for a moment, or waking after the external one): the VM
+  sat below the notch until full screen was left and entered again. macOS had laid the window
+  out for the external display while it still named the MacBook's, and OmacVM took that for
+  Split View and gave up the strip for the rest of that full screen. Now that counts as a
+  display change: once the displays settle and the Mac is unlocked, the VM covers the strip
+  again, without leaving full screen (macOS is asked to lay its full screen out again, at most 3
+  times per display change; every later display change gets its own tries). Until then `omacvm
+  check` warns that a display change moved the window below the notch; if macOS still keeps it
+  there, check says so and what to do: leave full screen and enter it again (when macOS shows
+  its menu bar in full screen: its menu bar setting or Keep the Dock and hot corners away
+  first). On a MacBook Pro M1 Max with its display switched off for 10 s, 3.2.10 lost the strip
+  3 times of 3 and this version covered it 3 of 3; in those rows macOS laid the window out again
+  by itself, so OmacVM's own request for that has run only in tests. Needs only the app update,
+  from the VM's next start (a VM that runs across the update keeps the old behaviour until it is
+  shut down); no Update VM.
+
+- **Update VM no longer restarts Omarchy's lock screen while the VM is locked, and Omanotch
+  follows Omarchy's updates again after an unlock (#612).** Before it restarts the Omarchy shell
+  for new bar widgets, OmacVM asks Omarchy whether the session is locked. In Update VM the
+  answer came with a warning in front, so a locked session read as unlocked: the shell, which
+  draws the lock screen, was restarted under the lock (the new shell locked again within about 2
+  seconds), and Update VM waited 30 seconds longer. And Omarchy (omarchy-mac 4.0.x with
+  Quickshell 0.3.2) keeps answering "locked" after the first unlock (omacom/omarchy-mac#738):
+  Omanotch's copies of Omarchy's bar and background then stopped following Omarchy's updates
+  until the next login, and an Update VM that installs Omanotch again could wait hours for them.
+  OmacVM reads Omarchy's lock status now; while the VM is locked, the shell restarts right after
+  the unlock. Not OmacVM's: after every unlock Omarchy does not lock the VM again (lock key,
+  idle lock) until its shell restarts (an open fix: omacom/omarchy-mac#752). `omacvm check`
+  warns while it is stuck; `omarchy-restart-shell` after an unlock brings the lock back for the
+  next lock only. Needs Update VM (`omacvm check`'s warning only the app update).
+
+- **Odd-size videos in Omarchy's Chromium are no longer one column narrower (#613).** In an
+  OmacVM.app VM, Arch Linux ARM's Chromium (Omarchy's default browser) decodes on the Mac
+  through OmacVM's V4L2 decoder, whose buffers are the picture rounded up to even. A video of an
+  odd width or height (a VP9 video of 853x480 or 1001x563) came out squeezed by that extra
+  column and row. The decoder now tells the Mac the picture's size for such buffers. Measured in
+  a test VM (Chromium 153, Mac mini M4): 853x480 and 1001x563 at their own size (ratio within
+  0.0005: 1.0002; 1.00005/1.00007), as with CPU decoding (3.2.11: one column, and one column and
+  one row, too many in their place); 854x480, 720p, 1080p and 1000x562 were and stay exact.
+  Needs Update VM (the 3.2.11 app is enough).
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most

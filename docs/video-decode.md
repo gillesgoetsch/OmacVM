@@ -153,16 +153,27 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   size Mesa has for the surface, which the Mac would scale again: the shim
   scales a declared source's region by Mesa's size over the declared one,
   and a converting `vaGetImage` reads an import of the planes at the
-  picture's size. Not covered: surfaces the decoder itself asks for larger
-  than the picture, at the stream's coded size (FFmpeg in mpv, Chrome on
-  Wayland; H.264 at every size that is not a multiple of 16: 1080p in 1088
-  rows, 360p in 368; HEVC at sizes that are not a multiple of 8, such as
-  1000x562 in 1000x568): VA-API carries no crop, so the app shows the
-  stream's own padding rows as before (fewer than before where Mesa's
-  rounding added to them). Measured in Chrome 154 on Wayland (no
-  ImageProcessor): VP9, AV1 and HEVC exact at 1080p, 360p, 854x480 and
-  360x640 (3.2.10: the strip at all of them), H.264 unchanged (its 1080p
-  surface has 1088 rows), HEVC 854x480 with 2 coded columns.
+  picture's size. Surfaces the decoder itself asks for larger than the
+  picture, at the stream's coded size (FFmpeg in mpv, Chrome on Wayland;
+  H.264 at every size that is not a multiple of 16: 1080p in 1088 rows,
+  360p in 368; HEVC at sizes that are not a multiple of 8, such as 1000x562
+  in 1000x568): VA-API carries no crop, and the apps send no SPS, so the
+  picture's size is only in the app's EGL import of the planes (Chrome: one
+  NV12 image of 1920x1080; mpv: R8 1920x1080 and GR88 960x540), which
+  virgl drops. Up to 3.2.11 the app showed the stream's own padding rows
+  there. Since 3.2.12 an EGL vendor library in front of Mesa's
+  (`src/app/guest/omacvm_egl.c`, `/etc/glvnd/egl_vendor.d/10_omacvm.json`,
+  [ADR 0063](adr/0063-video-size-from-the-apps-import.md)) hands such
+  imports to the shim when it is loaded in that process, and the shim tells
+  the Mac the import's size for the planes of a surface the app exported
+  through it, when the size changes. Hyprland, Xwayland, Omarchy's shell
+  (quickshell, also its lock screen), hyprlock and the login screen run
+  Mesa's EGL alone. Not reached: Firefox (it decodes in
+  its RDD process and shows the frames in another; it shows them at
+  their own size by itself), mpv's `vo=dmabuf-wayland`, Vulkan
+  importers. Off for one app:
+  `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;
+  for the VM: delete `10_omacvm.json`.
   The copy still fills the rows and columns past the picture with its last
   row and column (`virgl-video-plane-edge.patch`): for an older VM side or
   app, surfaces the shim did not declare, and lookups at the very edge.
@@ -227,7 +238,9 @@ off, `OMACVM_VIDEO_DECODE_SYNC=1` has the GPU thread wait for each picture
 stays at 1080p in the VM), `OMACVM_VIDEO_DEBUG=1` logs each stream and the time per
 frame (and how many pictures were in flight),
 `OMACVM_VIDEO_AV1=1` offers AV1 (the app sets it for VMs whose `omacvm apply`
-put the shim in: the VM folder's `video-decode` file). In the VM:
+put the shim in: the VM folder's `video-decode` file),
+`OMACVM_VIDEO_GIVEUP_MS=N` sets how long a decoded picture may take before it
+is given up (default 250, 50-500; [below](#when-the-macs-video-service-is-slow)). In the VM:
 `OMACVM_VA_EXPORT=1` or `0` in an app's environment turns the shim's
 exportable surfaces on or off for it; `OMACVM_VA_MAX=N` sets the largest
 size Chromium decodes in hardware (default: none with an app that says
@@ -237,6 +250,41 @@ sizes); `OMACVM_VA_DECODE_WAIT=0` or `1` turns the shim's wait after
 `vaEndPicture` off or on (default: on in Chromium's processes with such an
 app); `OMACVM_VA_FILL=0` keeps Chromium's
 converted frames as Mesa makes them (above).
+
+## When the Mac's video service is slow
+
+Every decoder's VideoToolbox session is made, changed (a new format), made
+again after it broke, and ended on that decoder's own queue, in order with its
+pictures; QEMU's graphics thread, which every guest app, the display and their
+fences wait for, never waits for it
+(`virgl-videotoolbox-session-queue.patch`). Starting a session is an XPC call
+to the Mac's video service: usually 10-300 ms, but on a Mac out of free memory
+it took 1.6 s (2026-10-28, `tracks/vm-stall.md`), and before this the whole VM's
+graphics stood still that long, at every new video stream (a call's tiles
+switch streams every few seconds). Now a picture sent meanwhile waits on the
+queue; one not in within `OMACVM_VIDEO_GIVEUP_MS` (250 ms) after its END_FRAME
+is given up: that video shows its last picture until its decoder is there.
+The VM's fences finish in one order, so the frames of other apps that come
+after that picture wait for it too, up to those 250 ms; nothing waits longer.
+The picture is still decoded once the session is there (a later picture may
+refer to it), but never written into the guest's planes: the fence the guest
+waited on has let them go. An AV1 picture with film grain goes into two
+buffers (the decoder's and the one Chrome shows): a read of either waits for
+it, and a picture given up is written into neither. A fence whose pictures are in but still being
+copied into their planes waits for the copy. qemu.log says when a start took
+that long or longer ("the Mac's video decoder took 1.6 s to start (H.264
+320x180): 3 pictures skipped", at most every 10 s).
+
+Limits: a decoder keeps up to 16 pictures on their way; with a 17th the oldest
+is given up if its session is still starting. Its queue holds up to 64 pictures
+not handed to VideoToolbox yet, so a session start of more than about 1 s at
+60 fps fills it: pictures past the 64th are refused at once (not decoded), and
+the pictures after them that refer to them can show errors until the stream's
+next key frame. A closed decoder counts against the 48 until its session has
+ended on its queue. What the Mac decodes and encodes is asked once when QEMU
+starts, beside its graphics thread; if the guest asks before the answer is in,
+the graphics thread waits for it once, 10 s at most, and after that only looks
+(no hardware video until the answer comes).
 
 ## Chrome's converted frames
 
@@ -454,6 +502,8 @@ opens), `--early-drain` (a drain before the first picture), `--expect-fail`
 (a picture under 64 pixels fails at once), `--stall` (the daemon stopped
 mid-video: an error within seconds, then the next video decodes), `--flood`
 (1000 drain commands: the module fails that decoder instead of growing).
+`src/tests/vdecd-logical.sh` (CI) checks what the daemon tells the Mac for
+odd sizes, against a stand-in for the kernel's ioctls.
 
 Limits:
 
@@ -462,6 +512,18 @@ Limits:
 - **AV1**: not built into this Chromium. YouTube gets VP9 (the extension);
   another site that sends AV1 plays on the CPU.
 - **10-bit** (VP9 profile 2): on the CPU; the pictures are 8-bit ARGB.
+- **Odd sizes** (a VP9 video of 853x480 or 1001x563): the daemon's buffers
+  are the picture's size rounded up to even (the module's step), and Chromium
+  imports the picture's own part of each one. Mesa's virgl driver drops the
+  size of an import, so the Mac sampled the whole buffer and the picture came
+  out one column (and row) narrower than it is (3.2.11 and older). Since
+  3.2.12 the daemon tells the Mac the picture's size for such buffers, as the
+  VA-API shim does for its surfaces: a NOP with a private payload
+  (`src/vdec/guest/vdecd-logical.h`), only when the app's runtime says
+  `omacvm.valogical=1` (3.2.11 and newer; with an older app the column
+  stays). `OMACVM_VA_LOGICAL=0` in the service's environment turns it off.
+  Even sizes need nothing (measured: 854x480, 720p, 1080p and 1000x562
+  exact, nothing sent).
 - **Memory**: Chromium's buffers are pinned VM memory, about 33 MB each at
   4K and 10 per video (8 MB each at 1080p).
 - **At most 8 videos** decode this way at once; more play on the CPU. One
@@ -491,15 +553,54 @@ Limits:
 - **AV1 in Firefox and mpv**: FFmpeg sends only the tile data of an AV1 frame,
   without its headers, and VideoToolbox needs the headers. Chrome sends the
   whole frame. So AV1 is offered to Chromium-based browsers only.
-- **VA-API conversions on the GPU give black pictures**: an image in RGB
-  (FFmpeg's `hwdownload,format=bgra`) and VA-API video processing
-  (`scale_vaapi`, GStreamer's `vapostproc`). Mesa does them with its video
-  compositor, whose shaders the Mac's OpenGL does not run as Mesa means
-  them (a swizzled sampler, 2D textures read as 2D arrays, two swizzles of
-  one texture). Read the picture out in YUV and convert or scale on the CPU
-  (`hwdownload,format=nv12,scale=...`). The other YUV layout comes from the
-  shim (above); outside the desktop session (SSH, sudo, services) it is used
-  only with `LIBVA_DRIVER_NAME=omacvm`, without it that one is black too.
+- **VA-API conversions on the GPU** (to RGB: FFmpeg's `hwdownload,format=bgra`
+  and `scale_vaapi=format=bgra`, GStreamer's `vapostproc`, Chrome's conversion
+  on X11) were black before 3.2.0; the compositor fixes of 3.2.0
+  ([above](#chromes-converted-frames)) made them draw. Measured on 3.2.11
+  (H.264 1920x1080, HEVC 1000x562): `hwdownload,format=bgra` and
+  `scale_vaapi=format=bgra` show the test card in place (its lines and bands
+  at their rows and columns). They are RGB, so not bit for bit; YUV to YUV
+  draws with the row pairs below. For bit-exact pictures read the picture out
+  in YUV (`hwdownload,format=nv12`); the other YUV layout comes from the shim
+  (above), which outside the desktop session (SSH, sudo, services) is used
+  only with `LIBVA_DRIVER_NAME=omacvm`.
+- **Motion-adaptive deinterlacing gives a green picture**: mpv's
+  `--vf=vavpp` with its default deinterlacer (or `--deinterlace=yes` with
+  `--hwdec=vaapi`), FFmpeg's `deinterlace_vaapi` in its default or
+  `motion_adaptive` mode, GStreamer's `vapostproc` with motion-adaptive
+  deinterlacing. This is OmacVM's runtime, not Mesa. Mesa's deinterlacer
+  declares its samplers without views and reads the decoded pictures, plain
+  2D textures, with 2D-array lookups. `virgl-shader-array-sampler-2d-view.patch`
+  turns such lookups into 2D ones only where a shader declares the view (as
+  Mesa's video compositor does), so here the Mac's OpenGL got a 2D-array
+  sampler on a 2D texture and read zeros (QEMU's log, once:
+  `GLD_TEXTURE_INDEX_2D_ARRAY is unloadable ... using zero texture`): Y, U
+  and V 0 are green. The same with Mesa's VA driver alone
+  (`LIBVA_DRIVER_NAME=virtio_gpu`), so not the shim. A runtime fix with its
+  test is in review (#615), not yet measured in a VM. Bob and weave draw, but
+  do not deinterlace: in Mesa 26.2 they are a plain copy (with the row pairs
+  of the next item). For interlaced video, let mpv deinterlace on the CPU
+  (`--hwdec=vaapi-copy --deinterlace=yes`). Browsers do not use it. Measured
+  on 3.2.11 (Mesa 26.2.5, Mac mini M4).
+- **VA-API video processing from YUV to YUV loses vertical detail** (mpv's
+  `vavpp` with `deint=bob` or `weave`, FFmpeg's `deinterlace_vaapi`,
+  GStreamer's `vapostproc`; measured on copies at the same size, and in
+  Mesa's source scaling takes the same shader). Mesa's video compositor does
+  YUV to YUV with its weave shader when the driver has no compute path for
+  it, as virgl (`vl_compositor.c` in Mesa 26.2.5 and main: the progressive
+  case falls through to weave), and the weave shader reads the picture as two
+  fields of half the height. On surfaces whose height is a multiple of 16
+  (854x480; 1080p in 1088 rows), and on all of them with Mesa's VA driver
+  alone, each pair of rows comes out alike (rows 474-479 as 475 475 477 477
+  479 479). With the shim, surfaces of other heights come out with a pattern
+  that depends on the height (rows 556-561 of 1000x562 as 556 557 558 559 560
+  560; of a 1000x568 surface as 556 557 559 559 561 561), and every row is
+  within one row of its place. With Mesa's driver alone the last chroma row
+  of a 1000x562 surface is far off. Edges of colour that start on an odd row of the chroma plane fringe:
+  the test card's bottom band of an HEVC 1000x562 video in mpv with
+  `deint=bob` looks one row off. Players that show the decoder's own frames
+  (mpv without `vavpp`, Chrome, Firefox, Chromium) are not affected. Mesa's,
+  not OmacVM's.
 - **HEVC**: Main and Main 10; long-term reference pictures from the SPS are
   not supported (rare).
 - **32 decoders at once per VM, 48 at most.** Each holds a session on the

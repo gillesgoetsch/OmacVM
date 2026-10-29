@@ -26,6 +26,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
+#include <time.h>
+#include <unistd.h>
 #include "soft-gl.h"
 #define VIRGL_RENDERER_UNSTABLE_APIS 1
 #include "virglrenderer.h"
@@ -655,6 +657,27 @@ static double decode_picture(uint32_t ctx_id, uint32_t codec, int f)
    return mse > 0 ? 10 * log10(255.0 * 255.0 / mse) : 99;
 }
 
+/* A decoder the guest closed counts against the limit until its session ended on
+ * its own queue (virgl-videotoolbox-session-queue.patch), a few ms later: open
+ * decoder H in context CTX_ID and decode picture F with it, again every 10 ms
+ * while it is refused, 2 s at most. Returns the luma PSNR; *WAITED: ms. */
+static double open_when_room(uint32_t ctx_id, uint32_t h, int f, int *waited)
+{
+   double p = 0;
+
+   for (*waited = 0; *waited <= 2000; *waited += 10) {
+      create_codec(h);
+      submit(ctx_id);
+      p = decode_picture(ctx_id, h, f);
+      if (p > 30)
+         return p;
+      destroy_codec(h);
+      submit(ctx_id);
+      usleep(10000);
+   }
+   return p;
+}
+
 /* Context CTX_ID gets the plane textures, the description and data buffers and the
  * NV12 video buffer. */
 static void setup_context(uint32_t ctx_id)
@@ -891,7 +914,7 @@ int main(void)
 
    /* At most MAX_LIVE decoders at once (each holds a media engine session and
     * its pictures), also past CAPS_LIMIT: one more decodes nothing; closing one
-    * makes room again. */
+    * makes room again, once its session ended on its queue. */
    int ok_all = 0;
    for (uint32_t h = 100; h < 100 + MAX_LIVE; h++) {
       create_codec(h);
@@ -902,16 +925,16 @@ int main(void)
    submit(1);
    double over = decode_picture(1, 100 + MAX_LIVE, 0);
    destroy_codec(100);
-   create_codec(200);
    submit(1);
-   double after = decode_picture(1, 200, 0);
+   int waited = 0;
+   double after = open_when_room(1, 200, 0, &waited);
    /* the open ones keep decoding */
    int still = decode_picture(1, 101, 1) > 30;
    snprintf(line, sizeof(line), "%d decoders open: %d of %d decode, one more %s (PSNR %.1f), "
-            "after closing one a new one %s (PSNR %.1f), an open one still decodes: %s",
-            MAX_LIVE, ok_all, MAX_LIVE, over > 30 ? "decodes" : "decodes nothing", over,
-            after > 30 ? "decodes" : "decodes nothing", after, still ? "yes" : "no");
-   check(ok_all == MAX_LIVE && over < 20 && after > 30 && still, line);
+            "after closing one a new one %s (PSNR %.1f, room after %d ms), an open one still "
+            "decodes: %s", MAX_LIVE, ok_all, MAX_LIVE, over > 30 ? "decodes" : "decodes nothing",
+            over, after > 30 ? "decodes" : "decodes nothing", after, waited, still ? "yes" : "no");
+   check(ok_all == MAX_LIVE && over < 20 && after > 30 && waited <= 1000 && still, line);
    for (uint32_t h = 101; h <= 100 + MAX_LIVE; h++)
       destroy_codec(h);
    destroy_codec(200);
@@ -921,24 +944,19 @@ int main(void)
     * player) frees them: MAX_LIVE open in context 2, context 2 destroyed, then
     * MAX_LIVE open again in context 1. */
    setup_context(2);
+   int in2 = 0;
    for (uint32_t h = 300; h < 300 + MAX_LIVE; h++)
-      create_codec(h);
-   submit(2);
-   int in2 = decode_picture(2, 300 + MAX_LIVE - 1, 0) > 30;
+      in2 += open_when_room(2, h, 0, &waited) > 30;
    virgl_renderer_context_destroy(2);
    int again = 0;
-   for (uint32_t h = 400; h < 400 + MAX_LIVE; h++) {
-      create_codec(h);
-      submit(1);
-      again += decode_picture(1, h, 0) > 30;
-   }
+   for (uint32_t h = 400; h < 400 + MAX_LIVE; h++)
+      again += open_when_room(1, h, 0, &waited) > 30;
    for (uint32_t h = 400; h < 400 + MAX_LIVE; h++)
       destroy_codec(h);
    submit(1);
-   snprintf(line, sizeof(line), "a context closed with %d decoders open (they decoded: %s) "
-            "frees them: %d of %d new ones decode", MAX_LIVE, in2 ? "yes" : "no", again,
-            MAX_LIVE);
-   check(in2 && again == MAX_LIVE, line);
+   snprintf(line, sizeof(line), "a context closed with %d decoders open (they decoded: %d) "
+            "frees them: %d of %d new ones decode", MAX_LIVE, in2, again, MAX_LIVE);
+   check(in2 == MAX_LIVE && again == MAX_LIVE, line);
 
    /* HEVC as the Mac's own encoder writes it (hevc_vaapi in the VM), from its bitrate
     * and its constant-QP session, with an IDR in the middle. */

@@ -21,6 +21,10 @@
 #       An app (not the desktop) lost its context on the Mac: the graphics
 #       memory apps may use was full (the rest is kept for the desktop), or
 #       macOS was short of memory. A note says so; nothing restarts.
+#   omacvm-desktop-recover stall SECONDS VM_GB MAC_GB
+#       The VM stood still that long because macOS ran out of free memory
+#       (QEMU's stall note; the VM held VM_GB of the Mac's MAC_GB). A note
+#       says so and what helps; nothing restarts.
 # Logs to the journal (journalctl -t omacvm-desktop-recover).
 set -uo pipefail
 ENV=${OMACVM_RECOVER_ENV:-/etc/omacvm/env}
@@ -115,8 +119,21 @@ app)
   say "$name lost its GPU context on the Mac (${3:-guard}); the desktop keeps drawing"
   in_session notify-send -a OmacVM -u normal "$name stopped drawing" "$body" 2>/dev/null || say "could not show the note: $body"
   ;;
+stall)
+  [[ -n $U ]] || { say "no desktop user in $ENV"; exit 1; }
+  # Digits only, as the app sends them.
+  secs=$(printf '%s' "${2:-}" | tr -cd '0-9' | cut -c1-6)
+  vm=$(printf '%s' "${3:-}" | tr -cd '0-9' | cut -c1-5)
+  mac=$(printf '%s' "${4:-}" | tr -cd '0-9' | cut -c1-5)
+  [[ -n $secs ]] || { say "stall: no time given"; exit 2; }
+  uses=""
+  [[ -n $vm && -n $mac && $mac != 0 ]] && uses=" (the VM uses $vm GB of this Mac's $mac GB)"
+  body="macOS ran out of free memory$uses, so the VM's processors had to wait. A smaller VM memory leaves the Mac more: on the Mac, omacvm resources."
+  say "the VM stood still for $secs s: macOS ran out of free memory$uses"
+  in_session notify-send -a OmacVM -u normal "The VM stood still for $secs s" "$body" 2>/dev/null || say "could not show the note: $body"
+  ;;
 *)
-  echo "usage: omacvm-desktop-recover desktop graphics|memory|guard | shell | notify | app NAME guard|pressure" >&2
+  echo "usage: omacvm-desktop-recover desktop graphics|memory|guard | shell | notify | app NAME guard|pressure | stall SECONDS VM_GB MAC_GB" >&2
   exit 2
   ;;
 esac

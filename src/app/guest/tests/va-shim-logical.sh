@@ -4,7 +4,9 @@
 # omacvm.valogical=1, only Mesa's own 4:2:0 surfaces whose size is not a multiple of 16; video
 # processing from such a surface (or an import of it) gets its source region scaled for the
 # size the Mac samples it at (any process), and vaGetImage into another format reads an import
-# of it at the picture's size. The shim runs against a
+# of it at the picture's size. Surfaces at the coded size (H.264 1080p: 1920x1088) get the size
+# the app's EGL import asks for (omacvm_va_dmabuf_imported_v1, called by omacvm_egl.c), only for
+# planes the app exported through the shim, only when it changes. The shim runs against a
 # stand-in for Mesa's driver and for the kernel's DRM ioctls (va-shim-logical.c), on Linux
 # with libva's headers (libva-dev) and the kernel's (linux-libc-dev).
 #   src/app/guest/tests/va-shim-logical.sh [SHIM_SOURCE]
@@ -17,7 +19,8 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 fail=0
 cc -shared -fPIC -O2 -Wall -DSTUB_DRIVER -o "$T/stub.so" "$here/va-shim-logical.c" || exit 1
-cc -shared -fPIC -O2 -Wall -DMESA_DRIVER="\"$T/stub.so\"" -o "$T/shim.so" "$shim_c" -ldl -lpthread || exit 1
+# the shim builds without a warning (GCC's -Wmaybe-uninitialized included)
+cc -shared -fPIC -O2 -Wall -Werror -DMESA_DRIVER="\"$T/stub.so\"" -o "$T/shim.so" "$shim_c" -ldl -lpthread || exit 1
 cc -O2 -Wall -rdynamic -o "$T/va-shim-logical" "$here/va-shim-logical.c" -ldl || exit 1
 printf 'OMACVM_VAEXPORT=1\nOMACVM_VADECASYNC=1\nOMACVM_VALOGICAL=1\n' > "$T/host-new.env"
 printf 'OMACVM_VAEXPORT=1\nOMACVM_VADECASYNC=1\n' > "$T/host-old.env"

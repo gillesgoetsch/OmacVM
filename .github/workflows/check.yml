@@ -215,6 +215,12 @@ jobs:
       - name: The VM gives its cold file cache back while macOS compresses it (giveback.sh, the app's trigger, omacvm check's row)
         run: src/tests/memory-giveback.sh
 
+      - name: Freed memory leaves the Mac for real (QEMU's free page reclaim, no VM; a real hypervisor map where the runner allows one)
+        run: src/tests/memory-reclaim.sh
+
+      - name: omacvm check says when the VM stood still (logs/vm-stalls)
+        run: src/tests/vm-stalls.sh
+
       - name: apply's SSH key in the VM (the user's ~/.ssh written as the user)
         run: src/tests/ssh-key.sh
 
@@ -273,6 +279,12 @@ jobs:
 
       - name: Default keyring for prebuilt VMs (first boot, apply, check)
         run: src/tests/default-keyring.sh
+
+      - name: New bar widgets load after Update VM, also after an unlock (Omarchy's lock status, not isLocked)
+        run: src/tests/restart-shell.sh
+
+      - name: omacvm check warns when Omarchy does not lock again after an unlock
+        run: src/tests/lock-stuck-check.sh
 
       - name: Prebuilt manifests are checked (untrusted input)
         run: src/tests/prebuilt-manifest.sh
@@ -406,6 +418,9 @@ jobs:
       - name: A newer memory-optimized kernel is built only when asked for
         run: src/tests/kernel-ask.sh
 
+      - name: The memory-optimized kernel's PKGBUILD is written from ALARM's 7.3 (a commented-out source) and from point releases
+        run: src/tests/thp-pkgbuild.sh
+
       - name: An app VM folder's own SSH key is made, found and offered first (a VM copied to another Mac)
         run: src/tests/vm-ssh-key.sh
 
@@ -444,6 +459,9 @@ jobs:
 
       - name: App menu memory lines (VM memory, graphics memory)
         run: app/runtime/Tests/display/test-gpu-memory-menu.sh
+
+      - name: vCPU stall note (a vCPU blocked on the Mac's memory or without a core)
+        run: app/runtime/Tests/vcpu/test-vcpu-stall.sh
 
       - name: Graphics memory guard keeps a part for the desktop (the rules)
         run: app/runtime/Tests/virgl/test-gpu-guard-policy.sh
@@ -507,6 +525,11 @@ jobs:
       - name: Display changes settle before the VM's windows follow (locked unplug, issue 428; the old rules fail it)
         run: app/runtime/Tests/display/test-display-settle.sh
 
+      - name: Full screen including notch takes the strip again after a display change (the user's log; 3.2.10 fails it)
+        run: |
+          app/runtime/Tests/display/test-fullpanel-retake.sh
+          app/runtime/Tests/display/test-fullpanel-retake.sh --self-test
+
       - name: HDR's headroom for the guest (ADR 0049; the checks catch code without it)
         run: app/runtime/Tests/display/test-hdr-headroom.sh
 
@@ -562,6 +585,9 @@ jobs:
 
       - name: Guest check accepts NOTCH right above the built-in display (offline)
         run: src/tests/notch-check.sh
+
+      - name: omacvm check's full screen including notch row (strip not back after a display change; offline)
+        run: src/tests/fullpanel-check.sh
 
       - name: Omarchy's shell colours on Qt 6.12 (the fix on made-up shell files, the check's row; issue 376)
         run: src/tests/shell-colors.sh
@@ -778,6 +804,9 @@ jobs:
       - name: omacvm check's "media controls" line (AirPods and media controls; no port, agent down, switch, what plays)
         run: src/tests/media-check.sh
 
+      - name: omacvm check's "Google Chrome" line warns about Chrome 154 and older on a CPU with SME (M4 and newer)
+        run: src/tests/chrome-sme.sh
+
       - name: OmacVM.app's hyprpicker patch applies and leaves no buffer files in the runtime folder
         run: src/tests/hyprpicker-patch.sh
 
@@ -826,11 +855,15 @@ jobs:
             libgles-dev libdrm-dev libavcodec-dev libavutil-dev libsystemd-dev
           OMACVM_VDECD_SYSTEMD=1 src/tests/vdecd-down.sh
 
-      - name: The VA driver shim gives Chromium surfaces of their real size, waits for its pictures, never decodes into an import and says each surface's own size (a stand-in for Mesa's driver)
+      - name: Chromium's video decoder tells the Mac an odd-size picture's own size (a stand-in for the kernel's ioctls)
+        run: src/tests/vdecd-logical.sh
+
+      - name: The VA driver shim gives Chromium surfaces of their real size, waits for its pictures, never decodes into an import and says each surface's own size, also the size apps import it at through the EGL vendor library (stand-ins for Mesa's drivers)
         run: |
-          sudo apt-get install -yq --no-install-recommends gcc libva-dev
+          sudo apt-get install -yq --no-install-recommends gcc libva-dev libegl-dev libglvnd-dev
           src/app/guest/tests/va-shim-surfaces.sh
           src/app/guest/tests/va-shim-decode-wait.sh
           src/app/guest/tests/va-shim-vpp-fill.sh
           src/app/guest/tests/va-shim-import-decode.sh
           src/app/guest/tests/va-shim-logical.sh
+          src/app/guest/tests/egl-vendor.sh

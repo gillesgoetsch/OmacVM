@@ -1,0 +1,789 @@
+From: OmacVM
+Subject: [PATCH] cocoa: FullPanel takes the strip again after a display change
+
+What: in "Full screen including notch" (FullPanel), a full screen that a
+display change left below the notch covers the strip again once the
+displays settle, without leaving full screen. Three parts:
+- A frame change is sorted by omacvm_fp_frame_kind: a frame laid out for
+  another display than NSScreen still names (not inside it), or on a
+  display CoreGraphics has off or asleep, is a display change on its way
+  ("display change: ...; the strip comes back once the displays settle",
+  which omacvm check warns about until "strip covered"), not a lost strip.
+  So is the band on the way back after a display change (laid out for
+  another display, or a full screen on a display without a camera housing),
+  also when NSWindowDidChangeScreen comes before the resize. A strip taken
+  as lost that went with a display change within 3 s (the window's display
+  changed, or the one it covered went off) is turned into one. A tile's
+  shape (inside the display, on its bottom edge, narrower) is always Split
+  View's loss, as before, and never turned into a display change.
+- The claim on the strip (the reservation answer) no longer waits for
+  -screenChanged:'s resume after a display without a camera housing:
+  AppKit may lay the window out on the notched display before
+  NSWindowDidChangeScreen comes. AppKit's own yes already means the Space's
+  display has a housing.
+- Once the displays settle (the display update ran, unlocked, awake, on the
+  console, nothing due), once the displays' windows are in full screen, and
+  when the user comes back to the VM's Space, a full screen below the menu
+  bar's band after a display change asks AppKit once to lay its tile out
+  again: -[_NSFullScreenSpace updateTileShapeAndReshapeContents] on
+  -[[window _fullScreenContentController] space], which asks the
+  reservation again. Only after AppKit's own
+  -alwaysReservesSpaceForMenuBarInFullScreen says the Space's display has a
+  housing, on the active Space, visible, with WindowServer's frame in
+  place; never Split View; at most 3 tries per display change (each new
+  display change starts them again, also after "strip not back"), one per
+  settle. Below a band taller than the camera housing's (+ 8 pt) no try:
+  "strip not back ... (AppKit keeps a band taller than the camera housing:
+  N pt, the housing N pt)" once the displays settled. A wait that ends by
+  itself with no trigger of its own (WindowServer still moving the window,
+  the displays' windows moving, the window not visible yet) asks again
+  0.5 s later, at most 3 times after each trigger.
+  Every class, selector and type encoding is checked, each the class's own
+  method with AppKit's code; main thread, @try. No frame is set, nothing is
+  toggled, no Space is touched. The return check engages: "strip taken
+  again after a display change (try N of 3)", "strip covered", and the
+  guest's size and arrangement again. Not in 2 s: "strip not back after a
+  display change (AppKit kept the band, try N of 3): normal full screen
+  ..." (omacvm check warns, with the remedy: leave full screen and enter
+  it again).
+
+Why: the user's MacBook Pro M4 Max (OmacVM 3.2.9, 2026-10-28), FullPanel on
+the built-in with an LG UltraFine 5K: after unplugging, replugging and
+sleep the strip beside the notch stayed away until full screen was entered
+again. When the built-in left the display set, AppKit laid the main window
+out for the LG while NSScreen still named the built-in (0,-323 2560x1440
+on 0,0 1728x1117); the "display unchanged" check passed, so it was taken
+as "strip lost" (meant for Split View), which blocked the resume, the
+return checks and the reservation answer for the rest of that full
+screen. The main window is never made again (unlike the other displays'
+windows), so when its Space came back to the built-in AppKit kept the menu
+bar's band (1728x1084) for good. Even without that, the strip came back
+only if AppKit laid the window out once more after NSWindowDidChangeScreen;
+nothing asked it to.
+
+Fallbacks: a missing or changed AppKit part (another macOS) gives today's
+behaviour with one line ("strip not back ... (selector missing: ...)");
+leaving and entering full screen again still covers the strip. With
+"Always show the menu bar in full screen" turned on during the full screen
+and Keep the Dock away off, no try ("menu bar always shown": omacvm check
+names the menu bar setting and Keep the Dock away as the remedy).
+
+Upstream: not applicable (private AppKit, OmacVM's notch strip).
+Test: app/runtime/Tests/display/test-fullpanel-retake.sh (the rules, the
+user's log in every order, NSScreen going with the Space and the resume
+before the resize, a tile, waits and repeats, and the wiring in
+the patched ui/cocoa.m at build time: the retake only from its three
+triggers and its own ask again, nothing in it that moves a window, a Space
+or the menu bar, the selectors checked by name, types and image); the
+strip itself only on a notched Mac
+(src/tests/e2e/display-unplug.sh, case fullpanel-builtin). Applies after
+omacvm-cocoa-display-settle.patch.
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -51,6 +51,7 @@
+ #include "ui/omacvm-notch-park.h"
+ #include "ui/omacvm-ime.h"
+ #include "ui/omacvm-fullpanel.h"
++#include "ui/omacvm-fullpanel-retake.h"
+ #include "ui/omacvm-close.h"
+ #include "ui/omacvm-modifiers.h"
+ #include "ui/omacvm-display-settle.h"
+@@ -3519,14 +3520,44 @@ @interface OmacVMFullPanelState : NSObject
+     bool reveal_logged;
+     bool fallback_logged;
+     bool options_logged;
++    /* A display change (omacvm-cocoa-fullpanel-retake.patch). */
++    bool displaced;            /* laid out for another display (or that display off), not back inside it yet */
++    bool display_changed;      /* a display change took the strip, not covered since */
++    double lost_at;            /* when the strip was lost (omacvm_ds_clock) */
++    bool lost_tile;            /* the lost frame had a Split View tile's shape */
++    bool retake_pending;       /* a try's check runs (-retakeExpired) */
++    bool retake_asked;         /* this return's check asked for a try */
++    bool retake_given_up;      /* "strip not back" for this display change */
++    int retake_tries;          /* since this display change began (-retakeNewChange) */
++    int retake_reasks;         /* asked again after a wait since the last trigger */
++    bool retake_tried;         /* a try in this full screen: retake_settle is its settle */
++    unsigned retake_settle;    /* omacvm_fullpanel_settles at the last try */
+ }
+ - (id)initWithWindow:(NSWindow *)w;
+ - (bool)claimsStrip;
+ - (void)willEnterFullScreen;
+ - (void)releaseSystemState;
+ - (void)windowGone;
++- (void)retake:(const char *)why;
++- (void)retakeAsk:(const char *)why;
++- (void)retakeAgain;
++- (void)retakeNewChange;
++- (bool)retakeTaken;
++- (void)retakeExpired;
++- (void)retakeGiveUp:(const char *)reason;
+ @end
+ 
++/*
++ * FullPanel after a display change (omacvm-cocoa-fullpanel-retake.patch):
++ * the display updates' state (omacvm-cocoa-display-settle.patch), defined
++ * with them further down.
++ */
++static double omacvm_ds_clock(void);
++static bool omacvm_fullpanel_displays_locked(void);
++static bool omacvm_fullpanel_displays_moving(void);
++/* Settles of the displays so far (the display update ran): one try per settle. */
++static unsigned omacvm_fullpanel_settles;
++
+ static char omacvm_fullpanel_state_key;
+ static char omacvm_fullpanel_titlebar_context;
+ static char omacvm_fullpanel_options_context;
+@@ -3737,6 +3768,172 @@ static bool omacvm_fullpanel_install_reservation(void)
+ QEMU_BUILD_BUG_ON(NSApplicationPresentationHideMenuBar != OMACVM_FP_HIDE_MENU_BAR);
+ QEMU_BUILD_BUG_ON(NSApplicationPresentationFullScreen != OMACVM_FP_FULL_SCREEN);
+ 
++/*
++ * AppKit's own "lay this full-screen tile out again", for a full screen a
++ * display change left below the notch (omacvm-cocoa-fullpanel-retake.patch):
++ * the window's full-screen content controller (-[NSWindow
++ * _fullScreenContentController]), its Space (-space, the object whose
++ * answer the reservation reads), the Space's -updateTileShapeAndReshapeContents
++ * (macOS 27: the tile's content rect asks the reservation again, the window
++ * gets the new frame) and its -alwaysReservesSpaceForMenuBarInFullScreen
++ * (yes only when the Space's display has a camera housing). Looked up once
++ * by name and type encoding, each the class's own method with its code in
++ * AppKit's image (no other code changed it); at each call the object's class
++ * must still use that code. Missing or changed: no retake, the line says
++ * so ("selector missing"). Main thread.
++ */
++typedef void (*OmacVMFullPanelVoidFn)(id, SEL);
++
++typedef struct {
++    bool looked, found;
++    Class window_cls, controller_cls, space_cls;
++    SEL controller_sel, space_sel, reshape_sel, band_sel;
++    IMP controller_imp, space_imp, reshape_imp, band_imp;
++} OmacVMFullPanelTileParts;
++
++static char omacvm_fullpanel_tile_differs[192];
++
++/*
++ * The class's own instance method `name` with the types `want`, its code in
++ * the class's image; else NULL, and what differs (logged with the line).
++ */
++static IMP omacvm_fullpanel_own_method(const char *cls_name, const char *name, const char *want,
++                                       Class *cls, SEL *sel)
++{
++    Class c = objc_getClass(cls_name);
++    Method m = c ? class_getInstanceMethod(c, sel_registerName(name)) : NULL;
++    Class parent = c ? class_getSuperclass(c) : Nil;
++    const char *has = m ? method_getTypeEncoding(m) : NULL;
++    const char *why = NULL;
++
++    if (!c) {
++        why = "(no such class)";
++    } else if (!m) {
++        why = "is not there";
++    } else if (!has || strcmp(has, want)) {
++        why = "has other types";
++    } else if (parent && class_getInstanceMethod(parent, method_getName(m)) == m) {
++        why = "is inherited";
++    } else if (!omacvm_fullpanel_in_image(method_getImplementation(m), c)) {
++        why = "is not AppKit's code";
++    }
++    if (why) {
++        if (!omacvm_fullpanel_tile_differs[0]) {
++            snprintf(omacvm_fullpanel_tile_differs, sizeof(omacvm_fullpanel_tile_differs),
++                     "%s -%s %s", cls_name, name, why);
++        }
++        return NULL;
++    }
++    *cls = c;
++    *sel = method_getName(m);
++    return method_getImplementation(m);
++}
++
++static const OmacVMFullPanelTileParts *omacvm_fullpanel_tile_parts(void)
++{
++    static OmacVMFullPanelTileParts p;
++
++    if (!p.looked) {
++        p.looked = true;
++        p.controller_imp = omacvm_fullpanel_own_method("NSWindow", "_fullScreenContentController",
++                                                       "@16@0:8", &p.window_cls, &p.controller_sel);
++        p.space_imp = omacvm_fullpanel_own_method("_NSFullScreenContentController", "space",
++                                                  "@16@0:8", &p.controller_cls, &p.space_sel);
++        p.reshape_imp = omacvm_fullpanel_own_method("_NSFullScreenSpace",
++                                                    "updateTileShapeAndReshapeContents", "v16@0:8",
++                                                    &p.space_cls, &p.reshape_sel);
++        p.band_imp = omacvm_fullpanel_own_method("_NSFullScreenSpace",
++                                                 "alwaysReservesSpaceForMenuBarInFullScreen",
++                                                 "B16@0:8", &p.space_cls, &p.band_sel);
++        p.found = p.controller_imp && p.space_imp && p.reshape_imp && p.band_imp;
++    }
++    return &p;
++}
++
++/* obj is a cls whose class still uses the code looked up for sel. */
++static bool omacvm_fullpanel_uses(id obj, Class cls, SEL sel, IMP imp)
++{
++    return obj && [obj isKindOfClass:cls] && class_getMethodImplementation(object_getClass(obj), sel) == imp;
++}
++
++/* The window's full-screen Space (AppKit's _NSFullScreenSpace), or nil. */
++static id omacvm_fullpanel_tile_space(NSWindow *w)
++{
++    const OmacVMFullPanelTileParts *p = omacvm_fullpanel_tile_parts();
++    id controller, space = nil;
++
++    if (!p->found || !omacvm_fullpanel_uses(w, p->window_cls, p->controller_sel, p->controller_imp)) {
++        return nil;
++    }
++    @try {
++        controller = ((OmacVMFullPanelObjectFn)p->controller_imp)(w, p->controller_sel);
++        if (omacvm_fullpanel_uses(controller, p->controller_cls, p->space_sel, p->space_imp)) {
++            space = ((OmacVMFullPanelObjectFn)p->space_imp)(controller, p->space_sel);
++        }
++    } @catch (NSException *exception) {
++        (void)exception;
++        return nil;
++    }
++    return omacvm_fullpanel_uses(space, p->space_cls, p->reshape_sel, p->reshape_imp) &&
++           omacvm_fullpanel_uses(space, p->space_cls, p->band_sel, p->band_imp) ? space : nil;
++}
++
++/* AppKit: the window's full-screen Space keeps the menu bar's band (its display has a housing). */
++static bool omacvm_fullpanel_appkit_band(NSWindow *w)
++{
++    const OmacVMFullPanelTileParts *p = omacvm_fullpanel_tile_parts();
++    id space = omacvm_fullpanel_tile_space(w);
++    bool band = false;
++
++    if (!space) {
++        return false;
++    }
++    @try {
++        band = ((OmacVMFullPanelBoolFn)p->band_imp)(space, p->band_sel);
++    } @catch (NSException *exception) {
++        (void)exception;
++    }
++    return band;
++}
++
++/*
++ * AppKit lays the window's full-screen tile out again (it asks the
++ * reservation again). No frame is set here, nothing toggled, no Space
++ * touched. false: not asked (a part missing, or AppKit raised).
++ */
++static bool omacvm_fullpanel_reshape(NSWindow *w)
++{
++    const OmacVMFullPanelTileParts *p = omacvm_fullpanel_tile_parts();
++    id space;
++
++    if (![NSThread isMainThread]) {
++        return false;
++    }
++    space = omacvm_fullpanel_tile_space(w);
++    if (!space) {
++        return false;
++    }
++    @try {
++        ((OmacVMFullPanelVoidFn)p->reshape_imp)(space, p->reshape_sel);
++    } @catch (NSException *exception) {
++        fprintf(stderr, "omacvm: full panel: AppKit's tile relayout raised %s\n",
++                [[exception name] UTF8String]);
++        return false;
++    }
++    return true;
++}
++
++/* The window's display: CoreGraphics has it on, awake and at NSScreen's size. */
++static bool omacvm_fullpanel_display_live(NSScreen *s, bool *same_size)
++{
++    NSNumber *n = [[s deviceDescription] objectForKey:@"NSScreenNumber"];
++    CGRect bounds = n ? CGDisplayBounds([n unsignedIntValue]) : CGRectZero;
++
++    *same_size = n && fabs(bounds.size.width - [s frame].size.width) < 0.5 &&
++                 fabs(bounds.size.height - [s frame].size.height) < 0.5;
++    return n && omacvm_screen_counts(s);
++}
++
+ @implementation OmacVMFullPanelState
+ 
+ - (id)initWithWindow:(NSWindow *)w
+@@ -3804,11 +4001,15 @@ - (void)dealloc
+     [super dealloc];
+ }
+ 
+-/* The reservation answer's question: does this window's full screen take the strip? */
++/*
++ * The reservation answer's question: does this window's full screen take
++ * the strip? Also before -screenChanged: has seen its display come back
++ * (released): AppKit may lay it out there first (omacvm_fp_claims).
++ */
+ - (bool)claimsStrip
+ {
+-    return window && inside && armed && !rejected && !lost && !released &&
+-           !omacvm_fullpanel_menu_failed && omacvm_fullpanel_notch(window);
++    return window && omacvm_fp_claims(inside, armed, rejected, lost, omacvm_fullpanel_menu_failed,
++                                      omacvm_fullpanel_notch(window));
+ }
+ 
+ /*
+@@ -3850,6 +4051,10 @@ - (void)endFullScreen
+     inside = armed = entered = accepted = rejected = lost = released = reveal = false;
+     own_known = false;
+     covered_logged = reveal_logged = fallback_logged = options_logged = false;
++    displaced = display_changed = lost_tile = retake_pending = retake_asked = retake_given_up = false;
++    retake_tried = false;
++    retake_tries = retake_reasks = 0;
++    lost_at = 0;
+ }
+ 
+ /* Whether AppKit gave this full screen the whole display (definitive: didEnterFullScreen). */
+@@ -3964,6 +4169,9 @@ - (bool)engage
+         [self releaseSystemState];
+         return false;
+     }
++    /* The strip is back: a try made it so (said first), or AppKit by itself. */
++    bool taken = retake_pending && [self retakeTaken];
++    displaced = display_changed = false;
+     if (!covered_logged) {
+         covered_logged = true;
+         /* omacvm check reads this line: the strip beside the notch shows the VM. */
+@@ -3972,6 +4180,10 @@ - (bool)engage
+                 [screen safeAreaInsets].top, immersive_mode_enabled ?
+                 "menu bar hidden (Keep the Dock away)" : "menu bar at the top edge");
+     }
++    if (taken) {
++        /* The guest's size and the arrangement for the whole display again. */
++        [self relayout];
++    }
+     return true;
+ }
+ 
+@@ -4267,6 +4479,11 @@ - (void)releaseSystemState
+ {
+     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkReturn)
+                                                object:nil];
++    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(retakeExpired)
++                                               object:nil];
++    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(retakeAgain)
++                                               object:nil];
++    retake_pending = false;
+     return_pending = false;
+     return_from_away = false;
+     reassert_scheduled = false;
+@@ -4281,11 +4498,15 @@ - (void)releaseSystemState
+     [self restoreOptions];
+ }
+ 
+-/* AppKit moved or resized the window: its full screen counts, or was lost. */
++/*
++ * AppKit moved or resized the window: its full screen counts, was lost
++ * (Split View), or a display change is on its way (omacvm_fp_frame_kind:
++ * the frame laid out for another display than NSScreen still names, or
++ * that display off): the strip comes back once the displays settle.
++ */
+ - (void)frameChanged:(NSNotification *)notification
+ {
+     NSScreen *screen = [window screen];
+-    bool covers;
+ 
+     if (!armed || !inside || !omacvm_fullpanel_in_full_screen(window)) {
+         return;
+@@ -4293,20 +4514,52 @@ - (void)frameChanged:(NSNotification *)notification
+     if (!accepted) {
+         [self verify:false];
+     } else if (entered && !lost && !released && screen) {
+-        covers = omacvm_fullpanel_covers(window);
+-        if (covers) {
+-            accepted_display = [screen frame];
+-        } else if (omacvm_fp_lost(accepted, true, covers,
+-                                  omacvm_fullpanel_same_display(screen, accepted_display))) {
+-            NSRect actual = [window frame], physical = [screen frame];
++        NSRect actual = [window frame], physical = [screen frame];
++        bool same_size, live = omacvm_fullpanel_display_live(screen, &same_size);
++        bool tile = omacvm_fp_tile(omacvm_fullpanel_rect(actual), omacvm_fullpanel_rect(physical));
++        bool within = omacvm_fp_inside(omacvm_fullpanel_rect(actual), omacvm_fullpanel_rect(physical));
+ 
++        /*
++         * A display change took the strip in this full screen (laid out for
++         * another display, or on a display without a housing): the band on
++         * the way back is no Split View, also when NSWindowDidChangeScreen
++         * came first; a tile always is.
++         */
++        switch (omacvm_fp_frame_kind(omacvm_fullpanel_covers(window), within, live,
++                                     omacvm_fullpanel_same_display(screen, accepted_display),
++                                     display_changed, tile)) {
++        case OMACVM_FP_FRAME_COVERS:
++            accepted_display = physical;
++            displaced = false;
++            break;
++        case OMACVM_FP_FRAME_DISPLACED:
++            if (!displaced) {
++                displaced = true;
++                [self retakeNewChange];
++                [self releaseSystemState];
++                covered_logged = false;
++                fprintf(stderr, "omacvm: full panel: display change: frame (%.0f %.0f %.0fx%.0f) on display (%.0f %.0f %.0fx%.0f), %s; the strip comes back once the displays settle\n",
++                        actual.origin.x, actual.origin.y, actual.size.width, actual.size.height,
++                        physical.origin.x, physical.origin.y, physical.size.width, physical.size.height,
++                        live ? "laid out for another display" : "that display is off or asleep");
++            }
++            return;
++        case OMACVM_FP_FRAME_LOST:
+             lost = true;
++            lost_at = omacvm_ds_clock();
++            lost_tile = tile;
+             [self releaseSystemState];
+             fprintf(stderr, "omacvm: full panel: strip lost: frame (%.0f %.0f %.0fx%.0f) on display (%.0f %.0f %.0fx%.0f); normal full screen until the next one\n",
+                     actual.origin.x, actual.origin.y, actual.size.width, actual.size.height,
+                     physical.origin.x, physical.origin.y, physical.size.width, physical.size.height);
+             [self relayout];
+             return;
++        case OMACVM_FP_FRAME_WAIT:
++            /* Back inside its display: the next displacement is a new display change. */
++            if (within && live) {
++                displaced = false;
++            }
++            break;
+         }
+     }
+     [self comeBack];
+@@ -4319,15 +4572,35 @@ - (void)frameChanged:(NSNotification *)notification
+ - (void)screenChanged:(NSNotification *)notification
+ {
+     bool full = omacvm_fullpanel_in_full_screen(window);
++    NSScreen *screen = [window screen];
++    bool same_size;
+ 
++    /*
++     * A strip lost a moment before the window's display changed, or the one
++     * it covered went off, went with that change: it comes back once the
++     * displays settle. A Split View's (a tile) stays lost.
++     */
++    if (lost && omacvm_fp_lost_to_display_change(true, omacvm_ds_clock() - lost_at,
++            [[notification name] isEqualToString:NSWindowDidChangeScreenNotification] || !screen ||
++            !omacvm_fullpanel_display_live(screen, &same_size) ||
++            !omacvm_fullpanel_same_display(screen, accepted_display), lost_tile)) {
++        fprintf(stderr, "omacvm: full panel: display change: the strip lost %.1f s ago went with it; the strip comes back once the displays settle\n",
++                omacvm_ds_clock() - lost_at);
++        lost = false;
++        displaced = true;
++        [self retakeNewChange];
++        covered_logged = false;
++    }
+     if (omacvm_fp_screen_releases(armed && inside, full, !omacvm_fullpanel_no_notch(window),
+                                   released)) {
+         released = true;
++        [self retakeNewChange];
+         [self releaseSystemState];
+         fprintf(stderr, "omacvm: full panel: the full screen is on a display without a camera housing: normal full screen there\n");
+         [self relayout];
+     } else if (omacvm_fp_screen_resumes(released, full, omacvm_fullpanel_notch(window))) {
+-        released = false;
++        /* On a display with a housing again: the next displacement is a new display change. */
++        released = displaced = false;
+         covered_logged = false;
+         [self relayout];
+         [self comeBack];
+@@ -4438,6 +4711,7 @@ - (void)comeBack
+     }
+     return_pending = true;
+     return_again_done = false;
++    retake_asked = false;
+     return_from_away = was_away;
+     return_checks = OMACVM_FP_RETURN_CHECKS;
+     [self performSelector:@selector(checkReturn) withObject:nil afterDelay:0.016
+@@ -4471,6 +4745,16 @@ - (void)checkReturn
+         return_pending = false;
+         return;
+     }
++    /*
++     * Back on its Space, below the band a display change left: one ask per
++     * return whether AppKit should lay it out again (the user was on
++     * another Space while the displays settled).
++     */
++    if (display_changed && !retake_pending && !retake_asked && compositor == 1 &&
++        [window isOnActiveSpace] && !omacvm_fullpanel_covers(window)) {
++        retake_asked = true;
++        [self retake:"back on its Space"];
++    }
+     if (return_checks-- == 0) {
+         return_pending = false;
+         if ([window isOnActiveSpace] && [window isKeyWindow]) {
+@@ -4483,6 +4767,188 @@ - (void)checkReturn
+                   inModes:[NSArray arrayWithObject:NSRunLoopCommonModes]];
+ }
+ 
++/*
++ * After a display change (omacvm-cocoa-fullpanel-retake.patch): a full
++ * screen the change left below the notch (the window on its display with a
++ * camera housing again, AppKit kept the menu bar's band) asks AppKit to lay
++ * its tile out again, which asks the reservation again: the whole display.
++ * Only when omacvm_fp_retake says now: the displays settled, unlocked, on
++ * its Space, WindowServer has it in place, never Split View, at most
++ * OMACVM_FP_RETAKE_TRIES per display change and one per settle; after a
++ * wait nothing else ends, asked again a moment later
++ * (omacvm_fp_retake_reask). The return check then engages ("strip taken
++ * again", "strip covered", the guest laid out again); without the whole
++ * display in OMACVM_FP_RETAKE_CHECK_S the line says so. Never a frame, a
++ * full-screen toggle or a Space.
++ */
++- (OmacVMFPRetakeFacts)retakeFacts
++{
++    NSScreen *screen = [window screen];
++    bool always = [[NSUserDefaults standardUserDefaults] boolForKey:@"AppleMenuBarVisibleInFullscreen"];
++    OmacVMFPRetakeFacts f = {
++        .inside = inside && omacvm_fullpanel_in_full_screen(window),
++        .armed = armed,
++        .entered = entered,
++        .rejected = rejected,
++        .lost = lost,
++        .display_changed = display_changed,
++        .given_up = retake_given_up,
++        .tries = retake_tries,
++        .tried_this_settle = retake_tried && retake_settle == omacvm_fullpanel_settles,
++        .pending = retake_pending,
++    };
++
++    if (!window || !screen || !f.inside || !f.armed || !f.entered || !f.display_changed) {
++        return f;   /* nothing to ask WindowServer or AppKit about */
++    }
++    f.notch = omacvm_fullpanel_notch(window);
++    f.covers = omacvm_fullpanel_covers(window);
++    f.band_kept = omacvm_fp_band_kept(omacvm_fullpanel_rect([window frame]),
++                                      omacvm_fullpanel_rect([screen frame]),
++                                      [screen safeAreaInsets].top);
++    f.band_tall = omacvm_fp_band_tall(omacvm_fullpanel_rect([window frame]),
++                                      omacvm_fullpanel_rect([screen frame]),
++                                      [screen safeAreaInsets].top);
++    f.display_live = omacvm_fullpanel_display_live(screen, &f.same_size);
++    f.on_space = [window isOnActiveSpace];
++    f.visible = ([window occlusionState] & NSWindowOcclusionStateVisible) != 0;
++    f.in_place = omacvm_fullpanel_compositor(window) == 1;
++    f.locked = omacvm_fullpanel_displays_locked();
++    f.moving = omacvm_fullpanel_displays_moving();
++    f.menu_bar_in_the_way = omacvm_fp_menu_bar_in_the_way(always, immersive_mode_enabled);
++    f.parts = omacvm_fullpanel_hook_state() == OMACVM_FP_HOOK_USABLE &&
++              omacvm_fullpanel_skylight() && !omacvm_fullpanel_menu_failed;
++    f.reshape = omacvm_fullpanel_tile_parts()->found;
++    /* Asked of AppKit only when everything else says now (-retakeAsk:). */
++    f.appkit_band = true;
++    return f;
++}
++
++/* A trigger (the displays settled, their windows in place, back on its Space) asks. */
++- (void)retake:(const char *)why
++{
++    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(retakeAgain)
++                                               object:nil];
++    retake_reasks = 0;
++    [self retakeAsk:why];
++}
++
++/* A wait no trigger may end is over (OMACVM_FP_RETAKE_REASK_S later): ask again. */
++- (void)retakeAgain
++{
++    retake_reasks++;
++    [self retakeAsk:"a moment later"];
++}
++
++- (void)retakeAsk:(const char *)why
++{
++    OmacVMFPRetakeFacts f = [self retakeFacts];
++    const char *reason;
++    OmacVMFPRetake r = omacvm_fp_retake(f, &reason);
++
++    if (r == OMACVM_FP_RETAKE_NOW) {
++        f.appkit_band = omacvm_fullpanel_appkit_band(window);
++        r = omacvm_fp_retake(f, &reason);
++    }
++    if (r == OMACVM_FP_RETAKE_GIVE_UP) {
++        [self retakeGiveUp:reason];
++        return;
++    }
++    if (omacvm_fp_retake_reask(f, r, retake_reasks)) {
++        [self performSelector:@selector(retakeAgain) withObject:nil afterDelay:OMACVM_FP_RETAKE_REASK_S
++                      inModes:[NSArray arrayWithObject:NSRunLoopCommonModes]];
++        return;
++    }
++    if (r != OMACVM_FP_RETAKE_NOW) {
++        return;
++    }
++    retake_tries++;
++    retake_tried = true;
++    retake_settle = omacvm_fullpanel_settles;
++    retake_pending = true;
++    fprintf(stderr, "omacvm: full panel: below the notch after a display change (%s): AppKit lays the window out again (try %d of %d)\n",
++            why, retake_tries, OMACVM_FP_RETAKE_TRIES);
++    if (!omacvm_fullpanel_reshape(window)) {
++        retake_pending = false;
++        [self retakeGiveUp:"AppKit's full-screen Space did not answer"];
++        return;
++    }
++    [self performSelector:@selector(retakeExpired) withObject:nil afterDelay:OMACVM_FP_RETAKE_CHECK_S
++                  inModes:[NSArray arrayWithObject:NSRunLoopCommonModes]];
++    if (return_pending) {
++        return_checks = OMACVM_FP_RETURN_CHECKS;
++    } else {
++        [self comeBack];
++    }
++}
++
++/*
++ * A display change took the strip (laid out for another display, a display
++ * without a camera housing, a loss that went with it): its own
++ * OMACVM_FP_RETAKE_TRIES, also after a "strip not back" for an earlier one.
++ * The settle of the last try stays: still one try per settle.
++ */
++- (void)retakeNewChange
++{
++    display_changed = true;
++    retake_tries = retake_reasks = 0;
++    retake_given_up = false;
++}
++
++/* The try worked: said before "strip covered". */
++- (bool)retakeTaken
++{
++    retake_pending = false;
++    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(retakeExpired)
++                                               object:nil];
++    fprintf(stderr, "omacvm: full panel: strip taken again after a display change (try %d of %d)\n",
++            retake_tries, OMACVM_FP_RETAKE_TRIES);
++    return true;
++}
++
++/* A try's check ran out: the whole display (not engaged yet), or the band is still there. */
++- (void)retakeExpired
++{
++    bool last;
++
++    if (!retake_pending || !window) {
++        retake_pending = false;
++        return;
++    }
++    retake_pending = false;
++    if (omacvm_fullpanel_covers(window)) {
++        fprintf(stderr, "omacvm: full panel: strip taken again after a display change (try %d of %d); covered once the window is in front\n",
++                retake_tries, OMACVM_FP_RETAKE_TRIES);
++        displaced = display_changed = false;
++        [self relayout];
++        return;
++    }
++    last = omacvm_fp_retake_final(retake_tries);
++    retake_given_up = last;
++    /* omacvm check reads this line (warns, with the remedy); a later "strip covered" wins. */
++    fprintf(stderr, "omacvm: full panel: strip not back after a display change (AppKit kept the band, try %d of %d): normal full screen %s\n",
++            retake_tries, OMACVM_FP_RETAKE_TRIES, last ? "until the next display change or full screen" : "for now");
++}
++
++/* No try for the rest of this display change: said once, with why. */
++- (void)retakeGiveUp:(const char *)reason
++{
++    bool parts = !strcmp(reason, "selector missing") && omacvm_fullpanel_tile_differs[0];
++    NSScreen *screen = [window screen];
++    char band[64] = "";
++
++    if (retake_given_up) {
++        return;
++    }
++    retake_given_up = true;
++    if (!strcmp(reason, OMACVM_FP_WHY_BAND_TALL) && screen) {
++        snprintf(band, sizeof(band), ": %.0f pt, the housing %.0f pt",
++                 [screen frame].size.height - [window frame].size.height, [screen safeAreaInsets].top);
++    }
++    fprintf(stderr, "omacvm: full panel: strip not back after a display change (%s%s%s%s): normal full screen until the next display change or full screen\n",
++            reason, parts ? ": " : "", parts ? omacvm_fullpanel_tile_differs : "", band);
++}
++
+ /*
+  * Once per return from away with the menu bar held back: release the
+  * options for one main-queue turn, hold them again on the next, then the
+@@ -4571,6 +5037,40 @@ static bool omacvm_fullpanel_vm_window(id w)
+            [w isKindOfClass:objc_getClass("OmacVMHeadWindow")];
+ }
+ 
++/*
++ * After a display change (omacvm-cocoa-fullpanel-retake.patch): each VM
++ * window's FullPanel state, looked up through its owner each time (#402),
++ * may ask AppKit to lay its full screen out again (-retake:). From the
++ * display update once the displays settled, and once the displays' windows
++ * are in full screen. Main thread.
++ */
++static void omacvm_fullpanel_retake_all(const char *why)
++{
++    if (!omacvm_fullpanel_requested()) {
++        return;
++    }
++    for (NSWindow *w in [NSApp windows]) {
++        if (omacvm_fullpanel_vm_window(w)) {
++            [omacvm_fullpanel_state(w) retake:why];
++        }
++    }
++}
++
++/* The displays' windows are done: once, half a second later (coalesced). */
++static void omacvm_fullpanel_retake_soon(void)
++{
++    static bool queued;
++
++    if (queued || !omacvm_fullpanel_requested()) {
++        return;
++    }
++    queued = true;
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{
++        queued = false;
++        omacvm_fullpanel_retake_all("the displays' windows are in place");
++    });
++}
++
+ /*
+  * At the start, before any window goes full screen: the reservation answer
+  * (AppKit asks during the way in) and, on every way into full screen of a
+@@ -9718,6 +10218,10 @@ - (void)windowDidEnterFullScreen:(NSNotification *)note
+     }
+     omacvm_full_busy = false;
+     omacvm_full_next();
++    /* FullPanel: nothing moves any more: a strip a display change took comes back. */
++    if (!omacvm_full_busy) {
++        omacvm_fullpanel_retake_soon();
++    }
+ }
+ 
+ /* A display changed its resolution, or the window found its full-screen size. */
+@@ -10141,6 +10645,19 @@ static double omacvm_displays_apply(void)
+ static bool omacvm_ds_screen_locked, omacvm_ds_asleep, omacvm_ds_away, omacvm_ds_test_locked;
+ static double omacvm_ds_locked_at;
+ 
++/* FullPanel after a display change (omacvm-cocoa-fullpanel-retake.patch): locked, asleep, another user. */
++static bool omacvm_fullpanel_displays_locked(void)
++{
++    return omacvm_ds_timer.locked;
++}
++
++/* A display update is due or runs, or a display's window still moves into or out of full screen. */
++static bool omacvm_fullpanel_displays_moving(void)
++{
++    return omacvm_ds_timer.armed || omacvm_ds_timer.running || omacvm_full_busy ||
++           [omacvm_heads_leaving count] > 0;
++}
++
+ static void omacvm_ds_fired(void);
+ 
+ static void omacvm_ds_arm(double at)
+@@ -10168,6 +10685,15 @@ static void omacvm_ds_fired(void)
+     if (omacvm_ds_done(&omacvm_ds_timer, omacvm_ds_clock(), retry, &at)) {
+         omacvm_ds_arm(at);
+     }
++    /*
++     * FullPanel (omacvm-cocoa-fullpanel-retake.patch): the displays settled
++     * (unlocked, awake, on the console): a strip a display change took
++     * comes back.
++     */
++    omacvm_fullpanel_settles++;
++    if (retry <= 0) {
++        omacvm_fullpanel_retake_all("the displays settled");
++    }
+ }
+ 
+ static void omacvm_ds_lock_changed(const char *why)

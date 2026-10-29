@@ -1,0 +1,168 @@
+From: OmacVM
+Subject: [PATCH] cocoa: the app menu says when the VM stood still
+
+What: under "VM memory" and "Graphics memory" in the app menu (omacvm-cocoa-
+graphics-memory.patch), a line once the VM stood still this run, from what the
+stall note counted (qemu-hvf-vcpu-stall-note.patch, main_loop_stall_status):
+  The VM stood still 2 times (longest 58 s): the Mac ran out of memory
+  The VM stood still 1 time (longest 2.4 s): its processors waited in macOS
+  The VM waited for the Mac's processors 1 time (longest 2.1 s)
+  The VM stood still 1 time (longest 2.2 s): QEMU was busy
+  The VM's graphics stood still 1 time (longest 2.5 s)
+(examples of the format; the first when the longest vCPU stall was blocked in
+macOS's kernel while the Mac paged, the second when the Mac did not page then,
+the third a vCPU without a Mac core, the fourth QEMU's main loop holding the
+BQL 2 s or more, the fifth only QEMU's graphics thread). Filled in when the menu opens, as the
+other two lines: no timer. A click, and the tooltip, explain what it was and
+what helps (a smaller VM memory, omacvm resources; qemu.log's lines). Hidden
+while nothing stood still, and without OMACVM_GPU_MEMORY_STATUS (QEMU not
+started by OmacVM.app) like the memory lines.
+Why: when the VM froze for a minute on the user's Mac (2026-10-28), nothing on
+the Mac said why; qemu.log now does, and this puts it where the memory is.
+Upstream: not applicable (OmacVM's menu).
+Test: app/runtime/Tests/vcpu/test-vcpu-stall.sh (the line's text in
+ui/omacvm-vm-stalls.h; build time and CI).
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 6194804..217dffc 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -45,6 +45,7 @@
+ #include "ui/omacvm-hw-cursor.h"
+ #include "ui/omacvm-shortcuts.h"
+ #include "ui/omacvm-gpu-memory.h"
++#include "ui/omacvm-vm-stalls.h"
+ #include "ui/omacvm-desktop-restart.h"
+ #include "ui/omacvm-clean-size.h"
+ #include "ui/omacvm-fullpanel-scale.h"
+@@ -5710,8 +5711,10 @@ @interface OmacvmMemoryMenu : NSObject <NSMenuDelegate>
+ @public
+     NSMenuItem *vmItem;
+     NSMenuItem *gpuItem;
++    NSMenuItem *stallItem;      /* OmacVM: shown once the VM stood still */
+ }
+ - (void)explain:(id)sender;
++- (void)explainStalls:(id)sender;
+ @end
+ 
+ static OmacvmMemoryMenu *omacvm_memory_menu;
+@@ -5744,6 +5747,18 @@ - (void)menuNeedsUpdate:(NSMenu *)menu
+         omacvm_vm_memory_line(current_machine->ram_size, line, sizeof(line));
+         [vmItem setTitle:[NSString stringWithUTF8String:line]];
+     }
++    /* what the stall note counted this run (omacvm-cocoa-vm-stalls-menu.patch) */
++    {
++        OmacvmStallStatus st;
++        char stall[200];
++        main_loop_stall_status(&st);
++        if (omacvm_stall_menu_line(&st, stall, sizeof(stall))) {
++            [stallItem setTitle:[NSString stringWithUTF8String:stall]];
++            [stallItem setHidden:NO];
++        } else {
++            [stallItem setHidden:YES];
++        }
++    }
+     omacvm_restart_desktop_update();
+ }
+ 
+@@ -5755,6 +5770,15 @@ - (void)explain:(id)sender
+     [alert addButtonWithTitle:@"OK"];
+     [alert runModal];
+ }
++
++- (void)explainStalls:(id)sender
++{
++    NSAlert *alert = [[NSAlert new] autorelease];
++    [alert setMessageText:[stallItem title]];
++    [alert setInformativeText:@OMACVM_STALL_MENU_EXPLANATION];
++    [alert addButtonWithTitle:@"OK"];
++    [alert runModal];
++}
+ @end
+ 
+ static void omacvm_add_memory_items(NSMenu *menu)
+@@ -5778,6 +5802,15 @@ static void omacvm_add_memory_items(NSMenu *menu)
+     }
+     omacvm_memory_menu->vmItem = vm;
+     omacvm_memory_menu->gpuItem = gpu;
++    /* the stall line, under them: hidden until the VM stood still */
++    NSMenuItem *stall = [[[NSMenuItem alloc] initWithTitle:@""
++                                                    action:@selector(explainStalls:)
++                                             keyEquivalent:@""] autorelease];
++    [stall setTarget:omacvm_memory_menu];
++    [stall setToolTip:@OMACVM_STALL_MENU_EXPLANATION];
++    [stall setHidden:YES];
++    [menu addItem:stall];
++    omacvm_memory_menu->stallItem = stall;
+     [menu setDelegate:omacvm_memory_menu];
+ }
+ 
+diff --git a/ui/omacvm-vm-stalls.h b/ui/omacvm-vm-stalls.h
+new file mode 100644
+index 0000000..aae53e7
+--- /dev/null
++++ b/ui/omacvm-vm-stalls.h
+@@ -0,0 +1,63 @@
++/*
++ * OmacVM: the app menu's stall line (omacvm-cocoa-vm-stalls-menu.patch), under
++ * "Graphics memory": what the stall note (qemu-hvf-vcpu-stall-note.patch)
++ * counted this run. No AppKit here, so it is unit tested
++ * (Tests/vcpu/test-vcpu-stall.sh).
++ */
++#ifndef OMACVM_VM_STALLS_H
++#define OMACVM_VM_STALLS_H
++
++#include "qemu/omacvm-stall.h"
++
++/*
++ * "The VM stood still 2 times (longest 58 s): the Mac ran out of memory";
++ * the vCPUs' stalls first, then QEMU's main loop with the BQL ("QEMU was
++ * busy"), then its graphics thread alone. 0: nothing to show (no line).
++ */
++static inline int omacvm_stall_menu_line(const OmacvmStallStatus *st, char *out, size_t n)
++{
++    char longest[32];
++
++    if (st->stalls) {
++        omacvm_stall_secs(st->longest_ms * 1000000LL, longest, sizeof(longest));
++        if (st->longest_cause == OMACVM_STALL_CAUSE_CPU) {
++            snprintf(out, n, "The VM waited for the Mac's processors %u time%s (longest %s)",
++                     st->stalls, st->stalls == 1 ? "" : "s", longest);
++        } else if (st->longest_cause == OMACVM_STALL_CAUSE_KERNEL) {
++            /* blocked in macOS's kernel while the Mac was not paging */
++            snprintf(out, n, "The VM stood still %u time%s (longest %s): its processors "
++                     "waited in macOS", st->stalls, st->stalls == 1 ? "" : "s", longest);
++        } else {
++            snprintf(out, n, "The VM stood still %u time%s (longest %s): the Mac ran out of "
++                     "memory", st->stalls, st->stalls == 1 ? "" : "s", longest);
++        }
++        return 1;
++    }
++    if (st->main_stalls) {
++        /* QEMU's main loop with the BQL (or waiting for it): the vCPUs waited */
++        omacvm_stall_secs(st->main_longest_ms * 1000000LL, longest, sizeof(longest));
++        snprintf(out, n, "The VM stood still %u time%s (longest %s): QEMU was busy",
++                 st->main_stalls, st->main_stalls == 1 ? "" : "s", longest);
++        return 1;
++    }
++    if (st->gpu_stalls) {
++        omacvm_stall_secs(st->gpu_longest_ms * 1000000LL, longest, sizeof(longest));
++        snprintf(out, n, "The VM's graphics stood still %u time%s (longest %s)",
++                 st->gpu_stalls, st->gpu_stalls == 1 ? "" : "s", longest);
++        return 1;
++    }
++    return 0;
++}
++
++/* What a click on the line explains. */
++#define OMACVM_STALL_MENU_EXPLANATION \
++    "The VM stood still: its processors waited in macOS while macOS made memory " \
++    "free for them (compressing or swapping the VM's memory), or waited for a " \
++    "free Mac processor, or QEMU itself was busy (qemu.log's \"main loop " \
++    "stalled\" line says where). The VM's clock ran on, so apps in the VM may " \
++    "say they missed a deadline.\n\n" \
++    "A smaller VM memory leaves the Mac more (omacvm resources --vm NAME), as " \
++    "does quitting big apps on the Mac. qemu.log in the VM's logs folder has a " \
++    "line for each time, with the Mac's free memory then."
++
++#endif

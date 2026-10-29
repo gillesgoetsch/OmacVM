@@ -114,7 +114,8 @@ Option 5.
   1080p video keeps the 8-row strip (the encoder's padding rows, usually
   the last row repeated). A real fix would be virgl
   honouring the import's size (a view of that size) and the app cropping,
-  in Mesa and virglrenderer upstream.
+  in Mesa and virglrenderer upstream. 3.2.12 covers these in the guest: the
+  app's EGL import says the size ([0063](0063-video-size-from-the-apps-import.md)).
 - Chrome on Wayland with GL (the user's command line: `--ozone-platform=wayland`,
   no Vulkan) decodes without an image processor ("No ImageProcessor
   needed") and draws the NV12 planes whole, like mpv. Measured on a test

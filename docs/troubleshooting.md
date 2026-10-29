@@ -10,6 +10,14 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 ## Common problems
 
 - **First stop**: `omacvm check` names what is wrong and what to do.
+- **Google Chrome's tab crashes ("Aw, Snap!") on videos, on a Mac with an M4
+  or newer** (OmacVM.app): update Chrome to 155 or newer. Chrome 154 and
+  older, and older Electron apps (Electron 42 and 44 measured), crash on every
+  video they decode on the CPU (small ones below 360 rows, or all with
+  hardware decoding off).
+  The VM sees the chip's SME, and their libyuv was built for chips that also
+  have SVE, which the M4 does not (fixed in Chrome 155). `omacvm check` warns
+  about it ("Google Chrome").
 - **Screenshots or screen sharing of Chrome far too bright in an HDR VM**:
   Update VM
   ([44](#44-app-screenshots-and-screen-sharing-of-chrome-too-bright-in-an-hdr-vm)).
@@ -153,6 +161,16 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 - **An external display went black or vanished when the Bridge started**
   (3.1.16 and before, on the Mac's HDMI port): replug it, then update. Until
   then, `omacvm disable external-brightness --vm NAME` stops all DDC/CI.
+- **The VM does not lock again after an unlock** (the lock key and the
+  idle lock do nothing): Omarchy's bug with Quickshell 0.3.2
+  (omarchy-mac 4.0.x,
+  [omacom/omarchy-mac#738](https://github.com/omacom/omarchy-mac/issues/738);
+  an open fix: omacom/omarchy-mac#752). It happens after every unlock. A
+  restart of Omarchy's shell brings the lock back for the next lock only:
+  after each unlock, run `omarchy-restart-shell` in a terminal (the bar
+  redraws once). OmacVM VMs have the idle lock on by default, so an idle VM
+  stays open while it is stuck. `omacvm check` warns while it is stuck
+  ("Omarchy's lock").
 - **Touch ID asks for the password instead**: the line above the password
   prompt says why ("Touch ID not available (VM not in front), use your
   password", "the Mac is still starting: try again in a moment", ...).
@@ -1263,3 +1281,49 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/app/guest/virtio-gpu/linux-virtio-gpu-hdr-metadata.patch`, tests
   `src/tests/virtio-gpu-patches.sh`, `src/tests/hdr-recording-check.sh`;
   ADR 0049 (amended 2026-10-27).
+
+## 45. app: the VM freezes for seconds or a minute, the Mac is out of memory
+
+- **Symptom:** the VM stands still for seconds to a minute and then goes on:
+  windows, video and the pointer stop, sound drops out. In the VM,
+  `journalctl -k` has "rcu: INFO: rcu_preempt detected stalls on CPUs/tasks"
+  (some CPUs, not all), `journalctl -u omacvm-vdecd` a "Watchdog timeout",
+  the display agent "no word from the Mac for 15 s". On the Mac, Activity
+  Monitor's Memory tab shows little free memory and the VM's "Compressed
+  Memory" growing, while the pressure graph may still be green.
+- **Cause:** macOS ran out of free memory and makes pages free by compressing
+  and swapping. A vCPU whose guest touches a page macOS compressed or swapped
+  out waits in macOS's kernel until macOS has a free page for it: that vCPU
+  stands still, the others run on. A VM that holds most of the Mac's memory
+  (a 42 GB VM on a 64 GB Mac held 51 GB with its file cache and graphics)
+  gets there with nothing else running. QEMU's graphics thread can stand
+  still the same way in a call to the Mac.
+- **Check:** `logs/qemu.log` in the VM's folder has a line for each stall
+  of 1 s or more, in this format (the numbers are an example): "OmacVM:
+  stall: vCPUs 1, 2, 3, 8 stood still for about 58 s, blocked in macOS's
+  kernel waiting for memory (Mac: compressor and swap 900 MB/s, 0.3 GB
+  free, ...)". It says "waiting for memory" only when the Mac was paging
+  then (compressing or swapping 16 MB/s or more, or pressure warn or
+  critical); "blocked in macOS's kernel (the Mac was not paging ...)" is
+  something else in macOS, and "waited ... for a Mac core" means the Mac's
+  CPUs were busy. The app menu says "The VM stood still N times";
+  `omacvm check --vm NAME` has a "VM stalls" warning. "main loop stalled for
+  N s in a GPU run without the BQL" is QEMU's graphics thread waiting in a
+  call to the Mac (the vCPUs ran on); "with the BQL held (the VM waits)" is
+  the whole VM waiting for QEMU (counted as `main_stalls`). Short stalls can
+  be missed: a vCPU blocked in macOS's kernel under about 2.25 s (3.25 s if
+  it was nearly idle before), one without a Mac core under about 4 s.
+- **Fix:** give the VM less memory (`omacvm resources --vm NAME --memory-gb
+  N`, from its next start), or quit big apps on the Mac. OmacVM.app's
+  give-back of the VM's cold file cache while macOS compresses it (ADR 0059)
+  is on from 3.2.12 (QEMU's free page reclaim, ADR 0062); 3.2.11 had it off.
+  After a stall of 10 s or more for memory the VM shows a note that says so
+  (once per 30 minutes; Update VM puts the note in). The memory cause has
+  been shown only in tests so far (simulated stalls), so the note has not
+  yet been seen on a real Mac.
+- **Where:** `app/runtime/patches/qemu-hvf-vcpu-stall-note.patch` (the
+  lines, `logs/vm-stalls`), `qemu-main-loop-stall-gpu-run.patch`,
+  `omacvm-cocoa-vm-stalls-menu.patch`, `app/app/Sources/OmacVMDesktop/VMStalls.swift`,
+  `src/app/guest/omacvm-desktop-recover` (the note), `src/cmd/check.sh`;
+  tests `app/runtime/Tests/vcpu/test-vcpu-stall.sh`, `src/tests/vm-stalls.sh`,
+  `swift run desktop-tests`; ADR 0060.

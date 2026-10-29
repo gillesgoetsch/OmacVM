@@ -162,6 +162,31 @@ if [[ $kr =~ ^[A-Za-z0-9_.-]+$ && -f $kd/$kr.keyring ]]; then ok "keyring" "$kr 
 elif compgen -G "$kd/*.keyring" >/dev/null; then
   bad "keyring" "none is the default: apps like Chromium ask for a keyring password (pick one in Passwords and Keys)" human
 else bad "keyring" "none: Chromium asks for a keyring password at its first start; omacvm apply makes Omarchy's default keyring"; fi
+# Google Chrome 154 and older on a Mac with SME: chrome_sme_line VERSION FEATURES
+# prints "status<TAB>detail" (nothing without a version: no Chrome). VERSION is
+# Chrome's --version, FEATURES /proc/cpuinfo's Features line. Chrome 154 and
+# older (Chromium 138-154) run libyuv's SME code built for Armv9-A, which starts
+# with an SVE instruction (cntd). Apple M4 and newer have SME but no SVE, and the
+# VM sees SME (OmacVM.app's QEMU 11), so Chrome's tab dies of SIGILL on every
+# video it decodes on the CPU. Fixed in Chrome 155 (libyuv fab11704).
+# src/tests/chrome-sme.sh.
+chrome_sme_line() {
+  local v
+  v=$(sed -n 's/^Google Chrome \([0-9][0-9]*\.[0-9.]*\).*/\1/p' <<<"$1" | head -1)
+  [[ -n $v ]] || return 0
+  if (( ${v%%.*} <= 154 )) && [[ " $2 " == *" sme "* ]]; then
+    printf 'warn\t%s\n' "Google Chrome $v crashes on videos it decodes on the CPU on this Mac: update Chrome (155 or newer)"
+  else printf 'ok\t%s\n' "$v"; fi
+}
+gcv=""
+for c in google-chrome-stable google-chrome /opt/google/chrome/google-chrome; do
+  if command -v "$c" >/dev/null; then gcv=$(timeout 10 "$c" --version 2>/dev/null); break; fi
+done
+IFS=$'\t' read -r gs gt < <(chrome_sme_line "$gcv" "$(grep -m1 '^Features' /proc/cpuinfo 2>/dev/null)")
+case $gs in
+  ok) ok "Google Chrome" "$gt" ;;
+  warn) warn "Google Chrome" "$gt" human ;;
+esac
 if [[ $TYPE == app ]]; then
   # Which UEFI firmware OmacVM.app started the VM with (SMBIOS BIOS version).
   fw=$(cat /sys/class/dmi/id/bios_version 2>/dev/null)
@@ -800,6 +825,22 @@ app)
     check "video decoding in Firefox" "the driver shim is on ld.so's path (Firefox's sandbox)" \
       grep -qx /usr/local/lib/dri /etc/ld.so.conf.d/omacvm-video.conf
   fi
+  # Videos at their own size where the decoder's surface is larger (H.264 1080p: 1088 rows):
+  # the EGL vendor library hands apps' video imports to the shim (ADR 0063).
+  if [[ $drv == omacvm ]]; then
+    egl=/etc/glvnd/egl_vendor.d/10_omacvm.json
+    if [[ -f $egl && -f /usr/local/lib/libEGL_omacvm.so.0 ]]; then
+      if grep -qx 'OMACVM_VALOGICAL=1' /run/omacvm/host.env 2>/dev/null; then
+        ok "video at its own size" "EGL vendor library in front of Mesa's: Chrome and mpv show H.264 1080p without 8 extra rows"
+      else
+        skip "video at its own size" "EGL vendor library installed; OmacVM.app 3.2.11 or newer uses it"
+      fi
+    elif [[ -f $egl ]]; then
+      bad "video at its own size" "glvnd's 10_omacvm.json names a library that is missing: omacvm apply"
+    else
+      warn "video at its own size" "no EGL vendor library (it did not build: EGL headers?): H.264 1080p shows 8 extra rows in Chrome and mpv"
+    fi
+  fi
   e=$(as_user env LIBVA_DRIVER_NAME=$drv LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri \
       vainfo --display drm 2>/dev/null | sed -n 's/^[[:space:]]*VAProfile\([A-Za-z0-9]*\)[[:space:]]*:[[:space:]]*VAEntrypointEncSlice$/\1/p' | tr '\n' ' ')
   if [[ -n $e ]]; then
@@ -928,6 +969,15 @@ if [[ $NO_IDLE_LOCK == on ]]; then
   if [[ -f $H/.local/state/omarchy/indicators/stay-awake ]]; then ok "screensaver and lock disabled" "the Mac's lock protects the VM"
   else bad "screensaver and lock disabled" "chosen, but Omarchy's Stay Awake is not set"; fi
 else ok "screensaver and lock" "Omarchy's own, after idle"; fi
+# Omarchy's lock after an unlock: omarchy-mac 4.0.x with Quickshell 0.3.2
+# keeps "locked" true after the first unlock, and its lock call then does
+# nothing until the shell restarts (omacom/omarchy-mac#738). The status shows
+# it: locked, but not requested, sessionLocked or secure (a fixed Omarchy
+# reads locked afresh). Its last line: without a locale Qt warns first.
+st=$(as_user omarchy-shell lock status 2>/dev/null | tail -n 1)
+if [[ $st == *'"locked":true'* && $st != *'"requested":true'* && $st != *'"sessionLocked":true'* && $st != *'"secure":true'* ]]; then
+  warn "Omarchy's lock" "does not lock again since the last unlock (lock key, idle lock), Omarchy's bug (omacom/omarchy-mac#738): run omarchy-restart-shell in a terminal" human
+fi
 FEATURE=autologin
 # As SDDM does it, whoever wrote the file (the Mac's omacvm check fixes OmacVM's record to match).
 # Run with bash -s from the Mac: the VM's copy (an older one has OmacVM's own file only).

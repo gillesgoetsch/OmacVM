@@ -438,7 +438,8 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   # to drop its file cache when macOS warns, and for its cold file cache while
   # macOS compresses the VM only with a QEMU that gives the pages back to
   # macOS (qemu.log's "give-back while macOS compresses: on|off" line;
-  # logs/memory-giveback, ADR 0059). The numbers are what the VM freed and
+  # logs/memory-giveback, ADR 0059), until that QEMU finds macOS keeping them
+  # anyway (kept=1, ADR 0062). The numbers are what the VM freed and
   # QEMU's footprint, not what the Mac got back. Never a failure: a hint when
   # macOS holds much compressed and the VM had little left to give.
   vmm=$(app_env "$(dirname "$(dirname "$miclog")")" MEM_MB); [[ $vmm =~ ^[0-9]+$ ]] || vmm=""
@@ -448,7 +449,9 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   # The app's own line: the first one (the app writes it within a second of the start, before the VM
   # boots; later QEMU lines can carry text from the VM). The words are check's.
   case $(LC_ALL=C grep -a -o -E 'OmacVM: VM memory: give-back while macOS compresses: (on|off)' "$miclog" 2>/dev/null | head -1) in
-    *": on") what="${what:+$what; }give-back while macOS compresses: on" ;;
+    *": on") if [[ $(mgv kept) == 1 ]]; then
+               what="${what:+$what; }give-back while macOS compresses: off for the rest of this run (macOS kept the pages QEMU gave back)"
+             else what="${what:+$what; }give-back while macOS compresses: on"; fi ;;
     *": off") what="${what:+$what; }give-back while macOS compresses: off (this QEMU keeps given-back pages)" ;;
   esac
   # What the VM said it freed (given_mb); for the warning's drop, which says
@@ -477,6 +480,36 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     what="${what:+$what; }the VM freed no file cache this run"
   fi
   [[ -n $what ]] && ok "VM memory" "$what"
+  # When the VM stood still this run (logs/vm-stalls, QEMU's stall note, ADR
+  # 0060): its vCPUs blocked in macOS's kernel waiting for memory (the Mac
+  # paged then), blocked there while the Mac did not page, or waiting for a
+  # Mac core; QEMU's main loop with the BQL (the VM waited); QEMU's graphics
+  # thread in a call to the Mac. A warning, never a failure. Short stalls can
+  # be missed (ADR 0060), so ok says only that none was seen. A runtime
+  # without the note writes no file: no line.
+  vs="$(dirname "$miclog")/vm-stalls"
+  if [[ -f $vs && ! -L $vs ]]; then
+    vsv() { v=$(sed -n "s/^$1=//p" "$vs" 2>/dev/null | head -1); [[ $v =~ ^[0-9]{1,12}$ ]] && echo "$v" || echo 0; }
+    vsw() { sed -n "s/^$1=//p" "$vs" | head -1 | LC_ALL=C tr -cd 'A-Za-z0-9_ .,:()+-' | cut -c1-100; }
+    secs() { awk -v m="$1" 'BEGIN { printf (m < 10000 ? "%.1f s" : "%d s"), m / 1000 }'; }
+    n=$(vsv stalls) longest=$(vsv longest_ms) gn=$(vsv gpu_stalls) gl=$(vsv gpu_longest_ms)
+    mn=$(vsv main_stalls) ml=$(vsv main_longest_ms)
+    cause=$(sed -n 's/^longest_cause=//p' "$vs" | head -1)
+    where=$(vsw gpu_last_where) mwhere=$(vsw main_last_where)
+    more=""
+    (( mn > 0 )) && more="QEMU's main loop held the VM $mn time(s) (longest $(secs "$ml")${mwhere:+, in $mwhere})"
+    (( gn > 0 )) && more="${more:+$more; }QEMU's graphics thread stood still $gn time(s) (longest $(secs "$gl")${where:+, in $where})"
+    if (( n > 0 )) && [[ $cause == cpu ]]; then
+      warn "VM stalls" "waited for the Mac's CPUs $n time(s) this run (longest $(secs "$longest"))${more:+; $more}"
+    elif (( n > 0 )) && [[ $cause == kernel ]]; then
+      warn "VM stalls" "stood still $n time(s) this run (longest $(secs "$longest")), blocked in macOS's kernel while the Mac was not paging (logs/qemu.log has each)${more:+; $more}"
+    elif (( n > 0 )); then
+      mac=$(sysctl -n hw.memsize 2>/dev/null); mac=${mac:+$(( mac / 1073741824 )) GB}
+      warn "VM stalls" "stood still $n time(s) this run (longest $(secs "$longest")): the Mac ran out of memory (${vmm:+VM memory $(gb "$vmm"), }${peak:+graphics peak $(gb "$peak"), }Mac ${mac:-?}); give the VM less: omacvm resources --vm \"$VM\"${more:+; $more}"
+    elif [[ -n $more ]]; then
+      warn "VM stalls" "$more"
+    else ok "VM stalls" "no stall seen this run"; fi
+  fi
 fi
 # The GPU path an app VM took this run (qemu.log starts fresh with each run):
 # fences from the sync thread or polled, frames as IOSurfaces or with a
@@ -953,16 +986,25 @@ if [[ $TYPE == app ]]; then
   # the notch, Omanotch fills the strip beside it. FullPanel (experimental,
   # src/lib/notch.sh): QEMU's window covers the strip and the VM's bar sits
   # there; QEMU logs "strip covered" once it has it, "strip lost" or "using
-  # normal full screen" when it fell back.
+  # normal full screen" when it fell back, "display change: ..." while a
+  # display change keeps the window below the notch (until "strip covered"),
+  # "strip not back after a display change" when macOS kept it there after
+  # the MacBook's display went and came back
+  # (omacvm-cocoa-fullpanel-retake.patch; with "menu bar always shown" the
+  # remedy is the menu bar setting, else leaving and entering full screen).
+  # "strip taken again" is not read.
   nd=$(app_dir "$VM" 2>/dev/null) || nd=""
   nmode=native; [[ -n $nd ]] && nmode=$(notch_choice "$nd")
   nlast=""; [[ -n $nd ]] && nlast=$(notch_this_start "$nd")
   if (( fp_start )); then
-    nq=$(grep -E '^omacvm: full panel: (strip covered|strip lost|.*normal full screen)' "$nd/logs/qemu.log" 2>/dev/null | tail -1)
+    nq=$(grep -E '^omacvm: full panel: (strip covered|strip lost|display change:|.*normal full screen)' "$nd/logs/qemu.log" 2>/dev/null | tail -1)
     nq=${nq#omacvm: full panel: }
     case $nq in
       "strip covered"*) ok "full screen (app)" "including notch (experimental): $nq; Omanotch idle" ;;
       "strip lost"*) warn "full screen (app)" "including notch set, but macOS moved the window below the notch: normal full screen until the next one ($nq)" ;;
+      "display change:"*) warn "full screen (app)" "including notch set; a display change moved the window below the notch, the strip comes back once the displays settle and the Mac is unlocked ($nq)" ;;
+      "strip not back after a display change (menu bar always shown)"*) warn "full screen (app)" "including notch set, but after a display change macOS shows its menu bar over the strip, so the window stays below the notch ($nq): $MENU_HINT, or turn on Keep the Dock and hot corners away in OmacVM (from the next start); then leave full screen and enter it again" ;;
+      "strip not back"*) warn "full screen (app)" "including notch set, but after a display change macOS kept the window below the notch ($nq); leave full screen and enter it again to cover the strip" ;;
       "") skip "full screen (app)" "including notch this start, not in full screen on the MacBook's display yet" ;;
       *) warn "full screen (app)" "including notch set, but QEMU uses normal full screen: $nq" ;;
     esac

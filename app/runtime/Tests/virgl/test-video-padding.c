@@ -554,8 +554,11 @@ static void run_case(struct source *s, int expect_marker)
    }
 
    /* the picture (bit for bit), and past what the host decoded: its last row/column; with
-    * film grain the same for the buffer the guest shows */
-   for (int b = 0; b < (s->grain ? 2 : 1); b++) {
+    * film grain the same for the buffer the guest shows, read first, as Chrome reads only
+    * that one (its read must wait for the pictures on their way into it, not only a read of
+    * the decoder's own buffer: virgl-videotoolbox-session-queue.patch) */
+   for (int k = 0; k < (s->grain ? 2 : 1); k++) {
+      int b = s->grain ? 1 - k : 0;
       struct planes_result r;
       planes_check(s, b ? res2 : res, pw, ph, texel, &r);
       snprintf(line, sizeof(line), "%s%s %dx%d%s into planes %ux%u + %ux%u, %d pictures: the "
