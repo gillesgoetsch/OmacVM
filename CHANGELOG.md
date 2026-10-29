@@ -10,9 +10,10 @@ in more words.
   V4L2 decoder, whose buffers are the picture rounded up to even. A video of an odd width or
   height (a VP9 video of 853x480 or 1001x563) came out squeezed by that extra column and row.
   The decoder now tells the Mac the picture's size for such buffers. Measured in a test VM
-  (Chromium 153, Mac mini M4): 853x480 and 1001x563 exact (3.2.11: one column, and one column
-  and one row, too many in their place); even sizes, every size YouTube sends among them, were
-  and stay exact. Needs Update VM (the 3.2.11 app is enough).
+  (Chromium 153, Mac mini M4): 853x480 and 1001x563 line ratios exact (1.0002; 1.00005/1.00007),
+  as with CPU decoding (3.2.11: one column, and one column and one row, too many in their
+  place); 854x480, 720p, 1080p and 1000x562 were and stay exact. Needs Update VM (the 3.2.11
+  app is enough).
 
 ## 3.2.11
 

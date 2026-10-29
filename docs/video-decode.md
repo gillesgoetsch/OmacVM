@@ -474,7 +474,8 @@ Limits:
   (`src/vdec/guest/vdecd-logical.h`), only when the app's runtime says
   `omacvm.valogical=1` (3.2.11 and newer; with an older app the column
   stays). `OMACVM_VA_LOGICAL=0` in the service's environment turns it off.
-  Even sizes, every size YouTube sends among them, need nothing.
+  Even sizes need nothing (measured: 854x480, 720p, 1080p and 1000x562
+  exact, nothing sent).
 - **Memory**: Chromium's buffers are pinned VM memory, about 33 MB each at
   4K and 10 per video (8 MB each at 1080p).
 - **At most 8 videos** decode this way at once; more play on the CPU. One
