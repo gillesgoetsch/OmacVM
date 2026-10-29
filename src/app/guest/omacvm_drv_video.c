@@ -1034,15 +1034,22 @@ void omacvm_va_dmabuf_imported_v1(uint32_t fourcc, uint32_t w, uint32_t h, unsig
             }
         }
     }
-    if (ok && k && send_logical(drm_fd(s->drv), (const uint32_t (*)[3])e, (unsigned)k)) {
-        for (int i = 0; i < np; i++) {
-            s->lw[plane[i]] = want[i][0];
-            s->lh[plane[i]] = want[i][1];
+    if (ok && k) {
+        int sent = send_logical(drm_fd(s->drv), (const uint32_t (*)[3])e, (unsigned)k);
+
+        if (sent) {
+            for (int i = 0; i < np; i++) {
+                s->lw[plane[i]] = want[i][0];
+                s->lh[plane[i]] = want[i][1];
+            }
+            if (s->lw[0]) {
+                s->flags |= SURF_DECLARED;
+                __atomic_store_n(&declared_any, 1, __ATOMIC_RELAXED);
+            }
         }
-        if (s->lw[0]) {
-            s->flags |= SURF_DECLARED;
-            __atomic_store_n(&declared_any, 1, __ATOMIC_RELAXED);
-        }
+        if (getenv("OMACVM_VA_DEBUG"))
+            fprintf(stderr, "omacvm_drv_video: an import at %ux%u (%.4s): %d plane size(s) %s\n",
+                    w, h, (const char *)&fourcc, k, sent ? "sent" : "not sent");
     }
     pthread_mutex_unlock(&surf_lock);
 }
