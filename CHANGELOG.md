@@ -6,7 +6,7 @@ in more words.
 ## 3.2.13 (unreleased)
 
 - **Updating a running VM whose screen is locked no longer leaves Omarchy's lock screen without
-  its password field.** `omacvm update` and `omacvm apply` wrote OmacVM's bar widgets again and
+  its password field (#617).** `omacvm update` and `omacvm apply` wrote OmacVM's bar widgets again and
   asked Omarchy's shell to rescan them. The shell of omarchy-mac 4.0.3 then reloads all its
   plugins, its own lock screen too, and under the lock the new lock screen had no password field
   until the VM was shut down and started again (3.2.11 and 3.2.12). Now nothing is written there
