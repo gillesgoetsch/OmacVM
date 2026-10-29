@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.13 (unreleased)
+
+- **H.264 coded interlaced decodes on the CPU instead of showing green.** In an OmacVM.app VM,
+  H.264 video coded as fields or MBAFF frames (interlaced TV recordings, x264's interlaced mode)
+  came out green with hardware decoding in mpv and FFmpeg, with or without deinterlacing
+  (measured on 3.2.12). The Mac's hardware decoder does not take such streams, and
+  VideoToolbox's software decoder, which it used instead, dropped every picture after the first
+  few and got the colours wrong at 1080 lines. OmacVM's VA-API driver in the VM now refuses these
+  pictures, so the app gets an error and mpv (`--hwdec=vaapi`) decodes on the CPU; with FFmpeg
+  leave out `-hwaccel vaapi`. Video coded as progressive frames decodes in hardware as before.
+  Measured on a Mac mini M4 with macOS 27.0 (docs/video-decode.md). Needs Update VM.
+
 ## 3.2.12
 
 In an OmacVM.app VM, memory the VM gives back now leaves the Mac, and the VM gives back its
