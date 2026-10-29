@@ -11,9 +11,12 @@ in more words.
   (measured on 3.2.12). The Mac's hardware decoder does not take such streams, and
   VideoToolbox's software decoder, which it used instead, dropped every picture after the first
   few and got the colours wrong at 1080 lines. OmacVM's VA-API driver in the VM now refuses these
-  pictures, so the app gets an error and mpv (`--hwdec=vaapi`) decodes on the CPU; with FFmpeg
-  leave out `-hwaccel vaapi`. Video coded as progressive frames decodes in hardware as before.
-  Measured on a Mac mini M4 with macOS 27.0 (docs/video-decode.md). Needs Update VM.
+  pictures, so the app gets an error instead: mpv (`--hwdec=vaapi`) switches to the CPU by itself
+  and shows the same picture as its CPU decoding (3.2.12: 99 % green at 1080i); FFmpeg with
+  `-hwaccel vaapi` prints an error for each picture and exits with 69, so leave that option out
+  for these videos. Video coded as
+  progressive frames decodes in hardware as before. Measured on a Mac mini M4 with macOS 27.0
+  (docs/video-decode.md). Needs Update VM.
 
 ## 3.2.12
 
