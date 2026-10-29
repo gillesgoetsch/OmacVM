@@ -778,7 +778,11 @@ The less obvious ones, with causes and where the fix lives, are in
   `guest/restart-shell.sh`'s job put it in place after the unlock, before its
   one restart (`lib/install-plugin.sh`, `lib/omacvm-plugins`); `omarchy plugin
   validate`, `enable` and `disable` are safe (they read the folder or change
-  shell.json only). Do not try to recover with a shell restart instead:
+  shell.json only). Feature offs under the lock: the control centre goes out
+  of the bar and its folder stays until the next apply; Omanotch's own
+  uninstall waits for the unlock (`guest/off.sh`, `guest/restart-shell.sh`);
+  Omanotch's `display-panel.py` asks Omarchy's lock status as `copies.py`
+  does. Do not try to recover with a shell restart instead:
   `omarchy-restart-shell` refuses while the lock is requested, and a restart
   under the lock is what #612 removed. `src/tests/plugin-lock.sh` fails for a
   new `rescanPlugins` caller that does not ask first. Not Omarchy's #738 (no
