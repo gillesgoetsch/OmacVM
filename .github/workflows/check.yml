@@ -406,6 +406,9 @@ jobs:
       - name: A newer memory-optimized kernel is built only when asked for
         run: src/tests/kernel-ask.sh
 
+      - name: The memory-optimized kernel's PKGBUILD is written from ALARM's 7.3 (a commented-out source) and from point releases
+        run: src/tests/thp-pkgbuild.sh
+
       - name: An app VM folder's own SSH key is made, found and offered first (a VM copied to another Mac)
         run: src/tests/vm-ssh-key.sh
 

@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.12 (unreleased)
+
+- **The memory-optimized kernel builds again.** Arch Linux ARM's kernel 7.3 has a commented-out
+  line in its list of sources, and OmacVM counted it, so the kernel build stopped at once with
+  "thp-pkgbuild: source and md5sums differ in length" on every route: turning the
+  memory-optimized kernel on failed (the VM went back to what it had), and Build Now in Update
+  VM kept the old kernel. It now skips such lines, as Arch's own tools do. After the update:
+  Update VM and Build Now (`omacvm update --vm NAME --kernel`), or turn the kernel on again
+  where that failed.
+
 ## 3.2.11
 
 In an OmacVM.app VM, Google Chrome's GPU process no longer crashes in video calls, most
