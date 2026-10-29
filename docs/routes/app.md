@@ -1432,7 +1432,7 @@ first, without compressing them. Pages macOS is compressing at that very
 moment get the same once more 20 ms later. "Held" below means in memory
 and not marked, or compressed: marked pages count as given back, though on
 a Mac with room they stay in memory until macOS needs it or the VM stops.
-Nothing of this runs under QEMU's main lock: a range the thread has no room
+The advice never runs under QEMU's main lock: a range the thread has no room
 for (4096 ranges waiting) or that cannot be moved aside gets the old way,
 and `logs/qemu.log` counts it. On the Mac mini (a 3 GB VM after a browser
 session, macOS compressing it), the old way left on the Mac all 1.3 GB it
