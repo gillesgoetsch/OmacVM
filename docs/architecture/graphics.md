@@ -585,6 +585,15 @@ Patches (all in `app/runtime/patches`, one per concern):
   memory) and leaves out COLOR_ATTACHMENT only where optimal tiling renders.
   `Tests/virgl/test-venus-image-limits.c` runs 101 cases through vkr's dispatch
   on the staged drivers at every runtime build.
+- `virgl-venus-missing-entries.patch`, `virgl-venus-guest-asserts.patch`,
+  `virgl-venus-buffer-binds.patch` (ADR 0065's amendment, 3.2.15): what still
+  ended QEMU in vkr itself (section 10). Proc table entries are never NULL: a
+  command of a Vulkan version or extension the app's device was not made with
+  reaches a stub that ends the app's context (`VKR_MISSING` tells a stub); the
+  asserts a guest reached are refusals; buffer binds stay inside their memory.
+  `Tests/virgl/test-venus-robust.c` sends its cases as encoded streams through
+  `vkr_context_submit_cmd` (one through a ring thread, one nested) at every
+  runtime build.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended
@@ -863,10 +872,15 @@ What crosses and who checks it:
   the memory, layout queries against the image, views against their image or
   buffer, sampler enums. A refused create gets `VK_ERROR_FORMAT_NOT_SUPPORTED`;
   a refused bind, view or sampler ends that app's Venus context (the guest
-  does not wait for those answers), and QEMU's log says why. Still open
-  (follow-up): buffer bind ranges, pipelines, render passes, descriptor writes,
-  command encoding, vkr's `assert()`s, NULL entry points of commands a device
-  was not made with. QEMU keeps the hardened runtime.
+  does not wait for those answers), and QEMU's log says why. Since 3.2.15
+  (ADR 0065's amendment) vkr also refuses what ended QEMU in vkr itself: a
+  command the app's device was not made with (a stub in every NULL proc table
+  entry ends that app's context), the guest values that reached its
+  `assert()`s (virgl keeps them in release), buffer binds past their memory and
+  memory made larger than the resource it comes from. Still open (#624):
+  pipelines, render passes, descriptor writes, command encoding, two rings on
+  one object at once, a guest that runs QEMU out of threads. QEMU keeps the
+  hardened runtime.
 - **video bitstreams**: our code parses slice headers (H.264 `pps_id`,
   ref-idx overrides), AV1 OBU headers and VP9 frames before VideoToolbox
   sees them. These parsers need a libFuzzer harness (planned, owner:

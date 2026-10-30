@@ -1,0 +1,217 @@
+virglrenderer: Venus refuses what reached vkr's asserts
+
+What: the assert()s a guest's commands reached (virglrenderer is built with
+assertions on) now end only the app's Venus context, with a log line:
+- vkImportSemaphoreResourceMESA with a resource id other than 0;
+- one object id twice in one call (vkAllocateCommandBuffers,
+  vkAllocateDescriptorSets, vkCreate*Pipelines), checked on a sorted copy of the
+  ids before any driver call;
+- host-visible memory the guest asked to export as OPAQUE_FD (the emulated
+  KHR_external_memory_fd) that has a Metal heap exports the heap;
+- vkCreateRingMESA that ends the context after listing the ring (a monitor
+  period of 0): a ring that never started is not stopped at the context's end,
+  by vkDestroyRingMESA or at the end of its resource. A ring whose thread was not
+  made ends the context, and the ring monitor counts as started only once its
+  thread runs (these two only fix the asserts: a guest that runs the process out
+  of threads still ends QEMU elsewhere, #624).
+Of the 79 asserts in src/venus: these 4 reached, 73 internal (constants, host
+values, or checked before; they stay), 1 on a failed thread creation (the ring
+monitor's) and 1 race. The race asserts in vkr_context.h (an object's add and
+remove) stay and a guest can still reach them, with two rings creating or
+destroying one id at once: open in #624.
+Why: each ended QEMU's process (SIGABRT): resource id 5 (vkr_queue.c), the same
+command buffer id twice (vkr_context.h), an OPAQUE_FD export on KosmicKrisp
+(vkr_device_memory.c), a ring monitor period of 0 and then the app's end
+(vkr_ring.c), on KosmicKrisp and MoltenVK alike but for the export (M4, macOS
+27).
+Upstream: the semaphore, the ids and the ring are vkr bugs on every host (draft
+with the missing entries'); the export choice is OmacVM's (Metal heaps).
+Tests: Tests/virgl/test-venus-robust.c: a-sem-import-res, a-dup-alloc and
+a-monitor0 (then the context's end) end the process before the patch and only
+the context after it; x-opaque exports on KosmicKrisp; two command buffers in one
+call, a ring and its context's end, DMA_BUF exports still work.
+
+diff --git a/src/venus/vkr_common.c b/src/venus/vkr_common.c
+index 34f8ced..ae7e2be 100644
+--- a/src/venus/vkr_common.c
++++ b/src/venus/vkr_common.c
+@@ -273,6 +273,46 @@ object_array_fini(struct object_array *arr)
+    free(arr->handle_storage);
+ }
+ 
++static int
++object_id_compare(const void *a, const void *b)
++{
++   const vkr_object_id x = *(const vkr_object_id *)a, y = *(const vkr_object_id *)b;
++   return x < y ? -1 : x > y;
++}
++
++/* OmacVM (virgl-venus-guest-asserts.patch): the guest names the new objects' ids, and one
++ * id twice in one call would put two objects under it (vkr_context_add_object asserts
++ * that it never happens). Sorted, so a guest's count costs n log n. */
++static bool
++object_array_ids_unique(struct vkr_context *ctx,
++                        uint32_t count,
++                        VkObjectType obj_type,
++                        size_t handle_size,
++                        const void *obj_id_handles)
++{
++   if (count < 2)
++      return true;
++   vkr_object_id *ids = malloc(sizeof(*ids) * count);
++   if (!ids)
++      return false;
++   for (uint32_t i = 0; i < count; i++) {
++      const void *obj_id_handle = (const char *)obj_id_handles + handle_size * i;
++      ids[i] = vkr_cs_handle_load_id((const void **)obj_id_handle, obj_type);
++   }
++   qsort(ids, count, sizeof(*ids), object_id_compare);
++   for (uint32_t i = 1; i < count; i++) {
++      if (ids[i] == ids[i - 1]) {
++         vkr_context_refuse(ctx, true, "an object array",
++                            "%u new objects of type %d name id %" PRIu64 " twice", count,
++                            obj_type, ids[i]);
++         free(ids);
++         return false;
++      }
++   }
++   free(ids);
++   return true;
++}
++
+ bool
+ object_array_init(struct vkr_context *ctx,
+                   struct object_array *arr,
+@@ -282,6 +322,9 @@ object_array_init(struct vkr_context *ctx,
+                   size_t handle_size,
+                   const void *obj_id_handles)
+ {
++   if (!object_array_ids_unique(ctx, count, obj_type, handle_size, obj_id_handles))
++      return false;
++
+    arr->count = count;
+ 
+    arr->objects = malloc(sizeof(*arr->objects) * count);
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 8ba56cd..ba5c9f9 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -689,8 +689,11 @@ vkr_context_ring_monitor_init(struct vkr_context *ctx, uint32_t report_period_us
+    ctx->ring_monitor.report_period_us = report_period_us;
+    ctx->ring_monitor.started = true;
+    ret = thrd_create(&ctx->ring_monitor.thread, vkr_context_ring_monitor_thread, ctx);
+-   if (ret != thrd_success)
++   if (ret != thrd_success) {
++      /* OmacVM (virgl-venus-guest-asserts.patch): no thread to stop at the context's end */
++      ctx->ring_monitor.started = false;
+       goto err_monitor_thrd_create;
++   }
+ 
+    return true;
+ 
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index fc2ba2d..96a6839 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -894,8 +894,11 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+       fd_type = VIRGL_RESOURCE_FD_DMABUF;
+       handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    } else if (can_export_opaque || can_export_metal) {
+-      /* prefer opaque for performance? */
+-      if (can_export_opaque) {
++      /* prefer opaque for performance? OmacVM (virgl-venus-guest-asserts.patch): not over
++       * a Metal heap: the export below takes the heap whenever the memory has one, and a
++       * guest that asked for OPAQUE_FD too (the emulated KHR_external_memory_fd) made it
++       * assert there */
++      if (can_export_opaque && !can_export_metal) {
+          fd_type = VIRGL_RESOURCE_FD_OPAQUE;
+          handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+       } else {
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index 1be36cc..8977b5b 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -643,7 +643,13 @@ vkr_dispatch_vkImportSemaphoreResourceMESA(
+    const VkImportSemaphoreResourceInfoMESA *res_info = args->pImportSemaphoreResourceInfo;
+ 
+    /* resourceId 0 is for importing a signaled payload to sync_fd fence */
+-   assert(!res_info->resourceId);
++   if (res_info->resourceId) {
++      /* OmacVM (virgl-venus-guest-asserts.patch): a guest value, not an invariant */
++      vkr_context_refuse(ctx, true, "vkImportSemaphoreResourceMESA",
++                         "resource %u (only 0, a signaled payload, can be imported)",
++                         res_info->resourceId);
++      return;
++   }
+ 
+    const VkImportSemaphoreFdInfoKHR import_info = {
+       .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+diff --git a/src/venus/vkr_ring.c b/src/venus/vkr_ring.c
+index 640e760..f116286 100644
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -342,7 +342,7 @@ vkr_ring_thread(void *arg)
+    return ret;
+ }
+ 
+-void
++bool
+ vkr_ring_start(struct vkr_ring *ring)
+ {
+    int ret;
+@@ -352,17 +352,23 @@ vkr_ring_start(struct vkr_ring *ring)
+    ret = thrd_create(&ring->thread, vkr_ring_thread, ring);
+    if (ret != thrd_success)
+       ring->started = false;
++   return ring->started;
+ }
+ 
+ bool
+ vkr_ring_stop(struct vkr_ring *ring)
+ {
+    mtx_lock(&ring->mutex);
++   /* OmacVM (virgl-venus-guest-asserts.patch): a ring vkCreateRingMESA listed but never
++    * started (a guest's bad monitor period, or no thread) has no thread to stop */
++   if (!ring->started) {
++      mtx_unlock(&ring->mutex);
++      return true;
++   }
+    if (thrd_equal(ring->thread, thrd_current())) {
+       mtx_unlock(&ring->mutex);
+       return false;
+    }
+-   assert(ring->started);
+    ring->started = false;
+    cnd_signal(&ring->cond);
+    mtx_unlock(&ring->mutex);
+diff --git a/src/venus/vkr_ring.h b/src/venus/vkr_ring.h
+index cd70c14..196d456 100644
+--- a/src/venus/vkr_ring.h
++++ b/src/venus/vkr_ring.h
+@@ -112,7 +112,7 @@ vkr_ring_create(const struct vkr_ring_layout *layout,
+ void
+ vkr_ring_destroy(struct vkr_ring *ring);
+ 
+-void
++bool
+ vkr_ring_start(struct vkr_ring *ring);
+ 
+ bool
+diff --git a/src/venus/vkr_transport.c b/src/venus/vkr_transport.c
+index 85c0294..1a24509 100644
+--- a/src/venus/vkr_transport.c
++++ b/src/venus/vkr_transport.c
+@@ -260,7 +260,12 @@ vkr_dispatch_vkCreateRingMESA(struct vn_dispatch_context *dispatch,
+       ring->prio = priority_info->priority;
+    }
+ 
+-   vkr_ring_start(ring);
++   /* OmacVM (virgl-venus-guest-asserts.patch): no thread, no ring: its commands would
++    * never run */
++   if (!vkr_ring_start(ring)) {
++      vkr_log("vkCreateRingMESA: no thread for the ring");
++      vkr_context_set_fatal(ctx);
++   }
+ }
+ 
+ static void

@@ -1,0 +1,729 @@
+virglrenderer: Venus proc table entries are never NULL
+
+What: when vkr loads a physical device's or a device's proc table, every entry
+the driver did not give gets a stub of the entry's own type
+(vkr_missing_entries.c, from the generated list vkr_proc_entries.h): a command of
+a Vulkan version or extension the app's instance or device was not made with.
+Called while a thread dispatches an app's commands (vkr_context_submit_cmd or a
+ring thread set the per-thread vkr_dispatching_context), a stub ends that app's
+Venus context with a log line; called from vkr's own code (a blob export, the
+context's end) it logs and returns an error, so the caller fails. The
+physical-device queries of four device extensions (calibrated timestamps,
+cooperative matrix, fragment shading rate, sample locations) count only when the
+device lists the extension: the Vulkan loader gives an entry for each and ends
+the process when the driver lacks it. Entries are never NULL from here on:
+VKR_MISSING tells a stub, and the six checks that tested NULL use it (#623's four
+device-image queries, which answer zeros, and the two Metal handle calls). A
+static assert stops the build when upstream adds an entry, until
+vkr_proc_entries.h is made again (Tests/virgl/venus-missing-entries.py).
+Why: a device's entries follow MIN(the driver's version, the guest's instance
+apiVersion) and its extensions: on a 1.1 device without extensions 148 of 286
+are NULL on KosmicKrisp (146 on MoltenVK), and 130 guest commands call such an
+entry without a check. A guest program sending one (vkCmdSetCullMode on a 1.1
+device, any acceleration structure command, vkQueueSubmit2 ...) made QEMU call
+address 0, on every path (command buffer, generated create, query, queue, the
+MESA commands, a ring thread, nested streams) and on KosmicKrisp and MoltenVK
+(M4, macOS 27, one process per case, 3 runs). A stub at load covers every dispatch function and vkr's own calls and
+costs nothing per command; a lookup in the dispatch layer would need a hand-kept
+map of commands to entries and would miss vkr's own calls.
+Upstream: a vkr bug on every host (a guest can send any command); draft in
+work/upstream-drafts/virglrenderer-venus-missing-entries.md, not sent.
+Tests: Tests/virgl/test-venus-robust.c (build time): after a 1.1 device without
+extensions every entry is set and the stubs are the missing ones; the n- and p-
+cases end the process before the patch and only the context after it; #623's
+queries on such a device still answer zeros; a stub vkr calls itself returns an
+error; vkr_context_submit_cmd puts the dispatching context back.
+run-venus-limits.py checks vkr_proc_entries.h against the built tree.
+
+diff --git a/src/meson.build b/src/meson.build
+index 202ce3d..0a6d2c1 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -79,6 +79,7 @@ venus_sources = [
+    'venus/vkr_image.c',
+    'venus/vkr_instance.c',
+    'venus/vkr_library.c',
++   'venus/vkr_missing_entries.c',
+    'venus/vkr_physical_device.c',
+    'venus/vkr_pipeline.c',
+    'venus/vkr_query_pool.c',
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index c3f51de..8ba56cd 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -167,8 +167,10 @@ vkr_context_submit_fence(struct vkr_context *ctx,
+    return ok;
+ }
+ 
+-bool
+-vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
++_Thread_local struct vkr_context *vkr_dispatching_context;
++
++static bool
++vkr_context_dispatch_stream(struct vkr_context *ctx, const void *buffer, size_t size)
+ {
+    /* CS error is considered fatal (destroy the context?) */
+    if (vkr_context_get_fatal(ctx)) {
+@@ -192,6 +194,18 @@ vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
+    return true;
+ }
+ 
++bool
++vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
++{
++   /* OmacVM: the context a missing entry point ends (vkr_missing_entries.c), put back on
++    * every way out */
++   struct vkr_context *outer = vkr_dispatching_context;
++   vkr_dispatching_context = ctx;
++   const bool ok = vkr_context_dispatch_stream(ctx, buffer, size);
++   vkr_dispatching_context = outer;
++   return ok;
++}
++
+ static inline void
+ vkr_context_free_resource(struct hash_entry *entry)
+ {
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index c1e85c4..8901c83 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -112,6 +112,13 @@ struct vkr_context {
+    struct vulkan_library vulkan_library;
+ };
+ 
++/* OmacVM (virgl-venus-missing-entries.patch): the context whose guest commands this
++ * thread dispatches right now, else NULL. vkr_context_submit_cmd sets it around a stream
++ * and a ring thread for its whole life: a proc table entry the driver did not give
++ * (vkr_missing_entries.h) ends that context. Any new thread that dispatches guest
++ * commands sets it too. */
++extern _Thread_local struct vkr_context *vkr_dispatching_context;
++
+ struct vkr_context *
+ vkr_context_create(uint32_t ctx_id,
+                    vkr_renderer_retire_fence_callback_type cb,
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 16dbba4..482b93d 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -76,6 +76,9 @@ vkr_device_init_proc_table(struct vkr_device *dev,
+ 
+    vn_util_init_device_proc_table(dev->base.handle.device, vk->GetDeviceProcAddr,
+                                   api_version, &ext_table, &dev->proc_table);
++   /* OmacVM: a command of a version or extension the device was not made with is NULL
++    * here; a guest can send it anyway (vkr_missing_entries.h) */
++   vkr_device_proc_table_fill_missing(&dev->proc_table);
+ }
+ 
+ static bool vkr_iosurface_windows_env;
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index 2092d8c..e8617da 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -11,6 +11,7 @@
+ #include "venus-protocol/vn_protocol_renderer_util.h"
+ 
+ #include "vkr_context.h"
++#include "vkr_missing_entries.h"
+ 
+ struct vkr_device {
+    struct vkr_object base;
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index f7cbebb..fc2ba2d 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -733,7 +733,7 @@ vkr_dispatch_vkGetMemoryResourcePropertiesMESA(
+          .pNext = NULL,
+          .memoryTypeBits = 0,
+       };
+-      if (!vk->GetMemoryMetalHandlePropertiesEXT) {
++      if (VKR_MISSING(vk, GetMemoryMetalHandlePropertiesEXT)) {
+          vkr_log("metal import failed: the driver has no vkGetMemoryMetalHandlePropertiesEXT");
+          args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+          return;
+@@ -944,7 +944,7 @@ vkr_device_memory_export_blob(struct vkr_device_memory *mem,
+          .memory = mem->base.handle.device_memory,
+          .handleType = handle_type,
+       };
+-      if (!vk->GetMemoryMetalHandleEXT) {
++      if (VKR_MISSING(vk, GetMemoryMetalHandleEXT)) {
+          vkr_log("metal export failed: the driver has no vkGetMemoryMetalHandleEXT");
+          return false;
+       }
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 0d4daaf..63853fb 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -551,12 +551,12 @@ vkr_dispatch_vkGetImageSubresourceLayout2(
+ 
+    /* OmacVM: only a subresource of the image, and only on a device that has the call (a
+     * guest can send any command: an entry point of an API version or extension the device
+-    * does not have is NULL here) */
++    * does not have is a stub here, vkr_missing_entries.h) */
+    const struct vkr_image *image = vkr_image_from_handle(args->image);
+    char why[192] = "no image";
+-   if (!vk->GetImageSubresourceLayout2)
++   if (VKR_MISSING(vk, GetImageSubresourceLayout2))
+       snprintf(why, sizeof(why), "the device has no vkGetImageSubresourceLayout2");
+-   if (!vk->GetImageSubresourceLayout2 || !image ||
++   if (VKR_MISSING(vk, GetImageSubresourceLayout2) || !image ||
+        !vkr_image_subresource_ok(image->format, image->drm_linear, image->mip_levels,
+                                  image->array_layers, &args->pSubresource->imageSubresource,
+                                  why, sizeof(why))) {
+@@ -583,7 +583,8 @@ vkr_dispatch_vkGetDeviceImageSubresourceLayout(
+    VkImageCreateInfo *info = (VkImageCreateInfo *)args->pInfo->pCreateInfo;
+    const bool drm = info->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    char why[192] = "the device has no vkGetDeviceImageSubresourceLayout";
+-   if (!vk->GetDeviceImageSubresourceLayout || !vkr_image_device_info_ok(dev, info, why, sizeof(why)) ||
++   if (VKR_MISSING(vk, GetDeviceImageSubresourceLayout) ||
++       !vkr_image_device_info_ok(dev, info, why, sizeof(why)) ||
+        !vkr_image_subresource_ok(info->format, drm && info->tiling == VK_IMAGE_TILING_LINEAR,
+                                  info->mipLevels, info->arrayLayers,
+                                  &args->pInfo->pSubresource->imageSubresource, why,
+@@ -794,7 +795,7 @@ vkr_dispatch_vkGetDeviceImageMemoryRequirements(
+    /* OmacVM: the create info as vkCreateImage makes it, checked the same way (and the
+     * device has the call) */
+    char why[192] = "the device has no vkGetDeviceImageMemoryRequirements";
+-   if (!vk->GetDeviceImageMemoryRequirements ||
++   if (VKR_MISSING(vk, GetDeviceImageMemoryRequirements) ||
+        !vkr_image_device_info_ok(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo, why,
+                                  sizeof(why))) {
+       vkr_context_refuse(dispatch->data, false, "vkGetDeviceImageMemoryRequirements", "%s",
+@@ -820,7 +821,7 @@ vkr_dispatch_vkGetDeviceImageSparseMemoryRequirements(
+    /* OmacVM: the create info as vkCreateImage makes it, checked the same way (and the
+     * device has the call) */
+    char why[192] = "the device has no vkGetDeviceImageSparseMemoryRequirements";
+-   if (!vk->GetDeviceImageSparseMemoryRequirements ||
++   if (VKR_MISSING(vk, GetDeviceImageSparseMemoryRequirements) ||
+        !vkr_image_device_info_ok(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo, why,
+                                  sizeof(why))) {
+       vkr_context_refuse(dispatch->data, false, "vkGetDeviceImageSparseMemoryRequirements",
+diff --git a/src/venus/vkr_missing_entries.c b/src/venus/vkr_missing_entries.c
+new file mode 100644
+index 0000000..f9aa430
+--- /dev/null
++++ b/src/venus/vkr_missing_entries.c
+@@ -0,0 +1,76 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-missing-entries.patch): the stubs of vkr_missing_entries.h, one per
++ * proc table entry, each with the entry's own type (vkr_proc_entries.h is generated from
++ * the PFN typedefs, so no call goes through a cast function type). */
++
++#include "vkr_missing_entries.h"
++
++#include "vkr_context.h"
++
++/* a stub ignores its parameters */
++#pragma GCC diagnostic ignored "-Wunused-parameter"
++
++static void
++vkr_missing_entry(const char *name)
++{
++   struct vkr_context *ctx = vkr_dispatching_context;
++   if (ctx) {
++      vkr_context_refuse(ctx, true, name,
++                         "the app's Vulkan instance or device has no such command (it was "
++                         "not made with the Vulkan version or extension of it)");
++      return;
++   }
++
++   /* vkr's own call outside an app's commands: no context to end, the caller fails */
++   static atomic_uint_fast64_t calls;
++   const uint64_t n = atomic_fetch_add(&calls, 1) + 1;
++   if (!(n & (n - 1)))
++      vkr_log("%s: the Vulkan driver has no such command for this device; vkr's call "
++              "failed (%" PRIu64 " so far)", name, n);
++}
++
++#define VKR_MISSING_DEFINE(ret, name, params, fallback)                                    \
++   VKAPI_ATTR ret VKAPI_CALL vkr_missing_vk##name params                                   \
++   {                                                                                       \
++      vkr_missing_entry("vk" #name);                                                       \
++      return fallback;                                                                     \
++   }
++#define VKR_MISSING_DEFINE_VOID(name, params)                                              \
++   VKAPI_ATTR void VKAPI_CALL vkr_missing_vk##name params                                  \
++   {                                                                                       \
++      vkr_missing_entry("vk" #name);                                                       \
++   }
++VKR_PHYSICAL_DEVICE_PROC_ENTRIES(VKR_MISSING_DEFINE, VKR_MISSING_DEFINE_VOID)
++VKR_DEVICE_PROC_ENTRIES(VKR_MISSING_DEFINE, VKR_MISSING_DEFINE_VOID)
++
++/* A member added to either table upstream stops the build here until
++ * vkr_proc_entries.h is made again (Tests/virgl/venus-missing-entries.py). */
++_Static_assert(sizeof(struct vn_physical_device_proc_table) ==
++                  VKR_PHYSICAL_DEVICE_PROC_ENTRY_COUNT * sizeof(PFN_vkVoidFunction),
++               "vn_physical_device_proc_table changed: make vkr_proc_entries.h again");
++_Static_assert(sizeof(struct vn_device_proc_table) ==
++                  VKR_DEVICE_PROC_ENTRY_COUNT * sizeof(PFN_vkVoidFunction),
++               "vn_device_proc_table changed: make vkr_proc_entries.h again");
++
++#define VKR_MISSING_FILL(ret, name, params, fallback)                                      \
++   if (!table->name)                                                                       \
++      table->name = vkr_missing_vk##name;
++#define VKR_MISSING_FILL_VOID(name, params)                                                \
++   if (!table->name)                                                                       \
++      table->name = vkr_missing_vk##name;
++
++void
++vkr_physical_device_proc_table_fill_missing(struct vn_physical_device_proc_table *table)
++{
++   VKR_PHYSICAL_DEVICE_PROC_ENTRIES(VKR_MISSING_FILL, VKR_MISSING_FILL_VOID)
++}
++
++void
++vkr_device_proc_table_fill_missing(struct vn_device_proc_table *table)
++{
++   VKR_DEVICE_PROC_ENTRIES(VKR_MISSING_FILL, VKR_MISSING_FILL_VOID)
++}
+diff --git a/src/venus/vkr_missing_entries.h b/src/venus/vkr_missing_entries.h
+new file mode 100644
+index 0000000..5f4660a
+--- /dev/null
++++ b/src/venus/vkr_missing_entries.h
+@@ -0,0 +1,43 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-missing-entries.patch): no entry of a physical device's or a
++ * device's proc table is ever NULL. An entry the driver did not give (a command of a
++ * Vulkan version or extension the app's instance or device was not made with) points at
++ * a stub of the entry's own type. Called while a thread dispatches an app's commands
++ * (vkr_dispatching_context), the stub ends that app's Venus context with a log line;
++ * called from vkr's own code, it logs and returns an error (or 0), so the caller fails.
++ * A guest can send any command, so without this a NULL entry was a call to address 0 in
++ * QEMU's process. */
++
++#ifndef VKR_MISSING_ENTRIES_H
++#define VKR_MISSING_ENTRIES_H
++
++#include "vkr_common.h"
++
++#include "venus-protocol/vn_protocol_renderer_util.h"
++#include "vkr_proc_entries.h"
++
++#define VKR_MISSING_DECLARE(ret, name, params, fallback)                                   \
++   VKAPI_ATTR ret VKAPI_CALL vkr_missing_vk##name params;
++#define VKR_MISSING_DECLARE_VOID(name, params)                                             \
++   VKAPI_ATTR void VKAPI_CALL vkr_missing_vk##name params;
++VKR_PHYSICAL_DEVICE_PROC_ENTRIES(VKR_MISSING_DECLARE, VKR_MISSING_DECLARE_VOID)
++VKR_DEVICE_PROC_ENTRIES(VKR_MISSING_DECLARE, VKR_MISSING_DECLARE_VOID)
++#undef VKR_MISSING_DECLARE
++#undef VKR_MISSING_DECLARE_VOID
++
++/* Whether the driver has no such command for this object: the entry is its stub. Test
++ * entries with this, never against NULL. */
++#define VKR_MISSING(table, name) ((table)->name == vkr_missing_vk##name)
++
++/* puts the stub into every NULL entry */
++void
++vkr_physical_device_proc_table_fill_missing(struct vn_physical_device_proc_table *table);
++
++void
++vkr_device_proc_table_fill_missing(struct vn_device_proc_table *table);
++
++#endif /* VKR_MISSING_ENTRIES_H */
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index 946b782..a3680a3 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -355,6 +355,40 @@ vkr_physical_device_init_extensions(struct vkr_physical_device *physical_dev)
+    physical_dev->extension_count = advertised_count;
+ }
+ 
++/* OmacVM (virgl-venus-missing-entries.patch): whether the guest is told of the extension */
++static bool
++vkr_physical_device_lists(const struct vkr_physical_device *physical_dev, const char *name)
++{
++   for (uint32_t i = 0; i < physical_dev->extension_count; i++) {
++      if (!strcmp(physical_dev->extensions[i].extensionName, name))
++         return true;
++   }
++   return false;
++}
++
++/* OmacVM (virgl-venus-missing-entries.patch): the queries of device extensions come from
++ * the Vulkan loader, which gives an entry for each whether the driver has the extension
++ * or not, and ends the process when the driver has not (MoltenVK: cooperative matrix and
++ * fragment shading rate queries); they count only when the device lists the extension.
++ * Then every NULL entry gets its stub (vkr_missing_entries.h). */
++static void
++vkr_physical_device_init_missing_entries(struct vkr_physical_device *physical_dev)
++{
++   struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
++
++   if (!vkr_physical_device_lists(physical_dev, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) &&
++       !vkr_physical_device_lists(physical_dev, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME))
++      vk->GetPhysicalDeviceCalibrateableTimeDomainsKHR = NULL;
++   if (!vkr_physical_device_lists(physical_dev, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME))
++      vk->GetPhysicalDeviceCooperativeMatrixPropertiesKHR = NULL;
++   if (!vkr_physical_device_lists(physical_dev, VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME))
++      vk->GetPhysicalDeviceFragmentShadingRatesKHR = NULL;
++   if (!vkr_physical_device_lists(physical_dev, VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME))
++      vk->GetPhysicalDeviceMultisamplePropertiesEXT = NULL;
++
++   vkr_physical_device_proc_table_fill_missing(vk);
++}
++
+ static void
+ vkr_physical_device_init_properties(struct vkr_physical_device *physical_dev)
+ {
+@@ -512,6 +546,7 @@ vkr_dispatch_vkEnumeratePhysicalDevices(struct vn_dispatch_context *dispatch,
+       physical_dev->api_version =
+          MIN2(physical_dev->properties.apiVersion, instance->api_version);
+       vkr_physical_device_init_extensions(physical_dev);
++      vkr_physical_device_init_missing_entries(physical_dev);
+       vkr_physical_device_init_memory_properties(physical_dev);
+       vkr_physical_device_init_id_properties(physical_dev);
+       vkr_physical_device_init_queue_family_properties(physical_dev);
+diff --git a/src/venus/vkr_proc_entries.h b/src/venus/vkr_proc_entries.h
+new file mode 100644
+index 0000000..bdaec64
+--- /dev/null
++++ b/src/venus/vkr_proc_entries.h
+@@ -0,0 +1,327 @@
++/* Generated by app/runtime/Tests/virgl/venus-missing-entries.py from
++ * venus-protocol/vn_protocol_renderer_util.h and the Vulkan headers (OmacVM,
++ * virgl-venus-missing-entries.patch); do not edit. Every proc table entry: X(return
++ * type, name, parameters, what its stub returns), or V(name, parameters) when it
++ * returns nothing. */
++#ifndef VKR_PROC_ENTRIES_H
++#define VKR_PROC_ENTRIES_H
++
++#define VKR_PHYSICAL_DEVICE_PROC_ENTRY_COUNT 26
++#define VKR_PHYSICAL_DEVICE_PROC_ENTRIES(X, V) \
++   X(VkResult, CreateDevice, (VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDevice* pDevice), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, EnumerateDeviceExtensionProperties, (VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, EnumerateDeviceLayerProperties, (VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkLayerProperties* pProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(PFN_vkVoidFunction, GetDeviceProcAddr, (VkDevice device, const char* pName), NULL) \
++   X(VkResult, GetPhysicalDeviceCalibrateableTimeDomainsKHR, (VkPhysicalDevice physicalDevice, uint32_t* pTimeDomainCount, VkTimeDomainKHR* pTimeDomains), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetPhysicalDeviceCooperativeMatrixPropertiesKHR, (VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkCooperativeMatrixPropertiesKHR* pProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(GetPhysicalDeviceExternalBufferProperties, (VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo* pExternalBufferInfo, VkExternalBufferProperties* pExternalBufferProperties)) \
++   V(GetPhysicalDeviceExternalFenceProperties, (VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalFenceInfo* pExternalFenceInfo, VkExternalFenceProperties* pExternalFenceProperties)) \
++   V(GetPhysicalDeviceExternalSemaphoreProperties, (VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalSemaphoreInfo* pExternalSemaphoreInfo, VkExternalSemaphoreProperties* pExternalSemaphoreProperties)) \
++   V(GetPhysicalDeviceFeatures, (VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures)) \
++   V(GetPhysicalDeviceFeatures2, (VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2* pFeatures)) \
++   V(GetPhysicalDeviceFormatProperties, (VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties* pFormatProperties)) \
++   V(GetPhysicalDeviceFormatProperties2, (VkPhysicalDevice physicalDevice, VkFormat format, VkFormatProperties2* pFormatProperties)) \
++   X(VkResult, GetPhysicalDeviceFragmentShadingRatesKHR, (VkPhysicalDevice physicalDevice, uint32_t* pFragmentShadingRateCount, VkPhysicalDeviceFragmentShadingRateKHR* pFragmentShadingRates), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetPhysicalDeviceImageFormatProperties, (VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage, VkImageCreateFlags flags, VkImageFormatProperties* pImageFormatProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetPhysicalDeviceImageFormatProperties2, (VkPhysicalDevice physicalDevice, const VkPhysicalDeviceImageFormatInfo2* pImageFormatInfo, VkImageFormatProperties2* pImageFormatProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(GetPhysicalDeviceMemoryProperties, (VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties* pMemoryProperties)) \
++   V(GetPhysicalDeviceMemoryProperties2, (VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties2* pMemoryProperties)) \
++   V(GetPhysicalDeviceMultisamplePropertiesEXT, (VkPhysicalDevice physicalDevice, VkSampleCountFlagBits samples, VkMultisamplePropertiesEXT* pMultisampleProperties)) \
++   V(GetPhysicalDeviceProperties, (VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties* pProperties)) \
++   V(GetPhysicalDeviceProperties2, (VkPhysicalDevice physicalDevice, VkPhysicalDeviceProperties2* pProperties)) \
++   V(GetPhysicalDeviceQueueFamilyProperties, (VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties* pQueueFamilyProperties)) \
++   V(GetPhysicalDeviceQueueFamilyProperties2, (VkPhysicalDevice physicalDevice, uint32_t* pQueueFamilyPropertyCount, VkQueueFamilyProperties2* pQueueFamilyProperties)) \
++   V(GetPhysicalDeviceSparseImageFormatProperties, (VkPhysicalDevice physicalDevice, VkFormat format, VkImageType type, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageTiling tiling, uint32_t* pPropertyCount, VkSparseImageFormatProperties* pProperties)) \
++   V(GetPhysicalDeviceSparseImageFormatProperties2, (VkPhysicalDevice physicalDevice, const VkPhysicalDeviceSparseImageFormatInfo2* pFormatInfo, uint32_t* pPropertyCount, VkSparseImageFormatProperties2* pProperties)) \
++   X(VkResult, GetPhysicalDeviceToolProperties, (VkPhysicalDevice physicalDevice, uint32_t* pToolCount, VkPhysicalDeviceToolProperties* pToolProperties), VK_ERROR_FEATURE_NOT_PRESENT)
++
++#define VKR_DEVICE_PROC_ENTRY_COUNT 286
++#define VKR_DEVICE_PROC_ENTRIES(X, V) \
++   X(VkResult, AllocateCommandBuffers, (VkDevice device, const VkCommandBufferAllocateInfo* pAllocateInfo, VkCommandBuffer* pCommandBuffers), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, AllocateDescriptorSets, (VkDevice device, const VkDescriptorSetAllocateInfo* pAllocateInfo, VkDescriptorSet* pDescriptorSets), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, AllocateMemory, (VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, BeginCommandBuffer, (VkCommandBuffer commandBuffer, const VkCommandBufferBeginInfo* pBeginInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, BindBufferMemory, (VkDevice device, VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize memoryOffset), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, BindBufferMemory2, (VkDevice device, uint32_t bindInfoCount, const VkBindBufferMemoryInfo* pBindInfos), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, BindImageMemory, (VkDevice device, VkImage image, VkDeviceMemory memory, VkDeviceSize memoryOffset), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, BindImageMemory2, (VkDevice device, uint32_t bindInfoCount, const VkBindImageMemoryInfo* pBindInfos), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, BuildAccelerationStructuresKHR, (VkDevice device, VkDeferredOperationKHR deferredOperation, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos, const VkAccelerationStructureBuildRangeInfoKHR* const* ppBuildRangeInfos), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(CmdBeginConditionalRenderingEXT, (VkCommandBuffer commandBuffer, const VkConditionalRenderingBeginInfoEXT* pConditionalRenderingBegin)) \
++   V(CmdBeginQuery, (VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags)) \
++   V(CmdBeginQueryIndexedEXT, (VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, VkQueryControlFlags flags, uint32_t index)) \
++   V(CmdBeginRenderPass, (VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, VkSubpassContents contents)) \
++   V(CmdBeginRenderPass2, (VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* pRenderPassBegin, const VkSubpassBeginInfo* pSubpassBeginInfo)) \
++   V(CmdBeginRendering, (VkCommandBuffer commandBuffer, const VkRenderingInfo* pRenderingInfo)) \
++   V(CmdBeginTransformFeedbackEXT, (VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer* pCounterBuffers, const VkDeviceSize* pCounterBufferOffsets)) \
++   V(CmdBindDescriptorSets, (VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets, uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets)) \
++   V(CmdBindDescriptorSets2, (VkCommandBuffer commandBuffer, const VkBindDescriptorSetsInfo* pBindDescriptorSetsInfo)) \
++   V(CmdBindIndexBuffer, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)) \
++   V(CmdBindIndexBuffer2, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, VkIndexType indexType)) \
++   V(CmdBindPipeline, (VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipeline pipeline)) \
++   V(CmdBindTransformFeedbackBuffersEXT, (VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const VkDeviceSize* pSizes)) \
++   V(CmdBindVertexBuffers, (VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets)) \
++   V(CmdBindVertexBuffers2, (VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer* pBuffers, const VkDeviceSize* pOffsets, const VkDeviceSize* pSizes, const VkDeviceSize* pStrides)) \
++   V(CmdBlitImage, (VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageBlit* pRegions, VkFilter filter)) \
++   V(CmdBlitImage2, (VkCommandBuffer commandBuffer, const VkBlitImageInfo2* pBlitImageInfo)) \
++   V(CmdBuildAccelerationStructuresIndirectKHR, (VkCommandBuffer commandBuffer, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos, const VkDeviceAddress* pIndirectDeviceAddresses, const uint32_t* pIndirectStrides, const uint32_t* const* ppMaxPrimitiveCounts)) \
++   V(CmdBuildAccelerationStructuresKHR, (VkCommandBuffer commandBuffer, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos, const VkAccelerationStructureBuildRangeInfoKHR* const* ppBuildRangeInfos)) \
++   V(CmdClearAttachments, (VkCommandBuffer commandBuffer, uint32_t attachmentCount, const VkClearAttachment* pAttachments, uint32_t rectCount, const VkClearRect* pRects)) \
++   V(CmdClearColorImage, (VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout, const VkClearColorValue* pColor, uint32_t rangeCount, const VkImageSubresourceRange* pRanges)) \
++   V(CmdClearDepthStencilImage, (VkCommandBuffer commandBuffer, VkImage image, VkImageLayout imageLayout, const VkClearDepthStencilValue* pDepthStencil, uint32_t rangeCount, const VkImageSubresourceRange* pRanges)) \
++   V(CmdCopyAccelerationStructureKHR, (VkCommandBuffer commandBuffer, const VkCopyAccelerationStructureInfoKHR* pInfo)) \
++   V(CmdCopyAccelerationStructureToMemoryKHR, (VkCommandBuffer commandBuffer, const VkCopyAccelerationStructureToMemoryInfoKHR* pInfo)) \
++   V(CmdCopyBuffer, (VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferCopy* pRegions)) \
++   V(CmdCopyBuffer2, (VkCommandBuffer commandBuffer, const VkCopyBufferInfo2* pCopyBufferInfo)) \
++   V(CmdCopyBufferToImage, (VkCommandBuffer commandBuffer, VkBuffer srcBuffer, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkBufferImageCopy* pRegions)) \
++   V(CmdCopyBufferToImage2, (VkCommandBuffer commandBuffer, const VkCopyBufferToImageInfo2* pCopyBufferToImageInfo)) \
++   V(CmdCopyImage, (VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageCopy* pRegions)) \
++   V(CmdCopyImage2, (VkCommandBuffer commandBuffer, const VkCopyImageInfo2* pCopyImageInfo)) \
++   V(CmdCopyImageToBuffer, (VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkBuffer dstBuffer, uint32_t regionCount, const VkBufferImageCopy* pRegions)) \
++   V(CmdCopyImageToBuffer2, (VkCommandBuffer commandBuffer, const VkCopyImageToBufferInfo2* pCopyImageToBufferInfo)) \
++   V(CmdCopyMemoryToAccelerationStructureKHR, (VkCommandBuffer commandBuffer, const VkCopyMemoryToAccelerationStructureInfoKHR* pInfo)) \
++   V(CmdCopyQueryPoolResults, (VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize stride, VkQueryResultFlags flags)) \
++   V(CmdDispatch, (VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)) \
++   V(CmdDispatchBase, (VkCommandBuffer commandBuffer, uint32_t baseGroupX, uint32_t baseGroupY, uint32_t baseGroupZ, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)) \
++   V(CmdDispatchIndirect, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset)) \
++   V(CmdDraw, (VkCommandBuffer commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)) \
++   V(CmdDrawIndexed, (VkCommandBuffer commandBuffer, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)) \
++   V(CmdDrawIndexedIndirect, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)) \
++   V(CmdDrawIndexedIndirectCount, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)) \
++   V(CmdDrawIndirect, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)) \
++   V(CmdDrawIndirectByteCountEXT, (VkCommandBuffer commandBuffer, uint32_t instanceCount, uint32_t firstInstance, VkBuffer counterBuffer, VkDeviceSize counterBufferOffset, uint32_t counterOffset, uint32_t vertexStride)) \
++   V(CmdDrawIndirectCount, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)) \
++   V(CmdDrawMeshTasksEXT, (VkCommandBuffer commandBuffer, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)) \
++   V(CmdDrawMeshTasksIndirectCountEXT, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, VkBuffer countBuffer, VkDeviceSize countBufferOffset, uint32_t maxDrawCount, uint32_t stride)) \
++   V(CmdDrawMeshTasksIndirectEXT, (VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride)) \
++   V(CmdDrawMultiEXT, (VkCommandBuffer commandBuffer, uint32_t drawCount, const VkMultiDrawInfoEXT* pVertexInfo, uint32_t instanceCount, uint32_t firstInstance, uint32_t stride)) \
++   V(CmdDrawMultiIndexedEXT, (VkCommandBuffer commandBuffer, uint32_t drawCount, const VkMultiDrawIndexedInfoEXT* pIndexInfo, uint32_t instanceCount, uint32_t firstInstance, uint32_t stride, const int32_t* pVertexOffset)) \
++   V(CmdEndConditionalRenderingEXT, (VkCommandBuffer commandBuffer)) \
++   V(CmdEndQuery, (VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query)) \
++   V(CmdEndQueryIndexedEXT, (VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t query, uint32_t index)) \
++   V(CmdEndRenderPass, (VkCommandBuffer commandBuffer)) \
++   V(CmdEndRenderPass2, (VkCommandBuffer commandBuffer, const VkSubpassEndInfo* pSubpassEndInfo)) \
++   V(CmdEndRendering, (VkCommandBuffer commandBuffer)) \
++   V(CmdEndTransformFeedbackEXT, (VkCommandBuffer commandBuffer, uint32_t firstCounterBuffer, uint32_t counterBufferCount, const VkBuffer* pCounterBuffers, const VkDeviceSize* pCounterBufferOffsets)) \
++   V(CmdExecuteCommands, (VkCommandBuffer commandBuffer, uint32_t commandBufferCount, const VkCommandBuffer* pCommandBuffers)) \
++   V(CmdFillBuffer, (VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize size, uint32_t data)) \
++   V(CmdNextSubpass, (VkCommandBuffer commandBuffer, VkSubpassContents contents)) \
++   V(CmdNextSubpass2, (VkCommandBuffer commandBuffer, const VkSubpassBeginInfo* pSubpassBeginInfo, const VkSubpassEndInfo* pSubpassEndInfo)) \
++   V(CmdPipelineBarrier, (VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, VkDependencyFlags dependencyFlags, uint32_t memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier* pImageMemoryBarriers)) \
++   V(CmdPipelineBarrier2, (VkCommandBuffer commandBuffer, const VkDependencyInfo* pDependencyInfo)) \
++   V(CmdPushConstants, (VkCommandBuffer commandBuffer, VkPipelineLayout layout, VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void* pValues)) \
++   V(CmdPushConstants2, (VkCommandBuffer commandBuffer, const VkPushConstantsInfo* pPushConstantsInfo)) \
++   V(CmdPushDescriptorSet, (VkCommandBuffer commandBuffer, VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t set, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites)) \
++   V(CmdPushDescriptorSet2, (VkCommandBuffer commandBuffer, const VkPushDescriptorSetInfo* pPushDescriptorSetInfo)) \
++   V(CmdPushDescriptorSetWithTemplate, (VkCommandBuffer commandBuffer, VkDescriptorUpdateTemplate descriptorUpdateTemplate, VkPipelineLayout layout, uint32_t set, const void* pData)) \
++   V(CmdPushDescriptorSetWithTemplate2, (VkCommandBuffer commandBuffer, const VkPushDescriptorSetWithTemplateInfo* pPushDescriptorSetWithTemplateInfo)) \
++   V(CmdResetEvent, (VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)) \
++   V(CmdResetEvent2, (VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags2 stageMask)) \
++   V(CmdResetQueryPool, (VkCommandBuffer commandBuffer, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)) \
++   V(CmdResolveImage, (VkCommandBuffer commandBuffer, VkImage srcImage, VkImageLayout srcImageLayout, VkImage dstImage, VkImageLayout dstImageLayout, uint32_t regionCount, const VkImageResolve* pRegions)) \
++   V(CmdResolveImage2, (VkCommandBuffer commandBuffer, const VkResolveImageInfo2* pResolveImageInfo)) \
++   V(CmdSetAlphaToCoverageEnableEXT, (VkCommandBuffer commandBuffer, VkBool32 alphaToCoverageEnable)) \
++   V(CmdSetAlphaToOneEnableEXT, (VkCommandBuffer commandBuffer, VkBool32 alphaToOneEnable)) \
++   V(CmdSetAttachmentFeedbackLoopEnableEXT, (VkCommandBuffer commandBuffer, VkImageAspectFlags aspectMask)) \
++   V(CmdSetBlendConstants, (VkCommandBuffer commandBuffer, const float blendConstants[4])) \
++   V(CmdSetColorBlendAdvancedEXT, (VkCommandBuffer commandBuffer, uint32_t firstAttachment, uint32_t attachmentCount, const VkColorBlendAdvancedEXT* pColorBlendAdvanced)) \
++   V(CmdSetColorBlendEnableEXT, (VkCommandBuffer commandBuffer, uint32_t firstAttachment, uint32_t attachmentCount, const VkBool32* pColorBlendEnables)) \
++   V(CmdSetColorBlendEquationEXT, (VkCommandBuffer commandBuffer, uint32_t firstAttachment, uint32_t attachmentCount, const VkColorBlendEquationEXT* pColorBlendEquations)) \
++   V(CmdSetColorWriteEnableEXT, (VkCommandBuffer commandBuffer, uint32_t attachmentCount, const VkBool32* pColorWriteEnables)) \
++   V(CmdSetColorWriteMaskEXT, (VkCommandBuffer commandBuffer, uint32_t firstAttachment, uint32_t attachmentCount, const VkColorComponentFlags* pColorWriteMasks)) \
++   V(CmdSetConservativeRasterizationModeEXT, (VkCommandBuffer commandBuffer, VkConservativeRasterizationModeEXT conservativeRasterizationMode)) \
++   V(CmdSetCullMode, (VkCommandBuffer commandBuffer, VkCullModeFlags cullMode)) \
++   V(CmdSetDepthBias, (VkCommandBuffer commandBuffer, float depthBiasConstantFactor, float depthBiasClamp, float depthBiasSlopeFactor)) \
++   V(CmdSetDepthBias2EXT, (VkCommandBuffer commandBuffer, const VkDepthBiasInfoEXT* pDepthBiasInfo)) \
++   V(CmdSetDepthBiasEnable, (VkCommandBuffer commandBuffer, VkBool32 depthBiasEnable)) \
++   V(CmdSetDepthBounds, (VkCommandBuffer commandBuffer, float minDepthBounds, float maxDepthBounds)) \
++   V(CmdSetDepthBoundsTestEnable, (VkCommandBuffer commandBuffer, VkBool32 depthBoundsTestEnable)) \
++   V(CmdSetDepthClampEnableEXT, (VkCommandBuffer commandBuffer, VkBool32 depthClampEnable)) \
++   V(CmdSetDepthClampRangeEXT, (VkCommandBuffer commandBuffer, VkDepthClampModeEXT depthClampMode, const VkDepthClampRangeEXT* pDepthClampRange)) \
++   V(CmdSetDepthClipEnableEXT, (VkCommandBuffer commandBuffer, VkBool32 depthClipEnable)) \
++   V(CmdSetDepthClipNegativeOneToOneEXT, (VkCommandBuffer commandBuffer, VkBool32 negativeOneToOne)) \
++   V(CmdSetDepthCompareOp, (VkCommandBuffer commandBuffer, VkCompareOp depthCompareOp)) \
++   V(CmdSetDepthTestEnable, (VkCommandBuffer commandBuffer, VkBool32 depthTestEnable)) \
++   V(CmdSetDepthWriteEnable, (VkCommandBuffer commandBuffer, VkBool32 depthWriteEnable)) \
++   V(CmdSetDeviceMask, (VkCommandBuffer commandBuffer, uint32_t deviceMask)) \
++   V(CmdSetEvent, (VkCommandBuffer commandBuffer, VkEvent event, VkPipelineStageFlags stageMask)) \
++   V(CmdSetEvent2, (VkCommandBuffer commandBuffer, VkEvent event, const VkDependencyInfo* pDependencyInfo)) \
++   V(CmdSetExtraPrimitiveOverestimationSizeEXT, (VkCommandBuffer commandBuffer, float extraPrimitiveOverestimationSize)) \
++   V(CmdSetFragmentShadingRateKHR, (VkCommandBuffer commandBuffer, const VkExtent2D* pFragmentSize, const VkFragmentShadingRateCombinerOpKHR combinerOps[2])) \
++   V(CmdSetFrontFace, (VkCommandBuffer commandBuffer, VkFrontFace frontFace)) \
++   V(CmdSetLineRasterizationModeEXT, (VkCommandBuffer commandBuffer, VkLineRasterizationModeEXT lineRasterizationMode)) \
++   V(CmdSetLineStipple, (VkCommandBuffer commandBuffer, uint32_t lineStippleFactor, uint16_t lineStipplePattern)) \
++   V(CmdSetLineStippleEnableEXT, (VkCommandBuffer commandBuffer, VkBool32 stippledLineEnable)) \
++   V(CmdSetLineWidth, (VkCommandBuffer commandBuffer, float lineWidth)) \
++   V(CmdSetLogicOpEXT, (VkCommandBuffer commandBuffer, VkLogicOp logicOp)) \
++   V(CmdSetLogicOpEnableEXT, (VkCommandBuffer commandBuffer, VkBool32 logicOpEnable)) \
++   V(CmdSetPatchControlPointsEXT, (VkCommandBuffer commandBuffer, uint32_t patchControlPoints)) \
++   V(CmdSetPolygonModeEXT, (VkCommandBuffer commandBuffer, VkPolygonMode polygonMode)) \
++   V(CmdSetPrimitiveRestartEnable, (VkCommandBuffer commandBuffer, VkBool32 primitiveRestartEnable)) \
++   V(CmdSetPrimitiveTopology, (VkCommandBuffer commandBuffer, VkPrimitiveTopology primitiveTopology)) \
++   V(CmdSetProvokingVertexModeEXT, (VkCommandBuffer commandBuffer, VkProvokingVertexModeEXT provokingVertexMode)) \
++   V(CmdSetRasterizationSamplesEXT, (VkCommandBuffer commandBuffer, VkSampleCountFlagBits rasterizationSamples)) \
++   V(CmdSetRasterizationStreamEXT, (VkCommandBuffer commandBuffer, uint32_t rasterizationStream)) \
++   V(CmdSetRasterizerDiscardEnable, (VkCommandBuffer commandBuffer, VkBool32 rasterizerDiscardEnable)) \
++   V(CmdSetRayTracingPipelineStackSizeKHR, (VkCommandBuffer commandBuffer, uint32_t pipelineStackSize)) \
++   V(CmdSetRenderingAttachmentLocations, (VkCommandBuffer commandBuffer, const VkRenderingAttachmentLocationInfo* pLocationInfo)) \
++   V(CmdSetRenderingInputAttachmentIndices, (VkCommandBuffer commandBuffer, const VkRenderingInputAttachmentIndexInfo* pInputAttachmentIndexInfo)) \
++   V(CmdSetSampleLocationsEXT, (VkCommandBuffer commandBuffer, const VkSampleLocationsInfoEXT* pSampleLocationsInfo)) \
++   V(CmdSetSampleLocationsEnableEXT, (VkCommandBuffer commandBuffer, VkBool32 sampleLocationsEnable)) \
++   V(CmdSetSampleMaskEXT, (VkCommandBuffer commandBuffer, VkSampleCountFlagBits samples, const VkSampleMask* pSampleMask)) \
++   V(CmdSetScissor, (VkCommandBuffer commandBuffer, uint32_t firstScissor, uint32_t scissorCount, const VkRect2D* pScissors)) \
++   V(CmdSetScissorWithCount, (VkCommandBuffer commandBuffer, uint32_t scissorCount, const VkRect2D* pScissors)) \
++   V(CmdSetStencilCompareMask, (VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t compareMask)) \
++   V(CmdSetStencilOp, (VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, VkStencilOp failOp, VkStencilOp passOp, VkStencilOp depthFailOp, VkCompareOp compareOp)) \
++   V(CmdSetStencilReference, (VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t reference)) \
++   V(CmdSetStencilTestEnable, (VkCommandBuffer commandBuffer, VkBool32 stencilTestEnable)) \
++   V(CmdSetStencilWriteMask, (VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask, uint32_t writeMask)) \
++   V(CmdSetTessellationDomainOriginEXT, (VkCommandBuffer commandBuffer, VkTessellationDomainOrigin domainOrigin)) \
++   V(CmdSetVertexInputEXT, (VkCommandBuffer commandBuffer, uint32_t vertexBindingDescriptionCount, const VkVertexInputBindingDescription2EXT* pVertexBindingDescriptions, uint32_t vertexAttributeDescriptionCount, const VkVertexInputAttributeDescription2EXT* pVertexAttributeDescriptions)) \
++   V(CmdSetViewport, (VkCommandBuffer commandBuffer, uint32_t firstViewport, uint32_t viewportCount, const VkViewport* pViewports)) \
++   V(CmdSetViewportWithCount, (VkCommandBuffer commandBuffer, uint32_t viewportCount, const VkViewport* pViewports)) \
++   V(CmdTraceRaysIndirect2KHR, (VkCommandBuffer commandBuffer, VkDeviceAddress indirectDeviceAddress)) \
++   V(CmdTraceRaysIndirectKHR, (VkCommandBuffer commandBuffer, const VkStridedDeviceAddressRegionKHR* pRaygenShaderBindingTable, const VkStridedDeviceAddressRegionKHR* pMissShaderBindingTable, const VkStridedDeviceAddressRegionKHR* pHitShaderBindingTable, const VkStridedDeviceAddressRegionKHR* pCallableShaderBindingTable, VkDeviceAddress indirectDeviceAddress)) \
++   V(CmdTraceRaysKHR, (VkCommandBuffer commandBuffer, const VkStridedDeviceAddressRegionKHR* pRaygenShaderBindingTable, const VkStridedDeviceAddressRegionKHR* pMissShaderBindingTable, const VkStridedDeviceAddressRegionKHR* pHitShaderBindingTable, const VkStridedDeviceAddressRegionKHR* pCallableShaderBindingTable, uint32_t width, uint32_t height, uint32_t depth)) \
++   V(CmdUpdateBuffer, (VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dataSize, const void* pData)) \
++   V(CmdWaitEvents, (VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent* pEvents, VkPipelineStageFlags srcStageMask, VkPipelineStageFlags dstStageMask, uint32_t memoryBarrierCount, const VkMemoryBarrier* pMemoryBarriers, uint32_t bufferMemoryBarrierCount, const VkBufferMemoryBarrier* pBufferMemoryBarriers, uint32_t imageMemoryBarrierCount, const VkImageMemoryBarrier* pImageMemoryBarriers)) \
++   V(CmdWaitEvents2, (VkCommandBuffer commandBuffer, uint32_t eventCount, const VkEvent* pEvents, const VkDependencyInfo* pDependencyInfos)) \
++   V(CmdWriteAccelerationStructuresPropertiesKHR, (VkCommandBuffer commandBuffer, uint32_t accelerationStructureCount, const VkAccelerationStructureKHR* pAccelerationStructures, VkQueryType queryType, VkQueryPool queryPool, uint32_t firstQuery)) \
++   V(CmdWriteTimestamp, (VkCommandBuffer commandBuffer, VkPipelineStageFlagBits pipelineStage, VkQueryPool queryPool, uint32_t query)) \
++   V(CmdWriteTimestamp2, (VkCommandBuffer commandBuffer, VkPipelineStageFlags2 stage, VkQueryPool queryPool, uint32_t query)) \
++   X(VkResult, CopyAccelerationStructureKHR, (VkDevice device, VkDeferredOperationKHR deferredOperation, const VkCopyAccelerationStructureInfoKHR* pInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CopyAccelerationStructureToMemoryKHR, (VkDevice device, VkDeferredOperationKHR deferredOperation, const VkCopyAccelerationStructureToMemoryInfoKHR* pInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CopyImageToImage, (VkDevice device, const VkCopyImageToImageInfo* pCopyImageToImageInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CopyImageToMemory, (VkDevice device, const VkCopyImageToMemoryInfo* pCopyImageToMemoryInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CopyMemoryToAccelerationStructureKHR, (VkDevice device, VkDeferredOperationKHR deferredOperation, const VkCopyMemoryToAccelerationStructureInfoKHR* pInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CopyMemoryToImage, (VkDevice device, const VkCopyMemoryToImageInfo* pCopyMemoryToImageInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateAccelerationStructureKHR, (VkDevice device, const VkAccelerationStructureCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkAccelerationStructureKHR* pAccelerationStructure), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateBuffer, (VkDevice device, const VkBufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBuffer* pBuffer), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateBufferView, (VkDevice device, const VkBufferViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkBufferView* pView), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateCommandPool, (VkDevice device, const VkCommandPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkCommandPool* pCommandPool), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateComputePipelines, (VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkComputePipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateDeferredOperationKHR, (VkDevice device, const VkAllocationCallbacks* pAllocator, VkDeferredOperationKHR* pDeferredOperation), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateDescriptorPool, (VkDevice device, const VkDescriptorPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorPool* pDescriptorPool), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateDescriptorSetLayout, (VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorSetLayout* pSetLayout), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateDescriptorUpdateTemplate, (VkDevice device, const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDescriptorUpdateTemplate* pDescriptorUpdateTemplate), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateEvent, (VkDevice device, const VkEventCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkEvent* pEvent), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateFence, (VkDevice device, const VkFenceCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFence* pFence), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateFramebuffer, (VkDevice device, const VkFramebufferCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkFramebuffer* pFramebuffer), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateGraphicsPipelines, (VkDevice device, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkGraphicsPipelineCreateInfo* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateImage, (VkDevice device, const VkImageCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImage* pImage), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateImageView, (VkDevice device, const VkImageViewCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkImageView* pView), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreatePipelineCache, (VkDevice device, const VkPipelineCacheCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineCache* pPipelineCache), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreatePipelineLayout, (VkDevice device, const VkPipelineLayoutCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPipelineLayout* pPipelineLayout), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreatePrivateDataSlot, (VkDevice device, const VkPrivateDataSlotCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkPrivateDataSlot* pPrivateDataSlot), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateQueryPool, (VkDevice device, const VkQueryPoolCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkQueryPool* pQueryPool), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateRayTracingPipelinesKHR, (VkDevice device, VkDeferredOperationKHR deferredOperation, VkPipelineCache pipelineCache, uint32_t createInfoCount, const VkRayTracingPipelineCreateInfoKHR* pCreateInfos, const VkAllocationCallbacks* pAllocator, VkPipeline* pPipelines), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateRenderPass, (VkDevice device, const VkRenderPassCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateRenderPass2, (VkDevice device, const VkRenderPassCreateInfo2* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkRenderPass* pRenderPass), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateSampler, (VkDevice device, const VkSamplerCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSampler* pSampler), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateSamplerYcbcrConversion, (VkDevice device, const VkSamplerYcbcrConversionCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSamplerYcbcrConversion* pYcbcrConversion), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateSemaphore, (VkDevice device, const VkSemaphoreCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSemaphore* pSemaphore), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, CreateShaderModule, (VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, DeferredOperationJoinKHR, (VkDevice device, VkDeferredOperationKHR operation), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(DestroyAccelerationStructureKHR, (VkDevice device, VkAccelerationStructureKHR accelerationStructure, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyBuffer, (VkDevice device, VkBuffer buffer, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyBufferView, (VkDevice device, VkBufferView bufferView, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyCommandPool, (VkDevice device, VkCommandPool commandPool, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyDeferredOperationKHR, (VkDevice device, VkDeferredOperationKHR operation, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyDescriptorPool, (VkDevice device, VkDescriptorPool descriptorPool, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyDescriptorSetLayout, (VkDevice device, VkDescriptorSetLayout descriptorSetLayout, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyDescriptorUpdateTemplate, (VkDevice device, VkDescriptorUpdateTemplate descriptorUpdateTemplate, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyDevice, (VkDevice device, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyEvent, (VkDevice device, VkEvent event, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyFence, (VkDevice device, VkFence fence, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyFramebuffer, (VkDevice device, VkFramebuffer framebuffer, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyImage, (VkDevice device, VkImage image, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyImageView, (VkDevice device, VkImageView imageView, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyPipeline, (VkDevice device, VkPipeline pipeline, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyPipelineCache, (VkDevice device, VkPipelineCache pipelineCache, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyPipelineLayout, (VkDevice device, VkPipelineLayout pipelineLayout, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyPrivateDataSlot, (VkDevice device, VkPrivateDataSlot privateDataSlot, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyQueryPool, (VkDevice device, VkQueryPool queryPool, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyRenderPass, (VkDevice device, VkRenderPass renderPass, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroySampler, (VkDevice device, VkSampler sampler, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroySamplerYcbcrConversion, (VkDevice device, VkSamplerYcbcrConversion ycbcrConversion, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroySemaphore, (VkDevice device, VkSemaphore semaphore, const VkAllocationCallbacks* pAllocator)) \
++   V(DestroyShaderModule, (VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator)) \
++   X(VkResult, DeviceWaitIdle, (VkDevice device), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, EndCommandBuffer, (VkCommandBuffer commandBuffer), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, FlushMappedMemoryRanges, (VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(FreeCommandBuffers, (VkDevice device, VkCommandPool commandPool, uint32_t commandBufferCount, const VkCommandBuffer* pCommandBuffers)) \
++   X(VkResult, FreeDescriptorSets, (VkDevice device, VkDescriptorPool descriptorPool, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(FreeMemory, (VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* pAllocator)) \
++   V(GetAccelerationStructureBuildSizesKHR, (VkDevice device, VkAccelerationStructureBuildTypeKHR buildType, const VkAccelerationStructureBuildGeometryInfoKHR* pBuildInfo, const uint32_t* pMaxPrimitiveCounts, VkAccelerationStructureBuildSizesInfoKHR* pSizeInfo)) \
++   X(VkDeviceAddress, GetAccelerationStructureDeviceAddressKHR, (VkDevice device, const VkAccelerationStructureDeviceAddressInfoKHR* pInfo), 0) \
++   X(VkDeviceAddress, GetBufferDeviceAddress, (VkDevice device, const VkBufferDeviceAddressInfo* pInfo), 0) \
++   V(GetBufferMemoryRequirements, (VkDevice device, VkBuffer buffer, VkMemoryRequirements* pMemoryRequirements)) \
++   V(GetBufferMemoryRequirements2, (VkDevice device, const VkBufferMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)) \
++   X(uint64_t, GetBufferOpaqueCaptureAddress, (VkDevice device, const VkBufferDeviceAddressInfo* pInfo), 0) \
++   X(VkResult, GetCalibratedTimestampsKHR, (VkDevice device, uint32_t timestampCount, const VkCalibratedTimestampInfoKHR* pTimestampInfos, uint64_t* pTimestamps, uint64_t* pMaxDeviation), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(uint32_t, GetDeferredOperationMaxConcurrencyKHR, (VkDevice device, VkDeferredOperationKHR operation), 0) \
++   X(VkResult, GetDeferredOperationResultKHR, (VkDevice device, VkDeferredOperationKHR operation), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(GetDescriptorSetLayoutSupport, (VkDevice device, const VkDescriptorSetLayoutCreateInfo* pCreateInfo, VkDescriptorSetLayoutSupport* pSupport)) \
++   V(GetDeviceAccelerationStructureCompatibilityKHR, (VkDevice device, const VkAccelerationStructureVersionInfoKHR* pVersionInfo, VkAccelerationStructureCompatibilityKHR* pCompatibility)) \
++   V(GetDeviceBufferMemoryRequirements, (VkDevice device, const VkDeviceBufferMemoryRequirements* pInfo, VkMemoryRequirements2* pMemoryRequirements)) \
++   V(GetDeviceGroupPeerMemoryFeatures, (VkDevice device, uint32_t heapIndex, uint32_t localDeviceIndex, uint32_t remoteDeviceIndex, VkPeerMemoryFeatureFlags* pPeerMemoryFeatures)) \
++   V(GetDeviceImageMemoryRequirements, (VkDevice device, const VkDeviceImageMemoryRequirements* pInfo, VkMemoryRequirements2* pMemoryRequirements)) \
++   V(GetDeviceImageSparseMemoryRequirements, (VkDevice device, const VkDeviceImageMemoryRequirements* pInfo, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements2* pSparseMemoryRequirements)) \
++   V(GetDeviceImageSubresourceLayout, (VkDevice device, const VkDeviceImageSubresourceInfo* pInfo, VkSubresourceLayout2* pLayout)) \
++   V(GetDeviceMemoryCommitment, (VkDevice device, VkDeviceMemory memory, VkDeviceSize* pCommittedMemoryInBytes)) \
++   X(uint64_t, GetDeviceMemoryOpaqueCaptureAddress, (VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo), 0) \
++   V(GetDeviceQueue, (VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue)) \
++   V(GetDeviceQueue2, (VkDevice device, const VkDeviceQueueInfo2* pQueueInfo, VkQueue* pQueue)) \
++   X(VkResult, GetEventStatus, (VkDevice device, VkEvent event), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetFenceFdKHR, (VkDevice device, const VkFenceGetFdInfoKHR* pGetFdInfo, int* pFd), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetFenceStatus, (VkDevice device, VkFence fence), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetImageDrmFormatModifierPropertiesEXT, (VkDevice device, VkImage image, VkImageDrmFormatModifierPropertiesEXT* pProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(GetImageMemoryRequirements, (VkDevice device, VkImage image, VkMemoryRequirements* pMemoryRequirements)) \
++   V(GetImageMemoryRequirements2, (VkDevice device, const VkImageMemoryRequirementsInfo2* pInfo, VkMemoryRequirements2* pMemoryRequirements)) \
++   V(GetImageSparseMemoryRequirements, (VkDevice device, VkImage image, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements* pSparseMemoryRequirements)) \
++   V(GetImageSparseMemoryRequirements2, (VkDevice device, const VkImageSparseMemoryRequirementsInfo2* pInfo, uint32_t* pSparseMemoryRequirementCount, VkSparseImageMemoryRequirements2* pSparseMemoryRequirements)) \
++   V(GetImageSubresourceLayout, (VkDevice device, VkImage image, const VkImageSubresource* pSubresource, VkSubresourceLayout* pLayout)) \
++   V(GetImageSubresourceLayout2, (VkDevice device, VkImage image, const VkImageSubresource2* pSubresource, VkSubresourceLayout2* pLayout)) \
++   X(VkResult, GetMemoryFdKHR, (VkDevice device, const VkMemoryGetFdInfoKHR* pGetFdInfo, int* pFd), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetMemoryFdPropertiesKHR, (VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, int fd, VkMemoryFdPropertiesKHR* pMemoryFdProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetMemoryMetalHandleEXT, (VkDevice device, const VkMemoryGetMetalHandleInfoEXT* pGetMetalHandleInfo, MTLResource_id* pHandle), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetMemoryMetalHandlePropertiesEXT, (VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, const MTLResource_id pHandle, VkMemoryMetalHandlePropertiesEXT* pMemoryMetalHandleProperties), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetPipelineCacheData, (VkDevice device, VkPipelineCache pipelineCache, size_t* pDataSize, void* pData), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(GetPrivateData, (VkDevice device, VkObjectType objectType, uint64_t objectHandle, VkPrivateDataSlot privateDataSlot, uint64_t* pData)) \
++   X(VkResult, GetQueryPoolResults, (VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount, size_t dataSize, void* pData, VkDeviceSize stride, VkQueryResultFlags flags), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetRayTracingCaptureReplayShaderGroupHandlesKHR, (VkDevice device, VkPipeline pipeline, uint32_t firstGroup, uint32_t groupCount, size_t dataSize, void* pData), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetRayTracingShaderGroupHandlesKHR, (VkDevice device, VkPipeline pipeline, uint32_t firstGroup, uint32_t groupCount, size_t dataSize, void* pData), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkDeviceSize, GetRayTracingShaderGroupStackSizeKHR, (VkDevice device, VkPipeline pipeline, uint32_t group, VkShaderGroupShaderKHR groupShader), 0) \
++   V(GetRenderAreaGranularity, (VkDevice device, VkRenderPass renderPass, VkExtent2D* pGranularity)) \
++   V(GetRenderingAreaGranularity, (VkDevice device, const VkRenderingAreaInfo* pRenderingAreaInfo, VkExtent2D* pGranularity)) \
++   X(VkResult, GetSemaphoreCounterValue, (VkDevice device, VkSemaphore semaphore, uint64_t* pValue), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, GetSemaphoreFdKHR, (VkDevice device, const VkSemaphoreGetFdInfoKHR* pGetFdInfo, int* pFd), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, ImportFenceFdKHR, (VkDevice device, const VkImportFenceFdInfoKHR* pImportFenceFdInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, ImportSemaphoreFdKHR, (VkDevice device, const VkImportSemaphoreFdInfoKHR* pImportSemaphoreFdInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, InvalidateMappedMemoryRanges, (VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, MapMemory, (VkDevice device, VkDeviceMemory memory, VkDeviceSize offset, VkDeviceSize size, VkMemoryMapFlags flags, void** ppData), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, MapMemory2, (VkDevice device, const VkMemoryMapInfo* pMemoryMapInfo, void** ppData), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, MergePipelineCaches, (VkDevice device, VkPipelineCache dstCache, uint32_t srcCacheCount, const VkPipelineCache* pSrcCaches), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, QueueBindSparse, (VkQueue queue, uint32_t bindInfoCount, const VkBindSparseInfo* pBindInfo, VkFence fence), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, QueueSubmit, (VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, QueueSubmit2, (VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits, VkFence fence), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, QueueWaitIdle, (VkQueue queue), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, ResetCommandBuffer, (VkCommandBuffer commandBuffer, VkCommandBufferResetFlags flags), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, ResetCommandPool, (VkDevice device, VkCommandPool commandPool, VkCommandPoolResetFlags flags), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, ResetDescriptorPool, (VkDevice device, VkDescriptorPool descriptorPool, VkDescriptorPoolResetFlags flags), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, ResetEvent, (VkDevice device, VkEvent event), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, ResetFences, (VkDevice device, uint32_t fenceCount, const VkFence* pFences), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(ResetQueryPool, (VkDevice device, VkQueryPool queryPool, uint32_t firstQuery, uint32_t queryCount)) \
++   X(VkResult, SetEvent, (VkDevice device, VkEvent event), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, SetPrivateData, (VkDevice device, VkObjectType objectType, uint64_t objectHandle, VkPrivateDataSlot privateDataSlot, uint64_t data), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, SignalSemaphore, (VkDevice device, const VkSemaphoreSignalInfo* pSignalInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, TransitionImageLayout, (VkDevice device, uint32_t transitionCount, const VkHostImageLayoutTransitionInfo* pTransitions), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(TrimCommandPool, (VkDevice device, VkCommandPool commandPool, VkCommandPoolTrimFlags flags)) \
++   V(UnmapMemory, (VkDevice device, VkDeviceMemory memory)) \
++   X(VkResult, UnmapMemory2, (VkDevice device, const VkMemoryUnmapInfo* pMemoryUnmapInfo), VK_ERROR_FEATURE_NOT_PRESENT) \
++   V(UpdateDescriptorSetWithTemplate, (VkDevice device, VkDescriptorSet descriptorSet, VkDescriptorUpdateTemplate descriptorUpdateTemplate, const void* pData)) \
++   V(UpdateDescriptorSets, (VkDevice device, uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites, uint32_t descriptorCopyCount, const VkCopyDescriptorSet* pDescriptorCopies)) \
++   X(VkResult, WaitForFences, (VkDevice device, uint32_t fenceCount, const VkFence* pFences, VkBool32 waitAll, uint64_t timeout), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, WaitSemaphores, (VkDevice device, const VkSemaphoreWaitInfo* pWaitInfo, uint64_t timeout), VK_ERROR_FEATURE_NOT_PRESENT) \
++   X(VkResult, WriteAccelerationStructuresPropertiesKHR, (VkDevice device, uint32_t accelerationStructureCount, const VkAccelerationStructureKHR* pAccelerationStructures, VkQueryType queryType, size_t dataSize, void* pData, size_t stride), VK_ERROR_FEATURE_NOT_PRESENT)
++
++#endif /* VKR_PROC_ENTRIES_H */
+diff --git a/src/venus/vkr_ring.c b/src/venus/vkr_ring.c
+index 08d8ef4..640e760 100644
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -253,6 +253,8 @@ vkr_ring_thread(void *arg)
+ 
+    snprintf(thread_name, ARRAY_SIZE(thread_name), "vkr-ring-%d", ctx->ctx_id);
+    u_thread_setname(thread_name);
++   /* OmacVM: this thread dispatches this context's commands only (vkr_context.h) */
++   vkr_dispatching_context = ctx;
+    if (ring->prio_valid && setpriority(PRIO_PROCESS, 0, ring->prio)) {
+ #ifdef DEBUG
+       /* Currently venus doesn't forward the CAP_SYS_NICE request upon forking, so

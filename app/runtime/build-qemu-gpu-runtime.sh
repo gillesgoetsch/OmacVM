@@ -1478,6 +1478,30 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-view-limits.
 grep -q 'if (!vkr_image_view_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {' "$virgl_source/src/venus/vkr_image.c" && \
   grep -q 'if (!vkr_buffer_view_ok(vkr_device_from_handle(args->device), args->pCreateInfo, why,' "$virgl_source/src/venus/vkr_buffer.c" || \
   die "vkr_image.c, vkr_buffer.c: views are not checked against their image and buffer (view-limits patch)"
+# What else a guest's commands ended QEMU's process with now ends only the app's Venus context
+# (ADR 0065, #624): proc table entries are never NULL (a command of a Vulkan version or extension
+# the app's device lacks reaches a stub), the asserts a guest reached are refusals, and buffer
+# binds stay inside their memory.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-missing-entries.patch"
+grep -q 'vkr_device_proc_table_fill_missing(&dev->proc_table);' "$virgl_source/src/venus/vkr_device.c" && \
+  grep -q 'vkr_physical_device_init_missing_entries(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_device.c, vkr_physical_device.c: missing proc table entries are not stubbed (missing-entries patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-guest-asserts.patch"
+grep -q 'if (!object_array_ids_unique(ctx, count, obj_type, handle_size, obj_id_handles))' "$virgl_source/src/venus/vkr_common.c" && \
+  grep -q 'vkr_context_refuse(ctx, true, "vkImportSemaphoreResourceMESA",' "$virgl_source/src/venus/vkr_queue.c" || \
+  die "vkr_common.c, vkr_queue.c: guest values still reach vkr's asserts (guest-asserts patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-buffer-binds.patch"
+grep -q 'if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(args->buffer),' "$virgl_source/src/venus/vkr_buffer.c" && \
+  grep -q 'const uint64_t limit = align64(res->memory_size, getpagesize());' "$virgl_source/src/venus/vkr_device_memory.c" || \
+  die "vkr_buffer.c, vkr_device_memory.c: buffer binds are not checked against their memory (buffer-binds patch)"
+# entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
+# last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
+# before the stubs).
+if grep -rnE --include='*.[ch]' --exclude=vkr_allocator.c --exclude-dir=venus-protocol \
+     '!\(?[[:space:]]*(vk|[A-Za-z_>.-]*proc_table)[[:space:]]*(->|\.)[[:space:]]*[A-Z]|(vk|proc_table)(->|\.)[A-Z][A-Za-z0-9]*[[:space:]]*[!=]=[[:space:]]*NULL' \
+     "$virgl_source/src/venus"; then
+  die "src/venus: a proc table entry tested against NULL; entries are never NULL, use VKR_MISSING (missing-entries patch)"
+fi
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
@@ -1662,16 +1686,17 @@ log "Relocating, capability-gating, signing, and publishing the runtime"
   "$native_dir/.build/qemu-gpu-runtime/bin/qemu-system-aarch64" || \
   die "the slirp UDP stall test failed"
 
-# A guest's Vulkan calls never reach the Mac's driver with what Metal ends QEMU on (ADR 0065):
-# each case through vkr's own dispatch on the staged runtime's real drivers (KosmicKrisp and
-# MoltenVK), one process per case; objects and binds only, nothing runs on the GPU.
+# A guest's Vulkan calls never reach the Mac's driver with what Metal ends QEMU on, and what
+# ended QEMU's process in vkr now ends only the app's context (ADR 0065): each case through
+# vkr's own dispatch on the staged runtime's real drivers (KosmicKrisp and MoltenVK), one process
+# per case; objects and binds only, nothing runs on the GPU.
 python3 "$native_dir/Tests/virgl/run-venus-limits.py" \
   "$virgl_build" "$work_dir/venus-limits" "$native_dir/.build/qemu-gpu-runtime" -- \
   "-L$epoxy_root/lib" -lepoxy \
   -framework Metal -framework CoreFoundation -lobjc \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
   "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib" || \
-  die "the Venus image limits test failed"
+  die "the Venus limits tests failed"
 
 # The firmware must show the logo and name the disk's boot entry as QEMU's
 # does, with the QEMU it ships with (Tests/firmware/test-firmware.py).

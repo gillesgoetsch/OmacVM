@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""test-venus-image-limits.c against the staged runtime's real Vulkan drivers (ADR 0065).
+"""test-venus-image-limits.c and test-venus-robust.c against the staged runtime's real
+Vulkan drivers (ADR 0065).
 
    run-venus-limits.py VIRGL_BUILD OUT_DIR RUNTIME_DIR -- LINK_ARGS...
 
-Builds the test with vkr_image.c's own compile flags against the renderer's static
+Builds each test with vkr_image.c's own compile flags against the renderer's static
 libraries (as run-regressions.py's run_test does), puts it in a lib/ folder laid out like
 the runtime (its libvulkan.1.dylib and drivers beside it, share/vulkan/icd.d next to it),
 so vkr loads the driver as in QEMU, and runs it once per driver: MoltenVK always,
 KosmicKrisp too where the runtime has it and macOS is 26 or newer (a KosmicKrisp half
-that falls back to MoltenVK fails the build). Then microseconds per vkCreateImage."""
+that falls back to MoltenVK fails the build). Then microseconds per vkCreateImage and per
+vkCreateBuffer. First, src/venus/vkr_proc_entries.h must be what venus-missing-entries.py
+makes of the built tree (virgl-venus-missing-entries.patch)."""
 import json
 import os
 from pathlib import Path
@@ -50,12 +53,25 @@ if share.is_symlink() or share.exists():
     share.unlink()
 share.symlink_to(runtime / "share")
 
-binary = lib / "test-venus-image-limits"
-subprocess.run([command[0], *flags, "-I" + str(source), "-I" + str(source / "venus"),
-                str(Path(__file__).with_name("test-venus-image-limits.c")),
-                str(build / "src/libvirgl.a"), str(build / "src/gallium/libgallium.a"),
-                str(build / "src/mesa/libmesa.a"), *link_args, "-o", str(binary)],
-               cwd=directory, check=True)
+# the stubs' list is the tables' list: made again from the tree, it must not differ
+entries = source / "venus" / "vkr_proc_entries.h"
+if entries.exists():
+    made = subprocess.run([sys.executable, str(Path(__file__).with_name("venus-missing-entries.py")),
+                           str(source / "venus")], capture_output=True, text=True)
+    if made.returncode or made.stdout != entries.read_text():
+        sys.exit("venus limits: FAIL: vkr_proc_entries.h is not what venus-missing-entries.py "
+                 "makes of this tree " + made.stderr.strip())
+    print("venus limits: vkr_proc_entries.h matches the tree's proc tables")
+else:
+    print("venus limits: no vkr_proc_entries.h (a tree without virgl-venus-missing-entries.patch)")
+
+tests = [("test-venus-image-limits", "vkCreateImage"), ("test-venus-robust", "vkCreateBuffer")]
+for name, _ in tests:
+    subprocess.run([command[0], *flags, "-I" + str(source), "-I" + str(source / "venus"),
+                    str(Path(__file__).with_name(name + ".c")),
+                    str(build / "src/libvirgl.a"), str(build / "src/gallium/libgallium.a"),
+                    str(build / "src/mesa/libmesa.a"), *link_args, "-o", str(lib / name)],
+                   cwd=directory, check=True)
 
 icd = runtime / "share/vulkan/icd.d"
 macos = int(platform.mac_ver()[0].split(".")[0] or 0)
@@ -74,19 +90,23 @@ env = {k: v for k, v in os.environ.items()
        if k not in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES") and not k.startswith("DYLD_")}
 env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(a[2:] for a in link_args if a.startswith("-L"))
 failed = []
-for name, title in drivers:
-    run = subprocess.run([str(binary)], env={**env, "OMACVM_VULKAN_DRIVER": name},
-                         capture_output=True, text=True)
-    print(run.stdout, end="")
-    summary = run.stdout.strip().splitlines()[-1] if run.stdout.strip() else ""
-    if run.returncode or not summary.startswith("all ok") or not summary.endswith(" on " + title):
-        failed.append(f"{title} ({summary or 'no output'})")
-        continue
-    timing = subprocess.run([str(binary), "--time", "10000"],
-                            env={**env, "OMACVM_VULKAN_DRIVER": name}, capture_output=True, text=True)
-    lines = [line for line in timing.stdout.splitlines() if line.startswith("timing:")]
-    print(f"{title} {lines[-1] if lines else 'timing: did not run'}")
+for test, _ in tests:
+    binary = lib / test
+    for name, title in drivers:
+        run = subprocess.run([str(binary)], env={**env, "OMACVM_VULKAN_DRIVER": name},
+                             capture_output=True, text=True)
+        print(run.stdout, end="")
+        summary = run.stdout.strip().splitlines()[-1] if run.stdout.strip() else ""
+        if run.returncode or not summary.startswith("all ok") or not summary.endswith(" on " + title):
+            failed.append(f"{test} on {title} ({summary or 'no output'})")
+            continue
+        timing = subprocess.run([str(binary), "--time", "10000"],
+                                env={**env, "OMACVM_VULKAN_DRIVER": name}, capture_output=True,
+                                text=True)
+        lines = [line for line in timing.stdout.splitlines() if line.startswith("timing:")]
+        print(f"{title} {lines[-1] if lines else 'timing: did not run'}")
 
 if failed:
-    sys.exit("venus limits: FAIL on " + ", ".join(failed))
-print("venus limits: every case as expected on " + " and ".join(t for _, t in drivers))
+    sys.exit("venus limits: FAIL: " + ", ".join(failed))
+print("venus limits: every case as expected in " + " and ".join(t for t, _ in tests) + " on " +
+      " and ".join(t for _, t in drivers))

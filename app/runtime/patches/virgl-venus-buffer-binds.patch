@@ -1,0 +1,371 @@
+virglrenderer: Venus buffer binds stay inside their memory
+
+What: vkBindBufferMemory and vkBindBufferMemory2 check each bind before the
+Mac's driver gets it: not a sparse buffer, a memory type the buffer takes, an
+aligned offset, and the buffer ends inside the memory (no overflow). vkr keeps
+each buffer's create flags and memory requirements from one query at create (as
+#623 does for images); image and buffer binds share the rule
+(vkr_device_memory_bind_ok). A refused bind ends the app's context: the guest
+binds without waiting. Memory made from a resource (VkImportMemoryResourceInfoMESA)
+may be no larger than the memory behind the resource, to the end of its host page
+(vkr_resource keeps that size when device memory is exported): a larger one is
+refused with VK_ERROR_INVALID_EXTERNAL_HANDLE, the context lives.
+Why: KosmicKrisp and MoltenVK return VK_SUCCESS for a buffer bound half past its
+memory's end, at an offset past it or one that wraps, unaligned, to memory smaller
+than the buffer, and (MoltenVK) a 1 TiB buffer to 64 KiB: the GPU could then read
+and write outside the memory (a GPU fault resets the GPU). MoltenVK ends the process
+on a memory type the buffer cannot take (Metal: "Invalid storageMode 3"). Both
+also make memory from a 64 KiB resource with 1024 times its size and bind a
+buffer of that size to it, past every range check (M4, macOS 27).
+Upstream: OmacVM policy (the spec makes these the app's job), as #623's image
+binds.
+Tests: Tests/virgl/test-venus-robust.c: the b- cases bind before the patch and
+end only the context after it; i-oversize is refused; binds in range, through
+vkBindBufferMemory2, a Vulkan window buffer's IOSurface (KosmicKrisp,
+OMACVM_VK_WINDOWS=iosurface) and memory of a resource's own size still bind;
+--time: the requirements query per vkCreateBuffer.
+
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index 635a922..9f00300 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -94,11 +94,22 @@ vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
+       vkr_find_struct(args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO);
+    const VkDeviceSize size = args->pCreateInfo->size;
+    const VkBufferUsageFlags2 usage = usage2 ? usage2->usage : args->pCreateInfo->usage;
++   const VkBufferCreateFlags flags = args->pCreateInfo->flags;
+    struct vkr_buffer *buffer = vkr_buffer_create_and_add(dispatch->data, args);
+    if (buffer) {
+       buffer->window = window;
+       buffer->size = size;
+       buffer->usage = usage;
++      /* OmacVM (virgl-venus-buffer-binds.patch): asked once here, for every bind */
++      VkMemoryRequirements req;
++      dev->proc_table.GetBufferMemoryRequirements(dev->base.handle.device,
++                                                  buffer->base.handle.buffer, &req);
++      buffer->flags = flags;
++      buffer->memory = (struct vkr_memory_requirements){
++         .size = req.size,
++         .alignment = req.alignment,
++         .type_bits = req.memoryTypeBits,
++      };
+    }
+ }
+ 
+@@ -133,25 +144,74 @@ vkr_dispatch_vkGetBufferMemoryRequirements2(
+    vk->GetBufferMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
+ }
+ 
++/* OmacVM (virgl-venus-buffer-binds.patch): whether memory may be bound to the buffer at
++ * offset: not a sparse buffer (those bind with vkQueueBindSparse), and the memory type,
++ * alignment and range as for images (vkr_device_memory_bind_ok). KosmicKrisp and MoltenVK
++ * bind whatever they get: a buffer past its memory's end could let the GPU read and
++ * write outside the memory, and MoltenVK ends the process on a memory type the buffer
++ * cannot take (Metal's "Invalid storageMode"). */
++static bool
++vkr_buffer_bind_ok(const struct vkr_buffer *buffer,
++                   const struct vkr_device_memory *mem,
++                   VkDeviceSize offset,
++                   char *why,
++                   size_t why_size)
++{
++   if (!buffer || !mem) {
++      snprintf(why, why_size, "no %s", buffer ? "memory" : "buffer");
++      return false;
++   }
++   if (buffer->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT) {
++      snprintf(why, why_size, "a sparse buffer (flags 0x%x)", buffer->flags);
++      return false;
++   }
++   return vkr_device_memory_bind_ok(mem, &buffer->memory, offset, why, why_size);
++}
++
+ static void
+-vkr_dispatch_vkBindBufferMemory(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkBindBufferMemory(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkBindBufferMemory *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM: the guest binds without waiting for an answer: a bind the driver must not
++    * get ends the app's context */
++   char why[192];
++   if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(args->buffer),
++                           vkr_device_memory_from_handle(args->memory), args->memoryOffset,
++                           why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, true, "vkBindBufferMemory", "%s", why);
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
++
+    vn_replace_vkBindBufferMemory_args_handle(args);
+    args->ret =
+       vk->BindBufferMemory(args->device, args->buffer, args->memory, args->memoryOffset);
+ }
+ 
+ static void
+-vkr_dispatch_vkBindBufferMemory2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkBindBufferMemory2(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkBindBufferMemory2 *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM: as vkBindBufferMemory, for each bind */
++   for (uint32_t i = 0; i < args->bindInfoCount; i++) {
++      const VkBindBufferMemoryInfo *bind = &args->pBindInfos[i];
++      char why[192];
++      if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(bind->buffer),
++                              vkr_device_memory_from_handle(bind->memory),
++                              bind->memoryOffset, why, sizeof(why))) {
++         vkr_context_refuse(dispatch->data, true, "vkBindBufferMemory2", "bind %u: %s", i,
++                            why);
++         args->ret = VK_ERROR_UNKNOWN;
++         return;
++      }
++   }
++
+    vn_replace_vkBindBufferMemory2_args_handle(args);
+    args->ret = vk->BindBufferMemory2(args->device, args->bindInfoCount, args->pBindInfos);
+ }
+diff --git a/src/venus/vkr_buffer.h b/src/venus/vkr_buffer.h
+index a02bf71..034b2bc 100644
+--- a/src/venus/vkr_buffer.h
++++ b/src/venus/vkr_buffer.h
+@@ -8,6 +8,8 @@
+ 
+ #include "vkr_common.h"
+ 
++#include "vkr_device_memory.h"
++
+ struct vkr_buffer {
+    struct vkr_object base;
+    /* OmacVM (ADR 0047): made for an IOSurface's memory (a Vulkan window buffer) */
+@@ -15,6 +17,10 @@ struct vkr_buffer {
+    /* OmacVM (virgl-venus-view-limits.patch): its size and usage, for texel buffer views */
+    VkDeviceSize size;
+    VkBufferUsageFlags2 usage;
++   /* OmacVM (virgl-venus-buffer-binds.patch): its create flags and the host's memory
++    * requirements, for binds */
++   VkBufferCreateFlags flags;
++   struct vkr_memory_requirements memory;
+ };
+ VKR_DEFINE_OBJECT_CAST(buffer, VK_OBJECT_TYPE_BUFFER, VkBuffer)
+ 
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index ba5c9f9..359a376 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -264,6 +264,7 @@ vkr_context_import_resource_internal(struct vkr_context *ctx,
+    res->res_id = res_id;
+    res->fd_type = fd_type;
+    res->size = blob_size;
++   res->memory_size = blob_size;
+ 
+    /* fd and mmap_ptr cannot be valid at the same time, but allowed to be -1 and NULL */
+    assert(fd < 0 || !mmap_ptr);
+@@ -363,6 +364,7 @@ vkr_context_import_resource_metal(struct vkr_context *ctx,
+    res->res_id = res_id;
+    res->fd_type = fd_type;
+    res->size = blob_size;
++   res->memory_size = blob_size;
+    res->u.metal_heap = (void *)CFRetain(metal_heap);
+ 
+    if (!vkr_context_add_resource(ctx, res)) {
+@@ -399,6 +401,7 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+          return false;
+       /* OmacVM: the heap lives on in the resource: it shares the memory's charge */
+       vkr_context_get_resource(ctx, res_id)->charge = virgl_gpu_charge_ref(mem->charge);
++      vkr_context_get_resource(ctx, res_id)->memory_size = mem->allocation_size;
+       return true;
+    }
+ 
+@@ -424,6 +427,7 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+    }
+    /* OmacVM: the exported storage lives on in the resource: it shares the charge */
+    vkr_context_get_resource(ctx, res_id)->charge = virgl_gpu_charge_ref(mem->charge);
++   vkr_context_get_resource(ctx, res_id)->memory_size = mem->allocation_size;
+ 
+    *out_blob = blob;
+ 
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index 8901c83..83c2db3 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -36,6 +36,11 @@ struct vkr_resource {
+ 
+    size_t size;
+ 
++   /* OmacVM (virgl-venus-buffer-binds.patch): the size of the memory behind it: device
++    * memory's allocation size when made from one (the guest names the blob's size), else
++    * the size it was made or imported with. Memory made from the resource stays inside. */
++   uint64_t memory_size;
++
+    /* OmacVM: shm blobs and exported device memory count against the GPU memory budget */
+    struct virgl_gpu_charge *charge;
+ };
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 96a6839..3d42ced 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -463,6 +463,24 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+       }
+    }
+ 
++   /* OmacVM (virgl-venus-buffer-binds.patch): the guest names the size of memory made
++    * from a resource, and binds are checked against that size: it stays inside the
++    * resource's memory (up to the end of the host page it ends in). Both Mac drivers
++    * take any size for an imported Metal heap. */
++   if (res_info) {
++      const struct vkr_resource *res = vkr_context_get_resource(ctx, res_info->resourceId);
++      const uint64_t limit = align64(res->memory_size, getpagesize());
++      if (alloc_info->allocationSize > limit) {
++         vkr_context_refuse(ctx, false, "vkAllocateMemory",
++                            "%" PRIu64 " bytes from resource %u of %" PRIu64,
++                            alloc_info->allocationSize, res_info->resourceId, res->memory_size);
++         if (local_import_info.fd >= 0)
++            close(local_import_info.fd);
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++   }
++
+    /* OmacVM: new device memory counts against the guest GPU memory budget. Memory
+     * imported from a resource keeps that storage alive: it shares the resource's
+     * charge, or, for a resource with none (imported into this context), charges the
+@@ -804,6 +822,31 @@ vkr_memory_charge_create(uint64_t bytes, const char *what)
+    return charge;
+ }
+ 
++bool
++vkr_device_memory_bind_ok(const struct vkr_device_memory *mem,
++                          const struct vkr_memory_requirements *req,
++                          VkDeviceSize offset,
++                          char *why,
++                          size_t why_size)
++{
++   if (mem->memory_type_index >= 32 || !(req->type_bits & (1u << mem->memory_type_index))) {
++      snprintf(why, why_size, "memory type %u not one of 0x%x", mem->memory_type_index,
++               req->type_bits);
++      return false;
++   }
++   if (req->alignment && offset % req->alignment) {
++      snprintf(why, why_size, "offset %" PRIu64 " not a multiple of %" PRIu64, offset,
++               req->alignment);
++      return false;
++   }
++   if (offset > mem->allocation_size || req->size > mem->allocation_size - offset) {
++      snprintf(why, why_size, "%" PRIu64 " bytes at %" PRIu64 " past the memory's %" PRIu64,
++               req->size, offset, mem->allocation_size);
++      return false;
++   }
++   return true;
++}
++
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem)
+ {
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+index b165ea5..6268501 100644
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -43,6 +43,24 @@ VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemo
+ void
+ vkr_context_init_device_memory_dispatch(struct vkr_context *ctx);
+ 
++/* OmacVM (virgl-venus-buffer-binds.patch): what the host asks of memory bound to a buffer
++ * or to one plane of an image (its memory requirements) */
++struct vkr_memory_requirements {
++   VkDeviceSize size;
++   VkDeviceSize alignment;
++   uint32_t type_bits;
++};
++
++/* OmacVM (virgl-venus-buffer-binds.patch): whether the memory may be bound at offset to a
++ * buffer or image plane with these requirements: the memory type is one it takes, the
++ * offset is aligned, and it ends inside the memory. Else why says why. */
++bool
++vkr_device_memory_bind_ok(const struct vkr_device_memory *mem,
++                          const struct vkr_memory_requirements *req,
++                          VkDeviceSize offset,
++                          char *why,
++                          size_t why_size);
++
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem);
+ 
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 63853fb..9a9d6b1 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -269,7 +269,7 @@ vkr_image_init_info(struct vkr_device *dev,
+          .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+       };
+       dev->proc_table.GetImageMemoryRequirements2(dev->base.handle.device, &req_info, &req);
+-      image->memory[i] = (struct vkr_image_memory){
++      image->memory[i] = (struct vkr_memory_requirements){
+          .size = req.memoryRequirements.size,
+          .alignment = req.memoryRequirements.alignment,
+          .type_bits = req.memoryRequirements.memoryTypeBits,
+@@ -279,7 +279,7 @@ vkr_image_init_info(struct vkr_device *dev,
+ 
+ /* OmacVM (virgl-venus-image-limits.patch): whether memory may be bound to an image (or
+  * one plane of it): the type is one of the image's, the offset is aligned and the image
+- * ends inside the memory. KosmicKrisp rounds the offset up itself and makes a linear
++ * ends inside the memory (vkr_device_memory_bind_ok). KosmicKrisp rounds the offset up itself and makes a linear
+  * image's texture from the memory's buffer: past the end it keeps no texture, and the
+  * GPU later uses what is not there. next: the bind info's pNext (plane info). */
+ static bool
+@@ -302,23 +302,7 @@ vkr_image_bind_ok(const struct vkr_image *image,
+                plane_info ? plane_info->planeAspect : 0, image->plane_count);
+       return false;
+    }
+-   const struct vkr_image_memory *req = &image->memory[plane];
+-   if (mem->memory_type_index >= 32 || !(req->type_bits & (1u << mem->memory_type_index))) {
+-      snprintf(why, why_size, "memory type %u not in the image's 0x%x",
+-               mem->memory_type_index, req->type_bits);
+-      return false;
+-   }
+-   if (req->alignment && offset % req->alignment) {
+-      snprintf(why, why_size, "offset %" PRIu64 " not a multiple of %" PRIu64, offset,
+-               req->alignment);
+-      return false;
+-   }
+-   if (offset > mem->allocation_size || req->size > mem->allocation_size - offset) {
+-      snprintf(why, why_size, "%" PRIu64 " bytes at %" PRIu64 " past the memory's %" PRIu64,
+-               req->size, offset, mem->allocation_size);
+-      return false;
+-   }
+-   return true;
++   return vkr_device_memory_bind_ok(mem, &image->memory[plane], offset, why, why_size);
+ }
+ 
+ /* OmacVM (virgl-venus-image-limits.patch): a create info a vkGetDeviceImage* query
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+index 6bae6a5..ece6c65 100644
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -8,12 +8,7 @@
+ 
+ #include "vkr_common.h"
+ 
+-/* OmacVM (virgl-venus-image-limits.patch): the host's memory requirements of one plane */
+-struct vkr_image_memory {
+-   VkDeviceSize size;
+-   VkDeviceSize alignment;
+-   uint32_t type_bits;
+-};
++#include "vkr_device_memory.h"
+ 
+ struct vkr_image {
+    struct vkr_object base;
+@@ -32,7 +27,7 @@ struct vkr_image {
+    bool drm_linear;
+    /* memory planes bound one by one (DISJOINT), else 1 */
+    uint32_t plane_count;
+-   struct vkr_image_memory memory[3];
++   struct vkr_memory_requirements memory[3];
+ };
+ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+ 

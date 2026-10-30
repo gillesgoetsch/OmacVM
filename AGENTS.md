@@ -826,6 +826,12 @@ The less obvious ones, with causes and where the fix lives, are in
   vkr checks image descriptions, binds, layouts, views and samplers first (ADR
   0065); a vkr path that hands the driver a new guest description needs the
   same check and a case in `app/runtime/Tests/virgl/test-venus-image-limits.c`.
+  vkr's proc table entries are never NULL: a command the app's device was not
+  made with reaches a stub that ends its context (`vkr_missing_entries.h`), so
+  test an entry with `VKR_MISSING`, never against NULL (the runtime build
+  fails on one), and a new thread that dispatches guest commands sets
+  `vkr_dispatching_context`. No guest value may reach an `assert()` in vkr
+  (virgl keeps them in release); such cases go in `test-venus-robust.c`.
 - Do not run guest apps on Zink as their OpenGL (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
   in an OmacVM.app VM with Vulkan: on KosmicKrisp it gives OpenGL 2.1 only.
   Ghostty's OpenGL 4.3 comes from llvmpipe instead. With the 3.2.13 app and
