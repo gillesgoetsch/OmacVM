@@ -576,7 +576,9 @@ elif [[ ${F[omanotch]} == on ]]; then
   # An empty notchcast is a broken install (seen once): build it again; a repair always does.
   [[ -e $H/.local/bin/notchcast && ! -s $H/.local/bin/notchcast ]] && home_run rm -f "$H/.local/bin/notchcast"
   [[ -n $ONLY ]] && home_run rm -f "$H/.local/state/omacvm/omanotch"
-  sum=$(cd "$R/omanotch/guest" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+  # Python's compiled files are not Omanotch's: root's build.py (OmacVM.app's
+  # display widget) leaves monitor/__pycache__ in each new copy, with new times.
+  sum=$(cd "$R/omanotch/guest" && find . -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
   stamp=$H/.local/state/omacvm/omanotch
   if [[ -x $H/.local/bin/notchcast && $(home_cat "$stamp") != "$sum" ]]; then
     log "Omanotch: changed, installs again"
