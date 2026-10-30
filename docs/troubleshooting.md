@@ -1369,6 +1369,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   widget), `src/omanotch/guest/monitor/display-panel.py` (Omanotch's display
   panel), `src/guest/off.sh` and `src/control/guest/install.sh` (the offs);
   tests `src/tests/plugin-lock.sh`, `src/tests/restart-shell.sh`,
+  `src/tests/lock-rules.sh` (the three lock rules against one table),
   `src/tests/features-off.sh`, `src/omanotch/guest/tests/test_display_panel.py`.
 
 ## 47. app: Ghostty opens no window, or draws on the CPU
