@@ -122,10 +122,8 @@ struct ReadyView: View {
     /// The VM's memory and its graphics memory side by side: the VM's RAM is
     /// fixed, its graphics come from the Mac on top, as needed (GPUMemory).
     private var factsInfo: String {
-        let gpu = GPUMemory.read(for: state.config).map {
-            "Graphics memory last run: peak \(GPUMemory.gb($0.peakMB)), from the Mac on top."
-        } ?? "Graphics memory comes from the Mac on top, as the VM needs it."
-        return "Set when the VM was made. CPUs and memory change under General, the disk under Storage. \(gpu)\n\n\(GPUMemory.explanation)"
+        "Set when the VM was made. CPUs and memory change under General, the disk under Storage. "
+            + "\(GPUMemory.lastRun(GPUMemory.read(for: state.config)))\n\n\(GPUMemory.explanation)"
     }
 
     // MARK: Notices under the header

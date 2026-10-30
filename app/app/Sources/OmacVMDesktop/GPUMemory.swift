@@ -90,18 +90,41 @@ public struct GPUMemory: Equatable {
     /// "Graphics memory: 1.6 GB (peak 2.6 GB)"
     public var line: String { "Graphics memory: \(GPUMemory.gb(inUseMB)) (peak \(GPUMemory.gb(peakMB)))" }
 
+    /// The VM's memory, its graphics and Activity Monitor's number, for every
+    /// (i) that explains them: the VM header's and General's Resources row's
+    /// (resourcesInfo). Measured numbers only: the 2-5 GB at 5K from the
+    /// field (2.2 GB, and 4.6 GB at the peak, on a 16 GB Mac mini with
+    /// Chrome), the counted-twice row from ADR 0062.
     public static let explanation = """
-        VM memory is the Mac memory the VM gets as its RAM (set above). What Linux frees \
-        goes back to the Mac and leaves QEMU's footprint, the number Activity Monitor \
-        shows for the VM. While macOS compresses the VM, the VM gives back the file cache \
-        it has not used lately; when macOS warns that memory is short, it drops its whole \
-        file cache. Graphics memory is extra: the textures and buffers the VM's \
-        desktop and apps draw with, taken from the Mac's memory as they need it (a 5K \
-        desktop with a browser: about 2 GB). \
+        VM memory is the VM's RAM: Linux sees exactly this much, and the Mac gives it \
+        as the VM uses it. What Linux frees goes back to the Mac and leaves QEMU's \
+        footprint, the number Activity Monitor shows for the VM. While macOS compresses \
+        the VM, the VM gives back the file cache it has not used lately; when macOS warns \
+        that memory is short, it drops its whole file cache. Graphics memory comes on \
+        top: the textures and buffers the VM's desktop and apps draw with, taken from the \
+        Mac's memory as they need it (a 5K desktop with a browser: 2 to 5 GB). \
         New ones for apps are refused when macOS itself runs short, or when all of them \
         together reach three quarters of the Mac's memory less a part kept for the \
-        desktop itself, so an app that takes too much stops, not the desktop.
+        desktop itself, so an app that takes too much stops, not the desktop. \
+        Activity Monitor can show more for the VM than both together: once QEMU itself \
+        touched a page of the VM (disk, graphics, network) and macOS compressed it, macOS \
+        counts that page twice (a 4 GB VM after a browser session: 5.9 GB shown, \
+        2.1 GB of it counted twice). omacvm check shows what the number is made of.
         """
+
+    /// The last run's graphics, for the same two (i)s; nil: no run yet (or
+    /// a runtime without the status file).
+    public static func lastRun(_ last: GPUMemory?) -> String {
+        last.map { "Graphics memory last run: peak \(gb($0.peakMB)), from the Mac on top." }
+            ?? "Graphics memory comes from the Mac on top, as the VM needs it."
+    }
+
+    /// The (i) beside Resources (General): CPUs, then the VM's memory and its
+    /// graphics in the header (i)'s own words.
+    public static func resourcesInfo(_ last: GPUMemory?) -> String {
+        "CPUs are the Mac's cores the VM may use at once. A change applies at the VM's next start. "
+            + "\(lastRun(last))\n\n\(explanation)"
+    }
 }
 
 /// An app in the VM (not the desktop or the shell) lost its GPU context

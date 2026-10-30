@@ -210,6 +210,20 @@ let says = GPUMemory.explanation
 expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !says.contains("keep holding")
        && says.contains("While macOS compresses the VM, the VM gives back the file cache")
        && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back while macOS compresses, the warning's drop")
+// The maintainer's Mac mini (2026-10-30): 12 GB set, 4.6 GB of graphics at 5K, Activity Monitor 23 GB. The words say
+// the field's range at 5K (not "about 2 GB") and that Activity Monitor counts compressed pages twice (ADR 0062's row).
+expect(says.contains("Linux sees exactly this much") && says.contains("Graphics memory comes on top")
+       && says.contains("(a 5K desktop with a browser: 2 to 5 GB)") && !says.contains("about 2 GB"),
+       "the settings' words: the VM's RAM, graphics on top, 2 to 5 GB at 5K")
+expect(says.contains("macOS counts that page twice (a 4 GB VM after a browser session: 5.9 GB shown, 2.1 GB of it counted twice)"),
+       "the settings' words: Activity Monitor counts part of a compressed VM twice, with the measured row")
+// One text for both (i)s: the VM header's and General's Resources row's say the same about memory.
+let lastPeak = GPUMemory.parse("in_use_mb=2186\npeak_mb=4619\n")
+expect(GPUMemory.lastRun(lastPeak) == "Graphics memory last run: peak 4.5 GB, from the Mac on top."
+       && GPUMemory.lastRun(nil) == "Graphics memory comes from the Mac on top, as the VM needs it.", "the last run's graphics, or how they come")
+expect(GPUMemory.resourcesInfo(lastPeak).hasPrefix("CPUs are the Mac's cores")
+       && GPUMemory.resourcesInfo(lastPeak).hasSuffix(GPUMemory.lastRun(lastPeak) + "\n\n" + GPUMemory.explanation),
+       "the Resources (i): CPUs, then the header's graphics line and the same explanation")
 
 // The user's report: 64 GB Mac, 42 GB VM; footprint 51 GB, resident 27-30 GB, macOS compressing at "normal".
 var u = withFix(64 * GB)
