@@ -138,6 +138,11 @@ So the screensaver in Ghostty keeps 3.7 of the VM's 4 vCPUs and 3.7 of the
 Mac's cores busy while it shows; in foot 0.8 and 1.1. Three 30-s runs of each
 gave the same split (QEMU 102-103 CPU-s per 30 s with Ghostty, 31-33 with
 foot). On 3.2.12 it opened no window with Ghostty (guest 0.66 CPU-s in 20 s).
+How long it shows (Omarchy's source, 4.0.3rc4-2 as the VM installs it; not
+measured): with Omarchy's defaults (`idle` in `~/.config/omarchy/shell.json`:
+screensaver 150, lock 300) it runs from 2.5 minutes idle until the lock at
+5 minutes, which closes it (`omarchy-system-lock` kills the screensaver's
+terminals), and it does not start while the screen is locked.
 
 ## Consequences
 

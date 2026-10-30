@@ -1399,8 +1399,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   default terminal, so with Ghostty it draws on the CPU too while it shows,
   and that is heavy: on two displays at scale 2 it kept 3.7 of a test
   VM's 4 cores busy, and the Mac mini drew about 36 W against 14-18 W without
-  it (20 W with the screensaver in foot). Off: `omarchy-toggle-screensaver`,
-  or `omacvm enable no-idle-lock`. Terminals
+  it (20 W with the screensaver in foot). With Omarchy's defaults it runs
+  from 2.5 minutes idle until the lock at 5 minutes, which closes it, and
+  not while the screen is locked (Omarchy's source; not measured). Off:
+  `omarchy-toggle-screensaver`, or `omacvm enable no-idle-lock`. Terminals
   that draw on the Mac's GPU in the VM: Alacritty and Kitty (Install >
   Terminal); Omarchy's default foot draws on the CPU by design and costs
   little (Setup > Defaults > Terminal, or `omarchy-default-terminal foot`).
