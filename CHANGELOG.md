@@ -116,7 +116,7 @@ in more words.
   0.57. Needs Update VM or `omacvm update`, then log out and in (an OmacVM.app VM updated while it
   was shut down needs nothing more); before that, `hyprctl getoption` saying false is no proof.
   `omacvm check` has a "transparent panels" line. The workaround for older versions is in
-  docs/troubleshooting.md, 48. Reported by @epicoun.
+  docs/troubleshooting.md, 50. Reported by @epicoun.
 
 - **Screenshots and screen sharing of HDR apps stay right with Hyprland 0.57 (OmacVM.app).** Hyprland
   0.57.0 (in Omarchy's edge repository, the dev channel, since 2026-10-29; Omarchy stable once it

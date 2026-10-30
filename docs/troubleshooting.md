@@ -31,7 +31,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 - **Notifications, bar panels or the Omarchy menu black out the whole screen**
   (Hyprland 0.57; OmacVM.app, UTM, Parallels): Update VM (3.2.15) or
   `omacvm update`, then log out and in
-  ([48](#48-all-routes-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
+  ([50](#50-all-routes-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU
@@ -1525,7 +1525,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   (the (i)); tests `src/tests/activity-monitor.sh`, `src/tests/resources.sh`,
   `swift run window-tests`, `swift run desktop-tests`.
 
-## 48. All routes: notifications, panels and the Omarchy menu black out the screen (Hyprland 0.57)
+## 50. All routes: notifications, panels and the Omarchy menu black out the screen (Hyprland 0.57)
 
 - **Symptom:** while an Omarchy notification, a bar panel or the Omarchy
   menu shows, the whole screen is black around its card. Opaque windows are
