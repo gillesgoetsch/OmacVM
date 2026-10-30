@@ -117,7 +117,7 @@ windows and 3.5 (29.9-35.5 CPU-s) in the large one, and 0.16 to 0.42 of
 one in the 10 s after it stopped, with the cursor blinking (foot and
 Alacritty almost none). On the Mac, QEMU used 25.0 CPU-seconds per 26 s
 run with Ghostty against 5.5 with foot and 5.4 with Alacritty (1272x640),
-and 44.6 against 7.5 and 6.7 per 27 s run (2512x1500); the Mac GPU's busy
+and 44.6 against 7.5 and 6.7 per 26-27 s run (2512x1500); the Mac GPU's busy
 share stayed at 0-7 % in all (a hidden test window).
 
 Omarchy's screensaver with Ghostty as the default terminal, this change:
