@@ -1,9 +1,10 @@
 # 0065: Venus checks what the Mac's Vulkan driver aborts on
 
 Status: accepted, built (`zink-abort`, 3.2.14), always on; amended in 3.2.15
-(`venus-robust`, "What else vkr refuses" below). Amends
-[0012](0012-venus-in-process.md). Notes, probes and the review:
-work/tracks/zink-abort.md, work/tracks/venus-robust.md.
+(`venus-robust`, "What else vkr refuses" below) and 3.2.17 (`venus-624`,
+"Indices, counts and offsets" below). Amends [0012](0012-venus-in-process.md).
+Notes, probes and the reviews: work/tracks/zink-abort.md,
+work/tracks/venus-robust.md, work/tracks/venus-624.md.
 
 ## Context
 
@@ -183,3 +184,133 @@ writes, `vkCmd*` parameters, two rings creating or destroying one object at
 once, thread exhaustion, duplicate frees, `vkQueueBindSparse` ranges, binds
 that do not match a dedicated allocation, and the asserts in the render server
 and proxy (the fence and ring ones are checked before them).
+
+## Indices, counts and offsets (amendment, 3.2.17)
+
+Lane `venus-624` (#624). What was left open above: pipelines and shader
+modules, render passes and framebuffers, descriptor writes and `vkCmd*`
+parameters. A probe through vkr's own dispatch on the M1 Max (Apple7, macOS
+27.0.1; KosmicKrisp, MoltenVK, and MoltenVK with
+`MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1`, which encodes at
+`vkEndCommandBuffer` what it otherwise encodes when QEMU submits; nothing
+submitted; 3 runs) found that vkr passed all four classes on unchecked, and:
+
+- **Guest values used as host memory addresses.** KosmicKrisp is built with
+  `NDEBUG`, so Mesa's and its own asserts on indices are gone: push constants
+  are copied to `push + offset`, `vkCmdSetViewport`/`SetScissor`,
+  vertex buffers and descriptor sets are stored at the guest's first index,
+  descriptor writes and copies at `binding offset + element * stride` in the
+  set's memory, query reports read and zeroed at `firstQuery`,
+  `vkCmdClearAttachments` writes a clear colour into an array of 8 on the stack
+  at `colorAttachment`, a layout's binding array is sized by the largest
+  binding number + 1 (0xffffffff wraps to 0), dynamic buffers are counted in a
+  `uint8_t` into a 64-slot table, sets, layouts and pools are sized in 32-bit
+  arithmetic, Mesa's `vk_pipeline_layout` and `vk_graphics_state` copy set
+  layouts, push constant ranges, viewports, blend state, vertex input, sample
+  and attachment locations into fixed arrays, and a secondary that executes
+  itself recurses until the ring thread's stack ends. MoltenVK grows a vector
+  to `offset + size` in 32 bits for push constants and reads query results and
+  descriptor slots at guest offsets too. SIGBUS/SIGSEGV in 3 of 3 runs. Any
+  Vulkan program in the VM reaches these through the normal API (the guest's
+  Venus driver passes the values on; it reads its own layout only for sampler
+  descriptors).
+- **Enum values a switch does not know.** In release builds Mesa's and
+  KosmicKrisp's `UNREACHABLE` is `__builtin_unreachable()`: compare ops, cull
+  modes, blend factors and ops, logic ops, index types, bind points, descriptor
+  types, query types, dynamic states, resolve modes and robustness behaviours
+  outside the known values are undefined behaviour in the driver.
+- **A legal app ended the VM.** KosmicKrisp told 32 multiview views and renders
+  N views with a Metal vertex amplification count of N; Metal aborts on 9 to 32
+  on Apple7 ("maxVertexAmplificationCount ... is not supported").
+- **App bugs that aborted Metal or crashed a driver:** more than 8 colour
+  attachments, blit and clear level ranges, a NULL sampler, a stage without a
+  module, a blend state for 3 colours in a pass with 1 (MoltenVK).
+- **GPU-side ranges:** copies, fills, indirect and vertex offsets, descriptor
+  ranges and render areas past their resources were accepted when recorded;
+  the GPU would read or write outside them when they run.
+- **Shader compilation:** malformed SPIR-V (garbage, truncated, a huge id
+  bound, a bad magic, a missing entry point) crashed both compilers.
+
+Decision: vkr bounds every guest index, count, offset, stride and known enum
+the driver uses to address host memory or a table, before the driver gets it,
+against the device's limits (`struct vkr_limits`, read once per physical
+device) and small tables of what objects were made with. Semantic validity
+stays with the driver (this is not a validation layer). Every refusal ends
+the app's Venus context with a log line (`vkr_context_check`): the guest
+records commands and makes these objects without waiting, so an error code
+would be lost and the next use of the id would end the context anyway, with a
+less clear line. Four patches, one per class:
+
+- `virgl-venus-command-limits.patch`: `vkCmd*` parameters against the limits
+  and the sizes of the buffers, images and query pools they name; query pools
+  (a type the device has, 1 to 2^20 queries) and the host query calls; the
+  enum values above where a command passes them; command buffer levels (only a
+  primary executes secondaries, `VK_EXT_nested_command_buffer` is hidden);
+  `vkCmdDrawMulti(Indexed)EXT` gets its entries' own size as the stride (the
+  decoder packs the array).
+- `virgl-venus-descriptor-limits.patch`: a refcounted table per set layout
+  (shared with its sets and the pipeline layouts that use it, so a layout may
+  be destroyed first); layouts, pools, variable counts, writes and copies
+  (the spec's consecutive-binding rule, `nullDescriptor` for NULL handles,
+  ranges inside the buffer and the range limits, multi-planar views only
+  where immutable YCbCr samplers sized the binding), pipeline layouts, and
+  binds and pushes against them (one dynamic offset per dynamic buffer).
+- `virgl-venus-render-pass-limits.patch`: attachment references, colour
+  counts, dependencies, multiview info, framebuffers (the pass's attachment
+  count, sizes within the limits), begins (clear values, imageless views,
+  sample locations), dynamic rendering and inheritance. KosmicKrisp's
+  `maxMultiviewViewCount` is told to the guest as the largest vertex
+  amplification count Metal supports on the GPU (`vkr_metal_limits.m`, read
+  once; 8 on the M1 Max), and view masks past it are refused at all five places
+  one arrives (render pass multiview info, subpass description 2, rendering
+  info, inheritance rendering info, pipeline rendering info). MoltenVK renders
+  32 views and keeps telling 32.
+- `virgl-venus-pipeline-limits.patch`: stages (one known bit each, code: a
+  module, or SPIR-V chained into the stage with a size in whole words; the
+  inline path skipped vkr's only shader check), specialization entries inside
+  their data, creation feedback, dynamic states Mesa knows, vertex input,
+  viewports, blend attachment counts equal to the subpass's colours, sample
+  counts and locations, the subpass, and the enums above (fields a dynamic
+  state replaces are left alone).
+
+`app/runtime/Tests/virgl/venus-command-ledger.tsv` gives each of vkr's 140
+`vkCmd*` handlers a verdict (checked, command-buffer state, values only,
+stub, GPU-side); the runtime build fails when a handler has none, so a new
+command in a virglrenderer update needs a decision. `test-venus-commands.c`
+(210 cases, a legal-maxima group among them: every limit at its advertised
+value must keep working) runs on KosmicKrisp, MoltenVK and MoltenVK with
+prefilled command buffers at every runtime build. Against 3.2.15's vkr 147 of
+210 fail on KosmicKrisp and 134 on MoltenVK; with the patches all pass.
+
+The cost, through vkr's dispatch on the M1 Max (10,000 calls, 3 runs):
+`vkUpdateDescriptorSets` 0.009 -> 0.017 us on KosmicKrisp and 0.021 -> 0.031
+us on MoltenVK, `vkCmdBindDescriptorSets` 0.009 -> 0.018 / 0.035 -> 0.046 us,
+`vkCmdPushConstants` 0.009 -> 0.012 / 0.108 -> 0.110 us, `vkCmdSetViewport`
+0.005 -> 0.007 / 0.029 -> 0.031 us, `vkCmdDraw` unchanged (0.16 / 0.022 us).
+
+The revisit trigger above ("a crash class inside shader compilation") has
+fired: malformed SPIR-V crashes both compilers. It is answered with a check in
+vkr, not with option 2: a structural scan of the SPIR-V (header, instruction
+lengths inside the code, the id bound, entry points and execution models,
+workgroup sizes after specialization, descriptor sets inside the pipeline
+layout) catches every probed crash and is the next change in #624, with
+command-buffer state (draw or dispatch without a bound pipeline of its kind,
+`vkCmdNextSubpass`/`EndRenderPass` outside a pass, `vkCmdClearAttachments`
+past the pass's colours), texel-region extents of copies and blits, and
+format checks for pipelines and render passes. Until it lands, malformed SPIR-V
+still ends QEMU. A full validator (SPIRV-Tools) would be a new pinned
+dependency and a cost per module; it is added only if a crash past the
+structural scan is found. Option 2 is revisited if such crashes keep coming,
+or when KosmicKrisp can share memory across processes.
+
+Still open (#624): the next change above; MoltenVK reads vertex buffers,
+descriptor sets and push constants a draw or dispatch uses but the app never
+set when it encodes them (at submit in QEMU; a test without them ended
+MoltenVK's process at `vkEndCommandBuffer` with prefilled command buffers);
+objects destroyed while a recorded or pending command buffer still uses them
+(MoltenVK encodes at submit from stored pointers, KosmicKrisp's Metal 4 command
+buffers do not retain their resources); what the GPU does when commands run
+(robustness off, hangs, huge dispatches); driver bugs on valid input; two rings
+on one object at once; thread exhaustion; huge descriptor pools (each pool size
+is bounded at 2^24 against overflow, not against memory); the other items
+listed in the amendment above.
