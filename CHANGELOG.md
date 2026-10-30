@@ -13,10 +13,10 @@ in more words.
   Omarchy notification, bar panel and the Omarchy menu blacked out the whole screen while it showed.
   OmacVM now turns the option off on every route (`~/.config/hypr/omacvm_vm.lua`), only when this
   Hyprland has it on and your own Hyprland files do not name it; on Hyprland 0.56 nothing changes,
-  and VMware Fusion was not affected. Not caused by OmacVM 3.2.13, which came out a day after
-  Hyprland 0.57. Needs Update VM or `omacvm update`, then log out and in (an OmacVM.app VM updated
-  while it was shut down needs nothing more); before that, `hyprctl getoption` saying false is no
-  proof. `omacvm check` has a "transparent panels" line. The workaround for older versions is in
+  and VMware Fusion was not affected. Not caused by OmacVM 3.2.13, which came out after Hyprland
+  0.57. Needs Update VM or `omacvm update`, then log out and in (an OmacVM.app VM updated while it
+  was shut down needs nothing more); before that, `hyprctl getoption` saying false is no proof.
+  `omacvm check` has a "transparent panels" line. The workaround for older versions is in
   docs/troubleshooting.md, 48. Reported by @epicoun.
 
 ## 3.2.14
