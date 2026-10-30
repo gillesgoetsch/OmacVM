@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.14 (unreleased)
+
+- **A program in the VM can no longer stop the whole VM through the Mac's Vulkan driver.** In an
+  OmacVM.app VM with Graphics on Vulkan (Automatic gives it on macOS 26 and newer), a program that
+  used Zink (OpenGL on Vulkan) could stop the whole VM: `glxinfo` with Zink, or Ghostty with Zink
+  and OpenGL 4.3 forced. Zink asked for a kind of linear image the Mac's driver cannot make, was
+  told it could, and Metal then ended QEMU's process. Other unusual Vulkan requests did the same
+  (too many levels or layers, a view past its image, a format the driver does not know, an
+  unknown sampler filter). The VM now checks such requests before the Mac's driver gets them: the
+  program gets a Vulkan error, or ends on its own, and the VM goes on; Zink is told that image is
+  not supported. Found while testing #598, reported by @benoitdepaire. Needs the app update
+  (from the VM's next start).
+
 ## 3.2.13
 
 In an OmacVM.app VM, mpv's and FFmpeg's VA-API deinterlacer no longer shows a green picture
