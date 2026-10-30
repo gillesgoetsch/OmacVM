@@ -99,18 +99,71 @@ odd.lostRecentWhy = ["guard"]
 expect(odd.why(of: DesktopRecovery.compositors) == nil, "why list of another length: not trusted")
 expect(GPUMemory.parse("pressure=normal\n") == nil, "no in_use_mb: not a status file")
 
-// Which apps the VM tells about (GPUMemoryNotice).
-let now = Date()
-let told = GPUMemoryNotice.apps(lost: ["chromium", "Hyprland", "quickshell", "firefox", "chromium", "mpv"],
-                                why: ["guard", "guard", "pressure", "pressure", "guard", "error"],
-                                lastTold: [:], now: now)
-expect(told.map { "\($0.name):\($0.why)" } == ["chromium:guard", "firefox:pressure"],
+// Which apps the VM tells about (GPUMemoryNotice), looked at every 5 s as
+// GPUMemoryWatch does. A tell reads "second:name:why", "@second" when it was
+// kept from an earlier look.
+do {
+let t0 = Date(timeIntervalSinceReferenceDate: 800_000_000)
+func looks(_ n: inout GPUMemoryNotice, until: Int, _ losses: [Int: ([String], [String])],
+           restartAt: Int? = nil) -> [String] {
+    var out: [String] = []
+    for s in stride(from: 0, through: until, by: 5) {
+        if s == restartAt { n.sessionRestarted() }
+        let (lost, why) = losses[s] ?? ([], [])
+        for t in n.look(lost: lost, why: why, now: t0.addingTimeInterval(Double(s))) {
+            out.append("\(s):\(t.name):\(t.why)" + (t.heldSince.map { "@\(Int($0.timeIntervalSince(t0)))" } ?? ""))
+        }
+    }
+    return out
+}
+let c = (["chrome"], ["pressure"]), g = (["chrome"], ["guard"])
+
+var n = GPUMemoryNotice()
+let first = n.look(lost: ["chromium", "Hyprland", "quickshell", "firefox", "chromium", "mpv"],
+                   why: ["guard", "guard", "pressure", "pressure", "guard", "error"], now: t0)
+expect(first.map { "\($0.name):\($0.why)" } == ["chromium:guard", "firefox:pressure"],
        "apps lost to the guard or pressure, once each; not the desktop, the shell or another error")
-expect(GPUMemoryNotice.apps(lost: ["chromium"], why: ["guard"], lastTold: ["chromium": now.addingTimeInterval(-30)], now: now).isEmpty,
-       "told 30 s ago: not again")
-expect(GPUMemoryNotice.apps(lost: ["chromium"], why: ["guard"], lastTold: ["chromium": now.addingTimeInterval(-90)], now: now).count == 1,
-       "told 90 s ago: again")
-expect(GPUMemoryNotice.apps(lost: ["chromium"], why: [], lastTold: [:], now: now).isEmpty, "an older runtime (no why): nothing")
+n = GPUMemoryNotice()
+expect(n.look(lost: ["chromium"], why: [], now: t0).isEmpty && n.waiting.isEmpty, "an older runtime (no why): nothing")
+
+// R2 and A1h (chrome-lost-context rows): lost again 30 s after the note.
+n = GPUMemoryNotice()
+var r = looks(&n, until: 180, [0: c, 30: c])
+expect(r == ["0:chrome:pressure", "60:chrome:pressure@30"],
+       "a second loss 30 s after the first: told when the minute is over, with its own time (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 180, [0: g, 20: g, 40: c])
+expect(r == ["0:chrome:guard", "60:chrome:pressure@40"], "two losses inside the minute: one tell, the newest (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 180, [0: c, 10: c, 20: c, 30: c])
+expect(r == ["0:chrome:pressure", "60:chrome:pressure@30"], "three in a minute: one tell after it, not three (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 300, Dictionary(uniqueKeysWithValues: stride(from: 0, through: 300, by: 5).map { ($0, g) }))
+expect(r == ["0:chrome:guard", "60:chrome:guard", "120:chrome:guard", "180:chrome:guard", "240:chrome:guard",
+             "300:chrome:guard"], "a loss every 5 s for 5 minutes: once a minute (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 180, [0: c, 30: g, 60: c])
+expect(r == ["0:chrome:pressure", "60:chrome:pressure"], "a kept loss and a new one as the minute ends: one tell (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 180, [0: c, 30: c], restartAt: 40)
+expect(r == ["0:chrome:pressure"] && n.waiting.isEmpty, "the desktop restarted: the kept loss is void (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 180, [0: c, 30: (["Hyprland", "quickshell", "chrome"], ["guard", "pressure", "error"])])
+expect(r == ["0:chrome:pressure"], "the desktop, the shell and other errors are never kept (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 180, [0: c, 30: c, 40: (["chrome", "firefox"], ["guard"])])
+expect(r == ["0:chrome:pressure", "60:chrome:pressure@30"], "lists of another length: nothing new, the kept one told (\(r))")
+n = GPUMemoryNotice()
+r = looks(&n, until: 180, [0: (["b", "a"], ["guard", "guard"]), 20: (["chromium"], ["guard"]),
+                           30: (["b", "a"], ["guard", "pressure"]), 50: (["chromium"], ["pressure"])])
+expect(r == ["0:b:guard", "0:a:guard", "20:chromium:guard", "60:a:pressure@30", "60:b:guard@30", "80:chromium:pressure@50"],
+       "each app its own minute; kept ones by name (\(r))")
+n = GPUMemoryNotice()
+_ = n.look(lost: (0..<50).map { "app\($0)" }, why: Array(repeating: "guard", count: 50), now: t0)
+let busy = n.recent
+_ = n.look(lost: [], why: [], now: t0.addingTimeInterval(GPUMemoryNotice.window))
+expect(busy == 50 && n.recent == 0, "apps told are forgotten after their minute (\(busy) -> \(n.recent))")
+}
 
 
 do {
