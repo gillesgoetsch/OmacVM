@@ -36,7 +36,8 @@ in more words.
   past the first or last workspace could switch the Mac's Space instead of staying in the VM, and
   OmacVM.app's check for a wallpaper that did not draw took a display showing the scratchpad for
   the bare desktop. Both now tell those workspaces by their name, on Hyprland 0.56 and 0.57; the
-  gestures daemon also follows 0.57's new `changeworkspaceid` event.
+  gestures daemon now also listens for Hyprland's `changeworkspaceid` event (a workspace got a new
+  id; 0.56.2 sends it too).
 
 ## 3.2.14
 

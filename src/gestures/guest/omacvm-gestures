@@ -978,7 +978,7 @@ HYPR_EVENTS = {b"workspace", b"workspacev2", b"focusedmon", b"focusedmonv2", b"c
                b"destroyworkspace", b"destroyworkspacev2", b"moveworkspace", b"moveworkspacev2", b"renameworkspace",
                b"activespecial", b"activespecialv2", b"openwindow", b"closewindow", b"movewindow", b"movewindowv2",
                b"monitoradded", b"monitoraddedv2", b"monitorremoved", b"monitorremovedv2", b"configreloaded",
-               b"changeworkspaceid"}   # Hyprland 0.57: a workspace's id changed (Omarchy's monitor_workspaces)
+               b"changeworkspaceid"}   # a workspace got a new id (0.56.2 sends it too; Omarchy's monitor_workspaces)
 EDGE_QUIET = 0.03        # s: a burst of Hyprland's events is read as one change ...
 EDGE_BURST = 0.2         # ... for at most this long
 EDGE_RECHECK = 30.0      # s: looked at again without an event (a missed one)

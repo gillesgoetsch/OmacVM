@@ -267,7 +267,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `/etc/pacman.d/hooks/zz-omacvm-hyprland.hook` written by
   `src/fusion/guest/install.sh`. In the VM: state in
   `/var/lib/omacvm/hyprland-vmwgfx`, log in
-  `/var/cache/omacvm/hyprland-vmwgfx/build.log`.
+  `/var/cache/omacvm/hyprland-vmwgfx/build.log`. Test:
+  `src/tests/fusion-vmwgfx.sh` (each patch applies to its release).
 - **If it comes back:** `omacvm apply --vm NAME`, or in the VM
   `/usr/local/lib/omacvm/fusion/build-hyprland.sh`. To test the hook, reinstall
   with `pacman -S omarchy/hyprland`. Plain `pacman -S hyprland` takes Arch's

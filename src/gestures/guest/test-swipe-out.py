@@ -375,7 +375,7 @@ check(told(1) == ["E - -"], "Hyprland 0.57: the scratchpad open (no id): E - -")
 sent.clear()
 H.world(1, [1, 2], {1: 1, 2: 1})
 event("changeworkspaceid>>3,2")
-check(told(1) == ["E - left"], "Hyprland 0.57: a workspace's id changed (changeworkspaceid): said again")
+check(told(1) == ["E - left"], "a workspace's id changed (changeworkspaceid, sent by 0.56.2 and 0.57): said again")
 H.v57 = False
 sent.clear()
 H.world(1, [1, 2], {1: 1, 2: 1})
