@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.13 (unreleased)
+## 3.2.13
 
 In an OmacVM.app VM, mpv's and FFmpeg's VA-API deinterlacer no longer shows a green picture
 (still open in 3.2.12), and H.264 coded interlaced decodes on the CPU instead of showing green
@@ -12,7 +12,9 @@ switching the control centre or Omanotch off then, no longer leaves Omarchy's lo
 without its password field. Needs the app update (the deinterlacer, from the VM's next start),
 then Update VM or `omacvm update` (the lock screen, interlaced H.264), then quit and start the
 video players again. UTM, VMware Fusion and Parallels get only the lock screen fixes (#617,
-#618).
+#618). Still open: in Omarchy's Chromium (its own V4L2 decoder), H.264 coded interlaced may
+show no picture instead of a green one (from the code; not checked in Chromium), and Omarchy
+does not lock the VM again after an unlock until its shell restarts (omacom/omarchy-mac#738).
 
 - **Updating a running VM whose screen is locked no longer leaves Omarchy's lock screen without
   its password field (#617).** `omacvm update` and `omacvm apply` wrote OmacVM's bar widgets again and
