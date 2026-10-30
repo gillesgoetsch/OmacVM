@@ -111,15 +111,16 @@ int main(void)
          "4 GB, or the Mac's memory not known: 256 MB (the least)");
 
    /* the 2026-10-30 Mac mini: 4619 MB in use when critical began, 1820 MB free or
-    * inactive, Chrome's next 5K window buffer (59 MB). 3.2.14 lost Chrome at every one. */
+    * inactive, Chrome's next 5K window buffer (56 MB in QEMU's log). 3.2.14 lost
+    * Chrome at every one. */
    uint64_t base = 4619 * MB, g = 512 * MB, left = 1820 * MB;
-   check(virgl_gpu_guard_critical_room(base, 59 * MB, base, g, left),
-         "critical: Chrome's 59 MB window buffer with nothing grown yet fits");
-   check(virgl_gpu_guard_critical_room(base - 59 * MB, 59 * MB, base, g, left),
+   check(virgl_gpu_guard_critical_room(base, 56 * MB, base, g, left),
+         "critical: Chrome's 56 MB window buffer with nothing grown yet fits");
+   check(virgl_gpu_guard_critical_room(base - 56 * MB, 56 * MB, base, g, left),
          "critical: a buffer that replaces one just freed fits");
    int replaced = 1;
    for (int i = 0; i < 1000; i++)          /* free one, make one: in use never grows */
-      replaced &= virgl_gpu_guard_critical_room(base - 59 * MB, 59 * MB, base, g, left);
+      replaced &= virgl_gpu_guard_critical_room(base - 56 * MB, 56 * MB, base, g, left);
    check(replaced, "critical: replacing a buffer 1000 times always fits");
    check(virgl_gpu_guard_critical_room(base + g - 64 * MB, 64 * MB, base, g, left),
          "critical: growth that ends exactly at the grace fits");
@@ -137,10 +138,10 @@ int main(void)
    check(!virgl_gpu_guard_critical_room(0, UINT64_MAX, 0, g, UINT64_MAX),
          "critical: a size past any grace: no room");
    /* the verdict with that answer: room -> an app's; no room -> for the desktop only */
-   expect("critical, within the grace: fits for whoever takes it", VIRGL_GPU_GUARD_FITS, base, 59 * MB, b, r,
-          VIRGL_GPU_GUARD_UNKNOWN, virgl_gpu_guard_critical_room(base, 59 * MB, base, g, left));
-   expect("critical, past the grace: for the desktop only", VIRGL_GPU_GUARD_DESKTOP_ONLY, base + g, 59 * MB, 48 * GB,
-          2 * GB, VIRGL_GPU_GUARD_UNKNOWN, virgl_gpu_guard_critical_room(base + g, 59 * MB, base, g, left));
+   expect("critical, within the grace: fits for whoever takes it", VIRGL_GPU_GUARD_FITS, base, 56 * MB, b, r,
+          VIRGL_GPU_GUARD_UNKNOWN, virgl_gpu_guard_critical_room(base, 56 * MB, base, g, left));
+   expect("critical, past the grace: for the desktop only", VIRGL_GPU_GUARD_DESKTOP_ONLY, base + g, 56 * MB, 48 * GB,
+          2 * GB, VIRGL_GPU_GUARD_UNKNOWN, virgl_gpu_guard_critical_room(base + g, 56 * MB, base, g, left));
 
    /* whose context: the names the guest's kernel gives (the process name), exactly */
    const char *list = VIRGL_GPU_GUARD_DESKTOP_DEFAULT;

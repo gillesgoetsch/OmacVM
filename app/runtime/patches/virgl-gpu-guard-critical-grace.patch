@@ -19,9 +19,10 @@ its desktop reserve are unchanged. The rule is a pure function in src/virgl_gpu_
 state beside the level. The test hook's level file takes LEVEL[:AVAILABLE_MB] like
 OMACVM_GPU_MEMORY_PRESSURE, so tests do not depend on the build Mac's free memory.
 Why: on a Mac mini with 16 GB (2026-10-30), a 12 GB VM with Chrome full screen at 5K: macOS
-went critical (the VM's memory, not its graphics, kept it there for minutes), Chrome's next
-window buffer (24-59 MB) cost Chrome its context, and a Chrome started again was lost at its
-first window as long as critical lasted: "chrome crashes and flickers unusable". A lost
+went critical (mostly the VM's memory kept it there for minutes: its graphics were about 5 GB
+of the 14.5-17.7 GB it really held), Chrome's next window buffer (24-56 MB) cost Chrome its
+context, and a Chrome started again was lost at its first window as long as critical lasted:
+"chrome crashes and flickers unusable". A lost
 context frees little (the app keeps its resources until its process ends), so the refusal
 barely helped the Mac either.
 Threading: the renderer thread only (QEMU's main loop), like the level it follows.
