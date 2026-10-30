@@ -54,7 +54,15 @@ case "$1 $2" in
   "plugin enable")
     echo "enable $3" >> "$CALLS"
     c=$HOME/.config/omarchy/shell.json
-    jq --arg id "$3" '.bar.layout.right += [{id: $id}]' "$c" > "$c.new" && mv "$c.new" "$c" ;;
+    jq --arg id "$3" '.bar.layout.right += [{id: $id}]' "$c" > "$c.new" && mv "$c.new" "$c"
+    # Omarchy's omarchy-plugin-enable wants the shell's answer to be just
+    # "ok": without a UTF-8 locale qs prints Qt's warning before it, and the
+    # command fails, though the shell enabled the plugin.
+    case ${LC_ALL:-${LC_CTYPE:-${LANG:-}}} in
+      *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
+      *) echo "omarchy-plugin-enable:   WARN: Detected locale \"C\" with character encoding \"ANSI_X3.4-1968\", which is not UTF-8. ok" >&2
+         exit 1 ;;
+    esac ;;
   "plugin disable") [[ -e $S/up ]] || exit 1; echo "disable $3" >> "$CALLS"; echo "Disabled $3" ;;
   *) exit 1 ;;
 esac
@@ -273,7 +281,25 @@ else
   expect "control/guest/install.sh has bar_item_off" yes no
 fi
 
-# 19. Every rescanPlugins caller asks for the lock first, or runs only from
+# 19. A plugin without placement.sh (a panel: the Wi-Fi QR card), the session
+#     open, Update VM's root shell without a locale. omacvm-plugins gives
+#     Omarchy's commands LC_ALL=C.UTF-8: enabled once and nothing left queued
+#     (it stayed queued and was enabled again, with a rescan of the open shell,
+#     at every later install-plugin.sh call and apply).
+mkdir -p "$T/p/panel"
+printf '{"schemaVersion":1,"id":"omacvm.q","name":"Q","version":"1","kinds":["panel"],"entryPoints":{"panel":"Panel.qml"}}\n' > "$T/p/panel/manifest.json"
+echo "Item {}" > "$T/p/panel/Panel.qml"
+no_locale() { (
+  unset LC_ALL LANG
+  for v in $(compgen -e | grep '^LC_'); do unset "$v"; done
+  "$@" ) }
+fresh yes; out=$(no_locale install_plugin panel)
+expect "a panel, no locale: enabled once, nothing left queued" "enable omacvm.q|" "$(grep '^enable' "$CALLS" | paste -sd'|' -)|$(queue)"
+expect "  Omarchy's enable did not fail" 0 "$(grep -c '^omarchy-plugin-enable:' <<< "$out")"
+: > "$CALLS"; no_locale install_plugin panel >/dev/null
+expect "  the next apply: no rescan, no enable" "" "$(calls)"
+
+# 20. Every rescanPlugins caller asks for the lock first, or runs only from
 #     omacvm-plugins (placement.sh). A new caller fails here until it does.
 if [[ -z ${1:-} ]]; then
   allowed="lib/omacvm-plugins app/guest/omacvm-displays omanotch/guest/monitor/display-panel.py omanotch/guest/uninstall.sh"
