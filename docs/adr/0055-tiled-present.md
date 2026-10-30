@@ -114,17 +114,19 @@ software renderer draws it right. Tiles that start past x 4096 exist only
 on pictures wider than 4352 pixels: full screen on a 5K or 6K display, a
 4K display set to look like more than 2176 points wide, the 24-inch iMac
 (4480), or a window that wide. There each of them came out squeezed,
-anchored at its right edge (5120 wide: the last three columns at 0.95,
-0.90 and 0.85), and stayed until a whole frame hid the tiles. Frames of
-the pointer alone (tiles) and whole frames (an app repainting) took turns,
-so the right part flickered while the pointer moved there; where the last
-column starts (128 points from the right edge at 5K) the right picture met
-the squeezed one and a line in it showed twice. Rows are never affected
-(the last row of the largest grid starts at 3840). Every earlier tiles row
-was at most 3456 pixels wide, so the check mode never met such a tile.
-Found from the user's report and screen recording (Mac mini M4, LG
-UltraFine 5K): the squeeze fitted there is 0.850 starting 256 pixels from
-the right, the same as the M1 Max's driver gives for the last column.
+anchored at the picture's right edge (5120 wide: the last three columns at
+0.95, 0.90 and 0.85; columns 17 and 18 squeeze toward x 5120, not toward
+their own right edge), and stayed until a whole frame hid the tiles.
+Frames of the pointer alone (tiles) and whole frames (an app repainting)
+took turns, so the right part flickered while the pointer moved there;
+where the last column starts (128 points from the right edge at 5K) the
+right picture met the squeezed one and a line in it showed twice. Rows are
+never affected (the last row of the largest grid starts at 3840). Every
+earlier tiles row was at most 3456 pixels wide, so the check mode never
+met such a tile. Found from the user's report and screen recording (Mac
+mini M4, LG UltraFine 5K): the squeeze fitted there is 0.850 starting 256
+pixels from the right, the same as the M1 Max's driver gives for the last
+column.
 
 Now each tile is drawn with the viewport inside its own surface (0, 0, its
 width, its height), and its part of the frame comes from texture
