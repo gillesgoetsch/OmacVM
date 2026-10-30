@@ -28,10 +28,22 @@ public struct ResourceLimits: Equatable {
         return nil
     }
 
-    /// Shown under the steppers when the memory leaves the Mac too little.
-    public func warning(memoryGB m: Int) -> String? {
+    /// Shown under the steppers when the memory leaves the Mac too little:
+    /// above the Best tier. The VM's graphics come on top of its memory;
+    /// `graphicsPeakMB` is the last run's peak (logs/gpu-memory), nil before
+    /// a first run. Only says so: the setting stays the person's.
+    /// `omacvm resources` and `omacvm check` say the same (mem_warning in
+    /// src/lib/setup.sh).
+    public func warning(memoryGB m: Int, graphicsPeakMB: Int? = nil) -> String? {
         guard m > safeMemoryGB else { return nil }
-        return "More than \(safeMemoryGB) GB leaves macOS and the graphics too little memory: the Mac can slow down or swap."
+        let peak = graphicsPeakMB.flatMap { $0 > 0 ? " (peak \(Self.gb($0)) last run)" : nil } ?? ""
+        return "\(m) GB and the VM's graphics on top\(peak) leave macOS too little of this Mac's \(macMemoryGB) GB: "
+            + "the Mac can slow down or swap, and apps in the VM can lose their graphics. \(safeMemoryGB) GB is this Mac's Best tier."
+    }
+
+    /// "4.5 GB", "800 MB" (as GPUMemory.gb).
+    static func gb(_ mb: Int) -> String {
+        mb < 1024 ? "\(mb) MB" : String(format: "%.1f GB", Double(mb) / 1024)
     }
 
     /// What a VM starts with on this Mac: vm.env's CPUs and memory, but a

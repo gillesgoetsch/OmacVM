@@ -35,8 +35,12 @@ Return to confirm):
    own setup once a release has an image for it.
 3. **How much of the Mac the VM gets**: Low, Balanced, High or Best, shown as
    CPUs and memory, or Custom. Best leaves macOS and the GPU a buffer of a
-   quarter of the memory, at least 8 GB. On Parallels Standard OmacVM stays
-   within its limits ([Parallels](routes/parallels.md)).
+   quarter of the memory, at least 8 GB. More is allowed (OmacVM.app and
+   `omacvm resources` warn): on OmacVM.app and UTM the VM's graphics come on
+   top of its memory
+   ([graphics memory](routes/app.md#graphics-memory-and-vm-memory)). On
+   Parallels Standard OmacVM stays within its limits
+   ([Parallels](routes/parallels.md)).
 
    Then **where the VM goes**: the app's own folder, or any folder you pick,
    an external drive for example (APFS or Mac OS Extended; Parallels, UTM

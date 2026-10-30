@@ -1,4 +1,5 @@
 import AppKit
+import OmacVMDesktop
 import OmacVMFeatures
 import OmacVMUpdate
 import OmacVMWindow
@@ -38,9 +39,16 @@ struct ResourcesRow: View {
     }
 
     var body: some View {
+        // The last run's graphics: the (i) and the warning say them.
+        let graphics = GPUMemory.read(for: state.config)
         VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .center, spacing: 12) {
-                Text("Resources").frame(maxWidth: .infinity, alignment: .leading)
+                // One (i) for CPUs and memory, where SettingRow puts it.
+                HStack(spacing: 6) {
+                    Text("Resources")
+                    InfoButton(topic: "Resources", text: GPUMemory.resourcesInfo(graphics)).layoutProbe("info-resources")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Picker("Resources", selection: selection) {
                     ForEach(0..<4) { Text(Mac.tierNames[$0]).tag($0) }
                     Text("Custom").tag(Self.custom)
@@ -83,7 +91,7 @@ struct ResourcesRow: View {
                 }
                 .padding(.top, 1)
             }
-            if let w = limits.warning(memoryGB: memoryGB) {
+            if let w = limits.warning(memoryGB: memoryGB, graphicsPeakMB: graphics?.peakMB) {
                 Text(w).font(.subheadline).foregroundStyle(Look.orange).fixedSize(horizontal: false, vertical: true)
             }
             // A VM from a bigger Mac: what it starts with here (main.swift startVM).
