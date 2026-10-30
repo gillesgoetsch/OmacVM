@@ -187,6 +187,19 @@ between, only what does not fit in what macOS has left is refused). The
 rule's test runs on any build Mac's grace (256 MB to 1 GB): the level file
 takes the memory left (`critical:40`) like `OMACVM_GPU_MEMORY_PRESSURE`.
 
+Checked in a hidden test VM (M1 Max with 32 GB, so a grace of 1 GB; this
+runtime with the guest script of ADR 0038's 3.2.15 amendment; the VM's
+monitor 5120x2880 at scale 2; critical forced inside QEMU through its level
+file; a WebGL page whose colour follows the clock, the screen's pixel read
+every 0.25 s). With critical held, Chrome replacing a 64 MB texture every
+2 s for 50 s lost nothing and drew right throughout (3.2.14 lost Chrome at
+its first new big buffer at critical). Growing by 64 MB every 2 s, Chrome
+was lost at the 17th, past the grace; the guest script gave it a new GPU
+process, and Chrome drew right again about 2 s after the loss and for the
+rest of the critical period. Hyprland and the bar were never lost. QEMU
+logged one baseline per critical period ("may grow by 1024 MB past the
+1310 MB in use now").
+
 The budget itself was considered again the same day (the user's peak: 4.6 GB
 of graphics at 5K with GPU compute on; a budget sized from the VM's memory,
 lane vm-footprint) and rejected again: a 16 GB Mac with an 8 GB VM would get
