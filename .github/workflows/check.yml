@@ -848,7 +848,7 @@ jobs:
       - name: omacvm check's HDR line says what Hyprland's SDR copy does (the check catches code without it)
         run: src/tests/hdr-copy-check.sh
 
-      - name: Screenshots and screen sharing of HDR apps (Hyprland 0.56.2's cm_helpers.glsl with OmacVM's two changes; its guard, hooks, check line; every shader variant compiles)
+      - name: Screenshots and screen sharing of HDR apps (a cm_helpers.glsl with OmacVM's two changes per Hyprland release, 0.56.2 and 0.57.0; its guard, hooks, check line naming the installed Hyprland; every shader variant compiles)
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq --no-install-recommends glslang-tools

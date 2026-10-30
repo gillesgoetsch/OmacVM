@@ -1,6 +1,6 @@
 #!/bin/bash
 # OmacVM.app: screenshots and screen sharing of HDR apps in an HDR VM (#579).
-# Hyprland 0.56.2 makes the SDR copy that screenshots (grim, Omarchy's
+# Hyprland 0.56.2 and 0.57.0 make the SDR copy that screenshots (grim, Omarchy's
 # screenshot and its frozen screen), colour picks (hyprpicker) and screen
 # sharing (xdg-desktop-portal-hyprland) read with SDR white at 80 nits for
 # windows drawn in HDR (PQ: Chrome, Chromium), which put it at
@@ -25,8 +25,9 @@
 # A change reaches each running Hyprland of the installed binary at once
 # (hyprctl reloadshaders as its user, not from the pre hook); one still running
 # an older binary (updated, not logged in again) keeps the text it read at its
-# start, which was checked then. Never fails a pacman transaction or an apply:
-# on any doubt our file goes out, and it exits 0.
+# start, which was checked then: log out and in before `hyprctl reloadshaders`
+# there (it would read the new release's file). Never fails a pacman
+# transaction or an apply: on any doubt our file goes out, and it exits 0.
 # Hyprland reads each shader file by name from ~/.config/hypr/shaders, then
 # /usr/share/hypr/shaders, then /usr/local/share/hypr/shaders, before its
 # built-in copy. Another file of a name ours works with (the five in

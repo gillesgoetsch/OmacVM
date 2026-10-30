@@ -1,14 +1,17 @@
 #!/bin/bash
 # OmacVM.app's fix for screenshots and screen sharing of HDR apps (#579,
-# src/app/guest/hypr-capture/): Hyprland 0.56.2's cm_helpers.glsl with two
-# changes, put in only for that Hyprland.
-#  1. 0.56.2/original names the v0.56.2 tag's commit and files (downloaded);
-#     our cm_helpers.glsl differs from the tag's only inside "OmacVM" blocks;
+# src/app/guest/hypr-capture/): Hyprland's cm_helpers.glsl with two changes,
+# one folder per Hyprland release (0.56.2/, 0.57.0/), each put in only for
+# that Hyprland.
+#  0. The releases Omarchy ships (RELEASES: stable and edge) each have a folder.
+#  1. Each folder's original names its tag's commit and files (downloaded);
+#     its cm_helpers.glsl differs from the tag's only inside "OmacVM" blocks;
 #     every shader variant that includes it compiles as with Hyprland's own
-#     (hypr-capture-shaders.py, glslangValidator).
+#     (hypr-capture-shaders.py, glslangValidator, the tag's own defines).
 #  2. Our SDR white is omacvm-display-sync's sdr_max_luminance (203).
 #  3. hypr-capture.sh in a fake root: in only beside a binary that carries the
-#     tag's files and commit, out on any doubt (a changed byte, no binary, an
+#     tag's files and commit, the folder of that release (also when the binary
+#     is another release's), out on any doubt (a changed byte, no binary, an
 #     unreadable one, no python3, no fix folder), the hooks, a running Hyprland
 #     reloaded only when it runs the installed binary, nobody else's file
 #     touched (also another file of the five names ours works with), never an
@@ -20,7 +23,8 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 SRC=$here/../app/guest/hypr-capture
-TAG=v0.56.2
+# Omarchy's Hyprland now: stable (pkgs.omarchy.org/stable) and edge (the dev channel). A new one: a folder first.
+RELEASES="0.56.2 0.57.0"
 fail=0
 ok()  { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
@@ -31,10 +35,21 @@ expect() {   # WHAT CONDITION...
 T=$(mktemp -d "${TMPDIR:-/tmp}/omacvm-hypr-capture.XXXXXX")
 trap 'chmod -R u+rwX "$T" 2>/dev/null; rm -rf "$T"' EXIT
 
+FOLDERS=$(cd "$SRC" && for d in */; do [[ -f $d/original ]] && printf '%s ' "${d%/}"; done)
+V0=0.56.2   # the release the detailed fake-root rows below use
+
+# --- 0: a folder for each release Omarchy ships
+for v in $RELEASES; do
+  expect "a fix folder for Hyprland $v" test -f "$SRC/$v/original" -a -f "$SRC/$v/cm_helpers.glsl"
+done
+
 # --- 2: one SDR white on both sides
-white=$(sed -n 's/^#define OMACVM_SDR_WHITE \([0-9.]*\)$/\1/p' "$SRC/0.56.2/cm_helpers.glsl")
-expect "our SDR white ($white) is display-sync's sdr_max_luminance" \
-  test "$(grep -c "sdr_max_luminance = ${white%.0}'" "$here/../app/guest/omacvm-display-sync")" = 2
+for v in $FOLDERS; do
+  white=$(sed -n 's/^#define OMACVM_SDR_WHITE \([0-9.]*\)$/\1/p' "$SRC/$v/cm_helpers.glsl")
+  expect "$v: our SDR white ($white) is display-sync's sdr_max_luminance" \
+    test "$(grep -c "sdr_max_luminance = ${white%.0}'" "$here/../app/guest/omacvm-display-sync")" = 2
+  expect "$v: the file's header names its release" grep -q "^// OmacVM begin: Hyprland $v's src/render/shaders/glsl/cm_helpers.glsl " "$SRC/$v/cm_helpers.glsl"
+done
 
 # --- 4: the check line
 awk '/^hdr_capture_line\(\) \{/ {on=1} on {print} on && /^}$/ {exit}' "$here/../guest/check.sh" > "$T/fn.sh"
@@ -71,26 +86,32 @@ expect "the pre hook takes ours out" grep -qx 'Exec = /usr/local/lib/omacvm/hypr
 expect "the pre hook runs before" grep -qx 'When = PreTransaction' "$SRC/05-omacvm-hypr-capture-pre.hook"
 expect "the post hook puts it back" grep -qx 'Exec = /usr/local/lib/omacvm/hypr-capture/hypr-capture.sh --hook-post' "$SRC/95-omacvm-hypr-capture.hook"
 
-# --- 1: the tag
-G=$T/hypr
-if ! git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" --filter=blob:none --no-checkout \
-     https://github.com/hyprwm/Hyprland "$G" 2>/dev/null ||
-   ! git -C "$G" sparse-checkout set --no-cone /src/render/shaders/glsl/ 2>/dev/null ||
-   ! git -C "$G" checkout -q 2>/dev/null; then
-  if [[ ${OMACVM_HC_STRICT:-} == 1 ]]; then bad "cannot download Hyprland $TAG (parts 1 and 3)"
-  else echo "skip: cannot download Hyprland $TAG (parts 1 and 3)"; fi
-  (( fail == 0 )) && echo "hypr-capture: all passed (offline parts only)"
-  exit $fail
-fi
-GL=$G/src/render/shaders/glsl
-expect "original names $TAG's commit" grep -qx "commit $(git -C "$G" rev-parse HEAD)" "$SRC/0.56.2/original"
-while read -r kind sha size name first; do
-  [[ $kind == file ]] || continue
-  expect "original: $name as in $TAG" test "$(sha256sum < "$GL/$name" | cut -d' ' -f1) $(( $(wc -c < "$GL/$name") )) $(head -n1 "$GL/$name")" = "$sha $size $first"
-done < "$SRC/0.56.2/original"
-expect "original lists the file we replace and those that call it" \
-  test "$(grep -c '^file ' "$SRC/0.56.2/original")" = 5
-outside=$(python3 - "$GL/cm_helpers.glsl" "$SRC/0.56.2/cm_helpers.glsl" <<'PY'
+# --- 1: each release folder against its tag
+fetch() {   # VERSION: the tag's shader folder and ShaderLoader.cpp in $T/hypr-VERSION
+  local g=$T/hypr-$1
+  git -c advice.detachedHead=false clone -q --depth 1 --branch "v$1" --filter=blob:none --no-checkout \
+      https://github.com/hyprwm/Hyprland "$g" 2>/dev/null &&
+    git -C "$g" sparse-checkout set --no-cone /src/render/shaders/glsl/ /src/render/ShaderLoader.cpp 2>/dev/null &&
+    git -C "$g" checkout -q 2>/dev/null
+}
+for v in $FOLDERS; do
+  if ! fetch "$v"; then
+    if [[ ${OMACVM_HC_STRICT:-} == 1 ]]; then bad "cannot download Hyprland v$v (parts 1 and 3)"
+    else echo "skip: cannot download Hyprland v$v (parts 1 and 3)"; fi
+    (( fail == 0 )) && echo "hypr-capture: all passed (offline parts only)"
+    exit $fail
+  fi
+done
+for v in $FOLDERS; do
+  G=$T/hypr-$v; GL=$G/src/render/shaders/glsl; TAG=v$v
+  expect "$v: original names $TAG's commit" grep -qx "commit $(git -C "$G" rev-parse HEAD)" "$SRC/$v/original"
+  while read -r kind sha size name first; do
+    [[ $kind == file ]] || continue
+    expect "$v: original: $name as in $TAG" test "$(sha256sum < "$GL/$name" | cut -d' ' -f1) $(( $(wc -c < "$GL/$name") )) $(head -n1 "$GL/$name")" = "$sha $size $first"
+  done < "$SRC/$v/original"
+  expect "$v: original lists the file we replace and those that call it" \
+    test "$(grep -c '^file ' "$SRC/$v/original")" = 5
+  outside=$(python3 - "$GL/cm_helpers.glsl" "$SRC/$v/cm_helpers.glsl" <<'PY'
 import difflib, sys
 a = open(sys.argv[1], encoding="utf-8").read().splitlines()
 b = open(sys.argv[2], encoding="utf-8").read().splitlines()
@@ -111,14 +132,18 @@ for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).ge
 print(f"blocks {sum(1 for l in b if l.strip().startswith('// OmacVM begin'))}")
 PY
 )
-expect "our cm_helpers.glsl differs from $TAG's only in OmacVM blocks ($(tail -n1 <<<"$outside"))" \
-  test "$(grep -vc '^blocks ' <<<"$outside")" = 0
-[[ $(grep -vc '^blocks ' <<<"$outside") == 0 ]] || grep -v '^blocks ' <<<"$outside"
-if command -v glslangValidator >/dev/null; then
-  if python3 "$here/hypr-capture-shaders.py" "$GL" "$SRC/0.56.2/cm_helpers.glsl"; then ok "shader variants"
-  else bad "shader variants"; fi
-elif [[ ${OMACVM_HC_STRICT:-} == 1 ]]; then bad "glslangValidator missing (glslang-tools)"
-else echo "skip: shader variants (no glslangValidator)"; fi
+  expect "$v: our cm_helpers.glsl differs from $TAG's only in OmacVM blocks ($(tail -n1 <<<"$outside"))" \
+    test "$(grep -vc '^blocks ' <<<"$outside")" = 0
+  [[ $(grep -vc '^blocks ' <<<"$outside") == 0 ]] || grep -v '^blocks ' <<<"$outside"
+  expect "$v: the same two OmacVM blocks and header as $V0's" \
+    test "$(grep -v '^// OmacVM begin: Hyprland ' "$SRC/$v/cm_helpers.glsl" | sed -n '/OmacVM begin/,/OmacVM end/p')" = \
+         "$(grep -v '^// OmacVM begin: Hyprland ' "$SRC/$V0/cm_helpers.glsl" | sed -n '/OmacVM begin/,/OmacVM end/p')"
+  if command -v glslangValidator >/dev/null; then
+    if python3 "$here/hypr-capture-shaders.py" "$GL" "$SRC/$v/cm_helpers.glsl"; then ok "$v: shader variants"
+    else bad "$v: shader variants"; fi
+  elif [[ ${OMACVM_HC_STRICT:-} == 1 ]]; then bad "glslangValidator missing (glslang-tools)"
+  else echo "skip: $v: shader variants (no glslangValidator)"; fi
+done
 
 # --- 3: hypr-capture.sh in a fake root
 R=$T/root
@@ -128,10 +153,12 @@ LOG=$T/hyprctl.log
 mkdir -p "$L" "$R/usr/bin" "$T/bin"
 cp -R "$SRC"/. "$L"/
 # a stand-in Hyprland binary: what the real one carries, between other bytes
-mkbin() {   # mkbin [sed expression for cm_helpers.glsl]
-  { head -c 4096 /dev/urandom; echo "Hyprland, built from commit $(git -C "$G" rev-parse HEAD)"
-    for f in constants.h CM.glsl tonemap.glsl surface.frag; do cat "$GL/$f"; printf '\0'; done
-    if [[ -n ${1:-} ]]; then sed "$1" "$GL/cm_helpers.glsl"; else cat "$GL/cm_helpers.glsl"; fi
+G=$T/hypr-$V0; GL=$G/src/render/shaders/glsl
+mkbin() {   # mkbin [sed expression for cm_helpers.glsl] [release: $V0]
+  local g=$T/hypr-${2:-$V0}
+  { head -c 4096 /dev/urandom; echo "Hyprland, built from commit $(git -C "$g" rev-parse HEAD)"
+    for f in constants.h CM.glsl tonemap.glsl surface.frag; do cat "$g/src/render/shaders/glsl/$f"; printf '\0'; done
+    if [[ -n ${1:-} ]]; then sed "$1" "$g/src/render/shaders/glsl/cm_helpers.glsl"; else cat "$g/src/render/shaders/glsl/cm_helpers.glsl"; fi
     head -c 4096 /dev/urandom; } > "$R/usr/bin/Hyprland"
 }
 cat > "$T/bin/hyprctl" <<EOF
@@ -156,10 +183,10 @@ rc() { run "$@" >/dev/null 2>&1; echo $?; }
 mkbin
 : > "$LOG"
 expect "the tag's binary: exit 0" test "$(rc)" = 0
-expect "the tag's binary: ours in place" cmp -s "$SRC/0.56.2/cm_helpers.glsl" "$OURS"
+expect "the tag's binary: ours in place" cmp -s "$SRC/$V0/cm_helpers.glsl" "$OURS"
 expect "ours: 0644" test "$(stat -c %a "$OURS")" = 644
 expect "the state names the release and our file" \
-  test "$(cat "$R/var/lib/omacvm/hypr-capture")" = "0.56.2 $(sha256sum < "$OURS" | cut -d' ' -f1)"
+  test "$(cat "$R/var/lib/omacvm/hypr-capture")" = "$V0 $(sha256sum < "$OURS" | cut -d' ' -f1)"
 expect "the running Hyprland of that binary reloaded, once, in its own runtime folder" \
   test "$(cat "$LOG")" = "live_1_a /run/user/1000 reloadshaders"
 expect "status: ok" test "$(status)" = ok
@@ -170,7 +197,7 @@ expect "pre hook: ours out" test ! -e "$OURS"
 expect "pre hook: no reload" test "$(reloads)" = 0
 expect "status after the pre hook: missing" test "$(status)" = missing
 expect "post hook: exit 0" test "$(rc --hook-post)" = 0
-expect "post hook: ours back" cmp -s "$SRC/0.56.2/cm_helpers.glsl" "$OURS"
+expect "post hook: ours back" cmp -s "$SRC/$V0/cm_helpers.glsl" "$OURS"
 expect "post hook: the live Hyprland reloaded" test "$(reloads)" = 1
 mkbin 's/SDR_MAX_LUMINANCE));/SDR_MAX_LUMINANCE)); /'
 : > "$LOG"
@@ -205,18 +232,18 @@ expect "no fix folder beside the script: exit 0, ours out" \
   test "$(OMACVM_HC_ROOT=$R OMACVM_HC_HYPRCTL=$T/bin/hyprctl "$T/nofix/hypr-capture.sh" >/dev/null 2>&1; echo $?; [[ -e $OURS ]] && echo there)" = 0
 # a file of an older OmacVM (recorded in the state) is replaced
 echo "// an older OmacVM fix" > "$OURS"
-echo "0.56.2 $(sha256sum < "$OURS" | cut -d' ' -f1)" > "$R/var/lib/omacvm/hypr-capture"
+echo "$V0 $(sha256sum < "$OURS" | cut -d' ' -f1)" > "$R/var/lib/omacvm/hypr-capture"
 run >/dev/null
-expect "an older OmacVM file: replaced by this one" cmp -s "$SRC/0.56.2/cm_helpers.glsl" "$OURS"
+expect "an older OmacVM file: replaced by this one" cmp -s "$SRC/$V0/cm_helpers.glsl" "$OURS"
 # an older OmacVM file whose record is gone: known by its header, so the pre
 # hook still takes it out and an apply replaces it
-older() { sed 's/OMACVM_SDR_WHITE 203.0/OMACVM_SDR_WHITE 200.0/' "$SRC/0.56.2/cm_helpers.glsl" > "$OURS"; rm -f "$R/var/lib/omacvm/hypr-capture"; }
+older() { sed 's/OMACVM_SDR_WHITE 203.0/OMACVM_SDR_WHITE 200.0/' "$SRC/$V0/cm_helpers.glsl" > "$OURS"; rm -f "$R/var/lib/omacvm/hypr-capture"; }
 older
 expect "an older OmacVM file, no record: status missing" test "$(status)" = missing
 run --hook-pre >/dev/null
 expect "an older OmacVM file, no record: the pre hook takes it out" test ! -e "$OURS"
 older; run >/dev/null
-expect "an older OmacVM file, no record: replaced by this one" cmp -s "$SRC/0.56.2/cm_helpers.glsl" "$OURS"
+expect "an older OmacVM file, no record: replaced by this one" cmp -s "$SRC/$V0/cm_helpers.glsl" "$OURS"
 # nobody else's file is touched
 echo "// someone's own" > "$OURS"; rm -f "$R/var/lib/omacvm/hypr-capture"
 run >/dev/null; run --hook-pre >/dev/null; run --remove >/dev/null
@@ -261,6 +288,23 @@ expect "--remove: exit 0" test "$(rc --remove)" = 0
 expect "--remove: ours out, the live Hyprland reloaded" test "$(reloads; [[ -e $OURS ]] && echo there)" = 1
 expect "a wrong option: usage, exit 2" test "$(rc --nope)" = 2
 expect "the replaced and the other program never reloaded" test "$(grep -c 'old_2_b\|other_3_c' "$LOG")" = 0
+
+# each release's binary gets its own folder's file (also right after another release's was in place)
+for v in $FOLDERS; do
+  mkbin "" "$v"; : > "$LOG"
+  expect "Hyprland $v's binary: exit 0" test "$(rc --hook-post)" = 0
+  expect "Hyprland $v's binary: the $v folder's file in place" cmp -s "$SRC/$v/cm_helpers.glsl" "$OURS"
+  expect "Hyprland $v's binary: the state names $v" test "$(cut -d' ' -f1 "$R/var/lib/omacvm/hypr-capture")" = "$v"
+  expect "Hyprland $v's binary: status ok, names $v" grep -q "^ok.*for Hyprland $v)" <(run --status)
+  expect "Hyprland $v's binary: the live Hyprland reloaded" test "$(reloads)" = 1
+  for o in $FOLDERS; do
+    [[ $o == "$v" ]] && continue
+    mkdir -p "$T/only-$o"; cp "$L/hypr-capture.sh" "$L/guard.py" "$T/only-$o/"; cp -R "$L/$o" "$T/only-$o/"
+    expect "Hyprland $v's binary, only the $o folder: ours out, status uncovered" \
+      test "$(OMACVM_HC_ROOT=$R OMACVM_HC_HYPRCTL=$T/bin/hyprctl "$T/only-$o/hypr-capture.sh" >/dev/null 2>&1; [[ -e $OURS ]] && echo there; OMACVM_HC_ROOT=$R "$T/only-$o/hypr-capture.sh" --status | cut -f1)" = uncovered
+    run >/dev/null
+  done
+done
 
 (( fail == 0 )) && echo "hypr-capture: all passed"
 exit $fail
