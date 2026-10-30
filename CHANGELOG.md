@@ -3,6 +3,30 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15 (unreleased)
+
+- **Updating a VM no longer asks Omarchy's shell to reload its plugins over and over.** OmacVM
+  enabled its bar widgets with Omarchy's `omarchy plugin enable` without a locale, and Omarchy
+  took Qt's locale warning for a failure ("omarchy-plugin-enable: WARN" in the update's log)
+  though the widget was enabled. A widget without its own place in the bar (the Wi-Fi QR card)
+  then stayed queued until the end of the update, and each later widget enabled it again and
+  asked the open shell to reload its plugins (8 times in one update after a 3.2.12 one). Now it
+  is enabled once. Needs Update VM or `omacvm update`.
+
+- **Omanotch counts an Omarchy shell that is starting or reloading as locked, as OmacVM's own
+  widgets do.** Its display panel (UTM, VMware Fusion, Parallels) and its copies of Omarchy's
+  bar and background took a shell that runs but does not answer yet as unlocked and could write
+  into Omarchy's plugins folder then; under a lock that reloads the lock screen without its
+  password field. They now wait up to 20 s for the shell and otherwise do it later (the next
+  start of Omanotch, or after the unlock). Omanotch installs again at this update (its files
+  changed).
+
+- **OmacVM.app: after an Omarchy update, the VM's displays follow the Mac's at once.** At the
+  first start after an Omarchy update that changed its display panel, the VM's display agent
+  rebuilt OmacVM's display widget first, which waits for a busy shell and then takes up to a
+  minute; the display sync now starts at once and the widget is rebuilt beside it. A shell that
+  takes no calls for 15 s now counts as busy, not as open, so the widget is not written into it.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
