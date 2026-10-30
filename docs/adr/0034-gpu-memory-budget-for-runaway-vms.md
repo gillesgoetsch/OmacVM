@@ -182,3 +182,11 @@ back), so a runaway at critical is stopped after the grace instead of at
 once. The rule's test runs on any build Mac's grace (256 MB to 1 GB): the
 level file takes the memory left (`critical:40`) like
 `OMACVM_GPU_MEMORY_PRESSURE`.
+
+The budget itself was considered again the same day (the user's peak: 4.6 GB
+of graphics at 5K with GPU compute on; a budget sized from the VM's memory,
+lane vm-footprint) and rejected again: a 16 GB Mac with an 8 GB VM would get
+about 4 GB, apps 3 GB of it, below that peak, so a browser would lose its
+graphics while macOS still said normal. The guard stays three quarters of the
+Mac's memory; what the VM takes in all is said in the app and `omacvm check`
+instead (#633).
