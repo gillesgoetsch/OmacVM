@@ -32,7 +32,7 @@ Measured on 3.2.12 in a test VM (Graphics Automatic, so Vulkan on macOS 27):
 | virgl, 4.3 forced (`MESA_GL_VERSION_OVERRIDE=4.3 MESA_GLSL_VERSION_OVERRIDE=430`) | 4.3 claimed | | | no window: "Too many fragment shader storage blocks (1/0)" |
 | llvmpipe (`LIBGL_ALWAYS_SOFTWARE=1`) | 4.6 | 4.6 | 3.2 | opens, draws, takes typing (in 614 ms) |
 | Zink on Venus (KosmicKrisp) | none | 2.1 | 2.0 | frame only: "No EGL configuration available" |
-| Zink, 4.3 forced | 4.3 claimed | | | QEMU aborted, 4 of 4 starts |
+| Zink, 4.3 forced | 4.3 claimed | | | QEMU aborted, 4 of 4 starts (up to 3.2.13; from 3.2.14 the VM goes on, ADR 0065) |
 
 1. **Docs only** (`LIBGL_ALWAYS_SOFTWARE=1 ghostty`, or another terminal):
    Ghostty stays without a window for everyone who picks it.
@@ -58,7 +58,9 @@ Measured on 3.2.12 in a test VM (Graphics Automatic, so Vulkan on macOS 27):
    did one `MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_KOPPER_DISABLE=1 glxinfo -B`
    run as the desktop user: a Metal assertion in KosmicKrisp's
    `vkBindImageMemory2` for a linear image Metal takes as a 2D array
-   (`mtl_new_texture_with_descriptor_linear`). The VM is gone at once.
+   (`mtl_new_texture_with_descriptor_linear`). The VM was gone at once. So it
+   was up to OmacVM.app 3.2.13; from 3.2.14 vkr reports that image as
+   unsupported and the VM goes on (ADR 0065), and Zink still gives no 4.3.
 4. **virgl 4.3**: Apple's OpenGL 4.1 has no storage buffers and no compute
    shaders; the forced version fails Ghostty's shader link. Turning read-only
    storage buffers into buffer textures in virglrenderer's shader translation
@@ -173,10 +175,10 @@ terminals), and it does not start while the screen is locked.
   (other GL stacks), a Flatpak Ghostty (its own glvnd inside the sandbox).
   There `LIBGL_ALWAYS_SOFTWARE=1 ghostty` is the way, where Mesa's llvmpipe
   is installed.
-- Zink again when (i) the QEMU abort above is fixed (its own lane) and (ii)
-  KosmicKrisp has transform feedback, geometry shaders and float64, so Zink
-  gives a real 4.x core; then window, typing and cost rows and a soak, and
-  never for the desktop or browsers without browser numbers.
+- Zink again when (i) the QEMU abort above is fixed (done in 3.2.14, ADR
+  0065) and (ii) KosmicKrisp has transform feedback, geometry shaders and
+  float64, so Zink gives a real 4.x core; then window, typing and cost rows
+  and a soak, and never for the desktop or browsers without browser numbers.
 - Tests: `src/app/guest/tests/egl-vendor.sh` (an exe named ghostty: Mesa's
   stand-in sees `=1` during its `eglInitialize` and nothing afterwards, also
   on a second call, when Mesa's call fails and from two threads at once; a

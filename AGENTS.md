@@ -681,7 +681,7 @@ The less obvious ones, with causes and where the fix lives, are in
 | SSH output in a `while read` loop eats the loop's input | `ssh` reads stdin | `< /dev/null` on SSH calls inside loops (`vm_probe` has it) |
 | ALARM downloads time out | geo-DNS mirror far away | `src/vm/base-install.sh` ranks mirrors |
 | OmacVM.app, HDR on: screenshots, hyprpicker and screen shares of Chrome (PQ windows) far too bright, light greys white; SDR apps exact | Hyprland 0.56.2's SDR copy for captures puts PQ windows' SDR white at 80 nits, not 203 | Update VM (`src/app/guest/hypr-capture/`); `omacvm check` "HDR captures" says whether the fix fits this Hyprland (docs/troubleshooting.md, 44) |
-| OmacVM.app: Ghostty opens no window, "Ghostty requires OpenGL 4.3" (3.2.13 and older) | virgl gives OpenGL 4.1 (the Mac's OpenGL); Ghostty 1.2 and newer need 4.3; Zink on KosmicKrisp gives 2.1, and a forced 4.3 aborts QEMU | 3.2.14: the EGL vendor library starts Ghostty alone on Mesa's llvmpipe (`src/app/guest/omacvm_egl.c`, ADR 0064); Update VM, then log out and in; `omacvm check` "Ghostty"; Alacritty and Kitty draw on the GPU (docs/troubleshooting.md, 47) |
+| OmacVM.app: Ghostty opens no window, "Ghostty requires OpenGL 4.3" (3.2.13 and older) | virgl gives OpenGL 4.1 (the Mac's OpenGL); Ghostty 1.2 and newer need 4.3; Zink on KosmicKrisp gives 2.1, and with the 3.2.13 app and older a forced 4.3 aborted QEMU (ADR 0065) | 3.2.14: the EGL vendor library starts Ghostty alone on Mesa's llvmpipe (`src/app/guest/omacvm_egl.c`, ADR 0064); Update VM, then log out and in; `omacvm check` "Ghostty"; Alacritty and Kitty draw on the GPU (docs/troubleshooting.md, 47) |
 | Fusion VM: black screen at SDDM, `invalid arguments for wl_surface.attach` in the journal | stock Hyprland on vmwgfx (e.g. an update the hook could not rebuild) | `omacvm apply`, or in the VM `/usr/local/share/omacvm/fusion/guest/build-hyprland.sh` (log `/var/cache/omacvm/hyprland-vmwgfx/build.log`) |
 | Fusion VM: `no such host` during a build | Fusion's NAT DNS | `src/fusion/guest/dns.sh` |
 | Testing the hook with `pacman -S hyprland` downgrades Hyprland | Arch's `extra` comes before Omarchy's repo | `pacman -S omarchy/hyprland` |
@@ -817,10 +817,12 @@ The less obvious ones, with causes and where the fix lives, are in
   0065); a vkr path that hands the driver a new guest description needs the
   same check and a case in `app/runtime/Tests/virgl/test-venus-image-limits.c`.
 - Do not run guest apps on Zink as their OpenGL (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
-  in an OmacVM.app VM with Vulkan, not even in a test: on KosmicKrisp it gives
-  OpenGL 2.1 only, and a forced 4.3 (or `LIBGL_KOPPER_DISABLE=1 glxinfo -B`)
-  aborted QEMU in Metal's linear-texture check, the VM gone at once (ADR 0064).
-  Ghostty's OpenGL 4.3 comes from llvmpipe instead.
+  in an OmacVM.app VM with Vulkan: on KosmicKrisp it gives OpenGL 2.1 only.
+  Ghostty's OpenGL 4.3 comes from llvmpipe instead. With the 3.2.13 app and
+  older not even in a test: a forced 4.3 (or `LIBGL_KOPPER_DISABLE=1 glxinfo
+  -B`) aborted QEMU in Metal's linear-texture check, the VM gone at once (ADR
+  0064); from 3.2.14 vkr reports that image as unsupported and the VM goes on
+  (ADR 0065).
 - Do not put personal data in this repo.
 
 ## 9. Conventions

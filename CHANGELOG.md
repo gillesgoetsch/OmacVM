@@ -30,8 +30,9 @@ in more words.
   cores busy, and the Mac mini drew about 36 W against 14-18 W without it (20 W in foot);
   `omarchy-toggle-screensaver` or `omacvm enable no-idle-lock` turns it off. `omacvm check` has a
   "Ghostty" line that says so. Zink is no way around it for now: on the Mac's Vulkan driver it
-  gives OpenGL 2.1, and with a forced 4.3 it stopped the whole VM (docs/troubleshooting.md, 47;
-  ADR 0064). Reported by @benoitdepaire. Needs Update VM, then log out and in (or
+  gives OpenGL 2.1, and with OmacVM.app 3.2.13 and older a forced 4.3 stopped the whole VM; now
+  the VM goes on, see the bullet above (docs/troubleshooting.md, 47; ADR 0064). Reported by
+  @benoitdepaire. Needs Update VM, then log out and in (or
   `systemctl --user stop app-com.mitchellh.ghostty.service`).
 
 ## 3.2.13

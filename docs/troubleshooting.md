@@ -1383,9 +1383,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   macOS stops at 4.1 (in both Graphics modes: Vulkan adds Venus beside it). Ghostty 1.2 and newer need 4.3
   (storage buffers in their shaders), which the Mac's OpenGL cannot give.
   Zink on the Mac's Vulkan driver gives only OpenGL 2.1 (GTK: "No EGL
-  configuration available"), and with a forced 4.3 it stopped the whole VM
-  (QEMU aborts in the Mac's Metal driver, unsaved work in the VM is lost):
-  don't start apps with `MESA_LOADER_DRIVER_OVERRIDE=zink`.
+  configuration available"). With OmacVM.app 3.2.13 and older a forced 4.3
+  stopped the whole VM (QEMU aborted in the Mac's Metal driver, unsaved work
+  in the VM was lost): don't start apps with `MESA_LOADER_DRIVER_OVERRIDE=zink`
+  there. From 3.2.14 the VM goes on (ADR 0065), and Zink still gives no 4.3.
 - **Fix:** Update VM (3.2.14). Ghostty alone then draws with Mesa's CPU
   renderer (llvmpipe, OpenGL 4.6); the programs started inside it keep the
   Mac's GPU. Then log out and in, or
