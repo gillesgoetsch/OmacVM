@@ -273,13 +273,21 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   - as the desktop user, only the install step runs as root;
   - the package's own binary stays as `/usr/bin/Hyprland.stock`;
   - a pacman hook builds it again after every Hyprland update (10 to 20
-    minutes, inside `omarchy update`).
+    minutes, inside `omarchy update`);
+  - one copy of the patch per Hyprland release (0.56.2, 0.57.0: the same
+    change; the lines around it moved), the one that applies is used. For a
+    Hyprland none applies to yet, the build says "no vmwgfx fix for Hyprland
+    <version> yet" and the rest of the apply or update goes on, but the
+    package's own Hyprland stays: a black screen from the next login.
+    `omacvm check`'s "Hyprland" line names the version; `omacvm update` brings
+    the patch once OmacVM has one.
 - **Where:** `src/fusion/guest/build-hyprland.sh`,
-  `src/fusion/guest/hyprland-vmwgfx-dmabuf.patch`, the hook
+  `src/fusion/guest/hyprland-vmwgfx/<release>.patch`, the hook
   `/etc/pacman.d/hooks/zz-omacvm-hyprland.hook` written by
   `src/fusion/guest/install.sh`. In the VM: state in
   `/var/lib/omacvm/hyprland-vmwgfx`, log in
-  `/var/cache/omacvm/hyprland-vmwgfx/build.log`.
+  `/var/cache/omacvm/hyprland-vmwgfx/build.log`. Test:
+  `src/tests/fusion-vmwgfx.sh` (each patch applies to its release).
 - **If it comes back:** `omacvm apply --vm NAME`, or in the VM
   `/usr/local/lib/omacvm/fusion/build-hyprland.sh`. To test the hook, reinstall
   with `pacman -S omarchy/hyprland`. Plain `pacman -S hyprland` takes Arch's
@@ -1275,7 +1283,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   On screen they look right; apps that draw SDR (imv, a terminal) come out
   exact. Omarchy's screen recordings come out grey and flat for every app.
 - **Cause:** those apps draw in HDR (PQ) with SDR white at 203 nits
-  (BT.2408). Hyprland 0.56.2 writes the SDR copy every capture reads with
+  (BT.2408). Hyprland 0.56.2 and 0.57.0 write the SDR copy every capture reads with
   SDR white at 80 nits for HDR windows (`cm_helpers.glsl`, a TODO upstream),
   so every colour is 2.54 times too bright in linear light and the light
   ones clip; a window shared alone is clamped at 80 nits the same way. SDR
@@ -1288,10 +1296,16 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   white at 203 nits in the copy, and a window shared alone is brought to
   the share's white before Hyprland's clamp. A running desktop takes it at
   once. Captures are SDR, so parts brighter than white (HDR video
-  highlights) are cut off in them. Only for the Hyprland it was made for
-  (0.56.2, checked byte for byte at each Hyprland update): with another one
-  `omacvm check`'s "HDR captures" line says there is no OmacVM fix for it,
-  and Hyprland's own copy is used. Back to Hyprland's own copy until the
+  highlights) are cut off in them. One file per Hyprland release (0.56.2,
+  0.57.0), each only for the Hyprland it was made for (checked byte for byte
+  at each Hyprland update; a Hyprland update puts in the new release's file):
+  with another one `omacvm check`'s "HDR captures" line says there is no
+  OmacVM fix for it, names the installed version and the releases OmacVM has
+  fixes for (e.g. "no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes
+  for 0.56.2 and 0.57.0)"), and Hyprland's own copy is used. After a Hyprland
+  update, log out and in before running `hyprctl reloadshaders` yourself: the
+  Hyprland still running from before would read the new release's file.
+  Back to Hyprland's own copy until the
   next Update VM or Hyprland update (both put it back):
   `sudo /usr/local/lib/omacvm/hypr-capture/hypr-capture.sh --remove`. Do not
   keep a copy of the file in `~/.config/hypr/shaders/`: Hyprland would read

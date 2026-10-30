@@ -61,8 +61,9 @@ each file taken from them:
   platformdirs developers), typing_extensions 4.16.0 (PSF-2.0).
 - **Hyprland** (github.com/hyprwm/Hyprland), BSD-3-Clause, Copyright (c)
   2022-2026, vaxerski, `src/app/guest/hypr-capture/LICENSE.hyprland`: its
-  shader file `cm_helpers.glsl` of v0.56.2 with two changes marked "OmacVM"
-  (`src/app/guest/hypr-capture/0.56.2/`), put into OmacVM.app's VMs for
+  shader file `cm_helpers.glsl` of v0.56.2 and of v0.57.0, each with two
+  changes marked "OmacVM" (`src/app/guest/hypr-capture/0.56.2/`,
+  `src/app/guest/hypr-capture/0.57.0/`), put into OmacVM.app's VMs for
   Hyprland to read in place of its own (screenshots and screen sharing of
   HDR windows, #579).
 - In the VM, nothing else is bundled: Arch Linux ARM and Omarchy

@@ -118,6 +118,40 @@ in more words.
   `omacvm check` has a "transparent panels" line. The workaround for older versions is in
   docs/troubleshooting.md, 48. Reported by @epicoun.
 
+- **Screenshots and screen sharing of HDR apps stay right with Hyprland 0.57 (OmacVM.app).** Hyprland
+  0.57.0 (in Omarchy's edge repository, the dev channel, since 2026-10-29; Omarchy stable once it
+  ships it) still writes the SDR copy every capture reads with PQ windows' white at 80 nits (#579).
+  OmacVM's fixed shader file was made for 0.56.2 only, so on 0.57 screenshots, colour picks and
+  screen shares of Chrome came out too bright again, and `omacvm check` said "no OmacVM fix for this
+  Hyprland (0.56.2: not built from commit efb50993)" (see #630). OmacVM now carries the same fix for
+  0.57.0 and puts in the installed release's file after each Hyprland update. When no file fits,
+  the "HDR captures" line names the installed Hyprland and the releases OmacVM has fixes for, e.g.
+  "no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes for 0.56.2 and 0.57.0)". Needs Update
+  VM or `omacvm update`; a running desktop takes it at once.
+
+- **VMware Fusion keeps its graphics fix with Hyprland 0.57.** OmacVM's Hyprland patch for Fusion's
+  graphics driver (vmwgfx) did not apply to Hyprland 0.57.0 (the code around it moved), so the
+  rebuild after a Hyprland update stopped, `omacvm apply` failed, and the VM was left with stock
+  Hyprland: a black screen at the next login. OmacVM now carries the patch for each Hyprland
+  release (0.56.2, 0.57.0) and builds with the one that applies. For a newer Hyprland it has no
+  patch for yet, the update and `omacvm apply` go on and say "no vmwgfx fix for Hyprland <version>
+  yet", and `omacvm check` names the version; `omacvm update` brings the patch once there is one.
+  Needs `omacvm update` before Omarchy stable moves to 0.57.
+
+- **A Hyprland that drops an option OmacVM.app sets shows no config error.** `omacvm_app.lua` sets
+  `cursor:no_hardware_cursors`, `cursor:use_cpu_buffer`, `render:keep_unmodified_copy` and
+  `render:cm_auto_hdr` now only when this Hyprland has them (`hl.get_config`), as `omacvm_vm.lua`
+  (#638) does: an option Hyprland does not know puts a red config error on the screen, which `pcall` did
+  not stop. All four are still there in 0.57.0, so nothing changes today.
+
+- **Swipe out to macOS sees Omarchy's scratchpad on Hyprland 0.57.** Hyprland 0.57 gives special
+  (scratchpad) and named workspaces no id any more. With the scratchpad open, a four-finger swipe
+  past the first or last workspace could switch the Mac's Space instead of staying in the VM, and
+  OmacVM.app's check for a wallpaper that did not draw took a display showing the scratchpad for
+  the bare desktop. Both now tell those workspaces by their name, on Hyprland 0.56 and 0.57; the
+  gestures daemon now also listens for Hyprland's `changeworkspaceid` event (a workspace got a new
+  id; 0.56.2 sends it too).
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver

@@ -1,0 +1,10 @@
+# Hyprland 0.57.0 (tag v0.57.0), the release this folder's cm_helpers.glsl is made for. hypr-capture.sh
+# puts it in only while /usr/bin/Hyprland was built from this commit and carries each file below byte for
+# byte (guard.py): the file it replaces and the ones that call it. Lines: commit HASH, or
+# file SHA256 BYTES NAME FIRST-LINE (where guard.py looks for it in the binary).
+commit 0aa6745f705f2c4b0a5004eb019ef76e5bbdb426
+file b7838b83e1f4d47e329aff8eaa732591216da2f68bda106e3ab2574184020291 9827 cm_helpers.glsl #ifndef ALLOW_INCLUDES
+file f1a2302091431e10b260b74e0c8d619ce9b7c7189bd6c3ea0096e33258d02127 567 CM.glsl #ifndef ALLOW_INCLUDES
+file 776c10dc702e5d80c3e1f07e505bd170b13d96042c9429ab32f4318be96b75c8 3474 tonemap.glsl #ifndef ALLOW_INCLUDES
+file 40467a58a526d038313e2f9ffad940862599d2d90def5feffe1c7608b8f85d04 1797 constants.h #ifndef CONSTANTS_H
+file 4b50938e81df0271f709beeedb95077db15424f3e8d431e9dff54cdf07ece034 6205 surface.frag #version 300 es

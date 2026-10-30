@@ -869,11 +869,14 @@ jobs:
       - name: omacvm check's HDR line says what Hyprland's SDR copy does (the check catches code without it)
         run: src/tests/hdr-copy-check.sh
 
-      - name: Screenshots and screen sharing of HDR apps (Hyprland 0.56.2's cm_helpers.glsl with OmacVM's two changes; its guard, hooks, check line; every shader variant compiles)
+      - name: Screenshots and screen sharing of HDR apps (a cm_helpers.glsl with OmacVM's two changes per Hyprland release, 0.56.2 and 0.57.0; its guard, hooks, check line naming the installed Hyprland; every shader variant compiles)
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq --no-install-recommends glslang-tools
           OMACVM_HC_STRICT=1 src/tests/hypr-capture.sh
+
+      - name: VMware Fusion's vmwgfx fix, one patch per Hyprland release (each applies to its tag; none fits a newer one, and the apply goes on and says so)
+        run: OMACVM_FUSION_STRICT=1 src/tests/fusion-vmwgfx.sh
 
       - name: Chromium's video decoder builds, and waits for a GPU that is not usable (no render node here)
         run: |

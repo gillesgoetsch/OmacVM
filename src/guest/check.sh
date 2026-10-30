@@ -960,8 +960,11 @@ fusion)
   section "VMware Fusion"
   check "graphics driver" "vmwgfx" test -d /sys/module/vmwgfx
   hv=$(pacman -Q hyprland 2>/dev/null | awk '{ print $2 }')
-  if [[ "$(cat /var/lib/omacvm/hyprland-vmwgfx 2>/dev/null)" == "$hv $(sha256sum /usr/bin/Hyprland | awk '{ print $1 }')" ]]; then
+  vst=$(cat /var/lib/omacvm/hyprland-vmwgfx 2>/dev/null)
+  if [[ $vst == "$hv $(sha256sum /usr/bin/Hyprland | awk '{ print $1 }')" ]]; then
     ok "Hyprland" "$hv with the vmwgfx fix"
+  elif [[ $vst == "$hv none" ]]; then
+    bad "Hyprland" "no vmwgfx fix for Hyprland $hv yet (black screen at the next login): omacvm update brings one"
   else bad "Hyprland" "$hv without the vmwgfx fix (black screen at the next login): omacvm apply builds it"; fi
   check "Hyprland after updates" "pacman hook rebuilds it" test -f /etc/pacman.d/hooks/zz-omacvm-hyprland.hook
   check "GPU in Chromium and Chrome" "--ignore-gpu-blocklist in /etc/chromium-flags.conf, /etc/chrome-flags.conf" \
