@@ -152,6 +152,56 @@ shell_colors() {
 QT_QUICK_TYPES=/usr/lib/qt6/qml/QtQuick/plugins.qmltypes
 if [[ -z $(shell_log) ]]; then skip "shell colours" "no log of a running Omarchy shell"
 else shell_colors "$(shell_log)" "$(/usr/local/lib/omacvm/shell-colors.py --status 2>/dev/null)"; fi
+# dmabuf_alpha_line ANSWER PIECE HYPR-START USER-FILE: the "transparent panels" line
+# (#630), "status<TAB>detail". Hyprland 0.57 turns quirks:skip_non_kms_dmabuf_formats on;
+# on virtio-gpu apps then get no buffer format with alpha, and the shell's panels,
+# notifications and the Omarchy menu black out the screen around them. omacvm_vm.lua
+# turns it off. Hyprland builds its format table at its start (a reload that changes the
+# option may not rebuild it), so false alone is no proof: OmacVM's setting counts from
+# the first Hyprland start after the file was written. ANSWER: `hyprctl getoption
+# quirks:skip_non_kms_dmabuf_formats` (bool from 0.56, int before; "set" = a config set
+# it); PIECE: omacvm_vm.lua's mtime when hyprland.lua requires it, else empty; HYPR-START:
+# the running Hyprland's start (epoch seconds); USER-FILE: the user's Hyprland file that
+# names the key, else empty. Status human = a warning only a person can clear (log out and
+# in). src/tests/dmabuf-alpha.sh.
+dmabuf_alpha_line() {
+  local v set what="quirks:skip_non_kms_dmabuf_formats"
+  v=$(sed -nE 's/^(bool|int): *//p' <<<"$1" | head -1)
+  set=$(sed -nE 's/^set: *//p' <<<"$1" | head -1)
+  local black="the shell's panels, notifications and the Omarchy menu black out the screen around them (no buffer format with alpha on virtio-gpu, #630)"
+  case $v in
+    true|1)
+      if [[ -n $4 ]]; then printf 'human\t%s\n' "Hyprland's $what is on, and ~/.config/hypr/$4 sets it: $black; take it out, then log out and in"
+      else printf 'warn\t%s\n' "Hyprland's $what is on (Hyprland 0.57's default): $black; Update VM (omacvm apply), then log out and in"; fi ;;
+    false|0)
+      if [[ $set != true && $set != 1 ]]; then printf 'ok\t%s\n' "apps get buffer formats with alpha ($what off: this Hyprland's default)"
+      elif [[ -n $4 ]]; then printf 'ok\t%s\n' "apps get buffer formats with alpha ($what off in ~/.config/hypr/$4, from the login after it was set)"
+      elif [[ -z $2 ]]; then printf 'warn\t%s\n' "$what was turned off while Hyprland ran (not in a config file): it counts only from Hyprland's start, so $black until then; Update VM (omacvm apply), then log out and in"
+      elif [[ -z $3 ]]; then printf 'skip\t%s\n' "the running Hyprland's start time is unknown"
+      elif (( $3 > $2 )); then printf 'ok\t%s\n' "apps get buffer formats with alpha (OmacVM turns Hyprland 0.57's $what off: omacvm_vm.lua)"
+      else printf 'human\t%s\n' "OmacVM turned Hyprland's $what off after this login; Hyprland applies it only at its start (hyprctl getoption says false already), so $black until you log out and in"; fi ;;
+    *) printf 'skip\t%s\n' "no answer from Hyprland about $what" ;;
+  esac
+}
+# Not on Fusion: vmwgfx's display plane takes formats with alpha.
+if [[ $TYPE != fusion ]]; then
+  hy=$H/.config/hypr; piece=""; hstart=""; ufile=""
+  if [[ -f $hy/omacvm_vm.lua ]] && grep -qxF 'require("hypr.omacvm_vm")' "$hy/hyprland.lua" 2>/dev/null; then
+    piece=$(stat -c %Y "$hy/omacvm_vm.lua" 2>/dev/null)
+  fi
+  hp=$(pgrep -n -u "$U" -x Hyprland)
+  [[ -n $hp ]] && hs=$(ps -o etimes= -p "$hp" 2>/dev/null | tr -d ' ') && [[ $hs =~ ^[0-9]+$ ]] && hstart=$(( $(date +%s) - hs ))
+  for f in hyprland looknfeel input bindings autostart envs monitors monitor_workspaces; do
+    if [[ -f $hy/$f.lua ]] && sed 's/--.*$//' "$hy/$f.lua" | grep -qF skip_non_kms_dmabuf_formats; then ufile=$f.lua; break; fi
+  done
+  IFS=$'\t' read -r ds dt < <(dmabuf_alpha_line "$(as_user hyprctl getoption quirks:skip_non_kms_dmabuf_formats 2>/dev/null)" "$piece" "$hstart" "$ufile")
+  case $ds in
+    ok) ok "transparent panels" "$dt" ;;
+    warn) warn "transparent panels" "$dt" ;;
+    human) warn "transparent panels" "$dt" human ;;
+    *) skip "transparent panels" "$dt" ;;
+  esac
+fi
 mon=$(as_user hyprctl monitors -j 2>/dev/null | jq -r 'max_by(.width * .height) | "\(.width)x\(.height)@\(.refreshRate | round) scale \(.scale)"' 2>/dev/null)
 if [[ -z $mon ]]; then bad "display" "no monitor from hyprctl"
 elif [[ $mon == 1160x768* ]]; then bad "display" "$mon: still the firmware mode (monitors.lua not applied)"

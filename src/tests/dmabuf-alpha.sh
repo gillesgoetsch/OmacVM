@@ -7,7 +7,8 @@
 #     every route the Lua files OmacVM's installers require from hyprland.lua turn it
 #     off; omacvm_vm.lua's cases (0.56.2, no such key, the user's own setting, ...);
 #  2. guest/hypr-vm.sh: the file before the line, one line however often it runs,
-#     nothing without Omarchy 4's hyprland.lua; guest/install.sh runs it on every route.
+#     nothing without Omarchy 4's hyprland.lua; guest/install.sh runs it on every route;
+#  3. omacvm check's "transparent panels" line (check.sh's dmabuf_alpha_line).
 #   LUA=lua5.5 src/tests/dmabuf-alpha.sh      (LUA: Lua 5.5, default lua)
 #   OMACVM_SRC=DIR src/tests/dmabuf-alpha.sh  the same against another checkout's src/
 #                                             (main before #630's fix fails)
@@ -81,5 +82,36 @@ blk=$(awk '/^if system; then$/ {b = ""; on = 1} on {b = b $0 "\n"} on && /^fi$/ 
 expect "guest/install.sh runs hypr-vm.sh as a system step" yes "$([[ -n $blk ]] && echo yes || echo no)"
 expect "... on every route (no VM type in that step)" "" "$(grep -n 'TYPE' <<<"$blk")"
 
+# ---------- 3. omacvm check's line ----------
+awk '/^dmabuf_alpha_line\(\) \{/ {on=1} on {print} on && /^}$/ {exit}' "$SRC/guest/check.sh" > "$T/fn.sh"
+if [[ ! -s $T/fn.sh ]]; then
+  echo "FAIL no dmabuf_alpha_line in check.sh"; fail=1
+else
+  # shellcheck disable=SC1091
+  source "$T/fn.sh"
+  line() { dmabuf_alpha_line "$@" | cut -f1; }
+  has() { dmabuf_alpha_line "$@" | grep -qF -- "$5" && echo yes || echo no; }   # ... TEXT
+  expect "0.57 default on, no fix: warn, Update VM" "warn yes" \
+    "$(line $'bool: true\nset: false' "" "" "") $(has $'bool: true\nset: false' "" "" "" "Update VM")"
+  expect "0.56.2 default off: ok" ok "$(line $'bool: false\nset: false' "" 2000 "")"
+  expect "0.56.2 default off, the fix written after this login: ok (nothing to wait for)" ok \
+    "$(line $'bool: false\nset: false' 3000 2000 "")"
+  expect "OmacVM's false, Hyprland started after the file: ok" ok "$(line $'bool: false\nset: true' 1000 2000 "")"
+  expect "OmacVM's false, written after Hyprland started: log out and in (getoption false is no proof)" "human yes" \
+    "$(line $'bool: false\nset: true' 3000 2000 "") $(has $'bool: false\nset: true' 3000 2000 "" "log out and in")"
+  expect "... written in the second Hyprland started: log out and in" human "$(line $'bool: false\nset: true' 2000 2000 "")"
+  # shellcheck disable=SC2088 # the text the line shows, not a path
+  uf='~/.config/hypr/looknfeel.lua'
+  expect "the user's true in looknfeel.lua: warn naming the file" "human yes" \
+    "$(line $'bool: true\nset: true' 1000 2000 looknfeel.lua) $(has $'bool: true\nset: true' 1000 2000 looknfeel.lua "$uf")"
+  expect "the user's false (#630's workaround): ok naming the file" "ok yes" \
+    "$(line $'bool: false\nset: true' "" 2000 looknfeel.lua) $(has $'bool: false\nset: true' "" 2000 looknfeel.lua "looknfeel.lua")"
+  expect "false set at run time, in no file: warn" warn "$(line $'bool: false\nset: true' "" 2000 "")"
+  expect "Hyprland's start unknown: skip" skip "$(line $'bool: false\nset: true' 1000 "" "")"
+  expect "an int (older Hyprland) 1: warn" warn "$(line $'int: 1\nset: false' "" 2000 "")"
+  expect "an int 0 by default: ok" ok "$(line $'int: 0\nset: false' "" 2000 "")"
+  expect "no answer: skip" skip "$(line "" "" 2000 "")"
+  expect "no such option: skip" skip "$(line "no such option" "" 2000 "")"
+fi
 (( fail == 0 )) && echo "dmabuf-alpha: all passed"
 exit $fail
