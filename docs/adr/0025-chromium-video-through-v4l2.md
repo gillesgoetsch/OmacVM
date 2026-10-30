@@ -102,7 +102,7 @@ Option 6, everything in the VM, nothing new on the Mac:
   dma-buf import in the VM's Dawn, and Ganesh on Vulkan (`--use-vulkan`)
   makes vkr on the Mac import a virgl resource it cannot (the Venus context
   is lost). In the launcher the first frame restarted the GPU process: the
-  video stopped after 10 frames and every page there lost its GPU state, not
+  video stopped after 4 to 10 frames and every page there lost its GPU state, not
   the decode error and CPU fallback above. From 3.2.15 the launcher decodes
   on the CPU (`--disable-accelerated-video-decode`); the normal Chromium
   entry keeps the decoder.

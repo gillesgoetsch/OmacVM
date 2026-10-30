@@ -110,7 +110,7 @@ the driver ID is asked for whenever `VK_KHR_driver_properties` is there.
   the VM has no dma-buf import (`SharedTextureMemoryDmaBuf`), and Venus on
   the Mac cannot import the decoder's buffers. The first frame restarted the
   GPU process (the page's WebGPU device and WebGL context were lost with it)
-  and the video stopped after 10 frames. On the CPU a 1080p30 H.264 clip
+  and the video stopped after 4 to 10 frames. On the CPU a 1080p30 H.264 clip
   plays at 30 fps, none dropped, also beside a WebGPU canvas and through
   `importExternalTexture`; a 2160p60 one decodes at 59.5 fps (M1 Max,
   KosmicKrisp, 3 GB VM with 4 CPUs). WebGPU matmul and Aquarium in the
