@@ -221,6 +221,12 @@ jobs:
       - name: omacvm check says when the VM stood still (logs/vm-stalls)
         run: src/tests/vm-stalls.sh
 
+      - name: omacvm resources (settings files, tiers, the warning above the Best tier; fixtures, no VM)
+        run: src/tests/resources.sh
+
+      - name: omacvm check says what Activity Monitor's number for an app VM is made of (stand-ins, no VM)
+        run: src/tests/activity-monitor.sh
+
       - name: apply's SSH key in the VM (the user's ~/.ssh written as the user)
         run: src/tests/ssh-key.sh
 
@@ -285,6 +291,9 @@ jobs:
 
       - name: Update VM on a locked VM writes no bar widget and asks no rescan until the unlock
         run: src/tests/plugin-lock.sh
+
+      - name: The lock rules (session-lock.sh, Omanotch's copies.py and display panel, omacvm-displays) answer alike; a shell that does not answer counts as locked
+        run: src/tests/lock-rules.sh
 
       - name: omacvm check warns when Omarchy does not lock again after an unlock
         run: src/tests/lock-stuck-check.sh
@@ -453,8 +462,9 @@ jobs:
 
       - name: Display sync (scales at 4K and 5K, nothing sent twice, the loop guard)
         run: |
-          # The VM side runs on Arch's bash 5; macOS's own is 3.2.
-          [ -x /opt/homebrew/bin/bash ] || brew install bash
+          # The VM side runs on Arch's bash 5; macOS's own is 3.2. GUEST_BASH: a bash 5
+          # outside Homebrew (the M1 Max runner's, in its own tools folder).
+          [ -x "${GUEST_BASH:-}" ] || [ -x /opt/homebrew/bin/bash ] || brew install bash
           python3 src/app/guest/tests/test_display_sync.py
 
       - name: Full-screen pointer guard (motion maths)
@@ -555,7 +565,7 @@ jobs:
         run: |
           app/runtime/Tests/display/test-pointer-hover.sh
           app/runtime/Tests/display/test-pointer-hover.sh --self-test
-      - name: Tiled present, only the changed tiles to WindowServer (the checks catch code without it)
+      - name: Tiled present, only the changed tiles to WindowServer; every tile drawn equals the whole frame (the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-present-tiles.sh
           app/runtime/Tests/display/test-present-tiles.sh --self-test
@@ -780,14 +790,23 @@ jobs:
       - name: The VM's cold file cache give-back on Linux (bash, GNU tools as in the VM; a kernel that refuses swappiness=)
         run: src/tests/memory-giveback.sh
 
+      - name: An app that lost its GPU context on the Mac gets a new GPU process (only its own, at most once in 6 minutes; stand-ins with Chrome's process names and titles)
+        run: src/tests/desktop-recover-gpu.sh
+
       - name: A feature switch on Linux (GNU sed, glide off path)
         run: src/tests/feature-switch.sh
+
+      - name: Update VM installs Omanotch again only when its files changed (Python's compiled files left out; GNU tools, as in the VM)
+        run: src/tests/omanotch-stamp.sh
 
       - name: Omarchy's shell colours on Qt 6.12 on Linux (GNU tools, the live shell's log by its pid)
         run: src/tests/shell-colors.sh
 
       - name: Bar widgets under Omarchy's lock on Linux (GNU tools, flock, as in the VM)
         run: src/tests/plugin-lock.sh
+
+      - name: The lock rules answer alike on Linux (Python and bash as in the VM)
+        run: src/tests/lock-rules.sh
 
       - name: OmacVM's edits of Omarchy's shell on Linux (GNU tools, as in the VM)
         run: src/tests/omarchy-shell.sh
@@ -841,18 +860,24 @@ jobs:
           curl -fsSL -o /tmp/lua.tgz https://www.lua.org/ftp/lua-5.5.0.tar.gz
           echo "57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d  /tmp/lua.tgz" | sha256sum -c -
           tar -xzf /tmp/lua.tgz -C /tmp && make -s -C /tmp/lua-5.5.0 linux >/dev/null
-          /tmp/lua-5.5.0/src/luac -p src/app/guest/omacvm_app.lua src/omanotch/guest/hypr/notchbar.lua
+          /tmp/lua-5.5.0/src/luac -p src/app/guest/omacvm_app.lua src/omanotch/guest/hypr/notchbar.lua src/guest/omacvm_vm.lua
           d=$(mktemp -d)
           XDG_RUNTIME_DIR=$d XDG_CONFIG_HOME=$d /tmp/lua-5.5.0/src/lua src/app/guest/tests/omacvm_app_test.lua src/app/guest/omacvm_app.lua
+
+      - name: Transparent panels on Hyprland 0.57 (#630) on every route; omacvm_vm.lua, its installer, its check line
+        run: LUA=/tmp/lua-5.5.0/src/lua src/tests/dmabuf-alpha.sh
 
       - name: omacvm check's HDR line says what Hyprland's SDR copy does (the check catches code without it)
         run: src/tests/hdr-copy-check.sh
 
-      - name: Screenshots and screen sharing of HDR apps (Hyprland 0.56.2's cm_helpers.glsl with OmacVM's two changes; its guard, hooks, check line; every shader variant compiles)
+      - name: Screenshots and screen sharing of HDR apps (a cm_helpers.glsl with OmacVM's two changes per Hyprland release, 0.56.2 and 0.57.0; its guard, hooks, check line naming the installed Hyprland; every shader variant compiles)
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq --no-install-recommends glslang-tools
           OMACVM_HC_STRICT=1 src/tests/hypr-capture.sh
+
+      - name: VMware Fusion's vmwgfx fix, one patch per Hyprland release (each applies to its tag; none fits a newer one, and the apply goes on and says so)
+        run: OMACVM_FUSION_STRICT=1 src/tests/fusion-vmwgfx.sh
 
       - name: Chromium's video decoder builds, and waits for a GPU that is not usable (no render node here)
         run: |
@@ -863,6 +888,9 @@ jobs:
 
       - name: Chromium's video decoder tells the Mac an odd-size picture's own size (a stand-in for the kernel's ioctls)
         run: src/tests/vdecd-logical.sh
+
+      - name: Chromium's video decoder fails a video whose first pictures VA-API refuses (H.264 coded interlaced), so Chromium decodes it on the CPU
+        run: src/tests/vdecd-refused.sh
 
       - name: The VA driver shim gives Chromium surfaces of their real size, waits for its pictures, never decodes into an import, refuses H.264 coded interlaced and says each surface's own size, also the size apps import it at through the EGL vendor library, which also starts Ghostty alone on Mesa's CPU renderer (stand-ins for Mesa's drivers)
         run: |

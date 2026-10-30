@@ -1,5 +1,8 @@
 -- omacvm_app.lua sets the outputs' kept rules again while Hyprland loads its
--- config (an Omarchy theme switch reloads it), against a fake Hyprland.
+-- config (an Omarchy theme switch reloads it), against a fake Hyprland that
+-- behaves as 0.56.2 and 0.57.0 do: hl.config with a key it does not know
+-- records a config error (shown on the screen) and raises none; hl.get_config
+-- gives nil and a message for such a key ("section.key" or "section:key").
 -- Run: d=$(mktemp -d); XDG_RUNTIME_DIR=$d XDG_CONFIG_HOME=$d lua src/app/guest/tests/omacvm_app_test.lua src/app/guest/omacvm_app.lua
 -- (Lua 5.4.)
 local modpath = arg[1]
@@ -8,12 +11,32 @@ local cfg = os.getenv("XDG_CONFIG_HOME")
 assert(modpath and rt and cfg and rt ~= "", "usage: see the top of this file")
 os.execute("mkdir -p '" .. rt .. "/omacvm/display-sync' '" .. cfg .. "/hypr'")
 
-local monitors, applied, window_rules, configs
+local monitors, applied, window_rules, configs, errors
+-- The options omacvm_app.lua sets, with Hyprland's defaults; a load can drop one (a newer Hyprland without it).
+local OPTIONS = { ["cursor.no_hardware_cursors"] = 2, ["cursor.use_cpu_buffer"] = 2,
+  ["render.keep_unmodified_copy"] = 2, ["render.cm_auto_hdr"] = 1, ["render.direct_scanout"] = 0 }
+local known = OPTIONS
 hl = {
   get_monitors = function() return monitors end,
   monitor = function(rule) applied[#applied + 1] = rule end,
   window_rule = function(rule) window_rules[#window_rules + 1] = rule end,
-  config = function(c) configs[#configs + 1] = c end,
+  config = function(c)
+    configs[#configs + 1] = c
+    for sec, kv in pairs(c) do
+      if type(kv) ~= "table" then errors[#errors + 1] = "not a table: " .. tostring(sec)
+      else
+        for k in pairs(kv) do
+          if known[sec .. "." .. k] == nil then errors[#errors + 1] = "unknown config key '" .. sec .. "." .. k .. "'" end
+        end
+      end
+    end
+  end,
+  get_config = function(key)
+    if type(key) ~= "string" then error("hl.get_config: bad type for arg 1") end
+    local k = key:gsub(":", ".")
+    if known[k] == nil then return nil, "unknown config key '" .. k .. "'" end
+    return known[k]
+  end,
   on = function() end,
   timer = function() end,
   exec_cmd = function() end,
@@ -27,8 +50,10 @@ end
 
 local function rule_file(output, text) write(rt .. "/omacvm/display-sync/" .. output .. ".rule", text) end
 
-local function load_config(names)
-  monitors, applied, window_rules, configs = {}, {}, {}, {}
+local function load_config(names, drop)
+  monitors, applied, window_rules, configs, errors = {}, {}, {}, {}, {}
+  known = {}
+  for k, v in pairs(OPTIONS) do if k ~= drop then known[k] = v end end
   for _, n in ipairs(names) do monitors[#monitors + 1] = { name = n } end
   dofile(modpath)
   return applied
@@ -198,6 +223,33 @@ table.sort(new)
 check("cursor_plane: only the pointer's two settings differ from the stock driver's",
   table.concat(new, " ") == "cursor.no_hardware_cursors=0 cursor.use_cpu_buffer=1")
 check("cursor_plane: no direct scanout", value("render", "direct_scanout") == nil)
+check("cursor_plane: no config error", #errors == 0)
+
+-- A Hyprland without one of the options (a newer one that dropped it): that one is not set, the others are,
+-- and no config error shows (pcall(hl.config, ...) let the error through: it is recorded, not raised).
+for _, drop in ipairs({ "cursor.no_hardware_cursors", "cursor.use_cpu_buffer", "render.keep_unmodified_copy",
+                        "render.cm_auto_hdr" }) do
+  load_config({ "Virtual-1" }, drop)
+  local sec, key = drop:match("^(%a+)%.([%a_]+)$")
+  local set = {}
+  for k in pairs(settings()) do set[#set + 1] = k:match("^[^=]+") end
+  table.sort(set)
+  check("a Hyprland without " .. drop .. ": no config error (" .. table.concat(errors, "; ") .. ")", #errors == 0)
+  check("a Hyprland without " .. drop .. ": not set, the others are (" .. table.concat(set, " ") .. ")",
+    value(sec, key) == nil and #set == 3)
+end
+write(params .. "/cursor_plane", "N\n")
+load_config({ "Virtual-1" })
+check("every option known: no config error", #errors == 0)
+check("every option known: the three without the plane set",
+  value("cursor", "no_hardware_cursors") == 1 and value("render", "keep_unmodified_copy") == 0
+  and value("render", "cm_auto_hdr") == 0)
+-- No hl.get_config (a Hyprland older than 0.55, none with a Lua config): nothing set, no error.
+local get_config = hl.get_config
+hl.get_config = nil
+load_config({ "Virtual-1" })
+check("no hl.get_config: nothing set, no error", #configs == 0 and #errors == 0)
+hl.get_config = get_config
 os.getenv = real_getenv
 
 if failed > 0 then

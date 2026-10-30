@@ -73,7 +73,7 @@ same VM): 3.16 / 3.16 / 3.17 W with tiles, 3.55 / 3.56 / 3.55 W without
 (WindowServer 43 vs 155 GPU ms/s, 59.9 frames a second either way). So the
 pointer moving costs 0.39-0.62 W (11-17 %) less. Pictures of the window,
 tiles on vs off: 0 pixels differ; the check mode never found a differing tile
-(0 of 524 checks in the second set).
+(0 of 524 checks in the second set; all rows up to 3456 pixels wide).
 
 MacBook Pro M1 Max, HDR at 120 Hz (3024x1896, XRGB2101010, EDR headroom
 11.43 on both sides), the VM full screen on the built-in panel at brightness
@@ -99,3 +99,59 @@ tiles on vs off from fresh starts: the same within a step; the check mode
   tiles.
 - No gain without the guest's damage: Linux before 7.4 flushes the whole
   plane on every page flip (then every frame is whole, as with the switch off).
+
+## Addendum (3.2.15): each tile is drawn inside its own surface
+
+3.2.14 drew a tile as the whole frame's quad moved by -x, -y onto the
+tile's 256x256 surface (`glViewport(-x, -y, frame width, frame height)`).
+Apple's OpenGL (4.1 on Metal) draws a viewport that starts more than 4096
+pixels outside its target squeezed (on the M1 Max 4097 is still right, 4100
+is not): the start becomes -4096 and the far edge stays, so the picture is
+scaled into the smaller span. The driver
+reports `GL_VIEWPORT_BOUNDS_RANGE` -32768..32767, and GL says the start is
+clamped to that range with the size kept, so this is a driver fault; the
+software renderer draws it right. Tiles that start past x 4096 exist only
+on pictures wider than 4352 pixels: full screen on a 5K or 6K display, a
+4K display set to look like more than 2176 points wide, the 24-inch iMac
+(4480), or a window that wide. There each of them came out squeezed,
+anchored at the picture's right edge (5120 wide: the last three columns at
+0.95, 0.90 and 0.85; columns 17 and 18 squeeze toward x 5120, not toward
+their own right edge), and stayed until a whole frame hid the tiles.
+Frames of the pointer alone (tiles) and whole frames (an app repainting)
+took turns, so the right part flickered while the pointer moved there;
+where the last column starts (128 points from the right edge at 5K) the
+right picture met the squeezed one and a line in it showed twice. Rows are
+never affected (the last row of the largest grid starts at 3840). Every
+earlier tiles row was at most 3456 pixels wide, so the check mode never
+met such a tile. Found from the user's report and screen recording (Mac
+mini M4, LG UltraFine 5K): the squeeze fitted there is 0.850 starting 256
+pixels from the right, the same as the M1 Max's driver gives for the last
+column.
+
+Now each tile is drawn with the viewport inside its own surface (0, 0, its
+width, its height), and its part of the frame comes from texture
+coordinates: a tile program (QEMU's blit shaders with the part as a
+uniform; the text and the part's maths in `ui/omacvm-present-tiles.h`)
+with its own quad, made where the switch is first read. If it does not
+build, tiles stay off for the run ("tiled present: off (the tile shader
+does not build: ...)") and frames are whole as before. No viewport in the
+present starts outside its target.
+
+Rejected:
+- `glBlitFramebuffer` from the frame into each tile: its alpha and sRGB
+  handling differ from the whole frame's blit, and it was never tried on
+  Apple's driver.
+- Tiles only left of x 4096: simplest, but it loses the saving on the
+  right side of big displays, where the bar and the pointer are.
+- A part rectangle in QEMU's `ui/shader.c`: the gtk, egl and dbus displays
+  share it.
+
+Tests: `test-present-tiles.c` checks every fragment's texture coordinate
+against the centre of the texel the whole frame samples (5 sizes, both
+flips); `test-present-tiles-gl.m` draws every tile and compares it with the
+whole frame on Apple's software renderer (CI, the runtime build), `--gpu`
+on a test Mac's GPU. M1 Max (macOS 27.0.1, 4.1 Metal - 91.7), 3.2.14's draw:
+36 of 240 tiles differ at 5120x2880 (also in half-float surfaces), 98 of
+336 at 6016x3384, 112 of 384 at 6144x4096, 10 of 180 at 4480x2520, 0 at
+3024x1964; the tile program: 0 at every size, both flips, 8-bit and
+half-float.

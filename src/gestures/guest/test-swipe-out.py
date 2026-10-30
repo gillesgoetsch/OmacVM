@@ -63,17 +63,34 @@ class Hypr:
         self.after_swipe = None   # (monitors, workspaces) Hyprland shows once a request came after the lift
         self.lifted = False
         self.old_options = False  # answer options as Hyprland before 0.56 did ({"int": 1})
+        self.v57 = False          # workspaces as Hyprland 0.57 says them: no id for a special or named one
+
+    def ws(self, key):
+        """A workspace reference (activeWorkspace): a number, or a name (a named workspace)."""
+        if not self.v57:
+            return {"id": key if isinstance(key, int) else -1337, "name": str(key)}
+        w = {"address": str(key), "type": "normal", "name": str(key)}
+        if isinstance(key, int):
+            w["id"] = key
+        return w
+
+    def special(self, sid):
+        """specialWorkspace: none (0), or the scratchpad (its 0.56 id, e.g. -98)."""
+        if not self.v57:
+            return {"id": sid, "name": "special:magic" if sid else ""}
+        return {"address": "special:magic", "type": "special", "name": "special:magic"} if sid else \
+            {"address": "", "type": "", "name": ""}
 
     def world(self, active, ids, windows=None, monitor="Virtual-1", others=(), special=0):
         windows = windows or {}
-        self.monitors = [{"name": monitor, "focused": True, "activeWorkspace": {"id": active, "name": str(active)},
-                          "specialWorkspace": {"id": special, "name": ""}}]
+        self.monitors = [{"name": monitor, "focused": True, "activeWorkspace": self.ws(active),
+                          "specialWorkspace": self.special(special)}]
         for name, act in others:
-            self.monitors.append({"name": name, "focused": False, "activeWorkspace": {"id": act, "name": str(act)},
-                                  "specialWorkspace": {"id": 0, "name": ""}})
-        self.workspaces = [{"id": i, "name": str(i), "monitor": monitor, "windows": windows.get(i, 0)} for i in ids]
+            self.monitors.append({"name": name, "focused": False, "activeWorkspace": self.ws(act),
+                                  "specialWorkspace": self.special(0)})
+        self.workspaces = [dict(self.ws(i), monitor=monitor, windows=windows.get(i, 0)) for i in ids]
         for name, act in others:
-            self.workspaces.append({"id": act, "name": str(act), "monitor": name, "windows": 1})
+            self.workspaces.append(dict(self.ws(act), monitor=name, windows=1))
         self.after_swipe = None
         self.lifted = False
 
@@ -210,6 +227,19 @@ check(swipe(0.3, fingers=3) == ["X left"], "three fingers: counts (Hyprland swip
 H.world(1, [1, 2, 3], {1: 2}, special=-98)
 check(swipe(0.3) == [], "a special workspace open (the scratchpad): nothing")
 
+# ---- Hyprland 0.57's JSON (as hyprctl printed it on 0.57.0-2): a special or named workspace has no id ----
+H.v57 = True
+H.world(1, [1, 2, 3], {1: 2})
+check(swipe(0.3) == ["X left"], "Hyprland 0.57: workspace 1 of 1..3, toward the previous: X left")
+H.world(1, [1, 2, 3], {1: 2}, special=-98)
+check(g.workspaces_now(SOCK)["special"] is True, "Hyprland 0.57: the scratchpad open (its name, no id): seen")
+check(swipe(0.3) == [], "Hyprland 0.57: the scratchpad open: nothing")
+H.world("notes", [1, 2], {1: 1, "notes": 0})
+st = g.workspaces_now(SOCK)
+check(st["active"] is None and st["empty"] is True and swipe(0.3) == [],
+      "Hyprland 0.57: a named workspace (no number): found by its name, no swipe out")
+H.v57 = False
+
 # ---- a Magic Mouse: four virtual fingers, at most 0.35 of the width, from the middle ----
 H.world(1, [1, 2], {1: 1})
 check(swipe(0.35, fingers=4) == ["X left"], "Magic Mouse swipe (4 virtual fingers, 0.35 of the width): X left")
@@ -333,6 +363,20 @@ sent.clear()
 H.world(1, [1], {1: 0}, special=-98)
 event("activespecial>>special:magic,Virtual-1")
 check(told(1) == ["E - -"], "the scratchpad open: E - -")
+sent.clear()
+H.v57 = True
+H.world(1, [1], {1: 0})
+event("activespecial>>,Virtual-1")
+check(told(1) == ["E right left"], "Hyprland 0.57: the scratchpad closed again: E right left")
+sent.clear()
+H.world(1, [1], {1: 0}, special=-98)
+event("activespecialv2>>special:magic,special:magic,Virtual-1")
+check(told(1) == ["E - -"], "Hyprland 0.57: the scratchpad open (no id): E - -")
+sent.clear()
+H.world(1, [1, 2], {1: 1, 2: 1})
+event("changeworkspaceid>>3,2")
+check(told(1) == ["E - left"], "a workspace's id changed (changeworkspaceid, sent by 0.56.2 and 0.57): said again")
+H.v57 = False
 sent.clear()
 H.world(1, [1, 2], {1: 1, 2: 1})
 g.SWIPE.set(False)

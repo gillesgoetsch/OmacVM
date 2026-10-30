@@ -390,3 +390,23 @@ Lives on both and is not refused unless the spec check is cheap: a cube view
 without CUBE_COMPATIBLE, a 2D view of a 3D image without 2D_ARRAY_COMPATIBLE, an
 sRGB view without MUTABLE, anisotropy 17, LOD bias 1e9. A texel view past its
 buffer lives on both but would have the GPU read outside it; it is refused.
+
+## A Vulkan device's entry points follow the app's version, and the loader can end the process (October 2026)
+
+Found with #624 (lane `venus-robust`). vkr loads a device's entry points for
+MIN(the driver's Vulkan version, the guest instance's `apiVersion`) and the
+extensions the device was made with; the rest are NULL. A guest app that asks
+for Vulkan 1.1 gets a 1.1 device even on a 1.3 driver, and any program in the
+VM can still send a 1.3 command: up to 3.2.14, vkr called address 0 in QEMU's
+process. Since 3.2.15 every missing entry is a stub that ends that app's
+context (ADR 0065's amendment); check one with `VKR_MISSING`, never against
+NULL.
+
+The Vulkan loader in the runtime (`libvulkan.1.dylib`) gives instance-level
+entries for device-extension queries (cooperative matrix, fragment shading
+rates and 26 more) whether the driver has them or not. When the driver has
+not, the loader's entry logs "ICD associated with VkPhysicalDevice does not
+support ..." and calls `abort()`: MoltenVK has no cooperative matrix or
+fragment shading rate query, so a program asking for one ended the VM.
+KosmicKrisp gave NULL there instead. vkr now uses those entries only when the
+device lists the extension.

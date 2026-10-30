@@ -161,11 +161,12 @@ expect "check: idle-lock off" on "$(ck OMACVM_FEATURE_idle_lock=off)"
 expect "check: nothing named" off "$(ck :)"
 expect "check: no-idle-lock on" on "$(ck "OMACVM_FEATURE_no_idle_lock=on OMACVM_FEATURE_idle_lock=on")"
 # guest/install.sh's --feature: the old name flipped (its own lines, run with
-# a bash 5 as Arch's; macOS's own 3.2 has no associative arrays).
+# a bash 5 as Arch's; macOS's own 3.2 has no associative arrays). GUEST_BASH
+# first: a bash 5 outside Homebrew (CI's M1 Max runner).
 block=$(awk '/^    --feature\) / {on = 1} on {print} on && /shift 2 ;;$/ {exit}' "$R/src/guest/install.sh")
 [[ $block == *'idle-lock'* ]] || { echo "FAIL install.sh --feature block not found"; exit 1; }
-B5=""; for b in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
-  [[ -x $b ]] && (( $("$b" -c 'echo ${BASH_VERSINFO[0]}') >= 4 )) && { B5=$b; break; }
+B5=""; for b in "${GUEST_BASH:-}" /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash; do
+  [[ -n $b && -x $b ]] && (( $("$b" -c 'echo ${BASH_VERSINFO[0]}') >= 4 )) && { B5=$b; break; }
 done
 gi() { "$B5" -c "declare -A SET=(); set -- --feature \"\$1\"; case \$1 in
 $block

@@ -47,7 +47,7 @@ building it.
 
 | Piece | Why it is needed | Where |
 |---|---|---|
-| Hyprland with the vmwgfx fix | without it every app dies on its first frame, the login screen first ([finding 1](../troubleshooting.md#1-fusion-black-screen-with-stock-omarchy)) | `src/fusion/guest/build-hyprland.sh`, `hyprland-vmwgfx-dmabuf.patch`, a pacman hook |
+| Hyprland with the vmwgfx fix | without it every app dies on its first frame, the login screen first ([finding 1](../troubleshooting.md#1-fusion-black-screen-with-stock-omarchy)) | `src/fusion/guest/build-hyprland.sh`, `hyprland-vmwgfx/<release>.patch` (one per Hyprland release), a pacman hook |
 | VMware Tools (`open-vm-tools`), built in the VM | Arch Linux ARM does not package them. Fusion sends the display layout only to a guest running them; without them every Mac display shows the same screen | `src/fusion/guest/build-open-vm-tools.sh` (Arch's recipe, pinned) |
 | Display layout | Hyprland ignores the positions vmwgfx suggests; this applies them, converted from pixels to points | `src/fusion/guest/omacvm-fusion-displays`, `omacvm-fusion-layout` |
 | Copy and paste | VMware's agent is X11 and cannot work on Hyprland's XWayland display. It gets a private Xvfb display, synced with Wayland's clipboard | `src/fusion/guest/omacvm-fusion-clipboard` |
@@ -112,7 +112,7 @@ Mesa 26.2.1 or newer fixes an svga dmabuf leak; `pacman -Q mesa` shows yours.
 
 | Symptom | Fix |
 |---|---|
-| Black screen at the login, `invalid arguments for wl_surface.attach` in the journal | stock Hyprland is back (an update the hook could not rebuild). `omacvm apply --vm NAME`, or in the VM `/usr/local/lib/omacvm/fusion/build-hyprland.sh`. Log: `/var/cache/omacvm/hyprland-vmwgfx/build.log` |
+| Black screen at the login, `invalid arguments for wl_surface.attach` in the journal | stock Hyprland is back (an update the hook could not rebuild). `omacvm apply --vm NAME`, or in the VM `/usr/local/lib/omacvm/fusion/build-hyprland.sh`. Log: `/var/cache/omacvm/hyprland-vmwgfx/build.log`. `omacvm check` says "no vmwgfx fix for Hyprland <version> yet": a Hyprland newer than this OmacVM's patches; `omacvm update` once OmacVM has one |
 | `no such host` during a build | Fusion's NAT DNS. In the VM: `/usr/local/share/omacvm/fusion/guest/dns.sh on`, and `off` afterwards |
 | Copy and paste does nothing | move the pointer into or out of the VM. `omacvm check` (one `vmtoolsd -n vmusr`, `DISPLAY=:99`) |
 | Chrome is slow, WebGL off | `--ignore-gpu-blocklist` in `~/.config/chrome-flags.conf`, then quit Chrome fully |

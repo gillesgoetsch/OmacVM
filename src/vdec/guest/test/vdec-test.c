@@ -28,7 +28,7 @@
  *                  queue is bounded) instead of growing
  *
  * Build: cc -O2 -o vdec-test vdec-test.c $(pkg-config --cflags --libs \
- *          libavformat libavcodec libavutil libswscale egl glesv2 gbm libdrm)
+ *          libavformat libavcodec libavutil libswscale egl glesv2 gbm libdrm) -lm
  */
 #define _GNU_SOURCE
 #include <errno.h>

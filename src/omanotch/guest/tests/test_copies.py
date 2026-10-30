@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 GUEST = ROOT / "src/omanotch/guest"
@@ -78,7 +79,8 @@ class Copies(unittest.TestCase):
             return 1, ""
         m.print = lambda *a, **k: None   # its one line per copy
         m.restart_and_check = restart
-        m.session_locked = lambda: self.locked
+        self.real_session_locked = m.session_locked
+        m.session_locked = lambda wait=0: self.locked
         m.recolor = lambda c: None
         m.run = run
 
@@ -481,6 +483,46 @@ class Copies(unittest.TestCase):
         self.assertEqual(st, "ok")
         self.assertIn("follows when the session is unlocked", d)
 
+    def busy_shell(self, looks):
+        """The real lock rule, the shell running but not answering for LOOKS
+        pings, then open; a clock that moves only with time.sleep. -> pings"""
+        pings, clock = [], [0.0]
+        stand_in = self.m.run
+
+        def run(cmd, timeout=30):
+            if cmd == ["omarchy-shell", "shell", "ping"]:
+                pings.append(clock[0])
+                return (1 if len(pings) <= looks else 0), ""
+            if cmd[:1] == ["pgrep"]:
+                return 0, "4242"
+            if cmd == ["omarchy-shell", "lock", "status"]:
+                return 0, status(False)
+            return stand_in(cmd, timeout)
+        self.m.run = run
+        self.m.session_locked = self.real_session_locked
+        for name, fake in (("monotonic", lambda: clock[0]), ("sleep", lambda s: clock.__setitem__(0, clock[0] + s))):
+            patcher = mock.patch.object(self.m.time, name, side_effect=fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return pings
+
+    def test_install_waits_for_a_shell_that_does_not_answer_yet(self):
+        # Omanotch's install right after a shell restart: a first install
+        # without the bar copy stops (install.sh), so it waits up to 20 s.
+        pings = self.busy_shell(3)
+        self.assertEqual(self.follow(install=True), 0)
+        self.assertTrue(self.entry().is_file())
+        self.assertTrue(self.entry("background").is_file())
+        self.assertEqual(len(pings), 4)
+
+    def test_a_shell_that_never_answers_counts_as_locked(self):
+        pings = self.busy_shell(10 ** 6)
+        self.assertEqual(self.follow(install=True), 3)
+        self.assertFalse(self.copy().exists())
+        self.assertTrue(20 <= pings[-1] < 22, pings[-1])
+        self.assertEqual(self.follow(), 3)       # the service: no wait (it waits for a quiet moment itself)
+        self.assertTrue(20 <= pings[-1] < 22, pings[-1])
+
     def test_a_removed_copy(self):
         self.follow(install=True)
         shutil.rmtree(self.copy())
@@ -532,7 +574,8 @@ class Locked(unittest.TestCase):
         self.m.run = lambda cmd, timeout=30: self.answers.get(tuple(cmd[1:]), (1, ""))
 
     def locked(self, status_answer, is_locked):
-        self.answers = {("lock", "status"): status_answer, ("lock", "isLocked"): (0, is_locked)}
+        self.answers = {("shell", "ping"): (0, ""), ("lock", "status"): status_answer,
+                        ("lock", "isLocked"): (0, is_locked)}
         return self.m.session_locked()
 
     def test_unlocked_after_an_unlock(self):
@@ -557,9 +600,15 @@ class Locked(unittest.TestCase):
         self.assertFalse(self.locked((1, ""), "false"))
         self.assertFalse(self.locked((0, "Function not found."), "false"))
 
-    def test_shell_not_answering(self):
+    def test_no_shell(self):
         self.answers = {}
         self.assertFalse(self.m.session_locked())
+
+    def test_shell_running_not_answering(self):
+        # Starting or reloading: a write now could reload its lock screen
+        # without the password field (as OmacVM's guest/session-lock.sh).
+        self.answers = {("-u", str(os.getuid()), "-x", "quickshell"): (0, "4242")}
+        self.assertTrue(self.m.session_locked())
 
 
 class Waiting(unittest.TestCase):

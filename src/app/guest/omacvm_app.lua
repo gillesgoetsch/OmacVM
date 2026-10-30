@@ -28,12 +28,23 @@ local function driver_option(name)
   return v == "Y"
 end
 local plane = driver_option("cursor_plane")
+-- Every option below is set only when this Hyprland has it: hl.config with a
+-- key it does not know puts a config error on the screen, and pcall does not
+-- catch that (Hyprland records it, it does not raise one). hl.get_config
+-- gives nil for such a key (Hyprland 0.55 and newer, every Hyprland with a Lua
+-- config). The same guard as ~/.config/hypr/omacvm_vm.lua's.
+local function set_option(section, name, value)
+  if type(hl.get_config) ~= "function" then return end
+  local ok, now = pcall(hl.get_config, section .. "." .. name)
+  if not ok or now == nil then return end
+  pcall(hl.config, { [section] = { [name] = value } })
+end
 -- With the plane the pointer is not drawn into the frames: a pointer move
 -- costs no new picture; QEMU shows the same image over its window.
-hl.config({ cursor = { no_hardware_cursors = (mac or plane) and 0 or 1 } })
+set_option("cursor", "no_hardware_cursors", (mac or plane) and 0 or 1)
 -- The cursor plane from a CPU buffer (a dumb buffer: virtio-gpu copies it to
--- the Mac with the plane update); pcall: an older Hyprland lacks the option.
-if mac or plane then pcall(hl.config, { cursor = { use_cpu_buffer = 1 } }) end
+-- the Mac with the plane update).
+if mac or plane then set_option("cursor", "use_cpu_buffer", 1) end
 -- HDR: with Virtual-1 in PQ and its SDR white at 203 nits, Hyprland 0.56's
 -- default ("auto") keeps an unmodified SDR copy of every frame for screen
 -- sharing: every window is drawn twice, into a second colour target. 0 makes
@@ -42,7 +53,7 @@ if mac or plane then pcall(hl.config, { cursor = { use_cpu_buffer = 1 } }) end
 -- screen shows the same pixels and screenshots are the same; each HDR frame
 -- costs the Mac's GPU 10-19 % less. No effect in SDR (no copy there either
 -- way). A keep_unmodified_copy the user set in their own Hyprland files wins:
--- then it is not set here. pcall: an older Hyprland lacks the option.
+-- then it is not set here.
 local function user_sets(word)
   local home = os.getenv("XDG_CONFIG_HOME") or ((os.getenv("HOME") or "") .. "/.config")
   for _, name in ipairs({ "hyprland", "looknfeel", "input", "bindings", "autostart", "envs", "monitors", "monitor_workspaces" }) do
@@ -61,7 +72,7 @@ local function user_sets(word)
   return false
 end
 if not user_sets("keep_unmodified_copy") then
-  pcall(hl.config, { render = { keep_unmodified_copy = 0 } })
+  set_option("render", "keep_unmodified_copy", 0)
 end
 -- HDR: omacvm-display-sync sets Virtual-1's mode (PQ, or SDR while the Mac
 -- cannot show PQ) and says supports_hdr in both, so Hyprland also takes back
@@ -73,7 +84,7 @@ end
 -- display-sync's mode. No effect without HDR (no output says
 -- supports_hdr then). A cm_auto_hdr the user set wins, as above.
 if not user_sets("cm_auto_hdr") then
-  pcall(hl.config, { render = { cm_auto_hdr = 0 } })
+  set_option("render", "cm_auto_hdr", 0)
 end
 -- A config reload drops the rules omacvm-display-sync gave the outputs, and
 -- each output would take monitors.lua's rule ("auto" place, cached mode) until

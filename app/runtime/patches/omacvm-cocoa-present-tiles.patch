@@ -7,7 +7,10 @@ frame and a grid of 256x256 tile layers
 lies over it (ui/omacvm-present-tiles.h). A guest frame whose changed box
 (the guest's flush rects since the last frame) covers at most 12 tiles is
 drawn into those tiles' own small surfaces only and put on their layers;
-WindowServer then composites only them. A frame with nothing changed is not
+WindowServer then composites only them. Each tile is drawn with the
+viewport inside its own surface and its part of the frame picked by
+texture coordinates (the tile program, made where the switch is read;
+tiles stay off when it does not build). A frame with nothing changed is not
 presented. Any other frame is whole, as before, and hides the tiles: the
 boot logo, extra brightness, another size or colour path, a scanout buffer
 not seen lately or not flushed yet, and more than 12 tiles. Each whole
@@ -32,14 +35,25 @@ The guest must say what changed: Linux before 7.4 flushes the whole plane
 on every page flip (the frame-path work, #520, backports the fix), and then
 every frame is whole, as without it.
 
+Tiles are never drawn with a viewport that starts outside their surface:
+Apple's OpenGL (4.1 on Metal) squeezes a viewport that starts more than
+4096 pixels outside its target (its start becomes -4096, its far edge
+stays). 3.2.14 drew each tile as the frame's quad moved by -x, -y, so on
+frames wider than 4352 pixels the tiles right of x 4096 came out squeezed
+(5120 pixels wide: the last three columns, 0.95, 0.90 and 0.85) until a
+whole frame hid them: the right part flickered while the pointer moved
+there (ADR 0055).
+
 Upstream: QEMU's cocoa display has no IOSurface present; not sent.
-Test: Tests/display/test-present-tiles.sh (the rules; the wiring in the
-patched ui/cocoa.m; --self-test: every check fails on the code without it,
-the runtime build runs it on the real cocoa.m before this patch).
+Test: Tests/display/test-present-tiles.sh (the rules; the tile shader
+against whole frames on Apple's software renderer, test-present-tiles-gl.m,
+--gpu on the GPU; the wiring in the patched ui/cocoa.m; --self-test: every
+check fails on the code without it, the runtime build runs it on the real
+cocoa.m before this patch).
 Applies after omacvm-cocoa-present-lossless.patch (it uses the partial
 present's rects, rules and checks), before omacvm-cocoa-no-app-nap.patch.
 diff --git a/ui/cocoa.m b/ui/cocoa.m
-index b7d0924..5ae261a 100644
+index 4922703..12193ba 100644
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
 @@ -57,6 +57,7 @@
@@ -85,7 +99,7 @@ index b7d0924..5ae261a 100644
  static void cocoa_gl_present_request(void);
  
  /*
-@@ -7964,6 +7968,214 @@ static bool cocoa_gl_present_on(void)
+@@ -7964,6 +7968,303 @@ static bool cocoa_gl_present_on(void)
      return present_ctx != NULL;
  }
  
@@ -143,19 +157,108 @@ index b7d0924..5ae261a 100644
 +static os_unfair_lock present_tile_lock = OS_UNFAIR_LOCK_INIT;
 +static CALayer *present_tile_layer[OMACVM_PT_MAX];  /* present_tile_lock */
 +static int present_tiles_shown;         /* present_tile_lock: tiles not hidden */
++/*
++ * The tile program (ui/omacvm-present-tiles.h: QEMU's blit, the tile's part
++ * of the frame by texture coordinates) and its own quad: vertex arrays are
++ * not shared between contexts. Made on present_ctx where the switch is read.
++ */
++static GLuint present_tile_prog, present_tile_vao, present_tile_vbo;
++static GLint present_tile_u_rect, present_tile_u_flip;
 +
++/* QEMU thread, present_ctx current: one shader of the tile program, 0 (and why) if it does not compile. */
++static GLuint present_tile_shader(GLenum type, const char *src, char *why, size_t n)
++{
++    GLuint s = glCreateShader(type);
++    GLint ok = 0;
++
++    glShaderSource(s, 1, &src, NULL);
++    glCompileShader(s);
++    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
++    if (!ok) {
++        glGetShaderInfoLog(s, (GLsizei)n, NULL, why);
++        glDeleteShader(s);
++        return 0;
++    }
++    return s;
++}
++
++/* QEMU thread, present_ctx current: the tile program and its quad. False (and why) if it does not build. */
++static bool present_tile_program(char *why, size_t n)
++{
++    static const GLfloat quad[] = { -1, -1, 1, -1, -1, 1, 1, 1 };
++    GLuint vs = present_tile_shader(GL_VERTEX_SHADER, OMACVM_PT_VERT, why, n);
++    GLuint fs = vs ? present_tile_shader(GL_FRAGMENT_SHADER, OMACVM_PT_FRAG, why, n) : 0;
++    GLint ok = 0;
++
++    if (vs && fs) {
++        present_tile_prog = glCreateProgram();
++        glAttachShader(present_tile_prog, vs);
++        glAttachShader(present_tile_prog, fs);
++        glBindAttribLocation(present_tile_prog, 0, "in_position");
++        glLinkProgram(present_tile_prog);
++        glGetProgramiv(present_tile_prog, GL_LINK_STATUS, &ok);
++        if (!ok) {
++            glGetProgramInfoLog(present_tile_prog, (GLsizei)n, NULL, why);
++            glDeleteProgram(present_tile_prog);
++            present_tile_prog = 0;
++        }
++    }
++    if (vs) {
++        glDeleteShader(vs);
++    }
++    if (fs) {
++        glDeleteShader(fs);
++    }
++    if (!ok) {
++        /* one line in qemu.log: the driver's log without its line breaks */
++        for (char *c = why; *c; c++) {
++            *c = *c == '\n' || *c == '\r' ? ' ' : *c;
++        }
++        if (!why[0]) {
++            snprintf(why, n, "no log");
++        }
++        return false;
++    }
++    glUseProgram(present_tile_prog);
++    glUniform1i(glGetUniformLocation(present_tile_prog, "image"), 0);
++    present_tile_u_rect = glGetUniformLocation(present_tile_prog, "rect");
++    present_tile_u_flip = glGetUniformLocation(present_tile_prog, "yflip");
++    glUseProgram(0);
++    glGenVertexArrays(1, &present_tile_vao);
++    glBindVertexArray(present_tile_vao);
++    glGenBuffers(1, &present_tile_vbo);
++    glBindBuffer(GL_ARRAY_BUFFER, present_tile_vbo);
++    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
++    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
++    glEnableVertexAttribArray(0);
++    glBindBuffer(GL_ARRAY_BUFFER, 0);
++    glBindVertexArray(0);
++    return true;
++}
++
++/*
++ * QEMU thread, present_ctx current (cocoa_gl_present). The switch is
++ * decided here once and never changes after (the present queues read
++ * present_tiles_on without a lock): the tile program is made first, and
++ * if it does not build, tiles stay off and frames are whole as before.
++ */
 +static bool present_tiles_wanted(void)
 +{
 +    if (present_tiles_on < 0) {
 +        const char *e = getenv("OMACVM_GL_PRESENT_TILES");
-+        present_tiles_on = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "check") ? 2 : 0;
-+        if (present_tiles_on && !present_vsync) {
++        int on = e && !strcmp(e, "1") ? 1 : e && !strcmp(e, "check") ? 2 : 0;
++        char why[512] = "";
++        if (on && !present_vsync) {
 +            present_tiles_on = 0;
 +            info_report("cocoa: tiled present: off (needs the vsync present)");
++        } else if (on && !present_tile_program(why, sizeof(why))) {
++            present_tiles_on = 0;
++            info_report("cocoa: tiled present: off (the tile shader does not build: %s)", why);
 +        } else {
-+            info_report("cocoa: tiled present: %s", present_tiles_on == 2 ?
++            present_tiles_on = on;
++            info_report("cocoa: tiled present: %s", on == 2 ?
 +                        "on, checked against whole frames (OMACVM_GL_PRESENT_TILES=check)" :
-+                        present_tiles_on ? "on (OMACVM_GL_PRESENT_TILES=1)" : "off");
++                        on ? "on (OMACVM_GL_PRESENT_TILES=1)" : "off");
 +        }
 +    }
 +    return present_tiles_on > 0;
@@ -300,7 +403,7 @@ index b7d0924..5ae261a 100644
  static void cocoa_gl_present_free(void)
  {
      for (int i = 0; i < present_nsurf; i++) {
-@@ -8230,6 +8442,7 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -8230,6 +8531,7 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
      present_packed_half = half;
      present_w = w;
      present_h = h;
@@ -308,7 +411,7 @@ index b7d0924..5ae261a 100644
      present_deep = deep;
      present_linear = linear;
      present_next = 0;
-@@ -8237,6 +8450,221 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -8237,6 +8539,230 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
      return true;
  }
  
@@ -460,23 +563,32 @@ index b7d0924..5ae261a 100644
 +    glBindTexture(GL_TEXTURE_2D, src);
 +    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 +    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
++    glUseProgram(present_tile_prog);
++    glUniform1f(present_tile_u_flip, flip ? 1.0f : 0.0f);
++    glBindVertexArray(present_tile_vao);
 +    for (int k = 0; k < nt; k++) {
 +        uint32_t x, y, tw, th;
++        GLfloat rect[4];
 +        omacvm_pt_rect(&present_tg, tl[k], &x, &y, &tw, &th);
++        omacvm_pt_tex_rect(&present_tg, tl[k], rect);
 +        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
 +                               GL_TEXTURE_RECTANGLE, present_ttex[tl[k]][bi[k]], 0);
 +        /*
-+         * The whole frame's quad, moved so that the tile's part lands on
-+         * the tile's surface: the same pixels as in a whole frame (its
-+         * first row is the frame's row y, as in the whole surfaces).
++         * The viewport stays inside the tile's surface; the tile's part of
++         * the frame comes from texture coordinates: the same pixels as in
++         * a whole frame (the surface's first row is the frame's row y).
++         * Never a viewport that starts outside the surface: Apple's OpenGL
++         * squeezes one that starts more than 4096 pixels out (ADR 0055).
 +         */
-+        glViewport(-(GLint)x, -(GLint)y, present_w, present_h);
++        glViewport(0, 0, tw, th);
 +        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 +        glClearColor(0, 0, 0, 1);
 +        glClear(GL_COLOR_BUFFER_BIT);
 +        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
-+        qemu_gl_run_texture_blit(present_gls, flip);
++        glUniform4fv(present_tile_u_rect, 1, rect);
++        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 +    }
++    glBindVertexArray(0);
 +    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 +    if (present_tiles_on == 2 && ++present_tile_frames % 30 == 1) {
 +        cocoa_gl_present_tiles_check(src, flip, tl, bi, nt);
@@ -530,7 +642,7 @@ index b7d0924..5ae261a 100644
  /* QEMU thread, BQL held. Returns false when nothing could be shown. */
  static bool cocoa_gl_present(void)
  {
-@@ -8385,6 +8813,7 @@ static bool cocoa_gl_present(void)
+@@ -8385,6 +8911,7 @@ static bool cocoa_gl_present(void)
                        (uint64_t)splash << 5 | (uint64_t)!gl_scanout_borrow << 6 |
                        (uint64_t)(w != present_w || h != present_h) << 7 |
                        (uint64_t)(uint32_t)(boost ? gain : 0) << 32;
@@ -538,7 +650,7 @@ index b7d0924..5ae261a 100644
      omacvm_pd_frame(&present_pd, w, h);
      if (pd_sig != present_pd_sig) {
          omacvm_pd_all_full(&present_pd);
-@@ -8402,6 +8831,35 @@ static bool cocoa_gl_present(void)
+@@ -8402,6 +8929,35 @@ static bool cocoa_gl_present(void)
              present_pd_ids[0] = gl_scanout_id;
          }
      }
@@ -574,7 +686,7 @@ index b7d0924..5ae261a 100644
      OmacvmPDRect pd;
      bool part = omacvm_pd_take(&present_pd, n, &pd) && present_damage_on &&
                  gl_scanout_borrow && !present_pd_unflushed && !splash && !boost &&
-@@ -8464,6 +8922,10 @@ static bool cocoa_gl_present(void)
+@@ -8464,6 +9020,10 @@ static bool cocoa_gl_present(void)
  
      IOSurfaceRef surf = present_surf[n];
      double flushed = CACurrentMediaTime();
@@ -585,7 +697,7 @@ index b7d0924..5ae261a 100644
      CFRetain(surf);
      if (present_vsync) {
          os_unfair_lock_lock(&present_lock);
-@@ -8491,7 +8953,9 @@ static bool cocoa_gl_present(void)
+@@ -8491,7 +9051,9 @@ static bool cocoa_gl_present(void)
          }
          CGLSetCurrentContext(NULL);
          if (present_vsync) {
@@ -596,7 +708,7 @@ index b7d0924..5ae261a 100644
              return;
          }
          dispatch_async(dispatch_get_main_queue(), ^{
-@@ -8585,6 +9049,9 @@ static void cocoa_gl_present_timer(void *opaque)
+@@ -8585,6 +9147,9 @@ static void cocoa_gl_present_timer(void *opaque)
  /* QEMU thread, BQL held: a tick took a frame off the queue. */
  static void cocoa_gl_present_bh(void *opaque)
  {
@@ -606,7 +718,7 @@ index b7d0924..5ae261a 100644
      if (gl_dirty) {
          cocoa_gl_present_request();
      }
-@@ -8596,6 +9063,207 @@ static void surface_put(IOSurfaceRef surf)
+@@ -8596,6 +9161,207 @@ static void surface_put(IOSurfaceRef surf)
      CFRelease(surf);
  }
  
@@ -814,7 +926,7 @@ index b7d0924..5ae261a 100644
  /* Any thread: put a finished frame on the layer. */
  static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushed,
                                    bool linear)
-@@ -8610,6 +9278,15 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
+@@ -8610,6 +9376,15 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
      cocoa_gl_layer_follow(layer, surf, linear);
      omacvm_present_gravity(layer, surf);
      [layer setContents:(id)surf];
@@ -830,7 +942,7 @@ index b7d0924..5ae261a 100644
      [CATransaction commit];
      if (qatomic_read(&omacvm_park_hold_on)) {
          dispatch_async(dispatch_get_main_queue(), ^{
-@@ -8618,6 +9295,16 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
+@@ -8618,6 +9393,16 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
      }
  }
  
@@ -847,7 +959,7 @@ index b7d0924..5ae261a 100644
  /* Main thread: give the link the rate present_sync.hz names. */
  static void cocoa_gl_present_link_rate(void)
  {
-@@ -8722,15 +9409,15 @@ static void present_window_reset(double now)
+@@ -8722,15 +9507,15 @@ static void present_window_reset(double now)
   * replaces it while the guest draws faster than the link, or while the
   * link runs slower than the screen.
   */
@@ -866,7 +978,7 @@ index b7d0924..5ae261a 100644
      double gap = present_sync.last_ready > 0 ?
                   now - present_sync.last_ready : INFINITY;
      present_sync.last_ready = now;
-@@ -8774,7 +9461,7 @@ static void cocoa_gl_present_queue_frame(IOSurfaceRef surf, GLint filter,
+@@ -8774,7 +9559,7 @@ static void cocoa_gl_present_queue_frame(IOSurfaceRef surf, GLint filter,
          bool slowed = present_sync.hz < present_sync.max_hz;
          if ((present_sync.merge || slowed) && last &&
              gap < present_sync.period / 2) {
@@ -875,7 +987,7 @@ index b7d0924..5ae261a 100644
              present_sync.queued--;
              present_sync.merged++;
              present_sync.extra++;
-@@ -8782,17 +9469,14 @@ static void cocoa_gl_present_queue_frame(IOSurfaceRef surf, GLint filter,
+@@ -8782,17 +9567,14 @@ static void cocoa_gl_present_queue_frame(IOSurfaceRef surf, GLint filter,
          } else {
              present_sync.extra = 0;
              if (present_sync.queued == PRESENT_QUEUE) {
@@ -895,7 +1007,7 @@ index b7d0924..5ae261a 100644
          /*
           * The guest draws faster than a slowed link (two extra frames in a
           * row, or a full queue): the full rate at once.
-@@ -8809,12 +9493,9 @@ static void cocoa_gl_present_queue_frame(IOSurfaceRef surf, GLint filter,
+@@ -8809,12 +9591,9 @@ static void cocoa_gl_present_queue_frame(IOSurfaceRef surf, GLint filter,
                                present_sync.queued, present_sync.linked);
      os_unfair_lock_unlock(&present_lock);
  
@@ -910,7 +1022,7 @@ index b7d0924..5ae261a 100644
      }
      if (wake) {
          dispatch_async(dispatch_get_main_queue(), ^{
-@@ -8872,9 +9553,8 @@ static double present_wanted_hz(void)
+@@ -8872,9 +9651,8 @@ static double present_wanted_hz(void)
   */
  static bool cocoa_gl_present_vsync(double T)
  {
@@ -922,7 +1034,7 @@ index b7d0924..5ae261a 100644
      bool input = present_input_first &&
                   qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - qemu_input_last_event_ns() <
                   PRESENT_INPUT_NS;
-@@ -8894,7 +9574,10 @@ static bool cocoa_gl_present_vsync(double T)
+@@ -8894,7 +9672,10 @@ static bool cocoa_gl_present_vsync(double T)
           */
          if (input && present_sync.queued > 1) {
              nstale = present_sync.queued - 1;
@@ -934,7 +1046,7 @@ index b7d0924..5ae261a 100644
              memmove(&present_sync.queue[0], &present_sync.queue[nstale],
                      sizeof(PresentFrame));
              present_sync.queued = 1;
-@@ -8924,7 +9607,8 @@ static bool cocoa_gl_present_vsync(double T)
+@@ -8924,7 +9705,8 @@ static bool cocoa_gl_present_vsync(double T)
              int quarter = present_sync.period > 0 ?
                            MAX(4, (int)lround(0.25 / present_sync.period)) : 15;
              if (++present_sync.left_run >= quarter) {
@@ -944,7 +1056,7 @@ index b7d0924..5ae261a 100644
                  present_sync.queued--;
                  memmove(&present_sync.queue[0], &present_sync.queue[1],
                          sizeof(PresentFrame) * present_sync.queued);
-@@ -8960,7 +9644,8 @@ static bool cocoa_gl_present_vsync(double T)
+@@ -8960,7 +9742,8 @@ static bool cocoa_gl_present_vsync(double T)
           */
          if (present_sync.win_min >= 1 && present_sync.win_min < INT_MAX &&
              !present_sync.win_late && present_sync.queued) {
@@ -954,7 +1066,7 @@ index b7d0924..5ae261a 100644
              present_sync.queued--;
              memmove(&present_sync.queue[0], &present_sync.queue[1],
                      sizeof(PresentFrame) * present_sync.queued);
-@@ -9012,18 +9697,9 @@ static bool cocoa_gl_present_vsync(double T)
+@@ -9012,18 +9795,9 @@ static bool cocoa_gl_present_vsync(double T)
      }
      os_unfair_lock_unlock(&present_lock);
  
@@ -976,7 +1088,7 @@ index b7d0924..5ae261a 100644
          /* The guest may have drawn while the queue was full. */
          qemu_bh_schedule(present_bh);
      }
-@@ -9184,6 +9860,11 @@ static void cocoa_gl_scanout_flush(DisplayChangeListener *dcl,
+@@ -9184,6 +9958,11 @@ static void cocoa_gl_scanout_flush(DisplayChangeListener *dcl,
      /* What changed, for the surfaces' next draws (partial present). */
      omacvm_pd_add(&present_pd, x, y, w, h);
      present_pd_unflushed = false;

@@ -92,10 +92,22 @@ Option 6, everything in the VM, nothing new on the Mac:
   network, in a sandboxed service. One thread serves all videos; at most 8
   decoders are open at once (more fall back to the CPU).
 - Failures end in a decode error, never a frozen video: one video that goes
-  wrong (a picture under 64 px, a stream VA-API cannot take, the GPU not
-  finishing a picture within 1 s) fails alone and Chromium plays it on the
-  CPU. If the daemon dies or hangs (systemd's watchdog, 5 s), every open
-  video gets a decode error and systemd starts the daemon again 2 s later.
+  wrong (a picture under 64 px, a stream VA-API cannot take, VA-API
+  refusing a video's first pictures, the GPU not finishing a picture within
+  1 s) fails alone and Chromium plays it on the CPU. If the daemon dies or
+  hangs (systemd's watchdog, 5 s), every open video gets a decode error and
+  systemd starts the daemon again 2 s later.
+- Only under Chromium's GL compositor. Chromium uses the V4L2 decoder under
+  any compositor that is not GL, and no Vulkan compositor can draw its
+  buffers on Venus: Graphite (the "Chromium (WebGPU)" launcher) has no
+  dma-buf import in the VM's Dawn, and Ganesh on Vulkan (`--use-vulkan`)
+  makes vkr on the Mac import a virgl resource it cannot (the Venus context
+  is lost). In the launcher the first frame restarted the GPU process: the
+  video stopped after its first frames (4 to 18 in the rows) and every page
+  there lost its GPU state, not the decode error and CPU fallback above.
+  From 3.2.15 the launcher decodes on the CPU
+  (`--disable-accelerated-video-decode`); the normal Chromium entry keeps
+  the decoder.
 - The module and the daemon trust each other only as far as the protocol
   goes: the module checks every size, index and buffer the daemon hands in,
   never reuses a decoder id, bounds what it queues for the daemon, and a

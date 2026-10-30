@@ -104,6 +104,20 @@ the driver ID is asked for whenever `VK_KHR_driver_properties` is there.
 - The launcher costs WebGL about a fifth (Aquarium 14.3 vs 18.4 fps,
   unlocked): WebGL stays on virgl and its frames reach the Vulkan
   compositor by copy. Hence a separate launcher, default Chromium unchanged.
+- The launcher decodes video on the CPU (`--disable-accelerated-video-decode`
+  on X11, from 3.2.15). Arch's Chromium keeps OmacVM's V4L2 decoder (ADR
+  0025) on under Graphite, but Graphite cannot draw its frames here: Dawn in
+  the VM has no dma-buf import (`SharedTextureMemoryDmaBuf`), and Venus on
+  the Mac cannot import the decoder's buffers. The first frame restarted the
+  GPU process (the page's WebGPU device and WebGL context were lost with it)
+  and the video stopped after its first frames (4 to 18 in the rows). On the
+  CPU a 1080p30 H.264 clip plays at 30 fps, none dropped, also beside a
+  WebGPU canvas and through `importExternalTexture`; a 2160p60 one decodes
+  at 59.5 fps, 53.9 shown (M1 Max, KosmicKrisp, 3 GB VM with 4 CPUs). WebGPU
+  matmul and Aquarium in the launcher are the same with and without the
+  switch. Google Chrome there should decode on the CPU already: Chromium
+  153's source refuses VA-API under Graphite (read in the source; no row
+  with Chrome 156 checked its decoder).
 - Copying a WebGPU canvas into a 2D canvas (`drawImage`) gives zeros in
   every Chrome mode in the VM, also the default one: open.
 - OpenCL 3.0 device "zink ... (MOLTENVK)"; Geekbench 7 GPU OpenCL passes

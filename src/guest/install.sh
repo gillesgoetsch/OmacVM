@@ -423,6 +423,18 @@ system && case $TYPE in
   fusion)
     log "VMware Fusion"; "$R/fusion/guest/install.sh" "$U" "$MODE" ${DSCALE:+"$DSCALE"} ;;
 esac
+# Hyprland settings every route needs (omacvm_vm.lua, each says why): Hyprland
+# 0.57's quirks:skip_non_kms_dmabuf_formats off, else virtio-gpu leaves apps no
+# format with alpha and the shell's panels and notifications black out the
+# screen (#630). Hyprland reads it at its start.
+if system; then
+  r=$("$R/guest/hypr-vm.sh" "$U" 2>&1) || r="failed: $r"
+  case $r in
+    added|updated) log "Hyprland: OmacVM's settings for every VM $r (on Hyprland 0.57: transparent panels and notifications from the next login)" ;;
+    "") ;;
+    *) log "Hyprland: OmacVM's settings for every VM: $r" ;;
+  esac
+fi
 # Chromium's video through V4L2: OmacVM.app VMs only (off on the other routes
 # above). Its own step, so the control centre can repair it alone.
 if want chromium-video && [[ $TYPE == app ]]; then
@@ -576,7 +588,9 @@ elif [[ ${F[omanotch]} == on ]]; then
   # An empty notchcast is a broken install (seen once): build it again; a repair always does.
   [[ -e $H/.local/bin/notchcast && ! -s $H/.local/bin/notchcast ]] && home_run rm -f "$H/.local/bin/notchcast"
   [[ -n $ONLY ]] && home_run rm -f "$H/.local/state/omacvm/omanotch"
-  sum=$(cd "$R/omanotch/guest" && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
+  # Python's compiled files are not Omanotch's: root's build.py (OmacVM.app's
+  # display widget) leaves monitor/__pycache__ in each new copy, with new times.
+  sum=$(cd "$R/omanotch/guest" && find . -type f ! -path '*/__pycache__/*' -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-16)
   stamp=$H/.local/state/omacvm/omanotch
   if [[ -x $H/.local/bin/notchcast && $(home_cat "$stamp") != "$sum" ]]; then
     log "Omanotch: changed, installs again"

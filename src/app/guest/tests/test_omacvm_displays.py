@@ -130,6 +130,41 @@ class DesktopOutputs(unittest.TestCase):
                         ([{"name": "Virtual-1", "activeWorkspace": 3}], [], self.L)]:
             self.assertEqual(od.desktop_outputs(m, w, l), [])
 
+    # Hyprland 0.57's JSON (as hyprctl printed it on 0.57.0-2): an id only for a numbered workspace; a special or
+    # named one has its name and address, and specialWorkspace is {"address": "", "type": "", "name": ""} with none.
+    @staticmethod
+    def active57(m, wid=None, name=None, special=""):
+        m = dict(m)
+        a = {"address": str(wid) if wid else name, "type": "normal", "name": str(wid) if wid else name}
+        if wid:
+            a["id"] = wid
+        m["activeWorkspace"] = a
+        m["specialWorkspace"] = {"address": special, "type": "special" if special else "", "name": special}
+        return m
+
+    @staticmethod
+    def ws57(*spaces):
+        out = []
+        for key, windows in spaces:
+            w = {"address": str(key), "type": "normal", "name": str(key), "windows": windows}
+            if isinstance(key, int):
+                w["id"] = key
+            out.append(w)
+        return out
+
+    def test_057_empty_numbered_workspaces(self):
+        mons = [self.active57(MONS[0], 1), self.active57(MONS[1], 11), self.active57(MONS[2], name="h057n")]
+        self.assertEqual(od.desktop_outputs(mons, self.ws57((1, 0), (11, 0), ("h057n", 0)), self.L),
+                         ["Virtual-1", "Virtual-2"])
+
+    def test_057_scratchpad_shown_is_not_the_desktop(self):
+        mons = [self.active57(MONS[0], 1, special="special:magic"), self.active57(MONS[1], 11)]
+        self.assertEqual(od.desktop_outputs(mons, self.ws57((1, 0), (11, 0)), self.L), ["Virtual-2"])
+
+    def test_057_named_workspace_by_its_name(self):
+        mons = [self.active57(MONS[0], name="h057n"), self.active57(MONS[1], name="busy")]
+        self.assertEqual(od.desktop_outputs(mons, self.ws57(("h057n", 0), ("busy", 2)), self.L), ["Virtual-1"])
+
 
 class LayoutEvent(unittest.TestCase):
     def test_events(self):
@@ -985,6 +1020,42 @@ class RefreshWidget(unittest.TestCase):
                 self.assertEqual(od.session_state(), "locked")
                 script.write_text("echo something else\n")
                 self.assertEqual(od.session_state(), "open")
+
+    def test_a_shell_that_takes_no_calls_is_busy(self):
+        # session-lock.sh still waiting on the shell after 15 s: busy, as its
+        # own word for a shell that runs and does not answer (not open).
+        with mock.patch.object(od.subprocess, "run", side_effect=od.subprocess.TimeoutExpired("bash", 15)):
+            self.assertEqual(od.session_state(), "busy")
+        with mock.patch.object(od.subprocess, "run", side_effect=OSError("no bash")):
+            self.assertEqual(od.session_state(), "open")             # no bash, no script: as before
+
+
+class AgentStart(unittest.TestCase):
+    def test_the_display_sync_does_not_wait_for_the_widget(self):
+        # The first start after an Omarchy update that changed the display
+        # panel, with a busy shell: the widget's rebuild waits for the shell,
+        # the agent (the hello to the Mac, the display sync) starts at once.
+        import threading
+        order, widget_done, agent_ran = [], threading.Event(), threading.Event()
+
+        def widget():
+            agent_ran.wait(5)
+            order.append("widget rebuilt")
+            widget_done.set()
+
+        class FakeAgent:
+            def run(self):
+                order.append("agent")
+                agent_ran.set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            port = pathlib.Path(tmp) / "port"
+            port.write_text("")
+            with mock.patch.object(od, "PORT", port), mock.patch.object(od, "refresh_widget", side_effect=widget), \
+                    mock.patch.object(od, "Agent", FakeAgent):
+                self.assertEqual(od.main(["omacvm-displays"]), 0)
+                widget_done.wait(5)
+        self.assertEqual(order, ["agent", "widget rebuilt"])
 
 
 class ConfigWatchTest(unittest.TestCase):

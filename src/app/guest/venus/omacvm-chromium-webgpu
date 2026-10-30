@@ -24,4 +24,12 @@ scale=""
   grep -qs -e '--force-device-scale-factor' "${XDG_CONFIG_HOME:-$HOME/.config}/$FLAGS" ||
   scale=$(hyprctl monitors -j 2>/dev/null | jq -r 'first(.[] | select(.focused)) | .scale' 2>/dev/null)
 [[ $scale =~ ^[0-9]+(\.[0-9]+)?$ ]] && set -- --force-device-scale-factor="$scale" "$@"
-exec "$B" --ozone-platform=x11 --enable-skia-graphite --skia-graphite-dawn-backend=vulkan "$@"
+# Video decodes on the CPU here. Arch's Chromium keeps OmacVM's V4L2 decoder on
+# under Graphite, but Graphite cannot draw its frames: Dawn has no dma-buf
+# import in the VM (SharedTextureMemoryDmaBuf), and Venus on the Mac cannot
+# import the decoder's buffers either. The first frame restarted the GPU
+# process, and every page's WebGPU with it. Chrome refuses VA-API under
+# Graphite by itself. A switch, not --disable-features: Chromium keeps only the
+# last --disable-features, so that would drop one from the user's flags file.
+exec "$B" --ozone-platform=x11 --enable-skia-graphite --skia-graphite-dawn-backend=vulkan \
+  --disable-accelerated-video-decode "$@"

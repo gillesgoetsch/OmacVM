@@ -109,6 +109,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 PORT = Path("/dev/virtio-ports/org.omacvm.display")
@@ -451,7 +452,10 @@ def desktop_outputs(monitors_data, workspaces_data, layers_data) -> list[str]:
     """
     if not isinstance(monitors_data, list) or not isinstance(layers_data, dict):
         return []
-    windows = {w.get("id"): w.get("windows", 0) for w in workspaces_data
+    # Hyprland 0.57 gives no id for a named or special workspace (0.56 a negative one): those by their name.
+    def key(w):
+        return w.get("id") if w.get("id") is not None else ("name", w.get("name"))
+    windows = {key(w): w.get("windows", 0) for w in workspaces_data
                if isinstance(w, dict)} if isinstance(workspaces_data, list) else {}
     out = []
     for m in monitors_data:
@@ -462,12 +466,13 @@ def desktop_outputs(monitors_data, workspaces_data, layers_data) -> list[str]:
             continue
         if m.get("mirrorOf") not in (None, "", "none") or m.get("dpmsStatus") is False:
             continue
+        # a special workspace shown: 0.56 says its id (0 with none), 0.57 its name and address ("" with none)
         special = m.get("specialWorkspace")
-        if isinstance(special, dict) and special.get("id"):
+        if isinstance(special, dict) and (special.get("id") or special.get("name") or special.get("address")):
             continue
         active = m.get("activeWorkspace")
-        wid = active.get("id") if isinstance(active, dict) else None
-        if wid is None or windows.get(wid, 1) != 0:
+        wid = key(active) if isinstance(active, dict) else None
+        if wid in (None, ("name", None), ("name", "")) or windows.get(wid, 1) != 0:
             continue
         levels = layers_data.get(name, {}).get("levels") if isinstance(layers_data.get(name), dict) else None
         if not any(isinstance(layer, dict) and layer.get("namespace") == WALLPAPER
@@ -591,10 +596,12 @@ def run_sync() -> None:
 
 def session_state() -> str:
     """The desktop session: down, busy, locked or open (guest/session-lock.sh;
-    open without it)."""
+    open without it). No word within 15 s: busy, the shell takes no calls."""
     try:
         out = subprocess.run(["bash", str(SESSION_LOCK)], capture_output=True, text=True,
                              timeout=15, check=False).stdout.strip()
+    except subprocess.TimeoutExpired:
+        return "busy"
     except (OSError, subprocess.SubprocessError):
         return "open"
     return out if out in ("down", "busy", "locked", "open") else "open"
@@ -607,7 +614,8 @@ def refresh_widget() -> None:
     locked: a write in the plugins folder or a rescan reloads Omarchy's lock
     screen without its password field (omarchy-mac 4.0.3); Update VM stages
     its own copy then, else the agent's next start does it. A shell that is
-    starting gets 20 s to answer."""
+    starting gets 20 more looks, a second apart. Runs beside the agent (main):
+    nothing of the display sync waits for it."""
     stamp = WIDGET / ".source-sha256"
     import hashlib
     try:
@@ -1409,7 +1417,7 @@ def main(argv: list[str]) -> int:
     if not PORT.exists():
         log(f"{PORT} is missing (an OmacVM.app without external displays)")
         return 0
-    refresh_widget()
+    threading.Thread(target=refresh_widget, name="widget", daemon=True).start()
     Agent().run()
     return 0
 

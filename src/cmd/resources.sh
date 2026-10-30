@@ -5,12 +5,15 @@
 #   omacvm resources --vm NAME --cpus N --memory-gb N   (either one alone too)
 #   --vm-type parallels|utm|fusion|app   when the name is used in more than one app
 #   --json   the VM's resources, the limits and the tiers (after a change: the
-#            new ones and "changed": true; a change applies on the next start)
+#            new ones and "changed": true; a change applies on the next start),
+#            and "warning" when its memory is above this Mac's Best tier
 # The same tiers and limits as omacvm build: 1 CPU up to this Mac's, 4 GB up
 # to its memory, within the Parallels licence. Parallels, UTM and VMware Fusion
 # change a stopped VM only (shut it down first); OmacVM.app's VM takes the
 # change at its next start. In a terminal without a change it asks (not with
-# --yes or --json).
+# --yes or --json). Memory above this Mac's Best tier is allowed, with a
+# warning (also when it only reads a VM that has it); the setting is never
+# lowered by itself.
 # Exit codes: 0 done, 1 failed, 2 usage, 3 needs a person (shut the VM down).
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -78,6 +81,14 @@ fi
 
 now=$(res_get "$VM" "$TYPE") || die "could not read the CPUs and memory of '$VM' from its $(app_label "$TYPE") settings"
 OLD_CPUS=${now% *}; OLD_MB=${now#* }
+# An OmacVM.app VM's graphics peak of its last run (QEMU's logs/gpu-memory),
+# for the warning: they come on top of its memory.
+PEAK=""
+if [[ $TYPE == app ]] && d=$(app_dir "$VM" 2>/dev/null) && [[ -f $d/logs/gpu-memory && ! -L $d/logs/gpu-memory ]]; then
+  PEAK=$(sed -n 's/^peak_mb=//p' "$d/logs/gpu-memory" | head -1)
+fi
+warning() { mem_warning "$TYPE" "$OLD_MB" "$VM" "$PEAK"; }
+say_warning() { local w; w=$(warning); [[ -z $w ]] || echo "Warning: $w"; }
 
 show_json() {   # CHANGED
   local t
@@ -90,6 +101,7 @@ show_json() {   # CHANGED
   done
   printf '}'
   [[ -n ${RES_NOTE:-} ]] && printf ',\n  "note": %s' "$(json_str "$RES_NOTE")"
+  t=$(warning); [[ -z $t ]] || printf ',\n  "warning": %s' "$(json_str "$t")"
   printf '}\n'
 }
 cpus_text() { (( $1 )) && echo "$1 CPUs" || echo "UTM's default CPUs"; }
@@ -102,6 +114,7 @@ if [[ -z $RES$CPUS$MEM_GB ]]; then
     else
       echo "'$VM' ($(app_label "$TYPE"), $STATE): $(cpus_text "$OLD_CPUS"), $(mem_text "$OLD_MB") memory"
       echo "This Mac: $mac_cores CPUs, $mac_mem_gb GB${LIMITED}. Change with --resources low|balanced|high|best, --cpus N or --memory-gb N."
+      say_warning
     fi
     exit 0
   fi
@@ -110,7 +123,7 @@ if [[ -z $RES$CPUS$MEM_GB ]]; then
   opts+=("Custom|choose CPUs and memory" "Keep|$(cpus_text "$OLD_CPUS"), $(mem_text "$OLD_MB") memory, as it is")
   ui_select tier "How much of this Mac ($mac_cores CPUs, $mac_mem_gb GB${LIMITED}) should '$VM' get?" 5 "${opts[@]}"
   case $tier in
-    5) exit 0 ;;
+    5) say_warning; exit 0 ;;
     4) CPUS=$(ask_value "CPUs (1-$CAP_CPUS)" "$OLD_CPUS" '^[0-9]+$')
        # Return keeps the memory exactly as it is (6000 MB stays 6000 MB, and
        # a VM under 4 GB keeps what it has).
@@ -134,7 +147,7 @@ fi
 [[ $NEW_MB == "$OLD_MB" ]] || (( NEW_MB >= 4096 && NEW_MB <= CAP_MEM_GB * 1024 )) || usage "--memory-gb: 4 to $CAP_MEM_GB GB$LIMITED"
 
 if [[ $NEW_CPUS == "$OLD_CPUS" && $NEW_MB == "$OLD_MB" ]]; then
-  if (( JSON )); then show_json false; else echo "'$VM' already has $(cpus_text "$NEW_CPUS") and $(mem_text "$NEW_MB") memory: nothing changed"; fi
+  if (( JSON )); then show_json false; else echo "'$VM' already has $(cpus_text "$NEW_CPUS") and $(mem_text "$NEW_MB") memory: nothing changed"; say_warning; fi
   exit 0
 fi
 
@@ -157,3 +170,4 @@ msg="'$VM' now has $(cpus_text "$NEW_CPUS") and $(mem_text "$NEW_MB") memory"
 [[ -n ${RES_NOTE:-} ]] && msg+="; $RES_NOTE"
 if [[ $STATE == running ]]; then echo "$msg. It runs now: this applies on the next start."
 else echo "$msg. This applies on the next start."; fi
+say_warning

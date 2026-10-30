@@ -155,7 +155,9 @@ BT.2100 PQ, and the layer asks for EDR. It stayed hidden because:
   at the display's white (not clipped from 80 nits), and an output that
   mirrors Virtual-1 with Hyprland's own mirroring draws from the same copy,
   so it shows PQ windows at SDR white too. Installed only while
-  `/usr/bin/Hyprland` was built from v0.56.2 and carries the five shader
+  `/usr/bin/Hyprland` was built from v0.56.2 (from 3.2.15 also v0.57.0: a
+  folder per release, the same two changes on that release's file; the
+  check names the installed version when none fits) and carries the five shader
   files the copy works with byte for byte (`guard.py`); pacman hooks take it out before Hyprland changes and put it
   back when the new binary passes; any other Hyprland reads its own copy
   (the bug may be back, nothing breaks), and `omacvm check`'s "HDR captures"

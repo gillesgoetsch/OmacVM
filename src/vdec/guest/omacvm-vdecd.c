@@ -14,11 +14,12 @@
  * sizes against that.
  *
  * One thread, one EGL context; instances are served in turn. A video that
- * goes wrong (a picture size or stream VA-API cannot take, a GPU that does
- * not finish a picture within FENCE_TIMEOUT) fails alone: the module hands
- * its buffers back as errors and the app decodes on the CPU. A daemon that
- * hangs as a whole stops pinging systemd's watchdog (WatchdogSec) and is
- * restarted; the module then fails every open video. Messages and answers:
+ * goes wrong (a picture size or stream VA-API cannot take, VA-API refusing
+ * its first pictures (vdecd-refused.h), a GPU that does not finish a picture
+ * within FENCE_TIMEOUT) fails alone: the module hands its buffers back as
+ * errors and the app decodes on the CPU. A daemon that hangs as a whole
+ * stops pinging systemd's watchdog (WatchdogSec) and is restarted; the
+ * module then fails every open video. Messages and answers:
  * omacvm-vdec.h. Environment: OMACVM_VDEC_DEBUG=1 logs every frame,
  * OMACVM_VDEC_HEVC=1 offers HEVC too (not to Chromium: see va_codecs),
  * OMACVM_VA_LOGICAL=0 leaves odd-size pictures' buffers as they are
@@ -56,6 +57,7 @@
 
 #include "omacvm-vdec.h"
 #include "vdecd-logical.h"
+#include "vdecd-refused.h"
 
 #define RENDER_NODE "/dev/dri/renderD128"
 #define MAX_PENDING_FRAMES 3	/* decoded, waiting for a CAPTURE buffer */
@@ -183,6 +185,8 @@ struct inst {
 	bool cap_on;			/* the app's CAPTURE buffers stream */
 	bool draining, drain_flushed;
 	bool no_va;			/* FFmpeg could not use VA-API for this stream */
+	struct vdecd_refused refused;	/* VA-API's refusals before the first picture */
+	bool refused_fail;		/* too many of them: pump() fails the video */
 	bool failed;			/* the module was told: only CLOSE now */
 	double decode_ms;		/* the last packet's, for OMACVM_VDEC_DEBUG */
 	struct srcimg *src;
@@ -333,12 +337,15 @@ static void receive_all(struct inst *in)
 			av_frame_free(&f);
 			if (r != AVERROR(EAGAIN) && r != AVERROR_EOF && in->errors++ < 10)
 				log_msg("vdecd: inst %u: decode error %d", in->id, r);
+			if (vdecd_refused_error(&in->refused, r))
+				in->refused_fail = true;
 			return;
 		}
 		if (f->format != AV_PIX_FMT_VAAPI || !f->hw_frames_ctx) {
 			av_frame_free(&f);
 			continue;
 		}
+		vdecd_refused_picture(&in->refused);
 		struct frame *fr = calloc(1, sizeof(*fr));
 		if (!fr) {
 			av_frame_free(&f);
@@ -792,6 +799,8 @@ static bool feed_input(struct inst *in)
 		}
 		if (r < 0 && in->errors++ < 10)
 			log_msg("vdecd: inst %u: bitstream refused (%d)", in->id, r);
+		if (r < 0 && vdecd_refused_error(&in->refused, r))
+			in->refused_fail = true;	/* pump() fails it: p is still ours here */
 		done(OVD_IOC_OUTPUT_DONE, in, p->index, p->seq, 0, 0);
 		in->in = p->next;
 		if (!in->in)
@@ -849,6 +858,11 @@ static void pump(struct inst *in)
 		if (in->no_va) {
 			in->no_va = false;
 			inst_fail(in, "VA-API cannot decode this stream");
+			return;
+		}
+		if (in->refused_fail) {
+			in->refused_fail = false;
+			inst_fail(in, "VA-API refused its first pictures");
 			return;
 		}
 		finish(in, true);
@@ -912,6 +926,9 @@ static void handle(const struct ovd_msg *m, AVBufferRef **buf)
 
 	switch (m->type) {
 	case OVD_MSG_START:
+		/* Also on the same decoder: Chromium starts again for a new track. */
+		vdecd_refused_start(&in->refused);
+		in->refused_fail = false;
 		if ((!in->cc || in->codec != m->codec) && !decoder_open(in, m->codec)) {
 			char why[64];
 

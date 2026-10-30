@@ -223,6 +223,14 @@ commit 82927e9. Changes here:
   and is not lost too. A refusal at the apps' share is logged as "apps' share
   of N MB reached", not as the whole budget. Checked by
   `Tests/virgl/test-resource-budget.c` (modes dropped, wording)
+- `patches/virgl-gpu-guard-critical-grace.patch`: at critical memory
+  pressure a new big resource has room when it fits in what macOS has left
+  and the guest's GPU memory stays within what was in use when critical began
+  plus a grace (a 32nd of the Mac's memory, 256 MB to 1 GB): an app that only
+  replaces its buffers is never lost there (ADR 0034). Checked by
+  `Tests/virgl/test-gpu-guard-policy.sh` (CI) and
+  `Tests/virgl/test-resource-budget.c` (modes critical, critical-steady,
+  levelfile)
 - `patches/qemu-virgl-2d-resource-scanout.patch`: QEMU makes 2D resources
   (the guest's dumb buffers: console, plymouth, dumb screens and cursors)
   with the SCANOUT bind, so the budget's screen reserve covers them; the

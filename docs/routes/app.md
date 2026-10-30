@@ -178,10 +178,10 @@ VM runs, and goes back by itself when a new version does not start
   starts Chromium (`omacvm-chrome-webgpu`: Google Chrome) with its
   compositor on Vulkan, which Chrome needs before it gives pages the Mac's
   GPU for WebGPU; the normal Chromium entry stays as it is (that mode costs
-  WebGL about a fifth, and Chrome's other route, ANGLE on Vulkan, has no
-  WebGL 2 on Venus); Firefox gets WebGPU on (`dom.webgpu.enabled`; Omarchy
-  has no Firefox, it counts once you add it). `omacvm check` has a "WebGPU
-  in Chromium" row.
+  WebGL about a fifth and decodes video on the CPU, and Chrome's other
+  route, ANGLE on Vulkan, has no WebGL 2 on Venus); Firefox gets WebGPU on
+  (`dom.webgpu.enabled`; Omarchy has no Firefox, it counts once you add
+  it). `omacvm check` has a "WebGPU in Chromium" row.
   Vulkan's host memory window (Venus' `hostmem`) comes from the VM's memory
   plan: what the Mac has beyond the VM's memory and macOS's reserve (4 GB up
   to 16 GB of memory, 6 GB up to 36 GB, 8 GB above), 4 to 32 GB; what Vulkan
@@ -1266,18 +1266,21 @@ apps, the GPU. A VM takes two kinds from it:
 - **Graphics memory** is extra, on top: the textures and buffers the VM's
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
   grows and shrinks with what is on screen: Omarchy alone at 5K about
-  1.2 GB, with a browser about 2 GB, 3 GB at 8K, and for a moment more
+  1.2 GB, with a browser 2 to 5 GB (Chrome full screen on a 16 GB Mac mini's
+  5K display: 2.1 GB, 4.5 GB at its peak), 3 GB at 8K, and for a moment more
   while the display scale changes (the table above).
 
 The app shows both: before a start, "VM memory: 8 GB; graphics memory last
-run: peak 2.6 GB, from the Mac on top"; while the VM runs, its app menu (the
+run: peak 2.6 GB, from the Mac on top" (the (i) beside General › Resources
+says the same); while the VM runs, its app menu (the
 one beside the Apple menu) has "VM memory: 8 GB" and "Graphics memory:
 1.6 GB (peak 2.6 GB)", read when you open the menu (a click explains them).
 `omacvm check` has a "graphics memory" row: now, the peak of this run, and
 macOS's memory pressure. So does the control centre in the VM (`omacvm`):
 "Graphics memory: 1.6 GB (peak 2.6 GB)", looked at every 2 s while it is
 open (nothing while it is closed), with a warning (!) while macOS is short of
-memory or after refused allocations.
+memory or after refused allocations. `omacvm check`'s "Activity Monitor"
+row says what Activity Monitor's number for the VM is made of (below).
 
 **When macOS compresses the VM** (ADR 0059). Linux keeps every file it
 read in its page cache, and to the Mac that is the VM's memory: macOS can
@@ -1359,10 +1362,16 @@ Fusion: nothing changes (their balloons do not report free pages).
   Everything still goes through, unless a new big buffer (16 MB or more)
   is bigger than all the memory macOS has left: more swapping is better
   than a black desktop.
-- When macOS is critical (red), new big buffers are refused. Before a
-  refusal QEMU frees what it can and looks again three times (100 ms;
-  within a second of the last refusal it does not wait again, as the VM
-  stands still while it waits).
+- When macOS is critical (red), a new big buffer goes through only when it
+  fits in what macOS has left and the VM's graphics memory stays within what
+  it used when critical began plus a grace: a 32nd of the Mac's memory,
+  256 MB to 1 GB (16 GB Mac: 512 MB). So an app can go on replacing its
+  window buffers (a 5K one is about 56 MB), and only growth past the grace
+  is stopped. 3.2.14 and older refused every new big buffer at critical, so
+  a browser lost its graphics at its next window for as long as critical
+  lasted. Before a refusal QEMU frees what it can and looks again three
+  times (100 ms; within a second of the last refusal it does not wait again,
+  as the VM stands still while it waits).
   Screens, cursors and small buffers are never refused for this, so the
   desktop keeps drawing as long as it can.
 
@@ -1376,7 +1385,8 @@ of 6 GB; 16 GB: 11 of 12 GB; 64 GB: 46 of 48 GB). An app past that share,
 or an app that wants a big new buffer while macOS is short of memory, loses
 its own GPU context; the desktop goes on into its part (macOS's pressure
 does not hold the desktop back, only the guard) and keeps drawing. The VM
-shows a note: "chromium stopped drawing", and why. On a MacBook Air with
+shows a note ("chromium's graphics were restarted", or "firefox stopped
+drawing") and why. On a MacBook Air with
 8 GB a browser with big WebGL pages reached the guard while macOS still
 said normal, and before this the next buffer refused was often Hyprland's
 (a black VM). `OMACVM_GPU_MEMORY_RESERVE_MB` sets the desktop's part (0:
@@ -1384,9 +1394,20 @@ none) and `OMACVM_GPU_MEMORY_DESKTOP` its contexts (comma-separated
 process names; for tests).
 
 **When a buffer is refused**, the app that wanted it loses its GPU context
-(the VM's graphics driver cannot hand back an "out of memory" for it). A
-browser starts its GPU process again. Hyprland cannot: the VM's Mesa does
-not report a lost context, and Hyprland 0.56, when told, stops ("Cannot
+(the VM's graphics driver cannot hand back an "out of memory" for it), and
+the VM's Mesa cannot tell the app: Chrome kept drawing into the lost
+context, blank or flickering, until it was quit (3.2.14 and older). From
+3.2.15 the VM ends the GPU process of an app that has one, and Chrome or
+Chromium starts a new one within seconds: its windows draw again, open tabs
+stay, pages with WebGL may need a reload (other Chromium-based apps such as
+Electron's have the same GPU process; not measured). At most once per app
+in 6 minutes and 3 times in an hour, because Chrome counts each as a crash
+and draws without the GPU for the rest of its session after 3 recent ones. Lost again within that time,
+the note says to quit the app and open it again. Other apps (Firefox, mpv)
+draw nothing until they are restarted. `journalctl -t
+omacvm-desktop-recover` in the VM says what was ended (ADR 0038). Hyprland
+cannot get a new context that way: the VM's Mesa does not report a lost
+context, and Hyprland 0.56, when told, stops ("Cannot
 continue until proper GPU reset handling is implemented"). So the app tells
 the VM through its guest agent, and the VM's `omacvm-desktop-recover`
 restarts the desktop session by itself, a few seconds after the loss (on
@@ -1505,7 +1526,36 @@ stayed were never in it, so it does not change with this. It can also show
 more than the VM holds: once QEMU's own threads touched a guest page (the
 disk, graphics, network) and macOS compressed it, macOS counts that page
 twice there (a 4 GB VM on the Mac mini after a browser session: 5.9 GB
-shown, 2.1 GB of it counted twice).
+shown, 2.1 GB of it counted twice; the Mac got 4.8 GB back when QEMU was
+killed). On a 16 GB Mac mini with Chrome full screen at 5K (2026-10-30) it
+showed 23 GB for a VM of 12 GB with 4.5 GB of graphics, and 19.3 GB for
+the same VM at 10 GB with 3.2 GB of graphics, while macOS compressed most
+of it. `omacvm check`'s "Activity Monitor" row says what the number is made
+of while the VM runs: "19.3 GB for the VM: VM memory at most 10.0 GB,
+graphics 3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and
+pages macOS counts twice while it compresses the VM)". VM memory is at most
+what QEMU runs with (`-m`), as Linux may not have touched all of it; the
+graphics are the VM's own count (`logs/gpu-memory`); the rest is not split
+further: nothing on the Mac says which pages are counted twice. The row
+reads QEMU's footprint with `proc_pid_rusage` (`src/lib/footprint.py`):
+no task port, QEMU runs on.
+
+**VM memory above the Best tier.** The Best tier leaves macOS and the
+graphics max(8 GB, a quarter) of the Mac: 8 GB of a 16 GB Mac. More is
+allowed, but the graphics come on top of it: a 12 GB VM with 4.5 GB of
+graphics is up to 16.5 GB before macOS and the Mac's own apps, so macOS
+compresses and swaps, reaches critical, and then refuses new big graphics
+buffers for apps (above). The VM's General › Resources says so under the
+memory in orange, with the last run's graphics peak, `omacvm resources`
+says it as a `Warning:` line (and `"warning"` in `--json`) when it sets or
+only reads such a value, and `omacvm check`'s "Activity Monitor" row is a
+warning then (after a lower setting, until the VM starts again, it adds
+"8 GB is set (applies at the next start)"). Nothing lowers the setting by
+itself. The graphics stay
+outside the setting, and the runaway guard stays at three quarters of the
+Mac whatever the VM's memory (ADR 0034; one sized from the VM's memory
+would stop Chrome at about 3 GB of graphics on a 16 GB Mac with an 8 GB VM,
+below the 4.5 GB it used at 5K).
 
 **Other VM apps** (what we checked; their own documents may say more):
 

@@ -3,6 +3,173 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15
+
+In an OmacVM.app VM, apps keep their graphics at critical memory pressure when they only replace
+buffers, and Chrome draws again by itself after it lost them; a Vulkan program can no longer stop
+the VM with a command its device was not made for; "Draw only what changed" no longer squeezes wide
+pictures; the Chromium (WebGPU) launcher plays videos; and a VM memory above the Mac's Best tier
+says what it costs. With Hyprland 0.57, Omarchy's notifications, panels and menu are transparent
+again, and HDR screenshots in OmacVM.app stay right. Needs the app update for the Vulkan checks, the
+memory grace, the tiles and the memory texts (from the VM's next start), and Update VM or
+`omacvm update` for the rest; on Hyprland 0.57 then log out and in, and quit Chromium before
+starting Chromium (WebGPU) again. UTM and Parallels get the transparent panels with Hyprland 0.57,
+fewer plugin reloads during an update, Omanotch's wait for a busy shell and the gestures daemon's
+workspace names. VMware Fusion gets its Hyprland build for 0.57 (`omacvm update` before Omarchy
+stable moves to 0.57), the same plugin and Omanotch fixes and the workspace names.
+
+- **"Draw only what changed" no longer squeezes the right part of wide pictures (#637; reported by
+  the user).** In an OmacVM.app VM with the experimental switch "Draw only what changed" on, a
+  picture wider than 4352 pixels flickered at its right part while the pointer moved there: full
+  screen on a 5K or 6K display, a 4K display set to look like more than 2176 points wide, a 24-inch
+  iMac, or a window that wide. The changed parts right of pixel 4352 came out squeezed until the
+  next whole frame (on a 5K display the last 768 pixels, so a line in the picture showed twice about
+  128 points from the right edge). Apple's OpenGL squeezes a drawing that starts more than 4096
+  pixels outside its target, and each changed part was drawn that way. Each part is now drawn inside
+  its own surface. Found on a Mac mini with an LG UltraFine 5K. Needs the app update (from the VM's
+  next start). Until then, switching "Draw only what changed" off avoids it (from the VM's next
+  start).
+
+- **A VM memory above the Mac's Best tier now says what it costs, and `omacvm check` says what
+  Activity Monitor's number is made of (#633; reported by the user).** A 12 GB VM on a 16 GB Mac
+  mini showed 23 GB in Activity Monitor: its graphics come on top of its memory (4.5 GB with Chrome
+  at 5K there), and while macOS compresses the VM it counts part of it twice. In OmacVM.app the VM's
+  General › Resources has an (i) that says so, and above the Best tier (8 GB on a 16 GB Mac) its
+  orange note names the graphics on top with the last run's peak. `omacvm resources` gives the same
+  warning (`"warning"` in `--json`), also when it only reads such a VM, and `omacvm check` has an
+  "Activity Monitor" row while the VM runs: the number, the VM's memory, its graphics now and the
+  rest (QEMU itself, graphics overhead, pages counted twice). Nothing lowers the setting by itself;
+  the graphics stay outside it, with their runaway guard as before. Needs the app update (the window
+  and its `omacvm`), or `omacvm update` for a command line install.
+
+- **A program in the VM can no longer stop the VM with a Vulkan command its device was not
+  made for, or with a buffer bound outside its memory (#629).** In an OmacVM.app VM with Graphics on
+  Vulkan, a program that talked to the VM's Vulkan renderer directly could stop the whole VM: a
+  command of a newer Vulkan version or of an extension its Vulkan device was not made with, one
+  object named twice in one call, and a few other unusual requests made QEMU stop. A buffer bound
+  partly outside its memory went through, which could let the Mac's GPU read and write outside
+  that memory. Normal Vulkan apps go through Mesa in the VM, which does not send these. Now only
+  that program's Vulkan connection ends, with the reason in the VM's log, and the VM goes on.
+  See #624. Needs the app update (from the VM's next start).
+
+- **While the Mac is short of memory, apps in the VM keep their graphics when they only replace
+  buffers (#634; reported by the user).** While macOS's memory pressure was critical, OmacVM.app
+  gave an app no new big graphics buffer (16 MB or more), and the app that made one lost its
+  graphics: Chrome at its next window buffer (about 56 MB at 5K), and a Chrome started again at its
+  first, for as long as macOS stayed critical (minutes on a Mac mini with 16 GB and a 12 GB VM). Now
+  an app may replace its buffers there, and the VM's graphics may grow by a 32nd of the Mac's memory
+  (256 MB to 1 GB; 512 MB on 16 GB) past what they used when critical began, in buffers that fit in
+  what macOS has left; only growth past that stops an app, as before. The next item completes it: a
+  Chrome lost past the grace gets a new GPU process from the VM. Needs the app update (from the VM's
+  next start).
+
+- **Chrome draws again by itself after it lost its graphics (#632; reported by the user).** When
+  macOS ran short of memory (or the apps' share of graphics memory was full), an app's GPU context
+  on the Mac was cut off so the desktop could keep drawing. The VM's graphics driver cannot tell the
+  app, so Chrome kept drawing into the lost context: its windows went blank or flickered until it
+  was quit, and the VM looked broken enough to restart (a Mac mini with 16 GB, Chrome at 5K). Now
+  the VM ends the lost app's GPU process, and Chrome and Chromium start a new one within seconds;
+  open tabs stay, pages with WebGL may need a reload (other Chromium-based apps such as Electron's
+  have the same GPU process; not measured). At most once per app in 6 minutes and 3 times in an
+  hour, as Chrome counts each as a crash and turns its GPU off after 3 in a short time; the note in
+  the VM says what happened. Other apps get the note, as before. The item above completes it:
+  without the app update, a Chrome started again while macOS stays critical loses its graphics again
+  at once. Needs Update VM.
+
+- **Videos play in the Chromium (WebGPU) launcher (#631).** In an OmacVM.app VM with Graphics on
+  Vulkan, the "Chromium (WebGPU)" menu entry showed a video's first frames and then stopped: the
+  first picture from the Mac's media engine restarted its GPU process, and every page's WebGPU with
+  it. It now decodes video on the CPU (a 1080p30 clip at 29.8 fps, 30 decoded, none dropped). The
+  normal Chromium entry keeps decoding on the Mac's media engine. Needs Update VM or
+  `omacvm update`, then quit Chromium and start Chromium (WebGPU) again.
+
+- **OmacVM.app: Omarchy's Chromium plays H.264 coded interlaced video on the CPU instead of
+  showing no picture (#627).** From 3.2.13 the VM's VA-API refuses such pictures (the Mac's hardware
+  decoder does not take them), and Chromium's V4L2 decoder then waited for a first picture that
+  never came. OmacVM's decoder for Chromium now gives up on such a video after 3 refused
+  pictures, before the first one, and Chromium decodes it on the CPU. Videos that play now are
+  not affected. Checked in a test VM on an M1 Max: an interlaced 1080 clip showed no video with
+  3.2.14 and plays now; a progressive one stays on the Mac's media engine. Needs Update VM or
+  `omacvm update`.
+
+- **Notifications, bar panels and the Omarchy menu are transparent again with Hyprland 0.57 (#638;
+  reported in #630).** Hyprland 0.57.0 (released 2026-10-28; in Omarchy's edge repository, the dev
+  channel, since 2026-10-29; Omarchy stable once it ships it) turns its option
+  `quirks:skip_non_kms_dmabuf_formats` on by default. Hyprland then offers apps only the buffer
+  formats a display plane takes, and the virtio-gpu display of OmacVM.app, UTM and Parallels takes
+  none with alpha: every transparent layer Qt Quick draws on the GPU came out black, so each Omarchy
+  notification, bar panel and the Omarchy menu blacked out the whole screen while it showed. OmacVM
+  now turns the option off on every route (`~/.config/hypr/omacvm_vm.lua`), only when this Hyprland
+  has it on and your own Hyprland files do not name it; on Hyprland 0.56 nothing changes, and VMware
+  Fusion was not affected. Not caused by OmacVM 3.2.13, which came out after Hyprland 0.57. Needs
+  Update VM or `omacvm update`, then log out and in (an OmacVM.app VM updated while it was shut down
+  needs nothing more); before that, `hyprctl getoption` saying false is no proof. `omacvm check` has
+  a "transparent panels" line. The workaround for older versions is in docs/troubleshooting.md, 50.
+  Reported by @epicoun.
+
+- **Screenshots and screen sharing of HDR apps stay right with Hyprland 0.57 (OmacVM.app, #639).**
+  Hyprland 0.57.0 (released 2026-10-28; in Omarchy's edge repository, the dev channel, since
+  2026-10-29; Omarchy stable once it ships it) still writes the SDR copy every capture reads with PQ
+  windows' white at 80 nits (#579). OmacVM's fixed shader file was made for 0.56.2 only, so on 0.57
+  screenshots, colour picks and screen shares of Chrome came out too bright again, and
+  `omacvm check` said "no OmacVM fix for this Hyprland (0.56.2: not built from commit efb50993)"
+  (see #630). OmacVM now carries the same fix for 0.57.0 and puts in the installed release's file
+  after each Hyprland update. When no file fits, the "HDR captures" line names the installed
+  Hyprland and the releases OmacVM has fixes for, e.g. "no OmacVM fix for Hyprland 0.58.0-1 yet
+  (OmacVM has fixes for 0.56.2 and 0.57.0)". Needs Update VM or `omacvm update`; a running desktop
+  takes it at once.
+
+- **VMware Fusion builds Hyprland 0.57 with its graphics fix (#639).** OmacVM's Hyprland patch for
+  Fusion's graphics driver (vmwgfx) did not apply to Hyprland 0.57.0 (the code around it moved), so
+  the rebuild after a Hyprland update stopped, `omacvm apply` failed, and the VM was left with stock
+  Hyprland: a black screen at the next login. OmacVM now carries the patch for each Hyprland release
+  (0.56.2, 0.57.0) and builds with the one that applies. For a newer Hyprland it has no patch for
+  yet, the update and `omacvm apply` go on and say "no vmwgfx fix for Hyprland <version> yet", and
+  `omacvm check` names the version; `omacvm update` brings the patch once there is one. Needs
+  `omacvm update` before Omarchy stable moves to 0.57.
+
+- **A Hyprland that drops an option OmacVM.app sets shows no config error (#639).** `omacvm_app.lua`
+  sets `cursor:no_hardware_cursors`, `cursor:use_cpu_buffer`, `render:keep_unmodified_copy` and
+  `render:cm_auto_hdr` now only when this Hyprland has them (`hl.get_config`), as `omacvm_vm.lua`
+  (#638) does: an option Hyprland does not know puts a red config error on the screen, which `pcall`
+  did not stop. All four are still there in 0.57.0, so nothing changes today.
+
+- **Swipe out to macOS sees Omarchy's scratchpad on Hyprland 0.57 (#639).** Hyprland 0.57 gives
+  special (scratchpad) and named workspaces no id any more. With the scratchpad open, a four-finger
+  swipe past the first or last workspace could switch the Mac's Space instead of staying in the VM,
+  and OmacVM.app's check for a wallpaper that did not draw took a display showing the scratchpad for
+  the bare desktop. Both now tell those workspaces by their name, on Hyprland 0.56 and 0.57; the
+  gestures daemon now also listens for Hyprland's `changeworkspaceid` event (a workspace got a new
+  id; 0.56.2 sends it too).
+
+- **Updating a VM no longer asks Omarchy's shell to reload its plugins over and over (#625).**
+  OmacVM enabled its bar widgets with Omarchy's `omarchy plugin enable` without a locale, and
+  Omarchy took Qt's locale warning for a failure ("omarchy-plugin-enable: WARN" in the update's log)
+  though the widget was enabled. A widget without its own place in the bar (the Wi-Fi QR card) then
+  stayed queued until the end of the update, and each later widget enabled it again and asked the
+  open shell to reload its plugins (8 times in one update after a 3.2.12 one). Now it is enabled
+  once. Needs Update VM or `omacvm update`.
+
+- **Omanotch counts an Omarchy shell that is starting or reloading as locked, as OmacVM's own
+  widgets do (#625).** Its display panel (UTM, VMware Fusion, Parallels) and its copies of Omarchy's
+  bar and background took a shell that runs but does not answer yet as unlocked and could write
+  into Omarchy's plugins folder then; under a lock that reloads the lock screen without its
+  password field. They now wait up to 20 s for the shell and otherwise do it later (the next
+  start of Omanotch, or after the unlock). Omanotch installs again at this update (its files
+  changed).
+
+- **OmacVM.app: after an Omarchy update, the VM's displays follow the Mac's at once (#625).** At the
+  first start after an Omarchy update that changed its display panel, the VM's display agent rebuilt
+  OmacVM's display widget first, which waits for a busy shell; the display sync now starts at once
+  and the widget is rebuilt beside it. A shell that takes no calls for 15 s now counts as busy, not
+  as open, so the widget is not written into it.
+
+- **Update VM no longer installs Omanotch again when it did not change (OmacVM.app, #626).** The
+  check for a changed Omanotch counted Python's compiled files that the same update leaves
+  beside Omanotch's display panel code, and those change with every update: each update of an
+  OmacVM.app VM with Omanotch on built and installed it again. Omanotch installs once more at
+  this update.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver

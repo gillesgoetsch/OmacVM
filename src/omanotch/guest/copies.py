@@ -429,11 +429,27 @@ def last_line(text):
     return lines[-1].strip() if lines else ""
 
 
-def session_locked():
+def quickshell_runs():
+    """A shell of this user runs (answering or not)."""
+    return run(["pgrep", "-u", str(os.getuid()), "-x", "quickshell"], 5)[0] == 0
+
+
+def session_locked(wait=0):
     """Omarchy's lock screen is up or on its way: its lock status, read at the
     call (requested, sessionLocked or secure). Not isLocked: with Quickshell
     0.3.2 and older it answers true after the first unlock until the shell
-    restarts (omarchy-mac#738), and the copies would never follow again."""
+    restarts (omarchy-mac#738), and the copies would never follow again.
+    A shell that runs but does not answer (starting, reloading) counts as
+    locked once WAIT seconds are up, as in OmacVM's guest/session-lock.sh: a
+    write then could reload its lock screen without the password field. No
+    shell: not locked."""
+    deadline = time.monotonic() + wait
+    while not shell_up():
+        if not quickshell_runs():
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(1)
     try:
         s = json.loads(last_line(run(["omarchy-shell", "lock", "status"], 10)[1]))
         return any(s.get(k) is True for k in ("requested", "sessionLocked", "secure"))
@@ -628,8 +644,10 @@ def show(path):
 
 def follow(install=False):
     """Every copy; one line each. 0: done, 1: one was rolled back, 3: the
-    session is locked (nothing done: the service does it after the unlock)."""
-    if session_locked():
+    session is locked (nothing done: the service does it after the unlock).
+    Omanotch's install gives a shell that does not answer yet 20 s: on a
+    first install it stops without the bar copy. The service waits itself."""
+    if session_locked(wait=20 if install else 0):
         print("copies: the session is locked: after the unlock")
         return 3
     todo, rc = [], 0

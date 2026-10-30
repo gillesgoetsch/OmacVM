@@ -18,10 +18,30 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   The VM sees the chip's SME, and their libyuv was built for chips that also
   have SVE, which the M4 does not (fixed in Chrome 155). `omacvm check` warns
   about it ("Google Chrome").
+- **Chrome goes blank or flickers while the Mac is short of memory**
+  (OmacVM.app 3.2.14 and older; the VM says "chrome stopped drawing"): the VM
+  needs no restart. Free memory first: close Chrome windows and tabs at 5K
+  and quit Mac apps you do not need until Activity Monitor's memory pressure
+  is no longer red. While it is red, a restarted Chrome loses its graphics
+  again at once, and each restart counts as a Chrome crash. Then, in a
+  terminal in the VM, `pkill -f -- 'chrome --type=gpu-process'` (at most once
+  every 5 minutes), or quit Chrome and open it again. With 3.2.15 the VM
+  restarts Chrome's graphics by itself (Update VM), and an app that only
+  replaces its buffers keeps them (the app update, from the VM's next start)
+  ([48](#48-app-chrome-goes-blank-or-flickers-while-the-mac-is-short-of-memory)).
+- **Notifications, bar panels or the Omarchy menu black out the whole screen**
+  (Hyprland 0.57; OmacVM.app, UTM, Parallels): Update VM (3.2.15) or
+  `omacvm update`, then log out and in
+  ([50](#50-all-routes-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU
   ([47](#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)).
+- **Activity Monitor shows the VM with far more memory than you gave it**
+  (OmacVM.app, e.g. 23 GB for a 12 GB VM): its graphics come on top, and
+  macOS counts part of a compressed VM twice. `omacvm check` says what the
+  number is made of; above the Mac's Best tier, give it less
+  ([49](#49-app-activity-monitor-shows-the-vm-with-far-more-memory-than-it-has)).
 - **Screenshots or screen sharing of Chrome far too bright in an HDR VM**:
   Update VM
   ([44](#44-app-screenshots-and-screen-sharing-of-chrome-too-bright-in-an-hdr-vm)).
@@ -254,13 +274,21 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   - as the desktop user, only the install step runs as root;
   - the package's own binary stays as `/usr/bin/Hyprland.stock`;
   - a pacman hook builds it again after every Hyprland update (10 to 20
-    minutes, inside `omarchy update`).
+    minutes, inside `omarchy update`);
+  - one copy of the patch per Hyprland release (0.56.2, 0.57.0: the same
+    change; the lines around it moved), the one that applies is used. For a
+    Hyprland none applies to yet, the build says "no vmwgfx fix for Hyprland
+    <version> yet" and the rest of the apply or update goes on, but the
+    package's own Hyprland stays: a black screen from the next login.
+    `omacvm check`'s "Hyprland" line names the version; `omacvm update` brings
+    the patch once OmacVM has one.
 - **Where:** `src/fusion/guest/build-hyprland.sh`,
-  `src/fusion/guest/hyprland-vmwgfx-dmabuf.patch`, the hook
+  `src/fusion/guest/hyprland-vmwgfx/<release>.patch`, the hook
   `/etc/pacman.d/hooks/zz-omacvm-hyprland.hook` written by
   `src/fusion/guest/install.sh`. In the VM: state in
   `/var/lib/omacvm/hyprland-vmwgfx`, log in
-  `/var/cache/omacvm/hyprland-vmwgfx/build.log`.
+  `/var/cache/omacvm/hyprland-vmwgfx/build.log`. Test:
+  `src/tests/fusion-vmwgfx.sh` (each patch applies to its release).
 - **If it comes back:** `omacvm apply --vm NAME`, or in the VM
   `/usr/local/lib/omacvm/fusion/build-hyprland.sh`. To test the hook, reinstall
   with `pacman -S omarchy/hyprland`. Plain `pacman -S hyprland` takes Arch's
@@ -594,8 +622,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   moment explains the 3993 MB in use.
 - **Fix:** no fixed limit any more. The VM's graphics memory grows as
   long as macOS has memory to give; new big buffers are refused only when
-  macOS says its memory is critical, or would be nearly used up while it
-  warns (`app/runtime/patches/virgl-darwin-memory-pressure.patch`). The one
+  macOS has no room for them: bigger than what it has left while it warns,
+  and while it is critical also past a grace of growth since critical began
+  (`app/runtime/patches/virgl-darwin-memory-pressure.patch`,
+  `virgl-gpu-guard-critical-grace.patch` from 3.2.15). The one
   fixed guard, three quarters of the Mac's memory, only stops a runaway VM,
   and its last part is kept for the desktop: on an 8 GB Mac a browser could
   fill the guard while macOS still said normal, and the next buffer refused
@@ -1254,7 +1284,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   On screen they look right; apps that draw SDR (imv, a terminal) come out
   exact. Omarchy's screen recordings come out grey and flat for every app.
 - **Cause:** those apps draw in HDR (PQ) with SDR white at 203 nits
-  (BT.2408). Hyprland 0.56.2 writes the SDR copy every capture reads with
+  (BT.2408). Hyprland 0.56.2 and 0.57.0 write the SDR copy every capture reads with
   SDR white at 80 nits for HDR windows (`cm_helpers.glsl`, a TODO upstream),
   so every colour is 2.54 times too bright in linear light and the light
   ones clip; a window shared alone is clamped at 80 nits the same way. SDR
@@ -1267,10 +1297,16 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   white at 203 nits in the copy, and a window shared alone is brought to
   the share's white before Hyprland's clamp. A running desktop takes it at
   once. Captures are SDR, so parts brighter than white (HDR video
-  highlights) are cut off in them. Only for the Hyprland it was made for
-  (0.56.2, checked byte for byte at each Hyprland update): with another one
-  `omacvm check`'s "HDR captures" line says there is no OmacVM fix for it,
-  and Hyprland's own copy is used. Back to Hyprland's own copy until the
+  highlights) are cut off in them. One file per Hyprland release (0.56.2,
+  0.57.0), each only for the Hyprland it was made for (checked byte for byte
+  at each Hyprland update; a Hyprland update puts in the new release's file):
+  with another one `omacvm check`'s "HDR captures" line says there is no
+  OmacVM fix for it, names the installed version and the releases OmacVM has
+  fixes for (e.g. "no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes
+  for 0.56.2 and 0.57.0)"), and Hyprland's own copy is used. After a Hyprland
+  update, log out and in before running `hyprctl reloadshaders` yourself: the
+  Hyprland still running from before would read the new release's file.
+  Back to Hyprland's own copy until the
   next Update VM or Hyprland update (both put it back):
   `sudo /usr/local/lib/omacvm/hypr-capture/hypr-capture.sh --remove`. Do not
   keep a copy of the file in `~/.config/hypr/shaders/`: Hyprland would read
@@ -1369,6 +1405,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   widget), `src/omanotch/guest/monitor/display-panel.py` (Omanotch's display
   panel), `src/guest/off.sh` and `src/control/guest/install.sh` (the offs);
   tests `src/tests/plugin-lock.sh`, `src/tests/restart-shell.sh`,
+  `src/tests/lock-rules.sh` (the three lock rules against one table),
   `src/tests/features-off.sh`, `src/omanotch/guest/tests/test_display_panel.py`.
 
 ## 47. app: Ghostty opens no window, or draws on the CPU
@@ -1416,3 +1453,127 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/guest/check.sh` ("Ghostty"); tests
   `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`;
   ADR 0064 (#598).
+
+## 48. app: Chrome goes blank or flickers while the Mac is short of memory
+
+- **Symptom:** in an OmacVM.app VM (3.2.14 and older), Chrome's windows go
+  blank or flicker and its pages stop drawing; the VM says "chrome stopped
+  drawing" because macOS ran short of memory. Only quitting Chrome, or
+  restarting the VM, helped. Seen on a Mac mini with 16 GB: a 12 GB VM, Chrome
+  full screen on a 5K display, macOS at critical memory pressure (red in
+  Activity Monitor).
+- **Cause:** while macOS is short of memory, QEMU gives an app no new big
+  buffer it has no room for (16 MB or more; a 5K window's is about 56 MB):
+  the app that takes one loses its GPU context on the Mac, so the desktop
+  keeps drawing (ADR 0034). `logs/qemu.log` says "context N (chrome) made
+  resource ... while macOS is short of memory (pressure critical): only the
+  desktop may have more now, the context is lost ... the guest driver cannot
+  be told, the app must be restarted". The VM's Mesa cannot tell Chrome, so
+  Chrome kept drawing into the lost context.
+- **Fix:** 3.2.15 (Update VM): the VM ends the lost app's GPU process, and
+  Chrome or Chromium starts a new one within seconds; open tabs stay, pages
+  with WebGL may need a reload. Other Chromium-based apps (Electron apps such
+  as VS Code) have the same GPU process and should do the same (not
+  measured). At most once per app in 6 minutes and 3 times in an hour:
+  Chrome counts each as a crash and draws without the GPU for the rest of its
+  session after 3 recent ones. Lost again within that time, the note says to
+  quit Chrome and open it again. With the app update too (3.2.15, from the
+  VM's next start), an app that only replaces its buffers while macOS is
+  critical keeps its graphics, and one that grows loses them only past a
+  grace ([24](#24-app-a-scale-like-16-on-a-5k-display-turns-the-vm-black-and-flickering)).
+- **Before the update:** free memory first. While Activity Monitor's memory
+  pressure is red, a Chrome restarted by hand loses its graphics again at
+  once (seen in a test VM), and each restart counts as a Chrome crash. Close
+  Chrome windows and tabs at 5K and quit Mac apps you do not need until the
+  pressure is no longer red; then, in a terminal in the VM,
+  `pkill -f -- 'chrome --type=gpu-process'` (Google Chrome; Chromium:
+  `pkill -f -- 'chromium --type=gpu-process'`), at most once every 5 minutes,
+  or quit Chrome (Ctrl+Shift+Q) and open it again. The VM's graphics come on
+  top of its memory, so a VM memory that leaves macOS room keeps the Mac out
+  of critical
+  ([45](#45-app-the-vm-freezes-for-seconds-or-a-minute-the-mac-is-out-of-memory)).
+- **Where:** `src/app/guest/omacvm-desktop-recover` (test
+  `src/tests/desktop-recover-gpu.sh`), ADR 0038's 3.2.15 amendment.
+
+## 49. app: Activity Monitor shows the VM with far more memory than it has
+
+- **Symptom:** Activity Monitor's Memory for OmacVM (the VM's QEMU) is far
+  above the memory set for the VM: 23 GB for a 12 GB VM on a 16 GB Mac mini,
+  19.3 GB at 10 GB (Chrome full screen at 5K, 2026-10-30). The Mac swaps, its
+  memory pressure is yellow or red, and apps in the VM can lose their
+  graphics (`omacvm check`'s "GPU contexts" row names them).
+- **Cause:** the number is QEMU's footprint, and it holds more than the VM's
+  memory. The VM's graphics come on top of it, from the Mac's memory as the
+  VM draws (2 to 5 GB for a 5K desktop with a browser; 4.5 GB in the 12 GB
+  run). And once QEMU itself touched a page of the VM (disk, graphics,
+  network) and macOS compressed it, macOS counts that page twice: a 4 GB VM
+  after a browser session showed 5.9 GB, 2.1 GB of it counted twice, and the
+  Mac got 4.8 GB back when QEMU stopped (ADR 0062). A VM above the Mac's
+  Best tier (8 GB on a 16 GB Mac) plus its graphics leaves macOS too little.
+- **Check:** `omacvm check --vm NAME` has an "Activity Monitor" row while
+  the VM runs: "19.3 GB for the VM: VM memory at most 10.0 GB, graphics
+  3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and pages
+  macOS counts twice while it compresses the VM)", a warning above the Best
+  tier. `omacvm resources --vm NAME` says the same warning.
+- **Fix:** give the VM the Best tier or less: in OmacVM.app the VM's
+  General › Resources › Best, or `omacvm resources --vm NAME --resources
+  best`; it applies at the VM's next start. OmacVM never lowers the setting
+  by itself. Quitting big Mac apps helps too. The graphics stay outside the
+  setting (Linux sees exactly the memory set), and their runaway guard stays
+  at three quarters of the Mac
+  ([graphics memory and VM memory](routes/app.md#graphics-memory-and-vm-memory)).
+- **Where:** `src/cmd/check.sh` ("Activity Monitor"), `src/lib/footprint.py`,
+  `src/lib/setup.sh` (`mem_warning`), `src/cmd/resources.sh`,
+  `app/app/Sources/OmacVMWindow/CustomResources.swift`
+  (`ResourceLimits.warning`), `app/app/Sources/OmacVMDesktop/GPUMemory.swift`
+  (the (i)); tests `src/tests/activity-monitor.sh`, `src/tests/resources.sh`,
+  `swift run window-tests`, `swift run desktop-tests`.
+
+## 50. All routes: notifications, panels and the Omarchy menu black out the screen (Hyprland 0.57)
+
+- **Symptom:** while an Omarchy notification, a bar panel or the Omarchy
+  menu shows, the whole screen is black around its card. Opaque windows are
+  fine. With `QT_QUICK_BACKEND=software` (Qt's CPU renderer) it is
+  transparent. OmacVM.app, UTM and Parallels, with Hyprland 0.57
+  (`hyprctl version`; released 2026-10-28): Omarchy's edge repository (the
+  dev channel) since 2026-10-29, Omarchy stable once it ships 0.57, or Arch
+  Linux ARM's 0.57.0 after a bare `pacman -Syu`.
+  VMware Fusion is not affected (its display takes formats with alpha).
+- **Cause:** Hyprland 0.57.0 turns `quirks:skip_non_kms_dmabuf_formats` on
+  by default (hyprwm/Hyprland#15803). Hyprland then offers apps only the
+  buffer formats a display plane takes, and virtio-gpu's plane (OmacVM.app,
+  UTM, Parallels) takes XRGB8888 only: no format with alpha is left. Mesa
+  then has no EGL config with alpha (15 configs instead of 165 in a test
+  VM), Qt Quick draws the shell's transparent layers into XRGB8888 buffers,
+  and Hyprland shows them opaque: black where they are transparent. Qt's CPU
+  renderer uses shared-memory buffers, which keep ARGB8888. Not OmacVM
+  3.2.13: the same VM and app flip between black and transparent on that one
+  option, also on Hyprland 0.56.2 with it set by hand.
+- **Fix (3.2.15):** Update VM (`omacvm apply`, `omacvm update`), then log
+  out and in (or restart the VM). OmacVM turns the option off
+  (`~/.config/hypr/omacvm_vm.lua`), only when this Hyprland has it on and
+  your own Hyprland files do not name it; on Hyprland 0.56 nothing changes.
+  Hyprland builds the table of formats at its start: a reload that changes
+  the option does not always rebuild it (the first reload after Hyprland
+  starts never does), so `hyprctl getoption quirks:skip_non_kms_dmabuf_formats`
+  saying false is no proof before you log out and in. An OmacVM.app VM
+  updated while it was shut down needs nothing more. `omacvm check` has a
+  "transparent panels" row: it says ok from the first login after the fix,
+  and "log out and in" before. Your own setting wins: `true` in your
+  Hyprland files keeps the black (the row says which file).
+- **Before 3.2.15:** add this line to `~/.config/hypr/looknfeel.lua`, then
+  log out and in:
+
+  ```lua
+  hl.config({ quirks = { skip_non_kms_dmabuf_formats = false } })
+  ```
+
+  and take `QT_QUICK_BACKEND=software` out of `~/.config/environment.d/` (it
+  makes the shell draw on the CPU). The line can stay after the update:
+  OmacVM then sets nothing.
+- **Where:** `src/guest/omacvm_vm.lua` (Hyprland settings every route needs),
+  `src/guest/hypr-vm.sh` (from `src/guest/install.sh`), `src/guest/check.sh`
+  ("transparent panels"); test `src/tests/dmabuf-alpha.sh` (Lua part:
+  `src/tests/omacvm_vm_test.lua`). Issue
+  [#630](https://github.com/gillesgoetsch/OmacVM/issues/630), reported by
+  @epicoun.

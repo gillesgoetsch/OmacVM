@@ -38,6 +38,17 @@ expect(air.startSizeText(cpus: 16, memoryMB: 48 * 1024, start: (8, 4096)).contai
 let mini = ResourceLimits(macCores: 10, macMemoryGB: 16)
 expect(mini.memoryGB == 4...14 && ResourceLimits(macCores: 12, macMemoryGB: 64).memoryGB == 4...56, "16 GB Mac: up to 14 GB; 64 GB Mac: up to 56 GB")
 expect(mini.safeMemoryGB == 8, "16 GB Mac: safe up to 8 GB")
+// The maintainer's Mac mini (16 GB, 5K, 2026-10-30): 12 GB set, graphics peak 4619 MB, Activity Monitor 23 GB.
+// The warning names the graphics on top with the last run's peak and the Best tier, and never changes the setting.
+expect(mini.warning(memoryGB: 12, graphicsPeakMB: 4619) == "12 GB and the VM's graphics on top (peak 4.5 GB last run) leave macOS "
+       + "too little of this Mac's 16 GB: the Mac can slow down or swap, and apps in the VM can lose their graphics. "
+       + "8 GB is this Mac's Best tier.", "16 GB Mac, 12 GB: the graphics on top with the last run's peak, the Best tier")
+expect(mini.warning(memoryGB: 9)?.contains("graphics on top leave macOS too little of this Mac's 16 GB") == true,
+       "no run yet: no peak, still the graphics on top")
+expect(mini.warning(memoryGB: 8, graphicsPeakMB: 4619) == nil, "16 GB Mac, 8 GB (Best): no warning, whatever the graphics")
+expect(air.warning(memoryGB: 6, graphicsPeakMB: 800)?.contains("(peak 800 MB last run)") == true
+       && air.warning(memoryGB: 6)?.hasSuffix("4 GB is this Mac's Best tier.") == true, "8 GB Mac: its own Best tier")
+expect(m4.warning(memoryGB: 97, graphicsPeakMB: 0)?.contains("(peak") == false, "a peak of 0 (nothing drawn yet): not said")
 
 // MARK: Disk
 

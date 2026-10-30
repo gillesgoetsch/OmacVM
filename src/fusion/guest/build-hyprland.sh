@@ -1,7 +1,8 @@
 #!/bin/bash
-# Build and install Hyprland with the vmwgfx fix (hyprland-vmwgfx-dmabuf.patch):
-# without it no GPU client survives on VMware Fusion, SDDM's greeter included,
-# and the VM shows a black screen. Run as root inside the VM.
+# Build and install Hyprland with the vmwgfx fix (hyprland-vmwgfx/<release>.patch,
+# one per Hyprland release, the same change): without it no GPU client
+# survives on VMware Fusion, SDDM's greeter included, and the VM shows a black
+# screen. Run as root inside the VM.
 #   build-hyprland.sh [--hook] [desktop-user]
 # Builds the exact source commit the installed hyprland package was built
 # from (its binary says which), checked after the download, as the desktop
@@ -10,11 +11,16 @@
 # patched build. A pacman hook (--hook: no pacman calls, its database is
 # locked then) runs it again after every hyprland upgrade. Takes 10 to 20
 # minutes on 4 vCPUs. OMACVM_REBUILD_HYPRLAND=1 builds anyway.
+# A Hyprland no patch applies to (a release newer than this OmacVM): says so,
+# records "<version> none" in the state (omacvm check names the version) and
+# exits 0, so the rest of the apply goes on; the package's own Hyprland stays
+# (a black screen at the next login on Fusion) until omacvm update brings a
+# patch for it. A failed download or build of a release that has one: exit 1.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 HOOK=0; [[ ${1:-} == --hook ]] && { HOOK=1; shift; }
 BIN=/usr/bin/Hyprland
-STATE=/var/lib/omacvm/hyprland-vmwgfx      # "<package version> <sha256 of the patched binary>"
+STATE=/var/lib/omacvm/hyprland-vmwgfx      # "<package version> <sha256 of the patched binary>", or "<version> none"
 W=/var/cache/omacvm/hyprland-vmwgfx
 DEPS=(base-devel git cmake ninja hyprwayland-scanner hyprland-protocols glaze)
 U=${1:-$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env 2>/dev/null | tail -1)}
@@ -23,6 +29,15 @@ U=${1:-$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env 2>/dev/null | tail -1)}
 pkg=$(pacman -Q hyprland 2>/dev/null | awk '{ print $2 }')
 [[ -n $pkg ]] || { echo "build-hyprland: the hyprland package is not installed" >&2; exit 1; }
 sum() { sha256sum "$1" | awk '{ print $1 }'; }
+# vmwgfx_patch [CMD...]: the newest of the patches that applies to the source
+# in the current folder (git apply --check, run through CMD: as_u below).
+vmwgfx_patch() {
+  local p
+  while read -r p; do
+    [[ -f $p ]] && "$@" git apply --check "$p" 2>/dev/null && { echo "$p"; return 0; }
+  done < <(printf '%s\n' "$here"/hyprland-vmwgfx/*.patch | sort -rV)
+  return 1
+}
 if [[ -z ${OMACVM_REBUILD_HYPRLAND:-} && -f $STATE && $(cat "$STATE") == "$pkg $(sum $BIN)" ]]; then
   echo "Hyprland $pkg already has the vmwgfx fix: nothing to build"
   exit 0
@@ -44,10 +59,14 @@ as_u git fetch -q --depth 1 https://github.com/hyprwm/Hyprland "$commit" 2>/dev/
 as_u git checkout -q FETCH_HEAD
 [[ $(as_u git rev-parse HEAD) == "$commit" ]] || { echo "build-hyprland: downloaded source is not $commit" >&2; exit 1; }
 as_u git submodule update -q --init --recursive --depth 1
-as_u git apply --check "$here/hyprland-vmwgfx-dmabuf.patch" 2>/dev/null ||
-  { echo "build-hyprland: the vmwgfx fix does not apply to Hyprland $pkg (omacvm update may bring a newer one)" >&2; exit 1; }
-as_u git apply "$here/hyprland-vmwgfx-dmabuf.patch"
-echo "building Hyprland $pkg with the vmwgfx fix (10 to 20 minutes)"
+if ! patch=$(vmwgfx_patch as_u); then
+  echo "build-hyprland: no vmwgfx fix for Hyprland $pkg yet: it stays as the package has it (a black screen at the next login on VMware Fusion) until omacvm update brings one" >&2
+  echo "$pkg none" > "$STATE"
+  cd /; rm -rf "$W/src"
+  exit 0
+fi
+as_u git apply "$patch"
+echo "building Hyprland $pkg with the vmwgfx fix ($(basename "$patch"), 10 to 20 minutes)"
 as_u cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr > "$W/build.log" 2>&1 &&
   as_u cmake --build build --target Hyprland >> "$W/build.log" 2>&1 ||
   { tail -20 "$W/build.log" >&2; echo "build-hyprland: the build failed, full log: $W/build.log" >&2; exit 1; }

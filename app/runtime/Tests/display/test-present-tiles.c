@@ -1,11 +1,16 @@
 /*
  * Tiled present rules (ui/omacvm-present-tiles.h): the grid, which tiles a
- * changed box touches, and that frames skipped in the present queue lose
- * nothing (their updates go into the frame after them). No QEMU, no display.
+ * changed box touches, that frames skipped in the present queue lose
+ * nothing (their updates go into the frame after them), and that the tile
+ * program's texture coordinates put every fragment of a tile on the centre
+ * of the frame texel the whole frame's blit samples there. No QEMU, no
+ * display, no GL (the shader itself: test-present-tiles-gl.m).
  *   cc -std=c11 -Wall -Wextra -Werror -I<dir with omacvm-present-tiles.h> test-present-tiles.c
  */
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "omacvm-present-tiles.h"
 
 static int fails;
@@ -108,6 +113,70 @@ static void test_tiles(void)
     OmacvmPTGrid none = omacvm_pt_grid(7000, 100);
     n = omacvm_pt_tiles(&none, 0, 0, 10, 10, out, 12);
     CHECK(n == 0, "no grid: no tiles (%d)", n);
+}
+
+/*
+ * The tile program (OMACVM_PT_VERT) at fragment I, J of a TW x TH tile: the
+ * quad's corners interpolated at the fragment's centre give
+ * u = (I + 0.5) / TW, v = (J + 0.5) / TH; its texture coordinate is
+ * RECT.xy + (u, v) * RECT.zw, the second one as 1 - that without the flip.
+ * The whole frame's blit (QEMU's, viewport over the whole surface) samples
+ * at frame pixel X + I, Y + J: s = (X + I + 0.5) / FW, and t = (Y + J + 0.5)
+ * / FH with the flip, 1 - that without. They must agree to 1/1000 of a
+ * texel (a slip of half a texel would still pick the right texel at most
+ * places with NEAREST, so a floor check alone would hide it). s depends
+ * on the column only and t on the row only, so every column and every row
+ * of every tile covers every fragment.
+ */
+static void test_tex_rect(void)
+{
+    static const uint32_t sizes[][2] = {
+        { 5120, 2880 }, { 6016, 3384 }, { 6144, 4096 }, { 4480, 2520 }, { 3024, 1964 },
+    };
+    CHECK(strstr(OMACVM_PT_VERT, "vec2 c = rect.xy + (in_position + 1.0) * 0.5 * rect.zw;") &&
+          strstr(OMACVM_PT_VERT, "ex_tex_coord = vec2(c.x, yflip > 0.5 ? c.y : 1.0 - c.y);") &&
+          strstr(OMACVM_PT_VERT, "gl_Position = vec4(in_position, 0.0, 1.0);"),
+          "the shader computes what this test checks");
+    CHECK(strstr(OMACVM_PT_FRAG, "out_frag_color = texture(image, ex_tex_coord);") != NULL,
+          "the fragment shader is QEMU's blit");
+    double worst = 0;
+    long fragments = 0;
+    for (unsigned k = 0; k < sizeof(sizes) / sizeof(sizes[0]); k++) {
+        OmacvmPTGrid g = omacvm_pt_grid(sizes[k][0], sizes[k][1]);
+        CHECK(g.cols > 0, "%ux%u has a grid", g.fw, g.fh);
+        for (unsigned t = 0; t < g.cols * g.rows; t++) {
+            uint32_t x, y, tw, th;
+            float r[4];
+            omacvm_pt_rect(&g, t, &x, &y, &tw, &th);
+            omacvm_pt_tex_rect(&g, t, r);
+            int bad = 0;
+            for (uint32_t i = 0; i < tw; i++) {
+                float u = (i + 0.5f) / (float)tw;
+                float c = r[0] + u * r[2];
+                double e = fabs((double)c * g.fw - (x + i + 0.5));
+                worst = e > worst ? e : worst;
+                bad += e > 1e-3;
+            }
+            for (int flip = 0; flip < 2; flip++) {
+                for (uint32_t j = 0; j < th; j++) {
+                    float v = (j + 0.5f) / (float)th;
+                    float c = r[1] + v * r[3];
+                    float tc = flip ? c : 1.0f - c;
+                    double want = flip ? (y + j + 0.5) / g.fh : 1.0 - (y + j + 0.5) / g.fh;
+                    double e = fabs(((double)tc - want) * g.fh);
+                    worst = e > worst ? e : worst;
+                    bad += e > 1e-3;
+                }
+            }
+            fragments += (long)tw * th;
+            CHECK(!bad, "%ux%u tile %u (x %u, y %u): %d columns or rows off their texel's centre",
+                  g.fw, g.fh, t, x, y, bad);
+        }
+    }
+    CHECK(fragments == 5120L * 2880 + 6016L * 3384 + 6144L * 4096 + 4480L * 2520 + 3024L * 1964,
+          "every fragment of every tile (%ld)", fragments);
+    printf("test-present-tiles: tile texture coordinates: %ld fragments, both flips, worst %.6f texel\n",
+           fragments, worst);
 }
 
 static void test_absorb_cases(void)
@@ -226,12 +295,13 @@ int main(void)
 {
     test_grid();
     test_tiles();
+    test_tex_rect();
     test_absorb_cases();
     test_streams();
     if (fails) {
         printf("test-present-tiles: %d FAILED\n", fails);
         return 1;
     }
-    printf("test-present-tiles: grid, boxes, skipped frames (2000 random streams) ok\n");
+    printf("test-present-tiles: grid, boxes, tile texture coordinates, skipped frames (2000 random streams) ok\n");
     return 0;
 }
