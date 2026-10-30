@@ -860,9 +860,8 @@ The less obvious ones, with causes and where the fix lives, are in
 - Do not take `pcall(hl.config, ...)` for a guard against a Hyprland without
   the key: `hl.config` with an unknown key records a config error (a red
   banner on the screen) and raises nothing. Ask `hl.get_config(key)` first: it
-  gives nil and a message for a key this Hyprland lacks (`omacvm_vm.lua`).
-  `omacvm_app.lua`'s pcalls have the flaw, harmless while their keys exist
-  (they do in 0.56.2 and 0.57.0).
+  gives nil and a message for a key this Hyprland lacks (`omacvm_vm.lua`;
+  `omacvm_app.lua` asks `hl.get_config` first too, from 3.2.15, #639).
 - Do not take `hyprctl getoption` or a config reload for proof that a
   linux-dmabuf format setting took effect. Hyprland builds its format table at
   its start and when a monitor comes or goes; its reload listener keeps the
