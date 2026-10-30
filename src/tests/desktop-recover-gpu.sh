@@ -28,7 +28,6 @@ T=$(mktemp -d)
 PIDS=()
 cleanup() {
   (( ${#PIDS[@]} )) && kill -KILL "${PIDS[@]}" 2>/dev/null
-  wait 2>/dev/null
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -45,6 +44,7 @@ proc() {
   shift 2
   (exec -a "$arg0" python3 -c "$NAMER" "$comm" "$@") > /dev/null 2>&1 &
   P=$!
+  disown "$P"   # no "Killed" job notices when the script under test ends it
   PIDS+=("$P")
   for _ in $(seq 100); do
     IFS= read -r c 2>/dev/null < "/proc/$P/comm" && [[ $c == "$comm" ]] && return 0
@@ -52,7 +52,7 @@ proc() {
   done
   echo "FAIL could not start a stand-in named $comm"; fail=1
 }
-# Running (a killed child stays a zombie until reaped: not running).
+# Running (an ended stand-in stays a zombie until this script ends: not running).
 alive() {
   local key state
   while read -r key state _; do [[ $key == State: ]] && break; done 2>/dev/null < "/proc/$1/status"
