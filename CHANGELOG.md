@@ -104,6 +104,20 @@ in more words.
   Needs the app update (from the VM's next start). Until then, switching "Draw only what
   changed" off avoids it (from the VM's next start).
 
+- **Notifications, bar panels and the Omarchy menu are transparent again with Hyprland 0.57 (#630).**
+  Hyprland 0.57.0 (Omarchy's dev channel since 2026-10-28; Omarchy stable once it ships it) turns
+  its option `quirks:skip_non_kms_dmabuf_formats` on by default. Hyprland then offers apps only the
+  buffer formats a display plane takes, and the virtio-gpu display of OmacVM.app, UTM and Parallels
+  takes none with alpha: every transparent layer Qt Quick draws on the GPU came out black, so each
+  Omarchy notification, bar panel and the Omarchy menu blacked out the whole screen while it showed.
+  OmacVM now turns the option off on every route (`~/.config/hypr/omacvm_vm.lua`), only when this
+  Hyprland has it on and your own Hyprland files do not name it; on Hyprland 0.56 nothing changes,
+  and VMware Fusion was not affected. Not caused by OmacVM 3.2.13, which came out after Hyprland
+  0.57. Needs Update VM or `omacvm update`, then log out and in (an OmacVM.app VM updated while it
+  was shut down needs nothing more); before that, `hyprctl getoption` saying false is no proof.
+  `omacvm check` has a "transparent panels" line. The workaround for older versions is in
+  docs/troubleshooting.md, 48. Reported by @epicoun.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
