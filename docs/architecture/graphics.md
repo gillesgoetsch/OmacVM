@@ -575,6 +575,15 @@ Patches (all in `app/runtime/patches`, one per concern):
   pages (it was 4 KiB-aligned), so every blob the guest maps is the
   allocation's own memory.
 - `qemu-hvf-virgl-blob-subregion.patch`, `qemu-virtio-gpu-blob-alignment.patch`.
+- `virgl-venus-linear-modifier-usage.patch`, `virgl-venus-image-limits.patch`,
+  `virgl-venus-view-limits.patch` (ADR 0065, 3.2.14): what the guest hands the
+  driver is checked first (section 10). Neither Mac driver has DRM format
+  modifiers, so vkr answers questions about `DRM_FORMAT_MOD_LINEAR` with the
+  host's answer for LINEAR tiling; that question now keeps INPUT_ATTACHMENT
+  (KosmicKrisp makes such an image a 2D array, which Metal aborts on for linear
+  memory) and leaves out COLOR_ATTACHMENT only where optimal tiling renders.
+  `Tests/virgl/test-venus-image-limits.c` runs 101 cases through vkr's dispatch
+  on the staged drivers at every runtime build.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended
@@ -647,7 +656,9 @@ qemu.log of the failed start stays as `logs/qemu-vulkan-fallback.log`;
 Limits: MoltenVK has no `nullDescriptor`, no geometry shaders, no logicOp,
 no float64, no `VK_EXT_provoking_vertex`. So Zink as a GL driver and
 ANGLE-on-Vulkan in Chrome do not work; they wait for KosmicKrisp, which
-needs Metal 4 (macOS 26). See ADR 0013. Zink for compute (rusticl) works
+needs Metal 4 (macOS 26). See ADR 0013. On KosmicKrisp, Zink's shared render
+targets (LINEAR with COLOR and INPUT_ATTACHMENT) are reported unsupported from
+3.2.14; up to 3.2.13 making one ended the VM (#598, ADR 0065). Zink for compute (rusticl) works
 with patches: next section, ADR 0022. With fences polled every 1 ms each
 vkmark frame waited about 1.3 ms: vkmark ~730-800 was latency, not GPU.
 With the sync thread's fences (`gpu-native`) the same runtime gives about
@@ -839,9 +850,21 @@ What crosses and who checks it:
   the scanout between two very large framebuffers (8000x6000 and 7000x5000)
   grows QEMU's GPU memory by about 1 GB per switch and never frees it.
 - **Venus**: the ring and command decoding are upstream vkr; the render
-  server runs in QEMU's process on macOS, so a Venus bug is a QEMU bug
-  (no process boundary, ADR 0012). Mitigation: off by default, hardened
-  runtime.
+  server runs in QEMU's process on macOS, so a Venus bug, or a driver abort
+  under it, ends the VM (no process boundary, ADR 0012). Venus is on with
+  Automatic on macOS 26+ since 3.0.13 (ADR 0035), so "off by default" no
+  longer covers it. Metal checks texture descriptors in release builds and
+  ends the process on one it cannot make, and KosmicKrisp and MoltenVK pass
+  guest values on to it: an ordinary program (Zink's linear render target,
+  #598) could end the VM. So vkr checks first (ADR 0065): image descriptions
+  against the driver's own format answer and the spec's shapes, binds against
+  the memory, layout queries against the image, views against their image or
+  buffer, sampler enums. A refused create gets `VK_ERROR_FORMAT_NOT_SUPPORTED`;
+  a refused bind, view or sampler ends that app's Venus context (the guest
+  does not wait for those answers), and QEMU's log says why. Still open
+  (follow-up): buffer bind ranges, pipelines, render passes, descriptor writes,
+  command encoding, vkr's `assert()`s, NULL entry points of commands a device
+  was not made with. QEMU keeps the hardened runtime.
 - **video bitstreams**: our code parses slice headers (H.264 `pps_id`,
   ref-idx overrides), AV1 OBU headers and VP9 frames before VideoToolbox
   sees them. These parsers need a libFuzzer harness (planned, owner:

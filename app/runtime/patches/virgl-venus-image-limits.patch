@@ -1,0 +1,1090 @@
+virglrenderer: Venus image descriptions, binds and layout queries within the host's limits
+
+What: vkr checks what a guest's image calls would hand to the Mac's Vulkan
+driver before it does (src/venus/vkr_image.c):
+- vkCreateImage, vkGetDeviceImageMemoryRequirements,
+  vkGetDeviceImageSparseMemoryRequirements and vkGetDeviceImageSubresourceLayout
+  take the create info the way vkCreateImage changes it (dma-buf handles, then the
+  emulated LINEAR modifier, then the check; the three queries never had the
+  modifier step and gave the host DRM tiling). The check: image type, tiling, one
+  sample count, no zero sizes, a 1D or 2D shape, cube compatible = 2D square with 6+
+  layers, only flag and usage bits vulkan_core.h names; then the driver's own
+  vkGetPhysicalDeviceImageFormatProperties2 for exactly that format, type, tiling,
+  usage and flags (a new question: external memory and format list stay out,
+  KosmicKrisp refuses MTLTEXTURE handles there; LINEAR asks what
+  virgl-venus-linear-modifier-usage.patch asks) must succeed, and extent, levels,
+  layers and samples must be in its answer, levels also <= log2(largest side) + 1.
+- The guest-facing format queries (both versions, and the sparse ones) refuse
+  an image type or tiling outside the spec; KosmicKrisp's query ends in
+  UNREACHABLE for them (undefined in its release build).
+- vkBindImageMemory(2): the memory's type is one of the image's, the offset is
+  aligned, the image (per plane for DISJOINT images) ends inside the memory. vkr
+  keeps each image's type, format, levels, layers and the host's memory
+  requirements (one query at create).
+- vkGetImageSubresourceLayout(2) and vkGetImageMemoryRequirements2: an aspect,
+  level, layer and plane of the image.
+- vkGetImageSubresourceLayout2 and the three vkGetDeviceImage* queries only on a
+  device that has them: a guest can send any command, and for an API version or
+  extension the device was not made with vkr called a NULL entry point.
+A refused create returns VK_ERROR_FORMAT_NOT_SUPPORTED (what the format query
+gives for the same values; not in vkCreateImage's list in the spec, but vkr
+already returns it for a DRM modifier it cannot make, and guest Mesa passes it to
+the app). A refused query zeroes only its main output (VkMemoryRequirements,
+VkSubresourceLayout, VkImageFormatProperties; a sparse count of 0), and the format
+queries also return VK_ERROR_FORMAT_NOT_SUPPORTED. Output structs chained to it
+(VkMemoryDedicatedRequirements, VkExternalImageFormatProperties,
+VkSubresourceHostMemcpySize) are not written and keep what the decoder's temp
+pool held (follow-up #624). Binds are made without waiting for an
+answer in the guest, so a refused bind ends the app's Venus context. The verdict
+depends only on the device and the description. The guest sends a create without
+waiting only when the same description is in its requirements cache (a
+successful create or a requirements query before); then the app's first use of
+the image ends its context. QEMU's log names the app, the call, the values and the
+limit at the 1st, 2nd, 4th ... refusal (vkr_context_refuse, one atomic count).
+src/venus/vkr_format_table.h (texel block size, planes, aspects) is generated
+by Tests/virgl/venus-format-table.py from the Vulkan registry. Uses
+vkr_physical_device_linear_usage from virgl-venus-linear-modifier-usage.patch.
+Scope: what the Mac drivers (Metal under them) end the process on, not every
+valid-usage rule.
+Why: Metal checks texture descriptors in release builds too and ends the
+process (MTLReportFailure, abort) on what it cannot make; KosmicKrisp and
+MoltenVK pass guest values on to it. Venus runs in QEMU's process on macOS
+(virgl-darwin-venus-in-process.patch), so any program in the VM could stop the
+VM: too many levels or layers, a texture past 16384 texels, a sample count the
+format has not, a zero size, a linear depth or compressed image (KosmicKrisp),
+a 2D image with depth 4 (MoltenVK), PLANE_1 of a one-plane image in
+vkGetImageSubresourceLayout (MoltenVK crashes), a format a driver has no entry
+for. A bind past the memory's end leaves KosmicKrisp a linear image without a
+texture for the GPU to use later.
+Upstream: OmacVM policy. Upstream virglrenderer runs the render server as its own
+process, where a driver abort ends that process only (ADR 0065).
+Tests: Tests/virgl/test-venus-image-limits.c (build time): every probe case
+through vkr's own dispatch with the real drivers, one child process per case;
+before the patch the cases end the child, after it they get the error or a
+context end, and the must-keep cases (window buffers, optimal 2D, array, cube, 3D,
+multisampled, mutable sRGB storage images) still create and bind. A refused
+description twice, then a use of its handle: the context ends, the driver is never
+called.
+
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index c4e9cea..c3f51de 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_context.h"
+ 
++#include <stdarg.h>
++#include <stdio.h>
+ #include <sys/mman.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+@@ -508,6 +510,28 @@ vkr_context_get_wait_ring_seqno(struct vkr_context *ctx,
+    return wait_ring;
+ }
+ 
++void
++vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const char *fmt, ...)
++{
++   /* one count for the process: ring threads of several apps refuse at the same time */
++   static atomic_uint_fast64_t refusals;
++   const uint64_t n = atomic_fetch_add(&refusals, 1) + 1;
++
++   /* the 1st, 2nd, 4th, 8th ... refusal: a guest in a loop cannot flood the log */
++   if (!(n & (n - 1))) {
++      char why[256];
++      va_list va;
++      va_start(va, fmt);
++      vsnprintf(why, sizeof(why), fmt, va);
++      va_end(va);
++      vkr_log("%s: %s refused: %s%s (%" PRIu64 " refused so far)",
++              ctx->debug_name ? ctx->debug_name : "?", call, why,
++              fatal ? "; the app's Vulkan context ends" : "", n);
++   }
++   if (fatal)
++      vkr_context_set_fatal(ctx);
++}
++
+ void
+ vkr_context_on_ring_fatal(struct vkr_context *ctx)
+ {
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index 5512b84..c1e85c4 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -173,6 +173,16 @@ vkr_context_get_fatal(struct vkr_context *ctx)
+    return ctx->cs_fatal_error;
+ }
+ 
++/* OmacVM (virgl-venus-image-limits.patch): a guest call vkr does not pass to the Mac's
++ * Vulkan driver, because the driver (Metal under it) would end QEMU on it or the spec
++ * forbids it. Logs the app, the call and why (fmt) at the 1st, 2nd, 4th ... refusal of
++ * the process. fatal: the call has no answer the guest waits for (the guest made the
++ * object without asking), so the app's Venus context ends; the guest's Mesa then ends
++ * that app, and the VM goes on. */
++void
++vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const char *fmt, ...)
++   PRINTFLIKE(4, 5);
++
+ static inline bool
+ vkr_context_validate_object_id(struct vkr_context *ctx, vkr_object_id id)
+ {
+diff --git a/src/venus/vkr_format_table.h b/src/venus/vkr_format_table.h
+new file mode 100644
+index 0000000..a261c73
+--- /dev/null
++++ b/src/venus/vkr_format_table.h
+@@ -0,0 +1,220 @@
++/* OmacVM (virgl-venus-image-limits.patch): generated by app/runtime/Tests/virgl/
++ * venus-format-table.py from the Vulkan registry (vk.xml) and venus-protocol/vulkan_core.h.
++ * Do not edit; run the script again. */
++
++#ifndef VKR_FORMAT_TABLE_H
++#define VKR_FORMAT_TABLE_H
++
++#include "vkr_common.h"
++
++/* the texel block size in bytes; 0 for a format this table does not know */
++static inline uint32_t
++vkr_format_block_size(VkFormat format)
++{
++   switch (format) {
++   case VK_FORMAT_A8_UNORM: case VK_FORMAT_R4G4_UNORM_PACK8: case VK_FORMAT_R8_BOOL_ARM:
++   case VK_FORMAT_R8_SINT: case VK_FORMAT_R8_SNORM: case VK_FORMAT_R8_SRGB:
++   case VK_FORMAT_R8_SSCALED: case VK_FORMAT_R8_UINT: case VK_FORMAT_R8_UNORM:
++   case VK_FORMAT_R8_USCALED: case VK_FORMAT_S8_UINT:
++      return 1;
++   case VK_FORMAT_A1B5G5R5_UNORM_PACK16: case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
++   case VK_FORMAT_A4B4G4R4_UNORM_PACK16: case VK_FORMAT_A4R4G4B4_UNORM_PACK16:
++   case VK_FORMAT_B4G4R4A4_UNORM_PACK16: case VK_FORMAT_B5G5R5A1_UNORM_PACK16:
++   case VK_FORMAT_B5G6R5_UNORM_PACK16: case VK_FORMAT_D16_UNORM:
++   case VK_FORMAT_R10X6_UINT_PACK16_ARM: case VK_FORMAT_R10X6_UNORM_PACK16:
++   case VK_FORMAT_R12X4_UINT_PACK16_ARM: case VK_FORMAT_R12X4_UNORM_PACK16:
++   case VK_FORMAT_R14X2_UINT_PACK16_ARM: case VK_FORMAT_R14X2_UNORM_PACK16_ARM:
++   case VK_FORMAT_R16_SFLOAT: case VK_FORMAT_R16_SINT: case VK_FORMAT_R16_SNORM:
++   case VK_FORMAT_R16_SSCALED: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16_UNORM:
++   case VK_FORMAT_R16_USCALED: case VK_FORMAT_R4G4B4A4_UNORM_PACK16:
++   case VK_FORMAT_R5G5B5A1_UNORM_PACK16: case VK_FORMAT_R5G6B5_UNORM_PACK16:
++   case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8_SNORM: case VK_FORMAT_R8G8_SRGB:
++   case VK_FORMAT_R8G8_SSCALED: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8_UNORM:
++   case VK_FORMAT_R8G8_USCALED:
++      return 2;
++   case VK_FORMAT_B8G8R8_SINT: case VK_FORMAT_B8G8R8_SNORM: case VK_FORMAT_B8G8R8_SRGB:
++   case VK_FORMAT_B8G8R8_SSCALED: case VK_FORMAT_B8G8R8_UINT: case VK_FORMAT_B8G8R8_UNORM:
++   case VK_FORMAT_B8G8R8_USCALED: case VK_FORMAT_D16_UNORM_S8_UINT:
++   case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM: case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM:
++   case VK_FORMAT_G8_B8R8_2PLANE_444_UNORM: case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM:
++   case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM: case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM:
++   case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8_SNORM: case VK_FORMAT_R8G8B8_SRGB:
++   case VK_FORMAT_R8G8B8_SSCALED: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8_UNORM:
++   case VK_FORMAT_R8G8B8_USCALED:
++      return 3;
++   case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_A2B10G10R10_SNORM_PACK32:
++   case VK_FORMAT_A2B10G10R10_SSCALED_PACK32: case VK_FORMAT_A2B10G10R10_UINT_PACK32:
++   case VK_FORMAT_A2B10G10R10_UNORM_PACK32: case VK_FORMAT_A2B10G10R10_USCALED_PACK32:
++   case VK_FORMAT_A2R10G10B10_SINT_PACK32: case VK_FORMAT_A2R10G10B10_SNORM_PACK32:
++   case VK_FORMAT_A2R10G10B10_SSCALED_PACK32: case VK_FORMAT_A2R10G10B10_UINT_PACK32:
++   case VK_FORMAT_A2R10G10B10_UNORM_PACK32: case VK_FORMAT_A2R10G10B10_USCALED_PACK32:
++   case VK_FORMAT_A8B8G8R8_SINT_PACK32: case VK_FORMAT_A8B8G8R8_SNORM_PACK32:
++   case VK_FORMAT_A8B8G8R8_SRGB_PACK32: case VK_FORMAT_A8B8G8R8_SSCALED_PACK32:
++   case VK_FORMAT_A8B8G8R8_UINT_PACK32: case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
++   case VK_FORMAT_A8B8G8R8_USCALED_PACK32: case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
++   case VK_FORMAT_B8G8R8A8_SINT: case VK_FORMAT_B8G8R8A8_SNORM: case VK_FORMAT_B8G8R8A8_SRGB:
++   case VK_FORMAT_B8G8R8A8_SSCALED: case VK_FORMAT_B8G8R8A8_UINT:
++   case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_USCALED:
++   case VK_FORMAT_B8G8R8G8_422_UNORM: case VK_FORMAT_D24_UNORM_S8_UINT:
++   case VK_FORMAT_D32_SFLOAT: case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
++   case VK_FORMAT_G8B8G8R8_422_UNORM: case VK_FORMAT_R10X6G10X6_UINT_2PACK16_ARM:
++   case VK_FORMAT_R10X6G10X6_UNORM_2PACK16: case VK_FORMAT_R12X4G12X4_UINT_2PACK16_ARM:
++   case VK_FORMAT_R12X4G12X4_UNORM_2PACK16: case VK_FORMAT_R14X2G14X2_UINT_2PACK16_ARM:
++   case VK_FORMAT_R14X2G14X2_UNORM_2PACK16_ARM: case VK_FORMAT_R16G16_SFIXED5_NV:
++   case VK_FORMAT_R16G16_SFLOAT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16_SNORM:
++   case VK_FORMAT_R16G16_SSCALED: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16_UNORM:
++   case VK_FORMAT_R16G16_USCALED: case VK_FORMAT_R32_SFLOAT: case VK_FORMAT_R32_SINT:
++   case VK_FORMAT_R32_UINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R8G8B8A8_SNORM:
++   case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_R8G8B8A8_SSCALED: case VK_FORMAT_R8G8B8A8_UINT:
++   case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_USCALED:
++   case VK_FORMAT_X8_D24_UNORM_PACK32:
++      return 4;
++   case VK_FORMAT_D32_SFLOAT_S8_UINT:
++      return 5;
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_420_UNORM_3PACK16_ARM:
++   case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_422_UNORM_3PACK16_ARM:
++   case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM: case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM:
++   case VK_FORMAT_G16_B16R16_2PLANE_444_UNORM: case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM:
++   case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM: case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM:
++   case VK_FORMAT_R16G16B16_SFLOAT: case VK_FORMAT_R16G16B16_SINT:
++   case VK_FORMAT_R16G16B16_SNORM: case VK_FORMAT_R16G16B16_SSCALED:
++   case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16_UNORM:
++   case VK_FORMAT_R16G16B16_USCALED:
++      return 6;
++   case VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16:
++   case VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16:
++   case VK_FORMAT_B16G16R16G16_422_UNORM: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
++   case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
++   case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC4_SNORM_BLOCK:
++   case VK_FORMAT_BC4_UNORM_BLOCK: case VK_FORMAT_EAC_R11_SNORM_BLOCK:
++   case VK_FORMAT_EAC_R11_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
++   case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
++   case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
++   case VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16:
++   case VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16:
++   case VK_FORMAT_G16B16G16R16_422_UNORM: case VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG:
++   case VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG: case VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG:
++   case VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG: case VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG:
++   case VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG: case VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG:
++   case VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG:
++   case VK_FORMAT_R10X6G10X6B10X6A10X6_UINT_4PACK16_ARM:
++   case VK_FORMAT_R10X6G10X6B10X6A10X6_UNORM_4PACK16:
++   case VK_FORMAT_R12X4G12X4B12X4A12X4_UINT_4PACK16_ARM:
++   case VK_FORMAT_R12X4G12X4B12X4A12X4_UNORM_4PACK16:
++   case VK_FORMAT_R14X2G14X2B14X2A14X2_UINT_4PACK16_ARM:
++   case VK_FORMAT_R14X2G14X2B14X2A14X2_UNORM_4PACK16_ARM: case VK_FORMAT_R16G16B16A16_SFLOAT:
++   case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R16G16B16A16_SNORM:
++   case VK_FORMAT_R16G16B16A16_SSCALED: case VK_FORMAT_R16G16B16A16_UINT:
++   case VK_FORMAT_R16G16B16A16_UNORM: case VK_FORMAT_R16G16B16A16_USCALED:
++   case VK_FORMAT_R32G32_SFLOAT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32_UINT:
++   case VK_FORMAT_R64_SFLOAT: case VK_FORMAT_R64_SINT: case VK_FORMAT_R64_UINT:
++      return 8;
++   case VK_FORMAT_R32G32B32_SFLOAT: case VK_FORMAT_R32G32B32_SINT:
++   case VK_FORMAT_R32G32B32_UINT:
++      return 12;
++   case VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK: case VK_FORMAT_ASTC_10x10_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_10x10_UNORM_BLOCK: case VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK:
++   case VK_FORMAT_ASTC_10x5_SRGB_BLOCK: case VK_FORMAT_ASTC_10x5_UNORM_BLOCK:
++   case VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK: case VK_FORMAT_ASTC_10x6_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_10x6_UNORM_BLOCK: case VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK:
++   case VK_FORMAT_ASTC_10x8_SRGB_BLOCK: case VK_FORMAT_ASTC_10x8_UNORM_BLOCK:
++   case VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK: case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_12x10_UNORM_BLOCK: case VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK:
++   case VK_FORMAT_ASTC_12x12_SRGB_BLOCK: case VK_FORMAT_ASTC_12x12_UNORM_BLOCK:
++   case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK: case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_4x4_UNORM_BLOCK: case VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK:
++   case VK_FORMAT_ASTC_5x4_SRGB_BLOCK: case VK_FORMAT_ASTC_5x4_UNORM_BLOCK:
++   case VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK: case VK_FORMAT_ASTC_5x5_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_5x5_UNORM_BLOCK: case VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK:
++   case VK_FORMAT_ASTC_6x5_SRGB_BLOCK: case VK_FORMAT_ASTC_6x5_UNORM_BLOCK:
++   case VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK: case VK_FORMAT_ASTC_6x6_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_6x6_UNORM_BLOCK: case VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK:
++   case VK_FORMAT_ASTC_8x5_SRGB_BLOCK: case VK_FORMAT_ASTC_8x5_UNORM_BLOCK:
++   case VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK: case VK_FORMAT_ASTC_8x6_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_8x6_UNORM_BLOCK: case VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK:
++   case VK_FORMAT_ASTC_8x8_SRGB_BLOCK: case VK_FORMAT_ASTC_8x8_UNORM_BLOCK:
++   case VK_FORMAT_BC2_SRGB_BLOCK: case VK_FORMAT_BC2_UNORM_BLOCK:
++   case VK_FORMAT_BC3_SRGB_BLOCK: case VK_FORMAT_BC3_UNORM_BLOCK:
++   case VK_FORMAT_BC5_SNORM_BLOCK: case VK_FORMAT_BC5_UNORM_BLOCK:
++   case VK_FORMAT_BC6H_SFLOAT_BLOCK: case VK_FORMAT_BC6H_UFLOAT_BLOCK:
++   case VK_FORMAT_BC7_SRGB_BLOCK: case VK_FORMAT_BC7_UNORM_BLOCK:
++   case VK_FORMAT_EAC_R11G11_SNORM_BLOCK: case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
++   case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK: case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
++   case VK_FORMAT_R32G32B32A32_SFLOAT: case VK_FORMAT_R32G32B32A32_SINT:
++   case VK_FORMAT_R32G32B32A32_UINT: case VK_FORMAT_R64G64_SFLOAT: case VK_FORMAT_R64G64_SINT:
++   case VK_FORMAT_R64G64_UINT:
++      return 16;
++   case VK_FORMAT_R64G64B64_SFLOAT: case VK_FORMAT_R64G64B64_SINT:
++   case VK_FORMAT_R64G64B64_UINT:
++      return 24;
++   case VK_FORMAT_R64G64B64A64_SFLOAT: case VK_FORMAT_R64G64B64A64_SINT:
++   case VK_FORMAT_R64G64B64A64_UINT:
++      return 32;
++   default:
++      return 0;
++   }
++}
++
++/* 2 or 3 for a multi-planar format, else 1 */
++static inline uint32_t
++vkr_format_plane_count(VkFormat format)
++{
++   switch (format) {
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_420_UNORM_3PACK16_ARM:
++   case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_422_UNORM_3PACK16_ARM:
++   case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM: case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM:
++   case VK_FORMAT_G16_B16R16_2PLANE_444_UNORM: case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
++   case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM: case VK_FORMAT_G8_B8R8_2PLANE_444_UNORM:
++      return 2;
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16:
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16:
++   case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM: case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM:
++   case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM: case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM:
++   case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM: case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM:
++      return 3;
++   default:
++      return 1;
++   }
++}
++
++/* DEPTH and/or STENCIL for a depth/stencil format, else COLOR */
++static inline VkImageAspectFlags
++vkr_format_aspects(VkFormat format)
++{
++   switch (format) {
++   case VK_FORMAT_D16_UNORM_S8_UINT: case VK_FORMAT_D24_UNORM_S8_UINT:
++   case VK_FORMAT_D32_SFLOAT_S8_UINT:
++      return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
++   case VK_FORMAT_D16_UNORM: case VK_FORMAT_D32_SFLOAT: case VK_FORMAT_X8_D24_UNORM_PACK32:
++      return VK_IMAGE_ASPECT_DEPTH_BIT;
++   case VK_FORMAT_S8_UINT:
++      return VK_IMAGE_ASPECT_STENCIL_BIT;
++   default:
++      return VK_IMAGE_ASPECT_COLOR_BIT;
++   }
++}
++
++/* 264 formats */
++#endif /* VKR_FORMAT_TABLE_H */
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 770440a..61c7b73 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -5,9 +5,18 @@
+ 
+ #include "vkr_image.h"
+ 
++#include <stdio.h>
++
++#include "vkr_device_memory.h"
++#include "vkr_format_table.h"
+ #include "vkr_image_gen.h"
+ #include "vkr_physical_device.h"
+ 
++/* OmacVM (virgl-venus-image-limits.patch): every VkImageCreateFlagBits and
++ * VkImageUsageFlagBits bit venus-protocol/vulkan_core.h names (header 334) */
++#define VKR_IMAGE_CREATE_FLAGS_KNOWN 0x0017ffffu
++#define VKR_IMAGE_USAGE_FLAGS_KNOWN 0x0efcffffu
++
+ static void
+ vkr_image_fix_create_info(struct vkr_device *dev,
+                           VkImageCreateInfo *pCreateInfo)
+@@ -66,11 +75,277 @@ vkr_image_emulate_drm_format_modifier_properties(UNUSED struct vkr_device *dev,
+    return VK_SUCCESS;
+ }
+ 
++/* OmacVM (virgl-venus-image-limits.patch): whether an image description may go to the
++ * Mac's Vulkan driver. Metal ends the process on a texture it cannot make (too many
++ * levels or texels, a sample count it has not, a linear texture it cannot back), and
++ * KosmicKrisp and MoltenVK hand the guest's values on to it. So the shape the spec allows
++ * is checked first (KosmicKrisp's own query has UNREACHABLE paths for bad values), then
++ * the driver's own format query is asked about exactly this description: what Metal can
++ * make is in that answer, vkr needs no Metal rules of its own. This checks what the Mac
++ * drivers end the process on, not every valid-usage rule. info is what the driver would
++ * get (after vkr_image_fix_create_info and vkr_image_fix_drm_format); the verdict depends
++ * only on the device and info. false: why says which value and which limit. */
++static bool
++vkr_image_info_ok(struct vkr_physical_device *physical_dev,
++                  const VkImageCreateInfo *info,
++                  char *why,
++                  size_t why_size)
++{
++   const VkExtent3D e = info->extent;
++
++   if (!vkr_physical_device_image_kind_ok(physical_dev, info->imageType, info->tiling)) {
++      snprintf(why, why_size, "imageType %d tiling %d", info->imageType, info->tiling);
++      return false;
++   }
++   if (!util_is_power_of_two_nonzero(info->samples) || info->samples > VK_SAMPLE_COUNT_64_BIT) {
++      snprintf(why, why_size, "samples 0x%x is not one sample count", info->samples);
++      return false;
++   }
++   if (!e.width || !e.height || !e.depth || !info->mipLevels || !info->arrayLayers) {
++      snprintf(why, why_size, "extent %ux%ux%u, %u levels, %u layers: none may be 0",
++               e.width, e.height, e.depth, info->mipLevels, info->arrayLayers);
++      return false;
++   }
++   if ((info->imageType == VK_IMAGE_TYPE_1D && (e.height != 1 || e.depth != 1)) ||
++       (info->imageType == VK_IMAGE_TYPE_2D && e.depth != 1)) {
++      snprintf(why, why_size, "imageType %d with extent %ux%ux%u", info->imageType, e.width,
++               e.height, e.depth);
++      return false;
++   }
++   if ((info->flags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) &&
++       (info->imageType != VK_IMAGE_TYPE_2D || e.width != e.height || info->arrayLayers < 6)) {
++      snprintf(why, why_size, "cube compatible imageType %d %ux%u with %u layers",
++               info->imageType, e.width, e.height, info->arrayLayers);
++      return false;
++   }
++   const VkImageStencilUsageCreateInfo *stencil =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO);
++   if ((info->flags & ~VKR_IMAGE_CREATE_FLAGS_KNOWN) || !info->usage ||
++       (info->usage & ~VKR_IMAGE_USAGE_FLAGS_KNOWN) ||
++       (stencil && (!stencil->stencilUsage ||
++                    (stencil->stencilUsage & ~VKR_IMAGE_USAGE_FLAGS_KNOWN)))) {
++      snprintf(why, why_size, "flags 0x%x usage 0x%x stencil usage 0x%x: unknown bits or none",
++               info->flags, info->usage, stencil ? stencil->stencilUsage : 0);
++      return false;
++   }
++
++   /* The driver's answer for this description. A new question: the external memory and
++    * format list structs of the create info stay out (KosmicKrisp's query refuses
++    * MTLTEXTURE handles, which every window buffer has). LINEAR asks the same as the
++    * emulated LINEAR modifier's query (virgl-venus-linear-modifier-usage.patch). */
++   const bool linear = info->tiling == VK_IMAGE_TILING_LINEAR;
++   VkImageStencilUsageCreateInfo stencil_q = {
++      .sType = VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO,
++   };
++   if (stencil)
++      stencil_q.stencilUsage =
++         linear ? vkr_physical_device_linear_usage(physical_dev, info->format,
++                                                   stencil->stencilUsage)
++                : stencil->stencilUsage;
++   const VkPhysicalDeviceImageFormatInfo2 q = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
++      .pNext = stencil ? &stencil_q : NULL,
++      .format = info->format,
++      .type = info->imageType,
++      .tiling = info->tiling,
++      .usage = linear ? vkr_physical_device_linear_usage(physical_dev, info->format, info->usage)
++                      : info->usage,
++      .flags = info->flags,
++   };
++   VkImageFormatProperties2 answer = {
++      .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
++   };
++   const VkResult r = physical_dev->proc_table.GetPhysicalDeviceImageFormatProperties2(
++      physical_dev->base.handle.physical_device, &q, &answer);
++   const VkImageFormatProperties *l = &answer.imageFormatProperties;
++   if (r != VK_SUCCESS) {
++      snprintf(why, why_size,
++               "the driver has no format %d imageType %d tiling %d usage 0x%x flags 0x%x (%d)",
++               info->format, info->imageType, info->tiling, q.usage, info->flags, r);
++      return false;
++   }
++   if (e.width > l->maxExtent.width || e.height > l->maxExtent.height ||
++       e.depth > l->maxExtent.depth) {
++      snprintf(why, why_size, "format %d extent %ux%ux%u past the driver's %ux%ux%u",
++               info->format, e.width, e.height, e.depth, l->maxExtent.width,
++               l->maxExtent.height, l->maxExtent.depth);
++      return false;
++   }
++   const uint32_t largest = MAX3(e.width, e.height, e.depth);
++   const uint32_t levels = util_logbase2(largest) + 1;
++   if (info->mipLevels > l->maxMipLevels || info->mipLevels > levels) {
++      snprintf(why, why_size, "%u levels for %u texels (the driver's limit %u)",
++               info->mipLevels, largest, l->maxMipLevels);
++      return false;
++   }
++   if (info->arrayLayers > l->maxArrayLayers) {
++      snprintf(why, why_size, "%u layers past the driver's %u", info->arrayLayers,
++               l->maxArrayLayers);
++      return false;
++   }
++   if (!(info->samples & l->sampleCounts)) {
++      snprintf(why, why_size, "samples 0x%x not in the driver's 0x%x for format %d",
++               info->samples, l->sampleCounts, info->format);
++      return false;
++   }
++   return true;
++}
++
++/* OmacVM (virgl-venus-image-limits.patch): the plane index of a plane aspect, or 3 */
++static uint32_t
++vkr_image_plane_index(VkImageAspectFlags aspect)
++{
++   switch (aspect) {
++   case VK_IMAGE_ASPECT_PLANE_0_BIT:
++      return 0;
++   case VK_IMAGE_ASPECT_PLANE_1_BIT:
++      return 1;
++   case VK_IMAGE_ASPECT_PLANE_2_BIT:
++      return 2;
++   default:
++      return 3;
++   }
++}
++
++/* OmacVM (virgl-venus-image-limits.patch): whether a subresource is in an image of this
++ * format, levels and layers (MoltenVK reads past its plane array for PLANE_1 of a
++ * one-plane image and crashes). drm_linear: the guest made the image with the emulated
++ * LINEAR modifier and names its one memory plane. */
++static bool
++vkr_image_subresource_ok(VkFormat format,
++                         bool drm_linear,
++                         uint32_t levels,
++                         uint32_t layers,
++                         const VkImageSubresource *sub,
++                         char *why,
++                         size_t why_size)
++{
++   const uint32_t planes = vkr_format_plane_count(format);
++   VkImageAspectFlags allowed =
++      planes > 1 ? (VK_IMAGE_ASPECT_PLANE_0_BIT << planes) - VK_IMAGE_ASPECT_PLANE_0_BIT
++                 : vkr_format_aspects(format);
++   if (drm_linear)
++      allowed |= VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT;
++   if (!util_is_power_of_two_nonzero(sub->aspectMask) || !(sub->aspectMask & allowed) ||
++       sub->mipLevel >= levels || sub->arrayLayer >= layers) {
++      snprintf(why, why_size,
++               "aspect 0x%x level %u layer %u of format %d with %u levels, %u layers",
++               sub->aspectMask, sub->mipLevel, sub->arrayLayer, format, levels, layers);
++      return false;
++   }
++   return true;
++}
++
++/* OmacVM (virgl-venus-image-limits.patch): what the host image was made with, and the
++ * host's memory requirements of each plane bound on its own (one query each) */
++static void
++vkr_image_init_info(struct vkr_device *dev,
++                    struct vkr_image *image,
++                    const VkImageCreateInfo *info,
++                    bool drm_linear)
++{
++   image->type = info->imageType;
++   image->format = info->format;
++   image->tiling = info->tiling;
++   image->flags = info->flags;
++   image->extent = info->extent;
++   image->mip_levels = info->mipLevels;
++   image->array_layers = info->arrayLayers;
++   image->drm_linear = drm_linear;
++   image->plane_count =
++      info->flags & VK_IMAGE_CREATE_DISJOINT_BIT ? vkr_format_plane_count(info->format) : 1;
++
++   for (uint32_t i = 0; i < image->plane_count; i++) {
++      VkImagePlaneMemoryRequirementsInfo plane = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO,
++         .planeAspect = VK_IMAGE_ASPECT_PLANE_0_BIT << i,
++      };
++      const VkImageMemoryRequirementsInfo2 req_info = {
++         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
++         .pNext = image->plane_count > 1 ? &plane : NULL,
++         .image = image->base.handle.image,
++      };
++      VkMemoryRequirements2 req = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
++      };
++      dev->proc_table.GetImageMemoryRequirements2(dev->base.handle.device, &req_info, &req);
++      image->memory[i] = (struct vkr_image_memory){
++         .size = req.memoryRequirements.size,
++         .alignment = req.memoryRequirements.alignment,
++         .type_bits = req.memoryRequirements.memoryTypeBits,
++      };
++   }
++}
++
++/* OmacVM (virgl-venus-image-limits.patch): whether memory may be bound to an image (or
++ * one plane of it): the type is one of the image's, the offset is aligned and the image
++ * ends inside the memory. KosmicKrisp rounds the offset up itself and makes a linear
++ * image's texture from the memory's buffer: past the end it keeps no texture, and the
++ * GPU later uses what is not there. next: the bind info's pNext (plane info). */
++static bool
++vkr_image_bind_ok(const struct vkr_image *image,
++                  const struct vkr_device_memory *mem,
++                  VkDeviceSize offset,
++                  const void *next,
++                  char *why,
++                  size_t why_size)
++{
++   const VkBindImagePlaneMemoryInfo *plane_info =
++      vkr_find_struct(next, VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO);
++   if (!image || !mem) {
++      snprintf(why, why_size, "no %s", image ? "memory" : "image");
++      return false;
++   }
++   const uint32_t plane = plane_info ? vkr_image_plane_index(plane_info->planeAspect) : 0;
++   if (!plane_info != (image->plane_count == 1) || plane >= image->plane_count) {
++      snprintf(why, why_size, "plane aspect 0x%x for an image of %u memory planes",
++               plane_info ? plane_info->planeAspect : 0, image->plane_count);
++      return false;
++   }
++   const struct vkr_image_memory *req = &image->memory[plane];
++   if (mem->memory_type_index >= 32 || !(req->type_bits & (1u << mem->memory_type_index))) {
++      snprintf(why, why_size, "memory type %u not in the image's 0x%x",
++               mem->memory_type_index, req->type_bits);
++      return false;
++   }
++   if (req->alignment && offset % req->alignment) {
++      snprintf(why, why_size, "offset %" PRIu64 " not a multiple of %" PRIu64, offset,
++               req->alignment);
++      return false;
++   }
++   if (offset > mem->allocation_size || req->size > mem->allocation_size - offset) {
++      snprintf(why, why_size, "%" PRIu64 " bytes at %" PRIu64 " past the memory's %" PRIu64,
++               req->size, offset, mem->allocation_size);
++      return false;
++   }
++   return true;
++}
++
++/* OmacVM (virgl-venus-image-limits.patch): a create info a vkGetDeviceImage* query
++ * takes, changed as vkCreateImage changes it (the same order: dma-buf handles, then the
++ * emulated LINEAR modifier, then the check), so the driver judges what it would make */
++static bool
++vkr_image_device_info_ok(struct vkr_device *dev,
++                         VkImageCreateInfo *info,
++                         char *why,
++                         size_t why_size)
++{
++   if (dev->physical_device->is_dma_buf_emulated)
++      vkr_image_fix_create_info(dev, info);
++   if (!dev->physical_device->EXT_image_drm_format_modifier &&
++       vkr_image_fix_drm_format(dev, info) != VK_SUCCESS) {
++      snprintf(why, why_size, "a DRM format modifier other than LINEAR");
++      return false;
++   }
++   return vkr_image_info_ok(dev->physical_device, info, why, why_size);
++}
++
+ static void
+ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkCreateImage *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
++   const bool drm = args->pCreateInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+ 
+    /* if host does not natively support dmabuf we need to patch create info */
+    if (dev->physical_device->is_dma_buf_emulated) {
+@@ -84,6 +359,19 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+       }
+    }
+ 
++   /* OmacVM: a description the driver would end QEMU on is not made. The error is the
++    * one the format query gives for it (not in vkCreateImage's list in the spec, but
++    * vkr already returns it for a DRM modifier it cannot make, and the guest's Mesa
++    * passes it to the app). The guest waits for this answer unless an earlier
++    * successful create or requirements query of the same description is in its cache:
++    * then the app's first use of the image ends its context. */
++   char why[192];
++   if (!vkr_image_info_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkCreateImage", "%s", why);
++      args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
++      return;
++   }
++
+    /* XXX If VkExternalMemoryImageCreateInfo is chained by the app, all is
+     * good.  If it is not chained, we might still bind an external memory to
+     * the image, because vkr_dispatch_vkAllocateMemory makes any HOST_VISIBLE
+@@ -103,7 +391,10 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+     * situation because the app does not consider the memory external.
+     */
+ 
+-   vkr_image_create_and_add(dispatch->data, args);
++   const VkImageCreateInfo info = *args->pCreateInfo;
++   struct vkr_image *image = vkr_image_create_and_add(dispatch->data, args);
++   if (image)
++      vkr_image_init_info(dev, image, &info, drm && info.tiling == VK_IMAGE_TILING_LINEAR);
+ }
+ 
+ static void
+@@ -127,12 +418,26 @@ vkr_dispatch_vkGetImageMemoryRequirements(
+ 
+ static void
+ vkr_dispatch_vkGetImageMemoryRequirements2(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetImageMemoryRequirements2 *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM: a plane only for an image whose planes are bound one by one */
++   const struct vkr_image *image = vkr_image_from_handle(args->pInfo->image);
++   const VkImagePlaneMemoryRequirementsInfo *plane =
++      vkr_find_struct(args->pInfo->pNext, VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO);
++   if (!image || (plane && vkr_image_plane_index(plane->planeAspect) >= image->plane_count) ||
++       (!plane && image->plane_count > 1)) {
++      vkr_context_refuse(dispatch->data, false, "vkGetImageMemoryRequirements2",
++                         "plane aspect 0x%x for an image of %u memory planes",
++                         plane ? plane->planeAspect : 0, image ? image->plane_count : 0);
++      memset(&args->pMemoryRequirements->memoryRequirements, 0,
++             sizeof(args->pMemoryRequirements->memoryRequirements));
++      return;
++   }
++
+    vn_replace_vkGetImageMemoryRequirements2_args_handle(args);
+    vk->GetImageMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
+ }
+@@ -166,36 +471,71 @@ vkr_dispatch_vkGetImageSparseMemoryRequirements2(
+ }
+ 
+ static void
+-vkr_dispatch_vkBindImageMemory(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkBindImageMemory(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkBindImageMemory *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM: the guest binds without waiting for an answer: a bind the driver must not
++    * get ends the app's context */
++   char why[192];
++   if (!vkr_image_bind_ok(vkr_image_from_handle(args->image),
++                          vkr_device_memory_from_handle(args->memory), args->memoryOffset,
++                          NULL, why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, true, "vkBindImageMemory", "%s", why);
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
++
+    vn_replace_vkBindImageMemory_args_handle(args);
+    args->ret =
+       vk->BindImageMemory(args->device, args->image, args->memory, args->memoryOffset);
+ }
+ 
+ static void
+-vkr_dispatch_vkBindImageMemory2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkBindImageMemory2(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkBindImageMemory2 *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM: as vkBindImageMemory, for each bind (and plane) */
++   for (uint32_t i = 0; i < args->bindInfoCount; i++) {
++      const VkBindImageMemoryInfo *bind = &args->pBindInfos[i];
++      char why[192];
++      if (!vkr_image_bind_ok(vkr_image_from_handle(bind->image),
++                             vkr_device_memory_from_handle(bind->memory), bind->memoryOffset,
++                             bind->pNext, why, sizeof(why))) {
++         vkr_context_refuse(dispatch->data, true, "vkBindImageMemory2", "bind %u: %s", i, why);
++         args->ret = VK_ERROR_UNKNOWN;
++         return;
++      }
++   }
++
+    vn_replace_vkBindImageMemory2_args_handle(args);
+    args->ret = vk->BindImageMemory2(args->device, args->bindInfoCount, args->pBindInfos);
+ }
+ 
+ static void
+ vkr_dispatch_vkGetImageSubresourceLayout(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetImageSubresourceLayout *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM: only a subresource of the image */
++   const struct vkr_image *image = vkr_image_from_handle(args->image);
++   char why[192] = "no image";
++   if (!image || !vkr_image_subresource_ok(image->format, image->drm_linear, image->mip_levels,
++                                           image->array_layers, args->pSubresource, why,
++                                           sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkGetImageSubresourceLayout", "%s", why);
++      memset(args->pLayout, 0, sizeof(*args->pLayout));
++      return;
++   }
++
+    vn_replace_vkGetImageSubresourceLayout_args_handle(args);
+    vk->GetImageSubresourceLayout(args->device, args->image, args->pSubresource,
+                                  args->pLayout);
+@@ -203,12 +543,28 @@ vkr_dispatch_vkGetImageSubresourceLayout(
+ 
+ static void
+ vkr_dispatch_vkGetImageSubresourceLayout2(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetImageSubresourceLayout2 *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM: only a subresource of the image, and only on a device that has the call (a
++    * guest can send any command: an entry point of an API version or extension the device
++    * does not have is NULL here) */
++   const struct vkr_image *image = vkr_image_from_handle(args->image);
++   char why[192] = "no image";
++   if (!vk->GetImageSubresourceLayout2)
++      snprintf(why, sizeof(why), "the device has no vkGetImageSubresourceLayout2");
++   if (!vk->GetImageSubresourceLayout2 || !image ||
++       !vkr_image_subresource_ok(image->format, image->drm_linear, image->mip_levels,
++                                 image->array_layers, &args->pSubresource->imageSubresource,
++                                 why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkGetImageSubresourceLayout2", "%s", why);
++      memset(&args->pLayout->subresourceLayout, 0, sizeof(args->pLayout->subresourceLayout));
++      return;
++   }
++
+    vn_replace_vkGetImageSubresourceLayout2_args_handle(args);
+    vk->GetImageSubresourceLayout2(args->device, args->image, args->pSubresource,
+                                   args->pLayout);
+@@ -216,15 +572,25 @@ vkr_dispatch_vkGetImageSubresourceLayout2(
+ 
+ static void
+ vkr_dispatch_vkGetDeviceImageSubresourceLayout(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetDeviceImageSubresourceLayout *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+-   /* if host does not natively support dmabuf we need to patch create info */
+-   if (dev->physical_device->is_dma_buf_emulated) {
+-      vkr_image_fix_create_info(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo);
++   /* OmacVM: the create info as vkCreateImage makes it, checked the same way, and only a
++    * subresource of it */
++   VkImageCreateInfo *info = (VkImageCreateInfo *)args->pInfo->pCreateInfo;
++   const bool drm = info->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
++   char why[192] = "the device has no vkGetDeviceImageSubresourceLayout";
++   if (!vk->GetDeviceImageSubresourceLayout || !vkr_image_device_info_ok(dev, info, why, sizeof(why)) ||
++       !vkr_image_subresource_ok(info->format, drm && info->tiling == VK_IMAGE_TILING_LINEAR,
++                                 info->mipLevels, info->arrayLayers,
++                                 &args->pInfo->pSubresource->imageSubresource, why,
++                                 sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkGetDeviceImageSubresourceLayout", "%s", why);
++      memset(&args->pLayout->subresourceLayout, 0, sizeof(args->pLayout->subresourceLayout));
++      return;
+    }
+ 
+    vn_replace_vkGetDeviceImageSubresourceLayout_args_handle(args);
+@@ -296,15 +662,23 @@ vkr_dispatch_vkDestroySamplerYcbcrConversion(
+ 
+ static void
+ vkr_dispatch_vkGetDeviceImageMemoryRequirements(
+-   UNUSED struct vn_dispatch_context *ctx,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetDeviceImageMemoryRequirements *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+-   /* if host does not natively support dmabuf we need to patch create info */
+-   if (dev->physical_device->is_dma_buf_emulated) {
+-      vkr_image_fix_create_info(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo);
++   /* OmacVM: the create info as vkCreateImage makes it, checked the same way (and the
++    * device has the call) */
++   char why[192] = "the device has no vkGetDeviceImageMemoryRequirements";
++   if (!vk->GetDeviceImageMemoryRequirements ||
++       !vkr_image_device_info_ok(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo, why,
++                                 sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkGetDeviceImageMemoryRequirements", "%s",
++                         why);
++      memset(&args->pMemoryRequirements->memoryRequirements, 0,
++             sizeof(args->pMemoryRequirements->memoryRequirements));
++      return;
+    }
+ 
+    vn_replace_vkGetDeviceImageMemoryRequirements_args_handle(args);
+@@ -314,15 +688,22 @@ vkr_dispatch_vkGetDeviceImageMemoryRequirements(
+ 
+ static void
+ vkr_dispatch_vkGetDeviceImageSparseMemoryRequirements(
+-   UNUSED struct vn_dispatch_context *ctx,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetDeviceImageSparseMemoryRequirements *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+-   /* if host does not natively support dmabuf we need to patch create info */
+-   if (dev->physical_device->is_dma_buf_emulated) {
+-      vkr_image_fix_create_info(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo);
++   /* OmacVM: the create info as vkCreateImage makes it, checked the same way (and the
++    * device has the call) */
++   char why[192] = "the device has no vkGetDeviceImageSparseMemoryRequirements";
++   if (!vk->GetDeviceImageSparseMemoryRequirements ||
++       !vkr_image_device_info_ok(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo, why,
++                                 sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkGetDeviceImageSparseMemoryRequirements",
++                         "%s", why);
++      *args->pSparseMemoryRequirementCount = 0;
++      return;
+    }
+ 
+    vn_replace_vkGetDeviceImageSparseMemoryRequirements_args_handle(args);
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+index 70a9800..6bae6a5 100644
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -8,8 +8,31 @@
+ 
+ #include "vkr_common.h"
+ 
++/* OmacVM (virgl-venus-image-limits.patch): the host's memory requirements of one plane */
++struct vkr_image_memory {
++   VkDeviceSize size;
++   VkDeviceSize alignment;
++   uint32_t type_bits;
++};
++
+ struct vkr_image {
+    struct vkr_object base;
++
++   /* OmacVM (virgl-venus-image-limits.patch): what the host image was made with (after
++    * vkr's own changes to the create info) and its memory requirements: binds, layout
++    * queries and views are checked against them */
++   VkImageType type;
++   VkFormat format;
++   VkImageTiling tiling;
++   VkImageCreateFlags flags;
++   VkExtent3D extent;
++   uint32_t mip_levels;
++   uint32_t array_layers;
++   /* made with the emulated DRM_FORMAT_MOD_LINEAR (the guest names MEMORY_PLANE_0) */
++   bool drm_linear;
++   /* memory planes bound one by one (DISJOINT), else 1 */
++   uint32_t plane_count;
++   struct vkr_image_memory memory[3];
+ };
+ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+ 
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index c1001a1..946b782 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -418,6 +418,23 @@ vkr_physical_device_linear_usage(struct vkr_physical_device *physical_dev,
+    return usage;
+ }
+ 
++/* OmacVM (virgl-venus-image-limits.patch): an image type and tiling the host driver can
++ * be asked about. KosmicKrisp ends its image queries in UNREACHABLE("Invalid image type"),
++ * undefined behaviour in its release build; neither Mac driver has DRM format modifiers,
++ * so that tiling must have become LINEAR (the emulated LINEAR modifier) by now. */
++bool
++vkr_physical_device_image_kind_ok(const struct vkr_physical_device *physical_dev,
++                                  VkImageType type,
++                                  VkImageTiling tiling)
++{
++   if (type != VK_IMAGE_TYPE_1D && type != VK_IMAGE_TYPE_2D && type != VK_IMAGE_TYPE_3D)
++      return false;
++   if (tiling == VK_IMAGE_TILING_OPTIMAL || tiling == VK_IMAGE_TILING_LINEAR)
++      return true;
++   return tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
++          physical_dev->EXT_image_drm_format_modifier;
++}
++
+ static void
+ vkr_physical_device_emulate_drm_props(VkDrmFormatModifierPropertiesListEXT *drm_props_list)
+ {
+@@ -689,13 +706,21 @@ vkr_dispatch_vkGetPhysicalDeviceFormatProperties(
+ 
+ static void
+ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetPhysicalDeviceImageFormatProperties *args)
+ {
+    struct vkr_physical_device *physical_dev =
+       vkr_physical_device_from_handle(args->physicalDevice);
+    struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
+ 
++   if (!vkr_physical_device_image_kind_ok(physical_dev, args->type, args->tiling)) {
++      vkr_context_refuse(dispatch->data, false, "vkGetPhysicalDeviceImageFormatProperties",
++                         "imageType %d tiling %d", args->type, args->tiling);
++      memset(args->pImageFormatProperties, 0, sizeof(*args->pImageFormatProperties));
++      args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
++      return;
++   }
++
+    vn_replace_vkGetPhysicalDeviceImageFormatProperties_args_handle(args);
+    args->ret = vk->GetPhysicalDeviceImageFormatProperties(
+       args->physicalDevice, args->format, args->type, args->tiling, args->usage,
+@@ -704,13 +729,23 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties(
+ 
+ static void
+ vkr_dispatch_vkGetPhysicalDeviceSparseImageFormatProperties(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetPhysicalDeviceSparseImageFormatProperties *args)
+ {
+    struct vkr_physical_device *physical_dev =
+       vkr_physical_device_from_handle(args->physicalDevice);
+    struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
+ 
++   if (!vkr_physical_device_image_kind_ok(physical_dev, args->type, args->tiling) ||
++       !util_is_power_of_two_nonzero(args->samples) || args->samples > VK_SAMPLE_COUNT_64_BIT) {
++      vkr_context_refuse(dispatch->data, false,
++                         "vkGetPhysicalDeviceSparseImageFormatProperties",
++                         "imageType %d tiling %d samples 0x%x", args->type, args->tiling,
++                         args->samples);
++      *args->pPropertyCount = 0;
++      return;
++   }
++
+    vn_replace_vkGetPhysicalDeviceSparseImageFormatProperties_args_handle(args);
+    vk->GetPhysicalDeviceSparseImageFormatProperties(
+       args->physicalDevice, args->format, args->type, args->samples, args->usage,
+@@ -836,7 +871,7 @@ vkr_dispatch_vkGetPhysicalDeviceFormatProperties2(
+ 
+ static void
+ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties2(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetPhysicalDeviceImageFormatProperties2 *args)
+ {
+    struct vkr_physical_device *physical_dev =
+@@ -881,6 +916,17 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties2(
+       }
+    }
+ 
++   if (!vkr_physical_device_image_kind_ok(physical_dev, args->pImageFormatInfo->type,
++                                          args->pImageFormatInfo->tiling)) {
++      vkr_context_refuse(dispatch->data, false, "vkGetPhysicalDeviceImageFormatProperties2",
++                         "imageType %d tiling %d", args->pImageFormatInfo->type,
++                         args->pImageFormatInfo->tiling);
++      memset(&args->pImageFormatProperties->imageFormatProperties, 0,
++             sizeof(args->pImageFormatProperties->imageFormatProperties));
++      args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
++      return;
++   }
++
+    vn_replace_vkGetPhysicalDeviceImageFormatProperties2_args_handle(args);
+    args->ret = vk->GetPhysicalDeviceImageFormatProperties2(
+       args->physicalDevice, args->pImageFormatInfo, args->pImageFormatProperties);
+@@ -912,13 +958,24 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties2(
+ 
+ static void
+ vkr_dispatch_vkGetPhysicalDeviceSparseImageFormatProperties2(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetPhysicalDeviceSparseImageFormatProperties2 *args)
+ {
+    struct vkr_physical_device *physical_dev =
+       vkr_physical_device_from_handle(args->physicalDevice);
+    struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
+ 
++   const VkPhysicalDeviceSparseImageFormatInfo2 *info = args->pFormatInfo;
++   if (!vkr_physical_device_image_kind_ok(physical_dev, info->type, info->tiling) ||
++       !util_is_power_of_two_nonzero(info->samples) || info->samples > VK_SAMPLE_COUNT_64_BIT) {
++      vkr_context_refuse(dispatch->data, false,
++                         "vkGetPhysicalDeviceSparseImageFormatProperties2",
++                         "imageType %d tiling %d samples 0x%x", info->type, info->tiling,
++                         info->samples);
++      *args->pPropertyCount = 0;
++      return;
++   }
++
+    vn_replace_vkGetPhysicalDeviceSparseImageFormatProperties2_args_handle(args);
+    vk->GetPhysicalDeviceSparseImageFormatProperties2(
+       args->physicalDevice, args->pFormatInfo, args->pPropertyCount, args->pProperties);
+diff --git a/src/venus/vkr_physical_device.h b/src/venus/vkr_physical_device.h
+index 251cbd0..3918ecf 100644
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -57,6 +57,12 @@ vkr_physical_device_linear_usage(struct vkr_physical_device *physical_dev,
+                                  VkFormat format,
+                                  VkImageUsageFlags usage);
+ 
++/* OmacVM: an image type and tiling the host driver can be asked about */
++bool
++vkr_physical_device_image_kind_ok(const struct vkr_physical_device *physical_dev,
++                                  VkImageType type,
++                                  VkImageTiling tiling);
++
+ void
+ vkr_physical_device_destroy(struct vkr_context *ctx,
+                             struct vkr_physical_device *physical_dev);

@@ -809,6 +809,12 @@ The less obvious ones, with causes and where the fix lives, are in
   gets there), preload a wrapper (sandboxes, setuid) or patch the VM's Mesa.
   The size is only in the app's EGL import; OmacVM's glvnd vendor library
   hands it to the VA shim (ADR 0063).
+- Do not hand guest Vulkan values to the Mac's driver unchecked. Metal checks
+  texture descriptors in release builds too and ends the process (QEMU, the VM)
+  on one it cannot make; KosmicKrisp and MoltenVK pass guest values on to it.
+  vkr checks image descriptions, binds, layouts, views and samplers first (ADR
+  0065); a vkr path that hands the driver a new guest description needs the
+  same check and a case in `app/runtime/Tests/virgl/test-venus-image-limits.c`.
 - Do not put personal data in this repo.
 
 ## 9. Conventions

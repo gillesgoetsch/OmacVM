@@ -352,3 +352,41 @@ the Mac mini (ADR 0044, "Retake after a display change").
   the app's presentation options; it does not depend on a stale NSScreen.
 - **Where:** the names and types are checked at
   run time by `omacvm-cocoa-fullpanel-retake.patch`.
+
+## Metal ends the process on a texture it cannot make, also in release (October 2026)
+
+Found with #598 (Ghostty and `glxinfo` with Zink ended the VM on Vulkan). Metal
+checks a texture's descriptor when it is made and, if it cannot make it, calls
+`MTLReportFailure` and aborts: `_mtlValidateStrideTextureParameters` for linear
+textures, `newTextureViewWithPixelFormat` checks for views. This runs in release
+builds with no `MTL_*` setting (the crash stacks have no MTLDebug frame), and
+nothing turns it off. KosmicKrisp and MoltenVK pass a Vulkan app's values on to
+it, so in OmacVM.app, where Venus runs in QEMU's process (ADR 0012), a guest
+program's bad image, view or sampler ended the VM. vkr now checks first (ADR 0065).
+
+What ended the process before the check (`Tests/virgl/test-venus-image-limits.c`
+against 3.2.13's vkr and drivers, M4, macOS 27; KK = KosmicKrisp, MVK = MoltenVK;
+the kit's probes in work/zink-abort/out/ have 3 identical runs of each case
+called on the drivers directly):
+
+| What the guest asks | KK | MVK |
+|---|---|---|
+| a LINEAR image with COLOR and INPUT_ATTACHMENT (Zink), bound | abort at bind: "Linear texture: must be of type MTLTextureType2D" | made |
+| LINEAR with 2 levels, 4 samples, a 3D, depth or BC1 format | abort | refused by its create |
+| 5 levels on a 1x1 image; past 16384 texels; past 2048 layers or depth | abort | abort |
+| samples 3 or 64 | abort | abort |
+| a zero width or 0 layers | abort | made |
+| a 2D image with depth 4 | made | abort |
+| a format the driver has no entry for (R64G64B64A64 float): an image or texel view | crash | abort |
+| the same format for a view of an image | crash | made |
+| a view past the image's levels or layers, of another texel size, viewType 7, 3D of 2D, cube of 5 layers | abort | made |
+| a texel view of 2^28 + 65536 R8 texels | abort | made |
+| sampler magFilter 7 | abort | made |
+| `vkGetImageSubresourceLayout` with PLANE_1 on a one-plane image | answers | crash |
+| `vkGetDeviceImageMemoryRequirements` with 5 levels on 1x1 / a LINEAR D32 | abort / abort | abort / answers |
+| a bind of memory of a type the image does not take | (one type only) | abort |
+
+Lives on both and is not refused unless the spec check is cheap: a cube view
+without CUBE_COMPATIBLE, a 2D view of a 3D image without 2D_ARRAY_COMPATIBLE, an
+sRGB view without MUTABLE, anisotropy 17, LOD bias 1e9. A texel view past its
+buffer lives on both but would have the GPU read outside it; it is refused.

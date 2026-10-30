@@ -1463,6 +1463,21 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-resource-logical-s
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-videotoolbox-session-queue.patch"
 grep -q 'dispatch_async_f(codec->dec_q, codec, dec_end_on_queue)' "$virgl_source/src/vrend/virgl_video_vt.c" || \
   die "virgl_video_vt.c: VideoToolbox sessions are not on the decoders' queues (session-queue patch)"
+# OmacVM Venus: what a guest's Vulkan calls hand the Mac's driver is checked first: Metal
+# under KosmicKrisp and MoltenVK ends QEMU's process on what it cannot make (ADR 0065, #598).
+# The emulated LINEAR modifier asks the host with INPUT_ATTACHMENT (Zink's linear render
+# target), image descriptions, binds and layout queries stay inside the driver's own limits,
+# views and samplers inside their image, buffer and enums.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-linear-modifier-usage.patch"
+grep -q 'pImageFormatInfo->usage = vkr_physical_device_linear_usage(' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_physical_device.c: the LINEAR modifier question still leaves out INPUT_ATTACHMENT (linear-modifier-usage patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-image-limits.patch"
+grep -q 'if (!vkr_image_info_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {' "$virgl_source/src/venus/vkr_image.c" || \
+  die "vkr_image.c: vkCreateImage does not check the image against the driver's limits (image-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-view-limits.patch"
+grep -q 'if (!vkr_image_view_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'if (!vkr_buffer_view_ok(vkr_device_from_handle(args->device), args->pCreateInfo, why,' "$virgl_source/src/venus/vkr_buffer.c" || \
+  die "vkr_image.c, vkr_buffer.c: views are not checked against their image and buffer (view-limits patch)"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
@@ -1646,6 +1661,17 @@ log "Relocating, capability-gating, signing, and publishing the runtime"
 "$native_dir/Tests/net/test-slirp-udp-stall.sh" \
   "$native_dir/.build/qemu-gpu-runtime/bin/qemu-system-aarch64" || \
   die "the slirp UDP stall test failed"
+
+# A guest's Vulkan calls never reach the Mac's driver with what Metal ends QEMU on (ADR 0065):
+# each case through vkr's own dispatch on the staged runtime's real drivers (KosmicKrisp and
+# MoltenVK), one process per case; objects and binds only, nothing runs on the GPU.
+python3 "$native_dir/Tests/virgl/run-venus-limits.py" \
+  "$virgl_build" "$work_dir/venus-limits" "$native_dir/.build/qemu-gpu-runtime" -- \
+  "-L$epoxy_root/lib" -lepoxy \
+  -framework Metal -framework CoreFoundation -lobjc \
+  -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
+  "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib" || \
+  die "the Venus image limits test failed"
 
 # The firmware must show the logo and name the disk's boot entry as QEMU's
 # does, with the QEMU it ships with (Tests/firmware/test-firmware.py).

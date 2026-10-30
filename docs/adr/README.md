@@ -50,5 +50,6 @@ a new record replaces it and says so.
 | [0061](0061-video-surfaces-at-their-own-size.md) | Video surfaces at their own size: the guest's VA-API shim declares each surface's size (a NOP payload), the Mac's shaders sample the rounded planes at it; no copy | accepted, built (`video-edge`, 3.2.11), on by default |
 | [0062](0062-free-page-reclaim.md) | Memory the VM gives back leaves the Mac: QEMU moves a reported range's old pages aside and a worker advises them `MADV_FREE_REUSABLE` (before, they stayed resident or compressed until QEMU quit) | accepted, built (`vm-memory-reclaim`), always on |
 | [0063](0063-video-size-from-the-apps-import.md) | Videos at the size the app imports them: a glvnd EGL vendor library in front of Mesa's hands an app's video imports to the VA shim, which says the size for surfaces at the coded size (H.264 1080p: 1088 rows) | accepted, built (`h264-edge`, 3.2.12), on with the 3.2.11 app's marker |
+| [0065](0065-venus-checks-what-metal-aborts-on.md) | Venus checks what the Mac's Vulkan driver aborts on: image descriptions against the driver's own format answer, binds, layouts, views and samplers, before KosmicKrisp or MoltenVK (Metal) gets them; amends 0012 | accepted, built (`zink-abort`, 3.2.14), always on |
 
 The whole chain: [../architecture/graphics.md](../architecture/graphics.md).
