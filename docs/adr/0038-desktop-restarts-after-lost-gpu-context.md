@@ -135,6 +135,9 @@ the old Chrome back 1.3 s after it. Restarted while QEMU still saw critical
 did not tell the VM again within its minute: Chrome stayed blank, which is
 why the runtime change at critical ships with this. The step by hand while
 critical held did the same: its new GPU process was lost again at once.
+With that runtime change (ADR 0034's 3.2.15 amendment) the same steps lost
+nothing, and a Chrome lost at critical past its grace drew right again
+about 2 s after the loss while critical still held.
 After two ends in 95 s
 (that restart, then one by hand) Chrome still drew with the GPU, but the
 WebGL page's context stayed lost (Chrome blocks WebGL on a page after GPU
