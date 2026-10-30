@@ -46,7 +46,14 @@ plan() {   # FREE_HOME ARGS... -> the plan's JSON or its last message, then "rc 
   rc=$?
   printf '%s\nrc %s\n' "$out" "$rc"
 }
-field() { python3 -c 'import json, sys; d = json.loads(sys.stdin.read().rsplit("\nrc ", 1)[0]); print(eval(sys.argv[1]))' "$1" 2>/dev/null || echo "no JSON"; }
+# Not JSON: "no JSON", and the output with python's error on stderr (CI's log), so a failure says why.
+field() {
+  local in; in=$(cat)
+  python3 -c 'import json, sys; d = json.loads(sys.stdin.read().rsplit("\nrc ", 1)[0]); print(eval(sys.argv[1]))' "$1" \
+    <<<"$in" 2> "$T/field.err" && return
+  echo "no JSON"
+  { echo "---- $1: not read ($(tail -1 "$T/field.err")); the plan's output:"; head -c 4000 <<<"$in"; echo "----"; } >&2
+}
 
 # A Mac with 20 GB free, the VM to a drive with 100: built there.
 out=$(plan 20 --vm-dir "$T/drive")
