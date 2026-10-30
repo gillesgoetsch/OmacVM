@@ -986,6 +986,42 @@ class RefreshWidget(unittest.TestCase):
                 script.write_text("echo something else\n")
                 self.assertEqual(od.session_state(), "open")
 
+    def test_a_shell_that_takes_no_calls_is_busy(self):
+        # session-lock.sh still waiting on the shell after 15 s: busy, as its
+        # own word for a shell that runs and does not answer (not open).
+        with mock.patch.object(od.subprocess, "run", side_effect=od.subprocess.TimeoutExpired("bash", 15)):
+            self.assertEqual(od.session_state(), "busy")
+        with mock.patch.object(od.subprocess, "run", side_effect=OSError("no bash")):
+            self.assertEqual(od.session_state(), "open")             # no bash, no script: as before
+
+
+class AgentStart(unittest.TestCase):
+    def test_the_display_sync_does_not_wait_for_the_widget(self):
+        # The first start after an Omarchy update that changed the display
+        # panel, with a busy shell: the widget's rebuild waits for the shell,
+        # the agent (the hello to the Mac, the display sync) starts at once.
+        import threading
+        order, widget_done, agent_ran = [], threading.Event(), threading.Event()
+
+        def widget():
+            agent_ran.wait(5)
+            order.append("widget rebuilt")
+            widget_done.set()
+
+        class FakeAgent:
+            def run(self):
+                order.append("agent")
+                agent_ran.set()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            port = pathlib.Path(tmp) / "port"
+            port.write_text("")
+            with mock.patch.object(od, "PORT", port), mock.patch.object(od, "refresh_widget", side_effect=widget), \
+                    mock.patch.object(od, "Agent", FakeAgent):
+                self.assertEqual(od.main(["omacvm-displays"]), 0)
+                widget_done.wait(5)
+        self.assertEqual(order, ["agent", "widget rebuilt"])
+
 
 class ConfigWatchTest(unittest.TestCase):
     def test_wakes_on_a_change_or_falls_back(self):

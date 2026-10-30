@@ -12,6 +12,11 @@
 # the unlock.
 set -uo pipefail
 [[ -n ${OMARCHY_PATH:-} ]] || source /usr/share/omarchy/default/bash/env-bootstrap 2>/dev/null
+# lib/install-plugin.sh runs this through root's sudo -u, without a locale:
+# qs then prints Qt's locale warning before each answer, and Omarchy's
+# omarchy-plugin-enable, which wants the answer "ok", fails though the shell
+# enabled the plugin. Such an id stayed queued for the next unlocked call.
+export LC_ALL=C.UTF-8
 ST=${XDG_STATE_HOME:-$HOME/.local/state}/omacvm
 Q=$ST/pending-plugins
 CL=$ST/pending-clock

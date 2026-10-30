@@ -34,6 +34,10 @@ VERSION = 1
 VERSION_LINE = f"// omarchy-notch-bar display panel patch v{VERSION}"
 CLONE_ID = "omanotch.monitor"
 LOCKED = "the session is locked: at the next start"
+# Seconds a shell that runs but does not answer gets before it counts as
+# locked: notchcast's start right after a login, uninstall.sh right after its
+# own reload, install.sh right after a shell restart. None of them asks again.
+BUSY_WAIT = 20
 
 HELPERS = f"""  // --- omarchy-notch-bar ------------------------------------------------
   {VERSION_LINE}
@@ -100,14 +104,33 @@ def run(*cmd, timeout=10):
         return ""
 
 
-def session_locked():
+def shell_up():
+    """The shell answers."""
+    try:
+        return subprocess.run(["omarchy-shell", "shell", "ping"], capture_output=True, timeout=10,
+                              check=False).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def session_locked(wait=BUSY_WAIT):
     """Omarchy's lock screen is up or on its way: its lock status, read at the
     call (requested, sessionLocked or secure), as copies.py reads it. Under
     the lock nothing is written in the plugins folder and nothing rescanned:
     the shell of omarchy-mac 4.0.3 reloads every plugin then, its lock screen
     too, and the new one has no password field. Not isLocked: with Quickshell
     0.3.2 and older it answers true after the first unlock until the shell
-    restarts (omarchy-mac#738)."""
+    restarts (omarchy-mac#738). A shell that runs but does not answer
+    (starting, reloading) counts as locked once WAIT seconds are up, as in
+    OmacVM's guest/session-lock.sh; no shell, not locked."""
+    deadline = time.monotonic() + wait
+    while not shell_up():
+        if not run("pgrep", "-u", str(os.getuid()), "-x", "quickshell").strip():
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(1)
+
     def last(text):
         lines = text.strip().splitlines()   # in a C locale qs prints Qt's warning first
         return lines[-1].strip() if lines else ""
