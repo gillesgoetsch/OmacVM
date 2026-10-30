@@ -1,0 +1,398 @@
+virglrenderer: Venus pipeline create infos stay inside what the driver indexes
+
+What: each stage of a graphics or compute pipeline is one stage bit the
+pipeline may have, once, with an entry name and code (a module, or SPIR-V
+chained into the stage whose size is a whole number of words); its
+specialization entries lie inside its data; dynamic states are ones Mesa's
+vk_graphics_state knows; vertex bindings, locations, divisors and strides,
+viewport and scissor counts, color blend attachment counts (equal to the
+subpass's or the rendering info's colors where the attachments are read),
+color write enables, attachment locations and input indices are within the
+device's limits; the subpass is one the pass has; rendering info colors and
+view mask within the limits; sample counts and sample locations ones the
+device has; topology, cull mode, compare and stencil ops, blend factors and
+ops, logic op, blend overlap and robustness behaviors are known values
+(fields a dynamic state replaces are left alone); creation feedback has one
+entry per stage or none. A refused create ends the app's context (the guest
+creates pipelines without waiting).
+Why: Mesa's vk_graphics_state and vk_pipeline (KosmicKrisp, NDEBUG) copy
+viewports into arrays of 16 (32 viewports: SIGBUS), color blend state into 8
+(32: stack overflow), vertex input into 32, sample locations into 32 and
+attachment locations into 8, index per-stage arrays by the stage bit, read
+specialization data at the entry's offset (a host read), write creation
+feedback per entry, and end their switches in UNREACHABLE on an unknown
+dynamic state, blend factor, op, logic op, compare op or cull mode; a stage
+without a module dereferences NULL in both drivers; MoltenVK reads a blend
+attachment per subpass color (3 against 1: SIGSEGV). Inline SPIR-V in a stage
+skipped vkr's only shader check (codeSize % 4).
+Upstream: OmacVM policy (spec VUIDs), draft only.
+Tests: Tests/virgl/test-venus-commands.c (the p- cases).
+
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 00d30cb..bb1f333 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -8,6 +8,7 @@
+ #include "vkr_pipeline_gen.h"
+ #include "vkr_descriptor_set.h"
+ #include "vkr_physical_device.h"
++#include "vkr_render_pass.h"
+ 
+ static void
+ vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
+@@ -195,6 +196,311 @@ vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_p
+    }
+ }
+ 
++/* OmacVM (virgl-venus-pipeline-limits.patch, ADR 0065): a pipeline's create info names
++ * stages, vertex bindings, viewports, color attachments, samples, subpasses, dynamic
++ * states and enum values inside what the driver indexes. Mesa's vk_graphics_state
++ * (KosmicKrisp, NDEBUG) copies viewports into arrays of 16, color blend state into 8,
++ * vertex bindings and attributes into 32, sample locations into 32 and attachment
++ * locations into 8, indexes per-stage arrays by the stage bit, reads a specialization
++ * entry at its offset in the data, writes creation feedback per stage, and ends its
++ * switches in UNREACHABLE for a dynamic state, blend factor, blend op, logic op, compare op
++ * or cull mode it does not know; MoltenVK reads a blend attachment per subpass color. A
++ * refused create ends the app's context (the guest creates pipelines without waiting). */
++
++/* the graphics stages the drivers build: Mesa indexes its stage arrays by the bit */
++#define VKR_GRAPHICS_STAGES                                                                \
++   (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |                 \
++    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |            \
++    VK_SHADER_STAGE_FRAGMENT_BIT)
++
++/* the dynamic states Mesa's vk_graphics_state knows (its switch ends in UNREACHABLE) */
++static bool
++vkr_dynamic_state_ok(VkDynamicState state)
++{
++   switch (state) {
++   case VK_DYNAMIC_STATE_VIEWPORT:
++   case VK_DYNAMIC_STATE_SCISSOR:
++   case VK_DYNAMIC_STATE_LINE_WIDTH:
++   case VK_DYNAMIC_STATE_DEPTH_BIAS:
++   case VK_DYNAMIC_STATE_BLEND_CONSTANTS:
++   case VK_DYNAMIC_STATE_DEPTH_BOUNDS:
++   case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK:
++   case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK:
++   case VK_DYNAMIC_STATE_STENCIL_REFERENCE:
++   case VK_DYNAMIC_STATE_CULL_MODE:
++   case VK_DYNAMIC_STATE_FRONT_FACE:
++   case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY:
++   case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT:
++   case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT:
++   case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE:
++   case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE:
++   case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE:
++   case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP:
++   case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE:
++   case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE:
++   case VK_DYNAMIC_STATE_STENCIL_OP:
++   case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
++   case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE:
++   case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE:
++   case VK_DYNAMIC_STATE_LINE_STIPPLE:
++   case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_EXT:
++   case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_DISCARD_RECTANGLE_MODE_EXT:
++   case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT:
++   case VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR:
++   case VK_DYNAMIC_STATE_VERTEX_INPUT_EXT:
++   case VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT:
++   case VK_DYNAMIC_STATE_LOGIC_OP_EXT:
++   case VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_TESSELLATION_DOMAIN_ORIGIN_EXT:
++   case VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_POLYGON_MODE_EXT:
++   case VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT:
++   case VK_DYNAMIC_STATE_SAMPLE_MASK_EXT:
++   case VK_DYNAMIC_STATE_ALPHA_TO_COVERAGE_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_ALPHA_TO_ONE_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_LOGIC_OP_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT:
++   case VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT:
++   case VK_DYNAMIC_STATE_RASTERIZATION_STREAM_EXT:
++   case VK_DYNAMIC_STATE_CONSERVATIVE_RASTERIZATION_MODE_EXT:
++   case VK_DYNAMIC_STATE_EXTRA_PRIMITIVE_OVERESTIMATION_SIZE_EXT:
++   case VK_DYNAMIC_STATE_DEPTH_CLIP_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT:
++   case VK_DYNAMIC_STATE_LINE_RASTERIZATION_MODE_EXT:
++   case VK_DYNAMIC_STATE_LINE_STIPPLE_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE_EXT:
++   case VK_DYNAMIC_STATE_ATTACHMENT_FEEDBACK_LOOP_ENABLE_EXT:
++   case VK_DYNAMIC_STATE_DEPTH_CLAMP_RANGE_EXT:
++   case VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT:
++      return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++vkr_robustness_ok(const VkPipelineRobustnessCreateInfo *r)
++{
++   return !r || ((uint32_t)r->storageBuffers <= VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2 &&
++                 (uint32_t)r->uniformBuffers <= VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2 &&
++                 (uint32_t)r->vertexInputs <= VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2 &&
++                 (uint32_t)r->images <= VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2);
++}
++
++/* a stage: one bit of the allowed ones, code (a module, or SPIR-V chained into it whose
++ * size the decoder copied whole), an entry name, specialization entries inside its data */
++static bool
++vkr_stage_ok(const VkPipelineShaderStageCreateInfo *st,
++             VkShaderStageFlags allowed,
++             char *why,
++             size_t why_size)
++{
++   const VkShaderModuleCreateInfo *code =
++      vkr_find_struct(st->pNext, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
++   if (!vkr_one_bit(st->stage) || !(st->stage & allowed) || !st->pName ||
++       (st->module == VK_NULL_HANDLE && (!code || !code->codeSize || (code->codeSize & 3)))) {
++      snprintf(why, why_size, "stage 0x%x: %s", st->stage,
++               !st->pName ? "no entry name"
++               : st->module == VK_NULL_HANDLE ? "no module and no code of a size in words"
++                                              : "not a stage of this pipeline");
++      return false;
++   }
++   if (!vkr_robustness_ok(vkr_find_struct(st->pNext, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO))) {
++      snprintf(why, why_size, "stage 0x%x: a robustness behavior", st->stage);
++      return false;
++   }
++   const VkSpecializationInfo *spec = st->pSpecializationInfo;
++   for (uint32_t i = 0; spec && i < spec->mapEntryCount; i++) {
++      const VkSpecializationMapEntry *e = &spec->pMapEntries[i];
++      if (!vkr_range_ok(e->offset, e->size, spec->dataSize)) {
++         snprintf(why, why_size, "stage 0x%x: specialization entry %u, %zu bytes at %u of %zu",
++                  st->stage, i, e->size, e->offset, spec->dataSize);
++         return false;
++      }
++   }
++   return true;
++}
++
++static bool
++vkr_dynamic(const VkPipelineDynamicStateCreateInfo *d, VkDynamicState state)
++{
++   for (uint32_t i = 0; d && i < d->dynamicStateCount; i++) {
++      if (d->pDynamicStates[i] == state)
++         return true;
++   }
++   return false;
++}
++
++static bool
++vkr_stencil_ok(const VkStencilOpState *s)
++{
++   return vkr_stencil_op_ok(s->failOp) && vkr_stencil_op_ok(s->passOp) &&
++          vkr_stencil_op_ok(s->depthFailOp) && vkr_compare_op_ok(s->compareOp);
++}
++
++static bool
++vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
++                         const VkGraphicsPipelineCreateInfo *info,
++                         char *why,
++                         size_t why_size)
++{
++   const struct vkr_limits *l = &physical_dev->limits;
++   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   const VkPipelineDynamicStateCreateInfo *dyn = info->pDynamicState;
++
++   for (uint32_t i = 0; dyn && i < dyn->dynamicStateCount; i++) {
++      if (!vkr_dynamic_state_ok(dyn->pDynamicStates[i])) {
++         snprintf(why, why_size, "dynamic state %d", dyn->pDynamicStates[i]);
++         return false;
++      }
++   }
++   VkShaderStageFlags seen = 0;
++   for (uint32_t i = 0; i < info->stageCount; i++) {
++      if (!vkr_stage_ok(&info->pStages[i], VKR_GRAPHICS_STAGES & ~seen, why, why_size))
++         return false;
++      seen |= info->pStages[i].stage;
++   }
++
++   /* the color attachments the blend state must describe */
++   const VkPipelineRenderingCreateInfo *rendering =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
++   const struct vkr_render_pass *pass = vkr_render_pass_from_handle(info->renderPass);
++   uint32_t colors = 0;
++   if (pass) {
++      if (info->subpass >= pass->subpass_count) {
++         snprintf(why, why_size, "subpass %u of %u", info->subpass, pass->subpass_count);
++         return false;
++      }
++      colors = pass->subpasses[info->subpass].colors;
++   } else if (rendering) {
++      if (rendering->colorAttachmentCount > lim->maxColorAttachments ||
++          !vkr_view_mask_ok(l, rendering->viewMask)) {
++         snprintf(why, why_size, "rendering with %u colors (at most %u), view mask 0x%x (views %u)",
++                  rendering->colorAttachmentCount, lim->maxColorAttachments, rendering->viewMask,
++                  l->multiview_views);
++         return false;
++      }
++      colors = rendering->colorAttachmentCount;
++   }
++   const VkRenderingAttachmentLocationInfo *locations =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO);
++   const VkRenderingInputAttachmentIndexInfo *inputs =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_INPUT_ATTACHMENT_INDEX_INFO);
++   const VkPipelineCreationFeedbackCreateInfo *feedback =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
++   if ((locations && locations->colorAttachmentCount > lim->maxColorAttachments) ||
++       (inputs && inputs->colorAttachmentCount > lim->maxColorAttachments) ||
++       (feedback && feedback->pipelineStageCreationFeedbackCount &&
++        feedback->pipelineStageCreationFeedbackCount != info->stageCount) ||
++       !vkr_robustness_ok(vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO))) {
++      snprintf(why, why_size, "%u attachment locations, %u input indices (at most %u), feedback "
++               "for %u of %u stages, or a robustness behavior",
++               locations ? locations->colorAttachmentCount : 0,
++               inputs ? inputs->colorAttachmentCount : 0, lim->maxColorAttachments,
++               feedback ? feedback->pipelineStageCreationFeedbackCount : 0, info->stageCount);
++      return false;
++   }
++
++   const VkPipelineVertexInputStateCreateInfo *vi = info->pVertexInputState;
++   if (vi) {
++      const VkPipelineVertexInputDivisorStateCreateInfo *div = vkr_find_struct(
++         vi->pNext, VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO);
++      bool ok = vi->vertexBindingDescriptionCount <= lim->maxVertexInputBindings &&
++                vi->vertexAttributeDescriptionCount <= lim->maxVertexInputAttributes;
++      for (uint32_t i = 0; ok && i < vi->vertexBindingDescriptionCount; i++) {
++         const VkVertexInputBindingDescription *b = &vi->pVertexBindingDescriptions[i];
++         ok = b->binding < lim->maxVertexInputBindings &&
++              b->stride <= lim->maxVertexInputBindingStride &&
++              (uint32_t)b->inputRate <= VK_VERTEX_INPUT_RATE_INSTANCE;
++      }
++      for (uint32_t i = 0; ok && i < vi->vertexAttributeDescriptionCount; i++) {
++         const VkVertexInputAttributeDescription *a = &vi->pVertexAttributeDescriptions[i];
++         ok = a->location < lim->maxVertexInputAttributes && a->binding < lim->maxVertexInputBindings;
++      }
++      for (uint32_t i = 0; ok && div && i < div->vertexBindingDivisorCount; i++)
++         ok = div->pVertexBindingDivisors[i].binding < lim->maxVertexInputBindings;
++      if (!ok) {
++         snprintf(why, why_size, "vertex input: a binding, location or stride past %u, %u, %u",
++                  lim->maxVertexInputBindings, lim->maxVertexInputAttributes,
++                  lim->maxVertexInputBindingStride);
++         return false;
++      }
++   }
++   if (info->pInputAssemblyState && !vkr_topology_ok(info->pInputAssemblyState->topology)) {
++      snprintf(why, why_size, "topology %d", info->pInputAssemblyState->topology);
++      return false;
++   }
++   const VkPipelineViewportStateCreateInfo *vp = info->pViewportState;
++   if (vp && (vp->viewportCount > lim->maxViewports || vp->scissorCount > lim->maxViewports)) {
++      snprintf(why, why_size, "%u viewports, %u scissors (at most %u)", vp->viewportCount,
++               vp->scissorCount, lim->maxViewports);
++      return false;
++   }
++   const VkPipelineRasterizationStateCreateInfo *rs = info->pRasterizationState;
++   if (rs && !vkr_dynamic(dyn, VK_DYNAMIC_STATE_CULL_MODE) && !vkr_cull_mode_ok(rs->cullMode)) {
++      snprintf(why, why_size, "cull mode %u", rs->cullMode);
++      return false;
++   }
++   const VkPipelineMultisampleStateCreateInfo *ms = info->pMultisampleState;
++   if (ms) {
++      const VkPipelineSampleLocationsStateCreateInfoEXT *sl = vkr_find_struct(
++         ms->pNext, VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT);
++      if ((!vkr_dynamic(dyn, VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT) &&
++           !vkr_sample_count_ok(lim, ms->rasterizationSamples)) ||
++          (sl && !vkr_dynamic(dyn, VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT) &&
++           !vkr_sample_locations_ok(l, &sl->sampleLocationsInfo))) {
++         snprintf(why, why_size, "%u samples, or sample locations", ms->rasterizationSamples);
++         return false;
++      }
++   }
++   const VkPipelineDepthStencilStateCreateInfo *ds = info->pDepthStencilState;
++   if (ds && ((!vkr_dynamic(dyn, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP) &&
++               !vkr_compare_op_ok(ds->depthCompareOp)) ||
++              (!vkr_dynamic(dyn, VK_DYNAMIC_STATE_STENCIL_OP) &&
++               (!vkr_stencil_ok(&ds->front) || !vkr_stencil_ok(&ds->back))))) {
++      snprintf(why, why_size, "depth compare op %d, or a stencil op", ds->depthCompareOp);
++      return false;
++   }
++   const VkPipelineColorBlendStateCreateInfo *cb = info->pColorBlendState;
++   if (cb) {
++      const VkPipelineColorWriteCreateInfoEXT *cw =
++         vkr_find_struct(cb->pNext, VK_STRUCTURE_TYPE_PIPELINE_COLOR_WRITE_CREATE_INFO_EXT);
++      const VkPipelineColorBlendAdvancedStateCreateInfoEXT *adv = vkr_find_struct(
++         cb->pNext, VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_ADVANCED_STATE_CREATE_INFO_EXT);
++      /* with enable, equation and write mask all dynamic, pAttachments is not read */
++      const bool attachments_read = !(vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT) &&
++                                      vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT) &&
++                                      vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT));
++      bool ok = cb->attachmentCount <= lim->maxColorAttachments &&
++                (!cb->pAttachments || !attachments_read || !colors || cb->attachmentCount == colors) &&
++                (!cw || cw->attachmentCount <= lim->maxColorAttachments) &&
++                (!adv || vkr_blend_overlap_ok(adv->blendOverlap)) &&
++                (!cb->logicOpEnable || vkr_dynamic(dyn, VK_DYNAMIC_STATE_LOGIC_OP_EXT) ||
++                 vkr_logic_op_ok(cb->logicOp));
++      const bool equation = !vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT);
++      for (uint32_t i = 0; ok && cb->pAttachments && attachments_read && equation &&
++                           i < cb->attachmentCount; i++) {
++         const VkPipelineColorBlendAttachmentState *a = &cb->pAttachments[i];
++         ok = vkr_blend_factor_ok(a->srcColorBlendFactor) &&
++              vkr_blend_factor_ok(a->dstColorBlendFactor) &&
++              vkr_blend_factor_ok(a->srcAlphaBlendFactor) &&
++              vkr_blend_factor_ok(a->dstAlphaBlendFactor) && vkr_blend_op_ok(l, a->colorBlendOp) &&
++              vkr_blend_op_ok(l, a->alphaBlendOp);
++      }
++      if (!ok) {
++         snprintf(why, why_size,
++                  "a color blend state of %u attachments for %u colors (at most %u), %u color "
++                  "write enables, or a blend factor, op or logic op", cb->attachmentCount, colors,
++                  lim->maxColorAttachments, cw ? cw->attachmentCount : 0);
++         return false;
++      }
++   }
++   return true;
++}
++
+ static void
+ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+                                        struct vn_command_vkCreateGraphicsPipelines *args)
+@@ -204,6 +510,16 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct object_array arr;
+ 
++   /* OmacVM (virgl-venus-pipeline-limits.patch): read before the handles are replaced */
++   char why[192];
++   for (uint32_t i = 0; i < args->createInfoCount; i++) {
++      if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos[i], why,
++                                    sizeof(why))) {
++         vkr_context_refuse(ctx, true, "vkCreateGraphicsPipelines", "pipeline %u: %s", i, why);
++         return;
++      }
++   }
++
+    if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
+       return;
+ 
+@@ -220,6 +536,26 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct object_array arr;
+ 
++   /* OmacVM (virgl-venus-pipeline-limits.patch) */
++   char why[192];
++   for (uint32_t i = 0; i < args->createInfoCount; i++) {
++      const VkComputePipelineCreateInfo *info = &args->pCreateInfos[i];
++      const VkPipelineCreationFeedbackCreateInfo *feedback =
++         vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
++      if (!vkr_stage_ok(&info->stage, VK_SHADER_STAGE_COMPUTE_BIT, why, sizeof(why)) ||
++          !vkr_context_check(ctx,
++                             (!feedback || feedback->pipelineStageCreationFeedbackCount <= 1) &&
++                                vkr_robustness_ok(vkr_find_struct(
++                                   info->pNext, VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO)),
++                             "vkCreateComputePipelines",
++                             "pipeline %u: feedback for %u stages, or a robustness behavior", i,
++                             feedback ? feedback->pipelineStageCreationFeedbackCount : 0)) {
++         if (!vkr_context_get_fatal(ctx))
++            vkr_context_refuse(ctx, true, "vkCreateComputePipelines", "pipeline %u: %s", i, why);
++         return;
++      }
++   }
++
+    if (vkr_compute_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
+       return;
+ 

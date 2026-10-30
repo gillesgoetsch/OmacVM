@@ -1512,6 +1512,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-render-pass-
 grep -q 'vkr_metal_max_vertex_amplification());' "$virgl_source/src/venus/vkr_physical_device.c" && \
   grep -q 'vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_physical_device.c, vkr_command_buffer.c: render passes and view counts are not checked (render-pass-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-limits.patch"
+grep -q 'if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos\[i\], why,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: pipeline create infos are not checked (pipeline-limits patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
