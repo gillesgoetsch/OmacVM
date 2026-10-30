@@ -146,11 +146,12 @@ The first amendment's "Critical: new big resources are refused" (with the
 desktop's reserve: made for the desktop only, so the app that takes one is
 lost) cost an app its context at every new big buffer for as long as macOS
 stayed critical, also one that only replaced a buffer it had just freed. On a
-Mac mini with 16 GB (2026-10-30: a 12 GB VM, Chrome full screen at 5K) the
-VM's memory, not its graphics, kept macOS critical for minutes: Chrome lost
-its context at its next window buffer (24-59 MB), and a Chrome started again
-at its first ("chrome crashes and flickers unusable"). The refusal barely
-helped the Mac: a lost context frees little until its app ends.
+Mac mini with 16 GB (2026-10-30: a 12 GB VM, Chrome full screen at 5K)
+mostly the VM's memory kept macOS critical for minutes (its graphics were
+about 5 GB of the 14.5-17.7 GB the VM really held): Chrome lost its context
+at its next window buffer (24-56 MB), and a Chrome started again at its first
+("chrome crashes and flickers unusable"). The refusal barely helped the Mac:
+a lost context frees little until its app ends.
 
 Options: (1) critical gets warn's rule (refused only what does not fit in
 what macOS has left): simplest, but nothing then bounds a runaway VM at
@@ -169,8 +170,9 @@ within what was in use when critical began plus a grace: a 32nd of the Mac's
 memory, 256 MB to 1 GB (8 GB Mac: 256 MB, 16 GB: 512 MB, 32 GB and more:
 1 GB). The baseline is set at the first look that sees critical (a room
 check or QEMU's once-a-second look) and cleared when that once-a-second look
-sees less than critical; QEMU's log says both numbers. Past the grace it is
-as before: made for the desktop only, an app that takes it is lost (and from
+sees less than critical, so each new critical period sets a new baseline;
+QEMU's log says both numbers. Past the grace it is as before: made for the
+desktop only, an app that takes it is lost (and from
 3.2.15 gets a new GPU process, ADR 0038's amendment). Warn, the desktop's own
 resources, screens and cursors, the guard and its desktop reserve are
 unchanged.
@@ -179,9 +181,11 @@ Consequences: an app can replace its buffers at critical without end and
 grow by a little. The VM's graphics can grow by up to the grace while macOS
 is critical (before: no new big buffer at all; small ones never were held
 back), so a runaway at critical is stopped after the grace instead of at
-once. The rule's test runs on any build Mac's grace (256 MB to 1 GB): the
-level file takes the memory left (`critical:40`) like
-`OMACVM_GPU_MEMORY_PRESSURE`.
+once. As each new critical period sets a new baseline, a VM whose pressure
+goes in and out of critical can grow by a grace each time (at warn in
+between, only what does not fit in what macOS has left is refused). The
+rule's test runs on any build Mac's grace (256 MB to 1 GB): the level file
+takes the memory left (`critical:40`) like `OMACVM_GPU_MEMORY_PRESSURE`.
 
 The budget itself was considered again the same day (the user's peak: 4.6 GB
 of graphics at 5K with GPU compute on; a budget sized from the VM's memory,

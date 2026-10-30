@@ -8,7 +8,7 @@ in more words.
 - **While the Mac is short of memory, apps in the VM keep their graphics when they only replace
   buffers (reported by the user).** While macOS's memory pressure was critical, OmacVM.app gave an
   app no new big graphics buffer (16 MB or more), and the app that made one lost its graphics: Chrome
-  at its next window buffer (about 59 MB at 5K), and a Chrome started again at its first, for as long
+  at its next window buffer (about 56 MB at 5K), and a Chrome started again at its first, for as long
   as macOS stayed critical (minutes on a Mac mini with 16 GB and a 12 GB VM). Now an app may replace
   its buffers there, and the VM's graphics may grow by a 32nd of the Mac's memory (256 MB to 1 GB;
   512 MB on 16 GB) past what they used when critical began, in buffers that fit in what macOS has

@@ -1363,7 +1363,7 @@ Fusion: nothing changes (their balloons do not report free pages).
   fits in what macOS has left and the VM's graphics memory stays within what
   it used when critical began plus a grace: a 32nd of the Mac's memory,
   256 MB to 1 GB (16 GB Mac: 512 MB). So an app can go on replacing its
-  window buffers (a 5K one is about 59 MB), and only growth past the grace
+  window buffers (a 5K one is about 56 MB), and only growth past the grace
   is stopped. 3.2.14 and older refused every new big buffer at critical, so
   a browser lost its graphics at its next window for as long as critical
   lasted. Before a refusal QEMU frees what it can and looks again three
