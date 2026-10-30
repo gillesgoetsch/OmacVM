@@ -9,7 +9,8 @@ in more words.
   "Chromium (WebGPU)" menu entry showed a video's first frames and then stopped: the first picture
   from the Mac's media engine restarted its GPU process, and every page's WebGPU with it. It now
   decodes video on the CPU (a 1080p30 clip at 30 fps, none dropped). The normal Chromium entry
-  keeps decoding on the Mac's media engine. Needs Update VM or `omacvm update`.
+  keeps decoding on the Mac's media engine. Needs Update VM or `omacvm update`, then quit
+  Chromium and start Chromium (WebGPU) again.
 
 ## 3.2.14
 
