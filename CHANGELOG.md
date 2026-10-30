@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15 (unreleased)
+
+- **Videos play in Chromium (WebGPU).** In an OmacVM.app VM with Graphics on Vulkan, the
+  "Chromium (WebGPU)" menu entry showed a video's first frames and then stopped: the first picture
+  from the Mac's media engine restarted its GPU process, and every page's WebGPU with it. It now
+  decodes video on the CPU (a 1080p30 clip at 30 fps, none dropped). The normal Chromium entry
+  keeps decoding on the Mac's media engine. Needs Update VM or `omacvm update`.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
