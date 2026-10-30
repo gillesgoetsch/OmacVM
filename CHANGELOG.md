@@ -3,37 +3,41 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.14 (unreleased)
+## 3.2.14
 
-- **A program in the VM can no longer stop the whole VM through the Mac's Vulkan driver.** In an
-  OmacVM.app VM with Graphics on Vulkan (Automatic gives it on macOS 26 and newer), a program that
-  used Zink (OpenGL on Vulkan) could stop the whole VM: `glxinfo` with Zink, or Ghostty with Zink
-  and OpenGL 4.3 forced. Zink asked for a kind of linear image the Mac's driver cannot make, was
-  told it could, and Metal then ended QEMU's process. Other unusual Vulkan requests did the same
-  (too many levels or layers, a view past its image, a format the driver does not know, an
-  unknown sampler filter). The VM now checks such requests before the Mac's driver gets them: the
-  program gets a Vulkan error, or ends on its own, and the VM goes on; Zink is told that image is
-  not supported. Found while testing #598, reported by @benoitdepaire. Needs the app update
-  (from the VM's next start).
+In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
+(Graphics on Vulkan), and Ghostty opens and draws. Needs the app update for the Vulkan checks
+(from the VM's next start), then Update VM or `omacvm update` and a new Ghostty (log out and in)
+for Ghostty. UTM, VMware Fusion and Parallels: nothing changes.
 
-- **Ghostty opens and draws in OmacVM.app VMs (#598).** Ghostty 1.2 and newer need OpenGL 4.3, and
-  an OmacVM.app VM's OpenGL is 4.1 (virgl on the Mac's OpenGL), so Ghostty opened no window
-  ("Ghostty requires OpenGL 4.3"). OmacVM's EGL library in the VM now starts Ghostty, and only
-  Ghostty, on Mesa's CPU renderer (llvmpipe, OpenGL 4.6); the programs started inside it keep the
-  Mac's GPU, and a driver variable set by hand still wins. That costs the VM's CPU: 10 s of fast
-  output took Ghostty about 20 CPU-seconds in a 1272x640-pixel window at scale 2, about 2 of a
-  4-CPU VM's cores (foot 0.8, Alacritty 0.6), and 35 in a 2512x1500-pixel one, nearly the whole
-  VM (foot 2, Alacritty 0.8; measured on a Mac mini M4).
-  Alacritty and Kitty draw on the Mac's GPU; Omarchy's default foot draws on the CPU by design and
-  costs little. With Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too
-  while it shows, and that costs a lot: on two displays at scale 2 it kept 3.7 of the VM's 4
-  cores busy, and the Mac mini drew about 36 W against 14-18 W without it (20 W in foot);
-  `omarchy-toggle-screensaver` or `omacvm enable no-idle-lock` turns it off. `omacvm check` has a
-  "Ghostty" line that says so. Zink is no way around it for now: on the Mac's Vulkan driver it
-  gives OpenGL 2.1, and with OmacVM.app 3.2.13 and older a forced 4.3 stopped the whole VM; now
-  the VM goes on, see the bullet above (docs/troubleshooting.md, 47; ADR 0064). Reported by
-  @benoitdepaire. Needs Update VM, then log out and in (or
-  `systemctl --user stop app-com.mitchellh.ghostty.service`).
+- **A program in the VM can no longer stop the whole VM through the Mac's Vulkan driver (#623).**
+  In an OmacVM.app VM with Graphics on Vulkan (Automatic gives it on macOS 26 and newer), a program
+  that used Zink (OpenGL on Vulkan) could stop the whole VM: `glxinfo -B` with Zink and kopper off
+  (`LIBGL_KOPPER_DISABLE=1`), or Ghostty with Zink and OpenGL 4.3 forced. Zink asked for a kind of
+  linear image the Mac's driver cannot make, was told it could, and Metal then ended QEMU's
+  process. Other unusual Vulkan requests did the same (too many levels or layers, a view past its
+  image, a format the driver does not know, an unknown sampler filter). OmacVM.app now checks them
+  on the Mac before its Vulkan driver gets them: the program gets a Vulkan error, or ends on its
+  own, and the VM goes on; Zink is told that image is not supported. Found while testing #598,
+  reported by @benoitdepaire. Needs the app update (from the VM's next start).
+
+- **Ghostty opens and draws in OmacVM.app VMs (#622; reported in #598).** Ghostty 1.2 and newer need
+  OpenGL 4.3, and an OmacVM.app VM's OpenGL is 4.1 (virgl on the Mac's OpenGL), so Ghostty opened no
+  window ("Ghostty requires OpenGL 4.3"). OmacVM's EGL library in the VM now starts Ghostty, and
+  only Ghostty, on Mesa's CPU renderer (llvmpipe, OpenGL 4.6); the programs started inside it keep
+  the Mac's GPU, and a driver variable set by hand still wins. That costs the VM's CPU: 10 s of fast
+  output took Ghostty about 20 CPU-seconds in a 1272x640-pixel window at scale 2, about 2 of a 4-CPU
+  VM's cores (foot 0.8, Alacritty 0.6), and 35 in a 2512x1500-pixel one, nearly the whole VM (foot
+  2, Alacritty 0.8; measured on a Mac mini M4). Alacritty and Kitty draw on the Mac's GPU; Omarchy's
+  default foot draws on the CPU by design and costs little. With Ghostty as the default terminal,
+  Omarchy's screensaver draws on the CPU too while it shows, and that costs a lot: on two displays
+  at scale 2 it kept 3.7 of the VM's 4 cores busy, and the Mac mini drew about 36 W against 14-18 W
+  without it (20 W in foot); `omarchy-toggle-screensaver` or `omacvm enable no-idle-lock` turns it
+  off. `omacvm check` has a "Ghostty" line that says so. Zink is no way around it for now: on the
+  Mac's Vulkan driver it gives OpenGL 2.1, and with OmacVM.app 3.2.13 and older a forced 4.3 stopped
+  the whole VM; now the VM goes on, see the bullet above (docs/troubleshooting.md, 47; ADR 0064).
+  Reported by @benoitdepaire. Needs Update VM, then log out and in (or `systemctl --user stop
+  app-com.mitchellh.ghostty.service`).
 
 ## 3.2.13
 
