@@ -92,6 +92,18 @@ in more words.
   itself; the graphics stay outside it, with their runaway guard as before. Needs the app update
   (the window and its `omacvm`), or `omacvm update` for a command line install.
 
+- **"Draw only what changed" no longer squeezes the right part of wide pictures (reported by
+  the user).** In an OmacVM.app VM with the experimental switch "Draw only what changed" on, a
+  picture wider than 4352 pixels flickered at its right part while the pointer moved there: full
+  screen on a 5K or 6K display, a 4K display set to look like more than 2176 points wide, a
+  24-inch iMac, or a window that wide. The changed parts right of pixel 4352 came out squeezed
+  until the next whole frame (on a 5K display the last 768 pixels, so a line in the picture
+  showed twice about 128 points from the right edge). Apple's OpenGL squeezes a drawing that
+  starts more than 4096 pixels outside its target, and each changed part was drawn that way.
+  Each part is now drawn inside its own surface. Found on a Mac mini with an LG UltraFine 5K.
+  Needs the app update (from the VM's next start). Until then, switching "Draw only what
+  changed" off avoids it (from the VM's next start).
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
