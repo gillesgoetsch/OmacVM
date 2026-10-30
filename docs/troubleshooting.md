@@ -1392,9 +1392,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `systemctl --user stop app-com.mitchellh.ghostty.service`: a Ghostty
   service that ran before the update keeps what it started with. It costs
   CPU: 10 s of fast output (2,400 lines/s) took Ghostty 19.8 CPU-seconds in
-  a 1272x640-pixel window at scale 2 and 24.9 in a 1296x690 one at scale 1
-  (about 2 to 2.5 of the VM's 4 cores; foot 0.8 and 1.5, Alacritty 0.6 and
-  0.7), and 35.5 in a 2512x1500 one on a 2560x1600 display at scale 2
+  a 1272x640-pixel window at scale 2 and 22.8 in a 1296x690 one at scale 1
+  (about 2 to 2.3 of the VM's 4 cores; foot 0.8 and 1.5, Alacritty 0.6 and
+  0.8), and 35.5 in a 2512x1500 one on a 2560x1600 display at scale 2
   (3.5 cores, nearly the whole VM; foot 2.0, Alacritty 0.8). Omarchy's screensaver runs in the
   default terminal, so with Ghostty it draws on the CPU too while it shows,
   and that is heavy: on two displays at scale 2 it kept 3.7 of a test
