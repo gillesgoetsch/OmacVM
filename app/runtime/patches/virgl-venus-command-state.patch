@@ -1,0 +1,672 @@
+virglrenderer: Venus commands come where Vulkan allows them
+
+What: vkr keeps a little state per command buffer: recording or not, the
+render pass or rendering that is open (its subpass, colors and view mask),
+whether a graphics or a compute pipeline is bound, conditional rendering. A
+command on a command buffer that does not record, a draw outside a pass or
+without a graphics pipeline, a dispatch inside a pass or without a compute
+pipeline, a clear outside a pass or of a color attachment the subpass lacks,
+a pass begun inside another, a next subpass past the last, a pass end
+without its begin, a query in a multiview pass past the pool's end for its
+views, a conditional rendering end without its begin, vkEndCommandBuffer
+with a pass or conditional rendering open, and the execution of a secondary
+that still records or does not match the primary's pass end the app's
+context.
+Why: KosmicKrisp (NDEBUG) ended on a draw or dispatch without a pipeline, on
+a next subpass past the last and on a pass end without a begin (SIGSEGV,
+end_subpass); MoltenVK with prefill on the same and on a draw outside a pass
+(SIGSEGV at vkEndCommandBuffer).
+Upstream: OmacVM policy (spec VUIDs), draft only.
+Tests: Tests/virgl/test-venus-commands.c (the c-state- cases).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 4af65c6..a4f87c2 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -18,12 +18,17 @@
+ #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+ #endif
+ 
++/* OmacVM (virgl-venus-command-state.patch): commands go only into a command buffer that
++ * records (begun, not ended or reset) */
+ #define VKR_CMD_CALL(cmd_name, args, ...)                                                \
+    do {                                                                                  \
+       struct vkr_command_buffer *_cmd =                                                  \
+          vkr_command_buffer_from_handle(args->commandBuffer);                            \
+       struct vn_device_proc_table *_vk = &_cmd->device->proc_table;                      \
+                                                                                          \
++      if (!vkr_context_check(dispatch->data, _cmd->state.recording, "vk" #cmd_name,      \
++                             "the command buffer is not recording"))                     \
++         return;                                                                         \
+       vn_replace_vk##cmd_name##_args_handle(args);                                       \
+       _vk->cmd_name(args->commandBuffer, ##__VA_ARGS__);                                 \
+    } while (0)
+@@ -246,6 +251,74 @@ vkr_cmd_push_set_ok(struct vkr_context *ctx,
+    return vkr_descriptor_writes_ok(ctx, call, dev, push, count, writes);
+ }
+ 
++/* OmacVM (virgl-venus-command-state.patch): the state checks */
++static struct vkr_cmd_state *
++vkr_cmd_state(VkCommandBuffer handle)
++{
++   return &vkr_command_buffer_from_handle(handle)->state;
++}
++
++static void
++vkr_cmd_state_reset(struct vkr_command_buffer *cmd)
++{
++   memset(&cmd->state, 0, sizeof(cmd->state));
++}
++
++static bool
++vkr_cmd_draw_ok(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, const char *call)
++{
++   const struct vkr_cmd_state *st = vkr_cmd_state(handle);
++   return vkr_context_check(dispatch->data, st->pass != VKR_CMD_PASS_NONE && st->graphics_bound,
++                            call, "%s", st->pass == VKR_CMD_PASS_NONE ? "outside a render pass"
++                                                                      : "no graphics pipeline bound");
++}
++
++static bool
++vkr_cmd_dispatch_ok(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, const char *call)
++{
++   const struct vkr_cmd_state *st = vkr_cmd_state(handle);
++   return vkr_context_check(dispatch->data, st->pass == VKR_CMD_PASS_NONE && st->compute_bound,
++                            call, "%s", st->pass != VKR_CMD_PASS_NONE ? "inside a render pass"
++                                                                      : "no compute pipeline bound");
++}
++
++/* a pass begins: none may be open */
++static bool
++vkr_cmd_pass_begin_ok(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, const char *call)
++{
++   return vkr_context_check(dispatch->data, vkr_cmd_state(handle)->pass == VKR_CMD_PASS_NONE, call,
++                            "inside a render pass already");
++}
++
++/* a pass this command buffer began ends, or moves to its next subpass */
++static bool
++vkr_cmd_pass_own_ok(struct vn_dispatch_context *dispatch,
++                    VkCommandBuffer handle,
++                    const char *call,
++                    enum vkr_cmd_pass kind,
++                    bool next)
++{
++   const struct vkr_cmd_state *st = vkr_cmd_state(handle);
++   return vkr_context_check(dispatch->data,
++                            st->pass == kind && !st->continues_pass &&
++                               (!next || st->subpass + 1 < st->subpass_count),
++                            call, "%s (subpass %u of %u)",
++                            st->pass != kind ? "no such pass begun here"
++                            : st->continues_pass ? "in a secondary that continues a pass"
++                                                 : "past the last subpass",
++                            st->subpass, st->subpass_count);
++}
++
++static void
++vkr_cmd_enter_subpass(struct vkr_cmd_state *st, uint32_t subpass)
++{
++   st->subpass = subpass;
++   if (st->render_pass && subpass < st->render_pass->subpass_count) {
++      st->colors = st->render_pass->subpasses[subpass].colors;
++      st->view_mask = st->render_pass->subpasses[subpass].view_mask;
++   }
++}
++
+ static void
+ vkr_dispatch_vkCreateCommandPool(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateCommandPool *args)
+@@ -278,6 +351,13 @@ vkr_dispatch_vkResetCommandPool(UNUSED struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM (virgl-venus-command-state.patch): every buffer of the pool starts over */
++   struct vkr_command_pool *pool = vkr_command_pool_from_handle(args->commandPool);
++   if (pool) {
++      list_for_each_entry (struct vkr_command_buffer, cmd, &pool->command_buffers, base.track_head)
++         vkr_cmd_state_reset(cmd);
++   }
++
+    vn_replace_vkResetCommandPool_args_handle(args);
+    args->ret = vk->ResetCommandPool(args->device, args->commandPool, args->flags);
+ }
+@@ -348,6 +428,7 @@ vkr_dispatch_vkResetCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
+    struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
+    struct vn_device_proc_table *vk = &cmd->device->proc_table;
+ 
++   vkr_cmd_state_reset(cmd);
+    vn_replace_vkResetCommandBuffer_args_handle(args);
+    args->ret = vk->ResetCommandBuffer(args->commandBuffer, args->flags);
+ }
+@@ -367,18 +448,55 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
+                                args->pBeginInfo->pInheritanceInfo))
+       return;
+ 
++   /* OmacVM (virgl-venus-command-state.patch): a secondary that continues a pass has the
++    * pass, subpass and colors of its inheritance (read before the handles are replaced) */
++   struct vkr_cmd_state st = { .recording = true };
++   const VkCommandBufferInheritanceInfo *inh = args->pBeginInfo->pInheritanceInfo;
++   if (cmd->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY && inh &&
++       (args->pBeginInfo->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
++      const struct vkr_render_pass *pass = vkr_render_pass_from_handle(inh->renderPass);
++      const VkCommandBufferInheritanceRenderingInfo *rendering = vkr_find_struct(
++         inh->pNext, VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO);
++      st.continues_pass = true;
++      if (pass) {
++         st.pass = VKR_CMD_PASS_RENDER_PASS;
++         st.render_pass = pass;
++         st.subpass_count = pass->subpass_count;
++         vkr_cmd_enter_subpass(&st, inh->subpass);
++      } else {
++         st.pass = VKR_CMD_PASS_RENDERING;
++         st.colors = rendering ? rendering->colorAttachmentCount : 0;
++         st.view_mask = rendering ? rendering->viewMask : 0;
++      }
++   }
++
+    vn_replace_vkBeginCommandBuffer_args_handle(args);
+    args->ret = vk->BeginCommandBuffer(args->commandBuffer, args->pBeginInfo);
++   cmd->state = st;
++   cmd->state.recording = args->ret == VK_SUCCESS;
+ }
+ 
+ static void
+-vkr_dispatch_vkEndCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkEndCommandBuffer(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkEndCommandBuffer *args)
+ {
+    TRACE_FUNC();
+    struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
+    struct vn_device_proc_table *vk = &cmd->device->proc_table;
+ 
++   /* OmacVM (virgl-venus-command-state.patch): recording, and no pass or conditional
++    * rendering left open (a secondary may end inside the pass it continues) */
++   const struct vkr_cmd_state *st = &cmd->state;
++   if (!vkr_context_check(dispatch->data,
++                          st->recording && !st->conditional &&
++                             (st->pass == VKR_CMD_PASS_NONE || st->continues_pass),
++                          "vkEndCommandBuffer", "%s",
++                          !st->recording ? "not recording"
++                          : st->conditional ? "conditional rendering left open"
++                                            : "a render pass left open"))
++      return;
++   cmd->state.recording = false;
++
+    vn_replace_vkEndCommandBuffer_args_handle(args);
+    args->ret = vk->EndCommandBuffer(args->commandBuffer);
+ }
+@@ -387,6 +505,7 @@ static void
+ vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdBindPipeline *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    const struct vkr_pipeline *pipeline = vkr_pipeline_from_handle(args->pipeline);
+    if (!vkr_context_check(dispatch->data,
+                           vkr_bind_point_ok(VKR_CMD_LIMITS(args), args->pipelineBindPoint) &&
+@@ -395,6 +514,11 @@ vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
+                           args->pipelineBindPoint, pipeline ? (int)pipeline->bind_point : -1))
+       return;
+    VKR_CMD_CALL(CmdBindPipeline, args, args->pipelineBindPoint, args->pipeline);
++   /* OmacVM (virgl-venus-command-state.patch) */
++   if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS)
++      st->graphics_bound = true;
++   else if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE)
++      st->compute_bound = true;
+ }
+ 
+ static void
+@@ -532,17 +656,21 @@ vkr_dispatch_vkCmdBindVertexBuffers(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDraw(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDraw(struct vn_dispatch_context *dispatch,
+                        struct vn_command_vkCmdDraw *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDraw"))
++      return;
+    VKR_CMD_CALL(CmdDraw, args, args->vertexCount, args->instanceCount, args->firstVertex,
+                 args->firstInstance);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDrawIndexed(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDrawIndexed(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdDrawIndexed *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed"))
++      return;
+    VKR_CMD_CALL(CmdDrawIndexed, args, args->indexCount, args->instanceCount,
+                 args->firstIndex, args->vertexOffset, args->firstInstance);
+ }
+@@ -551,6 +679,8 @@ static void
+ vkr_dispatch_vkCmdDrawIndirect(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdDrawIndirect *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndirect"))
++      return;
+    if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirect", args->buffer, args->offset,
+                             args->drawCount, VKR_CMD_LIM(args)->maxDrawIndirectCount,
+                             args->stride, sizeof(VkDrawIndirectCommand)))
+@@ -563,6 +693,8 @@ static void
+ vkr_dispatch_vkCmdDrawIndexedIndirect(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdDrawIndexedIndirect *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirect"))
++      return;
+    if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirect", args->buffer,
+                             args->offset, args->drawCount,
+                             VKR_CMD_LIM(args)->maxDrawIndirectCount, args->stride,
+@@ -576,6 +708,8 @@ static void
+ vkr_dispatch_vkCmdDispatch(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkCmdDispatch *args)
+ {
++   if (!vkr_cmd_dispatch_ok(dispatch, args->commandBuffer, "vkCmdDispatch"))
++      return;
+    const uint32_t *max = VKR_CMD_LIM(args)->maxComputeWorkGroupCount;
+    if (!vkr_context_check(dispatch->data,
+                           args->groupCountX <= max[0] && args->groupCountY <= max[1] &&
+@@ -592,6 +726,8 @@ static void
+ vkr_dispatch_vkCmdDispatchIndirect(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdDispatchIndirect *args)
+ {
++   if (!vkr_cmd_dispatch_ok(dispatch, args->commandBuffer, "vkCmdDispatchIndirect"))
++      return;
+    if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDispatchIndirect", args->buffer,
+                             args->offset, 1, 1, 0, sizeof(VkDispatchIndirectCommand)))
+       return;
+@@ -846,13 +982,18 @@ vkr_dispatch_vkCmdClearAttachments(struct vn_dispatch_context *dispatch,
+    /* KosmicKrisp's vk_meta_clear writes a color attachment's clear value into an array of
+     * 8 on the stack at colorAttachment */
+    const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   /* OmacVM (virgl-venus-command-state.patch): inside a pass, its colors */
++   const struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_context_check(dispatch->data, st->pass != VKR_CMD_PASS_NONE, "vkCmdClearAttachments",
++                          "outside a render pass"))
++      return;
+    for (uint32_t i = 0; i < args->attachmentCount; i++) {
+       const VkClearAttachment *a = &args->pAttachments[i];
+       if (!vkr_context_check(dispatch->data,
+                              !(a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) ||
+-                                a->colorAttachment < max,
+-                             "vkCmdClearAttachments", "color attachment %u of %u",
+-                             a->colorAttachment, max))
++                                (a->colorAttachment < max && a->colorAttachment < st->colors),
++                             "vkCmdClearAttachments", "color attachment %u of %u (%u in the pass)",
++                             a->colorAttachment, max, st->colors))
+          return;
+    }
+    VKR_CMD_CALL(CmdClearAttachments, args, args->attachmentCount, args->pAttachments,
+@@ -936,7 +1077,7 @@ vkr_dispatch_vkCmdBeginQuery(struct vn_dispatch_context *dispatch,
+                     struct vn_command_vkCmdBeginQuery *args)
+ {
+    const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
+-   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, MAX2(util_bitcount(vkr_cmd_state(args->commandBuffer)->view_mask), 1)),
+                           "vkCmdBeginQuery", "query %u of %u", args->query,
+                           pool ? pool->count : 0))
+       return;
+@@ -974,7 +1115,10 @@ vkr_dispatch_vkCmdWriteTimestamp(struct vn_dispatch_context *dispatch,
+                     struct vn_command_vkCmdWriteTimestamp *args)
+ {
+    const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
+-   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++   /* OmacVM (virgl-venus-command-state.patch): one query per view in a multiview pass */
++   if (!vkr_context_check(dispatch->data,
++                          vkr_queries_ok(pool, args->query,
++                                         MAX2(util_bitcount(vkr_cmd_state(args->commandBuffer)->view_mask), 1)),
+                           "vkCmdWriteTimestamp", "query %u of %u", args->query,
+                           pool ? pool->count : 0))
+       return;
+@@ -1025,24 +1169,46 @@ static void
+ vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
+                   struct vn_command_vkCmdBeginRenderPass *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_begin_ok(dispatch, args->commandBuffer, "vkCmdBeginRenderPass"))
++      return;
+    if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass", VKR_CMD_LIMITS(args),
+                                  args->pRenderPassBegin))
+       return;
++   /* read before the handles are replaced */
++   const struct vkr_render_pass *pass =
++      vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+    VKR_CMD_CALL(CmdBeginRenderPass, args, args->pRenderPassBegin, args->contents);
++   /* OmacVM (virgl-venus-command-state.patch) */
++   st->pass = VKR_CMD_PASS_RENDER_PASS;
++   st->render_pass = pass;
++   st->subpass_count = st->render_pass ? st->render_pass->subpass_count : 0;
++   vkr_cmd_enter_subpass(st, 0);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdNextSubpass(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdNextSubpass(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdNextSubpass *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdNextSubpass",
++                            VKR_CMD_PASS_RENDER_PASS, true))
++      return;
+    VKR_CMD_CALL(CmdNextSubpass, args, args->contents);
++   vkr_cmd_enter_subpass(st, st->subpass + 1);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdEndRenderPass(UNUSED struct vn_dispatch_context *dispatch,
+-                                struct vn_command_vkCmdEndRenderPass *args)
++vkr_dispatch_vkCmdEndRenderPass(struct vn_dispatch_context *dispatch,
++                  struct vn_command_vkCmdEndRenderPass *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdEndRenderPass", VKR_CMD_PASS_RENDER_PASS,
++                            false))
++      return;
+    VKR_CMD_CALL(CmdEndRenderPass, args);
++   st->pass = VKR_CMD_PASS_NONE;
++   st->render_pass = NULL;
+ }
+ 
+ static void
+@@ -1064,9 +1230,28 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+                              "vkCmdExecuteCommands", "command buffer %u is not a secondary",
+                              i))
+          return;
++      /* OmacVM (virgl-venus-command-state.patch) */
++      if (!vkr_context_check(ctx,
++                             !sec->state.recording &&
++                                sec->state.continues_pass == (cmd->state.pass != VKR_CMD_PASS_NONE),
++                             "vkCmdExecuteCommands", "secondary %u %s", i,
++                             sec->state.recording ? "still records"
++                             : sec->state.continues_pass ? "continues a pass outside one"
++                                                         : "does not continue the open pass"))
++         return;
++   }
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   bool graphics = false, compute = false;
++   for (uint32_t i = 0; i < args->commandBufferCount; i++) {
++      const struct vkr_command_buffer *sec =
++         vkr_command_buffer_from_handle(args->pCommandBuffers[i]);
++      graphics |= sec->state.graphics_bound;
++      compute |= sec->state.compute_bound;
+    }
+    VKR_CMD_CALL(CmdExecuteCommands, args, args->commandBufferCount,
+                 args->pCommandBuffers);
++   st->graphics_bound |= graphics;
++   st->compute_bound |= compute;
+ }
+ 
+ static void
+@@ -1080,6 +1265,8 @@ static void
+ vkr_dispatch_vkCmdDispatchBase(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdDispatchBase *args)
+ {
++   if (!vkr_cmd_dispatch_ok(dispatch, args->commandBuffer, "vkCmdDispatchBase"))
++      return;
+    const uint32_t *max = VKR_CMD_LIM(args)->maxComputeWorkGroupCount;
+    if (!vkr_context_check(dispatch->data,
+                           vkr_first_count_ok(args->baseGroupX, args->groupCountX, max[0]) &&
+@@ -1098,31 +1285,55 @@ static void
+ vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
+                   struct vn_command_vkCmdBeginRenderPass2 *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_begin_ok(dispatch, args->commandBuffer, "vkCmdBeginRenderPass2"))
++      return;
+    if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass2", VKR_CMD_LIMITS(args),
+                                  args->pRenderPassBegin))
+       return;
++   /* read before the handles are replaced */
++   const struct vkr_render_pass *pass =
++      vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+    VKR_CMD_CALL(CmdBeginRenderPass2, args, args->pRenderPassBegin,
+                 args->pSubpassBeginInfo);
++   /* OmacVM (virgl-venus-command-state.patch) */
++   st->pass = VKR_CMD_PASS_RENDER_PASS;
++   st->render_pass = pass;
++   st->subpass_count = st->render_pass ? st->render_pass->subpass_count : 0;
++   vkr_cmd_enter_subpass(st, 0);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdNextSubpass2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdNextSubpass2(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdNextSubpass2 *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdNextSubpass2",
++                            VKR_CMD_PASS_RENDER_PASS, true))
++      return;
+    VKR_CMD_CALL(CmdNextSubpass2, args, args->pSubpassBeginInfo, args->pSubpassEndInfo);
++   vkr_cmd_enter_subpass(st, st->subpass + 1);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdEndRenderPass2(UNUSED struct vn_dispatch_context *dispatch,
+-                                 struct vn_command_vkCmdEndRenderPass2 *args)
++vkr_dispatch_vkCmdEndRenderPass2(struct vn_dispatch_context *dispatch,
++                  struct vn_command_vkCmdEndRenderPass2 *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdEndRenderPass2", VKR_CMD_PASS_RENDER_PASS,
++                            false))
++      return;
+    VKR_CMD_CALL(CmdEndRenderPass2, args, args->pSubpassEndInfo);
++   st->pass = VKR_CMD_PASS_NONE;
++   st->render_pass = NULL;
+ }
+ 
+ static void
+ vkr_dispatch_vkCmdDrawIndirectCount(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCmdDrawIndirectCount *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndirectCount"))
++      return;
+    if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirectCount", args->buffer,
+                             args->offset, args->maxDrawCount, UINT32_MAX, args->stride,
+                             sizeof(VkDrawIndirectCommand)) ||
+@@ -1137,6 +1348,8 @@ static void
+ vkr_dispatch_vkCmdDrawIndexedIndirectCount(
+    struct vn_dispatch_context *dispatch, struct vn_command_vkCmdDrawIndexedIndirectCount *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirectCount"))
++      return;
+    if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirectCount", args->buffer,
+                             args->offset, args->maxDrawCount, UINT32_MAX, args->stride,
+                             sizeof(VkDrawIndexedIndirectCommand)) ||
+@@ -1223,7 +1436,7 @@ vkr_dispatch_vkCmdBeginQueryIndexedEXT(struct vn_dispatch_context *dispatch,
+          ? VKR_CMD_LIMITS(args)->max_xfb_streams
+          : 1;
+    if (!vkr_context_check(dispatch->data,
+-                          vkr_queries_ok(pool, args->query, 1) && args->index < streams,
++                          vkr_queries_ok(pool, args->query, MAX2(util_bitcount(vkr_cmd_state(args->commandBuffer)->view_mask), 1)) && args->index < streams,
+                           "vkCmdBeginQueryIndexedEXT", "query %u of %u, index %u of %u",
+                           args->query, pool ? pool->count : 0, args->index, streams))
+       return;
+@@ -1247,6 +1460,8 @@ static void
+ vkr_dispatch_vkCmdDrawIndirectByteCountEXT(
+    struct vn_dispatch_context *dispatch, struct vn_command_vkCmdDrawIndirectByteCountEXT *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndirectByteCountEXT"))
++      return;
+    if (!vkr_context_check(dispatch->data,
+                           args->vertexStride &&
+                              vkr_cmd_buffer_ok(args->counterBuffer, args->counterBufferOffset, 4),
+@@ -1455,38 +1670,58 @@ vkr_dispatch_vkCmdBeginConditionalRenderingEXT(
+    struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdBeginConditionalRenderingEXT *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    const VkConditionalRenderingBeginInfoEXT *info = args->pConditionalRenderingBegin;
+    if (!vkr_context_check(dispatch->data,
+-                          !(info->offset & 3) && vkr_cmd_buffer_ok(info->buffer, info->offset, 4),
++                          !vkr_cmd_state(args->commandBuffer)->conditional && !(info->offset & 3) &&
++                             vkr_cmd_buffer_ok(info->buffer, info->offset, 4),
+                           "vkCmdBeginConditionalRenderingEXT", "offset %" PRIu64 " of %" PRIu64,
+                           info->offset, vkr_cmd_buffer_size(info->buffer)))
+       return;
+    VKR_CMD_CALL(CmdBeginConditionalRenderingEXT, args, args->pConditionalRenderingBegin);
++   st->conditional = true;
+ }
+ 
+ static void
+ vkr_dispatch_vkCmdEndConditionalRenderingEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdEndConditionalRenderingEXT *args)
++   struct vn_dispatch_context *dispatch, struct vn_command_vkCmdEndConditionalRenderingEXT *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_context_check(dispatch->data, vkr_cmd_state(args->commandBuffer)->conditional,
++                          "vkCmdEndConditionalRenderingEXT", "no conditional rendering begun"))
++      return;
+    VKR_CMD_CALL(CmdEndConditionalRenderingEXT, args);
++   st->conditional = false;
+ }
+ 
+ static void
+ vkr_dispatch_vkCmdBeginRendering(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCmdBeginRendering *args)
+ {
+-   if (!vkr_rendering_ok(dispatch->data, VKR_CMD_DEVICE(args)->physical_device,
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_begin_ok(dispatch, args->commandBuffer, "vkCmdBeginRendering") ||
++       !vkr_rendering_ok(dispatch->data, VKR_CMD_DEVICE(args)->physical_device,
+                          args->pRenderingInfo))
+       return;
++   const uint32_t colors = args->pRenderingInfo->colorAttachmentCount;
++   const uint32_t view_mask = args->pRenderingInfo->viewMask;
+    VKR_CMD_CALL(CmdBeginRendering, args, args->pRenderingInfo);
++   /* OmacVM (virgl-venus-command-state.patch) */
++   st->pass = VKR_CMD_PASS_RENDERING;
++   st->colors = colors;
++   st->view_mask = view_mask;
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdEndRendering(UNUSED struct vn_dispatch_context *ctx,
++vkr_dispatch_vkCmdEndRendering(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdEndRendering *args)
+ {
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdEndRendering",
++                            VKR_CMD_PASS_RENDERING, false))
++      return;
+    VKR_CMD_CALL(CmdEndRendering, args);
++   st->pass = VKR_CMD_PASS_NONE;
+ }
+ 
+ static void
+@@ -1499,7 +1734,7 @@ vkr_dispatch_vkCmdPipelineBarrier2(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdResetEvent2(UNUSED struct vn_dispatch_context *ctx,
++vkr_dispatch_vkCmdResetEvent2(UNUSED struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdResetEvent2 *args)
+ {
+    VKR_CMD_CALL(CmdResetEvent2, args, args->event, args->stageMask);
+@@ -1531,7 +1766,10 @@ vkr_dispatch_vkCmdWriteTimestamp2(struct vn_dispatch_context *dispatch,
+                     struct vn_command_vkCmdWriteTimestamp2 *args)
+ {
+    const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
+-   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++   /* OmacVM (virgl-venus-command-state.patch): one query per view in a multiview pass */
++   if (!vkr_context_check(dispatch->data,
++                          vkr_queries_ok(pool, args->query,
++                                         MAX2(util_bitcount(vkr_cmd_state(args->commandBuffer)->view_mask), 1)),
+                           "vkCmdWriteTimestamp2", "query %u of %u", args->query,
+                           pool ? pool->count : 0))
+       return;
+@@ -1542,6 +1780,8 @@ static void
+ vkr_dispatch_vkCmdDrawMultiEXT(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdDrawMultiEXT *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawMultiEXT"))
++      return;
+    /* the decoder packs the drawCount entries back to back: the driver reads them with
+     * their own size as the stride, never the guest's */
+    if (!vkr_context_check(dispatch->data, !args->drawCount || args->pVertexInfo,
+@@ -1555,6 +1795,8 @@ static void
+ vkr_dispatch_vkCmdDrawMultiIndexedEXT(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdDrawMultiIndexedEXT *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawMultiIndexedEXT"))
++      return;
+    if (!vkr_context_check(dispatch->data, !args->drawCount || args->pIndexInfo,
+                           "vkCmdDrawMultiIndexedEXT", "%u draws without their array",
+                           args->drawCount))
+@@ -2044,9 +2286,11 @@ vkr_dispatch_vkCmdSetAttachmentFeedbackLoopEnableEXT(
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDrawMeshTasksEXT(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDrawMeshTasksEXT(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdDrawMeshTasksEXT *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawMeshTasksEXT"))
++      return;
+    VKR_CMD_CALL(CmdDrawMeshTasksEXT, args, args->groupCountX, args->groupCountY,
+                 args->groupCountZ);
+ }
+@@ -2056,6 +2300,8 @@ vkr_dispatch_vkCmdDrawMeshTasksIndirectEXT(
+    UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdDrawMeshTasksIndirectEXT *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawMeshTasksIndirectEXT"))
++      return;
+    VKR_CMD_CALL(CmdDrawMeshTasksIndirectEXT, args, args->buffer, args->offset,
+                 args->drawCount, args->stride);
+ }
+@@ -2065,6 +2311,8 @@ vkr_dispatch_vkCmdDrawMeshTasksIndirectCountEXT(
+    UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdDrawMeshTasksIndirectCountEXT *args)
+ {
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawMeshTasksIndirectCountEXT"))
++      return;
+    VKR_CMD_CALL(CmdDrawMeshTasksIndirectCountEXT, args, args->buffer, args->offset,
+                 args->countBuffer, args->countBufferOffset, args->maxDrawCount,
+                 args->stride);
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index 6ef6af8..0809fd9 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -17,12 +17,39 @@ struct vkr_command_pool {
+ };
+ VKR_DEFINE_OBJECT_CAST(command_pool, VK_OBJECT_TYPE_COMMAND_POOL, VkCommandPool)
+ 
++/* OmacVM (virgl-venus-command-state.patch): what a command buffer records into now. A
++ * draw needs a graphics pipeline bound and a pass, a dispatch a compute pipeline and no
++ * pass, the subpass commands their pass; KosmicKrisp dereferences the missing ones (its
++ * asserts are compiled out). Reset on begin, reset and pool reset. A command buffer is
++ * recorded by one guest thread at a time (the spec's external synchronization). */
++struct vkr_render_pass;
++
++enum vkr_cmd_pass {
++   VKR_CMD_PASS_NONE,
++   VKR_CMD_PASS_RENDER_PASS,
++   VKR_CMD_PASS_RENDERING,
++};
++
++struct vkr_cmd_state {
++   bool recording;
++   /* enum vkr_cmd_pass; a secondary begun to continue a pass has it from its inheritance */
++   uint8_t pass;
++   bool continues_pass;
++   uint32_t subpass, subpass_count;
++   /* the color attachments and view mask of the current subpass or rendering */
++   uint32_t colors, view_mask;
++   const struct vkr_render_pass *render_pass;
++   bool graphics_bound, compute_bound;
++   bool conditional;
++};
++
+ struct vkr_command_buffer {
+    struct vkr_object base;
+ 
+    struct vkr_device *device;
+    /* OmacVM (virgl-venus-command-limits.patch): only a primary executes secondaries */
+    VkCommandBufferLevel level;
++   struct vkr_cmd_state state;
+ };
+ VKR_DEFINE_OBJECT_CAST(command_buffer, VK_OBJECT_TYPE_COMMAND_BUFFER, VkCommandBuffer)
+ 

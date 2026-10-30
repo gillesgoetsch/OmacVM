@@ -1515,6 +1515,12 @@ grep -q 'vkr_metal_max_vertex_amplification());' "$virgl_source/src/venus/vkr_ph
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-limits.patch"
 grep -q 'if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos\[i\], why,' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c: pipeline create infos are not checked (pipeline-limits patch)"
+# Commands come where Vulkan allows them: a draw in a pass with a pipeline, a pass begun once and
+# ended where it began, a recording command buffer (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-state.patch"
+grep -q 'if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDraw"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'cmd->state.recording = false;' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_command_buffer.c: commands are not checked against the command buffer's state (command-state patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
