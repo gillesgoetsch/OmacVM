@@ -546,7 +546,7 @@ hdr_capture_line() {
 ghostty_line() {
   [[ $1 == 1 ]] || return 0
   if [[ -f $2 && -f $3 ]] && grep -qaF LIBGL_ALWAYS_SOFTWARE "$3"; then
-    printf 'ok\t%s\n' "draws on the VM's CPU (Mesa's llvmpipe): it needs OpenGL 4.3, the VM's GPU gives 4.1; fast output keeps about 2 of the VM's cores busy (more in a bigger window), Alacritty and Kitty draw on the Mac's GPU"
+    printf 'ok\t%s\n' "draws on the VM's CPU (Mesa's llvmpipe): it needs OpenGL 4.3, the VM's GPU gives 4.1; fast output keeps about 2 of the VM's cores busy (more in a bigger window), Alacritty and Kitty draw on the Mac's GPU; with Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too (off: omarchy-toggle-screensaver or omacvm enable no-idle-lock)"
   else
     printf 'fail\t%s\n' "opens no window: it needs OpenGL 4.3, the VM's GPU gives 4.1, and OmacVM's EGL vendor library that starts it on the CPU is missing or older: omacvm apply, then log out and in (until then: LIBGL_ALWAYS_SOFTWARE=1 ghostty)"
   fi
