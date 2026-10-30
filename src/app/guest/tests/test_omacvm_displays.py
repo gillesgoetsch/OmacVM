@@ -986,6 +986,14 @@ class RefreshWidget(unittest.TestCase):
                 script.write_text("echo something else\n")
                 self.assertEqual(od.session_state(), "open")
 
+    def test_a_shell_that_takes_no_calls_is_busy(self):
+        # session-lock.sh still waiting on the shell after 15 s: busy, as its
+        # own word for a shell that runs and does not answer (not open).
+        with mock.patch.object(od.subprocess, "run", side_effect=od.subprocess.TimeoutExpired("bash", 15)):
+            self.assertEqual(od.session_state(), "busy")
+        with mock.patch.object(od.subprocess, "run", side_effect=OSError("no bash")):
+            self.assertEqual(od.session_state(), "open")             # no bash, no script: as before
+
 
 class AgentStart(unittest.TestCase):
     def test_the_display_sync_does_not_wait_for_the_widget(self):

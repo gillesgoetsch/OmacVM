@@ -592,10 +592,12 @@ def run_sync() -> None:
 
 def session_state() -> str:
     """The desktop session: down, busy, locked or open (guest/session-lock.sh;
-    open without it)."""
+    open without it). No word within 15 s: busy, the shell takes no calls."""
     try:
         out = subprocess.run(["bash", str(SESSION_LOCK)], capture_output=True, text=True,
                              timeout=15, check=False).stdout.strip()
+    except subprocess.TimeoutExpired:
+        return "busy"
     except (OSError, subprocess.SubprocessError):
         return "open"
     return out if out in ("down", "busy", "locked", "open") else "open"
