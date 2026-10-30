@@ -1478,6 +1478,20 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-view-limits.
 grep -q 'if (!vkr_image_view_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {' "$virgl_source/src/venus/vkr_image.c" && \
   grep -q 'if (!vkr_buffer_view_ok(vkr_device_from_handle(args->device), args->pCreateInfo, why,' "$virgl_source/src/venus/vkr_buffer.c" || \
   die "vkr_image.c, vkr_buffer.c: views are not checked against their image and buffer (view-limits patch)"
+# What else a guest's commands ended QEMU's process with now ends only the app's Venus context
+# (ADR 0065, #624): proc table entries are never NULL (a command of a Vulkan version or extension
+# the app's device lacks reaches a stub).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-missing-entries.patch"
+grep -q 'vkr_device_proc_table_fill_missing(&dev->proc_table);' "$virgl_source/src/venus/vkr_device.c" && \
+  grep -q 'vkr_physical_device_init_missing_entries(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_device.c, vkr_physical_device.c: missing proc table entries are not stubbed (missing-entries patch)"
+# entries are never NULL: VKR_MISSING tells a stub (vkr_allocator.c keeps tables of its own,
+# venus-protocol's loader fallbacks run before the stubs)
+if grep -rnE --include='*.[ch]' --exclude=vkr_allocator.c --exclude-dir=venus-protocol \
+     '!\(?[[:space:]]*(vk|[A-Za-z_>.-]*proc_table)[[:space:]]*(->|\.)[[:space:]]*[A-Z]|(vk|proc_table)(->|\.)[A-Z][A-Za-z0-9]*[[:space:]]*[!=]=[[:space:]]*NULL' \
+     "$virgl_source/src/venus"; then
+  die "src/venus: a proc table entry tested against NULL; entries are never NULL, use VKR_MISSING (missing-entries patch)"
+fi
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
