@@ -104,30 +104,32 @@ in more words.
   Needs the app update (from the VM's next start). Until then, switching "Draw only what
   changed" off avoids it (from the VM's next start).
 
-- **Notifications, bar panels and the Omarchy menu are transparent again with Hyprland 0.57 (#630).**
-  Hyprland 0.57.0 (Omarchy's dev channel since 2026-10-28; Omarchy stable once it ships it) turns
-  its option `quirks:skip_non_kms_dmabuf_formats` on by default. Hyprland then offers apps only the
-  buffer formats a display plane takes, and the virtio-gpu display of OmacVM.app, UTM and Parallels
-  takes none with alpha: every transparent layer Qt Quick draws on the GPU came out black, so each
-  Omarchy notification, bar panel and the Omarchy menu blacked out the whole screen while it showed.
-  OmacVM now turns the option off on every route (`~/.config/hypr/omacvm_vm.lua`), only when this
-  Hyprland has it on and your own Hyprland files do not name it; on Hyprland 0.56 nothing changes,
-  and VMware Fusion was not affected. Not caused by OmacVM 3.2.13, which came out after Hyprland
-  0.57. Needs Update VM or `omacvm update`, then log out and in (an OmacVM.app VM updated while it
-  was shut down needs nothing more); before that, `hyprctl getoption` saying false is no proof.
-  `omacvm check` has a "transparent panels" line. The workaround for older versions is in
-  docs/troubleshooting.md, 50. Reported by @epicoun.
+- **Notifications, bar panels and the Omarchy menu are transparent again with Hyprland 0.57
+  (#630).** Hyprland 0.57.0 (released 2026-10-28; in Omarchy's edge repository, the dev channel,
+  since 2026-10-29; Omarchy stable once it ships it) turns its option
+  `quirks:skip_non_kms_dmabuf_formats` on by default. Hyprland then offers apps only the buffer
+  formats a display plane takes, and the virtio-gpu display of OmacVM.app, UTM and Parallels takes
+  none with alpha: every transparent layer Qt Quick draws on the GPU came out black, so each Omarchy
+  notification, bar panel and the Omarchy menu blacked out the whole screen while it showed. OmacVM
+  now turns the option off on every route (`~/.config/hypr/omacvm_vm.lua`), only when this Hyprland
+  has it on and your own Hyprland files do not name it; on Hyprland 0.56 nothing changes, and VMware
+  Fusion was not affected. Not caused by OmacVM 3.2.13, which came out after Hyprland 0.57. Needs
+  Update VM or `omacvm update`, then log out and in (an OmacVM.app VM updated while it was shut down
+  needs nothing more); before that, `hyprctl getoption` saying false is no proof. `omacvm check` has
+  a "transparent panels" line. The workaround for older versions is in docs/troubleshooting.md, 50.
+  Reported by @epicoun.
 
-- **Screenshots and screen sharing of HDR apps stay right with Hyprland 0.57 (OmacVM.app).** Hyprland
-  0.57.0 (in Omarchy's edge repository, the dev channel, since 2026-10-29; Omarchy stable once it
-  ships it) still writes the SDR copy every capture reads with PQ windows' white at 80 nits (#579).
-  OmacVM's fixed shader file was made for 0.56.2 only, so on 0.57 screenshots, colour picks and
-  screen shares of Chrome came out too bright again, and `omacvm check` said "no OmacVM fix for this
-  Hyprland (0.56.2: not built from commit efb50993)" (see #630). OmacVM now carries the same fix for
-  0.57.0 and puts in the installed release's file after each Hyprland update. When no file fits,
-  the "HDR captures" line names the installed Hyprland and the releases OmacVM has fixes for, e.g.
-  "no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes for 0.56.2 and 0.57.0)". Needs Update
-  VM or `omacvm update`; a running desktop takes it at once.
+- **Screenshots and screen sharing of HDR apps stay right with Hyprland 0.57 (OmacVM.app).**
+  Hyprland 0.57.0 (released 2026-10-28; in Omarchy's edge repository, the dev channel, since
+  2026-10-29; Omarchy stable once it ships it) still writes the SDR copy every capture reads with PQ
+  windows' white at 80 nits (#579). OmacVM's fixed shader file was made for 0.56.2 only, so on 0.57
+  screenshots, colour picks and screen shares of Chrome came out too bright again, and
+  `omacvm check` said "no OmacVM fix for this Hyprland (0.56.2: not built from commit efb50993)"
+  (see #630). OmacVM now carries the same fix for 0.57.0 and puts in the installed release's file
+  after each Hyprland update. When no file fits, the "HDR captures" line names the installed
+  Hyprland and the releases OmacVM has fixes for, e.g. "no OmacVM fix for Hyprland 0.58.0-1 yet
+  (OmacVM has fixes for 0.56.2 and 0.57.0)". Needs Update VM or `omacvm update`; a running desktop
+  takes it at once.
 
 - **VMware Fusion keeps its graphics fix with Hyprland 0.57.** OmacVM's Hyprland patch for Fusion's
   graphics driver (vmwgfx) did not apply to Hyprland 0.57.0 (the code around it moved), so the

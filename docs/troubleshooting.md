@@ -1535,8 +1535,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   menu shows, the whole screen is black around its card. Opaque windows are
   fine. With `QT_QUICK_BACKEND=software` (Qt's CPU renderer) it is
   transparent. OmacVM.app, UTM and Parallels, with Hyprland 0.57
-  (`hyprctl version`): Omarchy's dev channel since 2026-10-28, Omarchy stable
-  once it ships 0.57, or Arch Linux ARM's 0.57.0 after a bare `pacman -Syu`.
+  (`hyprctl version`; released 2026-10-28): Omarchy's edge repository (the
+  dev channel) since 2026-10-29, Omarchy stable once it ships 0.57, or Arch
+  Linux ARM's 0.57.0 after a bare `pacman -Syu`.
   VMware Fusion is not affected (its display takes formats with alpha).
 - **Cause:** Hyprland 0.57.0 turns `quirks:skip_non_kms_dmabuf_formats` on
   by default (hyprwm/Hyprland#15803). Hyprland then offers apps only the
