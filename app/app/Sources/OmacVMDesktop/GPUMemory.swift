@@ -93,7 +93,7 @@ public struct GPUMemory: Equatable {
     /// The VM's memory, its graphics and Activity Monitor's number, for every
     /// (i) that explains them: the VM header's and General's Resources row's
     /// (resourcesInfo). Measured numbers only: the 2-5 GB at 5K from the
-    /// field (2.2 GB, and 4.6 GB at the peak, on a 16 GB Mac mini with
+    /// field (2.1 GB, and 4.5 GB at the peak, on a 16 GB Mac mini with
     /// Chrome), the counted-twice row from ADR 0062.
     public static let explanation = """
         VM memory is the VM's RAM: Linux sees exactly this much, and the Mac gives it \

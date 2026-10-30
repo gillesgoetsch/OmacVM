@@ -210,7 +210,7 @@ let says = GPUMemory.explanation
 expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !says.contains("keep holding")
        && says.contains("While macOS compresses the VM, the VM gives back the file cache")
        && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back while macOS compresses, the warning's drop")
-// The maintainer's Mac mini (2026-10-30): 12 GB set, 4.6 GB of graphics at 5K, Activity Monitor 23 GB. The words say
+// The maintainer's Mac mini (2026-10-30): 12 GB set, 4.5 GB of graphics at 5K, Activity Monitor 23 GB. The words say
 // the field's range at 5K (not "about 2 GB") and that Activity Monitor counts compressed pages twice (ADR 0062's row).
 expect(says.contains("Linux sees exactly this much") && says.contains("Graphics memory comes on top")
        && says.contains("(a 5K desktop with a browser: 2 to 5 GB)") && !says.contains("about 2 GB"),

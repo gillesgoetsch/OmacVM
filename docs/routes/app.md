@@ -1267,7 +1267,7 @@ apps, the GPU. A VM takes two kinds from it:
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
   grows and shrinks with what is on screen: Omarchy alone at 5K about
   1.2 GB, with a browser 2 to 5 GB (Chrome full screen on a 16 GB Mac mini's
-  5K display: 2.2 GB, 4.6 GB at its peak), 3 GB at 8K, and for a moment more
+  5K display: 2.1 GB, 4.5 GB at its peak), 3 GB at 8K, and for a moment more
   while the display scale changes (the table above).
 
 The app shows both: before a start, "VM memory: 8 GB; graphics memory last
@@ -1510,7 +1510,7 @@ disk, graphics, network) and macOS compressed it, macOS counts that page
 twice there (a 4 GB VM on the Mac mini after a browser session: 5.9 GB
 shown, 2.1 GB of it counted twice; the Mac got 4.8 GB back when QEMU was
 killed). On a 16 GB Mac mini with Chrome full screen at 5K (2026-10-30) it
-showed 23 GB for a VM of 12 GB with 4.6 GB of graphics, and 19.3 GB for
+showed 23 GB for a VM of 12 GB with 4.5 GB of graphics, and 19.3 GB for
 the same VM at 10 GB with 3.2 GB of graphics, while macOS compressed most
 of it. `omacvm check`'s "Activity Monitor" row says what the number is made
 of while the VM runs: "19.3 GB for the VM: VM memory at most 10.0 GB,
@@ -1524,8 +1524,8 @@ no task port, QEMU runs on.
 
 **VM memory above the Best tier.** The Best tier leaves macOS and the
 graphics max(8 GB, a quarter) of the Mac: 8 GB of a 16 GB Mac. More is
-allowed, but the graphics come on top of it: a 12 GB VM with 4.6 GB of
-graphics is up to 16.6 GB before macOS and the Mac's own apps, so macOS
+allowed, but the graphics come on top of it: a 12 GB VM with 4.5 GB of
+graphics is up to 16.5 GB before macOS and the Mac's own apps, so macOS
 compresses and swaps, reaches critical, and then refuses new big graphics
 buffers for apps (above). The VM's General › Resources says so under the
 memory in orange, with the last run's graphics peak, `omacvm resources`
@@ -1535,7 +1535,7 @@ warning then. Nothing lowers the setting by itself. The graphics stay
 outside the setting, and the runaway guard stays at three quarters of the
 Mac whatever the VM's memory (ADR 0034; one sized from the VM's memory
 would stop Chrome at about 3 GB of graphics on a 16 GB Mac with an 8 GB VM,
-below the 4.6 GB it used at 5K).
+below the 4.5 GB it used at 5K).
 
 **Other VM apps** (what we checked; their own documents may say more):
 

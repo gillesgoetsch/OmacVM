@@ -1431,7 +1431,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   graphics (`omacvm check`'s "GPU contexts" row names them).
 - **Cause:** the number is QEMU's footprint, and it holds more than the VM's
   memory. The VM's graphics come on top of it, from the Mac's memory as the
-  VM draws (2 to 5 GB for a 5K desktop with a browser; 4.6 GB in the 12 GB
+  VM draws (2 to 5 GB for a 5K desktop with a browser; 4.5 GB in the 12 GB
   run). And once QEMU itself touched a page of the VM (disk, graphics,
   network) and macOS compressed it, macOS counts that page twice: a 4 GB VM
   after a browser session showed 5.9 GB, 2.1 GB of it counted twice, and the

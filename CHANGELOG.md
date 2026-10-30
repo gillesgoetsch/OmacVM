@@ -7,7 +7,7 @@ in more words.
 
 - **A VM memory above the Mac's Best tier now says what it costs, and `omacvm check` says what
   Activity Monitor's number is made of (reported by the user).** A 12 GB VM on a 16 GB Mac mini
-  showed 23 GB in Activity Monitor: its graphics come on top of its memory (4.6 GB with Chrome at
+  showed 23 GB in Activity Monitor: its graphics come on top of its memory (4.5 GB with Chrome at
   5K there), and while macOS compresses the VM it counts part of it twice. In OmacVM.app the VM's
   General › Resources has an (i) that says so, and above the Best tier (8 GB on a 16 GB Mac) its
   orange note names the graphics on top with the last run's peak. `omacvm resources` gives the same
