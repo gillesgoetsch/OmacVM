@@ -94,8 +94,9 @@ Option 6, everything in the VM, nothing new on the Mac:
 - Failures end in a decode error, never a frozen video: one video that goes
   wrong (a picture under 64 px, a stream VA-API cannot take, VA-API
   refusing a video's first pictures, the GPU not finishing a picture within
-  1 s) fails alone and Chromium plays it on the CPU. If the daemon dies or hangs (systemd's watchdog, 5 s), every open
-  video gets a decode error and systemd starts the daemon again 2 s later.
+  1 s) fails alone and Chromium plays it on the CPU. If the daemon dies or
+  hangs (systemd's watchdog, 5 s), every open video gets a decode error and
+  systemd starts the daemon again 2 s later.
 - The module and the daemon trust each other only as far as the protocol
   goes: the module checks every size, index and buffer the daemon hands in,
   never reuses a decoder id, bounds what it queues for the daemon, and a
