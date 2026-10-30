@@ -1,7 +1,11 @@
 /* Guest values in pipelines, render passes, descriptor sets, queries and vkCmd* parameters
  * stay inside what the Mac's Vulkan driver addresses (virgl-venus-command-limits.patch,
  * virgl-venus-descriptor-limits.patch, virgl-venus-render-pass-limits.patch,
- * virgl-venus-pipeline-limits.patch; ADR 0065, "Indices, counts and offsets").
+ * virgl-venus-pipeline-limits.patch; ADR 0065, "Indices, counts and offsets"), and commands
+ * come where Vulkan allows them, shaders are SPIR-V the compilers can take, copies stay
+ * inside their images and buffers and attachments have formats the device renders to
+ * (virgl-venus-command-state.patch, virgl-venus-spirv-scan.patch,
+ * virgl-venus-copy-regions.patch, virgl-venus-pipeline-formats.patch).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -141,6 +145,112 @@ static const uint32_t spv_comp[] = {
    0x00000012, 0x00060041, 0x00000015, 0x00000016, 0x0000000a, 0x0000000c, 0x00000013, 0x0003003e,
    0x00000016, 0x00000014, 0x000100fd, 0x00010038,
 };
+/* glslc -fshader-stage=comp -O0 --target-env=vulkan1.0 / vulkan1.3 (shaderc v2026.4) of a
+ * compute shader using set 0 binding 0 (storage buffer), set 1 binding 0 (combined image
+ * sampler) and set 2 binding 3 (uniform buffer) and declaring set 5 binding 1 unused
+ * (fuzz-venus-spirv.c, seeds spec10 and spec16); the 1.6 one lists set 5 in its entry
+ * point's interface */
+static const uint32_t spv_comp10[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x00000031, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0006000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000f, 0x00060010, 0x00000004,
+   0x00000011, 0x00000001, 0x00000002, 0x00000001, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004,
+   0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365,
+   0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572,
+   0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00030005, 0x00000008, 0x00000041,
+   0x00040006, 0x00000008, 0x00000000, 0x00000061, 0x00030005, 0x0000000a, 0x00000000, 0x00080005,
+   0x0000000f, 0x475f6c67, 0x61626f6c, 0x766e496c, 0x7461636f, 0x496e6f69, 0x00000044, 0x00030005,
+   0x00000014, 0x00000042, 0x00040006, 0x00000014, 0x00000000, 0x00000062, 0x00030005, 0x00000016,
+   0x00000000, 0x00030005, 0x0000001e, 0x00786574, 0x00040005, 0x0000002e, 0x73756e55, 0x00006465,
+   0x00040006, 0x0000002e, 0x00000000, 0x00000075, 0x00030005, 0x00000030, 0x00000000, 0x00040047,
+   0x00000007, 0x00000006, 0x00000004, 0x00030047, 0x00000008, 0x00000003, 0x00050048, 0x00000008,
+   0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x0000000a, 0x00000021, 0x00000000, 0x00040047,
+   0x0000000a, 0x00000022, 0x00000000, 0x00040047, 0x0000000f, 0x0000000b, 0x0000001c, 0x00030047,
+   0x00000014, 0x00000002, 0x00050048, 0x00000014, 0x00000000, 0x00000023, 0x00000000, 0x00040047,
+   0x00000016, 0x00000021, 0x00000003, 0x00040047, 0x00000016, 0x00000022, 0x00000002, 0x00040047,
+   0x0000001e, 0x00000021, 0x00000000, 0x00040047, 0x0000001e, 0x00000022, 0x00000001, 0x00040047,
+   0x00000029, 0x00000001, 0x00000000, 0x00040047, 0x0000002b, 0x00000001, 0x00000001, 0x00040047,
+   0x0000002c, 0x0000000b, 0x00000019, 0x00040047, 0x0000002d, 0x00000006, 0x00000004, 0x00030047,
+   0x0000002e, 0x00000003, 0x00050048, 0x0000002e, 0x00000000, 0x00000023, 0x00000000, 0x00040047,
+   0x00000030, 0x00000021, 0x00000001, 0x00040047, 0x00000030, 0x00000022, 0x00000005, 0x00020013,
+   0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015, 0x00000006, 0x00000020, 0x00000000,
+   0x0003001d, 0x00000007, 0x00000006, 0x0003001e, 0x00000008, 0x00000007, 0x00040020, 0x00000009,
+   0x00000002, 0x00000008, 0x0004003b, 0x00000009, 0x0000000a, 0x00000002, 0x00040015, 0x0000000b,
+   0x00000020, 0x00000001, 0x0004002b, 0x0000000b, 0x0000000c, 0x00000000, 0x00040017, 0x0000000d,
+   0x00000006, 0x00000003, 0x00040020, 0x0000000e, 0x00000001, 0x0000000d, 0x0004003b, 0x0000000e,
+   0x0000000f, 0x00000001, 0x0004002b, 0x00000006, 0x00000010, 0x00000000, 0x00040020, 0x00000011,
+   0x00000001, 0x00000006, 0x0003001e, 0x00000014, 0x00000006, 0x00040020, 0x00000015, 0x00000002,
+   0x00000014, 0x0004003b, 0x00000015, 0x00000016, 0x00000002, 0x00040020, 0x00000017, 0x00000002,
+   0x00000006, 0x00030016, 0x0000001a, 0x00000020, 0x00090019, 0x0000001b, 0x0000001a, 0x00000001,
+   0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x0003001b, 0x0000001c, 0x0000001b,
+   0x00040020, 0x0000001d, 0x00000000, 0x0000001c, 0x0004003b, 0x0000001d, 0x0000001e, 0x00000000,
+   0x00040017, 0x00000020, 0x0000001a, 0x00000002, 0x0004002b, 0x0000001a, 0x00000021, 0x00000000,
+   0x0005002c, 0x00000020, 0x00000022, 0x00000021, 0x00000021, 0x00040017, 0x00000023, 0x0000001a,
+   0x00000004, 0x00040032, 0x00000006, 0x00000029, 0x00000001, 0x0004002b, 0x00000006, 0x0000002a,
+   0x00000002, 0x00040032, 0x00000006, 0x0000002b, 0x00000001, 0x00060033, 0x0000000d, 0x0000002c,
+   0x00000029, 0x0000002a, 0x0000002b, 0x0003001d, 0x0000002d, 0x00000006, 0x0003001e, 0x0000002e,
+   0x0000002d, 0x00040020, 0x0000002f, 0x00000002, 0x0000002e, 0x0004003b, 0x0000002f, 0x00000030,
+   0x00000002, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005,
+   0x00050041, 0x00000011, 0x00000012, 0x0000000f, 0x00000010, 0x0004003d, 0x00000006, 0x00000013,
+   0x00000012, 0x00050041, 0x00000017, 0x00000018, 0x00000016, 0x0000000c, 0x0004003d, 0x00000006,
+   0x00000019, 0x00000018, 0x0004003d, 0x0000001c, 0x0000001f, 0x0000001e, 0x00070058, 0x00000023,
+   0x00000024, 0x0000001f, 0x00000022, 0x00000002, 0x00000021, 0x00050051, 0x0000001a, 0x00000025,
+   0x00000024, 0x00000000, 0x0004006d, 0x00000006, 0x00000026, 0x00000025, 0x00050080, 0x00000006,
+   0x00000027, 0x00000019, 0x00000026, 0x00060041, 0x00000017, 0x00000028, 0x0000000a, 0x0000000c,
+   0x00000013, 0x0003003e, 0x00000028, 0x00000027, 0x000100fd, 0x00010038,
+};
+static const uint32_t spv_comp16[] = {
+   0x07230203, 0x00010600, 0x000d000b, 0x00000034, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x000a000f, 0x00000005, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000d, 0x00000012, 0x00000019,
+   0x00000021, 0x00000033, 0x0006014b, 0x00000004, 0x00000026, 0x00000007, 0x00000008, 0x00000009,
+   0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70,
+   0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f,
+   0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669, 0x00040005, 0x00000004, 0x6e69616d,
+   0x00000000, 0x00030005, 0x0000000b, 0x00000041, 0x00040006, 0x0000000b, 0x00000000, 0x00000061,
+   0x00030005, 0x0000000d, 0x00000000, 0x00080005, 0x00000012, 0x475f6c67, 0x61626f6c, 0x766e496c,
+   0x7461636f, 0x496e6f69, 0x00000044, 0x00030005, 0x00000017, 0x00000042, 0x00040006, 0x00000017,
+   0x00000000, 0x00000062, 0x00030005, 0x00000019, 0x00000000, 0x00030005, 0x00000021, 0x00786574,
+   0x00040005, 0x00000031, 0x73756e55, 0x00006465, 0x00040006, 0x00000031, 0x00000000, 0x00000075,
+   0x00030005, 0x00000033, 0x00000000, 0x00040047, 0x00000007, 0x00000001, 0x00000000, 0x00040047,
+   0x00000009, 0x00000001, 0x00000001, 0x00040047, 0x0000000a, 0x00000006, 0x00000004, 0x00030047,
+   0x0000000b, 0x00000002, 0x00050048, 0x0000000b, 0x00000000, 0x00000023, 0x00000000, 0x00040047,
+   0x0000000d, 0x00000021, 0x00000000, 0x00040047, 0x0000000d, 0x00000022, 0x00000000, 0x00040047,
+   0x00000012, 0x0000000b, 0x0000001c, 0x00030047, 0x00000017, 0x00000002, 0x00050048, 0x00000017,
+   0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x00000019, 0x00000021, 0x00000003, 0x00040047,
+   0x00000019, 0x00000022, 0x00000002, 0x00040047, 0x00000021, 0x00000021, 0x00000000, 0x00040047,
+   0x00000021, 0x00000022, 0x00000001, 0x00040047, 0x0000002d, 0x00000001, 0x00000000, 0x00040047,
+   0x0000002e, 0x00000001, 0x00000001, 0x00040047, 0x00000030, 0x00000006, 0x00000004, 0x00030047,
+   0x00000031, 0x00000002, 0x00050048, 0x00000031, 0x00000000, 0x00000023, 0x00000000, 0x00040047,
+   0x00000033, 0x00000021, 0x00000001, 0x00040047, 0x00000033, 0x00000022, 0x00000005, 0x00020013,
+   0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015, 0x00000006, 0x00000020, 0x00000000,
+   0x00040032, 0x00000006, 0x00000007, 0x00000001, 0x0004002b, 0x00000006, 0x00000008, 0x00000002,
+   0x00040032, 0x00000006, 0x00000009, 0x00000001, 0x0003001d, 0x0000000a, 0x00000006, 0x0003001e,
+   0x0000000b, 0x0000000a, 0x00040020, 0x0000000c, 0x0000000c, 0x0000000b, 0x0004003b, 0x0000000c,
+   0x0000000d, 0x0000000c, 0x00040015, 0x0000000e, 0x00000020, 0x00000001, 0x0004002b, 0x0000000e,
+   0x0000000f, 0x00000000, 0x00040017, 0x00000010, 0x00000006, 0x00000003, 0x00040020, 0x00000011,
+   0x00000001, 0x00000010, 0x0004003b, 0x00000011, 0x00000012, 0x00000001, 0x0004002b, 0x00000006,
+   0x00000013, 0x00000000, 0x00040020, 0x00000014, 0x00000001, 0x00000006, 0x0003001e, 0x00000017,
+   0x00000006, 0x00040020, 0x00000018, 0x00000002, 0x00000017, 0x0004003b, 0x00000018, 0x00000019,
+   0x00000002, 0x00040020, 0x0000001a, 0x00000002, 0x00000006, 0x00030016, 0x0000001d, 0x00000020,
+   0x00090019, 0x0000001e, 0x0000001d, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000001,
+   0x00000000, 0x0003001b, 0x0000001f, 0x0000001e, 0x00040020, 0x00000020, 0x00000000, 0x0000001f,
+   0x0004003b, 0x00000020, 0x00000021, 0x00000000, 0x00040017, 0x00000023, 0x0000001d, 0x00000002,
+   0x0004002b, 0x0000001d, 0x00000024, 0x00000000, 0x0005002c, 0x00000023, 0x00000025, 0x00000024,
+   0x00000024, 0x00040017, 0x00000026, 0x0000001d, 0x00000004, 0x00040020, 0x0000002b, 0x0000000c,
+   0x00000006, 0x00040032, 0x00000006, 0x0000002d, 0x00000001, 0x00040032, 0x00000006, 0x0000002e,
+   0x00000001, 0x00060033, 0x00000010, 0x0000002f, 0x0000002d, 0x00000008, 0x0000002e, 0x0003001d,
+   0x00000030, 0x00000006, 0x0003001e, 0x00000031, 0x00000030, 0x00040020, 0x00000032, 0x0000000c,
+   0x00000031, 0x0004003b, 0x00000032, 0x00000033, 0x0000000c, 0x00050036, 0x00000002, 0x00000004,
+   0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x00050041, 0x00000014, 0x00000015, 0x00000012,
+   0x00000013, 0x0004003d, 0x00000006, 0x00000016, 0x00000015, 0x00050041, 0x0000001a, 0x0000001b,
+   0x00000019, 0x0000000f, 0x0004003d, 0x00000006, 0x0000001c, 0x0000001b, 0x0004003d, 0x0000001f,
+   0x00000022, 0x00000021, 0x00070058, 0x00000026, 0x00000027, 0x00000022, 0x00000025, 0x00000002,
+   0x00000024, 0x00050051, 0x0000001d, 0x00000028, 0x00000027, 0x00000000, 0x0004006d, 0x00000006,
+   0x00000029, 0x00000028, 0x00050080, 0x00000006, 0x0000002a, 0x0000001c, 0x00000029, 0x00060041,
+   0x0000002b, 0x0000002c, 0x0000000d, 0x0000000f, 0x00000016, 0x0003003e, 0x0000002c, 0x0000002a,
+   0x000100fd, 0x00010038,
+};
 
 static struct vkr_context *ctx;
 static struct vn_dispatch_context *D;
@@ -160,6 +270,7 @@ static VkResult last_ret;
 
 #define DEVH ((VkDevice)dev)
 #define FMT VK_FORMAT_R8G8B8A8_UNORM
+static VkFormat rp_format = FMT; /* the attachments of render_pass() */
 #define FAR32 0x7fffff00u
 #define FAR_INDEX 0x04000000u
 
@@ -692,7 +803,7 @@ static void *render_pass(uint32_t n_att, uint32_t n_refs, uint32_t ref_base, uin
    VkAttachmentDescription att[16];
    VkAttachmentReference refs[16];
    for (uint32_t i = 0; i < 16; i++) {
-      att[i] = (VkAttachmentDescription){ 0, FMT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
+      att[i] = (VkAttachmentDescription){ 0, rp_format, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
                                           VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                           VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
                                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
@@ -754,6 +865,7 @@ struct gfx {
    const VkSpecializationInfo *spec;
    uint32_t feedback_count; /* chain a creation feedback with this many stage entries */
    bool feedback;
+   VkFormat color_format, depth_format; /* dynamic rendering's (0: FMT, none) */
 };
 
 static void *graphics_pipeline(void *layout, const struct gfx *g)
@@ -797,9 +909,10 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
                                               .pAttachments = cba };
    static VkFormat formats[64];
    for (int i = 0; i < 64; i++)
-      formats[i] = FMT;
+      formats[i] = g->color_format ? g->color_format : FMT;
    VkPipelineRenderingCreateInfo ri = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .pNext = g->next,
-                                        .colorAttachmentCount = g->colors, .pColorAttachmentFormats = formats };
+                                        .colorAttachmentCount = g->colors, .pColorAttachmentFormats = formats,
+                                        .depthAttachmentFormat = g->depth_format };
    VkPipelineDynamicStateCreateInfo dyn = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                             .dynamicStateCount = g->dynamic_count, .pDynamicStates = g->dynamic };
    VkPipelineCreationFeedback whole = { 0 }, stages[2] = { { 0 } };
@@ -1054,6 +1167,14 @@ static void expect(bool refuse)
    printf("expect: %s\n", refuse ? "refuse" : "works");
 }
 
+/* the host's linear or optimal tiling features of a format include `feature` */
+static bool format_has(VkFormat f, VkFormatFeatureFlags feature)
+{
+   VkFormatProperties p = { 0 };
+   pdev->proc_table.GetPhysicalDeviceFormatProperties(pdev->base.handle.physical_device, f, &p);
+   return (p.linearTilingFeatures | p.optimalTilingFeatures) & feature;
+}
+
 #define IS(n) (!strcmp(c, (n)))
 
 /* ---------------- pipelines, pipeline layouts, shader stages ---------------- */
@@ -1128,10 +1249,115 @@ static int case_pipeline_layout(const char *c)
    return BROKEN;
 }
 
+/* the SPIR-V scan (virgl-venus-spirv-scan.patch): malformed modules end the context at
+ * vkCreateShaderModule (or a pipeline, for code inside the stage); a pipeline's entry point,
+ * workgroup size and descriptor sets are checked against its stage and layout */
+static int spirv_case(const char *c, struct world *w)
+{
+   static uint32_t code[4096];
+   const size_t n = sizeof(spv_comp) / 4;
+   memcpy(code, spv_comp, sizeof(spv_comp));
+   if (IS("p-spirv-garbage")) {
+      for (size_t i = 0; i < n; i++)
+         code[i] = 0x9e3779b9u * (uint32_t)(i + 1);
+      return created(shader(code, sizeof(spv_comp)));
+   }
+   if (IS("p-spirv-magic")) {
+      code[0] = 0x03022307;
+      return created(shader(code, sizeof(spv_comp)));
+   }
+   if (IS("p-spirv-bound")) {
+      code[3] = 0x3fffffff;
+      return created(shader(code, sizeof(spv_comp)));
+   }
+   /* the last instruction of 2 or more words: cut after its first word */
+   size_t last = 0;
+   for (size_t at = 5; at < n && (code[at] >> 16); at += code[at] >> 16) {
+      if ((code[at] >> 16) >= 2)
+         last = at;
+   }
+   if (IS("p-spirv-truncated"))
+      return created(shader(code, (last + 1) * 4));
+   if (IS("p-spirv-inline-garbage")) {
+      for (size_t i = 5; i < n; i++)
+         code[i] = 0x9e3779b9u * (uint32_t)(i + 1);
+      VkShaderModuleCreateInfo inl = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                       .codeSize = sizeof(spv_comp), .pCode = code };
+      return created(compute_pipeline(w->layout, NULL, &inl, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   if (IS("p-entry-missing")) {
+      /* the entry point's name "main" made "mbin": the stage's "main" is not in the module */
+      for (size_t at = 5; at < n && (code[at] >> 16); at += code[at] >> 16) {
+         if ((code[at] & 0xffff) == 15) {
+            code[at + 3] = 0x6e69626d;
+            break;
+         }
+      }
+      void *mod = shader(code, sizeof(spv_comp));
+      if (!mod)
+         broken("module without main");
+      return created(compute_pipeline(w->layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   if (IS("p-stage-mismatch")) {
+      /* a fragment shader's "main" as the compute stage */
+      void *frag = shader(spv_frag, sizeof(spv_frag));
+      if (!frag)
+         broken("fragment module");
+      return created(compute_pipeline(w->layout, frag, NULL, VK_SHADER_STAGE_COMPUTE_BIT, NULL, NULL));
+   }
+   void *comp = shader(spv_comp, sizeof(spv_comp));
+   if (!comp)
+      broken("compute module");
+   if (IS("p-shader-layout-sets")) {
+      /* the shader's set 0 binding 2 in a layout of no sets */
+      void *empty = pipeline_layout_of(NULL, 0, NULL, 0);
+      if (!empty)
+         broken("empty layout");
+      return created(compute_pipeline(empty, comp, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   if (IS("p-shader-layout-binding")) {
+      /* set 0 has binding 0 only */
+      void *dsl = one_binding_layout(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL);
+      void *layout = dsl ? pipeline_layout_of(&dsl, 1, NULL, 0) : NULL;
+      if (!layout)
+         broken("one-binding layout");
+      return created(compute_pipeline(layout, comp, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   if (!strncmp(c, "p-workgroup-", 12)) {
+      /* the module's local_size_x_id 0, specialized (MoltenVK: Metal's assertion at 65536) */
+      const uint32_t max = MIN2(lim.maxComputeWorkGroupSize[0], lim.maxComputeWorkGroupInvocations);
+      spec_local_size = IS("p-workgroup-huge") ? 65536 : IS("p-workgroup-max") ? max : max + 1;
+      step("workgroup %u x 1 x 1 (at most %u x .., %u in all)", spec_local_size, lim.maxComputeWorkGroupSize[0],
+           lim.maxComputeWorkGroupInvocations);
+      return created(compute_pipeline(w->layout, comp, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   if (!strncmp(c, "p-unused-set", 12)) {
+      const bool v16 = IS("p-unused-set-ok-16");
+      if (v16 && VK_API_VERSION_MINOR(props.apiVersion) < 3) {
+         printf("skip: Vulkan 1.%u (SPIR-V 1.6 needs 1.3)\n", VK_API_VERSION_MINOR(props.apiVersion));
+         return SKIP;
+      }
+      void *dsl[3] = { one_binding_layout(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_ALL),
+                       one_binding_layout(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL), NULL };
+      const VkDescriptorSetLayoutBinding ubo3 = { 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL };
+      dsl[2] = set_layout_of(&ubo3, 1, 0, NULL);
+      if (!dsl[0] || !dsl[1] || !dsl[2])
+         broken("set layouts");
+      /* "-missing": a layout without set 2, which the shader uses */
+      void *layout = pipeline_layout_of(dsl, IS("p-unused-set-missing") ? 2 : 3, NULL, 0);
+      void *mod = v16 ? shader(spv_comp16, sizeof(spv_comp16)) : shader(spv_comp10, sizeof(spv_comp10));
+      if (!layout || !mod)
+         broken("layout or module");
+      return created(compute_pipeline(layout, mod, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   return BROKEN;
+}
+
 static int case_pipeline(const char *c)
 {
    unsigned needs = 0;
-   if (IS("p-inline-spirv-odd") || IS("p-inline-spirv-ok") || IS("p-stage-null-module"))
+   if (IS("p-inline-spirv-odd") || IS("p-inline-spirv-ok") || IS("p-stage-null-module") ||
+       IS("p-spirv-inline-garbage"))
       needs |= N_MAINT5;
    if (IS("p-robustness-bad"))
       needs |= N_ROBUST;
@@ -1148,6 +1374,9 @@ static int case_pipeline(const char *c)
    make_world(&w, IS("p-ok") || IS("p-gfx-ok"));
    if (IS("p-ok") || IS("p-gfx-ok"))
       return WORKS;
+   if (!strncmp(c, "p-spirv-", 8) || IS("p-entry-missing") || IS("p-stage-mismatch") ||
+       !strncmp(c, "p-shader-layout-", 16) || !strncmp(c, "p-workgroup-", 12) || !strncmp(c, "p-unused-set", 12))
+      return spirv_case(c, &w);
 
    /* compute */
    if (!strncmp(c, "p-spec", 6) || !strncmp(c, "p-inline", 8) || !strncmp(c, "p-stage", 7) ||
@@ -1269,6 +1498,20 @@ static int case_pipeline(const char *c)
       g.ms_next = &sl;
       g.dynamic = sl_enable_dynamic;
       g.dynamic_count = 1;
+   } else if (IS("p-gfx-format-bad")) {
+      g.rp = NULL;
+      g.color_format = (VkFormat)0x7fff;
+   } else if (IS("p-gfx-format-r64")) {
+      /* no Metal pixel format: KosmicKrisp ended in kk_lower_nir */
+      g.rp = NULL;
+      g.color_format = VK_FORMAT_R64G64B64A64_SFLOAT;
+      expect(!format_has(g.color_format, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT));
+   } else if (IS("p-gfx-depth-format-color")) {
+      g.rp = NULL;
+      g.depth_format = FMT;
+   } else if (IS("p-gfx-depth-format-ok")) {
+      g.rp = NULL;
+      g.depth_format = VK_FORMAT_D32_SFLOAT;
    } else {
       return BROKEN;
    }
@@ -1555,6 +1798,13 @@ static int case_render_pass(const char *c)
       begin_pass(w.cmd, w.rp, w.fb, 64, 64);
       end_pass(w.cmd);
       return end(w.cmd);
+   }
+   if (IS("r-format-bad") || IS("r-format-r64")) {
+      rp_format = IS("r-format-bad") ? (VkFormat)0x7fff : VK_FORMAT_R64G64B64A64_SFLOAT;
+      if (IS("r-format-r64"))
+         expect(!format_has(rp_format, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                          VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
+      return created(render_pass(1, 1, 0, 0));
    }
    if (IS("r-att-ref-oob"))
       return created(render_pass(1, 1, 5, 0));
@@ -2098,12 +2348,212 @@ static int execute_case(const char *c, struct world *w)
    return end(w->cmd);
 }
 
+/* command buffer state (virgl-venus-command-state.patch): draws, dispatches, clears, passes,
+ * queries and secondaries only where Vulkan allows them */
+static int state_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   const VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   struct vn_command_vkCmdDraw draw = { .commandBuffer = cb, .vertexCount = 3, .instanceCount = 1 };
+   struct vn_command_vkCmdDispatch disp = { .commandBuffer = cb, .groupCountX = 1, .groupCountY = 1,
+                                            .groupCountZ = 1 };
+   if (IS("c-state-not-begun")) {
+      step("vkCmdDraw on a command buffer never begun");
+      D->dispatch_vkCmdDraw(D, &draw);
+      return end(cmd);
+   }
+   if (IS("c-state-execute-recording")) {
+      /* a secondary still recording, executed */
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      if (begin_secondary(sec, NULL) != VK_SUCCESS)
+         broken("secondary begin");
+      begin(cmd);
+      VkCommandBuffer s = (VkCommandBuffer)sec;
+      struct vn_command_vkCmdExecuteCommands e = { .commandBuffer = cb, .commandBufferCount = 1,
+                                                   .pCommandBuffers = &s };
+      step("vkCmdExecuteCommands of a secondary that still records");
+      D->dispatch_vkCmdExecuteCommands(D, &e);
+      return end(cmd);
+   }
+   begin(cmd);
+   if (IS("c-state-after-end")) {
+      const int r = end(cmd);
+      if (r != WORKS)
+         return r;
+      VkViewport vp = { 0, 0, 64, 64, 0, 1 };
+      struct vn_command_vkCmdSetViewport sv = { .commandBuffer = cb, .viewportCount = 1, .pViewports = &vp };
+      step("vkCmdSetViewport after vkEndCommandBuffer");
+      D->dispatch_vkCmdSetViewport(D, &sv);
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("c-state-draw-no-pipeline")) {
+      begin_pass(cmd, w->rp, w->fb, 64, 64);
+      ready(cmd, w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+      step("vkCmdDraw without a pipeline");
+      D->dispatch_vkCmdDraw(D, &draw);
+      end_pass(cmd);
+   } else if (IS("c-state-draw-outside")) {
+      bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w->gfx_pipe);
+      ready(cmd, w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+      step("vkCmdDraw outside a render pass");
+      D->dispatch_vkCmdDraw(D, &draw);
+   } else if (IS("c-state-dispatch-no-pipeline")) {
+      ready(cmd, w, VK_PIPELINE_BIND_POINT_COMPUTE);
+      step("vkCmdDispatch without a pipeline");
+      D->dispatch_vkCmdDispatch(D, &disp);
+   } else if (IS("c-state-dispatch-inside")) {
+      bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, w->comp_pipe);
+      ready(cmd, w, VK_PIPELINE_BIND_POINT_COMPUTE);
+      begin_pass(cmd, w->rp, w->fb, 64, 64);
+      step("vkCmdDispatch inside a render pass");
+      D->dispatch_vkCmdDispatch(D, &disp);
+      end_pass(cmd);
+   } else if (IS("c-state-clear-outside") || IS("c-state-clear-beyond")) {
+      /* the world's pass has 1 color attachment */
+      const bool beyond = IS("c-state-clear-beyond");
+      if (beyond)
+         begin_pass(cmd, w->rp, w->fb, 64, 64);
+      VkClearAttachment a = { VK_IMAGE_ASPECT_COLOR_BIT, beyond ? 1 : 0, { { { 1, 2, 3, 4 } } } };
+      VkClearRect r = { { { 0, 0 }, { 64, 64 } }, 0, 1 };
+      struct vn_command_vkCmdClearAttachments cl = { .commandBuffer = cb, .attachmentCount = 1, .pAttachments = &a,
+                                                     .rectCount = 1, .pRects = &r };
+      step("vkCmdClearAttachments color %u, %s", a.colorAttachment, beyond ? "a pass of 1 color" : "no pass");
+      D->dispatch_vkCmdClearAttachments(D, &cl);
+      if (beyond)
+         end_pass(cmd);
+   } else if (IS("c-state-next-subpass") || IS("c-state-two-subpasses-ok")) {
+      void *rp = w->rp, *fb = w->fb;
+      if (IS("c-state-two-subpasses-ok")) {
+         rp = two_subpass_pass(NULL, 0);
+         void *views[1] = { w->iv };
+         fb = rp ? framebuffer(rp, views, 1, 64, 64, 1) : NULL;
+         if (!fb)
+            broken("two-subpass framebuffer");
+      }
+      begin_pass(cmd, rp, fb, 64, 64);
+      struct vn_command_vkCmdNextSubpass ns = { .commandBuffer = cb, .contents = VK_SUBPASS_CONTENTS_INLINE };
+      step("vkCmdNextSubpass");
+      D->dispatch_vkCmdNextSubpass(D, &ns);
+      end_pass(cmd);
+   } else if (IS("c-state-end-no-begin")) {
+      end_pass(cmd);
+   } else if (IS("c-state-begin-twice")) {
+      begin_pass(cmd, w->rp, w->fb, 64, 64);
+      if (!ended())
+         begin_pass(cmd, w->rp, w->fb, 64, 64);
+      end_pass(cmd);
+   } else if (IS("c-state-end-in-pass")) {
+      begin_pass(cmd, w->rp, w->fb, 64, 64);
+   } else if (IS("c-state-query-views-ok") || IS("c-state-query-views-past")) {
+      /* a 2-view pass takes 2 queries from the one begun: query 2 or 3 of 4 */
+      if (max_views < 2) {
+         printf("skip: %u views\n", max_views);
+         return SKIP;
+      }
+      void *rp = render_pass(1, 1, 0, 0x3);
+      void *v = view(image(64, 64, 2, CA_SA), 2);
+      void *views[1] = { v };
+      void *fb = rp ? framebuffer(rp, views, 1, 64, 64, 1) : NULL;
+      void *qp = query_pool(VK_QUERY_TYPE_OCCLUSION, 4);
+      if (!fb)
+         broken("multiview framebuffer");
+      begin_pass(cmd, rp, fb, 64, 64);
+      const uint32_t q = IS("c-state-query-views-ok") ? 2 : 3;
+      struct vn_command_vkCmdBeginQuery b = { .commandBuffer = cb, .queryPool = (VkQueryPool)qp, .query = q };
+      step("vkCmdBeginQuery %u of 4 in a 2-view pass", q);
+      D->dispatch_vkCmdBeginQuery(D, &b);
+      if (!ended()) {
+         struct vn_command_vkCmdEndQuery e = { .commandBuffer = cb, .queryPool = (VkQueryPool)qp, .query = q };
+         D->dispatch_vkCmdEndQuery(D, &e);
+      }
+      end_pass(cmd);
+   } else {
+      return BROKEN;
+   }
+   return end(cmd);
+}
+
+/* copy regions (virgl-venus-copy-regions.patch): the world's images are 64 x 64 RGBA8
+ * (16384 bytes), its buffers 65536 bytes */
+static int region_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   const VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   begin(cmd);
+   if (!strncmp(c, "c-region-b2i-", 13) || !strncmp(c, "c-region-i2b-", 13)) {
+      VkBufferImageCopy r = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                              .imageExtent = { 64, 64, 1 } };
+      if (IS("c-region-b2i-max") || IS("c-region-i2b-max"))
+         r.bufferOffset = 65536 - 16384; /* the last byte the copy names is the buffer's last */
+      else if (IS("c-region-b2i-past") || IS("c-region-i2b-past"))
+         r.bufferOffset = 65536 - 16384 + 4;
+      else if (IS("c-region-b2i-rowlength"))
+         r.bufferRowLength = 0x40000000u; /* 4 GiB per row */
+      else if (IS("c-region-b2i-extent"))
+         r.imageExtent.width = 65;
+      else if (IS("c-region-b2i-offset"))
+         r.imageOffset.x = -1;
+      else if (IS("c-region-b2i-aspect"))
+         r.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+      else
+         return BROKEN;
+      if (!strncmp(c, "c-region-b2i-", 13)) {
+         struct vn_command_vkCmdCopyBufferToImage cpy = { .commandBuffer = cb, .srcBuffer = (VkBuffer)w->buf2,
+                                                          .dstImage = (VkImage)w->img,
+                                                          .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                                          .regionCount = 1, .pRegions = &r };
+         step("vkCmdCopyBufferToImage offset %llu row %u extent %ux%u at %d", (unsigned long long)r.bufferOffset,
+              r.bufferRowLength, r.imageExtent.width, r.imageExtent.height, r.imageOffset.x);
+         D->dispatch_vkCmdCopyBufferToImage(D, &cpy);
+      } else {
+         struct vn_command_vkCmdCopyImageToBuffer cpy = { .commandBuffer = cb, .srcImage = (VkImage)w->img,
+                                                          .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                                          .dstBuffer = (VkBuffer)w->buf2, .regionCount = 1,
+                                                          .pRegions = &r };
+         step("vkCmdCopyImageToBuffer offset %llu", (unsigned long long)r.bufferOffset);
+         D->dispatch_vkCmdCopyImageToBuffer(D, &cpy);
+      }
+   } else if (IS("c-region-image-past") || IS("c-region-image-max")) {
+      const bool past = IS("c-region-image-past");
+      VkImageCopy r = { .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                        .srcOffset = { past ? 32 : 0, 0, 0 },
+                        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                        .dstOffset = { past ? 0 : 32, 0, 0 }, .extent = { past ? 64 : 32, 64, 1 } };
+      struct vn_command_vkCmdCopyImage cpy = { .commandBuffer = cb, .srcImage = (VkImage)w->img,
+                                               .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                               .dstImage = (VkImage)w->img2,
+                                               .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                               .regionCount = 1, .pRegions = &r };
+      step("vkCmdCopyImage src x %d extent %u", r.srcOffset.x, r.extent.width);
+      D->dispatch_vkCmdCopyImage(D, &cpy);
+   } else if (IS("c-region-blit-past") || IS("c-region-blit-mirror")) {
+      /* a mirrored blit names its corners in reverse (legal); one corner at 65 is past */
+      const bool past = IS("c-region-blit-past");
+      VkImageBlit r = { .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                        .srcOffsets = { { 64, 64, 0 }, { 0, 0, 1 } },
+                        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                        .dstOffsets = { { 0, 0, 0 }, { past ? 65 : 64, 64, 1 } } };
+      struct vn_command_vkCmdBlitImage b = { .commandBuffer = cb, .srcImage = (VkImage)w->img,
+                                             .srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                             .dstImage = (VkImage)w->img2,
+                                             .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                             .regionCount = 1, .pRegions = &r, .filter = VK_FILTER_NEAREST };
+      step("vkCmdBlitImage dst corner x %d", r.dstOffsets[1].x);
+      D->dispatch_vkCmdBlitImage(D, &b);
+   } else {
+      return BROKEN;
+   }
+   return end(cmd);
+}
+
 static int inherit_case(const char *c)
 {
    static uint32_t locations[1 << 16];
    VkFormat formats[64];
    for (int i = 0; i < 64; i++)
       formats[i] = FMT;
+   if (IS("c-inherit-format-bad"))
+      formats[0] = (VkFormat)0x7fff;
    VkRenderingAttachmentLocationInfoKHR loc = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO_KHR,
                                                 .colorAttachmentCount = 1 << 16,
                                                 .pColorAttachmentLocations = locations };
@@ -2144,10 +2594,15 @@ static int case_command(const char *c)
       return inherit_case(c);
    struct world w = { 0 };
    const bool needs_pipe = !strncmp(c, "c-draw", 6) || !strncmp(c, "c-dispatch", 10) || IS("c-ok") ||
+                           !strncmp(c, "c-state-", 8) ||
                            IS("c-bind-wrong-point") || IS("c-bind-point-bad") || !strncmp(c, "c-clear-att", 11);
    make_world(&w, needs_pipe);
    if (!strncmp(c, "c-nested", 8) || !strncmp(c, "c-execute", 9))
       return execute_case(c, &w);
+   if (!strncmp(c, "c-state-", 8))
+      return state_case(c, &w);
+   if (!strncmp(c, "c-region-", 9))
+      return region_case(c, &w);
    void *cmd = w.cmd;
    begin(cmd);
    if (!strncmp(c, "c-sets-", 7) || IS("c-dyn-offsets-many"))
@@ -2609,6 +3064,15 @@ static const struct test_case cases[] = {
    { "p-layout-sets-max", E_WORKS }, { "p-layout-sets-over", E_REFUSE }, { "p-layout-sets-far", E_REFUSE },
    { "p-layout-push-ranges-ok", E_WORKS }, { "p-layout-push-ranges-far", E_REFUSE },
    { "p-layout-push-over", E_REFUSE }, { "p-layout-dynamic-max", E_WORKS }, { "p-layout-dynamic-over", E_REFUSE },
+   /* SPIR-V, entry points, workgroups, shader descriptor sets, attachment formats (PR-B) */
+   { "p-spirv-garbage", E_REFUSE }, { "p-spirv-magic", E_REFUSE }, { "p-spirv-bound", E_REFUSE },
+   { "p-spirv-truncated", E_REFUSE }, { "p-spirv-inline-garbage", E_REFUSE },
+   { "p-entry-missing", E_REFUSE }, { "p-stage-mismatch", E_REFUSE },
+   { "p-shader-layout-sets", E_REFUSE }, { "p-shader-layout-binding", E_REFUSE },
+   { "p-unused-set-ok", E_WORKS }, { "p-unused-set-ok-16", E_WORKS }, { "p-unused-set-missing", E_REFUSE },
+   { "p-workgroup-max", E_WORKS }, { "p-workgroup-over", E_REFUSE }, { "p-workgroup-huge", E_REFUSE },
+   { "p-gfx-format-bad", E_REFUSE }, { "p-gfx-format-r64", E_CHILD }, { "p-gfx-depth-format-color", E_REFUSE },
+   { "p-gfx-depth-format-ok", E_WORKS },
    /* render passes, framebuffers, dynamic rendering */
    { "r-ok", E_WORKS }, { "r-dyn-ok", E_WORKS }, { "r-two-subpasses-ok", E_WORKS },
    { "r-att-ref-oob", E_REFUSE }, { "r-att-ref-far", E_REFUSE },
@@ -2624,7 +3088,7 @@ static const struct test_case cases[] = {
    { "r-dyn-colors-over", E_REFUSE }, { "r-dyn-layers-over", E_REFUSE }, { "r-dyn-resolve-null", E_REFUSE },
    { "r-dyn-resolve-no-view", E_WORKS }, { "r-dyn-resolve-no-view-target", E_WORKS },
    { "r-begin-clear-color-stencil", E_WORKS }, { "r-begin-clear-ds-stencil", E_REFUSE },
-   { "r-dyn-resolve-mode-bad", E_REFUSE },
+   { "r-dyn-resolve-mode-bad", E_REFUSE }, { "r-format-bad", E_REFUSE }, { "r-format-r64", E_CHILD },
    /* descriptor set layouts, pools, sets, writes, copies */
    { "d-layout-binding-max", E_WORKS }, { "d-layout-binding-over", E_REFUSE }, { "d-layout-binding-far", E_REFUSE },
    { "d-layout-type-bad", E_REFUSE }, { "d-layout-dynamic-300", E_CHILD },
@@ -2677,7 +3141,20 @@ static const struct test_case cases[] = {
    { "c-att-locations-max", E_WORKS }, { "c-att-locations-far", E_REFUSE }, { "c-input-indices-far", E_REFUSE },
    { "c-inherit-ok", E_WORKS }, { "c-inherit-colors-over", E_REFUSE }, { "c-inherit-locations-far", E_REFUSE },
    { "c-execute-ok", E_WORKS }, { "c-execute-primary", E_REFUSE }, { "c-execute-in-secondary", E_REFUSE },
-   { "c-nested-self", E_REFUSE },
+   { "c-nested-self", E_REFUSE }, { "c-inherit-format-bad", E_REFUSE },
+   /* command buffer state, copy regions (PR-B) */
+   { "c-state-not-begun", E_REFUSE }, { "c-state-after-end", E_REFUSE }, { "c-state-execute-recording", E_REFUSE },
+   { "c-state-draw-no-pipeline", E_REFUSE }, { "c-state-draw-outside", E_REFUSE },
+   { "c-state-dispatch-no-pipeline", E_REFUSE }, { "c-state-dispatch-inside", E_REFUSE },
+   { "c-state-clear-outside", E_REFUSE }, { "c-state-clear-beyond", E_REFUSE },
+   { "c-state-next-subpass", E_REFUSE }, { "c-state-two-subpasses-ok", E_WORKS },
+   { "c-state-end-no-begin", E_REFUSE }, { "c-state-begin-twice", E_REFUSE }, { "c-state-end-in-pass", E_REFUSE },
+   { "c-state-query-views-ok", E_WORKS }, { "c-state-query-views-past", E_REFUSE },
+   { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
+   { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
+   { "c-region-i2b-max", E_WORKS }, { "c-region-i2b-past", E_REFUSE },
+   { "c-region-image-max", E_WORKS }, { "c-region-image-past", E_REFUSE },
+   { "c-region-blit-mirror", E_WORKS }, { "c-region-blit-past", E_REFUSE },
    /* host query calls, query pools */
    { "q-ok", E_WORKS }, { "q-reset-ok", E_WORKS }, { "q-pool-large", E_KEEP }, { "q-results-first-far", E_REFUSE },
    { "q-results-stride", E_REFUSE }, { "q-reset-far", E_REFUSE }, { "q-pool-type-bad", E_REFUSE },
