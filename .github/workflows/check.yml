@@ -286,6 +286,9 @@ jobs:
       - name: Update VM on a locked VM writes no bar widget and asks no rescan until the unlock
         run: src/tests/plugin-lock.sh
 
+      - name: The lock rules (session-lock.sh, Omanotch's copies.py and display panel, omacvm-displays) answer alike; a shell that does not answer counts as locked
+        run: src/tests/lock-rules.sh
+
       - name: omacvm check warns when Omarchy does not lock again after an unlock
         run: src/tests/lock-stuck-check.sh
 
@@ -788,6 +791,9 @@ jobs:
 
       - name: Bar widgets under Omarchy's lock on Linux (GNU tools, flock, as in the VM)
         run: src/tests/plugin-lock.sh
+
+      - name: The lock rules answer alike on Linux (Python and bash as in the VM)
+        run: src/tests/lock-rules.sh
 
       - name: OmacVM's edits of Omarchy's shell on Linux (GNU tools, as in the VM)
         run: src/tests/omarchy-shell.sh

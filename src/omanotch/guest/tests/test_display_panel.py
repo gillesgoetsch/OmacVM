@@ -48,6 +48,8 @@ MANIFEST = {"schemaVersion": 1, "id": "omarchy.monitor", "name": "Display", "kin
             "entryPoints": {"barWidget": "Panel.qml"},
             "barWidget": {"displayName": "Display", "category": "System", "allowMultiple": False}}
 
+PING = ("omarchy-shell", "shell", "ping")
+
 DISPLAYS = [{"name": "Virtual-1", "enabled": True, "focused": True, "width": 3456, "height": 2160},
             {"name": "NOTCH", "enabled": True, "focused": False, "width": 3456, "height": 74}]
 
@@ -126,16 +128,37 @@ class Clone(unittest.TestCase):
         self.enabled = []
         self.disabled = []
         self.no_shell = False
+        self.busy = 0             # looks the shell runs without answering (then it answers)
         self.lock_status = ""     # Omarchy's lock status answer ("" = no such call)
         self.is_locked = ""
-        patcher = mock.patch.object(dp, "run", side_effect=self.fake_run)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.clock = 0.0          # time.monotonic(); time.sleep moves it on
+        for name, fake in (("run", self.fake_run), ("shell_up", self.fake_up)):
+            patcher = mock.patch.object(dp, name, side_effect=fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, fake in (("monotonic", lambda: self.clock), ("sleep", self.fake_sleep)):
+            patcher = mock.patch.object(dp.time, name, side_effect=fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def fake_up(self):
+        self.calls.append(PING)
+        if self.no_shell:
+            return False
+        if self.busy:
+            self.busy -= 1
+            return False
+        return True
+
+    def fake_sleep(self, seconds):
+        self.clock += seconds
 
     def fake_run(self, *cmd, timeout=None):
         self.calls.append(cmd)
         if self.no_shell:
             return ""
+        if cmd[0] == "pgrep":
+            return "4242\n"      # a shell runs (answering or not)
         if cmd[0] == "omarchy-plugin-enable":
             self.enabled.append(cmd[1])
             return f"Enabled {cmd[1]}\n"
@@ -156,7 +179,7 @@ class Clone(unittest.TestCase):
 
     def shell_calls(self):
         """The calls that write through the shell or reload its plugins."""
-        return [c for c in self.calls if c[:2] != ("omarchy-shell", "lock")]
+        return [c for c in self.calls if c[:2] != ("omarchy-shell", "lock") and c != PING and c[0] != "pgrep"]
 
     # Under Omarchy's lock nothing is written in the plugins folder and the
     # shell is not asked to rescan: the shell of omarchy-mac 4.0.3 reloads its
@@ -230,7 +253,7 @@ class Clone(unittest.TestCase):
         self.calls.clear()
         self.main("--refresh")
         self.assertTrue((self.plugins / ".omanotch.monitor.new").is_dir())
-        self.assertEqual(self.calls, [("omarchy-shell", "lock", "status")])
+        self.assertEqual(self.calls, [PING, ("omarchy-shell", "lock", "status")])
 
     def test_lock_status_read_as_omarchy_says_it(self):
         warn = "  WARN: Detected locale \"C\" ...\nQt depends on a UTF-8 locale, and has switched to \"C.UTF-8\" instead.\n"
@@ -241,8 +264,50 @@ class Clone(unittest.TestCase):
         self.lock_status = ""                  # no status call: isLocked
         self.is_locked = warn + "true\n"
         self.assertTrue(dp.session_locked())
-        self.is_locked = ""                    # no shell
+        self.is_locked = ""                    # no answer to either call
         self.assertFalse(dp.session_locked())
+        self.no_shell = True                   # no shell
+        self.assertFalse(dp.session_locked())
+
+    # A shell that runs but does not answer (starting after a login,
+    # reloading after uninstall.sh's own reload, restarting) counts as locked,
+    # as in OmacVM's guest/session-lock.sh, but only after 20 s: none of the
+    # callers asks again (notchcast's start, uninstall.sh, install.sh).
+    def test_busy_then_open_install(self):
+        self.busy = 3
+        self.assertEqual(self.main(), 0)
+        self.assertTrue((self.clone / "Panel.qml").is_file())
+        self.assertEqual(self.enabled, ["omanotch.monitor"])
+        self.assertEqual(self.clock, 3)
+
+    def test_busy_then_open_remove(self):
+        self.main()
+        self.busy = 5
+        self.main("--remove")
+        self.assertFalse(self.clone.exists())
+        self.assertEqual(self.disabled, ["omanotch.monitor"])
+
+    def test_busy_then_open_refresh_after_omarchy_update(self):
+        self.main()
+        (self.source / "Panel.qml").write_text(PANEL.replace('id: root', 'id: root\n  // new'))
+        self.busy = 2
+        self.main("--refresh")
+        self.assertIn("// new", (self.clone / "Panel.qml").read_text())
+
+    def test_busy_for_good_counts_as_locked(self):
+        self.busy = 10 ** 6
+        self.assertEqual(self.main(), 0)
+        self.assertFalse(self.clone.exists())
+        self.assertEqual(self.shell_calls(), [])
+        self.assertGreaterEqual(self.clock, 20)
+        self.assertLess(self.clock, 22)
+        self.busy = 0
+        self.main()
+        self.busy = 10 ** 6
+        self.calls.clear()
+        self.main("--remove")
+        self.assertTrue(self.clone.exists())
+        self.assertEqual(self.shell_calls(), [])
 
     def main(self, *args):
         with mock.patch("builtins.print"):
