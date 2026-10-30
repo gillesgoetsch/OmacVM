@@ -1395,8 +1395,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   a 1272x640-pixel window at scale 2 and 24.9 in a 1296x690 one at scale 1
   (about 2 to 2.5 of the VM's 4 cores; foot 0.8 and 1.5, Alacritty 0.6 and
   0.7); a bigger window costs more. Omarchy's screensaver runs in the
-  default terminal, so with Ghostty it draws on the CPU too while it shows
-  (off: `omarchy-toggle-screensaver`, or `omacvm enable no-idle-lock`). Terminals
+  default terminal, so with Ghostty it draws on the CPU too while it shows,
+  and that is heavy: on two displays at scale 2 it kept all 4 of a test
+  VM's cores busy, and the Mac mini drew about 36 W against 14-18 W without
+  it (20 W with the screensaver in foot). Off: `omarchy-toggle-screensaver`,
+  or `omacvm enable no-idle-lock`. Terminals
   that draw on the Mac's GPU in the VM: Alacritty and Kitty (Install >
   Terminal); Omarchy's default foot draws on the CPU by design and costs
   little (Setup > Defaults > Terminal, or `omarchy-default-terminal foot`).

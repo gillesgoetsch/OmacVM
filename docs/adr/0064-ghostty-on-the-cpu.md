@@ -89,10 +89,15 @@ Option 2a.
   ok (on the CPU, the cost, the GPU-drawn terminals) or FAIL (no window: the
   library is missing or from before 3.2.14).
 - Omarchy's screensaver in Ghostty is kept, not left out by its class
-  (`org.omarchy.screensaver`): it then runs on the CPU too while it shows.
-  Without the change it opened no window at all. Off: Omarchy's
-  `omarchy-toggle-screensaver`, `omacvm enable no-idle-lock`, or foot as
-  the default terminal (foot draws on the CPU as well, by design).
+  (`org.omarchy.screensaver`): it then runs on the CPU too while it shows,
+  and that is heavy (Cost: all of a 4-CPU VM's cores, and the Mac mini
+  drew about 36 W against 14-18 W with no screensaver and 20 W with it in
+  foot). Without the change it opened no window at all. Off: Omarchy's
+  `omarchy-toggle-screensaver`, `omacvm enable no-idle-lock` (both named
+  in `omacvm check`'s Ghostty line), or foot as the default terminal (foot
+  draws on the CPU as well, by design, at a fraction of the cost). Keeping
+  it is open after these numbers; the other way is to leave the class out,
+  so that with Ghostty the screensaver opens no window, as before.
 
 ## Cost
 
@@ -104,16 +109,33 @@ median of 3 (`work/issue-598/kit`, `kit2`):
 |---|---|---|---|
 | 1296x690 pixels at scale 1 (3.2.12 with `LIBGL_ALWAYS_SOFTWARE=1`; no bench lock) | 24.9 / 1.57 CPU-s | 1.47 / 0.02 | 0.72 / 0.03 |
 | 1272x640 pixels at scale 2 (this change; bench lock) | 19.8 / 1.58 CPU-s | 0.82 / 0.03 | 0.60 / 0.03 |
+| 1296x690 pixels at scale 1 (this change; bench lock) | 22.8 / 1.82 CPU-s | 1.53 / 0.00 | 0.80 / 0.07 |
 
 So about 2 to 2.5 of the 4 vCPUs while output scrolls, and 0.16 of one in
 the 10 s after it stopped (foot and Alacritty almost none). On the Mac, QEMU used 25.0
 CPU-seconds per 26 s run with Ghostty against 5.5 with foot and 5.4 with
 Alacritty; the Mac GPU's busy share stayed at 0-1 % in all three (a hidden
 test window). A full-screen window on a large display has several times
-these pixels: not measured, because the test Mac (Mac mini M4, its swap
-nearly full) went to critical memory pressure with a 2560x1600 output. The
-same for the screensaver in Ghostty with this change; on 3.2.12 it opened no
-window on either of two outputs (guest 0.66 CPU-s in 20 s).
+these pixels: not measured yet (R6 in the PR), because the test Mac (Mac
+mini M4, its swap nearly full) went to critical memory pressure.
+
+Omarchy's screensaver with Ghostty as the default terminal, this change:
+two outputs at scale 2 (the hidden test window's 1320x740 and a 2560x1600
+one), one full-screen screensaver window on each. Windows of 180 s between
+two of macOS's power telemetry updates (about one a minute); whole-Mac power
+of the Mac mini M4 from that telemetry (no sudo), with the person's own apps
+on it taking one to two cores, so the idle runs differ by 4 W:
+
+| 180 s | guest CPU | QEMU on the Mac | Mac power | Mac GPU busy |
+|---|---|---|---|---|
+| No screensaver (2 runs) | 5.3 / 2.6 CPU-s | 4.9 / 3.9 CPU-s | 14.4 / 18.5 W | 0 % |
+| Screensaver in Ghostty (2 runs) | 670 / 673 CPU-s | 656 / 664 CPU-s | 35.8 / 35.6 W | 3 % |
+| Screensaver in foot (1 run; the second stopped at critical memory pressure) | 152 CPU-s | 201 CPU-s | 20.4 W | 13 % |
+
+So the screensaver in Ghostty keeps 3.7 of the VM's 4 vCPUs and 3.7 of the
+Mac's cores busy while it shows; in foot 0.8 and 1.1. Three 30-s runs of each
+gave the same split (QEMU 102-103 CPU-s per 30 s with Ghostty, 31-33 with
+foot). On 3.2.12 it opened no window with Ghostty (guest 0.66 CPU-s in 20 s).
 
 ## Consequences
 
@@ -129,11 +151,12 @@ window on either of two outputs (guest 0.66 CPU-s in 20 s).
   service (`--initial-window=false`) can outlive Update VM. After the
   update: log out and in, or `systemctl --user stop
   app-com.mitchellh.ghostty.service`. A precaution: in the 3.2.12 test VM
-  none was left, since a Ghostty that fails on OpenGL exits, and
-  `systemctl --user start` of the service failed there for another reason
-  (systemd: "lacks handler for reload signal USR2", a start-up race of
-  Ghostty 1.3.1; D-Bus activation started the same service fine after the
-  update).
+  no Ghostty was left to keep the old driver. Ghostty started from a shell
+  exits when OpenGL fails, and its service did not start at all, neither by
+  `systemctl --user start` nor by D-Bus activation (systemd: "Main process
+  lacks handler for reload signal USR2, refusing service startup"; seen
+  once each). After the update D-Bus activation started the same service
+  fine.
 - Opt-outs: `LIBGL_ALWAYS_SOFTWARE=0` (Ghostty on virgl again: no window),
   any `MESA_LOADER_DRIVER_OVERRIDE` or `GALLIUM_DRIVER`; for one program
   `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;

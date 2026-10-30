@@ -25,10 +25,13 @@ in more words.
   4-CPU VM's cores (foot 0.8, Alacritty 0.6), more in a bigger window (measured on a Mac mini M4).
   Alacritty and Kitty draw on the Mac's GPU; Omarchy's default foot draws on the CPU by design and
   costs little. With Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too
-  while it shows. `omacvm check` has a "Ghostty" line. Zink is no way around it for now: on the
-  Mac's Vulkan driver it gives OpenGL 2.1, and with a forced 4.3 it stopped the whole VM
-  (docs/troubleshooting.md, 47; ADR 0064). Reported by @benoitdepaire. Needs Update VM, then log
-  out and in (or `systemctl --user stop app-com.mitchellh.ghostty.service`).
+  while it shows, and that costs a lot: on two displays at scale 2 it kept all 4 of the VM's
+  cores busy, and the Mac mini drew about 36 W against 14-18 W without it (20 W in foot);
+  `omarchy-toggle-screensaver` or `omacvm enable no-idle-lock` turns it off. `omacvm check` has a
+  "Ghostty" line that says so. Zink is no way around it for now: on the Mac's Vulkan driver it
+  gives OpenGL 2.1, and with a forced 4.3 it stopped the whole VM (docs/troubleshooting.md, 47;
+  ADR 0064). Reported by @benoitdepaire. Needs Update VM, then log out and in (or
+  `systemctl --user stop app-com.mitchellh.ghostty.service`).
 
 ## 3.2.13
 
