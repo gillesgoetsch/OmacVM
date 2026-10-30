@@ -38,7 +38,7 @@ expect() {   # WHAT WANT GOT
 # user, installs with the user as owner or writes "$H/..." itself is root
 # writing there; home-files.sh's functions write as the user.
 lint=$(cd "$SRC" && grep -nE 'chown|install [^#]* -o "?\$(U|user)\b|>>? *"\$H' \
-    guest/install.sh guest/off.sh lib/install-plugin.sh clock/guest/clock.sh gestures/guest/glide.sh \
+    guest/install.sh guest/off.sh guest/hypr-vm.sh lib/install-plugin.sh clock/guest/clock.sh gestures/guest/glide.sh \
     bridge/guest/touchid.sh app/guest/omacvm-mac-folder */guest/install.sh 2>/dev/null |
   grep -vE ':[0-9]+: *#|-o root|chown -R nobody:|fchown' || true)
 expect "no chown, install -o or write to \"\$H...\" as root in the guest scripts" "" "$lint"
@@ -93,6 +93,7 @@ run_all() {
   ( cd "$G/clipboard/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
   bash "$G/gestures/guest/glide.sh" "$LU" on >/dev/null 2>&1
   bash "$G/gestures/guest/glide.sh" "$LU" off >/dev/null 2>&1
+  bash "$G/guest/hypr-vm.sh" "$LU" >/dev/null 2>&1
   bash "$G/clock/guest/clock.sh" "$LU" on "HH:mm" >/dev/null 2>&1
   bash "$G/clock/guest/clock.sh" "$LU" off >/dev/null 2>&1
   bash "$G/lib/install-plugin.sh" "$LU" "$G/workspaces/plugins/omacvm.workspaces" >/dev/null 2>&1
@@ -128,7 +129,7 @@ before=$(snapshot)
 
 # 1. Files in the home linked to root's files (and the temp names root used).
 fresh_home
-for f in hyprland.lua input.lua autostart.lua monitor_workspaces.lua omacvm_glide.lua .omacvm_glide.lua.new .monitor_workspaces.lua.new; do
+for f in hyprland.lua input.lua autostart.lua monitor_workspaces.lua omacvm_glide.lua omacvm_vm.lua .omacvm_glide.lua.new .monitor_workspaces.lua.new; do
   plant "$H/.config/hypr/$f" "$S/file"
 done
 plant "$H/.config/hypr/bindings.lua" "$S/secret"
@@ -172,6 +173,7 @@ echo old > "$H/.local/state/omacvm/restart-shell"
 ( cd "$G/keyboard/guest" && bash ./install.sh "$LU" us ) >/dev/null 2>&1
 ( cd "$G/display/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
 bash "$G/gestures/guest/glide.sh" "$LU" on >/dev/null 2>&1
+bash "$G/guest/hypr-vm.sh" "$LU" >/dev/null 2>&1
 bash "$G/clock/guest/clock.sh" "$LU" on "HH:mm" >/dev/null 2>&1
 python3 "$G/guest/shell-colors.py" --user "$LU" --qmltypes "$T/qt.qmltypes" >/dev/null 2>&1
 ( U=$LU IP=x; gssh() { shift; /bin/bash -c "$1"; }; die() { exit 1; }
@@ -187,6 +189,8 @@ expect "... monitors.lua keeps the scale, the user's, 644" "1 $LU 644" \
   "$(grep -c '^local omarchy_monitor_scale = 1.5$' "$H/.config/hypr/monitors.lua") $(owner "$H/.config/hypr/monitors.lua") $(stat -c %a "$H/.config/hypr/monitors.lua")"
 expect "... Glide in hyprland.lua and the flags file" "1 1" \
   "$(grep -c 'require("hypr.omacvm_glide")' "$H/.config/hypr/hyprland.lua") $(grep -c -- '--disable-smooth-scrolling' "$H/.config/chromium-flags.conf")"
+expect "... OmacVM's Hyprland settings in hyprland.lua, the user's file" "1 $LU" \
+  "$(grep -c 'require("hypr.omacvm_vm")' "$H/.config/hypr/hyprland.lua") $(owner "$H/.config/hypr/omacvm_vm.lua")"
 expect "... the clock moved in shell.json, the user's" "1 $LU" "$(jq '.bar.layout.right[-1].format == "HH:mm"' "$H/.config/omarchy/shell.json" | grep -c true) $(owner "$H/.config/omarchy/shell.json")"
 expect "... the plugin clone pinned, still the user's" "1 $LU" "$(grep -c '^import QtQuick 6.11 ' "$H/.config/omarchy/plugins/p/Bar.qml") $(owner "$H/.config/omarchy/plugins/p/Bar.qml")"
 expect "... the plugin's queue link, in a folder root had left" "yes $LU" \

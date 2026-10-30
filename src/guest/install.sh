@@ -423,6 +423,18 @@ system && case $TYPE in
   fusion)
     log "VMware Fusion"; "$R/fusion/guest/install.sh" "$U" "$MODE" ${DSCALE:+"$DSCALE"} ;;
 esac
+# Hyprland settings every route needs (omacvm_vm.lua, each says why): Hyprland
+# 0.57's quirks:skip_non_kms_dmabuf_formats off, else virtio-gpu leaves apps no
+# format with alpha and the shell's panels and notifications black out the
+# screen (#630). Hyprland reads it at its start.
+if system; then
+  r=$("$R/guest/hypr-vm.sh" "$U" 2>&1) || r="failed: $r"
+  case $r in
+    added|updated) log "Hyprland: OmacVM's settings for every VM $r (on Hyprland 0.57: transparent panels and notifications from the next login)" ;;
+    "") ;;
+    *) log "Hyprland: OmacVM's settings for every VM: $r" ;;
+  esac
+fi
 # Chromium's video through V4L2: OmacVM.app VMs only (off on the other routes
 # above). Its own step, so the control centre can repair it alone.
 if want chromium-video && [[ $TYPE == app ]]; then

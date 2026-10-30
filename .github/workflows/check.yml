@@ -841,9 +841,12 @@ jobs:
           curl -fsSL -o /tmp/lua.tgz https://www.lua.org/ftp/lua-5.5.0.tar.gz
           echo "57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d  /tmp/lua.tgz" | sha256sum -c -
           tar -xzf /tmp/lua.tgz -C /tmp && make -s -C /tmp/lua-5.5.0 linux >/dev/null
-          /tmp/lua-5.5.0/src/luac -p src/app/guest/omacvm_app.lua src/omanotch/guest/hypr/notchbar.lua
+          /tmp/lua-5.5.0/src/luac -p src/app/guest/omacvm_app.lua src/omanotch/guest/hypr/notchbar.lua src/guest/omacvm_vm.lua
           d=$(mktemp -d)
           XDG_RUNTIME_DIR=$d XDG_CONFIG_HOME=$d /tmp/lua-5.5.0/src/lua src/app/guest/tests/omacvm_app_test.lua src/app/guest/omacvm_app.lua
+
+      - name: Transparent panels on Hyprland 0.57 (#630) on every route; omacvm_vm.lua, its installer, its check line
+        run: LUA=/tmp/lua-5.5.0/src/lua src/tests/dmabuf-alpha.sh
 
       - name: omacvm check's HDR line says what Hyprland's SDR copy does (the check catches code without it)
         run: src/tests/hdr-copy-check.sh
