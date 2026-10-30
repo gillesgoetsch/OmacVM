@@ -837,6 +837,15 @@ The less obvious ones, with causes and where the fix lives, are in
   fails on one), and a new thread that dispatches guest commands sets
   `vkr_dispatching_context`. No guest value may reach an `assert()` in vkr
   (virgl keeps them in release); such cases go in `test-venus-robust.c`.
+  KosmicKrisp is built with NDEBUG: a Mesa assert on an index is no check, and
+  an enum value its switch lacks is undefined behaviour. Bound every guest
+  index, count, offset, stride and enum before the driver gets it (the
+  `vkr_limits.h` helpers, `vkr_context_check`: a refusal ends the app's
+  context); read what a create info's handles name before
+  `vn_replace_*_args_handle` replaces them. Each `vkr_dispatch_vkCmd*` needs a
+  row in `Tests/virgl/venus-command-ledger.tsv` (the runtime build fails
+  without one) and each new check a case in `test-venus-commands.c`, including
+  the limit's legal maximum.
 - Do not run guest apps on Zink as their OpenGL (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
   in an OmacVM.app VM with Vulkan: on KosmicKrisp it gives OpenGL 2.1 only.
   Ghostty's OpenGL 4.3 comes from llvmpipe instead. With the 3.2.13 app and

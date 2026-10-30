@@ -1626,3 +1626,27 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `inst_fail_all`); test `src/vdec/guest/test/vdec-test.c
   --hold-all-at-eos` (in the VM, as root);
   [video-decode.md](video-decode.md#chromium-from-arch-linux-arm).
+
+## 52. app: a Vulkan app ends, the VM goes on
+
+- **Symptom:** in an OmacVM.app VM with Graphics on Vulkan, one Vulkan app (a
+  game, a tool, Chromium's GPU process) ends or says its device was lost,
+  and the rest of the VM keeps working. The VM's `qemu.log` (in the VM's
+  folder, `logs/`) has `vkr: <app>: vkCmd... refused: ...; the app's Vulkan
+  context ends (N refused so far)` and `venus context N (<app>) is lost`.
+- **Cause:** from 3.2.17 OmacVM.app checks the indices, counts, offsets and
+  values a Vulkan app sends against the Mac GPU's limits and what the app
+  made (ADR 0065). The Mac's Vulkan drivers use such values as memory
+  addresses; before 3.2.17 a wrong one could stop the whole VM. The app sent
+  one the Vulkan spec does not allow (an app bug), so only its connection
+  ends. The line names the call and the values; only the 1st, 2nd, 4th, 8th
+  ... refusal since the VM started is logged.
+- **Fix:** update the app in the VM (most are fixed upstream once
+  reported: the line is what to report), or give the VM OpenGL: Graphics
+  OpenGL in the VM window, or `omacvm graphics --vm NAME opengl` (from the
+  next start), which avoids Venus. A
+  correct app that ends this way is an OmacVM bug: please report it with the
+  line.
+- **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`; tests
+  `app/runtime/Tests/virgl/test-venus-commands.c`,
+  `venus-command-ledger.tsv`; ADR 0065.

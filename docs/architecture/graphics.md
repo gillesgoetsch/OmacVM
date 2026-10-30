@@ -598,6 +598,18 @@ Patches (all in `app/runtime/patches`, one per concern):
   `Tests/virgl/test-venus-robust.c` sends its cases as encoded streams through
   `vkr_context_submit_cmd` (one through a ring thread, one nested) at every
   runtime build.
+- `virgl-venus-command-limits.patch`, `virgl-venus-descriptor-limits.patch`,
+  `virgl-venus-render-pass-limits.patch`, `virgl-venus-pipeline-limits.patch`
+  (ADR 0065's second amendment, 3.2.17): guest indices, counts, offsets,
+  strides and enum values in `vkCmd*`, queries, descriptor sets and layouts,
+  render passes and pipelines are bounded by the device's limits
+  (`struct vkr_limits`) and what the objects were made with (a refcounted
+  table per set layout, a subpass table per render pass, levels, bind points,
+  pool counts) before the driver gets them; a refusal ends the app's context.
+  KosmicKrisp's multiview count is told as Metal's vertex amplification count
+  (`vkr_metal_limits.m`). `Tests/virgl/test-venus-commands.c` (210 cases, with
+  the legal maxima) runs on KosmicKrisp, MoltenVK and MoltenVK with prefilled
+  command buffers; `venus-command-ledger.tsv` has a verdict per `vkCmd*`.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended
