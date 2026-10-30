@@ -536,8 +536,12 @@ Rules:
   dispatch source; its handler only stores the level, the renderer thread
   acts in `virgl_renderer_poll` and also reads the level once a second,
   because macOS tells only some processes about a warning): big new resources (16 MB+, not screens or
-  cursors) are refused only at "critical", or at "warn" when they are bigger
-  than all macOS has left, after a glFinish and three more looks. It writes
+  cursors) are refused only when they are bigger than all macOS has left
+  ("warn" and "critical"), and at "critical" also when the guest's GPU
+  memory would grow past what was in use when critical began by more than a
+  grace (a 32nd of the Mac's memory, 256 MB to 1 GB;
+  `virgl-gpu-guard-critical-grace.patch`: replacing buffers never costs a
+  context), after a glFinish and three more looks. It writes
   `logs/gpu-memory` for the app and `omacvm check`. A desktop takes
   1.1 GB at 4K to 3.1 GB at 8K, up to 6.2 GB for a moment while the scale
   changes (every screen-sized buffer is made again). QEMU's log notes each

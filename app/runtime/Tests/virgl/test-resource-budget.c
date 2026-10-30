@@ -11,12 +11,20 @@
  *   test-resource-budget off        OMACVM_GPU_MEMORY_MB=0: no budget
  *   test-resource-budget default    unset: three quarters of the Mac's memory, and the
  *                                   desktop reserve for this Mac's memory
- *   test-resource-budget critical   pressure critical: a big resource is made for the
+ *   test-resource-budget critical   pressure critical, 40 MB left: a 32 MB texture is the
+ *                                   app's (virgl-gpu-guard-critical-grace.patch); a 64 MB
+ *                                   one, bigger than what is left, is made for the
  *                                   desktop only after trying again (the next one at
  *                                   once): an app that takes it is lost, Hyprland keeps
  *                                   it, also as the lost app's dropped buffer; small
  *                                   ones, screens and cursors fit; an app's pipe
  *                                   resource is refused
+ *   test-resource-budget critical-steady
+ *                                   pressure critical, 4 GB left: an app that replaces
+ *                                   its 64 MB buffer 20 times is never lost; it then
+ *                                   grows by exactly this Mac's grace (a 32nd of its
+ *                                   memory, 256 MB to 1 GB) and the next one loses it;
+ *                                   Hyprland keeps its own
  *   test-resource-budget warn       pressure warn, 100 MB left: what fits
  *   test-resource-budget reserve    OMACVM_GPU_MEMORY_MB=64: the last 16 MB are kept for
  *                                   the desktop (virgl-gpu-guard-desktop-reserve.patch):
@@ -28,7 +36,9 @@
  *                                   says so in the log, not "budget reached"
  *   test-resource-budget status     the status file: in use, peak, a lost context
  *   test-resource-budget levelfile  the level read from a file at each look (the
- *                                   test hook that raises it while a VM runs) */
+ *                                   test hook that raises it while a VM runs), with what
+ *                                   macOS has left (critical:40); the grace counts again
+ *                                   from a new critical period */
 #include <fcntl.h>
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl3.h>
@@ -478,14 +488,30 @@ static void settle(void)
 
 static int sampler_view(int ctx_id, uint32_t handle, uint32_t res);
 
+/* The grace at critical for this Mac (virgl_gpu_guard_critical_grace): a 32nd of its
+ * memory, 256 MB to 1 GB. */
+static uint64_t critical_grace(void)
+{
+   uint64_t g = mac_memory() / 32;
+   return g < 256ull * MB ? 256ull * MB : g > 1024ull * MB ? 1024ull * MB : g;
+}
+
 static int run_critical(void)
 {
    char line[200], text[64] = "";
    uint32_t *app = named_context(2, 901, "chromium"), *desk = named_context(3, 902, "Hyprland");
+   /* the parent set macOS's free, inactive and purgeable memory to 40 MB */
+   uint32_t fits = tex2d(4096, 2048, 1);  /* 32 MB */
+   if (fits)
+      virgl_renderer_ctx_attach_resource(2, fits);
+   check(fits != 0 && alive(2, app), "pressure critical, 40 MB left: chromium's 32 MB texture fits, chromium "
+         "keeps drawing (it fits in what is left and in the grace)");
+   if (fits)
+      virgl_renderer_resource_unref(fits);
    double t = now_s();
    uint32_t big = tex2d(4096, 4096, 1);   /* 64 MB */
    double waited = now_s() - t;
-   check(big != 0, "pressure critical: a 64 MB texture is made, for the desktop only");
+   check(big != 0, "a 64 MB texture, more than macOS has left, is made for the desktop only");
    snprintf(line, sizeof line, "after trimming and looking again (%.0f ms)", waited * 1000);
    check(waited >= 0.09, line);
    virgl_renderer_ctx_attach_resource(2, big);
@@ -532,6 +558,65 @@ static int run_critical(void)
    free(app);
    free(desk);
    free(ff);
+   return 0;
+}
+
+/* The Mac mini of 2026-10-30: macOS critical for minutes, Chrome at 5K making window
+ * buffers. 3.2.14 lost Chrome at its first new one, and again at each one after it was
+ * started again. Now replacing buffers never costs a context, and only growth past the
+ * grace does. */
+static int run_critical_steady(void)
+{
+   char line[200], text[64] = "";
+   uint64_t grace = critical_grace();
+   int want = (int)(grace / (64 * MB));
+   uint32_t *app = named_context(2, 901, "chromium"), *desk = named_context(3, 902, "Hyprland");
+   uint32_t prev = 0, cur = 0;
+   int kept = 1;
+   for (int i = 0; i < 20; i++) {         /* a new window buffer, then the old one freed */
+      cur = tex2d(4096, 4096, 1);         /* 64 MB */
+      if (cur)
+         virgl_renderer_ctx_attach_resource(2, cur);
+      kept &= cur != 0 && alive(2, app);
+      if (prev)
+         virgl_renderer_resource_unref(prev);
+      prev = cur;
+   }
+   check(kept, "pressure critical: chromium replaces its 64 MB buffer 20 times and keeps drawing");
+   settle();
+   check(status_value("lost", NULL, 0) == 0 && status_value("refused", NULL, 0) == 0,
+         "lost=0, refused=0");
+   /* it now grows: one 64 MB buffer is held, so want - 1 more fit in the grace */
+   uint32_t h[17] = { cur };
+   int n = 1;
+   while (n < 17) {
+      h[n] = tex2d(4096, 4096, 1);
+      if (!h[n])
+         break;
+      virgl_renderer_ctx_attach_resource(2, h[n++]);
+      if (!alive(2, app))
+         break;
+   }
+   snprintf(line, sizeof line, "chromium grows by the grace for this Mac (%llu MB: %d buffers of 64 MB "
+            "held), the next one loses it (%d held)", (unsigned long long)(grace / MB), want, n - 1);
+   check(n - 1 == want && lost(2, app), line);
+   check(status_value("lost_why", text, sizeof text) == 0 && !strcmp(text, "pressure"),
+         "lost_why=pressure");
+   /* past the grace the desktop goes on, as before */
+   uint32_t d = tex2d(4096, 4096, 1);
+   if (d)
+      virgl_renderer_ctx_attach_resource(3, d);
+   check(d != 0 && alive(3, desk), "Hyprland's next 64 MB buffer, past the grace, is the desktop's: it keeps drawing");
+   uint32_t scan = make(T_2D, VIRGL_FORMAT_B8G8R8X8_UNORM, VIRGL_BIND_SCANOUT | VIRGL_BIND_RENDER_TARGET,
+                        5120, 2880, 1, 1, 0, 0);
+   check(scan != 0, "a 5K screen fits (screens are never held back for pressure)");
+   virgl_renderer_context_destroy(2);
+   virgl_renderer_context_destroy(3);
+   unref(h, n);
+   uint32_t done[] = { d, scan, 901, 902 };
+   unref(done, 4);
+   free(app);
+   free(desk);
    return 0;
 }
 
@@ -826,15 +911,15 @@ static void level_to(const char *level)
 
 static int run_levelfile(void)
 {
-   char text[64] = "";
+   char text[64] = "", line[200];
    uint32_t a = tex2d(4096, 4096, 1);     /* 64 MB */
    check(a != 0, "level file says normal: a 64 MB texture fits");
-   level_to("critical");
+   level_to("critical:40");
    uint32_t *app = named_context(2, 901, "chromium");
    uint32_t b = tex2d(4096, 4096, 1);
    virgl_renderer_ctx_attach_resource(2, b);
-   check(b != 0 && lost(2, app), "level file says critical: the next 64 MB texture is for the desktop only, "
-         "chromium that takes it is lost");
+   check(b != 0 && lost(2, app), "level file says critical:40: the next 64 MB texture, more than is left, is "
+         "for the desktop only, chromium that takes it is lost");
    usleep(1100000);                       /* the once-a-second look */
    settle();
    check(status_value("pressure", text, sizeof text) == 0 && !strcmp(text, "critical"),
@@ -842,10 +927,44 @@ static int run_levelfile(void)
    level_to("normal");
    uint32_t c = tex2d(4096, 4096, 1);
    check(c != 0, "back to normal: a 64 MB texture fits again");
+   /* the contexts first: their status buffers count in what is in use when critical begins */
+   uint32_t *app2 = named_context(4, 903, "chromium"), *app3 = named_context(5, 904, "chromium");
+   usleep(1100000);
+   settle();                              /* the renderer's own look sees normal */
+   /* critical again, room left: an app grows by the grace, then is lost */
+   level_to("critical:4096");
+   usleep(1100000);
+   settle();                              /* its look sees critical: the grace counts from here */
+   uint32_t h[17] = {0};
+   int n = 0, want = (int)(critical_grace() / (64 * MB));
+   while (n < 17 && (h[n] = tex2d(4096, 4096, 1))) {
+      virgl_renderer_ctx_attach_resource(4, h[n++]);
+      if (!alive(4, app2))
+         break;
+   }
+   snprintf(line, sizeof line, "critical with room: chromium grows by this Mac's grace (%d of 64 MB), the "
+            "next one loses it (%d)", want, n - 1);
+   check(n - 1 == want && lost(4, app2), line);
+   /* normal for a look, then critical again: the grace counts from what is in use then */
+   level_to("normal");
+   usleep(1100000);
+   settle();
+   level_to("critical:4096");
+   usleep(1100000);
+   settle();
+   uint32_t e = tex2d(4096, 4096, 1);
+   if (e)
+      virgl_renderer_ctx_attach_resource(5, e);
+   check(e != 0 && alive(5, app3), "a new critical period: another chromium's 64 MB texture fits again");
    virgl_renderer_context_destroy(2);
-   uint32_t done[] = { a, b, c, 901 };
-   unref(done, 4);
+   virgl_renderer_context_destroy(4);
+   virgl_renderer_context_destroy(5);
+   unref(h, n);
+   uint32_t done[] = { a, b, c, e, 901, 903, 904 };
+   unref(done, 7);
    free(app);
+   free(app2);
+   free(app3);
    return 0;
 }
 
@@ -869,6 +988,8 @@ static int child(const char *mode)
       run_off();
    else if (!strcmp(mode, "critical"))
       run_critical();
+   else if (!strcmp(mode, "critical-steady"))
+      run_critical_steady();
    else if (!strcmp(mode, "warn"))
       run_warn();
    else if (!strcmp(mode, "reserve"))
@@ -929,7 +1050,8 @@ int main(int argc, char **argv)
       fclose(lf);
    }
    int bad = spawn(argv[0], "limit", "64", "off") + spawn(argv[0], "off", "0", "off") +
-             spawn(argv[0], "default", NULL, "off") + spawn(argv[0], "critical", "0", "critical") +
+             spawn(argv[0], "default", NULL, "off") + spawn(argv[0], "critical", "0", "critical:40") +
+             spawn(argv[0], "critical-steady", "0", "critical:4096") +
              spawn(argv[0], "warn", "0", "warn:100") + spawn(argv[0], "status", "0", "normal") +
              spawn(argv[0], "reserve", "64", "off") + spawn(argv[0], "dropped", "64", "off") +
              spawn(argv[0], "wording", "64", "off") +

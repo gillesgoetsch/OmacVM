@@ -1359,10 +1359,16 @@ Fusion: nothing changes (their balloons do not report free pages).
   Everything still goes through, unless a new big buffer (16 MB or more)
   is bigger than all the memory macOS has left: more swapping is better
   than a black desktop.
-- When macOS is critical (red), new big buffers are refused. Before a
-  refusal QEMU frees what it can and looks again three times (100 ms;
-  within a second of the last refusal it does not wait again, as the VM
-  stands still while it waits).
+- When macOS is critical (red), a new big buffer goes through only when it
+  fits in what macOS has left and the VM's graphics memory stays within what
+  it used when critical began plus a grace: a 32nd of the Mac's memory,
+  256 MB to 1 GB (16 GB Mac: 512 MB). So an app can go on replacing its
+  window buffers (a 5K one is about 56 MB), and only growth past the grace
+  is stopped. 3.2.14 and older refused every new big buffer at critical, so
+  a browser lost its graphics at its next window for as long as critical
+  lasted. Before a refusal QEMU frees what it can and looks again three
+  times (100 ms; within a second of the last refusal it does not wait again,
+  as the VM stands still while it waits).
   Screens, cursors and small buffers are never refused for this, so the
   desktop keeps drawing as long as it can.
 

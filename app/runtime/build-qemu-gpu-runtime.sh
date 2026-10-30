@@ -1392,6 +1392,10 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-use-program-cache.
 # OmacVM: a lost app's dropped buffer keeps an empty 1x1 stand-in, so the compositor that shows it
 # is not lost too (a black VM); the log names the apps' share when an app stops there.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-gpu-guard-dropped-placeholder.patch"
+# OmacVM: at critical memory pressure an app may replace its buffers and grow by a grace (a 32nd
+# of the Mac's memory) past what was in use when critical began: every new big buffer cost the app
+# its context before, so Chrome at 5K was lost again at each window as long as critical lasted.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-gpu-guard-critical-grace.patch"
 # OmacVM: on Apple's GL (no ARB_vertex_attrib_binding) a draw sets its vertex attributes
 # and index buffer, and selects its shaders, only when they changed.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-legacy-vertex-cache.patch"
