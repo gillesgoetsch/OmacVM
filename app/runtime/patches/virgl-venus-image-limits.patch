@@ -29,7 +29,12 @@ driver before it does (src/venus/vkr_image.c):
 A refused create returns VK_ERROR_FORMAT_NOT_SUPPORTED (what the format query
 gives for the same values; not in vkCreateImage's list in the spec, but vkr
 already returns it for a DRM modifier it cannot make, and guest Mesa passes it to
-the app). A refused query answers zeros. Binds are made without waiting for an
+the app). A refused query zeroes only its main output (VkMemoryRequirements,
+VkSubresourceLayout, VkImageFormatProperties; a sparse count of 0), and the format
+queries also return VK_ERROR_FORMAT_NOT_SUPPORTED. Output structs chained to it
+(VkMemoryDedicatedRequirements, VkExternalImageFormatProperties,
+VkSubresourceHostMemcpySize) are not written and keep what the decoder's temp
+pool held (follow-up #624). Binds are made without waiting for an
 answer in the guest, so a refused bind ends the app's Venus context. The verdict
 depends only on the device and the description. The guest sends a create without
 waiting only when the same description is in its requirements cache (a

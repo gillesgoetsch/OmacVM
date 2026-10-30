@@ -64,7 +64,13 @@ Option 3, in three patches, each with a build-time test case:
 Error codes: a refused create returns `VK_ERROR_FORMAT_NOT_SUPPORTED` (what the
 format query gives for the same values; not in `vkCreateImage`'s list in the
 spec, but vkr already returned it for modifiers, and guest Mesa passes it on).
-A refused query answers zeros or `VK_ERROR_FORMAT_NOT_SUPPORTED`. The guest makes
+A refused query zeroes only its main output (`VkMemoryRequirements`,
+`VkSubresourceLayout`, `VkImageFormatProperties`; a sparse count of 0), and the
+format queries also return `VK_ERROR_FORMAT_NOT_SUPPORTED`. Output structs
+chained to it (`VkMemoryDedicatedRequirements`, `VkExternalImageFormatProperties`,
+`VkSubresourceHostMemcpySize`) are not written and keep what vkr's decoder had
+in that memory; the guest's Mesa caches the dedicated flags with the refused
+requirements (follow-up #624). The guest makes
 binds, views and samplers without waiting for an answer, so a refused one ends
 the app's Venus context; the guest's Mesa then ends that app and the VM goes on.
 The verdict depends only on the device and the description. QEMU's log names
