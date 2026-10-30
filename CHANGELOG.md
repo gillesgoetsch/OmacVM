@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15 (unreleased)
+
+- **Update VM no longer installs Omanotch again when it did not change (OmacVM.app).** The
+  check for a changed Omanotch counted Python's compiled files that the same update leaves
+  beside Omanotch's display panel code, and those change with every update: each update of an
+  OmacVM.app VM with Omanotch on built and installed it again. Omanotch installs once more at
+  this update.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
