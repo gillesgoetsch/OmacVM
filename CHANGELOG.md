@@ -25,6 +25,12 @@ in more words.
   yet", and `omacvm check` names the version; `omacvm update` brings the patch once there is one.
   Needs `omacvm update` before Omarchy stable moves to 0.57.
 
+- **A Hyprland that drops an option OmacVM.app sets shows no config error.** `omacvm_app.lua` sets
+  `cursor:no_hardware_cursors`, `cursor:use_cpu_buffer`, `render:keep_unmodified_copy` and
+  `render:cm_auto_hdr` now only when this Hyprland has them (`hl.get_config`), as `omacvm_vm.lua`
+  (#638) does: an option Hyprland does not know puts a red config error on the screen, which `pcall` did
+  not stop. All four are still there in 0.57.0, so nothing changes today.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
