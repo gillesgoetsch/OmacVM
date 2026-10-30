@@ -306,5 +306,38 @@ for v in $FOLDERS; do
   done
 done
 
+# the reason names the installed hyprland package (pacman's database: the entry named hyprland itself, not
+# hyprland-guiutils or -protocols beside it; no epoch) and the releases OmacVM has fixes for
+LAST=${FOLDERS% }; LAST=${LAST##* }
+PDB=$R/var/lib/pacman/local
+pkg() {   # pkg NAME VERSION: an installed package's record
+  mkdir -p "$PDB/$1-${2#*:}"; printf '%%NAME%%\n%s\n\n%%VERSION%%\n%s\n\n%%BASE%%\n%s\n\n' "$1" "$2" "$1" > "$PDB/$1-${2#*:}/desc"
+}
+why() { run --status | cut -f2 | sed 's/: screenshots and screen sharing.*//'; }
+# shellcheck disable=SC2086
+set -- $FOLDERS; have=$1; shift; while (( $# > 1 )); do have+=", $1"; shift; done; (( $# )) && have+=" and $1"
+pkg hyprland-guiutils 0.2.2-4; pkg hyprland-protocols 0.8.0-1
+mkbin "" "$LAST"; sed -i "s/$(git -C "$T/hypr-$LAST" rev-parse HEAD)/1111111111111111111111111111111111111111/" "$R/usr/bin/Hyprland"
+expect "no hyprland record (only hyprland-guiutils and -protocols): version not known" \
+  test "$(why)" = "no OmacVM fix for this Hyprland (its version is not known; OmacVM has fixes for $have)"
+pkg hyprland 0.58.0-1
+expect "an unknown release: names it and what OmacVM has" test "$(why)" = "no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes for $have)"
+expect "an unknown release: the apply says the same" grep -q "Hyprland's own copy: no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes for $have)" <(run --hook-post)
+rm -r "$PDB/hyprland-0.58.0-1"; pkg hyprland 1:0.58.0-2
+expect "an epoch: left out" test "$(why)" = "no OmacVM fix for Hyprland 0.58.0-2 yet (OmacVM has fixes for $have)"
+rm -r "$PDB/hyprland-0.58.0-2"; pkg hyprland "$LAST-9"
+mkbin 's/^#ifndef ALLOW_INCLUDES$/#ifndef ALLOW_INCLUDES /' "$LAST"
+expect "a known release, another build: says which file" \
+  test "$(why)" = "no OmacVM fix for this build of Hyprland $LAST-9 (its cm_helpers.glsl is not the one OmacVM's $LAST fix is made for)"
+mkbin "" "$LAST"
+expect "that release's own build: ok again" test "$(status)" = ok
+# #630's reporter: Hyprland 0.57.0-2 with only the 0.56.2 folder said "0.56.2: not built from commit efb50993"
+rm -r "$PDB/hyprland-$LAST-9"; pkg hyprland 0.57.0-2; mkbin "" 0.57.0
+mkdir -p "$T/only-0.56.2"; cp "$L/hypr-capture.sh" "$L/guard.py" "$T/only-0.56.2/"; cp -R "$L/0.56.2" "$T/only-0.56.2/"
+expect "0.57.0-2 with the 0.56.2 folder only: names 0.57.0-2, not 0.56.2's commit" \
+  test "$(OMACVM_HC_ROOT=$R "$T/only-0.56.2/hypr-capture.sh" --status | cut -f2 | sed 's/: screenshots.*//')" = \
+       "no OmacVM fix for Hyprland 0.57.0-2 yet (OmacVM has a fix for 0.56.2)"
+rm -r "$PDB"; run >/dev/null
+
 (( fail == 0 )) && echo "hypr-capture: all passed"
 exit $fail

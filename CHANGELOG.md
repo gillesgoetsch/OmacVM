@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15 (unreleased)
+
+- **Screenshots and screen sharing of HDR apps stay right with Hyprland 0.57 (OmacVM.app).** Hyprland
+  0.57.0 (in Omarchy's edge repository, the dev channel, since 2026-10-29; Omarchy stable once it
+  ships it) still writes the SDR copy every capture reads with PQ windows' white at 80 nits (#579).
+  OmacVM's fixed shader file was made for 0.56.2 only, so on 0.57 screenshots, colour picks and
+  screen shares of Chrome came out too bright again, and `omacvm check` said "no OmacVM fix for this
+  Hyprland (0.56.2: not built from commit efb50993)" (see #630). OmacVM now carries the same fix for
+  0.57.0 and puts in the installed release's file after each Hyprland update. When no file fits,
+  the "HDR captures" line names the installed Hyprland and the releases OmacVM has fixes for, e.g.
+  "no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes for 0.56.2 and 0.57.0)". Needs Update
+  VM or `omacvm update`; a running desktop takes it at once.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver

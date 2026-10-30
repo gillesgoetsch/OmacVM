@@ -11,9 +11,11 @@
 # it, at its start and at `hyprctl reloadshaders`.
 # Only while /usr/bin/Hyprland was built from the release the file was made for
 # and carries each shader file it works with byte for byte (guard.py, one folder
-# per release: 0.56.2/). Any other Hyprland reads its own copy: the bug may be
-# back, nothing breaks. pacman hooks take our file out before /usr/bin/Hyprland
-# changes and put it back after when the new binary passes.
+# per release: 0.56.2/, 0.57.0/). Any other Hyprland reads its own copy: the bug
+# may be back, nothing breaks; --status names the installed hyprland package
+# (pacman's database) and the releases OmacVM has fixes for. pacman hooks take
+# our file out before /usr/bin/Hyprland changes and put the new binary's
+# release's file in after when it passes.
 # Run as root inside the VM:
 #   hypr-capture.sh                  in place when the installed Hyprland passes, else out
 #   hypr-capture.sh --hook-pre       pacman, before /usr/bin/Hyprland changes: out
@@ -43,6 +45,7 @@ SHADERS=$R/usr/local/share/hypr/shaders
 OURS=$SHADERS/cm_helpers.glsl
 PKG=$R/usr/share/hypr/shaders                     # a package's shader files win over ours
 STATE=$R/var/lib/omacvm/hypr-capture              # "<release folder> <sha256 of our file>"
+PACDB=$R/var/lib/pacman/local                     # pacman's record of the installed packages
 HYPRCTL=${OMACVM_HC_HYPRCTL:-hyprctl}
 
 sum() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
@@ -56,15 +59,27 @@ found() {
   done < <(names)
   return 1
 }
+# installed: the hyprland package's version (pacman's database, read as a file:
+# also inside a hook), no epoch; fails when not known. Only the entry named
+# hyprland itself, not hyprland-guiutils, -protocols, -qtutils ...
+installed() {
+  local f
+  for f in "$PACDB"/hyprland-*/desc; do
+    [[ -f $f ]] || continue
+    awk '$0 == "%NAME%" { getline; n = $0 } $0 == "%VERSION%" { getline; v = $0 }
+         END { if (n != "hyprland" || v == "") exit 1; sub(/^[0-9]+:/, "", v); print v }' "$f" && return 0
+  done
+  return 1
+}
 # guard: the release folder that fits /usr/bin/Hyprland (guard.py), else fails
-# with why on stderr.
+# with why on stderr (the end of "no OmacVM fix for ...").
 guard() {
-  [[ -r $BIN ]] || { echo "no $BIN" >&2; return 1; }
-  command -v python3 >/dev/null || { echo "python3 missing" >&2; return 1; }
+  [[ -r $BIN ]] || { echo "this Hyprland (no /usr/bin/Hyprland)" >&2; return 1; }
+  command -v python3 >/dev/null || { echo "this Hyprland (python3 missing)" >&2; return 1; }
   local d=() f
   for f in "$here"/*/original; do [[ -f $f ]] && d+=("${f%/original}"); done
-  (( ${#d[@]} )) || { echo "no fix folder in $here" >&2; return 1; }
-  python3 -I "$here/guard.py" "$BIN" "${d[@]}"
+  (( ${#d[@]} )) || { echo "this Hyprland (no fix folder beside hypr-capture.sh)" >&2; return 1; }
+  python3 -I "$here/guard.py" --installed "$(installed)" "$BIN" "${d[@]}"
 }
 # is_ours FILE: a file OmacVM put there: one it ships, the one it recorded, or
 # one with its header (an older OmacVM's, also when the record is lost).
@@ -145,7 +160,7 @@ apply() {
   else
     why=$(guard 2>&1 >/dev/null | tail -n1)
     out || changed=0
-    echo "OmacVM: HDR captures: Hyprland's own copy (${why:-not checked}): no OmacVM fix for this Hyprland"
+    echo "OmacVM: HDR captures: Hyprland's own copy: no OmacVM fix for ${why:-this Hyprland (not checked)}"
   fi
   (( changed )) && reload
   return 0
@@ -171,7 +186,7 @@ status() {
     printf 'other\tanother %s in %s is used; OmacVM'"'"'s fix stays out\n' "$f" "$SHADERS"
   elif ! folder=$(guard 2>/dev/null); then
     why=$(guard 2>&1 >/dev/null | tail -n1)
-    printf 'uncovered\tno OmacVM fix for this Hyprland (%s): screenshots and screen sharing of HDR apps (Chrome) come out too bright while HDR is on\n' "${why:-not checked}"
+    printf 'uncovered\tno OmacVM fix for %s: screenshots and screen sharing of HDR apps (Chrome) come out too bright while HDR is on\n' "${why:-this Hyprland (not checked)}"
   elif [[ -e $OURS && $(sum "$OURS") == "$(sum "$here/$folder/cm_helpers.glsl")" ]]; then
     printf 'ok\tscreenshots and screen sharing of HDR apps at SDR white (OmacVM'"'"'s cm_helpers.glsl for Hyprland %s)\n' "$folder"
   elif [[ -e $OURS ]] && ! is_ours "$OURS"; then
