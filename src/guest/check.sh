@@ -161,9 +161,9 @@ else shell_colors "$(shell_log)" "$(/usr/local/lib/omacvm/shell-colors.py --stat
 # the first Hyprland start after the file was written. ANSWER: `hyprctl getoption
 # quirks:skip_non_kms_dmabuf_formats` (bool from 0.56, int before; "set" = a config set
 # it); PIECE: omacvm_vm.lua's mtime when hyprland.lua requires it, else empty; HYPR-START:
-# the running Hyprland's start (epoch seconds); USER-FILE: the user's Hyprland file that
-# names the key, else empty. Status human = a warning only a person can clear (log out and
-# in). src/tests/dmabuf-alpha.sh.
+# the running Hyprland's start (epoch seconds, from `hyprctl instances`); USER-FILE: the
+# user's Hyprland file that names the key, else empty. Status human = a warning only a
+# person can clear (log out and in). src/tests/dmabuf-alpha.sh.
 dmabuf_alpha_line() {
   local v set what="quirks:skip_non_kms_dmabuf_formats"
   v=$(sed -nE 's/^(bool|int): *//p' <<<"$1" | head -1)
@@ -189,8 +189,14 @@ if [[ $TYPE != fusion ]]; then
   if [[ -f $hy/omacvm_vm.lua ]] && grep -qxF 'require("hypr.omacvm_vm")' "$hy/hyprland.lua" 2>/dev/null; then
     piece=$(stat -c %Y "$hy/omacvm_vm.lua" 2>/dev/null)
   fi
+  # Hyprland's start: the time in its instance signature (the clock, like the file's
+  # mtime). Not now minus ps's etimes: etimes counts the VM's uptime, which stands still
+  # while the Mac sleeps, and the VM's clock is set to the Mac's after waking. No time: skip.
   hp=$(pgrep -n -u "$U" -x Hyprland)
-  [[ -n $hp ]] && hs=$(ps -o etimes= -p "$hp" 2>/dev/null | tr -d ' ') && [[ $hs =~ ^[0-9]+$ ]] && hstart=$(( $(date +%s) - hs ))
+  if [[ $hp =~ ^[0-9]+$ ]]; then
+    hstart=$(as_user hyprctl instances -j 2>/dev/null | jq -r --argjson p "$hp" '.[] | select(.pid == $p) | .time' 2>/dev/null | head -1)
+    [[ $hstart =~ ^[0-9]+$ ]] || hstart=""
+  fi
   for f in hyprland looknfeel input bindings autostart envs monitors monitor_workspaces; do
     if [[ -f $hy/$f.lua ]] && sed 's/--.*$//' "$hy/$f.lua" | grep -qF skip_non_kms_dmabuf_formats; then ufile=$f.lua; break; fi
   done

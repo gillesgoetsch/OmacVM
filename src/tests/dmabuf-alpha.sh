@@ -8,7 +8,8 @@
 #     off; omacvm_vm.lua's cases (0.56.2, no such key, the user's own setting, ...);
 #  2. guest/hypr-vm.sh: the file before the line, one line however often it runs,
 #     nothing without Omarchy 4's hyprland.lua; guest/install.sh runs it on every route;
-#  3. omacvm check's "transparent panels" line (check.sh's dmabuf_alpha_line).
+#  3. omacvm check's "transparent panels" line (check.sh's dmabuf_alpha_line), and the
+#     block that feeds it Hyprland's start (`hyprctl instances`, not ps's etimes).
 #   LUA=lua5.5 src/tests/dmabuf-alpha.sh      (LUA: Lua 5.5, default lua)
 #   OMACVM_SRC=DIR src/tests/dmabuf-alpha.sh  the same against another checkout's src/
 #                                             (main before #630's fix fails)
@@ -112,6 +113,50 @@ else
   expect "an int 0 by default: ok" ok "$(line $'int: 0\nset: false' "" 2000 "")"
   expect "no answer: skip" skip "$(line "" "" 2000 "")"
   expect "no such option: skip" skip "$(line "no such option" "" 2000 "")"
+
+  # The block that feeds it, with stand-ins for pgrep, ps, date, stat and hyprctl.
+  # Hyprland's start must come from its instance signature (`hyprctl instances -j`, the
+  # clock), not now minus ps's etimes: after a Mac sleep the VM's uptime stood still and its
+  # clock was set on. Here Hyprland started at 1000, omacvm_vm.lua was written at 3000, the
+  # clock says 5000, etimes 500 (now - etimes = 4500 would read "started after the file").
+  awk '/^if \[\[ \$TYPE != fusion \]\]; then$/ {on=1} on {print} on && /^fi$/ {exit}' "$SRC/guest/check.sh" > "$T/blk.sh"
+  S=$T/stub; mkdir -p "$S" "$T/bh/.config/hypr"
+  printf 'require("hypr.looknfeel")\nrequire("hypr.omacvm_vm")\n' > "$T/bh/.config/hypr/hyprland.lua"
+  echo "-- omacvm_vm.lua" > "$T/bh/.config/hypr/omacvm_vm.lua"
+  printf '#!/bin/sh\necho 813\n' > "$S/pgrep"
+  printf '#!/bin/sh\necho "  500"\n' > "$S/ps"
+  printf '#!/bin/sh\necho 5000\n' > "$S/date"
+  printf '#!/bin/sh\necho 3000\n' > "$S/stat"
+  cat > "$S/hyprctl" <<'X'
+#!/bin/sh
+case "$1 $2" in
+  "getoption quirks:skip_non_kms_dmabuf_formats") printf 'bool: false\nset: true\n' ;;
+  "instances -j") cat "$INST" ;;
+esac
+X
+  chmod +x "$S"/*
+  # hyprctl's own JSON: one object per running Hyprland, only "\n]" when there is none.
+  inst() {   # PID:TIME...
+    local e out="["
+    (( $# )) || { printf '\n]\n'; return; }
+    for e in "$@"; do
+      out+=$(printf '\n{\n    "instance": "abc_%s_1",\n    "time": %s,\n    "pid": %s,\n    "wl_socket": "wayland-1"\n},' "${e#*:}" "${e#*:}" "${e%%:*}")
+    done
+    printf '%s\n]\n' "${out%,}"
+  }
+  blk() {   # PID:TIME... -> what the block says
+    inst "$@" > "$T/inst.json"
+    # shellcheck disable=SC2034,SC2329 # used by the sourced block
+    ( export INST=$T/inst.json PATH="$S:$PATH"; TYPE=app H=$T/bh U=u
+      as_user() { "$@"; }; ok() { echo ok; }; warn() { echo "warn${3:+ $3}"; }; skip() { echo skip; }
+      # shellcheck disable=SC1091
+      source "$T/blk.sh" )
+  }
+  expect "check: OmacVM's file written after Hyprland started, then a Mac sleep: log out and in" "warn human" \
+    "$(blk 700:900 813:1000)"
+  expect "check: Hyprland started after the file: ok" ok "$(blk 813:4000)"
+  expect "check: no instance for Hyprland's pid: skip (no time)" skip "$(blk 700:900)"
+  expect "check: no instance at all: skip" skip "$(blk)"
 fi
 (( fail == 0 )) && echo "dmabuf-alpha: all passed"
 exit $fail
