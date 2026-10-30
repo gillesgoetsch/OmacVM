@@ -178,10 +178,10 @@ VM runs, and goes back by itself when a new version does not start
   starts Chromium (`omacvm-chrome-webgpu`: Google Chrome) with its
   compositor on Vulkan, which Chrome needs before it gives pages the Mac's
   GPU for WebGPU; the normal Chromium entry stays as it is (that mode costs
-  WebGL about a fifth, and Chrome's other route, ANGLE on Vulkan, has no
-  WebGL 2 on Venus); Firefox gets WebGPU on (`dom.webgpu.enabled`; Omarchy
-  has no Firefox, it counts once you add it). `omacvm check` has a "WebGPU
-  in Chromium" row.
+  WebGL about a fifth and decodes video on the CPU, and Chrome's other
+  route, ANGLE on Vulkan, has no WebGL 2 on Venus); Firefox gets WebGPU on
+  (`dom.webgpu.enabled`; Omarchy has no Firefox, it counts once you add
+  it). `omacvm check` has a "WebGPU in Chromium" row.
   Vulkan's host memory window (Venus' `hostmem`) comes from the VM's memory
   plan: what the Mac has beyond the VM's memory and macOS's reserve (4 GB up
   to 16 GB of memory, 6 GB up to 36 GB, 8 GB above), 4 to 32 GB; what Vulkan
