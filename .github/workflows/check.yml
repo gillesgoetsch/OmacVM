@@ -783,6 +783,9 @@ jobs:
       - name: A feature switch on Linux (GNU sed, glide off path)
         run: src/tests/feature-switch.sh
 
+      - name: Update VM installs Omanotch again only when its files changed (Python's compiled files left out; GNU tools, as in the VM)
+        run: src/tests/omanotch-stamp.sh
+
       - name: Omarchy's shell colours on Qt 6.12 on Linux (GNU tools, the live shell's log by its pid)
         run: src/tests/shell-colors.sh
 
