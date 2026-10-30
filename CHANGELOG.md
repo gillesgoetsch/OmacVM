@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.14 (unreleased)
+## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
 (Graphics on Vulkan), and Ghostty opens and draws. Needs the app update for the Vulkan checks
