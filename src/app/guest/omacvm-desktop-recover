@@ -20,7 +20,16 @@
 #   omacvm-desktop-recover app NAME guard|pressure
 #       An app (not the desktop) lost its context on the Mac: the graphics
 #       memory apps may use was full (the rest is kept for the desktop), or
-#       macOS was short of memory. A note says so; nothing restarts.
+#       macOS was short of memory. The VM's Mesa cannot tell the app, so
+#       Chrome or Chromium would draw nothing until it is restarted: its GPU
+#       process (a process of the user's named NAME with the argument
+#       --type=gpu-process) is ended, and the app starts a new one by itself,
+#       which also gives the lost context's memory back (measured with Chrome
+#       and Chromium; other Chromium-based apps such as Electron's have the
+#       same GPU process, not measured). At most once per app
+#       in 6 minutes and 3 times in an hour: Chrome counts each as a crash
+#       and turns its GPU off for the session after 3 recent ones (it
+#       forgives one per 5 minutes). A note says what happened.
 #   omacvm-desktop-recover stall SECONDS VM_GB MAC_GB
 #       The VM stood still that long because macOS ran out of free memory
 #       (QEMU's stall note; the VM held VM_GB of the Mac's MAC_GB). A note
@@ -29,6 +38,9 @@
 set -uo pipefail
 ENV=${OMACVM_RECOVER_ENV:-/etc/omacvm/env}
 NOTE=${OMACVM_RECOVER_NOTE:-/run/omacvm/desktop/restarted}
+# When each app's GPU process was restarted: root's own folder (0700), never
+# the user's /run/omacvm (root never writes into a folder the user owns).
+STAMPS=${OMACVM_RECOVER_STAMPS:-/run/omacvm-recover}
 say() { logger -t omacvm-desktop-recover -- "$*" 2>/dev/null; echo "$*"; }
 
 U=$(sed -n 's/^OMACVM_USER=//p' "$ENV" 2>/dev/null | tail -1)
@@ -55,6 +67,69 @@ try:
 except Exception:
     pass
 print(", ".join(seen))' 2>/dev/null
+}
+
+# The restarts of NAME's GPU process within the last hour, one time (s) per line.
+gpu_restarts() {
+  local now=$1 t
+  [[ -f $STAMPS/gpu-$2 && ! -L $STAMPS/gpu-$2 ]] || return 0
+  while IFS= read -r t; do
+    [[ $t =~ ^[0-9]{1,12}$ ]] && (( t > now - 3600 && t <= now )) && echo "$t"
+  done < "$STAMPS/gpu-$2"
+}
+
+# Ends NAME's GPU process so the app starts a new one (all of them when two
+# copies of the app run: which one was lost is not known). Only the desktop
+# user's processes whose name is exactly NAME and that have the argument
+# --type=gpu-process (Chrome, Chromium and other Chromium-based apps); never
+# the desktop's or a shell's. Fails with the reason in WHY_NOT.
+WHY_NOT=""
+gpu_restart() {
+  local name=$1 now uid p comm key real arg word args=() words=() pids=() last n gpu LC_ALL=C
+  now=${OMACVM_RECOVER_NOW:-$(date +%s)}
+  case $name in
+  Hyprland|quickshell|hyprlock|Xwayland|sddm*|systemd*|bash|sh|dash|zsh|fish|"An app")
+    WHY_NOT="not an app with its own GPU process"; return 1 ;;
+  esac
+  uid=$(id -u "$U" 2>/dev/null) || { WHY_NOT="no such user $U"; return 1; }
+  # The folder for the times: made by root, root's only; a link or anything
+  # else there and nothing restarts.
+  [[ -e $STAMPS || -L $STAMPS ]] || mkdir -m 700 "$STAMPS" 2>/dev/null
+  if [[ -L $STAMPS || ! -d $STAMPS || $(stat -c '%u %a' "$STAMPS" 2>/dev/null) != "$(id -u) 700" ]]; then
+    WHY_NOT="$STAMPS is not a folder of its own"; return 1
+  fi
+  last=$(gpu_restarts "$now" "$name" | sort -n | tail -1)
+  n=$(gpu_restarts "$now" "$name" | wc -l)
+  if [[ -n $last ]] && (( now - last < 360 )); then
+    WHY_NOT="restarted $(( (now - last) / 60 )) min ago"; return 1
+  fi
+  if (( n >= 3 )); then
+    WHY_NOT="restarted $n times in the last hour"; return 1
+  fi
+  # Read with bash alone (no regex: the name may hold "."). One argument must
+  # be exactly --type=gpu-process. Chromium's GPU process sets its process
+  # title: its arguments joined with spaces into one string, so a command
+  # line of one string is split at spaces; any other keeps its arguments.
+  for p in /proc/[0-9]*; do
+    IFS= read -r comm 2>/dev/null < "$p/comm" || continue
+    [[ $comm == "$name" ]] || continue
+    real=""
+    while IFS=$'\t' read -r key real _; do [[ $key == Uid: ]] && break; real=""; done 2>/dev/null < "$p/status"
+    [[ $real == "$uid" ]] || continue
+    args=()
+    while IFS= read -r -d '' arg || [[ -n $arg ]]; do
+      [[ -n $arg ]] && args+=("$arg")
+    done 2>/dev/null < "$p/cmdline"
+    words=("${args[@]}")
+    (( ${#args[@]} == 1 )) && read -ra words <<< "${args[0]}"
+    gpu=0
+    for word in "${words[@]}"; do [[ $word == "--type=gpu-process" ]] && gpu=1; done
+    (( gpu )) && pids+=("${p#/proc/}")
+  done
+  (( ${#pids[@]} )) || { WHY_NOT="no GPU process of $name"; return 1; }
+  kill -KILL "${pids[@]}" 2>/dev/null
+  { gpu_restarts "$now" "$name"; echo "$now"; } > "$STAMPS/gpu-$name.tmp" && mv -f "$STAMPS/gpu-$name.tmp" "$STAMPS/gpu-$name"
+  say "ended $name's GPU process (pid ${pids[*]}): $name starts a new one"
 }
 
 case ${1:-} in
@@ -112,12 +187,22 @@ app)
   # The name is the app's process name as QEMU kept it (letters, digits, . _ -).
   name=$(printf '%s' "${2:-}" | tr -cd 'A-Za-z0-9._-' | cut -c1-40); name=${name:-An app}
   if [[ ${3:-} == pressure ]]; then
-    body="macOS ran short of memory, so $name could not get more graphics memory and stopped drawing. The desktop keeps running. Close something on the Mac or in the VM, then reload or restart $name."
+    cause="macOS ran short of memory, so $name lost its graphics on the Mac."
+    helps="Close something on the Mac or in the VM."
   else
-    body="$name used all the graphics memory apps may have on this Mac (the rest is kept for the desktop), so it stopped drawing. The desktop keeps running. Close some of its tabs or windows, then reload or restart $name."
+    cause="$name used all the graphics memory apps may have on this Mac (the rest is kept for the desktop), so it lost its graphics."
+    helps="Close some of its tabs or windows."
   fi
   say "$name lost its GPU context on the Mac (${3:-guard}); the desktop keeps drawing"
-  in_session notify-send -a OmacVM -u normal "$name stopped drawing" "$body" 2>/dev/null || say "could not show the note: $body"
+  if gpu_restart "$name"; then
+    title="$name's graphics were restarted"
+    body="$cause OmacVM restarted $name's GPU process: its windows draw again in a few seconds and open tabs stay; pages with WebGL may need a reload. $helps If $name goes blank again, quit it and open it again."
+  else
+    say "$name's GPU process was not restarted: $WHY_NOT"
+    title="$name stopped drawing"
+    body="$cause The desktop keeps running. $helps Then reload or restart $name."
+  fi
+  in_session notify-send -a OmacVM -u normal "$title" "$body" 2>/dev/null || say "could not show the note: $body"
   ;;
 stall)
   [[ -n $U ]] || { say "no desktop user in $ENV"; exit 1; }

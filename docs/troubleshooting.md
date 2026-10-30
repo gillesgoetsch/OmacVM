@@ -18,6 +18,16 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   The VM sees the chip's SME, and their libyuv was built for chips that also
   have SVE, which the M4 does not (fixed in Chrome 155). `omacvm check` warns
   about it ("Google Chrome").
+- **Chrome goes blank or flickers while the Mac is short of memory**
+  (OmacVM.app 3.2.14 and older; the VM says "chrome stopped drawing"): the VM
+  needs no restart. Free memory first: close Chrome windows and tabs at 5K
+  and quit Mac apps you do not need until Activity Monitor's memory pressure
+  is no longer red. While it is red, a restarted Chrome loses its graphics
+  again at once, and each restart counts as a Chrome crash. Then, in a
+  terminal in the VM, `pkill -f -- 'chrome --type=gpu-process'` (at most once
+  every 5 minutes), or quit Chrome and open it again. With 3.2.15 (Update
+  VM) the VM restarts Chrome's graphics by itself
+  ([48](#48-app-chrome-goes-blank-or-flickers-while-the-mac-is-short-of-memory)).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU
@@ -1419,3 +1429,41 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/guest/check.sh` ("Ghostty"); tests
   `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`;
   ADR 0064 (#598).
+
+## 48. app: Chrome goes blank or flickers while the Mac is short of memory
+
+- **Symptom:** in an OmacVM.app VM (3.2.14 and older), Chrome's windows go
+  blank or flicker and its pages stop drawing; the VM says "chrome stopped
+  drawing" because macOS ran short of memory. Only quitting Chrome, or
+  restarting the VM, helped. Seen on a Mac mini with 16 GB: a 12 GB VM, Chrome
+  full screen on a 5K display, macOS at critical memory pressure (red in
+  Activity Monitor).
+- **Cause:** while macOS is short of memory, QEMU gives an app no new big
+  buffer it has no room for (16 MB or more; a 5K window's is about 56 MB):
+  the app that takes one loses its GPU context on the Mac, so the desktop
+  keeps drawing (ADR 0034). `logs/qemu.log` says "context N (chrome) made
+  resource ... while macOS is short of memory (pressure critical): only the
+  desktop may have more now, the context is lost ... the guest driver cannot
+  be told, the app must be restarted". The VM's Mesa cannot tell Chrome, so
+  Chrome kept drawing into the lost context.
+- **Fix:** 3.2.15 (Update VM): the VM ends the lost app's GPU process, and
+  Chrome or Chromium starts a new one within seconds; open tabs stay, pages
+  with WebGL may need a reload. Other Chromium-based apps (Electron apps such
+  as VS Code) have the same GPU process and should do the same (not
+  measured). At most once per app in 6 minutes and 3 times in an hour:
+  Chrome counts each as a crash and draws without the GPU for the rest of its
+  session after 3 recent ones. Lost again within that time, the note says to
+  quit Chrome and open it again.
+- **Before the update:** free memory first. While Activity Monitor's memory
+  pressure is red, a Chrome restarted by hand loses its graphics again at
+  once (seen in a test VM), and each restart counts as a Chrome crash. Close
+  Chrome windows and tabs at 5K and quit Mac apps you do not need until the
+  pressure is no longer red; then, in a terminal in the VM,
+  `pkill -f -- 'chrome --type=gpu-process'` (Google Chrome; Chromium:
+  `pkill -f -- 'chromium --type=gpu-process'`), at most once every 5 minutes,
+  or quit Chrome (Ctrl+Shift+Q) and open it again. The VM's graphics come on
+  top of its memory, so a VM memory that leaves macOS room keeps the Mac out
+  of critical
+  ([45](#45-app-the-vm-freezes-for-seconds-or-a-minute-the-mac-is-out-of-memory)).
+- **Where:** `src/app/guest/omacvm-desktop-recover` (test
+  `src/tests/desktop-recover-gpu.sh`), ADR 0038's 3.2.15 amendment.
