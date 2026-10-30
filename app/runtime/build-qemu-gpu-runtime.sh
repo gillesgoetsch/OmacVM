@@ -1486,13 +1486,6 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-missing-entr
 grep -q 'vkr_device_proc_table_fill_missing(&dev->proc_table);' "$virgl_source/src/venus/vkr_device.c" && \
   grep -q 'vkr_physical_device_init_missing_entries(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" || \
   die "vkr_device.c, vkr_physical_device.c: missing proc table entries are not stubbed (missing-entries patch)"
-# entries are never NULL: VKR_MISSING tells a stub (vkr_allocator.c keeps tables of its own,
-# venus-protocol's loader fallbacks run before the stubs)
-if grep -rnE --include='*.[ch]' --exclude=vkr_allocator.c --exclude-dir=venus-protocol \
-     '!\(?[[:space:]]*(vk|[A-Za-z_>.-]*proc_table)[[:space:]]*(->|\.)[[:space:]]*[A-Z]|(vk|proc_table)(->|\.)[A-Z][A-Za-z0-9]*[[:space:]]*[!=]=[[:space:]]*NULL' \
-     "$virgl_source/src/venus"; then
-  die "src/venus: a proc table entry tested against NULL; entries are never NULL, use VKR_MISSING (missing-entries patch)"
-fi
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-guest-asserts.patch"
 grep -q 'if (!object_array_ids_unique(ctx, count, obj_type, handle_size, obj_id_handles))' "$virgl_source/src/venus/vkr_common.c" && \
   grep -q 'vkr_context_refuse(ctx, true, "vkImportSemaphoreResourceMESA",' "$virgl_source/src/venus/vkr_queue.c" || \
@@ -1501,6 +1494,14 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-buffer-binds
 grep -q 'if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(args->buffer),' "$virgl_source/src/venus/vkr_buffer.c" && \
   grep -q 'const uint64_t limit = align64(res->memory_size, getpagesize());' "$virgl_source/src/venus/vkr_device_memory.c" || \
   die "vkr_buffer.c, vkr_device_memory.c: buffer binds are not checked against their memory (buffer-binds patch)"
+# entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
+# last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
+# before the stubs).
+if grep -rnE --include='*.[ch]' --exclude=vkr_allocator.c --exclude-dir=venus-protocol \
+     '!\(?[[:space:]]*(vk|[A-Za-z_>.-]*proc_table)[[:space:]]*(->|\.)[[:space:]]*[A-Z]|(vk|proc_table)(->|\.)[A-Z][A-Za-z0-9]*[[:space:]]*[!=]=[[:space:]]*NULL' \
+     "$virgl_source/src/venus"; then
+  die "src/venus: a proc table entry tested against NULL; entries are never NULL, use VKR_MISSING (missing-entries patch)"
+fi
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
