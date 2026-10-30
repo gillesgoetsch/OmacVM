@@ -779,14 +779,17 @@ def test_update_shows_live_progress_then_the_result_and_a_restart(world, monkeyp
             assert shown.startswith("Updating to OmacVM 2.9.1  ·  0:0"), shown
             assert "█" in shown and "░" in shown and "step 2 of 4: the VM side" in shown
             assert "OmacVM Bridge on the Mac" in shown        # the latest log line
-            body = str(a.screen.query_one("#body").render())
-            assert "step 2 of 4: the VM side" in body
+            # The job's thread sets the state, the app's loop draws the screen after it (a busy
+            # CI Mac: a moment later): wait for the screen itself, not for the state.
+            def body():
+                return str(a.screen.query_one("#body").render())
+            assert await settle(pilot, lambda: "step 2 of 4: the VM side" in body())
             # Done: the result stays, a restart waits (this boot only).
             assert await settle(pilot, lambda: a.last_result.startswith("Updated to OmacVM"), 15)
             assert "R restarts it now" in a.last_result and a.c.active_job() is None and not a.progress()
             assert os.path.exists(restart_file())
-            body = str(a.screen.query_one("#body").render())
-            assert "Updated to OmacVM 2.9.1" in body and "Up to date: OmacVM 2.9.1" in body
+            assert await settle(pilot, lambda: "Updated to OmacVM 2.9.1" in body())
+            assert "Up to date: OmacVM 2.9.1" in body()        # the list in the same drawing
             assert a.screen.query_one(".box").border_title == "Updates"
             await pilot.press("R")
             assert await settle(pilot, lambda: isinstance(a.screen, tui.ConfirmScreen))
