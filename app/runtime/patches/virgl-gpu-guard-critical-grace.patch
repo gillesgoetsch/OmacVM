@@ -1,0 +1,232 @@
+virglrenderer: at critical memory pressure an app may replace its buffers and grow by a grace
+
+What: virgl-darwin-memory-pressure.patch made every new big resource (16 MB or more, not
+a screen or cursor) "for the desktop only" while macOS's memory pressure is critical, and
+virgl-gpu-guard-desktop-reserve.patch loses the app context that takes one. So for as long as
+macOS stayed critical, every big buffer an app made cost it its GPU context, also one that
+only replaced a buffer it had just freed. Now, at critical, a new big resource has room when
+- it fits in what macOS has left (free, inactive and purgeable memory: warn's rule), and
+- all guest GPU memory (GL, Venus and the desktop's own: whose a new resource is is not known
+  yet) stays within what was in use when critical began plus a grace: a 32nd of the Mac's
+  memory, 256 MB to 1 GB (8 GB Mac: 256 MB, 16 GB: 512 MB, 32 GB and more: 1 GB).
+So buffers that replace freed ones never cost a context, and steady growth at critical still
+stops after the grace (that app is lost, as before). The baseline is set at the first look
+that sees critical (a room check or the renderer's once-a-second look, whichever comes first)
+and cleared when the renderer's own look sees less than critical; one log line says the
+baseline and the grace. Warn, the desktop's own resources, screens and cursors, the budget and
+its desktop reserve are unchanged. The rule is a pure function in src/virgl_gpu_guard.h
+(virgl_gpu_guard_critical_room, virgl_gpu_guard_critical_grace); the baseline is renderer-thread
+state beside the level. The test hook's level file takes LEVEL[:AVAILABLE_MB] like
+OMACVM_GPU_MEMORY_PRESSURE, so tests do not depend on the build Mac's free memory.
+Why: on a Mac mini with 16 GB (2026-10-30), a 12 GB VM with Chrome full screen at 5K: macOS
+went critical (the VM's memory, not its graphics, kept it there for minutes), Chrome's next
+window buffer (24-59 MB) cost Chrome its context, and a Chrome started again was lost at its
+first window as long as critical lasted: "chrome crashes and flickers unusable". A lost
+context frees little (the app keeps its resources until its process ends), so the refusal
+barely helped the Mac either.
+Threading: the renderer thread only (QEMU's main loop), like the level it follows.
+Upstream: not sent (macOS only; depends on the pressure and guard patches).
+Tests: Tests/virgl/test-gpu-guard-policy.sh (CI and the runtime build: the grace per Mac
+size, replacement at the baseline, growth up to and past the grace, bigger than what macOS has
+left, overflow); Tests/virgl/test-resource-budget.c (build time, Apple's software renderer):
+mode critical-steady (critical, 4 GB left: chromium replaces a 64 MB buffer 20 times and is
+never lost; it then grows by exactly the grace for this Mac, and the next one loses it;
+Hyprland keeps its own), mode critical (40 MB left: a 32 MB texture is chromium's, a 64 MB one
+for the desktop only), mode levelfile (critical:40 and back; the grace counts again from a new
+critical period).
+--- a/src/virgl_gpu_guard.h
++++ b/src/virgl_gpu_guard.h
+@@ -21,6 +21,8 @@
+ #define VIRGL_GPU_GUARD_RESERVE_MIN     (512ull << 20)
+ #define VIRGL_GPU_GUARD_RESERVE_MAX     (2048ull << 20)
+ #define VIRGL_GPU_GUARD_DISPLAY_RESERVE (256ull << 20)
++#define VIRGL_GPU_GUARD_CRITICAL_GRACE_MIN (256ull << 20)
++#define VIRGL_GPU_GUARD_CRITICAL_GRACE_MAX (1024ull << 20)
+ /* The desktop's GPU contexts by name: the guest's kernel names a context after the
+  * process that made it. The guest chooses that name, so an app could take it; the
+  * reserve stays inside the budget either way. */
+@@ -117,6 +119,36 @@ virgl_gpu_guard_verdict(uint64_t in_use, uint64_t size, uint64_t budget, uint64_
+    }
+ }
+ 
++/* While macOS's memory pressure is critical (virgl-gpu-guard-critical-grace.patch): how
++ * far all guest GPU memory may grow past what was in use when critical began, for a Mac
++ * with MAC bytes of memory: a 32nd of it, 256 MB to 1 GB (8 GB Mac: 256 MB, 16 GB:
++ * 512 MB, 32 GB and more: 1 GB). */
++static inline uint64_t virgl_gpu_guard_critical_grace(uint64_t mac)
++{
++   uint64_t g = mac / 32;
++
++   if (g < VIRGL_GPU_GUARD_CRITICAL_GRACE_MIN)
++      g = VIRGL_GPU_GUARD_CRITICAL_GRACE_MIN;
++   if (g > VIRGL_GPU_GUARD_CRITICAL_GRACE_MAX)
++      g = VIRGL_GPU_GUARD_CRITICAL_GRACE_MAX;
++   return g;
++}
++
++/* Has macOS room, at critical, for a new resource of SIZE bytes? IN_USE: all guest GPU
++ * memory now (Venus and the desktop's own included: whose a new resource is is not
++ * known yet); BASE: what was in use when critical began; GRACE: how far it may grow
++ * past that (virgl_gpu_guard_critical_grace); AVAILABLE: macOS's free, inactive and
++ * purgeable memory. Room when it fits in what macOS has left (warn's rule) and keeps
++ * the whole within BASE + GRACE: a buffer that replaces freed ones always fits, growth
++ * stops after the grace. */
++static inline bool virgl_gpu_guard_critical_room(uint64_t in_use, uint64_t size, uint64_t base,
++                                                 uint64_t grace, uint64_t available)
++{
++   uint64_t limit = base > UINT64_MAX - grace ? UINT64_MAX : base + grace;
++
++   return size <= available && virgl_gpu_guard_fits(in_use, size, limit);
++}
++
+ /* Is NAME one of the comma-separated names in LIST (exact, case and all)? */
+ static inline bool virgl_gpu_guard_is_desktop(const char *name, const char *list)
+ {
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -482,6 +482,9 @@ struct global_renderer_state {
+     * the budget, only for the desktop's contexts (desktop_names, comma-separated) */
+    uint64_t resource_reserve;
+    char *desktop_names;
++   /* OmacVM: how far guest GPU memory may grow while macOS is critical
++    * (virgl-gpu-guard-critical-grace.patch) */
++   uint64_t resource_critical_grace;
+    /* the last vrend_renderer_resource_create was made for the desktop only: 0 no,
+     * 1 past the apps' share, 2 while macOS is short of memory */
+    int resource_desktop_only_last;
+@@ -10463,6 +10466,7 @@ static void vrend_desktop_reserve_read(uint64_t mac)
+          virgl_warn("OMACVM_GPU_MEMORY_RESERVE_MB=%s is not a number of MB; using the default\n", env);
+    }
+    vrend_state.resource_reserve = reserve;
++   vrend_state.resource_critical_grace = virgl_gpu_guard_critical_grace(mac);
+    free(vrend_state.desktop_names);
+    vrend_state.desktop_names = strdup(names ? names : VIRGL_GPU_GUARD_DESKTOP_DEFAULT);
+    if (budget) {
+@@ -10513,20 +10517,22 @@ static void vrend_resource_budget_read(void)
+  *   the pressure rises, lets Apple's GL free what it still holds for deleted
+  *   textures and buffers (glFinish).
+  * - A new big resource (VREND_MEMORY_BIG or more; never a screen or cursor) is
+- *   checked against the pressure macOS has right now: refused at "critical", and
+- *   at "warn" only when it is bigger than all the free, inactive and purgeable
+- *   memory macOS has left (swapping more is better than a black desktop, short
+- *   of that). Before a refusal the renderer finishes its GL work and looks again
+- *   three times over 100 ms. Small resources, screens and cursors are never
+- *   refused for pressure.
++ *   checked against the pressure macOS has right now: at "warn" refused only when
++ *   it is bigger than all the free, inactive and purgeable memory macOS has left
++ *   (swapping more is better than a black desktop, short of that); at "critical"
++ *   also when the guest's GPU memory would grow past what was in use when critical
++ *   began by more than a grace (virgl-gpu-guard-critical-grace.patch: a buffer that
++ *   replaces freed ones is never refused). Before a refusal the renderer finishes
++ *   its GL work and looks again three times over 100 ms. Small resources, screens
++ *   and cursors are never refused for pressure.
+  * - OMACVM_GPU_MEMORY_STATUS names a file the app and omacvm check read: memory in
+  *   use, its peak since the VM started, the budget, the pressure, refusals and lost
+  *   GPU contexts. Written at most four times a second (on the renderer thread, by
+  *   rename), at once for a refusal or a lost context.
+  * OMACVM_GPU_MEMORY_PRESSURE=off|normal|warn|critical[:AVAILABLE_MB] fixes the
+  * level (and the available memory) instead of asking macOS, and =file:PATH reads
+- * the level from PATH at each look (so a test can raise it while the VM runs):
+- * for tests.
++ * the level (LEVEL[:AVAILABLE_MB]) from PATH at each look (so a test can raise it
++ * while the VM runs): for tests.
+  */
+ #define VREND_MEMORY_BIG            (16ull << 20)
+ #define VREND_MEMORY_STATUS_STEP    (8ull << 20)
+@@ -10561,6 +10567,9 @@ static struct {
+    bool dirty;
+    uint64_t written_bytes, written_peak, written_ns;
+    uint64_t refused_ns;         /* the last refusal for pressure */
++   /* in use when macOS's pressure became critical (virgl-gpu-guard-critical-grace.patch) */
++   bool critical_set;
++   uint64_t critical_base;
+ } vrend_memory = { .fixed_level = -1 };
+ 
+ static uint64_t vrend_memory_now_ns(void)
+@@ -10585,14 +10594,19 @@ static void vrend_memory_pressure_event(void *source)
+ static int vrend_memory_pressure_now(void)
+ {
+    if (vrend_memory.fixed_level == -3) {
+-      /* tests: the level is the file's first word, read at each look */
+-      char word[16] = "";
++      /* tests: the level is the file's first word, read at each look, with the
++       * available memory after a colon (critical:100) */
++      char word[32] = "", *colon;
+       FILE *f = fopen(vrend_memory.level_file, "r");
+       if (f) {
+-         if (fscanf(f, "%15s", word) != 1)
++         if (fscanf(f, "%31s", word) != 1)
+             word[0] = '\0';
+          fclose(f);
+       }
++      colon = strchr(word, ':');
++      vrend_memory.fixed_available = colon ? strtoull(colon + 1, NULL, 10) << 20 : 0;
++      if (colon)
++         *colon = '\0';
+       for (int i = VREND_PRESSURE_CRITICAL; i > VREND_PRESSURE_NORMAL; i--)
+          if (!strcmp(word, vrend_pressure_names[i]))
+             return i;
+@@ -10767,11 +10781,29 @@ static void vrend_memory_changed(void)
+       vrend_memory.dirty = true;
+ }
+ 
++/* OmacVM (virgl-gpu-guard-critical-grace.patch): the first look that sees critical
++ * (a room check or the tick, whichever comes first) notes what is in use then; the
++ * tick's look below critical forgets it. Renderer thread. */
++static void vrend_memory_critical_look(int level, bool tick)
++{
++   if (level == VREND_PRESSURE_CRITICAL && !vrend_memory.critical_set) {
++      vrend_memory.critical_set = true;
++      vrend_memory.critical_base = virgl_gpu_budget_in_use();
++      virgl_info("macOS memory pressure critical: guest GPU memory may grow by %llu MB past the "
++                 "%llu MB in use now, in new big resources that fit in what macOS has left\n",
++                 (unsigned long long)(vrend_state.resource_critical_grace >> 20),
++                 (unsigned long long)(vrend_memory.critical_base >> 20));
++   } else if (tick && level < VREND_PRESSURE_CRITICAL) {
++      vrend_memory.critical_set = false;
++   }
++}
++
+ static void vrend_memory_tick(void)
+ {
+    unsigned events = atomic_load(&vrend_memory.events);
+    int level = vrend_memory.handled_level;
+    uint64_t t = vrend_memory_now_ns();
++   bool looked = true;
+ 
+    if (events != vrend_memory.seen_events) {
+       vrend_memory.seen_events = events;
+@@ -10781,6 +10813,8 @@ static void vrend_memory_tick(void)
+        * mini at warn: no event for minutes), so look for ourselves once a second */
+       vrend_memory.checked_ns = t;
+       level = vrend_memory_pressure_now();
++   } else {
++      looked = false;
+    }
+    if (level != vrend_memory.handled_level) {
+       virgl_info("macOS memory pressure: %s (guest GPU memory in use: %llu MB)%s\n",
+@@ -10799,6 +10833,9 @@ static void vrend_memory_tick(void)
+       vrend_memory.handled_level = level;
+       vrend_memory.dirty = true;
+    }
++   /* only a look of its own: the level handled may be older than a room check's */
++   if (looked)
++      vrend_memory_critical_look(level, true);
+    if (vrend_memory.dirty)
+       vrend_memory_status_write(false);
+ }
+@@ -10808,8 +10845,12 @@ static bool vrend_memory_room(uint64_t size, int *level, uint64_t *available)
+ {
+    *level = vrend_memory_pressure_now();
+    *available = *level == VREND_PRESSURE_NORMAL ? UINT64_MAX : vrend_memory_available();
+-   if (*level == VREND_PRESSURE_CRITICAL)
+-      return false;
++   if (*level == VREND_PRESSURE_CRITICAL) {
++      /* replacing buffers never costs a context; growth stops after the grace */
++      vrend_memory_critical_look(*level, false);
++      return virgl_gpu_guard_critical_room(virgl_gpu_budget_in_use(), size, vrend_memory.critical_base,
++                                           vrend_state.resource_critical_grace, *available);
++   }
+    return *available >= size;
+ }
+ 
