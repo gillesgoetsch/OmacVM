@@ -10,10 +10,13 @@
 #                            it) or OmacVM.app (downloaded for this OmacVM's version)
 
 # An OpenSSL that can hash the password (macOS's own LibreSSL has no "passwd -6").
+# Its input is a here-string, not printf in a pipe: an openssl that refuses (or is
+# not there) exits before reading, and where SIGPIPE is ignored (a CI runner) bash 5's
+# printf then said "write error: Broken pipe" on stderr, inside --plan --json's output.
 sha512_openssl() {
   local o
   for o in openssl "$(brew --prefix openssl@3 2>/dev/null)/bin/openssl"; do
-    printf x | "$o" passwd -6 -stdin >/dev/null 2>&1 && { echo "$o"; return 0; }
+    "$o" passwd -6 -stdin <<<x >/dev/null 2>&1 && { echo "$o"; return 0; }
   done
   return 1
 }

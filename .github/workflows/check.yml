@@ -317,6 +317,8 @@ jobs:
 
       - name: UTM VM on another drive (--vm-dir; a stand-in UTM, no VM)
         run: src/tests/utm-vm-dir.sh
+      - name: The openssl probe says nothing on stderr when SIGPIPE is ignored (--plan --json stays JSON)
+        run: src/tests/openssl-probe.sh
       - name: UTM's shared network on another range is found before the install
         run: src/tests/utm-network.sh
 
