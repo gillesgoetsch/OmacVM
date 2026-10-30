@@ -1474,6 +1474,10 @@ grep -q 'pImageFormatInfo->usage = vkr_physical_device_linear_usage(' "$virgl_so
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-image-limits.patch"
 grep -q 'if (!vkr_image_info_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {' "$virgl_source/src/venus/vkr_image.c" || \
   die "vkr_image.c: vkCreateImage does not check the image against the driver's limits (image-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-view-limits.patch"
+grep -q 'if (!vkr_image_view_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'if (!vkr_buffer_view_ok(vkr_device_from_handle(args->device), args->pCreateInfo, why,' "$virgl_source/src/venus/vkr_buffer.c" || \
+  die "vkr_image.c, vkr_buffer.c: views are not checked against their image and buffer (view-limits patch)"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

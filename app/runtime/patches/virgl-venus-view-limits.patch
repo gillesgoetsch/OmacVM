@@ -1,0 +1,402 @@
+virglrenderer: Venus views and samplers within their image, buffer and enums
+
+What: vkr checks a guest's views and samplers before the Mac's Vulkan driver
+gets them:
+- vkCreateImageView: a view type of the spec, a 3D view only of a 3D image, a
+  format the driver has features for at the image's tiling and of the image's
+  texel block size (multi-planar images: not checked), levels and layers inside
+  the image (a 3D image's slices at the view's base level for other view types),
+  6 layers for a cube and a multiple of 6 for a cube array.
+- vkCreateBufferView: a buffer with texel usage and a format the driver has those
+  texel buffer features for, an offset inside the buffer and aligned (to
+  minTexelBufferOffsetAlignment, or by the per-format rule when the guest turned
+  texel buffer alignment on or uses Vulkan 1.3), whole texels inside the buffer, at
+  most maxTexelBufferElements. vkr keeps each buffer's size and usage.
+- vkCreateSampler: filters, mipmap mode, address modes, compare op and border
+  colour are values of the spec.
+The guest makes views and samplers without waiting for an answer, so a refused
+one ends the app's Venus context at once, with the reason in QEMU's log (made
+silently without the host object, the app's first use of it would end the
+context anyway, without a reason; a clamped range would hide the app's bug).
+Type pairs that live on both drivers are not refused (a cube view without
+CUBE_COMPATIBLE, a 2D view of a 3D image without 2D_ARRAY_COMPATIBLE, a 1D view
+of a 2D image). Uses vkr_context_refuse and vkr_format_table.h from
+virgl-venus-image-limits.patch; can be dropped on its own.
+Why: KosmicKrisp makes Metal texture views and texel buffer textures of the
+guest's values, and Metal ends the process on a level or slice past the texture,
+a cube view of 5 layers, a 3D view of a 2D texture, another texel size, a texel
+buffer wider than 2^28 texels; KosmicKrisp crashes on a format it has no entry for
+and ends on sampler magFilter 7 (M4, macOS 27, one process per case, 3 runs).
+A texel view past its buffer lives on both drivers, but the GPU would then read and
+write outside the buffer (a GPU fault resets the GPU).
+Upstream: OmacVM policy, as virgl-venus-image-limits.patch (ADR 0065).
+Tests: Tests/virgl/test-venus-image-limits.c (build time): the view, texel view and
+sampler cases end the child before the patch and end only the context after it;
+views and texel views in range, a cube of 6, an sRGB view of a mutable image and a
+BC1 block view still work.
+
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index 9dd8c57..635a922 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -5,7 +5,11 @@
+ 
+ #include "vkr_buffer.h"
+ 
++#include <stdio.h>
++
+ #include "vkr_buffer_gen.h"
++#include "vkr_device.h"
++#include "vkr_format_table.h"
+ #include "vkr_physical_device.h"
+ 
+ /* OmacVM (ADR 0047): Mesa's PRIME buffer (a Vulkan window's frames: transfer target
+@@ -86,9 +90,16 @@ vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
+     * vkr_physical_device_init_memory_properties as well.
+     */
+ 
++   const VkBufferUsageFlags2CreateInfo *usage2 =
++      vkr_find_struct(args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO);
++   const VkDeviceSize size = args->pCreateInfo->size;
++   const VkBufferUsageFlags2 usage = usage2 ? usage2->usage : args->pCreateInfo->usage;
+    struct vkr_buffer *buffer = vkr_buffer_create_and_add(dispatch->data, args);
+-   if (buffer)
++   if (buffer) {
+       buffer->window = window;
++      buffer->size = size;
++      buffer->usage = usage;
++   }
+ }
+ 
+ static void
+@@ -168,10 +179,123 @@ vkr_dispatch_vkGetBufferDeviceAddress(UNUSED struct vn_dispatch_context *dispatc
+    args->ret = vk->GetBufferDeviceAddress(args->device, args->pInfo);
+ }
+ 
++/* OmacVM (virgl-venus-view-limits.patch): whether the texel offset is aligned: to
++ * minTexelBufferOffsetAlignment, or by the per-format rule of the texel buffer alignment
++ * properties when the device has that rule on (vkr_device.c) */
++static bool
++vkr_buffer_view_offset_aligned(const struct vkr_device *dev,
++                               VkBufferUsageFlags2 usage,
++                               uint32_t texel,
++                               VkDeviceSize offset)
++{
++   struct vkr_physical_device *physical_dev = dev->physical_device;
++   const VkDeviceSize min = physical_dev->properties.limits.minTexelBufferOffsetAlignment;
++   if (!min || !(offset % min))
++      return true;
++   if (!dev->texel_buffer_alignment)
++      return false;
++
++   VkPhysicalDeviceTexelBufferAlignmentProperties align = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_PROPERTIES,
++   };
++   VkPhysicalDeviceProperties2 props = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
++      .pNext = &align,
++   };
++   physical_dev->proc_table.GetPhysicalDeviceProperties2(
++      physical_dev->base.handle.physical_device, &props);
++   /* a texel of three components: the size of one */
++   const VkDeviceSize single = texel % 3 ? texel : texel / 3;
++   VkDeviceSize storage = align.storageTexelBufferOffsetAlignmentBytes;
++   VkDeviceSize uniform = align.uniformTexelBufferOffsetAlignmentBytes;
++   if (align.storageTexelBufferOffsetSingleTexelAlignment)
++      storage = MIN2(storage, single);
++   if (align.uniformTexelBufferOffsetSingleTexelAlignment)
++      uniform = MIN2(uniform, single);
++   if ((usage & VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT) && (!storage || offset % storage))
++      return false;
++   if ((usage & VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT) && (!uniform || offset % uniform))
++      return false;
++   return true;
++}
++
++/* OmacVM (virgl-venus-view-limits.patch): whether a texel buffer view may go to the Mac's
++ * Vulkan driver: a format it has texel buffer features for (KosmicKrisp crashes on one it
++ * has no entry for), the buffer's texel usage, an aligned offset and whole texels inside
++ * the buffer, at most maxTexelBufferElements of them (Metal ends the process past its
++ * texture width). KosmicKrisp hands offset and range on to Metal as a texture over the
++ * buffer's memory: past the buffer the GPU would read and write memory it must not. */
++static bool
++vkr_buffer_view_ok(const struct vkr_device *dev,
++                   const VkBufferViewCreateInfo *info,
++                   char *why,
++                   size_t why_size)
++{
++   const struct vkr_buffer *buffer = vkr_buffer_from_handle(info->buffer);
++   if (!buffer) {
++      snprintf(why, why_size, "no buffer");
++      return false;
++   }
++   struct vkr_physical_device *physical_dev = dev->physical_device;
++   const VkBufferUsageFlags2CreateInfo *usage2 =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO);
++   const VkBufferUsageFlags2 usage = (usage2 ? usage2->usage : buffer->usage) &
++                                     (VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT |
++                                      VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT);
++   VkFormatProperties props = { 0 };
++   physical_dev->proc_table.GetPhysicalDeviceFormatProperties(
++      physical_dev->base.handle.physical_device, info->format, &props);
++   const uint32_t texel = vkr_format_block_size(info->format);
++   if (!usage || !texel ||
++       ((usage & VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT) &&
++        !(props.bufferFeatures & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT)) ||
++       ((usage & VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT) &&
++        !(props.bufferFeatures & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT))) {
++      snprintf(why, why_size, "format %d (buffer features 0x%x) for texel usage 0x%" PRIx64,
++               info->format, props.bufferFeatures, (uint64_t)usage);
++      return false;
++   }
++   if (info->offset >= buffer->size) {
++      snprintf(why, why_size, "offset %" PRIu64 " of a %" PRIu64 "-byte buffer", info->offset,
++               buffer->size);
++      return false;
++   }
++   const VkDeviceSize range = info->range == VK_WHOLE_SIZE
++                                 ? (buffer->size - info->offset) / texel * texel
++                                 : info->range;
++   if (!range || range % texel || range > buffer->size - info->offset) {
++      snprintf(why, why_size,
++               "range %" PRIu64 " at %" PRIu64 " of a %" PRIu64 "-byte buffer (%u-byte texels)",
++               info->range, info->offset, buffer->size, texel);
++      return false;
++   }
++   if (range / texel > physical_dev->properties.limits.maxTexelBufferElements) {
++      snprintf(why, why_size, "%" PRIu64 " texels past the driver's %u", range / texel,
++               physical_dev->properties.limits.maxTexelBufferElements);
++      return false;
++   }
++   if (!vkr_buffer_view_offset_aligned(dev, usage, texel, info->offset)) {
++      snprintf(why, why_size, "offset %" PRIu64 " not aligned for format %d (minimum %" PRIu64 ")",
++               info->offset, info->format,
++               physical_dev->properties.limits.minTexelBufferOffsetAlignment);
++      return false;
++   }
++   return true;
++}
++
+ static void
+ vkr_dispatch_vkCreateBufferView(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkCreateBufferView *args)
+ {
++   /* OmacVM: made without waiting for an answer: a refused view ends the app's context */
++   char why[192];
++   if (!vkr_buffer_view_ok(vkr_device_from_handle(args->device), args->pCreateInfo, why,
++                           sizeof(why))) {
++      vkr_context_refuse(dispatch->data, true, "vkCreateBufferView", "%s", why);
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
++
+    vkr_buffer_view_create_and_add(dispatch->data, args);
+ }
+ 
+diff --git a/src/venus/vkr_buffer.h b/src/venus/vkr_buffer.h
+index fa9f7d0..a02bf71 100644
+--- a/src/venus/vkr_buffer.h
++++ b/src/venus/vkr_buffer.h
+@@ -12,6 +12,9 @@ struct vkr_buffer {
+    struct vkr_object base;
+    /* OmacVM (ADR 0047): made for an IOSurface's memory (a Vulkan window buffer) */
+    bool window;
++   /* OmacVM (virgl-venus-view-limits.patch): its size and usage, for texel buffer views */
++   VkDeviceSize size;
++   VkBufferUsageFlags2 usage;
+ };
+ VKR_DEFINE_OBJECT_CAST(buffer, VK_OBJECT_TYPE_BUFFER, VkBuffer)
+ 
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index def6734..16dbba4 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -11,6 +11,7 @@
+ #include "vkr_context.h"
+ #include "vkr_descriptor_set.h"
+ #include "vkr_device_memory.h"
++#include "vkr_instance.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_queue.h"
+ 
+@@ -292,6 +293,16 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+    dev->physical_device = physical_dev;
+    vkr_device_init_iosurface_windows(dev);
+ 
++   /* OmacVM (virgl-venus-view-limits.patch): the per-format texel buffer offset rule
++    * holds when the guest turned it on, or for Vulkan 1.3, whose core has the rule (read
++    * leniently: no offset ends the process on either Mac driver) */
++   const VkPhysicalDeviceTexelBufferAlignmentFeaturesEXT *texel_align = vkr_find_struct(
++      args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TEXEL_BUFFER_ALIGNMENT_FEATURES_EXT);
++   dev->texel_buffer_alignment =
++      (texel_align && texel_align->texelBufferAlignment) ||
++      (ctx->instance && ctx->instance->api_version >= VK_API_VERSION_1_3 &&
++       physical_dev->api_version >= VK_API_VERSION_1_3);
++
+    vkr_device_init_proc_table(dev, physical_dev->api_version,
+                               args->pCreateInfo->ppEnabledExtensionNames,
+                               args->pCreateInfo->enabledExtensionCount);
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index a9875a8..2092d8c 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -24,6 +24,10 @@ struct vkr_device {
+    bool iosurface_windows;
+    PFN_vkGetMemoryHostPointerPropertiesEXT GetMemoryHostPointerPropertiesEXT;
+ 
++   /* OmacVM (virgl-venus-view-limits.patch): texel buffer offsets may follow the per-format
++    * rule of the texel buffer alignment properties */
++   bool texel_buffer_alignment;
++
+    struct list_head queues;
+ 
+    mtx_t free_sync_mutex;
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 61c7b73..0d4daaf 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -616,10 +616,92 @@ vkr_dispatch_vkGetImageDrmFormatModifierPropertiesEXT(
+    }
+ }
+ 
++/* OmacVM (virgl-venus-view-limits.patch): whether a view may go to the Mac's Vulkan
++ * driver. KosmicKrisp makes a Metal texture view of the guest's ranges, type and format,
++ * and Metal ends the process on a level, slice or cube face past the texture, a 3D view
++ * of a 2D texture, or a format of another texel size; a format KosmicKrisp has no entry
++ * for crashes it. Ranges are checked as the spec has them; type and format only where a
++ * driver ends the process (a cube view of a 3D image, or a 2D view of a 3D image made
++ * without 2D_ARRAY_COMPATIBLE, live on both drivers and are left to them). */
++static bool
++vkr_image_view_ok(struct vkr_physical_device *physical_dev,
++                  const VkImageViewCreateInfo *info,
++                  char *why,
++                  size_t why_size)
++{
++   const struct vkr_image *image = vkr_image_from_handle(info->image);
++   if (!image) {
++      snprintf(why, why_size, "no image");
++      return false;
++   }
++   if ((uint32_t)info->viewType > VK_IMAGE_VIEW_TYPE_CUBE_ARRAY ||
++       (info->viewType == VK_IMAGE_VIEW_TYPE_3D && image->type != VK_IMAGE_TYPE_3D)) {
++      snprintf(why, why_size, "viewType %d of an imageType %d image", info->viewType,
++               image->type);
++      return false;
++   }
++
++   /* a format the driver knows for this tiling, of the image's texel block size (planes
++    * of a multi-planar image have formats of their own: not checked) */
++   VkFormatProperties props = { 0 };
++   physical_dev->proc_table.GetPhysicalDeviceFormatProperties(
++      physical_dev->base.handle.physical_device, info->format, &props);
++   const VkFormatFeatureFlags features = image->tiling == VK_IMAGE_TILING_LINEAR
++                                            ? props.linearTilingFeatures
++                                            : props.optimalTilingFeatures;
++   const uint32_t texel = vkr_format_block_size(info->format);
++   if (!texel || !features ||
++       (vkr_format_plane_count(image->format) == 1 &&
++        texel != vkr_format_block_size(image->format))) {
++      snprintf(why, why_size,
++               "format %d (%u bytes a texel block, features 0x%x) of an image of format %d",
++               info->format, texel, features, image->format);
++      return false;
++   }
++
++   /* levels; layers, or a 3D image's slices at the view's base level */
++   const VkImageSubresourceRange *r = &info->subresourceRange;
++   if (r->baseMipLevel >= image->mip_levels ||
++       (r->levelCount != VK_REMAINING_MIP_LEVELS &&
++        (!r->levelCount || r->levelCount > image->mip_levels - r->baseMipLevel))) {
++      snprintf(why, why_size, "levels %u+%u of %u", r->baseMipLevel, r->levelCount,
++               image->mip_levels);
++      return false;
++   }
++   uint32_t layers = image->array_layers;
++   if (image->type == VK_IMAGE_TYPE_3D && info->viewType != VK_IMAGE_VIEW_TYPE_3D)
++      layers = MAX2(image->extent.depth >> r->baseMipLevel, 1);
++   if (r->baseArrayLayer >= layers ||
++       (r->layerCount != VK_REMAINING_ARRAY_LAYERS &&
++        (!r->layerCount || r->layerCount > layers - r->baseArrayLayer))) {
++      snprintf(why, why_size, "layers %u+%u of %u", r->baseArrayLayer, r->layerCount, layers);
++      return false;
++   }
++   const uint32_t count =
++      r->layerCount == VK_REMAINING_ARRAY_LAYERS ? layers - r->baseArrayLayer : r->layerCount;
++   if ((info->viewType == VK_IMAGE_VIEW_TYPE_CUBE && count != 6) ||
++       (info->viewType == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && count % 6)) {
++      snprintf(why, why_size, "a cube view (viewType %d) of %u layers", info->viewType, count);
++      return false;
++   }
++   return true;
++}
++
+ static void
+ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCreateImageView *args)
+ {
++   /* OmacVM: the guest makes views without waiting for an answer: a view the driver must
++    * not get ends the app's context here, with the reason in the log (made or skipped
++    * silently, the app's next use would end it anyway, or draw from a wrong range) */
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   char why[192];
++   if (!vkr_image_view_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, true, "vkCreateImageView", "%s", why);
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
++
+    vkr_image_view_create_and_add(dispatch->data, args);
+ }
+ 
+@@ -630,10 +712,51 @@ vkr_dispatch_vkDestroyImageView(struct vn_dispatch_context *dispatch,
+    vkr_image_view_destroy_and_remove(dispatch->data, args);
+ }
+ 
++/* OmacVM (virgl-venus-view-limits.patch): a sampler's enums are ones the spec has
++ * (KosmicKrisp ends the process on an unknown filter; the rest are checked the same way).
++ * Values in range (anisotropy, LOD bias, LOD clamps) live on both drivers and are left
++ * to them. */
++static bool
++vkr_sampler_info_ok(const VkSamplerCreateInfo *info, char *why, size_t why_size)
++{
++#define VKR_FILTER_OK(f)                                                                    \
++   ((f) == VK_FILTER_NEAREST || (f) == VK_FILTER_LINEAR || (f) == VK_FILTER_CUBIC_EXT)
++#define VKR_ADDRESS_OK(a) ((uint32_t)(a) <= VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE)
++   const bool border = info->addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
++                       info->addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
++                       info->addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
++   if (!VKR_FILTER_OK(info->magFilter) || !VKR_FILTER_OK(info->minFilter) ||
++       (uint32_t)info->mipmapMode > VK_SAMPLER_MIPMAP_MODE_LINEAR ||
++       !VKR_ADDRESS_OK(info->addressModeU) || !VKR_ADDRESS_OK(info->addressModeV) ||
++       !VKR_ADDRESS_OK(info->addressModeW) ||
++       (info->compareEnable && (uint32_t)info->compareOp > VK_COMPARE_OP_ALWAYS) ||
++       (border && (uint32_t)info->borderColor > VK_BORDER_COLOR_INT_OPAQUE_WHITE &&
++        info->borderColor != VK_BORDER_COLOR_FLOAT_CUSTOM_EXT &&
++        info->borderColor != VK_BORDER_COLOR_INT_CUSTOM_EXT)) {
++      snprintf(why, why_size,
++               "filters %d/%d mipmap %d address %d/%d/%d compare %d/%d border %d",
++               info->magFilter, info->minFilter, info->mipmapMode, info->addressModeU,
++               info->addressModeV, info->addressModeW, info->compareEnable, info->compareOp,
++               info->borderColor);
++      return false;
++   }
++#undef VKR_FILTER_OK
++#undef VKR_ADDRESS_OK
++   return true;
++}
++
+ static void
+ vkr_dispatch_vkCreateSampler(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCreateSampler *args)
+ {
++   /* OmacVM: made without waiting for an answer, as views */
++   char why[192];
++   if (!vkr_sampler_info_ok(args->pCreateInfo, why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, true, "vkCreateSampler", "%s", why);
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
++
+    vkr_sampler_create_and_add(dispatch->data, args);
+ }
+ 
