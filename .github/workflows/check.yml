@@ -780,6 +780,9 @@ jobs:
       - name: The VM's cold file cache give-back on Linux (bash, GNU tools as in the VM; a kernel that refuses swappiness=)
         run: src/tests/memory-giveback.sh
 
+      - name: An app that lost its GPU context on the Mac gets a new GPU process (only its own, at most once in 6 minutes; stand-ins with Chrome's process names and titles)
+        run: src/tests/desktop-recover-gpu.sh
+
       - name: A feature switch on Linux (GNU sed, glide off path)
         run: src/tests/feature-switch.sh
 
