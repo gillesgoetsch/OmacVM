@@ -200,10 +200,10 @@ rest of the critical period. Hyprland and the bar were never lost. QEMU
 logged one baseline per critical period ("may grow by 1024 MB past the
 1310 MB in use now").
 
-The budget itself was considered again the same day (the user's peak: 4.6 GB
-of graphics at 5K with GPU compute on; a budget sized from the VM's memory,
-lane vm-footprint) and rejected again: a 16 GB Mac with an 8 GB VM would get
-about 4 GB, apps 3 GB of it, below that peak, so a browser would lose its
-graphics while macOS still said normal. The guard stays three quarters of the
-Mac's memory; what the VM takes in all is said in the app and `omacvm check`
-instead (#633).
+The budget itself was considered again the same day (the user's peak: 4.5 GB
+(4619 MB) of graphics at 5K with GPU compute on; a budget sized from the VM's
+memory, lane vm-footprint) and rejected again: a 16 GB Mac with an 8 GB VM
+would get about 4 GB, apps 3 GB of it, below that peak, so a browser would
+lose its graphics while macOS still said normal. The guard stays three
+quarters of the Mac's memory; what the VM takes in all is said in the app and
+`omacvm check` instead (#633).
