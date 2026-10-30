@@ -35,6 +35,7 @@ source "$R/src/lib/features.sh"
 source "$R/src/lib/graphics.sh"
 source "$R/src/lib/notch.sh"
 source "$R/src/lib/mac-setup.sh"
+source "$R/src/lib/setup.sh"   # tier_best_mem, mem_warning (the Best tier)
 export OMA_KEY=$KEY
 # stop RC MESSAGE: no VM to check. With --json also the JSON, one failed check.
 stop() {
@@ -135,6 +136,10 @@ fi
 # listeners PORT: the addresses something listens on for that port
 listeners() { lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 { sub(/:[0-9]+$/, "", $9); print $9 }' | sort -u | tr '\n' ' '; }
 last_line() { grep -E "$2" "$1" 2>/dev/null | tail -1 | sed 's/^.*omacvm-[a-z]*: //'; }
+# fp_mb PID: its footprint in MB, Activity Monitor's Memory (src/lib/footprint.py:
+# proc_pid_rusage, no task port, the process runs on); status 1 without a python3
+# that runs here without asking (src/lib/tools.sh) or when the PID is gone.
+fp_mb() { local py; py=$(tools_python) || return 1; "$py" -I "$R/src/lib/footprint.py" "$1" 2>/dev/null; }
 
 say_ "Mac"
 L=~/Library/Logs
@@ -480,6 +485,29 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     what="${what:+$what; }the VM freed no file cache this run"
   fi
   [[ -n $what ]] && ok "VM memory" "$what"
+  # Activity Monitor's Memory for the VM (QEMU's footprint) and what it is made
+  # of, without a guess: the VM's memory this run (QEMU's -m; "at most": Linux
+  # may not have touched all of it, and what it gave back has left), its
+  # graphics now as the VM counts them (logs/gpu-memory), and the rest: QEMU
+  # itself, the graphics' overhead on the Mac and the pages macOS counts twice
+  # while it compresses the VM (ADR 0062). Only while QEMU runs and writes
+  # logs/gpu-memory. Memory above this Mac's Best tier is a warning (the same
+  # words as omacvm resources), never a failure; the setting stays.
+  am_pid=$(app_pid_dir "$(dirname "$(dirname "$miclog")")")
+  am_gpu=$(gmv in_use_mb)
+  if [[ $am_pid =~ ^[0-9]+$ && -s $gm && ! -L $gm && $am_gpu =~ ^[0-9]{1,7}$ ]] && am_fp=$(fp_mb "$am_pid") && [[ $am_fp =~ ^[0-9]{1,8}$ ]]; then
+    am_vm=$(ps -o args= -p "$am_pid" 2>/dev/null | LC_ALL=C grep -a -o -E ' -m [0-9]{1,8}M( |$)' | head -1 | LC_ALL=C tr -cd '0-9')
+    [[ $am_vm =~ ^[0-9]{1,8}$ ]] || am_vm=$vmm
+    if [[ $am_vm =~ ^[0-9]{1,8}$ ]]; then
+      what="$(gb "$am_fp") for the VM: VM memory at most $(gb "$am_vm"), graphics $(gb "$am_gpu") now"
+      am_rest=$(( am_fp - am_vm - am_gpu ))
+      (( am_rest > 0 )) && what="$what, the rest $(gb "$am_rest") (QEMU itself, graphics overhead and pages macOS counts twice while it compresses the VM)"
+      mac_specs
+      am_warn=$(mem_warning app "$am_vm" "$VM")
+      if [[ -n $am_warn ]]; then warn "Activity Monitor" "$what; $am_warn"
+      else ok "Activity Monitor" "$what"; fi
+    fi
+  fi   # Activity Monitor
   # When the VM stood still this run (logs/vm-stalls, QEMU's stall note, ADR
   # 0060): its vCPUs blocked in macOS's kernel waiting for memory (the Mac
   # paged then), blocked there while the Mac did not page, or waiting for a
