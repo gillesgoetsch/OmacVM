@@ -14,13 +14,16 @@ assertions on) now end only the app's Venus context, with a log line:
   made ends the context, and the ring monitor counts as started only once its
   thread runs (these two only fix the asserts: a guest that runs the process out
   of threads still ends QEMU elsewhere, #624).
-The other 73 asserts in src/venus are internal (constants, host values, or
-checked before); they stay.
+Of the 79 asserts in src/venus: these 4 reached, 73 internal (constants, host
+values, or checked before; they stay), 1 on a failed thread creation (the ring
+monitor's) and 1 race. The race asserts in vkr_context.h (an object's add and
+remove) stay and a guest can still reach them, with two rings creating or
+destroying one id at once: open in #624.
 Why: each ended QEMU's process (SIGABRT): resource id 5 (vkr_queue.c), the same
 command buffer id twice (vkr_context.h), an OPAQUE_FD export on KosmicKrisp
 (vkr_device_memory.c), a ring monitor period of 0 and then the app's end
 (vkr_ring.c), on KosmicKrisp and MoltenVK alike but for the export (M4, macOS
-27). Two rings creating or destroying one id at once stay open (#624).
+27).
 Upstream: the semaphore, the ids and the ring are vkr bugs on every host (draft
 with the missing entries'); the export choice is OmacVM's (Metal heaps).
 Tests: Tests/virgl/test-venus-robust.c: a-sem-import-res, a-dup-alloc and

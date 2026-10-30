@@ -121,7 +121,11 @@ VM could still end QEMU through vkr itself:
   semaphore resource id other than 0, one object id twice in one call, an
   OPAQUE_FD export on KosmicKrisp, and a ring whose monitor period was 0
   (vkr ended the context but kept the never-started ring, and the context's
-  end asserted).
+  end asserted). A guest can also reach the two in `vkr_context.h` that add
+  and remove an object, with two rings creating or destroying one id at once
+  (a race; read, not probed). The ring monitor's needs a failed thread
+  creation; the other 73 are internal. 79 = 4 reached + 73 kept + 1 thread
+  exhaustion + 1 race (the add is one of the 4: one call naming an id twice).
 - **Buffer binds.** Both drivers returned `VK_SUCCESS` for a buffer bound past
   its memory's end, at a wrapping offset, unaligned or to smaller memory, and
   MoltenVK for a 1 TiB buffer on 64 KiB (the GPU could then read and write
@@ -153,10 +157,12 @@ Decisions, one patch each, each case in `Tests/virgl/test-venus-robust.c`:
 - `virgl-venus-guest-asserts.patch`: **the reached asserts are refusals**, with
   a log line, and the context ends; ids are checked for duplicates on a sorted
   copy before any driver call; memory with a Metal heap exports the heap; a
-  ring that never started is not stopped. The other 73 asserts are internal
-  and stay. The ring thread and ring monitor fixes only remove two asserts on
-  thread creation: a guest that runs QEMU out of threads still ends it (QEMU
-  aborts when its own thread creation fails), which stays open in #624.
+  ring that never started is not stopped. The 73 internal asserts stay. The
+  ring thread and ring monitor fixes only take thread creation out of the
+  asserts: a guest that runs QEMU out of threads still ends it (QEMU aborts
+  when its own thread creation fails), which stays open in #624. The two race
+  asserts in `vkr_context.h` stay too: a guest can still reach them with two
+  rings creating or destroying one id at once, open in #624.
 - `virgl-venus-buffer-binds.patch`: **buffer binds follow the image rule**
   through one helper (`vkr_device_memory_bind_ok`: memory type, alignment, the
   end inside the memory), with each buffer's requirements asked once at
