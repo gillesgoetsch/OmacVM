@@ -453,8 +453,9 @@ jobs:
 
       - name: Display sync (scales at 4K and 5K, nothing sent twice, the loop guard)
         run: |
-          # The VM side runs on Arch's bash 5; macOS's own is 3.2.
-          [ -x /opt/homebrew/bin/bash ] || brew install bash
+          # The VM side runs on Arch's bash 5; macOS's own is 3.2. GUEST_BASH: a bash 5
+          # outside Homebrew (the M1 Max runner's, in its own tools folder).
+          [ -x "${GUEST_BASH:-}" ] || [ -x /opt/homebrew/bin/bash ] || brew install bash
           python3 src/app/guest/tests/test_display_sync.py
 
       - name: Full-screen pointer guard (motion maths)
