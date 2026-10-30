@@ -3,6 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15 (unreleased)
+
+- **OmacVM.app: Omarchy's Chromium plays H.264 coded interlaced video on the CPU instead of
+  showing no picture.** From 3.2.13 the VM's VA-API refuses such pictures (the Mac's hardware
+  decoder does not take them), and Chromium's V4L2 decoder then waited for a first picture that
+  never came. OmacVM's decoder for Chromium now gives up on such a video after 3 refused
+  pictures, before the first one, and Chromium decodes it on the CPU. Videos that play now are
+  not affected. Needs Update VM or `omacvm update` (from the code; not yet checked in Chromium).
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
