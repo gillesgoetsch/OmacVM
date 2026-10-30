@@ -113,10 +113,11 @@ the driver ID is asked for whenever `VK_KHR_driver_properties` is there.
   and the video stopped after its first frames (4 to 18 in the rows). On the
   CPU a 1080p30 H.264 clip plays at 30 fps, none dropped, also beside a
   WebGPU canvas and through `importExternalTexture`; a 2160p60 one decodes
-  at 59.5 fps (M1 Max, KosmicKrisp, 3 GB VM with 4 CPUs). WebGPU matmul and
-  Aquarium in the launcher are the same with and without the switch. Google
-  Chrome there decoded on the CPU already: Chromium refuses VA-API under
-  Graphite.
+  at 59.5 fps, 53.9 shown (M1 Max, KosmicKrisp, 3 GB VM with 4 CPUs). WebGPU
+  matmul and Aquarium in the launcher are the same with and without the
+  switch. Google Chrome there should decode on the CPU already: Chromium
+  153's source refuses VA-API under Graphite (read in the source; no row
+  with Chrome 156 checked its decoder).
 - Copying a WebGPU canvas into a 2D canvas (`drawImage`) gives zeros in
   every Chrome mode in the VM, also the default one: open.
 - OpenCL 3.0 device "zink ... (MOLTENVK)"; Geekbench 7 GPU OpenCL passes
