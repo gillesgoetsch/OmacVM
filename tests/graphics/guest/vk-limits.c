@@ -2,8 +2,9 @@
  * 3.2.13 (ADR 0065), from a program in the VM (Venus). One case per run; the caller runs
  * each in its own process and checks that QEMU lives on. Object creation, queries and
  * binds only: nothing is drawn or submitted.
- * Refused creates and queries come back as a VkResult (or zeros); a refused bind, view or
- * sampler ends this program's Venus context, and the guest's Mesa ends the program.
+ * Refused creates and queries come back as a VkResult (a refused query zeroes its main output
+ * struct only); a refused bind, view or sampler ends this program's Venus context and the VM
+ * goes on (3.2.14's rows: the program printed "alive" after it and exited 0).
  * Build: cc -O1 -o vk-limits vk-limits.c -lvulkan
  * Usage: vk-limits CASE    (cases: see main) */
 #include <stdio.h>

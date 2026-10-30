@@ -73,7 +73,8 @@ chained to it (`VkMemoryDedicatedRequirements`, `VkExternalImageFormatProperties
 in that memory; the guest's Mesa caches the dedicated flags with the refused
 requirements (follow-up #624). The guest makes
 binds, views and samplers without waiting for an answer, so a refused one ends
-the app's Venus context; the guest's Mesa then ends that app and the VM goes on.
+the app's Venus context and the VM goes on (in the 3.2.14 test rows the five
+programs with such a call printed "alive" after it and exited 0).
 The verdict depends only on the device and the description. QEMU's log names
 the app, the call, the values and the limit at the 1st, 2nd, 4th ... refusal.
 
@@ -171,12 +172,11 @@ Decisions, one patch each, each case in `Tests/virgl/test-venus-robust.c`:
   to its host page's end (`vkr_resource.memory_size`, set at export); a larger
   one gets `VK_ERROR_INVALID_EXTERNAL_HANDLE`.
 
-A refused bind or a missing entry ends the app's context (the guest's Mesa
-sends most commands without waiting); the guest's Mesa then ends that app and
-the VM goes on. The cost: one requirements query per `vkCreateBuffer`,
-0.01 us of the 0.13 us a `vkCreateBuffer` + `vkDestroyBuffer` takes through vkr
-on KosmicKrisp (0.14 us on MoltenVK; 10,000 creates, the query timed alone in a
-loop, as for images).
+A refused bind or a missing entry ends the app's Venus context (the guest's
+Mesa sends most commands without waiting) and the VM goes on. The cost: one
+requirements query per `vkCreateBuffer`, 0.01 us of the 0.13 us a
+`vkCreateBuffer` + `vkDestroyBuffer` takes through vkr on KosmicKrisp (0.14 us
+on MoltenVK; 10,000 creates, the query timed alone in a loop, as for images).
 
 Still open (#624): pipelines and shader modules, render passes, descriptor
 writes, `vkCmd*` parameters, two rings creating or destroying one object at
