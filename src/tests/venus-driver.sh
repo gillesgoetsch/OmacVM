@@ -289,8 +289,16 @@ printf '#!/bin/bash\necho "$@"\n' > "$T/lb/chromium"
 printf '#!/bin/bash\necho %s\n' "'[{\"focused\":false,\"scale\":1},{\"focused\":true,\"scale\":1.6}]'" > "$T/lb/hyprctl"
 chmod +x "$T/lb/chromium" "$T/lb/hyprctl"
 lw() { HOME=$T/lh XDG_CONFIG_HOME= DISPLAY=:0 PATH="$T/lb:$PATH" "$D/omacvm-chromium-webgpu" "$@"; }
-[[ $(lw https://a.example) == "--ozone-platform=x11 --enable-skia-graphite --skia-graphite-dawn-backend=vulkan --force-device-scale-factor=1.6 https://a.example" ]] &&
-  pass "WebGPU launcher: the focused display's scale" || fail "WebGPU launcher: scale missing ($(lw https://a.example))"
+[[ $(lw https://a.example) == "--ozone-platform=x11 --enable-skia-graphite --skia-graphite-dawn-backend=vulkan --disable-accelerated-video-decode --force-device-scale-factor=1.6 https://a.example" ]] &&
+  pass "WebGPU launcher: the focused display's scale" || fail "WebGPU launcher: arguments differ ($(lw https://a.example))"
+# On X11 (Graphite on Dawn's Vulkan) video decodes on the CPU: the guest's Dawn cannot import a frame of OmacVM's
+# V4L2 decoder, and the first one restarted the GPU process. Without X11 the launcher starts Chromium as it is
+# (GL compositor), where that decoder works.
+[[ " $(lw) " == *" --disable-accelerated-video-decode "* ]] && pass "WebGPU launcher on X11: video decodes on the CPU" ||
+  fail "WebGPU launcher on X11 keeps the V4L2 decoder ($(lw))"
+lnx() { HOME=$T/lh XDG_CONFIG_HOME='' DISPLAY='' PATH="$T/lb:$PATH" "$D/omacvm-chromium-webgpu" "$@" 2>/dev/null; }
+[[ $(lnx https://a.example) == "https://a.example" ]] && pass "WebGPU launcher without X11: Chromium with its own arguments only" ||
+  fail "WebGPU launcher without X11 added arguments ($(lnx https://a.example))"
 [[ $(lw --force-device-scale-factor=2) != *1.6* ]] && pass "WebGPU launcher: a scale on its command line wins" ||
   fail "WebGPU launcher overrode the command line's scale"
 echo "--force-device-scale-factor=1.25" > "$T/lh/.config/chromium-flags.conf"

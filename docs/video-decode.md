@@ -459,6 +459,10 @@ Chromium ◀─ its GPU buffer (ARGB) ◀─ GPU pass in omacvm-vdecd
 - Check: `omacvm check` shows *video decoding in Chromium* (and why the
   daemon is down when it is), and `chrome://media-internals`
   *V4L2VideoDecoder*.
+- "Chromium (WebGPU)" decodes video on the CPU (from 3.2.15): its Vulkan
+  compositor cannot draw these buffers on Venus, and the first one restarted
+  its GPU process (3.2.14 and older: the video stopped after a few
+  frames). The normal Chromium entry uses the media engine.
 
 YouTube *Big Buck Bunny* at 60 fps, Arch Linux ARM's Chromium 153, 60
 seconds with `src/bench/video-bench.py` (`--quality hd1080` for 1080p), in a
