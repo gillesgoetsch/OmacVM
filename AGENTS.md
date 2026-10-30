@@ -823,8 +823,9 @@ The less obvious ones, with causes and where the fix lives, are in
   -B`) aborted QEMU in Metal's linear-texture check, the VM gone at once (ADR
   0064); from 3.2.14 vkr reports that image as unsupported and the VM goes on
   (ADR 0065).
-- Do not give Chromium a Vulkan compositor (`--use-vulkan`, Graphite) while
-  chromium-video is on: its V4L2 decoder stays on there, and its buffers
+- Do not give Chromium a Vulkan compositor (`--use-vulkan`, Graphite)
+  without `--disable-accelerated-video-decode` while chromium-video is on:
+  its V4L2 decoder stays on there, and its buffers
   cannot be drawn on Venus. Graphite restarted the GPU process at the first
   frame (Dawn in the VM has no dma-buf import), Ganesh on Vulkan lost its
   Venus context (vkr cannot import the virgl resource). "Chromium (WebGPU)"
