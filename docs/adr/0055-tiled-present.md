@@ -105,8 +105,9 @@ tiles on vs off from fresh starts: the same within a step; the check mode
 3.2.14 drew a tile as the whole frame's quad moved by -x, -y onto the
 tile's 256x256 surface (`glViewport(-x, -y, frame width, frame height)`).
 Apple's OpenGL (4.1 on Metal) draws a viewport that starts more than 4096
-pixels outside its target squeezed: the start becomes -4096 and the far
-edge stays, so the picture is scaled into the smaller span. The driver
+pixels outside its target squeezed (on the M1 Max 4097 is still right, 4100
+is not): the start becomes -4096 and the far edge stays, so the picture is
+scaled into the smaller span. The driver
 reports `GL_VIEWPORT_BOUNDS_RANGE` -32768..32767, and GL says the start is
 clamped to that range with the size kept, so this is a driver fault; the
 software renderer draws it right. Tiles that start past x 4096 exist only
