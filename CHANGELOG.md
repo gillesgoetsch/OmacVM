@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.15 (unreleased)
+## 3.2.15
 
 In an OmacVM.app VM, apps keep their graphics at critical memory pressure when they only replace
 buffers, and Chrome draws again by itself after it lost them; a Vulkan program can no longer stop
