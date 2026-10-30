@@ -20,7 +20,7 @@ a new record replaces it and says so.
 | [0022](0022-webgpu-and-opencl-on-venus.md) | WebGPU (Firefox, Chromium launcher) and OpenCL (rusticl) on Venus | accepted, built (`webgpu-compute`) |
 | [0023](0023-refresh-rate-follows-the-guest.md) | The refresh rate follows the guest (ProMotion) | accepted, built (`pacing-hdr`) |
 | [0026](0026-fence-tests-off-the-render-threads-lock.md) | Fence tests stay off Apple GL's lock while the render thread works | accepted, sync-thread part in 2.9.1 |
-| [0034](0034-gpu-memory-budget-for-runaway-vms.md) | The GPU memory budget stops a runaway VM, never a desktop | accepted, built (`fractional-scale`) |
+| [0034](0034-gpu-memory-budget-for-runaway-vms.md) | The GPU memory budget stops a runaway VM, never a desktop; at critical pressure growth is judged, not each buffer (3.2.15) | accepted, built (`fractional-scale`), amended 3.2.15 |
 | [0035](0035-graphics-setting.md) | A Graphics setting per VM: OpenGL, Vulkan or Automatic; KosmicKrisp in release builds | accepted, built (`vk300`, 3.0.0) |
 | [0036](0036-sound-main-loop-qos.md) | Sound on a busy Mac: main loop at user-interactive QoS, no HDA catch-up | accepted, built (`audio-crackle`) |
 | [0037](0037-no-instant-resume-yet.md) | No save-to-disk resume while the VM uses the Mac's GPU; a faster cold start instead | accepted, start part built (`instant-resume`) |

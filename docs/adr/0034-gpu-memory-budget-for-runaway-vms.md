@@ -1,6 +1,6 @@
 # 0034: The GPU memory budget stops a runaway VM, never a desktop
 
-Status: accepted, amended twice (dynamic; the desktop's reserve, 3.0.5: see the end). Built on `fractional-scale`
+Status: accepted, amended three times (dynamic; the desktop's reserve, 3.0.5; growth at critical, 3.2.15: see the end). Built on `fractional-scale`
 (`app/runtime/patches/virgl-resource-memory-budget.patch`,
 `app/runtime/patches/virgl-darwin-memory-pressure.patch`).
 
@@ -139,3 +139,46 @@ memory full): with 3.0.3's virglrenderer Hyprland and quickshell lost their
 contexts and the screen went black; with this patch only Chromium was lost,
 the desktop took up to 140 MB of its part for the scale change, and a new
 Chromium window drew after the old ones were closed.
+
+## Amendment: at critical pressure, growth is judged, not each buffer (3.2.15)
+
+The first amendment's "Critical: new big resources are refused" (with the
+desktop's reserve: made for the desktop only, so the app that takes one is
+lost) cost an app its context at every new big buffer for as long as macOS
+stayed critical, also one that only replaced a buffer it had just freed. On a
+Mac mini with 16 GB (2026-10-30: a 12 GB VM, Chrome full screen at 5K) the
+VM's memory, not its graphics, kept macOS critical for minutes: Chrome lost
+its context at its next window buffer (24-59 MB), and a Chrome started again
+at its first ("chrome crashes and flickers unusable"). The refusal barely
+helped the Mac: a lost context frees little until its app ends.
+
+Options: (1) critical gets warn's rule (refused only what does not fit in
+what macOS has left): simplest, but nothing then bounds a runaway VM at
+critical; (2) refuse with an out-of-memory error: the guest's kernel does not
+wait for the answer to a resource create, so there is no path for it; (3) a
+short wait before refusing: each wait holds QEMU's main loop, the whole VM;
+(4) lose the biggest app context: its owner is not known when a resource is
+made, and it frees nothing until its app ends; (5) warn's rule plus a cap on
+growth since critical began.
+
+Decision: option 5 (`virgl-gpu-guard-critical-grace.patch`, rules in
+`src/virgl_gpu_guard.h`). At critical a new big resource has room when it
+fits in what macOS has left and all guest GPU memory (Venus and the
+desktop's own included: whose a new resource is is not known yet) stays
+within what was in use when critical began plus a grace: a 32nd of the Mac's
+memory, 256 MB to 1 GB (8 GB Mac: 256 MB, 16 GB: 512 MB, 32 GB and more:
+1 GB). The baseline is set at the first look that sees critical (a room
+check or QEMU's once-a-second look) and cleared when that once-a-second look
+sees less than critical; QEMU's log says both numbers. Past the grace it is
+as before: made for the desktop only, an app that takes it is lost (and from
+3.2.15 gets a new GPU process, ADR 0038's amendment). Warn, the desktop's own
+resources, screens and cursors, the guard and its desktop reserve are
+unchanged.
+
+Consequences: an app can replace its buffers at critical without end and
+grow by a little. The VM's graphics can grow by up to the grace while macOS
+is critical (before: no new big buffer at all; small ones never were held
+back), so a runaway at critical is stopped after the grace instead of at
+once. The rule's test runs on any build Mac's grace (256 MB to 1 GB): the
+level file takes the memory left (`critical:40`) like
+`OMACVM_GPU_MEMORY_PRESSURE`.
