@@ -4,7 +4,9 @@ Subject: [PATCH] cocoa: the tiled present's rules (ui/omacvm-present-tiles.h)
 What: the grid of tile layers over the window's last whole frame, which
 tiles a changed box touches (at most OMACVM_PT_FRAME_MAX, else a whole
 frame), and how a frame skipped in the present queue hands its tile
-updates to the frame after it. Plain C, no AppKit or OpenGL.
+updates to the frame after it; the tile program's shader text (QEMU's
+blit, the tile's part of the frame by texture coordinates) and that part
+for a tile. Plain C, no AppKit or OpenGL calls.
 
 Why: omacvm-cocoa-present-tiles.patch draws and shows only the changed
 tiles of a frame; these rules are tested on their own.
@@ -12,19 +14,24 @@ tiles of a frame; these rules are tested on their own.
 Upstream: OmacVM only.
 Test: app/runtime/Tests/display/test-present-tiles.sh (test-present-tiles.c:
 the grid, boxes, 2000 random frame streams with skipped frames show what
-showing every frame shows, and every surface is shown or freed once).
+showing every frame shows, and every surface is shown or freed once;
+each fragment's texture coordinate on its frame texel's centre;
+test-present-tiles-gl.m: every tile drawn with the shader equals the same
+frame drawn whole, on Apple's software renderer, --gpu on the GPU).
 diff --git a/ui/omacvm-present-tiles.h b/ui/omacvm-present-tiles.h
 new file mode 100644
-index 0000000..5070593
+index 0000000..807aff2
 --- /dev/null
 +++ b/ui/omacvm-present-tiles.h
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,217 @@
 +/*
 + * OmacVM: tiled present (only the changed part of the window goes to
 + * WindowServer).
 + *
-+ * No AppKit or OpenGL in here, so it is tested on its own
-+ * (app/runtime/Tests/display/test-present-tiles.c); ui/cocoa.m feeds it.
++ * No AppKit or OpenGL calls in here (the tile program's shader text is only
++ * strings), so it is tested on its own (app/runtime/Tests/display/
++ * test-present-tiles.c; the shader on a GL renderer: test-present-tiles-gl.m);
++ * ui/cocoa.m feeds it.
 + *
 + * QEMU's present shows each guest frame as a whole new surface, so
 + * WindowServer composites the whole window again for every frame, also when
@@ -84,6 +91,58 @@ index 0000000..5070593
 +    *y = r * OMACVM_PT_SIZE;
 +    *w = g->fw - *x < OMACVM_PT_SIZE ? g->fw - *x : OMACVM_PT_SIZE;
 +    *h = g->fh - *y < OMACVM_PT_SIZE ? g->fh - *y : OMACVM_PT_SIZE;
++}
++
++/*
++ * Drawing a tile: its own surface is the target and the viewport stays
++ * inside it (0, 0, its width, its height); the tile's part of the frame
++ * comes from texture coordinates. Not the frame's quad moved by -x, -y
++ * (3.2.14): Apple's OpenGL (4.1 on Metal) draws a viewport that starts more
++ * than 4096 pixels outside its target squeezed (its start becomes -4096, its
++ * far edge stays), so on frames wider than 4352 pixels the tiles right of
++ * x 4096 came out squeezed (ADR 0055).
++ *
++ * The tile program: QEMU's blit (ui/shader/texture-blit*.vert and .frag,
++ * desktop GL's #version 140) with the quad's texture coordinates taken from
++ * RECT, the tile's part of the frame over the frame's size (x, y, w, h; y in
++ * the frame's rows, as omacvm_pt_rect: the surfaces' first row is the frame's
++ * first row). YFLIP 1 is QEMU's flip blit, 0 its plain one. in_position is
++ * the quad's corners (-1..1), at attribute location 0.
++ */
++#define OMACVM_PT_VERT \
++    "#version 140\n" \
++    "in vec2 in_position;\n" \
++    "uniform vec4 rect;\n" \
++    "uniform float yflip;\n" \
++    "out vec2 ex_tex_coord;\n" \
++    "void main(void) {\n" \
++    "    gl_Position = vec4(in_position, 0.0, 1.0);\n" \
++    "    vec2 c = rect.xy + (in_position + 1.0) * 0.5 * rect.zw;\n" \
++    "    ex_tex_coord = vec2(c.x, yflip > 0.5 ? c.y : 1.0 - c.y);\n" \
++    "}\n"
++
++#define OMACVM_PT_FRAG \
++    "#version 140\n" \
++    "uniform sampler2D image;\n" \
++    "in mediump vec2 ex_tex_coord;\n" \
++    "out mediump vec4 out_frag_color;\n" \
++    "void main(void) {\n" \
++    "    out_frag_color = texture(image, ex_tex_coord);\n" \
++    "}\n"
++
++/*
++ * Tile T's part of the frame for the tile program's RECT: its edges over
++ * the frame's size. Each fragment's texture coordinate then lands on the
++ * centre of the frame texel the whole frame's blit samples there.
++ */
++static inline void omacvm_pt_tex_rect(const OmacvmPTGrid *g, unsigned t, float rect[4])
++{
++    uint32_t x, y, w, h;
++    omacvm_pt_rect(g, t, &x, &y, &w, &h);
++    rect[0] = (float)x / (float)g->fw;
++    rect[1] = (float)y / (float)g->fh;
++    rect[2] = (float)w / (float)g->fw;
++    rect[3] = (float)h / (float)g->fh;
 +}
 +
 +/*

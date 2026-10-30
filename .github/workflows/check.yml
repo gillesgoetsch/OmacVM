@@ -555,7 +555,7 @@ jobs:
         run: |
           app/runtime/Tests/display/test-pointer-hover.sh
           app/runtime/Tests/display/test-pointer-hover.sh --self-test
-      - name: Tiled present, only the changed tiles to WindowServer (the checks catch code without it)
+      - name: Tiled present, only the changed tiles to WindowServer; every tile drawn equals the whole frame (the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-present-tiles.sh
           app/runtime/Tests/display/test-present-tiles.sh --self-test
