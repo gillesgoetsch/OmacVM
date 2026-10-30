@@ -1498,6 +1498,12 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-buffer-binds
 grep -q 'if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(args->buffer),' "$virgl_source/src/venus/vkr_buffer.c" && \
   grep -q 'const uint64_t limit = align64(res->memory_size, getpagesize());' "$virgl_source/src/venus/vkr_device_memory.c" || \
   die "vkr_buffer.c, vkr_device_memory.c: buffer binds are not checked against their memory (buffer-binds patch)"
+# Guest indices, counts, offsets and enum values reach the Mac's driver only inside what they
+# name, one patch per class (ADR 0065, "Indices, counts and offsets"; #624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-limits.patch"
+grep -q 'vkr_physical_device_init_limits(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q 'vkr_first_count_ok(args->firstViewport, args->viewportCount, max),' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_physical_device.c, vkr_command_buffer.c: vkCmd* indices and offsets are not bounded (command-limits patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
