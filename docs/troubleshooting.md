@@ -25,8 +25,9 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   is no longer red. While it is red, a restarted Chrome loses its graphics
   again at once, and each restart counts as a Chrome crash. Then, in a
   terminal in the VM, `pkill -f -- 'chrome --type=gpu-process'` (at most once
-  every 5 minutes), or quit Chrome and open it again. With 3.2.15 (Update
-  VM) the VM restarts Chrome's graphics by itself
+  every 5 minutes), or quit Chrome and open it again. With 3.2.15 the VM
+  restarts Chrome's graphics by itself (Update VM), and an app that only
+  replaces its buffers keeps them (the app update, from the VM's next start)
   ([48](#48-app-chrome-goes-blank-or-flickers-while-the-mac-is-short-of-memory)).
 - **Notifications, bar panels or the Omarchy menu black out the whole screen**
   (Hyprland 0.57; OmacVM.app, UTM, Parallels): Update VM (3.2.15) or
@@ -1476,7 +1477,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   measured). At most once per app in 6 minutes and 3 times in an hour:
   Chrome counts each as a crash and draws without the GPU for the rest of its
   session after 3 recent ones. Lost again within that time, the note says to
-  quit Chrome and open it again.
+  quit Chrome and open it again. With the app update too (3.2.15, from the
+  VM's next start), an app that only replaces its buffers while macOS is
+  critical keeps its graphics, and one that grows loses them only past a
+  grace ([24](#24-app-a-scale-like-16-on-a-5k-display-turns-the-vm-black-and-flickering)).
 - **Before the update:** free memory first. While Activity Monitor's memory
   pressure is red, a Chrome restarted by hand loses its graphics again at
   once (seen in a test VM), and each restart counts as a Chrome crash. Close
