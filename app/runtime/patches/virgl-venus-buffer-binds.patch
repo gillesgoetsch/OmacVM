@@ -12,8 +12,8 @@ may be no larger than the memory behind the resource, to the end of its host pag
 refused with VK_ERROR_INVALID_EXTERNAL_HANDLE, the context lives.
 Why: KosmicKrisp and MoltenVK return VK_SUCCESS for a buffer bound half past its
 memory's end, at an offset past it or one that wraps, unaligned, to memory smaller
-than the buffer, and (MoltenVK) a 1 TiB buffer to 64 KiB: the GPU then reads and
-writes outside the memory (a GPU fault resets the GPU). MoltenVK ends the process
+than the buffer, and (MoltenVK) a 1 TiB buffer to 64 KiB: the GPU could then read
+and write outside the memory (a GPU fault resets the GPU). MoltenVK ends the process
 on a memory type the buffer cannot take (Metal: "Invalid storageMode 3"). Both
 also make memory from a 64 KiB resource with 1024 times its size and bind a
 buffer of that size to it, past every range check (M4, macOS 27).
@@ -59,9 +59,9 @@ index 635a922..9f00300 100644
 +/* OmacVM (virgl-venus-buffer-binds.patch): whether memory may be bound to the buffer at
 + * offset: not a sparse buffer (those bind with vkQueueBindSparse), and the memory type,
 + * alignment and range as for images (vkr_device_memory_bind_ok). KosmicKrisp and MoltenVK
-+ * bind whatever they get: a buffer past its memory's end lets the GPU read and write
-+ * outside the memory, and MoltenVK ends the process on a memory type the buffer cannot
-+ * take (Metal's "Invalid storageMode"). */
++ * bind whatever they get: a buffer past its memory's end could let the GPU read and
++ * write outside the memory, and MoltenVK ends the process on a memory type the buffer
++ * cannot take (Metal's "Invalid storageMode"). */
 +static bool
 +vkr_buffer_bind_ok(const struct vkr_buffer *buffer,
 +                   const struct vkr_device_memory *mem,

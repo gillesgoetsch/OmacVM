@@ -10,10 +10,10 @@ in more words.
   Vulkan, a program that talked to the VM's Vulkan renderer directly could stop the whole VM: a
   command of a newer Vulkan version or of an extension its Vulkan device was not made with, one
   object named twice in one call, and a few other unusual requests made QEMU stop. A buffer bound
-  partly outside its memory went through and let the Mac's GPU read and write outside that
-  memory. Normal Vulkan apps go through Mesa in the VM, which does not send these. Now only that
-  program's Vulkan connection ends, with the reason in the VM's log, and the VM goes on. See #624.
-  Needs the app update (from the VM's next start).
+  partly outside its memory went through, which could let the Mac's GPU read and write outside
+  that memory. Normal Vulkan apps go through Mesa in the VM, which does not send these. Now only
+  that program's Vulkan connection ends, with the reason in the VM's log, and the VM goes on.
+  See #624. Needs the app update (from the VM's next start).
 
 ## 3.2.14
 

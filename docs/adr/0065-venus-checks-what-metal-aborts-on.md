@@ -124,8 +124,8 @@ VM could still end QEMU through vkr itself:
   end asserted).
 - **Buffer binds.** Both drivers returned `VK_SUCCESS` for a buffer bound past
   its memory's end, at a wrapping offset, unaligned or to smaller memory, and
-  MoltenVK for a 1 TiB buffer on 64 KiB (the GPU then reads and writes outside
-  the memory); MoltenVK ended the process on a memory type the buffer cannot
+  MoltenVK for a 1 TiB buffer on 64 KiB (the GPU could then read and write
+  outside the memory); MoltenVK ended the process on a memory type the buffer cannot
   take. Both made memory from a 64 KiB resource with 1024 times its size and
   bound a buffer of that size to it.
 
