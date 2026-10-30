@@ -77,7 +77,9 @@ The verdict depends only on the device and the description. QEMU's log names
 the app, the call, the values and the limit at the 1st, 2nd, 4th ... refusal.
 
 The cost: about 0.03 us of host queries per `vkCreateImage` (1.45 us through vkr
-on KosmicKrisp, 10,000 creates), so no cache.
+on KosmicKrisp, 10,000 creates), so no cache. The 0.03 us is the checks' two
+host calls timed alone in a loop; a create without the checks (1.42 us) is the
+difference, not a run with the checks off.
 
 ## Consequences
 
