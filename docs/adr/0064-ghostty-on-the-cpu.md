@@ -90,7 +90,7 @@ Option 2a.
   library is missing or from before 3.2.14).
 - Omarchy's screensaver in Ghostty is kept, not left out by its class
   (`org.omarchy.screensaver`): it then runs on the CPU too while it shows,
-  and that is heavy (Cost: all of a 4-CPU VM's cores, and the Mac mini
+  and that is heavy (Cost: 3.7 of a 4-CPU VM's cores, and the Mac mini
   drew about 36 W against 14-18 W with no screensaver and 20 W with it in
   foot). Without the change it opened no window at all. Off: Omarchy's
   `omarchy-toggle-screensaver`, `omacvm enable no-idle-lock` (both named
