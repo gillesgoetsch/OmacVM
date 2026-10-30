@@ -18,6 +18,10 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   The VM sees the chip's SME, and their libyuv was built for chips that also
   have SVE, which the M4 does not (fixed in Chrome 155). `omacvm check` warns
   about it ("Google Chrome").
+- **Notifications, bar panels or the Omarchy menu black out the whole screen**
+  (Hyprland 0.57; OmacVM.app, UTM, Parallels): Update VM (3.2.15) or
+  `omacvm update`, then log out and in
+  ([48](#48-all-routes-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU
@@ -1416,3 +1420,51 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/guest/check.sh` ("Ghostty"); tests
   `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`;
   ADR 0064 (#598).
+
+## 48. All routes: notifications, panels and the Omarchy menu black out the screen (Hyprland 0.57)
+
+- **Symptom:** while an Omarchy notification, a bar panel or the Omarchy
+  menu shows, the whole screen is black around its card. Opaque windows are
+  fine. With `QT_QUICK_BACKEND=software` (Qt's CPU renderer) it is
+  transparent. OmacVM.app, UTM and Parallels, with Hyprland 0.57
+  (`hyprctl version`): Omarchy's dev channel since 2026-10-28, Omarchy stable
+  once it ships 0.57, or Arch Linux ARM's 0.57.0 after a bare `pacman -Syu`.
+  VMware Fusion is not affected (its display takes formats with alpha).
+- **Cause:** Hyprland 0.57.0 turns `quirks:skip_non_kms_dmabuf_formats` on
+  by default (hyprwm/Hyprland#15803). Hyprland then offers apps only the
+  buffer formats a display plane takes, and virtio-gpu's plane (OmacVM.app,
+  UTM, Parallels) takes XRGB8888 only: no format with alpha is left. Mesa
+  then has no EGL config with alpha (15 configs instead of 165 in a test
+  VM), Qt Quick draws the shell's transparent layers into XRGB8888 buffers,
+  and Hyprland shows them opaque: black where they are transparent. Qt's CPU
+  renderer uses shared-memory buffers, which keep ARGB8888. Not OmacVM
+  3.2.13: the same VM and app flip between black and transparent on that one
+  option, also on Hyprland 0.56.2 with it set by hand.
+- **Fix (3.2.15):** Update VM (`omacvm apply`, `omacvm update`), then log
+  out and in (or restart the VM). OmacVM turns the option off
+  (`~/.config/hypr/omacvm_vm.lua`), only when this Hyprland has it on and
+  your own Hyprland files do not name it; on Hyprland 0.56 nothing changes.
+  Hyprland builds the table of formats at its start: a reload that changes
+  the option does not always rebuild it (the first reload after Hyprland
+  starts never does), so `hyprctl getoption quirks:skip_non_kms_dmabuf_formats`
+  saying false is no proof before you log out and in. An OmacVM.app VM
+  updated while it was shut down needs nothing more. `omacvm check` has a
+  "transparent panels" row: it says ok from the first login after the fix,
+  and "log out and in" before. Your own setting wins: `true` in your
+  Hyprland files keeps the black (the row says which file).
+- **Before 3.2.15:** add this line to `~/.config/hypr/looknfeel.lua`, then
+  log out and in:
+
+  ```lua
+  hl.config({ quirks = { skip_non_kms_dmabuf_formats = false } })
+  ```
+
+  and take `QT_QUICK_BACKEND=software` out of `~/.config/environment.d/` (it
+  makes the shell draw on the CPU). The line can stay after the update:
+  OmacVM then sets nothing.
+- **Where:** `src/guest/omacvm_vm.lua` (Hyprland settings every route needs),
+  `src/guest/hypr-vm.sh` (from `src/guest/install.sh`), `src/guest/check.sh`
+  ("transparent panels"); test `src/tests/dmabuf-alpha.sh` (Lua part:
+  `src/tests/omacvm_vm_test.lua`). Issue
+  [#630](https://github.com/gillesgoetsch/OmacVM/issues/630), reported by
+  @epicoun.
