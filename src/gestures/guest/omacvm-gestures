@@ -689,6 +689,13 @@ def hypr_option(name, default, sock=None):
     return v if isinstance(v, bool) else bool(v) if isinstance(v, int) else default
 
 
+def special_shown(monitor):
+    """A special workspace (the scratchpad) is shown on this monitor (j/monitors): Hyprland 0.56 gives its id
+    (negative; 0 with none), 0.57 no id for it, only its name and address ("" with none)."""
+    sw = monitor.get("specialWorkspace")
+    return isinstance(sw, dict) and bool(sw.get("id") or sw.get("name") or sw.get("address"))
+
+
 def workspaces_now(sock=None):
     """The focused display's workspaces, as the swipe sees them: {"monitor",
     "active", "ids" (its normal workspaces), "empty" (the active one has no
@@ -701,13 +708,15 @@ def workspaces_now(sock=None):
     m = next((m for m in monitors if isinstance(m, dict) and m.get("focused")), None)
     if not m or not isinstance(m.get("activeWorkspace"), dict):
         return None
-    active = m["activeWorkspace"].get("id")
+    # A named workspace has no id in Hyprland 0.57 (a negative one in 0.56): it is found by its name then.
+    active, name = m["activeWorkspace"].get("id"), m["activeWorkspace"].get("name")
     ids = sorted(w["id"] for w in spaces if isinstance(w, dict) and w.get("monitor") == m.get("name")
                  and isinstance(w.get("id"), int) and w["id"] > 0)
-    here = next((w for w in spaces if isinstance(w, dict) and w.get("id") == active), {})
+    here = next((w for w in spaces if isinstance(w, dict) and
+                 (w.get("id") == active if active is not None else name and w.get("name") == name)), {})
     return {"monitor": m.get("name"), "active": active, "ids": ids,
             "empty": here.get("windows", 0) == 0,
-            "special": bool((m.get("specialWorkspace") or {}).get("id")),
+            "special": special_shown(m),
             "invert": hypr_option("gestures:workspace_swipe_invert", True, sock),
             "create_new": hypr_option("gestures:workspace_swipe_create_new", True, sock)}
 
@@ -968,7 +977,8 @@ def swipes_line(ways):
 HYPR_EVENTS = {b"workspace", b"workspacev2", b"focusedmon", b"focusedmonv2", b"createworkspace", b"createworkspacev2",
                b"destroyworkspace", b"destroyworkspacev2", b"moveworkspace", b"moveworkspacev2", b"renameworkspace",
                b"activespecial", b"activespecialv2", b"openwindow", b"closewindow", b"movewindow", b"movewindowv2",
-               b"monitoradded", b"monitoraddedv2", b"monitorremoved", b"monitorremovedv2", b"configreloaded"}
+               b"monitoradded", b"monitoraddedv2", b"monitorremoved", b"monitorremovedv2", b"configreloaded",
+               b"changeworkspaceid"}   # Hyprland 0.57: a workspace's id changed (Omarchy's monitor_workspaces)
 EDGE_QUIET = 0.03        # s: a burst of Hyprland's events is read as one change ...
 EDGE_BURST = 0.2         # ... for at most this long
 EDGE_RECHECK = 30.0      # s: looked at again without an event (a missed one)

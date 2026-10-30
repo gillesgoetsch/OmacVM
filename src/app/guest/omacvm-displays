@@ -451,7 +451,10 @@ def desktop_outputs(monitors_data, workspaces_data, layers_data) -> list[str]:
     """
     if not isinstance(monitors_data, list) or not isinstance(layers_data, dict):
         return []
-    windows = {w.get("id"): w.get("windows", 0) for w in workspaces_data
+    # Hyprland 0.57 gives no id for a named or special workspace (0.56 a negative one): those by their name.
+    def key(w):
+        return w.get("id") if w.get("id") is not None else ("name", w.get("name"))
+    windows = {key(w): w.get("windows", 0) for w in workspaces_data
                if isinstance(w, dict)} if isinstance(workspaces_data, list) else {}
     out = []
     for m in monitors_data:
@@ -462,12 +465,13 @@ def desktop_outputs(monitors_data, workspaces_data, layers_data) -> list[str]:
             continue
         if m.get("mirrorOf") not in (None, "", "none") or m.get("dpmsStatus") is False:
             continue
+        # a special workspace shown: 0.56 says its id (0 with none), 0.57 its name and address ("" with none)
         special = m.get("specialWorkspace")
-        if isinstance(special, dict) and special.get("id"):
+        if isinstance(special, dict) and (special.get("id") or special.get("name") or special.get("address")):
             continue
         active = m.get("activeWorkspace")
-        wid = active.get("id") if isinstance(active, dict) else None
-        if wid is None or windows.get(wid, 1) != 0:
+        wid = key(active) if isinstance(active, dict) else None
+        if wid in (None, ("name", None), ("name", "")) or windows.get(wid, 1) != 0:
             continue
         levels = layers_data.get(name, {}).get("levels") if isinstance(layers_data.get(name), dict) else None
         if not any(isinstance(layer, dict) and layer.get("namespace") == WALLPAPER

@@ -31,6 +31,13 @@ in more words.
   (#638) does: an option Hyprland does not know puts a red config error on the screen, which `pcall` did
   not stop. All four are still there in 0.57.0, so nothing changes today.
 
+- **Swipe out to macOS sees Omarchy's scratchpad on Hyprland 0.57.** Hyprland 0.57 gives special
+  (scratchpad) and named workspaces no id any more. With the scratchpad open, a four-finger swipe
+  past the first or last workspace could switch the Mac's Space instead of staying in the VM, and
+  OmacVM.app's check for a wallpaper that did not draw took a display showing the scratchpad for
+  the bare desktop. Both now tell those workspaces by their name, on Hyprland 0.56 and 0.57; the
+  gestures daemon also follows 0.57's new `changeworkspaceid` event.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
