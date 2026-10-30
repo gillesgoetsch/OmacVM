@@ -3,15 +3,17 @@
 # guard, or macOS short of memory). The VM's Mesa cannot tell the app, so
 # Chrome kept drawing into the lost context: blank or flickering windows
 # until it was restarted. `omacvm-desktop-recover app NAME guard|pressure`
-# now ends NAME's GPU process, and Chromium, Chrome and Electron apps start a
-# new one by themselves. Real processes stand in for an app's processes
+# now ends NAME's GPU process, and Chrome or Chromium starts a new one by
+# itself (other Chromium-based apps such as Electron's have the same GPU
+# process). Real processes stand in for an app's processes
 # (their /proc name and command line as Chrome's), so this runs on Linux only,
 # as in the VM (CI's guest job):
 # - only the GPU process of the app named, the user's own: a process named
-#   exactly NAME with the word --type=gpu-process in its command line (NUL-
-#   separated, or joined with spaces as Chrome's process title); not its
-#   browser or renderer, not another app's, not a name that only looks alike,
-#   not "--type=gpu-processX" or "--x=--type=gpu-process", never Hyprland's;
+#   exactly NAME with the argument --type=gpu-process (exactly that argument,
+#   or that word in a command line of one string: Chrome's process title);
+#   not its browser or renderer, not another app's, not a name that only
+#   looks alike, not "--type=gpu-processX" or "--x=--type=gpu-process", not
+#   the word after a space inside one of several arguments, never Hyprland's;
 # - at most once per app in 6 minutes and 3 times in an hour (Chrome turns
 #   its GPU off after 3 recent crashes and forgives one per 5 minutes);
 # - the times are kept in a folder of root's own (0700), never followed
@@ -38,7 +40,25 @@ expect() {   # WHAT WANT GOT
 
 # A process named COMM (its /proc comm) with the command line ARG0 ARGS...;
 # its pid in P. Python's main thread names the process itself (PR_SET_NAME).
-NAMER='import ctypes, sys, time; ctypes.CDLL(None).prctl(15, sys.argv[1].encode(), 0, 0, 0); time.sleep(600)'
+# titled COMM TITLE: the same, with a command line of one string, TITLE, as
+# Chrome's children set it (setproctitle): Python writes TITLE over its own
+# arguments' memory (arg_start/arg_end in /proc/self/stat), padded with NULs.
+NAMER='import ctypes, sys, time
+ctypes.CDLL(None).prctl(15, sys.argv[1].encode(), 0, 0, 0)
+if sys.argv[2:3] == ["--title"]:
+    f = open("/proc/self/stat").read().rsplit(")", 1)[1].split()
+    a, e = int(f[45]), int(f[46])
+    t = sys.argv[3].encode()[:e - a - 1]
+    ctypes.memmove(a, t + bytes(e - a - len(t)), e - a)
+time.sleep(600)'
+titled() {
+  proc "$1" python3 --title "$2"
+  for _ in $(seq 100); do
+    [[ $(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null | grep -c .) == 1 ]] && return 0
+    sleep 0.05
+  done
+  echo "FAIL the stand-in for \"$2\" has no command line of one string"; fail=1
+}
 proc() {
   local comm=$1 arg0=$2 c
   shift 2
@@ -83,14 +103,18 @@ body() { grep '^notify-send' "$CALLS" | cut -d'|' -f7; }
 # Chrome as it runs in the VM: its browser, a renderer and its GPU process,
 # the children with Chrome's process title (one string, words joined by spaces).
 proc chrome /opt/google/chrome/chrome; browser=$P
-proc chrome "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=7 --lang=en-US"; renderer=$P
-proc chrome "/opt/google/chrome/chrome --type=gpu-process --crashpad-handler-pid=7 --gpu-preferences=WAAAAAAAAAAg"; gpu=$P
+titled chrome "/opt/google/chrome/chrome --type=renderer --crashpad-handler-pid=7 --lang=en-US"; renderer=$P
+titled chrome "/opt/google/chrome/chrome --type=gpu-process --crashpad-handler-pid=7 --gpu-preferences=WAAAAAAAAAAg"; gpu=$P
+[[ $(tr '\0' '\n' < "/proc/$gpu/cmdline" | grep -c .) == 1 ]] && expect "a titled stand-in has a command line of one string" yes yes \
+  || expect "a titled stand-in has a command line of one string" yes "$(tr '\0' '|' < "/proc/$gpu/cmdline" | cut -c1-120)"
 # Arch's Chromium and an Electron app, arguments NUL-separated.
 proc chromium /usr/lib/chromium/chromium --type=gpu-process --field-trial-handle=3; chromium=$P
 proc code /usr/lib/code/code --type=gpu-process; code=$P
 # Look-alikes that are not chrome's GPU process.
 proc chrome /opt/google/chrome/chrome --type=gpu-processX; nearly=$P
 proc chrome /opt/google/chrome/chrome "--enable-features=x --x=--type=gpu-process"; inside=$P
+proc chrome /opt/google/chrome/chrome "--enable-features=x --type=gpu-process"; spaced=$P
+titled chrome "/opt/google/chrome/chrome --type=gpu-processX"; nearlyt=$P
 proc chromex /opt/chromex/chromex --type=gpu-process; chromex=$P
 proc Hyprland Hyprland --type=gpu-process; hypr=$P
 proc firefox /usr/lib/firefox/firefox -contentproc; firefox=$P
@@ -103,6 +127,8 @@ expect "Chromium's GPU process is not chrome's"               running "$(state "
 expect "an Electron app's GPU process is not chrome's"        running "$(state "$code")"
 expect "--type=gpu-processX is not a GPU process"             running "$(state "$nearly")"
 expect "the word inside another argument does not count"      running "$(state "$inside")"
+expect "nor after a space inside one of several arguments"    running "$(state "$spaced")"
+expect "a title with --type=gpu-processX is not a GPU process" running "$(state "$nearlyt")"
 expect "a name that starts the same (chromex) is not chrome"  running "$(state "$chromex")"
 expect "the note says chrome's graphics were restarted"       "chrome's graphics were restarted" "$(note)"
 expect "and why, what stays, and what to do if it goes blank again" \
@@ -114,7 +140,7 @@ expect "the times' folder: made 0700, the script's own"       "$(id -u) 700" "$(
 expect "one restart noted for chrome"                         1 "$(grep -c . "$T/stamps/gpu-chrome" 2>/dev/null)"
 
 # Chrome starts a new GPU process, which is lost again at once: not restarted again so soon.
-proc chrome "/opt/google/chrome/chrome --type=gpu-process --crashpad-handler-pid=7"; gpu=$P
+titled chrome "/opt/google/chrome/chrome --type=gpu-process --crashpad-handler-pid=7"; gpu=$P
 run $((NOW + 30)) chrome pressure
 expect "lost again 30 s later: the new GPU process is left alone" running "$(state "$gpu")"
 expect "the note says chrome stopped drawing (as before)"     "chrome stopped drawing" "$(note)"
@@ -124,10 +150,10 @@ run $((NOW + 359)) chrome pressure
 expect "5 min 59 s after: still left alone"                   running "$(state "$gpu")"
 run $((NOW + 360)) chrome pressure
 expect "6 min after: restarted (Chrome forgave the first)"    ended   "$(state "$gpu")"
-proc chrome "/opt/google/chrome/chrome --type=gpu-process"; gpu=$P
+titled chrome "/opt/google/chrome/chrome --type=gpu-process"; gpu=$P
 run $((NOW + 720)) chrome pressure
 expect "12 min after: restarted (the third in the hour)"      ended   "$(state "$gpu")"
-proc chrome "/opt/google/chrome/chrome --type=gpu-process"; gpu=$P
+titled chrome "/opt/google/chrome/chrome --type=gpu-process"; gpu=$P
 run $((NOW + 1100)) chrome pressure
 expect "a fourth within the hour: left alone"                 running "$(state "$gpu")"
 grep -q "restarted 3 times in the last hour" "$CALLS" \
@@ -146,7 +172,7 @@ case $(body) in
 esac
 
 # No regex: a "." in the name is a dot, and nothing is ended for it.
-proc chrome "/opt/google/chrome/chrome --type=gpu-process"; gpu=$P
+titled chrome "/opt/google/chrome/chrome --type=gpu-process"; gpu=$P
 run "$NOW" chr.me pressure
 expect "chr.me is not chrome"                                 running "$(state "$gpu")"
 # An app without a GPU process: the note only.

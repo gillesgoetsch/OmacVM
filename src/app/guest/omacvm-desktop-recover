@@ -20,11 +20,13 @@
 #   omacvm-desktop-recover app NAME guard|pressure
 #       An app (not the desktop) lost its context on the Mac: the graphics
 #       memory apps may use was full (the rest is kept for the desktop), or
-#       macOS was short of memory. The VM's Mesa cannot tell the app, so a
-#       Chromium or Electron app would draw nothing until it is restarted:
-#       its GPU process (a process of the user's named NAME with the argument
+#       macOS was short of memory. The VM's Mesa cannot tell the app, so
+#       Chrome or Chromium would draw nothing until it is restarted: its GPU
+#       process (a process of the user's named NAME with the argument
 #       --type=gpu-process) is ended, and the app starts a new one by itself,
-#       which also gives the lost context's memory back. At most once per app
+#       which also gives the lost context's memory back (measured with Chrome
+#       and Chromium; other Chromium-based apps such as Electron's have the
+#       same GPU process, not measured). At most once per app
 #       in 6 minutes and 3 times in an hour: Chrome counts each as a crash
 #       and turns its GPU off for the session after 3 recent ones (it
 #       forgives one per 5 minutes). A note says what happened.
@@ -79,11 +81,11 @@ gpu_restarts() {
 # Ends NAME's GPU process so the app starts a new one (all of them when two
 # copies of the app run: which one was lost is not known). Only the desktop
 # user's processes whose name is exactly NAME and that have the argument
-# --type=gpu-process (Chromium, Chrome, Electron apps); never the desktop's
-# or a shell's. Fails with the reason in WHY_NOT.
+# --type=gpu-process (Chrome, Chromium and other Chromium-based apps); never
+# the desktop's or a shell's. Fails with the reason in WHY_NOT.
 WHY_NOT=""
 gpu_restart() {
-  local name=$1 now uid p comm key real arg word words pids=() last n gpu LC_ALL=C
+  local name=$1 now uid p comm key real arg word args=() words=() pids=() last n gpu LC_ALL=C
   now=${OMACVM_RECOVER_NOW:-$(date +%s)}
   case $name in
   Hyprland|quickshell|hyprlock|Xwayland|sddm*|systemd*|bash|sh|dash|zsh|fish|"An app")
@@ -104,21 +106,24 @@ gpu_restart() {
   if (( n >= 3 )); then
     WHY_NOT="restarted $n times in the last hour"; return 1
   fi
-  # Read with bash alone (no regex: the name may hold "."). Chromium joins its
-  # arguments into one string with spaces (its process title), so the
-  # command line's words are split at NUL and at spaces; one must be exactly
-  # --type=gpu-process.
+  # Read with bash alone (no regex: the name may hold "."). One argument must
+  # be exactly --type=gpu-process. Chromium's GPU process sets its process
+  # title: its arguments joined with spaces into one string, so a command
+  # line of one string is split at spaces; any other keeps its arguments.
   for p in /proc/[0-9]*; do
     IFS= read -r comm 2>/dev/null < "$p/comm" || continue
     [[ $comm == "$name" ]] || continue
     real=""
     while IFS=$'\t' read -r key real _; do [[ $key == Uid: ]] && break; real=""; done 2>/dev/null < "$p/status"
     [[ $real == "$uid" ]] || continue
-    gpu=0
+    args=()
     while IFS= read -r -d '' arg || [[ -n $arg ]]; do
-      read -ra words <<< "$arg"
-      for word in "${words[@]}"; do [[ $word == "--type=gpu-process" ]] && gpu=1; done
+      [[ -n $arg ]] && args+=("$arg")
     done 2>/dev/null < "$p/cmdline"
+    words=("${args[@]}")
+    (( ${#args[@]} == 1 )) && read -ra words <<< "${args[0]}"
+    gpu=0
+    for word in "${words[@]}"; do [[ $word == "--type=gpu-process" ]] && gpu=1; done
     (( gpu )) && pids+=("${p#/proc/}")
   done
   (( ${#pids[@]} )) || { WHY_NOT="no GPU process of $name"; return 1; }
