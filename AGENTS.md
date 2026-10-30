@@ -870,6 +870,11 @@ The less obvious ones, with causes and where the fix lives, are in
   rebuilds it, and `hyprctl eval` never does (0.56.2 and 0.57.0,
   `LinuxDMABUF.cpp`). Only a Hyprland start applies it for sure: log out and
   in (#630).
+- Do not feed a probe with `printf x | cmd` on the Mac side when `cmd` may exit
+  before it reads (LibreSSL's `openssl passwd -6`, a missing binary): CI jobs
+  run with SIGPIPE ignored, and bash 5's printf then writes "write error:
+  Broken pipe" to stderr, which broke `omacvm build --plan --json` in a test
+  that reads its output with `2>&1`. Use a here-string (`cmd <<<x`).
 - Do not put personal data in this repo.
 
 ## 9. Conventions
