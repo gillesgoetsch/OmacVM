@@ -1685,16 +1685,17 @@ log "Relocating, capability-gating, signing, and publishing the runtime"
   "$native_dir/.build/qemu-gpu-runtime/bin/qemu-system-aarch64" || \
   die "the slirp UDP stall test failed"
 
-# A guest's Vulkan calls never reach the Mac's driver with what Metal ends QEMU on (ADR 0065):
-# each case through vkr's own dispatch on the staged runtime's real drivers (KosmicKrisp and
-# MoltenVK), one process per case; objects and binds only, nothing runs on the GPU.
+# A guest's Vulkan calls never reach the Mac's driver with what Metal ends QEMU on, and what
+# ended QEMU's process in vkr now ends only the app's context (ADR 0065): each case through
+# vkr's own dispatch on the staged runtime's real drivers (KosmicKrisp and MoltenVK), one process
+# per case; objects and binds only, nothing runs on the GPU.
 python3 "$native_dir/Tests/virgl/run-venus-limits.py" \
   "$virgl_build" "$work_dir/venus-limits" "$native_dir/.build/qemu-gpu-runtime" -- \
   "-L$epoxy_root/lib" -lepoxy \
   -framework Metal -framework CoreFoundation -lobjc \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
   "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib" || \
-  die "the Venus image limits test failed"
+  die "the Venus limits tests failed"
 
 # The firmware must show the logo and name the disk's boot entry as QEMU's
 # does, with the QEMU it ships with (Tests/firmware/test-firmware.py).
