@@ -633,9 +633,17 @@ Limits:
   new decoder while Chromium remembers its first picture, so 3 refusals
   right after a seek would end in a playback error instead; the shim
   refuses by the stream's SPS, so a video that played gets none after a
-  seek. `src/vdec/guest/vdecd-refused.h`, `src/tests/vdecd-refused.sh`;
-  not yet checked in Chromium. `OMACVM_VA_INTERLACED=1`
-  sends them to the Mac anyway (tests);
+  seek. Checked in a test VM on a MacBook Pro M1 Max (Arch's Chromium,
+  `tests/video/guest/video-geometry.py`): with 3.2.14 the 1080i clip
+  showed no video; with this change Chromium plays it on its CPU decoder
+  (`FFmpegVideoDecoder`) and vdecd logs one "VA-API refused its first
+  pictures" line; the progressive 1080 clip stays on `V4L2VideoDecoder`
+  (its SPS and PPS alone gave 3 `AVERROR_INVALIDDATA`, not counted).
+  `vdec-test --expect-fail` gets an error 2-36 ms after the start for the
+  1080i and 576i clips, a PAFF and a field-picture stream (CVPA1_TOSHIBA_B,
+  CVFI1_Sony_D); with 3.2.14 none, and no picture.
+  `src/vdec/guest/vdecd-refused.h`, `src/tests/vdecd-refused.sh`.
+  `OMACVM_VA_INTERLACED=1` sends them to the Mac anyway (tests);
   `src/app/guest/tests/va-shim-interlaced.sh`.
 - **VA-API video processing from YUV to YUV loses vertical detail** (mpv's
   `vavpp` with `deint=bob` or `weave`, FFmpeg's `deinterlace_vaapi`,
