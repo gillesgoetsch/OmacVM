@@ -621,9 +621,20 @@ Limits:
   Mesa 26.2.5, FFmpeg 9.0.2, mpv 0.41) on the 1080i and 576i clips above;
   H.264 coded as frames decodes in hardware as before (50 of 50 frames bit
   for bit) and no codec for the interlaced clips reaches the Mac.
-  Chromium from Arch (`omacvm-vdecd`) fails a video only when VA-API cannot
-  be used at all, so there such a video gets no pictures instead of green
-  ones (from the code; not checked in Chromium). `OMACVM_VA_INTERLACED=1`
+  Chromium from Arch (`omacvm-vdecd`) waits for a first picture that never
+  comes and gives no error, so up to 3.2.14 such a video got no pictures
+  instead of green ones (from the code). From 3.2.15 the daemon fails the
+  video once VA-API refused 3 of its pictures before the first one came out
+  (`AVERROR(EIO)`; an SPS or PPS alone does not count), and Chromium plays
+  it on the CPU: its V4L2 decoder falls back to its own decoder only after a
+  decode error before its first picture. Counted per decoder from each start
+  (Chromium starts again on the same device for a new track); a refused
+  picture after the first one is a lost picture as before. A seek opens a
+  new decoder while Chromium remembers its first picture, so 3 refusals
+  right after a seek would end in a playback error instead; the shim
+  refuses by the stream's SPS, so a video that played gets none after a
+  seek. `src/vdec/guest/vdecd-refused.h`, `src/tests/vdecd-refused.sh`;
+  not yet checked in Chromium. `OMACVM_VA_INTERLACED=1`
   sends them to the Mac anyway (tests);
   `src/app/guest/tests/va-shim-interlaced.sh`.
 - **VA-API video processing from YUV to YUV loses vertical detail** (mpv's
