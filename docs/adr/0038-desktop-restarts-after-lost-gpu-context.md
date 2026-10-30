@@ -118,6 +118,24 @@ acted on, and nothing is matched as a pattern.
   critical instead (ADR 0034's 3.2.15 amendment); both ship together. The
   note says to quit the app and open it again if it goes blank again.
 
+Checked in a hidden test VM (M1 Max, 3.2.14's app and runtime, the VM's
+monitor 5120x2880 at scale 2 like the user's 5K display, critical pressure
+forced inside QEMU through its test hook, a WebGL page whose colour follows
+the clock, the screen's pixel read every 0.25 s): with the VM's old script,
+Chrome 156 and Chromium 153 stayed frozen on one frame for the 55 s
+measured after the loss, their GPU process unchanged. With this script the
+app's next look ran it, the GPU process was ended, and Chrome drew right
+again 5.9 s after the loss (Chromium 2.9 s), its WebGL page got its context
+back (a "restored" event), and Chrome kept the GPU (GPU compositing on).
+The user's step by hand (`pkill -f -- 'chrome --type=gpu-process'`) brought
+the old Chrome back 1.3 s after it. Restarted while QEMU still saw critical
+(3.2.14's runtime), the new GPU process was lost again at once, and the app
+did not tell the VM again within its minute: Chrome stayed blank, which is
+why the runtime change at critical ships with this. After two ends in 95 s
+(that restart, then one by hand) Chrome still drew with the GPU, but the
+WebGL page's context stayed lost (Chrome blocks WebGL on a page after GPU
+process crashes): the note's "may need a reload".
+
 Not chosen:
 
 - Shipping the reset-reporting guest Mesa (`mesa-virgl-reset-status.patch`,
