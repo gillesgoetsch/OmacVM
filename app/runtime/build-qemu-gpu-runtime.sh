@@ -1463,6 +1463,14 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-resource-logical-s
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-videotoolbox-session-queue.patch"
 grep -q 'dispatch_async_f(codec->dec_q, codec, dec_end_on_queue)' "$virgl_source/src/vrend/virgl_video_vt.c" || \
   die "virgl_video_vt.c: VideoToolbox sessions are not on the decoders' queues (session-queue patch)"
+# OmacVM Venus: what a guest's Vulkan calls hand the Mac's driver is checked first: Metal
+# under KosmicKrisp and MoltenVK ends QEMU's process on what it cannot make (ADR 0065, #598).
+# The emulated LINEAR modifier asks the host with INPUT_ATTACHMENT (Zink's linear render
+# target), image descriptions, binds and layout queries stay inside the driver's own limits,
+# views and samplers inside their image, buffer and enums.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-linear-modifier-usage.patch"
+grep -q 'pImageFormatInfo->usage = vkr_physical_device_linear_usage(' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_physical_device.c: the LINEAR modifier question still leaves out INPUT_ATTACHMENT (linear-modifier-usage patch)"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.

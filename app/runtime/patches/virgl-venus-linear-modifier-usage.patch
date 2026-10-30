@@ -1,0 +1,90 @@
+virglrenderer: Venus asks the host about the LINEAR modifier with INPUT_ATTACHMENT
+
+What: neither Mac Vulkan driver (KosmicKrisp, MoltenVK) has
+VK_EXT_image_drm_format_modifier, so vkr answers the guest's questions about
+DRM_FORMAT_MOD_LINEAR with the host's answer for VK_IMAGE_TILING_LINEAR. That
+question left out COLOR_ATTACHMENT and INPUT_ATTACHMENT. It now leaves out only
+COLOR_ATTACHMENT, and only for a format whose optimal tiling renders
+(vkr_physical_device_linear_usage, which virgl-venus-image-limits.patch uses too).
+Why: Zink (OpenGL on Vulkan) asks for its shared render targets with
+SAMPLED|TRANSFER|COLOR_ATTACHMENT|INPUT_ATTACHMENT and the LINEAR modifier. It was
+told "supported" and made one. KosmicKrisp makes every 2D image with
+INPUT_ATTACHMENT a 2D array texture, linear ones too, and Metal ends the process
+at vkBindImageMemory2 for a linear 2D array ("Linear texture: must be of type
+MTLTextureType2D"): a program in the VM (glxinfo or Ghostty with Zink, #598) took
+the whole VM down. KosmicKrisp's own answer to the full question is "not
+supported"; only the shortened question got a yes.
+COLOR_ATTACHMENT stays out where optimal tiling renders: the Mac drivers never
+claim linear colour attachments, yet a guest's window buffers are linear colour
+attachments and render on both. Every format the shortened question accepts was
+made LINEAR with COLOR_ATTACHMENT and bound without an abort (KosmicKrisp 57
+formats, MoltenVK 56, M4 macOS 27). For a format whose optimal tiling cannot
+render, the question keeps COLOR_ATTACHMENT and is refused.
+Upstream: the emulation is the startergo tap's (homebrew-virglrenderer,
+virglrenderer-macos-unified.patch at de31b78a), not freedesktop's. Not sent.
+Tests: Tests/virgl/test-venus-image-limits.c (build time, real drivers, one child
+per case): Zink's image made through vkr's dispatch ends the child on
+KosmicKrisp without this patch and virgl-venus-image-limits.patch; with them the
+query answers VK_ERROR_FORMAT_NOT_SUPPORTED and vkCreateImage refuses it.
+
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index 381b319..c1001a1 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -396,6 +396,28 @@ vkr_physical_device_init_queue_family_properties(struct vkr_physical_device *phy
+    physical_dev->queue_family_properties = props;
+ }
+ 
++/* OmacVM: the usage to ask the host about for a LINEAR image. The Mac drivers never
++ * claim linear COLOR_ATTACHMENT, yet single-layer linear colour images render on both
++ * (a guest's window buffers are such images), so COLOR_ATTACHMENT is left out of the
++ * question, but only for a format whose optimal tiling renders: for any other the
++ * question keeps it and is refused. INPUT_ATTACHMENT stays in: KosmicKrisp makes a
++ * texture with it a 2D array, which Metal refuses for linear memory with an abort (Zink's
++ * shared render targets, #598). virgl-venus-image-limits.patch asks the same. */
++VkImageUsageFlags
++vkr_physical_device_linear_usage(struct vkr_physical_device *physical_dev,
++                                 VkFormat format,
++                                 VkImageUsageFlags usage)
++{
++   if (!(usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
++      return usage;
++   VkFormatProperties props = { 0 };
++   physical_dev->proc_table.GetPhysicalDeviceFormatProperties(
++      physical_dev->base.handle.physical_device, format, &props);
++   if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)
++      usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
++   return usage;
++}
++
+ static void
+ vkr_physical_device_emulate_drm_props(VkDrmFormatModifierPropertiesListEXT *drm_props_list)
+ {
+@@ -835,8 +857,8 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties2(
+             prev_struct->pNext = drm_format_mod->pNext;
+             vkr_log("emulating DRM_FORMAT_MOD_LINEAR with VK_IMAGE_TILING_LINEAR");
+             pImageFormatInfo->tiling = VK_IMAGE_TILING_LINEAR;
+-            pImageFormatInfo->usage &=
+-               ~(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
++            pImageFormatInfo->usage = vkr_physical_device_linear_usage(
++               physical_dev, pImageFormatInfo->format, pImageFormatInfo->usage);
+          } else {
+             vkr_log("only DRM_FORMAT_MOD_LINEAR is supported");
+             args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
+diff --git a/src/venus/vkr_physical_device.h b/src/venus/vkr_physical_device.h
+index ce2b80c..251cbd0 100644
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -51,6 +51,12 @@ VKR_DEFINE_OBJECT_CAST(physical_device, VK_OBJECT_TYPE_PHYSICAL_DEVICE, VkPhysic
+ void
+ vkr_context_init_physical_device_dispatch(struct vkr_context *ctx);
+ 
++/* OmacVM: the usage to ask the host about for a LINEAR image (see the .c file) */
++VkImageUsageFlags
++vkr_physical_device_linear_usage(struct vkr_physical_device *physical_dev,
++                                 VkFormat format,
++                                 VkImageUsageFlags usage);
++
+ void
+ vkr_physical_device_destroy(struct vkr_context *ctx,
+                             struct vkr_physical_device *physical_dev);
