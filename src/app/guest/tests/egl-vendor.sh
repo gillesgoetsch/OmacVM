@@ -2,7 +2,9 @@
 # OmacVM's EGL vendor library (src/app/guest/omacvm_egl.c): Mesa's EGL with the app's video imports
 # handed to the VA driver shim, only when the shim is loaded; fails open (no Mesa, another glvnd
 # ABI) and stays out of the desktop's own processes (Hyprland, Xwayland, Omarchy's shell with its
-# lock screen, hyprlock, the login screen). Runs against stand-ins for Mesa's EGL vendor library and
+# lock screen, hyprlock, the login screen). Ghostty, and only Ghostty, gets Mesa's CPU renderer at
+# its eglInitialize, and nothing of it afterwards (ADR 0064); foot and chromium get Mesa's own
+# eglInitialize. Runs against stand-ins for Mesa's EGL vendor library and
 # the shim (egl-vendor.c), on Linux with the EGL and glvnd headers (libegl-dev, libglvnd-dev).
 #   src/app/guest/tests/egl-vendor.sh [EGL_SOURCE]
 # EGL_SOURCE: another omacvm_egl.c.
@@ -20,21 +22,25 @@ cc -shared -fPIC -O2 -Wall -Werror -fvisibility=hidden -Wl,-soname,libEGL_omacvm
   -DMESA_EGL="\"$T/mesa/libEGL_mesa.so.0\"" -o "$T/libEGL_omacvm.so.0" "$src" -ldl || exit 1
 cc -shared -fPIC -O2 -Wall -Werror -fvisibility=hidden -DMESA_EGL="\"$T/none/libEGL_mesa.so.0\"" \
   -o "$T/nomesa.so" "$src" -ldl || exit 1
-cc -O2 -Wall -o "$T/egl-vendor" "$here/egl-vendor.c" -ldl || exit 1
-for exe in Hyprland Xwayland quickshell hyprlock sddm-greeter-qt6; do cp "$T/egl-vendor" "$T/$exe"; done
+cc -O2 -Wall -pthread -o "$T/egl-vendor" "$here/egl-vendor.c" -ldl || exit 1
+for exe in Hyprland Xwayland quickshell hyprlock sddm-greeter-qt6 ghostty foot chromium; do cp "$T/egl-vendor" "$T/$exe"; done
 
 # run PROGRAM LIBRARY MODE
 run() {
   local out
   out=$("$1" "$2" "$T/mesa/libEGL_mesa.so.0" "$T/dri/omacvm_drv_video.so" "$3" 2>&1)
   if [[ $? == 0 ]]; then
-    echo "ok: $3"
+    echo "ok: $3 (${1##*/})"
   else
-    echo "FAIL: $3"; fail=1
+    echo "FAIL: $3 (${1##*/})"; fail=1
   fi
   sed 's/^/    /' <<< "$out"
 }
 run "$T/egl-vendor" "$T/libEGL_omacvm.so.0" main
+# other apps keep Mesa's own eglInitialize; Ghostty gets the CPU renderer for it (OpenGL 4.3)
+run "$T/foot" "$T/libEGL_omacvm.so.0" main
+run "$T/chromium" "$T/libEGL_omacvm.so.0" main
+run "$T/ghostty" "$T/libEGL_omacvm.so.0" ghostty
 run "$T/egl-vendor" "$T/nomesa.so" nomesa
 run "$T/egl-vendor" "$T/libEGL_omacvm.so.0" abi1
 # the desktop's own processes (Omarchy 4's lock screen is quickshell's)

@@ -9,14 +9,28 @@
  * that shim is loaded in this process: the shim decides whether the planes are a surface of
  * its own and tells the Mac. Everything else is Mesa's, unchanged.
  *
+ * Its second job (ADR 0064): Ghostty 1.2 and newer need OpenGL 4.3, and the VM's GPU gives 4.1
+ * (virgl on the Mac's OpenGL 4.1; Zink on the Mac's Vulkan only 2.1), so Ghostty opened no
+ * window. In a process whose executable is named ghostty, and only there, glvnd gets a wrapper
+ * for eglInitialize, where Mesa picks its driver: LIBGL_ALWAYS_SOFTWARE=1 while Mesa's
+ * eglInitialize runs (llvmpipe, OpenGL 4.6, on the VM's CPU), removed again right after, so
+ * the programs Ghostty starts keep the GPU (with the variable on Ghostty's command line instead,
+ * eglinfo from its shell got llvmpipe). A LIBGL_ALWAYS_SOFTWARE,
+ * MESA_LOADER_DRIVER_OVERRIDE or GALLIUM_DRIVER already set is left alone: that choice wins.
+ * Set and removed under a mutex on every call, also when Mesa's call fails. Risk left: the
+ * environment changes while another thread of Ghostty might read it (getenv is not safe against
+ * setenv); GTK sets up EGL once per display, on its main thread, for the first window.
+ * Ghostty on the GPU again (it then opens no window): LIBGL_ALWAYS_SOFTWARE=0.
+ *
  * Kept small, and it fails open: if Mesa's library is missing or glvnd's vendor ABI is not
  * major 0, __egl_Main returns false and glvnd uses Mesa's own 50_mesa.json. The compositor
  * (Hyprland), Xwayland, Omarchy's shell (quickshell: the bar and Omarchy 4's lock screen),
  * hyprlock and the login screen run Mesa alone (they show no VA-API surfaces). Mesa thus
  * loads as two glvnd vendors in other processes; this one lists no devices (glvnd would list
- * every device twice), so displays opened on a device are Mesa's.
+ * every device twice), so displays opened on a device are Mesa's. Every process but Ghostty
+ * gets Mesa's own eglInitialize.
  * One app: __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json; the VM:
- * delete the JSON file.
+ * delete the JSON file (Ghostty then opens no window again).
  *
  * Built in the VM by install.sh (/usr/local/lib/libEGL_omacvm.so.0). MIT, part of OmacVM.
  */
@@ -24,8 +38,10 @@
 #include <dlfcn.h>
 #include <limits.h>
 #include <link.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <EGL/egl.h>
@@ -45,6 +61,9 @@ typedef void (*imported_fn)(uint32_t fourcc, uint32_t w, uint32_t h, unsigned in
 static void *(*mesa_gpa)(const char *);
 static PFNEGLCREATEIMAGEKHRPROC mesa_create_image_khr;
 static PFNEGLCREATEIMAGEPROC mesa_create_image;
+static PFNEGLINITIALIZEPROC mesa_initialize;
+static int cpu_gl;                      /* this process is Ghostty: Mesa's CPU renderer (see the top) */
+static pthread_mutex_t env_lock = PTHREAD_MUTEX_INITIALIZER;
 static imported_fn shim_entry;          /* found once, never dropped (the shim stays loaded) */
 static unsigned long long searched;     /* objects loaded at the last search without a hit */
 
@@ -166,7 +185,25 @@ static EGLImage create_image(EGLDisplay dpy, EGLContext ctx, EGLenum target,
     return img;
 }
 
-/* glvnd asks the vendor for every EGL function it dispatches to it, these two included. */
+/* Ghostty only: Mesa reads LIBGL_ALWAYS_SOFTWARE in eglInitialize, where it picks its driver;
+ * the variable is there for that call alone, unless a driver was chosen already (see the top). */
+static EGLBoolean initialize_cpu(EGLDisplay dpy, EGLint *major, EGLint *minor)
+{
+    PFNEGLINITIALIZEPROC f = __atomic_load_n(&mesa_initialize, __ATOMIC_ACQUIRE);
+    EGLBoolean ok;
+    int set;
+
+    pthread_mutex_lock(&env_lock);
+    set = !getenv("LIBGL_ALWAYS_SOFTWARE") && !getenv("MESA_LOADER_DRIVER_OVERRIDE") &&
+          !getenv("GALLIUM_DRIVER") && !setenv("LIBGL_ALWAYS_SOFTWARE", "1", 0);
+    ok = f(dpy, major, minor);
+    if (set)
+        unsetenv("LIBGL_ALWAYS_SOFTWARE");
+    pthread_mutex_unlock(&env_lock);
+    return ok;
+}
+
+/* glvnd asks the vendor for every EGL function it dispatches to it, these included. */
 static void *get_proc_address(const char *name)
 {
     void *p;
@@ -175,6 +212,10 @@ static void *get_proc_address(const char *name)
     if (!strcmp(name, "eglQueryDevicesEXT"))
         return NULL;
     p = mesa_gpa(name);
+    if (p && cpu_gl && !strcmp(name, "eglInitialize")) {
+        __atomic_store_n(&mesa_initialize, (PFNEGLINITIALIZEPROC)p, __ATOMIC_RELEASE);
+        return (void *)initialize_cpu;
+    }
     if (p && !strcmp(name, "eglCreateImageKHR")) {
         __atomic_store_n(&mesa_create_image_khr, (PFNEGLCREATEIMAGEKHRPROC)p, __ATOMIC_RELEASE);
         return (void *)create_image_khr;
@@ -186,18 +227,22 @@ static void *get_proc_address(const char *name)
     return p;
 }
 
-/* The compositor, Xwayland, Omarchy's shell and the lock and login screens (see the top) */
-static int desktop_process(void)
+/* The name of this process's executable (/proc/self/exe), "" when unknown; exe holds it. */
+static const char *program(char *exe, size_t size)
 {
-    char exe[PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    ssize_t n = readlink("/proc/self/exe", exe, size - 1);
     const char *b;
 
     if (n <= 0)
-        return 0;
+        return "";
     exe[n] = 0;
     b = strrchr(exe, '/');
-    b = b ? b + 1 : exe;
+    return b ? b + 1 : exe;
+}
+
+/* The compositor, Xwayland, Omarchy's shell and the lock and login screens (see the top) */
+static int desktop_process(const char *b)
+{
     return !strcmp(b, "Hyprland") || !strcmp(b, "Xwayland") || !strcmp(b, "quickshell") ||
            !strcmp(b, "hyprlock") || !strncmp(b, "sddm-greeter", 12);
 }
@@ -207,15 +252,18 @@ EGLBoolean __egl_Main(uint32_t version, const __EGLapiExports *exports, __EGLven
                       __EGLapiImports *imports)
 {
     __PFNEGLMAINPROC mesa_main;
+    char exe[PATH_MAX];
+    const char *name = program(exe, sizeof(exe));
     void *mesa;
 
-    if (EGL_VENDOR_ABI_GET_MAJOR_VERSION(version) != 0 || desktop_process())
+    if (EGL_VENDOR_ABI_GET_MAJOR_VERSION(version) != 0 || desktop_process(name))
         return EGL_FALSE;
     mesa = dlopen(MESA_EGL, RTLD_NOW | RTLD_LOCAL);
     mesa_main = mesa ? (__PFNEGLMAINPROC)dlsym(mesa, __EGL_MAIN_PROTO_NAME) : NULL;
     if (!mesa_main || !mesa_main(version, exports, vendor, imports) || !imports->getProcAddress)
         return EGL_FALSE;
     mesa_gpa = imports->getProcAddress;
+    cpu_gl = !strcmp(name, "ghostty");
     imports->getProcAddress = get_proc_address;
     return EGL_TRUE;
 }

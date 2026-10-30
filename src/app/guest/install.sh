@@ -134,8 +134,9 @@ if cc -shared -fPIC -O2 -o "$T/omacvm_drv_video.so" omacvm_drv_video.c -ldl 2>/d
   ldconfig
   # Videos at their own size where the decoder's surface is larger (H.264 1080p: 1088
   # rows): an EGL vendor library in front of Mesa's hands the app's video imports to the
-  # shim (omacvm_egl.c, ADR 0063). The library first, then glvnd's file; if it does not
-  # build, the file goes first (glvnd would skip a missing library anyway).
+  # shim (omacvm_egl.c, ADR 0063); it also starts Ghostty on Mesa's CPU renderer (ADR 0064).
+  # The library first, then glvnd's file; if it does not build, the file goes first (glvnd
+  # would skip a missing library anyway).
   if cc -shared -fPIC -O2 -fvisibility=hidden -Wl,-soname,libEGL_omacvm.so.0 \
        -o "$T/libEGL_omacvm.so.0" omacvm_egl.c -ldl 2>/dev/null; then
     install -Dm755 "$T/libEGL_omacvm.so.0" /usr/local/lib/libEGL_omacvm.so.0
@@ -143,7 +144,7 @@ if cc -shared -fPIC -O2 -o "$T/omacvm_drv_video.so" omacvm_drv_video.c -ldl 2>/d
   else
     rm -f /etc/glvnd/egl_vendor.d/10_omacvm.json
     rm -f /usr/local/lib/libEGL_omacvm.so.0
-    echo "OmacVM.app: the EGL vendor library did not build (EGL or glvnd headers missing?): H.264 1080p keeps 8 extra rows in Chrome and mpv"
+    echo "OmacVM.app: the EGL vendor library did not build (EGL or glvnd headers missing?): H.264 1080p keeps 8 extra rows in Chrome and mpv, and Ghostty opens no window"
   fi
 else
   echo "OmacVM.app: no C compiler, video decoding without the Firefox shim"

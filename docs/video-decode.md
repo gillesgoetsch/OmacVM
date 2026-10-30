@@ -173,7 +173,8 @@ decoded frame (IOSurface) ─GPU copy─▶ the guest's video textures ─▶ br
   their own size by itself), mpv's `vo=dmabuf-wayland`, Vulkan
   importers. Off for one app:
   `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`;
-  for the VM: delete `10_omacvm.json`.
+  for the VM: delete `10_omacvm.json` (that also ends Ghostty's CPU renderer,
+  [ADR 0064](adr/0064-ghostty-on-the-cpu.md): Ghostty then opens no window).
   The copy still fills the rows and columns past the picture with its last
   row and column (`virgl-video-plane-edge.patch`): for an older VM side or
   app, surfaces the shim did not declare, and lookups at the very edge.

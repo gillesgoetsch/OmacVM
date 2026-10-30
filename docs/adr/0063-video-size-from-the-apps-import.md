@@ -2,6 +2,9 @@
 
 Status: accepted, built (`h264-edge`, 3.2.12), on with the 3.2.11 app's
 `omacvm.valogical=1`; `OMACVM_VA_LOGICAL=0` in an app of the VM turns it off.
+Amended by [ADR 0064](0064-ghostty-on-the-cpu.md) (3.2.14): the library also
+starts Ghostty on Mesa's CPU renderer, with an environment variable for that
+one call in that one program.
 Notes, the investigation and the review: work/tracks/h264-coded-edge.md.
 
 ## Context
