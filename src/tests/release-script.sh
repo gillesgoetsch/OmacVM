@@ -1,7 +1,8 @@
 #!/bin/bash
 # The release script's offline parts: KosmicKrisp from another Mac
 # (app/runtime/import-kosmickrisp.sh) is taken only with a matching stamp and
-# a system-only dylib; release.sh and appcast.sh refuse bad arguments.
+# a system-only dylib; release.sh and appcast.sh refuse bad arguments;
+# sign-app.sh signs every part of an app (ad hoc here).
 # No key, no network, nothing outside a temp folder.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -94,6 +95,37 @@ OMACVM_RELEASE_E2E_OVERRIDE=short expect 1 "e2e: an override without a reason is
 OMACVM_RELEASE_E2E_OVERRIDE="the test Mac is away; checked by hand on the Air" expect 0 "e2e: an override with a reason" rel e2e
 grep -q "checked by hand on the Air" "$G/release/e2e-override.log" && ok "e2e: the override is logged" || bad "e2e: override not logged"
 [[ $(sed -n 's/^E2E=//p' "$G/release/state" | tail -1) == override ]] && ok "e2e: the state says override" || bad "e2e: override state"
+
+# sign-app.sh (build-app.sh's signing, also release.sh's for an app built
+# elsewhere): its arguments, and an ad hoc signing of a stand-in app with every
+# part the real one has (tiny arm64 programs), which then verifies.
+SA=$R/app/scripts/sign-app.sh
+expect 1 "sign-app.sh: no arguments" "$SA"
+expect 1 "sign-app.sh: not an app" "$SA" "$T" org.omacvm.test.signapp
+if command -v cc >/dev/null; then
+  A=$T/sa/Stand-in.app; C=$A/Contents
+  echo 'int main(void) { return 0; }' > "$T/m.c"; cc -arch arm64 -o "$T/m" "$T/m.c"
+  echo 'int f(void) { return 0; }' > "$T/l.c"; cc -arch arm64 -dynamiclib -o "$T/l.dylib" "$T/l.c"
+  bundle() {   # DIR ID EXE TYPE: a bundle with its program and Info.plist
+    mkdir -p "$1/Contents/MacOS"; cp "$T/m" "$1/Contents/MacOS/$3"
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>%s</string><key>CFBundleExecutable</key><string>%s</string><key>CFBundlePackageType</key><string>%s</string></dict></plist>\n' "$2" "$3" "$4" > "$1/Contents/Info.plist"
+  }
+  bundle "$A" org.omacvm.test.signapp OmacVM APPL
+  mkdir -p "$C/Resources/runtime/lib" "$C/Resources/runtime/bin" "$C/Resources/tools" "$C/Resources/python/bin" "$C/Library/LaunchServices" "$C/Helpers" "$C/PlugIns"
+  cp "$T/l.dylib" "$C/Resources/runtime/lib/libstand-in.dylib"
+  for f in runtime/bin/zstd runtime/bin/OmacVM tools/mac-notch python/bin/python3.13; do cp "$T/m" "$C/Resources/$f"; done
+  cp "$T/m" "$C/Library/LaunchServices/org.omacvm.netd"
+  for h in "OmacVM Test Bridge:org.omacvm.test.bridge" "OmacVM Test Gestures:org.omacvm.test.gestures" "Omanotch:ch.gillesgoetsch.omanotch"; do
+    bundle "$C/Helpers/${h%%:*}.app" "${h#*:}" helper APPL; codesign --force --sign - "$C/Helpers/${h%%:*}.app" 2>/dev/null
+  done
+  bundle "$C/PlugIns/OmacVMDockTile.docktileplugin" org.omacvm.test.signapp.docktile OmacVMDockTile BNDL
+  expect 0 "sign-app.sh: ad hoc, every part, verifies" env -u OMACVM_SIGN_ID "$SA" "$A" org.omacvm.test.signapp --test-identity
+  [[ $(codesign -dv "$C/Resources/runtime/bin/OmacVM" 2>&1) == *"Identifier=org.omacvm.test.signapp.qemu"* ]] && ok "sign-app.sh: QEMU's identifier follows the id" || bad "sign-app.sh: QEMU identifier"
+  [[ $(codesign -dv "$A" 2>&1) == *"Identifier=org.omacvm.test.signapp"* ]] && ok "sign-app.sh: the app's identifier is the given id" || bad "sign-app.sh: app identifier"
+  expect 1 "sign-app.sh: without --test-identity the release helpers' names are wanted" env OMACVM_SIGN_ID=- "$SA" "$A" org.omacvm.test.signapp
+else
+  echo "skip the sign-app.sh stand-in (no cc)"
+fi
 
 # appcast.sh ZIP: only an OmacVM-<version>.zip.
 touch "$T/Other.zip"
