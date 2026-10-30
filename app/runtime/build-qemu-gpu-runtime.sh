@@ -1480,7 +1480,8 @@ grep -q 'if (!vkr_image_view_ok(dev->physical_device, args->pCreateInfo, why, si
   die "vkr_image.c, vkr_buffer.c: views are not checked against their image and buffer (view-limits patch)"
 # What else a guest's commands ended QEMU's process with now ends only the app's Venus context
 # (ADR 0065, #624): proc table entries are never NULL (a command of a Vulkan version or extension
-# the app's device lacks reaches a stub), and the asserts a guest reached are refusals.
+# the app's device lacks reaches a stub), the asserts a guest reached are refusals, and buffer
+# binds stay inside their memory.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-missing-entries.patch"
 grep -q 'vkr_device_proc_table_fill_missing(&dev->proc_table);' "$virgl_source/src/venus/vkr_device.c" && \
   grep -q 'vkr_physical_device_init_missing_entries(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" || \
@@ -1496,6 +1497,10 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-guest-assert
 grep -q 'if (!object_array_ids_unique(ctx, count, obj_type, handle_size, obj_id_handles))' "$virgl_source/src/venus/vkr_common.c" && \
   grep -q 'vkr_context_refuse(ctx, true, "vkImportSemaphoreResourceMESA",' "$virgl_source/src/venus/vkr_queue.c" || \
   die "vkr_common.c, vkr_queue.c: guest values still reach vkr's asserts (guest-asserts patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-buffer-binds.patch"
+grep -q 'if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(args->buffer),' "$virgl_source/src/venus/vkr_buffer.c" && \
+  grep -q 'const uint64_t limit = align64(res->memory_size, getpagesize());' "$virgl_source/src/venus/vkr_device_memory.c" || \
+  die "vkr_buffer.c, vkr_device_memory.c: buffer binds are not checked against their memory (buffer-binds patch)"
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
