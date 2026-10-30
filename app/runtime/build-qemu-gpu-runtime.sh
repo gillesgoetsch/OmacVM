@@ -1528,6 +1528,11 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-scan.p
 grep -q 'vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));' "$virgl_source/src/venus/vkr_pipeline.c" && \
   grep -q 'vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c: guest SPIR-V is not scanned (spirv-scan patch)"
+# Copies, blits and resolves name texels inside their images and bytes inside their buffers (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-copy-regions.patch"
+grep -q 'vkr_cmd_buffer_image_ok(args->srcBuffer, args->dstImage, &r2),' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  [[ -s $virgl_source/src/venus/vkr_format_extent.h ]] || \
+  die "vkr_command_buffer.c: copy regions are not checked (copy-regions patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
