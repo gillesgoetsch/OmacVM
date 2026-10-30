@@ -1,6 +1,6 @@
 # 0064: Ghostty draws on Mesa's CPU renderer: it needs OpenGL 4.3, the VM's GPU gives 4.1
 
-Status: accepted, built (`issue-598`, 3.2.13), always on in OmacVM.app VMs
+Status: accepted, built (`issue-598`, 3.2.14), always on in OmacVM.app VMs
 for the program `ghostty` alone. Amends ADR 0063: OmacVM's EGL vendor
 library gets a second job, and for that job it sets an environment variable
 (0063 had none). Reported in #598 (@benoitdepaire). Notes, the
@@ -72,7 +72,7 @@ Option 2a.
 - In a process whose executable (`/proc/self/exe`, worked out once in
   `__egl_Main`) is named `ghostty`, and only there, the library's
   `getProcAddress` hands glvnd a wrapper for `eglInitialize`; every other
-  process gets Mesa's own `eglInitialize`, as in 3.2.12.
+  process gets Mesa's own `eglInitialize`, as before.
 - Mesa picks its driver in `eglInitialize` (it reads
   `LIBGL_ALWAYS_SOFTWARE` there, and the software screen reads
   `GALLIUM_DRIVER` while it is made). The wrapper sets
@@ -87,7 +87,7 @@ Option 2a.
 - No switch and no settings row: it is not opt-in, Ghostty opens no window
   without it. `omacvm check` has a "Ghostty" line when Ghostty is installed:
   ok (on the CPU, the cost, the GPU-drawn terminals) or FAIL (no window: the
-  library is missing or from before 3.2.13).
+  library is missing or from before 3.2.14).
 - Omarchy's screensaver in Ghostty is kept, not left out by its class
   (`org.omarchy.screensaver`): it then runs on the CPU too while it shows.
   Without the change it opened no window at all. Off: Omarchy's

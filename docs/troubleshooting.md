@@ -19,7 +19,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   have SVE, which the M4 does not (fixed in Chrome 155). `omacvm check` warns
   about it ("Google Chrome").
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
-  VM (3.2.13), then log out and in; it then draws on the VM's CPU. Alacritty
+  VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU
   ([47](#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)).
 - **Screenshots or screen sharing of Chrome far too bright in an HDR VM**:
@@ -1377,7 +1377,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   you picked) opens no window. Started from a terminal with
   `GHOSTTY_LOG=stderr ghostty` it says "loaded OpenGL 4.1", "OpenGL version
   is too old. Ghostty requires OpenGL 4.3" and "error.OpenGLOutdated"
-  (3.2.12 and older). From 3.2.13 Ghostty opens, and `omacvm check` says
+  (3.2.13 and older). From 3.2.14 Ghostty opens, and `omacvm check` says
   "Ghostty: draws on the VM's CPU".
 - **Cause:** OpenGL in an OmacVM.app VM is virgl on the Mac's OpenGL, which
   macOS stops at 4.1 (in both Graphics modes: Vulkan adds Venus beside it). Ghostty 1.2 and newer need 4.3
@@ -1386,7 +1386,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   configuration available"), and with a forced 4.3 it stopped the whole VM
   (QEMU aborts in the Mac's Metal driver, unsaved work in the VM is lost):
   don't start apps with `MESA_LOADER_DRIVER_OVERRIDE=zink`.
-- **Fix:** Update VM (3.2.13). Ghostty alone then draws with Mesa's CPU
+- **Fix:** Update VM (3.2.14). Ghostty alone then draws with Mesa's CPU
   renderer (llvmpipe, OpenGL 4.6); the programs started inside it keep the
   Mac's GPU. Then log out and in, or
   `systemctl --user stop app-com.mitchellh.ghostty.service`: a Ghostty
@@ -1400,7 +1400,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   that draw on the Mac's GPU in the VM: Alacritty and Kitty (Install >
   Terminal); Omarchy's default foot draws on the CPU by design and costs
   little (Setup > Defaults > Terminal, or `omarchy-default-terminal foot`).
-  Before 3.2.13, and on UTM, Fusion or Parallels (not measured there):
+  Before 3.2.14, and on UTM, Fusion or Parallels (not measured there):
   `LIBGL_ALWAYS_SOFTWARE=1 ghostty`, set for Ghostty only, not for the whole
   session (GL programs started from that Ghostty's shell draw on the CPU too;
   Chromium drops the variable). A driver set by hand (`LIBGL_ALWAYS_SOFTWARE`,
