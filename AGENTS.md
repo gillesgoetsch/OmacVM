@@ -804,8 +804,9 @@ The less obvious ones, with causes and where the fix lives, are in
   `-hwaccel videotoolbox` the same), and the software decoder VideoToolbox
   takes instead drops every picture after a format change and has the colours
   wrong at 1080 lines (M4, macOS 27). The VA shim refuses such pictures;
-  `omacvm-vdecd` fails a video after 3 of them, so Chromium decodes it on
-  the CPU (it waits for a picture with no error otherwise).
+  `omacvm-vdecd` fails a video after 3 of them before its first picture, so
+  Chromium decodes it on the CPU (it waits for a picture with no error
+  otherwise).
 - Do not look for a video's visible size in VA-API: decoding has no crop, and
   apps send only slice NAL units, never an SPS. Do not guess it (1088 -> 1080
   is wrong for real 1088-row videos), fix it on the Mac alone (the size never
