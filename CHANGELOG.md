@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15 (unreleased)
+
+- **Chrome draws again by itself after it lost its graphics (reported by the user).** When macOS
+  ran short of memory (or the apps' share of graphics memory was full), an app's GPU context on the
+  Mac was cut off so the desktop could keep drawing. The VM's graphics driver cannot tell the app,
+  so Chrome kept drawing into the lost context: its windows went blank or flickered until it was
+  quit, and the VM looked broken enough to restart (a Mac mini with 16 GB, Chrome at 5K). Now the VM
+  ends the lost app's GPU process, and Chrome, Chromium and Electron apps start a new one within
+  seconds; open tabs stay, pages with WebGL may need a reload. At most once per app in 6 minutes and
+  3 times in an hour, as Chrome counts each as a crash and turns its GPU off after 3 in a short
+  time; the note in the VM says what happened. Other apps get the note, as before. Needs Update VM.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver

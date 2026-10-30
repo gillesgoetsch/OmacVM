@@ -1376,7 +1376,8 @@ of 6 GB; 16 GB: 11 of 12 GB; 64 GB: 46 of 48 GB). An app past that share,
 or an app that wants a big new buffer while macOS is short of memory, loses
 its own GPU context; the desktop goes on into its part (macOS's pressure
 does not hold the desktop back, only the guard) and keeps drawing. The VM
-shows a note: "chromium stopped drawing", and why. On a MacBook Air with
+shows a note ("chromium's graphics were restarted", or "firefox stopped
+drawing") and why. On a MacBook Air with
 8 GB a browser with big WebGL pages reached the guard while macOS still
 said normal, and before this the next buffer refused was often Hyprland's
 (a black VM). `OMACVM_GPU_MEMORY_RESERVE_MB` sets the desktop's part (0:
@@ -1384,9 +1385,20 @@ none) and `OMACVM_GPU_MEMORY_DESKTOP` its contexts (comma-separated
 process names; for tests).
 
 **When a buffer is refused**, the app that wanted it loses its GPU context
-(the VM's graphics driver cannot hand back an "out of memory" for it). A
-browser starts its GPU process again. Hyprland cannot: the VM's Mesa does
-not report a lost context, and Hyprland 0.56, when told, stops ("Cannot
+(the VM's graphics driver cannot hand back an "out of memory" for it), and
+the VM's Mesa cannot tell the app: Chrome kept drawing into the lost
+context, blank or flickering, until it was quit (3.2.14 and older). From
+3.2.15 the VM ends the GPU process of an app that has one (Chrome,
+Chromium, Electron apps such as VS Code), and the app starts a new one
+within seconds: its windows draw again, open tabs stay, pages with WebGL
+may need a reload. At most once per app in 6 minutes and 3 times in an
+hour, because Chrome counts each as a crash and draws without the GPU for
+the rest of its session after 3 recent ones. Lost again within that time,
+the note says to quit the app and open it again. Other apps (Firefox, mpv)
+draw nothing until they are restarted. `journalctl -t
+omacvm-desktop-recover` in the VM says what was ended (ADR 0038). Hyprland
+cannot get a new context that way: the VM's Mesa does not report a lost
+context, and Hyprland 0.56, when told, stops ("Cannot
 continue until proper GPU reset handling is implemented"). So the app tells
 the VM through its guest agent, and the VM's `omacvm-desktop-recover`
 restarts the desktop session by itself, a few seconds after the loss (on
