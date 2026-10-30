@@ -329,7 +329,7 @@ rm -r "$PDB/hyprland-0.58.0-2"; pkg hyprland "$LAST-9"
 mkbin 's/^#ifndef ALLOW_INCLUDES$/#ifndef ALLOW_INCLUDES /' "$LAST"
 expect "a known release, another build: says which file" \
   test "$(why)" = "no OmacVM fix for this build of Hyprland $LAST-9 (its cm_helpers.glsl is not the one OmacVM's $LAST fix is made for)"
-mkbin "" "$LAST"
+mkbin "" "$LAST"; run >/dev/null
 expect "that release's own build: ok again" test "$(status)" = ok
 # #630's reporter: Hyprland 0.57.0-2 with only the 0.56.2 folder said "0.56.2: not built from commit efb50993"
 rm -r "$PDB/hyprland-$LAST-9"; pkg hyprland 0.57.0-2; mkbin "" 0.57.0
