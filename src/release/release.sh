@@ -40,6 +40,8 @@
 # OMACVM_RELEASE_TITLE, OMACVM_KOSMICKRISP_FROM (KosmicKrisp built on a Mac
 # that can: app/runtime/import-kosmickrisp.sh), OMACVM_RELEASE_RUNTIME_FROM (a runtime/.build to
 # start from; build-app.sh rebuilds it unless its inputs match),
+# OMACVM_RELEASE_APP_FROM (a folder with OmacVM.app built at M on a Mac
+# without the keys, and its build.log: checked and signed here, not built),
 # OMACVM_RELEASE_IMAGE_FROM (a folder with a signed image of this version:
 # used instead of building one), OMACVM_RELEASE_UNNOTARIZED=1 (release
 # without notarization, as 2.x), OMACVM_RELEASE_FROM (dry run only: the
@@ -220,6 +222,36 @@ step_merge() {
   note "M = $m"
 }
 
+# OMACVM_RELEASE_APP_FROM=DIR: OmacVM.app put together at M on another Mac (one
+# without the keys), unsigned or ad hoc, with that build's log (DIR/OmacVM.app,
+# DIR/build.log). Checked against M here (id, commit, version, its omacvm file by
+# file against git archive), then signed with M's own sign-app.sh. Nothing from
+# that Mac runs here.
+app_from() {   # DIR M
+  local from=$1 m=$2 p t
+  [[ -d $from/OmacVM.app/Contents && -f $from/build.log ]] || die "OMACVM_RELEASE_APP_FROM: no OmacVM.app or build.log in $from"
+  p=$from/OmacVM.app/Contents/Info.plist
+  [[ $(/usr/libexec/PlistBuddy -c "Print OmacVMCommit" "$p") == "$m" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not M"
+  [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$p") == "$VERSION" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not $VERSION"
+  [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$p") == org.omacvm.app ]] || die "OMACVM_RELEASE_APP_FROM: the app is not org.omacvm.app"
+  t=$(mktemp -d "${TMPDIR:-/tmp}/app-from.XXXXXX")
+  git -C "$WT" archive "$m" omacvm src CHANGELOG.md | tar -x -C "$t"
+  echo "$m" > "$t/COMMIT"; chmod -R go-w "$t"
+  omacvm_tree() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r f; do
+    if [[ -L $f ]]; then echo "l $(stat -f %Lp "$f") $f -> $(readlink "$f")"
+    elif [[ -d $f ]]; then echo "d $(stat -f %Lp "$f") $f"
+    else echo "f $(stat -f %Lp "$f") $(shasum -a 256 < "$f" | cut -d' ' -f1) $f"; fi; done); }
+  if [[ $(omacvm_tree "$t") != "$(omacvm_tree "$from/OmacVM.app/Contents/Resources/omacvm")" ]]; then
+    rm -rf "$t"; die "OMACVM_RELEASE_APP_FROM: its omacvm is not git archive M"
+  fi
+  rm -rf "$t"
+  rm -rf "$APP"; mkdir -p "$(dirname "$APP")"
+  ditto "$from/OmacVM.app" "$APP"
+  cp "$from/build.log" "$OUT/build.log"
+  note "app from $from (built elsewhere at M; its omacvm = git archive M); signing it here"
+  (cd "$WT" && app/scripts/sign-app.sh "$APP" org.omacvm.app) >> "$OUT/build.log" 2>&1 || die "signing failed: $OUT/build.log"
+}
+
 step_build() {
   local m; m=$(get M); [[ -n $m && -d $WT ]] || die "no M or no $WT: run bump/merge first"
   [[ $(git -C "$WT" rev-parse HEAD) == "$m" ]] || die "$WT is not at M"
@@ -230,7 +262,11 @@ step_build() {
     note "runtime from $OMACVM_RELEASE_RUNTIME_FROM (build-app.sh rebuilds it unless its inputs match)"
   fi
   [[ -n ${OMACVM_SIGN_ID:-} ]] || die "OMACVM_SIGN_ID is not set"
-  (cd "$WT" && app/scripts/build-app.sh --release) > "$OUT/build.log" 2>&1 || die "build failed: $OUT/build.log"
+  if [[ -n ${OMACVM_RELEASE_APP_FROM:-} ]]; then
+    app_from "$OMACVM_RELEASE_APP_FROM" "$m"
+  else
+    (cd "$WT" && app/scripts/build-app.sh --release) > "$OUT/build.log" 2>&1 || die "build failed: $OUT/build.log"
+  fi
   grep -qw FAIL "$OUT/build.log" && die "a build test failed: grep -n FAIL $OUT/build.log"
   local p=$APP/Contents/Info.plist
   [[ $(/usr/libexec/PlistBuddy -c "Print OmacVMCommit" "$p") == "$m" ]] || die "OmacVMCommit is not M"
