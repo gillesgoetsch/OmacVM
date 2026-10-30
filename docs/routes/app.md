@@ -1388,12 +1388,12 @@ process names; for tests).
 (the VM's graphics driver cannot hand back an "out of memory" for it), and
 the VM's Mesa cannot tell the app: Chrome kept drawing into the lost
 context, blank or flickering, until it was quit (3.2.14 and older). From
-3.2.15 the VM ends the GPU process of an app that has one (Chrome,
-Chromium, Electron apps such as VS Code), and the app starts a new one
-within seconds: its windows draw again, open tabs stay, pages with WebGL
-may need a reload. At most once per app in 6 minutes and 3 times in an
-hour, because Chrome counts each as a crash and draws without the GPU for
-the rest of its session after 3 recent ones. Lost again within that time,
+3.2.15 the VM ends the GPU process of an app that has one, and Chrome or
+Chromium starts a new one within seconds: its windows draw again, open tabs
+stay, pages with WebGL may need a reload (other Chromium-based apps such as
+Electron's have the same GPU process; not measured). At most once per app
+in 6 minutes and 3 times in an hour, because Chrome counts each as a crash
+and draws without the GPU for the rest of its session after 3 recent ones. Lost again within that time,
 the note says to quit the app and open it again. Other apps (Firefox, mpv)
 draw nothing until they are restarted. `journalctl -t
 omacvm-desktop-recover` in the VM says what was ended (ADR 0038). Hyprland

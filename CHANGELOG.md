@@ -10,8 +10,9 @@ in more words.
   Mac was cut off so the desktop could keep drawing. The VM's graphics driver cannot tell the app,
   so Chrome kept drawing into the lost context: its windows went blank or flickered until it was
   quit, and the VM looked broken enough to restart (a Mac mini with 16 GB, Chrome at 5K). Now the VM
-  ends the lost app's GPU process, and Chrome, Chromium and Electron apps start a new one within
-  seconds; open tabs stay, pages with WebGL may need a reload. At most once per app in 6 minutes and
+  ends the lost app's GPU process, and Chrome and Chromium start a new one within seconds; open tabs
+  stay, pages with WebGL may need a reload (other Chromium-based apps such as Electron's have the
+  same GPU process; not measured). At most once per app in 6 minutes and
   3 times in an hour, as Chrome counts each as a crash and turns its GPU off after 3 in a short
   time; the note in the VM says what happened. Other apps get the note, as before. Needs Update VM.
 

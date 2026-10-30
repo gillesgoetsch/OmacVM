@@ -1,8 +1,8 @@
 # 0038: The desktop restarts by itself after a lost GPU context
 
 Status: accepted, built (`gpu-auto-recovery`, 3.0.1); amended in 3.2.15 (a
-lost Chromium or Electron app gets a new GPU process: see the end). Builds on
-0034 (the GPU memory budget, which also names every lost context).
+lost Chrome or Chromium gets a new GPU process: see the end). Builds on 0034
+(the GPU memory budget, which also names every lost context).
 
 ## Context
 
@@ -75,7 +75,7 @@ Nothing in the VM learns of the loss by itself:
 - Real GPU reset handling inside Hyprland (keeping the apps) would need
   Hyprland and a reset-reporting Mesa; neither exists today.
 
-## Amendment: a lost Chromium or Electron app gets a new GPU process (3.2.15)
+## Amendment: a lost Chrome or Chromium gets a new GPU process (3.2.15)
 
 "A browser restarts its GPU process itself" was wrong. The VM's Mesa does
 not tell Chrome about the loss, so Chrome keeps drawing into the lost
@@ -89,15 +89,17 @@ Decision: for an app lost to the guard or to macOS's pressure, the app
 already runs `omacvm-desktop-recover app NAME guard|pressure` (once a
 minute per app at most). That now ends the app's GPU process: a process of
 the desktop user whose name (`/proc/PID/comm`) is exactly NAME and that has
-the word `--type=gpu-process` on its command line (split at NUL and at
-spaces: Chromium joins its arguments with spaces in its process title). The
-guest kernel names a context after the process that made it, and Chrome's
-GPU main thread keeps the process name, so QEMU's "context 20 (chrome)" is
-that process. Chromium, Chrome and Electron apps start a new GPU process by
-themselves; open tabs stay; the lost context's memory comes back on the Mac
-when the old process is gone. Apps without a GPU process (Firefox, mpv, a
-terminal) get the note only, as before; desktop and shell names are never
-acted on, and nothing is matched as a pattern.
+the argument `--type=gpu-process`: exactly that argument, or that word in a
+command line of one string (Chromium's GPU process sets its process title,
+its arguments joined with spaces). The guest kernel names a context after
+the process that made it, and Chrome's GPU main thread keeps the process
+name, so QEMU's "context 20 (chrome)" is that process. Chrome and Chromium
+start a new GPU process by themselves (measured below); other
+Chromium-based apps (Electron's, such as VS Code) have the same GPU process
+and should too (not measured). Open tabs stay; the lost context's memory
+comes back on the Mac when the old process is gone. Apps without a GPU
+process (Firefox, mpv, a terminal) get the note only, as before; desktop and
+shell names are never acted on, and nothing is matched as a pattern.
 
 - At most once per app in 6 minutes and 3 times in an hour. Chrome counts
   an ended GPU process as a crash, and after 3 recent ones it falls back to
@@ -131,7 +133,9 @@ The user's step by hand (`pkill -f -- 'chrome --type=gpu-process'`) brought
 the old Chrome back 1.3 s after it. Restarted while QEMU still saw critical
 (3.2.14's runtime), the new GPU process was lost again at once, and the app
 did not tell the VM again within its minute: Chrome stayed blank, which is
-why the runtime change at critical ships with this. After two ends in 95 s
+why the runtime change at critical ships with this. The step by hand while
+critical held did the same: its new GPU process was lost again at once.
+After two ends in 95 s
 (that restart, then one by hand) Chrome still drew with the GPU, but the
 WebGL page's context stayed lost (Chrome blocks WebGL on a page after GPU
 process crashes): the note's "may need a reload".
