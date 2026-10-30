@@ -1531,7 +1531,9 @@ buffers for apps (above). The VM's General › Resources says so under the
 memory in orange, with the last run's graphics peak, `omacvm resources`
 says it as a `Warning:` line (and `"warning"` in `--json`) when it sets or
 only reads such a value, and `omacvm check`'s "Activity Monitor" row is a
-warning then. Nothing lowers the setting by itself. The graphics stay
+warning then (after a lower setting, until the VM starts again, it adds
+"8 GB is set (applies at the next start)"). Nothing lowers the setting by
+itself. The graphics stay
 outside the setting, and the runaway guard stays at three quarters of the
 Mac whatever the VM's memory (ADR 0034; one sized from the VM's memory
 would stop Chrome at about 3 GB of graphics on a 16 GB Mac with an 8 GB VM,

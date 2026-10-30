@@ -45,6 +45,10 @@ printf 'in_use_mb=3328\npeak_mb=3687\nbudget_mb=12288\npressure=warn\n' > "$V/lo
 expect "the mini at 10 GB: what the number is made of, and the warning above the Best tier" \
   "WARN Activity Monitor: 19.3 GB for the VM: VM memory at most 10.0 GB, graphics 3.2 GB now, the rest 6.0 GB $REST; 10 GB and the VM's graphics on top leave macOS too little of this Mac's 16 GB: the Mac can slow down or swap, and apps in the VM can lose their graphics. 8 GB is this Mac's Best tier: omacvm resources --vm \"Omarchy\" --resources best" \
   "$(amrow "$V")"
+VMM=8192
+expect "lowered to the Best tier while the VM runs at 10 GB: the warning says the new setting applies at the next start" \
+  "WARN Activity Monitor: 19.3 GB for the VM: VM memory at most 10.0 GB, graphics 3.2 GB now, the rest 6.0 GB $REST; 10 GB and the VM's graphics on top leave macOS too little of this Mac's 16 GB: the Mac can slow down or swap, and apps in the VM can lose their graphics. 8 GB is this Mac's Best tier: omacvm resources --vm \"Omarchy\" --resources best; 8 GB is set (applies at the next start)" \
+  "$(amrow "$V")"
 ARGS="OmacVM-VM -name Omarchy -m 8192M -smp 10" FP=11000 VMM=8192
 printf 'in_use_mb=2186\npeak_mb=2510\n' > "$V/logs/gpu-memory"
 expect "at the Best tier (8 GB on 16): ok, no warning" \

@@ -504,6 +504,12 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
       (( am_rest > 0 )) && what="$what, the rest $(gb "$am_rest") (QEMU itself, graphics overhead and pages macOS counts twice while it compresses the VM)"
       mac_specs
       am_warn=$(mem_warning app "$am_vm" "$VM")
+      # A memory set while the VM runs (vm.env, e.g. lowered to Best) is not in
+      # effect yet: say so, or the warning reads as if nothing was done.
+      if [[ -n $am_warn && $vmm =~ ^[0-9]{1,8}$ && $vmm != "$am_vm" ]]; then
+        if (( vmm % 1024 )); then am_warn="$am_warn; $vmm MB is set (applies at the next start)"
+        else am_warn="$am_warn; $(( vmm / 1024 )) GB is set (applies at the next start)"; fi
+      fi
       if [[ -n $am_warn ]]; then warn "Activity Monitor" "$what; $am_warn"
       else ok "Activity Monitor" "$what"; fi
     fi
