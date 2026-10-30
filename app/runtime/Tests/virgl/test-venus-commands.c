@@ -1698,6 +1698,51 @@ static void bind_sets(void *cmd, void *layout, uint32_t first, void **sets, uint
    D->dispatch_vkCmdBindDescriptorSets(D, &b);
 }
 
+/* everything the world's pipelines use, bound (a draw or dispatch without it is invalid
+ * usage: MoltenVK reads the unset state when it encodes) */
+static void ready(void *cmd, struct world *w, VkPipelineBindPoint point)
+{
+   VkDescriptorBufferInfo ubo = { (VkBuffer)w->buf, 0, 256 }, ssbo = { (VkBuffer)w->buf, 256, 256 },
+                          dyn = { (VkBuffer)w->buf, 512, 256 };
+   VkDescriptorImageInfo cis = { (VkSampler)w->smp, (VkImageView)w->iv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+   VkWriteDescriptorSet wr[4] = {
+      { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = (VkDescriptorSet)w->set, .dstBinding = 0,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &ubo },
+      { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = (VkDescriptorSet)w->set, .dstBinding = 1,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &cis },
+      { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = (VkDescriptorSet)w->set, .dstBinding = 2,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &ssbo },
+      { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = (VkDescriptorSet)w->set, .dstBinding = 3,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, .pBufferInfo = &dyn } };
+   struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 4, .pDescriptorWrites = wr };
+   step("vkUpdateDescriptorSets (the world's set)");
+   D->dispatch_vkUpdateDescriptorSets(D, &u);
+   VkDescriptorSet set = (VkDescriptorSet)w->set;
+   const uint32_t off = 0;
+   struct vn_command_vkCmdBindDescriptorSets b = { .commandBuffer = (VkCommandBuffer)cmd, .pipelineBindPoint = point,
+                                                   .layout = (VkPipelineLayout)w->layout, .descriptorSetCount = 1,
+                                                   .pDescriptorSets = &set, .dynamicOffsetCount = 1,
+                                                   .pDynamicOffsets = &off };
+   step("vkCmdBindDescriptorSets (the world's set)");
+   D->dispatch_vkCmdBindDescriptorSets(D, &b);
+   static uint8_t data[128];
+   struct vn_command_vkCmdPushConstants p = { .commandBuffer = (VkCommandBuffer)cmd,
+                                              .layout = (VkPipelineLayout)w->layout,
+                                              .stageFlags = VK_SHADER_STAGE_ALL, .size = 128, .pValues = data };
+   D->dispatch_vkCmdPushConstants(D, &p);
+   if (point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+      VkBuffer vb = (VkBuffer)w->buf;
+      VkDeviceSize vo = 0;
+      struct vn_command_vkCmdBindVertexBuffers v = { .commandBuffer = (VkCommandBuffer)cmd, .bindingCount = 1,
+                                                     .pBuffers = &vb, .pOffsets = &vo };
+      D->dispatch_vkCmdBindVertexBuffers(D, &v);
+      VkViewport vp = { 0, 0, 64, 64, 0, 1 };
+      struct vn_command_vkCmdSetViewport sv = { .commandBuffer = (VkCommandBuffer)cmd, .viewportCount = 1,
+                                                .pViewports = &vp };
+      D->dispatch_vkCmdSetViewport(D, &sv);
+   }
+}
+
 static int sets_case(const char *c, struct world *w)
 {
    static uint32_t offs[4096];
@@ -1872,8 +1917,7 @@ static int case_command(const char *c)
 
    if (IS("c-ok")) {
       bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
-      struct vn_command_vkCmdSetViewport v = { .commandBuffer = cb, .viewportCount = 1, .pViewports = vps };
-      D->dispatch_vkCmdSetViewport(D, &v);
+      ready(cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
       struct vn_command_vkCmdDraw d = { .commandBuffer = cb, .vertexCount = 3, .instanceCount = 1 };
       step("vkCmdDraw");
       D->dispatch_vkCmdDraw(D, &d);
@@ -2089,6 +2133,7 @@ static int case_command(const char *c)
       }
    } else if (!strncmp(c, "c-draw-indirect", 15)) {
       bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
+      ready(cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
       struct vn_command_vkCmdDrawIndirect d = { .commandBuffer = cb, .buffer = (VkBuffer)w.buf,
                                                 .offset = IS("c-draw-indirect-ok") ? 65536 - 16 : 1 << 20,
                                                 .drawCount = 1, .stride = 16 };
@@ -2096,6 +2141,7 @@ static int case_command(const char *c)
       D->dispatch_vkCmdDrawIndirect(D, &d);
    } else if (!strncmp(c, "c-drawmulti", 11)) {
       bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
+      ready(cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
       /* the decoder packs the array: 64 entries back to back, a guard page after them */
       VkMultiDrawInfoEXT *infos = guarded(64 * sizeof(VkMultiDrawInfoEXT));
       for (int i = 0; i < 64; i++)
@@ -2112,6 +2158,7 @@ static int case_command(const char *c)
       D->dispatch_vkCmdDrawMultiEXT(D, &d);
    } else if (!strncmp(c, "c-dispatch", 10)) {
       bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, w.comp_pipe);
+      ready(cmd, &w, VK_PIPELINE_BIND_POINT_COMPUTE);
       if (IS("c-dispatch-indirect-past")) {
          struct vn_command_vkCmdDispatchIndirect d = { .commandBuffer = cb, .buffer = (VkBuffer)w.buf,
                                                        .offset = 1 << 20 };
@@ -2451,6 +2498,7 @@ static int time_commands(int n)
    us[3] = since(&t0) / n;
    begin_pass(w.cmd, w.rp, w.fb, 64, 64);
    bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
+   ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (int i = 0; i < n; i++) {
       struct vn_command_vkCmdDraw d = { .commandBuffer = cb, .vertexCount = 3, .instanceCount = 1 };
