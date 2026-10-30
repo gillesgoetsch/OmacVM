@@ -19,7 +19,11 @@ source "$here/../../guest/home-files.sh"   # the home is written as the user
 L=/usr/local/lib/omacvm/fusion
 install -d -o root -g root -m755 "$L"
 install -o root -g root -m755 "$here/build-hyprland.sh" "$L/"
-install -o root -g root -m644 "$here/hyprland-vmwgfx-dmabuf.patch" "$L/"
+# One vmwgfx patch per Hyprland release (before 3.2.15 one file beside the script).
+rm -f "$L/hyprland-vmwgfx-dmabuf.patch"
+install -d -o root -g root -m755 "$L/hyprland-vmwgfx"
+rm -f "$L"/hyprland-vmwgfx/*.patch
+install -o root -g root -m644 "$here"/hyprland-vmwgfx/*.patch "$L/hyprland-vmwgfx/"
 
 # Hyprland with the vmwgfx fix, now and after every hyprland upgrade. The hook
 # cannot install packages (pacman's database is locked), so the build tools stay.

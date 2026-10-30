@@ -254,9 +254,16 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   - as the desktop user, only the install step runs as root;
   - the package's own binary stays as `/usr/bin/Hyprland.stock`;
   - a pacman hook builds it again after every Hyprland update (10 to 20
-    minutes, inside `omarchy update`).
+    minutes, inside `omarchy update`);
+  - one copy of the patch per Hyprland release (0.56.2, 0.57.0: the same
+    change; the lines around it moved), the one that applies is used. For a
+    Hyprland none applies to yet, the build says "no vmwgfx fix for Hyprland
+    <version> yet" and the rest of the apply or update goes on, but the
+    package's own Hyprland stays: a black screen from the next login.
+    `omacvm check`'s "Hyprland" line names the version; `omacvm update` brings
+    the patch once OmacVM has one.
 - **Where:** `src/fusion/guest/build-hyprland.sh`,
-  `src/fusion/guest/hyprland-vmwgfx-dmabuf.patch`, the hook
+  `src/fusion/guest/hyprland-vmwgfx/<release>.patch`, the hook
   `/etc/pacman.d/hooks/zz-omacvm-hyprland.hook` written by
   `src/fusion/guest/install.sh`. In the VM: state in
   `/var/lib/omacvm/hyprland-vmwgfx`, log in

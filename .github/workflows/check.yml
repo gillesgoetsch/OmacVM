@@ -854,6 +854,9 @@ jobs:
           sudo apt-get install -yq --no-install-recommends glslang-tools
           OMACVM_HC_STRICT=1 src/tests/hypr-capture.sh
 
+      - name: VMware Fusion's vmwgfx fix, one patch per Hyprland release (each applies to its tag; none fits a newer one, and the apply goes on and says so)
+        run: OMACVM_FUSION_STRICT=1 src/tests/fusion-vmwgfx.sh
+
       - name: Chromium's video decoder builds, and waits for a GPU that is not usable (no render node here)
         run: |
           sudo apt-get update -q

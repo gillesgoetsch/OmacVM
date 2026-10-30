@@ -16,6 +16,15 @@ in more words.
   "no OmacVM fix for Hyprland 0.58.0-1 yet (OmacVM has fixes for 0.56.2 and 0.57.0)". Needs Update
   VM or `omacvm update`; a running desktop takes it at once.
 
+- **VMware Fusion keeps its graphics fix with Hyprland 0.57.** OmacVM's Hyprland patch for Fusion's
+  graphics driver (vmwgfx) did not apply to Hyprland 0.57.0 (the code around it moved), so the
+  rebuild after a Hyprland update stopped, `omacvm apply` failed, and the VM was left with stock
+  Hyprland: a black screen at the next login. OmacVM now carries the patch for each Hyprland
+  release (0.56.2, 0.57.0) and builds with the one that applies. For a newer Hyprland it has no
+  patch for yet, the update and `omacvm apply` go on and say "no vmwgfx fix for Hyprland <version>
+  yet", and `omacvm check` names the version; `omacvm update` brings the patch once there is one.
+  Needs `omacvm update` before Omarchy stable moves to 0.57.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver

@@ -1,0 +1,61 @@
+Hyprland: release vmwgfx's TTM surface handles when GEM_CLOSE fails.
+
+vmwgfx (VMware's guest GPU driver) prime-imports surface-backed dmabufs as TTM
+handles, not GEM handles, so drmCloseBufferHandle() fails with EINVAL, Hyprland
+rejects the buffer and every GPU client dies with "invalid arguments for
+wl_surface.attach". DRM_VMW_UNREF_SURFACE releases such a handle.
+
+By Pascal-0x90, from https://github.com/hyprwm/Hyprland/discussions/12966
+(2026-08-31), moved onto Hyprland 0.57.0's LinuxDMABUF.cpp (the same change; only
+the lines around it moved). Applies to Hyprland 0.57.0.
+
+--- a/src/protocols/LinuxDMABUF.cpp
++++ b/src/protocols/LinuxDMABUF.cpp
+@@ -5,6 +5,7 @@
+ #include "../helpers/MiscFunctions.hpp"
+ #include "../helpers/Format.hpp"
+ #include <sys/mman.h>
++#include <cstring>
+ #include <xf86drm.h>
+ #include <fcntl.h>
+ #include <sys/stat.h>
+@@ -270,6 +271,30 @@
+     m_createdBuffer = buf;
+ }
+ 
++#define DRM_VMW_UNREF_SURFACE 10
++
++struct drmVmwSurfaceArg {
++    int32_t  sid;
++    uint32_t handleType;
++};
++
++// vmwgfx prime-imports surface-backed dmabufs as TTM handles, not GEM, so
++// GEM_CLOSE fails with EINVAL; close them via DRM_VMW_UNREF_SURFACE instead.
++static int closeVmwGFXHandle(int fd, uint32_t handle) {
++    bool          isVmwgfx;
++    drmVersionPtr version;
++
++    version  = drmGetVersion(fd);
++    isVmwgfx = version && version->name && strncmp(version->name, "vmwgfx", version->name_len) == 0;
++    if (version)
++        drmFreeVersion(version);
++    if (!isVmwgfx)
++        return -1;
++
++    struct drmVmwSurfaceArg arg = {(int32_t)handle, 0};
++    return drmCommandWrite(fd, DRM_VMW_UNREF_SURFACE, &arg, sizeof(arg));
++}
++
+ bool CLinuxDMABUFParamsResource::commence() {
+     if (!PROTO::linuxDma->m_mainDeviceFD.isValid())
+         return true;
+@@ -282,7 +307,7 @@
+             return false;
+         }
+ 
+-        if (drmCloseBufferHandle(PROTO::linuxDma->m_mainDeviceFD.get(), handle)) {
++        if (drmCloseBufferHandle(PROTO::linuxDma->m_mainDeviceFD.get(), handle) != 0 && closeVmwGFXHandle(PROTO::linuxDma->m_mainDeviceFD.get(), handle) != 0) {
+             LOG(Log::ERR, "Failed to close dmabuf handle");
+             return false;
+         }

@@ -16,7 +16,7 @@ in the image with its version and licence.
 | Arch Linux ARM packages (kernel `linux-aarch64`, base system, everything installed with pacman) | each package's own: GPL, LGPL, MIT, BSD and others (see the package list) | https://archlinuxarm.org (package sources: https://github.com/archlinuxarm/PKGBUILDs, upstream sources linked from each PKGBUILD; Arch Linux's own: https://gitlab.archlinux.org/archlinux/packaging/packages) |
 | Omarchy for Macs (omarchy-mac) and the packages of its ARM repository (Hyprland stack) | MIT (Omarchy), BSD-3-Clause (Hyprland) and others | https://github.com/omacom/omarchy-mac, https://github.com/basecamp/omarchy, https://github.com/hyprwm |
 | OmacVM's guest side (`/usr/local/share/omacvm`) | MIT | https://github.com/gillesgoetsch/omacvm |
-| VMware Fusion image only: Hyprland rebuilt with OmacVM's vmwgfx patch | BSD-3-Clause | Hyprland's source from the Omarchy repository + `src/fusion/guest/hyprland-vmwgfx-dmabuf.patch` in OmacVM |
+| VMware Fusion image only: Hyprland rebuilt with OmacVM's vmwgfx patch | BSD-3-Clause | Hyprland's source from the Omarchy repository + `src/fusion/guest/hyprland-vmwgfx/<release>.patch` in OmacVM |
 | VMware Fusion image only: open-vm-tools, built from Arch Linux's recipe | LGPL-2.1 / GPL-2.0 | https://github.com/vmware/open-vm-tools, https://gitlab.archlinux.org/archlinux/packaging/packages/open-vm-tools |
 | UTM image only: spice-vdagent, qemu-guest-agent (Arch Linux ARM packages) | GPL | see Arch Linux ARM above |
 
