@@ -67,12 +67,20 @@ mac_specs() {
   mac_mem_gb=$(( $(sysctl -n hw.memsize) / 1073741824 ))
 }
 
-# tier_values INDEX -> sets T_CPUS and T_MEM (GB), within CAP_CPUS / CAP_MEM_GB.
-# Memory "Best" leaves macOS and the GPU (unified memory) max(8 GB, a quarter).
-tier_values() {
-  local m=$mac_mem_gb best_mem reserve
+# tier_best_mem -> the Best tier's memory in GB on this Mac (mac_mem_gb): it
+# leaves macOS and the GPU (unified memory) max(8 GB, a quarter). OmacVM.app's
+# ResourceLimits.safeMemoryGB is the same rule.
+tier_best_mem() {
+  local m=$mac_mem_gb reserve
   reserve=$(( m / 4 > 8 ? m / 4 : 8 ))
-  best_mem=$(( m - reserve > 4 ? m - reserve : 4 ))
+  echo $(( m - reserve > 4 ? m - reserve : 4 ))
+}
+
+# tier_values INDEX -> sets T_CPUS and T_MEM (GB), within CAP_CPUS / CAP_MEM_GB.
+# Memory "Best" is tier_best_mem.
+tier_values() {
+  local m=$mac_mem_gb best_mem
+  best_mem=$(tier_best_mem)
   case $1 in
     0) T_CPUS=$(( mac_perf / 2 > 2 ? mac_perf / 2 : 2 )); T_MEM=$(( m / 4 > 4 ? m / 4 : 4 )) ;;
     1) T_CPUS=$mac_perf; T_MEM=$(( m / 2 )) ;;
@@ -87,6 +95,29 @@ tier_values() {
 }
 
 tier_info() { tier_values "$1"; printf '%s CPUs, %s GB memory' "$T_CPUS" "$T_MEM"; }
+
+# mem_warning TYPE MEMORY_MB VM [GRAPHICS_PEAK_MB]: what a VM memory above this
+# Mac's Best tier means, one line (nothing at or below it). As OmacVM.app's
+# warning (ResourceLimits.warning): OmacVM.app and UTM take the VM's graphics
+# from the Mac on top of its memory (UTM with no limit; OmacVM.app's last run
+# peaked at GRAPHICS_PEAK_MB, from logs/gpu-memory); VMware Fusion takes its
+# graphics memory out of the VM's, Parallels does not say: no graphics words.
+# Only says so: the setting stays the person's.
+mem_warning() {
+  local best mem peak=""
+  best=$(tier_best_mem)
+  [[ $2 =~ ^[0-9]+$ ]] && (( $2 > best * 1024 )) || return 0
+  if (( $2 % 1024 )); then mem="$2 MB"; else mem="$(( $2 / 1024 )) GB"; fi
+  if [[ ${4:-} =~ ^[0-9]{1,7}$ ]] && (( $4 > 0 )); then
+    peak=$(awk -v m="$4" 'BEGIN { if (m < 1024) printf " (peak %d MB last run)", m; else printf " (peak %.1f GB last run)", m / 1024 }')
+  fi
+  case $1 in
+    app) printf '%s' "$mem and the VM's graphics on top$peak leave macOS too little of this Mac's $mac_mem_gb GB: the Mac can slow down or swap, and apps in the VM can lose their graphics." ;;
+    utm) printf '%s' "$mem and the VM's graphics on top (UTM sets them no limit) leave macOS too little of this Mac's $mac_mem_gb GB: the Mac can slow down or swap." ;;
+    *) printf '%s' "$mem leaves macOS too little of this Mac's $mac_mem_gb GB: the Mac can slow down or swap." ;;
+  esac
+  printf ' %s GB is this Mac'"'"'s Best tier: omacvm resources --vm "%s" --resources best\n' "$best" "$3"
+}
 
 # ---------- the apps ----------
 # Parallels' own licence limits per VM: sets P_EDITION, P_TRIAL, P_STATUS,

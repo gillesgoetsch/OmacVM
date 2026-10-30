@@ -47,7 +47,8 @@ sections 7-8 before fixing anything by hand.
   limits, the tiers), then `./omacvm resources --vm NAME --resources TIER`
   or `--cpus N --memory-gb N`. Parallels, UTM and Fusion VMs must be stopped
   (exit 3: the person shuts it down); a change applies on the next start. A
-  name in two apps: add `--vm-type`.
+  name in two apps: add `--vm-type`. A `warning` (memory above the Mac's
+  Best tier) goes to the person as it is; their setting stays theirs.
 - Omarchy installed by hand: `./omacvm apply --vm NAME`; exit 3 prints one
   command for the person to run in the VM's terminal, then apply again.
 - Update: `./omacvm update` (or `--vm NAME`).

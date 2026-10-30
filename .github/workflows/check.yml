@@ -221,6 +221,9 @@ jobs:
       - name: omacvm check says when the VM stood still (logs/vm-stalls)
         run: src/tests/vm-stalls.sh
 
+      - name: omacvm resources (settings files, tiers, the warning above the Best tier; fixtures, no VM)
+        run: src/tests/resources.sh
+
       - name: apply's SSH key in the VM (the user's ~/.ssh written as the user)
         run: src/tests/ssh-key.sh
 

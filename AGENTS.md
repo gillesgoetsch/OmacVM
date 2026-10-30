@@ -124,7 +124,9 @@ UTM, or choose their password: hand those over, never work around them.
   `--cpus N --memory-gb N`. Parallels, UTM and Fusion: the VM must be stopped
   (exit 3 otherwise: ask the person to shut it down); OmacVM.app: written to
   `vm.env`, applies on the next start. A name in two apps (or twice in one):
-  exit 2; add `--vm-type`.
+  exit 2; add `--vm-type`. Memory above the Mac's Best tier is allowed:
+  `warning` in the JSON (a `Warning:` line in text) says what it leaves
+  macOS; pass it on to the person, and never lower their setting unasked.
 - **Graphics** of an OmacVM.app VM: `omacvm graphics --vm NAME --json`
   (`graphics`: opengl|vulkan|auto, `next_start`, `this_start` from qemu.log,
   `driver_ready`), then `omacvm graphics --vm NAME opengl|vulkan|auto`:
