@@ -22,6 +22,11 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
   and Kitty draw on the Mac's GPU
   ([47](#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)).
+- **Activity Monitor shows the VM with far more memory than you gave it**
+  (OmacVM.app, e.g. 23 GB for a 12 GB VM): its graphics come on top, and
+  macOS counts part of a compressed VM twice. `omacvm check` says what the
+  number is made of; above the Mac's Best tier, give it less
+  ([49](#49-app-activity-monitor-shows-the-vm-with-far-more-memory-than-it-has)).
 - **Screenshots or screen sharing of Chrome far too bright in an HDR VM**:
   Update VM
   ([44](#44-app-screenshots-and-screen-sharing-of-chrome-too-bright-in-an-hdr-vm)).
@@ -1416,3 +1421,37 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/guest/check.sh` ("Ghostty"); tests
   `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`;
   ADR 0064 (#598).
+
+## 49. app: Activity Monitor shows the VM with far more memory than it has
+
+- **Symptom:** Activity Monitor's Memory for OmacVM (the VM's QEMU) is far
+  above the memory set for the VM: 23 GB for a 12 GB VM on a 16 GB Mac mini,
+  19.3 GB at 10 GB (Chrome full screen at 5K, 2026-10-30). The Mac swaps, its
+  memory pressure is yellow or red, and apps in the VM can lose their
+  graphics (`omacvm check`'s "GPU contexts" row names them).
+- **Cause:** the number is QEMU's footprint, and it holds more than the VM's
+  memory. The VM's graphics come on top of it, from the Mac's memory as the
+  VM draws (2 to 5 GB for a 5K desktop with a browser; 4.6 GB in the 12 GB
+  run). And once QEMU itself touched a page of the VM (disk, graphics,
+  network) and macOS compressed it, macOS counts that page twice: a 4 GB VM
+  after a browser session showed 5.9 GB, 2.1 GB of it counted twice, and the
+  Mac got 4.8 GB back when QEMU stopped (ADR 0062). A VM above the Mac's
+  Best tier (8 GB on a 16 GB Mac) plus its graphics leaves macOS too little.
+- **Check:** `omacvm check --vm NAME` has an "Activity Monitor" row while
+  the VM runs: "19.3 GB for the VM: VM memory at most 10.0 GB, graphics
+  3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and pages
+  macOS counts twice while it compresses the VM)", a warning above the Best
+  tier. `omacvm resources --vm NAME` says the same warning.
+- **Fix:** give the VM the Best tier or less: in OmacVM.app the VM's
+  General › Resources › Best, or `omacvm resources --vm NAME --resources
+  best`; it applies at the VM's next start. OmacVM never lowers the setting
+  by itself. Quitting big Mac apps helps too. The graphics stay outside the
+  setting (Linux sees exactly the memory set), and their runaway guard stays
+  at three quarters of the Mac
+  ([graphics memory and VM memory](routes/app.md#graphics-memory-and-vm-memory)).
+- **Where:** `src/cmd/check.sh` ("Activity Monitor"), `src/lib/footprint.py`,
+  `src/lib/setup.sh` (`mem_warning`), `src/cmd/resources.sh`,
+  `app/app/Sources/OmacVMWindow/CustomResources.swift`
+  (`ResourceLimits.warning`), `app/app/Sources/OmacVMDesktop/GPUMemory.swift`
+  (the (i)); tests `src/tests/activity-monitor.sh`, `src/tests/resources.sh`,
+  `swift run window-tests`, `swift run desktop-tests`.

@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.15 (unreleased)
+
+- **A VM memory above the Mac's Best tier now says what it costs, and `omacvm check` says what
+  Activity Monitor's number is made of (reported by the user).** A 12 GB VM on a 16 GB Mac mini
+  showed 23 GB in Activity Monitor: its graphics come on top of its memory (4.6 GB with Chrome at
+  5K there), and while macOS compresses the VM it counts part of it twice. In OmacVM.app the VM's
+  General › Resources has an (i) that says so, and above the Best tier (8 GB on a 16 GB Mac) its
+  orange note names the graphics on top with the last run's peak. `omacvm resources` gives the same
+  warning (`"warning"` in `--json`), also when it only reads such a VM, and `omacvm check` has an
+  "Activity Monitor" row while the VM runs: the number, the VM's memory, its graphics now and the
+  rest (QEMU itself, graphics overhead, pages counted twice). Nothing lowers the setting by
+  itself; the graphics stay outside it, with their runaway guard as before. Needs the app update
+  (the window and its `omacvm`), or `omacvm update` for a command line install.
+
 ## 3.2.14
 
 In an OmacVM.app VM, a program can no longer stop the whole VM through the Mac's Vulkan driver
