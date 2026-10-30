@@ -22,7 +22,8 @@ in more words.
   Ghostty, on Mesa's CPU renderer (llvmpipe, OpenGL 4.6); the programs started inside it keep the
   Mac's GPU, and a driver variable set by hand still wins. That costs the VM's CPU: 10 s of fast
   output took Ghostty about 20 CPU-seconds in a 1272x640-pixel window at scale 2, about 2 of a
-  4-CPU VM's cores (foot 0.8, Alacritty 0.6), more in a bigger window (measured on a Mac mini M4).
+  4-CPU VM's cores (foot 0.8, Alacritty 0.6), and 35 in a 2512x1500-pixel one, nearly the whole
+  VM (foot 2, Alacritty 0.8; measured on a Mac mini M4).
   Alacritty and Kitty draw on the Mac's GPU; Omarchy's default foot draws on the CPU by design and
   costs little. With Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too
   while it shows, and that costs a lot: on two displays at scale 2 it kept all 4 of the VM's

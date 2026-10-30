@@ -110,14 +110,15 @@ median of 3 (`work/issue-598/kit`, `kit2`):
 | 1296x690 pixels at scale 1 (3.2.12 with `LIBGL_ALWAYS_SOFTWARE=1`; no bench lock) | 24.9 / 1.57 CPU-s | 1.47 / 0.02 | 0.72 / 0.03 |
 | 1272x640 pixels at scale 2 (this change; bench lock) | 19.8 / 1.58 CPU-s | 0.82 / 0.03 | 0.60 / 0.03 |
 | 1296x690 pixels at scale 1 (this change; bench lock) | 22.8 / 1.82 CPU-s | 1.53 / 0.00 | 0.80 / 0.07 |
+| 2512x1500 pixels at scale 2, a 2560x1600 output (this change; bench lock) | 35.5 / 4.21 CPU-s | 2.03 / 0.01 | 0.84 / 0.01 |
 
-So about 2 to 2.5 of the 4 vCPUs while output scrolls, and 0.16 of one in
-the 10 s after it stopped (foot and Alacritty almost none). On the Mac, QEMU used 25.0
-CPU-seconds per 26 s run with Ghostty against 5.5 with foot and 5.4 with
-Alacritty; the Mac GPU's busy share stayed at 0-1 % in all three (a hidden
-test window). A full-screen window on a large display has several times
-these pixels: not measured yet (R6 in the PR), because the test Mac (Mac
-mini M4, its swap nearly full) went to critical memory pressure.
+So about 2 to 2.5 of the 4 vCPUs while output scrolls in the smaller
+windows and 3.5 (29.9-35.5 CPU-s) in the large one, and 0.16 to 0.42 of
+one in the 10 s after it stopped, with the cursor blinking (foot and
+Alacritty almost none). On the Mac, QEMU used 25.0 CPU-seconds per 26 s
+run with Ghostty against 5.5 with foot and 5.4 with Alacritty (1272x640),
+and 44.6 against 7.5 and 6.7 per 27 s run (2512x1500); the Mac GPU's busy
+share stayed at 0-7 % in all (a hidden test window).
 
 Omarchy's screensaver with Ghostty as the default terminal, this change:
 two outputs at scale 2 (the hidden test window's 1320x740 and a 2560x1600
