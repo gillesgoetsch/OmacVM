@@ -10,7 +10,9 @@ in more words.
   decoder does not take them), and Chromium's V4L2 decoder then waited for a first picture that
   never came. OmacVM's decoder for Chromium now gives up on such a video after 3 refused
   pictures, before the first one, and Chromium decodes it on the CPU. Videos that play now are
-  not affected. Needs Update VM or `omacvm update` (from the code; not yet checked in Chromium).
+  not affected. Checked in a test VM on an M1 Max: an interlaced 1080 clip showed no video with
+  3.2.14 and plays now; a progressive one stays on the Mac's media engine. Needs Update VM or
+  `omacvm update`.
 
 ## 3.2.14
 
