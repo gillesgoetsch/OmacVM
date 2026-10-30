@@ -123,8 +123,9 @@ Omarchy's screensaver with Ghostty as the default terminal, this change:
 two outputs at scale 2 (the hidden test window's 1320x740 and a 2560x1600
 one), one full-screen screensaver window on each. Windows of 180 s between
 two of macOS's power telemetry updates (about one a minute); whole-Mac power
-of the Mac mini M4 from that telemetry (no sudo), with the person's own apps
-on it taking one to two cores, so the idle runs differ by 4 W:
+of the Mac mini M4 from that telemetry (no sudo), with other work on the
+Mac taking one to two cores (its own apps, at times another lane's tests),
+so the two idle runs differ by 4 W:
 
 | 180 s | guest CPU | QEMU on the Mac | Mac power | Mac GPU busy |
 |---|---|---|---|---|
