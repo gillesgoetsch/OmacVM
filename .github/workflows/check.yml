@@ -481,6 +481,9 @@ jobs:
       - name: Graphics memory guard keeps a part for the desktop (the rules)
         run: app/runtime/Tests/virgl/test-gpu-guard-policy.sh
 
+      - name: Guest SPIR-V scan (fuzzed on the CPU, sanitizers)
+        run: app/runtime/Tests/virgl/fuzz-venus-spirv.sh
+
       - name: App menu Restart the Desktop after Later (QEMU's side)
         run: app/runtime/Tests/display/test-restart-desktop.sh
 

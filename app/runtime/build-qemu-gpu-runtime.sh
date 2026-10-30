@@ -1521,6 +1521,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-stat
 grep -q 'if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDraw"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'cmd->state.recording = false;' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_command_buffer.c: commands are not checked against the command buffer's state (command-state patch)"
+# Guest SPIR-V passes a structural scan before the Mac's shader compilers (#624); the scan on its
+# own first, fuzzed on the CPU under the sanitizers.
+"$native_dir/Tests/virgl/fuzz-venus-spirv.sh"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-scan.patch"
+grep -q 'vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: guest SPIR-V is not scanned (spirv-scan patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
