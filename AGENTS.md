@@ -889,6 +889,10 @@ The less obvious ones, with causes and where the fix lives, are in
   nobody logged in), the Mac side does not serve that VM, `omacvm check`
   says "off"; a line in `src/tests/features-off.sh`'s table says how. Experimental features are off by default
   and say so wherever they are offered.
+- Tests wait for the thing they check, on a busy CI Mac too: a control centre
+  Pilot test settles on the drawn screen (`#body`), not on the state a worker
+  thread set before the app's loop redraws; a time the code logged is compared
+  with the event's own time, never with the clock at the check (a minute on).
 - Verify on real VMs before committing behaviour changes: `omacvm apply` against a
   test VM, `omacvm build --vm-name "OmacVM Test"` (and `--vm-type utm`) for the full path,
   then `omacvm check --vm <name>` must pass.
