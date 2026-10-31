@@ -30,7 +30,9 @@ these blocks (its GL stand-in that added the block is gone).
 Not fixed here (other IO of separable programs, upstream code): Apple's GL refuses a
 layout location on a patch variable, which vrend gives every separable patch varying, and
 vrend puts a separable varying array at location 31 - its first, past the last location.
-Such pipelines are still refused and their draws skipped (rows in the same test).
+virgl-shader-separable-patch-varyings.patch and virgl-shader-separable-varying-arrays.patch
+fix both (#589); arrays in a geometry or tessellation shader's block are still refused (rows
+in the same test).
 
 --- a/src/vrend/vrend_shader.c
 +++ b/src/vrend/vrend_shader.c

@@ -1,0 +1,147 @@
+virglrenderer: separable varying arrays end at location 31 - their last sid (#589)
+
+What: a separable shader gives the generic varying of sid s the location 31 - s. On desktop
+GL a generic varying array outside an interface block now ends there: it starts at 31 - its
+last sid instead of 31 - its first. Between two separable stages (the key's separable_in and
+separable_out, virgl-shader-separable-patch-varyings.patch) its elements are in reverse:
+element i is sid last - i, at location 31 - (last - i), where the other stage has that sid as
+a single varying or in its own reversed array. Every read and write of such an array reverses
+its index (a dynamic index is clamped into the array), and so do the names transform feedback
+records. Next to a whole stage the program is linked as one and matches by name: the elements
+keep their order there. GLES and arrays in a block are unchanged.
+Why: an array from 31 - its first sid ran past the last location ("Or active varying aliasing.
+One or more slots starting at 31 unavailable for 'vso_g0' from layout location request"), so
+Apple's GL refused every separable pipeline with a varying array, on the software renderer and
+the M4 and M1 GPUs alike (macOS 27). Guest Mesa splits an array it reads with constant indices
+into single varyings (constant IO offsets are folded), so only arrays read or written with a
+dynamic index reach vrend as arrays. Arrays in a block (geometry and tessellation IO, vrend's
+stand-in for arrays of arrays, which Apple's GL 4.1 lacks) take no location on GLSL 4.10 and
+are still refused.
+Upstream: not sent; virglrenderer main puts such arrays at 31 - their first sid (checked
+2026-10-31).
+Test: Tests/virgl/test-separable-pervertex.c on Apple's software renderer: an array read with
+constant indices (green), an array into an array read with a dynamic index (E1), written with
+one (E1b), an array into single varyings (E2) and the reverse (E3), interpolateAtCentroid and
+interpolateAtSample on such an array, transform feedback of its second element (four
+components and two); each was refused before. One program of a separable and a whole stage
+(M3, M4): drawn right or refused, never drawn wrong. Arrays into or out of a geometry shader
+(E5-E7) stay refused rows.
+
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -167,6 +167,9 @@ struct vrend_shader_io {
+    /* integer output written through int_out_tmp<first> (see emit_int_output_stores) */
+    bool int_temp : 1;
+    unsigned int_temp_written : 4;
++   /* OmacVM (#589): a separable generic array whose element i is sid last - i
++    * (mark_reversed_arrays) */
++   bool reversed : 1;
+ };
+ 
+ struct vrend_io_range {
+@@ -2556,7 +2559,10 @@ static void get_so_name(const struct dump_ctx *ctx, bool from_block, const struc
+             get_blockvarname(blockname, stage_prefix, output, "");
+          snprintf(out_var, 255, "%s.%s[%d]%s",  blockname, output->glsl_name, index - output->first, wm);
+       } else {
+-         snprintf(out_var, 255, "%s[%d]%s",  output->glsl_name, index - output->first, wm);
++         int element = index - output->first;
++         if (output->reversed)
++            element = output->last - output->first - element;
++         snprintf(out_var, 255, "%s[%d]%s",  output->glsl_name, element, wm);
+       }
+    }
+ }
+@@ -5769,6 +5775,30 @@ static void handle_io_arrays(struct dump_ctx *ctx)
+    }
+ }
+ 
++/* OmacVM (#589): a separable shader gives the generic varying of sid s the location 31 - s.
++ * An array from sid s took the locations from 31 - s up, past the last one (Apple's GL
++ * refuses that, the GPU too), and its elements never met the other stage's single varyings.
++ * On desktop GL such an array outside a block now ends at 31 - its last sid (emit_ios_generic);
++ * between two separable stages its elements are in reverse, element i is sid last - i at
++ * 31 - (last - i), where the other stage has that sid, as a single varying or in its own
++ * reversed array. Every access reverses its index (vrend_shader_write_io_as_src/dst,
++ * get_so_name), a dynamic one clamped into the array. With a whole stage next to it the
++ * program is linked as one, which matches by name: the order stays. Arrays in a block
++ * (geometry and tessellation IO without arrays of arrays) take no location: unchanged. */
++static void mark_reversed_arrays(struct dump_ctx *ctx)
++{
++   if (!ctx->separable_program || ctx->cfg->use_gles)
++      return;
++   if (ctx->key->separable_in && !prefer_generic_io_block(ctx, io_in))
++      for (uint32_t i = 0; i < ctx->num_inputs; i++)
++         ctx->inputs[i].reversed = ctx->inputs[i].name == TGSI_SEMANTIC_GENERIC &&
++                                   ctx->inputs[i].first != ctx->inputs[i].last;
++   if (ctx->key->separable_out && !prefer_generic_io_block(ctx, io_out))
++      for (uint32_t i = 0; i < ctx->num_outputs; i++)
++         ctx->outputs[i].reversed = ctx->outputs[i].name == TGSI_SEMANTIC_GENERIC &&
++                                    ctx->outputs[i].first != ctx->outputs[i].last;
++}
++
+ static int
+ compare_shader_io(const void *vlhs, const void *vrhs)
+ {
+@@ -5896,6 +5926,7 @@ iter_instruction(struct tgsi_iterate_context *iter,
+       if (ctx->prog_type != TGSI_PROCESSOR_VERTEX)
+          ctx->num_inputs = add_missing_inputs(ctx, ctx->inputs, ctx->num_inputs);
+       handle_io_arrays(ctx);
++      mark_reversed_arrays(ctx);
+ 
+       /* Vertex shader inputs are not send as arrays, but the access may still be
+        * indirect. so we have to deal with that */
+@@ -7286,7 +7317,11 @@ emit_ios_generic(const struct dump_ctx *ctx,
+ 
+    if (ctx->separable_program && io->name == TGSI_SEMANTIC_GENERIC &&
+        !(ctx->prog_type == TGSI_PROCESSOR_FRAGMENT && strcmp(inout, "in") != 0)) {
+-      snprintf(layout, sizeof(layout), "layout(location = %d) ", 31 - io->sid);
++      /* OmacVM (#589, mark_reversed_arrays): an array outside a block on desktop GL ends
++       * at 31 - its last sid (from 31 - its first sid it ran past the last location) */
++      int top = io->first != io->last && !ctx->cfg->use_gles &&
++                !prefer_generic_io_block(ctx, iot) ? io->last - io->first : 0;
++      snprintf(layout, sizeof(layout), "layout(location = %d) ", 31 - io->sid - top);
+    }
+ 
+    if (io->first == io->last) {
+@@ -8947,6 +8982,14 @@ void vrend_shader_write_io_as_src(struct vrend_strbuf *result,
+                            src->Indirect.Index, offset);
+          else
+             strbuf_appendf(result, "%s.%s[%d]", array_or_varname, base->glsl_name, offset);
++      } else if (base->reversed) {
++         /* OmacVM (#589, mark_reversed_arrays) */
++         const int top = base->last - base->first;
++         if (src->Register.Indirect)
++            strbuf_appendf(result, "%s%s[clamp(%d - (addr%d + %d), 0, %d)]", base->glsl_name,
++                           array_or_varname, top, src->Indirect.Index, offset, top);
++         else
++            strbuf_appendf(result, "%s%s[%d]", base->glsl_name, array_or_varname, top - offset);
+       } else {
+          if (src->Register.Indirect)
+             strbuf_appendf(result, "%s%s[addr%d + %d]", base->glsl_name,
+@@ -8969,7 +9012,10 @@ void vrend_shader_write_io_as_dst(struct vrend_strbuf *result,
+    if (io->first == io->last) {
+       if (io->overlapping_array)
+          strbuf_appendf(result, "%s%s[%d]", io->overlapping_array->glsl_name,
+-                        array_or_varname, io->array_offset);
++                        array_or_varname, io->overlapping_array->reversed ?
++                           io->overlapping_array->last - io->overlapping_array->first -
++                              io->array_offset :
++                           io->array_offset);
+       else
+          strbuf_appendf(result, "%s%s", io->glsl_name, array_or_varname);
+    } else {
+@@ -8982,6 +9028,14 @@ void vrend_shader_write_io_as_dst(struct vrend_strbuf *result,
+                            src->Indirect.Index, offset);
+          else
+             strbuf_appendf(result, "%s.%s[%d]", array_or_varname, base->glsl_name, offset);
++      } else if (base->reversed) {
++         /* OmacVM (#589, mark_reversed_arrays) */
++         const int top = base->last - base->first;
++         if (src->Register.Indirect)
++            strbuf_appendf(result, "%s%s[clamp(%d - (addr%d + %d), 0, %d)]", base->glsl_name,
++                           array_or_varname, top, src->Indirect.Index, offset, top);
++         else
++            strbuf_appendf(result, "%s%s[%d]", base->glsl_name, array_or_varname, top - offset);
+       } else {
+          if (src->Register.Indirect)
+             strbuf_appendf(result, "%s%s[addr%d + %d]", base->glsl_name,

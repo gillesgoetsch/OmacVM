@@ -32,10 +32,25 @@
  *    context is not; the next draw with a complete framebuffer draws;
  *  - a context logs three such lines; another context logs its own.
  * With OMACVM_VIRGL_SHADER_FAILURES=lose the first two lose their context, as upstream.
- * Last, two shapes Apple's GL still refuses as separable programs (vrend's IO locations,
- * follow-ups): a patch varying from the tessellation control to the evaluation shader, and
- * a varying array. Their draws are skipped and logged, nothing crashes, the context draws
- * on. */
+ * Then the separable IO Apple's GL refused (#589):
+ *  - patch varyings from the tessellation control to the evaluation shader: Apple's GL takes
+ *    no layout location on a patch variable and gives patch varyings their slots in the order
+ *    of their names (virgl-shader-separable-patch-varyings.patch): one patch varying (white),
+ *    the evaluation shader reading one of two (D1) or both (D2), patch varyings 1 and 3 beside
+ *    a per-vertex varying (D4), twelve patch varyings read at 2 and 10 (D6);
+ *  - varying arrays between separable stages, which vrend put at location 31 - first, past
+ *    the last location (virgl-shader-separable-varying-arrays.patch): an array read with
+ *    constant indices (green), an array into an array read with a dynamic index (E1), written
+ *    with one (E1b), an array into single varyings (E2) and the reverse (E3);
+ *    interpolateAtCentroid and interpolateAtSample on such an array (constant indices);
+ *    transform feedback of its second element, all four components and two;
+ *  - separable and whole stages linked as one program with the same shapes (M1-M4): drawn
+ *    right, or refused, never drawn wrong.
+ * Last, the shapes Apple's GL still refuses as separable programs: a varying array into or
+ * out of a geometry shader's block (E5-E7: vrend declares such IO in a block, and a block
+ * member takes no location on GLSL 4.10), and interpolateAt* on an array element with a
+ * dynamic index (Apple's GLSL takes only a direct reference there, in any program). Their
+ * draws are skipped and logged, nothing crashes, the context draws on. */
 #include <OpenGL/OpenGL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,7 +66,7 @@ enum { SHADER_VERTEX = 0, SHADER_FRAGMENT = 1, SHADER_GEOMETRY = 2, SHADER_TESS_
 enum { PRIM_POINTS = 0, PRIM_TRIANGLES = 4, PRIM_PATCHES = 14, BUFFER = 0, TEXTURE_2D = 2,
        TEXTURE_CUBE = 4, CLEAR_COLOR0 = 1 << 2 };
 enum { GREEN = 0xff00ff00, BLUE = 0xffff0000, YELLOW = 0xff00ffff, MAGENTA = 0xffff00ff,
-       CYAN = 0xffffff00, RED = 0xff0000ff, GREY = 0xff808080 };
+       CYAN = 0xffffff00, RED = 0xff0000ff, GREY = 0xff808080, WHITE = 0xffffffff };
 enum { RS_TRIANGLES = 41, RS_POINTS = 42 };
 /* resources: colour buffer, 4-sample buffer, 2D and cube textures, transform feedback */
 enum { R_COLOUR = 5, R_MSAA = 7, R_TEX_2D = 11, R_TEX_CUBE = 12, R_XFB = 13 };
@@ -150,8 +165,9 @@ static void emit_shader(struct cmds *c, uint32_t handle, uint32_t type, const ch
    c->n += words;
 }
 
-/* a vertex shader that records OUT[1] (4 components) into stream output buffer 0 */
-static void emit_xfb_shader(struct cmds *c, uint32_t handle, const char *text)
+/* a vertex shader that records OUT[reg] (its first n components) into stream output buffer 0 */
+static void emit_xfb_shader_reg(struct cmds *c, uint32_t handle, const char *text, uint32_t reg,
+                                uint32_t n)
 {
    uint32_t bytes = strlen(text) + 1, words = (bytes + 3) / 4;
    emit(c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SHADER,
@@ -161,13 +177,18 @@ static void emit_xfb_shader(struct cmds *c, uint32_t handle, const char *text)
    emit(c, VIRGL_OBJ_SHADER_OFFSET_VAL(bytes));
    emit(c, 300);
    emit(c, 1);                                     /* stream outputs */
-   emit(c, 4); emit(c, 0); emit(c, 0); emit(c, 0); /* strides in dwords */
-   emit(c, VIRGL_OBJ_SHADER_SO_OUTPUT_REGISTER_INDEX(1) |
-           VIRGL_OBJ_SHADER_SO_OUTPUT_NUM_COMPONENTS(4));
+   emit(c, n); emit(c, 0); emit(c, 0); emit(c, 0); /* strides in dwords */
+   emit(c, VIRGL_OBJ_SHADER_SO_OUTPUT_REGISTER_INDEX(reg) |
+           VIRGL_OBJ_SHADER_SO_OUTPUT_NUM_COMPONENTS(n));
    emit(c, VIRGL_OBJ_SHADER_SO_OUTPUT_STREAM(0));
    memset(&c->dw[c->n], 0, words * 4);
    memcpy(&c->dw[c->n], text, bytes);
    c->n += words;
+}
+
+static void emit_xfb_shader(struct cmds *c, uint32_t handle, const char *text)
+{
+   emit_xfb_shader_reg(c, handle, text, 1, 4);
 }
 
 static void emit_bind(struct cmds *c, uint32_t handle, uint32_t type)
@@ -643,6 +664,314 @@ static const char *fs_array =
    "  0: ADD OUT[0], IN[0], IN[1]\n"
    "  1: END\n";
 
+/* #589 patch varyings: PATCH[0] red and PATCH[1] green */
+#define TCS_PATCH_HEAD \
+   "TESS_CTRL\n" \
+   "PROPERTY TCS_VERTICES_OUT 3\n" \
+   "PROPERTY SEPARABLE_PROGRAM 1\n" \
+   "DCL IN[][0], POSITION\n" \
+   "DCL SV[0], INVOCATIONID\n" \
+   "DCL OUT[][0], POSITION\n" \
+   "DCL OUT[1], TESSOUTER\n" \
+   "DCL OUT[2], TESSINNER\n"
+#define TCS_PATCH_BODY \
+   "  0: UARL ADDR[0].x, SV[0].xxxx\n" \
+   "  1: MOV OUT[ADDR[0].x][0], IN[ADDR[0].x][0]\n" \
+   "  2: MOV OUT[1].x, IMM[0].xxxx\n" \
+   "  3: MOV OUT[1].y, IMM[0].xxxx\n" \
+   "  4: MOV OUT[1].z, IMM[0].xxxx\n" \
+   "  5: MOV OUT[2].x, IMM[0].xxxx\n"
+
+static const char *tcs_patches =
+   TCS_PATCH_HEAD
+   "DCL OUT[3], PATCH[0]\n"
+   "DCL OUT[4], PATCH[1]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   TCS_PATCH_BODY
+   "  6: MOV OUT[3], IMM[0].xyyx\n"
+   "  7: MOV OUT[4], IMM[0].yxyx\n"
+   "  8: END\n";
+
+#define TES_PATCH_HEAD \
+   "TESS_EVAL\n" \
+   "PROPERTY TES_PRIM_MODE 4\n" \
+   "PROPERTY TES_SPACING 2\n" \
+   "PROPERTY TES_VERTEX_ORDER_CW 0\n" \
+   "PROPERTY TES_POINT_MODE 0\n" \
+   "PROPERTY SEPARABLE_PROGRAM 1\n" \
+   "DCL IN[][0], POSITION\n"
+#define TES_PATCH_POSITION \
+   "  0: MUL TEMP[0], IN[0][0], SV[0].xxxx\n" \
+   "  1: MAD TEMP[0], IN[1][0], SV[0].yyyy, TEMP[0]\n" \
+   "  2: MAD OUT[0], IN[2][0], SV[0].zzzz, TEMP[0]\n"
+
+/* the colour from PATCH[1] only */
+static const char *tes_patch1 =
+   TES_PATCH_HEAD
+   "DCL IN[1], PATCH[1]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   TES_PATCH_POSITION
+   "  3: MOV OUT[1], IN[1]\n"
+   "  4: END\n";
+
+/* 2 * PATCH[1] - PATCH[0]: green only when both come from their own slot (swapped: red) */
+static const char *tes_patch01 =
+   TES_PATCH_HEAD
+   "DCL IN[1], PATCH[0]\n"
+   "DCL IN[2], PATCH[1]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   "IMM[0] FLT32 {    2.0000,     0.0000,     0.0000,     0.0000}\n"
+   TES_PATCH_POSITION
+   "  3: MAD TEMP[1], IN[2], IMM[0].xxxx, -IN[1]\n"
+   "  4: MOV OUT[1], TEMP[1]\n"
+   "  5: END\n";
+
+/* a per-vertex GENERIC[0] red (it keeps its location) beside PATCH[1] green and PATCH[3]
+ * blue; PATCH[0] and PATCH[2] not written */
+static const char *tcs_gen_patches =
+   TCS_PATCH_HEAD
+   "DCL OUT[][3], GENERIC[0]\n"
+   "DCL OUT[4], PATCH[1]\n"
+   "DCL OUT[5], PATCH[3]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   TCS_PATCH_BODY
+   "  6: MOV OUT[ADDR[0].x][3], IMM[0].xyyx\n"
+   "  7: MOV OUT[4], IMM[0].yxyx\n"
+   "  8: MOV OUT[5], IMM[0].yyxx\n"
+   "  9: END\n";
+
+/* GENERIC[0] of vertex 0 + PATCH[1] + PATCH[3] - (1, 0, 1, 2): green when all three are right */
+static const char *tes_gen_patches =
+   TES_PATCH_HEAD
+   "DCL IN[][1], GENERIC[0]\n"
+   "DCL IN[2], PATCH[1]\n"
+   "DCL IN[3], PATCH[3]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     1.0000,     2.0000}\n"
+   TES_PATCH_POSITION
+   "  3: ADD TEMP[1], IN[0][1], IN[2]\n"
+   "  4: ADD TEMP[1], TEMP[1], IN[3]\n"
+   "  5: ADD TEMP[1], TEMP[1], -IMM[0]\n"
+   "  6: MOV OUT[1], TEMP[1]\n"
+   "  7: END\n";
+
+/* twelve patch varyings: PATCH[2] (0, 1, 0, 0) and PATCH[10] (0, 0, 0, 1), the others red
+ * ("patch10" sorts before "patch2") */
+static const char *tcs_patches12 =
+   TCS_PATCH_HEAD
+   "DCL OUT[3], PATCH[0]\n"
+   "DCL OUT[4], PATCH[1]\n"
+   "DCL OUT[5], PATCH[2]\n"
+   "DCL OUT[6], PATCH[3]\n"
+   "DCL OUT[7], PATCH[4]\n"
+   "DCL OUT[8], PATCH[5]\n"
+   "DCL OUT[9], PATCH[6]\n"
+   "DCL OUT[10], PATCH[7]\n"
+   "DCL OUT[11], PATCH[8]\n"
+   "DCL OUT[12], PATCH[9]\n"
+   "DCL OUT[13], PATCH[10]\n"
+   "DCL OUT[14], PATCH[11]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   TCS_PATCH_BODY
+   "  6: MOV OUT[3], IMM[0].xyyy\n"
+   "  7: MOV OUT[4], IMM[0].xyyy\n"
+   "  8: MOV OUT[5], IMM[0].yxyy\n"
+   "  9: MOV OUT[6], IMM[0].xyyy\n"
+   " 10: MOV OUT[7], IMM[0].xyyy\n"
+   " 11: MOV OUT[8], IMM[0].xyyy\n"
+   " 12: MOV OUT[9], IMM[0].xyyy\n"
+   " 13: MOV OUT[10], IMM[0].xyyy\n"
+   " 14: MOV OUT[11], IMM[0].xyyy\n"
+   " 15: MOV OUT[12], IMM[0].xyyy\n"
+   " 16: MOV OUT[13], IMM[0].yyyx\n"
+   " 17: MOV OUT[14], IMM[0].xyyy\n"
+   " 18: END\n";
+
+/* PATCH[2] + PATCH[10] */
+static const char *tes_patch2_10 =
+   TES_PATCH_HEAD
+   "DCL IN[1], PATCH[2]\n"
+   "DCL IN[2], PATCH[10]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   TES_PATCH_POSITION
+   "  3: ADD OUT[1], IN[1], IN[2]\n"
+   "  4: END\n";
+
+/* #589 varying arrays: vs_triangle_array writing its first element with a dynamic index */
+static const char *vs_triangle_array_dyn =
+   VS_TRIANGLE_HEAD
+   "DCL OUT[1..2], ARRAY(1), GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] UINT32 {1, 2, 0, 0}\n"
+   "IMM[1] FLT32 {    4.0000,    -1.0000,     0.5000,     1.0000}\n"
+   "IMM[2] FLT32 {    0.0000,     1.0000,     0.0000,     0.0000}\n"
+   "IMM[3] INT32 {0, 0, 0, 0}\n"
+   VS_TRIANGLE_BODY
+   "  6: UARL ADDR[0].x, IMM[3].xxxx\n"
+   "  7: MOV OUT[ADDR[0].x+1], IMM[2].xyxx\n"
+   "  8: MOV OUT[2], IMM[2].xxxy\n"
+   "  9: END\n";
+
+/* the same green in two single varyings GENERIC[0] and GENERIC[1] */
+static const char *vs_triangle_two =
+   VS_TRIANGLE_HEAD
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL OUT[2], GENERIC[1]\n"
+   "DCL TEMP[0]\n"
+   "IMM[0] UINT32 {1, 2, 0, 0}\n"
+   "IMM[1] FLT32 {    4.0000,    -1.0000,     0.5000,     1.0000}\n"
+   "IMM[2] FLT32 {    0.0000,     1.0000,     0.0000,     0.0000}\n"
+   VS_TRIANGLE_BODY
+   "  6: MOV OUT[1], IMM[2].xyxx\n"
+   "  7: MOV OUT[2], IMM[2].xxxy\n"
+   "  8: END\n";
+
+/* GENERIC[0] + GENERIC[1] read from an array, the first with a dynamic index */
+static const char *fs_array_dyn =
+   "FRAG\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[0..1], ARRAY(1), GENERIC[0], PERSPECTIVE\n"
+   "DCL OUT[0], COLOR\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: UARL ADDR[0].x, IMM[0].xxxx\n"
+   "  1: ADD OUT[0], IN[ADDR[0].x], IN[1]\n"
+   "  2: END\n";
+
+/* the same as two single inputs */
+static const char *fs_two =
+   "FRAG\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[0], GENERIC[0], PERSPECTIVE\n"
+   "DCL IN[1], GENERIC[1], PERSPECTIVE\n"
+   "DCL OUT[0], COLOR\n"
+   "  0: ADD OUT[0], IN[0], IN[1]\n"
+   "  1: END\n";
+
+/* the array read through interpolateAtCentroid and interpolateAtSample */
+static const char *fs_array_interp =
+   "FRAG\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[0..1], ARRAY(1), GENERIC[0], PERSPECTIVE\n"
+   "DCL OUT[0], COLOR\n"
+   "DCL TEMP[0..1]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: INTERP_CENTROID TEMP[0], IN[0]\n"
+   "  1: INTERP_SAMPLE TEMP[1], IN[1], IMM[0].xxxx\n"
+   "  2: ADD OUT[0], TEMP[0], TEMP[1]\n"
+   "  3: END\n";
+
+/* the same with a dynamic index in interpolateAtCentroid */
+static const char *fs_array_interp_dyn =
+   "FRAG\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[0..1], ARRAY(1), GENERIC[0], PERSPECTIVE\n"
+   "DCL OUT[0], COLOR\n"
+   "DCL TEMP[0..1]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: UARL ADDR[0].x, IMM[0].xxxx\n"
+   "  1: INTERP_CENTROID TEMP[0], IN[ADDR[0].x]\n"
+   "  2: INTERP_SAMPLE TEMP[1], IN[1], IMM[0].xxxx\n"
+   "  3: ADD OUT[0], TEMP[0], TEMP[1]\n"
+   "  4: END\n";
+
+/* records OUT[2], the array's second element: (0.25, 0.5, 0.75, 1); OUT[1] is (1, 1, 1, 1) */
+static const char *vs_xfb_array =
+   "VERT\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1..2], ARRAY(1), GENERIC[0]\n"
+   "IMM[0] FLT32 {    0.2500,     0.5000,     0.7500,     1.0000}\n"
+   "  0: MOV OUT[0], IMM[0].xxxw\n"
+   "  1: MOV OUT[1], IMM[0].wwww\n"
+   "  2: MOV OUT[2], IMM[0]\n"
+   "  3: END\n";
+
+/* a geometry shader passing the triangle on, the colour from GENERIC[0] + GENERIC[1] of
+ * vertex 0 read as single inputs (gs_two) or as an array with a dynamic index (gs_array) */
+static const char *gs_two =
+   "GEOM\n"
+   "PROPERTY GS_INPUT_PRIMITIVE TRIANGLES\n"
+   "PROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+   "PROPERTY GS_MAX_OUTPUT_VERTICES 3\n"
+   "PROPERTY GS_INVOCATIONS 1\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], GENERIC[0]\n"
+   "DCL IN[][2], GENERIC[1]\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: ADD TEMP[0], IN[0][1], IN[0][2]\n"
+   "  1: MOV OUT[0], IN[0][0]\n"
+   "  2: MOV OUT[1], TEMP[0]\n"
+   "  3: EMIT IMM[0].xxxx\n"
+   "  4: MOV OUT[0], IN[1][0]\n"
+   "  5: MOV OUT[1], TEMP[0]\n"
+   "  6: EMIT IMM[0].xxxx\n"
+   "  7: MOV OUT[0], IN[2][0]\n"
+   "  8: MOV OUT[1], TEMP[0]\n"
+   "  9: EMIT IMM[0].xxxx\n"
+   " 10: END\n";
+
+static const char *gs_array =
+   "GEOM\n"
+   "PROPERTY GS_INPUT_PRIMITIVE TRIANGLES\n"
+   "PROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+   "PROPERTY GS_MAX_OUTPUT_VERTICES 3\n"
+   "PROPERTY GS_INVOCATIONS 1\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1..2], ARRAY(1), GENERIC[0]\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: UARL ADDR[0].x, IMM[0].xxxx\n"
+   "  1: ADD TEMP[0], IN[0][ADDR[0].x+1], IN[0][2]\n"
+   "  2: MOV OUT[0], IN[0][0]\n"
+   "  3: MOV OUT[1], TEMP[0]\n"
+   "  4: EMIT IMM[0].xxxx\n"
+   "  5: MOV OUT[0], IN[1][0]\n"
+   "  6: MOV OUT[1], TEMP[0]\n"
+   "  7: EMIT IMM[0].xxxx\n"
+   "  8: MOV OUT[0], IN[2][0]\n"
+   "  9: MOV OUT[1], TEMP[0]\n"
+   " 10: EMIT IMM[0].xxxx\n"
+   " 11: END\n";
+
+/* A copy of a separable shader's text as a whole-program shader (no SEPARABLE_PROGRAM). */
+static const char *whole(const char *text)
+{
+   static char buf[8][2048];
+   static int next;
+   const char *line = "PROPERTY SEPARABLE_PROGRAM 1\n", *at = strstr(text, line);
+   char *b = buf[next++ % 8];
+   if (!at)
+      return text;
+   snprintf(b, sizeof(buf[0]), "%.*s%s", (int)(at - text), text, at + strlen(line));
+   return b;
+}
+
 /* records (0.25, 0.5, 0.75, 1) per vertex (emit_xfb_shader) */
 static const char *vs_xfb =
    "VERT\n"
@@ -728,52 +1057,78 @@ static void row(const char *what, const struct stage *stages, uint32_t mode, uin
          text);
 }
 
-/* Transform feedback from a separable vertex shader: three points record OUT[1]. */
-static void xfb_row(void)
+/* One program of separable and whole stages: drawn right, or refused and its draw skipped;
+ * never drawn wrong. */
+static void mixed_row(const char *what, const struct stage *stages, uint32_t mode, uint32_t want)
+{
+   char text[240];
+   int refused = refused_lines, errors = ctx_error_lines;
+   uint32_t got = draw_pipeline_in(1, stages, mode, 3, 8, 8);
+   int drawn = got == want && refused_lines == refused;
+   snprintf(text, sizeof(text), "%s: %s (0x%08x, want 0x%08x or refused)", what,
+            drawn ? "drawn" : refused_lines > refused ? "refused" : "WRONG", got, want);
+   check(drawn || (got == GREY && refused_lines > refused), text);
+   snprintf(text, sizeof(text), "%s: no context error", what);
+   check(ctx_error_lines == errors, text);
+}
+
+/* Transform feedback from a separable vertex shader (handle vs, and fs after it): three
+ * points record the first n components of OUT[reg], (0.25, 0.5, 0.75, 1). */
+static void xfb_record(const char *what, uint32_t vs, const char *vs_text, const char *fs_text,
+                       uint32_t reg, uint32_t n)
 {
    struct virgl_renderer_resource_create_args args = {
       .handle = R_XFB, .target = BUFFER, .format = VIRGL_FORMAT_R8_UNORM,
       .bind = VIRGL_BIND_STREAM_OUTPUT, .width = 4096, .height = 1, .depth = 1,
       .array_size = 1,
    };
-   check(!virgl_renderer_resource_create(&args, NULL, 0), "transform feedback: buffer");
+   char text[200];
+   snprintf(text, sizeof(text), "%s: buffer", what);
+   check(!virgl_renderer_resource_create(&args, NULL, 0), text);
    virgl_renderer_ctx_attach_resource(1, R_XFB);
    int refused = refused_lines, errors = ctx_error_lines, invalid = invalid_lines;
    struct cmds c = { .n = 0 };
    emit(&c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_STREAMOUT_TARGET,
                        VIRGL_OBJ_STREAMOUT_SIZE));
-   emit(&c, 95);
+   emit(&c, 200 + vs);              /* the target's handle */
    emit(&c, R_XFB);
    emit(&c, 0);                     /* offset */
    emit(&c, 4096);                  /* size */
    emit(&c, VIRGL_CMD0(VIRGL_CCMD_SET_STREAMOUT_TARGETS, 0, 2));
    emit(&c, 0);                     /* append bitmask */
-   emit(&c, 95);
-   emit_xfb_shader(&c, 96, vs_xfb);
-   emit_bind(&c, 96, SHADER_VERTEX);
-   emit_shader(&c, 97, SHADER_FRAGMENT, fs_varying);
-   emit_bind(&c, 97, SHADER_FRAGMENT);
+   emit(&c, 200 + vs);
+   emit_xfb_shader_reg(&c, vs, vs_text, reg, n);
+   emit_bind(&c, vs, SHADER_VERTEX);
+   emit_shader(&c, vs + 1, SHADER_FRAGMENT, fs_text);
+   emit_bind(&c, vs + 1, SHADER_FRAGMENT);
    emit_draw(&c, PRIM_POINTS, 3);
    emit(&c, VIRGL_CMD0(VIRGL_CCMD_SET_STREAMOUT_TARGETS, 0, 1));
    emit(&c, 0);
    emit_bind(&c, 0, SHADER_VERTEX);
    emit_bind(&c, 0, SHADER_FRAGMENT);
-   check(submit(1, &c) == 0, "transform feedback: the submit runs");
+   snprintf(text, sizeof(text), "%s: the submit runs", what);
+   check(submit(1, &c) == 0, text);
    float got[12] = { 0 };
    struct iovec iov = { got, sizeof(got) };
    struct virgl_box box = { 0, 0, 0, sizeof(got), 1, 1 };
    int r = virgl_renderer_transfer_read_iov(R_XFB, 1, 0, 0, 0, &box, 0, &iov, 1);
    int same = r == 0;
-   for (int i = 0; i < 12; i++)
-      same &= got[i] == 0.25f * (i % 4 + 1);
-   char text[200];
-   snprintf(text, sizeof(text), "transform feedback from a separable vertex shader: "
-            "recorded (%.2f %.2f %.2f %.2f ...)", got[0], got[1], got[2], got[3]);
+   for (uint32_t i = 0; i < 3 * n; i++)
+      same &= got[i] == 0.25f * (i % n + 1);
+   snprintf(text, sizeof(text), "%s: recorded (%.2f %.2f %.2f %.2f ...)", what, got[0], got[1],
+            got[2], got[3]);
    check(same, text);
+   snprintf(text, sizeof(text), "%s: no shader refused, no context error, valid", what);
    check(refused_lines == refused && ctx_error_lines == errors && invalid_lines == invalid,
-         "transform feedback: no shader refused, no context error, valid");
+         text);
    virgl_renderer_ctx_detach_resource(1, R_XFB);
    virgl_renderer_resource_unref(R_XFB);
+}
+
+/* Transform feedback from a separable vertex shader: three points record OUT[1]. */
+static void xfb_row(void)
+{
+   xfb_record("transform feedback from a separable vertex shader", 96, vs_xfb, fs_varying, 1, 4);
 }
 
 /* A 1x1 2D texture (red) and a 1x1 cube texture (green on every face). */
@@ -882,16 +1237,94 @@ static void samplers_row(int ctx_id, uint32_t fs, const char *what, int lose)
    check(invalid_lines == invalid + 1 && invalid_ctx == ctx_id, text);
 }
 
+/* #589: separable patch varyings and varying arrays (virgl-shader-separable-patch-varyings.patch,
+ * virgl-shader-separable-varying-arrays.patch). Each row failed before: vrend gave a patch
+ * varying a layout location, which Apple's GL refuses on a patch variable, and put a varying
+ * array at location 31 - its first, past the last location. */
+static void io_rows(void)
+{
+   row("a patch varying (white)", (const struct stage[]){
+          { 140, SHADER_VERTEX, vs_triangle }, { 141, SHADER_TESS_CTRL, tcs_patch },
+          { 142, SHADER_TESS_EVAL, tes_patch }, { 143, SHADER_FRAGMENT, fs_varying }, { 0 } },
+       PRIM_PATCHES, 3, 8, 8, WHITE);
+   row("D1 patch varyings 0 and 1, the evaluation shader reads 1", (const struct stage[]){
+          { 144, SHADER_VERTEX, vs_triangle }, { 145, SHADER_TESS_CTRL, tcs_patches },
+          { 146, SHADER_TESS_EVAL, tes_patch1 }, { 147, SHADER_FRAGMENT, fs_varying }, { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+   row("D2 patch varyings 0 and 1, the evaluation shader reads both", (const struct stage[]){
+          { 148, SHADER_VERTEX, vs_triangle }, { 149, SHADER_TESS_CTRL, tcs_patches },
+          { 150, SHADER_TESS_EVAL, tes_patch01 }, { 151, SHADER_FRAGMENT, fs_varying }, { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+   row("D4 a per-vertex varying beside patch varyings 1 and 3", (const struct stage[]){
+          { 152, SHADER_VERTEX, vs_triangle }, { 153, SHADER_TESS_CTRL, tcs_gen_patches },
+          { 154, SHADER_TESS_EVAL, tes_gen_patches }, { 155, SHADER_FRAGMENT, fs_varying },
+          { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+   row("D6 twelve patch varyings, the evaluation shader reads 2 and 10", (const struct stage[]){
+          { 156, SHADER_VERTEX, vs_triangle }, { 157, SHADER_TESS_CTRL, tcs_patches12 },
+          { 158, SHADER_TESS_EVAL, tes_patch2_10 }, { 159, SHADER_FRAGMENT, fs_varying },
+          { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+
+   row("a varying array (green)", (const struct stage[]){
+          { 160, SHADER_VERTEX, vs_triangle_array }, { 161, SHADER_FRAGMENT, fs_array }, { 0 } },
+       PRIM_TRIANGLES, 3, 8, 8, GREEN);
+   row("E1 an array into an array read with a dynamic index", (const struct stage[]){
+          { 162, SHADER_VERTEX, vs_triangle_array }, { 163, SHADER_FRAGMENT, fs_array_dyn },
+          { 0 } },
+       PRIM_TRIANGLES, 3, 8, 8, GREEN);
+   row("E1b an array written with a dynamic index", (const struct stage[]){
+          { 164, SHADER_VERTEX, vs_triangle_array_dyn }, { 165, SHADER_FRAGMENT, fs_array_dyn },
+          { 0 } },
+       PRIM_TRIANGLES, 3, 8, 8, GREEN);
+   row("E2 an array into single varyings", (const struct stage[]){
+          { 166, SHADER_VERTEX, vs_triangle_array }, { 167, SHADER_FRAGMENT, fs_two }, { 0 } },
+       PRIM_TRIANGLES, 3, 8, 8, GREEN);
+   row("E3 single varyings into an array", (const struct stage[]){
+          { 168, SHADER_VERTEX, vs_triangle_two }, { 169, SHADER_FRAGMENT, fs_array_dyn }, { 0 } },
+       PRIM_TRIANGLES, 3, 8, 8, GREEN);
+   row("interpolateAtCentroid and interpolateAtSample on an array", (const struct stage[]){
+          { 170, SHADER_VERTEX, vs_triangle_two }, { 171, SHADER_FRAGMENT, fs_array_interp },
+          { 0 } },
+       PRIM_TRIANGLES, 3, 8, 8, GREEN);
+   xfb_record("transform feedback of an array's second element", 172, vs_xfb_array, fs_two, 2, 4);
+   xfb_record("transform feedback of an array's second element, two components", 174,
+              vs_xfb_array, fs_two, 2, 2);
+
+   /* separable and whole stages linked as one program (the whole stage matches by name) */
+   mixed_row("M1 one program: separable control + whole evaluation shader, patch varyings 1 and 3",
+             (const struct stage[]){
+                { 176, SHADER_VERTEX, vs_triangle }, { 177, SHADER_TESS_CTRL, tcs_gen_patches },
+                { 178, SHADER_TESS_EVAL, whole(tes_gen_patches) },
+                { 179, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_PATCHES, GREEN);
+   mixed_row("M2 one program: whole control + separable evaluation shader, patch varyings 1 and 3",
+             (const struct stage[]){
+                { 180, SHADER_VERTEX, vs_triangle },
+                { 181, SHADER_TESS_CTRL, whole(tcs_gen_patches) },
+                { 182, SHADER_TESS_EVAL, tes_gen_patches }, { 183, SHADER_FRAGMENT, fs_varying },
+                { 0 } }, PRIM_PATCHES, GREEN);
+   mixed_row("M3 one program: separable vertex + whole fragment shader, an array (dynamic index)",
+             (const struct stage[]){
+                { 184, SHADER_VERTEX, vs_triangle_array },
+                { 185, SHADER_FRAGMENT, whole(fs_array_dyn) }, { 0 } }, PRIM_TRIANGLES, GREEN);
+   mixed_row("M4 one program: whole vertex + separable fragment shader, an array (dynamic index)",
+             (const struct stage[]){
+                { 186, SHADER_VERTEX, whole(vs_triangle_array) },
+                { 187, SHADER_FRAGMENT, fs_array_dyn }, { 0 } }, PRIM_TRIANGLES, GREEN);
+}
+
 /* Shapes Apple's GL still refuses as separable programs, in their own context (one refused
- * shader is enough to lose a context with "lose"). vrend gives a patch varying a layout
- * location, and Apple's GL refuses every location on a patch variable (0 to 31; without
- * one it links); it puts a varying array at location 31 - its first, so the array runs
- * past the last location. */
-static void refused_row(const char *what, const struct stage *stages, uint32_t mode)
+ * shader is enough to lose a context with "lose"): a varying array into or out of a geometry
+ * shader. vrend declares such IO in an interface block (its stand-in for arrays of arrays,
+ * which Apple's GL 4.1 lacks), and on GLSL 4.10 a block member takes no layout location, so
+ * the block never matches the single varyings or array of the other separate program. And
+ * interpolateAt* on an array element with a dynamic index: Apple's GLSL compiler takes only
+ * "a direct reference" there, separable or not, with or without a location. */
+static void refused_row(int ctx_id, const char *what, const struct stage *stages, uint32_t mode)
 {
    char text[200];
    int refused = refused_lines, errors = ctx_error_lines;
-   uint32_t got = draw_pipeline_in(4, stages, mode, 3, 8, 8);
+   uint32_t got = draw_pipeline_in(ctx_id, stages, mode, 3, 8, 8);
    snprintf(text, sizeof(text), "%s: refused and its draw skipped (0x%08x)", what, got);
    check(got == GREY && refused_lines > refused, text);
    snprintf(text, sizeof(text), "%s: no context error", what);
@@ -900,20 +1333,32 @@ static void refused_row(const char *what, const struct stage *stages, uint32_t m
 
 static void refused_rows(void)
 {
+   /* a context logs three refused shaders: one context for the three arrays, one more */
    new_context(4, "refused");
-   refused_row("still refused: a patch varying", (const struct stage[]){
-                  { 130, SHADER_VERTEX, vs_triangle }, { 131, SHADER_TESS_CTRL, tcs_patch },
-                  { 132, SHADER_TESS_EVAL, tes_patch }, { 133, SHADER_FRAGMENT, fs_varying },
-                  { 0 } }, PRIM_PATCHES);
-   refused_row("still refused: a varying array", (const struct stage[]){
-                  { 134, SHADER_VERTEX, vs_triangle_array },
-                  { 135, SHADER_FRAGMENT, fs_array }, { 0 } }, PRIM_TRIANGLES);
+   refused_row(4, "still refused: E5 an array into a geometry shader's single inputs",
+               (const struct stage[]){
+                  { 130, SHADER_VERTEX, vs_triangle_array }, { 131, SHADER_GEOMETRY, gs_two },
+                  { 132, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_TRIANGLES);
+   refused_row(4, "still refused: E6 single varyings into a geometry shader's array",
+               (const struct stage[]){
+                  { 133, SHADER_VERTEX, vs_triangle_two }, { 134, SHADER_GEOMETRY, gs_array },
+                  { 135, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_TRIANGLES);
+   refused_row(4, "still refused: E7 an array into a geometry shader's array",
+               (const struct stage[]){
+                  { 188, SHADER_VERTEX, vs_triangle_array }, { 189, SHADER_GEOMETRY, gs_array },
+                  { 190, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_TRIANGLES);
    uint32_t got = draw_pipeline_in(4, (const struct stage[]){
                                       { 136, SHADER_VERTEX, vs_triangle_green },
                                       { 137, SHADER_FRAGMENT, fs_varying }, { 0 } },
                                    PRIM_TRIANGLES, 3, 8, 8);
    check(got == GREEN, "still refused: the context draws on (green)");
    end_context(4);
+   new_context(5, "refused interpolateAt");
+   refused_row(5, "still refused: interpolateAtCentroid with a dynamic index",
+               (const struct stage[]){
+                  { 191, SHADER_VERTEX, vs_triangle_two },
+                  { 192, SHADER_FRAGMENT, fs_array_interp_dyn }, { 0 } }, PRIM_TRIANGLES);
+   end_context(5);
 }
 
 /* A context logs three failed validations; another context logs its own. */
@@ -1087,6 +1532,7 @@ int main(void)
       samplers_row(1, 101, "samplers: a 2D and a cube sampler in one fragment shader", 0);
       incomplete_framebuffer(0);
       log_budget();
+      io_rows();
       refused_rows();
    }
 
