@@ -4,7 +4,7 @@ vkCreateRenderPass(2)	colorAttachmentCount, inputAttachmentCount	A	colors <= max
 vkCreateRenderPass(2)	attachment samples	A	one bit within the device's counts	
 vkCreateRenderPass(2)	attachment format	B	known, with color or depth/stencil attachment features (linear or optimal)	PR-B: r-format-bad, r-format-r64
 vkCreateRenderPass(2)	dependency src/dstSubpass	A	< subpassCount or EXTERNAL	
-vkCreateRenderPass(2)	viewMask, correlated masks, VkRenderPassMultiviewCreateInfo counts	A	masks within the lowered view count; multiview subpassCount 0 or = subpassCount, dependencyCount 0 or =	r-mv-legal-9..32 (KK 6), r-multiview-all
+vkCreateRenderPass(2)	viewMask, VkRenderPassMultiviewCreateInfo counts	A	view masks within the lowered view count (correlation masks are not checked: no rule bounds them, the drivers only copy them); multiview subpassCount 0 or = subpassCount, dependencyCount 0 or =	r-mv-legal-9..32 (KK 6), r-multiview-all; legal: r-correlation-ok, r-correlation2-ok
 vkCreateRenderPass(2)	VkRenderPassInputAttachmentAspectCreateInfo subpass, index	A	< subpassCount, < its input count	
 vkCreateRenderPass2	depth/stencil resolve modes	A	known single bits (KK vk_to_mtl_map.c:266/278 UNREACHABLE)	
 vkCreateFramebuffer	attachmentCount, width, height, layers	A	count = the pass's (imageless: attachment image info count), 1..maxFramebuffer*	r-fb-fewer (KK 11)
@@ -39,8 +39,8 @@ vkCreateDescriptorSetLayout	push descriptor layouts	A	<= maxPushDescriptors, no 
 vkCreateDescriptorSetLayout	mutable type lists	A	list count covers every MUTABLE binding, listed types known, none MUTABLE	
 vkCreateDescriptorPool	maxSets, pool sizes	A	each <= 2^24 (KK multiplies in 32 bits), types known	d-pool-overflow
 vkAllocateDescriptorSets	variable descriptor counts	A	count 0 or = sets; each <= the variable binding's count	d-var-count-big, d-var-info-short
-vkUpdateDescriptorSets	dstBinding, dstArrayElement, count, type	A	binding exists, type matches (or MUTABLE lists it), elements inside the binding and the consecutive ones of the same type, inline offset/size	d-binding-far (KK 10), d-elem-far (both), d-dyn-elem-far, d-inline-far, d-copy-far
-vkUpdateDescriptorSets	sampler, image view, buffer, texel view handles	A	sampler not NULL without immutable samplers; NULL view/buffer only with nullDescriptor; a multi-planar view only with immutable YCbCr samplers	d-null-sampler (KK 11), gap 8: d-null-buffer, d-null-view
+vkUpdateDescriptorSets	dstBinding, dstArrayElement, count, type	A	binding exists, type matches (or MUTABLE lists it), elements inside the binding and the consecutive ones of the same type (bindings without descriptors and missing numbers skipped), inline offset/size	d-binding-far (KK 10), d-elem-far (both), d-dyn-elem-far, d-inline-far, d-copy-far; legal: d-consecutive-gap-ok, d-consecutive-zero-ok, d-copy-consecutive-ok
+vkUpdateDescriptorSets	sampler, image view, buffer, texel view handles	A	sampler not NULL without immutable samplers; NULL view/buffer (dynamic ones too) only with nullDescriptor; a multi-planar view only with immutable YCbCr samplers	d-null-sampler (KK 11), gap 8: d-null-buffer, d-null-view; legal: d-null-dynamic-nd
 vkUpdateDescriptorSets	buffer offset/range	A	offset < size, range WHOLE or offset + range <= size	d-range-past, d-offset-past-whole (accepted: GPU)
 vkCreateQueryPool	queryType, queryCount	A	a type the device has (kk_query_pool.c:42 UNREACHABLE); 1..2^20	q-pool-type-bad, q-pool-huge
 vkGetQueryPoolResults	first, count, stride, dataSize	A	first + count <= count; (count-1)*stride + result size <= dataSize	q-results-first-far (host read returned), q-results-stride (host write)
