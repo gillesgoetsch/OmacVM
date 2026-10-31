@@ -348,7 +348,14 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   flipped (`omacvm-cocoa-modifier-state*.patch`, ui/omacvm-modifiers.h, #412:
   with Universal Control Shift went up the moment it went down); only
   a key going down or a modifier changing presses one, a pointer event only
-  releases (`app/runtime/Tests/keys/test-modifier-state.sh`).
+  releases (`app/runtime/Tests/keys/test-modifier-state.sh`). The tap deletes
+  every key and modifier change the VM took from macOS's event stream; the one
+  exception: with mac-ime on, while an input method has the keys, a Shift change
+  also goes on to macOS after the VM and the input method had it (an input
+  method's lone-Shift switch, #357), and its copy back is dropped in handleEvent
+  (`omacvm-cocoa-ime-shift*.patch`, ADR 0043; `test-ime-shift.sh`). Never let
+  other modifier changes through: chords would look like lone or double
+  modifier presses to macOS (#655's first form).
 - Escape combo (Gestures): NEVER take the VM out of full screen or hide it
   (user, 2026-10-05). Out = macOS's own "Move left/right a space" shortcut
   (symbolic hotkeys 79/81, read per press: key, modifiers, enabled), posted
