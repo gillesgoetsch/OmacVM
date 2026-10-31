@@ -1,7 +1,9 @@
 #!/bin/bash
 # The release script's offline parts: KosmicKrisp from another Mac
 # (app/runtime/import-kosmickrisp.sh) is taken only with a matching stamp and
-# a system-only dylib; release.sh and appcast.sh refuse bad arguments.
+# a system-only dylib; release.sh and appcast.sh refuse bad arguments; an app
+# built on another Mac (OMACVM_RELEASE_APP_FROM) is checked against M before
+# anything signs it; sign-app.sh signs every part of an app (ad hoc here).
 # No key, no network, nothing outside a temp folder.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -94,6 +96,221 @@ OMACVM_RELEASE_E2E_OVERRIDE=short expect 1 "e2e: an override without a reason is
 OMACVM_RELEASE_E2E_OVERRIDE="the test Mac is away; checked by hand on the Air" expect 0 "e2e: an override with a reason" rel e2e
 grep -q "checked by hand on the Air" "$G/release/e2e-override.log" && ok "e2e: the override is logged" || bad "e2e: override not logged"
 [[ $(sed -n 's/^E2E=//p' "$G/release/state" | tail -1) == override ]] && ok "e2e: the state says override" || bad "e2e: override state"
+
+# OMACVM_RELEASE_APP_FROM (an app built at M on another Mac): an absolute path
+# only, refused before any step runs.
+gate true 1111111111111111111111111111111111111111 all
+OMACVM_RELEASE_APP_FROM=m1/release expect 1 "app from: a relative path is refused" rel e2e
+[[ $(OMACVM_RELEASE_APP_FROM=m1/release rel e2e 2>&1) == *"absolute path"* ]] && ok "app from: says it wants an absolute path" || bad "app from: no reason given"
+OMACVM_RELEASE_APP_FROM=$T/m1/release expect 0 "app from: an absolute path is taken" rel e2e
+OMACVM_RELEASE_APP_FROM=$T/m1/release OMACVM_RELEASE_RUNTIME_FROM=$T/runtime expect 1 "app from: a runtime from elsewhere beside it is refused" rel e2e
+# Step image after an app from another Mac (APP_FROM in the state, from step
+# build): the image VM runs on the app's own runtime (make-image.sh with
+# OMACVM_PREBUILT_APP), also when a runtime build sits in the worktree; after a
+# build here, on the worktree's runtime build. A stand-in make-image.sh in the
+# worktree says what it was given.
+H=$T/home; W=$H/omacvm-rel-9.9.9-build
+mkdir -p "$W/src/prebuilt" "$W/app/dist/OmacVM.app/Contents/Resources/runtime/bin"
+printf '#!/bin/bash\necho "app=${OMACVM_PREBUILT_APP:-none} $*" > "%s"\nexit 1\n' "$T/img-ran" > "$W/src/prebuilt/make-image.sh"
+printf '#!/bin/sh\n' > "$W/app/dist/OmacVM.app/Contents/Resources/runtime/bin/OmacVM"
+chmod +x "$W/src/prebuilt/make-image.sh" "$W/app/dist/OmacVM.app/Contents/Resources/runtime/bin/OmacVM"
+img() { rm -f "$T/img-ran"; HOME=$H OMACVM_RELEASE_OUT=$G "$R/src/release/release.sh" 9.9.9 image > "$T/img.out" 2>&1; cat "$T/img-ran" 2>/dev/null; }
+echo "APP_FROM=$T/m1/release" >> "$G/release/state"
+[[ $(img) == "app=$W/app/dist/OmacVM.app app build generalize package clean" ]] && ok "image: an app from another Mac makes the image on its own runtime" || { bad "image: not on the app's runtime"; cat "$T/img.out"; }
+mkdir -p "$W/app/runtime/.build/qemu-gpu-runtime/bin"; printf '#!/bin/sh\n' > "$W/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+chmod +x "$W/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+[[ $(img) == "app=$W/app/dist/OmacVM.app app build generalize package clean" ]] && ok "image: the app's runtime, not a runtime build left in the worktree" || bad "image: took the worktree's runtime build for an app from another Mac"
+echo "APP_FROM=" >> "$G/release/state"
+[[ $(img) == "app=none app build generalize package clean" ]] && ok "image: after a build here, the worktree's runtime build" || bad "image: a build here does not use the worktree's runtime"
+
+# Step build with OMACVM_RELEASE_APP_FROM: an app put together at M on another
+# Mac is checked before anything signs it. A stand-in worktree (a git repo, its
+# HEAD is M; its app/scripts/sign-app.sh only leaves a mark) and a stand-in app
+# made the way build-app.sh makes one. What build-app.sh copies from git is read
+# from its own lines (the archive paths, the scripts), so the matching app fails
+# when release.sh's copy of them is not the same. Each bad app must be refused
+# for its own reason before sign-app.sh runs; a matching one reaches it (then
+# codesign --verify stops step build: nothing is signed here).
+umask 022
+BA=$R/app/scripts/build-app.sh
+# build-app.sh's lines, read as text ($ROOT and $REPO stay literal).
+# shellcheck disable=SC2016
+read -r -a SCR <<< "$(awk '/install -m755 "\$ROOT\/scripts\// { f = 1 } f { print; if (!/\\$/) exit }' "$BA" | grep -o '\$ROOT/scripts/[^"]*' | sed 's|.*/||' | tr '\n' ' ')"
+# shellcheck disable=SC2016
+read -r -a ARC <<< "$(sed -n 's/.*git -C "\$REPO" archive "\$COMMIT" \(.*\) | tar -x -C "\$C\/Resources\/omacvm".*/\1/p' "$BA")"
+(( ${#SCR[@]} && ${#ARC[@]} )) && ok "app from: build-app.sh's scripts (${SCR[*]}) and archive paths (${ARC[*]}) read" ||
+  bad "app from: build-app.sh's scripts or archive paths not found"
+H2=$T/home2; W2=$H2/omacvm-rel-9.9.9-build; G2=$T/gate2; AF=$T/af; MARK=$T/signed
+mkdir -p "$W2/src/lib" "$W2/app/scripts" "$G2/release" "$AF"
+git -C "$W2" init -q
+printf '#!/bin/bash\necho omacvm\n' > "$W2/omacvm"; chmod 755 "$W2/omacvm"
+echo 9.9.9 > "$W2/src/VERSION"; echo 'x=1' > "$W2/src/lib/x.sh"; echo '# Changelog' > "$W2/CHANGELOG.md"
+for p in ${ARC[@]+"${ARC[@]}"}; do [[ -e $W2/$p ]] || echo "$p" > "$W2/$p"; done
+for s in ${SCR[@]+"${SCR[@]}"}; do printf '#!/bin/bash\necho %s\n' "$s" > "$W2/app/scripts/$s"; chmod 755 "$W2/app/scripts/$s"; done
+[[ -f $W2/app/scripts/vm-common.sh ]] && chmod 644 "$W2/app/scripts/vm-common.sh"   # as in git (sourced, not run)
+printf '#!/bin/bash\ntouch "%s"\n' "$MARK" > "$W2/app/scripts/sign-app.sh"; chmod 755 "$W2/app/scripts/sign-app.sh"
+echo /dist/ > "$W2/app/.gitignore"
+git -C "$W2" add -A && git -C "$W2" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m M
+M2=$(git -C "$W2" rev-parse HEAD); echo "M=$M2" > "$G2/release/state"
+goodapp() {   # DIR: DIR/OmacVM.app and DIR/build.log as build-app.sh --release leaves them at M
+  local c=$1/OmacVM.app/Contents s
+  mkdir -p "$c/MacOS" "$c/Resources/omacvm" "$c/Resources/scripts" "$c/Resources/runtime/bin" "$c/Resources/runtime/lib" \
+    "$c/Resources/firmware" "$c/Resources/licenses" "$c/Resources/python/bin" "$c/Resources/tools"
+  git -C "$W2" archive "$M2" ${ARC[@]+"${ARC[@]}"} | tar -x -C "$c/Resources/omacvm"
+  echo "$M2" > "$c/Resources/omacvm/COMMIT"; chmod -R go-w "$c/Resources/omacvm"
+  for s in ${SCR[@]+"${SCR[@]}"}; do git -C "$W2" show "$M2:app/scripts/$s" > "$c/Resources/scripts/$s"; chmod 755 "$c/Resources/scripts/$s"; done
+  printf '#!/bin/sh\n' > "$c/Resources/runtime/bin/OmacVM"; chmod 755 "$c/Resources/runtime/bin/OmacVM"
+  ln -s ../Resources/runtime/bin/OmacVM "$c/MacOS/OmacVM-VM"
+  printf 'x' > "$c/Resources/python/bin/python3.13"; ln -s python3.13 "$c/Resources/python/bin/python3"
+  printf 'x' > "$c/Resources/tools/mac-notch"
+  printf 'x' > "$c/Resources/runtime/lib/libvulkan_kosmickrisp.dylib"; echo "Mesa licences" > "$c/Resources/licenses/LICENSE.mesa-kosmickrisp.txt"
+  echo "omacvm edk2-stable202408-omacvm (stand-in)" > "$c/Resources/firmware/firmware-source"
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.omacvm.app</string><key>CFBundleShortVersionString</key><string>9.9.9</string><key>OmacVMCommit</key><string>%s</string></dict></plist>\n' "$M2" > "$c/Info.plist"
+  echo "==> built (stand-in)" > "$1/build.log"
+}
+goodapp "$AF/good"
+mk() { rm -rf "${AF:?}/$1"; ditto "$AF/good" "$AF/$1"; }   # CASE: a copy of the matching app
+afrun() {   # CASE [VAR=VALUE...]: step build with it; says whether sign-app.sh ran
+  local c=$1; shift
+  rm -f "$MARK"
+  env "$@" HOME="$H2" OMACVM_RELEASE_OUT="$G2" OMACVM_SIGN_ID=x OMACVM_RELEASE_APP_FROM="$AF/$c" "$R/src/release/release.sh" 9.9.9 build > "$T/af.out" 2>&1
+  [[ -e $MARK ]] && echo signed || echo refused
+}
+refused() {   # NAME CASE WHY [VAR=VALUE...]: refused before sign-app.sh, saying WHY
+  local name=$1 c=$2 why=$3; shift 3
+  if [[ $(afrun "$c" "$@") == refused && $(cat "$T/af.out") == *"$why"* ]]; then ok "app from: $name"
+  else bad "app from: $name (not refused with \"$why\")"; cat "$T/af.out"; fi
+}
+taken() {   # NAME CASE [VAR=VALUE...]: reaches sign-app.sh
+  local name=$1 c=$2; shift 2
+  if [[ $(afrun "$c" "$@") == signed ]]; then ok "app from: $name"; else bad "app from: $name (refused)"; cat "$T/af.out"; fi
+}
+pl() { /usr/libexec/PlistBuddy -c "Set :$2 $3" "$AF/$1/OmacVM.app/Contents/Info.plist"; }   # CASE KEY VALUE
+taken "a matching app reaches sign-app.sh" good
+C1=OmacVM.app/Contents
+mk commit; pl commit OmacVMCommit 1111111111111111111111111111111111111111
+refused "another OmacVMCommit" commit "the app is not M"
+mk version; pl version CFBundleShortVersionString 9.9.8
+refused "another version" version "the app is not 9.9.9"
+mk id; pl id CFBundleIdentifier org.omacvm.app.test
+refused "another bundle id" id "the app is not org.omacvm.app"
+mk nolog; rm "$AF/nolog/build.log"
+refused "no build.log" nolog "or build.log in"
+mkdir -p "$AF/applink"; ln -s "$AF/good/OmacVM.app" "$AF/applink/OmacVM.app"; cp "$AF/good/build.log" "$AF/applink/"
+refused "OmacVM.app is a link" applink "a folder, not a link"
+# Resources/omacvm (git archive M, COMMIT, go-w).
+mk om-changed; echo more >> "$AF/om-changed/$C1/Resources/omacvm/CHANGELOG.md"
+refused "omacvm: a changed file" om-changed "its omacvm is not git archive M"
+mk om-extra; echo x > "$AF/om-extra/$C1/Resources/omacvm/src/extra.sh"
+refused "omacvm: an extra file" om-extra "its omacvm is not git archive M"
+mk om-mode; chmod 755 "$AF/om-mode/$C1/Resources/omacvm/CHANGELOG.md"
+refused "omacvm: a mode change" om-mode "its omacvm is not git archive M"
+mk om-link; rm "$AF/om-link/$C1/Resources/omacvm/src/lib/x.sh"; ln -s /etc/hosts "$AF/om-link/$C1/Resources/omacvm/src/lib/x.sh"
+refused "omacvm: a link" om-link "its omacvm is not git archive M"
+# Resources/scripts (M's app/scripts, mode 755: the matching app has vm-common.sh at 755, git at 644).
+s0=${SCR[0]:-create-vm.sh}
+mk sc-changed; echo '# more' >> "$AF/sc-changed/$C1/Resources/scripts/$s0"
+refused "scripts: a changed script" sc-changed "its scripts are not M's app/scripts"
+mk sc-missing; rm "$AF/sc-missing/$C1/Resources/scripts/$s0"
+refused "scripts: a missing script" sc-missing "its scripts are not M's app/scripts"
+mk sc-extra; printf '#!/bin/bash\n' > "$AF/sc-extra/$C1/Resources/scripts/extra.sh"; chmod 755 "$AF/sc-extra/$C1/Resources/scripts/extra.sh"
+refused "scripts: an extra script" sc-extra "its scripts are not M's app/scripts"
+mk sc-644; chmod 644 "$AF/sc-644/$C1/Resources/scripts/$s0"
+refused "scripts: a script at 644" sc-644 "its scripts are not M's app/scripts"
+mk sc-link; rm "$AF/sc-link/$C1/Resources/scripts/$s0"; ln -s ../omacvm/omacvm "$AF/sc-link/$C1/Resources/scripts/$s0"
+refused "scripts: a script replaced by a link" sc-link "links are not the two"
+# The shape: file types, links, modes.
+mk link-out; ln -s /usr/bin/true "$AF/link-out/$C1/Resources/tools/mac-clock"
+refused "a link out of the app (tools/)" link-out "links are not the two"
+mk vm-file; rm "$AF/vm-file/$C1/MacOS/OmacVM-VM"; cp "$AF/vm-file/$C1/Resources/runtime/bin/OmacVM" "$AF/vm-file/$C1/MacOS/OmacVM-VM"
+refused "OmacVM-VM a file, not a link" vm-file "links are not the two"
+mk w777; chmod 777 "$AF/w777/$C1/Resources/python/bin/python3.13"
+refused "a file at 777 (python/)" w777 "writable by group or others"
+mk suid; chmod 4755 "$AF/suid/$C1/Resources/runtime/bin/OmacVM"
+refused "a setuid file" suid "setuid/setgid"
+mk sock; (cd "$AF/sock/$C1/Resources/tools" && python3 -I -c 'import socket; socket.socket(socket.AF_UNIX).bind("sock")')
+refused "a socket (not a file, folder or link)" sock "not a file, folder or link"
+# Refused later anyway, but only after signing or notarizing.
+mk fail; echo "FAIL virgl: a build test" >> "$AF/fail/build.log"
+refused "a FAIL in build.log" fail "a build test failed there"
+touch "$W2/stray"
+refused "a worktree with changes" good "has changes"
+rm -f "$W2/stray"
+mk nokk; rm "$AF/nokk/$C1/Resources/runtime/lib/libvulkan_kosmickrisp.dylib"
+refused "no KosmicKrisp" nokk "no KosmicKrisp"
+taken "no KosmicKrisp with OMACVM_RELEASE_NO_KOSMICKRISP=1" nokk OMACVM_RELEASE_NO_KOSMICKRISP=1
+mk nokklic; : > "$AF/nokklic/$C1/Resources/licenses/LICENSE.mesa-kosmickrisp.txt"
+refused "an empty KosmicKrisp licence notice" nokklic "no KosmicKrisp"
+mk qemufw; echo "qemu edk2-aarch64-code.fd (QEMU's)" > "$AF/qemufw/$C1/Resources/firmware/firmware-source"
+refused "QEMU's firmware" qemufw "QEMU's firmware, not OmacVM's"
+taken "QEMU's firmware with OMACVM_FIRMWARE=qemu" qemufw OMACVM_FIRMWARE=qemu
+
+# sign-app.sh (build-app.sh's signing, also release.sh's for an app built
+# elsewhere): its arguments, and an ad hoc signing of a stand-in app with every
+# part the real one has (tiny arm64 programs), which then verifies.
+SA=$R/app/scripts/sign-app.sh
+expect 1 "sign-app.sh: no arguments" "$SA"
+expect 1 "sign-app.sh: not an app" "$SA" "$T" org.omacvm.test.signapp
+if command -v cc >/dev/null; then
+  A=$T/sa/Stand-in.app; C=$A/Contents
+  echo 'int main(void) { return 0; }' > "$T/m.c"; cc -arch arm64 -o "$T/m" "$T/m.c"
+  echo 'int f(void) { return 0; }' > "$T/l.c"; cc -arch arm64 -dynamiclib -o "$T/l.dylib" "$T/l.c"
+  bundle() {   # DIR ID EXE TYPE: a bundle with its program and Info.plist
+    mkdir -p "$1/Contents/MacOS"; cp "$T/m" "$1/Contents/MacOS/$3"
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>%s</string><key>CFBundleExecutable</key><string>%s</string><key>CFBundlePackageType</key><string>%s</string></dict></plist>\n' "$2" "$3" "$4" > "$1/Contents/Info.plist"
+  }
+  bundle "$A" org.omacvm.test.signapp OmacVM APPL
+  mkdir -p "$C/Resources/runtime/lib" "$C/Resources/runtime/bin" "$C/Resources/tools" "$C/Resources/python/bin" "$C/Library/LaunchServices" "$C/Helpers" "$C/PlugIns"
+  cp "$T/l.dylib" "$C/Resources/runtime/lib/libstand-in.dylib"
+  for f in runtime/bin/zstd runtime/bin/OmacVM tools/mac-notch python/bin/python3.13; do cp "$T/m" "$C/Resources/$f"; done
+  cp "$T/m" "$C/Library/LaunchServices/org.omacvm.netd"
+  for h in "OmacVM Test Bridge:org.omacvm.test.bridge" "OmacVM Test Gestures:org.omacvm.test.gestures" "Omanotch:ch.gillesgoetsch.omanotch"; do
+    bundle "$C/Helpers/${h%%:*}.app" "${h#*:}" helper APPL; codesign --force --sign - "$C/Helpers/${h%%:*}.app" 2>/dev/null
+  done
+  bundle "$C/PlugIns/OmacVMDockTile.docktileplugin" org.omacvm.test.signapp.docktile OmacVMDockTile BNDL
+  expect 0 "sign-app.sh: ad hoc, every part, verifies" env -u OMACVM_SIGN_ID "$SA" "$A" org.omacvm.test.signapp --test-identity
+  [[ $(codesign -dv "$C/Resources/runtime/bin/OmacVM" 2>&1) == *"Identifier=org.omacvm.test.signapp.qemu"* ]] && ok "sign-app.sh: QEMU's identifier follows the id" || bad "sign-app.sh: QEMU identifier"
+  [[ $(codesign -dv "$A" 2>&1) == *"Identifier=org.omacvm.test.signapp"* ]] && ok "sign-app.sh: the app's identifier is the given id" || bad "sign-app.sh: app identifier"
+  expect 1 "sign-app.sh: without --test-identity the release helpers' names are wanted" env OMACVM_SIGN_ID=- "$SA" "$A" org.omacvm.test.signapp
+else
+  echo "skip the sign-app.sh stand-in (no cc)"
+fi
+
+# make-image.sh app (release.sh's image step) makes and starts the image VM
+# with this checkout's app/scripts and runtime build, or, with
+# OMACVM_PREBUILT_APP, with that app's own scripts and runtime (an app built on
+# another Mac leaves no runtime build in the checkout). Run from a copy of the
+# parts it reads, with stand-in scripts that only say which one ran: no VM, no
+# download.
+MI=$T/mi; IA=$T/mi-app/OmacVM.app; mkdir -p "$MI/src" "$MI/app/scripts" "$IA/Contents/Resources/scripts" "$IA/Contents/Resources/runtime/bin"
+cp -R "$R/src/lib" "$R/src/vm" "$R/src/prebuilt" "$R/src/VERSION" "$MI/src/"
+standin() {   # DIR WHO: create-vm.sh and vm-common.sh that write WHO and stop
+  printf '#!/bin/bash\necho "%s create $1" > "%s"\nexit 1\n' "$2" "$MI/ran" > "$1/create-vm.sh"; chmod +x "$1/create-vm.sh"
+  printf 'vm_load() { echo "%s boot $1" > "%s"; exit 1; }\n' "$2" "$MI/ran" > "$1/vm-common.sh"
+}
+standin "$MI/app/scripts" checkout; standin "$IA/Contents/Resources/scripts" app
+printf '#!/bin/sh\n' > "$IA/Contents/Resources/runtime/bin/OmacVM"; chmod +x "$IA/Contents/Resources/runtime/bin/OmacVM"
+plist_version() {   # VERSION: the stand-in app's Info.plist
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.omacvm.app</string><key>CFBundleShortVersionString</key><string>%s</string></dict></plist>\n' "$1" > "$IA/Contents/Info.plist"
+}
+plist_version "$(cat "$R/src/VERSION")"
+mimg() { rm -f "$MI/ran"; HOME=$T/mi-home OMACVM_PREBUILT_OUT=$T/mi-out "$MI/src/prebuilt/make-image.sh" app "$@" > "$T/mi.out" 2>&1; cat "$MI/ran" 2>/dev/null; }
+VMD=$T/mi-out/app/vm
+[[ $(mimg build) == "" ]] && ok "make-image: no runtime build and no app: nothing runs" || bad "make-image: ran without a runtime"
+[[ $(OMACVM_PREBUILT_APP=$IA mimg build) == "app create $VMD" ]] && ok "make-image: OMACVM_PREBUILT_APP: the app's create script makes the VM" || { bad "make-image: the app's create script did not run"; cat "$T/mi.out"; }
+rm -rf "$VMD"; mkdir -p "$VMD"
+[[ $(OMACVM_PREBUILT_APP=$IA mimg generalize) == "app boot $VMD" ]] && ok "make-image: OMACVM_PREBUILT_APP: the app's scripts start the VM" || { bad "make-image: the app's scripts did not start the VM"; cat "$T/mi.out"; }
+rm -rf "$VMD"
+mkdir -p "$MI/app/runtime/.build/qemu-gpu-runtime/bin"; printf '#!/bin/sh\n' > "$MI/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+chmod +x "$MI/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+[[ $(OMACVM_PREBUILT_APP=$IA mimg build) == "app create $VMD" ]] && ok "make-image: OMACVM_PREBUILT_APP wins over a runtime build in the checkout" || bad "make-image: took the checkout's runtime over OMACVM_PREBUILT_APP"
+rm -rf "$VMD"
+[[ $(mimg build) == "checkout create $VMD" ]] && ok "make-image: without it, the checkout's scripts and runtime build" || bad "make-image: the checkout's scripts did not run"
+rm -rf "$VMD"
+[[ $(OMACVM_PREBUILT_APP=mi-app/OmacVM.app mimg build) == "" && $(cat "$T/mi.out") == *"absolute path"* ]] && ok "make-image: a relative OMACVM_PREBUILT_APP is refused" || bad "make-image: took a relative OMACVM_PREBUILT_APP"
+plist_version 0.0.1
+[[ $(OMACVM_PREBUILT_APP=$IA mimg build) == "" && $(cat "$T/mi.out") == *"0.0.1"* ]] && ok "make-image: an app of another version is refused" || bad "make-image: took an app of another version"
+rm -rf "$VMD"
 
 # appcast.sh ZIP: only an OmacVM-<version>.zip.
 touch "$T/Other.zip"

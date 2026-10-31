@@ -165,6 +165,7 @@ The VM is a normal install: `omarchy update` and snapshots work.
 | `app/` | the launcher (Swift) |
 | `scripts/create-vm.sh` | builds a VM, headless |
 | `scripts/build-app.sh` | builds the app |
+| `scripts/sign-app.sh` | signs it (Developer ID with `OMACVM_SIGN_ID`, else ad hoc); also `release.sh`'s signing for an app built on another Mac |
 | `scripts/package-release.sh` | zips the built app for a release |
 | `scripts/appcast.sh` | the release's signed update feed |
 | `scripts/update-swap.sh` | swaps in an update, puts the old app back if the new one does not start |

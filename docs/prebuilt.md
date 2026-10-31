@@ -165,6 +165,11 @@ src/prebuilt/make-image.sh parallels clean     # delete the image VM
   (`OMACVM_HOST_PORTS=` empty). The package is `disk.img` alone, copied
   without its zeroed space; no firmware variables (GRUB is also on the
   disk's fallback path, `\EFI\BOOT\BOOTAA64.EFI`).
+  `OMACVM_PREBUILT_APP=/path/OmacVM.app` (absolute, the checkout's
+  version): the build and the start use that app's own scripts and runtime
+  (its `Contents/Resources`), as the app makes a person's VM. `release.sh`
+  sets it for an app built on another Mac, which leaves no runtime build in
+  the checkout.
 - **package**: the disk is compacted (`prl_disk_tool compact`,
   `vmware-vdiskmanager -k`; UTM's qcow2 stays sparse), the bundle is copied
   without logs, the Parallels `VM.app` stub, Mac paths, shared folders, ids or
