@@ -402,8 +402,9 @@ final class GPUMemoryWatch {
             guest("/usr/local/bin/omacvm-desktop-recover", ["app", app.name, app.why]) { _ in }
         }
         for name in notice.waiting where !waiting.contains(name) {
+            // A desktop restart before then voids it (restartDesktop): the line says so.
             log("OmacVM: \(name) in the VM lost its GPU context again within a minute of the last note: "
-                + "told when that minute is over")
+                + "told when that minute is over, unless the desktop restarts before then")
         }
     }
 

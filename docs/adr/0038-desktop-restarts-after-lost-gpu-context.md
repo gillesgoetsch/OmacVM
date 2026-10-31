@@ -182,8 +182,8 @@ late tell could end the GPU process of a Chrome opened again in the new
 session. Apps told more than a minute ago are forgotten, so names from the
 VM cannot grow the list. qemu.log says "NAME in the VM lost its GPU
 context again within a minute of the last note: told when that minute is
-over", then "NAME in the VM lost its GPU context N s ago: ... (told now:
-a minute after the last note)".
+over, unless the desktop restarts before then", then "NAME in the VM lost
+its GPU context N s ago: ... (told now: a minute after the last note)".
 
 The VM side is unchanged (`omacvm-desktop-recover app NAME WHY`). With
 3.2.15's script a late tell restarts the app's GPU process only within the
