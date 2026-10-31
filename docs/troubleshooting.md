@@ -281,14 +281,18 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
     <version> yet" and the rest of the apply or update goes on, but the
     package's own Hyprland stays: a black screen from the next login.
     `omacvm check`'s "Hyprland" line names the version; `omacvm update` brings
-    the patch once OmacVM has one.
+    the patch once OmacVM has one. From 3.2.16 the next apply or update says
+    the same without downloading Hyprland's source again (99 240 KB of
+    git objects for 0.57.0) until Hyprland or OmacVM's patches change; `omacvm update` to
+    3.2.16 checks once more.
 - **Where:** `src/fusion/guest/build-hyprland.sh`,
   `src/fusion/guest/hyprland-vmwgfx/<release>.patch`, the hook
   `/etc/pacman.d/hooks/zz-omacvm-hyprland.hook` written by
   `src/fusion/guest/install.sh`. In the VM: state in
   `/var/lib/omacvm/hyprland-vmwgfx`, log in
   `/var/cache/omacvm/hyprland-vmwgfx/build.log`. Test:
-  `src/tests/fusion-vmwgfx.sh` (each patch applies to its release).
+  `src/tests/fusion-vmwgfx.sh` (each patch applies to its release; the
+  skip for a recorded "none").
 - **If it comes back:** `omacvm apply --vm NAME`, or in the VM
   `/usr/local/lib/omacvm/fusion/build-hyprland.sh`. To test the hook, reinstall
   with `pacman -S omarchy/hyprland`. Plain `pacman -S hyprland` takes Arch's
