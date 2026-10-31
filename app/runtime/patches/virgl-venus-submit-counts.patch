@@ -1,0 +1,148 @@
+virglrenderer: Venus submit chains fit the submit's counts
+
+What: vkQueueSubmit's chained VkTimelineSemaphoreSubmitInfo gets value arrays of
+exactly the submit's wait and signal counts before the driver sees them (extra
+values dropped; missing ones, and an absent array, 0), and a VkDeviceGroupSubmitInfo
+whose counts differ from the submit's is refused. vkQueueBindSparse on a queue whose
+family has no SPARSE_BINDING bit is refused (on both Mac drivers: every family); its
+chained values are fitted the same way. A refusal ends the app's context (the guest
+does not wait for a submit).
+Why: MoltenVK writes waitSemaphoreValueCount and signalSemaphoreValueCount values
+into arrays of waitSemaphoreCount and signalSemaphoreCount entries (MVKQueue.mm).
+With binary semaphores alone, where Vulkan ignores the values (VUIDs
+VkSubmitInfo-pNext-03240 and -03241 apply only to timeline semaphores), a legal
+submit wrote guest values past a host heap array. Mesa reads the values and the
+device group indices by the submit's counts (its asserts compiled out), and the
+decoder lets a value array be absent with any count.
+Upstream: OmacVM policy (spec VUIDs; MoltenVK issue draft, not posted).
+Tests: Tests/virgl/test-venus-commands.c (the s- cases; s-submit-values-64 also under
+libgmalloc, where MoltenVK's write ended the process before this patch).
+
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index 8977b5b..b5bc74f 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -420,14 +420,89 @@ vkr_dispatch_vkGetDeviceQueue(struct vn_dispatch_context *dispatch,
+    return;
+ }
+ 
++/* OmacVM (virgl-venus-submit-counts.patch, ADR 0065): arrays chained to a submit carry
++ * counts of their own. Vulkan ties them to the submit's (VkDeviceGroupSubmitInfo always,
++ * VUIDs 00082, 00083, 00084; VkTimelineSemaphoreSubmitInfo only when a timeline semaphore is
++ * named, VUIDs 03240, 03241: with binary semaphores alone the values are ignored), and the
++ * drivers use them by either count: MoltenVK writes waitSemaphoreValueCount and
++ * signalSemaphoreValueCount values into its arrays of waitSemaphoreCount and
++ * signalSemaphoreCount entries (MVKQueue.mm: guest values written past a host heap array),
++ * Mesa reads the values and the device indices by the submit's counts (past the guest's
++ * arrays; the decoder lets a value array be absent with any count). So each value array is
++ * made exactly the submit's length (extra values dropped, missing ones 0: they count only
++ * for timeline semaphores, where the call was invalid anyway), and a device group whose
++ * counts differ is refused (the app's context ends: the guest does not wait for a submit). */
++static bool
++vkr_submit_values_fit(struct vn_dispatch_context *dispatch,
++                      uint32_t *count,
++                      const uint64_t **values,
++                      uint32_t want)
++{
++   const uint32_t have = *values ? *count : 0;
++   if (have < want) {
++      uint64_t *v = vkr_cs_decoder_alloc_temp_array((struct vkr_cs_decoder *)dispatch->decoder,
++                                                    sizeof(*v), want);
++      if (!v)
++         return false;
++      if (have)
++         memcpy(v, *values, sizeof(*v) * have);
++      memset(v + have, 0, sizeof(*v) * (want - have));
++      *values = v;
++   }
++   *count = want;
++   return true;
++}
++
++/* one submit's chain (a VkSubmitInfo's, or a VkBindSparseInfo's: device groups only for
++ * submits); false after a refusal */
++static bool
++vkr_submit_chain_ok(struct vn_dispatch_context *dispatch,
++                    const char *call,
++                    uint32_t index,
++                    const void *chain,
++                    uint32_t wait_count,
++                    uint32_t command_count,
++                    uint32_t signal_count,
++                    bool device_group)
++{
++   VkTimelineSemaphoreSubmitInfo *timeline =
++      vkr_find_struct(chain, VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO);
++   if (timeline &&
++       (!vkr_submit_values_fit(dispatch, &timeline->waitSemaphoreValueCount,
++                               &timeline->pWaitSemaphoreValues, wait_count) ||
++        !vkr_submit_values_fit(dispatch, &timeline->signalSemaphoreValueCount,
++                               &timeline->pSignalSemaphoreValues, signal_count)))
++      return false;
++   const VkDeviceGroupSubmitInfo *group =
++      device_group ? vkr_find_struct(chain, VK_STRUCTURE_TYPE_DEVICE_GROUP_SUBMIT_INFO) : NULL;
++   return !group ||
++          vkr_context_check(dispatch->data,
++                            group->waitSemaphoreCount == wait_count &&
++                               group->commandBufferCount == command_count &&
++                               group->signalSemaphoreCount == signal_count,
++                            call, "submit %u: device group counts %u, %u, %u for %u, %u, %u",
++                            index, group->waitSemaphoreCount, group->commandBufferCount,
++                            group->signalSemaphoreCount, wait_count, command_count,
++                            signal_count);
++}
++
+ static void
+-vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkQueueSubmit(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkQueueSubmit *args)
+ {
+    TRACE_FUNC();
+    struct vkr_queue *queue = vkr_queue_from_handle(args->queue);
+    struct vn_device_proc_table *vk = &queue->device->proc_table;
+ 
++   /* OmacVM (virgl-venus-submit-counts.patch) */
++   for (uint32_t i = 0; i < args->submitCount; i++) {
++      const VkSubmitInfo *submit = &args->pSubmits[i];
++      if (!vkr_submit_chain_ok(dispatch, "vkQueueSubmit", i, submit->pNext,
++                               submit->waitSemaphoreCount, submit->commandBufferCount,
++                               submit->signalSemaphoreCount, true))
++         return;
++   }
++
+    vn_replace_vkQueueSubmit_args_handle(args);
+ 
+    mtx_lock(&queue->vk_mutex);
+@@ -437,13 +512,31 @@ vkr_dispatch_vkQueueSubmit(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkQueueBindSparse(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkQueueBindSparse(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkQueueBindSparse *args)
+ {
+    TRACE_FUNC();
+    struct vkr_queue *queue = vkr_queue_from_handle(args->queue);
+    struct vn_device_proc_table *vk = &queue->device->proc_table;
+ 
++   /* OmacVM (virgl-venus-submit-counts.patch): only a queue of a family with
++    * SPARSE_BINDING binds sparse memory (VUID-vkQueueBindSparse-queuetype); neither Mac
++    * driver has one (MoltenVK answers FEATURE_NOT_PRESENT, KosmicKrisp's queue ignores the
++    * binds Mesa's runtime copies, its chained values read as vkQueueSubmit's) */
++   const struct vkr_physical_device *physical_dev = queue->device->physical_device;
++   const bool sparse = queue->family < physical_dev->queue_family_property_count &&
++                       (physical_dev->queue_family_properties[queue->family].queueFlags &
++                        VK_QUEUE_SPARSE_BINDING_BIT);
++   if (!vkr_context_check(dispatch->data, sparse, "vkQueueBindSparse",
++                          "queue family %u has no sparse binding", queue->family))
++      return;
++   for (uint32_t i = 0; i < args->bindInfoCount; i++) {
++      const VkBindSparseInfo *bind = &args->pBindInfo[i];
++      if (!vkr_submit_chain_ok(dispatch, "vkQueueBindSparse", i, bind->pNext,
++                               bind->waitSemaphoreCount, 0, bind->signalSemaphoreCount, false))
++         return;
++   }
++
+    vn_replace_vkQueueBindSparse_args_handle(args);
+ 
+    mtx_lock(&queue->vk_mutex);
