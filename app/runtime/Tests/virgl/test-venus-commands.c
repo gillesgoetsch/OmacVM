@@ -2428,6 +2428,48 @@ static int after_mv_case(const char *c, struct world *w)
    return end(cmd);
 }
 
+/* An app that destroys the render pass or framebuffer while a pass of it is open (its command
+ * buffer is invalid then): vkr must neither read the destroyed pass (vkr_cmd_state names it by
+ * id and serial, never by pointer) nor let the driver read it (Mesa's vk_render_pass does at the
+ * next subpass and the end), also when a new pass took the old id. The child runs with
+ * MallocScribble=1 (main), so a read of freed memory finds 0x55 bytes and fails at once. */
+static int destroyed_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   const VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   void *rp = two_subpass_pass(NULL, 0);
+   void *views[1] = { w->iv };
+   void *fb = rp ? framebuffer(rp, views, 1, 64, 64, 1) : NULL;
+   if (!fb)
+      broken("two-subpass framebuffer");
+   const uint64_t rp_id = ((struct vkr_object *)rp)->id;
+   begin_pass(cmd, rp, fb, 64, 64);
+   if (IS("c-state-destroyed-fb-end")) {
+      struct vn_command_vkDestroyFramebuffer d = { .device = DEVH, .framebuffer = (VkFramebuffer)fb };
+      step("vkDestroyFramebuffer while its pass is open");
+      D->dispatch_vkDestroyFramebuffer(D, &d);
+   } else {
+      struct vn_command_vkDestroyRenderPass d = { .device = DEVH, .renderPass = (VkRenderPass)rp };
+      step("vkDestroyRenderPass while its pass is open");
+      D->dispatch_vkDestroyRenderPass(D, &d);
+   }
+   if (IS("c-state-destroyed-id-reused")) {
+      /* another two-subpass pass, made with the destroyed one's id */
+      const uint64_t saved = next_id;
+      next_id = rp_id;
+      if (!two_subpass_pass(NULL, 0))
+         broken("render pass with the old id");
+      next_id = saved;
+   }
+   if (IS("c-state-destroyed-pass-next") || IS("c-state-destroyed-id-reused")) {
+      struct vn_command_vkCmdNextSubpass ns = { .commandBuffer = cb, .contents = VK_SUBPASS_CONTENTS_INLINE };
+      step("vkCmdNextSubpass");
+      D->dispatch_vkCmdNextSubpass(D, &ns);
+   }
+   end_pass(cmd);
+   return end(cmd);
+}
+
 static int state_case(const char *c, struct world *w)
 {
    void *cmd = w->cmd;
@@ -2456,6 +2498,8 @@ static int state_case(const char *c, struct world *w)
    begin(cmd);
    if (!strncmp(c, "c-state-after-mv", 16))
       return after_mv_case(c, w);
+   if (!strncmp(c, "c-state-destroyed-", 18))
+      return destroyed_case(c, w);
    if (IS("c-state-after-end")) {
       const int r = end(cmd);
       if (r != WORKS)
@@ -3232,6 +3276,8 @@ static const struct test_case cases[] = {
    { "c-state-query-views-ok", E_WORKS }, { "c-state-query-views-past", E_REFUSE },
    { "c-state-after-mv-timestamp", E_WORKS }, { "c-state-after-mv-query", E_WORKS },
    { "c-state-after-mv2-timestamp", E_WORKS }, { "c-state-after-mv-dyn-timestamp", E_WORKS },
+   { "c-state-destroyed-pass-next", E_REFUSE }, { "c-state-destroyed-pass-end", E_REFUSE },
+   { "c-state-destroyed-fb-end", E_REFUSE }, { "c-state-destroyed-id-reused", E_REFUSE },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
    { "c-region-i2b-max", E_WORKS }, { "c-region-i2b-past", E_REFUSE },
@@ -3377,6 +3423,15 @@ int main(int argc, char **argv)
       _exit(kosmickrisp ? ERROR : WORKS);
    }
    if (argc == 2) {
+      /* the destroyed-object cases: macOS's malloc fills freed memory with 0x55 bytes, so a
+       * read of a destroyed pass faults at once instead of finding its old values */
+      if (!strncmp(argv[1], "c-state-destroyed-", 18) && !getenv("MallocScribble")) {
+         setenv("MallocScribble", "1", 1);
+         setenv("MallocNanoZone", "0", 1);
+         execv(argv[0], argv);
+         printf("test setup: execv with MallocScribble failed\n");
+         _exit(BROKEN);
+      }
       const int status = run_case(argv[1]);
       printf("case end: %s\n", outcome_name(status));
       fflush(stdout);
