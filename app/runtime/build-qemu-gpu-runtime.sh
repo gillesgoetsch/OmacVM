@@ -1172,6 +1172,10 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volat
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volatile.patch"
 "$native_dir/Tests/display/test-present-volatile.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the spare present surfaces are not wired as tested (test-present-volatile.sh)"
+# That patch moved omacvmWindowSeen:'s work into omacvmSight:: the out-of-sight
+# skip must still be wired as present-unseen's test reads it.
+"$native_dir/Tests/display/test-present-unseen.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: frames are drawn for a window out of sight after the volatile patch (test-present-unseen.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
