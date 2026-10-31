@@ -522,8 +522,8 @@ jobs:
       - name: No macOS prompt for QEMU's full-grab tap at the VM's start (made only when already allowed)
         run: app/runtime/Tests/keys/test-tap-no-ask.sh
 
-      - name: QEMU's full-grab tap takes no modifier events (issue 357)
-        run: app/runtime/Tests/keys/test-tap-no-flags.sh
+      - name: Shift also goes to macOS while a Mac input method has the keys (issue 357; nothing else, mac-ime only)
+        run: app/runtime/Tests/keys/test-ime-shift.sh
 
       - name: Modifier keys follow each event's flags (Universal Control, issue 412; the old rules fail it)
         run: app/runtime/Tests/keys/test-modifier-state.sh
