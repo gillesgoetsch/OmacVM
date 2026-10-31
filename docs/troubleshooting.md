@@ -35,7 +35,8 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   ([50](#50-all-routes-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
-  and Kitty draw on the Mac's GPU
+  and Kitty draw on the Mac's GPU; from 3.2.17 the app's experimental switch
+  Ghostty on the Mac's GPU moves Ghostty there too (macOS 26 and newer)
   ([47](#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)).
 - **Activity Monitor shows the VM with far more memory than you gave it**
   (OmacVM.app, e.g. 23 GB for a 12 GB VM): its graphics come on top, and
@@ -1463,10 +1464,31 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   session (GL programs started from that Ghostty's shell draw on the CPU too;
   Chromium drops the variable). A driver set by hand (`LIBGL_ALWAYS_SOFTWARE`,
   `MESA_LOADER_DRIVER_OVERRIDE`, `GALLIUM_DRIVER`) wins over OmacVM's.
+- **On the Mac's GPU (3.2.17, experimental):** the VM window's switch
+  Ghostty on the Mac's GPU (General) starts Ghostty alone on Zink over the
+  VM's Vulkan with a forced OpenGL 4.3, on macOS 26 and newer (KosmicKrisp)
+  with Graphics Automatic or Vulkan. Update OmacVM.app, Update VM, turn the
+  switch on, then shut the VM down and start it again (a restart inside the
+  VM keeps the old answer; the row says what the running VM got); a Ghostty
+  that is open keeps its driver until you quit it. Measured on a Mac mini M4
+  and a MacBook Pro M1 Max: typing shown in 25 and 28 ms instead of 56 and
+  57, 10 s of fast output 3.3 and 3.4 instead of 32.8 and 31.7 Ghostty
+  CPU-seconds, for 6-9 % of the Mac's GPU and 150-300 MB of its graphics
+  memory per window. `omacvm check` says which
+  driver a running Ghostty has (zink or llvmpipe) and why. Not with GPU safe
+  mode, Graphics OpenGL or MoltenVK (macOS 15): Ghostty stays on the CPU.
+- **Symptom with the switch on:** Ghostty stops drawing and takes no input,
+  and Hyprland asks "Application Not Responding ... Terminate / Wait".
+  **Cause:** the Mac ended Ghostty's Vulkan context (it refused a command,
+  or the VM's graphics memory budget was used up). **Fix:** Terminate (the
+  programs running in that Ghostty end with it), then open Ghostty again; if
+  it happens again, turn the switch off and quit Ghostty.
 - **Where:** `src/app/guest/omacvm_egl.c` (OmacVM's EGL vendor library),
-  `src/guest/check.sh` ("Ghostty"); tests
-  `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`;
-  ADR 0064 (#598).
+  `src/guest/check.sh` ("Ghostty"), the app's `GhosttyGPU`
+  (`app/app/Sources/OmacVMWindow/GhosttyGPU.swift`); tests
+  `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`,
+  `swift run window-tests`, `src/tests/app-settings.sh`; ADR 0064 and its
+  amendment (#598).
 
 ## 48. app: Chrome goes blank or flickers while the Mac is short of memory
 

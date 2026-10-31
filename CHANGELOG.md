@@ -3,6 +3,24 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.18 (unreleased)
+
+- **Ghostty on the Mac's GPU, an experimental switch (OmacVM.app, see #598, @benoitdepaire).**
+  Ghostty needs OpenGL 4.3 and the VM's GPU gives 4.1, so since 3.2.14 Ghostty draws on the VM's
+  CPU. With the new switch "Ghostty on the Mac's GPU" (the VM window's General section, off by
+  default) Ghostty alone draws on the Mac's GPU through Zink over the VM's Vulkan, with OpenGL 4.3
+  forced, on macOS 26 and newer (KosmicKrisp). Measured on a Mac mini M4 and a MacBook Pro M1 Max
+  (a 1896x1030 window, median of 3): typing shown in 25 and 28 ms instead of 56 and 57, 10 s of
+  fast output took Ghostty 3.3 and 3.4 CPU-seconds instead of 32.8 and 31.7, and QEMU on the Mac 12
+  instead of 45 per run, with 56-57 instead of 30-37 changed frames a second; it uses 6-9 % of the
+  Mac's GPU while text scrolls and 150-300 MB of its graphics memory per window. The programs started in Ghostty keep the VM's normal graphics.
+  If the Mac ends Ghostty's Vulkan context, that Ghostty stops responding and only Terminate helps
+  (the programs in it end); the switch's (i) says so. Graphics OpenGL, MoltenVK (macOS 15) and GPU
+  safe mode keep Ghostty on the CPU. `omacvm check` now says which driver a running Ghostty has.
+  GTK's error line about a bad dma-buf file descriptor, once a frame under Zink, is gone: Mesa
+  answered the export without a descriptor. Needs the app update and Update VM, then a start of
+  the VM with the switch on (a Ghostty already open keeps its driver until you quit it).
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;
