@@ -16,13 +16,15 @@
  * call, when Mesa's call fails and from two threads at once; a LIBGL_ALWAYS_SOFTWARE,
  * MESA_LOADER_DRIVER_OVERRIDE or GALLIUM_DRIVER already set is left as it is; the record in
  * $XDG_RUNTIME_DIR/omacvm/ghostty-gl names llvmpipe, Mesa's driver and why; the dma-buf export
- * is Mesa's answer as it is (no Zink).
+ * and the extension string are Mesa's as they are (no Zink).
  * zink: the same with OMACVM_GLZINK=1 in host.env: MESA_LOADER_DRIVER_OVERRIDE=zink and
  * MESA_GL_VERSION_OVERRIDE=4.3, no LIBGL_ALWAYS_SOFTWARE, during the call and none of them
  * afterwards (second call, a failing call, two threads); the person's variables win as above,
  * and their own MESA_GL_VERSION_OVERRIDE gives llvmpipe as before; the record says zink and
  * Mesa's driver (also when Mesa fell back to swrast); a dma-buf export that Mesa answers yes
- * without an fd (Zink) is no, with -1 in the array, and one with an fd is Mesa's.
+ * without an fd (Zink) is no, with -1 in the array, and one with an fd is Mesa's; the Zink
+ * display's extension string leaves out EGL_MESA_image_dma_buf_export (the same copy each
+ * time), any other display's, name or EGL_NO_DISPLAY is Mesa's string.
  * zinkoff: OMACVM_GLZINK=1 and /run/omacvm/gl-zink-off (a lost Venus context): llvmpipe.
  * nomesa: no Mesa library: __egl_Main is false. abi1: glvnd's vendor ABI 1.x: false, Mesa not
  * loaded. desktop: run as an exe named as one of the desktop's processes (Hyprland, Xwayland,
@@ -79,6 +81,13 @@ static EGLBoolean initialize(EGLDisplay d, EGLint *a, EGLint *b)
     return fail_init ? EGL_FALSE : EGL_TRUE;
 }
 static const char *driver_name(EGLDisplay d) { (void)d; return driver; }
+/* eglQueryString: one extension string for every display */
+const char stub_ext[] = "EGL_KHR_image_base EGL_MESA_image_dma_buf_export EGL_EXT_image_dma_buf_import";
+static const char *query_string(EGLDisplay d, EGLint name)
+{
+    (void)d;
+    return name == EGL_EXTENSIONS ? stub_ext : name == EGL_VENDOR ? "Mesa Project" : NULL;
+}
 /* eglExportDMABUFImage(Query)MESA: one plane; yes with an fd, or (export_no_fd, as Zink) yes
  * with the array left as it was */
 int export_no_fd, export_calls;
@@ -116,6 +125,8 @@ void *stub_gpa(const char *name)
         return (void *)initialize;
     if (!strcmp(name, "eglGetDisplayDriverName"))
         return (void *)driver_name;
+    if (!strcmp(name, "eglQueryString"))
+        return (void *)query_string;
     if (!strcmp(name, "eglExportDMABUFImageMESA"))
         return (void *)export_dmabuf;
     if (!strcmp(name, "eglExportDMABUFImageQueryMESA"))
@@ -154,6 +165,8 @@ static void check(int ok, const char *what)
     failed |= !ok;
 }
 
+#define DPY ((EGLDisplay)(uintptr_t)0x100)   /* the display Ghostty sets up */
+#define DPY2 ((EGLDisplay)(uintptr_t)0x200)  /* one it never set up */
 static PFNEGLINITIALIZEPROC init;
 static unsigned *init_calls;
 static char (*init_saw)[3][8];
@@ -188,7 +201,7 @@ static void init_once(const char *what, EGLBoolean want, const char *want_saw, c
     char line[400], a[64], b[64];
     unsigned i = *init_calls;
     EGLint major, minor;
-    EGLBoolean r = init(EGL_NO_DISPLAY, &major, &minor);
+    EGLBoolean r = init(DPY, &major, &minor);
     const char *seen = *init_calls == i + 1 ? saw(i, a, sizeof(a)) : "?";
 
     snprintf(line, sizeof(line), "%s %s: Mesa's eglInitialize %s with [%s] (LIBGL_ALWAYS_SOFTWARE MESA_LOADER_DRIVER_OVERRIDE "
@@ -201,7 +214,7 @@ static void *init_thread(void *arg)
     EGLint major, minor;
 
     (void)arg;
-    init(EGL_NO_DISPLAY, &major, &minor);
+    init(DPY, &major, &minor);
     return NULL;
 }
 
@@ -284,6 +297,20 @@ static int ghostty(void *mesa, void *(*gpa)(const char *))
     if (fds[0] > 2)
         close(fds[0]);
     check(ex(EGL_NO_DISPLAY, (EGLImageKHR)1, NULL, strides, offsets), "an export without an fd array: Mesa's answer");
+
+    /* the extension string: Zink's display without the dma-buf export, the rest as Mesa's */
+    PFNEGLQUERYSTRINGPROC qs = (PFNEGLQUERYSTRINGPROC)gpa("eglQueryString");
+    const char *stub_ext = dlsym(mesa, "stub_ext");
+    check(qs && (void *)qs != mesa_gpa("eglQueryString") && stub_ext, "ghostty: eglQueryString is wrapped");
+    if (!qs || !stub_ext)
+        return 1;
+    const char *e1 = qs(DPY, EGL_EXTENSIONS), *e2 = qs(DPY, EGL_EXTENSIONS);
+    snprintf(what, sizeof(what), "%s: the display's extensions: '%s'", mode, e1 ? e1 : "(null)");
+    check(zink ? e1 && e1 == e2 && !strcmp(e1, "EGL_KHR_image_base EGL_EXT_image_dma_buf_import")
+               : e1 == stub_ext, what);
+    check(qs(DPY2, EGL_EXTENSIONS) == stub_ext && qs(EGL_NO_DISPLAY, EGL_EXTENSIONS) == stub_ext &&
+          !strcmp(qs(DPY, EGL_VENDOR), "Mesa Project"),
+          "another display, no display and another name: Mesa's strings");
 
     if (zink) {   /* Mesa falls back to swrast when Zink cannot start: the record says so */
         *zink_fails = 1;
@@ -373,9 +400,9 @@ int main(int argc, char **argv)
 
     check(cik && ci && (void *)cik != mesa_gpa("eglCreateImageKHR") &&
           (void *)ci != mesa_gpa("eglCreateImage"), "eglCreateImageKHR and eglCreateImage are wrapped");
-    check(gpa("eglInitialize") == mesa_gpa("eglInitialize") &&
+    check(gpa("eglInitialize") == mesa_gpa("eglInitialize") && gpa("eglQueryString") == mesa_gpa("eglQueryString") &&
           gpa("eglExportDMABUFImageMESA") == mesa_gpa("eglExportDMABUFImageMESA") && !gpa("eglNoSuchThing"),
-          "eglInitialize, eglExportDMABUFImageMESA and every other name are Mesa's own pointers");
+          "eglInitialize, eglQueryString, eglExportDMABUFImageMESA and every other name are Mesa's own pointers");
     check(!gpa("eglQueryDevicesEXT"), "eglQueryDevicesEXT is not offered (Mesa's own vendor lists the devices)");
 
     const EGLint nv12[] = { EGL_WIDTH, 1920, EGL_HEIGHT, 1080,
