@@ -427,11 +427,7 @@ struct VKWindowsNoCopyRow: View {
 
     /// Only KosmicKrisp can do it; with MoltenVK (macOS 15, or an app without
     /// KosmicKrisp) the frames are copied whatever the stored setting says.
-    static var usable: Bool {
-        Graphics.vulkanDriver(macOSMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
-                              kosmicKrisp: Runner.runtimeHasKosmicKrisp,
-                              environment: ProcessInfo.processInfo.environment).hasPrefix("KosmicKrisp")
-    }
+    static var usable: Bool { Runner.vulkanDriverKind == .kosmicKrisp }
 
     var body: some View {
         let usable = Self.usable
@@ -445,6 +441,50 @@ struct VKWindowsNoCopyRow: View {
         }
         .onChange(of: on) { _, v in if v != Settings.vkWindowsNoCopy { Settings.vkWindowsNoCopy = v } }
         .onChange(of: tick) { _, _ in on = Settings.vkWindowsNoCopy }
+    }
+}
+
+/// Ghostty on the Mac's GPU (Settings.ghosttyGPU, experimental, off by
+/// default; ADR 0064): read by each start of the VM. While the VM runs, the
+/// row says what that start did (GhosttyGPU, from its line in qemu.log), as
+/// the HDR row does: a restart inside the VM keeps it.
+struct GhosttyGPURow: View {
+    var tick = 0
+    /// The VM this window shows, and whether it runs now.
+    var folder: URL?
+    var running = false
+    @State private var on = Settings.ghosttyGPU
+    @State private var line = (text: GhosttyGPU.usual, isNote: false)
+
+    static let info = "Ghostty needs OpenGL 4.3, and the VM's own OpenGL stops at 4.1, so Ghostty draws on the VM's CPU (Mesa's llvmpipe). With this on, Ghostty draws on the Mac's GPU instead, through Zink over the VM's Vulkan: measured on a Mac mini M4 and a MacBook Pro M1 Max, typing showed on the screen in 25-38 ms instead of 55-62 ms, and fast output took Ghostty about a tenth of the CPU time (2-4 instead of 33-35 CPU seconds per 10 seconds) with the same picture. Only Ghostty: the programs you start in it, and every other app, keep their graphics. Needs Graphics Vulkan (or Automatic) on macOS 26 and newer (KosmicKrisp); on other Macs Ghostty stays on the CPU. Each Ghostty window takes about 150-300 MB of the Mac's graphics memory, and up to about 12 % of the Mac's GPU while text scrolls. If the Mac refuses a GPU command of Ghostty, that Ghostty stops responding: close it (the programs running in it end). Counts when the VM starts, not at a restart inside it; a Ghostty that is already open keeps its driver until you quit it. The VM gets the part that does this with Update VM. Experimental. GPU safe mode turns it off."
+
+    /// Only KosmicKrisp: with MoltenVK (macOS 15, or an app without
+    /// KosmicKrisp) Ghostty stays on the CPU whatever the stored setting says.
+    static var usable: Bool { Runner.vulkanDriverKind == .kosmicKrisp }
+
+    var body: some View {
+        let usable = Self.usable
+        SettingRow(title: "Ghostty on the Mac's GPU", badge: "experimental", subtitle: line.text, subtitleIsNote: line.isNote,
+                   info: Self.info, probe: "ghostty-gpu") {
+            RowSwitch(title: "Ghostty on the Mac's GPU", isOn: usable ? $on : .constant(false),
+                      enabled: usable && !Settings.gpuSafeMode)
+        }
+        .onAppear(perform: refresh)
+        .onChange(of: on) { _, v in
+            if v != Settings.ghosttyGPU { Settings.ghosttyGPU = v }
+            refresh()
+        }
+        .onChange(of: tick) { _, _ in on = Settings.ghosttyGPU; refresh() }
+        .onChange(of: running) { _, _ in refresh() }
+        .onChange(of: folder) { _, _ in refresh() }
+    }
+
+    /// The subtitle, with the note from the running VM's qemu.log (its head).
+    private func refresh() {
+        let log = running ? folder.flatMap { KeyAccess.lastLog(folder: $0) } : nil
+        let l = GhosttyGPU.subtitle(switchOn: Settings.ghosttyGPU, safeMode: Settings.gpuSafeMode,
+                                    macDriver: GhosttyGPU.Driver(Runner.vulkanDriverKind), running: running, log: log)
+        if l != line { line = l }
     }
 }
 

@@ -628,6 +628,51 @@ expect(HDRNote.subtitle(switchOn: false, safeMode: false, running: true, log: hd
 expect(HDRNote.subtitle(switchOn: true, safeMode: false, running: true, log: hdrOn) == (HDRNote.usual, false),
        "on and running with HDR: the usual line, grey")
 
+// MARK: Ghostty on the Mac's GPU (GhosttyGPU, ADR 0064): when a start tells the VM, and the row's note
+
+// The marker only with the switch on, no GPU safe mode, Venus at this start and KosmicKrisp.
+let gOn = GhosttyGPU.start(switchOn: true, safeMode: false, venus: true, driver: .kosmicKrisp)
+expect(gOn.on && gOn.why == "Zink over Venus on KosmicKrisp", "Ghostty GPU: switch on, Vulkan on KosmicKrisp: on")
+for (what, s) in [("switch off", GhosttyGPU.start(switchOn: false, safeMode: false, venus: true, driver: .kosmicKrisp)),
+                  ("GPU safe mode", GhosttyGPU.start(switchOn: true, safeMode: true, venus: true, driver: .kosmicKrisp)),
+                  ("Graphics OpenGL", GhosttyGPU.start(switchOn: true, safeMode: false, venus: false, driver: .kosmicKrisp)),
+                  ("MoltenVK", GhosttyGPU.start(switchOn: true, safeMode: false, venus: true, driver: .moltenVK)),
+                  ("a listed driver", GhosttyGPU.start(switchOn: true, safeMode: false, venus: true, driver: .listed)),
+                  ("off, OpenGL and MoltenVK", GhosttyGPU.start(switchOn: false, safeMode: true, venus: false, driver: .moltenVK))] {
+    expect(!s.on && !s.why.isEmpty, "Ghostty GPU: \(what): off (\(s.why))")
+}
+expect(GhosttyGPU.start(switchOn: false, safeMode: true, venus: false, driver: .moltenVK).why == "switch off",
+       "Ghostty GPU: the switch off says so first")
+expect(GhosttyGPU.start(switchOn: true, safeMode: false, venus: false, driver: .moltenVK).why == "Graphics is OpenGL at this start",
+       "Ghostty GPU: OpenGL says OpenGL, whatever the driver")
+expect(GhosttyGPU.smbios == "omacvm.glzink=1", "Ghostty GPU: the SMBIOS string omacvm-smbios turns into OMACVM_GLZINK=1")
+// qemu.log's line, read back as the HDR row reads its own
+let gHead = head + GhosttyGPU.record(gOn) + "\nOmacVM: pointer layer: off\n"
+let gMvk = head + GhosttyGPU.record((false, "MoltenVK: needs KosmicKrisp (macOS 26 and newer)")) + "\n"
+expect(GhosttyGPU.record(gOn) == "OmacVM: Ghostty on the Mac's GPU: on (Zink over Venus on KosmicKrisp)", "Ghostty GPU: the qemu.log line")
+expect(GhosttyGPU.startAnswer(gHead).map { $0.on && $0.why == "Zink over Venus on KosmicKrisp" } == true, "Ghostty GPU: the start's line: on")
+expect(GhosttyGPU.startAnswer(gMvk).map { !$0.on && $0.why == "MoltenVK: needs KosmicKrisp (macOS 26 and newer)" } == true,
+       "Ghostty GPU: the start's line: off and why (the why may hold parentheses)")
+expect(GhosttyGPU.startAnswer(noLine) == nil && GhosttyGPU.startAnswer(hdrOn) == nil, "Ghostty GPU: no line: started with the switch off")
+expect(GhosttyGPU.note(switchOn: true, running: true, log: gMvk) == "Not used at this start of the VM: MoltenVK: needs KosmicKrisp (macOS 26 and newer).",
+       "Ghostty GPU: on, but this start did not use it: why (as the HDR row)")
+expect(GhosttyGPU.note(switchOn: true, running: true, log: noLine)?.contains("Shut the VM down and start it again") == true,
+       "Ghostty GPU: switched on while the VM runs without: when it comes")
+expect(GhosttyGPU.note(switchOn: false, running: true, log: gHead)?.contains("still asks for Ghostty on the Mac's GPU") == true,
+       "Ghostty GPU: switched off while the VM runs with it: still on until the VM starts again")
+expect(GhosttyGPU.note(switchOn: true, running: true, log: gHead) == nil && GhosttyGPU.note(switchOn: true, running: false, log: gMvk) == nil,
+       "Ghostty GPU: on and running with it, or not running: no note")
+expect(GhosttyGPU.subtitle(switchOn: true, safeMode: false, macDriver: .kosmicKrisp, running: false, log: nil) == (GhosttyGPU.usual, false),
+       "Ghostty GPU: not running on a KosmicKrisp Mac: the usual line")
+expect(GhosttyGPU.subtitle(switchOn: true, safeMode: false, macDriver: .moltenVK, running: false, log: nil).text.hasPrefix("Not on this Mac"),
+       "Ghostty GPU: a MoltenVK Mac (macOS 15): not on this Mac")
+expect(GhosttyGPU.subtitle(switchOn: true, safeMode: true, macDriver: .kosmicKrisp, running: false, log: nil) == ("Off while GPU safe mode is on.", false),
+       "Ghostty GPU: GPU safe mode: safe mode's line")
+let gSafe = GhosttyGPU.subtitle(switchOn: true, safeMode: true, macDriver: .kosmicKrisp, running: true, log: gHead)
+expect(gSafe.isNote && gSafe.text.contains("still asks"), "Ghostty GPU: safe mode turned on while the VM runs with it: the note first")
+expect(GhosttyGPU.subtitle(switchOn: true, safeMode: false, macDriver: .kosmicKrisp, running: true, log: gMvk).isNote,
+       "Ghostty GPU: this start without it while on: an orange note")
+
 // MARK: SSH repair (SSHRepair: the folder's key into a VM that knows only another Mac's)
 
 let sshKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOmacVMwindowTestKeyOnly0123456789abcdefghij omacvm-vm"

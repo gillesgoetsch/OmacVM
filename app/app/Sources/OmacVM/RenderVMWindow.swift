@@ -265,6 +265,11 @@ enum RenderVMWindow {
         sheet("sheet-4-all-vms") { AllVMsView(storage: all, selected: all.vms.first?.folder) {} }
         usbPictures(folder: folder, into: dir)
         sheet("sheet-8-icon-looks") { AppIconPicker(selected: IconTheme.all[0]) { _ in } }
+        // The (i) of Ghostty on the Mac's GPU, as its popover shows it (InfoButton).
+        sheet("popover-3-ghostty-gpu") {
+            Text(GhosttyGPURow.info).fixedSize(horizontal: false, vertical: true)
+                .frame(width: 320, alignment: .leading).padding(14)
+        }
 
         // The icon in every look, for the Dock.
         for t in IconTheme.all {

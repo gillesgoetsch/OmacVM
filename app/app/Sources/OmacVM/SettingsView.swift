@@ -174,6 +174,7 @@ struct SettingsSections: View {
                 GPUComputeRow(state: state)
                 GPUOffMainLoopRow(tick: state.tick)
                 VKWindowsNoCopyRow(tick: state.tick)
+                GhosttyGPURow(tick: state.tick, folder: state.config.folder, running: running)
                 CloseActionRow(tick: state.tick)
             }
         }
