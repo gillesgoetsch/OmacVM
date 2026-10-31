@@ -305,16 +305,17 @@ ended on purpose by a test Vulkan layer that makes one image view vkr
 refuses; work/ghostty-gpu/venus-loss in the lane's notes):
 
 - 3.2.16 counted none of 8 such losses (vkcube, Ghostty): lost stayed 0, no
-  note. With this change all 12 were counted in the same 0.2 s look as
-  QEMU's "is lost" line, with the app's name, and told 0.5 to 4.8 s later
-  (the app looks every 5 s). The VM's note showed in Omarchy's popup; for
+  note. With this change all 13 were counted within 0.3 s of QEMU's "is
+  lost" line (12 in the same 0.2 s look), with the app's name, and told 0.5
+  to 4.8 s later (the app looks every 5 s). The VM's note showed in Omarchy's popup; for
   Ghostty `/run/omacvm/gl-zink-off` was written (root, 0644, "lost TIME
   venus"). A VM with the 3.1.32 or 3.2.0 script answered the new verb with
   its usage, and the app logged "Update VM puts it in" once.
 - vkcube ended by itself 0.5 to 0.6 s after its loss. The frozen Ghostty
   never received a typed line (60 s), its main thread waited in the
   kernel's `drm_syncobj_array_wait_timeout`, a SIGTERM ended it within 8 s
-  every time (14 of 14), and its shell ended with it (10 of 10 looked at).
+  every time (15 of 15), and its shell ended with it (10 of 10 looked at).
+  Hyprland's not-responding dialog came 2.8 s after the loss (M1).
 - A Ghostty started as Omarchy's launcher starts it (one instance, owning
   its D-Bus name) while the frozen one lived opened no window: it gave up
   with "Timeout was reached", or with "Remote peer disconnected" once the

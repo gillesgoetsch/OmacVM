@@ -15,9 +15,9 @@ in more words.
   a note that ends nothing: "Ghostty stopped drawing" (close it first with Terminate in the
   window that says it is not responding; the programs in it end; the next Ghostty starts on the
   CPU until the VM restarts, unless Zink is set for it by hand) or "NAME stopped drawing". `omacvm check`'s "GPU contexts" names
-  the app, marked "(Vulkan)". In test VMs on a Mac mini (M4) and an M1 Max, all 12 deliberate
-  losses (vkcube and a Zink Ghostty) were counted in the same 0.2 s look as QEMU's line and told
-  0.5 to 4.8 s later (the app looks every 5 s); 3.2.16 counted none of 8. 60 Ghostty windows on
+  the app, marked "(Vulkan)". In test VMs on a Mac mini (M4) and an M1 Max, all 13 deliberate
+  losses (vkcube and a Zink Ghostty) were counted within 0.3 s of QEMU's line and told 0.5 to
+  4.8 s later (the app looks every 5 s); 3.2.16 counted none of 8. 60 Ghostty windows on
   Zink closed or killed (also with SIGKILL during Zink's teardown and while drawing) counted
   nothing and showed no note. While a frozen Ghostty lived, a new one started as Omarchy starts
   it opened no window (it asks the frozen one over D-Bus and gives up); a SIGTERM ended the frozen
