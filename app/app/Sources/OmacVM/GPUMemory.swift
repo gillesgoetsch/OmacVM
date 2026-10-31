@@ -73,7 +73,9 @@ extension VMStalls {
 /// - When an app in the VM lost its GPU context because the graphics memory
 ///   was full (past the apps' share; the rest is kept for the desktop) or
 ///   macOS was short of memory, the VM shows a note that says so
-///   (GPUMemoryNotice; omacvm-desktop-recover app).
+///   (GPUMemoryNotice; omacvm-desktop-recover app). Once a minute per app at
+///   most: a loss inside the minute is told when it is over (the newest),
+///   not dropped; a desktop restart voids it.
 /// - When the VM stood still 10 s or more because macOS ran out of free
 ///   memory (QEMU's logs/vm-stalls), the VM shows a note that says so, at
 ///   most once per 30 minutes (VMStalls; omacvm-desktop-recover stall).
@@ -96,7 +98,7 @@ final class GPUMemoryWatch {
     private var alert: NSAlert?
     private var lastDesktopRestart: Date?
     private var lastShellRestart: Date?
-    private var appsTold: [String: Date] = [:]
+    private var notice = GPUMemoryNotice()
     /// The stalls already seen in logs/vm-stalls, and the last note about one.
     private var stallsSeen = 0
     private var stallNoteAt: Date?
@@ -355,6 +357,9 @@ final class GPUMemoryWatch {
             lostSeen = m.lost
             tellApps(new, why, m)
             lost(new, m)
+        } else {
+            // An app's loss kept inside its minute is told when that is over.
+            tellApps([], [], m)
         }
     }
 
@@ -378,16 +383,28 @@ final class GPUMemoryWatch {
 
     /// Apps that lost their GPU context to the memory guard or to macOS's
     /// pressure: logged, and a note in the VM (a VM from before 3.0.5 has no
-    /// such note: its agent refuses, nothing else happens).
+    /// such note: its agent refuses, nothing else happens). Every look, also
+    /// with nothing new: a loss kept inside its app's minute comes out here.
     private func tellApps(_ names: [String], _ why: [String], _ m: GPUMemory) {
         let now = Date()
-        for app in GPUMemoryNotice.apps(lost: names, why: why, lastTold: appsTold, now: now) {
-            appsTold[app.name] = now
-            let cause = app.why == "guard"
-                ? "the apps' share of graphics memory was full (\(GPUMemory.gb(m.appsMB)) of \(GPUMemory.gb(m.budgetMB)); the rest is kept for the desktop)"
-                : "macOS was short of memory (pressure \(m.pressure))"
-            log("OmacVM: \(app.name) in the VM lost its GPU context: \(cause)")
+        let waiting = Set(notice.waiting)
+        for app in notice.look(lost: names, why: why, now: now) {
+            if let since = app.heldSince {
+                let cause = app.why == "guard" ? "the apps' share of graphics memory was full" : "macOS was short of memory"
+                log("OmacVM: \(app.name) in the VM lost its GPU context \(Int(now.timeIntervalSince(since))) s ago: "
+                    + "\(cause) (told now: a minute after the last note)")
+            } else {
+                let cause = app.why == "guard"
+                    ? "the apps' share of graphics memory was full (\(GPUMemory.gb(m.appsMB)) of \(GPUMemory.gb(m.budgetMB)); the rest is kept for the desktop)"
+                    : "macOS was short of memory (pressure \(m.pressure))"
+                log("OmacVM: \(app.name) in the VM lost its GPU context: \(cause)")
+            }
             guest("/usr/local/bin/omacvm-desktop-recover", ["app", app.name, app.why]) { _ in }
+        }
+        for name in notice.waiting where !waiting.contains(name) {
+            // A desktop restart before then voids it (restartDesktop): the line says so.
+            log("OmacVM: \(name) in the VM lost its GPU context again within a minute of the last note: "
+                + "told when that minute is over, unless the desktop restarts before then")
         }
     }
 
@@ -426,6 +443,8 @@ final class GPUMemoryWatch {
     /// asked does not restart it twice; taken back when the VM refused (no
     /// restart happened), kept when it did not answer (one may be under way).
     private func restartDesktop(_ why: String, done: @escaping @MainActor (GuestAgent.Start) -> Void) {
+        // The session's apps close: a loss kept for one of them is void.
+        notice.sessionRestarted()
         let before = lastDesktopRestart
         let now = Date()
         lastDesktopRestart = now

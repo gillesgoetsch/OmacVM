@@ -1405,7 +1405,9 @@ stay, pages with WebGL may need a reload (other Chromium-based apps such as
 Electron's have the same GPU process; not measured). At most once per app
 in 6 minutes and 3 times in an hour, because Chrome counts each as a crash
 and draws without the GPU for the rest of its session after 3 recent ones. Lost again within that time,
-the note says to quit the app and open it again. Other apps (Firefox, mpv)
+the note says to quit the app and open it again. The app tells the VM once a minute per app at most; a
+loss inside that minute is told when the minute is over (3.2.16; before, it was dropped and the app
+stayed blank with no note). Other apps (Firefox, mpv)
 draw nothing until they are restarted. `journalctl -t
 omacvm-desktop-recover` in the VM says what was ended (ADR 0038). Hyprland
 cannot get a new context that way: the VM's Mesa does not report a lost

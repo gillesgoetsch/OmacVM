@@ -1493,6 +1493,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   VM's next start), an app that only replaces its buffers while macOS is
   critical keeps its graphics, and one that grows loses them only past a
   grace ([24](#24-app-a-scale-like-16-on-a-5k-display-turns-the-vm-black-and-flickering)).
+  With 3.2.15's app, a loss less than a minute after the app's last note for
+  Chrome was not told at all (Chrome blank, no note); from 3.2.16 (an app
+  update; the VM needs none) it is told when that minute is over, 60 to 66 s
+  after the last note: inside the 6 minutes that is the note "chrome stopped
+  drawing", not a second restart.
 - **Before the update:** free memory first. While Activity Monitor's memory
   pressure is red, a Chrome restarted by hand loses its graphics again at
   once (seen in a test VM), and each restart counts as a Chrome crash. Close
@@ -1505,7 +1510,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   of critical
   ([45](#45-app-the-vm-freezes-for-seconds-or-a-minute-the-mac-is-out-of-memory)).
 - **Where:** `src/app/guest/omacvm-desktop-recover` (test
-  `src/tests/desktop-recover-gpu.sh`), ADR 0038's 3.2.15 amendment.
+  `src/tests/desktop-recover-gpu.sh`), ADR 0038's 3.2.15 amendment; which
+  losses the app tells and when: `GPUMemoryNotice` in
+  `app/app/Sources/OmacVMDesktop/GPUMemory.swift` (test
+  `swift run desktop-tests`), ADR 0038's 3.2.16 amendment.
 
 ## 49. app: Activity Monitor shows the VM with far more memory than it has
 

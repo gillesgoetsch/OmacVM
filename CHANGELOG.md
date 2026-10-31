@@ -43,6 +43,15 @@ in more words.
   SDR the results are the same as before. Screenshots of the bare background stay black with HDR on:
   that is Hyprland's. Needs Update VM or `omacvm update` (no log out).
 
+- **An app lost again within a minute of its last note is no longer left out.** OmacVM.app tells
+  the VM about an app that lost its graphics at most once a minute per app, and dropped a loss
+  inside that minute: a Chrome lost again right after its GPU process was restarted stayed blank,
+  and the VM said nothing (seen in test VMs at critical memory pressure). Now the app keeps the
+  newest such loss and tells the VM when the minute is over (60 to 66 s after the last note); still
+  once a minute per app at most, and a desktop restart drops what was kept. Within 6 minutes of a
+  restart that gives the note "chrome stopped drawing ... reload or restart chrome", not another
+  restart; a VM set up with 3.0.5 to 3.2.14 shows the same note. Needs the app update only.
+
 ## 3.2.15
 
 In an OmacVM.app VM, apps keep their graphics at critical memory pressure when they only replace
