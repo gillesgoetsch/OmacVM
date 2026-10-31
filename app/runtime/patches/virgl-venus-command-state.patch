@@ -1,8 +1,9 @@
 virglrenderer: Venus commands come where Vulkan allows them
 
 What: vkr keeps a little state per command buffer: recording or not, the
-render pass or rendering that is open (its subpass, colors and view mask),
-whether a graphics or a compute pipeline is bound, conditional rendering. A
+render pass or rendering that is open (its subpass, colors and view mask,
+cleared when it ends), whether a graphics or a compute pipeline is bound,
+conditional rendering. A
 command on a command buffer that does not record, a draw outside a pass or
 without a graphics pipeline, a dispatch inside a pass or without a compute
 pipeline, a clear outside a pass or of a color attachment the subpass lacks,
@@ -20,7 +21,7 @@ Upstream: OmacVM policy (spec VUIDs), draft only.
 Tests: Tests/virgl/test-venus-commands.c (the c-state- cases).
 
 diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
-index 4af65c6..a4f87c2 100644
+index 4af65c6..c1fc126 100644
 --- a/src/venus/vkr_command_buffer.c
 +++ b/src/venus/vkr_command_buffer.c
 @@ -18,12 +18,17 @@
@@ -41,7 +42,7 @@ index 4af65c6..a4f87c2 100644
        vn_replace_vk##cmd_name##_args_handle(args);                                       \
        _vk->cmd_name(args->commandBuffer, ##__VA_ARGS__);                                 \
     } while (0)
-@@ -246,6 +251,74 @@ vkr_cmd_push_set_ok(struct vkr_context *ctx,
+@@ -246,6 +251,87 @@ vkr_cmd_push_set_ok(struct vkr_context *ctx,
     return vkr_descriptor_writes_ok(ctx, call, dev, push, count, writes);
  }
  
@@ -103,6 +104,19 @@ index 4af65c6..a4f87c2 100644
 +                            st->subpass, st->subpass_count);
 +}
 +
++/* a pass ends: nothing of it stays for the commands after it (a query or timestamp after a
++ * multiview pass takes one query, not one per view of that pass) */
++static void
++vkr_cmd_leave_pass(struct vkr_cmd_state *st)
++{
++   st->pass = VKR_CMD_PASS_NONE;
++   st->subpass = 0;
++   st->subpass_count = 0;
++   st->colors = 0;
++   st->view_mask = 0;
++   st->render_pass = NULL;
++}
++
 +static void
 +vkr_cmd_enter_subpass(struct vkr_cmd_state *st, uint32_t subpass)
 +{
@@ -116,7 +130,7 @@ index 4af65c6..a4f87c2 100644
  static void
  vkr_dispatch_vkCreateCommandPool(struct vn_dispatch_context *dispatch,
                                   struct vn_command_vkCreateCommandPool *args)
-@@ -278,6 +351,13 @@ vkr_dispatch_vkResetCommandPool(UNUSED struct vn_dispatch_context *dispatch,
+@@ -278,6 +364,13 @@ vkr_dispatch_vkResetCommandPool(UNUSED struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct vn_device_proc_table *vk = &dev->proc_table;
  
@@ -130,7 +144,7 @@ index 4af65c6..a4f87c2 100644
     vn_replace_vkResetCommandPool_args_handle(args);
     args->ret = vk->ResetCommandPool(args->device, args->commandPool, args->flags);
  }
-@@ -348,6 +428,7 @@ vkr_dispatch_vkResetCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
+@@ -348,6 +441,7 @@ vkr_dispatch_vkResetCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
     struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
     struct vn_device_proc_table *vk = &cmd->device->proc_table;
  
@@ -138,7 +152,7 @@ index 4af65c6..a4f87c2 100644
     vn_replace_vkResetCommandBuffer_args_handle(args);
     args->ret = vk->ResetCommandBuffer(args->commandBuffer, args->flags);
  }
-@@ -367,18 +448,55 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
+@@ -367,18 +461,55 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
                                 args->pBeginInfo->pInheritanceInfo))
        return;
  
@@ -195,7 +209,7 @@ index 4af65c6..a4f87c2 100644
     vn_replace_vkEndCommandBuffer_args_handle(args);
     args->ret = vk->EndCommandBuffer(args->commandBuffer);
  }
-@@ -387,6 +505,7 @@ static void
+@@ -387,6 +518,7 @@ static void
  vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
                                 struct vn_command_vkCmdBindPipeline *args)
  {
@@ -203,7 +217,7 @@ index 4af65c6..a4f87c2 100644
     const struct vkr_pipeline *pipeline = vkr_pipeline_from_handle(args->pipeline);
     if (!vkr_context_check(dispatch->data,
                            vkr_bind_point_ok(VKR_CMD_LIMITS(args), args->pipelineBindPoint) &&
-@@ -395,6 +514,11 @@ vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
+@@ -395,6 +527,11 @@ vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
                            args->pipelineBindPoint, pipeline ? (int)pipeline->bind_point : -1))
        return;
     VKR_CMD_CALL(CmdBindPipeline, args, args->pipelineBindPoint, args->pipeline);
@@ -215,7 +229,7 @@ index 4af65c6..a4f87c2 100644
  }
  
  static void
-@@ -532,17 +656,21 @@ vkr_dispatch_vkCmdBindVertexBuffers(struct vn_dispatch_context *dispatch,
+@@ -532,17 +669,21 @@ vkr_dispatch_vkCmdBindVertexBuffers(struct vn_dispatch_context *dispatch,
  }
  
  static void
@@ -239,7 +253,7 @@ index 4af65c6..a4f87c2 100644
     VKR_CMD_CALL(CmdDrawIndexed, args, args->indexCount, args->instanceCount,
                  args->firstIndex, args->vertexOffset, args->firstInstance);
  }
-@@ -551,6 +679,8 @@ static void
+@@ -551,6 +692,8 @@ static void
  vkr_dispatch_vkCmdDrawIndirect(struct vn_dispatch_context *dispatch,
                                 struct vn_command_vkCmdDrawIndirect *args)
  {
@@ -248,7 +262,7 @@ index 4af65c6..a4f87c2 100644
     if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirect", args->buffer, args->offset,
                              args->drawCount, VKR_CMD_LIM(args)->maxDrawIndirectCount,
                              args->stride, sizeof(VkDrawIndirectCommand)))
-@@ -563,6 +693,8 @@ static void
+@@ -563,6 +706,8 @@ static void
  vkr_dispatch_vkCmdDrawIndexedIndirect(struct vn_dispatch_context *dispatch,
                                        struct vn_command_vkCmdDrawIndexedIndirect *args)
  {
@@ -257,7 +271,7 @@ index 4af65c6..a4f87c2 100644
     if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirect", args->buffer,
                              args->offset, args->drawCount,
                              VKR_CMD_LIM(args)->maxDrawIndirectCount, args->stride,
-@@ -576,6 +708,8 @@ static void
+@@ -576,6 +721,8 @@ static void
  vkr_dispatch_vkCmdDispatch(struct vn_dispatch_context *dispatch,
                             struct vn_command_vkCmdDispatch *args)
  {
@@ -266,7 +280,7 @@ index 4af65c6..a4f87c2 100644
     const uint32_t *max = VKR_CMD_LIM(args)->maxComputeWorkGroupCount;
     if (!vkr_context_check(dispatch->data,
                            args->groupCountX <= max[0] && args->groupCountY <= max[1] &&
-@@ -592,6 +726,8 @@ static void
+@@ -592,6 +739,8 @@ static void
  vkr_dispatch_vkCmdDispatchIndirect(struct vn_dispatch_context *dispatch,
                                     struct vn_command_vkCmdDispatchIndirect *args)
  {
@@ -275,7 +289,7 @@ index 4af65c6..a4f87c2 100644
     if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDispatchIndirect", args->buffer,
                              args->offset, 1, 1, 0, sizeof(VkDispatchIndirectCommand)))
        return;
-@@ -846,13 +982,18 @@ vkr_dispatch_vkCmdClearAttachments(struct vn_dispatch_context *dispatch,
+@@ -846,13 +995,18 @@ vkr_dispatch_vkCmdClearAttachments(struct vn_dispatch_context *dispatch,
     /* KosmicKrisp's vk_meta_clear writes a color attachment's clear value into an array of
      * 8 on the stack at colorAttachment */
     const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
@@ -297,7 +311,7 @@ index 4af65c6..a4f87c2 100644
           return;
     }
     VKR_CMD_CALL(CmdClearAttachments, args, args->attachmentCount, args->pAttachments,
-@@ -936,7 +1077,7 @@ vkr_dispatch_vkCmdBeginQuery(struct vn_dispatch_context *dispatch,
+@@ -936,7 +1090,7 @@ vkr_dispatch_vkCmdBeginQuery(struct vn_dispatch_context *dispatch,
                      struct vn_command_vkCmdBeginQuery *args)
  {
     const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
@@ -306,7 +320,7 @@ index 4af65c6..a4f87c2 100644
                            "vkCmdBeginQuery", "query %u of %u", args->query,
                            pool ? pool->count : 0))
        return;
-@@ -974,7 +1115,10 @@ vkr_dispatch_vkCmdWriteTimestamp(struct vn_dispatch_context *dispatch,
+@@ -974,7 +1128,10 @@ vkr_dispatch_vkCmdWriteTimestamp(struct vn_dispatch_context *dispatch,
                      struct vn_command_vkCmdWriteTimestamp *args)
  {
     const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
@@ -318,7 +332,7 @@ index 4af65c6..a4f87c2 100644
                            "vkCmdWriteTimestamp", "query %u of %u", args->query,
                            pool ? pool->count : 0))
        return;
-@@ -1025,24 +1169,46 @@ static void
+@@ -1025,24 +1182,45 @@ static void
  vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
                    struct vn_command_vkCmdBeginRenderPass *args)
  {
@@ -363,12 +377,11 @@ index 4af65c6..a4f87c2 100644
 +                            false))
 +      return;
     VKR_CMD_CALL(CmdEndRenderPass, args);
-+   st->pass = VKR_CMD_PASS_NONE;
-+   st->render_pass = NULL;
++   vkr_cmd_leave_pass(st);
  }
  
  static void
-@@ -1064,9 +1230,28 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+@@ -1064,9 +1242,28 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
                               "vkCmdExecuteCommands", "command buffer %u is not a secondary",
                               i))
           return;
@@ -397,7 +410,7 @@ index 4af65c6..a4f87c2 100644
  }
  
  static void
-@@ -1080,6 +1265,8 @@ static void
+@@ -1080,6 +1277,8 @@ static void
  vkr_dispatch_vkCmdDispatchBase(struct vn_dispatch_context *dispatch,
                                 struct vn_command_vkCmdDispatchBase *args)
  {
@@ -406,7 +419,7 @@ index 4af65c6..a4f87c2 100644
     const uint32_t *max = VKR_CMD_LIM(args)->maxComputeWorkGroupCount;
     if (!vkr_context_check(dispatch->data,
                            vkr_first_count_ok(args->baseGroupX, args->groupCountX, max[0]) &&
-@@ -1098,31 +1285,55 @@ static void
+@@ -1098,31 +1297,54 @@ static void
  vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
                    struct vn_command_vkCmdBeginRenderPass2 *args)
  {
@@ -452,8 +465,7 @@ index 4af65c6..a4f87c2 100644
 +                            false))
 +      return;
     VKR_CMD_CALL(CmdEndRenderPass2, args, args->pSubpassEndInfo);
-+   st->pass = VKR_CMD_PASS_NONE;
-+   st->render_pass = NULL;
++   vkr_cmd_leave_pass(st);
  }
  
  static void
@@ -465,7 +477,7 @@ index 4af65c6..a4f87c2 100644
     if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirectCount", args->buffer,
                              args->offset, args->maxDrawCount, UINT32_MAX, args->stride,
                              sizeof(VkDrawIndirectCommand)) ||
-@@ -1137,6 +1348,8 @@ static void
+@@ -1137,6 +1359,8 @@ static void
  vkr_dispatch_vkCmdDrawIndexedIndirectCount(
     struct vn_dispatch_context *dispatch, struct vn_command_vkCmdDrawIndexedIndirectCount *args)
  {
@@ -474,7 +486,7 @@ index 4af65c6..a4f87c2 100644
     if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirectCount", args->buffer,
                              args->offset, args->maxDrawCount, UINT32_MAX, args->stride,
                              sizeof(VkDrawIndexedIndirectCommand)) ||
-@@ -1223,7 +1436,7 @@ vkr_dispatch_vkCmdBeginQueryIndexedEXT(struct vn_dispatch_context *dispatch,
+@@ -1223,7 +1447,7 @@ vkr_dispatch_vkCmdBeginQueryIndexedEXT(struct vn_dispatch_context *dispatch,
           ? VKR_CMD_LIMITS(args)->max_xfb_streams
           : 1;
     if (!vkr_context_check(dispatch->data,
@@ -483,7 +495,7 @@ index 4af65c6..a4f87c2 100644
                            "vkCmdBeginQueryIndexedEXT", "query %u of %u, index %u of %u",
                            args->query, pool ? pool->count : 0, args->index, streams))
        return;
-@@ -1247,6 +1460,8 @@ static void
+@@ -1247,6 +1471,8 @@ static void
  vkr_dispatch_vkCmdDrawIndirectByteCountEXT(
     struct vn_dispatch_context *dispatch, struct vn_command_vkCmdDrawIndirectByteCountEXT *args)
  {
@@ -492,7 +504,7 @@ index 4af65c6..a4f87c2 100644
     if (!vkr_context_check(dispatch->data,
                            args->vertexStride &&
                               vkr_cmd_buffer_ok(args->counterBuffer, args->counterBufferOffset, 4),
-@@ -1455,38 +1670,58 @@ vkr_dispatch_vkCmdBeginConditionalRenderingEXT(
+@@ -1455,38 +1681,58 @@ vkr_dispatch_vkCmdBeginConditionalRenderingEXT(
     struct vn_dispatch_context *dispatch,
     struct vn_command_vkCmdBeginConditionalRenderingEXT *args)
  {
@@ -552,11 +564,11 @@ index 4af65c6..a4f87c2 100644
 +                            VKR_CMD_PASS_RENDERING, false))
 +      return;
     VKR_CMD_CALL(CmdEndRendering, args);
-+   st->pass = VKR_CMD_PASS_NONE;
++   vkr_cmd_leave_pass(st);
  }
  
  static void
-@@ -1499,7 +1734,7 @@ vkr_dispatch_vkCmdPipelineBarrier2(struct vn_dispatch_context *dispatch,
+@@ -1499,7 +1745,7 @@ vkr_dispatch_vkCmdPipelineBarrier2(struct vn_dispatch_context *dispatch,
  }
  
  static void
@@ -565,7 +577,7 @@ index 4af65c6..a4f87c2 100644
                                struct vn_command_vkCmdResetEvent2 *args)
  {
     VKR_CMD_CALL(CmdResetEvent2, args, args->event, args->stageMask);
-@@ -1531,7 +1766,10 @@ vkr_dispatch_vkCmdWriteTimestamp2(struct vn_dispatch_context *dispatch,
+@@ -1531,7 +1777,10 @@ vkr_dispatch_vkCmdWriteTimestamp2(struct vn_dispatch_context *dispatch,
                      struct vn_command_vkCmdWriteTimestamp2 *args)
  {
     const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
@@ -577,7 +589,7 @@ index 4af65c6..a4f87c2 100644
                            "vkCmdWriteTimestamp2", "query %u of %u", args->query,
                            pool ? pool->count : 0))
        return;
-@@ -1542,6 +1780,8 @@ static void
+@@ -1542,6 +1791,8 @@ static void
  vkr_dispatch_vkCmdDrawMultiEXT(struct vn_dispatch_context *dispatch,
                                 struct vn_command_vkCmdDrawMultiEXT *args)
  {
@@ -586,7 +598,7 @@ index 4af65c6..a4f87c2 100644
     /* the decoder packs the drawCount entries back to back: the driver reads them with
      * their own size as the stride, never the guest's */
     if (!vkr_context_check(dispatch->data, !args->drawCount || args->pVertexInfo,
-@@ -1555,6 +1795,8 @@ static void
+@@ -1555,6 +1806,8 @@ static void
  vkr_dispatch_vkCmdDrawMultiIndexedEXT(struct vn_dispatch_context *dispatch,
                                        struct vn_command_vkCmdDrawMultiIndexedEXT *args)
  {
@@ -595,7 +607,7 @@ index 4af65c6..a4f87c2 100644
     if (!vkr_context_check(dispatch->data, !args->drawCount || args->pIndexInfo,
                            "vkCmdDrawMultiIndexedEXT", "%u draws without their array",
                            args->drawCount))
-@@ -2044,9 +2286,11 @@ vkr_dispatch_vkCmdSetAttachmentFeedbackLoopEnableEXT(
+@@ -2044,9 +2297,11 @@ vkr_dispatch_vkCmdSetAttachmentFeedbackLoopEnableEXT(
  }
  
  static void
@@ -608,7 +620,7 @@ index 4af65c6..a4f87c2 100644
     VKR_CMD_CALL(CmdDrawMeshTasksEXT, args, args->groupCountX, args->groupCountY,
                  args->groupCountZ);
  }
-@@ -2056,6 +2300,8 @@ vkr_dispatch_vkCmdDrawMeshTasksIndirectEXT(
+@@ -2056,6 +2311,8 @@ vkr_dispatch_vkCmdDrawMeshTasksIndirectEXT(
     UNUSED struct vn_dispatch_context *dispatch,
     struct vn_command_vkCmdDrawMeshTasksIndirectEXT *args)
  {
@@ -617,7 +629,7 @@ index 4af65c6..a4f87c2 100644
     VKR_CMD_CALL(CmdDrawMeshTasksIndirectEXT, args, args->buffer, args->offset,
                  args->drawCount, args->stride);
  }
-@@ -2065,6 +2311,8 @@ vkr_dispatch_vkCmdDrawMeshTasksIndirectCountEXT(
+@@ -2065,6 +2322,8 @@ vkr_dispatch_vkCmdDrawMeshTasksIndirectCountEXT(
     UNUSED struct vn_dispatch_context *dispatch,
     struct vn_command_vkCmdDrawMeshTasksIndirectCountEXT *args)
  {
