@@ -161,7 +161,7 @@ if (( BOFF )); then
     >> "$OUT/build-tool.log" 2>&1 || { echo "display-unplug: could not build the built-in display tool ($OUT/build-tool.log)" >&2; exit 3; }
 fi
 # The Mac's session locked (the screen lock): nobody can unlock it from here.
-session_locked() { [[ $(ioreg -n Root -d1 -k IOConsoleUsers 2>/dev/null) == *'"CGSSessionScreenIsLocked"=Yes'* ]]; }
+session_locked() { person_locked; }
 
 # Put back what this changes, also on Ctrl-C.
 FS_BEFORE=$(defaults read "$APPID" startFullScreen 2>/dev/null || echo unset)
