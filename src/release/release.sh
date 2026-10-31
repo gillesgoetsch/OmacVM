@@ -19,6 +19,8 @@
 #   verify    every file read back as the app, the command line and the Bridge
 #             read them
 #   image     the app's prebuilt VM (make-image.sh app), its manifest signed
+#             (on the runtime build in the worktree, or on the app's own
+#             runtime when the app came from OMACVM_RELEASE_APP_FROM)
 #   e2e       the gate: the person's path end to end on the test Mac
 #             (src/tests/e2e/cc-switches.sh) passed for a test identity
 #             build of M; publish refuses without it
@@ -40,8 +42,9 @@
 # OMACVM_RELEASE_TITLE, OMACVM_KOSMICKRISP_FROM (KosmicKrisp built on a Mac
 # that can: app/runtime/import-kosmickrisp.sh), OMACVM_RELEASE_RUNTIME_FROM (a runtime/.build to
 # start from; build-app.sh rebuilds it unless its inputs match),
-# OMACVM_RELEASE_APP_FROM (a folder with OmacVM.app built at M on a Mac
-# without the keys, and its build.log: checked and signed here, not built),
+# OMACVM_RELEASE_APP_FROM (an absolute path: a folder with OmacVM.app built
+# at M on a Mac without the keys, and its build.log: checked and signed here,
+# not built; step image then runs the image VM on that app's own runtime),
 # OMACVM_RELEASE_IMAGE_FROM (a folder with a signed image of this version:
 # used instead of building one), OMACVM_RELEASE_UNNOTARIZED=1 (release
 # without notarization, as 2.x), OMACVM_RELEASE_FROM (dry run only: the
@@ -73,9 +76,13 @@ shift
 STEPS=("$@")
 (( ${#STEPS[@]} )) || STEPS=(check bump merge build notarize package verify image e2e publish after)
 # OMACVM_RELEASE_APP_FROM: an absolute path only; a relative one would name
-# another folder for each folder release.sh is run from.
-[[ -z ${OMACVM_RELEASE_APP_FROM:-} || $OMACVM_RELEASE_APP_FROM == /* ]] ||
-  die "OMACVM_RELEASE_APP_FROM must be an absolute path, not $OMACVM_RELEASE_APP_FROM"
+# another folder for each folder release.sh is run from. The app brings its
+# own runtime: none from OMACVM_RELEASE_RUNTIME_FROM beside it.
+if [[ -n ${OMACVM_RELEASE_APP_FROM:-} ]]; then
+  [[ $OMACVM_RELEASE_APP_FROM == /* ]] || die "OMACVM_RELEASE_APP_FROM must be an absolute path, not $OMACVM_RELEASE_APP_FROM"
+  [[ -z ${OMACVM_RELEASE_RUNTIME_FROM:-} ]] ||
+    die "OMACVM_RELEASE_APP_FROM brings the app's own runtime: unset OMACVM_RELEASE_RUNTIME_FROM"
+fi
 
 # release-key.sh signs with the Keychain's release key only inside this run.
 export OMACVM_RELEASE_RUN=$VERSION
@@ -287,6 +294,8 @@ step_build() {
   if grep -q 'QEMU (from source)' "$OUT/build.log"; then note "runtime built from source, build tests passed"
   else note "runtime from the cache (its inputs match; no build tests ran this time)"; fi
   note "app $VERSION, OmacVMCommit $m, team $team, $(du -sh "$APP" | cut -f1)"
+  # Step image reads it: an app from another Mac has the only runtime of M.
+  put APP_FROM "${OMACVM_RELEASE_APP_FROM:-}"
 }
 
 step_notarize() {
@@ -378,9 +387,18 @@ step_image() {
     note "image from $OMACVM_RELEASE_IMAGE_FROM"
   else
     [[ -e $HOME/.omacvm-user-testing ]] && die "$HOME/.omacvm-user-testing is set: no VM now (or OMACVM_RELEASE_IMAGE_FROM)"
-    [[ -x $WT/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64 ]] || die "no runtime in $WT: run build first"
+    # An app from another Mac (step build with OMACVM_RELEASE_APP_FROM) leaves
+    # no runtime build in $WT: the image VM runs on the app's own runtime
+    # (make-image.sh OMACVM_PREBUILT_APP), never on a runtime build left there.
+    local own=
+    if [[ -n $(get APP_FROM) ]]; then
+      [[ -x $APP/Contents/Resources/runtime/bin/OmacVM ]] || die "no runtime in $APP: run build first"
+      own=$APP; note "the image VM runs on the app's own runtime (the app came from $(get APP_FROM))"
+    else
+      [[ -x $WT/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64 ]] || die "no runtime in $WT: run build first"
+    fi
     rm -rf "$img/vm"
-    (cd "$WT" && OMACVM_PREBUILT_OUT=$OUT/prebuilt-out src/prebuilt/make-image.sh app build generalize package clean) \
+    (cd "$WT" && OMACVM_PREBUILT_APP=$own OMACVM_PREBUILT_OUT=$OUT/prebuilt-out src/prebuilt/make-image.sh app build generalize package clean) \
       > "$OUT/image.log" 2>&1 || die "make-image.sh failed: $OUT/image.log"
     rm -rf "$img"; mv "$OUT/prebuilt-out/app" "$img"; rm -rf "$OUT/prebuilt-out"
   fi

@@ -102,6 +102,25 @@ gate true 1111111111111111111111111111111111111111 all
 OMACVM_RELEASE_APP_FROM=m1/release expect 1 "app from: a relative path is refused" rel e2e
 [[ $(OMACVM_RELEASE_APP_FROM=m1/release rel e2e 2>&1) == *"absolute path"* ]] && ok "app from: says it wants an absolute path" || bad "app from: no reason given"
 OMACVM_RELEASE_APP_FROM=$T/m1/release expect 0 "app from: an absolute path is taken" rel e2e
+OMACVM_RELEASE_APP_FROM=$T/m1/release OMACVM_RELEASE_RUNTIME_FROM=$T/runtime expect 1 "app from: a runtime from elsewhere beside it is refused" rel e2e
+# Step image after an app from another Mac (APP_FROM in the state, from step
+# build): the image VM runs on the app's own runtime (make-image.sh with
+# OMACVM_PREBUILT_APP), also when a runtime build sits in the worktree; after a
+# build here, on the worktree's runtime build. A stand-in make-image.sh in the
+# worktree says what it was given.
+H=$T/home; W=$H/omacvm-rel-9.9.9-build
+mkdir -p "$W/src/prebuilt" "$W/app/dist/OmacVM.app/Contents/Resources/runtime/bin"
+printf '#!/bin/bash\necho "app=${OMACVM_PREBUILT_APP:-none} $*" > "%s"\nexit 1\n' "$T/img-ran" > "$W/src/prebuilt/make-image.sh"
+printf '#!/bin/sh\n' > "$W/app/dist/OmacVM.app/Contents/Resources/runtime/bin/OmacVM"
+chmod +x "$W/src/prebuilt/make-image.sh" "$W/app/dist/OmacVM.app/Contents/Resources/runtime/bin/OmacVM"
+img() { rm -f "$T/img-ran"; HOME=$H OMACVM_RELEASE_OUT=$G "$R/src/release/release.sh" 9.9.9 image > "$T/img.out" 2>&1; cat "$T/img-ran" 2>/dev/null; }
+echo "APP_FROM=$T/m1/release" >> "$G/release/state"
+[[ $(img) == "app=$W/app/dist/OmacVM.app app build generalize package clean" ]] && ok "image: an app from another Mac makes the image on its own runtime" || { bad "image: not on the app's runtime"; cat "$T/img.out"; }
+mkdir -p "$W/app/runtime/.build/qemu-gpu-runtime/bin"; printf '#!/bin/sh\n' > "$W/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+chmod +x "$W/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+[[ $(img) == "app=$W/app/dist/OmacVM.app app build generalize package clean" ]] && ok "image: the app's runtime, not a runtime build left in the worktree" || bad "image: took the worktree's runtime build for an app from another Mac"
+echo "APP_FROM=" >> "$G/release/state"
+[[ $(img) == "app=none app build generalize package clean" ]] && ok "image: after a build here, the worktree's runtime build" || bad "image: a build here does not use the worktree's runtime"
 
 # sign-app.sh (build-app.sh's signing, also release.sh's for an app built
 # elsewhere): its arguments, and an ad hoc signing of a stand-in app with every
