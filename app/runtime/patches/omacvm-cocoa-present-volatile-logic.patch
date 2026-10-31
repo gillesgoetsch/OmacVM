@@ -1,0 +1,151 @@
+OmacVM Cocoa: rules for the window's spare present surfaces out of sight
+
+What: ui/omacvm-present-volatile.h, the rules of
+omacvm-cocoa-present-volatile.patch, with no AppKit, IOSurface or GL in
+them: after 2 s out of sight every present surface that Core Animation does
+not show or read goes volatile; in sight again, or taken for a frame, it
+comes back non-volatile first, and one macOS emptied meanwhile is drawn
+whole; a refusal stops the rule for the run and brings every volatile one
+back.
+Why: out of sight QEMU draws no frame, but all present surfaces stayed in
+its footprint: 5 x 62 MiB at 5120x2880 (8-bit, also lossless '&BGA'),
+5 x 118 MiB in half float (HDR, extra brightness). Volatile, one keeps
+5.9 MiB of footprint (host test, Mac mini M4, macOS 27.0: plain 62.1 ->
+5.9, lossless 63.1 -> 5.9, half float 118.4 -> 5.9, half float lossless
+119.4 -> 5.8 MiB per surface), and macOS may take its pages without
+compressing them.
+Upstream: OmacVM's own (QEMU's IOSurface present is OmacVM's patch).
+Tests: Tests/display/test-present-volatile.sh (the rules against this
+header; --self-test: they fail with 3.2.16's decisions, which keep every
+surface).
+diff --git a/ui/omacvm-present-volatile.h b/ui/omacvm-present-volatile.h
+new file mode 100644
+index 0000000..c9e1ee3
+--- /dev/null
++++ b/ui/omacvm-present-volatile.h
+@@ -0,0 +1,125 @@
++/*
++ * OmacVM: the window's spare present surfaces purgeable while it is out of
++ * sight.
++ *
++ * No AppKit, IOSurface or OpenGL in here, so it is tested on its own
++ * (app/runtime/Tests/display/test-present-volatile.c); ui/cocoa.m feeds it.
++ *
++ * QEMU draws the guest's frames into a few IOSurfaces (5 with vsync, 3
++ * without) and the window's layer shows one of them. Out of sight
++ * (minimised, covered, another Space, the screen locked, closed with Keep
++ * running) no frame is drawn, but all of them stay in QEMU's footprint:
++ * 5 x 56 MiB at 5120x2880, 5 x 112 MiB in half float. After
++ * OMACVM_PV_AFTER_MS out of sight, every surface Core Animation does not
++ * show or read is made volatile: it leaves the footprint (5.9 MiB left of
++ * one at 5K) and macOS may take its pages without compressing them. In
++ * sight again, or taken for a frame, a surface is made non-volatile first;
++ * one macOS emptied meanwhile has lost its picture and is drawn whole.
++ * A refusal (macOS says no to volatile) stops the rule for the run and
++ * makes every volatile surface non-volatile again.
++ */
++#ifndef OMACVM_PRESENT_VOLATILE_H
++#define OMACVM_PRESENT_VOLATILE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#define OMACVM_PV_SURFACES 8
++#define OMACVM_PV_AFTER_MS 2000
++
++typedef struct OmacvmPresentVolatile {
++    bool off;                       /* not for this run: switched off, or macOS refused */
++    bool away;                      /* out of sight at the last look */
++    int64_t away_ms;                /* ... since then */
++    unsigned n;                     /* surfaces in use */
++    bool vol[OMACVM_PV_SURFACES];   /* surface i is volatile now */
++    unsigned made, emptied;         /* this time out of sight: made volatile, came back empty */
++} OmacvmPresentVolatile;
++
++/* New surfaces (made, or freed: N = 0): none of them is volatile. */
++static inline void omacvm_pv_reset(OmacvmPresentVolatile *v, unsigned n)
++{
++    v->n = n > OMACVM_PV_SURFACES ? OMACVM_PV_SURFACES : n;
++    for (unsigned i = 0; i < OMACVM_PV_SURFACES; i++) {
++        v->vol[i] = false;
++    }
++}
++
++/* The window's sight at NOW_MS. */
++static inline void omacvm_pv_sight(OmacvmPresentVolatile *v, bool seen, int64_t now_ms)
++{
++    if (!seen && !v->away) {
++        v->away = true;
++        v->away_ms = now_ms;
++        v->made = v->emptied = 0;
++    } else if (seen) {
++        v->away = false;
++    }
++}
++
++/* Nothing volatile and in sight: nothing to look at. */
++static inline bool omacvm_pv_idle(const OmacvmPresentVolatile *v)
++{
++    if (v->away && !v->off) {
++        return false;
++    }
++    for (unsigned i = 0; i < v->n; i++) {
++        if (v->vol[i]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/*
++ * What to do with surface I now: 1 make it volatile, -1 make it
++ * non-volatile, 0 nothing. BUSY: Core Animation shows or reads it (in use,
++ * or the layer's contents).
++ */
++static inline int omacvm_pv_step(const OmacvmPresentVolatile *v, unsigned i, bool busy, int64_t now_ms)
++{
++    if (i >= v->n) {
++        return 0;
++    }
++    if (v->vol[i]) {
++        return v->away && !v->off ? 0 : -1;
++    }
++    return !v->off && v->away && !busy && now_ms - v->away_ms >= OMACVM_PV_AFTER_MS ? 1 : 0;
++}
++
++/* Surface I was asked to go volatile; OK: macOS took it. A refusal stops the rule for the run. */
++static inline void omacvm_pv_made(OmacvmPresentVolatile *v, unsigned i, bool ok)
++{
++    if (!ok) {
++        v->off = true;
++        return;
++    }
++    if (i < v->n) {
++        v->vol[i] = true;
++        v->made++;
++    }
++}
++
++/* Surface I is taken for a frame: must it be made non-volatile first? */
++static inline bool omacvm_pv_needed(const OmacvmPresentVolatile *v, unsigned i)
++{
++    return i < v->n && v->vol[i];
++}
++
++/*
++ * Surface I is non-volatile again; EMPTIED: macOS took its pages meanwhile
++ * (or it could not be made non-volatile). True: its picture is gone, draw
++ * it whole next.
++ */
++static inline bool omacvm_pv_back(OmacvmPresentVolatile *v, unsigned i, bool emptied)
++{
++    if (i < v->n) {
++        v->vol[i] = false;
++    }
++    if (emptied) {
++        v->emptied++;
++    }
++    return emptied;
++}
++
++#endif

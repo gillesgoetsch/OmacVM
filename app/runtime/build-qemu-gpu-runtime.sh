@@ -1145,6 +1145,18 @@ grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-console-texture-lazy.patch"
 "$native_dir/Tests/display/test-console-texture.sh" "$source_dir/ui/cocoa.m" "$source_dir/ui/console-gl.c" || \
   die "ui/cocoa.m: the console texture is not made when first drawn as tested (test-console-texture.sh)"
+# OmacVM: the window's spare present surfaces volatile after 2 s out of
+# sight (they leave QEMU's footprint); an emptied one is drawn whole. Its
+# rules' test, a check that the wiring checks fail on the code before, the
+# wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volatile-logic.patch"
+"$native_dir/Tests/display/test-present-volatile.sh" || \
+  die "the spare present surfaces' rules fail their test (test-present-volatile.sh)"
+"$native_dir/Tests/display/test-present-volatile.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a volatile-surface wiring check passes without the patch (test-present-volatile.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volatile.patch"
+"$native_dir/Tests/display/test-present-volatile.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the spare present surfaces are not wired as tested (test-present-volatile.sh)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
