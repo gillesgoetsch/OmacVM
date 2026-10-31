@@ -1324,6 +1324,14 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   and says so too ("HDR recordings" says which). Screenshots and shares taken on the Mac (a macOS
   screenshot, sharing the VM's window from a Mac app) are macOS's own and
   not covered.
+- **Black screenshots of the empty desktop:** with HDR on, a screenshot or
+  share of the desktop while its wallpaper is missing (Omarchy's shell
+  restarting or crashed) is black where the screen shows dark grey: Hyprland
+  leaves its background colour out of the copy that captures read. Nothing
+  to do; the wallpaper and windows come out right. Up to 3.2.15 the same
+  kept OmacVM's repair of a display without wallpaper (`omacvm-displays`,
+  `omacvm check`'s "desktop" line) from seeing it with HDR on; Update VM
+  (3.2.16) fixes that (`docs/notes/findings.md`).
 - **Where:** `src/app/guest/hypr-capture/` (the file, `guard.py`, the
   pacman hooks, `hypr-capture.sh`), `src/app/guest/install.sh`,
   `src/guest/check.sh`; test `src/tests/hypr-capture.sh`; recordings:
