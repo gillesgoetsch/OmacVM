@@ -75,10 +75,17 @@ spare surfaces were volatile, M emptied by macOS (drawn whole)".
 
 ## Consequences
 
-- Per 5K output, about 127 MiB less in every run with a GL scanout (the
-  console texture), and 4 of 5 present surfaces out of the footprint while
-  the window is out of sight: about 225 MiB (450 MiB in half float), by the
-  host test's per-surface costs. The VM rows are in the PR.
+- Per 5K output, QEMU's graphics (footprint(1)'s IOAccelerator) 88-181 MB
+  lower in every run with a GL scanout (hidden test VMs: Mac mini M4 910 ->
+  821 MB, M1 Max 999 -> 818 MB; the host test's texture: 120 MiB of the
+  graphics ledger on both, 127.4 / 176.6 MiB of footprint). In 60 display
+  off/on cycles the set scanout BQL holds of 20 ms or more went from 120 to 0.
+- Out of sight, the spare present surfaces leave the footprint: a 5K window
+  on a locked M1 Max (virtual display, the window's sight from a test file):
+  3 or 4 of 5 went volatile (a second one stays in use while a committed
+  frame waits for a display that shows nothing), 176-238 MB (8-bit lossless)
+  and 335-369 MB (half float) less; the first frame 2-13 ms after the window
+  was seen again. The host test's 4 of 5 (225 / 450 MiB) is the bound.
 - No upload under the BQL at a display off or on or a mode change.
 - A 2D picture in the CAOpenGLLayer path (GPU safe mode's boot console) may
   be black for one refresh tick after a switch until QEMU's thread makes its

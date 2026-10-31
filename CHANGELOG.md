@@ -6,17 +6,16 @@ in more words.
 ## 3.2.17 (unreleased)
 
 - **OmacVM.app's QEMU keeps less graphics memory of its own (#653).** QEMU no longer
-  makes its own copy of the console's picture while the guest shows its
-  desktop, where the window never draws it: about 127 MiB less in Activity
-  Monitor per 5K display (host test, Mac mini M4), and no upload under QEMU's
-  lock at each display off and on or mode change. The copy is made when it is
-  drawn (the firmware and boot console). And 2 s after the VM window goes out
-  of sight (minimised, covered, another Space, the screen locked) its spare
-  frame buffers become purgeable: they leave the footprint and macOS may take
-  them without compressing them; 4 of 5 at 5K, about 225 MiB (about 450 MiB
-  with HDR or Extra brightness), by the host test's per-buffer costs. They come
-  back before the next frame when the window shows again; one macOS took is
-  drawn whole. Needs the app update only.
+  makes its own copy of the console's picture while the guest shows its desktop, where the
+  window never draws it: QEMU's graphics memory at 5K was 88-181 MB lower in hidden test VMs
+  (Mac mini M4: 910 -> 821 MB; MacBook Pro M1 Max: 999 -> 818 MB), and in 60 display off/on
+  cycles no hold of QEMU's lock reached 20 ms (120 before). The copy is made when it is drawn
+  (the console before the guest's first frame). And 2 s after the VM window goes out of sight
+  (minimised, covered, another Space, the screen locked) its spare frame buffers become
+  purgeable: they leave Activity Monitor's number and macOS may take them without
+  compressing them. A 5K window on a locked M1 Max: 3 or 4 of its 5 buffers, 176-238 MB less
+  (335-369 MB with Extra brightness); they come back before the next frame, the first one 2-13
+  ms after the window shows again, and one macOS took is drawn whole. Needs the app update only.
 
 ## 3.2.16
 

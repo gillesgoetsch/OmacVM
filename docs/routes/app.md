@@ -1274,11 +1274,12 @@ apps, the GPU. A VM takes two kinds from it:
   own per window, outside these numbers: the frames it hands to macOS (5
   buffers of about 62 MB at 5K, twice that with HDR or Extra brightness).
   2 s after the window goes out of sight (minimised, covered, another Space,
-  the screen locked) all but the one shown become purgeable: they leave
-  Activity Monitor's number and macOS may take them; they come back before
-  the next frame (from 3.2.17, ADR 0067). QEMU's copy of the console's
-  picture is made only while that picture shows (the firmware and boot
-  console), not for the desktop (3.2.16 and older: about 127 MB at 5K).
+  the screen locked) the ones macOS is not showing or reading (3 or 4 of 5)
+  become purgeable: they leave Activity Monitor's number and macOS may take
+  them; they come back before the next frame (from 3.2.17, ADR 0067). QEMU's
+  copy of the console's picture is made only while that picture shows (the
+  console before the guest's first frame), not for the desktop (3.2.16 and
+  older: 90-180 MB more graphics at 5K).
 
 The app shows both: before a start, "VM memory: 8 GB; graphics memory last
 run: peak 2.6 GB, from the Mac on top" (the (i) beside General › Resources
