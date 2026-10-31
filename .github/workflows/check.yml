@@ -218,6 +218,9 @@ jobs:
       - name: Freed memory leaves the Mac for real (QEMU's free page reclaim, no VM; a real hypervisor map where the runner allows one)
         run: src/tests/memory-reclaim.sh
 
+      - name: Activity Monitor counts guest RAM once (QEMU's own-view sweep, no VM; a real hypervisor map where the runner allows one)
+        run: src/tests/memory-dcount.sh
+
       - name: omacvm check says when the VM stood still (logs/vm-stalls)
         run: src/tests/vm-stalls.sh
 
