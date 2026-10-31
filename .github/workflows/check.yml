@@ -441,7 +441,7 @@ jobs:
       - name: e2e harnesses put the test app's settings back and start only test VMs
         run: src/tests/e2e-test-vms.sh
 
-      - name: The on-screen release test's checks, offline (its tool builds; no screen, VM or app)
+      - name: The on-screen release test's checks and the locked present row's verdict, offline (their tools build; no screen, display, VM or app)
         run: src/tests/e2e-onscreen.sh
 
       - name: e2e harnesses wait between rows while someone is at the Mac; CI runners paused for a gate

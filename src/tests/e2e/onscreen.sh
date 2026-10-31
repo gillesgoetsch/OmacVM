@@ -84,8 +84,7 @@ hid_idle() { person_hid_idle; }
 # Remote sessions (Screen Sharing, port 5900, Jump Desktop; also one left alone) and input that was
 # not ours (the watcher's view too): person.sh.
 remote() { local r; r=$(person_remote); echo "${r:-none}"; }
-# No `ioreg | grep -q`: grep ends ioreg early, and under pipefail its SIGPIPE always made it No.
-locked() { [[ $(ioreg -n Root -d1 -k IOConsoleUsers 2>/dev/null) == *'"CGSSessionScreenIsLocked"=Yes'* ]] && echo Yes || echo No; }
+locked() { person_locked && echo Yes || echo No; }
 away() { [[ $(locked) != Yes && -z $(person_check) ]]; }
 who() { echo "HID idle $(hid_idle) s, remote sessions $(remote), screen locked $(locked)"; }
 # Our own events, also of a run before (HID idle counts ours as input): person.sh's stamp

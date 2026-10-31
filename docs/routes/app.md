@@ -1182,6 +1182,10 @@ Space, no menu bar change) and QEMU never takes the focus.
 `OMACVM_TEST_ONLY_DISPLAYS=<ids>` keeps real full screen but gives windows
 only to those displays (another test's virtual display is left alone).
 `OMACVM_DISPLAYS_DEBUG=1` logs what goes over the port (QEMU's log).
+`virtual-display.m --while-locked` makes the display only while the Mac's
+session is locked and takes it away when it unlocks, after killing the
+test app's processes (`--kill-app`), so a test window never moves onto a
+person's display (`src/tests/e2e/present-locked.sh`).
 
 ## Display scale on 4K, 5K and larger displays
 

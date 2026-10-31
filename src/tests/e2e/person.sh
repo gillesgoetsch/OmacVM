@@ -27,6 +27,8 @@
 #                             own input until (epoch s, 0 never), FOREIGN = the
 #                             watcher's last foreign input (epoch s, 0 none)
 #   person_check              the verdict now
+#   person_locked             exit 0 while the session is locked (the console's screen lock in
+#                             the IORegistry); present-locked.sh runs only then
 #   person_watch_start, person_watch_stop
 #   person_gate ROW           between two rows: what the watcher saw since the last
 #                             gate goes to person_overlap (a hook, if the harness
@@ -58,6 +60,7 @@ _person_ps() {
 _person_tcp() { nettop -m tcp -l 1 -L 1 -n 2>/dev/null; }
 _person_idle_raw() { ioreg -c IOHIDSystem 2>/dev/null | awk '/HIDIdleTime/ {print int($NF / 1000000000); exit}'; }
 _person_now() { date +%s; }
+_person_lock_raw() { ioreg -n Root -d1 -k IOConsoleUsers 2>/dev/null; }
 
 person_remote() {
   local r="" a ps
@@ -77,6 +80,9 @@ person_remote() {
 }
 
 person_hid_idle() { local i; i=$(_person_idle_raw); echo "${i:-0}"; }
+
+# No `ioreg | grep -q`: grep ends ioreg early, and under pipefail its SIGPIPE always made it No.
+person_locked() { [[ $(_person_lock_raw) == *'"CGSSessionScreenIsLocked"=Yes'* ]]; }
 
 person_posted() {   # [SECONDS]: our input from now until SECONDS from now
   local until=$(( $(_person_now) + ${1:-2} )) old

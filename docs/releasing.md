@@ -94,6 +94,18 @@ why a row could not run (a macOS without a Mac, BLOCKED because someone
 used it) in the release's notes for the maintainer. A FAIL stops the
 release like a failed step.
 
+Before `publish`, each locked test Mac also runs the real present row,
+`src/tests/e2e/present-locked.sh` ([src/tests/e2e/README.md](../src/tests/e2e/README.md#the-real-present-on-a-locked-mac-present-lockedsh)),
+on the test identity build of M copied over that Mac's one test app
+folder, with its VM lock held: QEMU's present of a 5120x2880 guest, then of
+a 6016x3384 guest (a second run), on a virtual display made for the run,
+"Draw only what changed" in check mode. It runs only while the session is
+locked and no other VM runs. A FAIL stops the release. VOID (it ran but
+proves nothing; `summary.tsv` says why) means the row is owed: write it
+down in the release's notes. A hidden start with the tiles check is no
+cover: its window stops presenting after the first frames (3.2.15's gate
+row said ok with 0 checks).
+
 After: close the PRs that shipped through the release PR, update the
 README cells that waited for the release, remove the worktrees
 (`release.sh X.Y.Z clean`).

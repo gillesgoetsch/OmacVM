@@ -1,0 +1,9 @@
+OmacVM: tiled present: on (the VM's driver says what changed, QEMU shows it in tiles)
+OmacVM-VM: info: cocoa: tiled present: on, checked against whole frames (OMACVM_GL_PRESENT_TILES=check)
+OmacVM-VM: info: cocoa: tiles check 1: 1 tiles, 0 pixels differ (0 of 1 checks differed)
+OmacVM-VM: info: cocoa: tiled present: first frame in tiles (1 of 240, box 8x16)
+OmacVM-VM: info: cocoa: tiled present, last minute: 1302 frames in tiles, 363 whole, 1 not presented (nothing changed)
+OmacVM-VM: info: cocoa: tiles check, so far: 0 of 44 checks differed
+OmacVM-VM: info: cocoa: tiles check 101: 4 tiles, 0 pixels differ (0 of 101 checks differed)
+OmacVM-VM: info: cocoa: tiled present, last minute: 2652 frames in tiles, 429 whole, 0 not presented (nothing changed)
+OmacVM-VM: info: cocoa: tiles check, so far: 0 of 132 checks differed
