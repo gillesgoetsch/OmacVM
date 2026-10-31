@@ -46,6 +46,18 @@ in more words.
   `omacvm check`'s "Activity Monitor" row and the (i) say what is left. `OMACVM_DCOUNT_SWEEP=0`
   turns it off. Needs the app update; nothing in the VM.
 
+- **OmacVM.app's QEMU keeps less graphics memory of its own (#653).** QEMU no longer
+  makes its own copy of the console's picture while the guest shows its desktop, where the
+  window never draws it: QEMU's graphics memory at 5K was 88-181 MB lower in hidden test VMs
+  (Mac mini M4: 910 -> 821 MB; MacBook Pro M1 Max: 999 -> 818 MB), and in 60 display off/on
+  cycles no hold of QEMU's lock reached 20 ms (120 before). The copy is made when it is drawn
+  (the console before the guest's first frame). And 2 s after the VM window goes out of sight
+  (minimised, covered, another Space, the screen locked) its spare frame buffers become
+  purgeable: they leave Activity Monitor's number and macOS may take them without
+  compressing them. A 5K window on a locked M1 Max: 3 or 4 of its 5 buffers, 176-238 MB less
+  (335-369 MB with Extra brightness); they come back before the next frame, the first one 2-13
+  ms after the window shows again, and one macOS took is drawn whole. Needs the app update only.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left

@@ -740,7 +740,16 @@ The less obvious ones, with causes and where the fix lives, are in
   stays "normal" while it does; the app's give-back of the cold cache while
   macOS compresses the VM (`src/memory/guest/giveback.sh`) runs only with a
   QEMU that carries the fix, and stops for the run when that QEMU says macOS
-  keeps the pages anyway (`logs/memory-reclaim`).
+  keeps the pages anyway (`logs/memory-reclaim`). QEMU's own graphics for
+  the window (ADR 0067): the console texture is made only when drawn (none
+  while the guest shows a GL scanout:
+  `qemu-cocoa-gl-console-texture-lazy.patch`, `OMACVM_CONSOLE_TEXTURE=eager`
+  the old way), and 2 s after the window goes out of sight the spare present
+  surfaces are volatile (`omacvm-cocoa-present-volatile*.patch`,
+  `OMACVM_PRESENT_VOLATILE=0` keeps them). Hidden test starts
+  (`OMACVM_COCOA_HIDDEN`) never go out of sight, so only a real window shows
+  the second; a footprint that drops while the window is hidden is purgeable
+  memory, still resident until macOS takes it.
 - GRUB on Arch only boots kernels named `/boot/vmlinuz-*` with their initramfs
   (`/boot/Image` boots without one, and grub-btrfs ignores it).
 - A Linux guest gets no trackpad gestures from Parallels, UTM or Fusion; they come from

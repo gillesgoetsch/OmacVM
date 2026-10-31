@@ -1150,6 +1150,28 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover.patch"
 "$native_dir/Tests/display/test-pointer-hover.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the pointer's place while another app is in front is not wired as tested (test-pointer-hover.sh)"
+# OmacVM: a console's GL texture made when it is first drawn, not at every
+# switch: none while the guest shows a GL scanout (virgl) or for the
+# placeholder behind the boot logo, so no upload under the BQL at a display
+# off or on or a mode change. The sequences and the wiring fail on the code
+# before, then pass.
+"$native_dir/Tests/display/test-console-texture.sh" --self-test "$source_dir/ui/cocoa.m" "$source_dir/ui/console-gl.c" || \
+  die "ui/cocoa.m: the console texture checks pass without the patch (test-console-texture.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-console-texture-lazy.patch"
+"$native_dir/Tests/display/test-console-texture.sh" "$source_dir/ui/cocoa.m" "$source_dir/ui/console-gl.c" || \
+  die "ui/cocoa.m: the console texture is not made when first drawn as tested (test-console-texture.sh)"
+# OmacVM: the window's spare present surfaces volatile after 2 s out of
+# sight (they leave QEMU's footprint); an emptied one is drawn whole. Its
+# rules' test, a check that the wiring checks fail on the code before, the
+# wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volatile-logic.patch"
+"$native_dir/Tests/display/test-present-volatile.sh" || \
+  die "the spare present surfaces' rules fail their test (test-present-volatile.sh)"
+"$native_dir/Tests/display/test-present-volatile.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a volatile-surface wiring check passes without the patch (test-present-volatile.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volatile.patch"
+"$native_dir/Tests/display/test-present-volatile.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the spare present surfaces are not wired as tested (test-present-volatile.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
