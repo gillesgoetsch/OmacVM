@@ -43,7 +43,22 @@ import Foundation
 /// the next gap for it (up to 2 h: what macOS compresses then is the VM's
 /// own programs' memory); 1 GB or more puts it back to 10 minutes. The
 /// warning's drop leaves that gap as it is. macOS's warning may follow a
-/// cold-only give-back after 2 minutes. Foundation only: `swift run desktop-tests`.
+/// cold-only give-back after 2 minutes.
+///
+/// When the VM is quiet (`idle`): every 15 minutes while macOS's pressure is
+/// normal, QEMU used at most a tenth of a core over the last minute, the
+/// compressing rule does not hold and no give-back ran in the last 10
+/// minutes, the VM gives back its cold file cache above the newest min(2 GB,
+/// a quarter of the VM) and compacts its free memory (giveback.sh idle).
+/// It counts as cold-only (the warning may follow after 2 minutes); an idle
+/// step the agent did not answer is tried again 15 minutes later, never
+/// sooner, and never delays the warning's drop. One that brought back under
+/// 256 MB, or after which the VM read back half of what the last one gave
+/// (its refaults), doubles the gap, up to 2 hours; 1 GB or more puts it back
+/// to 15 minutes. After the warning's drop, once the pressure is normal
+/// again, one compaction-only call (giveback.sh compact): compaction moves
+/// pages in use, so never while macOS is short of memory.
+/// Foundation only: `swift run desktop-tests`.
 public struct MemoryGiveBack: Sendable {
     public static let mib: UInt64 = 1 << 20
     public static let gib: UInt64 = 1 << 30
@@ -58,8 +73,14 @@ public struct MemoryGiveBack: Sendable {
     public static let large = gib
     /// Near the baseline: macOS's count starts again from there.
     static let near = 64 * mib
+    /// The idle give-back: every 15 minutes at most (times `idleBackoff`).
+    public static let idleGap: TimeInterval = 900
+    /// Quiet: QEMU used at most this much of one core over the last minute
+    /// (all its threads: the vCPUs, graphics, disk, display).
+    public static let quietCPU = 0.10
+    public static let quietWindow: TimeInterval = 60
 
-    public enum Trigger: String, Sendable { case compressing, warning, critical }
+    public enum Trigger: String, Sendable { case compressing, warning, critical, idle }
 
     /// One look at QEMU and macOS. Bytes; time in seconds.
     public struct Sample: Equatable, Sendable {
@@ -70,11 +91,18 @@ public struct MemoryGiveBack: Sendable {
         /// What macOS compressed since it started (vm_statistics64.compressions
         /// times the page size), every process.
         public var compressed: UInt64
-        public init(time: TimeInterval, footprint: UInt64, resident: UInt64, compressed: UInt64) {
+        /// QEMU's CPU time since it started (all threads), nanoseconds.
+        public var cpu: UInt64
+        /// macOS's memory pressure is normal (not warn or critical).
+        public var normal: Bool
+        public init(time: TimeInterval, footprint: UInt64, resident: UInt64, compressed: UInt64,
+                    cpu: UInt64 = 0, normal: Bool = true) {
             self.time = time
             self.footprint = footprint
             self.resident = resident
             self.compressed = compressed
+            self.cpu = cpu
+            self.normal = normal
         }
         public var taken: UInt64 { footprint > resident ? footprint - resident : 0 }
     }
@@ -97,12 +125,31 @@ public struct MemoryGiveBack: Sendable {
     /// not report free pages, or the app has no script). The warning's drop stays.
     public private(set) var off = false
     /// This QEMU gives the pages of a free page report back to macOS
-    /// (`qemuGivesPagesBack`). false: "compressing" never fires.
+    /// (`qemuGivesPagesBack`). false: "compressing" and "idle" never fire.
     public var pagesGoBack: Bool
+    /// The idle give-back is on (OMACVM_GIVEBACK_IDLE=0 turns it off, for tests).
+    public var idleOn: Bool
+    /// The gap for "idle" is 15 minutes times this.
+    public private(set) var idleBackoff: Double = 1
+    /// The idle agent did not answer this many times in a row.
+    public private(set) var idleMisses = 0
+    private var idleNext: TimeInterval?
+    /// The VM's refaults (MB, since it started) and what it gave at the last idle step.
+    private var idleRefault: (rf: Int, got: Int)?
+    /// QEMU's CPU time over the last minute (`seen`).
+    private var cpuSeen: [(time: TimeInterval, cpu: UInt64)] = []
+    /// The compaction-only call after the warning's drop is due (`compactAfterDrop`).
+    public private(set) var compactDue = false
 
-    public init(ram: UInt64, pagesGoBack: Bool = false) {
+    public init(ram: UInt64, pagesGoBack: Bool = false, idle: Bool = true) {
         self.ram = ram
         self.pagesGoBack = pagesGoBack
+        self.idleOn = idle
+    }
+
+    /// OMACVM_GIVEBACK_IDLE=0 turns the idle give-back off (tests that measure without it).
+    public static func idleOn(environment: [String: String]) -> Bool {
+        environment["OMACVM_GIVEBACK_IDLE"] != "0"
     }
 
     /// The text the reclaim fix puts into QEMU's binary (the worker's first
@@ -153,6 +200,13 @@ public struct MemoryGiveBack: Sendable {
             + "QEMU says macOS keeps the pages the VM gives back (\(why))"
     }
 
+    /// qemu.log's line about the idle give-back, once its QEMU is known.
+    public static func idleLine(on: Bool, pagesGoBack: Bool) -> String {
+        "OmacVM: VM memory: idle give-back: " + (!on ? "off (OMACVM_GIVEBACK_IDLE=0)"
+            : pagesGoBack ? "on (at most every 15 minutes while the VM is quiet and macOS's pressure normal)"
+            : "off (this QEMU keeps given-back pages)")
+    }
+
     /// qemu.log's line at each start; omacvm check's "VM memory" row reads
     /// "compresses: on" or "off" from it.
     public static func startLine(pagesGoBack: Bool) -> String {
@@ -178,25 +232,120 @@ public struct MemoryGiveBack: Sendable {
         return allowed(.compressing, at: s.time)
     }
 
-    /// Whether a give-back for `trigger` may start now.
+    /// Every look, before `compressing` and `idle`, also while a give-back
+    /// runs: QEMU's CPU time, for "quiet".
+    public mutating func seen(_ s: Sample) {
+        cpuSeen.append((s.time, s.cpu))
+        while cpuSeen.count > 1 && s.time - cpuSeen[1].time >= Self.quietWindow { cpuSeen.removeFirst() }
+        if idleNext == nil { idleNext = s.time + Self.idleGap }
+    }
+
+    /// QEMU used at most `quietCPU` of a core over the last minute (a whole
+    /// minute of looks; CPU time that went back counts as busy).
+    public var quiet: Bool {
+        guard let first = cpuSeen.first, let last = cpuSeen.last, last.time - first.time >= Self.quietWindow,
+              last.cpu >= first.cpu else { return false }
+        return Double(last.cpu - first.cpu) / 1e9 <= Self.quietCPU * (last.time - first.time)
+    }
+
+    /// The compressing rule holds (without its growth part): QEMU has at
+    /// least `minTaken` outside its resident memory and macOS compressed 1 GB
+    /// or more since the baseline. Graphics alone (no compressions) do not.
+    public func compressingHolds(_ s: Sample) -> Bool {
+        guard s.taken >= minTaken else { return false }
+        guard let b = baseline else { return true }
+        return s.compressed >= b.compressed && s.compressed - b.compressed >= Self.minCompressed
+    }
+
+    /// Every look after `compressing` said no: true when the VM should give
+    /// back now because it is quiet (`seen` first).
+    public func idle(_ s: Sample) -> Bool {
+        guard idleOn, pagesGoBack, !off, s.normal, quiet, !compressingHolds(s),
+              let n = idleNext, s.time >= n else { return false }
+        return allowed(.idle, at: s.time)
+    }
+
+    /// Whether a give-back for `trigger` may start now. A retry of
+    /// "compressing" or the warning that is due goes before "idle".
     public func allowed(_ trigger: Trigger, at t: TimeInterval) -> Bool {
-        if trigger == .compressing && !pagesGoBack { return false }
-        if let r = retryAt { return t >= r }
+        if (trigger == .compressing || trigger == .idle) && !pagesGoBack { return false }
+        if trigger == .idle && !idleOn { return false }
+        if let r = retryAt { return trigger != .idle && t >= r }
         guard let l = last else { return true }
         let since = t - l.time
         switch trigger {
         case .compressing:
             return !off && since >= min(Self.gap * backoff, Self.longestGap)
+        case .idle:
+            return !off && since >= Self.gap
         case .warning, .critical:
             return since >= Self.gap || (l.coldOnly && since >= Self.escalation)
         }
     }
 
-    /// A give-back starts (counted from now for the gap).
+    /// A give-back starts (counted from now for the gap). "compressing" and
+    /// "idle" take cold cache only.
     public mutating func started(_ trigger: Trigger, at t: TimeInterval) {
         previous = last
-        last = (t, trigger, trigger == .compressing)
+        last = (t, trigger, trigger == .compressing || trigger == .idle)
         retryAt = nil
+    }
+
+    /// The VM's agent did not answer an idle give-back: as if it had not
+    /// started, and again in 15 minutes (never sooner: no `retryAt`, so the
+    /// warning's drop is not held up).
+    public mutating func idleNoAnswer(at t: TimeInterval) {
+        last = previous
+        idleMisses += 1
+        idleNext = t + Self.idleGap
+    }
+
+    /// The VM answered an idle give-back (nil: no answer that could be read;
+    /// it may have run, so it counts). busy or locked: nothing ran, again in
+    /// 15 minutes. Otherwise what it brought back (cache and compacted
+    /// memory, by the VM's own count) and its refaults set the next gap.
+    /// Returns how many times in a row before it had not answered.
+    @discardableResult
+    public mutating func idleAnswered(_ r: Result?, at t: TimeInterval) -> Int {
+        let missed = idleMisses
+        idleMisses = 0
+        guard let r else {
+            idleNext = t + min(Self.idleGap * idleBackoff, Self.longestGap)
+            return missed
+        }
+        switch r.act {
+        case "norep":
+            off = true
+        case "busy", "locked":
+            last = previous
+            idleNext = t + Self.idleGap
+        default:
+            let back = r.gotMB + r.compactedMB
+            var longer = back < Int(Self.small / Self.mib)
+            if let p = idleRefault, let rf = r.refaultMB, p.got > 0, rf >= p.rf, rf - p.rf >= p.got / 2 { longer = true }
+            if longer {
+                idleBackoff = min(idleBackoff * 2, Self.longestGap / Self.idleGap)
+            } else if back >= Int(Self.large / Self.mib) {
+                idleBackoff = 1
+            }
+            if let rf = r.refaultMB { idleRefault = (rf, r.gotMB) }
+            idleNext = t + min(Self.idleGap * idleBackoff, Self.longestGap)
+        }
+        return missed
+    }
+
+    /// The warning's drop was done: one compaction-only call is due once the
+    /// pressure is normal again (only where given-back pages reach the Mac).
+    public mutating func dropped() {
+        if pagesGoBack && !off { compactDue = true }
+    }
+
+    /// Every look: true once, when the compaction-only call after the
+    /// warning's drop should go now (macOS's pressure normal again).
+    public mutating func compactAfterDrop(_ s: Sample) -> Bool {
+        guard compactDue, s.normal else { return false }
+        compactDue = false
+        return true
     }
 
     /// The VM's agent did not answer: as if it had not started. Again in 30 s,
@@ -230,7 +379,8 @@ public struct MemoryGiveBack: Sendable {
     /// 60 s after the VM answered: the baseline starts again from now, and for
     /// "compressing" what came back sets the next gap. What the VM says it
     /// gave counts; QEMU's footprint only when its answer could not be read.
-    /// The warning's drop (`trigger` warning or critical) leaves the gap as it is.
+    /// The warning's drop (`trigger` warning or critical) and "idle" (its own
+    /// gap: `idleAnswered`) leave that gap as it is.
     public mutating func settled(_ trigger: Trigger, guest: UInt64?, footprintDrop: UInt64, at t: TimeInterval) {
         if trigger == .compressing {
             let back = guest ?? footprintDrop
@@ -249,20 +399,34 @@ public struct MemoryGiveBack: Sendable {
 
     /// The VM's answer (giveback.sh): one line of key=value, sizes in MB. The
     /// VM is untrusted: the last line only, printable characters, at most 200
-    /// of them, numbers within 0 and the VM's memory, `act` letters only.
+    /// of them, numbers within 0 and the VM's memory (refaults: 0 to 2^31),
+    /// `act` and `compaction` letters only.
     public struct Result: Equatable, Sendable {
         public var act = ""
         public var wantMB = 0
         public var gotMB = 0
         public var cacheMB = 0
         public var cacheAfterMB = 0
+        /// Free memory in blocks too small for free page reporting, before
+        /// and after the compaction step.
         public var smallFreeMB = 0
-        public var totalMB = 0
+        public var smallAfterMB = 0
+        /// The compaction step: ran, cap (stopped at its time cap), or why it
+        /// did not run (small, busy, nopsi, no, time, fail, skip).
+        public var compaction = ""
+        public var compactionMS = 0
+        /// File pages the VM read again after it had let them go, since it started (MB).
+        public var refaultMB: Int?
         public var reporting = false
         public var order = -1
         public var seconds = 0
 
         public init() {}
+
+        /// What the compaction step made reportable: the small free blocks it joined.
+        public var compactedMB: Int {
+            compaction == "ran" || compaction == "cap" ? max(0, smallFreeMB - smallAfterMB) : 0
+        }
 
         public static func parse(_ text: String, maxMB: Int) -> Result? {
             let lines = text.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
@@ -272,6 +436,9 @@ public struct MemoryGiveBack: Sendable {
             let clean = String(scalars)
             let cap = max(0, maxMB)
             func mb(_ v: String) -> Int { min(max(Int(v) ?? 0, 0), cap) }
+            func letters(_ v: String) -> String {
+                String(v.unicodeScalars.filter { $0.value >= 0x61 && $0.value <= 0x7A }.prefix(12).map(Character.init))
+            }
             var r = Result()
             var seen = false
             for field in clean.split(separator: " ") {
@@ -279,15 +446,18 @@ public struct MemoryGiveBack: Sendable {
                 guard kv.count == 2 else { continue }
                 switch kv[0] {
                 case "act":
-                    r.act = String(kv[1].unicodeScalars.filter { $0.value >= 0x61 && $0.value <= 0x7A }.prefix(12).map(Character.init))
+                    r.act = letters(kv[1])
                     seen = !r.act.isEmpty
-                case "want_mb": r.wantMB = mb(kv[1])
-                case "got_mb": r.gotMB = mb(kv[1])
-                case "cache_mb": r.cacheMB = mb(kv[1])
-                case "cache_after_mb": r.cacheAfterMB = mb(kv[1])
-                case "small_free_mb": r.smallFreeMB = mb(kv[1])
-                case "total_mb": r.totalMB = mb(kv[1])
-                case "reporting": r.reporting = kv[1] == "1"
+                case "want": r.wantMB = mb(kv[1])
+                case "got": r.gotMB = mb(kv[1])
+                case "cache": r.cacheMB = mb(kv[1])
+                case "cache_to": r.cacheAfterMB = mb(kv[1])
+                case "small": r.smallFreeMB = mb(kv[1])
+                case "small_to": r.smallAfterMB = mb(kv[1])
+                case "cpt": r.compaction = letters(kv[1])
+                case "cpt_ms": r.compactionMS = min(max(Int(kv[1]) ?? 0, 0), 600_000)
+                case "rf": r.refaultMB = Int(kv[1]).map { min(max($0, 0), Int(Int32.max)) }
+                case "rep": r.reporting = kv[1] == "1"
                 case "order": r.order = min(max(Int(kv[1]) ?? -1, -1), 10)
                 case "secs": r.seconds = min(max(Int(kv[1]) ?? 0, 0), 600)
                 default: break
@@ -303,13 +473,31 @@ public struct MemoryGiveBack: Sendable {
         return mb < 1024 ? "\(mb) MB" : String(format: "%.1f GB", Double(bytes) / Double(gib))
     }
 
+    /// qemu.log's words for the compaction step of an answer.
+    public static func compactionWords(_ r: Result) -> String {
+        func g(_ mb: Int) -> String { gb(UInt64(max(mb, 0)) * mib) }
+        let secs = String(format: "%.1f s", Double(r.compactionMS) / 1000)
+        switch r.compaction {
+        case "ran", "cap":
+            return "compacted its free memory: \(g(r.smallFreeMB)) -> \(g(r.smallAfterMB)) in blocks too small to give back ("
+                + secs + (r.compaction == "cap" ? ", stopped at its time cap)" : ")")
+        case "small": return "\(g(r.smallFreeMB)) free in blocks too small to give back"
+        case "busy": return "no compaction (the VM was waiting for memory)"
+        case "nopsi": return "no compaction (its kernel has no memory pressure numbers)"
+        case "no": return "no compaction (its kernel or tools cannot)"
+        case "time": return "no compaction (no time left)"
+        case "fail": return "no compaction (its kernel refused)"
+        default: return "\(g(r.smallFreeMB)) free in blocks too small to give back"
+        }
+    }
+
     /// logs/memory-giveback: the last give-back of this run, for omacvm check.
     /// key=value lines; the app writes it whole at each give-back and removes
     /// it when the VM starts.
     public struct Status: Equatable, Sendable {
         public var count = 0
         public var at = 0               // when, seconds since 1970
-        public var trigger = ""         // compressing, warning, critical, off
+        public var trigger = ""         // compressing, warning, critical, off (never idle: its own lines)
         public var act = ""             // the VM's answer (giveback.sh), or "drop" for the warning
         public var givenMB: Int?        // what the VM said it gave; nil for the warning's drop
         public var returnedMB = 0       // QEMU's footprint, 60 s later, less than before
@@ -323,6 +511,11 @@ public struct MemoryGiveBack: Sendable {
         public var off = false
         /// QEMU said macOS keeps the pages the VM gives back (`qemuKeeps`).
         public var kept = false
+        /// Idle give-backs this run (not in `count`), what they brought back
+        /// by the VM's own count (cache and compacted memory), the last one.
+        public var idle = 0
+        public var idleMB = 0
+        public var idleAt = 0
 
         public init() {}
 
@@ -343,6 +536,9 @@ public struct MemoryGiveBack: Sendable {
             backoff=\(backoff)
             off=\(off ? 1 : 0)
             kept=\(kept ? 1 : 0)
+            idle=\(idle)
+            idle_mb=\(idleMB)
+            idle_at=\(idleAt)
 
             """
         }
