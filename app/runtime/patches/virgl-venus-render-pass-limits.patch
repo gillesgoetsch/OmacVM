@@ -7,8 +7,10 @@ bind point is graphics; attachment sample counts are ones the device has;
 dependencies name its subpasses; VkRenderPassMultiviewCreateInfo has a mask per
 subpass (or none) and an offset per dependency (or none); input attachment
 aspects name a subpass and one of its inputs; resolve modes are known. vkr
-keeps each pass's attachment count, the clear values a begin must give and a
-table of its subpasses (colors, view mask). A framebuffer has the pass's
+keeps each pass's attachment count, the clear values a begin must give (up to
+the last attachment whose load op clears, or whose stencil load op clears on
+a depth/stencil format: Vulkan ignores a color attachment's) and a table of
+its subpasses (colors, view mask). A framebuffer has the pass's
 attachment count (imageless: its image info count), no NULL view, a size
 within the device's limits. A begin names a framebuffer of the pass's
 attachments, enough clear values, imageless views, sample locations for its
@@ -283,10 +285,10 @@ index fd74243..fa2d40b 100644
  
  static void
 diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
-index 0cb3d70..4f38680 100644
+index 0cb3d70..e6d1d2c 100644
 --- a/src/venus/vkr_render_pass.c
 +++ b/src/venus/vkr_render_pass.c
-@@ -6,12 +6,405 @@
+@@ -6,12 +6,431 @@
  #include "vkr_render_pass.h"
  
  #include "vkr_render_pass_gen.h"
@@ -573,15 +575,40 @@ index 0cb3d70..4f38680 100644
 +   return NULL;
 +}
 +
-+/* the clear values a begin must give: up to the last attachment a load op clears */
++static bool
++vkr_format_is_depth_stencil(VkFormat format)
++{
++   switch (format) {
++   case VK_FORMAT_D16_UNORM:
++   case VK_FORMAT_X8_D24_UNORM_PACK32:
++   case VK_FORMAT_D32_SFLOAT:
++   case VK_FORMAT_S8_UINT:
++   case VK_FORMAT_D16_UNORM_S8_UINT:
++   case VK_FORMAT_D24_UNORM_S8_UINT:
++   case VK_FORMAT_D32_SFLOAT_S8_UINT:
++      return true;
++   default:
++      return false;
++   }
++}
++
++/* the clear values a begin must give: up to the last attachment whose loadOp clears, or
++ * whose stencilLoadOp clears when it has a depth/stencil format (Vulkan ignores the
++ * stencil load op of a color attachment) */
 +static uint32_t
-+vkr_clear_count(uint32_t count, const void *attachments, size_t stride, size_t load, size_t stencil_load)
++vkr_clear_count(uint32_t count,
++                const void *attachments,
++                size_t stride,
++                size_t format,
++                size_t load,
++                size_t stencil_load)
 +{
 +   uint32_t n = 0;
 +   for (uint32_t i = 0; i < count; i++) {
 +      const uint8_t *a = (const uint8_t *)attachments + i * stride;
 +      if (*(const VkAttachmentLoadOp *)(a + load) == VK_ATTACHMENT_LOAD_OP_CLEAR ||
-+          *(const VkAttachmentLoadOp *)(a + stencil_load) == VK_ATTACHMENT_LOAD_OP_CLEAR)
++          (*(const VkAttachmentLoadOp *)(a + stencil_load) == VK_ATTACHMENT_LOAD_OP_CLEAR &&
++           vkr_format_is_depth_stencil(*(const VkFormat *)(a + format))))
 +         n = i + 1;
 +   }
 +   return n;
@@ -679,6 +706,7 @@ index 0cb3d70..4f38680 100644
 +   const uint32_t attachments = info->attachmentCount, count = info->subpassCount;
 +   const uint32_t clears =
 +      vkr_clear_count(attachments, info->pAttachments, sizeof(VkAttachmentDescription),
++                      offsetof(VkAttachmentDescription, format),
 +                      offsetof(VkAttachmentDescription, loadOp),
 +                      offsetof(VkAttachmentDescription, stencilLoadOp));
 +   struct vkr_render_pass *pass = vkr_render_pass_create_and_add(dispatch->data, args);
@@ -693,7 +721,7 @@ index 0cb3d70..4f38680 100644
  }
  
  static void
-@@ -22,17 +415,36 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
+@@ -22,17 +441,37 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct vn_device_proc_table *vk = &dev->proc_table;
  
@@ -717,6 +745,7 @@ index 0cb3d70..4f38680 100644
 +   pass->attachment_count = info->attachmentCount;
 +   pass->clear_count =
 +      vkr_clear_count(info->attachmentCount, info->pAttachments, sizeof(VkAttachmentDescription2),
++                      offsetof(VkAttachmentDescription2, format),
 +                      offsetof(VkAttachmentDescription2, loadOp),
 +                      offsetof(VkAttachmentDescription2, stencilLoadOp));
 +   pass->subpass_count = info->subpassCount;
@@ -730,7 +759,7 @@ index 0cb3d70..4f38680 100644
        free(pass);
        return;
     }
-@@ -75,7 +487,35 @@ static void
+@@ -75,7 +514,35 @@ static void
  vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
                                   struct vn_command_vkCreateFramebuffer *args)
  {
