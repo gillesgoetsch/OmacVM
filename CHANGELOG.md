@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.17 (unreleased)
+
+- **Mac input methods: a lone Shift reaches an input method that switches on it (OmacVM.app,
+  experimental, #357, #655 by @Vocllum).** While the VM has the keyboard, QEMU's key tap took every
+  key and modifier from macOS's event stream, so an input method that switches between its modes on
+  a lone Shift from that stream never saw Shift in the VM: in @Vocllum's captures WeChat Input stayed
+  in Chinese at every Shift tap (7 of 7), and switched at each one (taps 3-8 of 8) with a QEMU that
+  let modifier changes through. Now, while an input method has the keys in a VM text field, a Shift
+  press and release also go on to macOS after the VM and the input method had them; nothing else
+  does (no Command, Control, Option, fn or Caps Lock, no Shift with one of them held), and nothing
+  changes with the feature off or a plain layout. To macOS a Shift+letter looks like a lone Shift
+  then. `OMACVM_IME_SHIFT=0` turns it off. Needs the app update, from the VM's next start.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left
