@@ -93,10 +93,11 @@ echo 0 > "$PERSON_OWN"; echo $(( $(date +%s) - 50 )) > "$F/last-input"; sleep 0.
 inp=$(date +%s); echo "$inp" > "$F/last-input"; sleep 0.8
 has "watch: foreign input logged" "input" "$(cut -f2 "$PERSON_DIR/watch.log")"
 # The time logged is the input's, to the second, not the clock at this check (a minute on when the
-# input came at hh:mm:59: CI failed so once). The watcher reads the clock twice, so a tick between
-# the two reads logs the second before.
+# input came at hh:mm:59: CI failed so once). The watcher reads the clock twice (its now, then the
+# idle time), and on a busy Mac more than a second can pass between the two: the line can say up to
+# two seconds before the input.
 e=$(awk -F'\t' '$2 == "input" { t = $1 } END { print t + 0 }' "$PERSON_DIR/watch.log")
-(( e == inp || e == inp - 1 )) && ok "watch: ... at the input's second" || bad "watch: input at $inp, logged at '$e'"
+(( e <= inp && e >= inp - 2 )) && ok "watch: ... at the input's second" || bad "watch: input at $inp, logged at '$e'"
 has "watch: ... with its time" "HID input at $(date -r "$e" +%H:%M:%S)" "$(cat "$PERSON_DIR/watch.log")"
 printf '18:06:28.1,tcp4 10.0.0.2:5900<->10.0.0.9:50000,en0,Established,1,1\n' > "$F/tcp"; sleep 1.5
 has "watch: a Screen Sharing connect logged" "vnc-5900" "$(grep "${TAB}remote${TAB}" "$PERSON_DIR/watch.log")"
