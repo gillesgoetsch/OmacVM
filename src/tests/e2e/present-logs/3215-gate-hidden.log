@@ -1,0 +1,3 @@
+OmacVM: tiled present: on (the VM's driver says what changed, QEMU shows it in tiles)
+OmacVM-VM: info: OmacVM: pause drawing while hidden: off (OMACVM_GUEST_PAUSE)
+OmacVM-VM: info: cocoa: tiled present: on, checked against whole frames (OMACVM_GL_PRESENT_TILES=check)
