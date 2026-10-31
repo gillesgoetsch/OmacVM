@@ -96,9 +96,15 @@ reclaim of ADR 0062):
   read the first 128 MB, 386 MB.
 - The app's give-back while macOS compresses (ADR 0059) reads `footprint -
   resident`: the stale compressed markers of QEMU's mapping leave it at each
-  pass, so it now sees what macOS compressed of the VM once (rows below).
-- A pass costs the main lock a few ms per chunk (host test: longest
-  4.16 ms for 128 MB) and QEMU's later touches a fault each.
+  pass, so it now sees what macOS compressed of the VM once. In the mini's
+  Chrome row it still fired as often (2 give-backs in the run, main and this
+  patch; `taken` 4805 MB on main, 3736 MB with the sweep at the last one).
+- A pass costs the main lock a few ms per chunk and QEMU's later touches a
+  fault each: per chunk p99 7.90 ms, longest 8.30 ms on the compressing Mac
+  mini (192 chunks), longest 1.74-3.66 ms on the M1 Max; the guests' vCPUs
+  did not wake later for it (below).
+- The second count can grow back between passes faster than the footprint:
+  hence at most two skipped passes in a row.
 
 ## Tests and rows
 
@@ -115,5 +121,43 @@ reclaim of ADR 0062):
   copy-on-write chunk and one without an object left as they are; a failed
   remap stops the sweep; `--predicate`: only main RAM is swept, never the
   Venus window's blobs, pflash or ROM; `--diverge`: QEMU stops.
-- VM rows, main 3.2.16 against this patch: see work/tracks/vm-memory.md
-  ("dcount-sweep") and the PR.
+- VM rows, main 3.2.16 (the published build) against this patch, hidden
+  4 GB test VMs (4 vCPUs, Chrome 156, KosmicKrisp), one pass a minute
+  (`OMACVM_DCOUNT_SWEEP=60`), each row taken after the next pass; P =
+  Activity Monitor, H = guest RAM the Mac holds (once), U = the second count
+  (footprint(1)'s "Untagged"), graphics = IOAccelerator mapped + unmapped,
+  heap = malloc; MB (work/vm-memory/dcount-sweep/raw/mini-table.md):
+
+  | Mac mini M4, macOS 27.0, compressing | P main / sweep | H main / sweep | U main / sweep | P - H - graphics - heap, main / sweep |
+  |---|---|---|---|---|
+  | boot + 2 min | 4424 / 2505 | 2435 / 2014 | 1201 / 143 | 1229 / 168 |
+  | 2.5 GB of /usr read from the disk | 6924 / 4539 | 4066 / 4073 | 2069 / 116 | 2098 / 143 |
+  | 10 x 2 GiB pattern in the guest | 4050 / 2315 | 2071 / 1800 | 1190 / 162 | 1219 / 191 |
+  | 5K Chrome, 10 tabs, WebGL, 1080p video | 8073 / 6368 | 3894 / 3919 | 1751 / 159 | 1815 / 224 |
+  | the same at the quit | 8267 / 6558 | 3958 / 3982 | 1768 / 187 | 1867 / 273 |
+
+  Same both ways: the read files' sha256 from the cache and again from the
+  disk after a pass, 300 MB written and read back, 10 x 2 GiB pattern (0
+  wrong units); free page reporting 0.0 MB left on the Mac, no "macOS keeps
+  the pages"; vkcube on Venus, the WebGL tab (0 contexts lost) and the
+  1080p video (293 of 17317 frames dropped, main 319 of 17368); 0 GPU
+  faults. A per-vCPU probe (5 ms sleeps on each vCPU, 150 s, during the
+  pattern rows): p99 2.58 ms late on every vCPU with 4 passes in the window,
+  max 3.47-5.73 ms (main, no pass: p99 2.58-2.59, max 7.63-14.59 ms).
+  At the quit the Mac got 4132 MB back for 6445 MB shown (main 4277 for
+  8135): compressed pages count at full size in Activity Monitor.
+
+  MacBook Pro M1 Max, macOS 27.0.1, nothing compressed (exit rows: QMP quit,
+  the Mac's free + reusable before and after):
+
+  | row | P main / sweep | U main / sweep | back main / sweep | back - P main / sweep |
+  |---|---|---|---|---|
+  | idle, 3 min after the start | 4153 / 2985 | 1334 / 164 | 2493 / 3852 | -1659 / +867 |
+  | 5K Chrome, 3 min | 7353 / 5983 | 1638 / 289 | 5963 / 6150 | -1389 / +167 |
+
+  The M1's sweep rows ran on the first version of this patch, which skipped
+  passes while the footprint did not grow: only the first pass (a minute
+  after the start) had run, so U had grown back to 164 and 289 MB. That is
+  what made the skip limit. With the sweep the Mac gets back more than
+  Activity Monitor showed: pages only QEMU touched since the pass are held
+  and not counted (above).

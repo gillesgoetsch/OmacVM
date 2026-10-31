@@ -10,7 +10,8 @@ in more words.
   12 GB VM on a MacBook Pro M1 Max showed 1.2 to 2.0 GB more than it held with nothing compressed,
   so the words of 3.2.16 ("counts part of a compressed VM twice") were wrong. QEMU now remaps its own
   view of the VM's memory every 5 minutes, which drops that count; no page moves and the Mac gets
-  no memory back (test without a VM: 2049 MB shown for 1024 MB held, 1024 MB after a pass).
+  no memory back. A 4 GB VM on a Mac mini showed 6.9 GB after 2.5 GB of disk reads and 8.1 GB with
+  Chrome at 5K; with the sweep 4.5 and 6.4 GB, for the same 4.1 and 3.9 GB of guest memory held.
   `omacvm check`'s "Activity Monitor" row and the (i) say what is left. `OMACVM_DCOUNT_SWEEP=0`
   turns it off. Needs the app update; nothing in the VM.
 
