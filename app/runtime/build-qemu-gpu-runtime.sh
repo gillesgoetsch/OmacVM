@@ -954,6 +954,12 @@ grep -q 'eventsTap = CGEventTapCreate(kCGHIDEventTap, place, kCGEventTapOptionDe
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-tap-no-ask.patch"
 "$native_dir/Tests/keys/test-tap-no-ask.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the full-grab tap is made (and asked for) without the permission (test-tap-no-ask.sh)"
+# Full-grab tap takes no modifier events (#357): flagsChanged flows through
+# the normal AppKit sendEvent path, so macOS global monitors (such as WeChat
+# Input / WeType single-Shift switching) receive flagsChanged.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-tap-no-flags.patch"
+"$native_dir/Tests/keys/test-tap-no-flags.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the full-grab tap subscribes to flagsChanged (test-tap-no-flags.sh)"
 # OmacVM.app's "Closing the window" (#358): Shut down, Keep running (the app
 # hidden, the Dock icon brings it back), Ask. Its rules' test, then the wiring.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-close-logic.patch"
