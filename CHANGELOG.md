@@ -3,6 +3,26 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.18 (unreleased)
+
+- **A Vulkan app that loses its graphics on the Mac is counted, named and told (#656).** In an OmacVM.app VM with Graphics on Vulkan, when
+  the Mac ended an app's Vulkan (Venus) context (a command the Mac's driver would abort on, or
+  memory the graphics budget refused), QEMU only wrote "venus context N (NAME) is lost" to its
+  log: its count of lost GPU contexts stayed at 0, so the app said nothing in the VM and
+  `omacvm check` did not name the app. Most Vulkan apps then end by themselves (vkcube within
+  0.6 s); a Ghostty drawn on the Mac's GPU through Zink stays, its windows frozen and deaf to
+  typing. Now QEMU counts such a loss with the app's name, the app tells the VM, and the VM shows
+  a note that ends nothing: "Ghostty stopped drawing" (close it first with Terminate in the
+  window that says it is not responding; the programs in it end; the next Ghostty starts on the
+  CPU until the VM restarts, unless Zink is set for it by hand) or "NAME stopped drawing". `omacvm check`'s "GPU contexts" names
+  the app, marked "(Vulkan)". In test VMs on a Mac mini (M4) and an M1 Max, all 10 deliberate
+  losses (vkcube and a Zink Ghostty) were counted in the same 0.2 s look as QEMU's line and told
+  0.5 to 4.8 s later (the app looks every 5 s); 3.2.16 counted none of 6. 60 Ghostty windows on
+  Zink closed or killed (also with SIGKILL during Zink's teardown and while drawing) counted
+  nothing and showed no note. In every frozen Ghostty, a SIGTERM ended it within 8 s, and its
+  shell ended with it. Needs the app update and Update VM: a VM without the VM part shows no
+  note (the app's log says once that Update VM puts it in).
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;
