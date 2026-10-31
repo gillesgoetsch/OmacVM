@@ -286,8 +286,10 @@ static void word(char *out, size_t size, const char *s)
     out[n] = 0;
 }
 
-/* $XDG_RUNTIME_DIR/omacvm/ghostty-gl: "PID ASKED GOT WHY", the last display set up */
-static void record(const char *asked, const char *got, const char *why)
+/* $XDG_RUNTIME_DIR/omacvm/ghostty-gl: "PID ASKED GOT WHY", the last display set up (one writer at a time) */
+static pthread_mutex_t record_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void record_file(const char *asked, const char *got, const char *why)
 {
     const char *run = getenv("XDG_RUNTIME_DIR");
     char dir[PATH_MAX], line[160];
@@ -309,6 +311,13 @@ static void record(const char *asked, const char *got, const char *why)
             unlinkat(d, "ghostty-gl.new", 0);
     }
     close(d);
+}
+
+static void record(const char *asked, const char *got, const char *why)
+{
+    pthread_mutex_lock(&record_lock);
+    record_file(asked, got, why);
+    pthread_mutex_unlock(&record_lock);
 }
 
 /* A display of Ghostty set up on Zink (its extension string leaves out the export) */
