@@ -299,7 +299,7 @@ commit 82927e9. Changes here:
   fixed over itself: the same objects, without QEMU's page table entries),
   128 MB at a time under the main lock, 20 ms apart; a pass a minute after
   the start, then every 5 minutes, skipped while QEMU's footprint grew less
-  than 64 MB. No page moves; the Mac gets nothing back. Main RAM only, by the
+  than 64 MB (twice in a row at most). No page moves; the Mac gets nothing back. Main RAM only, by the
   rule free page reports now share (`omacvm_ram_private`: never the Venus
   window's blobs, pflash, ROM, shared or file-backed memory). Before each
   remap every map entry must share its object with the guest (true shared

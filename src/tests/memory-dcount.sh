@@ -42,9 +42,10 @@ check "it starts when the machine is ready" grep -q '^+    qemu_add_machine_init
 check "its timer steps under the BQL, with the rule each time" \
   bash -c 'grep -q "^+    assert(bql_locked());$" <<<"$1" && grep -q "omacvm_sweep_step(&omacvm_sweep, get_clock(), omacvm_ram_private(mr));" <<<"$1"' \
   _ "$(fn omacvm_sweep_tick)"
-check "128 MB chunks, 20 ms apart, a pass every 5 minutes, skipped below 64 MB of growth" \
+check "128 MB chunks, 20 ms apart, a pass every 5 minutes, skipped below 64 MB of growth, twice in a row at most" \
   bash -c 'grep -q "^+#define OMACVM_SWEEP_CHUNK (128ull << 20)$" "$1" && grep -q "^+#define OMACVM_SWEEP_GAP_NS (20 \* 1000000LL)$" "$1" &&
-           grep -q "^+#define OMACVM_SWEEP_PERIOD_S 300$" "$1" && grep -q "^+#define OMACVM_SWEEP_GROWTH (64ull << 20)$" "$1"' _ "$P"
+           grep -q "^+#define OMACVM_SWEEP_PERIOD_S 300$" "$1" && grep -q "^+#define OMACVM_SWEEP_GROWTH (64ull << 20)$" "$1" &&
+           grep -q "^+#define OMACVM_SWEEP_SKIPS 2 " "$1" && grep -q "^+            s->skipped < OMACVM_SWEEP_SKIPS) {$" "$1"' _ "$P"
 # Each chunk: every map entry shares its object with the guest first; the remap keeps the objects (copy=FALSE) at the
 # same address; the first pass reads them again; a failed remap stops the sweep.
 chunk=$(fn omacvm_sweep_chunk)

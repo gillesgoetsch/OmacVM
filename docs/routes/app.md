@@ -1540,7 +1540,8 @@ drops that count (ADR 0066): every 5 minutes (the first time a minute after
 the start) it remaps its own view of the VM's main RAM over itself, 128 MB
 at a time under the main lock (`mach_vm_remap`, no copy: the same memory,
 without QEMU's page table entries). No page moves and the Mac gets nothing
-back; a pass is skipped while QEMU's footprint grew less than 64 MB.
+back; a pass is skipped while QEMU's footprint grew less than 64 MB, at most
+twice in a row.
 `logs/qemu.log` says "own-view sweep: on" at the start, then a line an hour
 (passes, MB less in Activity Monitor, the main lock's hold per chunk);
 `OMACVM_DCOUNT_SWEEP=0` turns it off. A page only QEMU touched since the

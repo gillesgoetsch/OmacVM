@@ -26,7 +26,7 @@
  * within 1 % of held, every page right as the guest sees it, and after it
  * QEMU's writes seen by the guest and the guest's by QEMU (the replaced
  * ranges too). Then: a pass is skipped while the footprint grew less than
- * 64 MB; a chunk with an entry that has no object yet, or is copy-on-write,
+ * 64 MB, twice in a row at most; a chunk with an entry that has no object yet, or is copy-on-write,
  * stays as it is (counted, one line), the rest is remapped; a failed remap
  * stops the sweep for the run (one line), QEMU's view unchanged; the hour's
  * and the run's qemu.log lines.
@@ -588,14 +588,19 @@ static int rows(void)
 #if defined(SWEEP_MAIN)
     return fails ? 1 : 0;
 #else
-    /* Idle: a pass is skipped while the footprint grew less than 64 MB. */
+    /* Idle: a pass is skipped while the footprint grew less than 64 MB, twice in a row at most (free page reports
+     * can shrink the footprint while QEMU's touches grow it): the third look runs one. */
     run_pass(&s, NULL);   /* the writes above grew it: this pass runs */
     uint64_t passes = s.run.passes, chunks = s.run.chunks, idle = s.run.idle;
-    int64_t next = omacvm_sweep_step(&s, clock_now, true);
-    row(next == s.period_ns && s.run.idle == idle + 1 && s.run.chunks == chunks && s.run.passes == passes,
-        "a pass is skipped while the footprint grew less than 64 MB (next look in %lld s)",
+    int64_t next = omacvm_sweep_step(&s, clock_now, true), next2 = omacvm_sweep_step(&s, clock_now, true);
+    row(next == s.period_ns && next2 == s.period_ns && s.run.idle == idle + 2 && s.run.chunks == chunks &&
+        s.run.passes == passes, "a pass is skipped while the footprint grew less than 64 MB (next look in %lld s), twice",
         (long long)(next / NANOSECONDS_PER_SECOND));
-    clock_now += next;
+    next = omacvm_sweep_step(&s, clock_now, true);
+    row(next == OMACVM_SWEEP_GAP_NS && s.run.chunks == chunks + 1 && s.run.idle == idle + 2,
+        "the third look runs a pass all the same");
+    run_pass(&s, NULL);
+    clock_now += s.period_ns;
 
     /* Chunks that must stay as they are: no object yet (chunk 7), copy-on-write (chunk 6). */
     uint64_t empty = 7 * 128 * MB + 8 * MB, cow = 6 * 128 * MB + 8 * MB;

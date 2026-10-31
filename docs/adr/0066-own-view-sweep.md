@@ -60,7 +60,9 @@ reclaim of ADR 0062):
   aside, which run under the BQL too (the reclaim worker only advises and
   unmaps its own aside ranges). A pass a minute after the start, then every
   5 minutes; skipped while QEMU's footprint grew less than 64 MB since the
-  last one (an idle VM wakes nothing).
+  last one, at most twice in a row: free page reports can shrink the
+  footprint while QEMU's touches grow the second count (M1 Max rows: no
+  pass for 4 minutes at a one-minute period, 289 MB counted twice again).
 - Checked at run time, not by macOS version: before each remap every map
   entry of the chunk must share its object (`SM_TRUESHARED` or `SM_SHARED`,
   an object id), be readable and writable and not wired. A copy-on-write

@@ -7,7 +7,8 @@ What: a sweep remaps QEMU's own view of the VM's main RAM over itself
 (mach_vm_remap, copy=FALSE, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE), one
 128 MB chunk at a time under the BQL, 20 ms apart; a pass a minute after
 the start, then every 5 minutes, skipped while QEMU's footprint grew less
-than 64 MB since the last pass. The remap keeps the same VM objects at the
+than 64 MB since the last pass, at most twice in a row (free page reports
+can shrink the footprint while QEMU's touches grow it). The remap keeps the same VM objects at the
 same offsets and drops only QEMU's page table entries; no page is touched,
 copied or moved. Main RAM only, QEMU's private anonymous memory:
 omacvm_ram_private(), which hvf_report_free_pages() now goes by too
@@ -48,16 +49,17 @@ preads and pwrites a file into and out of guest RAM (buffered and
 F_NOCACHE) and with two free page reports between chunks whose moves aside
 are released after the pass; every page right as the guest sees it, and
 QEMU's writes seen by the guest and the guest's by QEMU after it, the
-replaced ranges too; an idle pass skipped; a chunk with a copy-on-write
-entry or one without an object left as it is; a failed remap stops the
-sweep; --predicate: which RAM blocks are swept; --diverge: QEMU stops. The
-runtime build runs it on the patched source, CI on this file.
+replaced ranges too; an idle pass skipped, twice in a row at most; a chunk
+with a copy-on-write entry or one without an object left as it is; a
+failed remap stops the sweep; --predicate: which RAM blocks are swept;
+--diverge: QEMU stops. The runtime build runs it on the patched source, CI
+on this file.
 
 diff --git a/accel/hvf/hvf-all.c b/accel/hvf/hvf-all.c
-index 8f450f29..468aae34 100644
+index 8f450f29..ef7a0752 100644
 --- a/accel/hvf/hvf-all.c
 +++ b/accel/hvf/hvf-all.c
-@@ -722,11 +722,466 @@ void hvf_report_free_pages_done(void)
+@@ -722,11 +722,473 @@ void hvf_report_free_pages_done(void)
  }
  /* omacvm-reclaim: end */
  
@@ -87,7 +89,9 @@ index 8f450f29..468aae34 100644
 + * object) at a time under the BQL, 20 ms apart: a chunk never meets a free
 + * page report's replacement or its move aside, which run under the BQL too.
 + * A pass a minute after the start, then every 5 minutes, skipped while the
-+ * footprint grew less than 64 MB since the last one (an idle VM).
++ * footprint grew less than 64 MB since the last one, at most twice in a row
++ * (an idle VM; free page reports can shrink the footprint while QEMU's
++ * touches grow it, so at least every 15 minutes).
 + * Before each remap every map entry of the chunk must share its object
 + * (true shared or shared, an object id), be readable and writable and not
 + * wired: a remap of anything else (copy-on-write, or no object yet) gives
@@ -107,6 +111,7 @@ index 8f450f29..468aae34 100644
 +#define OMACVM_SWEEP_FIRST_S 60
 +#define OMACVM_SWEEP_PERIOD_S 300
 +#define OMACVM_SWEEP_GROWTH (64ull << 20)
++#define OMACVM_SWEEP_SKIPS 2              /* passes skipped in a row at most */
 +#define OMACVM_SWEEP_RUNS 8193            /* a chunk's 16 KiB pages, each its own object, and one */
 +
 +/*
@@ -144,6 +149,7 @@ index 8f450f29..468aae34 100644
 +    int64_t period_ns, next_ns;         /* between passes; until the next step */
 +    uint64_t at;                        /* the next chunk; size: between passes */
 +    bool first, stopped, said_left, check;
++    unsigned skipped;                   /* passes skipped since the last one */
 +    uint64_t footprint_after;           /* at the end of the last pass (0: none yet) */
 +    int64_t hour_start;
 +    char why[200];                      /* why it stopped */
@@ -436,11 +442,14 @@ index 8f450f29..468aae34 100644
 +    }
 +    if (s->at >= s->size) {
 +        fp = omacvm_sweep_footprint();
-+        if (s->footprint_after && fp < s->footprint_after + OMACVM_SWEEP_GROWTH) {
++        if (s->footprint_after && fp < s->footprint_after + OMACVM_SWEEP_GROWTH &&
++            s->skipped < OMACVM_SWEEP_SKIPS) {
++            s->skipped++;
 +            s->hour.idle++;
 +            s->run.idle++;
 +            return s->period_ns;
 +        }
++        s->skipped = 0;
 +        s->at = 0;
 +    }
 +    omacvm_sweep_chunk(s);
@@ -525,7 +534,7 @@ index 8f450f29..468aae34 100644
      size_t page_size = qemu_real_host_page_size();
      hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
      int64_t start = get_clock();
-@@ -736,20 +1191,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -736,20 +1198,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
          return;
      }
  
@@ -550,7 +559,7 @@ index 8f450f29..468aae34 100644
          int128_get64(section.size) != size ||
          section.offset_within_address_space != gpa ||
          memory_region_get_ram_ptr(mr) + section.offset_within_region != host) {
-@@ -853,6 +1304,8 @@ static int hvf_accel_init(AccelState *as, MachineState *ms)
+@@ -853,6 +1311,8 @@ static int hvf_accel_init(AccelState *as, MachineState *ms)
  
      hvf_state = s;
      memory_listener_register(&hvf_memory_listener, &address_space_memory);
