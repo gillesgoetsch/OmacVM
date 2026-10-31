@@ -607,7 +607,7 @@ Patches (all in `app/runtime/patches`, one per concern):
   table per set layout, a subpass table per render pass, levels, bind points,
   pool counts) before the driver gets them; a refusal ends the app's context.
   KosmicKrisp's multiview count is told as Metal's vertex amplification count
-  (`vkr_metal_limits.m`). `Tests/virgl/test-venus-commands.c` (272 cases, with
+  (`vkr_metal_limits.m`). `Tests/virgl/test-venus-commands.c` (281 cases, with
   the legal maxima) runs on KosmicKrisp, MoltenVK and MoltenVK with prefilled
   command buffers; `venus-command-ledger.tsv` has a verdict per `vkCmd*`.
 - `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch`,
