@@ -111,8 +111,10 @@ v=$(pv "$T/px.log" "${F[@]}"); [[ $v == FAIL$'\t'*"tiles check 7: 2 tiles, 12 pi
 v=$(pv "$L/3215-locked-m1.log" size=6016x3384 guest=5120x2880 locked=1 awake=1 damage=1)
 same "present: guest not at the size asked: VOID" "VOID	the guest ran at 5120x2880, not at the size asked, 6016x3384" "$v"
 same "present: the lock ended mid-row: VOID" "VOID	the row did not run locked to its end" "$(pv "$L/3215-locked-m1.log" size=5120x2880 guest=5120x2880 locked=0 awake=1 damage=1)"
-v=$(pv "$L/3215-locked-m1.log" size=5120x2880 guest=5120x2880 locked=1 awake=1 damage=0)
-[[ $v == VOID$'\t'"the VM sends no damage"* ]] && ok "present: no damage driver in the VM: VOID" || bad "present: no damage: '$v'"
+# No frame in tiles from a VM whose damage does not reach QEMU (an old guest, a new app): named.
+printf '%s\n%s\n' "$ON" 'OmacVM-VM: info: cocoa: tiled present, last minute: 0 frames in tiles, 3540 whole, 0 not presented (nothing changed)' > "$T/pw.log"
+v=$(pv "$T/pw.log" size=5120x2880 guest=5120x2880 locked=1 awake=1 damage=0)
+same "present: no damage driver in the VM: VOID" "VOID	no frame went in tiles (3540 whole frames in the minute lines): the VM sends no damage (without OmacVM's damage driver every frame is whole)" "$v"
 same "present: the display asleep at the end: VOID" "VOID	the virtual display was not awake at the end" "$(pv "$L/3215-locked-m1.log" size=5120x2880 guest=5120x2880 locked=1 awake=0 damage=1)"
 v=$(pv "$L/3215-locked-m1.log" size=5120x2880 guest=5120x2880)
 [[ $v == VOID* ]] && ok "present: facts not recorded: VOID ($v)" || bad "present: facts missing: '$v'"

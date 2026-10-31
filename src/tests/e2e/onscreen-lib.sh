@@ -18,15 +18,16 @@
 #                                         or needs-user, at least one ok. VOID: the row ran but proves
 #                                         nothing (present_verdict says why); a release owes it
 # For present-locked.sh (the real present on a locked Mac):
-#   present_verdict LOG size=WxH guest=WxH locked=1|0 awake=1|0 damage=1|0
+#   present_verdict LOG size=WxH guest=WxH locked=1|0 awake=1|0 [damage=1|0]
 #                                         the tiles check from that run's qemu.log lines: "ok|FAIL|VOID<TAB>why".
 #                                         FAIL: a check differed (a "tiles check N:" line with pixels that
 #                                         differ, or N > 0 in any "N of M checks differed"). ok needs the
-#                                         check on, the session locked the whole row, the VM's damage
-#                                         reaching QEMU (OmacVM's driver: without it every frame is whole),
-#                                         a frame in tiles, M >= PRESENT_MIN_CHECKS (20), the guest at the
-#                                         size asked (#637 shows only past 4352 pixels) and the virtual
-#                                         display awake at the end. Else VOID, with the first reason
+#                                         check on, the session locked the whole row, a frame in tiles,
+#                                         M >= PRESENT_MIN_CHECKS (20), the guest at the size asked (#637
+#                                         shows only past 4352 pixels) and the virtual display awake at the
+#                                         end. Else VOID, with the first reason; damage=0 (the VM's damage
+#                                         does not reach QEMU: no OmacVM damage driver, every frame whole)
+#                                         is named when no frame went in tiles
 #   e2e_present_guard                     exit 2 when the environment asks for a hidden start
 #                                         (OMACVM_COCOA_HIDDEN) with the tiles check
 #                                         (OMACVM_GL_PRESENT_TILES=check): a hidden window stops presenting
@@ -145,10 +146,9 @@ present_verdict() {
     printf 'VOID\tthe tiles check was not on (no "tiled present: on, checked against whole frames" line%s)\n' "${off:+; tiled present: $off}"; return 0
   fi
   [[ $locked == 1 ]] || { printf 'VOID\tthe row did not run locked to its end\n'; return 0; }
-  [[ -n $damage ]] || { printf 'VOID\twhether the VM sends its damage was not recorded\n'; return 0; }
-  [[ $damage == 1 ]] || { printf 'VOID\tthe VM sends no damage: without OmacVM'"'"'s damage driver every frame is whole\n'; return 0; }
   if (( first == 0 && tiles == 0 )); then
-    printf 'VOID\tno frame went in tiles%s\n' "$( (( whole > 0 )) && echo " ($whole whole frames in the minute lines)")"; return 0
+    printf 'VOID\tno frame went in tiles%s%s\n' "$( (( whole > 0 )) && echo " ($whole whole frames in the minute lines)")" \
+      "$( [[ $damage == 0 ]] && echo ": the VM sends no damage (without OmacVM's damage driver every frame is whole)")"; return 0
   fi
   (( m > 0 )) || { printf 'VOID\t0 checks ran\n'; return 0; }
   (( m >= PRESENT_MIN_CHECKS )) || { printf 'VOID\tonly %s checks ran (want at least %s)\n' "$m" "$PRESENT_MIN_CHECKS"; return 0; }

@@ -246,11 +246,12 @@ one a person looks at.
 
 The verdict: FAIL when any check differed (a `tiles check N:` line with
 pixels that differ, or N > 0 in any `N of M checks differed`). ok needs the
-check on, the session locked to the row's end, the VM's damage reaching
-QEMU (without OmacVM's damage driver every frame is whole), a frame in
-tiles, at least 20 checks, the guest at the size asked (#637 shows only
-past 4352 pixels) and the virtual display awake at the end. Anything else is
-VOID with its reason: the row proves nothing and the release owes it.
+check on, the session locked to the row's end, a frame in tiles, at least
+20 checks, the guest at the size asked (#637 shows only past 4352 pixels)
+and the virtual display awake at the end. Anything else is VOID with its
+reason: the row proves nothing and the release owes it. No frame in tiles
+from a VM whose damage does not reach QEMU (an older guest without
+OmacVM's damage driver: every frame whole) says so.
 `result.json` (`kind` omacvm-e2e-present-locked) does not pass on VOID.
 
 The display goes by itself when the session unlocks: macOS's unlock notice,

@@ -45,10 +45,12 @@ mode)
   asuser hyprctl monitors 2>/dev/null | awk '/^Monitor Virtual-1 / { v = 1; next } v && $1 ~ /^[0-9]+x[0-9]+@/ { print $1; exit }'
   ;;
 damage)
-  d=$(cat "/usr/local/lib/omacvm/virtio-gpu/$(uname -r)/damage" 2>/dev/null); st=$(cat /run/omacvm/virtio-gpu 2>/dev/null)
-  if [[ $d == kernel ]]; then echo "1 the kernel keeps the damage itself (loader: ${st:-no word})"
-  elif [[ $d == ours && $st == omacvm* && $st != *"without damage_clips"* ]]; then echo "1 OmacVM's driver with the damage fix ($st)"
-  else echo "0 build damage '${d:-none}', loader '${st:-no word}'"; fi
+  k=$(uname -r); d=$(cat "/usr/local/lib/omacvm/virtio-gpu/$k/damage" 2>/dev/null); st=$(cat /run/omacvm/virtio-gpu 2>/dev/null)
+  IFS=. read -r ma mi _ <<<"$k"; ma=${ma%%[!0-9]*}; mi=${mi%%[!0-9]*}; ma=${ma:-0}; mi=${mi:-0}
+  if [[ $d == kernel ]] || (( ma > 7 || (ma == 7 && mi >= 4) )); then
+    echo "1 Linux $k keeps the damage itself (loader: ${st:-no word})"
+  elif [[ $d == ours && $st == omacvm* && $st != *"without damage_clips"* ]]; then echo "1 OmacVM's driver with the damage fix ($st, Linux $k)"
+  else echo "0 Linux $k, build damage '${d:-none}', loader '${st:-no word}'"; fi
   ;;
 *) echo "usage: present-guest.sh links-off|links-check|links-back|mode|damage" >&2; exit 2 ;;
 esac
