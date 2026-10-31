@@ -107,9 +107,11 @@ signs it and does the rest:
 1. On the release Mac: `release.sh X.Y.Z check bump merge` (M = the merge
    commit).
 2. On the build Mac, in a clean worktree at M: `OMACVM_SIGN_ID=-
-   app/scripts/build-app.sh --release > build.log 2>&1` (ad hoc; the runtime
-   from source, `OMACVM_KOSMICKRISP_FROM` as for any release). Bring
-   `app/dist/OmacVM.app` and `build.log` into one folder on the release Mac,
+   app/scripts/build-app.sh --release > ../build.log 2>&1` (ad hoc; the runtime
+   from source, `OMACVM_KOSMICKRISP_FROM` as for any release). The log goes
+   outside the worktree: a new file in it makes the tree unclean, and
+   build-app.sh then refuses a release build. Bring `app/dist/OmacVM.app` and
+   `../build.log` into one folder on the release Mac,
    `DIR/OmacVM.app` and `DIR/build.log`, with `ditto` or `rsync -a`. Never
    through a drive or share that drops links or modes (exFAT, some SMB
    shares): step build refuses such a copy.
@@ -118,8 +120,8 @@ signs it and does the rest:
    difference is a signature, a Mach-O UUID or build path, or a file the
    commits PREV..M changed. Write anything else you let through into
    `OUT/app-from-allowed.txt` (OUT is the run's output folder,
-   `~/omacvm-work/release-X.Y.Z/release/`), one line per path with the
-   reason.
+   `~/omacvm-work/release-X.Y.Z/release/`, or `.../dry-run/` in a dry run),
+   one line per path with the reason.
 4. `OMACVM_RELEASE_APP_FROM=DIR src/release/release.sh X.Y.Z build notarize
    package verify image e2e publish after`, DIR an absolute path (a relative
    one is refused). Step build does not build. Before anything signs the
@@ -134,9 +136,11 @@ signs it and does the rest:
      signing and its entitlements come from it), no KosmicKrisp or no licence
      notice for it (unless `OMACVM_RELEASE_NO_KOSMICKRISP=1`), QEMU's firmware
      instead of OmacVM's (unless `OMACVM_FIRMWARE=qemu`);
-   - what build-app.sh copies from git, against M file by file (names,
+   - the parts build-app.sh copies from git, against M file by file (names,
      bytes, modes, links): `Contents/Resources/omacvm` = `git archive M`,
-     `Contents/Resources/scripts` = M's `app/scripts` files at mode 755.
+     `Contents/Resources/scripts` = the six `app/scripts` files build-app.sh
+     installs, at mode 755. The fonts and licence files it also copies are
+     not compared.
 
    Then it copies the app into the worktree, signs it with M's own
    `app/scripts/sign-app.sh` (build-app.sh's signing) and runs its usual

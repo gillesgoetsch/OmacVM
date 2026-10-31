@@ -236,10 +236,10 @@ step_merge() {
   note "M = $m"
 }
 
-# What build-app.sh copies into the app from git at M, which app_from compares
-# with M: its "git archive ... omacvm src CHANGELOG.md" into Resources/omacvm,
-# and its "install -m755 ... Contents/Resources/scripts/" of these app/scripts
-# files. release-script.sh builds its stand-in app from build-app.sh's own
+# The parts build-app.sh copies into the app from git at M that app_from
+# compares with M: its "git archive ... omacvm src CHANGELOG.md" into
+# Resources/omacvm, and its "install -m755 ... Contents/Resources/scripts/" of
+# these app/scripts files (not the fonts and licence files it also copies). release-script.sh builds its stand-in app from build-app.sh's own
 # lines, so a change there that is not made here too fails CI.
 APP_ARCHIVE=(omacvm src CHANGELOG.md)
 APP_SCRIPTS=(create-vm.sh prebuilt-vm.sh apply-vm.sh vm-common.sh update-vm.sh update-swap.sh)
