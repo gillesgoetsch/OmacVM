@@ -595,17 +595,54 @@ hdr_capture_line() {
     *) printf '%s\t%s\n' "$bad" "OmacVM's fix for screenshots and screen sharing of HDR apps (Chrome) is not in this VM: Update VM" ;;
   esac
 }
-# ghostty_line INSTALLED JSON LIBRARY: the "Ghostty" line, "status<TAB>detail" (nothing when
-# Ghostty is not installed). Ghostty 1.2 and newer need OpenGL 4.3, the VM's GPU gives 4.1, so
-# OmacVM's EGL vendor library starts Ghostty alone on Mesa's CPU renderer (ADR 0064). No GL call:
-# glvnd's file and the library, which has that part when it names the variable it sets.
+# ghostty_line INSTALLED JSON LIBRARY [MARKER ZINKOFF RECORD]: the "Ghostty" line,
+# "status<TAB>detail" (nothing when Ghostty is not installed). Ghostty 1.2 and newer need OpenGL
+# 4.3, the VM's GPU gives 4.1, so OmacVM's EGL vendor library starts Ghostty alone on Mesa's CPU
+# renderer, or on Zink over Venus with 4.3 when the app asks (ADR 0064). MARKER 1: host.env has
+# OMACVM_GLZINK=1 (OmacVM.app's experimental setting, Vulkan on KosmicKrisp); ZINKOFF 1: a Venus
+# context was lost in this boot (/run/omacvm/gl-zink-off); RECORD: a running Ghostty's line from
+# the library, "PID ASKED GOT WHY" (ghostty_running), "" for none. No GL call: glvnd's file and
+# the library, which has those parts when it names the variables it sets.
 ghostty_line() {
+  local cpu="draws on the VM's CPU (Mesa's llvmpipe): it needs OpenGL 4.3, the VM's GPU gives 4.1; fast output keeps about 2 of the VM's cores busy (more in a bigger window), Alacritty and Kitty draw on the Mac's GPU; with Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too (off: omarchy-toggle-screensaver or omacvm enable no-idle-lock)"
+  local gpu="draws on the Mac's GPU (Zink over Venus with OpenGL 4.3, OmacVM.app's experimental setting); if the Mac refuses its GPU commands that Ghostty stops responding: close it (programs in it end)"
+  local lost="draws on the VM's CPU (Mesa's llvmpipe): a Vulkan app's GPU context was lost in this boot, so Ghostty stays off the Mac's GPU until the VM starts again"
+  local rec=${6:-} asked got why
   [[ $1 == 1 ]] || return 0
-  if [[ -f $2 && -f $3 ]] && grep -qaF LIBGL_ALWAYS_SOFTWARE "$3"; then
-    printf 'ok\t%s\n' "draws on the VM's CPU (Mesa's llvmpipe): it needs OpenGL 4.3, the VM's GPU gives 4.1; fast output keeps about 2 of the VM's cores busy (more in a bigger window), Alacritty and Kitty draw on the Mac's GPU; with Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too (off: omarchy-toggle-screensaver or omacvm enable no-idle-lock)"
-  else
+  if ! [[ -f $2 && -f $3 ]] || ! grep -qaF LIBGL_ALWAYS_SOFTWARE "$3"; then
     printf 'fail\t%s\n' "opens no window: it needs OpenGL 4.3, the VM's GPU gives 4.1, and OmacVM's EGL vendor library that starts it on the CPU is missing or older: omacvm apply, then log out and in (until then: LIBGL_ALWAYS_SOFTWARE=1 ghostty)"
+    return 0
   fi
+  if [[ -n $rec ]]; then   # a running Ghostty: what the library asked for and what Mesa took
+    read -r _ asked got why <<< "$rec"
+    case $asked/$got/$why in
+      zink/zink/*) printf 'ok\t%s\n' "$gpu" ;;
+      zink/*) printf 'warn\t%s\n' "draws on the VM's CPU: OmacVM.app asks for the Mac's GPU, but Zink did not start and Mesa took $got instead" ;;
+      llvmpipe/*/zinkoff) printf 'warn\t%s\n' "$lost" ;;
+      llvmpipe/*/glversion) printf 'ok\t%s\n' "$cpu (MESA_GL_VERSION_OVERRIDE is set in its environment, so not on the Mac's GPU)" ;;
+      llvmpipe/*) printf 'ok\t%s\n' "$cpu" ;;
+      *) printf 'ok\t%s\n' "uses the driver its environment chose ($why is set): $got" ;;
+    esac
+    return 0
+  fi
+  if [[ ${4:-0} == 1 ]] && ! grep -qaF OMACVM_GLZINK "$3"; then
+    printf 'warn\t%s\n' "draws on the VM's CPU: OmacVM.app asks for the Mac's GPU, but this VM's EGL library is older: Update VM, then quit Ghostty (or log out and in)"
+  elif [[ ${4:-0} == 1 && ${5:-0} == 1 ]]; then
+    printf 'warn\t%s\n' "$lost"
+  elif [[ ${4:-0} == 1 ]]; then
+    printf 'ok\t%s\n' "the next Ghostty $gpu"
+  else
+    printf 'ok\t%s\n' "$cpu"
+  fi
+}
+# ghostty_running LINE PROC: LINE ("PID ASKED GOT WHY", the EGL library's record) when PID is a
+# running Ghostty (PROC/PID/comm), else nothing; a line of any other form is ignored.
+ghostty_running() {
+  local re='^([0-9]+) (zink|llvmpipe|own) ([A-Za-z0-9_?]+) ([A-Za-z_]+)$' c
+  [[ $1 =~ $re ]] || return 0
+  c=$(head -c 32 "$2/${BASH_REMATCH[1]}/comm" 2>/dev/null)
+  [[ $c == ghostty ]] && printf '%s\n' "$1"
+  return 0
 }
 # mpv's defaults in app and UTM VMs (app/guest/venus/mpv.sh): vo=gpu (gpu-next leaks a file per
 # frame on virgl and stops drawing after ~17 s), and OpenGL while the VM has Venus (on Vulkan mpv
@@ -914,11 +951,16 @@ app)
       warn "video at its own size" "no EGL vendor library (it did not build: EGL headers?): H.264 1080p shows 8 extra rows in Chrome and mpv"
     fi
   fi
-  # Ghostty needs OpenGL 4.3: on Mesa's CPU renderer, Ghostty alone (ADR 0064).
+  # Ghostty needs OpenGL 4.3: on Mesa's CPU renderer, Ghostty alone, or on Zink when the app asks
+  # (ADR 0064); a running Ghostty's driver from the library's record, read as the user.
   gi=0; command -v ghostty >/dev/null && gi=1
-  r=$(ghostty_line "$gi" /etc/glvnd/egl_vendor.d/10_omacvm.json /usr/local/lib/libEGL_omacvm.so.0)
+  gm=0; grep -qx 'OMACVM_GLZINK=1' /run/omacvm/host.env 2>/dev/null && gm=1
+  go=0; [[ -e /run/omacvm/gl-zink-off ]] && go=1
+  grec=""; (( gi )) && grec=$(ghostty_running "$(as_user head -c 200 "$RUN/omacvm/ghostty-gl" 2>/dev/null | head -1)" /proc)
+  r=$(ghostty_line "$gi" /etc/glvnd/egl_vendor.d/10_omacvm.json /usr/local/lib/libEGL_omacvm.so.0 "$gm" "$go" "$grec")
   case ${r%%$'\t'*} in
     ok) ok "Ghostty" "${r#*$'\t'}" ;;
+    warn) warn "Ghostty" "${r#*$'\t'}" ;;
     fail) bad "Ghostty" "${r#*$'\t'}" ;;
   esac
   e=$(as_user env LIBVA_DRIVER_NAME=$drv LIBVA_DRIVERS_PATH=/usr/local/lib/dri:/usr/lib/dri \
