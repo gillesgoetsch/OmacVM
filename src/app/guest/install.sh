@@ -151,8 +151,9 @@ else
 fi
 rm -rf "$T"
 install -Dm644 omacvm-app-video.js /usr/lib/firefox/defaults/pref/omacvm-app-video.js
-# Chrome and Chromium: a GL renderer string without "virgl", so Skia keeps
-# instanced drawing for canvas and SVG paths (the file says why).
+# Chrome, Chromium, Brave, Vivaldi and Electron (by program name): a GL
+# renderer string without "virgl", so Skia keeps instanced drawing for canvas
+# and SVG paths (the file says why).
 install -Dm644 50-omacvm-chrome.drirc /usr/share/drirc.d/50-omacvm-chrome.conf
 # Vulkan (Venus): a Venus driver that sizes GPU memory to the Mac's 16 KiB
 # pages (venus/vulkan-virtio.sh says why). Built now when the Mac says this VM
