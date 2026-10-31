@@ -346,6 +346,11 @@ if [[ -f $RP ]]; then
   expect "the reclaim fix writes that file with the words the app reads" "1 1" \
     "$(grep -c -F 'getenv("OMACVM_RECLAIM_STATUS")' "$RP") $(grep -c -F '"reclaim=keeps\nwhy=%s\n"' "$RP")"
 fi
+# The balloon (ADR 0059's review): inflating it gives the Mac nothing (MADV_DONTNEED; held -2 MB), deflating adds a second
+# count (+913 MB): the app never sends a balloon command over QMP.
+qmpcmds=$(grep -rhoE 'execute(CapturingEvents)?\("[a-z_-]+"' "$R/app/app/Sources" --exclude-dir=desktop-tests --exclude-dir=usb-tests | sed 's/.*("//; s/"$//' | LC_ALL=C sort -u | tr '\n' ' ')
+expect "the app never sends a QMP balloon command (its QMP commands: $qmpcmds)" "yes 0 0" \
+  "$([[ $qmpcmds == *query-status* ]] && echo yes) $(grep -c balloon <<< "$qmpcmds") $(grep -rn -E '"command-line": *"[^"]*balloon' "$R/app/app/Sources" | wc -l | tr -d ' ')"
 expect "no unit, timer or install line in the VM runs it" "" \
   "$(grep -rl giveback "$R/src" | grep -v -e '^'"$R"'/src/memory/guest/giveback.sh$' -e '^'"$R"'/src/tests/memory-giveback.sh$' -e '^'"$R"'/src/cmd/check.sh$')"
 exit $fail
