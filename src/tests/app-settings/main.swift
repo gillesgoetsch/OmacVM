@@ -1,6 +1,8 @@
 // The VM window's settings across launches: src/tests/app-settings.sh.
 //   t dump                 the settings as the window reads them (SettingsDump)
 //   t start                what a start of a VM reads: Extra brightness and HDR for it
+//   t ghostty VENUS DRIVER what a start reads for Ghostty on the Mac's GPU, with or without Venus
+//                          (1/0) on that Vulkan driver (kosmickrisp, moltenvk, listed)
 //   t retire               what a launch does with retired switches (Settings.removeRetiredSwitches)
 //   t mediadefault ID      AirPods and media controls' default for that bundle id
 //   t set KEY VALUE [VM]   one change, made with the call the window's row makes
@@ -21,6 +23,12 @@ MainActor.assumeIsolated {
     if a[1] == "start" {   // what a start of a VM reads (Runner.start), printed; nothing is written
         let x = Settings.extraBrightnessStart(), h = Settings.hdrStart(), t = Settings.presentTilesStart()
         print("extra \(x.on) (\(x.why)), hdr \(h.on) (\(h.why)), tiles \(t.on) (\(t.why))")
+        exit(0)
+    }
+    if a[1] == "ghostty", a.count > 3 {   // Ghostty on the Mac's GPU at a start (Runner.arguments)
+        let d: VulkanDriverKind = a[3] == "kosmickrisp" ? .kosmicKrisp : a[3] == "moltenvk" ? .moltenVK : .listed
+        let g = Settings.ghosttyGPUStart(venus: a[2] == "1", driver: d)
+        print("ghostty \(g.on) (\(g.why))")
         exit(0)
     }
     if a[1] == "retire" { Settings.removeRetiredSwitches(); exit(0) }
@@ -49,6 +57,7 @@ MainActor.assumeIsolated {
         case "pauseWhileHidden": Settings.pauseWhileHidden = value == "true"
         case "pointerPlane": Settings.pointerPlane = value == "true"
         case "presentTiles": Settings.presentTiles = value == "true"
+        case "ghosttyGPU": Settings.ghosttyGPU = value == "true"
         case "mediaControls": Settings.mediaControls = value == "true"
         case "closeAction": Settings.closeAction = CloseAction.parse(value)
         case "appIconTheme": AppIcon.set(IconTheme.choice(stored: value))

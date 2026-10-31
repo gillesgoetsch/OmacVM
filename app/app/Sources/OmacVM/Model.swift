@@ -744,6 +744,22 @@ enum Settings {
         }
         return (true, "the VM's driver says what changed, QEMU shows it in tiles")
     }
+    /// Ghostty on the Mac's GPU (experimental, off by default; ADR 0064's
+    /// amendment): a start with Vulkan on KosmicKrisp tells the VM (SMBIOS
+    /// omacvm.glzink=1) and its EGL vendor library starts Ghostty on Zink
+    /// over Venus with OpenGL 4.3 instead of Mesa's CPU renderer. The VM
+    /// window's switch (GhosttyGPURow) or defaults write org.omacvm.app
+    /// ghosttyGPU -bool true. Read at each start (ghosttyGPUStart).
+    static var ghosttyGPU: Bool {
+        get { UserDefaults.standard.bool(forKey: "ghosttyGPU") }
+        set { UserDefaults.standard.set(newValue, forKey: "ghosttyGPU") }
+    }
+    /// Ghostty on the Mac's GPU for one start: the switch, GPU safe mode, and
+    /// this start's graphics (Venus) and Vulkan driver (GhosttyGPU.start).
+    /// Runner takes the guest's SMBIOS and the qemu.log line from this answer.
+    static func ghosttyGPUStart(venus: Bool, driver: VulkanDriverKind) -> (on: Bool, why: String) {
+        GhosttyGPU.start(switchOn: ghosttyGPU, safeMode: gpuSafeMode, venus: venus, driver: GhosttyGPU.Driver(driver))
+    }
     /// Experimental, off by default, no switch in the window yet: the VM
     /// puts its pointer on virtio-gpu's cursor plane and the Mac's own cursor
     /// shows it (QEMU's OMACVM_HW_CURSOR, the guest's omacvm.hwcursor), so it
@@ -753,6 +769,16 @@ enum Settings {
     /// there today. From the VM's next start.
     /// Hidden: defaults write org.omacvm.app macPointer -bool true
     static var macPointer: Bool { UserDefaults.standard.bool(forKey: "macPointer") }
+}
+
+extension GhosttyGPU.Driver {
+    init(_ k: VulkanDriverKind) {
+        switch k {
+        case .kosmicKrisp: self = .kosmicKrisp
+        case .moltenVK: self = .moltenVK
+        case .listed: self = .listed
+        }
+    }
 }
 
 extension Mac {

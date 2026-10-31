@@ -49,6 +49,8 @@ final class Runner {
             atPath: c.folder.appendingPathComponent("guest-pointer").path)
         let g = Runner.graphicsPlan(c, fallbackOnce: openGLOnce)
         graphics = g
+        // Ghostty on the Mac's GPU: one answer for the guest and qemu.log (start()).
+        ghosttyGPU = Settings.ghosttyGPUStart(venus: g.venus, driver: Runner.vulkanDriverKind)
         var a: [String] = [
             "-name", q(c.name),
             // M1/M2 with Vulkan: a high PCI window that fits their address
@@ -154,6 +156,13 @@ final class Runner {
         if Settings.pointerPlane {
             a += ["-smbios", "type=11,value=omacvm.pointerplane=2"]
         }
+        // Ghostty on the Mac's GPU (Settings.ghosttyGPUStart, experimental): the
+        // guest's EGL vendor library starts Ghostty on Zink over Venus with
+        // OpenGL 4.3 (omacvm_egl.c reads host.env). Only with Vulkan on
+        // KosmicKrisp; otherwise nothing is sent and Ghostty stays on the CPU.
+        if ghosttyGPU.on {
+            a += ["-smbios", "type=11,value=\(GhosttyGPU.smbios)"]
+        }
         // Draw only what changed (Settings.presentTilesStart, experimental): the
         // guest loads OmacVM's virtio-gpu driver for its Linux 7.4 damage fix,
         // so QEMU gets what changed in each frame (omacvm-virtio-gpu-load).
@@ -253,6 +262,12 @@ final class Runner {
 
     /// The graphics this start got (Graphics.swift).
     private(set) var graphics: GraphicsPlan?
+
+    /// The Vulkan driver a start on this Mac gets (Graphics.vulkanDriverKind).
+    static var vulkanDriverKind: VulkanDriverKind {
+        Graphics.vulkanDriverKind(macOSMajor: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+                                  kosmicKrisp: runtimeHasKosmicKrisp, environment: ProcessInfo.processInfo.environment)
+    }
 
     /// The runtime has KosmicKrisp (release builds; Venus uses it on macOS 26+).
     static var runtimeHasKosmicKrisp: Bool {
@@ -624,6 +639,10 @@ final class Runner {
         if Settings.pointerPlane {
             log.write(Data("OmacVM: pointer layer: \(Settings.macPointer ? "off (macPointer is on)" : "asked (omacvm check says if it runs)")\n".utf8))
         }
+        // Ghostty on the Mac's GPU for omacvm check and the window's row, while the switch is on.
+        if Settings.ghosttyGPU {
+            log.write(Data("\(GhosttyGPU.record(ghosttyGPU))\n".utf8))
+        }
         // Draw only what changed, while the switch is on (QEMU's minute lines say how often).
         if Settings.presentTiles {
             log.write(Data("OmacVM: tiled present: \(tiles.on ? "on" : "off") (\(tiles.why))\n".utf8))
@@ -798,6 +817,8 @@ final class Runner {
     private(set) var hdr: (on: Bool, why: String) = (false, "switch off")
     /// Draw only what changed at this start (Settings.presentTilesStart), set in start().
     private(set) var tiles: (on: Bool, why: String) = (false, "switch off")
+    /// Ghostty on the Mac's GPU at this start (Settings.ghosttyGPUStart), set in arguments().
+    private(set) var ghosttyGPU: (on: Bool, why: String) = (false, "switch off")
     /// Extra brightness at this start (Settings.extraBrightnessStart), set in start().
     private(set) var extraBright: (on: Bool, why: String) = (false, "switch off")
     private(set) var notchGeometry: NotchGeometry?

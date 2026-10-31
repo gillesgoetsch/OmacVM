@@ -22,13 +22,35 @@
  * setenv); GTK sets up EGL once per display, on its main thread, for the first window.
  * Ghostty on the GPU again (it then opens no window): LIBGL_ALWAYS_SOFTWARE=0.
  *
+ * Ghostty on the Mac's GPU (ADR 0064's amendment, experimental, off by default): when the app
+ * asks for it at this start (OmacVM.app's setting, sent only with Vulkan on KosmicKrisp: SMBIOS
+ * omacvm.glzink=1, so host.env has OMACVM_GLZINK=1), no Venus context was lost in this boot
+ * (/run/omacvm/gl-zink-off absent) and the person set none of the variables above nor
+ * MESA_GL_VERSION_OVERRIDE, that eglInitialize gets MESA_LOADER_DRIVER_OVERRIDE=zink and
+ * MESA_GL_VERSION_OVERRIDE=4.3 instead, the same way: Zink on Venus then claims 4.3 core
+ * (KosmicKrisp has no transform feedback or geometry shaders; Ghostty 1.3.1 draws without
+ * them). Mesa reads the version once per process, when its first display is set up
+ * (version.c keeps it for every context), so it too is needed only for that call; its GLSL
+ * version stays Zink's own (a GL override skips the clamp). Where Zink cannot start (MoltenVK,
+ * no Venus) Mesa falls back to llvmpipe by itself. Both files are read only there. After Mesa's eglInitialize the library asks Mesa which driver it
+ * took (eglGetDisplayDriverName), says it in one line on stderr and writes
+ * $XDG_RUNTIME_DIR/omacvm/ghostty-gl ("PID ASKED GOT WHY", the last display set up), which
+ * omacvm check reads. On Zink Mesa's dma-buf export answers yes without writing the fd (the
+ * driver's fd query fails and egl_dri2.c ignores it), and GTK, which passes its array unset,
+ * then made a texture of whatever was in it: a CRITICAL and a close of a bad fd every frame.
+ * So for a display set up on Zink in a Ghostty process, eglQueryString(EGL_EXTENSIONS) leaves
+ * out EGL_MESA_image_dma_buf_export (GTK then never tries; told no, it logged a warning every
+ * frame instead), and eglExportDMABUFImageMESA, for apps that call it anyway (Ghostty 1.4),
+ * sets the fds to -1 first and says no when plane 0 got none: they draw without the export,
+ * as on any driver that has none.
+ *
  * Kept small, and it fails open: if Mesa's library is missing or glvnd's vendor ABI is not
  * major 0, __egl_Main returns false and glvnd uses Mesa's own 50_mesa.json. The compositor
  * (Hyprland), Xwayland, Omarchy's shell (quickshell: the bar and Omarchy 4's lock screen),
  * hyprlock and the login screen run Mesa alone (they show no VA-API surfaces). Mesa thus
  * loads as two glvnd vendors in other processes; this one lists no devices (glvnd would list
  * every device twice), so displays opened on a device are Mesa's. Every process but Ghostty
- * gets Mesa's own eglInitialize.
+ * gets Mesa's own eglInitialize, eglQueryString and eglExportDMABUFImageMESA.
  * One app: __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json; the VM:
  * delete the JSON file (Ghostty then opens no window again).
  *
@@ -36,13 +58,17 @@
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <link.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -50,6 +76,14 @@
 
 #ifndef MESA_EGL
 #define MESA_EGL "libEGL_mesa.so.0"
+#endif
+/* What the Mac said at this start (omacvm-app-host), and the file a lost Venus context leaves
+ * for the rest of the boot (one line "lost <time> <why>"); other paths for the tests. */
+#ifndef HOST_ENV
+#define HOST_ENV "/run/omacvm/host.env"
+#endif
+#ifndef GL_ZINK_OFF
+#define GL_ZINK_OFF "/run/omacvm/gl-zink-off"
 #endif
 #define SHIM "/omacvm_drv_video.so"
 
@@ -62,8 +96,22 @@ static void *(*mesa_gpa)(const char *);
 static PFNEGLCREATEIMAGEKHRPROC mesa_create_image_khr;
 static PFNEGLCREATEIMAGEPROC mesa_create_image;
 static PFNEGLINITIALIZEPROC mesa_initialize;
-static int cpu_gl;                      /* this process is Ghostty: Mesa's CPU renderer (see the top) */
+typedef const char *(*driver_name_fn)(EGLDisplay dpy);
+typedef EGLBoolean (*export_fn)(EGLDisplay dpy, EGLImageKHR image, int *fds, EGLint *strides, EGLint *offsets);
+typedef EGLBoolean (*export_query_fn)(EGLDisplay dpy, EGLImageKHR image, int *fourcc, int *planes,
+                                      EGLuint64KHR *modifiers);
+static export_fn mesa_export;
+static export_query_fn mesa_export_query;
+static PFNEGLQUERYSTRINGPROC mesa_query_string;
+static int ghostty_gl;                  /* this process is Ghostty: its driver is picked here (see the top) */
+static int on_zink;                     /* ... and a display of it was set up on Zink */
 static pthread_mutex_t env_lock = PTHREAD_MUTEX_INITIALIZER;
+/* Ghostty's displays set up on Zink, with Mesa's extension string and the copy without the
+ * dma-buf export (made once per string: kept for the process, as Mesa keeps its own) */
+#define ZINK_DISPLAYS 8
+static struct { EGLDisplay dpy; const char *mesa; char *ours; } zink_dpy[ZINK_DISPLAYS];
+static pthread_mutex_t zink_lock = PTHREAD_MUTEX_INITIALIZER;
+#define EXPORT_EXT "EGL_MESA_image_dma_buf_export"
 static imported_fn shim_entry;          /* found once, never dropped (the shim stays loaded) */
 static unsigned long long searched;     /* objects loaded at the last search without a hit */
 
@@ -185,22 +233,215 @@ static EGLImage create_image(EGLDisplay dpy, EGLContext ctx, EGLenum target,
     return img;
 }
 
-/* Ghostty only: Mesa reads LIBGL_ALWAYS_SOFTWARE in eglInitialize, where it picks its driver;
- * the variable is there for that call alone, unless a driver was chosen already (see the top). */
-static EGLBoolean initialize_cpu(EGLDisplay dpy, EGLint *major, EGLint *minor)
+/* host.env has this line (as the VA shim reads it) */
+static int host_says(const char *what)
+{
+    char line[256];
+    FILE *f = fopen(HOST_ENV, "re");
+    int yes = 0;
+
+    if (!f)
+        return 0;
+    while (!yes && fgets(line, sizeof(line), f))
+        yes = !strcmp(line, what);
+    fclose(f);
+    return yes;
+}
+
+/* What Ghostty's eglInitialize gets, and why (the record's last word, omacvm check's reason). */
+enum ask { ASK_OWN, ASK_LLVMPIPE, ASK_ZINK };
+
+static enum ask ghostty_ask(const char **why)
+{
+    static const char *const own[] = { "LIBGL_ALWAYS_SOFTWARE", "MESA_LOADER_DRIVER_OVERRIDE", "GALLIUM_DRIVER" };
+
+    for (size_t i = 0; i < sizeof(own) / sizeof(own[0]); i++)
+        if (getenv(own[i])) {
+            *why = own[i];      /* the person's choice wins */
+            return ASK_OWN;
+        }
+    if (!host_says("OMACVM_GLZINK=1\n"))
+        *why = "nomarker";      /* the app's setting off, or no Vulkan on KosmicKrisp at this start */
+    else if (!access(GL_ZINK_OFF, F_OK))
+        *why = "zinkoff";       /* a Venus context was lost in this boot */
+    else if (getenv("MESA_GL_VERSION_OVERRIDE"))
+        *why = "glversion";     /* the person's own version: llvmpipe, as before */
+    else {
+        *why = "setting";
+        return ASK_ZINK;
+    }
+    return ASK_LLVMPIPE;
+}
+
+/* One word of Mesa's driver name for the record ("?" when unknown) */
+static void word(char *out, size_t size, const char *s)
+{
+    size_t n = 0;
+
+    for (; s && *s && n + 1 < size; s++)
+        if ((*s >= 'a' && *s <= 'z') || (*s >= 'A' && *s <= 'Z') || (*s >= '0' && *s <= '9') || *s == '_')
+            out[n++] = *s;
+    if (!n)
+        out[n++] = '?';
+    out[n] = 0;
+}
+
+/* $XDG_RUNTIME_DIR/omacvm/ghostty-gl: "PID ASKED GOT WHY", the last display set up */
+static void record(const char *asked, const char *got, const char *why)
+{
+    const char *run = getenv("XDG_RUNTIME_DIR");
+    char dir[PATH_MAX], line[160];
+    int d, fd, n;
+
+    if (!run || run[0] != '/' || snprintf(dir, sizeof(dir), "%s/omacvm", run) >= (int)sizeof(dir))
+        return;
+    if (mkdir(dir, 0700) && errno != EEXIST)
+        return;
+    d = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (d < 0)
+        return;
+    n = snprintf(line, sizeof(line), "%d %s %s %s\n", (int)getpid(), asked, got, why);
+    fd = openat(d, "ghostty-gl.new", O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+    if (fd >= 0) {
+        int ok = n > 0 && n < (int)sizeof(line) && write(fd, line, (size_t)n) == n;
+        close(fd);
+        if (!ok || renameat(d, "ghostty-gl.new", d, "ghostty-gl"))
+            unlinkat(d, "ghostty-gl.new", 0);
+    }
+    close(d);
+}
+
+/* A display of Ghostty set up on Zink (its extension string leaves out the export) */
+static void zink_display(EGLDisplay dpy)
+{
+    int i;
+
+    pthread_mutex_lock(&zink_lock);
+    for (i = 0; i < ZINK_DISPLAYS && zink_dpy[i].dpy && zink_dpy[i].dpy != dpy; i++)
+        ;
+    if (i < ZINK_DISPLAYS && !zink_dpy[i].dpy)
+        zink_dpy[i].dpy = dpy;
+    pthread_mutex_unlock(&zink_lock);
+}
+
+/* s without the word EXPORT_EXT, or NULL (no memory) */
+static char *without_export(const char *s)
+{
+    size_t n = strlen(s), k = sizeof(EXPORT_EXT) - 1, o = 0;
+    char *r = malloc(n + 1);
+
+    if (!r)
+        return NULL;
+    for (const char *p = s; *p;) {
+        const char *e = p;
+        while (*e && *e != ' ')
+            e++;
+        if ((size_t)(e - p) != k || strncmp(p, EXPORT_EXT, k)) {
+            if (o)
+                r[o++] = ' ';
+            memcpy(r + o, p, (size_t)(e - p));
+            o += (size_t)(e - p);
+        }
+        p = *e ? e + 1 : e;
+    }
+    r[o] = 0;
+    return r;
+}
+
+/* Ghostty only: a display on Zink names no dma-buf export (see the top) */
+static const char *query_string(EGLDisplay dpy, EGLint name)
+{
+    PFNEGLQUERYSTRINGPROC f = __atomic_load_n(&mesa_query_string, __ATOMIC_ACQUIRE);
+    const char *s = f(dpy, name), *r = s;
+
+    if (!s || name != EGL_EXTENSIONS || dpy == EGL_NO_DISPLAY || !__atomic_load_n(&on_zink, __ATOMIC_ACQUIRE))
+        return s;
+    pthread_mutex_lock(&zink_lock);
+    for (int i = 0; i < ZINK_DISPLAYS && zink_dpy[i].dpy; i++) {
+        if (zink_dpy[i].dpy != dpy)
+            continue;
+        if (zink_dpy[i].mesa != s) {   /* first time, or Mesa made a new string (set up again) */
+            char *ours = without_export(s);
+            if (ours) {
+                zink_dpy[i].ours = ours;   /* an earlier copy stays: the app may still hold it */
+                zink_dpy[i].mesa = s;
+            }
+        }
+        if (zink_dpy[i].mesa == s && zink_dpy[i].ours)
+            r = zink_dpy[i].ours;
+        break;
+    }
+    pthread_mutex_unlock(&zink_lock);
+    return r;
+}
+
+/* Ghostty only: Mesa reads LIBGL_ALWAYS_SOFTWARE and MESA_LOADER_DRIVER_OVERRIDE in
+ * eglInitialize, where it picks its driver; the variables are there for that call alone, unless
+ * a driver was chosen already (see the top). Then Mesa's own answer is recorded. */
+static EGLBoolean initialize_ghostty(EGLDisplay dpy, EGLint *major, EGLint *minor)
 {
     PFNEGLINITIALIZEPROC f = __atomic_load_n(&mesa_initialize, __ATOMIC_ACQUIRE);
+    driver_name_fn name = (driver_name_fn)mesa_gpa("eglGetDisplayDriverName");
+    const char *why = "", *asked;
+    char got[32];
     EGLBoolean ok;
-    int set;
+    enum ask a;
 
     pthread_mutex_lock(&env_lock);
-    set = !getenv("LIBGL_ALWAYS_SOFTWARE") && !getenv("MESA_LOADER_DRIVER_OVERRIDE") &&
-          !getenv("GALLIUM_DRIVER") && !setenv("LIBGL_ALWAYS_SOFTWARE", "1", 0);
+    a = ghostty_ask(&why);
+    if (a == ASK_ZINK && setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 0))
+        a = ASK_OWN, why = "nomemory";
+    else if (a == ASK_ZINK && setenv("MESA_GL_VERSION_OVERRIDE", "4.3", 0)) {
+        unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+        a = ASK_OWN, why = "nomemory";
+    } else if (a == ASK_LLVMPIPE && setenv("LIBGL_ALWAYS_SOFTWARE", "1", 0))
+        a = ASK_OWN, why = "nomemory";
     ok = f(dpy, major, minor);
-    if (set)
+    if (a == ASK_ZINK) {
+        unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+        unsetenv("MESA_GL_VERSION_OVERRIDE");
+    } else if (a == ASK_LLVMPIPE)
         unsetenv("LIBGL_ALWAYS_SOFTWARE");
     pthread_mutex_unlock(&env_lock);
+    if (!ok)
+        return ok;
+    asked = a == ASK_ZINK ? "zink" : a == ASK_LLVMPIPE ? "llvmpipe" : "own";
+    word(got, sizeof(got), name ? name(dpy) : NULL);
+    if (!strcmp(got, "zink") || (a == ASK_ZINK && !strcmp(got, "?"))) {
+        zink_display(dpy);
+        __atomic_store_n(&on_zink, 1, __ATOMIC_RELEASE);
+    }
+    fprintf(stderr, "OmacVM: Ghostty's OpenGL: asked %s (%s), Mesa's driver %s\n", asked, why, got);
+    record(asked, got, why);
     return ok;
+}
+
+/* Ghostty on Zink only: Mesa says yes but leaves the fds as they were when the driver gives
+ * none (see the top); then no, with every fd it did give closed. */
+static EGLBoolean export_dmabuf(EGLDisplay dpy, EGLImageKHR image, int *fds, EGLint *strides, EGLint *offsets)
+{
+    export_fn f = __atomic_load_n(&mesa_export, __ATOMIC_ACQUIRE);
+    export_query_fn q = __atomic_load_n(&mesa_export_query, __ATOMIC_ACQUIRE);
+    static int said;
+    int planes = 0;
+    EGLBoolean ok;
+
+    if (!fds || !q || !__atomic_load_n(&on_zink, __ATOMIC_ACQUIRE) ||
+        !q(dpy, image, NULL, &planes, NULL) || planes < 1 || planes > 4)
+        return f(dpy, image, fds, strides, offsets);
+    for (int i = 0; i < planes; i++)
+        fds[i] = -1;
+    ok = f(dpy, image, fds, strides, offsets);
+    if (!ok || fds[0] >= 0)
+        return ok;
+    for (int i = 1; i < planes; i++)
+        if (fds[i] >= 0) {
+            close(fds[i]);
+            fds[i] = -1;
+        }
+    if (!__atomic_exchange_n(&said, 1, __ATOMIC_RELAXED))
+        fprintf(stderr, "OmacVM: Mesa exported no dma-buf fd (Zink): said no, drawn without it\n");
+    return EGL_FALSE;
 }
 
 /* glvnd asks the vendor for every EGL function it dispatches to it, these included. */
@@ -212,9 +453,18 @@ static void *get_proc_address(const char *name)
     if (!strcmp(name, "eglQueryDevicesEXT"))
         return NULL;
     p = mesa_gpa(name);
-    if (p && cpu_gl && !strcmp(name, "eglInitialize")) {
+    if (p && ghostty_gl && !strcmp(name, "eglInitialize")) {
         __atomic_store_n(&mesa_initialize, (PFNEGLINITIALIZEPROC)p, __ATOMIC_RELEASE);
-        return (void *)initialize_cpu;
+        return (void *)initialize_ghostty;
+    }
+    if (p && ghostty_gl && !strcmp(name, "eglQueryString")) {
+        __atomic_store_n(&mesa_query_string, (PFNEGLQUERYSTRINGPROC)p, __ATOMIC_RELEASE);
+        return (void *)query_string;
+    }
+    if (p && ghostty_gl && !strcmp(name, "eglExportDMABUFImageMESA")) {
+        __atomic_store_n(&mesa_export_query, (export_query_fn)mesa_gpa("eglExportDMABUFImageQueryMESA"), __ATOMIC_RELEASE);
+        __atomic_store_n(&mesa_export, (export_fn)p, __ATOMIC_RELEASE);
+        return (void *)export_dmabuf;
     }
     if (p && !strcmp(name, "eglCreateImageKHR")) {
         __atomic_store_n(&mesa_create_image_khr, (PFNEGLCREATEIMAGEKHRPROC)p, __ATOMIC_RELEASE);
@@ -263,7 +513,7 @@ EGLBoolean __egl_Main(uint32_t version, const __EGLapiExports *exports, __EGLven
     if (!mesa_main || !mesa_main(version, exports, vendor, imports) || !imports->getProcAddress)
         return EGL_FALSE;
     mesa_gpa = imports->getProcAddress;
-    cpu_gl = !strcmp(name, "ghostty");
+    ghostty_gl = !strcmp(name, "ghostty");
     imports->getProcAddress = get_proc_address;
     return EGL_TRUE;
 }
