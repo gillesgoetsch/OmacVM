@@ -16,6 +16,17 @@
 #                   window between the two starts)
 #   leftovers       nothing of the VM or the app runs on after the VM shut down from inside,
 #                   after its window was closed, and after the app quit
+#   usb             USB devices with a made-up device (a test build's OMACVM_TEST_USB_FAKE=1; the VM's
+#                   switch on for the first start only, put back after): in the window and in full
+#                   screen (FullPanel when the VM's notch setting says so), the question shows on the
+#                   VM's Space with the VM's window, the app in front, Return and Escape do nothing for
+#                   0.5 s and reach neither it nor the VM, Return then connects (the VM lists the
+#                   device), Escape keeps it on the Mac; QEMU's "USB Devices…" opens the list there
+#                   within 1 s, its Connect and Disconnect work, Return closes it and the VM is in
+#                   front again; no macOS permission dialog. Headless, on a locked Mac or one nobody
+#                   uses: QEMU's item by Accessibility (no input events) and the app's list: built
+#                   (locked: macOS shows a panel only for the app in front, and loginwindow is), or
+#                   shown and used by Accessibility's press; the on-screen part BLOCKED
 # The window's header buttons (Start, Update VM) sit under its toolbar, where a click posted as an event
 # does nothing (macOS 15, tried): they get Accessibility's press; switches, the sidebar and the pointer
 # get real events.
@@ -45,9 +56,9 @@ E=$(cd "$(dirname "$0")" && pwd)
 source "$E/test-vms.sh"
 source "$E/onscreen-lib.sh"
 source "$E/person.sh"
-ALL="window update-vm switch-stopped vm-size pointer leftovers"
+ALL="window update-vm switch-stopped vm-size pointer leftovers usb"
 APP=""; VM=""; OUT=""; ONLY=""; HEADLESS=0; PAUSE_CI=${OMACVM_E2E_PAUSE_CI:-0}; CI_WAIT=${OMACVM_E2E_CI_WAIT:-3000}
-usage() { sed -n '36,37s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '/^#   src\/tests\/e2e\/onscreen.sh --app/,/^#       \[--only/s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 while (( $# )); do
   case $1 in
     --app) APP=${2%/}; shift 2 ;;
@@ -194,6 +205,31 @@ is_full() { [[ $("$T" win "$1" 2>/dev/null) == *full=$2 ]]; }
 leftovers() { psall | os_leftovers "$APP" "$VMD" "$VM" | awk -v k="${1:-x}" '$1 != k' | cut -c1-200; }
 feature() { tr ' ' '\n' < "$VMD/features" 2>/dev/null | grep "^$1=" | tail -1 | cut -d= -f2; }
 pending() { cat "$VMD/$1-pending" 2>/dev/null | tr -d '\n'; }
+# The VM's USB switch and its remembered devices: the usb row changes them for one start; put back after.
+USB_SAVED=0
+usb_save() {
+  local f; mkdir -p "$OUT/saved/usb"
+  for f in usb-enabled usb.json; do
+    if [[ -f $VMD/$f ]]; then cp -p "$VMD/$f" "$OUT/saved/usb/$f"; else : > "$OUT/saved/usb/$f.none"; fi
+  done
+  USB_SAVED=1
+}
+usb_restore() {
+  local f; (( USB_SAVED )) || return 0
+  for f in usb-enabled usb.json; do
+    if [[ -f $OUT/saved/usb/$f ]]; then cp -p "$OUT/saved/usb/$f" "$VMD/$f"; else rm -f "$VMD/$f"; fi
+  done
+}
+# The switch on for the next start; "keep": the made-up device remembered as Keep on Mac (no question).
+usb_switch_on() {
+  (( USB_SAVED )) || usb_save
+  printf 'on\n' > "$VMD/usb-enabled"
+  if [[ ${1:-} == keep ]]; then
+    os_usb_keep_json "$(date +%Y-%m-%d)" > "$VMD/usb.json"
+  else rm -f "$VMD/usb.json"; fi
+  chmod 600 "$VMD/usb.json" 2>/dev/null
+  return 0
+}
 
 # --- settings this run changes: saved, put back at the end
 KEYS="startFullScreen gpuOffMainLoop closeAction skipInstallPaths"
@@ -207,6 +243,7 @@ cleanup() {
   for p in $(helpers); do [[ " $HELPERS0 " == *" $p "* ]] || kill "$p" 2>/dev/null; done
   p=$(qemu_pid); [[ -n $p ]] && { gssh systemctl poweroff >/dev/null 2>&1; waitfor 90 no_qemu >/dev/null || log "the VM did not shut down"; }
   p=$(launcher_pid); [[ -n $p ]] && { "$T" quit "$p" >/dev/null 2>&1; waitfor 20 no_launcher >/dev/null || kill "$p" 2>/dev/null; }
+  usb_restore
   # shellcheck disable=SC2086
   e2e_settings_restore "$DOM" "$OUT/saved" $KEYS || log "settings: not all put back"
   [[ -f $OUT/saved/omacvm-version ]] && ! grep -q "^$VER\$" "$VMD/omacvm-version" 2>/dev/null && cp "$OUT/saved/omacvm-version" "$VMD/omacvm-version"
@@ -418,7 +455,8 @@ gpu_lock_switch() {   # "Graphics without QEMU's lock" switched in the window (V
 
 open_window() {
   # The question about this Mac's helpers (the test helpers may not run) never blocks the rows.
-  open -n --env OMACVM_POINTER_DEBUG=1 --env OMACVM_TEST_HELPERS_ANSWER=later "$APP" --args --vm "$VM"
+  # The made-up USB device only matters while the VM's USB switch is on (the usb row).
+  open -n --env OMACVM_POINTER_DEBUG=1 --env OMACVM_TEST_HELPERS_ANSWER=later --env OMACVM_TEST_USB_FAKE=1 "$APP" --args --vm "$VM"
   waitfor 30 has_launcher >/dev/null || return 1
   LP=$(launcher_pid)
   waitfor 30 has_window >/dev/null || return 1
@@ -441,6 +479,180 @@ headless_leftovers() {
   stopped_left leftovers-stop "headless start, shut down from inside" && quit_left leftovers-quit
 }
 
+# --- usb: the made-up device (OMACVM_TEST_USB_FAKE=1: plugged and unplugged by a notification, QEMU
+# gets its emulated tablet for it, which the VM lists as "QEMU USB Tablet")
+UREQ=""   # the app's name for the list (USBRun.requestName): its bundle id, .usb., its pid
+UT0=0
+usb_n() { gssh 'grep -lx "QEMU USB Tablet" /sys/bus/usb/devices/*/product 2>/dev/null | wc -l' 2>/dev/null | tr -cd '0-9'; }
+usb_is() { [[ $(usb_n) == "$1" ]]; }
+usb_fake() { "$T" post "$UREQ.test" "$1" >/dev/null; }
+# grep -c, not -q: under pipefail an early grep -q makes the writer's SIGPIPE the pipeline's status
+usb_ready() { (( $(qnew | grep -ac 'OmacVM: USB: test device on (OMACVM_TEST_USB_FAKE)') > 0 )); }
+usb_logged() { (( $(qnew | grep -acF "OmacVM: USB: 1209:0001 OmacVM Test Device $1") > 0 )); }
+usb_list_up() { "$T" find "$LP" AXWindow "USB Devices" >/dev/null 2>&1; }
+usb_list_gone() { ! usb_list_up; }
+front_is() { [[ $("$T" frontpid) == "$1" ]]; }
+gssh_in() { ssh -i "$VMD/ssh-key" -i "$HOME/.ssh/omacvm" -p "$(port)" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1 "$@"; }
+# Return and Escape presses the VM gets (its keyboards' event files) for SECONDS: "return N escape M"
+usb_keys_start() {
+  gssh_in 'cat > /tmp/omacvm-e2e-keys.py' <<'PY' || return 1
+import os, re, select, struct, sys, time
+end = time.time() + float(sys.argv[1])
+fds = []
+for block in open("/proc/bus/input/devices").read().split("\n\n"):
+    m = re.search(r"Handlers=.*\bkbd\b.*\b(event\d+)", block)
+    if m:
+        fds.append(os.open("/dev/input/" + m.group(1), os.O_RDONLY | os.O_NONBLOCK))
+n = {28: 0, 96: 0, 1: 0}
+while time.time() < end:
+    for fd in select.select(fds, [], [], max(0.0, end - time.time()))[0]:
+        data = os.read(fd, 24 * 64)
+        for i in range(0, len(data) - 23, 24):
+            _, _, t, c, v = struct.unpack("qqHHi", data[i:i + 24])
+            if t == 1 and v == 1 and c in n:
+                n[c] += 1
+print("return %d escape %d keyboards %d" % (n[28] + n[96], n[1], len(fds)), flush=True)
+PY
+  gssh "command -v python3 >/dev/null || exit 3; nohup python3 /tmp/omacvm-e2e-keys.py $1 > /tmp/omacvm-e2e-keys.txt 2>&1 < /dev/null &"
+}
+usb_keys_read() { gssh 'cat /tmp/omacvm-e2e-keys.txt 2>/dev/null' 2>/dev/null | tail -1; }
+# macOS asked for nothing since the row began (tccd's dialogs, UserNotificationCenter's windows)
+usb_prompts() {
+  local n u w
+  n=$(/usr/bin/log show --style compact --start "$(date -r "$UT0" '+%Y-%m-%d %H:%M:%S')" \
+    --predicate 'process == "tccd" AND eventMessage CONTAINS "Notifying for access"' 2>/dev/null | grep -c 'Notifying for access')
+  u=$(pgrep -x UserNotificationCenter | head -1); w=0
+  [[ -n $u ]] && w=$("$T" onscreen "$u" 2>/dev/null | head -1)
+  [[ $n == 0 && ${w:-0} == 0 ]] && res usb-prompts ok "tccd Notifying 0, UserNotificationCenter windows 0" ||
+    res usb-prompts FAIL "tccd Notifying $n, UserNotificationCenter windows ${w:-0}"
+}
+
+# On screen, MODE window|full: the question twice (Connect, Keep on Mac), then the list from QEMU's menu.
+usb_part() {
+  local m=$1 sp0 sp r rc a k t0 t1 i why="" fp=""
+  [[ $m == full ]] && (( $(qnew | grep -ac 'full panel: strip covered') > 0 )) && fp=" (FullPanel)"
+  "$T" front "$QP" >/dev/null; sleep 1.5
+  sp0=$("$T" space)
+  # 1: the question, Return and Escape in its first half second, Return after it: Connect
+  k=$(date +%s); usb_keys_start 8 || why="no key count in the VM (python3?)"
+  usb_fake plug
+  posted; r=$("$T" ask-keys "$LP" "Connect to $VM" "$QP"); rc=$?; posted
+  sp=$("$T" space)
+  a=$(os_usb_ask_problems "$r " "$rc" "$sp0" "$sp" | tr '\n' ';')
+  waitfor 15 usb_is 1 >/dev/null || a+="the VM does not list the device after Connect ($(usb_n)); "
+  usb_logged "connected (asked, this time)" || a+="no 'connected (asked, this time)' line; "
+  waitfor 3 front_is "$QP" >/dev/null || a+="the VM was not in front again (front $("$T" frontpid)); "
+  while (( $(date +%s) < k + 10 )); do sleep 1; done; k=$(usb_keys_read)
+  if [[ $k == "return 0 escape 0 keyboards "[1-9]* ]]; then :; elif [[ -n $why ]]; then a+="$why; "; else a+="the VM got keys: '${k:-no count}'; "; fi
+  [[ -z $a ]] && res "usb-$m-ask" ok "$m$fp: $r; VM $k; device in the VM" || res "usb-$m-ask" FAIL "$m$fp: $a| $r"
+  usb_fake unplug
+  waitfor 15 usb_is 0 >/dev/null || res "usb-$m-unplug" FAIL "the VM still lists the device 15 s after the unplug"
+  onscreen_mid || { res "usb-$m-keep" BLOCKED "$MID"; return 1; }
+  # 2: Escape after the half second: Keep on Mac
+  "$T" front "$QP" >/dev/null; sleep 1
+  usb_fake plug
+  a=""
+  if waitfor 5 "$T" find "$LP" AXButton "Keep on Mac" >/dev/null 2>&1; then
+    sleep 0.7; posted; r=$("$T" key "$LP" 53) || a+="the question was not in front ($r); "
+    waitfor 3 usb_question_gone >/dev/null || a+="Escape did not answer it; "
+    sleep 5; usb_is 0 || a+="the VM has the device after Keep on Mac; "
+    usb_logged "kept on the Mac (asked, this time)" || a+="no 'kept on the Mac (asked, this time)' line; "
+    waitfor 3 front_is "$QP" >/dev/null || a+="the VM was not in front again; "
+  else a+="no question in 5 s; "; fi
+  [[ -z $a ]] && res "usb-$m-keep" ok "$m$fp: Escape kept it on the Mac, the VM in front again" || res "usb-$m-keep" FAIL "$m$fp: $a"
+  onscreen_mid || { usb_fake unplug; res "usb-$m-list" BLOCKED "$MID"; return 1; }
+  # 3: QEMU's "USB Devices…" (the device still plugged in, kept on the Mac)
+  a=""
+  "$T" front "$QP" >/dev/null; sleep 1; sp0=$("$T" space)
+  t0=$(now_s)
+  r=$("$T" menu "$QP" "USB Devices…") || a+="QEMU's item: $r; "
+  for ((i = 0; i < 30; i++)); do usb_list_up && break; sleep 0.1; done   # 3 s, looked at every 0.1 s
+  t1=$(now_s)
+  usb_list_up || a+="no list; "
+  awk -v a="$t0" -v b="$t1" 'BEGIN { exit !(b - a <= 1.0) }' || a+="the list took $(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.2f", b - a }') s; "
+  front_is "$LP" || a+="the list is not in front (front $("$T" frontpid)); "
+  [[ $("$T" space) == "$sp0" ]] || a+="the Space changed; "
+  [[ $("$T" onscreen "$QP" | head -1) -ge 1 ]] || a+="the VM's window is not on screen with the list; "
+  (( $("$T" texts "$LP" | grep -c 'OmacVM Test Device') > 0 )) || a+="the list does not show the device; "
+  if [[ -z $a ]]; then
+    posted; "$T" click "$LP" AXButton "Connect OmacVM Test Device to $VM" >/dev/null || a+="no Connect in the list; "
+    waitfor 15 usb_is 1 >/dev/null || a+="the VM does not list it after Connect; "
+    posted; "$T" click "$LP" AXButton "Disconnect OmacVM Test Device" >/dev/null || a+="no Disconnect in the list; "
+    waitfor 15 usb_is 0 >/dev/null || a+="the VM still lists it after Disconnect; "
+    posted; r=$("$T" key "$LP" 36) || a+="the list was not in front for Return ($r); "
+    waitfor 3 usb_list_gone >/dev/null || a+="Return did not close the list; "
+    waitfor 3 front_is "$QP" >/dev/null || a+="the VM was not in front after the list; "
+  fi
+  usb_fake unplug
+  [[ -z $a ]] && res "usb-$m-list" ok "$m$fp: the list in $(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.2f", b - a }') s on the VM's Space, in front; Connect, Disconnect, Return closed it, the VM in front" ||
+    { res "usb-$m-list" FAIL "$m$fp: $a"; "$T" texts "$LP" > "$OUT/shots/usb-$m-list.txt" 2>&1; usb_list_up && "$T" press "$LP" AXButton Done >/dev/null; }
+  sleep 6
+}
+usb_question_gone() { ! "$T" find "$LP" AXButton "Keep on Mac" >/dev/null 2>&1; }
+now_s() { perl -MTime::HiRes=time -e 'printf "%.2f", time'; }
+
+row_usb() {   # start 1, after the pointer row: the switch was on from the start
+  UT0=$(date +%s); UREQ="$DOM.usb.$LP"
+  waitfor 60 usb_ready >/dev/null || { res usb FAIL "no 'test device on (OMACVM_TEST_USB_FAKE)' line: not a test build, or the switch was off"; return; }
+  usb_part window || return
+  onscreen_mid || { res usb-full BLOCKED "$MID"; return; }
+  "$T" full "$QP" on >/dev/null; waitfor 15 is_full "$QP" 1 >/dev/null; sleep 3
+  if is_full "$QP" 1; then usb_part full
+  else res usb-full FAIL "the VM did not go full screen"; fi
+  "$T" full "$QP" off >/dev/null; waitfor 15 is_full "$QP" 0 >/dev/null; sleep 2
+  usb_prompts
+}
+
+# Headless: QEMU's item through Accessibility (no input events), only on a locked Mac or one nobody uses (the
+# app's panel could show to whoever works at it). macOS shows a panel only while its app is in front, and on a
+# locked Mac loginwindow is in front (no app can take it, 2026-10-31 on the mini and the M1): the list is then
+# only built (CGWindowList: the app's floating window, 520 pt wide, off screen) and its words and buttons are
+# the on-screen row's. Shown (the app in front): read and used by Accessibility's press.
+usb_list_win() { "$T" windows "$LP" 2>/dev/null | grep '^on=[01] layer 3 [0-9-]* [0-9-]* 520 ' | head -1; }
+usb_hidden() {
+  local r a="" w="" how="" i
+  if [[ $(locked) != Yes ]] && ! away; then res usb-list BLOCKED "headless on an unlocked Mac someone uses: the list's panel could show to them"; return; fi
+  usb_switch_on keep
+  qmark; UT0=$(date +%s)
+  open -n -g --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_BACKGROUND=1 --env OMACVM_TEST_USB_FAKE=1 \
+    --env OMACVM_TEST_HELPERS_ANSWER=later "$APP" --args --start --vm "$VM"
+  waitfor 60 has_qemu >/dev/null || { res usb-list FAIL "headless: no QEMU after 60 s"; usb_restore; return; }
+  QP=$(qemu_pid); LP=$(launcher_pid); UREQ="$DOM.usb.$LP"
+  if ! waitfor 240 guest_up >/dev/null; then a+="no SSH in 4 min; "
+  elif ! waitfor 60 usb_ready >/dev/null; then a+="no 'test device on' line; "
+  else
+    usb_fake plug
+    waitfor 10 usb_logged "kept on the Mac (remembered)" >/dev/null || a+="no 'kept on the Mac (remembered)' line; "
+    [[ -z $(usb_list_win) ]] || a+="a 520 pt floating window before QEMU's item: $(usb_list_win); "
+    r=$("$T" menu "$QP" "USB Devices…") || a+="QEMU's item: $r; "
+    for ((i = 0; i < 30; i++)); do [[ -n $(usb_list_win) ]] && break; sleep 0.1; done
+    w=$(usb_list_win); [[ -n $w ]] || a+="the app built no list (no floating 520 pt window in 3 s); "
+    sleep 1
+    if [[ -n $w && -z $a ]] && usb_list_up; then
+      (( $("$T" texts "$LP" | grep -c 'OmacVM Test Device') > 0 )) || a+="the list does not show the device; "
+      r=$("$T" press "$LP" AXButton "Connect OmacVM Test Device to $VM") || a+="Connect: $r; "
+      waitfor 15 usb_is 1 >/dev/null || a+="the VM does not list it after Connect ($(usb_n)); "
+      usb_logged "connected (from the list)" || a+="no 'connected (from the list)' line; "
+      r=$("$T" press "$LP" AXButton "Disconnect OmacVM Test Device") || a+="Disconnect: $r; "
+      waitfor 15 usb_is 0 >/dev/null || a+="the VM still lists it after Disconnect; "
+      usb_logged "disconnected (from the list)" || a+="no 'disconnected (from the list)' line; "
+      r=$("$T" press "$LP" AXButton Done) || a+="Done: $r; "
+      waitfor 3 usb_list_gone >/dev/null || a+="Done did not close the list; "
+      how="shown: the device listed; Connect: the VM lists it; Disconnect: gone; Done closed it"
+    elif [[ -n $w ]]; then
+      how="built, not shown ($w; in front: pid $("$T" frontpid), the app $("$T" appstate "$LP" | cut -d' ' -f1)): its words and buttons are the on-screen row's"
+    fi
+    usb_fake unplug
+  fi
+  [[ -z $a ]] && res usb-list ok "headless ($([[ $(locked) == Yes ]] && echo "locked Mac" || echo "nobody at the Mac")): QEMU's USB Devices… -> the app's list $how" ||
+    { res usb-list FAIL "headless: $a"; "$T" texts "$LP" > "$OUT/shots/usb-list.txt" 2>&1; "$T" windows "$LP" >> "$OUT/shots/usb-list.txt" 2>&1; }
+  usb_prompts
+  gssh systemctl poweroff >/dev/null 2>&1
+  stopped_left usb-stop "headless, shut down from inside" && quit_left usb-quit
+  usb_restore
+}
+
 # --- the run
 CI_PAUSED=0
 if (( HEADLESS )); then GONE="--headless"
@@ -457,6 +669,7 @@ fi
 if [[ -z $GONE ]]; then
   log "on screen: nobody uses the Mac ($(who))"
   want update-vm && echo 3.0.0 > "$VMD/omacvm-version"   # older than the app: the window offers Update VM
+  want usb && usb_switch_on   # for the first start only (the switch counts from a start)
   if open_window; then
     # Each row starts after onscreen_ok (between rows: it may wait, the windows hidden); inside a row
     # onscreen_mid only looks.
@@ -471,10 +684,12 @@ if [[ -z $GONE ]]; then
       [[ -n $SW_WANT ]] && switch_applied "$n"
       (( n == 1 )) && want vm-size && onscreen_ok && row_vm_size
       want pointer && onscreen_ok && row_pointer "$n"
+      (( n == 1 )) && want usb && onscreen_ok && row_usb
       onscreen_ok || break
       if (( n == 1 )); then
         gssh systemctl poweroff >/dev/null 2>&1
         stopped_left leftovers-stop "shut down from inside"
+        usb_restore   # the second start as the VM was
         # The window back as a person gets it: the app quits with its VM (3.1.24), so it is opened
         # again; one that stays is brought to the front (as from the Dock).
         waitfor 10 no_launcher >/dev/null
@@ -493,6 +708,8 @@ else
   log "on-screen rows not run: $GONE"
   want update-vm && update_vm_headless
   want leftovers && headless_leftovers
+  # The question and the Space need the screen: those parts are owed (BLOCKED) whatever the list did.
+  want usb && { usb_hidden; res usb BLOCKED "on screen not run ($GONE): the question, keys and the VM's Space are owed"; }
 fi
 # Rows that did not get to run on screen.
 [[ -n $GONE && $GONE != --headless && -n ${LP:-} ]] && res onscreen BLOCKED "stopped part way: $GONE"

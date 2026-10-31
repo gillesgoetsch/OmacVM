@@ -487,6 +487,9 @@ jobs:
       - name: App menu Restart the Desktop after Later (QEMU's side)
         run: app/runtime/Tests/display/test-restart-desktop.sh
 
+      - name: App menu USB Devices while the USB switch is on (QEMU's side)
+        run: app/runtime/Tests/display/test-usb-menu.sh
+
       - name: The VM takes the pointer without a click; the Mac's cursor hides once the guest draws its own
         run: app/runtime/Tests/display/test-pointer-start.sh
 

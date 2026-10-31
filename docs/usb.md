@@ -29,7 +29,9 @@ While the VM runs, plug in a device. OmacVM asks:
 
 ## The list
 
-**Devices…** next to the switch opens it.
+**Devices…** next to the switch opens it. While the VM runs, **USB
+Devices…** in the VM's app menu (the menu named after the VM, next to the
+Apple menu) opens it over the VM, also in full screen.
 
 - **Remembered**: each device you checked "Always" for, with what happens
   when it's plugged in: **Ask Each Time**, **Connect to Omarchy** or **Keep
@@ -45,8 +47,13 @@ without a serial number has one entry for all of them.
 
 ## While the VM runs
 
-- A device you connect belongs to the VM until you unplug it or the VM stops.
-  Then the Mac has it again. A restart inside Linux keeps it connected.
+- **USB Devices…** in the VM's app menu opens the list. **Connect** gives a
+  device you kept on the Mac to the VM without plugging it in again;
+  **Disconnect** gives a connected one back to the Mac. **Done** (or Return)
+  closes the list and the VM has the keyboard again.
+- A device you connect belongs to the VM until you unplug it, disconnect it
+  in the list, or the VM stops. Then the Mac has it again. A restart inside
+  Linux keeps it connected.
 - If Linux resets the device (firmware tools and DFU do), macOS sees it go and
   come back. OmacVM waits 4 seconds before it counts it as unplugged, so the
   VM keeps it.
@@ -181,16 +188,33 @@ Until then, other ways work for some of these:
     sent, also with QEMU stopped at that moment) was added by QEMU in 6 of 6
     tries; 3.2.0's code said the connect failed each time while the VM had
     it. Now the app says connected, as "info usb" does.
-- Not tested yet: a real free device end to end, and the question over a
-  full-screen VM on a Mac (none of the test Macs has a free device plugged
-  in). USB devices stay experimental until both are done.
+- 2026-10-31, the app menu's **USB Devices…** (`omacvm-cocoa-usb-menu.patch`),
+  on a Mac mini M4 (macOS 27.0) and a MacBook Pro M1 Max (macOS 27.0.1),
+  both with their screens locked:
+  - `usb-tests`: all 112 checks pass on both.
+  - `app/runtime/Tests/display/test-usb-menu.sh --qemu`: a hidden QEMU of the
+    runtime, its menu items pressed through Accessibility. The 3.2.16 runtime
+    has no item. The new one has it under Features…; each press posts the
+    app's name once and nothing under Features…'s; without the switch there
+    is no item. Same on both Macs.
+  - A hidden test VM with the made-up test device (`OMACVM_TEST_USB_FAKE=1`,
+    `src/tests/e2e/onscreen.sh` row `usb`): QEMU's item reaches the app,
+    which builds its list (a floating window 520 pt wide). macOS keeps it off
+    screen while the screen is locked (only the login window can be in
+    front then), so the list's buttons were not used.
+- Not tested yet: a real free device end to end, and the question and the
+  list over a full-screen VM on a Mac's screen (none of the test Macs has a
+  free device plugged in; the on-screen row `usb` needs an unlocked Mac
+  nobody uses). USB devices stay experimental until those are done.
 
 ## Known limits
 
-- The question is the app's own alert, floating over the VM's window (also
-  in full screen). While the VM runs, the list opens only from the window
-  before the start; a "USB Devices…" item in the VM's menu comes with a later
-  runtime.
+- The question and the list are the app's own windows, floating over the
+  VM's window. Over a full-screen VM neither has been checked on a Mac's
+  screen yet (see How it was tested).
+- A Mac that goes to sleep with a device connected to the VM is untested: if
+  the device comes back more than 4 seconds after macOS sees it go, the VM
+  loses it and OmacVM asks again.
 - A device that is connected stays connected when you change its choice in
   the list: the choice is for the next plug-in.
 - A device that gets another product id when it resets (DFU mode) is a new

@@ -172,6 +172,7 @@ saw any of them.
 | vm-size | the VM's window to full screen and back, twice | the same size after each |
 | pointer | moves into the VM; a background program shows the cursor (as OmacVM Gestures did up to 3.1.24); Finder and back; the same in full screen; Graphics without QEMU's lock on, then off (switched in the window) | the Mac shows no cursor over the VM: `CGCursorIsVisible` false or an empty image; a picture of the spot when it does |
 | leftovers | shuts the VM down from inside, closes its window, quits the app | no QEMU of the VM, nothing from the app (but its helpers) or on the VM's folder |
+| usb | the VM's USB switch on for the first start, a made-up device plugged in (a test build's `OMACVM_TEST_USB_FAKE=1`); in the window, then in full screen (FullPanel when the VM's notch setting says so): Return and Escape in the question's first half second, Return after it; again, Escape; QEMU's "USB Devices…" (Accessibility's press on QEMU's own menu item), Connect and Disconnect in the list, Return | the question on screen, floating, with the VM's window, on the same Space, the app in front; the early keys reach neither it nor the VM (the VM's keyboards counted); Return connects (the VM lists "QEMU USB Tablet"), Escape keeps it on the Mac; the list within 1.5 s on the VM's Space, in front, with the device; Connect and Disconnect reach the VM; Return closes it and the VM is in front again; tccd's "Notifying" 0, no UserNotificationCenter window. Headless, on a locked Mac or one nobody uses: QEMU's item by Accessibility's press, and the app builds its list (a floating window 520 pt wide); on a locked Mac it is not shown (macOS shows a panel only for the app in front, and loginwindow is), else it is read and used by Accessibility's press; the on-screen part BLOCKED |
 
 Real events where they work: the pointer, the switches and the sidebar get
 HID events; the window's header buttons (Start, Update VM) get
@@ -186,8 +187,8 @@ own (its last event, also a run's before, in `~/Library/Caches/omacvm-e2e-last-i
 between two rows: the app's windows hidden, a wait (above); someone inside a
 row: that row BLOCKED. Someone who stays, CI runners still on jobs (with
 `--pause-ci`) or `--headless`: the rows on screen are BLOCKED and
-update-vm (update-vm.sh, as the window runs it) and leftovers (a start
-without a window) run headless. `src/tests/e2e-onscreen.sh` tests the checks
+update-vm (update-vm.sh, as the window runs it), leftovers (a start
+without a window) and usb's list (usb-list) run headless. `src/tests/e2e-onscreen.sh` tests the checks
 offline (CI), `src/tests/e2e-person.sh` the waits and the exit codes.
 
 ```bash
