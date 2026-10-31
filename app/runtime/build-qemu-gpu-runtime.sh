@@ -1130,11 +1130,6 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover.patch"
 "$native_dir/Tests/display/test-pointer-hover.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the pointer's place while another app is in front is not wired as tested (test-pointer-hover.sh)"
-# OmacVM: no App Nap while the VM runs: with its window out of sight (screen
-# locked, another Space) macOS slowed the whole VM to a few percent.
-patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
-grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
-  die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
 # OmacVM: a console's GL texture made when it is first drawn, not at every
 # switch: none while the guest shows a GL scanout (virgl) or for the
 # placeholder behind the boot logo, so no upload under the BQL at a display
@@ -1157,6 +1152,11 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volat
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volatile.patch"
 "$native_dir/Tests/display/test-present-volatile.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the spare present surfaces are not wired as tested (test-present-volatile.sh)"
+# OmacVM: no App Nap while the VM runs: with its window out of sight (screen
+# locked, another Space) macOS slowed the whole VM to a few percent.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
+grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
