@@ -9,8 +9,9 @@ in more words.
   Mac (`src/tests/e2e/present-locked.sh`): the test app's window on a virtual display made for the
   run, guests at 5120x2880 and 6016x3384, a guest pointer at the top right, where 3.2.14 squeezed
   the tiles (#637). A hidden test start presents only its first frames, so 3.2.15's gate row for
-  #637 passed with 0 checks; such rows no longer count. On the locked M1 Max this path found 88 of
-  176 checks differing with 3.2.14 and 0 of 132 with 3.2.15. The display tool
+  #637 passed with 0 checks; such rows no longer count. On the locked M1 Max it found 98 of 196
+  checks differing with 3.2.14 at 5120x2880 and 197 of 198 at 6016x3384, and none with 3.2.15 (0 of
+  198, 0 of 195). The display tool
   (`app/scripts/dev/virtual-display.m --while-locked`) makes the display only while the Mac is
   locked and takes it away when the Mac unlocks, after ending the test app.
 

@@ -167,7 +167,11 @@ made for the run (60 Hz, a new serial each time), guests at 5120x2880 and
 6016x3384, check mode, a guest pointer at the top right. Under the lock
 macOS composites none of it (0 of 900 drawables presented on the locked
 M1 Max), but the window gets its display's frame clock and QEMU runs the
-real present. Locked M1 Max (macOS 27.0.1), the same path by hand: 3.2.15
-0 of 132 checks differed, 2652 frames a minute in tiles; 3.2.14 88 of 176.
+real present. Locked M1 Max (macOS 27.0.1), present-locked.sh, a guest
+pointer at the top right for 120 s: 3.2.14 98 of 196 checks differed at
+5120x2880 and 197 of 198 at 6016x3384; 3.2.15 0 of 198 and 0 of 195, about
+2600 frames a minute in tiles and 440 whole. A private unlock notice in the
+middle of a row ended the test app's 2 processes before the display went,
+with none of its windows on another display in 496 samples.
 Not covered: WindowServer's composite, 120 Hz pacing, the hold for a
 window nobody sees (present-unseen), the look on a real panel.
