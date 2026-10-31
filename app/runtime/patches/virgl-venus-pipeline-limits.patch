@@ -9,9 +9,11 @@ viewport and scissor counts, color blend attachment counts (equal to the
 subpass's or the rendering info's colors where the attachments are read),
 color write enables, attachment locations and input indices are within the
 device's limits; the subpass is one the pass has; rendering info colors and
-view mask within the limits; sample counts and sample locations ones the
-device has; topology, cull mode, compare and stencil ops, blend factors and
-ops, logic op, blend overlap and robustness behaviors are known values
+view mask within the limits; sample counts ones the device has, and sample
+locations too where Mesa copies them (sampleLocationsEnable on or dynamic,
+the locations not dynamic; Vulkan reads none while it is off); topology,
+cull mode, compare and stencil ops, blend factors and ops, logic op, blend
+overlap and robustness behaviors are known values
 (fields a dynamic state replaces are left alone); creation feedback has one
 entry per stage or none. A refused create ends the app's context (the guest
 creates pipelines without waiting).
@@ -29,7 +31,7 @@ Upstream: OmacVM policy (spec VUIDs), draft only.
 Tests: Tests/virgl/test-venus-commands.c (the p- cases).
 
 diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
-index 00d30cb..bb1f333 100644
+index 00d30cb..25008cb 100644
 --- a/src/venus/vkr_pipeline.c
 +++ b/src/venus/vkr_pipeline.c
 @@ -8,6 +8,7 @@
@@ -40,7 +42,7 @@ index 00d30cb..bb1f333 100644
  
  static void
  vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
-@@ -195,6 +196,311 @@ vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_p
+@@ -195,6 +196,316 @@ vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_p
     }
  }
  
@@ -296,10 +298,15 @@ index 00d30cb..bb1f333 100644
 +   if (ms) {
 +      const VkPipelineSampleLocationsStateCreateInfoEXT *sl = vkr_find_struct(
 +         ms->pNext, VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT);
++      /* the locations Mesa copies: on, or switched on at draw time, and not dynamic
++       * (Vulkan ignores them while sampleLocationsEnable is off) */
++      const bool locations_read =
++         sl && !vkr_dynamic(dyn, VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT) &&
++         (sl->sampleLocationsEnable ||
++          vkr_dynamic(dyn, VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT));
 +      if ((!vkr_dynamic(dyn, VK_DYNAMIC_STATE_RASTERIZATION_SAMPLES_EXT) &&
 +           !vkr_sample_count_ok(lim, ms->rasterizationSamples)) ||
-+          (sl && !vkr_dynamic(dyn, VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT) &&
-+           !vkr_sample_locations_ok(l, &sl->sampleLocationsInfo))) {
++          (locations_read && !vkr_sample_locations_ok(l, &sl->sampleLocationsInfo))) {
 +         snprintf(why, why_size, "%u samples, or sample locations", ms->rasterizationSamples);
 +         return false;
 +      }
@@ -352,7 +359,7 @@ index 00d30cb..bb1f333 100644
  static void
  vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
                                         struct vn_command_vkCreateGraphicsPipelines *args)
-@@ -204,6 +510,16 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+@@ -204,6 +515,16 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct object_array arr;
  
@@ -369,7 +376,7 @@ index 00d30cb..bb1f333 100644
     if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
        return;
  
-@@ -220,6 +536,26 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+@@ -220,6 +541,26 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct object_array arr;
  
