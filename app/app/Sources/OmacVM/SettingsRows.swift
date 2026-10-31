@@ -93,6 +93,7 @@ struct ResourcesRow: View {
             }
             if let w = limits.warning(memoryGB: memoryGB, graphicsPeakMB: graphics?.peakMB) {
                 Text(w).font(.subheadline).foregroundStyle(Look.orange).fixedSize(horizontal: false, vertical: true)
+                    .layoutProbe("note-memory")
             }
             // A VM from a bigger Mac: what it starts with here (main.swift startVM).
             if let n = state.config.startSizeNote {

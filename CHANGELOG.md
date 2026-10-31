@@ -3,6 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.17 (unreleased)
+
+- **The VM window's memory warning and the Resources (i) are drawn and checked at every CI run
+  (the texts of #633).** `OmacVM --render-vm-window` now draws the VM 2 GB above the Mac's Best
+  tier with a made-up last run (10 GB on the 16 GB Mac mini, Best 8 GB), light and dark, the
+  Resources (i)'s text as its popover shows it (444 pt high, 692 pt fit in the window) and the VM at
+  Best. It fails when the orange warning is missing, leaves its card or the window, or shows at
+  Best. Nothing changes in the app.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left

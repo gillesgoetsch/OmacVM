@@ -49,6 +49,15 @@ expect(mini.warning(memoryGB: 8, graphicsPeakMB: 4619) == nil, "16 GB Mac, 8 GB 
 expect(air.warning(memoryGB: 6, graphicsPeakMB: 800)?.contains("(peak 800 MB last run)") == true
        && air.warning(memoryGB: 6)?.hasSuffix("4 GB is this Mac's Best tier.") == true, "8 GB Mac: its own Best tier")
 expect(m4.warning(memoryGB: 97, graphicsPeakMB: 0)?.contains("(peak") == false, "a peak of 0 (nothing drawn yet): not said")
+// The window pictures draw the warning 2 GB above this Mac's Best tier (RenderVMWindow: window-26-memory-above-best).
+let m1Max = ResourceLimits(macCores: 10, macMemoryGB: 32)
+expect(air.aboveBestGB == 6 && mini.aboveBestGB == 10 && m1Max.aboveBestGB == 26 && m4.aboveBestGB == 98,
+       "the pictures' memory above Best: 8 GB Mac 6, 16 GB 10, 32 GB 26, 128 GB 98")
+for l in [air, mini, m1Max, m4] {
+    expect(l.aboveBestGB.map { l.memoryGB.contains($0) && l.warning(memoryGB: $0) != nil } == true,
+           "\(l.macMemoryGB) GB Mac: \(l.aboveBestGB ?? 0) GB is allowed and warns")
+}
+expect(ResourceLimits(macCores: 8, macMemoryGB: 4).aboveBestGB == nil, "steppers that end at Best: no value above it")
 
 // MARK: Disk
 
