@@ -1647,6 +1647,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   next start), which avoids Venus. A
   correct app that ends this way is an OmacVM bug: please report it with the
   line.
-- **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`; tests
-  `app/runtime/Tests/virgl/test-venus-commands.c`,
+- **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`,
+  `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` (shaders:
+  the line says `SPIR-V: ...`), `virgl-venus-copy-regions.patch`,
+  `virgl-venus-pipeline-formats.patch`; tests
+  `app/runtime/Tests/virgl/test-venus-commands.c`, `fuzz-venus-spirv.sh`,
   `venus-command-ledger.tsv`; ADR 0065.

@@ -607,9 +607,18 @@ Patches (all in `app/runtime/patches`, one per concern):
   table per set layout, a subpass table per render pass, levels, bind points,
   pool counts) before the driver gets them; a refusal ends the app's context.
   KosmicKrisp's multiview count is told as Metal's vertex amplification count
-  (`vkr_metal_limits.m`). `Tests/virgl/test-venus-commands.c` (222 cases, with
+  (`vkr_metal_limits.m`). `Tests/virgl/test-venus-commands.c` (272 cases, with
   the legal maxima) runs on KosmicKrisp, MoltenVK and MoltenVK with prefilled
   command buffers; `venus-command-ledger.tsv` has a verdict per `vkCmd*`.
+- `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch`,
+  `virgl-venus-copy-regions.patch`, `virgl-venus-pipeline-formats.patch`
+  (3.2.17): commands only where Vulkan allows them (per command buffer: the
+  open pass, the bound pipelines, recording); guest SPIR-V through a
+  structural scan (`vkr_spirv.c`: header, instructions, id bound, entry
+  points, workgroup sizes, the descriptor sets an entry point's call graph
+  uses), fuzzed on the CPU by `Tests/virgl/fuzz-venus-spirv.sh`; copy regions
+  inside their images and buffers (`vkr_format_extent.h`); attachment formats
+  the device renders to.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended

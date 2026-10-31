@@ -353,6 +353,18 @@ the Mac mini (ADR 0044, "Retake after a display change").
 - **Where:** the names and types are checked at
   run time by `omacvm-cocoa-fullpanel-retake.patch`.
 
+## SPIR-V 1.4+ entry point interfaces list unused descriptors (October 2026)
+
+Found with #624 (lane `venus-624`). From SPIR-V 1.4 an entry point's interface
+lists every global it uses, so it looks like the list of descriptors a shader
+needs in its pipeline layout. It is not: glslang (shaderc 2026.4, `--target-env
+vulkan1.3`) lists a declared but unused storage buffer there too
+(`fuzz-venus-spirv.c`, seed `spec16`: set 5 in the interface, used nowhere).
+Vulkan only requires the descriptors a shader statically uses to be in the
+layout. vkr's SPIR-V scan therefore takes the descriptors from the pointer
+instructions of the functions the entry point reaches through calls, not from
+the interface; a check by interface would end valid apps.
+
 ## KosmicKrisp has no index checks in release builds; Metal's amplification count is 8 on Apple7 (October 2026)
 
 Found with #624 (lane `venus-624`; probe and test through vkr's dispatch on the
