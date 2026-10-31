@@ -130,6 +130,15 @@ commit 82927e9. Changes here:
   it while the framebuffer is incomplete.
   `OMACVM_VIRGL_SHADER_FAILURES=lose` keeps upstream's context error. Checked
   by `Tests/virgl/test-separable-pervertex.c`
+- `patches/virgl-shader-separable-patch-varyings.patch`: a patch varying of a
+  separable program (tessellation control to evaluation shader) takes no layout
+  location on desktop GL (#589). Apple's GL refuses one and, without it, gives
+  patch varyings their slots in the order of their names, so the names are
+  zero-padded and two separable stages next to each other declare every one
+  from 0. Separable varying arrays are still refused (vrend puts them at 31 -
+  their first location, past the last); the VM's Mesa splits such arrays into
+  single varyings, also at a computed index. Checked by
+  `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
