@@ -13,7 +13,8 @@ attachment count (imageless: its image info count), no NULL view, a size
 within the device's limits. A begin names a framebuffer of the pass's
 attachments, enough clear values, imageless views, sample locations for its
 attachments and subpasses. Dynamic rendering: colors within the limit, layers
-within maxFramebufferLayers, resolve views where a resolve mode is set. A
+within maxFramebufferLayers, a resolve view where an attachment with a view
+sets a resolve mode (Vulkan asks for none without a view). A
 secondary inherits a subpass the pass has. Multiview: KosmicKrisp's
 maxMultiviewViewCount is told to the guest as the largest Metal vertex
 amplification count the GPU supports (read once from Metal), and view masks
@@ -282,10 +283,10 @@ index fd74243..fa2d40b 100644
  
  static void
 diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
-index 0cb3d70..e36f9d8 100644
+index 0cb3d70..4f38680 100644
 --- a/src/venus/vkr_render_pass.c
 +++ b/src/venus/vkr_render_pass.c
-@@ -6,12 +6,403 @@
+@@ -6,12 +6,405 @@
  #include "vkr_render_pass.h"
  
  #include "vkr_render_pass_gen.h"
@@ -631,12 +632,14 @@ index 0cb3d70..e36f9d8 100644
 +   return true;
 +}
 +
++/* a known resolve mode, and a resolve view where an attachment with a view resolves (Vulkan
++ * asks for none without a view; KosmicKrisp then skips the attachment's resolve) */
 +static bool
 +vkr_rendering_attachment_ok(const VkRenderingAttachmentInfo *a)
 +{
 +   return vkr_resolve_mode_ok(a->resolveMode) &&
-+          (a->resolveMode == VK_RESOLVE_MODE_NONE ||
-+           (a->imageView != VK_NULL_HANDLE && a->resolveImageView != VK_NULL_HANDLE));
++          (a->resolveMode == VK_RESOLVE_MODE_NONE || a->imageView == VK_NULL_HANDLE ||
++           a->resolveImageView != VK_NULL_HANDLE);
 +}
 +
 +bool
@@ -654,7 +657,7 @@ index 0cb3d70..e36f9d8 100644
 +      ok = vkr_rendering_attachment_ok(&info->pColorAttachments[i]);
 +   return vkr_context_check(ctx, ok, "vkCmdBeginRendering",
 +                            "%u colors (at most %u), view mask 0x%x (views %u), %u layers, or a "
-+                            "resolve without its views", info->colorAttachmentCount,
++                            "resolve without its view", info->colorAttachmentCount,
 +                            lim->maxColorAttachments, info->viewMask,
 +                            physical_dev->limits.multiview_views, info->layerCount);
 +}
@@ -690,7 +693,7 @@ index 0cb3d70..e36f9d8 100644
  }
  
  static void
-@@ -22,17 +413,36 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
+@@ -22,17 +415,36 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct vn_device_proc_table *vk = &dev->proc_table;
  
@@ -727,7 +730,7 @@ index 0cb3d70..e36f9d8 100644
        free(pass);
        return;
     }
-@@ -75,7 +485,35 @@ static void
+@@ -75,7 +487,35 @@ static void
  vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
                                   struct vn_command_vkCreateFramebuffer *args)
  {
