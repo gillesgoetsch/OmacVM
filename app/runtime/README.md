@@ -257,6 +257,24 @@ commit 82927e9. Changes here:
   times a second. `OMACVM_IDLE_REFRESH=0` keeps the display's rate. The build
   tests the rate logic, taken from the patched `ui/cocoa.m`
   (`Tests/display/test-idle-refresh.c`). Numbers: the idle-power PR
+- `patches/qemu-cocoa-gl-console-texture-lazy.patch`: a console's GL texture
+  (QEMU's copy of its surface) is made when something draws it, on QEMU's
+  thread: a 2D update, a present or the refresh tick without a GL scanout.
+  While the guest shows a GL scanout nothing draws it, and the boot logo
+  stands in for the placeholder, so most runs make none: about 127 MiB of
+  QEMU's footprint less per 5K output, and no upload under the BQL at a
+  display off or on. `OMACVM_CONSOLE_TEXTURE=eager` makes it at every switch,
+  as before. Checked by `Tests/display/test-console-texture.sh` (the
+  listeners from the patched `ui/cocoa.m` with a GL stub that counts the
+  bytes uploaded; the code before fails it)
+- `patches/omacvm-cocoa-present-volatile-logic.patch`,
+  `omacvm-cocoa-present-volatile.patch`: after 2 s out of sight the window's
+  spare present surfaces (all but the one Core Animation shows or reads) are
+  volatile and leave QEMU's footprint (4 of 5: about 225 MiB at 5K, 450 MiB in
+  half float); in sight again, or taken for a frame, they come back first, and
+  one macOS emptied is drawn whole. `OMACVM_PRESENT_VOLATILE=0` keeps them;
+  `OMACVM_TEST_PRESENT_PURGE=1` (tests) empties each one before it comes back.
+  Checked by `Tests/display/test-present-volatile.sh` (the rules and the wiring)
 - `patches/qemu-hvf-free-page-reclaim.patch` (try-omarchy): a range of guest
   memory Linux reports free (virtio-balloon free page reporting) gets fresh
   memory in its place (MAP_FIXED; Darwin's `MADV_DONTNEED` keeps what the

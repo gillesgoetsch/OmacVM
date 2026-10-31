@@ -3,6 +3,21 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.17 (unreleased)
+
+- **OmacVM.app's QEMU keeps less graphics memory of its own.** QEMU no longer
+  makes its own copy of the console's picture while the guest shows its
+  desktop, where the window never draws it: about 127 MiB less in Activity
+  Monitor per 5K display (host test, Mac mini M4), and no upload under QEMU's
+  lock at each display off and on or mode change. The copy is made when it is
+  drawn (the firmware and boot console). And 2 s after the VM window goes out
+  of sight (minimised, covered, another Space, the screen locked) its spare
+  frame buffers become purgeable: they leave the footprint and macOS may take
+  them without compressing them; 4 of 5 at 5K, about 225 MiB (about 450 MiB
+  with HDR or Extra brightness), by the host test's per-buffer costs. They come
+  back before the next frame when the window shows again; one macOS took is
+  drawn whole. Needs the app update only.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left

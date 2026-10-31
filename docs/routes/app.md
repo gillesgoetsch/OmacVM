@@ -1270,7 +1270,15 @@ apps, the GPU. A VM takes two kinds from it:
   grows and shrinks with what is on screen: Omarchy alone at 5K about
   1.2 GB, with a browser 2 to 5 GB (Chrome full screen on a 16 GB Mac mini's
   5K display: 2.1 GB, 4.5 GB at its peak), 3 GB at 8K, and for a moment more
-  while the display scale changes (the table above).
+  while the display scale changes (the table above). QEMU adds a part of its
+  own per window, outside these numbers: the frames it hands to macOS (5
+  buffers of about 62 MB at 5K, twice that with HDR or Extra brightness).
+  2 s after the window goes out of sight (minimised, covered, another Space,
+  the screen locked) all but the one shown become purgeable: they leave
+  Activity Monitor's number and macOS may take them; they come back before
+  the next frame (from 3.2.17, ADR 0067). QEMU's copy of the console's
+  picture is made only while that picture shows (the firmware and boot
+  console), not for the desktop (3.2.16 and older: about 127 MB at 5K).
 
 The app shows both: before a start, "VM memory: 8 GB; graphics memory last
 run: peak 2.6 GB, from the Mac on top" (the (i) beside General › Resources
