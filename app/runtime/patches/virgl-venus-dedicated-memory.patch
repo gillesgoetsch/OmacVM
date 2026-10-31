@@ -1,0 +1,448 @@
+virglrenderer: Venus dedicated memory goes before its image or buffer
+
+What: vkr links memory made for one image or buffer (VkMemoryDedicatedAllocateInfo)
+to that object. Only that object binds to the memory, at offset 0: another image or
+a buffer there is refused (the bind ends the app's context). When the app destroys
+the image or buffer while such memory lives, vkr drops its own object at once and
+keeps the driver's until the last of that memory is freed: memory first, then the
+object, also when the context ends. The links sit under a device mutex that is never
+held across a driver call.
+Why: MoltenVK keeps the dedicated image or buffer in the memory and writes to it
+when the memory is freed (~MVKDeviceMemory). An image destroyed before it was bound
+(legal) left a dangling pointer there, written after its free (seen under
+libgmalloc). MoltenVK also took an ALIAS_BIT image on memory dedicated to another
+image without counting it, and locked the freed memory's mutex when that image was
+destroyed later. KosmicKrisp ignores dedicated allocations.
+Upstream: OmacVM policy (VUIDs vkBindImageMemory-memory-02628 and -10926,
+vkBindBufferMemory-memory-01508 and -10925; no Mac driver has
+dedicatedAllocationImageAliasing, the exception of 02629); MoltenVK issue draft, not
+posted.
+Tests: Tests/virgl/test-venus-commands.c (the x- cases, also under libgmalloc).
+
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index b97207e..4f76eb2 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -117,6 +117,13 @@ static void
+ vkr_dispatch_vkDestroyBuffer(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkDestroyBuffer *args)
+ {
++   /* OmacVM (virgl-venus-dedicated-memory.patch): as vkDestroyImage */
++   struct vkr_buffer *buffer = vkr_buffer_from_handle(args->buffer);
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   if (buffer && vkr_dedicated_target_destroyed(dev, buffer->dedicated)) {
++      vkr_device_remove_object(dispatch->data, dev, &buffer->base);
++      return;
++   }
+    vkr_buffer_destroy_and_remove(dispatch->data, args);
+ }
+ 
+@@ -165,7 +172,15 @@ vkr_buffer_bind_ok(const struct vkr_buffer *buffer,
+       snprintf(why, why_size, "a sparse buffer (flags 0x%x)", buffer->flags);
+       return false;
+    }
+-   return vkr_device_memory_bind_ok(mem, &buffer->memory, offset, why, why_size);
++   if (!vkr_device_memory_bind_ok(mem, &buffer->memory, offset, why, why_size))
++      return false;
++   /* OmacVM (virgl-venus-dedicated-memory.patch) */
++   if (!vkr_device_memory_dedicated_ok(mem, buffer->dedicated, offset)) {
++      snprintf(why, why_size, "memory dedicated to another image or buffer, or offset %" PRIu64,
++               offset);
++      return false;
++   }
++   return true;
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_buffer.h b/src/venus/vkr_buffer.h
+index 034b2bc..3559359 100644
+--- a/src/venus/vkr_buffer.h
++++ b/src/venus/vkr_buffer.h
+@@ -21,6 +21,8 @@ struct vkr_buffer {
+     * requirements, for binds */
+    VkBufferCreateFlags flags;
+    struct vkr_memory_requirements memory;
++   /* OmacVM (virgl-venus-dedicated-memory.patch): set by a memory dedicated to it */
++   struct vkr_dedicated *dedicated;
+ };
+ VKR_DEFINE_OBJECT_CAST(buffer, VK_OBJECT_TYPE_BUFFER, VkBuffer)
+ 
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 1e81a62..f0acffe 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -7,10 +7,12 @@
+ 
+ #include "venus-protocol/vn_protocol_renderer_device.h"
+ 
++#include "vkr_buffer.h"
+ #include "vkr_command_buffer.h"
+ #include "vkr_context.h"
+ #include "vkr_descriptor_set.h"
+ #include "vkr_device_memory.h"
++#include "vkr_image.h"
+ #include "vkr_instance.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_queue.h"
+@@ -341,6 +343,8 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+    mtx_init(&dev->object_mutex, mtx_plain);
+    list_inithead(&dev->objects);
+ 
++   mtx_init(&dev->dedicated_mutex, mtx_plain);
++
+    list_add(&dev->base.track_head, &physical_dev->devices);
+ 
+    vkr_context_add_object(ctx, &dev->base);
+@@ -356,6 +360,14 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+ 
+    assert(vkr_device_should_track_object(obj));
+ 
++   /* OmacVM (virgl-venus-dedicated-memory.patch): as the guest's destroys, so an app that
++    * ends between allocating dedicated memory and binding it frees in the safe order */
++   bool target_waits = false;
++   if (obj->type == VK_OBJECT_TYPE_IMAGE)
++      target_waits = vkr_dedicated_target_destroyed(dev, ((struct vkr_image *)obj)->dedicated);
++   else if (obj->type == VK_OBJECT_TYPE_BUFFER)
++      target_waits = vkr_dedicated_target_destroyed(dev, ((struct vkr_buffer *)obj)->dedicated);
++
+    if (ctx->on_worker_thread) {
+       switch (obj->type) {
+       case VK_OBJECT_TYPE_SEMAPHORE:
+@@ -368,10 +380,12 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+          vk->FreeMemory(device, obj->handle.device_memory, NULL);
+          break;
+       case VK_OBJECT_TYPE_BUFFER:
+-         vk->DestroyBuffer(device, obj->handle.buffer, NULL);
++         if (!target_waits)
++            vk->DestroyBuffer(device, obj->handle.buffer, NULL);
+          break;
+       case VK_OBJECT_TYPE_IMAGE:
+-         vk->DestroyImage(device, obj->handle.image, NULL);
++         if (!target_waits)
++            vk->DestroyImage(device, obj->handle.image, NULL);
+          break;
+       case VK_OBJECT_TYPE_EVENT:
+          vk->DestroyEvent(device, obj->handle.event, NULL);
+@@ -437,9 +451,13 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+ 
+    /* always cleanup vkr allocs */
+    switch (obj->type) {
+-   case VK_OBJECT_TYPE_DEVICE_MEMORY:
+-      vkr_device_memory_release((struct vkr_device_memory *)obj);
++   case VK_OBJECT_TYPE_DEVICE_MEMORY: {
++      struct vkr_device_memory *mem = (struct vkr_device_memory *)obj;
++      vkr_device_memory_release(mem);
++      vkr_dedicated_memory_freed(dev, mem->dedicated, ctx->on_worker_thread);
++      mem->dedicated = NULL;
+       break;
++   }
+    case VK_OBJECT_TYPE_DESCRIPTOR_POOL:
+       /* Destroying VkDescriptorPool frees all VkDescriptorSet allocated inside. */
+       vkr_descriptor_pool_release(ctx, (struct vkr_descriptor_pool *)obj);
+@@ -487,6 +505,7 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+    }
+ 
+    mtx_destroy(&dev->free_sync_mutex);
++   mtx_destroy(&dev->dedicated_mutex);
+ 
+    if (destroy_vk || ctx->on_worker_thread)
+       vk->DestroyDevice(device, NULL);
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index 7eefa25..b5298db 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -41,6 +41,9 @@ struct vkr_device {
+ 
+    mtx_t object_mutex;
+    struct list_head objects;
++
++   /* OmacVM (virgl-venus-dedicated-memory.patch): the links of dedicated memory */
++   mtx_t dedicated_mutex;
+ };
+ VKR_DEFINE_OBJECT_CAST(device, VK_OBJECT_TYPE_DEVICE, VkDevice)
+ 
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 3d42ced..c68665f 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -10,6 +10,7 @@
+ #include "vkr_buffer.h"
+ #include "vkr_device.h"
+ #include "vkr_device_memory_gen.h"
++#include "vkr_image.h"
+ #include "vkr_physical_device.h"
+ 
+ #ifdef __APPLE__
+@@ -427,6 +428,90 @@ vkr_gbm_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *phys
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
++bool
++vkr_device_memory_dedicated_ok(const struct vkr_device_memory *mem,
++                               const struct vkr_dedicated *target,
++                               VkDeviceSize offset)
++{
++   mtx_t *mutex = &mem->device->dedicated_mutex;
++   mtx_lock(mutex);
++   const bool ok = !mem->dedicated || (mem->dedicated == target && !offset);
++   mtx_unlock(mutex);
++   return ok;
++}
++
++bool
++vkr_dedicated_target_destroyed(struct vkr_device *dev, struct vkr_dedicated *d)
++{
++   if (!d)
++      return false;
++   mtx_lock(&dev->dedicated_mutex);
++   const bool wait = d->memories > 0;
++   d->destroyed = true;
++   mtx_unlock(&dev->dedicated_mutex);
++   if (!wait)
++      free(d);
++   return wait;
++}
++
++void
++vkr_dedicated_memory_freed(struct vkr_device *dev, struct vkr_dedicated *d, bool destroy_vk)
++{
++   if (!d)
++      return;
++   mtx_lock(&dev->dedicated_mutex);
++   const bool last = !--d->memories;
++   const bool gone = last && d->destroyed;
++   mtx_unlock(&dev->dedicated_mutex);
++   if (!gone)
++      return;
++   struct vn_device_proc_table *vk = &dev->proc_table;
++   if (destroy_vk && d->type == VK_OBJECT_TYPE_IMAGE)
++      vk->DestroyImage(dev->base.handle.device, d->handle.image, NULL);
++   else if (destroy_vk)
++      vk->DestroyBuffer(dev->base.handle.device, d->handle.buffer, NULL);
++   free(d);
++}
++
++/* links new memory to the image or buffer it is dedicated to (read from the guest's chain
++ * before the handles were replaced); out of host memory, the memory goes again and the
++ * guest gets the error */
++static void
++vkr_device_memory_link_dedicated(struct vkr_context *ctx,
++                                 struct vkr_device *dev,
++                                 struct vkr_device_memory *mem,
++                                 struct vkr_image *image,
++                                 struct vkr_buffer *buffer,
++                                 VkResult *ret)
++{
++   struct vkr_dedicated **slot = image ? &image->dedicated : &buffer->dedicated;
++   struct vkr_dedicated *fresh = calloc(1, sizeof(*fresh));
++   mtx_lock(&dev->dedicated_mutex);
++   struct vkr_dedicated *d = *slot;
++   if (!d && fresh) {
++      d = fresh;
++      fresh = NULL;
++      d->type = image ? VK_OBJECT_TYPE_IMAGE : VK_OBJECT_TYPE_BUFFER;
++      if (image)
++         d->handle.image = image->base.handle.image;
++      else
++         d->handle.buffer = buffer->base.handle.buffer;
++      *slot = d;
++   }
++   if (d) {
++      d->memories++;
++      mem->dedicated = d;
++   }
++   mtx_unlock(&dev->dedicated_mutex);
++   free(fresh);
++   if (!d) {
++      vkr_device_memory_release(mem);
++      dev->proc_table.FreeMemory(dev->base.handle.device, mem->base.handle.device_memory, NULL);
++      vkr_device_remove_object(ctx, dev, &mem->base);
++      *ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++}
++
+ static void
+ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkAllocateMemory *args)
+@@ -443,6 +528,21 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
++   /* OmacVM (virgl-venus-dedicated-memory.patch): the image or buffer the memory is
++    * dedicated to, read before the handles are replaced; never both (VUID-
++    * VkMemoryDedicatedAllocateInfo-image-01432) */
++   const VkMemoryDedicatedAllocateInfo *dedicated_info =
++      vkr_find_struct(alloc_info->pNext, VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++   struct vkr_image *dedicated_image =
++      dedicated_info ? vkr_image_from_handle(dedicated_info->image) : NULL;
++   struct vkr_buffer *dedicated_buffer =
++      dedicated_info ? vkr_buffer_from_handle(dedicated_info->buffer) : NULL;
++   if (dedicated_image && dedicated_buffer) {
++      vkr_context_refuse(ctx, true, "vkAllocateMemory", "dedicated to an image and a buffer");
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
++
+    /* translate VkImportMemoryResourceInfoMESA into VkImportMemoryFdInfoKHR in place */
+    VkImportMemoryFdInfoKHR local_import_info = { .fd = -1 };
+    VkImportMemoryMetalHandleInfoEXT local_metal_import_info = { 0 };
+@@ -507,8 +607,14 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+        vkr_device_memory_is_window_buffer(alloc_info) &&
+        vkr_device_memory_alloc_iosurface(
+           ctx, args, dev, charge,
+-          physical_dev->memory_properties.memoryTypes[mem_type_index].propertyFlags))
++          physical_dev->memory_properties.memoryTypes[mem_type_index].propertyFlags)) {
++      struct vkr_device_memory *window = vkr_context_get_object(
++         ctx, vkr_cs_handle_load_id((const void **)args->pMemory, VK_OBJECT_TYPE_DEVICE_MEMORY));
++      if (window && (dedicated_image || dedicated_buffer))
++         vkr_device_memory_link_dedicated(ctx, dev, window, dedicated_image, dedicated_buffer,
++                                          &args->ret);
+       return;
++   }
+ #endif
+ 
+    VkExportMemoryAllocateInfo *export_info =
+@@ -661,6 +767,9 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    mem->allocation_size = alloc_info->allocationSize;
+    mem->memory_type_index = mem_type_index;
+    mem->charge = charge;
++   if (dedicated_image || dedicated_buffer)
++      vkr_device_memory_link_dedicated(ctx, dev, mem, dedicated_image, dedicated_buffer,
++                                       &args->ret);
+ }
+ 
+ static void
+@@ -671,6 +780,9 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
+    struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
+    if (!mem)
+       return;
++   /* OmacVM (virgl-venus-dedicated-memory.patch) */
++   struct vkr_device *mem_dev = mem->device;
++   struct vkr_dedicated *dedicated = mem->dedicated;
+ 
+ #ifdef __APPLE__
+    /* OmacVM: the IOSurface's pages outlive the Vulkan memory made of them until the
+@@ -681,6 +793,7 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
+ #endif
+    vkr_device_memory_release(mem);
+    vkr_device_memory_destroy_and_remove(dispatch->data, args);
++   vkr_dedicated_memory_freed(mem_dev, dedicated, true);
+ #ifdef __APPLE__
+    if (iosurface)
+       vkr_device_release_after_queues(dev, iosurface);
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+index 6268501..c951cb9 100644
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -10,6 +10,25 @@
+ 
+ struct gbm_bo;
+ 
++/* OmacVM (virgl-venus-dedicated-memory.patch, ADR 0065): the image or buffer device memory
++ * was made for (VkMemoryDedicatedAllocateInfo), shared by that object and the memories
++ * dedicated to it, under its device's dedicated_mutex (a leaf lock, never held across a
++ * driver call). MoltenVK keeps the target in the memory and writes to it when the memory
++ * is freed (~MVKDeviceMemory): a target destroyed before it was bound left the memory a
++ * dangling pointer. So the driver's destroy of a target waits for the last memory
++ * dedicated to it (memory first, then the target), and only the target binds to such
++ * memory, at offset 0. */
++struct vkr_dedicated {
++   VkObjectType type; /* VK_OBJECT_TYPE_IMAGE or VK_OBJECT_TYPE_BUFFER */
++   union {
++      VkImage image;
++      VkBuffer buffer;
++   } handle; /* the driver's */
++   uint32_t memories;
++   /* the guest destroyed the target: the driver's destroy waits for the last memory */
++   bool destroyed;
++};
++
+ struct vkr_device_memory {
+    struct vkr_object base;
+ 
+@@ -37,6 +56,9 @@ struct vkr_device_memory {
+    /* OmacVM: the memory is this IOSurface (IOSurfaceRef, retained), imported as host
+     * memory: a Vulkan window's buffer that macOS OpenGL can bind (ADR 0047) */
+    void *iosurface;
++
++   /* OmacVM (virgl-venus-dedicated-memory.patch): the target it was made for, or NULL */
++   struct vkr_dedicated *dedicated;
+ };
+ VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemory)
+ 
+@@ -61,6 +83,26 @@ vkr_device_memory_bind_ok(const struct vkr_device_memory *mem,
+                           char *why,
+                           size_t why_size);
+ 
++/* OmacVM (virgl-venus-dedicated-memory.patch): whether a bind of the image or buffer
++ * whose record is `target` (NULL: none yet) may use this memory at offset: memory dedicated
++ * to nothing, or to that target at offset 0 (VUIDs vkBindImageMemory-memory-02628 and
++ * -10926, vkBindBufferMemory-memory-01508 and -10925; no Mac driver has
++ * dedicatedAllocationImageAliasing, 02629's exception) */
++bool
++vkr_device_memory_dedicated_ok(const struct vkr_device_memory *mem,
++                               const struct vkr_dedicated *target,
++                               VkDeviceSize offset);
++
++/* the guest destroys a dedicated image or buffer (its record d, may be NULL): true when the
++ * driver's destroy must wait for a memory dedicated to it, else the record is freed */
++bool
++vkr_dedicated_target_destroyed(struct vkr_device *dev, struct vkr_dedicated *d);
++
++/* a memory dedicated to d is freed (the driver's free is done): the last one destroys a
++ * target the guest destroyed before (when destroy_vk) and frees the record */
++void
++vkr_dedicated_memory_freed(struct vkr_device *dev, struct vkr_dedicated *d, bool destroy_vk);
++
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem);
+ 
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 8fbb97b..b0f2f72 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -302,7 +302,15 @@ vkr_image_bind_ok(const struct vkr_image *image,
+                plane_info ? plane_info->planeAspect : 0, image->plane_count);
+       return false;
+    }
+-   return vkr_device_memory_bind_ok(mem, &image->memory[plane], offset, why, why_size);
++   if (!vkr_device_memory_bind_ok(mem, &image->memory[plane], offset, why, why_size))
++      return false;
++   /* OmacVM (virgl-venus-dedicated-memory.patch) */
++   if (!vkr_device_memory_dedicated_ok(mem, image->dedicated, offset)) {
++      snprintf(why, why_size, "memory dedicated to another image or buffer, or offset %" PRIu64,
++               offset);
++      return false;
++   }
++   return true;
+ }
+ 
+ /* OmacVM (virgl-venus-image-limits.patch): a create info a vkGetDeviceImage* query
+@@ -385,6 +393,14 @@ static void
+ vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkDestroyImage *args)
+ {
++   /* OmacVM (virgl-venus-dedicated-memory.patch): with memory dedicated to it alive, the
++    * driver's destroy waits for that memory's free */
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   if (image && vkr_dedicated_target_destroyed(dev, image->dedicated)) {
++      vkr_device_remove_object(dispatch->data, dev, &image->base);
++      return;
++   }
+    vkr_image_destroy_and_remove(dispatch->data, args);
+ }
+ 
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+index 9d19389..6aeece9 100644
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -28,6 +28,8 @@ struct vkr_image {
+    /* memory planes bound one by one (DISJOINT), else 1 */
+    uint32_t plane_count;
+    struct vkr_memory_requirements memory[3];
++   /* OmacVM (virgl-venus-dedicated-memory.patch): set by a memory dedicated to it */
++   struct vkr_dedicated *dedicated;
+ };
+ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+ 
