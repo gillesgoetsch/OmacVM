@@ -226,6 +226,26 @@ Then, in the key path (also for keys from the full-grab tap):
   deactivate and activate (#357). Keys follow the guest's focus at once.
   Modifier keys still reach the input method in those 0.2 s, as while a
   field has the focus: a Shift tap in that moment can switch its mode.
+- Shift also for macOS (#357, found by @Vocllum in #655;
+  `omacvm-cocoa-ime-shift*.patch`, `ui/omacvm-ime-shift.h`). QEMU's
+  full-grab tap deletes every key it gives the VM from macOS's event
+  stream, so an input method that switches its mode on a lone Shift from a
+  monitor on that stream (WeChat Input, from a reading of its binary)
+  never saw Shift. While mac-ime gives keys to an input method (the
+  conditions above, or the 0.2 s), a Shift change the VM and the input
+  method had in the tap also goes on to macOS: the left or right Shift
+  alone, never with Command, Control, Option or fn down, and a release
+  when its press went on. Its copy comes back through the app's event
+  queue and handleEvent drops it (time stamp and key code), so nothing
+  gets it twice. What macOS sees while the VM has the keyboard is still
+  nothing, except these Shift presses and releases; the keys between them
+  stay deleted, so to macOS a Shift+letter chord looks like a lone Shift.
+  With mac-ime off or a plain layout nothing changes. #655's first form
+  (no modifier changes in the tap's mask) let every modifier change
+  through for every user, so chords looked like lone or double modifier
+  presses to macOS and other apps, and keys and modifiers came to QEMU on
+  two paths with no order between them. `OMACVM_IME_SHIFT=0` turns it
+  off; qemu.log says which at the start.
 - Input source switching: while the conditions above hold except the
   input-method one, macOS's "Select the previous/next input source"
   shortcuts (symbolic hot keys 60 and 61, Ctrl+Space by default) and the
@@ -303,7 +323,9 @@ permission: AppKit's input context needs none.
 - Offline: the line parser and rectangle mapping as a host test (fuzzed
   lines, wrong types, huge numbers, the 4 KiB limit), the addon's message
   handling (`src/ime/tests/`), the patch in the build
-  check.
+  check. Which Shift goes on to macOS:
+  `app/runtime/Tests/keys/test-ime-shift.sh` (a table, real CGEvents,
+  the copies, the wiring; the rules before and #655's mask fail it).
 - Real typing only on the MacBook Air (rule 61: no synthetic input on the
   Mac the user works on), test identity, test VM: Japanese (Kotoeri
   Romaji: preedit, Space conversion, clause moves, Return, Esc),
