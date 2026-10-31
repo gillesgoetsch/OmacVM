@@ -274,7 +274,8 @@ lane's architecture review; work/followups-3217/sweep-safe).
 - **Test hook** (test mode only, `OMACVM_TEST_SKIP_DISPLAYS`; the app drops
   it in a release build): `OMACVM_TEST_SWEEP_DIVERGE=canary` gives the
   trial's view new memory after its remap, `=chunk` the same to guest RAM's
-  third chunk (256 MB in) at its first remap. It lives in the sweep's block
+  third chunk (256 MB in) at its first remap (`=chunk:N`: at the remap after
+  N of them, a later pass). It lives in the sweep's block
   (`omacvm_sweep_test_*`), which the unit test builds too.
 
 ### Tests and rows (3.2.18)

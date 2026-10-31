@@ -42,7 +42,7 @@ longest, chunks left as they were, why it stopped);
 OMACVM_DCOUNT_SWEEP_CHECK=1 (tests) a line per pass. Test hook (test mode
 only, OMACVM_TEST_SKIP_DISPLAYS): OMACVM_TEST_SWEEP_DIVERGE=canary|chunk
 gives QEMU's view new memory after the trial's remap or after the first
-remap of guest RAM's third chunk.
+remap of guest RAM's third chunk (chunk:N: the remap after N of them).
 
 Why: macOS charges a page to a process's footprint once for every mapping
 that touched it, resident or compressed. A guest page counts through the
@@ -77,10 +77,10 @@ too (QEMU stops). The runtime build runs it on the patched source, CI on
 this file.
 
 diff --git a/accel/hvf/hvf-all.c b/accel/hvf/hvf-all.c
-index 8f450f29..ea65e27 100644
+index 8f450f29..ae6f3eb 100644
 --- a/accel/hvf/hvf-all.c
 +++ b/accel/hvf/hvf-all.c
-@@ -722,11 +722,1119 @@ void hvf_report_free_pages_done(void)
+@@ -722,11 +722,1121 @@ void hvf_report_free_pages_done(void)
  }
  /* omacvm-reclaim: end */
  
@@ -1161,14 +1161,16 @@ index 8f450f29..ea65e27 100644
 +                       period, check && !strcmp(check, "1"), get_clock());
 +    /*
 +     * OmacVM tests only (test mode, the app drops the variable in a release
-+     * build): new memory in QEMU's view after the trial's remap, or after the
-+     * first remap of guest RAM's third chunk (256 MB in).
++     * build): new memory in QEMU's view after the trial's remap ("canary"),
++     * or after a remap of guest RAM's third chunk, 256 MB in ("chunk": the
++     * first one; "chunk:N": the one after N, a later pass).
 +     */
 +    if (test && test_mode && *test_mode) {
 +        if (!strcmp(test, "canary")) {
 +            omacvm_sweep_test.what = OMACVM_SWEEP_TEST_CANARY;
-+        } else if (!strcmp(test, "chunk")) {
++        } else if (!strncmp(test, "chunk", 5) && (!test[5] || test[5] == ':')) {
 +            omacvm_sweep_test.what = OMACVM_SWEEP_TEST_CHUNK;
++            omacvm_sweep_test.skip = test[5] ? (unsigned)MIN(MAX(atoi(test + 6), 0), 100) : 0;
 +            omacvm_sweep_test.at = (mach_vm_address_t)(uintptr_t)omacvm_sweep.host +
 +                (omacvm_sweep.size > 3 * OMACVM_SWEEP_CHUNK ? 2 * OMACVM_SWEEP_CHUNK : 0);
 +        }
@@ -1201,7 +1203,7 @@ index 8f450f29..ea65e27 100644
      size_t page_size = qemu_real_host_page_size();
      hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
      int64_t start = get_clock();
-@@ -736,20 +1844,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+@@ -736,20 +1846,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
          return;
      }
  
@@ -1226,7 +1228,7 @@ index 8f450f29..ea65e27 100644
          int128_get64(section.size) != size ||
          section.offset_within_address_space != gpa ||
          memory_region_get_ram_ptr(mr) + section.offset_within_region != host) {
-@@ -853,6 +1957,9 @@ static int hvf_accel_init(AccelState *as, MachineState *ms)
+@@ -853,6 +1959,9 @@ static int hvf_accel_init(AccelState *as, MachineState *ms)
  
      hvf_state = s;
      memory_listener_register(&hvf_memory_listener, &address_space_memory);
