@@ -148,6 +148,12 @@ commit 82927e9. Changes here:
   has it; the Mac's has not, so such whole programs drew nothing (vrend already
   declares those arrays as blocks there). #589; checked by
   `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-caps-tess-outputs.patch`: the guest gets the tessellation
+  shaders' per-vertex output limits on every GL with tessellation; they were 0
+  without atomic counters (the Mac), so the guest's Mesa refused every whole
+  program whose tessellation shader had an output ("too many output components
+  (4 > 0)") before it reached the Mac. #589; checked by
+  `Tests/virgl/test-whole-program-shapes.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
