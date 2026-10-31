@@ -361,7 +361,8 @@ static void setup_device(unsigned needs)
       if (!lists(table[i].ext) || !table[i].feature) {
          if (table[i].need == N_NESTED)
             continue; /* the case runs without it (vkr hides the extension) */
-         printf("skip: the device has no %s\n", table[i].ext);
+         printf("skip: the device has no %s%s\n", table[i].ext,
+                !lists(table[i].ext) ? "" : table[i].need == N_NULLDESC ? " nullDescriptor" : " feature for it");
          fflush(stdout);
          _exit(SKIP);
       }
@@ -1707,7 +1708,7 @@ static int pool_case(const char *c)
 static int case_descriptor(const char *c)
 {
    unsigned needs = 0;
-   if (IS("d-null-buffer-nd") || IS("d-null-view-nd"))
+   if (IS("d-null-buffer-nd") || IS("d-null-view-nd") || IS("d-null-dynamic-nd"))
       needs |= N_NULLDESC;
    if (!strncmp(c, "d-layout-push", 13))
       needs |= N_PUSHDESC;
@@ -1755,6 +1756,38 @@ static int case_descriptor(const char *c)
       wr.pImageInfo = &ii;
    } else if (IS("d-null-buffer") || IS("d-null-buffer-nd")) {
       bi[0] = (VkDescriptorBufferInfo){ VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
+   } else if (IS("d-null-dynamic-nd")) {
+      /* LEGAL with nullDescriptor: a NULL buffer at offset 0, VK_WHOLE_SIZE in a dynamic uniform
+       * and a dynamic storage buffer binding (VUID-VkDescriptorBufferInfo-buffer-02998/-02999
+       * ask no more for any buffer type; KosmicKrisp gives it an empty range) */
+      const VkDescriptorSetLayoutBinding b[2] = {
+         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_ALL, NULL },
+         { 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_ALL, NULL } };
+      VkDescriptorPoolSize sizes[2] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1 },
+                                        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1 } };
+      const uint64_t pid = next_id++;
+      VkDescriptorPool ph = (VkDescriptorPool)(uintptr_t)pid;
+      VkDescriptorPoolCreateInfo pinfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                           .poolSizeCount = 2, .pPoolSizes = sizes };
+      struct vn_command_vkCreateDescriptorPool cpool = { .device = DEVH, .pCreateInfo = &pinfo,
+                                                         .pDescriptorPool = &ph };
+      D->dispatch_vkCreateDescriptorPool(D, &cpool);
+      void *set = cpool.ret == VK_SUCCESS ? set_from(object(pid), set_layout_of(b, 2, 0, NULL), NULL) : NULL;
+      if (!set)
+         broken("dynamic buffer set");
+      bi[0] = (VkDescriptorBufferInfo){ VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
+      VkWriteDescriptorSet ubo = wr;
+      ubo.dstSet = (VkDescriptorSet)set;
+      ubo.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+      struct vn_command_vkUpdateDescriptorSets uu = { .device = DEVH, .descriptorWriteCount = 1,
+                                                      .pDescriptorWrites = &ubo };
+      step("vkUpdateDescriptorSets a NULL dynamic uniform buffer");
+      D->dispatch_vkUpdateDescriptorSets(D, &uu);
+      if (ended())
+         return FATAL;
+      wr.dstSet = (VkDescriptorSet)set;
+      wr.dstBinding = 1;
+      wr.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
    } else if (IS("d-range-past")) {
       bi[0].range = 1 << 20;
    } else if (IS("d-offset-past-whole")) {
@@ -2548,7 +2581,8 @@ static const struct test_case cases[] = {
    { "d-binding-oob", E_REFUSE }, { "d-binding-far", E_REFUSE }, { "d-elem-far", E_REFUSE },
    { "d-elem-next", E_REFUSE }, { "d-type-mismatch", E_REFUSE }, { "d-null-sampler", E_REFUSE },
    { "d-null-view", E_REFUSE }, { "d-null-view-nd", E_WORKS }, { "d-null-buffer", E_REFUSE },
-   { "d-null-buffer-nd", E_WORKS }, { "d-range-past", E_REFUSE }, { "d-offset-past-whole", E_REFUSE },
+   { "d-null-buffer-nd", E_WORKS }, { "d-null-dynamic-nd", E_WORKS }, { "d-range-past", E_REFUSE },
+   { "d-offset-past-whole", E_REFUSE },
    { "d-dyn-elem-far", E_REFUSE }, { "d-inline-far", E_REFUSE }, { "d-inline-size", E_REFUSE },
    { "d-copy-far", E_REFUSE },
    /* command recording */
