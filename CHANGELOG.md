@@ -5,58 +5,63 @@ in more words.
 
 ## 3.2.17 (unreleased)
 
-- **The VM window's memory warning and the Resources (i) are drawn and checked at every CI run
-  (the texts of #633).** `OmacVM --render-vm-window` now draws the VM 2 GB above the Mac's Best
-  tier with a made-up last run (10 GB on the 16 GB Mac mini, Best 8 GB), light and dark, the
-  Resources (i)'s text as its popover shows it (444 pt high, 692 pt fit in the window) and the VM at
-  Best. It fails when the orange warning is missing, leaves its card or the window, or shows at
-  Best. Nothing changes in the app.
+In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;
+QEMU keeps less graphics memory of its own, and less again while the window is out of sight; and a
+display going off or on no longer makes and deletes a temp file while the VM waits. Needs the app
+update (from the VM's next start); nothing in the VM. UTM, Fusion and Parallels: nothing changes.
 
-- Tests: releases run QEMU's real present with "Draw only what changed" checked on a locked test
-  Mac (`src/tests/e2e/present-locked.sh`): the test app's window on a virtual display made for the
+- **Activity Monitor counts the VM's memory once (OmacVM.app, #651).** macOS counted every page of
+  the VM that QEMU itself had touched (disk reads, network, graphics) a second time, compressed or
+  not: a 12 GB VM on a MacBook Pro M1 Max showed 1.2 to 2.0 GB more than it held with nothing
+  compressed, so the words of 3.2.16 ("counts part of a compressed VM twice") were wrong. QEMU now
+  remaps its own view of the VM's memory every 5 minutes, which drops that count; no page moves and
+  the Mac gets no memory back. A 4 GB VM on a Mac mini showed 6.9 GB after 2.5 GB of disk reads and
+  8.1 GB with Chrome at 5K; with the sweep 4.5 and 6.4 GB, for the same 4.1 and 3.9 GB of guest
+  memory held. `omacvm check`'s "Activity Monitor" row and the (i) say what is left.
+  `OMACVM_DCOUNT_SWEEP=0` turns it off. Needs the app update; nothing in the VM.
+
+- **OmacVM.app's QEMU keeps less graphics memory of its own (#653).** QEMU no longer makes its own
+  copy of the console's picture while the guest shows its desktop, where the window never draws it:
+  QEMU's graphics memory at 5K was 88-181 MB lower in hidden test VMs (Mac mini M4: 910 -> 821 MB;
+  MacBook Pro M1 Max: 999 -> 818 MB), and in 60 display off/on cycles no hold of QEMU's lock reached
+  20 ms (120 before). The copy is made when it is drawn (the console before the guest's first
+  frame). And 2 s after the VM window goes out of sight (minimised, covered, another Space, the
+  screen locked) its spare frame buffers become purgeable: they leave Activity Monitor's number and
+  macOS may take them without compressing them. A 5K window on a locked M1 Max (a test switch stood
+  in for macOS's notice): 3 or 4 of its 5 buffers, 176-238 MB less (335-369 MB with Extra
+  brightness); they come back before the next frame, the first one 2-13 ms after the window shows
+  again, and one macOS took is drawn whole. Needs the app update only.
+
+- **A display that goes off or on no longer makes and deletes a file while the VM waits (#609).** In
+  an OmacVM.app VM, QEMU kept the picture memory of each display in a temporary file (macOS has no
+  memory-only file for it), and made and deleted that file while it held the lock the VM's
+  processors need, each time a display went off or on ("Pause drawing while hidden", Omarchy's idle)
+  or changed its mode. On a Mac mini short of memory, deleting one such file once held that lock for
+  2.2 s, and the VM stood still meanwhile. QEMU now keeps that memory in plain memory, so no file is
+  made or deleted with the lock held (the memory is still freed there; how long that takes on a Mac
+  that short of memory is not measured yet). In test VMs on a Mac mini and an M1 Max, 100 mode
+  changes up to 5120x2880, 60 display off/on cycles and a restart made no temp file, where 3.2.16's
+  QEMU made and deleted 916 and 1,050 of them. QEMU's memory in Activity Monitor can now include
+  these pictures, up to width x height x 4 bytes each (56 MB at 5K), once QEMU draws or reads them
+  (the boot screen). `OMACVM_SURFACE_MEMORY=file` (QEMU's environment) goes back to the files. Needs
+  the app update (from the VM's next start).
+
+- Tests: releases run QEMU's real present with "Draw only what changed" checked on a locked test Mac
+  (#650, `src/tests/e2e/present-locked.sh`): the test app's window on a virtual display made for the
   run, guests at 5120x2880 and 6016x3384, a guest pointer at the top right, where 3.2.14 squeezed
   the tiles (#637). A hidden test start presents only its first frames, so 3.2.15's gate row for
   #637 passed with 0 checks; such rows no longer count. On the locked M1 Max it found 98 of 196
   checks differing with 3.2.14 at 5120x2880 and 197 of 198 at 6016x3384, and none with 3.2.15 (0 of
-  198, 0 of 195). The display tool
-  (`app/scripts/dev/virtual-display.m --while-locked`) makes the display only while the Mac is
-  locked and takes it away when the Mac unlocks, after ending the test app.
+  198, 0 of 195). The display tool (`app/scripts/dev/virtual-display.m --while-locked`) makes the
+  display only while the Mac is locked and takes it away when the Mac unlocks, after ending the test
+  app.
 
-- **A display that goes off or on no longer makes and deletes a file while the VM waits
-  (#609).** In an OmacVM.app VM, QEMU kept the picture memory of each display in a temporary
-  file (macOS has no memory-only file for it), and made and deleted that file while it held the
-  lock the VM's processors need, each time a display went off or on ("Pause drawing while
-  hidden", Omarchy's idle) or changed its mode. On a Mac mini short of memory, deleting one
-  such file once held that lock for 2.2 s, and the VM stood still meanwhile. QEMU now keeps that
-  memory in plain memory, so no file is made or deleted with the lock held. In test VMs on a Mac
-  mini and an M1 Max, 100 mode changes up to 5120x2880, 60 display off/on cycles and a restart
-  made no temp file, where 3.2.16's QEMU made and deleted 916 and 1,050 of them. QEMU's memory in
-  Activity Monitor now includes these pictures, width x height x 4 bytes each (about 56 MB for a
-  5K display), mostly zero pages that macOS compresses to almost nothing.
-  `OMACVM_SURFACE_MEMORY=file` (QEMU's environment) goes back to the files. Needs the app update
-  (from the VM's next start).
-
-- **Activity Monitor counts the VM's memory once (OmacVM.app).** macOS counted every page of the VM
-  that QEMU itself had touched (disk reads, network, graphics) a second time, compressed or not: a
-  12 GB VM on a MacBook Pro M1 Max showed 1.2 to 2.0 GB more than it held with nothing compressed,
-  so the words of 3.2.16 ("counts part of a compressed VM twice") were wrong. QEMU now remaps its own
-  view of the VM's memory every 5 minutes, which drops that count; no page moves and the Mac gets
-  no memory back. A 4 GB VM on a Mac mini showed 6.9 GB after 2.5 GB of disk reads and 8.1 GB with
-  Chrome at 5K; with the sweep 4.5 and 6.4 GB, for the same 4.1 and 3.9 GB of guest memory held.
-  `omacvm check`'s "Activity Monitor" row and the (i) say what is left. `OMACVM_DCOUNT_SWEEP=0`
-  turns it off. Needs the app update; nothing in the VM.
-
-- **OmacVM.app's QEMU keeps less graphics memory of its own (#653).** QEMU no longer
-  makes its own copy of the console's picture while the guest shows its desktop, where the
-  window never draws it: QEMU's graphics memory at 5K was 88-181 MB lower in hidden test VMs
-  (Mac mini M4: 910 -> 821 MB; MacBook Pro M1 Max: 999 -> 818 MB), and in 60 display off/on
-  cycles no hold of QEMU's lock reached 20 ms (120 before). The copy is made when it is drawn
-  (the console before the guest's first frame). And 2 s after the VM window goes out of sight
-  (minimised, covered, another Space, the screen locked) its spare frame buffers become
-  purgeable: they leave Activity Monitor's number and macOS may take them without
-  compressing them. A 5K window on a locked M1 Max: 3 or 4 of its 5 buffers, 176-238 MB less
-  (335-369 MB with Extra brightness); they come back before the next frame, the first one 2-13
-  ms after the window shows again, and one macOS took is drawn whole. Needs the app update only.
+- Tests: the VM window's memory warning and the Resources (i) are drawn and checked at every CI run
+  (the texts of #633; #649). `OmacVM --render-vm-window` now draws the VM 2 GB above the Mac's Best
+  tier with a made-up last run (10 GB on the 16 GB Mac mini, Best 8 GB), light and dark, the
+  Resources (i)'s text as its popover shows it, checked to fit in the window, and the VM at Best. It
+  fails when the orange warning is missing, leaves its card or the window, or shows at Best. Nothing
+  changes in the app.
 
 ## 3.2.16
 
