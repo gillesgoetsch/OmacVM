@@ -1449,6 +1449,61 @@ static int clear_rule_case(struct world *w, VkFormat format, VkAttachmentLoadOp 
    return end(w->cmd);
 }
 
+/* LEGAL: a multiview pass (views 0 and 1) whose correlation mask names view 8, with
+ * vkCreateRenderPass or vkCreateRenderPass2: no rule bounds a correlation mask by the view
+ * count (only overlaps, VUID-VkRenderPassMultiviewCreateInfo-pCorrelationMasks-00841 and
+ * VUID-VkRenderPassCreateInfo2-pCorrelatedViewMasks-03056), and the drivers only copy it */
+static void *correlation_pass(bool two)
+{
+   static const uint32_t view_mask = 0x3, correlation = 0x100;
+   const uint64_t id = next_id++;
+   VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+   VkResult ret;
+   if (!two) {
+      VkAttachmentDescription att = { 0, FMT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                      VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                      VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+                                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+      VkAttachmentReference ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+      VkSubpassDescription sub = { .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                   .colorAttachmentCount = 1, .pColorAttachments = &ref };
+      VkRenderPassMultiviewCreateInfo mv = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                             .subpassCount = 1, .pViewMasks = &view_mask,
+                                             .correlationMaskCount = 1, .pCorrelationMasks = &correlation };
+      VkRenderPassCreateInfo info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .pNext = &mv,
+                                      .attachmentCount = 1, .pAttachments = &att, .subpassCount = 1,
+                                      .pSubpasses = &sub };
+      struct vn_command_vkCreateRenderPass c = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+      step("vkCreateRenderPass view mask 0x%x, correlation mask 0x%x", view_mask, correlation);
+      D->dispatch_vkCreateRenderPass(D, &c);
+      ret = c.ret;
+   } else {
+      VkAttachmentDescription2 att = { .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, .format = FMT,
+                                       .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                       .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                       .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+      VkAttachmentReference2 ref = { .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, .attachment = 0,
+                                     .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT };
+      VkSubpassDescription2 sub = { .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2,
+                                    .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .viewMask = view_mask,
+                                    .colorAttachmentCount = 1, .pColorAttachments = &ref };
+      VkRenderPassCreateInfo2 info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, .attachmentCount = 1,
+                                       .pAttachments = &att, .subpassCount = 1, .pSubpasses = &sub,
+                                       .correlatedViewMaskCount = 1, .pCorrelatedViewMasks = &correlation };
+      struct vn_command_vkCreateRenderPass2 c = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+      step("vkCreateRenderPass2 view mask 0x%x, correlated view mask 0x%x", view_mask, correlation);
+      D->dispatch_vkCreateRenderPass2(D, &c);
+      ret = c.ret;
+   }
+   last_ret = ret;
+   step("vkCreateRenderPass%s = %d", two ? "2" : "", ret);
+   return ret == VK_SUCCESS ? object(id) : NULL;
+}
+
 static int rendering_case(const char *c, struct world *w)
 {
    VkRenderingAttachmentInfo att[16];
@@ -1559,6 +1614,8 @@ static int case_render_pass(const char *c)
                                              .subpassCount = 1, .pViewMasks = masks };
       return created(two_subpass_pass(&mv, 0));
    }
+   if (IS("r-correlation-ok") || IS("r-correlation2-ok"))
+      return created(correlation_pass(IS("r-correlation2-ok")));
    if (IS("r-dep-subpass-far"))
       return created(two_subpass_pass(NULL, FAR_INDEX));
    if (IS("r-two-subpasses-ok"))
@@ -2562,6 +2619,7 @@ static const struct test_case cases[] = {
    { "r-mv-legal-9", E_CHILD }, { "r-mv-legal-12", E_CHILD }, { "r-mv-legal-16", E_CHILD },
    { "r-mv-legal-32", E_CHILD }, { "r-mv-legal-max", E_CHILD }, { "r-mv-legal-max-dyn", E_CHILD },
    { "r-mv-count-short", E_REFUSE }, { "r-dep-subpass-far", E_REFUSE }, { "r-input-aspect-far", E_REFUSE },
+   { "r-correlation-ok", E_WORKS }, { "r-correlation2-ok", E_WORKS },
    { "r-sample-loc-index-far", E_REFUSE },
    { "r-dyn-colors-over", E_REFUSE }, { "r-dyn-layers-over", E_REFUSE }, { "r-dyn-resolve-null", E_REFUSE },
    { "r-dyn-resolve-no-view", E_WORKS }, { "r-dyn-resolve-no-view-target", E_WORKS },
