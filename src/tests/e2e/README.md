@@ -279,7 +279,8 @@ src/tests/e2e/present-locked.sh --vm "OmacVM M-e2e" --size 5120x2880 --out ~/e2e
 src/tests/e2e/present-locked.sh --vm "OmacVM M-e2e" --size 6016x3384 --out ~/e2e/present-6k
 ```
 
-About 6 minutes a run. One size per run (a second run makes a new display
+About 3.5 minutes a run (203 s on the M1 Max: the start, the 120 s pointer,
+30 s more for QEMU's minute line, the stop). One size per run (a second run makes a new display
 with a new serial; never a mode switch in a loop). Results: `summary.tsv`
 (ok, FAIL, VOID, needs-user, info, warn), `result.json`, `qemu.log` (the
 run's lines), the display lists, `run.log`. Exit 0 ok, 1 FAIL, 2 usage, 3
