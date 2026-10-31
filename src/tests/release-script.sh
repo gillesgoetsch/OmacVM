@@ -134,6 +134,42 @@ else
   echo "skip the sign-app.sh stand-in (no cc)"
 fi
 
+# make-image.sh app (release.sh's image step) makes and starts the image VM
+# with this checkout's app/scripts and runtime build, or, with
+# OMACVM_PREBUILT_APP, with that app's own scripts and runtime (an app built on
+# another Mac leaves no runtime build in the checkout). Run from a copy of the
+# parts it reads, with stand-in scripts that only say which one ran: no VM, no
+# download.
+MI=$T/mi; IA=$T/mi-app/OmacVM.app; mkdir -p "$MI/src" "$MI/app/scripts" "$IA/Contents/Resources/scripts" "$IA/Contents/Resources/runtime/bin"
+cp -R "$R/src/lib" "$R/src/vm" "$R/src/prebuilt" "$R/src/VERSION" "$MI/src/"
+standin() {   # DIR WHO: create-vm.sh and vm-common.sh that write WHO and stop
+  printf '#!/bin/bash\necho "%s create $1" > "%s"\nexit 1\n' "$2" "$MI/ran" > "$1/create-vm.sh"; chmod +x "$1/create-vm.sh"
+  printf 'vm_load() { echo "%s boot $1" > "%s"; exit 1; }\n' "$2" "$MI/ran" > "$1/vm-common.sh"
+}
+standin "$MI/app/scripts" checkout; standin "$IA/Contents/Resources/scripts" app
+printf '#!/bin/sh\n' > "$IA/Contents/Resources/runtime/bin/OmacVM"; chmod +x "$IA/Contents/Resources/runtime/bin/OmacVM"
+plist_version() {   # VERSION: the stand-in app's Info.plist
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.omacvm.app</string><key>CFBundleShortVersionString</key><string>%s</string></dict></plist>\n' "$1" > "$IA/Contents/Info.plist"
+}
+plist_version "$(cat "$R/src/VERSION")"
+mimg() { rm -f "$MI/ran"; HOME=$T/mi-home OMACVM_PREBUILT_OUT=$T/mi-out "$MI/src/prebuilt/make-image.sh" app "$@" > "$T/mi.out" 2>&1; cat "$MI/ran" 2>/dev/null; }
+VMD=$T/mi-out/app/vm
+[[ $(mimg build) == "" ]] && ok "make-image: no runtime build and no app: nothing runs" || bad "make-image: ran without a runtime"
+[[ $(OMACVM_PREBUILT_APP=$IA mimg build) == "app create $VMD" ]] && ok "make-image: OMACVM_PREBUILT_APP: the app's create script makes the VM" || { bad "make-image: the app's create script did not run"; cat "$T/mi.out"; }
+rm -rf "$VMD"; mkdir -p "$VMD"
+[[ $(OMACVM_PREBUILT_APP=$IA mimg generalize) == "app boot $VMD" ]] && ok "make-image: OMACVM_PREBUILT_APP: the app's scripts start the VM" || { bad "make-image: the app's scripts did not start the VM"; cat "$T/mi.out"; }
+rm -rf "$VMD"
+mkdir -p "$MI/app/runtime/.build/qemu-gpu-runtime/bin"; printf '#!/bin/sh\n' > "$MI/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+chmod +x "$MI/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
+[[ $(OMACVM_PREBUILT_APP=$IA mimg build) == "app create $VMD" ]] && ok "make-image: OMACVM_PREBUILT_APP wins over a runtime build in the checkout" || bad "make-image: took the checkout's runtime over OMACVM_PREBUILT_APP"
+rm -rf "$VMD"
+[[ $(mimg build) == "checkout create $VMD" ]] && ok "make-image: without it, the checkout's scripts and runtime build" || bad "make-image: the checkout's scripts did not run"
+rm -rf "$VMD"
+[[ $(OMACVM_PREBUILT_APP=mi-app/OmacVM.app mimg build) == "" && $(cat "$T/mi.out") == *"absolute path"* ]] && ok "make-image: a relative OMACVM_PREBUILT_APP is refused" || bad "make-image: took a relative OMACVM_PREBUILT_APP"
+plist_version 0.0.1
+[[ $(OMACVM_PREBUILT_APP=$IA mimg build) == "" && $(cat "$T/mi.out") == *"0.0.1"* ]] && ok "make-image: an app of another version is refused" || bad "make-image: took an app of another version"
+rm -rf "$VMD"
+
 # appcast.sh ZIP: only an OmacVM-<version>.zip.
 touch "$T/Other.zip"
 expect 1 "appcast.sh: a zip with another name is refused" "$R/app/scripts/appcast.sh" "$T/Other.zip"

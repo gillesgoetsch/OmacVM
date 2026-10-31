@@ -21,6 +21,9 @@
 # app: OmacVM.app's own create script from this checkout (app/scripts, with
 # the QEMU runtime built: app/scripts/build-app.sh), the VM in <output>/vm,
 # headless, without a window and without the Mac's helpers.
+# OMACVM_PREBUILT_APP=/path/OmacVM.app (app): that app's own scripts and
+# runtime instead (Contents/Resources), as the app makes a VM; for an app built
+# on another Mac, which leaves no runtime build here (src/release/release.sh).
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -29,7 +32,7 @@ source "$R/src/vm/fusion.sh"
 source "$R/src/prebuilt/lib.sh"
 
 ROUTE=${1:-}; shift || true
-case $ROUTE in parallels|utm|fusion|app) ;; *) sed -n '2,23s/^# \{0,1\}//p' "$0"; exit 2 ;; esac
+case $ROUTE in parallels|utm|fusion|app) ;; *) sed -n '2,26s/^# \{0,1\}//p' "$0"; exit 2 ;; esac
 STAGES=("$@"); (( ${#STAGES[@]} )) || STAGES=(build generalize package)
 VERSION=$(cat "$R/src/VERSION")
 case $ROUTE in parallels) VM="OmacVM Image Parallels" ;; utm) VM="OmacVM Image UTM" ;; fusion) VM="OmacVM Image Fusion" ;; app) VM="OmacVM Image App" ;; esac
@@ -41,6 +44,17 @@ mkdir -p "$OUT"
 # OmacVM.app's image VM: its folder, and no way to the Mac's helpers.
 APPVM=$OUT/vm
 export OMACVM_HOST_PORTS=""
+# The app's VM scripts (create-vm.sh, vm-common.sh): this checkout's, or those
+# of OMACVM_PREBUILT_APP, which find the runtime inside that app.
+APPSCRIPTS=$R/app/scripts
+if [[ -n ${OMACVM_PREBUILT_APP:-} ]]; then
+  [[ $ROUTE == app ]] || die "OMACVM_PREBUILT_APP is for the app route only"
+  [[ $OMACVM_PREBUILT_APP == /* ]] || die "OMACVM_PREBUILT_APP must be an absolute path, not $OMACVM_PREBUILT_APP"
+  [[ -f $OMACVM_PREBUILT_APP/Contents/Resources/scripts/create-vm.sh ]] || die "OMACVM_PREBUILT_APP: no OmacVM.app with its scripts at $OMACVM_PREBUILT_APP"
+  appv=$(plutil -extract CFBundleShortVersionString raw -o - "$OMACVM_PREBUILT_APP/Contents/Info.plist" 2>/dev/null || true)
+  [[ $appv == "$VERSION" ]] || die "OMACVM_PREBUILT_APP is OmacVM ${appv:-?}, this checkout $VERSION"
+  APPSCRIPTS=$OMACVM_PREBUILT_APP/Contents/Resources/scripts
+fi
 
 bundle() {   # the image VM's bundle on this Mac
   case $ROUTE in
@@ -70,7 +84,7 @@ wait_off() {
 # The app's image VM without a window, as its create script runs it (a subshell:
 # vm-common.sh has its own log and die).
 app_boot() {
-  ( source "$R/app/scripts/vm-common.sh"; vm_load "$APPVM"
+  ( source "$APPSCRIPTS/vm-common.sh"; vm_load "$APPVM"
     qemu_headless image "${QEMU_UEFI[@]}" -drive "$DISK_OPT" -device nvme,serial=omacvm,drive=disk,bootindex=0 )
 }
 
@@ -91,8 +105,12 @@ stage_build() {
 stage_build_app() {
   local port
   [[ -e $APPVM/disk.img ]] && die "$APPVM exists: delete it first (make-image.sh app clean)"
-  [[ -x $R/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64 ]] ||
-    die "no QEMU runtime in this checkout: app/scripts/build-app.sh builds it"
+  if [[ -n ${OMACVM_PREBUILT_APP:-} ]]; then
+    [[ -x $OMACVM_PREBUILT_APP/Contents/Resources/runtime/bin/OmacVM ]] || die "no QEMU runtime in $OMACVM_PREBUILT_APP"
+  else
+    [[ -x $R/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64 ]] ||
+      die "no QEMU runtime in this checkout: app/scripts/build-app.sh builds it"
+  fi
   log "build: $VM in $APPVM"
   port=$(app_free_port) || die "no free port for the VM's SSH"
   mkdir -p "$APPVM"
@@ -101,7 +119,7 @@ stage_build_app() {
     printf "VM_USER='%s'\nVM_FULLNAME='%s'\nVM_HOSTNAME=omarchy\n" "$PREBUILT_USER" "$PREBUILT_FULLNAME"
     printf "VM_TZ=UTC\nVM_LANG=en_US.UTF-8\nKEYBOARD=us\nFEATURES='%s'\n" "$PREBUILT_FEATURES"
   } > "$APPVM/vm.env"
-  openssl rand -hex 16 | OMACVM_CREATE_IMAGE=1 "$R/app/scripts/create-vm.sh" "$APPVM" ||
+  openssl rand -hex 16 | OMACVM_CREATE_IMAGE=1 "$APPSCRIPTS/create-vm.sh" "$APPVM" ||
     die "the build stopped (logs in $APPVM/logs)"
 }
 
@@ -218,10 +236,12 @@ compress_stage() {
   # Signed with OmacVM's release key (the main one from the Keychain, or
   # OMACVM_RELEASE_KEY_FILE) and read back as omacvm build and the app read
   # it; "devid_teams": the Developer ID team of the release app
-  # (app/dist/OmacVM.app) or of OMACVM_SIGN_ID (src/release/release-key.sh);
-  # OMACVM_NEXT_SPARE_KEY / OMACVM_REVOKED_KEYS as for the app's feed.
+  # (OMACVM_PREBUILT_APP, else app/dist/OmacVM.app) or of OMACVM_SIGN_ID
+  # (src/release/release-key.sh); OMACVM_NEXT_SPARE_KEY / OMACVM_REVOKED_KEYS
+  # as for the app's feed.
   local teams app=()
-  [[ -d $R/app/dist/OmacVM.app ]] && app=("$R/app/dist/OmacVM.app")
+  if [[ -n ${OMACVM_PREBUILT_APP:-} ]]; then app=("$OMACVM_PREBUILT_APP")
+  elif [[ -d $R/app/dist/OmacVM.app ]]; then app=("$R/app/dist/OmacVM.app"); fi
   teams=$("$R/src/release/release-key.sh" teams ${app[@]+"${app[@]}"}) || die "no Developer ID team for the manifest"
   python3 "$R/src/prebuilt/manifest.py" write "$OUT/$base.json" --route "$ROUTE" --omacvm "$VERSION" \
     --omarchy "$omarchy" --bundle "$(basename "$stage")" --unpacked "$(du -sk "$stage" | cut -f1)" \
