@@ -353,6 +353,39 @@ the Mac mini (ADR 0044, "Retake after a display change").
 - **Where:** the names and types are checked at
   run time by `omacvm-cocoa-fullpanel-retake.patch`.
 
+## KosmicKrisp has no index checks in release builds; Metal's amplification count is 8 on Apple7 (October 2026)
+
+Found with #624 (lane `venus-624`; probe and test through vkr's dispatch on the
+M1 Max, Apple7, macOS 27.0.1, 3 runs; work/tracks/venus-624.md). KosmicKrisp is
+built with `-Db_ndebug=true`, so every `assert()` in Mesa's Vulkan runtime and
+in KosmicKrisp is gone, and `UNREACHABLE` is `__builtin_unreachable()`. A
+Vulkan app's index, count or offset is then a memory address in QEMU:
+`push + offset` for push constants, the first index of viewports, scissors,
+vertex buffers and descriptor sets, `binding offset + element * stride` in a
+descriptor set's memory, query reports at `firstQuery`, a clear colour in an
+array of 8 on the stack, a binding array sized by the largest binding number + 1
+(0xffffffff wraps to 0), dynamic buffers counted in a `uint8_t`, and
+`vk_pipeline_layout` / `vk_graphics_state` copying into fixed arrays (32 set
+layouts, 14 push constant ranges, 16 viewports, 8 colours, 32 vertex bindings
+and attributes, 32 sample locations). An unknown compare op, cull mode, blend
+factor, dynamic state or descriptor type reaches `__builtin_unreachable()`.
+MoltenVK checks less of this at record time and encodes at submit (set
+`MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1` to see at `vkEndCommandBuffer`
+what QEMU's submit would do), and also reads vertex buffers, descriptor sets
+and push constants a draw uses when the app never set them.
+
+KosmicKrisp told 32 multiview views and renders N views with Metal vertex
+amplification count N: Metal aborts on 9 or more on Apple7
+(`supportsVertexAmplificationCount:` says yes up to 8); MoltenVK renders 32.
+vkr now tells KosmicKrisp's count as Metal's (ADR 0065). The mini's M4
+(Apple9) count is not measured yet.
+
+What the test found against 3.2.15's vkr (`Tests/virgl/test-venus-commands.c`,
+210 cases): 147 fail on KosmicKrisp, 134 on MoltenVK and on MoltenVK with
+prefilled command buffers (signals on the refused classes, the legal multiview
+passes on KosmicKrisp, and cases the drivers accept that the GPU would run out
+of range); none with the patches.
+
 ## Metal ends the process on a texture it cannot make, also in release (October 2026)
 
 Found with #598 (Ghostty and `glxinfo` with Zink ended the VM on Vulkan). Metal

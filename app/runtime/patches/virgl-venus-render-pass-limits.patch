@@ -1,0 +1,842 @@
+virglrenderer: Venus render passes, framebuffers and begins stay inside the pass
+
+What: a render pass's attachment references (color, input, resolve,
+depth/stencil, depth/stencil resolve, fragment shading rate, preserve) name
+its attachments or UNUSED; colors per subpass within maxColorAttachments; the
+bind point is graphics; attachment sample counts are ones the device has;
+dependencies name its subpasses; VkRenderPassMultiviewCreateInfo has a mask per
+subpass (or none) and an offset per dependency (or none); input attachment
+aspects name a subpass and one of its inputs; resolve modes are known. vkr
+keeps each pass's attachment count, the clear values a begin must give (up to
+the last attachment whose load op clears, or whose stencil load op clears on
+a depth/stencil format: Vulkan ignores a color attachment's) and a table of
+its subpasses (colors, view mask). A framebuffer has the pass's
+attachment count (imageless: its image info count), no NULL view, a size
+within the device's limits. A begin names a framebuffer of the pass's
+attachments, enough clear values, imageless views, sample locations for its
+attachments and subpasses. Dynamic rendering: colors within the limit, layers
+within maxFramebufferLayers, a resolve view where an attachment with a view
+sets a resolve mode (Vulkan asks for none without a view). A
+secondary inherits a subpass the pass has. Multiview: KosmicKrisp's
+maxMultiviewViewCount is told to the guest as the largest Metal vertex
+amplification count the GPU supports (read once from Metal), and view masks
+past it are refused where they arrive (render pass multiview info, subpass
+descriptions 2, rendering info, inheritance, pipeline rendering info in the
+pipeline-limits patch); correlation masks are not (no rule bounds them by
+the view count, and the drivers only copy them). A refusal ends the app's
+context.
+Why: Mesa's vk_render_pass (KosmicKrisp, NDEBUG) indexes attachments by every
+reference and the framebuffer's views by the pass's count, reads a clear value
+per CLEAR attachment and a sample location per named attachment; KosmicKrisp
+writes colors into arrays of 8 at begin (9 overflowed its stack: SIGABRT
+__stack_chk_fail) and renders N views with a vertex amplification count of N:
+Metal ends the process on 9 to 32 views on Apple7 (M1 Max) although the guest
+was told 32 (legal apps).
+Upstream: the multiview count is a KosmicKrisp bug (draft); the rest OmacVM
+policy (spec VUIDs), draft only.
+Tests: Tests/virgl/test-venus-commands.c (the r- cases: the multiview cases
+expect refusal past the count vkr reports for the device and work up to it).
+
+diff --git a/src/meson.build b/src/meson.build
+index 0a6d2c1..759251c 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -219,6 +219,10 @@ if with_venus
+    virgl_sources += venus_sources
+    virgl_sources += venus_codegen
+    virgl_depends += [venus_dep]
++   # OmacVM (virgl-venus-render-pass-limits.patch): Metal's vertex amplification count
++   if metal_dep.found()
++      virgl_sources += ['venus/vkr_metal_limits.m']
++   endif
+ endif
+ 
+ if with_drm_renderers
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 837bb6c..4af65c6 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -12,6 +12,7 @@
+ #include "vkr_physical_device.h"
+ #include "vkr_pipeline.h"
+ #include "vkr_query_pool.h"
++#include "vkr_render_pass.h"
+ 
+ #ifdef __clang__
+ #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+@@ -158,6 +159,17 @@ vkr_cmd_inheritance_ok(struct vkr_context *ctx,
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO);
+    const VkRenderingInputAttachmentIndexInfo *inputs =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_INPUT_ATTACHMENT_INDEX_INFO);
++   /* OmacVM (virgl-venus-render-pass-limits.patch): the pass's subpass, the views */
++   const struct vkr_render_pass *pass = vkr_render_pass_from_handle(info->renderPass);
++   if (!vkr_context_check(ctx, !pass || info->subpass < pass->subpass_count,
++                          "vkBeginCommandBuffer", "inheritance of subpass %u of %u",
++                          info->subpass, pass ? pass->subpass_count : 0) ||
++       !vkr_context_check(ctx,
++                          !rendering || vkr_view_mask_ok(&physical_dev->limits, rendering->viewMask),
++                          "vkBeginCommandBuffer", "inheritance of view mask 0x%x (views %u)",
++                          rendering ? rendering->viewMask : 0,
++                          physical_dev->limits.multiview_views))
++      return false;
+    return vkr_context_check(
+       ctx,
+       (!rendering ||
+@@ -1010,9 +1022,12 @@ vkr_dispatch_vkCmdPushConstants(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBeginRenderPass(UNUSED struct vn_dispatch_context *dispatch,
+-                                  struct vn_command_vkCmdBeginRenderPass *args)
++vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
++                  struct vn_command_vkCmdBeginRenderPass *args)
+ {
++   if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass", VKR_CMD_LIMITS(args),
++                                 args->pRenderPassBegin))
++      return;
+    VKR_CMD_CALL(CmdBeginRenderPass, args, args->pRenderPassBegin, args->contents);
+ }
+ 
+@@ -1080,9 +1095,12 @@ vkr_dispatch_vkCmdDispatchBase(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBeginRenderPass2(UNUSED struct vn_dispatch_context *dispatch,
+-                                   struct vn_command_vkCmdBeginRenderPass2 *args)
++vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
++                  struct vn_command_vkCmdBeginRenderPass2 *args)
+ {
++   if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass2", VKR_CMD_LIMITS(args),
++                                 args->pRenderPassBegin))
++      return;
+    VKR_CMD_CALL(CmdBeginRenderPass2, args, args->pRenderPassBegin,
+                 args->pSubpassBeginInfo);
+ }
+@@ -1455,9 +1473,12 @@ vkr_dispatch_vkCmdEndConditionalRenderingEXT(
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBeginRendering(UNUSED struct vn_dispatch_context *ctx,
++vkr_dispatch_vkCmdBeginRendering(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCmdBeginRendering *args)
+ {
++   if (!vkr_rendering_ok(dispatch->data, VKR_CMD_DEVICE(args)->physical_device,
++                         args->pRenderingInfo))
++      return;
+    VKR_CMD_CALL(CmdBeginRendering, args, args->pRenderingInfo);
+ }
+ 
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 4261c13..526d35e 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -5,6 +5,7 @@
+ 
+ #include "vkr_context.h"
+ #include "vkr_descriptor_set.h"
++#include "vkr_render_pass.h"
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -797,6 +798,7 @@ vkr_context_free_object(struct hash_entry *entry)
+    struct vkr_object *obj = entry->data;
+    /* OmacVM (virgl-venus-descriptor-limits.patch): what vkr keeps with the object */
+    vkr_descriptor_object_release(obj);
++   vkr_render_pass_object_release(obj);
+    free(obj);
+ }
+ 
+diff --git a/src/venus/vkr_limits.h b/src/venus/vkr_limits.h
+index fc22f71..d05c892 100644
+--- a/src/venus/vkr_limits.h
++++ b/src/venus/vkr_limits.h
+@@ -18,6 +18,9 @@
+ /* what the physical device reports beyond VkPhysicalDeviceLimits, read once at enumerate */
+ struct vkr_limits {
+    uint32_t max_multiview_views;      /* the driver's maxMultiviewViewCount */
++   /* OmacVM (virgl-venus-render-pass-limits.patch): the views the guest is told of and
++    * may name: KosmicKrisp's capped at Metal's vertex amplification count */
++   uint32_t multiview_views;
+    uint32_t max_push_descriptors;     /* 0 without VK_KHR_push_descriptor */
+    uint32_t max_inline_uniform_block; /* 0 without inline uniform blocks */
+    bool mutable_descriptors;          /* VK_EXT_mutable_descriptor_type */
+@@ -164,6 +167,21 @@ vkr_sample_locations_ok(const struct vkr_limits *l, const VkSampleLocationsInfoE
+              info->sampleLocationsCount;
+ }
+ 
++/* a view mask names views below the device's count */
++static inline bool
++vkr_view_mask_ok(const struct vkr_limits *l, uint32_t mask)
++{
++   return l->multiview_views >= 32 || !(mask >> l->multiview_views);
++}
++
++/* a resolve mode the drivers' switches know: none or one of the four */
++static inline bool
++vkr_resolve_mode_ok(VkResolveModeFlagBits mode)
++{
++   return mode == VK_RESOLVE_MODE_NONE ||
++          (vkr_one_bit(mode) && mode <= VK_RESOLVE_MODE_MAX_BIT);
++}
++
+ /* the levels and layers a guest names exist in the image (VK_REMAINING_* resolved) */
+ static inline bool
+ vkr_levels_layers_ok(uint32_t mip_levels,
+diff --git a/src/venus/vkr_metal_limits.m b/src/venus/vkr_metal_limits.m
+new file mode 100644
+index 0000000..b26eb90
+--- /dev/null
++++ b/src/venus/vkr_metal_limits.m
+@@ -0,0 +1,35 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-render-pass-limits.patch): how many views KosmicKrisp can render at
++ * once. It renders a multiview pass with Metal vertex amplification, one amplified vertex
++ * per view, and tells the guest 32 views; Metal ends the process (an assertion) on an
++ * amplification count the GPU does not support (Apple7: more than 8). Read once. */
++
++#import <Metal/Metal.h>
++
++#include <stdint.h>
++
++uint32_t
++vkr_metal_max_vertex_amplification(void);
++
++uint32_t
++vkr_metal_max_vertex_amplification(void)
++{
++   static uint32_t max;
++   static dispatch_once_t once;
++   dispatch_once(&once, ^{
++      @autoreleasepool {
++         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
++         uint32_t n = 1;
++         /* every count up to n: a pass with fewer views uses a smaller count */
++         while (device && n < 32 && [device supportsVertexAmplificationCount:n + 1])
++            n++;
++         max = n;
++         [device release];
++      }
++   });
++   return max;
++}
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index fd74243..fa2d40b 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -394,6 +394,18 @@ vkr_physical_device_init_missing_entries(struct vkr_physical_device *physical_de
+    vkr_physical_device_proc_table_fill_missing(vk);
+ }
+ 
++#if defined(__APPLE__)
++/* vkr_metal_limits.m (virgl-venus-render-pass-limits.patch) */
++uint32_t
++vkr_metal_max_vertex_amplification(void);
++#else
++static inline uint32_t
++vkr_metal_max_vertex_amplification(void)
++{
++   return 32;
++}
++#endif
++
+ /* OmacVM (virgl-venus-command-limits.patch): what the guest checks bound against beyond
+  * VkPhysicalDeviceLimits; structs of extensions only when the device lists them */
+ static void
+@@ -485,6 +497,21 @@ vkr_physical_device_init_limits(struct vkr_physical_device *physical_dev)
+       vkr_physical_device_lists(physical_dev, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+    l->primitives_generated_query =
+       vkr_physical_device_lists(physical_dev, VK_EXT_PRIMITIVES_GENERATED_QUERY_EXTENSION_NAME);
++
++   /* OmacVM (virgl-venus-render-pass-limits.patch): KosmicKrisp renders N views with a
++    * vertex amplification count of N; Metal ends the process past the GPU's */
++   VkPhysicalDeviceDriverProperties driver = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
++   };
++   VkPhysicalDeviceProperties2 driver2 = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
++      .pNext = &driver,
++   };
++   vk->GetPhysicalDeviceProperties2(handle, &driver2);
++   l->multiview_views = l->max_multiview_views;
++   if (driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP)
++      l->multiview_views = MIN2(l->multiview_views, vkr_metal_max_vertex_amplification());
++
+ }
+ 
+ static void
+@@ -942,6 +969,17 @@ vkr_dispatch_vkGetPhysicalDeviceProperties2(
+ 
+    vn_replace_vkGetPhysicalDeviceProperties2_args_handle(args);
+    vk->GetPhysicalDeviceProperties2(args->physicalDevice, args->pProperties);
++
++   /* OmacVM (virgl-venus-render-pass-limits.patch): the views the device can render */
++   const uint32_t views = physical_dev->limits.multiview_views;
++   VkPhysicalDeviceMultiviewProperties *mv =
++      vkr_find_struct(args->pProperties->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES);
++   if (mv && mv->maxMultiviewViewCount > views)
++      mv->maxMultiviewViewCount = views;
++   VkPhysicalDeviceVulkan11Properties *p11 =
++      vkr_find_struct(args->pProperties->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES);
++   if (p11 && p11->maxMultiviewViewCount > views)
++      p11->maxMultiviewViewCount = views;
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index 0cb3d70..5a565ca 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -6,12 +6,415 @@
+ #include "vkr_render_pass.h"
+ 
+ #include "vkr_render_pass_gen.h"
++#include "vkr_image.h"
++#include "vkr_physical_device.h"
++
++/* OmacVM (virgl-venus-render-pass-limits.patch, ADR 0065): a render pass's attachment
++ * references, counts and view masks stay inside the pass and the device's limits before
++ * the driver gets them. Mesa's vk_render_pass (KosmicKrisp) indexes the attachments by
++ * every reference and copies colors into arrays of 8 with its asserts compiled out;
++ * KosmicKrisp writes color attachments into fixed arrays at begin (more than 8 overflowed
++ * its stack) and renders N views with a Metal vertex amplification count of N (Metal ends
++ * the process past the GPU's). A refusal ends the app's context. */
++
++static bool
++vkr_attachment_ref_ok(uint32_t ref, uint32_t count)
++{
++   return ref == VK_ATTACHMENT_UNUSED || ref < count;
++}
++
++void
++vkr_render_pass_object_release(struct vkr_object *obj)
++{
++   if (obj->type == VK_OBJECT_TYPE_RENDER_PASS)
++      free(((struct vkr_render_pass *)obj)->subpasses);
++}
++
++/* the parts of VkSubpassDescription(2) both passes check */
++struct vkr_subpass_desc {
++   VkPipelineBindPoint bind_point;
++   uint32_t view_mask;
++   uint32_t input_count, color_count, preserve_count;
++   const uint32_t *preserve;
++};
++
++static bool
++vkr_subpass_ok(const struct vkr_physical_device *physical_dev,
++               uint32_t attachments,
++               uint32_t index,
++               const struct vkr_subpass_desc *s,
++               const uint32_t *refs,
++               uint32_t ref_count,
++               char *why,
++               size_t why_size)
++{
++   const struct vkr_limits *l = &physical_dev->limits;
++   if (s->bind_point != VK_PIPELINE_BIND_POINT_GRAPHICS ||
++       s->color_count > physical_dev->properties.limits.maxColorAttachments ||
++       !vkr_view_mask_ok(l, s->view_mask)) {
++      snprintf(why, why_size, "subpass %u: bind point %d, %u colors, view mask 0x%x (views %u)",
++               index, s->bind_point, s->color_count, s->view_mask, l->multiview_views);
++      return false;
++   }
++   for (uint32_t i = 0; i < ref_count; i++) {
++      if (!vkr_attachment_ref_ok(refs[i], attachments)) {
++         snprintf(why, why_size, "subpass %u: attachment %u of %u", index, refs[i], attachments);
++         return false;
++      }
++   }
++   for (uint32_t i = 0; i < s->preserve_count; i++) {
++      if (s->preserve[i] >= attachments) {
++         snprintf(why, why_size, "subpass %u: preserves attachment %u of %u", index,
++                  s->preserve[i], attachments);
++         return false;
++      }
++   }
++   return true;
++}
++
++static bool
++vkr_dependency_ok(uint32_t src, uint32_t dst, uint32_t subpasses)
++{
++   return (src == VK_SUBPASS_EXTERNAL || src < subpasses) &&
++          (dst == VK_SUBPASS_EXTERNAL || dst < subpasses);
++}
++
++/* the references of one subpass, gathered for vkr_subpass_ok */
++static uint32_t
++vkr_subpass_refs_1(const VkSubpassDescription *s, uint32_t *refs)
++{
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < s->inputAttachmentCount; i++)
++      refs[n++] = s->pInputAttachments[i].attachment;
++   for (uint32_t i = 0; i < s->colorAttachmentCount; i++) {
++      refs[n++] = s->pColorAttachments[i].attachment;
++      if (s->pResolveAttachments)
++         refs[n++] = s->pResolveAttachments[i].attachment;
++   }
++   if (s->pDepthStencilAttachment)
++      refs[n++] = s->pDepthStencilAttachment->attachment;
++   return n;
++}
++
++static uint32_t
++vkr_subpass_refs_2(const VkSubpassDescription2 *s,
++                   const VkAttachmentReference2 *ds_resolve,
++                   uint32_t *refs)
++{
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < s->inputAttachmentCount; i++)
++      refs[n++] = s->pInputAttachments[i].attachment;
++   for (uint32_t i = 0; i < s->colorAttachmentCount; i++) {
++      refs[n++] = s->pColorAttachments[i].attachment;
++      if (s->pResolveAttachments)
++         refs[n++] = s->pResolveAttachments[i].attachment;
++   }
++   if (s->pDepthStencilAttachment)
++      refs[n++] = s->pDepthStencilAttachment->attachment;
++   if (ds_resolve)
++      refs[n++] = ds_resolve->attachment;
++   return n;
++}
++
++/* the subpass table, or NULL with why */
++static struct vkr_subpass_info *
++vkr_render_pass_info_1(const struct vkr_physical_device *physical_dev,
++                       const VkRenderPassCreateInfo *info,
++                       char *why,
++                       size_t why_size)
++{
++   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   const VkRenderPassMultiviewCreateInfo *mv =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO);
++   const VkRenderPassInputAttachmentAspectCreateInfo *aspects = vkr_find_struct(
++      info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO);
++   if (!info->subpassCount ||
++       (mv && ((mv->subpassCount && mv->subpassCount != info->subpassCount) ||
++               (mv->dependencyCount && mv->dependencyCount != info->dependencyCount)))) {
++      snprintf(why, why_size, "%u subpasses, multiview masks for %u, offsets for %u of %u "
++               "dependencies", info->subpassCount, mv ? mv->subpassCount : 0,
++               mv ? mv->dependencyCount : 0, info->dependencyCount);
++      return NULL;
++   }
++   for (uint32_t i = 0; i < info->attachmentCount; i++) {
++      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
++         snprintf(why, why_size, "attachment %u: %u samples", i, info->pAttachments[i].samples);
++         return NULL;
++      }
++   }
++   struct vkr_subpass_info *subpasses = calloc(info->subpassCount, sizeof(*subpasses));
++   uint32_t *refs = malloc(sizeof(*refs) * (2 * (size_t)lim->maxColorAttachments + 2 + 4096));
++   if (!subpasses || !refs) {
++      snprintf(why, why_size, "out of host memory");
++      goto fail;
++   }
++   for (uint32_t i = 0; i < info->subpassCount; i++) {
++      const VkSubpassDescription *s = &info->pSubpasses[i];
++      const struct vkr_subpass_desc d = {
++         .bind_point = s->pipelineBindPoint,
++         .view_mask = mv && mv->subpassCount ? mv->pViewMasks[i] : 0,
++         .input_count = s->inputAttachmentCount,
++         .color_count = s->colorAttachmentCount,
++         .preserve_count = s->preserveAttachmentCount,
++         .preserve = s->pPreserveAttachments,
++      };
++      /* inputs past 4096 are refused before they are gathered */
++      if (s->inputAttachmentCount > 4096 || s->colorAttachmentCount > lim->maxColorAttachments) {
++         snprintf(why, why_size, "subpass %u: %u inputs, %u colors", i, s->inputAttachmentCount,
++                  s->colorAttachmentCount);
++         goto fail;
++      }
++      const uint32_t n = vkr_subpass_refs_1(s, refs);
++      if (!vkr_subpass_ok(physical_dev, info->attachmentCount, i, &d, refs, n, why, why_size))
++         goto fail;
++      subpasses[i] = (struct vkr_subpass_info){ s->colorAttachmentCount, d.view_mask };
++   }
++   for (uint32_t i = 0; i < info->dependencyCount; i++) {
++      const VkSubpassDependency *d = &info->pDependencies[i];
++      if (!vkr_dependency_ok(d->srcSubpass, d->dstSubpass, info->subpassCount)) {
++         snprintf(why, why_size, "dependency %u: subpass %u to %u of %u", i, d->srcSubpass,
++                  d->dstSubpass, info->subpassCount);
++         goto fail;
++      }
++   }
++   for (uint32_t i = 0; aspects && i < aspects->aspectReferenceCount; i++) {
++      const VkInputAttachmentAspectReference *r = &aspects->pAspectReferences[i];
++      if (r->subpass >= info->subpassCount ||
++          r->inputAttachmentIndex >= info->pSubpasses[r->subpass].inputAttachmentCount) {
++         snprintf(why, why_size, "input aspect %u: subpass %u input %u", i, r->subpass,
++                  r->inputAttachmentIndex);
++         goto fail;
++      }
++   }
++   free(refs);
++   return subpasses;
++
++fail:
++   free(refs);
++   free(subpasses);
++   return NULL;
++}
++
++static struct vkr_subpass_info *
++vkr_render_pass_info_2(const struct vkr_physical_device *physical_dev,
++                       const VkRenderPassCreateInfo2 *info,
++                       char *why,
++                       size_t why_size)
++{
++   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   if (!info->subpassCount) {
++      snprintf(why, why_size, "no subpass");
++      return NULL;
++   }
++   for (uint32_t i = 0; i < info->attachmentCount; i++) {
++      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
++         snprintf(why, why_size, "attachment %u: %u samples", i, info->pAttachments[i].samples);
++         return NULL;
++      }
++   }
++   struct vkr_subpass_info *subpasses = calloc(info->subpassCount, sizeof(*subpasses));
++   uint32_t *refs = malloc(sizeof(*refs) * (2 * (size_t)lim->maxColorAttachments + 2 + 4096));
++   if (!subpasses || !refs) {
++      snprintf(why, why_size, "out of host memory");
++      goto fail;
++   }
++   for (uint32_t i = 0; i < info->subpassCount; i++) {
++      const VkSubpassDescription2 *s = &info->pSubpasses[i];
++      const struct vkr_subpass_desc d = {
++         .bind_point = s->pipelineBindPoint,
++         .view_mask = s->viewMask,
++         .input_count = s->inputAttachmentCount,
++         .color_count = s->colorAttachmentCount,
++         .preserve_count = s->preserveAttachmentCount,
++         .preserve = s->pPreserveAttachments,
++      };
++      if (s->inputAttachmentCount > 4096 || s->colorAttachmentCount > lim->maxColorAttachments) {
++         snprintf(why, why_size, "subpass %u: %u inputs, %u colors", i, s->inputAttachmentCount,
++                  s->colorAttachmentCount);
++         goto fail;
++      }
++      const VkSubpassDescriptionDepthStencilResolve *ds = vkr_find_struct(
++         s->pNext, VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE);
++      if (ds && (!vkr_resolve_mode_ok(ds->depthResolveMode) ||
++                 !vkr_resolve_mode_ok(ds->stencilResolveMode))) {
++         snprintf(why, why_size, "subpass %u: resolve modes %u, %u", i, ds->depthResolveMode,
++                  ds->stencilResolveMode);
++         goto fail;
++      }
++      const VkFragmentShadingRateAttachmentInfoKHR *fsr = vkr_find_struct(
++         s->pNext, VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
++      const uint32_t n =
++         vkr_subpass_refs_2(s, ds ? ds->pDepthStencilResolveAttachment : NULL, refs);
++      if (!vkr_subpass_ok(physical_dev, info->attachmentCount, i, &d, refs, n, why, why_size) ||
++          (fsr && fsr->pFragmentShadingRateAttachment &&
++           !vkr_attachment_ref_ok(fsr->pFragmentShadingRateAttachment->attachment,
++                                  info->attachmentCount))) {
++         if (fsr)
++            snprintf(why, why_size, "subpass %u: an attachment reference past %u", i,
++                     info->attachmentCount);
++         goto fail;
++      }
++      subpasses[i] = (struct vkr_subpass_info){ s->colorAttachmentCount, s->viewMask };
++   }
++   for (uint32_t i = 0; i < info->dependencyCount; i++) {
++      const VkSubpassDependency2 *d = &info->pDependencies[i];
++      if (!vkr_dependency_ok(d->srcSubpass, d->dstSubpass, info->subpassCount)) {
++         snprintf(why, why_size, "dependency %u: subpass %u to %u of %u", i, d->srcSubpass,
++                  d->dstSubpass, info->subpassCount);
++         goto fail;
++      }
++   }
++   free(refs);
++   return subpasses;
++
++fail:
++   free(refs);
++   free(subpasses);
++   return NULL;
++}
++
++static bool
++vkr_format_is_depth_stencil(VkFormat format)
++{
++   switch (format) {
++   case VK_FORMAT_D16_UNORM:
++   case VK_FORMAT_X8_D24_UNORM_PACK32:
++   case VK_FORMAT_D32_SFLOAT:
++   case VK_FORMAT_S8_UINT:
++   case VK_FORMAT_D16_UNORM_S8_UINT:
++   case VK_FORMAT_D24_UNORM_S8_UINT:
++   case VK_FORMAT_D32_SFLOAT_S8_UINT:
++      return true;
++   default:
++      return false;
++   }
++}
++
++/* the clear values a begin must give: up to the last attachment whose loadOp clears, or
++ * whose stencilLoadOp clears when it has a depth/stencil format (Vulkan ignores the
++ * stencil load op of a color attachment) */
++static uint32_t
++vkr_clear_count(uint32_t count,
++                const void *attachments,
++                size_t stride,
++                size_t format,
++                size_t load,
++                size_t stencil_load)
++{
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < count; i++) {
++      const uint8_t *a = (const uint8_t *)attachments + i * stride;
++      if (*(const VkAttachmentLoadOp *)(a + load) == VK_ATTACHMENT_LOAD_OP_CLEAR ||
++          (*(const VkAttachmentLoadOp *)(a + stencil_load) == VK_ATTACHMENT_LOAD_OP_CLEAR &&
++           vkr_format_is_depth_stencil(*(const VkFormat *)(a + format))))
++         n = i + 1;
++   }
++   return n;
++}
++
++bool
++vkr_render_pass_begin_ok(struct vkr_context *ctx,
++                         const char *call,
++                         const struct vkr_limits *limits,
++                         const VkRenderPassBeginInfo *info)
++{
++   const struct vkr_render_pass *pass = vkr_render_pass_from_handle(info->renderPass);
++   const struct vkr_framebuffer *fb = vkr_framebuffer_from_handle(info->framebuffer);
++   const VkRenderPassAttachmentBeginInfo *views =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO);
++   const uint32_t fb_count = fb && fb->imageless ? (views ? views->attachmentCount : 0)
++                                                 : fb ? fb->attachment_count : 0;
++   bool ok = pass && fb && fb_count == pass->attachment_count &&
++             info->clearValueCount >= pass->clear_count;
++   for (uint32_t i = 0; ok && fb->imageless && i < fb_count; i++)
++      ok = views->pAttachments[i] != VK_NULL_HANDLE;
++   if (!vkr_context_check(ctx, ok, call,
++                          "framebuffer of %u attachments%s for a pass of %u, %u clear values of %u",
++                          fb_count, fb && fb->imageless ? " (imageless)" : "",
++                          pass ? pass->attachment_count : 0, info->clearValueCount,
++                          pass ? pass->clear_count : 0))
++      return false;
++   const VkRenderPassSampleLocationsBeginInfoEXT *sl =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_SAMPLE_LOCATIONS_BEGIN_INFO_EXT);
++   for (uint32_t i = 0; sl && i < sl->attachmentInitialSampleLocationsCount; i++) {
++      const VkAttachmentSampleLocationsEXT *a = &sl->pAttachmentInitialSampleLocations[i];
++      if (!vkr_context_check(ctx,
++                             a->attachmentIndex < pass->attachment_count &&
++                                vkr_sample_locations_ok(limits, &a->sampleLocationsInfo),
++                             call, "sample locations for attachment %u of %u",
++                             a->attachmentIndex, pass->attachment_count))
++         return false;
++   }
++   for (uint32_t i = 0; sl && i < sl->postSubpassSampleLocationsCount; i++) {
++      const VkSubpassSampleLocationsEXT *s = &sl->pPostSubpassSampleLocations[i];
++      if (!vkr_context_check(ctx,
++                             s->subpassIndex < pass->subpass_count &&
++                                vkr_sample_locations_ok(limits, &s->sampleLocationsInfo),
++                             call, "sample locations for subpass %u of %u", s->subpassIndex,
++                             pass->subpass_count))
++         return false;
++   }
++   return true;
++}
++
++/* a known resolve mode, and a resolve view where an attachment with a view resolves (Vulkan
++ * asks for none without a view; KosmicKrisp then skips the attachment's resolve) */
++static bool
++vkr_rendering_attachment_ok(const VkRenderingAttachmentInfo *a)
++{
++   return vkr_resolve_mode_ok(a->resolveMode) &&
++          (a->resolveMode == VK_RESOLVE_MODE_NONE || a->imageView == VK_NULL_HANDLE ||
++           a->resolveImageView != VK_NULL_HANDLE);
++}
++
++bool
++vkr_rendering_ok(struct vkr_context *ctx,
++                 const struct vkr_physical_device *physical_dev,
++                 const VkRenderingInfo *info)
++{
++   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   bool ok = info->colorAttachmentCount <= lim->maxColorAttachments &&
++             vkr_view_mask_ok(&physical_dev->limits, info->viewMask) &&
++             (info->viewMask || info->layerCount <= lim->maxFramebufferLayers) &&
++             (!info->pDepthAttachment || vkr_rendering_attachment_ok(info->pDepthAttachment)) &&
++             (!info->pStencilAttachment || vkr_rendering_attachment_ok(info->pStencilAttachment));
++   for (uint32_t i = 0; ok && i < info->colorAttachmentCount; i++)
++      ok = vkr_rendering_attachment_ok(&info->pColorAttachments[i]);
++   return vkr_context_check(ctx, ok, "vkCmdBeginRendering",
++                            "%u colors (at most %u), view mask 0x%x (views %u), %u layers, or a "
++                            "resolve without its view", info->colorAttachmentCount,
++                            lim->maxColorAttachments, info->viewMask,
++                            physical_dev->limits.multiview_views, info->layerCount);
++}
+ 
+ static void
+ vkr_dispatch_vkCreateRenderPass(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkCreateRenderPass *args)
+ {
+-   vkr_render_pass_create_and_add(dispatch->data, args);
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   const VkRenderPassCreateInfo *info = args->pCreateInfo;
++   char why[192];
++   struct vkr_subpass_info *subpasses =
++      vkr_render_pass_info_1(dev->physical_device, info, why, sizeof(why));
++   if (!subpasses) {
++      vkr_context_refuse(dispatch->data, true, "vkCreateRenderPass", "%s", why);
++      return;
++   }
++   const uint32_t attachments = info->attachmentCount, count = info->subpassCount;
++   const uint32_t clears =
++      vkr_clear_count(attachments, info->pAttachments, sizeof(VkAttachmentDescription),
++                      offsetof(VkAttachmentDescription, format),
++                      offsetof(VkAttachmentDescription, loadOp),
++                      offsetof(VkAttachmentDescription, stencilLoadOp));
++   struct vkr_render_pass *pass = vkr_render_pass_create_and_add(dispatch->data, args);
++   if (!pass) {
++      free(subpasses);
++      return;
++   }
++   pass->attachment_count = attachments;
++   pass->clear_count = clears;
++   pass->subpass_count = count;
++   pass->subpasses = subpasses;
+ }
+ 
+ static void
+@@ -22,17 +425,37 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM (virgl-venus-render-pass-limits.patch) */
++   const VkRenderPassCreateInfo2 *info = args->pCreateInfo;
++   char why[192];
++   struct vkr_subpass_info *subpasses =
++      vkr_render_pass_info_2(dev->physical_device, info, why, sizeof(why));
++   if (!subpasses) {
++      vkr_context_refuse(ctx, true, "vkCreateRenderPass2", "%s", why);
++      return;
++   }
++
+    struct vkr_render_pass *pass = vkr_context_alloc_object(
+       ctx, sizeof(*pass), VK_OBJECT_TYPE_RENDER_PASS, args->pRenderPass);
+    if (!pass) {
++      free(subpasses);
+       args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
+       return;
+    }
++   pass->attachment_count = info->attachmentCount;
++   pass->clear_count =
++      vkr_clear_count(info->attachmentCount, info->pAttachments, sizeof(VkAttachmentDescription2),
++                      offsetof(VkAttachmentDescription2, format),
++                      offsetof(VkAttachmentDescription2, loadOp),
++                      offsetof(VkAttachmentDescription2, stencilLoadOp));
++   pass->subpass_count = info->subpassCount;
++   pass->subpasses = subpasses;
+ 
+    vn_replace_vkCreateRenderPass2_args_handle(args);
+    args->ret = vk->CreateRenderPass2(args->device, args->pCreateInfo, NULL,
+                                      &pass->base.handle.render_pass);
+    if (args->ret != VK_SUCCESS) {
++      free(pass->subpasses);
+       free(pass);
+       return;
+    }
+@@ -75,7 +498,35 @@ static void
+ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateFramebuffer *args)
+ {
+-   vkr_framebuffer_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-render-pass-limits.patch): the attachments of its pass (Mesa's
++    * vk_common_CmdBeginRenderPass2 reads the framebuffer's for each of the pass's), sizes
++    * inside the device's limits */
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   const VkPhysicalDeviceLimits *lim = &dev->physical_device->properties.limits;
++   const VkFramebufferCreateInfo *info = args->pCreateInfo;
++   const struct vkr_render_pass *pass = vkr_render_pass_from_handle(info->renderPass);
++   const bool imageless = info->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT;
++   const VkFramebufferAttachmentsCreateInfo *images =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO);
++   const uint32_t count = imageless ? (images ? images->attachmentImageInfoCount : 0)
++                                    : info->attachmentCount;
++   bool ok = pass && count == pass->attachment_count && info->width && info->height &&
++             info->layers && info->width <= lim->maxFramebufferWidth &&
++             info->height <= lim->maxFramebufferHeight && info->layers <= lim->maxFramebufferLayers;
++   for (uint32_t i = 0; ok && !imageless && i < info->attachmentCount; i++)
++      ok = info->pAttachments[i] != VK_NULL_HANDLE;
++   if (!vkr_context_check(dispatch->data, ok, "vkCreateFramebuffer",
++                          "%u attachments%s for a pass of %u, %ux%ux%u (at most %ux%ux%u)", count,
++                          imageless ? " (imageless)" : "", pass ? pass->attachment_count : 0,
++                          info->width, info->height, info->layers, lim->maxFramebufferWidth,
++                          lim->maxFramebufferHeight, lim->maxFramebufferLayers))
++      return;
++
++   struct vkr_framebuffer *fb = vkr_framebuffer_create_and_add(dispatch->data, args);
++   if (fb) {
++      fb->attachment_count = count;
++      fb->imageless = imageless;
++   }
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_render_pass.h b/src/venus/vkr_render_pass.h
+index a6331b4..adc562e 100644
+--- a/src/venus/vkr_render_pass.h
++++ b/src/venus/vkr_render_pass.h
+@@ -7,20 +7,53 @@
+ #define VKR_RENDER_PASS_H
+ 
+ #include "vkr_common.h"
++#include "vkr_limits.h"
++
++/* OmacVM (virgl-venus-render-pass-limits.patch): what a pass was made with, for its
++ * framebuffers, begins, pipelines and secondaries */
++struct vkr_subpass_info {
++   uint32_t colors;
++   uint32_t view_mask;
++};
+ 
+ struct vkr_render_pass {
+    struct vkr_object base;
++   uint32_t attachment_count;
++   /* the last attachment a begin clears + 1: the clear values the begin must give */
++   uint32_t clear_count;
++   uint32_t subpass_count;
++   struct vkr_subpass_info *subpasses;
+ };
+ VKR_DEFINE_OBJECT_CAST(render_pass, VK_OBJECT_TYPE_RENDER_PASS, VkRenderPass)
+ 
+ struct vkr_framebuffer {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-render-pass-limits.patch) */
++   uint32_t attachment_count;
++   bool imageless;
+ };
+ VKR_DEFINE_OBJECT_CAST(framebuffer, VK_OBJECT_TYPE_FRAMEBUFFER, VkFramebuffer)
+ 
+ void
+ vkr_context_init_render_pass_dispatch(struct vkr_context *ctx);
+ 
++/* OmacVM (virgl-venus-render-pass-limits.patch): a pass's subpass table, freed with it */
++void
++vkr_render_pass_object_release(struct vkr_object *obj);
++
++/* a begin of a render pass names the pass's attachments and clear values */
++bool
++vkr_render_pass_begin_ok(struct vkr_context *ctx,
++                         const char *call,
++                         const struct vkr_limits *limits,
++                         const VkRenderPassBeginInfo *info);
++
++/* a begin of dynamic rendering names at most maxColorAttachments, views the device has */
++bool
++vkr_rendering_ok(struct vkr_context *ctx,
++                 const struct vkr_physical_device *physical_dev,
++                 const VkRenderingInfo *info);
++
+ void
+ vkr_context_init_framebuffer_dispatch(struct vkr_context *ctx);
+ 
