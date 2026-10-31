@@ -1,0 +1,329 @@
+virglrenderer: Venus guest threads stay inside one budget
+
+What: one process-wide count of the threads guest calls make (a render worker and a
+fence thread per Venus context, a thread per ring and the ring monitor, a sync thread
+per device queue), taken before each is made and given back when it is joined. Past
+1024 (OMACVM_VENUS_THREADS for tests) the call fails cleanly: the context is not
+made, vkCreateRingMESA ends its context, vkCreateDevice returns
+VK_ERROR_OUT_OF_HOST_MEMORY, and a log line says so (the 1st, 2nd, 4th ... time).
+Venus contexts are also bounded by the open-file limit, read at run time: at most a
+sixteenth of the soft limit (a context takes up to 8 files), and the render server's
+256 workers.
+Why: nothing bounded them. macOS allows 4096 threads per process, and QEMU ends the
+process when it cannot make a thread of its own, so a program in the VM that made
+contexts, rings (the guest's driver makes a ring per thread that compiles pipelines)
+or devices without end could end the VM. QEMU raises its soft open-file limit to
+OPEN_MAX (10240) on macOS, so contexts stop at the 256 workers there.
+Upstream: OmacVM policy.
+Tests: Tests/virgl/test-venus-threads.c (contexts, rings, queues, context-files).
+
+diff --git a/server/render_worker.c b/server/render_worker.c
+index 4a6c279..7001c9b 100644
+--- a/server/render_worker.c
++++ b/server/render_worker.c
+@@ -11,6 +11,8 @@
+ #endif
+ #include "render_worker.h"
+ 
++#include "virgl_util.h"
++
+ /* One and only one of ENABLE_RENDER_SERVER_WORKER_* must be set.
+  *
+  * With ENABLE_RENDER_SERVER_WORKER_PROCESS, each worker is a subprocess
+@@ -463,7 +465,13 @@ render_worker_create(struct render_worker_jail *jail,
+    ok = worker->pid >= 0;
+    (void)thread_func;
+ #elif defined(ENABLE_RENDER_SERVER_WORKER_THREAD)
+-   ok = thrd_create(&worker->thread, thread_func, worker->thread_data) == thrd_success;
++   /* OmacVM (virgl-venus-thread-budget.patch) */
++   ok = virgl_thread_budget_take("render worker of a new Venus context");
++   if (ok) {
++      ok = thrd_create(&worker->thread, thread_func, worker->thread_data) == thrd_success;
++      if (!ok)
++         virgl_thread_budget_give();
++   }
+ #elif defined(ENABLE_RENDER_SERVER_WORKER_MINIJAIL)
+    worker->pid = fork_minijail(jail->minijail);
+    ok = worker->pid >= 0;
+@@ -487,6 +495,7 @@ render_worker_destroy(struct render_worker_jail *jail, struct render_worker *wor
+ #ifdef ENABLE_RENDER_SERVER_WORKER_THREAD
+    /* we trust the thread to clean up and exit in finite time */
+    thrd_join(worker->thread, NULL);
++   virgl_thread_budget_give();
+    worker->reaped = true;
+ #else
+    /* kill to make sure the worker exits in finite time */
+diff --git a/src/proxy/proxy_context.c b/src/proxy/proxy_context.c
+index e1b3ce5..e5ce711 100644
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -545,6 +545,9 @@ proxy_context_attach_resource(struct virgl_context *base, struct virgl_resource
+    proxy_context_resource_add(ctx, res_id);
+ }
+ 
++/* OmacVM (virgl-venus-thread-budget.patch): the live contexts, made or being made */
++static atomic_int proxy_context_count;
++
+ static void
+ proxy_context_destroy(struct virgl_context *base)
+ {
+@@ -559,6 +562,7 @@ proxy_context_destroy(struct virgl_context *base)
+          ctx->sync_thread.stop = true;
+          write_eventfd(ctx->sync_thread.fence_eventfd, 1);
+          thrd_join(ctx->sync_thread.thread, NULL);
++         virgl_thread_budget_give();
+       }
+ 
+       close(ctx->sync_thread.fence_eventfd);
+@@ -587,6 +591,7 @@ proxy_context_destroy(struct virgl_context *base)
+    proxy_socket_fini(&ctx->socket);
+ 
+    free(ctx);
++   atomic_fetch_sub(&proxy_context_count, 1);
+ }
+ 
+ static void
+@@ -625,8 +630,12 @@ proxy_context_init_fencing(struct proxy_context *ctx)
+    }
+ 
+    if (proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB) {
++      /* OmacVM (virgl-venus-thread-budget.patch) */
++      if (!virgl_thread_budget_take("fence thread of a new Venus context"))
++         return false;
+       int ret = thrd_create(&ctx->sync_thread.thread, proxy_context_sync_thread, ctx);
+       if (ret != thrd_success) {
++         virgl_thread_budget_give();
+          proxy_log("failed to create sync thread");
+          return false;
+       }
+@@ -727,19 +736,39 @@ proxy_context_create(uint32_t ctx_id,
+    struct proxy_client *client = proxy_renderer.client;
+    struct proxy_context *ctx;
+ 
++   /* OmacVM (virgl-venus-thread-budget.patch): contexts take open files (a socket pair,
++    * shared memory, a fence FIFO on each side) and threads; a guest that makes them
++    * without end gets an error before QEMU runs out of either */
++   static atomic_uint refusals;
++   const int max = virgl_context_budget(256);
++   if (atomic_fetch_add(&proxy_context_count, 1) >= max) {
++      atomic_fetch_sub(&proxy_context_count, 1);
++      const unsigned r = atomic_fetch_add(&refusals, 1) + 1;
++      if (!(r & (r - 1)))
++         proxy_log("%d Venus contexts already (at most %d): context %u is not made (%u so far)",
++                   max, max, ctx_id, r);
++      return NULL;
++   }
++
+    int ctx_fd;
+    if (!proxy_client_create_context(client, ctx_id, debug_len, debug_name, &ctx_fd)) {
++      atomic_fetch_sub(&proxy_context_count, 1);
+       proxy_log("failed to create a context");
+       return NULL;
+    }
+ 
+    ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
++      atomic_fetch_sub(&proxy_context_count, 1);
+       close(ctx_fd);
+       return NULL;
+    }
+ 
+    proxy_context_init_base(ctx);
++   /* OmacVM (virgl-venus-thread-budget.patch): the server's context by this id; the
++    * failure path below destroys it there (with ctx_id still 0 its worker was never
++    * joined: a thread and its budget share lost per failed create) */
++   ctx->base.ctx_id = ctx_id;
+    ctx->client = client;
+    proxy_socket_init(&ctx->socket, ctx_fd);
+    ctx->shmem.fd = -1;
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 8db9fd9..57b2c31 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -709,11 +709,15 @@ vkr_context_ring_monitor_init(struct vkr_context *ctx, uint32_t report_period_us
+       goto err_cnd_init;
+ 
+    ctx->ring_monitor.report_period_us = report_period_us;
++   /* OmacVM (virgl-venus-thread-budget.patch) */
++   if (!virgl_thread_budget_take("Venus ring monitor"))
++      goto err_monitor_thrd_create;
+    ctx->ring_monitor.started = true;
+    ret = thrd_create(&ctx->ring_monitor.thread, vkr_context_ring_monitor_thread, ctx);
+    if (ret != thrd_success) {
+       /* OmacVM (virgl-venus-guest-asserts.patch): no thread to stop at the context's end */
+       ctx->ring_monitor.started = false;
++      virgl_thread_budget_give();
+       goto err_monitor_thrd_create;
+    }
+ 
+@@ -737,6 +741,7 @@ vkr_context_ring_monitor_fini(struct vkr_context *ctx)
+    mtx_unlock(&ctx->ring_monitor.mutex);
+ 
+    thrd_join(ctx->ring_monitor.thread, NULL);
++   virgl_thread_budget_give();
+ 
+    cnd_destroy(&ctx->ring_monitor.cond);
+    mtx_destroy(&ctx->ring_monitor.mutex);
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index b5bc74f..38b502b 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -176,6 +176,7 @@ vkr_queue_sync_thread_fini(struct vkr_queue *queue)
+    mtx_unlock(&queue->sync_thread.mutex);
+ 
+    thrd_join(queue->sync_thread.thread, NULL);
++   virgl_thread_budget_give();
+ 
+    list_for_each_entry_safe (struct vkr_queue_sync, sync, &queue->sync_thread.syncs, head)
+       vkr_queue_sync_retire(queue, sync);
+@@ -265,9 +266,16 @@ vkr_queue_sync_thread_init(struct vkr_queue *queue)
+ 
+    list_inithead(&queue->sync_thread.syncs);
+ 
++   /* OmacVM (virgl-venus-thread-budget.patch) */
++   if (!virgl_thread_budget_take("sync thread of a new Venus queue")) {
++      ret = thrd_error;
++      goto fail_thrd_create;
++   }
+    ret = thrd_create(&queue->sync_thread.thread, vkr_queue_thread, queue);
+-   if (ret != thrd_success)
++   if (ret != thrd_success) {
++      virgl_thread_budget_give();
+       goto fail_thrd_create;
++   }
+ 
+    return 0;
+ 
+diff --git a/src/venus/vkr_ring.c b/src/venus/vkr_ring.c
+index f116286..32a242a 100644
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -348,10 +348,15 @@ vkr_ring_start(struct vkr_ring *ring)
+    int ret;
+ 
+    assert(!ring->started);
++   /* OmacVM (virgl-venus-thread-budget.patch) */
++   if (!virgl_thread_budget_take("thread of a new Venus ring"))
++      return false;
+    ring->started = true;
+    ret = thrd_create(&ring->thread, vkr_ring_thread, ring);
+-   if (ret != thrd_success)
++   if (ret != thrd_success) {
+       ring->started = false;
++      virgl_thread_budget_give();
++   }
+    return ring->started;
+ }
+ 
+@@ -374,6 +379,7 @@ vkr_ring_stop(struct vkr_ring *ring)
+    mtx_unlock(&ring->mutex);
+ 
+    thrd_join(ring->thread, NULL);
++   virgl_thread_budget_give();
+ 
+    return true;
+ }
+diff --git a/src/virgl_util.c b/src/virgl_util.c
+index 6e100de..be96e74 100644
+--- a/src/virgl_util.c
++++ b/src/virgl_util.c
+@@ -28,6 +28,9 @@
+ 
+ #include "virgl_util.h"
+ 
++#include <stdatomic.h>
++#include <sys/resource.h>
++
+ #include <errno.h>
+ #ifdef HAVE_EVENTFD_H
+ #include <sys/eventfd.h>
+@@ -101,6 +104,64 @@ bool has_eventfd(void)
+ #endif
+ }
+ 
++static atomic_int virgl_threads_used;
++
++static void PRINTFLIKE(1, 2) virgl_thread_budget_log(const char *fmt, ...)
++{
++   va_list va;
++   va_start(va, fmt);
++   virgl_prefixed_logv("vkr", VIRGL_LOG_LEVEL_INFO, fmt, va);
++   va_end(va);
++}
++
++static int virgl_thread_budget_max(void)
++{
++   static atomic_int max;
++   int m = atomic_load(&max);
++   if (!m) {
++      const char *env = getenv("OMACVM_VENUS_THREADS");
++      m = env && atoi(env) > 0 ? atoi(env) : 1024;
++      atomic_store(&max, m);
++   }
++   return m;
++}
++
++bool virgl_thread_budget_take(const char *what)
++{
++   static atomic_uint refusals;
++   const int max = virgl_thread_budget_max();
++   int n = atomic_load(&virgl_threads_used);
++   do {
++      if (n >= max) {
++         const unsigned r = atomic_fetch_add(&refusals, 1) + 1;
++         if (!(r & (r - 1)))
++            virgl_thread_budget_log("%d threads for guest calls already (at most %d): the %s "
++                                    "is not made, that call fails (%u so far)", n, max, what, r);
++         return false;
++      }
++   } while (!atomic_compare_exchange_weak(&virgl_threads_used, &n, n + 1));
++   return true;
++}
++
++void virgl_thread_budget_give(void)
++{
++   atomic_fetch_sub(&virgl_threads_used, 1);
++}
++
++int virgl_thread_budget_used(void)
++{
++   return atomic_load(&virgl_threads_used);
++}
++
++int virgl_context_budget(int workers)
++{
++   struct rlimit r;
++   int max = workers;
++   if (!getrlimit(RLIMIT_NOFILE, &r) && r.rlim_cur != RLIM_INFINITY && r.rlim_cur / 16 < (rlim_t)max)
++      max = (int)(r.rlim_cur / 16);
++   return max > 0 ? max : 1;
++}
++
+ int create_eventfd(unsigned int initval)
+ {
+ #ifdef HAVE_EVENTFD_H
+diff --git a/src/virgl_util.h b/src/virgl_util.h
+index 6024b57..305c8d6 100644
+--- a/src/virgl_util.h
++++ b/src/virgl_util.h
+@@ -171,4 +171,20 @@ void trace_end(void **scope);
+ /* Utility to name a dmabuf using DMA_BUF_SET_NAME_B. */
+ void set_dmabuf_name(int fd, const char *name);
+ 
++/* OmacVM (virgl-venus-thread-budget.patch, ADR 0065): one process-wide count of the
++ * threads guest calls make: a render worker and a proxy sync thread per Venus context, a
++ * thread per ring and the ring monitor, a sync thread per device queue. QEMU, Metal and
++ * GCD need threads too, and QEMU ends the process when it cannot make one (macOS allows
++ * kern.num_taskthreads, 4096, per process). Taken before each such thread is made,
++ * given back when it is joined; past the budget (1024, OMACVM_VENUS_THREADS for tests)
++ * the guest's call fails and one line names `what` (the 1st, 2nd, 4th ... time). */
++bool virgl_thread_budget_take(const char *what);
++void virgl_thread_budget_give(void);
++int virgl_thread_budget_used(void);
++
++/* the Venus contexts that may live at once: at most `workers`, and no more than half of
++ * the open-file limit at 8 files each (sockets, shared memory, fence FIFOs), read at run
++ * time: QEMU raises the soft limit to OPEN_MAX (10240) on macOS */
++int virgl_context_budget(int workers);
++
+ #endif /* VIRGL_UTIL_H */

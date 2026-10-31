@@ -45,9 +45,9 @@ vkCmdResetQueryPool	pool, first, count	A	first + count <= count	c-query-reset-fa
 vkCmdWriteTimestamp	stage, pool, query	A+B	A: query < count; B: + the views of the open multiview pass (none after its end)	c-query-timestamp-far (MVK-p 11); PR-B legal: c-state-after-mv-timestamp, c-state-after-mv2-timestamp, c-state-after-mv-dyn-timestamp
 vkCmdCopyQueryPoolResults	pool, first, count, dst, offset, stride, flags	A	first + count <= count; offset + (count-1)*stride + result size <= dst size; offset, stride % 4	c-query-copy-past (accepted)
 vkCmdPushConstants	layout, stages, offset, size	A	offset, size % 4, size > 0, offset + size <= maxPushConstantsSize	c-push-far (KK 10), c-push-wrap (KK 10, MVK-p 10), c-push-near (KK 256 bytes past push[256])
-vkCmdBeginRenderPass	begin info	A+B	A: framebuffer attachment count = the pass's (imageless: the begin info's), clearValueCount >= the last attachment whose loadOp clears, or whose stencilLoadOp clears on a depth/stencil format, + 1, sample-location indices; B: pass state	r-fb-fewer (KK 11, MVK-p 11); r-begin-clear-ds-stencil; legal: r-begin-clear-color-stencil; PR-B: c-state-begin-twice
-vkCmdNextSubpass	contents	B	inside a render pass, not past its last subpass; the pass's render pass and framebuffer still exist (kept by id and serial, never by pointer)	r-next-subpass (KK 11); PR-B: c-state-next-subpass, c-state-two-subpasses-ok; c-state-destroyed-pass-next, c-state-destroyed-id-reused
-vkCmdEndRenderPass		B	inside a render pass whose render pass and framebuffer still exist; its end clears the pass's view mask, colors and subpasses	r-end-no-begin (KK 11, MVK-p 11); PR-B: c-state-end-no-begin, c-state-end-in-pass; c-state-destroyed-pass-end, c-state-destroyed-fb-end
+vkCmdBeginRenderPass	begin info	A+B+C	A: framebuffer attachment count = the pass's (imageless: the begin info's), clearValueCount >= the last attachment whose loadOp clears, or whose stencilLoadOp clears on a depth/stencil format, + 1, sample-location indices; B: pass state; C: the framebuffer's views still exist (an imageless begin's are kept with the command buffer)	r-fb-fewer (KK 11, MVK-p 11); r-begin-clear-ds-stencil; legal: r-begin-clear-color-stencil; PR-B: c-state-begin-twice; C: c-state-destroyed-view-begin, c-state-destroyed-view-imageless
+vkCmdNextSubpass	contents	B+C	inside a render pass, not past its last subpass; the pass's render pass and framebuffer still exist (kept by id and serial, never by pointer); C: the pass's views still exist	r-next-subpass (KK 11); PR-B: c-state-next-subpass, c-state-two-subpasses-ok; c-state-destroyed-pass-next, c-state-destroyed-id-reused; C: c-state-destroyed-view-next
+vkCmdEndRenderPass		B+C	inside a render pass whose render pass and framebuffer still exist; its end clears the pass's view mask, colors and subpasses; C: the pass's views still exist	r-end-no-begin (KK 11, MVK-p 11); PR-B: c-state-end-no-begin, c-state-end-in-pass; c-state-destroyed-pass-end, c-state-destroyed-fb-end; C: c-state-destroyed-view-end; legal: c-state-destroyed-view-after-ok
 vkCmdExecuteCommands	commandBuffers	A+B	A: a primary executing secondaries only (KK replays secondaries recursively; EXT_nested_command_buffer hidden); B: secondaries' bound state	gap 6: c-nested-self, c-execute-in-secondary, c-execute-primary; PR-B: c-state-execute-recording
 vkCmdSetDeviceMask	deviceMask	values only		Mesa: assert only
 vkCmdDispatchBase	bases, counts	A+B	A: base + count <= maxComputeWorkGroupCount per axis	
@@ -83,8 +83,8 @@ vkCmdSetPrimitiveRestartEnable	bool	values only
 vkCmdSetRasterizerDiscardEnable	bool	values only		
 vkCmdBeginConditionalRenderingEXT	buffer, offset	A	offset + 4 <= size, offset % 4	
 vkCmdEndConditionalRenderingEXT		B	inside conditional rendering	
-vkCmdBeginRendering	rendering info	A+B	A: colorAttachmentCount <= maxColorAttachments, viewMask within the (lowered) view count, layerCount <= maxFramebufferLayers, resolve view present where an attachment with a view sets a resolveMode (none asked without a view), resolve modes known; B: state	r-dyn-colors-9 (KK 6, MVK-p 6), r-dyn-viewmask-all (KK 6); legal: r-dyn-resolve-no-view(-target)
-vkCmdEndRendering		B	inside dynamic rendering; its end clears the view mask and colors	PR-B legal: c-state-after-mv-dyn-timestamp
+vkCmdBeginRendering	rendering info	A+B+C	A: colorAttachmentCount <= maxColorAttachments, viewMask within the (lowered) view count, layerCount <= maxFramebufferLayers, resolve view present where an attachment with a view sets a resolveMode (none asked without a view), resolve modes known; B: state; C: its views kept with the command buffer	r-dyn-colors-9 (KK 6, MVK-p 6), r-dyn-viewmask-all (KK 6); legal: r-dyn-resolve-no-view(-target); C: c-state-destroyed-view-rendering
+vkCmdEndRendering		B+C	inside dynamic rendering; its end clears the view mask and colors; C: the rendering's views still exist	PR-B legal: c-state-after-mv-dyn-timestamp; C: c-state-destroyed-view-rendering
 vkCmdPipelineBarrier2	dependency info	A	as vkCmdPipelineBarrier	gap 9
 vkCmdResetEvent2	event, stageMask	values only		
 vkCmdSetEvent2	event, dependency info	A	barrier ranges	
@@ -92,7 +92,7 @@ vkCmdWaitEvents2	events, dependency infos	A	barrier ranges
 vkCmdWriteTimestamp2	stage, pool, query	A+B	as vkCmdWriteTimestamp	
 vkCmdDrawMultiEXT	drawCount, pVertexInfo, stride	A+B	A: stride passed as sizeof(VkMultiDrawInfoEXT) (the decoder packs the array), NULL array with drawCount > 0 refused; B: pipeline	gap 2: c-drawmulti-stride, c-drawmulti-null
 vkCmdDrawMultiIndexedEXT	drawCount, pIndexInfo, stride, pVertexOffset	A+B	as vkCmdDrawMultiEXT	gap 2
-vkCmdPushDescriptorSet	bindPoint, layout, set, writes	A	set < the layout's set count and a push-descriptor set layout there; writes checked as vkUpdateDescriptorSets	c-push-set-oob
+vkCmdPushDescriptorSet	bindPoint, layout, set, writes	A+C	set < the layout's set count and a push-descriptor set layout there; writes checked as vkUpdateDescriptorSets; C: split per binding as vkUpdateDescriptorSets	c-push-set-oob; C legal: c-push-set-split-ok
 vkCmdSetColorWriteEnableEXT	count	A	count <= maxColorAttachments (Mesa vk_graphics_state.c:3154)	gap 3
 vkCmdSetVertexInputEXT	bindings, attributes	A	binding < maxVertexInputBindings, location < maxVertexInputAttributes, stride <= max, counts <= max	gap 3
 vkCmdSetAlphaToCoverageEnableEXT	bool	values only		

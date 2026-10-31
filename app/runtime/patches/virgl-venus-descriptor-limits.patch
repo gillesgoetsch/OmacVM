@@ -13,7 +13,10 @@ list for every mutable binding), pools (known types, at most 2^24 per size
 and sets), set allocation (one variable count per set, within the binding's),
 writes and copies (the binding exists, the type is its own, the elements lie
 in it and the consecutive bindings the spec allows, those without descriptors
-and numbers the layout lacks skipped; inline data of the written size;
+and numbers the layout lacks skipped, from an element that may lie past the
+first binding; an update over several bindings goes to the driver as one write
+or copy per binding, each part checked in its own binding: type, mutable type
+list, YCbCr planes; inline data of the written size;
 samplers present unless immutable; NULL views, buffers (dynamic ones too)
 and texel views only with nullDescriptor; buffer ranges inside the buffer and
 maxUniform/StorageBufferRange; a multi-planar view only where immutable YCbCr
@@ -25,7 +28,12 @@ pipeline layout, each with the pipeline layout's dynamic buffers there, one
 offset per dynamic buffer; a push to a push descriptor set layout, its writes
 as above). Image views and samplers keep their plane counts. A refusal ends
 the app's context (the guest makes and updates these without waiting).
-Why: KosmicKrisp (NDEBUG) sizes a layout's binding array by the largest binding
+Why: KosmicKrisp (NDEBUG) writes a whole write at its first binding's offset +
+element * that binding's stride, and MoltenVK with that binding's layout, but the
+strides and layouts of consecutive bindings of one type differ (immutable YCbCr
+samplers of 2 or 3 planes, a mutable binding as wide as its largest type): a
+legal write over a 3-plane and a 1-plane binding landed past the set.
+KosmicKrisp sizes a layout's binding array by the largest binding
 number + 1 (0xffffffff wraps to 0, then writes binding[0xffffffff]), counts
 dynamic buffers in a uint8 into a 64-bit bitset, sizes layouts, sets and pools
 in 32-bit arithmetic, writes each descriptor at the binding's offset + element *
@@ -38,11 +46,13 @@ too, and ends the process on a write of another type. Probed on Apple7:
 SIGBUS/SIGSEGV 3 of 3 (ADR 0065).
 Upstream: OmacVM policy (spec VUIDs), draft only.
 Tests: Tests/virgl/test-venus-commands.c (the d- and p-layout cases and the
-c-sets/c-push-set cases); --time: us per vkUpdateDescriptorSets and
+c-sets/c-push-set cases); Tests/virgl/test-venus-descriptor-walk.c (the walk over
+consecutive bindings against a model of the spec's rule, on the CPU, seeds 1, 2,
+3, 77 and 12345); --time: us per vkUpdateDescriptorSets (1 and 1000 writes) and
 vkCmdBindDescriptorSets through vkr.
 
 diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
-index ec98eda..837bb6c 100644
+index ec98eda..f231fe3 100644
 --- a/src/venus/vkr_command_buffer.c
 +++ b/src/venus/vkr_command_buffer.c
 @@ -7,6 +7,7 @@
@@ -90,21 +100,21 @@ index ec98eda..837bb6c 100644
 +
 +/* a push to set `set` of the layout: there, a push descriptor set layout */
 +static bool
-+vkr_cmd_push_set_ok(struct vkr_context *ctx,
++vkr_cmd_push_set_ok(struct vn_dispatch_context *dispatch,
 +                    const char *call,
 +                    const struct vkr_device *dev,
 +                    const struct vkr_pipeline_layout *layout,
 +                    uint32_t set,
-+                    uint32_t count,
-+                    const VkWriteDescriptorSet *writes)
++                    uint32_t *count,
++                    const VkWriteDescriptorSet **writes)
 +{
 +   const struct vkr_set_layout *push = layout && set < layout->set_count ? layout->sets[set] : NULL;
-+   if (!vkr_context_check(ctx,
++   if (!vkr_context_check(dispatch->data,
 +                          push && (push->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR),
 +                          call, "set %u of %u is not a push descriptor set", set,
 +                          layout ? layout->set_count : 0))
 +      return false;
-+   return vkr_descriptor_writes_ok(ctx, call, dev, push, count, writes);
++   return vkr_descriptor_writes_ok(dispatch, call, dev, push, count, writes);
 +}
 +
  static void
@@ -140,9 +150,9 @@ index ec98eda..837bb6c 100644
 +   if (!vkr_context_check(dispatch->data,
 +                          vkr_bind_point_ok(VKR_CMD_LIMITS(args), args->pipelineBindPoint),
 +                          "vkCmdPushDescriptorSet", "bind point %d", args->pipelineBindPoint) ||
-+       !vkr_cmd_push_set_ok(dispatch->data, "vkCmdPushDescriptorSet", VKR_CMD_DEVICE(args),
++       !vkr_cmd_push_set_ok(dispatch, "vkCmdPushDescriptorSet", VKR_CMD_DEVICE(args),
 +                            vkr_pipeline_layout_from_handle(args->layout), args->set,
-+                            args->descriptorWriteCount, args->pDescriptorWrites))
++                            &args->descriptorWriteCount, &args->pDescriptorWrites))
 +      return;
     VKR_CMD_CALL(CmdPushDescriptorSet, args, args->pipelineBindPoint, args->layout,
                  args->set, args->descriptorWriteCount, args->pDescriptorWrites);
@@ -172,10 +182,10 @@ index ec98eda..837bb6c 100644
 +vkr_dispatch_vkCmdPushDescriptorSet2(struct vn_dispatch_context *dispatch,
                                       struct vn_command_vkCmdPushDescriptorSet2 *args)
  {
-+   const VkPushDescriptorSetInfo *info = args->pPushDescriptorSetInfo;
-+   if (!vkr_cmd_push_set_ok(dispatch->data, "vkCmdPushDescriptorSet2", VKR_CMD_DEVICE(args),
++   VkPushDescriptorSetInfo *info = (VkPushDescriptorSetInfo *)args->pPushDescriptorSetInfo;
++   if (!vkr_cmd_push_set_ok(dispatch, "vkCmdPushDescriptorSet2", VKR_CMD_DEVICE(args),
 +                            vkr_pipeline_layout_from_handle(info->layout), info->set,
-+                            info->descriptorWriteCount, info->pDescriptorWrites))
++                            &info->descriptorWriteCount, &info->pDescriptorWrites))
 +      return;
     VKR_CMD_CALL(CmdPushDescriptorSet2, args, args->pPushDescriptorSetInfo);
  }
@@ -202,10 +212,10 @@ index 19c0929..4261c13 100644
  }
  
 diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
-index 5ec209f..0229a4f 100644
+index 5ec209f..10c6a1a 100644
 --- a/src/venus/vkr_descriptor_set.c
 +++ b/src/venus/vkr_descriptor_set.c
-@@ -6,6 +6,467 @@
+@@ -6,6 +6,701 @@
  #include "vkr_descriptor_set.h"
  
  #include "vkr_descriptor_set_gen.h"
@@ -463,34 +473,79 @@ index 5ec209f..0229a4f 100644
 +                                                                            : b->count;
 +}
 +
-+/* elements first .. first + count - 1 of a binding and, past its end, of the bindings that
-+ * follow it (the spec's consecutive binding update: bindings with no descriptors, and
-+ * numbers the layout lacks, are skipped; the others have the type, stages, flags and
-+ * immutable samplers of the first); inline uniform blocks within the one binding */
-+static bool
-+vkr_set_elements_ok(const struct vkr_set_layout *layout,
-+                    uint32_t index,
-+                    uint32_t variable_count,
-+                    uint32_t first,
-+                    uint32_t count)
++/* the consecutive binding update (VUID-VkWriteDescriptorSet-dstArrayElement-00321 and
++ * descriptorCount-00317, -00318, -10776, -10777): from element `first` of binding `index`,
++ * the descriptors fill the rest of that binding and go on into the bindings after it.
++ * Bindings with no descriptors, and numbers the layout lacks, are skipped; every other
++ * binding passed has the first one's type, stages, flags and immutable samplers or not.
++ * The walk gives one part per binding the update lands in: KosmicKrisp writes a whole
++ * write at its first binding's offset + element * that binding's stride and MoltenVK with
++ * that binding's layout, but strides and layouts differ between bindings of one type
++ * (immutable YCbCr samplers of 2 or 3 planes, a mutable binding sized by its largest
++ * type), so each part reaches the driver as a write of its own. Inline uniform blocks
++ * (bytes, a multiple of 4) and empty updates stay within the one binding. */
++void
++vkr_set_walk_init(struct vkr_set_walk *walk,
++                  const struct vkr_set_layout *layout,
++                  uint32_t variable_count,
++                  uint32_t index,
++                  uint32_t first,
++                  uint32_t count)
 +{
-+   const struct vkr_set_layout_binding *b = &layout->bindings[index];
-+   uint64_t room = vkr_set_binding_count(b, variable_count);
-+   if (b->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
-+      return !(first & 3) && !(count & 3) && vkr_range_ok(first, count, room);
-+   if (first > room)
++   *walk = (struct vkr_set_walk){ .layout = layout, .variable_count = variable_count,
++                                  .first_index = index, .index = index, .element = first,
++                                  .left = count };
++}
++
++bool
++vkr_set_walk_next(struct vkr_set_walk *walk, struct vkr_set_part *part)
++{
++   const struct vkr_set_layout *layout = walk->layout;
++   const struct vkr_set_layout_binding *b0 = &layout->bindings[walk->first_index];
++   if (walk->failed || (!walk->left && walk->parts))
 +      return false;
-+   room -= first;
-+   for (uint32_t i = index + 1; room < count && i < layout->binding_count; i++) {
-+      const struct vkr_set_layout_binding *next = &layout->bindings[i];
-+      if (!next->count)
-+         continue;
-+      if (next->type != b->type || next->stages != b->stages || next->flags != b->flags ||
-+          !next->immutable_planes != !b->immutable_planes)
++   if (b0->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK || !walk->left) {
++      const uint64_t room = vkr_set_binding_count(b0, walk->variable_count);
++      const bool ok = b0->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK
++                         ? !(walk->element & 3) && !(walk->left & 3) &&
++                              vkr_range_ok(walk->element, walk->left, room)
++                         : walk->element <= room;
++      if (!ok) {
++         walk->failed = true;
 +         return false;
-+      room += vkr_set_binding_count(next, variable_count);
++      }
++      *part = (struct vkr_set_part){ walk->first_index, walk->element, walk->left, 0 };
++      walk->done = walk->left;
++      walk->left = 0;
++      walk->parts = 1;
++      return true;
 +   }
-+   return room >= count;
++   for (; walk->index < layout->binding_count; walk->index++) {
++      const struct vkr_set_layout_binding *b = &layout->bindings[walk->index];
++      if (walk->index != walk->first_index) {
++         if (!b->count)
++            continue;
++         if (b->type != b0->type || b->stages != b0->stages || b->flags != b0->flags ||
++             !b->immutable_planes != !b0->immutable_planes)
++            break;
++      }
++      const uint32_t room = vkr_set_binding_count(b, walk->variable_count);
++      if (walk->element >= room) {
++         walk->element -= room;
++         continue;
++      }
++      const uint32_t n = MIN2(room - walk->element, walk->left);
++      *part = (struct vkr_set_part){ walk->index, walk->element, n, walk->done };
++      walk->done += n;
++      walk->left -= n;
++      walk->element = 0;
++      walk->index++;
++      walk->parts++;
++      return true;
++   }
++   /* past the layout's last binding, or a binding that differs */
++   walk->failed = true;
++   return false;
 +}
 +
 +/* the descriptor type a write or copy may name for a binding */
@@ -502,45 +557,49 @@ index 5ec209f..0229a4f 100644
 +           (b->mutable_types & (1u << type)));
 +}
 +
++/* a write's layout (a push layout, else its set's) and its variable count */
++static const struct vkr_set_layout *
++vkr_write_layout(const struct vkr_set_layout *push,
++                 const VkWriteDescriptorSet *w,
++                 uint32_t *variable_count)
++{
++   const struct vkr_descriptor_set *set =
++      push ? NULL : vkr_descriptor_set_from_handle(w->dstSet);
++   *variable_count = set ? set->variable_count : 0;
++   return push ? push : set ? set->layout : NULL;
++}
++
++/* one part of a write: its descriptors p->offset .. + p->count, in binding b */
 +static bool
-+vkr_descriptor_write_ok(const struct vkr_device *dev,
-+                        const struct vkr_set_layout *layout,
-+                        uint32_t variable_count,
-+                        const VkWriteDescriptorSet *w,
-+                        char *why,
-+                        size_t why_size)
++vkr_write_part_ok(const struct vkr_device *dev,
++                  const struct vkr_set_layout_binding *b,
++                  const VkWriteDescriptorSet *w,
++                  const struct vkr_set_part *p,
++                  char *why,
++                  size_t why_size)
 +{
 +   const VkPhysicalDeviceLimits *lim = &dev->physical_device->properties.limits;
-+   uint32_t index;
-+   const struct vkr_set_layout_binding *b =
-+      layout ? vkr_set_layout_find(layout, w->dstBinding, &index) : NULL;
-+   if (!b || !vkr_set_type_ok(b, w->descriptorType) ||
-+       !vkr_set_elements_ok(layout, index, variable_count, w->dstArrayElement,
-+                            w->descriptorCount)) {
-+      snprintf(why, why_size, "binding %u, elements %u + %u, type %d (the binding: %d of %u)",
-+               w->dstBinding, w->dstArrayElement, w->descriptorCount, w->descriptorType,
-+               b ? (int)b->type : -1, b ? vkr_set_binding_count(b, variable_count) : 0);
++   const bool null_ok = dev->null_descriptor;
++   if (!vkr_set_type_ok(b, w->descriptorType)) {
++      snprintf(why, why_size, "binding %u: type %d (the binding's: %d)", b->binding,
++               w->descriptorType, b->type);
 +      return false;
 +   }
-+   const bool null_ok = dev->null_descriptor;
 +   switch (w->descriptorType) {
 +   case VK_DESCRIPTOR_TYPE_SAMPLER:
 +   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
 +   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
 +   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
 +   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-+      if (!w->pImageInfo && w->descriptorCount) {
-+         snprintf(why, why_size, "binding %u: no image infos", w->dstBinding);
-+         return false;
-+      }
-+      for (uint32_t i = 0; i < w->descriptorCount; i++) {
-+         const VkDescriptorImageInfo *ii = &w->pImageInfo[i];
++      for (uint32_t i = 0; i < p->count; i++) {
++         const VkDescriptorImageInfo *ii = &w->pImageInfo[p->offset + i];
++         const uint32_t e = p->element + i;
 +         const bool sampler_type = w->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
 +                                   w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 +         const struct vkr_sampler *sampler = vkr_sampler_from_handle(ii->sampler);
 +         /* KosmicKrisp dereferences the sampler; YCbCr samplers only as immutable ones */
 +         if (sampler_type && !b->immutable_planes && (!sampler || sampler->planes)) {
-+            snprintf(why, why_size, "binding %u element %u: %s sampler", w->dstBinding, i,
++            snprintf(why, why_size, "binding %u element %u: %s sampler", b->binding, e,
 +                     sampler ? "a YCbCr" : "no");
 +            return false;
 +         }
@@ -553,7 +612,7 @@ index 5ec209f..0229a4f 100644
 +                                  : 1;
 +         if (view ? view->planes > MAX2(room, 1)
 +                  : !null_ok || w->descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
-+            snprintf(why, why_size, "binding %u element %u: %s", w->dstBinding, i,
++            snprintf(why, why_size, "binding %u element %u: %s", b->binding, e,
 +                     view ? "a multi-planar view without immutable YCbCr samplers"
 +                          : "no image view");
 +            return false;
@@ -562,13 +621,10 @@ index 5ec209f..0229a4f 100644
 +      break;
 +   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
 +   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-+      if (!w->pTexelBufferView && w->descriptorCount) {
-+         snprintf(why, why_size, "binding %u: no texel buffer views", w->dstBinding);
-+         return false;
-+      }
-+      for (uint32_t i = 0; i < w->descriptorCount; i++) {
-+         if (!w->pTexelBufferView[i] && !null_ok) {
-+            snprintf(why, why_size, "binding %u element %u: no texel buffer view", w->dstBinding, i);
++      for (uint32_t i = 0; i < p->count; i++) {
++         if (!w->pTexelBufferView[p->offset + i] && !null_ok) {
++            snprintf(why, why_size, "binding %u element %u: no texel buffer view (the device's "
++                     "nullDescriptor is off)", b->binding, p->element + i);
 +            return false;
 +         }
 +      }
@@ -577,31 +633,39 @@ index 5ec209f..0229a4f 100644
 +   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
 +   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
 +   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
-+      if (!w->pBufferInfo && w->descriptorCount) {
-+         snprintf(why, why_size, "binding %u: no buffer infos", w->dstBinding);
-+         return false;
-+      }
 +      const bool uniform = w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
 +                           w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
 +      const uint64_t max_range = uniform ? lim->maxUniformBufferRange : lim->maxStorageBufferRange;
-+      for (uint32_t i = 0; i < w->descriptorCount; i++) {
-+         const VkDescriptorBufferInfo *bi = &w->pBufferInfo[i];
++      for (uint32_t i = 0; i < p->count; i++) {
++         const VkDescriptorBufferInfo *bi = &w->pBufferInfo[p->offset + i];
 +         const struct vkr_buffer *buf = vkr_buffer_from_handle(bi->buffer);
-+         bool ok;
++         const uint32_t e = p->element + i;
 +         if (!buf) {
 +            /* dynamic ones too: KosmicKrisp gives a NULL buffer an empty range */
-+            ok = null_ok && !bi->offset && bi->range == VK_WHOLE_SIZE;
-+         } else {
-+            const uint64_t range =
-+               bi->range == VK_WHOLE_SIZE ? (bi->offset < buf->size ? buf->size - bi->offset : 0)
-+                                          : bi->range;
-+            ok = vkr_whole_range_ok(bi->offset, bi->range, buf->size) && range &&
-+                 range <= max_range;
++            if (null_ok && !bi->offset && bi->range == VK_WHOLE_SIZE)
++               continue;
++            if (!null_ok)
++               snprintf(why, why_size, "binding %u element %u: no buffer (the device's "
++                        "nullDescriptor is off)", b->binding, e);
++            else
++               snprintf(why, why_size, "binding %u element %u: no buffer at offset %" PRIu64
++                        ", range %" PRIu64 " (a null descriptor needs 0 and the whole size)",
++                        b->binding, e, bi->offset, bi->range);
++            return false;
 +         }
-+         if (!ok) {
-+            snprintf(why, why_size, "binding %u element %u: %" PRIu64 " bytes at %" PRIu64
-+                     " of %" PRIu64 " (at most %" PRIu64 ")", w->dstBinding, i, bi->range,
-+                     bi->offset, buf ? buf->size : 0, max_range);
++         const uint64_t range =
++            bi->range == VK_WHOLE_SIZE ? (bi->offset < buf->size ? buf->size - bi->offset : 0)
++                                       : bi->range;
++         if (!vkr_whole_range_ok(bi->offset, bi->range, buf->size) || !range ||
++             range > max_range) {
++            char what[40];
++            if (bi->range == VK_WHOLE_SIZE)
++               snprintf(what, sizeof(what), "the whole size");
++            else
++               snprintf(what, sizeof(what), "%" PRIu64 " bytes", bi->range);
++            snprintf(why, why_size, "binding %u element %u: %s at %" PRIu64 " of %" PRIu64
++                     " (at most %" PRIu64 ")", b->binding, e, what, bi->offset, buf->size,
++                     max_range);
 +            return false;
 +         }
 +      }
@@ -611,43 +675,146 @@ index 5ec209f..0229a4f 100644
 +      const VkWriteDescriptorSetInlineUniformBlock *data = vkr_find_struct(
 +         w->pNext, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK);
 +      if (!data || data->dataSize != w->descriptorCount) {
-+         snprintf(why, why_size, "binding %u: %u inline bytes, %u in the write", w->dstBinding,
++         snprintf(why, why_size, "binding %u: %u inline bytes, %u in the write", b->binding,
 +                  data ? data->dataSize : 0, w->descriptorCount);
 +         return false;
 +      }
 +      break;
 +   }
 +   default:
-+      snprintf(why, why_size, "binding %u: type %d", w->dstBinding, w->descriptorType);
++      snprintf(why, why_size, "binding %u: type %d", b->binding, w->descriptorType);
 +      return false;
 +   }
 +   return true;
 +}
 +
++/* a write's parts (the bindings it lands in), or 0 when it does not hold; *as_is: one
++ * part, where the write names it */
++static uint32_t
++vkr_descriptor_write_parts(const struct vkr_device *dev,
++                           const struct vkr_set_layout *push,
++                           const VkWriteDescriptorSet *w,
++                           bool *as_is,
++                           char *why,
++                           size_t why_size)
++{
++   uint32_t variable_count, index;
++   const struct vkr_set_layout *layout = vkr_write_layout(push, w, &variable_count);
++   const struct vkr_set_layout_binding *b =
++      layout ? vkr_set_layout_find(layout, w->dstBinding, &index) : NULL;
++   if (!b || !vkr_set_type_ok(b, w->descriptorType)) {
++      snprintf(why, why_size, "binding %u: %s", w->dstBinding,
++               b ? "another descriptor type" : "not in the set's layout");
++      return 0;
++   }
++   const bool image = w->descriptorType <= VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
++                      w->descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
++   const bool texel = w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
++                      w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
++   const bool buffer = w->descriptorType >= VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
++                       w->descriptorType <= VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
++   if (w->descriptorCount && ((image && !w->pImageInfo) || (texel && !w->pTexelBufferView) ||
++                              (buffer && !w->pBufferInfo))) {
++      snprintf(why, why_size, "binding %u: no %s", w->dstBinding,
++               image ? "image infos" : texel ? "texel buffer views" : "buffer infos");
++      return 0;
++   }
++   struct vkr_set_walk walk;
++   struct vkr_set_part p = { 0 };
++   vkr_set_walk_init(&walk, layout, variable_count, index, w->dstArrayElement,
++                     w->descriptorCount);
++   while (vkr_set_walk_next(&walk, &p)) {
++      if (!vkr_write_part_ok(dev, &layout->bindings[p.index], w, &p, why, why_size))
++         return 0;
++   }
++   if (walk.failed) {
++      snprintf(why, why_size, "binding %u, elements %u + %u, type %d (the binding: %d of %u)",
++               w->dstBinding, w->dstArrayElement, w->descriptorCount, w->descriptorType,
++               (int)b->type, vkr_set_binding_count(b, variable_count));
++      return 0;
++   }
++   *as_is = walk.parts == 1 && p.index == index && p.element == w->dstArrayElement;
++   return walk.parts;
++}
++
 +bool
-+vkr_descriptor_writes_ok(struct vkr_context *ctx,
++vkr_descriptor_writes_ok(struct vn_dispatch_context *dispatch,
 +                         const char *call,
 +                         const struct vkr_device *dev,
 +                         const struct vkr_set_layout *push,
-+                         uint32_t count,
-+                         const VkWriteDescriptorSet *writes)
++                         uint32_t *count,
++                         const VkWriteDescriptorSet **writes)
 +{
++   const VkWriteDescriptorSet *in = *writes;
 +   char why[192];
-+   for (uint32_t i = 0; i < count; i++) {
-+      const struct vkr_descriptor_set *set =
-+         push ? NULL : vkr_descriptor_set_from_handle(writes[i].dstSet);
-+      const struct vkr_set_layout *layout = push ? push : set ? set->layout : NULL;
-+      if (!vkr_descriptor_write_ok(dev, layout, set ? set->variable_count : 0, &writes[i], why,
-+                                   sizeof(why))) {
-+         vkr_context_refuse(ctx, true, call, "write %u: %s", i, why);
++   uint64_t parts = 0;
++   bool all_as_is = true;
++   for (uint32_t i = 0; i < *count; i++) {
++      bool as_is = false;
++      const uint32_t n = vkr_descriptor_write_parts(dev, push, &in[i], &as_is, why, sizeof(why));
++      if (!n) {
++         vkr_context_refuse(dispatch->data, true, call, "write %u: %s", i, why);
 +         return false;
 +      }
++      parts += n;
++      all_as_is &= as_is;
 +   }
++   if (all_as_is)
++      return true;
++
++   /* the driver gets one write per binding (handles are replaced in these afterwards: the
++    * parts share the guest's info arrays, each element in one part) */
++   VkWriteDescriptorSet *out = vkr_cs_decoder_alloc_temp_array(
++      (struct vkr_cs_decoder *)dispatch->decoder, sizeof(*out), parts);
++   if (!out)
++      return false;
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < *count; i++) {
++      const VkWriteDescriptorSet *w = &in[i];
++      uint32_t variable_count, index;
++      const struct vkr_set_layout *layout = vkr_write_layout(push, w, &variable_count);
++      vkr_set_layout_find(layout, w->dstBinding, &index);
++      struct vkr_set_walk walk;
++      struct vkr_set_part p;
++      vkr_set_walk_init(&walk, layout, variable_count, index, w->dstArrayElement,
++                        w->descriptorCount);
++      const uint32_t start = n;
++      while (vkr_set_walk_next(&walk, &p)) {
++         VkWriteDescriptorSet *o = &out[n++];
++         *o = *w;
++         o->dstBinding = layout->bindings[p.index].binding;
++         o->dstArrayElement = p.element;
++         o->descriptorCount = p.count;
++         if (w->pImageInfo)
++            o->pImageInfo = w->pImageInfo + p.offset;
++         if (w->pBufferInfo)
++            o->pBufferInfo = w->pBufferInfo + p.offset;
++         if (w->pTexelBufferView)
++            o->pTexelBufferView = w->pTexelBufferView + p.offset;
++      }
++      /* a split write's chain is for types that never split (inline uniform blocks) */
++      for (uint32_t j = start; n - start > 1 && j < n; j++)
++         out[j].pNext = NULL;
++   }
++   *writes = out;
++   *count = n;
 +   return true;
 +}
 +
++/* a copy's types: the same, or a mutable binding on either side */
 +static bool
-+vkr_descriptor_copy_ok(const VkCopyDescriptorSet *c, char *why, size_t why_size)
++vkr_copy_types_ok(const struct vkr_set_layout_binding *s, const struct vkr_set_layout_binding *d)
++{
++   return s->type == d->type || s->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT ||
++          d->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT;
++}
++
++/* a copy's segments: each in one binding on either side; 0 when it does not hold. out:
++ * where to put them (NULL to count); *as_is: one segment, where the copy names it */
++static uint32_t
++vkr_descriptor_copy_segments(const VkCopyDescriptorSet *c,
++                             VkCopyDescriptorSet *out,
++                             bool *as_is)
 +{
 +   const struct vkr_descriptor_set *src = vkr_descriptor_set_from_handle(c->srcSet);
 +   const struct vkr_descriptor_set *dst = vkr_descriptor_set_from_handle(c->dstSet);
@@ -656,24 +823,101 @@ index 5ec209f..0229a4f 100644
 +      src && src->layout ? vkr_set_layout_find(src->layout, c->srcBinding, &si) : NULL;
 +   const struct vkr_set_layout_binding *db =
 +      dst && dst->layout ? vkr_set_layout_find(dst->layout, c->dstBinding, &di) : NULL;
-+   if (!sb || !db ||
-+       (sb->type != db->type && sb->type != VK_DESCRIPTOR_TYPE_MUTABLE_EXT &&
-+        db->type != VK_DESCRIPTOR_TYPE_MUTABLE_EXT) ||
-+       !vkr_set_elements_ok(src->layout, si, src->variable_count, c->srcArrayElement,
-+                            c->descriptorCount) ||
-+       !vkr_set_elements_ok(dst->layout, di, dst->variable_count, c->dstArrayElement,
-+                            c->descriptorCount)) {
-+      snprintf(why, why_size, "binding %u elements %u + %u to binding %u elements %u + %u",
-+               c->srcBinding, c->srcArrayElement, c->descriptorCount, c->dstBinding,
-+               c->dstArrayElement, c->descriptorCount);
-+      return false;
++   if (!sb || !db)
++      return 0;
++   struct vkr_set_walk sw, dw;
++   struct vkr_set_part sp, dp;
++   vkr_set_walk_init(&sw, src->layout, src->variable_count, si, c->srcArrayElement,
++                     c->descriptorCount);
++   vkr_set_walk_init(&dw, dst->layout, dst->variable_count, di, c->dstArrayElement,
++                     c->descriptorCount);
++   if (!c->descriptorCount) {
++      if (!vkr_set_walk_next(&sw, &sp) || !vkr_set_walk_next(&dw, &dp) ||
++          !vkr_copy_types_ok(sb, db))
++         return 0;
++      if (out)
++         out[0] = *c;
++      *as_is = true;
++      return 1;
 +   }
++   /* both sides place the same count, a part of at least one descriptor at a time */
++   uint32_t n = 0, s_left = 0, d_left = 0;
++   do {
++      if (!s_left) {
++         if (!vkr_set_walk_next(&sw, &sp))
++            return 0;
++         s_left = sp.count;
++      }
++      if (!d_left) {
++         if (!vkr_set_walk_next(&dw, &dp))
++            return 0;
++         d_left = dp.count;
++      }
++      const struct vkr_set_layout_binding *s = &src->layout->bindings[sp.index];
++      const struct vkr_set_layout_binding *d = &dst->layout->bindings[dp.index];
++      if (!vkr_copy_types_ok(s, d))
++         return 0;
++      const uint32_t m = MIN2(s_left, d_left);
++      if (out) {
++         out[n] = *c;
++         out[n].srcBinding = s->binding;
++         out[n].srcArrayElement = sp.element + (sp.count - s_left);
++         out[n].dstBinding = d->binding;
++         out[n].dstArrayElement = dp.element + (dp.count - d_left);
++         out[n].descriptorCount = m;
++      }
++      n++;
++      s_left -= m;
++      d_left -= m;
++   } while (s_left || d_left || sw.left || dw.left);
++   *as_is = n == 1 && sp.index == si && sp.element == c->srcArrayElement && dp.index == di &&
++            dp.element == c->dstArrayElement;
++   return n;
++}
++
++bool
++vkr_descriptor_copies_ok(struct vn_dispatch_context *dispatch,
++                         const char *call,
++                         uint32_t *count,
++                         const VkCopyDescriptorSet **copies)
++{
++   const VkCopyDescriptorSet *in = *copies;
++   uint64_t segments = 0;
++   bool all_as_is = true;
++   for (uint32_t i = 0; i < *count; i++) {
++      const VkCopyDescriptorSet *c = &in[i];
++      bool as_is = false;
++      const uint32_t n = vkr_descriptor_copy_segments(c, NULL, &as_is);
++      if (!n) {
++         vkr_context_refuse(dispatch->data, true, call,
++                            "copy %u: binding %u elements %u + %u to binding %u elements %u + %u",
++                            i, c->srcBinding, c->srcArrayElement, c->descriptorCount,
++                            c->dstBinding, c->dstArrayElement, c->descriptorCount);
++         return false;
++      }
++      segments += n;
++      all_as_is &= as_is;
++   }
++   if (all_as_is)
++      return true;
++
++   VkCopyDescriptorSet *out = vkr_cs_decoder_alloc_temp_array(
++      (struct vkr_cs_decoder *)dispatch->decoder, sizeof(*out), segments);
++   if (!out)
++      return false;
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < *count; i++) {
++      bool as_is;
++      n += vkr_descriptor_copy_segments(&in[i], &out[n], &as_is);
++   }
++   *copies = out;
++   *count = n;
 +   return true;
 +}
  
  static void
  vkr_dispatch_vkGetDescriptorSetLayoutSupport(
-@@ -24,7 +485,23 @@ vkr_dispatch_vkCreateDescriptorSetLayout(
+@@ -24,7 +719,23 @@ vkr_dispatch_vkCreateDescriptorSetLayout(
     struct vn_dispatch_context *dispatch,
     struct vn_command_vkCreateDescriptorSetLayout *args)
  {
@@ -698,7 +942,7 @@ index 5ec209f..0229a4f 100644
  }
  
  static void
-@@ -39,6 +516,30 @@ static void
+@@ -39,6 +750,30 @@ static void
  vkr_dispatch_vkCreateDescriptorPool(struct vn_dispatch_context *dispatch,
                                      struct vn_command_vkCreateDescriptorPool *args)
  {
@@ -729,7 +973,7 @@ index 5ec209f..0229a4f 100644
     struct vkr_descriptor_pool *pool =
        vkr_descriptor_pool_create_and_add(dispatch->data, args);
     if (!pool)
-@@ -103,13 +604,63 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
+@@ -103,13 +838,63 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
        return;
     }
  
@@ -793,7 +1037,7 @@ index 5ec209f..0229a4f 100644
     vkr_descriptor_set_add_array(ctx, dev, pool, &arr);
  }
  
-@@ -133,12 +684,25 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
+@@ -133,12 +918,20 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
  }
  
  static void
@@ -804,24 +1048,19 @@ index 5ec209f..0229a4f 100644
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct vn_device_proc_table *vk = &dev->proc_table;
  
-+   /* OmacVM (virgl-venus-descriptor-limits.patch) */
-+   if (!vkr_descriptor_writes_ok(dispatch->data, "vkUpdateDescriptorSets", dev, NULL,
-+                                 args->descriptorWriteCount, args->pDescriptorWrites))
++   /* OmacVM (virgl-venus-descriptor-limits.patch): checked, and split where they go on
++    * into the next binding */
++   if (!vkr_descriptor_writes_ok(dispatch, "vkUpdateDescriptorSets", dev, NULL,
++                                 &args->descriptorWriteCount, &args->pDescriptorWrites) ||
++       !vkr_descriptor_copies_ok(dispatch, "vkUpdateDescriptorSets", &args->descriptorCopyCount,
++                                 &args->pDescriptorCopies))
 +      return;
-+   for (uint32_t i = 0; i < args->descriptorCopyCount; i++) {
-+      char why[192];
-+      if (!vkr_descriptor_copy_ok(&args->pDescriptorCopies[i], why, sizeof(why))) {
-+         vkr_context_refuse(dispatch->data, true, "vkUpdateDescriptorSets", "copy %u: %s", i,
-+                            why);
-+         return;
-+      }
-+   }
 +
     vn_replace_vkUpdateDescriptorSets_args_handle(args);
     vk->UpdateDescriptorSets(args->device, args->descriptorWriteCount,
                              args->pDescriptorWrites, args->descriptorCopyCount,
 diff --git a/src/venus/vkr_descriptor_set.h b/src/venus/vkr_descriptor_set.h
-index 1a31cfa..7ae0f4d 100644
+index 1a31cfa..9186001 100644
 --- a/src/venus/vkr_descriptor_set.h
 +++ b/src/venus/vkr_descriptor_set.h
 @@ -10,8 +10,36 @@
@@ -872,7 +1111,7 @@ index 1a31cfa..7ae0f4d 100644
  };
  VKR_DEFINE_OBJECT_CAST(descriptor_set, VK_OBJECT_TYPE_DESCRIPTOR_SET, VkDescriptorSet)
  
-@@ -52,6 +84,28 @@ vkr_context_init_descriptor_set_dispatch(struct vkr_context *ctx);
+@@ -52,6 +84,74 @@ vkr_context_init_descriptor_set_dispatch(struct vkr_context *ctx);
  void
  vkr_context_init_descriptor_update_template_dispatch(struct vkr_context *ctx);
  
@@ -888,15 +1127,61 @@ index 1a31cfa..7ae0f4d 100644
 +void
 +vkr_descriptor_object_release(struct vkr_object *obj);
 +
-+/* the writes a guest names hold in their sets (push: in the push set layout instead):
-+ * bindings, types, elements, handles and ranges; false after a refusal */
++/* one binding's part of a write, or of a copy's side: the binding's index in the layout's
++ * table, the part's first element there, its count and its first descriptor in the write */
++struct vkr_set_part {
++   uint32_t index;
++   uint32_t element;
++   uint32_t count;
++   uint32_t offset;
++};
++
++/* a write's or copy side's walk over the consecutive bindings it updates
++ * (vkr_descriptor_set.c) */
++struct vkr_set_walk {
++   const struct vkr_set_layout *layout;
++   uint32_t variable_count;
++   uint32_t first_index;
++   uint32_t index;
++   uint32_t element;
++   uint32_t left;
++   uint32_t done;
++   uint32_t parts;
++   bool failed;
++};
++
++void
++vkr_set_walk_init(struct vkr_set_walk *walk,
++                  const struct vkr_set_layout *layout,
++                  uint32_t variable_count,
++                  uint32_t index,
++                  uint32_t first,
++                  uint32_t count);
++
++/* the next part, false at the end: then walk->failed says whether the update did not fit
++ * (past the layout's last binding, or into a binding of another kind) */
 +bool
-+vkr_descriptor_writes_ok(struct vkr_context *ctx,
++vkr_set_walk_next(struct vkr_set_walk *walk, struct vkr_set_part *part);
++
++/* the writes a guest names hold in their sets (push: in the push set layout instead):
++ * bindings, types, elements, handles and ranges; false after a refusal (the context ends).
++ * A write that goes on into the next binding is split there: *writes and *count then name
++ * a copy in the decoder's temp pool, one write per binding. Handles are replaced after. */
++bool
++vkr_descriptor_writes_ok(struct vn_dispatch_context *dispatch,
 +                         const char *call,
 +                         const struct vkr_device *dev,
 +                         const struct vkr_set_layout *push,
-+                         uint32_t count,
-+                         const VkWriteDescriptorSet *writes);
++                         uint32_t *count,
++                         const VkWriteDescriptorSet **writes);
++
++/* the same for copies: both sides inside their sets, split where either side goes on into
++ * the next binding */
++bool
++vkr_descriptor_copies_ok(struct vn_dispatch_context *dispatch,
++                         const char *call,
++                         uint32_t *count,
++                         const VkCopyDescriptorSet **copies);
 +
  static inline void
  vkr_descriptor_pool_release(struct vkr_context *ctx, struct vkr_descriptor_pool *pool)

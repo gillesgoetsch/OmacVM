@@ -25,7 +25,7 @@ Upstream: OmacVM policy (spec VUIDs), draft only.
 Tests: Tests/virgl/test-venus-commands.c (the c-state- cases).
 
 diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
-index 4af65c6..519078f 100644
+index 2ea54a6..c0d4df1 100644
 --- a/src/venus/vkr_command_buffer.c
 +++ b/src/venus/vkr_command_buffer.c
 @@ -18,12 +18,17 @@
@@ -46,8 +46,8 @@ index 4af65c6..519078f 100644
        vn_replace_vk##cmd_name##_args_handle(args);                                       \
        _vk->cmd_name(args->commandBuffer, ##__VA_ARGS__);                                 \
     } while (0)
-@@ -246,6 +251,135 @@ vkr_cmd_push_set_ok(struct vkr_context *ctx,
-    return vkr_descriptor_writes_ok(ctx, call, dev, push, count, writes);
+@@ -246,6 +251,135 @@ vkr_cmd_push_set_ok(struct vn_dispatch_context *dispatch,
+    return vkr_descriptor_writes_ok(dispatch, call, dev, push, count, writes);
  }
  
 +/* OmacVM (virgl-venus-command-state.patch): the state checks */
@@ -766,7 +766,7 @@ index 6ef6af8..3aa221d 100644
  VKR_DEFINE_OBJECT_CAST(command_buffer, VK_OBJECT_TYPE_COMMAND_BUFFER, VkCommandBuffer)
  
 diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
-index e6d1d2c..71a1d98 100644
+index 5a565ca..26eb4d2 100644
 --- a/src/venus/vkr_render_pass.c
 +++ b/src/venus/vkr_render_pass.c
 @@ -23,6 +23,38 @@ vkr_attachment_ref_ok(uint32_t ref, uint32_t count)
@@ -808,7 +808,7 @@ index e6d1d2c..71a1d98 100644
  void
  vkr_render_pass_object_release(struct vkr_object *obj)
  {
-@@ -427,6 +459,7 @@ vkr_dispatch_vkCreateRenderPass(struct vn_dispatch_context *dispatch,
+@@ -411,6 +443,7 @@ vkr_dispatch_vkCreateRenderPass(struct vn_dispatch_context *dispatch,
        free(subpasses);
        return;
     }
@@ -816,7 +816,7 @@ index e6d1d2c..71a1d98 100644
     pass->attachment_count = attachments;
     pass->clear_count = clears;
     pass->subpass_count = count;
-@@ -458,6 +491,7 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
+@@ -442,6 +475,7 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
        args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
        return;
     }
@@ -824,7 +824,7 @@ index e6d1d2c..71a1d98 100644
     pass->attachment_count = info->attachmentCount;
     pass->clear_count =
        vkr_clear_count(info->attachmentCount, info->pAttachments, sizeof(VkAttachmentDescription2),
-@@ -540,6 +574,7 @@ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+@@ -524,6 +558,7 @@ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
  
     struct vkr_framebuffer *fb = vkr_framebuffer_create_and_add(dispatch->data, args);
     if (fb) {

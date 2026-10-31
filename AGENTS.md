@@ -851,6 +851,11 @@ The less obvious ones, with causes and where the fix lives, are in
   (glslang lists unused ones). A new `vkCmd*` that needs a pass, a pipeline or
   a recording buffer checks `vkr_cmd_state`; an object kept there is kept by id
   and serial, never as a pointer (an app may destroy it while recording).
+  A descriptor update reaches the driver one binding at a time
+  (`vkr_set_walk_*`: the drivers write a whole update with its first binding's
+  stride). A thread made for a guest call takes from `virgl_thread_budget_take`
+  and gives back at its join. Memory made for one image or buffer goes before
+  it in the driver (`vkr_dedicated_*`).
 - Do not run guest apps on Zink as their OpenGL (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
   in an OmacVM.app VM with Vulkan: on KosmicKrisp it gives OpenGL 2.1 only.
   Ghostty's OpenGL 4.3 comes from llvmpipe instead. With the 3.2.13 app and

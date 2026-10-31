@@ -1505,7 +1505,7 @@ grep -q 'vkr_physical_device_init_limits(physical_dev);' "$virgl_source/src/venu
   grep -q 'vkr_first_count_ok(args->firstViewport, args->viewportCount, max),' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_physical_device.c, vkr_command_buffer.c: vkCmd* indices and offsets are not bounded (command-limits patch)"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-descriptor-limits.patch"
-grep -q 'vkr_descriptor_writes_ok(dispatch->data, "vkUpdateDescriptorSets", dev, NULL,' "$virgl_source/src/venus/vkr_descriptor_set.c" && \
+grep -q 'vkr_descriptor_writes_ok(dispatch, "vkUpdateDescriptorSets", dev, NULL,' "$virgl_source/src/venus/vkr_descriptor_set.c" && \
   grep -q 'vkr_cmd_sets_ok(dispatch->data, "vkCmdBindDescriptorSets",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_descriptor_set.c, vkr_command_buffer.c: descriptor writes and binds are not checked (descriptor-limits patch)"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-render-pass-limits.patch"
@@ -1536,8 +1536,33 @@ grep -q 'vkr_cmd_buffer_image_ok(args->srcBuffer, args->dstImage, &r2),' "$virgl
 # Attachment formats are ones the Mac's device renders to (#624).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-formats.patch"
 grep -q 'if (!vkr_rendering_formats_ok(physical_dev, rendering->colorAttachmentCount,' "$virgl_source/src/venus/vkr_pipeline.c" && \
-  grep -q '!vkr_physical_device_format_ok(physical_dev, info->pAttachments\[i\].format,' "$virgl_source/src/venus/vkr_render_pass.c" || \
+  grep -q '!vkr_subpass_formats_ok(physical_dev, i, refs, n,' "$virgl_source/src/venus/vkr_render_pass.c" || \
   die "vkr_pipeline.c, vkr_render_pass.c: attachment formats are not checked (pipeline-formats patch)"
+# A submit's chained arrays fit its counts, frees name objects of their pool once,
+# dedicated memory goes before its image or buffer, replies carry zeros where nothing was
+# written, guest threads stay inside one budget, and a pass's image views live while it is
+# open (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-submit-counts.patch"
+grep -q 'if (!vkr_submit_chain_ok(dispatch, "vkQueueSubmit", i, submit->pNext,' "$virgl_source/src/venus/vkr_queue.c" || \
+  die "vkr_queue.c: a submit's chained counts are not fitted (submit-counts patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pool-frees.patch"
+grep -q 'if (obj->pool != pool || obj->free_stamp == stamp) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
+  die "vkr_device_object.py: frees are not checked against their pool (pool-frees patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-dedicated-memory.patch"
+grep -q 'if (!vkr_device_memory_dedicated_ok(mem, image->dedicated, offset)) {' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'vkr_dedicated_memory_freed(mem_dev, dedicated, true);' "$virgl_source/src/venus/vkr_device_memory.c" || \
+  die "vkr_image.c, vkr_device_memory.c: dedicated memory is not linked to its target (dedicated-memory patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-temp-zero.patch"
+grep -q 'if (dec->zero_temp)' "$virgl_source/src/venus/vkr_cs.h" && \
+  grep -q 'cmd_flags & VK_COMMAND_GENERATE_REPLY_BIT_EXT;' "$virgl_source/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h" || \
+  die "vkr_cs.h: a reply's temporary memory is not zeroed (temp-zero patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-thread-budget.patch"
+grep -q 'virgl_thread_budget_take("thread of a new Venus ring")' "$virgl_source/src/venus/vkr_ring.c" && \
+  grep -q 'virgl_thread_budget_take("render worker of a new Venus context")' "$virgl_source/server/render_worker.c" || \
+  die "vkr_ring.c, render_worker.c: guest threads are not budgeted (thread-budget patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pass-views.patch"
+grep -q '!vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd->view_count))' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_command_buffer.c: a pass's image views are not checked (pass-views patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

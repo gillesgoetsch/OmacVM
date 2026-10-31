@@ -1,6 +1,7 @@
 /* What a guest's Venus commands ended QEMU's process with now ends only the app's Venus
  * context (virgl-venus-missing-entries.patch, virgl-venus-guest-asserts.patch,
- * virgl-venus-buffer-binds.patch; ADR 0065, "What else vkr refuses").
+ * virgl-venus-buffer-binds.patch; ADR 0065, "What else vkr refuses"), and what a reply
+ * carries back is what the call wrote or zeros (virgl-venus-temp-zero.patch).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c. Each
  * case sends hand-encoded commands through vkr_context_submit_cmd, the path of QEMU's
@@ -572,6 +573,86 @@ static int device_image_query_case(int layout)
    return zero ? outcome() : BROKEN;
 }
 
+/* ---- replies: chained output structs a refused or unfilled query leaves (temp-zero) ---- */
+/* the temp pool's first bytes full of 0x5a: vkCmdSetViewport's viewports are decoded there
+ * (the pool starts over at the same place for the next command) */
+static void fill_temp_pool(uint64_t cb)
+{
+   const struct vkr_physical_device *pdev = vkr_context_get_object(ctx, PDEV_ID);
+   const uint32_t n = MIN2(pdev->properties.limits.maxViewports, 16);
+   cmd(VK_COMMAND_TYPE_vkCmdSetViewport_EXT, 0);
+   u64(cb); u32(0); u32(n);
+   u64(n);
+   for (uint32_t i = 0; i < n * 6; i++)
+      u32(0x5a5a5a5au);
+   submit();
+}
+
+/* the two 32-bit words after the struct of type `stype` in the reply (its pNext pointer
+ * between), or false when the reply lacks it */
+static bool reply_struct_words(VkStructureType stype, uint32_t out[2])
+{
+   for (size_t at = 0; at + 20 <= 512; at += 4) {
+      int32_t t;
+      memcpy(&t, reply + at, 4);
+      if (t == (int32_t)stype) {
+         memcpy(out, reply + at + 12, 8);
+         return true;
+      }
+   }
+   return false;
+}
+
+static int reply_chain_case(int refused)
+{
+   setup(VK_API_VERSION_1_1, 0, NULL);
+   const uint64_t cb = command_buffer();
+   fill_temp_pool(cb);
+   uint32_t words[2];
+   VkStructureType stype;
+   if (refused) {
+      /* the second plane's requirements of an image of one: refused, the context lives;
+       * its chained VkMemoryDedicatedRequirements is not written */
+      const uint64_t img = next_id++;
+      cmd(VK_COMMAND_TYPE_vkCreateImage_EXT, 0);
+      u64(DEV_ID);
+      image_create_info();
+      ptr(0); ptr(1); u64(img);
+      submit();
+      fill_temp_pool(cb);
+      seek(0);
+      cmd(VK_COMMAND_TYPE_vkGetImageMemoryRequirements2_EXT, 1);
+      u64(DEV_ID);
+      ptr(1); i32(VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2);
+      ptr(1); i32(VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO); ptr(0); u32(VK_IMAGE_ASPECT_PLANE_1_BIT);
+      u64(img);
+      ptr(1); i32(VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2);
+      ptr(1); i32(VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS); ptr(0);
+      stype = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+   } else {
+      /* a format query with an output struct the driver does not fill (no image view
+       * info asks for it) */
+      seek(0);
+      cmd(VK_COMMAND_TYPE_vkGetPhysicalDeviceImageFormatProperties2_EXT, 1);
+      u64(PDEV_ID);
+      ptr(1); i32(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2); ptr(0);
+      i32(VK_FORMAT_R8G8B8A8_UNORM); i32(VK_IMAGE_TYPE_2D); i32(VK_IMAGE_TILING_OPTIMAL);
+      u32(VK_IMAGE_USAGE_SAMPLED_BIT); u32(0);
+      ptr(1); i32(VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2);
+      ptr(1); i32(VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT); ptr(0);
+      stype = VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT;
+   }
+   if (!reply_call())
+      return ENDED;
+   if (!reply_struct_words(stype, words)) {
+      printf("the reply has no struct of type %d\n", stype);
+      return BROKEN;
+   }
+   printf("the chained struct's two words in the reply: 0x%08x 0x%08x\n", words[0], words[1]);
+   /* VkBool32s: 0 or 1 when written or zeroed; the pool's old bytes otherwise */
+   return words[0] <= 1 && words[1] <= 1 ? outcome() : BROKEN;
+}
+
 #ifdef VKR_MISSING
 /* every entry of both tables is set, the missing ones are the stubs */
 static int tables_case(void)
@@ -885,6 +966,9 @@ static const struct test_case cases[] = {
    { "b-sparse", E_ENDED, "a sparse buffer" },
    { "i-import", E_ALIVE, NULL },
    { "i-oversize", E_REFUSED, "vkAllocateMemory refused" },
+   /* replies carry zeros where nothing was written */
+   { "o-refused-chain", E_ALIVE, "vkGetImageMemoryRequirements2 refused" },
+   { "o-unwritten-chain", E_ALIVE, NULL },
 };
 
 #define IS(s) (!strcmp(name, s))
@@ -959,6 +1043,10 @@ static int run_case(const char *name)
       return import_case(0);
    if (IS("i-oversize"))
       return import_case(1);
+   if (IS("o-refused-chain"))
+      return reply_chain_case(1);
+   if (IS("o-unwritten-chain"))
+      return reply_chain_case(0);
    printf("unknown case %s\n", name);
    return BROKEN;
 }
@@ -1022,6 +1110,37 @@ static int time_creates(int n)
    printf("timing: %d creates: %.2f us per vkCreateBuffer+vkDestroyBuffer through vkr, "
           "%.2f us of it the requirements query, %.2f us without it\n", n, with, query,
           with - query);
+
+   /* through the decoder (vkr_context_submit_cmd), 64 commands a stream: a query with a
+    * reply (its temp memory zeroed by virgl-venus-temp-zero.patch) and a vkCmd* (none) */
+   const uint64_t cb = command_buffer();
+   double per[2];
+   for (int kind = 0; kind < 2; kind++) {
+      const int batches = n / 64 > 0 ? n / 64 : 1;
+      double total = 0;
+      for (int b = 0; b < batches; b++) {
+         for (int i = 0; i < 64; i++) {
+            if (kind == 0) {
+               seek(0);
+               cmd(VK_COMMAND_TYPE_vkGetPhysicalDeviceFormatProperties2_EXT, 1);
+               u64(PDEV_ID); i32(VK_FORMAT_R8G8B8A8_UNORM);
+               ptr(1); i32(VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2); ptr(0);
+            } else {
+               cmd(VK_COMMAND_TYPE_vkCmdSetViewport_EXT, 0);
+               u64(cb); u32(0); u32(1); u64(1);
+               f32(0); f32(0); f32(64); f32(64); f32(0); f32(1);
+            }
+         }
+         clock_gettime(CLOCK_MONOTONIC, &t0);
+         if (!submit())
+            broken("a stream failed while timing");
+         clock_gettime(CLOCK_MONOTONIC, &t1);
+         total += (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
+      }
+      per[kind] = total / 1e3 / (batches * 64);
+   }
+   printf("timing: through the decoder, us per command: vkGetPhysicalDeviceFormatProperties2 "
+          "(a reply) %.3f, vkCmdSetViewport %.3f\n", per[0], per[1]);
    return 0;
 }
 

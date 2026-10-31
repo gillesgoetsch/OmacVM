@@ -398,6 +398,21 @@ prefilled command buffers (signals on the refused classes, the legal multiview
 passes on KosmicKrisp, and cases the drivers accept that the GPU would run out
 of range); none with the patches.
 
+## MoltenVK trusts a submit's value counts and keeps dedicated targets (October 2026)
+
+Found with #624 (lane `venus-624-c`; drivers probed alone on the mini's M4,
+plainly and under libgmalloc). MoltenVK 1.4.2 writes the values of a chained
+`VkTimelineSemaphoreSubmitInfo` by that struct's own counts into its arrays of
+the submit's semaphore counts, also when only binary semaphores are named and
+Vulkan ignores the values. It keeps the image or buffer memory was made for
+(`VkMemoryDedicatedAllocateInfo`) in the memory and writes to it when the
+memory is freed, so an image destroyed before its bind leaves a dangling
+pointer there. Both drivers write a descriptor update over several bindings
+with the first binding's stride or layout, and KosmicKrisp frees whatever a
+free names (twice, or into another pool). vkr fits or refuses each (ADR 0065).
+QEMU 11 raises its own soft open-file limit to `OPEN_MAX` (10240) on macOS
+(`os_setup_limits`), whatever launchd's 256 is.
+
 ## Metal ends the process on a texture it cannot make, also in release (October 2026)
 
 Found with #598 (Ghostty and `glxinfo` with Zink ended the VM on Vulkan). Metal

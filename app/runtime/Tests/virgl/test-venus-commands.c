@@ -5,7 +5,11 @@
  * come where Vulkan allows them, shaders are SPIR-V the compilers can take, copies stay
  * inside their images and buffers and attachments have formats the device renders to
  * (virgl-venus-command-state.patch, virgl-venus-spirv-scan.patch,
- * virgl-venus-copy-regions.patch, virgl-venus-pipeline-formats.patch).
+ * virgl-venus-copy-regions.patch, virgl-venus-pipeline-formats.patch); frees name objects of
+ * their pool once, a submit's chained arrays fit its counts, dedicated memory outlives its
+ * image or buffer in the driver, and a pass's image views live while it is open
+ * (virgl-venus-pool-frees.patch, virgl-venus-submit-counts.patch,
+ * virgl-venus-dedicated-memory.patch, virgl-venus-pass-views.patch).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -16,9 +20,11 @@
  * cases that must keep working (the legal maxima: every limit at its advertised value)
  * still work without one.
  *
- * Objects, pipelines, descriptor writes and command RECORDING only: nothing is submitted,
- * and a child ends with _exit() right after its last call, so no command buffer is reset
- * or destroyed (MoltenVK commits a prefilled Metal command buffer then). Run with
+ * Objects, pipelines, descriptor writes and command RECORDING only: nothing recorded is
+ * submitted (the s- cases submit a batch with no command buffer, only a semaphore signal,
+ * and wait for the queue), and a child ends with _exit() right after its last call, so no
+ * recorded command buffer is reset or destroyed (MoltenVK commits a prefilled Metal command
+ * buffer then). Run with
  * MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1, MoltenVK encodes at vkEndCommandBuffer what
  * it otherwise encodes at vkQueueSubmit in QEMU, still without committing (standards 14).
  *
@@ -56,6 +62,7 @@
 #include "vkr_physical_device.h"
 #include "vkr_pipeline.h"
 #include "vkr_query_pool.h"
+#include "vkr_queue.h"
 #include "vkr_render_pass.h"
 #include "vkr_renderer.h"
 
@@ -81,6 +88,8 @@ enum {
    N_ROBUST = 1 << 8,    /* VK_EXT_pipeline_robustness */
    N_LOGICOP = 1 << 9,   /* extendedDynamicState2LogicOp */
    N_BLENDEN = 1 << 10,  /* extendedDynamicState3ColorBlendEnable */
+   N_YCBCR = 1 << 11,    /* samplerYcbcrConversion (core 1.1) */
+   N_MUTABLE = 1 << 12,  /* VK_EXT_mutable_descriptor_type */
 };
 
 static const uint32_t spv_vert[] = {
@@ -424,6 +433,8 @@ static void setup_device(unsigned needs)
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT };
    VkPhysicalDeviceNestedCommandBufferFeaturesEXT nested = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_NESTED_COMMAND_BUFFER_FEATURES_EXT };
+   VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mut = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT };
    VkPhysicalDeviceVulkan13Features f13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
    VkPhysicalDeviceVulkan12Features f12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f13 };
    VkPhysicalDeviceVulkan11Features f11 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &f12 };
@@ -443,6 +454,7 @@ static void setup_device(unsigned needs)
    QUERY(VK_KHR_MAINTENANCE_6_EXTENSION_NAME, m6);
    QUERY(VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME, pr);
    QUERY(VK_EXT_NESTED_COMMAND_BUFFER_EXTENSION_NAME, nested);
+   QUERY(VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME, mut);
 #undef QUERY
    pdev->proc_table.GetPhysicalDeviceFeatures2(host, &f2);
 
@@ -462,7 +474,13 @@ static void setup_device(unsigned needs)
       { N_ROBUST, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME, pr.pipelineRobustness },
       { N_LOGICOP, VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME, eds2.extendedDynamicState2LogicOp },
       { N_BLENDEN, VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME, eds3.extendedDynamicState3ColorBlendEnable },
+      { N_MUTABLE, VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME, mut.mutableDescriptorType },
    };
+   if ((needs & N_YCBCR) && !f11.samplerYcbcrConversion) {
+      printf("skip: the device has no samplerYcbcrConversion\n");
+      fflush(stdout);
+      _exit(SKIP);
+   }
    const char *exts[16];
    uint32_t n_ext = 0;
    have = 0;
@@ -500,7 +518,8 @@ static void setup_device(unsigned needs)
       .descriptorBindingPartiallyBound = f12.descriptorBindingPartiallyBound,
       .imagelessFramebuffer = f12.imagelessFramebuffer };
    VkPhysicalDeviceVulkan11Features e11 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-                                            .pNext = &e12, .multiview = f11.multiview };
+                                            .pNext = &e12, .multiview = f11.multiview,
+                                            .samplerYcbcrConversion = (needs & N_YCBCR) != 0 };
    VkPhysicalDeviceFeatures2 e2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e11 };
    e2.features.robustBufferAccess = f2.features.robustBufferAccess;
    e2.features.independentBlend = f2.features.independentBlend;
@@ -529,6 +548,9 @@ static void setup_device(unsigned needs)
    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT eeds3 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT,
       .extendedDynamicState3ColorBlendEnable = VK_TRUE };
+   VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT emut = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT,
+      .mutableDescriptorType = VK_TRUE };
 #define ENABLE(n, s)                                                                      \
    if (have & (n)) {                                                                      \
       *tail = &(s);                                                                       \
@@ -543,6 +565,7 @@ static void setup_device(unsigned needs)
    ENABLE(N_ROBUST, epr);
    ENABLE(N_LOGICOP, eeds2);
    ENABLE(N_BLENDEN, eeds3);
+   ENABLE(N_MUTABLE, emut);
 #undef ENABLE
    const float priority = 1;
    const VkDeviceQueueCreateInfo q = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
@@ -1897,6 +1920,83 @@ static int case_render_pass(const char *c)
    }
    if (!strncmp(c, "r-dyn-", 6))
       return rendering_case(c, &w);
+   if (IS("r-unused-format-ok")) {
+      /* LEGAL: an attachment no subpass uses may have a format without attachment features
+       * (the feature VUIDs are on the references, e.g. VkSubpassDescription-pColorAttachments-
+       * 02648): a compressed format the device samples; render pass, framebuffer, begin, end */
+      static const VkFormat candidates[] = { VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+                                             VK_FORMAT_BC1_RGBA_UNORM_BLOCK };
+      VkFormat other = VK_FORMAT_UNDEFINED;
+      for (uint32_t i = 0; i < 3 && !other; i++) {
+         VkFormatProperties fp = { 0 };
+         pdev->proc_table.GetPhysicalDeviceFormatProperties(pdev->base.handle.physical_device, candidates[i], &fp);
+         const VkFormatFeatureFlags any = fp.linearTilingFeatures | fp.optimalTilingFeatures;
+         if ((fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) &&
+             !(any & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)))
+            other = candidates[i];
+      }
+      if (!other) {
+         printf("skip: no sampled format without attachment features\n");
+         return SKIP;
+      }
+      VkAttachmentDescription att[2] = {
+         { 0, FMT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_STORE,
+           VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+         { 0, other, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+           VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL } };
+      VkAttachmentReference ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+      VkSubpassDescription sub = { .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                   .colorAttachmentCount = 1, .pColorAttachments = &ref };
+      const uint64_t id = next_id++;
+      VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+      VkRenderPassCreateInfo info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 2,
+                                      .pAttachments = att, .subpassCount = 1, .pSubpasses = &sub };
+      struct vn_command_vkCreateRenderPass cr = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+      step("vkCreateRenderPass: attachment 1 of format %d, no subpass uses it", other);
+      D->dispatch_vkCreateRenderPass(D, &cr);
+      step("vkCreateRenderPass = %d", cr.ret);
+      if (ended())
+         return FATAL;
+      if (cr.ret != VK_SUCCESS)
+         return ERROR;
+      const uint64_t iid = next_id++;
+      VkImage ih = (VkImage)(uintptr_t)iid;
+      VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                  .format = other, .extent = { 64, 64, 1 }, .mipLevels = 1, .arrayLayers = 1,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                  .usage = VK_IMAGE_USAGE_SAMPLED_BIT };
+      struct vn_command_vkCreateImage ci = { .device = DEVH, .pCreateInfo = &iinfo, .pImage = &ih };
+      D->dispatch_vkCreateImage(D, &ci);
+      struct vkr_image *cimg = object(iid);
+      if (ci.ret != VK_SUCCESS || !cimg)
+         broken("compressed image");
+      VkMemoryRequirements req = { 0 };
+      struct vn_command_vkGetImageMemoryRequirements r = { .device = DEVH, .image = (VkImage)cimg,
+                                                           .pMemoryRequirements = &req };
+      D->dispatch_vkGetImageMemoryRequirements(D, &r);
+      struct vkr_device_memory *mem = allocate(req.size, memory_type(req.memoryTypeBits));
+      struct vn_command_vkBindImageMemory bm = { .device = DEVH, .image = (VkImage)cimg, .memory = (VkDeviceMemory)mem };
+      D->dispatch_vkBindImageMemory(D, &bm);
+      const uint64_t vid = next_id++;
+      VkImageView vh = (VkImageView)(uintptr_t)vid;
+      VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = (VkImage)cimg,
+                                      .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = other,
+                                      .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+      struct vn_command_vkCreateImageView cv = { .device = DEVH, .pCreateInfo = &vinfo, .pView = &vh };
+      D->dispatch_vkCreateImageView(D, &cv);
+      if (bm.ret != VK_SUCCESS || cv.ret != VK_SUCCESS || !object(vid))
+         broken("compressed view");
+      void *views[2] = { w.iv, object(vid) };
+      void *fb = framebuffer(object(id), views, 2, 64, 64, 1);
+      if (!fb)
+         return created(fb);
+      begin(w.cmd);
+      begin_pass_clear(w.cmd, object(id), fb, 64, 64, 1);
+      end_pass(w.cmd);
+      return end(w.cmd);
+   }
    return BROKEN;
 }
 
@@ -2017,6 +2117,10 @@ static int case_descriptor(const char *c)
    unsigned needs = 0;
    if (IS("d-null-buffer-nd") || IS("d-null-view-nd") || IS("d-null-dynamic-nd"))
       needs |= N_NULLDESC;
+   if (IS("d-planes-ok"))
+      needs |= N_YCBCR;
+   if (IS("d-mutable-ok"))
+      needs |= N_MUTABLE;
    if (!strncmp(c, "d-layout-push", 13))
       needs |= N_PUSHDESC;
    setup(needs);
@@ -2171,6 +2275,189 @@ static int case_descriptor(const char *c)
          wr.dstSet = (VkDescriptorSet)(IS("d-consecutive-gap-ok") ? gap_set : zero_set);
          wr.descriptorCount = 4;
       }
+   } else if (IS("d-start-next-ok") || IS("d-copy-start-next-ok") || IS("d-start-past-all")) {
+      /* LEGAL: an update whose first element lies past its binding starts in the next one
+       * (VUID-VkWriteDescriptorSet-dstArrayElement-00321 counts the consecutive bindings);
+       * {0: UBO x2, 1: UBO x2}: element 3 of binding 0 is element 1 of binding 1, elements 2
+       * and 3 are binding 1's. Past every binding: refused. */
+      const VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, VK_SHADER_STAGE_ALL, NULL },
+                                                  { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, VK_SHADER_STAGE_ALL, NULL } };
+      void *dsl = set_layout_of(b, 2, 0, NULL);
+      void *s0 = set_from(w.pool, dsl, NULL), *s1 = set_from(w.pool, dsl, NULL);
+      if (!s0 || !s1)
+         broken("consecutive sets");
+      static VkDescriptorBufferInfo four[4];
+      for (uint32_t i = 0; i < 4; i++)
+         four[i] = (VkDescriptorBufferInfo){ (VkBuffer)w.buf, 256 * i, 256 };
+      wr.dstSet = (VkDescriptorSet)s0;
+      wr.pBufferInfo = four;
+      if (IS("d-copy-start-next-ok")) {
+         VkWriteDescriptorSet all = wr;
+         all.descriptorCount = 4;
+         struct vn_command_vkUpdateDescriptorSets us = { .device = DEVH, .descriptorWriteCount = 1,
+                                                         .pDescriptorWrites = &all };
+         step("vkUpdateDescriptorSets the copy's source, 4 from binding 0");
+         D->dispatch_vkUpdateDescriptorSets(D, &us);
+         if (ended())
+            return FATAL;
+         cp.srcSet = (VkDescriptorSet)s0;
+         cp.srcArrayElement = 2; /* binding 1, element 0 */
+         cp.dstSet = (VkDescriptorSet)s1;
+         cp.descriptorCount = 2;
+         n_copy = 1;
+      } else {
+         wr.dstArrayElement = IS("d-start-past-all") ? 4 : 3;
+      }
+   } else if (IS("d-planes-ok")) {
+      /* LEGAL: one write over a binding whose immutable sampler has a 3-plane YCbCr conversion
+       * and a binding of plain immutable samplers (VUID-VkWriteDescriptorSet-descriptorCount-
+       * 00318 asks only that both have immutable samplers). KosmicKrisp's descriptors there
+       * are 3 and 1 wide: written in one go at the first binding's stride, the last one landed
+       * past the set; MoltenVK wrote all three with the first binding's layout. */
+      const VkFormat yuv = VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
+      if (!format_has(yuv, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) {
+         printf("skip: no sampled %d (3-plane) images\n", yuv);
+         return SKIP;
+      }
+      const uint64_t cid = next_id++;
+      VkSamplerYcbcrConversion ch = (VkSamplerYcbcrConversion)(uintptr_t)cid;
+      VkSamplerYcbcrConversionCreateInfo cinfo = {
+         .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO, .format = yuv,
+         .ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709, .ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW,
+         .xChromaOffset = VK_CHROMA_LOCATION_MIDPOINT, .yChromaOffset = VK_CHROMA_LOCATION_MIDPOINT,
+         .chromaFilter = VK_FILTER_NEAREST };
+      struct vn_command_vkCreateSamplerYcbcrConversion cc = { .device = DEVH, .pCreateInfo = &cinfo,
+                                                              .pYcbcrConversion = &ch };
+      step("vkCreateSamplerYcbcrConversion 3 planes");
+      D->dispatch_vkCreateSamplerYcbcrConversion(D, &cc);
+      if (cc.ret != VK_SUCCESS || !object(cid)) {
+         printf("skip: no YCbCr conversion (%d)\n", cc.ret);
+         return SKIP;
+      }
+      VkSamplerYcbcrConversionInfo conv = { .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO,
+                                            .conversion = (VkSamplerYcbcrConversion)object(cid) };
+      const uint64_t sid = next_id++;
+      VkSampler sh = (VkSampler)(uintptr_t)sid;
+      VkSamplerCreateInfo sinfo = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .pNext = &conv,
+                                    .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST,
+                                    .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                    .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                    .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE };
+      struct vn_command_vkCreateSampler cs = { .device = DEVH, .pCreateInfo = &sinfo, .pSampler = &sh };
+      step("vkCreateSampler with the conversion");
+      D->dispatch_vkCreateSampler(D, &cs);
+      if (cs.ret != VK_SUCCESS || !object(sid))
+         broken("YCbCr sampler");
+      VkSampler ycbcr = (VkSampler)object(sid), plain[2] = { (VkSampler)w.smp, (VkSampler)w.smp };
+      const VkDescriptorSetLayoutBinding b[2] = {
+         { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_ALL, &ycbcr },
+         { 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2, VK_SHADER_STAGE_ALL, plain } };
+      void *dsl = set_layout_of(b, 2, 0, NULL);
+      /* a pool of exactly this set (the 3-plane binding counts as the driver's descriptor
+       * count of the format, + 2), so a write past the set is a write past the pool's
+       * memory (MoltenVK's CPU copy is heap memory: libgmalloc sees it) */
+      VkSamplerYcbcrConversionImageFormatProperties ycp = {
+         .sType = VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES };
+      VkImageFormatProperties2 ifp = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, .pNext = &ycp };
+      const VkPhysicalDeviceImageFormatInfo2 ifi = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+                                                     .format = yuv, .type = VK_IMAGE_TYPE_2D,
+                                                     .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                                     .usage = VK_IMAGE_USAGE_SAMPLED_BIT };
+      pdev->proc_table.GetPhysicalDeviceImageFormatProperties2(pdev->base.handle.physical_device, &ifi, &ifp);
+      VkDescriptorPoolSize ysize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                     MAX2(ycp.combinedImageSamplerDescriptorCount, 1) + 2 };
+      const uint64_t ypid = next_id++;
+      VkDescriptorPool yph = (VkDescriptorPool)(uintptr_t)ypid;
+      VkDescriptorPoolCreateInfo ypinfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                            .poolSizeCount = 1, .pPoolSizes = &ysize };
+      struct vn_command_vkCreateDescriptorPool ycpool = { .device = DEVH, .pCreateInfo = &ypinfo,
+                                                          .pDescriptorPool = &yph };
+      D->dispatch_vkCreateDescriptorPool(D, &ycpool);
+      void *set = dsl && ycpool.ret == VK_SUCCESS ? set_from(object(ypid), dsl, NULL) : NULL;
+      if (!set)
+         return created(set);
+      /* a 3-plane image and a view of it with the conversion, then two plain views */
+      const uint64_t iid = next_id++;
+      VkImage ih = (VkImage)(uintptr_t)iid;
+      VkImageCreateInfo iinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                                  .format = yuv, .extent = { 64, 64, 1 }, .mipLevels = 1, .arrayLayers = 1,
+                                  .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                  .usage = VK_IMAGE_USAGE_SAMPLED_BIT };
+      struct vn_command_vkCreateImage ci = { .device = DEVH, .pCreateInfo = &iinfo, .pImage = &ih };
+      D->dispatch_vkCreateImage(D, &ci);
+      struct vkr_image *yimg = object(iid);
+      if (ended())
+         return FATAL;
+      if (ci.ret != VK_SUCCESS || !yimg) {
+         printf("skip: no 3-plane image (%d)\n", ci.ret);
+         return SKIP;
+      }
+      VkMemoryRequirements req = { 0 };
+      struct vn_command_vkGetImageMemoryRequirements r = { .device = DEVH, .image = (VkImage)yimg,
+                                                           .pMemoryRequirements = &req };
+      D->dispatch_vkGetImageMemoryRequirements(D, &r);
+      struct vkr_device_memory *mem = allocate(req.size, memory_type(req.memoryTypeBits));
+      struct vn_command_vkBindImageMemory bm = { .device = DEVH, .image = (VkImage)yimg, .memory = (VkDeviceMemory)mem };
+      D->dispatch_vkBindImageMemory(D, &bm);
+      if (bm.ret != VK_SUCCESS)
+         broken("3-plane bind");
+      const uint64_t vid = next_id++;
+      VkImageView vh = (VkImageView)(uintptr_t)vid;
+      VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .pNext = &conv,
+                                      .image = (VkImage)yimg, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = yuv,
+                                      .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+      struct vn_command_vkCreateImageView cv = { .device = DEVH, .pCreateInfo = &vinfo, .pView = &vh };
+      D->dispatch_vkCreateImageView(D, &cv);
+      if (ended())
+         return FATAL;
+      if (cv.ret != VK_SUCCESS || !object(vid)) {
+         printf("skip: no 3-plane view (%d)\n", cv.ret);
+         return SKIP;
+      }
+      static VkDescriptorImageInfo three[3];
+      three[0] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, (VkImageView)object(vid),
+                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+      three[1] = three[2] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, (VkImageView)w.iv,
+                                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+      wr.dstSet = (VkDescriptorSet)set;
+      wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      wr.descriptorCount = 3;
+      wr.pBufferInfo = NULL;
+      wr.pImageInfo = three;
+   } else if (IS("d-mutable-ok")) {
+      /* LEGAL: one write of uniform buffers over two mutable bindings with other type lists
+       * (their descriptors are as wide as the largest type each can hold) */
+      static const VkDescriptorType wide[2] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE };
+      static const VkDescriptorType narrow[1] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
+      const VkMutableDescriptorTypeListEXT lists2[2] = { { 2, wide }, { 1, narrow } };
+      const VkMutableDescriptorTypeCreateInfoEXT mut = {
+         .sType = VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT, .mutableDescriptorTypeListCount = 2,
+         .pMutableDescriptorTypeLists = lists2 };
+      const VkDescriptorSetLayoutBinding b[2] = { { 0, VK_DESCRIPTOR_TYPE_MUTABLE_EXT, 1, VK_SHADER_STAGE_ALL, NULL },
+                                                  { 1, VK_DESCRIPTOR_TYPE_MUTABLE_EXT, 2, VK_SHADER_STAGE_ALL, NULL } };
+      void *dsl = set_layout_of(b, 2, 0, &mut);
+      if (!dsl)
+         return created(dsl);
+      VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_MUTABLE_EXT, 3 }; /* exactly the set */
+      const VkMutableDescriptorTypeCreateInfoEXT pmut = {
+         .sType = VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT, .mutableDescriptorTypeListCount = 1,
+         .pMutableDescriptorTypeLists = lists2 };
+      const uint64_t pid = next_id++;
+      VkDescriptorPool ph = (VkDescriptorPool)(uintptr_t)pid;
+      VkDescriptorPoolCreateInfo pinfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .pNext = &pmut,
+                                           .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &size };
+      struct vn_command_vkCreateDescriptorPool cpool = { .device = DEVH, .pCreateInfo = &pinfo,
+                                                         .pDescriptorPool = &ph };
+      D->dispatch_vkCreateDescriptorPool(D, &cpool);
+      void *set = cpool.ret == VK_SUCCESS ? set_from(object(pid), dsl, NULL) : NULL;
+      if (!set)
+         broken("mutable set");
+      static VkDescriptorBufferInfo three_b[3];
+      for (uint32_t i = 0; i < 3; i++)
+         three_b[i] = (VkDescriptorBufferInfo){ (VkBuffer)w.buf, 256 * i, 256 };
+      wr.dstSet = (VkDescriptorSet)set;
+      wr.descriptorCount = 3;
+      wr.pBufferInfo = three_b;
    } else {
       return BROKEN;
    }
@@ -2298,6 +2585,21 @@ static int push_set_case(const char *c, struct world *w)
                                .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                .pBufferInfo = &bi };
    uint32_t set = 1;
+   if (IS("c-push-set-split-ok")) {
+      /* LEGAL: one push over two bindings of a push layout (split per binding by vkr) */
+      const VkDescriptorSetLayoutBinding two[2] = { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL },
+                                                    { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL } };
+      void *push2 = set_layout_of(two, 2, VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, NULL);
+      void *dsls2[2] = { plain, push2 };
+      layout = push2 ? pipeline_layout_of(dsls2, 2, NULL, 0) : NULL;
+      if (!layout)
+         broken("two-binding push layout");
+      static VkDescriptorBufferInfo bi2[2];
+      bi2[0] = bi;
+      bi2[1] = (VkDescriptorBufferInfo){ (VkBuffer)w->buf, 256, 256 };
+      wr.pBufferInfo = bi2;
+      wr.descriptorCount = 2;
+   }
    if (IS("c-push-set-oob"))
       set = FAR_INDEX;
    else if (IS("c-push-set-not-push"))
@@ -2470,6 +2772,9 @@ static int destroyed_case(const char *c, struct world *w)
    return end(cmd);
 }
 
+/* the pass views cases (below, with the venus-624-c cases) */
+static int views_case(const char *c, struct world *w);
+
 static int state_case(const char *c, struct world *w)
 {
    void *cmd = w->cmd;
@@ -2498,6 +2803,8 @@ static int state_case(const char *c, struct world *w)
    begin(cmd);
    if (!strncmp(c, "c-state-after-mv", 16))
       return after_mv_case(c, w);
+   if (!strncmp(c, "c-state-destroyed-view", 22))
+      return views_case(c, w);
    if (!strncmp(c, "c-state-destroyed-", 18))
       return destroyed_case(c, w);
    if (IS("c-state-after-end")) {
@@ -3182,10 +3489,485 @@ static int case_query(const char *c)
    return BROKEN;
 }
 
+/* ---------------- venus-624-c: frees, submits, dedicated memory, pass views, size 0 ---------------- */
+/* a command pool with n command buffers (ids out[0..n-1]); returns the pool */
+static void *pool_with_buffers(uint32_t n, void **out)
+{
+   const uint64_t pid = next_id++;
+   VkCommandPool ph = (VkCommandPool)(uintptr_t)pid;
+   VkCommandPoolCreateInfo pinfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+   struct vn_command_vkCreateCommandPool cp = { .device = DEVH, .pCreateInfo = &pinfo, .pCommandPool = &ph };
+   D->dispatch_vkCreateCommandPool(D, &cp);
+   if (cp.ret != VK_SUCCESS || !object(pid))
+      broken("vkCreateCommandPool");
+   VkCommandBuffer h[4];
+   uint64_t ids[4];
+   for (uint32_t i = 0; i < n && i < 4; i++) {
+      ids[i] = next_id++;
+      h[i] = (VkCommandBuffer)(uintptr_t)ids[i];
+   }
+   VkCommandBufferAllocateInfo ainfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                         .commandPool = (VkCommandPool)object(pid),
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = n };
+   struct vn_command_vkAllocateCommandBuffers a = { .device = DEVH, .pAllocateInfo = &ainfo, .pCommandBuffers = h };
+   D->dispatch_vkAllocateCommandBuffers(D, &a);
+   if (a.ret != VK_SUCCESS)
+      broken("vkAllocateCommandBuffers");
+   for (uint32_t i = 0; i < n && i < 4; i++)
+      out[i] = object(ids[i]);
+   return object(pid);
+}
+
+static void free_buffers(void *pool, void **cmds, uint32_t n)
+{
+   VkCommandBuffer h[4];
+   for (uint32_t i = 0; i < n && i < 4; i++)
+      h[i] = (VkCommandBuffer)cmds[i];
+   struct vn_command_vkFreeCommandBuffers f = { .device = DEVH, .commandPool = (VkCommandPool)pool,
+                                                .commandBufferCount = n, .pCommandBuffers = h };
+   step("vkFreeCommandBuffers %u", n);
+   D->dispatch_vkFreeCommandBuffers(D, &f);
+}
+
+static void free_sets(void *pool, void **sets, uint32_t n)
+{
+   VkDescriptorSet h[4];
+   for (uint32_t i = 0; i < n && i < 4; i++)
+      h[i] = (VkDescriptorSet)sets[i];
+   struct vn_command_vkFreeDescriptorSets f = { .device = DEVH, .descriptorPool = (VkDescriptorPool)pool,
+                                                .descriptorSetCount = n, .pDescriptorSets = h };
+   step("vkFreeDescriptorSets %u", n);
+   D->dispatch_vkFreeDescriptorSets(D, &f);
+}
+
+/* LEGAL: two objects, NULL entries, a pool reset then a new set (VUID-vkFreeCommandBuffers-
+ * pCommandBuffers-parent, vkFreeDescriptorSets-pDescriptorSets-parent, -00309 (each a valid
+ * handle, freed once)); refused: an object named twice, one of another pool. Before the
+ * pool-frees patch KosmicKrisp destroyed a set named twice twice (SIGSEGV in
+ * kk_FreeDescriptorSets) and freed a command buffer of pool B into pool A (SIGSEGV at A's
+ * destroy) */
+static int case_frees(const char *c)
+{
+   setup(0);
+   if (!strncmp(c, "f-cmds", 6)) {
+      void *cmds[2], *other[1];
+      void *pool = pool_with_buffers(2, cmds);
+      if (IS("f-cmds-ok")) {
+         free_buffers(pool, cmds, 2);
+      } else if (IS("f-cmds-null-ok")) {
+         void *two[2] = { cmds[0], NULL };
+         free_buffers(pool, two, 2);
+      } else if (IS("f-cmds-dup")) {
+         void *two[2] = { cmds[0], cmds[0] };
+         free_buffers(pool, two, 2);
+      } else if (IS("f-cmds-other-pool")) {
+         void *pool_b = pool_with_buffers(1, other);
+         free_buffers(pool, other, 1);
+         if (!ended()) {
+            struct vn_command_vkDestroyCommandPool d = { .device = DEVH, .commandPool = (VkCommandPool)pool };
+            step("vkDestroyCommandPool of the pool it was freed through");
+            D->dispatch_vkDestroyCommandPool(D, &d);
+            struct vn_command_vkDestroyCommandPool d2 = { .device = DEVH, .commandPool = (VkCommandPool)pool_b };
+            step("vkDestroyCommandPool of its own pool");
+            D->dispatch_vkDestroyCommandPool(D, &d2);
+         }
+      } else {
+         return BROKEN;
+      }
+      return ended() ? FATAL : WORKS;
+   }
+   void *dsl = set_layout();
+   void *pool_a = pool();
+   void *s0 = set_from(pool_a, dsl, NULL), *s1 = set_from(pool_a, dsl, NULL);
+   if (!s0 || !s1)
+      broken("sets");
+   if (IS("f-sets-ok")) {
+      void *two[2] = { s0, s1 };
+      free_sets(pool_a, two, 2);
+   } else if (IS("f-sets-reset-ok")) {
+      struct vn_command_vkResetDescriptorPool r = { .device = DEVH, .descriptorPool = (VkDescriptorPool)pool_a };
+      step("vkResetDescriptorPool");
+      D->dispatch_vkResetDescriptorPool(D, &r);
+      void *s2 = set_from(pool_a, dsl, NULL);
+      if (!s2)
+         return ERROR;
+      void *one[2] = { s2, NULL };
+      free_sets(pool_a, one, 2);
+   } else if (IS("f-sets-dup")) {
+      void *two[2] = { s0, s0 };
+      free_sets(pool_a, two, 2);
+   } else if (IS("f-sets-other-pool")) {
+      void *pool_b = pool();
+      void *sb = set_from(pool_b, dsl, NULL);
+      if (!sb)
+         broken("set of pool B");
+      void *one[1] = { sb };
+      free_sets(pool_a, one, 1);
+      /* the next set of pool A may now get pool B's memory range */
+      if (!ended() && !set_from(pool_a, dsl, NULL))
+         return ERROR;
+   } else {
+      return BROKEN;
+   }
+   return ended() ? FATAL : WORKS;
+}
+
+/* the device's queue, through vkGetDeviceQueue2 with the ring vkr asks for */
+static struct vkr_queue *device_queue(void)
+{
+   const uint64_t id = next_id++;
+   VkQueue h = (VkQueue)(uintptr_t)id;
+   VkDeviceQueueTimelineInfoMESA timeline = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_TIMELINE_INFO_MESA,
+                                              .ringIdx = 1 };
+   VkDeviceQueueInfo2 info = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2, .pNext = &timeline };
+   struct vn_command_vkGetDeviceQueue2 g = { .device = DEVH, .pQueueInfo = &info, .pQueue = &h };
+   D->dispatch_vkGetDeviceQueue2(D, &g);
+   struct vkr_queue *q = object(id);
+   if (!q || ended())
+      broken("vkGetDeviceQueue2");
+   return q;
+}
+
+static void *binary_semaphore(void)
+{
+   const uint64_t id = next_id++;
+   VkSemaphore h = (VkSemaphore)(uintptr_t)id;
+   VkSemaphoreCreateInfo info = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+   struct vn_command_vkCreateSemaphore c = { .device = DEVH, .pCreateInfo = &info, .pSemaphore = &h };
+   D->dispatch_vkCreateSemaphore(D, &c);
+   if (c.ret != VK_SUCCESS || !object(id))
+      broken("vkCreateSemaphore");
+   return object(id);
+}
+
+/* submits with no command buffer, signalling one binary semaphore: nothing is recorded,
+ * nothing runs but the signal (the review's STANDARDS 14 allowance: no command buffers, not
+ * fuzzed, GPU restart watch on; the queue is waited for before the child ends).
+ * LEGAL: 64 timeline values with binary semaphores alone (VUIDs VkSubmitInfo-pNext-03240 and
+ * -03241 tie the counts only for timeline semaphores): MoltenVK wrote the 63 extra values past
+ * its array of one (MVKQueue.mm), seen under libgmalloc. Refused: device group counts that
+ * differ from the submit's (VUIDs VkDeviceGroupSubmitInfo-waitSemaphoreCount-00082 ...), and
+ * vkQueueBindSparse on a queue without sparse binding (VUID-vkQueueBindSparse-queuetype). */
+static int case_submit(const char *c)
+{
+   setup(0);
+   struct vkr_queue *q = device_queue();
+   const VkQueue qh = (VkQueue)q;
+   if (IS("s-bind-sparse")) {
+      struct vn_command_vkQueueBindSparse b = { .queue = qh, .bindInfoCount = 0 };
+      step("vkQueueBindSparse on a queue of family %u", q->family);
+      D->dispatch_vkQueueBindSparse(D, &b);
+      return ended() ? FATAL : (b.ret == VK_SUCCESS ? WORKS : ERROR);
+   }
+   VkSemaphore sem = (VkSemaphore)binary_semaphore();
+   static uint64_t values[64];
+   uint32_t indices[2] = { 0, 0 };
+   VkTimelineSemaphoreSubmitInfo timeline = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                              .signalSemaphoreValueCount = 64, .pSignalSemaphoreValues = values };
+   VkDeviceGroupSubmitInfo group = { .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_SUBMIT_INFO, .waitSemaphoreCount = 1,
+                                     .pWaitSemaphoreDeviceIndices = indices, .signalSemaphoreCount = 1,
+                                     .pSignalSemaphoreDeviceIndices = indices };
+   VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = 1,
+                           .pSignalSemaphores = &sem };
+   if (IS("s-submit-values-64"))
+      submit.pNext = &timeline;
+   else if (IS("s-submit-group-counts"))
+      submit.pNext = &group;
+   else if (!IS("s-submit-ok"))
+      return BROKEN;
+   struct vn_command_vkQueueSubmit s = { .queue = qh, .submitCount = 1, .pSubmits = &submit };
+   step("vkQueueSubmit: no command buffer, one binary semaphore signalled, chain %s", c);
+   D->dispatch_vkQueueSubmit(D, &s);
+   step("vkQueueSubmit = %d", s.ret);
+   if (ended())
+      return FATAL;
+   /* the driver's own wait (vkr refuses vkQueueWaitIdle from a guest) */
+   q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+   step("the queue is idle");
+   return s.ret == VK_SUCCESS ? WORKS : ERROR;
+}
+
+/* an image not bound yet (flags: create flags) */
+static struct vkr_image *image_unbound(VkImageCreateFlags flags, VkFormat format, VkImageUsageFlags usage)
+{
+   const uint64_t id = next_id++;
+   VkImage hd = (VkImage)(uintptr_t)id;
+   VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags,
+                              .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = { 64, 64, 1 },
+                              .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                              .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage };
+   struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
+   D->dispatch_vkCreateImage(D, &c);
+   struct vkr_image *img = object(id);
+   if (c.ret != VK_SUCCESS || !img)
+      broken("vkCreateImage");
+   return img;
+}
+
+static struct vkr_buffer *buffer_unbound(VkDeviceSize size)
+{
+   const uint64_t id = next_id++;
+   VkBuffer h = (VkBuffer)(uintptr_t)id;
+   VkBufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                               .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT };
+   struct vn_command_vkCreateBuffer c = { .device = DEVH, .pCreateInfo = &info, .pBuffer = &h };
+   D->dispatch_vkCreateBuffer(D, &c);
+   struct vkr_buffer *buf = object(id);
+   if (c.ret != VK_SUCCESS || !buf)
+      broken("vkCreateBuffer");
+   return buf;
+}
+
+/* memory dedicated to the image or the buffer (VkMemoryDedicatedAllocateInfo), of its size */
+static struct vkr_device_memory *dedicated_memory(struct vkr_image *img, struct vkr_buffer *buf)
+{
+   VkMemoryRequirements req = { 0 };
+   if (img) {
+      struct vn_command_vkGetImageMemoryRequirements r = { .device = DEVH, .image = (VkImage)img,
+                                                           .pMemoryRequirements = &req };
+      D->dispatch_vkGetImageMemoryRequirements(D, &r);
+   } else {
+      struct vn_command_vkGetBufferMemoryRequirements r = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                            .pMemoryRequirements = &req };
+      D->dispatch_vkGetBufferMemoryRequirements(D, &r);
+   }
+   const uint64_t id = next_id++;
+   VkDeviceMemory h = (VkDeviceMemory)(uintptr_t)id;
+   VkMemoryDedicatedAllocateInfo ded = { .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                         .image = (VkImage)img, .buffer = (VkBuffer)buf };
+   VkMemoryAllocateInfo info = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ded,
+                                 .allocationSize = req.size, .memoryTypeIndex = memory_type(req.memoryTypeBits) };
+   struct vn_command_vkAllocateMemory a = { .device = DEVH, .pAllocateInfo = &info, .pMemory = &h };
+   step("vkAllocateMemory %llu bytes dedicated to a%s", (unsigned long long)req.size, img ? "n image" : " buffer");
+   D->dispatch_vkAllocateMemory(D, &a);
+   if (a.ret != VK_SUCCESS || !object(id))
+      broken("dedicated vkAllocateMemory");
+   return object(id);
+}
+
+static VkResult bind_image_at(struct vkr_image *img, struct vkr_device_memory *mem)
+{
+   struct vn_command_vkBindImageMemory b = { .device = DEVH, .image = (VkImage)img, .memory = (VkDeviceMemory)mem };
+   step("vkBindImageMemory");
+   D->dispatch_vkBindImageMemory(D, &b);
+   return b.ret;
+}
+
+static void destroy_image(struct vkr_image *img)
+{
+   struct vn_command_vkDestroyImage d = { .device = DEVH, .image = (VkImage)img };
+   step("vkDestroyImage");
+   D->dispatch_vkDestroyImage(D, &d);
+}
+
+static void free_memory(struct vkr_device_memory *mem)
+{
+   struct vn_command_vkFreeMemory f = { .device = DEVH, .memory = (VkDeviceMemory)mem };
+   step("vkFreeMemory");
+   D->dispatch_vkFreeMemory(D, &f);
+}
+
+/* LEGAL: memory dedicated to an image or buffer that is destroyed before it is bound, then
+ * the memory freed (MoltenVK kept the target in the memory and wrote to it at the free:
+ * freed memory, seen under libgmalloc), also when the app's context ends in between; bound,
+ * then destroyed and freed. Refused (the bind ends the context): another image on memory
+ * dedicated to one (VUID-vkBindImageMemory-memory-02628; MoltenVK took an ALIAS_BIT image
+ * there without counting it, and locked the freed memory's mutex at its destroy), a buffer
+ * on memory dedicated to an image (VUID-vkBindBufferMemory-memory-10925). */
+static int case_dedicated(const char *c)
+{
+   setup(0);
+   const bool alias = IS("x-dedicated-alias");
+   const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   if (IS("x-dedicated-buffer-unbound-ok")) {
+      struct vkr_buffer *buf = buffer_unbound(65536);
+      struct vkr_device_memory *mem = dedicated_memory(NULL, buf);
+      struct vn_command_vkDestroyBuffer d = { .device = DEVH, .buffer = (VkBuffer)buf };
+      step("vkDestroyBuffer before any bind");
+      D->dispatch_vkDestroyBuffer(D, &d);
+      free_memory(mem);
+      return ended() ? FATAL : WORKS;
+   }
+   struct vkr_image *a = image_unbound(alias ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
+   struct vkr_device_memory *mem = dedicated_memory(a, NULL);
+   if (IS("x-dedicated-bound-ok")) {
+      if (bind_image_at(a, mem) != VK_SUCCESS)
+         return ended() ? FATAL : ERROR;
+      destroy_image(a);
+      free_memory(mem);
+   } else if (IS("x-dedicated-unbound-ok")) {
+      destroy_image(a);
+      free_memory(mem);
+   } else if (IS("x-dedicated-context-end-ok")) {
+      step("the context ends with the image unbound");
+      vkr_context_destroy(ctx);
+      step("the context is gone");
+      return WORKS;
+   } else if (IS("x-dedicated-other") || alias) {
+      struct vkr_image *b = image_unbound(alias ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
+      bind_image_at(b, mem);
+      if (!ended()) {
+         free_memory(mem);
+         destroy_image(b);
+      }
+   } else if (IS("x-dedicated-buffer-to-image")) {
+      struct vkr_buffer *buf = buffer_unbound(4096);
+      struct vn_command_vkBindBufferMemory b = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                 .memory = (VkDeviceMemory)mem };
+      step("vkBindBufferMemory to memory dedicated to an image");
+      D->dispatch_vkBindBufferMemory(D, &b);
+   } else {
+      return BROKEN;
+   }
+   return ended() ? FATAL : WORKS;
+}
+
+/* LEGAL controls: a 0-byte vkAllocateMemory of device-local and host-visible memory; both
+ * drivers live through it (an error or a 0-byte allocation), vkr passes it on */
+static int case_memory(const char *c)
+{
+   setup(0);
+   const VkPhysicalDeviceMemoryProperties *mp = &pdev->memory_properties;
+   const VkMemoryPropertyFlags want =
+      IS("m-alloc0-host") ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+   uint32_t type = UINT32_MAX;
+   for (uint32_t i = 0; i < mp->memoryTypeCount && type == UINT32_MAX; i++)
+      if ((mp->memoryTypes[i].propertyFlags & want) == want)
+         type = i;
+   if (type == UINT32_MAX)
+      return SKIP;
+   const uint64_t id = next_id++;
+   VkDeviceMemory h = (VkDeviceMemory)(uintptr_t)id;
+   VkMemoryAllocateInfo info = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = 0,
+                                 .memoryTypeIndex = type };
+   struct vn_command_vkAllocateMemory a = { .device = DEVH, .pAllocateInfo = &info, .pMemory = &h };
+   step("vkAllocateMemory 0 bytes of type %u", type);
+   D->dispatch_vkAllocateMemory(D, &a);
+   step("vkAllocateMemory = %d", a.ret);
+   if (ended())
+      return FATAL;
+   if (a.ret != VK_SUCCESS)
+      return ERROR;
+   free_memory(object(id));
+   return ended() ? FATAL : WORKS;
+}
+
+/* the image views of an open pass destroyed while it records: refused at the begin (a
+ * framebuffer's), the next subpass and the end (Mesa's vk_render_pass reads them there, and
+ * KosmicKrisp a rendering's at its end); destroyed after the command buffer ended, another
+ * one records a pass (MallocScribble as the destroyed-pass cases) */
+static void destroy_view(void *v)
+{
+   struct vn_command_vkDestroyImageView d = { .device = DEVH, .imageView = (VkImageView)v };
+   step("vkDestroyImageView");
+   D->dispatch_vkDestroyImageView(D, &d);
+}
+
+static int views_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   void *v = view(w->img, 1);
+   void *views[1] = { v };
+   if (IS("c-state-destroyed-view-rendering")) {
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)v,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                             .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
+      struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderingInfo = &ri };
+      step("vkCmdBeginRendering");
+      D->dispatch_vkCmdBeginRendering(D, &b);
+      destroy_view(v);
+      if (!ended()) {
+         struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)cmd };
+         step("vkCmdEndRendering");
+         D->dispatch_vkCmdEndRendering(D, &e);
+      }
+      return end(cmd);
+   }
+   if (IS("c-state-destroyed-view-imageless")) {
+      const VkFormat fmt = FMT;
+      VkFramebufferAttachmentImageInfo ai = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO,
+                                              .usage = CA_SA, .width = 64, .height = 64, .layerCount = 1,
+                                              .viewFormatCount = 1, .pViewFormats = &fmt };
+      VkFramebufferAttachmentsCreateInfo ac = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO,
+                                                .attachmentImageInfoCount = 1, .pAttachmentImageInfos = &ai };
+      const uint64_t id = next_id++;
+      VkFramebuffer fh = (VkFramebuffer)(uintptr_t)id;
+      VkFramebufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .pNext = &ac,
+                                       .flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT,
+                                       .renderPass = (VkRenderPass)w->rp, .attachmentCount = 1,
+                                       .width = 64, .height = 64, .layers = 1 };
+      struct vn_command_vkCreateFramebuffer cf = { .device = DEVH, .pCreateInfo = &info, .pFramebuffer = &fh };
+      step("vkCreateFramebuffer (imageless)");
+      D->dispatch_vkCreateFramebuffer(D, &cf);
+      if (cf.ret != VK_SUCCESS || !object(id)) {
+         printf("skip: no imageless framebuffer (%d)\n", cf.ret);
+         return SKIP;
+      }
+      VkImageView vh = (VkImageView)v;
+      VkRenderPassAttachmentBeginInfo ab = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
+                                             .attachmentCount = 1, .pAttachments = &vh };
+      VkClearValue clear = { 0 };
+      VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .pNext = &ab,
+                                   .renderPass = (VkRenderPass)w->rp, .framebuffer = (VkFramebuffer)object(id),
+                                   .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                   .pClearValues = &clear };
+      struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
+                                                   .contents = VK_SUBPASS_CONTENTS_INLINE };
+      step("vkCmdBeginRenderPass (imageless)");
+      D->dispatch_vkCmdBeginRenderPass(D, &b);
+      destroy_view(v);
+      end_pass(cmd);
+      return end(cmd);
+   }
+   const bool next = IS("c-state-destroyed-view-next");
+   void *rp = next ? two_subpass_pass(NULL, 0) : w->rp;
+   void *fb = rp ? framebuffer(rp, views, 1, 64, 64, 1) : NULL;
+   if (!fb)
+      broken("framebuffer of a fresh view");
+   if (IS("c-state-destroyed-view-begin")) {
+      destroy_view(v);
+      begin_pass(cmd, rp, fb, 64, 64);
+      end_pass(cmd);
+      return end(cmd);
+   }
+   begin_pass(cmd, rp, fb, 64, 64);
+   if (IS("c-state-destroyed-view-after-ok")) {
+      /* the command buffer ended first (destroying a view a recording one uses makes it
+       * invalid), then another records a pass */
+      end_pass(cmd);
+      const int r = end(cmd);
+      if (r != WORKS)
+         return r;
+      destroy_view(v);
+      void *cmd2 = command_buffer();
+      begin(cmd2);
+      begin_pass(cmd2, w->rp, w->fb, 64, 64);
+      end_pass(cmd2);
+      return end(cmd2);
+   }
+   destroy_view(v);
+   if (next && !ended()) {
+      struct vn_command_vkCmdNextSubpass ns = { .commandBuffer = (VkCommandBuffer)cmd,
+                                                .contents = VK_SUBPASS_CONTENTS_INLINE };
+      step("vkCmdNextSubpass");
+      D->dispatch_vkCmdNextSubpass(D, &ns);
+   } else if (!IS("c-state-destroyed-view-end")) {
+      return BROKEN;
+   }
+   end_pass(cmd);
+   return end(cmd);
+}
+
 /* ---------------- the cases and what each must see ---------------- */
 struct test_case {
    const char *name;
    int expect;
+   /* E_REFUSE: a text its refusal line must have (NULL: any) */
+   const char *line;
 };
 
 static const struct test_case cases[] = {
@@ -3232,6 +4014,7 @@ static const struct test_case cases[] = {
    { "r-dyn-resolve-no-view", E_WORKS }, { "r-dyn-resolve-no-view-target", E_WORKS },
    { "r-begin-clear-color-stencil", E_WORKS }, { "r-begin-clear-ds-stencil", E_REFUSE },
    { "r-dyn-resolve-mode-bad", E_REFUSE }, { "r-format-bad", E_REFUSE }, { "r-format-r64", E_CHILD },
+   { "r-unused-format-ok", E_WORKS },
    /* descriptor set layouts, pools, sets, writes, copies */
    { "d-layout-binding-max", E_WORKS }, { "d-layout-binding-over", E_REFUSE }, { "d-layout-binding-far", E_REFUSE },
    { "d-layout-type-bad", E_REFUSE }, { "d-layout-dynamic-300", E_CHILD },
@@ -3245,11 +4028,13 @@ static const struct test_case cases[] = {
    { "d-consecutive-gap-ok", E_WORKS }, { "d-consecutive-zero-ok", E_WORKS }, { "d-copy-consecutive-ok", E_WORKS },
    { "d-binding-oob", E_REFUSE }, { "d-binding-far", E_REFUSE }, { "d-elem-far", E_REFUSE },
    { "d-elem-next", E_REFUSE }, { "d-type-mismatch", E_REFUSE }, { "d-null-sampler", E_REFUSE },
-   { "d-null-view", E_REFUSE }, { "d-null-view-nd", E_WORKS }, { "d-null-buffer", E_REFUSE },
+   { "d-null-view", E_REFUSE }, { "d-null-view-nd", E_WORKS }, { "d-null-buffer", E_REFUSE, "no buffer (the device's nullDescriptor is off)" },
    { "d-null-buffer-nd", E_WORKS }, { "d-null-dynamic-nd", E_WORKS }, { "d-range-past", E_REFUSE },
    { "d-offset-past-whole", E_REFUSE },
    { "d-dyn-elem-far", E_REFUSE }, { "d-inline-far", E_REFUSE }, { "d-inline-size", E_REFUSE },
    { "d-copy-far", E_REFUSE },
+   { "d-start-next-ok", E_WORKS }, { "d-copy-start-next-ok", E_WORKS }, { "d-start-past-all", E_REFUSE },
+   { "d-planes-ok", E_WORKS }, { "d-mutable-ok", E_WORKS },
    /* command recording */
    { "c-ok", E_WORKS }, { "c-push-max", E_WORKS }, { "c-push-far", E_REFUSE }, { "c-push-near", E_REFUSE },
    { "c-push-wrap", E_REFUSE }, { "c-push2-far", E_REFUSE },
@@ -3262,7 +4047,7 @@ static const struct test_case cases[] = {
    { "c-sets2-first-far", E_REFUSE }, { "c-dyn-offsets-many", E_REFUSE }, { "c-sets-fewer-offsets", E_REFUSE },
    { "c-sets-layout-mismatch", E_REFUSE },
    { "c-push-set-ok", E_WORKS }, { "c-push-set-oob", E_REFUSE }, { "c-push-set-not-push", E_REFUSE },
-   { "c-push-set-binding-far", E_REFUSE },
+   { "c-push-set-binding-far", E_REFUSE }, { "c-push-set-split-ok", E_WORKS },
    { "c-copy-buffer-ok", E_WORKS }, { "c-copy-buffer-past", E_REFUSE }, { "c-copy-buffer-far", E_REFUSE },
    { "c-copy-buffer-wrap", E_REFUSE }, { "c-copy-b2i-ok", E_WORKS }, { "c-copy-b2i-level", E_REFUSE },
    { "c-copy-image-ok", E_WORKS }, { "c-copy-image-layer", E_REFUSE },
@@ -3298,6 +4083,9 @@ static const struct test_case cases[] = {
    { "c-state-destroyed-pass-next", E_REFUSE }, { "c-state-destroyed-pass-end", E_REFUSE },
    { "c-state-destroyed-fb-end", E_REFUSE }, { "c-state-destroyed-id-reused", E_REFUSE },
    { "c-state-end-query-views-past", E_REFUSE },
+   { "c-state-destroyed-view-begin", E_REFUSE }, { "c-state-destroyed-view-next", E_REFUSE },
+   { "c-state-destroyed-view-end", E_REFUSE }, { "c-state-destroyed-view-imageless", E_REFUSE },
+   { "c-state-destroyed-view-rendering", E_REFUSE }, { "c-state-destroyed-view-after-ok", E_WORKS },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
    { "c-region-i2b-max", E_WORKS }, { "c-region-i2b-past", E_REFUSE },
@@ -3307,6 +4095,17 @@ static const struct test_case cases[] = {
    { "q-ok", E_WORKS }, { "q-reset-ok", E_WORKS }, { "q-pool-large", E_KEEP }, { "q-results-first-far", E_REFUSE },
    { "q-results-stride", E_REFUSE }, { "q-reset-far", E_REFUSE }, { "q-pool-type-bad", E_REFUSE },
    { "q-pool-huge", E_REFUSE },
+   /* pool frees, submit counts, dedicated memory, size-0 memory (venus-624-c) */
+   { "f-cmds-ok", E_WORKS }, { "f-cmds-null-ok", E_WORKS }, { "f-cmds-dup", E_REFUSE, "named twice" },
+   { "f-cmds-other-pool", E_REFUSE, "of another pool" }, { "f-sets-ok", E_WORKS }, { "f-sets-reset-ok", E_WORKS },
+   { "f-sets-dup", E_REFUSE, "named twice" }, { "f-sets-other-pool", E_REFUSE, "of another pool" },
+   { "s-submit-ok", E_WORKS }, { "s-submit-values-64", E_WORKS },
+   { "s-submit-group-counts", E_REFUSE, "device group counts" }, { "s-bind-sparse", E_REFUSE, "no sparse binding" },
+   { "x-dedicated-bound-ok", E_WORKS }, { "x-dedicated-unbound-ok", E_WORKS },
+   { "x-dedicated-buffer-unbound-ok", E_WORKS }, { "x-dedicated-context-end-ok", E_WORKS },
+   { "x-dedicated-other", E_REFUSE, "dedicated to another" }, { "x-dedicated-alias", E_REFUSE, "dedicated to another" },
+   { "x-dedicated-buffer-to-image", E_REFUSE, "dedicated to another" },
+   { "m-alloc0-device", E_KEEP }, { "m-alloc0-host", E_KEEP },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -3318,6 +4117,10 @@ static int run_case(const char *c)
    case 'd': return case_descriptor(c);
    case 'c': return case_command(c);
    case 'q': return case_query(c);
+   case 'f': return case_frees(c);
+   case 's': return case_submit(c);
+   case 'x': return case_dedicated(c);
+   case 'm': return case_memory(c);
    default: return BROKEN;
    }
 }
@@ -3339,7 +4142,7 @@ static int time_commands(int n)
    const VkCommandBuffer cb = (VkCommandBuffer)w.cmd;
    static uint8_t data[64];
    struct timespec t0;
-   double us[5];
+   double us[8];
 
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (int i = 0; i < n; i++) {
@@ -3378,6 +4181,55 @@ static int time_commands(int n)
       D->dispatch_vkCmdBindDescriptorSets(D, &b);
    }
    us[3] = since(&t0) / n;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   for (int i = 0; i < n; i++) {
+      VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
+      struct vn_command_vkCmdPipelineBarrier b = { .commandBuffer = cb,
+                                                   .srcStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                                   .dstStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                                   .memoryBarrierCount = 1, .pMemoryBarriers = &mb };
+      D->dispatch_vkCmdPipelineBarrier(D, &b);
+   }
+   us[5] = since(&t0) / n;
+   /* one vkUpdateDescriptorSets of 1000 writes (n / 100 times); vkr turns the handles in the
+      writes into the driver's in place, so each round gets fresh writes (filled untimed) */
+   static VkWriteDescriptorSet many[1000];
+   static VkDescriptorBufferInfo many_bi[1000];
+   const int rounds = n / 100 > 0 ? n / 100 : 1;
+   double total = 0;
+   for (int i = 0; i < rounds; i++) {
+      for (int j = 0; j < 1000; j++) {
+         many_bi[j] = (VkDescriptorBufferInfo){ (VkBuffer)w.buf, 0, 256 };
+         many[j] = (VkWriteDescriptorSet){ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                           .dstSet = (VkDescriptorSet)w.set, .dstBinding = 0,
+                                           .descriptorCount = 1,
+                                           .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                           .pBufferInfo = &many_bi[j] };
+      }
+      struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1000,
+                                                     .pDescriptorWrites = many };
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      D->dispatch_vkUpdateDescriptorSets(D, &u);
+      total += since(&t0);
+   }
+   us[6] = total / rounds;
+   /* a pass is an encoder in KosmicKrisp's Metal command buffer: n / 10 of them */
+   const int passes = n / 10 > 0 ? n / 10 : 1;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   for (int i = 0; i < passes; i++) {
+      VkClearValue clear = { 0 };
+      VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                   .renderPass = (VkRenderPass)w.rp, .framebuffer = (VkFramebuffer)w.fb,
+                                   .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                   .pClearValues = &clear };
+      struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = cb, .pRenderPassBegin = &bi,
+                                                   .contents = VK_SUBPASS_CONTENTS_INLINE };
+      D->dispatch_vkCmdBeginRenderPass(D, &b);
+      struct vn_command_vkCmdEndRenderPass e = { .commandBuffer = cb };
+      D->dispatch_vkCmdEndRenderPass(D, &e);
+   }
+   us[7] = since(&t0) / passes;
    begin_pass(w.cmd, w.rp, w.fb, 64, 64);
    bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
    ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
@@ -3392,8 +4244,10 @@ static int time_commands(int n)
       return 1;
    }
    printf("timing: %d each, us per call through vkr: vkCmdPushConstants %.3f, vkCmdSetViewport %.3f, "
-          "vkUpdateDescriptorSets %.3f, vkCmdBindDescriptorSets %.3f, vkCmdDraw %.3f\n",
-          n, us[0], us[1], us[2], us[3], us[4]);
+          "vkUpdateDescriptorSets %.3f, vkCmdBindDescriptorSets %.3f, vkCmdDraw %.3f, "
+          "vkCmdPipelineBarrier %.3f, vkUpdateDescriptorSets of 1000 writes %.3f, "
+          "vkCmdBeginRenderPass+vkCmdEndRenderPass %.3f\n",
+          n, us[0], us[1], us[2], us[3], us[4], us[5], us[6], us[7]);
    fflush(stdout);
    _exit(0); /* nothing submitted, nothing destroyed */
 }
@@ -3535,7 +4389,7 @@ int main(int argc, char **argv)
          ok = true;
          skipped++;
       } else if (want == E_REFUSE) {
-         ok = got == FATAL && refused_line;
+         ok = got == FATAL && refused_line && (!tc->line || strstr(refusal, tc->line));
       } else if (want == E_WORKS) {
          ok = got == WORKS && !refused_line;
       } else {
