@@ -57,8 +57,9 @@ import Foundation
 /// 256 MB, or after which the VM read back half of what the last one gave
 /// (its refaults), doubles the gap, up to 2 hours; 1 GB or more puts it back
 /// to 15 minutes. After the warning's drop, once the pressure is normal
-/// again, one compaction-only call (giveback.sh compact): compaction moves
-/// pages in use, so never while macOS is short of memory.
+/// again and the VM is quiet, one compaction-only call (giveback.sh
+/// compact): compaction moves pages in use, so never while macOS is short of
+/// memory or the VM busy.
 /// Foundation only: `swift run desktop-tests`.
 public struct MemoryGiveBack: Sendable {
     public static let mib: UInt64 = 1 << 20
@@ -290,6 +291,7 @@ public struct MemoryGiveBack: Sendable {
         previous = last
         last = (t, trigger, trigger == .compressing || trigger == .idle)
         retryAt = nil
+        if trigger == .idle { compactDue = false }
     }
 
     /// The VM's agent did not answer an idle give-back: as if it had not
@@ -342,9 +344,12 @@ public struct MemoryGiveBack: Sendable {
     }
 
     /// Every look: true once, when the compaction-only call after the
-    /// warning's drop should go now (macOS's pressure normal again).
+    /// warning's drop should go now: macOS's pressure normal again and the VM
+    /// quiet (compaction moves pages in use: on the M1 Max with a video
+    /// playing, the VM's waits of 10 ms or more went from 12 to about 50 in
+    /// 150 s). An idle give-back before then compacts too.
     public mutating func compactAfterDrop(_ s: Sample) -> Bool {
-        guard compactDue, s.normal else { return false }
+        guard compactDue, s.normal, quiet else { return false }
         compactDue = false
         return true
     }

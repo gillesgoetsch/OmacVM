@@ -577,15 +577,33 @@ d2.started(.idle, at: 900)
 d2.idleAnswered(MemoryGiveBack.Result.parse("act=norep rep=0", maxMB: 8192), at: 901)
 expect(d2.off && !d2.allowed(.idle, at: 9000) && !d2.allowed(.compressing, at: 9000) && d2.allowed(.warning, at: 9000),
        "norep: no more idle or compressing give-backs; the warning's drop stays")
-// After the warning's drop: one compaction-only call once the pressure is normal again, never while it is not.
+// After the warning's drop: one compaction-only call once the pressure is normal again and the VM is quiet (compaction
+// moves pages in use: on the M1 Max with a video playing, waits of 10 ms or more went from 12 to about 50 in 150 s).
+func looks(_ m: inout MemoryGiveBack, from t0: Double, to t1: Double, load: Double, normal: Bool = true) -> Double? {
+    var t = t0
+    while t <= t1 {
+        var s = sample(t, fp: 6, res: 5, comp: 100)
+        s.cpu = UInt64(t * load * core); s.normal = normal
+        m.seen(s)
+        if m.compactAfterDrop(s) { return t }
+        t += 5
+    }
+    return nil
+}
 var e = withFix(32 * GB)
 e.started(.warning, at: 100)
 e.answered(nil)
 e.dropped()
-expect(e.compactDue && !e.compactAfterDrop(warn(sample(105, fp: 6, res: 5, comp: 100))), "the drop done, pressure still warn: no compaction")
-expect(e.compactAfterDrop(sample(110, fp: 6, res: 5, comp: 100)) && !e.compactAfterDrop(sample(115, fp: 6, res: 5, comp: 100)),
-       "  normal again: one compaction-only call, once")
+expect(e.compactDue && looks(&e, from: 0, to: 300, load: 0.02, normal: false) == nil, "the drop done, pressure still warn: no compaction")
+expect(looks(&e, from: 305, to: 600, load: 0.7) == nil && e.compactDue, "  normal again but QEMU busy (a video, 70 % of a core): not yet")
+let quietAt = looks(&e, from: 605, to: 900, load: 0.02)
+expect(quietAt == 665 && !e.compactDue && looks(&e, from: 670, to: 2000, load: 0.02) == nil,
+       "  normal and quiet for a minute: one compaction-only call, once (at \(quietAt ?? -1))")
 expect(e.last?.trigger == .warning, "  not a give-back for the gaps (the drop's stays)")
+var e3 = withFix(32 * GB)
+e3.dropped()
+e3.started(.idle, at: 50)
+expect(!e3.compactDue, "an idle give-back before it compacts too: the call after the drop is dropped")
 var e2 = MemoryGiveBack(ram: 32 * GB)
 e2.dropped()
 expect(!e2.compactDue, "a QEMU that keeps given-back pages: no compaction after the drop")
