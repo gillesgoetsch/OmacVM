@@ -143,6 +143,11 @@ commit 82927e9. Changes here:
   The clip distance members that `virgl-shader-separable-pervertex.patch` puts
   into a separable block now apply on the Mac too (they needed cull distances
   before). #589; checked by `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-arrays-of-arrays.patch`: a geometry or tessellation
+  shader with a varying array asks for GL_ARB_arrays_of_arrays only where the GL
+  has it; the Mac's has not, so such whole programs drew nothing (vrend already
+  declares those arrays as blocks there). #589; checked by
+  `Tests/virgl/test-whole-program-shapes.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
