@@ -260,10 +260,12 @@ expect(MemoryGiveBack.startLine(pagesGoBack: true) == "OmacVM: VM memory: give-b
        + "(this QEMU gives the pages back to macOS)", "the line when on")
 // The settings' words (GPUMemory.explanation), true with the reclaim fix (3.2.12): freed memory goes back to the Mac,
 // the cold cache while macOS compresses the VM, the whole cache at macOS's warning. 3.2.11 said the Mac kept the pages.
+// 3.2.17: also when the VM is idle, and its scattered free memory (compaction).
 let says = GPUMemory.explanation
 expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !says.contains("keep holding")
-       && says.contains("While macOS compresses the VM, the VM gives back the file cache")
-       && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back while macOS compresses, the warning's drop")
+       && says.contains("When the VM is idle and while macOS compresses it, the VM gives back the file cache it has not used lately")
+       && says.contains("gathers its scattered free memory, so that the Mac can take it back")
+       && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back when idle and while macOS compresses, compaction, the warning's drop")
 // The maintainer's Mac mini (2026-10-30): 12 GB set, 4.5 GB of graphics at 5K, Activity Monitor 23 GB. The words say
 // the field's range at 5K (not "about 2 GB") and that Activity Monitor counts compressed pages twice (ADR 0062's row).
 expect(says.contains("Linux sees exactly this much") && says.contains("Graphics memory comes on top")
