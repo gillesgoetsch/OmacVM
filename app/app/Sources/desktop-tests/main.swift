@@ -178,6 +178,7 @@ func sample(_ t: Double, fp: Double, res: Double, comp: Double) -> MemoryGiveBac
 // takes fresh pages: a give-back would only make Activity Monitor's number smaller. Without it: never; the warning's
 // drop as in 3.2.10 (once per 10 minutes). The rest of this block is a QEMU with the fix (behaviour unchanged).
 func withFix(_ ram: UInt64) -> MemoryGiveBack { MemoryGiveBack(ram: ram, pagesGoBack: true) }
+func warn(_ s: MemoryGiveBack.Sample) -> MemoryGiveBack.Sample { var w = s; w.normal = false; return w }
 var keeps = MemoryGiveBack(ram: 64 * GB)
 expect(!keeps.pagesGoBack, "a QEMU not known to give the pages back: it keeps them (the default)")
 expect(!keeps.allowed(.compressing, at: 0) && keeps.allowed(.warning, at: 0) && keeps.allowed(.critical, at: 0),
@@ -259,10 +260,12 @@ expect(MemoryGiveBack.startLine(pagesGoBack: true) == "OmacVM: VM memory: give-b
        + "(this QEMU gives the pages back to macOS)", "the line when on")
 // The settings' words (GPUMemory.explanation), true with the reclaim fix (3.2.12): freed memory goes back to the Mac,
 // the cold cache while macOS compresses the VM, the whole cache at macOS's warning. 3.2.11 said the Mac kept the pages.
+// 3.2.17: also when the VM is idle, and its scattered free memory (compaction).
 let says = GPUMemory.explanation
 expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !says.contains("keep holding")
-       && says.contains("While macOS compresses the VM, the VM gives back the file cache")
-       && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back while macOS compresses, the warning's drop")
+       && says.contains("When the VM is idle and while macOS compresses it, the VM gives back the file cache it has not used lately")
+       && says.contains("when it is idle it also gathers its scattered free memory, so that the Mac can take it back")
+       && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back when idle and while macOS compresses, compaction, the warning's drop")
 // The maintainer's Mac mini (2026-10-30): 12 GB set, 4.5 GB of graphics at 5K, Activity Monitor 23 GB. The words say
 // the field's range at 5K (not "about 2 GB") and that Activity Monitor counts compressed pages twice (ADR 0062's row).
 expect(says.contains("Linux sees exactly this much") && says.contains("Graphics memory comes on top")
@@ -372,7 +375,7 @@ expect(w.allowed(.warning, at: 0) && w.allowed(.compressing, at: 0), "nothing be
 w.started(.compressing, at: 1000)
 expect(!w.allowed(.compressing, at: 1599) && w.allowed(.compressing, at: 1600), "compressing again after 10 minutes")
 expect(!w.allowed(.warning, at: 1119) && w.allowed(.critical, at: 1120), "warning 2 minutes after a cold-only give-back")
-w.answered(MemoryGiveBack.Result.parse("act=drop got_mb=900", maxMB: 8192))
+w.answered(MemoryGiveBack.Result.parse("act=drop got=900", maxMB: 8192))
 expect(!w.allowed(.warning, at: 1500) && w.allowed(.warning, at: 1600), "after a whole-cache drop: 10 minutes for the warning too")
 w.started(.warning, at: 2000)
 expect(!w.allowed(.compressing, at: 2300) && !w.allowed(.warning, at: 2300), "after the warning's drop: nothing for 10 minutes")
@@ -407,7 +410,7 @@ var qAsks = 0, qAt = 0.0
 while qAt < 3600 { qAsks += 1; qAt += MemoryGiveBack.retryAfter(misses: qAsks) }
 expect(qAsks == 10, "an hour of a silent agent: 10 asks, not 120 (\(qAsks))")
 q.started(.compressing, at: qt)
-expect(q.answered(MemoryGiveBack.Result.parse("act=reclaim got_mb=2000", maxMB: 43008)) == 9 && q.misses == 0,
+expect(q.answered(MemoryGiveBack.Result.parse("act=reclaim got=2000", maxMB: 43008)) == 9 && q.misses == 0,
        "it answers again: the streak ends")
 q.noAnswer(at: qt + 700)
 expect(!q.allowed(.compressing, at: qt + 729) && q.allowed(.compressing, at: qt + 730) && q.misses == 1,
@@ -419,7 +422,7 @@ var k = withFix(64 * GB)
 var t = 0.0
 for want in [2.0, 4, 8, 12, 12] {
     k.started(.compressing, at: t)
-    k.answered(MemoryGiveBack.Result.parse("act=none got_mb=0", maxMB: 43008))
+    k.answered(MemoryGiveBack.Result.parse("act=none got=0", maxMB: 43008))
     k.settled(.compressing, guest: 0, footprintDrop: 100 * MB, at: t + 70)
     expect(k.backoff == want, "small give-back: backoff x\(Int(want))")
     t += 600 * want
@@ -458,47 +461,216 @@ expect(s.baseline?.taken == 5 * GB, "the new baseline: taken 60 s after the give
 // A balloon that does not report: no more give-backs for "compressing"; the warning stays.
 var o = withFix(64 * GB)
 o.started(.compressing, at: 0)
-o.answered(MemoryGiveBack.Result.parse("mode=compressing act=norep reporting=0", maxMB: 8192))
+o.answered(MemoryGiveBack.Result.parse("mode=compressing act=norep rep=0", maxMB: 8192))
 expect(o.off && !o.compressing(sample(5000, fp: 60, res: 20, comp: 900)), "not reporting: off for this run")
 expect(o.allowed(.warning, at: 5000), "the warning's drop still runs")
 
+// The idle give-back (ADR 0059, 3.2.17): every 15 minutes while macOS's pressure is normal, QEMU used at most a fifth of a
+// core over the last minute, the compressing rule does not hold and no give-back ran in the last 10 minutes.
+let core = 1_000_000_000.0   // QEMU's CPU time in ns: one core for one second
+func idleLooks(_ m: inout MemoryGiveBack, from t0: Double, to t1: Double, fp: Double = 6, res: Double = 5, comp: Double = 100,
+               load: Double = 0.02, normal: Bool = true) -> Double? {
+    // One look every 5 s; QEMU uses `load` of a core. Returns the first time idle() says go (nil: never).
+    var t = t0
+    while t <= t1 {
+        let s = MemoryGiveBack.Sample(time: t, footprint: UInt64(fp * Double(GB)), resident: UInt64(res * Double(GB)),
+                                      compressed: UInt64(comp * Double(GB)), cpu: UInt64(t * load * core), normal: normal)
+        m.seen(s)
+        if !m.compressing(s) && m.idle(s) { return t }
+        t += 5
+    }
+    return nil
+}
+var i1 = withFix(32 * GB)
+expect(i1.idleOn && MemoryGiveBack.idleOn(environment: [:]) && !MemoryGiveBack.idleOn(environment: ["OMACVM_GIVEBACK_IDLE": "0"])
+       && MemoryGiveBack.idleOn(environment: ["OMACVM_GIVEBACK_IDLE": "1"]), "idle on by default; OMACVM_GIVEBACK_IDLE=0 turns it off")
+expect(idleLooks(&i1, from: 0, to: 2000) == 900, "a quiet VM, pressure normal: the first idle give-back 15 minutes after the start")
+var i2 = withFix(32 * GB)
+expect(idleLooks(&i2, from: 0, to: 2000, normal: false) == nil, "macOS's pressure warn or critical: never")
+var i3 = withFix(32 * GB)
+expect(idleLooks(&i3, from: 0, to: 2000, load: 0.31) == nil, "QEMU used 31 % of a core (a muted video): not quiet, never")
+var i3b = withFix(32 * GB)
+expect(idleLooks(&i3b, from: 0, to: 2000, load: 0.095) == 900, "  9.5 % of a core (an idle hidden VM on the M1 Max): quiet")
+var i3c = withFix(32 * GB)
+expect(idleLooks(&i3c, from: 0, to: 2000, load: 0.21) == nil, "  21 %: not quiet (the limit is a fifth of a core)")
+var i4 = MemoryGiveBack(ram: 32 * GB, pagesGoBack: true, idle: false)
+expect(idleLooks(&i4, from: 0, to: 3000) == nil && !i4.allowed(.idle, at: 3000), "OMACVM_GIVEBACK_IDLE=0: never")
+var i5 = MemoryGiveBack(ram: 32 * GB)
+expect(idleLooks(&i5, from: 0, to: 3000) == nil, "a QEMU that keeps given-back pages: never (as for compressing)")
+// Not a full minute of looks yet (the app looks every 5 s): not quiet.
+var i6 = withFix(32 * GB)
+i6.seen(sample(895, fp: 6, res: 5, comp: 100))
+expect(!i6.quiet && !i6.idle(sample(900, fp: 6, res: 5, comp: 100)), "under a minute of looks: not known to be quiet")
+// QEMU has min(2 GB, a quarter of the Mac) or more outside its resident memory (what macOS compressed of it, and
+// graphics): no idle give-back (it compacts: macOS would decompress what moves; the compressing rule has its own
+// back-off). The Mac mini's quiet rows had 3.3-4.9 GB there all along; the M1 Max's 0.3 GB.
+var i7 = withFix(32 * GB)
+expect(idleLooks(&i7, from: 0, to: 2000, fp: 6.95, res: 5, comp: 100) == 900, "1.95 GB outside the resident memory: idle runs")
+var i8 = withFix(32 * GB)
+expect(idleLooks(&i8, from: 0, to: 2000, fp: 7, res: 5, comp: 100) == nil && i8.compressingHolds(sample(2000, fp: 7, res: 5, comp: 100))
+       && i8.last == nil, "2 GB outside (compressed pages or graphics, nothing compressed lately): no idle give-back")
+var i8b = withFix(8 * GB), i8c = withFix(8 * GB)
+expect(idleLooks(&i8b, from: 0, to: 2000, fp: 5.9, res: 4, comp: 100) == 900 && idleLooks(&i8c, from: 0, to: 2000, fp: 6.1, res: 4, comp: 100) == nil,
+       "an 8 GB Mac: the same 2 GB (a quarter of it)")
+// One 10-minute gap with the other give-backs: none within 10 minutes of a give-back while macOS compressed.
+var i9 = withFix(32 * GB)
+_ = idleLooks(&i9, from: 0, to: 500)
+i9.started(.compressing, at: 500)
+i9.answered(MemoryGiveBack.Result.parse("act=reclaim got=2000", maxMB: 8192))
+expect(idleLooks(&i9, from: 505, to: 3000) == 1100, "the last give-back at 500 s: idle at 1100 s, not at 900 s")
+// It counts as cold-only: the warning may follow 2 minutes after it, and the next compressing give-back after 10.
+var j = withFix(32 * GB)
+let jt = idleLooks(&j, from: 0, to: 2000)!
+j.started(.idle, at: jt)
+expect(!j.allowed(.warning, at: jt + 119) && j.allowed(.critical, at: jt + 120) && !j.allowed(.compressing, at: jt + 599)
+       && j.allowed(.compressing, at: jt + 600), "idle counts as cold-only: the warning after 2 minutes, compressing after 10")
+// Its agent did not answer: again in 15 minutes, never sooner, and the warning's drop is not held up (no shared retry).
+j.idleNoAnswer(at: jt + 5)
+expect(j.last == nil && j.idleMisses == 1 && j.misses == 0, "an idle miss: as if it had not started, not the shared miss count")
+expect(j.allowed(.warning, at: jt + 3) && j.allowed(.compressing, at: jt + 3), "  the warning's drop and compressing may go at once")
+expect(idleLooks(&j, from: jt + 10, to: jt + 3000) == jt + 5 + 900, "  the next idle give-back 15 minutes after the miss")
+// A retry of the warning or compressing that is due goes first; idle waits until it answered.
+var jr = withFix(32 * GB)
+_ = idleLooks(&jr, from: 0, to: 850)
+jr.started(.warning, at: 850)
+jr.noAnswer(at: 851)
+expect(!jr.allowed(.idle, at: 2000) && jr.allowed(.warning, at: 2000), "a warning retry pending: no idle give-back before it")
+// What came back sets the gap: under 256 MB doubles it (30, 60, 120 minutes, then 2 hours at most); 1 GB or more: 15 again.
+var b = withFix(32 * GB)
+var bt = idleLooks(&b, from: 0, to: 2000)!
+var gaps: [Double] = []
+for _ in 0..<5 {
+    b.started(.idle, at: bt)
+    b.idleAnswered(MemoryGiveBack.Result.parse("act=none got=0 small=100 small_to=100 cpt=small rf=0", maxMB: 8192), at: bt + 5)
+    b.settled(.idle, guest: 0, footprintDrop: 0, at: bt + 65)
+    let next = idleLooks(&b, from: bt + 70, to: bt + 9000)!
+    gaps.append(next - (bt + 5))
+    bt = next
+}
+expect(gaps == [1800, 3600, 7200, 7200, 7200] && b.idleBackoff == 8, "under 256 MB back: 30, 60, 120 minutes, then 2 hours at most (\(gaps))")
+b.started(.idle, at: bt)
+b.idleAnswered(MemoryGiveBack.Result.parse("act=reclaim got=600 small=900 small_to=300 cpt=ran rf=0", maxMB: 8192), at: bt + 3)
+expect(b.idleBackoff == 1 && b.backoff == 1, "600 MB of cache + 600 MB compacted (1.2 GB): back to 15 minutes; compressing's gap untouched")
+b.started(.idle, at: bt + 1000)
+b.idleAnswered(MemoryGiveBack.Result.parse("act=reclaim got=500 small=200 small_to=200 cpt=small rf=100", maxMB: 8192), at: bt + 1003)
+expect(b.idleBackoff == 1, "500 MB back (256 MB to 1 GB): the gap stays; refaults 100 MB since the last (it gave 600): stays")
+b.started(.idle, at: bt + 2000)
+b.idleAnswered(MemoryGiveBack.Result.parse("act=reclaim got=2000 small=200 small_to=200 cpt=small rf=360", maxMB: 8192), at: bt + 2003)
+expect(b.idleBackoff == 2, "2 GB back, but the VM read 260 MB again of the 500 the last gave (half or more): the gap doubles")
+// busy or locked: nothing ran; not counted, again in 15 minutes, the gap as it was.
+var c = withFix(32 * GB)
+let ct = idleLooks(&c, from: 0, to: 2000)!
+c.started(.idle, at: ct)
+c.idleAnswered(MemoryGiveBack.Result.parse("act=busy psi=0.5", maxMB: 8192), at: ct + 5)
+expect(c.last == nil && c.idleBackoff == 1 && c.allowed(.compressing, at: ct + 2), "busy: not a give-back (no gap for the others)")
+expect(idleLooks(&c, from: ct + 10, to: ct + 3000) == ct + 5 + 900, "  the next try 15 minutes later")
+c.started(.idle, at: ct + 1000)
+c.idleAnswered(MemoryGiveBack.Result.parse("act=locked", maxMB: 8192), at: ct + 1001)
+expect(c.last == nil && c.idleBackoff == 1, "locked (the last one still runs in the VM): the same")
+// An answer that could not be read: it may have run, so it counts (the gap as it was).
+c.started(.idle, at: ct + 2000)
+c.idleAnswered(nil, at: ct + 2030)
+expect(c.last?.trigger == .idle && c.idleBackoff == 1, "no readable answer: counted as a give-back")
+// A balloon that does not report: off, for compressing too.
+var d2 = withFix(32 * GB)
+d2.started(.idle, at: 900)
+d2.idleAnswered(MemoryGiveBack.Result.parse("act=norep rep=0", maxMB: 8192), at: 901)
+expect(d2.off && !d2.allowed(.idle, at: 9000) && !d2.allowed(.compressing, at: 9000) && d2.allowed(.warning, at: 9000),
+       "norep: no more idle or compressing give-backs; the warning's drop stays")
+// After the warning's drop: one compaction-only call once the pressure is normal again and the VM is quiet (compaction
+// moves pages in use: on the M1 Max with a video playing, waits of 10 ms or more went from 12 to about 50 in 150 s).
+func looks(_ m: inout MemoryGiveBack, from t0: Double, to t1: Double, load: Double, normal: Bool = true) -> Double? {
+    var t = t0
+    while t <= t1 {
+        var s = sample(t, fp: 6, res: 5, comp: 100)
+        s.cpu = UInt64(t * load * core); s.normal = normal
+        m.seen(s)
+        if m.compactAfterDrop(s) { return t }
+        t += 5
+    }
+    return nil
+}
+var e = withFix(32 * GB)
+e.started(.warning, at: 100)
+e.answered(nil)
+e.dropped()
+expect(e.compactDue && looks(&e, from: 0, to: 300, load: 0.02, normal: false) == nil, "the drop done, pressure still warn: no compaction")
+expect(looks(&e, from: 305, to: 600, load: 0.7) == nil && e.compactDue, "  normal again but QEMU busy (a video, 70 % of a core): not yet")
+let quietAt = looks(&e, from: 605, to: 900, load: 0.02)
+expect(quietAt == 665 && !e.compactDue && looks(&e, from: 670, to: 2000, load: 0.02) == nil,
+       "  normal and quiet for a minute: one compaction-only call, once (at \(quietAt ?? -1))")
+expect(e.last?.trigger == .warning, "  not a give-back for the gaps (the drop's stays)")
+var e3 = withFix(32 * GB)
+e3.dropped()
+e3.started(.idle, at: 50)
+expect(!e3.compactDue, "an idle give-back before it compacts too: the call after the drop is dropped")
+var e2 = MemoryGiveBack(ram: 32 * GB)
+e2.dropped()
+expect(!e2.compactDue, "a QEMU that keeps given-back pages: no compaction after the drop")
+// qemu.log's words.
+expect(MemoryGiveBack.idleLine(on: true, pagesGoBack: true) == "OmacVM: VM memory: idle give-back: on (at most every 15 minutes while the VM is quiet and macOS's pressure normal)"
+       && MemoryGiveBack.idleLine(on: false, pagesGoBack: true) == "OmacVM: VM memory: idle give-back: off (OMACVM_GIVEBACK_IDLE=0)"
+       && MemoryGiveBack.idleLine(on: true, pagesGoBack: false) == "OmacVM: VM memory: idle give-back: off (this QEMU keeps given-back pages)",
+       "the start line about the idle give-back")
+let ran = MemoryGiveBack.Result.parse("act=none small=1191 small_to=131 cpt=ran cpt_ms=430", maxMB: 8192)!
+expect(MemoryGiveBack.compactionWords(ran) == "compacted its free memory: 1.2 GB -> 131 MB in blocks too small to give back (0.4 s)",
+       "the compaction's words")
+expect(MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=1191 small_to=600 cpt=cap cpt_ms=10000", maxMB: 8192)!)
+       .hasSuffix("(10.0 s, stopped at its time cap)")
+       && MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=90 cpt=small", maxMB: 8192)!) == "90 MB free in blocks too small to give back"
+       && MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=900 cpt=busy", maxMB: 8192)!) == "no compaction (the VM was waiting for memory)",
+       "  at its cap, too little to compact, the VM busy")
+var ist = MemoryGiveBack.Status()
+ist.idle = 4; ist.idleMB = 2150; ist.idleAt = 1_793_177_520
+expect(ist.text.contains("\ncount=0\n") || ist.text.hasPrefix("count=0\n"), "idle give-backs do not count in count= (omacvm check's N times)")
+expect(ist.text.hasSuffix("idle=4\nidle_mb=2150\nidle_at=1793177520\n"), "  their own lines: idle=, idle_mb=, idle_at=")
+
 // The VM's answer is untrusted.
-let line = "mode=compressing act=reclaim want_mb=12444 got_mb=12380 cache_mb=15550 cache_after_mb=3170 small_free_mb=900 total_mb=42035 reporting=1 order=6 steps=13 secs=19"
+let line = "mode=compressing act=reclaim want=12444 got=12380 cache=15550 cache_to=3170 small=1191 small_to=131 cpt=ran cpt_ms=430 psi=0 rf=812 rep=1 order=6 steps=13 secs=19"
 let r = MemoryGiveBack.Result.parse("noise\n" + line + "\n", maxMB: 43008)
-expect(r?.act == "reclaim" && r?.gotMB == 12380 && r?.cacheMB == 15550 && r?.cacheAfterMB == 3170 && r?.smallFreeMB == 900
-       && r?.totalMB == 42035 && r?.reporting == true && r?.order == 6 && r?.seconds == 19, "giveback.sh's line read")
-let big = MemoryGiveBack.Result.parse("act=reclaim got_mb=99999999 cache_mb=-5 small_free_mb=x order=77 secs=99999", maxMB: 4096)
-expect(big?.gotMB == 4096 && big?.cacheMB == 0 && big?.smallFreeMB == 0 && big?.order == 10 && big?.seconds == 600,
-       "numbers clamped to 0 and the VM's memory")
-expect(MemoryGiveBack.Result.parse("act=re\u{1b}[31mcl\u{7}aim got_mb=5", maxMB: 100)?.act == "remclaim", "act: letters only")
-expect(MemoryGiveBack.Result.parse("got_mb=5 cache_mb=7", maxMB: 100) == nil, "no act: not an answer")
-expect(MemoryGiveBack.Result.parse("act=;; got_mb=5", maxMB: 100) == nil, "an act without letters: not an answer")
+expect(r?.act == "reclaim" && r?.wantMB == 12444 && r?.gotMB == 12380 && r?.cacheMB == 15550 && r?.cacheAfterMB == 3170
+       && r?.smallFreeMB == 1191 && r?.smallAfterMB == 131 && r?.compaction == "ran" && r?.compactionMS == 430 && r?.refaultMB == 812
+       && r?.reporting == true && r?.order == 6 && r?.seconds == 19, "giveback.sh's line read")
+expect(r?.compactedMB == 1060, "  what compaction made reportable: the small free blocks it joined (1191 -> 131)")
+expect(MemoryGiveBack.Result.parse("act=none small=900 small_to=100 cpt=busy", maxMB: 4096)?.compactedMB == 0
+       && MemoryGiveBack.Result.parse("act=none small=900 small_to=950 cpt=cap", maxMB: 4096)?.compactedMB == 0
+       && MemoryGiveBack.Result.parse("act=none small=900 small_to=300 cpt=cap", maxMB: 4096)?.compactedMB == 600,
+       "  only a compaction that ran (or ran to its cap) counts, never below 0")
+expect(MemoryGiveBack.Result.parse("act=none", maxMB: 4096)?.refaultMB == nil, "  no refaults in the line: nil")
+let big = MemoryGiveBack.Result.parse("act=reclaim got=99999999 cache=-5 small=x order=77 secs=99999 cpt_ms=-4 rf=99999999999999", maxMB: 4096)
+expect(big?.gotMB == 4096 && big?.cacheMB == 0 && big?.smallFreeMB == 0 && big?.order == 10 && big?.seconds == 600
+       && big?.compactionMS == 0 && big?.refaultMB == Int(Int32.max), "numbers clamped to 0 and the VM's memory (refaults to 2^31)")
+expect(MemoryGiveBack.Result.parse("act=re\u{1b}[31mcl\u{7}aim got=5", maxMB: 100)?.act == "remclaim", "act: letters only")
+expect(MemoryGiveBack.Result.parse("act=none cpt=r\u{1b}an9", maxMB: 100)?.compaction == "ran", "cpt: letters only")
+expect(MemoryGiveBack.Result.parse("got=5 cache=7", maxMB: 100) == nil, "no act: not an answer")
+expect(MemoryGiveBack.Result.parse("act=;; got=5", maxMB: 100) == nil, "an act without letters: not an answer")
 expect(MemoryGiveBack.Result.parse(String(repeating: "x", count: 300) + " act=reclaim", maxMB: 100) == nil, "past 200 characters: cut")
 expect(MemoryGiveBack.Result.parse("", maxMB: 100) == nil && MemoryGiveBack.Result.parse("\n\n", maxMB: 100) == nil, "empty: nil")
 
 // Seeded fuzz: random answers never crash and never give a number out of range.
 var seed: UInt64 = 0x5eed_0059
 func next() -> UInt64 { seed = seed &* 6364136223846793005 &+ 1442695040888963407; return seed >> 33 }
-let pieces = ["act=", "reclaim", "got_mb=", "cache_mb=", "cache_after_mb=", "small_free_mb=", "total_mb=", "order=", "secs=",
-              "reporting=", "=", " ", "\n", "\r", "-", "9", "99999999999999999999", "-1", "\u{0}", "\u{1b}", "é", "🙂", "\u{7f}", "a"]
+let pieces = ["act=", "reclaim", "got=", "cache=", "cache_to=", "small=", "small_to=", "cpt=", "cpt_ms=", "rf=", "order=", "secs=",
+              "rep=", "=", " ", "\n", "\r", "-", "9", "99999999999999999999", "-1", "\u{0}", "\u{1b}", "é", "🙂", "\u{7f}", "a"]
 var bad = 0
 for _ in 0..<5000 {
     var text = ""
     for _ in 0..<Int(next() % 40) { text += pieces[Int(next() % UInt64(pieces.count))] }
     let cap = Int(next() % 65536)
     guard let x = MemoryGiveBack.Result.parse(text, maxMB: cap) else { continue }
-    let nums = [x.wantMB, x.gotMB, x.cacheMB, x.cacheAfterMB, x.smallFreeMB, x.totalMB]
-    if nums.contains(where: { $0 < 0 || $0 > cap }) || x.act.isEmpty || x.act.count > 12
-        || !x.act.unicodeScalars.allSatisfy({ $0.value >= 0x61 && $0.value <= 0x7A })
+    let nums = [x.wantMB, x.gotMB, x.cacheMB, x.cacheAfterMB, x.smallFreeMB, x.smallAfterMB, x.compactedMB]
+    if nums.contains(where: { $0 < 0 || $0 > cap }) || x.act.isEmpty || x.act.count > 12 || x.compaction.count > 12
+        || !(x.act + x.compaction).unicodeScalars.allSatisfy({ $0.value >= 0x61 && $0.value <= 0x7A })
+        || !(0...600_000).contains(x.compactionMS) || (x.refaultMB.map { $0 < 0 } ?? false)
         || !(-1...10).contains(x.order) || !(0...600).contains(x.seconds) { bad += 1 }
 }
-expect(bad == 0, "5000 random answers: every number within range, act letters only")
+expect(bad == 0, "5000 random answers: every number within range, act and cpt letters only")
 
 // The status file for omacvm check.
 var st = MemoryGiveBack.Status()
 st.count = 3; st.at = 1_793_177_520; st.trigger = "compressing"; st.act = "reclaim"; st.givenMB = 11900; st.returnedMB = 11200
 expect(st.text.hasPrefix("count=3\nat=1793177520\ntrigger=compressing\nact=reclaim\ngiven_mb=11900\nreturned_mb=11200\n")
-       && st.text.hasSuffix("off=0\nkept=0\n"), "status file: key=value lines")
+       && st.text.hasSuffix("off=0\nkept=0\nidle=0\nidle_mb=0\nidle_at=0\n"), "status file: key=value lines")
 st.givenMB = nil
 expect(st.text.contains("\ngiven_mb=\n"), "the warning's drop: no count from the VM, given_mb empty")
 expect(MemoryGiveBack.gb(900 * MB) == "900 MB" && MemoryGiveBack.gb(11900 * MB) == "11.6 GB", "sizes as the log says them")

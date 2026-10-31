@@ -98,9 +98,11 @@ public struct GPUMemory: Equatable {
     public static let explanation = """
         VM memory is the VM's RAM: Linux sees exactly this much, and the Mac gives it \
         as the VM uses it. What Linux frees goes back to the Mac and leaves QEMU's \
-        footprint, the number Activity Monitor shows for the VM. While macOS compresses \
-        the VM, the VM gives back the file cache it has not used lately; when macOS warns \
-        that memory is short, it drops its whole file cache. Graphics memory comes on \
+        footprint, the number Activity Monitor shows for the VM. When the VM is idle and \
+        while macOS compresses it, the VM gives back the file cache it has not used lately; \
+        when it is idle it also gathers its scattered free memory, so that the Mac can take \
+        it back. When macOS warns that memory is short, it drops its whole file cache. \
+        Graphics memory comes on \
         top: the textures and buffers the VM's desktop and apps draw with, taken from the \
         Mac's memory as they need it (a 5K desktop with a browser: 2 to 5 GB). \
         New ones for apps are refused when macOS itself runs short, or when all of them \

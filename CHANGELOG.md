@@ -3,6 +3,29 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.17 (unreleased)
+
+- **What the VM frees reaches the Mac: it gathers its free memory, and gives back when it is idle
+  (#652).** Linux in an OmacVM.app VM hands freed memory back to the Mac only in blocks of 256 KiB
+  and up; after a browser closes or the VM drops its cache, much of it sits in smaller blocks and
+  stays on the Mac (a 4 GB test VM with Chrome just closed: 1.2 GB on the MacBook Pro M1 Max,
+  1.0-1.4 GB on the Mac mini). Now the VM gives back when it is idle: at most every 15 minutes,
+  while macOS's memory pressure is normal, QEMU used at most a fifth of a CPU core for a minute and
+  has under 2 GB outside its resident memory (what macOS compressed of it, and graphics; a quarter
+  of a smaller Mac), it gives back the file cache it has not used lately above its
+  newest 2 GB (a quarter of a smaller VM) and gathers its free memory into blocks it can hand back
+  (Linux's compaction: at most 10 s, only when the VM does not wait for memory). After macOS's
+  memory warning makes the VM drop its cache, it gathers its free memory once the pressure is
+  normal again and the VM is quiet. In a test VM on the M1 Max (4 GB, Chrome closed, 20 minutes quiet) the idle step
+  gathered 1.2 GB in 0.6 s: the Mac held 2425 MB of the VM's memory against 3445 MB with 3.2.16,
+  and its own counters had 1044 MB less to take back when the VM quit; Chrome started as fast after a step (245 against
+  265 ms, median of 3), and no step runs while a video plays (QEMU at 71-85 % of a core). Not
+  while macOS compresses the VM: moving pages makes macOS decompress them (on the Mac mini, where
+  it gave 330-630 MB, one of two test windows had a 1.2 s stall note). `OMACVM_GIVEBACK_IDLE=0`
+  (the app's environment) turns the idle give-back off; `logs/qemu.log` has one line per idle
+  give-back, and `omacvm check`'s "VM memory" line counts them on their own. Needs only the app
+  update: the VM runs the app's own script, no Update VM.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left
