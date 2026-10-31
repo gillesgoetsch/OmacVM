@@ -45,7 +45,7 @@ vkCmdResetQueryPool	pool, first, count	A	first + count <= count	c-query-reset-fa
 vkCmdWriteTimestamp	stage, pool, query	A	query < count	c-query-timestamp-far (MVK-p 11)
 vkCmdCopyQueryPoolResults	pool, first, count, dst, offset, stride, flags	A	first + count <= count; offset + (count-1)*stride + result size <= dst size; offset, stride % 4	c-query-copy-past (accepted)
 vkCmdPushConstants	layout, stages, offset, size	A	offset, size % 4, size > 0, offset + size <= maxPushConstantsSize	c-push-far (KK 10), c-push-wrap (KK 10, MVK-p 10), c-push-near (KK 256 bytes past push[256])
-vkCmdBeginRenderPass	begin info	A+B	A: framebuffer attachment count = the pass's (imageless: the begin info's), clearValueCount >= the last CLEAR attachment + 1, sample-location indices; B: pass state	r-fb-fewer (KK 11, MVK-p 11)
+vkCmdBeginRenderPass	begin info	A+B	A: framebuffer attachment count = the pass's (imageless: the begin info's), clearValueCount >= the last attachment whose loadOp clears, or whose stencilLoadOp clears on a depth/stencil format, + 1, sample-location indices; B: pass state	r-fb-fewer (KK 11, MVK-p 11); r-begin-clear-ds-stencil; legal: r-begin-clear-color-stencil
 vkCmdNextSubpass	contents	B	inside a render pass, not past its last subpass	r-next-subpass (KK 11)
 vkCmdEndRenderPass		B	inside a render pass	r-end-no-begin (KK 11, MVK-p 11)
 vkCmdExecuteCommands	commandBuffers	A+B	A: a primary executing secondaries only (KK replays secondaries recursively; EXT_nested_command_buffer hidden); B: secondaries' bound state	gap 6: c-nested-self, c-execute-in-secondary, c-execute-primary

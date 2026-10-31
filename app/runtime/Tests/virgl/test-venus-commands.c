@@ -1348,6 +1348,92 @@ static void *two_subpass_pass(const void *next, uint32_t dep_src)
    return cr.ret == VK_SUCCESS ? object(id) : NULL;
 }
 
+/* the clear values a begin must give (VUID-VkRenderPassBeginInfo-clearValueCount-00902): an
+ * attachment counts when its loadOp clears, or its stencilLoadOp on a depth/stencil format */
+static VkFormat ds_stencil_format(void)
+{
+   static const VkFormat formats[] = { VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT,
+                                       VK_FORMAT_D16_UNORM_S8_UINT, VK_FORMAT_S8_UINT };
+   for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+      VkFormatProperties p = { 0 };
+      pdev->proc_table.GetPhysicalDeviceFormatProperties(pdev->base.handle.physical_device, formats[i], &p);
+      if (p.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+         return formats[i];
+   }
+   return VK_FORMAT_UNDEFINED;
+}
+
+/* a view of a 64 x 64 depth/stencil image of `format` */
+static void *ds_view(VkFormat format)
+{
+   const uint64_t id = next_id++, vid = next_id++;
+   VkImage hd = (VkImage)(uintptr_t)id;
+   VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = format, .extent = { 64, 64, 1 }, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT };
+   struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
+   D->dispatch_vkCreateImage(D, &c);
+   struct vkr_image *img = object(id);
+   if (c.ret != VK_SUCCESS || !img)
+      broken("vkCreateImage (depth/stencil)");
+   VkMemoryRequirements req = { 0 };
+   struct vn_command_vkGetImageMemoryRequirements r = { .device = DEVH, .image = (VkImage)img,
+                                                       .pMemoryRequirements = &req };
+   D->dispatch_vkGetImageMemoryRequirements(D, &r);
+   struct vkr_device_memory *mem = allocate(req.size, memory_type(req.memoryTypeBits));
+   struct vn_command_vkBindImageMemory b = { .device = DEVH, .image = (VkImage)img, .memory = (VkDeviceMemory)mem };
+   D->dispatch_vkBindImageMemory(D, &b);
+   if (b.ret != VK_SUCCESS)
+      broken("vkBindImageMemory (depth/stencil)");
+   VkImageView h = (VkImageView)(uintptr_t)vid;
+   const VkImageAspectFlags aspects = format == VK_FORMAT_S8_UINT
+                                         ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                         : VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+   VkImageViewCreateInfo vinfo = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = (VkImage)img,
+                                   .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format,
+                                   .subresourceRange = { aspects, 0, 1, 0, 1 } };
+   struct vn_command_vkCreateImageView v = { .device = DEVH, .pCreateInfo = &vinfo, .pView = &h };
+   D->dispatch_vkCreateImageView(D, &v);
+   if (v.ret != VK_SUCCESS || !object(vid))
+      broken("vkCreateImageView (depth/stencil)");
+   return object(vid);
+}
+
+/* a pass of one attachment, a color one (FMT) or a depth/stencil one, with these load ops;
+ * begun with no clear values and ended */
+static int clear_rule_case(struct world *w, VkFormat format, VkAttachmentLoadOp load,
+                           VkAttachmentLoadOp stencil_load)
+{
+   const bool ds = format != FMT;
+   const VkImageLayout layout = ds ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                   : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+   VkAttachmentDescription att = { 0, format, VK_SAMPLE_COUNT_1_BIT, load, VK_ATTACHMENT_STORE_OP_STORE,
+                                   stencil_load, VK_ATTACHMENT_STORE_OP_STORE, VK_IMAGE_LAYOUT_UNDEFINED, layout };
+   VkAttachmentReference ref = { 0, layout };
+   VkSubpassDescription sub = { .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                .colorAttachmentCount = ds ? 0 : 1, .pColorAttachments = ds ? NULL : &ref,
+                                .pDepthStencilAttachment = ds ? &ref : NULL };
+   const uint64_t id = next_id++;
+   VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+   VkRenderPassCreateInfo info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
+                                   .pAttachments = &att, .subpassCount = 1, .pSubpasses = &sub };
+   struct vn_command_vkCreateRenderPass cr = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+   step("vkCreateRenderPass format %d, load op %d, stencil load op %d", format, load, stencil_load);
+   D->dispatch_vkCreateRenderPass(D, &cr);
+   void *rp = cr.ret == VK_SUCCESS ? object(id) : NULL;
+   if (!rp)
+      broken("render pass");
+   void *views[1] = { ds ? ds_view(format) : w->iv };
+   void *fb = framebuffer(rp, views, 1, 64, 64, 1);
+   if (!fb)
+      broken("framebuffer");
+   begin(w->cmd);
+   begin_pass_clear(w->cmd, rp, fb, 64, 64, 0);
+   end_pass(w->cmd);
+   return end(w->cmd);
+}
+
 static int rendering_case(const char *c, struct world *w)
 {
    VkRenderingAttachmentInfo att[16];
@@ -1428,6 +1514,17 @@ static int case_render_pass(const char *c)
       begin_pass_clear(w.cmd, w.rp, w.fb, 64, 64, 0);
       end_pass(w.cmd);
       return end(w.cmd);
+   }
+   /* LEGAL: a color attachment's stencil load op is ignored, so it asks no clear value */
+   if (IS("r-begin-clear-color-stencil"))
+      return clear_rule_case(&w, FMT, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_CLEAR);
+   if (IS("r-begin-clear-ds-stencil")) {
+      const VkFormat ds = ds_stencil_format();
+      if (ds == VK_FORMAT_UNDEFINED) {
+         printf("skip: no depth/stencil format with stencil\n");
+         return SKIP;
+      }
+      return clear_rule_case(&w, ds, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_CLEAR);
    }
    if (IS("r-multiview-3"))
       return mv_case(3, false, false);
@@ -2379,6 +2476,7 @@ static const struct test_case cases[] = {
    { "r-sample-loc-index-far", E_REFUSE },
    { "r-dyn-colors-over", E_REFUSE }, { "r-dyn-layers-over", E_REFUSE }, { "r-dyn-resolve-null", E_REFUSE },
    { "r-dyn-resolve-no-view", E_WORKS }, { "r-dyn-resolve-no-view-target", E_WORKS },
+   { "r-begin-clear-color-stencil", E_WORKS }, { "r-begin-clear-ds-stencil", E_REFUSE },
    { "r-dyn-resolve-mode-bad", E_REFUSE },
    /* descriptor set layouts, pools, sets, writes, copies */
    { "d-layout-binding-max", E_WORKS }, { "d-layout-binding-over", E_REFUSE }, { "d-layout-binding-far", E_REFUSE },
