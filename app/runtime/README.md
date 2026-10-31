@@ -130,6 +130,30 @@ commit 82927e9. Changes here:
   it while the framebuffer is incomplete.
   `OMACVM_VIRGL_SHADER_FAILURES=lose` keeps upstream's context error. Checked
   by `Tests/virgl/test-separable-pervertex.c`
+- `patches/virgl-shader-clip-distances.patch`: on a desktop GL without cull
+  distances (the Mac's 4.1) vrend still writes clip distances: a shader that
+  writes gl_ClipDistance compiles and clips (its draws were skipped), user clip
+  planes clip after the last vertex, tessellation or geometry shader (they were
+  ignored), and a tessellation evaluation shader as the last stage gets the y
+  prescale and its transform feedback (it drew upside down in a window and
+  recorded zeros). The planes' stores sit in a shader variant for planes on
+  (key bit `ucp_enabled`, last vertex or evaluation shader only; the geometry
+  shader's `gs.emit_clip_distance`), so a shader drawn without planes keeps its
+  GLSL. gl_CullDistance is still never declared: such a shader stays refused.
+  The clip distance members that `virgl-shader-separable-pervertex.patch` puts
+  into a separable block now apply on the Mac too (they needed cull distances
+  before). #589; checked by `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-arrays-of-arrays.patch`: a geometry or tessellation
+  shader with a varying array asks for GL_ARB_arrays_of_arrays only where the GL
+  has it; the Mac's has not, so such whole programs drew nothing (vrend already
+  declares those arrays as blocks there). #589; checked by
+  `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-caps-tess-outputs.patch`: the guest gets the tessellation
+  shaders' per-vertex output limits on every GL with tessellation; they were 0
+  without atomic counters (the Mac), so the guest's Mesa refused every whole
+  program whose tessellation shader had an output ("too many output components
+  (4 > 0)") before it reached the Mac. #589; checked by
+  `Tests/virgl/test-whole-program-shapes.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once

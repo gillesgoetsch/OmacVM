@@ -1,0 +1,155 @@
+virglrenderer: clip distances and a last tessellation evaluation shader without cull distances
+
+What: on a desktop GL without cull distances (Apple's GL 4.1 has no ARB_cull_distance) vrend
+writes clip distances. A vertex, tessellation or geometry shader that writes gl_ClipDistance
+compiles and clips; user clip planes (glClipPlane in a compatibility context) clip after the
+last vertex, tessellation evaluation or geometry shader. A tessellation evaluation shader that
+is the last stage before the fragment shader gets the y prescale and its transform feedback
+stores, as a vertex shader does. gl_CullDistance is still never declared there: a shader that
+writes one stays refused, as before.
+Why: vrend took "has cull distances" for "has clip distances". gl_ClipDistance is core in
+desktop GLSL 1.30; only GLES needs EXT_clip_cull_distance, which the cull distance feature
+stands for there. On the Mac a shader that wrote gl_ClipDistance did not compile (it wrote an
+undeclared clip_dist_temp) and its draws were skipped; clip planes and the clip distances of
+tessellation and geometry shaders were ignored. The tessellation evaluation shader's end sat
+inside the same test: under a flipped viewport (a guest's window) tessellated geometry landed
+upside down, and its transform feedback recorded zeros and left GL error 0x502 for the next
+command (#589).
+How: has_clip_distance() (cull distances, or desktop GL) gates the clip declarations and
+stores of all four stages. The user clip planes' stores sit in a shader variant of their own:
+the geometry shader's gs.emit_clip_distance as before, and a new key bit ucp_enabled for the
+last vertex or tessellation evaluation shader, set only on a desktop GL without cull
+distances. A shader drawn without clip planes keeps its GLSL byte for byte; programs drawn
+with planes on and off get one more variant. A last tessellation evaluation shader now uses
+vrend's VirglBlock (one uniform block binding), as the vertex and geometry shaders do. A
+loose gl_ClipDistance only appears in a last stage that is not separable and a gl_PerVertex
+block only in a stage that is not last or in a separable one, so the two never meet (that
+crashed Apple's GLSL compiler, virgl-567). The clip distance members that
+virgl-shader-separable-pervertex.patch puts into a separable stage's block now apply on the
+Mac too.
+Upstream: the same gates in virglrenderer main (e0a1caf3, checked 2026-10-31); not sent.
+Test: Tests/virgl/test-whole-program-shapes.c rows A, B and C (12 fail without this patch,
+also with planes switched on and off for one program), Tests/virgl/test-core-glsl-shaders.c
+(exact texts unchanged).
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -5697,6 +5697,13 @@
+ 
+    if (type == PIPE_SHADER_GEOMETRY)
+       key->gs.emit_clip_distance = sub_ctx->rs_state.clip_plane_enable != 0;
++   /* OmacVM: a desktop GL without cull distances (the Mac) writes the user clip planes'
++    * distances in a variant of the last vertex or tessellation evaluation shader for
++    * planes on; every other key stays as it was */
++   if (!vrend_state.use_gles && !has_feature(feat_cull_distance) &&
++       ((type == PIPE_SHADER_VERTEX && !key->gs_present && !key->tes_present) ||
++        (type == PIPE_SHADER_TESS_EVAL && !key->gs_present)))
++      key->ucp_enabled = sub_ctx->rs_state.clip_plane_enable != 0;
+ 
+    for (int i = 0; i < sub_ctx->views[type].max_num_views; i++) {
+       struct vrend_sampler_view *view = sub_ctx->views[type].views[i];
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -2639,13 +2639,27 @@
+    }
+ }
+ 
++/* OmacVM: gl_ClipDistance is core in desktop GLSL (1.30); only GLES needs
++ * EXT_clip_cull_distance, which the cull distance feature stands for there. A desktop GL
++ * without cull distances (the Mac's 4.1) writes clip distances too. */
++static inline bool has_clip_distance(const struct dump_ctx *ctx)
++{
++   return ctx->cfg->has_cull_distance || !ctx->cfg->use_gles;
++}
++
+ /* OmacVM: emit_clip_dist_movs() writes the user clip planes' distances: the last vertex
+- * stage without clip distance outputs, on a GL with cull distances (its callers' test). */
++ * stage without clip distance outputs. With cull distances always (upstream); on a desktop
++ * GL without them only while the planes are on, in a variant of its own: the geometry
++ * shader's gs.emit_clip_distance, the vertex or tessellation evaluation shader's
++ * ucp_enabled (set only there), so a shader drawn without planes keeps its GLSL. */
+ static bool writes_ucp_clip_dist(const struct dump_ctx *ctx)
+ {
+-   return ctx->cfg->has_cull_distance && ctx->num_out_clip_dist == 0 &&
+-          ctx->is_last_vertex_stage && ctx->num_outputs + 2 <= MAX_VARYING &&
+-          (ctx->prog_type != TGSI_PROCESSOR_GEOMETRY || ctx->key->gs.emit_clip_distance);
++   if (ctx->num_out_clip_dist || !ctx->is_last_vertex_stage ||
++       ctx->num_outputs + 2 > MAX_VARYING)
++      return false;
++   if (ctx->prog_type == TGSI_PROCESSOR_GEOMETRY)
++      return has_clip_distance(ctx) && ctx->key->gs.emit_clip_distance;
++   return ctx->cfg->has_cull_distance || ctx->key->ucp_enabled;
+ }
+ 
+ static void emit_clip_dist_movs(const struct dump_ctx *ctx,
+@@ -2802,7 +2816,7 @@
+     if (ctx->so && !ctx->key->gs_present && !ctx->key->tes_present)
+        emit_so_movs(ctx, glsl_strbufs, has_clipvertex_so);
+ 
+-    if (ctx->cfg->has_cull_distance)
++    if (has_clip_distance(ctx))
+        emit_clip_dist_movs(ctx, glsl_strbufs);
+ 
+     if (!ctx->key->gs_present && !ctx->key->tes_present)
+@@ -6280,12 +6294,15 @@
+    case TGSI_OPCODE_END:
+       if (iter->processor.Processor == TGSI_PROCESSOR_VERTEX) {
+          handle_vertex_proc_exit(ctx, &ctx->glsl_strbufs, &ctx->has_clipvertex_so);
+-      } else if (iter->processor.Processor == TGSI_PROCESSOR_TESS_CTRL && ctx->cfg->has_cull_distance) {
++      } else if (iter->processor.Processor == TGSI_PROCESSOR_TESS_CTRL && has_clip_distance(ctx)) {
+          emit_clip_dist_movs(ctx, &ctx->glsl_strbufs);
+-      } else if (iter->processor.Processor == TGSI_PROCESSOR_TESS_EVAL && ctx->cfg->has_cull_distance) {
++      } else if (iter->processor.Processor == TGSI_PROCESSOR_TESS_EVAL) {
++         /* OmacVM: as handle_vertex_proc_exit: a GL without cull distances lost the
++          * stream output and the y prescale of a last evaluation shader too */
+          if (ctx->so && !ctx->key->gs_present)
+             emit_so_movs(ctx, &ctx->glsl_strbufs, &ctx->has_clipvertex_so);
+-         emit_clip_dist_movs(ctx, &ctx->glsl_strbufs);
++         if (has_clip_distance(ctx))
++            emit_clip_dist_movs(ctx, &ctx->glsl_strbufs);
+          if (!ctx->key->gs_present) {
+             emit_prescale(&ctx->glsl_strbufs);
+          }
+@@ -6328,7 +6345,7 @@
+          emit_int_output_stores(ctx, &ctx->glsl_strbufs);
+          if (ctx->so && ctx->key->gs_present)
+             emit_so_movs(ctx, &ctx->glsl_strbufs, &ctx->has_clipvertex_so);
+-         if (ctx->cfg->has_cull_distance && ctx->key->gs.emit_clip_distance)
++         if (has_clip_distance(ctx) && ctx->key->gs.emit_clip_distance)
+             emit_clip_dist_movs(ctx, &ctx->glsl_strbufs);
+          emit_prescale(&ctx->glsl_strbufs);
+          if (imd->val[inst->Src[0].Register.SwizzleX].ui > 0) {
+@@ -7586,7 +7603,11 @@
+    char cull_buf[64] = "";
+    char clip_buf[64] = "";
+ 
+-   if (ctx->cfg->has_cull_distance && (ctx->num_out_clip_dist || ctx->is_last_vertex_stage)) {
++   /* OmacVM: a desktop GL without cull distances declares the clip distances the shader
++    * or the user clip planes write, never gl_CullDistance (a shader that writes one stays
++    * refused, as before) */
++   if ((ctx->cfg->has_cull_distance && (ctx->num_out_clip_dist || ctx->is_last_vertex_stage)) ||
++       (has_clip_distance(ctx) && (ctx->num_out_clip_dist || writes_ucp_clip_dist(ctx)))) {
+       int num_clip_dists = ctx->num_clip_dist_prop ? ctx->num_clip_dist_prop : 0;
+       int num_cull_dists = ctx->num_cull_dist_prop ? ctx->num_cull_dist_prop : 0;
+ 
+@@ -7596,7 +7617,7 @@
+ 
+       if (num_clip_dists)
+          snprintf(clip_buf, 64, "out float gl_ClipDistance[%d];\n", num_clip_dists);
+-      if (num_cull_dists)
++      if (num_cull_dists && ctx->cfg->has_cull_distance)
+          snprintf(cull_buf, 64, "out float gl_CullDistance[%d];\n", num_cull_dists);
+ 
+       /* OmacVM: a separable stage has them in its gl_PerVertex block below (both at
+--- a/src/vrend/vrend_shader.h
++++ b/src/vrend/vrend_shader.h
+@@ -252,6 +252,9 @@
+    /* OmacVM: CONST[0] stays uniforms although the block would fit the stage (the
+     * program had no binding left for it: vrend_shader_selector.const_uniforms) */
+    uint8_t const_uniforms : 1;
++   /* OmacVM: user clip planes on; only for the last vertex or tessellation evaluation
++    * shader on a desktop GL without cull distances (the shader writes their distances) */
++   uint8_t ucp_enabled : 1;
+ };
+ 
+ struct vrend_shader_cfg {

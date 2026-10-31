@@ -1499,6 +1499,24 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 # OmacVM: a program pipeline the GL finds invalid in the current state (sampler units not
 # set yet, an incomplete framebuffer) is logged; it ended the guest app's whole context.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-log.patch"
+# OmacVM: a desktop GL without cull distances (the Mac's 4.1) still writes clip distances
+# (gl_ClipDistance, user clip planes), and a last tessellation evaluation shader gets its y
+# prescale and transform feedback (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-clip-distances.patch"
+grep -q 'return ctx->cfg->has_cull_distance || !ctx->cfg->use_gles;' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->ucp_enabled = sub_ctx->rs_state.clip_plane_enable != 0;' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend: clip distances still need cull distances (shader-clip-distances patch)"
+# OmacVM: GL_ARB_arrays_of_arrays only where the GL has it (the Mac's has not, #589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-arrays-of-arrays.patch"
+[[ $(grep -c 'use_gles && ctx->cfg->has_arrays_of_arrays' "$virgl_source/src/vrend/vrend_shader.c") == 3 ]] && \
+  grep -q 'if (!ctx.cfg->use_gles && ctx.cfg->has_arrays_of_arrays &&' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: ARB_arrays_of_arrays still required without the extension (shader-arrays-of-arrays patch)"
+# OmacVM: the guest gets the tessellation shaders' output limits on a GL without atomic
+# counters (they were 0 on the Mac: its Mesa refused whole tessellation programs, #589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-caps-tess-outputs.patch"
+grep -q 'glGetIntegerv(GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS, &max);' "$virgl_source/src/vrend/vrend_renderer.c" && \
+  ! grep -q 'GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_renderer.c: the tessellation output limits are still asked under atomic counters (caps-tess-outputs patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.

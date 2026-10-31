@@ -1,0 +1,55 @@
+virglrenderer: GL_ARB_arrays_of_arrays only where the GL has it
+
+What: a geometry or tessellation shader with a varying or patch array asks for
+GL_ARB_arrays_of_arrays only where the host's GL has the extension (four places).
+Why: vrend required it without asking the GL. Apple's GL 4.1 has no ARB_arrays_of_arrays
+("extension 'GL_ARB_arrays_of_arrays' is not supported"): the shader did not compile and the
+program drew nothing (#589). On such a GL vrend already declares these arrays in interface
+blocks (prefer_generic_io_block), which need no extension. Arrays read with constant indices
+never get here (the guest's Mesa splits them); dynamically indexed ones do.
+Upstream: the same in virglrenderer main (e0a1caf3, checked 2026-10-31); not sent.
+Test: Tests/virgl/test-whole-program-shapes.c row E8 (fails without this patch), rows E9 and
+E4 (controls).
+
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -1758,7 +1758,8 @@
+          if (ctx->inputs[i].first != ctx->inputs[i].last ||
+              ctx->inputs[i].array_id > 0) {
+             ctx->guest_sent_io_arrays = true;
+-            if (!ctx->cfg->use_gles &&
++            /* OmacVM: only where the GL has it (the Mac's has not: the arrays are blocks) */
++            if (!ctx->cfg->use_gles && ctx->cfg->has_arrays_of_arrays &&
+                 (ctx->prog_type == TGSI_PROCESSOR_GEOMETRY ||
+                  ctx->prog_type == TGSI_PROCESSOR_TESS_CTRL ||
+                  ctx->prog_type == TGSI_PROCESSOR_TESS_EVAL)) {
+@@ -2023,7 +2024,8 @@
+              ctx->outputs[i].array_id > 0) {
+             ctx->guest_sent_io_arrays = true;
+ 
+-            if (!ctx->cfg->use_gles &&
++            /* OmacVM: only where the GL has it */
++            if (!ctx->cfg->use_gles && ctx->cfg->has_arrays_of_arrays &&
+                 (ctx->prog_type == TGSI_PROCESSOR_GEOMETRY ||
+                  ctx->prog_type == TGSI_PROCESSOR_TESS_CTRL ||
+                  ctx->prog_type == TGSI_PROCESSOR_TESS_EVAL)) {
+@@ -8637,7 +8639,8 @@
+    if (ctx.const_ubo)
+       ctx.glsl_ver_required = require_glsl_ver(&ctx, 140);
+ 
+-   if (!ctx.cfg->use_gles &&
++   /* OmacVM: only where the GL has it */
++   if (!ctx.cfg->use_gles && ctx.cfg->has_arrays_of_arrays &&
+       ( key->in_arrays.num_arrays > 0 ) &&
+        (ctx.prog_type == TGSI_PROCESSOR_GEOMETRY ||
+         ctx.prog_type == TGSI_PROCESSOR_TESS_CTRL ||
+@@ -8776,7 +8779,8 @@
+          if (ctx->inputs[i].first != ctx->inputs[i].last ||
+              ctx->inputs[i].array_id > 0) {
+             ctx->guest_sent_io_arrays = true;
+-            if (!ctx->cfg->use_gles)
++            /* OmacVM: only where the GL has it */
++            if (!ctx->cfg->use_gles && ctx->cfg->has_arrays_of_arrays)
+                ctx->shader_req_bits |= SHADER_REQ_ARRAYS_OF_ARRAYS;
+          }
+          break;
