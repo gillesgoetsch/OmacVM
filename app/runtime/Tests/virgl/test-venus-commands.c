@@ -2350,6 +2350,84 @@ static int execute_case(const char *c, struct world *w)
 
 /* command buffer state (virgl-venus-command-state.patch): draws, dispatches, clears, passes,
  * queries and secondaries only where Vulkan allows them */
+/* LEGAL (a 2-view pass, then a GPU profiler's timestamp: Godot's XR renderer): once a multiview
+ * pass or rendering has ended, a timestamp or query takes one query again, here query 3 of 4.
+ * The pass ends with vkCmdEndRenderPass, vkCmdEndRenderPass2 or vkCmdEndRendering. */
+static int after_mv_case(const char *c, struct world *w)
+{
+   if (max_views < 2) {
+      printf("skip: %u views\n", max_views);
+      return SKIP;
+   }
+   void *cmd = w->cmd;
+   const VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   const bool query = IS("c-state-after-mv-query");
+   void *qp = query_pool(query ? VK_QUERY_TYPE_OCCLUSION : VK_QUERY_TYPE_TIMESTAMP, 4);
+   void *v = view(image(64, 64, 2, CA_SA), 2);
+   if (IS("c-state-after-mv-dyn-timestamp")) {
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)v,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                             .viewMask = 0x3, .colorAttachmentCount = 1, .pColorAttachments = &att };
+      struct vn_command_vkCmdBeginRendering b = { .commandBuffer = cb, .pRenderingInfo = &ri };
+      step("vkCmdBeginRendering viewMask 0x3");
+      D->dispatch_vkCmdBeginRendering(D, &b);
+      if (!ended()) {
+         struct vn_command_vkCmdEndRendering e = { .commandBuffer = cb };
+         step("vkCmdEndRendering");
+         D->dispatch_vkCmdEndRendering(D, &e);
+      }
+   } else {
+      void *rp = render_pass(1, 1, 0, 0x3);
+      void *views[1] = { v };
+      void *fb = rp ? framebuffer(rp, views, 1, 64, 64, 1) : NULL;
+      if (!fb)
+         broken("multiview framebuffer");
+      if (IS("c-state-after-mv2-timestamp")) {
+         VkClearValue clear = { 0 };
+         VkRenderPassBeginInfo info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                        .renderPass = (VkRenderPass)rp, .framebuffer = (VkFramebuffer)fb,
+                                        .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                        .pClearValues = &clear };
+         VkSubpassBeginInfo sbi = { .sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO,
+                                    .contents = VK_SUBPASS_CONTENTS_INLINE };
+         VkSubpassEndInfo sei = { .sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO };
+         struct vn_command_vkCmdBeginRenderPass2 b = { .commandBuffer = cb, .pRenderPassBegin = &info,
+                                                       .pSubpassBeginInfo = &sbi };
+         step("vkCmdBeginRenderPass2 (2 views)");
+         D->dispatch_vkCmdBeginRenderPass2(D, &b);
+         if (!ended()) {
+            struct vn_command_vkCmdEndRenderPass2 e = { .commandBuffer = cb, .pSubpassEndInfo = &sei };
+            step("vkCmdEndRenderPass2");
+            D->dispatch_vkCmdEndRenderPass2(D, &e);
+         }
+      } else {
+         begin_pass(cmd, rp, fb, 64, 64);
+         end_pass(cmd);
+      }
+   }
+   if (ended())
+      return end(cmd);
+   if (query) {
+      struct vn_command_vkCmdBeginQuery b = { .commandBuffer = cb, .queryPool = (VkQueryPool)qp, .query = 3 };
+      step("vkCmdBeginQuery 3 of 4 after the pass");
+      D->dispatch_vkCmdBeginQuery(D, &b);
+      if (!ended()) {
+         struct vn_command_vkCmdEndQuery e = { .commandBuffer = cb, .queryPool = (VkQueryPool)qp, .query = 3 };
+         D->dispatch_vkCmdEndQuery(D, &e);
+      }
+   } else {
+      struct vn_command_vkCmdWriteTimestamp t = { .commandBuffer = cb,
+                                                  .pipelineStage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                                  .queryPool = (VkQueryPool)qp, .query = 3 };
+      step("vkCmdWriteTimestamp 3 of 4 after the pass");
+      D->dispatch_vkCmdWriteTimestamp(D, &t);
+   }
+   return end(cmd);
+}
+
 static int state_case(const char *c, struct world *w)
 {
    void *cmd = w->cmd;
@@ -2376,6 +2454,8 @@ static int state_case(const char *c, struct world *w)
       return end(cmd);
    }
    begin(cmd);
+   if (!strncmp(c, "c-state-after-mv", 16))
+      return after_mv_case(c, w);
    if (IS("c-state-after-end")) {
       const int r = end(cmd);
       if (r != WORKS)
@@ -3150,6 +3230,8 @@ static const struct test_case cases[] = {
    { "c-state-next-subpass", E_REFUSE }, { "c-state-two-subpasses-ok", E_WORKS },
    { "c-state-end-no-begin", E_REFUSE }, { "c-state-begin-twice", E_REFUSE }, { "c-state-end-in-pass", E_REFUSE },
    { "c-state-query-views-ok", E_WORKS }, { "c-state-query-views-past", E_REFUSE },
+   { "c-state-after-mv-timestamp", E_WORKS }, { "c-state-after-mv-query", E_WORKS },
+   { "c-state-after-mv2-timestamp", E_WORKS }, { "c-state-after-mv-dyn-timestamp", E_WORKS },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
    { "c-region-i2b-max", E_WORKS }, { "c-region-i2b-past", E_REFUSE },
