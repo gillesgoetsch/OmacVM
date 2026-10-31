@@ -231,13 +231,13 @@ expect "the state file: one line, the folder made 0755, the file 0644, the scrip
   "1 755 644 $(id -u)" \
   "$(grep -c . "$OMACVM_RECOVER_ZINK_OFF") $(stat -c '%a' "$T/run-omacvm") $(stat -c '%a %u' "$OMACVM_RECOVER_ZINK_OFF")"
 expect "the note says Ghostty stopped drawing"                "Ghostty stopped drawing" "$(note)"
-expect "and to close it first, what ends, and the CPU next time" \
-  "The Mac refused ghostty's Vulkan commands, so its Vulkan graphics ended. Its windows no longer draw or take typing, and a new Ghostty window waits for it: close it first (Terminate in the window that says it is not responding). Programs running in it end. The next Ghostty starts on the CPU until the VM restarts." \
+expect "first to close it (what ends, why a new window waits), then why, and the CPU next time" \
+  "Close it first: Terminate in the window that says it is not responding (programs running in it end); until then a new Ghostty window waits for it. The Mac refused its Vulkan commands. Its windows no longer draw or take typing. The next Ghostty starts on the CPU until the VM restarts." \
   "$(body)"
 venus ghostty guard
 expect "a second loss keeps the first line"                   "$line" "$(cat "$OMACVM_RECOVER_ZINK_OFF")"
 case $(body) in
-"ghostty used all the graphics memory apps may have on this Mac, so its Vulkan graphics ended. Its windows"*)
+"Close it first: "*" It used all the graphics memory apps may have on this Mac. Its windows"*)
   expect "the guard's note names the memory" yes yes ;;
 *) expect "the guard's note names the memory" yes "$(body)" ;;
 esac

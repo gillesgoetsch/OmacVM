@@ -224,8 +224,10 @@ venus)
   why=venus; [[ ${3:-} == guard ]] && why=guard
   if [[ $why == guard ]]; then
     cause="$name used all the graphics memory apps may have on this Mac, so its Vulkan graphics ended."
+    short="It used all the graphics memory apps may have on this Mac."
   else
     cause="The Mac refused $name's Vulkan commands, so its Vulkan graphics ended."
+    short="The Mac refused its Vulkan commands."
   fi
   say "$name lost its Vulkan (Venus) context on the Mac ($why); nothing is ended, the desktop keeps drawing"
   if [[ $name == ghostty ]]; then
@@ -242,8 +244,9 @@ venus)
         mv -f "$ZINK_OFF.tmp.$$" "$ZINK_OFF" && say "Ghostty starts on the CPU for the rest of this boot ($ZINK_OFF)"
       rm -f "$ZINK_OFF.tmp.$$"
     fi
+    # What to do first: the popup shows only the first lines.
     title="Ghostty stopped drawing"
-    body="$cause Its windows no longer draw or take typing, and a new Ghostty window waits for it: close it first (Terminate in the window that says it is not responding). Programs running in it end. The next Ghostty starts on the CPU until the VM restarts."
+    body="Close it first: Terminate in the window that says it is not responding (programs running in it end); until then a new Ghostty window waits for it. $short Its windows no longer draw or take typing. The next Ghostty starts on the CPU until the VM restarts."
   else
     title="$name stopped drawing"
     body="$cause The desktop keeps running. Restart $name; if it closed by itself, open it again."
