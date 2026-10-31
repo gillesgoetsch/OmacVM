@@ -33,7 +33,7 @@ wiring; --self-test: every check fails on the code before); VM rows in
 the PR (a real window on a locked Mac: footprint seen, unseen 10 s, seen;
 check mode and the purge hook).
 diff --git a/ui/cocoa.m b/ui/cocoa.m
-index 55773e2..4c27dc2 100644
+index 70c50ae..a040d42 100644
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
 @@ -63,6 +63,7 @@
@@ -143,7 +143,7 @@ index 55773e2..4c27dc2 100644
  #ifdef CONFIG_OPENGL
      omacvm_bright_reread();     /* the switch again, before the frame */
      omacvm_present_seen_again();
-@@ -9164,6 +9220,23 @@ static int cocoa_gl_present_tile_buf(unsigned t)
+@@ -9171,6 +9227,23 @@ static int cocoa_gl_present_tile_buf(unsigned t)
      return -1;
  }
  
@@ -167,7 +167,7 @@ index 55773e2..4c27dc2 100644
  static void cocoa_gl_present_free(void)
  {
      for (int i = 0; i < present_nsurf; i++) {
-@@ -9179,6 +9252,92 @@ static void cocoa_gl_present_free(void)
+@@ -9186,6 +9259,92 @@ static void cocoa_gl_present_free(void)
      present_w = present_h = 0;
      present_deep = false;
      present_linear = false;
@@ -260,7 +260,7 @@ index 55773e2..4c27dc2 100644
  }
  
  static bool cocoa_gl_present_hdr_wanted(void)
-@@ -9456,6 +9615,7 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -9463,6 +9622,7 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
      present_linear = linear;
      present_next = 0;
      omacvm_pd_reset(&present_pd, present_nsurf, present_pd.fw, present_pd.fh);
@@ -268,7 +268,7 @@ index 55773e2..4c27dc2 100644
      return true;
  }
  
-@@ -9693,6 +9853,8 @@ static bool cocoa_gl_present(void)
+@@ -9700,6 +9860,8 @@ static bool cocoa_gl_present(void)
      bool splash = false;
      static int always = -1;
  
@@ -277,7 +277,7 @@ index 55773e2..4c27dc2 100644
      /*
       * OmacVM: out of sight (hidden, minimised, covered, another Space) no
       * frame is copied for the window; the newest one is drawn as it shows
-@@ -9824,6 +9986,10 @@ static bool cocoa_gl_present(void)
+@@ -9831,6 +9993,10 @@ static bool cocoa_gl_present(void)
      }
      unsigned n = (present_next + i) % present_nsurf;
      present_next = (n + 1) % present_nsurf;
@@ -288,7 +288,7 @@ index 55773e2..4c27dc2 100644
  
      /* OmacVM: what surface n needs (partial present, see present_pd). */
      if (present_damage_on < 0) {
-@@ -9998,6 +10164,7 @@ static bool cocoa_gl_present(void)
+@@ -10005,6 +10171,7 @@ static bool cocoa_gl_present(void)
              cocoa_gl_layer_follow(layer, surf, boost);
              omacvm_present_gravity(layer, surf);
              [layer setContents:(id)surf];
@@ -296,7 +296,7 @@ index 55773e2..4c27dc2 100644
              [CATransaction commit];
              omacvm_park_frame_shown(flushed);
              IOSurfaceDecrementUseCount(surf);
-@@ -10005,6 +10172,11 @@ static bool cocoa_gl_present(void)
+@@ -10012,6 +10179,11 @@ static bool cocoa_gl_present(void)
          });
      });
      present_last_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -308,7 +308,7 @@ index 55773e2..4c27dc2 100644
      return true;
  }
  
-@@ -10238,6 +10410,7 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
+@@ -10245,6 +10417,7 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
          cocoa_gl_layer_follow(layer, pt->base, f->linear);
          omacvm_present_gravity(layer, pt->base);
          [layer setContents:(id)pt->base];
@@ -316,7 +316,7 @@ index 55773e2..4c27dc2 100644
          present_tiles_hide_locked();
      }
      CGFloat s = [layer contentsScale];
-@@ -10308,6 +10481,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
+@@ -10315,6 +10488,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
      cocoa_gl_layer_follow(layer, surf, linear);
      omacvm_present_gravity(layer, surf);
      [layer setContents:(id)surf];
@@ -324,7 +324,7 @@ index 55773e2..4c27dc2 100644
      if (present_tiles_on > 0) {
          /* a whole frame: the tiles over it go; can later frames go in tiles? */
          uint32_t fw = IOSurfaceGetWidth(surf), fh = IOSurfaceGetHeight(surf);
-@@ -10816,6 +10990,8 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
+@@ -10823,6 +10997,8 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
       */
      bool held = omacvm_present_held();
  

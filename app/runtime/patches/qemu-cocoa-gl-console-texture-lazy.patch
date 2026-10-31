@@ -13,9 +13,9 @@ texture at all. OMACVM_CONSOLE_TEXTURE=eager makes it at every switch, as
 before. qemu.log once: "cocoa: console texture: made when first drawn" or
 "... made at every switch (OMACVM_CONSOLE_TEXTURE=eager)". Test hook:
 OMACVM_TEST_CONSOLE_CHECK=1 reads every frame drawn from the console
-texture (the present and the CAOpenGLLayer path) back at 8 x 8 points and
-compares them with the surface ("cocoa: console check (PATH): ..."); the
-present's surfaces stay plain then.
+texture (the present and the CAOpenGLLayer path) back whole and compares
+it with the surface at 128 x 72 points with a picture ("cocoa: console
+check (PATH): ..."); the present's surfaces stay plain then.
 Why: with virgl the window shows the guest's scanout texture and never the
 console texture, yet every set scanout made one: qemu_console_resize at
 each mode change and display on, the placeholder at each display off (at
@@ -33,10 +33,10 @@ nothing (3.2.16: 5120x2880x4 at every switch), the placeholder without
 the logo one 640x480 upload, a 2D surface one whole upload at its first
 update; the readers' wiring; --self-test: all fail on the code before).
 diff --git a/ui/cocoa.m b/ui/cocoa.m
-index 11f15f1..55773e2 100644
+index 11f15f1..70c50ae 100644
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -8069,11 +8069,130 @@ static void omacvm_intro_start(void)
+@@ -8069,11 +8069,137 @@ static void omacvm_intro_start(void)
      omacvm_hold_start();
  }
  
@@ -89,8 +89,9 @@ index 11f15f1..55773e2 100644
 +
 +/*
 + * OmacVM tests: OMACVM_TEST_CONSOLE_CHECK=1 reads every frame drawn from the
-+ * console texture (no GL scanout, not the boot logo) back at 8 x 8 points
-+ * and compares them with the console surface there (either row order), so a
++ * console texture (no GL scanout, not the boot logo) back whole and compares
++ * it with the console surface at 128 x 72 points (either row order; only
++ * points with a picture count: a missing texture draws black there), so a
 + * test sees that the 2D picture shows, not only that QEMU has it. qemu.log:
 + * "cocoa: console check (PATH): ..." for the first frame, each one that
 + * differs (20 at most) and every 100th. The present's surfaces stay plain
@@ -112,18 +113,24 @@ index 11f15f1..55773e2 100644
 +{
 +    static unsigned ok, bad, blank, logged;
 +    int sw, sh, content = 0, match[2] = { 0, 0 };
++    uint32_t *px;
 +
-+    if (!s || surface_bits_per_pixel(s) != 32 || vw <= 0 || vh <= 0) {
++    if (!s || surface_bits_per_pixel(s) != 32 || vw <= 0 || vh <= 0 || vw > 16384 || vh > 16384) {
++        return;
++    }
++    px = g_try_malloc((size_t)vw * vh * 4);
++    if (!px) {
 +        return;
 +    }
 +    sw = surface_width(s);
 +    sh = surface_height(s);
 +    glPixelStorei(GL_PACK_ALIGNMENT, 4);
-+    for (int j = 0; j < 8; j++) {
-+        for (int i = 0; i < 8; i++) {
-+            int sx = (2 * i + 1) * sw / 16, sy = (2 * j + 1) * sh / 16;
++    glReadPixels(0, 0, vw, vh, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, px);
++    for (int j = 0; j < 72; j++) {
++        for (int i = 0; i < 128; i++) {
++            int sx = (2 * i + 1) * sw / 256, sy = (2 * j + 1) * sh / 144;
 +            int vx = (int)((sx + 0.5) * vw / sw), vy = (int)((sy + 0.5) * vh / sh);
-+            uint32_t want, got[2] = { 0, 0 };
++            uint32_t want;
 +
 +            memcpy(&want, (uint8_t *)surface_data(s) + (size_t)sy * surface_stride(s) + 4 * sx, 4);
 +            want &= 0xffffff;
@@ -131,12 +138,11 @@ index 11f15f1..55773e2 100644
 +                continue;   /* black: says nothing about a missing picture */
 +            }
 +            content++;
-+            glReadPixels(vx, vy, 1, 1, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, &got[0]);
-+            glReadPixels(vx, vh - 1 - vy, 1, 1, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, &got[1]);
-+            match[0] += (got[0] & 0xffffff) == want;
-+            match[1] += (got[1] & 0xffffff) == want;
++            match[0] += (px[(size_t)vy * vw + vx] & 0xffffff) == want;
++            match[1] += (px[(size_t)(vh - 1 - vy) * vw + vx] & 0xffffff) == want;
 +        }
 +    }
++    g_free(px);
 +    int m = MAX(match[0], match[1]);
 +    bool differs = content && m * 4 < content * 3;
 +    if (!content) {
@@ -146,7 +152,8 @@ index 11f15f1..55773e2 100644
 +    } else {
 +        ok++;
 +    }
-+    if (ok + bad == 1 || (differs && logged < 20) || (ok + bad + blank) % 100 == 0) {
++    if (ok + bad + blank == 1 || (content && ok + bad == 1) || (differs && logged < 20) ||
++        (ok + bad + blank) % 100 == 0) {
 +        logged += differs;
 +        info_report("cocoa: console check (%s): %ux%u drawn at %dx%d, %d of %d points with a picture as the "
 +                    "surface (rows %s); so far %u as the surface, %u differ, %u blank",
@@ -168,7 +175,7 @@ index 11f15f1..55773e2 100644
          gl_dirty = true;
      });
      cocoa_refresh_activity();
-@@ -8087,10 +8206,17 @@ static void cocoa_gl_update(DisplayChangeListener *dcl,
+@@ -8087,10 +8213,17 @@ static void cocoa_gl_update(DisplayChangeListener *dcl,
  static void cocoa_gl_switch(DisplayChangeListener *dcl,
                              DisplaySurface *new_surface)
  {
@@ -190,7 +197,7 @@ index 11f15f1..55773e2 100644
  
      cocoa_switch(dcl, new_surface);
      gl_dirty = true;
-@@ -8175,11 +8301,18 @@ static void cocoa_gl_render(void)
+@@ -8175,11 +8308,18 @@ static void cocoa_gl_render(void)
          }
      } else if (omacvm_splash_wanted(NULL, surface)) {
          omacvm_splash_draw(size.width, size.height, !omacvm_desktop_up);
@@ -210,7 +217,7 @@ index 11f15f1..55773e2 100644
      }
  
      if (cocoa_gl_trace_enabled()) {
-@@ -9224,6 +9357,9 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -9224,6 +9364,9 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
          present_lossless = !(e && (!strcmp(e, "0") || !strcmp(e, "off")));
          if (!present_lossless) {
              info_report("cocoa: lossless surfaces: off (OMACVM_GL_LOSSLESS)");
@@ -220,7 +227,7 @@ index 11f15f1..55773e2 100644
          } else if (pd && !strcmp(pd, "check")) {
              /*
               * The partial present's check mode reads the shown surface back
-@@ -9597,7 +9733,7 @@ static bool cocoa_gl_present(void)
+@@ -9597,7 +9740,7 @@ static bool cocoa_gl_present(void)
          w = omacvm_view_w ? omacvm_view_w : (surface ? surface_width(surface) : 0);
          h = omacvm_view_h ? omacvm_view_h : (surface ? surface_height(surface) : 0);
          flip = false;
@@ -229,7 +236,7 @@ index 11f15f1..55773e2 100644
          src = surface->texture;
          w = surface_width(surface);
          h = surface_height(surface);
-@@ -9798,6 +9934,9 @@ static bool cocoa_gl_present(void)
+@@ -9798,6 +9941,9 @@ static bool cocoa_gl_present(void)
          if (!boost || !omacvm_bright_blit(flip, linear ? gain : OMACVM_BRIGHT_ONE, pq)) {
              qemu_gl_run_texture_blit(present_gls, flip);
          }
@@ -239,7 +246,7 @@ index 11f15f1..55773e2 100644
      }
      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
      glDisable(GL_SCISSOR_TEST);
-@@ -10677,6 +10816,15 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
+@@ -10677,6 +10823,15 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
       */
      bool held = omacvm_present_held();
  
@@ -255,7 +262,7 @@ index 11f15f1..55773e2 100644
      cocoa_refresh(dcl);
      cocoa_refresh_tick(gl_dirty && !held);
  
-@@ -11577,7 +11725,11 @@ static void omacvm_head_gfx_update(DisplayChangeListener *dcl,
+@@ -11577,7 +11732,11 @@ static void omacvm_head_gfx_update(DisplayChangeListener *dcl,
      OmacVMHead *hd = (OmacVMHead *)dcl;
  
      with_gl_view_ctx(^{
@@ -268,7 +275,7 @@ index 11f15f1..55773e2 100644
      });
      hd->dirty = true;
      cocoa_refresh_activity();
-@@ -11587,13 +11739,17 @@ static void omacvm_head_gfx_switch(DisplayChangeListener *dcl,
+@@ -11587,13 +11746,17 @@ static void omacvm_head_gfx_switch(DisplayChangeListener *dcl,
                                     DisplaySurface *new_surface)
  {
      OmacVMHead *hd = (OmacVMHead *)dcl;
@@ -292,7 +299,7 @@ index 11f15f1..55773e2 100644
      hd->surface = new_surface;
      hd->dirty = true;
      cocoa_refresh_activity();
-@@ -11604,6 +11760,11 @@ static void omacvm_head_refresh(DisplayChangeListener *dcl)
+@@ -11604,6 +11767,11 @@ static void omacvm_head_refresh(DisplayChangeListener *dcl)
      OmacVMHead *hd = (OmacVMHead *)dcl;
  
      qemu_console_hw_update(dcl->con);
