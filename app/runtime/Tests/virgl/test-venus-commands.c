@@ -2913,6 +2913,9 @@ int main(int argc, char **argv)
          const char *r = strstr(refusal, "vkr: ");
          printf("   %s", r ? r : refusal);
       }
+      char skip[256];
+      if (got == SKIP && log_has(log, "skip: ", skip, sizeof(skip)))
+         printf("   %s", strstr(skip, "skip: "));
       if (!ok) {
          char line[1024];
          FILE *f = fopen(log, "r");
