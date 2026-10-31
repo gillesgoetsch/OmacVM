@@ -2350,7 +2350,7 @@ static int execute_case(const char *c, struct world *w)
 
 /* command buffer state (virgl-venus-command-state.patch): draws, dispatches, clears, passes,
  * queries and secondaries only where Vulkan allows them */
-/* LEGAL (a 2-view pass, then a GPU profiler's timestamp: Godot's XR renderer): once a multiview
+/* LEGAL (a 2-view pass, then a GPU profiler's timestamp, as an XR renderer may do): once a multiview
  * pass or rendering has ended, a timestamp or query takes one query again, here query 3 of 4.
  * The pass ends with vkCmdEndRenderPass, vkCmdEndRenderPass2 or vkCmdEndRendering. */
 static int after_mv_case(const char *c, struct world *w)
