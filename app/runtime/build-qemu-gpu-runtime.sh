@@ -1540,6 +1540,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-buffer-binds
 grep -q 'if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(args->buffer),' "$virgl_source/src/venus/vkr_buffer.c" && \
   grep -q 'const uint64_t limit = align64(res->memory_size, getpagesize());' "$virgl_source/src/venus/vkr_device_memory.c" || \
   die "vkr_buffer.c, vkr_device_memory.c: buffer binds are not checked against their memory (buffer-binds patch)"
+# A lost Venus context counts in the status file like a lost GL one, with its app's name and
+# cause (venus, or guard after a budget refusal); a context the guest was closing does not
+# (#624's gap; tracks: ghostty-gpu venus-loss).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-lost-context-count.patch"
+grep -q 'virgl_gpu_budget_venus_lost(name, guard ? "guard" : "venus");' "$virgl_source/src/venus/vkr_context.c" && \
+  grep -q 'vrend_memory_take_venus_losses();' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vkr_context.c, vrend_renderer.c: a lost Venus context is not counted in the status file (venus-lost-context-count patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

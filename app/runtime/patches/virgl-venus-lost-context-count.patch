@@ -1,0 +1,325 @@
+virglrenderer: a lost Venus context counts in the status file, with its app's name
+
+What: when vkr's ring thread ends a Venus context for good (vkr_context_on_ring_fatal,
+"venus context N (NAME) is lost"), the context now counts where OmacVM.app and omacvm
+check look for lost GPU contexts: the status file (OMACVM_GPU_MEMORY_STATUS) gets lost
++1, lost_last and lost_recent with its name, lost_recent_why "venus" ("guard" when the
+budget had refused a Venus allocation of that context: with the guest's asynchronous
+allocation the app's next use of that memory ends the context), and a new list
+lost_recent_kind (gl or venus for each of lost_recent). The ring thread leaves the name
+and cause in the shared budget module (src/virgl_gpu_budget.h,
+virgl_gpu_budget_venus_lost: the newest eight keep their names, all are counted);
+vrend's status writer takes them on the renderer thread at its next poll
+(vrend_memory_tick) and writes the file at once, as for a lost GL context.
+A context the guest was closing does not count. When an app's process ends, the guest's
+kernel closes every handle of it before it destroys the context; a handle vkr still uses
+(the ring's own buffer, a command stream being read, a reply being written) then ends
+the context (vkr_context_destroy_resource), and the ring command that fails after it is
+a teardown (SIGKILL during Zink's teardown on an M1 Max printed "is lost" for it).
+vkr_context_destroy_resource now marks the context closing before it sets the fatal
+flag; the ring-fatal path then logs "venus context N (NAME) ended while the guest closed
+it: not a lost context" and counts nothing. The once-per-context guard of the ring-fatal
+path is atomic (a context can have several rings).
+Why: QEMU's GPU status counted lost virgl (GL) contexts only. A Venus context ended by
+vkr's checks (ADR 0065) or the budget left lost at 0 (gpu_lost_delta 0 in all 4 lose
+rows of the ghostty-gpu lane, 3.2.15), so OmacVM.app said nothing, omacvm check did not
+name the app, and a Zink Ghostty that lost its context hung with no note.
+Threading: virgl_gpu_budget_venus_lost runs on ring threads (any thread): a pthread
+mutex around eight slots and an atomic count, which the renderer thread reads without
+the lock first. closing and budget_refused are atomics; closing is stored with a full
+fence before the fatal flag, and the ring thread fences after it saw the flag, before
+it reads closing.
+Upstream: not sent (the status file and the budget are OmacVM's).
+Tests: Tests/virgl/test-venus-lost-count.c (build time, the public API, GL on Apple's
+software renderer, Venus with a stub libvulkan): a bad ring command moves lost 0 -> 1
+with the name, venus and kind venus, a second ring of the same app after it keeps 1; a
+60 MB blob refused by a 64 MB budget, then a bad ring command: why guard. Without this
+patch lost stays 0. Tests/virgl/test-venus-robust.c l-lost and l-teardown (the runtime's
+real driver): a reply being written when its stream is closed, then a ring command:
+"ended while the guest closed it", not "is lost" (before: "is lost").
+Tests/virgl/test-resource-budget.c status: GL losses are kind gl.
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -312,8 +312,11 @@ vkr_context_create_resource_from_shm(struct vkr_context *ctx,
+ 
+    /* OmacVM: shared memory of the guest's size counts against the GPU memory budget */
+    struct virgl_gpu_charge *charge = vkr_memory_charge_create(blob_size, "Venus shared memory");
+-   if (!charge)
++   if (!charge) {
++      /* virgl-venus-lost-context-count.patch: a loss after this counts as "guard" */
++      atomic_store(&ctx->budget_refused, true);
+       return false;
++   }
+ 
+    int fd = os_create_anonymous_file(blob_size, "vkr-shmem");
+    if (fd < 0) {
+@@ -480,14 +483,17 @@ vkr_context_destroy_resource(struct vkr_context *ctx, uint32_t res_id)
+    if (!res)
+       return;
+ 
+-   if (!vkr_cs_encoder_check_stream(&ctx->encoder, res))
++   if (!vkr_cs_encoder_check_stream(&ctx->encoder, res)) {
++      vkr_context_set_closing(ctx);
+       vkr_context_set_fatal(ctx);
++   }
+ 
+    mtx_lock(&ctx->ring_mutex);
+    list_for_each_entry_safe (struct vkr_ring, ring, &ctx->rings, head) {
+       if (ring->resource == res ||
+           !vkr_cs_decoder_check_stream(&ring->decoder, res) ||
+           !vkr_cs_encoder_check_stream(&ring->encoder, res)) {
++         vkr_context_set_closing(ctx);
+          vkr_context_set_fatal(ctx);
+ 
+          mtx_unlock(&ctx->ring_mutex);
+@@ -550,15 +556,39 @@ vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const
+       vkr_context_set_fatal(ctx);
+ }
+ 
++/* OmacVM (virgl-venus-lost-context-count.patch): the guest closed a resource this context's
++ * commands still use (vkr_context_destroy_resource), so the context ends: its process ended.
++ * Visible to a ring thread before the fatal flag that follows (the fence pairs with the one
++ * in vkr_context_on_ring_fatal). */
++void
++vkr_context_set_closing(struct vkr_context *ctx)
++{
++   atomic_store(&ctx->closing, true);
++   atomic_thread_fence(memory_order_seq_cst);
++}
++
+ void
+ vkr_context_on_ring_fatal(struct vkr_context *ctx)
+ {
+-   /* The ring thread stops here for good; log it once per context. */
+-   if (!ctx->loss_logged)
+-      virgl_error("venus context %u (%s) is lost: the guest driver sees the fatal ring "
+-                  "status and ends the app\n", ctx->ctx_id,
+-                  ctx->debug_name ? ctx->debug_name : "");
+-   ctx->loss_logged = true;
++   /* The ring thread stops here for good; log it once per context (the first ring
++    * thread). A lost context counts in the status file with its name and cause
++    * (virgl-venus-lost-context-count.patch); one the guest was closing does not: its
++    * process ended (SIGKILL while Zink tore down: a ring command after the kernel had
++    * closed the reply stream). */
++   if (!atomic_exchange(&ctx->loss_logged, true)) {
++      const char *name = ctx->debug_name ? ctx->debug_name : "";
++      atomic_thread_fence(memory_order_seq_cst);
++      if (atomic_load(&ctx->closing)) {
++         virgl_info("venus context %u (%s) ended while the guest closed it: not a lost "
++                    "context\n", ctx->ctx_id, name);
++      } else {
++         const bool guard = atomic_load(&ctx->budget_refused);
++         virgl_error("venus context %u (%s) is lost: the guest driver sees the fatal ring "
++                     "status and ends the app%s\n", ctx->ctx_id, name,
++                     guard ? " (the GPU memory budget had refused its memory)" : "");
++         virgl_gpu_budget_venus_lost(name, guard ? "guard" : "venus");
++      }
++   }
+    vkr_context_set_fatal(ctx);
+ 
+    mtx_lock(&ctx->wait_ring.mutex);
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -59,7 +59,15 @@ struct vkr_context {
+    vkr_renderer_retire_fence_callback_type retire_fence;
+ 
+    char *debug_name;
+-   bool loss_logged;
++   /* OmacVM: the ring-fatal path ran (any ring thread: the first one says it) */
++   atomic_bool loss_logged;
++   /* OmacVM (virgl-venus-lost-context-count.patch): the guest closed a resource this
++    * context's commands still used, which ended the context. Its process ended: the
++    * guest's kernel closes every handle of it before it destroys the context, so a ring
++    * that fails after that is a teardown, not a lost context. Set before the fatal flag. */
++   atomic_bool closing;
++   /* the budget refused a Venus allocation of this context: its loss counts as "guard" */
++   atomic_bool budget_refused;
+    enum vkr_context_validate_level validate_level;
+    bool validate_fatal;
+ 
+@@ -288,6 +296,11 @@ vkr_context_get_wait_ring_seqno(struct vkr_context *ctx,
+                                 uint64_t ring_id,
+                                 uint32_t *out_seqno);
+ 
++/* OmacVM (virgl-venus-lost-context-count.patch): the guest closed a resource the
++ * context's commands still use; call before vkr_context_set_fatal */
++void
++vkr_context_set_closing(struct vkr_context *ctx);
++
+ void
+ vkr_context_on_ring_fatal(struct vkr_context *ctx);
+ 
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -494,6 +494,10 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+       charge = vkr_memory_charge_create(alloc_info->allocationSize, "Vulkan device memory");
+    }
+    if (!charge) {
++      /* virgl-venus-lost-context-count.patch: a guest that allocates asynchronously (Mesa's
++       * default) never sees this answer; its next use of the memory ends the context, and
++       * that loss counts as "guard" */
++      atomic_store(&ctx->budget_refused, true);
+       if (local_import_info.fd >= 0)
+          close(local_import_info.fd);
+       args->ret = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+--- a/src/virgl_gpu_budget.h
++++ b/src/virgl_gpu_budget.h
+@@ -23,6 +23,14 @@ uint64_t virgl_gpu_budget_apps_limit(void);
+ /* would an app's BYTES be refused by the apps' share only (the whole budget has room)? */
+ bool virgl_gpu_budget_apps_share_full(uint64_t bytes);
+ 
++/* OmacVM (virgl-venus-lost-context-count.patch): a Venus context lost for good, told by
++ * vkr's ring-fatal path (a ring thread; any thread may call it). NAME: the context's
++ * name (the guest process's), WHY: "guard" when the budget had refused memory of that
++ * context, else "venus". Kept until the renderer thread's next poll, which counts it
++ * in the status file (OMACVM_GPU_MEMORY_STATUS) as it counts a lost GL context:
++ * lost, lost_last, lost_recent, lost_recent_why, and "venus" in lost_recent_kind. */
++void virgl_gpu_budget_venus_lost(const char *name, const char *why);
++
+ /*
+  * A charge that goes with a piece of storage (Venus device memory, a shm blob): every
+  * object that keeps the storage alive holds a reference (the VkDeviceMemory, memory
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -29,6 +29,7 @@
+ #include <stdatomic.h>
+ #include <fcntl.h>
+ #include <limits.h>
++#include <pthread.h>
+ #include <time.h>
+ #ifdef __APPLE__
+ /* OmacVM: the Mac's memory pressure (virgl-darwin-memory-pressure.patch) */
+@@ -568,6 +569,8 @@ static void vrend_resource_budget_init(void);
+ static void vrend_memory_init(void);
+ static void vrend_memory_tick(void);
+ static void vrend_memory_status_lost(const char *name);
++/* OmacVM: lost Venus contexts into the status file (virgl-venus-lost-context-count.patch) */
++static void vrend_memory_take_venus_losses(void);
+ 
+ bool vrend_renderer_video_available(void)
+ {
+@@ -11858,6 +11861,9 @@ static struct {
+    const char *lost_why_last;
+    const char *lost_recent_why[8];
+    const char *lost_why_next;
++   /* OmacVM (virgl-venus-lost-context-count.patch): gl or venus for each, set the same way */
++   const char *lost_recent_kind[8];
++   const char *lost_kind_next;
+    char *status_path;
+    bool dirty;
+    uint64_t written_bytes, written_peak, written_ns;
+@@ -12014,7 +12020,8 @@ static uint64_t vrend_memory_footprint(void)
+ 
+ static void vrend_memory_status_write(bool now)
+ {
+-   char text[1600], recent[8 * 65] = "", recent_why[8 * 10] = "", tmp[PATH_MAX];
++   char text[1700], recent[8 * 65] = "", recent_why[8 * 10] = "", recent_kind[8 * 7] = "";
++   char tmp[PATH_MAX];
+    uint64_t budget = vrend_state.resource_budget;
+    uint64_t apps = budget ? virgl_gpu_guard_limit(budget, vrend_state.resource_reserve,
+                                                   VIRGL_GPU_GUARD_APP) : 0;
+@@ -12036,11 +12043,14 @@ static void vrend_memory_status_write(bool now)
+       if (recent_why[0])
+          strcat(recent_why, ",");
+       strcat(recent_why, vrend_memory.lost_recent_why[i] ? vrend_memory.lost_recent_why[i] : "error");
++      if (recent_kind[0])
++         strcat(recent_kind, ",");
++      strcat(recent_kind, vrend_memory.lost_recent_kind[i] ? vrend_memory.lost_recent_kind[i] : "gl");
+    }
+    len = snprintf(text, sizeof(text),
+                   "in_use_mb=%llu\npeak_mb=%llu\nbudget_mb=%llu\npressure=%s\nrefused=%llu\n"
+                   "lost=%llu\nlost_last=%s\nlost_recent=%s\napps_mb=%llu\nreserve_mb=%llu\n"
+-                  "lost_why=%s\nlost_recent_why=%s\n",
++                  "lost_why=%s\nlost_recent_why=%s\nlost_recent_kind=%s\n",
+                   (unsigned long long)(virgl_gpu_budget_in_use() >> 20),
+                   (unsigned long long)(vrend_memory.peak >> 20),
+                   (unsigned long long)(vrend_state.resource_budget >> 20),
+@@ -12048,7 +12058,8 @@ static void vrend_memory_status_write(bool now)
+                   (unsigned long long)(vrend_memory.refusals + vrend_state.resource_refusals),
+                   (unsigned long long)vrend_memory.lost, vrend_memory.lost_last, recent,
+                   (unsigned long long)(apps >> 20), (unsigned long long)((budget - apps) >> 20),
+-                  vrend_memory.lost_why_last ? vrend_memory.lost_why_last : "", recent_why);
++                  vrend_memory.lost_why_last ? vrend_memory.lost_why_last : "", recent_why,
++                  recent_kind);
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", vrend_memory.status_path) >= (int)sizeof(tmp))
+       return;
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+@@ -12131,6 +12142,8 @@ static void vrend_memory_tick(void)
+    /* only a look of its own: the level handled may be older than a room check's */
+    if (looked)
+       vrend_memory_critical_look(level, true);
++   /* OmacVM (virgl-venus-lost-context-count.patch): lost Venus contexts, written at once */
++   vrend_memory_take_venus_losses();
+    if (vrend_memory.dirty)
+       vrend_memory_status_write(false);
+ }
+@@ -12221,10 +12234,69 @@ static void vrend_memory_status_lost(const char *name)
+    memmove(&vrend_memory.lost_recent_why[0], &vrend_memory.lost_recent_why[1],
+            sizeof(vrend_memory.lost_recent_why[0]) * 7);
+    vrend_memory.lost_recent_why[7] = vrend_memory.lost_why_last;
++   memmove(&vrend_memory.lost_recent_kind[0], &vrend_memory.lost_recent_kind[1],
++           sizeof(vrend_memory.lost_recent_kind[0]) * 7);
++   vrend_memory.lost_recent_kind[7] = vrend_memory.lost_kind_next ? vrend_memory.lost_kind_next : "gl";
++   vrend_memory.lost_kind_next = NULL;
+    vrend_memory.lost++;
+    vrend_memory_status_write(true);
+ }
+ 
++/*
++ * OmacVM (virgl-venus-lost-context-count.patch): Venus contexts lost for good. vkr's ring
++ * threads tell them (virgl_gpu_budget_venus_lost); the renderer thread, which owns the
++ * status file, counts them at its next poll (vrend_memory_take_venus_losses). More than
++ * eight between two polls: the newest eight keep their names, all are counted.
++ */
++static struct {
++   pthread_mutex_t mutex;
++   atomic_uint pending;         /* told since the last take; read without the lock first */
++   struct {
++      char name[64];
++      const char *why;
++   } slot[8];                   /* the newest, oldest first */
++} vrend_venus_lost = { .mutex = PTHREAD_MUTEX_INITIALIZER };
++
++void virgl_gpu_budget_venus_lost(const char *name, const char *why)
++{
++   pthread_mutex_lock(&vrend_venus_lost.mutex);
++   unsigned n = atomic_load(&vrend_venus_lost.pending);
++   unsigned i = MIN2(n, 7u);
++   if (n >= 8)
++      memmove(&vrend_venus_lost.slot[0], &vrend_venus_lost.slot[1], sizeof(vrend_venus_lost.slot[0]) * 7);
++   snprintf(vrend_venus_lost.slot[i].name, sizeof(vrend_venus_lost.slot[i].name), "%s", name ? name : "");
++   vrend_venus_lost.slot[i].why = why && !strcmp(why, "guard") ? "guard" : "venus";
++   atomic_store(&vrend_venus_lost.pending, n + 1);
++   pthread_mutex_unlock(&vrend_venus_lost.mutex);
++}
++
++/* Renderer thread: counts what the ring threads told since the last poll. */
++static void vrend_memory_take_venus_losses(void)
++{
++   char names[8][64];
++   const char *why[8];
++   unsigned n;
++
++   if (!atomic_load(&vrend_venus_lost.pending))
++      return;
++   pthread_mutex_lock(&vrend_venus_lost.mutex);
++   n = atomic_load(&vrend_venus_lost.pending);
++   for (unsigned i = 0; i < MIN2(n, 8u); i++) {
++      memcpy(names[i], vrend_venus_lost.slot[i].name, sizeof(names[i]));
++      why[i] = vrend_venus_lost.slot[i].why;
++   }
++   atomic_store(&vrend_venus_lost.pending, 0);
++   pthread_mutex_unlock(&vrend_venus_lost.mutex);
++   /* the ones past eight, oldest first: counted, their names gone */
++   if (n > 8)
++      vrend_memory.lost += n - 8;
++   for (unsigned i = 0; i < MIN2(n, 8u); i++) {
++      vrend_memory.lost_why_next = why[i];
++      vrend_memory.lost_kind_next = "venus";
++      vrend_memory_status_lost(names[i]);
++   }
++}
++
+ static once_flag vrend_resource_budget_once = ONCE_FLAG_INIT;
+ 
+ void virgl_gpu_budget_init(void)
