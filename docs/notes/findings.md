@@ -390,7 +390,7 @@ KosmicKrisp told 32 multiview views and renders N views with Metal vertex
 amplification count N: Metal aborts on 9 or more on Apple7
 (`supportsVertexAmplificationCount:` says yes up to 8); MoltenVK renders 32.
 vkr now tells KosmicKrisp's count as Metal's (ADR 0065). The mini's M4
-(Apple9) count is not measured yet.
+(Apple9) says 8 too (the runtime build's test there, #644).
 
 What the test found against 3.2.15's vkr (`Tests/virgl/test-venus-commands.c`,
 210 cases): 147 fail on KosmicKrisp, 134 on MoltenVK and on MoltenVK with
