@@ -190,7 +190,7 @@ grep -q "notify-send|-a|OmacVM|-u|normal|vkcube stopped drawing|The Mac refused 
   && expect "venus: a note names the app and the refusal" yes yes || { expect "venus: a note names the app and the refusal" yes no; cat "$CALLS"; }
 : > "$CALLS"
 "$G" venus ghostty guard > /dev/null
-grep -q "notify-send|-a|OmacVM|-u|normal|Ghostty stopped drawing|Close it first: Terminate in the window that says it is not responding (programs running in it end); until then a new Ghostty window waits for it. It used all the graphics memory apps may have on this Mac. .*The next Ghostty starts on the CPU until the VM restarts, unless Zink is set for it by hand." "$CALLS" \
+grep -q "notify-send|-a|OmacVM|-u|normal|Ghostty stopped drawing|Close it first: Terminate in the window that says it is not responding (programs running in it end); until then no new Ghostty window opens. It used all the graphics memory apps may have on this Mac. .*The next Ghostty starts on the CPU until the VM restarts, unless Zink is set for it by hand." "$CALLS" \
   && expect "venus ghostty: close it first, what ends, the CPU next time" yes yes \
   || { expect "venus ghostty: close it first, what ends, the CPU next time" yes no; cat "$CALLS"; }
 grep -q "lost its Vulkan (Venus) context on the Mac (guard)" "$CALLS" \
