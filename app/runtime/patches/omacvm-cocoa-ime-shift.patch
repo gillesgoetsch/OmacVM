@@ -1,0 +1,139 @@
+From: OmacVM
+Subject: [PATCH] cocoa: mac-ime: Shift also goes on to macOS while an input method has the keys (#357)
+
+What: while the VM has the keyboard, the full-grab tap still takes every key
+and modifier change first: the VM gets it and, with mac-ime, the Mac's input
+method too (omacvm_ime_key). A Shift change then also goes on to macOS
+(the callback returns the event instead of NULL), but only as
+ui/omacvm-ime-shift.h says: the Shift keys alone, only while mac-ime gives
+keys to an input method (a VM text field, the VM's window with the keyboard,
+an input method as the Mac's input source; or its context still on during
+the 0.2 s off delay), never with Command, Control, Option or fn down, and a
+release when its press went on. The event then comes back to QEMU through
+the app's event queue; handleEvent drops that copy first (time stamp and key
+code), so neither the VM nor the input method gets it twice. Nothing changes
+with mac-ime off, with a plain keyboard layout, or for any other key.
+OMACVM_IME_SHIFT=0 turns it off; qemu.log says which at the start.
+
+Why: an active tap whose callback returns NULL deletes the event from the
+system stream, so another app's global event monitor never sees it. WeChat
+Input switches between Chinese and English on a lone Shift and, from a
+reading of its binary by @Vocllum (#655), reaches that switch from such a
+monitor: in the VM a lone Shift never switched it (#357). #655 dropped
+kCGEventFlagsChanged from the tap's mask; with it, a patched 3.2.8 QEMU
+switched on taps 3-8 of 8 (E C E C E C). That let every modifier change reach
+macOS while the keys between them stayed deleted, so chords looked like lone
+or double modifier presses to macOS and other apps (Shift+A as a lone Shift,
+Super+1 Super+2 as a double Command), for every user, and keys and modifiers
+came to QEMU on two paths with no order between them. This keeps the tap's
+mask and passes on only Shift, in the order the VM got it.
+
+Upstream: not sent (OmacVM's mac-ime only).
+
+Test: app/runtime/Tests/keys/test-ime-shift.sh (CI: the rules from
+omacvm-cocoa-ime-shift-logic.patch, a table and real CGEvents; the runtime
+build: also the wiring in ui/cocoa.m). Applies after
+omacvm-cocoa-tap-no-ask.patch (the mac-ime patches before it).
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -50,6 +50,7 @@
+ #include "ui/omacvm-fullpanel-scale.h"
+ #include "ui/omacvm-notch-park.h"
+ #include "ui/omacvm-ime.h"
++#include "ui/omacvm-ime-shift.h"
+ #include "ui/omacvm-fullpanel.h"
+ #include "hw/core/boards.h"
+ #include "system/system.h"
+@@ -864,6 +865,8 @@
+ static bool omacvm_ime_on;
+ static bool omacvm_ime_key(NSEvent *event);
+ static bool omacvm_ime_globe(void);
++static bool omacvm_ime_shift_to_macos(CGEventRef cgEvent);
++static bool omacvm_ime_shift_back(NSEvent *event);
+ 
+ /*
+  * Main thread, every key and click event before QEMU's own handling (the
+@@ -1153,6 +1156,14 @@
+ 
+     NSEvent *event = [NSEvent eventWithCGEvent:cgEvent];
+     if ([view isKeyboardCaptured] && [view handleEvent:event]) {
++        /*
++         * OmacVM mac-ime: the VM and the input method had this Shift; it
++         * goes on to macOS too, for an input method's lone-Shift switch
++         * (#357, ui/omacvm-ime-shift.h). Its copy is dropped in handleEvent.
++         */
++        if (type == kCGEventFlagsChanged && omacvm_ime_on && omacvm_ime_shift_to_macos(cgEvent)) {
++            return cgEvent;
++        }
+         COCOA_DEBUG("Global events tap: qemu handled the event, capturing!\n");
+         return NULL;
+     }
+@@ -2137,6 +2148,10 @@
+ 
+ - (bool) handleEvent:(NSEvent *)event
+ {
++    /* OmacVM mac-ime: a Shift the full-grab tap let go on to macOS, back: the VM had it. */
++    if (omacvm_ime_on && omacvm_ime_shift_back(event)) {
++        return true;
++    }
+     if (omacvm_key_for_macos(event)) {
+         return false;
+     }
+@@ -10688,6 +10703,46 @@
+         return false;           /* the input method did not want it: QEMU's path */
+     }
+     omacvm_ime_take(&omacvm_ime_keys, [event keyCode]);
++    return true;
++}
++
++/*
++ * Shift also for macOS (ui/omacvm-ime-shift.h): main thread, the full-grab
++ * tap's callback after handleEvent (so omacvm_ime is as omacvm_ime_key just
++ * saw it) and handleEvent for the copy. OMACVM_IME_SHIFT=0: never.
++ */
++static OmacVMImeShift omacvm_ime_shift;
++static bool omacvm_ime_shift_off;
++
++static bool omacvm_ime_shift_to_macos(CGEventRef cgEvent)
++{
++    int key = (int)CGEventGetIntegerValueField(cgEvent, kCGKeyboardEventKeycode);
++    uint64_t flags = CGEventGetFlags(cgEvent);
++
++    if (!omacvm_ime_shift_pass(&omacvm_ime_shift, key, flags, !omacvm_ime_shift_off,
++                               &omacvm_ime, omacvm_ime_off.waiting)) {
++        return false;
++    }
++    omacvm_ime_shift_sent(&omacvm_ime_shift, CGEventGetTimestamp(cgEvent), key);
++    if (omacvm_ime_debug) {
++        fprintf(stderr, "omacvm-ime: modifier key %d flags 0x%llx: also to macOS\n", key,
++                (unsigned long long)flags);
++    }
++    return true;
++}
++
++static bool omacvm_ime_shift_back(NSEvent *event)
++{
++    CGEventRef cgEvent;
++
++    if ([event type] != NSEventTypeFlagsChanged || !(cgEvent = [event CGEvent]) ||
++        !omacvm_ime_shift_again(&omacvm_ime_shift, CGEventGetTimestamp(cgEvent), [event keyCode])) {
++        return false;
++    }
++    if (omacvm_ime_debug) {
++        fprintf(stderr, "omacvm-ime: modifier key %d: back from macOS, dropped (the VM had it)\n",
++                [event keyCode]);
++    }
+     return true;
+ }
+ 
+@@ -10895,6 +10950,9 @@
+     omacvm_ime_source_changed();
+     info_report("cocoa: mac-ime: on (OMACVM_IME_SOCKET): the Mac's input methods type in the "
+                 "VM's text fields once its Fcitx5 module says hello");
++    omacvm_ime_shift_off = getenv("OMACVM_IME_SHIFT") && !strcmp(getenv("OMACVM_IME_SHIFT"), "0");
++    info_report("cocoa: mac-ime: Shift also goes to macOS while an input method has the keys: %s",
++                omacvm_ime_shift_off ? "off (OMACVM_IME_SHIFT=0)" : "on");
+     omacvm_ime_connect();
+ }
+ 
