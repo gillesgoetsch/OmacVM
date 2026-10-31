@@ -1556,6 +1556,10 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-temp-zero.pa
 grep -q 'if (dec->zero_temp)' "$virgl_source/src/venus/vkr_cs.h" && \
   grep -q 'cmd_flags & VK_COMMAND_GENERATE_REPLY_BIT_EXT;' "$virgl_source/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h" || \
   die "vkr_cs.h: a reply's temporary memory is not zeroed (temp-zero patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-thread-budget.patch"
+grep -q 'virgl_thread_budget_take("thread of a new Venus ring")' "$virgl_source/src/venus/vkr_ring.c" && \
+  grep -q 'virgl_thread_budget_take("render worker of a new Venus context")' "$virgl_source/server/render_worker.c" || \
+  die "vkr_ring.c, render_worker.c: guest threads are not budgeted (thread-budget patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
