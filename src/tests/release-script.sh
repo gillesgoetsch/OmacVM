@@ -126,9 +126,10 @@ echo "APP_FROM=" >> "$G/release/state"
 # Step build with OMACVM_RELEASE_APP_FROM: an app put together at M on another
 # Mac is checked before anything signs it. A stand-in worktree (a git repo, its
 # HEAD is M; its app/scripts/sign-app.sh only leaves a mark) and a stand-in app
-# made the way build-app.sh makes one (what it copies from git is read from its
-# own lines: the archive paths, the scripts). Each bad app must be refused for
-# its own reason before sign-app.sh runs; a matching one reaches it (then
+# made the way build-app.sh makes one. What build-app.sh copies from git is read
+# from its own lines (the archive paths, the scripts), so the matching app fails
+# when release.sh's copy of them is not the same. Each bad app must be refused
+# for its own reason before sign-app.sh runs; a matching one reaches it (then
 # codesign --verify stops step build: nothing is signed here).
 umask 022
 BA=$R/app/scripts/build-app.sh
@@ -204,6 +205,16 @@ mk om-mode; chmod 755 "$AF/om-mode/$C1/Resources/omacvm/CHANGELOG.md"
 refused "omacvm: a mode change" om-mode "its omacvm is not git archive M"
 mk om-link; rm "$AF/om-link/$C1/Resources/omacvm/src/lib/x.sh"; ln -s /etc/hosts "$AF/om-link/$C1/Resources/omacvm/src/lib/x.sh"
 refused "omacvm: a link" om-link "its omacvm is not git archive M"
+# Resources/scripts (M's app/scripts, mode 755: the matching app has vm-common.sh at 755, git at 644).
+s0=${SCR[0]:-create-vm.sh}
+mk sc-changed; echo '# more' >> "$AF/sc-changed/$C1/Resources/scripts/$s0"
+refused "scripts: a changed script" sc-changed "its scripts are not M's app/scripts"
+mk sc-missing; rm "$AF/sc-missing/$C1/Resources/scripts/$s0"
+refused "scripts: a missing script" sc-missing "its scripts are not M's app/scripts"
+mk sc-extra; printf '#!/bin/bash\n' > "$AF/sc-extra/$C1/Resources/scripts/extra.sh"; chmod 755 "$AF/sc-extra/$C1/Resources/scripts/extra.sh"
+refused "scripts: an extra script" sc-extra "its scripts are not M's app/scripts"
+mk sc-644; chmod 644 "$AF/sc-644/$C1/Resources/scripts/$s0"
+refused "scripts: a script at 644" sc-644 "its scripts are not M's app/scripts"
 
 # sign-app.sh (build-app.sh's signing, also release.sh's for an app built
 # elsewhere): its arguments, and an ad hoc signing of a stand-in app with every

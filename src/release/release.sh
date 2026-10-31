@@ -233,33 +233,49 @@ step_merge() {
   note "M = $m"
 }
 
+# What build-app.sh copies into the app from git at M, which app_from compares
+# with M: its "git archive ... omacvm src CHANGELOG.md" into Resources/omacvm,
+# and its "install -m755 ... Contents/Resources/scripts/" of these app/scripts
+# files. release-script.sh builds its stand-in app from build-app.sh's own
+# lines, so a change there that is not made here too fails CI.
+APP_ARCHIVE=(omacvm src CHANGELOG.md)
+APP_SCRIPTS=(create-vm.sh prebuilt-vm.sh apply-vm.sh vm-common.sh update-vm.sh update-swap.sh)
+# A folder's tree, one line per entry: type, mode, a file's sha256 or a link's
+# target, path. Equal lists: the same names, bytes, modes and types.
+tree_list() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r f; do
+  if [[ -L $f ]]; then echo "l $(stat -f %Lp "$f") $f -> $(readlink "$f")"
+  elif [[ -d $f ]]; then echo "d $(stat -f %Lp "$f") $f"
+  else echo "f $(stat -f %Lp "$f") $(shasum -a 256 < "$f" | cut -d' ' -f1) $f"; fi; done); }
+
 # OMACVM_RELEASE_APP_FROM=DIR: OmacVM.app put together at M on another Mac (one
 # without the keys), unsigned or ad hoc, with that build's log (DIR/OmacVM.app,
-# DIR/build.log). Checked against M here (id, commit, version, its omacvm file by
-# file against git archive), then signed with M's own sign-app.sh. Nothing from
-# that Mac runs here.
+# DIR/build.log). Checked against M here (id, commit and version; what
+# build-app.sh copies from git, file by file), then signed with M's own
+# sign-app.sh. Nothing from that Mac runs here.
 app_from() {   # DIR M
-  local from=$1 m=$2 p t
-  [[ -d $from/OmacVM.app/Contents && -f $from/build.log ]] || die "OMACVM_RELEASE_APP_FROM: no OmacVM.app or build.log in $from"
-  p=$from/OmacVM.app/Contents/Info.plist
+  local from=$1 m=$2 c p t om=0 sc=0
+  c=$from/OmacVM.app/Contents; p=$c/Info.plist
+  [[ -d $c && -f $from/build.log ]] || die "OMACVM_RELEASE_APP_FROM: no OmacVM.app or build.log in $from"
   [[ $(/usr/libexec/PlistBuddy -c "Print OmacVMCommit" "$p") == "$m" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not M"
   [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$p") == "$VERSION" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not $VERSION"
   [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$p") == org.omacvm.app ]] || die "OMACVM_RELEASE_APP_FROM: the app is not org.omacvm.app"
-  t=$(mktemp -d "${TMPDIR:-/tmp}/app-from.XXXXXX")
-  git -C "$WT" archive "$m" omacvm src CHANGELOG.md | tar -x -C "$t"
-  echo "$m" > "$t/COMMIT"; chmod -R go-w "$t"
-  omacvm_tree() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r f; do
-    if [[ -L $f ]]; then echo "l $(stat -f %Lp "$f") $f -> $(readlink "$f")"
-    elif [[ -d $f ]]; then echo "d $(stat -f %Lp "$f") $f"
-    else echo "f $(stat -f %Lp "$f") $(shasum -a 256 < "$f" | cut -d' ' -f1) $f"; fi; done); }
-  if [[ $(omacvm_tree "$t") != "$(omacvm_tree "$from/OmacVM.app/Contents/Resources/omacvm")" ]]; then
-    rm -rf "$t"; die "OMACVM_RELEASE_APP_FROM: its omacvm is not git archive M"
-  fi
+  # What build-app.sh copies from git, made here the same way from M:
+  # omacvm (git archive, COMMIT, go-w) and the scripts (mode 755; git has some
+  # at 644).
+  t=$(mktemp -d "${TMPDIR:-/tmp}/app-from.XXXXXX"); mkdir "$t/omacvm" "$t/s"
+  git -C "$WT" archive "$m" "${APP_ARCHIVE[@]}" | tar -x -C "$t/omacvm" || { rm -rf "$t"; die "git archive of M failed"; }
+  echo "$m" > "$t/omacvm/COMMIT"; chmod -R go-w "$t/omacvm"
+  git -C "$WT" archive "$m" "${APP_SCRIPTS[@]/#/app/scripts/}" | tar -x -C "$t/s" || { rm -rf "$t"; die "git archive of M's app/scripts failed (${APP_SCRIPTS[*]})"; }
+  chmod 755 "$t/s/app/scripts"/*
+  [[ $(tree_list "$t/omacvm") == "$(tree_list "$c/Resources/omacvm")" ]] && om=1
+  [[ $(tree_list "$t/s/app/scripts") == "$(tree_list "$c/Resources/scripts")" ]] && sc=1
   rm -rf "$t"
+  (( om )) || die "OMACVM_RELEASE_APP_FROM: its omacvm is not git archive M"
+  (( sc )) || die "OMACVM_RELEASE_APP_FROM: its scripts are not M's app/scripts at mode 755"
   rm -rf "$APP"; mkdir -p "$(dirname "$APP")"
   ditto "$from/OmacVM.app" "$APP"
   cp "$from/build.log" "$OUT/build.log"
-  note "app from $from (built elsewhere at M; its omacvm = git archive M); signing it here"
+  note "app from $from (built elsewhere at M; checked against M); signing it here"
   (cd "$WT" && app/scripts/sign-app.sh "$APP" org.omacvm.app) >> "$OUT/build.log" 2>&1 || die "signing failed: $OUT/build.log"
 }
 
