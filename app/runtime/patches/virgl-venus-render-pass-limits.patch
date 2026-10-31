@@ -22,7 +22,9 @@ maxMultiviewViewCount is told to the guest as the largest Metal vertex
 amplification count the GPU supports (read once from Metal), and view masks
 past it are refused where they arrive (render pass multiview info, subpass
 descriptions 2, rendering info, inheritance, pipeline rendering info in the
-pipeline-limits patch). A refusal ends the app's context.
+pipeline-limits patch); correlation masks are not (no rule bounds them by
+the view count, and the drivers only copy them). A refusal ends the app's
+context.
 Why: Mesa's vk_render_pass (KosmicKrisp, NDEBUG) indexes attachments by every
 reference and the framebuffer's views by the pass's count, reads a clear value
 per CLEAR attachment and a sample location per named attachment; KosmicKrisp
@@ -285,10 +287,10 @@ index fd74243..fa2d40b 100644
  
  static void
 diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
-index 0cb3d70..e6d1d2c 100644
+index 0cb3d70..5a565ca 100644
 --- a/src/venus/vkr_render_pass.c
 +++ b/src/venus/vkr_render_pass.c
-@@ -6,12 +6,431 @@
+@@ -6,12 +6,415 @@
  #include "vkr_render_pass.h"
  
  #include "vkr_render_pass_gen.h"
@@ -409,7 +411,6 @@ index 0cb3d70..e6d1d2c 100644
 +                       char *why,
 +                       size_t why_size)
 +{
-+   const struct vkr_limits *l = &physical_dev->limits;
 +   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
 +   const VkRenderPassMultiviewCreateInfo *mv =
 +      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO);
@@ -422,13 +423,6 @@ index 0cb3d70..e6d1d2c 100644
 +               "dependencies", info->subpassCount, mv ? mv->subpassCount : 0,
 +               mv ? mv->dependencyCount : 0, info->dependencyCount);
 +      return NULL;
-+   }
-+   for (uint32_t i = 0; mv && i < mv->correlationMaskCount; i++) {
-+      if (!vkr_view_mask_ok(l, mv->pCorrelationMasks[i])) {
-+         snprintf(why, why_size, "correlation mask 0x%x (views %u)", mv->pCorrelationMasks[i],
-+                  l->multiview_views);
-+         return NULL;
-+      }
 +   }
 +   for (uint32_t i = 0; i < info->attachmentCount; i++) {
 +      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
@@ -495,18 +489,10 @@ index 0cb3d70..e6d1d2c 100644
 +                       char *why,
 +                       size_t why_size)
 +{
-+   const struct vkr_limits *l = &physical_dev->limits;
 +   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
 +   if (!info->subpassCount) {
 +      snprintf(why, why_size, "no subpass");
 +      return NULL;
-+   }
-+   for (uint32_t i = 0; i < info->correlatedViewMaskCount; i++) {
-+      if (!vkr_view_mask_ok(l, info->pCorrelatedViewMasks[i])) {
-+         snprintf(why, why_size, "correlated view mask 0x%x (views %u)",
-+                  info->pCorrelatedViewMasks[i], l->multiview_views);
-+         return NULL;
-+      }
 +   }
 +   for (uint32_t i = 0; i < info->attachmentCount; i++) {
 +      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
@@ -721,7 +707,7 @@ index 0cb3d70..e6d1d2c 100644
  }
  
  static void
-@@ -22,17 +441,37 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
+@@ -22,17 +425,37 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
     struct vkr_device *dev = vkr_device_from_handle(args->device);
     struct vn_device_proc_table *vk = &dev->proc_table;
  
@@ -759,7 +745,7 @@ index 0cb3d70..e6d1d2c 100644
        free(pass);
        return;
     }
-@@ -75,7 +514,35 @@ static void
+@@ -75,7 +498,35 @@ static void
  vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
                                   struct vn_command_vkCreateFramebuffer *args)
  {
