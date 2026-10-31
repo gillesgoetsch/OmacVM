@@ -6,15 +6,24 @@
 #     OMACVM_PRESENT_HIDDEN=1;
 #   - the main window's occlusion is followed; when it shows again the newest
 #     frame is drawn at once (present_bh), and qemu.log counts what was not;
+#     from omacvm-cocoa-present-volatile.patch on, omacvmWindowSeen: hands the
+#     occlusion's value to omacvmSight:, which does the rest: the checks
+#     follow that call and read both bodies as one;
 #   - with --self-test (CI): the checks fail on QEMU's code without the patch.
 #   test-present-unseen.sh <patched ui/cocoa.m> | --self-test
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd -P)
 body() { awk -v h="$2" 'index($0, h) == 1 {on=1} on {print} on && /^}$/ {exit}' "$1"; }
 problems() {
-  local m=$1 present seen
+  local m=$1 present seen sight
   present=$(body "$m" 'static bool cocoa_gl_present(void)')
   seen=$(body "$m" '- (void)omacvmWindowSeen:(NSNotification *)note')
+  # Only this exact call: the occlusion's value, at the method's top level.
+  if grep -qxF '    [self omacvmSight:seen];' <<<"$seen"; then
+    sight=$(body "$m" '- (void)omacvmSight:(bool)seen')
+    [[ -n $sight ]] || { echo "omacvmWindowSeen: calls omacvmSight:, which is not there"; return; }
+    seen+=$'\n'$sight
+  fi
   [[ -n $present ]] || { echo "no cocoa_gl_present"; return; }
   grep -q 'if (!qatomic_read(&omacvm_window_seen) && !always) {' <<<"$present" || echo "frames are drawn out of sight"
   grep -q 'getenv("OMACVM_PRESENT_HIDDEN")' <<<"$present" || echo "OMACVM_PRESENT_HIDDEN does not draw them anyway"
