@@ -72,6 +72,10 @@ VERSION=${1:-}
 shift
 STEPS=("$@")
 (( ${#STEPS[@]} )) || STEPS=(check bump merge build notarize package verify image e2e publish after)
+# OMACVM_RELEASE_APP_FROM: an absolute path only; a relative one would name
+# another folder for each folder release.sh is run from.
+[[ -z ${OMACVM_RELEASE_APP_FROM:-} || $OMACVM_RELEASE_APP_FROM == /* ]] ||
+  die "OMACVM_RELEASE_APP_FROM must be an absolute path, not $OMACVM_RELEASE_APP_FROM"
 
 # release-key.sh signs with the Keychain's release key only inside this run.
 export OMACVM_RELEASE_RUN=$VERSION

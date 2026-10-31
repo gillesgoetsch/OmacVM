@@ -96,6 +96,13 @@ OMACVM_RELEASE_E2E_OVERRIDE="the test Mac is away; checked by hand on the Air" e
 grep -q "checked by hand on the Air" "$G/release/e2e-override.log" && ok "e2e: the override is logged" || bad "e2e: override not logged"
 [[ $(sed -n 's/^E2E=//p' "$G/release/state" | tail -1) == override ]] && ok "e2e: the state says override" || bad "e2e: override state"
 
+# OMACVM_RELEASE_APP_FROM (an app built at M on another Mac): an absolute path
+# only, refused before any step runs.
+gate true 1111111111111111111111111111111111111111 all
+OMACVM_RELEASE_APP_FROM=m1/release expect 1 "app from: a relative path is refused" rel e2e
+[[ $(OMACVM_RELEASE_APP_FROM=m1/release rel e2e 2>&1) == *"absolute path"* ]] && ok "app from: says it wants an absolute path" || bad "app from: no reason given"
+OMACVM_RELEASE_APP_FROM=$T/m1/release expect 0 "app from: an absolute path is taken" rel e2e
+
 # sign-app.sh (build-app.sh's signing, also release.sh's for an app built
 # elsewhere): its arguments, and an ad hoc signing of a stand-in app with every
 # part the real one has (tiny arm64 programs), which then verifies.
