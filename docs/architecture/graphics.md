@@ -619,6 +619,19 @@ Patches (all in `app/runtime/patches`, one per concern):
   uses), fuzzed on the CPU by `Tests/virgl/fuzz-venus-spirv.sh`; copy regions
   inside their images and buffers (`vkr_format_extent.h`); attachment formats
   the device renders to.
+- `virgl-venus-submit-counts.patch`, `virgl-venus-pool-frees.patch`,
+  `virgl-venus-dedicated-memory.patch`, `virgl-venus-temp-zero.patch`,
+  `virgl-venus-thread-budget.patch`, `virgl-venus-pass-views.patch` (3.2.17,
+  ADR 0065's third amendment): a submit's chained value arrays fit its counts;
+  frees name objects of their own pool once; memory made for one image or
+  buffer goes before it in the driver (`struct vkr_dedicated`); a reply's
+  temporary memory is zeroed; one budget of 1024 threads for guest calls
+  (`virgl_thread_budget_take` in `virgl_util.c`, used by the render server,
+  the proxy and vkr), contexts within the open-file limit; image views of the
+  open pass by id and serial. Descriptor updates reach the driver one binding at
+  a time (`vkr_set_walk_*`, tested against a model by
+  `Tests/virgl/test-venus-descriptor-walk.c`); `Tests/virgl/test-venus-threads.c`
+  drives every thread site to its refusal.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended

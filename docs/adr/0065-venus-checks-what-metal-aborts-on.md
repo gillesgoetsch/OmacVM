@@ -2,9 +2,11 @@
 
 Status: accepted, built (`zink-abort`, 3.2.14), always on; amended in 3.2.15
 (`venus-robust`, "What else vkr refuses" below) and 3.2.17 (`venus-624`,
-"Indices, counts and offsets" below). Amends [0012](0012-venus-in-process.md).
-Notes, probes and the reviews: work/tracks/zink-abort.md,
-work/tracks/venus-robust.md, work/tracks/venus-624.md.
+"Indices, counts and offsets" below; `venus-624-c`, "Frees, submits, dedicated
+memory, replies, threads and pass views" below). Amends
+[0012](0012-venus-in-process.md). Notes, probes and the reviews:
+work/tracks/zink-abort.md, work/tracks/venus-robust.md,
+work/tracks/venus-624.md, work/venus-624/c/plan.md.
 
 ## Context
 
@@ -366,3 +368,143 @@ buffers do not retain their resources); what the GPU does when commands run
 on one object at once; thread exhaustion; huge descriptor pools (each pool size
 is bounded at 2^24 against overflow, not against memory); the other items
 listed in the amendment above.
+
+## Frees, submits, dedicated memory, replies, threads and pass views (amendment, 3.2.17)
+
+Lane `venus-624-c` (#624, after #643 and #644). A probe of the drivers
+alone on the mini's M4 (Apple9; KosmicKrisp and MoltenVK of that runtime;
+objects, allocations and frees only, each case in its own process, plainly and
+under libgmalloc, which unmaps freed memory) and reading Mesa at the
+KosmicKrisp pin, MoltenVK 1.4.2 and the guest's Mesa 26.2.5 found more ways a
+program in the VM reached QEMU's memory, several of them with legal input:
+
+- **Frees.** KosmicKrisp destroyed a descriptor set named twice in one
+  `vkFreeDescriptorSets` twice (SIGSEGV), Mesa's runtime put a command buffer
+  of another pool into the pool that freed it (SIGSEGV when that pool was
+  destroyed), and KosmicKrisp's descriptor pool took over another pool's
+  memory range, which its next set then used.
+- **Submit chains.** MoltenVK writes the values of a chained
+  `VkTimelineSemaphoreSubmitInfo` by that struct's own counts into arrays of
+  the submit's semaphore counts (`MVKQueue.mm`). Vulkan ignores the values when
+  only binary semaphores are named, so a legal submit wrote guest values past a
+  host heap array. Mesa reads the values and `VkDeviceGroupSubmitInfo`'s
+  indices by the submit's counts.
+- **Dedicated memory.** MoltenVK keeps the image or buffer memory was made for
+  and writes to it when the memory is freed: an image destroyed before it was
+  bound (legal) left a dangling pointer, written after its free. It also
+  accepted an `ALIAS_BIT` image on memory dedicated to another image without
+  counting it, and locked the freed memory's mutex when that image went later.
+  KosmicKrisp ignores dedicated allocations.
+- **Consecutive descriptor updates.** KosmicKrisp writes a whole write at its
+  first binding's offset + element * that binding's stride, and MoltenVK with
+  that binding's layout, but consecutive bindings of one type can differ in
+  size (immutable YCbCr samplers of 2 or 3 planes, a mutable binding as wide as
+  its largest type): a legal update over a 3-plane and a 1-plane binding wrote
+  past the set. The "same type stays inside the set" argument of the amendment
+  above did not hold for these.
+- **Pass views.** Mesa's `vk_render_pass` reads the open pass's image views at
+  its begin, each next subpass and its end, KosmicKrisp a rendering's at its
+  end (its resolves): a view destroyed while recording was freed memory there.
+- **Replies.** An output struct chained to a query is decoded with only its
+  `sType` and `pNext` written. One vkr refuses (it zeroes the main struct) or
+  one the driver does not fill went back with the decoder's old bytes (other
+  commands' data, host pointers).
+- **Threads.** Nothing bounded the threads guest calls make (a render worker
+  and a fence thread per context, a thread per ring and the ring monitor, a
+  sync thread per queue). macOS allows 4096 per process, and QEMU ends when it
+  cannot make one of its own. A failed context create also never joined its
+  render worker (the proxy destroyed context 0).
+- Size-0 allocations hurt neither driver. A legal texel buffer view of 0
+  elements (`VK_WHOLE_SIZE` with less than a texel left) aborts both (Metal:
+  width 0); vkr keeps refusing it.
+
+Decision: six more patches after `virgl-venus-pipeline-formats.patch`, one
+concern each, and two changes in the earlier patches:
+
+- `virgl-venus-descriptor-limits.patch` (changed): an update over several
+  bindings reaches the driver as one write or copy per binding
+  (`vkr_set_walk_*`), each part checked in its own binding (type, mutable type
+  list, YCbCr planes); writes, copies on both sides and push descriptors. An
+  update may also start past its first binding, as Vulkan allows
+  (VUID-VkWriteDescriptorSet-dstArrayElement-00321); the earlier `first > room`
+  refusal is gone. A refused NULL buffer now says "no buffer (the device's
+  nullDescriptor is off)".
+- `virgl-venus-pipeline-formats.patch` (changed): the attachment format
+  features only for attachments a subpass uses (Vulkan puts those rules on the
+  references); an attachment no subpass uses needs only a known format.
+- `virgl-venus-submit-counts.patch`: timeline value arrays made exactly the
+  submit's length (extra values dropped, missing ones and an absent array 0:
+  they count only for timeline semaphores, where the call was invalid anyway);
+  a device group with other counts refused (VUIDs 00082 to 00084);
+  `vkQueueBindSparse` on a family without `SPARSE_BINDING` refused (all of
+  them on both Mac drivers).
+- `virgl-venus-pool-frees.patch`: pooled objects keep their pool; a free
+  checks every handle (of this pool, named once; a stamp per call, no
+  allocation) before any is freed.
+- `virgl-venus-dedicated-memory.patch`: memory made for one image or buffer is
+  linked to it (a record shared by the object and its memories, under a device
+  mutex never held across a driver call). Only that object binds to it, at
+  offset 0 (VUIDs 02628, 10926, 01508, 10925; no Mac driver has
+  `dedicatedAllocationImageAliasing`, the exception of 02629). When the app
+  destroys the object first, the driver's destroy waits for the last of that
+  memory: memory first, then the object, also when the context ends
+  (`vkr_device_object_destroy` keeps the same rule).
+- `virgl-venus-temp-zero.patch`: the decoder's temporary memory is zeroed for a
+  command with a reply (the flag is set per command in `vn_dispatch_command`);
+  `vkCmd*` never reply.
+- `virgl-venus-thread-budget.patch`: one process-wide count of those threads,
+  1024 at most (`OMACVM_VENUS_THREADS` for tests), taken before each is made
+  and given back at its join; past it the call fails cleanly (no context,
+  `vkCreateRingMESA` ends its context, `vkCreateDevice` returns
+  `VK_ERROR_OUT_OF_HOST_MEMORY`), with a log line. Contexts also stop at a
+  sixteenth of the open-file limit read at run time (each takes at most 8
+  files; QEMU raises its soft limit to `OPEN_MAX`, 10240, on macOS, so the
+  render server's 256 workers bound them there). A failed create now destroys
+  its server context by its id.
+- `virgl-venus-pass-views.patch`: image views get the serial render passes and
+  framebuffers have (`vkr_object_next_serial`, moved to `vkr_common.c`); a
+  framebuffer keeps its views by id and serial, an imageless begin and
+  `vkCmdBeginRendering` leave theirs with the command buffer until the pass
+  ends. A begin whose framebuffer view was destroyed, and a next subpass or end
+  after one of the open pass's views was, end the context (the command buffer
+  is invalid).
+
+Still open (#624): two rings on one object at once (vkr looks an object up
+and uses it after its object mutex is released; a per-context read-write lock
+or per-object references need a measured cost and a test hook first, and must
+not deadlock `vkWaitRingSeqnoMESA`, which blocks the context's own dispatch
+until a ring reaches a seqno, or nested `vkExecuteCommandStreamsMESA`);
+objects destroyed under a recorded or pending command buffer (MoltenVK encodes
+at submit from stored pointers; KosmicKrisp also reads a pass's resolve views
+where it splits the pass inside: barriers in multisampled passes, compute in a
+pass, its flushes); a null descriptor in place of a 0-element texel view where
+the app enabled `nullDescriptor`; the caps that guard host memory rather than
+addresses (pool sizes, sets and layouts above 2^24 descriptors, SPIR-V id
+bounds above 2^20, workgroup sizes built with `OpSpecConstantOp`, more than
+2^20 queries, binding numbers from 2^16); a pipeline's colour attachment count
+when blend enable, equation and write mask are all dynamic (no Mac driver has
+those states; Mesa writes by the count, so the bound stays); what the GPU does
+when commands run; driver bugs on valid input; full SPIR-V validation;
+option 1.
+
+`test-venus-commands.c` has 315 cases now (34 for these), `test-venus-robust.c`
+two more (a refused query's chained output, an output struct the driver does not
+write), `test-venus-threads.c` drives each thread site and the context bound to
+its refusal under a small budget, and `test-venus-descriptor-walk.c` checks the
+walk against a plain model of Vulkan's rule (100,000 random updates per seed).
+On the mini's M4 with #644's vkr and these tests, 17 of the new cases fail on
+KosmicKrisp, MoltenVK and MoltenVK with prefill (the process ended in 5, 2 and
+7 of them), and under libgmalloc 12 and 15 of the 24 cases run there (6 and 5
+ended); the two robust cases fail on both. `d-planes-ok`, `d-mutable-ok` and
+`c-push-set-split-ok` pass before too, even under libgmalloc: the driver's
+write past the set stays in its pool's memory there, so they guard the split
+rather than show the overrun. With these patches every case passes 3 of 3 on
+all three, under libgmalloc too, the walk at seeds 1, 2, 3, 77 and 12345, the
+SPIR-V fuzz at the same seeds (0 failures), 0 GPU restarts. Medians of 3 runs
+of 10,000 calls (A B B A A B): a `vkUpdateDescriptorSets` of 1000 writes costs
+8.1 -> 11.0 us on KosmicKrisp and 13.8 -> 17.4 us on MoltenVK (about 3 ns a
+write), one write 0.013 -> 0.016 and 0.023 -> 0.026 us, a
+`vkCmdBeginRenderPass` + `vkCmdEndRenderPass` 10.5 -> 10.4 and 0.080 -> 0.103
+us; `vkCmdDraw`, `SetViewport`, `PushConstants`, `BindDescriptorSets` and
+`PipelineBarrier` stay within their noise, and so does a command with a reply
+through the decoder (0.059 -> 0.055 and 0.034 -> 0.035 us).
