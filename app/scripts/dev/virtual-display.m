@@ -35,8 +35,8 @@
 // its windows reaches a real display. Prints "killed=N" (with --kill-app) and
 // "quit=WHY", then exits: 0 stopped (TERM, INT), 4 unlocked, 5 the parent
 // ended, 6 lifetime over.
-// Tests: --unlock-note NAME listens for NAME instead of macOS's notice, which
-// nobody else may post (the person's app and QEMU's lock watch listen to it);
+// Tests: --unlock-note NAME also listens for NAME (macOS's own notice is never
+// posted by a test: the person's app and QEMU's lock watch listen to it);
 // --post-note NAME posts such a notice (org.omacvm.test.* only). --dry-run makes
 // no display and reads the lock from OMACVM_TEST_LOCKED (1, 0, or file:PATH
 // whose first character is 1 while "locked"); that variable is refused
@@ -253,7 +253,8 @@ static BOOL real_locked(void) { return !strcmp(lock_cg(), "yes") && !strcmp(lock
 // --while-locked
 static BOOL whileLocked, dryRun, finishing;
 static double maxSeconds = -1;
-static NSString *unlockNote = @"com.apple.screenIsUnlocked";
+static NSString *const macUnlockNote = @"com.apple.screenIsUnlocked";
+static NSString *testNote;   // --unlock-note
 static char killApp[PATH_MAX];
 static const char *testLocked;   // OMACVM_TEST_LOCKED (with --dry-run only)
 static pid_t parent0;
@@ -378,7 +379,7 @@ int main(int argc, const char **argv)
             } else if (!strcmp(argv[i], "--max-seconds") && i + 1 < argc) {
                 maxSeconds = strtod(argv[++i], NULL);
             } else if (!strcmp(argv[i], "--unlock-note") && i + 1 < argc) {
-                unlockNote = [NSString stringWithUTF8String:argv[++i]];
+                testNote = [NSString stringWithUTF8String:argv[++i]];
             } else if (!strcmp(argv[i], "--kill-app") && i + 1 < argc) {
                 if (!realpath(argv[++i], killApp)) {
                     fprintf(stderr, "virtual-display: --kill-app %s: no such app\n", argv[i]);
@@ -398,7 +399,7 @@ int main(int argc, const char **argv)
             fprintf(stderr, "virtual-display: OMACVM_TEST_LOCKED only with --dry-run\n");
             return 2;
         }
-        if ((dryRun || killApp[0] || ![unlockNote isEqualToString:@"com.apple.screenIsUnlocked"]) && !whileLocked) {
+        if ((dryRun || killApp[0] || testNote) && !whileLocked) {
             fprintf(stderr, "virtual-display: --dry-run, --kill-app and --unlock-note go with --while-locked\n");
             return 2;
         }
@@ -462,12 +463,15 @@ int main(int argc, const char **argv)
         (void)s1; (void)s2; (void)s3;
         dispatch_source_t t = nil, pe = nil, st = nil, si = nil;
         if (whileLocked) {
-            [[NSDistributedNotificationCenter defaultCenter] addObserverForName:unlockNote
-                                                                         object:nil
-                                                                          queue:[NSOperationQueue mainQueue]
-                                                                     usingBlock:^(NSNotification *note) {
-                finish("unlocked how=notice", 4);
-            }];
+            for (NSString *n in testNote ? @[macUnlockNote, testNote] : @[macUnlockNote]) {
+                [[NSDistributedNotificationCenter defaultCenter] addObserverForName:n
+                                                                             object:nil
+                                                                              queue:[NSOperationQueue mainQueue]
+                                                                         usingBlock:^(NSNotification *note) {
+                    (void)note;
+                    finish("unlocked how=notice", 4);
+                }];
+            }
             // The lock read again every 0.5 s (a notice can be missed), the parent, the lifetime.
             t = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
             dispatch_source_set_timer(t, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), NSEC_PER_SEC / 2,

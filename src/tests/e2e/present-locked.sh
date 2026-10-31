@@ -56,7 +56,7 @@ source "$E/onscreen-lib.sh"
 source "$E/person.sh"
 VM=""; SIZE=5120x2880; SECS=120; OUT=""; DRILL=0
 APP=${OMACVM_E2E_APP:-"$HOME/Applications/OmacVM Test.app"}
-usage() { sed -n '41,42s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '39,40s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 while (( $# )); do
   case $1 in
     --vm) VM=$2; shift 2 ;;
@@ -269,7 +269,9 @@ defaults write "$DOM" skipInstallPaths -array "$APP"
 for k in pauseWhileHidden hdr extraBrightness mediaControls vsyncLock pointerPlane gpuSafeMode; do defaults write "$DOM" "$k" -bool false; done
 
 # --- 4. the VM, its window on the virtual display only
-L0=$( [[ -f $QL ]] && wc -l < "$QL" | tr -d ' ' || echo 0)
+# The app starts qemu.log anew at each start; an older log is kept aside, so the run's lines start at line 1.
+[[ -f $QL ]] && mv -f "$QL" "$QL.before-present"
+L0=0
 [[ -z $(qemu_pid) ]] && rm -f "$VMD/running"   # a QEMU that crashed before left it: "Start Anyway"
 with_timeout 30 open -n -g --env "OMACVM_TEST_SKIP_DISPLAYS=$REAL" --env "OMACVM_TEST_MAIN_DISPLAY=$VD_ID" \
   --env OMACVM_PRESENT_HIDDEN=1 --env OMACVM_GUEST_PAUSE=0 --env OMACVM_GL_PRESENT_TILES=check \
@@ -291,9 +293,11 @@ res start ok "QEMU $QP; the app's processes: $(inside_app | tr '\n' ' ')"
 sleep 20   # the desktop up, the window placed
 # census_off FILE PID: the PID's windows (window-census lines) outside the virtual display; QEMU's on it counted in ONVD.
 IFS=, read -r vx vy vwh <<<"$VB"; vw=${vwh%x*}; vh=${vwh#*x}
+# (A window with alpha 0 shows nothing anywhere: not counted.)
 census_off() {
-  local num xy wh d wx wy ww wt
-  while read -r _ num _ _ _ xy wh _ d; do
+  local num alpha xy wh d wx wy ww wt
+  while read -r _ num _ _ alpha xy wh _ d; do
+    [[ $alpha == 0.00 ]] && continue
     wx=${xy%,*}; wy=${xy#*,}; ww=${wh%x*}; wt=${wh#*x}
     if [[ $d == "$VD_ID" ]] && (( wx >= vx - 1 && wy >= vy - 1 && wx + ww <= vx + vw + 1 && wy + wt <= vy + vh + 1 )); then
       [[ $2 == "$QP" ]] && ONVD=$((ONVD + 1))
@@ -360,7 +364,7 @@ res present "$VR" "$SIZE, $VER ($COMMIT): $VW"
 case $VR in ok) RC=0 ;; FAIL) RC=1 ;; *) RC=4 ;; esac
 res session-end info "locked: $("$VD" --lock-state) (person.sh: $(locked_now)); HID idle $(person_hid_idle) s; memory level $(lvl), pressure $(press); the virtual display $( (( AWAKE )) && echo awake || echo "not awake or gone")"
 if (( DRILL > 0 )); then
-  q=$(cat "$OUT/vd.out"); moved=$(grep '^window ' "$OUT/drill-census.txt" | grep -v " display $VD_ID\$")
+  q=$(cat "$OUT/vd.out"); moved=$(grep '^window ' "$OUT/drill-census.txt" | grep -v -e " display $VD_ID\$" -e ' alpha 0.00 ')
   if [[ $q == *$'\n'killed=[1-9]*$'\n'quit=unlocked\ how=notice* && -z $(inside_app) && -z $moved ]]; then
     res drill ok "the display tool killed the app's $(sed -n 's/^killed=//p' <<<"$q") processes, then the display went (quit=unlocked how=notice); no window of the app on another display in $(grep -c ' pid ' "$OUT/drill-census.txt") samples; nothing runs from the app"
   else
