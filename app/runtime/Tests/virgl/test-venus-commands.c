@@ -1351,7 +1351,8 @@ static void *two_subpass_pass(const void *next, uint32_t dep_src)
 static int rendering_case(const char *c, struct world *w)
 {
    VkRenderingAttachmentInfo att[16];
-   const uint32_t n = IS("r-dyn-colors-over") ? lim.maxColorAttachments + 1 : 1;
+   const bool no_view = IS("r-dyn-resolve-no-view") || IS("r-dyn-resolve-no-view-target");
+   const uint32_t n = IS("r-dyn-colors-over") ? lim.maxColorAttachments + 1 : no_view ? 2 : 1;
    for (uint32_t i = 0; i < n && i < 16; i++)
       att[i] = (VkRenderingAttachmentInfo){ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                                             .imageView = (VkImageView)(i ? view(image(64, 64, 1, CA_SA), 1) : w->iv),
@@ -1366,7 +1367,15 @@ static int rendering_case(const char *c, struct world *w)
       att[0].resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
    else if (IS("r-dyn-resolve-mode-bad"))
       att[0].resolveMode = (VkResolveModeFlagBits)0x40;
-   else if (!IS("r-dyn-colors-over") && !IS("r-dyn-ok"))
+   else if (no_view) {
+      /* LEGAL: a second color attachment without a view (unused) and a resolve mode set;
+       * Vulkan asks for a resolve view only where the attachment has a view */
+      att[1].imageView = VK_NULL_HANDLE;
+      att[1].resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+      att[1].resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      if (IS("r-dyn-resolve-no-view-target"))
+         att[1].resolveImageView = (VkImageView)view(image(64, 64, 1, CA_SA), 1);
+   } else if (!IS("r-dyn-colors-over") && !IS("r-dyn-ok"))
       return BROKEN;
    begin(w->cmd);
    struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)w->cmd, .pRenderingInfo = &ri };
@@ -2369,6 +2378,7 @@ static const struct test_case cases[] = {
    { "r-mv-count-short", E_REFUSE }, { "r-dep-subpass-far", E_REFUSE }, { "r-input-aspect-far", E_REFUSE },
    { "r-sample-loc-index-far", E_REFUSE },
    { "r-dyn-colors-over", E_REFUSE }, { "r-dyn-layers-over", E_REFUSE }, { "r-dyn-resolve-null", E_REFUSE },
+   { "r-dyn-resolve-no-view", E_WORKS }, { "r-dyn-resolve-no-view-target", E_WORKS },
    { "r-dyn-resolve-mode-bad", E_REFUSE },
    /* descriptor set layouts, pools, sets, writes, copies */
    { "d-layout-binding-max", E_WORKS }, { "d-layout-binding-over", E_REFUSE }, { "d-layout-binding-far", E_REFUSE },

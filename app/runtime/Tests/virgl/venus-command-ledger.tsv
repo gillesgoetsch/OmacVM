@@ -83,7 +83,7 @@ vkCmdSetPrimitiveRestartEnable	bool	values only
 vkCmdSetRasterizerDiscardEnable	bool	values only		
 vkCmdBeginConditionalRenderingEXT	buffer, offset	A	offset + 4 <= size, offset % 4	
 vkCmdEndConditionalRenderingEXT		B	inside conditional rendering	
-vkCmdBeginRendering	rendering info	A+B	A: colorAttachmentCount <= maxColorAttachments, viewMask within the (lowered) view count, layerCount <= maxFramebufferLayers, resolve view present when resolveMode is not NONE, resolve modes known; B: state	r-dyn-colors-9 (KK 6, MVK-p 6), r-dyn-viewmask-all (KK 6)
+vkCmdBeginRendering	rendering info	A+B	A: colorAttachmentCount <= maxColorAttachments, viewMask within the (lowered) view count, layerCount <= maxFramebufferLayers, resolve view present where an attachment with a view sets a resolveMode (none asked without a view), resolve modes known; B: state	r-dyn-colors-9 (KK 6, MVK-p 6), r-dyn-viewmask-all (KK 6); legal: r-dyn-resolve-no-view(-target)
 vkCmdEndRendering		B	inside dynamic rendering	
 vkCmdPipelineBarrier2	dependency info	A	as vkCmdPipelineBarrier	gap 9
 vkCmdResetEvent2	event, stageMask	values only		
