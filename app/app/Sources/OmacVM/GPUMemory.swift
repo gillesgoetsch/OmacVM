@@ -441,14 +441,13 @@ final class GPUMemoryWatch {
         }
         switch (w.trigger, r?.act) {
         case (.compressing, "reclaim"?):
-            log("OmacVM: the VM gave back \(g(r!.gotMB)) of cold file cache (\(g(r!.cacheMB)) -> \(g(r!.cacheAfterMB))) "
-                + "and \(MemoryGiveBack.compactionWords(r!)); \(line)")
+            log("OmacVM: the VM gave back \(g(r!.gotMB)) of cold file cache (\(g(r!.cacheMB)) -> \(g(r!.cacheAfterMB)); "
+                + "\(g(r!.smallFreeMB)) free in blocks too small to give back); \(line)")
         case (.compressing, "drop"?):
-            log("OmacVM: the VM dropped its whole file cache, \(g(r!.gotMB)) (its kernel has no cold-only way), "
-                + "and \(MemoryGiveBack.compactionWords(r!)); \(line)")
+            log("OmacVM: the VM dropped its whole file cache, \(g(r!.gotMB)) (its kernel has no cold-only way); \(line)")
         case (.compressing, _?):
-            log("OmacVM: the VM had no cold file cache to give (\(g(r!.cacheMB)) of file cache) and "
-                + "\(MemoryGiveBack.compactionWords(r!)); \(line)")
+            log("OmacVM: the VM had no cold file cache to give (\(g(r!.cacheMB)) of file cache, "
+                + "\(g(r!.smallFreeMB)) free in blocks too small to give back); \(line)")
         case (.compressing, nil):
             log("OmacVM: the give-back's result is not known; \(line)")
         default:
