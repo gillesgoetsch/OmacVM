@@ -1,7 +1,8 @@
 #!/bin/bash
 # Test for qemu-hvf-own-view-sweep.patch (no VM): after a sweep, Activity
-# Monitor counts guest RAM once, and QEMU and the guest still see the same
-# memory (test-dcount.c says how).
+# Monitor counts guest RAM once, QEMU and the guest still see the same
+# memory, and a remap that does not do what ADR 0066 expects turns the sweep
+# off or maps back instead of stopping QEMU (test-dcount.c says how).
 #   test-dcount.sh [QEMU_SOURCE_DIR [WORK_DIR]]
 # With a source dir (the runtime build): the sweep and the free page reclaim
 # from the patched accel/hvf/hvf-all.c, and they must be wired in. Without
@@ -11,8 +12,11 @@
 # hypervisor's and, where this Mac lets a process make a VM, a real one
 # (--hv). Then --predicate (which RAM blocks a free page report may replace
 # and the sweep may remap: never the Venus host memory window's blobs, pflash
-# or ROM) and --diverge (a remap that changes QEMU's view in the first pass:
-# QEMU must stop).
+# or ROM) and the sweep's own test hook: the trial's remap diverges or takes
+# too long (the sweep is off, guest RAM never remapped), a chunk's remap
+# diverges in the first or a later pass, leaves a hole, reads private once,
+# or its spare differs (mapped back or stopped, QEMU runs on), and mapping
+# back fails too (QEMU must stop: the only abort left).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src=${1:-} work=${2:-}
@@ -54,6 +58,16 @@ if [[ -n $src ]]; then
      $start == *"timer_new_ns(QEMU_CLOCK_REALTIME, omacvm_sweep_tick, NULL);"* &&
      $start == *'"OmacVM: own-view sweep: on: '* ]] || \
     { echo "FAIL: the sweep does not start over the machine's main RAM, with its switch and start line"; exit 1; }
+  # The trial before the machine starts, at a free IPA below the VM's IPA size, its time limit, and off with why;
+  # mem-lock turns it off; the test hook only in test mode.
+  [[ $start == *"if (!omacvm_sweep_canary(&omacvm_sweep, omacvm_sweep_free_ipa(OMACVM_SWEEP_TRIAL),"* &&
+     $start == *"OMACVM_SWEEP_TRIAL_MS, why, sizeof(why))) {"* &&
+     $start == *'"OmacVM: own-view sweep: off (%s): Activity Monitor counts the VM'* &&
+     $start == *"if (should_mlock(mlock_state)) {"* &&
+     $start == *'getenv("OMACVM_TEST_SWEEP_DIVERGE")'* && $start == *"if (test && test_mode && *test_mode) {"* ]] || \
+    { echo "FAIL: the sweep does not run its trial first (with its time limit, off with why, mem-lock, test hook)"; exit 1; }
+  [[ $init == *"omacvm_sweep_ipa_bits = pa_range;"* ]] || \
+    { echo "FAIL: hvf_accel_init() does not give the sweep the VM's IPA size"; exit 1; }
 else
   block reclaim "$here/../../patches/qemu-hvf-free-page-reclaim-reusable.patch" patch > "$work/reclaim.inc"
   block sweep "$here/../../patches/qemu-hvf-own-view-sweep.patch" patch > "$work/sweep.inc"
@@ -74,15 +88,15 @@ for v in patch main; do
   codesign -s - -f --entitlements "$work/hv.plist" "$work/test-$v" 2>/dev/null
 done
 fail=0
-run() {   # WANT(pass|fail|abort) BINARY [ARGS...]
+run() {   # WANT(pass|fail|abort:MESSAGE) BINARY [ARGS...]
   local want=$1 bin=$2 rc out; shift 2
   rc=0; out=$(TEST_DCOUNT_DIR=$work "$work/$bin" "$@" 2>&1) || rc=$?
   local what="$bin${*:+ $*}"
   if (( rc == 2 )) && [[ $out == *"SKIP"* ]]; then
     echo "  $what: skipped, $(grep -m1 -o 'SKIP.*' <<< "$out")"
   elif [[ $want == pass && $rc == 0 ]] || [[ $want == fail && $rc == 1 && $out == *"COUNTED TWICE"* ]] ||
-       [[ $want == abort && $rc -ge 128 && $out == *"maps other memory than the guest's"* ]]; then
-    echo "  $what: ${want}ed as it should ($(grep -c '^  ok' <<< "$out") ok rows${out:+; $(grep -m1 -o 'after pass 2: [^:]*' <<< "$out" || true)})"
+       [[ $want == abort:* && $rc -ge 128 && $out == *"${want#abort:}"* ]]; then
+    echo "  $what: ${want%%:*}ed as it should ($(grep -c '^  ok' <<< "$out") ok rows${out:+; $(grep -m1 -o -e 'after pass 2: [^:]*' -e 'mapped back after [0-9]* us' -e 'off ([^:]*' <<< "$out" || true)})"
   else
     echo "FAIL $what (exit $rc, want $want):"; grep -v '^  ok' <<< "$out" | sed 's/^/    /' | tail -25; fail=1
   fi
@@ -90,8 +104,11 @@ run() {   # WANT(pass|fail|abort) BINARY [ARGS...]
 for hv in "" --hv; do
   run pass test-patch ${hv:+"$hv"}
   run fail test-main ${hv:+"$hv"}
+  for c in --canary --diverge --chunk --spare --hole --dip --hang; do
+    run pass test-patch ${hv:+"$hv"} "$c"
+  done
+  run "abort:could not be mapped back" test-patch ${hv:+"$hv"} --unmapped
 done
 run pass test-patch --predicate
-run abort test-patch --diverge
 rm -f "$work/io-in" "$work/io-out"
 (( fail == 0 )) && echo "test-dcount: all ok" || { echo "test-dcount: FAILED"; exit 1; }

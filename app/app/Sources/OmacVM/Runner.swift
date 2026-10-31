@@ -534,6 +534,10 @@ final class Runner {
         if TestHooks.value("OMACVM_TEST_EDR", bundleID: Bundle.main.bundleIdentifier) == nil {
             env.removeValue(forKey: "OMACVM_TEST_EDR")
         }
+        // A test build may make QEMU's own-view sweep go wrong on purpose (ADR 0066).
+        if TestHooks.value("OMACVM_TEST_SWEEP_DIVERGE", bundleID: Bundle.main.bundleIdentifier) == nil {
+            env.removeValue(forKey: "OMACVM_TEST_SWEEP_DIVERGE")
+        }
         // QEMU puts its main loop (sound card timers, virgl) at user-interactive
         // QoS and logs which one it got; audioClassic keeps the default.
         if Settings.audioClassic {
