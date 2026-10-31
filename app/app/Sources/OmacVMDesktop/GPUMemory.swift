@@ -94,7 +94,8 @@ public struct GPUMemory: Equatable {
     /// (i) that explains them: the VM header's and General's Resources row's
     /// (resourcesInfo). Measured numbers only: the 2-5 GB at 5K from the
     /// field (2.1 GB, and 4.5 GB at the peak, on a 16 GB Mac mini with
-    /// Chrome), the counted-twice row from ADR 0062.
+    /// Chrome), the counted-twice row from ADR 0062 (from before QEMU's sweep,
+    /// ADR 0066: macOS counts what QEMU touched twice, compressed or not).
     public static let explanation = """
         VM memory is the VM's RAM: Linux sees exactly this much, and the Mac gives it \
         as the VM uses it. What Linux frees goes back to the Mac and leaves QEMU's \
@@ -106,10 +107,11 @@ public struct GPUMemory: Equatable {
         New ones for apps are refused when macOS itself runs short, or when all of them \
         together reach three quarters of the Mac's memory less a part kept for the \
         desktop itself, so an app that takes too much stops, not the desktop. \
-        Activity Monitor can show more for the VM than both together: once QEMU itself \
-        touched a page of the VM (disk, graphics, network) and macOS compressed it, macOS \
-        counts that page twice (a 4 GB VM after a browser session: 5.9 GB shown, \
-        2.1 GB of it counted twice). omacvm check shows what the number is made of.
+        Activity Monitor can show more for the VM than both together: a page of the VM \
+        that QEMU itself touched (disk, graphics, network) counts twice there until \
+        QEMU's next sweep, every 5 minutes; that is no memory (a 4 GB VM after a browser \
+        session, before the sweep: 5.9 GB shown, 2.1 GB of it counted twice). omacvm \
+        check shows what the number is made of.
         """
 
     /// The last run's graphics, for the same two (i)s; nil: no run yet (or

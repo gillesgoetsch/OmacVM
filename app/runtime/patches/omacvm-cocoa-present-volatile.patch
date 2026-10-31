@@ -1,0 +1,335 @@
+OmacVM Cocoa: the window's spare present surfaces volatile while it is out of sight
+
+What: after 2 s out of sight (macOS's occlusion state: minimised, covered,
+another Space, the screen locked, closed with Keep running) every present
+IOSurface that Core Animation does not show or read (in use, or the
+layer's contents) gets IOSurfaceSetPurgeable volatile. In sight again, the
+surfaces come back non-volatile before the frame; a surface taken for a
+frame comes back first; one that macOS emptied meanwhile is drawn whole
+(the partial present's state for every surface set to full). QEMU's thread
+looks at every refresh tick (500 ms while out of sight) and present. A
+refusal from macOS logs once and stops the rule for the run.
+OMACVM_PRESENT_VOLATILE=0 keeps every surface, as before;
+OMACVM_PRESENT_HIDDEN (frames drawn out of sight) keeps them too. qemu.log:
+"cocoa: present surfaces: spare ones volatile while the window is out of
+sight" (or "all kept (...)") once, and at each return after one went
+volatile "cocoa: present: in sight again: N spare surfaces were volatile,
+M emptied by macOS (drawn whole)" and "cocoa: present: first frame N ms
+after the window was seen again". Test hooks: OMACVM_TEST_PRESENT_PURGE=1
+empties each surface for real (kIOSurfacePurgeableEmpty) before it comes
+back; OMACVM_TEST_SIGHT=FILE (test mode only) takes the window's sight
+from the file ("seen" / "unseen", read every 0.25 s) instead of macOS's
+occlusion notices, as a locked test Mac shows no window as seen.
+Why: out of sight QEMU draws nothing, yet kept 5 surfaces: 310 MiB of its
+footprint at 5120x2880 8-bit or lossless, 592 MiB in half float. With
+this, 4 of 5 at 5K: -225 MiB (8-bit, lossless), -450 MiB (half float),
+by the per-surface host costs in the logic patch. Host test of a real
+purge (Mac mini M4, macOS 27.0, plain and lossless 5K surfaces bound as
+GL textures): Empty then non-volatile reports Empty, the old picture is
+gone, a new draw into it shows and the footprint comes back.
+Upstream: OmacVM's own. Needs omacvm-cocoa-present-volatile-logic.patch.
+Tests: Tests/display/test-present-volatile.sh <patched ui/cocoa.m> (the
+wiring; --self-test: every check fails on the code before); VM rows in
+the PR (a real window on a locked Mac: footprint seen, unseen 10 s, seen;
+check mode and the purge hook).
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 70c50ae..a040d42 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -63,6 +63,7 @@
+ #include "ui/omacvm-pointer-hover.h"
+ #include "ui/omacvm-present-tiles.h"
+ #include "ui/omacvm-present-damage.h"
++#include "ui/omacvm-present-volatile.h"
+ #include "ui/omacvm-guest-pause.h"
+ #include "hw/core/boards.h"
+ #include "system/system.h"
+@@ -183,6 +184,7 @@ static void cocoa_switch(DisplayChangeListener *dcl,
+  * window's occlusion), read on QEMU's.
+  */
+ static bool omacvm_window_seen = true;
++static int64_t omacvm_window_seen_ns;   /* when it last came into sight (QEMU_CLOCK_REALTIME) */
+ static unsigned omacvm_frames_unseen;   /* QEMU's thread, BQL */
+ #ifdef CONFIG_OPENGL
+ static void omacvm_present_seen_again(void);
+@@ -1139,6 +1141,24 @@ @interface OmacVMHoverWatch : NSObject
+ static void omacvm_corner_release(void);
+ static bool omacvm_is_head_console(unsigned int index);
+ static bool omacvm_test_mode(void);
++/*
++ * OmacVM tests (test mode only): OMACVM_TEST_SIGHT=FILE makes the main
++ * window's sight the file's word, "seen" or "unseen" (read every 0.25 s),
++ * instead of macOS's occlusion notices: a locked test Mac shows no window as
++ * seen, so a test of what happens out of sight and back needs it.
++ */
++static const char *omacvm_test_sight_path(void)
++{
++    static int read;
++    static const char *path;
++
++    if (!read) {
++        const char *v = getenv("OMACVM_TEST_SIGHT");
++        read = 1;
++        path = v && *v && omacvm_test_mode() ? v : NULL;
++    }
++    return path;
++}
+ static void omacvm_displays_update(void);
+ static void omacvm_pointer_init(void);
+ 
+@@ -5463,6 +5483,12 @@ - (id) init
+                                                  selector:@selector(omacvmWindowSeen:)
+                                                      name:NSWindowDidChangeOcclusionStateNotification
+                                                    object:window];
++        if (omacvm_test_sight_path()) {
++            info_report("cocoa: test: the window's sight from %s", omacvm_test_sight_path());
++            [NSTimer scheduledTimerWithTimeInterval:0.25 target:self
++                                           selector:@selector(omacvmTestSight:)
++                                           userInfo:nil repeats:YES];
++        }
+ 
+         /* Used for displaying pause on the screen */
+         pauseLabel = [NSTextField new];
+@@ -5608,7 +5634,6 @@ - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:
+ /* Main thread: the window came into sight or went out of it. */
+ - (void)omacvmWindowSeen:(NSNotification *)note
+ {
+-    static double since;
+     NSWindow *w = [note object];
+     bool seen = ([w occlusionState] & NSWindowOcclusionStateVisible) != 0;
+     /*
+@@ -5616,6 +5641,36 @@ - (void)omacvmWindowSeen:(NSNotification *)note
+      * notice, so omacvm_window_seen still says seen when it first shows.
+      */
+     omacvm_gp_update();
++    if (omacvm_test_sight_path()) {
++        return;     /* a test's file says it (omacvmTestSight) */
++    }
++    [self omacvmSight:seen];
++}
++
++/* Main thread, tests: the window's sight from OMACVM_TEST_SIGHT's file. */
++- (void)omacvmTestSight:(NSTimer *)timer
++{
++    char b[16] = "";
++    FILE *f = fopen(omacvm_test_sight_path(), "r");
++
++    if (f) {
++        if (!fgets(b, sizeof(b), f)) {
++            b[0] = 0;
++        }
++        fclose(f);
++    }
++    if (!strncmp(b, "unseen", 6)) {
++        [self omacvmSight:false];
++    } else if (!strncmp(b, "seen", 4)) {
++        [self omacvmSight:true];
++    }
++}
++
++/* Main thread: the window is in sight (SEEN) or out of it. */
++- (void)omacvmSight:(bool)seen
++{
++    static double since;
++
+     if (seen == qatomic_read(&omacvm_window_seen)) {
+         return;
+     }
+@@ -5628,6 +5683,7 @@ - (void)omacvmWindowSeen:(NSNotification *)note
+         return;
+     }
+     double away = CACurrentMediaTime() - since;
++    qatomic_set(&omacvm_window_seen_ns, qemu_clock_get_ns(QEMU_CLOCK_REALTIME));
+ #ifdef CONFIG_OPENGL
+     omacvm_bright_reread();     /* the switch again, before the frame */
+     omacvm_present_seen_again();
+@@ -9171,6 +9227,23 @@ static int cocoa_gl_present_tile_buf(unsigned t)
+     return -1;
+ }
+ 
++/*
++ * OmacVM: the spare surfaces volatile while the window is out of sight
++ * (ui/omacvm-present-volatile.h). QEMU thread, BQL: present_volatile_look()
++ * at every refresh tick (500 ms while out of sight) and present, and the
++ * present makes the surface it takes non-volatile first. Shown = in use
++ * (IOSurfaceIsInUse, as the present picks its next surface) or the layer's
++ * contents (present_shown, set where a frame goes on the layer).
++ * OMACVM_PRESENT_VOLATILE=0 keeps them all; so does OMACVM_PRESENT_HIDDEN,
++ * which draws out of sight. OMACVM_TEST_PRESENT_PURGE=1 (tests): every
++ * surface is emptied for real (kIOSurfacePurgeableEmpty: its picture gone,
++ * as when macOS takes its pages) before it comes back.
++ */
++static OmacvmPresentVolatile present_pv;
++static int64_t present_pv_back_ns;      /* in sight again after volatile surfaces: the first frame is timed */
++static IOSurfaceRef present_shown;      /* the layer's contents (any thread): compared, never used */
++static int present_pv_purge = -1;       /* OMACVM_TEST_PRESENT_PURGE; -1 not read yet */
++
+ static void cocoa_gl_present_free(void)
+ {
+     for (int i = 0; i < present_nsurf; i++) {
+@@ -9186,6 +9259,92 @@ static void cocoa_gl_present_free(void)
+     present_w = present_h = 0;
+     present_deep = false;
+     present_linear = false;
++    omacvm_pv_reset(&present_pv, 0);
++}
++
++/* QEMU thread, BQL: surface I non-volatile again (taken for a frame, or in sight). */
++static void present_volatile_back(unsigned i)
++{
++    uint32_t old = kIOSurfacePurgeableNonVolatile;
++
++    if (present_pv_purge == 1) {
++        /* the test hook: macOS's purge, for real, before it comes back */
++        IOSurfaceSetPurgeable(present_surf[i], kIOSurfacePurgeableEmpty, &old);
++    }
++    kern_return_t kr = IOSurfaceSetPurgeable(present_surf[i], kIOSurfacePurgeableNonVolatile, &old);
++    bool emptied = kr != KERN_SUCCESS || old == kIOSurfacePurgeableEmpty;
++
++    if (kr != KERN_SUCCESS && !present_pv.off) {
++        present_pv.off = true;
++        warn_report("cocoa: present surfaces: one could not be made non-volatile (%d): "
++                    "drawn whole, all kept from now on", kr);
++    }
++    if (omacvm_pv_back(&present_pv, i, emptied)) {
++        omacvm_pd_all_full(&present_pd);    /* its picture is gone: whole draws next */
++    }
++}
++
++/* QEMU thread, BQL: the rule's look (refresh tick, present). */
++static void present_volatile_look(void)
++{
++    if (!present_ctx) {
++        return;     /* the CAOpenGLLayer path has no surfaces of its own */
++    }
++    if (present_pv_purge < 0) {
++        const char *e = getenv("OMACVM_PRESENT_VOLATILE");
++        const char *t = getenv("OMACVM_TEST_PRESENT_PURGE");
++        bool hidden = getenv("OMACVM_PRESENT_HIDDEN") != NULL;
++
++        present_pv_purge = t && !strcmp(t, "1");
++        present_pv.off = hidden || (e && !strcmp(e, "0"));
++        info_report("cocoa: present surfaces: %s%s",
++                    hidden ? "all kept (OMACVM_PRESENT_HIDDEN draws out of sight)" :
++                    present_pv.off ? "all kept (OMACVM_PRESENT_VOLATILE=0)" :
++                    "spare ones volatile while the window is out of sight "
++                    "(OMACVM_PRESENT_VOLATILE=0: all kept)",
++                    present_pv_purge ? "; test: each one emptied before it comes back "
++                                       "(OMACVM_TEST_PRESENT_PURGE)" : "");
++    }
++    if (!present_surf[0]) {
++        return;
++    }
++    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++    bool was_away = present_pv.away;
++    omacvm_pv_sight(&present_pv, qatomic_read(&omacvm_window_seen), now);
++    if (omacvm_pv_idle(&present_pv)) {
++        return;
++    }
++    IOSurfaceRef shown = qatomic_read(&present_shown);
++    for (unsigned i = 0; i < present_nsurf; i++) {
++        bool busy = present_surf[i] == shown || IOSurfaceIsInUse(present_surf[i]);
++        int step = omacvm_pv_step(&present_pv, i, busy, now);
++        if (step > 0) {
++            uint32_t old;
++            kern_return_t kr = IOSurfaceSetPurgeable(present_surf[i], kIOSurfacePurgeableVolatile, &old);
++            omacvm_pv_made(&present_pv, i, kr == KERN_SUCCESS);
++            if (kr != KERN_SUCCESS) {
++                warn_report("cocoa: present surfaces: macOS refused a volatile one (%d): "
++                            "all kept from now on", kr);
++                for (unsigned k = 0; k < present_nsurf; k++) {
++                    if (omacvm_pv_needed(&present_pv, k)) {
++                        present_volatile_back(k);
++                    }
++                }
++                break;
++            }
++        } else if (step < 0) {
++            present_volatile_back(i);
++        }
++    }
++    if (was_away && !present_pv.away && present_pv.made) {
++        info_report("cocoa: present: in sight again: %u spare surfaces were volatile, "
++                    "%u emptied by macOS (drawn whole)", present_pv.made, present_pv.emptied);
++        present_pv.made = present_pv.emptied = 0;
++        present_pv_back_ns = qatomic_read(&omacvm_window_seen_ns);
++        if (!present_pv_back_ns) {
++            present_pv_back_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++        }
++    }
+ }
+ 
+ static bool cocoa_gl_present_hdr_wanted(void)
+@@ -9463,6 +9622,7 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+     present_linear = linear;
+     present_next = 0;
+     omacvm_pd_reset(&present_pd, present_nsurf, present_pd.fw, present_pd.fh);
++    omacvm_pv_reset(&present_pv, present_nsurf);
+     return true;
+ }
+ 
+@@ -9700,6 +9860,8 @@ static bool cocoa_gl_present(void)
+     bool splash = false;
+     static int always = -1;
+ 
++    /* OmacVM: spare surfaces volatile out of sight, non-volatile in sight. */
++    present_volatile_look();
+     /*
+      * OmacVM: out of sight (hidden, minimised, covered, another Space) no
+      * frame is copied for the window; the newest one is drawn as it shows
+@@ -9831,6 +9993,10 @@ static bool cocoa_gl_present(void)
+     }
+     unsigned n = (present_next + i) % present_nsurf;
+     present_next = (n + 1) % present_nsurf;
++    /* OmacVM: a volatile surface is made non-volatile before it is drawn into. */
++    if (omacvm_pv_needed(&present_pv, n)) {
++        present_volatile_back(n);
++    }
+ 
+     /* OmacVM: what surface n needs (partial present, see present_pd). */
+     if (present_damage_on < 0) {
+@@ -10005,6 +10171,7 @@ static bool cocoa_gl_present(void)
+             cocoa_gl_layer_follow(layer, surf, boost);
+             omacvm_present_gravity(layer, surf);
+             [layer setContents:(id)surf];
++            qatomic_set(&present_shown, surf);
+             [CATransaction commit];
+             omacvm_park_frame_shown(flushed);
+             IOSurfaceDecrementUseCount(surf);
+@@ -10012,6 +10179,11 @@ static bool cocoa_gl_present(void)
+         });
+     });
+     present_last_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    if (present_pv_back_ns) {
++        info_report("cocoa: present: first frame %.1f ms after the window was seen again",
++                    (present_last_ns - present_pv_back_ns) / 1e6);
++        present_pv_back_ns = 0;
++    }
+     return true;
+ }
+ 
+@@ -10245,6 +10417,7 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
+         cocoa_gl_layer_follow(layer, pt->base, f->linear);
+         omacvm_present_gravity(layer, pt->base);
+         [layer setContents:(id)pt->base];
++        qatomic_set(&present_shown, pt->base);
+         present_tiles_hide_locked();
+     }
+     CGFloat s = [layer contentsScale];
+@@ -10315,6 +10488,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
+     cocoa_gl_layer_follow(layer, surf, linear);
+     omacvm_present_gravity(layer, surf);
+     [layer setContents:(id)surf];
++    qatomic_set(&present_shown, surf);
+     if (present_tiles_on > 0) {
+         /* a whole frame: the tiles over it go; can later frames go in tiles? */
+         uint32_t fw = IOSurfaceGetWidth(surf), fh = IOSurfaceGetHeight(surf);
+@@ -10823,6 +10997,8 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
+      */
+     bool held = omacvm_present_held();
+ 
++    /* OmacVM: the spare present surfaces' rule looks at least every tick. */
++    present_volatile_look();
+     /*
+      * OmacVM: a console surface drawn on the AppKit thread (no IOSurface
+      * present) gets its texture here at the latest; the present makes its own.

@@ -489,8 +489,14 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   # of, without a guess: the VM's memory this run (QEMU's -m; "at most": Linux
   # may not have touched all of it, and what it gave back has left), its
   # graphics now as the VM counts them (logs/gpu-memory), and the rest: QEMU
-  # itself, the graphics' overhead on the Mac and the pages macOS counts twice
-  # while it compresses the VM (ADR 0062). Only while QEMU runs and writes
+  # itself, the graphics' overhead on the Mac and the VM's pages QEMU's own
+  # threads touched, which macOS counts a second time, compressed or not (ADR
+  # 0066). A QEMU that sweeps its own view of the VM's RAM (its first
+  # "own-view sweep: on" line in qemu.log, from 3.2.17) drops that count every
+  # few minutes: then only what it touched since its last sweep (unless it
+  # stopped for the run: "own-view sweep: stopped for this run"). The words
+  # come from this QEMU's line, not from this omacvm's version (an omacvm can
+  # run beside an older app). Only while QEMU runs and writes
   # logs/gpu-memory. Memory above this Mac's Best tier is a warning (the same
   # words as omacvm resources), never a failure; the setting stays.
   am_pid=$(app_pid_dir "$(dirname "$(dirname "$miclog")")")
@@ -501,7 +507,12 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     if [[ $am_vm =~ ^[0-9]{1,8}$ ]]; then
       what="$(gb "$am_fp") for the VM: VM memory at most $(gb "$am_vm"), graphics $(gb "$am_gpu") now"
       am_rest=$(( am_fp - am_vm - am_gpu ))
-      (( am_rest > 0 )) && what="$what, the rest $(gb "$am_rest") (QEMU itself, graphics overhead and pages macOS counts twice while it compresses the VM)"
+      am_twice="pages of the VM QEMU touched, which macOS counts twice"
+      if [[ $(LC_ALL=C grep -a -o -E 'OmacVM: own-view sweep: (on|off)' "$miclog" 2>/dev/null | head -1) == *": on" ]] &&
+         ! LC_ALL=C grep -a -c 'OmacVM: own-view sweep: stopped for this run' "$miclog" > /dev/null 2>&1; then
+        am_twice="pages of the VM QEMU touched since its last sweep, counted twice until then"
+      fi
+      (( am_rest > 0 )) && what="$what, the rest $(gb "$am_rest") (QEMU itself, graphics overhead and $am_twice)"
       mac_specs
       am_warn=$(mem_warning app "$am_vm" "$VM")
       # A memory set while the VM runs (vm.env, e.g. lowered to Best) is not in

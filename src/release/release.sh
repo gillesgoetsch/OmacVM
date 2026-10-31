@@ -13,12 +13,16 @@
 #   merge     the release PR into main with a merge commit M (dry run: M is
 #             the local commit)
 #   build     build-app.sh --release in a worktree at M; build tests must pass
+#             (or an app built at M on another Mac, checked and signed here:
+#             OMACVM_RELEASE_APP_FROM)
 #   notarize  Apple's notary service, then staple the ticket into the app
 #   package   OmacVM-VERSION.zip + .sha256, OmacVM-appcast.json + .sig (the
 #             app feed), omacvm-manifest.json + .sig (control centre)
 #   verify    every file read back as the app, the command line and the Bridge
 #             read them
 #   image     the app's prebuilt VM (make-image.sh app), its manifest signed
+#             (on the runtime build in the worktree, or on the app's own
+#             runtime when the app came from OMACVM_RELEASE_APP_FROM)
 #   e2e       the gate: the person's path end to end on the test Mac
 #             (src/tests/e2e/cc-switches.sh) passed for a test identity
 #             build of M; publish refuses without it
@@ -40,6 +44,10 @@
 # OMACVM_RELEASE_TITLE, OMACVM_KOSMICKRISP_FROM (KosmicKrisp built on a Mac
 # that can: app/runtime/import-kosmickrisp.sh), OMACVM_RELEASE_RUNTIME_FROM (a runtime/.build to
 # start from; build-app.sh rebuilds it unless its inputs match),
+# OMACVM_RELEASE_APP_FROM (an absolute path: a folder with OmacVM.app built
+# at M on a Mac without the keys, and its build.log: checked against M and
+# signed here, not built; step image then runs the image VM on that app's own
+# runtime; docs/releasing.md says what is checked and what is trusted),
 # OMACVM_RELEASE_IMAGE_FROM (a folder with a signed image of this version:
 # used instead of building one), OMACVM_RELEASE_UNNOTARIZED=1 (release
 # without notarization, as 2.x), OMACVM_RELEASE_FROM (dry run only: the
@@ -70,6 +78,14 @@ VERSION=${1:-}
 shift
 STEPS=("$@")
 (( ${#STEPS[@]} )) || STEPS=(check bump merge build notarize package verify image e2e publish after)
+# OMACVM_RELEASE_APP_FROM: an absolute path only; a relative one would name
+# another folder for each folder release.sh is run from. The app brings its
+# own runtime: none from OMACVM_RELEASE_RUNTIME_FROM beside it.
+if [[ -n ${OMACVM_RELEASE_APP_FROM:-} ]]; then
+  [[ $OMACVM_RELEASE_APP_FROM == /* ]] || die "OMACVM_RELEASE_APP_FROM must be an absolute path, not $OMACVM_RELEASE_APP_FROM"
+  [[ -z ${OMACVM_RELEASE_RUNTIME_FROM:-} ]] ||
+    die "OMACVM_RELEASE_APP_FROM brings the app's own runtime: unset OMACVM_RELEASE_RUNTIME_FROM"
+fi
 
 # release-key.sh signs with the Keychain's release key only inside this run.
 export OMACVM_RELEASE_RUN=$VERSION
@@ -220,6 +236,78 @@ step_merge() {
   note "M = $m"
 }
 
+# The parts build-app.sh copies into the app from git at M that app_from
+# compares with M: its "git archive ... omacvm src CHANGELOG.md" into
+# Resources/omacvm, and its "install -m755 ... Contents/Resources/scripts/" of
+# these app/scripts files (not the fonts and licence files it also copies). release-script.sh builds its stand-in app from build-app.sh's own
+# lines, so a change there that is not made here too fails CI.
+APP_ARCHIVE=(omacvm src CHANGELOG.md)
+APP_SCRIPTS=(create-vm.sh prebuilt-vm.sh apply-vm.sh vm-common.sh update-vm.sh update-swap.sh)
+# The app's links outside Resources/omacvm: build-app.sh's (QEMU started under
+# the app's name) and python's own.
+APP_LINKS='./Contents/MacOS/OmacVM-VM -> ../Resources/runtime/bin/OmacVM
+./Contents/Resources/python/bin/python3 -> python3.13'
+# A folder's tree, one line per entry: type, mode, a file's sha256 or a link's
+# target, path. Equal lists: the same names, bytes, modes and types.
+tree_list() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r f; do
+  if [[ -L $f ]]; then echo "l $(stat -f %Lp "$f") $f -> $(readlink "$f")"
+  elif [[ -d $f ]]; then echo "d $(stat -f %Lp "$f") $f"
+  else echo "f $(stat -f %Lp "$f") $(shasum -a 256 < "$f" | cut -d' ' -f1) $f"; fi; done); }
+
+# OMACVM_RELEASE_APP_FROM=DIR: OmacVM.app put together at M on another Mac (one
+# without the keys), unsigned or ad hoc, with that build's log (DIR/OmacVM.app,
+# DIR/build.log). Before anything signs it: its shape, id, commit and version;
+# what step build and package-release.sh would refuse only after signing; and
+# what build-app.sh copies from git, file by file against M. Then M's own
+# sign-app.sh signs it. These checks catch mistakes; the binaries are trusted as
+# the build Mac's own: step image runs its QEMU and tools here
+# (docs/releasing.md, "An app built on another Mac").
+app_from() {   # DIR M
+  local from=$1 m=$2 a c p t x om=0 sc=0
+  a=$from/OmacVM.app; c=$a/Contents; p=$c/Info.plist
+  [[ -d $c && ! -L $a && -f $from/build.log ]] || die "OMACVM_RELEASE_APP_FROM: no OmacVM.app (a folder, not a link) or build.log in $from"
+  # Its shape first, before anything reads a file: only files, folders and
+  # links (a FIFO would hang shasum and ditto); outside omacvm (compared below)
+  # only the two links above, so no path sign-app.sh signs leads out of the app;
+  # nothing writable by group or others, no setuid or setgid. A copy over a
+  # drive or share that drops links or modes stops here.
+  x=$(cd "$a" && find . ! -type f ! -type d ! -type l -print) || die "OMACVM_RELEASE_APP_FROM: cannot read $a"
+  [[ -z $x ]] || die "OMACVM_RELEASE_APP_FROM: not a file, folder or link: ${x%%$'\n'*}"
+  x=$(cd "$a" && find . -type l ! -path './Contents/Resources/omacvm/*' -print | LC_ALL=C sort | while IFS= read -r f; do echo "$f -> $(readlink "$f")"; done) || die "OMACVM_RELEASE_APP_FROM: cannot read $a"
+  [[ $x == "$APP_LINKS" ]] || die "OMACVM_RELEASE_APP_FROM: the app's links are not the two it should have (lost or changed in the copy?): ${x:-none}"
+  x=$(cd "$a" && find . ! -type l \( -perm -0020 -o -perm -0002 -o -perm -4000 -o -perm -2000 \) -print) || die "OMACVM_RELEASE_APP_FROM: cannot read $a"
+  [[ -z $x ]] || die "OMACVM_RELEASE_APP_FROM: writable by group or others, or setuid/setgid: ${x%%$'\n'*}"
+  [[ $(/usr/libexec/PlistBuddy -c "Print OmacVMCommit" "$p") == "$m" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not M"
+  [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$p") == "$VERSION" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not $VERSION"
+  [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$p") == org.omacvm.app ]] || die "OMACVM_RELEASE_APP_FROM: the app is not org.omacvm.app"
+  # Refused later anyway, but only after signing (step build) or notarizing
+  # (package-release.sh); a plain build (no --release) at M fails here.
+  grep -qw FAIL "$from/build.log" && die "OMACVM_RELEASE_APP_FROM: a build test failed there: grep -n FAIL $from/build.log"
+  [[ -z $(git -C "$WT" status --porcelain) ]] || die "OMACVM_RELEASE_APP_FROM: $WT has changes (the signing and its entitlements come from it)"
+  [[ ${OMACVM_RELEASE_NO_KOSMICKRISP:-0} == 1 || ( -f $c/Resources/runtime/lib/libvulkan_kosmickrisp.dylib && -s $c/Resources/licenses/LICENSE.mesa-kosmickrisp.txt ) ]] ||
+    die "OMACVM_RELEASE_APP_FROM: the app has no KosmicKrisp (or no licence notice for it): build it with --release (or OMACVM_RELEASE_NO_KOSMICKRISP=1)"
+  [[ $(cat "$c/Resources/firmware/firmware-source" 2>/dev/null) == omacvm* || ${OMACVM_FIRMWARE:-} == qemu ]] ||
+    die "OMACVM_RELEASE_APP_FROM: the app has QEMU's firmware, not OmacVM's (or OMACVM_FIRMWARE=qemu)"
+  # What build-app.sh copies from git, made here the same way from M:
+  # omacvm (git archive, COMMIT, go-w) and the scripts (mode 755; git has some
+  # at 644).
+  t=$(mktemp -d "${TMPDIR:-/tmp}/app-from.XXXXXX"); mkdir "$t/omacvm" "$t/s"
+  git -C "$WT" archive "$m" "${APP_ARCHIVE[@]}" | tar -x -C "$t/omacvm" || { rm -rf "$t"; die "git archive of M failed"; }
+  echo "$m" > "$t/omacvm/COMMIT"; chmod -R go-w "$t/omacvm"
+  git -C "$WT" archive "$m" "${APP_SCRIPTS[@]/#/app/scripts/}" | tar -x -C "$t/s" || { rm -rf "$t"; die "git archive of M's app/scripts failed (${APP_SCRIPTS[*]})"; }
+  chmod 755 "$t/s/app/scripts"/*
+  [[ $(tree_list "$t/omacvm") == "$(tree_list "$c/Resources/omacvm")" ]] && om=1
+  [[ $(tree_list "$t/s/app/scripts") == "$(tree_list "$c/Resources/scripts")" ]] && sc=1
+  rm -rf "$t"
+  (( om )) || die "OMACVM_RELEASE_APP_FROM: its omacvm is not git archive M"
+  (( sc )) || die "OMACVM_RELEASE_APP_FROM: its scripts are not M's app/scripts at mode 755"
+  rm -rf "$APP"; mkdir -p "$(dirname "$APP")"
+  ditto "$a" "$APP"
+  cp "$from/build.log" "$OUT/build.log"
+  note "app from $from (built elsewhere at M; checked against M); signing it here"
+  (cd "$WT" && app/scripts/sign-app.sh "$APP" org.omacvm.app) >> "$OUT/build.log" 2>&1 || die "signing failed: $OUT/build.log"
+}
+
 step_build() {
   local m; m=$(get M); [[ -n $m && -d $WT ]] || die "no M or no $WT: run bump/merge first"
   [[ $(git -C "$WT" rev-parse HEAD) == "$m" ]] || die "$WT is not at M"
@@ -230,7 +318,11 @@ step_build() {
     note "runtime from $OMACVM_RELEASE_RUNTIME_FROM (build-app.sh rebuilds it unless its inputs match)"
   fi
   [[ -n ${OMACVM_SIGN_ID:-} ]] || die "OMACVM_SIGN_ID is not set"
-  (cd "$WT" && app/scripts/build-app.sh --release) > "$OUT/build.log" 2>&1 || die "build failed: $OUT/build.log"
+  if [[ -n ${OMACVM_RELEASE_APP_FROM:-} ]]; then
+    app_from "$OMACVM_RELEASE_APP_FROM" "$m"
+  else
+    (cd "$WT" && app/scripts/build-app.sh --release) > "$OUT/build.log" 2>&1 || die "build failed: $OUT/build.log"
+  fi
   grep -qw FAIL "$OUT/build.log" && die "a build test failed: grep -n FAIL $OUT/build.log"
   local p=$APP/Contents/Info.plist
   [[ $(/usr/libexec/PlistBuddy -c "Print OmacVMCommit" "$p") == "$m" ]] || die "OmacVMCommit is not M"
@@ -247,6 +339,8 @@ step_build() {
   if grep -q 'QEMU (from source)' "$OUT/build.log"; then note "runtime built from source, build tests passed"
   else note "runtime from the cache (its inputs match; no build tests ran this time)"; fi
   note "app $VERSION, OmacVMCommit $m, team $team, $(du -sh "$APP" | cut -f1)"
+  # Step image reads it: an app from another Mac has the only runtime of M.
+  put APP_FROM "${OMACVM_RELEASE_APP_FROM:-}"
 }
 
 step_notarize() {
@@ -338,9 +432,18 @@ step_image() {
     note "image from $OMACVM_RELEASE_IMAGE_FROM"
   else
     [[ -e $HOME/.omacvm-user-testing ]] && die "$HOME/.omacvm-user-testing is set: no VM now (or OMACVM_RELEASE_IMAGE_FROM)"
-    [[ -x $WT/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64 ]] || die "no runtime in $WT: run build first"
+    # An app from another Mac (step build with OMACVM_RELEASE_APP_FROM) leaves
+    # no runtime build in $WT: the image VM runs on the app's own runtime
+    # (make-image.sh OMACVM_PREBUILT_APP), never on a runtime build left there.
+    local own=
+    if [[ -n $(get APP_FROM) ]]; then
+      [[ -x $APP/Contents/Resources/runtime/bin/OmacVM ]] || die "no runtime in $APP: run build first"
+      own=$APP; note "the image VM runs on the app's own runtime (the app came from $(get APP_FROM))"
+    else
+      [[ -x $WT/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64 ]] || die "no runtime in $WT: run build first"
+    fi
     rm -rf "$img/vm"
-    (cd "$WT" && OMACVM_PREBUILT_OUT=$OUT/prebuilt-out src/prebuilt/make-image.sh app build generalize package clean) \
+    (cd "$WT" && OMACVM_PREBUILT_APP=$own OMACVM_PREBUILT_OUT=$OUT/prebuilt-out src/prebuilt/make-image.sh app build generalize package clean) \
       > "$OUT/image.log" 2>&1 || die "make-image.sh failed: $OUT/image.log"
     rm -rf "$img"; mv "$OUT/prebuilt-out/app" "$img"; rm -rf "$OUT/prebuilt-out"
   fi

@@ -264,12 +264,16 @@ expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !say
        && says.contains("While macOS compresses the VM, the VM gives back the file cache")
        && says.contains("drops its whole"), "the settings' words: back to the Mac, the give-back while macOS compresses, the warning's drop")
 // The maintainer's Mac mini (2026-10-30): 12 GB set, 4.5 GB of graphics at 5K, Activity Monitor 23 GB. The words say
-// the field's range at 5K (not "about 2 GB") and that Activity Monitor counts compressed pages twice (ADR 0062's row).
+// the field's range at 5K (not "about 2 GB") and that Activity Monitor counts what QEMU touched twice until its next
+// sweep, compressed or not (ADR 0066; ADR 0062's row from before the sweep), and that it is no memory.
 expect(says.contains("Linux sees exactly this much") && says.contains("Graphics memory comes on top")
        && says.contains("(a 5K desktop with a browser: 2 to 5 GB)") && !says.contains("about 2 GB"),
        "the settings' words: the VM's RAM, graphics on top, 2 to 5 GB at 5K")
-expect(says.contains("macOS counts that page twice (a 4 GB VM after a browser session: 5.9 GB shown, 2.1 GB of it counted twice)"),
-       "the settings' words: Activity Monitor counts part of a compressed VM twice, with the measured row")
+expect(says.contains("a page of the VM that QEMU itself touched (disk, graphics, network) counts twice there until "
+                     + "QEMU's next sweep, every 5 minutes; that is no memory")
+       && says.contains("(a 4 GB VM after a browser session, before the sweep: 5.9 GB shown, 2.1 GB of it counted twice)")
+       && !says.contains("compressed it"),
+       "the settings' words: what QEMU touched counts twice until its sweep, not only when compressed; no memory; the measured row")
 // One text for both (i)s: the VM header's and General's Resources row's say the same about memory.
 let lastPeak = GPUMemory.parse("in_use_mb=2186\npeak_mb=4619\n")
 expect(GPUMemory.lastRun(lastPeak) == "Graphics memory last run: peak 4.5 GB, from the Mac on top."

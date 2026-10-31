@@ -218,6 +218,9 @@ jobs:
       - name: Freed memory leaves the Mac for real (QEMU's free page reclaim, no VM; a real hypervisor map where the runner allows one)
         run: src/tests/memory-reclaim.sh
 
+      - name: Activity Monitor counts guest RAM once (QEMU's own-view sweep, no VM; a real hypervisor map where the runner allows one)
+        run: src/tests/memory-dcount.sh
+
       - name: omacvm check says when the VM stood still (logs/vm-stalls)
         run: src/tests/vm-stalls.sh
 
@@ -441,7 +444,7 @@ jobs:
       - name: e2e harnesses put the test app's settings back and start only test VMs
         run: src/tests/e2e-test-vms.sh
 
-      - name: The on-screen release test's checks, offline (its tool builds; no screen, VM or app)
+      - name: The on-screen release test's checks and the locked present row's verdict, offline (their tools build; no screen, display, VM or app)
         run: src/tests/e2e-onscreen.sh
 
       - name: e2e harnesses wait between rows while someone is at the Mac; CI runners paused for a gate
@@ -580,6 +583,14 @@ jobs:
       - name: The window's surfaces lossless-compressed (the checks catch code without it)
         run: app/runtime/Tests/display/test-present-lossless.sh
 
+      - name: The console texture made only when drawn, none while a GL scanout shows (3.2.16's code fails it)
+        run: app/runtime/Tests/display/test-console-texture.sh --self-test
+
+      - name: The window's spare present surfaces volatile out of sight (the rules; the checks catch code without it)
+        run: |
+          app/runtime/Tests/display/test-present-volatile.sh
+          app/runtime/Tests/display/test-present-volatile.sh --self-test
+
       - name: OmacVM.app full screen always in its own Space (no notch cover; escape combo stays out)
         run: src/tests/app-fullscreen-space.sh
 
@@ -644,6 +655,9 @@ jobs:
 
       - name: Disk flushes as write barriers (patch pinned and tested, log lines, check)
         run: src/tests/disk-flush.sh
+
+      - name: Display surfaces in memory, no temp files (patch pinned, applied and tested, guard, switch, log lines)
+        run: src/tests/surface-memory.sh
 
       - name: The VM's GPU work without QEMU's big lock (patches pinned and ordered, switch, log lines, check, what runs unlocked)
         run: src/tests/gpu-unlocked.sh

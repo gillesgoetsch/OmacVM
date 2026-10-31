@@ -1,0 +1,80 @@
+From: OmacVM
+Subject: [PATCH] ui: display surfaces in memory on macOS, no temp files
+
+What: on macOS, in a build without a D-Bus display, a display surface's
+pixels go in anonymous memory (mmap MAP_PRIVATE | MAP_ANON) instead of
+QEMU's memfd fallback, an unlinked file in $TMPDIR per surface. Freeing a
+surface is then a plain munmap (qemu_memfd_free() with fd -1, unchanged).
+OMACVM_SURFACE_MEMORY=file keeps upstream's temp files. QEMU's log says
+which, once, at the first surface: "OmacVM: display surfaces: in memory
+(no temp files)" or "OmacVM: display surfaces: temp files
+(OMACVM_SURFACE_MEMORY=file)".
+
+Why: macOS has no memfd, so qemu_memfd_alloc() falls back to mkstemp,
+unlink, ftruncate and a shared mmap, and the close() that frees a surface
+deletes its file. QEMU makes and frees surfaces with the BQL held, at each
+set scanout that switches a display off or on or changes its mode (DPMS
+off/on: Pause drawing while hidden, Omarchy's idle). On a Mac mini that
+swapped, close() held the BQL 22-77 ms and once 2.2 s, mkstemp 45-74 ms,
+and the VM's processors waited for the BQL meanwhile. Only a D-Bus display
+reads the share handle (ui/dbus-listener.c); OmacVM builds none, and the
+runtime build stops if config-host.h ever has CONFIG_DBUS_DISPLAY.
+Numbers: work/tracks/surface-close-bql.md.
+
+Memory: QEMU's footprint now counts each live surface, W x H x 4 bytes
+(56 MB at 5120x2880, 31 MB at 3456x2234), twice while one replaces
+another; before, these were file pages outside the footprint. The pages
+stay zero until something draws into them, and macOS compresses zero
+pages to almost nothing.
+
+Upstream: not sent; WIN32 already uses anonymous memory here
+(qemu_win32_map_alloc).
+Test: Tests/display/test-surface-memory.sh (these functions from the
+patched source, stand-ins for the file calls and a 2.2 s close(): no file,
+no close(), one munmap, 300 surfaces leave no fd or memory; with
+OMACVM_SURFACE_MEMORY=file the temp file and its close(); the log line in
+both modes). The runtime build checks the mmap is in.
+
+--- a/ui/qemu-pixman.c
++++ b/ui/qemu-pixman.c
+@@ -278,6 +278,40 @@ qemu_pixman_shareable_alloc(const char *name, size_t size,
+ {
+ #ifdef WIN32
+     return qemu_win32_map_alloc(size, handle, errp);
++#elif defined(CONFIG_DARWIN) && !defined(CONFIG_DBUS_DISPLAY)
++    /*
++     * OmacVM: macOS has no memfd, so qemu_memfd_alloc() makes an unlinked
++     * file in $TMPDIR for every surface, and the close() that frees it
++     * deletes the file. Both run with the BQL held (a display switched off
++     * or on, a mode change) and wait on the disk while the Mac swaps: one
++     * close() held the BQL 2.2 s. Only a D-Bus display reads the share
++     * handle, and this build has none, so the pixels go in plain memory.
++     * The free path stays: qemu_memfd_free() with fd -1 only unmaps.
++     * OMACVM_SURFACE_MEMORY=file keeps the temp files. Every caller holds
++     * the BQL, so the setting is read once without a lock.
++     */
++    static int omacvm_surface_mode;   /* 0 not read yet, 1 memory, 2 file */
++    void *p;
++
++    if (!omacvm_surface_mode) {
++        const char *v = getenv("OMACVM_SURFACE_MEMORY");
++
++        omacvm_surface_mode = v && strcmp(v, "file") == 0 ? 2 : 1;
++        fprintf(stderr, "OmacVM: display surfaces: %s\n",
++                omacvm_surface_mode == 2 ?
++                "temp files (OMACVM_SURFACE_MEMORY=file)" :
++                "in memory (no temp files)");
++    }
++    if (omacvm_surface_mode == 2) {
++        return qemu_memfd_alloc(name, size, 0, handle, errp);
++    }
++    p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
++    if (p == MAP_FAILED) {
++        error_setg_errno(errp, errno, "failed to allocate surface memory");
++        return NULL;
++    }
++    *handle = SHAREABLE_NONE;
++    return p;
+ #else
+     return qemu_memfd_alloc(name, size, 0, handle, errp);
+ #endif

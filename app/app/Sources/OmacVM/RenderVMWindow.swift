@@ -1,4 +1,5 @@
 import AppKit
+import OmacVMDesktop
 import OmacVMUSB
 import OmacVMUpdate
 import OmacVMIcon
@@ -12,9 +13,10 @@ import OmacVMFeatures
 /// the height it opens with on a 13-inch MacBook Air (WindowSize), scrolled to
 /// each section, each state and sheet; and the whole page of settings at
 /// once. Writes DIR/heights.txt and exits 1 when something does not fit that
-/// window (a sheet taller than it, a part outside the window's sides) or the
-/// controls at the end of the rows are not on one line (WindowLayout). CI
-/// runs it.
+/// window (a sheet taller than it, a part outside the window's sides), the
+/// controls at the end of the rows are not on one line (WindowLayout), or the
+/// memory warning above this Mac's Best tier is missing, outside the window
+/// or shown at Best (memoryPictures). CI runs it.
 @MainActor
 enum RenderVMWindow {
     /// What the pictures show instead of this Mac's answers.
@@ -144,6 +146,7 @@ enum RenderVMWindow {
         try? VMDisk.setJobs([], config)
         try? config.writeResources()
         state.config = config
+        memoryPictures(state, config, usual)
 
         // Disk › Change… open: a 128 GB disk with 9 GB used, a smaller size
         // chosen; and a 64 GB one, which cannot shrink, made larger.
@@ -292,13 +295,16 @@ enum RenderVMWindow {
     /// The window as the app makes it (main.swift), never on screen, at the
     /// 13-inch MacBook Air's height; checks that every part is inside it and
     /// the rows' controls end on one line.
-    private static func window(_ name: String, _ state: AppState, _ preview: Preview, height: Double = smallHeight) {
-        picture(name, into: dirURL, height: height) { RootView(state: state, preview: preview) }
+    private static func window(_ name: String, _ state: AppState, _ preview: Preview, height: Double = smallHeight,
+                               each: ((_ dark: Bool) -> Void)? = nil) {
+        picture(name, into: dirURL, height: height, each: each) { RootView(state: state, preview: preview) }
         sides(name, height: height)
     }
 
     /// The window with this content, light and dark (the frames of the dark one stay in LayoutProbe).
-    static func picture<V: View>(_ name: String, into dir: URL, height: Double = smallHeight, _ root: () -> V) {
+    /// `each` looks at LayoutProbe's frames of each, light then dark.
+    static func picture<V: View>(_ name: String, into dir: URL, height: Double = smallHeight,
+                                 each: ((_ dark: Bool) -> Void)? = nil, _ root: () -> V) {
         for dark in [false, true] {
             LayoutProbe.frames = [:]
             let w = PictureWindow.make(root().environment(\.controlActiveState, .key))
@@ -306,6 +312,7 @@ enum RenderVMWindow {
             w.setContentSize(NSSize(width: WindowSize.width, height: height))
             settle(w)
             if let frame = w.contentView?.superview { WindowPicture.write(frame, "\(name)\(dark ? "-dark" : "")", into: dir) }
+            each?(dark)
             w.contentViewController = nil
         }
     }
@@ -372,6 +379,70 @@ enum RenderVMWindow {
              fail: !problems.isEmpty)
         if ProcessInfo.processInfo.environment["OMACVM_RENDER_BOXES"] != nil {
             lines.append("  " + boxes.map { "\($0.name) \(Int($0.minX.rounded()))-\(Int($0.maxX.rounded()))" }.joined(separator: ", "))
+        }
+    }
+
+    /// The orange warning under Resources when the memory is above this
+    /// Mac's Best tier (ResourceLimits.warning, two long sentences) and the
+    /// Resources (i)'s text, with a made-up last run in logs/gpu-memory (as
+    /// QEMU writes it, GPUMemory.parse). The memory follows this Mac: 2 GB
+    /// above its Best (aboveBestGB). The warning ("note-memory") must be in
+    /// both pictures, inside the card's sides and below the header within the
+    /// window's height, scrolled to General; at Best it must be gone. The
+    /// VM's resources and graphics file are put back after.
+    private static func memoryPictures(_ state: AppState, _ config: VMConfig, _ usual: Preview) {
+        let limits = ResourceLimits.mac
+        let gpu = GPUMemory.file(for: config)
+        defer {
+            try? FileManager.default.removeItem(at: gpu)
+            try? config.writeResources()
+            state.config = config
+        }
+        // Made up; the peak is a 12 GB VM's at 5K with Chrome on the 16 GB Mac mini (2026-10-30).
+        try? "in_use_mb=2150\npeak_mb=4619\nbudget_mb=12288\napps_mb=11264\nreserve_mb=1024\npressure=normal\nrefused=0\nlost=0\n"
+            .write(to: gpu, atomically: true, encoding: .utf8)
+        let mac = "this Mac \(limits.macMemoryGB) GB, Best \(limits.safeMemoryGB) GB, steppers 4-\(limits.memoryGB.upperBound) GB"
+        guard let above = limits.aboveBestGB, let peak = GPUMemory.read(for: config) else {
+            note("memory-above-best: \(mac): no value above Best, or no graphics file read: nothing drawn", fail: true)
+            return
+        }
+        var c = config
+        c.memoryMB = above * 1024
+        try? c.writeResources()
+        state.config = c
+        var general = usual
+        general.section = "general"
+        let name = "window-26-memory-above-best"
+        note("\(name): \(mac), the VM \(above) GB, graphics peak \(peak.peakMB) MB")
+        // The card's rows (SettingsSections' column, WindowLayout).
+        let left = WindowSize.sidebar + WindowLayout.contentInset + WindowLayout.rowInset
+        let right = WindowLayout.width - WindowLayout.contentInset - WindowLayout.rowInset
+        let top = Double(Look.headerHeight), bottom = smallHeight, tol = WindowLayout.tolerance
+        window(name, state, general) { dark in
+            let look = "\(name)\(dark ? "-dark" : "")"
+            guard let f = LayoutProbe.frames["note-memory"] else {
+                note("\(look): the memory warning is MISSING", fail: true)
+                return
+            }
+            let inside = Double(f.minX) >= left - tol && Double(f.maxX) <= right + tol
+                && Double(f.minY) >= top - tol && Double(f.maxY) <= bottom + tol
+            note("\(look): memory warning x \(Int(f.minX.rounded()))-\(Int(f.maxX.rounded())) (card \(Int(left))-\(Int(right))), "
+                 + "y \(Int(f.minY.rounded()))-\(Int(f.maxY.rounded())) (below the header \(Int(top)), window \(Int(bottom))), "
+                 + (inside ? "inside" : "OUTSIDE"), fail: !inside)
+        }
+        sheet("popover-2-resources") { InfoText(text: GPUMemory.resourcesInfo(peak)) }
+
+        // At Best: no warning.
+        let best = Mac.tier(3)
+        c.cpus = best.cpus
+        c.memoryMB = best.memoryGB * 1024
+        try? c.writeResources()
+        state.config = c
+        let atBest = "window-27-memory-at-best"
+        window(atBest, state, general) { dark in
+            let look = "\(atBest)\(dark ? "-dark" : "")"
+            let shown = LayoutProbe.frames["note-memory"] != nil
+            note("\(look): the VM \(best.memoryGB) GB (Best), memory warning " + (shown ? "SHOWN" : "none"), fail: shown)
         }
     }
 
