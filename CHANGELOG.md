@@ -9,21 +9,22 @@ in more words.
   Ghostty needs OpenGL 4.3 and the VM's GPU gives 4.1, so since 3.2.14 Ghostty draws on the VM's
   CPU. With the new switch "Ghostty on the Mac's GPU" (the VM window's General section, off by
   default) Ghostty alone draws on the Mac's GPU through Zink over the VM's Vulkan, with OpenGL 4.3
-  forced, on macOS 26 and newer (KosmicKrisp). Measured on a Mac mini M4 and a MacBook Pro M1 Max
-  (a 1896x1030 window, median of 3): typing shown in 25 and 28 ms instead of 56 and 57, 10 s of
-  fast output took Ghostty 3.3 and 3.4 CPU-seconds instead of 32.8 and 31.7, and QEMU on the Mac 12
+  forced, on macOS 26 and newer (KosmicKrisp). Measured on a Mac mini M4 and a MacBook Pro M1 Max (a
+  1896x1030 window, median of 3): typing shown in 25 and 28 ms instead of 56 and 57, 10 s of fast
+  output took Ghostty 3.3 and 3.4 CPU-seconds instead of 32.8 and 31.7, and QEMU on the Mac 12
   instead of 45 per run, with 56-57 instead of 30-37 changed frames a second; it uses 6-9 % of the
   Mac's GPU while text scrolls and 150-300 MB of its graphics memory (M1 Max: one window 155-163 MB,
-  three windows of one Ghostty 164-278 MB). With Ghostty as the default terminal, Omarchy's screensaver on two displays made
-  the Mac mini draw 40-41 W on Zink instead of 53-54 W (35-36 W without the screensaver, 39 W with it
-  in foot; one session, another app using a core of the Mac all along). The programs started in Ghostty keep the VM's normal graphics.
-  If the Mac ends Ghostty's Vulkan context, that Ghostty ends or stops responding (only Terminate
-  helps; the programs in it end); the switch's (i) says so. With the VM's graphics memory used up (a
-  test with a 384 MB budget and Chromium on WebGL) a Ghostty on Zink ended at its start, one on the
-  CPU opened. Graphics OpenGL, MoltenVK (macOS 15) and GPU
-  safe mode keep Ghostty on the CPU. `omacvm check` now says which driver a running Ghostty has.
-  GTK's error lines about a bad dma-buf file descriptor under Zink, about 1,330 in 10 s of scrolling
-  (also with Zink set by hand), are gone: Mesa answered the export without a descriptor. Needs the app update and Update VM, then a start of
+  three windows of one Ghostty 164-278 MB). With Ghostty as the default terminal, Omarchy's
+  screensaver on two displays made the Mac mini draw 40-41 W on Zink instead of 53-54 W (35-36 W
+  without the screensaver, 39 W with it in foot; one session, another app using a core of the Mac
+  all along). The programs started in Ghostty keep the VM's normal graphics. If the Mac ends
+  Ghostty's Vulkan context, that Ghostty ends or stops responding (only Terminate helps; the
+  programs in it end); the switch's (i) says so. With the VM's graphics memory used up (a test with
+  a 384 MB budget and Chromium on WebGL) a Ghostty on Zink ended at its start, one on the CPU
+  opened. Graphics OpenGL, MoltenVK (macOS 15) and GPU safe mode keep Ghostty on the CPU. `omacvm
+  check` now says which driver a running Ghostty has. GTK's error lines about a bad dma-buf file
+  descriptor under Zink, about 1,330 in 10 s of scrolling (also with Zink set by hand), are gone:
+  Mesa answered the export without a descriptor. Needs the app update and Update VM, then a start of
   the VM with the switch on (a Ghostty already open keeps its driver until you quit it).
 
 ## 3.2.17
