@@ -8,10 +8,12 @@ import importlib.util
 import json
 import pathlib
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
 from unittest import mock
+import zlib
 
 HERE = pathlib.Path(__file__).resolve().parent
 loader = importlib.machinery.SourceFileLoader("omacvm_displays", str(HERE.parent / "omacvm-displays"))
@@ -176,35 +178,201 @@ class LayoutEvent(unittest.TestCase):
         self.assertFalse(od.layout_event(b"focusedmon>>Virtual-1,1\nfocusedmonv2>>Virtual-1,1\n"))
 
 
+def paeth(a, b, c):
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    return a if pa <= pb and pa <= pc else b if pb <= pc else c
+
+
+def chunk(kind, body):
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
+def png(rows, colour=6, depth=8, filters=(0,), interlace=0, extra=b"", idat_parts=1):
+    """A PNG of rows (lists of pixel tuples, 16-bit samples for depth 16), written the
+    textbook way; row y gets filter type filters[y % len(filters)]."""
+    h, w = len(rows), len(rows[0])
+    step = (3 if colour == 2 else 4) * depth // 8
+    raw = b""
+    prev = bytes(w * step)
+    for y, row in enumerate(rows):
+        line = bytes(v for px in row for s in px for v in ((s >> 8, s & 255) if depth == 16 else (s,)))
+        kind = filters[y % len(filters)]
+        out = bytearray([kind])
+        for i, x in enumerate(line):
+            a = line[i - step] if i >= step else 0
+            b = prev[i]
+            c = prev[i - step] if i >= step else 0
+            out.append((x - (0, a, b, (a + b) // 2, paeth(a, b, c))[kind]) & 255)
+        raw += bytes(out)
+        prev = line
+    data = zlib.compress(raw)
+    cut = -(-len(data) // idat_parts)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, depth, colour, 0, 0, interlace))
+            + extra + b"".join(chunk(b"IDAT", data[i:i + cut]) for i in range(0, len(data), cut))
+            + chunk(b"IEND", b""))
+
+
+def flat_png(w, h, pixel):
+    return png([[pixel] * w] * h, colour=6 if len(pixel) == 4 else 2)
+
+
+def picture(w, h, channels):
+    return [[((x * 37) % 256, (y * 91) % 256, (x * y) % 256, (x + y) * 13 % 256)[:channels]
+             for x in range(w)] for y in range(h)]
+
+
+class PngPixels(unittest.TestCase):
+    def test_every_filter_type(self):
+        for channels, colour in ((4, 6), (3, 2)):
+            rows = picture(7, 5, channels)
+            want = bytes(v for row in rows for px in row for v in px)
+            for filters in ((0,), (1,), (2,), (3,), (4,), (0, 1, 2, 3, 4)):
+                self.assertEqual(od.png_pixels(png(rows, colour=colour, filters=filters)),
+                                 (7, 5, channels, want), (colour, filters))
+
+    def test_16_bit_gives_the_high_byte(self):
+        rows = [[(0xAB12, 0x00FF, 0xFF00, 0x0101)] * 3, [(0x1234, 0xFFFF, 0, 0x8000)] * 3]
+        for filters in ((0,), (4,), (1, 3)):
+            self.assertEqual(od.png_pixels(png(rows, depth=16, filters=filters)),
+                             (3, 2, 4, bytes((0xAB, 0, 0xFF, 1) * 3 + (0x12, 0xFF, 0, 0x80) * 3)))
+        self.assertEqual(od.png_pixels(png([[(0x1100, 0x2200, 0x33FF)]], colour=2, depth=16)),
+                         (1, 1, 3, bytes((0x11, 0x22, 0x33))))
+
+    def test_other_chunks_and_split_data(self):
+        rows = picture(9, 4, 4)
+        data = png(rows, extra=chunk(b"tEXt", b"Software\0grim"), idat_parts=3)
+        self.assertEqual(od.png_pixels(data)[3], bytes(v for row in rows for px in row for v in px))
+
+    def test_refused(self):
+        good = flat_png(4, 3, (1, 2, 3, 4))
+        bad_crc = good[:-5] + bytes([good[-5] ^ 1]) + good[-4:]
+        cases = {
+            "empty": b"", "ppm": ppm(4, 3, (1, 2, 3)), "garbage": b"\x89PNG\r\n\x1a\nxyz",
+            "bad crc": bad_crc,
+            "palette": png([[(1, 2, 3)]], colour=3), "grey": png([[(1, 2, 3)]], colour=0),
+            "grey alpha": png([[(1, 2, 3, 4)]], colour=4),
+            "interlaced": png([[(1, 2, 3, 4)]], interlace=1),
+        }
+        for cut in (10, 30, len(good) - 13, len(good) - 1):
+            cases[f"cut at {cut}"] = good[:cut]
+        header = struct.pack(">IIBBBBB", 2048, 1024, 8, 6, 0, 0, 0)  # 2 M pixels: more than a grab
+        cases["too big"] = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b""))
+                            + chunk(b"IEND", b""))
+        short = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 3, 8, 6, 0, 0, 0))
+        cases["rows missing"] = short + chunk(b"IDAT", zlib.compress(bytes(17 * 2))) + chunk(b"IEND", b"")
+        cases["not zlib"] = short + chunk(b"IDAT", b"not zlib at all") + chunk(b"IEND", b"")
+        cases["filter 5"] = (short + chunk(b"IDAT", zlib.compress(bytes([5]) + bytes(16) + bytes(17 * 2)))
+                             + chunk(b"IEND", b""))
+        cases["4-bit"] = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 1, 4, 2, 0, 0, 0))
+                          + chunk(b"IDAT", zlib.compress(bytes(4))) + chunk(b"IEND", b""))
+        cases["no width"] = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 0, 3, 8, 6, 0, 0, 0))
+                             + chunk(b"IEND", b""))
+        for name, data in cases.items():
+            self.assertIsNone(od.png_pixels(data), name)
+            self.assertIsNone(od.png_shown(data, od.HYPR_GREY), name)
+
+    def test_more_data_than_the_picture_is_not_unpacked(self):
+        raw = (bytes([0]) + bytes((9, 9, 9, 255)) * 4) * 3 + bytes(50 << 20)
+        data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 3, 8, 6, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+        self.assertEqual(od.png_pixels(data), (4, 3, 4, bytes((9, 9, 9, 255)) * 12))
+
+
 class Shown(unittest.TestCase):
+    G = od.HYPR_GREY
+
     def test_grey_is_undrawn(self):
-        self.assertTrue(od.undrawn(od.ppm_shown(ppm(40, 30, (17, 17, 17)), od.HYPR_GREY)))
+        self.assertTrue(od.undrawn(od.png_shown(flat_png(40, 30, (17, 17, 17)), self.G)))
+        self.assertTrue(od.undrawn(od.png_shown(flat_png(40, 30, (18, 16, 17, 255)), self.G)))
+
+    def test_alpha_0_is_undrawn(self):
+        # HDR: grim reads Hyprland's SDR copy, (0,0,0,0) where only the background colour is.
+        self.assertTrue(od.undrawn(od.png_shown(flat_png(40, 30, (0, 0, 0, 0)), self.G)))
+        self.assertTrue(od.undrawn(od.png_shown(flat_png(8, 8, (90, 4, 7, 0)), self.G)))
 
     def test_wallpaper_is_drawn(self):
-        img = ppm(20, 10, (17, 17, 17))
-        mixed = b"P6\n4 20\n255\n" + bytes((17, 17, 17)) * 40 + bytes((90, 140, 200)) * 40
-        self.assertFalse(od.undrawn(od.ppm_shown(mixed, od.HYPR_GREY)))
-        self.assertTrue(od.undrawn(od.ppm_shown(img, od.HYPR_GREY)))
+        mixed = png([[(17, 17, 17, 255)] * 4] * 10 + [[(90, 140, 200, 255)] * 4] * 10)
+        self.assertFalse(od.undrawn(od.png_shown(mixed, self.G)))
+        half = png([[(0, 0, 0, 0)] * 4] * 10 + [[(90, 140, 200, 255)] * 4] * 10)
+        self.assertFalse(od.undrawn(od.png_shown(half, self.G)))
 
     def test_flat_other_colour_is_not_undrawn(self):
-        # A plain wallpaper or a dark (DPMS off) output is not Hyprland's grey.
-        self.assertFalse(od.undrawn(od.ppm_shown(ppm(8, 8, (0, 0, 0)), od.HYPR_GREY)))
-        self.assertFalse(od.undrawn(od.ppm_shown(ppm(8, 8, (40, 90, 200)), od.HYPR_GREY)))
+        # A plain wallpaper, black too: drawn (alpha 255 in HDR's copy, no grey in SDR).
+        for pixel in ((0, 0, 0), (0, 0, 0, 255), (40, 90, 200), (40, 90, 200, 255), (0, 0, 0, 128)):
+            self.assertFalse(od.undrawn(od.png_shown(flat_png(8, 8, pixel), self.G)), pixel)
 
     def test_bar_rows_do_not_count(self):
         # A drawn bar at the top over a missing wallpaper is still undrawn.
-        img = b"P6\n10 20\n255\n" + bytes((30, 30, 46)) * 20 + bytes((17, 17, 17)) * 180
-        self.assertTrue(od.undrawn(od.ppm_shown(img, od.HYPR_GREY)))
+        for empty in ((17, 17, 17, 255), (0, 0, 0, 0)):
+            img = png([[(30, 30, 46, 255)] * 10] * 2 + [[empty] * 10] * 18)
+            self.assertTrue(od.undrawn(od.png_shown(img, self.G)), empty)
 
-    def test_not_ppm(self):
-        for data in (b"", b"P5\n1 1\n255\n\0", b"P6\n2 2\n255\n\0", b"garbage"):
-            self.assertIsNone(od.ppm_shown(data, od.HYPR_GREY))
-            self.assertFalse(od.undrawn(od.ppm_shown(data, od.HYPR_GREY)))
+    def test_another_background_colour(self):
+        grey = od.background_colour({"int": 0xff202122})
+        self.assertTrue(od.undrawn(od.png_shown(flat_png(8, 8, (0x20, 0x21, 0x22)), grey)))
+        self.assertFalse(od.undrawn(od.png_shown(flat_png(8, 8, (17, 17, 17)), grey)))
+
+    def test_not_a_png(self):
+        for data in (b"", ppm(8, 8, (17, 17, 17)), b"garbage"):
+            self.assertIsNone(od.png_shown(data, self.G))
+            self.assertFalse(od.undrawn(od.png_shown(data, self.G)))
 
     def test_background_colour(self):
         self.assertEqual(od.background_colour({"int": 0xff202122}), (0x20, 0x21, 0x22))
         self.assertEqual(od.background_colour(None), od.HYPR_GREY)
         self.assertEqual(od.background_colour({"int": "x"}), od.HYPR_GREY)
+
+
+class GrimLook(unittest.TestCase):
+    """undrawn_outputs() with grim faked where it is run: each picture format grim is
+    asked for (-t) gets that format of the same screen. Rows (hdr-grab, Hyprland 0.56.2
+    and 0.57.0, HDR): where only the background colour is, grim gives (0,0,0) in PPM and
+    alpha 0 in PNG (Hyprland's SDR copy for captures has nothing there), while the screen
+    shows the grey; a drawn pixel, black too, has alpha 255; in SDR grim gives the grey."""
+
+    def look(self, ppm_pixel, png_data, grim_rc=0):
+        self.asked = []
+
+        def run(argv, **kw):
+            self.asked.append(argv)
+            fmt = argv[argv.index("-t") + 1] if "-t" in argv else "png"
+            out = ppm(40, 30, ppm_pixel) if fmt == "ppm" else png_data
+            return od.subprocess.CompletedProcess(argv, grim_rc, stdout=out, stderr=b"")
+        hypr = {"j/monitors": [active(mon("Virtual-1", 0, 0, 1920, 1080), 1)],
+                "j/workspaces": ws(w1=0),
+                "j/layers": layers(Virtual_1=[("omarchy-background", 0, 0, 1920, 1080)]),
+                "j/getoption misc:background_color": {"int": 0xff111111}}
+        with mock.patch.object(od, "hypr_json", hypr.get), mock.patch.object(od.subprocess, "run", run), \
+                mock.patch.object(od, "log") as log:
+            out = od.undrawn_outputs()
+        self.logged = [c.args[0] for c in log.call_args_list]
+        return out
+
+    def test_hdr_nothing_drawn_is_seen(self):
+        self.assertEqual(self.look((0, 0, 0), flat_png(40, 30, (0, 0, 0, 0))), ["Virtual-1"])
+
+    def test_hdr_black_wallpaper_is_drawn(self):
+        self.assertEqual(self.look((0, 0, 0), flat_png(40, 30, (0, 0, 0, 255))), [])
+
+    def test_hdr_wallpaper_is_drawn(self):
+        self.assertEqual(self.look((127, 50, 118), flat_png(40, 30, (127, 50, 118, 255))), [])
+
+    def test_sdr_grey_is_seen(self):
+        self.assertEqual(self.look((17, 17, 17), flat_png(40, 30, (17, 17, 17))), ["Virtual-1"])
+
+    def test_grim_is_asked_for_a_small_png(self):
+        self.look((17, 17, 17), flat_png(4, 4, (17, 17, 17)))
+        self.assertEqual(self.asked, [["grim", "-s", "0.1", "-o", "Virtual-1", "-t", "png", "-"]])
+
+    def test_an_unreadable_grab_is_not_counted_and_said_once(self):
+        od.grab_unread_said = False
+        self.addCleanup(setattr, od, "grab_unread_said", False)
+        self.assertEqual(self.look((17, 17, 17), b"\x89PNG not really"), [])
+        self.assertEqual(len(self.logged), 1)
+        self.assertIn("Virtual-1", self.logged[0])
+        self.assertEqual(self.look((17, 17, 17), b"", grim_rc=1), [])
+        self.assertEqual(self.logged, [])
 
 
 class Agent(unittest.TestCase):
