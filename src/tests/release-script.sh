@@ -1,8 +1,9 @@
 #!/bin/bash
 # The release script's offline parts: KosmicKrisp from another Mac
 # (app/runtime/import-kosmickrisp.sh) is taken only with a matching stamp and
-# a system-only dylib; release.sh and appcast.sh refuse bad arguments;
-# sign-app.sh signs every part of an app (ad hoc here).
+# a system-only dylib; release.sh and appcast.sh refuse bad arguments; an app
+# built on another Mac (OMACVM_RELEASE_APP_FROM) is checked against M before
+# anything signs it; sign-app.sh signs every part of an app (ad hoc here).
 # No key, no network, nothing outside a temp folder.
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -121,6 +122,88 @@ chmod +x "$W/app/runtime/.build/qemu-gpu-runtime/bin/qemu-system-aarch64"
 [[ $(img) == "app=$W/app/dist/OmacVM.app app build generalize package clean" ]] && ok "image: the app's runtime, not a runtime build left in the worktree" || bad "image: took the worktree's runtime build for an app from another Mac"
 echo "APP_FROM=" >> "$G/release/state"
 [[ $(img) == "app=none app build generalize package clean" ]] && ok "image: after a build here, the worktree's runtime build" || bad "image: a build here does not use the worktree's runtime"
+
+# Step build with OMACVM_RELEASE_APP_FROM: an app put together at M on another
+# Mac is checked before anything signs it. A stand-in worktree (a git repo, its
+# HEAD is M; its app/scripts/sign-app.sh only leaves a mark) and a stand-in app
+# made the way build-app.sh makes one (what it copies from git is read from its
+# own lines: the archive paths, the scripts). Each bad app must be refused for
+# its own reason before sign-app.sh runs; a matching one reaches it (then
+# codesign --verify stops step build: nothing is signed here).
+umask 022
+BA=$R/app/scripts/build-app.sh
+# build-app.sh's lines, read as text ($ROOT and $REPO stay literal).
+# shellcheck disable=SC2016
+read -r -a SCR <<< "$(awk '/install -m755 "\$ROOT\/scripts\// { f = 1 } f { print; if (!/\\$/) exit }' "$BA" | grep -o '\$ROOT/scripts/[^"]*' | sed 's|.*/||' | tr '\n' ' ')"
+# shellcheck disable=SC2016
+read -r -a ARC <<< "$(sed -n 's/.*git -C "\$REPO" archive "\$COMMIT" \(.*\) | tar -x -C "\$C\/Resources\/omacvm".*/\1/p' "$BA")"
+(( ${#SCR[@]} && ${#ARC[@]} )) && ok "app from: build-app.sh's scripts (${SCR[*]}) and archive paths (${ARC[*]}) read" ||
+  bad "app from: build-app.sh's scripts or archive paths not found"
+H2=$T/home2; W2=$H2/omacvm-rel-9.9.9-build; G2=$T/gate2; AF=$T/af; MARK=$T/signed
+mkdir -p "$W2/src/lib" "$W2/app/scripts" "$G2/release" "$AF"
+git -C "$W2" init -q
+printf '#!/bin/bash\necho omacvm\n' > "$W2/omacvm"; chmod 755 "$W2/omacvm"
+echo 9.9.9 > "$W2/src/VERSION"; echo 'x=1' > "$W2/src/lib/x.sh"; echo '# Changelog' > "$W2/CHANGELOG.md"
+for p in ${ARC[@]+"${ARC[@]}"}; do [[ -e $W2/$p ]] || echo "$p" > "$W2/$p"; done
+for s in ${SCR[@]+"${SCR[@]}"}; do printf '#!/bin/bash\necho %s\n' "$s" > "$W2/app/scripts/$s"; chmod 755 "$W2/app/scripts/$s"; done
+[[ -f $W2/app/scripts/vm-common.sh ]] && chmod 644 "$W2/app/scripts/vm-common.sh"   # as in git (sourced, not run)
+printf '#!/bin/bash\ntouch "%s"\n' "$MARK" > "$W2/app/scripts/sign-app.sh"; chmod 755 "$W2/app/scripts/sign-app.sh"
+echo /dist/ > "$W2/app/.gitignore"
+git -C "$W2" add -A && git -C "$W2" -c user.name=test -c user.email=test@example.invalid -c commit.gpgsign=false commit -q -m M
+M2=$(git -C "$W2" rev-parse HEAD); echo "M=$M2" > "$G2/release/state"
+goodapp() {   # DIR: DIR/OmacVM.app and DIR/build.log as build-app.sh --release leaves them at M
+  local c=$1/OmacVM.app/Contents s
+  mkdir -p "$c/MacOS" "$c/Resources/omacvm" "$c/Resources/scripts" "$c/Resources/runtime/bin" "$c/Resources/runtime/lib" \
+    "$c/Resources/firmware" "$c/Resources/licenses" "$c/Resources/python/bin" "$c/Resources/tools"
+  git -C "$W2" archive "$M2" ${ARC[@]+"${ARC[@]}"} | tar -x -C "$c/Resources/omacvm"
+  echo "$M2" > "$c/Resources/omacvm/COMMIT"; chmod -R go-w "$c/Resources/omacvm"
+  for s in ${SCR[@]+"${SCR[@]}"}; do git -C "$W2" show "$M2:app/scripts/$s" > "$c/Resources/scripts/$s"; chmod 755 "$c/Resources/scripts/$s"; done
+  printf '#!/bin/sh\n' > "$c/Resources/runtime/bin/OmacVM"; chmod 755 "$c/Resources/runtime/bin/OmacVM"
+  ln -s ../Resources/runtime/bin/OmacVM "$c/MacOS/OmacVM-VM"
+  printf 'x' > "$c/Resources/python/bin/python3.13"; ln -s python3.13 "$c/Resources/python/bin/python3"
+  printf 'x' > "$c/Resources/tools/mac-notch"
+  printf 'x' > "$c/Resources/runtime/lib/libvulkan_kosmickrisp.dylib"; echo "Mesa licences" > "$c/Resources/licenses/LICENSE.mesa-kosmickrisp.txt"
+  echo "omacvm edk2-stable202408-omacvm (stand-in)" > "$c/Resources/firmware/firmware-source"
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.omacvm.app</string><key>CFBundleShortVersionString</key><string>9.9.9</string><key>OmacVMCommit</key><string>%s</string></dict></plist>\n' "$M2" > "$c/Info.plist"
+  echo "==> built (stand-in)" > "$1/build.log"
+}
+goodapp "$AF/good"
+mk() { rm -rf "${AF:?}/$1"; ditto "$AF/good" "$AF/$1"; }   # CASE: a copy of the matching app
+afrun() {   # CASE [VAR=VALUE...]: step build with it; says whether sign-app.sh ran
+  local c=$1; shift
+  rm -f "$MARK"
+  env "$@" HOME="$H2" OMACVM_RELEASE_OUT="$G2" OMACVM_SIGN_ID=x OMACVM_RELEASE_APP_FROM="$AF/$c" "$R/src/release/release.sh" 9.9.9 build > "$T/af.out" 2>&1
+  [[ -e $MARK ]] && echo signed || echo refused
+}
+refused() {   # NAME CASE WHY [VAR=VALUE...]: refused before sign-app.sh, saying WHY
+  local name=$1 c=$2 why=$3; shift 3
+  if [[ $(afrun "$c" "$@") == refused && $(cat "$T/af.out") == *"$why"* ]]; then ok "app from: $name"
+  else bad "app from: $name (not refused with \"$why\")"; cat "$T/af.out"; fi
+}
+taken() {   # NAME CASE [VAR=VALUE...]: reaches sign-app.sh
+  local name=$1 c=$2; shift 2
+  if [[ $(afrun "$c" "$@") == signed ]]; then ok "app from: $name"; else bad "app from: $name (refused)"; cat "$T/af.out"; fi
+}
+pl() { /usr/libexec/PlistBuddy -c "Set :$2 $3" "$AF/$1/OmacVM.app/Contents/Info.plist"; }   # CASE KEY VALUE
+taken "a matching app reaches sign-app.sh" good
+C1=OmacVM.app/Contents
+mk commit; pl commit OmacVMCommit 1111111111111111111111111111111111111111
+refused "another OmacVMCommit" commit "the app is not M"
+mk version; pl version CFBundleShortVersionString 9.9.8
+refused "another version" version "the app is not 9.9.9"
+mk id; pl id CFBundleIdentifier org.omacvm.app.test
+refused "another bundle id" id "the app is not org.omacvm.app"
+mk nolog; rm "$AF/nolog/build.log"
+refused "no build.log" nolog "or build.log in"
+# Resources/omacvm (git archive M, COMMIT, go-w).
+mk om-changed; echo more >> "$AF/om-changed/$C1/Resources/omacvm/CHANGELOG.md"
+refused "omacvm: a changed file" om-changed "its omacvm is not git archive M"
+mk om-extra; echo x > "$AF/om-extra/$C1/Resources/omacvm/src/extra.sh"
+refused "omacvm: an extra file" om-extra "its omacvm is not git archive M"
+mk om-mode; chmod 755 "$AF/om-mode/$C1/Resources/omacvm/CHANGELOG.md"
+refused "omacvm: a mode change" om-mode "its omacvm is not git archive M"
+mk om-link; rm "$AF/om-link/$C1/Resources/omacvm/src/lib/x.sh"; ln -s /etc/hosts "$AF/om-link/$C1/Resources/omacvm/src/lib/x.sh"
+refused "omacvm: a link" om-link "its omacvm is not git archive M"
 
 # sign-app.sh (build-app.sh's signing, also release.sh's for an app built
 # elsewhere): its arguments, and an ad hoc signing of a stand-in app with every
