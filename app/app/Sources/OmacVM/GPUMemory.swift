@@ -75,7 +75,11 @@ extension VMStalls {
 ///   macOS was short of memory, the VM shows a note that says so
 ///   (GPUMemoryNotice; omacvm-desktop-recover app). Once a minute per app at
 ///   most: a loss inside the minute is told when it is over (the newest),
-///   not dropped; a desktop restart voids it.
+///   not dropped; a desktop restart voids it. A Vulkan (Venus) context lost
+///   the same way, or because the Mac refused its commands, gets
+///   omacvm-desktop-recover venus (3.2.17): a note, nothing ended, and a
+///   Ghostty on Zink starts on the CPU next time; a VM without it says so
+///   once in qemu.log (Update VM).
 /// - When the VM stood still 10 s or more because macOS ran out of free
 ///   memory (QEMU's logs/vm-stalls), the VM shows a note that says so, at
 ///   most once per 30 minutes (VMStalls; omacvm-desktop-recover stall).
@@ -354,12 +358,13 @@ final class GPUMemoryWatch {
             let count = min(m.lost - lostSeen, m.lostRecent.count)
             let new = Array(m.lostRecent.suffix(count))
             let why = m.lostRecentWhy.count == m.lostRecent.count ? Array(m.lostRecentWhy.suffix(count)) : []
+            let kind = m.lostRecentKind.count == m.lostRecent.count ? Array(m.lostRecentKind.suffix(count)) : []
             lostSeen = m.lost
-            tellApps(new, why, m)
-            lost(new, m)
+            tellApps(new, why, kind, m)
+            lost(new, kind, m)
         } else {
             // An app's loss kept inside its minute is told when that is over.
-            tellApps([], [], m)
+            tellApps([], [], [], m)
         }
     }
 
@@ -385,21 +390,28 @@ final class GPUMemoryWatch {
     /// pressure: logged, and a note in the VM (a VM from before 3.0.5 has no
     /// such note: its agent refuses, nothing else happens). Every look, also
     /// with nothing new: a loss kept inside its app's minute comes out here.
-    private func tellApps(_ names: [String], _ why: [String], _ m: GPUMemory) {
+    private func tellApps(_ names: [String], _ why: [String], _ kind: [String], _ m: GPUMemory) {
         let now = Date()
         let waiting = Set(notice.waiting)
-        for app in notice.look(lost: names, why: why, now: now) {
+        for app in notice.look(lost: names, why: why, kind: kind, now: now) {
+            let vulkan = app.venus ? " (Vulkan)" : ""
             if let since = app.heldSince {
-                let cause = app.why == "guard" ? "the apps' share of graphics memory was full" : "macOS was short of memory"
-                log("OmacVM: \(app.name) in the VM lost its GPU context \(Int(now.timeIntervalSince(since))) s ago: "
+                let cause = app.why == "guard" ? "the apps' share of graphics memory was full"
+                    : app.why == "venus" ? "its Vulkan commands were refused on the Mac" : "macOS was short of memory"
+                log("OmacVM: \(app.name) in the VM lost its GPU context\(vulkan) \(Int(now.timeIntervalSince(since))) s ago: "
                     + "\(cause) (told now: a minute after the last note)")
             } else {
                 let cause = app.why == "guard"
                     ? "the apps' share of graphics memory was full (\(GPUMemory.gb(m.appsMB)) of \(GPUMemory.gb(m.budgetMB)); the rest is kept for the desktop)"
+                    : app.why == "venus" ? "its Vulkan commands were refused on the Mac"
                     : "macOS was short of memory (pressure \(m.pressure))"
-                log("OmacVM: \(app.name) in the VM lost its GPU context: \(cause)")
+                log("OmacVM: \(app.name) in the VM lost its GPU context\(vulkan): \(cause)")
             }
-            guest("/usr/local/bin/omacvm-desktop-recover", ["app", app.name, app.why]) { _ in }
+            if app.venus {
+                venusNote(app.name, app.why)
+            } else {
+                guest("/usr/local/bin/omacvm-desktop-recover", ["app", app.name, app.why]) { _ in }
+            }
         }
         for name in notice.waiting where !waiting.contains(name) {
             // A desktop restart before then voids it (restartDesktop): the line says so.
@@ -408,10 +420,40 @@ final class GPUMemoryWatch {
         }
     }
 
-    private func lost(_ names: [String], _ m: GPUMemory) {
+    /// A lost Vulkan (Venus) context: omacvm-desktop-recover venus NAME WHY
+    /// in the VM (a note; for ghostty also /run/omacvm/gl-zink-off: the next
+    /// Ghostty starts on the CPU; nothing is ended). Its exit is waited for
+    /// up to 2 s (ADR 0038's rule: no answer in time is not tried again): a
+    /// VM from before 3.2.17 answers with its usage (exit 2), so the note is
+    /// only in this log until Update VM; it never gets `app NAME venus`,
+    /// which such a VM would take for a full graphics memory and answer by
+    /// ending the app's GPU process.
+    private func venusNote(_ name: String, _ why: String) {
+        let socket = config.agentSocket.path
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let outcome = GuestAgent.runAndWait(socketPath: socket, "/usr/local/bin/omacvm-desktop-recover",
+                                                ["venus", name, why], seconds: 2)
+            Task { @MainActor in self?.venusNoted(name, outcome) }
+        }
+    }
+
+    private func venusNoted(_ name: String, _ outcome: GuestAgent.Outcome) {
+        switch outcome {
+        case .exited(0, _), .running:
+            return
+        case .exited(2, _), .refused:
+            log("OmacVM: the VM has no note for a lost Vulkan context yet (\(name)): Update VM puts it in")
+        case .exited(let code, _):
+            log("OmacVM: the VM's note for \(name)'s lost Vulkan context failed (exit \(code))")
+        case .noAgent, .badReply:
+            log("OmacVM: the VM's agent did not answer: \(name)'s lost Vulkan context is only in this log")
+        }
+    }
+
+    private func lost(_ names: [String], _ kinds: [String], _ m: GPUMemory) {
         guard alert == nil else { return }
         let now = Date()
-        let action = DesktopRecovery.action(lost: names, enabled: DesktopRecovery.enabled(),
+        let action = DesktopRecovery.action(lost: names, kinds: kinds, enabled: DesktopRecovery.enabled(),
                                             lastDesktop: lastDesktopRestart, lastShell: lastShellRestart, now: now)
         switch action {
         case .none:

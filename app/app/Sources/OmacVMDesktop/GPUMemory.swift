@@ -6,7 +6,9 @@ import Foundation
 /// and virgl-gpu-guard-desktop-reserve.patch): in use now, the peak since the VM
 /// started, the budget and the part of it kept for the VM's desktop, macOS's
 /// memory pressure, how many allocations were refused and which GPU contexts
-/// were lost, and why. Foundation only: `swift run desktop-tests`.
+/// were lost, why, and whether each was a GL (virgl) or a Vulkan (Venus)
+/// context (virgl-venus-lost-context-count.patch). Foundation only:
+/// `swift run desktop-tests`.
 public struct GPUMemory: Equatable {
     public var inUseMB = 0
     public var peakMB = 0
@@ -21,9 +23,12 @@ public struct GPUMemory: Equatable {
     public var lostLast = ""
     /// The last eight lost contexts, oldest first, and why each was lost:
     /// guard (the budget, or an app past its share), pressure (macOS short of
-    /// memory) or error (anything else). Empty from an older runtime.
+    /// memory), venus (a Vulkan context whose commands were refused on the
+    /// Mac) or error (anything else). Empty from an older runtime.
     public var lostRecent: [String] = []
     public var lostRecentWhy: [String] = []
+    /// gl or venus for each of `lostRecent` (3.2.17; empty before: all gl).
+    public var lostRecentKind: [String] = []
 
     public init() {}
 
@@ -46,6 +51,7 @@ public struct GPUMemory: Equatable {
             case "lost_last": m.lostLast = kv[1]
             case "lost_recent": m.lostRecent = kv[1].split(separator: ",").map(String.init)
             case "lost_recent_why": m.lostRecentWhy = kv[1].split(separator: ",").map(String.init)
+            case "lost_recent_kind": m.lostRecentKind = kv[1].split(separator: ",").map(String.init)
             default: break
             }
         }
@@ -133,6 +139,9 @@ public struct GPUMemory: Equatable {
 /// because the VM's graphics memory was full or macOS was short of memory:
 /// the VM says so (omacvm-desktop-recover app; from 3.2.15 it also ends the
 /// app's GPU process), so the app's black window or reload has a reason.
+/// A Vulkan (Venus) context lost because the Mac refused its commands, or
+/// to the guard, gets its own note (omacvm-desktop-recover venus, 3.2.17:
+/// nothing is ended; a Ghostty on Zink starts on the CPU next time).
 /// One per VM run (GPUMemoryWatch), looked at every 5 s.
 public struct GPUMemoryNotice {
     /// Once a minute per app at most (a browser's GPU process can be lost
@@ -143,16 +152,18 @@ public struct GPUMemoryNotice {
 
     public struct Tell: Equatable {
         public let name: String
-        /// guard or pressure
+        /// guard, pressure or venus
         public let why: String
         /// When the loss told now was seen; nil: seen in this look.
         public let heldSince: Date?
+        /// A Vulkan (Venus) context: the VM gets omacvm-desktop-recover venus.
+        public var venus = false
     }
 
     /// The last tell per app, kept only for the minute after it.
     private var told: [String: Date] = [:]
     /// The newest loss per app told within the minute, and when it was seen.
-    private var held: [String: (why: String, since: Date)] = [:]
+    private var held: [String: (why: String, since: Date, venus: Bool)] = [:]
 
     public init() {}
 
@@ -163,33 +174,38 @@ public struct GPUMemoryNotice {
 
     /// Every look, also with nothing new (so kept losses come out). `lost`
     /// and `why`: the contexts lost since the last look, with the same count
-    /// (else none are new). Apps lost to the guard or to pressure, never the
-    /// desktop or the shell, the newest why per app: told now, or kept when
-    /// the app was told less than a minute ago. New ones first, in their
-    /// order, then kept ones whose minute is over, by name.
-    public mutating func look(lost: [String], why: [String], now: Date) -> [Tell] {
+    /// (else none are new); `kind`: gl or venus for each (another count, or
+    /// none from an older runtime: all gl). Apps lost to the guard or to
+    /// pressure, and Vulkan contexts lost to the guard or refused on the Mac
+    /// (venus), never the desktop or the shell, the newest per app: told
+    /// now, or kept when the app was told less than a minute ago. New ones
+    /// first, in their order, then kept ones whose minute is over, by name.
+    public mutating func look(lost: [String], why: [String], kind: [String] = [], now: Date) -> [Tell] {
         told = told.filter { now.timeIntervalSince($0.value) < Self.window }
-        var new: [(name: String, why: String)] = []
+        var new: [(name: String, why: String, venus: Bool)] = []
         if lost.count == why.count {
-            for (name, w) in zip(lost, why) where w == "guard" || w == "pressure" {
+            let venus = kind.count == lost.count ? kind.map { $0 == "venus" } : Array(repeating: false, count: lost.count)
+            for (i, name) in lost.enumerated() {
+                let w = why[i], v = venus[i]
+                guard w == "guard" || (!v && w == "pressure") || (v && w == "venus") else { continue }
                 if DesktopRecovery.compositors.contains(name) || DesktopRecovery.shells.contains(name) { continue }
-                if let i = new.firstIndex(where: { $0.name == name }) { new[i].why = w } else { new.append((name, w)) }
+                if let j = new.firstIndex(where: { $0.name == name }) { new[j] = (name, w, v) } else { new.append((name, w, v)) }
             }
         }
         var out: [Tell] = []
         for app in new {
             if told[app.name] != nil {
-                held[app.name] = (app.why, now)
+                held[app.name] = (app.why, now, app.venus)
             } else {
                 held[app.name] = nil
                 told[app.name] = now
-                out.append(Tell(name: app.name, why: app.why, heldSince: nil))
+                out.append(Tell(name: app.name, why: app.why, heldSince: nil, venus: app.venus))
             }
         }
         for name in held.keys.sorted() where told[name] == nil {
             let h = held.removeValue(forKey: name)!
             told[name] = now
-            out.append(Tell(name: name, why: h.why, heldSince: h.since))
+            out.append(Tell(name: name, why: h.why, heldSince: h.since, venus: h.venus))
         }
         return out
     }
