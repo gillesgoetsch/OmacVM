@@ -155,3 +155,19 @@ on a test Mac's GPU. M1 Max (macOS 27.0.1, 4.1 Metal - 91.7), 3.2.14's draw:
 336 at 6016x3384, 112 of 384 at 6144x4096, 10 of 180 at 4480x2520, 0 at
 3024x1964; the tile program: 0 at every size, both flips, 8-bit and
 half-float.
+
+## Addendum (2026-10-31): the release row
+
+A hidden test start (`OMACVM_COCOA_HIDDEN`) never orders its window in, so
+its view's display link never ticks: QEMU presents its first frames and
+then none, and no tiles check runs. 3.2.15's gate row for #637 said ok
+with 0 checks. Releases run `src/tests/e2e/present-locked.sh` instead, on a
+locked test Mac: the test app's window ordered in on a virtual display
+made for the run (60 Hz, a new serial each time), guests at 5120x2880 and
+6016x3384, check mode, a guest pointer at the top right. Under the lock
+macOS composites none of it (0 of 900 drawables presented on the locked
+M1 Max), but the window gets its display's frame clock and QEMU runs the
+real present. Locked M1 Max (macOS 27.0.1), the same path by hand: 3.2.15
+0 of 132 checks differed, 2652 frames a minute in tiles; 3.2.14 88 of 176.
+Not covered: WindowServer's composite, 120 Hz pacing, the hold for a
+window nobody sees (present-unseen), the look on a real panel.
