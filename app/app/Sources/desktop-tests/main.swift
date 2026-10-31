@@ -501,15 +501,17 @@ expect(idleLooks(&i5, from: 0, to: 3000) == nil, "a QEMU that keeps given-back p
 var i6 = withFix(32 * GB)
 i6.seen(sample(895, fp: 6, res: 5, comp: 100))
 expect(!i6.quiet && !i6.idle(sample(900, fp: 6, res: 5, comp: 100)), "under a minute of looks: not known to be quiet")
-// The compressing rule holds (taken >= min(2 GB, a quarter of the Mac) and macOS compressed 1 GB since the baseline):
-// that rule acts, not idle. Graphics alone (taken 3 GB, nothing compressed) do not block it.
+// QEMU has min(2 GB, a quarter of the Mac) or more outside its resident memory (what macOS compressed of it, and
+// graphics): no idle give-back (it compacts: macOS would decompress what moves; the compressing rule has its own
+// back-off). The Mac mini's quiet rows had 3.3-4.9 GB there all along; the M1 Max's 0.3 GB.
 var i7 = withFix(32 * GB)
-_ = idleLooks(&i7, from: 0, to: 600, fp: 9, res: 5, comp: 100)
-expect(idleLooks(&i7, from: 605, to: 2000, fp: 9, res: 5, comp: 100) == 900, "3 GB of graphics outside the resident memory, nothing compressed: idle runs")
+expect(idleLooks(&i7, from: 0, to: 2000, fp: 6.95, res: 5, comp: 100) == 900, "1.95 GB outside the resident memory: idle runs")
 var i8 = withFix(32 * GB)
-_ = idleLooks(&i8, from: 0, to: 600, fp: 6.6, res: 5, comp: 100)
-expect(idleLooks(&i8, from: 605, to: 2000, fp: 7.5, res: 5, comp: 102) == nil && i8.compressingHolds(sample(2000, fp: 7.5, res: 5, comp: 102))
-       && i8.last == nil, "2.5 GB outside (0.9 GB grown), macOS compressed 2 GB since: the compressing rule holds, no idle give-back")
+expect(idleLooks(&i8, from: 0, to: 2000, fp: 7, res: 5, comp: 100) == nil && i8.compressingHolds(sample(2000, fp: 7, res: 5, comp: 100))
+       && i8.last == nil, "2 GB outside (compressed pages or graphics, nothing compressed lately): no idle give-back")
+var i8b = withFix(8 * GB), i8c = withFix(8 * GB)
+expect(idleLooks(&i8b, from: 0, to: 2000, fp: 5.9, res: 4, comp: 100) == 900 && idleLooks(&i8c, from: 0, to: 2000, fp: 6.1, res: 4, comp: 100) == nil,
+       "an 8 GB Mac: the same 2 GB (a quarter of it)")
 // One 10-minute gap with the other give-backs: none within 10 minutes of a give-back while macOS compressed.
 var i9 = withFix(32 * GB)
 _ = idleLooks(&i9, from: 0, to: 500)

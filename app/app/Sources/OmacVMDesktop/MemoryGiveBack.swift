@@ -46,8 +46,9 @@ import Foundation
 /// cold-only give-back after 2 minutes.
 ///
 /// When the VM is quiet (`idle`): every 15 minutes while macOS's pressure is
-/// normal, QEMU used at most a fifth of a core over the last minute, the
-/// compressing rule does not hold and no give-back ran in the last 10
+/// normal, QEMU used at most a fifth of a core over the last minute, QEMU has
+/// under min(2 GB, a quarter of the Mac) outside its resident memory (what
+/// macOS compressed of it, and graphics) and no give-back ran in the last 10
 /// minutes, the VM gives back its cold file cache above the newest min(2 GB,
 /// a quarter of the VM) and compacts its free memory (giveback.sh idle).
 /// It counts as cold-only (the warning may follow after 2 minutes); an idle
@@ -249,14 +250,13 @@ public struct MemoryGiveBack: Sendable {
         return Double(last.cpu - first.cpu) / 1e9 <= Self.quietCPU * (last.time - first.time)
     }
 
-    /// The compressing rule holds (without its growth part): QEMU has at
-    /// least `minTaken` outside its resident memory and macOS compressed 1 GB
-    /// or more since the baseline. Graphics alone (no compressions) do not.
-    public func compressingHolds(_ s: Sample) -> Bool {
-        guard s.taken >= minTaken else { return false }
-        guard let b = baseline else { return true }
-        return s.compressed >= b.compressed && s.compressed - b.compressed >= Self.minCompressed
-    }
+    /// The compressing rule's first part holds: QEMU has at least `minTaken`
+    /// outside its resident memory (what macOS compressed of it, and graphics).
+    /// No idle give-back then: it compacts, and moving pages makes macOS
+    /// decompress them; and the give-back while macOS compresses has its own
+    /// back-off. Graphics count too: a 5K desktop with a browser open on a
+    /// small Mac waits until the browser closes.
+    public func compressingHolds(_ s: Sample) -> Bool { s.taken >= minTaken }
 
     /// Every look after `compressing` said no: true when the VM should give
     /// back now because it is quiet (`seen` first).
