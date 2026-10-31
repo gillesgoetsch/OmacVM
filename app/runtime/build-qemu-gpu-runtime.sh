@@ -1505,7 +1505,7 @@ grep -q 'vkr_physical_device_init_limits(physical_dev);' "$virgl_source/src/venu
   grep -q 'vkr_first_count_ok(args->firstViewport, args->viewportCount, max),' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_physical_device.c, vkr_command_buffer.c: vkCmd* indices and offsets are not bounded (command-limits patch)"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-descriptor-limits.patch"
-grep -q 'vkr_descriptor_writes_ok(dispatch->data, "vkUpdateDescriptorSets", dev, NULL,' "$virgl_source/src/venus/vkr_descriptor_set.c" && \
+grep -q 'vkr_descriptor_writes_ok(dispatch, "vkUpdateDescriptorSets", dev, NULL,' "$virgl_source/src/venus/vkr_descriptor_set.c" && \
   grep -q 'vkr_cmd_sets_ok(dispatch->data, "vkCmdBindDescriptorSets",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_descriptor_set.c, vkr_command_buffer.c: descriptor writes and binds are not checked (descriptor-limits patch)"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-render-pass-limits.patch"
