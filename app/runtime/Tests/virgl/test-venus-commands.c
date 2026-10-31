@@ -2568,6 +2568,25 @@ static int state_case(const char *c, struct world *w)
       end_pass(cmd);
    } else if (IS("c-state-end-in-pass")) {
       begin_pass(cmd, w->rp, w->fb, 64, 64);
+   } else if (IS("c-state-end-query-views-past")) {
+      /* an end without its begin at query 3 of 4 in a 2-view pass: KosmicKrisp makes one query
+       * available per view, the second past the pool */
+      if (max_views < 2) {
+         printf("skip: %u views\n", max_views);
+         return SKIP;
+      }
+      void *rp = render_pass(1, 1, 0, 0x3);
+      void *v = view(image(64, 64, 2, CA_SA), 2);
+      void *views[1] = { v };
+      void *fb = rp ? framebuffer(rp, views, 1, 64, 64, 1) : NULL;
+      void *qp = query_pool(VK_QUERY_TYPE_OCCLUSION, 4);
+      if (!fb)
+         broken("multiview framebuffer");
+      begin_pass(cmd, rp, fb, 64, 64);
+      struct vn_command_vkCmdEndQuery e = { .commandBuffer = cb, .queryPool = (VkQueryPool)qp, .query = 3 };
+      step("vkCmdEndQuery 3 of 4 in a 2-view pass");
+      D->dispatch_vkCmdEndQuery(D, &e);
+      end_pass(cmd);
    } else if (IS("c-state-query-views-ok") || IS("c-state-query-views-past")) {
       /* a 2-view pass takes 2 queries from the one begun: query 2 or 3 of 4 */
       if (max_views < 2) {
@@ -3278,6 +3297,7 @@ static const struct test_case cases[] = {
    { "c-state-after-mv2-timestamp", E_WORKS }, { "c-state-after-mv-dyn-timestamp", E_WORKS },
    { "c-state-destroyed-pass-next", E_REFUSE }, { "c-state-destroyed-pass-end", E_REFUSE },
    { "c-state-destroyed-fb-end", E_REFUSE }, { "c-state-destroyed-id-reused", E_REFUSE },
+   { "c-state-end-query-views-past", E_REFUSE },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
    { "c-region-i2b-max", E_WORKS }, { "c-region-i2b-past", E_REFUSE },

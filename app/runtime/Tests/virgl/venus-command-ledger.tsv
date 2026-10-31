@@ -40,7 +40,7 @@ vkCmdResetEvent	event, stageMask	values only
 vkCmdWaitEvents	events, barriers	A	image barrier ranges inside the image, buffer barrier ranges inside the buffer	gap 9: c-barrier-range
 vkCmdPipelineBarrier	barriers	A	as vkCmdWaitEvents	gap 9: c-barrier-range
 vkCmdBeginQuery	pool, query, flags	A+B	A: query < the pool's count; B: + the views of the open multiview pass (none after its end)	c-query-begin-far (KK accepted: GPU write; MVK-p 11); PR-B: c-state-query-views-past, c-state-query-views-ok; legal: c-state-after-mv-query
-vkCmdEndQuery	pool, query	A	query < count	
+vkCmdEndQuery	pool, query	A+B	A: query < count; B: + the views of the open multiview pass, as its begin (KosmicKrisp makes one query available per view)	PR-B: c-state-end-query-views-past, c-state-query-views-ok
 vkCmdResetQueryPool	pool, first, count	A	first + count <= count	c-query-reset-far (MVK-p 11)
 vkCmdWriteTimestamp	stage, pool, query	A+B	A: query < count; B: + the views of the open multiview pass (none after its end)	c-query-timestamp-far (MVK-p 11); PR-B legal: c-state-after-mv-timestamp, c-state-after-mv2-timestamp, c-state-after-mv-dyn-timestamp
 vkCmdCopyQueryPoolResults	pool, first, count, dst, offset, stride, flags	A	first + count <= count; offset + (count-1)*stride + result size <= dst size; offset, stride % 4	c-query-copy-past (accepted)
@@ -61,7 +61,7 @@ vkCmdBindTransformFeedbackBuffersEXT	first, count, buffers, offsets, sizes	stub	
 vkCmdBeginTransformFeedbackEXT	firstCounterBuffer, count	stub	as above	
 vkCmdEndTransformFeedbackEXT	firstCounterBuffer, count	stub	as above	
 vkCmdBeginQueryIndexedEXT	pool, query, index	stub	query < count kept; + the views of the open multiview pass	
-vkCmdEndQueryIndexedEXT	pool, query, index	stub	query < count kept	
+vkCmdEndQueryIndexedEXT	pool, query, index	stub	query < count kept; + the views of the open multiview pass	
 vkCmdDrawIndirectByteCountEXT	counter buffer, offset	stub		
 vkCmdBindVertexBuffers2	first, count, buffers, offsets, sizes, strides	A	as vkCmdBindVertexBuffers; offset + size <= buffer size; stride <= maxVertexInputBindingStride	
 vkCmdBindIndexBuffer2	buffer, offset, size, indexType	A	as vkCmdBindIndexBuffer; offset + size <= buffer size	
