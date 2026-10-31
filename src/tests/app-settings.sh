@@ -74,6 +74,7 @@ expect "fresh: Extra brightness off" false "$(val app.extraBrightness)"
 expect "fresh: Pause drawing while hidden off" false "$(val app.pauseWhileHidden)"
 expect "fresh: Pointer on its own layer off" false "$(val app.pointerPlane)"
 expect "fresh: Draw only what changed off" false "$(val app.presentTiles)"
+expect "fresh: Ghostty on the Mac's GPU off" false "$(val app.ghosttyGPU)"
 expect "fresh: AirPods and media controls on" true "$(val app.mediaControls)"
 expect "  on for the app (org.omacvm.app)" true "$(run mediadefault org.omacvm.app)"
 expect "  off for the test identity: a test VM never takes the person's AirPods" "false false" \
@@ -105,7 +106,7 @@ done
 
 # (b) Changes as the window makes them, read by the next launches; (c) per VM.
 mkdir -p "$H/Shared"
-for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "pauseWhileHidden true" "pointerPlane true" "presentTiles true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
+for kv in "startFullScreen false" "keepDockAway false" "audioThread false" "gpuOffMainLoop false" "shareKeyboard true" "vkWindowsNoCopy false" "hdr true" "extraBrightness true" "pauseWhileHidden true" "pointerPlane true" "presentTiles true" "ghosttyGPU true" "mediaControls false" "closeAction ask" "appIconTheme flexoki-light" \
           "escapeSwipe all" "mouseSwipeFingers 3" "swipeOut true" "updateChecks false"; do
   run set $kv || { echo "FAIL set $kv"; fail=1; }
 done
@@ -126,6 +127,7 @@ for launch in 1 2; do
   expect "launch $launch: Pause drawing while hidden on" true "$(val app.pauseWhileHidden)"
   expect "launch $launch: Pointer on its own layer on" true "$(val app.pointerPlane)"
   expect "launch $launch: Draw only what changed on" true "$(val app.presentTiles)"
+  expect "launch $launch: Ghostty on the Mac's GPU on" true "$(val app.ghosttyGPU)"
   expect "launch $launch: AirPods and media controls off" false "$(val app.mediaControls)"
   expect "launch $launch: Closing the window asks" ask "$(val app.closeAction)"
   expect "launch $launch: icon Flexoki Light" flexoki-light "$(val app.appIconTheme)"
@@ -276,7 +278,34 @@ for want in false true; do
     expect "Draw only what changed $want, $step: the switch still $want" $want "$(val app.presentTiles)"
   done
 done
+# (h) Ghostty on the Mac's GPU: a start tells the VM (SMBIOS omacvm.glzink=1) only with the switch
+# on, GPU safe mode off, Venus at that start and KosmicKrisp as its Vulkan driver; GPU safe mode
+# leaves the switch as set.
+for want in false true; do
+  run set ghosttyGPU $want || { echo "FAIL set ghosttyGPU $want"; fail=1; }
+  for step in "1 kosmickrisp" "0 kosmickrisp" "1 moltenvk" "1 listed" "safe 1 kosmickrisp"; do
+    [[ $step == safe* ]] && defaults write "$D" gpuSafeMode -bool true
+    s=$(run ghostty ${step#safe })
+    defaults delete "$D" gpuSafeMode 2>/dev/null
+    case $want/$step in
+      false/*) w="ghostty false (switch off)" ;;
+      true/safe*) w="ghostty false (GPU safe mode)" ;;
+      "true/0 kosmickrisp") w="ghostty false (Graphics is OpenGL at this start)" ;;
+      "true/1 moltenvk") w="ghostty false (MoltenVK: needs KosmicKrisp (macOS 26 and newer))" ;;
+      "true/1 listed") w="ghostty false (the Vulkan driver VK_DRIVER_FILES names)" ;;
+      true/*) w="ghostty true (Zink over Venus on KosmicKrisp)" ;;
+    esac
+    expect "Ghostty on the Mac's GPU $want, $step: the start's answer" "$w" "$s"
+    dump
+    expect "Ghostty on the Mac's GPU $want, $step: the switch still $want" $want "$(val app.ghosttyGPU)"
+  done
+done
 RUNNER=$R/app/app/Sources/OmacVM/Runner.swift
+grep -q 'ghosttyGPU = Settings.ghosttyGPUStart(venus: g.venus, driver: Runner.vulkanDriverKind)' "$RUNNER" &&
+  grep -A1 -F 'if ghosttyGPU.on {' "$RUNNER" | grep -q 'value=\\(GhosttyGPU.smbios)' &&
+  grep -A1 -F 'if Settings.ghosttyGPU {' "$RUNNER" | grep -q 'GhosttyGPU.record(ghosttyGPU)' &&
+  ! grep -q 'Settings.ghosttyGPU &&' "$RUNNER" && echo "ok   Runner: omacvm.glzink=1 from this start's answer (Venus, the driver), the qemu.log line while the switch is on" ||
+  { echo "FAIL Runner: omacvm.glzink=1 not from Settings.ghosttyGPUStart(venus:driver:) or no qemu.log line"; fail=1; }
 expect "Runner: QEMU's tiles and the guest's omacvm.damage=1 from the same start answer" "2" \
   "$(grep -c 'if tiles.on {' "$RUNNER")"
 grep -q 'a += \["-smbios", "type=11,value=omacvm.damage=1"\]' "$RUNNER" && grep -q 'env\["OMACVM_GL_PRESENT_TILES"\] = env\["OMACVM_GL_PRESENT_TILES"\] == "check" ? "check" : "1"' "$RUNNER" &&
