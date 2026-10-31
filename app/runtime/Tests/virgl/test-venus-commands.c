@@ -4192,24 +4192,28 @@ static int time_commands(int n)
       D->dispatch_vkCmdPipelineBarrier(D, &b);
    }
    us[5] = since(&t0) / n;
-   /* one vkUpdateDescriptorSets of 1000 writes (n / 100 times) */
+   /* one vkUpdateDescriptorSets of 1000 writes (n / 100 times); vkr turns the handles in the
+      writes into the driver's in place, so each round gets fresh writes (filled untimed) */
    static VkWriteDescriptorSet many[1000];
    static VkDescriptorBufferInfo many_bi[1000];
-   for (int i = 0; i < 1000; i++) {
-      many_bi[i] = (VkDescriptorBufferInfo){ (VkBuffer)w.buf, 0, 256 };
-      many[i] = (VkWriteDescriptorSet){ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                        .dstSet = (VkDescriptorSet)w.set, .dstBinding = 0, .descriptorCount = 1,
-                                        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                        .pBufferInfo = &many_bi[i] };
-   }
    const int rounds = n / 100 > 0 ? n / 100 : 1;
-   clock_gettime(CLOCK_MONOTONIC, &t0);
+   double total = 0;
    for (int i = 0; i < rounds; i++) {
+      for (int j = 0; j < 1000; j++) {
+         many_bi[j] = (VkDescriptorBufferInfo){ (VkBuffer)w.buf, 0, 256 };
+         many[j] = (VkWriteDescriptorSet){ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                           .dstSet = (VkDescriptorSet)w.set, .dstBinding = 0,
+                                           .descriptorCount = 1,
+                                           .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                           .pBufferInfo = &many_bi[j] };
+      }
       struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1000,
                                                      .pDescriptorWrites = many };
+      clock_gettime(CLOCK_MONOTONIC, &t0);
       D->dispatch_vkUpdateDescriptorSets(D, &u);
+      total += since(&t0);
    }
-   us[6] = since(&t0) / rounds;
+   us[6] = total / rounds;
    /* a pass is an encoder in KosmicKrisp's Metal command buffer: n / 10 of them */
    const int passes = n / 10 > 0 ? n / 10 : 1;
    clock_gettime(CLOCK_MONOTONIC, &t0);
