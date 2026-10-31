@@ -1656,8 +1656,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   refused one of its Vulkan commands (ADR 0065), or the graphics memory apps
   may use was full (`... (the GPU memory budget had refused its memory)`).
   Most Vulkan apps then end by themselves. Ghostty on Zink stays: its windows
-  never draw again, and since one Ghostty serves every Ghostty window, a new
-  window waits for the frozen one. Up to 3.2.16 OmacVM did not count a lost
+  never draw again, and since Omarchy starts Ghostty as one instance, a new
+  Ghostty asks the frozen one for its window over D-Bus, gets no answer and
+  gives up (its log: `error registering application: Timeout was reached`).
+  Up to 3.2.16 OmacVM did not count a lost
   Vulkan context (`logs/gpu-memory` stayed at lost=0), so nothing was said,
   `omacvm check` did not name the app, and the next Ghostty went to Zink
   again.
@@ -1665,7 +1667,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   and tells the VM, which shows a note ("Ghostty stopped drawing", or
   "<app> stopped drawing") and ends nothing. Close the frozen Ghostty first:
   Terminate in Hyprland's window (programs running in it end), then open
-  Ghostty again. OmacVM writes `/run/omacvm/gl-zink-off` (one line "lost
+  Ghostty again (in test VMs its window came in about 0.55 s). OmacVM writes `/run/omacvm/gl-zink-off` (one line "lost
   TIME WHY"): OmacVM's EGL library starts Ghostty on the CPU (llvmpipe), not
   on Zink, until the VM restarts (a Ghostty started with Zink's variables by
   hand is not changed: start it without them). Other apps: restart them.
