@@ -199,9 +199,9 @@ wrapup() {
       '(process == "tccd" AND eventMessage CONTAINS "Notifying for access") OR (process == "WindowServer" AND eventMessage CONTAINS "setting mode") OR process == "nehelper"' \
       > "$OUT/log-side.txt" 2>&1
     nt=$(grep -c 'Notifying for access' "$OUT/log-side.txt"); nw=$(grep -c 'setting mode' "$OUT/log-side.txt")
-    ne=$(grep -a 'nehelper' "$OUT/log-side.txt" | grep -a -i 'omacvm' | tail -1 | sed 's/.*nehelper[^:]*: //' | cut -c1-160)
+    ne=$(grep -a 'nehelper' "$OUT/log-side.txt" | grep -a -F "($DOM)" | tail -1 | sed 's/.*nehelper[^:]*: //' | cut -c1-160)
     unc=""; for p in $(pgrep -x UserNotificationCenter); do unc+="$("$CENSUS" "$p" | grep '^windows ') "; done
-    res side-effects "$( (( nt == 0 )) && echo info || echo warn)" "tccd 'Notifying for access' $nt; WindowServer 'setting mode' $nw; UserNotificationCenter: ${unc:-not running}; nehelper: ${ne:-no line for omacvm}"
+    res side-effects "$( (( nt == 0 )) && echo info || echo warn)" "tccd 'Notifying for access' $nt; WindowServer 'setting mode' $nw; UserNotificationCenter: ${unc:-not running}; nehelper: ${ne:-no Local Network line for $DOM}"
   fi
   os_result_json "$S" omacvm-e2e-present-locked "$OUT/result.json" version="$VER" commit="$COMMIT" size="$SIZE" \
     seconds=$(( $(date +%s) - T0 )) exit="$RC" >/dev/null
