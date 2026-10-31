@@ -235,8 +235,12 @@ Decision: vkr bounds every guest index, count, offset, stride and known enum
 the driver uses to address host memory or a table, before the driver gets it,
 against the device's limits (`struct vkr_limits`, read once per physical
 device) and small tables of what objects were made with. Semantic validity
-stays with the driver (this is not a validation layer). Every refusal ends
-the app's Venus context with a log line (`vkr_context_check`): the guest
+stays with the driver (this is not a validation layer), and values Vulkan
+ignores are left alone: a resolve mode on an attachment without a view, a
+colour attachment's stencil load op, a pipeline's sample locations while
+sample locations are off (unless switched on at draw time, as Mesa then
+copies them). Every refusal ends the app's Venus context with a log line
+(`vkr_context_check`): the guest
 records commands and makes these objects without waiting, so an error code
 would be lost and the next use of the id would end the context anyway, with a
 less clear line. Four patches, one per class:
@@ -277,16 +281,18 @@ less clear line. Four patches, one per class:
 `vkCmd*` handlers a verdict (checked, command-buffer state, values only,
 stub, GPU-side); the runtime build fails when a handler has none, so a new
 command in a virglrenderer update needs a decision. `test-venus-commands.c`
-(210 cases, a legal-maxima group among them: every limit at its advertised
+(216 cases, a legal-maxima group among them: every limit at its advertised
 value must keep working) runs on KosmicKrisp, MoltenVK and MoltenVK with
 prefilled command buffers at every runtime build. Against 3.2.15's vkr 147 of
-210 fail on KosmicKrisp and 134 on MoltenVK; with the patches all pass.
+the first 210 failed on KosmicKrisp and 134 on MoltenVK; with the patches all
+pass.
 
-The cost, through vkr's dispatch on the M1 Max (10,000 calls, 3 runs):
-`vkUpdateDescriptorSets` 0.009 -> 0.017 us on KosmicKrisp and 0.021 -> 0.031
-us on MoltenVK, `vkCmdBindDescriptorSets` 0.009 -> 0.018 / 0.035 -> 0.046 us,
-`vkCmdPushConstants` 0.009 -> 0.012 / 0.108 -> 0.110 us, `vkCmdSetViewport`
-0.005 -> 0.007 / 0.029 -> 0.031 us, `vkCmdDraw` unchanged (0.16 / 0.022 us).
+The cost, through vkr's dispatch on the M1 Max (10,000 calls, medians of 3
+runs): `vkUpdateDescriptorSets` 0.009 -> 0.017 us on KosmicKrisp and 0.021 ->
+0.030 us on MoltenVK, `vkCmdBindDescriptorSets` 0.009 -> 0.018 / 0.035 ->
+0.046 us, `vkCmdPushConstants` 0.009 -> 0.012 / 0.108 -> 0.110 us,
+`vkCmdSetViewport` 0.005 -> 0.007 / 0.029 -> 0.032 us, `vkCmdDraw` 0.163 ->
+0.165 / 0.022 -> 0.022 us.
 
 The revisit trigger above ("a crash class inside shader compilation") has
 fired: malformed SPIR-V crashes both compilers. It is answered with a check in
