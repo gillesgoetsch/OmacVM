@@ -1634,6 +1634,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   and the rest of the VM keeps working. The VM's `qemu.log` (in the VM's
   folder, `logs/`) has `vkr: <app>: vkCmd... refused: ...; the app's Vulkan
   context ends (N refused so far)` and `venus context N (<app>) is lost`.
+  Or, with very many Vulkan apps or devices at once, a new one does not start:
+  `vkr: N threads for guest calls already (at most 1024): the ... is not made`
+  or `proxy: N Venus contexts already ...`.
 - **Cause:** from 3.2.17 OmacVM.app checks the indices, counts, offsets and
   values a Vulkan app sends against the Mac GPU's limits and what the app
   made (ADR 0065). The Mac's Vulkan drivers use such values as memory
@@ -1650,6 +1653,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 - **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`,
   `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` (shaders:
   the line says `SPIR-V: ...`), `virgl-venus-copy-regions.patch`,
-  `virgl-venus-pipeline-formats.patch`; tests
-  `app/runtime/Tests/virgl/test-venus-commands.c`, `fuzz-venus-spirv.sh`,
-  `venus-command-ledger.tsv`; ADR 0065.
+  `virgl-venus-pipeline-formats.patch`, `virgl-venus-submit-counts.patch`,
+  `virgl-venus-pool-frees.patch`, `virgl-venus-dedicated-memory.patch`,
+  `virgl-venus-pass-views.patch`, `virgl-venus-thread-budget.patch` (the
+  threads line); tests `app/runtime/Tests/virgl/test-venus-commands.c`,
+  `test-venus-threads.c`, `fuzz-venus-spirv.sh`, `venus-command-ledger.tsv`;
+  ADR 0065.

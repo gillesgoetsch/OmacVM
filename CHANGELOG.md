@@ -33,6 +33,19 @@ in more words.
   read the freed pass). Such a program now loses only its own Vulkan connection, with the refused
   call in QEMU's log (troubleshooting 52). Shaders are scanned once when the app makes them; correct
   shaders are not affected. Needs the app update.
+- **More Vulkan mistakes of a program in the VM end only that program, and three legal uses work
+  (see #624).** With Graphics on Vulkan, a Vulkan program could still stop the VM, or make the Mac's
+  driver write into memory QEMU had already freed: a descriptor set or command buffer freed twice or
+  through another pool, extra values in a submit, memory made for one image used by another, an
+  image destroyed before it was bound to its memory, an image view destroyed while a render pass on
+  it was being recorded, or Vulkan contexts, rings and devices made without end until QEMU could not
+  start a thread. Each of these now ends only that program's Vulkan connection, or the call fails,
+  and QEMU's log says why (troubleshooting 52). Replies to the VM no longer carry old bytes of
+  QEMU's memory where the Mac's driver wrote nothing. Legal uses that ended a program before now
+  work: a descriptor update that starts in or runs on into the next binding (also over bindings of
+  different sizes, which the Mac's drivers had written past their set), an attachment no subpass
+  uses with a format the GPU can only sample, and the image destroyed before its bind. Needs the
+  app update.
 
 ## 3.2.16
 
