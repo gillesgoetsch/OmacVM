@@ -1,0 +1,570 @@
+From: OmacVM
+Subject: [PATCH] hvf: Activity Monitor counts guest RAM once (QEMU remaps its own view)
+
+Applies after qemu-hvf-free-page-reclaim-reusable.patch.
+
+What: a sweep remaps QEMU's own view of the VM's main RAM over itself
+(mach_vm_remap, copy=FALSE, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE), one
+128 MB chunk at a time under the BQL, 20 ms apart; a pass a minute after
+the start, then every 5 minutes, skipped while QEMU's footprint grew less
+than 64 MB since the last pass, at most twice in a row (free page reports
+can shrink the footprint while QEMU's touches grow it). The remap keeps the same VM objects at the
+same offsets and drops only QEMU's page table entries; no page is touched,
+copied or moved. Main RAM only, QEMU's private anonymous memory:
+omacvm_ram_private(), which hvf_report_free_pages() now goes by too
+(never the Venus host memory window's blobs, pflash, ROM, shared or
+file-backed memory, nor while dirty logging is on). Before each remap
+every map entry of the chunk must share its object with the hypervisor's
+map (true shared or shared, an object id), be readable and writable and
+not wired; else the chunk stays as it is and is counted (one qemu.log
+line). In the first pass QEMU reads the chunk's objects and offsets again
+after each remap: a change means QEMU's view is no longer the guest's
+memory, and QEMU stops (abort) before it reads or writes there. A failed
+remap that left the view as it was stops the sweep for the run (one line).
+OMACVM_DCOUNT_SWEEP=0 turns it off; a number of seconds sets the time
+between passes (tests). qemu.log: a start line ("own-view sweep: on" or
+"off": omacvm check's "Activity Monitor" row picks its words from it), a
+line an hour from the sweep's own timer and one at exit (passes, passes
+skipped, chunks remapped, MB less in Activity Monitor, the main lock's
+hold per chunk: p99 and longest, chunks left as they were, why it
+stopped); OMACVM_DCOUNT_SWEEP_CHECK=1 (tests) a line per pass.
+
+Why: macOS charges a page to a process's footprint once for every mapping
+that touched it, resident or compressed. A guest page counts through the
+hypervisor's map when the guest touches it, and again through QEMU's own
+mapping once QEMU's threads did (disk reads into guest RAM, network,
+graphics transfers): no memory, but Activity Monitor shows it. A 4 GB VM
+on a Mac mini showed 2.1 GB more after its boot and 2.5 GB of reads; a
+12 GB VM on a MacBook Pro M1 Max 1.2-2.0 GB more with nothing compressed
+(work/tracks/vm-memory.md). A page only QEMU touched since the guest last
+did leaves the count until one of them touches it again: the Mac still
+holds it (ADR 0066).
+
+Upstream: OmacVM only (macOS accounting; upstream QEMU has no such sweep).
+Test: Tests/memory/test-dcount.sh, no VM: guest RAM shared with a second
+map or a real hv_vm_map; QEMU writes 1 GB, the guest reads it: the
+footprint is 2.0x what the Mac holds; after one clean pass 1.001x (main,
+without the sweep: 2.0x, the test fails); pass 1 runs while a thread
+preads and pwrites a file into and out of guest RAM (buffered and
+F_NOCACHE) and with two free page reports between chunks whose moves aside
+are released after the pass; every page right as the guest sees it, and
+QEMU's writes seen by the guest and the guest's by QEMU after it, the
+replaced ranges too; an idle pass skipped, twice in a row at most; a chunk
+with a copy-on-write entry or one without an object left as it is; a
+failed remap stops the sweep; --predicate: which RAM blocks are swept;
+--diverge: QEMU stops. The runtime build runs it on the patched source, CI
+on this file.
+
+diff --git a/accel/hvf/hvf-all.c b/accel/hvf/hvf-all.c
+index 8f450f29..ef7a0752 100644
+--- a/accel/hvf/hvf-all.c
++++ b/accel/hvf/hvf-all.c
+@@ -722,11 +722,473 @@ void hvf_report_free_pages_done(void)
+ }
+ /* omacvm-reclaim: end */
+ 
++/* omacvm-sweep: begin (app/runtime/Tests/memory/test-dcount.sh builds this part alone) */
++/*
++ * QEMU's own view of guest RAM, counted once (ADR 0066).
++ *
++ * macOS charges a page to a process's footprint (Activity Monitor's Memory)
++ * once for every mapping that touched it, resident or compressed: through
++ * the hypervisor's map when the guest touches it, and again through QEMU's
++ * own mapping once QEMU's threads did (disk reads into guest RAM, network,
++ * graphics transfers). Both mappings share the same VM objects (hv_vm_map
++ * makes them true shared), so the second count is no memory, but Activity
++ * Monitor shows it: a 4 GB VM showed 2.1 GB more after its boot and 2.5 GB
++ * of reads, and a compressed page keeps it until QEMU's mapping goes.
++ *
++ * The sweep remaps QEMU's view over itself (mach_vm_remap, copy=FALSE,
++ * VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE): the same objects at the same
++ * offsets, without QEMU's page table entries, so their charges go. No page
++ * is touched, copied or moved; QEMU's next touch maps a page again (about
++ * 0.4 us per 16 KiB page). A page only QEMU touched since the guest last
++ * did (a disk read the guest has not used yet) leaves the count until one
++ * of them touches it again; the Mac still holds it.
++ *
++ * Main RAM only, QEMU's private anonymous memory (omacvm_ram_private(), the
++ * rule a free page report goes by too), one 128 MB chunk (XNU's anonymous
++ * object) at a time under the BQL, 20 ms apart: a chunk never meets a free
++ * page report's replacement or its move aside, which run under the BQL too.
++ * A pass a minute after the start, then every 5 minutes, skipped while the
++ * footprint grew less than 64 MB since the last one, at most twice in a row
++ * (an idle VM; free page reports can shrink the footprint while QEMU's
++ * touches grow it, so at least every 15 minutes).
++ * Before each remap every map entry of the chunk must share its object
++ * (true shared or shared, an object id), be readable and writable and not
++ * wired: a remap of anything else (copy-on-write, or no object yet) gives
++ * QEMU's view memory of its own, and QEMU and the guest would no longer see
++ * the same pages. Such a chunk stays as it is and is counted (one qemu.log
++ * line). In the first pass the objects and offsets are read again after each
++ * remap: a change means that has happened anyway, and QEMU stops before it
++ * writes there. A failed remap that left the view as it was stops the sweep
++ * for the run (one line). OMACVM_DCOUNT_SWEEP=0 turns it off; a number of
++ * seconds sets the time between passes (tests). qemu.log: the start line,
++ * a line an hour and one at exit (passes, MB less in Activity Monitor, the
++ * main lock's hold per chunk); OMACVM_DCOUNT_SWEEP_CHECK=1 (tests) a line
++ * per pass.
++ */
++#define OMACVM_SWEEP_CHUNK (128ull << 20)
++#define OMACVM_SWEEP_GAP_NS (20 * 1000000LL)
++#define OMACVM_SWEEP_FIRST_S 60
++#define OMACVM_SWEEP_PERIOD_S 300
++#define OMACVM_SWEEP_GROWTH (64ull << 20)
++#define OMACVM_SWEEP_SKIPS 2              /* passes skipped in a row at most */
++#define OMACVM_SWEEP_RUNS 8193            /* a chunk's 16 KiB pages, each its own object, and one */
++
++/*
++ * QEMU's own private anonymous guest RAM: what a free page report may
++ * replace and the sweep may remap. Never shared, file-backed, device, ROM or
++ * flash memory, nor memory QEMU was given rather than allocated
++ * (RAM_PREALLOC: memory_region_init_ram_ptr, as the Venus host memory
++ * window's blobs), nor while dirty logging write-protects it.
++ */
++static bool omacvm_ram_private(MemoryRegion *mr)
++{
++    RAMBlock *rb = mr->ram_block;
++
++    return memory_region_is_ram(mr) && !mr->readonly && !mr->rom_device &&
++           !memory_region_is_ram_device(mr) && rb && rb->fd < 0 &&
++           !(rb->flags & (RAM_SHARED | RAM_PREALLOC)) &&
++           !memory_region_get_dirty_log_mask(mr);
++}
++
++/* A piece of QEMU's view: one object, from an offset on. */
++typedef struct OmacvmSweepRun {
++    mach_vm_address_t start, end;
++    uint64_t object, offset;
++} OmacvmSweepRun;
++
++typedef struct OmacvmSweepStats {
++    uint64_t passes, idle, chunks, less, left, left_bytes;
++    int64_t longest_ns;
++    uint32_t hold[OMACVM_RECLAIM_STEPS];  /* per chunk, in the reclaim's 0.1 ms steps */
++} OmacvmSweepStats;
++
++typedef struct OmacvmSweep {
++    uint8_t *host;                      /* main RAM in QEMU's view */
++    uint64_t size;
++    int64_t period_ns, next_ns;         /* between passes; until the next step */
++    uint64_t at;                        /* the next chunk; size: between passes */
++    bool first, stopped, said_left, check;
++    unsigned skipped;                   /* passes skipped since the last one */
++    uint64_t footprint_after;           /* at the end of the last pass (0: none yet) */
++    int64_t hour_start;
++    char why[200];                      /* why it stopped */
++    OmacvmSweepStats hour, run;
++} OmacvmSweep;
++
++/* A chunk's pieces before a remap, and after it in the first pass. */
++static OmacvmSweepRun omacvm_sweep_runs[OMACVM_SWEEP_RUNS], omacvm_sweep_after[OMACVM_SWEEP_RUNS];
++
++/* OMACVM_DCOUNT_SWEEP: unset: on, every 5 minutes; "0": off; 10-86400: seconds between passes (tests). */
++static int64_t omacvm_sweep_period(const char *v)
++{
++    char *end;
++    long s;
++
++    if (!v || !*v) {
++        return OMACVM_SWEEP_PERIOD_S;
++    }
++    s = strtol(v, &end, 10);
++    if (*end || s < 0) {
++        return OMACVM_SWEEP_PERIOD_S;
++    }
++    if (s == 0) {
++        return 0;
++    }
++    return s < 10 ? 10 : s > 86400 ? 86400 : s;
++}
++
++static uint64_t omacvm_sweep_footprint(void)
++{
++    task_vm_info_data_t ti;
++    mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
++
++    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&ti, &n) != KERN_SUCCESS) {
++        return 0;
++    }
++    return ti.phys_footprint;
++}
++
++/*
++ * QEMU's view of [at, at + len): may a remap over itself keep it the
++ * guest's memory? Every map entry shares its object (true shared or shared,
++ * an object id), is readable and writable, not wired and inherited alike.
++ * Fills runs[] (*n of them, up to OMACVM_SWEEP_RUNS; one object's adjacent
++ * pieces as one) and *inherit. Returns true, or false with the reason in why.
++ */
++static bool omacvm_sweep_entries(mach_vm_address_t at, mach_vm_size_t len,
++                                 OmacvmSweepRun *runs, unsigned *n,
++                                 vm_inherit_t *inherit, char *why, size_t whylen)
++{
++    mach_vm_address_t a = at, end = at + len;
++    vm_region_submap_info_data_64_t info;
++    mach_msg_type_number_t count;
++    mach_vm_address_t start;
++    mach_vm_size_t size;
++    natural_t depth;
++    uint64_t offset;
++    OmacvmSweepRun *r;
++
++    *n = 0;
++    while (a < end) {
++        start = a;
++        size = 0;
++        depth = 0;
++        count = VM_REGION_SUBMAP_INFO_COUNT_64;
++        if (mach_vm_region_recurse(mach_task_self(), &start, &size, &depth,
++                                   (vm_region_recurse_info_t)&info, &count) != KERN_SUCCESS ||
++            start > a) {
++            snprintf(why, whylen, "nothing mapped at +%llu MB",
++                     (unsigned long long)((a - at) >> 20));
++            return false;
++        }
++        if (info.is_submap ||
++            (info.share_mode != SM_TRUESHARED && info.share_mode != SM_SHARED) ||
++            !info.object_id ||
++            (info.protection & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE) ||
++            info.user_wired_count) {
++            snprintf(why, whylen, "a map entry at +%llu MB is not shared with the "
++                     "guest as QEMU's view must be (share mode %d, %s, protection %d, "
++                     "%s)", (unsigned long long)((a - at) >> 20), info.share_mode,
++                     info.object_id ? "an object" : "no object", info.protection,
++                     info.user_wired_count ? "wired" : "not wired");
++            return false;
++        }
++        if (a == at) {
++            *inherit = info.inheritance;
++        } else if (info.inheritance != *inherit) {
++            snprintf(why, whylen, "its map entries are inherited differently");
++            return false;
++        }
++        offset = info.offset + (a - start);
++        size = MIN(start + size, end) - a;
++        r = *n ? &runs[*n - 1] : NULL;
++        if (r && r->object == info.object_id && r->end == a &&
++            r->offset + (r->end - r->start) == offset) {
++            r->end = a + size;
++        } else if (*n == OMACVM_SWEEP_RUNS) {
++            snprintf(why, whylen, "more than %d map entries", OMACVM_SWEEP_RUNS);
++            return false;
++        } else {
++            runs[(*n)++] = (OmacvmSweepRun) { a, a + size, info.object_id, offset };
++        }
++        a += size;
++    }
++    return true;
++}
++
++/* After a remap: does QEMU's view of the chunk still map exactly runs[]? */
++static bool omacvm_sweep_same(mach_vm_address_t at, mach_vm_size_t len,
++                              const OmacvmSweepRun *runs, unsigned n,
++                              char *why, size_t whylen)
++{
++    const OmacvmSweepRun *b, *c;
++    vm_inherit_t inherit;
++    unsigned m, i;
++
++    if (!omacvm_sweep_entries(at, len, omacvm_sweep_after, &m, &inherit, why, whylen)) {
++        return false;
++    }
++    if (m != n) {
++        snprintf(why, whylen, "%u pieces before, %u after", n, m);
++        return false;
++    }
++    for (i = 0; i < n; i++) {
++        b = &runs[i];
++        c = &omacvm_sweep_after[i];
++        if (b->start != c->start || b->end != c->end || b->object != c->object ||
++            b->offset != c->offset) {
++            snprintf(why, whylen, "another object or offset at +%llu MB",
++                     (unsigned long long)((c->start - at) >> 20));
++            return false;
++        }
++    }
++    return true;
++}
++
++static void omacvm_sweep_add_hold(OmacvmSweep *s, int64_t ns)
++{
++    int step = MIN(ns / OMACVM_RECLAIM_STEP_NS, OMACVM_RECLAIM_STEPS - 1);
++
++    s->hour.hold[step]++;
++    s->run.hold[step]++;
++    s->hour.longest_ns = MAX(s->hour.longest_ns, ns);
++    s->run.longest_ns = MAX(s->run.longest_ns, ns);
++}
++
++static void omacvm_sweep_stop(OmacvmSweep *s, const char *why)
++{
++    s->stopped = true;
++    snprintf(s->why, sizeof(s->why), "%s", why);
++    warn_report("OmacVM: own-view sweep: stopped for this run: %s; Activity Monitor "
++                "counts the VM's pages QEMU touches twice again, as up to 3.2.16", why);
++}
++
++/* One chunk, under the BQL: check, remap, and in the first pass check again. */
++static void omacvm_sweep_chunk(OmacvmSweep *s)
++{
++    mach_vm_address_t at = (mach_vm_address_t)(uintptr_t)s->host + s->at, to = at;
++    mach_vm_size_t len = MIN(OMACVM_SWEEP_CHUNK, s->size - s->at);
++    int64_t start = get_clock();
++    vm_inherit_t inherit = VM_INHERIT_DEFAULT;
++    uint64_t before, after;
++    vm_prot_t cur, max;
++    kern_return_t kr;
++    char why[160], stop[200];
++    unsigned n;
++
++    s->at += len;
++    if (!omacvm_sweep_entries(at, len, omacvm_sweep_runs, &n, &inherit, why, sizeof(why))) {
++        s->hour.left++;
++        s->run.left++;
++        s->hour.left_bytes += len;
++        s->run.left_bytes += len;
++        if (!s->said_left) {
++            s->said_left = true;
++            warn_report("OmacVM: own-view sweep: a chunk at +%llu MB stays as it is "
++                        "(%s); qemu.log's sweep lines count such chunks",
++                        (unsigned long long)((at - (uintptr_t)s->host) >> 20), why);
++        }
++        omacvm_sweep_add_hold(s, get_clock() - start);
++        return;
++    }
++    before = omacvm_sweep_footprint();
++    kr = mach_vm_remap(mach_task_self(), &to, len, 0,
++                       VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), at,
++                       FALSE, &cur, &max, inherit);
++    if (kr != KERN_SUCCESS || to != at ||
++        (cur & (VM_PROT_READ | VM_PROT_WRITE)) != (VM_PROT_READ | VM_PROT_WRITE)) {
++        if (!omacvm_sweep_same(at, len, omacvm_sweep_runs, n, why, sizeof(why))) {
++            error_report("OmacVM: own-view sweep: a failed remap (%s) changed QEMU's view "
++                         "of guest RAM at +%llu MB (%s): QEMU stops before it reads or "
++                         "writes memory that is not the guest's", mach_error_string(kr),
++                         (unsigned long long)((at - (uintptr_t)s->host) >> 20), why);
++            abort();
++        }
++        snprintf(stop, sizeof(stop), "a remap at +%llu MB failed (%s, protection %d)",
++                 (unsigned long long)((at - (uintptr_t)s->host) >> 20),
++                 mach_error_string(kr), kr == KERN_SUCCESS ? cur : 0);
++        omacvm_sweep_add_hold(s, get_clock() - start);
++        omacvm_sweep_stop(s, stop);
++        return;
++    }
++    if (s->first && !omacvm_sweep_same(at, len, omacvm_sweep_runs, n, why, sizeof(why))) {
++        error_report("OmacVM: own-view sweep: after a remap QEMU's view of guest RAM at "
++                     "+%llu MB maps other memory than the guest's (%s): QEMU stops "
++                     "before it reads or writes there",
++                     (unsigned long long)((at - (uintptr_t)s->host) >> 20), why);
++        abort();
++    }
++    after = omacvm_sweep_footprint();
++    s->hour.chunks++;
++    s->run.chunks++;
++    if (before > after) {
++        s->hour.less += before - after;
++        s->run.less += before - after;
++    }
++    omacvm_sweep_add_hold(s, get_clock() - start);
++}
++
++static void omacvm_sweep_log(const OmacvmSweep *s, const char *when,
++                             const OmacvmSweepStats *t)
++{
++    uint64_t total = 0, need, seen = 0;
++    char left[160] = "", stopped[240] = "";
++    int64_t p99;
++    int step;
++
++    for (step = 0; step < OMACVM_RECLAIM_STEPS; step++) {
++        total += t->hold[step];
++    }
++    need = total - total / 100;
++    for (step = 0; step < OMACVM_RECLAIM_STEPS - 1; step++) {
++        seen += t->hold[step];
++        if (seen >= need) {
++            break;
++        }
++    }
++    p99 = MIN((int64_t)(step + 1) * OMACVM_RECLAIM_STEP_NS, t->longest_ns);
++    if (t->left) {
++        snprintf(left, sizeof(left), "; %" PRIu64 " chunks (%.0f MB) left as they were "
++                 "(not shared with the guest as QEMU's view must be)", t->left,
++                 t->left_bytes / 1048576.0);
++    }
++    if (s->stopped) {
++        snprintf(stopped, sizeof(stopped), "; stopped: %s", s->why);
++    }
++    info_report("OmacVM: own-view sweep %s: %" PRIu64 " passes over %.0f MB of guest "
++                "RAM, %" PRIu64 " skipped (QEMU's footprint grew less than 64 MB), %"
++                PRIu64 " chunks remapped; Activity Monitor %.0f MB less; main lock per "
++                "chunk p99 %.2f ms, longest %.2f ms%s%s", when, t->passes,
++                s->size / 1048576.0, t->idle, t->chunks, t->less / 1048576.0,
++                p99 / 1e6, t->longest_ns / 1e6, left, stopped);
++}
++
++static void omacvm_sweep_setup(OmacvmSweep *s, void *host, uint64_t size,
++                               int64_t period_s, bool check, int64_t now)
++{
++    memset(s, 0, sizeof(*s));
++    s->host = host;
++    s->size = size;
++    s->at = size;
++    s->first = true;
++    s->check = check;
++    s->period_ns = period_s * NANOSECONDS_PER_SECOND;
++    s->next_ns = MIN(period_s, OMACVM_SWEEP_FIRST_S) * NANOSECONDS_PER_SECOND;
++    s->hour_start = now;
++}
++
++/*
++ * Under the BQL, from the sweep's timer: the next chunk of a pass, or the
++ * start of one, and the hour's line. usable: main RAM is still QEMU's
++ * private memory (no dirty logging). Returns when to come again (ns from
++ * now), or -1: stopped for the run.
++ */
++static int64_t omacvm_sweep_step(OmacvmSweep *s, int64_t now, bool usable)
++{
++    uint64_t fp;
++
++    if (s->stopped) {
++        return -1;
++    }
++    if (now - s->hour_start >= 3600 * NANOSECONDS_PER_SECOND) {
++        omacvm_sweep_log(s, "in the last hour", &s->hour);
++        memset(&s->hour, 0, sizeof(s->hour));
++        s->hour_start = now;
++    }
++    if (!usable) {
++        s->at = s->size;                /* this pass ends here */
++        return s->period_ns;
++    }
++    if (s->at >= s->size) {
++        fp = omacvm_sweep_footprint();
++        if (s->footprint_after && fp < s->footprint_after + OMACVM_SWEEP_GROWTH &&
++            s->skipped < OMACVM_SWEEP_SKIPS) {
++            s->skipped++;
++            s->hour.idle++;
++            s->run.idle++;
++            return s->period_ns;
++        }
++        s->skipped = 0;
++        s->at = 0;
++    }
++    omacvm_sweep_chunk(s);
++    if (s->stopped) {
++        return -1;
++    }
++    if (s->at < s->size) {
++        return OMACVM_SWEEP_GAP_NS;
++    }
++    s->first = false;
++    s->hour.passes++;
++    s->run.passes++;
++    s->footprint_after = omacvm_sweep_footprint();
++    if (s->check) {
++        info_report("OmacVM: own-view sweep check: pass %" PRIu64 " done, %" PRIu64
++                    " chunks remapped this run, Activity Monitor %.0f MB less this run, "
++                    "longest chunk %.2f ms, footprint now %.0f MB", s->run.passes,
++                    s->run.chunks, s->run.less / 1048576.0, s->run.longest_ns / 1e6,
++                    s->footprint_after / 1048576.0);
++    }
++    return s->period_ns;
++}
++/* omacvm-sweep: end */
++
++/* The sweep's QEMU side: its timer on the main loop (under the BQL), from the machine's start. */
++static OmacvmSweep omacvm_sweep;
++static QEMUTimer *omacvm_sweep_timer;
++static Notifier omacvm_sweep_init, omacvm_sweep_exit;
++
++static void omacvm_sweep_tick(void *opaque)
++{
++    MemoryRegion *mr = current_machine->ram;
++    int64_t next;
++
++    assert(bql_locked());
++    next = omacvm_sweep_step(&omacvm_sweep, get_clock(), omacvm_ram_private(mr));
++    if (next >= 0) {
++        timer_mod(omacvm_sweep_timer, qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + next);
++    }
++}
++
++static void omacvm_sweep_at_exit(Notifier *n, void *data)
++{
++    omacvm_sweep_log(&omacvm_sweep, "this run", &omacvm_sweep.run);
++}
++
++static void omacvm_sweep_start(Notifier *n, void *data)
++{
++    MemoryRegion *mr = current_machine ? current_machine->ram : NULL;
++    const char *check = getenv("OMACVM_DCOUNT_SWEEP_CHECK");
++    int64_t period = omacvm_sweep_period(getenv("OMACVM_DCOUNT_SWEEP"));
++
++    if (!period) {
++        info_report("OmacVM: own-view sweep: off (OMACVM_DCOUNT_SWEEP=0): Activity "
++                    "Monitor counts the VM's pages QEMU touches twice");
++        return;
++    }
++    if (!mr || !mr->ram_block || !omacvm_ram_private(mr)) {
++        info_report("OmacVM: own-view sweep: off (the VM's RAM is not QEMU's private "
++                    "memory)");
++        return;
++    }
++    omacvm_sweep_setup(&omacvm_sweep, mr->ram_block->host, mr->ram_block->used_length,
++                       period, check && !strcmp(check, "1"), get_clock());
++    /* omacvm check's "Activity Monitor" row picks its words from this line. */
++    info_report("OmacVM: own-view sweep: on: QEMU remaps its view of the VM's %.0f MB "
++                "every %" PRId64 " s, so Activity Monitor counts the VM's pages once "
++                "(OMACVM_DCOUNT_SWEEP=0 turns it off)", omacvm_sweep.size / 1048576.0,
++                period);
++    omacvm_sweep_exit.notify = omacvm_sweep_at_exit;
++    qemu_add_exit_notifier(&omacvm_sweep_exit);
++    omacvm_sweep_timer = timer_new_ns(QEMU_CLOCK_REALTIME, omacvm_sweep_tick, NULL);
++    timer_mod(omacvm_sweep_timer,
++              qemu_clock_get_ns(QEMU_CLOCK_REALTIME) + omacvm_sweep.next_ns);
++}
++
+ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+ {
+     MemoryRegionSection section;
+     MemoryRegion *mr;
+-    RAMBlock *rb;
+     size_t page_size = qemu_real_host_page_size();
+     hv_memory_flags_t flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
+     int64_t start = get_clock();
+@@ -736,20 +1198,16 @@ void hvf_report_free_pages(hwaddr gpa, void *host, size_t size)
+         return;
+     }
+ 
+-    /* Only replace QEMU-owned private anonymous RAM, mapped at this GPA.
+-     * Never replace shared, file-backed, device, ROM, or externally owned RAM.
+-     * Skip dirty logging rather than bypassing HVF's write protection.
++    /* Only replace QEMU-owned private anonymous RAM, mapped at this GPA
++     * (omacvm_ram_private(): the sweep goes by the same rule). Skip dirty
++     * logging rather than bypassing HVF's write protection.
+      */
+     section = memory_region_find(get_system_memory(), gpa, size);
+     mr = section.mr;
+     if (!mr) {
+         return;
+     }
+-    rb = mr->ram_block;
+-    if (!memory_region_is_ram(mr) || mr->readonly || mr->rom_device ||
+-        memory_region_is_ram_device(mr) || !rb || rb->fd >= 0 ||
+-        (rb->flags & (RAM_SHARED | RAM_PREALLOC)) ||
+-        memory_region_get_dirty_log_mask(mr) ||
++    if (!omacvm_ram_private(mr) ||
+         int128_get64(section.size) != size ||
+         section.offset_within_address_space != gpa ||
+         memory_region_get_ram_ptr(mr) + section.offset_within_region != host) {
+@@ -853,6 +1311,8 @@ static int hvf_accel_init(AccelState *as, MachineState *ms)
+ 
+     hvf_state = s;
+     memory_listener_register(&hvf_memory_listener, &address_space_memory);
++    omacvm_sweep_init.notify = omacvm_sweep_start;
++    qemu_add_machine_init_done_notifier(&omacvm_sweep_init);
+ 
+     return hvf_arch_init();
+ }

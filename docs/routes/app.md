@@ -1531,22 +1531,36 @@ the fix runs.
 
 Activity Monitor's Memory for the VM is QEMU's footprint. The pages that
 stayed were never in it, so it does not change with this. It can also show
-more than the VM holds: once QEMU's own threads touched a guest page (the
-disk, graphics, network) and macOS compressed it, macOS counts that page
-twice there (a 4 GB VM on the Mac mini after a browser session: 5.9 GB
-shown, 2.1 GB of it counted twice; the Mac got 4.8 GB back when QEMU was
-killed). On a 16 GB Mac mini with Chrome full screen at 5K (2026-10-30) it
-showed 23 GB for a VM of 12 GB with 4.5 GB of graphics, and 19.3 GB for
-the same VM at 10 GB with 3.2 GB of graphics, while macOS compressed most
-of it. `omacvm check`'s "Activity Monitor" row says what the number is made
-of while the VM runs: "19.3 GB for the VM: VM memory at most 10.0 GB,
-graphics 3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and
-pages macOS counts twice while it compresses the VM)". VM memory is at most
-what QEMU runs with (`-m`), as Linux may not have touched all of it; the
-graphics are the VM's own count (`logs/gpu-memory`); the rest is not split
-further: nothing on the Mac says which pages are counted twice. The row
-reads QEMU's footprint with `proc_pid_rusage` (`src/lib/footprint.py`):
-no task port, QEMU runs on.
+more than the VM holds: macOS counts a page of the VM once for every mapping
+that touched it, and QEMU's own threads (the disk, graphics, network) reach
+guest RAM through QEMU's own mapping of it, so each page they touched counts
+twice, compressed or not (a 4 GB VM on the Mac mini after a browser session:
+5.9 GB shown, 2.1 GB of it counted twice; the Mac got 4.8 GB back when QEMU
+was killed; a 12 GB VM on a MacBook Pro M1 Max with nothing compressed: 1.2
+to 2.0 GB counted twice). On a 16 GB Mac mini with Chrome full screen at 5K
+(2026-10-30) it showed 23 GB for a VM of 12 GB with 4.5 GB of graphics, and
+19.3 GB for the same VM at 10 GB with 3.2 GB of graphics. From 3.2.17 QEMU
+drops that count (ADR 0066): every 5 minutes (the first time a minute after
+the start) it remaps its own view of the VM's main RAM over itself, 128 MB
+at a time under the main lock (`mach_vm_remap`, no copy: the same memory,
+without QEMU's page table entries). No page moves and the Mac gets nothing
+back; a pass is skipped while QEMU's footprint grew less than 64 MB, at most
+twice in a row.
+`logs/qemu.log` says "own-view sweep: on" at the start, then a line an hour
+(passes, MB less in Activity Monitor, the main lock's hold per chunk);
+`OMACVM_DCOUNT_SWEEP=0` turns it off. A page only QEMU touched since the
+guest last did (a disk read the guest has not used yet) leaves the count
+until one of them touches it again. `omacvm check`'s "Activity Monitor" row
+says what the number is made of while the VM runs: "19.3 GB for the VM: VM
+memory at most 10.0 GB, graphics 3.2 GB now, the rest 6.1 GB (QEMU itself,
+graphics overhead and pages of the VM QEMU touched, which macOS counts
+twice)"; with a QEMU that sweeps (its own qemu.log line, not omacvm's
+version) "pages of the VM QEMU touched since its last sweep, counted twice
+until then". VM memory is at most what QEMU runs with (`-m`), as Linux may
+not have touched all of it; the graphics are the VM's own count
+(`logs/gpu-memory`); the rest is not split further. The row reads QEMU's
+footprint with `proc_pid_rusage` (`src/lib/footprint.py`): no task port,
+QEMU runs on.
 
 **VM memory above the Best tier.** The Best tier leaves macOS and the
 graphics max(8 GB, a quarter) of the Mac: 8 GB of a 16 GB Mac. More is

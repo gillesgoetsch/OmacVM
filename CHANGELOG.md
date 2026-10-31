@@ -36,6 +36,16 @@ in more words.
   `OMACVM_SURFACE_MEMORY=file` (QEMU's environment) goes back to the files. Needs the app update
   (from the VM's next start).
 
+- **Activity Monitor counts the VM's memory once (OmacVM.app).** macOS counted every page of the VM
+  that QEMU itself had touched (disk reads, network, graphics) a second time, compressed or not: a
+  12 GB VM on a MacBook Pro M1 Max showed 1.2 to 2.0 GB more than it held with nothing compressed,
+  so the words of 3.2.16 ("counts part of a compressed VM twice") were wrong. QEMU now remaps its own
+  view of the VM's memory every 5 minutes, which drops that count; no page moves and the Mac gets
+  no memory back. A 4 GB VM on a Mac mini showed 6.9 GB after 2.5 GB of disk reads and 8.1 GB with
+  Chrome at 5K; with the sweep 4.5 and 6.4 GB, for the same 4.1 and 3.9 GB of guest memory held.
+  `omacvm check`'s "Activity Monitor" row and the (i) say what is left. `OMACVM_DCOUNT_SWEEP=0`
+  turns it off. Needs the app update; nothing in the VM.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left

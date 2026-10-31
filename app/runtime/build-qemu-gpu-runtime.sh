@@ -93,6 +93,7 @@ shared_folder_patch="$native_dir/patches/qemu-9p-guest-owner.patch"
 memory_reclaim_patch="$native_dir/patches/qemu-hvf-free-page-reclaim.patch"
 mapped_sections_patch="$native_dir/patches/qemu-hvf-mapped-sections.patch"
 reclaim_reusable_patch="$native_dir/patches/qemu-hvf-free-page-reclaim-reusable.patch"
+own_view_sweep_patch="$native_dir/patches/qemu-hvf-own-view-sweep.patch"
 strchrnul_patch="$native_dir/patches/qemu-darwin-strchrnul-compat.patch"
 usb_exact_bus_patch="$native_dir/patches/qemu-usb-host-exact-bus.patch"
 slirp_patch="$native_dir/patches/libslirp-darwin-icmp-matching.patch"
@@ -162,6 +163,7 @@ shared_folder_patch_sha256=41247692501655393ae3a40f56915472ab29b6e89c5173e33db1f
 memory_reclaim_patch_sha256=5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf
 mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0
 reclaim_reusable_patch_sha256=4b86c2c3629dda457f0afe48a2e360341e85ccb499a9d5fd8e1abf7f8ea21cc8
+own_view_sweep_patch_sha256=52b6b89bf732f546d014a7f005cdf212115f1538b9ca006ce17f85ebcbe3e38f
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
 virgl_int_tex_patch_sha256=5336df08e7096fb0e4b977ebedf36aac29c6c053df7edbdea7ff5e45273f57e4
@@ -342,6 +344,8 @@ macos_major=$(sw_vers -productVersion | awk -F. '{ print $1 }')
   die "missing HVF mapped-sections patch: $mapped_sections_patch"
 [[ -f $reclaim_reusable_patch && ! -L $reclaim_reusable_patch ]] || \
   die "missing HVF free-page reclaim (reusable) patch: $reclaim_reusable_patch"
+[[ -f $own_view_sweep_patch && ! -L $own_view_sweep_patch ]] || \
+  die "missing HVF own-view sweep patch: $own_view_sweep_patch"
 [[ -f $strchrnul_patch && ! -L $strchrnul_patch ]] || \
   die "missing Darwin strchrnul compatibility patch: $strchrnul_patch"
 [[ -f $usb_exact_bus_patch && ! -L $usb_exact_bus_patch ]] || \
@@ -606,6 +610,8 @@ verify_file_sha "Try Omarchy HVF mapped-sections patch" \
   "$mapped_sections_patch" "$mapped_sections_patch_sha256"
 verify_file_sha "OmacVM HVF free-page reclaim (reusable) patch" \
   "$reclaim_reusable_patch" "$reclaim_reusable_patch_sha256"
+verify_file_sha "OmacVM HVF own-view sweep patch" \
+  "$own_view_sweep_patch" "$own_view_sweep_patch_sha256"
 verify_file_sha "Try Omarchy Darwin GPU fence polling patch" \
   "$fence_poll_patch" "$fence_poll_patch_sha256"
 verify_file_sha "Try Omarchy Darwin strchrnul compatibility patch" \
@@ -640,6 +646,14 @@ patch -d "$source_dir" -p1 -f -i "$mapped_sections_patch"
 # this Mac allows one), the worker's queue overflowing included.
 patch -d "$source_dir" -p1 -f -i "$reclaim_reusable_patch"
 "$native_dir/Tests/memory/test-reclaim.sh" "$source_dir" "$work_dir/memory-tests"
+# OmacVM: Activity Monitor counts guest RAM once: QEMU remaps its own view of
+# the VM's main RAM over itself every few minutes (its page table entries,
+# and with them the second count, go; no page is touched); free page reports
+# go by the same rule for QEMU's private RAM. The test runs the patched sweep
+# and reclaim on guest RAM shared like QEMU's (a real hv_vm_map where this
+# Mac allows one) while a thread reads and writes a file into it.
+patch -d "$source_dir" -p1 -f -i "$own_view_sweep_patch"
+"$native_dir/Tests/memory/test-dcount.sh" "$source_dir" "$work_dir/dcount-tests"
 patch -d "$source_dir" -p1 -f -i "$fence_poll_patch"
 patch -d "$source_dir" -p1 -f -i "$pinch_patch"
 patch -d "$source_dir" -p1 -f -i "$precise_scroll_patch"

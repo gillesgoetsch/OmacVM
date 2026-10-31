@@ -300,6 +300,28 @@ commit 82927e9. Changes here:
   `--keeps`: a refused and a skipped advice; `--overflow`: the worker
   behind until its queue is full, no advice under the BQL) and in CI
   (`src/tests/memory-reclaim.sh`); ADR 0062
+- `patches/qemu-hvf-own-view-sweep.patch` (after the reclaim patch):
+  Activity Monitor counts guest RAM once. macOS charges a page once per
+  mapping that touched it, so every guest page QEMU's own threads touched
+  (disk, network, graphics) counted twice, compressed or not. A sweep remaps
+  QEMU's view of the VM's main RAM over itself (`mach_vm_remap`, no copy,
+  fixed over itself: the same objects, without QEMU's page table entries),
+  128 MB at a time under the main lock, 20 ms apart; a pass a minute after
+  the start, then every 5 minutes, skipped while QEMU's footprint grew less
+  than 64 MB (twice in a row at most). No page moves; the Mac gets nothing back. Main RAM only, by the
+  rule free page reports now share (`omacvm_ram_private`: never the Venus
+  window's blobs, pflash, ROM, shared or file-backed memory). Before each
+  remap every map entry must share its object with the guest (true shared
+  or shared, an object, read-write, not wired), else the chunk stays as it
+  is (counted); in the first pass a changed view stops QEMU; a failed remap
+  stops the sweep for the run. `logs/qemu.log`: "own-view sweep: on" or
+  "off" at the start (`omacvm check` reads it), a line an hour and one at
+  exit (passes, MB less in Activity Monitor, the main lock's hold per
+  chunk). `OMACVM_DCOUNT_SWEEP=0`: off; seconds there: the time between
+  passes, and `OMACVM_DCOUNT_SWEEP_CHECK=1` a line per pass (tests).
+  `Tests/memory/test-dcount.sh` at build time (no VM; a real `hv_vm_map`
+  where the Mac lets the build make a VM; pread/pwrite and free page
+  reports during a pass) and in CI (`src/tests/memory-dcount.sh`); ADR 0066
 - `patches/mesa-kosmickrisp-*.patch`: changes to KosmicKrisp, applied by
   `build-kosmickrisp.sh` in name order (their hash is in its stamp).
   `mesa-kosmickrisp-shared-align.patch` declares a compute shader's shared

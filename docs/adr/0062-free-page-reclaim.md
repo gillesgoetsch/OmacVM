@@ -143,6 +143,12 @@ they left after.
   graphics, network) and macOS compressed it, it counts that page twice
   (4 GB VM on the mini after a browser session: 5.9 GB shown, 2.1 GB of it
   counted twice; the Mac got back 4.8 GB when QEMU was killed).
+  Note (3.2.17, ADR 0066): compression is not what makes it count twice.
+  macOS counts a page once per mapping that touched it, resident or
+  compressed (a 12 GB VM with nothing compressed: 1.2 to 2.0 GB counted
+  twice); QEMU's own-view sweep now drops that count every 5 minutes.
+  A free page report and the sweep go by one rule for QEMU's private RAM
+  (`omacvm_ram_private`).
 - Main lock and guest stalls (Mac mini, 3 GB VM; of what the VM gave back,
   macOS had compressed 90-94 % of what it still held): the hold per report p99 0.85-0.98 ms,
   longest 1.12 ms (the old way: 0.39-0.68 ms, longest 0.68 ms); the

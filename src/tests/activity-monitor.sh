@@ -3,9 +3,10 @@
 # Activity Monitor's Memory for an OmacVM.app VM, and what it is made of
 # without a guess: VM memory at most QEMU's -m, graphics now from
 # logs/gpu-memory, the rest when above 0 (QEMU itself, graphics overhead,
-# pages macOS counts twice while it compresses the VM); a warning above this
-# Mac's Best tier, never a failure; no line without QEMU, its footprint or the
-# file. Stand-ins for QEMU's process, its footprint and the Mac's memory;
+# the VM's pages QEMU touched, which macOS counts twice; with a QEMU that says
+# "own-view sweep: on" in qemu.log only those since its last sweep); a warning
+# above this Mac's Best tier, never a failure; no line without QEMU, its
+# footprint or the file. Stand-ins for QEMU's process, its footprint and the Mac's memory;
 # src/lib/footprint.py on real processes. No VM. macOS only.
 #   src/tests/activity-monitor.sh
 set -uo pipefail
@@ -36,7 +37,8 @@ amrow() {
     eval "$row" )
 }
 V=$T/Omarchy; mkdir -p "$V/logs"; : > "$V/logs/qemu.log"
-REST="(QEMU itself, graphics overhead and pages macOS counts twice while it compresses the VM)"
+REST="(QEMU itself, graphics overhead and pages of the VM QEMU touched, which macOS counts twice)"
+SWEPT="(QEMU itself, graphics overhead and pages of the VM QEMU touched since its last sweep, counted twice until then)"
 # The maintainer's Mac mini, read on 2026-10-30 15:25: 16 GB Mac, the VM at 10 GB, QEMU's footprint 19748 MB,
 # 3328 MB of graphics in use.
 PID=4242 FP=19748 VMM=10240 MACGB=16
@@ -68,6 +70,20 @@ MACGB=64
 expect "the same on a 64 GB Mac: ok (its Best tier is 48 GB)" "ok" "$(amrow "$V" | cut -d' ' -f1)"
 PID=""
 expect "QEMU not running: no line" "" "$(amrow "$V")"
+# The words come from this QEMU's own line (an omacvm can run beside an older app's QEMU): the first one.
+PID=4242
+printf '%s\n' "OmacVM-VM: OmacVM: own-view sweep: on: QEMU remaps its view of the VM's 12288 MB every 300 s, so Activity Monitor counts the VM's pages once (OMACVM_DCOUNT_SWEEP=0 turns it off)" > "$V/logs/qemu.log"
+expect "a QEMU that sweeps its own view: only what it touched since its last sweep is counted twice" \
+  "ok Activity Monitor: 23.0 GB for the VM: VM memory at most 12.0 GB, graphics 4.5 GB now, the rest 6.5 GB $SWEPT" "$(amrow "$V")"
+printf '%s\n' "OmacVM-VM: OmacVM: own-view sweep: on: QEMU remaps its view of the VM's 12288 MB every 300 s" \
+  "OmacVM-VM: warning: OmacVM: own-view sweep: stopped for this run: a remap at +0 MB failed ((os/kern) no space available, protection 0)" > "$V/logs/qemu.log"
+expect "the sweep stopped for the run: counted twice, as before" \
+  "ok Activity Monitor: 23.0 GB for the VM: VM memory at most 12.0 GB, graphics 4.5 GB now, the rest 6.5 GB $REST" "$(amrow "$V")"
+printf '%s\n' "OmacVM-VM: OmacVM: own-view sweep: off (OMACVM_DCOUNT_SWEEP=0): Activity Monitor counts the VM's pages QEMU touches twice" \
+  "guest: OmacVM: own-view sweep: on" > "$V/logs/qemu.log"
+expect "the sweep switched off (its first line): counted twice, as before" \
+  "ok Activity Monitor: 23.0 GB for the VM: VM memory at most 12.0 GB, graphics 4.5 GB now, the rest 6.5 GB $REST" "$(amrow "$V")"
+: > "$V/logs/qemu.log"
 PID=4242 FP=""
 expect "its footprint not readable (no python3 here, or QEMU just ended): no line" "" "$(amrow "$V")"
 FP=23552; rm "$V/logs/gpu-memory"
