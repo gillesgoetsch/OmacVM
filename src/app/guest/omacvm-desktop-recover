@@ -30,6 +30,18 @@
 #       in 6 minutes and 3 times in an hour: Chrome counts each as a crash
 #       and turns its GPU off for the session after 3 recent ones (it
 #       forgives one per 5 minutes). A note says what happened.
+#   omacvm-desktop-recover venus NAME venus|guard
+#       A Vulkan (Venus) context of an app ended on the Mac: the Mac refused
+#       its Vulkan commands (venus), or the graphics memory apps may use was
+#       full (guard). Nothing is ended: the VM's Vulkan driver ends most apps
+#       by itself; a Ghostty on Zink stops drawing and takes no typing, and a
+#       new Ghostty window waits for it (one Ghostty serves all its windows).
+#       For ghostty, $ZINK_OFF says "Ghostty on the CPU for the rest of this
+#       boot" (root's, everyone reads it; one line "lost TIME WHY"), which
+#       OmacVM's EGL library reads at the next Ghostty's start. A note says
+#       what happened and what to do. (3.2.17; older VMs answer with the usage
+#       line, exit 2: `app NAME venus` would be taken for a full graphics
+#       memory there and end the app's GPU process.)
 #   omacvm-desktop-recover stall SECONDS VM_GB MAC_GB
 #       The VM stood still that long because macOS ran out of free memory
 #       (QEMU's stall note; the VM held VM_GB of the Mac's MAC_GB). A note
@@ -41,6 +53,8 @@ NOTE=${OMACVM_RECOVER_NOTE:-/run/omacvm/desktop/restarted}
 # When each app's GPU process was restarted: root's own folder (0700), never
 # the user's /run/omacvm (root never writes into a folder the user owns).
 STAMPS=${OMACVM_RECOVER_STAMPS:-/run/omacvm-recover}
+# Ghostty on the CPU for the rest of this boot (venus): in root's /run/omacvm.
+ZINK_OFF=${OMACVM_RECOVER_ZINK_OFF:-/run/omacvm/gl-zink-off}
 say() { logger -t omacvm-desktop-recover -- "$*" 2>/dev/null; echo "$*"; }
 
 U=$(sed -n 's/^OMACVM_USER=//p' "$ENV" 2>/dev/null | tail -1)
@@ -204,6 +218,39 @@ app)
   fi
   in_session notify-send -a OmacVM -u normal "$title" "$body" 2>/dev/null || say "could not show the note: $body"
   ;;
+venus)
+  # The name is the app's process name as QEMU kept it (letters, digits, . _ -).
+  name=$(printf '%s' "${2:-}" | tr -cd 'A-Za-z0-9._-' | cut -c1-40); name=${name:-An app}
+  why=venus; [[ ${3:-} == guard ]] && why=guard
+  if [[ $why == guard ]]; then
+    cause="$name used all the graphics memory apps may have on this Mac, so its Vulkan graphics ended."
+  else
+    cause="The Mac refused $name's Vulkan commands, so its Vulkan graphics ended."
+  fi
+  say "$name lost its Vulkan (Venus) context on the Mac ($why); nothing is ended, the desktop keeps drawing"
+  if [[ $name == ghostty ]]; then
+    # Root's own file in root's folder (0755): never through a link, never in a folder
+    # someone else owns. Written once per boot; a second loss keeps the first line.
+    dir=$(dirname "$ZINK_OFF")
+    [[ -e $dir || -L $dir ]] || install -d -m 755 "$dir" 2>/dev/null
+    if [[ -L $dir || ! -d $dir || $(stat -c '%u' "$dir" 2>/dev/null) != "$(id -u)" ]]; then
+      say "$dir is not root's own folder: Ghostty may start on Zink again"
+    elif [[ -L $ZINK_OFF || ( -e $ZINK_OFF && ! -f $ZINK_OFF ) ]]; then
+      say "$ZINK_OFF is not a plain file: Ghostty may start on Zink again"
+    elif [[ ! -e $ZINK_OFF ]]; then
+      printf 'lost %s %s\n' "$(date -Iseconds)" "$why" > "$ZINK_OFF.tmp.$$" && chmod 644 "$ZINK_OFF.tmp.$$" &&
+        mv -f "$ZINK_OFF.tmp.$$" "$ZINK_OFF" && say "Ghostty starts on the CPU for the rest of this boot ($ZINK_OFF)"
+      rm -f "$ZINK_OFF.tmp.$$"
+    fi
+    title="Ghostty stopped drawing"
+    body="$cause Its windows no longer draw or take typing, and a new Ghostty window waits for it: close it first (Terminate in the window that says it is not responding). Programs running in it end. The next Ghostty starts on the CPU until the VM restarts."
+  else
+    title="$name stopped drawing"
+    body="$cause The desktop keeps running. Restart $name; if it closed by itself, open it again."
+  fi
+  [[ -n $U ]] || { say "no desktop user in $ENV; the note: $body"; exit 1; }
+  in_session notify-send -a OmacVM -u normal "$title" "$body" 2>/dev/null || say "could not show the note: $body"
+  ;;
 stall)
   [[ -n $U ]] || { say "no desktop user in $ENV"; exit 1; }
   # Digits only, as the app sends them.
@@ -218,7 +265,7 @@ stall)
   in_session notify-send -a OmacVM -u normal "The VM stood still for $secs s" "$body" 2>/dev/null || say "could not show the note: $body"
   ;;
 *)
-  echo "usage: omacvm-desktop-recover desktop graphics|memory|guard | shell | notify | app NAME guard|pressure | stall SECONDS VM_GB MAC_GB" >&2
+  echo "usage: omacvm-desktop-recover desktop graphics|memory|guard | shell | notify | app NAME guard|pressure | venus NAME venus|guard | stall SECONDS VM_GB MAC_GB" >&2
   exit 2
   ;;
 esac
