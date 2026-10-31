@@ -224,6 +224,9 @@ jobs:
       - name: omacvm check says when the VM stood still (logs/vm-stalls)
         run: src/tests/vm-stalls.sh
 
+      - name: omacvm check names the apps that lost a GL or Vulkan (Venus) GPU context, not a context the guest was closing
+        run: src/tests/gpu-contexts-check.sh
+
       - name: omacvm resources (settings files, tiers, the warning above the Best tier; fixtures, no VM)
         run: src/tests/resources.sh
 
@@ -806,7 +809,7 @@ jobs:
       - name: The VM's cold file cache give-back on Linux (bash, GNU tools as in the VM; a kernel that refuses swappiness=)
         run: src/tests/memory-giveback.sh
 
-      - name: An app that lost its GPU context on the Mac gets a new GPU process (only its own, at most once in 6 minutes; stand-ins with Chrome's process names and titles)
+      - name: An app that lost its GPU context on the Mac gets a new GPU process (only its own, at most once in 6 minutes; stand-ins with Chrome's process names and titles); a lost Vulkan context ends nothing and sends the next Ghostty to the CPU
         run: src/tests/desktop-recover-gpu.sh
 
       - name: A feature switch on Linux (GNU sed, glide off path)
