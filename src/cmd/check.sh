@@ -441,12 +441,13 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   FEATURE=""
   # The VM's memory, and the VM's file cache this run: OmacVM.app asks the VM
   # to drop its file cache when macOS warns, and for its cold file cache while
-  # macOS compresses the VM only with a QEMU that gives the pages back to
-  # macOS (qemu.log's "give-back while macOS compresses: on|off" line;
-  # logs/memory-giveback, ADR 0059), until that QEMU finds macOS keeping them
-  # anyway (kept=1, ADR 0062). The numbers are what the VM freed and
-  # QEMU's footprint, not what the Mac got back. Never a failure: a hint when
-  # macOS holds much compressed and the VM had little left to give.
+  # macOS compresses the VM or when the VM is quiet only with a QEMU that gives
+  # the pages back to macOS (qemu.log's "give-back while macOS compresses:
+  # on|off" line; logs/memory-giveback, ADR 0059), until that QEMU finds macOS
+  # keeping them anyway (kept=1, ADR 0062). The idle give-backs have their own
+  # count (idle=, idle_mb=), not in "N times". The numbers are what the VM
+  # freed and QEMU's footprint, not what the Mac got back. Never a failure: a
+  # hint when macOS holds much compressed and the VM had little left to give.
   vmm=$(app_env "$(dirname "$(dirname "$miclog")")" MEM_MB); [[ $vmm =~ ^[0-9]+$ ]] || vmm=""
   mg="$(dirname "$miclog")/memory-giveback"
   mgv() { sed -n "s/^$1=//p" "$mg" 2>/dev/null | head -1; }
@@ -481,8 +482,14 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     if (( mgb < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then
       what="$what; macOS holds $(gb $(( stored * pgsz / 1048576 ))) compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)"
     fi
-  else
+  elif [[ ! $(mgv idle) =~ ^[1-9][0-9]*$ ]]; then
     what="${what:+$what; }the VM freed no file cache this run"
+  fi
+  # The idle give-backs (cache and compacted free memory, by the VM's own count).
+  mgi=$(mgv idle) mgim=$(mgv idle_mb)
+  if [[ $(mgv off) != 1 && $mgi =~ ^[1-9][0-9]*$ && $mgim =~ ^[0-9]+$ ]]; then
+    if [[ $mgi == 1 ]]; then mgi="once"; else mgi="$mgi times"; fi
+    what="${what:+$what; }while the VM was idle it gave back memory $mgi this run, $(gb "$mgim") by its own count"
   fi
   [[ -n $what ]] && ok "VM memory" "$what"
   # Activity Monitor's Memory for the VM (QEMU's footprint) and what it is made
