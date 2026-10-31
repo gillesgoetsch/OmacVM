@@ -5,7 +5,7 @@ in more words.
 
 ## 3.2.17 (unreleased)
 
-- **OmacVM.app's QEMU keeps less graphics memory of its own.** QEMU no longer
+- **OmacVM.app's QEMU keeps less graphics memory of its own (#653).** QEMU no longer
   makes its own copy of the console's picture while the guest shows its
   desktop, where the window never draws it: about 127 MiB less in Activity
   Monitor per 5K display (host test, Mac mini M4), and no upload under QEMU's
