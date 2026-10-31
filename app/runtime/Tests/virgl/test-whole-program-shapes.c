@@ -19,10 +19,11 @@
  *        tessellation evaluation shader, as the last stage: the planes pick the variant);
  *        and a vertex shader that writes gl_CullDistance, which the Mac's GL has not: it stays
  *        refused, nothing drawn, no context error, the next rows still draw;
- *  E     a whole program with a varying array into a geometry shader (dynamically indexed:
- *        GL_ARB_arrays_of_arrays only where the GL has it, virgl-shader-arrays-of-arrays.patch),
- *        and its controls: single varyings into the geometry shader, an array into single
- *        fragment inputs. */
+ *  E     a whole program with a varying array into a geometry shader, and one whose
+ *        tessellation evaluation shader reads its patch varyings as an array (both dynamically
+ *        indexed: GL_ARB_arrays_of_arrays only where the GL has it,
+ *        virgl-shader-arrays-of-arrays.patch), and the controls: single varyings into the
+ *        geometry shader, an array into single fragment inputs. */
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl3.h>
 #include <stdio.h>
@@ -511,6 +512,46 @@ static const char *gs_array =
    " 10: EMIT IMM[0].xxxx\n"
    " 11: END\n";
 
+/* patch varyings as an array: the control shader writes PATCH[0..1] = (0,1,0,0), (0,0,0,1), the
+ * evaluation shader reads them with a dynamic index (the guest's Mesa keeps tessellation inputs
+ * indexed so; a geometry shader's it unrolls) */
+static const char *tcs_patch_array =
+   "TESS_CTRL\n"
+   "PROPERTY TCS_VERTICES_OUT 3\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL SV[0], INVOCATIONID\n"
+   "DCL OUT[][0], POSITION\n"
+   "DCL OUT[1], TESSOUTER\n"
+   "DCL OUT[2], TESSINNER\n"
+   "DCL OUT[3..4], ARRAY(1), PATCH[0]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   "  0: UARL ADDR[0].x, SV[0].xxxx\n"
+   "  1: MOV OUT[ADDR[0].x][0], IN[ADDR[0].x][0]\n"
+   "  2: MOV OUT[1].x, IMM[0].xxxx\n"
+   "  3: MOV OUT[1].y, IMM[0].xxxx\n"
+   "  4: MOV OUT[1].z, IMM[0].xxxx\n"
+   "  5: MOV OUT[2].x, IMM[0].xxxx\n"
+   "  6: MOV OUT[3], IMM[0].yxyy\n"
+   "  7: MOV OUT[4], IMM[0].yyyx\n"
+   "  8: END\n";
+
+static const char *tes_patch_array =
+   "TESS_EVAL\n"
+   TES_PROPS
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[1..2], ARRAY(1), PATCH[0]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   TES_POS
+   "  4: UARL ADDR[0].x, IMM[0].xxxx\n"
+   "  5: ADD OUT[1], IN[ADDR[0].x+1], IN[2]\n"
+   "  6: END\n";
+
 /* A copy marked separable. */
 static const char *separable(const char *text)
 {
@@ -867,6 +908,12 @@ int main(int argc, char **argv)
       row("E4 whole program: array output, single inputs (green)", (const struct stage[]){
              { 0, SHADER_VERTEX, vs_array, 0 }, { 0, SHADER_FRAGMENT, fs_two, 0 }, { 0 } },
           PRIM_TRIANGLES, 0xffff);
+      row("E10 whole program: patch varyings as an array, read with a dynamic index (green)",
+          (const struct stage[]){
+             { 0, SHADER_VERTEX, vs_full, 0 }, { 0, SHADER_TESS_CTRL, tcs_patch_array, 0 },
+             { 0, SHADER_TESS_EVAL, tes_patch_array, 0 }, { 0, SHADER_FRAGMENT, fs_varying, 0 },
+             { 0 } },
+          PRIM_PATCHES, 0xffff);
    }
 
    virgl_renderer_ctx_detach_resource(cur_ctx, R_COLOUR);
