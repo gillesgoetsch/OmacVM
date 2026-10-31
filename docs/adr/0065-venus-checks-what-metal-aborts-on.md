@@ -302,14 +302,18 @@ vkr, not with option 2. Four more patches, one per class, after the four above:
 
 - `virgl-venus-command-state.patch`: each command buffer's state (recording,
   the open render pass or rendering with its subpass, colours and view mask,
-  the bound pipelines, conditional rendering). Commands on a buffer that does
-  not record, draws outside a pass or without a graphics pipeline, dispatches
-  inside a pass or without a compute pipeline, clears outside a pass or past
-  its colours, a pass begun inside another, `vkCmdNextSubpass` past the last
-  subpass, ends without their begin, queries and timestamps in a multiview
-  pass past the pool (one query per view), and secondaries that still record
-  or do not match the primary's pass end the context. KosmicKrisp and
-  MoltenVK with prefill crashed on the probed ones.
+  all cleared when it ends; its render pass and framebuffer by id and a serial
+  given at create, never by pointer; the bound pipelines, conditional
+  rendering). Commands on a buffer that does not record, draws outside a pass
+  or without a graphics pipeline, dispatches inside a pass or without a
+  compute pipeline, clears outside a pass or past its colours, a pass begun
+  inside another, `vkCmdNextSubpass` past the last subpass, ends without their
+  begin, a next subpass or an end after the app destroyed the pass's render
+  pass or framebuffer (vkr and Mesa's `vk_render_pass` read both there; such a
+  command buffer is invalid in Vulkan), queries (begin and end) and
+  timestamps in a multiview pass past the pool (one query per view), and
+  secondaries that still record or do not match the primary's pass end the
+  context. KosmicKrisp and MoltenVK with prefill crashed on the probed ones.
 - `virgl-venus-spirv-scan.patch`: a structural scan of every module and of
   SPIR-V chained into a stage (`vkr_spirv.c`, no driver): header, every
   instruction inside the code, the ids it reads inside the bound (at most
@@ -332,16 +336,18 @@ vkr, not with option 2. Four more patches, one per class, after the four above:
   with the colour or depth/stencil attachment feature on the host (an unknown
   format ended both drivers, R64G64B64A64 ended KosmicKrisp).
 
-`test-venus-commands.c` has 272 cases now (50 for these classes, legal
+`test-venus-commands.c` has 281 cases now (59 for these classes, legal
 maxima among them: a mirrored blit, a copy that ends at the buffer's last
 byte, the largest workgroup, a shader with an unused descriptor set the layout
 lacks). With the four patches above all 40 refused new cases fail on
 KosmicKrisp, MoltenVK and MoltenVK with prefill (the process ended in 8, 6 and
-12 of them); with 3.2.15's vkr 187, 174 and 174 of the 260 cases fail; with all
+12 of them); with 3.2.15's vkr 187, 174 and 174 of the first 260 failed; with all
 eight patches every case passes (3 of 3 runs, 0 GPU restarts). `vkCmdDraw`
 through vkr costs 0.169 -> 0.173 us on KosmicKrisp and 0.025 -> 0.029 us on
-MoltenVK (medians of 3 runs); a scan takes 0.16 to 0.53 us for a shader of 126
-to 394 words (the mini's M4, once per `vkCreateShaderModule`).
+MoltenVK (medians of 3 runs). The scan runs once per `vkCreateShaderModule`;
+the fuzz test's largest module (2.9 million words, 131,072 functions) scans in
+0.02-0.03 s and its call graph walks in 0.03-0.05 s (each build log prints
+them).
 
 A full validator (SPIRV-Tools) would be a new pinned dependency and a cost
 per module; it is added only if a crash past the structural scan is found.
@@ -353,7 +359,8 @@ descriptor sets and push constants a draw or dispatch uses but the app never
 set when it encodes them (at submit in QEMU; a test without them ended
 MoltenVK's process at `vkEndCommandBuffer` with prefilled command buffers);
 objects destroyed while a recorded or pending command buffer still uses them
-(MoltenVK encodes at submit from stored pointers, KosmicKrisp's Metal 4 command
+(vkr checks only the open pass's render pass and framebuffer, at its next
+subpass and end; MoltenVK encodes at submit from stored pointers, KosmicKrisp's Metal 4 command
 buffers do not retain their resources); what the GPU does when commands run
 (robustness off, hangs, huge dispatches); driver bugs on valid input; two rings
 on one object at once; thread exhaustion; huge descriptor pools (each pool size
