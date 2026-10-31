@@ -23,9 +23,10 @@
 #                   0.5 s and reach neither it nor the VM, Return then connects (the VM lists the
 #                   device), Escape keeps it on the Mac; QEMU's "USB Devices…" opens the list there
 #                   within 1 s, its Connect and Disconnect work, Return closes it and the VM is in
-#                   front again; no macOS permission dialog. Headless (or nobody may see the screen):
-#                   the list only, opened through QEMU's item by Accessibility and used by
-#                   Accessibility's press (no input events), so it also runs on a locked Mac
+#                   front again; no macOS permission dialog. Headless, on a locked Mac or one nobody
+#                   uses: QEMU's item by Accessibility (no input events) and the app's list: built
+#                   (locked: macOS shows a panel only for the app in front, and loginwindow is), or
+#                   shown and used by Accessibility's press; the on-screen part BLOCKED
 # The window's header buttons (Start, Update VM) sit under its toolbar, where a click posted as an event
 # does nothing (macOS 15, tried): they get Accessibility's press; switches, the sidebar and the pointer
 # get real events.
@@ -603,9 +604,15 @@ row_usb() {   # start 1, after the pointer row: the switch was on from the start
   usb_prompts
 }
 
-# Headless (also on a locked Mac): the list through QEMU's item and Accessibility's press, no input events.
+# Headless: QEMU's item through Accessibility (no input events), only on a locked Mac or one nobody uses (the
+# app's panel could show to whoever works at it). macOS shows a panel only while its app is in front, and on a
+# locked Mac loginwindow is in front (no app can take it, 2026-10-31 on the mini and the M1): the list is then
+# only built (CGWindowList: the app's floating window, 520 pt wide, off screen) and its words and buttons are
+# the on-screen row's. Shown (the app in front): read and used by Accessibility's press.
+usb_list_win() { "$T" windows "$LP" 2>/dev/null | grep '^on=[01] layer 3 [0-9-]* [0-9-]* 520 ' | head -1; }
 usb_hidden() {
-  local r a=""
+  local r a="" w="" how="" i
+  if [[ $(locked) != Yes ]] && ! away; then res usb-list BLOCKED "headless on an unlocked Mac someone uses: the list's panel could show to them"; return; fi
   usb_switch_on keep
   qmark; UT0=$(date +%s)
   open -n -g --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_BACKGROUND=1 --env OMACVM_TEST_USB_FAKE=1 \
@@ -617,22 +624,29 @@ usb_hidden() {
   else
     usb_fake plug
     waitfor 10 usb_logged "kept on the Mac (remembered)" >/dev/null || a+="no 'kept on the Mac (remembered)' line; "
+    [[ -z $(usb_list_win) ]] || a+="a 520 pt floating window before QEMU's item: $(usb_list_win); "
     r=$("$T" menu "$QP" "USB Devices…") || a+="QEMU's item: $r; "
-    waitfor 3 usb_list_up >/dev/null || a+="no list from QEMU's item; "
-    [[ $("$T" onscreen "$LP" | head -1) -ge 1 ]] || a+="the list is not on screen; "
-    (( $("$T" texts "$LP" | grep -c 'OmacVM Test Device') > 0 )) || a+="the list does not show the device; "
-    r=$("$T" press "$LP" AXButton "Connect OmacVM Test Device to $VM") || a+="Connect: $r; "
-    waitfor 15 usb_is 1 >/dev/null || a+="the VM does not list it after Connect ($(usb_n)); "
-    usb_logged "connected (from the list)" || a+="no 'connected (from the list)' line; "
-    r=$("$T" press "$LP" AXButton "Disconnect OmacVM Test Device") || a+="Disconnect: $r; "
-    waitfor 15 usb_is 0 >/dev/null || a+="the VM still lists it after Disconnect; "
-    usb_logged "disconnected (from the list)" || a+="no 'disconnected (from the list)' line; "
-    r=$("$T" press "$LP" AXButton Done) || a+="Done: $r; "
-    waitfor 3 usb_list_gone >/dev/null || a+="Done did not close the list; "
+    for ((i = 0; i < 30; i++)); do [[ -n $(usb_list_win) ]] && break; sleep 0.1; done
+    w=$(usb_list_win); [[ -n $w ]] || a+="the app built no list (no floating 520 pt window in 3 s); "
+    sleep 1
+    if [[ -n $w && -z $a ]] && usb_list_up; then
+      (( $("$T" texts "$LP" | grep -c 'OmacVM Test Device') > 0 )) || a+="the list does not show the device; "
+      r=$("$T" press "$LP" AXButton "Connect OmacVM Test Device to $VM") || a+="Connect: $r; "
+      waitfor 15 usb_is 1 >/dev/null || a+="the VM does not list it after Connect ($(usb_n)); "
+      usb_logged "connected (from the list)" || a+="no 'connected (from the list)' line; "
+      r=$("$T" press "$LP" AXButton "Disconnect OmacVM Test Device") || a+="Disconnect: $r; "
+      waitfor 15 usb_is 0 >/dev/null || a+="the VM still lists it after Disconnect; "
+      usb_logged "disconnected (from the list)" || a+="no 'disconnected (from the list)' line; "
+      r=$("$T" press "$LP" AXButton Done) || a+="Done: $r; "
+      waitfor 3 usb_list_gone >/dev/null || a+="Done did not close the list; "
+      how="shown: the device listed; Connect: the VM lists it; Disconnect: gone; Done closed it"
+    elif [[ -n $w ]]; then
+      how="built, not shown ($w; in front: pid $("$T" frontpid), the app $("$T" appstate "$LP" | cut -d' ' -f1)): its words and buttons are the on-screen row's"
+    fi
     usb_fake unplug
   fi
-  [[ -z $a ]] && res usb-list ok "headless: QEMU's USB Devices… opened the list (the device, kept on the Mac); Connect: the VM lists it; Disconnect: gone; Done closed it" ||
-    { res usb-list FAIL "headless: $a"; "$T" texts "$LP" > "$OUT/shots/usb-list.txt" 2>&1; }
+  [[ -z $a ]] && res usb-list ok "headless ($([[ $(locked) == Yes ]] && echo "locked Mac" || echo "nobody at the Mac")): QEMU's USB Devices… -> the app's list $how" ||
+    { res usb-list FAIL "headless: $a"; "$T" texts "$LP" > "$OUT/shots/usb-list.txt" 2>&1; "$T" windows "$LP" >> "$OUT/shots/usb-list.txt" 2>&1; }
   usb_prompts
   gssh systemctl poweroff >/dev/null 2>&1
   stopped_left usb-stop "headless, shut down from inside" && quit_left usb-quit

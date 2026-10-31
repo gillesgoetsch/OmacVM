@@ -31,6 +31,9 @@
 //   space                    the id of the Space shown on the active display
 //   onscreen PID             PID's windows on screen now (CGWindowList, no pictures): N, then
 //                            "layer L X Y W H" per window
+//   windows PID              all of PID's windows, also those not on screen (CGWindowList): "on=0|1 layer L
+//                            X Y W H alpha A" per window
+//   appstate PID             active=0|1 hidden=0|1 policy=regular|accessory|prohibited front=PID
 //   key PID CODE             a key press (virtual key CODE: 36 Return, 53 Escape), only while PID is in
 //                            front (exit 3 otherwise: nothing sent)
 //   ask-keys PID BUTTON [OTHER]
@@ -374,6 +377,18 @@ case "onscreen":
     let ws = onScreen(pidArg())
     say("\(ws.count)")
     for w in ws { say("layer \(w.layer) \(fmt(w.frame))") }
+case "windows":
+    let pid = pidArg()
+    let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
+    for w in list where (w[kCGWindowOwnerPID as String] as? Int).map(pid_t.init) == pid {
+        let r = (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) } ?? .zero
+        say("on=\((w[kCGWindowIsOnscreen as String] as? Bool) == true ? 1 : 0) layer \((w[kCGWindowLayer as String] as? Int) ?? 0) \(fmt(r)) alpha \((w[kCGWindowAlpha as String] as? Double) ?? 0)")
+    }
+case "appstate":
+    let pid = pidArg()
+    guard let a = NSRunningApplication(processIdentifier: pid) else { say("no app \(pid)"); exit(1) }
+    let pol = a.activationPolicy == .regular ? "regular" : a.activationPolicy == .accessory ? "accessory" : "prohibited"
+    say("active=\(a.isActive ? 1 : 0) hidden=\(a.isHidden ? 1 : 0) policy=\(pol) front=\(frontNow())")
 case "key":
     let pid = pidArg()
     guard args.count >= 4, let code = CGKeyCode(args[3]) else { usage() }
