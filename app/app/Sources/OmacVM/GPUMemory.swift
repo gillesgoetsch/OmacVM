@@ -57,7 +57,8 @@ extension VMStalls {
 
 /// While a VM runs: follows its graphics memory and macOS's memory pressure.
 /// - When macOS warns that memory is short, the VM drops its whole file
-///   cache, and compacts its free memory once the pressure is normal again.
+///   cache, and compacts its free memory once the pressure is normal again
+///   and the VM quiet.
 ///   When macOS compresses the VM, or the VM is quiet (MemoryGiveBack says
 ///   when), the VM gives back its cold file cache, and when quiet it also
 ///   compacts its free memory (src/memory/guest/giveback.sh, from this app's
