@@ -15,13 +15,20 @@ struct InfoButton: View {
         .buttonStyle(.borderless)
         .accessibilityLabel("About \(topic)")
         .help(text)
-        .popover(isPresented: $shown, arrowEdge: .bottom) {
-            Text(text)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: 320, alignment: .leading)
-                .padding(14)
-        }
+        .popover(isPresented: $shown, arrowEdge: .bottom) { InfoText(text: text) }
     }
 }
 
+/// What an (i)'s popover shows. The window pictures draw the same view
+/// (RenderVMWindow: popover-2-resources).
+struct InfoText: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: 320, alignment: .leading)
+            .padding(14)
+    }
+}
