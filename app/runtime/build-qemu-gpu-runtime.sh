@@ -1135,6 +1135,16 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-pointer-hover
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
 grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
+# OmacVM: a console's GL texture made when it is first drawn, not at every
+# switch: none while the guest shows a GL scanout (virgl) or for the
+# placeholder behind the boot logo, so no upload under the BQL at a display
+# off or on or a mode change. The sequences and the wiring fail on the code
+# before, then pass.
+"$native_dir/Tests/display/test-console-texture.sh" --self-test "$source_dir/ui/cocoa.m" "$source_dir/ui/console-gl.c" || \
+  die "ui/cocoa.m: the console texture checks pass without the patch (test-console-texture.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/qemu-cocoa-gl-console-texture-lazy.patch"
+"$native_dir/Tests/display/test-console-texture.sh" "$source_dir/ui/cocoa.m" "$source_dir/ui/console-gl.c" || \
+  die "ui/cocoa.m: the console texture is not made when first drawn as tested (test-console-texture.sh)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"

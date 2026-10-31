@@ -1,0 +1,211 @@
+QEMU Cocoa: make a console's GL texture when it is first drawn
+
+What: cocoa_gl_switch and the extra displays' omacvm_head_gfx_switch drop
+the old surface's texture and make none for the new one. It is made whole
+(glTexImage2D of the surface; the surface holds the whole picture) on
+QEMU's thread when something draws it: at the surface's first update (2D:
+the firmware, the boot console), at a present without a GL scanout, or at
+the refresh tick before a CAOpenGLLayer (GPU safe mode, extra displays)
+draws it. Readers on the AppKit thread draw black until it is there and
+never make it. The boot logo stands in for the "display not active"
+placeholder, so with the logo on (the default) the placeholder gets no
+texture at all. OMACVM_CONSOLE_TEXTURE=eager makes it at every switch, as
+before. qemu.log once: "cocoa: console texture: made when first drawn" or
+"... made at every switch (OMACVM_CONSOLE_TEXTURE=eager)".
+Why: with virgl the window shows the guest's scanout texture and never the
+console texture, yet every set scanout made one: qemu_console_resize at
+each mode change and display on, the placeholder at each display off (at
+the old size), each upload under the BQL. Apple's GL keeps a second copy
+of a texture filled from client memory: 127.4 MiB of QEMU's footprint per
+5120x2880 output (host test without a VM, vm-memory host-code gfxmem:
+console 127.4 vs console-nodata 0). #609's rows: up to 218.6 ms of BQL
+per upload, 161-170 holds of 20 ms or more in 60 display off/on cycles.
+Upstream: the console texture code is upstream's (ui/console-gl.c); the
+callers are OmacVM's texture-borrowing and heads patches. Not sent.
+Tests: Tests/display/test-console-texture.sh (build time: the listeners
+and console-gl.c's helpers from the patched files with a GL stub that
+counts uploaded bytes: a GL scanout and 3 display off/on cycles upload
+nothing (3.2.16: 5120x2880x4 at every switch), the placeholder without
+the logo one 640x480 upload, a 2D surface one whole upload at its first
+update; the readers' wiring; --self-test: all fail on the code before).
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index d558a3a..e8d601c 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -8094,11 +8094,62 @@ static void omacvm_intro_start(void)
+     omacvm_hold_start();
+ }
+ 
++/*
++ * OmacVM: a console's GL texture (QEMU's copy of its DisplaySurface) is made
++ * when it is first drawn, not at every switch. While the guest shows a GL
++ * scanout nothing draws it, and the boot logo stands in for the "display
++ * not active" placeholder; made at every switch it cost ~127 MiB of QEMU's
++ * footprint at 5K (Apple's GL keeps a second copy of a texture filled from
++ * client memory) and an upload under the BQL at every display off and on,
++ * mode change and reset. It is made whole (the surface holds the whole
++ * picture) on QEMU's thread: at the surface's first update (the firmware,
++ * the boot console: 2D), at a present that draws it, or at the refresh
++ * tick before a layer does. Readers on the AppKit thread (the CAOpenGLLayer
++ * path, other displays' layers) draw black until it is there.
++ * OMACVM_CONSOLE_TEXTURE=eager makes it at every switch, as before.
++ */
++static bool omacvm_console_tex_eager(void)
++{
++    static int eager = -1;
++
++    if (eager < 0) {
++        const char *v = getenv("OMACVM_CONSOLE_TEXTURE");
++        eager = v && !strcmp(v, "eager");
++        info_report("cocoa: console texture: %s", eager ?
++                    "made at every switch (OMACVM_CONSOLE_TEXTURE=eager)" :
++                    "made when first drawn (OMACVM_CONSOLE_TEXTURE=eager: at every switch)");
++    }
++    return eager;
++}
++
++/* BQL: does a listener draw S's texture (SCANOUT: it shows a GL scanout)? */
++static bool omacvm_console_tex_wanted(DisplaySurface *s, bool scanout)
++{
++    return s && !scanout && !omacvm_splash_wanted(NULL, s);
++}
++
++/* QEMU's thread, BQL: S's texture, made whole now if it is drawn and not there yet. */
++static bool omacvm_console_tex_ready(DisplaySurface *s, bool scanout)
++{
++    if (s && !s->texture && omacvm_console_tex_wanted(s, scanout)) {
++        CGLContextObj prev = CGLGetCurrentContext();
++        with_gl_view_ctx(^{
++            surface_gl_create_texture(dgc.gls, s);
++        });
++        CGLSetCurrentContext(prev);
++    }
++    return s && s->texture;
++}
++
+ static void cocoa_gl_update(DisplayChangeListener *dcl,
+                             int x, int y, int w, int h)
+ {
+     with_gl_view_ctx(^{
+-        surface_gl_update_texture(dgc.gls, surface, x, y, w, h);
++        if (surface->texture) {
++            surface_gl_update_texture(dgc.gls, surface, x, y, w, h);
++        } else if (omacvm_console_tex_wanted(surface, gl_scanout_borrow != NULL)) {
++            surface_gl_create_texture(dgc.gls, surface);    /* whole, at its first update */
++        }
+         gl_dirty = true;
+     });
+     cocoa_refresh_activity();
+@@ -8112,10 +8163,17 @@ static void cocoa_gl_update(DisplayChangeListener *dcl,
+ static void cocoa_gl_switch(DisplayChangeListener *dcl,
+                             DisplaySurface *new_surface)
+ {
+-    with_gl_view_ctx(^{
+-        surface_gl_destroy_texture(dgc.gls, surface);
+-        surface_gl_create_texture(dgc.gls, new_surface);
+-    });
++    bool eager = omacvm_console_tex_eager();
++
++    /* OmacVM: the new surface's texture when it is first drawn (above). */
++    if (eager || (surface && surface->texture)) {
++        with_gl_view_ctx(^{
++            surface_gl_destroy_texture(dgc.gls, surface);
++            if (eager) {
++                surface_gl_create_texture(dgc.gls, new_surface);
++            }
++        });
++    }
+ 
+     cocoa_switch(dcl, new_surface);
+     gl_dirty = true;
+@@ -8200,11 +8258,15 @@ static void cocoa_gl_render(void)
+         }
+     } else if (omacvm_splash_wanted(NULL, surface)) {
+         omacvm_splash_draw(size.width, size.height, !omacvm_desktop_up);
+-    } else {
++    } else if (surface && surface->texture) {
+         glBindTexture(GL_TEXTURE_2D, surface->texture);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+         surface_gl_render_texture(dgc.gls, surface);
++    } else {
++        /* OmacVM: no console texture yet (QEMU's thread makes it). */
++        glClearColor(0, 0, 0, 1);
++        glClear(GL_COLOR_BUFFER_BIT);
+     }
+ 
+     if (cocoa_gl_trace_enabled()) {
+@@ -9622,7 +9684,7 @@ static bool cocoa_gl_present(void)
+         w = omacvm_view_w ? omacvm_view_w : (surface ? surface_width(surface) : 0);
+         h = omacvm_view_h ? omacvm_view_h : (surface ? surface_height(surface) : 0);
+         flip = false;
+-    } else if (surface && surface->texture) {
++    } else if (omacvm_console_tex_ready(surface, false)) {
+         src = surface->texture;
+         w = surface_width(surface);
+         h = surface_height(surface);
+@@ -10702,6 +10764,15 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
+      */
+     bool held = omacvm_present_held();
+ 
++    /*
++     * OmacVM: a console surface drawn on the AppKit thread (no IOSurface
++     * present) gets its texture here at the latest; the present makes its own.
++     */
++    if (!present_ctx && surface && !surface->texture &&
++        omacvm_console_tex_ready(surface, gl_scanout_borrow != NULL)) {
++        gl_dirty = true;
++    }
++
+     cocoa_refresh(dcl);
+     cocoa_refresh_tick(gl_dirty && !held);
+ 
+@@ -11602,7 +11673,11 @@ static void omacvm_head_gfx_update(DisplayChangeListener *dcl,
+     OmacVMHead *hd = (OmacVMHead *)dcl;
+ 
+     with_gl_view_ctx(^{
+-        surface_gl_update_texture(dgc.gls, hd->surface, x, y, w, h);
++        if (hd->surface && hd->surface->texture) {
++            surface_gl_update_texture(dgc.gls, hd->surface, x, y, w, h);
++        } else if (omacvm_console_tex_wanted(hd->surface, hd->borrow != NULL)) {
++            surface_gl_create_texture(dgc.gls, hd->surface);    /* whole, at its first update */
++        }
+     });
+     hd->dirty = true;
+     cocoa_refresh_activity();
+@@ -11612,13 +11687,17 @@ static void omacvm_head_gfx_switch(DisplayChangeListener *dcl,
+                                    DisplaySurface *new_surface)
+ {
+     OmacVMHead *hd = (OmacVMHead *)dcl;
++    bool eager = omacvm_console_tex_eager();
+ 
+-    with_gl_view_ctx(^{
+-        surface_gl_destroy_texture(dgc.gls, hd->surface);
+-        if (new_surface) {
+-            surface_gl_create_texture(dgc.gls, new_surface);
+-        }
+-    });
++    /* OmacVM: the new surface's texture when it is first drawn (cocoa_gl_update). */
++    if (eager || (hd->surface && hd->surface->texture)) {
++        with_gl_view_ctx(^{
++            surface_gl_destroy_texture(dgc.gls, hd->surface);
++            if (eager && new_surface) {
++                surface_gl_create_texture(dgc.gls, new_surface);
++            }
++        });
++    }
+     hd->surface = new_surface;
+     hd->dirty = true;
+     cocoa_refresh_activity();
+@@ -11629,6 +11708,11 @@ static void omacvm_head_refresh(DisplayChangeListener *dcl)
+     OmacVMHead *hd = (OmacVMHead *)dcl;
+ 
+     qemu_console_hw_update(dcl->con);
++    /* OmacVM: its layer draws on the AppKit thread: the console texture here. */
++    if (hd->surface && !hd->surface->texture &&
++        omacvm_console_tex_ready(hd->surface, hd->borrow != NULL)) {
++        hd->dirty = true;
++    }
+     if (hd->dirty && hd->display) {
+         int output = hd->output;
+         dispatch_async(dispatch_get_main_queue(), ^{
