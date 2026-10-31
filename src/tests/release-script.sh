@@ -230,6 +230,20 @@ mk suid; chmod 4755 "$AF/suid/$C1/Resources/runtime/bin/OmacVM"
 refused "a setuid file" suid "setuid/setgid"
 mk sock; (cd "$AF/sock/$C1/Resources/tools" && python3 -I -c 'import socket; socket.socket(socket.AF_UNIX).bind("sock")')
 refused "a socket (not a file, folder or link)" sock "not a file, folder or link"
+# Refused later anyway, but only after signing or notarizing.
+mk fail; echo "FAIL virgl: a build test" >> "$AF/fail/build.log"
+refused "a FAIL in build.log" fail "a build test failed there"
+touch "$W2/stray"
+refused "a worktree with changes" good "has changes"
+rm -f "$W2/stray"
+mk nokk; rm "$AF/nokk/$C1/Resources/runtime/lib/libvulkan_kosmickrisp.dylib"
+refused "no KosmicKrisp" nokk "no KosmicKrisp"
+taken "no KosmicKrisp with OMACVM_RELEASE_NO_KOSMICKRISP=1" nokk OMACVM_RELEASE_NO_KOSMICKRISP=1
+mk nokklic; : > "$AF/nokklic/$C1/Resources/licenses/LICENSE.mesa-kosmickrisp.txt"
+refused "an empty KosmicKrisp licence notice" nokklic "no KosmicKrisp"
+mk qemufw; echo "qemu edk2-aarch64-code.fd (QEMU's)" > "$AF/qemufw/$C1/Resources/firmware/firmware-source"
+refused "QEMU's firmware" qemufw "QEMU's firmware, not OmacVM's"
+taken "QEMU's firmware with OMACVM_FIRMWARE=qemu" qemufw OMACVM_FIRMWARE=qemu
 
 # sign-app.sh (build-app.sh's signing, also release.sh's for an app built
 # elsewhere): its arguments, and an ad hoc signing of a stand-in app with every

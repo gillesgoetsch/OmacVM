@@ -254,7 +254,8 @@ tree_list() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS=
 # OMACVM_RELEASE_APP_FROM=DIR: OmacVM.app put together at M on another Mac (one
 # without the keys), unsigned or ad hoc, with that build's log (DIR/OmacVM.app,
 # DIR/build.log). Checked against M here (its shape, id, commit and version;
-# what build-app.sh copies from git, file by file), then signed with M's own
+# what step build and package-release.sh would refuse only after signing; what
+# build-app.sh copies from git, file by file), then signed with M's own
 # sign-app.sh. Nothing from that Mac runs here.
 app_from() {   # DIR M
   local from=$1 m=$2 a c p t x om=0 sc=0
@@ -274,6 +275,14 @@ app_from() {   # DIR M
   [[ $(/usr/libexec/PlistBuddy -c "Print OmacVMCommit" "$p") == "$m" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not M"
   [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$p") == "$VERSION" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not $VERSION"
   [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$p") == org.omacvm.app ]] || die "OMACVM_RELEASE_APP_FROM: the app is not org.omacvm.app"
+  # Refused later anyway, but only after signing (step build) or notarizing
+  # (package-release.sh); a plain build (no --release) at M fails here.
+  grep -qw FAIL "$from/build.log" && die "OMACVM_RELEASE_APP_FROM: a build test failed there: grep -n FAIL $from/build.log"
+  [[ -z $(git -C "$WT" status --porcelain) ]] || die "OMACVM_RELEASE_APP_FROM: $WT has changes (the signing and its entitlements come from it)"
+  [[ ${OMACVM_RELEASE_NO_KOSMICKRISP:-0} == 1 || ( -f $c/Resources/runtime/lib/libvulkan_kosmickrisp.dylib && -s $c/Resources/licenses/LICENSE.mesa-kosmickrisp.txt ) ]] ||
+    die "OMACVM_RELEASE_APP_FROM: the app has no KosmicKrisp (or no licence notice for it): build it with --release (or OMACVM_RELEASE_NO_KOSMICKRISP=1)"
+  [[ $(cat "$c/Resources/firmware/firmware-source" 2>/dev/null) == omacvm* || ${OMACVM_FIRMWARE:-} == qemu ]] ||
+    die "OMACVM_RELEASE_APP_FROM: the app has QEMU's firmware, not OmacVM's (or OMACVM_FIRMWARE=qemu)"
   # What build-app.sh copies from git, made here the same way from M:
   # omacvm (git archive, COMMIT, go-w) and the scripts (mode 755; git has some
   # at 644).
