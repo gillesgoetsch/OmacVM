@@ -146,8 +146,9 @@ commit 82927e9. Changes here:
 - `patches/virgl-shader-arrays-of-arrays.patch`: a geometry or tessellation
   shader with a varying array asks for GL_ARB_arrays_of_arrays only where the GL
   has it; the Mac's has not, so such whole programs drew nothing (vrend already
-  declares those arrays as blocks there). #589; checked by
-  `Tests/virgl/test-whole-program-shapes.c`
+  declares those arrays as blocks there). From a VM: a tessellation shader that
+  indexes varyings or patch varyings dynamically (the guest's Mesa unrolls a
+  geometry shader's). #589; checked by `Tests/virgl/test-whole-program-shapes.c`
 - `patches/virgl-caps-tess-outputs.patch`: the guest gets the tessellation
   shaders' per-vertex output limits on every GL with tessellation; they were 0
   without atomic counters (the Mac), so the guest's Mesa refused every whole

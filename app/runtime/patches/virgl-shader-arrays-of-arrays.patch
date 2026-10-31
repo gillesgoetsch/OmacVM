@@ -6,10 +6,11 @@ Why: vrend required it without asking the GL. Apple's GL 4.1 has no ARB_arrays_o
 ("extension 'GL_ARB_arrays_of_arrays' is not supported"): the shader did not compile and the
 program drew nothing (#589). On such a GL vrend already declares these arrays in interface
 blocks (prefer_generic_io_block), which need no extension. Arrays read with constant indices
-never get here (the guest's Mesa splits them); dynamically indexed ones do.
+never get here (the guest's Mesa splits them), nor a geometry shader's inputs (it unrolls a
+dynamic index there); tessellation shaders' dynamically indexed varyings and patch varyings do.
 Upstream: the same in virglrenderer main (e0a1caf3, checked 2026-10-31); not sent.
-Test: Tests/virgl/test-whole-program-shapes.c row E8 (fails without this patch), rows E9 and
-E4 (controls).
+Test: Tests/virgl/test-whole-program-shapes.c rows E8 and E10 (fail without this patch), rows
+E9 and E4 (controls).
 
 --- a/src/vrend/vrend_shader.c
 +++ b/src/vrend/vrend_shader.c
