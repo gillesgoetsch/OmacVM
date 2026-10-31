@@ -210,6 +210,9 @@ static void inst_fail_all(struct ovd_inst *inst)
 	}
 	spin_unlock(&inst->slock);
 	wake_up_interruptible(&inst->setup_wq);
+	/* A poll asleep on a decoder with nothing queued (ovd_poll) gets no
+	 * buffer back from the loop above: wake it, it then sees the failure. */
+	wake_up_all(&inst->fh.wait);
 }
 
 /* ---- messages to the daemon ------------------------------------------- */
@@ -1050,11 +1053,40 @@ static int ovd_release(struct file *file)
 	return 0;
 }
 
+/*
+ * v4l2_m2m_poll() reports EPOLLERR while neither queue has a buffer queued.
+ * Here that is no error while a queue streams: at the end of a stream the
+ * app holds every CAPTURE buffer, OUTPUT is drained, and the daemon waits
+ * for a buffer to put the last pictures and the LAST one in. Chromium 153
+ * drops a wait that gets EPOLLERR and posts no new one, so it never saw
+ * that LAST: playback stood still at the end of a clip and a loop never
+ * looped. So the poll sleeps then, until a buffer comes back, an event or
+ * a stream off (vb2 wakes done_wq) or a failure (inst_fail_all wakes
+ * fh.wait). Neither queue streaming, or a failed decoder: EPOLLERR as
+ * before. v4l2_m2m_poll() has registered all three wait queues before this
+ * looks at the state, under the lock the stream ioctls take.
+ */
+static __poll_t ovd_poll(struct file *file, poll_table *wait)
+{
+	struct ovd_inst *inst = file2inst(file);
+	struct v4l2_m2m_ctx *ctx = inst->fh.m2m_ctx;
+	__poll_t rc;
+
+	mutex_lock(&inst->lock);
+	rc = v4l2_m2m_poll(file, ctx, wait);
+	if ((rc & EPOLLERR) && !READ_ONCE(inst->dead) &&
+	    (vb2_is_streaming(v4l2_m2m_get_src_vq(ctx)) ||
+	     vb2_is_streaming(v4l2_m2m_get_dst_vq(ctx))))
+		rc &= ~EPOLLERR;
+	mutex_unlock(&inst->lock);
+	return rc;
+}
+
 static const struct v4l2_file_operations ovd_fops = {
 	.owner = THIS_MODULE,
 	.open = ovd_open,
 	.release = ovd_release,
-	.poll = v4l2_m2m_fop_poll,
+	.poll = ovd_poll,
 	.unlocked_ioctl = video_ioctl2,
 	.mmap = v4l2_m2m_fop_mmap,
 };
