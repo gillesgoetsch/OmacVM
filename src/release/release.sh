@@ -13,6 +13,8 @@
 #   merge     the release PR into main with a merge commit M (dry run: M is
 #             the local commit)
 #   build     build-app.sh --release in a worktree at M; build tests must pass
+#             (or an app built at M on another Mac, checked and signed here:
+#             OMACVM_RELEASE_APP_FROM)
 #   notarize  Apple's notary service, then staple the ticket into the app
 #   package   OmacVM-VERSION.zip + .sha256, OmacVM-appcast.json + .sig (the
 #             app feed), omacvm-manifest.json + .sig (control centre)
@@ -43,8 +45,9 @@
 # that can: app/runtime/import-kosmickrisp.sh), OMACVM_RELEASE_RUNTIME_FROM (a runtime/.build to
 # start from; build-app.sh rebuilds it unless its inputs match),
 # OMACVM_RELEASE_APP_FROM (an absolute path: a folder with OmacVM.app built
-# at M on a Mac without the keys, and its build.log: checked and signed here,
-# not built; step image then runs the image VM on that app's own runtime),
+# at M on a Mac without the keys, and its build.log: checked against M and
+# signed here, not built; step image then runs the image VM on that app's own
+# runtime; docs/releasing.md says what is checked and what is trusted),
 # OMACVM_RELEASE_IMAGE_FROM (a folder with a signed image of this version:
 # used instead of building one), OMACVM_RELEASE_UNNOTARIZED=1 (release
 # without notarization, as 2.x), OMACVM_RELEASE_FROM (dry run only: the
@@ -253,10 +256,12 @@ tree_list() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS=
 
 # OMACVM_RELEASE_APP_FROM=DIR: OmacVM.app put together at M on another Mac (one
 # without the keys), unsigned or ad hoc, with that build's log (DIR/OmacVM.app,
-# DIR/build.log). Checked against M here (its shape, id, commit and version;
-# what step build and package-release.sh would refuse only after signing; what
-# build-app.sh copies from git, file by file), then signed with M's own
-# sign-app.sh. Nothing from that Mac runs here.
+# DIR/build.log). Before anything signs it: its shape, id, commit and version;
+# what step build and package-release.sh would refuse only after signing; and
+# what build-app.sh copies from git, file by file against M. Then M's own
+# sign-app.sh signs it. These checks catch mistakes; the binaries are trusted as
+# the build Mac's own: step image runs its QEMU and tools here
+# (docs/releasing.md, "An app built on another Mac").
 app_from() {   # DIR M
   local from=$1 m=$2 a c p t x om=0 sc=0
   a=$from/OmacVM.app; c=$a/Contents; p=$c/Info.plist

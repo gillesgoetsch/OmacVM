@@ -106,30 +106,69 @@ signs it and does the rest:
 
 1. On the release Mac: `release.sh X.Y.Z check bump merge` (M = the merge
    commit).
-2. On the build Mac, at M: `OMACVM_SIGN_ID=- app/scripts/build-app.sh
-   --release` (ad hoc; the runtime from source, `OMACVM_KOSMICKRISP_FROM` as
-   for any release). Bring `app/dist/OmacVM.app` and the build's output into
-   one folder on the release Mac, `DIR/OmacVM.app` and `DIR/build.log`, with
-   the files' modes and links kept (`ditto`, `rsync -a`).
+2. On the build Mac, in a clean worktree at M: `OMACVM_SIGN_ID=-
+   app/scripts/build-app.sh --release > build.log 2>&1` (ad hoc; the runtime
+   from source, `OMACVM_KOSMICKRISP_FROM` as for any release). Bring
+   `app/dist/OmacVM.app` and `build.log` into one folder on the release Mac,
+   `DIR/OmacVM.app` and `DIR/build.log`, with `ditto` or `rsync -a`. Never
+   through a drive or share that drops links or modes (exFAT, some SMB
+   shares): step build refuses such a copy.
 3. Before anything signs it, compare it with the previous release
    (`OmacVM-PREV.zip` from GitHub, its sha256 checked), file by file: each
    difference is a signature, a Mach-O UUID or build path, or a file the
-   commits PREV..M changed. Anything else you let through goes into the
-   release's notes with the reason.
+   commits PREV..M changed. Write anything else you let through into
+   `OUT/app-from-allowed.txt` (OUT is the run's output folder,
+   `~/omacvm-work/release-X.Y.Z/release/`), one line per path with the
+   reason.
 4. `OMACVM_RELEASE_APP_FROM=DIR src/release/release.sh X.Y.Z build notarize
    package verify image e2e publish after`, DIR an absolute path (a relative
-   one is refused). Step build does not build: it checks the app against M
-   (bundle id, OmacVMCommit = M, the version, `Contents/Resources/omacvm` =
-   `git archive M` file by file), copies it into the worktree and signs it
-   with M's own `app/scripts/sign-app.sh` (build-app.sh's signing), then
-   runs its usual checks. Nothing of the app runs before that. Nothing built
-   a runtime in the worktree, so step image makes the VM with the app's own
-   scripts and runtime (`make-image.sh` with `OMACVM_PREBUILT_APP`);
-   `OMACVM_RELEASE_RUNTIME_FROM` beside `OMACVM_RELEASE_APP_FROM` is refused.
+   one is refused). Step build does not build. Before anything signs the
+   app, it checks:
+   - its shape: only files, folders and links; outside
+     `Contents/Resources/omacvm` only the app's two links
+     (`Contents/MacOS/OmacVM-VM`, `Contents/Resources/python/bin/python3`);
+     nothing writable by group or others, nothing setuid or setgid;
+   - bundle id `org.omacvm.app`, OmacVMCommit = M, the version;
+   - what would otherwise stop the release only after signing or
+     notarizing: a `FAIL` in build.log, changes in the worktree at M (the
+     signing and its entitlements come from it), no KosmicKrisp or no licence
+     notice for it (unless `OMACVM_RELEASE_NO_KOSMICKRISP=1`), QEMU's firmware
+     instead of OmacVM's (unless `OMACVM_FIRMWARE=qemu`);
+   - what build-app.sh copies from git, against M file by file (names,
+     bytes, modes, links): `Contents/Resources/omacvm` = `git archive M`,
+     `Contents/Resources/scripts` = M's `app/scripts` files at mode 755.
 
-In a dry run M is bump's local commit: the other Mac builds that commit
-(`--dry-run X.Y.Z check bump`, the build there, then `--dry-run X.Y.Z build
-...` with `OMACVM_RELEASE_APP_FROM`).
+   Then it copies the app into the worktree, signs it with M's own
+   `app/scripts/sign-app.sh` (build-app.sh's signing) and runs its usual
+   checks. Nothing built a runtime in the worktree, so step image makes the
+   VM with the app's own scripts and runtime (`make-image.sh` with
+   `OMACVM_PREBUILT_APP`); `OMACVM_RELEASE_RUNTIME_FROM` beside
+   `OMACVM_RELEASE_APP_FROM` is refused.
+
+What the checks catch are mistakes: another commit, version or bundle id, a
+build without `--release`, a copy that lost links or modes, a changed file.
+They cannot check the binaries (the launcher, QEMU and its libraries, the
+helpers, netd, the tools, python): those are built on the other Mac, are
+not the same bytes twice, and the release ships them as that Mac made them.
+Nothing of the app runs on the release Mac before step image. Step image
+runs the app's QEMU, its libraries and its tools there, on the Mac with the
+keys (and its python, if no other `python3` comes first on the PATH). So
+build only on a Mac you would make the release on yourself: your own, without
+the keys, one you start the copy from.
+
+In a dry run M is bump's local commit (`--dry-run X.Y.Z check bump`) and
+nothing is pushed: bring it to the build Mac yourself, for example as a git
+bundle:
+
+```bash
+# release Mac: the commits origin does not have
+git -C ~/omacvm-rel-X.Y.Z-dry bundle create /tmp/m.bundle HEAD --not --remotes=origin
+# build Mac, in its clone after git fetch origin, with m.bundle copied over
+git fetch /path/to/m.bundle HEAD && git worktree add --detach ../omacvm-m FETCH_HEAD
+```
+
+Then build there as in 2 and run `--dry-run X.Y.Z build ...` with
+`OMACVM_RELEASE_APP_FROM`. Nothing goes to GitHub.
 
 ## Rollback
 
