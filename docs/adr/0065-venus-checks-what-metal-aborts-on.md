@@ -255,7 +255,8 @@ less clear line. Four patches, one per class:
 - `virgl-venus-descriptor-limits.patch`: a refcounted table per set layout
   (shared with its sets and the pipeline layouts that use it, so a layout may
   be destroyed first); layouts, pools, variable counts, writes and copies
-  (the spec's consecutive-binding rule, `nullDescriptor` for NULL handles,
+  (the spec's consecutive-binding rule, which skips bindings without
+  descriptors; `nullDescriptor` for NULL handles, dynamic buffers too;
   ranges inside the buffer and the range limits, multi-planar views only
   where immutable YCbCr samplers sized the binding), pipeline layouts, and
   binds and pushes against them (one dynamic offset per dynamic buffer).
@@ -267,8 +268,9 @@ less clear line. Four patches, one per class:
   amplification count Metal supports on the GPU (`vkr_metal_limits.m`, read
   once; 8 on the M1 Max), and view masks past it are refused at all five places
   one arrives (render pass multiview info, subpass description 2, rendering
-  info, inheritance rendering info, pipeline rendering info). MoltenVK renders
-  32 views and keeps telling 32.
+  info, inheritance rendering info, pipeline rendering info). Correlation
+  masks are not checked: no rule bounds them by the view count, and the
+  drivers only copy them. MoltenVK renders 32 views and keeps telling 32.
 - `virgl-venus-pipeline-limits.patch`: stages (one known bit each, code: a
   module, or SPIR-V chained into the stage with a size in whole words; the
   inline path skipped vkr's only shader check), specialization entries inside
@@ -281,7 +283,7 @@ less clear line. Four patches, one per class:
 `vkCmd*` handlers a verdict (checked, command-buffer state, values only,
 stub, GPU-side); the runtime build fails when a handler has none, so a new
 command in a virglrenderer update needs a decision. `test-venus-commands.c`
-(216 cases, a legal-maxima group among them: every limit at its advertised
+(222 cases, a legal-maxima group among them: every limit at its advertised
 value must keep working) runs on KosmicKrisp, MoltenVK and MoltenVK with
 prefilled command buffers at every runtime build. Against 3.2.15's vkr 147 of
 the first 210 failed on KosmicKrisp and 134 on MoltenVK; with the patches all
