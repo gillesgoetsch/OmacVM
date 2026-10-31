@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.17 (unreleased)
+
+- **Activity Monitor counts the VM's memory once (OmacVM.app).** macOS counted every page of the VM
+  that QEMU itself had touched (disk reads, network, graphics) a second time, compressed or not: a
+  12 GB VM on a MacBook Pro M1 Max showed 1.2 to 2.0 GB more than it held with nothing compressed,
+  so the words of 3.2.16 ("counts part of a compressed VM twice") were wrong. QEMU now remaps its own
+  view of the VM's memory every 5 minutes, which drops that count; no page moves and the Mac gets
+  no memory back (test without a VM: 2049 MB shown for 1024 MB held, 1024 MB after a pass).
+  `omacvm check`'s "Activity Monitor" row and the (i) say what is left. `OMACVM_DCOUNT_SWEEP=0`
+  turns it off. Needs the app update; nothing in the VM.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left

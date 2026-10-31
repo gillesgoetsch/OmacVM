@@ -39,8 +39,10 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   ([47](#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)).
 - **Activity Monitor shows the VM with far more memory than you gave it**
   (OmacVM.app, e.g. 23 GB for a 12 GB VM): its graphics come on top, and
-  macOS counts part of a compressed VM twice. `omacvm check` says what the
-  number is made of; above the Mac's Best tier, give it less
+  macOS counted every page of the VM that QEMU itself touched twice (from
+  3.2.17 QEMU drops that count every few minutes: update the app).
+  `omacvm check` says what the number is made of; above the Mac's Best
+  tier, give it less
   ([49](#49-app-activity-monitor-shows-the-vm-with-far-more-memory-than-it-has)).
 - **Screenshots or screen sharing of Chrome far too bright in an HDR VM**:
   Update VM
@@ -1525,16 +1527,23 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 - **Cause:** the number is QEMU's footprint, and it holds more than the VM's
   memory. The VM's graphics come on top of it, from the Mac's memory as the
   VM draws (2 to 5 GB for a 5K desktop with a browser; 4.5 GB in the 12 GB
-  run). And once QEMU itself touched a page of the VM (disk, graphics,
-  network) and macOS compressed it, macOS counts that page twice: a 4 GB VM
-  after a browser session showed 5.9 GB, 2.1 GB of it counted twice, and the
-  Mac got 4.8 GB back when QEMU stopped (ADR 0062). A VM above the Mac's
-  Best tier (8 GB on a 16 GB Mac) plus its graphics leaves macOS too little.
+  run). And macOS counts a page of the VM twice once QEMU itself touched it
+  (disk, graphics, network), compressed or not: a 4 GB VM after a browser
+  session showed 5.9 GB, 2.1 GB of it counted twice, and the Mac got 4.8 GB
+  back when QEMU stopped; a 12 GB VM with nothing compressed showed 1.2 to
+  2.0 GB more than it held. From 3.2.17 QEMU remaps its own view of the VM's
+  memory every 5 minutes, which drops that count; what it touched since then
+  is still counted twice (ADR 0066). It never was memory: the Mac gets
+  nothing back from it. A VM above the Mac's Best tier (8 GB on a 16 GB Mac)
+  plus its graphics leaves macOS too little.
 - **Check:** `omacvm check --vm NAME` has an "Activity Monitor" row while
   the VM runs: "19.3 GB for the VM: VM memory at most 10.0 GB, graphics
-  3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and pages
-  macOS counts twice while it compresses the VM)", a warning above the Best
-  tier. `omacvm resources --vm NAME` says the same warning.
+  3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and pages of
+  the VM QEMU touched, which macOS counts twice)", a warning above the Best
+  tier; with 3.2.17's QEMU "pages of the VM QEMU touched since its last
+  sweep, counted twice until then". `logs/qemu.log` has the sweep's lines
+  ("own-view sweep": on or off, then a line an hour). `omacvm resources
+  --vm NAME` says the same warning.
 - **Fix:** give the VM the Best tier or less: in OmacVM.app the VM's
   General › Resources › Best, or `omacvm resources --vm NAME --resources
   best`; it applies at the VM's next start. OmacVM never lowers the setting
@@ -1543,11 +1552,12 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   at three quarters of the Mac
   ([graphics memory and VM memory](routes/app.md#graphics-memory-and-vm-memory)).
 - **Where:** `src/cmd/check.sh` ("Activity Monitor"), `src/lib/footprint.py`,
+  `app/runtime/patches/qemu-hvf-own-view-sweep.patch` (the sweep, ADR 0066),
   `src/lib/setup.sh` (`mem_warning`), `src/cmd/resources.sh`,
   `app/app/Sources/OmacVMWindow/CustomResources.swift`
   (`ResourceLimits.warning`), `app/app/Sources/OmacVMDesktop/GPUMemory.swift`
   (the (i)); tests `src/tests/activity-monitor.sh`, `src/tests/resources.sh`,
-  `swift run window-tests`, `swift run desktop-tests`.
+  `src/tests/memory-dcount.sh`, `swift run window-tests`, `swift run desktop-tests`.
 
 ## 50. All routes: notifications, panels and the Omarchy menu black out the screen (Hyprland 0.57)
 
