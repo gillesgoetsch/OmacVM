@@ -206,6 +206,10 @@ Known limits:
   allows (not after a restart at the first tell).
 - While the app's "desktop stopped drawing" window is up its looks wait;
   Restart voids the kept losses.
+- A reboot inside the VM (the same QEMU, so the same app run) keeps the
+  kept losses, while it empties the script's restart stamps in /run: a
+  late tell can then end the GPU process of a Chrome opened just after the
+  reboot, once.
 
 Not chosen:
 
