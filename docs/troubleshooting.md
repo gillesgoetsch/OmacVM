@@ -1547,7 +1547,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `app/app/Sources/OmacVMWindow/CustomResources.swift`
   (`ResourceLimits.warning`), `app/app/Sources/OmacVMDesktop/GPUMemory.swift`
   (the (i)); tests `src/tests/activity-monitor.sh`, `src/tests/resources.sh`,
-  `swift run window-tests`, `swift run desktop-tests`.
+  `swift run window-tests`, `swift run desktop-tests`, and the window
+  pictures (`OmacVM --render-vm-window`, CI): the warning 2 GB above the
+  Mac's Best tier inside the window (window-26), none at Best (window-27),
+  the (i)'s text (popover-2-resources).
 
 ## 50. All routes: notifications, panels and the Omarchy menu black out the screen (Hyprland 0.57)
 
