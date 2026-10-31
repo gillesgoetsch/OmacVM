@@ -14,8 +14,8 @@ and sets), set allocation (one variable count per set, within the binding's),
 writes and copies (the binding exists, the type is its own, the elements lie
 in it and the consecutive bindings the spec allows, those without descriptors
 and numbers the layout lacks skipped; inline data of the written size;
-samplers present unless immutable; NULL views, buffers and texel views only
-with nullDescriptor; buffer ranges inside the buffer and
+samplers present unless immutable; NULL views, buffers (dynamic ones too)
+and texel views only with nullDescriptor; buffer ranges inside the buffer and
 maxUniform/StorageBufferRange; a multi-planar view only where immutable YCbCr
 samplers sized the binding), pipeline layouts (set layouts within
 maxBoundDescriptorSets and not NULL, push constant ranges inside the limit
@@ -202,10 +202,10 @@ index 19c0929..4261c13 100644
  }
  
 diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
-index 5ec209f..7957441 100644
+index 5ec209f..0229a4f 100644
 --- a/src/venus/vkr_descriptor_set.c
 +++ b/src/venus/vkr_descriptor_set.c
-@@ -6,6 +6,468 @@
+@@ -6,6 +6,467 @@
  #include "vkr_descriptor_set.h"
  
  #include "vkr_descriptor_set_gen.h"
@@ -589,9 +589,8 @@ index 5ec209f..7957441 100644
 +         const struct vkr_buffer *buf = vkr_buffer_from_handle(bi->buffer);
 +         bool ok;
 +         if (!buf) {
-+            ok = null_ok && !bi->offset && bi->range == VK_WHOLE_SIZE &&
-+                 (w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-+                  w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
++            /* dynamic ones too: KosmicKrisp gives a NULL buffer an empty range */
++            ok = null_ok && !bi->offset && bi->range == VK_WHOLE_SIZE;
 +         } else {
 +            const uint64_t range =
 +               bi->range == VK_WHOLE_SIZE ? (bi->offset < buf->size ? buf->size - bi->offset : 0)
@@ -674,7 +673,7 @@ index 5ec209f..7957441 100644
  
  static void
  vkr_dispatch_vkGetDescriptorSetLayoutSupport(
-@@ -24,7 +486,23 @@ vkr_dispatch_vkCreateDescriptorSetLayout(
+@@ -24,7 +485,23 @@ vkr_dispatch_vkCreateDescriptorSetLayout(
     struct vn_dispatch_context *dispatch,
     struct vn_command_vkCreateDescriptorSetLayout *args)
  {
@@ -699,7 +698,7 @@ index 5ec209f..7957441 100644
  }
  
  static void
-@@ -39,6 +517,30 @@ static void
+@@ -39,6 +516,30 @@ static void
  vkr_dispatch_vkCreateDescriptorPool(struct vn_dispatch_context *dispatch,
                                      struct vn_command_vkCreateDescriptorPool *args)
  {
@@ -730,7 +729,7 @@ index 5ec209f..7957441 100644
     struct vkr_descriptor_pool *pool =
        vkr_descriptor_pool_create_and_add(dispatch->data, args);
     if (!pool)
-@@ -103,13 +605,63 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
+@@ -103,13 +604,63 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
        return;
     }
  
@@ -794,7 +793,7 @@ index 5ec209f..7957441 100644
     vkr_descriptor_set_add_array(ctx, dev, pool, &arr);
  }
  
-@@ -133,12 +685,25 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
+@@ -133,12 +684,25 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
  }
  
  static void
