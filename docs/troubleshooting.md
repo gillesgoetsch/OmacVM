@@ -1577,3 +1577,32 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/tests/omacvm_vm_test.lua`). Issue
   [#630](https://github.com/gillesgoetsch/OmacVM/issues/630), reported by
   @epicoun.
+
+## 51. app: a video in Chromium stops at its end, a looped one never loops
+
+- **Symptom:** in an OmacVM.app VM, Omarchy's Chromium stops a video on its
+  last picture when it decodes it on the Mac's media engine
+  (`chrome://media-internals` says *V4L2VideoDecoder*): a looped video
+  never starts again, the page never gets `ended` (a playlist does not go
+  on), and a stream that changes its picture size in the middle (Media
+  Source, as streaming sites do when they change the quality) stands still
+  at the change. Up to there it plays at its full frame rate. 3.2.15 and
+  older.
+- **Cause:** at the end of a stream, and at a size change (which empties
+  the decoder the same way), Chromium holds all of the decoder's picture
+  buffers while the decoder still owes it the last pictures and the buffer
+  that marks the end. The decoder (`omacvm-vdec`) answered Chromium's wait
+  in that state with an error: the kernel's helper for such devices says
+  EPOLLERR while no buffer is queued. Chromium 153 drops a wait that gets
+  that answer and starts no new one, so it never saw the pictures and the
+  end that came next.
+- **Fix (3.2.16):** Update VM (`omacvm apply`, `omacvm update`), then quit
+  and start Chromium again. If a video was open during the update, the new
+  decoder loads at the next VM start (`omacvm check` says an update waits).
+  Nothing on the Mac; any app version. Before 3.2.16, `omacvm disable
+  chromium-video` has Chromium decode on the VM's CPU, which loops and ends
+  (and costs about twice the VM's CPU at 4K).
+- **Where:** `src/vdec/guest/module/omacvm-vdec.c` (`ovd_poll`, the wake in
+  `inst_fail_all`); test `src/vdec/guest/test/vdec-test.c
+  --hold-all-at-eos` (in the VM, as root);
+  [video-decode.md](video-decode.md#chromium-from-arch-linux-arm).

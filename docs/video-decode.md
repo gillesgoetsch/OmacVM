@@ -463,6 +463,32 @@ Chromium ◀─ its GPU buffer (ARGB) ◀─ GPU pass in omacvm-vdecd
   compositor cannot draw these buffers on Venus, and the first one restarted
   its GPU process (3.2.14 and older: the video stopped after a few
   frames). The normal Chromium entry uses the media engine.
+- **The end of a video** (fixed in 3.2.16): a video stopped on its last
+  picture, a looped one never started again, and a stream that changed its
+  picture size in the middle stood still at the change (3.2.15 and older).
+  At those points Chromium holds all of the decoder's picture buffers while
+  the decoder still owes it the last pictures and the buffer that marks the
+  end. The module's poll answered that with an error (EPOLLERR, what the
+  kernel's helper for such devices says while no buffer is queued), and
+  Chromium 153 drops a wait that gets that answer and starts no new one: the
+  end never reached it. The module's own poll (`ovd_poll`) sleeps instead
+  while a queue streams, until a picture, an event, a stream off or a
+  failure; a decoder the daemon failed, or one with both queues off, still
+  gets the error, so a gone daemon still ends in an error, not a hang.
+  Measured on a Mac mini M4 in a hidden test VM (3.2.15 app, the guest
+  before and after): looped clips, 3 runs each, 6 s at 2160p60 and 30 s at
+  1080p60: all 6 stopped at their end before, all looped after (the 4K clip
+  in a 70 s run 12 times, 55-104 ms per seek, one decoder open at a time,
+  59 frames a second decoded); the 4K clip without loop: `ended` 0 of 3
+  before, 3 of 3 after; a Media Source stream that switches from 1080p to
+  720p at 6 s and ends at 12 s: stopped at the switch before, played both
+  sizes to its end after. A frame rate measured over a window that spans
+  the end of a looped clip came out low for this reason (17 frames a second
+  for the 6 s 4K clip in a 10 s window), not for decoding: a 30 s 2160p60
+  clip decodes at 59.9-60 frames a second through this decoder (3 runs
+  before, 3 after). Update VM, then restart Chromium; if a video was open
+  during the update, the new module loads at the next VM start
+  (`omacvm check` says so). Nothing on the Mac; any app version.
 
 YouTube *Big Buck Bunny* at 60 fps, Arch Linux ARM's Chromium 153, 60
 seconds with `src/bench/video-bench.py` (`--quality hd1080` for 1080p), in a
@@ -506,7 +532,12 @@ Its modes check the failures: `--churn` (a busy decoder closes while the next
 opens), `--early-drain` (a drain before the first picture), `--expect-fail`
 (a picture under 64 pixels fails at once), `--stall` (the daemon stopped
 mid-video: an error within seconds, then the next video decodes), `--flood`
-(1000 drain commands: the module fails that decoder instead of growing).
+(1000 drain commands: the module fails that decoder instead of growing),
+`--hold-all-at-eos` (Chromium's end of a stream: every picture buffer held
+while the decoder still owes the last pictures and the end; a second thread
+polls the way Chromium waits and must sleep, then wake within a second when
+the buffers come back, when both queues stop, and with an error when the
+daemon is gone; 3.2.15's module answers at once with an error).
 `src/tests/vdecd-logical.sh` (CI) checks what the daemon tells the Mac for
 odd sizes, against a stand-in for the kernel's ioctls.
 
