@@ -1499,6 +1499,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 # OmacVM: a program pipeline the GL finds invalid in the current state (sampler units not
 # set yet, an incomplete framebuffer) is logged; it ended the guest app's whole context.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-log.patch"
+# OmacVM: separable patch varyings take no location on desktop GL (Apple's GL refuses one and
+# matches them by the order of their names: names zero-padded, every one from 0 declared);
+# they were refused and their draws skipped (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-patch-varyings.patch"
+grep -q 'static void emit_patch_fill(const struct dump_ctx \*ctx,' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->separable_out = 1;' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c, vrend_renderer.c: separable patch varyings still take a location (patch-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.

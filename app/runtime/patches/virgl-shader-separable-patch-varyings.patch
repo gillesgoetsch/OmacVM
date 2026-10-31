@@ -1,0 +1,240 @@
+virglrenderer: patch varyings without a location on desktop GL (#589)
+
+What: on desktop GL a patch varying gets no layout location, its name is zero-padded
+(patch00, patch01 ... patch10 instead of patch0 ... patch10), and between a separable
+tessellation control shader and a separable evaluation shader each one declares every patch
+varying from 0 up to the highest one it declares (the control shader leaves the extra ones
+unwritten, the evaluation shader does not read them). The shader key says whether the stage
+before or after a separable shader is separable too (separable_in, separable_out, set in
+vrend_sync_shader_io beside the masks a whole neighbour fills in). GLES keeps vrend's
+locations and names.
+Why: Apple's GL refuses any layout location on a patch variable ("Or active varying aliasing.
+One or more slots starting at 0 unavailable for 'patch0' from layout location request"), so
+every separable pipeline with a patch varying was refused and its draws skipped. Without a
+location it gives the patch varyings of separate programs their slots in the order of their
+names, not by name: an evaluation shader that declares only patch1 read the control shader's
+patch0, and patch10 sorted before patch2. With zero-padded names and every patch varying from
+0 declared in both stages, the n-th name is patch n in both. Seen alike on Apple's software
+renderer and the M4 and M1 GPUs (macOS 27). Without a location GL matches by name (GL 4.1,
+7.4.1), so the rule holds on any desktop GL; a separable stage next to a whole one is linked
+into one program with it, and that link matches by name (the key masks give both the same
+patch varyings, as for whole programs).
+Upstream: not sent; virglrenderer main gives separable patch varyings the same locations
+(checked 2026-10-31).
+Test: Tests/virgl/test-separable-pervertex.c: separable pipelines with patch varyings on
+Apple's software renderer: one patch varying (white), the evaluation shader reading one of
+two (D1) or both (D2), patch varyings 1 and 3 beside a per-vertex varying (D4), twelve patch
+varyings read at 2 and 10 (D6); each was refused before. One program of a separable and a
+whole tessellation stage (M1, M2): drawn right or refused, never drawn wrong.
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -5405,7 +5405,8 @@ static inline void vrend_sync_shader_io(struct vrend_sub_context *sub_ctx,
+          key->in_arrays = prev->sinfo.output_arrays;
+ 
+          memcpy(key->force_invariant_inputs, prev->sinfo.invariant_outputs, 4 * sizeof(uint32_t));
+-      }
++      } else
++         key->separable_in = 1;
+       key->ssbo_binding_offset = prev->sinfo.ssbo_last_binding + 1;
+       key->image_binding_offset = prev->sinfo.image_last_binding + 1;
+ 
+@@ -5515,7 +5516,8 @@ static inline void vrend_sync_shader_io(struct vrend_sub_context *sub_ctx,
+                key->vs.fog_fixup_mask = (fog_input ^ fog_output) & fog_input;
+             }
+          }
+-      }
++      } else
++         key->separable_out = 1;
+    }
+ }
+ 
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -525,6 +525,23 @@ void vrend_shader_write_io_as_dst(struct vrend_strbuf *buf,
+                                   const struct tgsi_full_dst_register *src,
+                                   enum io_decl_type decl_type);
+ 
++/* OmacVM (#589): Apple's GL refuses a layout location on a patch variable and, without one,
++ * gives patch varyings their slots in the order of their names, also between separate
++ * programs. So on desktop GL a patch varying has no location (GL matches it by name then, in
++ * one program), its name is zero-padded (patch02 sorts before patch10), and between two
++ * separable stages the control shader writes and the evaluation shader reads every patch
++ * varying from 0 up to the highest one it declares (emit_patch_fill): the n-th name is
++ * patch n in both. GLES keeps vrend's locations and names. */
++static inline bool patch_location(const struct dump_ctx *ctx)
++{
++   return ctx->separable_program && ctx->cfg->use_gles;
++}
++
++static inline int patch_sid_width(const struct dump_ctx *ctx)
++{
++   return ctx->cfg->use_gles ? 0 : 2;
++}
++
+ /* We prefer arrays of arrays, but if this is not available then TCS, GEOM, and TES
+  * inputs must be blocks, but FS input should not because interpolateAt* doesn't
+  * support dereferencing block members. */
+@@ -1786,7 +1803,8 @@ iter_declaration(struct tgsi_iterate_context *iter,
+          else if (ctx->inputs[i].name == TGSI_SEMANTIC_GENERIC)
+             snprintf(ctx->inputs[i].glsl_name, 128, "%s_g%d", name_prefix, ctx->inputs[i].sid);
+          else if (ctx->inputs[i].name == TGSI_SEMANTIC_PATCH)
+-            snprintf(ctx->inputs[i].glsl_name, 128, "%s%d", name_prefix, ctx->inputs[i].sid);
++            snprintf(ctx->inputs[i].glsl_name, 128, "%s%0*d", name_prefix,
++                     patch_sid_width(ctx), ctx->inputs[i].sid);
+          else if (ctx->inputs[i].name == TGSI_SEMANTIC_TEXCOORD)
+             snprintf(ctx->inputs[i].glsl_name, 128, "%s_t%d", name_prefix, ctx->inputs[i].sid);
+          else
+@@ -2069,7 +2087,8 @@ iter_declaration(struct tgsi_iterate_context *iter,
+          else if (ctx->outputs[i].name == TGSI_SEMANTIC_BCOLOR)
+             snprintf(ctx->outputs[i].glsl_name, 64, "%s_bc%d", name_prefix, ctx->outputs[i].sid);
+          else if (ctx->outputs[i].name == TGSI_SEMANTIC_PATCH)
+-            snprintf(ctx->outputs[i].glsl_name, 64, "%s%d", name_prefix, ctx->outputs[i].sid);
++            snprintf(ctx->outputs[i].glsl_name, 64, "%s%0*d", name_prefix,
++                     patch_sid_width(ctx), ctx->outputs[i].sid);
+          else if (ctx->outputs[i].name == TGSI_SEMANTIC_GENERIC)
+             snprintf(ctx->outputs[i].glsl_name, 64, "%s_g%d", name_prefix, ctx->outputs[i].sid);
+          else if (ctx->outputs[i].name == TGSI_SEMANTIC_TEXCOORD)
+@@ -5766,7 +5785,7 @@ compare_shader_io(const void *vlhs, const void *vrhs)
+ static void
+ add_missing_semantic_inputs(struct vrend_shader_io *inputs, int *num_inputs,
+                             int *next_location, uint64_t sids_missing,
+-                            const char *prefix, char *type_prefix,
++                            const char *prefix, char *type_prefix, int sid_width,
+                             enum tgsi_semantic name,
+                             const struct vrend_shader_key *key)
+ {
+@@ -5797,7 +5816,7 @@ add_missing_semantic_inputs(struct vrend_shader_io *inputs, int *num_inputs,
+ 
+       sids_missing &= ~sids_added;
+ 
+-      snprintf(io->glsl_name, 128, "%s%s%d", prefix, type_prefix, sid);
++      snprintf(io->glsl_name, 128, "%s%s%0*d", prefix, type_prefix, sid_width, sid);
+       (*num_inputs)++;
+    }
+ }
+@@ -5840,13 +5859,13 @@ add_missing_inputs(const struct dump_ctx *ctx, struct vrend_shader_io *inputs,
+ 
+    const char *prefix = get_stage_input_name_prefix(ctx, ctx->prog_type);
+    add_missing_semantic_inputs(inputs, &num_inputs, &next_location,
+-                               generics_missing, prefix, "_g",
++                               generics_missing, prefix, "_g", 0,
+                                TGSI_SEMANTIC_GENERIC, ctx->key);
+    add_missing_semantic_inputs(inputs, &num_inputs, &next_location,
+-                               texcoord_missing, prefix, "_t",
++                               texcoord_missing, prefix, "_t", 0,
+                                TGSI_SEMANTIC_TEXCOORD, ctx->key);
+    add_missing_semantic_inputs(inputs, &num_inputs, &next_location,
+-                               patches_missing, "patch", "",
++                               patches_missing, "patch", "", patch_sid_width(ctx),
+                                TGSI_SEMANTIC_PATCH, ctx->key);
+ 
+    qsort(inputs, num_inputs, sizeof(struct vrend_shader_io),
+@@ -7499,6 +7518,22 @@ emit_ios_patch(struct vrend_glsl_strbufs *glsl_strbufs,
+    return emitted_patches;
+ }
+ 
++/* OmacVM (#589, patch_sid_width): between two separable stages on desktop GL, the patch
++ * varyings below the highest one declared that are not declared themselves */
++static void emit_patch_fill(const struct dump_ctx *ctx, struct vrend_glsl_strbufs *glsl_strbufs,
++                            uint64_t declared, enum io_type iot)
++{
++   if (ctx->cfg->use_gles || !declared ||
++       !(iot == io_in ? ctx->key->separable_in : ctx->key->separable_out))
++      return;
++   int top = 64 - __builtin_clzll(declared);
++   uint64_t fill = (top == 64 ? ~0ull : (1ull << top) - 1) & ~declared;
++   while (fill) {
++      int sid = u_bit_scan64(&fill);
++      emit_hdrf(glsl_strbufs, "patch %s vec4 patch%02d;\n", iot == io_in ? "in" : "out", sid);
++   }
++}
++
+ static bool
+ can_emit_generic_default(UNUSED const struct vrend_shader_io *io)
+ {
+@@ -7957,7 +7992,7 @@ static void emit_ios_tcs(const struct dump_ctx *ctx,
+          if (ctx->inputs[i].name == TGSI_SEMANTIC_PATCH) {
+             emit_ios_patch(glsl_strbufs, "",  &ctx->inputs[i], "in",
+                            ctx->inputs[i].last - ctx->inputs[i].first + 1,
+-                           ctx->separable_program);
++                           patch_location(ctx));
+          } else
+             emit_ios_generic(ctx, glsl_strbufs, generic_ios, texcoord_ios, io_in, "", &ctx->inputs[i], "in", "[]");
+       }
+@@ -7970,7 +8005,7 @@ static void emit_ios_tcs(const struct dump_ctx *ctx,
+    if (ctx->patch_ios.output_range.used)
+       emitted_patches |= emit_ios_patch(glsl_strbufs, "patch", &ctx->patch_ios.output_range.io, "out",
+                                         ctx->patch_ios.output_range.io.last - ctx->patch_ios.output_range.io.first + 1,
+-                                        ctx->separable_program);
++                                        patch_location(ctx));
+ 
+    for (i = 0; i < ctx->num_outputs; i++) {
+       if (!ctx->outputs[i].glsl_predefined_no_emit) {
+@@ -7978,7 +8013,7 @@ static void emit_ios_tcs(const struct dump_ctx *ctx,
+ 
+             emitted_patches |= emit_ios_patch(glsl_strbufs, "patch", &ctx->outputs[i], "out",
+                                               ctx->outputs[i].last - ctx->outputs[i].first + 1,
+-                                              ctx->separable_program);
++                                              patch_location(ctx));
+          } else
+             emit_ios_generic(ctx, glsl_strbufs, generic_ios, texcoord_ios, io_out, "", &ctx->outputs[i], "out", "[]");
+       } else if (ctx->outputs[i].invariant || ctx->outputs[i].precise) {
+@@ -7989,6 +8024,8 @@ static void emit_ios_tcs(const struct dump_ctx *ctx,
+       }
+    }
+ 
++   emit_patch_fill(ctx, glsl_strbufs, emitted_patches, io_out);
++
+    emit_ios_per_vertex_in(ctx, glsl_strbufs, has_pervertex);
+    emit_ios_per_vertex_out(ctx, glsl_strbufs, " gl_out[]");
+ 
+@@ -8004,12 +8041,13 @@ static void emit_ios_tes(const struct dump_ctx *ctx,
+                          bool *force_color_two_side)
+ {
+    uint32_t i;
++   uint64_t in_patches = 0;
+ 
+    if (ctx->patch_ios.input_range.used)
+-      emit_ios_patch(glsl_strbufs, "patch", &ctx->patch_ios.input_range.io, "in",
+-                     ctx->patch_ios.input_range.io.last -
+-                        ctx->patch_ios.input_range.io.first + 1,
+-                     ctx->separable_program);
++      in_patches |= emit_ios_patch(glsl_strbufs, "patch", &ctx->patch_ios.input_range.io, "in",
++                                   ctx->patch_ios.input_range.io.last -
++                                      ctx->patch_ios.input_range.io.first + 1,
++                                   patch_location(ctx));
+ 
+    if (generic_ios->input_range.used)
+       emit_ios_indirect_generics_input(ctx, glsl_strbufs, "[]");
+@@ -8017,13 +8055,14 @@ static void emit_ios_tes(const struct dump_ctx *ctx,
+    for (i = 0; i < ctx->num_inputs; i++) {
+       if (!ctx->inputs[i].glsl_predefined_no_emit) {
+          if (ctx->inputs[i].name == TGSI_SEMANTIC_PATCH)
+-            emit_ios_patch(glsl_strbufs, "patch", &ctx->inputs[i], "in",
+-                           ctx->inputs[i].last - ctx->inputs[i].first + 1,
+-                           ctx->separable_program);
++            in_patches |= emit_ios_patch(glsl_strbufs, "patch", &ctx->inputs[i], "in",
++                                         ctx->inputs[i].last - ctx->inputs[i].first + 1,
++                                         patch_location(ctx));
+          else
+             emit_ios_generic(ctx, glsl_strbufs, generic_ios, texcoord_ios, io_in, "", &ctx->inputs[i], "in", "[]");
+       }
+    }
++   emit_patch_fill(ctx, glsl_strbufs, in_patches, io_in);
+ 
+    emit_hdrf(glsl_strbufs, "layout(%s, %s, %s%s) in;\n",
+              prim_to_tes_name(ctx->tes_prim_mode),
+--- a/src/vrend/vrend_shader.h
++++ b/src/vrend/vrend_shader.h
+@@ -249,6 +249,10 @@ struct vrend_shader_key {
+    uint8_t require_input_arrays : 1;
+    uint8_t require_output_arrays : 1;
+    uint8_t use_pervertex_in : 1;
++   /* OmacVM (#589): the stage before (in) or after (out) this separable shader is separable
++    * too: their IO meets as separate programs, not linked as one */
++   uint8_t separable_in : 1;
++   uint8_t separable_out : 1;
+    /* OmacVM: CONST[0] stays uniforms although the block would fit the stage (the
+     * program had no binding left for it: vrend_shader_selector.const_uniforms) */
+    uint8_t const_uniforms : 1;
