@@ -2,7 +2,7 @@
 
 Status: accepted, built (`gpu-auto-recovery`, 3.0.1); amended in 3.2.15 (a
 lost Chrome or Chromium gets a new GPU process), 3.2.16 (a loss inside an
-app's minute is told when it is over) and 3.2.17 (a lost Vulkan context is
+app's minute is told when it is over) and 3.2.18 (a lost Vulkan context is
 counted and told): see the end. Builds on 0034 (the GPU
 memory budget, which also names every lost context).
 
@@ -243,9 +243,9 @@ the first tell (the VM's journal: 65.0 s); the VM did not restart Chrome
 again ("restarted 1 min ago") and showed the note. Hyprland and the shell
 lost nothing.
 
-## Amendment: a lost Vulkan (Venus) context is counted and told (3.2.17)
+## Amendment: a lost Vulkan (Venus) context is counted and told (3.2.18)
 
-Until 3.2.16 only GL (virgl) contexts counted. When vkr ended an app's
+Until 3.2.17 only GL (virgl) contexts counted. When vkr ended an app's
 Venus context (a command the Mac's driver would abort on, ADR 0065, or
 memory the budget refused), QEMU printed "venus context N (NAME) is lost"
 and nothing else: `logs/gpu-memory` stayed at lost=0 (gpu_lost_delta 0 in
@@ -279,7 +279,7 @@ Decision:
 - The app tells the VM through the same `GPUMemoryNotice` (once a minute per
   app, a loss inside the minute told when it is over) with a new verb,
   `omacvm-desktop-recover venus NAME venus|guard`. Not `app NAME venus`:
-  the 3.2.15 and 3.2.16 scripts take any cause but `pressure` for a full
+  the 3.2.15 to 3.2.17 scripts take any cause but `pressure` for a full
   graphics memory and end the app's GPU process (a Chromium with WebGPU
   would lose its GPU process for nothing). An older script answers the new
   verb with its usage (exit 2); the app waits 2 s for the exit (no answer

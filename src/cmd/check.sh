@@ -404,7 +404,7 @@ fi
 # restarts; for the shell that is a black display without bar. QEMU's log
 # (this run of the VM) names it: a GL context ("context error reported N
 # "NAME""), or a Vulkan (Venus) one ("venus context N (NAME) is lost", from
-# runtime 2.7.1; from 3.2.17 one the guest was closing says "ended while the
+# runtime 2.7.1; from 3.2.18 one the guest was closing says "ended while the
 # guest closed it" instead and is not named here).
 if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   lost=$( { grep -o 'context error reported [0-9]* "[^"]*"' "$miclog" | sed 's/.*"\(.*\)"$/\1/'

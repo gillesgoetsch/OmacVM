@@ -77,7 +77,7 @@ extension VMStalls {
 ///   most: a loss inside the minute is told when it is over (the newest),
 ///   not dropped; a desktop restart voids it. A Vulkan (Venus) context lost
 ///   the same way, or because the Mac refused its commands, gets
-///   omacvm-desktop-recover venus (3.2.17): a note, nothing ended, and a
+///   omacvm-desktop-recover venus (3.2.18): a note, nothing ended, and a
 ///   Ghostty on Zink starts on the CPU next time; a VM without it says so
 ///   once in qemu.log (Update VM).
 /// - When the VM stood still 10 s or more because macOS ran out of free
@@ -104,7 +104,7 @@ final class GPUMemoryWatch {
     private var lastShellRestart: Date?
     private var notice = GPUMemoryNotice()
     /// The VM answered omacvm-desktop-recover venus with its usage (a VM
-    /// from before 3.2.17): said once per run.
+    /// from before 3.2.18): said once per run.
     private var venusNoteMissing = false
     /// The stalls already seen in logs/vm-stalls, and the last note about one.
     private var stallsSeen = 0
@@ -427,7 +427,7 @@ final class GPUMemoryWatch {
     /// in the VM (a note; for ghostty also /run/omacvm/gl-zink-off: the next
     /// Ghostty starts on the CPU; nothing is ended). Its exit is waited for
     /// up to 2 s (ADR 0038's rule: no answer in time is not tried again): a
-    /// VM from before 3.2.17 answers with its usage (exit 2), so the note is
+    /// VM from before 3.2.18 answers with its usage (exit 2), so the note is
     /// only in this log until Update VM; it never gets `app NAME venus`,
     /// which such a VM would take for a full graphics memory and answer by
     /// ending the app's GPU process.

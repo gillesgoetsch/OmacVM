@@ -164,7 +164,7 @@ let busy = n.recent
 _ = n.look(lost: [], why: [], now: t0.addingTimeInterval(GPUMemoryNotice.window))
 expect(busy == 50 && n.recent == 0, "apps told are forgotten after their minute (\(busy) -> \(n.recent))")
 
-// Lost Vulkan (Venus) contexts (virgl-venus-lost-context-count.patch, 3.2.17): QEMU names
+// Lost Vulkan (Venus) contexts (virgl-venus-lost-context-count.patch, 3.2.18): QEMU names
 // them with why venus (the Mac refused its commands) or guard, and kind venus. A note each
 // (omacvm-desktop-recover venus), in the same minute per app; never a desktop restart.
 let venusStatus = "in_use_mb=900\nlost=3\nlost_recent=chrome,ghostty,vkcube\nlost_recent_why=pressure,venus,guard\n"

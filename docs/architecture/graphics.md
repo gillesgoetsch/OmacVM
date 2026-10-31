@@ -598,7 +598,7 @@ Patches (all in `app/runtime/patches`, one per concern):
   `Tests/virgl/test-venus-robust.c` sends its cases as encoded streams through
   `vkr_context_submit_cmd` (one through a ring thread, one nested) at every
   runtime build.
-- `virgl-venus-lost-context-count.patch` (3.2.17, ADR 0038's amendment): a
+- `virgl-venus-lost-context-count.patch` (3.2.18, ADR 0038's amendment): a
   Venus context vkr's ring thread ends counts in `logs/gpu-memory` like a GL
   one (lost, its name, why `venus` or `guard`, `lost_recent_kind` `venus`):
   the ring thread leaves it in the shared budget module, the renderer thread

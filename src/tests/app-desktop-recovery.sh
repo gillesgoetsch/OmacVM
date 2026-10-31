@@ -182,7 +182,7 @@ touch "$NOTIFY_FAILS"; : > "$CALLS"
 "$G" app chromium guard > /dev/null
 grep -q "could not show the note" "$CALLS" && expect "app note without a daemon: logged" yes yes || expect "app note without a daemon: logged" yes no
 rm -f "$NOTIFY_FAILS"
-# A lost Vulkan (Venus) context (3.2.17): a note, nothing restarts or ends.
+# A lost Vulkan (Venus) context (3.2.18): a note, nothing restarts or ends.
 : > "$CALLS"
 "$G" venus vkcube venus > /dev/null; rc=$?
 expect "venus: nothing restarts"                 "0 " "$rc $(grep -e '^systemctl' -e '^omarchy-restart-shell' "$CALLS")"

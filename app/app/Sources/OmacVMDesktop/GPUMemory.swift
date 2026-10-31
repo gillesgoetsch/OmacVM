@@ -27,7 +27,7 @@ public struct GPUMemory: Equatable {
     /// Mac) or error (anything else). Empty from an older runtime.
     public var lostRecent: [String] = []
     public var lostRecentWhy: [String] = []
-    /// gl or venus for each of `lostRecent` (3.2.17; empty before: all gl).
+    /// gl or venus for each of `lostRecent` (3.2.18; empty before: all gl).
     public var lostRecentKind: [String] = []
 
     public init() {}
@@ -140,7 +140,7 @@ public struct GPUMemory: Equatable {
 /// the VM says so (omacvm-desktop-recover app; from 3.2.15 it also ends the
 /// app's GPU process), so the app's black window or reload has a reason.
 /// A Vulkan (Venus) context lost because the Mac refused its commands, or
-/// to the guard, gets its own note (omacvm-desktop-recover venus, 3.2.17:
+/// to the guard, gets its own note (omacvm-desktop-recover venus, 3.2.18:
 /// nothing is ended; a Ghostty on Zink starts on the CPU next time).
 /// One per VM run (GPUMemoryWatch), looked at every 5 s.
 public struct GPUMemoryNotice {

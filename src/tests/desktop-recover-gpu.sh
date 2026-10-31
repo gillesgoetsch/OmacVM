@@ -206,7 +206,7 @@ chmod 700 "$T/stamps"
 run "$NOW" code pressure
 expect "a folder of its own: the Electron app's GPU process is ended" ended "$(state "$code")"
 
-# A lost Vulkan (Venus) context (3.2.17): `venus NAME venus|guard` ends nothing, not even
+# A lost Vulkan (Venus) context (3.2.18): `venus NAME venus|guard` ends nothing, not even
 # a GPU process; for ghostty it writes the state file that sends the next Ghostty to the
 # CPU (root's file in root's folder, one line "lost TIME WHY"), never through a link.
 export OMACVM_RECOVER_ZINK_OFF=$T/run-omacvm/gl-zink-off

@@ -3,7 +3,7 @@
 # run: the apps whose GL context ("context error reported N "NAME"") or Vulkan
 # (Venus) context ("venus context N (NAME) is lost") was lost, once each, the
 # Vulkan ones marked; a Venus context the guest was closing ("ended while the
-# guest closed it", 3.2.17) is not named. Never a failure. No VM. macOS only.
+# guest closed it", 3.2.18) is not named. Never a failure. No VM. macOS only.
 #   src/tests/gpu-contexts-check.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)

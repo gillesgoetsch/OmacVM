@@ -1640,9 +1640,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   --hold-all-at-eos` (in the VM, as root);
   [video-decode.md](video-decode.md#chromium-from-arch-linux-arm).
 
-## 53. app: Ghostty on the Mac's GPU stops drawing, or a Vulkan app ends
-
-(52 is taken by the Vulkan checks of 3.2.17.)
+## 52. app: Ghostty on the Mac's GPU stops drawing, or a Vulkan app ends
 
 - **Symptom:** in an OmacVM.app VM with Graphics on Vulkan, a Ghostty that
   draws through Zink on the Mac's GPU (set up by hand, or later through
@@ -1659,11 +1657,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   never draw again, and since Omarchy starts Ghostty as one instance, a new
   Ghostty asks the frozen one for its window over D-Bus, gets no answer and
   gives up (its log: `error registering application: Timeout was reached`).
-  Up to 3.2.16 OmacVM did not count a lost
+  Up to 3.2.17 OmacVM did not count a lost
   Vulkan context (`logs/gpu-memory` stayed at lost=0), so nothing was said,
   `omacvm check` did not name the app, and the next Ghostty went to Zink
   again.
-- **Fix (3.2.17, the app update and Update VM):** the app counts the loss
+- **Fix (3.2.18, the app update and Update VM):** the app counts the loss
   and tells the VM, which shows a note ("Ghostty stopped drawing", or
   "<app> stopped drawing") and ends nothing. Close the frozen Ghostty first:
   Terminate in Hyprland's window (programs running in it end), then open
@@ -1682,5 +1680,5 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `DesktopRecovery` in `app/app/Sources/OmacVMDesktop/` (`swift run
   desktop-tests`), `src/app/guest/omacvm-desktop-recover venus` (tests
   `src/tests/app-desktop-recovery.sh`, `src/tests/desktop-recover-gpu.sh`),
-  `src/cmd/check.sh` (`src/tests/gpu-contexts-check.sh`); ADR 0038's 3.2.17
+  `src/cmd/check.sh` (`src/tests/gpu-contexts-check.sh`); ADR 0038's 3.2.18
   amendment.
