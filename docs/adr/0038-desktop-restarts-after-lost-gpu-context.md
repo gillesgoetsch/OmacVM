@@ -1,8 +1,9 @@
 # 0038: The desktop restarts by itself after a lost GPU context
 
 Status: accepted, built (`gpu-auto-recovery`, 3.0.1); amended in 3.2.15 (a
-lost Chrome or Chromium gets a new GPU process) and 3.2.16 (a loss inside an
-app's minute is told when it is over): see the end. Builds on 0034 (the GPU
+lost Chrome or Chromium gets a new GPU process), 3.2.16 (a loss inside an
+app's minute is told when it is over) and 3.2.18 (a lost Vulkan context is
+counted and told): see the end. Builds on 0034 (the GPU
 memory budget, which also names every lost context).
 
 ## Context
@@ -241,3 +242,104 @@ would tell that loss when the minute was over and told it 64.9 s after
 the first tell (the VM's journal: 65.0 s); the VM did not restart Chrome
 again ("restarted 1 min ago") and showed the note. Hyprland and the shell
 lost nothing.
+
+## Amendment: a lost Vulkan (Venus) context is counted and told (3.2.18)
+
+Until 3.2.17 only GL (virgl) contexts counted. When vkr ended an app's
+Venus context (a command the Mac's driver would abort on, ADR 0065, or
+memory the budget refused), QEMU printed "venus context N (NAME) is lost"
+and nothing else: `logs/gpu-memory` stayed at lost=0 (gpu_lost_delta 0 in
+all four lose rows of the ghostty-gpu lane, 3.2.15 on an M4 and an M1 Max),
+the app said nothing, and `omacvm check` did not name the app (the gap
+noted in #624). Most Vulkan apps then end by themselves: the VM's Venus
+driver aborts when it sees the ring's fatal status. A Ghostty drawn on the
+Mac's GPU through Zink does not: it hangs with its windows (Hyprland's
+"not responding"), and no new Ghostty window opens while it lives: Omarchy
+starts Ghostty as one instance (`--gtk-single-instance=true`), so a new one
+asks the frozen one over D-Bus and gives up ("Timeout was reached").
+
+Decision:
+
+- QEMU counts a Venus loss where it counts a GL one, from vkr's ring-fatal
+  path (`virgl-venus-lost-context-count.patch`): the ring thread leaves the
+  name and cause in the shared budget module, and the renderer thread, which
+  owns the status file, writes it at its next poll: lost, lost_last,
+  lost_recent, lost_recent_why `venus` (refused on the Mac) or `guard` (the
+  budget had refused a Venus allocation of that context first: with the
+  guest's asynchronous allocation the app's next use of that memory is what
+  ends it), and a new list, lost_recent_kind (`gl` or `venus`).
+- A context the guest was closing is not lost. When an app's process ends,
+  the guest's kernel closes all its handles before it destroys the context;
+  a handle vkr still uses (the ring's own buffer, a command stream being
+  read, a reply being written) then ends the context, and the ring command
+  that fails after it is a teardown. In the zink-venus rows a SIGKILL during
+  Zink's teardown printed "is lost" that way (M1 Max qemu-k15.log line 130).
+  vkr marks such a context closing before its fatal flag; the ring-fatal
+  path then logs "ended while the guest closed it" and counts nothing.
+- The app tells the VM through the same `GPUMemoryNotice` (once a minute per
+  app, a loss inside the minute told when it is over) with a new verb,
+  `omacvm-desktop-recover venus NAME venus|guard`. Not `app NAME venus`:
+  the 3.2.15 to 3.2.17 scripts take any cause but `pressure` for a full
+  graphics memory and end the app's GPU process (a Chromium with WebGPU
+  would lose its GPU process for nothing). An older script answers the new
+  verb with its usage (exit 2); the app waits 2 s for the exit (no answer
+  in time: nothing more, as for the desktop) and says once in qemu.log that
+  Update VM puts the note in.
+- The VM ends nothing. The note says what happened; for `ghostty` it says
+  to close the frozen Ghostty first (Terminate: the programs in it end; no
+  new Ghostty window opens until then) and that the next one starts on the
+  CPU (not one set to Zink by hand), and the script writes
+  `/run/omacvm/gl-zink-off` (root's file in root's folder, one line "lost
+  TIME WHY", never through a link): OmacVM's EGL library starts Ghostty on
+  Zink only without that file (the experimental Zink path; without it
+  Ghostty is on the CPU anyway, ADR 0064), so a refused Zink Ghostty cannot
+  hang again and again before the VM restarts.
+- `DesktopRecovery` never restarts the desktop or the shell for a Venus
+  context, whatever its name (the desktop and the shell draw with GL).
+- `omacvm check`'s "GPU contexts" names Venus losses too, marked
+  "(Vulkan)".
+
+Checked in hidden test VMs (Mac mini M4 and M1 Max, KosmicKrisp, 3.2.16's app
+fe590bb0 against this change, a Ghostty 1.3.1 on Zink by hand, its context
+ended on purpose by a test Vulkan layer that makes one image view vkr
+refuses; work/ghostty-gpu/venus-loss in the lane's notes):
+
+- 3.2.16 counted none of 8 such losses (vkcube, Ghostty): lost stayed 0, no
+  note. With this change all 13 were counted within 0.3 s of QEMU's "is
+  lost" line (12 in the same 0.2 s look), with the app's name, and told 0.5
+  to 4.8 s later (the app looks every 5 s). The VM's note showed in Omarchy's popup; for
+  Ghostty `/run/omacvm/gl-zink-off` was written (root, 0644, "lost TIME
+  venus"). A VM with the 3.1.32 or 3.2.0 script answered the new verb with
+  its usage, and the app logged "Update VM puts it in" once.
+- vkcube ended by itself 0.5 to 0.6 s after its loss. The frozen Ghostty
+  never received a typed line (60 s), its main thread waited in the
+  kernel's `drm_syncobj_array_wait_timeout`, a SIGTERM ended it within 8 s
+  every time (15 of 15), and its shell ended with it (10 of 10 looked at).
+  Hyprland's not-responding dialog came 2.8 s after the loss (M1).
+- A Ghostty started as Omarchy's launcher starts it (one instance, owning
+  its D-Bus name) while the frozen one lived opened no window: it gave up
+  with "Timeout was reached", or with "Remote peer disconnected" once the
+  frozen one was ended (both Macs). Started after the frozen one ended, a
+  new Ghostty opened in 0.53 to 0.56 s on llvmpipe, drew and took typing.
+- No false counts: 60 Ghostty windows on Zink per build closed with
+  SIGTERM, killed with SIGKILL 20 to 500 ms into Zink's teardown, or killed
+  while drawing, counted nothing and showed no note; a Zink scroll run
+  counted nothing. The race the zink-venus rows met once (M1 qemu-k15.log
+  line 130) did not come back in these 120 ends, so the teardown rule is
+  proven by `test-venus-robust.c` l-teardown (it fails with the patch taken
+  out of the same tree, on KosmicKrisp and MoltenVK).
+- tccd asked for nothing, no GPU fault, no crash report.
+
+Not chosen:
+
+- Hooking the count where the proxy marks a context lost (its fences
+  signalled from then on, `virgl-venus-lost-context-fences.patch`): that
+  happens only when a later fence submit fails, and its line appeared 0
+  times in the six QEMU logs of the zink-venus rows, the four deliberate
+  losses included.
+- Ending the frozen Ghostty for the user: its shells and their programs
+  would end without a word; Terminate is the user's.
+- Making Ghostty survive the loss inside the guest's Venus driver (abort,
+  or VK_ERROR_DEVICE_LOST to Zink): its windows would still never draw
+  again and its shells would still be lost, and where it waits is not known
+  yet.

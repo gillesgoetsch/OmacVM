@@ -402,9 +402,14 @@ if [[ -n $miclog && -f $miclog ]]; then
 fi
 # A VM app whose GPU context virglrenderer dropped draws nothing until it
 # restarts; for the shell that is a black display without bar. QEMU's log
-# (this run of the VM) names it.
+# (this run of the VM) names it: a GL context ("context error reported N
+# "NAME""), or a Vulkan (Venus) one ("venus context N (NAME) is lost", from
+# runtime 2.7.1; from 3.2.18 one the guest was closing says "ended while the
+# guest closed it" instead and is not named here).
 if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
-  lost=$(grep -o 'context error reported [0-9]* "[^"]*"' "$miclog" | sed 's/.*"\(.*\)"$/\1/' | sort -u | paste -sd, - | sed 's/,/, /g')
+  lost=$( { grep -o 'context error reported [0-9]* "[^"]*"' "$miclog" | sed 's/.*"\(.*\)"$/\1/'
+            grep -o 'venus context [0-9]* ([^)]*) is lost' "$miclog" | sed 's/^venus context [0-9]* (\(.*\)) is lost$/\1 (Vulkan)/'
+          } | grep -v '^$' | sort -u | paste -sd, - | sed 's/,/, /g')
   # Not a failure by itself: the app may have been restarted since (the VM's
   # "desktop" line says whether the shell draws now).
   # The app restarts the desktop (and the shell) by itself (DesktopRecovery).

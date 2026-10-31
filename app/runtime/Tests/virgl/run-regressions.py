@@ -278,6 +278,9 @@ run_api_test("test-transform-feedback")
 run_api_test("test-gpu-ranges", oracle=True)
 run_api_test("test-resource-budget")
 run_api_test("test-venus-budget-storage", vulkan_stub=True)
+# A lost Venus context counts in the status file with its name, why and kind, like a GL one
+# (virgl-venus-lost-context-count.patch); the teardown case is test-venus-robust.c's.
+run_api_test("test-venus-lost-count", vulkan_stub=True)
 run_fuzz_replay()
 run_test("test-darwin-eventfd", "virgl_util.c")
 run_test("test-thread-sync-fallback", "vrend_renderer.c")
