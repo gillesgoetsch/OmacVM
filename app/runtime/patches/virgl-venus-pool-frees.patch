@@ -1,0 +1,136 @@
+virglrenderer: Venus frees name objects of their own pool, once
+
+What: vkFreeCommandBuffers and vkFreeDescriptorSets check every handle before any is
+freed: each command buffer or set belongs to the pool the call names and is named
+once (a stamp per call marks them, no allocation; NULL handles stay allowed).
+Pooled objects keep their pool for this. A refusal ends the app's context (frees
+have no answer).
+Why: the driver frees each handle it is handed into the pool it is told. KosmicKrisp
+destroyed a set named twice twice (SIGSEGV in kk_FreeDescriptorSets); Mesa's runtime
+put a command buffer of another pool into this pool's list (SIGSEGV when that pool
+was destroyed); KosmicKrisp's descriptor pool took over another pool's memory range,
+which its next set then used, so descriptor writes landed outside the pool's buffer.
+Probed on the M4 (Apple9) with KosmicKrisp and MoltenVK.
+Upstream: OmacVM policy (VUIDs vkFreeCommandBuffers-pCommandBuffers-parent,
+vkFreeDescriptorSets-pDescriptorSets-parent and -00310).
+Tests: Tests/virgl/test-venus-commands.c (the f- cases, also under libgmalloc).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 1525903..eb3a16f 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -642,7 +642,8 @@ vkr_dispatch_vkFreeCommandBuffers(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
+-   vkr_command_buffer_destroy_driver_handles(ctx, args, &free_list);
++   if (!vkr_command_buffer_destroy_driver_handles(ctx, args, &free_list))
++      return;
+    vkr_context_remove_objects(ctx, &free_list);
+ }
+ 
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index 3aa221d..96101d4 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -51,6 +51,10 @@ struct vkr_command_buffer {
+    struct vkr_object base;
+ 
+    struct vkr_device *device;
++   /* OmacVM (virgl-venus-pool-frees.patch): its pool, and the stamp of the last free call
++    * that named it */
++   struct vkr_command_pool *pool;
++   uint64_t free_stamp;
+    /* OmacVM (virgl-venus-command-limits.patch): only a primary executes secondaries */
+    VkCommandBufferLevel level;
+    struct vkr_cmd_state state;
+diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
+index 37347f5..c65f6f3 100644
+--- a/src/venus/vkr_descriptor_set.c
++++ b/src/venus/vkr_descriptor_set.c
+@@ -911,7 +911,8 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
+-   vkr_descriptor_set_destroy_driver_handles(ctx, args, &free_list);
++   if (!vkr_descriptor_set_destroy_driver_handles(ctx, args, &free_list))
++      return;
+    vkr_context_remove_objects(ctx, &free_list);
+ 
+    args->ret = VK_SUCCESS;
+diff --git a/src/venus/vkr_descriptor_set.h b/src/venus/vkr_descriptor_set.h
+index 944bd1c..d79c4be 100644
+--- a/src/venus/vkr_descriptor_set.h
++++ b/src/venus/vkr_descriptor_set.h
+@@ -58,6 +58,10 @@ struct vkr_descriptor_set {
+    struct vkr_object base;
+ 
+    struct vkr_device *device;
++   /* OmacVM (virgl-venus-pool-frees.patch): its pool, and the stamp of the last free call
++    * that named it */
++   struct vkr_descriptor_pool *pool;
++   uint64_t free_stamp;
+    /* OmacVM (virgl-venus-descriptor-limits.patch): its layout, and the count of its
+     * variable-count binding as allocated */
+    struct vkr_set_layout *layout;
+diff --git a/src/venus/vkr_device_object.py b/src/venus/vkr_device_object.py
+index 343b9ba..4873c95 100644
+--- a/src/venus/vkr_device_object.py
++++ b/src/venus/vkr_device_object.py
+@@ -105,15 +105,37 @@ POOL_OBJECT_DESTROY_DRIVER_HANDLES_TEMPL = '''
+ /* destroy an array of driver {vk_type}s from a pool, remove them from the
+  * vkr_{pool_type}, and return the list of affected vkr_{vkr_type}s
+  */
+-static inline void
++static inline bool
+ vkr_{destroy_func_name}_destroy_driver_handles(
+-   UNUSED struct vkr_context *ctx,
++   struct vkr_context *ctx,
+    struct vn_command_{destroy_cmd} *args,
+    struct list_head *free_list)
+ {{
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM (virgl-venus-pool-frees.patch, ADR 0065): every object named is of this pool
++    * and named once, all checked before any is freed: the driver frees each one it is
++    * handed into the pool it is told (KosmicKrisp destroys a set named twice twice, and
++    * Mesa puts a command buffer of another pool into this one's free list), and the call
++    * has no answer, so a refusal ends the app's context. A stamp per call marks the named
++    * ones (no allocation); NULL handles stay allowed. */
++   static atomic_uint_fast64_t stamps;
++   const uint64_t stamp = atomic_fetch_add(&stamps, 1) + 1;
++   const struct vkr_{pool_type} *pool = vkr_{pool_type}_from_handle(args->{destroy_pool});
++   for (uint32_t i = 0; i < args->{destroy_count}; i++) {{
++      struct vkr_{vkr_type} *obj =
++         vkr_{vkr_type}_from_handle(args->{destroy_objs}[i]);
++      if (!obj)
++         continue;
++      if (obj->pool != pool || obj->free_stamp == stamp) {{
++         vkr_context_refuse(ctx, true, "{destroy_cmd}", "{vk_type} %u: %s", i,
++                            obj->pool != pool ? "of another pool" : "named twice");
++         return false;
++      }}
++      obj->free_stamp = stamp;
++   }}
++
+    list_inithead(free_list);
+    for (uint32_t i = 0; i < args->{destroy_count}; i++) {{
+       struct vkr_{vkr_type} *obj =
+@@ -129,6 +151,7 @@ vkr_{destroy_func_name}_destroy_driver_handles(
+    vn_replace_{destroy_cmd}_args_handle(args);
+    vk->{proc_destroy}(args->device, args->{destroy_pool},
+       args->{destroy_count}, args->{destroy_objs});
++   return true;
+ }}
+ '''
+ 
+@@ -241,6 +264,8 @@ void vkr_{create_func_name}_add_array(
+ 
+       obj->base.handle.{vkr_type} = (({vk_type} *)arr->handle_storage)[i];
+       obj->device = dev;
++      /* OmacVM (virgl-venus-pool-frees.patch): the pool it is freed from */
++      obj->pool = pool;
+ 
+       /* pool objects are tracked by the pool other than the device */
+       list_add(&obj->base.track_head, &pool->{vkr_type}s);

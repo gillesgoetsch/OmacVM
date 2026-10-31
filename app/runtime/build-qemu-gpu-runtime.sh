@@ -1545,6 +1545,9 @@ grep -q 'if (!vkr_rendering_formats_ok(physical_dev, rendering->colorAttachmentC
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-submit-counts.patch"
 grep -q 'if (!vkr_submit_chain_ok(dispatch, "vkQueueSubmit", i, submit->pNext,' "$virgl_source/src/venus/vkr_queue.c" || \
   die "vkr_queue.c: a submit's chained counts are not fitted (submit-counts patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pool-frees.patch"
+grep -q 'if (obj->pool != pool || obj->free_stamp == stamp) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
+  die "vkr_device_object.py: frees are not checked against their pool (pool-frees patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
