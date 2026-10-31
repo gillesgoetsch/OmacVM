@@ -3,7 +3,7 @@
  * public renderer API on Apple's software renderer (soft-gl.h, the GPU's GLSL front end). Each
  * row draws with new shaders and reads column 8 back (a 16-bit mask of the green rows) or the
  * recorded transform feedback values, and checks that no shader was refused and no context
- * error came:
+ * error came. Each section runs in a guest context of its own:
  *  caps  the tessellation control and evaluation shaders' output limits reach the guest (its
  *        Mesa links whole tessellation programs against them; they were 0 without atomic
  *        counters: virgl-caps-tess-outputs.patch);
@@ -45,6 +45,7 @@ enum { R_COLOUR = 5, R_XFB = 13 };
 static CGLContextObj main_ctx;
 static int failures, refused_lines, ctx_error_lines;
 static int verbose, has_cull_distance;
+static uint32_t cur_ctx;      /* the guest context of the section that runs */
 static uint32_t last_centre;   /* the pixel at (8, 8) of the last read */
 
 static void count_log(enum virgl_log_level_flags level, const char *message, void *data)
@@ -543,12 +544,12 @@ static uint32_t draw_mask(const struct stage *stages, uint32_t mode, uint32_t co
       emit_bind(&c, handles[n], s->type);
    }
    emit_draw(&c, mode, count);
-   if (submit(1, &c))
+   if (submit(cur_ctx, &c))
       return ~0u;
-   uint32_t mask = read_mask(1);
+   uint32_t mask = read_mask(cur_ctx);
    for (int i = 0; i < n; i++)
       emit_bind(&c, 0, stages[i].type);
-   submit(1, &c);
+   submit(cur_ctx, &c);
    return mask;
 }
 
@@ -557,7 +558,7 @@ static void use(int flip, uint32_t rs)
    struct cmds c = { .n = 0 };
    emit_viewport(&c, flip);
    emit_bind_rasterizer(&c, rs);
-   submit(1, &c);
+   submit(cur_ctx, &c);
 }
 
 static void row(const char *what, const struct stage *stages, uint32_t mode, uint32_t want)
@@ -580,7 +581,7 @@ static void xfb_row(int sep)
       .bind = VIRGL_BIND_STREAM_OUTPUT, .width = 4096, .height = 1, .depth = 1, .array_size = 1,
    };
    check(!virgl_renderer_resource_create(&args, NULL, 0), "B transform feedback: buffer");
-   virgl_renderer_ctx_attach_resource(1, R_XFB);
+   virgl_renderer_ctx_attach_resource(cur_ctx, R_XFB);
    int refused = refused_lines, errors = ctx_error_lines;
    struct cmds c = { .n = 0 };
    emit(&c, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_STREAMOUT_TARGET,
@@ -609,11 +610,11 @@ static void xfb_row(int sep)
    emit(&c, 0);
    for (int i = 0; i < 4; i++)
       emit_bind(&c, 0, st[i].type);
-   check(submit(1, &c) == 0, "B transform feedback: the submit runs");
+   check(submit(cur_ctx, &c) == 0, "B transform feedback: the submit runs");
    float got[12] = { 0 };
    struct iovec iov = { got, sizeof(got) };
    struct virgl_box box = { 0, 0, 0, sizeof(got), 1, 1 };
-   int r = virgl_renderer_transfer_read_iov(R_XFB, 1, 0, 0, 0, &box, 0, &iov, 1);
+   int r = virgl_renderer_transfer_read_iov(R_XFB, cur_ctx, 0, 0, 0, &box, 0, &iov, 1);
    int same = r == 0;
    for (int i = 0; i < 12; i++)
       same &= got[i] == 0.25f * (i % 4 + 1);
@@ -625,10 +626,29 @@ static void xfb_row(int sep)
    snprintf(text, sizeof(text), "B transform feedback (%s): no shader refused (%d), no context error",
             sep ? "separable" : "whole", refused_lines - refused);
    check(refused_lines == refused && ctx_error_lines == errors, text);
-   virgl_renderer_ctx_detach_resource(1, R_XFB);
+   virgl_renderer_ctx_detach_resource(cur_ctx, R_XFB);
    virgl_renderer_resource_unref(R_XFB);
 }
 
+
+/* A new guest context with the colour buffer and the fixed state for each section: a section that
+ * ends its context on a host without the fixes (B on main) does not take the later ones with it. */
+static void section_context(const char *name)
+{
+   if (cur_ctx) {
+      virgl_renderer_ctx_detach_resource(cur_ctx, R_COLOUR);
+      virgl_renderer_context_destroy(cur_ctx);
+   }
+   cur_ctx++;
+   char text[80];
+   snprintf(text, sizeof(text), "context %u for %s", cur_ctx, name);
+   check(!virgl_renderer_context_create(cur_ctx, strlen(name), name), text);
+   virgl_renderer_ctx_attach_resource(cur_ctx, R_COLOUR);
+   struct cmds c = { .n = 0 };
+   emit_setup(&c);
+   snprintf(text, sizeof(text), "framebuffer of context %u", cur_ctx);
+   check(submit(cur_ctx, &c) == 0, text);
+}
 
 /* the host's tessellation output limits as the guest gets them: its Mesa links each
  * tessellation shader's per-vertex outputs against them */
@@ -663,13 +683,13 @@ static void toggle_rows(const char *what, const struct stage *stages, uint32_t m
       emit_shader_so(&c, handles[n], s->type, s->text, s->so);
       emit_bind(&c, handles[n], s->type);
    }
-   submit(1, &c);
+   submit(cur_ctx, &c);
    for (int i = 0; i < 3; i++) {
       int refused = refused_lines, errors = ctx_error_lines;
       emit_bind_rasterizer(&c, rs[i]);
       emit_clear_grey(&c);
       emit_draw(&c, mode, 3);
-      uint32_t got = submit(1, &c) ? ~0u : read_mask(1);
+      uint32_t got = submit(cur_ctx, &c) ? ~0u : read_mask(cur_ctx);
       uint32_t want = rs[i] == RS_CLIP0 ? top : 0xffff;
       char text[240];
       snprintf(text, sizeof(text), "%s, draw %d (planes %s): green rows 0x%04x, want 0x%04x", what,
@@ -682,7 +702,7 @@ static void toggle_rows(const char *what, const struct stage *stages, uint32_t m
    for (int i = 0; i < n; i++)
       emit_bind(&c, 0, stages[i].type);
    emit_bind_rasterizer(&c, RS_PLAIN);
-   submit(1, &c);
+   submit(cur_ctx, &c);
 }
 
 /* A shader the host cannot have (gl_CullDistance on a GL without cull distances): refused,
@@ -729,16 +749,12 @@ int main(int argc, char **argv)
       return 1;
    }
    caps_row();
-   check(!virgl_renderer_context_create(1, strlen("shapes"), "shapes"), "context");
    struct virgl_renderer_resource_create_args args = {
       .handle = R_COLOUR, .target = TEXTURE_2D, .format = VIRGL_FORMAT_R8G8B8A8_UNORM,
       .bind = VIRGL_BIND_RENDER_TARGET, .width = 16, .height = 16, .depth = 1, .array_size = 1,
    };
    check(!virgl_renderer_resource_create(&args, NULL, 0), "colour buffer");
-   virgl_renderer_ctx_attach_resource(1, R_COLOUR);
-   struct cmds c = { .n = 0 };
-   emit_setup(&c);
-   check(submit(1, &c) == 0, "framebuffer");
+   section_context("reference");
 
    /* references: the top half from a vertex shader, straight and flipped */
    use(0, RS_PLAIN);
@@ -756,6 +772,7 @@ int main(int argc, char **argv)
          text);
 
    if (strchr(only, 'A')) {
+      section_context("A");
       for (int sep = 0; sep < 2; sep++) {
          for (int flip = 0; flip < 2; flip++) {
             use(flip, RS_PLAIN);
@@ -773,11 +790,13 @@ int main(int argc, char **argv)
    }
 
    if (strchr(only, 'B')) {
+      section_context("B");
       xfb_row(0);
       xfb_row(1);
    }
 
    if (strchr(only, 'C')) {
+      section_context("C");
       use(0, RS_PLAIN);
       row("C0 vertex shader with gl_ClipDistance, clip plane off: all drawn", (const struct stage[]){
              { 0, SHADER_VERTEX, vs_clip, 0 }, { 0, SHADER_FRAGMENT, fs_green, 0 }, { 0 } },
@@ -823,6 +842,9 @@ int main(int argc, char **argv)
                                           { 0, SHADER_TESS_EVAL, tes_pos, 0 },
                                           { 0, SHADER_FRAGMENT, fs_green, 0 }, { 0 } },
                   PRIM_PATCHES, top);
+      /* its own context: the refusal is logged once per context */
+      section_context("C9");
+      use(0, RS_PLAIN);
       cull_row();
       row("C12 after the refused shader: all drawn", (const struct stage[]){
              { 0, SHADER_VERTEX, vs_full, 0 }, { 0, SHADER_FRAGMENT, fs_green, 0 }, { 0 } },
@@ -830,6 +852,7 @@ int main(int argc, char **argv)
    }
 
    if (strchr(only, 'E')) {
+      section_context("E");
       use(0, RS_PLAIN);
       row("E8 whole program: array output into a geometry shader's array input (green)",
           (const struct stage[]){
@@ -846,8 +869,8 @@ int main(int argc, char **argv)
           PRIM_TRIANGLES, 0xffff);
    }
 
-   virgl_renderer_ctx_detach_resource(1, R_COLOUR);
-   virgl_renderer_context_destroy(1);
+   virgl_renderer_ctx_detach_resource(cur_ctx, R_COLOUR);
+   virgl_renderer_context_destroy(cur_ctx);
    virgl_renderer_resource_unref(R_COLOUR);
    virgl_renderer_cleanup(&cookie);
    if (failures)
