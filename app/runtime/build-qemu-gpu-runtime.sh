@@ -1560,6 +1560,9 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-thread-budge
 grep -q 'virgl_thread_budget_take("thread of a new Venus ring")' "$virgl_source/src/venus/vkr_ring.c" && \
   grep -q 'virgl_thread_budget_take("render worker of a new Venus context")' "$virgl_source/server/render_worker.c" || \
   die "vkr_ring.c, render_worker.c: guest threads are not budgeted (thread-budget patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pass-views.patch"
+grep -q '!vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd->view_count))' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_command_buffer.c: a pass's image views are not checked (pass-views patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
