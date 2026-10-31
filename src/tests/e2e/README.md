@@ -213,6 +213,81 @@ window's words), `run.log`. A release runs it on a test
 identity build of M (or the release zip relabeled, `relabel.sh`) on each
 macOS it has a Mac for (docs/releasing.md).
 
+## The real present on a locked Mac (`present-locked.sh`)
+
+`present-locked.sh` runs the present path a person's full-screen VM uses,
+at a 5K or 6K guest size, with "Draw only what changed" in check mode
+(`OMACVM_GL_PRESENT_TILES=check`: every 30th frame drawn in tiles is drawn
+whole too and compared), while a guest pointer moves at the top right. It
+runs on a locked test Mac, with nobody there. Why: 3.2.14 squeezed the tiles
+right of x 4096 on pictures wider than 4352 pixels (#637), and no release
+row saw it. 3.2.15's gate row for it said ok with 0 checks: it was a hidden
+start.
+
+A hidden start (`OMACVM_COCOA_HIDDEN`) is never ordered in, so its view's
+display link never ticks: QEMU presents its first frames and then none
+(no frame in tiles, no check). It still tests the guest (QEMU's own frame
+timer keeps the guest drawing), the shaders building and the switch read,
+never the tiles, the pacing or the window's picture. Here the test app's
+window is ordered in on a virtual display made for the run
+(`app/scripts/dev/virtual-display.m --while-locked`): under the lock macOS
+shows none of it, and the window gets its display's frame clock (60/s) like
+one a person looks at.
+
+| Step | What | Refused or VOID when |
+|---|---|---|
+| may it run | the session locked (`person_locked`), no other VM (the person's would get a window on the new display), no `~/.omacvm-bench.lock`, memory level 40 or more and pressure normal, the VM at most 4 GB, `~/.omacvm-test-identity.lock` free | exit 3, nothing made |
+| displays | every real display's mode (pixels, refresh) read; one virtual display at the size asked (HiDPI, 60 Hz), a new random serial and its own name; the modes read again | a mode changed: stop, exit 5, `needs-user.txt` (STANDARDS 32: never set back); macOS gave another size: VOID |
+| settings | `presentTiles`, `startFullScreen` on; `pauseWhileHidden`, `hdr`, `extraBrightness`, `mediaControls`, `vsyncLock`, `pointerPlane`, `gpuSafeMode` off (GPU safe mode turns tiles off, the pointer layer takes the pointer out of the frame); `skipInstallPaths`; saved first and put back (`e2e_settings_save`/`_restore`) | |
+| start | the test app in test mode: `OMACVM_TEST_SKIP_DISPLAYS` = the real displays, `OMACVM_TEST_MAIN_DISPLAY` = ours, `OMACVM_PRESENT_HIDDEN=1`, `OMACVM_GUEST_PAUSE=0`, the clipboard apart (`OMACVM_TEST_PASTEBOARD`) | a window of the app outside the virtual display, or none of QEMU's on it: the app killed, VOID |
+| in the VM | the Mac links off and checked (STANDARDS 18a), Virtual-1's mode, whether the compositor's damage reaches QEMU (OmacVM's driver: `omacvm check`'s "Changed parts"), a uinput pointer at the top right for `--seconds` (120), then on in 10 s steps until QEMU's next minute line (it writes none at its stop) | links still on: FAIL |
+| verdict | `present_verdict` (onscreen-lib.sh) on this run's qemu.log lines | below |
+| end | the VM stopped, the display gone, the settings and the links put back; the modes again; tccd "Notifying for access", UserNotificationCenter's windows, WindowServer "setting mode", nehelper's Local Network line | a mode changed: exit 5 |
+
+The verdict: FAIL when any check differed (a `tiles check N:` line with
+pixels that differ, or N > 0 in any `N of M checks differed`). ok needs the
+check on, the session locked to the row's end, the VM's damage reaching
+QEMU (without OmacVM's damage driver every frame is whole), a frame in
+tiles, at least 20 checks, the guest at the size asked (#637 shows only
+past 4352 pixels) and the virtual display awake at the end. Anything else is
+VOID with its reason: the row proves nothing and the release owes it.
+`result.json` (`kind` omacvm-e2e-present-locked) does not pass on VOID.
+
+The display goes by itself when the session unlocks: macOS's unlock notice,
+or the lock read every 0.5 s (CoreGraphics' session and the IORegistry's
+console user), when the script ends, or after 45 minutes. Before it goes,
+every process run from inside the test app is killed: a window left on a
+display that goes moves to the person's display. The script watches the
+lock every second too (the same order) and stops the VM at critical memory.
+`--drill-unlock S` sends the display tool a private notice S seconds into
+the pointer (never macOS's own notice: the person's app and QEMU's lock
+watch listen to it): the app's processes must be gone before the display,
+none of its windows on another display meanwhile; that row is VOID.
+
+What it does not cover: WindowServer's composite (under the lock macOS puts
+none of the window's frames on a screen: 0 of 900 drawables presented on
+the locked M1 Max), the panel's own refresh and 120 Hz pacing (the virtual
+display is 60 Hz), the hold for a window nobody sees (present-unseen:
+`OMACVM_PRESENT_HIDDEN=1` skips it), and surface use counts as WindowServer
+holds them. The look on a real panel stays a person's check.
+
+```bash
+# the caller holds the Mac's VM lock; the session is locked; a stopped test VM of at most 4 GB;
+# new builds copied over the one test app folder (a new folder brings macOS's Local Network question)
+src/tests/e2e/present-locked.sh --vm "OmacVM M-e2e" --size 5120x2880 --out ~/e2e/present-5k
+src/tests/e2e/present-locked.sh --vm "OmacVM M-e2e" --size 6016x3384 --out ~/e2e/present-6k
+```
+
+About 6 minutes a run. One size per run (a second run makes a new display
+with a new serial; never a mode switch in a loop). Results: `summary.tsv`
+(ok, FAIL, VOID, needs-user, info, warn), `result.json`, `qemu.log` (the
+run's lines), the display lists, `run.log`. Exit 0 ok, 1 FAIL, 2 usage, 3
+not run, 4 VOID, 5 a real display's mode changed.
+`src/tests/e2e-onscreen.sh` tests the verdict on saved qemu.log lines
+(`present-logs/`: 3.2.15 and 3.2.14 on the locked M1 Max, 3.2.15's hidden
+gate row), the guard and the display tool's `--while-locked` without a
+display (`--dry-run`), offline in CI.
+
 ## Stale frames after focus changes (`stale-frames/`)
 
 `stale-frames/stale-frames.sh --vm NAME` checks #167 (window borders left
