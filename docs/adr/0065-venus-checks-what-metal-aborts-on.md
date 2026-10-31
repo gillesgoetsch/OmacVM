@@ -298,20 +298,57 @@ runs): `vkUpdateDescriptorSets` 0.009 -> 0.017 us on KosmicKrisp and 0.021 ->
 
 The revisit trigger above ("a crash class inside shader compilation") has
 fired: malformed SPIR-V crashes both compilers. It is answered with a check in
-vkr, not with option 2: a structural scan of the SPIR-V (header, instruction
-lengths inside the code, the id bound, entry points and execution models,
-workgroup sizes after specialization, descriptor sets inside the pipeline
-layout) catches every probed crash and is the next change in #624, with
-command-buffer state (draw or dispatch without a bound pipeline of its kind,
-`vkCmdNextSubpass`/`EndRenderPass` outside a pass, `vkCmdClearAttachments`
-past the pass's colours), texel-region extents of copies and blits, and
-format checks for pipelines and render passes. Until it lands, malformed SPIR-V
-still ends QEMU. A full validator (SPIRV-Tools) would be a new pinned
-dependency and a cost per module; it is added only if a crash past the
-structural scan is found. Option 2 is revisited if such crashes keep coming,
-or when KosmicKrisp can share memory across processes.
+vkr, not with option 2. Four more patches, one per class, after the four above:
 
-Still open (#624): the next change above; MoltenVK reads vertex buffers,
+- `virgl-venus-command-state.patch`: each command buffer's state (recording,
+  the open render pass or rendering with its subpass, colours and view mask,
+  the bound pipelines, conditional rendering). Commands on a buffer that does
+  not record, draws outside a pass or without a graphics pipeline, dispatches
+  inside a pass or without a compute pipeline, clears outside a pass or past
+  its colours, a pass begun inside another, `vkCmdNextSubpass` past the last
+  subpass, ends without their begin, queries and timestamps in a multiview
+  pass past the pool (one query per view), and secondaries that still record
+  or do not match the primary's pass end the context. KosmicKrisp and
+  MoltenVK with prefill crashed on the probed ones.
+- `virgl-venus-spirv-scan.patch`: a structural scan of every module and of
+  SPIR-V chained into a stage (`vkr_spirv.c`, no driver): header, every
+  instruction inside the code, the ids it reads inside the bound (at most
+  2^20; KosmicKrisp allocates per id), entry point names that end. Pipelines
+  need their stage's entry point by name and execution model, a workgroup
+  size after specialization (`LocalSize`, `LocalSizeId` or the
+  `WorkgroupSize` built-in) inside the device's limits, and the descriptor
+  sets and bindings that the functions their entry point reaches through
+  calls use in their layout. Entry point interfaces are not used for this:
+  glslang lists unused descriptors there from SPIR-V 1.4, which a valid layout
+  need not have. The scan is fuzzed on the CPU alone under the sanitizers
+  (`Tests/virgl/fuzz-venus-spirv.sh`, CI and every runtime build).
+- `virgl-venus-copy-regions.patch`: copy, blit and resolve regions name an
+  aspect the image has and texels inside the level (a plane's share, block
+  formats in whole blocks); buffer-image copies name bytes inside the buffer
+  up to their last texel block (overflow-checked). `vkr_format_extent.h` is
+  generated from the Vulkan registry like `vkr_format_table.h`.
+- `virgl-venus-pipeline-formats.patch`: render pass attachments and the
+  formats of a pipeline's or a secondary's dynamic rendering are known formats
+  with the colour or depth/stencil attachment feature on the host (an unknown
+  format ended both drivers, R64G64B64A64 ended KosmicKrisp).
+
+`test-venus-commands.c` has 272 cases now (50 for these classes, legal
+maxima among them: a mirrored blit, a copy that ends at the buffer's last
+byte, the largest workgroup, a shader with an unused descriptor set the layout
+lacks). With the four patches above all 40 refused new cases fail on
+KosmicKrisp, MoltenVK and MoltenVK with prefill (the process ended in 8, 6 and
+12 of them); with 3.2.15's vkr 187, 174 and 174 of the 260 cases fail; with all
+eight patches every case passes (3 of 3 runs, 0 GPU restarts). `vkCmdDraw`
+through vkr costs 0.169 -> 0.173 us on KosmicKrisp and 0.025 -> 0.029 us on
+MoltenVK (medians of 3 runs); a scan takes 0.16 to 0.53 us for a shader of 126
+to 394 words (the mini's M4, once per `vkCreateShaderModule`).
+
+A full validator (SPIRV-Tools) would be a new pinned dependency and a cost
+per module; it is added only if a crash past the structural scan is found.
+Option 2 is revisited if such crashes keep coming, or when KosmicKrisp can
+share memory across processes.
+
+Still open (#624): MoltenVK reads vertex buffers,
 descriptor sets and push constants a draw or dispatch uses but the app never
 set when it encodes them (at submit in QEMU; a test without them ended
 MoltenVK's process at `vkEndCommandBuffer` with prefilled command buffers);
