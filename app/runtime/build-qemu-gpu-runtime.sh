@@ -1515,6 +1515,29 @@ grep -q 'vkr_metal_max_vertex_amplification());' "$virgl_source/src/venus/vkr_ph
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-limits.patch"
 grep -q 'if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos\[i\], why,' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c: pipeline create infos are not checked (pipeline-limits patch)"
+# Commands come where Vulkan allows them: a draw in a pass with a pipeline, a pass begun once and
+# ended where it began, a recording command buffer (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-state.patch"
+grep -q 'if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDraw"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'cmd->state.recording = false;' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_command_buffer.c: commands are not checked against the command buffer's state (command-state patch)"
+# Guest SPIR-V passes a structural scan before the Mac's shader compilers (#624); the scan on its
+# own first, fuzzed on the CPU under the sanitizers.
+"$native_dir/Tests/virgl/fuzz-venus-spirv.sh"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-scan.patch"
+grep -q 'vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: guest SPIR-V is not scanned (spirv-scan patch)"
+# Copies, blits and resolves name texels inside their images and bytes inside their buffers (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-copy-regions.patch"
+grep -q 'vkr_cmd_buffer_image_ok(args->srcBuffer, args->dstImage, &r2),' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  [[ -s $virgl_source/src/venus/vkr_format_extent.h ]] || \
+  die "vkr_command_buffer.c: copy regions are not checked (copy-regions patch)"
+# Attachment formats are ones the Mac's device renders to (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-formats.patch"
+grep -q 'if (!vkr_rendering_formats_ok(physical_dev, rendering->colorAttachmentCount,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q '!vkr_physical_device_format_ok(physical_dev, info->pAttachments\[i\].format,' "$virgl_source/src/venus/vkr_render_pass.c" || \
+  die "vkr_pipeline.c, vkr_render_pass.c: attachment formats are not checked (pipeline-formats patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

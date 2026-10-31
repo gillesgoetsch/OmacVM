@@ -845,7 +845,12 @@ The less obvious ones, with causes and where the fix lives, are in
   `vn_replace_*_args_handle` replaces them. Each `vkr_dispatch_vkCmd*` needs a
   row in `Tests/virgl/venus-command-ledger.tsv` (the runtime build fails
   without one) and each new check a case in `test-venus-commands.c`, including
-  the limit's legal maximum.
+  the limit's legal maximum. Guest SPIR-V reaches a driver only through
+  `vkr_spirv_scan` (fuzz it with `Tests/virgl/fuzz-venus-spirv.sh` after a
+  change); never take an entry point's interface as the descriptors it uses
+  (glslang lists unused ones). A new `vkCmd*` that needs a pass, a pipeline or
+  a recording buffer checks `vkr_cmd_state`; an object kept there is kept by id
+  and serial, never as a pointer (an app may destroy it while recording).
 - Do not run guest apps on Zink as their OpenGL (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
   in an OmacVM.app VM with Vulkan: on KosmicKrisp it gives OpenGL 2.1 only.
   Ghostty's OpenGL 4.3 comes from llvmpipe instead. With the 3.2.13 app and

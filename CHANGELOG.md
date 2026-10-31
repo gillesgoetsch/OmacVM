@@ -21,8 +21,18 @@ in more words.
   the VM window or `omacvm graphics --vm NAME opengl`, avoids Venus for it). With KosmicKrisp a pass
   with more than 8 views (Apple M1; the count Metal supports on the Mac) ended the VM although the
   app had been told 32: apps are now told the Mac's count. Needs the app update (from the VM's next
-  start). Still open in #624: malformed shaders, commands outside their render pass and copy regions
-  past an image (the next change).
+  start).
+- **A broken shader, a draw outside its render pass or an attachment format the Mac's GPU cannot
+  draw to no longer stops the VM either (see #624).** With Graphics on Vulkan, a Vulkan program that
+  sent SPIR-V the Mac's shader compilers cannot read, asked for an entry point its shader lacks or a
+  workgroup larger than the GPU runs, used a descriptor set its pipeline layout lacks, drew without
+  a pipeline or outside a render pass, or made a pipeline for an unknown format or one Metal cannot
+  render to (64-bit colour) ended QEMU and the VM. Copies and blits past their image or buffer,
+  which the Mac's GPU would have run outside the resource, are refused too. So is the next subpass
+  or the end of a render pass the program destroyed while still recording into it (the Mac's driver
+  read the freed pass). Such a program now loses only its own Vulkan connection, with the refused
+  call in QEMU's log (troubleshooting 52). Shaders are scanned once when the app makes them; correct
+  shaders are not affected. Needs the app update.
 
 ## 3.2.16
 

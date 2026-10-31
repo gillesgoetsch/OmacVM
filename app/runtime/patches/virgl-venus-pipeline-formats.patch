@@ -1,0 +1,172 @@
+virglrenderer: Venus attachment formats are ones the device renders to
+
+What: render pass attachments (vkCreateRenderPass and 2), and the color,
+depth and stencil formats of a pipeline's dynamic rendering and of a
+secondary's inherited rendering, are formats vkr's format table knows with
+the color or depth/stencil attachment feature among the host's linear or
+optimal tiling features (VK_FORMAT_UNDEFINED, no attachment, where Vulkan
+allows it), and a color format list has the count's entries. A refused
+create or begin ends the app's context.
+Why: an unknown VkFormat in a pipeline's rendering info ended both drivers
+(KosmicKrisp in kk_lower_nir; MoltenVK: strlen(NULL) in
+MVKPixelFormats::getMTLPixelFormat), and KosmicKrisp ended on an
+R64G64B64A64 color attachment, which Metal has no pixel format for.
+Upstream: OmacVM policy (spec VUIDs), draft only.
+Tests: Tests/virgl/test-venus-commands.c (p-gfx-format-, p-gfx-depth-format-,
+r-format-, c-inherit-format-bad cases).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index a6f3215..f60ae6b 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -339,10 +339,16 @@ vkr_cmd_inheritance_ok(struct vkr_context *ctx,
+        (rendering->colorAttachmentCount <= lim->maxColorAttachments &&
+         (!rendering->rasterizationSamples ||
+          vkr_sample_count_ok(lim, rendering->rasterizationSamples)))) &&
++         (!rendering ||
++          vkr_rendering_formats_ok(physical_dev, rendering->colorAttachmentCount,
++                                   rendering->pColorAttachmentFormats,
++                                   rendering->depthAttachmentFormat,
++                                   rendering->stencilAttachmentFormat)) &&
+          (!locations || locations->colorAttachmentCount <= lim->maxColorAttachments) &&
+          (!inputs || inputs->colorAttachmentCount <= lim->maxColorAttachments),
+       "vkBeginCommandBuffer",
+-      "inheritance with %u colors (%u samples), %u locations, %u input indices (at most %u)",
++      "inheritance with %u colors (%u samples, or formats the device cannot render to), %u "
++      "locations, %u input indices (at most %u)",
+       rendering ? rendering->colorAttachmentCount : 0,
+       rendering ? rendering->rasterizationSamples : 0,
+       locations ? locations->colorAttachmentCount : 0,
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index fa2d40b..4fdbeea 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -10,6 +10,7 @@
+ #include "vkr_context.h"
+ #include "vkr_device.h"
+ #include "vkr_instance.h"
++#include "vkr_format_table.h"
+ 
+ #ifdef HAVE_LINUX_UDMABUF_H
+ #include <fcntl.h>
+@@ -85,6 +86,24 @@ vkr_physical_device_get_gbm_device(void)
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
++/* OmacVM (virgl-venus-pipeline-formats.patch): attachment formats. An unknown VkFormat ended
++ * both drivers' pipeline creation (MoltenVK: strlen(NULL) in getMTLPixelFormat), and
++ * KosmicKrisp ended it on an R64G64B64A64 color attachment, which Metal has no pixel format
++ * for. Linear or optimal: the Vulkan "potential format features" an attachment needs. */
++bool
++vkr_physical_device_format_ok(const struct vkr_physical_device *physical_dev,
++                              VkFormat format,
++                              VkFormatFeatureFlags features)
++{
++   if (!vkr_format_block_size(format))
++      return false;
++   VkFormatProperties props;
++   memset(&props, 0, sizeof(props));
++   physical_dev->proc_table.GetPhysicalDeviceFormatProperties(
++      physical_dev->base.handle.physical_device, format, &props);
++   return (props.linearTilingFeatures | props.optimalTilingFeatures) & features;
++}
++
+ void
+ vkr_physical_device_destroy(struct vkr_context *ctx,
+                             struct vkr_physical_device *physical_dev)
+diff --git a/src/venus/vkr_physical_device.h b/src/venus/vkr_physical_device.h
+index 64a3859..8871ddf 100644
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -66,6 +66,38 @@ vkr_physical_device_image_kind_ok(const struct vkr_physical_device *physical_dev
+                                   VkImageType type,
+                                   VkImageTiling tiling);
+ 
++/* OmacVM (virgl-venus-pipeline-formats.patch): a format vkr's format table knows with one
++ * of `features` among its linear or optimal tiling features on the host */
++bool
++vkr_physical_device_format_ok(const struct vkr_physical_device *physical_dev,
++                              VkFormat format,
++                              VkFormatFeatureFlags features);
++
++/* the formats of dynamic rendering (a pipeline's or an inherited one): UNDEFINED for no
++ * attachment, else a color (depth, stencil) attachment format of the device; a color format
++ * list of the count */
++static inline bool
++vkr_rendering_formats_ok(const struct vkr_physical_device *physical_dev,
++                         uint32_t color_count,
++                         const VkFormat *colors,
++                         VkFormat depth,
++                         VkFormat stencil)
++{
++   if (color_count && !colors)
++      return false;
++   for (uint32_t i = 0; i < color_count; i++) {
++      if (colors[i] != VK_FORMAT_UNDEFINED &&
++          !vkr_physical_device_format_ok(physical_dev, colors[i], VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
++         return false;
++   }
++   return (depth == VK_FORMAT_UNDEFINED ||
++           vkr_physical_device_format_ok(physical_dev, depth,
++                                         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) &&
++          (stencil == VK_FORMAT_UNDEFINED ||
++           vkr_physical_device_format_ok(physical_dev, stencil,
++                                         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT));
++}
++
+ void
+ vkr_physical_device_destroy(struct vkr_context *ctx,
+                             struct vkr_physical_device *physical_dev);
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index ad6e502..204ebfd 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -500,6 +500,14 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+          return false;
+       }
+       colors = rendering->colorAttachmentCount;
++      /* OmacVM (virgl-venus-pipeline-formats.patch) */
++      if (!vkr_rendering_formats_ok(physical_dev, rendering->colorAttachmentCount,
++                                    rendering->pColorAttachmentFormats,
++                                    rendering->depthAttachmentFormat,
++                                    rendering->stencilAttachmentFormat)) {
++         snprintf(why, why_size, "rendering formats the device cannot render to");
++         return false;
++      }
+    }
+    const VkRenderingAttachmentLocationInfo *locations =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO);
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index 26eb4d2..80f9dd3 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -169,8 +169,12 @@ vkr_render_pass_info_1(const struct vkr_physical_device *physical_dev,
+       return NULL;
+    }
+    for (uint32_t i = 0; i < info->attachmentCount; i++) {
+-      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
+-         snprintf(why, why_size, "attachment %u: %u samples", i, info->pAttachments[i].samples);
++      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples) ||
++          !vkr_physical_device_format_ok(physical_dev, info->pAttachments[i].format,
++                                         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
++                                            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
++         snprintf(why, why_size, "attachment %u: %u samples, format %d", i,
++                  info->pAttachments[i].samples, info->pAttachments[i].format);
+          return NULL;
+       }
+    }
+@@ -239,8 +243,12 @@ vkr_render_pass_info_2(const struct vkr_physical_device *physical_dev,
+       return NULL;
+    }
+    for (uint32_t i = 0; i < info->attachmentCount; i++) {
+-      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
+-         snprintf(why, why_size, "attachment %u: %u samples", i, info->pAttachments[i].samples);
++      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples) ||
++          !vkr_physical_device_format_ok(physical_dev, info->pAttachments[i].format,
++                                         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
++                                            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
++         snprintf(why, why_size, "attachment %u: %u samples, format %d", i,
++                  info->pAttachments[i].samples, info->pAttachments[i].format);
+          return NULL;
+       }
+    }
