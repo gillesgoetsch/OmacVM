@@ -53,8 +53,9 @@ Measured on 3.2.12 in a test VM (Graphics Automatic, so Vulkan on macOS 27):
       refused by the kernel (`DRM_IOCTL_MODE_CREATE_DUMB`: permission denied).
 3. **Zink on Venus**: OpenGL 2.1 without a core profile, because the Mac's
    Vulkan driver (KosmicKrisp, pinned at Mesa e5f0687) has no transform
-   feedback (3.0) and no geometry shaders (3.2); it also lacks float64,
-   which 4.0 needs. With a forced 4.3 every Ghostty start aborted QEMU, and so
+   feedback (3.0) and no geometry shaders (3.2). (Float64 is no limit: Zink
+   reports doubles whatever the Vulkan driver has, `zink_screen.c` in Mesa
+   26.2.6 and main.) With a forced 4.3 every Ghostty start aborted QEMU, and so
    did one `MESA_LOADER_DRIVER_OVERRIDE=zink LIBGL_KOPPER_DISABLE=1 glxinfo -B`
    run as the desktop user: a Metal assertion in KosmicKrisp's
    `vkBindImageMemory2` for a linear image Metal takes as a 2D array
@@ -176,8 +177,8 @@ terminals), and it does not start while the screen is locked.
   There `LIBGL_ALWAYS_SOFTWARE=1 ghostty` is the way, where Mesa's llvmpipe
   is installed.
 - Zink again when (i) the QEMU abort above is fixed (done in 3.2.14, ADR
-  0065) and (ii) KosmicKrisp has transform feedback, geometry shaders and
-  float64, so Zink gives a real 4.x core; then window, typing and cost rows
+  0065) and (ii) KosmicKrisp has transform feedback and geometry shaders,
+  so Zink gives a real 4.x core; then window, typing and cost rows
   and a soak, and never for the desktop or browsers without browser numbers.
 - Tests: `src/app/guest/tests/egl-vendor.sh` (an exe named ghostty: Mesa's
   stand-in sees `=1` during its `eglInitialize` and nothing afterwards, also
