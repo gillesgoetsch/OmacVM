@@ -59,8 +59,9 @@ extension VMStalls {
 /// - When macOS warns that memory is short, the VM drops its whole file
 ///   cache, and compacts its free memory once the pressure is normal again.
 ///   When macOS compresses the VM, or the VM is quiet (MemoryGiveBack says
-///   when), the VM gives back its cold file cache and compacts its free
-///   memory (src/memory/guest/giveback.sh, from this app's bundle), but only
+///   when), the VM gives back its cold file cache, and when quiet it also
+///   compacts its free memory (src/memory/guest/giveback.sh, from this app's
+///   bundle; never while macOS compresses the VM), but only
 ///   with a QEMU that gives the pages back to macOS (MemoryGiveBack.pagesGoBack;
 ///   qemu.log lines at the start say which), and only until that QEMU says
 ///   macOS keeps the pages anyway (its file logs/memory-reclaim, looked at

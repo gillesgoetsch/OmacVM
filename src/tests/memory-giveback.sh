@@ -84,14 +84,14 @@ untouched() {   # DIR: what the script must never write
 cm() { cat "$1/proc/sys/vm/compact_memory"; }
 
 # The user's VM (42 GB, 2.8 GB active and 12.4 GB cold file cache, 1191 MB free in blocks too small to report, as on
-# the M1 after Chrome closed): all but the newest 1 GB, in 1 GB steps, then one compaction.
+# the M1 after Chrome closed): all but the newest 1 GB, in 1 GB steps; no compaction while macOS compresses.
 mkroot "$T/u" 2850 12700
 out=$(run "$T/u" compressing)
 expect "cold cache less 1 GB is asked for" "reclaim 11676" "$(key "$out" act) $(key "$out" want)"
 expect "in 1 GB steps (12)" 12 "$(key "$out" steps)"
 expect "the last step is the rest, file pages only" "$((412 * 1048576)) swappiness=0" "$(cat "$T/u/sys/fs/cgroup/memory.reclaim")"
 expect "no full cache drop" 0 "$(cat "$T/u/proc/sys/vm/drop_caches")"
-expect "1191 MB in blocks under order 6 (256 KiB), the VM not waiting for memory: one write to compact_memory" "1 ran 1191" \
+expect "while macOS compresses: no compaction (moving pages makes macOS decompress them; ADR 0059)" "keep skip 1191" \
   "$(cm "$T/u") $(key "$out" cpt) $(key "$out" small)"
 expect "reporting order, zram, swap untouched" "6 keep keep" "$(untouched "$T/u")"
 expect "cache before and after, refaults, reporting on" "15550 15550 300 1 6" \
@@ -109,14 +109,18 @@ expect "a 4 GB VM keeps its newest eighth" "reclaim 1388 2" "$(key "$out" act) $
 mkroot "$T/s" 900 1068 "" "" 200
 out=$(run "$T/s" compressing)
 expect "under 64 MB of cold cache beyond the newest 1 GB: nothing" "none 44" "$(key "$out" act) $(key "$out" want)"
-expect "  memory.reclaim, drop_caches, compact_memory not written (200 MB in small blocks: under 256)" "|0|keep|small" \
-  "$(cat "$T/s/sys/fs/cgroup/memory.reclaim")|$(cat "$T/s/proc/sys/vm/drop_caches")|$(cm "$T/s")|$(key "$out" cpt)"
+expect "  memory.reclaim and drop_caches not written" "|0" \
+  "$(cat "$T/s/sys/fs/cgroup/memory.reclaim")|$(cat "$T/s/proc/sys/vm/drop_caches")"
+out=$(run "$T/s" idle)
+expect "idle with 200 MB in small blocks (under 256): no compaction" "keep small" "$(cm "$T/s") $(key "$out" cpt)"
 
-# The VM waits for memory (PSI memory some avg10 0.25): while macOS compresses the cache still goes, no compaction.
+# The VM waits for memory (PSI memory some avg10 0.25): while macOS compresses the cache still goes; compact: none.
 mkroot "$T/p" 2850 12700
 psi "$T/p" 0.25 0.00
 out=$(run "$T/p" compressing)
-expect "PSI busy while macOS compresses: the cold cache, no compaction" "reclaim busy keep 0.25" "$(key "$out" act) $(key "$out" cpt) $(cm "$T/p") $(key "$out" psi)"
+expect "PSI busy while macOS compresses: the cold cache as before" "reclaim keep 0.25" "$(key "$out" act) $(cm "$T/p") $(key "$out" psi)"
+out=$(run "$T/p" compact)
+expect "  compact with the VM waiting for memory: no compaction" "compact busy keep" "$(key "$out" act) $(key "$out" cpt) $(cm "$T/p")"
 
 # The balloon does not report free pages: freed memory would stay on the Mac anyway.
 mkroot "$T/n" 2850 12700 0000100000000000
@@ -133,7 +137,7 @@ expect "  compact: nothing either" "norep keep" "$(key "$out" act) $(cm "$T/o")"
 mkroot "$T/k" 2850 12700
 rm "$T/k/sys/fs/cgroup/memory.reclaim"
 out=$(run "$T/k" compressing)
-expect "no memory.reclaim: drop_caches 1, then compaction" "drop 1 1" "$(key "$out" act) $(cat "$T/k/proc/sys/vm/drop_caches") $(cm "$T/k")"
+expect "no memory.reclaim: drop_caches 1 (no compaction while macOS compresses)" "drop 1 keep" "$(key "$out" act) $(cat "$T/k/proc/sys/vm/drop_caches") $(cm "$T/k")"
 expect "  reporting order, zram, swap untouched" "6 keep keep" "$(untouched "$T/k")"
 
 # A write it cannot do for another reason (EAGAIN in a real VM: nothing more to take): stop, no drop.
@@ -160,8 +164,9 @@ fi
 mkroot "$T/i" 2850 12700
 out=$(run "$T/i" idle)
 expect "idle, Inactive(file) above the keep: memory.reclaim, all but the newest 2 GB" "reclaim 10652 11" "$(key "$out" act) $(key "$out" want) $(key "$out" steps)"
-expect "  the last step is the rest, file pages only; then compaction" "$((412 * 1048576)) swappiness=0 1 ran" \
-  "$(cat "$T/i/sys/fs/cgroup/memory.reclaim") $(cm "$T/i") $(key "$out" cpt)"
+expect "  the last step is the rest, file pages only" "$((412 * 1048576)) swappiness=0" "$(cat "$T/i/sys/fs/cgroup/memory.reclaim")"
+expect "  1191 MB in blocks under order 6 (256 KiB), the VM not waiting for memory: one write to compact_memory" "1 ran 1191" \
+  "$(cm "$T/i") $(key "$out" cpt) $(key "$out" small)"
 expect "  never the whole cache" 0 "$(cat "$T/i/proc/sys/vm/drop_caches")"
 mkroot "$T/i4" 891 1875
 sed -i.bak "s/^MemTotal:.*/MemTotal:       $((3899 * 1024)) kB/" "$T/i4/proc/meminfo"
