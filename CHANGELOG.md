@@ -3,6 +3,23 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.16 (unreleased)
+
+- **With HDR on, a display left without its wallpaper is noticed and repaired again.** In an
+  OmacVM.app VM, `omacvm-displays` looks at each display after the desktop starts and after the
+  displays change, and restarts Omarchy's shell when one shows only Hyprland's dark grey (no
+  wallpaper, no bar); `omacvm check` says so in its "desktop" line. With HDR on neither saw it:
+  Hyprland leaves its background colour out of the copy that screenshots read, so the look's small
+  screenshot came out black and fully transparent there while the screen showed the grey. The look
+  now counts fully transparent pixels as nothing drawn too; a black wallpaper still counts as drawn.
+  Measured in a hidden test VM with HDR on and a see-through layer in place of the wallpaper: 3.2.15
+  restarted nothing over two looks and `omacvm check` said "ok desktop" (Hyprland 0.56.2; on 0.57.0
+  its look found nothing either); now check says "FAIL desktop" and the shell is restarted once,
+  then the wallpaper is drawn and check says "ok ... (shell restarted 1 time(s) to draw it)" (0.56.2
+  and 0.57.0). With Omarchy's wallpaper (no restart over 3 looks), a black layer, a window, and in
+  SDR the results are the same as before. Screenshots of the bare background stay black with HDR on:
+  that is Hyprland's. Needs Update VM or `omacvm update` (no log out).
+
 ## 3.2.15
 
 In an OmacVM.app VM, apps keep their graphics at critical memory pressure when they only replace

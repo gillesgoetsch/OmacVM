@@ -410,3 +410,68 @@ support ..." and calls `abort()`: MoltenVK has no cooperative matrix or
 fragment shading rate query, so a program asking for one ended the VM.
 KosmicKrisp gave NULL there instead. vkr now uses those entries only when the
 device lists the extension.
+
+## HDR screenshots of the bare desktop are black (October 2026)
+
+Found with lane `hdr-grab` (a follow-up from #639's rows). In an OmacVM.app
+VM with HDR on, a screenshot of a part of the screen where only Hyprland's
+background colour shows comes out black, while the screen shows the grey.
+Rows on the Mac mini: hidden test VM, HDR on as in #639's rows (the test
+app's `hdr` switch and `OMACVM_TEST_EDR=16,6.69`: Virtual-1 XRGB2101010 in
+PQ, SDR white 203 nits), Hyprland 0.56.2-7 and 0.57.0-2 alike, Omarchy's
+shell stopped:
+
+- grim: (0,0,0) on 100 % of the picture below its top tenth, alpha 0 in its
+  PNG (also at `-s 0.1`); the screen (the scanout read over KMS, PQ decoded
+  at 203 nits): the grey, 19.1 of 255. Omarchy's own screenshot: black.
+- The same with OmacVM's capture file removed (`hypr-capture.sh --remove`)
+  and with `render:keep_unmodified_copy` 0 or 2; no old picture stays where
+  a closed window was.
+- With Virtual-1 in SDR: grim (17,17,17), the same as the screen.
+- Omarchy's wallpaper and windows: grim gives what the screen shows; a drawn
+  black block has alpha 255.
+
+Why: captures read Hyprland's unmodified SDR copy when the output is PQ or
+HLG and has an SDR modifier (`CMonitor::needsUnmodifiedCopy()`: SDR min or
+max luminance, brightness or saturation other than the defaults; the max
+default is 80, OmacVM's HDR rule sets `sdr_max_luminance = 203` in
+`omacvm-display-sync`). The copy is the second draw buffer of the frame's
+framebuffer (the mirror texture, `GLFramebuffer.cpp`); surfaces write it
+from their shader, but the background colour is
+`glClearBufferfv(GL_COLOR, 0, ...)`, buffer 0 only (`GLElementRenderer.cpp`,
+0.56.2, 0.57.0 and main of 2026-10-30). Once attached the copy stays
+attached (`IFramebuffer::enableMirror` returns early for the same texture),
+so the frame's own clear (`clearAfterInvalidation`) empties both buffers to
+(0,0,0,0) every frame: nothing old stays behind. `keep_unmodified_copy` 0
+behaves like 2 here: with a modifier and PQ it falls back to
+`needsACopyFB()`, which is true while any capture runs. Without a modifier
+there is no copy and captures read the screen's buffer.
+
+What it broke in OmacVM: `omacvm-displays`' desktop look (a `grim -t ppm`
+grab compared with `misc:background_color`) and `omacvm check`'s "desktop"
+line never saw an undrawn wallpaper in HDR: with a see-through layer named
+like Omarchy's wallpaper the look found the grey on 0.0 of the picture
+(undrawn: no) in HDR and on 1.0 (undrawn: yes) in SDR. From 3.2.16 the look
+reads grim's PNG (a small reader in the file: 8- or 16-bit RGB or RGBA) and
+counts alpha 0 as nothing drawn as well. Rows with it (same VM, 0.56.2-7 and
+0.57.0-2, grim -s 0.1 = 192x108 RGBA in HDR and SDR alike):
+
+- see-through layer, HDR: nothing drawn on 1.0 (alpha 0 on 1.0), undrawn;
+  3.2.15's look on the same desktop 0.0. SDR: 1.0 in both.
+- Omarchy's wallpaper: 0.0 in both modes (alpha 255 on 0.979; the rest are
+  the picture's edges, part transparent after the downscale); no restart and
+  no "no desktop drawn" line over 3 looks (pokes and a shell start).
+- an opaque black layer: 0.0 (alpha 255 on 0.979), not counted.
+- a window over the see-through layer: the display is not judged (a window
+  on its workspace); beside the window alpha 0 on 0.708 in HDR.
+- the agent with the see-through layer in HDR: "no desktop drawn on
+  Virtual-1: restarting the shell" once, shell-repairs count 1, then the
+  wallpaper drawn; `omacvm check`'s "desktop" FAIL before, ok after. With
+  3.2.15's agent (0.56.2): no line and no restart over two looks, check ok.
+
+About 2 % of the small grab of a drawn wallpaper is part transparent (its
+edges after the downscale), so only alpha 0 counts as nothing drawn.
+
+People see the black only while the shell's wallpaper is down (a shell
+restart or crash): screenshots and shares of the bare background. That
+part is Hyprland's; a report for Hyprland is drafted, not posted.
