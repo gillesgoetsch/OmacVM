@@ -21,6 +21,14 @@ public struct ResourceLimits: Equatable {
     /// The most memory that leaves the Mac enough: the Best tier's.
     public var safeMemoryGB: Int { max(macMemoryGB - max(macMemoryGB / 4, 8), 4) }
 
+    /// 2 GB above the Best tier, at most the steppers' top: the memory the
+    /// window pictures draw the warning with (RenderVMWindow). nil when the
+    /// steppers end at Best.
+    public var aboveBestGB: Int? {
+        let m = min(safeMemoryGB + 2, memoryGB.upperBound)
+        return m > safeMemoryGB ? m : nil
+    }
+
     /// Why these values are refused (the CLI's wording), or nil.
     public func problem(cpus c: Int, memoryGB m: Int) -> String? {
         if !cpus.contains(c) { return "CPUs: 1 to \(cpus.upperBound)." }
