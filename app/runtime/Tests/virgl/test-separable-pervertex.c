@@ -14,8 +14,8 @@
  *  - blocks that differ between stages: a vertex shader that writes gl_PointSize before a
  *    geometry shader that reads only gl_Position (yellow), and one that reads
  *    gl_in[].gl_PointSize (yellow from the point size);
- *  - clip distance arrays inside the blocks (declared on the Mac too; vrend writes them only
- *    on GLs with cull distances): a geometry shader with clip outputs (yellow), and
+ *  - clip distance arrays inside the blocks (vrend writes them on the Mac too since
+ *    virgl-shader-clip-distances.patch): a geometry shader with clip outputs (yellow), and
  *    tessellation control and evaluation shaders that pass them on (magenta);
  *  - a flat integer varying (green);
  *  - transform feedback from a separable vertex shader: the recorded values come back;
