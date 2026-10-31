@@ -148,16 +148,21 @@ reclaim of ADR 0062):
   8135): compressed pages count at full size in Activity Monitor.
 
   MacBook Pro M1 Max, macOS 27.0.1, nothing compressed (exit rows: QMP quit,
-  the Mac's free + reusable before and after):
+  the Mac's free + reusable before and after; CI jobs ran on the M1's
+  runners during these takes, and the Mac's counters include them):
 
-  | row | P main / sweep | U main / sweep | back main / sweep | back - P main / sweep |
-  |---|---|---|---|---|
-  | idle, 3 min after the start | 4153 / 2985 | 1334 / 164 | 2493 / 3852 | -1659 / +867 |
-  | 5K Chrome, 3 min | 7353 / 5983 | 1638 / 289 | 5963 / 6150 | -1389 / +167 |
+  | row | P main / first patch / this patch | U main / first / this | back - P main / first / this |
+  |---|---|---|---|
+  | idle, 3 min after the start | 4153 / 2985 / 2927 | 1334 / 164 / 117 | -1659 / +867 / +103 |
+  | 5K Chrome, 3 min | 7353 / 5983 / 5775 | 1638 / 289 / 129 | -1389 / +167 / +2110 |
 
-  The M1's sweep rows ran on the first version of this patch, which skipped
-  passes while the footprint did not grow: only the first pass (a minute
-  after the start) had run, so U had grown back to 164 and 289 MB. That is
-  what made the skip limit. With the sweep the Mac gets back more than
-  Activity Monitor showed: pages only QEMU touched since the pass are held
-  and not counted (above).
+  The first version of this patch skipped passes while the footprint did not
+  grow: only the pass a minute after the start had run before its rows, and
+  U had grown back to 164 and 289 MB; that made the skip limit. With it
+  ("this", each row right after a pass) U was 117 and 129 MB. With the sweep
+  the Mac gets back more than Activity Monitor showed (+103 to +2110 MB):
+  pages only QEMU touched since the pass are held and not counted (above).
+  QEMU's CPU at idle with the default 5-minute period, 10 minutes each: 54.0
+  s per hour on main, 57.2 s per hour with the sweep (no pass ran in the
+  window: two looks, both skipped). Watts at idle were not measured under
+  the bench lock.
