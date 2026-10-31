@@ -99,14 +99,6 @@ for name, _ in tests:
                     str(build / "src/mesa/libmesa.a"), *link_args, "-o", str(lib / name)],
                    cwd=directory, check=True)
 
-# the descriptor walk on the CPU, at the seeds the lane ran (virgl-venus-descriptor-limits.patch)
-for seed in (1, 2, 3, 77, 12345):
-    walk = subprocess.run([str(lib / "test-venus-descriptor-walk"), str(seed)], capture_output=True, text=True)
-    print(walk.stdout, end="")
-    if walk.returncode:
-        sys.exit(f"venus limits: FAIL: test-venus-descriptor-walk seed {seed}")
-tests = [t for t in tests if t[0] != "test-venus-descriptor-walk"]
-
 # under libgmalloc: the cases a heap write past or after an allocation shows in
 gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-sets-other-pool "
                  "s-submit-ok s-submit-values-64 x-dedicated-bound-ok x-dedicated-unbound-ok "
@@ -133,6 +125,18 @@ else:
 env = {k: v for k, v in os.environ.items()
        if k not in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES") and not k.startswith("DYLD_")}
 env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(a[2:] for a in link_args if a.startswith("-L"))
+
+# the descriptor walk on the CPU, at the seeds the lane ran (virgl-venus-descriptor-limits.patch);
+# it links the renderer's libraries too, so it needs the same library path
+for seed in (1, 2, 3, 77, 12345):
+    walk = subprocess.run([str(lib / "test-venus-descriptor-walk"), str(seed)], env=env, capture_output=True,
+                          text=True)
+    print(walk.stdout, end="")
+    if walk.returncode:
+        print(walk.stderr[-2000:], end="")
+        sys.exit(f"venus limits: FAIL: test-venus-descriptor-walk seed {seed} (exit {walk.returncode})")
+tests = [t for t in tests if t[0] != "test-venus-descriptor-walk"]
+
 failed = []
 for test, _ in tests:
     binary = lib / test
