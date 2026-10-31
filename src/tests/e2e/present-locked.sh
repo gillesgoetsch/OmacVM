@@ -26,8 +26,8 @@
 #   4. The VM started in test mode with its window on the virtual display only
 #      (OMACVM_TEST_SKIP_DISPLAYS = the real ones, OMACVM_TEST_MAIN_DISPLAY = ours,
 #      OMACVM_PRESENT_HIDDEN=1, OMACVM_GUEST_PAUSE=0, the clipboard apart).
-#      Every window of the test app must lie inside the virtual display, else it
-#      is killed and the row is VOID.
+#      Every window of QEMU must lie inside the virtual display, else the app
+#      is killed and the row is VOID (the launcher's windows are noted).
 #   5. In the VM: the Mac links off (STANDARDS 18a), the guest's mode and
 #      whether its damage reaches QEMU read, a uinput pointer moved at the top
 #      right for --seconds (default 120), then on until QEMU's next minute line.
@@ -304,16 +304,19 @@ census_off() {
     else printf 'pid %s window %s at %s %s on display %s; ' "$2" "$num" "$xy" "$wh" "$d"; fi
   done < <(grep '^window ' "$1")
 }
-off=""; ONVD=0
+# QEMU's windows must all be on it; the launcher's (if any) are noted: on an unlock the display tool
+# kills every process of the app before the display goes.
+off=""; other=""; ONVD=0
 for p in $(inside_app); do
   "$CENSUS" "$p" > "$OUT/census-$p.txt" 2>&1
-  census_off "$OUT/census-$p.txt" "$p" > "$OUT/census-off.txt"; off+=$(cat "$OUT/census-off.txt")
+  census_off "$OUT/census-$p.txt" "$p" > "$OUT/census-off.txt"
+  if [[ $p == "$QP" ]]; then off+=$(cat "$OUT/census-off.txt"); else other+=$(cat "$OUT/census-off.txt"); fi
 done
 if [[ -n $off || $ONVD == 0 ]]; then
   kill_app
   res window VOID "${off:-no QEMU window on the virtual display }(the app killed)"; stop_here 4
 fi
-res window ok "$ONVD QEMU window(s) inside the virtual display ($VB), no window of the app elsewhere"
+res window ok "$ONVD QEMU window(s) inside the virtual display ($VB), none elsewhere; the app's other windows: ${other:-none}"
 
 # --- 5. in the VM
 COPYFILE_DISABLE=1 tar -C "$E" -cf - present-guest.sh present-pointer.py |
