@@ -84,6 +84,14 @@ commit 82927e9. Changes here:
   that full screen gives the window its shadow back. macOS's own full screen
   never had it. `Tests/display/test-borderless-rim.sh` checks it at build
   time; `test-borderless-rim-live.sh` measures the pixels on macOS 26 or newer.
+- `patches/omacvm-cocoa-usb-menu.patch`: "USB Devices…" in the app menu,
+  under "Features…", while the VM's USB switch is on (`OMACVM_USB_REQUEST`,
+  set by the app). A click hands QEMU's activation to the app that set the
+  name, then posts it; the app opens its list of USB devices over the VM
+  (`USBRun.showList`). Without the variable the menu is unchanged.
+  `Tests/display/test-usb-menu.sh` checks it at build time and in CI; with
+  `--qemu` it presses the items of a hidden QEMU of a built runtime through
+  Accessibility, with "Features…" as the control.
 - `patches/virgl-texture-integer-samplers.patch`: shaders that read integer
   textures (`usampler2D`) compile on the Mac's OpenGL. Before, Apple's
   compiler refused them and the guest's GL context stopped for good: Chrome's
