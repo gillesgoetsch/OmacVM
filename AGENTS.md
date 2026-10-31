@@ -545,7 +545,7 @@ new note or (i) gets a `layoutProbe` and a picture there.
 | Sound on its own thread | `audioThread` (bool; hidden `audioMainLoop`, `audioClassic` force it off; read at each start; the playback buffers follow the Mac's output (#548): a start with a Bluetooth/AirPlay output uses the main loop's queue, 44.1 kHz 512 frames (`AudioPath.threadWirelessOptions`), a switch to one while it runs 512 frames (the app's size file, `OMACVM_AUDIO_OUT_FRAMES_FILE`, `AudioOutputSize`), a refused start the next size (`qemu-sdl-audio-out-size*.patch`); check line "sound buffers") | `true` (from 3.1.17; 3.1.16 `false`) | app |
 | AirPods and media controls | `mediaControls` (bool; the launcher watches it (KVO), so it counts at once in a running VM; the VM is macOS's Now Playing app while its player plays: `NowPlaying.swift`, ADR 0058; qemu.log `OmacVM: media controls: on\|off` at each start; check line "media controls") | `true`; the test identity `false` (a test VM never takes the person's AirPods) | app |
 | Mac folder | `mac-folder` (the folder's path) | off (no file) | VM |
-| USB devices | `usb-enabled`, remembered devices `usb.json` | off | VM |
+| USB devices | `usb-enabled`, remembered devices `usb.json`; while on, QEMU's app menu has "USB Devices…" (`OMACVM_USB_REQUEST`, `omacvm-cocoa-usb-menu.patch`: QEMU yields its activation to the app, which opens its list, USBRun.showList) | off | VM |
 | Fast network | `fast-network` + `features` `fast-network=on` | off | VM |
 | Disk | `disk.img`'s length, `vm.env` `DISK_GB`; `disk-jobs`, `disk-resize` | 64 GB at setup | VM |
 | VMs folder | `vmsRoot`, `otherVMsRoots` | `~/OmacVM` | app |
