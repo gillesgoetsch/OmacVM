@@ -1,0 +1,519 @@
+virglrenderer: Venus pass views live while the pass is open
+
+What: image views get a serial (the one count render passes and framebuffers use,
+moved to vkr_common.c). A framebuffer keeps its views by id and serial; an imageless
+begin and vkCmdBeginRendering leave theirs with the command buffer until the pass
+ends. A begin whose framebuffer view was destroyed, and a next subpass or end after
+the app destroyed one of the open pass's views, are refused: the app's context ends
+(its command buffer is invalid).
+Why: Mesa's vk_render_pass reads the framebuffer's (or an imageless begin's) views at
+the begin, at each next subpass and at the end, and KosmicKrisp reads a rendering's
+at its end (its resolves): a view destroyed while recording was freed memory there.
+Not covered (ADR 0065, still open): KosmicKrisp also reads a pass's resolve views
+where it splits the pass inside (barriers, compute), and views or images destroyed
+under a recorded or pending command buffer.
+Upstream: OmacVM policy (object lifetime VUIDs).
+Tests: Tests/virgl/test-venus-commands.c (the c-state-destroyed-view- cases, also
+under libgmalloc); --time: microseconds per vkCmdBeginRenderPass + vkCmdEndRenderPass.
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index eb3a16f..ff64d66 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -430,10 +430,133 @@ vkr_cmd_queries(VkCommandBuffer handle)
+    return MAX2(util_bitcount(vkr_cmd_state(handle)->view_mask), 1);
+ }
+ 
++/* OmacVM (virgl-venus-pass-views.patch): the image views of the open pass. Mesa's
++ * vk_render_pass reads the framebuffer's (or an imageless begin's) views at the begin, at
++ * each next subpass and at the end, and KosmicKrisp a rendering's at its end (its
++ * resolves): a view the app destroyed while recording is freed memory there, and the
++ * command buffer is invalid (as with a destroyed render pass, the context ends). A
++ * framebuffer keeps its views by id and serial; an imageless begin and vkCmdBeginRendering
++ * leave theirs with the command buffer. (KosmicKrisp also reads a pass's resolve views
++ * where it splits the pass inside: barriers, compute: still open, ADR 0065.) */
++static void
++vkr_cmd_set_views(struct vkr_command_buffer *cmd, struct vkr_view_ref *views, uint32_t count)
++{
++   if (cmd->views != cmd->view_storage)
++      free(cmd->views);
++   cmd->views = views;
++   cmd->view_count = count;
++}
++
++/* room for count views: the command buffer's own storage when they fit, else the heap;
++ * NULL when out of host memory. The open pass's views are dropped first. */
++static struct vkr_view_ref *
++vkr_cmd_view_room(struct vkr_command_buffer *cmd, uint32_t count)
++{
++   vkr_cmd_set_views(cmd, NULL, 0);
++   return count <= VKR_CMD_VIEW_STORAGE ? cmd->view_storage
++                                        : malloc(sizeof(struct vkr_view_ref) * count);
++}
++
++void
++vkr_command_buffer_object_release(struct vkr_object *obj)
++{
++   if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER)
++      vkr_cmd_set_views((struct vkr_command_buffer *)obj, NULL, 0);
++}
++
++static bool
++vkr_cmd_views_ok(struct vkr_context *ctx,
++                 const char *call,
++                 const struct vkr_view_ref *views,
++                 uint32_t count)
++{
++   for (uint32_t i = 0; i < count; i++) {
++      if (views[i].id && !vkr_view_ref_alive(ctx, &views[i]))
++         return vkr_context_check(ctx, false, call, "view %u of the pass was destroyed", i);
++   }
++   return true;
++}
++
++/* the views a render pass begin names: the framebuffer's (checked here), or an imageless
++ * begin's (kept with the command buffer); false after a refusal */
++static bool
++vkr_cmd_begin_views(struct vn_dispatch_context *dispatch,
++                    struct vkr_command_buffer *cmd,
++                    const char *call,
++                    const VkRenderPassBeginInfo *info)
++{
++   struct vkr_context *ctx = dispatch->data;
++   const struct vkr_framebuffer *fb = vkr_framebuffer_from_handle(info->framebuffer);
++   if (!fb->imageless) {
++      vkr_cmd_set_views(cmd, NULL, 0);
++      return vkr_cmd_views_ok(ctx, call, fb->views, fb->attachment_count);
++   }
++   const VkRenderPassAttachmentBeginInfo *att =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO);
++   const uint32_t count = att ? att->attachmentCount : 0;
++   struct vkr_view_ref *views = vkr_cmd_view_room(cmd, count);
++   if (!vkr_context_check(ctx, views != NULL, call, "out of host memory"))
++      return false;
++   for (uint32_t i = 0; i < count; i++)
++      views[i] = vkr_view_ref_of(vkr_image_view_from_handle(att->pAttachments[i]));
++   vkr_cmd_set_views(cmd, views, count);
++   return true;
++}
++
++/* the open render pass's views at a next subpass or its end */
++static bool
++vkr_cmd_pass_views_ok(struct vn_dispatch_context *dispatch,
++                      const struct vkr_command_buffer *cmd,
++                      const char *call)
++{
++   struct vkr_context *ctx = dispatch->data;
++   const struct vkr_framebuffer *fb =
++      vkr_framebuffer_lookup(ctx, cmd->state.framebuffer_id, cmd->state.framebuffer_serial);
++   if (!fb) /* vkr_cmd_pass_objects refused it first */
++      return false;
++   return fb->imageless ? vkr_cmd_views_ok(ctx, call, cmd->views, cmd->view_count)
++                        : vkr_cmd_views_ok(ctx, call, fb->views, fb->attachment_count);
++}
++
++/* the views a dynamic rendering names: colors and their resolves, depth, stencil and their
++ * resolves, shading rate and density map */
++static bool
++vkr_cmd_rendering_views(struct vn_dispatch_context *dispatch,
++                        struct vkr_command_buffer *cmd,
++                        const VkRenderingInfo *info)
++{
++   const VkRenderingFragmentShadingRateAttachmentInfoKHR *fsr = vkr_find_struct(
++      info->pNext, VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
++   const VkRenderingFragmentDensityMapAttachmentInfoEXT *fdm = vkr_find_struct(
++      info->pNext, VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_DENSITY_MAP_ATTACHMENT_INFO_EXT);
++   const uint32_t max = 2 * info->colorAttachmentCount + 6;
++   struct vkr_view_ref *views = vkr_cmd_view_room(cmd, max);
++   if (!vkr_context_check(dispatch->data, views != NULL, "vkCmdBeginRendering", "out of host memory"))
++      return false;
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < info->colorAttachmentCount; i++) {
++      views[n++] =
++         vkr_view_ref_of(vkr_image_view_from_handle(info->pColorAttachments[i].imageView));
++      views[n++] =
++         vkr_view_ref_of(vkr_image_view_from_handle(info->pColorAttachments[i].resolveImageView));
++   }
++   const VkRenderingAttachmentInfo *ds[2] = { info->pDepthAttachment, info->pStencilAttachment };
++   for (uint32_t i = 0; i < 2; i++) {
++      views[n++] = vkr_view_ref_of(ds[i] ? vkr_image_view_from_handle(ds[i]->imageView) : NULL);
++      views[n++] =
++         vkr_view_ref_of(ds[i] ? vkr_image_view_from_handle(ds[i]->resolveImageView) : NULL);
++   }
++   views[n++] = vkr_view_ref_of(fsr ? vkr_image_view_from_handle(fsr->imageView) : NULL);
++   views[n++] = vkr_view_ref_of(fdm ? vkr_image_view_from_handle(fdm->imageView) : NULL);
++   vkr_cmd_set_views(cmd, views, n);
++   return true;
++}
++
+ static void
+ vkr_cmd_state_reset(struct vkr_command_buffer *cmd)
+ {
+    memset(&cmd->state, 0, sizeof(cmd->state));
++   vkr_cmd_set_views(cmd, NULL, 0);
+ }
+ 
+ static bool
+@@ -698,6 +821,7 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
+    vn_replace_vkBeginCommandBuffer_args_handle(args);
+    args->ret = vk->BeginCommandBuffer(args->commandBuffer, args->pBeginInfo);
+    cmd->state = st;
++   vkr_cmd_set_views(cmd, NULL, 0);
+    cmd->state.recording = args->ret == VK_SUCCESS;
+ }
+ 
+@@ -1420,6 +1544,10 @@ vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
+    if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass", VKR_CMD_LIMITS(args),
+                                  args->pRenderPassBegin))
+       return;
++   /* OmacVM (virgl-venus-pass-views.patch) */
++   if (!vkr_cmd_begin_views(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
++                            "vkCmdBeginRenderPass", args->pRenderPassBegin))
++      return;
+    /* read before the handles are replaced */
+    const struct vkr_render_pass *pass =
+       vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+@@ -1439,7 +1567,9 @@ vkr_dispatch_vkCmdNextSubpass(struct vn_dispatch_context *dispatch,
+                             VKR_CMD_PASS_RENDER_PASS, true))
+       return;
+    const struct vkr_render_pass *pass = vkr_cmd_pass_objects(dispatch, st, "vkCmdNextSubpass");
+-   if (!pass)
++   if (!pass ||
++       !vkr_cmd_pass_views_ok(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
++                              "vkCmdNextSubpass"))
+       return;
+    VKR_CMD_CALL(CmdNextSubpass, args, args->contents);
+    vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
+@@ -1450,12 +1580,16 @@ vkr_dispatch_vkCmdEndRenderPass(struct vn_dispatch_context *dispatch,
+                   struct vn_command_vkCmdEndRenderPass *args)
+ {
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   /* OmacVM (virgl-venus-pass-views.patch): read before the handles are replaced */
++   struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
+    if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdEndRenderPass", VKR_CMD_PASS_RENDER_PASS,
+                             false) ||
+-       !vkr_cmd_pass_objects(dispatch, st, "vkCmdEndRenderPass"))
++       !vkr_cmd_pass_objects(dispatch, st, "vkCmdEndRenderPass") ||
++       !vkr_cmd_pass_views_ok(dispatch, cmd, "vkCmdEndRenderPass"))
+       return;
+    VKR_CMD_CALL(CmdEndRenderPass, args);
+    vkr_cmd_leave_pass(st);
++   vkr_cmd_set_views(cmd, NULL, 0);
+ }
+ 
+ static void
+@@ -1538,6 +1672,10 @@ vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
+    if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass2", VKR_CMD_LIMITS(args),
+                                  args->pRenderPassBegin))
+       return;
++   /* OmacVM (virgl-venus-pass-views.patch) */
++   if (!vkr_cmd_begin_views(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
++                            "vkCmdBeginRenderPass2", args->pRenderPassBegin))
++      return;
+    /* read before the handles are replaced */
+    const struct vkr_render_pass *pass =
+       vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+@@ -1558,7 +1696,9 @@ vkr_dispatch_vkCmdNextSubpass2(struct vn_dispatch_context *dispatch,
+                             VKR_CMD_PASS_RENDER_PASS, true))
+       return;
+    const struct vkr_render_pass *pass = vkr_cmd_pass_objects(dispatch, st, "vkCmdNextSubpass2");
+-   if (!pass)
++   if (!pass ||
++       !vkr_cmd_pass_views_ok(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
++                              "vkCmdNextSubpass2"))
+       return;
+    VKR_CMD_CALL(CmdNextSubpass2, args, args->pSubpassBeginInfo, args->pSubpassEndInfo);
+    vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
+@@ -1569,12 +1709,16 @@ vkr_dispatch_vkCmdEndRenderPass2(struct vn_dispatch_context *dispatch,
+                   struct vn_command_vkCmdEndRenderPass2 *args)
+ {
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   /* OmacVM (virgl-venus-pass-views.patch): read before the handles are replaced */
++   struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
+    if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdEndRenderPass2", VKR_CMD_PASS_RENDER_PASS,
+                             false) ||
+-       !vkr_cmd_pass_objects(dispatch, st, "vkCmdEndRenderPass2"))
++       !vkr_cmd_pass_objects(dispatch, st, "vkCmdEndRenderPass2") ||
++       !vkr_cmd_pass_views_ok(dispatch, cmd, "vkCmdEndRenderPass2"))
+       return;
+    VKR_CMD_CALL(CmdEndRenderPass2, args, args->pSubpassEndInfo);
+    vkr_cmd_leave_pass(st);
++   vkr_cmd_set_views(cmd, NULL, 0);
+ }
+ 
+ static void
+@@ -1953,7 +2097,9 @@ vkr_dispatch_vkCmdBeginRendering(struct vn_dispatch_context *dispatch,
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    if (!vkr_cmd_pass_begin_ok(dispatch, args->commandBuffer, "vkCmdBeginRendering") ||
+        !vkr_rendering_ok(dispatch->data, VKR_CMD_DEVICE(args)->physical_device,
+-                         args->pRenderingInfo))
++                         args->pRenderingInfo) ||
++       !vkr_cmd_rendering_views(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
++                                args->pRenderingInfo))
+       return;
+    const uint32_t colors = args->pRenderingInfo->colorAttachmentCount;
+    const uint32_t view_mask = args->pRenderingInfo->viewMask;
+@@ -1969,11 +2115,14 @@ vkr_dispatch_vkCmdEndRendering(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdEndRendering *args)
+ {
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
+    if (!vkr_cmd_pass_own_ok(dispatch, args->commandBuffer, "vkCmdEndRendering",
+-                            VKR_CMD_PASS_RENDERING, false))
++                            VKR_CMD_PASS_RENDERING, false) ||
++       !vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd->view_count))
+       return;
+    VKR_CMD_CALL(CmdEndRendering, args);
+    vkr_cmd_leave_pass(st);
++   vkr_cmd_set_views(cmd, NULL, 0);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index 96101d4..458dcba 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -9,6 +9,7 @@
+ #include "vkr_common.h"
+ 
+ #include "vkr_context.h"
++#include "vkr_image.h"
+ 
+ struct vkr_command_pool {
+    struct vkr_object base;
+@@ -47,6 +48,10 @@ struct vkr_cmd_state {
+    bool conditional;
+ };
+ 
++/* a dynamic rendering's views with 8 color attachments: colors and their resolves, depth,
++ * stencil and their resolves, shading rate, density map */
++#define VKR_CMD_VIEW_STORAGE 22
++
+ struct vkr_command_buffer {
+    struct vkr_object base;
+ 
+@@ -58,12 +63,24 @@ struct vkr_command_buffer {
+    /* OmacVM (virgl-venus-command-limits.patch): only a primary executes secondaries */
+    VkCommandBufferLevel level;
+    struct vkr_cmd_state state;
++   /* OmacVM (virgl-venus-pass-views.patch): the image views of the open pass when it named
++    * them itself (an imageless framebuffer's begin, dynamic rendering), in view_storage when
++    * they fit (no allocation per pass), else on the heap; dropped when the pass ends, the
++    * command buffer starts over or goes */
++   struct vkr_view_ref *views;
++   uint32_t view_count;
++   struct vkr_view_ref view_storage[VKR_CMD_VIEW_STORAGE];
+ };
+ VKR_DEFINE_OBJECT_CAST(command_buffer, VK_OBJECT_TYPE_COMMAND_BUFFER, VkCommandBuffer)
+ 
+ void
+ vkr_context_init_command_pool_dispatch(struct vkr_context *ctx);
+ 
++/* OmacVM (virgl-venus-pass-views.patch): what vkr keeps with a command buffer, freed with
++ * it (vkr_context_free_object) */
++void
++vkr_command_buffer_object_release(struct vkr_object *obj);
++
+ void
+ vkr_context_init_command_buffer_dispatch(struct vkr_context *ctx);
+ 
+diff --git a/src/venus/vkr_common.c b/src/venus/vkr_common.c
+index ae7e2be..14b5477 100644
+--- a/src/venus/vkr_common.c
++++ b/src/venus/vkr_common.c
+@@ -353,3 +353,10 @@ object_array_init(struct vkr_context *ctx,
+ 
+    return true;
+ }
++
++uint64_t
++vkr_object_next_serial(void)
++{
++   static atomic_uint_fast64_t serials;
++   return atomic_fetch_add(&serials, 1) + 1;
++}
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index b7d6cd4..6c0b013 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -364,4 +364,11 @@ vkr_seqno_ge(uint32_t a, uint32_t b)
+ struct virgl_gpu_charge *
+ vkr_memory_charge_create(uint64_t bytes, const char *what);
+ 
++/* OmacVM (virgl-venus-pass-views.patch): a count from 1 for the process (ring threads of
++ * several apps make objects at the same time): render passes, framebuffers and image views
++ * get one, so a command buffer names them by id and serial, and an object made later with
++ * the id is not taken for them */
++uint64_t
++vkr_object_next_serial(void);
++
+ #endif /* VKR_COMMON_H */
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 57b2c31..8d56415 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -806,6 +806,7 @@ vkr_context_free_object(struct hash_entry *entry)
+    vkr_descriptor_object_release(obj);
+    vkr_render_pass_object_release(obj);
+    vkr_pipeline_object_release(obj);
++   vkr_command_buffer_object_release(obj);
+    free(obj);
+ }
+ 
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index b0f2f72..ce65056 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -709,8 +709,18 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+                               ? vkr_format_plane_count(info->format)
+                               : 1;
+    struct vkr_image_view *view = vkr_image_view_create_and_add(dispatch->data, args);
+-   if (view)
++   if (view) {
+       view->planes = planes ? planes : 1;
++      view->serial = vkr_object_next_serial();
++   }
++}
++
++bool
++vkr_view_ref_alive(struct vkr_context *ctx, const struct vkr_view_ref *ref)
++{
++   const struct vkr_object *obj = ref->id ? vkr_context_get_object(ctx, ref->id) : NULL;
++   return obj && obj->type == VK_OBJECT_TYPE_IMAGE_VIEW &&
++          ((const struct vkr_image_view *)obj)->serial == ref->serial;
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+index 6aeece9..197b54d 100644
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -38,9 +38,31 @@ struct vkr_image_view {
+    /* OmacVM (virgl-venus-descriptor-limits.patch): the planes a descriptor of it takes in
+     * KosmicKrisp (a multi-planar color view: its format's planes) */
+    uint8_t planes;
++   /* OmacVM (virgl-venus-pass-views.patch): vkr_object_next_serial at its create */
++   uint64_t serial;
+ };
+ VKR_DEFINE_OBJECT_CAST(image_view, VK_OBJECT_TYPE_IMAGE_VIEW, VkImageView)
+ 
++/* OmacVM (virgl-venus-pass-views.patch): an image view a framebuffer or an open pass names,
++ * by id and serial (id 0: none) */
++struct vkr_view_ref {
++   vkr_object_id id;
++   uint64_t serial;
++};
++
++static inline struct vkr_view_ref
++vkr_view_ref_of(const struct vkr_image_view *view)
++{
++   return view ? (struct vkr_view_ref){ view->base.id, view->serial }
++               : (struct vkr_view_ref){ 0, 0 };
++}
++
++struct vkr_context;
++
++/* whether the view still exists (the app did not destroy it) */
++bool
++vkr_view_ref_alive(struct vkr_context *ctx, const struct vkr_view_ref *ref);
++
+ struct vkr_sampler {
+    struct vkr_object base;
+    /* OmacVM (virgl-venus-descriptor-limits.patch): its YCbCr conversion's planes, 0
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index 7021a83..152c1c3 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -25,15 +25,6 @@ vkr_attachment_ref_ok(uint32_t ref, uint32_t count)
+    return ref == VK_ATTACHMENT_UNUSED || ref < count;
+ }
+ 
+-/* OmacVM (virgl-venus-command-state.patch): one count for the process: ring threads of
+- * several apps make passes at the same time */
+-static uint64_t
+-vkr_render_pass_next_serial(void)
+-{
+-   static atomic_uint_fast64_t serials;
+-   return atomic_fetch_add(&serials, 1) + 1;
+-}
+-
+ static const struct vkr_object *
+ vkr_render_pass_object_lookup(struct vkr_context *ctx, vkr_object_id id, VkObjectType type)
+ {
+@@ -62,6 +53,8 @@ vkr_render_pass_object_release(struct vkr_object *obj)
+ {
+    if (obj->type == VK_OBJECT_TYPE_RENDER_PASS)
+       free(((struct vkr_render_pass *)obj)->subpasses);
++   else if (obj->type == VK_OBJECT_TYPE_FRAMEBUFFER)
++      free(((struct vkr_framebuffer *)obj)->views);
+ }
+ 
+ /* the parts of VkSubpassDescription(2) both passes check */
+@@ -490,7 +483,7 @@ vkr_dispatch_vkCreateRenderPass(struct vn_dispatch_context *dispatch,
+       free(subpasses);
+       return;
+    }
+-   pass->serial = vkr_render_pass_next_serial();
++   pass->serial = vkr_object_next_serial();
+    pass->attachment_count = attachments;
+    pass->clear_count = clears;
+    pass->subpass_count = count;
+@@ -522,7 +515,7 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
+       args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
+       return;
+    }
+-   pass->serial = vkr_render_pass_next_serial();
++   pass->serial = vkr_object_next_serial();
+    pass->attachment_count = info->attachmentCount;
+    pass->clear_count =
+       vkr_clear_count(info->attachmentCount, info->pAttachments, sizeof(VkAttachmentDescription2),
+@@ -603,11 +596,27 @@ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+                           lim->maxFramebufferHeight, lim->maxFramebufferLayers))
+       return;
+ 
++   /* OmacVM (virgl-venus-pass-views.patch): its views, read before the handles are
++    * replaced */
++   struct vkr_view_ref *views = NULL;
++   if (!imageless && count) {
++      views = malloc(sizeof(*views) * count);
++      if (!views) {
++         args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++         return;
++      }
++      for (uint32_t i = 0; i < count; i++)
++         views[i] = vkr_view_ref_of(vkr_image_view_from_handle(info->pAttachments[i]));
++   }
++
+    struct vkr_framebuffer *fb = vkr_framebuffer_create_and_add(dispatch->data, args);
+    if (fb) {
+-      fb->serial = vkr_render_pass_next_serial();
++      fb->serial = vkr_object_next_serial();
+       fb->attachment_count = count;
+       fb->imageless = imageless;
++      fb->views = views;
++   } else {
++      free(views);
+    }
+ }
+ 
+diff --git a/src/venus/vkr_render_pass.h b/src/venus/vkr_render_pass.h
+index 3f24c56..6546072 100644
+--- a/src/venus/vkr_render_pass.h
++++ b/src/venus/vkr_render_pass.h
+@@ -7,6 +7,7 @@
+ #define VKR_RENDER_PASS_H
+ 
+ #include "vkr_common.h"
++#include "vkr_image.h"
+ #include "vkr_limits.h"
+ 
+ /* OmacVM (virgl-venus-render-pass-limits.patch): what a pass was made with, for its
+@@ -37,6 +38,8 @@ struct vkr_framebuffer {
+    /* OmacVM (virgl-venus-render-pass-limits.patch) */
+    uint32_t attachment_count;
+    bool imageless;
++   /* OmacVM (virgl-venus-pass-views.patch): its views (not imageless), freed with it */
++   struct vkr_view_ref *views;
+ };
+ VKR_DEFINE_OBJECT_CAST(framebuffer, VK_OBJECT_TYPE_FRAMEBUFFER, VkFramebuffer)
+ 
