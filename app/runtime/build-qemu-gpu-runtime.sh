@@ -1538,6 +1538,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-for
 grep -q 'if (!vkr_rendering_formats_ok(physical_dev, rendering->colorAttachmentCount,' "$virgl_source/src/venus/vkr_pipeline.c" && \
   grep -q '!vkr_subpass_formats_ok(physical_dev, i, refs, n,' "$virgl_source/src/venus/vkr_render_pass.c" || \
   die "vkr_pipeline.c, vkr_render_pass.c: attachment formats are not checked (pipeline-formats patch)"
+# A submit's chained arrays fit its counts, frees name objects of their pool once,
+# dedicated memory goes before its image or buffer, replies carry zeros where nothing was
+# written, guest threads stay inside one budget, and a pass's image views live while it is
+# open (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-submit-counts.patch"
+grep -q 'if (!vkr_submit_chain_ok(dispatch, "vkQueueSubmit", i, submit->pNext,' "$virgl_source/src/venus/vkr_queue.c" || \
+  die "vkr_queue.c: a submit's chained counts are not fitted (submit-counts patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
