@@ -46,7 +46,7 @@ import Foundation
 /// cold-only give-back after 2 minutes.
 ///
 /// When the VM is quiet (`idle`): every 15 minutes while macOS's pressure is
-/// normal, QEMU used at most a tenth of a core over the last minute, the
+/// normal, QEMU used at most a fifth of a core over the last minute, the
 /// compressing rule does not hold and no give-back ran in the last 10
 /// minutes, the VM gives back its cold file cache above the newest min(2 GB,
 /// a quarter of the VM) and compacts its free memory (giveback.sh idle).
@@ -76,8 +76,9 @@ public struct MemoryGiveBack: Sendable {
     /// The idle give-back: every 15 minutes at most (times `idleBackoff`).
     public static let idleGap: TimeInterval = 900
     /// Quiet: QEMU used at most this much of one core over the last minute
-    /// (all its threads: the vCPUs, graphics, disk, display).
-    public static let quietCPU = 0.10
+    /// (all its threads: the vCPUs, graphics, disk, display). Idle VMs used
+    /// 4-10 % (a hidden 4 GB VM on the M1 Max: 9.5 %), a video 31-60 %.
+    public static let quietCPU = 0.20
     public static let quietWindow: TimeInterval = 60
 
     public enum Trigger: String, Sendable { case compressing, warning, critical, idle }

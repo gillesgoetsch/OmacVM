@@ -465,7 +465,7 @@ o.answered(MemoryGiveBack.Result.parse("mode=compressing act=norep rep=0", maxMB
 expect(o.off && !o.compressing(sample(5000, fp: 60, res: 20, comp: 900)), "not reporting: off for this run")
 expect(o.allowed(.warning, at: 5000), "the warning's drop still runs")
 
-// The idle give-back (ADR 0059, 3.2.17): every 15 minutes while macOS's pressure is normal, QEMU used at most a tenth of a
+// The idle give-back (ADR 0059, 3.2.17): every 15 minutes while macOS's pressure is normal, QEMU used at most a fifth of a
 // core over the last minute, the compressing rule does not hold and no give-back ran in the last 10 minutes.
 let core = 1_000_000_000.0   // QEMU's CPU time in ns: one core for one second
 func idleLooks(_ m: inout MemoryGiveBack, from t0: Double, to t1: Double, fp: Double = 6, res: Double = 5, comp: Double = 100,
@@ -488,9 +488,11 @@ expect(idleLooks(&i1, from: 0, to: 2000) == 900, "a quiet VM, pressure normal: t
 var i2 = withFix(32 * GB)
 expect(idleLooks(&i2, from: 0, to: 2000, normal: false) == nil, "macOS's pressure warn or critical: never")
 var i3 = withFix(32 * GB)
-expect(idleLooks(&i3, from: 0, to: 2000, load: 0.15) == nil, "QEMU used 15 % of a core (a video, a build): not quiet, never")
+expect(idleLooks(&i3, from: 0, to: 2000, load: 0.31) == nil, "QEMU used 31 % of a core (a muted video): not quiet, never")
 var i3b = withFix(32 * GB)
-expect(idleLooks(&i3b, from: 0, to: 2000, load: 0.09) == 900, "  9 % of a core: quiet")
+expect(idleLooks(&i3b, from: 0, to: 2000, load: 0.095) == 900, "  9.5 % of a core (an idle hidden VM on the M1 Max): quiet")
+var i3c = withFix(32 * GB)
+expect(idleLooks(&i3c, from: 0, to: 2000, load: 0.21) == nil, "  21 %: not quiet (the limit is a fifth of a core)")
 var i4 = MemoryGiveBack(ram: 32 * GB, pagesGoBack: true, idle: false)
 expect(idleLooks(&i4, from: 0, to: 3000) == nil && !i4.allowed(.idle, at: 3000), "OMACVM_GIVEBACK_IDLE=0: never")
 var i5 = MemoryGiveBack(ram: 32 * GB)
