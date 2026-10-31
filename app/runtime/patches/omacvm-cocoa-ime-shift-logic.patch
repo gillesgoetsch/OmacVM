@@ -1,0 +1,156 @@
+From: OmacVM
+Subject: [PATCH] ui: which Shift change goes on to macOS (mac-ime), tested without AppKit
+
+What: a header with no AppKit in it: whether a modifier change the VM took
+in the full-grab tap also goes on to macOS (only the Shift keys, only while
+mac-ime gives keys to an input method, no Command, Control, Option or fn
+down; a release when its press went on), and how its copy is told when it
+comes back through the app's event queue (time stamp and key code). Used by
+omacvm-cocoa-ime-shift.patch (which explains the why).
+
+Why its own file: so the rules are tested without QEMU or a window
+(app/runtime/Tests/keys/test-ime-shift.sh applies this patch and
+omacvm-cocoa-ime-logic.patch to an empty folder; at build time and in CI).
+
+Upstream: not sent (OmacVM's mac-ime only).
+Test: app/runtime/Tests/keys/test-ime-shift.c.
+
+diff --git a/ui/omacvm-ime-shift.h b/ui/omacvm-ime-shift.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-ime-shift.h
+@@ -0,0 +1,134 @@
++/*
++ * OmacVM mac-ime: Shift also for macOS while an input method has the keys
++ * (#357, idea and captures by @Vocllum in #655).
++ *
++ * No AppKit in here, so it is tested on its own
++ * (app/runtime/Tests/keys/test-ime-shift.c); ui/cocoa.m's full-grab tap
++ * feeds it.
++ *
++ * While the VM has the keyboard, the full-grab tap deletes every key event
++ * the VM took from macOS's event stream. An input method that switches
++ * between its modes on a lone Shift from a monitor on that stream (WeChat
++ * Input) never sees Shift then. So a Shift change goes on to macOS too,
++ * after the VM and mac-ime's input method had it in the tap, and only:
++ * - for the Shift keys (left 56, right 60), never Command, Control, Option,
++ *   fn or Caps Lock, and not while one of Command, Control, Option or fn is
++ *   down;
++ * - while mac-ime gives keys to an input method: a text field in the VM has
++ *   the focus, the VM's window the keyboard, the Mac's input source is an
++ *   input method (omacvm_ime_active), or its context is still on during the
++ *   short off delay (omacvm_ime_off_step). Nothing goes on with mac-ime off
++ *   or with a plain keyboard layout.
++ * A release goes on when its press did, also if the rules changed between
++ * the two, so macOS never sees a Shift that stays down.
++ *
++ * An event the tap lets go on comes back to QEMU through the app's event
++ * queue. omacvm_ime_shift_again tells that copy by its time stamp and key
++ * code (both kept by macOS), and ui/cocoa.m drops it: the VM and the input
++ * method had it already.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef OMACVM_IME_SHIFT_H
++#define OMACVM_IME_SHIFT_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "omacvm-ime.h"
++
++#define OMACVM_IME_SHIFT_LEFT  56          /* kVK_Shift */
++#define OMACVM_IME_SHIFT_RIGHT 60          /* kVK_RightShift */
++
++/* CGEventFlags bits (kCGEventFlagMask*, IOLLEvent.h's NX_DEVICE*KEYMASK). */
++#define OMACVM_IME_SHIFT_F_SHIFT   0x00020000ull   /* kCGEventFlagMaskShift */
++#define OMACVM_IME_SHIFT_F_CONTROL 0x00040000ull   /* kCGEventFlagMaskControl */
++#define OMACVM_IME_SHIFT_F_OPTION  0x00080000ull   /* kCGEventFlagMaskAlternate */
++#define OMACVM_IME_SHIFT_F_COMMAND 0x00100000ull   /* kCGEventFlagMaskCommand */
++#define OMACVM_IME_SHIFT_F_FN      0x00800000ull   /* kCGEventFlagMaskSecondaryFn */
++#define OMACVM_IME_SHIFT_F_LEFT    0x00000002ull   /* NX_DEVICELSHIFTKEYMASK */
++#define OMACVM_IME_SHIFT_F_RIGHT   0x00000004ull   /* NX_DEVICERSHIFTKEYMASK */
++#define OMACVM_IME_SHIFT_F_OTHERS  (OMACVM_IME_SHIFT_F_CONTROL | OMACVM_IME_SHIFT_F_OPTION | \
++                                    OMACVM_IME_SHIFT_F_COMMAND | OMACVM_IME_SHIFT_F_FN)
++
++/* Events that went on and whose copy may still come back (a few at most). */
++#define OMACVM_IME_SHIFT_SENT 8
++
++typedef struct OmacVMImeShift {
++    bool passed[2];                 /* left, right: its press went on to macOS */
++    struct {
++        uint64_t time;              /* CGEventGetTimestamp */
++        int keycode;
++        bool live;
++    } sent[OMACVM_IME_SHIFT_SENT];
++    unsigned next;
++} OmacVMImeShift;
++
++/*
++ * Whether a Shift key's flagsChanged is its press: its NX_DEVICE* bit, or,
++ * on an event without those bits (some apps post such), the Shift flag.
++ */
++static inline bool omacvm_ime_shift_down(int keycode, uint64_t flags)
++{
++    uint64_t bit = keycode == OMACVM_IME_SHIFT_RIGHT ? OMACVM_IME_SHIFT_F_RIGHT : OMACVM_IME_SHIFT_F_LEFT;
++
++    if (!(flags & OMACVM_IME_SHIFT_F_SHIFT)) {
++        return false;
++    }
++    if (flags & (OMACVM_IME_SHIFT_F_LEFT | OMACVM_IME_SHIFT_F_RIGHT)) {
++        return flags & bit;
++    }
++    return true;
++}
++
++/*
++ * A flagsChanged event the VM took in the full-grab tap: true when it goes on
++ * to macOS too. on: mac-ime is on for this VM (and not turned off with
++ * OMACVM_IME_SHIFT=0); s: mac-ime's state; waiting: its context's off is
++ * still due (omacvm_ime_off.waiting).
++ */
++static inline bool omacvm_ime_shift_pass(OmacVMImeShift *sh, int keycode, uint64_t flags,
++                                         bool on, const OmacVMImeState *s, bool waiting)
++{
++    int side;
++
++    if (keycode == OMACVM_IME_SHIFT_LEFT) {
++        side = 0;
++    } else if (keycode == OMACVM_IME_SHIFT_RIGHT) {
++        side = 1;
++    } else {
++        return false;
++    }
++    if (!omacvm_ime_shift_down(keycode, flags)) {
++        bool was = sh->passed[side];
++        sh->passed[side] = false;
++        return was;
++    }
++    sh->passed[side] = on && (omacvm_ime_active(s) || waiting) &&
++                       !(flags & OMACVM_IME_SHIFT_F_OTHERS);
++    return sh->passed[side];
++}
++
++/* An event that went on: its copy will come back through the app's queue. */
++static inline void omacvm_ime_shift_sent(OmacVMImeShift *sh, uint64_t time, int keycode)
++{
++    unsigned i = sh->next++ % OMACVM_IME_SHIFT_SENT;
++
++    sh->sent[i].time = time;
++    sh->sent[i].keycode = keycode;
++    sh->sent[i].live = true;
++}
++
++/* That copy (once per event that went on): true, and it is dropped. */
++static inline bool omacvm_ime_shift_again(OmacVMImeShift *sh, uint64_t time, int keycode)
++{
++    for (unsigned i = 0; i < OMACVM_IME_SHIFT_SENT; i++) {
++        if (sh->sent[i].live && sh->sent[i].time == time && sh->sent[i].keycode == keycode) {
++            sh->sent[i].live = false;
++            return true;
++        }
++    }
++    return false;
++}
++
++#endif

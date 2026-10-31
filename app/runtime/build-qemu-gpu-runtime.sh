@@ -954,6 +954,14 @@ grep -q 'eventsTap = CGEventTapCreate(kCGHIDEventTap, place, kCGEventTapOptionDe
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-tap-no-ask.patch"
 "$native_dir/Tests/keys/test-tap-no-ask.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the full-grab tap is made (and asked for) without the permission (test-tap-no-ask.sh)"
+# mac-ime (#357, from #655): a Shift change the VM and the input method had
+# in the full-grab tap also goes on to macOS (an input method's lone-Shift
+# switch watches the system's events), only while an input method has the
+# keys; its copy back is dropped. Its rules' test, then the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift.patch"
+"$native_dir/Tests/keys/test-ime-shift.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: Shift does not go on to macOS as tested (test-ime-shift.sh)"
 # OmacVM.app's "Closing the window" (#358): Shut down, Keep running (the app
 # hidden, the Dock icon brings it back), Ask. Its rules' test, then the wiring.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-close-logic.patch"
