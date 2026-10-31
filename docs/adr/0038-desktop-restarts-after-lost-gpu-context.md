@@ -229,9 +229,11 @@ these fail.
 Checked in a hidden test VM (M1 Max, this change on 3.2.15's app and
 runtime and 3.2.15's VM script, the VM's monitor 5120x2880 at scale 2,
 critical with 40 MB left forced through QEMU's test hook, one 64 MB
-texture in Chrome): Chrome's context was lost, the app told the VM at once
-and the VM ended Chrome's GPU process; the new one was lost 4 s later at
-its first window buffer (56 MB). The app said it would tell that loss when
-the minute was over and told it 64.9 s after the first tell (the VM's
-journal: 65.0 s); the VM did not restart Chrome again ("restarted 1 min
-ago") and showed the note. Hyprland and the shell lost nothing.
+texture in Chrome): Chrome's context was lost, the app told the VM 2.7 s
+later at its next 5 s look and the VM ended Chrome's GPU process; the new
+one was lost at its first window buffer (56 MB), 3.9 s after the first
+loss and 1.2 s after the VM ended the old GPU process. The app said it
+would tell that loss when the minute was over and told it 64.9 s after
+the first tell (the VM's journal: 65.0 s); the VM did not restart Chrome
+again ("restarted 1 min ago") and showed the note. Hyprland and the shell
+lost nothing.
