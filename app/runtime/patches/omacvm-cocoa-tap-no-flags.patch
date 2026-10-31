@@ -1,0 +1,36 @@
+From: OmacVM
+Subject: [PATCH] cocoa: full-grab tap takes no modifier events
+
+What: setFullGrab no longer includes kCGEventFlagsChanged in its event tap
+mask (CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp)).
+Modifier changes (flagsChanged) now arrive exclusively through the standard
+AppKit sendEvent path while OmacVM's window is key.
+
+Why: An active filter event tap (kCGEventTapOptionDefault) whose callback
+returns NULL deletes the event from the system stream (CGEventTapCallBack).
+While the VM has the keyboard, handleTapEvent does that for modifier
+changes too, so other apps' global monitors (NSEvent
+addGlobalMonitorForEventsMatchingMask:handler:) never see them. WeChat
+Input (WeType) registers such a monitor for flagsChanged and, read from its
+binary (an inference, not a run-time trace), its lone Shift switch is
+reached from there. In #357 a lone Shift tap did not switch Chinese and
+English in the VM; with this mask, the tap still on, it does. keyDown and
+keyUp stay captured as before.
+
+Upstream: not sent (OmacVM-specific input tap behavior; refs #357).
+
+Test: app/runtime/Tests/keys/test-tap-no-flags.sh (CI: mask from this patch;
+the runtime build: also that setFullGrab in ui/cocoa.m uses it). Applies after
+omacvm-cocoa-tap-no-ask.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -1970,7 +1970,7 @@
+ {
+     COCOA_DEBUG("QemuCocoaView: setFullGrab\n");
+ 
+-    CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventFlagsChanged);
++    CGEventMask mask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp);
+     CGEventTapPlacement place = omacvm_keys_place();
+     if (!omacvm_tap_allowed()) {
+         warn_report("Could not create event tap, system key combos will not be captured.\n");
