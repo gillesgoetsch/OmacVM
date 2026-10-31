@@ -26,6 +26,18 @@
  *   --flood        (root) with the daemon stopped for a moment, 1000
  *                  DEC_CMD_STOPs: the module fails the decoder (its message
  *                  queue is bounded) instead of growing
+ *   --hold-all-at-eos  (root) Chromium's end of a stream: the last packets
+ *                  fed, DEC_CMD_STOP, every OUTPUT buffer back and every
+ *                  CAPTURE buffer held by the app while the decoder still owes
+ *                  pictures and the LAST buffer. A second thread then polls the
+ *                  way Chromium waits (POLLIN|POLLPRI plus a wake eventfd, no
+ *                  POLLOUT): that poll must sleep, not return POLLERR (Chromium
+ *                  drops such a wait and never sees the LAST). Three rounds per
+ *                  file, each on a new decoder: wake (the buffers queued back:
+ *                  POLLIN within 1 s, the owed pictures, LAST and EOS within
+ *                  1 s), streamoff (both queues off: the poll returns within
+ *                  1 s), daemon-gone (the daemon stopped as in --stall: POLLERR
+ *                  within 15 s)
  *
  * Build: cc -O2 -o vdec-test vdec-test.c $(pkg-config --cflags --libs \
  *          libavformat libavcodec libavutil libswscale egl glesv2 gbm libdrm) -lm
@@ -42,6 +54,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/eventfd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -64,7 +77,9 @@
 #define MIN_PSNR 35.0
 
 static int vfd;
-static enum { NORMAL, EARLY_DRAIN, CHURN, EXPECT_FAIL, STALL, FLOOD } mode;
+static enum { NORMAL, EARLY_DRAIN, CHURN, EXPECT_FAIL, STALL, FLOOD, HOLD_EOS } mode;
+/* --hold-all-at-eos: the round (what ends the held state) */
+static enum { H_WAKE, H_STREAMOFF, H_DAEMON } hold_sub;
 static EGLDisplay egl;
 static PFNEGLCREATEIMAGEKHRPROC create_image;
 static PFNEGLDESTROYIMAGEKHRPROC destroy_image;
@@ -129,6 +144,24 @@ static void ref_open(struct ref *r, const char *path)
 	}
 }
 
+/* The packets of one stream, read through once (a container without a count). */
+static int64_t count_packets(const char *path, int stream)
+{
+	AVFormatContext *fc = NULL;
+	AVPacket *p = av_packet_alloc();
+	int64_t n = 0;
+
+	if (!p || avformat_open_input(&fc, path, NULL, NULL))
+		die(path);
+	while (av_read_frame(fc, p) >= 0) {
+		n += p->stream_index == stream;
+		av_packet_unref(p);
+	}
+	av_packet_free(&p);
+	avformat_close_input(&fc);
+	return n;
+}
+
 /* The next packet of the stream as the decoder gets it (NULL at the end). */
 static AVPacket *ref_packet(struct ref *r)
 {
@@ -161,6 +194,7 @@ struct cap {
 
 static struct cap caps[NCAP];
 static int ncap, cap_w, cap_h, vis_w, vis_h, cap_stride;
+static int cap_in;	/* CAPTURE buffers queued with the driver */
 
 static void egl_init(void)
 {
@@ -194,6 +228,7 @@ static void cap_release(void)
 		close(caps[i].fd);
 	}
 	ncap = 0;
+	cap_in = 0;
 	xioctl(VIDIOC_REQBUFS, &rb);
 }
 
@@ -204,7 +239,10 @@ static bool cap_queue(int i)
 	struct v4l2_buffer b = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, .memory = V4L2_MEMORY_MMAP,
 				 .index = i, .length = 1, .m.planes = pl };
 
-	return xioctl(VIDIOC_QBUF, &b) == 0;
+	if (xioctl(VIDIOC_QBUF, &b))
+		return false;
+	cap_in++;
+	return true;
 }
 
 /* After SOURCE_CHANGE: the new format, buffers, exports, imports, stream on.
@@ -273,6 +311,15 @@ struct result {
 	bool timeout;		/* no progress: a hang */
 	bool early_eos;		/* --early-drain: EOS without a picture */
 	double fail_ms;		/* --stall/--expect-fail: until the error came */
+	/* --hold-all-at-eos */
+	bool hold;		/* the held state was reached (LAST still owed) */
+	bool blocked;		/* the poll still slept 500 ms into it */
+	int revents;		/* what that poll returned with */
+	double poll_ms;		/* from its start to its return */
+	double after_ms;	/* from the round's action to its return; -1: none */
+	double last_ms;		/* wake: from the buffers' requeue to LAST */
+	int after_frames;	/* wake: pictures that came after the requeue */
+	int missing;		/* wake: software pictures the driver never sent */
 };
 
 /* The daemon's pid (--stall). */
@@ -311,6 +358,106 @@ static bool early_drain(void)
 				}
 	}
 	return false;
+}
+
+/* ---- --hold-all-at-eos: one wait the way Chromium waits ------------------------------- */
+
+/* Chromium 153 (v4l2_stateful_video_decoder.cc, WaitOnceForEvents) waits
+ * for CAPTURE on its own thread: poll() on the device for POLLIN|POLLPRI and
+ * on a wake eventfd, no timeout; a return with neither POLLIN nor POLLPRI
+ * ends that wait without a new one. Here capped at 20 s so a hang ends. */
+struct waiter {
+	int fd, wake;
+	pthread_t t;
+	int done;		/* set (atomic) when the poll returned */
+	int revents;
+	bool woken;		/* by the eventfd, not the device */
+	double t0, t_ret;
+};
+
+static void *wait_once(void *p)
+{
+	struct waiter *w = p;
+	struct pollfd pfd[2] = { { .fd = w->fd, .events = POLLIN | POLLPRI },
+				 { .fd = w->wake, .events = POLLIN } };
+	int r;
+
+	do
+		r = poll(pfd, 2, 20000);
+	while (r < 0 && errno == EINTR);
+	w->revents = r > 0 ? pfd[0].revents : 0;
+	w->woken = r > 0 && (pfd[1].revents & POLLIN);
+	w->t_ret = now_ms();
+	__atomic_store_n(&w->done, 1, __ATOMIC_RELEASE);
+	return NULL;
+}
+
+/* True when the wait returned within `ms` from `from`. */
+static bool waiter_back(struct waiter *w, double from, double ms)
+{
+	while (!__atomic_load_n(&w->done, __ATOMIC_ACQUIRE)) {
+		if (now_ms() - from >= ms)
+			return false;
+		usleep(2000);
+	}
+	return true;
+}
+
+/* Every CAPTURE buffer is with the app, OUTPUT is drained, the decoder owes
+ * the LAST buffer: one wait from a second thread, then this round's action.
+ * Wake: the held buffers go back (`held`, cleared); the main loop then
+ * dequeues the rest and times the LAST from res->last_ms's start (*t_act). */
+static void hold_check(struct result *res, bool *held, double *t_act)
+{
+	struct waiter w = { .fd = vfd };
+	int out_type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, cap_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+	double limit = hold_sub == H_DAEMON ? 15000 : 1000;
+	pid_t stopped = 0;
+	uint64_t one = 1;
+
+	res->hold = true;
+	res->after_ms = -1;
+	w.wake = eventfd(0, EFD_CLOEXEC);
+	if (w.wake < 0)
+		die("eventfd");
+	w.t0 = now_ms();
+	if (pthread_create(&w.t, NULL, wait_once, &w))
+		die("pthread_create");
+	res->blocked = !waiter_back(&w, w.t0, 500);
+	*t_act = now_ms();
+	switch (hold_sub) {
+	case H_WAKE:
+		for (int i = 0; i < ncap; i++)
+			if (held[i]) {
+				held[i] = false;
+				if (!cap_queue(i))
+					res->failed = true;
+			}
+		break;
+	case H_STREAMOFF:
+		if (xioctl(VIDIOC_STREAMOFF, &out_type) || xioctl(VIDIOC_STREAMOFF, &cap_type))
+			die("STREAMOFF (held)");
+		cap_in = 0;
+		break;
+	case H_DAEMON:
+		stopped = daemon_pid();
+		if (stopped <= 0 || kill(stopped, SIGSTOP))
+			die("SIGSTOP omacvm-vdecd");
+		break;
+	}
+	if (res->blocked && waiter_back(&w, *t_act, limit))
+		res->after_ms = w.t_ret - *t_act;
+	if (stopped)
+		kill(stopped, SIGCONT);	/* when the watchdog has not killed it */
+	if (!__atomic_load_n(&w.done, __ATOMIC_ACQUIRE) && write(w.wake, &one, sizeof(one)) < 0)
+		die("eventfd write");
+	pthread_join(w.t, NULL);
+	close(w.wake);
+	res->revents = w.woken ? -1 : w.revents;
+	res->poll_ms = w.t_ret - w.t0;
+	if (getenv("VDEC_TEST_DEBUG"))
+		fprintf(stderr, "hold: blocked %d revents 0x%x poll %.0f ms after %.0f ms\n", res->blocked,
+			w.revents, res->poll_ms, res->after_ms);
 }
 
 static double psnr_rgb(const uint8_t *a, const uint8_t *b, int w, int h, int bstride)
@@ -434,12 +581,21 @@ static void run(const char *path, struct result *res, int stop_after)
 	double t_fail = 0;
 	bool busy = false;
 	int wait_ms = mode == STALL ? 15000 : 5000;
+	/* --hold-all-at-eos: CAPTURE buffers held near the end; one goes back
+	 * only while OUTPUT still waits for the daemon, so at most one is queued
+	 * when OUTPUT is drained and the LAST is still owed then. */
+	bool held[NCAP] = { false }, hold_done = false;
+	int64_t n_run = 0, nb;
+	double t_act = 0;
 
 	memset(res, 0, sizeof(*res));
 	res->min_psnr = 99;
 	res->hash = 0xcbf29ce484222325ull;
 	ref_open(&r, path);
-	seek_at = r.fc->streams[r.stream]->nb_frames > 40 ? 30 : -1;
+	nb = r.fc->streams[r.stream]->nb_frames;
+	seek_at = nb > 40 ? 30 : -1;
+	if (mode == HOLD_EOS && nb <= 0)
+		nb = count_packets(path, r.stream);	/* WebM has no count */
 	tb = r.fc->streams[r.stream]->time_base;
 
 	f.fmt.pix_mp.pixelformat = r.cc->codec_id == AV_CODEC_ID_H264 ? V4L2_PIX_FMT_H264 :
@@ -514,6 +670,7 @@ static void run(const char *path, struct result *res, int stop_after)
 				refs_clear();
 				res->seeks++;
 				seek_at = -1;
+				n_run = 0;
 				/* New timestamps after the seek (1000 s on): pictures
 				 * decoded before it may still come out. */
 				epoch += 1000000000;
@@ -548,6 +705,7 @@ static void run(const char *path, struct result *res, int stop_after)
 			out_free[i] = false;
 			av_packet_free(&pending);
 			n++;
+			n_run++;
 			if (stop_after && n == stop_after) {	/* --churn: left busy */
 				busy = true;
 				goto out;
@@ -596,7 +754,12 @@ static void run(const char *path, struct result *res, int stop_after)
 				res->failed = true;
 		}
 		b.type = cap_type;
+		/* Near the end: fed (or the last NCAP + 26 packets of a known count) after the seek. */
+		bool holding = mode == HOLD_EOS && !hold_done && seek_at < 0 &&
+			       (fed_all || (nb > 0 && n_run >= nb - (NCAP + 26)));
+
 		while (ncap && xioctl(VIDIOC_DQBUF, &b) == 0) {
+			cap_in--;
 			if (b.flags & V4L2_BUF_FLAG_ERROR) {
 				res->errors++;
 				res->failed = true;
@@ -609,6 +772,8 @@ static void run(const char *path, struct result *res, int stop_after)
 					last_ts = ts;
 					compare(&r, res, b.index, ts);
 					res->frames++;
+					if (t_act)
+						res->after_frames++;
 					if (mode == STALL && res->frames == 20 && !stalled) {
 						stalled = daemon_pid();
 						if (stalled <= 0 || kill(stalled, SIGSTOP))
@@ -640,16 +805,46 @@ static void run(const char *path, struct result *res, int stop_after)
 					break;
 				}
 				res->drained = true;
+				if (t_act)
+					res->last_ms = now_ms() - t_act;
 				break;
+			}
+			if (holding && b.index < NCAP) {
+				held[b.index] = true;
+				continue;
 			}
 			if (!cap_queue(b.index)) {
 				res->failed = true;
 				break;
 			}
 		}
+		if (holding && !res->drained && !res->failed) {
+			int outq = 0;
+
+			for (int i = 0; i < NOUT; i++)
+				outq += !out_free[i];
+			if (stopped && !outq && !cap_in) {
+				/* The held state: nothing queued, LAST owed. */
+				hold_check(res, held, &t_act);
+				hold_done = true;
+				if (hold_sub != H_WAKE)
+					break;
+			} else if (outq && !cap_in) {
+				for (int i = 0; i < ncap; i++)
+					if (held[i]) {
+						held[i] = false;
+						if (!cap_queue(i))
+							res->failed = true;
+						break;
+					}
+			}
+		}
 		if (res->drained && res->eos)
 			break;
 	}
+	if (mode == HOLD_EOS)
+		for (int i = 0; i < NREF; i++)
+			res->missing += refs[i] && refs[i]->pts >= skip_below;
 	if (res->failed && t_fail)
 		res->fail_ms = now_ms() - t_fail;
 	if (stalled)
@@ -663,6 +858,7 @@ out:
 			close(caps[i].fd);
 		}
 		ncap = 0;
+		cap_in = 0;
 	} else {
 		xioctl(VIDIOC_STREAMOFF, &out_type);
 		xioctl(VIDIOC_STREAMOFF, &cap_type);
@@ -715,6 +911,25 @@ static void *close_fd(void *fd)
 	return NULL;
 }
 
+/* --hold-all-at-eos: the held state reached and the poll asleep in it, then
+ * the round's end in time (and, for wake, every picture right). */
+static bool hold_ok(const struct result *res)
+{
+	if (!res->hold || !res->blocked || res->after_ms < 0)
+		return false;
+	switch (hold_sub) {
+	case H_WAKE:
+		return res->revents > 0 && (res->revents & POLLIN) && res->after_ms <= 1000 &&
+		       res->drained && res->eos && res->last_ms <= 1000 && !res->missing &&
+		       res->frames > 0 && !res->errors && res->min_psnr >= MIN_PSNR;
+	case H_STREAMOFF:
+		return res->revents > 0 && res->after_ms <= 1000;
+	case H_DAEMON:
+		return res->revents > 0 && (res->revents & POLLERR) && res->after_ms <= 15000;
+	}
+	return false;
+}
+
 static bool result_ok(const struct result *res)
 {
 	switch (mode) {
@@ -742,9 +957,30 @@ static void print(const char *file, const char *what, const struct result *res, 
 	fflush(stdout);
 }
 
+static void print_hold(const char *file, const char *what, const struct result *res, bool ok)
+{
+	char ev[16];
+
+	if (res->revents < 0)
+		snprintf(ev, sizeof(ev), "none");
+	else
+		snprintf(ev, sizeof(ev), "0x%x", res->revents);
+	printf("{\"file\": \"%s\", \"test\": \"%s\", \"ok\": %s, \"hold\": %s, \"blocked\": %s, "
+	       "\"revents\": \"%s\", \"poll_ms\": %.0f, \"after_ms\": %.0f, \"last_ms\": %.0f, "
+	       "\"after_frames\": %d, \"missing\": %d, \"frames\": %d, \"min_psnr_rgb\": %.1f, \"seeks\": %d, "
+	       "\"drained\": %s, \"eos\": %s, \"errors\": %d, \"failed\": %s, \"pictures\": \"%016llx\"}\n",
+	       file, what, ok ? "true" : "false", res->hold ? "true" : "false", res->blocked ? "true" : "false", ev,
+	       res->poll_ms, res->after_ms, res->last_ms, res->after_frames, res->missing, res->frames,
+	       res->min_psnr, res->seeks, res->drained ? "true" : "false", res->eos ? "true" : "false",
+	       res->errors, res->failed ? "true" : "false", (unsigned long long)res->hash);
+	fflush(stdout);
+}
+
 static int test_file(const char *file)
 {
 	static const char *names[] = { "decode", "early-drain", "churn", "expect-fail", "stall", "flood" };
+	static const char *rounds[] = { "hold-all-at-eos/wake", "hold-all-at-eos/streamoff",
+					 "hold-all-at-eos/daemon-gone" };
 	struct result res;
 	bool ok;
 
@@ -772,6 +1008,26 @@ static int test_file(const char *file)
 				exit(1);
 			}
 		}
+	}
+	if (mode == HOLD_EOS) {
+		int bad = 0;
+
+		for (int s = H_WAKE; s <= H_DAEMON; s++) {
+			hold_sub = s;
+			if (s != H_WAKE && (vfd = wait_device(15000)) < 0) {
+				fprintf(stderr, "vdec-test: no device for %s\n", rounds[s]);
+				return 1;
+			}
+			run(file, &res, 0);
+			close(vfd);
+			ok = hold_ok(&res);
+			print_hold(file, rounds[s], &res, ok);
+			bad += !ok;
+		}
+		/* The daemon systemd starts again serves the next file. */
+		if ((vfd = wait_device(15000)) >= 0)
+			close(vfd);
+		return bad != 0;
 	}
 	run(file, &res, 0);
 	close(vfd);
@@ -814,12 +1070,15 @@ int main(int argc, char **argv)
 			mode = STALL;
 		else if (!strcmp(argv[1], "--flood"))
 			mode = FLOOD;
+		else if (!strcmp(argv[1], "--hold-all-at-eos"))
+			mode = HOLD_EOS;
 		else
 			argc = 0;
 		i = 2;
 	}
 	if (argc <= i) {
-		fprintf(stderr, "usage: vdec-test [--early-drain|--churn|--expect-fail|--stall|--flood] FILE...\n");
+		fprintf(stderr, "usage: vdec-test [--early-drain|--churn|--expect-fail|--stall|--flood|"
+			"--hold-all-at-eos] FILE...\n");
 		return 2;
 	}
 	egl_init();

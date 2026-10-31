@@ -3,6 +3,22 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.16 (unreleased)
+
+- **Videos in Omarchy's Chromium loop, end and change size again (OmacVM.app).** When Chromium
+  decoded a video on the Mac's media engine (the Chromium video feature), it stopped on the last
+  picture: a looped video never started again, the page never got its `ended` event, and a Media
+  Source stream stood still where its picture size changed (3.2.15 and older). At those points
+  Chromium holds all of the decoder's picture buffers while the decoder still owes it the last
+  pictures; the decoder answered Chromium's wait with an error, and Chromium 153 then never waited
+  again. Now that wait sleeps until the pictures come. In a test VM on a Mac mini, 3 runs per row,
+  before and after: a looped 6 s 2160p60 clip and a looped 30 s 1080p60 clip stopped at their end in
+  6 of 6 runs before and looped in 6 of 6 after (the 4K clip 12 times in a 70 s run); the 4K clip
+  without loop fired `ended` in 0 of 3 before and 3 of 3 after; a test page's Media Source stream
+  that switches from 1080p to 720p at 6 s stopped at the switch before and played both sizes to its
+  end after (one run each). Needs Update VM, then a restart of Chromium (if a video was open during
+  the update, the new decoder loads at the VM's next start); nothing on the Mac, any app version.
+
 ## 3.2.15
 
 In an OmacVM.app VM, apps keep their graphics at critical memory pressure when they only replace
