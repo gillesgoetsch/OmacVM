@@ -75,6 +75,10 @@ PID=4242
 printf '%s\n' "OmacVM-VM: OmacVM: own-view sweep: on: QEMU remaps its view of the VM's 12288 MB every 300 s, so Activity Monitor counts the VM's pages once (OMACVM_DCOUNT_SWEEP=0 turns it off)" > "$V/logs/qemu.log"
 expect "a QEMU that sweeps its own view: only what it touched since its last sweep is counted twice" \
   "ok Activity Monitor: 23.0 GB for the VM: VM memory at most 12.0 GB, graphics 4.5 GB now, the rest 6.5 GB $SWEPT" "$(amrow "$V")"
+printf '%s\n' "OmacVM-VM: OmacVM: own-view sweep: on: QEMU remaps its view of the VM's 12288 MB every 300 s" \
+  "OmacVM-VM: warning: OmacVM: own-view sweep: stopped for this run: a remap at +0 MB failed ((os/kern) no space available, protection 0)" > "$V/logs/qemu.log"
+expect "the sweep stopped for the run: counted twice, as before" \
+  "ok Activity Monitor: 23.0 GB for the VM: VM memory at most 12.0 GB, graphics 4.5 GB now, the rest 6.5 GB $REST" "$(amrow "$V")"
 printf '%s\n' "OmacVM-VM: OmacVM: own-view sweep: off (OMACVM_DCOUNT_SWEEP=0): Activity Monitor counts the VM's pages QEMU touches twice" \
   "guest: OmacVM: own-view sweep: on" > "$V/logs/qemu.log"
 expect "the sweep switched off (its first line): counted twice, as before" \
