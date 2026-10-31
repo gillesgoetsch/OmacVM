@@ -14,13 +14,15 @@ in more words.
   color attachments than the GPU takes, a value the driver does not know (a compare op, blend factor
   or dynamic state), or a secondary command buffer that runs itself. The values are now checked
   against the GPU's limits and what the app made, and a program that sends such a value loses only
-  its own Vulkan connection: it ends, QEMU's log says "venus context N (app) is lost" with the
-  refused call and values, and the VM goes on. Apps that are correct are not affected; one that
-  relied on such a value now ends (Graphics: OpenGL, in the VM window or `omacvm graphics --vm NAME
-  opengl`, avoids Venus for it). With KosmicKrisp a pass with more than 8 views (Apple M1; the count
-  Metal supports on the Mac) ended the VM although the app had been told 32: apps are now told the
-  Mac's count. Needs the app update (from the VM's next start). Still open in #624: malformed
-  shaders, commands outside their render pass and copy regions past an image (the next change).
+  its own Vulkan connection: it ends and the VM goes on. QEMU's log says "venus context N (app) is
+  lost"; the refused call and its values are on a separate "vkr: <app>: <call> refused: ..." line,
+  written for the 1st, 2nd, 4th, 8th ... refusal since the VM started (troubleshooting 52). Apps
+  that are correct are not affected; one that relied on such a value now ends (Graphics: OpenGL, in
+  the VM window or `omacvm graphics --vm NAME opengl`, avoids Venus for it). With KosmicKrisp a pass
+  with more than 8 views (Apple M1; the count Metal supports on the Mac) ended the VM although the
+  app had been told 32: apps are now told the Mac's count. Needs the app update (from the VM's next
+  start). Still open in #624: malformed shaders, commands outside their render pass and copy regions
+  past an image (the next change).
 
 ## 3.2.16
 
