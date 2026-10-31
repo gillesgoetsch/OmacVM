@@ -103,6 +103,9 @@ final class GPUMemoryWatch {
     private var lastDesktopRestart: Date?
     private var lastShellRestart: Date?
     private var notice = GPUMemoryNotice()
+    /// The VM answered omacvm-desktop-recover venus with its usage (a VM
+    /// from before 3.2.17): said once per run.
+    private var venusNoteMissing = false
     /// The stalls already seen in logs/vm-stalls, and the last note about one.
     private var stallsSeen = 0
     private var stallNoteAt: Date?
@@ -442,6 +445,8 @@ final class GPUMemoryWatch {
         case .exited(0, _), .running:
             return
         case .exited(2, _), .refused:
+            guard !venusNoteMissing else { return }
+            venusNoteMissing = true
             log("OmacVM: the VM has no note for a lost Vulkan context yet (\(name)): Update VM puts it in")
         case .exited(let code, _):
             log("OmacVM: the VM's note for \(name)'s lost Vulkan context failed (exit \(code))")
