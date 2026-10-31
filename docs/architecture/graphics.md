@@ -598,6 +598,15 @@ Patches (all in `app/runtime/patches`, one per concern):
   `Tests/virgl/test-venus-robust.c` sends its cases as encoded streams through
   `vkr_context_submit_cmd` (one through a ring thread, one nested) at every
   runtime build.
+- `virgl-venus-lost-context-count.patch` (3.2.17, ADR 0038's amendment): a
+  Venus context vkr's ring thread ends counts in `logs/gpu-memory` like a GL
+  one (lost, its name, why `venus` or `guard`, `lost_recent_kind` `venus`):
+  the ring thread leaves it in the shared budget module, the renderer thread
+  writes it at its next poll. A context the guest was closing (its process
+  ended, so a handle vkr still used was closed first) logs "ended while the
+  guest closed it" and is not counted. The app tells the VM
+  (`omacvm-desktop-recover venus`: a note; for Ghostty on Zink also
+  `/run/omacvm/gl-zink-off`); `Tests/virgl/test-venus-lost-count.c`.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended
