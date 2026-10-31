@@ -874,7 +874,9 @@ The less obvious ones, with causes and where the fix lives, are in
   before it reads (LibreSSL's `openssl passwd -6`, a missing binary): CI jobs
   run with SIGPIPE ignored, and bash 5's printf then writes "write error:
   Broken pipe" to stderr, which broke `omacvm build --plan --json` in a test
-  that reads its output with `2>&1`. Use a here-string (`cmd <<<x`).
+  that reads its output with `2>&1`. Use a here-string (`cmd <<<x`), but
+  not for secrets: bash 3.2 writes a here-string to a temp file (the
+  password hash in `src/cmd/build.sh` keeps its pipe).
 - Do not put personal data in this repo.
 
 ## 9. Conventions
