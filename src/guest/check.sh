@@ -963,7 +963,7 @@ fusion)
   vst=$(cat /var/lib/omacvm/hyprland-vmwgfx 2>/dev/null)
   if [[ $vst == "$hv $(sha256sum /usr/bin/Hyprland | awk '{ print $1 }')" ]]; then
     ok "Hyprland" "$hv with the vmwgfx fix"
-  elif [[ $vst == "$hv none" ]]; then
+  elif [[ $vst == "$hv none" || $vst == "$hv none "* ]]; then   # "<version> none <commit> <patch set>" from 3.2.16
     bad "Hyprland" "no vmwgfx fix for Hyprland $hv yet (black screen at the next login): omacvm update brings one"
   else bad "Hyprland" "$hv without the vmwgfx fix (black screen at the next login): omacvm apply builds it"; fi
   check "Hyprland after updates" "pacman hook rebuilds it" test -f /etc/pacman.d/hooks/zz-omacvm-hyprland.hook

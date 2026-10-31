@@ -12,15 +12,17 @@
 # locked then) runs it again after every hyprland upgrade. Takes 10 to 20
 # minutes on 4 vCPUs. OMACVM_REBUILD_HYPRLAND=1 builds anyway.
 # A Hyprland no patch applies to (a release newer than this OmacVM): says so,
-# records "<version> none" in the state (omacvm check names the version) and
-# exits 0, so the rest of the apply goes on; the package's own Hyprland stays
-# (a black screen at the next login on Fusion) until omacvm update brings a
-# patch for it. A failed download or build of a release that has one: exit 1.
+# records "<version> none <source commit> <patch set>" in the state (omacvm
+# check names the version) and exits 0, so the rest of the apply goes on; the
+# package's own Hyprland stays (a black screen at the next login on Fusion)
+# until omacvm update brings a patch for it. The next run with the same source
+# and the same patches says so again without the download (99 240 KB of git
+# objects for 0.57.0). A failed download or build of a release that has one: exit 1.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 HOOK=0; [[ ${1:-} == --hook ]] && { HOOK=1; shift; }
 BIN=/usr/bin/Hyprland
-STATE=/var/lib/omacvm/hyprland-vmwgfx      # "<package version> <sha256 of the patched binary>", or "<version> none"
+STATE=/var/lib/omacvm/hyprland-vmwgfx      # "<package version> <sha256 of the patched binary>", or "<version> none <commit> <patch set>"
 W=/var/cache/omacvm/hyprland-vmwgfx
 DEPS=(base-devel git cmake ninja hyprwayland-scanner hyprland-protocols glaze)
 U=${1:-$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env 2>/dev/null | tail -1)}
@@ -38,6 +40,23 @@ vmwgfx_patch() {
   done < <(printf '%s\n' "$here"/hyprland-vmwgfx/*.patch | sort -rV)
   return 1
 }
+# patch_set: one word for the installed patches, from their names and contents
+# only (the apply runs this script from /usr/local/share/omacvm/fusion/guest,
+# the hook from /usr/local/lib/omacvm/fusion: the same patches, the same word).
+patch_set() {
+  local p
+  for p in "$here"/hyprland-vmwgfx/*.patch; do
+    if [[ -f $p ]]; then printf '%s %s\n' "${p##*/}" "$(sum "$p")"; fi
+  done | sha256sum | cut -c1-16
+}
+# none_recorded: an earlier run downloaded this source commit and found that
+# none of these patches applies to it: the same answer again.
+none_recorded() {
+  [[ -z ${OMACVM_REBUILD_HYPRLAND:-} && -f $STATE && $(cat "$STATE") == "$pkg none $commit $(patch_set)" ]]
+}
+no_fix() {
+  echo "build-hyprland: no vmwgfx fix for Hyprland $pkg yet: it stays as the package has it (a black screen at the next login on VMware Fusion) until omacvm update brings one" >&2
+}
 if [[ -z ${OMACVM_REBUILD_HYPRLAND:-} && -f $STATE && $(cat "$STATE") == "$pkg $(sum $BIN)" ]]; then
   echo "Hyprland $pkg already has the vmwgfx fix: nothing to build"
   exit 0
@@ -47,6 +66,7 @@ stock=$BIN
 [[ -f $STATE && $(awk '{ print $2 }' "$STATE") == "$(sum $BIN)" && -f $BIN.stock ]] && stock=$BIN.stock
 commit=$("$stock" --version 2>/dev/null | grep -o '\b[0-9a-f]\{40\}\b' | head -1 || true)
 [[ -n $commit ]] || { echo "build-hyprland: $stock does not say its source commit" >&2; exit 1; }
+if none_recorded; then no_fix; exit 0; fi
 
 if (( ! HOOK )); then "$here/../../guest/pkg-add" "${DEPS[@]}"; fi
 rm -rf "$W"; install -d -o "$U" -g "$U" "$W"; mkdir -p "$(dirname "$STATE")"
@@ -60,8 +80,8 @@ as_u git checkout -q FETCH_HEAD
 [[ $(as_u git rev-parse HEAD) == "$commit" ]] || { echo "build-hyprland: downloaded source is not $commit" >&2; exit 1; }
 as_u git submodule update -q --init --recursive --depth 1
 if ! patch=$(vmwgfx_patch as_u); then
-  echo "build-hyprland: no vmwgfx fix for Hyprland $pkg yet: it stays as the package has it (a black screen at the next login on VMware Fusion) until omacvm update brings one" >&2
-  echo "$pkg none" > "$STATE"
+  no_fix
+  echo "$pkg none $commit $(patch_set)" > "$STATE"
   cd /; rm -rf "$W/src"
   exit 0
 fi

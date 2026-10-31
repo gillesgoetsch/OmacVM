@@ -19,6 +19,15 @@ in more words.
   end after (one run each). Needs Update VM, then a restart of Chromium (if a video was open during
   the update, the new decoder loads at the VM's next start); nothing on the Mac, any app version.
 
+- **VMware Fusion: no new download of Hyprland's source at every apply while OmacVM has no fix for
+  it.** When no vmwgfx patch of OmacVM fits the installed Hyprland, every apply and update
+  downloaded its source again (99 240 KB of git objects for 0.57.0, measured with the same git calls
+  on a Mac mini), only to find the same. The VM now records the source commit and the patches it
+  checked, and the next run with the same ones says "no vmwgfx fix for Hyprland <version> yet" again
+  at once; an OmacVM update that brings a patch, or a Hyprland update, checks again. Needs `omacvm
+  update`; the first apply after it downloads once more. Not run in a Fusion VM (none on the test
+  Macs); tested in `src/tests/fusion-vmwgfx.sh`.
+
 ## 3.2.15
 
 In an OmacVM.app VM, apps keep their graphics at critical memory pressure when they only replace
