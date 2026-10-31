@@ -870,6 +870,13 @@ The less obvious ones, with causes and where the fix lives, are in
   rebuilds it, and `hyprctl eval` never does (0.56.2 and 0.57.0,
   `LinuxDMABUF.cpp`). Only a Hyprland start applies it for sure: log out and
   in (#630).
+- Do not feed a probe with `printf x | cmd` on the Mac side when `cmd` may exit
+  before it reads (LibreSSL's `openssl passwd -6`, a missing binary): CI jobs
+  run with SIGPIPE ignored, and bash 5's printf then writes "write error:
+  Broken pipe" to stderr, which broke `omacvm build --plan --json` in a test
+  that reads its output with `2>&1`. Use a here-string (`cmd <<<x`), but
+  not for secrets: bash 3.2 writes a here-string to a temp file (the
+  password hash in `src/cmd/build.sh` keeps its pipe).
 - Do not put personal data in this repo.
 
 ## 9. Conventions
@@ -889,6 +896,10 @@ The less obvious ones, with causes and where the fix lives, are in
   nobody logged in), the Mac side does not serve that VM, `omacvm check`
   says "off"; a line in `src/tests/features-off.sh`'s table says how. Experimental features are off by default
   and say so wherever they are offered.
+- Tests wait for the thing they check, on a busy CI Mac too: a control centre
+  Pilot test settles on the drawn screen (`#body`), not on the state a worker
+  thread set before the app's loop redraws; a time the code logged is compared
+  with the event's own time, never with the clock at the check (a minute on).
 - Verify on real VMs before committing behaviour changes: `omacvm apply` against a
   test VM, `omacvm build --vm-name "OmacVM Test"` (and `--vm-type utm`) for the full path,
   then `omacvm check --vm <name>` must pass.
