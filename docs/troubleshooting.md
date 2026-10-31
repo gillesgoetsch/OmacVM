@@ -1533,7 +1533,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   back when QEMU stopped; a 12 GB VM with nothing compressed showed 1.2 to
   2.0 GB more than it held. From 3.2.17 QEMU remaps its own view of the VM's
   memory every 5 minutes, which drops that count; what it touched since then
-  is still counted twice (ADR 0066). It never was memory: the Mac gets
+  is still counted twice (ADR 0066). From 3.2.18 a sweep that does not keep
+  the same memory on a Mac turns itself off for the run (QEMU tries it on
+  scratch memory first) or maps the memory back and stops; the VM keeps
+  running. It never was memory: the Mac gets
   nothing back from it. A VM above the Mac's Best tier (8 GB on a 16 GB Mac)
   plus its graphics leaves macOS too little.
 - **Check:** `omacvm check --vm NAME` has an "Activity Monitor" row while
@@ -1541,9 +1544,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and pages of
   the VM QEMU touched, which macOS counts twice)", a warning above the Best
   tier; with 3.2.17's QEMU "pages of the VM QEMU touched since its last
-  sweep, counted twice until then". `logs/qemu.log` has the sweep's lines
-  ("own-view sweep": on or off, then a line an hour). `omacvm resources
-  --vm NAME` says the same warning.
+  sweep, counted twice until then", and "QEMU's own-view sweep is off for
+  this run: why" when it is off or stopped. `logs/qemu.log` has the sweep's
+  lines ("own-view sweep": on or "off (why)", then a line an hour; "stopped
+  for this run: why"). `omacvm resources --vm NAME` says the same warning.
 - **Fix:** give the VM the Best tier or less: in OmacVM.app the VM's
   General › Resources › Best, or `omacvm resources --vm NAME --resources
   best`; it applies at the VM's next start. OmacVM never lowers the setting
@@ -1552,7 +1556,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   at three quarters of the Mac
   ([graphics memory and VM memory](routes/app.md#graphics-memory-and-vm-memory)).
 - **Where:** `src/cmd/check.sh` ("Activity Monitor"), `src/lib/footprint.py`,
-  `app/runtime/patches/qemu-hvf-own-view-sweep.patch` (the sweep, ADR 0066),
+  `app/runtime/patches/qemu-hvf-own-view-sweep.patch` (the sweep and its
+  trial, ADR 0066; `app/runtime/Tests/memory/test-dcount.sh`),
   `src/lib/setup.sh` (`mem_warning`), `src/cmd/resources.sh`,
   `app/app/Sources/OmacVMWindow/CustomResources.swift`
   (`ResourceLimits.warning`), `app/app/Sources/OmacVMDesktop/GPUMemory.swift`

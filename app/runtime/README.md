@@ -329,18 +329,28 @@ commit 82927e9. Changes here:
   the start, then every 5 minutes, skipped while QEMU's footprint grew less
   than 64 MB (twice in a row at most). No page moves; the Mac gets nothing back. Main RAM only, by the
   rule free page reports now share (`omacvm_ram_private`: never the Venus
-  window's blobs, pflash, ROM, shared or file-backed memory). Before each
-  remap every map entry must share its object with the guest (true shared
-  or shared, an object, read-write, not wired), else the chunk stays as it
-  is (counted); in the first pass a changed view stops QEMU; a failed remap
-  stops the sweep for the run. `logs/qemu.log`: "own-view sweep: on" or
-  "off" at the start (`omacvm check` reads it), a line an hour and one at
-  exit (passes, MB less in Activity Monitor, the main lock's hold per
-  chunk). `OMACVM_DCOUNT_SWEEP=0`: off; seconds there: the time between
-  passes, and `OMACVM_DCOUNT_SWEEP_CHECK=1` a line per pass (tests).
+  window's blobs, pflash, ROM, shared or file-backed memory). From 3.2.18
+  a sweep that would not keep QEMU's view the guest's memory turns itself
+  off instead of stopping QEMU: before the machine starts a trial on 256 MB
+  of scratch memory the hypervisor maps as guest RAM runs one chunk through
+  the same steps (anything wrong, or past 3 s: off for the run, "off
+  (why)"); each chunk's entries must have the share mode the trial measured
+  (else it stays as it is, counted), a spare mapping of it is made, and
+  after the remap the entries are read again at once on every pass; a
+  changed view is mapped back from the spare and the sweep stops for the
+  run; QEMU stops only when mapping back fails (ADR 0066's amendment).
+  `-overcommit mem-lock` turns it off. `logs/qemu.log`: "own-view sweep:
+  on" or "off (why)" at the start (`omacvm check` reads it), a line an hour
+  and one at exit (passes, MB less in Activity Monitor, the main lock's
+  hold per chunk, chunks mapped back, why it stopped).
+  `OMACVM_DCOUNT_SWEEP=0`: off; seconds there: the time between passes, and
+  `OMACVM_DCOUNT_SWEEP_CHECK=1` a line per pass (tests);
+  `OMACVM_TEST_SWEEP_DIVERGE=canary|chunk` (test mode only, dropped by the
+  app in a release build) makes the trial or a chunk go wrong on purpose.
   `Tests/memory/test-dcount.sh` at build time (no VM; a real `hv_vm_map`
   where the Mac lets the build make a VM; pread/pwrite and free page
-  reports during a pass) and in CI (`src/tests/memory-dcount.sh`); ADR 0066
+  reports during a pass; the trial and every way a remap can go wrong, by
+  the sweep's own test hook) and in CI (`src/tests/memory-dcount.sh`); ADR 0066
 - `patches/mesa-kosmickrisp-*.patch`: changes to KosmicKrisp, applied by
   `build-kosmickrisp.sh` in name order (their hash is in its stamp).
   `mesa-kosmickrisp-shared-align.patch` declares a compute shader's shared
