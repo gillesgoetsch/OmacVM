@@ -6,7 +6,7 @@
 # compressing: macOS is compressing the VM. idle: the VM is quiet (the app saw
 # QEMU use little CPU for a minute, macOS's pressure normal). compact: after
 # macOS's warning made the VM drop its file cache, once the pressure is normal
-# again. report: numbers only.
+# again and the VM quiet. report: numbers only.
 # Prints one line of key=value for the app, at most 200 characters (sizes in MB).
 # The cache: only file cache read once and not again (Linux's inactive file
 # list; memory.reclaim with swappiness=0, oldest first), except the newest
