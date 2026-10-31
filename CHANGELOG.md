@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.17 (unreleased)
+## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;
 QEMU keeps less graphics memory of its own, and less again while the window is out of sight; and a
