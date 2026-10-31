@@ -272,7 +272,14 @@ and library against this change with the switch on
 | Ghostty's resident memory | 240 -> 141 MB | 240 -> 141 MB |
 
 CRITICAL and export lines 0 in every row; qemu.log refused / lost /
-assertion lines 0. Fallbacks, each its own start with the switch on: Graphics
+assertion lines 0. Zink set by hand with one scroll run: 1330 (M1) and 1336
+(mini) GTK CRITICAL lines with the 3.2.16 library, 0 and 0 with this one. A
+30-minute soak (M1, output at 2,400 lines/s): alive, drawing, typing after,
+resident memory 140 -> 141 MB, 0 lines. Omarchy's screensaver in Ghostty on
+two outputs at scale 2, whole-Mac power of the Mac mini in one session (180 s
+windows; another app kept a core busy all along): no screensaver 34.6 / 35.9
+W, in Ghostty on llvmpipe 53.1 / 53.8 W (guest 690 / 694 CPU-s), in foot 39.0
+W, in Ghostty on Zink 40.0 / 41.0 W (guest 103 / 100 CPU-s, Mac GPU 44 %). Fallbacks, each its own start with the switch on: Graphics
 OpenGL and `OMACVM_VULKAN_DRIVER=moltenvk` send no marker and Ghostty draws
 on llvmpipe as before; with the switch off, the same. The programs Ghostty
 starts get none of the variables (eglinfo from its shell: virgl 4.1).
@@ -288,8 +295,14 @@ does on llvmpipe.
   lacks: a Ghostty version that uses them would be refused and land in that
   hang. Ghostty 1.3.1 and 1.4.0 use neither.
 - Venus memory counts against the VM's graphics budget (ADR 0034) and the
-  pressure guard does not cut it: each Ghostty window takes about 150-300 MB
-  of the Mac's graphics memory.
+  pressure guard does not cut it: a Ghostty on Zink takes 150-300 MB of the
+  Mac's graphics memory (M1 Max: one window +155-163 MB, three windows of one
+  Ghostty +164-278 MB; the investigation's separate processes 150-290 MB
+  each). Past the budget its Venus context is lost: with a 384 MB budget and
+  Chromium on WebGL Aquarium first, a Ghostty on Zink ended at its start
+  ("venus context N (ghostty) is lost", the guest driver ended it), with and
+  without `VN_PERF=no_async_mem_alloc` (so the library does not set it); one
+  on llvmpipe opened and took typing.
 - Not measured: M2 and M3 GPUs, MacBook Air (off limits during the lane).
 - Default stays off. On by default only after the lost-context work, a soak
   on both Macs, the browser rows and the 1.4.0 rows; without the override

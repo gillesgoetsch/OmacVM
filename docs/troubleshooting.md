@@ -1474,15 +1474,21 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   and a MacBook Pro M1 Max: typing shown in 25 and 28 ms instead of 56 and
   57, 10 s of fast output 3.3 and 3.4 instead of 32.8 and 31.7 Ghostty
   CPU-seconds, for 6-9 % of the Mac's GPU and 150-300 MB of its graphics
-  memory per window. `omacvm check` says which
+  memory (M1 Max: one window 155-163 MB, three windows of one Ghostty
+  164-278 MB). Omarchy's screensaver
+  in Ghostty on two displays: the Mac mini drew 40-41 W on Zink against
+  53-54 W on the CPU (35-36 W without it, 39 W in foot; one session). `omacvm check` says which
   driver a running Ghostty has (zink or llvmpipe) and why. Not with GPU safe
   mode, Graphics OpenGL or MoltenVK (macOS 15): Ghostty stays on the CPU.
 - **Symptom with the switch on:** Ghostty stops drawing and takes no input,
-  and Hyprland asks "Application Not Responding ... Terminate / Wait".
-  **Cause:** the Mac ended Ghostty's Vulkan context (it refused a command,
-  or the VM's graphics memory budget was used up). **Fix:** Terminate (the
-  programs running in that Ghostty end with it), then open Ghostty again; if
-  it happens again, turn the switch off and quit Ghostty.
+  and Hyprland asks "Application Not Responding ... Terminate / Wait"; or
+  Ghostty ends, or does not open at all. **Cause:** the Mac ended Ghostty's
+  Vulkan context: it refused a command, or the VM's graphics memory was used
+  up (qemu.log: "venus context N (ghostty) is lost"; with a 384 MB budget and
+  Chromium on a WebGL page a Ghostty on Zink ended at its start, with or
+  without `VN_PERF=no_async_mem_alloc`, one on the CPU opened). **Fix:**
+  Terminate (the programs running in that Ghostty end with it), then open
+  Ghostty again; if it happens again, turn the switch off and quit Ghostty.
 - **Where:** `src/app/guest/omacvm_egl.c` (OmacVM's EGL vendor library),
   `src/guest/check.sh` ("Ghostty"), the app's `GhosttyGPU`
   (`app/app/Sources/OmacVMWindow/GhosttyGPU.swift`); tests

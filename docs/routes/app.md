@@ -520,7 +520,7 @@ the VM's SSH on `127.0.0.1:<port>`.
   Measured on a Mac mini M4 and an M1 Max: typing shown in 25 and 28 ms
   instead of 56 and 57, scrolling output 3.3 and 3.4 instead of 32.8 and
   31.7 Ghostty CPU-seconds per 10 s, for 6-9 % of the Mac's GPU and
-  150-300 MB of its graphics memory per window. If the Mac
+  150-300 MB of its graphics memory. If the Mac
   ends Ghostty's Venus context, that Ghostty stops responding and only
   Terminate helps (the programs in it end). Not with GPU safe mode,
   Graphics OpenGL or MoltenVK (no marker: Ghostty on the CPU as before).
