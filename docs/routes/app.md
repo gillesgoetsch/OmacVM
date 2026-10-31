@@ -1263,8 +1263,9 @@ apps, the GPU. A VM takes two kinds from it:
   up: `src/memory/guest/90-omacvm-mm.tmpfiles`; QEMU tells macOS it may take
   the old pages, ADR 0062) and leaves QEMU's footprint, the number Activity
   Monitor shows. Up to 3.2.11 macOS kept holding those pages until the VM
-  stopped. When macOS compresses the VM or warns that memory is short, the VM
-  gives back its file cache (below).
+  stopped. When macOS compresses the VM, when the VM is idle, or when macOS
+  warns that memory is short, the VM gives back its file cache and gathers
+  its scattered free memory (below).
 - **Graphics memory** is extra, on top: the textures and buffers the VM's
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
   grows and shrinks with what is on screen: Omarchy alone at 5K about
@@ -1335,13 +1336,51 @@ cold-only way (before Linux 6.11) drops its whole cache instead.
 `logs/qemu.log` has two lines per give-back ("macOS is compressing the VM
 ...", then what the VM freed and QEMU's footprint 60 s later).
 
+**When the VM is idle** (3.2.17). Free page reporting hands Linux's free
+memory to QEMU only in blocks of 256 KiB and up. After a browser closes, a
+give-back or a cache drop, much of what Linux freed sits in smaller blocks,
+and those stay on the Mac (a 4 GB test VM with Chrome just closed: 1.2 GB on
+the MacBook Pro M1 Max, 1.0-1.4 GB on the Mac mini). Every 15 minutes at
+most, while macOS's memory pressure is normal, QEMU used at most a fifth of
+a CPU core over the last minute (an idle VM 4-10 %, a 1080p60 video at 5K
+71-85 %), QEMU has under min(2 GB, a quarter of the Mac) outside its resident
+memory (compressed pages and graphics: so not while macOS compresses the VM,
+and on a small Mac not while a 5K browser session is open) and no give-back
+ran in the last 10 minutes, the app runs `giveback.sh idle`: the VM gives
+back its cold file cache above the newest min(2 GB, a quarter of the VM),
+then gathers its free memory into big blocks, which it then reports
+(compaction: `compact_memory`, only when 256 MB or more is in small blocks
+and the VM does not wait for memory, PSI memory some avg10 0.10 or less; at
+most 10 s, stopped with SIGKILL; one run at a time, as the VM goes on running
+it after the app stopped waiting 30 s). The VM answers "busy" when its own
+memory or disk pressure is up; the memory-optimized kernel, which counts
+nearly all its cache as cold, keeps its cache and only compacts. After one
+that brought back under 256 MB, or after which the VM read back half of what
+the last one gave (its refaults), the next waits twice as long, up to 2
+hours; 1 GB or more puts it back to 15 minutes. One the VM's agent did not
+answer is tried again 15 minutes later and never holds up the warning's
+drop. After macOS's warning makes the VM drop its cache, the VM compacts once
+the pressure is normal again and the VM is quiet (`giveback.sh compact`).
+Compaction moves pages in use, so never while macOS is short of memory or
+the VM is busy, and never in the give-back
+while macOS compresses the VM (macOS must decompress what moves; ADR 0059).
+On the M1 Max (4 GB VM, Chrome closed, 20 minutes quiet) the app's own idle
+step joined 1.2 GB of small blocks in 0.6 s: the Mac held 2425 MB of the
+VM's memory against 3.2.16's 3445 MB, and got back 3491 MB against 4535 MB
+when the VM quit. `OMACVM_GIVEBACK_IDLE=0` in the app's environment turns
+the idle give-back off. `logs/qemu.log` says at each start "VM memory: idle
+give-back: on" or "off", and has one line for each idle give-back that ran
+("the VM was idle: it gave back ... and compacted its free memory ...; QEMU's
+footprint ... 60 s later").
+
 `omacvm check` has a "VM memory" row: the VM's memory, whether the give-back
 while macOS compresses is on, how many times the VM freed its file cache
 this run and what it freed the last time (for the warning's drop, how much
 smaller QEMU's footprint was a minute later: the footprint, not memory back
 to the Mac), and when macOS still holds a quarter of the Mac compressed and
 the VM had little left to give, that a smaller VM memory leaves the Mac more
-(`omacvm resources`). A large VM's footprint can still be well above what
+(`omacvm resources`); idle give-backs on their own: how many and how much in
+all, by the VM's own count. A large VM's footprint can still be well above what
 Linux uses (ADR 0059, "What this does not explain"). UTM, Parallels and
 Fusion: nothing changes (their balloons do not report free pages).
 
@@ -1355,7 +1394,9 @@ Fusion: nothing changes (their balloons do not report free pages).
   flushes after every resource command; `logs/qemu.log` says "freed N MB"),
   and the app asks the VM to drop its whole file cache (at most every 10
   minutes, also counting the give-backs above, or 2 minutes after one of
-  them; again after 30 s, then less often, if the VM did not answer), which
+  them; again after 30 s, then less often, if the VM did not answer; once
+  the pressure is normal again and the VM quiet, it compacts its free
+  memory, above), which
   then leaves QEMU's footprint (the cache it dropped: 0.1 GB on a fresh VM,
   1 GB after a long session; up to 3.2.11 macOS could keep holding the
   pages, above).
