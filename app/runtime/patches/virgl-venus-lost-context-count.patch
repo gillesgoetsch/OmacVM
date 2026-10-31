@@ -72,8 +72,8 @@ Tests/virgl/test-resource-budget.c status: GL losses are kind gl.
           vkr_context_set_fatal(ctx);
  
           mtx_unlock(&ctx->ring_mutex);
-@@ -550,15 +556,39 @@ vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const
-       vkr_context_set_fatal(ctx);
+@@ -502,6 +508,17 @@ vkr_context_destroy_resource(struct vkr_context *ctx, uint32_t res_id)
+    vkr_context_remove_resource(ctx, res_id);
  }
  
 +/* OmacVM (virgl-venus-lost-context-count.patch): the guest closed a resource this context's
@@ -88,6 +88,10 @@ Tests/virgl/test-resource-budget.c status: GL losses are kind gl.
 +}
 +
  void
+ vkr_context_on_ring_seqno_update(struct vkr_context *ctx,
+                                  uint64_t ring_id,
+@@ -553,12 +570,25 @@ vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const
+ void
  vkr_context_on_ring_fatal(struct vkr_context *ctx)
  {
 -   /* The ring thread stops here for good; log it once per context. */
@@ -100,7 +104,7 @@ Tests/virgl/test-resource-budget.c status: GL losses are kind gl.
 +    * thread). A lost context counts in the status file with its name and cause
 +    * (virgl-venus-lost-context-count.patch); one the guest was closing does not: its
 +    * process ended (SIGKILL while Zink tore down: a ring command after the kernel had
-+    * closed the reply stream). */
++    * closed a handle vkr still used). */
 +   if (!atomic_exchange(&ctx->loss_logged, true)) {
 +      const char *name = ctx->debug_name ? ctx->debug_name : "";
 +      atomic_thread_fence(memory_order_seq_cst);
