@@ -1626,3 +1626,33 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `inst_fail_all`); test `src/vdec/guest/test/vdec-test.c
   --hold-all-at-eos` (in the VM, as root);
   [video-decode.md](video-decode.md#chromium-from-arch-linux-arm).
+
+## 52. app: canvas and SVG pages are slow in Brave, Vivaldi or an Electron app
+
+- **Symptom:** in an OmacVM.app VM (3.2.16 and older), pages that draw many
+  canvas strokes, clip paths or SVG paths (charts, whiteboards, diagram
+  apps) are much slower in Brave, Vivaldi or Electron than in Google Chrome
+  or Omarchy's Chromium. `chrome://gpu` (or a WebGL page) names the GPU
+  `ANGLE (Mesa, virgl (Apple M4), ...)`, where Chrome says `OmacVM-GPU`.
+- **Cause:** Skia, the graphics library of every Chromium-based app, turns
+  instanced drawing off when the GL renderer names virgl, and then draws
+  every canvas stroke and clip path on the CPU. Since 3.1.32 Mesa gives
+  Chrome and Chromium the name "OmacVM-GPU" instead, by program name
+  (`/usr/share/drirc.d/50-omacvm-chrome.conf`); every other program kept
+  "virgl".
+- **Fix (3.2.17):** Update VM (`omacvm apply`, `omacvm update`), then quit
+  and start those apps again. The file now also names `brave`,
+  `vivaldi-bin` and `electron` (Electron's own build and Arch's
+  `electronNN` packages), on Wayland and X11. Brave 1.98.63 in a test VM on
+  a Mac mini M4: MotionMark 2754 -> 4483 (medians of 3), its Paths test
+  7.3x; Electron 45 at a fixed Paths complexity: 5.5 -> 34 fps. Nothing on
+  the Mac; any app version.
+- **Not covered:** an Electron app shipped under its own program name (its
+  GPU process is that program); UTM, VMware Fusion and Parallels VMs.
+- **The real name for one app:** start it with `force_gl_renderer=`
+  (empty), e.g. `force_gl_renderer= brave`: Mesa then skips the file (also
+  for Chrome). Mesa prints "ATTENTION: default value of option
+  force_gl_renderer overridden by environment." on the app's error output.
+- **Where:** `src/app/guest/50-omacvm-chrome.drirc`; test
+  `src/app/guest/tests/test_chrome_drirc.py`;
+  [graphics.md](architecture/graphics.md).

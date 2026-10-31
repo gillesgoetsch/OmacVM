@@ -78,7 +78,11 @@ VM runs, and goes back by itself when a new version does not start
 - The window: Omarchy follows its size and the display's refresh rate
   (120 Hz on a MacBook Pro).
 - GPU in browsers: WebGL 1 and 2 on the hardware in Chromium, Google Chrome,
-  Brave and Firefox (`virgl (Apple M4 Max)`), no flags.
+  Brave and Firefox, no flags. Chromium, Google Chrome, Brave, Vivaldi and
+  Electron (the program `electron`) see the GPU as `OmacVM-GPU`, so they draw
+  canvas and SVG paths on the GPU; Firefox, and an Electron app shipped under
+  its own program name, see `virgl (Apple M4 Max)`. One app with the real
+  name: `force_gl_renderer= brave` (the variable empty).
 - For faster pages, use Google Chrome instead of Omarchy's Chromium. If
   Chrome is not installed yet: Omarchy menu > Install > Browser > Chrome
   (from the AUR). That writes a new `~/.config/chrome-flags.conf` with

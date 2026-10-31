@@ -115,15 +115,17 @@ on CGL, not on ANGLE.
 | Frames on the display's refresh (jitter buffer, display link thread) | built: `pacing-hdr` | `qemu-cocoa-gl-present-vsync.patch`, ADR 0020 |
 | Colour-tagged frames, 10-bit scanout, HDR (PQ, EDR) | built: `pacing-hdr`, `hdr` (the app's switch, off by default; the guest tone-maps into the display's headroom) | `qemu-cocoa-gl-present-color.patch`, `omacvm-cocoa-hdr-headroom*.patch`, `src/app/guest/virtio-gpu/`, ADR 0021, 0049 |
 | Guest paced by the host's vsync (its vblank timer follows the Mac's refresh) | built 3.2.3 (`input-vsync`, "Frames in step with the Mac"), removed 3.2.7 | ADR 0056, 0057 |
-| Chrome's GL renderer without "virgl" (Skia keeps instanced drawing) | built: `gpu-browser` (3.1.32) | `src/app/guest/50-omacvm-chrome.drirc` |
+| Chrome's GL renderer without "virgl" (Skia keeps instanced drawing) | built: `gpu-browser` (3.1.32); Brave, Vivaldi, Electron: `browser-speed-gpu-name-all` (3.2.17) | `src/app/guest/50-omacvm-chrome.drirc` |
 
 Chrome's renderer string: Skia turns instanced drawing off when the GL
 renderer names virgl (`GrGLCaps.cpp`, 2021, no public reason). Without it
 Chrome's GL path has no path atlas, and every canvas stroke and clip path
 becomes a CPU mask, an upload and a draw of its own in every frame. App VMs
 get a Mesa drirc (`/usr/share/drirc.d/50-omacvm-chrome.conf`) that gives the
-programs `chrome` and `chromium` the renderer "OmacVM-GPU" (`force_gl_renderer`);
-every other program keeps the real string. MotionMark at a fixed complexity
+programs `chrome` and `chromium` the renderer "OmacVM-GPU" (`force_gl_renderer`),
+and from 3.2.17 `brave`, `vivaldi-bin` and `electron` (Electron's own build,
+Arch's `electronNN`); every other program keeps the real string, also an
+Electron app shipped under its own name. MotionMark at a fixed complexity
 in a VM on the M4 Max (3 alternating rounds): Paths 29-35 -> 75 fps, Suits
 40-48 -> 75 fps (75 = the hidden VM display's rate), Canvas Arcs 75 both.
 chrome://gpu lists the same features and driver workarounds. A static page
@@ -132,6 +134,19 @@ Graphite render; it differs from Chrome's CPU raster only inside one thick
 self-overlapping stroke, which GPU tessellation fills. dEQP-GLES3
 `functional.instanced` 45/45 and `functional.draw` 324/324 pass on virgl.
 The WebGL renderer string that pages can read changes the same way.
+Brave 1.98.63 in a hidden VM on the Mac mini M4 (page 1560x870 at 2x,
+60 Hz, 3 alternating rounds against `force_gl_renderer=`, which gives the
+real name): Paths at complexity 100000 5.8 -> 41.8 fps, Suits at 3000
+13.7 -> 44.2 fps, Canvas Arcs 60 fps both (the display's rate); MotionMark
+2754 -> 4483 (medians: Paths 7.3x, Suits 3.1x, Canvas Arcs 2.2x, Canvas
+Lines 1.27x, the other four within 10 %); Aquarium 30k 37.7 vs 38.9 fps,
+scrolling 60 fps both. The static page differs in 0.026 % of its 4x4 cells,
+where thick strokes cross (#509 saw the same in Chrome), the same in
+Electron. Electron 45.2.1, Paths 100000: 5.5 -> 34.2 fps on Wayland,
+5.3 -> 32.7 fps on X11.
+A name by process type instead (OmacVM's EGL vendor library in a process
+with `--type=gpu-process`) does not reach Chromium: ANGLE draws on Chrome's
+own GBM device, whose Mesa screen exists before Chrome loads EGL.
 
 ## 2. Processes and threads
 

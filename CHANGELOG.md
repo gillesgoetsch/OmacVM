@@ -3,6 +3,22 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.17 (unreleased)
+
+- **Brave, Vivaldi and Electron draw canvas and SVG paths on the GPU (OmacVM.app, #654).** Skia, the
+  graphics library of every Chromium-based app, draws canvas strokes and clip paths on the CPU when
+  the GPU's name says virgl. Since 3.1.32 Chrome and Chromium see "OmacVM-GPU" instead; now Brave,
+  Vivaldi and Electron do too (the programs `brave`, `vivaldi-bin` and `electron`, on Wayland and
+  X11; Vivaldi by its program name, not run). Brave 1.98.63 in a test VM on a Mac mini M4, 3
+  alternating rounds against the old name: MotionMark 2754 -> 4483 (medians; its Paths test 7.3x,
+  Suits 3.1x, Canvas Arcs 2.2x), Paths at a fixed complexity 5.8 -> 41.8 fps, Suits 13.7 -> 44.2 fps.
+  Electron 45.2.1, Paths at the same complexity: 5.5 -> 34.2 fps on Wayland, 5.3 -> 32.7 fps on X11.
+  WebGL (Aquarium 37.7 vs 38.9 fps) and scrolling (60 fps) stay the same, and a page of canvas and
+  SVG shapes looks the same: 0.03 % of its 4x4-pixel areas differ, where thick strokes cross. An
+  Electron app shipped under its own program name keeps the old name, and so does Firefox. One app
+  with the old name: `force_gl_renderer= brave`. Needs Update VM, then restart those apps. UTM,
+  VMware Fusion and Parallels: nothing changes.
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left

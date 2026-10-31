@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""The Chrome renderer string override (50-omacvm-chrome.drirc): valid XML, only Chrome's and Chromium's
-programs, no "virgl" in the string, installed where Mesa reads it (no VM needed).
+"""The Chrome renderer string override (50-omacvm-chrome.drirc): valid XML, only the programs of Chrome,
+Chromium, Brave, Vivaldi and Electron, no "virgl" in the string, installed where Mesa reads it (no VM needed).
 
     python3 src/app/guest/tests/test_chrome_drirc.py
 """
@@ -27,11 +27,15 @@ class ChromeDrirc(unittest.TestCase):
 
     def test_programs(self):
         rx = re.compile(self.app.get("executable_regexp"))
-        # Mesa matches the program name: Google Chrome's /opt/google/chrome/chrome, Arch's /usr/lib/chromium/chromium
-        for name in ("chrome", "chromium"):
+        # Mesa matches the program name: Google Chrome's /opt/google/chrome/chrome, Arch's /usr/lib/chromium/chromium,
+        # Brave's /opt/brave-bin/brave (AUR) or /opt/brave.com/brave/brave, Vivaldi's /opt/vivaldi/vivaldi-bin (its
+        # vivaldi is a script), Electron's own build and Arch's /usr/lib/electron37/electron. Electron apps shipped
+        # under their own program name keep the real string.
+        for name in ("chrome", "chromium", "brave", "vivaldi-bin", "electron", "electron37"):
             self.assertTrue(rx.fullmatch(name), name)
-        for name in ("google-chrome", "chrome_crashpad_handler", "chromium-browser", "brave", "electron", "firefox",
-                     "glmark2", "Hyprland", "deqp-gles3", "xchrome", "chromex"):
+        for name in ("google-chrome", "chrome_crashpad_handler", "chromium-browser", "brave-browser", "vivaldi",
+                     "electron-builder", "code", "slack", "firefox", "glmark2", "Hyprland", "deqp-gles3", "xchrome",
+                     "chromex", "bravex", "xelectron"):
             self.assertIsNone(rx.search(name), name)
 
     def test_renderer_string(self):
