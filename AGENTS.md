@@ -852,6 +852,17 @@ The less obvious ones, with causes and where the fix lives, are in
   playback stood still there (3.2.15 and older). `ovd_poll` clears it while
   a queue streams and the decoder is not failed; `vdec-test
   --hold-all-at-eos` fails without it.
+- Do not name the GPU for Chromium's GPU process from OmacVM's EGL vendor
+  library (`force_gl_renderer` set in a process with `--type=gpu-process`):
+  Chromium's GL (ANGLE) draws on Chrome's own GBM device
+  (`EGL_PLATFORM_GBM_KHR`), and Mesa sets up that screen at
+  `gbm_create_device`, before Chrome loads EGL. Brave 1.98.63 kept "virgl"
+  with the variable set around its `eglInitialize` and with it set when glvnd
+  loaded the library. Chromium also writes its GPU process's command line
+  back as one string with spaces (1 NUL in 960 bytes). The name comes from
+  `50-omacvm-chrome.drirc` by program name (chrome, chromium, brave,
+  vivaldi-bin, electron); `force_gl_renderer=` (empty) gives one app the
+  real name.
 - Do not give Chromium a Vulkan compositor (`--use-vulkan`, Graphite)
   without `--disable-accelerated-video-decode` while chromium-video is on:
   its V4L2 decoder stays on there, and its buffers
