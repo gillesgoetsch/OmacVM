@@ -22,6 +22,20 @@ in more words.
   (`app/scripts/dev/virtual-display.m --while-locked`) makes the display only while the Mac is
   locked and takes it away when the Mac unlocks, after ending the test app.
 
+- **A display that goes off or on no longer makes and deletes a file while the VM waits
+  (#609).** In an OmacVM.app VM, QEMU kept the picture memory of each display in a temporary
+  file (macOS has no memory-only file for it), and made and deleted that file while it held the
+  lock the VM's processors need, each time a display went off or on ("Pause drawing while
+  hidden", Omarchy's idle) or changed its mode. On a Mac mini short of memory, deleting one
+  such file once held that lock for 2.2 s, and the VM stood still meanwhile. QEMU now keeps that
+  memory in plain memory, so no file is made or deleted with the lock held. In test VMs on a Mac
+  mini and an M1 Max, 100 mode changes up to 5120x2880, 60 display off/on cycles and a restart
+  made no temp file, where 3.2.16's QEMU made and deleted 916 and 1,050 of them. QEMU's memory in
+  Activity Monitor now includes these pictures, width x height x 4 bytes each (about 56 MB for a
+  5K display), mostly zero pages that macOS compresses to almost nothing.
+  `OMACVM_SURFACE_MEMORY=file` (QEMU's environment) goes back to the files. Needs the app update
+  (from the VM's next start).
+
 ## 3.2.16
 
 In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left

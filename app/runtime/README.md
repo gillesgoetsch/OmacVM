@@ -185,6 +185,15 @@ commit 82927e9. Changes here:
   (software renderer; runs the patched `with_gl_view_ctx()` taken from
   `ui/cocoa.m`); `Tests/display/view-texture-churn.c` measures the GPU memory
   per switch by hand (GPU, capped, not run by the build)
+- `patches/qemu-darwin-surface-memory.patch`: QEMU keeps a display surface's
+  pixels in plain memory, not in a temp file each (macOS has no memfd).
+  Making and deleting those files ran with the BQL held at every display
+  off/on and mode change, and waited on the disk while the Mac swapped (one
+  close() 2.2 s). `OMACVM_SURFACE_MEMORY=file` keeps the temp files; qemu.log
+  says which ("OmacVM: display surfaces: ..."). Only in a build without a
+  D-Bus display (the runtime build checks config-host.h). Checked by
+  `Tests/display/test-surface-memory.sh` (the patched functions, stand-ins
+  for the file calls, a 2.2 s close()); `src/tests/surface-memory.sh` in CI
 - `patches/virgl-control-queue-flush.patch`: vrend's own context is flushed
   after QEMU's resource create, unref and transfer-to-host commands; the
   guest's new screen, uploaded there on every mode change, stayed in GPU
