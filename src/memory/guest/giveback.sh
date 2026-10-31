@@ -14,11 +14,13 @@
 # macOS compresses, min(2 GB, a quarter) when idle. Never programs' memory,
 # zram, swap or the balloon. The memory-optimized kernel (MGLRU) counts nearly
 # all of its cache as inactive, so idle leaves its cache alone (act=mglru).
-# Compaction: free page reporting hands only free blocks of
-# page_reporting_order (256 KiB) and up to QEMU; free memory in smaller blocks
-# stays on the Mac. compact_memory moves pages in use to join them, so it runs
-# only when 256 MB or more is in such blocks and the VM does not wait for
-# memory (PSI memory some avg10 <= 0.10), at most 10 s (SIGKILL stops it).
+# Compaction (idle and compact): free page reporting hands only free blocks
+# of page_reporting_order (256 KiB) and up to QEMU; free memory in smaller
+# blocks stays on the Mac. compact_memory moves pages in use to join them, so
+# it runs only when 256 MB or more is in such blocks and the VM does not wait
+# for memory (PSI memory some avg10 <= 0.10), at most 10 s (SIGKILL stops
+# it); never while macOS compresses the VM (moving pages makes macOS
+# decompress them: not shown to be safe there, ADR 0059).
 # The whole script stays under 25 s (the app waits 30 s), and only one runs at
 # a time (flock): the VM goes on running it after the app stopped waiting.
 # Linux reports the freed pages to QEMU (free page reporting); QEMU's reclaim
@@ -83,7 +85,7 @@ elif [ "$act" = compressing ] || [ "$act" = idle ]; then
     [ "$act" = refused ] && [ "$mode" = compressing ] && sync && echo 1 > "$R/proc/sys/vm/drop_caches" && act=drop
   fi
 fi
-case $act in reclaim|none|refused|drop|mglru|compact)
+case $mode:$act in idle:reclaim|idle:none|idle:refused|idle:mglru|compact:compact)
   c=$(( B - ($(ms) - t0) / 1000 )); [ "$c" -le 10 ] || c=10
   if [ "$sf" -lt 256 ]; then cpt=small
   elif [ "$lk" = 0 ] || [ ! -e "$R/proc/sys/vm/compact_memory" ] || ! command -v timeout >/dev/null 2>&1; then cpt=no
