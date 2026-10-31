@@ -580,6 +580,14 @@ jobs:
       - name: The window's surfaces lossless-compressed (the checks catch code without it)
         run: app/runtime/Tests/display/test-present-lossless.sh
 
+      - name: The console texture made only when drawn, none while a GL scanout shows (3.2.16's code fails it)
+        run: app/runtime/Tests/display/test-console-texture.sh --self-test
+
+      - name: The window's spare present surfaces volatile out of sight (the rules; the checks catch code without it)
+        run: |
+          app/runtime/Tests/display/test-present-volatile.sh
+          app/runtime/Tests/display/test-present-volatile.sh --self-test
+
       - name: OmacVM.app full screen always in its own Space (no notch cover; escape combo stays out)
         run: src/tests/app-fullscreen-space.sh
 
