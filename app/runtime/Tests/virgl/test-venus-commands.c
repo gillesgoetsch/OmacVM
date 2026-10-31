@@ -1790,6 +1790,47 @@ static int case_descriptor(const char *c)
       void *dsl = set_layout_of(b, 2, 0, NULL);
       wr.dstSet = (VkDescriptorSet)set_from(w.pool, dsl, NULL);
       wr.descriptorCount = 2; /* binding 0, then binding 1 */
+   } else if (IS("d-consecutive-gap-ok") || IS("d-consecutive-zero-ok") || IS("d-copy-consecutive-ok")) {
+      /* LEGAL: an update past its binding goes on in the next binding with descriptors; a
+       * binding with none, and a number the layout lacks, are skipped whatever their type
+       * (VUID-VkWriteDescriptorSet-descriptorCount-00317: "except those with a descriptorCount
+       * of zero"). Layouts {0: UBO x2, 2: UBO x2} and {0: UBO x2, 1: SAMPLER x0, 2: UBO x2};
+       * 4 descriptors from binding 0, element 0 (the copy: from a set of the second layout
+       * into one of the first) */
+      const VkDescriptorSetLayoutBinding gap[2] = { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, VK_SHADER_STAGE_ALL, NULL },
+                                                    { 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, VK_SHADER_STAGE_ALL, NULL } };
+      const VkDescriptorSetLayoutBinding zero[3] = { { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, VK_SHADER_STAGE_ALL, NULL },
+                                                     { 1, VK_DESCRIPTOR_TYPE_SAMPLER, 0, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+                                                     { 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2, VK_SHADER_STAGE_ALL, NULL } };
+      static VkDescriptorBufferInfo four[4];
+      for (uint32_t i = 0; i < 4; i++)
+         four[i] = (VkDescriptorBufferInfo){ (VkBuffer)w.buf, 256 * i, 256 };
+      void *gap_set = set_from(w.pool, set_layout_of(gap, 2, 0, NULL), NULL);
+      void *zero_set = set_from(w.pool, set_layout_of(zero, 3, 0, NULL), NULL);
+      if (!gap_set || !zero_set)
+         broken("consecutive sets");
+      wr.pBufferInfo = four;
+      if (IS("d-copy-consecutive-ok")) {
+         /* the source written binding by binding (2 + 2), then copied in one go */
+         VkWriteDescriptorSet src[2] = { wr, wr };
+         src[0].dstSet = src[1].dstSet = (VkDescriptorSet)zero_set;
+         src[0].descriptorCount = src[1].descriptorCount = 2;
+         src[1].dstBinding = 2;
+         src[1].pBufferInfo = four + 2;
+         struct vn_command_vkUpdateDescriptorSets us = { .device = DEVH, .descriptorWriteCount = 2,
+                                                         .pDescriptorWrites = src };
+         step("vkUpdateDescriptorSets the copy's source, bindings 0 and 2");
+         D->dispatch_vkUpdateDescriptorSets(D, &us);
+         if (ended())
+            return FATAL;
+         cp.srcSet = (VkDescriptorSet)zero_set;
+         cp.dstSet = (VkDescriptorSet)gap_set;
+         cp.descriptorCount = 4;
+         n_copy = 1;
+      } else {
+         wr.dstSet = (VkDescriptorSet)(IS("d-consecutive-gap-ok") ? gap_set : zero_set);
+         wr.descriptorCount = 4;
+      }
    } else {
       return BROKEN;
    }
@@ -2503,6 +2544,7 @@ static const struct test_case cases[] = {
    { "d-pool-large", E_KEEP }, { "d-pool-overflow", E_REFUSE }, { "d-pool-type-bad", E_REFUSE },
    { "d-var-ok", E_WORKS }, { "d-var-count-big", E_REFUSE }, { "d-var-info-short", E_REFUSE },
    { "d-ok", E_WORKS }, { "d-consecutive-ok", E_WORKS }, { "d-copy-ok", E_WORKS }, { "d-inline-ok", E_WORKS },
+   { "d-consecutive-gap-ok", E_WORKS }, { "d-consecutive-zero-ok", E_WORKS }, { "d-copy-consecutive-ok", E_WORKS },
    { "d-binding-oob", E_REFUSE }, { "d-binding-far", E_REFUSE }, { "d-elem-far", E_REFUSE },
    { "d-elem-next", E_REFUSE }, { "d-type-mismatch", E_REFUSE }, { "d-null-sampler", E_REFUSE },
    { "d-null-view", E_REFUSE }, { "d-null-view-nd", E_WORKS }, { "d-null-buffer", E_REFUSE },
