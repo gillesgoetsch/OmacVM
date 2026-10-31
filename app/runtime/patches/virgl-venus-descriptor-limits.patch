@@ -212,10 +212,10 @@ index 19c0929..4261c13 100644
  }
  
 diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
-index 5ec209f..0c3215d 100644
+index 5ec209f..10c6a1a 100644
 --- a/src/venus/vkr_descriptor_set.c
 +++ b/src/venus/vkr_descriptor_set.c
-@@ -6,6 +6,690 @@
+@@ -6,6 +6,701 @@
  #include "vkr_descriptor_set.h"
  
  #include "vkr_descriptor_set_gen.h"
@@ -623,8 +623,8 @@ index 5ec209f..0c3215d 100644
 +   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
 +      for (uint32_t i = 0; i < p->count; i++) {
 +         if (!w->pTexelBufferView[p->offset + i] && !null_ok) {
-+            snprintf(why, why_size, "binding %u element %u: no texel buffer view", b->binding,
-+                     p->element + i);
++            snprintf(why, why_size, "binding %u element %u: no texel buffer view (the device's "
++                     "nullDescriptor is off)", b->binding, p->element + i);
 +            return false;
 +         }
 +      }
@@ -640,21 +640,32 @@ index 5ec209f..0c3215d 100644
 +         const VkDescriptorBufferInfo *bi = &w->pBufferInfo[p->offset + i];
 +         const struct vkr_buffer *buf = vkr_buffer_from_handle(bi->buffer);
 +         const uint32_t e = p->element + i;
-+         bool ok;
 +         if (!buf) {
 +            /* dynamic ones too: KosmicKrisp gives a NULL buffer an empty range */
-+            ok = null_ok && !bi->offset && bi->range == VK_WHOLE_SIZE;
-+         } else {
-+            const uint64_t range =
-+               bi->range == VK_WHOLE_SIZE ? (bi->offset < buf->size ? buf->size - bi->offset : 0)
-+                                          : bi->range;
-+            ok = vkr_whole_range_ok(bi->offset, bi->range, buf->size) && range &&
-+                 range <= max_range;
++            if (null_ok && !bi->offset && bi->range == VK_WHOLE_SIZE)
++               continue;
++            if (!null_ok)
++               snprintf(why, why_size, "binding %u element %u: no buffer (the device's "
++                        "nullDescriptor is off)", b->binding, e);
++            else
++               snprintf(why, why_size, "binding %u element %u: no buffer at offset %" PRIu64
++                        ", range %" PRIu64 " (a null descriptor needs 0 and the whole size)",
++                        b->binding, e, bi->offset, bi->range);
++            return false;
 +         }
-+         if (!ok) {
-+            snprintf(why, why_size, "binding %u element %u: %" PRIu64 " bytes at %" PRIu64
-+                     " of %" PRIu64 " (at most %" PRIu64 ")", b->binding, e, bi->range,
-+                     bi->offset, buf ? buf->size : 0, max_range);
++         const uint64_t range =
++            bi->range == VK_WHOLE_SIZE ? (bi->offset < buf->size ? buf->size - bi->offset : 0)
++                                       : bi->range;
++         if (!vkr_whole_range_ok(bi->offset, bi->range, buf->size) || !range ||
++             range > max_range) {
++            char what[40];
++            if (bi->range == VK_WHOLE_SIZE)
++               snprintf(what, sizeof(what), "the whole size");
++            else
++               snprintf(what, sizeof(what), "%" PRIu64 " bytes", bi->range);
++            snprintf(why, why_size, "binding %u element %u: %s at %" PRIu64 " of %" PRIu64
++                     " (at most %" PRIu64 ")", b->binding, e, what, bi->offset, buf->size,
++                     max_range);
 +            return false;
 +         }
 +      }
@@ -906,7 +917,7 @@ index 5ec209f..0c3215d 100644
  
  static void
  vkr_dispatch_vkGetDescriptorSetLayoutSupport(
-@@ -24,7 +708,23 @@ vkr_dispatch_vkCreateDescriptorSetLayout(
+@@ -24,7 +719,23 @@ vkr_dispatch_vkCreateDescriptorSetLayout(
     struct vn_dispatch_context *dispatch,
     struct vn_command_vkCreateDescriptorSetLayout *args)
  {
@@ -931,7 +942,7 @@ index 5ec209f..0c3215d 100644
  }
  
  static void
-@@ -39,6 +739,30 @@ static void
+@@ -39,6 +750,30 @@ static void
  vkr_dispatch_vkCreateDescriptorPool(struct vn_dispatch_context *dispatch,
                                      struct vn_command_vkCreateDescriptorPool *args)
  {
@@ -962,7 +973,7 @@ index 5ec209f..0c3215d 100644
     struct vkr_descriptor_pool *pool =
        vkr_descriptor_pool_create_and_add(dispatch->data, args);
     if (!pool)
-@@ -103,13 +827,63 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
+@@ -103,13 +838,63 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
        return;
     }
  
@@ -1026,7 +1037,7 @@ index 5ec209f..0c3215d 100644
     vkr_descriptor_set_add_array(ctx, dev, pool, &arr);
  }
  
-@@ -133,12 +907,20 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
+@@ -133,12 +918,20 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
  }
  
  static void
