@@ -1552,6 +1552,10 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-dedicated-me
 grep -q 'if (!vkr_device_memory_dedicated_ok(mem, image->dedicated, offset)) {' "$virgl_source/src/venus/vkr_image.c" && \
   grep -q 'vkr_dedicated_memory_freed(mem_dev, dedicated, true);' "$virgl_source/src/venus/vkr_device_memory.c" || \
   die "vkr_image.c, vkr_device_memory.c: dedicated memory is not linked to its target (dedicated-memory patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-temp-zero.patch"
+grep -q 'if (dec->zero_temp)' "$virgl_source/src/venus/vkr_cs.h" && \
+  grep -q 'cmd_flags & VK_COMMAND_GENERATE_REPLY_BIT_EXT;' "$virgl_source/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h" || \
+  die "vkr_cs.h: a reply's temporary memory is not zeroed (temp-zero patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
