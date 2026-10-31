@@ -14,9 +14,12 @@ OMACVM_PRESENT_HIDDEN (frames drawn out of sight) keeps them too. qemu.log:
 "cocoa: present surfaces: spare ones volatile while the window is out of
 sight" (or "all kept (...)") once, and at each return after one went
 volatile "cocoa: present: in sight again: N spare surfaces were volatile,
-M emptied by macOS (drawn whole)". OMACVM_TEST_PRESENT_PURGE=1 (tests)
+M emptied by macOS (drawn whole)" and "cocoa: present: first frame N ms
+after the window was seen again". Test hooks: OMACVM_TEST_PRESENT_PURGE=1
 empties each surface for real (kIOSurfacePurgeableEmpty) before it comes
-back.
+back; OMACVM_TEST_SIGHT=FILE (test mode only) takes the window's sight
+from the file ("seen" / "unseen", read every 0.25 s) instead of macOS's
+occlusion notices, as a locked test Mac shows no window as seen.
 Why: out of sight QEMU draws nothing, yet kept 5 surfaces: 310 MiB of its
 footprint at 5120x2880 8-bit or lossless, 592 MiB in half float. With
 this, 4 of 5 at 5K: -225 MiB (8-bit, lossless), -450 MiB (half float),
@@ -30,7 +33,7 @@ wiring; --self-test: every check fails on the code before); VM rows in
 the PR (a real window on a locked Mac: footprint seen, unseen 10 s, seen;
 check mode and the purge hook).
 diff --git a/ui/cocoa.m b/ui/cocoa.m
-index e8d601c..94c2f80 100644
+index 7a7a418..8d0a6fb 100644
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
 @@ -63,6 +63,7 @@
@@ -41,7 +44,106 @@ index e8d601c..94c2f80 100644
  #include "ui/omacvm-guest-pause.h"
  #include "hw/core/boards.h"
  #include "system/system.h"
-@@ -9118,6 +9119,22 @@ static int cocoa_gl_present_tile_buf(unsigned t)
+@@ -183,6 +184,7 @@ static void cocoa_switch(DisplayChangeListener *dcl,
+  * window's occlusion), read on QEMU's.
+  */
+ static bool omacvm_window_seen = true;
++static int64_t omacvm_window_seen_ns;   /* when it last came into sight (QEMU_CLOCK_REALTIME) */
+ static unsigned omacvm_frames_unseen;   /* QEMU's thread, BQL */
+ #ifdef CONFIG_OPENGL
+ static void omacvm_present_seen_again(void);
+@@ -1139,6 +1141,24 @@ @interface OmacVMHoverWatch : NSObject
+ static void omacvm_corner_release(void);
+ static bool omacvm_is_head_console(unsigned int index);
+ static bool omacvm_test_mode(void);
++/*
++ * OmacVM tests (test mode only): OMACVM_TEST_SIGHT=FILE makes the main
++ * window's sight the file's word, "seen" or "unseen" (read every 0.25 s),
++ * instead of macOS's occlusion notices: a locked test Mac shows no window as
++ * seen, so a test of what happens out of sight and back needs it.
++ */
++static const char *omacvm_test_sight_path(void)
++{
++    static int read;
++    static const char *path;
++
++    if (!read) {
++        const char *v = getenv("OMACVM_TEST_SIGHT");
++        read = 1;
++        path = v && *v && omacvm_test_mode() ? v : NULL;
++    }
++    return path;
++}
+ static void omacvm_displays_update(void);
+ static void omacvm_pointer_init(void);
+ 
+@@ -5463,6 +5483,12 @@ - (id) init
+                                                  selector:@selector(omacvmWindowSeen:)
+                                                      name:NSWindowDidChangeOcclusionStateNotification
+                                                    object:window];
++        if (omacvm_test_sight_path()) {
++            info_report("cocoa: test: the window's sight from %s", omacvm_test_sight_path());
++            [NSTimer scheduledTimerWithTimeInterval:0.25 target:self
++                                           selector:@selector(omacvmTestSight:)
++                                           userInfo:nil repeats:YES];
++        }
+ 
+         /* Used for displaying pause on the screen */
+         pauseLabel = [NSTextField new];
+@@ -5608,7 +5634,6 @@ - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:
+ /* Main thread: the window came into sight or went out of it. */
+ - (void)omacvmWindowSeen:(NSNotification *)note
+ {
+-    static double since;
+     NSWindow *w = [note object];
+     bool seen = ([w occlusionState] & NSWindowOcclusionStateVisible) != 0;
+     /*
+@@ -5616,6 +5641,36 @@ - (void)omacvmWindowSeen:(NSNotification *)note
+      * notice, so omacvm_window_seen still says seen when it first shows.
+      */
+     omacvm_gp_update();
++    if (omacvm_test_sight_path()) {
++        return;     /* a test's file says it (omacvmTestSight) */
++    }
++    [self omacvmSight:seen];
++}
++
++/* Main thread, tests: the window's sight from OMACVM_TEST_SIGHT's file. */
++- (void)omacvmTestSight:(NSTimer *)timer
++{
++    char b[16] = "";
++    FILE *f = fopen(omacvm_test_sight_path(), "r");
++
++    if (f) {
++        if (!fgets(b, sizeof(b), f)) {
++            b[0] = 0;
++        }
++        fclose(f);
++    }
++    if (!strncmp(b, "unseen", 6)) {
++        [self omacvmSight:false];
++    } else if (!strncmp(b, "seen", 4)) {
++        [self omacvmSight:true];
++    }
++}
++
++/* Main thread: the window is in sight (SEEN) or out of it. */
++- (void)omacvmSight:(bool)seen
++{
++    static double since;
++
+     if (seen == qatomic_read(&omacvm_window_seen)) {
+         return;
+     }
+@@ -5628,6 +5683,7 @@ - (void)omacvmWindowSeen:(NSNotification *)note
+         return;
+     }
+     double away = CACurrentMediaTime() - since;
++    qatomic_set(&omacvm_window_seen_ns, qemu_clock_get_ns(QEMU_CLOCK_REALTIME));
+ #ifdef CONFIG_OPENGL
+     omacvm_bright_reread();     /* the switch again, before the frame */
+     omacvm_present_seen_again();
+@@ -9189,6 +9245,23 @@ static int cocoa_gl_present_tile_buf(unsigned t)
      return -1;
  }
  
@@ -58,13 +160,14 @@ index e8d601c..94c2f80 100644
 + * as when macOS takes its pages) before it comes back.
 + */
 +static OmacvmPresentVolatile present_pv;
++static int64_t present_pv_back_ns;      /* in sight again after volatile surfaces: the first frame is timed */
 +static IOSurfaceRef present_shown;      /* the layer's contents (any thread): compared, never used */
 +static int present_pv_purge = -1;       /* OMACVM_TEST_PRESENT_PURGE; -1 not read yet */
 +
  static void cocoa_gl_present_free(void)
  {
      for (int i = 0; i < present_nsurf; i++) {
-@@ -9133,6 +9150,88 @@ static void cocoa_gl_present_free(void)
+@@ -9204,6 +9277,92 @@ static void cocoa_gl_present_free(void)
      present_w = present_h = 0;
      present_deep = false;
      present_linear = false;
@@ -149,11 +252,15 @@ index e8d601c..94c2f80 100644
 +        info_report("cocoa: present: in sight again: %u spare surfaces were volatile, "
 +                    "%u emptied by macOS (drawn whole)", present_pv.made, present_pv.emptied);
 +        present_pv.made = present_pv.emptied = 0;
++        present_pv_back_ns = qatomic_read(&omacvm_window_seen_ns);
++        if (!present_pv_back_ns) {
++            present_pv_back_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++        }
 +    }
  }
  
  static bool cocoa_gl_present_hdr_wanted(void)
-@@ -9407,6 +9506,7 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
+@@ -9481,6 +9640,7 @@ static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linea
      present_linear = linear;
      present_next = 0;
      omacvm_pd_reset(&present_pd, present_nsurf, present_pd.fw, present_pd.fh);
@@ -161,7 +268,7 @@ index e8d601c..94c2f80 100644
      return true;
  }
  
-@@ -9644,6 +9744,8 @@ static bool cocoa_gl_present(void)
+@@ -9718,6 +9878,8 @@ static bool cocoa_gl_present(void)
      bool splash = false;
      static int always = -1;
  
@@ -170,7 +277,7 @@ index e8d601c..94c2f80 100644
      /*
       * OmacVM: out of sight (hidden, minimised, covered, another Space) no
       * frame is copied for the window; the newest one is drawn as it shows
-@@ -9775,6 +9877,10 @@ static bool cocoa_gl_present(void)
+@@ -9849,6 +10011,10 @@ static bool cocoa_gl_present(void)
      }
      unsigned n = (present_next + i) % present_nsurf;
      present_next = (n + 1) % present_nsurf;
@@ -181,7 +288,7 @@ index e8d601c..94c2f80 100644
  
      /* OmacVM: what surface n needs (partial present, see present_pd). */
      if (present_damage_on < 0) {
-@@ -9946,6 +10052,7 @@ static bool cocoa_gl_present(void)
+@@ -10023,6 +10189,7 @@ static bool cocoa_gl_present(void)
              cocoa_gl_layer_follow(layer, surf, boost);
              omacvm_present_gravity(layer, surf);
              [layer setContents:(id)surf];
@@ -189,7 +296,19 @@ index e8d601c..94c2f80 100644
              [CATransaction commit];
              omacvm_park_frame_shown(flushed);
              IOSurfaceDecrementUseCount(surf);
-@@ -10186,6 +10293,7 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
+@@ -10030,6 +10197,11 @@ static bool cocoa_gl_present(void)
+         });
+     });
+     present_last_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
++    if (present_pv_back_ns) {
++        info_report("cocoa: present: first frame %.1f ms after the window was seen again",
++                    (present_last_ns - present_pv_back_ns) / 1e6);
++        present_pv_back_ns = 0;
++    }
+     return true;
+ }
+ 
+@@ -10263,6 +10435,7 @@ static void cocoa_gl_present_show_tiles(PresentFrame *f)
          cocoa_gl_layer_follow(layer, pt->base, f->linear);
          omacvm_present_gravity(layer, pt->base);
          [layer setContents:(id)pt->base];
@@ -197,7 +316,7 @@ index e8d601c..94c2f80 100644
          present_tiles_hide_locked();
      }
      CGFloat s = [layer contentsScale];
-@@ -10256,6 +10364,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
+@@ -10333,6 +10506,7 @@ static void cocoa_gl_present_show(IOSurfaceRef surf, GLint filter, double flushe
      cocoa_gl_layer_follow(layer, surf, linear);
      omacvm_present_gravity(layer, surf);
      [layer setContents:(id)surf];
@@ -205,7 +324,7 @@ index e8d601c..94c2f80 100644
      if (present_tiles_on > 0) {
          /* a whole frame: the tiles over it go; can later frames go in tiles? */
          uint32_t fw = IOSurfaceGetWidth(surf), fh = IOSurfaceGetHeight(surf);
-@@ -10764,6 +10873,8 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
+@@ -10841,6 +11015,8 @@ static void cocoa_gl_refresh(DisplayChangeListener *dcl)
       */
      bool held = omacvm_present_held();
  

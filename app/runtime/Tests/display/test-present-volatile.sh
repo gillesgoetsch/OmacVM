@@ -29,7 +29,7 @@ has() { grep -qF -- "$2" <<<"$1"; }
 order() { awk -v a="$2" -v b="$3" '!x && index($0, a) {x=NR; next} x && index($0, b) {y=NR; exit} END {exit !(x && y)}' <<<"$1"; }
 
 checks() {
-  local m=$1 free alloc look back present refresh show showt nonvsync
+  local m=$1 free alloc look back present refresh show showt nonvsync seen
   free=$(fbody "$m" 'static void cocoa_gl_present_free(void)')
   alloc=$(fbody "$m" 'static bool cocoa_gl_present_alloc(uint32_t w, uint32_t h, bool deep, bool linear)')
   look=$(fbody "$m" 'static void present_volatile_look(void)')
@@ -63,6 +63,11 @@ checks() {
   chk "the shown surface is noted (vsync)" order "$show" '[layer setContents:(id)surf];' 'qatomic_set(&present_shown, surf);'
   chk "the shown surface is noted (tiles' whole frame)" order "$showt" '[layer setContents:(id)pt->base];' \
     'qatomic_set(&present_shown, pt->base);'
+  chk "the first frame after a return is timed" order "$present" 'present_last_ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);' \
+    'first frame %.1f ms after the window was seen again'
+  chk "the test sight file only in test mode" grep -qF 'path = v && *v && omacvm_test_mode() ? v : NULL;' "$m"
+  seen=$(fbody "$m" '- (void)omacvmWindowSeen:(NSNotification *)note')
+  chk "a test sight file stands in for macOS's occlusion notices" order "$seen" 'if (omacvm_test_sight_path()) {' '[self omacvmSight:seen];'
   nonvsync=$(awk '/dispatch_async\(dispatch_get_main_queue\(\), \^\{/{on=1} on && /\[layer setContents:\(id\)surf\];/{s=1} s && /qatomic_set\(&present_shown, surf\);/{ok=1; exit} END{exit !ok}' <<<"$present" && echo y)
   chk "the shown surface is noted (frames shown when drawn)" test -n "$nonvsync"
 }

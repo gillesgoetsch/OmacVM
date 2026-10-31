@@ -83,6 +83,11 @@ wiring() {
   chk "(kept) extra displays: the boot logo before the texture" order "$hrender" '} else if (omacvm_splash_wanted(NULL, hd->surface)) {' '} else if (hd->surface && hd->surface->texture) {'
   chk "extra displays' refresh tick makes it for their layers" has "$hrefresh" 'omacvm_console_tex_ready(hd->surface, hd->borrow != NULL)'
   chk "qemu.log says how the console texture is made" grep -qF '"cocoa: console texture: %s"' "$m"
+  chk "the test hook checks the present's console frames" order "$present" 'qemu_gl_run_texture_blit(present_gls, flip);' \
+    'omacvm_console_check("present", surface, present_w, present_h);'
+  chk "the test hook checks the CAOpenGLLayer path's console frames" order "$render" 'surface_gl_render_texture(dgc.gls, surface);' \
+    'omacvm_console_check("layer", surface, size.width, size.height);'
+  chk "the test hook keeps the present's surfaces plain" grep -qF 'lossless surfaces: off (OMACVM_TEST_CONSOLE_CHECK reads them back)' "$m"
 }
 
 if [[ ${1:-} == --self-test ]]; then
@@ -100,7 +105,8 @@ if [[ ${1:-} == --self-test ]]; then
   if "$work/t" old > "$work/old.out"; then
     echo "FAIL the sequences pass on the code before the patch" >&2; cat "$work/old.out" >&2; exit 1
   fi
-  grep '^FAIL' "$work/old.out" | sed 's/^/  (before) /'
+  # the build's log and CI look for the word FAIL: say these as "fails before"
+  grep '^FAIL' "$work/old.out" | sed 's/^FAIL /  fails before the patch, as it should: /'
   # "(kept)": what 3.2.16 already did right and must stay so; every other check is new.
   passed=$(wiring "$old" | grep '^ok ' | grep -v '^ok (kept) ')
   if [[ -n $passed ]]; then echo "FAIL these wiring checks pass on the code before the patch:" >&2; echo "$passed" >&2; exit 1; fi
