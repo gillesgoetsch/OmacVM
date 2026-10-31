@@ -196,6 +196,8 @@ mk id; pl id CFBundleIdentifier org.omacvm.app.test
 refused "another bundle id" id "the app is not org.omacvm.app"
 mk nolog; rm "$AF/nolog/build.log"
 refused "no build.log" nolog "or build.log in"
+mkdir -p "$AF/applink"; ln -s "$AF/good/OmacVM.app" "$AF/applink/OmacVM.app"; cp "$AF/good/build.log" "$AF/applink/"
+refused "OmacVM.app is a link" applink "a folder, not a link"
 # Resources/omacvm (git archive M, COMMIT, go-w).
 mk om-changed; echo more >> "$AF/om-changed/$C1/Resources/omacvm/CHANGELOG.md"
 refused "omacvm: a changed file" om-changed "its omacvm is not git archive M"
@@ -215,6 +217,19 @@ mk sc-extra; printf '#!/bin/bash\n' > "$AF/sc-extra/$C1/Resources/scripts/extra.
 refused "scripts: an extra script" sc-extra "its scripts are not M's app/scripts"
 mk sc-644; chmod 644 "$AF/sc-644/$C1/Resources/scripts/$s0"
 refused "scripts: a script at 644" sc-644 "its scripts are not M's app/scripts"
+mk sc-link; rm "$AF/sc-link/$C1/Resources/scripts/$s0"; ln -s ../omacvm/omacvm "$AF/sc-link/$C1/Resources/scripts/$s0"
+refused "scripts: a script replaced by a link" sc-link "links are not the two"
+# The shape: file types, links, modes.
+mk link-out; ln -s /usr/bin/true "$AF/link-out/$C1/Resources/tools/mac-clock"
+refused "a link out of the app (tools/)" link-out "links are not the two"
+mk vm-file; rm "$AF/vm-file/$C1/MacOS/OmacVM-VM"; cp "$AF/vm-file/$C1/Resources/runtime/bin/OmacVM" "$AF/vm-file/$C1/MacOS/OmacVM-VM"
+refused "OmacVM-VM a file, not a link" vm-file "links are not the two"
+mk w777; chmod 777 "$AF/w777/$C1/Resources/python/bin/python3.13"
+refused "a file at 777 (python/)" w777 "writable by group or others"
+mk suid; chmod 4755 "$AF/suid/$C1/Resources/runtime/bin/OmacVM"
+refused "a setuid file" suid "setuid/setgid"
+mk sock; (cd "$AF/sock/$C1/Resources/tools" && python3 -I -c 'import socket; socket.socket(socket.AF_UNIX).bind("sock")')
+refused "a socket (not a file, folder or link)" sock "not a file, folder or link"
 
 # sign-app.sh (build-app.sh's signing, also release.sh's for an app built
 # elsewhere): its arguments, and an ad hoc signing of a stand-in app with every

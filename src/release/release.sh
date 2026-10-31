@@ -240,6 +240,10 @@ step_merge() {
 # lines, so a change there that is not made here too fails CI.
 APP_ARCHIVE=(omacvm src CHANGELOG.md)
 APP_SCRIPTS=(create-vm.sh prebuilt-vm.sh apply-vm.sh vm-common.sh update-vm.sh update-swap.sh)
+# The app's links outside Resources/omacvm: build-app.sh's (QEMU started under
+# the app's name) and python's own.
+APP_LINKS='./Contents/MacOS/OmacVM-VM -> ../Resources/runtime/bin/OmacVM
+./Contents/Resources/python/bin/python3 -> python3.13'
 # A folder's tree, one line per entry: type, mode, a file's sha256 or a link's
 # target, path. Equal lists: the same names, bytes, modes and types.
 tree_list() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS= read -r f; do
@@ -249,13 +253,24 @@ tree_list() { (cd "$1" && find . -mindepth 1 -print | LC_ALL=C sort | while IFS=
 
 # OMACVM_RELEASE_APP_FROM=DIR: OmacVM.app put together at M on another Mac (one
 # without the keys), unsigned or ad hoc, with that build's log (DIR/OmacVM.app,
-# DIR/build.log). Checked against M here (id, commit and version; what
-# build-app.sh copies from git, file by file), then signed with M's own
+# DIR/build.log). Checked against M here (its shape, id, commit and version;
+# what build-app.sh copies from git, file by file), then signed with M's own
 # sign-app.sh. Nothing from that Mac runs here.
 app_from() {   # DIR M
-  local from=$1 m=$2 c p t om=0 sc=0
-  c=$from/OmacVM.app/Contents; p=$c/Info.plist
-  [[ -d $c && -f $from/build.log ]] || die "OMACVM_RELEASE_APP_FROM: no OmacVM.app or build.log in $from"
+  local from=$1 m=$2 a c p t x om=0 sc=0
+  a=$from/OmacVM.app; c=$a/Contents; p=$c/Info.plist
+  [[ -d $c && ! -L $a && -f $from/build.log ]] || die "OMACVM_RELEASE_APP_FROM: no OmacVM.app (a folder, not a link) or build.log in $from"
+  # Its shape first, before anything reads a file: only files, folders and
+  # links (a FIFO would hang shasum and ditto); outside omacvm (compared below)
+  # only the two links above, so no path sign-app.sh signs leads out of the app;
+  # nothing writable by group or others, no setuid or setgid. A copy over a
+  # drive or share that drops links or modes stops here.
+  x=$(cd "$a" && find . ! -type f ! -type d ! -type l -print) || die "OMACVM_RELEASE_APP_FROM: cannot read $a"
+  [[ -z $x ]] || die "OMACVM_RELEASE_APP_FROM: not a file, folder or link: ${x%%$'\n'*}"
+  x=$(cd "$a" && find . -type l ! -path './Contents/Resources/omacvm/*' -print | LC_ALL=C sort | while IFS= read -r f; do echo "$f -> $(readlink "$f")"; done) || die "OMACVM_RELEASE_APP_FROM: cannot read $a"
+  [[ $x == "$APP_LINKS" ]] || die "OMACVM_RELEASE_APP_FROM: the app's links are not the two it should have (lost or changed in the copy?): ${x:-none}"
+  x=$(cd "$a" && find . ! -type l \( -perm -0020 -o -perm -0002 -o -perm -4000 -o -perm -2000 \) -print) || die "OMACVM_RELEASE_APP_FROM: cannot read $a"
+  [[ -z $x ]] || die "OMACVM_RELEASE_APP_FROM: writable by group or others, or setuid/setgid: ${x%%$'\n'*}"
   [[ $(/usr/libexec/PlistBuddy -c "Print OmacVMCommit" "$p") == "$m" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not M"
   [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$p") == "$VERSION" ]] || die "OMACVM_RELEASE_APP_FROM: the app is not $VERSION"
   [[ $(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$p") == org.omacvm.app ]] || die "OMACVM_RELEASE_APP_FROM: the app is not org.omacvm.app"
@@ -273,7 +288,7 @@ app_from() {   # DIR M
   (( om )) || die "OMACVM_RELEASE_APP_FROM: its omacvm is not git archive M"
   (( sc )) || die "OMACVM_RELEASE_APP_FROM: its scripts are not M's app/scripts at mode 755"
   rm -rf "$APP"; mkdir -p "$(dirname "$APP")"
-  ditto "$from/OmacVM.app" "$APP"
+  ditto "$a" "$APP"
   cp "$from/build.log" "$OUT/build.log"
   note "app from $from (built elsewhere at M; checked against M); signing it here"
   (cd "$WT" && app/scripts/sign-app.sh "$APP" org.omacvm.app) >> "$OUT/build.log" 2>&1 || die "signing failed: $OUT/build.log"
