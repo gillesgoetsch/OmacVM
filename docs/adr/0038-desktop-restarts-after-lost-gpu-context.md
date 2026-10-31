@@ -1,8 +1,9 @@
 # 0038: The desktop restarts by itself after a lost GPU context
 
 Status: accepted, built (`gpu-auto-recovery`, 3.0.1); amended in 3.2.15 (a
-lost Chrome or Chromium gets a new GPU process: see the end). Builds on 0034
-(the GPU memory budget, which also names every lost context).
+lost Chrome or Chromium gets a new GPU process) and 3.2.16 (a loss inside an
+app's minute is told when it is over): see the end. Builds on 0034 (the GPU
+memory budget, which also names every lost context).
 
 ## Context
 
@@ -157,3 +158,86 @@ Not chosen:
   context freed nothing until its app ended): a lost context's memory now
   comes back when its GPU process ends, but the renderer still does not know
   which context owns a resource until it is attached.
+
+## Amendment: a loss inside an app's minute is told when the minute is over (3.2.16)
+
+The app tells the VM about an app's lost context at most once a minute
+per app. Until 3.2.16 a loss inside that minute was dropped: nothing kept
+it, and QEMU's count of lost contexts had already moved past it, so the VM
+was never told. In the rows of the 3.2.15 amendment (M1 Max, 3.2.14's app
+and runtime, critical forced through QEMU's test hook) four losses of
+Chrome came inside its minute and were never told: the second of R1mc, A1h
+and A1c (a new GPU process, lost again at once) and R2's (about 43 s after
+R1mc's note at 16:10:52; the VM's journal has no line for it). Chrome
+stayed blank and no note said so.
+
+Decision: `GPUMemoryNotice` keeps the newest such loss per app (its cause
+and when the app saw it) and tells the VM when that app's minute is over:
+60 to 66 s after the last note, as the app looks every 5 s, also when
+nothing new was lost. Still one tell per app per minute: losses every 5 s
+are told at 0, 60, 120 s as before; only a loss that is the last inside
+its minute, an app that stays blank, is now told where it was dropped. A
+desktop restart voids the kept losses: the session's apps closed, and a
+late tell could end the GPU process of a Chrome opened again in the new
+session. Apps told more than a minute ago are forgotten, so names from the
+VM cannot grow the list. qemu.log says "NAME in the VM lost its GPU
+context again within a minute of the last note: told when that minute is
+over, unless the desktop restarts before then", then "NAME in the VM lost
+its GPU context N s ago: ... (told now: a minute after the last note)".
+
+The VM side is unchanged (`omacvm-desktop-recover app NAME WHY`). With
+3.2.15's script a late tell restarts the app's GPU process only within the
+script's limit (once per app in 6 minutes, 3 times an hour). A loss right
+after such a restart is told inside those 6 minutes, so it gets the note
+"NAME stopped drawing ... Then reload or restart NAME", not a second
+restart: R2's Chrome would still not have been restarted, but the VM now
+says that it stopped drawing. A VM with the script of 3.0.5 to 3.2.14
+shows the same note a minute late; an older VM has no note. App update
+only: the VM needs no update.
+
+Known limits:
+
+- The late tell comes 60 to 66 s after the previous one, not at once.
+- A second context of the old GPU process lost between the app's look and
+  the VM's end of that process would be told a minute later: a note while
+  Chrome draws again. Not seen: every row lost one context per GPU process.
+- An app quit and opened again inside the minute still gets the kept tell:
+  a note, or a restart of its new GPU process only when the script's limit
+  allows (not after a restart at the first tell).
+- While the app's "desktop stopped drawing" window is up its looks wait;
+  Restart voids the kept losses.
+- A reboot inside the VM (the same QEMU, so the same app run) keeps the
+  kept losses, while it empties the script's restart stamps in /run: a
+  late tell can then end the GPU process of a Chrome opened just after the
+  reboot, once.
+
+Not chosen:
+
+- No minute at all (the VM decides): a note per loss, with no limit on
+  notes.
+- The VM keeps a restart its limit refused and does it when the 6 minutes
+  are over: Chrome blank for minutes anyway, and the user may have
+  restarted it by then (a healthy GPU process ended, one more Chrome crash
+  counted).
+- The loss's age as a fourth argument, so the VM skips a tell when the
+  app's GPU processes all started after the loss: a change to the VM's
+  interface for rare cases its limit already bounds. Left for later.
+
+Tests: `swift run desktop-tests` (looks every 5 s: a second loss 30 s
+after the first is told at 60 s with its own time; three in a minute give
+one tell; a loss every 5 s gives one tell a minute; a desktop restart
+voids a kept loss; the desktop, the shell and other errors are never
+kept). On 3.2.15's rule, through an adapter kept outside the repo, 6 of
+these fail.
+
+Checked in a hidden test VM (M1 Max, this change on 3.2.15's app and
+runtime and 3.2.15's VM script, the VM's monitor 5120x2880 at scale 2,
+critical with 40 MB left forced through QEMU's test hook, one 64 MB
+texture in Chrome): Chrome's context was lost, the app told the VM 2.7 s
+later at its next 5 s look and the VM ended Chrome's GPU process; the new
+one was lost at its first window buffer (56 MB), 3.9 s after the first
+loss and 1.2 s after the VM ended the old GPU process. The app said it
+would tell that loss when the minute was over and told it 64.9 s after
+the first tell (the VM's journal: 65.0 s); the VM did not restart Chrome
+again ("restarted 1 min ago") and showed the note. Hyprland and the shell
+lost nothing.

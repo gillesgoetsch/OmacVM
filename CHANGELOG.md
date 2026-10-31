@@ -3,6 +3,63 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.16
+
+In an OmacVM.app VM, videos in Omarchy's Chromium loop, end and change size again; a display left
+without its wallpaper is noticed and repaired with HDR on too; and an app lost again within a minute
+of its last note gets its note when that minute is over. VMware Fusion no longer downloads
+Hyprland's source at every apply while OmacVM has no fix for it. Needs the app update for the late
+note (from the VM's next start), and Update VM or `omacvm update` for the rest; then restart
+Chromium. UTM and Parallels: nothing changes.
+
+- **An app lost again within a minute of its last note is no longer left out (#642).** OmacVM.app
+  tells the VM about an app that lost its graphics at most once a minute per app, and dropped a loss
+  inside that minute: a Chrome lost again right after its GPU process was restarted stayed blank,
+  and the VM said nothing (seen in test VMs at critical memory pressure). Now the app keeps the
+  newest such loss and tells the VM when the minute is over: about a minute after the last note
+  (65 s in a test VM); still once a minute per app at most, and a desktop restart drops what was
+  kept. Within 6 minutes of a restart that gives the note "chrome stopped drawing ... reload or
+  restart chrome", not another restart; a VM set up with 3.0.5 to 3.2.14 shows the same note. Needs
+  the app update only.
+
+- **Videos in Omarchy's Chromium loop, end and change size again (OmacVM.app, #646).** When Chromium
+  decoded a video on the Mac's media engine (the Chromium video feature), it stopped on the last
+  picture: a looped video never started again, the page never got its `ended` event, and a Media
+  Source stream stood still where its picture size changed (3.2.15 and older). At those points
+  Chromium holds all of the decoder's picture buffers while the decoder still owes it the last
+  pictures; the decoder answered Chromium's wait with an error, and Chromium 153 then never waited
+  again. Now that wait sleeps until the pictures come. In a test VM on a Mac mini, 3 runs per row,
+  before and after: a looped 6 s 2160p60 clip and a looped 30 s 1080p60 clip stopped at their end in
+  6 of 6 runs before and looped in 6 of 6 after (the 4K clip 12 times in a 70 s run); the 4K clip
+  without loop fired `ended` in 0 of 3 before and 3 of 3 after; a test page's Media Source stream
+  that switches from 1080p to 720p at 6 s stopped at the switch before and played both sizes to its
+  end after (one run each). Needs Update VM, then a restart of Chromium (if a video was open during
+  the update, the new decoder loads at the VM's next start); nothing on the Mac, any app version.
+
+- **A display left without its wallpaper is noticed and repaired with HDR on too (#647).** In an
+  OmacVM.app VM, `omacvm-displays` looks at each display after the desktop starts and after the
+  displays change, and restarts Omarchy's shell when one shows only Hyprland's dark grey (no
+  wallpaper, no bar); `omacvm check` says so in its "desktop" line. With HDR on neither saw it:
+  Hyprland leaves its background colour out of the copy that screenshots read, so the look's small
+  screenshot came out black and fully transparent there while the screen showed the grey. The look
+  now counts fully transparent pixels as nothing drawn too; a black wallpaper still counts as drawn.
+  Measured in a hidden test VM with HDR on and a see-through layer in place of the wallpaper: 3.2.15
+  restarted nothing over two looks and `omacvm check` said "ok desktop" (Hyprland 0.56.2; on 0.57.0
+  its look found nothing either); now check says "FAIL desktop" and the shell is restarted once,
+  then the wallpaper is drawn and check says "ok ... (shell restarted 1 time(s) to draw it)" (0.56.2
+  and 0.57.0). With Omarchy's wallpaper (no restart over 3 looks), a black layer, a window, and in
+  SDR the results are the same as before. Screenshots of the bare background stay black with HDR on:
+  that is Hyprland's. Needs Update VM or `omacvm update` (no log out).
+
+- **VMware Fusion: no new download of Hyprland's source at every apply while OmacVM has no fix for
+  it (#645).** When no vmwgfx patch of OmacVM fits the installed Hyprland, every apply and update
+  downloaded its source again (99 240 KB of git objects for 0.57.0, measured with the same git calls
+  on a Mac mini), only to find the same. The VM now records the source commit and the patches it
+  checked, and the next run with the same ones says "no vmwgfx fix for Hyprland <version> yet" again
+  at once; an OmacVM update that brings a patch, or a Hyprland update, checks again. Needs
+  `omacvm update`; the first apply after it downloads once more. Not run in a Fusion VM (none on the
+  test Macs); tested in `src/tests/fusion-vmwgfx.sh`.
+
 ## 3.2.15
 
 In an OmacVM.app VM, apps keep their graphics at critical memory pressure when they only replace

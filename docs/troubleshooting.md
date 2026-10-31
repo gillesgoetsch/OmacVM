@@ -281,14 +281,18 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
     <version> yet" and the rest of the apply or update goes on, but the
     package's own Hyprland stays: a black screen from the next login.
     `omacvm check`'s "Hyprland" line names the version; `omacvm update` brings
-    the patch once OmacVM has one.
+    the patch once OmacVM has one. From 3.2.16 the next apply or update says
+    the same without downloading Hyprland's source again (99 240 KB of
+    git objects for 0.57.0) until Hyprland or OmacVM's patches change; `omacvm update` to
+    3.2.16 checks once more.
 - **Where:** `src/fusion/guest/build-hyprland.sh`,
   `src/fusion/guest/hyprland-vmwgfx/<release>.patch`, the hook
   `/etc/pacman.d/hooks/zz-omacvm-hyprland.hook` written by
   `src/fusion/guest/install.sh`. In the VM: state in
   `/var/lib/omacvm/hyprland-vmwgfx`, log in
   `/var/cache/omacvm/hyprland-vmwgfx/build.log`. Test:
-  `src/tests/fusion-vmwgfx.sh` (each patch applies to its release).
+  `src/tests/fusion-vmwgfx.sh` (each patch applies to its release; the
+  skip for a recorded "none").
 - **If it comes back:** `omacvm apply --vm NAME`, or in the VM
   `/usr/local/lib/omacvm/fusion/build-hyprland.sh`. To test the hook, reinstall
   with `pacman -S omarchy/hyprland`. Plain `pacman -S hyprland` takes Arch's
@@ -1320,6 +1324,14 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   and says so too ("HDR recordings" says which). Screenshots and shares taken on the Mac (a macOS
   screenshot, sharing the VM's window from a Mac app) are macOS's own and
   not covered.
+- **Black screenshots of the empty desktop:** with HDR on, a screenshot or
+  share of the desktop while its wallpaper is missing (Omarchy's shell
+  restarting or crashed) is black where the screen shows dark grey: Hyprland
+  leaves its background colour out of the copy that captures read. Nothing
+  to do; the wallpaper and windows come out right. Up to 3.2.15 the same
+  kept OmacVM's repair of a display without wallpaper (`omacvm-displays`,
+  `omacvm check`'s "desktop" line) from seeing it with HDR on; Update VM
+  (3.2.16) fixes that (`docs/notes/findings.md`).
 - **Where:** `src/app/guest/hypr-capture/` (the file, `guard.py`, the
   pacman hooks, `hypr-capture.sh`), `src/app/guest/install.sh`,
   `src/guest/check.sh`; test `src/tests/hypr-capture.sh`; recordings:
@@ -1481,6 +1493,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   VM's next start), an app that only replaces its buffers while macOS is
   critical keeps its graphics, and one that grows loses them only past a
   grace ([24](#24-app-a-scale-like-16-on-a-5k-display-turns-the-vm-black-and-flickering)).
+  With 3.2.15's app, a loss less than a minute after the app's last note for
+  Chrome was not told at all (Chrome blank, no note); from 3.2.16 (an app
+  update; the VM needs none) it is told when that minute is over, 60 to 66 s
+  after the last note: inside the 6 minutes that is the note "chrome stopped
+  drawing", not a second restart.
 - **Before the update:** free memory first. While Activity Monitor's memory
   pressure is red, a Chrome restarted by hand loses its graphics again at
   once (seen in a test VM), and each restart counts as a Chrome crash. Close
@@ -1493,7 +1510,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   of critical
   ([45](#45-app-the-vm-freezes-for-seconds-or-a-minute-the-mac-is-out-of-memory)).
 - **Where:** `src/app/guest/omacvm-desktop-recover` (test
-  `src/tests/desktop-recover-gpu.sh`), ADR 0038's 3.2.15 amendment.
+  `src/tests/desktop-recover-gpu.sh`), ADR 0038's 3.2.15 amendment; which
+  losses the app tells and when: `GPUMemoryNotice` in
+  `app/app/Sources/OmacVMDesktop/GPUMemory.swift` (test
+  `swift run desktop-tests`), ADR 0038's 3.2.16 amendment.
 
 ## 49. app: Activity Monitor shows the VM with far more memory than it has
 
@@ -1577,3 +1597,32 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/tests/omacvm_vm_test.lua`). Issue
   [#630](https://github.com/gillesgoetsch/OmacVM/issues/630), reported by
   @epicoun.
+
+## 51. app: a video in Chromium stops at its end, a looped one never loops
+
+- **Symptom:** in an OmacVM.app VM, Omarchy's Chromium stops a video on its
+  last picture when it decodes it on the Mac's media engine
+  (`chrome://media-internals` says *V4L2VideoDecoder*): a looped video
+  never starts again, the page never gets `ended` (a playlist does not go
+  on), and a stream that changes its picture size in the middle (Media
+  Source, as streaming sites do when they change the quality) stands still
+  at the change. Up to there it plays at its full frame rate. 3.2.15 and
+  older.
+- **Cause:** at the end of a stream, and at a size change (which empties
+  the decoder the same way), Chromium holds all of the decoder's picture
+  buffers while the decoder still owes it the last pictures and the buffer
+  that marks the end. The decoder (`omacvm-vdec`) answered Chromium's wait
+  in that state with an error: the kernel's helper for such devices says
+  EPOLLERR while no buffer is queued. Chromium 153 drops a wait that gets
+  that answer and starts no new one, so it never saw the pictures and the
+  end that came next.
+- **Fix (3.2.16):** Update VM (`omacvm apply`, `omacvm update`), then quit
+  and start Chromium again. If a video was open during the update, the new
+  decoder loads at the next VM start (`omacvm check` says an update waits).
+  Nothing on the Mac; any app version. Before 3.2.16, `omacvm disable
+  chromium-video` has Chromium decode on the VM's CPU, which loops and ends
+  (and costs about twice the VM's CPU at 4K).
+- **Where:** `src/vdec/guest/module/omacvm-vdec.c` (`ovd_poll`, the wake in
+  `inst_fail_all`); test `src/vdec/guest/test/vdec-test.c
+  --hold-all-at-eos` (in the VM, as root);
+  [video-decode.md](video-decode.md#chromium-from-arch-linux-arm).

@@ -114,3 +114,28 @@ Option 6, everything in the VM, nothing new on the Mac:
   daemon of another build is refused (protocol version).
 - If Arch Linux ARM builds Chromium with VA-API one day, Chromium uses VA-API
   directly and this can go; nothing here depends on that.
+
+## Addendum (3.2.16): the module's own poll
+
+Chromium 153 waits for the CAPTURE queue with one-shot polls (POLLIN|POLLPRI,
+no timeout) and drops a poll that returns anything else without posting a
+new one. The kernel's `v4l2_m2m_fop_poll` returns EPOLLERR while neither
+queue has a buffer queued, and that is the normal state at the end of a
+stream and at a size change: Chromium holds every CAPTURE buffer while the
+daemon still owes the last pictures and the LAST buffer. Chromium's waits
+were used up on EPOLLERR, the LAST was never seen, and playback stood
+still there (a looped video never looped; 3.2.15 and older).
+
+- Options: (a) the module's own poll around `v4l2_m2m_poll`, (b) a full
+  rewrite of the poll (done lists, LAST handling), (c) a Chromium flag for
+  another of its decoder paths. (c) swaps in Chromium code never tested
+  with this device, and Arch's Chromium is a binary OmacVM does not build;
+  (b) duplicates the kernel's logic for no gain.
+- Decision: (a). Under the queues' lock, after `v4l2_m2m_poll` has
+  registered its wait queues, EPOLLERR is cleared while a queue streams and
+  the daemon has not failed the decoder; `inst_fail_all` wakes a sleeping
+  poll. A failed decoder, or one with both queues off, still gets EPOLLERR,
+  so "daemon gone = errors, not hangs" holds. Guest only: no protocol
+  change, any app version.
+- Test: `vdec-test --hold-all-at-eos` (3.2.15's module fails it, 9 of 9
+  rounds; the fix passes them).

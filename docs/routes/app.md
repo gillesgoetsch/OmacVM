@@ -1148,7 +1148,9 @@ window per guest screen:
   pieces: at least 1 GiB even when every piece is a single 4 KiB page).
   `omacvm-displays` also looks at what each display shows (a small
   screenshot) after the shell starts and after the layout changes; a display
-  that shows only the grey with no window on it gets the shell restarted
+  that shows only the grey with no window on it (with HDR on, the screenshot
+  has nothing there at all, alpha 0: Hyprland's copy for captures lacks its
+  background colour) gets the shell restarted
   (not while locked, at most every 2 minutes, 3 times per session, not again
   when a restart changed nothing; `repair-shell=off` in
   `~/.config/omacvm/displays.conf` turns that off). `omacvm check` says
@@ -1403,7 +1405,9 @@ stay, pages with WebGL may need a reload (other Chromium-based apps such as
 Electron's have the same GPU process; not measured). At most once per app
 in 6 minutes and 3 times in an hour, because Chrome counts each as a crash
 and draws without the GPU for the rest of its session after 3 recent ones. Lost again within that time,
-the note says to quit the app and open it again. Other apps (Firefox, mpv)
+the note says to quit the app and open it again. The app tells the VM once a minute per app at most; a
+loss inside that minute is told when the minute is over (3.2.16; before, it was dropped and the app
+stayed blank with no note). Other apps (Firefox, mpv)
 draw nothing until they are restarted. `journalctl -t
 omacvm-desktop-recover` in the VM says what was ended (ADR 0038). Hyprland
 cannot get a new context that way: the VM's Mesa does not report a lost

@@ -129,24 +129,72 @@ public struct GPUMemory: Equatable {
 
 /// An app in the VM (not the desktop or the shell) lost its GPU context
 /// because the VM's graphics memory was full or macOS was short of memory:
-/// the VM says so, so the app's black window or reload has a reason.
-public enum GPUMemoryNotice {
+/// the VM says so (omacvm-desktop-recover app; from 3.2.15 it also ends the
+/// app's GPU process), so the app's black window or reload has a reason.
+/// One per VM run (GPUMemoryWatch), looked at every 5 s.
+public struct GPUMemoryNotice {
     /// Once a minute per app at most (a browser's GPU process can be lost
-    /// again as it comes back).
+    /// again as it comes back). A loss inside the minute is kept, the newest
+    /// per app, and told when the minute is over: dropped, an app lost again
+    /// right after it came back stayed blank with nothing said.
     public static let window: TimeInterval = 60
 
-    /// Of the contexts lost since the last look (names, and why with the same
-    /// count, else none are told), the apps to tell about: guard or pressure,
-    /// not the desktop or the shell, each once.
-    public static func apps(lost: [String], why: [String], lastTold: [String: Date], now: Date) -> [(name: String, why: String)] {
-        guard lost.count == why.count else { return [] }
-        var out: [(name: String, why: String)] = []
-        for (name, w) in zip(lost, why) where w == "guard" || w == "pressure" {
-            if DesktopRecovery.compositors.contains(name) || DesktopRecovery.shells.contains(name) { continue }
-            if out.contains(where: { $0.name == name }) { continue }
-            if let t = lastTold[name], now.timeIntervalSince(t) < window { continue }
-            out.append((name, w))
+    public struct Tell: Equatable {
+        public let name: String
+        /// guard or pressure
+        public let why: String
+        /// When the loss told now was seen; nil: seen in this look.
+        public let heldSince: Date?
+    }
+
+    /// The last tell per app, kept only for the minute after it.
+    private var told: [String: Date] = [:]
+    /// The newest loss per app told within the minute, and when it was seen.
+    private var held: [String: (why: String, since: Date)] = [:]
+
+    public init() {}
+
+    /// Apps told within the last minute (at the last look).
+    public var recent: Int { told.count }
+    /// Apps with a loss kept for the end of their minute.
+    public var waiting: [String] { held.keys.sorted() }
+
+    /// Every look, also with nothing new (so kept losses come out). `lost`
+    /// and `why`: the contexts lost since the last look, with the same count
+    /// (else none are new). Apps lost to the guard or to pressure, never the
+    /// desktop or the shell, the newest why per app: told now, or kept when
+    /// the app was told less than a minute ago. New ones first, in their
+    /// order, then kept ones whose minute is over, by name.
+    public mutating func look(lost: [String], why: [String], now: Date) -> [Tell] {
+        told = told.filter { now.timeIntervalSince($0.value) < Self.window }
+        var new: [(name: String, why: String)] = []
+        if lost.count == why.count {
+            for (name, w) in zip(lost, why) where w == "guard" || w == "pressure" {
+                if DesktopRecovery.compositors.contains(name) || DesktopRecovery.shells.contains(name) { continue }
+                if let i = new.firstIndex(where: { $0.name == name }) { new[i].why = w } else { new.append((name, w)) }
+            }
+        }
+        var out: [Tell] = []
+        for app in new {
+            if told[app.name] != nil {
+                held[app.name] = (app.why, now)
+            } else {
+                held[app.name] = nil
+                told[app.name] = now
+                out.append(Tell(name: app.name, why: app.why, heldSince: nil))
+            }
+        }
+        for name in held.keys.sorted() where told[name] == nil {
+            let h = held.removeValue(forKey: name)!
+            told[name] = now
+            out.append(Tell(name: name, why: h.why, heldSince: h.since))
         }
         return out
+    }
+
+    /// The VM's desktop session was restarted: its apps were closed, so the
+    /// losses kept for them are void.
+    public mutating func sessionRestarted() {
+        held = [:]
     }
 }
