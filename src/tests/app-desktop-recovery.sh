@@ -105,7 +105,7 @@ printf '#!/bin/bash\n:\n' > "$S/chown"
 printf '#!/bin/bash\n:\n' > "$S/sleep"
 chmod +x "$S"/*
 export PATH="$S:$PATH"
-export OMACVM_RECOVER_ENV=$T/env OMACVM_RECOVER_NOTE=$T/run/desktop/restarted OMACVM_RECOVER_STAMPS=$T/stamps CLIENTS=$T/clients NOTIFY_FAILS=$T/notify-fails LOCKED=$T/locked LOCK_FAILS=$T/lock-fails
+export OMACVM_RECOVER_ENV=$T/env OMACVM_RECOVER_NOTE=$T/run/desktop/restarted OMACVM_RECOVER_STAMPS=$T/stamps OMACVM_RECOVER_ZINK_OFF=$T/run-omacvm/gl-zink-off CLIENTS=$T/clients NOTIFY_FAILS=$T/notify-fails LOCKED=$T/locked LOCK_FAILS=$T/lock-fails
 printf 'OMACVM_VM_TYPE=app\nOMACVM_USER=tester\n' > "$T/env"
 cat > "$CLIENTS" <<'JSON'
 [{"class": "chromium", "title": "a"}, {"class": "Alacritty"}, {"class": "chromium"}, {"class": "", "initialClass": "obsidian"}, {"class": "bad\nwhy=x"}]
