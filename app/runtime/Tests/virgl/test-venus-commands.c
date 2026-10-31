@@ -1136,7 +1136,7 @@ static int case_pipeline(const char *c)
       needs |= N_ROBUST;
    if (IS("p-gfx-att-locations-far"))
       needs |= N_LOCALREAD;
-   if (IS("p-gfx-sample-locations-far"))
+   if (!strncmp(c, "p-gfx-sample-locations-", 23))
       needs |= N_SAMPLELOC;
    setup(needs);
    if (IS("p-cache-garbage") || IS("p-cache-header"))
@@ -1210,6 +1210,12 @@ static int case_pipeline(const char *c)
       .sampleLocationsInfo = { .sType = VK_STRUCTURE_TYPE_SAMPLE_LOCATIONS_INFO_EXT,
                                .sampleLocationsPerPixel = VK_SAMPLE_COUNT_1_BIT, .sampleLocationGridSize = { 64, 64 },
                                .sampleLocationsCount = 4096, .pSampleLocations = sl_points } };
+   /* LEGAL: the state chained with sampleLocationsEnable off and its locations left empty
+    * (Vulkan reads them only while sample locations are on) */
+   VkPipelineSampleLocationsStateCreateInfoEXT sl_off = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT,
+      .sampleLocationsInfo = { .sType = VK_STRUCTURE_TYPE_SAMPLE_LOCATIONS_INFO_EXT } };
+   static VkDynamicState sl_enable_dynamic[1] = { VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_ENABLE_EXT };
    if (IS("p-gfx-colors-max") || IS("p-gfx-colors-over") || IS("p-gfx-colors-32")) {
       g.rp = NULL;
       g.colors = IS("p-gfx-colors-max") ? lim.maxColorAttachments
@@ -1254,6 +1260,14 @@ static int case_pipeline(const char *c)
       g.next = &loc;
    } else if (IS("p-gfx-sample-locations-far")) {
       g.ms_next = &sl;
+   } else if (IS("p-gfx-sample-locations-off")) {
+      g.ms_next = &sl_off;
+   } else if (IS("p-gfx-sample-locations-dyn-far")) {
+      /* off in the pipeline, but switched on at draw time: Mesa copies the locations */
+      sl.sampleLocationsEnable = VK_FALSE;
+      g.ms_next = &sl;
+      g.dynamic = sl_enable_dynamic;
+      g.dynamic_count = 1;
    } else {
       return BROKEN;
    }
@@ -2460,6 +2474,7 @@ static const struct test_case cases[] = {
    { "p-gfx-stage-bits-bad", E_REFUSE }, { "p-gfx-blend-factor-bad", E_REFUSE }, { "p-gfx-compare-bad", E_REFUSE },
    { "p-gfx-cull-bad", E_REFUSE }, { "p-gfx-feedback-ok", E_WORKS }, { "p-gfx-feedback-far", E_REFUSE },
    { "p-gfx-att-locations-far", E_REFUSE }, { "p-gfx-sample-locations-far", E_REFUSE },
+   { "p-gfx-sample-locations-off", E_WORKS }, { "p-gfx-sample-locations-dyn-far", E_REFUSE },
    { "p-layout-sets-max", E_WORKS }, { "p-layout-sets-over", E_REFUSE }, { "p-layout-sets-far", E_REFUSE },
    { "p-layout-push-ranges-ok", E_WORKS }, { "p-layout-push-ranges-far", E_REFUSE },
    { "p-layout-push-over", E_REFUSE }, { "p-layout-dynamic-max", E_WORKS }, { "p-layout-dynamic-over", E_REFUSE },
