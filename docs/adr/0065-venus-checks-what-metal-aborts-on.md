@@ -1,9 +1,9 @@
 # 0065: Venus checks what the Mac's Vulkan driver aborts on
 
 Status: accepted, built (`zink-abort`, 3.2.14), always on; amended in 3.2.15
-(`venus-robust`, "What else vkr refuses" below) and 3.2.17 (`venus-624`,
-"Indices, counts and offsets" below; `venus-624-c`, "Frees, submits, dedicated
-memory, replies, threads and pass views" below). Amends
+(`venus-robust`, "What else vkr refuses" below), 3.2.17 (`venus-624`,
+"Indices, counts and offsets" below) and 3.2.18 (`venus-624-c`, "Frees,
+submits, dedicated memory, replies, threads and pass views" below). Amends
 [0012](0012-venus-in-process.md). Notes, probes and the reviews:
 work/tracks/zink-abort.md, work/tracks/venus-robust.md,
 work/tracks/venus-624.md, work/venus-624/c/plan.md.
@@ -369,7 +369,7 @@ on one object at once; thread exhaustion; huge descriptor pools (each pool size
 is bounded at 2^24 against overflow, not against memory); the other items
 listed in the amendment above.
 
-## Frees, submits, dedicated memory, replies, threads and pass views (amendment, 3.2.17)
+## Frees, submits, dedicated memory, replies, threads and pass views (amendment, 3.2.18)
 
 Lane `venus-624-c` (#624, after #643 and #644). A probe of the drivers
 alone on the mini's M4 (Apple9; KosmicKrisp and MoltenVK of that runtime;

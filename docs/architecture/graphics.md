@@ -621,7 +621,7 @@ Patches (all in `app/runtime/patches`, one per concern):
   the device renders to.
 - `virgl-venus-submit-counts.patch`, `virgl-venus-pool-frees.patch`,
   `virgl-venus-dedicated-memory.patch`, `virgl-venus-temp-zero.patch`,
-  `virgl-venus-thread-budget.patch`, `virgl-venus-pass-views.patch` (3.2.17,
+  `virgl-venus-thread-budget.patch`, `virgl-venus-pass-views.patch` (3.2.18,
   ADR 0065's third amendment): a submit's chained value arrays fit its counts;
   frees name objects of their own pool once; memory made for one image or
   buffer goes before it in the driver (`struct vkr_dedicated`); a reply's
