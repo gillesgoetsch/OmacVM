@@ -17,6 +17,9 @@
  *        own clip distance; a separable vertex shader with its own and with the planes'; then
  *        one program drawn with the planes on, off and on again (a vertex shader, and a
  *        tessellation evaluation shader, as the last stage: the planes pick the variant);
+ *        a vertex shader's gl_ClipDistance read from gl_in and written again by a geometry
+ *        shader, or by tessellation control and evaluation shaders, whole and separable, with
+ *        the planes on, off and on (C13-C16: the geometry shader writes them only for planes on);
  *        and a vertex shader that writes gl_CullDistance, which the Mac's GL has not: it stays
  *        refused, nothing drawn, no context error, the next rows still draw;
  *  E     a whole program with a varying array into a geometry shader, and one whose
@@ -383,6 +386,71 @@ static const char *tes_clip =
    TES_POS
    "  4: MOV OUT[1].x, TEMP[0].yyyy\n"
    "  5: END\n";
+
+/* Clip distances passed on (C13-C16): the vertex shader's gl_ClipDistance[0] (= y) read from
+ * gl_in and written again by a geometry shader, or by a control and an evaluation shader (the
+ * evaluation shader interpolates it as it does the position) */
+static const char *gs_clip_pass =
+   "GEOM\n"
+   "PROPERTY GS_INPUT_PRIMITIVE TRIANGLES\n"
+   "PROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+   "PROPERTY GS_MAX_OUTPUT_VERTICES 3\n"
+   "PROPERTY GS_INVOCATIONS 1\n"
+   "PROPERTY NUM_CLIPDIST_ENABLED 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], CLIPDIST[0]\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: MOV OUT[0], IN[0][0]\n"
+   "  1: MOV OUT[1].x, IN[0][1].xxxx\n"
+   "  2: EMIT IMM[0].xxxx\n"
+   "  3: MOV OUT[0], IN[1][0]\n"
+   "  4: MOV OUT[1].x, IN[1][1].xxxx\n"
+   "  5: EMIT IMM[0].xxxx\n"
+   "  6: MOV OUT[0], IN[2][0]\n"
+   "  7: MOV OUT[1].x, IN[2][1].xxxx\n"
+   "  8: EMIT IMM[0].xxxx\n"
+   "  9: END\n";
+
+static const char *tcs_clip_pass =
+   "TESS_CTRL\n"
+   "PROPERTY TCS_VERTICES_OUT 3\n"
+   "PROPERTY NUM_CLIPDIST_ENABLED 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], CLIPDIST[0]\n"
+   "DCL SV[0], INVOCATIONID\n"
+   "DCL OUT[][0], POSITION\n"
+   "DCL OUT[][1], CLIPDIST[0]\n"
+   "DCL OUT[2], TESSOUTER\n"
+   "DCL OUT[3], TESSINNER\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   "  0: UARL ADDR[0].x, SV[0].xxxx\n"
+   "  1: MOV OUT[ADDR[0].x][0], IN[ADDR[0].x][0]\n"
+   "  2: MOV OUT[ADDR[0].x][1].x, IN[ADDR[0].x][1].xxxx\n"
+   "  3: MOV OUT[2].x, IMM[0].xxxx\n"
+   "  4: MOV OUT[2].y, IMM[0].xxxx\n"
+   "  5: MOV OUT[2].z, IMM[0].xxxx\n"
+   "  6: MOV OUT[3].x, IMM[0].xxxx\n"
+   "  7: END\n";
+
+static const char *tes_clip_pass =
+   "TESS_EVAL\n"
+   TES_PROPS
+   "PROPERTY NUM_CLIPDIST_ENABLED 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], CLIPDIST[0]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\n"
+   "DCL TEMP[0..1]\n"
+   TES_POS
+   "  4: MUL TEMP[1].x, IN[0][1].xxxx, SV[0].xxxx\n"
+   "  5: MAD TEMP[1].x, IN[1][1].xxxx, SV[0].yyyy, TEMP[1].xxxx\n"
+   "  6: MAD TEMP[1].x, IN[2][1].xxxx, SV[0].zzzz, TEMP[1].xxxx\n"
+   "  7: MOV OUT[1].x, TEMP[1].xxxx\n"
+   "  8: END\n";
 
 /* records (0.25, 0.5, 0.75, 1) for each evaluated point (emit_shader_so) */
 static const char *tes_xfb =
@@ -883,6 +951,24 @@ int main(int argc, char **argv)
                                           { 0, SHADER_TESS_EVAL, tes_pos, 0 },
                                           { 0, SHADER_FRAGMENT, fs_green, 0 }, { 0 } },
                   PRIM_PATCHES, top);
+      /* clip distances passed on by a later stage, whole and separable */
+      for (int sep = 0; sep < 2; sep++) {
+         snprintf(text, sizeof(text), "C%d %s: gl_ClipDistance from the vertex shader passed on by a "
+                  "geometry shader", 13 + sep, sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip) : vs_clip, 0 },
+                        { 0, SHADER_GEOMETRY, sep ? separable(gs_clip_pass) : gs_clip_pass, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
+                     PRIM_TRIANGLES, top);
+         snprintf(text, sizeof(text), "C%d %s: gl_ClipDistance from the vertex shader passed on by "
+                  "tessellation control and evaluation shaders", 15 + sep, sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip) : vs_clip, 0 },
+                        { 0, SHADER_TESS_CTRL, sep ? separable(tcs_clip_pass) : tcs_clip_pass, 0 },
+                        { 0, SHADER_TESS_EVAL, sep ? separable(tes_clip_pass) : tes_clip_pass, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
+                     PRIM_PATCHES, top);
+      }
       /* its own context: the refusal is logged once per context */
       section_context("C9");
       use(0, RS_PLAIN);
