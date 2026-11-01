@@ -30,8 +30,9 @@ While the VM runs, plug in a device. OmacVM asks:
 ## The list
 
 **Devices…** next to the switch opens it. While the VM runs, **USB
-Devices…** in the VM's app menu (the menu named after the VM, next to the
-Apple menu) opens it over the VM, also in full screen.
+Devices…** in the app menu (the one named OmacVM, next to the Apple menu)
+opens it over the VM. Over a full-screen VM that is not checked on a Mac's
+screen yet (see Known limits).
 
 - **Remembered**: each device you checked "Always" for, with what happens
   when it's plugged in: **Ask Each Time**, **Connect to Omarchy** or **Keep
@@ -47,7 +48,7 @@ without a serial number has one entry for all of them.
 
 ## While the VM runs
 
-- **USB Devices…** in the VM's app menu opens the list. **Connect** gives a
+- **USB Devices…** in the app menu (OmacVM) opens the list. **Connect** gives a
   device you kept on the Mac to the VM without plugging it in again;
   **Disconnect** gives a connected one back to the Mac. **Done** (or Return)
   closes the list and the VM has the keyboard again.
@@ -198,10 +199,12 @@ Until then, other ways work for some of these:
     app's name once and nothing under Features…'s; without the switch there
     is no item. Same on both Macs.
   - A hidden test VM with the made-up test device (`OMACVM_TEST_USB_FAKE=1`,
-    `src/tests/e2e/onscreen.sh` row `usb`): QEMU's item reaches the app,
-    which builds its list (a floating window 520 pt wide). macOS keeps it off
-    screen while the screen is locked (only the login window can be in
-    front then), so the list's buttons were not used.
+    `src/tests/e2e/onscreen.sh --headless --only usb`), on the M1 Max:
+    QEMU's item reaches the app, which builds its list (a floating window
+    520 pt wide). macOS keeps it off screen while the screen is locked (only
+    the login window can be in front then), so the list's buttons were not
+    used. On the mini this row ran only with an earlier check, which looked
+    for the list on screen; the row as it is now is still to run there.
 - Not tested yet: a real free device end to end, and the question and the
   list over a full-screen VM on a Mac's screen (none of the test Macs has a
   free device plugged in; the on-screen row `usb` needs an unlocked Mac
@@ -214,7 +217,9 @@ Until then, other ways work for some of these:
   screen yet (see How it was tested).
 - A Mac that goes to sleep with a device connected to the VM is untested: if
   the device comes back more than 4 seconds after macOS sees it go, the VM
-  loses it and OmacVM asks again.
+  loses it, and OmacVM takes it as a new plug-in: it asks again, or for a
+  remembered device does what the list says (**Connect to Omarchy** connects
+  it again without asking).
 - A device that is connected stays connected when you change its choice in
   the list: the choice is for the next plug-in.
 - A device that gets another product id when it resets (DFU mode) is a new

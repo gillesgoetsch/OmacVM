@@ -5,16 +5,17 @@ in more words.
 
 ## 3.2.18 (unreleased)
 
-- **USB Devices… in the VM's app menu (OmacVM.app, experimental USB devices, #660).** While a VM's
-  USB devices switch is on, the app menu of the VM's window (the one named after the VM) has **USB
+- **USB Devices… in the app menu while the VM runs (OmacVM.app, experimental USB devices, #660).**
+  While a VM's USB devices switch is on, the app menu (OmacVM, next to the Apple menu) has **USB
   Devices…** under Features…. It opens the app's USB list over the VM, to connect a device kept on
   the Mac or disconnect one without unplugging it, and to choose what happens next time. Before, the
   list opened only from the app's window before a start. QEMU hands the app its place in front as it
-  asks (macOS lets only the app in front do that). Checked with the screens of a Mac mini M4 and a
-  MacBook Pro M1 Max locked: the item is there only with the switch on, and a press reaches the app,
-  which builds the list; the list on screen, over a full-screen VM and its buttons are not checked
-  yet (a locked Mac shows no app's window). USB devices stay experimental and off by default. Needs
-  the app update, from the VM's next start; nothing in the VM.
+  asks (macOS lets only the app in front do that). Checked with the screens locked: on a Mac mini M4
+  and a MacBook Pro M1 Max the item is there only with the switch on and each press sends the app's
+  request; on the M1 Max the app then builds its list (on the mini that check is still to run). The
+  list on screen, over a full-screen VM, and its buttons are not checked yet (a locked Mac shows no
+  app's window). USB devices stay experimental and off by default. Needs the app update, from the
+  VM's next start; nothing in the VM.
 
 ## 3.2.17
 

@@ -38,8 +38,10 @@
 # looks: someone there ends that row BLOCKED (no wait with a row's window up),
 # the next row waits. A visit between two rows gets a "person" row (BLOCKED
 # when a row failed meanwhile). Someone who stays: the rest is BLOCKED, and
-# update-vm (update-vm.sh, as the window runs it) and leftovers (a start
-# without a window) run headless; also with --headless.
+# update-vm (update-vm.sh, as the window runs it), leftovers (a start
+# without a window) and usb's list part (QEMU's item and the app's list by
+# Accessibility, only on a locked Mac or one nobody uses) run headless;
+# also with --headless.
 # --pause-ci (or OMACVM_E2E_PAUSE_CI=1): this Mac's CI runners stopped for the
 # run (ci-runners.sh), started again at the end. A runner still on a job after
 # OMACVM_E2E_CI_WAIT s (default 3000) would start its VMs during the rows: the
