@@ -1,0 +1,96 @@
+From: OmacVM
+Subject: [PATCH, prototype 2] cocoa: do not hand the Shift that goes on to macOS to the input method
+
+What: #657 hands every modifier event to mac-ime's input context inside the
+tap and then passes Shift on to macOS. The input method therefore sees the
+Shift from the app first and from the global monitor second. The order is
+the other way round in the version that works (0xc00: the event is not in
+the tap, so the global monitor sees it before the app hands it over).
+This prototype keeps everything else and only skips the input context for
+a Shift that the tap is about to pass on (`omacvm_ime_shift_would_pass()`
+mirrors `omacvm_ime_shift_pass()` without its side effects). The guest's
+modifier state still comes from `handleEventLocked`, unchanged.
+
+Why: measured with WeChat Input and the independent probe (key 56, five
+taps): hid-head, hid-tail, annot-listen, the NSEvent global monitor and
+session-listen all see the Shift with flags 0x20102/0x100 and userData 0,
+press to release 136 to 200 ms. mac-ime sees it as well, and the mode
+changes 0 times. Dropping the copy (prototype 1) does not change that.
+
+Upstream: not sent (a prototype for the discussion in #655 / #657).
+
+Test: the same three checks as in #655.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -949,6 +949,10 @@
+ static bool omacvm_ime_globe(void);
+ static bool omacvm_ime_shift_to_macos(CGEventRef cgEvent);
+ static bool omacvm_ime_shift_back(NSEvent *event);
++/* OmacVM prototype 2: this Shift is not handed to the input method, so it
++ * only reaches macOS (and the input method's global monitor) once. */
++static bool omacvm_ime_shift_would_pass(int keycode, uint64_t flags);
++static bool omacvm_ime_shift_skip;
+ 
+ /*
+  * Main thread, every key and click event before QEMU's own handling (the
+@@ -1276,7 +1280,14 @@
+     }
+ 
+     NSEvent *event = [NSEvent eventWithCGEvent:cgEvent];
+-    if ([view isKeyboardCaptured] && [view handleEvent:event]) {
++    if (type == kCGEventFlagsChanged && omacvm_ime_on) {
++        omacvm_ime_shift_skip = omacvm_ime_shift_would_pass(
++            (int)CGEventGetIntegerValueField(cgEvent, kCGKeyboardEventKeycode),
++            CGEventGetFlags(cgEvent));
++    }
++    bool omacvm_captured = [view isKeyboardCaptured] && [view handleEvent:event];
++    omacvm_ime_shift_skip = false;
++    if (omacvm_captured) {
+         /*
+          * OmacVM mac-ime: the VM and the input method had this Shift; it
+          * goes on to macOS too, for an input method's lone-Shift switch
+@@ -14166,13 +14177,14 @@
+          */
+         bool active = omacvm_ime_active(&omacvm_ime) || omacvm_ime_off.waiting;   /* its context is still on */
+         BOOL used = NO;
+-        if (active) {
++        if (active && !omacvm_ime_shift_skip) {
+             omacvm_ime_activate();
+             used = [omacvm_ime_ctx handleEvent:event];
+         }
+         if (omacvm_ime_debug) {
+             fprintf(stderr, "omacvm-ime: modifier key %d flags 0x%lx: %s\n", [event keyCode],
+                     (unsigned long)[event modifierFlags], !active ? "inactive, only to the VM" :
++                    omacvm_ime_shift_skip ? "not handed to the input method (it goes on to macOS)" :
+                     used ? "input method used it, also to the VM" : "input method did not want it, to the VM");
+         }
+         return false;
+@@ -14256,6 +14268,27 @@
+     return true;
+ }
+ 
++/* OmacVM prototype 2: would the tap pass this Shift on to macOS? The same
++ * rule as omacvm_ime_shift_pass(), without its side effects. */
++static bool omacvm_ime_shift_would_pass(int keycode, uint64_t flags)
++{
++    int side;
++
++    if (keycode == OMACVM_IME_SHIFT_LEFT) {
++        side = 0;
++    } else if (keycode == OMACVM_IME_SHIFT_RIGHT) {
++        side = 1;
++    } else {
++        return false;
++    }
++    if (!omacvm_ime_shift_down(keycode, flags)) {
++        return omacvm_ime_shift.passed[side];
++    }
++    return !omacvm_ime_shift_off &&
++           (omacvm_ime_active(&omacvm_ime) || omacvm_ime_off.waiting) &&
++           !(flags & OMACVM_IME_SHIFT_F_OTHERS);
++}
++
+ static bool omacvm_ime_shift_back(NSEvent *event)
+ {
+     int key;

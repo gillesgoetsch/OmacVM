@@ -1,0 +1,101 @@
+From: OmacVM
+Subject: [PATCH, prototype] cocoa: recognise the Shift copy that comes back by key, direction and time
+
+What: #657's `omacvm_ime_shift_back()` matches the copy of a Shift the tap
+passed on to macOS by the CGEvent timestamp and the key code. On macOS 27
+the copy that arrives through the app's event queue does not carry that
+timestamp, so the match never fires: every Shift is handed to the input
+method a second time, WeChat Input sees press and release twice inside its
+350 ms window, toggles twice and nothing changes. This prototype keeps the
+tap's mask and the pass-through rule as they are and matches the copy on
+key code (56/60), direction (the Shift bit in the event's flags) and a
+300 ms window instead, consuming one record per match.
+
+Why: with #657 as it stands, 11 lone Shift taps on the cloned VM: `also to
+macOS` 22 lines, `back from macOS, dropped` 0 lines, a second `input method
+did not want it` after every pass-through, and the mode changed 0 times.
+This patch alone does not restore the switch either (6 taps, 3 with a
+following letter, all C): the input method still gets the Shift from the
+app. Prototype 2 has the rest.
+
+Upstream: not sent (a prototype for the discussion in #655 / #657).
+
+Test: the same three checks as in #655: lone Shift taps, quick Shift+letter
+chords, and the three log lines per Shift event.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -14219,6 +14219,20 @@
+  */
+ static OmacVMImeShift omacvm_ime_shift;
+ static bool omacvm_ime_shift_off;
++
++/* OmacVM prototype: the Shifts the tap passed on, by key, direction and time.
++ * The copy that comes back through the app's event queue is a different
++ * CGEvent (its timestamp is not the one recorded), so it is matched on these
++ * instead. Main thread only. */
++typedef struct OmacvmShiftSent {
++    int key;
++    bool down;
++    CFAbsoluteTime at;
++} OmacvmShiftSent;
++#define OMACVM_SHIFT_SENT 8
++#define OMACVM_SHIFT_BACK_S 0.3
++static OmacvmShiftSent omacvm_shift_sent[OMACVM_SHIFT_SENT];
++static unsigned omacvm_shift_sent_next;
+ 
+ static bool omacvm_ime_shift_to_macos(CGEventRef cgEvent)
+ {
+@@ -14230,6 +14244,11 @@
+         return false;
+     }
+     omacvm_ime_shift_sent(&omacvm_ime_shift, CGEventGetTimestamp(cgEvent), key);
++    omacvm_shift_sent[omacvm_shift_sent_next].key = key;
++    omacvm_shift_sent[omacvm_shift_sent_next].down =
++        (flags & OMACVM_IME_SHIFT_F_SHIFT) != 0;
++    omacvm_shift_sent[omacvm_shift_sent_next].at = CFAbsoluteTimeGetCurrent();
++    omacvm_shift_sent_next = (omacvm_shift_sent_next + 1) % OMACVM_SHIFT_SENT;
+     if (omacvm_ime_debug) {
+         fprintf(stderr, "omacvm-ime: modifier key %d flags 0x%llx: also to macOS\n", key,
+                 (unsigned long long)flags);
+@@ -14239,17 +14258,33 @@
+ 
+ static bool omacvm_ime_shift_back(NSEvent *event)
+ {
+-    CGEventRef cgEvent;
++    int key;
++    bool down;
++    CFAbsoluteTime now;
+ 
+-    if ([event type] != NSEventTypeFlagsChanged || !(cgEvent = [event CGEvent]) ||
+-        !omacvm_ime_shift_again(&omacvm_ime_shift, CGEventGetTimestamp(cgEvent), [event keyCode])) {
++    if ([event type] != NSEventTypeFlagsChanged) {
+         return false;
+     }
+-    if (omacvm_ime_debug) {
+-        fprintf(stderr, "omacvm-ime: modifier key %d: back from macOS, dropped (the VM had it)\n",
+-                [event keyCode]);
++    key = (int)[event keyCode];
++    down = ([event modifierFlags] & NSEventModifierFlagShift) != 0;
++    now = CFAbsoluteTimeGetCurrent();
++    for (unsigned i = 0; i < OMACVM_SHIFT_SENT; i++) {
++        double age;
++        if (omacvm_shift_sent[i].key != key || omacvm_shift_sent[i].down != down) {
++            continue;
++        }
++        age = now - omacvm_shift_sent[i].at;
++        if (age < 0 || age > OMACVM_SHIFT_BACK_S) {
++            continue;
++        }
++        omacvm_shift_sent[i].key = -1;
++        if (omacvm_ime_debug) {
++            fprintf(stderr, "omacvm-ime: modifier key %d: back from macOS, dropped (the VM had it, %.0f ms)\n",
++                    key, age * 1000.0);
++        }
++        return true;
+     }
+-    return true;
++    return false;
+ }
+ 
+ /* One line from the guest's module. Anything unexpected is dropped. */

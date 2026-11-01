@@ -982,6 +982,10 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift-log
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift.patch"
 "$native_dir/Tests/keys/test-ime-shift.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: Shift does not go on to macOS as tested (test-ime-shift.sh)"
+# Prototype: recognise the Shift copy that comes back by key, direction and time.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift-back-proto.patch"
+# Prototype 2: the Shift that goes on to macOS is not handed to the input method.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift-skip-proto.patch"
 # OmacVM.app's "Closing the window" (#358): Shut down, Keep running (the app
 # hidden, the Dock icon brings it back), Ask. Its rules' test, then the wiring.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-close-logic.patch"
