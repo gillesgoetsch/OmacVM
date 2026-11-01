@@ -61,6 +61,10 @@ c = first(r"git clean -ffdx")
 print("cleanup_always=%d" % (c > 0 and any("if: always()" in l for l in app[max(0, c - 4):c])))
 print("no_prt=%d" % ("pull_request_target" not in re.sub(r"#.*", "", text)))
 print("checks_this=%d" % ("src/tests/ci-app-build.sh" in "\n".join(jobs.get("check", []))))
+# One cache per Mac above the runner folders, not one per runner's tool cache.
+print("cache_per_mac=%d" % ("%/*/*/*" in body and "${RUNNER_TOOL_CACHE:?}/omacvm-runtime" not in body))
+m = re.search(r"OMACVM_CI_RUNTIME_KEEP=([0-9]+)", body)
+print("cache_keep=%s" % (m.group(1) if m else ""))
 EOF
 v() { sed -n "s/^$1=//p" "$T/wf"; }
 expect "check.yml has an app job" 1 "$(v has_app)"
@@ -78,6 +82,8 @@ expect "the runtime is kept after the build" 1 "$(v save_after)"
 expect "the app job always cleans up (git clean)" 1 "$(v cleanup_always)"
 expect "no pull_request_target in check.yml" 1 "$(v no_prt)"
 expect "the check job runs this test" 1 "$(v checks_this)"
+expect "the runners of a Mac share one runtime cache" 1 "$(v cache_per_mac)"
+expect "... which keeps 10 runtimes" 10 "$(v cache_keep)"
 
 # --- build-app.sh --runtime-inputs: the hash only, nothing built, no git needed.
 mkdir -p "$T/r/app" "$T/r/src"
@@ -137,6 +143,15 @@ expect "an inputs.sha256 that is not a hash is not cached" "skip ($T/j/inputs.sh
 mkdir -p "$T/cache/$K3"; echo "$K3" > "$T/cache/$K3/inputs.sha256"
 expect "a broken cache entry is a miss" miss "$(cache restore "$T/b5" "$K3")"
 rm -rf "${T:?}/cache/$K3"
+# A copy that fails (an entry another runner's save takes away, a file that
+# cannot be read) is a miss, and no half runtime is left in the build folder.
+fake "$T/u" "$K4"
+expect "save into a second cache" saved "$(OMACVM_CI_RUNTIME_CACHE=$T/cache2 cache save "$T/u")"
+chmod 000 "$T/cache2/$K4/firmware/firmware-source"
+expect "a restore whose copy fails is a miss" "miss (the copy failed)" \
+  "$(OMACVM_CI_RUNTIME_CACHE=$T/cache2 cache restore "$T/b7" "$K4" 2>/dev/null)"
+[[ ! -e $T/b7 ]] && ok "... and leaves no build folder" || bad "a failed copy left $T/b7"
+rm -rf "${T:?}/cache2" "$T/u"
 # The newest KEEP stay (the one restored last counts as new).
 fake "$T/s2" "$K2"; fake "$T/s3" "$K3"; fake "$T/s4" "$K4"
 expect "save with room left" saved "$(cache save "$T/s2")"; sleep 1

@@ -26,9 +26,18 @@ def run_in_pty(args, env, send=b"", wait=8.0, answer=b""):
         r, _, _ = select.select([m], [], [], 0.2)
         if r:
             try:
-                out += os.read(m, 65536)
-            except OSError:
+                chunk = os.read(m, 65536)
+            except OSError:   # Linux: EIO once the child closed the terminal
+                chunk = b""
+            if not chunk:     # macOS: end of file, ready again at once
+                # The child closed the terminal: it is ending. Wait for it (it
+                # may not be reaped yet) instead of reading end of file again.
+                try:
+                    p.wait(timeout=max(0.2, end - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    pass
                 break
+            out += chunk
         # Textual missing and the Mac answers: it offers to install it from there.
         if b"[Y/n]" in out and answer and not answered:
             os.write(m, answer)
