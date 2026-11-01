@@ -1423,6 +1423,7 @@ final class Runner {
         alert.informativeText = "It is paused. Resume it, or shut it down."
         alert.addButton(withTitle: "Resume")
         alert.addButton(withTitle: "Shut Down")
+        AskKeys.take(alert.window, overVM: process?.processIdentifier)
         let shutDown = alert.runModal() == .alertSecondButtonReturn
         resumeIfPaused()
         if shutDown { powerDown() } else { syncClock() }
