@@ -1,6 +1,6 @@
 # Quick checks on every pull request and on main: syntax, ShellCheck errors,
-# the app's and the Mac helpers' builds and offline tests (the guest agents'
-# also on Linux) and the control centre's tests. No signing beyond ad hoc, no VMs.
+# the app's and the Mac helpers' builds and offline tests, and on Linux the
+# guest agents' and the control centre's tests. No signing beyond ad hoc, no VMs.
 # On the Mac mini also OmacVM.app as a release puts it together (job app).
 #
 # Where the macOS job runs: pushes to main and pull requests from branches of
@@ -81,14 +81,6 @@ jobs:
 
       - name: omacvm report runs on macOS's own python3
         run: /usr/bin/python3 -c "import sys; sys.path.insert(0, 'src/control'); import omacvm_cc.report, omacvm_cc.collect, omacvm_cc.bridge, omacvm_cc.state"
-
-      - name: Control centre tests (state, redaction, Textual Pilot against a fake Mac)
-        run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
-          # Textual as the VM gets it: OmacVM's own wheels (src/control/vendor).
-          "$RUNNER_TEMP/venv/bin/pip" install -q --no-deps src/control/vendor/*.whl
-          "$RUNNER_TEMP/venv/bin/pip" install -q pytest pyte
-          cd src/control && "$RUNNER_TEMP/venv/bin/python" -m pytest -q tests
 
       - name: Bridge's control centre and Touch ID requests (allow-list, limits, manifest signatures, LocalAuthentication mocked)
         run: src/bridge/mac/tests/run.sh
