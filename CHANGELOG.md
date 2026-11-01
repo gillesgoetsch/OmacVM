@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.18 (unreleased)
+
+- CI: the macOS check job may take 90 minutes instead of 60. On 2026-10-31 its runner Mac, a MacBook
+  Pro M1 Max on a 15 W charger, needed 54-71 minutes, and 5 jobs were stopped at 60 when 85-98 %
+  done. The runners of one Mac share one QEMU runtime cache of 10 runtimes (each runner kept 3 of
+  its own: 5 app jobs built QEMU from source for a runtime another runner had). The control
+  centre's tests (433, the program runs in the VM) moved to the Linux guest job on Python 3.14,
+  7 minutes less per Mac job; their terminal helper now waits for the program's end (on Linux it
+  stopped early, on macOS it waited out its time) (#668). Nothing changes in the app or the VM.
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;
