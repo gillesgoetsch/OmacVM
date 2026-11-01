@@ -1591,7 +1591,7 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pool-frees.p
 grep -q 'if (obj->pool != pool || obj->free_stamp == stamp) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
   die "vkr_device_object.py: frees are not checked against their pool (pool-frees patch)"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-dedicated-memory.patch"
-grep -q 'if (!vkr_device_memory_dedicated_ok(mem, image->dedicated, offset)) {' "$virgl_source/src/venus/vkr_image.c" && \
+grep -q 'if (!vkr_device_memory_dedicated_ok(mem, image->dedicated,' "$virgl_source/src/venus/vkr_image.c" && \
   grep -q 'vkr_dedicated_memory_freed(mem_dev, dedicated, true);' "$virgl_source/src/venus/vkr_device_memory.c" || \
   die "vkr_image.c, vkr_device_memory.c: dedicated memory is not linked to its target (dedicated-memory patch)"
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-temp-zero.patch"
