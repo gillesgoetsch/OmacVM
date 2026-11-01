@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.18 (unreleased)
+## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
 itself off instead of stopping the VM; Brave, Vivaldi and Electron draw canvas and SVG paths on the
