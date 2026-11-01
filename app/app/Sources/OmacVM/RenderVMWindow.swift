@@ -371,6 +371,13 @@ enum RenderVMWindow {
             if !off.isEmpty { problems.append("row ends not on one line: " + rows.map { "\($0.name) \(Int($0.maxX.rounded()))" }.joined(separator: ", ")) }
             if first.maxX > rowEnd + WindowLayout.tolerance { problems.append("rows end at \(Int(first.maxX)), past \(Int(rowEnd))") }
         }
+        // Settings wider than their column push the whole window, sidebar
+        // and all, to the left (Start in's pictures with an always shown
+        // scroll bar until 3.2.18: CI on macOS 15 has one).
+        if let nav = LayoutProbe.boxes().first(where: { $0.name.hasPrefix("nav-") }),
+           abs(nav.minX - WindowLayout.sidebarInset) > WindowLayout.tolerance {
+            problems.append("the sidebar's items start at \(Int(nav.minX.rounded())), not \(Int(WindowLayout.sidebarInset)): the settings are wider than their column")
+        }
         if let start = boxes.first(where: { $0.name == "start" }),
            abs(start.maxX - (WindowLayout.width - WindowLayout.inset)) > WindowLayout.tolerance {
             problems.append("Start ends at \(Int(start.maxX)), not at \(Int(WindowLayout.width - WindowLayout.inset))")
