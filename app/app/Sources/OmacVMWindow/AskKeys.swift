@@ -27,16 +27,19 @@ public enum AskKeys {
         if takes(front: front, me: getpid(), vm: vm) { NSApp.activate(ignoringOtherApps: true) }
     }
 
-    /// A question about something the person just asked for (a start, also
-    /// from a terminal): it stands in the way, so it takes the keys.
-    public static func take(_ window: NSWindow) {
+    /// A question before a start. A start the person just asked for (also
+    /// from a terminal) waits for it, so it takes the keys. A start that comes
+    /// by itself (after an update's install, after Update VM) may come minutes
+    /// later: the rule above, or Return meant for another app answers it.
+    public static func take(_ window: NSWindow, personAsked: Bool) {
         float(window)
-        NSApp.activate(ignoringOtherApps: true)
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if takes(front: front, me: getpid(), vm: nil, personAsked: personAsked) { NSApp.activate(ignoringOtherApps: true) }
     }
 
-    /// Nobody's app is in front, or this one or the VM is.
-    public nonisolated static func takes(front: pid_t?, me: pid_t, vm: pid_t?) -> Bool {
-        guard let front else { return true }
+    /// The person just asked, nobody's app is in front, or this one or the VM is.
+    public nonisolated static func takes(front: pid_t?, me: pid_t, vm: pid_t?, personAsked: Bool = false) -> Bool {
+        guard !personAsked, let front else { return true }
         return front == me || front == vm
     }
 
