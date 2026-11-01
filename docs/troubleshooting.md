@@ -1664,8 +1664,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   GPU process is that program); UTM, VMware Fusion and Parallels VMs.
 - **The real name for one app:** start it with `force_gl_renderer=`
   (empty), e.g. `force_gl_renderer= brave`: Mesa then skips the file (also
-  for Chrome). Mesa prints "ATTENTION: default value of option
-  force_gl_renderer overridden by environment." on the app's error output.
+  for Chrome) and prints "ATTENTION: option value of option
+  force_gl_renderer ignored." on the app's error output.
 - **Where:** `src/app/guest/50-omacvm-chrome.drirc`; test
   `src/app/guest/tests/test_chrome_drirc.py`;
   [graphics.md](architecture/graphics.md).
