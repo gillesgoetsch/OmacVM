@@ -5,8 +5,8 @@ in more words.
 
 ## 3.2.18 (unreleased)
 
-- **The VM window stays in place when scroll bars are always shown (OmacVM.app).** On a Mac with a
-  notch whose scroll bars are always shown (a mouse without a trackpad, or System Settings >
+- **The VM window stays in place when scroll bars are always shown (OmacVM.app, #667).** On a Mac
+  with a notch whose scroll bars are always shown (a mouse without a trackpad, or System Settings >
   Appearance > Show scroll bars: Always), Start in's three pictures needed 11 pt more than the
   settings' column had: the whole window slid 5 pt to the left, the sidebar cut off at its left
   edge and the scroll bar half outside the window. The gaps between the pictures now shrink to fit;
