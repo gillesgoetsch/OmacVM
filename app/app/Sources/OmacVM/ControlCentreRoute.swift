@@ -1,4 +1,5 @@
 import AppKit
+import OmacVMWindow
 
 /// "Features…" in the VM's app menu: OmacVM's control centre on the VM's
 /// desktop. The menu is QEMU's (its window is in front while the VM runs,
@@ -59,11 +60,12 @@ final class ControlCentreRoute {
         log("OmacVM: Features…: \(Self.record(outcome))")
         guard let (title, text) = Self.problem(outcome, vmName: vmName) else { return }
         let qemu = NSWorkspace.shared.frontmostApplication
-        NSApp.activate()
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = text
         alert.addButton(withTitle: "OK")
+        // The click was in QEMU's menu, up to 12 s ago.
+        AskKeys.take(alert.window, overVM: AppDelegate.qemuApp?.processIdentifier)
         alert.runModal()
         qemu?.activate()
     }

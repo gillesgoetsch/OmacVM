@@ -818,8 +818,9 @@ final class Updater: ObservableObject {
             if let why { log("OMACVM_RESTART_FORCE refused: \(why)") }
             force = hook == "1" && why == nil
         } else {
-            NSApp.activate()
-            force = Self.shutdownTimeoutAlert().runModal() == .alertSecondButtonReturn
+            let alert = Self.shutdownTimeoutAlert()
+            AskKeys.take(alert.window, overVM: AppDelegate.qemuApp?.processIdentifier)
+            force = alert.runModal() == .alertSecondButtonReturn
         }
         guard force, let vm = runningVM(), let version else { return }
         restarting = true
