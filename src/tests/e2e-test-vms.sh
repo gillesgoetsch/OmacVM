@@ -104,4 +104,13 @@ expect "drive-drop.sh restores through e2e_settings_restore" 1 "$(grep -c 'e2e_s
 expect "cc-switches.sh: no ~/OmacVM fallback for the test app" 0 "$(grep -c 'read "$APPID" vmsRoot 2>/dev/null || echo' "$R/src/tests/e2e/cc-switches.sh")"
 bash -n "$R/src/tests/e2e/drive-drop.sh" && bash -n "$R/src/tests/e2e/cc-switches.sh" || { echo "FAIL harness syntax"; fail=1; }
 
+# A copy of src/tests/e2e without src/lib (a kit's copy, 2026-10-31): the harness stops instead of
+# running without the guards ("app_prod_dir: command not found", the installed app's folder not refused).
+mkdir -p "$T/copy/e2e" && cp "$R/src/tests/e2e/test-vms.sh" "$T/copy/e2e/"
+printf 'source "$(dirname "$0")/test-vms.sh"\necho "went on"\n' > "$T/copy/e2e/harness.sh"
+out=$(bash "$T/copy/e2e/harness.sh" 2>&1); rc=$?
+expect "a copy without src/lib: the harness stops with exit 2" 2 "$rc"
+expect "a copy without src/lib: nothing after the source runs" 0 "$(grep -c 'went on' <<<"$out")"
+expect "a copy without src/lib: says why" 1 "$(grep -c 'no src/lib/app.sh' <<<"$out")"
+
 exit $fail

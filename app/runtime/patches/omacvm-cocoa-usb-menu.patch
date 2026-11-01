@@ -1,0 +1,181 @@
+From: OmacVM
+Subject: [PATCH] cocoa: "USB Devices…" in the app menu opens the app's USB list
+
+What: while the VM's USB switch is on, the app menu (the one named after the
+VM's app) has "USB Devices…" under "Features…". A click posts a distributed
+notification under the name OmacVM.app put in OMACVM_USB_REQUEST (its bundle
+id and process id, "<id>.usb.<pid>"); the app (USBRun.showList) opens its list
+of the Mac's USB devices in a floating panel over the VM, also on the VM's
+full-screen Space: connect a device now, give one back, change or forget a
+remembered one. Before posting, QEMU yields its activation to that process
+(only when the process with the name's pid has the name's bundle id), so the
+app's activation is not left to chance: QEMU is the app in front at the
+click, and macOS lets only the app in front hand activation over. Without
+OMACVM_USB_REQUEST (the switch off, or QEMU not started by OmacVM.app) the
+menu is unchanged.
+Why: during a run the app's own window is hidden (the launcher is an
+.accessory app then), so a device answered "Keep on Mac" could only be
+connected by plugging it in again, and a connected one given back only by
+unplugging it or stopping the VM (docs/usb.md, Known limits).
+Safety: QEMU sends nothing but the click: no data, no reply read. Any process
+of the same user could post the same name; all it does is open the list.
+Upstream: not applicable (OmacVM's launcher).
+Test: app/runtime/Tests/display/test-usb-menu.sh: the header's rules (build
+time and CI); with --qemu, a hidden QEMU of the runtime (no disk, CPUs
+stopped) whose menu items are pressed through Accessibility on its own pid,
+with "Features…" as the control. The list over the VM:
+src/tests/e2e/onscreen.sh, row usb.
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+index 6162f4d..b4d92fb 100644
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -47,6 +47,7 @@
+ #include "ui/omacvm-gpu-memory.h"
+ #include "ui/omacvm-vm-stalls.h"
+ #include "ui/omacvm-desktop-restart.h"
++#include "ui/omacvm-usb-menu.h"
+ #include "ui/omacvm-clean-size.h"
+ #include "ui/omacvm-fullpanel-scale.h"
+ #include "ui/omacvm-notch-park.h"
+@@ -6236,6 +6237,56 @@ static void omacvm_add_features_item(NSMenu *menu)
+     [menu addItem:item];
+ }
+ 
++/*
++ * OmacVM: "USB Devices…" in the app menu (omacvm-cocoa-usb-menu.patch) opens
++ * OmacVM.app's list of USB devices over the VM, while the VM's USB switch is
++ * on. As with "Features…", QEMU only passes the click on: a distributed
++ * notification under the name the app gave (OMACVM_USB_REQUEST, its bundle id
++ * and process id). QEMU is in front at the click and macOS lets only the app
++ * in front hand its activation over: it yields to the app first, so the list
++ * comes up in front with the keys, on the VM's Space.
++ */
++@interface OmacvmUSBItem : NSObject
++- (void)open:(id)sender;
++@end
++
++static OmacvmUSBItem *omacvm_usb_item;
++
++@implementation OmacvmUSBItem
++- (void)open:(id)sender
++{
++    const char *name = omacvm_usb_request();
++    if (!name) {
++        return;
++    }
++    pid_t pid = omacvm_usb_launcher_pid(name);
++    NSRunningApplication *app = pid > 0
++        ? [NSRunningApplication runningApplicationWithProcessIdentifier:pid] : nil;
++    if (app && omacvm_usb_is_launcher(name, [[app bundleIdentifier] UTF8String])) {
++        [NSApp yieldActivationToApplication:app];
++    }
++    [[NSDistributedNotificationCenter defaultCenter]
++        postNotificationName:[NSString stringWithUTF8String:name]
++                      object:nil
++                    userInfo:nil
++          deliverImmediately:YES];
++}
++@end
++
++static void omacvm_add_usb_item(NSMenu *menu)
++{
++    if (!omacvm_usb_request()) {
++        return; /* the USB switch is off, or not started by OmacVM.app */
++    }
++    omacvm_usb_item = [[OmacvmUSBItem alloc] init];
++    NSMenuItem *item = [[[NSMenuItem alloc] initWithTitle:@"USB Devices\u2026"
++                                                   action:@selector(open:)
++                                            keyEquivalent:@""] autorelease];
++    [item setTarget:omacvm_usb_item];
++    [item setToolTip:@"The Mac's USB devices for this VM: connect, give back, remember"];
++    [menu addItem:item];
++}
++
+ static void create_initial_menus(void)
+ {
+     // Add menus
+@@ -6249,6 +6300,7 @@ static void create_initial_menus(void)
+     menu = [[NSMenu alloc] initWithTitle:@""];
+     [menu addItemWithTitle:[NSString stringWithFormat:@"About %@", omacvm_product_name()] action:@selector(do_about_menu_item:) keyEquivalent:@""];
+     omacvm_add_features_item(menu);
++    omacvm_add_usb_item(menu);
+     omacvm_add_memory_items(menu);
+     omacvm_add_restart_desktop_item(menu);
+     [menu addItem:[NSMenuItem separatorItem]]; //Separator
+diff --git a/ui/omacvm-usb-menu.h b/ui/omacvm-usb-menu.h
+new file mode 100644
+index 0000000..29110b2
+--- /dev/null
++++ b/ui/omacvm-usb-menu.h
+@@ -0,0 +1,70 @@
++/*
++ * OmacVM: "USB Devices…" in the app menu (omacvm-cocoa-usb-menu.patch).
++ *
++ * OmacVM.app sets OMACVM_USB_REQUEST while the VM's USB switch is on: the
++ * name of a distributed notification, "<the app's bundle id>.usb.<its pid>"
++ * (USBRun.requestName). A click posts it, and the app opens its list of USB
++ * devices over the VM (USBRun.showList). Before that QEMU, the app in front
++ * at the click, hands its activation to that app, so the list comes up in
++ * front with the keys. No AppKit here, so it is unit tested
++ * (Tests/display/test-usb-menu.sh).
++ */
++#ifndef OMACVM_USB_MENU_H
++#define OMACVM_USB_MENU_H
++
++#include <stdlib.h>
++#include <string.h>
++#include <sys/types.h>
++
++/* The notification to post, or NULL: the switch is off, or QEMU was not
++ * started by OmacVM.app. No item then. */
++static inline const char *omacvm_usb_request(void)
++{
++    const char *v = getenv("OMACVM_USB_REQUEST");
++    return v && *v ? v : NULL;
++}
++
++/* S as a pid: 1 to 9 digits and nothing else, above 0; else 0. */
++static inline pid_t omacvm_usb_digits(const char *s)
++{
++    long v = 0;
++    size_t i;
++
++    for (i = 0; s[i]; i++) {
++        if (i == 9 || s[i] < '0' || s[i] > '9') {
++            return 0;
++        }
++        v = v * 10 + (s[i] - '0');
++    }
++    return (pid_t)v;
++}
++
++/* The app's pid at the end of the name ("<bundle id>.usb.<pid>"), or 0. */
++static inline pid_t omacvm_usb_launcher_pid(const char *name)
++{
++    const char *tail = NULL, *p;
++
++    if (!name) {
++        return 0;
++    }
++    for (p = strstr(name, ".usb."); p; p = strstr(p + 1, ".usb.")) {
++        tail = p + 5;
++    }
++    return tail ? omacvm_usb_digits(tail) : 0;
++}
++
++/* 1 when BUNDLE_ID is the one the name starts with: the process with the
++ * name's pid is the app that asked (QEMU hands its activation only to it). */
++static inline int omacvm_usb_is_launcher(const char *name, const char *bundle_id)
++{
++    size_t n;
++
++    if (!name || !bundle_id || !*bundle_id) {
++        return 0;
++    }
++    n = strlen(bundle_id);
++    return strncmp(name, bundle_id, n) == 0 && strncmp(name + n, ".usb.", 5) == 0 &&
++           omacvm_usb_digits(name + n + 5) > 0;
++}
++
++#endif

@@ -1055,6 +1055,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-vm-stalls-men
 grep -q 'omacvm_stall_menu_line(&st, stall, sizeof(stall))' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the app menu's stall line is missing (cocoa-vm-stalls-menu patch)"
 "$native_dir/Tests/vcpu/test-vcpu-stall.sh"
+# OmacVM: "USB Devices…" in the app menu under Features… while the VM's USB
+# switch is on: the launcher's list over the VM (USBRun.showList). After the
+# vm-stalls patch: restart-desktop's hunk has Features… and the memory lines as
+# its context.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-usb-menu.patch"
+"$native_dir/Tests/display/test-usb-menu.sh"
+[[ $(grep -A1 '^    omacvm_add_features_item(menu);$' "$source_dir/ui/cocoa.m") == *$'\n    omacvm_add_usb_item(menu);' ]] && \
+  grep -q '\[NSApp yieldActivationToApplication:app\];' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m has no USB Devices... item under Features... in the app menu (usb-menu patch)"
 # OmacVM: the Mac's cursor stays hidden over the VM: an empty image while
 # hidden, set again on motion, and every 0.5 s while hidden, when another
 # process or macOS showed it (the Mac's arrow over the guest's pointer,

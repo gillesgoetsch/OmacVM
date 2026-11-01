@@ -37,6 +37,20 @@ is "cursor: an empty image" os_cursor_hidden "visible=1 empty=1 at 10,10"
 isnt "cursor: the arrow" os_cursor_hidden "visible=1 empty=0 at 10,10"
 isnt "cursor: shown, image unknown" os_cursor_hidden "visible=1 empty=? at 10,10"
 
+# The USB question's first second (the tool's ask-keys line, its exit code, the Space before and after).
+G="found=0.04 alert=1@layer3 vm=1 space=4 early=stays front=501 late=answered@0.71 sent=Return@0.15,Escape@0.30,Return@0.65 "
+same "usb: the question as it should be" "" "$(os_usb_ask_problems "$G" 0 4 4)"
+p=$(os_usb_ask_problems "found=0.04 alert=1@layer3 vm=1 space=4 early=answered@0.16 front=501 late=stays sent=Return@0.15 " 1 4 4)
+[[ $p == *"within 0.5 s"* && $p == *"did not answer"* ]] && ok "usb: answered by the early Return" || bad "usb: early Return: '$p'"
+p=$(os_usb_ask_problems "found=0.05 front=600 sent= " 3 4 4); [[ $p == *"not in front"* ]] && ok "usb: question not in front" || bad "usb: not in front: '$p'"
+p=$(os_usb_ask_problems "found=0.04 alert=1@layer0 vm=1 space=4 early=stays front=501 late=answered@0.7 sent= " 0 4 4)
+[[ $p == *"no floating"* ]] && ok "usb: question not floating" || bad "usb: layer 0: '$p'"
+p=$(os_usb_ask_problems "found=0.04 alert=1@layer3 vm=0 space=9 early=stays front=501 late=answered@0.7 sent= " 0 4 9)
+[[ $p == *"VM's window"* && $p == *"Space changed"* ]] && ok "usb: question on another Space" || bad "usb: other Space: '$p'"
+same "usb: no question" "no question in 5 s" "$(os_usb_ask_problems "question=none " 1 4 4)"
+same "usb: usb.json, the test device kept on the Mac" "1 1 1209:0001 mac OmacVM Test Device 2026-10-31" "$(os_usb_keep_json 2026-10-31 |
+  /usr/bin/python3 -c 'import json,sys; o=json.load(sys.stdin); d=o["devices"][0]; print(o["version"], len(o["devices"]), d["vendor"]+":"+d["product"], d["choice"], d["name"], d["since"], *(k for k in ("serial","maker") if k not in d))')"
+
 # What runs on after the run: QEMU of the VM, the app (not its helpers), anything on the VM's folder
 # (not another VM's with a longer name).
 A="/x/OmacVM Test.app"; D="/v/OmacVM M-e2e"
@@ -68,6 +82,9 @@ same "result: ok and skip pass" True "$(/usr/bin/python3 -c 'import json,sys; pr
 # The tool compiles (it runs only on a test Mac).
 if xcrun swiftc -O "$R/src/tests/e2e/onscreen-tool.swift" -o "$T/onscreen-tool" 2>"$T/swiftc.log"; then
   out=$("$T/onscreen-tool" nonsense 2>&1); [[ $? == 2 && $out == usage* ]] && ok "tool: builds, usage on a wrong command" || bad "tool: '$out'"
+  # The USB row's readings (no window, no input): a Space id, no windows of a process without any.
+  out=$("$T/onscreen-tool" space 2>&1); [[ $out =~ ^[0-9]+$ ]] && ok "tool: space ($out)" || bad "tool: space: '$out'"
+  out=$("$T/onscreen-tool" onscreen $$ 2>&1); [[ $out == 0 ]] && ok "tool: onscreen of a shell: 0" || bad "tool: onscreen: '$out'"
 else bad "tool does not build: $(head -5 "$T/swiftc.log")"; fi
 
 # The harness refuses a release build and a VM outside the test app's VMs folder (exit 2, nothing started).

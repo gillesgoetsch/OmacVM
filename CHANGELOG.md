@@ -117,6 +117,18 @@ in more words.
   without a descriptor. Needs the app update and Update VM, then a start of the VM with the switch
   on (a Ghostty already open keeps its driver until you quit it).
 
+- **USB Devices… in the app menu while the VM runs (OmacVM.app, experimental USB devices, #660).**
+  While a VM's USB devices switch is on, the app menu (OmacVM, next to the Apple menu) has **USB
+  Devices…** under Features…. It opens the app's USB list over the VM, to connect a device kept on
+  the Mac or disconnect one without unplugging it, and to choose what happens next time. Before, the
+  list opened only from the app's window before a start. QEMU hands the app its place in front as it
+  asks (macOS lets only the app in front do that). Checked with the screens locked: on a Mac mini M4
+  and a MacBook Pro M1 Max the item is there only with the switch on and each press sends the app's
+  request; on the M1 Max the app then builds its list (on the mini that check is still to run). The
+  list on screen, over a full-screen VM, and its buttons are not checked yet (a locked Mac shows no
+  app's window). USB devices stay experimental and off by default. Needs the app update, from the
+  VM's next start; nothing in the VM.
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;
