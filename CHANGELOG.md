@@ -5,7 +5,7 @@ in more words.
 
 ## 3.2.18 (unreleased)
 
-- **Ghostty on the Mac's GPU, an experimental switch (OmacVM.app, see #598, @benoitdepaire).**
+- **Ghostty on the Mac's GPU, an experimental switch (OmacVM.app, #658; see #598, @benoitdepaire).**
   Ghostty needs OpenGL 4.3 and the VM's GPU gives 4.1, so since 3.2.14 Ghostty draws on the VM's
   CPU. With the new switch "Ghostty on the Mac's GPU" (the VM window's General section, off by
   default) Ghostty alone draws on the Mac's GPU through Zink over the VM's Vulkan, with OpenGL 4.3

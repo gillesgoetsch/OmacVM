@@ -35,7 +35,7 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   ([50](#50-all-routes-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
-  and Kitty draw on the Mac's GPU; from 3.2.17 the app's experimental switch
+  and Kitty draw on the Mac's GPU; from 3.2.18 the app's experimental switch
   Ghostty on the Mac's GPU moves Ghostty there too (macOS 26 and newer)
   ([47](#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)).
 - **Activity Monitor shows the VM with far more memory than you gave it**
@@ -1464,7 +1464,7 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   session (GL programs started from that Ghostty's shell draw on the CPU too;
   Chromium drops the variable). A driver set by hand (`LIBGL_ALWAYS_SOFTWARE`,
   `MESA_LOADER_DRIVER_OVERRIDE`, `GALLIUM_DRIVER`) wins over OmacVM's.
-- **On the Mac's GPU (3.2.17, experimental):** the VM window's switch
+- **On the Mac's GPU (3.2.18, experimental):** the VM window's switch
   Ghostty on the Mac's GPU (General) starts Ghostty alone on Zink over the
   VM's Vulkan with a forced OpenGL 4.3, on macOS 26 and newer (KosmicKrisp)
   with Graphics Automatic or Vulkan. Update OmacVM.app, Update VM, turn the

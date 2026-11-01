@@ -5,7 +5,7 @@ for the program `ghostty` alone. Amends ADR 0063: OmacVM's EGL vendor
 library gets a second job, and for that job it sets an environment variable
 (0063 had none). Reported in #598 (@benoitdepaire). Notes, the
 investigation and the review: work/tracks/issue-598-ghostty.md. Amended in
-3.2.17 (`ghostty-zink`): with the app's experimental switch "Ghostty on the
+3.2.18 (`ghostty-zink`): with the app's experimental switch "Ghostty on the
 Mac's GPU" (off by default) Ghostty draws on Zink over Venus instead, on
 KosmicKrisp only (section "Amendment" at the end).
 
@@ -190,7 +190,7 @@ terminals), and it does not start while the screen is locked.
   `src/tests/ghostty-check.sh` (the check line, also against the library
   built from source); the VM rows R1-R9 in the PR and the track.
 
-## Amendment (3.2.17): Ghostty on the Mac's GPU, an experimental switch
+## Amendment (3.2.18): Ghostty on the Mac's GPU, an experimental switch
 
 Lane `ghostty-gpu` (work/tracks/ghostty-gpu.md: the investigation, the plan,
 the architecture review, unit `ghostty-zink`).
