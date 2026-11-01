@@ -14,7 +14,7 @@
 # the next harness's `--vm NAME` was not found and the test app fell back to
 # the person's VM. Paths are quoted here, and a missing save never deletes.
 _E2E_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../lib" && pwd)
-source "$_E2E_LIB/app.sh"
+source "$_E2E_LIB/app.sh" || { echo "test-vms.sh: no src/lib/app.sh beside src/tests/e2e: run the harness from the repo" >&2; exit 2; }
 
 _e2e_key_file() { printf '%s/%s' "$1" "$(printf '%s' "$2" | tr -c 'A-Za-z0-9_.-' '_')"; }
 
