@@ -1,9 +1,11 @@
 #!/bin/bash
-# CI's QEMU runtime cache on the self-hosted Mac mini, so the app job runs
+# CI's QEMU runtime cache on a self-hosted runner Mac, so the app job runs
 # build-app.sh in minutes instead of building QEMU and its firmware each time.
 # One folder per inputs hash (build-app.sh --runtime-inputs): only what
 # build-app.sh takes from runtime/.build (qemu-gpu-runtime, firmware,
-# inputs.sha256), never the edk2 build folder. The newest KEEP stay.
+# inputs.sha256), never the edk2 build folder. The newest KEEP stay. The
+# runners of one Mac share it: a save is put together beside it and renamed in
+# one step, and a restore marks its entry as used before it copies.
 #   .github/app-runtime-cache.sh restore BUILD_DIR KEY   prints hit or miss
 #   .github/app-runtime-cache.sh save BUILD_DIR          prints saved, have or skip
 # OMACVM_CI_RUNTIME_CACHE: the cache folder (required). OMACVM_CI_RUNTIME_KEEP: 3.
@@ -29,10 +31,15 @@ case ${1:-} in
     key_ok "$key" || { echo "not an inputs hash: $key" >&2; exit 2; }
     if [[ -e $dir ]]; then echo "miss ($dir is there already)"; exit 0; fi
     if ! complete "$CACHE/$key" "$key"; then echo miss; exit 0; fi
+    # The newest used stays longest; marked first, so another runner's save
+    # does not take it as the oldest while it is copied.
+    touch "$CACHE/$key"
     mkdir -p "$(dirname "$dir")" "$dir"
     # cp -c: a clone on APFS, no copy of the bytes.
-    for p in qemu-gpu-runtime firmware inputs.sha256; do cp -cR "$CACHE/$key/$p" "$dir/"; done
-    touch "$CACHE/$key"   # the newest used stays longest
+    for p in qemu-gpu-runtime firmware inputs.sha256; do
+      cp -cR "$CACHE/$key/$p" "$dir/" || { rm -rf "$dir"; echo "miss (the copy failed)"; exit 0; }
+    done
+    if ! complete "$dir" "$key"; then rm -rf "$dir"; echo "miss (the copy is not complete)"; exit 0; fi
     echo hit
     ;;
   save)
