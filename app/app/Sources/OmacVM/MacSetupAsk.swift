@@ -36,14 +36,14 @@ extension MacSetup {
     /// The question before a start: the fix (Update VM, Check for Updates,
     /// a System Settings pane) or Later. Over a full-screen Space too (a
     /// start from there: omacvm start, --start), as USB's questions.
-    @MainActor func ask(vm: String) -> Answer {
+    @MainActor func ask(vm: String, personAsked: Bool) -> Answer {
         let a = NSAlert()
         a.alertStyle = .warning
         a.messageText = title(vm: vm)
         a.informativeText = message(vm: vm)
         a.addButton(withTitle: button)
         a.addButton(withTitle: "Later").keyEquivalent = "\u{1b}"
-        AskKeys.take(a.window)
+        AskKeys.take(a.window, personAsked: personAsked)
         return a.runModal() == .alertFirstButtonReturn ? .fix : .later
     }
 }
