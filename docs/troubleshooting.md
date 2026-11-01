@@ -1485,10 +1485,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   Ghostty ends, or does not open at all. **Cause:** the Mac ended Ghostty's
   Vulkan context: it refused a command, or the VM's graphics memory was used
   up (qemu.log: "venus context N (ghostty) is lost"; with a 384 MB budget and
-  Chromium on a WebGL page a Ghostty on Zink ended at its start, with or
-  without `VN_PERF=no_async_mem_alloc`, one on the CPU opened). **Fix:**
-  Terminate (the programs running in that Ghostty end with it), then open
-  Ghostty again; if it happens again, turn the switch off and quit Ghostty.
+  Chromium on a WebGL page a Ghostty on Zink ended at its start, one on the
+  CPU opened). **Fix:** Terminate (the programs running in that Ghostty end
+  with it), then open Ghostty again; if it happens again, turn the switch
+  off, then shut the VM down and start it again: the switch counts only from
+  a VM start, so until then a new Ghostty can start on Zink again.
 - **Where:** `src/app/guest/omacvm_egl.c` (OmacVM's EGL vendor library),
   `src/guest/check.sh` ("Ghostty"), the app's `GhosttyGPU`
   (`app/app/Sources/OmacVMWindow/GhosttyGPU.swift`); tests
