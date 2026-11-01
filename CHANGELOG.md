@@ -154,6 +154,27 @@ nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing c
   clip planes both on and off gets one more compiled shader. Chromium's WebGL 1 and WebGL 2 smoke
   passed before and after. Needs the app update (from the VM's next start); nothing in the VM.
 
+- **OpenGL program pipelines that pass values per patch draw (OmacVM.app, #661, see #589).** An app
+  in the VM that builds its tessellation shaders as separate programs (program pipelines) and
+  passes values per patch from the control to the evaluation shader drew nothing: the Mac's
+  OpenGL refused those shaders, and `logs/qemu.log` said "refused a shader". Now the Mac takes
+  them. The app's own tests run 5 such shapes that were refused; they draw the right colours on
+  Apple's software renderer and on the GPUs of a Mac mini M4 and a MacBook Pro M1 Max (macOS 27),
+  with 0 GPU restarts. In a test VM on the M1 Max (the VM's Mesa 26.2.5), four such pipelines (2
+  and 12 values per patch) drew nothing with 3.2.16: the Mac refused two ("refused a shader"),
+  and the VM's Mesa refused the two whose evaluation shader has outputs of its own, which #663
+  fixes. With this release and #663 all four draw, and no shader is refused.
+  Needs the app update, from the VM's next start; nothing in the VM. UTM, Parallels and Fusion:
+  nothing changes.
+
+- **Correction to 3.2.11: arrays passed between shader stages (#589).** 3.2.11 said such arrays
+  draw on the GPUs of a Mac mini M4 and a MacBook Air M2, and that only Apple's software renderer
+  refused them. They draw because the VM's Mesa (26.2.5) passes an array between separate programs
+  as single values, also one that a shader reads or writes at a computed index: in a test VM on a
+  MacBook Pro M1 Max such shaders reached the Mac without an array and drew with 3.2.16. Handed to
+  the Mac's OpenGL as an array, the way the app's runtime would declare it, the shape is refused
+  on the GPUs of an M4 and an M1 Max too. Nothing changes for these arrays in this release.
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;

@@ -167,6 +167,15 @@ commit 82927e9. Changes here:
   program whose tessellation shader had an output ("too many output components
   (4 > 0)") before it reached the Mac. #589; checked by
   `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-separable-patch-varyings.patch`: a patch varying of a
+  separable program (tessellation control to evaluation shader) takes no layout
+  location on desktop GL (#589). Apple's GL refuses one and, without it, gives
+  patch varyings their slots in the order of their names, so the names are
+  zero-padded and two separable stages next to each other declare every one
+  from 0. Separable varying arrays are still refused (vrend puts them at 31 -
+  their first location, past the last); the VM's Mesa splits such arrays into
+  single varyings, also at a computed index. Checked by
+  `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
