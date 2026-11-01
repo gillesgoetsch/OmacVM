@@ -4,8 +4,8 @@ Status: accepted, built (`vm-memory-giveback`), no setting. The give-back
 while macOS compresses the VM runs only with a QEMU that gives the pages back
 to macOS (ADR 0062): on from 3.2.12, whose QEMU does. 3.2.11's QEMU did not,
 so in 3.2.11 it was off and the warning's drop worked as in 3.2.10 (below,
-"3.2.11: off until QEMU gives the pages back"). From 3.2.17 the VM also
-compacts its free memory and gives back when it is idle (below, "3.2.17:
+"3.2.11: off until QEMU gives the pages back"). From 3.2.18 the VM also
+compacts its free memory and gives back when it is idle (below, "3.2.18:
 compaction, and a give-back when the VM is idle"). Notes, the spike and the
 reviews: work/tracks/vm-memory-giveback.md, work/tracks/vm-memory-gap.md,
 work/tracks/vm-memory.md. Sizes are binary (1 GB = 1024 MB), as the app,
@@ -154,7 +154,7 @@ the memory-optimized kernel it asks for nearly all of the VM's file cache (a
   (qemu.log "off for the rest of this run"; `omacvm check` says the same).
   ADR 0062 says how.
 
-## 3.2.17: compaction, and a give-back when the VM is idle
+## 3.2.18: compaction, and a give-back when the VM is idle
 
 Free page reporting hands only free blocks of `page_reporting_order` (6:
 256 KiB) and up to QEMU. Right after a browser closes or a cache drop, much

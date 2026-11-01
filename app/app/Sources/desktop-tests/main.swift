@@ -260,7 +260,7 @@ expect(MemoryGiveBack.startLine(pagesGoBack: true) == "OmacVM: VM memory: give-b
        + "(this QEMU gives the pages back to macOS)", "the line when on")
 // The settings' words (GPUMemory.explanation), true with the reclaim fix (3.2.12): freed memory goes back to the Mac,
 // the cold cache while macOS compresses the VM, the whole cache at macOS's warning. 3.2.11 said the Mac kept the pages.
-// 3.2.17: also when the VM is idle, and its scattered free memory (compaction).
+// 3.2.18: also when the VM is idle, and its scattered free memory (compaction).
 let says = GPUMemory.explanation
 expect(says.contains("goes back to the Mac and leaves QEMU's footprint") && !says.contains("keep holding")
        && says.contains("When the VM is idle and while macOS compresses it, the VM gives back the file cache it has not used lately")
@@ -469,7 +469,7 @@ o.answered(MemoryGiveBack.Result.parse("mode=compressing act=norep rep=0", maxMB
 expect(o.off && !o.compressing(sample(5000, fp: 60, res: 20, comp: 900)), "not reporting: off for this run")
 expect(o.allowed(.warning, at: 5000), "the warning's drop still runs")
 
-// The idle give-back (ADR 0059, 3.2.17): every 15 minutes while macOS's pressure is normal, QEMU used at most a fifth of a
+// The idle give-back (ADR 0059, 3.2.18): every 15 minutes while macOS's pressure is normal, QEMU used at most a fifth of a
 // core over the last minute, the compressing rule does not hold and no give-back ran in the last 10 minutes.
 let core = 1_000_000_000.0   // QEMU's CPU time in ns: one core for one second
 func idleLooks(_ m: inout MemoryGiveBack, from t0: Double, to t1: Double, fp: Double = 6, res: Double = 5, comp: Double = 100,

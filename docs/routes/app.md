@@ -1349,7 +1349,7 @@ cold-only way (before Linux 6.11) drops its whole cache instead.
 `logs/qemu.log` has two lines per give-back ("macOS is compressing the VM
 ...", then what the VM freed and QEMU's footprint 60 s later).
 
-**When the VM is idle** (3.2.17). Free page reporting hands Linux's free
+**When the VM is idle** (3.2.18). Free page reporting hands Linux's free
 memory to QEMU only in blocks of 256 KiB and up. After a browser closes, a
 give-back or a cache drop, much of what Linux freed sits in smaller blocks,
 and those stay on the Mac (a 4 GB test VM with Chrome just closed: 1.2 GB on

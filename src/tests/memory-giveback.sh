@@ -294,7 +294,7 @@ if [[ $(uname -s) == Darwin ]]; then
   printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\ngiven_mb=12186\nreturned_mb=0\noff=0\nkept=1\n' "$at" > "$V/logs/memory-giveback"
   expect "QEMU found macOS keeping the pages (kept=1): off for the rest of the run" \
     "VM memory: 42.0 GB; give-back while macOS compresses: off for the rest of this run (macOS kept the pages QEMU gave back); the VM freed file cache 3 times this run, the last at 10:12 (macOS was compressing the VM): 11.9 GB" "$(vmrow "$V")"
-  # Idle give-backs (3.2.17): their own count, never in "N times" or "the last at".
+  # Idle give-backs (3.2.18): their own count, never in "N times" or "the last at".
   printf 'count=3\nat=%s\ntrigger=compressing\nact=reclaim\ngiven_mb=12186\nreturned_mb=0\noff=0\nidle=4\nidle_mb=2150\nidle_at=%s\n' "$at" "$at" > "$V/logs/memory-giveback"
   expect "idle give-backs beside the others: their own count and MB" \
     "VM memory: 42.0 GB; give-back while macOS compresses: on; the VM freed file cache 3 times this run, the last at 10:12 (macOS was compressing the VM): 11.9 GB; while the VM was idle it gave back memory 4 times this run, 2.1 GB by its own count" "$(vmrow "$V")"
