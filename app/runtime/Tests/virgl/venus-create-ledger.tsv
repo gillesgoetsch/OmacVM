@@ -2,7 +2,7 @@ call	field	verdict	what vkr checks	evidence
 vkCreateRenderPass(2)	attachment refs (color, input, resolve, depth/stencil, ds resolve), preserve	A	< attachmentCount or UNUSED (Mesa vk_render_pass asserts only)	r-att-ref-far (MVK 10)
 vkCreateRenderPass(2)	colorAttachmentCount, inputAttachmentCount	A	colors <= maxColorAttachments	r-colors-9 (KK 6)
 vkCreateRenderPass(2)	attachment samples	A	one bit within the device's counts	
-vkCreateRenderPass(2)	attachment format	B	known, with color or depth/stencil attachment features (linear or optimal)	PR-B: r-format-bad, r-format-r64
+vkCreateRenderPass(2)	attachment format	B+C	known; color or depth/stencil attachment features (linear or optimal) where a subpass uses it (C: one no subpass uses, only known)	PR-B: r-format-bad, r-format-r64; C legal: r-unused-format-ok
 vkCreateRenderPass(2)	dependency src/dstSubpass	A	< subpassCount or EXTERNAL	
 vkCreateRenderPass(2)	viewMask, VkRenderPassMultiviewCreateInfo counts	A	view masks within the lowered view count (correlation masks are not checked: no rule bounds them, the drivers only copy them); multiview subpassCount 0 or = subpassCount, dependencyCount 0 or =	r-mv-legal-9..32 (KK 6), r-multiview-all; legal: r-correlation-ok, r-correlation2-ok
 vkCreateRenderPass(2)	VkRenderPassInputAttachmentAspectCreateInfo subpass, index	A	< subpassCount, < its input count	
@@ -39,7 +39,7 @@ vkCreateDescriptorSetLayout	push descriptor layouts	A	<= maxPushDescriptors, no 
 vkCreateDescriptorSetLayout	mutable type lists	A	list count covers every MUTABLE binding, listed types known, none MUTABLE	
 vkCreateDescriptorPool	maxSets, pool sizes	A	each <= 2^24 (KK multiplies in 32 bits), types known	d-pool-overflow
 vkAllocateDescriptorSets	variable descriptor counts	A	count 0 or = sets; each <= the variable binding's count	d-var-count-big, d-var-info-short
-vkUpdateDescriptorSets	dstBinding, dstArrayElement, count, type	A	binding exists, type matches (or MUTABLE lists it), elements inside the binding and the consecutive ones of the same type (bindings without descriptors and missing numbers skipped), inline offset/size	d-binding-far (KK 10), d-elem-far (both), d-dyn-elem-far, d-inline-far, d-copy-far; legal: d-consecutive-gap-ok, d-consecutive-zero-ok, d-copy-consecutive-ok
+vkUpdateDescriptorSets	dstBinding, dstArrayElement, count, type	A+C	binding exists, type matches (or MUTABLE lists it), elements inside the binding and the consecutive ones of the same type (bindings without descriptors and missing numbers skipped), inline offset/size; C: split per binding for the driver, each part checked in its own binding (type, mutable list, YCbCr planes); may start past dstBinding	d-binding-far (KK 10), d-elem-far (both), d-dyn-elem-far, d-inline-far, d-copy-far; legal: d-consecutive-gap-ok, d-consecutive-zero-ok, d-copy-consecutive-ok; C: d-start-past-all; legal: d-start-next-ok, d-copy-start-next-ok, d-planes-ok, d-mutable-ok (MVK freed/unowned write before, libgmalloc)
 vkUpdateDescriptorSets	sampler, image view, buffer, texel view handles	A	sampler not NULL without immutable samplers; NULL view/buffer (dynamic ones too) only with nullDescriptor; a multi-planar view only with immutable YCbCr samplers	d-null-sampler (KK 11), gap 8: d-null-buffer, d-null-view; legal: d-null-dynamic-nd
 vkUpdateDescriptorSets	buffer offset/range	A	offset < size, range WHOLE or offset + range <= size	d-range-past, d-offset-past-whole (accepted: GPU)
 vkCreateQueryPool	queryType, queryCount	A	a type the device has (kk_query_pool.c:42 UNREACHABLE); 1..2^20	q-pool-type-bad, q-pool-huge
@@ -52,3 +52,13 @@ vkCreateShaderModule	content	B	structural scan	p-spirv-*; PR-B: p-spirv-garbage,
 vkCreatePipelineCache	initial data	values only	both parsers live with garbage	p-cache-garbage, p-cache-header
 vkCreateDescriptorUpdateTemplate	entries	values only	never used on the host (template updates are not dispatched)	
 vkCreateImageView / vkCreateSamplerYcbcrConversion / vkCreateSampler	plane counts	A	kept for descriptor writes	
+vkFreeCommandBuffers / vkFreeDescriptorSets	handles	C	each of the pool the call names, named once (checked before any is freed)	f-cmds-dup, f-cmds-other-pool, f-sets-dup, f-sets-other-pool (KK 11 on two); legal: f-cmds-ok, f-cmds-null-ok, f-sets-ok, f-sets-reset-ok
+vkQueueSubmit	VkTimelineSemaphoreSubmitInfo value counts	C	value arrays made the submit's wait and signal counts (extra dropped, missing 0)	legal: s-submit-values-64 (MVK heap write before, libgmalloc)
+vkQueueSubmit	VkDeviceGroupSubmitInfo counts	C	the submit's counts (VUIDs 00082, 00083, 00084)	s-submit-group-counts
+vkQueueBindSparse	queue	C	a family with SPARSE_BINDING (none on the Mac drivers)	s-bind-sparse
+vkAllocateMemory	VkMemoryDedicatedAllocateInfo	C	not an image and a buffer; the memory linked to its target	legal: x-dedicated-bound-ok, x-dedicated-unbound-ok, x-dedicated-buffer-unbound-ok, x-dedicated-context-end-ok
+vkBindImageMemory(2) / vkBindBufferMemory(2)	memory dedicated to another object	C	only its target binds, at offset 0 (VUIDs 02628, 10926, 01508, 10925)	x-dedicated-other, x-dedicated-alias, x-dedicated-buffer-to-image
+vkDestroyImage / vkDestroyBuffer	a target of live dedicated memory	C	the driver's destroy after the memory's free (also at the context's end)	legal: x-dedicated-unbound-ok (MVK freed-memory write before, libgmalloc)
+vkCreateFramebuffer	pAttachments	C	the views kept by id and serial for the begin	c-state-destroyed-view-begin
+Venus contexts, vkCreateRingMESA, vkCreateDevice	threads, open files	C	one process budget of 1024 guest threads; contexts within a sixteenth of the open-file limit and 256	test-venus-threads: contexts, rings, queues, context-files
+replies	chained output structs	C	temporary memory zeroed for commands with a reply	o-refused-chain, o-unwritten-chain (test-venus-robust)

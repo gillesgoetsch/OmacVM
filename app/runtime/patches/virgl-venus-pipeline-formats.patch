@@ -1,11 +1,14 @@
 virglrenderer: Venus attachment formats are ones the device renders to
 
-What: render pass attachments (vkCreateRenderPass and 2), and the color,
-depth and stencil formats of a pipeline's dynamic rendering and of a
+What: the render pass attachments a subpass uses (vkCreateRenderPass and 2: as
+color, input, resolve, depth/stencil or its resolve, shading rate), and the
+color, depth and stencil formats of a pipeline's dynamic rendering and of a
 secondary's inherited rendering, are formats vkr's format table knows with
 the color or depth/stencil attachment feature among the host's linear or
 optimal tiling features (VK_FORMAT_UNDEFINED, no attachment, where Vulkan
-allows it), and a color format list has the count's entries. A refused
+allows it), and a color format list has the count's entries. An attachment no
+subpass uses needs only a format the table knows (Mesa computes aspects for
+every attachment; Vulkan puts the feature rules on the references). A refused
 create or begin ends the app's context.
 Why: an unknown VkFormat in a pipeline's rendering info ended both drivers
 (KosmicKrisp in kk_lower_nir; MoltenVK: strlen(NULL) in
@@ -13,10 +16,11 @@ MVKPixelFormats::getMTLPixelFormat), and KosmicKrisp ended on an
 R64G64B64A64 color attachment, which Metal has no pixel format for.
 Upstream: OmacVM policy (spec VUIDs), draft only.
 Tests: Tests/virgl/test-venus-commands.c (p-gfx-format-, p-gfx-depth-format-,
-r-format-, c-inherit-format-bad cases).
+r-format-, c-inherit-format-bad cases; r-unused-format-ok: an attachment no
+subpass uses, of a sampled-only format, through a framebuffer, begin and end).
 
 diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
-index a6f3215..f60ae6b 100644
+index c8572f4..1525903 100644
 --- a/src/venus/vkr_command_buffer.c
 +++ b/src/venus/vkr_command_buffer.c
 @@ -339,10 +339,16 @@ vkr_cmd_inheritance_ok(struct vkr_context *ctx,
@@ -137,36 +141,120 @@ index ad6e502..204ebfd 100644
     const VkRenderingAttachmentLocationInfo *locations =
        vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO);
 diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
-index 26eb4d2..80f9dd3 100644
+index 26eb4d2..7021a83 100644
 --- a/src/venus/vkr_render_pass.c
 +++ b/src/venus/vkr_render_pass.c
-@@ -169,8 +169,12 @@ vkr_render_pass_info_1(const struct vkr_physical_device *physical_dev,
+@@ -5,6 +5,8 @@
+ 
+ #include "vkr_render_pass.h"
+ 
++#include "vkr_format_table.h"
++
+ #include "vkr_render_pass_gen.h"
+ #include "vkr_image.h"
+ #include "vkr_physical_device.h"
+@@ -148,6 +150,37 @@ vkr_subpass_refs_2(const VkSubpassDescription2 *s,
+    return n;
+ }
+ 
++/* OmacVM (virgl-venus-pipeline-formats.patch): the attachments a subpass uses (color, input,
++ * resolve, depth/stencil and its resolve, shading rate) have formats the device renders to;
++ * one no subpass uses needs only a format vkr knows (Mesa computes aspects for every
++ * attachment), as Vulkan puts the format feature rules on the references
++ * (VUID-VkSubpassDescription-pColorAttachments-02648, -pInputAttachments-02647, ...) */
++static bool
++vkr_subpass_formats_ok(const struct vkr_physical_device *physical_dev,
++                       uint32_t subpass,
++                       const uint32_t *refs,
++                       uint32_t n,
++                       const VkFormat *formats,
++                       size_t stride,
++                       char *why,
++                       size_t why_size)
++{
++   for (uint32_t r = 0; r < n; r++) {
++      if (refs[r] == VK_ATTACHMENT_UNUSED)
++         continue;
++      const VkFormat format = *(const VkFormat *)((const char *)formats + stride * refs[r]);
++      if (!vkr_physical_device_format_ok(physical_dev, format,
++                                         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
++                                            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
++                                            VK_FORMAT_FEATURE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)) {
++         snprintf(why, why_size, "subpass %u: attachment %u of format %d", subpass, refs[r],
++                  format);
++         return false;
++      }
++   }
++   return true;
++}
++
+ /* the subpass table, or NULL with why */
+ static struct vkr_subpass_info *
+ vkr_render_pass_info_1(const struct vkr_physical_device *physical_dev,
+@@ -169,8 +202,10 @@ vkr_render_pass_info_1(const struct vkr_physical_device *physical_dev,
        return NULL;
     }
     for (uint32_t i = 0; i < info->attachmentCount; i++) {
 -      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
 -         snprintf(why, why_size, "attachment %u: %u samples", i, info->pAttachments[i].samples);
 +      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples) ||
-+          !vkr_physical_device_format_ok(physical_dev, info->pAttachments[i].format,
-+                                         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-+                                            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
++          !vkr_format_block_size(info->pAttachments[i].format)) {
 +         snprintf(why, why_size, "attachment %u: %u samples, format %d", i,
 +                  info->pAttachments[i].samples, info->pAttachments[i].format);
           return NULL;
        }
     }
-@@ -239,8 +243,12 @@ vkr_render_pass_info_2(const struct vkr_physical_device *physical_dev,
+@@ -197,7 +232,10 @@ vkr_render_pass_info_1(const struct vkr_physical_device *physical_dev,
+          goto fail;
+       }
+       const uint32_t n = vkr_subpass_refs_1(s, refs);
+-      if (!vkr_subpass_ok(physical_dev, info->attachmentCount, i, &d, refs, n, why, why_size))
++      if (!vkr_subpass_ok(physical_dev, info->attachmentCount, i, &d, refs, n, why, why_size) ||
++          !vkr_subpass_formats_ok(physical_dev, i, refs, n,
++                                  info->pAttachments ? &info->pAttachments[0].format : NULL,
++                                  sizeof(info->pAttachments[0]), why, why_size))
+          goto fail;
+       subpasses[i] = (struct vkr_subpass_info){ s->colorAttachmentCount, d.view_mask };
+    }
+@@ -239,13 +277,16 @@ vkr_render_pass_info_2(const struct vkr_physical_device *physical_dev,
        return NULL;
     }
     for (uint32_t i = 0; i < info->attachmentCount; i++) {
 -      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples)) {
 -         snprintf(why, why_size, "attachment %u: %u samples", i, info->pAttachments[i].samples);
 +      if (!vkr_sample_count_ok(lim, info->pAttachments[i].samples) ||
-+          !vkr_physical_device_format_ok(physical_dev, info->pAttachments[i].format,
-+                                         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-+                                            VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
++          !vkr_format_block_size(info->pAttachments[i].format)) {
 +         snprintf(why, why_size, "attachment %u: %u samples, format %d", i,
 +                  info->pAttachments[i].samples, info->pAttachments[i].format);
           return NULL;
        }
     }
+    struct vkr_subpass_info *subpasses = calloc(info->subpassCount, sizeof(*subpasses));
+-   uint32_t *refs = malloc(sizeof(*refs) * (2 * (size_t)lim->maxColorAttachments + 2 + 4096));
++   /* inputs, colors and resolves, depth/stencil and its resolve, shading rate */
++   uint32_t *refs = malloc(sizeof(*refs) * (2 * (size_t)lim->maxColorAttachments + 3 + 4096));
+    if (!subpasses || !refs) {
+       snprintf(why, why_size, "out of host memory");
+       goto fail;
+@@ -275,7 +316,7 @@ vkr_render_pass_info_2(const struct vkr_physical_device *physical_dev,
+       }
+       const VkFragmentShadingRateAttachmentInfoKHR *fsr = vkr_find_struct(
+          s->pNext, VK_STRUCTURE_TYPE_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR);
+-      const uint32_t n =
++      uint32_t n =
+          vkr_subpass_refs_2(s, ds ? ds->pDepthStencilResolveAttachment : NULL, refs);
+       if (!vkr_subpass_ok(physical_dev, info->attachmentCount, i, &d, refs, n, why, why_size) ||
+           (fsr && fsr->pFragmentShadingRateAttachment &&
+@@ -286,6 +327,12 @@ vkr_render_pass_info_2(const struct vkr_physical_device *physical_dev,
+                      info->attachmentCount);
+          goto fail;
+       }
++      if (fsr && fsr->pFragmentShadingRateAttachment)
++         refs[n++] = fsr->pFragmentShadingRateAttachment->attachment;
++      if (!vkr_subpass_formats_ok(physical_dev, i, refs, n,
++                                  info->pAttachments ? &info->pAttachments[0].format : NULL,
++                                  sizeof(info->pAttachments[0]), why, why_size))
++         goto fail;
+       subpasses[i] = (struct vkr_subpass_info){ s->colorAttachmentCount, s->viewMask };
+    }
+    for (uint32_t i = 0; i < info->dependencyCount; i++) {
