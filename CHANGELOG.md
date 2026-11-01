@@ -13,6 +13,19 @@ in more words.
   7 minutes less per Mac job; their terminal helper now waits for the program's end (on Linux it
   stopped early, on macOS it waited out its time) (#668). Nothing changes in the app or the VM.
 
+- **QEMU's own-view sweep turns itself off instead of stopping the VM (OmacVM.app, #666).** 3.2.17's
+  sweep (Activity Monitor counts the VM's memory once, #651) stopped QEMU, and with it the VM, when
+  a remap did not keep QEMU's view of the VM's memory as it was, and it had been tested on macOS 27
+  only; a busy Mac could even trigger that with nothing wrong. Now QEMU tries the remap on 256 MB of
+  scratch memory before the VM starts and turns the sweep off for the run if it does not keep the
+  same memory or takes more than 3 seconds (qemu.log: "own-view sweep: off (why)"). During the run
+  it keeps a spare mapping of each chunk while it remaps it, maps a chunk back if the remap changed
+  it, and stops the sweep; the VM keeps running. QEMU stops only if mapping back fails too.
+  `omacvm check`'s "Activity Monitor" row says why the sweep is off. Checked in a hidden test VM on a
+  MacBook Pro M1 Max (macOS 27): the sweep as before, and with each failure made on purpose the VM
+  kept running and its files read back the same; its tests also pass on macOS 15 and 26. Needs the app
+  update, from the VM's next start; nothing in the VM.
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;

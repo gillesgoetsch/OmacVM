@@ -1,7 +1,10 @@
 # 0066: Activity Monitor counts guest RAM once (QEMU sweeps its own view)
 
 Status: accepted, built (`vm-memory` unit `dcount-sweep`, 3.2.17), on by
-default; `OMACVM_DCOUNT_SWEEP=0` turns it off. Corrects the "counted twice
+default; `OMACVM_DCOUNT_SWEEP=0` turns it off. Amended in 3.2.18 (unit
+`sweep-safe`, [below](#amendment-3218-the-sweep-turns-itself-off-instead-of-stopping-qemu)):
+a sweep that would not do what this ADR expects turns itself off or maps
+back instead of stopping QEMU. Corrects the "counted twice
 while macOS compresses" words of [0062](0062-free-page-reclaim.md) and #633.
 Notes and raw rows: work/tracks/vm-memory.md ("dcount-sweep"),
 work/vm-memory/dcount-sweep/raw.
@@ -64,16 +67,17 @@ reclaim of ADR 0062):
   footprint while QEMU's touches grow the second count (M1 Max rows: no
   pass for 4 minutes at a one-minute period, 289 MB counted twice again).
 - Checked at run time, not by macOS version: before each remap every map
-  entry of the chunk must share its object (`SM_TRUESHARED` or `SM_SHARED`,
-  an object id), be readable and writable and not wired. A copy-on-write
+  entry of the chunk must share its object (3.2.17: `SM_TRUESHARED` or
+  `SM_SHARED`; from 3.2.18 the share mode the trial measured, below), an
+  object id, be readable and writable and not wired. A copy-on-write
   entry, or one with no object yet, would get memory of its own from the
   remap, and QEMU and the guest would no longer see the same page (a disk read
   would land where the guest cannot see it). Such a chunk stays as it is and
-  is counted, with one qemu.log line. In the first pass QEMU reads the
-  chunk's objects and offsets again after each remap; a change means that has
-  happened anyway, so QEMU stops (abort) before it reads or writes there
-  rather than run on with a view that is not the guest's memory. A failed
-  remap that left the view as it was stops the sweep for the run, one line.
+  is counted, with one qemu.log line. In 3.2.17's first pass QEMU read the
+  chunk's objects and offsets again after each remap and stopped (abort) on a
+  change; 3.2.18 checks every pass and maps the chunk back (amendment). A
+  failed remap that left the view as it was stops the sweep for the run, one
+  line.
 - qemu.log: a start line, "own-view sweep: on" or "off" (`omacvm check`'s
   "Activity Monitor" row picks its words from it, so an omacvm beside an
   older app says the right thing); a line an hour from the sweep's own timer
@@ -166,3 +170,158 @@ reclaim of ADR 0062):
   s per hour on main, 57.2 s per hour with the sweep (no pass ran in the
   window: two looks, both skipped). Watts at idle were not measured under
   the bench lock.
+
+## Amendment (3.2.18): the sweep turns itself off instead of stopping QEMU
+
+Unit `sweep-safe` (work/tracks/arch-review-3217.md's follow-up and the
+lane's architecture review; work/followups-3217/sweep-safe).
+
+### Context
+
+- 3.2.17 stopped QEMU (abort) when its first pass found that a remap had
+  changed QEMU's view, and its host test ran on macOS 27 only. OmacVM.app
+  supports macOS 15 and newer. Nothing on the Mac promises that a remap
+  with copy=FALSE keeps the same objects on every macOS, and a user cannot
+  easily set `OMACVM_DCOUNT_SWEEP=0`.
+- What XNU (`vm_map.c` with `vm_sanitize`, macOS 15 era or later) can do to
+  such a remap:
+  - `vm_map_region_walk` reads an object's reference count one low while a
+    fault or page-out runs on it (`paging_in_progress`). QEMU's view and
+    the hypervisor's map share each object (two references), so true
+    shared memory can read `SM_PRIVATE` for a moment. 3.2.17's check after
+    the remap refused that and stopped QEMU: possible on a busy Mac with
+    nothing wrong.
+  - A failed overwrite can leave the old entries unmapped (the delete's
+    zap list is not put back), so "a failed remap left the view as it was"
+    is not promised.
+  - A kernel-wired entry (`vm_map_wire`: mlock, `-overcommit mem-lock`,
+    physio on a raw disk device) makes the overwrite wait, without a time
+    limit, with the map lock released and earlier entries already unlinked.
+    No check can see kernel wiring. IOMemoryDescriptor and direct I/O
+    (F_NOCACHE) wire pages, not entries, and do not block the remap.
+  - With copy=FALSE XNU can shadow QEMU's own entry while it extracts it
+    (copy strategy symmetric and needs-copy, shadowed, or not true shared
+    and the object larger than the entry). `SM_TRUESHARED` (true share, copy
+    delay) is safe; `SM_SHARED` is not promised to be.
+  - Full region info looks at every page of the range; the short info has
+    every field the sweep reads.
+
+### Decision
+
+- **A trial before the machine starts.** QEMU allocates 256 MB of scratch
+  memory as it allocates RAM blocks and the hypervisor maps it as guest RAM
+  (`hv_vm_map` at a 1 GB boundary past one of the machine's regions, 4 GB
+  up at least, below the VM's IPA size, that no region or container
+  overlaps: no vCPU or device reaches it; with no such IPA, or a failing
+  `hv_vm_map`, a second mapping stands in). QEMU's view writes a word every
+  MB of the first 128 MB, then a 4 MB piece gets new memory as a free page
+  report leaves it (`hv_vm_unmap`, `mmap`, `hv_vm_map`, without the
+  reclaim's call, worker or counters). The trial reads the share mode every
+  map entry has (normally `SM_TRUESHARED`), makes a second mapping of the
+  chunk, runs the real chunk steps on it (below), and then QEMU's view and
+  the second mapping must read what was there and each other's writes.
+  Anything else, or a trial past 3 s (on its own thread: a kernel that wired
+  what the hypervisor maps would make the remap wait), and the sweep is off
+  for the run: one start line, "own-view sweep: off (why): Activity Monitor
+  counts the VM's pages QEMU touches twice", no timer, guest RAM never
+  remapped, the scratch memory and its mappings gone (a trial past the
+  limit removes them itself when it ends), the reclaim untouched. It takes
+  about 1 ms. No trial when the sweep is off by `OMACVM_DCOUNT_SWEEP=0`, for
+  RAM that is not QEMU's private memory, or with `-overcommit mem-lock`
+  (off, with that reason).
+- **Each chunk**, under the BQL:
+  1. its map entries (short region info) must have the trial's share mode,
+     an object, be readable and writable, not wired, inherited alike; else
+     it stays as it is (a reference count read low then only skips it);
+  2. a spare: one more mapping of the chunk (`mach_vm_remap`, copy=FALSE,
+     anywhere, not inherited, as the reclaim's move aside). It touches no
+     page and makes no page table entry; it holds one more reference per
+     object for a moment. It must map the same objects and offsets, and
+     QEMU's view must still do (no spare: the sweep stops; a view that
+     changed: mapped back from the spare if the spare is right);
+  3. the remap over itself (`VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE`, copy=FALSE);
+  4. at once, with nothing between (no log, no footprint read), the entries
+     read again: the same objects at the same offsets, readable and writable,
+     not copy-on-write or empty. Any other share mode passes (the reference
+     count read low). This runs on every pass, not only the first;
+  5. right: the spare goes. Changed (other memory, or a hole after a failed
+     remap): QEMU's view is mapped back from the spare, over what is mapped
+     there and into what is not (`VM_FLAGS_FIXED` alone: a delete across a
+     hole raises EXC_GUARD), checked again, twice at most; the spare goes;
+     the sweep stops for the run: "stopped for this run: mapped back after
+     N us: the remap at +X MB changed QEMU's view (...); a disk, network or
+     graphics transfer through that chunk in that time may have gone wrong".
+     The mapped-back chunk is counted apart ("1 mapped back"). QEMU stops
+     (abort) only when its view is still not the guest's memory after that:
+     "could not be mapped back".
+  QEMU never unmaps, maps, protects or deallocates its view itself.
+- **What remains.** Disk and network threads and Venus' ring threads do not
+  take the BQL. In the time between a remap that went wrong and the end of
+  mapping back, a transfer through that chunk can read or write the wrong
+  page: 44-118 us in the unit test for a chunk without page table entries,
+  0.8-4.3 ms for one QEMU had touched all over, 2.2 ms in the M1 VM row
+  (below). 3.2.17 had the same window before its abort. It only matters on
+  a macOS that does what the trial did not show.
+- **Precondition**: guest RAM is not wired by the kernel: no mlock, no
+  `-overcommit mem-lock` (turns the sweep off) and no raw disk device for a
+  VM disk (OmacVM.app's disks are files).
+- **omacvm check** takes the why from "off (why):" or "stopped for this
+  run: why" (printable ASCII, 120 characters at most): "QEMU's own-view
+  sweep is off for this run: why". A 3.2.17 CLI with this QEMU still reads
+  "off"/"stopped" as before (the plain words, no why); a new CLI with
+  3.2.17's QEMU shows 3.2.17's reasons; with 3.2.16's QEMU (no line) it
+  says nothing about the sweep. qemu.log is emptied at each start.
+- **Test hook** (test mode only, `OMACVM_TEST_SKIP_DISPLAYS`; the app drops
+  it in a release build): `OMACVM_TEST_SWEEP_DIVERGE=canary` gives the
+  trial's view new memory after its remap, `=chunk` the same to guest RAM's
+  third chunk (256 MB in) at its first remap (`=chunk:N`: at the remap after
+  N of them, a later pass). It lives in the sweep's block
+  (`omacvm_sweep_test_*`), which the unit test builds too.
+
+### Tests and rows (3.2.18)
+
+- `Tests/memory/test-dcount.sh` (and CI's `src/tests/memory-dcount.sh`, 40
+  checks): the trial passes and leaves nothing behind; the rows of 3.2.17;
+  with the hook, each with a second mapping and a real `hv_vm_map`:
+  `--canary` (off with why, no remap of guest RAM, memory the same both
+  ways), `--diverge` (the first pass), `--chunk` (a later pass, under
+  pread/pwrite: mapped back, 0 bad rounds), `--spare` (stopped before that
+  chunk's remap), `--hole` (mapped back around and into the hole, no remap
+  over it), `--dip` (a chunk read private once: the pass goes on, no line),
+  `--hang` (the trial past a 200 ms limit: off; its memory gone once it
+  ends) and `--unmapped` (mapping back fails too: QEMU stops, the only abort
+  left). The same cases against 3.2.17's sweep (6fddfa70, the hook around
+  its calls): `--diverge`, `--hole` and `--dip` stop QEMU, `--chunk` leaves
+  QEMU's view other memory than the guest's
+  (work/followups-3217/sweep-safe/old-block-6fddfa70.txt).
+- VM rows, MacBook Pro M1 Max (macOS 27.0.1), a hidden 4 GB test VM (4
+  vCPUs, a clone updated to 3.2.17) with a test app of this branch,
+  `OMACVM_DCOUNT_SWEEP=60`, one take (work/followups-3217/sweep-safe/raw/m1):
+  - default: the one start line "on: ... (after a trial on scratch memory
+    mapped by the hypervisor, 1.2 ms; ...)"; U 106 MB right after the first
+    pass (3.2.17's release gate on the mini: 183-205 MB); 1477 MB after
+    2.5 GB of reads, 114 MB after the next pass; a 300+ MB file's sha256 the
+    same from the cache and from the disk after a pass, 300 MB written and
+    read back the same; per chunk p99 and longest 7.85 ms; check: no "off".
+  - `canary`: the one start line "off (a trial remap on scratch memory: the
+    remap at +0 MB changed QEMU's view (...); mapped back)"; QMP says
+    running; no pass; U 1305 MB after the boot and 1845 MB after the reads,
+    as up to 3.2.16; check's row ends "QEMU's own-view sweep is off for this
+    run: a trial remap on scratch memory: ...".
+  - `chunk:1` (the second pass, the guest idle): "stopped for this run:
+    mapped back after 2193 us: the remap at +256 MB changed QEMU's view
+    (...)"; QMP says running; the file's sha256 the same before, from the
+    cache and from the disk after; 300 MB written and read back the same;
+    the run's line "34 chunks remapped, 1 mapped back", p99 and longest
+    10.13 ms; check says why.
+  - 0 host GPU faults, 0 tccd "Notifying" lines.
+- GitHub's macos-15 (a manual "Run workflow", run 41254137128): memory-dcount
+  40 of 40, test-dcount all ok on the second-mapping path (no hypervisor for
+  the runner's processes: `--hv` skipped), activity-monitor ok.
+- macOS 26.6.2 and 15.7.7 in headless VMs on the M1 (followups-3217/host,
+  work/tracks/vm-memory.md "sweep on macOS 26 and 15"): this branch's
+  test-dcount all ok on the second-mapping path (the trial passes, 1.1 and
+  1.4 ms; the hook's cases as on macOS 27), and 3.2.17's sweep does not
+  diverge there either. The real `hv_vm_map` rows need a Mac that runs
+  macOS 26 or 15 itself (no nested virtualization on the M1): OWED.
+

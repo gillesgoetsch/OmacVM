@@ -1557,7 +1557,13 @@ back; a pass is skipped while QEMU's footprint grew less than 64 MB, at most
 twice in a row.
 `logs/qemu.log` says "own-view sweep: on" at the start, then a line an hour
 (passes, MB less in Activity Monitor, the main lock's hold per chunk);
-`OMACVM_DCOUNT_SWEEP=0` turns it off. A page only QEMU touched since the
+`OMACVM_DCOUNT_SWEEP=0` turns it off. From 3.2.18 QEMU first tries the
+remap on 256 MB of scratch memory before the VM starts and turns the sweep
+off for the run ("own-view sweep: off (why)") if that does not keep the
+same memory; during the run it keeps a spare mapping of each chunk while it
+remaps it, maps a chunk back if the remap changed it and stops the sweep
+("stopped for this run: mapped back after N us: ..."), and the VM keeps
+running (ADR 0066's amendment). A page only QEMU touched since the
 guest last did (a disk read the guest has not used yet) leaves the count
 until one of them touches it again. `omacvm check`'s "Activity Monitor" row
 says what the number is made of while the VM runs: "19.3 GB for the VM: VM
@@ -1565,7 +1571,8 @@ memory at most 10.0 GB, graphics 3.2 GB now, the rest 6.1 GB (QEMU itself,
 graphics overhead and pages of the VM QEMU touched, which macOS counts
 twice)"; with a QEMU that sweeps (its own qemu.log line, not omacvm's
 version) "pages of the VM QEMU touched since its last sweep, counted twice
-until then". VM memory is at most what QEMU runs with (`-m`), as Linux may
+until then"; with one whose sweep is off or stopped, the plain words and
+"QEMU's own-view sweep is off for this run: why". VM memory is at most what QEMU runs with (`-m`), as Linux may
 not have touched all of it; the graphics are the VM's own count
 (`logs/gpu-memory`); the rest is not split further. The row reads QEMU's
 footprint with `proc_pid_rusage` (`src/lib/footprint.py`): no task port,

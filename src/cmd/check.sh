@@ -493,10 +493,13 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   # threads touched, which macOS counts a second time, compressed or not (ADR
   # 0066). A QEMU that sweeps its own view of the VM's RAM (its first
   # "own-view sweep: on" line in qemu.log, from 3.2.17) drops that count every
-  # few minutes: then only what it touched since its last sweep (unless it
-  # stopped for the run: "own-view sweep: stopped for this run"). The words
-  # come from this QEMU's line, not from this omacvm's version (an omacvm can
-  # run beside an older app). Only while QEMU runs and writes
+  # few minutes: then only what it touched since its last sweep. A sweep that
+  # is off ("own-view sweep: off (why)", from 3.2.18 also when its trial on
+  # scratch memory failed) or stopped for the run ("stopped for this run:
+  # why") gives the plain words and its why (printable ASCII, 120 characters
+  # at most). The words come from this QEMU's lines, not from this omacvm's
+  # version (an omacvm can run beside an older app; 3.2.16's QEMU has no
+  # line, and then no why). Only while QEMU runs and writes
   # logs/gpu-memory. Memory above this Mac's Best tier is a warning (the same
   # words as omacvm resources), never a failure; the setting stays.
   am_pid=$(app_pid_dir "$(dirname "$(dirname "$miclog")")")
@@ -508,11 +511,23 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
       what="$(gb "$am_fp") for the VM: VM memory at most $(gb "$am_vm"), graphics $(gb "$am_gpu") now"
       am_rest=$(( am_fp - am_vm - am_gpu ))
       am_twice="pages of the VM QEMU touched, which macOS counts twice"
-      if [[ $(LC_ALL=C grep -a -o -E 'OmacVM: own-view sweep: (on|off)' "$miclog" 2>/dev/null | head -1) == *": on" ]] &&
-         ! LC_ALL=C grep -a -c 'OmacVM: own-view sweep: stopped for this run' "$miclog" > /dev/null 2>&1; then
+      am_start=$(LC_ALL=C grep -a -m1 -E 'OmacVM: own-view sweep: (on|off)' "$miclog" 2>/dev/null)
+      am_stop=$(LC_ALL=C grep -a -m1 'OmacVM: own-view sweep: stopped for this run: ' "$miclog" 2>/dev/null)
+      am_off=""
+      if [[ $am_start == *"OmacVM: own-view sweep: on"* && -z $am_stop ]]; then
         am_twice="pages of the VM QEMU touched since its last sweep, counted twice until then"
+      elif [[ $am_start == *"OmacVM: own-view sweep: on"* ]]; then
+        am_off=$(printf '%s\n' "$am_stop" | LC_ALL=C sed -E -n \
+          's/.*OmacVM: own-view sweep: stopped for this run: (.*); Activity Monitor counts .*/\1/p')
+      elif [[ $am_start == *"OmacVM: own-view sweep: off ("* ]]; then
+        am_off=$(printf '%s\n' "$am_start" | LC_ALL=C sed -E -n \
+          -e 's/.*OmacVM: own-view sweep: off \((.*)\): Activity Monitor counts .*/\1/p' \
+          -e 's/.*OmacVM: own-view sweep: off \((.*)\)$/\1/p')
       fi
+      am_off=$(printf '%s' "$am_off" | LC_ALL=C tr -cd '\040-\176')
+      (( ${#am_off} > 120 )) && am_off="${am_off:0:117}..."
       (( am_rest > 0 )) && what="$what, the rest $(gb "$am_rest") (QEMU itself, graphics overhead and $am_twice)"
+      [[ -n $am_off ]] && what="$what; QEMU's own-view sweep is off for this run: $am_off"
       mac_specs
       am_warn=$(mem_warning app "$am_vm" "$VM")
       # A memory set while the VM runs (vm.env, e.g. lowered to Best) is not in
