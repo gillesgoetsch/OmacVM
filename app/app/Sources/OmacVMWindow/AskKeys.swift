@@ -48,7 +48,9 @@ public enum AskKeys {
     /// on the main queue waits for ever while runModal runs inside another
     /// such block, and the buttons would stay off.
     public static func hold(_ alert: NSAlert) {
-        hold(controls: alert.buttons + [alert.suppressionButton].compactMap { $0 })
+        var controls: [NSControl] = alert.buttons
+        if let box = alert.suppressionButton { controls.append(box) }
+        hold(controls: controls)
     }
 
     public static func hold(controls: [NSControl]) {
