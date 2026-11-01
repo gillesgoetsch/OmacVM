@@ -189,10 +189,20 @@ less than that in real memory); a cache drop alone gave back only 536 of its
   neither the idle give-back nor the compaction after the warning's drop
   runs while QEMU has min(2 GB, a quarter of the Mac) or more outside its
   resident memory (on the mini: 2.7 to 5.8 GB in every sample of both
-  arms, footprint less resident). The cause of that line is open: the
-  window also held the kit's full snapshot (`footprint`, `vmmap` and
-  `heap -s` suspend QEMU; 2.2-2.4 s gaps in other rows), and so did the
-  M1 Max's warning row below, the only other window with such a line.
+  arms, footprint less resident). That line came from the test kit, not
+  from the compaction: it is line 42 of 44 in the qemu.log copy the kit's
+  full snapshot makes right after `footprint`, `vmmap` and `heap -s`,
+  which suspend QEMU; such lines sit at the end of a full
+  snapshot also in rows that never compacted (3.2.16's quiet row). In the
+  rows of 2026-11-01 all 4 stall lines were written at the end of a full
+  snapshot (1.5-3.5 s late, 4-13 s of tools) and none in 41 minutes of
+  windows without one. A third proof by hand on the mini, with stall lines
+  counted before the snapshot: 1067 -> 115 MB in 0.5 s, the VM's worst
+  wait 8.7 ms, 0 stall lines, and 456 MB more free + reusable memory over
+  its 60 s (reusable +767 MB) while the Mac's free memory fell by 719 and
+  372 MB in the control windows around it (other processes). Compaction
+  while macOS compresses stays out of this change all the same (see "Not
+  now").
 - **Idle** (the review's S3): every 15 minutes at most, while macOS's
   pressure is normal, QEMU used at most a fifth of a core over the last
   minute (its CPU time from the 5 s look; idle VMs used 4-10 %, a 1080p60
@@ -228,10 +238,14 @@ less than that in real memory); a cache drop alone gave back only 536 of its
   VM's worst wait was 32 ms in both, but its waits of 10 ms or more were
   49-61 per CPU in 150 s against 11-14, so it now waits for a quiet VM.
   That window also had one "stall: the stall watchdog woke 1.0 s late" line
-  (none without the compaction), after the compaction's reports and in the
-  same window as the kit's full snapshot: its cause is open, as for the
-  mini's line above. Taken was about 1.25 GB there, so the compressing
-  rule never held; the case with macOS compressing has desktop tests only.
+  (none without the compaction), 6 lines before the end of the qemu.log
+  copy of the kit's full snapshot after it: the kit's, as above. With this
+  rule (2026-11-01, hidden 4 GB VMs, the same 15 s warning, then Chrome
+  closed): on the M1 Max (QEMU 281-300 MB outside its resident memory) the
+  call came 61 s after the close and joined 1.4 GB -> 214 MB in 0.9 s; on
+  the Mac mini, macOS compressing (2446-2725 MB outside), the VM dropped its
+  cache and no call came in the 4 minutes after the close (QEMU used 40 s
+  of CPU in the whole 5.3 minutes, the video included).
 - **What shows**: qemu.log at each start "VM memory: idle give-back: on" or
   "off"; one line per idle give-back that ran ("the VM was idle: it gave back
   ... and compacted its free memory: X -> Y in blocks too small to give back
@@ -270,11 +284,22 @@ less than that in real memory); a cache drop alone gave back only 536 of its
     memory 2779 against 3631 MB 20 minutes after the close, but what it got
     back at quit only 290 MB less (3241 against 3531 MB): most of that memory
     was compressed and cost the Mac about a third of its size.
+  - A 30-minute session on the M1 Max (2026-11-01, this rule; 3 cycles of
+    Chrome's cold start, Chrome with 10 tabs and the video for 90 s, a build
+    in the VM for 120 s (`compileall -j 4` and `tar` of 110 MB of Python's
+    library, io pressure 2.6), then quiet to the cycle's end): the app ran 2
+    idle steps, both in a quiet part (QEMU at 3-5 % of a core), none while
+    busy; they joined 899 MB -> 248 MB and 1.1 GB -> 336 MB in 0.1 s, and
+    QEMU's footprint was 1.1 and 0.9 GB lower 60 s later. Chrome's cold
+    start after a step 248 ms, in the other cycles 365 ms and 760 ms (right
+    after the warning row's whole-cache drop); memory pressure 0.00 at every
+    cycle's end; refaults in the minute after each step 0 and 1 MB; no stall
+    line. The cache stayed under the keep here too.
   - Not run: the 12 GB rows (a 4 GB VM is the test limit without an
-    exception), a 30-minute browser and build session, idle watts (one step
-    of about 1 s of CPU every 15 minutes at most; no exclusive Mac for a
-    power window), the idle give-back of cache in a VM (in every step the
-    4 GB VM's cache stayed under the keep: those steps only compacted).
+    exception), idle watts (one step of about 1 s of CPU every 15 minutes at
+    most; no exclusive Mac for a power window with the brightness the power
+    rows need), the idle give-back of cache in a VM (in every step the 4 GB
+    VM's cache stayed under the keep: those steps only compacted).
 
 ## What this does not explain
 
@@ -293,10 +318,11 @@ but still held, graphics, QEMU's own memory) and is looked into separately.
 
 ## Not now
 
-- Compaction while macOS compresses the VM: two rows by hand gave 345-630
-  MB of real memory, one of them with a 1.2 s stall line; a third row that
-  counts stall lines before the kit's snapshot (which suspends QEMU) and
-  tells that stall's cause would decide.
+- Compaction while macOS compresses the VM: three rows by hand gave 345-440,
+  570-630 and at least 456 MB of real memory with no stall line of their
+  own (the one line was the test kit's snapshot, above). Turning it on
+  changes this rule (the give-back while macOS compresses, the idle step and
+  the call after the drop): a change of its own, with rows at warn.
 - `page_reporting_order` 2 or 3 (16 or 32 KiB blocks): after a compaction it
   added only 101 MB (M1 Max) and 146 MB (Mac mini) held, for about 20 times
   the reports, 1.2-1.4 s more of QEMU's CPU per burst and 18-26 thousand map
