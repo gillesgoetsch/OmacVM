@@ -129,6 +129,31 @@ in more words.
   app's window). USB devices stay experimental and off by default. Needs the app update, from the
   VM's next start; nothing in the VM.
 
+In OmacVM.app VMs, desktop OpenGL programs that use clip distances, user clip planes or
+tessellation draw as they should. Needs the app update (from the VM's next start);
+nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing changes.
+
+- **Desktop OpenGL: clip distances, user clip planes and tessellation (OmacVM.app, #663, see
+  #589).** The Mac's OpenGL 4.1 has no cull distances, no arrays of arrays and no atomic counters,
+  and the VM's graphics left something out for each: a shader that writes gl_ClipDistance was
+  refused and drew nothing; glClipPlane and the clip distances of tessellation and geometry shaders
+  were ignored; tessellation drawn into a window landed in the other half, upside down, and its
+  transform feedback recorded zeros; the VM's own OpenGL refused every program with a tessellation
+  shader that has an output ("tessellation control shader uses too many output components (4 >
+  0)"), so only program pipelines got tessellation at all; and a tessellation shader that reads its
+  varyings as an array with a computed index did not compile. In a test VM on a MacBook Pro M1 Max
+  (the 3.2.16 app and this one, the same VM, a 1920x1080 window, three runs), each such program
+  drew wrong or not at all with 3.2.16 and right with this build: the clip rows keep the top half,
+  tessellation draws in the top half (also in a screenshot of the window), transform feedback
+  records its values, and qemu.log has no refused shader. Transform feedback from a tessellation
+  evaluation shader runs on the Mac's CPU, not its GPU: Apple's OpenGL takes its software vertex
+  path for such draws (qemu.log says once "Fallback to SW vertex processing for EVAL_PROG TF");
+  the values are right, its speed was not measured. Shaders that use none of this keep their
+  text: of the 250 that OmacVM's virgl build tests make, only the 4 tessellation shaders drawn last
+  or passing clip distances on changed, and all 2,161 test lines still pass. A program drawn with
+  clip planes both on and off gets one more compiled shader. Chromium's WebGL 1 and WebGL 2 smoke
+  passed before and after. Needs the app update (from the VM's next start); nothing in the VM.
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;

@@ -46,6 +46,15 @@ process, one Chrome):
   framebuffer switches and freed when unused, with the depth test off while it
   is attached (as GL behaves without a depth buffer);
 - the reported sampler limit is the smallest of the host's stages.
+- (#589, 2026-10-31) clip distances on every desktop GL, not only on one with cull
+  distances (the Mac has none): gl_ClipDistance is core GLSL there. The user clip
+  planes' stores go into a shader variant for planes on (a key bit for the last
+  vertex or tessellation evaluation shader, the geometry shader's existing one),
+  so a shader drawn without planes keeps its GLSL; a last tessellation evaluation
+  shader gets its y prescale and transform feedback stores as a vertex shader does;
+  `GL_ARB_arrays_of_arrays` only where the GL has it; the tessellation output limits
+  are reported without atomic counters. No setting either (architecture review
+  2026-10-31): the same translation fixes, covered by text and GPU compile rows.
 
 Option 1 stays useful as a safety net and is gpu-robust's track (ADR 0016: a
 refused shader skips its draws, a lost context is reported to the guest).

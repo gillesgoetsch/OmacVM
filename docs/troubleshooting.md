@@ -1747,3 +1747,28 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/tests/app-desktop-recovery.sh`, `src/tests/desktop-recover-gpu.sh`),
   `src/cmd/check.sh` (`src/tests/gpu-contexts-check.sh`); ADR 0038's 3.2.18
   amendment.
+## 52. app: a desktop OpenGL program draws nothing, upside down or without its clipping
+
+- **Symptom:** in an OmacVM.app VM, a desktop OpenGL program (an app or game, not a browser) draws
+  nothing where a shader writes gl_ClipDistance (qemu.log: "the host refused a shader (compile)",
+  "Use of undeclared identifier 'clip_dist_temp'"); glClipPlane clips nothing; tessellated
+  geometry drawn into a window shows upside down, in the other half; transform feedback from a
+  tessellation evaluation shader records zeros; a program with a tessellation shader fails to link
+  in the VM with "tessellation control shader uses too many output components (4 > 0)"; or a
+  tessellation shader that indexes its varyings or patch varyings with a computed index draws
+  nothing ("extension 'GL_ARB_arrays_of_arrays' is not supported" in qemu.log). 3.2.17 and older.
+- **Cause:** the Mac's OpenGL 4.1 has no cull distances, no arrays of arrays and no atomic
+  counters. The VM's virglrenderer wrote clip distances (and the end of a last tessellation
+  evaluation shader: its y flip and transform feedback) only on a GL with cull distances, asked for
+  arrays of arrays without checking, and reported the tessellation shaders' output limits only on
+  a GL with atomic counters, so the VM's Mesa saw 0 and refused such programs itself (#589).
+- **Fix (3.2.18):** update the app; it applies from the VM's next start. Nothing in the VM.
+  Separable programs with patch varyings or varying arrays between their stages are a separate
+  case. "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log is expected: Apple's
+  OpenGL records transform feedback from a tessellation evaluation shader on its software vertex
+  path (on the CPU); the values are right.
+- **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
+  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`; test
+  `app/runtime/Tests/virgl/test-whole-program-shapes.c`;
+  [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
+  and ADR 0019.

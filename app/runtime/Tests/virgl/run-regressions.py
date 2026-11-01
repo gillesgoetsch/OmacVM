@@ -274,6 +274,10 @@ run_api_test("test-query-result", interposer="query-result-gl")
 # "lose" keeps upstream's context error.
 run_api_test("test-separable-pervertex")
 run_api_test("test-separable-pervertex", env={"OMACVM_VIRGL_SHADER_FAILURES": "lose"})
+# Whole programs on a GL without cull distances, arrays of arrays or atomic counters (#589):
+# clip distances, a last tessellation evaluation shader, the tessellation output caps.
+run_api_test("test-whole-program-shapes")
+run_api_test("test-whole-program-shapes", env={"OMACVM_VIRGL_SELECT_CACHE": "0"})
 run_api_test("test-transform-feedback")
 run_api_test("test-gpu-ranges", oracle=True)
 run_api_test("test-resource-budget")
