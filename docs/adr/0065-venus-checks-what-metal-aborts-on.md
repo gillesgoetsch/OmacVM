@@ -388,13 +388,16 @@ program in the VM reached QEMU's memory, several of them with legal input:
   the submit's semaphore counts (`MVKQueue.mm`). Vulkan ignores the values when
   only binary semaphores are named, so a legal submit wrote guest values past a
   host heap array. Mesa reads the values and `VkDeviceGroupSubmitInfo`'s
-  indices by the submit's counts.
+  indices by the submit's counts. vkr reads the first struct of a type and
+  MoltenVK's loops keep the last, so a second value struct would go past any
+  check of the first.
 - **Dedicated memory.** MoltenVK keeps the image or buffer memory was made for
   and writes to it when the memory is freed: an image destroyed before it was
   bound (legal) left a dangling pointer, written after its free. It also
   accepted an `ALIAS_BIT` image on memory dedicated to another image without
   counting it, and locked the freed memory's mutex when that image went later.
-  KosmicKrisp ignores dedicated allocations.
+  KosmicKrisp ignores dedicated allocations. A second dedicated struct in the
+  chain would name another target for MoltenVK than for vkr.
 - **Consecutive descriptor updates.** KosmicKrisp writes a whole write at its
   first binding's offset + element * that binding's stride, and MoltenVK with
   that binding's layout, but consecutive bindings of one type can differ in
@@ -437,7 +440,11 @@ concern each, and two changes in the earlier patches:
   they count only for timeline semaphores, where the call was invalid anyway);
   a device group with other counts refused (VUIDs 00082 to 00084);
   `vkQueueBindSparse` on a family without `SPARSE_BINDING` refused (all of
-  them on both Mac drivers).
+  them on both Mac drivers); a chain that names a structure type twice
+  refused in both calls (VUIDs `VkSubmitInfo-sType-unique`,
+  `VkBindSparseInfo-sType-unique`). The decoder takes only a few types in such
+  a chain, so the walk meets a repeat within those few steps, however long the
+  chain is.
 - `virgl-venus-pool-frees.patch`: pooled objects keep their pool; a free
   checks every handle (of this pool, named once; a stamp per call, no
   allocation) before any is freed.
@@ -445,10 +452,19 @@ concern each, and two changes in the earlier patches:
   linked to it (a record shared by the object and its memories, under a device
   mutex never held across a driver call). Only that object binds to it, at
   offset 0 (VUIDs 02628, 10926, 01508, 10925; no Mac driver has
-  `dedicatedAllocationImageAliasing`, the exception of 02629). When the app
-  destroys the object first, the driver's destroy waits for the last of that
-  memory: memory first, then the object, also when the context ends
-  (`vkr_device_object_destroy` keeps the same rule).
+  `dedicatedAllocationImageAliasing`, the exception of 02629). One exception,
+  on KosmicKrisp alone: an `ALIAS_BIT` image may bind to memory dedicated to an
+  `ALIAS_BIT` image, at offset 0. An app that binds a swapchain image with
+  `VkBindImageMemorySwapchainInfoKHR` gets that from guest Mesa (a second image
+  of the swapchain's create info, bound to `wsi_common_get_memory`, which is
+  dedicated to the swapchain's own image), and KosmicKrisp ignores dedicated
+  allocations. On MoltenVK that bind stays refused: it ended the process
+  (`x-dedicated-alias`), so such an app ends there. A dedicated struct chained
+  twice (VUID `VkMemoryAllocateInfo-sType-unique`) and a target of another
+  device are refused at the allocation. When the app destroys the object
+  first, the driver's destroy waits for the last of that memory: memory first,
+  then the object, also when the context ends (`vkr_device_object_destroy`
+  keeps the same rule).
 - `virgl-venus-temp-zero.patch`: the decoder's temporary memory is zeroed for a
   command with a reply (the flag is set per command in `vn_dispatch_command`);
   `vkCmd*` never reply.
@@ -467,9 +483,20 @@ concern each, and two changes in the earlier patches:
   `vkCmdBeginRendering` leave theirs with the command buffer until the pass
   ends. A begin whose framebuffer view was destroyed, and a next subpass or end
   after one of the open pass's views was, end the context (the command buffer
-  is invalid).
+  is invalid). A resolve view Vulkan ignores (no resolve mode, or no view) is
+  not kept, and the driver gets NULL there: destroying it is legal, and
+  MoltenVK reads it whatever the mode.
 
-Still open (#624): two rings on one object at once (vkr looks an object up
+`virgl-venus-render-pass-limits.patch` also refuses a framebuffer or imageless
+begin with a count and no array, which the decoder lets through: vkr read
+address 0 there.
+
+Still open (#624): an app that binds a swapchain image through
+`VkBindImageMemorySwapchainInfoKHR` on MoltenVK (above; a bind MoltenVK counts
+would need a change in MoltenVK); structure types chained twice on the calls
+other than these (`vkBindImageMemory2`'s plane info, `vkCreateImage`'s stencil
+usage: vkr reads the first, MoltenVK's loops the last; a check in the decoder
+would cover every chain at once); two rings on one object at once (vkr looks an object up
 and uses it after its object mutex is released; a per-context read-write lock
 or per-object references need a measured cost and a test hook first, and must
 not deadlock `vkWaitRingSeqnoMESA`, which blocks the context's own dispatch
@@ -487,20 +514,25 @@ those states; Mesa writes by the count, so the bound stays); what the GPU does
 when commands run; driver bugs on valid input; full SPIR-V validation;
 option 1.
 
-`test-venus-commands.c` has 315 cases now (34 for these), `test-venus-robust.c`
+`test-venus-commands.c` has 324 cases now (43 for these), `test-venus-robust.c`
 two more (a refused query's chained output, an output struct the driver does not
 write), `test-venus-threads.c` drives each thread site and the context bound to
 its refusal under a small budget, and `test-venus-descriptor-walk.c` checks the
 walk against a plain model of Vulkan's rule (100,000 random updates per seed).
 On the mini's M4 with #644's vkr and these tests, 17 of the new cases fail on
 KosmicKrisp, MoltenVK and MoltenVK with prefill (the process ended in 5, 2 and
-7 of them), and under libgmalloc 12 and 15 of the 24 cases run there (6 and 5
-ended); the two robust cases fail on both. `d-planes-ok`, `d-mutable-ok` and
+7 of them), and under libgmalloc 12 and 15 of the 24 cases run there then (6 and
+5 ended); the two robust cases fail on both. `d-planes-ok`, `d-mutable-ok` and
 `c-push-set-split-ok` pass before too, even under libgmalloc: the driver's
 write past the set stays in its pool's memory there, so they guard the split
-rather than show the overrun. With these patches every case passes 3 of 3 on
-all three, under libgmalloc too, the walk at seeds 1, 2, 3, 77 and 12345, the
-SPIR-V fuzz at the same seeds (0 failures), 0 GPU restarts. Medians of 3 runs
+rather than show the overrun. The 9 cases added last (a struct chained twice on
+a submit, a sparse bind and an allocation, a target of another device, no array
+with a count on a framebuffer and a begin, an ignored resolve view, two
+`ALIAS_BIT` images) fail 9, 8 and 8 on the first head of these patches (bebb5bda)
+on the three, the process ended in 2 each; under libgmalloc 4 and 3 of the 27
+cases (MoltenVK's write ended the process in all 3). With these patches every
+case passes 3 of 3 on all three, under libgmalloc too, the walk at seeds 1, 2,
+3, 77 and 12345, the SPIR-V fuzz at the same seeds (0 failures), 0 GPU restarts. Medians of 3 runs
 of 10,000 calls (A B B A A B): a `vkUpdateDescriptorSets` of 1000 writes costs
 8.1 -> 11.0 us on KosmicKrisp and 13.8 -> 17.4 us on MoltenVK (about 3 ns a
 write), one write 0.013 -> 0.016 and 0.023 -> 0.026 us, a

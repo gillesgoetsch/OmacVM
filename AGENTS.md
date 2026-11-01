@@ -877,7 +877,8 @@ The less obvious ones, with causes and where the fix lives, are in
   (`vkr_set_walk_*`: the drivers write a whole update with its first binding's
   stride). A thread made for a guest call takes from `virgl_thread_budget_take`
   and gives back at its join. Memory made for one image or buffer goes before
-  it in the driver (`vkr_dedicated_*`).
+  it in the driver (`vkr_dedicated_*`). A check of a chained struct sees the
+  first of a type and MoltenVK uses the last: refuse repeats (`vkr_chain_repeats`).
 - Do not run guest apps on Zink as their OpenGL (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
   in an OmacVM.app VM with Vulkan: on KosmicKrisp it gives OpenGL 2.1 only.
   Ghostty's OpenGL 4.3 comes from llvmpipe instead. With the 3.2.13 app and

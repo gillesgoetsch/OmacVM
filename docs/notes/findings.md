@@ -407,7 +407,10 @@ the submit's semaphore counts, also when only binary semaphores are named and
 Vulkan ignores the values. It keeps the image or buffer memory was made for
 (`VkMemoryDedicatedAllocateInfo`) in the memory and writes to it when the
 memory is freed, so an image destroyed before its bind leaves a dangling
-pointer there. Both drivers write a descriptor update over several bindings
+pointer there. Its `pNext` loops keep the last struct of a type, vkr's
+`vkr_find_struct` and Mesa's `vk_find_struct` the first, so a chain with a type
+twice gets past a check of the first (vkr refuses it on submits and allocations).
+Both drivers write a descriptor update over several bindings
 with the first binding's stride or layout, and KosmicKrisp frees whatever a
 free names (twice, or into another pool). vkr fits or refuses each (ADR 0065).
 QEMU 11 raises its own soft open-file limit to `OPEN_MAX` (10240) on macOS

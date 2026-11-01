@@ -622,9 +622,11 @@ Patches (all in `app/runtime/patches`, one per concern):
 - `virgl-venus-submit-counts.patch`, `virgl-venus-pool-frees.patch`,
   `virgl-venus-dedicated-memory.patch`, `virgl-venus-temp-zero.patch`,
   `virgl-venus-thread-budget.patch`, `virgl-venus-pass-views.patch` (3.2.18,
-  ADR 0065's third amendment): a submit's chained value arrays fit its counts;
+  ADR 0065's third amendment): a submit's chained value arrays fit its counts,
+  a chain with a structure type twice is refused (`vkr_chain_repeats`);
   frees name objects of their own pool once; memory made for one image or
-  buffer goes before it in the driver (`struct vkr_dedicated`); a reply's
+  buffer goes before it in the driver (`struct vkr_dedicated`), and only
+  KosmicKrisp takes a second `ALIAS_BIT` image on it (swapchain binds); a reply's
   temporary memory is zeroed; one budget of 1024 threads for guest calls
   (`virgl_thread_budget_take` in `virgl_util.c`, used by the render server,
   the proxy and vkr), contexts within the open-file limit; image views of the
