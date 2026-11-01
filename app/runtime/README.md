@@ -84,6 +84,14 @@ commit 82927e9. Changes here:
   that full screen gives the window its shadow back. macOS's own full screen
   never had it. `Tests/display/test-borderless-rim.sh` checks it at build
   time; `test-borderless-rim-live.sh` measures the pixels on macOS 26 or newer.
+- `patches/omacvm-cocoa-usb-menu.patch`: "USB Devices…" in the app menu,
+  under "Features…", while the VM's USB switch is on (`OMACVM_USB_REQUEST`,
+  set by the app). A click hands QEMU's activation to the app that set the
+  name, then posts it; the app opens its list of USB devices over the VM
+  (`USBRun.showList`). Without the variable the menu is unchanged.
+  `Tests/display/test-usb-menu.sh` checks it at build time and in CI; with
+  `--qemu` it presses the items of a hidden QEMU of a built runtime through
+  Accessibility, with "Features…" as the control.
 - `patches/virgl-texture-integer-samplers.patch`: shaders that read integer
   textures (`usampler2D`) compile on the Mac's OpenGL. Before, Apple's
   compiler refused them and the guest's GL context stopped for good: Chrome's
@@ -130,6 +138,44 @@ commit 82927e9. Changes here:
   it while the framebuffer is incomplete.
   `OMACVM_VIRGL_SHADER_FAILURES=lose` keeps upstream's context error. Checked
   by `Tests/virgl/test-separable-pervertex.c`
+- `patches/virgl-shader-clip-distances.patch`: on a desktop GL without cull
+  distances (the Mac's 4.1) vrend still writes clip distances: a shader that
+  writes gl_ClipDistance compiles and clips (its draws were skipped), user clip
+  planes clip after the last vertex, tessellation or geometry shader (they were
+  ignored), and a tessellation evaluation shader as the last stage gets the y
+  prescale and its transform feedback (it drew upside down in a window and
+  recorded zeros; Apple's GL records that transform feedback on its software
+  vertex path: "Fallback to SW vertex processing for EVAL_PROG TF" once in
+  qemu.log). The planes' stores sit in a shader variant for planes on
+  (key bit `ucp_enabled`, last vertex or evaluation shader only; the geometry
+  shader's `gs.emit_clip_distance`), so a shader drawn without planes keeps its
+  GLSL. A vertex shader still never declares gl_CullDistance (geometry and
+  tessellation shaders declare it as before and stop at GL_ARB_cull_distance):
+  such a shader stays refused.
+  The clip distance members that `virgl-shader-separable-pervertex.patch` puts
+  into a separable block now apply on the Mac too (they needed cull distances
+  before). #589; checked by `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-arrays-of-arrays.patch`: a geometry or tessellation
+  shader with a varying array asks for GL_ARB_arrays_of_arrays only where the GL
+  has it; the Mac's has not, so such whole programs drew nothing (vrend already
+  declares those arrays as blocks there). From a VM: a tessellation shader that
+  indexes varyings or patch varyings dynamically (the guest's Mesa unrolls a
+  geometry shader's). #589; checked by `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-caps-tess-outputs.patch`: the guest gets the tessellation
+  shaders' per-vertex output limits on every GL with tessellation; they were 0
+  without atomic counters (the Mac), so the guest's Mesa refused every whole
+  program whose tessellation shader had an output ("too many output components
+  (4 > 0)") before it reached the Mac. #589; checked by
+  `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-separable-patch-varyings.patch`: a patch varying of a
+  separable program (tessellation control to evaluation shader) takes no layout
+  location on desktop GL (#589). Apple's GL refuses one and, without it, gives
+  patch varyings their slots in the order of their names, so the names are
+  zero-padded and two separable stages next to each other declare every one
+  from 0. Separable varying arrays are still refused (vrend puts them at 31 -
+  their first location, past the last); the VM's Mesa splits such arrays into
+  single varyings, also at a computed index. Checked by
+  `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
@@ -258,6 +304,14 @@ commit 82927e9. Changes here:
   The charge goes with the storage: it lasts until the last holder is gone
   (the memory, memory imported from it, the guest's blob), so a kept dma-buf
   fd or mapping still counts. Checked by `Tests/virgl/test-venus-budget-storage.c`
+- `patches/virgl-venus-lost-context-count.patch`: a Venus context vkr's ring
+  thread ends counts in the status file (`OMACVM_GPU_MEMORY_STATUS`) like a GL
+  one: lost, the app's name, why `venus` (or `guard` after a budget refusal of
+  that context) and `lost_recent_kind` `venus`; a context the guest was closing
+  (a handle vkr still used closed first: the app's process ended) is not
+  counted ("ended while the guest closed it"). Checked by
+  `Tests/virgl/test-venus-lost-count.c` and `test-venus-robust.c` (l-lost,
+  l-teardown)
 - `patches/qemu-cocoa-idle-refresh.patch`: QEMU's refresh tick (every 8 ms on
   a 120 Hz display, for every output) slows to 500 ms after a second without
   work for it (2D updates, new scanouts, the extra outputs' windows) and comes
@@ -329,18 +383,28 @@ commit 82927e9. Changes here:
   the start, then every 5 minutes, skipped while QEMU's footprint grew less
   than 64 MB (twice in a row at most). No page moves; the Mac gets nothing back. Main RAM only, by the
   rule free page reports now share (`omacvm_ram_private`: never the Venus
-  window's blobs, pflash, ROM, shared or file-backed memory). Before each
-  remap every map entry must share its object with the guest (true shared
-  or shared, an object, read-write, not wired), else the chunk stays as it
-  is (counted); in the first pass a changed view stops QEMU; a failed remap
-  stops the sweep for the run. `logs/qemu.log`: "own-view sweep: on" or
-  "off" at the start (`omacvm check` reads it), a line an hour and one at
-  exit (passes, MB less in Activity Monitor, the main lock's hold per
-  chunk). `OMACVM_DCOUNT_SWEEP=0`: off; seconds there: the time between
-  passes, and `OMACVM_DCOUNT_SWEEP_CHECK=1` a line per pass (tests).
+  window's blobs, pflash, ROM, shared or file-backed memory). From 3.2.18
+  a sweep that would not keep QEMU's view the guest's memory turns itself
+  off instead of stopping QEMU: before the machine starts a trial on 256 MB
+  of scratch memory the hypervisor maps as guest RAM runs one chunk through
+  the same steps (anything wrong, or past 3 s: off for the run, "off
+  (why)"); each chunk's entries must have the share mode the trial measured
+  (else it stays as it is, counted), a spare mapping of it is made, and
+  after the remap the entries are read again at once on every pass; a
+  changed view is mapped back from the spare and the sweep stops for the
+  run; QEMU stops only when mapping back fails (ADR 0066's amendment).
+  `-overcommit mem-lock` turns it off. `logs/qemu.log`: "own-view sweep:
+  on" or "off (why)" at the start (`omacvm check` reads it), a line an hour
+  and one at exit (passes, MB less in Activity Monitor, the main lock's
+  hold per chunk, chunks mapped back, why it stopped).
+  `OMACVM_DCOUNT_SWEEP=0`: off; seconds there: the time between passes, and
+  `OMACVM_DCOUNT_SWEEP_CHECK=1` a line per pass (tests);
+  `OMACVM_TEST_SWEEP_DIVERGE=canary|chunk` (test mode only, dropped by the
+  app in a release build) makes the trial or a chunk go wrong on purpose.
   `Tests/memory/test-dcount.sh` at build time (no VM; a real `hv_vm_map`
   where the Mac lets the build make a VM; pread/pwrite and free page
-  reports during a pass) and in CI (`src/tests/memory-dcount.sh`); ADR 0066
+  reports during a pass; the trial and every way a remap can go wrong, by
+  the sweep's own test hook) and in CI (`src/tests/memory-dcount.sh`); ADR 0066
 - `patches/mesa-kosmickrisp-*.patch`: changes to KosmicKrisp, applied by
   `build-kosmickrisp.sh` in name order (their hash is in its stamp).
   `mesa-kosmickrisp-shared-align.patch` declares a compute shader's shared

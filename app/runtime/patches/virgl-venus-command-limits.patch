@@ -1,0 +1,2178 @@
+virglrenderer: Venus vkCmd* indices, counts and offsets stay inside what they name
+
+What: before the Mac's driver records a command, vkr bounds the guest's
+indices, counts, offsets, strides and enum values: viewports, scissors, vertex
+buffers, color attachment state and sample locations against the device's
+limits (first + count, 64-bit); push constants against maxPushConstantsSize;
+buffer offsets and ranges of binds, copies, fills, updates, indirect draws and
+dispatches, conditional rendering and barriers against the buffer's size;
+mip levels and layers of copies, blits, resolves, clears and image barriers
+against the image; queries against the pool's count (query pools: a type the
+device has, 1 to 2^20 queries; vkGetQueryPoolResults' stride against dataSize);
+enum values that index the drivers' tables (bind points, index types, cull
+modes, compare and stencil ops, topologies, logic ops, blend factors and ops,
+sample counts); command buffer levels: only a primary executes secondaries,
+and VK_EXT_nested_command_buffer is hidden; vkCmdDrawMulti(Indexed)EXT gets
+its entries' own size as the stride (the decoder packs them). vkr keeps the
+device's limits once per physical device (struct vkr_limits), a command
+buffer's level, a pipeline's bind point and a query pool's type and count. A
+refused command ends the app's context with a log line (the guest records and
+creates these without waiting); the decoder stops there.
+Why: KosmicKrisp is built with NDEBUG, so Mesa's and its own asserts on these
+are gone: a guest index or offset is a host memory access (push constants at
+push + offset, SET_DYN_ARRAY at first, vertex buffers and descriptor sets at
+firstBinding/firstSet, query reports at firstQuery, vk_meta_clear's stack
+array at colorAttachment, a secondary that executes itself recurses until the
+stack ends), and an enum value its switch does not know reaches
+__builtin_unreachable(). Metal ends the process on level and layer ranges
+(newLevelRange). MoltenVK grows a vector to offset + size in 32 bits for push
+constants and reads query results past the pool. Probed on Apple7 (M1 Max):
+SIGBUS/SIGSEGV/SIGABRT in 3 of 3 runs on the probed cases (ADR 0065).
+Upstream: OmacVM policy (the spec makes these the app's job), as #623's image
+limits; vkCmdDrawMulti's stride and the nested-recursion are vkr/Mesa bugs on
+every host (draft only, not posted).
+Tests: Tests/virgl/test-venus-commands.c (the c- and q- cases): each refused
+case ends its child before the patch (or reaches the driver) and only its
+context after it; the legal maxima (every limit at its advertised value) work.
+Run on KosmicKrisp, MoltenVK and MoltenVK with prefilled Metal command
+buffers (encoding at vkEndCommandBuffer, what QEMU's submit does); --time: us
+per vkCmdPushConstants, vkCmdSetViewport and vkCmdDraw through vkr.
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 95a6be9..ec98eda 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -6,6 +6,11 @@
+ #include "vkr_command_buffer.h"
+ 
+ #include "vkr_command_buffer_gen.h"
++#include "vkr_buffer.h"
++#include "vkr_image.h"
++#include "vkr_physical_device.h"
++#include "vkr_pipeline.h"
++#include "vkr_query_pool.h"
+ 
+ #ifdef __clang__
+ #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+@@ -21,6 +26,163 @@
+       _vk->cmd_name(args->commandBuffer, ##__VA_ARGS__);                                 \
+    } while (0)
+ 
++/* OmacVM (virgl-venus-command-limits.patch, ADR 0065): the guest's indices, counts,
++ * offsets and enum values in vkCmd* are bounded by the device's limits and the sizes of
++ * the objects they name before the driver records them: KosmicKrisp (built with NDEBUG)
++ * writes and reads host memory at such offsets, and Metal ends the process on level and
++ * layer ranges. A refused command ends the app's context (the guest records without
++ * waiting); the decoder stops there. */
++#define VKR_CMD_DEVICE(args) (vkr_command_buffer_from_handle((args)->commandBuffer)->device)
++#define VKR_CMD_LIMITS(args) (&VKR_CMD_DEVICE(args)->physical_device->limits)
++#define VKR_CMD_LIM(args) (&VKR_CMD_DEVICE(args)->physical_device->properties.limits)
++
++static bool
++vkr_cmd_buffer_ok(VkBuffer handle, VkDeviceSize offset, VkDeviceSize size)
++{
++   const struct vkr_buffer *buf = vkr_buffer_from_handle(handle);
++   return buf && vkr_range_ok(offset, size, buf->size);
++}
++
++static VkDeviceSize
++vkr_cmd_buffer_size(VkBuffer handle)
++{
++   const struct vkr_buffer *buf = vkr_buffer_from_handle(handle);
++   return buf ? buf->size : 0;
++}
++
++static bool
++vkr_cmd_layers_ok(VkImage handle, const VkImageSubresourceLayers *sub)
++{
++   const struct vkr_image *img = vkr_image_from_handle(handle);
++   return img && vkr_levels_layers_ok(img->mip_levels, img->array_layers, sub->mipLevel, 1,
++                                      sub->baseArrayLayer, sub->layerCount);
++}
++
++static bool
++vkr_cmd_range_ok(VkImage handle, const VkImageSubresourceRange *range)
++{
++   const struct vkr_image *img = vkr_image_from_handle(handle);
++   return img && vkr_levels_layers_ok(img->mip_levels, img->array_layers, range->baseMipLevel,
++                                      range->levelCount, range->baseArrayLayer,
++                                      range->layerCount);
++}
++
++/* barriers: images inside their levels and layers, buffers inside their size */
++static bool
++vkr_cmd_barriers_ok(struct vkr_context *ctx,
++                    const char *call,
++                    uint32_t buffer_count,
++                    const VkBufferMemoryBarrier *buffers,
++                    uint32_t image_count,
++                    const VkImageMemoryBarrier *images)
++{
++   for (uint32_t i = 0; i < buffer_count; i++) {
++      if (!vkr_context_check(ctx,
++                             vkr_whole_range_ok(buffers[i].offset, buffers[i].size,
++                                                vkr_cmd_buffer_size(buffers[i].buffer)),
++                             call, "buffer barrier %u: %" PRIu64 " bytes at %" PRIu64
++                             " of %" PRIu64, i, buffers[i].size, buffers[i].offset,
++                             vkr_cmd_buffer_size(buffers[i].buffer)))
++         return false;
++   }
++   for (uint32_t i = 0; i < image_count; i++) {
++      const VkImageSubresourceRange *r = &images[i].subresourceRange;
++      if (!vkr_context_check(ctx, vkr_cmd_range_ok(images[i].image, r), call,
++                             "image barrier %u: levels %u + %u, layers %u + %u outside the image",
++                             i, r->baseMipLevel, r->levelCount, r->baseArrayLayer,
++                             r->layerCount))
++         return false;
++   }
++   return true;
++}
++
++static bool
++vkr_cmd_dependency_ok(struct vkr_context *ctx, const char *call, const VkDependencyInfo *info)
++{
++   if (!info)
++      return true;
++   for (uint32_t i = 0; i < info->bufferMemoryBarrierCount; i++) {
++      const VkBufferMemoryBarrier2 *b = &info->pBufferMemoryBarriers[i];
++      if (!vkr_context_check(ctx,
++                             vkr_whole_range_ok(b->offset, b->size,
++                                                vkr_cmd_buffer_size(b->buffer)),
++                             call, "buffer barrier %u: %" PRIu64 " bytes at %" PRIu64
++                             " of %" PRIu64, i, b->size, b->offset,
++                             vkr_cmd_buffer_size(b->buffer)))
++         return false;
++   }
++   for (uint32_t i = 0; i < info->imageMemoryBarrierCount; i++) {
++      const VkImageSubresourceRange *r = &info->pImageMemoryBarriers[i].subresourceRange;
++      if (!vkr_context_check(ctx, vkr_cmd_range_ok(info->pImageMemoryBarriers[i].image, r),
++                             call,
++                             "image barrier %u: levels %u + %u, layers %u + %u outside the image",
++                             i, r->baseMipLevel, r->levelCount, r->baseArrayLayer,
++                             r->layerCount))
++         return false;
++   }
++   return true;
++}
++
++/* indirect commands: count records of elem bytes, stride apart, inside the buffer */
++static bool
++vkr_cmd_indirect_ok(struct vkr_context *ctx,
++                    const char *call,
++                    VkBuffer buffer,
++                    VkDeviceSize offset,
++                    uint32_t count,
++                    uint32_t max_count,
++                    uint32_t stride,
++                    uint32_t elem)
++{
++   const VkDeviceSize size = vkr_cmd_buffer_size(buffer);
++   return vkr_context_check(
++      ctx,
++      size && !(offset & 3) && count <= max_count &&
++         (count <= 1 || (!(stride & 3) && stride >= elem)) &&
++         vkr_strided_ok(offset, count, count > 1 ? stride : 0, elem, size),
++      call, "%u records of %u bytes, stride %u, at %" PRIu64 " of a %" PRIu64 "-byte buffer",
++      count, elem, stride, offset, size);
++}
++
++/* a secondary's inheritance: rendering counts inside the device's limits */
++static bool
++vkr_cmd_inheritance_ok(struct vkr_context *ctx,
++                       const struct vkr_physical_device *physical_dev,
++                       const VkCommandBufferInheritanceInfo *info)
++{
++   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   const VkCommandBufferInheritanceRenderingInfo *rendering = vkr_find_struct(
++      info->pNext, VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO);
++   const VkRenderingAttachmentLocationInfo *locations =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO);
++   const VkRenderingInputAttachmentIndexInfo *inputs =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_INPUT_ATTACHMENT_INDEX_INFO);
++   return vkr_context_check(
++      ctx,
++      (!rendering ||
++       (rendering->colorAttachmentCount <= lim->maxColorAttachments &&
++        (!rendering->rasterizationSamples ||
++         vkr_sample_count_ok(lim, rendering->rasterizationSamples)))) &&
++         (!locations || locations->colorAttachmentCount <= lim->maxColorAttachments) &&
++         (!inputs || inputs->colorAttachmentCount <= lim->maxColorAttachments),
++      "vkBeginCommandBuffer",
++      "inheritance with %u colors (%u samples), %u locations, %u input indices (at most %u)",
++      rendering ? rendering->colorAttachmentCount : 0,
++      rendering ? rendering->rasterizationSamples : 0,
++      locations ? locations->colorAttachmentCount : 0,
++      inputs ? inputs->colorAttachmentCount : 0, lim->maxColorAttachments);
++}
++
++static bool
++vkr_cmd_equation_ok(const struct vkr_limits *l, const VkColorBlendEquationEXT *e)
++{
++   return vkr_blend_factor_ok(e->srcColorBlendFactor) &&
++          vkr_blend_factor_ok(e->dstColorBlendFactor) &&
++          vkr_blend_factor_ok(e->srcAlphaBlendFactor) &&
++          vkr_blend_factor_ok(e->dstAlphaBlendFactor) && vkr_blend_op_ok(l, e->colorBlendOp) &&
++          vkr_blend_op_ok(l, e->alphaBlendOp);
++}
++
+ static void
+ vkr_dispatch_vkCreateCommandPool(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateCommandPool *args)
+@@ -83,9 +245,19 @@ vkr_dispatch_vkAllocateCommandBuffers(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
++   /* OmacVM (virgl-venus-command-limits.patch) */
++   const VkCommandBufferLevel level = args->pAllocateInfo->level;
++   if (!vkr_context_check(ctx,
++                          level == VK_COMMAND_BUFFER_LEVEL_PRIMARY ||
++                             level == VK_COMMAND_BUFFER_LEVEL_SECONDARY,
++                          "vkAllocateCommandBuffers", "level %d", level))
++      return;
++
+    if (vkr_command_buffer_create_array(ctx, args, &arr) != VK_SUCCESS)
+       return;
+ 
++   for (uint32_t i = 0; i < arr.count; i++)
++      ((struct vkr_command_buffer *)arr.objects[i])->level = level;
+    vkr_command_buffer_add_array(ctx, dev, pool, &arr);
+ }
+ 
+@@ -118,13 +290,20 @@ vkr_dispatch_vkResetCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkBeginCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkBeginCommandBuffer *args)
+ {
+    TRACE_FUNC();
+    struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
+    struct vn_device_proc_table *vk = &cmd->device->proc_table;
+ 
++   /* OmacVM (virgl-venus-command-limits.patch): a secondary's inheritance info is parsed
++    * into fixed arrays (Mesa's color maps) */
++   if (cmd->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY && args->pBeginInfo->pInheritanceInfo &&
++       !vkr_cmd_inheritance_ok(dispatch->data, cmd->device->physical_device,
++                               args->pBeginInfo->pInheritanceInfo))
++      return;
++
+    vn_replace_vkBeginCommandBuffer_args_handle(args);
+    args->ret = vk->BeginCommandBuffer(args->commandBuffer, args->pBeginInfo);
+ }
+@@ -142,24 +321,43 @@ vkr_dispatch_vkEndCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindPipeline(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdBindPipeline *args)
+ {
++   const struct vkr_pipeline *pipeline = vkr_pipeline_from_handle(args->pipeline);
++   if (!vkr_context_check(dispatch->data,
++                          vkr_bind_point_ok(VKR_CMD_LIMITS(args), args->pipelineBindPoint) &&
++                             pipeline && pipeline->bind_point == args->pipelineBindPoint,
++                          "vkCmdBindPipeline", "bind point %d for a pipeline of %d",
++                          args->pipelineBindPoint, pipeline ? (int)pipeline->bind_point : -1))
++      return;
+    VKR_CMD_CALL(CmdBindPipeline, args, args->pipelineBindPoint, args->pipeline);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetViewport(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetViewport(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdSetViewport *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxViewports;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstViewport, args->viewportCount, max),
++                          "vkCmdSetViewport", "viewports %u + %u of %u", args->firstViewport,
++                          args->viewportCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetViewport, args, args->firstViewport, args->viewportCount,
+                 args->pViewports);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetScissor(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetScissor(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCmdSetScissor *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxViewports;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstScissor, args->scissorCount, max),
++                          "vkCmdSetScissor", "scissors %u + %u of %u", args->firstScissor,
++                          args->scissorCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetScissor, args, args->firstScissor, args->scissorCount,
+                 args->pScissors);
+ }
+@@ -224,16 +422,40 @@ vkr_dispatch_vkCmdBindDescriptorSets(UNUSED struct vn_dispatch_context *dispatch
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindIndexBuffer(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindIndexBuffer(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdBindIndexBuffer *args)
+ {
++   const VkDeviceSize size = vkr_cmd_buffer_size(args->buffer);
++   if (!vkr_context_check(dispatch->data,
++                          vkr_index_type_ok(VKR_CMD_LIMITS(args), args->indexType) &&
++                             (size ? args->offset < size
++                                   : VKR_CMD_DEVICE(args)->maintenance6 && !args->offset),
++                          "vkCmdBindIndexBuffer", "index type %d at %" PRIu64 " of %" PRIu64,
++                          args->indexType, args->offset, size))
++      return;
+    VKR_CMD_CALL(CmdBindIndexBuffer, args, args->buffer, args->offset, args->indexType);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindVertexBuffers(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindVertexBuffers(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCmdBindVertexBuffers *args)
+ {
++   struct vkr_context *ctx = dispatch->data;
++   const uint32_t max = VKR_CMD_LIM(args)->maxVertexInputBindings;
++   if (!vkr_context_check(ctx, vkr_first_count_ok(args->firstBinding, args->bindingCount, max),
++                          "vkCmdBindVertexBuffers", "bindings %u + %u of %u",
++                          args->firstBinding, args->bindingCount, max))
++      return;
++   const bool null_ok = VKR_CMD_DEVICE(args)->null_descriptor;
++   for (uint32_t i = 0; i < args->bindingCount; i++) {
++      const VkDeviceSize size = vkr_cmd_buffer_size(args->pBuffers[i]);
++      if (!vkr_context_check(ctx,
++                             size ? args->pOffsets[i] < size : null_ok && !args->pOffsets[i],
++                             "vkCmdBindVertexBuffers",
++                             "binding %u: offset %" PRIu64 " of %" PRIu64 "%s", i,
++                             args->pOffsets[i], size, size ? "" : " (no buffer)"))
++         return;
++   }
+    VKR_CMD_CALL(CmdBindVertexBuffers, args, args->firstBinding, args->bindingCount,
+                 args->pBuffers, args->pOffsets);
+ }
+@@ -255,164 +477,344 @@ vkr_dispatch_vkCmdDrawIndexed(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDrawIndirect(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDrawIndirect(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdDrawIndirect *args)
+ {
++   if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirect", args->buffer, args->offset,
++                            args->drawCount, VKR_CMD_LIM(args)->maxDrawIndirectCount,
++                            args->stride, sizeof(VkDrawIndirectCommand)))
++      return;
+    VKR_CMD_CALL(CmdDrawIndirect, args, args->buffer, args->offset, args->drawCount,
+                 args->stride);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDrawIndexedIndirect(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDrawIndexedIndirect(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdDrawIndexedIndirect *args)
+ {
++   if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirect", args->buffer,
++                            args->offset, args->drawCount,
++                            VKR_CMD_LIM(args)->maxDrawIndirectCount, args->stride,
++                            sizeof(VkDrawIndexedIndirectCommand)))
++      return;
+    VKR_CMD_CALL(CmdDrawIndexedIndirect, args, args->buffer, args->offset, args->drawCount,
+                 args->stride);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDispatch(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDispatch(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkCmdDispatch *args)
+ {
++   const uint32_t *max = VKR_CMD_LIM(args)->maxComputeWorkGroupCount;
++   if (!vkr_context_check(dispatch->data,
++                          args->groupCountX <= max[0] && args->groupCountY <= max[1] &&
++                             args->groupCountZ <= max[2],
++                          "vkCmdDispatch", "%u x %u x %u groups (at most %u x %u x %u)",
++                          args->groupCountX, args->groupCountY, args->groupCountZ, max[0],
++                          max[1], max[2]))
++      return;
+    VKR_CMD_CALL(CmdDispatch, args, args->groupCountX, args->groupCountY,
+                 args->groupCountZ);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDispatchIndirect(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDispatchIndirect(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdDispatchIndirect *args)
+ {
++   if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDispatchIndirect", args->buffer,
++                            args->offset, 1, 1, 0, sizeof(VkDispatchIndirectCommand)))
++      return;
+    VKR_CMD_CALL(CmdDispatchIndirect, args, args->buffer, args->offset);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyBuffer(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdCopyBuffer(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCmdCopyBuffer *args)
+ {
++   for (uint32_t i = 0; i < args->regionCount; i++) {
++      const VkBufferCopy *r = &args->pRegions[i];
++      if (!vkr_context_check(dispatch->data,
++                             r->size && vkr_cmd_buffer_ok(args->srcBuffer, r->srcOffset, r->size) &&
++                                vkr_cmd_buffer_ok(args->dstBuffer, r->dstOffset, r->size),
++                             "vkCmdCopyBuffer",
++                             "region %u: %" PRIu64 " bytes from %" PRIu64 " of %" PRIu64
++                             " to %" PRIu64 " of %" PRIu64, i, r->size, r->srcOffset,
++                             vkr_cmd_buffer_size(args->srcBuffer), r->dstOffset,
++                             vkr_cmd_buffer_size(args->dstBuffer)))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyBuffer, args, args->srcBuffer, args->dstBuffer, args->regionCount,
+                 args->pRegions);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyBuffer2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdCopyBuffer2(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdCopyBuffer2 *args)
+ {
++   const VkCopyBufferInfo2 *info = args->pCopyBufferInfo;
++   for (uint32_t i = 0; i < info->regionCount; i++) {
++      const VkBufferCopy2 *r = &info->pRegions[i];
++      if (!vkr_context_check(dispatch->data,
++                             r->size && vkr_cmd_buffer_ok(info->srcBuffer, r->srcOffset, r->size) &&
++                                vkr_cmd_buffer_ok(info->dstBuffer, r->dstOffset, r->size),
++                             "vkCmdCopyBuffer2",
++                             "region %u: %" PRIu64 " bytes from %" PRIu64 " of %" PRIu64
++                             " to %" PRIu64 " of %" PRIu64, i, r->size, r->srcOffset,
++                             vkr_cmd_buffer_size(info->srcBuffer), r->dstOffset,
++                             vkr_cmd_buffer_size(info->dstBuffer)))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyBuffer2, args, args->pCopyBufferInfo);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyImage(UNUSED struct vn_dispatch_context *dispatch,
+-                            struct vn_command_vkCmdCopyImage *args)
++vkr_dispatch_vkCmdCopyImage(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdCopyImage *args)
+ {
++   for (uint32_t i = 0; i < args->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].srcSubresource) &&
++                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource),
++                             "vkCmdCopyImage", "region %u: a level or layer outside the image", i))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyImage2(UNUSED struct vn_dispatch_context *dispatch,
+-                             struct vn_command_vkCmdCopyImage2 *args)
++vkr_dispatch_vkCmdCopyImage2(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdCopyImage2 *args)
+ {
++   const VkCopyImageInfo2 *info = args->pCopyImageInfo;
++   for (uint32_t i = 0; i < info->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].srcSubresource) &&
++                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource),
++                             "vkCmdCopyImage2", "region %u: a level or layer outside the image", i))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyImage2, args, args->pCopyImageInfo);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBlitImage(UNUSED struct vn_dispatch_context *dispatch,
+-                            struct vn_command_vkCmdBlitImage *args)
++vkr_dispatch_vkCmdBlitImage(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdBlitImage *args)
+ {
++   for (uint32_t i = 0; i < args->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].srcSubresource) &&
++                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource),
++                             "vkCmdBlitImage", "region %u: a level or layer outside the image", i))
++         return;
++   }
+    VKR_CMD_CALL(CmdBlitImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions, args->filter);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBlitImage2(UNUSED struct vn_dispatch_context *dispatch,
+-                             struct vn_command_vkCmdBlitImage2 *args)
++vkr_dispatch_vkCmdBlitImage2(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdBlitImage2 *args)
+ {
++   const VkBlitImageInfo2 *info = args->pBlitImageInfo;
++   for (uint32_t i = 0; i < info->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].srcSubresource) &&
++                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource),
++                             "vkCmdBlitImage2", "region %u: a level or layer outside the image", i))
++         return;
++   }
+    VKR_CMD_CALL(CmdBlitImage2, args, args->pBlitImageInfo);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyBufferToImage(UNUSED struct vn_dispatch_context *dispatch,
+-                                    struct vn_command_vkCmdCopyBufferToImage *args)
++vkr_dispatch_vkCmdCopyBufferToImage(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdCopyBufferToImage *args)
+ {
++   for (uint32_t i = 0; i < args->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].imageSubresource) &&
++                                args->pRegions[i].bufferOffset < vkr_cmd_buffer_size(args->srcBuffer),
++                             "vkCmdCopyBufferToImage",
++                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
++                             " of %" PRIu64, i, args->pRegions[i].imageSubresource.mipLevel,
++                             args->pRegions[i].imageSubresource.baseArrayLayer,
++                             args->pRegions[i].imageSubresource.layerCount,
++                             args->pRegions[i].bufferOffset, vkr_cmd_buffer_size(args->srcBuffer)))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyBufferToImage, args, args->srcBuffer, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyBufferToImage2(UNUSED struct vn_dispatch_context *dispatch,
+-                                     struct vn_command_vkCmdCopyBufferToImage2 *args)
++vkr_dispatch_vkCmdCopyBufferToImage2(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdCopyBufferToImage2 *args)
+ {
++   const VkCopyBufferToImageInfo2 *info = args->pCopyBufferToImageInfo;
++   for (uint32_t i = 0; i < info->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].imageSubresource) &&
++                                info->pRegions[i].bufferOffset < vkr_cmd_buffer_size(info->srcBuffer),
++                             "vkCmdCopyBufferToImage2",
++                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
++                             " of %" PRIu64, i, info->pRegions[i].imageSubresource.mipLevel,
++                             info->pRegions[i].imageSubresource.baseArrayLayer,
++                             info->pRegions[i].imageSubresource.layerCount,
++                             info->pRegions[i].bufferOffset, vkr_cmd_buffer_size(info->srcBuffer)))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyBufferToImage2, args, args->pCopyBufferToImageInfo);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyImageToBuffer(UNUSED struct vn_dispatch_context *dispatch,
+-                                    struct vn_command_vkCmdCopyImageToBuffer *args)
++vkr_dispatch_vkCmdCopyImageToBuffer(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdCopyImageToBuffer *args)
+ {
++   for (uint32_t i = 0; i < args->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].imageSubresource) &&
++                                args->pRegions[i].bufferOffset < vkr_cmd_buffer_size(args->dstBuffer),
++                             "vkCmdCopyImageToBuffer",
++                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
++                             " of %" PRIu64, i, args->pRegions[i].imageSubresource.mipLevel,
++                             args->pRegions[i].imageSubresource.baseArrayLayer,
++                             args->pRegions[i].imageSubresource.layerCount,
++                             args->pRegions[i].bufferOffset, vkr_cmd_buffer_size(args->dstBuffer)))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyImageToBuffer, args, args->srcImage, args->srcImageLayout,
+                 args->dstBuffer, args->regionCount, args->pRegions);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyImageToBuffer2(UNUSED struct vn_dispatch_context *dispatch,
+-                                     struct vn_command_vkCmdCopyImageToBuffer2 *args)
++vkr_dispatch_vkCmdCopyImageToBuffer2(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdCopyImageToBuffer2 *args)
+ {
++   const VkCopyImageToBufferInfo2 *info = args->pCopyImageToBufferInfo;
++   for (uint32_t i = 0; i < info->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].imageSubresource) &&
++                                info->pRegions[i].bufferOffset < vkr_cmd_buffer_size(info->dstBuffer),
++                             "vkCmdCopyImageToBuffer2",
++                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
++                             " of %" PRIu64, i, info->pRegions[i].imageSubresource.mipLevel,
++                             info->pRegions[i].imageSubresource.baseArrayLayer,
++                             info->pRegions[i].imageSubresource.layerCount,
++                             info->pRegions[i].bufferOffset, vkr_cmd_buffer_size(info->dstBuffer)))
++         return;
++   }
+    VKR_CMD_CALL(CmdCopyImageToBuffer2, args, args->pCopyImageToBufferInfo);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdUpdateBuffer(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdUpdateBuffer(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdUpdateBuffer *args)
+ {
++   if (!vkr_context_check(dispatch->data,
++                          args->dataSize && args->dataSize <= 65536 && !(args->dataSize & 3) &&
++                             !(args->dstOffset & 3) &&
++                             vkr_cmd_buffer_ok(args->dstBuffer, args->dstOffset, args->dataSize),
++                          "vkCmdUpdateBuffer", "%" PRIu64 " bytes at %" PRIu64 " of %" PRIu64,
++                          args->dataSize, args->dstOffset, vkr_cmd_buffer_size(args->dstBuffer)))
++      return;
+    VKR_CMD_CALL(CmdUpdateBuffer, args, args->dstBuffer, args->dstOffset, args->dataSize,
+                 args->pData);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdFillBuffer(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdFillBuffer(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCmdFillBuffer *args)
+ {
++   if (!vkr_context_check(dispatch->data,
++                          !(args->dstOffset & 3) &&
++                             (args->size == VK_WHOLE_SIZE || (args->size && !(args->size & 3))) &&
++                             vkr_whole_range_ok(args->dstOffset, args->size,
++                                                vkr_cmd_buffer_size(args->dstBuffer)),
++                          "vkCmdFillBuffer", "%" PRIu64 " bytes at %" PRIu64 " of %" PRIu64,
++                          args->size, args->dstOffset, vkr_cmd_buffer_size(args->dstBuffer)))
++      return;
+    VKR_CMD_CALL(CmdFillBuffer, args, args->dstBuffer, args->dstOffset, args->size,
+                 args->data);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdClearColorImage(UNUSED struct vn_dispatch_context *dispatch,
+-                                  struct vn_command_vkCmdClearColorImage *args)
++vkr_dispatch_vkCmdClearColorImage(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdClearColorImage *args)
+ {
++   for (uint32_t i = 0; i < args->rangeCount; i++) {
++      const VkImageSubresourceRange *r = &args->pRanges[i];
++      if (!vkr_context_check(dispatch->data, vkr_cmd_range_ok(args->image, r),
++                             "vkCmdClearColorImage", "range %u: levels %u + %u, layers %u + %u", i,
++                             r->baseMipLevel, r->levelCount, r->baseArrayLayer, r->layerCount))
++         return;
++   }
+    VKR_CMD_CALL(CmdClearColorImage, args, args->image, args->imageLayout, args->pColor,
+                 args->rangeCount, args->pRanges);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdClearDepthStencilImage(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdClearDepthStencilImage *args)
++vkr_dispatch_vkCmdClearDepthStencilImage(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdClearDepthStencilImage *args)
+ {
+-   VKR_CMD_CALL(CmdClearDepthStencilImage, args, args->image, args->imageLayout,
+-                args->pDepthStencil, args->rangeCount, args->pRanges);
++   for (uint32_t i = 0; i < args->rangeCount; i++) {
++      const VkImageSubresourceRange *r = &args->pRanges[i];
++      if (!vkr_context_check(dispatch->data, vkr_cmd_range_ok(args->image, r),
++                             "vkCmdClearDepthStencilImage", "range %u: levels %u + %u, layers %u + %u", i,
++                             r->baseMipLevel, r->levelCount, r->baseArrayLayer, r->layerCount))
++         return;
++   }
++   VKR_CMD_CALL(CmdClearDepthStencilImage, args, args->image, args->imageLayout, args->pDepthStencil,
++                args->rangeCount, args->pRanges);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdClearAttachments(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdClearAttachments(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdClearAttachments *args)
+ {
++   /* KosmicKrisp's vk_meta_clear writes a color attachment's clear value into an array of
++    * 8 on the stack at colorAttachment */
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   for (uint32_t i = 0; i < args->attachmentCount; i++) {
++      const VkClearAttachment *a = &args->pAttachments[i];
++      if (!vkr_context_check(dispatch->data,
++                             !(a->aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) ||
++                                a->colorAttachment < max,
++                             "vkCmdClearAttachments", "color attachment %u of %u",
++                             a->colorAttachment, max))
++         return;
++   }
+    VKR_CMD_CALL(CmdClearAttachments, args, args->attachmentCount, args->pAttachments,
+                 args->rectCount, args->pRects);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdResolveImage(UNUSED struct vn_dispatch_context *dispatch,
+-                               struct vn_command_vkCmdResolveImage *args)
++vkr_dispatch_vkCmdResolveImage(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdResolveImage *args)
+ {
++   for (uint32_t i = 0; i < args->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].srcSubresource) &&
++                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource),
++                             "vkCmdResolveImage", "region %u: a level or layer outside the image", i))
++         return;
++   }
+    VKR_CMD_CALL(CmdResolveImage, args, args->srcImage, args->srcImageLayout,
+                 args->dstImage, args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdResolveImage2(UNUSED struct vn_dispatch_context *dispatch,
+-                                struct vn_command_vkCmdResolveImage2 *args)
++vkr_dispatch_vkCmdResolveImage2(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdResolveImage2 *args)
+ {
++   const VkResolveImageInfo2 *info = args->pResolveImageInfo;
++   for (uint32_t i = 0; i < info->regionCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].srcSubresource) &&
++                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource),
++                             "vkCmdResolveImage2", "region %u: a level or layer outside the image", i))
++         return;
++   }
+    VKR_CMD_CALL(CmdResolveImage2, args, args->pResolveImageInfo);
+ }
+ 
+@@ -431,9 +833,13 @@ vkr_dispatch_vkCmdResetEvent(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdWaitEvents(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdWaitEvents(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCmdWaitEvents *args)
+ {
++   if (!vkr_cmd_barriers_ok(dispatch->data, "vkCmdWaitEvents", args->bufferMemoryBarrierCount,
++                            args->pBufferMemoryBarriers, args->imageMemoryBarrierCount,
++                            args->pImageMemoryBarriers))
++      return;
+    VKR_CMD_CALL(CmdWaitEvents, args, args->eventCount, args->pEvents, args->srcStageMask,
+                 args->dstStageMask, args->memoryBarrierCount, args->pMemoryBarriers,
+                 args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+@@ -441,9 +847,13 @@ vkr_dispatch_vkCmdWaitEvents(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdPipelineBarrier(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdPipelineBarrier(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdPipelineBarrier *args)
+ {
++   if (!vkr_cmd_barriers_ok(dispatch->data, "vkCmdPipelineBarrier",
++                            args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
++                            args->imageMemoryBarrierCount, args->pImageMemoryBarriers))
++      return;
+    VKR_CMD_CALL(CmdPipelineBarrier, args, args->srcStageMask, args->dstStageMask,
+                 args->dependencyFlags, args->memoryBarrierCount, args->pMemoryBarriers,
+                 args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+@@ -451,48 +861,91 @@ vkr_dispatch_vkCmdPipelineBarrier(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBeginQuery(UNUSED struct vn_dispatch_context *dispatch,
+-                             struct vn_command_vkCmdBeginQuery *args)
++vkr_dispatch_vkCmdBeginQuery(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdBeginQuery *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++                          "vkCmdBeginQuery", "query %u of %u", args->query,
++                          pool ? pool->count : 0))
++      return;
+    VKR_CMD_CALL(CmdBeginQuery, args, args->queryPool, args->query, args->flags);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdEndQuery(UNUSED struct vn_dispatch_context *dispatch,
+-                           struct vn_command_vkCmdEndQuery *args)
++vkr_dispatch_vkCmdEndQuery(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdEndQuery *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++                          "vkCmdEndQuery", "query %u of %u", args->query,
++                          pool ? pool->count : 0))
++      return;
+    VKR_CMD_CALL(CmdEndQuery, args, args->queryPool, args->query);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdResetQueryPool(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdResetQueryPool(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCmdResetQueryPool *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_context_check(dispatch->data,
++                          vkr_queries_ok(pool, args->firstQuery, args->queryCount),
++                          "vkCmdResetQueryPool", "queries %u + %u of %u", args->firstQuery,
++                          args->queryCount, pool ? pool->count : 0))
++      return;
+    VKR_CMD_CALL(CmdResetQueryPool, args, args->queryPool, args->firstQuery,
+                 args->queryCount);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdWriteTimestamp(UNUSED struct vn_dispatch_context *dispatch,
+-                                 struct vn_command_vkCmdWriteTimestamp *args)
++vkr_dispatch_vkCmdWriteTimestamp(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdWriteTimestamp *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++                          "vkCmdWriteTimestamp", "query %u of %u", args->query,
++                          pool ? pool->count : 0))
++      return;
+    VKR_CMD_CALL(CmdWriteTimestamp, args, args->pipelineStage, args->queryPool,
+                 args->query);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdCopyQueryPoolResults(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdCopyQueryPoolResults(struct vn_dispatch_context *dispatch,
+                                        struct vn_command_vkCmdCopyQueryPoolResults *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   const VkDeviceSize size = vkr_cmd_buffer_size(args->dstBuffer);
++   const VkDeviceSize align = (args->flags & VK_QUERY_RESULT_64_BIT) ? 7 : 3;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_queries_ok(pool, args->firstQuery, args->queryCount) &&
++                             !(args->dstOffset & align) && !(args->stride & align) &&
++                             vkr_strided_ok(args->dstOffset, args->queryCount, args->stride,
++                                            vkr_query_result_size(pool, args->flags), size),
++                          "vkCmdCopyQueryPoolResults",
++                          "queries %u + %u of %u to %" PRIu64 " of %" PRIu64 ", stride %" PRIu64,
++                          args->firstQuery, args->queryCount, pool ? pool->count : 0,
++                          args->dstOffset, size, args->stride))
++      return;
+    VKR_CMD_CALL(CmdCopyQueryPoolResults, args, args->queryPool, args->firstQuery,
+                 args->queryCount, args->dstBuffer, args->dstOffset, args->stride,
+                 args->flags);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdPushConstants(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdPushConstants(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkCmdPushConstants *args)
+ {
++   /* KosmicKrisp copies the values to push + offset; MoltenVK grows a vector to
++    * offset + size in 32 bits */
++   const uint32_t max = VKR_CMD_LIM(args)->maxPushConstantsSize;
++   if (!vkr_context_check(dispatch->data,
++                          args->size && !(args->offset & 3) && !(args->size & 3) &&
++                             vkr_first_count_ok(args->offset, args->size, max),
++                          "vkCmdPushConstants", "%u bytes at %u (at most %u)", args->size,
++                          args->offset, max))
++      return;
+    VKR_CMD_CALL(CmdPushConstants, args, args->layout, args->stageFlags, args->offset,
+                 args->size, args->pValues);
+ }
+@@ -519,9 +972,25 @@ vkr_dispatch_vkCmdEndRenderPass(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdExecuteCommands(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdExecuteCommands *args)
+ {
++   /* only a primary executes secondaries: KosmicKrisp replays a secondary's commands
++    * into the primary, recursively, so a secondary that (in)directly executes itself
++    * recurses until the thread's stack ends */
++   struct vkr_context *ctx = dispatch->data;
++   const struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->commandBuffer);
++   if (!vkr_context_check(ctx, cmd->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY,
++                          "vkCmdExecuteCommands", "in a secondary command buffer"))
++      return;
++   for (uint32_t i = 0; i < args->commandBufferCount; i++) {
++      const struct vkr_command_buffer *sec =
++         vkr_command_buffer_from_handle(args->pCommandBuffers[i]);
++      if (!vkr_context_check(ctx, sec && sec->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY,
++                             "vkCmdExecuteCommands", "command buffer %u is not a secondary",
++                             i))
++         return;
++   }
+    VKR_CMD_CALL(CmdExecuteCommands, args, args->commandBufferCount,
+                 args->pCommandBuffers);
+ }
+@@ -534,9 +1003,18 @@ vkr_dispatch_vkCmdSetDeviceMask(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDispatchBase(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDispatchBase(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdDispatchBase *args)
+ {
++   const uint32_t *max = VKR_CMD_LIM(args)->maxComputeWorkGroupCount;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->baseGroupX, args->groupCountX, max[0]) &&
++                             vkr_first_count_ok(args->baseGroupY, args->groupCountY, max[1]) &&
++                             vkr_first_count_ok(args->baseGroupZ, args->groupCountZ, max[2]),
++                          "vkCmdDispatchBase", "groups from %u, %u, %u: %u x %u x %u",
++                          args->baseGroupX, args->baseGroupY, args->baseGroupZ,
++                          args->groupCountX, args->groupCountY, args->groupCountZ))
++      return;
+    VKR_CMD_CALL(CmdDispatchBase, args, args->baseGroupX, args->baseGroupY,
+                 args->baseGroupZ, args->groupCountX, args->groupCountY,
+                 args->groupCountZ);
+@@ -565,18 +1043,29 @@ vkr_dispatch_vkCmdEndRenderPass2(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDrawIndirectCount(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDrawIndirectCount(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCmdDrawIndirectCount *args)
+ {
++   if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirectCount", args->buffer,
++                            args->offset, args->maxDrawCount, UINT32_MAX, args->stride,
++                            sizeof(VkDrawIndirectCommand)) ||
++       !vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirectCount", args->countBuffer,
++                            args->countBufferOffset, 1, 1, 0, 4))
++      return;
+    VKR_CMD_CALL(CmdDrawIndirectCount, args, args->buffer, args->offset, args->countBuffer,
+                 args->countBufferOffset, args->maxDrawCount, args->stride);
+ }
+ 
+ static void
+ vkr_dispatch_vkCmdDrawIndexedIndirectCount(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdDrawIndexedIndirectCount *args)
++   struct vn_dispatch_context *dispatch, struct vn_command_vkCmdDrawIndexedIndirectCount *args)
+ {
++   if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirectCount", args->buffer,
++                            args->offset, args->maxDrawCount, UINT32_MAX, args->stride,
++                            sizeof(VkDrawIndexedIndirectCommand)) ||
++       !vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirectCount", args->countBuffer,
++                            args->countBufferOffset, 1, 1, 0, 4))
++      return;
+    VKR_CMD_CALL(CmdDrawIndexedIndirectCount, args, args->buffer, args->offset,
+                 args->countBuffer, args->countBufferOffset, args->maxDrawCount,
+                 args->stride);
+@@ -592,78 +1081,160 @@ vkr_dispatch_vkCmdSetLineStipple(UNUSED struct vn_dispatch_context *dispatch,
+ 
+ static void
+ vkr_dispatch_vkCmdBindTransformFeedbackBuffersEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdBindTransformFeedbackBuffersEXT *args)
+ {
++   struct vkr_context *ctx = dispatch->data;
++   const uint32_t max = VKR_CMD_LIMITS(args)->max_xfb_buffers;
++   if (!vkr_context_check(ctx, vkr_first_count_ok(args->firstBinding, args->bindingCount, max),
++                          "vkCmdBindTransformFeedbackBuffersEXT", "buffers %u + %u of %u",
++                          args->firstBinding, args->bindingCount, max))
++      return;
++   for (uint32_t i = 0; i < args->bindingCount; i++) {
++      const VkDeviceSize size = args->pSizes ? args->pSizes[i] : VK_WHOLE_SIZE;
++      if (!vkr_context_check(ctx,
++                             vkr_whole_range_ok(args->pOffsets[i], size,
++                                                vkr_cmd_buffer_size(args->pBuffers[i])),
++                             "vkCmdBindTransformFeedbackBuffersEXT",
++                             "buffer %u: %" PRIu64 " bytes at %" PRIu64, i, size,
++                             args->pOffsets[i]))
++         return;
++   }
+    VKR_CMD_CALL(CmdBindTransformFeedbackBuffersEXT, args, args->firstBinding,
+                 args->bindingCount, args->pBuffers, args->pOffsets, args->pSizes);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBeginTransformFeedbackEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdBeginTransformFeedbackEXT *args)
++vkr_dispatch_vkCmdBeginTransformFeedbackEXT(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdBeginTransformFeedbackEXT *args)
+ {
++   const uint32_t max = VKR_CMD_LIMITS(args)->max_xfb_buffers;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstCounterBuffer, args->counterBufferCount,
++                                             max),
++                          "vkCmdBeginTransformFeedbackEXT", "counter buffers %u + %u of %u",
++                          args->firstCounterBuffer, args->counterBufferCount, max))
++      return;
+    VKR_CMD_CALL(CmdBeginTransformFeedbackEXT, args, args->firstCounterBuffer,
+                 args->counterBufferCount, args->pCounterBuffers,
+                 args->pCounterBufferOffsets);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdEndTransformFeedbackEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdEndTransformFeedbackEXT *args)
++vkr_dispatch_vkCmdEndTransformFeedbackEXT(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdEndTransformFeedbackEXT *args)
+ {
++   const uint32_t max = VKR_CMD_LIMITS(args)->max_xfb_buffers;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstCounterBuffer, args->counterBufferCount,
++                                             max),
++                          "vkCmdEndTransformFeedbackEXT", "counter buffers %u + %u of %u",
++                          args->firstCounterBuffer, args->counterBufferCount, max))
++      return;
+    VKR_CMD_CALL(CmdEndTransformFeedbackEXT, args, args->firstCounterBuffer,
+                 args->counterBufferCount, args->pCounterBuffers,
+                 args->pCounterBufferOffsets);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBeginQueryIndexedEXT(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBeginQueryIndexedEXT(struct vn_dispatch_context *dispatch,
+                                        struct vn_command_vkCmdBeginQueryIndexedEXT *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   const uint32_t streams =
++      pool && pool->type == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT
++         ? VKR_CMD_LIMITS(args)->max_xfb_streams
++         : 1;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_queries_ok(pool, args->query, 1) && args->index < streams,
++                          "vkCmdBeginQueryIndexedEXT", "query %u of %u, index %u of %u",
++                          args->query, pool ? pool->count : 0, args->index, streams))
++      return;
+    VKR_CMD_CALL(CmdBeginQueryIndexedEXT, args, args->queryPool, args->query, args->flags,
+                 args->index);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdEndQueryIndexedEXT(UNUSED struct vn_dispatch_context *dispatch,
+-                                     struct vn_command_vkCmdEndQueryIndexedEXT *args)
++vkr_dispatch_vkCmdEndQueryIndexedEXT(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdEndQueryIndexedEXT *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++                          "vkCmdEndQueryIndexedEXT", "query %u of %u", args->query,
++                          pool ? pool->count : 0))
++      return;
+    VKR_CMD_CALL(CmdEndQueryIndexedEXT, args, args->queryPool, args->query, args->index);
+ }
+ 
+ static void
+ vkr_dispatch_vkCmdDrawIndirectByteCountEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdDrawIndirectByteCountEXT *args)
++   struct vn_dispatch_context *dispatch, struct vn_command_vkCmdDrawIndirectByteCountEXT *args)
+ {
++   if (!vkr_context_check(dispatch->data,
++                          args->vertexStride &&
++                             vkr_cmd_buffer_ok(args->counterBuffer, args->counterBufferOffset, 4),
++                          "vkCmdDrawIndirectByteCountEXT", "counter at %" PRIu64 ", stride %u",
++                          args->counterBufferOffset, args->vertexStride))
++      return;
+    VKR_CMD_CALL(CmdDrawIndirectByteCountEXT, args, args->instanceCount,
+                 args->firstInstance, args->counterBuffer, args->counterBufferOffset,
+                 args->counterOffset, args->vertexStride);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindVertexBuffers2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindVertexBuffers2(struct vn_dispatch_context *dispatch,
+                                      struct vn_command_vkCmdBindVertexBuffers2 *args)
+ {
++   struct vkr_context *ctx = dispatch->data;
++   const VkPhysicalDeviceLimits *lim = VKR_CMD_LIM(args);
++   if (!vkr_context_check(ctx,
++                          vkr_first_count_ok(args->firstBinding, args->bindingCount,
++                                             lim->maxVertexInputBindings),
++                          "vkCmdBindVertexBuffers2", "bindings %u + %u of %u",
++                          args->firstBinding, args->bindingCount, lim->maxVertexInputBindings))
++      return;
++   const bool null_ok = VKR_CMD_DEVICE(args)->null_descriptor;
++   for (uint32_t i = 0; i < args->bindingCount; i++) {
++      const VkDeviceSize size = vkr_cmd_buffer_size(args->pBuffers[i]);
++      const VkDeviceSize range = args->pSizes ? args->pSizes[i] : VK_WHOLE_SIZE;
++      const VkDeviceSize stride = args->pStrides ? args->pStrides[i] : 0;
++      if (!vkr_context_check(ctx,
++                             (size ? vkr_whole_range_ok(args->pOffsets[i], range, size)
++                                   : null_ok && !args->pOffsets[i]) &&
++                                stride <= lim->maxVertexInputBindingStride,
++                             "vkCmdBindVertexBuffers2",
++                             "binding %u: %" PRIu64 " bytes at %" PRIu64 " of %" PRIu64
++                             ", stride %" PRIu64, i, range, args->pOffsets[i], size, stride))
++         return;
++   }
+    VKR_CMD_CALL(CmdBindVertexBuffers2, args, args->firstBinding, args->bindingCount,
+                 args->pBuffers, args->pOffsets, args->pSizes, args->pStrides);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindIndexBuffer2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindIndexBuffer2(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdBindIndexBuffer2 *args)
+ {
++   const VkDeviceSize size = vkr_cmd_buffer_size(args->buffer);
++   if (!vkr_context_check(dispatch->data,
++                          vkr_index_type_ok(VKR_CMD_LIMITS(args), args->indexType) &&
++                             (size ? vkr_whole_range_ok(args->offset, args->size, size)
++                                   : VKR_CMD_DEVICE(args)->maintenance6 && !args->offset),
++                          "vkCmdBindIndexBuffer2",
++                          "index type %d, %" PRIu64 " bytes at %" PRIu64 " of %" PRIu64,
++                          args->indexType, args->size, args->offset, size))
++      return;
+    VKR_CMD_CALL(CmdBindIndexBuffer2, args, args->buffer, args->offset, args->size,
+                 args->indexType);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetCullMode(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetCullMode(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdSetCullMode *args)
+ {
++   if (!vkr_context_check(dispatch->data, vkr_cull_mode_ok(args->cullMode), "vkCmdSetCullMode",
++                          "cull mode %u", args->cullMode))
++      return;
+    VKR_CMD_CALL(CmdSetCullMode, args, args->cullMode);
+ }
+ 
+@@ -676,9 +1247,12 @@ vkr_dispatch_vkCmdSetDepthBoundsTestEnable(
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetDepthCompareOp(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetDepthCompareOp(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCmdSetDepthCompareOp *args)
+ {
++   if (!vkr_context_check(dispatch->data, vkr_compare_op_ok(args->depthCompareOp),
++                          "vkCmdSetDepthCompareOp", "compare op %d", args->depthCompareOp))
++      return;
+    VKR_CMD_CALL(CmdSetDepthCompareOp, args, args->depthCompareOp);
+ }
+ 
+@@ -704,23 +1278,37 @@ vkr_dispatch_vkCmdSetFrontFace(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetPrimitiveTopology(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetPrimitiveTopology(struct vn_dispatch_context *dispatch,
+                                        struct vn_command_vkCmdSetPrimitiveTopology *args)
+ {
++   if (!vkr_context_check(dispatch->data, vkr_topology_ok(args->primitiveTopology),
++                          "vkCmdSetPrimitiveTopology", "topology %d", args->primitiveTopology))
++      return;
+    VKR_CMD_CALL(CmdSetPrimitiveTopology, args, args->primitiveTopology);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetScissorWithCount(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetScissorWithCount(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdSetScissorWithCount *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxViewports;
++   if (!vkr_context_check(dispatch->data, args->scissorCount <= max, "vkCmdSetScissorWithCount",
++                          "%u scissors of %u", args->scissorCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetScissorWithCount, args, args->scissorCount, args->pScissors);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetStencilOp(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetStencilOp(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdSetStencilOp *args)
+ {
++   if (!vkr_context_check(dispatch->data,
++                          vkr_stencil_op_ok(args->failOp) && vkr_stencil_op_ok(args->passOp) &&
++                             vkr_stencil_op_ok(args->depthFailOp) &&
++                             vkr_compare_op_ok(args->compareOp),
++                          "vkCmdSetStencilOp", "ops %d %d %d, compare op %d", args->failOp,
++                          args->passOp, args->depthFailOp, args->compareOp))
++      return;
+    VKR_CMD_CALL(CmdSetStencilOp, args, args->faceMask, args->failOp, args->passOp,
+                 args->depthFailOp, args->compareOp);
+ }
+@@ -733,9 +1321,14 @@ vkr_dispatch_vkCmdSetStencilTestEnable(UNUSED struct vn_dispatch_context *dispat
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetViewportWithCount(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetViewportWithCount(struct vn_dispatch_context *dispatch,
+                                        struct vn_command_vkCmdSetViewportWithCount *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxViewports;
++   if (!vkr_context_check(dispatch->data, args->viewportCount <= max,
++                          "vkCmdSetViewportWithCount", "%u viewports of %u",
++                          args->viewportCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetViewportWithCount, args, args->viewportCount, args->pViewports);
+ }
+ 
+@@ -747,9 +1340,12 @@ vkr_dispatch_vkCmdSetDepthBiasEnable(UNUSED struct vn_dispatch_context *dispatch
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetLogicOpEXT(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetLogicOpEXT(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkCmdSetLogicOpEXT *args)
+ {
++   if (!vkr_context_check(dispatch->data, vkr_logic_op_ok(args->logicOp), "vkCmdSetLogicOpEXT",
++                          "logic op %d", args->logicOp))
++      return;
+    VKR_CMD_CALL(CmdSetLogicOpEXT, args, args->logicOp);
+ }
+ 
+@@ -779,9 +1375,15 @@ vkr_dispatch_vkCmdSetRasterizerDiscardEnable(
+ 
+ static void
+ vkr_dispatch_vkCmdBeginConditionalRenderingEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdBeginConditionalRenderingEXT *args)
+ {
++   const VkConditionalRenderingBeginInfoEXT *info = args->pConditionalRenderingBegin;
++   if (!vkr_context_check(dispatch->data,
++                          !(info->offset & 3) && vkr_cmd_buffer_ok(info->buffer, info->offset, 4),
++                          "vkCmdBeginConditionalRenderingEXT", "offset %" PRIu64 " of %" PRIu64,
++                          info->offset, vkr_cmd_buffer_size(info->buffer)))
++      return;
+    VKR_CMD_CALL(CmdBeginConditionalRenderingEXT, args, args->pConditionalRenderingBegin);
+ }
+ 
+@@ -808,9 +1410,11 @@ vkr_dispatch_vkCmdEndRendering(UNUSED struct vn_dispatch_context *ctx,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdPipelineBarrier2(UNUSED struct vn_dispatch_context *ctx,
++vkr_dispatch_vkCmdPipelineBarrier2(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdPipelineBarrier2 *args)
+ {
++   if (!vkr_cmd_dependency_ok(dispatch->data, "vkCmdPipelineBarrier2", args->pDependencyInfo))
++      return;
+    VKR_CMD_CALL(CmdPipelineBarrier2, args, args->pDependencyInfo);
+ }
+ 
+@@ -822,41 +1426,61 @@ vkr_dispatch_vkCmdResetEvent2(UNUSED struct vn_dispatch_context *ctx,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetEvent2(UNUSED struct vn_dispatch_context *ctx,
++vkr_dispatch_vkCmdSetEvent2(struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkCmdSetEvent2 *args)
+ {
++   if (!vkr_cmd_dependency_ok(dispatch->data, "vkCmdSetEvent2", args->pDependencyInfo))
++      return;
+    VKR_CMD_CALL(CmdSetEvent2, args, args->event, args->pDependencyInfo);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdWaitEvents2(UNUSED struct vn_dispatch_context *ctx,
++vkr_dispatch_vkCmdWaitEvents2(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdWaitEvents2 *args)
+ {
++   for (uint32_t i = 0; i < args->eventCount; i++) {
++      if (!vkr_cmd_dependency_ok(dispatch->data, "vkCmdWaitEvents2", &args->pDependencyInfos[i]))
++         return;
++   }
+    VKR_CMD_CALL(CmdWaitEvents2, args, args->eventCount, args->pEvents,
+                 args->pDependencyInfos);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdWriteTimestamp2(UNUSED struct vn_dispatch_context *ctx,
+-                                  struct vn_command_vkCmdWriteTimestamp2 *args)
++vkr_dispatch_vkCmdWriteTimestamp2(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdWriteTimestamp2 *args)
+ {
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_context_check(dispatch->data, vkr_queries_ok(pool, args->query, 1),
++                          "vkCmdWriteTimestamp2", "query %u of %u", args->query,
++                          pool ? pool->count : 0))
++      return;
+    VKR_CMD_CALL(CmdWriteTimestamp2, args, args->stage, args->queryPool, args->query);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDrawMultiEXT(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDrawMultiEXT(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdDrawMultiEXT *args)
+ {
++   /* the decoder packs the drawCount entries back to back: the driver reads them with
++    * their own size as the stride, never the guest's */
++   if (!vkr_context_check(dispatch->data, !args->drawCount || args->pVertexInfo,
++                          "vkCmdDrawMultiEXT", "%u draws without their array", args->drawCount))
++      return;
+    VKR_CMD_CALL(CmdDrawMultiEXT, args, args->drawCount, args->pVertexInfo,
+-                args->instanceCount, args->firstInstance, args->stride);
++                args->instanceCount, args->firstInstance, sizeof(VkMultiDrawInfoEXT));
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdDrawMultiIndexedEXT(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdDrawMultiIndexedEXT(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdDrawMultiIndexedEXT *args)
+ {
++   if (!vkr_context_check(dispatch->data, !args->drawCount || args->pIndexInfo,
++                          "vkCmdDrawMultiIndexedEXT", "%u draws without their array",
++                          args->drawCount))
++      return;
+    VKR_CMD_CALL(CmdDrawMultiIndexedEXT, args, args->drawCount, args->pIndexInfo,
+-                args->instanceCount, args->firstInstance, args->stride,
++                args->instanceCount, args->firstInstance, sizeof(VkMultiDrawIndexedInfoEXT),
+                 args->pVertexOffset);
+ }
+ 
+@@ -869,18 +1493,51 @@ vkr_dispatch_vkCmdPushDescriptorSet(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetColorWriteEnableEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdSetColorWriteEnableEXT *args)
++vkr_dispatch_vkCmdSetColorWriteEnableEXT(struct vn_dispatch_context *dispatch,
++                                         struct vn_command_vkCmdSetColorWriteEnableEXT *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   if (!vkr_context_check(dispatch->data, args->attachmentCount <= max,
++                          "vkCmdSetColorWriteEnableEXT", "%u attachments of %u",
++                          args->attachmentCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetColorWriteEnableEXT, args, args->attachmentCount,
+                 args->pColorWriteEnables);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetVertexInputEXT(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetVertexInputEXT(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCmdSetVertexInputEXT *args)
+ {
++   struct vkr_context *ctx = dispatch->data;
++   const VkPhysicalDeviceLimits *lim = VKR_CMD_LIM(args);
++   if (!vkr_context_check(ctx,
++                          args->vertexBindingDescriptionCount <= lim->maxVertexInputBindings &&
++                             args->vertexAttributeDescriptionCount <=
++                                lim->maxVertexInputAttributes,
++                          "vkCmdSetVertexInputEXT", "%u bindings, %u attributes",
++                          args->vertexBindingDescriptionCount,
++                          args->vertexAttributeDescriptionCount))
++      return;
++   for (uint32_t i = 0; i < args->vertexBindingDescriptionCount; i++) {
++      const VkVertexInputBindingDescription2EXT *b = &args->pVertexBindingDescriptions[i];
++      if (!vkr_context_check(ctx,
++                             b->binding < lim->maxVertexInputBindings &&
++                                b->stride <= lim->maxVertexInputBindingStride &&
++                                (uint32_t)b->inputRate <= VK_VERTEX_INPUT_RATE_INSTANCE,
++                             "vkCmdSetVertexInputEXT", "binding %u, stride %u, rate %d",
++                             b->binding, b->stride, b->inputRate))
++         return;
++   }
++   for (uint32_t i = 0; i < args->vertexAttributeDescriptionCount; i++) {
++      const VkVertexInputAttributeDescription2EXT *a = &args->pVertexAttributeDescriptions[i];
++      if (!vkr_context_check(ctx,
++                             a->location < lim->maxVertexInputAttributes &&
++                                a->binding < lim->maxVertexInputBindings,
++                             "vkCmdSetVertexInputEXT", "attribute at location %u, binding %u",
++                             a->location, a->binding))
++         return;
++   }
+    VKR_CMD_CALL(CmdSetVertexInputEXT, args, args->vertexBindingDescriptionCount,
+                 args->pVertexBindingDescriptions, args->vertexAttributeDescriptionCount,
+                 args->pVertexAttributeDescriptions);
+@@ -903,36 +1560,75 @@ vkr_dispatch_vkCmdSetAlphaToOneEnableEXT(
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetColorBlendAdvancedEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdSetColorBlendAdvancedEXT *args)
++vkr_dispatch_vkCmdSetColorBlendAdvancedEXT(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdSetColorBlendAdvancedEXT *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstAttachment, args->attachmentCount, max),
++                          "vkCmdSetColorBlendAdvancedEXT", "attachments %u + %u of %u", args->firstAttachment,
++                          args->attachmentCount, max))
++      return;
++   for (uint32_t i = 0; i < args->attachmentCount; i++) {
++      const VkColorBlendAdvancedEXT *a = &args->pColorBlendAdvanced[i];
++      if (!vkr_context_check(dispatch->data,
++                             VKR_CMD_LIMITS(args)->advanced_blend &&
++                                a->advancedBlendOp >= VK_BLEND_OP_ZERO_EXT &&
++                                a->advancedBlendOp <= VK_BLEND_OP_BLUE_EXT &&
++                                vkr_blend_overlap_ok(a->blendOverlap),
++                             "vkCmdSetColorBlendAdvancedEXT", "attachment %u: op %d, overlap %d",
++                             i, a->advancedBlendOp, a->blendOverlap))
++         return;
++   }
+    VKR_CMD_CALL(CmdSetColorBlendAdvancedEXT, args, args->firstAttachment,
+                 args->attachmentCount, args->pColorBlendAdvanced);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetColorBlendEnableEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdSetColorBlendEnableEXT *args)
++vkr_dispatch_vkCmdSetColorBlendEnableEXT(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdSetColorBlendEnableEXT *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstAttachment, args->attachmentCount, max),
++                          "vkCmdSetColorBlendEnableEXT", "attachments %u + %u of %u", args->firstAttachment,
++                          args->attachmentCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetColorBlendEnableEXT, args, args->firstAttachment,
+                 args->attachmentCount, args->pColorBlendEnables);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetColorBlendEquationEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdSetColorBlendEquationEXT *args)
++vkr_dispatch_vkCmdSetColorBlendEquationEXT(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdSetColorBlendEquationEXT *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstAttachment, args->attachmentCount, max),
++                          "vkCmdSetColorBlendEquationEXT", "attachments %u + %u of %u", args->firstAttachment,
++                          args->attachmentCount, max))
++      return;
++   for (uint32_t i = 0; i < args->attachmentCount; i++) {
++      if (!vkr_context_check(dispatch->data,
++                             vkr_cmd_equation_ok(VKR_CMD_LIMITS(args), &args->pColorBlendEquations[i]),
++                             "vkCmdSetColorBlendEquationEXT", "attachment %u: a blend factor or op",
++                             i))
++         return;
++   }
+    VKR_CMD_CALL(CmdSetColorBlendEquationEXT, args, args->firstAttachment,
+                 args->attachmentCount, args->pColorBlendEquations);
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetColorWriteMaskEXT(UNUSED struct vn_dispatch_context *dispatch,
+-                                       struct vn_command_vkCmdSetColorWriteMaskEXT *args)
++vkr_dispatch_vkCmdSetColorWriteMaskEXT(struct vn_dispatch_context *dispatch,
++                    struct vn_command_vkCmdSetColorWriteMaskEXT *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   if (!vkr_context_check(dispatch->data,
++                          vkr_first_count_ok(args->firstAttachment, args->attachmentCount, max),
++                          "vkCmdSetColorWriteMaskEXT", "attachments %u + %u of %u", args->firstAttachment,
++                          args->attachmentCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetColorWriteMaskEXT, args, args->firstAttachment,
+                 args->attachmentCount, args->pColorWriteMasks);
+ }
+@@ -1018,9 +1714,13 @@ vkr_dispatch_vkCmdSetProvokingVertexModeEXT(
+ 
+ static void
+ vkr_dispatch_vkCmdSetRasterizationSamplesEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
+-   struct vn_command_vkCmdSetRasterizationSamplesEXT *args)
++   struct vn_dispatch_context *dispatch, struct vn_command_vkCmdSetRasterizationSamplesEXT *args)
+ {
++   if (!vkr_context_check(dispatch->data,
++                          vkr_sample_count_ok(VKR_CMD_LIM(args), args->rasterizationSamples),
++                          "vkCmdSetRasterizationSamplesEXT", "%u samples",
++                          args->rasterizationSamples))
++      return;
+    VKR_CMD_CALL(CmdSetRasterizationSamplesEXT, args, args->rasterizationSamples);
+ }
+ 
+@@ -1065,25 +1765,43 @@ vkr_dispatch_vkCmdSetFragmentShadingRateKHR(
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdSetSampleLocationsEXT(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdSetSampleLocationsEXT(struct vn_dispatch_context *dispatch,
+                                         struct vn_command_vkCmdSetSampleLocationsEXT *args)
+ {
++   const VkSampleLocationsInfoEXT *info = args->pSampleLocationsInfo;
++   if (!vkr_context_check(dispatch->data, vkr_sample_locations_ok(VKR_CMD_LIMITS(args), info),
++                          "vkCmdSetSampleLocationsEXT",
++                          "%u locations, grid %ux%u, %u per pixel", info->sampleLocationsCount,
++                          info->sampleLocationGridSize.width,
++                          info->sampleLocationGridSize.height, info->sampleLocationsPerPixel))
++      return;
+    VKR_CMD_CALL(CmdSetSampleLocationsEXT, args, args->pSampleLocationsInfo);
+ }
+ 
+ static void
+ vkr_dispatch_vkCmdSetRenderingAttachmentLocations(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdSetRenderingAttachmentLocations *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   if (!vkr_context_check(dispatch->data, args->pLocationInfo->colorAttachmentCount <= max,
++                          "vkCmdSetRenderingAttachmentLocations", "%u attachments of %u",
++                          args->pLocationInfo->colorAttachmentCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetRenderingAttachmentLocations, args, args->pLocationInfo);
+ }
+ 
+ static void
+ vkr_dispatch_vkCmdSetRenderingInputAttachmentIndices(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdSetRenderingInputAttachmentIndices *args)
+ {
++   const uint32_t max = VKR_CMD_LIM(args)->maxColorAttachments;
++   if (!vkr_context_check(dispatch->data,
++                          args->pInputAttachmentIndexInfo->colorAttachmentCount <= max,
++                          "vkCmdSetRenderingInputAttachmentIndices", "%u attachments of %u",
++                          args->pInputAttachmentIndexInfo->colorAttachmentCount, max))
++      return;
+    VKR_CMD_CALL(CmdSetRenderingInputAttachmentIndices, args,
+                 args->pInputAttachmentIndexInfo);
+ }
+@@ -1096,9 +1814,17 @@ vkr_dispatch_vkCmdBindDescriptorSets2(UNUSED struct vn_dispatch_context *dispatc
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdPushConstants2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdPushConstants2(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCmdPushConstants2 *args)
+ {
++   const VkPushConstantsInfo *info = args->pPushConstantsInfo;
++   const uint32_t max = VKR_CMD_LIM(args)->maxPushConstantsSize;
++   if (!vkr_context_check(dispatch->data,
++                          info->size && !(info->offset & 3) && !(info->size & 3) &&
++                             vkr_first_count_ok(info->offset, info->size, max),
++                          "vkCmdPushConstants2", "%u bytes at %u (at most %u)", info->size,
++                          info->offset, max))
++      return;
+    VKR_CMD_CALL(CmdPushConstants2, args, args->pPushConstantsInfo);
+ }
+ 
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index 90b6d38..6ef6af8 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -21,6 +21,8 @@ struct vkr_command_buffer {
+    struct vkr_object base;
+ 
+    struct vkr_device *device;
++   /* OmacVM (virgl-venus-command-limits.patch): only a primary executes secondaries */
++   VkCommandBufferLevel level;
+ };
+ VKR_DEFINE_OBJECT_CAST(command_buffer, VK_OBJECT_TYPE_COMMAND_BUFFER, VkCommandBuffer)
+ 
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 359a376..19c0929 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -550,6 +550,21 @@ vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const
+       vkr_context_set_fatal(ctx);
+ }
+ 
++bool
++vkr_context_check(struct vkr_context *ctx, bool ok, const char *call, const char *fmt, ...)
++{
++   if (likely(ok))
++      return true;
++
++   char why[256];
++   va_list va;
++   va_start(va, fmt);
++   vsnprintf(why, sizeof(why), fmt, va);
++   va_end(va);
++   vkr_context_refuse(ctx, true, call, "%s", why);
++   return false;
++}
++
+ void
+ vkr_context_on_ring_fatal(struct vkr_context *ctx)
+ {
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index 83c2db3..26b36c0 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -195,6 +195,13 @@ void
+ vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const char *fmt, ...)
+    PRINTFLIKE(4, 5);
+ 
++/* OmacVM (virgl-venus-command-limits.patch): ok, or the guest call is refused as
++ * vkr_context_refuse(ctx, true, call, fmt, ...) does (the app's context ends) and false.
++ * The message is made only on a refusal. */
++bool
++vkr_context_check(struct vkr_context *ctx, bool ok, const char *call, const char *fmt, ...)
++   PRINTFLIKE(4, 5);
++
+ static inline bool
+ vkr_context_validate_object_id(struct vkr_context *ctx, vkr_object_id id)
+ {
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 482b93d..1e81a62 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -219,6 +219,10 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+       if (!physical_dev->EXT_queue_family_foreign &&
+             !strcmp(args->pCreateInfo->ppEnabledExtensionNames[i], VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME))
+          continue;
++      /* OmacVM (virgl-venus-command-limits.patch): hidden from the guest */
++      if (!strcmp(args->pCreateInfo->ppEnabledExtensionNames[i],
++                  VK_EXT_NESTED_COMMAND_BUFFER_EXTENSION_NAME))
++         continue;
+       exts[ext_count++] = args->pCreateInfo->ppEnabledExtensionNames[i];
+    }
+ 
+@@ -306,6 +310,16 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+       (ctx->instance && ctx->instance->api_version >= VK_API_VERSION_1_3 &&
+        physical_dev->api_version >= VK_API_VERSION_1_3);
+ 
++   /* OmacVM (virgl-venus-command-limits.patch) */
++   const VkPhysicalDeviceRobustness2FeaturesEXT *robustness2 = vkr_find_struct(
++      args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT);
++   dev->null_descriptor = robustness2 && robustness2->nullDescriptor;
++   const VkPhysicalDeviceMaintenance6FeaturesKHR *maintenance6 = vkr_find_struct(
++      args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_6_FEATURES_KHR);
++   const VkPhysicalDeviceVulkan14Features *v14 = vkr_find_struct(
++      args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES);
++   dev->maintenance6 = (maintenance6 && maintenance6->maintenance6) || (v14 && v14->maintenance6);
++
+    vkr_device_init_proc_table(dev, physical_dev->api_version,
+                               args->pCreateInfo->ppEnabledExtensionNames,
+                               args->pCreateInfo->enabledExtensionCount);
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index e8617da..7eefa25 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -28,6 +28,11 @@ struct vkr_device {
+    /* OmacVM (virgl-venus-view-limits.patch): texel buffer offsets may follow the per-format
+     * rule of the texel buffer alignment properties */
+    bool texel_buffer_alignment;
++   /* OmacVM (virgl-venus-command-limits.patch): features vkr's checks follow, as the guest
++    * turned them on: NULL buffers and views (robustness2), a NULL index buffer
++    * (maintenance6) */
++   bool null_descriptor;
++   bool maintenance6;
+ 
+    struct list_head queues;
+ 
+diff --git a/src/venus/vkr_limits.h b/src/venus/vkr_limits.h
+new file mode 100644
+index 0000000..acb0929
+--- /dev/null
++++ b/src/venus/vkr_limits.h
+@@ -0,0 +1,186 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-command-limits.patch, ADR 0065 "Indices, counts and offsets"): what
++ * vkr knows of the device's limits and the helpers that bound a guest's indices, counts,
++ * offsets and enum values before the Mac's Vulkan driver uses them. KosmicKrisp is built
++ * with NDEBUG: Mesa's asserts on these are gone, so an index past a fixed array is a host
++ * memory access, and an enum value a switch does not know reaches __builtin_unreachable().
++ * Every check is spec validity (a VUID); semantic validation stays with the driver. */
++
++#ifndef VKR_LIMITS_H
++#define VKR_LIMITS_H
++
++#include "vkr_common.h"
++
++/* what the physical device reports beyond VkPhysicalDeviceLimits, read once at enumerate */
++struct vkr_limits {
++   uint32_t max_multiview_views;      /* the driver's maxMultiviewViewCount */
++   uint32_t max_push_descriptors;     /* 0 without VK_KHR_push_descriptor */
++   uint32_t max_inline_uniform_block; /* 0 without inline uniform blocks */
++   uint32_t max_xfb_buffers, max_xfb_streams;
++   VkSampleCountFlags sample_location_counts;
++   VkExtent2D max_sample_location_grid;
++   /* update-after-bind per-set limits (Vulkan 1.2), 0 when the device has none */
++   uint32_t uab_samplers, uab_uniform_buffers, uab_uniform_buffers_dynamic, uab_storage_buffers,
++      uab_storage_buffers_dynamic, uab_sampled_images, uab_storage_images, uab_input_attachments;
++   bool pipeline_statistics_query;
++   bool index_type_uint8;
++   bool advanced_blend;
++   bool ray_tracing;
++   bool transform_feedback;
++   bool primitives_generated_query;
++};
++
++/* first + count <= max, without overflow */
++static inline bool
++vkr_first_count_ok(uint32_t first, uint32_t count, uint32_t max)
++{
++   return (uint64_t)first + count <= max;
++}
++
++/* offset + size <= total, without overflow */
++static inline bool
++vkr_range_ok(uint64_t offset, uint64_t size, uint64_t total)
++{
++   return offset <= total && size <= total - offset;
++}
++
++/* a buffer range of a descriptor, a barrier or a bind: offset inside, size VK_WHOLE_SIZE
++ * or inside too */
++static inline bool
++vkr_whole_range_ok(uint64_t offset, uint64_t size, uint64_t total)
++{
++   return size == VK_WHOLE_SIZE ? offset < total : vkr_range_ok(offset, size, total);
++}
++
++/* first + (count - 1) * stride + elem <= total, count >= 1 */
++static inline bool
++vkr_strided_ok(uint64_t offset, uint32_t count, uint64_t stride, uint64_t elem, uint64_t total)
++{
++   if (!count)
++      return true;
++   const uint64_t span = (uint64_t)(count - 1) * stride; /* < 2^64: both < 2^32 */
++   return vkr_range_ok(offset, span, total) && vkr_range_ok(offset + span, elem, total);
++}
++
++static inline bool
++vkr_one_bit(uint32_t v)
++{
++   return v && !(v & (v - 1));
++}
++
++/* the enum values the drivers' switches know (KosmicKrisp's vk_to_mtl_map.c and Mesa's
++ * vk_blend.c end in UNREACHABLE for any other) */
++static inline bool
++vkr_compare_op_ok(VkCompareOp op)
++{
++   return (uint32_t)op <= VK_COMPARE_OP_ALWAYS;
++}
++
++static inline bool
++vkr_stencil_op_ok(VkStencilOp op)
++{
++   return (uint32_t)op <= VK_STENCIL_OP_DECREMENT_AND_WRAP;
++}
++
++static inline bool
++vkr_cull_mode_ok(VkCullModeFlags mode)
++{
++   return mode <= VK_CULL_MODE_FRONT_AND_BACK;
++}
++
++static inline bool
++vkr_topology_ok(VkPrimitiveTopology t)
++{
++   return (uint32_t)t <= VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
++}
++
++static inline bool
++vkr_logic_op_ok(VkLogicOp op)
++{
++   return (uint32_t)op <= VK_LOGIC_OP_SET;
++}
++
++static inline bool
++vkr_blend_factor_ok(VkBlendFactor f)
++{
++   return (uint32_t)f <= VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
++}
++
++static inline bool
++vkr_blend_op_ok(const struct vkr_limits *l, VkBlendOp op)
++{
++   return (uint32_t)op <= VK_BLEND_OP_MAX ||
++          (l->advanced_blend && op >= VK_BLEND_OP_ZERO_EXT && op <= VK_BLEND_OP_BLUE_EXT);
++}
++
++static inline bool
++vkr_blend_overlap_ok(VkBlendOverlapEXT o)
++{
++   return (uint32_t)o <= VK_BLEND_OVERLAP_CONJOINT_EXT;
++}
++
++static inline bool
++vkr_index_type_ok(const struct vkr_limits *l, VkIndexType t)
++{
++   return t == VK_INDEX_TYPE_UINT16 || t == VK_INDEX_TYPE_UINT32 ||
++          (l->index_type_uint8 && t == VK_INDEX_TYPE_UINT8);
++}
++
++static inline bool
++vkr_bind_point_ok(const struct vkr_limits *l, VkPipelineBindPoint p)
++{
++   return p == VK_PIPELINE_BIND_POINT_GRAPHICS || p == VK_PIPELINE_BIND_POINT_COMPUTE ||
++          (l->ray_tracing && p == VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
++}
++
++/* one sample count the device renders with */
++static inline bool
++vkr_sample_count_ok(const VkPhysicalDeviceLimits *lim, VkSampleCountFlagBits s)
++{
++   const VkSampleCountFlags all =
++      lim->framebufferColorSampleCounts | lim->framebufferDepthSampleCounts |
++      lim->framebufferStencilSampleCounts | lim->framebufferNoAttachmentsSampleCounts;
++   return vkr_one_bit(s) && (s & all);
++}
++
++/* sample locations Mesa copies into a fixed array: count = grid x per pixel, inside the
++ * device's grid and sample counts */
++static inline bool
++vkr_sample_locations_ok(const struct vkr_limits *l, const VkSampleLocationsInfoEXT *info)
++{
++   if (!info)
++      return true;
++   const VkExtent2D g = info->sampleLocationGridSize;
++   return vkr_one_bit(info->sampleLocationsPerPixel) &&
++          (info->sampleLocationsPerPixel & l->sample_location_counts) &&
++          g.width <= l->max_sample_location_grid.width &&
++          g.height <= l->max_sample_location_grid.height &&
++          (uint64_t)g.width * g.height * info->sampleLocationsPerPixel ==
++             info->sampleLocationsCount;
++}
++
++/* the levels and layers a guest names exist in the image (VK_REMAINING_* resolved) */
++static inline bool
++vkr_levels_layers_ok(uint32_t mip_levels,
++                     uint32_t array_layers,
++                     uint32_t base_level,
++                     uint32_t level_count,
++                     uint32_t base_layer,
++                     uint32_t layer_count)
++{
++   if (base_level >= mip_levels || base_layer >= array_layers)
++      return false;
++   if (level_count != VK_REMAINING_MIP_LEVELS &&
++       (!level_count || !vkr_first_count_ok(base_level, level_count, mip_levels)))
++      return false;
++   if (layer_count != VK_REMAINING_ARRAY_LAYERS &&
++       (!layer_count || !vkr_first_count_ok(base_layer, layer_count, array_layers)))
++      return false;
++   return true;
++}
++
++#endif /* VKR_LIMITS_H */
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index a3680a3..6253584 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -299,6 +299,11 @@ vkr_physical_device_init_extensions(struct vkr_physical_device *physical_dev)
+          physical_dev->KHR_portability_subset = true;
+          /* hide from guest */
+          continue;
++      } else if (!strcmp(props->extensionName, VK_EXT_NESTED_COMMAND_BUFFER_EXTENSION_NAME)) {
++         /* OmacVM (virgl-venus-command-limits.patch): hidden; only a primary executes
++          * secondaries (KosmicKrisp replays secondaries recursively, a secondary that
++          * executes itself ran QEMU's ring thread out of stack) */
++         continue;
+       }
+ 
+       const uint32_t spec_ver = vkr_extension_get_spec_version(props->extensionName);
+@@ -389,6 +394,95 @@ vkr_physical_device_init_missing_entries(struct vkr_physical_device *physical_de
+    vkr_physical_device_proc_table_fill_missing(vk);
+ }
+ 
++/* OmacVM (virgl-venus-command-limits.patch): what the guest checks bound against beyond
++ * VkPhysicalDeviceLimits; structs of extensions only when the device lists them */
++static void
++vkr_physical_device_init_limits(struct vkr_physical_device *physical_dev)
++{
++   struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
++   VkPhysicalDevice handle = physical_dev->base.handle.physical_device;
++   const uint32_t version = physical_dev->properties.apiVersion;
++   struct vkr_limits *l = &physical_dev->limits;
++
++   VkPhysicalDeviceMultiviewProperties mv = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES,
++   };
++   VkPhysicalDeviceVulkan12Properties p12 = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
++   };
++   VkPhysicalDeviceInlineUniformBlockProperties inl = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INLINE_UNIFORM_BLOCK_PROPERTIES,
++   };
++   VkPhysicalDevicePushDescriptorPropertiesKHR push = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR,
++   };
++   VkPhysicalDeviceTransformFeedbackPropertiesEXT xfb = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT,
++   };
++   VkPhysicalDeviceSampleLocationsPropertiesEXT sl = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLE_LOCATIONS_PROPERTIES_EXT,
++   };
++   VkPhysicalDeviceProperties2 props2 = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
++      .pNext = &mv,
++   };
++   void **tail = &mv.pNext;
++   if (version >= VK_API_VERSION_1_2) {
++      *tail = &p12;
++      tail = &p12.pNext;
++   }
++   if (version >= VK_API_VERSION_1_3 ||
++       vkr_physical_device_lists(physical_dev, VK_EXT_INLINE_UNIFORM_BLOCK_EXTENSION_NAME)) {
++      *tail = &inl;
++      tail = &inl.pNext;
++   }
++   if (vkr_physical_device_lists(physical_dev, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) {
++      *tail = &push;
++      tail = &push.pNext;
++   }
++   l->transform_feedback =
++      vkr_physical_device_lists(physical_dev, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME);
++   if (l->transform_feedback) {
++      *tail = &xfb;
++      tail = &xfb.pNext;
++   }
++   if (vkr_physical_device_lists(physical_dev, VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME)) {
++      *tail = &sl;
++      tail = &sl.pNext;
++   }
++   vk->GetPhysicalDeviceProperties2(handle, &props2);
++
++   VkPhysicalDeviceFeatures features;
++   memset(&features, 0, sizeof(features));
++   vk->GetPhysicalDeviceFeatures(handle, &features);
++
++   l->max_multiview_views = mv.maxMultiviewViewCount;
++   l->max_push_descriptors = push.maxPushDescriptors;
++   l->max_inline_uniform_block = inl.maxInlineUniformBlockSize;
++   l->max_xfb_buffers = xfb.maxTransformFeedbackBuffers;
++   l->max_xfb_streams = xfb.maxTransformFeedbackStreams;
++   l->sample_location_counts = sl.sampleLocationSampleCounts;
++   l->max_sample_location_grid = sl.maxSampleLocationGridSize;
++   l->uab_samplers = p12.maxDescriptorSetUpdateAfterBindSamplers;
++   l->uab_uniform_buffers = p12.maxDescriptorSetUpdateAfterBindUniformBuffers;
++   l->uab_uniform_buffers_dynamic = p12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic;
++   l->uab_storage_buffers = p12.maxDescriptorSetUpdateAfterBindStorageBuffers;
++   l->uab_storage_buffers_dynamic = p12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic;
++   l->uab_sampled_images = p12.maxDescriptorSetUpdateAfterBindSampledImages;
++   l->uab_storage_images = p12.maxDescriptorSetUpdateAfterBindStorageImages;
++   l->uab_input_attachments = p12.maxDescriptorSetUpdateAfterBindInputAttachments;
++   l->pipeline_statistics_query = features.pipelineStatisticsQuery;
++   l->index_type_uint8 =
++      vkr_physical_device_lists(physical_dev, VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME) ||
++      vkr_physical_device_lists(physical_dev, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
++   l->advanced_blend =
++      vkr_physical_device_lists(physical_dev, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
++   l->ray_tracing =
++      vkr_physical_device_lists(physical_dev, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
++   l->primitives_generated_query =
++      vkr_physical_device_lists(physical_dev, VK_EXT_PRIMITIVES_GENERATED_QUERY_EXTENSION_NAME);
++}
++
+ static void
+ vkr_physical_device_init_properties(struct vkr_physical_device *physical_dev)
+ {
+@@ -547,6 +641,7 @@ vkr_dispatch_vkEnumeratePhysicalDevices(struct vn_dispatch_context *dispatch,
+          MIN2(physical_dev->properties.apiVersion, instance->api_version);
+       vkr_physical_device_init_extensions(physical_dev);
+       vkr_physical_device_init_missing_entries(physical_dev);
++      vkr_physical_device_init_limits(physical_dev);
+       vkr_physical_device_init_memory_properties(physical_dev);
+       vkr_physical_device_init_id_properties(physical_dev);
+       vkr_physical_device_init_queue_family_properties(physical_dev);
+diff --git a/src/venus/vkr_physical_device.h b/src/venus/vkr_physical_device.h
+index 3918ecf..64a3859 100644
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -7,6 +7,7 @@
+ #define VKR_PHYSICAL_DEVICE_H
+ 
+ #include "vkr_common.h"
++#include "vkr_limits.h"
+ 
+ #include "venus-protocol/vn_protocol_renderer_util.h"
+ 
+@@ -16,6 +17,8 @@ struct vkr_physical_device {
+    struct vn_physical_device_proc_table proc_table;
+ 
+    VkPhysicalDeviceProperties properties;
++   /* OmacVM (virgl-venus-command-limits.patch): limits and features beyond properties */
++   struct vkr_limits limits;
+    uint32_t api_version;
+ 
+    VkExtensionProperties *extensions;
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 76709b9..6e59136 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -105,6 +105,17 @@ vkr_dispatch_vkMergePipelineCaches(UNUSED struct vn_dispatch_context *dispatch,
+                                        args->pSrcCaches);
+ }
+ 
++/* OmacVM (virgl-venus-command-limits.patch): the bind point the pipelines are for */
++static void
++vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_point)
++{
++   for (uint32_t i = 0; i < arr->count; i++) {
++      struct vkr_pipeline *pipeline = arr->objects[i];
++      if (pipeline)
++         pipeline->bind_point = bind_point;
++   }
++}
++
+ static void
+ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+                                        struct vn_command_vkCreateGraphicsPipelines *args)
+@@ -117,6 +128,7 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+    if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
+       return;
+ 
++   vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+ }
+ 
+@@ -132,6 +144,7 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+    if (vkr_compute_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
+       return;
+ 
++   vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_COMPUTE);
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+ }
+ 
+@@ -155,6 +168,7 @@ vkr_dispatch_vkCreateRayTracingPipelinesKHR(
+    if (vkr_ray_tracing_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
+       return;
+ 
++   vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+ }
+ 
+diff --git a/src/venus/vkr_pipeline.h b/src/venus/vkr_pipeline.h
+index a356ebf..350e9e0 100644
+--- a/src/venus/vkr_pipeline.h
++++ b/src/venus/vkr_pipeline.h
+@@ -25,6 +25,8 @@ VKR_DEFINE_OBJECT_CAST(pipeline_cache, VK_OBJECT_TYPE_PIPELINE_CACHE, VkPipeline
+ 
+ struct vkr_pipeline {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-command-limits.patch): vkCmdBindPipeline binds it here only */
++   VkPipelineBindPoint bind_point;
+ };
+ VKR_DEFINE_OBJECT_CAST(pipeline, VK_OBJECT_TYPE_PIPELINE, VkPipeline)
+ 
+diff --git a/src/venus/vkr_query_pool.c b/src/venus/vkr_query_pool.c
+index eb77fe4..df26e0a 100644
+--- a/src/venus/vkr_query_pool.c
++++ b/src/venus/vkr_query_pool.c
+@@ -6,12 +6,59 @@
+ #include "vkr_query_pool.h"
+ 
+ #include "vkr_query_pool_gen.h"
++#include "vkr_physical_device.h"
++
++/* OmacVM (virgl-venus-command-limits.patch): the most queries in one pool. KosmicKrisp
++ * sizes a pool in 32-bit arithmetic and has no case for a type it lacks (UNREACHABLE). */
++#define VKR_MAX_QUERIES (1u << 20)
+ 
+ static void
+ vkr_dispatch_vkCreateQueryPool(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCreateQueryPool *args)
+ {
+-   vkr_query_pool_create_and_add(dispatch->data, args);
++   const struct vkr_device *dev = vkr_device_from_handle(args->device);
++   const struct vkr_limits *l = &dev->physical_device->limits;
++   const VkQueryPoolCreateInfo *info = args->pCreateInfo;
++   uint32_t values = 1;
++   bool known;
++   switch (info->queryType) {
++   case VK_QUERY_TYPE_OCCLUSION:
++   case VK_QUERY_TYPE_TIMESTAMP:
++      known = true;
++      break;
++   case VK_QUERY_TYPE_PIPELINE_STATISTICS:
++      /* the core statistics only (no task, mesh or cluster counters on a Mac) */
++      known = l->pipeline_statistics_query && info->pipelineStatistics &&
++              !(info->pipelineStatistics &
++                ~(VkQueryPipelineStatisticFlags)
++                   VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT * 2 - 1);
++      values = util_bitcount(info->pipelineStatistics);
++      break;
++   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
++      known = l->transform_feedback;
++      values = 2;
++      break;
++   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
++      known = l->primitives_generated_query;
++      break;
++   default:
++      known = false;
++      break;
++   }
++   if (!known || !info->queryCount || info->queryCount > VKR_MAX_QUERIES) {
++      vkr_context_refuse(dispatch->data, true, "vkCreateQueryPool",
++                         "type %d with %u queries (at most %u, of a type the device has)",
++                         info->queryType, info->queryCount, VKR_MAX_QUERIES);
++      return;
++   }
++   const VkQueryType type = info->queryType;
++   const uint32_t count = info->queryCount;
++   struct vkr_query_pool *pool = vkr_query_pool_create_and_add(dispatch->data, args);
++   if (pool) {
++      pool->type = type;
++      pool->count = count;
++      pool->values = values;
++   }
+ }
+ 
+ static void
+@@ -22,12 +69,25 @@ vkr_dispatch_vkDestroyQueryPool(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkGetQueryPoolResults(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkGetQueryPoolResults(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkGetQueryPoolResults *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM (virgl-venus-command-limits.patch): KosmicKrisp reads the pool's reports for
++    * every query asked and writes each at i * stride into pData, both without a bound */
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_queries_ok(pool, args->firstQuery, args->queryCount) ||
++       !vkr_strided_ok(0, args->queryCount, args->stride,
++                       vkr_query_result_size(pool, args->flags), args->dataSize)) {
++      vkr_context_refuse(dispatch->data, true, "vkGetQueryPoolResults",
++                         "queries %u + %u of %u, stride %" PRIu64 " into %zu bytes",
++                         args->firstQuery, args->queryCount, pool ? pool->count : 0,
++                         args->stride, args->dataSize);
++      return;
++   }
++
+    vn_replace_vkGetQueryPoolResults_args_handle(args);
+    args->ret = vk->GetQueryPoolResults(args->device, args->queryPool, args->firstQuery,
+                                        args->queryCount, args->dataSize, args->pData,
+@@ -35,12 +95,20 @@ vkr_dispatch_vkGetQueryPoolResults(UNUSED struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkResetQueryPool(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkResetQueryPool(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkResetQueryPool *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM (virgl-venus-command-limits.patch): KosmicKrisp zeroes the reports asked */
++   const struct vkr_query_pool *pool = vkr_query_pool_from_handle(args->queryPool);
++   if (!vkr_queries_ok(pool, args->firstQuery, args->queryCount)) {
++      vkr_context_refuse(dispatch->data, true, "vkResetQueryPool", "queries %u + %u of %u",
++                         args->firstQuery, args->queryCount, pool ? pool->count : 0);
++      return;
++   }
++
+    vn_replace_vkResetQueryPool_args_handle(args);
+    vk->ResetQueryPool(args->device, args->queryPool, args->firstQuery, args->queryCount);
+ }
+diff --git a/src/venus/vkr_query_pool.h b/src/venus/vkr_query_pool.h
+index 6bee13d..6fe8c19 100644
+--- a/src/venus/vkr_query_pool.h
++++ b/src/venus/vkr_query_pool.h
+@@ -10,9 +10,32 @@
+ 
+ struct vkr_query_pool {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-command-limits.patch): what the query commands are bounded by */
++   VkQueryType type;
++   uint32_t count;
++   /* values per query in vkGetQueryPoolResults and vkCmdCopyQueryPoolResults */
++   uint32_t values;
+ };
+ VKR_DEFINE_OBJECT_CAST(query_pool, VK_OBJECT_TYPE_QUERY_POOL, VkQueryPool)
+ 
++/* OmacVM (virgl-venus-command-limits.patch): the bytes one query's results take */
++static inline uint64_t
++vkr_query_result_size(const struct vkr_query_pool *pool, VkQueryResultFlags flags)
++{
++   const uint64_t word = (flags & VK_QUERY_RESULT_64_BIT) ? 8 : 4;
++   const uint32_t status =
++      (flags & (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT | VK_QUERY_RESULT_WITH_STATUS_BIT_KHR)) ? 1
++                                                                                                : 0;
++   return (pool->values + status) * word;
++}
++
++/* queries first .. first + count - 1 exist in the pool */
++static inline bool
++vkr_queries_ok(const struct vkr_query_pool *pool, uint32_t first, uint32_t count)
++{
++   return pool && (uint64_t)first + count <= pool->count;
++}
++
+ void
+ vkr_context_init_query_pool_dispatch(struct vkr_context *ctx);
+ 

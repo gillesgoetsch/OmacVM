@@ -268,6 +268,8 @@ enum RenderVMWindow {
         sheet("sheet-4-all-vms") { AllVMsView(storage: all, selected: all.vms.first?.folder) {} }
         usbPictures(folder: folder, into: dir)
         sheet("sheet-8-icon-looks") { AppIconPicker(selected: IconTheme.all[0]) { _ in } }
+        // The (i) of Ghostty on the Mac's GPU, as its popover shows it (InfoButton).
+        sheet("popover-3-ghostty-gpu") { InfoText(text: GhosttyGPURow.info) }
 
         // The icon in every look, for the Dock.
         for t in IconTheme.all {
@@ -370,6 +372,13 @@ enum RenderVMWindow {
             let off = rows.filter { abs($0.maxX - first.maxX) > WindowLayout.tolerance }
             if !off.isEmpty { problems.append("row ends not on one line: " + rows.map { "\($0.name) \(Int($0.maxX.rounded()))" }.joined(separator: ", ")) }
             if first.maxX > rowEnd + WindowLayout.tolerance { problems.append("rows end at \(Int(first.maxX)), past \(Int(rowEnd))") }
+        }
+        // Settings wider than their column push the whole window, sidebar
+        // and all, to the left (Start in's pictures with an always shown
+        // scroll bar until 3.2.18: CI on macOS 15 has one).
+        if let nav = LayoutProbe.boxes().first(where: { $0.name.hasPrefix("nav-") }),
+           abs(nav.minX - WindowLayout.sidebarInset) > WindowLayout.tolerance {
+            problems.append("the sidebar's items start at \(Int(nav.minX.rounded())), not \(Int(WindowLayout.sidebarInset)): the settings are wider than their column")
         }
         if let start = boxes.first(where: { $0.name == "start" }),
            abs(start.maxX - (WindowLayout.width - WindowLayout.inset)) > WindowLayout.tolerance {

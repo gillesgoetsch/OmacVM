@@ -14,8 +14,8 @@
  *  - blocks that differ between stages: a vertex shader that writes gl_PointSize before a
  *    geometry shader that reads only gl_Position (yellow), and one that reads
  *    gl_in[].gl_PointSize (yellow from the point size);
- *  - clip distance arrays inside the blocks (declared on the Mac too; vrend writes them only
- *    on GLs with cull distances): a geometry shader with clip outputs (yellow), and
+ *  - clip distance arrays inside the blocks (vrend writes them on the Mac too since
+ *    virgl-shader-clip-distances.patch): a geometry shader with clip outputs (yellow), and
  *    tessellation control and evaluation shaders that pass them on (magenta);
  *  - a flat integer varying (green);
  *  - transform feedback from a separable vertex shader: the recorded values come back;
@@ -32,10 +32,19 @@
  *    context is not; the next draw with a complete framebuffer draws;
  *  - a context logs three such lines; another context logs its own.
  * With OMACVM_VIRGL_SHADER_FAILURES=lose the first two lose their context, as upstream.
- * Last, two shapes Apple's GL still refuses as separable programs (vrend's IO locations,
- * follow-ups): a patch varying from the tessellation control to the evaluation shader, and
- * a varying array. Their draws are skipped and logged, nothing crashes, the context draws
- * on. */
+ * Then patch varyings from the tessellation control to the evaluation shader (#589): Apple's
+ * GL takes no layout location on a patch variable and gives patch varyings their slots in the
+ * order of their names (virgl-shader-separable-patch-varyings.patch): one patch varying
+ * (white), the evaluation shader reading one of two (D1) or both (D2), patch varyings 1 and 3
+ * beside a per-vertex varying (D4), twelve patch varyings read at 2 and 10 (D6); and programs
+ * of separable and whole stages linked as one (M1-M4, patch varyings and a varying array):
+ * drawn right, or refused, never drawn wrong.
+ * Last, varying arrays, which Apple's GL still refuses as separable programs: vrend puts one
+ * at location 31 - its first, past the last location, or in an interface block before or
+ * after a geometry shader (its stand-in for arrays of arrays; a block member takes no location
+ * on GLSL 4.10). The VM's Mesa (26.2.5) never sends such an array between separate programs:
+ * it splits a varying array into single varyings, also at a computed index. Their draws are
+ * skipped and logged, nothing crashes, the context draws on. */
 #include <OpenGL/OpenGL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,7 +60,7 @@ enum { SHADER_VERTEX = 0, SHADER_FRAGMENT = 1, SHADER_GEOMETRY = 2, SHADER_TESS_
 enum { PRIM_POINTS = 0, PRIM_TRIANGLES = 4, PRIM_PATCHES = 14, BUFFER = 0, TEXTURE_2D = 2,
        TEXTURE_CUBE = 4, CLEAR_COLOR0 = 1 << 2 };
 enum { GREEN = 0xff00ff00, BLUE = 0xffff0000, YELLOW = 0xff00ffff, MAGENTA = 0xffff00ff,
-       CYAN = 0xffffff00, RED = 0xff0000ff, GREY = 0xff808080 };
+       CYAN = 0xffffff00, RED = 0xff0000ff, GREY = 0xff808080, WHITE = 0xffffffff };
 enum { RS_TRIANGLES = 41, RS_POINTS = 42 };
 /* resources: colour buffer, 4-sample buffer, 2D and cube textures, transform feedback */
 enum { R_COLOUR = 5, R_MSAA = 7, R_TEX_2D = 11, R_TEX_CUBE = 12, R_XFB = 13 };
@@ -643,6 +652,248 @@ static const char *fs_array =
    "  0: ADD OUT[0], IN[0], IN[1]\n"
    "  1: END\n";
 
+/* #589 patch varyings: PATCH[0] red and PATCH[1] green */
+#define TCS_PATCH_HEAD \
+   "TESS_CTRL\n" \
+   "PROPERTY TCS_VERTICES_OUT 3\n" \
+   "PROPERTY SEPARABLE_PROGRAM 1\n" \
+   "DCL IN[][0], POSITION\n" \
+   "DCL SV[0], INVOCATIONID\n" \
+   "DCL OUT[][0], POSITION\n" \
+   "DCL OUT[1], TESSOUTER\n" \
+   "DCL OUT[2], TESSINNER\n"
+#define TCS_PATCH_BODY \
+   "  0: UARL ADDR[0].x, SV[0].xxxx\n" \
+   "  1: MOV OUT[ADDR[0].x][0], IN[ADDR[0].x][0]\n" \
+   "  2: MOV OUT[1].x, IMM[0].xxxx\n" \
+   "  3: MOV OUT[1].y, IMM[0].xxxx\n" \
+   "  4: MOV OUT[1].z, IMM[0].xxxx\n" \
+   "  5: MOV OUT[2].x, IMM[0].xxxx\n"
+
+static const char *tcs_patches =
+   TCS_PATCH_HEAD
+   "DCL OUT[3], PATCH[0]\n"
+   "DCL OUT[4], PATCH[1]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   TCS_PATCH_BODY
+   "  6: MOV OUT[3], IMM[0].xyyx\n"
+   "  7: MOV OUT[4], IMM[0].yxyx\n"
+   "  8: END\n";
+
+#define TES_PATCH_HEAD \
+   "TESS_EVAL\n" \
+   "PROPERTY TES_PRIM_MODE 4\n" \
+   "PROPERTY TES_SPACING 2\n" \
+   "PROPERTY TES_VERTEX_ORDER_CW 0\n" \
+   "PROPERTY TES_POINT_MODE 0\n" \
+   "PROPERTY SEPARABLE_PROGRAM 1\n" \
+   "DCL IN[][0], POSITION\n"
+#define TES_PATCH_POSITION \
+   "  0: MUL TEMP[0], IN[0][0], SV[0].xxxx\n" \
+   "  1: MAD TEMP[0], IN[1][0], SV[0].yyyy, TEMP[0]\n" \
+   "  2: MAD OUT[0], IN[2][0], SV[0].zzzz, TEMP[0]\n"
+
+/* the colour from PATCH[1] only */
+static const char *tes_patch1 =
+   TES_PATCH_HEAD
+   "DCL IN[1], PATCH[1]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   TES_PATCH_POSITION
+   "  3: MOV OUT[1], IN[1]\n"
+   "  4: END\n";
+
+/* 2 * PATCH[1] - PATCH[0]: green only when both come from their own slot (swapped: red) */
+static const char *tes_patch01 =
+   TES_PATCH_HEAD
+   "DCL IN[1], PATCH[0]\n"
+   "DCL IN[2], PATCH[1]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   "IMM[0] FLT32 {    2.0000,     0.0000,     0.0000,     0.0000}\n"
+   TES_PATCH_POSITION
+   "  3: MAD TEMP[1], IN[2], IMM[0].xxxx, -IN[1]\n"
+   "  4: MOV OUT[1], TEMP[1]\n"
+   "  5: END\n";
+
+/* a per-vertex GENERIC[0] red (it keeps its location) beside PATCH[1] green and PATCH[3]
+ * blue; PATCH[0] and PATCH[2] not written */
+static const char *tcs_gen_patches =
+   TCS_PATCH_HEAD
+   "DCL OUT[][3], GENERIC[0]\n"
+   "DCL OUT[4], PATCH[1]\n"
+   "DCL OUT[5], PATCH[3]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   TCS_PATCH_BODY
+   "  6: MOV OUT[ADDR[0].x][3], IMM[0].xyyx\n"
+   "  7: MOV OUT[4], IMM[0].yxyx\n"
+   "  8: MOV OUT[5], IMM[0].yyxx\n"
+   "  9: END\n";
+
+/* GENERIC[0] of vertex 0 + PATCH[1] + PATCH[3] - (1, 0, 1, 2): green when all three are right */
+static const char *tes_gen_patches =
+   TES_PATCH_HEAD
+   "DCL IN[][1], GENERIC[0]\n"
+   "DCL IN[2], PATCH[1]\n"
+   "DCL IN[3], PATCH[3]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     1.0000,     2.0000}\n"
+   TES_PATCH_POSITION
+   "  3: ADD TEMP[1], IN[0][1], IN[2]\n"
+   "  4: ADD TEMP[1], TEMP[1], IN[3]\n"
+   "  5: ADD TEMP[1], TEMP[1], -IMM[0]\n"
+   "  6: MOV OUT[1], TEMP[1]\n"
+   "  7: END\n";
+
+/* twelve patch varyings: PATCH[2] (0, 1, 0, 0) and PATCH[10] (0, 0, 0, 1), the others red
+ * ("patch10" sorts before "patch2") */
+static const char *tcs_patches12 =
+   TCS_PATCH_HEAD
+   "DCL OUT[3], PATCH[0]\n"
+   "DCL OUT[4], PATCH[1]\n"
+   "DCL OUT[5], PATCH[2]\n"
+   "DCL OUT[6], PATCH[3]\n"
+   "DCL OUT[7], PATCH[4]\n"
+   "DCL OUT[8], PATCH[5]\n"
+   "DCL OUT[9], PATCH[6]\n"
+   "DCL OUT[10], PATCH[7]\n"
+   "DCL OUT[11], PATCH[8]\n"
+   "DCL OUT[12], PATCH[9]\n"
+   "DCL OUT[13], PATCH[10]\n"
+   "DCL OUT[14], PATCH[11]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   TCS_PATCH_BODY
+   "  6: MOV OUT[3], IMM[0].xyyy\n"
+   "  7: MOV OUT[4], IMM[0].xyyy\n"
+   "  8: MOV OUT[5], IMM[0].yxyy\n"
+   "  9: MOV OUT[6], IMM[0].xyyy\n"
+   " 10: MOV OUT[7], IMM[0].xyyy\n"
+   " 11: MOV OUT[8], IMM[0].xyyy\n"
+   " 12: MOV OUT[9], IMM[0].xyyy\n"
+   " 13: MOV OUT[10], IMM[0].xyyy\n"
+   " 14: MOV OUT[11], IMM[0].xyyy\n"
+   " 15: MOV OUT[12], IMM[0].xyyy\n"
+   " 16: MOV OUT[13], IMM[0].yyyx\n"
+   " 17: MOV OUT[14], IMM[0].xyyy\n"
+   " 18: END\n";
+
+/* PATCH[2] + PATCH[10] */
+static const char *tes_patch2_10 =
+   TES_PATCH_HEAD
+   "DCL IN[1], PATCH[2]\n"
+   "DCL IN[2], PATCH[10]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   TES_PATCH_POSITION
+   "  3: ADD OUT[1], IN[1], IN[2]\n"
+   "  4: END\n";
+
+/* the same green in two single varyings GENERIC[0] and GENERIC[1] */
+static const char *vs_triangle_two =
+   VS_TRIANGLE_HEAD
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL OUT[2], GENERIC[1]\n"
+   "DCL TEMP[0]\n"
+   "IMM[0] UINT32 {1, 2, 0, 0}\n"
+   "IMM[1] FLT32 {    4.0000,    -1.0000,     0.5000,     1.0000}\n"
+   "IMM[2] FLT32 {    0.0000,     1.0000,     0.0000,     0.0000}\n"
+   VS_TRIANGLE_BODY
+   "  6: MOV OUT[1], IMM[2].xyxx\n"
+   "  7: MOV OUT[2], IMM[2].xxxy\n"
+   "  8: END\n";
+
+/* GENERIC[0] + GENERIC[1] read from an array, the first with a dynamic index */
+static const char *fs_array_dyn =
+   "FRAG\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[0..1], ARRAY(1), GENERIC[0], PERSPECTIVE\n"
+   "DCL OUT[0], COLOR\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: UARL ADDR[0].x, IMM[0].xxxx\n"
+   "  1: ADD OUT[0], IN[ADDR[0].x], IN[1]\n"
+   "  2: END\n";
+
+/* a geometry shader passing the triangle on, the colour from GENERIC[0] + GENERIC[1] of
+ * vertex 0 read as single inputs (gs_two) or as an array with a dynamic index (gs_array) */
+static const char *gs_two =
+   "GEOM\n"
+   "PROPERTY GS_INPUT_PRIMITIVE TRIANGLES\n"
+   "PROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+   "PROPERTY GS_MAX_OUTPUT_VERTICES 3\n"
+   "PROPERTY GS_INVOCATIONS 1\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], GENERIC[0]\n"
+   "DCL IN[][2], GENERIC[1]\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: ADD TEMP[0], IN[0][1], IN[0][2]\n"
+   "  1: MOV OUT[0], IN[0][0]\n"
+   "  2: MOV OUT[1], TEMP[0]\n"
+   "  3: EMIT IMM[0].xxxx\n"
+   "  4: MOV OUT[0], IN[1][0]\n"
+   "  5: MOV OUT[1], TEMP[0]\n"
+   "  6: EMIT IMM[0].xxxx\n"
+   "  7: MOV OUT[0], IN[2][0]\n"
+   "  8: MOV OUT[1], TEMP[0]\n"
+   "  9: EMIT IMM[0].xxxx\n"
+   " 10: END\n";
+
+static const char *gs_array =
+   "GEOM\n"
+   "PROPERTY GS_INPUT_PRIMITIVE TRIANGLES\n"
+   "PROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+   "PROPERTY GS_MAX_OUTPUT_VERTICES 3\n"
+   "PROPERTY GS_INVOCATIONS 1\n"
+   "PROPERTY SEPARABLE_PROGRAM 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1..2], ARRAY(1), GENERIC[0]\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], GENERIC[0]\n"
+   "DCL TEMP[0]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] INT32 {0, 0, 0, 0}\n"
+   "  0: UARL ADDR[0].x, IMM[0].xxxx\n"
+   "  1: ADD TEMP[0], IN[0][ADDR[0].x+1], IN[0][2]\n"
+   "  2: MOV OUT[0], IN[0][0]\n"
+   "  3: MOV OUT[1], TEMP[0]\n"
+   "  4: EMIT IMM[0].xxxx\n"
+   "  5: MOV OUT[0], IN[1][0]\n"
+   "  6: MOV OUT[1], TEMP[0]\n"
+   "  7: EMIT IMM[0].xxxx\n"
+   "  8: MOV OUT[0], IN[2][0]\n"
+   "  9: MOV OUT[1], TEMP[0]\n"
+   " 10: EMIT IMM[0].xxxx\n"
+   " 11: END\n";
+
+/* A copy of a separable shader's text as a whole-program shader (no SEPARABLE_PROGRAM). */
+static const char *whole(const char *text)
+{
+   static char buf[8][2048];
+   static int next;
+   const char *line = "PROPERTY SEPARABLE_PROGRAM 1\n", *at = strstr(text, line);
+   char *b = buf[next++ % 8];
+   if (!at)
+      return text;
+   snprintf(b, sizeof(buf[0]), "%.*s%s", (int)(at - text), text, at + strlen(line));
+   return b;
+}
+
 /* records (0.25, 0.5, 0.75, 1) per vertex (emit_xfb_shader) */
 static const char *vs_xfb =
    "VERT\n"
@@ -726,6 +977,21 @@ static void row(const char *what, const struct stage *stages, uint32_t mode, uin
    snprintf(text, sizeof(text), "%s: no shader refused, no context error, valid", what);
    check(refused_lines == refused && ctx_error_lines == errors && invalid_lines == invalid,
          text);
+}
+
+/* One program of separable and whole stages: drawn right, or refused and its draw skipped;
+ * never drawn wrong. */
+static void mixed_row(const char *what, const struct stage *stages, uint32_t mode, uint32_t want)
+{
+   char text[240];
+   int refused = refused_lines, errors = ctx_error_lines;
+   uint32_t got = draw_pipeline_in(1, stages, mode, 3, 8, 8);
+   int drawn = got == want && refused_lines == refused;
+   snprintf(text, sizeof(text), "%s: %s (0x%08x, want 0x%08x or refused)", what,
+            drawn ? "drawn" : refused_lines > refused ? "refused" : "WRONG", got, want);
+   check(drawn || (got == GREY && refused_lines > refused), text);
+   snprintf(text, sizeof(text), "%s: no context error", what);
+   check(ctx_error_lines == errors, text);
 }
 
 /* Transform feedback from a separable vertex shader: three points record OUT[1]. */
@@ -882,16 +1148,68 @@ static void samplers_row(int ctx_id, uint32_t fs, const char *what, int lose)
    check(invalid_lines == invalid + 1 && invalid_ctx == ctx_id, text);
 }
 
-/* Shapes Apple's GL still refuses as separable programs, in their own context (one refused
- * shader is enough to lose a context with "lose"). vrend gives a patch varying a layout
- * location, and Apple's GL refuses every location on a patch variable (0 to 31; without
- * one it links); it puts a varying array at location 31 - its first, so the array runs
- * past the last location. */
-static void refused_row(const char *what, const struct stage *stages, uint32_t mode)
+/* #589: separable patch varyings (virgl-shader-separable-patch-varyings.patch). Each row
+ * failed before: vrend gave a patch varying a layout location, which Apple's GL refuses on a
+ * patch variable. */
+static void io_rows(void)
+{
+   row("a patch varying (white)", (const struct stage[]){
+          { 140, SHADER_VERTEX, vs_triangle }, { 141, SHADER_TESS_CTRL, tcs_patch },
+          { 142, SHADER_TESS_EVAL, tes_patch }, { 143, SHADER_FRAGMENT, fs_varying }, { 0 } },
+       PRIM_PATCHES, 3, 8, 8, WHITE);
+   row("D1 patch varyings 0 and 1, the evaluation shader reads 1", (const struct stage[]){
+          { 144, SHADER_VERTEX, vs_triangle }, { 145, SHADER_TESS_CTRL, tcs_patches },
+          { 146, SHADER_TESS_EVAL, tes_patch1 }, { 147, SHADER_FRAGMENT, fs_varying }, { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+   row("D2 patch varyings 0 and 1, the evaluation shader reads both", (const struct stage[]){
+          { 148, SHADER_VERTEX, vs_triangle }, { 149, SHADER_TESS_CTRL, tcs_patches },
+          { 150, SHADER_TESS_EVAL, tes_patch01 }, { 151, SHADER_FRAGMENT, fs_varying }, { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+   row("D4 a per-vertex varying beside patch varyings 1 and 3", (const struct stage[]){
+          { 152, SHADER_VERTEX, vs_triangle }, { 153, SHADER_TESS_CTRL, tcs_gen_patches },
+          { 154, SHADER_TESS_EVAL, tes_gen_patches }, { 155, SHADER_FRAGMENT, fs_varying },
+          { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+   row("D6 twelve patch varyings, the evaluation shader reads 2 and 10", (const struct stage[]){
+          { 156, SHADER_VERTEX, vs_triangle }, { 157, SHADER_TESS_CTRL, tcs_patches12 },
+          { 158, SHADER_TESS_EVAL, tes_patch2_10 }, { 159, SHADER_FRAGMENT, fs_varying },
+          { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+
+   /* separable and whole stages linked as one program (the whole stage matches by name) */
+   mixed_row("M1 one program: separable control + whole evaluation shader, patch varyings 1 and 3",
+             (const struct stage[]){
+                { 176, SHADER_VERTEX, vs_triangle }, { 177, SHADER_TESS_CTRL, tcs_gen_patches },
+                { 178, SHADER_TESS_EVAL, whole(tes_gen_patches) },
+                { 179, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_PATCHES, GREEN);
+   mixed_row("M2 one program: whole control + separable evaluation shader, patch varyings 1 and 3",
+             (const struct stage[]){
+                { 180, SHADER_VERTEX, vs_triangle },
+                { 181, SHADER_TESS_CTRL, whole(tcs_gen_patches) },
+                { 182, SHADER_TESS_EVAL, tes_gen_patches }, { 183, SHADER_FRAGMENT, fs_varying },
+                { 0 } }, PRIM_PATCHES, GREEN);
+   mixed_row("M3 one program: separable vertex + whole fragment shader, an array (dynamic index)",
+             (const struct stage[]){
+                { 184, SHADER_VERTEX, vs_triangle_array },
+                { 185, SHADER_FRAGMENT, whole(fs_array_dyn) }, { 0 } }, PRIM_TRIANGLES, GREEN);
+   mixed_row("M4 one program: whole vertex + separable fragment shader, an array (dynamic index)",
+             (const struct stage[]){
+                { 186, SHADER_VERTEX, whole(vs_triangle_array) },
+                { 187, SHADER_FRAGMENT, fs_array_dyn }, { 0 } }, PRIM_TRIANGLES, GREEN);
+}
+
+/* Varying arrays, which Apple's GL still refuses as separable programs, in their own contexts
+ * (a context logs three refused shaders; one refused shader is enough to lose a context with
+ * "lose"). vrend puts a separable varying array at location 31 - its first, past the last
+ * location, and before or after a geometry shader declares such IO in an interface block (its
+ * stand-in for arrays of arrays, which Apple's GL 4.1 lacks), where on GLSL 4.10 a block member
+ * takes no layout location. The VM's Mesa never sends such an array between separate programs
+ * (it splits it into single varyings, also at a computed index): not fixed. */
+static void refused_row(int ctx_id, const char *what, const struct stage *stages, uint32_t mode)
 {
    char text[200];
    int refused = refused_lines, errors = ctx_error_lines;
-   uint32_t got = draw_pipeline_in(4, stages, mode, 3, 8, 8);
+   uint32_t got = draw_pipeline_in(ctx_id, stages, mode, 3, 8, 8);
    snprintf(text, sizeof(text), "%s: refused and its draw skipped (0x%08x)", what, got);
    check(got == GREY && refused_lines > refused, text);
    snprintf(text, sizeof(text), "%s: no context error", what);
@@ -901,19 +1219,29 @@ static void refused_row(const char *what, const struct stage *stages, uint32_t m
 static void refused_rows(void)
 {
    new_context(4, "refused");
-   refused_row("still refused: a patch varying", (const struct stage[]){
-                  { 130, SHADER_VERTEX, vs_triangle }, { 131, SHADER_TESS_CTRL, tcs_patch },
-                  { 132, SHADER_TESS_EVAL, tes_patch }, { 133, SHADER_FRAGMENT, fs_varying },
-                  { 0 } }, PRIM_PATCHES);
-   refused_row("still refused: a varying array", (const struct stage[]){
-                  { 134, SHADER_VERTEX, vs_triangle_array },
-                  { 135, SHADER_FRAGMENT, fs_array }, { 0 } }, PRIM_TRIANGLES);
+   refused_row(4, "still refused: a varying array", (const struct stage[]){
+                  { 130, SHADER_VERTEX, vs_triangle_array },
+                  { 131, SHADER_FRAGMENT, fs_array }, { 0 } }, PRIM_TRIANGLES);
+   refused_row(4, "still refused: E5 an array into a geometry shader's single inputs",
+               (const struct stage[]){
+                  { 132, SHADER_VERTEX, vs_triangle_array }, { 133, SHADER_GEOMETRY, gs_two },
+                  { 134, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_TRIANGLES);
+   refused_row(4, "still refused: E6 single varyings into a geometry shader's array",
+               (const struct stage[]){
+                  { 135, SHADER_VERTEX, vs_triangle_two }, { 136, SHADER_GEOMETRY, gs_array },
+                  { 137, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_TRIANGLES);
    uint32_t got = draw_pipeline_in(4, (const struct stage[]){
-                                      { 136, SHADER_VERTEX, vs_triangle_green },
-                                      { 137, SHADER_FRAGMENT, fs_varying }, { 0 } },
+                                      { 138, SHADER_VERTEX, vs_triangle_green },
+                                      { 139, SHADER_FRAGMENT, fs_varying }, { 0 } },
                                    PRIM_TRIANGLES, 3, 8, 8);
    check(got == GREEN, "still refused: the context draws on (green)");
    end_context(4);
+   new_context(5, "refused 2");
+   refused_row(5, "still refused: E7 an array into a geometry shader's array",
+               (const struct stage[]){
+                  { 130, SHADER_VERTEX, vs_triangle_array }, { 131, SHADER_GEOMETRY, gs_array },
+                  { 132, SHADER_FRAGMENT, fs_varying }, { 0 } }, PRIM_TRIANGLES);
+   end_context(5);
 }
 
 /* A context logs three failed validations; another context logs its own. */
@@ -1087,6 +1415,7 @@ int main(void)
       samplers_row(1, 101, "samplers: a 2D and a cube sampler in one fragment shader", 0);
       incomplete_framebuffer(0);
       log_budget();
+      io_rows();
       refused_rows();
    }
 

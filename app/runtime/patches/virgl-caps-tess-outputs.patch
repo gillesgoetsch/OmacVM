@@ -1,0 +1,47 @@
+virglrenderer: tessellation shader output limits on a GL without atomic counters
+
+What: the caps carry the tessellation control and evaluation shaders' per-vertex output
+limits (GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS and GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS,
+in vec4s) on every GL with tessellation.
+Why: vrend asked for them only on a GL with atomic counters; Apple's GL 4.1 has none, so both
+were 0. The guest's Mesa (host_feature_check_version 19 and newer; the host says 23) links
+each tessellation shader against them: a whole program whose tessellation shader had any
+output failed in the guest ("tessellation control shader uses too many output components
+(4 > 0)") and never reached the Mac; only separable tessellation did. The control shader's
+limit is the per-vertex one the guest checks (gl_nir_link_varyings.c,
+check_against_output_limit); vrend sent the total over all vertices. With this patch whole
+tessellation programs reach virgl-shader-clip-distances.patch's last-stage fixes.
+Upstream: the same in virglrenderer main (e0a1caf3, checked 2026-10-31: the total, under
+atomic counters); not sent.
+Test: Tests/virgl/test-whole-program-shapes.c's caps row (both 0 without this patch).
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -16684,6 +16684,14 @@
+    if (has_feature(feat_tessellation)) {
+       glGetIntegerv(GL_MAX_TESS_PATCH_COMPONENTS, &max);
+       caps->v2.max_shader_patch_varyings = max / 4;
++      /* OmacVM: the per-vertex output limits the guest's Mesa links tessellation shaders
++       * against (host_feature_check_version >= 19); asked under atomic counters before,
++       * which Apple's GL has not: 0, so every whole program with a tessellation shader
++       * that has outputs failed the guest's own link */
++      glGetIntegerv(GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS, &max);
++      caps->v2.max_tcs_outputs = max / 4;
++      glGetIntegerv(GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS, &max);
++      caps->v2.max_tes_outputs = max / 4;
+    } else
+       caps->v2.max_shader_patch_varyings = 0;
+ 
+@@ -16832,12 +16840,6 @@
+                        (GLint*)(caps->v2.max_atomic_counter_buffers + PIPE_SHADER_TESS_CTRL));
+          glGetIntegerv(GL_MAX_TESS_EVALUATION_ATOMIC_COUNTER_BUFFERS,
+                        (GLint*)(caps->v2.max_atomic_counter_buffers + PIPE_SHADER_TESS_EVAL));
+-
+-         glGetIntegerv(GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS, &max);
+-         caps->v2.max_tcs_outputs = max / 4;
+-
+-         glGetIntegerv(GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS, &max);
+-         caps->v2.max_tes_outputs = max / 4;
+       }
+ 
+       if (has_feature(feat_compute_shader)) {

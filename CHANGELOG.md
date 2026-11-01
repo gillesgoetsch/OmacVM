@@ -3,6 +3,231 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.18
+
+In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
+itself off instead of stopping the VM; Brave, Vivaldi and Electron draw canvas and SVG paths on the
+GPU; a Vulkan app that loses its graphics is counted, named and told; and more Vulkan mistakes of a
+program end only that program, not the VM. Desktop OpenGL programs that use clip distances, user
+clip planes or tessellation draw as they should; browsers draw as before. New and experimental: a
+switch for Ghostty on the Mac's GPU, and USB Devices… in the app menu while the VM runs. Needs the
+app update (from the VM's next start); Update VM too for Brave, Vivaldi and Electron, the note about
+a lost app and the Ghostty switch. UTM, Fusion and Parallels: nothing changes.
+
+- **What the VM frees reaches the Mac: it gathers its free memory, and gives back when it is idle
+  (OmacVM.app, #652).** Linux in an OmacVM.app VM hands freed memory back to the Mac only in blocks
+  of 256 KiB and up; after a browser closes or the VM drops its cache, much of it sits in smaller
+  blocks and stays on the Mac (a 4 GB test VM with Chrome just closed: 1.2 GB on the MacBook Pro M1
+  Max, 1.0-1.4 GB on the Mac mini). Now the VM gives back when it is idle: at most every 15 minutes,
+  while macOS's memory pressure is normal, QEMU used at most a fifth of a CPU core for a minute and
+  has under 2 GB outside its resident memory (what macOS compressed of it, and graphics; a quarter
+  of a smaller Mac), it gives back the file cache it has not used lately above its newest 2 GB (a
+  quarter of a smaller VM) and gathers its free memory into blocks it can hand back (Linux's
+  compaction: at most 10 s, only when the VM does not wait for memory). After macOS's memory warning
+  makes the VM drop its cache, it gathers its free memory once the pressure is normal again and the
+  VM is quiet. In a test VM on the M1 Max (4 GB, Chrome closed, 20 minutes quiet) the idle step
+  gathered 1.2 GB in 0.6 s: the Mac held 2425 MB of the VM's memory against 3445 MB with 3.2.16, and
+  its own counters had 1044 MB less to take back when the VM quit; Chrome started as fast after a
+  step (245 against 265 ms, median of 3), and no step runs while a video plays (QEMU at 71-85 % of a
+  core). Neither the idle step nor the gathering after the warning runs while macOS compresses the
+  VM: moving pages makes macOS decompress them. `OMACVM_GIVEBACK_IDLE=0` (the app's environment)
+  turns the idle give-back off; `logs/qemu.log` has one line per idle give-back, and
+  `omacvm check`'s "VM memory" line counts them on their own. Needs only the app update: the VM runs
+  the app's own script, no Update VM.
+
+- **QEMU's own-view sweep turns itself off instead of stopping the VM (OmacVM.app, #666).** 3.2.17's
+  sweep (Activity Monitor counts the VM's memory once, #651) stopped QEMU, and with it the VM, when
+  a remap did not keep QEMU's view of the VM's memory as it was, and it had been tested on macOS 27
+  only; a busy Mac could even trigger that with nothing wrong. Now QEMU tries the remap on 256 MB of
+  scratch memory before the VM starts and turns the sweep off for the run if it does not keep the
+  same memory or takes more than 3 seconds (qemu.log: "own-view sweep: off (why)"). During the run
+  it keeps a spare mapping of each chunk while it remaps it, maps a chunk back if the remap changed
+  it, and stops the sweep; the VM keeps running. QEMU stops only if mapping back fails too.
+  `omacvm check`'s "Activity Monitor" row says why the sweep is off. Checked in a hidden test VM on
+  a MacBook Pro M1 Max (macOS 27): the sweep as before, and with each failure made on purpose the VM
+  kept running, and after a remap that failed during the run its files read back the same (the trial
+  at the start runs before the VM does); its tests also pass on macOS 15 and 26 with a second
+  mapping in QEMU's place (the hypervisor's own mapping there is not tested yet). Needs the app
+  update, from the VM's next start; nothing in the VM.
+
+- **Brave, Vivaldi and Electron draw canvas and SVG paths on the GPU (OmacVM.app, #654).** Skia, the
+  graphics library of every Chromium-based app, draws canvas strokes and clip paths on the CPU when
+  the GPU's name says virgl. Since 3.1.32 Chrome and Chromium see "OmacVM-GPU" instead; now Brave,
+  Vivaldi and Electron do too (the programs `brave`, `vivaldi-bin` and `electron`, on Wayland and
+  X11; Vivaldi by its program name, not run). Brave 1.98.63 in a test VM on a Mac mini M4, 3
+  alternating rounds against the old name: MotionMark 2754 -> 4483 (medians; its Paths test 7.3x,
+  Suits 3.1x, Canvas Arcs 2.2x), Paths at a fixed complexity 5.8 -> 41.8 fps, Suits 13.7 -> 44.2 fps.
+  Electron 45.2.1, Paths at the same complexity: 5.5 -> 34.2 fps on Wayland, 5.3 -> 32.7 fps on X11.
+  WebGL (Aquarium 37.7 vs 38.9 fps) and scrolling (60 fps) stay the same, and a page of canvas and
+  SVG shapes looks the same on Wayland: 0.03 % of its 4x4-pixel areas differ, where thick strokes
+  cross (X11 not compared). An Electron app shipped under its own program name keeps the old name,
+  and so does Firefox. One app with the old name: `force_gl_renderer= brave`. Needs Update VM, then
+  restart those apps. UTM, VMware Fusion and Parallels: nothing changes.
+
+- **A Vulkan app that loses its graphics on the Mac is counted, named and told (#656).** In an
+  OmacVM.app VM with Graphics on Vulkan, when the Mac ended an app's Vulkan (Venus) context (a
+  command the Mac's driver would abort on, or memory the graphics budget refused), QEMU only wrote
+  "venus context N (NAME) is lost" to its log: its count of lost GPU contexts stayed at 0, so the
+  app said nothing in the VM and `omacvm check` did not name the app. Most Vulkan apps then end by
+  themselves (vkcube within 0.6 s); a Ghostty drawn on the Mac's GPU through Zink stays, its windows
+  frozen and deaf to typing. Now QEMU counts such a loss with the app's name, the app tells the VM,
+  and the VM shows a note that ends nothing: "Ghostty stopped drawing" (close it first with
+  Terminate in the window that says it is not responding; the programs in it end; the next Ghostty
+  starts on the CPU until the VM restarts, unless Zink is set for it by hand) or "NAME stopped
+  drawing". `omacvm check`'s "GPU contexts" names the app, marked "(Vulkan)". In test VMs on a Mac
+  mini (M4) and an M1 Max, all 13 deliberate losses (vkcube and a Zink Ghostty) were counted within
+  0.3 s of QEMU's line and told 0.5 to 4.8 s later (the app looks every 5 s), where 3.2.16 counted
+  none of 8. Of 60 Ghostty windows on Zink closed or killed (also with SIGKILL during Zink's
+  teardown and while drawing), none was counted or got a note. While a frozen Ghostty lived, a new
+  one started as Omarchy starts it opened no window (it asks the frozen one over D-Bus and gives
+  up); a SIGTERM ended the frozen one within 8 s every time, its shell with it, and the next Ghostty
+  opened in 0.53 to 0.56 s. Needs the app update and Update VM: a VM without the VM part shows no
+  note (the app's log says once that Update VM puts it in).
+
+- **Ghostty on the Mac's GPU, an experimental switch (OmacVM.app, #658; see #598, @benoitdepaire).**
+  Ghostty needs OpenGL 4.3 and the VM's GPU gives 4.1, so since 3.2.14 Ghostty draws on the VM's
+  CPU. With the new switch "Ghostty on the Mac's GPU" (the VM window's General section, off by
+  default) Ghostty alone draws on the Mac's GPU through Zink over the VM's Vulkan, with OpenGL 4.3
+  forced, on macOS 26 and newer (KosmicKrisp). Measured on a Mac mini M4 and a MacBook Pro M1 Max (a
+  1896x1030 window, median of 3): typing shown in 25 and 28 ms instead of 56 and 57, 10 s of fast
+  output took Ghostty 3.3 and 3.4 CPU-seconds instead of 32.8 and 31.7, and QEMU on the Mac 12
+  instead of 45 per run, with 56-57 instead of 30-37 changed frames a second; it uses 6-9 % of the
+  Mac's GPU while text scrolls and 150-300 MB of its graphics memory (M1 Max: one window 155-163 MB,
+  three windows of one Ghostty 164-278 MB). With Ghostty as the default terminal, Omarchy's
+  screensaver on two displays made the Mac mini draw 40-41 W on Zink instead of 53-54 W (35-36 W
+  without the screensaver, 39 W with it in foot; one session, another app using a core of the Mac
+  all along). Chromium's MotionMark and Speedometer with one or three Ghostty windows open scored
+  the same on Zink as on the CPU (Mac mini: 4340 / 4227 vs 4287 / 4271, 33.4 / 33.3 vs 33.1 / 32.8).
+  The programs started in Ghostty keep the VM's normal graphics. If the Mac ends Ghostty's Vulkan
+  context, that Ghostty ends or stops responding (only Terminate helps; the programs in it end); the
+  switch's (i) says so. With the VM's graphics memory used up (a test with a 384 MB budget and
+  Chromium on WebGL) a Ghostty on Zink ended at its start, one on the CPU opened. Graphics OpenGL,
+  MoltenVK (macOS 15) and GPU safe mode keep Ghostty on the CPU. `omacvm check` now says which
+  driver a running Ghostty has. GTK's error lines about a bad dma-buf file descriptor under Zink,
+  about 1,330 in 10 s of scrolling (also with Zink set by hand), are gone: Mesa answered the export
+  without a descriptor. Needs the app update and Update VM, then a start of the VM with the switch
+  on (a Ghostty already open keeps its driver until you quit it).
+
+- **USB Devices… in the app menu while the VM runs (OmacVM.app, experimental USB devices, #660).**
+  While a VM's USB devices switch is on, the app menu (OmacVM, next to the Apple menu) has **USB
+  Devices…** under Features…. It opens the app's USB list over the VM, to connect a device kept on
+  the Mac or disconnect one without unplugging it, and to choose what happens next time. Before, the
+  list opened only from the app's window before a start. QEMU hands the app its place in front as it
+  asks (macOS lets only the app in front do that). Checked with the screens locked: on a Mac mini M4
+  and a MacBook Pro M1 Max the item is there only with the switch on and each press sends the app's
+  request; on the M1 Max the app then builds its list (on the mini that check is still to run). The
+  list on screen, over a full-screen VM, and its buttons are not checked yet (a locked Mac shows no
+  app's window). USB devices stay experimental and off by default. Needs the app update, from the
+  VM's next start; nothing in the VM.
+
+- **The VM window stays in place when scroll bars are always shown (OmacVM.app, #667).** On a Mac
+  with a notch whose scroll bars are always shown (a mouse without a trackpad, or System Settings >
+  Appearance > Show scroll bars: Always), Start in's three pictures needed 11 pt more than the
+  settings' column had: the whole window slid 5 pt to the left, the sidebar cut off at its left
+  edge and the scroll bar half outside the window. The gaps between the pictures now shrink to fit;
+  with scroll bars that show only while scrolling the window looks as before. Found by CI on
+  macOS 15. Needs the app update; nothing in the VM.
+
+- **Desktop OpenGL: clip distances, user clip planes and tessellation (OmacVM.app, #663, see
+  #589).** The Mac's OpenGL 4.1 has no cull distances, no arrays of arrays and no atomic counters,
+  and the VM's graphics left something out for each: a shader that writes gl_ClipDistance was
+  refused and drew nothing; glClipPlane and the clip distances of tessellation and geometry shaders
+  were ignored; tessellation drawn into a window landed in the other half, upside down, and its
+  transform feedback recorded zeros; the VM's own OpenGL refused every program with a tessellation
+  shader that has an output ("tessellation control shader uses too many output components (4 >
+  0)"), so only program pipelines got tessellation at all; and a tessellation shader that reads its
+  varyings as an array with a computed index did not compile. In a test VM on a MacBook Pro M1 Max
+  (the 3.2.16 app and this one, the same VM, a 1920x1080 window, three runs), each such program
+  drew wrong or not at all with 3.2.16 and right with this build: the clip rows keep the top half,
+  tessellation draws in the top half (also in a screenshot of the window), transform feedback
+  records its values, and qemu.log has no refused shader. Transform feedback from a tessellation
+  evaluation shader runs on the Mac's CPU, not its GPU: Apple's OpenGL takes its software vertex
+  path for such draws (qemu.log says once "Fallback to SW vertex processing for EVAL_PROG TF");
+  the values are right, its speed was not measured. Shaders that use none of this keep their
+  text: of the 250 that OmacVM's virgl build tests make, only the 4 tessellation shaders drawn last
+  or passing clip distances on changed, and all 2,161 test lines still pass. A program drawn with
+  clip planes both on and off gets one more compiled shader. Chromium's WebGL 1 and WebGL 2 smoke
+  passed before and after. Needs the app update (from the VM's next start); nothing in the VM.
+
+- **OpenGL program pipelines that pass values per patch draw (OmacVM.app, #661, see #589).** An app
+  in the VM that builds its tessellation shaders as separate programs (program pipelines) and
+  passes values per patch from the control to the evaluation shader drew nothing: the Mac's
+  OpenGL refused those shaders, and `logs/qemu.log` said "refused a shader". Now the Mac takes
+  them. The app's own tests run 5 such shapes that were refused; they draw the right colours on
+  Apple's software renderer and on the GPUs of a Mac mini M4 and a MacBook Pro M1 Max (macOS 27),
+  with 0 GPU restarts. In a test VM on the M1 Max (the VM's Mesa 26.2.5), four such pipelines (2
+  and 12 values per patch) drew nothing with 3.2.16: the Mac refused two ("refused a shader"),
+  and the VM's Mesa refused the two whose evaluation shader has outputs of its own, which #663
+  fixes. With this release and #663 all four draw, and no shader is refused.
+  Needs the app update, from the VM's next start; nothing in the VM. UTM, Parallels and Fusion:
+  nothing changes.
+
+- **Correction to 3.2.11: arrays passed between shader stages (#661, see #589).** 3.2.11 said such
+  arrays draw on the GPUs of a Mac mini M4 and a MacBook Air M2, and that only Apple's software
+  renderer refused them. They draw because the VM's Mesa (26.2.5) passes an array between separate
+  programs as single values, also one that a shader reads or writes at a computed index: in a test
+  VM on a MacBook Pro M1 Max such shaders reached the Mac without an array and drew with 3.2.16.
+  Handed to the Mac's OpenGL as an array, the way the app's runtime would declare it, the shape is
+  refused on the GPUs of an M4 and an M1 Max too. Nothing changes for these arrays in this release.
+
+- **A program in the VM can no longer stop the VM with Vulkan values that point outside what they
+  name, and apps get the number of views the Mac's GPU can draw (#643, see #624).** In an OmacVM.app
+  VM with Graphics on Vulkan, an ordinary Vulkan program could stop the whole VM through the normal
+  API, or let the Mac's driver write VM data into QEMU's memory: a push constant offset, a viewport,
+  vertex buffer, descriptor set or query index, a descriptor write's binding or element past what
+  its set has, a blend state for more colors than the pass has, a pipeline with more viewports or
+  color attachments than the GPU takes, a value the driver does not know (a compare op, blend factor
+  or dynamic state), or a secondary command buffer that runs itself. The values are now checked
+  against the GPU's limits and what the app made, and a program that sends such a value loses only
+  its own Vulkan connection: it ends and the VM goes on. QEMU's log says "venus context N (app) is
+  lost"; the refused call and its values are on a separate "vkr: <app>: <call> refused: ..." line,
+  written for the 1st, 2nd, 4th, 8th ... refusal since the VM started (troubleshooting 55). Apps
+  that keep to Vulkan's rules are not affected, but for rare legal values that stay refused (very
+  large pools, layouts and query counts, a pipeline's vertex stride while the stride is dynamic; ADR
+  0065); one that relied on such a value now ends (Graphics: OpenGL, in the VM window or
+  `omacvm graphics --vm NAME opengl`, avoids Venus for it). With KosmicKrisp a pass with more than 8
+  views (Apple M1; the count Metal supports on the Mac) ended the VM although the app had been told
+  32: apps are now told the Mac's count. Needs the app update (from the VM's next start).
+
+- **A broken shader, a draw outside its render pass or an attachment format the Mac's GPU cannot
+  draw to no longer stops the VM either (#644, see #624).** With Graphics on Vulkan, a Vulkan
+  program that sent SPIR-V the Mac's shader compilers cannot read, asked for an entry point its
+  shader lacks or a workgroup larger than the GPU runs, used a descriptor set its pipeline layout
+  lacks, drew without a pipeline or outside a render pass, or made a pipeline for an unknown format
+  or one Metal cannot render to (64-bit colour) ended QEMU and the VM. Copies and blits past their
+  image or buffer, which the Mac's GPU would have run outside the resource, are refused too. So is
+  the next subpass or the end of a render pass the program destroyed while still recording into it
+  (the Mac's driver read the freed pass). Such a program now loses only its own Vulkan connection,
+  with the refused call in QEMU's log (troubleshooting 55). Shaders are scanned once when the app
+  makes them; correct shaders are not affected, but for very large ones past its limits (ADR 0065).
+  Needs the app update.
+
+- **More Vulkan mistakes of a program in the VM end only that program, and three legal uses work
+  (#664, see #624).** With Graphics on Vulkan, a Vulkan program could still stop the VM, or make the
+  Mac's driver write into memory QEMU had already freed: a descriptor set or command buffer freed
+  twice or through another pool, extra values in a submit, memory made for one image used by
+  another, an image destroyed before it was bound to its memory, an image view destroyed while a
+  render pass on it was being recorded, or Vulkan contexts, rings and devices made without end until
+  QEMU could not start a thread. Each of these now ends only that program's Vulkan connection, or
+  the call fails, and QEMU's log says why (troubleshooting 55). Replies to the VM no longer carry
+  old bytes of QEMU's memory where the Mac's driver wrote nothing. Legal uses that ended a program
+  before now work: a descriptor update that starts in or runs on into the next binding (also over
+  bindings of different sizes, which the Mac's drivers had written past their set), an attachment no
+  subpass uses with a format the GPU can only sample, and the image destroyed before its bind. Needs
+  the app update.
+
+- Tests (#667): the window pictures fail when the settings push the sidebar out of place, and
+  `src/tests/app-settings.sh` reads a missing key as empty on macOS 15 too (its `plutil` writes the
+  error where the value goes), so CI's check job passes on GitHub's macos-15 again.
+
+- CI: the macOS check job may take 90 minutes instead of 60. On 2026-10-31 its runner Mac, a MacBook
+  Pro M1 Max on a 15 W charger, needed 54-71 minutes, and 5 jobs were stopped at 60 when 85-98 %
+  done. The runners of one Mac share one QEMU runtime cache of 10 runtimes (each runner kept 3 of
+  its own: 5 app jobs built QEMU from source for a runtime another runner had). The control
+  centre's tests (433, the program runs in the VM) moved to the Linux guest job on Python 3.14,
+  7 minutes less per Mac job; their terminal helper now waits for the program's end (on Linux it
+  stopped early, on macOS it waited out its time) (#668). Nothing changes in the app or the VM.
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;

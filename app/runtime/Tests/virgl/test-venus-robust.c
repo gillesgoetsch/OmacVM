@@ -1,6 +1,7 @@
 /* What a guest's Venus commands ended QEMU's process with now ends only the app's Venus
  * context (virgl-venus-missing-entries.patch, virgl-venus-guest-asserts.patch,
- * virgl-venus-buffer-binds.patch; ADR 0065, "What else vkr refuses").
+ * virgl-venus-buffer-binds.patch; ADR 0065, "What else vkr refuses"), and what a reply
+ * carries back is what the call wrote or zeros (virgl-venus-temp-zero.patch).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c. Each
  * case sends hand-encoded commands through vkr_context_submit_cmd, the path of QEMU's
@@ -9,8 +10,10 @@
  * own process. Without the patches the cases end their process (a call to address 0, an
  * assert, the Vulkan loader's abort) or the driver binds memory the buffer does not fit
  * in; with them each ends only its context, with a log line, and the must-keep cases
- * work without one. Objects, queries and binds only: no command buffer is submitted,
- * nothing runs on the GPU (standards 14).
+ * work without one. A ring that fails is a lost context, counted in the status file,
+ * unless the guest had closed a resource the context still used (its process ended:
+ * virgl-venus-lost-context-count.patch, l-lost and l-teardown). Objects, queries and binds
+ * only: no command buffer is submitted, nothing runs on the GPU (standards 14).
  *
  *   test-venus-robust              every case, one process each, then a summary
  *   test-venus-robust CASE         one case (what the children run)
@@ -508,6 +511,57 @@ static int nested_case(void)
 }
 
 /* the physical-device query of an extension the device does not list */
+/* A ring that fails (virgl-venus-lost-context-count.patch): a live context is lost, and
+ * the status file counts it ("venus context 1 (test) is lost", the cause venus). One that
+ * fails after the guest closed a resource the context still used is a teardown, never
+ * counted: when an app's process ends (SIGKILL while Zink tore down, M1 Max qemu-k15.log
+ * line 130), its kernel closes every handle before it destroys the context, and a command
+ * still in the ring then fails. Here: a reply being written (the encoder busy) when the
+ * reply stream is closed, as vkr_context_destroy_resource sees it. */
+static int lost_case(int closing)
+{
+   setup(VK_API_VERSION_1_1, 0, NULL);
+   uint8_t *shm = shm_resource(2, 65536);
+   volatile uint32_t *tail = (volatile uint32_t *)(shm + 4), *status = (volatile uint32_t *)(shm + 8);
+   cmd(VK_COMMAND_TYPE_vkCreateRingMESA_EXT, 0);
+   u64(77); ptr(1);
+   i32(VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA); ptr(0);
+   u32(0); u32(2);         /* flags, resourceId */
+   u64(0); u64(65536);     /* offset, size */
+   u64(30000000000ull);    /* idleTimeout: the ring looks at its tail, no notify needed */
+   u64(0); u64(4); u64(8); /* head, tail, status */
+   u64(64); u64(4096);     /* buffer */
+   u64(64 + 4096); u64(0); /* extra */
+   submit();
+   if (vkr_context_get_fatal(ctx))
+      broken("vkCreateRingMESA");
+   if (closing) {
+      if (!vkr_cs_encoder_acquire(&ctx->encoder))
+         broken("no reply stream to write into");
+      vkr_context_destroy_resource(ctx, REPLY_RES);
+   }
+   /* no such command (a live context), or any (the closing one is ended already) */
+   i32(closing ? VK_COMMAND_TYPE_vkCmdSetCullMode_EXT : 0x7fff); u32(0);
+   memcpy(shm + 64, cs, cs_n);
+   const uint32_t n = (uint32_t)cs_n;
+   cs_n = 0;
+   __atomic_store_n(tail, n, __ATOMIC_SEQ_CST);
+   for (int i = 0; i < 400 && !(*status & VK_RING_STATUS_FATAL_BIT_MESA); i++)
+      usleep(5000);
+   /* the ring thread logs right after it sets the status */
+   for (int i = 0; i < 200 && !logged("venus context 1 (test)"); i++)
+      usleep(5000);
+   printf("ring status 0x%x\n", *status);
+   if (!(*status & VK_RING_STATUS_FATAL_BIT_MESA))
+      return outcome();
+   if (logged(closing ? "venus context 1 (test) is lost" : "ended while the guest closed it")) {
+      printf("%s\n", closing ? "a teardown counted as a lost context" : "a lost context taken for a teardown");
+      return BROKEN;
+   }
+   /* the closing case keeps its busy encoder: the process ends here, as the app's did */
+   return outcome();
+}
+
 static int physical_query_case(VkCommandTypeEXT type, const char *ext)
 {
    setup(VK_API_VERSION_1_1, 0, NULL);
@@ -570,6 +624,86 @@ static int device_image_query_case(int layout)
       zero &= !r[i];
    printf("reply %d: the answer is %s\n", type, zero ? "zeros" : "not zeros");
    return zero ? outcome() : BROKEN;
+}
+
+/* ---- replies: chained output structs a refused or unfilled query leaves (temp-zero) ---- */
+/* the temp pool's first bytes full of 0x5a: vkCmdSetViewport's viewports are decoded there
+ * (the pool starts over at the same place for the next command) */
+static void fill_temp_pool(uint64_t cb)
+{
+   const struct vkr_physical_device *pdev = vkr_context_get_object(ctx, PDEV_ID);
+   const uint32_t n = MIN2(pdev->properties.limits.maxViewports, 16);
+   cmd(VK_COMMAND_TYPE_vkCmdSetViewport_EXT, 0);
+   u64(cb); u32(0); u32(n);
+   u64(n);
+   for (uint32_t i = 0; i < n * 6; i++)
+      u32(0x5a5a5a5au);
+   submit();
+}
+
+/* the two 32-bit words after the struct of type `stype` in the reply (its pNext pointer
+ * between), or false when the reply lacks it */
+static bool reply_struct_words(VkStructureType stype, uint32_t out[2])
+{
+   for (size_t at = 0; at + 20 <= 512; at += 4) {
+      int32_t t;
+      memcpy(&t, reply + at, 4);
+      if (t == (int32_t)stype) {
+         memcpy(out, reply + at + 12, 8);
+         return true;
+      }
+   }
+   return false;
+}
+
+static int reply_chain_case(int refused)
+{
+   setup(VK_API_VERSION_1_1, 0, NULL);
+   const uint64_t cb = command_buffer();
+   fill_temp_pool(cb);
+   uint32_t words[2];
+   VkStructureType stype;
+   if (refused) {
+      /* the second plane's requirements of an image of one: refused, the context lives;
+       * its chained VkMemoryDedicatedRequirements is not written */
+      const uint64_t img = next_id++;
+      cmd(VK_COMMAND_TYPE_vkCreateImage_EXT, 0);
+      u64(DEV_ID);
+      image_create_info();
+      ptr(0); ptr(1); u64(img);
+      submit();
+      fill_temp_pool(cb);
+      seek(0);
+      cmd(VK_COMMAND_TYPE_vkGetImageMemoryRequirements2_EXT, 1);
+      u64(DEV_ID);
+      ptr(1); i32(VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2);
+      ptr(1); i32(VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO); ptr(0); u32(VK_IMAGE_ASPECT_PLANE_1_BIT);
+      u64(img);
+      ptr(1); i32(VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2);
+      ptr(1); i32(VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS); ptr(0);
+      stype = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+   } else {
+      /* a format query with an output struct the driver does not fill (no image view
+       * info asks for it) */
+      seek(0);
+      cmd(VK_COMMAND_TYPE_vkGetPhysicalDeviceImageFormatProperties2_EXT, 1);
+      u64(PDEV_ID);
+      ptr(1); i32(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2); ptr(0);
+      i32(VK_FORMAT_R8G8B8A8_UNORM); i32(VK_IMAGE_TYPE_2D); i32(VK_IMAGE_TILING_OPTIMAL);
+      u32(VK_IMAGE_USAGE_SAMPLED_BIT); u32(0);
+      ptr(1); i32(VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2);
+      ptr(1); i32(VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT); ptr(0);
+      stype = VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT;
+   }
+   if (!reply_call())
+      return ENDED;
+   if (!reply_struct_words(stype, words)) {
+      printf("the reply has no struct of type %d\n", stype);
+      return BROKEN;
+   }
+   printf("the chained struct's two words in the reply: 0x%08x 0x%08x\n", words[0], words[1]);
+   /* VkBool32s: 0 or 1 when written or zeroed; the pool's old bytes otherwise */
+   return words[0] <= 1 && words[1] <= 1 ? outcome() : BROKEN;
 }
 
 #ifdef VKR_MISSING
@@ -854,6 +988,9 @@ static const struct test_case cases[] = {
    { "n-sem-import", E_ENDED, "vkImportSemaphoreFdKHR refused" },
    { "n-ring", E_ENDED, "vkCmdSetCullMode refused" },
    { "n-nested", E_ENDED, "vkCmdSetCullMode refused" },
+   /* a lost context counts; a teardown does not (virgl-venus-lost-context-count.patch) */
+   { "l-lost", E_ENDED, "venus context 1 (test) is lost" },
+   { "l-teardown", E_ENDED, "venus context 1 (test) ended while the guest closed it" },
    { "p-coopmat", E_ENDED, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR refused" },
    { "p-fsr", E_ENDED, "vkGetPhysicalDeviceFragmentShadingRatesKHR refused" },
    /* must keep: the commands on devices that have them, #623's zero answers */
@@ -885,6 +1022,9 @@ static const struct test_case cases[] = {
    { "b-sparse", E_ENDED, "a sparse buffer" },
    { "i-import", E_ALIVE, NULL },
    { "i-oversize", E_REFUSED, "vkAllocateMemory refused" },
+   /* replies carry zeros where nothing was written */
+   { "o-refused-chain", E_ALIVE, "vkGetImageMemoryRequirements2 refused" },
+   { "o-unwritten-chain", E_ALIVE, NULL },
 };
 
 #define IS(s) (!strcmp(name, s))
@@ -928,6 +1068,10 @@ static int run_case(const char *name)
       return ring_case(1, 0);
    if (IS("n-nested"))
       return nested_case();
+   if (IS("l-lost"))
+      return lost_case(0);
+   if (IS("l-teardown"))
+      return lost_case(1);
    if (IS("p-coopmat"))
       return physical_query_case(VK_COMMAND_TYPE_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR_EXT,
                                  "VK_KHR_cooperative_matrix");
@@ -959,6 +1103,10 @@ static int run_case(const char *name)
       return import_case(0);
    if (IS("i-oversize"))
       return import_case(1);
+   if (IS("o-refused-chain"))
+      return reply_chain_case(1);
+   if (IS("o-unwritten-chain"))
+      return reply_chain_case(0);
    printf("unknown case %s\n", name);
    return BROKEN;
 }
@@ -1022,6 +1170,37 @@ static int time_creates(int n)
    printf("timing: %d creates: %.2f us per vkCreateBuffer+vkDestroyBuffer through vkr, "
           "%.2f us of it the requirements query, %.2f us without it\n", n, with, query,
           with - query);
+
+   /* through the decoder (vkr_context_submit_cmd), 64 commands a stream: a query with a
+    * reply (its temp memory zeroed by virgl-venus-temp-zero.patch) and a vkCmd* (none) */
+   const uint64_t cb = command_buffer();
+   double per[2];
+   for (int kind = 0; kind < 2; kind++) {
+      const int batches = n / 64 > 0 ? n / 64 : 1;
+      double total = 0;
+      for (int b = 0; b < batches; b++) {
+         for (int i = 0; i < 64; i++) {
+            if (kind == 0) {
+               seek(0);
+               cmd(VK_COMMAND_TYPE_vkGetPhysicalDeviceFormatProperties2_EXT, 1);
+               u64(PDEV_ID); i32(VK_FORMAT_R8G8B8A8_UNORM);
+               ptr(1); i32(VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2); ptr(0);
+            } else {
+               cmd(VK_COMMAND_TYPE_vkCmdSetViewport_EXT, 0);
+               u64(cb); u32(0); u32(1); u64(1);
+               f32(0); f32(0); f32(64); f32(64); f32(0); f32(1);
+            }
+         }
+         clock_gettime(CLOCK_MONOTONIC, &t0);
+         if (!submit())
+            broken("a stream failed while timing");
+         clock_gettime(CLOCK_MONOTONIC, &t1);
+         total += (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
+      }
+      per[kind] = total / 1e3 / (batches * 64);
+   }
+   printf("timing: through the decoder, us per command: vkGetPhysicalDeviceFormatProperties2 "
+          "(a reply) %.3f, vkCmdSetViewport %.3f\n", per[0], per[1]);
    return 0;
 }
 

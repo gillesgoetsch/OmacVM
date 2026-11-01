@@ -1,6 +1,6 @@
 # Quick checks on every pull request and on main: syntax, ShellCheck errors,
-# the app's and the Mac helpers' builds and offline tests (the guest agents'
-# also on Linux) and the control centre's tests. No signing beyond ad hoc, no VMs.
+# the app's and the Mac helpers' builds and offline tests, and on Linux the
+# guest agents' and the control centre's tests. No signing beyond ad hoc, no VMs.
 # On the Mac mini also OmacVM.app as a release puts it together (job app).
 #
 # Where the macOS job runs: pushes to main and pull requests from branches of
@@ -31,8 +31,10 @@ jobs:
     # is deleted): false, so macos-15. fromJSON gives the runner's label list.
     runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","ARM64","omacvm-mini"]') || 'macos-15' }}
     # the mini: fresh test binaries can wait minutes before they start (macOS); the
-    # job then needs more than 35 min although nothing is wrong (#258)
-    timeout-minutes: 60
+    # job then needs more than 35 min although nothing is wrong (#258). A runner
+    # Mac held back by its power (the M1 Max on a 15 W charger: 54-71 min on
+    # 2026-10-31) still finishes: 90.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -79,14 +81,6 @@ jobs:
 
       - name: omacvm report runs on macOS's own python3
         run: /usr/bin/python3 -c "import sys; sys.path.insert(0, 'src/control'); import omacvm_cc.report, omacvm_cc.collect, omacvm_cc.bridge, omacvm_cc.state"
-
-      - name: Control centre tests (state, redaction, Textual Pilot against a fake Mac)
-        run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
-          # Textual as the VM gets it: OmacVM's own wheels (src/control/vendor).
-          "$RUNNER_TEMP/venv/bin/pip" install -q --no-deps src/control/vendor/*.whl
-          "$RUNNER_TEMP/venv/bin/pip" install -q pytest pyte
-          cd src/control && "$RUNNER_TEMP/venv/bin/python" -m pytest -q tests
 
       - name: Bridge's control centre and Touch ID requests (allow-list, limits, manifest signatures, LocalAuthentication mocked)
         run: src/bridge/mac/tests/run.sh
@@ -223,6 +217,9 @@ jobs:
 
       - name: omacvm check says when the VM stood still (logs/vm-stalls)
         run: src/tests/vm-stalls.sh
+
+      - name: omacvm check names the apps that lost a GL or Vulkan (Venus) GPU context, not a context the guest was closing
+        run: src/tests/gpu-contexts-check.sh
 
       - name: omacvm resources (settings files, tiers, the warning above the Best tier; fixtures, no VM)
         run: src/tests/resources.sh
@@ -484,8 +481,14 @@ jobs:
       - name: Graphics memory guard keeps a part for the desktop (the rules)
         run: app/runtime/Tests/virgl/test-gpu-guard-policy.sh
 
+      - name: Guest SPIR-V scan (fuzzed on the CPU, sanitizers)
+        run: app/runtime/Tests/virgl/fuzz-venus-spirv.sh
+
       - name: App menu Restart the Desktop after Later (QEMU's side)
         run: app/runtime/Tests/display/test-restart-desktop.sh
+
+      - name: App menu USB Devices while the USB switch is on (QEMU's side)
+        run: app/runtime/Tests/display/test-usb-menu.sh
 
       - name: The VM takes the pointer without a click; the Mac's cursor hides once the guest draws its own
         run: app/runtime/Tests/display/test-pointer-start.sh
@@ -700,10 +703,11 @@ jobs:
   # OmacVM.app as app/scripts/build-app.sh puts it together for a release (the
   # launcher and Touch ID panel built for release, the QEMU runtime, the Mac
   # helpers, its python3, an ad hoc signature), so a break shows on the pull
-  # request, not at release time. Only on the mini, where the QEMU runtime
-  # comes from a cache kept per runner (.github/app-runtime-cache.sh); a new
-  # runtime (its patches or build scripts changed) is built once there. Forks
-  # and a manual run (macos-15, no cache) skip this job.
+  # request, not at release time. Only on the self-hosted runners, where the
+  # QEMU runtime comes from one cache per Mac that all its runners share
+  # (.github/app-runtime-cache.sh); a new runtime (its patches or build scripts
+  # changed) is built once per Mac. Forks and a manual run (macos-15, no cache)
+  # skip this job.
   app:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","ARM64","omacvm-mini"]') || 'macos-15' }}
@@ -728,8 +732,14 @@ jobs:
           tmp=${TMPDIR:-/tmp}; job_tmp=$(mktemp -d "${tmp%/}/j.XXXXXX")
           echo "TMPDIR=$job_tmp" >> "$GITHUB_ENV"
           echo "JOB_TMP=$job_tmp" >> "$GITHUB_ENV"
-          # Beside the runner's tool cache: kept between jobs, never in the checkout.
-          echo "OMACVM_CI_RUNTIME_CACHE=${RUNNER_TOOL_CACHE:?}/omacvm-runtime" >> "$GITHUB_ENV"
+          # One cache per Mac beside its runner folders (~/omacvm-ci/omacvm-runtime;
+          # the tool cache is <runner>/_work.noindex/_tool): kept between jobs, never
+          # in the checkout, and a runtime one runner built is there for the others.
+          # 10 runtimes of 52 MB: main's and those of the open pull requests.
+          tc=${RUNNER_TOOL_CACHE:?}; ci=${tc%/*/*/*}
+          [[ -d $ci && $ci == /?*/?* ]] || { echo "::error::no folder for the runtime cache above $tc"; exit 1; }
+          echo "OMACVM_CI_RUNTIME_CACHE=$ci/omacvm-runtime" >> "$GITHUB_ENV"
+          echo "OMACVM_CI_RUNTIME_KEEP=10" >> "$GITHUB_ENV"
 
       - name: QEMU runtime from the cache
         run: |
@@ -782,12 +792,34 @@ jobs:
           git clean -ffdxq 2>/dev/null || true
 
   # The guest agents are Linux programs: their inotify and pidfd waits only
-  # run here (on the Mac those tests skip). Arm, like the guest.
+  # run here (on the Mac those tests skip). Arm, like the guest. The control
+  # centre runs in the VM too, so its tests run here, not on the Macs' runners.
   guest:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # The guest steps take 6-10 min, the control centre's tests about 5.5 more.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      # Python 3.14 as the VM and the Macs run them (Ubuntu's python3 is 3.12).
+      # Only for that step: the other steps keep Ubuntu's python3 (python3-gi).
+      - name: Python 3.14 for the control centre tests
+        id: py
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          update-environment: false
+
+      - name: Control centre tests (state, redaction, Textual Pilot against a fake Mac)
+        env:
+          PY: ${{ steps.py.outputs.python-path }}
+        run: |
+          "$PY" -m venv "$RUNNER_TEMP/venv"
+          # Textual as the VM gets it: OmacVM's own wheels (src/control/vendor).
+          "$RUNNER_TEMP/venv/bin/pip" install -q --no-deps src/control/vendor/*.whl
+          "$RUNNER_TEMP/venv/bin/pip" install -q pytest pyte
+          "$RUNNER_TEMP/venv/bin/python" --version
+          cd src/control && "$RUNNER_TEMP/venv/bin/python" -m pytest -q tests
 
       - name: Guest agents tests on Linux (inotify, pidfd, idle waits)
         run: |
@@ -806,7 +838,7 @@ jobs:
       - name: The VM's cold file cache give-back on Linux (bash, GNU tools as in the VM; a kernel that refuses swappiness=)
         run: src/tests/memory-giveback.sh
 
-      - name: An app that lost its GPU context on the Mac gets a new GPU process (only its own, at most once in 6 minutes; stand-ins with Chrome's process names and titles)
+      - name: An app that lost its GPU context on the Mac gets a new GPU process (only its own, at most once in 6 minutes; stand-ins with Chrome's process names and titles); a lost Vulkan context ends nothing and sends the next Ghostty to the CPU
         run: src/tests/desktop-recover-gpu.sh
 
       - name: A feature switch on Linux (GNU sed, glide off path)

@@ -25,6 +25,23 @@
 //   click PID ROLE LABEL     a real click at its centre
 //   press PID ROLE LABEL     its Accessibility press action (as VoiceOver or Switch Control press it)
 //   move X1 Y1 X2 Y2 N MS    N+1 pointer moves from X1,Y1 to X2,Y2, MS ms apart
+//   menu PID TITLE           Accessibility's press on PID's menu item TITLE (its menu bar, read without
+//                            opening a menu: as VoiceOver presses it; no input events)
+//   post NAME [OBJECT]       a distributed notification NAME (with the string OBJECT)
+//   space                    the id of the Space shown on the active display
+//   onscreen PID             PID's windows on screen now (CGWindowList, no pictures): N, then
+//                            "layer L X Y W H" per window
+//   windows PID              all of PID's windows, also those not on screen (CGWindowList): "on=0|1 layer L
+//                            X Y W H alpha A" per window
+//   appstate PID             active=0|1 hidden=0|1 policy=regular|accessory|prohibited front=PID
+//   key PID CODE             a key press (virtual key CODE: 36 Return, 53 Escape), only while PID is in
+//                            front (exit 3 otherwise: nothing sent)
+//   ask-keys PID BUTTON [OTHER]
+//                            the question's first second: waits up to 5 s for PID's AXButton BUTTON,
+//                            then while PID is in front Return at 0.15 s and Escape at 0.3 s (the
+//                            question must stay), at 0.4 s PID's and OTHER's windows on screen and the
+//                            Space, Return at 0.65 s (it must go): key=value words with the times;
+//                            exit 3 when PID was not in front (no key sent then)
 // A click goes out only when PID is in front and the element under the point is PID's (exit 3
 // otherwise: nothing pressed). Exit 0 done, 1 not found / refused, 2 usage, 3 not ours / not front.
 // xcrun swiftc -O onscreen-tool.swift -o onscreen-tool
@@ -164,6 +181,53 @@ func click(_ p: CGPoint, count: Int) {
     }
 }
 
+/// A key press and release at the HID level (only after a front check by the caller).
+func key(_ code: CGKeyCode) {
+    let src = CGEventSource(stateID: .hidSystemState)
+    for down in [true, false] {
+        CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: down)?.post(tap: .cghidEventTap)
+        usleep(30_000)
+    }
+}
+
+/// PID's windows on screen (no names: those need Screen Recording).
+func onScreen(_ pid: pid_t) -> [(layer: Int, frame: CGRect)] {
+    let list = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+    return list.compactMap { w in
+        guard (w[kCGWindowOwnerPID as String] as? Int).map(pid_t.init) == pid,
+              let b = w[kCGWindowBounds as String] as? NSDictionary,
+              let r = CGRect(dictionaryRepresentation: b) else { return nil }
+        return ((w[kCGWindowLayer as String] as? Int) ?? 0, r)
+    }
+}
+
+func menuItem(_ pid: pid_t, _ title: String) -> AXUIElement? {
+    guard let bar = attr(app(pid), kAXMenuBarAttribute) else { return nil }
+    var all: [AXUIElement] = []
+    walk(bar as! AXUIElement, &all)
+    return all.first { str($0, kAXRoleAttribute) == kAXMenuItemRole as String && str($0, kAXTitleAttribute) == title }
+}
+
+/// The app in front now (Accessibility asks the window server each time: NSWorkspace's answer is not
+/// updated in a process that does not run its run loop).
+func frontNow() -> pid_t {
+    var v: AnyObject?
+    guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &v) == .success,
+          let a = v else { return NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0 }
+    var p: pid_t = 0
+    AXUIElementGetPid(a as! AXUIElement, &p)
+    return p
+}
+
+/// The id of the Space on screen (SkyLight; 0 when it cannot be read).
+func activeSpace() -> UInt64 {
+    typealias Conn = @convention(c) () -> Int32
+    typealias Active = @convention(c) (Int32) -> UInt64
+    guard let c = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_CGSDefaultConnection"),
+          let a = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGSGetActiveSpace") else { return 0 }
+    return unsafeBitCast(a, to: Active.self)(unsafeBitCast(c, to: Conn.self)())
+}
+
 // MARK: Commands
 
 guard args.count >= 2 else { usage() }
@@ -294,6 +358,83 @@ case "move":
         usleep(useconds_t(ms * 1000))
     }
     say("moved to \(Int(b.x)),\(Int(b.y))")
+case "menu":
+    let pid = pidArg()
+    guard args.count >= 4 else { usage() }
+    guard let item = menuItem(pid, args[3]) else { say("NOT FOUND"); exit(1) }
+    let r = AXUIElementPerformAction(item, kAXPressAction as CFString)
+    say(r == .success ? "pressed" : "press refused: \(r.rawValue)")
+    exit(r == .success ? 0 : 1)
+case "post":
+    guard args.count >= 3 else { usage() }
+    DistributedNotificationCenter.default().postNotificationName(Notification.Name(args[2]), object: args.count >= 4 ? args[3] : nil,
+                                                                 userInfo: nil, deliverImmediately: true)
+    usleep(200_000)
+    say("posted")
+case "space":
+    say("\(activeSpace())")
+case "onscreen":
+    let ws = onScreen(pidArg())
+    say("\(ws.count)")
+    for w in ws { say("layer \(w.layer) \(fmt(w.frame))") }
+case "windows":
+    let pid = pidArg()
+    let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
+    for w in list where (w[kCGWindowOwnerPID as String] as? Int).map(pid_t.init) == pid {
+        let r = (w[kCGWindowBounds as String] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0) } ?? .zero
+        say("on=\((w[kCGWindowIsOnscreen as String] as? Bool) == true ? 1 : 0) layer \((w[kCGWindowLayer as String] as? Int) ?? 0) \(fmt(r)) alpha \((w[kCGWindowAlpha as String] as? Double) ?? 0)")
+    }
+case "appstate":
+    let pid = pidArg()
+    guard let a = NSRunningApplication(processIdentifier: pid) else { say("no app \(pid)"); exit(1) }
+    let pol = a.activationPolicy == .regular ? "regular" : a.activationPolicy == .accessory ? "accessory" : "prohibited"
+    say("active=\(a.isActive ? 1 : 0) hidden=\(a.isHidden ? 1 : 0) policy=\(pol) front=\(frontNow())")
+case "key":
+    let pid = pidArg()
+    guard args.count >= 4, let code = CGKeyCode(args[3]) else { usage() }
+    let f = frontNow()
+    guard f == pid else { say("NOT FRONT (front pid \(f))"); exit(3) }
+    key(code)
+    say("sent \(code)")
+case "ask-keys":
+    let pid = pidArg()
+    guard args.count >= 4 else { usage() }
+    let label = args[3]
+    func up() -> Bool { find(pid, kAXButtonRole as String, label) != nil }
+    let start = Date()
+    while !up() {
+        if Date().timeIntervalSince(start) > 5 { say("question=none"); exit(1) }
+        usleep(20_000)
+    }
+    let t0 = Date()
+    func at(_ s: Double) { let w = s - Date().timeIntervalSince(t0); if w > 0 { usleep(useconds_t(w * 1_000_000)) } }
+    func now() -> String { String(format: "%.2f", Date().timeIntervalSince(t0)) }
+    var out = ["found=" + String(format: "%.2f", t0.timeIntervalSince(start))]
+    var sent: [String] = []
+    for (s, code, name) in [(0.15, CGKeyCode(36), "Return"), (0.30, CGKeyCode(53), "Escape")] {
+        at(s)
+        let f = frontNow()
+        guard f == pid else { say((out + ["front=\(f)", "sent=\(sent.joined(separator: ","))"]).joined(separator: " ")); exit(3) }
+        key(code); sent.append("\(name)@\(now())")
+    }
+    // Where it is, while it waits: PID's windows on screen (the highest layer), OTHER's, the Space.
+    at(0.40)
+    let mine = onScreen(pid)
+    out.append("alert=\(mine.count)@layer\(mine.map(\.layer).max() ?? 0)")
+    if args.count >= 5, let other = pid_t(args[4]) { out.append("vm=\(onScreen(other).count)") }
+    out.append("space=\(activeSpace())")
+    at(0.45)
+    let early = up()
+    out.append("early=\(early ? "stays" : "answered@" + now())")
+    at(0.65)
+    let f = frontNow()
+    guard f == pid else { say((out + ["front=\(f)", "sent=\(sent.joined(separator: ","))"]).joined(separator: " ")); exit(3) }
+    key(36); sent.append("Return@\(now())")
+    var late = "stays"
+    for _ in 0..<75 { if !up() { late = "answered@" + now(); break }; usleep(20_000) }
+    out += ["front=\(pid)", "late=\(late)", "sent=\(sent.joined(separator: ","))"]
+    say(out.joined(separator: " "))
+    exit(early && late != "stays" ? 0 : 1)
 default:
     usage()
 }

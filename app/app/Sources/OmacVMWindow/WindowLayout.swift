@@ -14,6 +14,8 @@ public enum WindowLayout {
     public static var contentWidth: Double { width - WindowSize.sidebar - 2 * contentInset }
     /// A card's rows: 16 pt in from the card's sides.
     public static let rowInset: Double = 16
+    /// The sidebar's items: 10 pt in from its sides.
+    public static let sidebarInset: Double = 10
 
     /// Edges this close count as one line.
     public static let tolerance: Double = 1

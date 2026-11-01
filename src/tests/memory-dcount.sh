@@ -2,10 +2,15 @@
 # Offline checks for QEMU's own-view sweep (no VM, no QEMU build): Activity
 # Monitor counts guest RAM once. The patch is pinned, applied right after the
 # free page reclaim it shares its rule with, and tested by the runtime build;
-# under the main lock it remaps QEMU's view of main RAM over itself in 128 MB
-# chunks, checks every map entry first, and logs what it did:
-# app/runtime/Tests/memory/test-dcount.sh, here on the sweep taken from the
-# patch (the runtime build runs it on the patched QEMU source).
+# before the machine starts it runs a trial on scratch memory and is off for
+# the run when that does not do what ADR 0066 expects; under the main lock it
+# remaps QEMU's view of main RAM over itself in 128 MB chunks, checks every
+# map entry first, makes a spare, reads the chunk again at once after the
+# remap and maps it back from the spare if it changed, stops QEMU only when
+# that fails, and logs what it did; its test hook only in test mode, dropped
+# by the app in a release build: app/runtime/Tests/memory/test-dcount.sh,
+# here on the sweep taken from the patch (the runtime build runs it on the
+# patched QEMU source).
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 P=$R/app/runtime/patches/qemu-hvf-own-view-sweep.patch
@@ -46,27 +51,58 @@ check "128 MB chunks, 20 ms apart, a pass every 5 minutes, skipped below 64 MB o
   bash -c 'grep -q "^+#define OMACVM_SWEEP_CHUNK (128ull << 20)$" "$1" && grep -q "^+#define OMACVM_SWEEP_GAP_NS (20 \* 1000000LL)$" "$1" &&
            grep -q "^+#define OMACVM_SWEEP_PERIOD_S 300$" "$1" && grep -q "^+#define OMACVM_SWEEP_GROWTH (64ull << 20)$" "$1" &&
            grep -q "^+#define OMACVM_SWEEP_SKIPS 2 " "$1" && grep -q "^+            s->skipped < OMACVM_SWEEP_SKIPS) {$" "$1"' _ "$P"
-# Each chunk: every map entry shares its object with the guest first; the remap keeps the objects (copy=FALSE) at the
-# same address; the first pass reads them again; a failed remap stops the sweep.
-chunk=$(fn omacvm_sweep_chunk)
-seq=$(grep -o -e 'omacvm_sweep_entries(' -e 'mach_vm_remap(' -e 'omacvm_sweep_same(' <<<"$chunk" | tr '\n' ' ')
-check "a chunk: entries checked, remapped, read again (was: $seq)" \
-  test "$seq" = "omacvm_sweep_entries( mach_vm_remap( omacvm_sweep_same( omacvm_sweep_same( "
-check "  the remap: same task and address, no copy, fixed over itself" \
-  bash -c 'grep -q "VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), at,$" <<<"$1" && grep -q "^+                       FALSE, &cur, &max, inherit);$" <<<"$1"' _ "$chunk"
+# Before the machine starts: the trial on scratch memory, within its time limit; off for the run with why.
+start=$(fn omacvm_sweep_start)
+check "before the machine starts, a trial on scratch memory at a free IPA, at most 3 s; else off with why" \
+  bash -c 'grep -q "^+    if (!omacvm_sweep_canary(&omacvm_sweep, omacvm_sweep_free_ipa(OMACVM_SWEEP_TRIAL),$" <<<"$1" &&
+           grep -q "OmacVM: own-view sweep: off (%s): Activity Monitor counts the VM" <<<"$1" &&
+           grep -q "^+#define OMACVM_SWEEP_TRIAL_MS 3000 " "$2" && grep -q "omacvm_sweep_ipa_bits = pa_range;" "$2"' _ "$start" "$P"
+trial=$(fn omacvm_sweep_trial_run)
+check "  the trial: hv_vm_map as guest RAM (else a second mapping), a piece given new memory, the same remap, both ways" \
+  bash -c 'grep -q "hv_vm_map(scratch, t->ipa, OMACVM_SWEEP_TRIAL, flags) == HV_SUCCESS" <<<"$1" &&
+           grep -q "hv_vm_map(scratch + cut, t->ipa + cut, piece, flags)" <<<"$1" &&
+           grep -q "r = omacvm_sweep_remap(&b, mode, view, view, OMACVM_SWEEP_CHUNK, &less, &wrong, what," <<<"$1" &&
+           grep -q "omacvm_sweep_trial_same(" <<<"$1"' _ "$trial"
+check "  -overcommit mem-lock turns it off" grep -q '^+    if (should_mlock(mlock_state)) {$' "$P"
+# Each chunk: every map entry has the trial's share mode first; a spare; the remap keeps the objects (copy=FALSE) at
+# the same address; read again at once on every pass; mapped back from the spare if it changed.
+chunk=$(fn omacvm_sweep_remap)
+seq=$(grep -o -e 'omacvm_sweep_entries(' -e 'omacvm_sweep_test_remap(' -e 'omacvm_sweep_same(' -e 'omacvm_sweep_restore(' \
+  -e 'omacvm_sweep_footprint(' <<<"$chunk" | tr '\n' ' ')
+check "a chunk: entries checked, a spare made and checked, remapped, read again at once, else mapped back (was: $seq)" \
+  test "$seq" = "omacvm_sweep_entries( omacvm_sweep_test_remap( omacvm_sweep_same( omacvm_sweep_same( omacvm_sweep_restore( omacvm_sweep_footprint( omacvm_sweep_test_remap( omacvm_sweep_same( omacvm_sweep_footprint( omacvm_sweep_restore( "
+check "  the remap: same task and address, no copy, fixed over itself, then the check before anything else" \
+  bash -c 'grep -A2 "VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE, mach_task_self(), at,$" <<<"$1" | grep -q "^+                                     FALSE, &cur, &max, inherit);$" &&
+           grep -q "^+        same = omacvm_sweep_same(b, at, at, len, n, base, what, sizeof(what));  /\* at once \*/$" <<<"$1"' _ "$chunk"
+check "  the spare: no copy, anywhere, not inherited, gone on every path" \
+  bash -c 'grep -q "mach_task_self(), at, FALSE, &cur, &max,$" <<<"$1" && grep -q "VM_INHERIT_NONE) != KERN_SUCCESS) {$" <<<"$1" &&
+           grep -q "^+        mach_vm_deallocate(mach_task_self(), spare, len);$" <<<"$1"' _ "$chunk"
 entries=$(fn omacvm_sweep_entries)
-check "  only entries that share an object: true shared or shared, an object id, read-write, not wired" \
-  bash -c 'grep -q "(info.share_mode != SM_TRUESHARED && info.share_mode != SM_SHARED) ||" <<<"$1" &&
-           grep -q "!info.object_id ||" <<<"$1" && grep -q "info.user_wired_count) {" <<<"$1" && grep -q "info.is_submap ||" <<<"$1"' _ "$entries"
-check "  in the first pass a changed view stops QEMU" grep -q '^+    if (s->first && !omacvm_sweep_same(at, len, omacvm_sweep_runs, n, why, sizeof(why))) {$' "$P"
-check "  a failed remap stops the sweep for the run" grep -q '^+        omacvm_sweep_stop(s, stop);$' "$P"
+check "  before: the trial's share mode, an object, read-write, not wired; after: same objects (private passes), short info" \
+  bash -c 'grep -q "shared = want >= 0 ? info.share_mode == want && !info.user_wired_count :" <<<"$1" &&
+           grep -q "info.share_mode != SM_COW && info.share_mode != SM_EMPTY;" <<<"$1" && grep -q "!info.object_id ||" <<<"$1" &&
+           grep -q "info.is_submap ||" <<<"$1" && grep -q "count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;" <<<"$1"' _ "$entries"
+check "  mapped back over what is mapped, into what is not (no delete across a hole)" \
+  bash -c 'grep -q "^+            flags = VM_FLAGS_FIXED;$" <<<"$1" && grep -q "^+            flags = VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE;$" <<<"$1"' \
+  _ "$(fn omacvm_sweep_map_back)"
+check "  mapped back or no spare: the sweep stops for the run; QEMU stops only when it could not be mapped back" \
+  bash -c 'grep -A6 "case OMACVM_SWEEP_MAPPED_BACK:" <<<"$1" | grep -q "omacvm_sweep_stop(s, stop);" &&
+           grep -A4 "case OMACVM_SWEEP_LOST:" <<<"$1" | grep -q "abort();" &&
+           test "$(grep -c "abort()" <<<"$2")" = 1' _ "$(fn omacvm_sweep_chunk)" "$(awk '/omacvm-sweep: begin/,/omacvm-sweep: end/' "$P")"
+check "  a failed remap stops the sweep for the run" grep -q '^+        omacvm_sweep_stop(s, why);$' "$P"
 check "  no madvise, no page touched" bash -c '! grep -q "^+.*madvise(" <<<"$1"' _ "$(awk '/omacvm-sweep: begin/,/omacvm-sweep: end/' "$P")"
+# The test hook: only in test mode (QEMU), and the app drops its variable in a release build.
+check "its test hook only in test mode, and the app drops it in a release build" \
+  bash -c 'grep -q "^+    if (test && test_mode && \*test_mode) {$" "$1" && grep -q "getenv(\"OMACVM_TEST_SKIP_DISPLAYS\")" "$1" &&
+           grep -A2 "TestHooks.value(\"OMACVM_TEST_SWEEP_DIVERGE\"" "$2" | grep -q "env.removeValue(forKey: \"OMACVM_TEST_SWEEP_DIVERGE\")"' \
+  _ "$P" "$R/app/app/Sources/OmacVM/Runner.swift"
 check "OMACVM_DCOUNT_SWEEP=0 turns it off" grep -q 'omacvm_sweep_period(getenv("OMACVM_DCOUNT_SWEEP"))' "$P"
 check "OMACVM_DCOUNT_SWEEP_CHECK=1 for tests" grep -q 'getenv("OMACVM_DCOUNT_SWEEP_CHECK")' "$P"
 # qemu.log: the start line omacvm check reads, its own hourly line and the run's at exit.
 for line in "OmacVM: own-view sweep: on: QEMU remaps its view of the VM's %.0f MB " "OmacVM: own-view sweep: off (" \
-    "OmacVM: own-view sweep %s: %\" PRIu64 \" passes over %.0f MB of guest " "chunks remapped; Activity Monitor %.0f MB less; main lock per " \
-    "left as they were " "OmacVM: own-view sweep: stopped for this run: %s" "stays as it is " "maps other memory than the guest's"; do
+    "OmacVM: own-view sweep %s: %\" PRIu64 \" passes over %.0f MB of guest " "chunks remapped%s; Activity Monitor %.0f MB less; main lock per " \
+    "left as they were " "OmacVM: own-view sweep: stopped for this run: %s" "stays as it is " "mapped back after %lld us: %s; a disk, network " \
+    "could not be \"" "a trial remap on scratch memory took longer than %lld ms"; do
   check "patch logs '$line'" grep -qF "$line" "$P"
 done
 check "its hour's line comes from its own timer, the run's at exit" \

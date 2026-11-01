@@ -106,8 +106,9 @@ on CGL, not on ANGLE.
 | Venus on MoltenVK | built: `gpu-venus`, merged into `gpu-native`, hidden switch | see section 6 |
 | KosmicKrisp on macOS 26 | built, in release builds (3.0.0, ADR 0035) | `virgl-darwin-vulkan-beside.patch` + `virgl-darwin-kosmickrisp-fallback.patch` |
 | OpenCL (rusticl on Zink), WebGPU in Firefox and Chromium | built: `webgpu-compute`; feature `vulkan` (`gpu-next`, opt-in) | section 6, ADR 0022 |
-| Zink as GL driver, ANGLE-on-Vulkan in Chrome | blocked: on KosmicKrisp (Mesa e5f0687) Zink gives GL 2.1 / ES 2.0 (no transform feedback or geometry shaders; float64 is no limit, Zink reports doubles itself); with OmacVM.app 3.2.13 and older a guest app on Zink with a forced 4.3, or `glxinfo` with `LIBGL_KOPPER_DISABLE=1`, aborted QEMU (a linear image Metal takes as a 2D array in KosmicKrisp's `vkBindImageMemory2`), from 3.2.14 vkr reports that image as unsupported and the VM goes on; on MoltenVK GL 2.1, no `VK_EXT_provoking_vertex` | ADR 0064, 0065 |
+| Zink as GL driver, ANGLE-on-Vulkan in Chrome | blocked: on KosmicKrisp (Mesa e5f0687) Zink gives GL 2.1 / ES 2.0 (no transform feedback or geometry shaders; float64 is no limit, Zink reports doubles itself); with OmacVM.app 3.2.13 and older a guest app on Zink with a forced 4.3, or `glxinfo` with `LIBGL_KOPPER_DISABLE=1`, aborted QEMU (a linear image Metal takes as a 2D array in KosmicKrisp's `vkBindImageMemory2`), from 3.2.14 vkr reports that image as unsupported and the VM goes on; on MoltenVK GL 2.1, no `VK_EXT_provoking_vertex`; one exception, Ghostty with its experimental switch (next rows) | ADR 0064, 0065 |
 | Ghostty (needs OpenGL 4.3; virgl gives 4.1) on Mesa's llvmpipe, Ghostty alone, its children on the GPU | built: `issue-598` (3.2.14) | `src/app/guest/omacvm_egl.c`, ADR 0064 |
+| Ghostty on Zink over Venus with a forced OpenGL 4.3, Ghostty alone, KosmicKrisp only (typing about twice as fast, a tenth of the CPU while output scrolls; a lost Venus context hangs that Ghostty); its Zink displays name no dma-buf export (Mesa answers it without an fd) | built: `ghostty-zink` (3.2.18), off by default (experimental switch "Ghostty on the Mac's GPU", `ghosttyGPU`, SMBIOS `omacvm.glzink=1`) | `src/app/guest/omacvm_egl.c`, `OmacVMWindow/GhosttyGPU.swift`, ADR 0064's amendment |
 | VideoToolbox decode | built: `video-decode` | `virgl-videotoolbox-decode.patch` |
 | One window per display | built: `app-displays` | `omacvm-cocoa-displays.patch` |
 | Async ctrl queue (guest keeps encoding while the host runs) | planned | finding from `browser-gpu` |
@@ -115,23 +116,40 @@ on CGL, not on ANGLE.
 | Frames on the display's refresh (jitter buffer, display link thread) | built: `pacing-hdr` | `qemu-cocoa-gl-present-vsync.patch`, ADR 0020 |
 | Colour-tagged frames, 10-bit scanout, HDR (PQ, EDR) | built: `pacing-hdr`, `hdr` (the app's switch, off by default; the guest tone-maps into the display's headroom) | `qemu-cocoa-gl-present-color.patch`, `omacvm-cocoa-hdr-headroom*.patch`, `src/app/guest/virtio-gpu/`, ADR 0021, 0049 |
 | Guest paced by the host's vsync (its vblank timer follows the Mac's refresh) | built 3.2.3 (`input-vsync`, "Frames in step with the Mac"), removed 3.2.7 | ADR 0056, 0057 |
-| Chrome's GL renderer without "virgl" (Skia keeps instanced drawing) | built: `gpu-browser` (3.1.32) | `src/app/guest/50-omacvm-chrome.drirc` |
+| Chrome's GL renderer without "virgl" (Skia keeps instanced drawing) | built: `gpu-browser` (3.1.32); Brave, Vivaldi, Electron: `browser-speed-gpu-name-all` (3.2.18) | `src/app/guest/50-omacvm-chrome.drirc` |
 
 Chrome's renderer string: Skia turns instanced drawing off when the GL
 renderer names virgl (`GrGLCaps.cpp`, 2021, no public reason). Without it
 Chrome's GL path has no path atlas, and every canvas stroke and clip path
 becomes a CPU mask, an upload and a draw of its own in every frame. App VMs
 get a Mesa drirc (`/usr/share/drirc.d/50-omacvm-chrome.conf`) that gives the
-programs `chrome` and `chromium` the renderer "OmacVM-GPU" (`force_gl_renderer`);
-every other program keeps the real string. MotionMark at a fixed complexity
-in a VM on the M4 Max (3 alternating rounds): Paths 29-35 -> 75 fps, Suits
-40-48 -> 75 fps (75 = the hidden VM display's rate), Canvas Arcs 75 both.
+programs `chrome` and `chromium` the renderer "OmacVM-GPU" (`force_gl_renderer`),
+and from 3.2.18 `brave`, `vivaldi-bin` and `electron` (Electron's own arm64
+build; Arch Linux ARM has no Electron package); every other program keeps
+the real string, also an Electron app shipped under its own name. MotionMark
+at a fixed complexity in a VM on the M4 Max (3 alternating rounds): Paths
+29-35 -> 75 fps, Suits 40-48 -> 75 fps (75 = the hidden VM display's rate).
+Fixed-complexity rows named "Canvas Arcs" ran nothing: MotionMark's
+developer page matches the test name without spaces (`CanvasArcs`).
 chrome://gpu lists the same features and driver workarounds. A static page
 of strokes, arcs, clips, rounded rects and SVG paths matches Chrome's
 Graphite render; it differs from Chrome's CPU raster only inside one thick
 self-overlapping stroke, which GPU tessellation fills. dEQP-GLES3
 `functional.instanced` 45/45 and `functional.draw` 324/324 pass on virgl.
 The WebGL renderer string that pages can read changes the same way.
+Brave 1.98.63 in a hidden VM on the Mac mini M4 (page 1560x870 at 2x,
+60 Hz, 3 alternating rounds against `force_gl_renderer=`, which gives the
+real name): Paths at complexity 100000 5.8 -> 41.8 fps, Suits at 3000
+13.7 -> 44.2 fps; MotionMark 2754 -> 4483 (medians: Paths 7.3x, Suits 3.1x,
+Canvas Arcs 2.2x, Canvas Lines 1.27x, the other four within 10 %; arcs only
+from this subtest); Aquarium 30k 37.7 vs 38.9 fps, scrolling 60 fps both.
+The static page differs in 0.026 % of its 4x4 cells, where thick strokes
+cross (#509 saw the same in Chrome), the same in Electron on Wayland (X11
+not compared). Electron 45.2.1, Paths 100000: 5.5 -> 34.2 fps on Wayland,
+5.3 -> 32.7 fps on X11.
+A name by process type instead (OmacVM's EGL vendor library in a process
+with `--type=gpu-process`) does not reach Chromium: ANGLE draws on Chrome's
+own GBM device, whose Mesa screen exists before Chrome loads EGL.
 
 ## 2. Processes and threads
 
@@ -463,9 +481,13 @@ one patch each, each with a build-time test that compiles or runs on the Mac's G
 | integer multisample blit used texture() on a MS sampler (upstream bug) | `virgl-blitter-integer-msaa.patch` | `test-blitter-shaders.c` |
 | framebuffer without attachments (all draw buffers GL_NONE): GL error on draw | `virgl-framebuffer-no-attachments.patch` (depth stand-in as large as the first viewport, at most 8192², kept between switches, freed when unused; depth test off while it is attached) | `test-empty-framebuffer.c` |
 | guest told 32 samplers per stage, the Mac has 16 | `virgl-caps-sampler-limit.patch` (smallest limit of all stages) | `test-sampler-limit.c` |
+| no cull distances: vrend wrote no clip distances (a shader writing gl_ClipDistance refused, user clip planes and the clip distances of tessellation and geometry shaders ignored), and a last tessellation evaluation shader lost its y prescale (upside down in a window) and its transform feedback (#589) | `virgl-shader-clip-distances.patch` (clip distances on every desktop GL; the user clip planes' stores in a variant for planes on: key bit `ucp_enabled` for the last vertex or evaluation shader, `gs.emit_clip_distance` for the geometry shader; a vertex shader still never declares gl_CullDistance; transform feedback from a last evaluation shader runs on Apple's software vertex path: "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log) | `test-whole-program-shapes.c` |
+| `GL_ARB_arrays_of_arrays` asked for by a geometry or tessellation shader with a varying array, without checking the host (#589) | `virgl-shader-arrays-of-arrays.patch` (only where the GL has it; interface blocks otherwise, as vrend already declared them) | `test-whole-program-shapes.c` |
+| guest told 0 tessellation shader outputs (asked only on a GL with atomic counters): the guest's Mesa refused every whole program whose tessellation shader had an output (#589) | `virgl-caps-tess-outputs.patch` (the per-vertex limits, on every GL with tessellation) | `test-whole-program-shapes.c` |
 
-The patches apply after gpu-native's and only touch `vrend_shader.c`,
-`vrend_blitter.[ch]` and `vrend_renderer.c` (framebuffer state, caps).
+The patches apply after gpu-native's and only touch `vrend_shader.[ch]` (the
+clip distance patch adds a shader key bit), `vrend_blitter.[ch]` and
+`vrend_renderer.c` (framebuffer state, caps).
 `virgl-shader-core-glsl-version.patch` covers gpu-robust's `virgl-core-instance-id.patch`
 (same loop in `emit_header`); both apply in either order, drop that one when both land.
 gpu-robust's containment (refused shader skips its draws) is the safety net for gaps
@@ -598,6 +620,51 @@ Patches (all in `app/runtime/patches`, one per concern):
   `Tests/virgl/test-venus-robust.c` sends its cases as encoded streams through
   `vkr_context_submit_cmd` (one through a ring thread, one nested) at every
   runtime build.
+- `virgl-venus-lost-context-count.patch` (3.2.18, ADR 0038's amendment): a
+  Venus context vkr's ring thread ends counts in `logs/gpu-memory` like a GL
+  one (lost, its name, why `venus` or `guard`, `lost_recent_kind` `venus`):
+  the ring thread leaves it in the shared budget module, the renderer thread
+  writes it at its next poll. A context the guest was closing (its process
+  ended, so a handle vkr still used was closed first) logs "ended while the
+  guest closed it" and is not counted. The app tells the VM
+  (`omacvm-desktop-recover venus`: a note; for Ghostty on Zink also
+  `/run/omacvm/gl-zink-off`); `Tests/virgl/test-venus-lost-count.c`.
+- `virgl-venus-command-limits.patch`, `virgl-venus-descriptor-limits.patch`,
+  `virgl-venus-render-pass-limits.patch`, `virgl-venus-pipeline-limits.patch`
+  (ADR 0065's second amendment, 3.2.18): guest indices, counts, offsets,
+  strides and enum values in `vkCmd*`, queries, descriptor sets and layouts,
+  render passes and pipelines are bounded by the device's limits
+  (`struct vkr_limits`) and what the objects were made with (a refcounted
+  table per set layout, a subpass table per render pass, levels, bind points,
+  pool counts) before the driver gets them; a refusal ends the app's context.
+  KosmicKrisp's multiview count is told as Metal's vertex amplification count
+  (`vkr_metal_limits.m`). `Tests/virgl/test-venus-commands.c` (281 cases, with
+  the legal maxima) runs on KosmicKrisp, MoltenVK and MoltenVK with prefilled
+  command buffers; `venus-command-ledger.tsv` has a verdict per `vkCmd*`.
+- `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch`,
+  `virgl-venus-copy-regions.patch`, `virgl-venus-pipeline-formats.patch`
+  (3.2.18): commands only where Vulkan allows them (per command buffer: the
+  open pass, the bound pipelines, recording); guest SPIR-V through a
+  structural scan (`vkr_spirv.c`: header, instructions, id bound, entry
+  points, workgroup sizes, the descriptor sets an entry point's call graph
+  uses), fuzzed on the CPU by `Tests/virgl/fuzz-venus-spirv.sh`; copy regions
+  inside their images and buffers (`vkr_format_extent.h`); attachment formats
+  the device renders to.
+- `virgl-venus-submit-counts.patch`, `virgl-venus-pool-frees.patch`,
+  `virgl-venus-dedicated-memory.patch`, `virgl-venus-temp-zero.patch`,
+  `virgl-venus-thread-budget.patch`, `virgl-venus-pass-views.patch` (3.2.18,
+  ADR 0065's third amendment): a submit's chained value arrays fit its counts,
+  a chain with a structure type twice is refused (`vkr_chain_repeats`);
+  frees name objects of their own pool once; memory made for one image or
+  buffer goes before it in the driver (`struct vkr_dedicated`), and only
+  KosmicKrisp takes a second `ALIAS_BIT` image on it (swapchain binds); a reply's
+  temporary memory is zeroed; one budget of 1024 threads for guest calls
+  (`virgl_thread_budget_take` in `virgl_util.c`, used by the render server,
+  the proxy and vkr), contexts within the open-file limit; image views of the
+  open pass by id and serial. Descriptor updates reach the driver one binding at
+  a time (`vkr_set_walk_*`, tested against a model by
+  `Tests/virgl/test-venus-descriptor-walk.c`); `Tests/virgl/test-venus-threads.c`
+  drives every thread site to its refusal.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended

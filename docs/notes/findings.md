@@ -353,6 +353,69 @@ the Mac mini (ADR 0044, "Retake after a display change").
 - **Where:** the names and types are checked at
   run time by `omacvm-cocoa-fullpanel-retake.patch`.
 
+## SPIR-V 1.4+ entry point interfaces list unused descriptors (October 2026)
+
+Found with #624 (lane `venus-624`). From SPIR-V 1.4 an entry point's interface
+lists every global it uses, so it looks like the list of descriptors a shader
+needs in its pipeline layout. It is not: glslang (shaderc 2026.4, `--target-env
+vulkan1.3`) lists a declared but unused storage buffer there too
+(`fuzz-venus-spirv.c`, seed `spec16`: set 5 in the interface, used nowhere).
+Vulkan only requires the descriptors a shader statically uses to be in the
+layout. vkr's SPIR-V scan therefore takes the descriptors from the pointer
+instructions of the functions the entry point reaches through calls, not from
+the interface; a check by interface would end valid apps.
+
+## KosmicKrisp has no index checks in release builds; Metal's amplification count is 8 on Apple7 (October 2026)
+
+Found with #624 (lane `venus-624`; probe and test through vkr's dispatch on the
+M1 Max, Apple7, macOS 27.0.1, 3 runs; work/tracks/venus-624.md). KosmicKrisp is
+built with `-Db_ndebug=true`, so every `assert()` in Mesa's Vulkan runtime and
+in KosmicKrisp is gone, and `UNREACHABLE` is `__builtin_unreachable()`. A
+Vulkan app's index, count or offset is then a memory address in QEMU:
+`push + offset` for push constants, the first index of viewports, scissors,
+vertex buffers and descriptor sets, `binding offset + element * stride` in a
+descriptor set's memory, query reports at `firstQuery`, a clear colour in an
+array of 8 on the stack, a binding array sized by the largest binding number + 1
+(0xffffffff wraps to 0), dynamic buffers counted in a `uint8_t`, and
+`vk_pipeline_layout` / `vk_graphics_state` copying into fixed arrays (32 set
+layouts, 14 push constant ranges, 16 viewports, 8 colours, 32 vertex bindings
+and attributes, 32 sample locations). An unknown compare op, cull mode, blend
+factor, dynamic state or descriptor type reaches `__builtin_unreachable()`.
+MoltenVK checks less of this at record time and encodes at submit (set
+`MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1` to see at `vkEndCommandBuffer`
+what QEMU's submit would do), and also reads vertex buffers, descriptor sets
+and push constants a draw uses when the app never set them.
+
+KosmicKrisp told 32 multiview views and renders N views with Metal vertex
+amplification count N: Metal aborts on 9 or more on Apple7
+(`supportsVertexAmplificationCount:` says yes up to 8); MoltenVK renders 32.
+vkr now tells KosmicKrisp's count as Metal's (ADR 0065). The mini's M4
+(Apple9) says 8 too (the runtime build's test there, #644).
+
+What the test found against 3.2.15's vkr (`Tests/virgl/test-venus-commands.c`,
+210 cases): 147 fail on KosmicKrisp, 134 on MoltenVK and on MoltenVK with
+prefilled command buffers (signals on the refused classes, the legal multiview
+passes on KosmicKrisp, and cases the drivers accept that the GPU would run out
+of range); none with the patches.
+
+## MoltenVK trusts a submit's value counts and keeps dedicated targets (October 2026)
+
+Found with #624 (lane `venus-624-c`; drivers probed alone on the mini's M4,
+plainly and under libgmalloc). MoltenVK 1.4.2 writes the values of a chained
+`VkTimelineSemaphoreSubmitInfo` by that struct's own counts into its arrays of
+the submit's semaphore counts, also when only binary semaphores are named and
+Vulkan ignores the values. It keeps the image or buffer memory was made for
+(`VkMemoryDedicatedAllocateInfo`) in the memory and writes to it when the
+memory is freed, so an image destroyed before its bind leaves a dangling
+pointer there. Its `pNext` loops keep the last struct of a type, vkr's
+`vkr_find_struct` and Mesa's `vk_find_struct` the first, so a chain with a type
+twice gets past a check of the first (vkr refuses it on submits and allocations).
+Both drivers write a descriptor update over several bindings
+with the first binding's stride or layout, and KosmicKrisp frees whatever a
+free names (twice, or into another pool). vkr fits or refuses each (ADR 0065).
+QEMU 11 raises its own soft open-file limit to `OPEN_MAX` (10240) on macOS
+(`os_setup_limits`), whatever launchd's 256 is.
+
 ## Metal ends the process on a texture it cannot make, also in release (October 2026)
 
 Found with #598 (Ghostty and `glxinfo` with Zink ended the VM on Vulkan). Metal

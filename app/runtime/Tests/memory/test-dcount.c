@@ -1,6 +1,7 @@
 /* Test for qemu-hvf-own-view-sweep.patch (no VM): does Activity Monitor
- * count guest RAM once after a sweep, and do QEMU and the guest still see
- * the same memory?
+ * count guest RAM once after a sweep, do QEMU and the guest still see the
+ * same memory, and does a sweep that would not do what ADR 0066 expects turn
+ * itself off instead of stopping QEMU?
  *
  * The sweep's part of the patched accel/hvf/hvf-all.c (omacvm-sweep: begin
  * ... end) and the free page reclaim's (omacvm-reclaim), taken out by
@@ -12,27 +13,42 @@
  * over QEMU's view: resident + compressed); "footprint" is this process's
  * phys_footprint, Activity Monitor's Memory.
  *
- *   test-dcount [--hv]       the sweep's rows (below)
- *   test-dcount --diverge    a remap that changes QEMU's view in the first pass: QEMU must stop (abort)
- *   test-dcount --predicate  which RAM blocks a report may replace and the sweep may remap
+ *   test-dcount [--hv]             the sweep's rows (below)
+ *   test-dcount [--hv] --predicate which RAM blocks a report may replace and the sweep may remap
+ *   test-dcount [--hv] CASE        a remap that does not do what ADR 0066 expects, made so by
+ *                                  the sweep's own test hook (omacvm_sweep_test_*, as
+ *                                  OMACVM_TEST_SWEEP_DIVERGE in QEMU):
+ *     --canary    the trial's remap gives QEMU's view new memory: the sweep is off ("off (why)"),
+ *                 guest RAM never remapped, the trial's memory gone, one memory both ways
+ *     --diverge   the first pass's first chunk the same: mapped back, the sweep stopped, QEMU runs
+ *     --chunk     the same in a later pass, chunk 2, while a thread preads and pwrites guest RAM
+ *     --spare     the spare of chunk 2 differs: the sweep stops before that chunk is remapped
+ *     --hole      chunk 2's remap leaves a hole and fails: mapped back around and into the hole
+ *     --unmapped  and mapping back fails too: QEMU stops (abort), the only abort left
+ *     --dip       chunk 2 reads private once after its remap (a reference count read low): fine
+ *     --hang      the trial's remap waits past the time limit: off; the trial's memory goes later
  *
- * Rows: QEMU writes 1 GB (a disk read), the guest reads it: footprint about
- * twice held (else this Mac does not count it twice: SKIP). Pass 1 while a
- * thread reads and writes a file into and out of guest RAM (pread/pwrite,
- * buffered and F_NOCACHE: QEMU's disk thread pool), with a free page report
- * between chunks in a chunk already swept and in one not yet swept, their
- * moves aside released only after the pass, and the replaced ranges
- * touched by neither side until after it. Then a clean pass 2: footprint
- * within 1 % of held, every page right as the guest sees it, and after it
- * QEMU's writes seen by the guest and the guest's by QEMU (the replaced
- * ranges too). Then: a pass is skipped while the footprint grew less than
- * 64 MB, twice in a row at most; a chunk with an entry that has no object yet, or is copy-on-write,
- * stays as it is (counted, one line), the rest is remapped; a failed remap
- * stops the sweep for the run (one line), QEMU's view unchanged; the hour's
- * and the run's qemu.log lines.
+ * Rows: before the machine starts, the trial on scratch memory passes and
+ * leaves nothing behind. QEMU writes 1 GB (a disk read), the guest reads it:
+ * footprint about twice held (else this Mac does not count it twice: SKIP).
+ * Pass 1 while a thread reads and writes a file into and out of guest RAM
+ * (pread/pwrite, buffered and F_NOCACHE: QEMU's disk thread pool), with a
+ * free page report between chunks in a chunk already swept and in one not
+ * yet swept, their moves aside released only after the pass, and the
+ * replaced ranges touched by neither side until after it. Then a clean pass
+ * 2: footprint within 1 % of held, every page right as the guest sees it,
+ * and after it QEMU's writes seen by the guest and the guest's by QEMU (the
+ * replaced ranges too). Then: a pass is skipped while the footprint grew
+ * less than 64 MB, twice in a row at most; a chunk with an entry that has no
+ * object yet, or is copy-on-write, stays as it is (counted, one line), the
+ * rest is remapped; a failed remap stops the sweep for the run (one line),
+ * QEMU's view unchanged; the hour's and the run's qemu.log lines.
  *
- * Built two ways by test-dcount.sh: the patch's sweep (must pass) and
- * -DSWEEP_MAIN (no sweep, as up to 3.2.16: must fail with "COUNTED TWICE").
+ * Built three ways by test-dcount.sh and by hand: the patch's sweep (must
+ * pass), -DSWEEP_MAIN (no sweep, as up to 3.2.16: must fail with "COUNTED
+ * TWICE"), and -DSWEEP_OLD (3.2.17's sweep, sweep.inc, with the hook,
+ * sweep-test.inc, around its calls: --diverge, --chunk, --hole and --dip
+ * must fail there, the first pass's by stopping QEMU).
  */
 #include <Hypervisor/Hypervisor.h>
 #include <assert.h>
@@ -178,6 +194,38 @@ static char *g_strdup_printf(const char *fmt, ...)
     return s;
 }
 
+#define g_new0(type, n) ((type *)calloc((n), sizeof(type)))
+#define g_usleep(us) usleep((useconds_t)(us))
+#define qemu_mutex_destroy(m) pthread_mutex_destroy(m)
+#define qemu_cond_destroy(c) pthread_cond_destroy(c)
+static bool qemu_cond_timedwait(QemuCond *c, QemuMutex *m, int ms)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += ms / 1000;
+    ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000L;
+    }
+    return pthread_cond_timedwait(c, m, &ts) == 0;
+}
+/* QEMU's allocation of RAM blocks (qemu_ram_mmap: the block, then a guard page). */
+static void *qemu_anon_ram_alloc(size_t size, uint64_t *align, bool shared, bool noreserve)
+{
+    uint8_t *p = mmap(NULL, size + 16 * KB, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (p == MAP_FAILED) {
+        return NULL;
+    }
+    mprotect(p + size, 16 * KB, PROT_NONE);
+    *align = 16 * KB;
+    return p;
+}
+static void qemu_anon_ram_free(void *p, size_t size)
+{
+    munmap(p, size + 16 * KB);
+}
+
 /* QEMU's memory types, as far as omacvm_ram_private() looks at them. */
 #define RAM_PREALLOC (1 << 0)
 #define RAM_SHARED (1 << 1)
@@ -203,35 +251,50 @@ static uint8_t memory_region_get_dirty_log_mask(MemoryRegion *mr)
     return mr->dirty_log_mask;
 }
 
-/* The sweep's remaps (VM_FLAGS_OVERWRITE) on demand: fail (no room), or change QEMU's view after the remap. */
-enum { REMAP_REAL, REMAP_FAIL, REMAP_DIVERGE };
+/* The sweep's remaps over QEMU's view (VM_FLAGS_OVERWRITE): counted per chunk of guest RAM, made to fail on
+ * demand (no room), and never across a hole (that raises EXC_GUARD: counted and refused here instead). */
+enum { REMAP_REAL, REMAP_FAIL };
 static int remap_mode = REMAP_REAL;
-static unsigned long sweep_remaps;
+static unsigned long sweep_remaps, ram_remaps, gap_remaps, chunk_remaps[64];
+static bool has_gap(mach_vm_address_t at, mach_vm_size_t size)
+{
+    for (mach_vm_address_t a = at; a < at + size;) {
+        mach_vm_address_t start = a;
+        mach_vm_size_t len = 0;
+        natural_t depth = 0;
+        vm_region_submap_short_info_data_64_t info;
+        mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+        if (mach_vm_region_recurse(mach_task_self(), &start, &len, &depth, (vm_region_recurse_info_t)&info,
+                                   &count) != KERN_SUCCESS || start > a) {
+            return true;
+        }
+        a = start + len;
+    }
+    return false;
+}
 static kern_return_t test_mach_vm_remap(vm_map_t target, mach_vm_address_t *address, mach_vm_size_t size,
                                         mach_vm_offset_t mask, int flags, vm_map_t src, mach_vm_address_t src_address,
                                         boolean_t copy, vm_prot_t *cur, vm_prot_t *max, vm_inherit_t inherit)
 {
-    kern_return_t kr;
-
     if (flags & VM_FLAGS_OVERWRITE) {
         sweep_remaps++;
+        if (*address >= (mach_vm_address_t)ram && *address < (mach_vm_address_t)ram + ram_size) {
+            ram_remaps++;
+            chunk_remaps[(*address - (mach_vm_address_t)ram) >> 27]++;
+        }
+        if (has_gap(*address, size)) {
+            gap_remaps++;
+            return KERN_INVALID_ADDRESS;
+        }
         if (remap_mode == REMAP_FAIL) {
             return KERN_NO_SPACE;
         }
     }
-    kr = mach_vm_remap(target, address, size, mask, flags, src, src_address, copy, cur, max, inherit);
-    if (kr == KERN_SUCCESS && (flags & VM_FLAGS_OVERWRITE) && remap_mode == REMAP_DIVERGE) {
-        /* What a remap of a copy-on-write entry does: QEMU's view gets memory of its own. */
-        mmap((void *)*address, pg, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0);
-    }
-    return kr;
+    return mach_vm_remap(target, address, size, mask, flags, src, src_address, copy, cur, max, inherit);
 }
 #define mach_vm_remap test_mach_vm_remap
 #include "reclaim.inc"
-#if !defined(SWEEP_MAIN)
-#include "sweep.inc"
-static const char *sweep_name = "the patch's sweep";
-#else
+#if defined(SWEEP_MAIN)
 /* main up to 3.2.16: no sweep. */
 static const char *sweep_name = "main (no sweep)";
 typedef struct OmacvmSweepStats {
@@ -254,8 +317,22 @@ static int64_t omacvm_sweep_step(OmacvmSweep *s, int64_t now, bool usable)
     s->run.passes++;    /* a "pass" that does nothing */
     return 300 * NANOSECONDS_PER_SECOND;
 }
+#elif defined(SWEEP_OLD)
+/* 3.2.17's sweep (no trial, no spare), with this sweep's test hook around its calls. */
+static const char *sweep_name = "3.2.17's sweep";
+#define OMACVM_SWEEP_CHUNK (128ull << 20)
+#include "sweep-test.inc"
+#undef mach_vm_remap
+#define mach_vm_remap omacvm_sweep_test_remap
+#define mach_vm_region_recurse omacvm_sweep_test_region
+#include "sweep.inc"
+#undef mach_vm_region_recurse
+#else
+#include "sweep.inc"
+static const char *sweep_name = "the patch's sweep";
 #endif
 #undef mach_vm_remap
+#define TRIAL_IPA 0x800000000ull       /* the trial's scratch memory for the hypervisor (--hv): 32 GB */
 
 /* ---- the guest: a vCPU program (--hv) or the second mapping ----
  * x0 = start IPA, x1 = end, x2 = stride, x5 = op: 0 write x0 + x6, 1 read,
@@ -409,6 +486,7 @@ static char io_in[1024], io_out[1024];
 static atomic_bool io_stop;
 static atomic_ulong io_rounds, io_bad;
 static uint8_t *io_want, *io_back;
+static pthread_t io;
 
 static void *io_thread(void *arg)
 {
@@ -433,6 +511,39 @@ static void *io_thread(void *arg)
     close(in);
     close(out);
     return NULL;
+}
+
+/* The thread starts and has done two rounds. */
+static void io_start(void)
+{
+    /* mmap, not malloc: freed, they leave the footprint at once (malloc may keep big blocks) */
+    io_want = mmap(NULL, IO_LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    io_back = mmap(NULL, IO_LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    for (uint64_t o = 0; o < IO_LEN; o += 8) {
+        *(uint64_t *)(io_want + o) = (o % STRIDE) ? 0x5a5a5a5a5a5a5a5aull : value(IO_OFF + o, IO_SALT);
+    }
+    int fd = open(io_in, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0 || write(fd, io_want, IO_LEN) != (ssize_t)IO_LEN) {
+        die("writing the I/O file", errno);
+    }
+    close(fd);
+    atomic_store(&io_stop, false);
+    io_rounds = 0;
+    pthread_create(&io, NULL, io_thread, NULL);
+    while (io_rounds < 2) {
+        usleep(1000);
+    }
+}
+
+/* Stops it; the rounds it did. */
+static unsigned long io_end(void)
+{
+    unsigned long rounds = io_rounds;
+    atomic_store(&io_stop, true);
+    pthread_join(io, NULL);
+    munmap(io_want, IO_LEN);
+    munmap(io_back, IO_LEN);
+    return rounds;
 }
 
 /* Steps of the sweep until one more pass is done (or it stops); a callback after each chunk. Fake clock. */
@@ -493,19 +604,81 @@ static bool verify_all(uint64_t salt)
     return true;
 }
 
+/* One memory both ways: QEMU writes the first half, the guest sees it; the guest writes the second, QEMU sees it. */
+static bool both_ways(uint64_t salt)
+{
+    qemu_write(0, ram_size / 2, salt);
+    if (!guest(G_VERIFY, 0, ram_size / 2, salt)) {
+        return false;
+    }
+    guest(G_WRITE, ram_size / 2, ram_size, salt + 1);
+    return qemu_verify(ram_size / 2, ram_size, salt + 1, false);
+}
+
 static double ratio(uint64_t fp, uint64_t base, uint64_t h)
 {
     return h ? (double)(fp > base ? fp - base : 0) / (double)h : 0;
 }
 
+/* Is nothing mapped in [at, at + len)? */
+static bool unmapped(mach_vm_address_t at, mach_vm_size_t len)
+{
+    mach_vm_address_t start = at;
+    mach_vm_size_t size = 0;
+    natural_t depth = 0;
+    vm_region_submap_short_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+    return mach_vm_region_recurse(mach_task_self(), &start, &size, &depth, (vm_region_recurse_info_t)&info,
+                                  &count) != KERN_SUCCESS || start >= at + len;
+}
+
+#if !defined(SWEEP_MAIN) && !defined(SWEEP_OLD)
+/* Before the machine starts: the trial. ok: it passed and left nothing behind (its memory, the hypervisor's
+ * map of it, its footprint). */
+static bool trial(OmacvmSweep *s, int64_t limit_ms, char *why, size_t whylen, bool *gone)
+{
+    uint64_t before = footprint();
+    unsigned long remaps = ram_remaps;
+    bool ok = omacvm_sweep_canary(s, use_hv ? TRIAL_IPA : 0, limit_ms, why, whylen);
+    for (int i = 0; i < 5000 && __atomic_load_n(&omacvm_sweep_trials, __ATOMIC_SEQ_CST); i++) {
+        usleep(1000);                   /* a late trial (past the time limit) ends on its own */
+    }
+    *gone = !__atomic_load_n(&omacvm_sweep_trials, __ATOMIC_SEQ_CST) && ram_remaps == remaps &&
+            footprint() < before + 4 * MB &&
+            (!omacvm_sweep_test.at || unmapped(omacvm_sweep_test.at, OMACVM_SWEEP_TRIAL));
+    if (use_hv && *gone) {
+        /* the hypervisor's map of the trial's memory is gone: its IPA maps again */
+        void *pg_ = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        *gone = hv_vm_map(pg_, TRIAL_IPA, pg, HV_MEMORY_READ) == HV_SUCCESS &&
+                hv_vm_unmap(TRIAL_IPA, pg) == HV_SUCCESS;
+        munmap(pg_, pg);
+    }
+    return ok;
+}
+#endif
+
 static int rows(void)
 {
     OmacvmSweep s;
-    pthread_t io;
     uint64_t base, fp, h;
 
     printf("test-dcount: %s, guest RAM %llu MB, %s\n", sweep_name, (unsigned long long)(ram_size / MB),
            use_hv ? "a real hv_vm_map and vCPU" : "a second mapping for the hypervisor's");
+    omacvm_sweep_setup(&s, ram, ram_size, 300, true, clock_now);
+#if !defined(SWEEP_MAIN) && !defined(SWEEP_OLD)
+    /* The trial, before the machine starts. */
+    char tw[512];
+    bool gone;
+    bool passed = trial(&s, OMACVM_SWEEP_TRIAL_MS, tw, sizeof(tw), &gone);
+    row(passed && s.mode == SM_TRUESHARED, "the trial on scratch memory passes before the machine starts (%s, "
+        "share mode %d, %.1f ms)%s%s", s.trial_hv ? "mapped by the hypervisor" : "a second mapping", s.mode,
+        s.trial_ns / 1e6, passed ? "" : ": ", passed ? "" : tw);
+    row(gone, "  and leaves nothing behind (its memory, %sthe footprint as before)",
+        use_hv ? "the hypervisor's map of it, " : "");
+    if (!passed) {
+        return 1;
+    }
+#endif
     base = footprint();
     /* A disk read: QEMU writes every page, then the guest reads it. */
     qemu_write(0, ram_size, 1);
@@ -525,26 +698,9 @@ static int rows(void)
     row(true, "counted twice before a sweep: footprint %.2fx held", ratio(fp, base, h));
 
     /* Pass 1, under load: the disk thread pool's reads and writes, two free page reports between chunks. */
-    /* mmap, not malloc: freed, they leave the footprint at once (malloc may keep big blocks) */
-    io_want = mmap(NULL, IO_LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    io_back = mmap(NULL, IO_LEN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    for (uint64_t o = 0; o < IO_LEN; o += 8) {
-        *(uint64_t *)(io_want + o) = (o % STRIDE) ? 0x5a5a5a5a5a5a5a5aull : value(IO_OFF + o, IO_SALT);
-    }
-    int fd = open(io_in, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0 || write(fd, io_want, IO_LEN) != (ssize_t)IO_LEN) {
-        die("writing the I/O file", errno);
-    }
-    close(fd);
-    pthread_create(&io, NULL, io_thread, NULL);
-    while (io_rounds < 2) {
-        usleep(1000);
-    }
-    omacvm_sweep_setup(&s, ram, ram_size, 300, true, clock_now);
+    io_start();
     run_pass(&s, report_between);
-    unsigned long rounds = io_rounds;
-    atomic_store(&io_stop, true);
-    pthread_join(io, NULL);
+    unsigned long rounds = io_end();
     if (aside1) {
         omacvm_reclaim_release(aside1, REP_LEN, NULL);
     }
@@ -557,8 +713,6 @@ static int rows(void)
     row(verify_all(1), "after pass 1 the guest sees every page right (replaced ranges 0, the file's data)");
 
     /* Pass 2, clean: QEMU reads 256 MB first (a disk write), so the footprint grew and the pass runs. */
-    munmap(io_want, IO_LEN);
-    munmap(io_back, IO_LEN);
     row(qemu_verify(0, REP1, 1, false) && qemu_verify(REP1 + REP_LEN, 256 * MB, 1, false),
         "QEMU reads 256 MB (a disk write): what the guest has");
     run_pass(&s, NULL);
@@ -585,7 +739,7 @@ static int rows(void)
     row(guest(G_VERIFY, REP2, REP2 + REP_LEN, 5), "a replaced range swept untouched: QEMU's write seen by the guest");
     guest(G_WRITE, REP1, REP1 + REP_LEN, 6);
     row(qemu_verify(REP1, REP1 + REP_LEN, 6, false), "a replaced range swept untouched: the guest's write seen by QEMU");
-#if defined(SWEEP_MAIN)
+#if defined(SWEEP_MAIN) || defined(SWEEP_OLD)
     return fails ? 1 : 0;
 #else
     /* Idle: a pass is skipped while the footprint grew less than 64 MB, twice in a row at most (free page reports
@@ -642,6 +796,7 @@ static int rows(void)
         "a failed remap stops the sweep for the run, one line");
     row(guest(G_VERIFY, 0, REP1, 3) && qemu_verify(ram_size / 2, ram_size / 2 + 64 * MB, 4, false),
         "after it QEMU and the guest still see the same memory");
+    row(gap_remaps == 0, "no remap over a hole in QEMU's view (EXC_GUARD) all along");
 
     /* qemu.log: the hour's line from the sweep's own timer, the run's line at exit. */
     char why[1024];
@@ -650,7 +805,7 @@ static int rows(void)
     row(strstr(why, "OmacVM: own-view sweep this run: ") && strstr(why, " passes over 1024 MB of guest RAM, ") &&
         strstr(why, " skipped (QEMU's footprint grew less than 64 MB), ") && strstr(why, "; Activity Monitor ") &&
         strstr(why, "MB less; main lock per chunk p99 ") && strstr(why, "2 chunks (256 MB) left as they were") &&
-        strstr(why, "; stopped: a remap at +0 MB failed"), "the run's qemu.log line");
+        strstr(why, "; stopped: a remap at +0 MB failed") && !strstr(why, "mapped back"), "the run's qemu.log line");
     OmacvmSweep t;
     omacvm_sweep_setup(&t, ram, ram_size, 300, false, 0);
     t.footprint_after = footprint();
@@ -667,19 +822,115 @@ static int rows(void)
 }
 
 #if !defined(SWEEP_MAIN)
-/* --diverge: a remap that leaves QEMU's view other memory than the guest's, in the first pass: QEMU stops. */
-static int diverge(void)
+/*
+ * A remap that does not do what ADR 0066 expects (the sweep's test hook). QEMU's side: the trial (unless
+ * --canary or --hang make it fail, or 3.2.17's sweep has none), then passes; the chunk the hook acts on is
+ * chunk 2 (from 256 MB), or chunk 0 for --diverge. Exit 0: the sweep did what it must; 1: not.
+ */
+static int divergence(const char *mode)
 {
     OmacvmSweep s;
-    qemu_write(0, ram_size, 1);
-    guest(G_VERIFY, 0, ram_size, 1);
-    omacvm_sweep_setup(&s, ram, ram_size, 300, false, 0);
-    remap_mode = REMAP_DIVERGE;
-    run_pass(&s, NULL);
-    printf("test-dcount --diverge: the sweep went on (%llu chunks)\n", (unsigned long long)s.run.chunks);
-    return 1;
-}
+    uint64_t chunk = !strcmp(mode, "--diverge") ? 0 : 2 * OMACVM_SWEEP_CHUNK;
+    char why[512] = "";
+    (void)why;
+    bool later = !strcmp(mode, "--chunk"), stopping = true;
+    int what = !strcmp(mode, "--canary") ? OMACVM_SWEEP_TEST_CANARY :
+               !strcmp(mode, "--diverge") || later ? OMACVM_SWEEP_TEST_CHUNK :
+               !strcmp(mode, "--spare") ? OMACVM_SWEEP_TEST_SPARE : !strcmp(mode, "--hole") ? OMACVM_SWEEP_TEST_HOLE :
+               !strcmp(mode, "--unmapped") ? OMACVM_SWEEP_TEST_UNMAPPED : !strcmp(mode, "--dip") ? OMACVM_SWEEP_TEST_DIP :
+               !strcmp(mode, "--hang") ? OMACVM_SWEEP_TEST_HANG : -1;
 
+    if (what < 0) {
+        fprintf(stderr, "test-dcount: unknown case %s\n", mode);
+        return 2;
+    }
+    printf("test-dcount %s: %s, guest RAM %llu MB, %s\n", mode, sweep_name, (unsigned long long)(ram_size / MB),
+           use_hv ? "a real hv_vm_map and vCPU" : "a second mapping for the hypervisor's");
+    qemu_write(0, ram_size, 1);
+    if (!guest(G_VERIFY, 0, ram_size, 1)) {
+        row(false, "the guest reads what QEMU wrote");
+        return 1;
+    }
+    omacvm_sweep_setup(&s, ram, ram_size, 300, false, 0);
+    omacvm_sweep_test.what = what;
+#if !defined(SWEEP_OLD)
+    bool gone;
+    if (what == OMACVM_SWEEP_TEST_CANARY || what == OMACVM_SWEEP_TEST_HANG) {
+        omacvm_sweep_test.hang_ms = 700;
+        bool on = trial(&s, what == OMACVM_SWEEP_TEST_HANG ? 200 : OMACVM_SWEEP_TRIAL_MS, why, sizeof(why), &gone);
+        printf("  qemu.log: OmacVM: own-view sweep: %s%s%s\n", on ? "on" : "off (", on ? "" : why, on ? "" : ")");
+        bool said = what == OMACVM_SWEEP_TEST_HANG ?
+                    strstr(why, "a trial remap on scratch memory took longer than 200 ms") != NULL :
+                    strstr(why, "a trial remap on scratch memory: ") && strstr(why, "; mapped back");
+        row(!on && said && s.mode == -1,
+            "the sweep is off for the run, with why (the start line's \"off (...)\")");
+        row(gone, "the trial left nothing behind (its memory, %sthe footprint as before)%s",
+            use_hv ? "the hypervisor's map of it, " : "", what == OMACVM_SWEEP_TEST_HANG ? ", once it ended" : "");
+        row(ram_remaps == 0, "no remap of guest RAM (QEMU starts no timer)");
+        row(both_ways(3), "QEMU and the guest see the same memory both ways");
+        return fails ? 1 : 0;
+    }
+    if (!trial(&s, OMACVM_SWEEP_TRIAL_MS, why, sizeof(why), &gone)) {
+        row(false, "the trial passes: %s", why);
+        return 1;
+    }
+#endif
+    if (later) {
+        run_pass(&s, NULL);             /* pass 1 as it should be */
+        qemu_read(0, 256 * MB);         /* the footprint grows: pass 2 runs */
+        io_start();
+    }
+    omacvm_sweep_test.at = (mach_vm_address_t)ram + chunk;
+    unsigned w = warnings;
+    run_pass(&s, NULL);
+    unsigned long rounds = later ? io_end() : 0;
+    unsigned long at_chunk = chunk_remaps[chunk >> 27];
+    switch (what) {
+    case OMACVM_SWEEP_TEST_CHUNK:
+    case OMACVM_SWEEP_TEST_HOLE:
+#if !defined(SWEEP_OLD)
+        row(s.run.mapped_back == 1, "the chunk is mapped back (%llu)", (unsigned long long)s.run.mapped_back);
+#endif
+        row(s.stopped && warnings == w + 1 && strstr(last_warn, "stopped for this run: mapped back after ") &&
+            strstr(last_warn, " us: the remap at +") && strstr(last_warn, "may have gone wrong"),
+            "the sweep stops for the run, one line: mapped back after so many us");
+        if (what == OMACVM_SWEEP_TEST_HOLE) {
+            row(gap_remaps == 0, "mapped back around the hole and into it, never over it (EXC_GUARD)");
+        }
+        break;
+    case OMACVM_SWEEP_TEST_SPARE:
+        row(s.stopped && strstr(last_warn, "stopped for this run: no spare mapping of the chunk at +256 MB"),
+            "the sweep stops for the run: no spare to map back from");
+        row(at_chunk == 0 && s.run.chunks == 2, "before that chunk is remapped (%lu remaps of it, %llu chunks before)",
+            at_chunk, (unsigned long long)s.run.chunks);
+        break;
+    case OMACVM_SWEEP_TEST_DIP:
+        stopping = false;
+        row(!s.stopped && s.run.passes == 1 && s.run.chunks == ram_size / OMACVM_SWEEP_CHUNK && s.run.left == 0 &&
+            warnings == w, "a chunk read private once after its remap: the pass goes on (%llu chunks), no line",
+            (unsigned long long)s.run.chunks);
+        break;
+    case OMACVM_SWEEP_TEST_UNMAPPED:
+        printf("test-dcount %s: QEMU ran on (%s)\n", mode, s.stopped ? s.why : "the sweep too");
+        return 1;
+    }
+    if (later) {
+        row(io_bad == 0 && rounds >= 2, "pread/pwrite into and out of guest RAM during that pass: %lu rounds, %lu bad",
+            rounds, (unsigned long)io_bad);
+    }
+    /* every page as the guest sees it: what QEMU wrote, the I/O range the file */
+    row(guest(G_VERIFY, 0, later ? IO_OFF : ram_size, 1) &&
+        (!later || (guest(G_VERIFY, IO_OFF, IO_OFF + IO_LEN, IO_SALT) && guest(G_VERIFY, IO_OFF + IO_LEN, ram_size, 1))),
+        "the guest's memory is as it was");
+    row(both_ways(3), "QEMU and the guest see the same memory both ways (the chunk's page 1 MB in too)");
+    if (stopping) {
+        row(omacvm_sweep_step(&s, clock_now + s.period_ns, true) == -1, "no further pass");
+    }
+    return fails ? 1 : 0;
+}
+#endif
+
+#if !defined(SWEEP_MAIN) && !defined(SWEEP_OLD)
 /* --predicate: which blocks a free page report may replace and the sweep may remap. */
 static int predicate(void)
 {
@@ -718,14 +969,9 @@ int main(int argc, char **argv)
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
     pg = (size_t)getpagesize();
-#if defined(SWEEP_MAIN)
-    (void)mode;
-#else
+#if !defined(SWEEP_MAIN) && !defined(SWEEP_OLD)
     if (!strcmp(mode, "--predicate")) {
         return predicate();
-    }
-    if (!strcmp(mode, "--diverge")) {
-        ram_size = 256 * MB;
     }
 #endif
     const char *tmp = getenv("TEST_DCOUNT_DIR");
@@ -756,9 +1002,13 @@ int main(int argc, char **argv)
         }
         hvmap = (uint8_t *)a;
     }
-#if !defined(SWEEP_MAIN)
-    if (!strcmp(mode, "--diverge")) {
-        return diverge();
+#if defined(SWEEP_MAIN)
+    (void)mode;
+#else
+    if (*mode) {
+        int rc = divergence(mode);
+        printf("test-dcount %s: %s\n", mode, rc == 0 ? "all ok" : "FAILED");
+        return rc;
     }
 #endif
     int rc = rows();

@@ -163,7 +163,7 @@ shared_folder_patch_sha256=41247692501655393ae3a40f56915472ab29b6e89c5173e33db1f
 memory_reclaim_patch_sha256=5d422130996b99145d017d4429df660a07c757388ef7d52cba389766c18b0acf
 mapped_sections_patch_sha256=2991378d565faeaf114bb5948bfa9ad05c39b078e4e1f4c2a674c3283800fab0
 reclaim_reusable_patch_sha256=4b86c2c3629dda457f0afe48a2e360341e85ccb499a9d5fd8e1abf7f8ea21cc8
-own_view_sweep_patch_sha256=52b6b89bf732f546d014a7f005cdf212115f1538b9ca006ce17f85ebcbe3e38f
+own_view_sweep_patch_sha256=2b61505769ed99e6c7ab56d92daf292a504459a210f5685a3922e628c84406b5
 fence_poll_patch_sha256=1ac407bdb617dfc52d004d0ebd0d07641d920f7d3a9756223c6426a207fb1499
 virgl_native_patch_sha256=692ed73cf88780b4c0e04c56e3cfb21cec761768dea909d755624e07d82fc60c
 virgl_int_tex_patch_sha256=5336df08e7096fb0e4b977ebedf36aac29c6c053df7edbdea7ff5e45273f57e4
@@ -1055,6 +1055,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-vm-stalls-men
 grep -q 'omacvm_stall_menu_line(&st, stall, sizeof(stall))' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the app menu's stall line is missing (cocoa-vm-stalls-menu patch)"
 "$native_dir/Tests/vcpu/test-vcpu-stall.sh"
+# OmacVM: "USB Devices…" in the app menu under Features… while the VM's USB
+# switch is on: the launcher's list over the VM (USBRun.showList). After the
+# vm-stalls patch: restart-desktop's hunk has Features… and the memory lines as
+# its context.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-usb-menu.patch"
+"$native_dir/Tests/display/test-usb-menu.sh"
+[[ $(grep -A1 '^    omacvm_add_features_item(menu);$' "$source_dir/ui/cocoa.m") == *$'\n    omacvm_add_usb_item(menu);' ]] && \
+  grep -q '\[NSApp yieldActivationToApplication:app\];' "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m has no USB Devices... item under Features... in the app menu (usb-menu patch)"
 # OmacVM: the Mac's cursor stays hidden over the VM: an empty image while
 # hidden, set again on motion, and every 0.5 s while hidden, when another
 # process or macOS showed it (the Mac's arrow over the guest's pointer,
@@ -1172,6 +1181,10 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volat
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volatile.patch"
 "$native_dir/Tests/display/test-present-volatile.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the spare present surfaces are not wired as tested (test-present-volatile.sh)"
+# That patch moved omacvmWindowSeen:'s work into omacvmSight:: the out-of-sight
+# skip must still be wired as present-unseen's test reads it.
+"$native_dir/Tests/display/test-present-unseen.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: frames are drawn for a window out of sight after the volatile patch (test-present-unseen.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
@@ -1499,6 +1512,31 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 # OmacVM: a program pipeline the GL finds invalid in the current state (sampler units not
 # set yet, an incomplete framebuffer) is logged; it ended the guest app's whole context.
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-pipeline-validate-log.patch"
+# OmacVM: a desktop GL without cull distances (the Mac's 4.1) still writes clip distances
+# (gl_ClipDistance, user clip planes), and a last tessellation evaluation shader gets its y
+# prescale and transform feedback (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-clip-distances.patch"
+grep -q 'return ctx->cfg->has_cull_distance || !ctx->cfg->use_gles;' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->ucp_enabled = sub_ctx->rs_state.clip_plane_enable != 0;' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend: clip distances still need cull distances (shader-clip-distances patch)"
+# OmacVM: GL_ARB_arrays_of_arrays only where the GL has it (the Mac's has not, #589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-arrays-of-arrays.patch"
+[[ $(grep -c 'use_gles && ctx->cfg->has_arrays_of_arrays' "$virgl_source/src/vrend/vrend_shader.c") == 3 ]] && \
+  grep -q 'if (!ctx.cfg->use_gles && ctx.cfg->has_arrays_of_arrays &&' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: ARB_arrays_of_arrays still required without the extension (shader-arrays-of-arrays patch)"
+# OmacVM: the guest gets the tessellation shaders' output limits on a GL without atomic
+# counters (they were 0 on the Mac: its Mesa refused whole tessellation programs, #589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-caps-tess-outputs.patch"
+grep -q 'glGetIntegerv(GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS, &max);' "$virgl_source/src/vrend/vrend_renderer.c" && \
+  ! grep -q 'GL_MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_renderer.c: the tessellation output limits are still asked under atomic counters (caps-tess-outputs patch)"
+# OmacVM: separable patch varyings take no location on desktop GL (Apple's GL refuses one and
+# matches them by the order of their names: names zero-padded, every one from 0 declared);
+# they were refused and their draws skipped (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-patch-varyings.patch"
+grep -q 'static void emit_patch_fill(const struct dump_ctx \*ctx,' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->separable_out = 1;' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c, vrend_renderer.c: separable patch varyings still take a location (patch-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
@@ -1540,6 +1578,78 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-buffer-binds
 grep -q 'if (!vkr_buffer_bind_ok(vkr_buffer_from_handle(args->buffer),' "$virgl_source/src/venus/vkr_buffer.c" && \
   grep -q 'const uint64_t limit = align64(res->memory_size, getpagesize());' "$virgl_source/src/venus/vkr_device_memory.c" || \
   die "vkr_buffer.c, vkr_device_memory.c: buffer binds are not checked against their memory (buffer-binds patch)"
+# A lost Venus context counts in the status file like a lost GL one, with its app's name and
+# cause (venus, or guard after a budget refusal); a context the guest was closing does not
+# (#624's gap; tracks: ghostty-gpu venus-loss).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-lost-context-count.patch"
+grep -q 'virgl_gpu_budget_venus_lost(name, guard ? "guard" : "venus");' "$virgl_source/src/venus/vkr_context.c" && \
+  grep -q 'vrend_memory_take_venus_losses();' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vkr_context.c, vrend_renderer.c: a lost Venus context is not counted in the status file (venus-lost-context-count patch)"
+# Guest indices, counts, offsets and enum values reach the Mac's driver only inside what they
+# name, one patch per class (ADR 0065, "Indices, counts and offsets"; #624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-limits.patch"
+grep -q 'vkr_physical_device_init_limits(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q 'vkr_first_count_ok(args->firstViewport, args->viewportCount, max),' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_physical_device.c, vkr_command_buffer.c: vkCmd* indices and offsets are not bounded (command-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-descriptor-limits.patch"
+grep -q 'vkr_descriptor_writes_ok(dispatch, "vkUpdateDescriptorSets", dev, NULL,' "$virgl_source/src/venus/vkr_descriptor_set.c" && \
+  grep -q 'vkr_cmd_sets_ok(dispatch->data, "vkCmdBindDescriptorSets",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_descriptor_set.c, vkr_command_buffer.c: descriptor writes and binds are not checked (descriptor-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-render-pass-limits.patch"
+grep -q 'vkr_metal_max_vertex_amplification());' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q 'vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_physical_device.c, vkr_command_buffer.c: render passes and view counts are not checked (render-pass-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-limits.patch"
+grep -q 'if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos\[i\], why,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: pipeline create infos are not checked (pipeline-limits patch)"
+# Commands come where Vulkan allows them: a draw in a pass with a pipeline, a pass begun once and
+# ended where it began, a recording command buffer (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-state.patch"
+grep -q 'if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDraw"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'cmd->state.recording = false;' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_command_buffer.c: commands are not checked against the command buffer's state (command-state patch)"
+# Guest SPIR-V passes a structural scan before the Mac's shader compilers (#624); the scan on its
+# own first, fuzzed on the CPU under the sanitizers.
+"$native_dir/Tests/virgl/fuzz-venus-spirv.sh"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-scan.patch"
+grep -q 'vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: guest SPIR-V is not scanned (spirv-scan patch)"
+# Copies, blits and resolves name texels inside their images and bytes inside their buffers (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-copy-regions.patch"
+grep -q 'vkr_cmd_buffer_image_ok(args->srcBuffer, args->dstImage, &r2),' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  [[ -s $virgl_source/src/venus/vkr_format_extent.h ]] || \
+  die "vkr_command_buffer.c: copy regions are not checked (copy-regions patch)"
+# Attachment formats are ones the Mac's device renders to (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-formats.patch"
+grep -q 'if (!vkr_rendering_formats_ok(physical_dev, rendering->colorAttachmentCount,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q '!vkr_subpass_formats_ok(physical_dev, i, refs, n,' "$virgl_source/src/venus/vkr_render_pass.c" || \
+  die "vkr_pipeline.c, vkr_render_pass.c: attachment formats are not checked (pipeline-formats patch)"
+# A submit's chained arrays fit its counts, frees name objects of their pool once,
+# dedicated memory goes before its image or buffer, replies carry zeros where nothing was
+# written, guest threads stay inside one budget, and a pass's image views live while it is
+# open (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-submit-counts.patch"
+grep -q 'if (!vkr_submit_chain_ok(dispatch, "vkQueueSubmit", i, submit->pNext,' "$virgl_source/src/venus/vkr_queue.c" || \
+  die "vkr_queue.c: a submit's chained counts are not fitted (submit-counts patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pool-frees.patch"
+grep -q 'if (obj->pool != pool || obj->free_stamp == stamp) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
+  die "vkr_device_object.py: frees are not checked against their pool (pool-frees patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-dedicated-memory.patch"
+grep -q 'if (!vkr_device_memory_dedicated_ok(mem, image->dedicated,' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'vkr_dedicated_memory_freed(mem_dev, dedicated, true);' "$virgl_source/src/venus/vkr_device_memory.c" || \
+  die "vkr_image.c, vkr_device_memory.c: dedicated memory is not linked to its target (dedicated-memory patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-temp-zero.patch"
+grep -q 'if (dec->zero_temp)' "$virgl_source/src/venus/vkr_cs.h" && \
+  grep -q 'cmd_flags & VK_COMMAND_GENERATE_REPLY_BIT_EXT;' "$virgl_source/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h" || \
+  die "vkr_cs.h: a reply's temporary memory is not zeroed (temp-zero patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-thread-budget.patch"
+grep -q 'virgl_thread_budget_take("thread of a new Venus ring")' "$virgl_source/src/venus/vkr_ring.c" && \
+  grep -q 'virgl_thread_budget_take("render worker of a new Venus context")' "$virgl_source/server/render_worker.c" || \
+  die "vkr_ring.c, render_worker.c: guest threads are not budgeted (thread-budget patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pass-views.patch"
+grep -q '!vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd->view_count))' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_command_buffer.c: a pass's image views are not checked (pass-views patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

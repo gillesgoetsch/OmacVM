@@ -894,6 +894,8 @@ static int run_status(void)
    check(status_value("lost", NULL, 0) == 2 &&
          status_value("lost_recent", text, sizeof text) == 0 && !strcmp(text, "Hypr_land_1,chromium"),
          "lost=2, lost_recent=Hypr_land_1,chromium");
+   check(status_value("lost_recent_kind", text, sizeof text) == 0 && !strcmp(text, "gl,gl"),
+         "both GL contexts: lost_recent_kind=gl,gl (virgl-venus-lost-context-count.patch)");
    virgl_renderer_context_destroy(2);
    virgl_renderer_context_destroy(1);
    return 0;

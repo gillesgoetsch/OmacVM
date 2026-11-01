@@ -274,10 +274,17 @@ run_api_test("test-query-result", interposer="query-result-gl")
 # "lose" keeps upstream's context error.
 run_api_test("test-separable-pervertex")
 run_api_test("test-separable-pervertex", env={"OMACVM_VIRGL_SHADER_FAILURES": "lose"})
+# Whole programs on a GL without cull distances, arrays of arrays or atomic counters (#589):
+# clip distances, a last tessellation evaluation shader, the tessellation output caps.
+run_api_test("test-whole-program-shapes")
+run_api_test("test-whole-program-shapes", env={"OMACVM_VIRGL_SELECT_CACHE": "0"})
 run_api_test("test-transform-feedback")
 run_api_test("test-gpu-ranges", oracle=True)
 run_api_test("test-resource-budget")
 run_api_test("test-venus-budget-storage", vulkan_stub=True)
+# A lost Venus context counts in the status file with its name, why and kind, like a GL one
+# (virgl-venus-lost-context-count.patch); the teardown case is test-venus-robust.c's.
+run_api_test("test-venus-lost-count", vulkan_stub=True)
 run_fuzz_replay()
 run_test("test-darwin-eventfd", "virgl_util.c")
 run_test("test-thread-sync-fallback", "vrend_renderer.c")

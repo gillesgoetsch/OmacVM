@@ -9,6 +9,12 @@
 #   os_same_size "X Y W H" "X Y W H"      exit 0 when both are as wide and as tall (within 1 pt)
 #   os_cursor_hidden "visible=V empty=E at X,Y"
 #                                         exit 0 when the Mac shows no cursor: hidden, or an empty image
+#   os_usb_ask_problems "ASK-KEYS WORDS" RC SPACE_BEFORE SPACE_AFTER
+#                                         what is wrong with the USB question's first second (the tool's
+#                                         ask-keys line and exit code; the Space before the plug-in and
+#                                         after): nothing printed when it is right
+#   os_usb_keep_json DATE                 usb.json with the made-up test device (1209:0001) remembered as
+#                                         Keep on Mac (USBMemory's file, version 1)
 #   os_leftovers APP VMDIR VMNAME         reads "PID ARGS" lines (ps -axww -o pid=,args=) and prints
 #                                         those of the run: QEMU of VMNAME, anything run from APP
 #                                         (not its Helpers: Bridge and Gestures stay), anything on VMDIR
@@ -64,6 +70,23 @@ os_same_size() {
 
 os_cursor_hidden() {
   [[ $1 == visible=0* || $1 == *" empty=1 "* ]]
+}
+
+os_usb_ask_problems() {
+  local r=$1 rc=$2 sp0=$3 sp=$4
+  [[ $r == *"question=none"* ]] && { echo "no question in 5 s"; return 0; }
+  [[ $rc == 3 ]] && echo "the question was not in front (no key sent after that)"
+  [[ $r == *" early=stays "* ]] || echo "Return or Escape answered it within 0.5 s"
+  [[ $r == *" late=answered@"* ]] || echo "Return after 0.5 s did not answer it"
+  if [[ $r =~ " alert="([0-9]+)"@layer"([0-9]+) ]]; then
+    (( BASH_REMATCH[1] >= 1 && BASH_REMATCH[2] >= 3 )) || echo "no floating question window on screen"
+  else echo "no floating question window on screen"; fi
+  [[ $r =~ " vm="([0-9]+) ]] && (( BASH_REMATCH[1] >= 1 )) || echo "the VM's window was not on screen with it"
+  [[ -n $sp0 && $sp0 != 0 && $sp == "$sp0" && $r == *" space=$sp0 "* ]] || echo "the Space changed or was not read ($sp0, $sp)"
+}
+
+os_usb_keep_json() {
+  printf '{"devices":[{"choice":"mac","maker":"OmacVM tests","name":"OmacVM Test Device","product":"0001","serial":"","since":"%s","vendor":"1209"}],"version":1}\n' "$1"
 }
 
 os_leftovers() {

@@ -1,0 +1,775 @@
+virglrenderer: Venus copies, blits and resolves stay inside their images and buffers
+
+What: each region of vkCmdCopyImage(2), vkCmdBlitImage(2),
+vkCmdResolveImage(2), vkCmdCopyBufferToImage(2) and vkCmdCopyImageToBuffer(2)
+names an aspect the image's format has (a plane of a multi-planar format,
+depth and/or stencil, else color), a non-empty extent and texels inside the
+level (a plane's share of it; block formats in whole blocks; between formats
+of other block sizes the destination's extent in its own blocks); blit
+corners lie inside the levels; a buffer-image copy's row length and image
+height are 0 or at least the extent, and the bytes from its buffer offset to
+the end of its last texel block (overflow-checked) lie inside the buffer.
+The format facts come from src/venus/vkr_format_extent.h, generated from the
+Vulkan registry like vkr_format_table.h. A refused command ends the app's
+context.
+Why: both drivers record such regions; the GPU would then read or write
+outside the image or buffer when the commands run (not run here: that needs
+a submit, and a GPU fault once ended in a macOS panic).
+virgl-venus-command-limits.patch checks the levels and layers only.
+Upstream: OmacVM policy (spec VUIDs), draft only.
+Tests: Tests/virgl/test-venus-commands.c (the c-region- cases);
+Tests/virgl/venus-format-extent.py writes the header.
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index a4f87c2..6b42818 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -8,6 +8,8 @@
+ #include "vkr_command_buffer_gen.h"
+ #include "vkr_buffer.h"
+ #include "vkr_descriptor_set.h"
++#include "vkr_format_extent.h"
++#include "vkr_format_table.h"
+ #include "vkr_image.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_pipeline.h"
+@@ -74,6 +76,162 @@ vkr_cmd_range_ok(VkImage handle, const VkImageSubresourceRange *range)
+                                       range->layerCount);
+ }
+ 
++/* OmacVM (virgl-venus-copy-regions.patch): the texels a copy, blit or resolve names exist
++ * in its images, and a buffer-image copy's bytes in its buffer. Both drivers record regions
++ * outside them; the GPU would then read or write outside the resource (not run: it needs a
++ * submit, and a GPU fault once ended in a macOS panic). The aspect is one the image's format
++ * has (a plane of a multi-planar format, depth and/or stencil of a depth/stencil format, else
++ * color); offsets and extents are in that aspect's texels, whole texel blocks for block
++ * formats (VUIDs of VkImageCopy, VkImageBlit, VkImageResolve and VkBufferImageCopy). */
++struct vkr_cmd_aspect {
++   VkFormat format; /* a plane's format, else the image's */
++   uint32_t width_div;
++   uint32_t height_div;
++   uint32_t copy_size; /* the bytes of a texel block in a buffer */
++};
++
++static bool
++vkr_cmd_aspect(const struct vkr_image *img, VkImageAspectFlags aspect, bool one, struct vkr_cmd_aspect *a)
++{
++   a->format = img->format;
++   a->width_div = a->height_div = 1;
++   if (vkr_format_plane_count(img->format) > 1) {
++      const uint32_t plane = aspect == VK_IMAGE_ASPECT_PLANE_0_BIT   ? 0
++                             : aspect == VK_IMAGE_ASPECT_PLANE_1_BIT ? 1
++                             : aspect == VK_IMAGE_ASPECT_PLANE_2_BIT ? 2
++                                                                     : UINT32_MAX;
++      a->format = vkr_format_plane(img->format, plane, &a->width_div, &a->height_div);
++      a->copy_size = vkr_format_block_size(a->format);
++      return a->format != VK_FORMAT_UNDEFINED && a->copy_size;
++   }
++   const VkImageAspectFlags has = vkr_format_aspects(img->format);
++   if (!aspect || (aspect & ~has) || (one && !vkr_one_bit(aspect)))
++      return false;
++   a->copy_size = has == VK_IMAGE_ASPECT_COLOR_BIT          ? vkr_format_block_size(img->format)
++                  : aspect == VK_IMAGE_ASPECT_DEPTH_BIT     ? vkr_format_depth_copy_size(img->format)
++                  : aspect == VK_IMAGE_ASPECT_STENCIL_BIT   ? 1
++                                                            : 0;
++   return one ? a->copy_size != 0 : vkr_format_block_size(img->format) != 0;
++}
++
++/* offset + extent inside the level (a plane's share of it; block formats in whole blocks) */
++static bool
++vkr_cmd_region_ok(const struct vkr_image *img,
++                  const struct vkr_cmd_aspect *a,
++                  uint32_t level,
++                  VkOffset3D offset,
++                  uint64_t width,
++                  uint64_t height,
++                  uint64_t depth)
++{
++   if (level >= img->mip_levels || offset.x < 0 || offset.y < 0 || offset.z < 0)
++      return false;
++   const VkExtent2D b = vkr_format_block_extent(a->format);
++   const uint64_t w = MAX2(MAX2(img->extent.width >> level, 1u) / a->width_div, 1u);
++   const uint64_t h = MAX2(MAX2(img->extent.height >> level, 1u) / a->height_div, 1u);
++   const uint64_t d = MAX2(img->extent.depth >> level, 1u);
++   return (uint64_t)offset.x + width <= DIV_ROUND_UP(w, b.width) * b.width &&
++          (uint64_t)offset.y + height <= DIV_ROUND_UP(h, b.height) * b.height &&
++          (uint64_t)offset.z + depth <= d;
++}
++
++/* an image-to-image copy or resolve region */
++static bool
++vkr_cmd_image_copy_ok(VkImage src_image,
++                      const VkImageSubresourceLayers *src_sub,
++                      VkOffset3D src_offset,
++                      VkImage dst_image,
++                      const VkImageSubresourceLayers *dst_sub,
++                      VkOffset3D dst_offset,
++                      VkExtent3D extent)
++{
++   const struct vkr_image *s = vkr_image_from_handle(src_image), *d = vkr_image_from_handle(dst_image);
++   struct vkr_cmd_aspect sa, da;
++   if (!s || !d || !extent.width || !extent.height || !extent.depth ||
++       !vkr_cmd_aspect(s, src_sub->aspectMask, false, &sa) ||
++       !vkr_cmd_aspect(d, dst_sub->aspectMask, false, &da))
++      return false;
++   /* between a 3D image and a 2D array the 2D side's slices are its layers */
++   uint64_t src_depth = extent.depth, dst_depth = extent.depth;
++   if ((s->type == VK_IMAGE_TYPE_3D) != (d->type == VK_IMAGE_TYPE_3D)) {
++      if (s->type != VK_IMAGE_TYPE_3D)
++         src_depth = 1;
++      else
++         dst_depth = 1;
++   }
++   /* between formats of other block extents the extent is in the source's texels, one block
++    * of the source per block of the destination */
++   const VkExtent2D sb = vkr_format_block_extent(sa.format), db = vkr_format_block_extent(da.format);
++   const uint64_t dst_width = DIV_ROUND_UP((uint64_t)extent.width, sb.width) * db.width;
++   const uint64_t dst_height = DIV_ROUND_UP((uint64_t)extent.height, sb.height) * db.height;
++   return vkr_cmd_region_ok(s, &sa, src_sub->mipLevel, src_offset, extent.width, extent.height, src_depth) &&
++          vkr_cmd_region_ok(d, &da, dst_sub->mipLevel, dst_offset, dst_width, dst_height, dst_depth);
++}
++
++/* a blit region: its four corners inside the levels */
++static bool
++vkr_cmd_blit_ok(VkImage src_image,
++                const VkImageSubresourceLayers *src_sub,
++                const VkOffset3D src_offsets[2],
++                VkImage dst_image,
++                const VkImageSubresourceLayers *dst_sub,
++                const VkOffset3D dst_offsets[2])
++{
++   const struct vkr_image *s = vkr_image_from_handle(src_image), *d = vkr_image_from_handle(dst_image);
++   struct vkr_cmd_aspect sa, da;
++   return s && d && vkr_cmd_aspect(s, src_sub->aspectMask, false, &sa) &&
++          vkr_cmd_aspect(d, dst_sub->aspectMask, false, &da) &&
++          vkr_cmd_region_ok(s, &sa, src_sub->mipLevel, src_offsets[0], 0, 0, 0) &&
++          vkr_cmd_region_ok(s, &sa, src_sub->mipLevel, src_offsets[1], 0, 0, 0) &&
++          vkr_cmd_region_ok(d, &da, dst_sub->mipLevel, dst_offsets[0], 0, 0, 0) &&
++          vkr_cmd_region_ok(d, &da, dst_sub->mipLevel, dst_offsets[1], 0, 0, 0);
++}
++
++/* a buffer-image copy: the image region, and the buffer bytes from the offset to the end of
++ * the last texel block (row length and image height in texels, 0 for tightly packed) */
++static bool
++vkr_cmd_buffer_image_ok(VkBuffer buffer, VkImage image, const VkBufferImageCopy2 *r)
++{
++   const struct vkr_image *img = vkr_image_from_handle(image);
++   const VkExtent3D e = r->imageExtent;
++   struct vkr_cmd_aspect a;
++   if (!img || !e.width || !e.height || !e.depth ||
++       !vkr_cmd_aspect(img, r->imageSubresource.aspectMask, true, &a) ||
++       !vkr_cmd_region_ok(img, &a, r->imageSubresource.mipLevel, r->imageOffset, e.width, e.height,
++                          e.depth) ||
++       (r->bufferRowLength && r->bufferRowLength < e.width) ||
++       (r->bufferImageHeight && r->bufferImageHeight < e.height))
++      return false;
++   const VkExtent2D b = vkr_format_block_extent(a.format);
++   const uint64_t row = DIV_ROUND_UP((uint64_t)(r->bufferRowLength ? r->bufferRowLength : e.width), b.width);
++   const uint64_t rows =
++      DIV_ROUND_UP((uint64_t)(r->bufferImageHeight ? r->bufferImageHeight : e.height), b.height);
++   const uint64_t layers = r->imageSubresource.layerCount == VK_REMAINING_ARRAY_LAYERS
++                              ? img->array_layers - r->imageSubresource.baseArrayLayer
++                              : r->imageSubresource.layerCount;
++   /* slices < 2^64 (depth and layers inside the image); the rest overflow-checked, a
++    * guest's row length and image height reach 2^32 each */
++   const uint64_t slices = (uint64_t)e.depth * layers;
++   uint64_t bytes;
++   if (__builtin_mul_overflow(slices - 1, rows, &bytes) || __builtin_mul_overflow(bytes, row, &bytes) ||
++       __builtin_add_overflow(bytes, (DIV_ROUND_UP((uint64_t)e.height, b.height) - 1) * row, &bytes) ||
++       __builtin_add_overflow(bytes, DIV_ROUND_UP((uint64_t)e.width, b.width), &bytes) ||
++       __builtin_mul_overflow(bytes, (uint64_t)a.copy_size, &bytes))
++      return false;
++   return vkr_range_ok(r->bufferOffset, bytes, vkr_cmd_buffer_size(buffer));
++}
++
++static VkBufferImageCopy2
++vkr_cmd_region2(const VkBufferImageCopy *r)
++{
++   return (VkBufferImageCopy2){ .bufferOffset = r->bufferOffset,
++                                .bufferRowLength = r->bufferRowLength,
++                                .bufferImageHeight = r->bufferImageHeight,
++                                .imageSubresource = r->imageSubresource,
++                                .imageOffset = r->imageOffset,
++                                .imageExtent = r->imageExtent };
++}
++
+ /* barriers: images inside their levels and layers, buffers inside their size */
+ static bool
+ vkr_cmd_barriers_ok(struct vkr_context *ctx,
+@@ -781,8 +939,11 @@ vkr_dispatch_vkCmdCopyImage(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < args->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].srcSubresource) &&
+-                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource),
+-                             "vkCmdCopyImage", "region %u: a level or layer outside the image", i))
++                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource) &&
++                                vkr_cmd_image_copy_ok(args->srcImage, &args->pRegions[i].srcSubresource, args->pRegions[i].srcOffset,
++                                                      args->dstImage, &args->pRegions[i].dstSubresource, args->pRegions[i].dstOffset,
++                                                      args->pRegions[i].extent),
++                             "vkCmdCopyImage", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
+    VKR_CMD_CALL(CmdCopyImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+@@ -797,8 +958,11 @@ vkr_dispatch_vkCmdCopyImage2(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < info->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].srcSubresource) &&
+-                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource),
+-                             "vkCmdCopyImage2", "region %u: a level or layer outside the image", i))
++                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource) &&
++                                vkr_cmd_image_copy_ok(info->srcImage, &info->pRegions[i].srcSubresource, info->pRegions[i].srcOffset,
++                                                      info->dstImage, &info->pRegions[i].dstSubresource, info->pRegions[i].dstOffset,
++                                                      info->pRegions[i].extent),
++                             "vkCmdCopyImage2", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
+    VKR_CMD_CALL(CmdCopyImage2, args, args->pCopyImageInfo);
+@@ -811,8 +975,10 @@ vkr_dispatch_vkCmdBlitImage(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < args->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].srcSubresource) &&
+-                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource),
+-                             "vkCmdBlitImage", "region %u: a level or layer outside the image", i))
++                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource) &&
++                                vkr_cmd_blit_ok(args->srcImage, &args->pRegions[i].srcSubresource, args->pRegions[i].srcOffsets,
++                                                args->dstImage, &args->pRegions[i].dstSubresource, args->pRegions[i].dstOffsets),
++                             "vkCmdBlitImage", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
+    VKR_CMD_CALL(CmdBlitImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+@@ -827,8 +993,10 @@ vkr_dispatch_vkCmdBlitImage2(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < info->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].srcSubresource) &&
+-                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource),
+-                             "vkCmdBlitImage2", "region %u: a level or layer outside the image", i))
++                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource) &&
++                                vkr_cmd_blit_ok(info->srcImage, &info->pRegions[i].srcSubresource, info->pRegions[i].srcOffsets,
++                                                info->dstImage, &info->pRegions[i].dstSubresource, info->pRegions[i].dstOffsets),
++                             "vkCmdBlitImage2", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
+    VKR_CMD_CALL(CmdBlitImage2, args, args->pBlitImageInfo);
+@@ -839,12 +1007,13 @@ vkr_dispatch_vkCmdCopyBufferToImage(struct vn_dispatch_context *dispatch,
+                     struct vn_command_vkCmdCopyBufferToImage *args)
+ {
+    for (uint32_t i = 0; i < args->regionCount; i++) {
++      const VkBufferImageCopy2 r2 = vkr_cmd_region2(&args->pRegions[i]);
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].imageSubresource) &&
+-                                args->pRegions[i].bufferOffset < vkr_cmd_buffer_size(args->srcBuffer),
++                                vkr_cmd_buffer_image_ok(args->srcBuffer, args->dstImage, &r2),
+                              "vkCmdCopyBufferToImage",
+-                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
+-                             " of %" PRIu64, i, args->pRegions[i].imageSubresource.mipLevel,
++                             "region %u: level %u, layers %u + %u: texels outside the image or bytes outside the"
++                             " buffer (offset %" PRIu64 " of %" PRIu64 ")", i, args->pRegions[i].imageSubresource.mipLevel,
+                              args->pRegions[i].imageSubresource.baseArrayLayer,
+                              args->pRegions[i].imageSubresource.layerCount,
+                              args->pRegions[i].bufferOffset, vkr_cmd_buffer_size(args->srcBuffer)))
+@@ -862,10 +1031,10 @@ vkr_dispatch_vkCmdCopyBufferToImage2(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < info->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].imageSubresource) &&
+-                                info->pRegions[i].bufferOffset < vkr_cmd_buffer_size(info->srcBuffer),
++                                vkr_cmd_buffer_image_ok(info->srcBuffer, info->dstImage, &info->pRegions[i]),
+                              "vkCmdCopyBufferToImage2",
+-                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
+-                             " of %" PRIu64, i, info->pRegions[i].imageSubresource.mipLevel,
++                             "region %u: level %u, layers %u + %u: texels outside the image or bytes outside the"
++                             " buffer (offset %" PRIu64 " of %" PRIu64 ")", i, info->pRegions[i].imageSubresource.mipLevel,
+                              info->pRegions[i].imageSubresource.baseArrayLayer,
+                              info->pRegions[i].imageSubresource.layerCount,
+                              info->pRegions[i].bufferOffset, vkr_cmd_buffer_size(info->srcBuffer)))
+@@ -879,12 +1048,13 @@ vkr_dispatch_vkCmdCopyImageToBuffer(struct vn_dispatch_context *dispatch,
+                     struct vn_command_vkCmdCopyImageToBuffer *args)
+ {
+    for (uint32_t i = 0; i < args->regionCount; i++) {
++      const VkBufferImageCopy2 r2 = vkr_cmd_region2(&args->pRegions[i]);
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].imageSubresource) &&
+-                                args->pRegions[i].bufferOffset < vkr_cmd_buffer_size(args->dstBuffer),
++                                vkr_cmd_buffer_image_ok(args->dstBuffer, args->srcImage, &r2),
+                              "vkCmdCopyImageToBuffer",
+-                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
+-                             " of %" PRIu64, i, args->pRegions[i].imageSubresource.mipLevel,
++                             "region %u: level %u, layers %u + %u: texels outside the image or bytes outside the"
++                             " buffer (offset %" PRIu64 " of %" PRIu64 ")", i, args->pRegions[i].imageSubresource.mipLevel,
+                              args->pRegions[i].imageSubresource.baseArrayLayer,
+                              args->pRegions[i].imageSubresource.layerCount,
+                              args->pRegions[i].bufferOffset, vkr_cmd_buffer_size(args->dstBuffer)))
+@@ -902,10 +1072,10 @@ vkr_dispatch_vkCmdCopyImageToBuffer2(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < info->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].imageSubresource) &&
+-                                info->pRegions[i].bufferOffset < vkr_cmd_buffer_size(info->dstBuffer),
++                                vkr_cmd_buffer_image_ok(info->dstBuffer, info->srcImage, &info->pRegions[i]),
+                              "vkCmdCopyImageToBuffer2",
+-                             "region %u: level %u, layers %u + %u, buffer offset %" PRIu64
+-                             " of %" PRIu64, i, info->pRegions[i].imageSubresource.mipLevel,
++                             "region %u: level %u, layers %u + %u: texels outside the image or bytes outside the"
++                             " buffer (offset %" PRIu64 " of %" PRIu64 ")", i, info->pRegions[i].imageSubresource.mipLevel,
+                              info->pRegions[i].imageSubresource.baseArrayLayer,
+                              info->pRegions[i].imageSubresource.layerCount,
+                              info->pRegions[i].bufferOffset, vkr_cmd_buffer_size(info->dstBuffer)))
+@@ -1007,8 +1177,11 @@ vkr_dispatch_vkCmdResolveImage(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < args->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(args->srcImage, &args->pRegions[i].srcSubresource) &&
+-                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource),
+-                             "vkCmdResolveImage", "region %u: a level or layer outside the image", i))
++                                vkr_cmd_layers_ok(args->dstImage, &args->pRegions[i].dstSubresource) &&
++                                vkr_cmd_image_copy_ok(args->srcImage, &args->pRegions[i].srcSubresource, args->pRegions[i].srcOffset,
++                                                      args->dstImage, &args->pRegions[i].dstSubresource, args->pRegions[i].dstOffset,
++                                                      args->pRegions[i].extent),
++                             "vkCmdResolveImage", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
+    VKR_CMD_CALL(CmdResolveImage, args, args->srcImage, args->srcImageLayout,
+@@ -1023,8 +1196,11 @@ vkr_dispatch_vkCmdResolveImage2(struct vn_dispatch_context *dispatch,
+    for (uint32_t i = 0; i < info->regionCount; i++) {
+       if (!vkr_context_check(dispatch->data,
+                              vkr_cmd_layers_ok(info->srcImage, &info->pRegions[i].srcSubresource) &&
+-                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource),
+-                             "vkCmdResolveImage2", "region %u: a level or layer outside the image", i))
++                                vkr_cmd_layers_ok(info->dstImage, &info->pRegions[i].dstSubresource) &&
++                                vkr_cmd_image_copy_ok(info->srcImage, &info->pRegions[i].srcSubresource, info->pRegions[i].srcOffset,
++                                                      info->dstImage, &info->pRegions[i].dstSubresource, info->pRegions[i].dstOffset,
++                                                      info->pRegions[i].extent),
++                             "vkCmdResolveImage2", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
+    VKR_CMD_CALL(CmdResolveImage2, args, args->pResolveImageInfo);
+diff --git a/src/venus/vkr_format_extent.h b/src/venus/vkr_format_extent.h
+new file mode 100644
+index 0000000..55b20a0
+--- /dev/null
++++ b/src/venus/vkr_format_extent.h
+@@ -0,0 +1,427 @@
++/* OmacVM (virgl-venus-copy-regions.patch): generated by app/runtime/Tests/virgl/
++ * venus-format-extent.py from the Vulkan registry (vk.xml) and venus-protocol/vulkan_core.h.
++ * Do not edit; run the script again. */
++
++#ifndef VKR_FORMAT_EXTENT_H
++#define VKR_FORMAT_EXTENT_H
++
++#include "vkr_common.h"
++
++/* the texel block's width and height in texels (1 x 1 for most formats) */
++static inline VkExtent2D
++vkr_format_block_extent(VkFormat format)
++{
++   switch (format) {
++   case VK_FORMAT_B10X6G10X6R10X6G10X6_422_UNORM_4PACK16:
++   case VK_FORMAT_B12X4G12X4R12X4G12X4_422_UNORM_4PACK16:
++   case VK_FORMAT_B16G16R16G16_422_UNORM: case VK_FORMAT_B8G8R8G8_422_UNORM:
++   case VK_FORMAT_G10X6B10X6G10X6R10X6_422_UNORM_4PACK16:
++   case VK_FORMAT_G12X4B12X4G12X4R12X4_422_UNORM_4PACK16:
++   case VK_FORMAT_G16B16G16R16_422_UNORM: case VK_FORMAT_G8B8G8R8_422_UNORM:
++      return (VkExtent2D){ 2, 1 };
++   case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK: case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_4x4_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
++   case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
++   case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK:
++   case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK:
++   case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC4_SNORM_BLOCK:
++   case VK_FORMAT_BC4_UNORM_BLOCK: case VK_FORMAT_BC5_SNORM_BLOCK:
++   case VK_FORMAT_BC5_UNORM_BLOCK: case VK_FORMAT_BC6H_SFLOAT_BLOCK:
++   case VK_FORMAT_BC6H_UFLOAT_BLOCK: case VK_FORMAT_BC7_SRGB_BLOCK:
++   case VK_FORMAT_BC7_UNORM_BLOCK: case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
++   case VK_FORMAT_EAC_R11G11_UNORM_BLOCK: case VK_FORMAT_EAC_R11_SNORM_BLOCK:
++   case VK_FORMAT_EAC_R11_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
++   case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
++   case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK: case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
++   case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK: case VK_FORMAT_PVRTC1_4BPP_SRGB_BLOCK_IMG:
++   case VK_FORMAT_PVRTC1_4BPP_UNORM_BLOCK_IMG: case VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG:
++   case VK_FORMAT_PVRTC2_4BPP_UNORM_BLOCK_IMG:
++      return (VkExtent2D){ 4, 4 };
++   case VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK: case VK_FORMAT_ASTC_5x4_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_5x4_UNORM_BLOCK:
++      return (VkExtent2D){ 5, 4 };
++   case VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK: case VK_FORMAT_ASTC_5x5_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_5x5_UNORM_BLOCK:
++      return (VkExtent2D){ 5, 5 };
++   case VK_FORMAT_ASTC_6x5_SFLOAT_BLOCK: case VK_FORMAT_ASTC_6x5_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_6x5_UNORM_BLOCK:
++      return (VkExtent2D){ 6, 5 };
++   case VK_FORMAT_ASTC_6x6_SFLOAT_BLOCK: case VK_FORMAT_ASTC_6x6_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_6x6_UNORM_BLOCK:
++      return (VkExtent2D){ 6, 6 };
++   case VK_FORMAT_PVRTC1_2BPP_SRGB_BLOCK_IMG: case VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG:
++   case VK_FORMAT_PVRTC2_2BPP_SRGB_BLOCK_IMG: case VK_FORMAT_PVRTC2_2BPP_UNORM_BLOCK_IMG:
++      return (VkExtent2D){ 8, 4 };
++   case VK_FORMAT_ASTC_8x5_SFLOAT_BLOCK: case VK_FORMAT_ASTC_8x5_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_8x5_UNORM_BLOCK:
++      return (VkExtent2D){ 8, 5 };
++   case VK_FORMAT_ASTC_8x6_SFLOAT_BLOCK: case VK_FORMAT_ASTC_8x6_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_8x6_UNORM_BLOCK:
++      return (VkExtent2D){ 8, 6 };
++   case VK_FORMAT_ASTC_8x8_SFLOAT_BLOCK: case VK_FORMAT_ASTC_8x8_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_8x8_UNORM_BLOCK:
++      return (VkExtent2D){ 8, 8 };
++   case VK_FORMAT_ASTC_10x5_SFLOAT_BLOCK: case VK_FORMAT_ASTC_10x5_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_10x5_UNORM_BLOCK:
++      return (VkExtent2D){ 10, 5 };
++   case VK_FORMAT_ASTC_10x6_SFLOAT_BLOCK: case VK_FORMAT_ASTC_10x6_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_10x6_UNORM_BLOCK:
++      return (VkExtent2D){ 10, 6 };
++   case VK_FORMAT_ASTC_10x8_SFLOAT_BLOCK: case VK_FORMAT_ASTC_10x8_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_10x8_UNORM_BLOCK:
++      return (VkExtent2D){ 10, 8 };
++   case VK_FORMAT_ASTC_10x10_SFLOAT_BLOCK: case VK_FORMAT_ASTC_10x10_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_10x10_UNORM_BLOCK:
++      return (VkExtent2D){ 10, 10 };
++   case VK_FORMAT_ASTC_12x10_SFLOAT_BLOCK: case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_12x10_UNORM_BLOCK:
++      return (VkExtent2D){ 12, 10 };
++   case VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK: case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
++   case VK_FORMAT_ASTC_12x12_UNORM_BLOCK:
++      return (VkExtent2D){ 12, 12 };
++   default:
++      return (VkExtent2D){ 1, 1 };
++   }
++}
++
++/* plane `plane` of a multi-planar format: its format and how much smaller than the image it
++ * is; VK_FORMAT_UNDEFINED for a plane the format does not have */
++static inline VkFormat
++vkr_format_plane(VkFormat format, uint32_t plane, uint32_t *width_divisor,
++                 uint32_t *height_divisor)
++{
++   *width_divisor = *height_divisor = 1;
++   switch (format) {
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_444_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 1:
++         return VK_FORMAT_R10X6G10X6_UNORM_2PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_444_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 1:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 2:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R10X6G10X6_UNORM_2PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_422_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R10X6G10X6_UNORM_2PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G10X6_B10X6_R10X6_3PLANE_420_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R10X6_UNORM_PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_444_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 1:
++         return VK_FORMAT_R12X4G12X4_UNORM_2PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_444_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 1:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 2:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_422_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R12X4G12X4_UNORM_2PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_422_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R12X4G12X4_UNORM_2PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G12X4_B12X4_R12X4_3PLANE_420_UNORM_3PACK16:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R12X4_UNORM_PACK16;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_422_UNORM_3PACK16_ARM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R14X2_UNORM_PACK16_ARM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R14X2G14X2_UNORM_2PACK16_ARM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G14X2_B14X2R14X2_2PLANE_420_UNORM_3PACK16_ARM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R14X2_UNORM_PACK16_ARM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R14X2G14X2_UNORM_2PACK16_ARM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G16_B16R16_2PLANE_444_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R16_UNORM;
++      case 1:
++         return VK_FORMAT_R16G16_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R16_UNORM;
++      case 1:
++         return VK_FORMAT_R16_UNORM;
++      case 2:
++         return VK_FORMAT_R16_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G16_B16R16_2PLANE_422_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R16_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R16G16_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G16_B16_R16_3PLANE_422_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R16_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R16_UNORM;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R16_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G16_B16R16_2PLANE_420_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R16_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R16G16_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R16_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R16_UNORM;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R16_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G8_B8R8_2PLANE_444_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R8_UNORM;
++      case 1:
++         return VK_FORMAT_R8G8_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R8_UNORM;
++      case 1:
++         return VK_FORMAT_R8_UNORM;
++      case 2:
++         return VK_FORMAT_R8_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G8_B8R8_2PLANE_422_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R8_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R8G8_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G8_B8_R8_3PLANE_422_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R8_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R8_UNORM;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 1;
++         return VK_FORMAT_R8_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R8_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R8G8_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM:
++      switch (plane) {
++      case 0:
++         return VK_FORMAT_R8_UNORM;
++      case 1:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R8_UNORM;
++      case 2:
++         *width_divisor = 2;
++         *height_divisor = 2;
++         return VK_FORMAT_R8_UNORM;
++      default:
++         return VK_FORMAT_UNDEFINED;
++      }
++   default:
++      return VK_FORMAT_UNDEFINED;
++   }
++}
++
++/* the bytes a depth texel of a depth format takes in a buffer; 0 for other formats (a
++ * stencil texel always takes 1) */
++static inline uint32_t
++vkr_format_depth_copy_size(VkFormat format)
++{
++   switch (format) {
++   case VK_FORMAT_D16_UNORM: case VK_FORMAT_D16_UNORM_S8_UINT:
++      return 2;
++   case VK_FORMAT_D24_UNORM_S8_UINT: case VK_FORMAT_D32_SFLOAT:
++   case VK_FORMAT_D32_SFLOAT_S8_UINT: case VK_FORMAT_X8_D24_UNORM_PACK32:
++      return 4;
++   default:
++      return 0;
++   }
++}
++
++/* 264 formats */
++#endif /* VKR_FORMAT_EXTENT_H */

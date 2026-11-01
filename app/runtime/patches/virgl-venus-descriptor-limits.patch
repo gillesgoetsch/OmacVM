@@ -1,0 +1,1412 @@
+virglrenderer: Venus descriptor sets and pipeline layouts stay inside what the driver sized
+
+What: vkr keeps a table of each descriptor set layout (bindings sorted by
+number: type, count, flags, stages, immutable samplers and their planes, a
+mutable binding's types), shared by the layout, its sets and the pipeline
+layouts that use it (refcounted: a layout may be destroyed while they live),
+and checks against it: layout creates (binding numbers below 2^16, known
+types, inline blocks within maxInlineUniformBlockSize, at most 2^24
+descriptors, dynamic buffers within the device's limits, binding flags for
+every binding or none, the variable count on the largest binding, non-NULL
+immutable samplers, push descriptor layouts within maxPushDescriptors, a type
+list for every mutable binding), pools (known types, at most 2^24 per size
+and sets), set allocation (one variable count per set, within the binding's),
+writes and copies (the binding exists, the type is its own, the elements lie
+in it and the consecutive bindings the spec allows, those without descriptors
+and numbers the layout lacks skipped, from an element that may lie past the
+first binding; an update over several bindings goes to the driver as one write
+or copy per binding, each part checked in its own binding: type, mutable type
+list, YCbCr planes; inline data of the written size;
+samplers present unless immutable; NULL views, buffers (dynamic ones too)
+and texel views only with nullDescriptor; buffer ranges inside the buffer and
+maxUniform/StorageBufferRange; a multi-planar view only where immutable YCbCr
+samplers sized the binding), pipeline layouts (set layouts within
+maxBoundDescriptorSets and not NULL, push constant ranges inside the limit
+with one range per stage, dynamic buffers within the limits), and
+vkCmdBindDescriptorSets(2) and vkCmdPushDescriptorSet(2) (sets inside the
+pipeline layout, each with the pipeline layout's dynamic buffers there, one
+offset per dynamic buffer; a push to a push descriptor set layout, its writes
+as above). Image views and samplers keep their plane counts. A refusal ends
+the app's context (the guest makes and updates these without waiting).
+Why: KosmicKrisp (NDEBUG) writes a whole write at its first binding's offset +
+element * that binding's stride, and MoltenVK with that binding's layout, but the
+strides and layouts of consecutive bindings of one type differ (immutable YCbCr
+samplers of 2 or 3 planes, a mutable binding as wide as its largest type): a
+legal write over a 3-plane and a 1-plane binding landed past the set.
+KosmicKrisp sizes a layout's binding array by the largest binding
+number + 1 (0xffffffff wraps to 0, then writes binding[0xffffffff]), counts
+dynamic buffers in a uint8 into a 64-bit bitset, sizes layouts, sets and pools
+in 32-bit arithmetic, writes each descriptor at the binding's offset + element *
+stride into the set's memory (assert compiled out), dereferences a NULL
+sampler, writes a descriptor per plane of a multi-planar view, and reads
+pDynamicOffsets by the layouts' counts and set->dynamic_buffers by the pipeline
+layout's; Mesa's vk_pipeline_layout copies set layouts into an array of 32 and
+push constant ranges into one of 14. MoltenVK writes at the binding's offset
+too, and ends the process on a write of another type. Probed on Apple7:
+SIGBUS/SIGSEGV 3 of 3 (ADR 0065).
+Upstream: OmacVM policy (spec VUIDs), draft only.
+Tests: Tests/virgl/test-venus-commands.c (the d- and p-layout cases and the
+c-sets/c-push-set cases); Tests/virgl/test-venus-descriptor-walk.c (the walk over
+consecutive bindings against a model of the spec's rule, on the CPU, seeds 1, 2,
+3, 77 and 12345); --time: us per vkUpdateDescriptorSets (1 and 1000 writes) and
+vkCmdBindDescriptorSets through vkr.
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index ec98eda..f231fe3 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -7,6 +7,7 @@
+ 
+ #include "vkr_command_buffer_gen.h"
+ #include "vkr_buffer.h"
++#include "vkr_descriptor_set.h"
+ #include "vkr_image.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_pipeline.h"
+@@ -183,6 +184,56 @@ vkr_cmd_equation_ok(const struct vkr_limits *l, const VkColorBlendEquationEXT *e
+           vkr_blend_op_ok(l, e->alphaBlendOp);
+ }
+ 
++/* OmacVM (virgl-venus-descriptor-limits.patch): sets first .. first + count - 1 exist in
++ * the pipeline layout, each bound set's layout has the dynamic buffers the pipeline
++ * layout's has there, and the guest gives one offset for each (KosmicKrisp indexes the
++ * layout's arrays by firstSet and reads pDynamicOffsets by the layouts' counts) */
++static bool
++vkr_cmd_sets_ok(struct vkr_context *ctx,
++                const char *call,
++                const struct vkr_pipeline_layout *layout,
++                uint32_t first,
++                uint32_t count,
++                const VkDescriptorSet *sets,
++                uint32_t offset_count)
++{
++   if (!vkr_context_check(ctx, layout && vkr_first_count_ok(first, count, layout->set_count),
++                          call, "sets %u + %u of %u", first, count,
++                          layout ? layout->set_count : 0))
++      return false;
++   uint32_t dynamic = 0;
++   for (uint32_t i = 0; i < count; i++) {
++      const struct vkr_descriptor_set *set = vkr_descriptor_set_from_handle(sets[i]);
++      const struct vkr_set_layout *want = layout->sets[first + i];
++      if (!vkr_context_check(ctx, set && set->layout && set->layout->dynamic_count == want->dynamic_count,
++                             call, "set %u: %s", first + i,
++                             set ? "dynamic buffers unlike the pipeline layout's" : "NULL"))
++         return false;
++      dynamic += want->dynamic_count;
++   }
++   return vkr_context_check(ctx, offset_count == dynamic, call,
++                            "%u dynamic offsets for %u dynamic buffers", offset_count, dynamic);
++}
++
++/* a push to set `set` of the layout: there, a push descriptor set layout */
++static bool
++vkr_cmd_push_set_ok(struct vn_dispatch_context *dispatch,
++                    const char *call,
++                    const struct vkr_device *dev,
++                    const struct vkr_pipeline_layout *layout,
++                    uint32_t set,
++                    uint32_t *count,
++                    const VkWriteDescriptorSet **writes)
++{
++   const struct vkr_set_layout *push = layout && set < layout->set_count ? layout->sets[set] : NULL;
++   if (!vkr_context_check(dispatch->data,
++                          push && (push->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR),
++                          call, "set %u of %u is not a push descriptor set", set,
++                          layout ? layout->set_count : 0))
++      return false;
++   return vkr_descriptor_writes_ok(dispatch, call, dev, push, count, writes);
++}
++
+ static void
+ vkr_dispatch_vkCreateCommandPool(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateCommandPool *args)
+@@ -413,9 +464,17 @@ vkr_dispatch_vkCmdSetStencilReference(UNUSED struct vn_dispatch_context *dispatc
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindDescriptorSets(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindDescriptorSets(struct vn_dispatch_context *dispatch,
+                                      struct vn_command_vkCmdBindDescriptorSets *args)
+ {
++   if (!vkr_context_check(dispatch->data,
++                          vkr_bind_point_ok(VKR_CMD_LIMITS(args), args->pipelineBindPoint),
++                          "vkCmdBindDescriptorSets", "bind point %d", args->pipelineBindPoint) ||
++       !vkr_cmd_sets_ok(dispatch->data, "vkCmdBindDescriptorSets",
++                        vkr_pipeline_layout_from_handle(args->layout), args->firstSet,
++                        args->descriptorSetCount, args->pDescriptorSets,
++                        args->dynamicOffsetCount))
++      return;
+    VKR_CMD_CALL(CmdBindDescriptorSets, args, args->pipelineBindPoint, args->layout,
+                 args->firstSet, args->descriptorSetCount, args->pDescriptorSets,
+                 args->dynamicOffsetCount, args->pDynamicOffsets);
+@@ -1485,9 +1544,16 @@ vkr_dispatch_vkCmdDrawMultiIndexedEXT(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdPushDescriptorSet(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdPushDescriptorSet(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCmdPushDescriptorSet *args)
+ {
++   if (!vkr_context_check(dispatch->data,
++                          vkr_bind_point_ok(VKR_CMD_LIMITS(args), args->pipelineBindPoint),
++                          "vkCmdPushDescriptorSet", "bind point %d", args->pipelineBindPoint) ||
++       !vkr_cmd_push_set_ok(dispatch, "vkCmdPushDescriptorSet", VKR_CMD_DEVICE(args),
++                            vkr_pipeline_layout_from_handle(args->layout), args->set,
++                            &args->descriptorWriteCount, &args->pDescriptorWrites))
++      return;
+    VKR_CMD_CALL(CmdPushDescriptorSet, args, args->pipelineBindPoint, args->layout,
+                 args->set, args->descriptorWriteCount, args->pDescriptorWrites);
+ }
+@@ -1807,9 +1873,15 @@ vkr_dispatch_vkCmdSetRenderingInputAttachmentIndices(
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdBindDescriptorSets2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdBindDescriptorSets2(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdBindDescriptorSets2 *args)
+ {
++   const VkBindDescriptorSetsInfo *info = args->pBindDescriptorSetsInfo;
++   if (!vkr_cmd_sets_ok(dispatch->data, "vkCmdBindDescriptorSets2",
++                        vkr_pipeline_layout_from_handle(info->layout), info->firstSet,
++                        info->descriptorSetCount, info->pDescriptorSets,
++                        info->dynamicOffsetCount))
++      return;
+    VKR_CMD_CALL(CmdBindDescriptorSets2, args, args->pBindDescriptorSetsInfo);
+ }
+ 
+@@ -1829,9 +1901,14 @@ vkr_dispatch_vkCmdPushConstants2(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkCmdPushDescriptorSet2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkCmdPushDescriptorSet2(struct vn_dispatch_context *dispatch,
+                                      struct vn_command_vkCmdPushDescriptorSet2 *args)
+ {
++   VkPushDescriptorSetInfo *info = (VkPushDescriptorSetInfo *)args->pPushDescriptorSetInfo;
++   if (!vkr_cmd_push_set_ok(dispatch, "vkCmdPushDescriptorSet2", VKR_CMD_DEVICE(args),
++                            vkr_pipeline_layout_from_handle(info->layout), info->set,
++                            &info->descriptorWriteCount, &info->pDescriptorWrites))
++      return;
+    VKR_CMD_CALL(CmdPushDescriptorSet2, args, args->pPushDescriptorSetInfo);
+ }
+ 
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 19c0929..4261c13 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "vkr_context.h"
++#include "vkr_descriptor_set.h"
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -794,6 +795,8 @@ void
+ vkr_context_free_object(struct hash_entry *entry)
+ {
+    struct vkr_object *obj = entry->data;
++   /* OmacVM (virgl-venus-descriptor-limits.patch): what vkr keeps with the object */
++   vkr_descriptor_object_release(obj);
+    free(obj);
+ }
+ 
+diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
+index 5ec209f..10c6a1a 100644
+--- a/src/venus/vkr_descriptor_set.c
++++ b/src/venus/vkr_descriptor_set.c
+@@ -6,6 +6,701 @@
+ #include "vkr_descriptor_set.h"
+ 
+ #include "vkr_descriptor_set_gen.h"
++#include "vkr_buffer.h"
++#include "vkr_image.h"
++#include "vkr_physical_device.h"
++#include "vkr_pipeline.h"
++
++/* OmacVM (virgl-venus-descriptor-limits.patch, ADR 0065): descriptor set layouts, pools,
++ * sets and writes stay inside what the driver sizes. KosmicKrisp sizes a layout's binding
++ * array by the largest binding number + 1 (uint32: 0xffffffff wraps to 0), counts dynamic
++ * buffers in a uint8 into a bitset of 64, sizes sets and pools in 32-bit arithmetic, and
++ * writes each descriptor at the binding's offset + element * stride into the set's
++ * memory, with its asserts compiled out: a guest number there is a host address. */
++
++/* the largest binding number + 1, the most descriptors (bytes of inline uniform blocks)
++ * in one layout, pool size or variable count: KosmicKrisp's 64-byte descriptors times this
++ * stay far below 2^32 */
++#define VKR_MAX_BINDINGS (1u << 16)
++#define VKR_MAX_DESCRIPTORS (1u << 24)
++
++struct vkr_set_layout *
++vkr_set_layout_ref(struct vkr_set_layout *layout)
++{
++   if (layout)
++      atomic_fetch_add(&layout->refs, 1);
++   return layout;
++}
++
++void
++vkr_set_layout_unref(struct vkr_set_layout *layout)
++{
++   if (layout && atomic_fetch_sub(&layout->refs, 1) == 1)
++      free(layout);
++}
++
++void
++vkr_descriptor_object_release(struct vkr_object *obj)
++{
++   switch (obj->type) {
++   case VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT:
++      vkr_set_layout_unref(((struct vkr_descriptor_set_layout *)obj)->info);
++      break;
++   case VK_OBJECT_TYPE_DESCRIPTOR_SET:
++      vkr_set_layout_unref(((struct vkr_descriptor_set *)obj)->layout);
++      break;
++   case VK_OBJECT_TYPE_PIPELINE_LAYOUT: {
++      struct vkr_pipeline_layout *layout = (struct vkr_pipeline_layout *)obj;
++      for (uint32_t i = 0; i < layout->set_count; i++)
++         vkr_set_layout_unref(layout->sets[i]);
++      free(layout->sets);
++      break;
++   }
++   default:
++      break;
++   }
++}
++
++/* the core descriptor types and the extension ones the device has */
++static bool
++vkr_descriptor_type_ok(const struct vkr_limits *l, VkDescriptorType type)
++{
++   return (uint32_t)type <= VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT ||
++          (type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK && l->max_inline_uniform_block) ||
++          (type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT && l->mutable_descriptors);
++}
++
++/* a MUTABLE binding's list: core types other than the dynamic buffers, none twice */
++static bool
++vkr_mutable_list_ok(const VkMutableDescriptorTypeListEXT *list, uint32_t *types)
++{
++   *types = 0;
++   for (uint32_t i = 0; i < list->descriptorTypeCount; i++) {
++      const VkDescriptorType t = list->pDescriptorTypes[i];
++      if ((uint32_t)t > VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT ||
++          t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
++          t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC || (*types & (1u << t)))
++         return false;
++      *types |= 1u << t;
++   }
++   return true;
++}
++
++static int
++vkr_set_layout_binding_compare(const void *a, const void *b)
++{
++   const uint32_t x = ((const struct vkr_set_layout_binding *)a)->binding;
++   const uint32_t y = ((const struct vkr_set_layout_binding *)b)->binding;
++   return x < y ? -1 : x > y;
++}
++
++/* the layout's table, or NULL with why (a guest value outside what the driver sizes) */
++static struct vkr_set_layout *
++vkr_set_layout_create(const struct vkr_physical_device *physical_dev,
++                      const VkDescriptorSetLayoutCreateInfo *info,
++                      char *why,
++                      size_t why_size)
++{
++   const struct vkr_limits *l = &physical_dev->limits;
++   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   const VkDescriptorSetLayoutBindingFlagsCreateInfo *flags_info = vkr_find_struct(
++      info->pNext, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
++   const VkMutableDescriptorTypeCreateInfoEXT *mutable_info =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
++   const bool push = info->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
++
++   if (info->bindingCount > VKR_MAX_BINDINGS ||
++       (flags_info && flags_info->bindingCount && flags_info->bindingCount != info->bindingCount)) {
++      snprintf(why, why_size, "%u bindings, %u binding flags", info->bindingCount,
++               flags_info ? flags_info->bindingCount : 0);
++      return NULL;
++   }
++   struct vkr_set_layout *layout =
++      calloc(1, sizeof(*layout) + sizeof(layout->bindings[0]) * info->bindingCount);
++   if (!layout) {
++      snprintf(why, why_size, "out of host memory");
++      return NULL;
++   }
++   atomic_init(&layout->refs, 1);
++   layout->flags = info->flags;
++   layout->binding_count = info->bindingCount;
++
++   uint64_t descriptors = 0, inline_bytes = 0;
++   uint32_t ubo_dynamic = 0, ssbo_dynamic = 0, variable = UINT32_MAX;
++   for (uint32_t i = 0; i < info->bindingCount; i++) {
++      const VkDescriptorSetLayoutBinding *b = &info->pBindings[i];
++      struct vkr_set_layout_binding *t = &layout->bindings[i];
++      t->binding = b->binding;
++      t->type = b->descriptorType;
++      t->count = b->descriptorCount;
++      t->stages = b->stageFlags;
++      t->flags = flags_info && flags_info->bindingCount ? flags_info->pBindingFlags[i] : 0;
++      if (b->binding >= VKR_MAX_BINDINGS || !vkr_descriptor_type_ok(l, b->descriptorType)) {
++         snprintf(why, why_size, "binding %u of type %d", b->binding, b->descriptorType);
++         goto fail;
++      }
++      if (t->flags & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)
++         variable = i;
++      switch (b->descriptorType) {
++      case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
++         if ((b->descriptorCount & 3) || b->descriptorCount > l->max_inline_uniform_block) {
++            snprintf(why, why_size, "binding %u: an inline uniform block of %u bytes (at most %u)",
++                     b->binding, b->descriptorCount, l->max_inline_uniform_block);
++            goto fail;
++         }
++         inline_bytes += b->descriptorCount;
++         continue;
++      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
++         ubo_dynamic += b->descriptorCount;
++         break;
++      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
++         ssbo_dynamic += b->descriptorCount;
++         break;
++      case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
++         /* KosmicKrisp reads the list at the binding's index in pBindings */
++         if (!mutable_info || i >= mutable_info->mutableDescriptorTypeListCount ||
++             !vkr_mutable_list_ok(&mutable_info->pMutableDescriptorTypeLists[i],
++                                  &t->mutable_types)) {
++            snprintf(why, why_size, "binding %u: a mutable binding without a valid type list",
++                     b->binding);
++            goto fail;
++         }
++         break;
++      case VK_DESCRIPTOR_TYPE_SAMPLER:
++      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
++         if (b->pImmutableSamplers) {
++            t->immutable_planes = 1;
++            for (uint32_t s = 0; s < b->descriptorCount; s++) {
++               const struct vkr_sampler *sampler = vkr_sampler_from_handle(b->pImmutableSamplers[s]);
++               if (!sampler) {
++                  snprintf(why, why_size, "binding %u: immutable sampler %u is NULL", b->binding, s);
++                  goto fail;
++               }
++               t->immutable_planes = MAX2(t->immutable_planes, sampler->planes);
++            }
++         }
++         break;
++      default:
++         break;
++      }
++      descriptors += b->descriptorCount;
++   }
++
++   qsort(layout->bindings, layout->binding_count, sizeof(layout->bindings[0]),
++         vkr_set_layout_binding_compare);
++   for (uint32_t i = 1; i < layout->binding_count; i++) {
++      if (layout->bindings[i].binding == layout->bindings[i - 1].binding) {
++         snprintf(why, why_size, "binding %u twice", layout->bindings[i].binding);
++         goto fail;
++      }
++   }
++   /* the variable binding is the largest one, and not of a dynamic buffer */
++   if (variable != UINT32_MAX) {
++      const struct vkr_set_layout_binding *last = &layout->bindings[layout->binding_count - 1];
++      if (info->pBindings[variable].binding != last->binding ||
++          last->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
++          last->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC || push) {
++         snprintf(why, why_size, "a variable count on binding %u of type %d",
++                  info->pBindings[variable].binding, info->pBindings[variable].descriptorType);
++         goto fail;
++      }
++   }
++   const uint32_t ubo_dynamic_max = MAX2(lim->maxDescriptorSetUniformBuffersDynamic,
++                                         l->uab_uniform_buffers_dynamic);
++   const uint32_t ssbo_dynamic_max = MAX2(lim->maxDescriptorSetStorageBuffersDynamic,
++                                          l->uab_storage_buffers_dynamic);
++   if (descriptors > VKR_MAX_DESCRIPTORS || inline_bytes > VKR_MAX_DESCRIPTORS ||
++       ubo_dynamic > ubo_dynamic_max || ssbo_dynamic > ssbo_dynamic_max) {
++      snprintf(why, why_size,
++               "%" PRIu64 " descriptors, %" PRIu64 " inline bytes, %u + %u dynamic buffers "
++               "(at most %u, %u, %u + %u)", descriptors, inline_bytes, ubo_dynamic, ssbo_dynamic,
++               VKR_MAX_DESCRIPTORS, VKR_MAX_DESCRIPTORS, ubo_dynamic_max, ssbo_dynamic_max);
++      goto fail;
++   }
++   /* a push descriptor layout fits KosmicKrisp's push set (maxPushDescriptors of its
++    * largest descriptor) */
++   if (push && (!l->max_push_descriptors || descriptors > l->max_push_descriptors ||
++                ubo_dynamic || ssbo_dynamic || inline_bytes)) {
++      snprintf(why, why_size, "a push descriptor layout of %" PRIu64 " descriptors (at most %u), "
++               "%u dynamic, %" PRIu64 " inline bytes", descriptors, l->max_push_descriptors,
++               ubo_dynamic + ssbo_dynamic, inline_bytes);
++      goto fail;
++   }
++   layout->dynamic_count = ubo_dynamic + ssbo_dynamic;
++   return layout;
++
++fail:
++   free(layout);
++   return NULL;
++}
++
++static const struct vkr_set_layout_binding *
++vkr_set_layout_find(const struct vkr_set_layout *layout, uint32_t binding, uint32_t *index)
++{
++   uint32_t lo = 0, hi = layout->binding_count;
++   while (lo < hi) {
++      const uint32_t mid = lo + (hi - lo) / 2;
++      if (layout->bindings[mid].binding < binding) {
++         lo = mid + 1;
++      } else if (layout->bindings[mid].binding > binding) {
++         hi = mid;
++      } else {
++         *index = mid;
++         return &layout->bindings[mid];
++      }
++   }
++   return NULL;
++}
++
++/* a binding's descriptors in a set: the variable binding has the set's count */
++static uint32_t
++vkr_set_binding_count(const struct vkr_set_layout_binding *b, uint32_t variable_count)
++{
++   return (b->flags & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) ? variable_count
++                                                                            : b->count;
++}
++
++/* the consecutive binding update (VUID-VkWriteDescriptorSet-dstArrayElement-00321 and
++ * descriptorCount-00317, -00318, -10776, -10777): from element `first` of binding `index`,
++ * the descriptors fill the rest of that binding and go on into the bindings after it.
++ * Bindings with no descriptors, and numbers the layout lacks, are skipped; every other
++ * binding passed has the first one's type, stages, flags and immutable samplers or not.
++ * The walk gives one part per binding the update lands in: KosmicKrisp writes a whole
++ * write at its first binding's offset + element * that binding's stride and MoltenVK with
++ * that binding's layout, but strides and layouts differ between bindings of one type
++ * (immutable YCbCr samplers of 2 or 3 planes, a mutable binding sized by its largest
++ * type), so each part reaches the driver as a write of its own. Inline uniform blocks
++ * (bytes, a multiple of 4) and empty updates stay within the one binding. */
++void
++vkr_set_walk_init(struct vkr_set_walk *walk,
++                  const struct vkr_set_layout *layout,
++                  uint32_t variable_count,
++                  uint32_t index,
++                  uint32_t first,
++                  uint32_t count)
++{
++   *walk = (struct vkr_set_walk){ .layout = layout, .variable_count = variable_count,
++                                  .first_index = index, .index = index, .element = first,
++                                  .left = count };
++}
++
++bool
++vkr_set_walk_next(struct vkr_set_walk *walk, struct vkr_set_part *part)
++{
++   const struct vkr_set_layout *layout = walk->layout;
++   const struct vkr_set_layout_binding *b0 = &layout->bindings[walk->first_index];
++   if (walk->failed || (!walk->left && walk->parts))
++      return false;
++   if (b0->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK || !walk->left) {
++      const uint64_t room = vkr_set_binding_count(b0, walk->variable_count);
++      const bool ok = b0->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK
++                         ? !(walk->element & 3) && !(walk->left & 3) &&
++                              vkr_range_ok(walk->element, walk->left, room)
++                         : walk->element <= room;
++      if (!ok) {
++         walk->failed = true;
++         return false;
++      }
++      *part = (struct vkr_set_part){ walk->first_index, walk->element, walk->left, 0 };
++      walk->done = walk->left;
++      walk->left = 0;
++      walk->parts = 1;
++      return true;
++   }
++   for (; walk->index < layout->binding_count; walk->index++) {
++      const struct vkr_set_layout_binding *b = &layout->bindings[walk->index];
++      if (walk->index != walk->first_index) {
++         if (!b->count)
++            continue;
++         if (b->type != b0->type || b->stages != b0->stages || b->flags != b0->flags ||
++             !b->immutable_planes != !b0->immutable_planes)
++            break;
++      }
++      const uint32_t room = vkr_set_binding_count(b, walk->variable_count);
++      if (walk->element >= room) {
++         walk->element -= room;
++         continue;
++      }
++      const uint32_t n = MIN2(room - walk->element, walk->left);
++      *part = (struct vkr_set_part){ walk->index, walk->element, n, walk->done };
++      walk->done += n;
++      walk->left -= n;
++      walk->element = 0;
++      walk->index++;
++      walk->parts++;
++      return true;
++   }
++   /* past the layout's last binding, or a binding that differs */
++   walk->failed = true;
++   return false;
++}
++
++/* the descriptor type a write or copy may name for a binding */
++static bool
++vkr_set_type_ok(const struct vkr_set_layout_binding *b, VkDescriptorType type)
++{
++   return type == b->type ||
++          (b->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT && (uint32_t)type <= 31 &&
++           (b->mutable_types & (1u << type)));
++}
++
++/* a write's layout (a push layout, else its set's) and its variable count */
++static const struct vkr_set_layout *
++vkr_write_layout(const struct vkr_set_layout *push,
++                 const VkWriteDescriptorSet *w,
++                 uint32_t *variable_count)
++{
++   const struct vkr_descriptor_set *set =
++      push ? NULL : vkr_descriptor_set_from_handle(w->dstSet);
++   *variable_count = set ? set->variable_count : 0;
++   return push ? push : set ? set->layout : NULL;
++}
++
++/* one part of a write: its descriptors p->offset .. + p->count, in binding b */
++static bool
++vkr_write_part_ok(const struct vkr_device *dev,
++                  const struct vkr_set_layout_binding *b,
++                  const VkWriteDescriptorSet *w,
++                  const struct vkr_set_part *p,
++                  char *why,
++                  size_t why_size)
++{
++   const VkPhysicalDeviceLimits *lim = &dev->physical_device->properties.limits;
++   const bool null_ok = dev->null_descriptor;
++   if (!vkr_set_type_ok(b, w->descriptorType)) {
++      snprintf(why, why_size, "binding %u: type %d (the binding's: %d)", b->binding,
++               w->descriptorType, b->type);
++      return false;
++   }
++   switch (w->descriptorType) {
++   case VK_DESCRIPTOR_TYPE_SAMPLER:
++   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
++   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
++   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
++   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
++      for (uint32_t i = 0; i < p->count; i++) {
++         const VkDescriptorImageInfo *ii = &w->pImageInfo[p->offset + i];
++         const uint32_t e = p->element + i;
++         const bool sampler_type = w->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER ||
++                                   w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
++         const struct vkr_sampler *sampler = vkr_sampler_from_handle(ii->sampler);
++         /* KosmicKrisp dereferences the sampler; YCbCr samplers only as immutable ones */
++         if (sampler_type && !b->immutable_planes && (!sampler || sampler->planes)) {
++            snprintf(why, why_size, "binding %u element %u: %s sampler", b->binding, e,
++                     sampler ? "a YCbCr" : "no");
++            return false;
++         }
++         if (w->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER)
++            continue;
++         const struct vkr_image_view *view = vkr_image_view_from_handle(ii->imageView);
++         /* a multi-planar view takes a descriptor per plane: only in a binding sized for it */
++         const uint32_t room = w->descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
++                                  ? b->immutable_planes
++                                  : 1;
++         if (view ? view->planes > MAX2(room, 1)
++                  : !null_ok || w->descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
++            snprintf(why, why_size, "binding %u element %u: %s", b->binding, e,
++                     view ? "a multi-planar view without immutable YCbCr samplers"
++                          : "no image view");
++            return false;
++         }
++      }
++      break;
++   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
++   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
++      for (uint32_t i = 0; i < p->count; i++) {
++         if (!w->pTexelBufferView[p->offset + i] && !null_ok) {
++            snprintf(why, why_size, "binding %u element %u: no texel buffer view (the device's "
++                     "nullDescriptor is off)", b->binding, p->element + i);
++            return false;
++         }
++      }
++      break;
++   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
++   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
++   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
++   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
++      const bool uniform = w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
++                           w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
++      const uint64_t max_range = uniform ? lim->maxUniformBufferRange : lim->maxStorageBufferRange;
++      for (uint32_t i = 0; i < p->count; i++) {
++         const VkDescriptorBufferInfo *bi = &w->pBufferInfo[p->offset + i];
++         const struct vkr_buffer *buf = vkr_buffer_from_handle(bi->buffer);
++         const uint32_t e = p->element + i;
++         if (!buf) {
++            /* dynamic ones too: KosmicKrisp gives a NULL buffer an empty range */
++            if (null_ok && !bi->offset && bi->range == VK_WHOLE_SIZE)
++               continue;
++            if (!null_ok)
++               snprintf(why, why_size, "binding %u element %u: no buffer (the device's "
++                        "nullDescriptor is off)", b->binding, e);
++            else
++               snprintf(why, why_size, "binding %u element %u: no buffer at offset %" PRIu64
++                        ", range %" PRIu64 " (a null descriptor needs 0 and the whole size)",
++                        b->binding, e, bi->offset, bi->range);
++            return false;
++         }
++         const uint64_t range =
++            bi->range == VK_WHOLE_SIZE ? (bi->offset < buf->size ? buf->size - bi->offset : 0)
++                                       : bi->range;
++         if (!vkr_whole_range_ok(bi->offset, bi->range, buf->size) || !range ||
++             range > max_range) {
++            char what[40];
++            if (bi->range == VK_WHOLE_SIZE)
++               snprintf(what, sizeof(what), "the whole size");
++            else
++               snprintf(what, sizeof(what), "%" PRIu64 " bytes", bi->range);
++            snprintf(why, why_size, "binding %u element %u: %s at %" PRIu64 " of %" PRIu64
++                     " (at most %" PRIu64 ")", b->binding, e, what, bi->offset, buf->size,
++                     max_range);
++            return false;
++         }
++      }
++      break;
++   }
++   case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK: {
++      const VkWriteDescriptorSetInlineUniformBlock *data = vkr_find_struct(
++         w->pNext, VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK);
++      if (!data || data->dataSize != w->descriptorCount) {
++         snprintf(why, why_size, "binding %u: %u inline bytes, %u in the write", b->binding,
++                  data ? data->dataSize : 0, w->descriptorCount);
++         return false;
++      }
++      break;
++   }
++   default:
++      snprintf(why, why_size, "binding %u: type %d", b->binding, w->descriptorType);
++      return false;
++   }
++   return true;
++}
++
++/* a write's parts (the bindings it lands in), or 0 when it does not hold; *as_is: one
++ * part, where the write names it */
++static uint32_t
++vkr_descriptor_write_parts(const struct vkr_device *dev,
++                           const struct vkr_set_layout *push,
++                           const VkWriteDescriptorSet *w,
++                           bool *as_is,
++                           char *why,
++                           size_t why_size)
++{
++   uint32_t variable_count, index;
++   const struct vkr_set_layout *layout = vkr_write_layout(push, w, &variable_count);
++   const struct vkr_set_layout_binding *b =
++      layout ? vkr_set_layout_find(layout, w->dstBinding, &index) : NULL;
++   if (!b || !vkr_set_type_ok(b, w->descriptorType)) {
++      snprintf(why, why_size, "binding %u: %s", w->dstBinding,
++               b ? "another descriptor type" : "not in the set's layout");
++      return 0;
++   }
++   const bool image = w->descriptorType <= VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
++                      w->descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
++   const bool texel = w->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
++                      w->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
++   const bool buffer = w->descriptorType >= VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
++                       w->descriptorType <= VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
++   if (w->descriptorCount && ((image && !w->pImageInfo) || (texel && !w->pTexelBufferView) ||
++                              (buffer && !w->pBufferInfo))) {
++      snprintf(why, why_size, "binding %u: no %s", w->dstBinding,
++               image ? "image infos" : texel ? "texel buffer views" : "buffer infos");
++      return 0;
++   }
++   struct vkr_set_walk walk;
++   struct vkr_set_part p = { 0 };
++   vkr_set_walk_init(&walk, layout, variable_count, index, w->dstArrayElement,
++                     w->descriptorCount);
++   while (vkr_set_walk_next(&walk, &p)) {
++      if (!vkr_write_part_ok(dev, &layout->bindings[p.index], w, &p, why, why_size))
++         return 0;
++   }
++   if (walk.failed) {
++      snprintf(why, why_size, "binding %u, elements %u + %u, type %d (the binding: %d of %u)",
++               w->dstBinding, w->dstArrayElement, w->descriptorCount, w->descriptorType,
++               (int)b->type, vkr_set_binding_count(b, variable_count));
++      return 0;
++   }
++   *as_is = walk.parts == 1 && p.index == index && p.element == w->dstArrayElement;
++   return walk.parts;
++}
++
++bool
++vkr_descriptor_writes_ok(struct vn_dispatch_context *dispatch,
++                         const char *call,
++                         const struct vkr_device *dev,
++                         const struct vkr_set_layout *push,
++                         uint32_t *count,
++                         const VkWriteDescriptorSet **writes)
++{
++   const VkWriteDescriptorSet *in = *writes;
++   char why[192];
++   uint64_t parts = 0;
++   bool all_as_is = true;
++   for (uint32_t i = 0; i < *count; i++) {
++      bool as_is = false;
++      const uint32_t n = vkr_descriptor_write_parts(dev, push, &in[i], &as_is, why, sizeof(why));
++      if (!n) {
++         vkr_context_refuse(dispatch->data, true, call, "write %u: %s", i, why);
++         return false;
++      }
++      parts += n;
++      all_as_is &= as_is;
++   }
++   if (all_as_is)
++      return true;
++
++   /* the driver gets one write per binding (handles are replaced in these afterwards: the
++    * parts share the guest's info arrays, each element in one part) */
++   VkWriteDescriptorSet *out = vkr_cs_decoder_alloc_temp_array(
++      (struct vkr_cs_decoder *)dispatch->decoder, sizeof(*out), parts);
++   if (!out)
++      return false;
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < *count; i++) {
++      const VkWriteDescriptorSet *w = &in[i];
++      uint32_t variable_count, index;
++      const struct vkr_set_layout *layout = vkr_write_layout(push, w, &variable_count);
++      vkr_set_layout_find(layout, w->dstBinding, &index);
++      struct vkr_set_walk walk;
++      struct vkr_set_part p;
++      vkr_set_walk_init(&walk, layout, variable_count, index, w->dstArrayElement,
++                        w->descriptorCount);
++      const uint32_t start = n;
++      while (vkr_set_walk_next(&walk, &p)) {
++         VkWriteDescriptorSet *o = &out[n++];
++         *o = *w;
++         o->dstBinding = layout->bindings[p.index].binding;
++         o->dstArrayElement = p.element;
++         o->descriptorCount = p.count;
++         if (w->pImageInfo)
++            o->pImageInfo = w->pImageInfo + p.offset;
++         if (w->pBufferInfo)
++            o->pBufferInfo = w->pBufferInfo + p.offset;
++         if (w->pTexelBufferView)
++            o->pTexelBufferView = w->pTexelBufferView + p.offset;
++      }
++      /* a split write's chain is for types that never split (inline uniform blocks) */
++      for (uint32_t j = start; n - start > 1 && j < n; j++)
++         out[j].pNext = NULL;
++   }
++   *writes = out;
++   *count = n;
++   return true;
++}
++
++/* a copy's types: the same, or a mutable binding on either side */
++static bool
++vkr_copy_types_ok(const struct vkr_set_layout_binding *s, const struct vkr_set_layout_binding *d)
++{
++   return s->type == d->type || s->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT ||
++          d->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT;
++}
++
++/* a copy's segments: each in one binding on either side; 0 when it does not hold. out:
++ * where to put them (NULL to count); *as_is: one segment, where the copy names it */
++static uint32_t
++vkr_descriptor_copy_segments(const VkCopyDescriptorSet *c,
++                             VkCopyDescriptorSet *out,
++                             bool *as_is)
++{
++   const struct vkr_descriptor_set *src = vkr_descriptor_set_from_handle(c->srcSet);
++   const struct vkr_descriptor_set *dst = vkr_descriptor_set_from_handle(c->dstSet);
++   uint32_t si, di;
++   const struct vkr_set_layout_binding *sb =
++      src && src->layout ? vkr_set_layout_find(src->layout, c->srcBinding, &si) : NULL;
++   const struct vkr_set_layout_binding *db =
++      dst && dst->layout ? vkr_set_layout_find(dst->layout, c->dstBinding, &di) : NULL;
++   if (!sb || !db)
++      return 0;
++   struct vkr_set_walk sw, dw;
++   struct vkr_set_part sp, dp;
++   vkr_set_walk_init(&sw, src->layout, src->variable_count, si, c->srcArrayElement,
++                     c->descriptorCount);
++   vkr_set_walk_init(&dw, dst->layout, dst->variable_count, di, c->dstArrayElement,
++                     c->descriptorCount);
++   if (!c->descriptorCount) {
++      if (!vkr_set_walk_next(&sw, &sp) || !vkr_set_walk_next(&dw, &dp) ||
++          !vkr_copy_types_ok(sb, db))
++         return 0;
++      if (out)
++         out[0] = *c;
++      *as_is = true;
++      return 1;
++   }
++   /* both sides place the same count, a part of at least one descriptor at a time */
++   uint32_t n = 0, s_left = 0, d_left = 0;
++   do {
++      if (!s_left) {
++         if (!vkr_set_walk_next(&sw, &sp))
++            return 0;
++         s_left = sp.count;
++      }
++      if (!d_left) {
++         if (!vkr_set_walk_next(&dw, &dp))
++            return 0;
++         d_left = dp.count;
++      }
++      const struct vkr_set_layout_binding *s = &src->layout->bindings[sp.index];
++      const struct vkr_set_layout_binding *d = &dst->layout->bindings[dp.index];
++      if (!vkr_copy_types_ok(s, d))
++         return 0;
++      const uint32_t m = MIN2(s_left, d_left);
++      if (out) {
++         out[n] = *c;
++         out[n].srcBinding = s->binding;
++         out[n].srcArrayElement = sp.element + (sp.count - s_left);
++         out[n].dstBinding = d->binding;
++         out[n].dstArrayElement = dp.element + (dp.count - d_left);
++         out[n].descriptorCount = m;
++      }
++      n++;
++      s_left -= m;
++      d_left -= m;
++   } while (s_left || d_left || sw.left || dw.left);
++   *as_is = n == 1 && sp.index == si && sp.element == c->srcArrayElement && dp.index == di &&
++            dp.element == c->dstArrayElement;
++   return n;
++}
++
++bool
++vkr_descriptor_copies_ok(struct vn_dispatch_context *dispatch,
++                         const char *call,
++                         uint32_t *count,
++                         const VkCopyDescriptorSet **copies)
++{
++   const VkCopyDescriptorSet *in = *copies;
++   uint64_t segments = 0;
++   bool all_as_is = true;
++   for (uint32_t i = 0; i < *count; i++) {
++      const VkCopyDescriptorSet *c = &in[i];
++      bool as_is = false;
++      const uint32_t n = vkr_descriptor_copy_segments(c, NULL, &as_is);
++      if (!n) {
++         vkr_context_refuse(dispatch->data, true, call,
++                            "copy %u: binding %u elements %u + %u to binding %u elements %u + %u",
++                            i, c->srcBinding, c->srcArrayElement, c->descriptorCount,
++                            c->dstBinding, c->dstArrayElement, c->descriptorCount);
++         return false;
++      }
++      segments += n;
++      all_as_is &= as_is;
++   }
++   if (all_as_is)
++      return true;
++
++   VkCopyDescriptorSet *out = vkr_cs_decoder_alloc_temp_array(
++      (struct vkr_cs_decoder *)dispatch->decoder, sizeof(*out), segments);
++   if (!out)
++      return false;
++   uint32_t n = 0;
++   for (uint32_t i = 0; i < *count; i++) {
++      bool as_is;
++      n += vkr_descriptor_copy_segments(&in[i], &out[n], &as_is);
++   }
++   *copies = out;
++   *count = n;
++   return true;
++}
+ 
+ static void
+ vkr_dispatch_vkGetDescriptorSetLayoutSupport(
+@@ -24,7 +719,23 @@ vkr_dispatch_vkCreateDescriptorSetLayout(
+    struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCreateDescriptorSetLayout *args)
+ {
+-   vkr_descriptor_set_layout_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-descriptor-limits.patch): the table is made from the guest's
++    * create info before the handles in it are replaced */
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   char why[192];
++   struct vkr_set_layout *info =
++      vkr_set_layout_create(dev->physical_device, args->pCreateInfo, why, sizeof(why));
++   if (!info) {
++      vkr_context_refuse(dispatch->data, true, "vkCreateDescriptorSetLayout", "%s", why);
++      return;
++   }
++   struct vkr_descriptor_set_layout *layout =
++      vkr_descriptor_set_layout_create_and_add(dispatch->data, args);
++   if (!layout) {
++      vkr_set_layout_unref(info);
++      return;
++   }
++   layout->info = info;
+ }
+ 
+ static void
+@@ -39,6 +750,30 @@ static void
+ vkr_dispatch_vkCreateDescriptorPool(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCreateDescriptorPool *args)
+ {
++   /* OmacVM (virgl-venus-descriptor-limits.patch): KosmicKrisp sizes the pool's memory as
++    * stride * count per pool size in 32 bits, and has no case for a type it lacks */
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   const struct vkr_limits *l = &dev->physical_device->limits;
++   const VkDescriptorPoolCreateInfo *info = args->pCreateInfo;
++   const VkMutableDescriptorTypeCreateInfoEXT *mutable_info =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
++   bool ok = info->maxSets <= VKR_MAX_DESCRIPTORS;
++   for (uint32_t i = 0; ok && i < info->poolSizeCount; i++) {
++      const VkDescriptorPoolSize *size = &info->pPoolSizes[i];
++      uint32_t types;
++      ok = vkr_descriptor_type_ok(l, size->type) && size->descriptorCount &&
++           size->descriptorCount <= VKR_MAX_DESCRIPTORS &&
++           (size->type != VK_DESCRIPTOR_TYPE_MUTABLE_EXT || !mutable_info ||
++            i >= mutable_info->mutableDescriptorTypeListCount ||
++            vkr_mutable_list_ok(&mutable_info->pMutableDescriptorTypeLists[i], &types));
++   }
++   if (!ok) {
++      vkr_context_refuse(dispatch->data, true, "vkCreateDescriptorPool",
++                         "%u sets, a pool size of a type the device lacks or more than %u "
++                         "descriptors", info->maxSets, VKR_MAX_DESCRIPTORS);
++      return;
++   }
++
+    struct vkr_descriptor_pool *pool =
+       vkr_descriptor_pool_create_and_add(dispatch->data, args);
+    if (!pool)
+@@ -103,13 +838,63 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
++   /* OmacVM (virgl-venus-descriptor-limits.patch): the sets' layouts and variable counts,
++    * read before the handles are replaced; KosmicKrisp reads a variable count per set and
++    * adds stride * count to the set's size in 32 bits */
++   const VkDescriptorSetAllocateInfo *info = args->pAllocateInfo;
++   const VkDescriptorSetVariableDescriptorCountAllocateInfo *variable = vkr_find_struct(
++      info->pNext, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO);
++   if (!vkr_context_check(ctx,
++                          !variable || !variable->descriptorSetCount ||
++                             variable->descriptorSetCount == info->descriptorSetCount,
++                          "vkAllocateDescriptorSets", "%u variable counts for %u sets",
++                          variable ? variable->descriptorSetCount : 0, info->descriptorSetCount))
++      return;
++   struct vkr_set_layout **layouts = calloc(info->descriptorSetCount, sizeof(*layouts) + 4);
++   uint32_t *counts = (uint32_t *)(layouts + info->descriptorSetCount);
++   if (!layouts && info->descriptorSetCount) {
++      args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++      return;
++   }
++   for (uint32_t i = 0; i < info->descriptorSetCount; i++) {
++      const struct vkr_descriptor_set_layout *layout =
++         vkr_descriptor_set_layout_from_handle(info->pSetLayouts[i]);
++      struct vkr_set_layout *t = layout ? layout->info : NULL;
++      const struct vkr_set_layout_binding *last =
++         t && t->binding_count ? &t->bindings[t->binding_count - 1] : NULL;
++      const bool has_variable =
++         last && (last->flags & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT);
++      counts[i] = variable && variable->descriptorSetCount && has_variable
++                     ? variable->pDescriptorCounts[i]
++                     : 0;
++      if (!vkr_context_check(ctx,
++                             t && !(t->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR) &&
++                                (!has_variable || counts[i] <= last->count),
++                             "vkAllocateDescriptorSets", "set %u: %s", i,
++                             !t ? "no layout"
++                             : (t->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR)
++                                ? "a push descriptor layout"
++                                : "a variable count past the binding's")) {
++         free(layouts);
++         return;
++      }
++      layouts[i] = t;
++   }
++
+    result = vkr_descriptor_set_create_array(ctx, args, &arr);
+    if (result != VK_SUCCESS) {
++      free(layouts);
+       if (!(pool->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT))
+          vkr_log("Warning: vkAllocateDescriptorSets failed(%u)", result);
+       return;
+    }
+ 
++   for (uint32_t i = 0; i < arr.count; i++) {
++      struct vkr_descriptor_set *set = arr.objects[i];
++      set->layout = vkr_set_layout_ref(layouts[i]);
++      set->variable_count = counts[i];
++   }
++   free(layouts);
+    vkr_descriptor_set_add_array(ctx, dev, pool, &arr);
+ }
+ 
+@@ -133,12 +918,20 @@ vkr_dispatch_vkFreeDescriptorSets(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkUpdateDescriptorSets(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkUpdateDescriptorSets(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkUpdateDescriptorSets *args)
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   /* OmacVM (virgl-venus-descriptor-limits.patch): checked, and split where they go on
++    * into the next binding */
++   if (!vkr_descriptor_writes_ok(dispatch, "vkUpdateDescriptorSets", dev, NULL,
++                                 &args->descriptorWriteCount, &args->pDescriptorWrites) ||
++       !vkr_descriptor_copies_ok(dispatch, "vkUpdateDescriptorSets", &args->descriptorCopyCount,
++                                 &args->pDescriptorCopies))
++      return;
++
+    vn_replace_vkUpdateDescriptorSets_args_handle(args);
+    vk->UpdateDescriptorSets(args->device, args->descriptorWriteCount,
+                             args->pDescriptorWrites, args->descriptorCopyCount,
+diff --git a/src/venus/vkr_descriptor_set.h b/src/venus/vkr_descriptor_set.h
+index 1a31cfa..9186001 100644
+--- a/src/venus/vkr_descriptor_set.h
++++ b/src/venus/vkr_descriptor_set.h
+@@ -10,8 +10,36 @@
+ 
+ #include "vkr_context.h"
+ 
++/* OmacVM (virgl-venus-descriptor-limits.patch, ADR 0065): what a set layout was made
++ * with, kept for the descriptor writes, binds and pushes that name it. Shared by the
++ * layout, its sets and the pipeline layouts that use it (a layout may be destroyed while
++ * they live), freed with the last reference. Bindings are sorted by number. */
++struct vkr_set_layout_binding {
++   uint32_t binding;
++   VkDescriptorType type;
++   /* descriptors, or bytes of an inline uniform block */
++   uint32_t count;
++   VkDescriptorBindingFlags flags;
++   VkShaderStageFlags stages;
++   /* immutable samplers: 0 none, else the most planes their YCbCr conversions have (1
++    * without one) */
++   uint8_t immutable_planes;
++   /* a MUTABLE binding: the types it may hold, a bit per VkDescriptorType 0..10 */
++   uint32_t mutable_types;
++};
++
++struct vkr_set_layout {
++   atomic_uint refs;
++   VkDescriptorSetLayoutCreateFlags flags;
++   /* dynamic uniform and storage buffers */
++   uint32_t dynamic_count;
++   uint32_t binding_count;
++   struct vkr_set_layout_binding bindings[];
++};
++
+ struct vkr_descriptor_set_layout {
+    struct vkr_object base;
++   struct vkr_set_layout *info;
+ };
+ VKR_DEFINE_OBJECT_CAST(descriptor_set_layout,
+                        VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT,
+@@ -30,6 +58,10 @@ struct vkr_descriptor_set {
+    struct vkr_object base;
+ 
+    struct vkr_device *device;
++   /* OmacVM (virgl-venus-descriptor-limits.patch): its layout, and the count of its
++    * variable-count binding as allocated */
++   struct vkr_set_layout *layout;
++   uint32_t variable_count;
+ };
+ VKR_DEFINE_OBJECT_CAST(descriptor_set, VK_OBJECT_TYPE_DESCRIPTOR_SET, VkDescriptorSet)
+ 
+@@ -52,6 +84,74 @@ vkr_context_init_descriptor_set_dispatch(struct vkr_context *ctx);
+ void
+ vkr_context_init_descriptor_update_template_dispatch(struct vkr_context *ctx);
+ 
++/* OmacVM (virgl-venus-descriptor-limits.patch) */
++struct vkr_set_layout *
++vkr_set_layout_ref(struct vkr_set_layout *layout);
++
++void
++vkr_set_layout_unref(struct vkr_set_layout *layout);
++
++/* what a descriptor set layout, a set or a pipeline layout keeps besides itself, released
++ * with the object (vkr_context_free_object) */
++void
++vkr_descriptor_object_release(struct vkr_object *obj);
++
++/* one binding's part of a write, or of a copy's side: the binding's index in the layout's
++ * table, the part's first element there, its count and its first descriptor in the write */
++struct vkr_set_part {
++   uint32_t index;
++   uint32_t element;
++   uint32_t count;
++   uint32_t offset;
++};
++
++/* a write's or copy side's walk over the consecutive bindings it updates
++ * (vkr_descriptor_set.c) */
++struct vkr_set_walk {
++   const struct vkr_set_layout *layout;
++   uint32_t variable_count;
++   uint32_t first_index;
++   uint32_t index;
++   uint32_t element;
++   uint32_t left;
++   uint32_t done;
++   uint32_t parts;
++   bool failed;
++};
++
++void
++vkr_set_walk_init(struct vkr_set_walk *walk,
++                  const struct vkr_set_layout *layout,
++                  uint32_t variable_count,
++                  uint32_t index,
++                  uint32_t first,
++                  uint32_t count);
++
++/* the next part, false at the end: then walk->failed says whether the update did not fit
++ * (past the layout's last binding, or into a binding of another kind) */
++bool
++vkr_set_walk_next(struct vkr_set_walk *walk, struct vkr_set_part *part);
++
++/* the writes a guest names hold in their sets (push: in the push set layout instead):
++ * bindings, types, elements, handles and ranges; false after a refusal (the context ends).
++ * A write that goes on into the next binding is split there: *writes and *count then name
++ * a copy in the decoder's temp pool, one write per binding. Handles are replaced after. */
++bool
++vkr_descriptor_writes_ok(struct vn_dispatch_context *dispatch,
++                         const char *call,
++                         const struct vkr_device *dev,
++                         const struct vkr_set_layout *push,
++                         uint32_t *count,
++                         const VkWriteDescriptorSet **writes);
++
++/* the same for copies: both sides inside their sets, split where either side goes on into
++ * the next binding */
++bool
++vkr_descriptor_copies_ok(struct vn_dispatch_context *dispatch,
++                         const char *call,
++                         uint32_t *count,
++                         const VkCopyDescriptorSet **copies);
++
+ static inline void
+ vkr_descriptor_pool_release(struct vkr_context *ctx, struct vkr_descriptor_pool *pool)
+ {
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 9a9d6b1..8fbb97b 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -687,7 +687,14 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
+-   vkr_image_view_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-descriptor-limits.patch) */
++   const VkImageViewCreateInfo *info = args->pCreateInfo;
++   const uint32_t planes = (info->subresourceRange.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT)
++                              ? vkr_format_plane_count(info->format)
++                              : 1;
++   struct vkr_image_view *view = vkr_image_view_create_and_add(dispatch->data, args);
++   if (view)
++      view->planes = planes ? planes : 1;
+ }
+ 
+ static void
+@@ -742,7 +749,15 @@ vkr_dispatch_vkCreateSampler(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
+-   vkr_sampler_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-descriptor-limits.patch) */
++   const VkSamplerYcbcrConversionInfo *ycbcr = vkr_find_struct(
++      args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO);
++   const struct vkr_sampler_ycbcr_conversion *conversion =
++      ycbcr ? vkr_sampler_ycbcr_conversion_from_handle(ycbcr->conversion) : NULL;
++   const uint8_t planes = conversion ? conversion->planes : 0;
++   struct vkr_sampler *sampler = vkr_sampler_create_and_add(dispatch->data, args);
++   if (sampler)
++      sampler->planes = planes;
+ }
+ 
+ static void
+@@ -757,7 +772,12 @@ vkr_dispatch_vkCreateSamplerYcbcrConversion(
+    struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCreateSamplerYcbcrConversion *args)
+ {
+-   vkr_sampler_ycbcr_conversion_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-descriptor-limits.patch) */
++   const uint32_t planes = vkr_format_plane_count(args->pCreateInfo->format);
++   struct vkr_sampler_ycbcr_conversion *conversion =
++      vkr_sampler_ycbcr_conversion_create_and_add(dispatch->data, args);
++   if (conversion)
++      conversion->planes = planes ? planes : 1;
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+index ece6c65..9d19389 100644
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -33,16 +33,24 @@ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+ 
+ struct vkr_image_view {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-descriptor-limits.patch): the planes a descriptor of it takes in
++    * KosmicKrisp (a multi-planar color view: its format's planes) */
++   uint8_t planes;
+ };
+ VKR_DEFINE_OBJECT_CAST(image_view, VK_OBJECT_TYPE_IMAGE_VIEW, VkImageView)
+ 
+ struct vkr_sampler {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-descriptor-limits.patch): its YCbCr conversion's planes, 0
++    * without one */
++   uint8_t planes;
+ };
+ VKR_DEFINE_OBJECT_CAST(sampler, VK_OBJECT_TYPE_SAMPLER, VkSampler)
+ 
+ struct vkr_sampler_ycbcr_conversion {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-descriptor-limits.patch): its format's planes */
++   uint8_t planes;
+ };
+ VKR_DEFINE_OBJECT_CAST(sampler_ycbcr_conversion,
+                        VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION,
+diff --git a/src/venus/vkr_limits.h b/src/venus/vkr_limits.h
+index acb0929..fc22f71 100644
+--- a/src/venus/vkr_limits.h
++++ b/src/venus/vkr_limits.h
+@@ -20,6 +20,7 @@ struct vkr_limits {
+    uint32_t max_multiview_views;      /* the driver's maxMultiviewViewCount */
+    uint32_t max_push_descriptors;     /* 0 without VK_KHR_push_descriptor */
+    uint32_t max_inline_uniform_block; /* 0 without inline uniform blocks */
++   bool mutable_descriptors;          /* VK_EXT_mutable_descriptor_type */
+    uint32_t max_xfb_buffers, max_xfb_streams;
+    VkSampleCountFlags sample_location_counts;
+    VkExtent2D max_sample_location_grid;
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index 6253584..fd74243 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -477,6 +477,10 @@ vkr_physical_device_init_limits(struct vkr_physical_device *physical_dev)
+       vkr_physical_device_lists(physical_dev, VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
+    l->advanced_blend =
+       vkr_physical_device_lists(physical_dev, VK_EXT_BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
++   /* OmacVM (virgl-venus-descriptor-limits.patch) */
++   l->mutable_descriptors =
++      vkr_physical_device_lists(physical_dev, VK_EXT_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME) ||
++      vkr_physical_device_lists(physical_dev, VK_VALVE_MUTABLE_DESCRIPTOR_TYPE_EXTENSION_NAME);
+    l->ray_tracing =
+       vkr_physical_device_lists(physical_dev, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+    l->primitives_generated_query =
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 6e59136..00d30cb 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -6,6 +6,8 @@
+ #include "vkr_pipeline.h"
+ 
+ #include "vkr_pipeline_gen.h"
++#include "vkr_descriptor_set.h"
++#include "vkr_physical_device.h"
+ 
+ static void
+ vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
+@@ -55,7 +57,84 @@ static void
+ vkr_dispatch_vkCreatePipelineLayout(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkCreatePipelineLayout *args)
+ {
+-   vkr_pipeline_layout_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-descriptor-limits.patch): Mesa's vk_pipeline_layout copies the
++    * set layouts into an array of 32 and the push constant ranges into one of 14;
++    * KosmicKrisp binds dynamic buffers into 64 slots from a uint8 offset */
++   struct vkr_context *ctx = dispatch->data;
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   const VkPhysicalDeviceLimits *lim = &dev->physical_device->properties.limits;
++   const struct vkr_limits *l = &dev->physical_device->limits;
++   const VkPipelineLayoutCreateInfo *info = args->pCreateInfo;
++   if (!vkr_context_check(ctx, info->setLayoutCount <= lim->maxBoundDescriptorSets,
++                          "vkCreatePipelineLayout", "%u set layouts (at most %u)",
++                          info->setLayoutCount, lim->maxBoundDescriptorSets))
++      return;
++   /* push constant ranges: inside the limit, of the stages the device has (or
++    * VK_SHADER_STAGE_ALL), none twice: at most one range per stage */
++   VkShaderStageFlags stages = VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT;
++   if (l->ray_tracing)
++      stages |= VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
++                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR | VK_SHADER_STAGE_MISS_BIT_KHR |
++                VK_SHADER_STAGE_INTERSECTION_BIT_KHR | VK_SHADER_STAGE_CALLABLE_BIT_KHR;
++   VkShaderStageFlags seen = 0;
++   for (uint32_t i = 0; i < info->pushConstantRangeCount; i++) {
++      const VkPushConstantRange *r = &info->pPushConstantRanges[i];
++      const VkShaderStageFlags flags =
++         r->stageFlags == VK_SHADER_STAGE_ALL ? stages : r->stageFlags;
++      if (!vkr_context_check(ctx,
++                             flags && !(flags & ~stages) && !(flags & seen) &&
++                                r->size && !(r->offset & 3) && !(r->size & 3) &&
++                                vkr_first_count_ok(r->offset, r->size, lim->maxPushConstantsSize),
++                             "vkCreatePipelineLayout",
++                             "push constant range %u: stages 0x%x, %u bytes at %u (at most %u)", i,
++                             r->stageFlags, r->size, r->offset, lim->maxPushConstantsSize))
++         return;
++      seen |= flags;
++   }
++   struct vkr_set_layout **sets = calloc(info->setLayoutCount ? info->setLayoutCount : 1,
++                                         sizeof(*sets));
++   if (!sets) {
++      args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++      return;
++   }
++   uint32_t ubo_dynamic = 0, ssbo_dynamic = 0;
++   for (uint32_t i = 0; i < info->setLayoutCount; i++) {
++      const struct vkr_descriptor_set_layout *set =
++         vkr_descriptor_set_layout_from_handle(info->pSetLayouts[i]);
++      sets[i] = set ? set->info : NULL;
++      if (!vkr_context_check(ctx, sets[i], "vkCreatePipelineLayout", "set layout %u is NULL", i)) {
++         free(sets);
++         return;
++      }
++      for (uint32_t b = 0; b < sets[i]->binding_count; b++) {
++         if (sets[i]->bindings[b].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
++            ubo_dynamic += sets[i]->bindings[b].count;
++         else if (sets[i]->bindings[b].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
++            ssbo_dynamic += sets[i]->bindings[b].count;
++      }
++   }
++   const uint32_t ubo_max = MAX2(lim->maxDescriptorSetUniformBuffersDynamic,
++                                 l->uab_uniform_buffers_dynamic);
++   const uint32_t ssbo_max = MAX2(lim->maxDescriptorSetStorageBuffersDynamic,
++                                  l->uab_storage_buffers_dynamic);
++   if (!vkr_context_check(ctx, ubo_dynamic <= ubo_max && ssbo_dynamic <= ssbo_max,
++                          "vkCreatePipelineLayout",
++                          "%u + %u dynamic buffers (at most %u + %u)", ubo_dynamic,
++                          ssbo_dynamic, ubo_max, ssbo_max)) {
++      free(sets);
++      return;
++   }
++   const uint32_t set_count = info->setLayoutCount;
++
++   struct vkr_pipeline_layout *layout = vkr_pipeline_layout_create_and_add(ctx, args);
++   if (!layout) {
++      free(sets);
++      return;
++   }
++   for (uint32_t i = 0; i < set_count; i++)
++      vkr_set_layout_ref(sets[i]);
++   layout->sets = sets;
++   layout->set_count = set_count;
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_pipeline.h b/src/venus/vkr_pipeline.h
+index 350e9e0..afafef2 100644
+--- a/src/venus/vkr_pipeline.h
++++ b/src/venus/vkr_pipeline.h
+@@ -13,8 +13,13 @@ struct vkr_shader_module {
+ };
+ VKR_DEFINE_OBJECT_CAST(shader_module, VK_OBJECT_TYPE_SHADER_MODULE, VkShaderModule)
+ 
++struct vkr_set_layout;
++
+ struct vkr_pipeline_layout {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-descriptor-limits.patch): its set layouts, for binds and pushes */
++   uint32_t set_count;
++   struct vkr_set_layout **sets;
+ };
+ VKR_DEFINE_OBJECT_CAST(pipeline_layout, VK_OBJECT_TYPE_PIPELINE_LAYOUT, VkPipelineLayout)
+ 

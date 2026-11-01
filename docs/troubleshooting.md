@@ -35,7 +35,8 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
   ([50](#50-all-routes-notifications-panels-and-the-omarchy-menu-black-out-the-screen-hyprland-057)).
 - **Ghostty opens no window** (OpenGL 4.3 needed, the VM gives 4.1): Update
   VM (3.2.14), then log out and in; it then draws on the VM's CPU. Alacritty
-  and Kitty draw on the Mac's GPU
+  and Kitty draw on the Mac's GPU; from 3.2.18 the app's experimental switch
+  Ghostty on the Mac's GPU moves Ghostty there too (macOS 26 and newer)
   ([47](#47-app-ghostty-opens-no-window-or-draws-on-the-cpu)).
 - **Activity Monitor shows the VM with far more memory than you gave it**
   (OmacVM.app, e.g. 23 GB for a 12 GB VM): its graphics come on top, and
@@ -1376,6 +1377,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   N`, from its next start), or quit big apps on the Mac. OmacVM.app's
   give-back of the VM's cold file cache while macOS compresses it (ADR 0059)
   is on from 3.2.12 (QEMU's free page reclaim, ADR 0062); 3.2.11 had it off.
+  From 3.2.18 the VM also gives back when it is idle, and gathers its
+  scattered free memory so that the Mac can take it back (compaction).
   After a stall of 10 s or more for memory the VM shows a note that says so
   (once per 30 minutes; Update VM puts the note in). The memory cause has
   been shown only in tests so far (simulated stalls), so the note has not
@@ -1463,10 +1466,38 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   session (GL programs started from that Ghostty's shell draw on the CPU too;
   Chromium drops the variable). A driver set by hand (`LIBGL_ALWAYS_SOFTWARE`,
   `MESA_LOADER_DRIVER_OVERRIDE`, `GALLIUM_DRIVER`) wins over OmacVM's.
+- **On the Mac's GPU (3.2.18, experimental):** the VM window's switch
+  Ghostty on the Mac's GPU (General) starts Ghostty alone on Zink over the
+  VM's Vulkan with a forced OpenGL 4.3, on macOS 26 and newer (KosmicKrisp)
+  with Graphics Automatic or Vulkan. Update OmacVM.app, Update VM, turn the
+  switch on, then shut the VM down and start it again (a restart inside the
+  VM keeps the old answer; the row says what the running VM got); a Ghostty
+  that is open keeps its driver until you quit it. Measured on a Mac mini M4
+  and a MacBook Pro M1 Max: typing shown in 25 and 28 ms instead of 56 and
+  57, 10 s of fast output 3.3 and 3.4 instead of 32.8 and 31.7 Ghostty
+  CPU-seconds, for 6-9 % of the Mac's GPU and 150-300 MB of its graphics
+  memory (M1 Max: one window 155-163 MB, three windows of one Ghostty
+  164-278 MB). Omarchy's screensaver
+  in Ghostty on two displays: the Mac mini drew 40-41 W on Zink against
+  53-54 W on the CPU (35-36 W without it, 39 W in foot; one session). `omacvm check` says which
+  driver a running Ghostty has (zink or llvmpipe) and why. Not with GPU safe
+  mode, Graphics OpenGL or MoltenVK (macOS 15): Ghostty stays on the CPU.
+- **Symptom with the switch on:** Ghostty stops drawing and takes no input,
+  and Hyprland asks "Application Not Responding ... Terminate / Wait"; or
+  Ghostty ends, or does not open at all. **Cause:** the Mac ended Ghostty's
+  Vulkan context: it refused a command, or the VM's graphics memory was used
+  up (qemu.log: "venus context N (ghostty) is lost"; with a 384 MB budget and
+  Chromium on a WebGL page a Ghostty on Zink ended at its start, one on the
+  CPU opened). **Fix:** Terminate (the programs running in that Ghostty end
+  with it), then open Ghostty again; if it happens again, turn the switch
+  off, then shut the VM down and start it again: the switch counts only from
+  a VM start, so until then a new Ghostty can start on Zink again.
 - **Where:** `src/app/guest/omacvm_egl.c` (OmacVM's EGL vendor library),
-  `src/guest/check.sh` ("Ghostty"); tests
-  `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`;
-  ADR 0064 (#598).
+  `src/guest/check.sh` ("Ghostty"), the app's `GhosttyGPU`
+  (`app/app/Sources/OmacVMWindow/GhosttyGPU.swift`); tests
+  `src/app/guest/tests/egl-vendor.sh`, `src/tests/ghostty-check.sh`,
+  `swift run window-tests`, `src/tests/app-settings.sh`; ADR 0064 and its
+  amendment (#598).
 
 ## 48. app: Chrome goes blank or flickers while the Mac is short of memory
 
@@ -1533,7 +1564,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   back when QEMU stopped; a 12 GB VM with nothing compressed showed 1.2 to
   2.0 GB more than it held. From 3.2.17 QEMU remaps its own view of the VM's
   memory every 5 minutes, which drops that count; what it touched since then
-  is still counted twice (ADR 0066). It never was memory: the Mac gets
+  is still counted twice (ADR 0066). From 3.2.18 a sweep that does not keep
+  the same memory on a Mac turns itself off for the run (QEMU tries it on
+  scratch memory first) or maps the memory back and stops; the VM keeps
+  running. It never was memory: the Mac gets
   nothing back from it. A VM above the Mac's Best tier (8 GB on a 16 GB Mac)
   plus its graphics leaves macOS too little.
 - **Check:** `omacvm check --vm NAME` has an "Activity Monitor" row while
@@ -1541,9 +1575,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   3.2 GB now, the rest 6.1 GB (QEMU itself, graphics overhead and pages of
   the VM QEMU touched, which macOS counts twice)", a warning above the Best
   tier; with 3.2.17's QEMU "pages of the VM QEMU touched since its last
-  sweep, counted twice until then". `logs/qemu.log` has the sweep's lines
-  ("own-view sweep": on or off, then a line an hour). `omacvm resources
-  --vm NAME` says the same warning.
+  sweep, counted twice until then", and "QEMU's own-view sweep is off for
+  this run: why" when it is off or stopped. `logs/qemu.log` has the sweep's
+  lines ("own-view sweep": on or "off (why)", then a line an hour; "stopped
+  for this run: why"). `omacvm resources --vm NAME` says the same warning.
 - **Fix:** give the VM the Best tier or less: in OmacVM.app the VM's
   General › Resources › Best, or `omacvm resources --vm NAME --resources
   best`; it applies at the VM's next start. OmacVM never lowers the setting
@@ -1552,7 +1587,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   at three quarters of the Mac
   ([graphics memory and VM memory](routes/app.md#graphics-memory-and-vm-memory)).
 - **Where:** `src/cmd/check.sh` ("Activity Monitor"), `src/lib/footprint.py`,
-  `app/runtime/patches/qemu-hvf-own-view-sweep.patch` (the sweep, ADR 0066),
+  `app/runtime/patches/qemu-hvf-own-view-sweep.patch` (the sweep and its
+  trial, ADR 0066; `app/runtime/Tests/memory/test-dcount.sh`),
   `src/lib/setup.sh` (`mem_warning`), `src/cmd/resources.sh`,
   `app/app/Sources/OmacVMWindow/CustomResources.swift`
   (`ResourceLimits.warning`), `app/app/Sources/OmacVMDesktop/GPUMemory.swift`
@@ -1639,3 +1675,135 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `inst_fail_all`); test `src/vdec/guest/test/vdec-test.c
   --hold-all-at-eos` (in the VM, as root);
   [video-decode.md](video-decode.md#chromium-from-arch-linux-arm).
+
+## 52. app: canvas and SVG pages are slow in Brave, Vivaldi or an Electron app
+
+- **Symptom:** in an OmacVM.app VM (3.2.17 and older), pages that draw many
+  canvas strokes, clip paths or SVG paths (charts, whiteboards, diagram
+  apps) are much slower in Brave, Vivaldi or Electron than in Google Chrome
+  or Omarchy's Chromium. `chrome://gpu` (or a WebGL page) names the GPU
+  `ANGLE (Mesa, virgl (Apple M4), ...)`, where Chrome says `OmacVM-GPU`.
+- **Cause:** Skia, the graphics library of every Chromium-based app, turns
+  instanced drawing off when the GL renderer names virgl, and then draws
+  every canvas stroke and clip path on the CPU. Since 3.1.32 Mesa gives
+  Chrome and Chromium the name "OmacVM-GPU" instead, by program name
+  (`/usr/share/drirc.d/50-omacvm-chrome.conf`); every other program kept
+  "virgl".
+- **Fix (3.2.18):** Update VM (`omacvm apply`, `omacvm update`), then quit
+  and start those apps again. The file now also names `brave`,
+  `vivaldi-bin` and `electron` (the program of Electron's own arm64 build;
+  Arch Linux ARM has no Electron package), on Wayland and X11. Brave
+  1.98.63 in a test VM on a Mac mini M4: MotionMark 2754 -> 4483 (medians
+  of 3), its Paths test 7.3x; Electron 45 at a fixed Paths complexity: 5.5
+  -> 34 fps on Wayland. Nothing on the Mac; any app version.
+- **Not covered:** an Electron app shipped under its own program name (its
+  GPU process is that program); UTM, VMware Fusion and Parallels VMs.
+- **The real name for one app:** start it with `force_gl_renderer=`
+  (empty), e.g. `force_gl_renderer= brave`: Mesa then skips the file (also
+  for Chrome) and prints "ATTENTION: option value of option
+  force_gl_renderer ignored." on the app's error output.
+- **Where:** `src/app/guest/50-omacvm-chrome.drirc`; test
+  `src/app/guest/tests/test_chrome_drirc.py`;
+  [graphics.md](architecture/graphics.md).
+
+## 53. app: Ghostty on the Mac's GPU stops drawing, or a Vulkan app ends
+
+- **Symptom:** in an OmacVM.app VM with Graphics on Vulkan, a Ghostty that
+  draws through Zink on the Mac's GPU (set up by hand, for example) stops
+  drawing and takes no typing;
+  Hyprland says "Application Not Responding" with Terminate and Wait, and a
+  new Ghostty window (Super+Return) does not open. Or another Vulkan app
+  (vkcube, a game, Zed, Chromium with WebGPU) stops drawing or ends. The rest
+  of the VM keeps working. The VM's `logs/qemu.log` has `venus context N
+  (<app>) is lost`.
+- **Cause:** the app's Vulkan (Venus) context ended on the Mac: the Mac
+  refused one of its Vulkan commands (ADR 0065), or the graphics memory apps
+  may use was full (`... (the GPU memory budget had refused its memory)`).
+  Most Vulkan apps then end by themselves. Ghostty on Zink stays: its windows
+  never draw again, and since Omarchy starts Ghostty as one instance, a new
+  Ghostty asks the frozen one for its window over D-Bus, gets no answer and
+  gives up (its log: `error registering application: Timeout was reached`).
+  Up to 3.2.17 OmacVM did not count a lost
+  Vulkan context (`logs/gpu-memory` stayed at lost=0), so nothing was said,
+  and `omacvm check` did not name the app.
+- **Fix (3.2.18, the app update and Update VM):** the app counts the loss
+  and tells the VM, which shows a note ("Ghostty stopped drawing", or
+  "<app> stopped drawing") and ends nothing. Close the frozen Ghostty first:
+  Terminate in Hyprland's window (programs running in it end), then open
+  Ghostty again without Zink's variables (in test VMs its window came in
+  about 0.55 s): it starts on the CPU (llvmpipe, ADR 0064). Until the VM
+  restarts OmacVM keeps `/run/omacvm/gl-zink-off` (one line "lost TIME
+  WHY"): a start of Ghostty on Zink by OmacVM has to take the CPU while it
+  exists. Other apps: restart them.
+  `omacvm check`'s "GPU contexts" names the app, marked "(Vulkan)". A
+  context the guest was closing anyway (the app was ending) is not counted:
+  QEMU's log says `venus context N (<app>) ended while the guest closed it`.
+  With the app update but no Update VM, the VM shows no note (the app's log
+  says "Update VM puts it in").
+- **Where:** `app/runtime/patches/virgl-venus-lost-context-count.patch`
+  (tests `app/runtime/Tests/virgl/test-venus-lost-count.c`,
+  `test-venus-robust.c` l-lost and l-teardown), `GPUMemoryNotice` and
+  `DesktopRecovery` in `app/app/Sources/OmacVMDesktop/` (`swift run
+  desktop-tests`), `src/app/guest/omacvm-desktop-recover venus` (tests
+  `src/tests/app-desktop-recovery.sh`, `src/tests/desktop-recover-gpu.sh`),
+  `src/cmd/check.sh` (`src/tests/gpu-contexts-check.sh`); ADR 0038's 3.2.18
+  amendment.
+
+## 54. app: a desktop OpenGL program draws nothing, upside down or without its clipping
+
+- **Symptom:** in an OmacVM.app VM, a desktop OpenGL program (an app or game, not a browser) draws
+  nothing where a shader writes gl_ClipDistance (qemu.log: "the host refused a shader (compile)",
+  "Use of undeclared identifier 'clip_dist_temp'"); glClipPlane clips nothing; tessellated
+  geometry drawn into a window shows upside down, in the other half; transform feedback from a
+  tessellation evaluation shader records zeros; a program with a tessellation shader fails to link
+  in the VM with "tessellation control shader uses too many output components (4 > 0)"; or a
+  tessellation shader that indexes its varyings or patch varyings with a computed index draws
+  nothing ("extension 'GL_ARB_arrays_of_arrays' is not supported" in qemu.log). 3.2.17 and older.
+- **Cause:** the Mac's OpenGL 4.1 has no cull distances, no arrays of arrays and no atomic
+  counters. The VM's virglrenderer wrote clip distances (and the end of a last tessellation
+  evaluation shader: its y flip and transform feedback) only on a GL with cull distances, asked for
+  arrays of arrays without checking, and reported the tessellation shaders' output limits only on
+  a GL with atomic counters, so the VM's Mesa saw 0 and refused such programs itself (#589).
+- **Fix (3.2.18):** update the app; it applies from the VM's next start. Nothing in the VM.
+  Separable programs with patch varyings or varying arrays between their stages are a separate
+  case. "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log is expected: Apple's
+  OpenGL records transform feedback from a tessellation evaluation shader on its software vertex
+  path (on the CPU); the values are right.
+- **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
+  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`; test
+  `app/runtime/Tests/virgl/test-whole-program-shapes.c`;
+  [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
+  and ADR 0019.
+
+## 55. app: a Vulkan app ends, the VM goes on
+
+- **Symptom:** in an OmacVM.app VM with Graphics on Vulkan, one Vulkan app (a
+  game, a tool, Chromium's GPU process) ends or says its device was lost,
+  and the rest of the VM keeps working. The VM's `qemu.log` (in the VM's
+  folder, `logs/`) has `vkr: <app>: vkCmd... refused: ...; the app's Vulkan
+  context ends (N refused so far)` and `venus context N (<app>) is lost`.
+  Or, with very many Vulkan apps or devices at once, a new one does not start:
+  `vkr: N threads for guest calls already (at most 1024): the ... is not made`
+  or `proxy: N Venus contexts already ...`.
+- **Cause:** from 3.2.18 OmacVM.app checks the indices, counts, offsets and
+  values a Vulkan app sends against the Mac GPU's limits and what the app
+  made (ADR 0065). The Mac's Vulkan drivers use such values as memory
+  addresses; before 3.2.18 a wrong one could stop the whole VM. The app sent
+  one the Vulkan spec does not allow (an app bug), so only its connection
+  ends. The line names the call and the values; only the 1st, 2nd, 4th, 8th
+  ... refusal since the VM started is logged.
+- **Fix:** update the app in the VM (most are fixed upstream once
+  reported: the line is what to report), or give the VM OpenGL: Graphics
+  OpenGL in the VM window, or `omacvm graphics --vm NAME opengl` (from the
+  next start), which avoids Venus. A
+  correct app that ends this way is an OmacVM bug: please report it with the
+  line.
+- **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`,
+  `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` (shaders:
+  the line says `SPIR-V: ...`), `virgl-venus-copy-regions.patch`,
+  `virgl-venus-pipeline-formats.patch`, `virgl-venus-submit-counts.patch`,
+  `virgl-venus-pool-frees.patch`, `virgl-venus-dedicated-memory.patch`,
+  `virgl-venus-pass-views.patch`, `virgl-venus-thread-budget.patch` (the
+  threads line); tests `app/runtime/Tests/virgl/test-venus-commands.c`,
+  `test-venus-threads.c`, `fuzz-venus-spirv.sh`, `venus-command-ledger.tsv`;
+  ADR 0065.

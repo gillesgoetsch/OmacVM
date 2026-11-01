@@ -78,7 +78,11 @@ VM runs, and goes back by itself when a new version does not start
 - The window: Omarchy follows its size and the display's refresh rate
   (120 Hz on a MacBook Pro).
 - GPU in browsers: WebGL 1 and 2 on the hardware in Chromium, Google Chrome,
-  Brave and Firefox (`virgl (Apple M4 Max)`), no flags.
+  Brave and Firefox, no flags. Chromium, Google Chrome, Brave, Vivaldi and
+  Electron (the program `electron`) see the GPU as `OmacVM-GPU`, so they draw
+  canvas and SVG paths on the GPU; Firefox, and an Electron app shipped under
+  its own program name, see `virgl (Apple M4 Max)`. One app with the real
+  name: `force_gl_renderer= brave` (the variable empty).
 - For faster pages, use Google Chrome instead of Omarchy's Chromium. If
   Chrome is not installed yet: Omarchy menu > Install > Browser > Chrome
   (from the AUR). That writes a new `~/.config/chrome-flags.conf` with
@@ -510,6 +514,21 @@ the VM's SSH on `127.0.0.1:<port>`.
   own pointer. With Extra brightness QEMU gives the main window's layer the
   frames' gain, so the pointer is as bright as the page under it. Not with the hidden Mac pointer setting (that one needs the
   hotspot). `omacvm check` says "Pointer layer".
+- Ghostty on the Mac's GPU (experimental, off; the VM window's General
+  section, `defaults write org.omacvm.app ghosttyGPU -bool true`, from the
+  VM's next start; ADR 0064's amendment): Ghostty needs OpenGL 4.3 and
+  otherwise draws on the VM's CPU (llvmpipe). With the switch on, a start
+  with Vulkan on KosmicKrisp (macOS 26 and newer) tells the VM (SMBIOS
+  `omacvm.glzink=1`), and OmacVM's EGL library starts Ghostty alone on Zink
+  over Venus with a forced 4.3; Update VM brings that part of the library.
+  Measured on a Mac mini M4 and an M1 Max: typing shown in 25 and 28 ms
+  instead of 56 and 57, scrolling output 3.3 and 3.4 instead of 32.8 and
+  31.7 Ghostty CPU-seconds per 10 s, for 6-9 % of the Mac's GPU and
+  150-300 MB of its graphics memory. If the Mac
+  ends Ghostty's Venus context, that Ghostty stops responding and only
+  Terminate helps (the programs in it end). Not with GPU safe mode,
+  Graphics OpenGL or MoltenVK (no marker: Ghostty on the CPU as before).
+  `omacvm check` says which driver a running Ghostty has ("Ghostty").
 - Draw only what changed (experimental, off; the VM window's Display
   section, `defaults write org.omacvm.app presentTiles -bool true`, from the
   VM's next start; ADR 0055): QEMU keeps the last whole frame on the window
@@ -1267,8 +1286,9 @@ apps, the GPU. A VM takes two kinds from it:
   up: `src/memory/guest/90-omacvm-mm.tmpfiles`; QEMU tells macOS it may take
   the old pages, ADR 0062) and leaves QEMU's footprint, the number Activity
   Monitor shows. Up to 3.2.11 macOS kept holding those pages until the VM
-  stopped. When macOS compresses the VM or warns that memory is short, the VM
-  gives back its file cache (below).
+  stopped. When macOS compresses the VM, when the VM is idle, or when macOS
+  warns that memory is short, the VM gives back its file cache and gathers
+  its scattered free memory (below).
 - **Graphics memory** is extra, on top: the textures and buffers the VM's
   desktop and apps draw with, kept by the Mac's GPU driver for the VM. It
   grows and shrinks with what is on screen: Omarchy alone at 5K about
@@ -1348,13 +1368,52 @@ cold-only way (before Linux 6.11) drops its whole cache instead.
 `logs/qemu.log` has two lines per give-back ("macOS is compressing the VM
 ...", then what the VM freed and QEMU's footprint 60 s later).
 
+**When the VM is idle** (3.2.18). Free page reporting hands Linux's free
+memory to QEMU only in blocks of 256 KiB and up. After a browser closes, a
+give-back or a cache drop, much of what Linux freed sits in smaller blocks,
+and those stay on the Mac (a 4 GB test VM with Chrome just closed: 1.2 GB on
+the MacBook Pro M1 Max, 1.0-1.4 GB on the Mac mini). Every 15 minutes at
+most, while macOS's memory pressure is normal, QEMU used at most a fifth of
+a CPU core over the last minute (an idle VM 4-10 %, a 1080p60 video at 5K
+71-85 %), QEMU has under min(2 GB, a quarter of the Mac) outside its resident
+memory (compressed pages and graphics: so not while macOS compresses the VM,
+and on a small Mac not while a 5K browser session is open) and no give-back
+ran in the last 10 minutes, the app runs `giveback.sh idle`: the VM gives
+back its cold file cache above the newest min(2 GB, a quarter of the VM),
+then gathers its free memory into big blocks, which it then reports
+(compaction: `compact_memory`, only when 256 MB or more is in small blocks
+and the VM does not wait for memory, PSI memory some avg10 0.10 or less; at
+most 10 s, stopped with SIGKILL; one run at a time, as the VM goes on running
+it after the app stopped waiting 30 s). The VM answers "busy" when its own
+memory or disk pressure is up; the memory-optimized kernel, which counts
+nearly all its cache as cold, keeps its cache and only compacts. After one
+that brought back under 256 MB, or after which the VM read back half of what
+the last one gave (its refaults), the next waits twice as long, up to 2
+hours; 1 GB or more puts it back to 15 minutes. One the VM's agent did not
+answer is tried again 15 minutes later and never holds up the warning's
+drop. After macOS's warning makes the VM drop its cache, the VM compacts once
+the pressure is normal again, the VM is quiet and QEMU has under min(2 GB, a
+quarter of the Mac) outside its resident memory, as for idle (`giveback.sh
+compact`). Compaction moves pages in use, so never while macOS is short of
+memory or the VM is busy, and never while macOS compresses the VM, also not
+in the give-back for that (macOS must decompress what moves; ADR 0059).
+On the M1 Max (4 GB VM, Chrome closed, 20 minutes quiet) the app's own idle
+step joined 1.2 GB of small blocks in 0.6 s: the Mac held 2425 MB of the
+VM's memory against 3.2.16's 3445 MB, and got back 3491 MB against 4535 MB
+when the VM quit. `OMACVM_GIVEBACK_IDLE=0` in the app's environment turns
+the idle give-back off. `logs/qemu.log` says at each start "VM memory: idle
+give-back: on" or "off", and has one line for each idle give-back that ran
+("the VM was idle: it gave back ... and compacted its free memory ...; QEMU's
+footprint ... 60 s later").
+
 `omacvm check` has a "VM memory" row: the VM's memory, whether the give-back
 while macOS compresses is on, how many times the VM freed its file cache
 this run and what it freed the last time (for the warning's drop, how much
 smaller QEMU's footprint was a minute later: the footprint, not memory back
 to the Mac), and when macOS still holds a quarter of the Mac compressed and
 the VM had little left to give, that a smaller VM memory leaves the Mac more
-(`omacvm resources`). A large VM's footprint can still be well above what
+(`omacvm resources`); idle give-backs on their own: how many and how much in
+all, by the VM's own count. A large VM's footprint can still be well above what
 Linux uses (ADR 0059, "What this does not explain"). UTM, Parallels and
 Fusion: nothing changes (their balloons do not report free pages).
 
@@ -1368,7 +1427,9 @@ Fusion: nothing changes (their balloons do not report free pages).
   flushes after every resource command; `logs/qemu.log` says "freed N MB"),
   and the app asks the VM to drop its whole file cache (at most every 10
   minutes, also counting the give-backs above, or 2 minutes after one of
-  them; again after 30 s, then less often, if the VM did not answer), which
+  them; again after 30 s, then less often, if the VM did not answer; once
+  the pressure is normal again and the VM quiet, it compacts its free
+  memory, above), which
   then leaves QEMU's footprint (the cache it dropped: 0.1 GB on a fresh VM,
   1 GB after a long session; up to 3.2.11 macOS could keep holding the
   pages, above).
@@ -1557,7 +1618,13 @@ back; a pass is skipped while QEMU's footprint grew less than 64 MB, at most
 twice in a row.
 `logs/qemu.log` says "own-view sweep: on" at the start, then a line an hour
 (passes, MB less in Activity Monitor, the main lock's hold per chunk);
-`OMACVM_DCOUNT_SWEEP=0` turns it off. A page only QEMU touched since the
+`OMACVM_DCOUNT_SWEEP=0` turns it off. From 3.2.18 QEMU first tries the
+remap on 256 MB of scratch memory before the VM starts and turns the sweep
+off for the run ("own-view sweep: off (why)") if that does not keep the
+same memory; during the run it keeps a spare mapping of each chunk while it
+remaps it, maps a chunk back if the remap changed it and stops the sweep
+("stopped for this run: mapped back after N us: ..."), and the VM keeps
+running (ADR 0066's amendment). A page only QEMU touched since the
 guest last did (a disk read the guest has not used yet) leaves the count
 until one of them touches it again. `omacvm check`'s "Activity Monitor" row
 says what the number is made of while the VM runs: "19.3 GB for the VM: VM
@@ -1565,7 +1632,8 @@ memory at most 10.0 GB, graphics 3.2 GB now, the rest 6.1 GB (QEMU itself,
 graphics overhead and pages of the VM QEMU touched, which macOS counts
 twice)"; with a QEMU that sweeps (its own qemu.log line, not omacvm's
 version) "pages of the VM QEMU touched since its last sweep, counted twice
-until then". VM memory is at most what QEMU runs with (`-m`), as Linux may
+until then"; with one whose sweep is off or stopped, the plain words and
+"QEMU's own-view sweep is off for this run: why". VM memory is at most what QEMU runs with (`-m`), as Linux may
 not have touched all of it; the graphics are the VM's own count
 (`logs/gpu-memory`); the rest is not split further. The row reads QEMU's
 footprint with `proc_pid_rusage` (`src/lib/footprint.py`): no task port,

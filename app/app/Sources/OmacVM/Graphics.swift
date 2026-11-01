@@ -269,18 +269,34 @@ enum Graphics {
     }
 }
 
+/// The Vulkan driver the runtime loads (virgl-darwin-vulkan-beside.patch).
+enum VulkanDriverKind: Equatable {
+    case kosmicKrisp, moltenVK
+    /// The driver VK_DRIVER_FILES / VK_ICD_FILENAMES names.
+    case listed
+}
+
 extension Graphics {
-    /// The Vulkan driver the runtime loads, in words (virgl-darwin-vulkan-beside.patch:
-    /// VK_DRIVER_FILES / VK_ICD_FILENAMES win, then OMACVM_VULKAN_DRIVER=moltenvk|kosmickrisp,
-    /// else KosmicKrisp on macOS 26+ when the app has it, MoltenVK otherwise).
-    static func vulkanDriver(macOSMajor: Int, kosmicKrisp: Bool, environment: [String: String] = [:]) -> String {
-        if environment["VK_DRIVER_FILES"] != nil || environment["VK_ICD_FILENAMES"] != nil {
-            return "the Vulkan driver VK_DRIVER_FILES names"
-        }
+    /// The Vulkan driver the runtime loads: VK_DRIVER_FILES / VK_ICD_FILENAMES
+    /// win, then OMACVM_VULKAN_DRIVER=moltenvk|kosmickrisp, else KosmicKrisp on
+    /// macOS 26+ when the app has it, MoltenVK otherwise.
+    static func vulkanDriverKind(macOSMajor: Int, kosmicKrisp: Bool, environment: [String: String] = [:]) -> VulkanDriverKind {
+        if environment["VK_DRIVER_FILES"] != nil || environment["VK_ICD_FILENAMES"] != nil { return .listed }
         switch environment["OMACVM_VULKAN_DRIVER"] {
-        case "moltenvk": return "MoltenVK (OMACVM_VULKAN_DRIVER)"
-        case "kosmickrisp" where kosmicKrisp: return "KosmicKrisp (OMACVM_VULKAN_DRIVER)"
-        default: return macOSMajor >= 26 && kosmicKrisp ? "KosmicKrisp" : "MoltenVK"
+        case "moltenvk": return .moltenVK
+        case "kosmickrisp" where kosmicKrisp: return .kosmicKrisp
+        default: return macOSMajor >= 26 && kosmicKrisp ? .kosmicKrisp : .moltenVK
+        }
+    }
+
+    /// The same, in words.
+    static func vulkanDriver(macOSMajor: Int, kosmicKrisp: Bool, environment: [String: String] = [:]) -> String {
+        let v = environment["OMACVM_VULKAN_DRIVER"]
+        let chosen = v == "moltenvk" || (v == "kosmickrisp" && kosmicKrisp) ? " (OMACVM_VULKAN_DRIVER)" : ""
+        switch vulkanDriverKind(macOSMajor: macOSMajor, kosmicKrisp: kosmicKrisp, environment: environment) {
+        case .listed: return "the Vulkan driver VK_DRIVER_FILES names"
+        case .moltenVK: return "MoltenVK" + chosen
+        case .kosmicKrisp: return "KosmicKrisp" + chosen
         }
     }
 }

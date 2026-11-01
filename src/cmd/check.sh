@@ -402,9 +402,14 @@ if [[ -n $miclog && -f $miclog ]]; then
 fi
 # A VM app whose GPU context virglrenderer dropped draws nothing until it
 # restarts; for the shell that is a black display without bar. QEMU's log
-# (this run of the VM) names it.
+# (this run of the VM) names it: a GL context ("context error reported N
+# "NAME""), or a Vulkan (Venus) one ("venus context N (NAME) is lost", from
+# runtime 2.7.1; from 3.2.18 one the guest was closing says "ended while the
+# guest closed it" instead and is not named here).
 if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
-  lost=$(grep -o 'context error reported [0-9]* "[^"]*"' "$miclog" | sed 's/.*"\(.*\)"$/\1/' | sort -u | paste -sd, - | sed 's/,/, /g')
+  lost=$( { grep -o 'context error reported [0-9]* "[^"]*"' "$miclog" | sed 's/.*"\(.*\)"$/\1/'
+            grep -o 'venus context [0-9]* ([^)]*) is lost' "$miclog" | sed 's/^venus context [0-9]* (\(.*\)) is lost$/\1 (Vulkan)/'
+          } | grep -v '^$' | sort -u | paste -sd, - | sed 's/,/, /g')
   # Not a failure by itself: the app may have been restarted since (the VM's
   # "desktop" line says whether the shell draws now).
   # The app restarts the desktop (and the shell) by itself (DesktopRecovery).
@@ -441,12 +446,13 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   FEATURE=""
   # The VM's memory, and the VM's file cache this run: OmacVM.app asks the VM
   # to drop its file cache when macOS warns, and for its cold file cache while
-  # macOS compresses the VM only with a QEMU that gives the pages back to
-  # macOS (qemu.log's "give-back while macOS compresses: on|off" line;
-  # logs/memory-giveback, ADR 0059), until that QEMU finds macOS keeping them
-  # anyway (kept=1, ADR 0062). The numbers are what the VM freed and
-  # QEMU's footprint, not what the Mac got back. Never a failure: a hint when
-  # macOS holds much compressed and the VM had little left to give.
+  # macOS compresses the VM or when the VM is quiet only with a QEMU that gives
+  # the pages back to macOS (qemu.log's "give-back while macOS compresses:
+  # on|off" line; logs/memory-giveback, ADR 0059), until that QEMU finds macOS
+  # keeping them anyway (kept=1, ADR 0062). The idle give-backs have their own
+  # count (idle=, idle_mb=), not in "N times". The numbers are what the VM
+  # freed and QEMU's footprint, not what the Mac got back. Never a failure: a
+  # hint when macOS holds much compressed and the VM had little left to give.
   vmm=$(app_env "$(dirname "$(dirname "$miclog")")" MEM_MB); [[ $vmm =~ ^[0-9]+$ ]] || vmm=""
   mg="$(dirname "$miclog")/memory-giveback"
   mgv() { sed -n "s/^$1=//p" "$mg" 2>/dev/null | head -1; }
@@ -481,8 +487,14 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
     if (( mgb < 256 )) && [[ $stored =~ ^[0-9]+$ && $pgsz =~ ^[0-9]+$ && $ram =~ ^[0-9]+$ ]] && (( stored * pgsz >= ram / 4 )); then
       what="$what; macOS holds $(gb $(( stored * pgsz / 1048576 ))) compressed and the VM had little left to give: a smaller VM memory leaves the Mac more (omacvm resources)"
     fi
-  else
+  elif [[ ! $(mgv idle) =~ ^[1-9][0-9]*$ ]]; then
     what="${what:+$what; }the VM freed no file cache this run"
+  fi
+  # The idle give-backs (cache and compacted free memory, by the VM's own count).
+  mgi=$(mgv idle) mgim=$(mgv idle_mb)
+  if [[ $(mgv off) != 1 && $mgi =~ ^[1-9][0-9]*$ && $mgim =~ ^[0-9]+$ ]]; then
+    if [[ $mgi == 1 ]]; then mgi="once"; else mgi="$mgi times"; fi
+    what="${what:+$what; }while the VM was idle it gave back memory $mgi this run, $(gb "$mgim") by its own count"
   fi
   [[ -n $what ]] && ok "VM memory" "$what"
   # Activity Monitor's Memory for the VM (QEMU's footprint) and what it is made
@@ -493,10 +505,13 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
   # threads touched, which macOS counts a second time, compressed or not (ADR
   # 0066). A QEMU that sweeps its own view of the VM's RAM (its first
   # "own-view sweep: on" line in qemu.log, from 3.2.17) drops that count every
-  # few minutes: then only what it touched since its last sweep (unless it
-  # stopped for the run: "own-view sweep: stopped for this run"). The words
-  # come from this QEMU's line, not from this omacvm's version (an omacvm can
-  # run beside an older app). Only while QEMU runs and writes
+  # few minutes: then only what it touched since its last sweep. A sweep that
+  # is off ("own-view sweep: off (why)", from 3.2.18 also when its trial on
+  # scratch memory failed) or stopped for the run ("stopped for this run:
+  # why") gives the plain words and its why (printable ASCII, 120 characters
+  # at most). The words come from this QEMU's lines, not from this omacvm's
+  # version (an omacvm can run beside an older app; 3.2.16's QEMU has no
+  # line, and then no why). Only while QEMU runs and writes
   # logs/gpu-memory. Memory above this Mac's Best tier is a warning (the same
   # words as omacvm resources), never a failure; the setting stays.
   am_pid=$(app_pid_dir "$(dirname "$(dirname "$miclog")")")
@@ -508,11 +523,23 @@ if [[ $TYPE == app && -n $miclog && -f $miclog ]]; then
       what="$(gb "$am_fp") for the VM: VM memory at most $(gb "$am_vm"), graphics $(gb "$am_gpu") now"
       am_rest=$(( am_fp - am_vm - am_gpu ))
       am_twice="pages of the VM QEMU touched, which macOS counts twice"
-      if [[ $(LC_ALL=C grep -a -o -E 'OmacVM: own-view sweep: (on|off)' "$miclog" 2>/dev/null | head -1) == *": on" ]] &&
-         ! LC_ALL=C grep -a -c 'OmacVM: own-view sweep: stopped for this run' "$miclog" > /dev/null 2>&1; then
+      am_start=$(LC_ALL=C grep -a -m1 -E 'OmacVM: own-view sweep: (on|off)' "$miclog" 2>/dev/null)
+      am_stop=$(LC_ALL=C grep -a -m1 'OmacVM: own-view sweep: stopped for this run: ' "$miclog" 2>/dev/null)
+      am_off=""
+      if [[ $am_start == *"OmacVM: own-view sweep: on"* && -z $am_stop ]]; then
         am_twice="pages of the VM QEMU touched since its last sweep, counted twice until then"
+      elif [[ $am_start == *"OmacVM: own-view sweep: on"* ]]; then
+        am_off=$(printf '%s\n' "$am_stop" | LC_ALL=C sed -E -n \
+          's/.*OmacVM: own-view sweep: stopped for this run: (.*); Activity Monitor counts .*/\1/p')
+      elif [[ $am_start == *"OmacVM: own-view sweep: off ("* ]]; then
+        am_off=$(printf '%s\n' "$am_start" | LC_ALL=C sed -E -n \
+          -e 's/.*OmacVM: own-view sweep: off \((.*)\): Activity Monitor counts .*/\1/p' \
+          -e 's/.*OmacVM: own-view sweep: off \((.*)\)$/\1/p')
       fi
+      am_off=$(printf '%s' "$am_off" | LC_ALL=C tr -cd '\040-\176')
+      (( ${#am_off} > 120 )) && am_off="${am_off:0:117}..."
       (( am_rest > 0 )) && what="$what, the rest $(gb "$am_rest") (QEMU itself, graphics overhead and $am_twice)"
+      [[ -n $am_off ]] && what="$what; QEMU's own-view sweep is off for this run: $am_off"
       mac_specs
       am_warn=$(mem_warning app "$am_vm" "$VM")
       # A memory set while the VM runs (vm.env, e.g. lowered to Best) is not in

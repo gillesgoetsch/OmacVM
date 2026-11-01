@@ -277,7 +277,7 @@ struct SpyScroll<Content: View>: View {
                 .layoutProbe("nav-\(item.id)")
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, CGFloat(WindowLayout.sidebarInset))
         .padding(.vertical, 12)
         .frame(width: CGFloat(WindowSize.sidebar))
         .frame(maxHeight: .infinity, alignment: .top)

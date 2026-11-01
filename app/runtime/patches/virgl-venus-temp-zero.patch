@@ -1,0 +1,55 @@
+virglrenderer: Venus replies carry zeros where nothing was written
+
+What: the command decoder's temporary memory is zeroed for a command with a reply
+(VK_COMMAND_GENERATE_REPLY_BIT_EXT, set per command in vn_dispatch_command). vkCmd*
+never reply, so the drawing path does not pay for it.
+Why: an output struct chained to a query is decoded with only its sType and pNext
+written. A query vkr refuses (it zeroes only the main struct) or a struct the driver
+does not fill went back to the guest with the pool's old bytes: other commands' data
+and host pointers (a new pool buffer comes straight from malloc).
+Upstream: OmacVM policy.
+Tests: Tests/virgl/test-venus-robust.c (o-refused-chain, o-unwritten-chain); --time:
+microseconds per command through the decoder, with a reply and without.
+
+diff --git a/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h b/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h
+index e138f6d..9e8cdab 100644
+--- a/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h
++++ b/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h
+@@ -707,6 +707,10 @@ static inline void vn_dispatch_command(struct vn_dispatch_context *ctx)
+ 
+     vn_decode_VkCommandTypeEXT(ctx->decoder, &cmd_type);
+     vn_decode_VkFlags(ctx->decoder, &cmd_flags);
++    /* OmacVM (virgl-venus-temp-zero.patch): what the command decodes into is zeroed when it
++     * has a reply */
++    ((struct vkr_cs_decoder *)ctx->decoder)->zero_temp =
++        cmd_flags & VK_COMMAND_GENERATE_REPLY_BIT_EXT;
+ 
+     {
+         if (cmd_type < 335 && vn_dispatch_table[cmd_type])
+diff --git a/src/venus/vkr_cs.h b/src/venus/vkr_cs.h
+index c72c5cc..353a876 100644
+--- a/src/venus/vkr_cs.h
++++ b/src/venus/vkr_cs.h
+@@ -66,6 +66,9 @@ struct vkr_cs_decoder {
+ 
+    bool *fatal_error;
+    struct vkr_cs_decoder_temp_pool temp_pool;
++   /* OmacVM (virgl-venus-temp-zero.patch): the command being decoded has a reply, so its
++    * temp memory is zeroed (vkr_cs_decoder_alloc_temp) */
++   bool zero_temp;
+ 
+    /* Support vkExecuteCommandStreamsMESA for command buffer recording and indirect
+     * submission. Only a single level nested decoder state is needed. Base level is
+@@ -355,6 +358,12 @@ vkr_cs_decoder_alloc_temp(struct vkr_cs_decoder *dec, size_t size)
+ 
+    void *ptr = pool->cur;
+    pool->cur += size;
++   /* OmacVM (virgl-venus-temp-zero.patch, ADR 0065): a reply carries output structs the
++    * decoder put here with only sType and pNext written, and a refused or unfilled one
++    * went back as the pool's old bytes (other commands, host pointers): a command with a
++    * reply gets zeroed memory. vkCmd* never reply: no cost on the drawing path. */
++   if (dec->zero_temp)
++      memset(ptr, 0, size);
+    return ptr;
+ }
+ 
