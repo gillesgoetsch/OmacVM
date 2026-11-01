@@ -250,7 +250,7 @@ Venus context (a command the Mac's driver would abort on, ADR 0065, or
 memory the budget refused), QEMU printed "venus context N (NAME) is lost"
 and nothing else: `logs/gpu-memory` stayed at lost=0 (gpu_lost_delta 0 in
 all four lose rows of the ghostty-gpu lane on an M4 and an M1 Max: 3.2.15,
-two of them with #643's 703e7090 on top),
+two of them with #644's 703e7090 (on #643) on top),
 the app said nothing, and `omacvm check` did not name the app (the gap
 noted in #624). Most Vulkan apps then end by themselves: the VM's Venus
 driver aborts when it sees the ring's fatal status. A Ghostty drawn on the
