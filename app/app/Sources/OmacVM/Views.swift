@@ -20,7 +20,7 @@ extension RunMarker {
         alert.informativeText = warn + " Start it only when it runs nowhere else."
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Start Anyway")
-        NSApp.activate()
+        AskKeys.take(alert.window)
         return alert.runModal() == .alertSecondButtonReturn
     }
 }

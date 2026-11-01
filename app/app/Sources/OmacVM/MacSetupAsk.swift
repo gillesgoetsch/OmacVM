@@ -1,5 +1,6 @@
 import AppKit
 import OmacVMFeatures
+import OmacVMWindow
 
 /// Is this Mac set up for a VM (OmacVMFeatures' MacSetup): asked before each
 /// start (AppDelegate.askMacHelpers) and shown in the window (AppState's
@@ -42,9 +43,7 @@ extension MacSetup {
         a.informativeText = message(vm: vm)
         a.addButton(withTitle: button)
         a.addButton(withTitle: "Later").keyEquivalent = "\u{1b}"
-        a.window.level = .floating
-        a.window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        NSApp.activate()
+        AskKeys.take(a.window)
         return a.runModal() == .alertFirstButtonReturn ? .fix : .later
     }
 }

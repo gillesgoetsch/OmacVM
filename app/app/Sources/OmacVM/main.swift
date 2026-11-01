@@ -688,7 +688,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         + "Or start on the normal network (QEMU's own) this time; the fast network stays on for the next starts."
                     a.addButton(withTitle: need.button)
                     a.addButton(withTitle: "Start on Normal Network")
-                    NSApp.activate()
+                    AskKeys.take(a.window)
                     update = a.runModal() == .alertFirstButtonReturn
                 }
                 guard update else { finish(FastNetwork.notUpdated("you chose the normal network for this start")); return }
@@ -701,7 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             b.messageText = "The fast network was not updated"
                             b.informativeText = "\(err)\n\nThe VM starts on the normal network (QEMU's own) this time."
                             b.addButton(withTitle: "Start")
-                            NSApp.activate()
+                            AskKeys.take(b.window)
                             b.runModal()
                         }
                         finish(FastNetwork.notUpdated(err))
@@ -818,7 +818,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.messageText = Graphics.didNotStartOnMac
             alert.informativeText = text
             alert.addButton(withTitle: "OK")
-            NSApp.activate()
+            AskKeys.take(alert.window, overVM: Self.qemuApp?.processIdentifier)
             alert.runModal()
             Self.qemuApp?.activate()
         }

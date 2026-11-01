@@ -3,6 +3,7 @@
 // Custom resources, the disk's size (slider bounds, smaller in steps), "omacvm in Terminal", the window's
 // height, the keyboard note, the SSH repair. Exit 0 when all pass. CI runs it on every pull request.
 import Darwin
+import AppKit
 import Foundation
 import OmacVMIcon
 import OmacVMWindow
@@ -1203,6 +1204,28 @@ do {
         print("skip backup size: this volume makes no clones (\(dir.path))")
     }
 }
+// A question from the VM's side takes the keys from the VM, never from an app the person works in.
+expect(AskKeys.takes(front: 501, me: 500, vm: 501), "a question takes the keys from the VM in front")
+expect(AskKeys.takes(front: 500, me: 500, vm: 501), "and with this app in front")
+expect(AskKeys.takes(front: nil, me: 500, vm: 501), "and with no app in front")
+expect(!AskKeys.takes(front: 777, me: 500, vm: 501), "another app in front keeps the keys")
+expect(!AskKeys.takes(front: 777, me: 500, vm: nil), "also with no VM")
+
+// The half second ends while a modal question runs, also one started from a block on the main queue
+// (a block there waits for ever then: the buttons stayed off).
+let held = NSButton()
+var heldDone = false
+DispatchQueue.main.async {
+    MainActor.assumeIsolated {
+        AskKeys.hold(controls: [held])
+        expect(!held.isEnabled, "the buttons wait")
+        let end = Date().addingTimeInterval(AskKeys.guardTime + 1)
+        while !held.isEnabled, Date() < end { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
+        expect(held.isEnabled, "and come back inside a nested run loop")
+        heldDone = true
+    }
+}
+while !heldDone { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05)) }
 
 print(failures == 0 ? "all passed" : "\(failures) failed")
 exit(failures == 0 ? 0 : 1)
