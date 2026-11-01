@@ -101,7 +101,8 @@ for name, _ in tests:
 
 # under libgmalloc: the cases a heap write past or after an allocation shows in
 gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-sets-other-pool "
-                 "s-submit-ok s-submit-values-64 x-dedicated-bound-ok x-dedicated-unbound-ok "
+                 "s-submit-ok s-submit-values-64 s-submit-chain-twice x-dedicated-chain-twice "
+                 "x-dedicated-chain-null x-dedicated-bound-ok x-dedicated-unbound-ok "
                  "x-dedicated-buffer-unbound-ok x-dedicated-context-end-ok x-dedicated-other "
                  "x-dedicated-alias c-state-destroyed-view-begin c-state-destroyed-view-next "
                  "c-state-destroyed-view-end c-state-destroyed-view-imageless "

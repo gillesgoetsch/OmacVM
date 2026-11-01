@@ -573,11 +573,12 @@ static void setup_device(unsigned needs)
    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2,
                               .queueCreateInfoCount = 1, .pQueueCreateInfos = &q,
                               .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = exts };
-   VkDevice device_id = (VkDevice)(uintptr_t)3;
+   const uint64_t device_object = dev ? next_id++ : 3;
+   VkDevice device_id = (VkDevice)(uintptr_t)device_object;
    struct vn_command_vkCreateDevice cd = { .physicalDevice = (VkPhysicalDevice)pdev, .pCreateInfo = &dci,
                                            .pDevice = &device_id };
    D->dispatch_vkCreateDevice(D, &cd);
-   dev = object(3);
+   dev = object(device_object);
    if (cd.ret != VK_SUCCESS || !dev)
       broken("vkCreateDevice");
    printf("driver: %s on %s, api %u.%u; maxMultiviewViewCount told %u, maxViewports %u, "
@@ -1084,6 +1085,31 @@ static void end_pass(void *cmd)
    struct vn_command_vkCmdEndRenderPass c = { .commandBuffer = (VkCommandBuffer)cmd };
    step("vkCmdEndRenderPass");
    D->dispatch_vkCmdEndRenderPass(D, &c);
+}
+
+/* an imageless framebuffer of one attachment; NULL (with a skip line) where the driver has none */
+static void *imageless_framebuffer(void *rp)
+{
+   const VkFormat fmt = FMT;
+   VkFramebufferAttachmentImageInfo ai = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO,
+                                           .usage = CA_SA, .width = 64, .height = 64, .layerCount = 1,
+                                           .viewFormatCount = 1, .pViewFormats = &fmt };
+   VkFramebufferAttachmentsCreateInfo ac = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO,
+                                             .attachmentImageInfoCount = 1, .pAttachmentImageInfos = &ai };
+   const uint64_t id = next_id++;
+   VkFramebuffer fh = (VkFramebuffer)(uintptr_t)id;
+   VkFramebufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .pNext = &ac,
+                                    .flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT,
+                                    .renderPass = (VkRenderPass)rp, .attachmentCount = 1,
+                                    .width = 64, .height = 64, .layers = 1 };
+   struct vn_command_vkCreateFramebuffer cf = { .device = DEVH, .pCreateInfo = &info, .pFramebuffer = &fh };
+   step("vkCreateFramebuffer (imageless)");
+   D->dispatch_vkCreateFramebuffer(D, &cf);
+   if (cf.ret != VK_SUCCESS || !object(id)) {
+      printf("skip: no imageless framebuffer (%d)\n", cf.ret);
+      return NULL;
+   }
+   return object(id);
 }
 
 static void bind_pipeline(void *cmd, VkPipelineBindPoint point, void *pipe)
@@ -1845,6 +1871,38 @@ static int case_render_pass(const char *c)
          return created(fb);
       begin(w.cmd);
       begin_pass(w.cmd, w.rp, fb, 64, 64);
+      end_pass(w.cmd);
+      return end(w.cmd);
+   }
+   if (IS("r-fb-null-array")) {
+      /* an absent array with a count: the decoder lets it through */
+      const uint64_t id = next_id++;
+      VkFramebuffer hd = (VkFramebuffer)(uintptr_t)id;
+      VkFramebufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                                       .renderPass = (VkRenderPass)w.rp, .attachmentCount = 1,
+                                       .width = 64, .height = 64, .layers = 1 };
+      struct vn_command_vkCreateFramebuffer f = { .device = DEVH, .pCreateInfo = &info, .pFramebuffer = &hd };
+      step("vkCreateFramebuffer: 1 attachment, no array");
+      D->dispatch_vkCreateFramebuffer(D, &f);
+      last_ret = f.ret;
+      return created(object(id));
+   }
+   if (IS("r-begin-null-array")) {
+      void *fb = imageless_framebuffer(w.rp);
+      if (!fb)
+         return SKIP;
+      VkRenderPassAttachmentBeginInfo ab = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
+                                             .attachmentCount = 1 };
+      VkClearValue clear = { 0 };
+      VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .pNext = &ab,
+                                   .renderPass = (VkRenderPass)w.rp, .framebuffer = (VkFramebuffer)fb,
+                                   .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                   .pClearValues = &clear };
+      struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)w.cmd, .pRenderPassBegin = &bi,
+                                                   .contents = VK_SUBPASS_CONTENTS_INLINE };
+      begin(w.cmd);
+      step("vkCmdBeginRenderPass: imageless, 1 attachment, no array");
+      D->dispatch_vkCmdBeginRenderPass(D, &b);
       end_pass(w.cmd);
       return end(w.cmd);
    }
@@ -3646,21 +3704,32 @@ static void *binary_semaphore(void)
  * LEGAL: 64 timeline values with binary semaphores alone (VUIDs VkSubmitInfo-pNext-03240 and
  * -03241 tie the counts only for timeline semaphores): MoltenVK wrote the 63 extra values past
  * its array of one (MVKQueue.mm), seen under libgmalloc. Refused: device group counts that
- * differ from the submit's (VUIDs VkDeviceGroupSubmitInfo-waitSemaphoreCount-00082 ...), and
- * vkQueueBindSparse on a queue without sparse binding (VUID-vkQueueBindSparse-queuetype). */
+ * differ from the submit's (VUIDs VkDeviceGroupSubmitInfo-waitSemaphoreCount-00082 ...),
+ * vkQueueBindSparse on a queue without sparse binding (VUID-vkQueueBindSparse-queuetype), and
+ * a value struct chained twice (VUID-VkSubmitInfo-sType-unique, VUID-VkBindSparseInfo-sType-unique):
+ * vkr fitted the first, MoltenVK used the second and wrote its 64 values past its array. */
 static int case_submit(const char *c)
 {
    setup(0);
    struct vkr_queue *q = device_queue();
    const VkQueue qh = (VkQueue)q;
-   if (IS("s-bind-sparse")) {
-      struct vn_command_vkQueueBindSparse b = { .queue = qh, .bindInfoCount = 0 };
+   static uint64_t values[64], one[1];
+   if (IS("s-bind-sparse") || IS("s-bind-sparse-chain-twice")) {
+      const bool chain = IS("s-bind-sparse-chain-twice");
+      VkTimelineSemaphoreSubmitInfo second = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+      VkTimelineSemaphoreSubmitInfo first = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                              .pNext = &second };
+      VkBindSparseInfo info = { .sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO, .pNext = &first };
+      struct vn_command_vkQueueBindSparse b = { .queue = qh, .bindInfoCount = chain ? 1 : 0,
+                                                .pBindInfo = chain ? &info : NULL };
+      /* no Mac driver has a sparse family: marked here, to reach the chain's check */
+      if (chain)
+         pdev->queue_family_properties[q->family].queueFlags |= VK_QUEUE_SPARSE_BINDING_BIT;
       step("vkQueueBindSparse on a queue of family %u", q->family);
       D->dispatch_vkQueueBindSparse(D, &b);
       return ended() ? FATAL : (b.ret == VK_SUCCESS ? WORKS : ERROR);
    }
    VkSemaphore sem = (VkSemaphore)binary_semaphore();
-   static uint64_t values[64];
    uint32_t indices[2] = { 0, 0 };
    VkTimelineSemaphoreSubmitInfo timeline = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
                                               .signalSemaphoreValueCount = 64, .pSignalSemaphoreValues = values };
@@ -3669,8 +3738,13 @@ static int case_submit(const char *c)
                                      .pSignalSemaphoreDeviceIndices = indices };
    VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = 1,
                            .pSignalSemaphores = &sem };
+   VkTimelineSemaphoreSubmitInfo fits = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                                          .pNext = &timeline, .signalSemaphoreValueCount = 1,
+                                          .pSignalSemaphoreValues = one };
    if (IS("s-submit-values-64"))
       submit.pNext = &timeline;
+   else if (IS("s-submit-chain-twice"))
+      submit.pNext = &fits;
    else if (IS("s-submit-group-counts"))
       submit.pNext = &group;
    else if (!IS("s-submit-ok"))
@@ -3718,8 +3792,7 @@ static struct vkr_buffer *buffer_unbound(VkDeviceSize size)
    return buf;
 }
 
-/* memory dedicated to the image or the buffer (VkMemoryDedicatedAllocateInfo), of its size */
-static struct vkr_device_memory *dedicated_memory(struct vkr_image *img, struct vkr_buffer *buf)
+static VkMemoryRequirements requirements_of(struct vkr_image *img, struct vkr_buffer *buf)
 {
    VkMemoryRequirements req = { 0 };
    if (img) {
@@ -3731,18 +3804,33 @@ static struct vkr_device_memory *dedicated_memory(struct vkr_image *img, struct 
                                                             .pMemoryRequirements = &req };
       D->dispatch_vkGetBufferMemoryRequirements(D, &r);
    }
+   return req;
+}
+
+/* memory with this chain; NULL once a refusal ended the context */
+static struct vkr_device_memory *chained_memory(const void *chain, const VkMemoryRequirements *req)
+{
    const uint64_t id = next_id++;
    VkDeviceMemory h = (VkDeviceMemory)(uintptr_t)id;
-   VkMemoryDedicatedAllocateInfo ded = { .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-                                         .image = (VkImage)img, .buffer = (VkBuffer)buf };
-   VkMemoryAllocateInfo info = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &ded,
-                                 .allocationSize = req.size, .memoryTypeIndex = memory_type(req.memoryTypeBits) };
+   VkMemoryAllocateInfo info = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = chain,
+                                 .allocationSize = req->size, .memoryTypeIndex = memory_type(req->memoryTypeBits) };
    struct vn_command_vkAllocateMemory a = { .device = DEVH, .pAllocateInfo = &info, .pMemory = &h };
-   step("vkAllocateMemory %llu bytes dedicated to a%s", (unsigned long long)req.size, img ? "n image" : " buffer");
+   step("vkAllocateMemory %llu bytes, dedicated", (unsigned long long)req->size);
    D->dispatch_vkAllocateMemory(D, &a);
+   if (ended())
+      return NULL;
    if (a.ret != VK_SUCCESS || !object(id))
       broken("dedicated vkAllocateMemory");
    return object(id);
+}
+
+/* memory dedicated to the image or the buffer (VkMemoryDedicatedAllocateInfo), of its size */
+static struct vkr_device_memory *dedicated_memory(struct vkr_image *img, struct vkr_buffer *buf)
+{
+   const VkMemoryRequirements req = requirements_of(img, buf);
+   VkMemoryDedicatedAllocateInfo ded = { .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                         .image = (VkImage)img, .buffer = (VkBuffer)buf };
+   return chained_memory(&ded, &req);
 }
 
 static VkResult bind_image_at(struct vkr_image *img, struct vkr_device_memory *mem)
@@ -3771,14 +3859,44 @@ static void free_memory(struct vkr_device_memory *mem)
  * the memory freed (MoltenVK kept the target in the memory and wrote to it at the free:
  * freed memory, seen under libgmalloc), also when the app's context ends in between; bound,
  * then destroyed and freed. Refused (the bind ends the context): another image on memory
- * dedicated to one (VUID-vkBindImageMemory-memory-02628; MoltenVK took an ALIAS_BIT image
- * there without counting it, and locked the freed memory's mutex at its destroy), a buffer
- * on memory dedicated to an image (VUID-vkBindBufferMemory-memory-10925). */
+ * dedicated to one (VUID-vkBindImageMemory-memory-02628), a buffer on memory dedicated to an
+ * image (VUID-vkBindBufferMemory-memory-10925). Two ALIAS_BIT images on such memory are what
+ * guest Mesa binds for VkBindImageMemorySwapchainInfoKHR: they work on KosmicKrisp, which
+ * ignores dedicated allocations, and stay refused on MoltenVK, which took the second image
+ * without counting it and locked the freed memory's mutex at its destroy. Refused at the
+ * allocation (the chain names one thing for vkr and another for MoltenVK, whose loop keeps
+ * the last, VUID-VkMemoryAllocateInfo-sType-unique): a dedicated struct chained twice, the
+ * first naming image A or nothing, then image B destroyed before the free; a target of
+ * another device. */
 static int case_dedicated(const char *c)
 {
    setup(0);
-   const bool alias = IS("x-dedicated-alias");
+   const bool alias = IS("x-dedicated-alias"), half = IS("x-dedicated-alias-half");
    const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   if (IS("x-dedicated-chain-twice") || IS("x-dedicated-chain-null")) {
+      struct vkr_image *a = image_unbound(0, FMT, usage), *b = image_unbound(0, FMT, usage);
+      const VkMemoryRequirements req = requirements_of(b, NULL);
+      VkMemoryDedicatedAllocateInfo second = { .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                               .image = (VkImage)b };
+      VkMemoryDedicatedAllocateInfo first = { .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                              .pNext = &second,
+                                              .image = IS("x-dedicated-chain-twice") ? (VkImage)a : VK_NULL_HANDLE };
+      struct vkr_device_memory *mem = chained_memory(&first, &req);
+      if (!mem)
+         return FATAL;
+      destroy_image(b);
+      free_memory(mem);
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("x-dedicated-other-device")) {
+      struct vkr_image *a = image_unbound(0, FMT, usage);
+      const VkMemoryRequirements req = requirements_of(a, NULL);
+      setup_device(0);
+      VkMemoryDedicatedAllocateInfo ded = { .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                            .image = (VkImage)a };
+      chained_memory(&ded, &req);
+      return ended() ? FATAL : WORKS;
+   }
    if (IS("x-dedicated-buffer-unbound-ok")) {
       struct vkr_buffer *buf = buffer_unbound(65536);
       struct vkr_device_memory *mem = dedicated_memory(NULL, buf);
@@ -3803,8 +3921,10 @@ static int case_dedicated(const char *c)
       vkr_context_destroy(ctx);
       step("the context is gone");
       return WORKS;
-   } else if (IS("x-dedicated-other") || alias) {
-      struct vkr_image *b = image_unbound(alias ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
+   } else if (IS("x-dedicated-other") || alias || half) {
+      if (alias)
+         expect(!kosmickrisp);
+      struct vkr_image *b = image_unbound(alias || half ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
       bind_image_at(b, mem);
       if (!ended()) {
          free_memory(mem);
@@ -3868,9 +3988,12 @@ static int views_case(const char *c, struct world *w)
    void *cmd = w->cmd;
    void *v = view(w->img, 1);
    void *views[1] = { v };
-   if (IS("c-state-destroyed-view-rendering")) {
+   /* LEGAL: with no resolve the resolve view is ignored, destroying it changes nothing */
+   const bool ignored = IS("c-state-destroyed-view-resolve-none-ok");
+   if (IS("c-state-destroyed-view-rendering") || ignored) {
+      void *other = ignored ? view(w->img, 1) : NULL;
       VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-                                        .imageView = (VkImageView)v,
+                                        .imageView = (VkImageView)v, .resolveImageView = (VkImageView)other,
                                         .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                                         .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
@@ -3879,7 +4002,7 @@ static int views_case(const char *c, struct world *w)
       struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderingInfo = &ri };
       step("vkCmdBeginRendering");
       D->dispatch_vkCmdBeginRendering(D, &b);
-      destroy_view(v);
+      destroy_view(ignored ? other : v);
       if (!ended()) {
          struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)cmd };
          step("vkCmdEndRendering");
@@ -3888,31 +4011,15 @@ static int views_case(const char *c, struct world *w)
       return end(cmd);
    }
    if (IS("c-state-destroyed-view-imageless")) {
-      const VkFormat fmt = FMT;
-      VkFramebufferAttachmentImageInfo ai = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO,
-                                              .usage = CA_SA, .width = 64, .height = 64, .layerCount = 1,
-                                              .viewFormatCount = 1, .pViewFormats = &fmt };
-      VkFramebufferAttachmentsCreateInfo ac = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO,
-                                                .attachmentImageInfoCount = 1, .pAttachmentImageInfos = &ai };
-      const uint64_t id = next_id++;
-      VkFramebuffer fh = (VkFramebuffer)(uintptr_t)id;
-      VkFramebufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .pNext = &ac,
-                                       .flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT,
-                                       .renderPass = (VkRenderPass)w->rp, .attachmentCount = 1,
-                                       .width = 64, .height = 64, .layers = 1 };
-      struct vn_command_vkCreateFramebuffer cf = { .device = DEVH, .pCreateInfo = &info, .pFramebuffer = &fh };
-      step("vkCreateFramebuffer (imageless)");
-      D->dispatch_vkCreateFramebuffer(D, &cf);
-      if (cf.ret != VK_SUCCESS || !object(id)) {
-         printf("skip: no imageless framebuffer (%d)\n", cf.ret);
+      void *fb = imageless_framebuffer(w->rp);
+      if (!fb)
          return SKIP;
-      }
       VkImageView vh = (VkImageView)v;
       VkRenderPassAttachmentBeginInfo ab = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
                                              .attachmentCount = 1, .pAttachments = &vh };
       VkClearValue clear = { 0 };
       VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .pNext = &ab,
-                                   .renderPass = (VkRenderPass)w->rp, .framebuffer = (VkFramebuffer)object(id),
+                                   .renderPass = (VkRenderPass)w->rp, .framebuffer = (VkFramebuffer)fb,
                                    .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
                                    .pClearValues = &clear };
       struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
@@ -4003,6 +4110,7 @@ static const struct test_case cases[] = {
    { "r-att-ref-oob", E_REFUSE }, { "r-att-ref-far", E_REFUSE },
    { "r-colors-max", E_WORKS }, { "r-colors-over", E_REFUSE }, { "r-colors-16", E_REFUSE },
    { "r-fb-fewer", E_REFUSE }, { "r-fb-huge", E_REFUSE }, { "r-begin-clear-short", E_REFUSE },
+   { "r-fb-null-array", E_REFUSE }, { "r-begin-null-array", E_REFUSE },
    { "r-multiview-3", E_WORKS }, { "r-multiview-all", E_CHILD }, { "r-dyn-viewmask-all", E_CHILD },
    { "r-mv-legal-2", E_CHILD }, { "r-mv-legal-4", E_CHILD }, { "r-mv-legal-8", E_CHILD },
    { "r-mv-legal-9", E_CHILD }, { "r-mv-legal-12", E_CHILD }, { "r-mv-legal-16", E_CHILD },
@@ -4086,6 +4194,7 @@ static const struct test_case cases[] = {
    { "c-state-destroyed-view-begin", E_REFUSE }, { "c-state-destroyed-view-next", E_REFUSE },
    { "c-state-destroyed-view-end", E_REFUSE }, { "c-state-destroyed-view-imageless", E_REFUSE },
    { "c-state-destroyed-view-rendering", E_REFUSE }, { "c-state-destroyed-view-after-ok", E_WORKS },
+   { "c-state-destroyed-view-resolve-none-ok", E_WORKS },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
    { "c-region-i2b-max", E_WORKS }, { "c-region-i2b-past", E_REFUSE },
@@ -4101,9 +4210,13 @@ static const struct test_case cases[] = {
    { "f-sets-dup", E_REFUSE, "named twice" }, { "f-sets-other-pool", E_REFUSE, "of another pool" },
    { "s-submit-ok", E_WORKS }, { "s-submit-values-64", E_WORKS },
    { "s-submit-group-counts", E_REFUSE, "device group counts" }, { "s-bind-sparse", E_REFUSE, "no sparse binding" },
+   { "s-submit-chain-twice", E_REFUSE, "chained twice" }, { "s-bind-sparse-chain-twice", E_REFUSE, "chained twice" },
    { "x-dedicated-bound-ok", E_WORKS }, { "x-dedicated-unbound-ok", E_WORKS },
    { "x-dedicated-buffer-unbound-ok", E_WORKS }, { "x-dedicated-context-end-ok", E_WORKS },
-   { "x-dedicated-other", E_REFUSE, "dedicated to another" }, { "x-dedicated-alias", E_REFUSE, "dedicated to another" },
+   { "x-dedicated-other", E_REFUSE, "dedicated to another" }, { "x-dedicated-alias", E_CHILD, "dedicated to another" },
+   { "x-dedicated-alias-half", E_REFUSE, "dedicated to another" },
+   { "x-dedicated-chain-twice", E_REFUSE, "chained twice" }, { "x-dedicated-chain-null", E_REFUSE, "chained twice" },
+   { "x-dedicated-other-device", E_REFUSE, "another device" },
    { "x-dedicated-buffer-to-image", E_REFUSE, "dedicated to another" },
    { "m-alloc0-device", E_KEEP }, { "m-alloc0-host", E_KEEP },
 };
