@@ -651,7 +651,7 @@ final class GPUMemoryWatch {
         a.addButton(withTitle: "Restart the Desktop")
         a.addButton(withTitle: "Later")
         alert = a
-        AskKeys.take(a.window, overVM: AppDelegate.qemuApp?.processIdentifier)
+        AskKeys.take(a.window, overVM: qemuPID)
         // Comes with no warning, and Return restarts the desktop.
         AskKeys.hold(a)
         let answer = a.runModal()
