@@ -5,8 +5,9 @@ writes clip distances. A vertex, tessellation or geometry shader that writes gl_
 compiles and clips; user clip planes (glClipPlane in a compatibility context) clip after the
 last vertex, tessellation evaluation or geometry shader. A tessellation evaluation shader that
 is the last stage before the fragment shader gets the y prescale and its transform feedback
-stores, as a vertex shader does. gl_CullDistance is still never declared there: a shader that
-writes one stays refused, as before.
+stores, as a vertex shader does. A vertex shader still never declares gl_CullDistance there
+(geometry and tessellation shaders declare it as before and stop at GL_ARB_cull_distance): a
+shader that writes one stays refused, as before.
 Why: vrend took "has cull distances" for "has clip distances". gl_ClipDistance is core in
 desktop GLSL 1.30; only GLES needs EXT_clip_cull_distance, which the cull distance feature
 stands for there. On the Mac a shader that wrote gl_ClipDistance did not compile (it wrote an
@@ -22,15 +23,18 @@ last vertex or tessellation evaluation shader, set only on a desktop GL without 
 distances. A shader drawn without clip planes keeps its GLSL byte for byte; programs drawn
 with planes on and off get one more variant. A last tessellation evaluation shader now uses
 vrend's VirglBlock (one uniform block binding), as the vertex and geometry shaders do. A
-loose gl_ClipDistance only appears in a last stage that is not separable and a gl_PerVertex
-block only in a stage that is not last or in a separable one, so the two never meet (that
-crashed Apple's GLSL compiler, virgl-567). The clip distance members that
+loose out gl_ClipDistance only appears in a last stage that is not separable and an out
+gl_PerVertex block only in a stage that is not last or in a separable one, so the two never
+meet (that crashed Apple's GLSL compiler, virgl-567). A whole geometry shader that passes clip
+distances on has an in gl_PerVertex block beside its loose out gl_ClipDistance; Apple's
+compiler takes that (software renderer, M4 and M1 Max GPUs). The clip distance members that
 virgl-shader-separable-pervertex.patch puts into a separable stage's block now apply on the
 Mac too.
 Upstream: the same gates in virglrenderer main (e0a1caf3, checked 2026-10-31); not sent.
-Test: Tests/virgl/test-whole-program-shapes.c rows A, B and C (12 fail without this patch,
-also with planes switched on and off for one program), Tests/virgl/test-core-glsl-shaders.c
-(exact texts unchanged).
+Test: Tests/virgl/test-whole-program-shapes.c rows A, B and C (16 fail without this patch,
+also with planes switched on and off for one program, and clip distances passed on by a
+geometry shader or by tessellation shaders, whole and separable),
+Tests/virgl/test-core-glsl-shaders.c (exact texts unchanged).
 
 --- a/src/vrend/vrend_renderer.c
 +++ b/src/vrend/vrend_renderer.c
