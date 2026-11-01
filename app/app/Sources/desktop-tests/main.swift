@@ -638,9 +638,30 @@ expect(MemoryGiveBack.compactionWords(ran) == "compacted its free memory: 1.2 GB
        "the compaction's words")
 expect(MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=1191 small_to=600 cpt=cap cpt_ms=10000", maxMB: 8192)!)
        .hasSuffix("(10.0 s, stopped at its time cap)")
-       && MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=90 cpt=small", maxMB: 8192)!) == "90 MB free in blocks too small to give back"
-       && MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=900 cpt=busy", maxMB: 8192)!) == "no compaction (the VM was waiting for memory)",
+       && MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=90 cpt=small", maxMB: 8192)!)
+          == "had 90 MB free in blocks too small to give back (under 256 MB: not compacted)"
+       && MemoryGiveBack.compactionWords(MemoryGiveBack.Result.parse("act=none small=900 cpt=busy", maxMB: 8192)!)
+          == "did not compact (it was waiting for memory)",
        "  at its cap, too little to compact, the VM busy")
+// The whole qemu.log line of the compaction after the drop, for every answer giveback.sh compact can give.
+let afterDrop = "OmacVM: after the drop, macOS's pressure normal again: the VM "
+for (answer, words) in [
+    ("mode=compact act=compact small=564 small_to=104 cpt=ran cpt_ms=500", "compacted its free memory: 564 MB -> 104 MB in blocks too small to give back (0.5 s)"),
+    ("mode=compact act=compact small=1191 small_to=600 cpt=cap cpt_ms=10000",
+     "compacted its free memory: 1.2 GB -> 600 MB in blocks too small to give back (10.0 s, stopped at its time cap)"),
+    ("mode=compact act=compact small=90 small_to=90 cpt=small", "had 90 MB free in blocks too small to give back (under 256 MB: not compacted)"),
+    ("mode=compact act=compact small=900 small_to=900 cpt=busy", "did not compact (it was waiting for memory)"),
+    ("mode=compact act=compact small=900 small_to=900 cpt=nopsi", "did not compact (its kernel has no memory pressure numbers)"),
+    ("mode=compact act=compact small=900 small_to=900 cpt=no", "did not compact (its kernel or tools cannot)"),
+    ("mode=compact act=compact small=900 small_to=900 cpt=time", "did not compact (no time left)"),
+    ("mode=compact act=compact small=900 small_to=100 cpt=fail cpt_ms=3", "did not compact (its kernel refused)"),
+    ("mode=compact act=locked small=900 small_to=900 cpt=skip", "did not compact (another give-back still ran in it)"),
+    ("mode=compact act=norep small=900 small_to=900 cpt=skip rep=0", "did not compact (its balloon does not report free pages)"),
+    ("mode=compact act=compact small=900 small_to=900 cpt=skip", "did not compact"),
+] {
+    let got = MemoryGiveBack.afterDropLine(MemoryGiveBack.Result.parse(answer, maxMB: 8192)!)
+    expect(got == afterDrop + words, "after the drop, \(answer): \"\(got)\"")
+}
 var ist = MemoryGiveBack.Status()
 ist.idle = 4; ist.idleMB = 2150; ist.idleAt = 1_793_177_520
 expect(ist.text.contains("\ncount=0\n") || ist.text.hasPrefix("count=0\n"), "idle give-backs do not count in count= (omacvm check's N times)")

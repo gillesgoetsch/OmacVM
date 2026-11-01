@@ -485,7 +485,8 @@ public struct MemoryGiveBack: Sendable {
         return mb < 1024 ? "\(mb) MB" : String(format: "%.1f GB", Double(bytes) / Double(gib))
     }
 
-    /// qemu.log's words for the compaction step of an answer.
+    /// qemu.log's words for the compaction step of an answer, after "the VM"
+    /// or "it ... and": what it did, or that it did not compact and why.
     public static func compactionWords(_ r: Result) -> String {
         func g(_ mb: Int) -> String { gb(UInt64(max(mb, 0)) * mib) }
         let secs = String(format: "%.1f s", Double(r.compactionMS) / 1000)
@@ -493,14 +494,26 @@ public struct MemoryGiveBack: Sendable {
         case "ran", "cap":
             return "compacted its free memory: \(g(r.smallFreeMB)) -> \(g(r.smallAfterMB)) in blocks too small to give back ("
                 + secs + (r.compaction == "cap" ? ", stopped at its time cap)" : ")")
-        case "small": return "\(g(r.smallFreeMB)) free in blocks too small to give back"
-        case "busy": return "no compaction (the VM was waiting for memory)"
-        case "nopsi": return "no compaction (its kernel has no memory pressure numbers)"
-        case "no": return "no compaction (its kernel or tools cannot)"
-        case "time": return "no compaction (no time left)"
-        case "fail": return "no compaction (its kernel refused)"
-        default: return "\(g(r.smallFreeMB)) free in blocks too small to give back"
+        case "small": return "had \(g(r.smallFreeMB)) free in blocks too small to give back (under 256 MB: not compacted)"
+        case "busy": return "did not compact (it was waiting for memory)"
+        case "nopsi": return "did not compact (its kernel has no memory pressure numbers)"
+        case "no": return "did not compact (its kernel or tools cannot)"
+        case "time": return "did not compact (no time left)"
+        case "fail": return "did not compact (its kernel refused)"
+        default: return "did not compact"
         }
+    }
+
+    /// qemu.log's line for the answer to the compaction after the drop
+    /// (giveback.sh compact): locked (another run of the script) and norep
+    /// (no free page reporting) ran nothing.
+    public static func afterDropLine(_ r: Result) -> String {
+        let words = switch r.act {
+        case "locked": "did not compact (another give-back still ran in it)"
+        case "norep": "did not compact (its balloon does not report free pages)"
+        default: compactionWords(r)
+        }
+        return "OmacVM: after the drop, macOS's pressure normal again: the VM " + words
     }
 
     /// logs/memory-giveback: the last give-back of this run, for omacvm check.

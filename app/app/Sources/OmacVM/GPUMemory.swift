@@ -341,7 +341,7 @@ final class GPUMemoryWatch {
             return
         }
         guard let r = answer(outcome, cap, "compaction after the drop") else { return }
-        log("OmacVM: after the drop, macOS's pressure normal again: the VM " + MemoryGiveBack.compactionWords(r))
+        log(MemoryGiveBack.afterDropLine(r))
     }
 
     /// QEMU's reclaim fix found macOS keeping the pages the VM gives back (a
