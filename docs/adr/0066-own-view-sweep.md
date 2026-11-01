@@ -257,11 +257,11 @@ lane's architecture review; work/followups-3217/sweep-safe).
   QEMU never unmaps, maps, protects or deallocates its view itself.
 - **What remains.** Disk and network threads and Venus' ring threads do not
   take the BQL. In the time between a remap that went wrong and the end of
-  mapping back (microseconds: 44-101 us for a chunk without page table
-  entries in the test, about 1.1-1.5 ms for one QEMU had touched all over)
-  a transfer through that chunk can read or write the wrong page. 3.2.17
-  had the same window before its abort. It only matters on a macOS that
-  does what the trial did not show.
+  mapping back, a transfer through that chunk can read or write the wrong
+  page: 44-118 us in the unit test for a chunk without page table entries,
+  0.8-4.3 ms for one QEMU had touched all over, 2.2 ms in the M1 VM row
+  (below). 3.2.17 had the same window before its abort. It only matters on
+  a macOS that does what the trial did not show.
 - **Precondition**: guest RAM is not wired by the kernel: no mlock, no
   `-overcommit mem-lock` (turns the sweep off) and no raw disk device for a
   VM disk (OmacVM.app's disks are files).
@@ -294,4 +294,34 @@ lane's architecture review; work/followups-3217/sweep-safe).
   its calls): `--diverge`, `--hole` and `--dip` stop QEMU, `--chunk` leaves
   QEMU's view other memory than the guest's
   (work/followups-3217/sweep-safe/old-block-6fddfa70.txt).
+- VM rows, MacBook Pro M1 Max (macOS 27.0.1), a hidden 4 GB test VM (4
+  vCPUs, a clone updated to 3.2.17) with a test app of this branch,
+  `OMACVM_DCOUNT_SWEEP=60`, one take (work/followups-3217/sweep-safe/raw/m1):
+  - default: the one start line "on: ... (after a trial on scratch memory
+    mapped by the hypervisor, 1.2 ms; ...)"; U 106 MB right after the first
+    pass (3.2.17's release gate on the mini: 183-205 MB); 1477 MB after
+    2.5 GB of reads, 114 MB after the next pass; a 300+ MB file's sha256 the
+    same from the cache and from the disk after a pass, 300 MB written and
+    read back the same; per chunk p99 and longest 7.85 ms; check: no "off".
+  - `canary`: the one start line "off (a trial remap on scratch memory: the
+    remap at +0 MB changed QEMU's view (...); mapped back)"; QMP says
+    running; no pass; U 1305 MB after the boot and 1845 MB after the reads,
+    as up to 3.2.16; check's row ends "QEMU's own-view sweep is off for this
+    run: a trial remap on scratch memory: ...".
+  - `chunk:1` (the second pass, the guest idle): "stopped for this run:
+    mapped back after 2193 us: the remap at +256 MB changed QEMU's view
+    (...)"; QMP says running; the file's sha256 the same before, from the
+    cache and from the disk after; 300 MB written and read back the same;
+    the run's line "34 chunks remapped, 1 mapped back", p99 and longest
+    10.13 ms; check says why.
+  - 0 host GPU faults, 0 tccd "Notifying" lines.
+- GitHub's macos-15 (a manual "Run workflow", run 41254137128): memory-dcount
+  40 of 40, test-dcount all ok on the second-mapping path (no hypervisor for
+  the runner's processes: `--hv` skipped), activity-monitor ok.
+- macOS 26.6.2 and 15.7.7 in headless VMs on the M1 (followups-3217/host,
+  work/tracks/vm-memory.md "sweep on macOS 26 and 15"): this branch's
+  test-dcount all ok on the second-mapping path (the trial passes, 1.1 and
+  1.4 ms; the hook's cases as on macOS 27), and 3.2.17's sweep does not
+  diverge there either. The real `hv_vm_map` rows need a Mac that runs
+  macOS 26 or 15 itself (no nested virtualization on the M1): OWED.
 

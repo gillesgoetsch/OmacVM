@@ -13,8 +13,10 @@ in more words.
   same memory or takes more than 3 seconds (qemu.log: "own-view sweep: off (why)"). During the run
   it keeps a spare mapping of each chunk while it remaps it, maps a chunk back if the remap changed
   it, and stops the sweep; the VM keeps running. QEMU stops only if mapping back fails too.
-  `omacvm check`'s "Activity Monitor" row says why the sweep is off. Needs the app update, from the
-  VM's next start; nothing in the VM.
+  `omacvm check`'s "Activity Monitor" row says why the sweep is off. Checked in a hidden test VM on a
+  MacBook Pro M1 Max (macOS 27): the sweep as before, and with each failure made on purpose the VM
+  kept running and its files read back the same; its tests also pass on macOS 15 and 26. Needs the app
+  update, from the VM's next start; nothing in the VM.
 
 ## 3.2.17
 
