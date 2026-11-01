@@ -36,17 +36,24 @@ itself: the alert shows at modal level, without the keys.
 
 - A question from the VM's side (USB question and notices, USB list, lost
   desktop, why the VM started again, Features… problems, the update's shutdown
-  timeout) takes the keys only with the VM, this app or no app in front. In
-  front of another app the person keeps the keys; the window floats, a click
-  answers it. USB asks only with the VM or the app in front anyway.
+  timeout, a VM that did not wake) takes the keys only with the VM, this app or
+  no app in front. In front of another app the person keeps the keys; the
+  window floats, a click answers it. USB asks only with the VM or the app in
+  front anyway.
 - A question about a start the person just asked for (start on another Mac,
   Mac setup, fast network) takes them always: the start waits for it, also
   from `omacvm start` in a terminal.
+- The same questions before a start that comes by itself follow the first rule
+  (`startVM(personAsked: false)`): the start after an update's install, after
+  Update VM, after a disk cut. It can come minutes after the person's last
+  click, when they work in another app and Return would answer the question.
 - Each of them floats on every Space and over a full-screen window, so that
   taking the keys does not move the person to another Space.
 - USB's half second with the buttons off, now `AskKeys.hold`, also covers the
-  lost-desktop question: until now Return typed into a VM could not reach it,
-  and Return there restarts the desktop.
+  questions Return could not reach until now and where it does something: the
+  lost desktop (restarts the desktop), Mac setup (runs the fix) and the fast
+  network's first question (starts the service update). The others default to
+  Cancel or have one button that does no harm.
 
 `showWindow` stays on `NSApp.activate()`: the app's window after a VM ended
 asks nothing, so it can wait for the person.
