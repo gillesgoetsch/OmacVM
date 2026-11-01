@@ -274,9 +274,9 @@ and library against this change with the switch on
 CRITICAL and export lines 0 in every row; qemu.log refused / lost /
 assertion lines 0. Zink set by hand with one scroll run: 1330 (M1) and 1336
 (mini) GTK CRITICAL lines with the 3.2.16 library, 0 and 0 with this one. A
-30-minute soak (M1, output at 2,400 lines/s): alive, drawing, typing after,
-resident memory 140 -> 141 MB, 0 lines. Omarchy's screensaver in Ghostty on
-two outputs at scale 2, whole-Mac power of the Mac mini in one session (180 s
+30-minute soak on each Mac (output at 2,400 lines/s): alive, drawing in 29
+of 30 samples, typing after, resident memory 140 -> 141 MB, 0 lines.
+Omarchy's screensaver in Ghostty on two outputs at scale 2, whole-Mac power of the Mac mini in one session (180 s
 windows; another app kept a core busy all along): no screensaver 34.6 / 35.9
 W, in Ghostty on llvmpipe 53.1 / 53.8 W (guest 690 / 694 CPU-s), in foot 39.0
 W, in Ghostty on Zink 40.0 / 41.0 W (guest 103 / 100 CPU-s, Mac GPU 44 %).
@@ -296,8 +296,10 @@ does on llvmpipe.
 
 ### Consequences
 
-- A lost Venus context hangs that Ghostty (said in the (i); the lost-context
-  work notes it and keeps the next Ghostty on the CPU, `gl-zink-off`).
+- A lost Venus context hangs that Ghostty (said in the (i)). This change
+  only reads `/run/omacvm/gl-zink-off`: once the lost-context work writes it
+  after such a loss, the next Ghostty of that boot starts on the CPU; without
+  that work nothing writes it, and the next Ghostty starts on Zink again.
 - The forced 4.3 claims transform feedback and geometry shaders KosmicKrisp
   lacks: a Ghostty version that uses them would be refused and land in that
   hang. Ghostty 1.3.1 and 1.4.0 use neither.
@@ -307,10 +309,13 @@ does on llvmpipe.
   Ghostty +164-278 MB; Mac mini: one window +171 MB; the investigation's
   separate processes 150-290 MB each). Past the budget its Venus context is lost: with a 384 MB budget and
   Chromium on WebGL Aquarium first, a Ghostty on Zink ended at its start
-  ("venus context N (ghostty) is lost", the guest driver ended it), with and
-  without `VN_PERF=no_async_mem_alloc` (so the library does not set it); one
-  on llvmpipe opened and took typing.
+  ("venus context N (ghostty) is lost", the guest driver ended it); one on
+  llvmpipe opened and took typing. Started with
+  `VN_PERF=no_async_mem_alloc` it ended the same way, but those rows cannot
+  show the variable reached it (it ended first); the same start passed it on
+  at 1024 MB on the Mac mini, not on the M1 Max. The library does not set it.
 - Not measured: M2 and M3 GPUs, MacBook Air (off limits during the lane).
-- Default stays off. On by default only after the lost-context work, a soak
-  on both Macs, the browser rows and the 1.4.0 rows; without the override
-  once KosmicKrisp has transform feedback (upstream MR 44928).
+- Default stays off. The soaks on both Macs and the 1.4.0 rows passed; on by
+  default only after the lost-context work and the M1 Max's browser rows
+  (left out above); without the override once KosmicKrisp has transform
+  feedback (upstream MR 44928).
