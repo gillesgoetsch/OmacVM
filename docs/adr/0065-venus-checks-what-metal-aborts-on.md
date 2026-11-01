@@ -1,7 +1,7 @@
 # 0065: Venus checks what the Mac's Vulkan driver aborts on
 
 Status: accepted, built (`zink-abort`, 3.2.14), always on; amended in 3.2.15
-(`venus-robust`, "What else vkr refuses" below), 3.2.17 (`venus-624`,
+(`venus-robust`, "What else vkr refuses" below), 3.2.18 (`venus-624`,
 "Indices, counts and offsets" below) and 3.2.18 (`venus-624-c`, "Frees,
 submits, dedicated memory, replies, threads and pass views" below). Amends
 [0012](0012-venus-in-process.md). Notes, probes and the reviews:
@@ -187,7 +187,7 @@ once, thread exhaustion, duplicate frees, `vkQueueBindSparse` ranges, binds
 that do not match a dedicated allocation, and the asserts in the render server
 and proxy (the fence and ring ones are checked before them).
 
-## Indices, counts and offsets (amendment, 3.2.17)
+## Indices, counts and offsets (amendment, 3.2.18)
 
 Lane `venus-624` (#624). What was left open above: pipelines and shader
 modules, render passes and framebuffers, descriptor writes and `vkCmd*`

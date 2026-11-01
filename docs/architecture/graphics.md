@@ -631,7 +631,7 @@ Patches (all in `app/runtime/patches`, one per concern):
   `/run/omacvm/gl-zink-off`); `Tests/virgl/test-venus-lost-count.c`.
 - `virgl-venus-command-limits.patch`, `virgl-venus-descriptor-limits.patch`,
   `virgl-venus-render-pass-limits.patch`, `virgl-venus-pipeline-limits.patch`
-  (ADR 0065's second amendment, 3.2.17): guest indices, counts, offsets,
+  (ADR 0065's second amendment, 3.2.18): guest indices, counts, offsets,
   strides and enum values in `vkCmd*`, queries, descriptor sets and layouts,
   render passes and pipelines are bounded by the device's limits
   (`struct vkr_limits`) and what the objects were made with (a refcounted
@@ -643,7 +643,7 @@ Patches (all in `app/runtime/patches`, one per concern):
   command buffers; `venus-command-ledger.tsv` has a verdict per `vkCmd*`.
 - `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch`,
   `virgl-venus-copy-regions.patch`, `virgl-venus-pipeline-formats.patch`
-  (3.2.17): commands only where Vulkan allows them (per command buffer: the
+  (3.2.18): commands only where Vulkan allows them (per command buffer: the
   open pass, the bound pipelines, recording); guest SPIR-V through a
   structural scan (`vkr_spirv.c`: header, instructions, id bound, entry
   points, workgroup sizes, the descriptor sets an entry point's call graph

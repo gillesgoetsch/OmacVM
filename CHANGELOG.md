@@ -182,7 +182,7 @@ nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing c
   image destroyed before it was bound to its memory, an image view destroyed while a render pass on
   it was being recorded, or Vulkan contexts, rings and devices made without end until QEMU could not
   start a thread. Each of these now ends only that program's Vulkan connection, or the call fails,
-  and QEMU's log says why (troubleshooting 52). Replies to the VM no longer carry old bytes of
+  and QEMU's log says why (troubleshooting 55). Replies to the VM no longer carry old bytes of
   QEMU's memory where the Mac's driver wrote nothing. Legal uses that ended a program before now
   work: a descriptor update that starts in or runs on into the next binding (also over bindings of
   different sizes, which the Mac's drivers had written past their set), an attachment no subpass
@@ -200,7 +200,7 @@ nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing c
   against the GPU's limits and what the app made, and a program that sends such a value loses only
   its own Vulkan connection: it ends and the VM goes on. QEMU's log says "venus context N (app) is
   lost"; the refused call and its values are on a separate "vkr: <app>: <call> refused: ..." line,
-  written for the 1st, 2nd, 4th, 8th ... refusal since the VM started (troubleshooting 52). Apps
+  written for the 1st, 2nd, 4th, 8th ... refusal since the VM started (troubleshooting 55). Apps
   that are correct are not affected; one that relied on such a value now ends (Graphics: OpenGL, in
   the VM window or `omacvm graphics --vm NAME opengl`, avoids Venus for it). With KosmicKrisp a pass
   with more than 8 views (Apple M1; the count Metal supports on the Mac) ended the VM although the
@@ -215,7 +215,7 @@ nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing c
   which the Mac's GPU would have run outside the resource, are refused too. So is the next subpass
   or the end of a render pass the program destroyed while still recording into it (the Mac's driver
   read the freed pass). Such a program now loses only its own Vulkan connection, with the refused
-  call in QEMU's log (troubleshooting 52). Shaders are scanned once when the app makes them; correct
+  call in QEMU's log (troubleshooting 55). Shaders are scanned once when the app makes them; correct
   shaders are not affected. Needs the app update.
 
 ## 3.2.17

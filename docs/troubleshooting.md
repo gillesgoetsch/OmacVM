@@ -1705,7 +1705,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 - **Where:** `src/app/guest/50-omacvm-chrome.drirc`; test
   `src/app/guest/tests/test_chrome_drirc.py`;
   [graphics.md](architecture/graphics.md).
-## 52. app: Ghostty on the Mac's GPU stops drawing, or a Vulkan app ends
+
+## 53. app: Ghostty on the Mac's GPU stops drawing, or a Vulkan app ends
 
 - **Symptom:** in an OmacVM.app VM with Graphics on Vulkan, a Ghostty that
   draws through Zink on the Mac's GPU (set up by hand, for example) stops
@@ -1747,7 +1748,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `src/tests/app-desktop-recovery.sh`, `src/tests/desktop-recover-gpu.sh`),
   `src/cmd/check.sh` (`src/tests/gpu-contexts-check.sh`); ADR 0038's 3.2.18
   amendment.
-## 52. app: a desktop OpenGL program draws nothing, upside down or without its clipping
+
+## 54. app: a desktop OpenGL program draws nothing, upside down or without its clipping
 
 - **Symptom:** in an OmacVM.app VM, a desktop OpenGL program (an app or game, not a browser) draws
   nothing where a shader writes gl_ClipDistance (qemu.log: "the host refused a shader (compile)",
@@ -1772,7 +1774,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `app/runtime/Tests/virgl/test-whole-program-shapes.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.
-## 52. app: a Vulkan app ends, the VM goes on
+
+## 55. app: a Vulkan app ends, the VM goes on
 
 - **Symptom:** in an OmacVM.app VM with Graphics on Vulkan, one Vulkan app (a
   game, a tool, Chromium's GPU process) ends or says its device was lost,
@@ -1782,10 +1785,10 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   Or, with very many Vulkan apps or devices at once, a new one does not start:
   `vkr: N threads for guest calls already (at most 1024): the ... is not made`
   or `proxy: N Venus contexts already ...`.
-- **Cause:** from 3.2.17 OmacVM.app checks the indices, counts, offsets and
+- **Cause:** from 3.2.18 OmacVM.app checks the indices, counts, offsets and
   values a Vulkan app sends against the Mac GPU's limits and what the app
   made (ADR 0065). The Mac's Vulkan drivers use such values as memory
-  addresses; before 3.2.17 a wrong one could stop the whole VM. The app sent
+  addresses; before 3.2.18 a wrong one could stop the whole VM. The app sent
   one the Vulkan spec does not allow (an app bug), so only its connection
   ends. The line names the call and the values; only the 1st, 2nd, 4th, 8th
   ... refusal since the VM started is logged.
