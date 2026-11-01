@@ -51,7 +51,8 @@ mkdir -p "$H" "$T/settings"
 defaults write "$D" vmsRoot "$V"
 run() { HOME=$H CFFIXED_USER_HOME=$H OMACVM_SETTINGS_DIR=$T/settings OMACVM_RESOURCES=$R/app "$T/t" "$@"; }
 dump() { run dump > "$T/dump.json" || { echo "FAIL dump"; fail=1; }; }
-val() { plutil -extract "$1" raw -o - "$T/dump.json" 2>/dev/null; }   # KEYPATH (vms.0.name)
+# KEYPATH (vms.0.name); a missing key: nothing (macOS 15's plutil writes its error to stdout)
+val() { local v; v=$(plutil -extract "$1" raw -o - "$T/dump.json" 2>/dev/null) || return 0; printf '%s\n' "$v"; }
 vm() {   # NAME: a VM folder as the app's build leaves it (create-vm.sh)
   mkdir -p "$V/$1/logs"
   printf "NAME='%s'\nCPUS=4\nMEM_MB=8192\nDISK_GB=64\nSSH_PORT=52222\nVM_USER='me'\nFEATURES='bridge=on gestures=on'\n" "$1" > "$V/$1/vm.env"
