@@ -243,7 +243,9 @@ lane's architecture review; work/followups-3217/sweep-safe).
   4. at once, with nothing between (no log, no footprint read), the entries
      read again: the same objects at the same offsets, readable and writable,
      not copy-on-write or empty. Any other share mode passes (the reference
-     count read low). This runs on every pass, not only the first;
+     count read low). The objects are compared by `object_id` (a 32-bit hash in
+     the short region info, so this says which object, not what it holds).
+     This runs on every pass, not only the first;
   5. right: the spare goes. Changed (other memory, or a hole after a failed
      remap): QEMU's view is mapped back from the spare, over what is mapped
      there and into what is not (`VM_FLAGS_FIXED` alone: a delete across a
@@ -260,8 +262,11 @@ lane's architecture review; work/followups-3217/sweep-safe).
   mapping back, a transfer through that chunk can read or write the wrong
   page: 44-118 us in the unit test for a chunk without page table entries,
   0.8-4.3 ms for one QEMU had touched all over, 2.2 ms in the M1 VM row
-  (below). 3.2.17 had the same window before its abort. It only matters on
-  a macOS that does what the trial did not show.
+  (below), and on GitHub's macos-15 runner 340 us (`--diverge`) and 7469 us
+  (`--hole`), past those ranges. A hole in that time faults such a thread,
+  which ends QEMU; it does not only reach the wrong page. 3.2.17 had the same
+  window before its abort. It only matters on a macOS that does what the
+  trial did not show.
 - **Precondition**: guest RAM is not wired by the kernel: no mlock, no
   `-overcommit mem-lock` (turns the sweep off) and no raw disk device for a
   VM disk (OmacVM.app's disks are files).
