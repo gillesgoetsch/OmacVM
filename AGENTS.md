@@ -513,7 +513,10 @@ are in the VM's folder. `OmacVM --settings-dump` prints them all as the window
 reads them; `src/tests/app-settings.sh` checks defaults, relaunches, two VMs,
 3.0's files and the CLI. `OmacVM --render-vm-window DIR` (`swift build`, CI)
 draws the window offscreen for made-up VMs, light and dark, and exits 1 when a
-part leaves the window's sides, a sheet or popover is taller than the window,
+part leaves the window's sides, the settings are wider than their column (the
+sidebar moves; GitHub's macos-15 shows scroll bars always: put
+`-AppleShowScrollBars Always` before `--render-vm-window` to draw it so
+anywhere), a sheet or popover is taller than the window,
 or the memory warning is missing 2 GB above this Mac's Best tier, lies outside
 its card or the window, or shows at Best (`DIR/heights.txt` says which); a
 new note or (i) gets a `layoutProbe` and a picture there.

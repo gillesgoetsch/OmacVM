@@ -28,8 +28,13 @@ struct StartInRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Start in").fontWeight(.semibold)
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(StartIn.choices(hasNotch: hasNotch), id: \.self) { c in
+            // 12 pt between the pictures, less when the scroll bar is always
+            // shown (a mouse, or System Settings): it takes 15 pt, three
+            // pictures with 12 pt then need 11 pt more than the row has, and
+            // the whole window slid 5 pt to the left (macOS 15 CI, 3.2.17).
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(Array(StartIn.choices(hasNotch: hasNotch).enumerated()), id: \.element) { i, c in
+                    if i > 0 { Spacer(minLength: 2).frame(maxWidth: 12) }
                     PictureChoice(title: c.caption, subtitle: c.detail(hasNotch: hasNotch), selected: c == current, width: 164) {
                         set(c)
                     } picture: {
