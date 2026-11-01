@@ -31,8 +31,10 @@ jobs:
     # is deleted): false, so macos-15. fromJSON gives the runner's label list.
     runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","ARM64","omacvm-mini"]') || 'macos-15' }}
     # the mini: fresh test binaries can wait minutes before they start (macOS); the
-    # job then needs more than 35 min although nothing is wrong (#258)
-    timeout-minutes: 60
+    # job then needs more than 35 min although nothing is wrong (#258). A runner
+    # Mac held back by its power (the M1 Max on a 15 W charger: 54-71 min on
+    # 2026-10-31) still finishes: 90.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
