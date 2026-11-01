@@ -10,8 +10,8 @@ import OmacVMDesktop
 extension RunMarker {
     /// Before a start or Update VM: the VM was not shut down cleanly or was
     /// copied while it ran. Asks Cancel / Start Anyway (a hidden test run
-    /// only logs it). True: go on.
-    @MainActor static func confirmStart(_ c: VMConfig) -> Bool {
+    /// only logs it). True: go on. `personAsked`: AskKeys.
+    @MainActor static func confirmStart(_ c: VMConfig, personAsked: Bool = true) -> Bool {
         guard let warn = warning(folder: c.folder, thisMac: Mac.hardwareID) else { return true }
         FileHandle.standardError.write(Data("OmacVM: \(c.name): \(warn)\n".utf8))
         if ProcessInfo.processInfo.environment["OMACVM_COCOA_HIDDEN"] != nil { return true }
@@ -20,7 +20,7 @@ extension RunMarker {
         alert.informativeText = warn + " Start it only when it runs nowhere else."
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Start Anyway")
-        NSApp.activate()
+        AskKeys.take(alert.window, personAsked: personAsked)
         return alert.runModal() == .alertSecondButtonReturn
     }
 }
@@ -49,6 +49,8 @@ final class AppState: ObservableObject {
     let creator = Creator()
     let storage = StorageModel()
     var startVM: () -> Void = {}
+    /// A start that comes by itself, not from the person just now (main.swift sets it).
+    var startVMUnasked: () -> Void = {}
     /// The running VM's window to the front (main.swift sets it).
     var showVM: () -> Void = {}
     /// This app's VM runs (main.swift sets it).
@@ -112,7 +114,7 @@ final class AppState: ObservableObject {
                 // Read as the start asks (askMacHelpers), and gone after it
                 // either way: a start that stopped early leaves no quiet one behind.
                 helpersQuietOnce = true
-                startVM()
+                startVMUnasked()
                 helpersQuietOnce = false
             }
         }

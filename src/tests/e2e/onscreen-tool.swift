@@ -11,6 +11,8 @@
 //   full PID on|off          AXFullScreen of that window (as its green button and View > Exit Full Screen)
 //   close PID                presses that window's close button
 //   zoom PID                 presses its zoom button (the green one of a window without full screen)
+//   menu-click PID TITLE     a real click on PID's app menu, then on the item called TITLE (HID events: a
+//                            user event for PID, which "menu" is not); PID must be in front: clicked
 //   front PID                PID's app to the front (no input events): front | not front
 //   frontpid                 the pid of the app in front
 //   quit PID                 asks PID's app to quit (as Command-Q)
@@ -365,6 +367,29 @@ case "menu":
     let r = AXUIElementPerformAction(item, kAXPressAction as CFString)
     say(r == .success ? "pressed" : "press refused: \(r.rawValue)")
     exit(r == .success ? 0 : 1)
+case "menu-click":
+    // A real click on PID's app menu in the menu bar, then on the item: as a person's, so PID gets a
+    // user event (Accessibility's press in "menu" gives it none). PID must be in front.
+    let pid = pidArg()
+    guard args.count >= 4 else { usage() }
+    let was = frontNow()
+    guard was == pid else { say("NOT FRONT (front pid \(was))"); exit(3) }
+    guard let bar = attr(app(pid), kAXMenuBarAttribute) else { say("no menu bar"); exit(1) }
+    let top = kids(bar as! AXUIElement)
+    guard top.count > 1, let f = frame(top[1]) else { say("no app menu"); exit(1) }   // 0 is the Apple menu
+    let p = CGPoint(x: f.midX, y: f.midY)
+    post(.mouseMoved, CGPoint(x: p.x, y: 0))   // a full-screen VM: the menu bar comes down first
+    usleep(1_200_000)
+    click(p, count: 1)
+    usleep(700_000)
+    var all: [AXUIElement] = []
+    walk(top[1], &all)
+    guard let item = all.first(where: { str($0, kAXRoleAttribute) == kAXMenuItemRole as String && str($0, kAXTitleAttribute) == args[3] }),
+          let g = frame(item) else { key(53); say("NOT FOUND"); exit(1) }
+    click(CGPoint(x: g.midX, y: g.midY), count: 1)
+    // Off the menu bar and every corner (a hot corner may put the display to sleep, and the Mac locks).
+    if let s = NSScreen.screens.first { post(.mouseMoved, CGPoint(x: s.frame.midX, y: s.frame.midY)) }
+    say("clicked")
 case "post":
     guard args.count >= 3 else { usage() }
     DistributedNotificationCenter.default().postNotificationName(Notification.Name(args[2]), object: args.count >= 4 ? args[3] : nil,

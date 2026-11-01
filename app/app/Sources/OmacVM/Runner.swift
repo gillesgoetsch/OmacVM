@@ -498,7 +498,9 @@ final class Runner {
         }
         // "Features…" in QEMU's app menu asks this app to open the control
         // centre in the VM (ControlCentreRoute).
-        let route = ControlCentreRoute(agentPath: c.agentSocket.path, vmName: c.name) { [weak self] line in
+        let route = ControlCentreRoute(agentPath: c.agentSocket.path, vmName: c.name, takeKeys: { [weak self] window in
+            AskKeys.take(window, overVM: self?.process?.processIdentifier)
+        }) { [weak self] line in
             self?.appendLog(line)
         }
         env["OMACVM_FEATURES_REQUEST"] = route.requestName
@@ -1358,6 +1360,7 @@ final class Runner {
         alert.informativeText = "It is paused. Resume it, or shut it down."
         alert.addButton(withTitle: "Resume")
         alert.addButton(withTitle: "Shut Down")
+        AskKeys.take(alert.window, overVM: process?.processIdentifier)
         let shutDown = alert.runModal() == .alertSecondButtonReturn
         resumeIfPaused()
         if shutDown { powerDown() } else { syncClock() }

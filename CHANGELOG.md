@@ -3,6 +3,26 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.19 (unreleased)
+
+- **USB's question gets the keys (OmacVM.app, experimental USB devices).** When a device was plugged
+  in, the app's question came up without the keys: Return and Escape went to the VM. macOS 14 and
+  later let a background app in front only if the app there yields, and a plug-in is no click. The
+  same for the other questions that come with no click in the app: the lost desktop, Features… in
+  the app menu, an update's shutdown timeout, a VM that did not wake with the Mac, a start from a
+  terminal, and the list from USB Devices…. Now they take the keys from the VM, on every Space and
+  over a full-screen VM, never from another app you work in (there they float and a click answers
+  them); only a start you just asked for takes them in any case, not the start after an update or
+  Update VM. The lost desktop's, the Mac setup and the fast network's questions wait half a second,
+  as USB's does, so a Return typed a moment earlier does not answer them. Checked on a Mac mini:
+  Escape on the question in a window and in full screen; what macOS allows on macOS 15.8, 26.6 and
+  27.0. See [ADR 0068](docs/adr/0068-ask-keys.md). Needs the app update, from the VM's next start.
+- **Correction to 3.2.18's USB Devices… entry (#660).** It says the mini's check is still to run and
+  the list on screen is not checked. Both were done for 3.2.18 on a Mac mini M4: with the screens
+  locked or nobody at it, each press built the list; in a window, opened by a real click on the
+  menu, the list came up and its Connect, Disconnect and Return worked. Over a full-screen VM it is
+  still not checked.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
