@@ -57,9 +57,10 @@ import Foundation
 /// 256 MB, or after which the VM read back half of what the last one gave
 /// (its refaults), doubles the gap, up to 2 hours; 1 GB or more puts it back
 /// to 15 minutes. After the warning's drop, once the pressure is normal
-/// again and the VM is quiet, one compaction-only call (giveback.sh
-/// compact): compaction moves pages in use, so never while macOS is short of
-/// memory or the VM busy.
+/// again, the VM is quiet and QEMU has under min(2 GB, a quarter of the Mac)
+/// outside its resident memory (as for idle), one compaction-only call
+/// (giveback.sh compact): compaction moves pages in use, so never while
+/// macOS is short of memory, compresses the VM, or the VM is busy.
 /// Foundation only: `swift run desktop-tests`.
 public struct MemoryGiveBack: Sendable {
     public static let mib: UInt64 = 1 << 20
@@ -344,12 +345,17 @@ public struct MemoryGiveBack: Sendable {
     }
 
     /// Every look: true once, when the compaction-only call after the
-    /// warning's drop should go now: macOS's pressure normal again and the VM
+    /// warning's drop should go now: macOS's pressure normal again, the VM
     /// quiet (compaction moves pages in use: on the M1 Max with a video
-    /// playing, the VM's waits of 10 ms or more went from 12 to about 50 in
-    /// 150 s). An idle give-back before then compacts too.
+    /// playing, the VM's waits of 10 ms or more went from 11-14 to about 50
+    /// in 150 s) and the compressing rule's first part does not hold (moving
+    /// pages makes macOS decompress them; on the Mac mini QEMU had 2.7-5.8 GB
+    /// outside its resident memory in every sample): due until then. An idle
+    /// give-back before then compacts too. Not at all once QEMU keeps
+    /// given-back pages or the give-backs are off for the run.
     public mutating func compactAfterDrop(_ s: Sample) -> Bool {
-        guard compactDue, s.normal, quiet else { return false }
+        if !pagesGoBack || off { compactDue = false }
+        guard compactDue, s.normal, quiet, !compressingHolds(s) else { return false }
         compactDue = false
         return true
     }

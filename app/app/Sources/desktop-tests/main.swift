@@ -582,11 +582,12 @@ d2.idleAnswered(MemoryGiveBack.Result.parse("act=norep rep=0", maxMB: 8192), at:
 expect(d2.off && !d2.allowed(.idle, at: 9000) && !d2.allowed(.compressing, at: 9000) && d2.allowed(.warning, at: 9000),
        "norep: no more idle or compressing give-backs; the warning's drop stays")
 // After the warning's drop: one compaction-only call once the pressure is normal again and the VM is quiet (compaction
-// moves pages in use: on the M1 Max with a video playing, waits of 10 ms or more went from 12 to about 50 in 150 s).
-func looks(_ m: inout MemoryGiveBack, from t0: Double, to t1: Double, load: Double, normal: Bool = true) -> Double? {
+// moves pages in use: on the M1 Max with a video playing, waits of 10 ms or more went from 11-14 to about 50 per CPU in 150 s).
+func looks(_ m: inout MemoryGiveBack, from t0: Double, to t1: Double, load: Double, normal: Bool = true,
+           fp: Double = 6, res: Double = 5) -> Double? {
     var t = t0
     while t <= t1 {
-        var s = sample(t, fp: 6, res: 5, comp: 100)
+        var s = sample(t, fp: fp, res: res, comp: 100)
         s.cpu = UInt64(t * load * core); s.normal = normal
         m.seen(s)
         if m.compactAfterDrop(s) { return t }
@@ -611,6 +612,22 @@ expect(!e3.compactDue, "an idle give-back before it compacts too: the call after
 var e2 = MemoryGiveBack(ram: 32 * GB)
 e2.dropped()
 expect(!e2.compactDue, "a QEMU that keeps given-back pages: no compaction after the drop")
+// Never while macOS compresses the VM (as idle): QEMU with min(2 GB, a quarter of the Mac) or more outside its
+// resident memory waits (the Mac mini's rows had 2.7-5.8 GB there); the call stays due until it has less.
+var e4 = withFix(32 * GB)
+e4.started(.warning, at: 100)
+e4.answered(nil)
+e4.dropped()
+expect(looks(&e4, from: 0, to: 900, load: 0.02, fp: 7, res: 5) == nil && e4.compactDue,
+       "after the drop, normal and quiet, but 2 GB outside QEMU's resident memory: no compaction, still due")
+expect(looks(&e4, from: 905, to: 1200, load: 0.02, fp: 6.5, res: 5) == 905 && !e4.compactDue,
+       "  1.5 GB outside: the compaction-only call, once")
+// The call checks again when it fires: QEMU said it keeps given-back pages, or the run's give-backs are off.
+var e5 = withFix(32 * GB), e6 = withFix(32 * GB)
+e5.dropped(); e5.qemuKept()
+e6.dropped(); e6.stop()
+expect(looks(&e5, from: 0, to: 900, load: 0.02) == nil && looks(&e6, from: 0, to: 900, load: 0.02) == nil,
+       "  QEMU keeps given-back pages, or give-backs off for the run, since the drop: no compaction")
 // qemu.log's words.
 expect(MemoryGiveBack.idleLine(on: true, pagesGoBack: true) == "OmacVM: VM memory: idle give-back: on (at most every 15 minutes while the VM is quiet and macOS's pressure normal)"
        && MemoryGiveBack.idleLine(on: false, pagesGoBack: true) == "OmacVM: VM memory: idle give-back: off (OMACVM_GIVEBACK_IDLE=0)"
