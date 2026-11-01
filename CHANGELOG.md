@@ -17,15 +17,17 @@ in more words.
   three windows of one Ghostty 164-278 MB). With Ghostty as the default terminal, Omarchy's
   screensaver on two displays made the Mac mini draw 40-41 W on Zink instead of 53-54 W (35-36 W
   without the screensaver, 39 W with it in foot; one session, another app using a core of the Mac
-  all along). The programs started in Ghostty keep the VM's normal graphics. If the Mac ends
-  Ghostty's Vulkan context, that Ghostty ends or stops responding (only Terminate helps; the
-  programs in it end); the switch's (i) says so. With the VM's graphics memory used up (a test with
-  a 384 MB budget and Chromium on WebGL) a Ghostty on Zink ended at its start, one on the CPU
-  opened. Graphics OpenGL, MoltenVK (macOS 15) and GPU safe mode keep Ghostty on the CPU. `omacvm
-  check` now says which driver a running Ghostty has. GTK's error lines about a bad dma-buf file
-  descriptor under Zink, about 1,330 in 10 s of scrolling (also with Zink set by hand), are gone:
-  Mesa answered the export without a descriptor. Needs the app update and Update VM, then a start of
-  the VM with the switch on (a Ghostty already open keeps its driver until you quit it).
+  all along). Chromium's MotionMark and Speedometer with one or three Ghostty windows open scored
+  the same on Zink as on the CPU (Mac mini: 4340 / 4227 vs 4287 / 4271, 33.4 / 33.3 vs 33.1 / 32.8).
+  The programs started in Ghostty keep the VM's normal graphics. If the Mac ends Ghostty's Vulkan
+  context, that Ghostty ends or stops responding (only Terminate helps; the programs in it end); the
+  switch's (i) says so. With the VM's graphics memory used up (a test with a 384 MB budget and
+  Chromium on WebGL) a Ghostty on Zink ended at its start, one on the CPU opened. Graphics OpenGL,
+  MoltenVK (macOS 15) and GPU safe mode keep Ghostty on the CPU. `omacvm check` now says which
+  driver a running Ghostty has. GTK's error lines about a bad dma-buf file descriptor under Zink,
+  about 1,330 in 10 s of scrolling (also with Zink set by hand), are gone: Mesa answered the export
+  without a descriptor. Needs the app update and Update VM, then a start of the VM with the switch
+  on (a Ghostty already open keeps its driver until you quit it).
 
 ## 3.2.17
 

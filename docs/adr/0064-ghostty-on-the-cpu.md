@@ -279,7 +279,14 @@ resident memory 140 -> 141 MB, 0 lines. Omarchy's screensaver in Ghostty on
 two outputs at scale 2, whole-Mac power of the Mac mini in one session (180 s
 windows; another app kept a core busy all along): no screensaver 34.6 / 35.9
 W, in Ghostty on llvmpipe 53.1 / 53.8 W (guest 690 / 694 CPU-s), in foot 39.0
-W, in Ghostty on Zink 40.0 / 41.0 W (guest 103 / 100 CPU-s, Mac GPU 44 %). Fallbacks, each its own start with the switch on: Graphics
+W, in Ghostty on Zink 40.0 / 41.0 W (guest 103 / 100 CPU-s, Mac GPU 44 %).
+Browser first (Mac mini, bench lock, 3 runs each, Ghostty idle on another
+workspace, Chromium 156 full screen): MotionMark 1.3.1 with one Ghostty
+window 4287 (4143-4379) on llvmpipe, 4340 (4335-4383) on Zink, with three
+4271 (3863-4279) and 4227 (4191-4238); Speedometer 3.1 33.1 / 33.4 and 32.8 /
+33.3. Idle Zink windows cost nothing (60 s hidden or visible: Ghostty 0-0.4
+CPU-s). The M1 Max's browser rows are left out: its three CI jobs moved
+Speedometer between 7 and 23 on one boot with no Ghostty at all. Fallbacks, each its own start with the switch on: Graphics
 OpenGL and `OMACVM_VULKAN_DRIVER=moltenvk` send no marker and Ghostty draws
 on llvmpipe as before; with the switch off, the same. The programs Ghostty
 starts get none of the variables (eglinfo from its shell: virgl 4.1).
@@ -297,8 +304,8 @@ does on llvmpipe.
 - Venus memory counts against the VM's graphics budget (ADR 0034) and the
   pressure guard does not cut it: a Ghostty on Zink takes 150-300 MB of the
   Mac's graphics memory (M1 Max: one window +155-163 MB, three windows of one
-  Ghostty +164-278 MB; the investigation's separate processes 150-290 MB
-  each). Past the budget its Venus context is lost: with a 384 MB budget and
+  Ghostty +164-278 MB; Mac mini: one window +171 MB; the investigation's
+  separate processes 150-290 MB each). Past the budget its Venus context is lost: with a 384 MB budget and
   Chromium on WebGL Aquarium first, a Ghostty on Zink ended at its start
   ("venus context N (ghostty) is lost", the guest driver ended it), with and
   without `VN_PERF=no_async_mem_alloc` (so the library does not set it); one
