@@ -615,7 +615,7 @@ index 0cb3d70..5a565ca 100644
 +   bool ok = pass && fb && fb_count == pass->attachment_count &&
 +             info->clearValueCount >= pass->clear_count;
 +   for (uint32_t i = 0; ok && fb->imageless && i < fb_count; i++)
-+      ok = views->pAttachments[i] != VK_NULL_HANDLE;
++      ok = views->pAttachments && views->pAttachments[i] != VK_NULL_HANDLE;
 +   if (!vkr_context_check(ctx, ok, call,
 +                          "framebuffer of %u attachments%s for a pass of %u, %u clear values of %u",
 +                          fb_count, fb && fb->imageless ? " (imageless)" : "",
@@ -766,7 +766,7 @@ index 0cb3d70..5a565ca 100644
 +             info->layers && info->width <= lim->maxFramebufferWidth &&
 +             info->height <= lim->maxFramebufferHeight && info->layers <= lim->maxFramebufferLayers;
 +   for (uint32_t i = 0; ok && !imageless && i < info->attachmentCount; i++)
-+      ok = info->pAttachments[i] != VK_NULL_HANDLE;
++      ok = info->pAttachments && info->pAttachments[i] != VK_NULL_HANDLE;
 +   if (!vkr_context_check(dispatch->data, ok, "vkCreateFramebuffer",
 +                          "%u attachments%s for a pass of %u, %ux%ux%u (at most %ux%ux%u)", count,
 +                          imageless ? " (imageless)" : "", pass ? pass->attachment_count : 0,
