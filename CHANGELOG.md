@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.18 (unreleased)
+
+- **The VM window stays in place when scroll bars are always shown (OmacVM.app).** On a Mac with a
+  notch whose scroll bars are always shown (a mouse without a trackpad, or System Settings >
+  Appearance > Show scroll bars: Always), Start in's three pictures needed 11 pt more than the
+  settings' column had: the whole window slid 5 pt to the left, the sidebar cut off at its left
+  edge and the scroll bar half outside the window. The gaps between the pictures now shrink to fit;
+  with scroll bars that show only while scrolling the window looks as before. Found by CI on
+  macOS 15. Needs the app update; nothing in the VM.
+
+- Tests: the window pictures fail when the settings push the sidebar out of place, and
+  `src/tests/app-settings.sh` reads a missing key as empty on macOS 15 too (its `plutil` writes the
+  error where the value goes), so CI's check job passes on GitHub's macos-15 again.
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;
