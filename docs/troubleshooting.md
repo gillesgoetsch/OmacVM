@@ -1655,11 +1655,11 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   "virgl".
 - **Fix (3.2.18):** Update VM (`omacvm apply`, `omacvm update`), then quit
   and start those apps again. The file now also names `brave`,
-  `vivaldi-bin` and `electron` (Electron's own build and Arch's
-  `electronNN` packages), on Wayland and X11. Brave 1.98.63 in a test VM on
-  a Mac mini M4: MotionMark 2754 -> 4483 (medians of 3), its Paths test
-  7.3x; Electron 45 at a fixed Paths complexity: 5.5 -> 34 fps. Nothing on
-  the Mac; any app version.
+  `vivaldi-bin` and `electron` (the program of Electron's own arm64 build;
+  Arch Linux ARM has no Electron package), on Wayland and X11. Brave
+  1.98.63 in a test VM on a Mac mini M4: MotionMark 2754 -> 4483 (medians
+  of 3), its Paths test 7.3x; Electron 45 at a fixed Paths complexity: 5.5
+  -> 34 fps on Wayland. Nothing on the Mac; any app version.
 - **Not covered:** an Electron app shipped under its own program name (its
   GPU process is that program); UTM, VMware Fusion and Parallels VMs.
 - **The real name for one app:** start it with `force_gl_renderer=`

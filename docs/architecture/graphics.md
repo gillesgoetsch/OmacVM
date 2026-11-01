@@ -123,11 +123,13 @@ Chrome's GL path has no path atlas, and every canvas stroke and clip path
 becomes a CPU mask, an upload and a draw of its own in every frame. App VMs
 get a Mesa drirc (`/usr/share/drirc.d/50-omacvm-chrome.conf`) that gives the
 programs `chrome` and `chromium` the renderer "OmacVM-GPU" (`force_gl_renderer`),
-and from 3.2.18 `brave`, `vivaldi-bin` and `electron` (Electron's own build,
-Arch's `electronNN`); every other program keeps the real string, also an
-Electron app shipped under its own name. MotionMark at a fixed complexity
-in a VM on the M4 Max (3 alternating rounds): Paths 29-35 -> 75 fps, Suits
-40-48 -> 75 fps (75 = the hidden VM display's rate), Canvas Arcs 75 both.
+and from 3.2.18 `brave`, `vivaldi-bin` and `electron` (Electron's own arm64
+build; Arch Linux ARM has no Electron package); every other program keeps
+the real string, also an Electron app shipped under its own name. MotionMark
+at a fixed complexity in a VM on the M4 Max (3 alternating rounds): Paths
+29-35 -> 75 fps, Suits 40-48 -> 75 fps (75 = the hidden VM display's rate).
+Fixed-complexity rows named "Canvas Arcs" ran nothing: MotionMark's
+developer page matches the test name without spaces (`CanvasArcs`).
 chrome://gpu lists the same features and driver workarounds. A static page
 of strokes, arcs, clips, rounded rects and SVG paths matches Chrome's
 Graphite render; it differs from Chrome's CPU raster only inside one thick
@@ -137,12 +139,12 @@ The WebGL renderer string that pages can read changes the same way.
 Brave 1.98.63 in a hidden VM on the Mac mini M4 (page 1560x870 at 2x,
 60 Hz, 3 alternating rounds against `force_gl_renderer=`, which gives the
 real name): Paths at complexity 100000 5.8 -> 41.8 fps, Suits at 3000
-13.7 -> 44.2 fps, Canvas Arcs 60 fps both (the display's rate); MotionMark
-2754 -> 4483 (medians: Paths 7.3x, Suits 3.1x, Canvas Arcs 2.2x, Canvas
-Lines 1.27x, the other four within 10 %); Aquarium 30k 37.7 vs 38.9 fps,
-scrolling 60 fps both. The static page differs in 0.026 % of its 4x4 cells,
-where thick strokes cross (#509 saw the same in Chrome), the same in
-Electron. Electron 45.2.1, Paths 100000: 5.5 -> 34.2 fps on Wayland,
+13.7 -> 44.2 fps; MotionMark 2754 -> 4483 (medians: Paths 7.3x, Suits 3.1x,
+Canvas Arcs 2.2x, Canvas Lines 1.27x, the other four within 10 %; arcs only
+from this subtest); Aquarium 30k 37.7 vs 38.9 fps, scrolling 60 fps both.
+The static page differs in 0.026 % of its 4x4 cells, where thick strokes
+cross (#509 saw the same in Chrome), the same in Electron on Wayland (X11
+not compared). Electron 45.2.1, Paths 100000: 5.5 -> 34.2 fps on Wayland,
 5.3 -> 32.7 fps on X11.
 A name by process type instead (OmacVM's EGL vendor library in a process
 with `--type=gpu-process`) does not reach Chromium: ANGLE draws on Chrome's

@@ -14,10 +14,10 @@ in more words.
   Suits 3.1x, Canvas Arcs 2.2x), Paths at a fixed complexity 5.8 -> 41.8 fps, Suits 13.7 -> 44.2 fps.
   Electron 45.2.1, Paths at the same complexity: 5.5 -> 34.2 fps on Wayland, 5.3 -> 32.7 fps on X11.
   WebGL (Aquarium 37.7 vs 38.9 fps) and scrolling (60 fps) stay the same, and a page of canvas and
-  SVG shapes looks the same: 0.03 % of its 4x4-pixel areas differ, where thick strokes cross. An
-  Electron app shipped under its own program name keeps the old name, and so does Firefox. One app
-  with the old name: `force_gl_renderer= brave`. Needs Update VM, then restart those apps. UTM,
-  VMware Fusion and Parallels: nothing changes.
+  SVG shapes looks the same on Wayland: 0.03 % of its 4x4-pixel areas differ, where thick strokes
+  cross (X11 not compared). An Electron app shipped under its own program name keeps the old name,
+  and so does Firefox. One app with the old name: `force_gl_renderer= brave`. Needs Update VM, then
+  restart those apps. UTM, VMware Fusion and Parallels: nothing changes.
 
 ## 3.2.17
 

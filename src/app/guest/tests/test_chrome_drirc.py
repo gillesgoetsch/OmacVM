@@ -29,8 +29,8 @@ class ChromeDrirc(unittest.TestCase):
         rx = re.compile(self.app.get("executable_regexp"))
         # Mesa matches the program name: Google Chrome's /opt/google/chrome/chrome, Arch's /usr/lib/chromium/chromium,
         # Brave's /opt/brave-bin/brave (AUR) or /opt/brave.com/brave/brave, Vivaldi's /opt/vivaldi/vivaldi-bin (its
-        # vivaldi is a script), Electron's own build and Arch's /usr/lib/electron37/electron. Electron apps shipped
-        # under their own program name keep the real string.
+        # vivaldi is a script), Electron's own arm64 build (Arch Linux ARM has no Electron package; electron[0-9]*
+        # also takes a versioned name). Electron apps shipped under their own program name keep the real string.
         for name in ("chrome", "chromium", "brave", "vivaldi-bin", "electron", "electron37"):
             self.assertTrue(rx.fullmatch(name), name)
         for name in ("google-chrome", "chrome_crashpad_handler", "chromium-browser", "brave-browser", "vivaldi",
