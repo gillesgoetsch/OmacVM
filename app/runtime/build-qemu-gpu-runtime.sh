@@ -1585,6 +1585,23 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-lost-context
 grep -q 'virgl_gpu_budget_venus_lost(name, guard ? "guard" : "venus");' "$virgl_source/src/venus/vkr_context.c" && \
   grep -q 'vrend_memory_take_venus_losses();' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vkr_context.c, vrend_renderer.c: a lost Venus context is not counted in the status file (venus-lost-context-count patch)"
+# Guest indices, counts, offsets and enum values reach the Mac's driver only inside what they
+# name, one patch per class (ADR 0065, "Indices, counts and offsets"; #624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-limits.patch"
+grep -q 'vkr_physical_device_init_limits(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q 'vkr_first_count_ok(args->firstViewport, args->viewportCount, max),' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_physical_device.c, vkr_command_buffer.c: vkCmd* indices and offsets are not bounded (command-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-descriptor-limits.patch"
+grep -q 'vkr_descriptor_writes_ok(dispatch->data, "vkUpdateDescriptorSets", dev, NULL,' "$virgl_source/src/venus/vkr_descriptor_set.c" && \
+  grep -q 'vkr_cmd_sets_ok(dispatch->data, "vkCmdBindDescriptorSets",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_descriptor_set.c, vkr_command_buffer.c: descriptor writes and binds are not checked (descriptor-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-render-pass-limits.patch"
+grep -q 'vkr_metal_max_vertex_amplification());' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q 'vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass",' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_physical_device.c, vkr_command_buffer.c: render passes and view counts are not checked (render-pass-limits patch)"
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pipeline-limits.patch"
+grep -q 'if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos\[i\], why,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: pipeline create infos are not checked (pipeline-limits patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

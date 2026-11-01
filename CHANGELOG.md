@@ -175,6 +175,25 @@ nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing c
   the Mac's OpenGL as an array, the way the app's runtime would declare it, the shape is refused
   on the GPUs of an M4 and an M1 Max too. Nothing changes for these arrays in this release.
 
+- **A program in the VM can no longer stop the VM with Vulkan values that point outside what they
+  name, and apps get the number of views the Mac's GPU can draw (see #624).** In an OmacVM.app VM
+  with Graphics on Vulkan, an ordinary Vulkan program could stop the whole VM through the normal
+  API, or let the Mac's driver write VM data into QEMU's memory: a push constant offset, a viewport,
+  vertex buffer, descriptor set or query index, a descriptor write's binding or element past what
+  its set has, a blend state for more colors than the pass has, a pipeline with more viewports or
+  color attachments than the GPU takes, a value the driver does not know (a compare op, blend factor
+  or dynamic state), or a secondary command buffer that runs itself. The values are now checked
+  against the GPU's limits and what the app made, and a program that sends such a value loses only
+  its own Vulkan connection: it ends and the VM goes on. QEMU's log says "venus context N (app) is
+  lost"; the refused call and its values are on a separate "vkr: <app>: <call> refused: ..." line,
+  written for the 1st, 2nd, 4th, 8th ... refusal since the VM started (troubleshooting 52). Apps
+  that are correct are not affected; one that relied on such a value now ends (Graphics: OpenGL, in
+  the VM window or `omacvm graphics --vm NAME opengl`, avoids Venus for it). With KosmicKrisp a pass
+  with more than 8 views (Apple M1; the count Metal supports on the Mac) ended the VM although the
+  app had been told 32: apps are now told the Mac's count. Needs the app update (from the VM's next
+  start). Still open in #624: malformed shaders, commands outside their render pass and copy regions
+  past an image (the next change).
+
 ## 3.2.17
 
 In OmacVM.app VMs, Activity Monitor no longer counts the VM's memory twice where QEMU touched it;

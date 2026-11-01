@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""test-venus-image-limits.c and test-venus-robust.c against the staged runtime's real
-Vulkan drivers (ADR 0065).
+"""test-venus-image-limits.c, test-venus-robust.c and test-venus-commands.c against the
+staged runtime's real Vulkan drivers (ADR 0065).
 
    run-venus-limits.py VIRGL_BUILD OUT_DIR RUNTIME_DIR -- LINK_ARGS...
 
@@ -9,13 +9,18 @@ libraries (as run-regressions.py's run_test does), puts it in a lib/ folder laid
 the runtime (its libvulkan.1.dylib and drivers beside it, share/vulkan/icd.d next to it),
 so vkr loads the driver as in QEMU, and runs it once per driver: MoltenVK always,
 KosmicKrisp too where the runtime has it and macOS is 26 or newer (a KosmicKrisp half
-that falls back to MoltenVK fails the build). Then microseconds per vkCreateImage and per
-vkCreateBuffer. First, src/venus/vkr_proc_entries.h must be what venus-missing-entries.py
-makes of the built tree (virgl-venus-missing-entries.patch)."""
+that falls back to MoltenVK fails the build); test-venus-commands also on MoltenVK with
+MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1 (it encodes at vkEndCommandBuffer what it otherwise
+encodes at the submit; nothing is submitted). Then microseconds per vkCreateImage, per
+vkCreateBuffer and per command. First, src/venus/vkr_proc_entries.h must be what
+venus-missing-entries.py makes of the built tree (virgl-venus-missing-entries.patch), and
+venus-command-ledger.tsv must give a verdict for every vkCmd* handler of the tree's
+vkr_command_buffer.c (a new one needs a decision on its guest values)."""
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -65,7 +70,20 @@ if entries.exists():
 else:
     print("venus limits: no vkr_proc_entries.h (a tree without virgl-venus-missing-entries.patch)")
 
-tests = [("test-venus-image-limits", "vkCreateImage"), ("test-venus-robust", "vkCreateBuffer")]
+# every vkCmd* handler has a verdict on its guest values (virgl-venus-command-limits.patch)
+ledger = Path(__file__).with_name("venus-command-ledger.tsv")
+handlers = re.findall(r"^vkr_dispatch_(vkCmd[A-Za-z0-9]+)\(",
+                      (source / "venus" / "vkr_command_buffer.c").read_text(), re.M)
+rows = {line.split("\t")[0] for line in ledger.read_text().splitlines()[1:] if line.strip()}
+missing, stale = sorted(set(handlers) - rows), sorted(rows - set(handlers))
+if missing or stale:
+    sys.exit(f"venus limits: FAIL: venus-command-ledger.tsv: no verdict for {missing}, rows "
+             f"without a handler {stale}")
+print(f"venus limits: venus-command-ledger.tsv has a verdict for each of the {len(handlers)} "
+      "vkCmd* handlers")
+
+tests = [("test-venus-image-limits", "vkCreateImage"), ("test-venus-robust", "vkCreateBuffer"),
+         ("test-venus-commands", "vkCmd*")]
 for name, _ in tests:
     subprocess.run([command[0], *flags, "-I" + str(source), "-I" + str(source / "venus"),
                     str(Path(__file__).with_name(name + ".c")),
@@ -92,19 +110,22 @@ env["DYLD_FALLBACK_LIBRARY_PATH"] = ":".join(a[2:] for a in link_args if a.start
 failed = []
 for test, _ in tests:
     binary = lib / test
-    for name, title in drivers:
-        run = subprocess.run([str(binary)], env={**env, "OMACVM_VULKAN_DRIVER": name},
-                             capture_output=True, text=True)
+    variants = [(name, title, {}) for name, title in drivers]
+    if test == "test-venus-commands":
+        variants.append(("moltenvk", "MoltenVK", {"MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS": "1"}))
+    for name, title, extra in variants:
+        variant_env = {**env, "OMACVM_VULKAN_DRIVER": name, **extra}
+        label = title + (" (prefilled Metal command buffers)" if extra else "")
+        run = subprocess.run([str(binary)], env=variant_env, capture_output=True, text=True)
         print(run.stdout, end="")
         summary = run.stdout.strip().splitlines()[-1] if run.stdout.strip() else ""
         if run.returncode or not summary.startswith("all ok") or not summary.endswith(" on " + title):
-            failed.append(f"{test} on {title} ({summary or 'no output'})")
+            failed.append(f"{test} on {label} ({summary or 'no output'})")
             continue
-        timing = subprocess.run([str(binary), "--time", "10000"],
-                                env={**env, "OMACVM_VULKAN_DRIVER": name}, capture_output=True,
-                                text=True)
+        timing = subprocess.run([str(binary), "--time", "10000"], env=variant_env,
+                                capture_output=True, text=True)
         lines = [line for line in timing.stdout.splitlines() if line.startswith("timing:")]
-        print(f"{title} {lines[-1] if lines else 'timing: did not run'}")
+        print(f"{label} {lines[-1] if lines else 'timing: did not run'}")
 
 if failed:
     sys.exit("venus limits: FAIL: " + ", ".join(failed))
