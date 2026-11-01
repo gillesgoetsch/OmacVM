@@ -1,0 +1,54 @@
+call	field	verdict	what vkr checks	evidence
+vkCreateRenderPass(2)	attachment refs (color, input, resolve, depth/stencil, ds resolve), preserve	A	< attachmentCount or UNUSED (Mesa vk_render_pass asserts only)	r-att-ref-far (MVK 10)
+vkCreateRenderPass(2)	colorAttachmentCount, inputAttachmentCount	A	colors <= maxColorAttachments	r-colors-9 (KK 6)
+vkCreateRenderPass(2)	attachment samples	A	one bit within the device's counts	
+vkCreateRenderPass(2)	attachment format	B	known, with color or depth/stencil attachment features (linear or optimal)	PR-B: r-format-bad, r-format-r64
+vkCreateRenderPass(2)	dependency src/dstSubpass	A	< subpassCount or EXTERNAL	
+vkCreateRenderPass(2)	viewMask, VkRenderPassMultiviewCreateInfo counts	A	view masks within the lowered view count (correlation masks are not checked: no rule bounds them, the drivers only copy them); multiview subpassCount 0 or = subpassCount, dependencyCount 0 or =	r-mv-legal-9..32 (KK 6), r-multiview-all; legal: r-correlation-ok, r-correlation2-ok
+vkCreateRenderPass(2)	VkRenderPassInputAttachmentAspectCreateInfo subpass, index	A	< subpassCount, < its input count	
+vkCreateRenderPass2	depth/stencil resolve modes	A	known single bits (KK vk_to_mtl_map.c:266/278 UNREACHABLE)	
+vkCreateFramebuffer	attachmentCount, width, height, layers	A	count = the pass's (imageless: attachment image info count), 1..maxFramebuffer*	r-fb-fewer (KK 11)
+vkCreateGraphicsPipelines	viewportCount, scissorCount	A	<= maxViewports (Mesa copies into [16])	p-gfx-viewports-32 (KK 10)
+vkCreateGraphicsPipelines	color blend attachmentCount	A	<= maxColorAttachments, = the subpass's/rendering's colors	p-gfx-colors-32 (KK 6), p-gfx-blend-count (MVK 11)
+vkCreateGraphicsPipelines	VkPipelineRenderingCreateInfo colorAttachmentCount, viewMask	A	<= max, view count	p-gfx-colors-9 (MVK 6)
+vkCreateGraphicsPipelines	vertex binding, location, stride, divisor binding	A	< maxVertexInputBindings / Attributes, stride <= max	p-gfx-vbinding-far, p-gfx-vlocation-far (KK accepted: Mesa [32])
+vkCreateGraphicsPipelines	rasterizationSamples	A	one bit within the device's counts	p-gfx-samples-64 (KK 11)
+vkCreateGraphicsPipelines	subpass	A	< the pass's subpassCount	p-gfx-subpass-oob (KK 11 once)
+vkCreateGraphicsPipelines	stages[].stage	A	one known stage bit (Mesa indexes stage arrays by it)	
+vkCreateGraphicsPipelines	dynamic states	A	Mesa's known list (vk_graphics_state.c:309 UNREACHABLE)	
+vkCreateGraphicsPipelines	blend factors/ops/logic op, compare ops, cull mode, topology	A	known values	
+vkCreateGraphicsPipelines	VkPipelineSampleLocationsStateCreateInfoEXT	A	as vkCmdSetSampleLocationsEXT, where Mesa copies them: sampleLocationsEnable on or dynamic, the locations not dynamic	p-gfx-sample-locations-far, -dyn-far; legal: p-gfx-sample-locations-off
+vkCreateGraphicsPipelines	VkPipelineColorWriteCreateInfoEXT attachmentCount	A	<= maxColorAttachments	
+vkCreateGraphicsPipelines	VkRenderingAttachmentLocationInfo / InputAttachmentIndexInfo counts	A	<= maxColorAttachments	gap 3
+vkCreate*Pipelines	specialization map entries	A	offset + size <= dataSize	p-spec-oob (host read)
+vkCreate*Pipelines	VkPipelineCreationFeedbackCreateInfo stage count	A	0 or the stage count (Mesa writes per stage)	
+vkCreate*Pipelines	VkPipelineRobustnessCreateInfo behaviors	A	known (kk_shader.h:152 UNREACHABLE)	
+vkCreate*Pipelines	stage module NULL, inline VkShaderModuleCreateInfo codeSize	A	a module or inline code; inline codeSize % 4 (gap 7)	p-stage-null-module, p-inline-spirv-odd
+vkCreate*Pipelines	SPIR-V content, entry point, workgroup size, descriptor sets	B	structural scan; entry point by name and model; workgroup after specialization; sets the entry's call graph uses	p-spirv-* (both crash), p-entry-missing (MVK 6), p-workgroup-huge (MVK 6), p-layout-mismatch (KK 11); PR-B: p-spirv-*, p-entry-missing, p-stage-mismatch, p-workgroup-*, p-shader-layout-*, p-unused-set-*
+vkCreate*Pipelines	color/depth formats, sample counts vs formats	B	known formats with attachment features (rendering info, inheritance); sample counts as in PR-A	p-gfx-format-bad (both 11); PR-B: p-gfx-format-bad, p-gfx-format-r64, p-gfx-depth-format-*, c-inherit-format-bad
+vkCreateComputePipelines	stage	A	COMPUTE	
+vkCreatePipelineLayout	setLayoutCount	A	<= maxBoundDescriptorSets (Mesa set_layouts[32])	gap 5: p-layout-sets-40
+vkCreatePipelineLayout	push constant ranges	A	offset/size % 4, inside maxPushConstantsSize, stages disjoint (Mesa push_ranges[14])	gap 5: p-layout-push-ranges-20
+vkCreatePipelineLayout	dynamic descriptors in all sets	A	<= maxDescriptorSetUniform/StorageBuffersDynamic (KK root[64], uint8 offset)	gap 5: p-layout-dynamic-70
+vkCreateDescriptorSetLayout	binding numbers	A	< 65536 (KK sizes its array by the largest + 1, uint32 wrap at 2^32-1)	gap 5: d-layout-binding-far
+vkCreateDescriptorSetLayout	descriptorType	A	a type the device has (kk_descriptor_set_layout.c:85 UNREACHABLE)	d-layout-type-bad
+vkCreateDescriptorSetLayout	descriptorCount per type	A	sum per type <= the larger of the device's per-set and update-after-bind limits; inline bytes <= maxInlineUniformBlockSize, % 4	d-layout-dynamic-300 (KK uint8 count, bitset[64])
+vkCreateDescriptorSetLayout	pImmutableSamplers entries	A	not NULL	d-layout-null-immutable
+vkCreateDescriptorSetLayout	binding flags count, variable binding	A	0 or bindingCount; variable only on the largest binding	d-layout-flags-short
+vkCreateDescriptorSetLayout	push descriptor layouts	A	<= maxPushDescriptors, no dynamic or inline	d-layout-push-big (KK data[2048])
+vkCreateDescriptorSetLayout	mutable type lists	A	list count covers every MUTABLE binding, listed types known, none MUTABLE	
+vkCreateDescriptorPool	maxSets, pool sizes	A	each <= 2^24 (KK multiplies in 32 bits), types known	d-pool-overflow
+vkAllocateDescriptorSets	variable descriptor counts	A	count 0 or = sets; each <= the variable binding's count	d-var-count-big, d-var-info-short
+vkUpdateDescriptorSets	dstBinding, dstArrayElement, count, type	A	binding exists, type matches (or MUTABLE lists it), elements inside the binding and the consecutive ones of the same type (bindings without descriptors and missing numbers skipped), inline offset/size	d-binding-far (KK 10), d-elem-far (both), d-dyn-elem-far, d-inline-far, d-copy-far; legal: d-consecutive-gap-ok, d-consecutive-zero-ok, d-copy-consecutive-ok
+vkUpdateDescriptorSets	sampler, image view, buffer, texel view handles	A	sampler not NULL without immutable samplers; NULL view/buffer (dynamic ones too) only with nullDescriptor; a multi-planar view only with immutable YCbCr samplers	d-null-sampler (KK 11), gap 8: d-null-buffer, d-null-view; legal: d-null-dynamic-nd
+vkUpdateDescriptorSets	buffer offset/range	A	offset < size, range WHOLE or offset + range <= size	d-range-past, d-offset-past-whole (accepted: GPU)
+vkCreateQueryPool	queryType, queryCount	A	a type the device has (kk_query_pool.c:42 UNREACHABLE); 1..2^20	q-pool-type-bad, q-pool-huge
+vkGetQueryPoolResults	first, count, stride, dataSize	A	first + count <= count; (count-1)*stride + result size <= dataSize	q-results-first-far (host read returned), q-results-stride (host write)
+vkResetQueryPool	first, count	A	first + count <= count	q-reset-far (KK 11)
+vkAllocateCommandBuffers	level	A	PRIMARY or SECONDARY (kept for vkCmdExecuteCommands)	
+vkBeginCommandBuffer	inheritance subpass, rendering info, locations	A	subpass < the pass's count; colorAttachmentCount <= max; viewMask; location counts <= max	gap 3: c-inherit-locations-9
+vkCreateShaderModule	codeSize	A	% 4 (already in vkr)	
+vkCreateShaderModule	content	B	structural scan	p-spirv-*; PR-B: p-spirv-garbage, -magic, -bound, -truncated
+vkCreatePipelineCache	initial data	values only	both parsers live with garbage	p-cache-garbage, p-cache-header
+vkCreateDescriptorUpdateTemplate	entries	values only	never used on the host (template updates are not dispatched)	
+vkCreateImageView / vkCreateSamplerYcbcrConversion / vkCreateSampler	plane counts	A	kept for descriptor writes	

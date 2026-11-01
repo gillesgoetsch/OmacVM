@@ -12,43 +12,43 @@ vkCmdSetStencilReference	faceMask, reference	values only
 vkCmdBindDescriptorSets	bindPoint, layout, firstSet, count, sets, dynamicOffsetCount	A	bind point; firstSet + count <= the layout's set count; each set's layout has the layout's dynamic count for that set; dynamicOffsetCount = their sum (KK reads pDynamicOffsets by the layouts' counts)	c-sets-first-far (KK 11/10, MVK-p 10), gap 4: c-sets-fewer-offsets, c-sets-layout-mismatch
 vkCmdBindIndexBuffer	buffer, offset, indexType	A	indexType a known one the device has (KK vk_to_mtl_map.c:304 UNREACHABLE); offset < size; NULL buffer only with maintenance6 at offset 0	c-ibuf-type-bad, c-ibuf-offset-past
 vkCmdBindVertexBuffers	firstBinding, bindingCount, buffers, offsets	A	first + count <= maxVertexInputBindings; offset <= size; NULL buffer only with nullDescriptor	c-vbuf-first-far (KK 10, MVK-p 10), c-vbuf-offset-past, gap 8: c-vbuf-null
-vkCmdDraw	counts	B	a graphics pipeline bound, inside a pass	c-draw-no-pipeline (KK 11, MVK-p 11)
+vkCmdDraw	counts	B	a graphics pipeline bound, inside a pass	c-draw-no-pipeline (KK 11, MVK-p 11); PR-B: c-state-draw-no-pipeline, c-state-draw-outside
 vkCmdDrawIndexed	counts	B	as vkCmdDraw	as c-draw-no-pipeline
 vkCmdDrawIndirect	buffer, offset, drawCount, stride	A+B	A: offset + (n-1)*stride + 16 <= size, offset and stride multiples of 4, stride >= 16 for n > 1, n <= maxDrawIndirectCount; B: pipeline bound	c-draw-indirect-past (accepted: GPU read)
 vkCmdDrawIndexedIndirect	buffer, offset, drawCount, stride	A+B	as vkCmdDrawIndirect with 20 bytes	
-vkCmdDispatch	group counts	A+B	A: each count <= maxComputeWorkGroupCount; B: compute pipeline bound	c-dispatch-huge (accepted: GPU watchdog), c-dispatch-no-pipeline (KK 11, MVK-p 11)
+vkCmdDispatch	group counts	A+B	A: each count <= maxComputeWorkGroupCount; B: compute pipeline bound	c-dispatch-huge (accepted: GPU watchdog), c-dispatch-no-pipeline (KK 11, MVK-p 11); PR-B: c-state-dispatch-no-pipeline, c-state-dispatch-inside
 vkCmdDispatchIndirect	buffer, offset	A+B	A: offset + 12 <= size, offset % 4; B: pipeline bound	c-dispatch-indirect-past (accepted)
 vkCmdCopyBuffer	src, dst, regions	A	each region inside both buffers, size > 0 (64-bit)	c-copy-buffer-past, c-copy-buffer-far (accepted: GPU)
 vkCmdCopyBuffer2	info: regions	A	as vkCmdCopyBuffer	
-vkCmdCopyImage	images, regions	A+B	A: mip level and layer range inside each image; B: offsets + extents	c-copy-image-past (accepted)
+vkCmdCopyImage	images, regions	A+B	A: mip level and layer range inside each image; B: offsets + extents	c-copy-image-past (accepted); PR-B: c-region-image-past, c-region-image-max
 vkCmdCopyImage2	info	A+B	as vkCmdCopyImage	
-vkCmdBlitImage	images, regions, filter	A+B	A: subresources; B: offsets inside the level	c-blit-level (KK 6: Metal newLevelRange), c-blit-past (accepted)
+vkCmdBlitImage	images, regions, filter	A+B	A: subresources; B: offsets inside the level	c-blit-level (KK 6: Metal newLevelRange), c-blit-past (accepted); PR-B: c-region-blit-past, c-region-blit-mirror
 vkCmdBlitImage2	info	A+B	as vkCmdBlitImage	
-vkCmdCopyBufferToImage	buffer, image, regions	A+B	A: image subresource, bufferOffset < size; B: texel extent and the buffer bytes it needs	c-copy-b2i-level, c-copy-b2i-past (accepted)
+vkCmdCopyBufferToImage	buffer, image, regions	A+B	A: image subresource, bufferOffset < size; B: texel extent and the buffer bytes it needs	c-copy-b2i-level, c-copy-b2i-past (accepted); PR-B: c-region-b2i-past, -rowlength, -extent, -offset, -aspect, -max
 vkCmdCopyBufferToImage2	info	A+B	as vkCmdCopyBufferToImage	
-vkCmdCopyImageToBuffer	image, buffer, regions	A+B	as vkCmdCopyBufferToImage	c-copy-i2b-past (accepted)
+vkCmdCopyImageToBuffer	image, buffer, regions	A+B	as vkCmdCopyBufferToImage	c-copy-i2b-past (accepted); PR-B: c-region-i2b-past, c-region-i2b-max
 vkCmdCopyImageToBuffer2	info	A+B	as vkCmdCopyBufferToImage	
 vkCmdUpdateBuffer	dst, offset, dataSize	A	offset + dataSize <= size, both % 4, dataSize <= 65536	c-update-past (accepted)
 vkCmdFillBuffer	dst, offset, size	A	offset < size, offset + size <= size or WHOLE, % 4	c-fill-past (accepted)
 vkCmdClearColorImage	image, ranges	A	level and layer ranges inside the image (REMAINING resolved)	c-clear-color-range (KK 6: Metal newLevelRange)
 vkCmdClearDepthStencilImage	image, ranges	A	as vkCmdClearColorImage	
-vkCmdClearAttachments	attachments[].colorAttachment, rects	A+B	A: colorAttachment < maxColorAttachments for COLOR (KK vk_meta_clear.c:221 writes push.color_values[a] on the stack, assert compiled out); B: < the pass's color count	gap 1: c-clear-att-8, c-clear-att-far
+vkCmdClearAttachments	attachments[].colorAttachment, rects	A+B	A: colorAttachment < maxColorAttachments for COLOR (KK vk_meta_clear.c:221 writes push.color_values[a] on the stack, assert compiled out); B: < the pass's color count	gap 1: c-clear-att-8, c-clear-att-far; PR-B: c-state-clear-beyond, c-state-clear-outside
 vkCmdResolveImage	images, regions	A+B	as vkCmdCopyImage	
 vkCmdResolveImage2	info	A+B	as vkCmdCopyImage	
 vkCmdSetEvent	event, stageMask	values only		
 vkCmdResetEvent	event, stageMask	values only		
 vkCmdWaitEvents	events, barriers	A	image barrier ranges inside the image, buffer barrier ranges inside the buffer	gap 9: c-barrier-range
 vkCmdPipelineBarrier	barriers	A	as vkCmdWaitEvents	gap 9: c-barrier-range
-vkCmdBeginQuery	pool, query, flags	A+B	A: query < the pool's count; B: + views in a multiview pass	c-query-begin-far (KK accepted: GPU write; MVK-p 11)
-vkCmdEndQuery	pool, query	A	query < count	
+vkCmdBeginQuery	pool, query, flags	A+B	A: query < the pool's count; B: + the views of the open multiview pass (none after its end)	c-query-begin-far (KK accepted: GPU write; MVK-p 11); PR-B: c-state-query-views-past, c-state-query-views-ok; legal: c-state-after-mv-query
+vkCmdEndQuery	pool, query	A+B	A: query < count; B: + the views of the open multiview pass, as its begin (KosmicKrisp makes one query available per view)	PR-B: c-state-end-query-views-past, c-state-query-views-ok
 vkCmdResetQueryPool	pool, first, count	A	first + count <= count	c-query-reset-far (MVK-p 11)
-vkCmdWriteTimestamp	stage, pool, query	A	query < count	c-query-timestamp-far (MVK-p 11)
+vkCmdWriteTimestamp	stage, pool, query	A+B	A: query < count; B: + the views of the open multiview pass (none after its end)	c-query-timestamp-far (MVK-p 11); PR-B legal: c-state-after-mv-timestamp, c-state-after-mv2-timestamp, c-state-after-mv-dyn-timestamp
 vkCmdCopyQueryPoolResults	pool, first, count, dst, offset, stride, flags	A	first + count <= count; offset + (count-1)*stride + result size <= dst size; offset, stride % 4	c-query-copy-past (accepted)
 vkCmdPushConstants	layout, stages, offset, size	A	offset, size % 4, size > 0, offset + size <= maxPushConstantsSize	c-push-far (KK 10), c-push-wrap (KK 10, MVK-p 10), c-push-near (KK 256 bytes past push[256])
-vkCmdBeginRenderPass	begin info	A+B	A: framebuffer attachment count = the pass's (imageless: the begin info's), clearValueCount >= the last attachment whose loadOp clears, or whose stencilLoadOp clears on a depth/stencil format, + 1, sample-location indices; B: pass state	r-fb-fewer (KK 11, MVK-p 11); r-begin-clear-ds-stencil; legal: r-begin-clear-color-stencil
-vkCmdNextSubpass	contents	B	inside a render pass, not past its last subpass	r-next-subpass (KK 11)
-vkCmdEndRenderPass		B	inside a render pass	r-end-no-begin (KK 11, MVK-p 11)
-vkCmdExecuteCommands	commandBuffers	A+B	A: a primary executing secondaries only (KK replays secondaries recursively; EXT_nested_command_buffer hidden); B: secondaries' bound state	gap 6: c-nested-self, c-execute-in-secondary, c-execute-primary
+vkCmdBeginRenderPass	begin info	A+B	A: framebuffer attachment count = the pass's (imageless: the begin info's), clearValueCount >= the last attachment whose loadOp clears, or whose stencilLoadOp clears on a depth/stencil format, + 1, sample-location indices; B: pass state	r-fb-fewer (KK 11, MVK-p 11); r-begin-clear-ds-stencil; legal: r-begin-clear-color-stencil; PR-B: c-state-begin-twice
+vkCmdNextSubpass	contents	B	inside a render pass, not past its last subpass; the pass's render pass and framebuffer still exist (kept by id and serial, never by pointer)	r-next-subpass (KK 11); PR-B: c-state-next-subpass, c-state-two-subpasses-ok; c-state-destroyed-pass-next, c-state-destroyed-id-reused
+vkCmdEndRenderPass		B	inside a render pass whose render pass and framebuffer still exist; its end clears the pass's view mask, colors and subpasses	r-end-no-begin (KK 11, MVK-p 11); PR-B: c-state-end-no-begin, c-state-end-in-pass; c-state-destroyed-pass-end, c-state-destroyed-fb-end
+vkCmdExecuteCommands	commandBuffers	A+B	A: a primary executing secondaries only (KK replays secondaries recursively; EXT_nested_command_buffer hidden); B: secondaries' bound state	gap 6: c-nested-self, c-execute-in-secondary, c-execute-primary; PR-B: c-state-execute-recording
 vkCmdSetDeviceMask	deviceMask	values only		Mesa: assert only
 vkCmdDispatchBase	bases, counts	A+B	A: base + count <= maxComputeWorkGroupCount per axis	
 vkCmdBeginRenderPass2	begin info	A+B	as vkCmdBeginRenderPass	
@@ -60,8 +60,8 @@ vkCmdSetLineStipple	factor, pattern	values only
 vkCmdBindTransformFeedbackBuffersEXT	first, count, buffers, offsets, sizes	stub	no Mac driver has VK_EXT_transform_feedback; A bound kept (first + count <= maxTransformFeedbackBuffers)	
 vkCmdBeginTransformFeedbackEXT	firstCounterBuffer, count	stub	as above	
 vkCmdEndTransformFeedbackEXT	firstCounterBuffer, count	stub	as above	
-vkCmdBeginQueryIndexedEXT	pool, query, index	stub	query < count kept	
-vkCmdEndQueryIndexedEXT	pool, query, index	stub	query < count kept	
+vkCmdBeginQueryIndexedEXT	pool, query, index	stub	query < count kept; + the views of the open multiview pass	
+vkCmdEndQueryIndexedEXT	pool, query, index	stub	query < count kept; + the views of the open multiview pass	
 vkCmdDrawIndirectByteCountEXT	counter buffer, offset	stub		
 vkCmdBindVertexBuffers2	first, count, buffers, offsets, sizes, strides	A	as vkCmdBindVertexBuffers; offset + size <= buffer size; stride <= maxVertexInputBindingStride	
 vkCmdBindIndexBuffer2	buffer, offset, size, indexType	A	as vkCmdBindIndexBuffer; offset + size <= buffer size	
@@ -84,12 +84,12 @@ vkCmdSetRasterizerDiscardEnable	bool	values only
 vkCmdBeginConditionalRenderingEXT	buffer, offset	A	offset + 4 <= size, offset % 4	
 vkCmdEndConditionalRenderingEXT		B	inside conditional rendering	
 vkCmdBeginRendering	rendering info	A+B	A: colorAttachmentCount <= maxColorAttachments, viewMask within the (lowered) view count, layerCount <= maxFramebufferLayers, resolve view present where an attachment with a view sets a resolveMode (none asked without a view), resolve modes known; B: state	r-dyn-colors-9 (KK 6, MVK-p 6), r-dyn-viewmask-all (KK 6); legal: r-dyn-resolve-no-view(-target)
-vkCmdEndRendering		B	inside dynamic rendering	
+vkCmdEndRendering		B	inside dynamic rendering; its end clears the view mask and colors	PR-B legal: c-state-after-mv-dyn-timestamp
 vkCmdPipelineBarrier2	dependency info	A	as vkCmdPipelineBarrier	gap 9
 vkCmdResetEvent2	event, stageMask	values only		
 vkCmdSetEvent2	event, dependency info	A	barrier ranges	
 vkCmdWaitEvents2	events, dependency infos	A	barrier ranges	
-vkCmdWriteTimestamp2	stage, pool, query	A	query < count	
+vkCmdWriteTimestamp2	stage, pool, query	A+B	as vkCmdWriteTimestamp	
 vkCmdDrawMultiEXT	drawCount, pVertexInfo, stride	A+B	A: stride passed as sizeof(VkMultiDrawInfoEXT) (the decoder packs the array), NULL array with drawCount > 0 refused; B: pipeline	gap 2: c-drawmulti-stride, c-drawmulti-null
 vkCmdDrawMultiIndexedEXT	drawCount, pIndexInfo, stride, pVertexOffset	A+B	as vkCmdDrawMultiEXT	gap 2
 vkCmdPushDescriptorSet	bindPoint, layout, set, writes	A	set < the layout's set count and a push-descriptor set layout there; writes checked as vkUpdateDescriptorSets	c-push-set-oob

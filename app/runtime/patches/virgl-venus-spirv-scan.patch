@@ -1,0 +1,1007 @@
+virglrenderer: Venus SPIR-V is scanned before the Mac's shader compilers
+
+What: vkCreateShaderModule and SPIR-V chained into a pipeline stage go
+through a structural scan (src/venus/vkr_spirv.c, no driver): the header
+(magic, version up to 1.6, an id bound up to 2^20, schema 0), every
+instruction inside the code, the ids the scan reads inside the bound, entry
+point names that end. A pipeline then needs its stage's entry point by name
+and execution model, a compute workgroup size after specialization
+(LocalSize, LocalSizeId or the WorkgroupSize built-in, spec constants
+resolved) inside the device's limits, and every descriptor set and binding
+that the functions its entry point reaches use in its layout. Descriptors no
+function uses need not be there (glslang lists them in SPIR-V 1.4+
+interfaces too). A refusal ends the app's context.
+Why: KosmicKrisp's spirv_to_nir ended QEMU on a bad magic (NULL in its own
+error path) and on an id bound of 0x3fffffff (SIGBUS in
+linear_zalloc_child_array); MoltenVK's SPIRV-Cross on garbage, truncated code
+and that bound (SIGSEGV) and with an uncaught exception on a missing entry
+point or a stage of another model (SIGABRT); Metal ended MoltenVK on a
+workgroup of 65536 threads; KosmicKrisp dereferenced a descriptor set the
+layout lacks (kk_nir_lower_descriptors).
+Upstream: OmacVM policy (spec VUIDs), draft only.
+Tests: Tests/virgl/fuzz-venus-spirv.sh (the scan alone on the CPU, under
+AddressSanitizer and UndefinedBehaviorSanitizer); Tests/virgl/
+test-venus-commands.c (p-spirv-, p-entry-missing, p-stage-mismatch,
+p-shader-layout-, p-unused-set-, p-workgroup- cases).
+
+diff --git a/src/meson.build b/src/meson.build
+index 759251c..0612d7a 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -85,6 +85,7 @@ venus_sources = [
+    'venus/vkr_query_pool.c',
+    'venus/vkr_queue.c',
+    'venus/vkr_render_pass.c',
++   'venus/vkr_spirv.c',
+    'venus/vkr_renderer.c',
+    'venus/vkr_ring.c',
+    'venus/vkr_transport.c',
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 526d35e..8db9fd9 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -6,6 +6,7 @@
+ #include "vkr_context.h"
+ #include "vkr_descriptor_set.h"
+ #include "vkr_render_pass.h"
++#include "vkr_pipeline.h"
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -799,6 +800,7 @@ vkr_context_free_object(struct hash_entry *entry)
+    /* OmacVM (virgl-venus-descriptor-limits.patch): what vkr keeps with the object */
+    vkr_descriptor_object_release(obj);
+    vkr_render_pass_object_release(obj);
++   vkr_pipeline_object_release(obj);
+    free(obj);
+ }
+ 
+diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
+index 1e14bbe..8119d4f 100644
+--- a/src/venus/vkr_descriptor_set.c
++++ b/src/venus/vkr_descriptor_set.c
+@@ -234,7 +234,7 @@ fail:
+    return NULL;
+ }
+ 
+-static const struct vkr_set_layout_binding *
++const struct vkr_set_layout_binding *
+ vkr_set_layout_find(const struct vkr_set_layout *layout, uint32_t binding, uint32_t *index)
+ {
+    uint32_t lo = 0, hi = layout->binding_count;
+diff --git a/src/venus/vkr_descriptor_set.h b/src/venus/vkr_descriptor_set.h
+index 7ae0f4d..8f39adc 100644
+--- a/src/venus/vkr_descriptor_set.h
++++ b/src/venus/vkr_descriptor_set.h
+@@ -91,6 +91,10 @@ vkr_set_layout_ref(struct vkr_set_layout *layout);
+ void
+ vkr_set_layout_unref(struct vkr_set_layout *layout);
+ 
++/* the binding of that number in the layout (and its index), or NULL */
++const struct vkr_set_layout_binding *
++vkr_set_layout_find(const struct vkr_set_layout *layout, uint32_t binding, uint32_t *index);
++
+ /* what a descriptor set layout, a set or a pipeline layout keeps besides itself, released
+  * with the object (vkr_context_free_object) */
+ void
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index bb1f333..15986eb 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -9,6 +9,7 @@
+ #include "vkr_descriptor_set.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_render_pass.h"
++#include "vkr_spirv.h"
+ 
+ static void
+ vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
+@@ -44,7 +45,28 @@ vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
+-   vkr_shader_module_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-spirv-scan.patch): the structural scan first; both Mac shader
++    * compilers ended QEMU on malformed SPIR-V */
++   char why[192];
++   struct vkr_spirv_info *spirv =
++      vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));
++   if (!spirv) {
++      vkr_context_refuse(ctx, true, "vkCreateShaderModule", "%s", why);
++      return;
++   }
++   struct vkr_shader_module *module = vkr_shader_module_create_and_add(dispatch->data, args);
++   if (!module) {
++      vkr_spirv_free(spirv);
++      return;
++   }
++   module->spirv = spirv;
++}
++
++void
++vkr_pipeline_object_release(struct vkr_object *obj)
++{
++   if (obj->type == VK_OBJECT_TYPE_SHADER_MODULE)
++      vkr_spirv_free(((struct vkr_shader_module *)obj)->spirv);
+ }
+ 
+ static void
+@@ -324,6 +346,98 @@ vkr_stage_ok(const VkPipelineShaderStageCreateInfo *st,
+    return true;
+ }
+ 
++/* OmacVM (virgl-venus-spirv-scan.patch): a specialization constant's value in the stage's
++ * data, as the driver reads it (the entry's size, at most 4 bytes of it) */
++static bool
++vkr_spec_lookup(const void *data, uint32_t spec_id, uint32_t *value)
++{
++   const VkSpecializationInfo *spec = data;
++   for (uint32_t i = 0; spec && i < spec->mapEntryCount; i++) {
++      const VkSpecializationMapEntry *e = &spec->pMapEntries[i];
++      if (e->constantID != spec_id)
++         continue;
++      uint32_t v = 0;
++      if (e->size && spec->pData)
++         memcpy(&v, (const uint8_t *)spec->pData + e->offset, MIN2(e->size, sizeof(v)));
++      *value = v;
++      return true;
++   }
++   return false;
++}
++
++/* a descriptor a shader uses is in the pipeline layout */
++static bool
++vkr_layout_has(const void *data, uint32_t set, uint32_t binding)
++{
++   const struct vkr_pipeline_layout *layout = data;
++   uint32_t index;
++   return set < layout->set_count && layout->sets[set] &&
++          vkr_set_layout_find(layout->sets[set], binding, &index);
++}
++
++static uint32_t
++vkr_stage_model(VkShaderStageFlagBits stage)
++{
++   switch (stage) {
++   case VK_SHADER_STAGE_VERTEX_BIT: return 0;
++   case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT: return 1;
++   case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT: return 2;
++   case VK_SHADER_STAGE_GEOMETRY_BIT: return 3;
++   case VK_SHADER_STAGE_FRAGMENT_BIT: return 4;
++   case VK_SHADER_STAGE_COMPUTE_BIT: return 5;
++   default: return UINT32_MAX;
++   }
++}
++
++/* the stage's SPIR-V (its module's summary, or a scan of the code chained into the stage)
++ * has an entry point of that name for the stage, a workgroup size inside the device's
++ * limits after specialization, and descriptor sets and bindings the layout has */
++static bool
++vkr_stage_shader_ok(const struct vkr_physical_device *physical_dev,
++                    const struct vkr_pipeline_layout *layout,
++                    const VkPipelineShaderStageCreateInfo *st,
++                    char *why,
++                    size_t why_size)
++{
++   const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   const struct vkr_shader_module *module = vkr_shader_module_from_handle(st->module);
++   struct vkr_spirv_info *own = NULL;
++   const struct vkr_spirv_info *spirv = module ? module->spirv : NULL;
++   if (!module) {
++      const VkShaderModuleCreateInfo *code =
++         vkr_find_struct(st->pNext, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
++      own = vkr_spirv_scan(code->pCode, code->codeSize, why, why_size);
++      if (!own)
++         return false;
++      spirv = own;
++   }
++   bool ok = false;
++   const struct vkr_spirv_entry *entry = vkr_spirv_entry(spirv, st->pName, vkr_stage_model(st->stage));
++   uint32_t size[3];
++   if (!spirv) {
++      snprintf(why, why_size, "stage 0x%x: a shader module without its scan", st->stage);
++   } else if (!entry) {
++      snprintf(why, why_size, "stage 0x%x: no entry point \"%.64s\" for the stage", st->stage,
++               st->pName);
++   } else if (st->stage == VK_SHADER_STAGE_COMPUTE_BIT &&
++              (!vkr_spirv_workgroup_size(spirv, entry, vkr_spec_lookup, st->pSpecializationInfo, size) ||
++               !size[0] || !size[1] || !size[2] || size[0] > lim->maxComputeWorkGroupSize[0] ||
++               size[1] > lim->maxComputeWorkGroupSize[1] || size[2] > lim->maxComputeWorkGroupSize[2] ||
++               (uint64_t)size[0] * size[1] * size[2] > lim->maxComputeWorkGroupInvocations)) {
++      snprintf(why, why_size, "a workgroup of %u x %u x %u (at most %u x %u x %u, %u in all)", size[0],
++               size[1], size[2], lim->maxComputeWorkGroupSize[0], lim->maxComputeWorkGroupSize[1],
++               lim->maxComputeWorkGroupSize[2], lim->maxComputeWorkGroupInvocations);
++   } else {
++      uint32_t set, binding;
++      ok = !layout || vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);
++      if (!ok)
++         snprintf(why, why_size, "stage 0x%x: set %u binding %u, not in the pipeline layout (%u sets)",
++                  st->stage, set, binding, layout->set_count);
++   }
++   vkr_spirv_free(own);
++   return ok;
++}
++
+ static bool
+ vkr_dynamic(const VkPipelineDynamicStateCreateInfo *d, VkDynamicState state)
+ {
+@@ -358,8 +472,10 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+       }
+    }
+    VkShaderStageFlags seen = 0;
++   const struct vkr_pipeline_layout *layout = vkr_pipeline_layout_from_handle(info->layout);
+    for (uint32_t i = 0; i < info->stageCount; i++) {
+-      if (!vkr_stage_ok(&info->pStages[i], VKR_GRAPHICS_STAGES & ~seen, why, why_size))
++      if (!vkr_stage_ok(&info->pStages[i], VKR_GRAPHICS_STAGES & ~seen, why, why_size) ||
++          !vkr_stage_shader_ok(physical_dev, layout, &info->pStages[i], why, why_size))
+          return false;
+       seen |= info->pStages[i].stage;
+    }
+@@ -543,6 +659,8 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+       const VkPipelineCreationFeedbackCreateInfo *feedback =
+          vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
+       if (!vkr_stage_ok(&info->stage, VK_SHADER_STAGE_COMPUTE_BIT, why, sizeof(why)) ||
++          !vkr_stage_shader_ok(dev->physical_device, vkr_pipeline_layout_from_handle(info->layout),
++                               &info->stage, why, sizeof(why)) ||
+           !vkr_context_check(ctx,
+                              (!feedback || feedback->pipelineStageCreationFeedbackCount <= 1) &&
+                                 vkr_robustness_ok(vkr_find_struct(
+diff --git a/src/venus/vkr_pipeline.h b/src/venus/vkr_pipeline.h
+index afafef2..c1d304d 100644
+--- a/src/venus/vkr_pipeline.h
++++ b/src/venus/vkr_pipeline.h
+@@ -8,8 +8,12 @@
+ 
+ #include "vkr_common.h"
+ 
++struct vkr_spirv_info;
++
+ struct vkr_shader_module {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-spirv-scan.patch): the scan's summary (vkr_spirv.h) */
++   struct vkr_spirv_info *spirv;
+ };
+ VKR_DEFINE_OBJECT_CAST(shader_module, VK_OBJECT_TYPE_SHADER_MODULE, VkShaderModule)
+ 
+@@ -38,6 +42,10 @@ VKR_DEFINE_OBJECT_CAST(pipeline, VK_OBJECT_TYPE_PIPELINE, VkPipeline)
+ void
+ vkr_context_init_shader_module_dispatch(struct vkr_context *ctx);
+ 
++/* OmacVM (virgl-venus-spirv-scan.patch): a shader module's summary, freed with it */
++void
++vkr_pipeline_object_release(struct vkr_object *obj);
++
+ void
+ vkr_context_init_pipeline_layout_dispatch(struct vkr_context *ctx);
+ 
+diff --git a/src/venus/vkr_spirv.c b/src/venus/vkr_spirv.c
+new file mode 100644
+index 0000000..426aa9a
+--- /dev/null
++++ b/src/venus/vkr_spirv.c
+@@ -0,0 +1,611 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-spirv-scan.patch): see vkr_spirv.h. One pass over the words checks
++ * every instruction's word count against the code and the ids this scan reads against the
++ * bound, and collects entry points, execution modes, decorations, constants, functions,
++ * calls and the ids pointer instructions use into arrays; sorting them by id then joins
++ * them in O(n log n), so no module makes the scan quadratic, and an entry point's descriptor
++ * variables are a walk over its call graph. Plain C, no driver. */
++
++#include "vkr_spirv.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define SPV_MAGIC 0x07230203u
++
++enum {
++   OP_ENTRY_POINT = 15,
++   OP_EXECUTION_MODE = 16,
++   OP_CONSTANT = 43,
++   OP_CONSTANT_COMPOSITE = 44,
++   OP_FUNCTION = 54,
++   OP_FUNCTION_END = 56,
++   OP_SPEC_CONSTANT = 50,
++   OP_SPEC_CONSTANT_COMPOSITE = 51,
++   OP_FUNCTION_CALL = 57,
++   OP_IMAGE_TEXEL_POINTER = 60,
++   OP_LOAD = 61,
++   OP_STORE = 62,
++   OP_COPY_MEMORY = 63,
++   OP_COPY_MEMORY_SIZED = 64,
++   OP_ACCESS_CHAIN = 65,
++   OP_IN_BOUNDS_ACCESS_CHAIN = 66,
++   OP_PTR_ACCESS_CHAIN = 67,
++   OP_ARRAY_LENGTH = 68,
++   OP_DECORATE = 71,
++   OP_IN_BOUNDS_PTR_ACCESS_CHAIN = 70,
++   OP_COPY_OBJECT = 83,
++   OP_CONVERT_PTR_TO_U = 117,
++   OP_PTR_CAST_TO_GENERIC = 121,
++   OP_GENERIC_CAST_TO_PTR = 122,
++   OP_BITCAST = 124,
++   OP_SELECT = 169,
++   OP_ATOMIC_LOAD = 227,
++   OP_ATOMIC_STORE = 228,
++   OP_ATOMIC_EXCHANGE = 229,
++   OP_ATOMIC_XOR = 242,
++   OP_PHI = 245,
++   OP_ATOMIC_FLAG_TEST_AND_SET = 318,
++   OP_ATOMIC_FLAG_CLEAR = 319,
++   OP_EXECUTION_MODE_ID = 331,
++   OP_COPY_LOGICAL = 400,
++   OP_PTR_EQUAL = 401,
++   OP_PTR_NOT_EQUAL = 402,
++   OP_PTR_DIFF = 403,
++   OP_COOPERATIVE_MATRIX_LOAD = 4457,
++   OP_COOPERATIVE_MATRIX_STORE = 4458,
++   OP_ATOMIC_FMIN = 5614,
++   OP_ATOMIC_FMAX = 5615,
++   OP_ATOMIC_FADD = 6035,
++};
++
++enum {
++   DEC_SPEC_ID = 1,
++   DEC_BUILT_IN = 11,
++   DEC_BINDING = 33,
++   DEC_DESCRIPTOR_SET = 34,
++   BUILT_IN_WORKGROUP_SIZE = 25,
++   MODE_LOCAL_SIZE = 17,
++   MODE_LOCAL_SIZE_ID = 38,
++};
++
++/* a decoration this scan keeps: SpecId, Binding or DescriptorSet with its value */
++struct deco {
++   uint32_t id, kind, value;
++};
++
++/* a constant composite (a WorkgroupSize built-in is one of three ids) */
++struct composite {
++   uint32_t id, count, v[3];
++};
++
++/* a LocalSize or LocalSizeId execution mode */
++struct mode {
++   uint32_t function, kind, v[3];
++};
++
++/* a growing array */
++struct vec {
++   void *p;
++   uint32_t n, cap;
++};
++
++struct scan {
++   const uint32_t *w;
++   size_t n; /* words */
++   uint32_t bound;
++   char *why;
++   size_t why_size;
++   struct vkr_spirv_info *info;
++   struct vec entries, names, decos, modes, consts, composites, functions, calls, uses;
++   uint32_t workgroup_composite;
++   uint32_t function; /* the function the instruction is in, or 0 */
++};
++
++static bool
++fail(struct scan *s, const char *msg, size_t at)
++{
++   snprintf(s->why, s->why_size, "SPIR-V: %s (word %zu)", msg, at);
++   return false;
++}
++
++/* room for `count` more elements of `elem` bytes */
++static void *
++vec_add(struct vec *v, uint32_t count, size_t elem)
++{
++   if (v->n + (uint64_t)count > v->cap) {
++      uint64_t c = v->cap ? v->cap : 16;
++      while (c < v->n + (uint64_t)count)
++         c *= 2;
++      if (c > UINT32_MAX)
++         return NULL;
++      void *q = realloc(v->p, (size_t)c * elem);
++      if (!q)
++         return NULL;
++      v->p = q;
++      v->cap = (uint32_t)c;
++   }
++   void *at = (char *)v->p + (size_t)v->n * elem;
++   v->n += count;
++   return at;
++}
++
++static int
++cmp_u32(const void *a, const void *b)
++{
++   const uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
++   return x < y ? -1 : x > y;
++}
++
++/* elements whose first uint32 is the key, sorted: the first with `key`, or NULL */
++static const void *
++find(const struct vec *v, size_t elem, uint32_t key)
++{
++   uint32_t lo = 0, hi = v->n;
++   while (lo < hi) {
++      const uint32_t mid = lo + (hi - lo) / 2;
++      const uint32_t k = *(const uint32_t *)((const char *)v->p + (size_t)mid * elem);
++      if (k < key)
++         lo = mid + 1;
++      else
++         hi = mid;
++   }
++   if (lo < v->n && *(const uint32_t *)((const char *)v->p + (size_t)lo * elem) == key)
++      return (const char *)v->p + (size_t)lo * elem;
++   return NULL;
++}
++
++/* a literal string in words [at, end): its length, or -1 when it does not end there */
++static int
++string_len(const struct scan *s, size_t at, size_t end)
++{
++   const char *p = (const char *)&s->w[at];
++   const void *nul = memchr(p, 0, (end - at) * 4);
++   return nul ? (int)((const char *)nul - p) : -1;
++}
++
++static bool
++id_ok(const struct scan *s, uint32_t id)
++{
++   return id && id < s->bound;
++}
++
++/* a function names id in a pointer instruction (outside functions nothing is used) */
++static bool
++use(struct scan *s, uint32_t id)
++{
++   if (!s->function)
++      return true;
++   struct vkr_spirv_pair *u = vec_add(&s->uses, 1, sizeof(*u));
++   if (u)
++      *u = (struct vkr_spirv_pair){ s->function, id };
++   return u != NULL;
++}
++
++static bool
++instruction(struct scan *s, size_t at, uint32_t op, uint32_t len)
++{
++   const uint32_t *w = &s->w[at];
++   switch (op) {
++   case OP_ENTRY_POINT: {
++      if (len < 4 || !id_ok(s, w[2]))
++         return fail(s, "an entry point without a function or name", at);
++      const int nl = string_len(s, at + 3, at + len);
++      if (nl < 0)
++         return fail(s, "an entry point name that does not end", at);
++      struct vkr_spirv_entry *e = vec_add(&s->entries, 1, sizeof(*e));
++      char *name = vec_add(&s->names, (uint32_t)nl + 1, 1);
++      if (!e || !name)
++         return fail(s, "out of host memory", at);
++      memset(e, 0, sizeof(*e));
++      e->model = w[1];
++      e->function = w[2];
++      e->name = (uint32_t)(name - (char *)s->names.p);
++      memcpy(name, &w[3], (size_t)nl + 1);
++      for (size_t i = 3 + ((size_t)nl + 4) / 4; i < len; i++) {
++         if (!id_ok(s, w[i]))
++            return fail(s, "an entry point interface id past the bound", at);
++      }
++      return true;
++   }
++   case OP_EXECUTION_MODE:
++   case OP_EXECUTION_MODE_ID: {
++      if (len < 3 || !id_ok(s, w[1]))
++         return fail(s, "an execution mode without an entry point", at);
++      if (!((op == OP_EXECUTION_MODE && w[2] == MODE_LOCAL_SIZE) ||
++            (op == OP_EXECUTION_MODE_ID && w[2] == MODE_LOCAL_SIZE_ID)))
++         return true;
++      if (len != 6)
++         return fail(s, "a workgroup size without three values", at);
++      if (op == OP_EXECUTION_MODE_ID && (!id_ok(s, w[3]) || !id_ok(s, w[4]) || !id_ok(s, w[5])))
++         return fail(s, "a workgroup size id past the bound", at);
++      struct mode *m = vec_add(&s->modes, 1, sizeof(*m));
++      if (!m)
++         return fail(s, "out of host memory", at);
++      *m = (struct mode){ .function = w[1], .kind = op == OP_EXECUTION_MODE ? 1 : 2 };
++      memcpy(m->v, &w[3], sizeof(m->v));
++      return true;
++   }
++   case OP_DECORATE:
++      if (len < 3 || !id_ok(s, w[1]))
++         return fail(s, "a decoration of an id past the bound", at);
++      if (w[2] == DEC_BUILT_IN && len >= 4 && w[3] == BUILT_IN_WORKGROUP_SIZE) {
++         s->workgroup_composite = w[1];
++      } else if (w[2] == DEC_SPEC_ID || w[2] == DEC_BINDING || w[2] == DEC_DESCRIPTOR_SET) {
++         if (len < 4)
++            return fail(s, "a decoration without its value", at);
++         struct deco *d = vec_add(&s->decos, 1, sizeof(*d));
++         if (!d)
++            return fail(s, "out of host memory", at);
++         *d = (struct deco){ w[1], w[2], w[3] };
++      }
++      return true;
++   case OP_CONSTANT:
++   case OP_SPEC_CONSTANT: {
++      if (len < 4 || !id_ok(s, w[2]))
++         return fail(s, "a constant without a value", at);
++      struct vkr_spirv_constant *c = vec_add(&s->consts, 1, sizeof(*c));
++      if (!c)
++         return fail(s, "out of host memory", at);
++      /* spec_id 0 marks a spec constant until the SpecId decorations are joined */
++      *c = (struct vkr_spirv_constant){ .id = w[2], .spec_id = op == OP_CONSTANT ? UINT32_MAX : 0,
++                                        .value = w[3] };
++      return true;
++   }
++   case OP_FUNCTION: {
++      if (len < 5 || !id_ok(s, w[2]) || s->function)
++         return fail(s, "a function without an id or inside another", at);
++      uint32_t *f = vec_add(&s->functions, 1, sizeof(*f));
++      if (!f)
++         return fail(s, "out of host memory", at);
++      *f = s->function = w[2];
++      return true;
++   }
++   case OP_FUNCTION_END:
++      s->function = 0;
++      return true;
++   case OP_CONSTANT_COMPOSITE:
++   case OP_SPEC_CONSTANT_COMPOSITE:
++      if (len < 3 || !id_ok(s, w[2]))
++         return fail(s, "a composite without an id", at);
++      for (uint32_t i = 3; i < len; i++) {
++         if (!id_ok(s, w[i]))
++            return fail(s, "a composite constituent past the bound", at);
++      }
++      /* kept whatever the order of the decoration: the join finds the WorkgroupSize one */
++      {
++         struct composite *c = vec_add(&s->composites, 1, sizeof(*c));
++         if (!c)
++            return fail(s, "out of host memory", at);
++         *c = (struct composite){ .id = w[2], .count = len - 3 };
++         if (len == 6)
++            memcpy(c->v, &w[3], sizeof(c->v));
++      }
++      return true;
++   /* instructions that take pointers: a descriptor variable they name is used (the pointer
++    * operand at word 3, at word 1 for stores; every operand of calls, selects, phis and
++    * pointer comparisons). Names, decorations and debug instructions are no use. */
++   case OP_LOAD:
++   case OP_ACCESS_CHAIN:
++   case OP_IN_BOUNDS_ACCESS_CHAIN:
++   case OP_PTR_ACCESS_CHAIN:
++   case OP_IN_BOUNDS_PTR_ACCESS_CHAIN:
++   case OP_IMAGE_TEXEL_POINTER:
++   case OP_ARRAY_LENGTH:
++   case OP_COPY_OBJECT:
++   case OP_COPY_LOGICAL:
++   case OP_CONVERT_PTR_TO_U:
++   case OP_PTR_CAST_TO_GENERIC:
++   case OP_GENERIC_CAST_TO_PTR:
++   case OP_BITCAST:
++   case OP_ATOMIC_LOAD:
++   case OP_ATOMIC_FLAG_TEST_AND_SET:
++   case OP_ATOMIC_FMIN:
++   case OP_ATOMIC_FMAX:
++   case OP_ATOMIC_FADD:
++   case OP_COOPERATIVE_MATRIX_LOAD:
++      return len < 4 || use(s, w[3]) || fail(s, "out of host memory", at);
++   case OP_STORE:
++   case OP_COPY_MEMORY:
++   case OP_COPY_MEMORY_SIZED:
++   case OP_ATOMIC_STORE:
++   case OP_ATOMIC_FLAG_CLEAR:
++   case OP_COOPERATIVE_MATRIX_STORE:
++      for (uint32_t i = 1; i < len && i < 3; i++) {
++         if (!use(s, w[i]))
++            return fail(s, "out of host memory", at);
++      }
++      return true;
++   case OP_SELECT:
++   case OP_PTR_EQUAL:
++   case OP_PTR_NOT_EQUAL:
++   case OP_PTR_DIFF:
++   case OP_PHI:
++   case OP_FUNCTION_CALL:
++      if (op == OP_FUNCTION_CALL && s->function && len >= 4) {
++         struct vkr_spirv_pair *c = vec_add(&s->calls, 1, sizeof(*c));
++         if (!c)
++            return fail(s, "out of host memory", at);
++         *c = (struct vkr_spirv_pair){ s->function, w[3] };
++      }
++      for (uint32_t i = op == OP_FUNCTION_CALL ? 4 : 3; i < len; i++) {
++         if (!use(s, w[i]))
++            return fail(s, "out of host memory", at);
++      }
++      return true;
++   default:
++      if (op >= OP_ATOMIC_EXCHANGE && op <= OP_ATOMIC_XOR)
++         return len < 4 || use(s, w[3]) || fail(s, "out of host memory", at);
++      return true;
++   }
++}
++
++/* the joins: execution modes into entries, SpecIds into constants, used descriptor
++ * variables into bindings */
++static bool
++join(struct scan *s)
++{
++   struct vkr_spirv_info *info = s->info;
++   /* not the entry points' interfaces: from SPIR-V 1.4 they list globals, but glslang lists
++    * unused ones too, which a valid pipeline layout need not have */
++   qsort(s->modes.p, s->modes.n, sizeof(struct mode), cmp_u32);
++   qsort(s->decos.p, s->decos.n, sizeof(struct deco), cmp_u32);
++   qsort(s->consts.p, s->consts.n, sizeof(struct vkr_spirv_constant), cmp_u32);
++   qsort(s->composites.p, s->composites.n, sizeof(struct composite), cmp_u32);
++   qsort(s->functions.p, s->functions.n, sizeof(uint32_t), cmp_u32);
++   qsort(s->calls.p, s->calls.n, sizeof(struct vkr_spirv_pair), cmp_u32);
++   qsort(s->uses.p, s->uses.n, sizeof(struct vkr_spirv_pair), cmp_u32);
++
++   struct vkr_spirv_entry *entries = s->entries.p;
++   for (uint32_t i = 0; i < s->entries.n; i++) {
++      const struct mode *m = find(&s->modes, sizeof(*m), entries[i].function);
++      if (!m)
++         continue;
++      entries[i].local_size_kind = (uint8_t)m->kind;
++      memcpy(m->kind == 1 ? entries[i].local_size : entries[i].local_size_id, m->v, sizeof(m->v));
++   }
++   /* a spec constant's SpecId: the decorations of its id (sorted by id, any kind) */
++   struct vkr_spirv_constant *consts = s->consts.p;
++   const struct deco *decos = s->decos.p;
++   for (uint32_t i = 0; i < s->consts.n; i++) {
++      if (consts[i].spec_id == UINT32_MAX)
++         continue;
++      consts[i].spec_id = UINT32_MAX - 1; /* no SpecId: its default value only */
++      for (const struct deco *d = find(&s->decos, sizeof(*d), consts[i].id);
++           d && d < decos + s->decos.n && d->id == consts[i].id; d++) {
++         if (d->kind == DEC_SPEC_ID)
++            consts[i].spec_id = d->value;
++      }
++   }
++   /* descriptor variables: ids with a DescriptorSet decoration (sorted by id) */
++   struct vec vars = { 0 };
++   for (uint32_t i = 0; i < s->decos.n;) {
++      const uint32_t id = decos[i].id;
++      uint32_t set = UINT32_MAX, binding = 0;
++      for (; i < s->decos.n && decos[i].id == id; i++) {
++         if (decos[i].kind == DEC_DESCRIPTOR_SET)
++            set = decos[i].value;
++         else if (decos[i].kind == DEC_BINDING)
++            binding = decos[i].value;
++      }
++      if (set == UINT32_MAX)
++         continue;
++      struct vkr_spirv_var *v = vec_add(&vars, 1, sizeof(*v));
++      if (!v) {
++         free(vars.p);
++         return fail(s, "out of host memory", 0);
++      }
++      *v = (struct vkr_spirv_var){ id, set, binding };
++   }
++   info->entries = s->entries.p;
++   info->entry_count = s->entries.n;
++   info->names = s->names.p;
++   info->constants = s->consts.p;
++   info->constant_count = s->consts.n;
++   info->vars = vars.p;
++   info->var_count = vars.n;
++   info->functions = s->functions.p;
++   info->function_count = s->functions.n;
++   info->calls = s->calls.p;
++   info->call_count = s->calls.n;
++   info->uses = s->uses.p;
++   info->use_count = s->uses.n;
++   s->entries.p = s->names.p = s->consts.p = s->functions.p = s->calls.p = s->uses.p = NULL;
++   const struct composite *wg =
++      s->workgroup_composite ? find(&s->composites, sizeof(*wg), s->workgroup_composite) : NULL;
++   if (wg && wg->count != 3)
++      return fail(s, "a WorkgroupSize that is not three values", 0);
++   if (wg)
++      memcpy(info->workgroup_size, wg->v, sizeof(wg->v));
++   return true;
++}
++
++struct vkr_spirv_info *
++vkr_spirv_scan(const uint32_t *code, size_t bytes, char *why, size_t why_size)
++{
++   struct scan s = { .w = code, .n = bytes / 4, .why = why, .why_size = why_size };
++   if (!code || bytes % 4 || s.n < 5) {
++      fail(&s, "shorter than its header or not whole words", 0);
++      return NULL;
++   }
++   const uint32_t version = code[1];
++   if (code[0] != SPV_MAGIC) {
++      fail(&s, "not SPIR-V (magic)", 0);
++      return NULL;
++   }
++   if ((version >> 16) != 1 || ((version >> 8) & 0xff) > 6 || (version & 0xff)) {
++      fail(&s, "an unknown SPIR-V version", 1);
++      return NULL;
++   }
++   s.bound = code[3];
++   if (!s.bound || s.bound > VKR_SPIRV_MAX_BOUND || code[4]) {
++      snprintf(why, why_size, "SPIR-V: id bound %u (at most %u) or schema %u", s.bound,
++               VKR_SPIRV_MAX_BOUND, code[4]);
++      return NULL;
++   }
++   s.info = calloc(1, sizeof(*s.info));
++   bool ok = s.info != NULL || fail(&s, "out of host memory", 0);
++   for (size_t at = 5; ok && at < s.n;) {
++      const uint32_t len = code[at] >> 16, op = code[at] & 0xffff;
++      if (!len || len > s.n - at) {
++         ok = fail(&s, "an instruction past the end of the code", at);
++         break;
++      }
++      ok = instruction(&s, at, op, len);
++      at += len;
++   }
++   if (ok && !s.entries.n)
++      ok = fail(&s, "no entry point", 0);
++   if (ok)
++      ok = join(&s);
++   free(s.entries.p);
++   free(s.names.p);
++   free(s.decos.p);
++   free(s.modes.p);
++   free(s.consts.p);
++   free(s.composites.p);
++   free(s.functions.p);
++   free(s.calls.p);
++   free(s.uses.p);
++   if (!ok) {
++      vkr_spirv_free(s.info);
++      return NULL;
++   }
++   return s.info;
++}
++
++void
++vkr_spirv_free(struct vkr_spirv_info *info)
++{
++   if (!info)
++      return;
++   free(info->entries);
++   free(info->names);
++   free(info->constants);
++   free(info->vars);
++   free(info->functions);
++   free(info->calls);
++   free(info->uses);
++   free(info);
++}
++
++const struct vkr_spirv_entry *
++vkr_spirv_entry(const struct vkr_spirv_info *info, const char *name, uint32_t model)
++{
++   for (uint32_t i = 0; info && name && i < info->entry_count; i++) {
++      const struct vkr_spirv_entry *e = &info->entries[i];
++      if (e->model == model && !strcmp(info->names + e->name, name))
++         return e;
++   }
++   return NULL;
++}
++
++/* a constant's value after specialization (constants are sorted by id) */
++static bool
++constant_value(const struct vkr_spirv_info *info,
++               uint32_t id,
++               bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++               const void *data,
++               uint32_t *value)
++{
++   const struct vec v = { .p = info->constants, .n = info->constant_count };
++   const struct vkr_spirv_constant *c = find(&v, sizeof(*c), id);
++   if (!c)
++      return false;
++   *value = c->value;
++   if (c->spec_id < UINT32_MAX - 1 && lookup)
++      lookup(data, c->spec_id, value);
++   return true;
++}
++
++bool
++vkr_spirv_workgroup_size(const struct vkr_spirv_info *info,
++                         const struct vkr_spirv_entry *entry,
++                         bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                         const void *data,
++                         uint32_t size[3])
++{
++   size[0] = size[1] = size[2] = 1;
++   /* the WorkgroupSize built-in wins over the execution modes */
++   if (info->workgroup_size[0]) {
++      for (int i = 0; i < 3; i++) {
++         if (!constant_value(info, info->workgroup_size[i], lookup, data, &size[i]))
++            return false;
++      }
++      return true;
++   }
++   if (entry->local_size_kind == 1) {
++      memcpy(size, entry->local_size, sizeof(entry->local_size));
++      return true;
++   }
++   if (entry->local_size_kind == 2) {
++      for (int i = 0; i < 3; i++) {
++         if (!constant_value(info, entry->local_size_id[i], lookup, data, &size[i]))
++            return false;
++      }
++   }
++   return true;
++}
++
++/* the index of a function id in the sorted list, or UINT32_MAX */
++static uint32_t
++function_index(const struct vkr_spirv_info *info, uint32_t id)
++{
++   const struct vec v = { .p = info->functions, .n = info->function_count };
++   const uint32_t *f = find(&v, sizeof(*f), id);
++   return f ? (uint32_t)(f - info->functions) : UINT32_MAX;
++}
++
++bool
++vkr_spirv_bindings_ok(const struct vkr_spirv_info *info,
++                      const struct vkr_spirv_entry *entry,
++                      bool (*ok)(const void *data, uint32_t set, uint32_t binding),
++                      const void *data,
++                      uint32_t *set,
++                      uint32_t *binding)
++{
++   *set = *binding = UINT32_MAX;
++   const uint32_t first = function_index(info, entry->function);
++   if (first == UINT32_MAX)
++      return true;
++   /* breadth first over the call graph: each function once */
++   uint8_t *seen = calloc(info->function_count, 1);
++   uint32_t *queue = malloc(sizeof(*queue) * (size_t)info->function_count);
++   bool result = seen && queue;
++   uint32_t head = 0, tail = 0;
++   if (result) {
++      seen[first] = 1;
++      queue[tail++] = first;
++   }
++   const struct vec calls = { .p = info->calls, .n = info->call_count };
++   const struct vec uses = { .p = info->uses, .n = info->use_count };
++   const struct vec vars = { .p = info->vars, .n = info->var_count };
++   while (result && head < tail) {
++      const uint32_t function = info->functions[queue[head++]];
++      for (const struct vkr_spirv_pair *c = find(&calls, sizeof(*c), function);
++           c && c < info->calls + info->call_count && c->function == function; c++) {
++         const uint32_t callee = function_index(info, c->id);
++         if (callee != UINT32_MAX && !seen[callee]) {
++            seen[callee] = 1;
++            queue[tail++] = callee;
++         }
++      }
++      for (const struct vkr_spirv_pair *u = find(&uses, sizeof(*u), function);
++           result && u && u < info->uses + info->use_count && u->function == function; u++) {
++         const struct vkr_spirv_var *v = find(&vars, sizeof(*v), u->id);
++         if (v && !ok(data, v->set, v->binding)) {
++            *set = v->set;
++            *binding = v->binding;
++            result = false;
++         }
++      }
++   }
++   free(seen);
++   free(queue);
++   return result;
++}
+diff --git a/src/venus/vkr_spirv.h b/src/venus/vkr_spirv.h
+new file mode 100644
+index 0000000..1b79868
+--- /dev/null
++++ b/src/venus/vkr_spirv.h
+@@ -0,0 +1,108 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-spirv-scan.patch, ADR 0065): a structural scan of a guest's SPIR-V
++ * before the Mac's shader compilers see it. Both compilers ended QEMU on malformed SPIR-V
++ * (KosmicKrisp's spirv_to_nir on a bad magic, in its own error path, and on a huge id bound;
++ * MoltenVK's SPIRV-Cross with an uncaught exception on a missing entry point), on a
++ * workgroup size past Metal's (MoltenVK) and on a shader using a descriptor set the layout
++ * lacks (KosmicKrisp). This is not a validator: it checks what those crashes need (the
++ * header, every instruction inside the code, the ids it reads inside the bound, entry
++ * points, workgroup sizes, descriptor sets) and keeps a summary for pipeline creation.
++ * Self-contained (no Vulkan driver), so it is fuzzed on the CPU alone
++ * (Tests/virgl/fuzz-venus-spirv.sh). */
++
++#ifndef VKR_SPIRV_H
++#define VKR_SPIRV_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++/* the largest id bound: KosmicKrisp allocates per id (a bound of 0x3fffffff ended QEMU) */
++#define VKR_SPIRV_MAX_BOUND (1u << 20)
++
++struct vkr_spirv_entry {
++   uint32_t model;    /* SpvExecutionModel */
++   uint32_t function; /* id */
++   uint32_t name;     /* offset into the summary's name buffer */
++   uint32_t local_size[3];
++   uint32_t local_size_id[3];
++   uint8_t local_size_kind; /* 0 none, 1 LocalSize, 2 LocalSizeId */
++};
++
++/* a constant whose value a workgroup size may name; spec_id UINT32_MAX for a plain one */
++struct vkr_spirv_constant {
++   uint32_t id;
++   uint32_t spec_id;
++   uint32_t value;
++};
++
++/* a descriptor variable: an id with a DescriptorSet decoration */
++struct vkr_spirv_var {
++   uint32_t id;
++   uint32_t set;
++   uint32_t binding;
++};
++
++/* (function, id): a call from one function to another, or an id a function's pointer
++ * instruction names */
++struct vkr_spirv_pair {
++   uint32_t function;
++   uint32_t id;
++};
++
++struct vkr_spirv_info {
++   uint32_t entry_count;
++   struct vkr_spirv_entry *entries;
++   char *names;
++   uint32_t constant_count;
++   struct vkr_spirv_constant *constants; /* sorted by id */
++   /* the WorkgroupSize built-in: its composite's three components, or 0 */
++   uint32_t workgroup_size[3];
++   /* sorted: an entry point's descriptor variables are the ones the functions it reaches
++    * through calls name */
++   uint32_t var_count;
++   struct vkr_spirv_var *vars;
++   uint32_t function_count;
++   uint32_t *functions;
++   uint32_t call_count;
++   struct vkr_spirv_pair *calls;
++   uint32_t use_count;
++   struct vkr_spirv_pair *uses;
++};
++
++/* the scan of `bytes` bytes of SPIR-V; NULL with a reason in why (malformed or too big) */
++struct vkr_spirv_info *
++vkr_spirv_scan(const uint32_t *code, size_t bytes, char *why, size_t why_size);
++
++void
++vkr_spirv_free(struct vkr_spirv_info *info);
++
++/* the entry point named `name` of execution model `model`, or NULL */
++const struct vkr_spirv_entry *
++vkr_spirv_entry(const struct vkr_spirv_info *info, const char *name, uint32_t model);
++
++/* a stage's workgroup size after specialization (lookup: SpecId -> value, false when the
++ * pipeline does not specialize it); false when an id it names is not a known constant */
++bool
++vkr_spirv_workgroup_size(const struct vkr_spirv_info *info,
++                         const struct vkr_spirv_entry *entry,
++                         bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                         const void *data,
++                         uint32_t size[3]);
++
++/* each descriptor variable the entry point's functions use, to `ok` (in O(module size));
++ * false at the first one `ok` refuses (its set and binding in *set and *binding) or out of
++ * host memory (both UINT32_MAX) */
++bool
++vkr_spirv_bindings_ok(const struct vkr_spirv_info *info,
++                      const struct vkr_spirv_entry *entry,
++                      bool (*ok)(const void *data, uint32_t set, uint32_t binding),
++                      const void *data,
++                      uint32_t *set,
++                      uint32_t *binding);
++
++#endif /* VKR_SPIRV_H */
