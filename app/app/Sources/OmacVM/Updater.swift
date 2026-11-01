@@ -728,6 +728,8 @@ final class Updater: ObservableObject {
 
     /// From the app delegate: the VM this launcher runs, and its controls.
     var runningVM: () -> (folder: URL, name: String)? = { nil }
+    /// The running VM's QEMU: a question may take the keys from it (AskKeys).
+    var qemuPID: () -> pid_t? = { nil }
     var powerDownVM: () -> Void = {}
     var forceStopVM: () -> Void = {}
     var startVMAgain: (URL) -> Void = { _ in }
@@ -819,7 +821,7 @@ final class Updater: ObservableObject {
             force = hook == "1" && why == nil
         } else {
             let alert = Self.shutdownTimeoutAlert()
-            AskKeys.take(alert.window, overVM: AppDelegate.qemuApp?.processIdentifier)
+            AskKeys.take(alert.window, overVM: qemuPID())
             force = alert.runModal() == .alertSecondButtonReturn
         }
         guard force, let vm = runningVM(), let version else { return }

@@ -1,5 +1,4 @@
 import AppKit
-import OmacVMWindow
 
 /// "Features…" in the VM's app menu: OmacVM's control centre on the VM's
 /// desktop. The menu is QEMU's (its window is in front while the VM runs,
@@ -19,12 +18,15 @@ final class ControlCentreRoute {
     private let agentPath: String
     private let vmName: String
     private let log: (String) -> Void
+    /// AskKeys, from the Runner: this file also builds on its own (app-idle.sh).
+    private let takeKeys: (NSWindow) -> Void
     private var observer: NSObjectProtocol?
     private var busy = false
 
-    init(agentPath: String, vmName: String, log: @escaping (String) -> Void) {
+    init(agentPath: String, vmName: String, takeKeys: @escaping (NSWindow) -> Void, log: @escaping (String) -> Void) {
         self.agentPath = agentPath
         self.vmName = vmName
+        self.takeKeys = takeKeys
         self.log = log
         requestName = "\(Bundle.main.bundleIdentifier ?? "org.omacvm.app").features.\(getpid())"
     }
@@ -65,7 +67,7 @@ final class ControlCentreRoute {
         alert.informativeText = text
         alert.addButton(withTitle: "OK")
         // The click was in QEMU's menu, up to 12 s ago.
-        AskKeys.take(alert.window, overVM: AppDelegate.qemuApp?.processIdentifier)
+        takeKeys(alert.window)
         alert.runModal()
         qemu?.activate()
     }

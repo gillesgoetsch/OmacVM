@@ -170,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Update with a VM restart (Updater.swift): the launcher's VM and its controls.
         let u = Updater.shared
+        u.qemuPID = { Self.qemuApp?.processIdentifier }
         u.runningVM = { [weak self] in
             guard let r = self?.runner, r.isRunning else { return nil }
             return (r.config.folder, r.config.name)
