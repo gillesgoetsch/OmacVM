@@ -6,7 +6,7 @@ in more words.
 ## 3.2.18 (unreleased)
 
 In OmacVM.app VMs, desktop OpenGL programs that use clip distances, user clip planes or
-tessellation draw on the Mac's GPU as they should. Needs the app update (from the VM's next start);
+tessellation draw as they should. Needs the app update (from the VM's next start);
 nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing changes.
 
 - **Desktop OpenGL: clip distances, user clip planes and tessellation (OmacVM.app, #663, see
@@ -21,7 +21,10 @@ nothing in the VM. Browsers draw as before. UTM, Fusion and Parallels: nothing c
   (the 3.2.16 app and this one, the same VM, a 1920x1080 window, three runs), each such program
   drew wrong or not at all with 3.2.16 and right with this build: the clip rows keep the top half,
   tessellation draws in the top half (also in a screenshot of the window), transform feedback
-  records its values, and qemu.log has no refused shader. Shaders that use none of this keep their
+  records its values, and qemu.log has no refused shader. Transform feedback from a tessellation
+  evaluation shader runs on the Mac's CPU, not its GPU: Apple's OpenGL takes its software vertex
+  path for such draws (qemu.log says once "Fallback to SW vertex processing for EVAL_PROG TF");
+  the values are right, its speed was not measured. Shaders that use none of this keep their
   text: of the 250 that OmacVM's virgl build tests make, only the 4 tessellation shaders drawn last
   or passing clip distances on changed, and all 2,161 test lines still pass. A program drawn with
   clip planes both on and off gets one more compiled shader. Chromium's WebGL 1 and WebGL 2 smoke

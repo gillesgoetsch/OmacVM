@@ -136,10 +136,14 @@ commit 82927e9. Changes here:
   planes clip after the last vertex, tessellation or geometry shader (they were
   ignored), and a tessellation evaluation shader as the last stage gets the y
   prescale and its transform feedback (it drew upside down in a window and
-  recorded zeros). The planes' stores sit in a shader variant for planes on
+  recorded zeros; Apple's GL records that transform feedback on its software
+  vertex path: "Fallback to SW vertex processing for EVAL_PROG TF" once in
+  qemu.log). The planes' stores sit in a shader variant for planes on
   (key bit `ucp_enabled`, last vertex or evaluation shader only; the geometry
   shader's `gs.emit_clip_distance`), so a shader drawn without planes keeps its
-  GLSL. gl_CullDistance is still never declared: such a shader stays refused.
+  GLSL. A vertex shader still never declares gl_CullDistance (geometry and
+  tessellation shaders declare it as before and stop at GL_ARB_cull_distance):
+  such a shader stays refused.
   The clip distance members that `virgl-shader-separable-pervertex.patch` puts
   into a separable block now apply on the Mac too (they needed cull distances
   before). #589; checked by `Tests/virgl/test-whole-program-shapes.c`

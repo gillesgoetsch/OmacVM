@@ -1657,7 +1657,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   a GL with atomic counters, so the VM's Mesa saw 0 and refused such programs itself (#589).
 - **Fix (3.2.18):** update the app; it applies from the VM's next start. Nothing in the VM.
   Separable programs with patch varyings or varying arrays between their stages are a separate
-  case.
+  case. "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log is expected: Apple's
+  OpenGL records transform feedback from a tessellation evaluation shader on its software vertex
+  path (on the CPU); the values are right.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`; test
   `app/runtime/Tests/virgl/test-whole-program-shapes.c`;
