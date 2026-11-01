@@ -514,6 +514,21 @@ the VM's SSH on `127.0.0.1:<port>`.
   own pointer. With Extra brightness QEMU gives the main window's layer the
   frames' gain, so the pointer is as bright as the page under it. Not with the hidden Mac pointer setting (that one needs the
   hotspot). `omacvm check` says "Pointer layer".
+- Ghostty on the Mac's GPU (experimental, off; the VM window's General
+  section, `defaults write org.omacvm.app ghosttyGPU -bool true`, from the
+  VM's next start; ADR 0064's amendment): Ghostty needs OpenGL 4.3 and
+  otherwise draws on the VM's CPU (llvmpipe). With the switch on, a start
+  with Vulkan on KosmicKrisp (macOS 26 and newer) tells the VM (SMBIOS
+  `omacvm.glzink=1`), and OmacVM's EGL library starts Ghostty alone on Zink
+  over Venus with a forced 4.3; Update VM brings that part of the library.
+  Measured on a Mac mini M4 and an M1 Max: typing shown in 25 and 28 ms
+  instead of 56 and 57, scrolling output 3.3 and 3.4 instead of 32.8 and
+  31.7 Ghostty CPU-seconds per 10 s, for 6-9 % of the Mac's GPU and
+  150-300 MB of its graphics memory. If the Mac
+  ends Ghostty's Venus context, that Ghostty stops responding and only
+  Terminate helps (the programs in it end). Not with GPU safe mode,
+  Graphics OpenGL or MoltenVK (no marker: Ghostty on the CPU as before).
+  `omacvm check` says which driver a running Ghostty has ("Ghostty").
 - Draw only what changed (experimental, off; the VM window's Display
   section, `defaults write org.omacvm.app presentTiles -bool true`, from the
   VM's next start; ADR 0055): QEMU keeps the last whole frame on the window

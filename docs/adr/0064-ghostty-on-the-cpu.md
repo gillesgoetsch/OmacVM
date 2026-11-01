@@ -4,7 +4,10 @@ Status: accepted, built (`issue-598`, 3.2.14), always on in OmacVM.app VMs
 for the program `ghostty` alone. Amends ADR 0063: OmacVM's EGL vendor
 library gets a second job, and for that job it sets an environment variable
 (0063 had none). Reported in #598 (@benoitdepaire). Notes, the
-investigation and the review: work/tracks/issue-598-ghostty.md.
+investigation and the review: work/tracks/issue-598-ghostty.md. Amended in
+3.2.18 (`ghostty-zink`): with the app's experimental switch "Ghostty on the
+Mac's GPU" (off by default) Ghostty draws on Zink over Venus instead, on
+KosmicKrisp only (section "Amendment" at the end).
 
 ## Context
 
@@ -186,3 +189,133 @@ terminals), and it does not start while the screen is locked.
   variable set before is kept; foot and chromium get Mesa's own pointer),
   `src/tests/ghostty-check.sh` (the check line, also against the library
   built from source); the VM rows R1-R9 in the PR and the track.
+
+## Amendment (3.2.18): Ghostty on the Mac's GPU, an experimental switch
+
+Lane `ghostty-gpu` (work/tracks/ghostty-gpu.md: the investigation, the plan,
+the architecture review, unit `ghostty-zink`).
+
+### Context
+
+Zink on KosmicKrisp still gives OpenGL 2.1 only (no transform feedback, no
+geometry shaders at the pinned Mesa e5f0687; float64 is no limit, see
+option 3). With `MESA_GL_VERSION_OVERRIDE=4.3` Zink claims 4.3 core, and
+Ghostty 1.3.1 opens, draws and takes typing on the Mac's GPU, on the Mac
+mini M4 and the MacBook Pro M1 Max (Apple7, new coverage), since 3.2.14 also
+without ending QEMU (ADR 0065). Measured against llvmpipe (below), it types
+about twice as fast and takes about a tenth of the CPU while output scrolls,
+for some of the Mac's GPU and its graphics memory. The cost of a loss: when
+the Mac ends a Venus context, that Ghostty stops drawing and answers no
+input (Hyprland's "not responding", only Terminate), and the programs in it
+end with it.
+
+### Decision
+
+- An app switch, `ghosttyGPU` (General, under the Vulkan rows; off; (i)). A
+  start sends SMBIOS `omacvm.glzink=1` (host.env `OMACVM_GLZINK=1`) only with
+  the switch on, no GPU safe mode, Venus at that start and KosmicKrisp as its
+  Vulkan driver: one pure rule, `GhosttyGPU.start` (`OmacVMWindow`), with
+  the driver as a typed value (`Graphics.vulkanDriverKind`). MoltenVK Macs
+  (macOS 15) get no switch to turn: Zink does not start there. qemu.log
+  `OmacVM: Ghostty on the Mac's GPU: on|off (why)` while the switch is on; the
+  row says what the running VM's start did, as the HDR row.
+- No probe service in the VM: the app knows Venus, the driver and that its
+  runtime refuses instead of aborting; where Zink cannot start, Mesa falls
+  back to llvmpipe by itself.
+- The EGL library, in a process named `ghostty`: with the marker, no
+  `/run/omacvm/gl-zink-off` (a Venus context lost in this boot; written by
+  the lost-context work, absent = no effect) and none of the person's
+  `LIBGL_ALWAYS_SOFTWARE`, `MESA_LOADER_DRIVER_OVERRIDE`, `GALLIUM_DRIVER`,
+  `MESA_GL_VERSION_OVERRIDE`, its `eglInitialize` gets
+  `MESA_LOADER_DRIVER_OVERRIDE=zink MESA_GL_VERSION_OVERRIDE=4.3` instead of
+  `LIBGL_ALWAYS_SOFTWARE=1`, the same way (lock, gone after the call). Mesa
+  reads the GL version override once per process, at its first display
+  (`version.c`, a static), so 4.3 holds for every context. No GLSL override:
+  under a GL override `_mesa_compute_version` skips the GLSL clamp, and
+  Zink's own 460 stays (the rows draw without one).
+- After Mesa's call the library asks it which driver it took
+  (`eglGetDisplayDriverName`), writes one stderr line and
+  `$XDG_RUNTIME_DIR/omacvm/ghostty-gl` ("PID ASKED GOT WHY"); `omacvm check`'s
+  "Ghostty" line names zink or llvmpipe for a running Ghostty from it (only a
+  live process named ghostty), and why.
+- The bad fd. Under Zink, GTK 4.24 logged a CRITICAL (`fd > 0` failed) and a
+  close of a bad descriptor about once a frame (646-901 lines per 10 s of
+  scrolling in the investigation). Mesa's `dri2_export_dma_buf_image_mesa`
+  (egl_dri2.c, 26.2.6) ignores a failed fd query and returns `EGL_TRUE`; on
+  Zink over Venus (and on llvmpipe) that query fails, and GTK passes its fd
+  array unset, so it made a texture of whatever was there. Measured with a
+  stand-in that sets the array to 12345 first: Mesa answers yes and the 12345
+  stays (Zink and llvmpipe, M4 and M1). GTK's own switch does not help:
+  Ghostty sets `GDK_DISABLE` itself before GTK starts. So for a display set up
+  on Zink in a Ghostty process, `eglQueryString(EGL_EXTENSIONS)` leaves out
+  `EGL_MESA_image_dma_buf_export` and GTK never tries (told no instead, GTK
+  logged "eglExportDMABUFImage failed" every frame), and
+  `eglExportDMABUFImageMESA`, for apps that call it anyway (Ghostty 1.4),
+  sets the fds to -1 first and says no when plane 0 got none.
+
+### Measured
+
+Hidden 4 GB test clones, Graphics Automatic (KosmicKrisp), Mesa 26.2.6, GTK
+4.24.1, Ghostty 1.3.1 started as its desktop entry or by D-Bus (no variable
+by hand), window 1896x1030 pixels, bench lock, median of 3; the 3.2.16 app
+and library against this change with the switch on
+(work/ghostty-gpu/ghostty-zink, `kit/summary.py`):
+
+| | Mac mini M4 | MacBook Pro M1 Max (3 CI jobs on it) |
+|---|---|---|
+| typing shown, p50 / p90 | 55.6 / 62.6 ms -> 24.7 / 31.2 ms | 57.2 / 63.2 ms -> 28.2 / 37.1 ms |
+| Ghostty CPU-s per 10 s of scrolling (guest total) | 32.8 (33.3) -> 3.3 (4.5) | 31.7 (32.6) -> 3.4 (4.7) |
+| Ghostty CPU-s in the 10 s after it | 2.5 -> 0.2 | 2.6 -> 0.2 |
+| QEMU on the Mac, CPU-s per scroll step (~26 s) | 44.9 -> 12.4 | 45.2 -> 12.4 |
+| changed frames on the output per s | 37.2 -> 56.2 | 29.7 -> 57.5 |
+| Mac GPU busy while scrolling | 0.6 % -> 8.8 % | 0 % -> 6 % |
+| Ghostty's resident memory | 240 -> 141 MB | 240 -> 141 MB |
+
+CRITICAL and export lines 0 in every row; qemu.log refused / lost /
+assertion lines 0. Zink set by hand with one scroll run: 1330 (M1) and 1336
+(mini) GTK CRITICAL lines with the 3.2.16 library, 0 and 0 with this one. A
+30-minute soak on each Mac (output at 2,400 lines/s): alive, drawing in 29
+of 30 samples, typing after, resident memory 140 -> 141 MB, 0 lines.
+Omarchy's screensaver in Ghostty on two outputs at scale 2, whole-Mac power of the Mac mini in one session (180 s
+windows; another app kept a core busy all along): no screensaver 34.6 / 35.9
+W, in Ghostty on llvmpipe 53.1 / 53.8 W (guest 690 / 694 CPU-s), in foot 39.0
+W, in Ghostty on Zink 40.0 / 41.0 W (guest 103 / 100 CPU-s, Mac GPU 44 %).
+Browser first (Mac mini, bench lock, 3 runs each, Ghostty idle on another
+workspace, Chromium 156 full screen): MotionMark 1.3.1 with one Ghostty
+window 4287 (4143-4379) on llvmpipe, 4340 (4335-4383) on Zink, with three
+4271 (3863-4279) and 4227 (4191-4238); Speedometer 3.1 33.1 / 33.4 and 32.8 /
+33.3. Idle Zink windows cost nothing (60 s hidden or visible: Ghostty 0-0.4
+CPU-s). The M1 Max's browser rows are left out: its three CI jobs moved
+Speedometer between 7 and 23 on one boot with no Ghostty at all. Fallbacks, each its own start with the switch on: Graphics
+OpenGL and `OMACVM_VULKAN_DRIVER=moltenvk` send no marker and Ghostty draws
+on llvmpipe as before; with the switch off, the same. The programs Ghostty
+starts get none of the variables (eglinfo from its shell: virgl 4.1).
+Ghostty 1.4.0 (the build of unit `ghostty-14-cpu`) on Zink: window, drawing,
+typing; its own dma-buf export is told no and it reads each frame back, as it
+does on llvmpipe.
+
+### Consequences
+
+- A lost Venus context hangs that Ghostty (said in the (i)). This change
+  only reads `/run/omacvm/gl-zink-off`: once the lost-context work writes it
+  after such a loss, the next Ghostty of that boot starts on the CPU; without
+  that work nothing writes it, and the next Ghostty starts on Zink again.
+- The forced 4.3 claims transform feedback and geometry shaders KosmicKrisp
+  lacks: a Ghostty version that uses them would be refused and land in that
+  hang. Ghostty 1.3.1 and 1.4.0 use neither.
+- Venus memory counts against the VM's graphics budget (ADR 0034) and the
+  pressure guard does not cut it: a Ghostty on Zink takes 150-300 MB of the
+  Mac's graphics memory (M1 Max: one window +155-163 MB, three windows of one
+  Ghostty +164-278 MB; Mac mini: one window +171 MB; the investigation's
+  separate processes 150-290 MB each). Past the budget its Venus context is lost: with a 384 MB budget and
+  Chromium on WebGL Aquarium first, a Ghostty on Zink ended at its start
+  ("venus context N (ghostty) is lost", the guest driver ended it); one on
+  llvmpipe opened and took typing. Started with
+  `VN_PERF=no_async_mem_alloc` it ended the same way, but those rows cannot
+  show the variable reached it (it ended first); the same start passed it on
+  at 1024 MB on the Mac mini, not on the M1 Max. The library does not set it.
+- Not measured: M2 and M3 GPUs, MacBook Air (off limits during the lane).
+- Default stays off. The soaks on both Macs and the 1.4.0 rows passed; on by
+  default only after the lost-context work and the M1 Max's browser rows
+  (left out above); without the override once KosmicKrisp has transform
+  feedback (upstream MR 44928).
