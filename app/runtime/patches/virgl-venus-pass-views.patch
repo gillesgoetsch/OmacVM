@@ -5,7 +5,8 @@ moved to vkr_common.c). A framebuffer keeps its views by id and serial; an image
 begin and vkCmdBeginRendering leave theirs with the command buffer until the pass
 ends. A begin whose framebuffer view was destroyed, and a next subpass or end after
 the app destroyed one of the open pass's views, are refused: the app's context ends
-(its command buffer is invalid).
+(its command buffer is invalid). A resolve view Vulkan ignores (no resolve mode, or no
+view) is not kept, and goes to the driver as NULL: MoltenVK reads it whatever the mode.
 Why: Mesa's vk_render_pass reads the framebuffer's (or an imageless begin's) views at
 the begin, at each next subpass and at the end, and KosmicKrisp reads a rendering's
 at its end (its resolves): a view destroyed while recording was freed memory there.
@@ -17,10 +18,10 @@ Tests: Tests/virgl/test-venus-commands.c (the c-state-destroyed-view- cases, als
 under libgmalloc); --time: microseconds per vkCmdBeginRenderPass + vkCmdEndRenderPass.
 
 diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
-index eb3a16f..ff64d66 100644
+index eb3a16f..9bfdca9 100644
 --- a/src/venus/vkr_command_buffer.c
 +++ b/src/venus/vkr_command_buffer.c
-@@ -430,10 +430,133 @@ vkr_cmd_queries(VkCommandBuffer handle)
+@@ -430,10 +430,146 @@ vkr_cmd_queries(VkCommandBuffer handle)
     return MAX2(util_bitcount(vkr_cmd_state(handle)->view_mask), 1);
  }
  
@@ -112,6 +113,21 @@ index eb3a16f..ff64d66 100644
 +                        : vkr_cmd_views_ok(ctx, call, fb->views, fb->attachment_count);
 +}
 +
++/* an attachment's resolve view. Where Vulkan ignores it (no resolve, no view) the app may
++ * destroy it, and MoltenVK reads it whatever the mode: it is cleared before the driver sees
++ * it, and NULL here. */
++static const struct vkr_image_view *
++vkr_rendering_resolve_view(const VkRenderingAttachmentInfo *a)
++{
++   if (!a)
++      return NULL;
++   if (a->imageView == VK_NULL_HANDLE || a->resolveMode == VK_RESOLVE_MODE_NONE) {
++      ((VkRenderingAttachmentInfo *)a)->resolveImageView = VK_NULL_HANDLE;
++      return NULL;
++   }
++   return vkr_image_view_from_handle(a->resolveImageView);
++}
++
 +/* the views a dynamic rendering names: colors and their resolves, depth, stencil and their
 + * resolves, shading rate and density map */
 +static bool
@@ -131,14 +147,12 @@ index eb3a16f..ff64d66 100644
 +   for (uint32_t i = 0; i < info->colorAttachmentCount; i++) {
 +      views[n++] =
 +         vkr_view_ref_of(vkr_image_view_from_handle(info->pColorAttachments[i].imageView));
-+      views[n++] =
-+         vkr_view_ref_of(vkr_image_view_from_handle(info->pColorAttachments[i].resolveImageView));
++      views[n++] = vkr_view_ref_of(vkr_rendering_resolve_view(&info->pColorAttachments[i]));
 +   }
 +   const VkRenderingAttachmentInfo *ds[2] = { info->pDepthAttachment, info->pStencilAttachment };
 +   for (uint32_t i = 0; i < 2; i++) {
 +      views[n++] = vkr_view_ref_of(ds[i] ? vkr_image_view_from_handle(ds[i]->imageView) : NULL);
-+      views[n++] =
-+         vkr_view_ref_of(ds[i] ? vkr_image_view_from_handle(ds[i]->resolveImageView) : NULL);
++      views[n++] = vkr_view_ref_of(vkr_rendering_resolve_view(ds[i]));
 +   }
 +   views[n++] = vkr_view_ref_of(fsr ? vkr_image_view_from_handle(fsr->imageView) : NULL);
 +   views[n++] = vkr_view_ref_of(fdm ? vkr_image_view_from_handle(fdm->imageView) : NULL);
@@ -154,7 +168,7 @@ index eb3a16f..ff64d66 100644
  }
  
  static bool
-@@ -698,6 +821,7 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
+@@ -698,6 +834,7 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
     vn_replace_vkBeginCommandBuffer_args_handle(args);
     args->ret = vk->BeginCommandBuffer(args->commandBuffer, args->pBeginInfo);
     cmd->state = st;
@@ -162,7 +176,7 @@ index eb3a16f..ff64d66 100644
     cmd->state.recording = args->ret == VK_SUCCESS;
  }
  
-@@ -1420,6 +1544,10 @@ vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
+@@ -1420,6 +1557,10 @@ vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
     if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass", VKR_CMD_LIMITS(args),
                                   args->pRenderPassBegin))
        return;
@@ -173,7 +187,7 @@ index eb3a16f..ff64d66 100644
     /* read before the handles are replaced */
     const struct vkr_render_pass *pass =
        vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
-@@ -1439,7 +1567,9 @@ vkr_dispatch_vkCmdNextSubpass(struct vn_dispatch_context *dispatch,
+@@ -1439,7 +1580,9 @@ vkr_dispatch_vkCmdNextSubpass(struct vn_dispatch_context *dispatch,
                              VKR_CMD_PASS_RENDER_PASS, true))
        return;
     const struct vkr_render_pass *pass = vkr_cmd_pass_objects(dispatch, st, "vkCmdNextSubpass");
@@ -184,7 +198,7 @@ index eb3a16f..ff64d66 100644
        return;
     VKR_CMD_CALL(CmdNextSubpass, args, args->contents);
     vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
-@@ -1450,12 +1580,16 @@ vkr_dispatch_vkCmdEndRenderPass(struct vn_dispatch_context *dispatch,
+@@ -1450,12 +1593,16 @@ vkr_dispatch_vkCmdEndRenderPass(struct vn_dispatch_context *dispatch,
                    struct vn_command_vkCmdEndRenderPass *args)
  {
     struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
@@ -202,7 +216,7 @@ index eb3a16f..ff64d66 100644
  }
  
  static void
-@@ -1538,6 +1672,10 @@ vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
+@@ -1538,6 +1685,10 @@ vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
     if (!vkr_render_pass_begin_ok(dispatch->data, "vkCmdBeginRenderPass2", VKR_CMD_LIMITS(args),
                                   args->pRenderPassBegin))
        return;
@@ -213,7 +227,7 @@ index eb3a16f..ff64d66 100644
     /* read before the handles are replaced */
     const struct vkr_render_pass *pass =
        vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
-@@ -1558,7 +1696,9 @@ vkr_dispatch_vkCmdNextSubpass2(struct vn_dispatch_context *dispatch,
+@@ -1558,7 +1709,9 @@ vkr_dispatch_vkCmdNextSubpass2(struct vn_dispatch_context *dispatch,
                              VKR_CMD_PASS_RENDER_PASS, true))
        return;
     const struct vkr_render_pass *pass = vkr_cmd_pass_objects(dispatch, st, "vkCmdNextSubpass2");
@@ -224,7 +238,7 @@ index eb3a16f..ff64d66 100644
        return;
     VKR_CMD_CALL(CmdNextSubpass2, args, args->pSubpassBeginInfo, args->pSubpassEndInfo);
     vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
-@@ -1569,12 +1709,16 @@ vkr_dispatch_vkCmdEndRenderPass2(struct vn_dispatch_context *dispatch,
+@@ -1569,12 +1722,16 @@ vkr_dispatch_vkCmdEndRenderPass2(struct vn_dispatch_context *dispatch,
                    struct vn_command_vkCmdEndRenderPass2 *args)
  {
     struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
@@ -242,7 +256,7 @@ index eb3a16f..ff64d66 100644
  }
  
  static void
-@@ -1953,7 +2097,9 @@ vkr_dispatch_vkCmdBeginRendering(struct vn_dispatch_context *dispatch,
+@@ -1953,7 +2110,9 @@ vkr_dispatch_vkCmdBeginRendering(struct vn_dispatch_context *dispatch,
     struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
     if (!vkr_cmd_pass_begin_ok(dispatch, args->commandBuffer, "vkCmdBeginRendering") ||
         !vkr_rendering_ok(dispatch->data, VKR_CMD_DEVICE(args)->physical_device,
@@ -253,7 +267,7 @@ index eb3a16f..ff64d66 100644
        return;
     const uint32_t colors = args->pRenderingInfo->colorAttachmentCount;
     const uint32_t view_mask = args->pRenderingInfo->viewMask;
-@@ -1969,11 +2115,14 @@ vkr_dispatch_vkCmdEndRendering(struct vn_dispatch_context *dispatch,
+@@ -1969,11 +2128,14 @@ vkr_dispatch_vkCmdEndRendering(struct vn_dispatch_context *dispatch,
                                 struct vn_command_vkCmdEndRendering *args)
  {
     struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
@@ -333,10 +347,10 @@ index ae7e2be..14b5477 100644
 +   return atomic_fetch_add(&serials, 1) + 1;
 +}
 diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
-index b7d6cd4..6c0b013 100644
+index e3d28d5..054ff02 100644
 --- a/src/venus/vkr_common.h
 +++ b/src/venus/vkr_common.h
-@@ -364,4 +364,11 @@ vkr_seqno_ge(uint32_t a, uint32_t b)
+@@ -381,4 +381,11 @@ vkr_seqno_ge(uint32_t a, uint32_t b)
  struct virgl_gpu_charge *
  vkr_memory_charge_create(uint64_t bytes, const char *what);
  
@@ -361,10 +375,10 @@ index 57b2c31..8d56415 100644
  }
  
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index b0f2f72..ce65056 100644
+index 10c55b4..60fac0f 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
-@@ -709,8 +709,18 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+@@ -711,8 +711,18 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
                                ? vkr_format_plane_count(info->format)
                                : 1;
     struct vkr_image_view *view = vkr_image_view_create_and_add(dispatch->data, args);
@@ -385,10 +399,10 @@ index b0f2f72..ce65056 100644
  
  static void
 diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
-index 6aeece9..197b54d 100644
+index 9db5c7c..30edb44 100644
 --- a/src/venus/vkr_image.h
 +++ b/src/venus/vkr_image.h
-@@ -38,9 +38,31 @@ struct vkr_image_view {
+@@ -39,9 +39,31 @@ struct vkr_image_view {
     /* OmacVM (virgl-venus-descriptor-limits.patch): the planes a descriptor of it takes in
      * KosmicKrisp (a multi-planar color view: its format's planes) */
     uint8_t planes;
@@ -421,7 +435,7 @@ index 6aeece9..197b54d 100644
     struct vkr_object base;
     /* OmacVM (virgl-venus-descriptor-limits.patch): its YCbCr conversion's planes, 0
 diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
-index 7021a83..152c1c3 100644
+index d016653..b2a5268 100644
 --- a/src/venus/vkr_render_pass.c
 +++ b/src/venus/vkr_render_pass.c
 @@ -25,15 +25,6 @@ vkr_attachment_ref_ok(uint32_t ref, uint32_t count)
