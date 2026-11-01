@@ -21,7 +21,7 @@ in more words.
   and its own counters had 1044 MB less to take back when the VM quit; Chrome started as fast after a step (245 against
   265 ms, median of 3), and no step runs while a video plays (QEMU at 71-85 % of a core). Not
   while macOS compresses the VM: moving pages makes macOS decompress them (on the Mac mini, where
-  it gave 330-630 MB, one of two test windows had a 1.2 s stall note). `OMACVM_GIVEBACK_IDLE=0`
+  it gave 345-630 MB, one of two test windows had a 1.2 s stall note). `OMACVM_GIVEBACK_IDLE=0`
   (the app's environment) turns the idle give-back off; `logs/qemu.log` has one line per idle
   give-back, and `omacvm check`'s "VM memory" line counts them on their own. Needs only the app
   update: the VM runs the app's own script, no Update VM.

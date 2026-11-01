@@ -743,9 +743,10 @@ The less obvious ones, with causes and where the fix lives, are in
   QEMU says macOS keeps the pages anyway (`logs/memory-reclaim`). Free
   memory in blocks under 256 KiB (`page_reporting_order` 6) is never
   reported: after a browser closes or a cache drop that is often 1 GB or
-  more, so the idle give-back ends with a compaction (`compact_memory`, only
-  when the VM does not wait for memory, KILL-capped, one at a time; never
-  while macOS compresses the VM, which must decompress what moves). Do not
+  more, so the idle give-back and one call after the warning's drop end
+  with a compaction (`compact_memory`, only when the VM does not wait for
+  memory, KILL-capped, one at a time; never while macOS compresses the VM,
+  which must decompress what moves). Do not
   inflate the balloon to give memory back: on macOS inflating frees nothing
   (`MADV_DONTNEED`, held -2 MB) and deflating adds a second count (+913 MB);
   the app sends no balloon command (`src/tests/memory-giveback.sh`).

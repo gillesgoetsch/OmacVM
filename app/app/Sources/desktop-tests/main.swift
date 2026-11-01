@@ -507,7 +507,7 @@ i6.seen(sample(895, fp: 6, res: 5, comp: 100))
 expect(!i6.quiet && !i6.idle(sample(900, fp: 6, res: 5, comp: 100)), "under a minute of looks: not known to be quiet")
 // QEMU has min(2 GB, a quarter of the Mac) or more outside its resident memory (what macOS compressed of it, and
 // graphics): no idle give-back (it compacts: macOS would decompress what moves; the compressing rule has its own
-// back-off). The Mac mini's quiet rows had 3.3-4.9 GB there all along; the M1 Max's 0.3 GB.
+// back-off). The Mac mini had 2.7-5.8 GB there in every sample (footprint less resident); the M1 Max 0.3 GB.
 var i7 = withFix(32 * GB)
 expect(idleLooks(&i7, from: 0, to: 2000, fp: 6.95, res: 5, comp: 100) == 900, "1.95 GB outside the resident memory: idle runs")
 var i8 = withFix(32 * GB)

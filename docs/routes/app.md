@@ -1373,10 +1373,11 @@ the last one gave (its refaults), the next waits twice as long, up to 2
 hours; 1 GB or more puts it back to 15 minutes. One the VM's agent did not
 answer is tried again 15 minutes later and never holds up the warning's
 drop. After macOS's warning makes the VM drop its cache, the VM compacts once
-the pressure is normal again and the VM is quiet (`giveback.sh compact`).
-Compaction moves pages in use, so never while macOS is short of memory or
-the VM is busy, and never in the give-back
-while macOS compresses the VM (macOS must decompress what moves; ADR 0059).
+the pressure is normal again, the VM is quiet and QEMU has under min(2 GB, a
+quarter of the Mac) outside its resident memory, as for idle (`giveback.sh
+compact`). Compaction moves pages in use, so never while macOS is short of
+memory or the VM is busy, and never while macOS compresses the VM, also not
+in the give-back for that (macOS must decompress what moves; ADR 0059).
 On the M1 Max (4 GB VM, Chrome closed, 20 minutes quiet) the app's own idle
 step joined 1.2 GB of small blocks in 0.6 s: the Mac held 2425 MB of the
 VM's memory against 3.2.16's 3445 MB, and got back 3491 MB against 4535 MB
