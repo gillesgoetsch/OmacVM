@@ -1643,8 +1643,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 ## 52. app: Ghostty on the Mac's GPU stops drawing, or a Vulkan app ends
 
 - **Symptom:** in an OmacVM.app VM with Graphics on Vulkan, a Ghostty that
-  draws through Zink on the Mac's GPU (set up by hand, or later through
-  OmacVM's experimental Ghostty setting) stops drawing and takes no typing;
+  draws through Zink on the Mac's GPU (set up by hand, for example) stops
+  drawing and takes no typing;
   Hyprland says "Application Not Responding" with Terminate and Wait, and a
   new Ghostty window (Super+Return) does not open. Or another Vulkan app
   (vkcube, a game, Zed, Chromium with WebGPU) stops drawing or ends. The rest
@@ -1659,16 +1659,16 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   gives up (its log: `error registering application: Timeout was reached`).
   Up to 3.2.17 OmacVM did not count a lost
   Vulkan context (`logs/gpu-memory` stayed at lost=0), so nothing was said,
-  `omacvm check` did not name the app, and the next Ghostty went to Zink
-  again.
+  and `omacvm check` did not name the app.
 - **Fix (3.2.18, the app update and Update VM):** the app counts the loss
   and tells the VM, which shows a note ("Ghostty stopped drawing", or
   "<app> stopped drawing") and ends nothing. Close the frozen Ghostty first:
   Terminate in Hyprland's window (programs running in it end), then open
-  Ghostty again (in test VMs its window came in about 0.55 s). OmacVM writes `/run/omacvm/gl-zink-off` (one line "lost
-  TIME WHY"): OmacVM's EGL library starts Ghostty on the CPU (llvmpipe), not
-  on Zink, until the VM restarts (a Ghostty started with Zink's variables by
-  hand is not changed: start it without them). Other apps: restart them.
+  Ghostty again without Zink's variables (in test VMs its window came in
+  about 0.55 s): it starts on the CPU (llvmpipe, ADR 0064). Until the VM
+  restarts OmacVM keeps `/run/omacvm/gl-zink-off` (one line "lost TIME
+  WHY"): a start of Ghostty on Zink by OmacVM has to take the CPU while it
+  exists. Other apps: restart them.
   `omacvm check`'s "GPU contexts" names the app, marked "(Vulkan)". A
   context the guest was closing anyway (the app was ending) is not counted:
   QEMU's log says `venus context N (<app>) ended while the guest closed it`.

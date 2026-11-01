@@ -249,7 +249,8 @@ Until 3.2.17 only GL (virgl) contexts counted. When vkr ended an app's
 Venus context (a command the Mac's driver would abort on, ADR 0065, or
 memory the budget refused), QEMU printed "venus context N (NAME) is lost"
 and nothing else: `logs/gpu-memory` stayed at lost=0 (gpu_lost_delta 0 in
-all four lose rows of the ghostty-gpu lane, 3.2.15 on an M4 and an M1 Max),
+all four lose rows of the ghostty-gpu lane on an M4 and an M1 Max: 3.2.15,
+two of them with #643's 703e7090 on top),
 the app said nothing, and `omacvm check` did not name the app (the gap
 noted in #624). Most Vulkan apps then end by themselves: the VM's Venus
 driver aborts when it sees the ring's fatal status. A Ghostty drawn on the
@@ -290,10 +291,11 @@ Decision:
   new Ghostty window opens until then) and that the next one starts on the
   CPU (not one set to Zink by hand), and the script writes
   `/run/omacvm/gl-zink-off` (root's file in root's folder, one line "lost
-  TIME WHY", never through a link): OmacVM's EGL library starts Ghostty on
-  Zink only without that file (the experimental Zink path; without it
-  Ghostty is on the CPU anyway, ADR 0064), so a refused Zink Ghostty cannot
-  hang again and again before the VM restarts.
+  TIME WHY", never through a link). The file is a contract this change
+  only writes: a start of Ghostty on Zink by OmacVM has to take the CPU
+  while it exists, so a refused Zink Ghostty cannot hang again and again
+  before the VM restarts. Without such a start Ghostty is on the CPU
+  anyway (OmacVM's EGL library, ADR 0064).
 - `DesktopRecovery` never restarts the desktop or the shell for a Venus
   context, whatever its name (the desktop and the shell draw with GL).
 - `omacvm check`'s "GPU contexts" names Venus losses too, marked
