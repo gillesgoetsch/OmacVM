@@ -11,6 +11,9 @@ import Foundation
 ///   as macOS short of memory, would only repeat it).
 /// - The shell lost (Omarchy's bar and launcher, Quickshell): only the shell
 ///   starts again, no app closes. At most once a minute.
+/// - A Vulkan (Venus) context never restarts anything, whatever its name:
+///   the desktop and the shell draw with GL, and a lost Venus context is one
+///   app's (GPUMemoryNotice gives it a note).
 /// Off: the app asks every time, as up to 3.0.0.
 /// Hidden: defaults write org.omacvm.app desktopAutoRestart -bool false
 ///
@@ -39,10 +42,13 @@ public enum DesktopRecovery {
         d.object(forKey: key) as? Bool ?? true
     }
 
-    /// `lost`: the contexts lost since the last look. `lastDesktop`: when
-    /// the desktop was last restarted (by itself or with the button);
-    /// `lastShell`: when the shell was.
-    public static func action(lost: [String], enabled: Bool, lastDesktop: Date?, lastShell: Date?, now: Date) -> Action {
+    /// `lost`: the contexts lost since the last look; `kinds`: gl or venus
+    /// for each (another count, or none from an older runtime: all gl).
+    /// `lastDesktop`: when the desktop was last restarted (by itself or with
+    /// the button); `lastShell`: when the shell was.
+    public static func action(lost: [String], kinds: [String] = [], enabled: Bool, lastDesktop: Date?,
+                              lastShell: Date?, now: Date) -> Action {
+        let lost = kinds.count == lost.count ? zip(lost, kinds).filter { $0.1 != "venus" }.map(\.0) : lost
         if lost.contains(where: compositors.contains) {
             guard enabled else { return .ask(again: false) }
             if let t = lastDesktop, now.timeIntervalSince(t) < window { return .ask(again: true) }

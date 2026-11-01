@@ -258,6 +258,14 @@ commit 82927e9. Changes here:
   The charge goes with the storage: it lasts until the last holder is gone
   (the memory, memory imported from it, the guest's blob), so a kept dma-buf
   fd or mapping still counts. Checked by `Tests/virgl/test-venus-budget-storage.c`
+- `patches/virgl-venus-lost-context-count.patch`: a Venus context vkr's ring
+  thread ends counts in the status file (`OMACVM_GPU_MEMORY_STATUS`) like a GL
+  one: lost, the app's name, why `venus` (or `guard` after a budget refusal of
+  that context) and `lost_recent_kind` `venus`; a context the guest was closing
+  (a handle vkr still used closed first: the app's process ended) is not
+  counted ("ended while the guest closed it"). Checked by
+  `Tests/virgl/test-venus-lost-count.c` and `test-venus-robust.c` (l-lost,
+  l-teardown)
 - `patches/qemu-cocoa-idle-refresh.patch`: QEMU's refresh tick (every 8 ms on
   a 120 Hz display, for every output) slows to 500 ms after a second without
   work for it (2D updates, new scanouts, the extra outputs' windows) and comes

@@ -20,6 +20,8 @@
 #   through a link; anything else there and nothing restarts;
 # - an app without a GPU process (Firefox): the note only, as before;
 # - the note says what happened and what to do if it goes blank again.
+# - a lost Vulkan (Venus) context (venus NAME venus|guard): nothing is ended; for
+#   ghostty the state file that sends the next Ghostty to the CPU, never through a link.
 #   src/tests/desktop-recover-gpu.sh [SCRIPT]   (another copy of the script, e.g. an older one)
 set -uo pipefail
 [[ $(uname -s) == Linux ]] || { echo "skip: Linux only (it reads /proc)"; exit 0; }
@@ -203,4 +205,53 @@ expect "the times' folder is open to others: nothing ended"   running "$(state "
 chmod 700 "$T/stamps"
 run "$NOW" code pressure
 expect "a folder of its own: the Electron app's GPU process is ended" ended "$(state "$code")"
+
+# A lost Vulkan (Venus) context (3.2.18): `venus NAME venus|guard` ends nothing, not even
+# a GPU process; for ghostty it writes the state file that sends the next Ghostty to the
+# CPU (root's file in root's folder, one line "lost TIME WHY"), never through a link.
+export OMACVM_RECOVER_ZINK_OFF=$T/run-omacvm/gl-zink-off
+venus() { : > "$CALLS"; "$G" venus "$@" > /dev/null 2>&1; }
+titled chrome "/opt/google/chrome/chrome --type=gpu-process"; gpu=$P
+proc ghostty /usr/bin/ghostty --gtk-single-instance=true; ghostty=$P
+venus chrome venus
+expect "venus chrome: its GPU process is not ended"           running "$(state "$gpu")"
+expect "venus chrome: no state file (not ghostty)"            no "$([[ -e $OMACVM_RECOVER_ZINK_OFF ]] && echo yes || echo no)"
+expect "venus chrome: the note" "chrome stopped drawing" "$(note)"
+expect "venus chrome: says why and what helps" \
+  "The Mac refused chrome's Vulkan commands, so its Vulkan graphics ended. The desktop keeps running. Restart chrome; if it closed by itself, open it again." \
+  "$(body)"
+venus ghostty venus
+expect "venus ghostty: Ghostty is not ended"                  running "$(state "$ghostty")"
+line=$(cat "$OMACVM_RECOVER_ZINK_OFF" 2>/dev/null)
+case $line in
+"lost "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*" venus") expect "the state file: one line lost TIME venus" yes yes ;;
+*) expect "the state file: one line lost TIME venus" "lost TIME venus" "$line" ;;
+esac
+expect "the state file: one line, the folder made 0755, the file 0644, the script's own" \
+  "1 755 644 $(id -u)" \
+  "$(grep -c . "$OMACVM_RECOVER_ZINK_OFF") $(stat -c '%a' "$T/run-omacvm") $(stat -c '%a %u' "$OMACVM_RECOVER_ZINK_OFF")"
+expect "the note says Ghostty stopped drawing"                "Ghostty stopped drawing" "$(note)"
+expect "first to close it (what ends, that no new window opens until then), then why, and the CPU next time" \
+  "Close it first: Terminate in the window that says it is not responding (programs running in it end); until then no new Ghostty window opens. The Mac refused its Vulkan commands. Its windows no longer draw or take typing. The next Ghostty starts on the CPU until the VM restarts, unless Zink is set for it by hand." \
+  "$(body)"
+venus ghostty guard
+expect "a second loss keeps the first line"                   "$line" "$(cat "$OMACVM_RECOVER_ZINK_OFF")"
+case $(body) in
+"Close it first: "*" It used all the graphics memory apps may have on this Mac. Its windows"*)
+  expect "the guard's note names the memory" yes yes ;;
+*) expect "the guard's note names the memory" yes "$(body)" ;;
+esac
+venus 'ghost;ty$(id)' 'x;y'
+expect "the name keeps only letters, digits, . _ -; any other cause is venus" 1 \
+  "$(grep -c 'ghosttyid lost its Vulkan (Venus) context on the Mac (venus)' "$CALLS")"
+# Never through a link: the file a link points to stays as it was.
+rm -f "$OMACVM_RECOVER_ZINK_OFF"; echo keep > "$T/target"; ln -s "$T/target" "$OMACVM_RECOVER_ZINK_OFF"
+venus ghostty venus
+expect "a link where the state file goes: not followed"       keep "$(cat "$T/target")"
+grep -q "is not a plain file" "$CALLS" && expect "the journal says so" yes yes || expect "the journal says so" yes no
+rm -f "$OMACVM_RECOVER_ZINK_OFF"; rm -rf "$T/run-omacvm"; ln -s "$T/elsewhere" "$T/run-omacvm"
+venus ghostty venus
+expect "a link where the folder goes: nothing written there"  "" "$(ls -A "$T/elsewhere")"
+grep -q "is not root's own folder" "$CALLS" && expect "the journal says so (folder)" yes yes \
+  || expect "the journal says so (folder)" yes no
 exit $fail

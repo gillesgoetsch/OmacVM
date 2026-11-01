@@ -163,6 +163,50 @@ _ = n.look(lost: (0..<50).map { "app\($0)" }, why: Array(repeating: "guard", cou
 let busy = n.recent
 _ = n.look(lost: [], why: [], now: t0.addingTimeInterval(GPUMemoryNotice.window))
 expect(busy == 50 && n.recent == 0, "apps told are forgotten after their minute (\(busy) -> \(n.recent))")
+
+// Lost Vulkan (Venus) contexts (virgl-venus-lost-context-count.patch, 3.2.18): QEMU names
+// them with why venus (the Mac refused its commands) or guard, and kind venus. A note each
+// (omacvm-desktop-recover venus), in the same minute per app; never a desktop restart.
+let venusStatus = "in_use_mb=900\nlost=3\nlost_recent=chrome,ghostty,vkcube\nlost_recent_why=pressure,venus,guard\n"
+    + "lost_recent_kind=gl,venus,venus\n"
+let vm = GPUMemory.parse(venusStatus)
+expect(vm?.lostRecentKind == ["gl", "venus", "venus"], "lost_recent_kind read")
+expect(GPUMemory.parse("in_use_mb=1\nlost_recent=a\n")?.lostRecentKind == [], "an older runtime: no kinds")
+n = GPUMemoryNotice()
+var tells = n.look(lost: ["chrome", "ghostty", "vkcube"], why: ["pressure", "venus", "guard"],
+                   kind: ["gl", "venus", "venus"], now: t0)
+expect(tells.map { "\($0.name):\($0.why):\($0.venus)" } == ["chrome:pressure:false", "ghostty:venus:true", "vkcube:guard:true"],
+       "a GL loss and two Venus losses (refused, guard): a note each, Venus ones marked (\(tells.map(\.name)))")
+n = GPUMemoryNotice()
+tells = n.look(lost: ["ghostty"], why: ["venus"], now: t0)
+expect(tells.isEmpty, "why venus without the kind list (lists out of step): no note")
+n = GPUMemoryNotice()
+tells = n.look(lost: ["ghostty", "zed"], why: ["pressure", "error"], kind: ["venus", "venus"], now: t0)
+expect(tells.isEmpty, "a Venus context with another cause (pressure, error): no note")
+n = GPUMemoryNotice()
+tells = n.look(lost: ["Hyprland", "quickshell"], why: ["venus", "venus"], kind: ["venus", "venus"], now: t0)
+expect(tells.isEmpty, "the desktop's or the shell's names: no note")
+n = GPUMemoryNotice()
+tells = n.look(lost: ["ghostty"], why: ["venus"], kind: ["venus", "gl"], now: t0)
+expect(tells.isEmpty, "a kind list of another length: as gl, so venus is no cause: no note")
+// A second Zink Ghostty lost 20 s after the first: kept, told when the minute is over, still Venus.
+n = GPUMemoryNotice()
+var vr: [String] = []
+for s in stride(from: 0, through: 120, by: 5) {
+    let (l, w, k): ([String], [String], [String]) = s == 0 || s == 20 ? (["ghostty"], ["venus"], ["venus"]) : ([], [], [])
+    for t in n.look(lost: l, why: w, kind: k, now: t0.addingTimeInterval(Double(s))) {
+        vr.append("\(s):\(t.name):\(t.why):\(t.venus)" + (t.heldSince.map { "@\(Int($0.timeIntervalSince(t0)))" } ?? ""))
+    }
+}
+expect(vr == ["0:ghostty:venus:true", "60:ghostty:venus:true@20"], "a Venus loss inside the minute: kept, told after it (\(vr))")
+expect(DesktopRecovery.action(lost: ["Hyprland"], kinds: ["venus"], enabled: true, lastDesktop: nil, lastShell: nil, now: t0) == .none,
+       "a Venus context named Hyprland: no desktop restart")
+expect(DesktopRecovery.action(lost: ["quickshell"], kinds: ["venus"], enabled: true, lastDesktop: nil, lastShell: nil, now: t0) == .none,
+       "a Venus context named quickshell: no shell restart")
+expect(DesktopRecovery.action(lost: ["ghostty", "Hyprland"], kinds: ["venus", "gl"], enabled: true, lastDesktop: nil, lastShell: nil,
+                              now: t0) == .restartDesktop, "Hyprland's GL context with a Venus loss beside it: the desktop restarts")
+expect(DesktopRecovery.action(lost: ["Hyprland"], kinds: [], enabled: true, lastDesktop: nil, lastShell: nil, now: t0) == .restartDesktop,
+       "no kinds (an older runtime): as before")
 }
 
 

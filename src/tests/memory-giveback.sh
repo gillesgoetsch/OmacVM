@@ -314,7 +314,7 @@ fi
 G=$R/app/app/Sources/OmacVM/GPUMemory.swift
 expect "the app carries the script from its bundle" 1 "$(grep -c '"Contents/Resources/omacvm/src/memory/guest/giveback.sh"' "$G")"
 expect "the app runs it through runAndWait, with \"compressing\", \"idle\" and \"compact\"" "1 1 1 1 1" \
-  "$(grep -c '\["-c", script, "giveback", mode\], seconds: 30)' "$G") $(grep -c 'GuestAgent.runAndWait' "$G") $(grep -c 'askVM("compressing", script, s)' "$G") $(grep -c 'askVM("idle", script, s)' "$G") $(grep -c 'askVM("compact", script, s)' "$G")"
+  "$(grep -c '\["-c", script, "giveback", mode\], seconds: 30)' "$G") $(grep -c 'GuestAgent.runAndWait(socketPath: socket, "/bin/sh", \["-c", script, "giveback", mode\]' "$G") $(grep -c 'askVM("compressing", script, s)' "$G") $(grep -c 'askVM("idle", script, s)' "$G") $(grep -c 'askVM("compact", script, s)' "$G")"
 expect "a silent agent: one line in qemu.log, not one per 30 s (the policy: desktop-tests)" "1 1 1" \
   "$(grep -c "did not answer: trying again" "$G") $(grep -B1 "did not answer: trying again" "$G" | grep -c 'if giveBack.misses == 1 {') $(grep -c 'giveBack.noAnswer(at:' "$G")"
 # While macOS compresses the VM, only with a QEMU that gives the pages back (MemoryGiveBack.pagesGoBack, read from

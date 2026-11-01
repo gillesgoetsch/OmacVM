@@ -28,11 +28,13 @@ cat > "$T/main.swift" <<'SWIFT'
 import Foundation
 let a = CommandLine.arguments
 switch a[1] {
-case "action":   // LOST(comma list) ENABLED LAST_DESKTOP_AGO|- LAST_SHELL_AGO|-
+case "action":   // LOST(comma list) ENABLED LAST_DESKTOP_AGO|- LAST_SHELL_AGO|- [KINDS(comma list)]
   let now = Date()
   let ago = { (s: String) -> Date? in s == "-" ? nil : now.addingTimeInterval(-Double(s)!) }
   let lost = a[2].isEmpty ? [] : a[2].split(separator: ",").map(String.init)
-  switch DesktopRecovery.action(lost: lost, enabled: a[3] == "on", lastDesktop: ago(a[4]), lastShell: ago(a[5]), now: now) {
+  let kinds = a.count > 6 ? a[6].split(separator: ",").map(String.init) : []
+  switch DesktopRecovery.action(lost: lost, kinds: kinds, enabled: a[3] == "on", lastDesktop: ago(a[4]),
+                                lastShell: ago(a[5]), now: now) {
   case .none: print("none")
   case .restartDesktop: print("restart")
   case .ask(let again): print(again ? "ask-again" : "ask")
@@ -62,6 +64,9 @@ expect "the shell lost after two minutes: restarts it"      shell     "$(r actio
 expect "the shell lost, switched off: nothing"              none      "$(r action quickshell off - -)"
 expect "a browser lost: nothing (it is not the desktop)"    none      "$(r action chromium on - -)"
 expect "no names: nothing"                                  none      "$(r action '' on - -)"
+expect "a Vulkan (Venus) context named Hyprland: nothing"   none      "$(r action Hyprland on - - venus)"
+expect "a Vulkan context named quickshell: nothing"         none      "$(r action quickshell on - - venus)"
+expect "Hyprland's GL context beside a Venus loss: restarts" restart  "$(r action ghostty,Hyprland on - - venus,gl)"
 expect "normal pressure, nothing refused: graphics"         graphics  "$(r reason normal 0)"
 expect "refused: memory"                                    memory    "$(r reason normal 3)"
 expect "critical pressure: memory"                          memory    "$(r reason critical 0)"
@@ -100,7 +105,7 @@ printf '#!/bin/bash\n:\n' > "$S/chown"
 printf '#!/bin/bash\n:\n' > "$S/sleep"
 chmod +x "$S"/*
 export PATH="$S:$PATH"
-export OMACVM_RECOVER_ENV=$T/env OMACVM_RECOVER_NOTE=$T/run/desktop/restarted OMACVM_RECOVER_STAMPS=$T/stamps CLIENTS=$T/clients NOTIFY_FAILS=$T/notify-fails LOCKED=$T/locked LOCK_FAILS=$T/lock-fails
+export OMACVM_RECOVER_ENV=$T/env OMACVM_RECOVER_NOTE=$T/run/desktop/restarted OMACVM_RECOVER_STAMPS=$T/stamps OMACVM_RECOVER_ZINK_OFF=$T/run-omacvm/gl-zink-off CLIENTS=$T/clients NOTIFY_FAILS=$T/notify-fails LOCKED=$T/locked LOCK_FAILS=$T/lock-fails
 printf 'OMACVM_VM_TYPE=app\nOMACVM_USER=tester\n' > "$T/env"
 cat > "$CLIENTS" <<'JSON'
 [{"class": "chromium", "title": "a"}, {"class": "Alacritty"}, {"class": "chromium"}, {"class": "", "initialClass": "obsidian"}, {"class": "bad\nwhy=x"}]
@@ -177,6 +182,19 @@ touch "$NOTIFY_FAILS"; : > "$CALLS"
 "$G" app chromium guard > /dev/null
 grep -q "could not show the note" "$CALLS" && expect "app note without a daemon: logged" yes yes || expect "app note without a daemon: logged" yes no
 rm -f "$NOTIFY_FAILS"
+# A lost Vulkan (Venus) context (3.2.18): a note, nothing restarts or ends.
+: > "$CALLS"
+"$G" venus vkcube venus > /dev/null; rc=$?
+expect "venus: nothing restarts"                 "0 " "$rc $(grep -e '^systemctl' -e '^omarchy-restart-shell' "$CALLS")"
+grep -q "notify-send|-a|OmacVM|-u|normal|vkcube stopped drawing|The Mac refused vkcube's Vulkan commands, so its Vulkan graphics ended. The desktop keeps running. Restart vkcube" "$CALLS" \
+  && expect "venus: a note names the app and the refusal" yes yes || { expect "venus: a note names the app and the refusal" yes no; cat "$CALLS"; }
+: > "$CALLS"
+"$G" venus ghostty guard > /dev/null
+grep -q "notify-send|-a|OmacVM|-u|normal|Ghostty stopped drawing|Close it first: Terminate in the window that says it is not responding (programs running in it end); until then no new Ghostty window opens. It used all the graphics memory apps may have on this Mac. .*The next Ghostty starts on the CPU until the VM restarts, unless Zink is set for it by hand." "$CALLS" \
+  && expect "venus ghostty: close it first, what ends, the CPU next time" yes yes \
+  || { expect "venus ghostty: close it first, what ends, the CPU next time" yes no; cat "$CALLS"; }
+grep -q "lost its Vulkan (Venus) context on the Mac (guard)" "$CALLS" \
+  && expect "venus: logged to the journal with the cause" yes yes || expect "venus: logged to the journal with the cause" yes no
 # The VM stood still (QEMU's stall note): a note with the numbers, nothing restarts.
 : > "$CALLS"
 "$G" stall 58 51 64 > /dev/null
@@ -203,6 +221,8 @@ expect "shell without a user: refused"           1 "$rc"
 expect "desktop without a user: still restarts"  "systemctl restart sddm" "$(grep '^systemctl' "$CALLS")"
 "$G" app chromium guard > /dev/null; rc=$?
 expect "app note without a user: refused"        1 "$rc"
+"$G" venus vkcube venus > /dev/null; rc=$?
+expect "venus note without a user: refused"      1 "$rc"
 "$G" bogus 2>/dev/null; rc=$?
 expect "unknown mode: usage"                     2 "$rc"
 

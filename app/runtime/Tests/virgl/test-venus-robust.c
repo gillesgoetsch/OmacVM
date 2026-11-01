@@ -9,8 +9,10 @@
  * own process. Without the patches the cases end their process (a call to address 0, an
  * assert, the Vulkan loader's abort) or the driver binds memory the buffer does not fit
  * in; with them each ends only its context, with a log line, and the must-keep cases
- * work without one. Objects, queries and binds only: no command buffer is submitted,
- * nothing runs on the GPU (standards 14).
+ * work without one. A ring that fails is a lost context, counted in the status file,
+ * unless the guest had closed a resource the context still used (its process ended:
+ * virgl-venus-lost-context-count.patch, l-lost and l-teardown). Objects, queries and binds
+ * only: no command buffer is submitted, nothing runs on the GPU (standards 14).
  *
  *   test-venus-robust              every case, one process each, then a summary
  *   test-venus-robust CASE         one case (what the children run)
@@ -508,6 +510,57 @@ static int nested_case(void)
 }
 
 /* the physical-device query of an extension the device does not list */
+/* A ring that fails (virgl-venus-lost-context-count.patch): a live context is lost, and
+ * the status file counts it ("venus context 1 (test) is lost", the cause venus). One that
+ * fails after the guest closed a resource the context still used is a teardown, never
+ * counted: when an app's process ends (SIGKILL while Zink tore down, M1 Max qemu-k15.log
+ * line 130), its kernel closes every handle before it destroys the context, and a command
+ * still in the ring then fails. Here: a reply being written (the encoder busy) when the
+ * reply stream is closed, as vkr_context_destroy_resource sees it. */
+static int lost_case(int closing)
+{
+   setup(VK_API_VERSION_1_1, 0, NULL);
+   uint8_t *shm = shm_resource(2, 65536);
+   volatile uint32_t *tail = (volatile uint32_t *)(shm + 4), *status = (volatile uint32_t *)(shm + 8);
+   cmd(VK_COMMAND_TYPE_vkCreateRingMESA_EXT, 0);
+   u64(77); ptr(1);
+   i32(VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA); ptr(0);
+   u32(0); u32(2);         /* flags, resourceId */
+   u64(0); u64(65536);     /* offset, size */
+   u64(30000000000ull);    /* idleTimeout: the ring looks at its tail, no notify needed */
+   u64(0); u64(4); u64(8); /* head, tail, status */
+   u64(64); u64(4096);     /* buffer */
+   u64(64 + 4096); u64(0); /* extra */
+   submit();
+   if (vkr_context_get_fatal(ctx))
+      broken("vkCreateRingMESA");
+   if (closing) {
+      if (!vkr_cs_encoder_acquire(&ctx->encoder))
+         broken("no reply stream to write into");
+      vkr_context_destroy_resource(ctx, REPLY_RES);
+   }
+   /* no such command (a live context), or any (the closing one is ended already) */
+   i32(closing ? VK_COMMAND_TYPE_vkCmdSetCullMode_EXT : 0x7fff); u32(0);
+   memcpy(shm + 64, cs, cs_n);
+   const uint32_t n = (uint32_t)cs_n;
+   cs_n = 0;
+   __atomic_store_n(tail, n, __ATOMIC_SEQ_CST);
+   for (int i = 0; i < 400 && !(*status & VK_RING_STATUS_FATAL_BIT_MESA); i++)
+      usleep(5000);
+   /* the ring thread logs right after it sets the status */
+   for (int i = 0; i < 200 && !logged("venus context 1 (test)"); i++)
+      usleep(5000);
+   printf("ring status 0x%x\n", *status);
+   if (!(*status & VK_RING_STATUS_FATAL_BIT_MESA))
+      return outcome();
+   if (logged(closing ? "venus context 1 (test) is lost" : "ended while the guest closed it")) {
+      printf("%s\n", closing ? "a teardown counted as a lost context" : "a lost context taken for a teardown");
+      return BROKEN;
+   }
+   /* the closing case keeps its busy encoder: the process ends here, as the app's did */
+   return outcome();
+}
+
 static int physical_query_case(VkCommandTypeEXT type, const char *ext)
 {
    setup(VK_API_VERSION_1_1, 0, NULL);
@@ -854,6 +907,9 @@ static const struct test_case cases[] = {
    { "n-sem-import", E_ENDED, "vkImportSemaphoreFdKHR refused" },
    { "n-ring", E_ENDED, "vkCmdSetCullMode refused" },
    { "n-nested", E_ENDED, "vkCmdSetCullMode refused" },
+   /* a lost context counts; a teardown does not (virgl-venus-lost-context-count.patch) */
+   { "l-lost", E_ENDED, "venus context 1 (test) is lost" },
+   { "l-teardown", E_ENDED, "venus context 1 (test) ended while the guest closed it" },
    { "p-coopmat", E_ENDED, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR refused" },
    { "p-fsr", E_ENDED, "vkGetPhysicalDeviceFragmentShadingRatesKHR refused" },
    /* must keep: the commands on devices that have them, #623's zero answers */
@@ -928,6 +984,10 @@ static int run_case(const char *name)
       return ring_case(1, 0);
    if (IS("n-nested"))
       return nested_case();
+   if (IS("l-lost"))
+      return lost_case(0);
+   if (IS("l-teardown"))
+      return lost_case(1);
    if (IS("p-coopmat"))
       return physical_query_case(VK_COMMAND_TYPE_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR_EXT,
                                  "VK_KHR_cooperative_matrix");
