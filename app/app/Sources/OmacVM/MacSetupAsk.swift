@@ -44,6 +44,8 @@ extension MacSetup {
         a.addButton(withTitle: button)
         a.addButton(withTitle: "Later").keyEquivalent = "\u{1b}"
         AskKeys.take(a.window, personAsked: personAsked)
+        // It can come 2 s after the start, and Return runs the fix.
+        AskKeys.hold(a)
         return a.runModal() == .alertFirstButtonReturn ? .fix : .later
     }
 }

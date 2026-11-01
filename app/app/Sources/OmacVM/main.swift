@@ -644,6 +644,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     a.addButton(withTitle: need.button)
                     a.addButton(withTitle: "Start on Normal Network")
                     AskKeys.take(a.window, personAsked: personAsked)
+                    // Comes after a look at the service, and Return updates it.
+                    AskKeys.hold(a)
                     update = a.runModal() == .alertFirstButtonReturn
                 }
                 guard update else { finish(FastNetwork.notUpdated("you chose the normal network for this start")); return }
