@@ -20,6 +20,10 @@
  *        a vertex shader's gl_ClipDistance read from gl_in and written again by a geometry
  *        shader, or by tessellation control and evaluation shaders, whole and separable, with
  *        the planes on, off and on (C13-C16: the geometry shader writes them only for planes on);
+ *        the vertex shader's gl_ClipDistance read by an evaluation shader without a control
+ *        shader (C17, C18), and a control shader's gl_ClipDistance its evaluation shader does
+ *        not read (C19, C20), whole and separable, planes on, off and on (on the Mac the
+ *        control shader passes them as varyings: virgl-shader-tess-clip-varyings.patch);
  *        and a vertex shader that writes gl_CullDistance, which the Mac's GL has not: it stays
  *        refused, nothing drawn, no context error, the next rows still draw;
  *  E     a whole program with a varying array into a geometry shader, and one whose
@@ -966,6 +970,21 @@ int main(int argc, char **argv)
                         { 0, SHADER_VERTEX, sep ? separable(vs_clip) : vs_clip, 0 },
                         { 0, SHADER_TESS_CTRL, sep ? separable(tcs_clip_pass) : tcs_clip_pass, 0 },
                         { 0, SHADER_TESS_EVAL, sep ? separable(tes_clip_pass) : tes_clip_pass, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
+                     PRIM_PATCHES, top);
+         snprintf(text, sizeof(text), "C%d %s: gl_ClipDistance from the vertex shader read by an "
+                  "evaluation shader without a control shader", 17 + sep, sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip) : vs_clip, 0 },
+                        { 0, SHADER_TESS_EVAL, sep ? separable(tes_clip_pass) : tes_clip_pass, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
+                     PRIM_PATCHES, top);
+         snprintf(text, sizeof(text), "C%d %s: a control shader's gl_ClipDistance its evaluation "
+                  "shader does not read", 19 + sep, sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip) : vs_clip, 0 },
+                        { 0, SHADER_TESS_CTRL, sep ? separable(tcs_clip_pass) : tcs_clip_pass, 0 },
+                        { 0, SHADER_TESS_EVAL, sep ? separable(tes_pos) : tes_pos, 0 },
                         { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
                      PRIM_PATCHES, top);
       }
