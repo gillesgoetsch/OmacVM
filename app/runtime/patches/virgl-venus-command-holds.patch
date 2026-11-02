@@ -281,7 +281,7 @@ index 6b5294b..8a278ba 100644
  }
  
 diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
-index 1940c0c..a6a0bd5 100644
+index 1940c0c..b9bfb4e 100644
 --- a/src/venus/vkr_device.c
 +++ b/src/venus/vkr_device.c
 @@ -16,6 +16,7 @@
@@ -312,13 +312,15 @@ index 1940c0c..a6a0bd5 100644
     /* OmacVM (virgl-venus-dedicated-memory.patch): as the guest's destroys, so an app that
      * ends between allocating dedicated memory and binding it frees in the safe order */
     bool target_waits = false;
-@@ -496,6 +503,14 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+@@ -496,6 +503,16 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
           vkr_device_object_destroy(ctx, dev, obj);
     }
  
 +   /* OmacVM (virgl-venus-command-holds.patch): the pools above let go of every zombie; one
-+    * left would be a holder vkr lost track of */
-+   list_for_each_entry_safe (struct vkr_object, obj, &dev->zombies, track_head) {
++    * left would be a holder vkr lost track of. Always take the first: freeing a view can
++    * free its image, which may be the next entry */
++   while (!list_is_empty(&dev->zombies)) {
++      struct vkr_object *obj = list_first_entry(&dev->zombies, struct vkr_object, track_head);
 +      vkr_log("device teardown: a zombie of type %d still held %u times", obj->type, obj->holds);
 +      obj->holds = 1;
 +      vkr_object_unhold(obj);
@@ -327,7 +329,7 @@ index 1940c0c..a6a0bd5 100644
     list_for_each_entry_safe (struct vkr_queue, queue, &dev->queues, base.track_head)
        vkr_queue_destroy(ctx, queue);
  
-@@ -515,6 +530,91 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+@@ -515,6 +532,91 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
     vkr_context_remove_object(ctx, &dev->base);
  }
  
