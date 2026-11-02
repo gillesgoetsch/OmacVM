@@ -549,7 +549,7 @@ Lane `open-1102/venus` (#624's two open points above). Read in vkr at
 replaced the read-write lock this ADR named with what follows.
 
 **Two threads on one object.** Each ring has its own thread, and the context's
-own stream runs on the render worker's. vkr let go of its table lock right after
+own stream runs on QEMU's (in QEMU `on_worker_thread` is false). vkr let go of its table lock right after
 a lookup, so one ring could destroy an image, buffer, layout or pipeline cache
 another ring's call was reading (freed memory in vkr and the driver), two rings
 could record into one command buffer, QEMU's blob export read a memory a ring
@@ -583,8 +583,12 @@ context. So:
   for that and destroyed again.
 - Not covered: a call that blocks in the driver (a fence or semaphore wait
   without end) holds its app's lock and stops that app's other rings and its own
-  stream. It already stopped its own ring and the context's end; other apps and
-  QEMU go on.
+  stream. QEMU's thread takes the same lock for that app's fences, blobs and
+  resource removals, so a ring stuck under it in a `vkWaitForFences` or
+  `vkWaitSemaphores` with a guest-chosen timeout (`vkr_queue.c`) stops QEMU's
+  thread at that app's next fence or blob, and with it the whole VM. Not a new
+  kind of hang: the context's stream and a teardown joining a stuck ring could
+  already do it. Other apps' calls do not take this lock.
 
 **Views read after their destroy.** KosmicKrisp reads a pass's views (and a
 view's image: its views do not keep it) where it splits a pass while
@@ -608,8 +612,12 @@ default synchronous submits it reads them at `vkQueueSubmit`.
   checks at the begin, a next subpass and the end stay.
 - Not covered: views reached only through descriptor sets (probe on MoltenVK: a
   stale set bound, nothing dispatched, submitted: no read, plain and under
-  libgmalloc), and what a pending KosmicKrisp command buffer reads on the GPU
-  (Metal 4 command buffers keep no texture alive).
+  libgmalloc), what a pending KosmicKrisp command buffer reads on the GPU
+  (Metal 4 command buffers keep no texture alive), and secondaries: MoltenVK
+  keeps raw secondary pointers in `MVKCmdExecuteCommands` and reads them when the
+  primary is submitted, so a secondary freed (or its pool destroyed) after a
+  primary executed it is read after its free (from MoltenVK's source, not
+  tested; a primary holding its secondaries is the follow-up).
 
 `virgl-venus-test-pause.patch` (first, test only, NULL in QEMU) stops a call
 between vkr's reads and the driver, so a build without the fix runs the same
@@ -620,18 +628,33 @@ call, a nested wait, a destroy beside a compile, a teardown), 9 held-view cases
 and the probe; `--ring-time` times calls through a ring and the stream.
 
 On the mini's M4 with the hook alone, the three destroy-under-a-pipeline-call
-cases ended the process (SIGSEGV) on KosmicKrisp, MoltenVK and MoltenVK with
-prefill, plainly and under libgmalloc; the duplicate id hit the assert; the
-destroy, recording and memory free beside a paused call did not wait (SIGSEGV on
-KosmicKrisp and under libgmalloc); MoltenVK's submit of a command buffer whose
-view was destroyed ended the process; KosmicKrisp's barrier in a multisampled
-pass read the freed resolve view under libgmalloc (`kk_get_attachment_store_op`
-from `kk_CmdPipelineBarrier2`). The legal held cases and the no-deadlock cases
-pass before too. With the patches all 20 new cases pass on the five modes, and
-every case of the file once (344 ok; 47 under libgmalloc); without the give-up
-in `vkWaitRingSeqnoMESA` the nested-wait case deadlocks. On the M1 Max (Apple7,
-KosmicKrisp new there) the runtime's build runs them all: 344 of 344 on
-KosmicKrisp, MoltenVK and MoltenVK with prefill, 45 of 45 under libgmalloc. In a
+cases ended the process (SIGSEGV) on KosmicKrisp and MoltenVK, plainly and
+under libgmalloc; the duplicate id hit the assert; the destroy, recording and
+memory free beside a paused call did not wait (SIGSEGV on KosmicKrisp and under
+libgmalloc); MoltenVK's submit of a command buffer whose view was destroyed
+ended the process; KosmicKrisp's barrier in a multisampled pass read the freed
+resolve view under libgmalloc (`kk_get_attachment_store_op` from
+`kk_CmdPipelineBarrier2`). The mini's MoltenVK-with-prefill run before the fix
+was stopped before the `t-` cases; on the M1 Max that run has the three destroy
+cases end the process (SIGSEGV), the duplicate id the assert, and the other
+three not wait, and passes with the fix. The legal held cases and the
+no-deadlock cases pass before too. With the patches the 20 new cases pass where
+they run: 20 on MoltenVK plain and under libgmalloc, 18 on KosmicKrisp plain
+and under libgmalloc (the held submit and the probe are MoltenVK-only and skip),
+12 on MoltenVK with prefill (it commits at a reset and encodes at the end, so the
+7 held-view cases and the probe skip); every case of the file once: 344 ok
+(skipped among them: 4 on KosmicKrisp, 13 on MoltenVK, 21 with prefill), 47
+under libgmalloc. Without the give-up in `vkWaitRingSeqnoMESA` the nested-wait
+case deadlocks. On the M1 Max (Apple7, KosmicKrisp new there) the runtime's
+build runs them all: 344 of 344 on KosmicKrisp, MoltenVK and MoltenVK with
+prefill, 45 of 45 under libgmalloc. Timing there (A B B A A B, medians of 3, the
+hook-only build against this one, no VM or CI job at the start, bench lock):
+per call in microseconds, KosmicKrisp `vkCmdDraw` 0.168 and 0.168, 1000
+descriptor writes 15.86 and 15.70, a render pass begin and end 12.78 and 12.69;
+MoltenVK `vkCmdDraw` 0.027 and 0.027, a render pass begin and end 0.147 and
+0.185 (the holds), a call with a reply through the context's stream 0.084 and
+0.092; `vkCmdDraw` through a ring beside a compile ring 0.317 and 0.313
+(KosmicKrisp), 0.284 and 0.298 (MoltenVK). In a
 4 GB test VM there (guest Mesa 26.2.4), vkcube, vkmark, Zink, rusticl, Chromium's
 WebGPU matmul and WebGL Aquarium show no refusal line, and a guest program
 through its own driver ends only itself: a free through another pool and a
