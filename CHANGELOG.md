@@ -3,6 +3,12 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.19 (unreleased)
+
+- **The control centre no longer quits when news from the Mac comes as a screen opens (#672).**
+  Enter on a row or U for updates, at the moment the control centre redrew with the Mac's latest
+  answer, could end it with "No nodes match '#body'". That screen now draws itself once it is ready.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
