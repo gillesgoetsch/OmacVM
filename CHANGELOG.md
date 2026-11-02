@@ -8,7 +8,7 @@ in more words.
 - Tests: app-drive-drop.sh no longer fails with "rename image not under /Volumes: ''" when other
   disk images attach at the same time. hdiutil then can print the volume's line (with its mount
   point) before the disk's own lines; the test took the last line. It now takes the line that has
-  the mount point, prints hdiutil's output when there is none, and detaches the image either way.
+  the mount point, and when there is none prints hdiutil's output and detaches the image.
 
 ## 3.2.18
 
