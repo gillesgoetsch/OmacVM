@@ -9,7 +9,7 @@ Why: the cross-ring tests (#624) stop one ring there while another ring or QEMU'
 destroys, frees or creates; this patch comes first so a build without the fix
 (virgl-venus-ring-lock.patch) runs the same tests.
 Upstream: OmacVM test hook.
-Tests: Tests/virgl/test-venus-commands.c (the r- cases).
+Tests: Tests/virgl/test-venus-commands.c (the t- cases).
 
 diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
 index 9bfdca9..362ff38 100644
