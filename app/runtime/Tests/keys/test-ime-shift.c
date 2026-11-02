@@ -2,14 +2,18 @@
  * mac-ime: which modifier change the full-grab tap lets go on to macOS
  * (#357, omacvm-cocoa-ime-shift-logic.patch). A table of single events and
  * Shift sequences through ui/omacvm-ime-shift.h; real CGEvents (made here, no
- * permission needed) read the way the tap reads them; the copy that comes
- * back is dropped once. The rules before (nothing goes on) and #655's mask
- * (every modifier change goes on) must each fail the table.
+ * permission needed) read the way the tap reads them; copies that come back
+ * with another time stamp or with no CGEvent are told by key code and
+ * direction within 300 ms, once each; the orders in which the VM and the
+ * input method get a passed Shift and the keys around it. The rules before
+ * (nothing goes on) and #655's mask (every modifier change goes on) must
+ * each fail the table.
  */
 #include <ApplicationServices/ApplicationServices.h>
 #include <Carbon/Carbon.h>
 #include <IOKit/hidsystem/IOLLEvent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "omacvm-ime-shift.h"
@@ -183,8 +187,10 @@ static CGEventRef flags_event(CGKeyCode key, CGEventFlags flags)
     return e;
 }
 
-/* As ui/cocoa.m's omacvm_ime_shift_to_macos reads it. */
-static bool tap_pass(OmacVMImeShift *sh, CGEventRef e, bool on, int st)
+#define MS 1000000ull   /* ns */
+
+/* As ui/cocoa.m reads it in the tap (before handleEvent), and remembers it after. */
+static bool tap_pass(OmacVMImeShift *sh, CGEventRef e, bool on, int st, uint64_t now)
 {
     OmacVMImeState s;
     bool waiting, on_state;
@@ -195,8 +201,105 @@ static bool tap_pass(OmacVMImeShift *sh, CGEventRef e, bool on, int st)
         !omacvm_ime_shift_pass(sh, key, CGEventGetFlags(e), on && on_state, &s, waiting)) {
         return false;
     }
-    omacvm_ime_shift_sent(sh, CGEventGetTimestamp(e), key);
+    omacvm_ime_shift_sent(sh, omacvm_ime_shift_slot(sh), key, CGEventGetFlags(e), now, true);
     return true;
+}
+
+/* As ui/cocoa.m reads a copy from the app's queue: [event keyCode], [event modifierFlags]. */
+static int back(OmacVMImeShift *sh, CGEventRef e, uint64_t now)
+{
+    return omacvm_ime_shift_copy(sh, (int)CGEventGetIntegerValueField(e, kCGKeyboardEventKeycode),
+                                 CGEventGetFlags(e), now);
+}
+
+/*
+ * Who gets what, as ui/cocoa.m does it: the VM gets every tap event once
+ * (a passed Shift in the tap, never its copy); the input context gets a
+ * passed Shift from its copy, or before the next key, in order.
+ */
+typedef struct {
+    char vm[64], im[64];    /* 'd'/'u' Shift press/release, 'a' another key */
+    int nvm, nim;
+    OmacVMImeShift sh;
+} World;
+
+static void w_flush(World *w, uint64_t now, uint64_t before, bool expired_only)
+{
+    int i;
+
+    while ((i = omacvm_ime_shift_due(&w->sh, now, before, expired_only)) >= 0) {
+        w->sh.sent[i].due = false;
+        if (!omacvm_ime_shift_stale(&w->sh, i, now)) {
+            w->im[w->nim++] = w->sh.sent[i].down ? 'd' : 'u';
+        }
+    }
+}
+
+/* An event in the tap: a Shift (down/up) that goes on, or another key. */
+static void w_tap(World *w, char what, uint64_t now)
+{
+    OmacVMImeState s;
+    bool waiting, on;
+
+    state(ACTIVE, &s, &waiting, &on);
+    if (what == 'a') {
+        w_flush(w, now, UINT64_MAX, false);
+        w->vm[w->nvm++] = 'a';
+        w->im[w->nim++] = 'a';
+        return;
+    }
+    uint64_t flags = what == 'd' ? SH | LS : 0;
+    bool pass = omacvm_ime_shift_pass(&w->sh, 56, flags, true, &s, waiting);
+    w_flush(w, now, UINT64_MAX, true);
+    w->vm[w->nvm++] = what;
+    if (pass) {
+        omacvm_ime_shift_sent(&w->sh, omacvm_ime_shift_slot(&w->sh), 56, flags, now, true);
+    } else {
+        w->im[w->nim++] = what;
+    }
+}
+
+/* A copy back from macOS in the app's queue. */
+static void w_back(World *w, char what, uint64_t now)
+{
+    int i = omacvm_ime_shift_copy(&w->sh, 56, what == 'd' ? SH | LS : 0, now);
+
+    if (i < 0) {                     /* not a copy: QEMU's path, VM and input context */
+        w_flush(w, now, UINT64_MAX, false);
+        w->vm[w->nvm++] = what;
+        w->im[w->nim++] = what;
+        return;
+    }
+    if (w->sh.sent[i].due) {
+        w_flush(w, now, w->sh.sent[i].seq, false);
+        w->sh.sent[i].due = false;
+        w->im[w->nim++] = what;
+    }
+}
+
+static void world(const char *name, const char *script, const char *want_vm, const char *want_im)
+{
+    World w;
+    char buf[160];
+    uint64_t t = 1000 * MS;
+
+    memset(&w, 0, sizeof(w));
+    /* script: T<ms> advance, then tap d/u/a, or b<d|u> a copy back */
+    for (const char *p = script; *p; p++) {
+        if (*p == 'T') {
+            t += (uint64_t)strtoul(p + 1, (char **)&p, 10) * MS;
+            p--;
+        } else if (*p == 'b') {
+            w_back(&w, *++p, t);
+        } else if (*p != ' ') {
+            w_tap(&w, *p, t);
+        }
+    }
+    snprintf(buf, sizeof(buf), "%s: the VM gets %s, the input method %s", name, want_vm, want_im);
+    check(!strcmp(w.vm, want_vm) && !strcmp(w.im, want_im), buf);
+    if (strcmp(w.vm, want_vm) || strcmp(w.im, want_im)) {
+        printf("     got: the VM %s, the input method %s\n", w.vm, w.im);
+    }
 }
 
 static void real_events(void)
@@ -204,6 +307,7 @@ static void real_events(void)
     OmacVMImeShift sh;
     CGEventRef down = flags_event(kVK_Shift, SH | LS | NC), up = flags_event(kVK_Shift, NC);
     CGEventRef cmd = flags_event(kVK_Command, CM | 0x08 | NC);
+    uint64_t t = 5000 * MS;
 
     memset(&sh, 0, sizeof(sh));
     if (!down || !up || !cmd) {
@@ -211,24 +315,24 @@ static void real_events(void)
         return;
     }
     CGEventSetTimestamp(up, CGEventGetTimestamp(down) + 80000000);   /* 80 ms later */
-    check(tap_pass(&sh, down, true, ACTIVE), "real CGEvent: Shift press goes on");
-    check(tap_pass(&sh, up, true, ACTIVE), "real CGEvent: ... and its release");
-    check(!tap_pass(&sh, cmd, true, ACTIVE), "real CGEvent: Command does not");
+    check(tap_pass(&sh, down, true, ACTIVE, t), "real CGEvent: Shift press goes on");
+    check(tap_pass(&sh, up, true, ACTIVE, t + 80 * MS), "real CGEvent: ... and its release");
+    check(!tap_pass(&sh, cmd, true, ACTIVE, t + 90 * MS), "real CGEvent: Command does not");
 
-    /* The copies come back through the app's queue: each dropped once. */
+    /* The copies come back with another time stamp (as on a real Mac): told by key and direction. */
     CGEventRef down2 = CGEventCreateCopy(down), up2 = CGEventCreateCopy(up);
-    check(down2 && omacvm_ime_shift_again(&sh, CGEventGetTimestamp(down2), kVK_Shift),
-          "the press's copy is told (time stamp and key code) and dropped");
-    check(up2 && omacvm_ime_shift_again(&sh, CGEventGetTimestamp(up2), kVK_Shift), "... the release's too");
-    check(!omacvm_ime_shift_again(&sh, CGEventGetTimestamp(down), kVK_Shift), "... only once");
-    check(!omacvm_ime_shift_again(&sh, CGEventGetTimestamp(cmd), kVK_Command),
-          "an event that was kept is not dropped when it comes");
-    if (down2) {
-        CFRelease(down2);
+    if (!down2 || !up2) {
+        check(false, "real CGEvents: copied");
+        return;
     }
-    if (up2) {
-        CFRelease(up2);
-    }
+    CGEventSetTimestamp(down2, CGEventGetTimestamp(down) + 7000000);
+    CGEventSetTimestamp(up2, CGEventGetTimestamp(up) + 12000000);
+    check(back(&sh, down2, t + 7 * MS) >= 0, "the press's copy with another time stamp is told and dropped");
+    check(back(&sh, up2, t + 92 * MS) >= 0, "... the release's too");
+    check(back(&sh, down2, t + 93 * MS) < 0, "... only once");
+    check(back(&sh, cmd, t + 94 * MS) < 0, "an event that was kept is not taken for a copy");
+    CFRelease(down2);
+    CFRelease(up2);
     CFRelease(down);
     CFRelease(up);
     CFRelease(cmd);
@@ -237,27 +341,87 @@ static void real_events(void)
 static void copies(void)
 {
     OmacVMImeShift sh;
+    uint64_t t = 1000 * MS;
     bool all = true;
 
     memset(&sh, 0, sizeof(sh));
-    omacvm_ime_shift_sent(&sh, 1000, 56);
-    check(!omacvm_ime_shift_again(&sh, 1000, 60), "another key with the same time stamp: not dropped");
-    check(!omacvm_ime_shift_again(&sh, 1001, 56), "the same key at another time: not dropped");
-    check(omacvm_ime_shift_again(&sh, 1000, 56), "the copy: dropped");
+    /* A copy with no CGEvent: only the key code and the NSEvent's flags. */
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, SH | LS, t, true);
+    check(omacvm_ime_shift_copy(&sh, 56, SH | LS | 0x100, t + 3 * MS) >= 0,
+          "a copy with no CGEvent (key code and flags only) is told");
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, SH | LS, t, true);
+    check(omacvm_ime_shift_copy(&sh, 56, 0x100, t + 3 * MS) < 0, "the other direction is not its copy");
+    check(omacvm_ime_shift_copy(&sh, 60, SH | RS, t + 3 * MS) < 0, "the other Shift is not its copy");
+    check(omacvm_ime_shift_copy(&sh, 55, SH | LS, t + 3 * MS) < 0, "another key is not its copy");
+    check(omacvm_ime_shift_copy(&sh, 56, SH | LS, t + 301 * MS) < 0, "after 300 ms: not its copy any more");
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, SH | LS, t, true);
+    check(omacvm_ime_shift_copy(&sh, 56, SH | LS, t + 300 * MS) >= 0, "at 300 ms: still its copy");
+    /* Right Shift released while the left is held: flags still have Shift and the left bit. */
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 60, SH | LS, t, true);
+    check(omacvm_ime_shift_copy(&sh, 60, SH | LS, t + 2 * MS) >= 0,
+          "right Shift's release with the left still down is told as a release");
+    /* One drop per event sent. */
+    memset(&sh, 0, sizeof(sh));
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, SH | LS, t, true);
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, SH | LS, t + 1 * MS, true);
+    int a = omacvm_ime_shift_copy(&sh, 56, SH | LS, t + 4 * MS), b = omacvm_ime_shift_copy(&sh, 56, SH | LS, t + 5 * MS);
+    check(a >= 0 && b >= 0 && a != b && sh.sent[a].seq < sh.sent[b].seq &&
+          omacvm_ime_shift_copy(&sh, 56, SH | LS, t + 6 * MS) < 0,
+          "two sent, two dropped (oldest first), a third is not");
     /* Up to OMACVM_IME_SHIFT_SENT copies may be on their way at once, in any order. */
-    for (uint64_t t = 1; t <= OMACVM_IME_SHIFT_SENT; t++) {
-        omacvm_ime_shift_sent(&sh, 2000 + t, 56 + (int)(t & 1) * 4);
+    memset(&sh, 0, sizeof(sh));
+    for (int k = 0; k < OMACVM_IME_SHIFT_SENT; k++) {
+        omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), k & 1 ? 60 : 56, k & 2 ? 0 : SH | (k & 1 ? RS : LS),
+                              t + (uint64_t)k * MS, true);
     }
-    for (uint64_t t = OMACVM_IME_SHIFT_SENT; t >= 1; t--) {
-        all = all && omacvm_ime_shift_again(&sh, 2000 + t, 56 + (int)(t & 1) * 4);
+    for (int k = OMACVM_IME_SHIFT_SENT - 1; k >= 0; k--) {
+        all = all && omacvm_ime_shift_copy(&sh, k & 1 ? 60 : 56, k & 2 ? 0 : SH | (k & 1 ? RS : LS), t + 20 * MS) >= 0;
     }
-    check(all, "8 copies on their way: each dropped, in any order");
-    /* A copy that never came is forgotten after 8 more. */
-    omacvm_ime_shift_sent(&sh, 3000, 56);
-    for (uint64_t t = 1; t <= OMACVM_IME_SHIFT_SENT; t++) {
-        omacvm_ime_shift_sent(&sh, 4000 + t, 60);
+    check(all, "8 copies on their way: each dropped");
+    /* A full ring: the next slot is the oldest. */
+    memset(&sh, 0, sizeof(sh));
+    for (int k = 0; k < OMACVM_IME_SHIFT_SENT; k++) {
+        omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, SH | LS, t + (uint64_t)k * MS, true);
     }
-    check(!omacvm_ime_shift_again(&sh, 3000, 56), "a copy that never came is forgotten after 8 more");
+    int s = omacvm_ime_shift_slot(&sh);
+    check(sh.sent[s].seq == 1, "8 waiting: the next takes the oldest's slot (cocoa.m gives it to the input method first)");
+    /* Due: oldest first; expired_only waits for the copy's 300 ms. */
+    memset(&sh, 0, sizeof(sh));
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, SH | LS, t, true);
+    omacvm_ime_shift_sent(&sh, omacvm_ime_shift_slot(&sh), 56, 0, t + 50 * MS, true);
+    int d = omacvm_ime_shift_due(&sh, t + 60 * MS, UINT64_MAX, false);
+    check(d >= 0 && sh.sent[d].down, "due: the oldest first (the press)");
+    check(omacvm_ime_shift_due(&sh, t + 60 * MS, UINT64_MAX, true) < 0, "... none expired yet at 60 ms");
+    check(omacvm_ime_shift_due(&sh, t + 301 * MS, UINT64_MAX, true) == d, "... the press expired at 301 ms");
+    check(omacvm_ime_shift_due(&sh, t + 60 * MS, sh.sent[d].seq, false) < 0, "... nothing due before the oldest");
+    check(!omacvm_ime_shift_stale(&sh, d, t + 999 * MS) && omacvm_ime_shift_stale(&sh, d, t + 1001 * MS),
+          "a press is too old for the input method after 1 s");
+    int r = -1;
+    for (int k = 0; k < OMACVM_IME_SHIFT_SENT; k++) {
+        if (sh.sent[k].due && !sh.sent[k].down) {
+            r = k;
+        }
+    }
+    check(r >= 0 && !omacvm_ime_shift_stale(&sh, r, t + 5000 * MS), "... a release never is");
+    check(omacvm_ime_shift_mode(NULL) == OMACVM_IME_SHIFT_ON && omacvm_ime_shift_mode("1") == OMACVM_IME_SHIFT_ON &&
+          omacvm_ime_shift_mode("0") == OMACVM_IME_SHIFT_OFF && omacvm_ime_shift_mode("skip") == OMACVM_IME_SHIFT_SKIP &&
+          omacvm_ime_shift_mode("skipx") == OMACVM_IME_SHIFT_ON && omacvm_ime_shift_mode("") == OMACVM_IME_SHIFT_ON,
+          "OMACVM_IME_SHIFT: unset/1 on, 0 off, skip a test");
+}
+
+/* Orders, as ui/cocoa.m wires the rules: what the VM and the input method get. */
+static void orders(void)
+{
+    world("lone tap, copies back 5 ms after each", "d T5 bd T80 u T5 bu", "du", "du");
+    world("lone tap, copies late but in time (main thread busy 250 ms)", "d T80 u T170 bd bu", "du", "du");
+    world("chord typed before the copy: Shift first, then the key", "d T1 a T4 bd T80 u T5 bu", "dau", "dau");
+    world("chord with the release before its copy too", "d T1 a T1 u T1 a T5 bd bu", "daua", "daua");
+    world("letters after a tap: each in order", "d T5 bd T80 u T5 bu T50 a T50 a", "duaa", "duaa");
+    world("copy never back: given before the next key", "d T5 bd T80 u T400 a", "dua", "dua");
+    world("copy never back: given on the next Shift after 300 ms", "d T5 bd T80 u T400 d T5 bd", "dud", "dud");
+    world("release's copy never back, next key 2 s later: still given", "d T5 bd T80 u T2000 a", "dua", "dua");
+    world("press's copy never back, next key 2 s later: too old, not given", "d T2000 a", "da", "a");
+    world("a copy after 300 ms is not a copy (QEMU's path)", "d T400 bd", "dd", "dd");
 }
 
 int main(void)
@@ -269,6 +433,7 @@ int main(void)
     printf("     (before: %d steps differ; mask: %d)\n", before, mask);
     real_events();
     copies();
+    orders();
     if (fails) {
         printf("test-ime-shift: %d FAIL\n", fails);
         return 1;

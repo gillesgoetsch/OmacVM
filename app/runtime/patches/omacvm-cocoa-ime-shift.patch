@@ -2,18 +2,26 @@ From: OmacVM
 Subject: [PATCH] cocoa: mac-ime: Shift also goes on to macOS while an input method has the keys (#357)
 
 What: while the VM has the keyboard, the full-grab tap still takes every key
-and modifier change first: the VM gets it and, with mac-ime, the Mac's input
-method too (omacvm_ime_key). A Shift change then also goes on to macOS
-(the callback returns the event instead of NULL), but only as
-ui/omacvm-ime-shift.h says: the Shift keys alone, only while mac-ime gives
-keys to an input method (a VM text field, the VM's window with the keyboard,
-an input method as the Mac's input source; or its context still on during
-the 0.2 s off delay), never with Command, Control, Option or fn down, and a
-release when its press went on. The event then comes back to QEMU through
-the app's event queue; handleEvent drops that copy first (time stamp and key
-code), so neither the VM nor the input method gets it twice. Nothing changes
-with mac-ime off, with a plain keyboard layout, or for any other key.
-OMACVM_IME_SHIFT=0 turns it off; qemu.log says which at the start.
+and modifier change first. For a flagsChanged it now decides before
+handleEvent whether a Shift also goes on to macOS (the callback returns the
+event instead of NULL), as ui/omacvm-ime-shift.h says: the Shift keys alone,
+only while mac-ime gives keys to an input method (a VM text field, the VM's
+window with the keyboard, an input method as the Mac's input source; or its
+context still on during the 0.2 s off delay), never with Command, Control,
+Option or fn down, and a release when its press went on. Such a Shift goes
+to the VM in the tap (omacvm_ime_key does not hand it to the input context
+there). macOS gives it back through the app's event queue; handleEvent then
+drops it for the VM and gives it to mac-ime's input context, like any Mac
+app, where the input context gets a key after the window server delivered
+it. The copy is told by key code and direction within 300 ms. If another
+key reaches omacvm_ime_key first (a chord typed within the copy's 2-15 ms,
+or the main thread busy), the input context gets the saved Shift before it
+and the copy is only dropped. A Shift whose copy did not come goes to the
+input context on the next key event (not when older than 1 s). Nothing
+changes with mac-ime off, with a plain keyboard layout, or for any other
+key. OMACVM_IME_SHIFT=0 turns it off; OMACVM_IME_SHIFT=skip (a test) passes
+Shift on but never gives it to the input context (@Vocllum's variant 4 in
+#655). qemu.log says which at the start.
 
 Why: an active tap whose callback returns NULL deletes the event from the
 system stream, so another app's global event monitor never sees it. WeChat
@@ -27,13 +35,23 @@ or double modifier presses to macOS and other apps (Shift+A as a lone Shift,
 Super+1 Super+2 as a double Command), for every user, and keys and modifiers
 came to QEMU on two paths with no order between them. This keeps the tap's
 mask and passes on only Shift, in the order the VM got it.
+The first version told the copy by its time stamp and gave the input
+context the Shift in the tap. On a real Mac (@Vocllum, 2026-11-01) the copy
+was never told (0 of 22), so the input method saw each Shift twice, and with
+the copy dropped the mode still did not change while the input context had
+the Shift before macOS delivered it. Not giving the input context the Shift
+at all (his variant 4) did switch WeChat Input, but input methods that switch
+on a lone Shift through the input context only (Squirrel/Rime, say) would
+then stop switching in the VM.
 
 Upstream: not sent (OmacVM's mac-ime only).
 
 Test: app/runtime/Tests/keys/test-ime-shift.sh (CI: the rules from
-omacvm-cocoa-ime-shift-logic.patch, a table and real CGEvents; the runtime
-build: also the wiring in ui/cocoa.m). Applies after
-omacvm-cocoa-tap-no-ask.patch (the mac-ime patches before it).
+omacvm-cocoa-ime-shift-logic.patch, a table, real CGEvents and copies that
+differ from them; the runtime build: also the wiring in ui/cocoa.m);
+app/runtime/Tests/keys/ime-shift-copy.sh (local: the copy macOS really gives
+back). Applies after omacvm-cocoa-tap-no-ask.patch (the mac-ime patches
+before it).
 
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
@@ -45,42 +63,86 @@ omacvm-cocoa-tap-no-ask.patch (the mac-ime patches before it).
  #include "ui/omacvm-fullpanel.h"
  #include "hw/core/boards.h"
  #include "system/system.h"
-@@ -864,6 +865,8 @@
+@@ -864,6 +865,13 @@
  static bool omacvm_ime_on;
  static bool omacvm_ime_key(NSEvent *event);
  static bool omacvm_ime_globe(void);
-+static bool omacvm_ime_shift_to_macos(CGEventRef cgEvent);
++static bool omacvm_ime_shift_will_pass(CGEventRef cgEvent);
++static void omacvm_ime_shift_to_macos(CGEventRef cgEvent);
 +static bool omacvm_ime_shift_back(NSEvent *event);
++static void omacvm_ime_shift_flush(bool expired_only);
++static OmacVMImeShiftMode omacvm_ime_shift_mode_now;   /* OMACVM_IME_SHIFT, read once at mac-ime's start */
++/* Main thread: which event the full-grab tap is handing to handleEvent now. */
++static enum { OMACVM_IME_TAP_NONE, OMACVM_IME_TAP_KEY, OMACVM_IME_TAP_SHIFT } omacvm_ime_tap_now;
  
  /*
   * Main thread, every key and click event before QEMU's own handling (the
-@@ -1153,6 +1156,14 @@
+@@ -1152,7 +1160,22 @@
+     }
  
      NSEvent *event = [NSEvent eventWithCGEvent:cgEvent];
-     if ([view isKeyboardCaptured] && [view handleEvent:event]) {
-+        /*
-+         * OmacVM mac-ime: the VM and the input method had this Shift; it
-+         * goes on to macOS too, for an input method's lone-Shift switch
-+         * (#357, ui/omacvm-ime-shift.h). Its copy is dropped in handleEvent.
-+         */
-+        if (type == kCGEventFlagsChanged && omacvm_ime_on && omacvm_ime_shift_to_macos(cgEvent)) {
+-    if ([view isKeyboardCaptured] && [view handleEvent:event]) {
++    /*
++     * OmacVM mac-ime: whether this Shift also goes on to macOS, for an input
++     * method's lone-Shift switch (#357, ui/omacvm-ime-shift.h), is decided
++     * before handleEvent: then the VM gets it here and mac-ime's input
++     * method when macOS gives it back (omacvm_ime_shift_back).
++     */
++    bool omacvm_pass = type == kCGEventFlagsChanged && omacvm_ime_on && [view isKeyboardCaptured] &&
++                       omacvm_ime_shift_will_pass(cgEvent);
++    omacvm_ime_tap_now = omacvm_pass ? OMACVM_IME_TAP_SHIFT : OMACVM_IME_TAP_KEY;
++    bool omacvm_took = [view isKeyboardCaptured] && [view handleEvent:event];
++    omacvm_ime_tap_now = OMACVM_IME_TAP_NONE;
++    if (omacvm_took) {
++        if (omacvm_pass) {
++            omacvm_ime_shift_to_macos(cgEvent);
 +            return cgEvent;
 +        }
          COCOA_DEBUG("Global events tap: qemu handled the event, capturing!\n");
          return NULL;
      }
-@@ -2137,6 +2148,10 @@
+@@ -2137,6 +2160,10 @@
  
  - (bool) handleEvent:(NSEvent *)event
  {
-+    /* OmacVM mac-ime: a Shift the full-grab tap let go on to macOS, back: the VM had it. */
++    /* OmacVM mac-ime: a Shift the full-grab tap let go on to macOS, back: the VM had it, the input method gets it. */
 +    if (omacvm_ime_on && omacvm_ime_shift_back(event)) {
 +        return true;
 +    }
      if (omacvm_key_for_macos(event)) {
          return false;
      }
-@@ -10688,6 +10703,46 @@
+@@ -10638,20 +10665,28 @@
+         return false;
+     }
+     omacvm_ime.window_key = omacvm_ime_window_key();
++    /* A Shift that went on to macOS and that the input method has not had yet goes first. */
++    omacvm_ime_shift_flush(omacvm_ime_tap_now == OMACVM_IME_TAP_SHIFT);
+     if (kt == OMACVM_IME_FLAGS) {
+         /*
+          * Modifiers go to the VM; the input method sees them too: a Shift
+          * press and release with no key between switches some to Latin.
++         * A Shift that also goes on to macOS reaches it when macOS gives
++         * it back (omacvm_ime_shift_back).
+          */
+         bool active = omacvm_ime_active(&omacvm_ime) || omacvm_ime_off.waiting;   /* its context is still on */
++        bool later = omacvm_ime_tap_now == OMACVM_IME_TAP_SHIFT;
+         BOOL used = NO;
+-        if (active) {
++        if (active && !later) {
+             omacvm_ime_activate();
+             used = [omacvm_ime_ctx handleEvent:event];
+         }
+         if (omacvm_ime_debug) {
+             fprintf(stderr, "omacvm-ime: modifier key %d flags 0x%lx: %s\n", [event keyCode],
+                     (unsigned long)[event modifierFlags], !active ? "inactive, only to the VM" :
++                    later && omacvm_ime_shift_mode_now == OMACVM_IME_SHIFT_SKIP ?
++                    "to the VM; not to the input method (OMACVM_IME_SHIFT=skip)" :
++                    later ? "to the VM; to the input method when it is back from macOS" :
+                     used ? "input method used it, also to the VM" : "input method did not want it, to the VM");
+         }
+         return false;
+@@ -10688,6 +10723,141 @@
          return false;           /* the input method did not want it: QEMU's path */
      }
      omacvm_ime_take(&omacvm_ime_keys, [event keyCode]);
@@ -88,52 +150,150 @@ omacvm-cocoa-tap-no-ask.patch (the mac-ime patches before it).
 +}
 +
 +/*
-+ * Shift also for macOS (ui/omacvm-ime-shift.h): main thread, the full-grab
-+ * tap's callback after handleEvent (so omacvm_ime is as omacvm_ime_key just
-+ * saw it) and handleEvent for the copy. OMACVM_IME_SHIFT=0: never.
++ * Shift also for macOS (ui/omacvm-ime-shift.h), main thread only: the
++ * full-grab tap's callback (omacvm_ime_shift_will_pass before handleEvent,
++ * omacvm_ime_shift_to_macos after it), handleEvent for the copy, and
++ * omacvm_ime_key before each key event (omacvm_ime_shift_flush).
++ * omacvm_ime_shift_ev[i] is a copy of the event in slot i while the input
++ * method is still due it. OMACVM_IME_SHIFT=0: never.
 + */
 +static OmacVMImeShift omacvm_ime_shift;
-+static bool omacvm_ime_shift_off;
++static CGEventRef omacvm_ime_shift_ev[OMACVM_IME_SHIFT_SENT];
 +
-+static bool omacvm_ime_shift_to_macos(CGEventRef cgEvent)
++static uint64_t omacvm_ime_shift_now(void)
++{
++    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++}
++
++static bool omacvm_ime_shift_will_pass(CGEventRef cgEvent)
++{
++    omacvm_ime.window_key = omacvm_ime_window_key();
++    return omacvm_ime_shift_pass(&omacvm_ime_shift, (int)CGEventGetIntegerValueField(cgEvent, kCGKeyboardEventKeycode),
++                                 CGEventGetFlags(cgEvent), omacvm_ime_shift_mode_now != OMACVM_IME_SHIFT_OFF,
++                                 &omacvm_ime, omacvm_ime_off.waiting);
++}
++
++/*
++ * The input method gets the Shift in slot i: the copy macOS gave back, or
++ * (event nil) the one saved in the tap. Same check as omacvm_ime_key's.
++ */
++static const char *omacvm_ime_shift_give(int i, NSEvent *event)
++{
++    CGEventRef saved = omacvm_ime_shift_ev[i];
++    const char *what = "inactive, not to the input method";
++
++    omacvm_ime_shift_ev[i] = NULL;
++    omacvm_ime_shift.sent[i].due = false;
++    omacvm_ime.window_key = omacvm_ime_window_key();
++    if (!event && saved) {
++        event = [NSEvent eventWithCGEvent:saved];
++    }
++    if (event && (omacvm_ime_active(&omacvm_ime) || omacvm_ime_off.waiting)) {
++        omacvm_ime_activate();
++        what = [omacvm_ime_ctx handleEvent:event] ? "input method used it" : "input method did not want it";
++    }
++    if (saved) {
++        CFRelease(saved);
++    }
++    return what;
++}
++
++/* Gives the input method, in order, what it is due before another key (expired_only: whose copy did not come). */
++static void omacvm_ime_shift_flush_before(uint64_t before, bool expired_only)
++{
++    uint64_t now = omacvm_ime_shift_now();
++    int i;
++
++    while ((i = omacvm_ime_shift_due(&omacvm_ime_shift, now, before, expired_only)) >= 0) {
++        int key = omacvm_ime_shift.sent[i].keycode;
++        if (omacvm_ime_shift_stale(&omacvm_ime_shift, i, now)) {
++            omacvm_ime_shift.sent[i].due = false;
++            if (omacvm_ime_shift_ev[i]) {
++                CFRelease(omacvm_ime_shift_ev[i]);
++                omacvm_ime_shift_ev[i] = NULL;
++            }
++            if (omacvm_ime_debug) {
++                fprintf(stderr, "omacvm-ime: modifier key %d: never back from macOS, a press too old for the input method\n", key);
++            }
++            continue;
++        }
++        const char *what = omacvm_ime_shift_give(i, nil);
++        if (omacvm_ime_debug) {
++            fprintf(stderr, "omacvm-ime: modifier key %d: to the input method before the next key (%llu ms): %s\n",
++                    key, (unsigned long long)((now - omacvm_ime_shift.sent[i].at) / 1000000), what);
++        }
++    }
++}
++
++static void omacvm_ime_shift_flush(bool expired_only)
++{
++    omacvm_ime_shift_flush_before(UINT64_MAX, expired_only);
++}
++
++/* After handleEvent gave this Shift to the VM: it goes on to macOS, and its copy is waited for. */
++static void omacvm_ime_shift_to_macos(CGEventRef cgEvent)
 +{
 +    int key = (int)CGEventGetIntegerValueField(cgEvent, kCGKeyboardEventKeycode);
 +    uint64_t flags = CGEventGetFlags(cgEvent);
++    bool due = omacvm_ime_shift_mode_now == OMACVM_IME_SHIFT_ON;
++    int i = omacvm_ime_shift_slot(&omacvm_ime_shift);
 +
-+    if (!omacvm_ime_shift_pass(&omacvm_ime_shift, key, flags, !omacvm_ime_shift_off,
-+                               &omacvm_ime, omacvm_ime_off.waiting)) {
-+        return false;
++    if (omacvm_ime_shift.sent[i].due) {
++        omacvm_ime_shift_give(i, nil);          /* 8 on their way: the oldest goes now */
 +    }
-+    omacvm_ime_shift_sent(&omacvm_ime_shift, CGEventGetTimestamp(cgEvent), key);
++    omacvm_ime_shift_sent(&omacvm_ime_shift, i, key, flags, omacvm_ime_shift_now(), due);
++    omacvm_ime_shift_ev[i] = due ? CGEventCreateCopy(cgEvent) : NULL;
 +    if (omacvm_ime_debug) {
 +        fprintf(stderr, "omacvm-ime: modifier key %d flags 0x%llx: also to macOS\n", key,
 +                (unsigned long long)flags);
 +    }
-+    return true;
 +}
 +
++/*
++ * A flagsChanged from the app's queue (never one the tap is handing over):
++ * the copy of a Shift that went on is dropped for the VM, which had it,
++ * and given to the input method, unless it had it already. Told by key code
++ * and direction only: its CGEvent may be nil and its time stamp differs.
++ */
 +static bool omacvm_ime_shift_back(NSEvent *event)
 +{
-+    CGEventRef cgEvent;
++    uint64_t now;
++    int i, key;
++    const char *what;
 +
-+    if ([event type] != NSEventTypeFlagsChanged || !(cgEvent = [event CGEvent]) ||
-+        !omacvm_ime_shift_again(&omacvm_ime_shift, CGEventGetTimestamp(cgEvent), [event keyCode])) {
++    if (omacvm_ime_tap_now != OMACVM_IME_TAP_NONE || [event type] != NSEventTypeFlagsChanged) {
 +        return false;
 +    }
++    now = omacvm_ime_shift_now();
++    key = (int)[event keyCode];
++    i = omacvm_ime_shift_copy(&omacvm_ime_shift, key, (uint64_t)[event modifierFlags], now);
++    if (i < 0) {
++        return false;
++    }
++    if (!omacvm_ime_shift.sent[i].due) {
++        what = omacvm_ime_shift_mode_now == OMACVM_IME_SHIFT_SKIP ?
++               "not to the input method (OMACVM_IME_SHIFT=skip)" : "the input method had it already";
++    } else {
++        omacvm_ime_shift_flush_before(omacvm_ime_shift.sent[i].seq, false);
++        what = omacvm_ime_shift_give(i, event);
++    }
 +    if (omacvm_ime_debug) {
-+        fprintf(stderr, "omacvm-ime: modifier key %d: back from macOS, dropped (the VM had it)\n",
-+                [event keyCode]);
++        fprintf(stderr, "omacvm-ime: modifier key %d: back from macOS, dropped (%llu ms; the VM had it): %s\n", key,
++                (unsigned long long)((now - omacvm_ime_shift.sent[i].at) / 1000000), what);
 +    }
      return true;
  }
  
-@@ -10895,6 +10950,9 @@
+@@ -10895,6 +11065,12 @@
      omacvm_ime_source_changed();
      info_report("cocoa: mac-ime: on (OMACVM_IME_SOCKET): the Mac's input methods type in the "
                  "VM's text fields once its Fcitx5 module says hello");
-+    omacvm_ime_shift_off = getenv("OMACVM_IME_SHIFT") && !strcmp(getenv("OMACVM_IME_SHIFT"), "0");
++    omacvm_ime_shift_mode_now = omacvm_ime_shift_mode(getenv("OMACVM_IME_SHIFT"));
 +    info_report("cocoa: mac-ime: Shift also goes to macOS while an input method has the keys: %s",
-+                omacvm_ime_shift_off ? "off (OMACVM_IME_SHIFT=0)" : "on");
++                omacvm_ime_shift_mode_now == OMACVM_IME_SHIFT_OFF ? "off (OMACVM_IME_SHIFT=0)" :
++                omacvm_ime_shift_mode_now == OMACVM_IME_SHIFT_SKIP ?
++                "on, the input method never gets it (OMACVM_IME_SHIFT=skip, a test)" :
++                "on, the input method gets it back from macOS");
      omacvm_ime_connect();
  }
  
