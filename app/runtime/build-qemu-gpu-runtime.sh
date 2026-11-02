@@ -1654,6 +1654,17 @@ grep -q '!vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd-
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-test-pause.patch"
 grep -q 'vkr_test_pause("pipeline");' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c: no test pause hook (test-pause patch)"
+# The rings of one app take turns on its objects; pipeline calls run beside them with their
+# objects pinned (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-ring-lock.patch"
+grep -q 'const bool locked = vkr_context_lock(ctx);' "$virgl_source/src/venus/vkr_ring.c" && \
+  grep -q 'if (!vkr_pins_begin(ctx, &pins, "vkCreateGraphicsPipelines", args->device,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_ring.c, vkr_pipeline.c: rings of one app do not take turns (ring-lock patch)"
+# Command buffers hold the image views, framebuffers and render passes their passes named (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-holds.patch"
+grep -q 'if (vkr_device_object_held(ctx, obj, ctx->on_worker_thread))' "$virgl_source/src/venus/vkr_device.c" && \
+  grep -q 'vkr_cmd_unhold_all(cmd);' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_device.c, vkr_command_buffer.c: command buffers do not hold their views (command-holds patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

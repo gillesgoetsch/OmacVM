@@ -1,0 +1,609 @@
+virglrenderer: Venus command buffers hold the views their passes named
+
+What: a command buffer holds the image views, their images, the framebuffers and render
+passes that its render pass begins, dynamic renderings and a secondary's inheritance
+named, until the driver let go of what it recorded: a reset, a new begin, a free, a pool
+reset or destroy, the context's end. An image view holds its image. The app may destroy a
+held object (the command buffer becomes invalid, which Vulkan allows): its id leaves
+vkr's table at once and the driver's destroy waits for the last holder. Memory dedicated
+to an image still goes first. A command buffer may hold objects of its own device only
+(the begin infos' commonparent VUIDs); a view of another device's image is refused at
+its create (VUID-vkCreateImageView-image-parent). vkDestroyCommandPool lets the driver free
+the pool's command buffers before vkr lets go of what they held.
+Why: KosmicKrisp reads a pass's views (and a view's image) where it splits a pass while
+recording: barriers with more than one sample or a split, draws after a color map or
+sample location change, the store ops at the pass's end. MoltenVK's recorded commands
+keep raw image view, framebuffer and render pass pointers and read them when it encodes
+at vkQueueSubmit. A view the app destroyed under a recorded command buffer was freed
+memory there. The pass-views checks at the begin, a next subpass and the end stay.
+Not covered (ADR 0065): views reached only through descriptor sets (the probe case
+records what MoltenVK does), and what a pending KosmicKrisp command buffer reads on the
+GPU (Metal 4 command buffers keep no texture alive).
+Upstream: OmacVM policy (object lifetime VUIDs).
+Tests: Tests/virgl/test-venus-commands.c (the c-state-destroyed-view-held- cases, also
+under libgmalloc; c-probe-descriptor-view); --time: vkCmdBeginRenderPass + vkCmdEndRenderPass.
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 362ff38..6958901 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -457,11 +457,59 @@ vkr_cmd_view_room(struct vkr_command_buffer *cmd, uint32_t count)
+                                         : malloc(sizeof(struct vkr_view_ref) * count);
+ }
+ 
++/* OmacVM (virgl-venus-command-holds.patch, vkr_device.h): the command buffer holds obj
++ * (NULL: none) until the driver let go of what it recorded. An object of another device is
++ * refused (the commonparent VUIDs of the begin infos); false after a refusal. */
++static bool
++vkr_cmd_hold(struct vkr_context *ctx,
++             struct vkr_command_buffer *cmd,
++             void *handle,
++             const char *call)
++{
++   struct vkr_object *obj = handle;
++   if (!obj)
++      return true;
++   if (!vkr_context_check(ctx, vkr_holdable_device(obj) == cmd->device, call,
++                          "an object of another device"))
++      return false;
++   if (!cmd->held) {
++      cmd->held = _mesa_hash_table_create(NULL, _mesa_hash_pointer, _mesa_key_pointer_equal);
++      if (!vkr_context_check(ctx, cmd->held != NULL, call, "out of host memory"))
++         return false;
++   }
++   const uint32_t hash = _mesa_hash_pointer(obj);
++   if (_mesa_hash_table_search_pre_hashed(cmd->held, hash, obj))
++      return true;
++   if (!vkr_context_check(ctx, _mesa_hash_table_insert_pre_hashed(cmd->held, hash, obj, obj),
++                          call, "out of host memory"))
++      return false;
++   vkr_object_hold(obj);
++   return true;
++}
++
++/* the driver let go of what the command buffer recorded (reset, begin, free): a zombie it
++ * held last is destroyed now */
++static void
++vkr_cmd_unhold_all(struct vkr_command_buffer *cmd)
++{
++   if (!cmd->held || !_mesa_hash_table_num_entries(cmd->held))
++      return;
++   hash_table_foreach (cmd->held, entry)
++      vkr_object_unhold((struct vkr_object *)entry->key);
++   _mesa_hash_table_clear(cmd->held, NULL);
++}
++
+ void
+ vkr_command_buffer_object_release(struct vkr_object *obj)
+ {
+-   if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER)
+-      vkr_cmd_set_views((struct vkr_command_buffer *)obj, NULL, 0);
++   if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER) {
++      struct vkr_command_buffer *cmd = (struct vkr_command_buffer *)obj;
++      vkr_cmd_set_views(cmd, NULL, 0);
++      /* OmacVM (virgl-venus-command-holds.patch): the driver freed it already */
++      vkr_cmd_unhold_all(cmd);
++      _mesa_hash_table_destroy(cmd->held, NULL);
++      cmd->held = NULL;
++   }
+ }
+ 
+ static bool
+@@ -487,9 +535,19 @@ vkr_cmd_begin_views(struct vn_dispatch_context *dispatch,
+ {
+    struct vkr_context *ctx = dispatch->data;
+    const struct vkr_framebuffer *fb = vkr_framebuffer_from_handle(info->framebuffer);
++   /* OmacVM (virgl-venus-command-holds.patch): the pass, the framebuffer and its views */
++   if (!vkr_cmd_hold(ctx, cmd, (void *)info->renderPass, call) ||
++       !vkr_cmd_hold(ctx, cmd, (void *)fb, call))
++      return false;
+    if (!fb->imageless) {
+       vkr_cmd_set_views(cmd, NULL, 0);
+-      return vkr_cmd_views_ok(ctx, call, fb->views, fb->attachment_count);
++      if (!vkr_cmd_views_ok(ctx, call, fb->views, fb->attachment_count))
++         return false;
++      for (uint32_t i = 0; i < fb->attachment_count; i++) {
++         if (!vkr_cmd_hold(ctx, cmd, vkr_context_get_object(ctx, fb->views[i].id), call))
++            return false;
++      }
++      return true;
+    }
+    const VkRenderPassAttachmentBeginInfo *att =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO);
+@@ -497,8 +555,15 @@ vkr_cmd_begin_views(struct vn_dispatch_context *dispatch,
+    struct vkr_view_ref *views = vkr_cmd_view_room(cmd, count);
+    if (!vkr_context_check(ctx, views != NULL, call, "out of host memory"))
+       return false;
+-   for (uint32_t i = 0; i < count; i++)
+-      views[i] = vkr_view_ref_of(vkr_image_view_from_handle(att->pAttachments[i]));
++   for (uint32_t i = 0; i < count; i++) {
++      struct vkr_image_view *view = vkr_image_view_from_handle(att->pAttachments[i]);
++      views[i] = vkr_view_ref_of(view);
++      if (!vkr_cmd_hold(ctx, cmd, view, call)) {
++         if (views != cmd->view_storage)
++            free(views);
++         return false;
++      }
++   }
+    vkr_cmd_set_views(cmd, views, count);
+    return true;
+ }
+@@ -549,18 +614,38 @@ vkr_cmd_rendering_views(struct vn_dispatch_context *dispatch,
+    if (!vkr_context_check(dispatch->data, views != NULL, "vkCmdBeginRendering", "out of host memory"))
+       return false;
+    uint32_t n = 0;
++   const struct vkr_image_view *named[2 * VKR_CMD_VIEW_STORAGE];
++   const struct vkr_image_view **all =
++      max <= ARRAY_SIZE(named) ? named : malloc(sizeof(*all) * max);
++   if (!vkr_context_check(dispatch->data, all != NULL, "vkCmdBeginRendering", "out of host memory")) {
++      if (views != cmd->view_storage)
++         free(views);
++      return false;
++   }
+    for (uint32_t i = 0; i < info->colorAttachmentCount; i++) {
+-      views[n++] =
+-         vkr_view_ref_of(vkr_image_view_from_handle(info->pColorAttachments[i].imageView));
+-      views[n++] = vkr_view_ref_of(vkr_rendering_resolve_view(&info->pColorAttachments[i]));
++      all[n++] = vkr_image_view_from_handle(info->pColorAttachments[i].imageView);
++      all[n++] = vkr_rendering_resolve_view(&info->pColorAttachments[i]);
+    }
+    const VkRenderingAttachmentInfo *ds[2] = { info->pDepthAttachment, info->pStencilAttachment };
+    for (uint32_t i = 0; i < 2; i++) {
+-      views[n++] = vkr_view_ref_of(ds[i] ? vkr_image_view_from_handle(ds[i]->imageView) : NULL);
+-      views[n++] = vkr_view_ref_of(vkr_rendering_resolve_view(ds[i]));
++      all[n++] = ds[i] ? vkr_image_view_from_handle(ds[i]->imageView) : NULL;
++      all[n++] = vkr_rendering_resolve_view(ds[i]);
++   }
++   all[n++] = fsr ? vkr_image_view_from_handle(fsr->imageView) : NULL;
++   all[n++] = fdm ? vkr_image_view_from_handle(fdm->imageView) : NULL;
++   /* OmacVM (virgl-venus-command-holds.patch): each held until the driver lets go */
++   bool held = true;
++   for (uint32_t i = 0; i < n; i++) {
++      views[i] = vkr_view_ref_of(all[i]);
++      held = held && vkr_cmd_hold(dispatch->data, cmd, (void *)all[i], "vkCmdBeginRendering");
++   }
++   if (all != named)
++      free(all);
++   if (!held) {
++      if (views != cmd->view_storage)
++         free(views);
++      return false;
+    }
+-   views[n++] = vkr_view_ref_of(fsr ? vkr_image_view_from_handle(fsr->imageView) : NULL);
+-   views[n++] = vkr_view_ref_of(fdm ? vkr_image_view_from_handle(fdm->imageView) : NULL);
+    vkr_cmd_set_views(cmd, views, n);
+    return true;
+ }
+@@ -701,8 +786,12 @@ vkr_dispatch_vkDestroyCommandPool(struct vn_dispatch_context *dispatch,
+    if (!pool)
+       return;
+ 
++   /* OmacVM (virgl-venus-command-holds.patch): the driver frees the pool's command buffers
++    * first, then vkr lets go of what they held (vkr_command_pool_destroy_and_remove) */
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   vkr_command_pool_destroy_driver_handle(ctx, args);
+    vkr_command_pool_release(ctx, pool);
+-   vkr_command_pool_destroy_and_remove(ctx, args);
++   vkr_device_remove_object(ctx, dev, &pool->base);
+ }
+ 
+ static void
+@@ -721,6 +810,11 @@ vkr_dispatch_vkResetCommandPool(UNUSED struct vn_dispatch_context *dispatch,
+ 
+    vn_replace_vkResetCommandPool_args_handle(args);
+    args->ret = vk->ResetCommandPool(args->device, args->commandPool, args->flags);
++   /* OmacVM (virgl-venus-command-holds.patch) */
++   if (pool && args->ret == VK_SUCCESS) {
++      list_for_each_entry (struct vkr_command_buffer, cmd, &pool->command_buffers, base.track_head)
++         vkr_cmd_unhold_all(cmd);
++   }
+ }
+ 
+ static void
+@@ -793,6 +887,9 @@ vkr_dispatch_vkResetCommandBuffer(UNUSED struct vn_dispatch_context *dispatch,
+    vkr_cmd_state_reset(cmd);
+    vn_replace_vkResetCommandBuffer_args_handle(args);
+    args->ret = vk->ResetCommandBuffer(args->commandBuffer, args->flags);
++   /* OmacVM (virgl-venus-command-holds.patch) */
++   if (args->ret == VK_SUCCESS)
++      vkr_cmd_unhold_all(cmd);
+ }
+ 
+ static void
+@@ -831,11 +928,23 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
+       }
+    }
+ 
++   /* OmacVM (virgl-venus-command-holds.patch): an inheritance's render pass and
++    * framebuffer, held once the driver let go of what was recorded before */
++   void *inh_pass = inh ? (void *)inh->renderPass : NULL;
++   void *inh_fb = inh ? (void *)inh->framebuffer : NULL;
++
+    vn_replace_vkBeginCommandBuffer_args_handle(args);
+    args->ret = vk->BeginCommandBuffer(args->commandBuffer, args->pBeginInfo);
+    cmd->state = st;
+    vkr_cmd_set_views(cmd, NULL, 0);
+    cmd->state.recording = args->ret == VK_SUCCESS;
++   if (args->ret == VK_SUCCESS) {
++      vkr_cmd_unhold_all(cmd);
++      if (cmd->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY &&
++          (!vkr_cmd_hold(dispatch->data, cmd, inh_pass, "vkBeginCommandBuffer") ||
++           !vkr_cmd_hold(dispatch->data, cmd, inh_fb, "vkBeginCommandBuffer")))
++         return;
++   }
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index 458dcba..31bc435 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -70,6 +70,9 @@ struct vkr_command_buffer {
+    struct vkr_view_ref *views;
+    uint32_t view_count;
+    struct vkr_view_ref view_storage[VKR_CMD_VIEW_STORAGE];
++   /* OmacVM (virgl-venus-command-holds.patch, vkr_device.h): the objects it holds (keys),
++    * NULL until its first pass; emptied when the driver let go of what it recorded */
++   struct hash_table *held;
+ };
+ VKR_DEFINE_OBJECT_CAST(command_buffer, VK_OBJECT_TYPE_COMMAND_BUFFER, VkCommandBuffer)
+ 
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index 32706ed..8e4fa1f 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -170,6 +170,15 @@ struct vkr_object {
+     * without the context's dispatch lock that name the object (vkr_context.h); a destroy of
+     * it then is refused. Counted under that lock. */
+    uint32_t pins;
++
++   /* OmacVM (virgl-venus-command-holds.patch, ADR 0065): the command buffers that named it
++    * (image views, framebuffers, render passes) and the views of it (an image). While any
++    * holds it, a destroy takes its id out of the table at once (a zombie) and the driver's
++    * destroy waits for the last holder (vkr_device.h). Under the context's dispatch lock. */
++   uint32_t holds;
++   bool zombie;
++   /* the zombie's driver object is destroyed when the last holder lets go */
++   bool zombie_destroy_vk;
+ };
+ 
+ struct object_array {
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 6b5294b..8a278ba 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -880,6 +880,7 @@ vkr_object_free(struct vkr_object *obj)
+    vkr_render_pass_object_release(obj);
+    vkr_pipeline_object_release(obj);
+    vkr_command_buffer_object_release(obj);
++   vkr_image_object_release(obj);
+    free(obj);
+ }
+ 
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 1940c0c..a6a0bd5 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -16,6 +16,7 @@
+ #include "vkr_instance.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_queue.h"
++#include "vkr_render_pass.h"
+ 
+ static VkResult
+ vkr_device_create_queues(struct vkr_context *ctx,
+@@ -344,6 +345,7 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+    list_inithead(&dev->objects);
+ 
+    mtx_init(&dev->dedicated_mutex, mtx_plain);
++   list_inithead(&dev->zombies);
+ 
+    list_add(&dev->base.track_head, &physical_dev->devices);
+ 
+@@ -360,6 +362,11 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+ 
+    assert(vkr_device_should_track_object(obj));
+ 
++   /* OmacVM (virgl-venus-command-holds.patch): a held object waits for its holders (the
++    * command pools of this device, destroyed in this walk) */
++   if (vkr_device_object_held(ctx, obj, ctx->on_worker_thread))
++      return;
++
+    /* OmacVM (virgl-venus-dedicated-memory.patch): as the guest's destroys, so an app that
+     * ends between allocating dedicated memory and binding it frees in the safe order */
+    bool target_waits = false;
+@@ -496,6 +503,14 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+          vkr_device_object_destroy(ctx, dev, obj);
+    }
+ 
++   /* OmacVM (virgl-venus-command-holds.patch): the pools above let go of every zombie; one
++    * left would be a holder vkr lost track of */
++   list_for_each_entry_safe (struct vkr_object, obj, &dev->zombies, track_head) {
++      vkr_log("device teardown: a zombie of type %d still held %u times", obj->type, obj->holds);
++      obj->holds = 1;
++      vkr_object_unhold(obj);
++   }
++
+    list_for_each_entry_safe (struct vkr_queue, queue, &dev->queues, base.track_head)
+       vkr_queue_destroy(ctx, queue);
+ 
+@@ -515,6 +530,91 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+    vkr_context_remove_object(ctx, &dev->base);
+ }
+ 
++struct vkr_device *
++vkr_holdable_device(const struct vkr_object *obj)
++{
++   switch (obj->type) {
++   case VK_OBJECT_TYPE_IMAGE:
++      return ((const struct vkr_image *)obj)->device;
++   case VK_OBJECT_TYPE_IMAGE_VIEW:
++      return ((const struct vkr_image_view *)obj)->device;
++   case VK_OBJECT_TYPE_FRAMEBUFFER:
++      return ((const struct vkr_framebuffer *)obj)->device;
++   case VK_OBJECT_TYPE_RENDER_PASS:
++      return ((const struct vkr_render_pass *)obj)->device;
++   default:
++      return NULL;
++   }
++}
++
++bool
++vkr_device_object_held(struct vkr_context *ctx, struct vkr_object *obj, bool destroy_vk)
++{
++   if (likely(!obj->holds))
++      return false;
++   struct vkr_device *dev = vkr_holdable_device(obj);
++   assert(dev && !obj->zombie);
++
++   mtx_lock(&ctx->object_mutex);
++   struct hash_entry *entry = _mesa_hash_table_search(ctx->object_table, &obj->id);
++   if (entry && entry->data == obj)
++      _mesa_hash_table_remove(ctx->object_table, entry);
++   mtx_unlock(&ctx->object_mutex);
++
++   mtx_lock(&dev->object_mutex);
++   list_del(&obj->track_head);
++   list_add(&obj->track_head, &dev->zombies);
++   mtx_unlock(&dev->object_mutex);
++
++   obj->zombie = true;
++   obj->zombie_destroy_vk = destroy_vk;
++   return true;
++}
++
++void
++vkr_object_unhold(struct vkr_object *obj)
++{
++   assert(obj->holds);
++   if (--obj->holds || !obj->zombie)
++      return;
++
++   struct vkr_device *dev = vkr_holdable_device(obj);
++   struct vn_device_proc_table *vk = &dev->proc_table;
++   VkDevice device = dev->base.handle.device;
++
++   mtx_lock(&dev->object_mutex);
++   list_del(&obj->track_head);
++   mtx_unlock(&dev->object_mutex);
++
++   switch (obj->type) {
++   case VK_OBJECT_TYPE_IMAGE: {
++      /* dedicated memory alive: its free destroys the image (memory first) */
++      const bool waits =
++         vkr_dedicated_target_destroyed(dev, ((struct vkr_image *)obj)->dedicated);
++      if (obj->zombie_destroy_vk && !waits)
++         vk->DestroyImage(device, obj->handle.image, NULL);
++      break;
++   }
++   case VK_OBJECT_TYPE_IMAGE_VIEW:
++      if (obj->zombie_destroy_vk)
++         vk->DestroyImageView(device, obj->handle.image_view, NULL);
++      break;
++   case VK_OBJECT_TYPE_FRAMEBUFFER:
++      if (obj->zombie_destroy_vk)
++         vk->DestroyFramebuffer(device, obj->handle.framebuffer, NULL);
++      break;
++   case VK_OBJECT_TYPE_RENDER_PASS:
++      if (obj->zombie_destroy_vk)
++         vk->DestroyRenderPass(device, obj->handle.render_pass, NULL);
++      break;
++   default:
++      assert(false);
++      break;
++   }
++   /* a view lets go of its image here (vkr_image_object_release) */
++   vkr_object_free(obj);
++}
++
+ static void
+ vkr_dispatch_vkDestroyDevice(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkDestroyDevice *args)
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index b5298db..1c8a06c 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -44,6 +44,9 @@ struct vkr_device {
+ 
+    /* OmacVM (virgl-venus-dedicated-memory.patch): the links of dedicated memory */
+    mtx_t dedicated_mutex;
++
++   /* OmacVM (virgl-venus-command-holds.patch): objects destroyed while held */
++   struct list_head zombies;
+ };
+ VKR_DEFINE_OBJECT_CAST(device, VK_OBJECT_TYPE_DEVICE, VkDevice)
+ 
+@@ -110,4 +113,38 @@ vkr_device_remove_object(struct vkr_context *ctx,
+    vkr_context_remove_object(ctx, obj);
+ }
+ 
++/* OmacVM (virgl-venus-command-holds.patch, ADR 0065): a command buffer holds the image
++ * views, their images, the framebuffers and render passes its passes and renderings named,
++ * until it is reset, begun again or freed (its pool reset or destroyed): Mesa's
++ * vk_render_pass and KosmicKrisp read a pass's views wherever they split or end it, and
++ * MoltenVK's recorded commands keep raw view, framebuffer and render pass pointers that a
++ * submit reads. An image view holds its image (KosmicKrisp's view reads its image). The
++ * app may destroy a held object (the command buffer becomes invalid, which is legal): the
++ * id leaves the table at once, so a new object may take it, and the driver's destroy waits
++ * for the last holder. A command buffer holds objects of its own device only, so the
++ * device's teardown, which frees its command pools, lets go of every zombie of it. */
++
++/* tests tell a vkr with holds by this */
++#define VKR_COMMAND_HOLDS 1
++
++/* the device of a holdable object */
++struct vkr_device *
++vkr_holdable_device(const struct vkr_object *obj);
++
++/* the guest destroys obj, or its device goes (destroy_vk: as for the others there): true
++ * when it is held, then it is a zombie (out of the table and the device's list) and the
++ * caller destroys nothing */
++bool
++vkr_device_object_held(struct vkr_context *ctx, struct vkr_object *obj, bool destroy_vk);
++
++static inline void
++vkr_object_hold(struct vkr_object *obj)
++{
++   obj->holds++;
++}
++
++/* the last holder of a zombie destroys it */
++void
++vkr_object_unhold(struct vkr_object *obj);
++
+ #endif /* VKR_DEVICE_H */
+diff --git a/src/venus/vkr_device_object.py b/src/venus/vkr_device_object.py
+index 7877151..c2c2723 100644
+--- a/src/venus/vkr_device_object.py
++++ b/src/venus/vkr_device_object.py
+@@ -321,6 +321,9 @@ vkr_{destroy_func_name}_destroy_and_remove(
+    /* OmacVM (virgl-venus-ring-lock.patch) */
+    if (vkr_context_pinned(ctx, &obj->base, "{destroy_cmd}"))
+       return;
++   /* OmacVM (virgl-venus-command-holds.patch) */
++   if (vkr_device_object_held(ctx, &obj->base, true))
++      return;
+ 
+    vkr_{destroy_func_name}_destroy_driver_handle(ctx, args);
+ 
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 60fac0f..7162a49 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -399,6 +399,10 @@ vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
+     * driver's destroy waits for that memory's free */
+    struct vkr_image *image = vkr_image_from_handle(args->image);
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
++   /* OmacVM (virgl-venus-command-holds.patch): a view or command buffer holds it: the
++    * zombie's last holder destroys it (with the dedicated memory rule) */
++   if (image && vkr_device_object_held(dispatch->data, &image->base, true))
++      return;
+    if (image && vkr_dedicated_target_destroyed(image->device, image->dedicated)) {
+       vkr_device_remove_object(dispatch->data, dev, &image->base);
+       return;
+@@ -710,10 +714,33 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+    const uint32_t planes = (info->subresourceRange.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT)
+                               ? vkr_format_plane_count(info->format)
+                               : 1;
++   /* OmacVM (virgl-venus-command-holds.patch): the view holds its image, which must be of
++    * its device (VUID-vkCreateImageView-image-parent) */
++   struct vkr_image *image = vkr_image_from_handle(info->image);
++   if (!vkr_context_check(dispatch->data, !image || image->device == dev, "vkCreateImageView",
++                          "an image of another device")) {
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
+    struct vkr_image_view *view = vkr_image_view_create_and_add(dispatch->data, args);
+    if (view) {
+       view->planes = planes ? planes : 1;
+       view->serial = vkr_object_next_serial();
++      view->device = dev;
++      view->image = image;
++      if (image)
++         vkr_object_hold(&image->base);
++   }
++}
++
++void
++vkr_image_object_release(struct vkr_object *obj)
++{
++   struct vkr_image_view *view = (struct vkr_image_view *)obj;
++   if (obj->type == VK_OBJECT_TYPE_IMAGE_VIEW && view->image) {
++      struct vkr_image *image = view->image;
++      view->image = NULL;
++      vkr_object_unhold(&image->base);
+    }
+ }
+ 
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+index 30edb44..71fcc82 100644
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -41,9 +41,17 @@ struct vkr_image_view {
+    uint8_t planes;
+    /* OmacVM (virgl-venus-pass-views.patch): vkr_object_next_serial at its create */
+    uint64_t serial;
++   /* OmacVM (virgl-venus-command-holds.patch): its device, and its image, which it holds */
++   struct vkr_device *device;
++   struct vkr_image *image;
+ };
+ VKR_DEFINE_OBJECT_CAST(image_view, VK_OBJECT_TYPE_IMAGE_VIEW, VkImageView)
+ 
++/* OmacVM (virgl-venus-command-holds.patch): what vkr keeps with an image view, freed with
++ * it (vkr_object_free): its hold on its image */
++void
++vkr_image_object_release(struct vkr_object *obj);
++
+ /* OmacVM (virgl-venus-pass-views.patch): an image view a framebuffer or an open pass names,
+  * by id and serial (id 0: none) */
+ struct vkr_view_ref {
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index b2a5268..bb58dae 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -484,6 +484,7 @@ vkr_dispatch_vkCreateRenderPass(struct vn_dispatch_context *dispatch,
+       return;
+    }
+    pass->serial = vkr_object_next_serial();
++   pass->device = dev;
+    pass->attachment_count = attachments;
+    pass->clear_count = clears;
+    pass->subpass_count = count;
+@@ -516,6 +517,7 @@ vkr_dispatch_vkCreateRenderPass2(struct vn_dispatch_context *dispatch,
+       return;
+    }
+    pass->serial = vkr_object_next_serial();
++   pass->device = dev;
+    pass->attachment_count = info->attachmentCount;
+    pass->clear_count =
+       vkr_clear_count(info->attachmentCount, info->pAttachments, sizeof(VkAttachmentDescription2),
+@@ -612,6 +614,7 @@ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+    struct vkr_framebuffer *fb = vkr_framebuffer_create_and_add(dispatch->data, args);
+    if (fb) {
+       fb->serial = vkr_object_next_serial();
++      fb->device = dev;
+       fb->attachment_count = count;
+       fb->imageless = imageless;
+       fb->views = views;
+diff --git a/src/venus/vkr_render_pass.h b/src/venus/vkr_render_pass.h
+index 6546072..a7f4a6b 100644
+--- a/src/venus/vkr_render_pass.h
++++ b/src/venus/vkr_render_pass.h
+@@ -28,6 +28,8 @@ struct vkr_render_pass {
+    uint32_t clear_count;
+    uint32_t subpass_count;
+    struct vkr_subpass_info *subpasses;
++   /* OmacVM (virgl-venus-command-holds.patch) */
++   struct vkr_device *device;
+ };
+ VKR_DEFINE_OBJECT_CAST(render_pass, VK_OBJECT_TYPE_RENDER_PASS, VkRenderPass)
+ 
+@@ -40,6 +42,8 @@ struct vkr_framebuffer {
+    bool imageless;
+    /* OmacVM (virgl-venus-pass-views.patch): its views (not imageless), freed with it */
+    struct vkr_view_ref *views;
++   /* OmacVM (virgl-venus-command-holds.patch) */
++   struct vkr_device *device;
+ };
+ VKR_DEFINE_OBJECT_CAST(framebuffer, VK_OBJECT_TYPE_FRAMEBUFFER, VkFramebuffer)
+ 
