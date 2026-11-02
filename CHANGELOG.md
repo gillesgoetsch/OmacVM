@@ -23,6 +23,11 @@ in more words.
   so QEMU read freed memory (a free alone hands the secondary back to its pool). Now the primary
   holds its secondaries as it holds its image views: the driver's copy of a freed one, and its
   pool, wait until the primary is reset, begun again or freed. Needs the app update.
+- **A Vulkan program can bind memory to a one-plane alias of a YCbCr image's plane (OmacVM.app,
+  #683, see #624).** With Graphics on Vulkan, binding memory with plane 0 to a one-plane image
+  made with DISJOINT and ALIAS (legal; dEQP's ycbcr.plane_view.memory_alias cases do it) ended the
+  program's Vulkan connection since 3.2.14. Now it binds, and a plane the image does not have is
+  still refused. Nothing that bound before is refused now. Needs the app update.
 
 ## 3.2.18
 
