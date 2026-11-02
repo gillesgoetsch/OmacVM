@@ -18,11 +18,11 @@ in more words.
   multisampled pass, MoltenVK when the command buffer is submitted. Now the driver's copy waits
   until the command buffer is reset, begun again or freed. Needs the app update.
 - **A command buffer that ran another one keeps it until it lets go (OmacVM.app, #676).** With
-  Graphics on Vulkan, a program could free a secondary command buffer (or destroy its pool) after
-  a primary command buffer ran it and then submit the primary: MoltenVK reads the secondary at
-  the submit, so QEMU read freed memory. Now the primary holds its secondaries as it holds its
-  image views: the driver's copy of a freed one waits until the primary is reset, begun again or
-  freed. Needs the app update.
+  Graphics on Vulkan, a program could destroy a secondary command buffer's pool after a primary
+  command buffer ran it and then submit the primary: MoltenVK reads the secondary at the submit,
+  so QEMU read freed memory (a free alone hands the secondary back to its pool). Now the primary
+  holds its secondaries as it holds its image views: the driver's copy of a freed one, and its
+  pool, wait until the primary is reset, begun again or freed. Needs the app update.
 
 ## 3.2.18
 

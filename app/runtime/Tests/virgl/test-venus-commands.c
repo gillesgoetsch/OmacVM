@@ -81,7 +81,7 @@
 extern char **environ;
 
 /* what a case saw: the child's exit status */
-enum { WORKS = 10, ERROR = 11, FATAL = 12, SKIP = 13, BROKEN = 2 };
+enum { WORKS = 10, ERROR = 11, FATAL = 12, SKIP = 13, ZOMBIES = 14, BROKEN = 2 };
 /* what a case must see: refused (the context ends with a log line), kept (works or a
  * VkResult error, no refusal), works (no error, no refusal); the multiview and push
  * constant cases decide in the child from the device's limits ("expect:" line) */
@@ -4443,16 +4443,16 @@ static int secondary_case(const char *c, struct world *w)
       reset_command_buffer(cmd);
       free_command_buffer(sec);
       step("zombies after the reset and the free: %d", zombies());
-      return ended() ? FATAL : zombies() > 0 ? ERROR : WORKS;
+      return ended() ? FATAL : zombies() > 0 ? ZOMBIES : WORKS;
    }
    if (same) {
       free_command_buffer(sec);
       step("zombies after the free: %d", zombies());
       if (zombies() != 1)
-         return ended() ? FATAL : ERROR;
+         return ended() ? FATAL : ZOMBIES;
       destroy_command_pool(pool);
       step("zombies after the pool's destroy: %d", zombies());
-      return ended() ? FATAL : zombies() > 0 ? ERROR : WORKS;
+      return ended() ? FATAL : zombies() > 0 ? ZOMBIES : WORKS;
    }
    /* the submit cases submit whatever vkr kept (the driver's read is what they test), then
     * judge the zombies */
@@ -4461,13 +4461,13 @@ static int secondary_case(const char *c, struct world *w)
    int z = zombies();
    step("zombies after the free: %d", z);
    if (z != 1 && !submit)
-      return ended() ? FATAL : ERROR;
+      return ended() ? FATAL : ZOMBIES;
    if (!IS("c-state-secondary-held-free-submit")) {
       destroy_command_pool(pool);
       z = zombies();
       step("zombies after the pool's destroy: %d", z);
       if (z != 2 && !submit)
-         return ended() ? FATAL : ERROR;
+         return ended() ? FATAL : ZOMBIES;
    }
    if (submit) {
       const int want = IS("c-state-secondary-held-free-submit") ? 1 : 2;
@@ -4483,7 +4483,7 @@ static int secondary_case(const char *c, struct world *w)
          return FATAL;
       q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
       step("the queue is idle; zombies: %d (want %d)", z, want);
-      return qs.ret == VK_SUCCESS && z == want ? WORKS : ERROR;
+      return qs.ret != VK_SUCCESS ? ERROR : z != want ? ZOMBIES : WORKS;
    }
    if (IS("c-state-secondary-held-reset-ok")) {
       reset_command_buffer(cmd);
@@ -4500,7 +4500,7 @@ static int secondary_case(const char *c, struct world *w)
    if (ended())
       return FATAL;
    step("zombies now: %d", zombies());
-   return zombies() > 0 ? ERROR : WORKS;
+   return zombies() > 0 ? ZOMBIES : WORKS;
 }
 
 /* ---------------- two threads on one context (virgl-venus-ring-lock.patch) ----------------
@@ -5423,6 +5423,7 @@ static const char *outcome_name(int status)
    case ERROR: return "a VkResult error";
    case FATAL: return "the context ended";
    case SKIP: return "skipped";
+   case ZOMBIES: return "a wrong zombie count";
    default: return "broken";
    }
 }
