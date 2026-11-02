@@ -37,6 +37,7 @@ gpu-compute:venus/compute.sh off on every apply of an app VM (OpenCL switch, the
 vulkan:apply removes the VM's vulkan file (no Venus device from the next start) and venus/install.sh --remove; nothing of it talks to the Mac (src/tests/vulkan-feature.sh)
 x86-apps:x86/guest/install.sh off removes OmacVM's box64 package and its binfmt rule on every apply; nothing of it talks to the Mac (src/tests/x86-apps.sh)
 mac-ime:ime/guest/install.sh off removes OmacVM's Fcitx5 module, its port rule, the GTK line and the Chromium flag on every apply; OmacVM.app adds the org.omacvm.ime port and its socket only for a VM whose record says mac-ime=on, and QEMU's window code reads keys as before without OMACVM_IME_SOCKET (src/ime/tests/run.sh, app/runtime/Tests/keys/test-ime.sh)
+drag-drop:drop/guest/install.sh off removes the drop helper, omacvm-drop, the share's mount and the port's rule on every apply; OmacVM.app adds the org.omacvm.drop port, the read-only drop share and QEMU's drop socket only for a VM whose record says drag-drop=on, and QEMU's windows take no drops without OMACVM_DROP_SOCKET (src/drop/tests/run.sh, app/runtime/Tests/drop/test-drop.sh, swift run drop-tests)
 touch-id:apply deletes the Mac's Touch ID key (the Bridge then says off, no dialog); install.sh runs touchid.sh off: PAM lines, polkit rule, drop-in and the VM's keys gone (src/tests/touchid-client.sh)
 "
 while IFS=$'\t' read -r name _; do
