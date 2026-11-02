@@ -329,6 +329,16 @@ EOF
       "$("$T/links" "$T/vm" x | grep -o 'Mac input methods [a-z]*')"
     app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on mac-ime=off"
     expect "app: mac-ime=off: no port" "Mac input methods off" "$("$T/links" "$T/vm" x | grep -o 'Mac input methods [a-z]*')"
+    # drag-drop: its port, share and QEMU's drop socket only when named on (off by default).
+    mkdir -p "$T/dnd"
+    printf '%s\n' 'import Foundation' 'print(MacLinks.load(folder: URL(fileURLWithPath: CommandLine.arguments[1])).dragDrop)' > "$T/dnd/main.swift"
+    if swiftc -O -o "$T/dnd/links" "$R/app/app/Sources/OmacVM/MacLinks.swift" "$T/dnd/main.swift" 2>>"$T/swiftc.log"; then
+      expect "app: drag-drop not named: off" "false" "$("$T/dnd/links" "$T/vm")"
+      app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on drag-drop=on"
+      expect "app: drag-drop=on: its port and share this start" "true" "$("$T/dnd/links" "$T/vm")"
+      app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on drag-drop=off"
+      expect "app: drag-drop=off: none" "false" "$("$T/dnd/links" "$T/vm")"
+    else echo "FAIL MacLinks.swift with drag-drop does not compile"; fail=1; fi
     mkdir -p "$T/old"
     expect "app: a VM from before: Touch ID off, its port all the same" "touchid=false" "$("$T/links" "$T/old" x | grep -o 'touchid=[a-z]*')"
     expect "app: a VM from before (no features file): as before" "ports=47811,47830,47831 battery=true camera=true test=47811>47911,47830>47930,47831>47931" "$("$T/links" "$T/old")"

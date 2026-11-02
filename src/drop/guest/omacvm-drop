@@ -270,7 +270,10 @@ def handle(fd, raw, state):
     if drop is None:
         return
     to, why = place(drop, int((time.monotonic() - t0) * 1000))
-    send(fd, {"t": "done", "id": drop["id"], "to": to, "why": why or ""})
+    try:
+        send(fd, {"t": "done", "id": drop["id"], "to": to, "why": why or ""})
+    except OSError:
+        pass   # the Mac's side went away meanwhile: it drops the staging at the VM's stop
     state["drops"] = (state["drops"] + [{"at": time.time(), "files": len(drop["items"]), "to": to, "why": why or ""}])[-10:]
     write_status(state)
 
