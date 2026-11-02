@@ -6,7 +6,7 @@ in more words.
 ## 3.2.19 (unreleased)
 
 - **A Vulkan program's threads take turns in QEMU, and image views a recorded command buffer
-  named stay until it lets go of them (OmacVM.app, see #624).** With Graphics on Vulkan, a
+  named stay until it lets go of them (OmacVM.app, #673, see #624).** With Graphics on Vulkan, a
   program's threads reach QEMU on rings of their own, and nothing kept one ring from using what
   another had just destroyed: a program that destroyed an object while another of its threads was
   making a pipeline with it, or two threads recording into one command buffer, could make QEMU and

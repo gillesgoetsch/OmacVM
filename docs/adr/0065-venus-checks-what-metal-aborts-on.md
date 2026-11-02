@@ -618,3 +618,28 @@ beside the context's stream (destroys under a paused pipeline create and cache
 read, a duplicate id, a destroy, a recording and a memory free beside a paused
 call, a nested wait, a destroy beside a compile, a teardown), 9 held-view cases
 and the probe; `--ring-time` times calls through a ring and the stream.
+
+On the mini's M4 with the hook alone, the three destroy-under-a-pipeline-call
+cases ended the process (SIGSEGV) on KosmicKrisp, MoltenVK and MoltenVK with
+prefill, plainly and under libgmalloc; the duplicate id hit the assert; the
+destroy, recording and memory free beside a paused call did not wait (SIGSEGV on
+KosmicKrisp and under libgmalloc); MoltenVK's submit of a command buffer whose
+view was destroyed ended the process; KosmicKrisp's barrier in a multisampled
+pass read the freed resolve view under libgmalloc (`kk_get_attachment_store_op`
+from `kk_CmdPipelineBarrier2`). The legal held cases and the no-deadlock cases
+pass before too. With the patches all 20 new cases pass on the five modes, and
+every case of the file once (344 ok; 47 under libgmalloc); without the give-up
+in `vkWaitRingSeqnoMESA` the nested-wait case deadlocks. On the M1 Max (Apple7,
+KosmicKrisp new there) the runtime's build runs them all: 344 of 344 on
+KosmicKrisp, MoltenVK and MoltenVK with prefill, 45 of 45 under libgmalloc. In a
+4 GB test VM there (guest Mesa 26.2.4), vkcube, vkmark, Zink, rusticl, Chromium's
+WebGPU matmul and WebGL Aquarium show no refusal line, and a guest program
+through its own driver ends only itself: a free through another pool and a
+layout destroyed while another thread compiled with it are refused, vkcube beside
+it keeps drawing. Through guest Mesa a view destroyed mid-recording reaches QEMU
+before the recorded commands (Mesa sends a command buffer's commands when it
+flushes them), so that begin names a gone view and the decoder ends the context;
+the holds matter for commands QEMU already has. The dEQP-VK subset made the M1's
+GPU restart (firmware-detected lockup, timeline semaphore cases with
+tessellation and geometry stages) on 3.2.18 and this branch alike; it was
+stopped there (STANDARDS 14) and stays to compare on an M4.
