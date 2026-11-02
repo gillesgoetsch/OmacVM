@@ -64,6 +64,8 @@ stop_vm() {
 }
 stop_serve() {
   exec 7>&- 2>/dev/null
+  # Its stdin closed, drop-serve stops as the app does at the VM's stop (staging and socket go).
+  [[ -n $serve_pid ]] && for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$serve_pid" 2>/dev/null || break; sleep 0.3; done
   [[ -n $serve_pid ]] && { kill "$serve_pid" 2>/dev/null; wait "$serve_pid" 2>/dev/null; }
   serve_pid=""
 }
@@ -259,9 +261,9 @@ drop "$SRC/huge.bin"
 for _ in $(seq 240); do [[ $(count "$OUT/serve.log" "in the VM: Downloads") -gt $n0 ]] && break; sleep 0.25; done
 t1=$(/usr/bin/python3 -c 'import time; print(time.time())')
 l=$(guser 'bash /tmp/dnd/guest-rows.sh ls "$(xdg-user-dir DOWNLOAD 2>/dev/null || echo ~/Downloads)"' | grep huge)
-secs=$(awk "BEGIN{printf \"%.1f\", $t1-$t0}")
+secs=$(awk "BEGIN{printf \"%.1f\", $t1-$t0}"); mbs=$(awk "BEGIN{printf \"%.0f\", 1024/($t1-$t0)}")
 if grep -q "^$(sum "$SRC/huge.bin") 1073741824 huge.bin$" <<<"$l"; then
-  row speed PASS "(1 GiB drop to the VM's answer: $secs s = $(awk "BEGIN{printf \"%.0f\", 1024/($t1-$t0)}") MB/s; $(grep 'drop: 1 files' "$OUT/serve.log" | tail -1 | sed 's/.*drop: //'))"
+  row speed PASS "(1 GiB drop to the VM's answer: $secs s = $mbs MB/s; $(grep 'drop: 1 file,' "$OUT/serve.log" | tail -1 | sed 's/.*drop: //'))"
 else row speed FAIL "($l; $secs s)"; fi
 guser 'rm -f "$(xdg-user-dir DOWNLOAD 2>/dev/null || echo ~/Downloads)"/{hello*.txt,huge.bin}' > /dev/null
 
@@ -272,9 +274,9 @@ start_qemu off || exit 1
 gssh_in "rm -rf /tmp/dnd && mkdir -p /tmp/dnd && tar -C /tmp/dnd -xf - 2>/dev/null && chown -R $GUSER /tmp/dnd" < "$W/guest.tar" 2>> "$OUT/run.log"
 o=$(gssh "ls /dev/virtio-ports/ 2>/dev/null | grep -c drop; findmnt /run/omacvm/drop >/dev/null && echo mounted || echo unmounted; bash /tmp/dnd/drop/guest/install.sh $GUSER --status" 2>&1 | tr '\n' ' ')
 os=$(guser "systemctl --user is-active omacvm-drop.service" 2>&1)
-if [[ $o == "0 unmounted ok "* && $os != active && $(count "$OUT/qemu-off.log" "omacvm-drop") == 0 && ! -S $RUN/drop ]]; then
-  row off PASS "(no port, share unmounted, service $os, QEMU silent, no socket)"
-else row off FAIL "($o; service $os; qemu: $(grep -c omacvm-drop "$OUT/qemu-off.log"))"; fi
+if [[ $o == "0 unmounted ok "* && $os != active && $(count "$OUT/qemu-off.log" "omacvm-drop") == 0 && $(count "$OUT/qemu-off.log" "drag-drop") == 0 && ! -e $ST && ! -S $RUN/drop ]]; then
+  row off PASS "(no port, share unmounted, service $os, QEMU takes no drops; the app's side stopped: staging and socket gone)"
+else row off FAIL "($o; service $os; qemu: $(grep -c -e omacvm-drop -e drag-drop "$OUT/qemu-off.log"); staging $(ls -d "$ST" 2>/dev/null); socket $(ls "$RUN/drop" 2>/dev/null))"; fi
 gssh "bash /tmp/dnd/drop/guest/install.sh $GUSER off; bash /tmp/dnd/drop/guest/install.sh $GUSER --status" >> "$OUT/run.log" 2>&1
 log "rows: $(grep -c ' PASS' "$OUT/rows.txt") PASS, $fails FAIL"
 exit $(( fails > 0 ))

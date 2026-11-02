@@ -266,10 +266,10 @@ public final class DropServer: @unchecked Sendable {
         guard fd >= 0, ready, Self.writeAll(fd, line) else {
             lock.lock(); waiting[r.id] = nil; lock.unlock()
             stage.removeDrop(r.id)
-            log("OmacVM: drop: \(r.items.count) files not given to the VM: its omacvm-drop does not answer")
+            log("OmacVM: drop: \(r.items.count) file\(r.items.count == 1 ? "" : "s") not given to the VM: its omacvm-drop does not answer")
             return
         }
-        log("OmacVM: drop: \(r.items.count) files, \(mb) MB, \(how) in \(took) s, \(age) ms after the drop\(skipped > 0 ? ", \(skipped) skipped" : "")\(r.why.map { " (\($0))" } ?? "")")
+        log("OmacVM: drop: \(r.items.count) file\(r.items.count == 1 ? "" : "s"), \(mb) MB, \(how) in \(took) s, \(age) ms after the drop\(skipped > 0 ? ", \(skipped) skipped" : "")\(r.why.map { " (\($0))" } ?? "")")
     }
 
     // MARK: the VM's port
