@@ -675,6 +675,10 @@ Patches (all in `app/runtime/patches`, one per concern):
   passes their passes named until the driver let go of the recording; a destroyed
   held object waits as a zombie on its device. The test hook stops a call between
   vkr and the driver for the `t-` cases of `Tests/virgl/test-venus-commands.c`.
+- `virgl-venus-secondary-holds.patch` (3.2.19, ADR 0065's fourth amendment, #676):
+  a primary holds the secondaries it executed in the same way (MoltenVK reads them
+  when it encodes the primary at the submit); a freed held secondary stays in the
+  driver as a zombie holding its pool, and a destroyed pool with one waits for it.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended
