@@ -43,7 +43,7 @@ mkdir -p "$OUT" && : > "$OUT/rows.txt"
 fails=0
 log() { echo "$(date +%H:%M:%S) $*" >> "$OUT/run.log"; }
 row() { echo "ROW $1: $2${3:+ $3}" >> "$OUT/rows.txt"; log "ROW $1: $2${3:+ $3}"; [[ $2 == PASS ]] || fails=$((fails + 1)); }
-qpid() { pgrep -f -- "-name $NAME," | head -1; }
+qpid() { LC_ALL=C pgrep -f -- "-name $NAME," | head -1; }
 gssh_in() {   # stdin goes to the VM
   ssh -i "$VMD/ssh-key" -o IdentitiesOnly=yes -p "$PORT" -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1 "$@"
