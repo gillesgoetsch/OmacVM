@@ -108,13 +108,18 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "c-state-destroyed-view-end c-state-destroyed-view-imageless "
                  "c-state-destroyed-view-rendering c-state-destroyed-view-after-ok d-planes-ok "
                  "d-mutable-ok d-start-next-ok d-copy-start-next-ok "
-                 # views destroyed under a command buffer, two threads on one context
-                 # (virgl-venus-command-holds.patch, virgl-venus-ring-lock.patch)
+                 # views destroyed and secondaries freed under a command buffer, two threads
+                 # on one context (virgl-venus-command-holds.patch,
+                 # virgl-venus-secondary-holds.patch, virgl-venus-ring-lock.patch)
                  "c-state-destroyed-view-held-rendering-barrier c-state-destroyed-view-held-pass-barrier "
                  "c-state-destroyed-view-held-submit c-state-destroyed-view-held-reset-ok "
                  "c-state-destroyed-view-held-begin-ok c-state-destroyed-view-held-free-ok "
                  "c-state-destroyed-view-held-image-memory-ok c-state-destroyed-view-held-teardown-ok "
-                 "c-state-destroyed-view-held-control-ok t-pipeline-destroy-layout t-pipeline-destroy-module "
+                 "c-state-destroyed-view-held-control-ok c-state-secondary-held-free-submit "
+                 "c-state-secondary-held-pool-submit c-state-secondary-held-reset-ok "
+                 "c-state-secondary-held-free-primary-ok c-state-secondary-held-same-pool-ok "
+                 "c-state-secondary-held-teardown-ok c-state-secondary-held-control-ok "
+                 "t-pipeline-destroy-layout t-pipeline-destroy-module "
                  "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
                  "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok")
 gmalloc = Path("/usr/lib/libgmalloc.dylib")
