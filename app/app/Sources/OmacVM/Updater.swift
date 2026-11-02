@@ -676,18 +676,15 @@ final class Updater: ObservableObject {
 
     /// What the staged version brings, with every version since the running
     /// one: its own CHANGELOG.md (signed with the app and checked before it
-    /// was staged). nil: an app without one, or without the staged version's
-    /// section. Kept per app, staged and running version (nil too: the banner
-    /// and the sheet ask on every redraw).
+    /// was staged), read only down to the running version's section. nil: an
+    /// app without one, or without the staged version's section. Kept per
+    /// app, staged and running version (nil too: the banner and the sheet ask
+    /// on every redraw).
     func whatsNew(_ s: Staged) -> WhatsNewList? {
         let key = "\(s.app.path)\n\(s.version)\n\(whatsNewRunning)"
         if let n = whatsNewCache[key] { return n }
         let url = s.app.appendingPathComponent("Contents/Resources/omacvm/CHANGELOG.md")
-        var n: WhatsNewList?
-        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= WhatsNew.maxBytes,
-           let text = try? String(contentsOf: url, encoding: .utf8) {
-            n = WhatsNew.parse(changelog: text, running: whatsNewRunning, staged: s.version)
-        }
+        let n = WhatsNew.read(url, running: whatsNewRunning, staged: s.version)
         whatsNewCache[key] = .some(n)
         return n
     }

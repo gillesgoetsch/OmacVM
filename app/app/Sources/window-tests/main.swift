@@ -653,7 +653,44 @@ expect(WhatsNew.parse(changelog: manyItems, version: "5.0.0")?.items.count == 30
 let summaryList = WhatsNewList(staged: "3.2", sections: [.init(version: "3.2.1", news: WhatsNew(intro: "Newer.", items: [])),
                                                           .init(version: "3.2.0", news: WhatsNew(intro: "Staged.", items: []))])
 expect(summaryList.summary() == "Staged.", "the summary is the staged version's section, not the first one")
-expect(WhatsNew.parse(changelog: String(repeating: "x", count: WhatsNew.maxBytes + 1), running: "1.0", staged: "2.0") == nil, "too big: nothing")
+expect(WhatsNew.parse(changelog: String(repeating: "x", count: WhatsNew.maxBytes + 1), running: "1.0", staged: "2.0") == nil,
+       "past maxBytes without a section: nothing")
+
+// A changelog past maxBytes (CHANGELOG.md was 274 KB of the 512 KiB, #674's review): What's New
+// reads from the top to the running version's heading, so the file's size does not matter.
+var huge = "# Changelog\n\n## 3.2.19 (unreleased)\n\n- Not out yet, and below the running version: no stop above the staged one.\n\n## 9.0.2\n\nTwo.\n\n- Two a.\n\n## 9.0.1\n\n- One a.\n\n## 9.0.0\n\n- Zero.\n"
+let oldItems = (1...100).map { "- Old item \($0) " + String(repeating: "x", count: 90) }.joined(separator: "\n")
+for v in (0..<80).reversed() { huge += "\n## 8.0.\(v)\n\n" + oldItems + "\n" }
+expect(huge.utf8.count > WhatsNew.maxBytes + 200_000, "the test changelog is past maxBytes (\(huge.utf8.count) bytes)")
+expect(versions(WhatsNew.parse(changelog: huge, running: "9.0.0", staged: "9.0.2")) == ["9.0.2", "9.0.1"], "past maxBytes: the versions since the running one")
+expect(versions(WhatsNew.parse(changelog: huge, running: "?", staged: "9.0.2")) == ["9.0.2"], "past maxBytes, no running version: the staged section")
+expect(WhatsNew.parse(changelog: huge, version: "9.0.1")?.items == ["One a."], "past maxBytes: one version's section")
+expect(WhatsNew.head(huge, running: "9.0.0", staged: "9.0.2").hasSuffix("- One a.\n\n"), "the head ends at the running version's heading")
+let farHead = WhatsNew.head(huge, running: "1.0.0", staged: "9.0.2")
+expect(farHead.utf8.count <= WhatsNew.maxBytes && huge.hasPrefix(farHead) && huge.utf8[farHead.endIndex] == 0x0A,
+       "a running version below all of it: at most maxBytes, cut at a line's end")
+let far = WhatsNew.parse(changelog: huge, running: "1.0.0", staged: "9.0.2")
+expect(versions(far) == ["9.0.2", "9.0.1", "9.0.0", "8.0.79"] && (far?.omittedVersions ?? 0) > 0, "a running version below all of it: the caps as before")
+
+// The file: read in steps, only as far as needed.
+let newsDir = FileManager.default.temporaryDirectory.appendingPathComponent("whats-new-tests-\(getpid())")
+try? FileManager.default.createDirectory(at: newsDir, withIntermediateDirectories: true)
+let hugeFile = newsDir.appendingPathComponent("CHANGELOG.md")
+try? Data(huge.utf8).write(to: hugeFile)
+expect(versions(WhatsNew.read(hugeFile, running: "9.0.0", staged: "9.0.2")) == ["9.0.2", "9.0.1"], "a file past maxBytes: the versions since the running one")
+expect(versions(WhatsNew.read(hugeFile, running: "1.0.0", staged: "9.0.2")) == ["9.0.2", "9.0.1", "9.0.0", "8.0.79"],
+       "a file past maxBytes, running below all of it: what fits in maxBytes")
+let badTail = newsDir.appendingPathComponent("bad-tail.md")
+try? (Data(several.utf8) + Data([0xFF, 0xFE, 0x0A]) + Data(huge.utf8)).write(to: badTail)
+expect(versions(WhatsNew.read(badTail, running: "3.2.1", staged: "3.2.5")) == ["3.2.5", "3.2.4", "3.2.3", "3.2.2"],
+       "text after the running version's heading is never read (not UTF-8 there)")
+expect(WhatsNew.read(badTail, running: "?", staged: "3.2.5")?.summary() == "Five.", "the staged section alone: read up to the next heading")
+expect(WhatsNew.read(newsDir.appendingPathComponent("none.md"), running: "3.2.1", staged: "3.2.5") == nil, "no file: nothing")
+let smallFile = newsDir.appendingPathComponent("small.md")
+try? Data(several.utf8).write(to: smallFile)
+expect(WhatsNew.read(smallFile, running: "3.1.9", staged: "3.2.2") == WhatsNew.parse(changelog: several, running: "3.1.9", staged: "3.2.2"),
+       "a small file read to its end: the same as parsing the text")
+try? FileManager.default.removeItem(at: newsDir)
 
 // MARK: Window sides (the pictures' frames: OmacVM --render-vm-window)
 

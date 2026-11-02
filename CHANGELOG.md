@@ -9,7 +9,9 @@ in more words.
   What's New showed only the newest one's notes. Now it shows each version after the one you run, up
   to the update, newest first, each under its own version number, from the update's own CHANGELOG.
   At most 5 versions and 30 items; the rest is counted, with a link to the changelog on GitHub. The
-  banner's line stays the update's, and an update by one version looks as before.
+  banner's line stays the update's, and an update by one version looks as before. It reads the
+  changelog only down to your version, so a long changelog no longer hides What's New (past 512 KiB
+  it showed nothing).
 
 ## 3.2.18
 

@@ -20,12 +20,15 @@ public struct WhatsNew: Equatable, Sendable {
     public static let maxItems = 30
     /// Versions shown; older ones are left to the release notes.
     public static let maxVersions = 5
+    /// The most of a changelog that is read: What's New needs only its top,
+    /// down to the running version's heading (see `head`), so a longer file
+    /// still works.
     public static let maxBytes = 512 * 1024
 
     /// The "## VERSION" section of a changelog; nil when it has none.
     public static func parse(changelog: String, version: String) -> WhatsNew? {
-        guard changelog.utf8.count <= maxBytes,
-              let s = sections(changelog).first(where: { $0.title == version || $0.title.hasPrefix(version + " ") }),
+        let isVersion = { (title: String) in title == version || title.hasPrefix(version + " ") }
+        guard let s = sections(head(changelog, cut: Cut(low: nil, isStaged: isVersion))).first(where: { isVersion($0.title) }),
               !(s.news.intro == nil && s.news.items.isEmpty) else { return nil }
         return WhatsNew(intro: s.news.intro, items: Array(s.news.items.prefix(maxItems)))
     }
@@ -39,14 +42,13 @@ public struct WhatsNew: Equatable, Sendable {
     /// versions and `maxItems` items in all, filled newest first; the rest
     /// is counted.
     public static func parse(changelog: String, running: String, staged: String) -> WhatsNewList? {
-        guard changelog.utf8.count <= maxBytes else { return nil }
         guard let top = Version(staged) else {
             return parse(changelog: changelog, version: staged).map { WhatsNewList(staged: staged, sections: [.init(version: staged, news: $0)]) }
         }
         let low = Version(running).flatMap { $0 < top ? $0 : nil }
         var found: [(version: Version, news: WhatsNew)] = []
-        for s in sections(changelog) {
-            guard let token = s.title.split(separator: " ").first, let v = Version(String(token)),
+        for s in sections(head(changelog, running: running, staged: staged)) {
+            guard let v = headingVersion(s.title),
                   v <= top, low.map({ $0 < v }) ?? (v == top),
                   !(s.news.intro == nil && s.news.items.isEmpty),
                   !found.contains(where: { $0.version == v }) else { continue }
@@ -72,9 +74,100 @@ public struct WhatsNew: Equatable, Sendable {
         return list
     }
 
+    /// Reads a changelog file line by line in 64 KiB steps, only as far as
+    /// `head` would keep (never more than `maxBytes`), then parses that part.
+    /// nil: no file, a read error, a line in that part that is not UTF-8, or
+    /// no section for the staged version.
+    public static func read(_ url: URL, running: String, staged: String) -> WhatsNewList? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        var stop = cut(running: running, staged: staged)
+        var text = "", used = 0, rest = Data()
+        reading: while true {
+            let chunk: Data
+            do { chunk = try h.read(upToCount: 64 * 1024) ?? Data() } catch { return nil }   // nil: the end of the file
+            rest.append(chunk)
+            while let nl = rest.firstIndex(of: 0x0A) {
+                guard used + (nl - rest.startIndex) + 1 <= maxBytes else { break reading }
+                guard let line = String(data: rest[rest.startIndex..<nl], encoding: .utf8) else { return nil }
+                if stop.ends(at: line[...]) { break reading }
+                text += line + "\n"
+                used += line.utf8.count + 1
+                rest = rest[(nl + 1)...]
+            }
+            if used + rest.count > maxBytes { break }
+            if chunk.isEmpty {
+                // The last line, without a line break.
+                guard let line = String(data: rest, encoding: .utf8) else { return nil }
+                if !stop.ends(at: line[...]) { text += line }
+                break
+            }
+        }
+        return parse(changelog: text, running: running, staged: staged)
+    }
+
+    /// Where reading a changelog can stop. With a running version below the
+    /// staged one: after the staged version's heading, at the first "## "
+    /// heading at or below the running version (the file is newest first;
+    /// sections out of order above it are still read). Otherwise only the
+    /// staged section is shown: at the first heading after the first staged
+    /// section that has text.
+    struct Cut {
+        var low: Version?
+        var isStaged: (String) -> Bool
+        var seen = false, inStaged = false, stagedHasText = false
+
+        mutating func ends(at line: Substring) -> Bool {
+            guard line.hasPrefix("## ") else {
+                if inStaged, line.range(of: #"^#+ "#, options: .regularExpression) == nil,
+                   !line.trimmingCharacters(in: .whitespaces).isEmpty { stagedHasText = true }
+                return false
+            }
+            let title = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
+            if let low, seen { return headingVersion(title).map { $0 <= low } ?? false }
+            if low == nil, inStaged, stagedHasText { return true }
+            inStaged = isStaged(title)
+            seen = seen || inStaged
+            return false
+        }
+    }
+
+    static func cut(running: String, staged: String) -> Cut {
+        guard let top = Version(staged) else { return Cut(low: nil, isStaged: { $0 == staged || $0.hasPrefix(staged + " ") }) }
+        return Cut(low: Version(running).flatMap { $0 < top ? $0 : nil }, isStaged: { headingVersion($0) == top })
+    }
+
+    /// The part of a changelog that What's New needs: from the top to where
+    /// `Cut` stops, and at most `maxBytes`, ending at a whole line. The rest
+    /// of the text is never looked at, so its size does not matter.
+    public static func head(_ changelog: String, running: String, staged: String) -> Substring {
+        head(changelog, cut: cut(running: running, staged: staged))
+    }
+
+    static func head(_ changelog: String, cut: Cut) -> Substring {
+        var cut = cut
+        let u = changelog.utf8
+        var end = u.endIndex
+        if let cap = u.index(u.startIndex, offsetBy: maxBytes, limitedBy: u.endIndex), cap < u.endIndex {
+            end = u[..<cap].lastIndex(of: 0x0A) ?? u.startIndex
+        }
+        var start = u.startIndex
+        while start < end {
+            let nl = u[start..<end].firstIndex(of: 0x0A) ?? end
+            if cut.ends(at: changelog[start..<nl]) { return changelog[..<start] }
+            start = nl < end ? u.index(after: nl) : end
+        }
+        return changelog[..<end]
+    }
+
+    /// A heading's version: its first word ("3.2.4 (2026-01-02)" is 3.2.4); nil for "Unreleased".
+    static func headingVersion(_ title: String) -> Version? {
+        title.split(separator: " ").first.flatMap { Version(String($0)) }
+    }
+
     /// The changelog's "## " sections in file order, with their intro and
     /// bullets. Other headings ("# Changelog", "### Fixed") are left out.
-    static func sections(_ changelog: String) -> [(title: String, news: WhatsNew)] {
+    static func sections<S: StringProtocol>(_ changelog: S) -> [(title: String, news: WhatsNew)] {
         var out: [(title: String, news: WhatsNew)] = []
         var title: String?, intro: [String] = [], items: [String] = []
         func close() {
