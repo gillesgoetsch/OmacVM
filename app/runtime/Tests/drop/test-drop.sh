@@ -29,6 +29,8 @@ else
   awk '/^@@/ {on=1; next} on && /^-/ {next} on {print substr($0, 2)}' "$patches/omacvm-cocoa-drop.patch" > "$src"
 fi
 fail=0 passed=0
+# Self-test: the checks' own lines would read as failures in the build log; only the verdict shows.
+if (( self )); then exec 3>&1 1>/dev/null; fi
 body() { awk -v h="$2" 'index($0, h) == 1 {on=1} on {print} on && /^}$/ {exit}' "$1"; }
 has() {
   if grep -qF -- "$3" <<<"$2"; then echo "ok   $1"; passed=$((passed + 1)); else echo "FAIL $1"; fail=1; fi
@@ -73,7 +75,7 @@ for c in QemuCocoaView OmacVMHeadView; do
   has "$c: performDragOperation takes the drop" "$impl" '- (BOOL)performDragOperation:(id<NSDraggingInfo>)info { return omacvm_drop_take(omacvm_drop_urls(info)); }'
 done
 if (( self )); then
-  if (( passed == 0 )); then echo "ok   self-test: every wiring check fails before the patch"; exit 0; fi
-  echo "FAIL self-test: $passed wiring checks pass before the patch"; exit 1
+  if (( passed == 0 )); then echo "ok   self-test: every wiring check fails before the patch" >&3; exit 0; fi
+  echo "self-test: $passed wiring checks pass before the patch (they must all fail there)" >&3; exit 1
 fi
 exit $fail
