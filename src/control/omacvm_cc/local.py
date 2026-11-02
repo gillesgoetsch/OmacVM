@@ -50,15 +50,23 @@ def ime_port() -> str:
     return os.environ.get("OMACVM_IME_PORT", "/dev/virtio-ports/org.omacvm.ime")
 
 
+def drop_port() -> str:
+    """OmacVM.app's port for drag and drop (drag-drop; the app adds it, and
+    the drop share, at a start with the feature on)."""
+    return os.environ.get("OMACVM_DROP_PORT", "/dev/virtio-ports/org.omacvm.drop")
+
+
 def next_start(vm_type: str, on: dict[str, bool]) -> set[str]:
     """The features that are on but in use only from the VM's next start:
-    Touch ID or the Mac's input methods on an OmacVM.app VM without its port
+    Touch ID, the Mac's input methods or drag and drop on an OmacVM.app VM without its port
     (turned on while the VM ran; the app adds the port when it starts the VM)."""
     out = set()
     if vm_type == "app" and on.get("touch-id") and not os.path.lexists(auth_port()):
         out.add("touch-id")
     if vm_type == "app" and on.get("mac-ime") and not os.path.lexists(ime_port()):
         out.add("mac-ime")
+    if vm_type == "app" and on.get("drag-drop") and not os.path.lexists(drop_port()):
+        out.add("drag-drop")
     return out
 
 
