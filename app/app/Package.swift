@@ -74,7 +74,7 @@ let package = Package(
         // Drag and drop of files into the VM (feature drag-drop): staging,
         // QEMU's drop socket and the org.omacvm.drop port's lines, without a
         // VM: `swift run drop-tests`. drop-serve: the app's side alone, for
-        // the hidden VM rows (src/tests/drop-vm.sh) that run QEMU directly.
+        // the hidden VM rows (src/tests/e2e/drag-drop.sh) that run QEMU directly.
         .target(name: "OmacVMDrop"),
         .executableTarget(name: "drop-tests", dependencies: ["OmacVMDrop", "OmacVMFeatures"]),
         .executableTarget(name: "drop-serve", dependencies: ["OmacVMDrop"]),
