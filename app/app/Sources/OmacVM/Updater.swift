@@ -674,18 +674,26 @@ final class Updater: ObservableObject {
     /// When the last check ran (weekly or by hand), for the window's line.
     var lastCheckDate: Date? { lastCheck }
 
-    /// What the staged version brings: its own CHANGELOG.md (signed with the
-    /// app and checked before it was staged). nil: an app without one.
-    func whatsNew(_ s: Staged) -> WhatsNew? {
-        if let n = whatsNewCache[s.version] { return n }
+    /// What the staged version brings, with every version since the running
+    /// one: its own CHANGELOG.md (signed with the app and checked before it
+    /// was staged). nil: an app without one, or without the staged version's
+    /// section. Kept per app, staged and running version (nil too: the banner
+    /// and the sheet ask on every redraw).
+    func whatsNew(_ s: Staged) -> WhatsNewList? {
+        let key = "\(s.app.path)\n\(s.version)\n\(whatsNewRunning)"
+        if let n = whatsNewCache[key] { return n }
         let url = s.app.appendingPathComponent("Contents/Resources/omacvm/CHANGELOG.md")
-        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= WhatsNew.maxBytes,
-              let text = try? String(contentsOf: url, encoding: .utf8),
-              let n = WhatsNew.parse(changelog: text, version: s.version) else { return nil }
-        whatsNewCache[s.version] = n
+        var n: WhatsNewList?
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= WhatsNew.maxBytes,
+           let text = try? String(contentsOf: url, encoding: .utf8) {
+            n = WhatsNew.parse(changelog: text, running: whatsNewRunning, staged: s.version)
+        }
+        whatsNewCache[key] = .some(n)
         return n
     }
-    private var whatsNewCache: [String: WhatsNew] = [:]
+    private var whatsNewCache: [String: WhatsNewList?] = [:]
+    /// The lower end of What's New: this app's version (the pictures set their own).
+    private var whatsNewRunning: String { shownRunning ?? currentVersion }
 
     // MARK: - Check Now (the window and the menu)
 
@@ -955,11 +963,13 @@ final class Updater: ObservableObject {
     // MARK: - pictures of the UI (test builds: --render-update-ui)
 
     private var shownPrevious: String?
+    private var shownRunning: String?
 
     /// Puts the updater in a state to draw it; nothing is checked or saved.
+    /// `running`: the version What's New counts from (else this build's).
     func showForRendering(staged: Staged?, notice: String?, enabled: Bool, waiting: Bool, previous: String?,
                           outcome: Outcome? = nil, checking: Bool = false, downloading: String? = nil,
-                          downloaded: (done: Int64, total: Int64)? = nil) {
+                          downloaded: (done: Int64, total: Int64)? = nil, running: String? = nil) {
         self.staged = staged
         lastOutcome = outcome
         self.checking = checking
@@ -969,6 +979,7 @@ final class Updater: ObservableObject {
         self.enabled = enabled
         installWhenIdle = waiting
         shownPrevious = previous
+        shownRunning = running
     }
 
     // MARK: - helpers

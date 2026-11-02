@@ -196,6 +196,9 @@ enum RenderVMWindow {
         state.screen = screen
         u.showForRendering(staged: staged, notice: nil, enabled: true, waiting: false, previous: nil)
         sheet("sheet-1-whats-new") { WhatsNewSheet(updater: u, running: false) {} }
+        // An update past three versions (3.1.0 runs, 3.1.3 is ready): each version's section, newest first.
+        u.showForRendering(staged: makeStagedAppThree(tmp), notice: nil, enabled: true, waiting: false, previous: nil, running: "3.1.0")
+        sheet("sheet-2-whats-new-three") { WhatsNewSheet(updater: u, running: false) {} }
         u.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil)
 
         // This Mac not set up for the VM: a folder copied from another Mac
@@ -551,6 +554,58 @@ enum RenderVMWindow {
         """
         try? changelog.write(to: res.appendingPathComponent("CHANGELOG.md"), atomically: true, encoding: .utf8)
         return Updater.Staged(version: version, app: app, notes: URL(string: "https://github.com/gillesgoetsch/OmacVM/releases/tag/v\(version)"),
+                              teams: [])
+    }
+}
+
+extension RenderVMWindow {
+    /// A downloaded 3.1.3 whose CHANGELOG.md has 3.1.3, 3.1.2 and 3.1.1 after
+    /// the running 3.1.0, with intros and items as long as real ones.
+    static func makeStagedAppThree(_ tmp: URL) -> Updater.Staged {
+        let app = tmp.appendingPathComponent("staged-three/OmacVM.app")
+        let res = app.appendingPathComponent("Contents/Resources/omacvm")
+        try? FileManager.default.createDirectory(at: res, withIntermediateDirectories: true)
+        let changelog = """
+        # Changelog
+
+        ## 3.1.3
+
+        In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle, and Brave, Vivaldi and Electron
+        draw canvas and SVG paths on the GPU. Needs the app update (from the VM's next start); Update VM too
+        for Brave, Vivaldi and Electron. UTM, Fusion and Parallels: nothing changes.
+
+        - **What the VM frees reaches the Mac (OmacVM.app, #652).** At most every 15 minutes, while macOS's
+          memory pressure is normal and the VM is quiet, it gives back the file cache it has not used lately
+          and gathers its free memory into blocks it can hand back.
+        - **Brave, Vivaldi and Electron draw on the GPU (#648).** Canvas and SVG paths no longer fall back
+          to the CPU in Chromium browsers other than Chrome.
+        - A Vulkan app that loses its graphics is counted, named and told, and ends alone instead of the VM.
+
+        ## 3.1.2
+
+        USB Devices… in the app menu while the VM runs, and a switch for Ghostty on the Mac's GPU
+        (experimental, off by default). Needs the app update.
+
+        - **USB Devices…** in the app menu: plug a device into the running VM or take it back without
+          opening the settings (#640, by @Vocllum).
+        - **Ghostty on the Mac's GPU** (experimental, under Graphics): Ghostty draws with Zink over Venus
+          instead of the CPU.
+
+        ## 3.1.1
+
+        A new settings window: everything about a VM on one page.
+
+        - OmacVM.app: **the VM's settings** in one window with a sidebar: General, Display, Input, Sharing & Devices, \
+        Storage & Updates.
+        - **Swipe out to macOS**: past the first or last workspace, a swipe goes on to the macOS Space beside the VM \
+        (#342, by @epicoun).
+
+        ## 3.1.0
+
+        - Running now: not shown.
+        """
+        try? changelog.write(to: res.appendingPathComponent("CHANGELOG.md"), atomically: true, encoding: .utf8)
+        return Updater.Staged(version: "3.1.3", app: app, notes: URL(string: "https://github.com/gillesgoetsch/OmacVM/releases/tag/v3.1.3"),
                               teams: [])
     }
 }
