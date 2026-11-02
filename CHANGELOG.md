@@ -3,6 +3,12 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.19 (unreleased)
+
+- **omacvm check names the right cause when Ghostty draws on the CPU after a lost GPU context (see #656).**
+  Its Ghostty line said "a Vulkan app's GPU context was lost", but only Ghostty's own lost context
+  keeps the next Ghostty off the Mac's GPU; it now says so.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
