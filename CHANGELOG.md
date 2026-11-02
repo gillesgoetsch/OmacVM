@@ -3,6 +3,13 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.19 (unreleased)
+
+- Tests: app-drive-drop.sh no longer fails with "rename image not under /Volumes: ''" when other
+  disk images attach at the same time. hdiutil then can print the volume's line (with its mount
+  point) before the disk's own lines; the test took the last line. It now takes the line that has
+  the mount point, prints hdiutil's output when there is none, and detaches the image either way.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns

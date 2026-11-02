@@ -16,6 +16,11 @@ cleanup() {
     hdiutil detach -quiet -force "$REN" >/dev/null 2>&1 || true
     hdiutil detach -quiet -force "${REN}R" >/dev/null 2>&1 || true
   fi
+  # The rename image's whole disk, also when no mount point was found.
+  if [[ -s $T/ren.out ]]; then
+    d=$(awk -F'\t' '$2 ~ /^GUID_partition_scheme/ { sub(/ +$/, "", $1); print $1 }' "$T/ren.out")
+    [[ -z $d ]] || hdiutil detach -quiet -force "$d" >/dev/null 2>&1 || true
+  fi
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -32,9 +37,13 @@ hdiutil detach -quiet -force "$MNT" >/dev/null 2>&1 || true
 
 hdiutil create -quiet -size 64m -fs APFS -volname OmacVMDrop "$T/drive.dmg"
 hdiutil attach -quiet -nobrowse -mountpoint "$MNT" "$T/drive.dmg"
-# The rename needs a mount point under /Volumes (its last tab field).
+# The rename needs a mount point under /Volumes: the last tab field of the
+# volume's line. hdiutil does not always print that line last (with other
+# images attaching at the same time the disk's own lines can come after it).
 hdiutil create -quiet -size 64m -fs APFS -volname "OmacVMRen$$" "$T/ren.dmg"
-REN=$(hdiutil attach -nobrowse "$T/ren.dmg" | awk -F'\t' 'END { print $NF }')
-[[ $REN == /Volumes/* ]] || { echo "FAIL rename image not under /Volumes: '$REN'"; exit 1; }
+hdiutil attach -nobrowse "$T/ren.dmg" > "$T/ren.out"
+REN=$(awk -F'\t' '$NF ~ /^\/Volumes\// { print $NF }' "$T/ren.out")
+[[ $REN == /Volumes/* && $REN != *$'\n'* ]] || {
+  echo "FAIL rename image not under /Volumes: '$REN'"; cat "$T/ren.out"; exit 1; }
 echo "== APFS"
 "$T/drive-drop-test" "$T/work/apfs" "$MNT" "$T/drive.dmg" OmacVMDrop "$REN"
