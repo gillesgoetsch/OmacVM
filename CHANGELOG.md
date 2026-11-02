@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.19 (unreleased)
+
+- **What's New lists every version since yours (OmacVM.app).** When an update skips versions, its
+  What's New showed only the newest one's notes. Now it shows each version after the one you run, up
+  to the update, newest first, each under its own version number, from the update's own CHANGELOG.
+  At most 5 versions and 30 items; the rest is counted, with a link to the changelog on GitHub. The
+  banner's line stays the update's, and an update by one version looks as before.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns

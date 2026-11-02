@@ -9,7 +9,8 @@ Where the app differs from the page, on purpose:
 
 - The escape combo's line reads "Takes you back to macOS."
 - The update banner names the version found and the first line of its
-  CHANGELOG; What's New shows that version's whole section.
+  CHANGELOG; What's New shows that version's whole section (from 3.2.19 also
+  the sections of the versions it skips, newest first).
 - The icon has eight looks: OmacVM's own and three dark Omarchy themes
   (Tokyo Night, Catppuccin, Gruvbox) on the top row, four light ones below
   (Flexoki Light, Catppuccin Latte, Rosé Pine, Lupine).
