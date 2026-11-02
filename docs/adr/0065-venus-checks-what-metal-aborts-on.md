@@ -540,3 +540,81 @@ write), one write 0.013 -> 0.016 and 0.023 -> 0.026 us, a
 us; `vkCmdDraw`, `SetViewport`, `PushConstants`, `BindDescriptorSets` and
 `PipelineBarrier` stay within their noise, and so does a command with a reply
 through the decoder (0.059 -> 0.055 and 0.034 -> 0.035 us).
+
+## Rings of one app, and views under a command buffer (amendment, 3.2.19)
+
+Lane `open-1102/venus` (#624's two open points above). Read in vkr at
+61c2de6f, guest Mesa 26.2.4, KosmicKrisp at the runtime's pin and MoltenVK
+1.4.2; the architecture review (`work/tracks/venus-624.md`, 2026-11-02 07:56)
+replaced the read-write lock this ADR named with what follows.
+
+**Two threads on one object.** Each ring has its own thread, and the context's
+own stream runs on the render worker's. vkr let go of its table lock right after
+a lookup, so one ring could destroy an image, buffer, layout or pipeline cache
+another ring's call was reading (freed memory in vkr and the driver), two rings
+could record into one command buffer, QEMU's blob export read a memory a ring
+freed (`vkr_context_create_resource_from_device_memory`), and two creates of one
+id could both pass the id check (the second hit `vkr_context_add_object`'s
+assert; release builds keep asserts). A read-write lock would not cover two
+readers on one command buffer or pool, would stall a destroy on the main ring
+behind every compile on another ring, missed the export, and its read side was
+taken again by nested `vkExecuteCommandStreamsMESA`.
+
+Guest Mesa 26.2.4 sends only pipeline creation and pipeline cache reads to a
+second ring (`vn_tls_get_ring`, synchronous there); each VkInstance is its own
+context. So:
+
+- `virgl-venus-ring-lock.patch`: one dispatch lock per context. A ring takes it
+  per batch it reads, the context's stream per command (not for the ring and
+  reply-stream commands, which touch no object), QEMU's calls per call (a device
+  memory's blob, a resource's removal, a fence on a queue); nested streams keep
+  it (`vkr_locked_context`, thread-local). `vkWaitRingSeqnoMESA`,
+  `vkWaitVirtqueueSeqnoMESA` and `vkDestroyRingMESA` give it up while they wait
+  for or join a ring. `vkCreateGraphicsPipelines`, `vkCreateComputePipelines`
+  and `vkGetPipelineCacheData` give it up while the driver runs them, with the
+  objects they name pinned (device, cache, layout, render pass, shader modules,
+  base pipeline, libraries; a count under the lock); the pins go before the
+  answer or the ring position reaches the guest. Destroying a pinned object, or
+  the instance while a pipeline call runs, is refused: the spec's Threading
+  Behavior and Object Lifetime rules do not let an app destroy what another
+  thread's call uses, and a legal app never sees it (its create returned before
+  it can destroy). An id the table has already is refused when it is added (the
+  guest named it twice); pipelines made while the lock was given up are checked
+  for that and destroyed again.
+- Not covered: a call that blocks in the driver (a fence or semaphore wait
+  without end) holds its app's lock and stops that app's other rings and its own
+  stream. It already stopped its own ring and the context's end; other apps and
+  QEMU go on.
+
+**Views read after their destroy.** KosmicKrisp reads a pass's views (and a
+view's image: its views do not keep it) where it splits a pass while
+recording: a barrier with more than one sample or a split, a draw after a color
+map or sample location change, the store ops at the end. MoltenVK's recorded
+commands keep raw image view, framebuffer and render pass pointers, and with its
+default synchronous submits it reads them at `vkQueueSubmit`.
+
+- `virgl-venus-command-holds.patch`: a command buffer holds the image views, the
+  framebuffers and render passes its render pass begins, dynamic renderings and
+  a secondary's inheritance named, until the driver let go of what it recorded
+  (a reset, a new begin, a free, a pool reset or destroy, the context's end; the
+  pool's destroy now lets the driver free its command buffers first). An image
+  view holds its image. Destroying a held object is legal (the command buffer
+  becomes invalid): the id leaves the table at once, and the driver's destroy
+  waits for the last holder (a zombie on its device). Dedicated memory still goes
+  before its image; a device's teardown frees its pools, which lets go of its
+  zombies, before the device. Holds stay within one device (a begin naming
+  another device's object, or a view of another device's image, is refused:
+  the commonparent VUIDs, VUID-vkCreateImageView-image-parent). The pass-views
+  checks at the begin, a next subpass and the end stay.
+- Not covered: views reached only through descriptor sets (probe on MoltenVK: a
+  stale set bound, nothing dispatched, submitted: no read, plain and under
+  libgmalloc), and what a pending KosmicKrisp command buffer reads on the GPU
+  (Metal 4 command buffers keep no texture alive).
+
+`virgl-venus-test-pause.patch` (first, test only, NULL in QEMU) stops a call
+between vkr's reads and the driver, so a build without the fix runs the same
+tests. `test-venus-commands.c` has 344 cases now: 10 `t-` cases with a real ring
+beside the context's stream (destroys under a paused pipeline create and cache
+read, a duplicate id, a destroy, a recording and a memory free beside a paused
+call, a nested wait, a destroy beside a compile, a teardown), 9 held-view cases
+and the probe; `--ring-time` times calls through a ring and the stream.

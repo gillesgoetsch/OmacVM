@@ -3,6 +3,21 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.19 (unreleased)
+
+- **A Vulkan program's threads take turns in QEMU, and image views a recorded command buffer
+  named stay until it lets go of them (OmacVM.app, see #624).** With Graphics on Vulkan, a
+  program's threads reach QEMU on rings of their own, and nothing kept one ring from using what
+  another had just destroyed: a program that destroyed an object while another of its threads was
+  making a pipeline with it, or two threads recording into one command buffer, could make QEMU and
+  the Mac's driver use freed memory. Now one thread at a time works on a program's objects; making
+  pipelines still runs beside the rest (Chromium's, Dawn's and Zink's compile threads), and
+  destroying what such a call uses ends only that program's Vulkan connection (troubleshooting
+  55). Destroying an image view (or its image, framebuffer or render pass) that a recorded command
+  buffer named is legal, but the Mac's drivers still read it: KosmicKrisp at a barrier in a
+  multisampled pass, MoltenVK when the command buffer is submitted. Now the driver's copy waits
+  until the command buffer is reset, begun again or freed. Needs the app update.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
