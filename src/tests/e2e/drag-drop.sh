@@ -268,7 +268,9 @@ guser 'rm -f "$(xdg-user-dir DOWNLOAD 2>/dev/null || echo ~/Downloads)"/{hello*.
 # --- off: the same VM started without the switch -------------------------------------------------
 stop_vm; stop_serve
 start_qemu off || exit 1
-o=$(gssh "ls /dev/virtio-ports/ | grep -c drop; findmnt /run/omacvm/drop >/dev/null && echo mounted || echo unmounted; bash /tmp/dnd/drop/guest/install.sh $GUSER --status" 2>&1 | tr '\n' ' ')
+# /tmp went with the restart: the VM's files again (the feature stays installed in the VM).
+gssh_in "rm -rf /tmp/dnd && mkdir -p /tmp/dnd && tar -C /tmp/dnd -xf - 2>/dev/null && chown -R $GUSER /tmp/dnd" < "$W/guest.tar" 2>> "$OUT/run.log"
+o=$(gssh "ls /dev/virtio-ports/ 2>/dev/null | grep -c drop; findmnt /run/omacvm/drop >/dev/null && echo mounted || echo unmounted; bash /tmp/dnd/drop/guest/install.sh $GUSER --status" 2>&1 | tr '\n' ' ')
 os=$(guser "systemctl --user is-active omacvm-drop.service" 2>&1)
 if [[ $o == "0 unmounted ok "* && $os != active && $(count "$OUT/qemu-off.log" "omacvm-drop") == 0 && ! -S $RUN/drop ]]; then
   row off PASS "(no port, share unmounted, service $os, QEMU silent, no socket)"
