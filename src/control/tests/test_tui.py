@@ -1172,7 +1172,9 @@ def test_gpu_memory_row_live(tmp_path, monkeypatch):
             from textual.widgets import DataTable
             t = a.screen.query_one(DataTable)
             t.move_cursor(row=[x.feature.name for x in a.rows].index("gpu-memory"))
-            await pilot.pause(0.1)
+            # The hint follows the cursor a moment later: once it names the row.
+            assert await settle(pilot, lambda: str(a.screen.query_one("#hint").render()).startswith("Graphics memory: "),
+                                seconds=10), str(a.screen.query_one("#hint").render())
             hint = str(a.screen.query_one("#hint").render())
             assert "VM memory is the Mac memory you gave the VM" in hint
             # macOS gets short of memory: the row warns at the next look.
