@@ -5,7 +5,7 @@ in more words.
 
 ## 3.2.19 (unreleased)
 
-- **omacvm check names the right cause when Ghostty draws on the CPU after a lost GPU context (see #656).**
+- **omacvm check names the right cause when Ghostty draws on the CPU after a lost GPU context (#675).**
   Its Ghostty line said "a Vulkan app's GPU context was lost", but only Ghostty's own lost context
   keeps the next Ghostty off the Mac's GPU; it now says so.
 
