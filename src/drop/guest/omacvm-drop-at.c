@@ -19,7 +19,8 @@
 //
 // Prints one line: "app" (an app took the drop and finished it), "none" (no
 // app took it: cancelled), or "error WHAT". Exit 0, 3, 1.
-// Built in the VM by src/drop/guest/install.sh (gcc, wayland-scanner).
+// Built in the VM by src/drop/guest/install.sh (gcc, wayland-scanner; the layer shell protocol
+// needs xdg-shell's popup interface, so its code is built in too).
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <poll.h>
@@ -96,7 +97,11 @@ static void p_frame(void *d, struct wl_pointer *p) { (void)d; (void)p; }
 static void p_axis_source(void *d, struct wl_pointer *p, uint32_t s) { (void)d; (void)p; (void)s; }
 static void p_axis_stop(void *d, struct wl_pointer *p, uint32_t t, uint32_t a) { (void)d; (void)p; (void)t; (void)a; }
 static void p_axis_discrete(void *d, struct wl_pointer *p, uint32_t a, int32_t v) { (void)d; (void)p; (void)a; (void)v; }
-static const struct wl_pointer_listener p_l = { p_enter, p_leave, p_motion, p_button, p_axis, p_frame, p_axis_source, p_axis_stop, p_axis_discrete };
+/* Named fields: a newer libwayland's later events (axis_value120, ...) stay NULL; the seat is bound at version 5. */
+static const struct wl_pointer_listener p_l = {
+    .enter = p_enter, .leave = p_leave, .motion = p_motion, .button = p_button, .axis = p_axis,
+    .frame = p_frame, .axis_source = p_axis_source, .axis_stop = p_axis_stop, .axis_discrete = p_axis_discrete,
+};
 
 static void s_target(void *d, struct wl_data_source *s, const char *mime) { (void)d; (void)s; (void)mime; }
 static void s_send(void *d, struct wl_data_source *s, const char *mime, int32_t fd) {
@@ -113,7 +118,10 @@ static void s_cancelled(void *d, struct wl_data_source *s) { (void)d; (void)s; c
 static void s_drop(void *d, struct wl_data_source *s) { (void)d; (void)s; }
 static void s_finished(void *d, struct wl_data_source *s) { (void)d; (void)s; finished = 1; }
 static void s_action(void *d, struct wl_data_source *s, uint32_t a) { (void)d; (void)s; (void)a; }
-static const struct wl_data_source_listener s_l = { s_target, s_send, s_cancelled, s_drop, s_finished, s_action };
+static const struct wl_data_source_listener s_l = {
+    .target = s_target, .send = s_send, .cancelled = s_cancelled,
+    .dnd_drop_performed = s_drop, .dnd_finished = s_finished, .action = s_action,
+};
 
 /* Events for up to `t` ms, or until *flag. */
 static void pump(int t, int *flag) {

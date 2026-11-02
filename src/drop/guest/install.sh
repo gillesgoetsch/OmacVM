@@ -21,7 +21,7 @@ INFO=$LIB/omacvm-drop-at.build
 RULE=$ROOT/etc/udev/rules.d/70-omacvm-drop.rules
 UNIT=$ROOT/etc/systemd/user/omacvm-drop.service
 SHARE_UNIT=$ROOT/etc/systemd/system/omacvm-drop-share.service
-SOURCES=(omacvm-drop-at.c proto/wlr-layer-shell-unstable-v1.xml proto/wlr-virtual-pointer-unstable-v1.xml)
+SOURCES=(omacvm-drop-at.c proto/wlr-layer-shell-unstable-v1.xml proto/wlr-virtual-pointer-unstable-v1.xml proto/xdg-shell.xml)
 
 source_digest() { cat "${SOURCES[@]}" | sha256sum | cut -c1-16; }
 wayland_version() { pkg-config --modversion wayland-client 2>/dev/null || echo unknown; }
@@ -41,7 +41,7 @@ build() {
   command -v wayland-scanner >/dev/null && command -v cc >/dev/null || {
     echo "drag and drop: the VM lacks a C compiler or wayland-scanner (pacman -S gcc wayland)" >&2; return 1; }
   local p
-  for p in wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1; do
+  for p in wlr-layer-shell-unstable-v1 wlr-virtual-pointer-unstable-v1 xdg-shell; do
     wayland-scanner client-header "proto/$p.xml" "$t/$p-client-protocol.h"
     wayland-scanner private-code "proto/$p.xml" "$t/$p-protocol.c"
   done

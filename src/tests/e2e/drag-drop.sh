@@ -33,7 +33,7 @@ set -uo pipefail
 export LC_ALL=C PATH=/usr/bin:/bin:/usr/sbin:/sbin
 [[ $# == 4 ]] || { echo "usage: drag-drop.sh WORK APP BASE_VM DROP_SERVE" >&2; exit 2; }
 W=$1 APP=$2 BASE=$3 SERVE=$4
-R=$(cd "$(dirname "$0")/../.." && pwd -P)
+R=$(cd "$(dirname "$0")/../../.." && pwd -P)
 OUT=$W/out RUN=$W/run VMD=$W/vm ST=$W/vm/drop SRC=$W/files
 QEMU="$APP/Contents/MacOS/OmacVM-VM" FW="$APP/Contents/Resources/firmware/edk2-aarch64-code.fd"
 NAME="OmacVM T-dnd" PORT=52885 GUSER=""
@@ -44,10 +44,11 @@ fails=0
 log() { echo "$(date +%H:%M:%S) $*" >> "$OUT/run.log"; }
 row() { echo "ROW $1: $2${3:+ $3}" >> "$OUT/rows.txt"; log "ROW $1: $2${3:+ $3}"; [[ $2 == PASS ]] || fails=$((fails + 1)); }
 qpid() { pgrep -f -- "-name $NAME," | head -1; }
-gssh() {
+gssh_in() {   # stdin goes to the VM
   ssh -i "$VMD/ssh-key" -o IdentitiesOnly=yes -p "$PORT" -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1 "$@" < /dev/null
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR root@127.0.0.1 "$@"
 }
+gssh() { gssh_in "$@" < /dev/null; }
 guser() {
   gssh "U=$GUSER; R=/run/user/\$(id -u \$U); H=\$(ls -t \$R/hypr 2>/dev/null | head -1); W=\$(ls \$R 2>/dev/null | grep -m1 '^wayland-[0-9]*\$'); cd /tmp; runuser -u \$U -- env HOME=/home/\$U USER=\$U XDG_RUNTIME_DIR=\$R DBUS_SESSION_BUS_ADDRESS=unix:path=\$R/bus HYPRLAND_INSTANCE_SIGNATURE=\$H WAYLAND_DISPLAY=\${W:-wayland-1} bash -lc $(printf %q "$1")"
 }
@@ -84,7 +85,7 @@ for i in $(seq 257); do printf '%s' "$i" > "$SRC/many/f$i"; done
 mkdir -p "$VMD" "$RUN" && chmod 700 "$RUN"
 # The VM's files: the feature's guest side (as apply copies it) and the rows' helpers.
 mkdir -p "$W/g/drop" && cp -R "$R/src/drop/guest" "$W/g/drop/" && cp "$R/src/drop/tests/vm/"* "$W/g/" &&
-  tar -C "$W/g" -cf "$W/guest.tar" . && rm -rf "$W/g" || { log "guest files not packed"; exit 1; }
+  COPYFILE_DISABLE=1 tar -C "$W/g" -cf "$W/guest.tar" . && rm -rf "$W/g" || { log "guest files not packed"; exit 1; }
 cp -c "$BASE/disk.img" "$BASE/efi-vars.fd" "$BASE/ssh-key" "$VMD/" || { log "clone failed"; exit 1; }
 chmod 600 "$VMD/ssh-key"
 mkdir -p "$ST" && chmod 700 "$ST"
@@ -163,7 +164,7 @@ serve_pid=$!
 exec 7> "$RUN/in"
 wait_for "$OUT/serve.log" "drop-serve: listening" 10 || { log "drop-serve did not start"; exit 1; }
 start_qemu on || exit 1
-gssh "rm -rf /tmp/dnd && mkdir -p /tmp/dnd && tar -C /tmp/dnd -xf - && chown -R $GUSER /tmp/dnd" < "$W/guest.tar" 2>> "$OUT/run.log" ||
+gssh_in "rm -rf /tmp/dnd && mkdir -p /tmp/dnd && tar -C /tmp/dnd -xf - 2>/dev/null && chown -R $GUSER /tmp/dnd" < "$W/guest.tar" 2>> "$OUT/run.log" ||
   { log "guest files not copied"; exit 1; }
 SIZE=$(guser "bash /tmp/dnd/guest-rows.sh size")
 log "guest: $(gssh 'uname -r; pacman -Q hyprland nautilus 2>&1' | tr '\n' ' ') output $SIZE"
