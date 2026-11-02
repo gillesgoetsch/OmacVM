@@ -485,6 +485,11 @@ final class Runner {
                 dropRecord = "off this start: its socket could not be made (\(error.localizedDescription))"
             }
         }
+        // Whatever fails from here before QEMU runs (qemu.log cannot be
+        // opened, QEMU cannot start) stops the drop server again: its threads,
+        // its listening socket and its staging folder.
+        var qemuRuns = false
+        defer { if !qemuRuns { drop?.stop(); drop = nil; dropPeer = nil } }
         p.arguments = arguments()
         var env = ProcessInfo.processInfo.environment
         env["OMACVM_PRODUCT_NAME"] = Product.name
@@ -740,7 +745,8 @@ final class Runner {
            ProcessInfo.processInfo.environment["OMACVM_COCOA_HIDDEN"] == nil, !TestIdentity.isOn {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
         }
-        do { try p.run() } catch { drop?.stop(); drop = nil; throw error }
+        try p.run()
+        qemuRuns = true
         process = p
         dropPeer?.set(p.processIdentifier)
         mark(pid: p.processIdentifier)
