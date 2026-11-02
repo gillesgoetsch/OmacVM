@@ -1769,9 +1769,16 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   case. "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log is expected: Apple's
   OpenGL records transform feedback from a tessellation evaluation shader on its software vertex
   path (on the CPU); the values are right.
+- **3.2.19:** a program whose tessellation control shader passes clip distances to its evaluation
+  shader ran on Apple's CPU vertex path with 3.2.18 ("Fallback to SW vertex processing because
+  buildPipelineState failed" in qemu.log, a first draw of ~270 ms, MTLCompilerService crash
+  reports), and on the M1 Max often drew nothing; 3.2.19 passes them as plain varyings and the
+  draws stay on the GPU. Update the app. Clip distances from a vertex shader straight into an
+  evaluation shader (no control shader) still take the CPU path.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
-  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`; test
-  `app/runtime/Tests/virgl/test-whole-program-shapes.c`;
+  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
+  `virgl-shader-tess-clip-varyings.patch` (3.2.19); tests
+  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.
 
