@@ -321,14 +321,16 @@ def cmd_graphics(a: list[str]) -> None:
         if st["note"].startswith(want + ":") and st["status"] != "working":
             out(True, steps=steps, after=st, seconds=round(time.monotonic() - t0, 1), trouble=seen, screen=screen())
         keys("space")
-        time.sleep(0.8)
-        q = re.sub(r"\s+", " ", screen())
-        if not asked(q):
+        # Graphics always asks: waited for, not a fixed 0.8 s (a busy Mac draws it later).
+        if not watch(lambda s: asked(re.sub(r"\s+", " ", s)), 15)[0]:
             out(False, error="Space on Graphics asked nothing", steps=steps, screen=screen())
         keys("y")
         prev = st["note"]
+        # Ended: the row's own note is a setting again ("to Vulkan…" while the job runs; the hint
+        # under the table can still say the status from before, and a Space then is refused).
         ok, text, s2 = watch(lambda s: state_of("Graphics", s)["status"] not in ("working", None)
-                             and state_of("Graphics", s)["note"] != prev, secs)
+                             and state_of("Graphics", s)["note"] != prev
+                             and re.match(r"(Automatic|OpenGL|Vulkan):", state_of("Graphics", s)["note"]) is not None, secs)
         seen += [x for x in s2 if x not in seen]
         steps.append({"from": prev, "to": state_of("Graphics", text)["note"], "ended": ok})
         if not ok:
