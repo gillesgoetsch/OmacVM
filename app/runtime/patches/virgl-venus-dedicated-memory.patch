@@ -435,7 +435,7 @@ index 6268501..039b107 100644
  vkr_device_memory_release(struct vkr_device_memory *mem);
  
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index 8fbb97b..10c55b4 100644
+index 02d95f7..b012da7 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
 @@ -244,6 +244,7 @@ vkr_image_init_info(struct vkr_device *dev,
@@ -446,7 +446,7 @@ index 8fbb97b..10c55b4 100644
     image->type = info->imageType;
     image->format = info->format;
     image->tiling = info->tiling;
-@@ -302,7 +303,16 @@ vkr_image_bind_ok(const struct vkr_image *image,
+@@ -305,7 +306,16 @@ vkr_image_bind_ok(const struct vkr_image *image,
                 plane_info ? plane_info->planeAspect : 0, image->plane_count);
        return false;
     }
@@ -464,7 +464,7 @@ index 8fbb97b..10c55b4 100644
  }
  
  /* OmacVM (virgl-venus-image-limits.patch): a create info a vkGetDeviceImage* query
-@@ -385,6 +395,14 @@ static void
+@@ -388,6 +398,14 @@ static void
  vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
                              struct vn_command_vkDestroyImage *args)
  {
