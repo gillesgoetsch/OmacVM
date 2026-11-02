@@ -41,7 +41,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static OmacVMGuard omacvm_guard;         /* the full-screen pointer guard */
  /* When the VM takes the pointer by itself; the Mac's cursor (main thread). */
  static OmacVMPointerStart omacvm_ptr;
-@@ -12330,6 +12333,7 @@
+@@ -12305,6 +12308,7 @@
      self = [super initWithFrame:frame];
      if (self) {
          output = index;
@@ -49,7 +49,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          NSTrackingArea *area = [[NSTrackingArea alloc]
              initWithRect:CGRectZero
                   options:NSTrackingActiveAlways | NSTrackingMouseEnteredAndExited |
-@@ -15137,9 +15141,345 @@
+@@ -15112,9 +15116,345 @@
      if (icon) {
          [NSApp setApplicationIconImage:icon];
          [icon release];
@@ -395,7 +395,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
  {
      NSAutoreleasePool * pool = [[NSAutoreleasePool alloc] init];
-@@ -15276,6 +15616,7 @@
+@@ -15251,6 +15591,7 @@
      omacvm_shortcuts_init();
      omacvm_globe_init();
      omacvm_ime_init();
