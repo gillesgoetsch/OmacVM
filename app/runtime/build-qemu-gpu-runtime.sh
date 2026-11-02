@@ -1537,6 +1537,18 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 grep -q 'static void emit_patch_fill(const struct dump_ctx \*ctx,' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q 'key->separable_out = 1;' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c, vrend_renderer.c: separable patch varyings still take a location (patch-varyings patch)"
+# OmacVM: on a desktop GL without cull distances a tessellation control shader passes its
+# clip distances to the evaluation shader as plain varyings (omacvm_clip0[]): gl_ClipDistance
+# in gl_out[] or gl_in[] made Apple's Metal pipeline build fail, the draws ran on its CPU
+# vertex path and its shader compiler crashed (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-tess-clip-varyings.patch"
+grep -q 'static int tcs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d\[gl_InvocationID\].%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (clip_dist && !tcs_clip)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (ctx->num_in_clip_dist && !tes_clip) {' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (gl_in && tes_clip_varyings(ctx)) {' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->tess_clip_in = type == PIPE_SHADER_TESS_EVAL' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: tessellation shaders still pass clip distances in gl_out[]/gl_in[] on the Mac (tess-clip-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
