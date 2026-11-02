@@ -10,12 +10,21 @@ in more words.
   key and modifier from macOS's event stream, so an input method that switches between its modes on
   a lone Shift from that stream never saw Shift in the VM: in @Vocllum's captures WeChat Input stayed
   in Chinese after each Shift tap followed by a letter (7 of 7 in 3.2.8), and switched at each one
-  (taps 3-8 of 8) with a 3.2.8 QEMU that let modifier changes through. Not yet tried with WeChat
-  Input on this change. Now, while an input method has the keys in a VM text field, a Shift
-  press and release also go on to macOS after the VM and the input method had them; nothing else
+  (taps 3-8 of 8) with a 3.2.8 QEMU that let modifier changes through. Now, while an input method
+  has the keys in a VM text field, a Shift press and release also go on to macOS; nothing else
   does (no Command, Control, Option, fn or Caps Lock, no Shift with one of them held), and nothing
-  changes with the feature off or a plain layout. To macOS a Shift+letter looks like a lone Shift
-  then. `OMACVM_IME_SHIFT=0` turns it off. Needs the app update, from the VM's next start.
+  changes with the feature off or a plain layout. The VM gets the Shift at once; the input method
+  gets it when macOS gives it back, as in any Mac app (a key typed before that comes after it).
+  The first form of this change gave the input method the Shift before macOS had it and never
+  recognised the copy coming back (@Vocllum's build: the mode changed 0 times); his matcher for
+  that copy is in. Not yet tried with WeChat Input in this form. To macOS a Shift+letter looks
+  like a lone Shift. `OMACVM_IME_SHIFT=0` turns it off. Needs the app update, from the VM's next
+  start.
+- **Building the QEMU runtime with only the Command Line Tools (no Xcode)** (reported by @Vocllum
+  in #655). The build put the Command Line Tools' folder first in PATH, so its `cc` did not find
+  the SDK (`Hypervisor/Hypervisor.h`) and its Python 3.9 made QEMU's configure ask for `tomli`.
+  The build now takes a Python 3.11 or newer from PATH and puts only that `python3` first; `cc`
+  stays `/usr/bin/cc`. Without such a Python it stops at once and says what to install.
 
 ## 3.2.18
 

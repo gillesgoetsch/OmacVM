@@ -232,14 +232,30 @@ Then, in the key path (also for keys from the full-grab tap):
   stream, so an input method that switches its mode on a lone Shift from a
   monitor on that stream (WeChat Input, from a reading of its binary)
   never saw Shift. While mac-ime gives keys to an input method (the
-  conditions above, or the 0.2 s), a Shift change the VM and the input
-  method had in the tap also goes on to macOS: the left or right Shift
-  alone, never with Command, Control, Option or fn down, and a release
-  when its press went on. Its copy comes back through the app's event
-  queue and handleEvent drops it (time stamp and key code), so nothing
-  gets it twice. What macOS sees while the VM has the keyboard is still
-  nothing, except these Shift presses and releases; the keys between them
-  stay deleted, so to macOS a Shift+letter chord looks like a lone Shift.
+  conditions above, or the 0.2 s), a Shift change also goes on to macOS:
+  the left or right Shift alone, never with Command, Control, Option or
+  fn down, and a release when its press went on. The tap decides before
+  handleEvent: the VM gets such a Shift in the tap, the input context
+  does not. macOS gives it back through the app's event queue (2-15 ms
+  later on @Vocllum's Mac); handleEvent then takes that copy (key code and
+  direction within 300 ms, one per event sent: macOS keeps neither the
+  tap's time stamp nor always a CGEvent on it), never gives it to the VM,
+  and gives it to the input context, as in any Mac app, where the input
+  context gets a key after the window server delivered it and other apps'
+  monitors saw it. If another key reaches omacvm_ime_key first (a chord
+  typed within those milliseconds, a busy main thread), the input context
+  gets the saved Shift before it and the copy is only dropped; a Shift
+  whose copy did not come goes before the next key event (a press older
+  than 1 s is dropped). The first form gave the input context the Shift
+  in the tap and told the copy by its time stamp: on a real Mac the copy
+  was never told (0 of 22) and, once it was, WeChat Input still did not
+  switch while its input context had the Shift before macOS delivered
+  it. Not giving the input context a passed Shift at all switched WeChat
+  Input (@Vocllum's variant 4), but input methods that switch on a lone
+  Shift through the input context only (Squirrel/Rime) would stop
+  switching in the VM: it is only a test switch, `OMACVM_IME_SHIFT=skip`.
+  What macOS sees while the VM has the keyboard is still nothing, except
+  these Shift presses and releases; the keys between them stay deleted, so to macOS a Shift+letter chord looks like a lone Shift.
   With mac-ime off or a plain layout nothing changes. #655's first form
   (no modifier changes in the tap's mask) let every modifier change
   through for every user, so chords looked like lone or double modifier
@@ -325,7 +341,13 @@ permission: AppKit's input context needs none.
   handling (`src/ime/tests/`), the patch in the build
   check. Which Shift goes on to macOS:
   `app/runtime/Tests/keys/test-ime-shift.sh` (a table, real CGEvents,
-  the copies, the wiring; the rules before and #655's mask fail it).
+  copies with another time stamp or no CGEvent, the orders in which the
+  VM and the input context get a passed Shift and the keys around it, the
+  wiring; the rules before and #655's mask fail it). What macOS really
+  gives back: `app/runtime/Tests/keys/ime-shift-copy.sh` (local, an
+  active HID tap and posted Shift taps; on the mini, macOS 27.0, 12 of 12
+  copies told, 0.3-4.1 ms; posted events kept the tap's time stamp, so
+  the real-keyboard difference needs a person, `OMACVM_IME_DEBUG=1`).
 - Real typing only on the MacBook Air (rule 61: no synthetic input on the
   Mac the user works on), test identity, test VM: Japanese (Kotoeri
   Romaji: preedit, Space conversion, clause moves, Return, Esc),
