@@ -187,16 +187,17 @@ func readLine(_ fd: Int32, _ secs: Int32 = 5) -> String {
     }
     return ""
 }
+/// A whole line to a socket (its UTF-8 bytes, all of them).
+func put(_ fd: Int32, _ s: String) { _ = s.withCString { write(fd, $0, strlen($0)) } }
 func sendFrame(_ s: Int32, _ o: [String: Any], _ fds: [Int32]) -> Bool {
     let j = json(o)
     var bytes = [UInt8(j.count >> 24 & 255), UInt8(j.count >> 16 & 255), UInt8(j.count >> 8 & 255), UInt8(j.count & 255)] + [UInt8](j)
     let clen = MemoryLayout<cmsghdr>.size + 4 * fds.count
     let cbuf = UnsafeMutableRawPointer.allocate(byteCount: max(clen, 16) + 8, alignment: 8)
     defer { cbuf.deallocate() }
-    var h = cmsghdr(cmsg_len: socklen_t(clen), cmsg_level: SOL_SOCKET, cmsg_type: SCM_RIGHTS)
+    let h = cmsghdr(cmsg_len: socklen_t(clen), cmsg_level: SOL_SOCKET, cmsg_type: SCM_RIGHTS)
     cbuf.storeBytes(of: h, as: cmsghdr.self)
     for (i, f) in fds.enumerated() { cbuf.storeBytes(of: f, toByteOffset: MemoryLayout<cmsghdr>.size + 4 * i, as: Int32.self) }
-    _ = h
     return bytes.withUnsafeMutableBytes { bp -> Bool in
         var iov = iovec(iov_base: bp.baseAddress, iov_len: bp.count)
         var m = msghdr()
@@ -222,25 +223,27 @@ let vm = accept(vmListen, nil, nil)
 expect(readLine(vm) == "{\"t\":\"hello\",\"v\":1}", "server: says hello to the VM")
 expect(server.testDrop(paths: ["/x"]) , "server: test-drop goes to QEMU in test mode")
 expect(readLine(q) == "test-drop\t/x", "server: QEMU got the test-drop line")
-_ = write(vm, "{\"t\":\"hello\",\"v\":1}\n", 20)
+put(vm, "{\"t\":\"hello\",\"v\":1}\n")
 expect(readLine(q) == "ready", "server: ready once the VM said hello")
 // A drop: two files in two frames.
 let at = Int64(Date().timeIntervalSince1970 * 1000)
 expect(sendFrame(q, ["v": 1, "drop": 1, "at": at, "last": false, "names": ["big.bin"]], [fd("big.bin")]), "server: frame 1 sent")
 expect(sendFrame(q, ["v": 1, "drop": 1, "at": at, "last": true, "names": ["a.txt"], "skipped": 1], [fd("a.txt")]), "server: frame 2 sent")
-let dl = readLine(vm)
+// The VM's side may get the Mac's hello again (an answer to its own): skip hellos.
+var dl = readLine(vm)
+while dl.contains("\"t\":\"hello\"") { dl = readLine(vm) }
 let d = (try? JSONSerialization.jsonObject(with: Data(dl.utf8))) as? [String: Any]
 let id = d?["id"] as? String ?? ""
 let names = (d?["items"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
 expect(d?["t"] as? String == "drop" && names == ["big.bin", "a.txt"], "server: the VM got one drop line with both files")
 expect(sum(tmp + "/vm2-drop/\(id)/big.bin") == sum(src + "/big.bin"), "server: staged content the same (sha256)")
-_ = write(vm, "{\"t\":\"done\",\"id\":\"\(id)\",\"to\":\"downloads\"}\n", 64)
+put(vm, "{\"t\":\"done\",\"id\":\"\(id)\",\"to\":\"downloads\"}\n")
 usleep(300_000)
 expect(access(tmp + "/vm2-drop/\(id)", F_OK) != 0, "server: staging removed once the VM put the files in Downloads")
 logLock.lock(); let joined = logs.joined(separator: "\n"); logLock.unlock()
 expect(joined.contains("drop: 2 files") && joined.contains("1 skipped") && joined.contains("Downloads"), "server: qemu.log lines")
 expect(!joined.contains("big.bin") && !joined.contains("a.txt"), "server: never a name in qemu.log")
-_ = write(vm, "{\"t\":\"bye\"}\n", 12)
+put(vm, "{\"t\":\"bye\"}\n")
 expect(readLine(q) == "wait", "server: wait again after the VM's bye")
 // Another process (a stand-in pid): refused before anything is read.
 expected = getpid() + 100000
@@ -254,5 +257,6 @@ server.stop()
 expect(access(tmp + "/vm2-drop", F_OK) != 0 || { usleep(300_000); return access(tmp + "/vm2-drop", F_OK) != 0 }(), "server: staging gone at stop")
 close(q2); close(vm); close(vmListen)
 
+if failures > 0 { logLock.lock(); print("server log:\n  " + logs.joined(separator: "\n  ")); logLock.unlock() }
 print(failures == 0 ? "drop-tests: all passed" : "drop-tests: \(failures) failed")
 exit(failures == 0 ? 0 : 1)
