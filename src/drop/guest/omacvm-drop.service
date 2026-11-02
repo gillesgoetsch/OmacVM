@@ -1,0 +1,14 @@
+[Unit]
+Description=OmacVM.app: drag and drop of files from the Mac
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionPathExists=/dev/virtio-ports/org.omacvm.drop
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/local/bin/omacvm-drop
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

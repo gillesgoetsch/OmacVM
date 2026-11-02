@@ -1,0 +1,13 @@
+[Unit]
+Description=OmacVM.app: the drop share at /run/omacvm/drop (read-only)
+After=local-fs.target systemd-modules-load.service
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/omacvm-drop-share
+ExecStop=/usr/local/bin/omacvm-drop-share --stop
+
+[Install]
+WantedBy=multi-user.target
