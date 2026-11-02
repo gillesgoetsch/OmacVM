@@ -1650,6 +1650,10 @@ grep -q 'virgl_thread_budget_take("thread of a new Venus ring")' "$virgl_source/
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pass-views.patch"
 grep -q '!vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd->view_count))' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_command_buffer.c: a pass's image views are not checked (pass-views patch)"
+# A test hook stops a guest call between vkr and the driver (the cross-ring tests, #624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-test-pause.patch"
+grep -q 'vkr_test_pause("pipeline");' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: no test pause hook (test-pause patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

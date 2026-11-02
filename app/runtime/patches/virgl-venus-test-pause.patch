@@ -1,0 +1,121 @@
+virglrenderer: Venus test hook that stops a guest call between vkr and the driver
+
+What: vkr_test_pause_hook, NULL in QEMU and set only by the Venus tests, is called inside
+four calls between vkr's reads of the call's objects and the driver's call: the pipeline
+creates (ids checked, objects not yet added), vkGetPipelineCacheData, vkCmdFillBuffer and
+a device memory's blob export. The pipeline creates call the generated init and driver
+steps one by one so the hook sits between them.
+Why: the cross-ring tests (#624) stop one ring there while another ring or QEMU's thread
+destroys, frees or creates; this patch comes first so a build without the fix
+(virgl-venus-ring-lock.patch) runs the same tests.
+Upstream: OmacVM test hook.
+Tests: Tests/virgl/test-venus-commands.c (the r- cases).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 9bfdca9..362ff38 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -1315,6 +1315,7 @@ vkr_dispatch_vkCmdFillBuffer(struct vn_dispatch_context *dispatch,
+                           "vkCmdFillBuffer", "%" PRIu64 " bytes at %" PRIu64 " of %" PRIu64,
+                           args->size, args->dstOffset, vkr_cmd_buffer_size(args->dstBuffer)))
+       return;
++   vkr_test_pause("command"); /* OmacVM (virgl-venus-test-pause.patch) */
+    VKR_CMD_CALL(CmdFillBuffer, args, args->dstBuffer, args->dstOffset, args->size,
+                 args->data);
+ }
+diff --git a/src/venus/vkr_common.c b/src/venus/vkr_common.c
+index 14b5477..6c0f9dd 100644
+--- a/src/venus/vkr_common.c
++++ b/src/venus/vkr_common.c
+@@ -354,6 +354,8 @@ object_array_init(struct vkr_context *ctx,
+    return true;
+ }
+ 
++void (*vkr_test_pause_hook)(const char *where);
++
+ uint64_t
+ vkr_object_next_serial(void)
+ {
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index 054ff02..0605cd2 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -388,4 +388,18 @@ vkr_memory_charge_create(uint64_t bytes, const char *what);
+ uint64_t
+ vkr_object_next_serial(void);
+ 
++/* OmacVM (virgl-venus-test-pause.patch): for tests only, NULL in QEMU. A test sets it to
++ * stop a thread at a named point of a guest call, between vkr's reads of the call's objects
++ * and the driver's: "pipeline" (vkCreateGraphicsPipelines, vkCreateComputePipelines, the ids
++ * checked and the objects not yet added), "cache-data" (vkGetPipelineCacheData), "command"
++ * (vkCmdFillBuffer) and "export" (a device memory's blob, the memory looked up). */
++extern void (*vkr_test_pause_hook)(const char *where);
++
++static inline void
++vkr_test_pause(const char *where)
++{
++   if (unlikely(vkr_test_pause_hook))
++      vkr_test_pause_hook(where);
++}
++
+ #endif /* VKR_COMMON_H */
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 2e31468..dc6bfb8 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -395,6 +395,7 @@ vkr_context_create_resource_from_device_memory(struct vkr_context *ctx,
+    struct vkr_device_memory *mem = vkr_context_get_object(ctx, blob_id);
+    if (!mem || mem->base.type != VK_OBJECT_TYPE_DEVICE_MEMORY)
+       return false;
++   vkr_test_pause("export"); /* OmacVM (virgl-venus-test-pause.patch) */
+ 
+    struct virgl_context_blob blob;
+    if (!vkr_device_memory_export_blob(mem, blob_size, blob_flags, &blob))
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 204ebfd..48e5221 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -189,6 +189,7 @@ vkr_dispatch_vkGetPipelineCacheData(UNUSED struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   vkr_test_pause("cache-data"); /* OmacVM (virgl-venus-test-pause.patch) */
+    vn_replace_vkGetPipelineCacheData_args_handle(args);
+    args->ret = vk->GetPipelineCacheData(args->device, args->pipelineCache,
+                                         args->pDataSize, args->pData);
+@@ -649,8 +650,16 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+       }
+    }
+ 
+-   if (vkr_graphics_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
++   /* OmacVM (virgl-venus-test-pause.patch): vkr_graphics_pipeline_create_array, with the
++    * test's pause between the id checks and the driver */
++   if (vkr_graphics_pipeline_init_array(ctx, args, &arr) != VK_SUCCESS)
+       return;
++   vkr_test_pause("pipeline");
++   if (vkr_graphics_pipeline_create_driver_handles(ctx, args, &arr) < VK_SUCCESS) {
++      memset(args->pPipelines, 0, args->createInfoCount * sizeof(args->pPipelines[0]));
++      object_array_fini(&arr);
++      return;
++   }
+ 
+    vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+@@ -687,8 +696,16 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+       }
+    }
+ 
+-   if (vkr_compute_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
++   /* OmacVM (virgl-venus-test-pause.patch): vkr_compute_pipeline_create_array, with the
++    * test's pause between the id checks and the driver */
++   if (vkr_compute_pipeline_init_array(ctx, args, &arr) != VK_SUCCESS)
+       return;
++   vkr_test_pause("pipeline");
++   if (vkr_compute_pipeline_create_driver_handles(ctx, args, &arr) < VK_SUCCESS) {
++      memset(args->pPipelines, 0, args->createInfoCount * sizeof(args->pPipelines[0]));
++      object_array_fini(&arr);
++      return;
++   }
+ 
+    vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_COMPUTE);
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
