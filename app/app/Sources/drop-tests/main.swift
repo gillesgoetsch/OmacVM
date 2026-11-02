@@ -99,6 +99,8 @@ expect(DragDrop.switchState.pendingFile == "drag-drop-pending", "switch: pending
 expect(DropServer.peerAllowed(peer: 42, expected: 42), "peer: the VM's QEMU")
 expect(!DropServer.peerAllowed(peer: 43, expected: 42) && !DropServer.peerAllowed(peer: 42, expected: nil) && !DropServer.peerAllowed(peer: nil, expected: 42),
        "peer: another process, or QEMU not started yet: refused")
+expect(DropServer.refusal(peer: 43, expected: 42) == "refused a connection from pid 43: not this VM's QEMU (pid 42)", "peer: refusal says both pids")
+expect(DropServer.refusal(peer: 42, expected: nil).contains("pid was not known"), "peer: refusal says the pid was not known")
 
 // MARK: staging
 func sh(_ s: String) -> String {
@@ -253,6 +255,15 @@ expect(readLine(q2, 2) == "", "server: a connection from another pid gets nothin
 usleep(200_000)
 logLock.lock(); let refused = logs.contains { $0.contains("refused a connection") }; logLock.unlock()
 expect(refused, "server: refusal logged")
+logLock.lock(); let truthful = logs.contains { $0.contains("from pid \(getpid()): not this VM's QEMU (pid \(getpid() + 100000))") }; logLock.unlock()
+expect(truthful, "server: the refusal names the pid it refused and the one it wanted")
+// The VM's own QEMU connecting before the app knows its pid (the race in the
+// VM rows' serve.log): it waits for the pid and is taken once it matches.
+expected = nil
+let q3 = unixConnect(listen)
+DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) { expected = getpid() }
+expect(readLine(q3, 3) == "wait", "server: QEMU connected before its pid was known: taken once the pid is set")
+close(q3)
 server.stop()
 expect(access(tmp + "/vm2-drop", F_OK) != 0 || { usleep(300_000); return access(tmp + "/vm2-drop", F_OK) != 0 }(), "server: staging gone at stop")
 close(q2); close(vm); close(vmListen)

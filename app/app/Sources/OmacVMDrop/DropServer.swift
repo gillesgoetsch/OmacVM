@@ -117,10 +117,16 @@ public final class DropServer: @unchecked Sendable {
             var one: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
             let peer = Self.peerPID(fd)
-            guard Self.peerAllowed(peer: peer, expected: qemuPID()) else {
+            // QEMU connects at its start, which can be before the app has its
+            // pid (Process.run returns, then the pid is set): wait for it.
+            let expected = expectedPID()
+            guard Self.peerAllowed(peer: peer, expected: expected) else {
                 close(fd)
                 lock.lock(); refusedPeers += 1; let n = refusedPeers; lock.unlock()
-                if n == 1 { log("OmacVM: drag and drop: refused a connection that is not this VM's QEMU (pid \(peer.map(String.init) ?? "?"))") }
+                // Every refusal, but a process that keeps trying fills no log.
+                if n <= 20 || n % 100 == 0 {
+                    log("OmacVM: drag and drop: \(Self.refusal(peer: peer, expected: expected))\(n > 1 ? " (\(n) refused so far)" : "")")
+                }
                 continue
             }
             lock.lock()
@@ -141,6 +147,28 @@ public final class DropServer: @unchecked Sendable {
         var len = socklen_t(MemoryLayout<pid_t>.size)
         guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0 else { return nil }
         return pid
+    }
+
+    /// How long a connection waits for QEMU's pid to be known.
+    static let pidWait: TimeInterval = 5
+
+    /// QEMU's pid, waited for up to pidWait while the server runs; nil: not known.
+    private func expectedPID() -> pid_t? {
+        let until = Date().addingTimeInterval(Self.pidWait)
+        while true {
+            if let p = qemuPID() { return p }
+            guard isRunning, Date() < until else { return nil }
+            usleep(20_000)
+        }
+    }
+
+    /// The qemu.log line for a refused connection: what was refused and why.
+    public static func refusal(peer: pid_t?, expected: pid_t?) -> String {
+        let who = peer.map { "pid \($0)" } ?? "a process whose pid could not be read"
+        guard let e = expected else {
+            return "refused a connection from \(who): this VM's QEMU pid was not known after \(Int(pidWait)) s"
+        }
+        return "refused a connection from \(who): not this VM's QEMU (pid \(e))"
     }
 
     /// Only the VM's own QEMU (its pid known, the same).
