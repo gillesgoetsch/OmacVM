@@ -16,11 +16,6 @@ cleanup() {
     hdiutil detach -quiet -force "$REN" >/dev/null 2>&1 || true
     hdiutil detach -quiet -force "${REN}R" >/dev/null 2>&1 || true
   fi
-  # The rename image's whole disk, also when no mount point was found.
-  if [[ -s $T/ren.out ]]; then
-    d=$(awk -F'\t' '$2 ~ /^GUID_partition_scheme/ { sub(/ +$/, "", $1); print $1 }' "$T/ren.out")
-    [[ -z $d ]] || hdiutil detach -quiet -force "$d" >/dev/null 2>&1 || true
-  fi
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -44,6 +39,12 @@ hdiutil create -quiet -size 64m -fs APFS -volname "OmacVMRen$$" "$T/ren.dmg"
 hdiutil attach -nobrowse "$T/ren.dmg" > "$T/ren.out"
 REN=$(awk -F'\t' '$NF ~ /^\/Volumes\// { print $NF }' "$T/ren.out")
 [[ $REN == /Volumes/* && $REN != *$'\n'* ]] || {
-  echo "FAIL rename image not under /Volumes: '$REN'"; cat "$T/ren.out"; exit 1; }
+  echo "FAIL rename image not under /Volumes: '$REN'"; cat "$T/ren.out"
+  # The image is still attached here: detach its whole disk. Only here, as
+  # macOS hands the disk number to the next image once the test freed it.
+  d=$(awk -F'\t' '$2 ~ /^GUID_partition_scheme/ { sub(/ +$/, "", $1); print $1 }' "$T/ren.out")
+  REN=
+  [[ -z $d ]] || hdiutil detach -quiet -force "$d" >/dev/null 2>&1 || true
+  exit 1; }
 echo "== APFS"
 "$T/drive-drop-test" "$T/work/apfs" "$MNT" "$T/drive.dmg" OmacVMDrop "$REN"
