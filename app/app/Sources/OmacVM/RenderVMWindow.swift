@@ -198,7 +198,10 @@ enum RenderVMWindow {
         sheet("sheet-1-whats-new") { WhatsNewSheet(updater: u, running: false) {} }
         // An update past three versions (3.1.0 runs, 3.1.3 is ready): each version's section, newest first.
         u.showForRendering(staged: makeStagedAppThree(tmp), notice: nil, enabled: true, waiting: false, previous: nil, running: "3.1.0")
-        sheet("sheet-2-whats-new-three") { WhatsNewSheet(updater: u, running: false) {} }
+        sheet("sheet-1b-whats-new-three") { WhatsNewSheet(updater: u, running: false) {} }
+        // Past more versions than it shows (3.0.0 runs, 3.0.8 is ready): 5 versions, the rest counted.
+        u.showForRendering(staged: makeStagedAppMany(tmp), notice: nil, enabled: true, waiting: false, previous: nil, running: "3.0.0")
+        sheet("sheet-1c-whats-new-more") { WhatsNewSheet(updater: u, running: false) {} }
         u.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil)
 
         // This Mac not set up for the VM: a folder copied from another Mac
@@ -606,6 +609,22 @@ extension RenderVMWindow {
         """
         try? changelog.write(to: res.appendingPathComponent("CHANGELOG.md"), atomically: true, encoding: .utf8)
         return Updater.Staged(version: "3.1.3", app: app, notes: URL(string: "https://github.com/gillesgoetsch/OmacVM/releases/tag/v3.1.3"),
+                              teams: [])
+    }
+
+    /// A downloaded 3.0.8 whose CHANGELOG.md has 8 versions after the running
+    /// 3.0.0, 7 items each: more than What's New shows.
+    static func makeStagedAppMany(_ tmp: URL) -> Updater.Staged {
+        let app = tmp.appendingPathComponent("staged-many/OmacVM.app")
+        let res = app.appendingPathComponent("Contents/Resources/omacvm")
+        try? FileManager.default.createDirectory(at: res, withIntermediateDirectories: true)
+        var changelog = "# Changelog\n"
+        for v in (1...8).reversed() {
+            changelog += "\n## 3.0.\(v)\n\nFixes for 3.0.\(v - 1).\n\n"
+            changelog += (1...7).map { "- Fix \($0) of 3.0.\(v): a line about what changed for the VM." }.joined(separator: "\n") + "\n"
+        }
+        try? changelog.write(to: res.appendingPathComponent("CHANGELOG.md"), atomically: true, encoding: .utf8)
+        return Updater.Staged(version: "3.0.8", app: app, notes: URL(string: "https://github.com/gillesgoetsch/OmacVM/releases/tag/v3.0.8"),
                               teams: [])
     }
 }
