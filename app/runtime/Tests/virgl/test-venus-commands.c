@@ -4673,7 +4673,7 @@ static void *watchdog(void *arg)
  *     waits give the lock up, else a deadlock (stopped after 5 s).
  *   -compile-no-delay-ok: with a pipeline create paused, the stream's unrelated
  *     vkDestroyBuffer takes < 1 ms (median of 3).
- *   -teardown-paused-ok: the context ends while the ring is paused in a create: within 3 s. */
+ *   -teardown-paused-ok: the context ends while the ring is paused in a create: within 15 s. */
 static int case_threads(const char *c)
 {
    setup(0);
@@ -4692,12 +4692,14 @@ static int case_threads(const char *c)
       if (IS("t-teardown-paused-ok")) {
          const double t0 = ms_now();
          pthread_t wd;
-         pthread_create(&wd, NULL, watchdog, (void *)(intptr_t)10000);
+         pthread_create(&wd, NULL, watchdog, (void *)(intptr_t)30000);
          step("the context ends while the ring is paused");
          vkr_context_destroy(ctx);
          const double dt = ms_now() - t0;
          step("the context is gone after %.1f ms", dt);
-         return dt < 3000 ? WORKS : ERROR;
+         /* the pause (<= PAUSE_MS plus sleep overshoot) and a device's teardown; a build Mac
+          * under load took 4.4 s (M1 Max, background QoS): a deadlock never ends */
+         return dt < 15000 ? WORKS : ERROR;
       }
       if (IS("t-compile-no-delay-ok")) {
          double took[3];
