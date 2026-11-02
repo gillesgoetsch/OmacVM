@@ -8,7 +8,7 @@
 # open files to the app). The VM's pointer is put where a drag would leave it with QMP's tablet.
 #
 #   drag-drop.sh WORK APP BASE_VM DROP_SERVE
-#     WORK        an empty folder of this run (clone, logs, run sockets); kept: out/
+#     WORK        an empty folder of this run (clone, run sockets, the VM's files); kept: out/
 #     APP         the test app (its QEMU and firmware), org.omacvm.app.test
 #     BASE_VM     a test VM folder (disk.img, efi-vars.fd, ssh-key) with a desktop user logged in at boot
 #     DROP_SERVE  app/app's drop-serve binary (swift build --product drop-serve)
@@ -39,7 +39,7 @@ QEMU="$APP/Contents/MacOS/OmacVM-VM" FW="$APP/Contents/Resources/firmware/edk2-a
 NAME="OmacVM T-dnd" PORT=52885 GUSER=""
 mkdir -p "$OUT" && : > "$OUT/rows.txt"
 [[ -x $QEMU && -f $FW && -x $SERVE && -f $BASE/disk.img ]] || { echo "missing app, firmware, drop-serve or VM" >&2; exit 2; }
-[[ -z $(ls -A "$W" | grep -v '^out$') ]] || { echo "WORK must be empty (but out/)" >&2; exit 2; }
+[[ -z $(ls -A "$W" | grep -vx out) ]] || { echo "WORK must be empty (but out/)" >&2; exit 2; }
 fails=0
 log() { echo "$(date +%H:%M:%S) $*" >> "$OUT/run.log"; }
 row() { echo "ROW $1: $2${3:+ $3}" >> "$OUT/rows.txt"; log "ROW $1: $2${3:+ $3}"; [[ $2 == PASS ]] || fails=$((fails + 1)); }
@@ -68,7 +68,7 @@ stop_serve() {
 }
 finish() {
   stop_serve; stop_vm
-  [[ -d $VMD && ! -L $VMD && -z $(qpid) ]] && rm -rf "$VMD" "$SRC" "$RUN" && log "clone, files and run folder deleted"
+  [[ -d $VMD && ! -L $VMD && -z $(qpid) ]] && rm -rf "$VMD" "$SRC" "$RUN" "$W/guest.tar" && log "clone, files and run folder deleted"
   log "end: $fails failed"
 }
 trap finish EXIT
@@ -82,6 +82,9 @@ head -c 209715200 /dev/urandom > "$SRC/big.bin"
 head -c 1073741824 /dev/urandom > "$SRC/huge.bin"
 for i in $(seq 257); do printf '%s' "$i" > "$SRC/many/f$i"; done
 mkdir -p "$VMD" "$RUN" && chmod 700 "$RUN"
+# The VM's files: the feature's guest side (as apply copies it) and the rows' helpers.
+mkdir -p "$W/g/drop" && cp -R "$R/src/drop/guest" "$W/g/drop/" && cp "$R/src/drop/tests/vm/"* "$W/g/" &&
+  tar -C "$W/g" -cf "$W/guest.tar" . && rm -rf "$W/g" || { log "guest files not packed"; exit 1; }
 cp -c "$BASE/disk.img" "$BASE/efi-vars.fd" "$BASE/ssh-key" "$VMD/" || { log "clone failed"; exit 1; }
 chmod 600 "$VMD/ssh-key"
 mkdir -p "$ST" && chmod 700 "$ST"
