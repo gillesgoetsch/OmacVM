@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.19 (unreleased)
+
+- **Omarchy's tray works in the notch strip (Omanotch, #662).** With the bar in the strip, tray
+  icons did not answer clicks and the drawer's arrow did nothing, so icons in the drawer could not
+  be reached at all. Now the icons take left, right and middle clicks and scrolling as on the bar
+  in the VM (a right click opens the app's menu right under the strip), and a left click on the
+  arrow opens or closes the drawer; it closes when the pointer leaves the strip. The bar in the VM
+  keeps opening the drawer on hover. Also for a clone of the tray. Thanks to @mlamoure for the
+  report and the cause. Checked in a test VM with Omarchy 4.0.3rc4: before, every click on a tray
+  icon missed; after, each button and the wheel reached the app. Needs Update VM.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
