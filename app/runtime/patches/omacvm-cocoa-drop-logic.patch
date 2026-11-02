@@ -1,0 +1,265 @@
+From: OmacVM
+Subject: [PATCH] ui: the rules for drag and drop of files into the VM (drag-drop)
+
+What: a header with no AppKit in it, for omacvm-cocoa-drop.patch: when a
+drag over a VM window is taken (the app said ready, 1-256 files, no folder,
+the last drop opened), a dropped file's name (one component, no control
+characters, 255 bytes), the frames that carry the open files to the app
+(length-prefixed JSON, at most 32 files each, names escaped), and the app's
+lines (ready, wait, test-drop; complete lines only, a too long one dropped).
+
+Why its own file: so the rules are tested without QEMU, a display or a drag
+(app/runtime/Tests/drop/test-drop.sh applies this patch to an empty folder;
+at build time and in CI).
+
+Upstream: not applicable (OmacVM.app's drop share and port, ADR 0069).
+Test: app/runtime/Tests/drop/test-drop.c.
+
+diff --git a/ui/omacvm-drop.h b/ui/omacvm-drop.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-drop.h
+@@ -0,0 +1,243 @@
++/*
++ * OmacVM drag-drop: files dropped on the VM's windows go to the app's side
++ * (docs/adr/0069-drag-and-drop.md). The rules ui/cocoa.m follows, with no
++ * AppKit in here, so they are tested on their own
++ * (app/runtime/Tests/drop/test-drop.c): when a drag is taken, a dropped
++ * file's name, the frames that carry the open files to the app, and the
++ * app's lines.
++ *
++ * Off (no OMACVM_DROP_SOCKET: the feature is off for the VM) none of this
++ * runs: ui/cocoa.m registers no drop types and the windows are no drop
++ * targets, as before.
++ */
++#ifndef OMACVM_DROP_H
++#define OMACVM_DROP_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++/* At most this many files per drop (the app's DropWire.maxItems). */
++#define OMACVM_DROP_MAX 256
++/* Open files per frame (one sendmsg). */
++#define OMACVM_DROP_PER_FRAME 32
++/* One frame's JSON at most (the app's DropWire.maxFrame). */
++#define OMACVM_DROP_FRAME_MAX (64 * 1024)
++/* A drop's files are opened within this many seconds, else it is given up. */
++#define OMACVM_DROP_OPEN_LIMIT 30.0
++
++typedef struct OmacVMDropIn {
++    bool ready;      /* the app said "ready" (the VM's omacvm-drop answers) */
++    int count;       /* file URLs on the pasteboard */
++    bool folder;     /* one of them is a folder (from the URL: no disk access) */
++    bool busy;       /* the last drop is still being opened */
++} OmacVMDropIn;
++
++enum {
++    OMACVM_DROP_TAKE = 0,
++    OMACVM_DROP_NOT_READY,
++    OMACVM_DROP_NO_FILES,
++    OMACVM_DROP_TOO_MANY,
++    OMACVM_DROP_FOLDER,
++    OMACVM_DROP_BUSY,
++};
++
++/* Whether the window takes this drag (copy) or shows no drop. */
++static inline int omacvm_drop_verdict(const OmacVMDropIn *in)
++{
++    if (!in->ready) {
++        return OMACVM_DROP_NOT_READY;
++    }
++    if (in->count <= 0) {
++        return OMACVM_DROP_NO_FILES;
++    }
++    if (in->count > OMACVM_DROP_MAX) {
++        return OMACVM_DROP_TOO_MANY;
++    }
++    if (in->folder) {
++        return OMACVM_DROP_FOLDER;
++    }
++    if (in->busy) {
++        return OMACVM_DROP_BUSY;
++    }
++    return OMACVM_DROP_TAKE;
++}
++
++static inline const char *omacvm_drop_why(int v)
++{
++    switch (v) {
++    case OMACVM_DROP_TAKE: return "taken";
++    case OMACVM_DROP_NOT_READY: return "the VM's omacvm-drop has not answered yet";
++    case OMACVM_DROP_NO_FILES: return "no files in it";
++    case OMACVM_DROP_TOO_MANY: return "more than 256 files";
++    case OMACVM_DROP_FOLDER: return "a folder in it (files only)";
++    case OMACVM_DROP_BUSY: return "the last drop is still being opened";
++    }
++    return "?";
++}
++
++/*
++ * A dropped file's name as the VM sees it (the app's DropWire.nameOK): one
++ * path component, no control characters or DEL, not "." or "..", 1-255
++ * bytes.
++ */
++static inline bool omacvm_drop_name_ok(const char *n)
++{
++    size_t len = n ? strlen(n) : 0;
++
++    if (len == 0 || len > 255 || !strcmp(n, ".") || !strcmp(n, "..")) {
++        return false;
++    }
++    for (const unsigned char *p = (const unsigned char *)n; *p; p++) {
++        if (*p == '/' || *p < 0x20 || *p == 0x7f) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/* The last component of a path (what follows the last '/'). */
++static inline const char *omacvm_drop_base(const char *path)
++{
++    const char *s = strrchr(path, '/');
++    return s ? s + 1 : path;
++}
++
++/* A JSON string of `s` into out (with quotes); false when it does not fit. */
++static inline bool omacvm_drop_json_str(char *out, size_t cap, size_t *at, const char *s)
++{
++    static const char hex[] = "0123456789abcdef";
++
++    if (*at + 1 >= cap) {
++        return false;
++    }
++    out[(*at)++] = '"';
++    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
++        char esc[7] = { 0 };
++        size_t n;
++        if (*p == '"' || *p == '\\') {
++            esc[0] = '\\'; esc[1] = (char)*p; n = 2;
++        } else if (*p < 0x20 || *p == 0x7f) {
++            esc[0] = '\\'; esc[1] = 'u'; esc[2] = '0'; esc[3] = '0';
++            esc[4] = hex[*p >> 4]; esc[5] = hex[*p & 15]; n = 6;
++        } else {
++            esc[0] = (char)*p; n = 1;
++        }
++        if (*at + n + 1 >= cap) {
++            return false;
++        }
++        memcpy(out + *at, esc, n);
++        *at += n;
++    }
++    out[(*at)++] = '"';
++    return true;
++}
++
++/*
++ * One frame: 4 bytes of length (big-endian), then
++ * {"v":1,"drop":D,"at":MS,"last":true|false,"names":[...],"skipped":K}.
++ * `names` belong to the open files sent with this frame, in order (at most
++ * OMACVM_DROP_PER_FRAME). Returns the frame's whole length, or 0 when it
++ * does not fit `cap` or a name is not ok.
++ */
++static inline size_t omacvm_drop_frame(char *out, size_t cap, int drop, int64_t at_ms, bool last,
++                                       const char *const *names, int n, int skipped)
++{
++    size_t at = 4;
++    int w;
++
++    if (cap < 64 || n < 0 || n > OMACVM_DROP_PER_FRAME || cap > OMACVM_DROP_FRAME_MAX + 4) {
++        return 0;
++    }
++    w = snprintf(out + at, cap - at, "{\"v\":1,\"drop\":%d,\"at\":%lld,\"last\":%s,\"names\":[",
++                 drop, (long long)at_ms, last ? "true" : "false");
++    if (w < 0 || (size_t)w >= cap - at) {
++        return 0;
++    }
++    at += (size_t)w;
++    for (int i = 0; i < n; i++) {
++        if (!omacvm_drop_name_ok(names[i])) {
++            return 0;
++        }
++        if (i > 0) {
++            if (at + 1 >= cap) {
++                return 0;
++            }
++            out[at++] = ',';
++        }
++        if (!omacvm_drop_json_str(out, cap, &at, names[i])) {
++            return 0;
++        }
++    }
++    w = snprintf(out + at, cap - at, "],\"skipped\":%d}", skipped < 0 ? 0 : skipped);
++    if (w < 0 || (size_t)w >= cap - at) {
++        return 0;
++    }
++    at += (size_t)w;
++    {
++        uint32_t len = (uint32_t)(at - 4);
++        out[0] = (char)(len >> 24); out[1] = (char)(len >> 16);
++        out[2] = (char)(len >> 8); out[3] = (char)len;
++    }
++    return at;
++}
++
++/* A line from the app (without its newline). */
++enum { OMACVM_DROP_LINE_OTHER = 0, OMACVM_DROP_LINE_READY, OMACVM_DROP_LINE_WAIT, OMACVM_DROP_LINE_TEST };
++
++static inline int omacvm_drop_line(const char *l)
++{
++    if (!strcmp(l, "ready")) {
++        return OMACVM_DROP_LINE_READY;
++    }
++    if (!strcmp(l, "wait")) {
++        return OMACVM_DROP_LINE_WAIT;
++    }
++    if (!strncmp(l, "test-drop\t", 10)) {
++        return OMACVM_DROP_LINE_TEST;
++    }
++    return OMACVM_DROP_LINE_OTHER;
++}
++
++/*
++ * Line framing for the app's lines: complete lines only, at most 4 KiB plus
++ * a test-drop's paths (64 KiB); a longer one is dropped whole.
++ */
++#define OMACVM_DROP_LINE_MAX (64 * 1024)
++
++typedef struct OmacVMDropLines {
++    char buf[OMACVM_DROP_LINE_MAX];
++    size_t len;
++    bool skipping;
++} OmacVMDropLines;
++
++/*
++ * Feeds `n` bytes; calls each(line, ctx) for every complete line (NUL-ended,
++ * no newline). A line longer than the buffer is dropped up to its newline.
++ */
++static inline void omacvm_drop_feed(OmacVMDropLines *l, const char *data, size_t n,
++                                    void (*each)(const char *line, void *ctx), void *ctx)
++{
++    for (size_t i = 0; i < n; i++) {
++        char c = data[i];
++        if (c == '\n') {
++            if (!l->skipping) {
++                l->buf[l->len] = 0;
++                each(l->buf, ctx);
++            }
++            l->len = 0;
++            l->skipping = false;
++        } else if (!l->skipping) {
++            if (l->len + 1 >= sizeof(l->buf)) {
++                l->len = 0;
++                l->skipping = true;
++            } else {
++                l->buf[l->len++] = c;
++            }
++        }
++    }
++}
++
++#endif

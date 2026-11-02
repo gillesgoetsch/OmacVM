@@ -1190,6 +1190,16 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volat
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
 grep -q 'beginActivityWithOptions:NSActivityUserInitiatedAllowingIdleSystemSleep' "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: QEMU's window process must not be napped (no-app-nap patch)"
+# OmacVM: drag and drop of files into the VM (drag-drop, ADR 0069): with
+# OMACVM_DROP_SOCKET the VM's windows take files and hand them, open, to the
+# app. Its rules' test, a check that the wiring checks fail on the code
+# before, the wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop-logic.patch"
+"$native_dir/Tests/drop/test-drop.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a drag-drop wiring check passes without the patch (test-drop.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop.patch"
+"$native_dir/Tests/drop/test-drop.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: drag and drop is not wired as tested, or its rules fail (test-drop.sh)"
 
 virgl_root="$dependency_root/virglrenderer/$virgl_version"
 angle_root="$dependency_root/angle/$angle_version"
