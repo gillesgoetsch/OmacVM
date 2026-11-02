@@ -4,6 +4,7 @@ import Foundation
 import OmacVMFeatures
 import OmacVMAudio
 import OmacVMAuth
+import OmacVMDrop
 import OmacVMMedia
 import OmacVMNet
 import OmacVMUpdate
@@ -231,7 +232,10 @@ final class Runner {
         let share = MacFolder.plan(c)
         macFolder = share.record
         a += share.arguments
-        return a
+        // Drag and drop (drag-drop on only; docs/drag-and-drop.md): its port
+        // and the read-only drop share after everything, the Mac folder too,
+        // so turning it on or off moves no other device (DropPlan.finish).
+        return DropPlan.finish(arguments: a, on: links.dragDrop, folder: c.dropFolder.path, portSocket: q(c.dropPortSocket.path))
     }
 
     /// The USB switch at this start (USBSwitch), and its qemu.log record.
@@ -242,6 +246,11 @@ final class Runner {
 
     /// What the last start did with the Mac folder (MacFolderPlan's record).
     private(set) var macFolder = "off"
+
+    /// Drag and drop while the VM runs (drag-drop on only), and this start's qemu.log record.
+    private var drop: DropServer?
+    private var dropPeer: DropPeer?
+    private var dropRecord = "off"
 
     /// The display for the VM's window: under the pointer, else the one with
     /// the active menu bar; nil with one display.
@@ -434,6 +443,8 @@ final class Runner {
         let imePending = MacIME.prepareStart(folder: c.folder)
         // WebGPU and GPU compute switched in the window while it was stopped: the same way.
         let gpuComputePending = GPUCompute.switchState.prepareStart(folder: c.folder)
+        // Drag and drop switched in the window while it was stopped: the same way.
+        let dropPending = DragDrop.switchState.prepareStart(folder: c.folder)
         // What of the Mac this start may use (its features), read once.
         links = MacLinks.load(folder: c.folder)
         // The strip beside the notch (NotchArea, #339): FullPanel only with the
@@ -455,6 +466,25 @@ final class Runner {
         extraBright = Settings.extraBrightnessStart()
         // Draw only what changed: one answer for the guest, QEMU and qemu.log.
         tiles = Settings.presentTilesStart()
+        // Drag and drop: this app's side listens before QEMU starts (QEMU
+        // connects at its start). Cannot listen: off for this start, said why.
+        dropRecord = DropPlan.record(on: false)
+        if links.dragDrop {
+            let peer = DropPeer()
+            let server = DropServer(listenPath: c.dropSocket.path, portPath: c.dropPortSocket.path,
+                                    stage: DropStage(root: c.dropFolder.path), qemuPID: { peer.value }) { [weak self] line in
+                Task { @MainActor in self?.appendLog(line) }
+            }
+            do {
+                try server.start()
+                drop = server
+                dropPeer = peer
+                dropRecord = DropPlan.record(on: true)
+            } catch {
+                links.dragDrop = false
+                dropRecord = "off this start: its socket could not be made (\(error.localizedDescription))"
+            }
+        }
         p.arguments = arguments()
         var env = ProcessInfo.processInfo.environment
         env["OMACVM_PRODUCT_NAME"] = Product.name
@@ -491,6 +521,8 @@ final class Runner {
         }
         // QEMU's window code talks to the VM's display agent over this port.
         env["OMACVM_DISPLAY_SOCKET"] = c.displaySocket.path
+        // Drag and drop: QEMU's windows take drops only with this (drag-drop on only).
+        if links.dragDrop { env[DropPlan.socketVariable] = c.dropSocket.path }
         // And to the VM's Fcitx5 module over this one (mac-ime on only).
         if links.macIME {
             try? FileManager.default.removeItem(at: c.imeSocket)
@@ -620,6 +652,7 @@ final class Runner {
         if notchSkip { log.write(Data("OmacVM: skip the notch: on\n".utf8)) }
         log.write(Data("OmacVM: Mac proxy: \(proxy.record(fastNetwork: network.vmnet))\n".utf8))
         log.write(Data("OmacVM: Mac folder: \(macFolder)\n".utf8))
+        log.write(Data("OmacVM: drag and drop: \(dropRecord)\n".utf8))
         if let n = sizeNote { log.write(Data("OmacVM: resources: \(c.cpus) CPUs, \(c.memoryMB) MB for this start: \(n)\n".utf8)) }
         if let g = graphics { log.write(Data("OmacVM: graphics: \(g.record)\n".utf8)) }
         log.write(Data("OmacVM: USB devices: \(usbRecord)\n".utf8))
@@ -692,6 +725,8 @@ final class Runner {
                 self?.auth?.stop()
                 self?.usb?.stop()
                 self?.usb = nil
+                self?.drop?.stop()
+                self?.drop = nil
                 self?.onExit?(status)
             }
         }
@@ -705,8 +740,9 @@ final class Runner {
            ProcessInfo.processInfo.environment["OMACVM_COCOA_HIDDEN"] == nil, !TestIdentity.isOn {
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
         }
-        try p.run()
+        do { try p.run() } catch { drop?.stop(); drop = nil; throw error }
         process = p
+        dropPeer?.set(p.processIdentifier)
         mark(pid: p.processIdentifier)
         if usbOn {
             usb = USBRun(config: c, qemuPID: p.processIdentifier) { [weak self] line in self?.appendLog(line) }
@@ -763,6 +799,12 @@ final class Runner {
             }
             if let on = imePending {
                 FeatureStart.run(config: c, switch: MacIME.switchState, what: "Mac input methods", on: on, agentPath: agentPath,
+                                 until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
+                    Task { @MainActor in self?.appendLog(line) }
+                }
+            }
+            if let on = dropPending {
+                FeatureStart.run(config: c, switch: DragDrop.switchState, what: "Drag and drop", on: on, agentPath: agentPath,
                                  until: agentDeadline, running: { kill(pid, 0) == 0 }) { [weak self] line in
                     Task { @MainActor in self?.appendLog(line) }
                 }

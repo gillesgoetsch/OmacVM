@@ -225,6 +225,7 @@ struct SettingsSections: View {
             SectionTitle(text: "Sharing & Devices")
             Card {
                 MacFolderRow(state: state)
+                DragDropRow(state: state)
                 USBRow(state: state)
                 FastNetworkRow(state: state)
             }
