@@ -1723,3 +1723,23 @@ def test_keyboard_light_note_only_while_macos_adjusts_it(world):
                 assert (S.KEYBOARD_AUTO_NOTE in body) is auto, body
         asyncio.run(go())
 
+
+def test_a_refresh_before_a_screen_is_drawn(world):
+    """A worker's refresh that comes while the details or updates screen is
+    pushed but not drawn yet waits for its own first drawing; it raised
+    NoMatches in the worker, which ends the control centre (CI 10-29, and
+    with every call from a thread 0.3 s late)."""
+    from omacvm_cc.tui import DetailsScreen, UpdatesScreen
+
+    async def go():
+        a = app()
+        async with a.run_test(size=(110, 30)) as pilot:
+            assert await settle(pilot, lambda: a.c.linked and shown(a))
+            for screen, name in ((DetailsScreen("bridge"), "details"), (UpdatesScreen(), "updates")):
+                a.push_screen(screen)
+                assert a.screen is screen and not screen.query(".box"), f"{name}: pushed, not drawn yet"
+                a.refresh_all()
+                assert await settle(pilot, lambda: any(str(w.render()).strip() for w in screen.query("#body"))), name
+                await pilot.press("escape")
+                assert await settle(pilot, lambda: a.screen is not screen), name
+    asyncio.run(go())
