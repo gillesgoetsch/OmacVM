@@ -39,4 +39,4 @@ while let line = readLine() {
         print(server.readyNow ? "drop-serve: ready" : "drop-serve: wait")
     }
 }
-server.stop()
+server.stop(wait: true)

@@ -65,8 +65,10 @@ public final class DropServer: @unchecked Sendable {
         Thread.detachNewThread { me.leaseLoop() }
     }
 
-    /// The VM stopped: sockets closed, a copy that runs stopped, staging gone.
-    public func stop() {
+    /// The VM stopped: sockets closed, a copy that runs stopped, staging gone
+    /// (on the staging queue, after the drop in hand; `wait`: return once it
+    /// is gone, for a process that ends right after).
+    public func stop(wait: Bool = false) {
         lock.lock()
         guard running else { lock.unlock(); return }
         running = false
@@ -75,7 +77,7 @@ public final class DropServer: @unchecked Sendable {
         lock.unlock()
         unlink(listenPath)
         stage.cancel()
-        queue.async { [stage] in stage.remove() }
+        if wait { queue.sync { stage.remove() } } else { queue.async { [stage] in stage.remove() } }
     }
 
     private var isRunning: Bool { lock.lock(); defer { lock.unlock() }; return running }
