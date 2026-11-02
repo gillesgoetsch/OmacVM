@@ -1665,6 +1665,11 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-hold
 grep -q 'if (vkr_device_object_held(ctx, obj, ctx->on_worker_thread))' "$virgl_source/src/venus/vkr_device.c" && \
   grep -q 'vkr_cmd_unhold_all(cmd);' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_device.c, vkr_command_buffer.c: command buffers do not hold their views (command-holds patch)"
+# A primary holds the secondaries it executed; a freed one waits in the driver for it (#676).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-secondary-holds.patch"
+grep -q 'vkr_command_pool_destroy(ctx, pool->device, pool, true);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'if (vkr_device_object_held(ctx, &obj->base, true)) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
+  die "vkr_command_buffer.c, vkr_device_object.py: primaries do not hold their secondaries (secondary-holds patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

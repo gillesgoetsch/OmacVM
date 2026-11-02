@@ -1,0 +1,277 @@
+virglrenderer: Venus primaries hold the secondaries they executed
+
+What: a primary command buffer holds each secondary vkCmdExecuteCommands named until the
+driver let go of what it recorded (a reset, a new begin, a free, a pool reset or destroy,
+the context's end), as it holds the views its passes named (virgl-venus-command-holds.patch).
+The app may free a held secondary or destroy its pool (the primary becomes invalid, which
+Vulkan allows): its id leaves vkr's table at once and it stays in the driver, a zombie that
+holds its pool, until the last primary lets go; then it is freed into its pool. A destroyed
+pool with such a zombie leaves the table too, its other command buffers are freed one by
+one first, and the driver's destroy waits for its last zombie. Without held command
+buffers a pool goes at once, as before. The device's teardown destroys its pools the same
+way and frees zombies left over holders first.
+Why: MoltenVK's vkCmdExecuteCommands keeps the secondaries' pointers (MVKCmdExecuteCommands,
+MVKCmdPipeline.h) and reads them when it encodes the primary at vkQueueSubmit
+(MVKCmdPipeline.mm); a destroyed pool deletes its command buffers, so a guest app could make
+QEMU read freed memory (#676, from #673's review). KosmicKrisp replays a secondary into the
+primary while recording.
+Upstream: OmacVM policy (object lifetime: VUID-vkCmdExecuteCommands-commonparent, invalid
+primaries).
+Tests: Tests/virgl/test-venus-commands.c (the c-state-secondary-held- cases, also under
+libgmalloc).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 6958901..15b3bad 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -769,11 +769,54 @@ static void
+ vkr_dispatch_vkCreateCommandPool(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkCreateCommandPool *args)
+ {
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vkr_command_pool *pool = vkr_command_pool_create_and_add(dispatch->data, args);
+    if (!pool)
+       return;
+ 
+    list_inithead(&pool->command_buffers);
++   /* OmacVM (virgl-venus-secondary-holds.patch) */
++   pool->device = dev;
++}
++
++/* OmacVM (virgl-venus-secondary-holds.patch): a command buffer a primary holds (it
++ * executed it) stays in the driver as a zombie, and the pool with it until its last zombie
++ * goes (vkr_object_unhold); the others are freed in the driver first, then vkr lets go of
++ * what they held. Without such a command buffer: the pool goes at once, as before. */
++void
++vkr_command_pool_destroy(struct vkr_context *ctx,
++                         struct vkr_device *dev,
++                         struct vkr_command_pool *pool,
++                         bool destroy_vk)
++{
++   struct vn_device_proc_table *vk = &dev->proc_table;
++   VkDevice device = dev->base.handle.device;
++   VkCommandPool handle = pool->base.handle.command_pool;
++
++   list_for_each_entry_safe (struct vkr_command_buffer, cmd, &pool->command_buffers,
++                             base.track_head)
++      vkr_device_object_held(ctx, &cmd->base, destroy_vk);
++
++   if (pool->base.holds && destroy_vk) {
++      list_for_each_entry (struct vkr_command_buffer, cmd, &pool->command_buffers,
++                           base.track_head)
++         vk->FreeCommandBuffers(device, handle, 1, &cmd->base.handle.command_buffer);
++   } else if (destroy_vk) {
++      vk->DestroyCommandPool(device, handle, NULL);
++   }
++   const bool destroyed = !pool->base.holds;
++   /* the zombies of the pool may go here (their last holders were of this pool) */
++   vkr_command_pool_release(ctx, pool);
++
++   if (destroyed) {
++      vkr_device_remove_object(ctx, dev, &pool->base);
++   } else if (!pool->base.holds) {
++      if (destroy_vk)
++         vk->DestroyCommandPool(device, handle, NULL);
++      vkr_device_remove_object(ctx, dev, &pool->base);
++   } else {
++      vkr_device_object_held(ctx, &pool->base, destroy_vk);
++   }
+ }
+ 
+ static void
+@@ -787,11 +830,9 @@ vkr_dispatch_vkDestroyCommandPool(struct vn_dispatch_context *dispatch,
+       return;
+ 
+    /* OmacVM (virgl-venus-command-holds.patch): the driver frees the pool's command buffers
+-    * first, then vkr lets go of what they held (vkr_command_pool_destroy_and_remove) */
+-   struct vkr_device *dev = vkr_device_from_handle(args->device);
+-   vkr_command_pool_destroy_driver_handle(ctx, args);
+-   vkr_command_pool_release(ctx, pool);
+-   vkr_device_remove_object(ctx, dev, &pool->base);
++    * first, then vkr lets go of what they held; one a primary holds waits for it
++    * (virgl-venus-secondary-holds.patch) */
++   vkr_command_pool_destroy(ctx, pool->device, pool, true);
+ }
+ 
+ static void
+@@ -1744,6 +1785,15 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+                                                          : "does not continue the open pass"))
+          return;
+    }
++   /* OmacVM (virgl-venus-secondary-holds.patch): the primary holds what it executes until
++    * the driver let go of what it recorded: MoltenVK keeps the secondaries' pointers and
++    * reads them when it encodes the primary (at vkQueueSubmit) */
++   for (uint32_t i = 0; i < args->commandBufferCount; i++) {
++      if (!vkr_cmd_hold(ctx, (struct vkr_command_buffer *)cmd,
++                        vkr_command_buffer_from_handle(args->pCommandBuffers[i]),
++                        "vkCmdExecuteCommands"))
++         return;
++   }
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    bool graphics = false, compute = false;
+    for (uint32_t i = 0; i < args->commandBufferCount; i++) {
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index 31bc435..ddc8e57 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -15,6 +15,8 @@ struct vkr_command_pool {
+    struct vkr_object base;
+ 
+    struct list_head command_buffers;
++   /* OmacVM (virgl-venus-secondary-holds.patch) */
++   struct vkr_device *device;
+ };
+ VKR_DEFINE_OBJECT_CAST(command_pool, VK_OBJECT_TYPE_COMMAND_POOL, VkCommandPool)
+ 
+@@ -93,4 +95,12 @@ vkr_command_pool_release(struct vkr_context *ctx, struct vkr_command_pool *pool)
+    vkr_context_remove_objects(ctx, &pool->command_buffers);
+ }
+ 
++/* OmacVM (virgl-venus-secondary-holds.patch, vkr_device.h): the guest destroys pool, or its
++ * device goes (destroy_vk: as for the others there) */
++void
++vkr_command_pool_destroy(struct vkr_context *ctx,
++                         struct vkr_device *dev,
++                         struct vkr_command_pool *pool,
++                         bool destroy_vk);
++
+ #endif /* VKR_COMMAND_BUFFER_H */
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index b9bfb4e..422c49f 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -352,6 +352,22 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+    vkr_context_add_object(ctx, &dev->base);
+ }
+ 
++/* OmacVM (virgl-venus-secondary-holds.patch): the teardown's order for zombies left over: holders first */
++static int
++vkr_zombie_rank(const struct vkr_object *obj)
++{
++   switch (obj->type) {
++   case VK_OBJECT_TYPE_COMMAND_BUFFER:
++      return 0;
++   case VK_OBJECT_TYPE_IMAGE:
++      return 2;
++   case VK_OBJECT_TYPE_COMMAND_POOL:
++      return 3;
++   default:
++      return 1;
++   }
++}
++
+ static void
+ vkr_device_object_destroy(struct vkr_context *ctx,
+                           struct vkr_device *dev,
+@@ -362,6 +378,13 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+ 
+    assert(vkr_device_should_track_object(obj));
+ 
++   /* OmacVM (virgl-venus-secondary-holds.patch): a pool's command buffers a primary of
++    * another pool holds wait for it, and so does the pool */
++   if (obj->type == VK_OBJECT_TYPE_COMMAND_POOL) {
++      vkr_command_pool_destroy(ctx, dev, (struct vkr_command_pool *)obj, ctx->on_worker_thread);
++      return;
++   }
++
+    /* OmacVM (virgl-venus-command-holds.patch): a held object waits for its holders (the
+     * command pools of this device, destroyed in this walk) */
+    if (vkr_device_object_held(ctx, obj, ctx->on_worker_thread))
+@@ -504,10 +527,15 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+    }
+ 
+    /* OmacVM (virgl-venus-command-holds.patch): the pools above let go of every zombie; one
+-    * left would be a holder vkr lost track of. Always take the first: freeing a view can
+-    * free its image, which may be the next entry */
++    * left would be a holder vkr lost track of. Holders before what they hold (a command
++    * buffer, then views, framebuffers and passes, then images, then pools), each time from
++    * the list again: freeing one can free others (virgl-venus-secondary-holds.patch) */
+    while (!list_is_empty(&dev->zombies)) {
+-      struct vkr_object *obj = list_first_entry(&dev->zombies, struct vkr_object, track_head);
++      struct vkr_object *obj = NULL;
++      list_for_each_entry (struct vkr_object, z, &dev->zombies, track_head) {
++         if (!obj || vkr_zombie_rank(z) < vkr_zombie_rank(obj))
++            obj = z;
++      }
+       vkr_log("device teardown: a zombie of type %d still held %u times", obj->type, obj->holds);
+       obj->holds = 1;
+       vkr_object_unhold(obj);
+@@ -536,6 +564,10 @@ struct vkr_device *
+ vkr_holdable_device(const struct vkr_object *obj)
+ {
+    switch (obj->type) {
++   case VK_OBJECT_TYPE_COMMAND_BUFFER:
++      return ((const struct vkr_command_buffer *)obj)->device;
++   case VK_OBJECT_TYPE_COMMAND_POOL:
++      return ((const struct vkr_command_pool *)obj)->device;
+    case VK_OBJECT_TYPE_IMAGE:
+       return ((const struct vkr_image *)obj)->device;
+    case VK_OBJECT_TYPE_IMAGE_VIEW:
+@@ -570,6 +602,9 @@ vkr_device_object_held(struct vkr_context *ctx, struct vkr_object *obj, bool des
+ 
+    obj->zombie = true;
+    obj->zombie_destroy_vk = destroy_vk;
++   /* OmacVM (virgl-venus-secondary-holds.patch): a command buffer lives in its pool */
++   if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER)
++      vkr_object_hold(&((struct vkr_command_buffer *)obj)->pool->base);
+    return true;
+ }
+ 
+@@ -609,6 +644,23 @@ vkr_object_unhold(struct vkr_object *obj)
+       if (obj->zombie_destroy_vk)
+          vk->DestroyRenderPass(device, obj->handle.render_pass, NULL);
+       break;
++   case VK_OBJECT_TYPE_COMMAND_BUFFER: {
++      /* OmacVM (virgl-venus-secondary-holds.patch): freed into its pool, which it held */
++      struct vkr_command_pool *pool = ((struct vkr_command_buffer *)obj)->pool;
++      if (obj->zombie_destroy_vk)
++         vk->FreeCommandBuffers(device, pool->base.handle.command_pool, 1,
++                                &obj->handle.command_buffer);
++      /* it lets go of what it held here (vkr_command_buffer_object_release) */
++      vkr_object_free(obj);
++      vkr_object_unhold(&pool->base);
++      return;
++   }
++   case VK_OBJECT_TYPE_COMMAND_POOL:
++      /* its command buffers went before (vkr_command_pool_destroy) */
++      assert(list_is_empty(&((struct vkr_command_pool *)obj)->command_buffers));
++      if (obj->zombie_destroy_vk)
++         vk->DestroyCommandPool(device, obj->handle.command_pool, NULL);
++      break;
+    default:
+       assert(false);
+       break;
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index 1c8a06c..6001ee7 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -127,6 +127,12 @@ vkr_device_remove_object(struct vkr_context *ctx,
+ /* tests tell a vkr with holds by this */
+ #define VKR_COMMAND_HOLDS 1
+ 
++/* OmacVM (virgl-venus-secondary-holds.patch): a primary holds the secondaries it executed
++ * (MoltenVK keeps their pointers and reads them when it encodes the primary); a held
++ * command buffer the app frees stays in the driver as a zombie, holding its pool, and a
++ * destroyed pool with such a zombie waits for it (vkr_command_pool_destroy) */
++#define VKR_SECONDARY_HOLDS 1
++
+ /* the device of a holdable object */
+ struct vkr_device *
+ vkr_holdable_device(const struct vkr_object *obj);
+diff --git a/src/venus/vkr_device_object.py b/src/venus/vkr_device_object.py
+index c2c2723..18dfa4a 100644
+--- a/src/venus/vkr_device_object.py
++++ b/src/venus/vkr_device_object.py
+@@ -142,6 +142,12 @@ vkr_{destroy_func_name}_destroy_driver_handles(
+          vkr_{vkr_type}_from_handle(args->{destroy_objs}[i]);
+       if (!obj)
+          continue;
++      /* OmacVM (virgl-venus-secondary-holds.patch): one a primary holds stays in the
++       * driver, a zombie, until its last holder lets go (vkr_device.h) */
++      if (vkr_device_object_held(ctx, &obj->base, true)) {{
++         (({vk_type} *)args->{destroy_objs})[i] = VK_NULL_HANDLE;
++         continue;
++      }}
+ 
+       list_del(&obj->base.track_head);
+       list_addtail(&obj->base.track_head, free_list);
