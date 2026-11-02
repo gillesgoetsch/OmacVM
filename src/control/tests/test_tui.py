@@ -1257,10 +1257,13 @@ def test_updates_screen_updates_omarchy_too(world, tmp_path, monkeypatch):
         async with a.run_test(size=(110, 40)) as pilot:
             await pilot.press("U")
             from omacvm_cc.tui import ConfirmScreen, UpdatesScreen
-            assert await settle(pilot, lambda: a.omarchy_waiting == 2)
-            body = str(a.screen.query_one("#body").render())
-            assert isinstance(a.screen, UpdatesScreen)
-            assert "Omarchy: 2 updates waiting" in body and "not OmacVM" in body
+            # The count comes from a worker thread; the screen draws it a moment later on a busy
+            # Mac: wait for the drawn body, not for the count.
+            def body():
+                s = a.screen
+                return str(s.query_one("#body").render()) if isinstance(s, UpdatesScreen) and s.query("#body") else ""
+            assert await settle(pilot, lambda: "Omarchy: 2 updates waiting" in body()), body()
+            assert a.omarchy_waiting == 2 and "not OmacVM" in body()
             await pilot.press("o")
             assert await asks(pilot)
             await pilot.press("n")
@@ -1269,9 +1272,7 @@ def test_updates_screen_updates_omarchy_too(world, tmp_path, monkeypatch):
             await pilot.press("o")
             assert await asks(pilot)
             await pilot.press("y")
-            end = time.monotonic() + 3
-            while time.monotonic() < end and not calls.exists():
-                await pilot.pause(0.05)
+            assert await settle(pilot, lambda: calls.exists() and calls.read_text().strip() != "")
             assert calls.read_text().strip() == "omacvm --window update-system --yes"
             # Nothing went to the Mac: this is not the OmacVM update.
             assert not any(p == "/omacvm/jobs" for _, p, _ in world.requests)
