@@ -15,11 +15,13 @@ MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1 (it encodes at vkEndCommandBuffer wha
 encodes at the submit; nothing recorded is submitted). The cases whose harm shows only as
 a write to freed or unowned heap memory (frees, submit counts, dedicated memory, pass
 views, descriptor parts) run once more under libgmalloc (freed memory unmapped: such a
-write ends the process). Then microseconds per vkCreateImage, per vkCreateBuffer and per
-command. First, src/venus/vkr_proc_entries.h must be what
-venus-missing-entries.py makes of the built tree (virgl-venus-missing-entries.patch), and
-venus-command-ledger.tsv must give a verdict for every vkCmd* handler of the tree's
-vkr_command_buffer.c (a new one needs a decision on its guest values)."""
+write ends the process), and so do test-venus-image-limits' plane binds (DISJOINT planes
+and one-plane DISJOINT|ALIAS images on them, dEQP's ycbcr.plane_view.memory_alias, #624).
+Then microseconds per vkCreateImage, per vkCreateBuffer and per command. First,
+src/venus/vkr_proc_entries.h must be what venus-missing-entries.py makes of the built tree
+(virgl-venus-missing-entries.patch), and venus-command-ledger.tsv must give a verdict for
+every vkCmd* handler of the tree's vkr_command_buffer.c (a new one needs a decision on its
+guest values)."""
 import json
 import os
 from pathlib import Path
@@ -122,6 +124,13 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "t-pipeline-destroy-layout t-pipeline-destroy-module "
                  "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
                  "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok")
+# test-venus-image-limits under libgmalloc: plane binds, where a driver reads a plane's memory
+# slot by the guest's plane aspect
+image_gmalloc_cases = ("bind-plane-info bind-disjoint-no-plane bind-disjoint-planes-ok "
+                       "bind-alias-plane0-ok bind-alias-plane1-ok bind-alias-no-plane bind-alias-v1 "
+                       "bind-alias-plane1-aspect")
+gmalloc_runs = {"test-venus-commands": ("VENUS_COMMANDS_CASES", gmalloc_cases),
+                "test-venus-image-limits": ("VENUS_IMAGE_CASES", image_gmalloc_cases)}
 gmalloc = Path("/usr/lib/libgmalloc.dylib")
 
 icd = runtime / "share/vulkan/icd.d"
@@ -158,9 +167,10 @@ for test, _ in tests:
     variants = [(name, title, {}) for name, title in drivers]
     if test == "test-venus-commands":
         variants.append(("moltenvk", "MoltenVK", {"MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS": "1"}))
-        if gmalloc.exists():
-            variants += [(name, title, {"DYLD_INSERT_LIBRARIES": str(gmalloc),
-                                        "VENUS_COMMANDS_CASES": gmalloc_cases}) for name, title in drivers]
+    if test in gmalloc_runs and gmalloc.exists():
+        variable, cases = gmalloc_runs[test]
+        variants += [(name, title, {"DYLD_INSERT_LIBRARIES": str(gmalloc), variable: cases})
+                     for name, title in drivers]
     for name, title, extra in variants:
         variant_env = {**env, "OMACVM_VULKAN_DRIVER": name, **extra}
         label = title + (" (prefilled Metal command buffers)" if "MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS" in extra
