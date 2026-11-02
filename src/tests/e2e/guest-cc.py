@@ -146,6 +146,20 @@ def below_table(text: str) -> str:
     return re.sub(r"\s+", " ", " ".join(rest))
 
 
+def hint_row(hint: str) -> str | None:
+    """The row the hint names ("Title: summary · on, works"); None from a control centre whose
+    hint gives only the summary (3.2.18 and older)."""
+    global TITLES
+    if TITLES is None:
+        TITLES = titles()
+    return next((t for t in TITLES if hint.startswith(t + ":")), None)
+
+
+def hint_is(title: str, text: str) -> bool:
+    """The hint under the table is title's (or names no row: an older control centre)."""
+    return hint_row(below_table(text)) in (title, None)
+
+
 def row_line(text: str, title: str) -> str:
     for i, t in table(text):
         if t == title:
@@ -164,6 +178,13 @@ def goto(title: str) -> dict:
         cur_line = cursor_line(screen(ansi=True))
         cur = next((k for k, (i, _) in enumerate(rows) if i == cur_line), None)
         if cur == want:
+            # The hint under the table follows the cursor a moment later (more on a busy Mac):
+            # read on once it names this row.
+            end = time.monotonic() + 10
+            while not hint_is(title, screen()) and time.monotonic() < end:
+                time.sleep(0.1)
+            if not hint_is(title, screen()):
+                return {"error": f"the hint did not name '{title}'", "rows": names, "hint": below_table(screen())}
             return {"rows": names}
         if cur is None:
             # The cursor's colour is not readable here: from the top, then trust the count.
@@ -180,10 +201,11 @@ def goto(title: str) -> dict:
 
 
 def state_of(title: str, text: str) -> dict:
+    """on and status from the hint, while it is title's; the note from title's own line."""
     hint = below_table(text)
     line = row_line(text, title)
     note = line.split(title, 1)[1].strip(" │") if title in line else ""
-    m = re.search(r"·\s+(on|off),\s+(works|needs you|failing|off|unavailable|not checked|working|from the next start)", hint)
+    m = None if hint_row(hint) not in (title, None) else re.search(r"·\s+(on|off),\s+(works|needs you|failing|off|unavailable|not checked|working|from the next start)", hint)
     return {"on": m.group(1) if m else None, "status": m.group(2) if m else None, "note": note, "below": hint}
 
 
