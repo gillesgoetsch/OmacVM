@@ -85,6 +85,14 @@ p=$(HOME=$H app_free_port)
 expect "the SSH ports of every folder are taken" yes "$([[ $p =~ ^5[0-9]+$ && $p != 52220 && $p != 52223 ]] && echo yes || echo "$p")"
 echo mac=x > "$OLD/Omarchy/fast-network"
 HOME=$H app_any_fast_network; expect "the fast network of a VM in the old place counts" 0 $?
+# Its reader stops at the first VM with the fast network: the folder lister
+# goes quietly where SIGPIPE is ignored (CI runners: bash's "echo: write
+# error: Broken pipe"). 2000 VM folders fill the pipe, which makes it sure.
+mkdir -p "$T/many"; (cd "$T/many" && mkdir $(seq -f 'vm%04g' 1 2000) && for d in vm*; do : > "$d/vm.env"; done)
+echo mac=x > "$T/many/vm0001/fast-network"
+err=$( (trap '' PIPE; app_vms_roots() { echo "$T/many"; }; app_any_fast_network; echo "rc=$?" >&3) 3>&1 2>&1 >/dev/null)
+expect "SIGPIPE ignored, 2000 VMs, the first with the fast network: rc 0, nothing on stderr" "rc=0" "$err"
+rm -rf "$T/many"
 defaults write "$OMACVM_APP_ID" vmsRoot "$OLD"; defaults delete "$OMACVM_APP_ID" otherVMsRoots
 expect "set to the old place: listed once" "$OLD|" "$(HOME=$H app_vms_roots | tr '\n' '|')"
 defaults delete "$OMACVM_APP_ID" >/dev/null 2>&1
