@@ -10,9 +10,10 @@
  * image or buffer in the driver, and a pass's image views live while it is open
  * (virgl-venus-pool-frees.patch, virgl-venus-submit-counts.patch,
  * virgl-venus-dedicated-memory.patch, virgl-venus-pass-views.patch); a ring and the
- * context's stream take turns on the app's objects, and command buffers hold the views
- * their passes named (virgl-venus-ring-lock.patch, virgl-venus-command-holds.patch; the
- * t- cases stop a real ring with virgl-venus-test-pause.patch's hook).
+ * context's stream take turns on the app's objects, command buffers hold the views their
+ * passes named and primaries the secondaries they executed (virgl-venus-ring-lock.patch,
+ * virgl-venus-command-holds.patch, virgl-venus-secondary-holds.patch; the t- cases stop a
+ * real ring with virgl-venus-test-pause.patch's hook).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -30,7 +31,8 @@
  * buffer then). Exceptions: c-state-destroyed-view-held-submit and c-probe-descriptor-view
  * submit one legal 64x64 clear pass (or a bound set and nothing else) on MoltenVK without
  * prefill and wait for the queue; the held reset, free and teardown cases skip MoltenVK
- * with prefill. Run with
+ * with prefill; c-state-secondary-held-*-submit submit a primary whose secondary holds one
+ * barrier, on every driver, and the c-state-secondary-held- cases reset or free it. Run with
  * MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1, MoltenVK encodes at vkEndCommandBuffer what
  * it otherwise encodes at vkQueueSubmit in QEMU, still without committing (standards 14).
  *
@@ -79,7 +81,7 @@
 extern char **environ;
 
 /* what a case saw: the child's exit status */
-enum { WORKS = 10, ERROR = 11, FATAL = 12, SKIP = 13, BROKEN = 2 };
+enum { WORKS = 10, ERROR = 11, FATAL = 12, SKIP = 13, ZOMBIES = 14, BROKEN = 2 };
 /* what a case must see: refused (the context ends with a log line), kept (works or a
  * VkResult error, no refusal), works (no error, no refusal); the multiview and push
  * constant cases decide in the child from the device's limits ("expect:" line) */
@@ -2843,6 +2845,7 @@ static int destroyed_case(const char *c, struct world *w)
 /* the pass views cases (below, with the venus-624-c cases) */
 static int views_case(const char *c, struct world *w);
 static int held_case(const char *c, struct world *w, void *v);
+static int secondary_case(const char *c, struct world *w);
 
 static int state_case(const char *c, struct world *w)
 {
@@ -2874,6 +2877,8 @@ static int state_case(const char *c, struct world *w)
       return after_mv_case(c, w);
    if (!strncmp(c, "c-state-destroyed-view", 22))
       return views_case(c, w);
+   if (!strncmp(c, "c-state-secondary-held-", 23))
+      return secondary_case(c, w);
    if (!strncmp(c, "c-state-destroyed-", 18))
       return destroyed_case(c, w);
    if (IS("c-state-after-end")) {
@@ -4367,6 +4372,137 @@ static int descriptor_probe(struct world *w)
    return s.ret == VK_SUCCESS ? WORKS : ERROR;
 }
 
+/* A primary executes a secondary, then the app frees the secondary or destroys its pool
+ * (invalid for the primary, legal to do): MoltenVK's vkCmdExecuteCommands keeps the
+ * secondary's pointer (MVKCmdExecuteCommands) and reads it when it encodes the primary at
+ * vkQueueSubmit; its pool's destroy frees it (a free alone hands it back to the pool,
+ * reset). With virgl-venus-secondary-holds.patch the primary holds the secondary until it
+ * is reset, begun again or freed: the freed secondary is a zombie, and so is its destroyed
+ * pool, until then.
+ *   -free-submit, -pool-submit: the secondary freed (and its pool destroyed), then the
+ *     primary submitted and waited for (a barrier: legal GPU work).
+ *   -reset-ok, -free-primary-ok: LEGAL: then the primary reset or freed: no zombie left.
+ *   -same-pool-ok: LEGAL: both in one pool, the secondary freed, the pool destroyed.
+ *   -teardown-ok: LEGAL: the context ends with the zombies.
+ *   -control-ok: the secondary freed after the primary's reset goes at once. */
+static void *command_buffer_in(void *pool, VkCommandBufferLevel level)
+{
+   const uint64_t cid = next_id++;
+   VkCommandBuffer ch = (VkCommandBuffer)(uintptr_t)cid;
+   VkCommandBufferAllocateInfo ainfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                         .commandPool = (VkCommandPool)pool, .level = level,
+                                         .commandBufferCount = 1 };
+   struct vn_command_vkAllocateCommandBuffers a = { .device = DEVH, .pAllocateInfo = &ainfo, .pCommandBuffers = &ch };
+   D->dispatch_vkAllocateCommandBuffers(D, &a);
+   if (a.ret != VK_SUCCESS || !object(cid))
+      broken("vkAllocateCommandBuffers");
+   return object(cid);
+}
+
+static void free_command_buffer(void *cmd)
+{
+   struct vkr_command_buffer *cbo = cmd;
+   VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   struct vn_command_vkFreeCommandBuffers f = { .device = DEVH, .commandPool = (VkCommandPool)cbo->pool,
+                                                .commandBufferCount = 1, .pCommandBuffers = &cb };
+   step("vkFreeCommandBuffers");
+   D->dispatch_vkFreeCommandBuffers(D, &f);
+}
+
+static void destroy_command_pool(void *pool)
+{
+   struct vn_command_vkDestroyCommandPool d = { .device = DEVH, .commandPool = (VkCommandPool)pool };
+   step("vkDestroyCommandPool");
+   D->dispatch_vkDestroyCommandPool(D, &d);
+}
+
+static int secondary_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   const bool same = IS("c-state-secondary-held-same-pool-ok");
+   void *sec = same ? command_buffer_in(((struct vkr_command_buffer *)cmd)->pool,
+                                        VK_COMMAND_BUFFER_LEVEL_SECONDARY)
+                    : command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+   void *pool = ((struct vkr_command_buffer *)sec)->pool;
+   if (begin_secondary(sec, NULL) != VK_SUCCESS)
+      broken("secondary begin");
+   color_barrier(sec);
+   int r = end(sec);
+   if (r != WORKS)
+      return r;
+   VkCommandBuffer s = (VkCommandBuffer)sec;
+   struct vn_command_vkCmdExecuteCommands e = { .commandBuffer = (VkCommandBuffer)cmd, .commandBufferCount = 1,
+                                                .pCommandBuffers = &s };
+   step("vkCmdExecuteCommands of the secondary");
+   D->dispatch_vkCmdExecuteCommands(D, &e);
+   r = end(cmd);
+   if (r != WORKS)
+      return r;
+
+   if (IS("c-state-secondary-held-control-ok")) {
+      reset_command_buffer(cmd);
+      free_command_buffer(sec);
+      step("zombies after the reset and the free: %d", zombies());
+      return ended() ? FATAL : zombies() > 0 ? ZOMBIES : WORKS;
+   }
+   if (same) {
+      free_command_buffer(sec);
+      step("zombies after the free: %d", zombies());
+      if (zombies() != 1)
+         return ended() ? FATAL : ZOMBIES;
+      destroy_command_pool(pool);
+      step("zombies after the pool's destroy: %d", zombies());
+      return ended() ? FATAL : zombies() > 0 ? ZOMBIES : WORKS;
+   }
+   /* the submit cases submit whatever vkr kept (the driver's read is what they test), then
+    * judge the zombies */
+   const bool submit = IS("c-state-secondary-held-free-submit") || IS("c-state-secondary-held-pool-submit");
+   free_command_buffer(sec);
+   int z = zombies();
+   step("zombies after the free: %d", z);
+   if (z != 1 && !submit)
+      return ended() ? FATAL : ZOMBIES;
+   if (!IS("c-state-secondary-held-free-submit")) {
+      destroy_command_pool(pool);
+      z = zombies();
+      step("zombies after the pool's destroy: %d", z);
+      if (z != 2 && !submit)
+         return ended() ? FATAL : ZOMBIES;
+   }
+   if (submit) {
+      const int want = IS("c-state-secondary-held-free-submit") ? 1 : 2;
+      struct vkr_queue *q = device_queue();
+      VkCommandBuffer cb = (VkCommandBuffer)cmd;
+      VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                              .pCommandBuffers = &cb };
+      struct vn_command_vkQueueSubmit qs = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &submit };
+      step("vkQueueSubmit of the primary whose secondary was freed");
+      D->dispatch_vkQueueSubmit(D, &qs);
+      step("vkQueueSubmit = %d", qs.ret);
+      if (ended())
+         return FATAL;
+      q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+      step("the queue is idle; zombies: %d (want %d)", z, want);
+      return qs.ret != VK_SUCCESS ? ERROR : z != want ? ZOMBIES : WORKS;
+   }
+   if (IS("c-state-secondary-held-reset-ok")) {
+      reset_command_buffer(cmd);
+   } else if (IS("c-state-secondary-held-free-primary-ok")) {
+      free_command_buffer(cmd);
+   } else if (IS("c-state-secondary-held-teardown-ok")) {
+      step("the context ends with the primary recorded");
+      vkr_context_destroy(ctx);
+      step("the context is gone");
+      return WORKS;
+   } else {
+      return BROKEN;
+   }
+   if (ended())
+      return FATAL;
+   step("zombies now: %d", zombies());
+   return zombies() > 0 ? ZOMBIES : WORKS;
+}
+
 /* ---------------- two threads on one context (virgl-venus-ring-lock.patch) ----------------
  * A real ring (vkCreateRingMESA on shared memory, its own thread) runs one guest call that
  * the test hook (virgl-venus-test-pause.patch) stops between vkr's reads and the driver's
@@ -5089,6 +5225,11 @@ static const struct test_case cases[] = {
    { "c-state-destroyed-view-held-reset-ok", E_WORKS }, { "c-state-destroyed-view-held-begin-ok", E_WORKS },
    { "c-state-destroyed-view-held-free-ok", E_WORKS }, { "c-state-destroyed-view-held-image-memory-ok", E_WORKS },
    { "c-state-destroyed-view-held-teardown-ok", E_WORKS }, { "c-state-destroyed-view-held-control-ok", E_WORKS },
+   /* primaries hold the secondaries they executed (virgl-venus-secondary-holds.patch) */
+   { "c-state-secondary-held-free-submit", E_WORKS }, { "c-state-secondary-held-pool-submit", E_WORKS },
+   { "c-state-secondary-held-reset-ok", E_WORKS }, { "c-state-secondary-held-free-primary-ok", E_WORKS },
+   { "c-state-secondary-held-same-pool-ok", E_WORKS }, { "c-state-secondary-held-teardown-ok", E_WORKS },
+   { "c-state-secondary-held-control-ok", E_WORKS },
    { "c-probe-descriptor-view", E_PROBE },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
@@ -5282,6 +5423,7 @@ static const char *outcome_name(int status)
    case ERROR: return "a VkResult error";
    case FATAL: return "the context ended";
    case SKIP: return "skipped";
+   case ZOMBIES: return "a wrong zombie count";
    default: return "broken";
    }
 }

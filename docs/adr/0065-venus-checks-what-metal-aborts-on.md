@@ -613,11 +613,25 @@ default synchronous submits it reads them at `vkQueueSubmit`.
 - Not covered: views reached only through descriptor sets (probe on MoltenVK: a
   stale set bound, nothing dispatched, submitted: no read, plain and under
   libgmalloc), what a pending KosmicKrisp command buffer reads on the GPU
-  (Metal 4 command buffers keep no texture alive), and secondaries: MoltenVK
-  keeps raw secondary pointers in `MVKCmdExecuteCommands` and reads them when the
-  primary is submitted, so a secondary freed (or its pool destroyed) after a
-  primary executed it is read after its free (from MoltenVK's source, not
-  tested; a primary holding its secondaries is the follow-up).
+  (Metal 4 command buffers keep no texture alive), and secondaries (next
+  paragraph).
+
+**Secondaries read after their free (#676).** MoltenVK keeps raw secondary
+pointers in `MVKCmdExecuteCommands` and reads them when it encodes the primary
+at `vkQueueSubmit`; a free hands a command buffer back to its pool (reset), the
+pool's destroy deletes it. KosmicKrisp replays a secondary into the primary
+while recording.
+
+- `virgl-venus-secondary-holds.patch`: a primary holds the secondaries
+  `vkCmdExecuteCommands` named, as it holds its views (same release points). A
+  freed held secondary leaves the table and stays in the driver as a zombie
+  that holds its pool; the last holder frees it into the pool. A destroyed pool
+  with a held command buffer frees its other command buffers one by one, leaves
+  the table and waits for its last zombie; without one it goes at once, as
+  before. `vkFreeCommandBuffers` hands the driver NULL for a held one. The
+  device's teardown destroys pools this way, and frees zombies left over
+  holders first (command buffers, then views, framebuffers and passes, then
+  images, then pools).
 
 `virgl-venus-test-pause.patch` (first, test only, NULL in QEMU) stops a call
 between vkr's reads and the driver, so a build without the fix runs the same
@@ -666,3 +680,17 @@ the holds matter for commands QEMU already has. The dEQP-VK subset made the M1's
 GPU restart (firmware-detected lockup, timeline semaphore cases with
 tessellation and geometry stages) on 3.2.18 and this branch alike; it was
 stopped there (STANDARDS 14) and stays to compare on an M4.
+
+The secondary holds have 7 `c-state-secondary-held-` cases (a primary executes
+a secondary that records one barrier; the secondary is freed, or freed and its
+pool destroyed, then the primary is submitted, reset or freed, or both share a
+pool, or the context ends; a free after the primary's reset leaves no zombie).
+On the M1 Max (virgl-only builds of #673's head and this one, the case file of
+this one, drivers of the 3.2.16 test app): before, 6 of 7 fail on KosmicKrisp,
+MoltenVK and MoltenVK with prefill, plainly and under libgmalloc (the freed
+secondary goes at once: no zombie), and MoltenVK under libgmalloc ends the
+process (SIGSEGV) in the submit of the primary whose secondary's pool was
+destroyed; plain MoltenVK and KosmicKrisp submit it without a crash. After, 7 of
+7 on all five; the whole file (`run-venus-limits.py`) 351 ok on KosmicKrisp (4
+skipped), MoltenVK (13) and with prefill (21), 52 under libgmalloc on both, no
+teardown zombie line, no GPU restart.
