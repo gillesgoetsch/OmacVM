@@ -363,8 +363,8 @@ def cmd_graphics(a: list[str]) -> None:
 def cmd_updates(a: list[str]) -> None:
     secs = float(a[0]) if a else 120
     keys("U")
-    time.sleep(1)
-    if "Updates" not in screen():
+    # The screen is drawn once its body is (a busy Mac: later than 1 s), not after a fixed pause.
+    if not watch(lambda s: "Updates" in s and "Update checks" in s, 15)[0]:
         out(False, error="U did not open the updates screen", screen=screen())
     before = screen()
     keys("c")
