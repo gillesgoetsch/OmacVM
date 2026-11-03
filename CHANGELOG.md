@@ -64,6 +64,15 @@ in more words.
   format with DISJOINT and ALIAS, which Vulkan allows) because MoltenVK's format check says no to it, while
   MoltenVK makes it fine. Now QEMU asks MoltenVK about the same image without DISJOINT, which changes nothing
   for one plane, and tells the program the same answer. KosmicKrisp is not changed. Needs the app update.
+- **OmacVM's own guest Mesa build copies every clip distance back after a loop (guest Mesa,
+  manual build, #694, see #589).** In a tessellation control shader that copies 5 to 8 clip
+  distances in a loop, Mesa's virgl driver copied only distances 0..3 back to their output, and
+  4..7 were undefined: a negative one did not clip on the M4's GPU and Apple's software renderer,
+  and on the M1 Max's GPU the draw was clipped away (#692). `src/app/guest/mesa/build.sh`, which builds Mesa's virgl driver with OmacVM's
+  patches into a folder of its own (`/opt/omacvm-mesa`, used with `LD_LIBRARY_PATH`), now has
+  `mesa-virgl-tgsi-clip-copyback.patch` for it. The VM's own Mesa (Arch's) does not get it:
+  nothing changes in a VM that does not use that build. One statement per distance avoids the
+  case with any Mesa.
 
 ## 3.2.19
 
