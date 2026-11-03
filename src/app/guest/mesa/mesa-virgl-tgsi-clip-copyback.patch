@@ -1,0 +1,66 @@
+Mesa (guest): virgl copies every clip distance temporary back after an indexed write
+
+What: virgl_tgsi_transform_instruction writes clip distance outputs through temporaries
+(writemask fixups, one per vec4) and copies the written temporary back to its output with
+a full writemask. A write with an indirect index, MOV OUT[ADDR[0].x+1], which an app's
+gl_ClipDistance[i] in a loop becomes, is moved to TEMP[ADDR[0].x+fix0] and can land in
+either temporary, but only the first one (distances 0..3) was copied back: distances
+4..7 written that way never reached the output. Now such a write copies every clip
+distance temporary back. Direct writes, CLIPVERTEX and COLOR are as before.
+Why: in a tessellation control shader that copies 5 to 8 clip distances in a loop (the
+3.2.19 gate's tcs-8*loop rows) the evaluation shader got undefined values for
+distances 4..7: a negative distance 5 did not clip on the M4's GPU nor on Apple's
+software renderer, and on the M1 Max's GPU the undefined values clipped the whole draw
+(#692, from #589). virglrenderer's dump of that shader showed
+clip_dist_temp[0] = temp18[0] and no [1].
+Applies to: Mesa 26.2.3 (virgl_tgsi.c is the same in 26.2.5).
+Upstream: not sent.
+
+--- a/src/gallium/drivers/virgl/virgl_tgsi.c
++++ b/src/gallium/drivers/virgl/virgl_tgsi.c
+@@ -66,6 +66,8 @@
+    unsigned src_temp;
+ 
+    unsigned writemask_fixup_outs[5];
++   /* OmacVM: the fixup is one of the clip distance outputs (one array for an indirect write) */
++   bool writemask_fixup_clip[5];
+    unsigned writemask_fixup_temps;
+    unsigned num_writemask_fixups;
+ 
+@@ -113,9 +115,12 @@
+    case TGSI_FILE_OUTPUT:
+       switch (decl->Semantic.Name) {
+       case TGSI_SEMANTIC_CLIPDIST:
++         vtctx->writemask_fixup_clip[vtctx->num_writemask_fixups] = true;
+          vtctx->writemask_fixup_outs[vtctx->num_writemask_fixups++] = decl->Range.First;
+-         if (decl->Range.Last != decl->Range.First)
++         if (decl->Range.Last != decl->Range.First) {
++            vtctx->writemask_fixup_clip[vtctx->num_writemask_fixups] = true;
+             vtctx->writemask_fixup_outs[vtctx->num_writemask_fixups++] = decl->Range.Last;
++         }
+          break;
+       case TGSI_SEMANTIC_CLIPVERTEX:
+          vtctx->writemask_fixup_outs[vtctx->num_writemask_fixups++] = decl->Range.First;
+@@ -420,7 +425,21 @@
+          inst->Dst[i].Register.Index >= vtctx->writemask_fixup_temps &&
+          inst->Dst[i].Register.Index < vtctx->writemask_fixup_temps + vtctx->num_writemask_fixups) {
+          /* Emit the fixup MOV from the clipdist/vert temporary to the real output. */
+-         unsigned real_out = vtctx->writemask_fixup_outs[inst->Dst[i].Register.Index - vtctx->writemask_fixup_temps];
++         unsigned j = inst->Dst[i].Register.Index - vtctx->writemask_fixup_temps;
++         /* OmacVM: a clip distance write with an indirect index (gl_ClipDistance[i] in a
++          * loop) can land in any of the clip distance temporaries, not only the one its
++          * index names: copy every one back. */
++         if (inst->Dst[i].Register.Indirect && vtctx->writemask_fixup_clip[j]) {
++            for (unsigned k = 0; k < vtctx->num_writemask_fixups; k++) {
++               if (vtctx->writemask_fixup_clip[k])
++                  tgsi_transform_op1_inst(ctx, TGSI_OPCODE_MOV,
++                                          TGSI_FILE_OUTPUT, vtctx->writemask_fixup_outs[k],
++                                          TGSI_WRITEMASK_XYZW, TGSI_FILE_TEMPORARY,
++                                          vtctx->writemask_fixup_temps + k);
++            }
++            continue;
++         }
++         unsigned real_out = vtctx->writemask_fixup_outs[j];
+          tgsi_transform_op1_inst(ctx, TGSI_OPCODE_MOV,
+                                  TGSI_FILE_OUTPUT, real_out, TGSI_WRITEMASK_XYZW,
+                                  inst->Dst[i].Register.File, inst->Dst[i].Register.Index);

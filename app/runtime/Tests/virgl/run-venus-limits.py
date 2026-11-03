@@ -107,6 +107,11 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "x-dedicated-chain-null x-dedicated-bound-ok x-dedicated-unbound-ok "
                  "x-dedicated-buffer-unbound-ok x-dedicated-context-end-ok x-dedicated-other "
                  "x-dedicated-alias c-state-destroyed-view-begin c-state-destroyed-view-next "
+                 # a swapchain's memory freed before the image bound to it
+                 # (virgl-venus-alias-memory.patch)
+                 "x-dedicated-alias-b-first-ok x-dedicated-alias-free-a-b x-dedicated-alias-context-end "
+                 "x-dedicated-alias-held x-dedicated-alias-own-dedicated x-dedicated-alias-bind2 "
+                 "x-dedicated-alias-twice x-dedicated-alias-bind2-twice "
                  "c-state-destroyed-view-end c-state-destroyed-view-imageless "
                  "c-state-destroyed-view-rendering c-state-destroyed-view-after-ok d-planes-ok "
                  "d-mutable-ok d-start-next-ok d-copy-start-next-ok "
@@ -123,12 +128,23 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "c-state-secondary-held-teardown-ok c-state-secondary-held-control-ok "
                  "t-pipeline-destroy-layout t-pipeline-destroy-module "
                  "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
-                 "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok")
+                 "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok "
+                 # a structure type twice in a chain (virgl-venus-chain-repeats.patch)
+                 "r-repeat-multiview-short r-repeat-attachment-begin r-repeat-begin-two-types-ok "
+                 # a view without a driver view, blend states the drivers read past
+                 # (virgl-venus-ignored-values.patch)
+                 "d-texel-empty-nd d-texel-empty-teardown p-gfx-vstride-dynamic p-gfx-blend-null-dyn "
+                 "p-gfx-blend-more-dyn "
+                 # draws with a set or index buffer never bound, the NULL index buffer vkr
+                 # binds (virgl-venus-unset-state.patch)
+                 "u-set-unset u-set-second-unset u-set-unset-dispatch u-set-second-unset-dispatch "
+                 "u-set-secondary u-ib-unset u-ib-null-m6-ok u-ib-unset-m6-ok u-ib-unset-m6-indirect-ok "
+                 "u-set-interface-only-ok u-set-execute-kept")
 # test-venus-image-limits under libgmalloc: plane binds, where a driver reads a plane's memory
 # slot by the guest's plane aspect
 image_gmalloc_cases = ("bind-plane-info bind-disjoint-no-plane bind-disjoint-planes-ok "
                        "bind-alias-plane0-ok bind-alias-plane1-ok bind-alias-no-plane bind-alias-v1 "
-                       "bind-alias-plane1-aspect")
+                       "bind-alias-plane1-aspect repeat-bind-plane repeat-reqs-plane")
 gmalloc_runs = {"test-venus-commands": ("VENUS_COMMANDS_CASES", gmalloc_cases),
                 "test-venus-image-limits": ("VENUS_IMAGE_CASES", image_gmalloc_cases)}
 gmalloc = Path("/usr/lib/libgmalloc.dylib")

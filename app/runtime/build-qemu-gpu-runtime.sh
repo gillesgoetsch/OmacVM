@@ -1568,6 +1568,28 @@ grep -q 'static int vs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_sourc
   grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d.%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q '(prev->type == PIPE_SHADER_VERTEX && !key->tcs_present)) &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c: a vertex shader still passes clip distances to an evaluation shader in gl_PerVertex on the Mac (vs-tes-clip-varyings patch)"
+# OmacVM: ... and a separable control shader writes the padding patch varyings it declares
+# (patch-varyings patch): never written, Apple's Metal pipeline build failed, the draws ran on
+# its CPU vertex path and its shader compiler crashed now and then (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-patch-fill-writes.patch"
+grep -q 'static uint64_t patch_fill_mask(' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q '"patch%02d = vec4(0.0);\\n"' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: a separable control shader still leaves its padding patch varyings unwritten (patch-fill-writes patch)"
+# OmacVM: a temp the guest indexes at run time without an ARRAY declaration is a GLSL array:
+# the guest's Mesa sends clip distances written in a loop that way, and "temp18[i].x" on a
+# plain vec4 did not compile on the Mac, so those draws were skipped (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-indirect-temps.patch"
+grep -q 'static int lowest_indirect_temp(const struct dump_ctx \*ctx, int first, int last)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'get_temp(ctx, dst_reg->Register.Indirect, dst_reg->Indirect.Index, dst_reg->Register.Index,' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: a temp indexed at run time without ARRAY is still a single vec4 (indirect-temps patch)"
+# OmacVM: ... and a vertex shader before a control shader (omacvm_vclip0, its own names: the
+# control shader writes omacvm_clip0 itself): with gl_ClipDistance[4..7] in its gl_PerVertex
+# block the M4's and M1 Max's GPUs drew nothing (#692).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-vs-tcs-clip-varyings.patch"
+grep -q 'static int clip_varyings_in(const struct dump_ctx \*ctx, const char \*\*name)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'return ctx->key->tcs_present ? "omacvm_vclip" : "omacvm_clip";' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->vs_clip_in = type == PIPE_SHADER_TESS_CTRL && prev->type == PIPE_SHADER_VERTEX &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: a vertex shader still passes clip distances to a control shader in gl_PerVertex on the Mac (vs-tcs-clip-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
@@ -1701,6 +1723,39 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-secondary-ho
 grep -q 'vkr_command_pool_destroy(ctx, pool->device, pool, true);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'if (vkr_device_object_held(ctx, &obj->base, true)) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
   die "vkr_command_buffer.c, vkr_device_object.py: primaries do not hold their secondaries (secondary-holds patch)"
+# A structure type twice in a chain vkr checks is refused: vkr reads the first, the drivers the
+# last (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-chain-repeats.patch"
+grep -q 'vkr_chain_repeat(const void \*chain)' "$virgl_source/src/venus/vkr_common.h" && \
+  grep -q '"VkRenderPassCreateInfo", why, why_size)' "$virgl_source/src/venus/vkr_render_pass.c" && \
+  grep -q '"VkRenderPassBeginInfo"))' "$virgl_source/src/venus/vkr_render_pass.c" || \
+  die "vkr_common.h, vkr_render_pass.c: a structure type twice in a chain gets past vkr (chain-repeats patch)"
+# A texel view of no element, a dynamic vertex stride and blend states: what Vulkan ignores is
+# taken, what the drivers read must be there (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-ignored-values.patch"
+grep -q 'if (check == VKR_VIEW_EMPTY) {' "$virgl_source/src/venus/vkr_buffer.c" && \
+  grep -q 'const bool count_read = !(three && (advanced || !dev->blend_coherent));' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_buffer.c, vkr_pipeline.c: Venus refuses values Vulkan ignores or passes blend states the drivers read past (ignored-values patch)"
+# A draw or dispatch with a descriptor set its pipeline uses, or an index buffer, never bound
+# since the begin is refused: MoltenVK reads the NULL slot when it encodes (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-unset-state.patch"
+grep -q 'vkr_cmd_used_sets_ok(dispatch, st, VKR_CMD_GRAPHICS, call);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'vkr_pipeline_set_used_sets(init ? &arr : NULL, used);' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_command_buffer.c, vkr_pipeline.c: a draw with a set or index buffer never bound gets past vkr (unset-state patch)"
+# An app's image bound to a swapchain's memory (an ALIAS_BIT image with the swapchain image's
+# create info, on memory dedicated to that image) binds on MoltenVK too and holds the memory
+# until its driver destroy: MoltenVK locked the freed memory at that destroy (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-alias-memory.patch"
+grep -q 'vkr_image_hold_alias_memory(image, mem);' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'vkr_device_memory_free(dev, (struct vkr_device_memory \*)obj, obj->zombie_destroy_vk);' "$virgl_source/src/venus/vkr_device.c" || \
+  die "vkr_image.c, vkr_device.c: an image bound to a swapchain's memory does not hold it (alias-memory patch)"
+# An image that aliases one plane of a disjoint YCbCr image (DISJOINT|ALIAS on a one-plane
+# format) is asked about without DISJOINT after the driver's "no", in vkCreateImage's check and
+# in the guest's format query: MoltenVK's query refuses it, its create makes it (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-disjoint-alias-format.patch"
+grep -q 'q.flags = vkr_physical_device_retry_flags(info->format, info->flags, r);' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'args->pImageFormatInfo->format, args->pImageFormatInfo->flags, args->ret);' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_image.c, vkr_physical_device.c: a one-plane DISJOINT|ALIAS image is asked about with DISJOINT (disjoint-alias-format patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

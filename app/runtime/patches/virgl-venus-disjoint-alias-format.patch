@@ -1,0 +1,146 @@
+virglrenderer: Venus makes an image that aliases one plane of a disjoint YCbCr image on MoltenVK
+
+What: an image of a one-plane format with DISJOINT and ALIAS (the image that aliases one
+plane of a disjoint multi-planar image) whose format query the driver answers with
+FORMAT_NOT_SUPPORTED is asked once more without DISJOINT. That answer counts: in
+vkCreateImage's check and the three vkGetDeviceImage* queries (vkr_image_info_ok), and in
+what the guest is told by vkGetPhysicalDeviceImageFormatProperties and
+vkGetPhysicalDeviceImageFormatProperties2 (on a copy of the guest's info). The create info
+goes to the driver as the guest sent it. Only after a "no" and only for a format vkr's
+table knows with one plane: a driver that answers the flags itself (KosmicKrisp) keeps
+its answer. One-plane DISJOINT without ALIAS and multi-planar DISJOINT are not changed.
+The refusal log line names the flags asked too.
+Why: dEQP-VK.ycbcr.plane_view.memory_alias.*_fragment makes such an image (VUID-
+VkImageCreateInfo-format-01577 allows it) and binds it with PLANE_0 to a plane's memory.
+MoltenVK 1.4.2's format query refuses DISJOINT on every format that is not multi-planar
+and does not look at ALIAS (MVKDevice.mm:1578), so vkr refused the create: 349 of the 400
+cases failed with VK_ERROR_FORMAT_NOT_SUPPORTED on the M4 (3.2.18, 3.2.19, #693). MoltenVK's
+vkCreateImage makes the image with one memory binding, as without DISJOINT (MVKImage.mm:
+1261). Driver probe on the M4, 400 cases x (3 plain, 3 libgmalloc, 1 Metal validation):
+0 crashes, 0 validation errors; MoltenVK says yes to 388 without DISJOINT, makes all 388
+with it, with the same memory requirements as without (also asked with PLANE_0), and the
+bytes written through the alias are the plane's in all 349 cases dEQP runs. KosmicKrisp
+answers DISJOINT|ALIAS as without DISJOINT in 400 of 400 (3 + 3 runs). dEQP asks the query
+only for the multi-planar format (VUID-VkImageCreateInfo-imageCreateMaxMipLevels-02251
+wants one for the alias too); the guest is told what vkCreateImage does either way.
+Upstream: OmacVM policy; nothing posted to MoltenVK.
+Tests: Tests/virgl/test-venus-image-limits.c (bind-alias-* now on MoltenVK too, the
+agree-* and devreq-alias cases).
+
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index c442dbd..757c06b 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -142,7 +142,7 @@ vkr_image_info_ok(struct vkr_physical_device *physical_dev,
+          linear ? vkr_physical_device_linear_usage(physical_dev, info->format,
+                                                    stencil->stencilUsage)
+                 : stencil->stencilUsage;
+-   const VkPhysicalDeviceImageFormatInfo2 q = {
++   VkPhysicalDeviceImageFormatInfo2 q = {
+       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+       .pNext = stencil ? &stencil_q : NULL,
+       .format = info->format,
+@@ -155,13 +155,21 @@ vkr_image_info_ok(struct vkr_physical_device *physical_dev,
+    VkImageFormatProperties2 answer = {
+       .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
+    };
+-   const VkResult r = physical_dev->proc_table.GetPhysicalDeviceImageFormatProperties2(
++   VkResult r = physical_dev->proc_table.GetPhysicalDeviceImageFormatProperties2(
+       physical_dev->base.handle.physical_device, &q, &answer);
++   /* OmacVM (virgl-venus-disjoint-alias-format.patch): a one-plane DISJOINT|ALIAS image is
++    * asked again without DISJOINT after a "no", as the guest's own query is; the create
++    * info goes to the driver as it is */
++   q.flags = vkr_physical_device_retry_flags(info->format, info->flags, r);
++   if (q.flags != info->flags)
++      r = physical_dev->proc_table.GetPhysicalDeviceImageFormatProperties2(
++         physical_dev->base.handle.physical_device, &q, &answer);
+    const VkImageFormatProperties *l = &answer.imageFormatProperties;
+    if (r != VK_SUCCESS) {
+       snprintf(why, why_size,
+-               "the driver has no format %d imageType %d tiling %d usage 0x%x flags 0x%x (%d)",
+-               info->format, info->imageType, info->tiling, q.usage, info->flags, r);
++               "the driver has no format %d imageType %d tiling %d usage 0x%x flags 0x%x "
++               "(asked 0x%x) (%d)",
++               info->format, info->imageType, info->tiling, q.usage, info->flags, q.flags, r);
+       return false;
+    }
+    if (e.width > l->maxExtent.width || e.height > l->maxExtent.height ||
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index 8bbd7eb..f5bd808 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -614,6 +614,26 @@ vkr_physical_device_image_kind_ok(const struct vkr_physical_device *physical_dev
+           physical_dev->EXT_image_drm_format_modifier;
+ }
+ 
++/* OmacVM (virgl-venus-disjoint-alias-format.patch): the flags to ask the driver's format
++ * query once more with after it answered r to flags, or flags (nothing to ask again).
++ * DISJOINT with ALIAS on a one-plane format is legal (VUID-VkImageCreateInfo-format-01577):
++ * an image that aliases one plane of a disjoint YCbCr image. MoltenVK 1.4.2's query says
++ * FORMAT_NOT_SUPPORTED to DISJOINT on every format that is not multi-planar and does not
++ * look at ALIAS (MVKDevice.mm:1578); its vkCreateImage makes the image with one memory
++ * binding, as without DISJOINT (MVKImage.mm:1261). A one-plane image has one memory
++ * plane, so DISJOINT changes nothing its limits depend on: asked without it, the driver
++ * judges the same image. Only after a "no", so a driver that answers these flags itself
++ * (KosmicKrisp) keeps its own answer; only for a format vkr's table knows. */
++VkImageCreateFlags
++vkr_physical_device_retry_flags(VkFormat format, VkImageCreateFlags flags, VkResult r)
++{
++   const VkImageCreateFlags alias = VK_IMAGE_CREATE_DISJOINT_BIT | VK_IMAGE_CREATE_ALIAS_BIT;
++   if (r != VK_ERROR_FORMAT_NOT_SUPPORTED || (flags & alias) != alias ||
++       !vkr_format_block_size(format) || vkr_format_plane_count(format) != 1)
++      return flags;
++   return flags & ~VK_IMAGE_CREATE_DISJOINT_BIT;
++}
++
+ static void
+ vkr_physical_device_emulate_drm_props(VkDrmFormatModifierPropertiesListEXT *drm_props_list)
+ {
+@@ -906,6 +926,14 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties(
+    args->ret = vk->GetPhysicalDeviceImageFormatProperties(
+       args->physicalDevice, args->format, args->type, args->tiling, args->usage,
+       args->flags, args->pImageFormatProperties);
++   /* OmacVM (virgl-venus-disjoint-alias-format.patch): the answer vkCreateImage's check
++    * gives (vkr_image_info_ok), so the guest makes what it was told it may */
++   const VkImageCreateFlags again =
++      vkr_physical_device_retry_flags(args->format, args->flags, args->ret);
++   if (again != args->flags)
++      args->ret = vk->GetPhysicalDeviceImageFormatProperties(
++         args->physicalDevice, args->format, args->type, args->tiling, args->usage, again,
++         args->pImageFormatProperties);
+ }
+ 
+ static void
+@@ -1122,6 +1150,16 @@ vkr_dispatch_vkGetPhysicalDeviceImageFormatProperties2(
+    vn_replace_vkGetPhysicalDeviceImageFormatProperties2_args_handle(args);
+    args->ret = vk->GetPhysicalDeviceImageFormatProperties2(
+       args->physicalDevice, args->pImageFormatInfo, args->pImageFormatProperties);
++   /* OmacVM (virgl-venus-disjoint-alias-format.patch): as version 1, on a copy (the
++    * guest's chain stays as it is) */
++   const VkImageCreateFlags again = vkr_physical_device_retry_flags(
++      args->pImageFormatInfo->format, args->pImageFormatInfo->flags, args->ret);
++   if (again != args->pImageFormatInfo->flags) {
++      VkPhysicalDeviceImageFormatInfo2 info = *args->pImageFormatInfo;
++      info.flags = again;
++      args->ret = vk->GetPhysicalDeviceImageFormatProperties2(args->physicalDevice, &info,
++                                                              args->pImageFormatProperties);
++   }
+ 
+    /* emulate handle for dmabuf */
+    if (physical_dev->is_dma_buf_emulated && physical_dev->is_metal_export_supported) {
+diff --git a/src/venus/vkr_physical_device.h b/src/venus/vkr_physical_device.h
+index 8871ddf..2065ee5 100644
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -66,6 +66,11 @@ vkr_physical_device_image_kind_ok(const struct vkr_physical_device *physical_dev
+                                   VkImageType type,
+                                   VkImageTiling tiling);
+ 
++/* OmacVM (virgl-venus-disjoint-alias-format.patch): the flags to ask the driver's format
++ * query again with after its answer r, or flags (see the .c file) */
++VkImageCreateFlags
++vkr_physical_device_retry_flags(VkFormat format, VkImageCreateFlags flags, VkResult r);
++
+ /* OmacVM (virgl-venus-pipeline-formats.patch): a format vkr's format table knows with one
+  * of `features` among its linear or optimal tiling features on the host */
+ bool

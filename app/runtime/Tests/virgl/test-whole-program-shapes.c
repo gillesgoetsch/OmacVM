@@ -31,6 +31,14 @@
  *        they pass before and after it: the GPU rows are in work/v589-vs);
  *        and a vertex shader that writes gl_CullDistance, which the Mac's GL has not: it stays
  *        refused, nothing drawn, no context error, the next rows still draw;
+ *  L     a control shader that copies 1..8 clip distances from its vertex shader to its
+ *        evaluation shader, whole and separable, one statement per distance or in a loop as the
+ *        guest's Mesa sends it (indexed temps without ARRAY, virgl-shader-indirect-temps.patch:
+ *        refused before, so nothing drawn), each distance in turn the one negative one: the
+ *        evaluation shader draws red if it sees a negative one, else green. In the guest's own
+ *        loop its Mesa never copies distances 4..7 back to their output (virgl_tgsi.c): those
+ *        rows print their colour as info and check only that no shader was refused; the loop
+ *        with both halves copied back checks them;
  *  E     a whole program with a varying array into a geometry shader, and one whose
  *        tessellation evaluation shader reads its patch varyings as an array (both dynamically
  *        indexed: GL_ARB_arrays_of_arrays only where the GL has it,
@@ -51,7 +59,7 @@ enum { SHADER_VERTEX = 0, SHADER_FRAGMENT = 1, SHADER_GEOMETRY = 2, SHADER_TESS_
        SHADER_TESS_EVAL = 4 };
 enum { PRIM_POINTS = 0, PRIM_TRIANGLES = 4, PRIM_PATCHES = 14, BUFFER = 0, TEXTURE_2D = 2,
        CLEAR_COLOR0 = 1 << 2 };
-enum { GREEN = 0xff00ff00, GREY = 0xff808080 };
+enum { GREEN = 0xff00ff00, GREY = 0xff808080, RED = 0xff0000ff };
 enum { RS_PLAIN = 41, RS_CLIP0 = 43 };
 enum { R_COLOUR = 5, R_XFB = 13 };
 
@@ -720,6 +728,104 @@ static const char *tes_patch_array =
    "  5: ADD OUT[1], IN[ADDR[0].x+1], IN[2]\n"
    "  6: END\n";
 
+/* Clip distances a control shader copies in a loop (L): the guest's Mesa sends the loop with
+ * indirect temps (virgl_tgsi.c moves each clip distance output into a temp and keeps the
+ * index: MOV TEMP[ADDR[1].x][ADDR[0].x+18].x), and it copies back only the first vec4 (OUT[1]
+ * = TEMP[18]; distances 4..7 never reach OUT[2]). vrend's GLSL for such a temp did not
+ * compile on the Mac ("Swizzle of non-vector primitive float"; virgl-shader-indirect-temps
+ * .patch), the draw was skipped. N distances (1..8) from the vertex shader, distance K (or
+ * none: K < 0) negative; the evaluation shader colours red when any of its N distances is
+ * negative, else green (no clip planes: a skipped draw stays grey, which no row wants). No
+ * NUM_CLIPDIST_ENABLED: the guest's Mesa drops it on a host without cull distances. */
+static char *text_buf(void)
+{
+   static char buf[16][8192];
+   static int next;
+   return buf[next++ % 16];
+}
+
+static const char *vs_clipn(int n, int k)
+{
+   char *b = text_buf();
+   float d[8];
+   for (int i = 0; i < 8; i++)
+      d[i] = i == k ? -1.0f : 1.0f;
+   snprintf(b, 8192,
+            "VERT\nDCL SV[0], VERTEXID\nDCL OUT[0], POSITION\n"
+            "DCL OUT[1], CLIPDIST[0]\n%sDCL TEMP[0..1]\nIMM[0] UINT32 {1, 2, 0, 0}\n"
+            "IMM[1] FLT32 {    4.0000,    -1.0000,     0.5000,     1.0000}\n"
+            "IMM[2] FLT32 { %f, %f, %f, %f}\nIMM[3] FLT32 { %f, %f, %f, %f}\n" VS_POS_BODY
+            "  4: MAD TEMP[1].xy, TEMP[0].xyyy, IMM[1].xxxx, IMM[1].yyyy\n"
+            "  5: MOV TEMP[1].zw, IMM[1].zzzw\n  6: MOV OUT[0], TEMP[1]\n  7: MOV OUT[1], IMM[2]\n%s"
+            "  9: END\n", n > 4 ? "DCL OUT[2], CLIPDIST[1]\n" : "", d[0], d[1], d[2], d[3], d[4], d[5],
+            d[6], d[7], n > 4 ? "  8: MOV OUT[2], IMM[3]\n" : "");
+   return b;
+}
+
+/* the control shader: FORM 0 one statement per distance (what Mesa sends for
+ * gl_out[i].gl_ClipDistance[0] = ...; [1] = ...: direct temps), 1 the guest's loop as it
+ * sends it, 2 the loop with both vec4s copied back */
+static const char *tcs_clipn(int n, int form)
+{
+   char *b = text_buf();
+   const int o = n > 4 ? 3 : 2;
+   int len = snprintf(b, 8192,
+                      "TESS_CTRL\nPROPERTY TCS_VERTICES_OUT 3\nDCL IN[][0], POSITION\nDCL IN[][1], CLIPDIST\n%s"
+                      "DCL SV[0], INVOCATIONID\nDCL OUT[][0], POSITION\nDCL OUT[][1], CLIPDIST\n%s"
+                      "DCL OUT[%d].xyz, TESSOUTER\nDCL OUT[%d].x, TESSINNER\nDCL TEMP[0..13]\nDCL ADDR[0..1]\n"
+                      "IMM[0] UINT32 {0, 3, 2, 1}\nIMM[1] UINT32 {%d, 1065353216, 0, 0}\nDCL TEMP[14..17]\n%s"
+                      "UARL ADDR[1].x, SV[0].xxxx\nMOV TEMP[4], IN[ADDR[1].x][0]\nMOV OUT[ADDR[1].x][0], TEMP[4]\n",
+                      n > 4 ? "DCL IN[][2], CLIPDIST[1]\n" : "", n > 4 ? "DCL OUT[][2], CLIPDIST[1]\n" : "",
+                      o, o + 1, n, n > 4 ? "DCL TEMP[18..19]\n" : "DCL TEMP[18]\n");
+   if (form == 0) {
+      for (int i = 0; i < n; i++)
+         len += snprintf(b + len, 8192 - len, "MOV TEMP[%d].%c, IN[ADDR[1].x][%d].%c%c%c%c\nMOV OUT[%d], TEMP[%d]\n",
+                         18 + i / 4, "xyzw"[i % 4], 1 + i / 4, "xyzw"[i % 4], "xyzw"[i % 4], "xyzw"[i % 4],
+                         "xyzw"[i % 4], 1 + i / 4, 18 + i / 4);
+   } else {
+      const char *copy = n > 4 && form == 2 ? "MOV OUT[1], TEMP[18]\nMOV OUT[2], TEMP[19]\n" :
+                         "MOV OUT[1], TEMP[18]\n";
+      len += snprintf(b + len, 8192 - len,
+                      "MOV TEMP[3].x, IMM[0].xxxx\nBGNLOOP\n"
+                      "AND TEMP[5].x, TEMP[3].xxxx, IMM[0].yyyy\nISHR TEMP[6].x, TEMP[3].xxxx, IMM[0].zzzz\n"
+                      "ISLT TEMP[7].xyz, TEMP[5].xxxx, IMM[0].zwyz\nMOV TEMP[8].x, TEMP[7].yxxx\n"
+                      "UARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+                      "MOV TEMP[9], IN[ADDR[1].x][ADDR[0].x+1]\nMOV TEMP[10].x, TEMP[7].zxxx\n"
+                      "MOV TEMP[11].x, TEMP[7].xxxx\nUIF TEMP[11].xxxx\nUIF TEMP[8].xxxx\n"
+                      "MOV TEMP[12].x, TEMP[9].xxxx\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+                      "MOV TEMP[ADDR[1].x][ADDR[0].x+18].x, TEMP[12].xxxx\n%sELSE\n"
+                      "MOV TEMP[2].y, TEMP[9].xyxx\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+                      "MOV TEMP[ADDR[1].x][ADDR[0].x+18].y, TEMP[2].xyxx\n%sENDIF\nELSE\nUIF TEMP[10].xxxx\n"
+                      "MOV TEMP[1].z, TEMP[9].xxzx\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+                      "MOV TEMP[ADDR[1].x][ADDR[0].x+18].z, TEMP[1].xxzx\n%sELSE\n"
+                      "MOV TEMP[0].w, TEMP[9].xxxw\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+                      "MOV TEMP[ADDR[1].x][ADDR[0].x+18].w, TEMP[0].xxxw\n%sENDIF\nENDIF\n"
+                      "UADD TEMP[3].x, TEMP[3].xxxx, IMM[0].wwww\nISGE TEMP[13].x, TEMP[3].xxxx, IMM[1].xxxx\n"
+                      "UIF TEMP[13].xxxx\nBRK\nENDIF\nENDLOOP\n", copy, copy, copy, copy);
+   }
+   snprintf(b + len, 8192 - len, "MOV OUT[%d].x, IMM[1].yyyy\nMOV OUT[%d].y, IMM[1].yyyy\n"
+            "MOV OUT[%d].z, IMM[1].yyyy\nMOV OUT[%d].x, IMM[1].yyyy\nEND\n", o, o, o, o + 1);
+   return b;
+}
+
+static const char *tes_clipn(int n)
+{
+   char *b = text_buf();
+   int len = snprintf(b, 8192,
+                      "TESS_EVAL\n" TES_PROPS "DCL IN[][0], POSITION\n"
+                      "DCL IN[][1], CLIPDIST[0]\n%sDCL SV[0], TESSCOORD\nDCL OUT[0], POSITION\n"
+                      "DCL OUT[1], CLIPDIST[0]\nDCL OUT[2], GENERIC[0]\nDCL TEMP[0..1]\n"
+                      "IMM[0] FLT32 {    0.0000,     1.0000,     0.0000,     1.0000}\n"
+                      "IMM[1] FLT32 {    1.0000,     0.0000,     0.0000,     1.0000}\n"
+                      "IMM[2] FLT32 {    1.0000,     1.0000,     1.0000,     1.0000}\n" TES_POS
+                      "MOV TEMP[1].x, IN[0][1].xxxx\n", n > 4 ? "DCL IN[][2], CLIPDIST[1]\n" : "");
+   for (int i = 1; i < n; i++)
+      len += snprintf(b + len, 8192 - len, "MIN TEMP[1].x, TEMP[1].xxxx, IN[0][%d].%c%c%c%c\n", 1 + i / 4,
+                      "xyzw"[i % 4], "xyzw"[i % 4], "xyzw"[i % 4], "xyzw"[i % 4]);
+   snprintf(b + len, 8192 - len, "CMP OUT[2], TEMP[1].xxxx, IMM[1], IMM[0]\nMOV OUT[1], IMM[2]\nEND\n");
+   return b;
+}
+
 /* A copy marked separable. */
 static const char *separable(const char *text)
 {
@@ -914,6 +1020,25 @@ static void toggle_rows(const char *what, const struct stage *stages, uint32_t m
    submit(cur_ctx, &c);
 }
 
+/* L: no distance negative (K < 0): every row green; one negative: red, none green. INFO: the
+ * colour is printed, not checked (distances the guest's Mesa never copies back) */
+static void clip_loop_row(const char *what, const struct stage *stages, int k, int info)
+{
+   char text[240];
+   int refused = refused_lines, errors = ctx_error_lines;
+   uint32_t got = draw_mask(stages, PRIM_PATCHES, 3);
+   int ok = k < 0 ? got == 0xffff && last_centre == GREEN : got == 0 && last_centre == RED;
+   snprintf(text, sizeof(text), "%s: green rows 0x%04x, centre 0x%08x, want %s", what, got, last_centre,
+            k < 0 ? "all green" : "red");
+   if (info)
+      printf("info: %s (not checked: the guest's Mesa never copies distances 4..7 back)\n", text);
+   else
+      check(ok, text);
+   snprintf(text, sizeof(text), "%s: no shader refused (%d), no context error (%d)", what,
+            refused_lines - refused, ctx_error_lines - errors);
+   check(refused_lines == refused && ctx_error_lines == errors, text);
+}
+
 /* A shader the host cannot have (gl_CullDistance on a GL without cull distances): refused,
  * its draw skipped, no context error; the renderer goes on. */
 static void cull_row(void)
@@ -939,7 +1064,7 @@ int main(int argc, char **argv)
 {
    setvbuf(stdout, NULL, _IONBF, 0);
    verbose = getenv("TEST_SHAPES_VERBOSE") != NULL;
-   const char *only = argc > 1 ? argv[1] : "ABCE";
+   const char *only = argc > 1 ? argv[1] : "ABCEL";
    main_ctx = soft_gl_context(NULL);
    if (!main_ctx || CGLSetCurrentContext(main_ctx)) {
       printf("skip: no OpenGL context on this Mac\n");
@@ -1106,6 +1231,35 @@ int main(int argc, char **argv)
       row("C12 after the refused shader: all drawn", (const struct stage[]){
              { 0, SHADER_VERTEX, vs_full, 0 }, { 0, SHADER_FRAGMENT, fs_green, 0 }, { 0 } },
           PRIM_TRIANGLES, 0xffff);
+   }
+
+   if (strchr(only, 'L')) {
+      static const char *form_name[] = { "one statement per distance", "the guest's loop",
+                                         "the loop, both vec4s copied back" };
+      section_context("L");
+      use(0, RS_PLAIN);
+      int nrow = 0;
+      for (int sep = 0; sep < 2; sep++) {
+         for (int form = 0; form < 3; form++) {
+            for (int n = 1; n <= 8; n++) {
+               if (form == 2 && n <= 4)
+                  continue;   /* the same text as the guest's loop */
+               for (int k = -1; k < n; k++) {
+                  char kk[24] = "none negative";
+                  if (k >= 0)
+                     snprintf(kk, sizeof(kk), "distance %d negative", k);
+                  snprintf(text, sizeof(text), "L%d %s TCS, %s, %d distance%s, %s", ++nrow,
+                           sep ? "separable" : "whole", form_name[form], n, n > 1 ? "s" : "", kk);
+                  clip_loop_row(text, (const struct stage[]){
+                                   { 0, SHADER_VERTEX, sep ? separable(vs_clipn(n, k)) : vs_clipn(n, k), 0 },
+                                   { 0, SHADER_TESS_CTRL, sep ? separable(tcs_clipn(n, form)) : tcs_clipn(n, form), 0 },
+                                   { 0, SHADER_TESS_EVAL, sep ? separable(tes_clipn(n)) : tes_clipn(n), 0 },
+                                   { 0, SHADER_FRAGMENT, sep ? separable(fs_varying) : fs_varying, 0 }, { 0 } },
+                                k, form == 1 && n > 4 && (k < 0 || k >= 4));
+               }
+            }
+         }
+      }
    }
 
    if (strchr(only, 'E')) {

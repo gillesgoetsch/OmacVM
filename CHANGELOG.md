@@ -3,6 +3,91 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.20
+
+In OmacVM.app VMs, more desktop OpenGL programs with tessellation draw on the Mac's GPU: separate
+control shaders whose patch values leave gaps, clip distances written in a loop, and a vertex
+shader's clip distances 4..7 going into a control shader. With Graphics on Vulkan, a program that
+chains one structure type twice, leaves out a blend attachment array or draws with a descriptor set
+or index buffer it never bound now ends only its own Vulkan connection, not the VM; on MoltenVK,
+an image bound to a swapchain's memory and an image that aliases one plane of a YCbCr image now
+work. Needs the app update only (from the VM's next start); no Update VM. UTM, Fusion and Parallels
+get nothing from 3.2.20. One case stays with the VM's Mesa: a control shader that copies 5 to 8
+clip distances in a loop gets undefined values for 4..7; one statement per distance avoids it.
+OmacVM's own guest Mesa build (built by hand, #694) has a fix for it; no VM gets that build from
+this release, and whether it becomes the default is not decided.
+
+- **OpenGL program pipelines whose patch values do not start at 0 stay on the GPU (OmacVM.app,
+  #688, see #589).** An app that gives its tessellation patch values explicit locations in
+  separate shader programs (for example locations 1 and 3) left the gaps unwritten in the control
+  shader the Mac gets, and Apple's OpenGL could not build the GPU pipeline ("Fallback to SW vertex
+  processing because buildPipelineState failed" in qemu.log). On the MacBook Pro M1 Max such
+  draws ran on Apple's CPU vertex path, the first draw took 262-272 ms and Apple's shader compiler
+  crashed now and then; on the Mac mini M4 they drew nothing. Now the control shader also writes
+  the gaps: on both Macs no fallback line, the pixels of Apple's software renderer, the first draw
+  in 5-6 ms (M1 Max) and 5-100 ms (M4). In a test VM on the M1 Max the VM's Mesa keeps such gaps,
+  and the fallback line is gone with the same pixels. Needs the app update (from the VM's next
+  start); nothing in the VM.
+- **OpenGL shaders that write their clip distances in a loop compile on the Mac (OmacVM.app,
+  #691, see #589).** A tessellation control shader that copies `gl_ClipDistance[i]` in a `for`
+  loop (also a vertex, geometry or evaluation shader that writes them in one) came from the VM's
+  Mesa with temps indexed at run time, and the Mac refused it ("Swizzle of non-vector primitive
+  float" in qemu.log), so its draws were skipped (3.2.18 and 3.2.19 alike). Now it compiles; with
+  up to 4 distances it draws what one statement per distance draws, on the M1 Max and M4 GPUs and
+  Apple's software renderer; with 5 to 8 before a control shader, see the next entry. Needs the
+  app update (from the VM's next start).
+- **A vertex shader's clip distances 4..7 reach a tessellation control shader on the Mac's GPU
+  (OmacVM.app, #695, see #589).** With `gl_ClipDistance[4..7]` going from a vertex shader into a
+  control shader, the M4's and M1 Max's GPUs drew nothing (Apple's software renderer drew it); the
+  VM's Mesa sends that when the vertex shader writes its distances in a loop. The vertex shader now
+  passes them to the control shader as plain varyings, as 3.2.19 does before an evaluation shader.
+  One case stays in the VM's Mesa: a control shader that copies 5 to 8 distances in a loop gets
+  only 0..3 back, and 4..7 are then undefined. On the M4 they read 0 (the draw is there, but a
+  negative one does not clip), on the M1 Max they clip the draw away. OmacVM's own guest Mesa
+  build has a patch for it (#694); the VM's Arch Mesa does not. One statement per distance avoids it.
+  Needs the app update (from the VM's next start).
+- **A Vulkan program that chains one structure type twice no longer gets past QEMU's checks
+  (OmacVM.app, #687, see #624).** With Graphics on Vulkan, QEMU checked the first of two
+  structures of one type and the Mac's driver used the last: a render pass with a second
+  multiview structure of 9 views ended the VM on KosmicKrisp. Vulkan does not allow such a chain;
+  now it ends only that program's Vulkan connection. Needs the app update.
+- **A Vulkan program with a color blend state that has no attachment array can no longer end the VM
+  (OmacVM.app, #690, see #624).** With Graphics on Vulkan, QEMU passed such a pipeline (not allowed in
+  Vulkan) to the Mac's driver, which crashed. Now it ends only the program's Vulkan connection. Needs
+  the app update.
+- **Two legal Vulkan values no longer end a program's Vulkan connection (OmacVM.app, #690, see #624).**
+  A texel buffer view with less than one texel (when the program asked for nullDescriptor, on
+  KosmicKrisp) now works as an empty view, and a pipeline's vertex stride is no longer checked when
+  the program sets it at draw time. Refused buffer values in QEMU's log now say "no buffer" and "the
+  whole size" instead of 18446744073709551615. Needs the app update.
+- **A Vulkan program that draws with a descriptor set or index buffer it never bound can no longer end
+  the VM (OmacVM.app, #693, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU crashed when it sent
+  such a draw (not allowed in Vulkan) to the Mac's GPU. Now only that program's Vulkan connection ends.
+  An indexed draw without an index buffer still works where the program turned on maintenance6, which
+  allows it. Needs the app update.
+- **A Vulkan program that binds an image to a window's swapchain now works on MoltenVK too (OmacVM.app,
+  #696, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU ended the program's Vulkan connection at such
+  a bind (`VkBindImageMemorySwapchainInfoKHR`); letting it through as it was would have crashed QEMU when the
+  program closed the swapchain before the image. Now QEMU keeps the swapchain's memory until the image is
+  gone, on both drivers. On KosmicKrisp, an image unlike the swapchain's on that memory is now refused (Vulkan
+  does not allow it). Needs the app update.
+- **A Vulkan program can now make an image that aliases one plane of a YCbCr video image on MoltenVK
+  (OmacVM.app, #697, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU refused such an image (one-plane
+  format with DISJOINT and ALIAS, which Vulkan allows) because MoltenVK's format check says no to it, while
+  MoltenVK makes it fine. Now QEMU asks MoltenVK about the same image without DISJOINT, which changes nothing
+  for one plane, and tells the program the same answer. KosmicKrisp is not changed. Needs the app update.
+- **OmacVM's own guest Mesa build copies every clip distance back after a loop (guest Mesa,
+  manual build, #694, see #589).** In a tessellation control shader that copies 5 to 8 clip
+  distances in a loop, Mesa's virgl driver copied only distances 0..3 back to their output, and
+  4..7 were undefined: a negative one did not clip on the M4's GPU and Apple's software renderer,
+  and on the M1 Max's GPU the draw was clipped away (#692). `src/app/guest/mesa/build.sh`, which
+  builds Mesa's virgl driver with OmacVM's patches for apps started with `LD_LIBRARY_PATH`, now
+  has `mesa-virgl-tgsi-clip-copyback.patch` for it. Its default folder, `/opt/omacvm-mesa`, is
+  also where a VM with Vulkan on keeps its Venus Mesa: in such a VM give `PREFIX` another folder
+  (for example `PREFIX=/opt/omacvm-gl-mesa`), or the build replaces the Venus Mesa. The VM's own
+  Mesa (Arch's) does not get the patch: nothing changes in a VM that does not use that build. One
+  statement per distance avoids the case with any Mesa.
+
 ## 3.2.19
 
 In OmacVM.app VMs, a Vulkan program's threads take turns in QEMU, and what a recorded command buffer

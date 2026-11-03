@@ -191,6 +191,29 @@ commit 82927e9. Changes here:
   build failed on as well: on the M1 Max those draws ran on its CPU vertex path
   and drew nothing (#589). Checked by `Tests/virgl/test-core-glsl-shaders.c` and
   `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-separable-patch-fill-writes.patch`: a separable control
+  shader also writes the padding patch varyings it declares (`patch00 = vec4(0.0);`
+  for patch varyings that do not start at 0 or have a gap): never written, Apple's
+  Metal pipeline build failed, the draws ran on its CPU vertex path and its shader
+  compiler crashed now and then (#589). Checked by
+  `Tests/virgl/test-core-glsl-shaders.c` and `Tests/virgl/test-separable-pervertex.c`
+- `patches/virgl-shader-indirect-temps.patch`: a temp the guest indexes at run time
+  without an ARRAY declaration is a GLSL array (`vec4 temp18[2]`) from its lowest
+  indexed register on; the rest stay single `vec4`s. The VM's Mesa sends clip
+  distances written in a loop that way, and `temp18[i].x` on a plain `vec4` did
+  not compile on the Mac ("Swizzle of non-vector primitive float"), so those draws
+  were skipped (#589). Indexed writes use the address register they name. In such a
+  loop the VM's Mesa still copies only distances 0..3 back to their output (a patch
+  for OmacVM's own guest Mesa build, `src/app/guest/mesa/`, #692). Checked
+  by `Tests/virgl/test-core-glsl-shaders.c` and `Tests/virgl/test-whole-program-shapes.c`
+  (L rows)
+- `patches/virgl-shader-vs-tcs-clip-varyings.patch`: a vertex shader before a
+  tessellation control shader passes its clip distances as plain varyings
+  (`omacvm_vclip0`/`omacvm_vclip1`, no location) instead of `gl_ClipDistance` in its
+  `gl_PerVertex` block; the control shader reads them like the evaluation shader
+  reads `omacvm_clipK[]`. With `gl_ClipDistance[4..7]` in that block the M4's and
+  M1 Max's GPUs drew nothing (#692). Checked by `Tests/virgl/test-core-glsl-shaders.c`
+  and the L rows of `Tests/virgl/test-whole-program-shapes.c` on the GPU
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once

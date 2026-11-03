@@ -1,0 +1,682 @@
+virglrenderer: Venus binds an app's image to a swapchain's memory on both drivers
+
+What: overrides the KosmicKrisp-only exception in virgl-venus-dedicated-memory.patch's
+header. An ALIAS_BIT image with the create info of the ALIAS_BIT image a memory is
+dedicated to may bind to that memory at offset 0 on MoltenVK too. That is what guest Mesa
+sends for an app's image bound with VkBindImageMemorySwapchainInfoKHR: it makes the image
+from the swapchain's create info and binds it to the swapchain image's dedicated memory.
+Such an image holds the memory for every bind vkr passes on, whatever the driver returns.
+A memory the guest frees then stays in the driver as a zombie until the image's driver
+destroy, also a deferred one (the image is itself a dedicated target). The order is: the
+image, the memory, the image the memory was dedicated to. Refused with a log line: an
+ALIAS_BIT image with other create info (type, format, tiling, flags, usage, extent,
+levels, layers, samples), a second bind of such an image, and one image twice in one
+vkBindImageMemory2. KosmicKrisp let those through before. All memory frees (vkFreeMemory,
+the device's teardown, a zombie's last holder) go through one helper,
+vkr_device_memory_free.
+Why: MoltenVK 1.4.2 binds an aliasable image to dedicated memory (MVKDeviceMemory.mm:171)
+but counts it only in non-dedicated memory (:175). So ~MVKDeviceMemory never clears the
+image's pointer to the memory, and vkDestroyImage later locks the freed memory's mutex
+(removeImageMemoryBinding). Freeing the swapchain's memory before the app's image is legal
+(vkDestroySwapchainKHR has only VUIDs 01282-01284). Driver probe on the M1 Max: every run
+that freed the memory first crashed on MoltenVK (60 SIGABRT, 60 SIGSEGV under libgmalloc),
+none on KosmicKrisp. The image draws from the target's MTLTexture (MVKImage.mm:105-111),
+so it must match the target. vkr refused the bind on MoltenVK before, which ended the
+app's context.
+Upstream: OmacVM policy (VUIDs VkImageSwapchainCreateInfoKHR-swapchain-00995,
+VkBindImageMemoryInfo-image-07460, vkBindImageMemory2-pBindInfos-04006,
+vkBindImageMemory-memory-02628); nothing posted to MoltenVK.
+Tests: Tests/virgl/test-venus-commands.c (the x-dedicated-alias cases, also under
+libgmalloc).
+
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index 3dfb6d2..a81e57b 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -129,7 +129,7 @@ vkr_dispatch_vkDestroyBuffer(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-dedicated-memory.patch): as vkDestroyImage */
+    struct vkr_buffer *buffer = vkr_buffer_from_handle(args->buffer);
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+-   if (buffer && vkr_dedicated_target_destroyed(buffer->device, buffer->dedicated)) {
++   if (buffer && vkr_dedicated_target_destroyed(buffer->device, buffer->dedicated, NULL)) {
+       vkr_device_remove_object(dispatch->data, dev, &buffer->base);
+       return;
+    }
+@@ -184,12 +184,9 @@ vkr_buffer_bind_ok(const struct vkr_buffer *buffer,
+    if (!vkr_device_memory_bind_ok(mem, &buffer->memory, offset, why, why_size))
+       return false;
+    /* OmacVM (virgl-venus-dedicated-memory.patch) */
+-   if (!vkr_device_memory_dedicated_ok(mem, buffer->dedicated, false, offset)) {
+-      snprintf(why, why_size, "memory dedicated to another image or buffer, or offset %" PRIu64,
+-               offset);
+-      return false;
+-   }
+-   return true;
++   bool alias;
++   return vkr_device_memory_dedicated_ok(mem, buffer->dedicated, NULL, offset, &alias, why,
++                                         why_size);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 49ad9b7..1c84241 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -373,8 +373,11 @@ vkr_zombie_rank(const struct vkr_object *obj)
+       return 0;
+    case VK_OBJECT_TYPE_IMAGE:
+       return 2;
+-   case VK_OBJECT_TYPE_COMMAND_POOL:
++   /* OmacVM (virgl-venus-alias-memory.patch): after the images that hold it */
++   case VK_OBJECT_TYPE_DEVICE_MEMORY:
+       return 3;
++   case VK_OBJECT_TYPE_COMMAND_POOL:
++      return 4;
+    default:
+       return 1;
+    }
+@@ -402,13 +405,27 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+    if (vkr_device_object_held(ctx, obj, ctx->on_worker_thread))
+       return;
+ 
++   /* OmacVM (virgl-venus-alias-memory.patch): one free for all (vkr_device_memory_free) */
++   if (obj->type == VK_OBJECT_TYPE_DEVICE_MEMORY) {
++      vkr_device_memory_free(dev, (struct vkr_device_memory *)obj, ctx->on_worker_thread);
++      vkr_device_remove_object(ctx, dev, obj);
++      return;
++   }
++
+    /* OmacVM (virgl-venus-dedicated-memory.patch): as the guest's destroys, so an app that
+-    * ends between allocating dedicated memory and binding it frees in the safe order */
++    * ends between allocating dedicated memory and binding it frees in the safe order;
++    * an image's hold on memory dedicated to another image goes after its driver destroy
++    * (virgl-venus-alias-memory.patch) */
+    bool target_waits = false;
+-   if (obj->type == VK_OBJECT_TYPE_IMAGE)
+-      target_waits = vkr_dedicated_target_destroyed(dev, ((struct vkr_image *)obj)->dedicated);
+-   else if (obj->type == VK_OBJECT_TYPE_BUFFER)
+-      target_waits = vkr_dedicated_target_destroyed(dev, ((struct vkr_buffer *)obj)->dedicated);
++   struct vkr_device_memory *alias_memory = NULL;
++   if (obj->type == VK_OBJECT_TYPE_IMAGE) {
++      struct vkr_image *image = (struct vkr_image *)obj;
++      alias_memory = vkr_image_take_alias_memory(image);
++      target_waits = vkr_dedicated_target_destroyed(dev, image->dedicated, alias_memory);
++   } else if (obj->type == VK_OBJECT_TYPE_BUFFER) {
++      target_waits =
++         vkr_dedicated_target_destroyed(dev, ((struct vkr_buffer *)obj)->dedicated, NULL);
++   }
+ 
+    if (ctx->on_worker_thread) {
+       switch (obj->type) {
+@@ -418,9 +435,6 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+       case VK_OBJECT_TYPE_FENCE:
+          vk->DestroyFence(device, obj->handle.fence, NULL);
+          break;
+-      case VK_OBJECT_TYPE_DEVICE_MEMORY:
+-         vk->FreeMemory(device, obj->handle.device_memory, NULL);
+-         break;
+       case VK_OBJECT_TYPE_BUFFER:
+          if (!target_waits)
+             vk->DestroyBuffer(device, obj->handle.buffer, NULL);
+@@ -493,13 +507,6 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+ 
+    /* always cleanup vkr allocs */
+    switch (obj->type) {
+-   case VK_OBJECT_TYPE_DEVICE_MEMORY: {
+-      struct vkr_device_memory *mem = (struct vkr_device_memory *)obj;
+-      vkr_device_memory_release(mem);
+-      vkr_dedicated_memory_freed(dev, mem->dedicated, ctx->on_worker_thread);
+-      mem->dedicated = NULL;
+-      break;
+-   }
+    case VK_OBJECT_TYPE_DESCRIPTOR_POOL:
+       /* Destroying VkDescriptorPool frees all VkDescriptorSet allocated inside. */
+       vkr_descriptor_pool_release(ctx, (struct vkr_descriptor_pool *)obj);
+@@ -513,6 +520,8 @@ vkr_device_object_destroy(struct vkr_context *ctx,
+    };
+ 
+    vkr_device_remove_object(ctx, dev, obj);
++   if (alias_memory && !target_waits)
++      vkr_object_unhold(&alias_memory->base);
+ }
+ 
+ void
+@@ -524,6 +533,9 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+    if (!list_is_empty(&dev->objects))
+       vkr_log("destroying device with valid objects");
+ 
++   /* OmacVM (virgl-venus-alias-memory.patch) */
++   dev->teardown = true;
++
+    /* only wait if on workder thread to prepare for vk obj cleanup */
+    if (ctx->on_worker_thread) {
+       VkResult result = vk->DeviceWaitIdle(device);
+@@ -582,6 +594,10 @@ vkr_holdable_device(const struct vkr_object *obj)
+       return ((const struct vkr_command_pool *)obj)->device;
+    case VK_OBJECT_TYPE_IMAGE:
+       return ((const struct vkr_image *)obj)->device;
++   /* OmacVM (virgl-venus-alias-memory.patch): held by an image bound to it while it is
++    * dedicated to another */
++   case VK_OBJECT_TYPE_DEVICE_MEMORY:
++      return ((const struct vkr_device_memory *)obj)->device;
+    case VK_OBJECT_TYPE_IMAGE_VIEW:
+       return ((const struct vkr_image_view *)obj)->device;
+    case VK_OBJECT_TYPE_FRAMEBUFFER:
+@@ -635,15 +651,25 @@ vkr_object_unhold(struct vkr_object *obj)
+    list_del(&obj->track_head);
+    mtx_unlock(&dev->object_mutex);
+ 
++   struct vkr_device_memory *alias_memory = NULL;
+    switch (obj->type) {
+    case VK_OBJECT_TYPE_IMAGE: {
+-      /* dedicated memory alive: its free destroys the image (memory first) */
+-      const bool waits =
+-         vkr_dedicated_target_destroyed(dev, ((struct vkr_image *)obj)->dedicated);
++      /* dedicated memory alive: its free destroys the image (memory first); memory
++       * dedicated to another image it is bound to goes after it
++       * (virgl-venus-alias-memory.patch) */
++      struct vkr_image *image = (struct vkr_image *)obj;
++      struct vkr_device_memory *held = vkr_image_take_alias_memory(image);
++      const bool waits = vkr_dedicated_target_destroyed(dev, image->dedicated, held);
+       if (obj->zombie_destroy_vk && !waits)
+          vk->DestroyImage(device, obj->handle.image, NULL);
++      if (!waits)
++         alias_memory = held;
+       break;
+    }
++   /* OmacVM (virgl-venus-alias-memory.patch): the image that held it is gone */
++   case VK_OBJECT_TYPE_DEVICE_MEMORY:
++      vkr_device_memory_free(dev, (struct vkr_device_memory *)obj, obj->zombie_destroy_vk);
++      break;
+    case VK_OBJECT_TYPE_IMAGE_VIEW:
+       if (obj->zombie_destroy_vk)
+          vk->DestroyImageView(device, obj->handle.image_view, NULL);
+@@ -679,6 +705,8 @@ vkr_object_unhold(struct vkr_object *obj)
+    }
+    /* a view lets go of its image here (vkr_image_object_release) */
+    vkr_object_free(obj);
++   if (alias_memory)
++      vkr_object_unhold(&alias_memory->base);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index 99e53f8..5d76f54 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -54,6 +54,9 @@ struct vkr_device {
+ 
+    /* OmacVM (virgl-venus-command-holds.patch): objects destroyed while held */
+    struct list_head zombies;
++
++   /* OmacVM (virgl-venus-alias-memory.patch): vkr_device_destroy runs (the device is idle) */
++   bool teardown;
+ };
+ VKR_DEFINE_OBJECT_CAST(device, VK_OBJECT_TYPE_DEVICE, VkDevice)
+ 
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 62a5170..7312480 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -428,28 +428,65 @@ vkr_gbm_get_fd_info_from_allocation_info(UNUSED struct vkr_physical_device *phys
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
+ 
++/* OmacVM (virgl-venus-alias-memory.patch): the same create info as far as vkr keeps it */
++static bool
++vkr_alias_info_equal(const struct vkr_alias_info *a, const struct vkr_alias_info *b)
++{
++   return a->type == b->type && a->format == b->format && a->tiling == b->tiling &&
++          a->flags == b->flags && a->usage == b->usage && a->extent.width == b->extent.width &&
++          a->extent.height == b->extent.height && a->extent.depth == b->extent.depth &&
++          a->mip_levels == b->mip_levels && a->array_layers == b->array_layers &&
++          a->samples == b->samples;
++}
++
+ bool
+ vkr_device_memory_dedicated_ok(const struct vkr_device_memory *mem,
+                                const struct vkr_dedicated *target,
+-                               bool alias,
+-                               VkDeviceSize offset)
++                               const struct vkr_alias_info *image,
++                               VkDeviceSize offset,
++                               bool *alias,
++                               char *why,
++                               size_t why_size)
+ {
+    mtx_t *mutex = &mem->device->dedicated_mutex;
+    mtx_lock(mutex);
+    const struct vkr_dedicated *d = mem->dedicated;
+-   const bool ok = !d || ((d == target || (alias && d->alias)) && !offset);
++   bool ok = true;
++   *alias = false;
++   if (d && offset) {
++      ok = false;
++      snprintf(why, why_size, "offset %" PRIu64 " into memory dedicated to an image or buffer",
++               offset);
++   } else if (d && d != target) {
++      /* only the swapchain form (virgl-venus-alias-memory.patch, VUID 00995) */
++      if (!image || !(image->flags & VK_IMAGE_CREATE_ALIAS_BIT) || !d->alias) {
++         ok = false;
++         snprintf(why, why_size, "memory dedicated to another image or buffer");
++      } else if (!vkr_alias_info_equal(image, &d->image_info)) {
++         ok = false;
++         snprintf(why, why_size,
++                  "an ALIAS_BIT image unlike the image its memory is dedicated to (create "
++                  "info: type, format, tiling, flags, usage, extent, levels, layers, samples)");
++      } else {
++         *alias = true;
++      }
++   }
+    mtx_unlock(mutex);
+    return ok;
+ }
+ 
+ bool
+-vkr_dedicated_target_destroyed(struct vkr_device *dev, struct vkr_dedicated *d)
++vkr_dedicated_target_destroyed(struct vkr_device *dev,
++                               struct vkr_dedicated *d,
++                               struct vkr_device_memory *alias_memory)
+ {
+    if (!d)
+       return false;
+    mtx_lock(&dev->dedicated_mutex);
+    const bool wait = d->memories > 0;
+    d->destroyed = true;
++   if (wait)
++      d->alias_memory = alias_memory;
+    mtx_unlock(&dev->dedicated_mutex);
+    if (!wait)
+       free(d);
+@@ -472,7 +509,35 @@ vkr_dedicated_memory_freed(struct vkr_device *dev, struct vkr_dedicated *d, bool
+       vk->DestroyImage(dev->base.handle.device, d->handle.image, NULL);
+    else if (destroy_vk)
+       vk->DestroyBuffer(dev->base.handle.device, d->handle.buffer, NULL);
++   /* OmacVM (virgl-venus-alias-memory.patch): the memory of another image it was bound to
++    * goes after it */
++   struct vkr_device_memory *alias_memory = d->alias_memory;
+    free(d);
++   if (alias_memory)
++      vkr_object_unhold(&alias_memory->base);
++}
++
++void
++vkr_device_memory_free(struct vkr_device *dev, struct vkr_device_memory *mem, bool destroy_vk)
++{
++   struct vkr_dedicated *d = mem->dedicated;
++   mem->dedicated = NULL;
++#ifdef __APPLE__
++   /* the IOSurface's pages outlive the Vulkan memory made of them until the GPU is done
++    * with what the guest submitted before this */
++   void *iosurface = mem->iosurface;
++   mem->iosurface = NULL;
++#endif
++   vkr_device_memory_release(mem);
++   if (destroy_vk)
++      dev->proc_table.FreeMemory(dev->base.handle.device, mem->base.handle.device_memory, NULL);
++   vkr_dedicated_memory_freed(dev, d, destroy_vk);
++#ifdef __APPLE__
++   if (iosurface && destroy_vk && !dev->teardown)
++      vkr_device_release_after_queues(dev, iosurface);
++   else if (iosurface)
++      CFRelease(iosurface);
++#endif
+ }
+ 
+ /* links new memory to the image or buffer it is dedicated to (read from the guest's chain
+@@ -494,11 +559,12 @@ vkr_device_memory_link_dedicated(struct vkr_context *ctx,
+       d = fresh;
+       fresh = NULL;
+       d->type = image ? VK_OBJECT_TYPE_IMAGE : VK_OBJECT_TYPE_BUFFER;
+-      d->alias = image && (image->flags & VK_IMAGE_CREATE_ALIAS_BIT) &&
+-                 dev->physical_device->limits.kosmickrisp;
+-      if (image)
++      /* OmacVM (virgl-venus-alias-memory.patch): on both drivers */
++      d->alias = image && (image->flags & VK_IMAGE_CREATE_ALIAS_BIT);
++      if (image) {
+          d->handle.image = image->base.handle.image;
+-      else
++         vkr_image_alias_info(image, &d->image_info);
++      } else
+          d->handle.buffer = buffer->base.handle.buffer;
+       *slot = d;
+    }
+@@ -509,8 +575,7 @@ vkr_device_memory_link_dedicated(struct vkr_context *ctx,
+    mtx_unlock(&dev->dedicated_mutex);
+    free(fresh);
+    if (!d) {
+-      vkr_device_memory_release(mem);
+-      dev->proc_table.FreeMemory(dev->base.handle.device, mem->base.handle.device_memory, NULL);
++      vkr_device_memory_free(dev, mem, true);
+       vkr_device_remove_object(ctx, dev, &mem->base);
+       *ret = VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+@@ -800,24 +865,17 @@ vkr_dispatch_vkFreeMemory(struct vn_dispatch_context *dispatch,
+    struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
+    if (!mem)
+       return;
+-   /* OmacVM (virgl-venus-dedicated-memory.patch) */
+-   struct vkr_device *mem_dev = mem->device;
+-   struct vkr_dedicated *dedicated = mem->dedicated;
+-
+-#ifdef __APPLE__
+-   /* OmacVM: the IOSurface's pages outlive the Vulkan memory made of them until the
+-    * GPU is done with what the guest submitted before this */
++   struct vkr_context *ctx = dispatch->data;
++   /* OmacVM (virgl-venus-ring-lock.patch) */
++   if (vkr_context_pinned(ctx, &mem->base, "vkFreeMemory"))
++      return;
++   /* OmacVM (virgl-venus-alias-memory.patch): an image bound to it while it is dedicated to
++    * another holds it: a zombie until that image's driver destroy */
++   if (vkr_device_object_held(ctx, &mem->base, true))
++      return;
+    struct vkr_device *dev = mem->device;
+-   void *iosurface = mem->iosurface;
+-   mem->iosurface = NULL;
+-#endif
+-   vkr_device_memory_release(mem);
+-   vkr_device_memory_destroy_and_remove(dispatch->data, args);
+-   vkr_dedicated_memory_freed(mem_dev, dedicated, true);
+-#ifdef __APPLE__
+-   if (iosurface)
+-      vkr_device_release_after_queues(dev, iosurface);
+-#endif
++   vkr_device_memory_free(dev, mem, true);
++   vkr_device_remove_object(ctx, dev, &mem->base);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+index 039b107..6622b29 100644
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -17,10 +17,29 @@ struct gbm_bo;
+  * is freed (~MVKDeviceMemory): a target destroyed before it was bound left the memory a
+  * dangling pointer. So the driver's destroy of a target waits for the last memory
+  * dedicated to it (memory first, then the target), and only the target binds to such
+- * memory, at offset 0. One exception, on KosmicKrisp alone: a swapchain's image (ALIAS_BIT)
+- * and an app's image bound to it (VkBindImageMemorySwapchainInfoKHR, ALIAS_BIT too; guest
+- * Mesa binds the swapchain image's dedicated memory). KosmicKrisp ignores dedicated
+- * allocations; MoltenVK does not count that image, so there the bind stays refused. */
++ * memory, at offset 0.
++ * OmacVM (virgl-venus-alias-memory.patch, overrides the exception above): one more image
++ * binds, on both drivers: an app's image bound to a swapchain's
++ * (VkBindImageMemorySwapchainInfoKHR). Guest Mesa makes it from the swapchain's own create
++ * info (VUID-VkImageSwapchainCreateInfoKHR-swapchain-00995) and binds it to the swapchain
++ * image's dedicated memory at offset 0, so vkr takes an ALIAS_BIT image with the target's
++ * create info (image_info) there. MoltenVK binds that image without counting it in the
++ * memory and locks the memory when the image is destroyed: so the image holds the memory
++ * (alias_memory), a freed memory stays in the driver as a zombie, and its driver free (and
++ * so the target's destroy) waits for the image's driver destroy: the image, the memory,
++ * the target. KosmicKrisp ignores dedicated allocations. */
++struct vkr_alias_info {
++   VkImageType type;
++   VkFormat format;
++   VkImageTiling tiling;
++   VkImageCreateFlags flags;
++   VkImageUsageFlags usage;
++   VkExtent3D extent;
++   uint32_t mip_levels;
++   uint32_t array_layers;
++   VkSampleCountFlagBits samples;
++};
++
+ struct vkr_dedicated {
+    VkObjectType type; /* VK_OBJECT_TYPE_IMAGE or VK_OBJECT_TYPE_BUFFER */
+    union {
+@@ -30,8 +49,13 @@ struct vkr_dedicated {
+    uint32_t memories;
+    /* the guest destroyed the target: the driver's destroy waits for the last memory */
+    bool destroyed;
+-   /* an ALIAS_BIT image on KosmicKrisp: other ALIAS_BIT images may bind too */
++   /* an ALIAS_BIT image: other ALIAS_BIT images with its create info may bind too
++    * (virgl-venus-alias-memory.patch: on both drivers) */
+    bool alias;
++   struct vkr_alias_info image_info;
++   /* OmacVM (virgl-venus-alias-memory.patch): the target destroyed by the guest was bound
++    * to memory dedicated to another image: that memory, held until the deferred destroy */
++   struct vkr_device_memory *alias_memory;
+ };
+ 
+ struct vkr_device_memory {
+@@ -92,24 +116,43 @@ vkr_device_memory_bind_ok(const struct vkr_device_memory *mem,
+  * whose record is `target` (NULL: none yet) may use this memory at offset: memory dedicated
+  * to nothing, or to that target at offset 0 (VUIDs vkBindImageMemory-memory-02628 and
+  * -10926, vkBindBufferMemory-memory-01508 and -10925; no Mac driver has
+- * dedicatedAllocationImageAliasing, 02629's exception), or with alias (an ALIAS_BIT image)
+- * to an image that takes aliases, at offset 0 */
++ * dedicatedAllocationImageAliasing, 02629's exception), or (image: the binding image's
++ * create info, NULL for a buffer) an ALIAS_BIT image with the create info of the ALIAS_BIT
++ * image the memory is dedicated to, at offset 0 (virgl-venus-alias-memory.patch): then
++ * *alias is true and the image must hold the memory. Else false, with why. */
+ bool
+ vkr_device_memory_dedicated_ok(const struct vkr_device_memory *mem,
+                                const struct vkr_dedicated *target,
+-                               bool alias,
+-                               VkDeviceSize offset);
++                               const struct vkr_alias_info *image,
++                               VkDeviceSize offset,
++                               bool *alias,
++                               char *why,
++                               size_t why_size);
+ 
+ /* the guest destroys a dedicated image or buffer (its record d, may be NULL): true when the
+- * driver's destroy must wait for a memory dedicated to it, else the record is freed */
++ * driver's destroy must wait for a memory dedicated to it, else the record is freed.
++ * alias_memory (virgl-venus-alias-memory.patch): the memory the image holds (NULL: none);
++ * when true the record takes that hold over, else the caller lets go of it after the
++ * driver's destroy. */
+ bool
+-vkr_dedicated_target_destroyed(struct vkr_device *dev, struct vkr_dedicated *d);
++vkr_dedicated_target_destroyed(struct vkr_device *dev,
++                               struct vkr_dedicated *d,
++                               struct vkr_device_memory *alias_memory);
+ 
+ /* a memory dedicated to d is freed (the driver's free is done): the last one destroys a
+- * target the guest destroyed before (when destroy_vk) and frees the record */
++ * target the guest destroyed before (when destroy_vk), lets go of the memory that target
++ * held and frees the record */
+ void
+ vkr_dedicated_memory_freed(struct vkr_device *dev, struct vkr_dedicated *d, bool destroy_vk);
+ 
++/* OmacVM (virgl-venus-alias-memory.patch): all of a memory's free, for the guest's
++ * vkFreeMemory, the device's teardown and a zombie's last holder alike: vkr's own release,
++ * the driver's free (destroy_vk), the target it was dedicated to (vkr_dedicated_memory_freed),
++ * then its IOSurface: after the queues, or at once in the device's teardown (the device is
++ * idle there) or without destroy_vk. The caller removes or frees vkr's object after. */
++void
++vkr_device_memory_free(struct vkr_device *dev, struct vkr_device_memory *mem, bool destroy_vk);
++
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem);
+ 
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index e77ce25..c442dbd 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -252,6 +252,8 @@ vkr_image_init_info(struct vkr_device *dev,
+    image->extent = info->extent;
+    image->mip_levels = info->mipLevels;
+    image->array_layers = info->arrayLayers;
++   image->usage = info->usage;
++   image->samples = info->samples;
+    image->drm_linear = drm_linear;
+    image->plane_count =
+       info->flags & VK_IMAGE_CREATE_DISJOINT_BIT ? vkr_format_plane_count(info->format) : 1;
+@@ -288,6 +290,7 @@ vkr_image_bind_ok(const struct vkr_image *image,
+                   const struct vkr_device_memory *mem,
+                   VkDeviceSize offset,
+                   const void *next,
++                  bool *alias,
+                   char *why,
+                   size_t why_size)
+ {
+@@ -300,6 +303,11 @@ vkr_image_bind_ok(const struct vkr_image *image,
+       snprintf(why, why_size, "no %s", image ? "memory" : "image");
+       return false;
+    }
++   /* OmacVM (virgl-venus-alias-memory.patch): its hold would be lost */
++   if (image->alias_memory) {
++      snprintf(why, why_size, "an image bound already (VUID-VkBindImageMemoryInfo-image-07460)");
++      return false;
++   }
+    const uint32_t plane = plane_info ? vkr_image_plane_index(plane_info->planeAspect) : 0;
+    /* plane info only for a DISJOINT image, needed with 2+ memory planes; a one-plane
+     * DISJOINT|ALIAS image (VUID 01577) binds with PLANE_0 or without. memory[] is per plane. */
+@@ -311,14 +319,22 @@ vkr_image_bind_ok(const struct vkr_image *image,
+    }
+    if (!vkr_device_memory_bind_ok(mem, &image->memory[plane], offset, why, why_size))
+       return false;
+-   /* OmacVM (virgl-venus-dedicated-memory.patch) */
+-   if (!vkr_device_memory_dedicated_ok(mem, image->dedicated,
+-                                       image->flags & VK_IMAGE_CREATE_ALIAS_BIT, offset)) {
+-      snprintf(why, why_size, "memory dedicated to another image or buffer, or offset %" PRIu64,
+-               offset);
+-      return false;
+-   }
+-   return true;
++   /* OmacVM (virgl-venus-dedicated-memory.patch, virgl-venus-alias-memory.patch) */
++   struct vkr_alias_info info;
++   vkr_image_alias_info(image, &info);
++   return vkr_device_memory_dedicated_ok(mem, image->dedicated, &info, offset, alias, why,
++                                         why_size);
++}
++
++/* OmacVM (virgl-venus-alias-memory.patch): a bind vkr passes on to memory dedicated to
++ * another image holds that memory, whatever the driver's bind returns (MoltenVK keeps the
++ * memory in the image before it can fail) */
++static void
++vkr_image_hold_alias_memory(struct vkr_image *image, struct vkr_device_memory *mem)
++{
++   assert(!image->alias_memory);
++   vkr_object_hold(&mem->base);
++   image->alias_memory = mem;
+ }
+ 
+ /* OmacVM (virgl-venus-image-limits.patch): a create info a vkGetDeviceImage* query
+@@ -420,11 +436,18 @@ vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
+     * zombie's last holder destroys it (with the dedicated memory rule) */
+    if (image && vkr_device_object_held(dispatch->data, &image->base, true))
+       return;
+-   if (image && vkr_dedicated_target_destroyed(image->device, image->dedicated)) {
++   if (!image || vkr_context_pinned(dispatch->data, &image->base, "vkDestroyImage"))
++      return;
++   /* OmacVM (virgl-venus-alias-memory.patch): the memory dedicated to another image it is
++    * bound to goes after its driver destroy */
++   struct vkr_device_memory *alias_memory = vkr_image_take_alias_memory(image);
++   if (vkr_dedicated_target_destroyed(image->device, image->dedicated, alias_memory)) {
+       vkr_device_remove_object(dispatch->data, dev, &image->base);
+       return;
+    }
+    vkr_image_destroy_and_remove(dispatch->data, args);
++   if (alias_memory)
++      vkr_object_unhold(&alias_memory->base);
+ }
+ 
+ static void
+@@ -511,13 +534,16 @@ vkr_dispatch_vkBindImageMemory(struct vn_dispatch_context *dispatch,
+    /* OmacVM: the guest binds without waiting for an answer: a bind the driver must not
+     * get ends the app's context */
+    char why[192];
+-   if (!vkr_image_bind_ok(vkr_image_from_handle(args->image),
+-                          vkr_device_memory_from_handle(args->memory), args->memoryOffset,
+-                          NULL, why, sizeof(why))) {
++   struct vkr_image *image = vkr_image_from_handle(args->image);
++   struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->memory);
++   bool alias = false;
++   if (!vkr_image_bind_ok(image, mem, args->memoryOffset, NULL, &alias, why, sizeof(why))) {
+       vkr_context_refuse(dispatch->data, true, "vkBindImageMemory", "%s", why);
+       args->ret = VK_ERROR_UNKNOWN;
+       return;
+    }
++   if (alias)
++      vkr_image_hold_alias_memory(image, mem);
+ 
+    vn_replace_vkBindImageMemory_args_handle(args);
+    args->ret =
+@@ -532,16 +558,36 @@ vkr_dispatch_vkBindImageMemory2(struct vn_dispatch_context *dispatch,
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    /* OmacVM: as vkBindImageMemory, for each bind (and plane) */
++   uint32_t aliases = 0;
+    for (uint32_t i = 0; i < args->bindInfoCount; i++) {
+       const VkBindImageMemoryInfo *bind = &args->pBindInfos[i];
+       char why[192];
++      bool alias = false;
+       if (!vkr_image_bind_ok(vkr_image_from_handle(bind->image),
+                              vkr_device_memory_from_handle(bind->memory), bind->memoryOffset,
+-                             bind->pNext, why, sizeof(why))) {
++                             bind->pNext, &alias, why, sizeof(why))) {
+          vkr_context_refuse(dispatch->data, true, "vkBindImageMemory2", "bind %u: %s", i, why);
+          args->ret = VK_ERROR_UNKNOWN;
+          return;
+       }
++      /* OmacVM (virgl-venus-alias-memory.patch): one hold per image (VUID-vkBindImageMemory2-
++       * pBindInfos-04006; an image of such memory has one plane, VUID 01797) */
++      for (uint32_t j = 0; alias && j < i; j++) {
++         if (args->pBindInfos[j].image == bind->image) {
++            vkr_context_refuse(dispatch->data, true, "vkBindImageMemory2",
++                               "bind %u: an image named twice", i);
++            args->ret = VK_ERROR_UNKNOWN;
++            return;
++         }
++      }
++      aliases += alias;
++   }
++   for (uint32_t i = 0; aliases && i < args->bindInfoCount; i++) {
++      struct vkr_image *image = vkr_image_from_handle(args->pBindInfos[i].image);
++      struct vkr_device_memory *mem = vkr_device_memory_from_handle(args->pBindInfos[i].memory);
++      /* what vkr_image_bind_ok took as an alias */
++      if (mem->dedicated && mem->dedicated != image->dedicated)
++         vkr_image_hold_alias_memory(image, mem);
+    }
+ 
+    vn_replace_vkBindImageMemory2_args_handle(args);
+diff --git a/src/venus/vkr_image.h b/src/venus/vkr_image.h
+index 71fcc82..2c172d8 100644
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -31,9 +31,43 @@ struct vkr_image {
+    /* OmacVM (virgl-venus-dedicated-memory.patch): set by a memory dedicated to it */
+    struct vkr_dedicated *dedicated;
+    struct vkr_device *device;
++   /* OmacVM (virgl-venus-alias-memory.patch): the rest of the create info an alias is
++    * compared on, and the memory dedicated to another image it is bound to, which it holds
++    * until its driver destroy (NULL: none) */
++   VkImageUsageFlags usage;
++   VkSampleCountFlagBits samples;
++   struct vkr_device_memory *alias_memory;
+ };
+ VKR_DEFINE_OBJECT_CAST(image, VK_OBJECT_TYPE_IMAGE, VkImage)
+ 
++/* OmacVM (virgl-venus-alias-memory.patch) */
++static inline void
++vkr_image_alias_info(const struct vkr_image *image, struct vkr_alias_info *info)
++{
++   *info = (struct vkr_alias_info){
++      .type = image->type,
++      .format = image->format,
++      .tiling = image->tiling,
++      .flags = image->flags,
++      .usage = image->usage,
++      .extent = image->extent,
++      .mip_levels = image->mip_levels,
++      .array_layers = image->array_layers,
++      .samples = image->samples,
++   };
++}
++
++/* OmacVM (virgl-venus-alias-memory.patch): takes the image's hold on memory dedicated to
++ * another image (NULL: none), before its driver destroy; the caller passes it to
++ * vkr_dedicated_target_destroyed and lets go of it after that destroy */
++static inline struct vkr_device_memory *
++vkr_image_take_alias_memory(struct vkr_image *image)
++{
++   struct vkr_device_memory *mem = image->alias_memory;
++   image->alias_memory = NULL;
++   return mem;
++}
++
+ struct vkr_image_view {
+    struct vkr_object base;
+    /* OmacVM (virgl-venus-descriptor-limits.patch): the planes a descriptor of it takes in

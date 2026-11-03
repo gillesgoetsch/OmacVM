@@ -13,7 +13,13 @@
  * context's stream take turns on the app's objects, command buffers hold the views their
  * passes named and primaries the secondaries they executed (virgl-venus-ring-lock.patch,
  * virgl-venus-command-holds.patch, virgl-venus-secondary-holds.patch; the t- cases stop a
- * real ring with virgl-venus-test-pause.patch's hook).
+ * real ring with virgl-venus-test-pause.patch's hook), and no chain vkr checks has one
+ * structure type twice (virgl-venus-chain-repeats.patch: the -repeat- cases); a texel
+ * view of no element, a dynamic vertex stride and color blend states vkr counts as read or
+ * ignored as Vulkan does, and refusal lines without 18446744073709551615
+ * (virgl-venus-ignored-values.patch: case_ignored); no draw or dispatch uses a descriptor
+ * set, and no indexed draw an index buffer, never bound since the begin
+ * (virgl-venus-unset-state.patch: the u- cases, case_unset).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -32,7 +38,9 @@
  * submit one legal 64x64 clear pass (or a bound set and nothing else) on MoltenVK without
  * prefill and wait for the queue; the held reset, free and teardown cases skip MoltenVK
  * with prefill; c-state-secondary-held-*-submit submit a primary whose secondary holds one
- * barrier, on every driver, and the c-state-secondary-held- cases reset or free it. Run with
+ * barrier, on every driver, and the c-state-secondary-held- cases reset or free it; the
+ * u-ib-*-m6-ok cases submit their legal indexed draw (3 vertices at index 0, 64x64) on
+ * MoltenVK and wait for the queue. Run with
  * MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1, MoltenVK encodes at vkEndCommandBuffer what
  * it otherwise encodes at vkQueueSubmit in QEMU, still without committing (standards 14).
  *
@@ -288,6 +296,7 @@ static uint32_t dynamic_ubo_max, dynamic_ssbo_max; /* the larger of the core and
 static VkSampleCountFlags sample_location_counts;
 static VkExtent2D sample_location_grid;
 static VkResult last_ret;
+static bool have_indirect_count; /* drawIndirectCount on (the u-ib-*-indirect-count cases) */
 
 #define DEVH ((VkDevice)dev)
 #define FMT VK_FORMAT_R8G8B8A8_UNORM
@@ -532,6 +541,7 @@ static void setup_device(unsigned needs)
    VkPhysicalDeviceVulkan11Features e11 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .pNext = &e12, .multiview = f11.multiview,
                                             .samplerYcbcrConversion = (needs & N_YCBCR) != 0 };
+   have_indirect_count = f12.drawIndirectCount;
    VkPhysicalDeviceFeatures2 e2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e11 };
    e2.features.robustBufferAccess = f2.features.robustBufferAccess;
    e2.features.independentBlend = f2.features.independentBlend;
@@ -892,6 +902,8 @@ struct gfx {
    void *vert, *frag;
    const void *next;    /* chained after the rendering info */
    const void *ms_next; /* chained on the multisample state */
+   const void *vi_next; /* chained on the vertex input state */
+   const void *cb_next; /* chained on the color blend state */
    const VkDynamicState *dynamic;
    uint32_t dynamic_count;
    VkShaderStageFlagBits vert_stage;
@@ -902,6 +914,8 @@ struct gfx {
    uint32_t feedback_count; /* chain a creation feedback with this many stage entries */
    bool feedback;
    VkFormat color_format, depth_format; /* dynamic rendering's (0: FMT, none) */
+   bool blend_null; /* the color blend state without its attachment array */
+   bool discard;    /* rasterizerDiscardEnable VK_TRUE */
 };
 
 static void *graphics_pipeline(void *layout, const struct gfx *g)
@@ -915,7 +929,7 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
    VkVertexInputBindingDescription vb = { g->vbinding, g->vstride ? g->vstride : 16, VK_VERTEX_INPUT_RATE_VERTEX };
    VkVertexInputAttributeDescription va = { g->vlocation, g->vbinding, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };
    VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                                               .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vb,
+                                               .pNext = g->vi_next, .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vb,
                                                .vertexAttributeDescriptionCount = 1,
                                                .pVertexAttributeDescriptions = &va };
    VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -931,7 +945,7 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
                                             .scissorCount = g->viewports ? g->viewports : 1, .pScissors = scs };
    VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                  .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = g->cull,
-                                                 .lineWidth = 1 };
+                                                 .lineWidth = 1, .rasterizerDiscardEnable = g->discard };
    VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .pNext = g->ms_next, .rasterizationSamples = g->samples ? g->samples : VK_SAMPLE_COUNT_1_BIT };
    VkPipelineDepthStencilStateCreateInfo ds = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -941,8 +955,8 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
       cba[i] = (VkPipelineColorBlendAttachmentState){ .blendEnable = g->src_factor != 0, .colorWriteMask = 0xf,
                                                       .srcColorBlendFactor = g->src_factor };
    VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                              .attachmentCount = g->blend_count ? g->blend_count : g->colors,
-                                              .pAttachments = cba };
+                                              .pNext = g->cb_next, .attachmentCount = g->blend_count ? g->blend_count : g->colors,
+                                              .pAttachments = g->blend_null ? NULL : cba };
    static VkFormat formats[64];
    for (int i = 0; i < 64; i++)
       formats[i] = g->color_format ? g->color_format : FMT;
@@ -2556,9 +2570,9 @@ static void bind_sets(void *cmd, void *layout, uint32_t first, void **sets, uint
    D->dispatch_vkCmdBindDescriptorSets(D, &b);
 }
 
-/* everything the world's pipelines use, bound (a draw or dispatch without it is invalid
- * usage: MoltenVK reads the unset state when it encodes) */
-static void ready(void *cmd, struct world *w, VkPipelineBindPoint point)
+/* everything the world's pipelines use but its set (written, not bound): push constants
+ * and, for graphics, the vertex buffer and viewport */
+static void ready_except_set(void *cmd, struct world *w, VkPipelineBindPoint point)
 {
    VkDescriptorBufferInfo ubo = { (VkBuffer)w->buf, 0, 256 }, ssbo = { (VkBuffer)w->buf, 256, 256 },
                           dyn = { (VkBuffer)w->buf, 512, 256 };
@@ -2575,14 +2589,6 @@ static void ready(void *cmd, struct world *w, VkPipelineBindPoint point)
    struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 4, .pDescriptorWrites = wr };
    step("vkUpdateDescriptorSets (the world's set)");
    D->dispatch_vkUpdateDescriptorSets(D, &u);
-   VkDescriptorSet set = (VkDescriptorSet)w->set;
-   const uint32_t off = 0;
-   struct vn_command_vkCmdBindDescriptorSets b = { .commandBuffer = (VkCommandBuffer)cmd, .pipelineBindPoint = point,
-                                                   .layout = (VkPipelineLayout)w->layout, .descriptorSetCount = 1,
-                                                   .pDescriptorSets = &set, .dynamicOffsetCount = 1,
-                                                   .pDynamicOffsets = &off };
-   step("vkCmdBindDescriptorSets (the world's set)");
-   D->dispatch_vkCmdBindDescriptorSets(D, &b);
    static uint8_t data[128];
    struct vn_command_vkCmdPushConstants p = { .commandBuffer = (VkCommandBuffer)cmd,
                                               .layout = (VkPipelineLayout)w->layout,
@@ -2599,6 +2605,27 @@ static void ready(void *cmd, struct world *w, VkPipelineBindPoint point)
                                                 .pViewports = &vp };
       D->dispatch_vkCmdSetViewport(D, &sv);
    }
+}
+
+/* the world's set, at `point` (one dynamic offset) */
+static void bind_world_set(void *cmd, struct world *w, VkPipelineBindPoint point)
+{
+   VkDescriptorSet set = (VkDescriptorSet)w->set;
+   const uint32_t off = 0;
+   struct vn_command_vkCmdBindDescriptorSets b = { .commandBuffer = (VkCommandBuffer)cmd, .pipelineBindPoint = point,
+                                                   .layout = (VkPipelineLayout)w->layout, .descriptorSetCount = 1,
+                                                   .pDescriptorSets = &set, .dynamicOffsetCount = 1,
+                                                   .pDynamicOffsets = &off };
+   step("vkCmdBindDescriptorSets (the world's set) at point %d", point);
+   D->dispatch_vkCmdBindDescriptorSets(D, &b);
+}
+
+/* everything the world's pipelines use, bound (a draw or dispatch without it is invalid
+ * usage: MoltenVK reads the unset state when it encodes) */
+static void ready(void *cmd, struct world *w, VkPipelineBindPoint point)
+{
+   ready_except_set(cmd, w, point);
+   bind_world_set(cmd, w, point);
 }
 
 static int sets_case(const char *c, struct world *w)
@@ -3777,13 +3804,14 @@ static int case_submit(const char *c)
    return s.ret == VK_SUCCESS ? WORKS : ERROR;
 }
 
-/* an image not bound yet (flags: create flags) */
-static struct vkr_image *image_unbound(VkImageCreateFlags flags, VkFormat format, VkImageUsageFlags usage)
+/* an image not bound yet (flags: create flags), size x size */
+static struct vkr_image *image_unbound_size(VkImageCreateFlags flags, VkFormat format, VkImageUsageFlags usage,
+                                            uint32_t size)
 {
    const uint64_t id = next_id++;
    VkImage hd = (VkImage)(uintptr_t)id;
    VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags,
-                              .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = { 64, 64, 1 },
+                              .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = { size, size, 1 },
                               .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage };
    struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
@@ -3792,6 +3820,11 @@ static struct vkr_image *image_unbound(VkImageCreateFlags flags, VkFormat format
    if (c.ret != VK_SUCCESS || !img)
       broken("vkCreateImage");
    return img;
+}
+
+static struct vkr_image *image_unbound(VkImageCreateFlags flags, VkFormat format, VkImageUsageFlags usage)
+{
+   return image_unbound_size(flags, format, usage, 64);
 }
 
 static struct vkr_buffer *buffer_unbound(VkDeviceSize size)
@@ -3876,18 +3909,20 @@ static void free_memory(struct vkr_device_memory *mem)
  * freed memory, seen under libgmalloc), also when the app's context ends in between; bound,
  * then destroyed and freed. Refused (the bind ends the context): another image on memory
  * dedicated to one (VUID-vkBindImageMemory-memory-02628), a buffer on memory dedicated to an
- * image (VUID-vkBindBufferMemory-memory-10925). Two ALIAS_BIT images on such memory are what
- * guest Mesa binds for VkBindImageMemorySwapchainInfoKHR: they work on KosmicKrisp, which
- * ignores dedicated allocations, and stay refused on MoltenVK, which took the second image
- * without counting it and locked the freed memory's mutex at its destroy. Refused at the
+ * image (VUID-vkBindBufferMemory-memory-10925). Two ALIAS_BIT images on such memory with
+ * the same create info are what guest Mesa binds for VkBindImageMemorySwapchainInfoKHR: the
+ * x-dedicated-alias cases (case_alias). Refused at the
  * allocation (the chain names one thing for vkr and another for MoltenVK, whose loop keeps
  * the last, VUID-VkMemoryAllocateInfo-sType-unique): a dedicated struct chained twice, the
  * first naming image A or nothing, then image B destroyed before the free; a target of
  * another device. */
+static int case_alias(const char *c);
+
 static int case_dedicated(const char *c)
 {
+   if (!strncmp(c, "x-dedicated-alias", 17))
+      return case_alias(c);
    setup(0);
-   const bool alias = IS("x-dedicated-alias"), half = IS("x-dedicated-alias-half");
    const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    if (IS("x-dedicated-chain-twice") || IS("x-dedicated-chain-null")) {
       struct vkr_image *a = image_unbound(0, FMT, usage), *b = image_unbound(0, FMT, usage);
@@ -3922,7 +3957,7 @@ static int case_dedicated(const char *c)
       free_memory(mem);
       return ended() ? FATAL : WORKS;
    }
-   struct vkr_image *a = image_unbound(alias ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
+   struct vkr_image *a = image_unbound(0, FMT, usage);
    struct vkr_device_memory *mem = dedicated_memory(a, NULL);
    if (IS("x-dedicated-bound-ok")) {
       if (bind_image_at(a, mem) != VK_SUCCESS)
@@ -3937,10 +3972,8 @@ static int case_dedicated(const char *c)
       vkr_context_destroy(ctx);
       step("the context is gone");
       return WORKS;
-   } else if (IS("x-dedicated-other") || alias || half) {
-      if (alias)
-         expect(!kosmickrisp);
-      struct vkr_image *b = image_unbound(alias || half ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
+   } else if (IS("x-dedicated-other")) {
+      struct vkr_image *b = image_unbound(0, FMT, usage);
       bind_image_at(b, mem);
       if (!ended()) {
          free_memory(mem);
@@ -4501,6 +4534,157 @@ static int secondary_case(const char *c, struct world *w)
       return FATAL;
    step("zombies now: %d", zombies());
    return zombies() > 0 ? ZOMBIES : WORKS;
+}
+
+/* ---------------- a swapchain's memory (virgl-venus-alias-memory.patch) ----------------
+ * LEGAL, what guest Mesa sends for an app's image bound with VkBindImageMemorySwapchainInfoKHR:
+ * image B, made from the swapchain's create info (ALIAS_BIT, VUID-VkImageSwapchainCreateInfoKHR-
+ * swapchain-00995), bound to the memory M dedicated to the swapchain's image A at offset 0.
+ * MoltenVK binds B without counting it in M and locks M when B is destroyed: M freed first
+ * (destroying the swapchain before B breaks no VUID) was a freed-mutex lock (SIGABRT, under
+ * libgmalloc SIGSEGV). So B holds M: a freed M is a zombie until B's driver destroy.
+ *   x-dedicated-alias: bind B, free M (a zombie), destroy B (none left)
+ *   -b-first-ok: B destroyed before M's free and A's destroy (the order before the fix)
+ *   -free-a-b: free M, destroy A, then B
+ *   -context-end: M freed, the context ends with A and B
+ *   -held: a view of B a command buffer's rendering names; free M, destroy the view and B
+ *     (B, M and the view zombies), then the command buffer's free lets go of all three
+ *   -own-dedicated: B is itself the target of memory M2: B's driver destroy waits for M2's
+ *     free, and M's for that destroy
+ *   -bind2: two such images in one vkBindImageMemory2
+ * Refused: -half (A without ALIAS_BIT, VUID 02628), -params, -params-usage, -params-flags (B
+ * unlike A: the extent, a usage bit, MUTABLE_FORMAT: MoltenVK draws B from A's texture),
+ * -twice (B bound again, VUID-VkBindImageMemoryInfo-image-07460), -bind2-twice (B twice in
+ * one call, VUID-vkBindImageMemory2-pBindInfos-04006). */
+/* a wrong count is told at the end: the case goes on, so a vkr without the hold reaches the
+ * driver's destroy of B (MoltenVK's freed-mutex lock) */
+static bool alias_bad;
+static void alias_zombies(int want, const char *when)
+{
+   const int z = zombies();
+   step("zombies %s: %d (want %d)", when, z, want);
+   alias_bad |= z != want;
+}
+
+static int alias_end(void)
+{
+   return ended() ? FATAL : alias_bad ? ZOMBIES : WORKS;
+}
+
+static int case_alias(const char *c)
+{
+   setup(0);
+   const bool held = IS("x-dedicated-alias-held");
+   const VkImageUsageFlags usage = held ? CA_SA : VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   const VkImageCreateFlags alias = VK_IMAGE_CREATE_ALIAS_BIT;
+   struct vkr_image *a = image_unbound(IS("x-dedicated-alias-half") ? 0 : alias, FMT, usage);
+   struct vkr_device_memory *mem = dedicated_memory(a, NULL);
+   if (!mem)
+      return FATAL;
+
+   VkImageCreateFlags bflags = alias;
+   VkImageUsageFlags busage = usage;
+   uint32_t bsize = 64;
+   if (IS("x-dedicated-alias-params"))
+      bsize = 32;
+   else if (IS("x-dedicated-alias-params-usage"))
+      busage |= VK_IMAGE_USAGE_STORAGE_BIT;
+   else if (IS("x-dedicated-alias-params-flags"))
+      bflags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+   struct vkr_image *b = image_unbound_size(bflags, FMT, busage, bsize);
+
+   if (IS("x-dedicated-alias-bind2") || IS("x-dedicated-alias-bind2-twice")) {
+      const bool twice = IS("x-dedicated-alias-bind2-twice");
+      struct vkr_image *b2 = twice ? b : image_unbound(alias, FMT, usage);
+      VkBindImageMemoryInfo binds[2] = {
+         { .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .image = (VkImage)b, .memory = (VkDeviceMemory)mem },
+         { .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .image = (VkImage)b2, .memory = (VkDeviceMemory)mem },
+      };
+      struct vn_command_vkBindImageMemory2 bi = { .device = DEVH, .bindInfoCount = 2, .pBindInfos = binds };
+      step("vkBindImageMemory2: two images to memory dedicated to another");
+      D->dispatch_vkBindImageMemory2(D, &bi);
+      if (ended())
+         return FATAL;
+      if (bi.ret != VK_SUCCESS)
+         return ERROR;
+      free_memory(mem);
+      alias_zombies(1, "after the free");
+      destroy_image(b);
+      alias_zombies(1, "after the first image's destroy");
+      if (b2 != b)
+         destroy_image(b2);
+      destroy_image(a);
+      alias_zombies(0, "at the end");
+      return alias_end();
+   }
+
+   /* B's own dedicated memory, never bound (legal) */
+   struct vkr_device_memory *own = IS("x-dedicated-alias-own-dedicated") ? dedicated_memory(b, NULL) : NULL;
+   if (ended())
+      return FATAL;
+   if (bind_image_at(b, mem) != VK_SUCCESS)
+      return ended() ? FATAL : ERROR;
+   if (IS("x-dedicated-alias-twice")) {
+      bind_image_at(b, mem);
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("x-dedicated-alias-b-first-ok")) {
+      destroy_image(b);
+      free_memory(mem);
+      destroy_image(a);
+      alias_zombies(0, "at the end");
+      return alias_end();
+   }
+   void *v = NULL, *cmd = NULL;
+   if (held) {
+      v = view(b, 1);
+      cmd = command_buffer();
+      begin(cmd);
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)v,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                             .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
+      struct vn_command_vkCmdBeginRendering br = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderingInfo = &ri };
+      step("vkCmdBeginRendering into a view of B");
+      D->dispatch_vkCmdBeginRendering(D, &br);
+      if (ended())
+         return FATAL;
+      struct vn_command_vkCmdEndRendering er = { .commandBuffer = (VkCommandBuffer)cmd };
+      D->dispatch_vkCmdEndRendering(D, &er);
+      const int r = end(cmd);
+      if (r != WORKS)
+         return r;
+   }
+   free_memory(mem);
+   alias_zombies(1, "after the free of A's memory");
+   if (IS("x-dedicated-alias-context-end")) {
+      step("the context ends with A and B");
+      vkr_context_destroy(ctx);
+      step("the context is gone");
+      return alias_bad ? ZOMBIES : WORKS;
+   }
+   if (IS("x-dedicated-alias-free-a-b")) {
+      destroy_image(a);
+      alias_zombies(1, "after A's destroy");
+   }
+   if (held)
+      destroy_view(v);
+   destroy_image(b);
+   if (held) {
+      alias_zombies(3, "after the view's and B's destroy");
+      free_command_buffer(cmd);
+   } else if (own) {
+      alias_zombies(1, "after B's destroy (its memory alive)");
+      free_memory(own);
+   }
+   alias_zombies(0, "after B's destroy");
+   if (!IS("x-dedicated-alias-free-a-b"))
+      destroy_image(a);
+   if (IS("x-dedicated-alias") || IS("x-dedicated-alias-free-a-b") || held || own)
+      return alias_end();
+   return BROKEN;
 }
 
 /* ---------------- two threads on one context (virgl-venus-ring-lock.patch) ----------------
@@ -5093,6 +5277,1078 @@ static int ring_time(int n)
 }
 
 /* ---------------- the cases and what each must see ---------------- */
+/* ---------------- a structure type twice in a chain ----------------
+ * VUID-<struct>-sType-unique; each struct alone is legal. vkr's checks read the first of a
+ * type, the drivers the last (virgl-venus-chain-repeats.patch). r-repeat-multiview: Mesa's
+ * vk_common_CreateRenderPass (KosmicKrisp) keeps the second struct, 9 views, and Metal ended
+ * the process at the pass's begin; r-repeat-multiview-short: Mesa reads the second struct's
+ * masks for both subpasses, past its one-mask array (guarded memory); r-repeat-attachment-
+ * begin: MoltenVK's begin keeps the second attachment info, which has no views, and reads
+ * the pass's one attachment from it. The -two-types-ok cases have the same structs once
+ * (beside a second type where the chain takes one). */
+static void *one_subpass_pass(const void *next)
+{
+   VkAttachmentDescription att = { 0, FMT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                   VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                   VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+                                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+   VkAttachmentReference ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+   VkSubpassDescription sub = { .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                                .pColorAttachments = &ref };
+   const uint64_t id = next_id++;
+   VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+   VkRenderPassCreateInfo info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .pNext = next,
+                                   .attachmentCount = 1, .pAttachments = &att, .subpassCount = 1, .pSubpasses = &sub };
+   struct vn_command_vkCreateRenderPass cr = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+   step("vkCreateRenderPass 1 subpass, a chain");
+   D->dispatch_vkCreateRenderPass(D, &cr);
+   last_ret = cr.ret;
+   step("vkCreateRenderPass = %d", cr.ret);
+   return cr.ret == VK_SUCCESS ? object(id) : NULL;
+}
+
+/* a pass of one attachment on view v, begun with next on the begin info, ended */
+static int pass_on(void *rp, void *v, const void *begin_next, bool imageless)
+{
+   void *views[1] = { v };
+   void *fb = imageless ? imageless_framebuffer(rp) : framebuffer(rp, views, 1, 64, 64, 1);
+   if (!fb)
+      return imageless ? SKIP : created(fb);
+   void *cmd = command_buffer();
+   begin(cmd);
+   VkClearValue clear = { 0 };
+   VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .pNext = begin_next,
+                                .renderPass = (VkRenderPass)rp, .framebuffer = (VkFramebuffer)fb,
+                                .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1, .pClearValues = &clear };
+   struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
+                                                .contents = VK_SUBPASS_CONTENTS_INLINE };
+   step("vkCmdBeginRenderPass, a chain on the begin info");
+   D->dispatch_vkCmdBeginRenderPass(D, &b);
+   end_pass(cmd);
+   return end(cmd);
+}
+
+static int case_repeat(const char *c)
+{
+   unsigned needs = 0;
+   if (IS("p-repeat-inline-spirv") || IS("d-repeat-buffer-view"))
+      needs |= N_MAINT5;
+   if (IS("p-repeat-gfx-ms"))
+      needs |= N_SAMPLELOC;
+   setup(needs);
+   struct world w = { 0 };
+   make_world(&w, c[0] == 'p');
+
+   if (IS("r-repeat-multiview") || IS("r-repeat-two-types-ok")) {
+      if (9 > lim.maxImageArrayLayers || 9 > lim.maxFramebufferLayers) {
+         printf("skip: 9 layers\n");
+         return SKIP;
+      }
+      static const uint32_t one = 0x1, nine = 0x1ff;
+      VkRenderPassMultiviewCreateInfo mv2 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .subpassCount = 1, .pViewMasks = &nine };
+      VkRenderPassInputAttachmentAspectCreateInfo ia = {
+         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO };
+      VkRenderPassMultiviewCreateInfo mv1 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .pNext = IS("r-repeat-multiview") ? (const void *)&mv2 : &ia,
+                                              .subpassCount = 1, .pViewMasks = &one };
+      void *rp = one_subpass_pass(&mv1);
+      if (!rp)
+         return created(rp);
+      return pass_on(rp, view(image(64, 64, 9, CA_SA), 9), NULL, false);
+   }
+   if (IS("r-repeat-multiview-short")) {
+      static const uint32_t masks[2] = { 1, 1 };
+      uint32_t *short_masks = guarded(sizeof(uint32_t));
+      short_masks[0] = 1;
+      VkRenderPassMultiviewCreateInfo mv2 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .subpassCount = 1, .pViewMasks = short_masks };
+      VkRenderPassMultiviewCreateInfo mv1 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .pNext = &mv2, .subpassCount = 2, .pViewMasks = masks };
+      return created(two_subpass_pass(&mv1, 0));
+   }
+   if (IS("r-repeat-attachment-begin")) {
+      VkImageView one = (VkImageView)w.iv;
+      VkRenderPassAttachmentBeginInfo ab2 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO };
+      VkRenderPassAttachmentBeginInfo ab1 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
+                                              .pNext = &ab2, .attachmentCount = 1, .pAttachments = &one };
+      return pass_on(w.rp, NULL, &ab1, true);
+   }
+   if (IS("r-repeat-begin") || IS("r-repeat-begin-two-types-ok")) {
+      /* device group begin infos (core 1.1), device mask 1, no areas */
+      VkDeviceGroupRenderPassBeginInfo g2 = { .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_RENDER_PASS_BEGIN_INFO,
+                                              .deviceMask = 1 };
+      VkImageView one = (VkImageView)w.iv;
+      VkRenderPassAttachmentBeginInfo ab = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
+                                             .attachmentCount = 1, .pAttachments = &one };
+      VkDeviceGroupRenderPassBeginInfo g1 = { .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_RENDER_PASS_BEGIN_INFO,
+                                              .pNext = IS("r-repeat-begin") ? (const void *)&g2 : &ab,
+                                              .deviceMask = 1 };
+      return pass_on(w.rp, w.iv, &g1, IS("r-repeat-begin-two-types-ok"));
+   }
+   if (IS("r-repeat-pass2-subpass")) {
+      /* depth/stencil resolve infos with no resolve (core 1.2) */
+      VkSubpassDescriptionDepthStencilResolve r2 = {
+         .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE };
+      VkSubpassDescriptionDepthStencilResolve r1 = r2;
+      r1.pNext = &r2;
+      VkAttachmentDescription2 att = { .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, .format = FMT,
+                                       .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                       .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                       .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+      VkAttachmentReference2 ref = { .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, .attachment = 0,
+                                     .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT };
+      VkSubpassDescription2 sub = { .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2, .pNext = &r1,
+                                    .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    .colorAttachmentCount = 1, .pColorAttachments = &ref };
+      const uint64_t id = next_id++;
+      VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+      VkRenderPassCreateInfo2 info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, .attachmentCount = 1,
+                                       .pAttachments = &att, .subpassCount = 1, .pSubpasses = &sub };
+      struct vn_command_vkCreateRenderPass2 cr = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+      step("vkCreateRenderPass2, two depth/stencil resolve infos on the subpass");
+      D->dispatch_vkCreateRenderPass2(D, &cr);
+      last_ret = cr.ret;
+      return created(cr.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("r-repeat-framebuffer")) {
+      const VkFormat fmt = FMT;
+      VkFramebufferAttachmentImageInfo ai = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO,
+                                              .usage = CA_SA, .width = 64, .height = 64, .layerCount = 1,
+                                              .viewFormatCount = 1, .pViewFormats = &fmt };
+      VkFramebufferAttachmentsCreateInfo ac2 = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO,
+                                                 .attachmentImageInfoCount = 1, .pAttachmentImageInfos = &ai };
+      VkFramebufferAttachmentsCreateInfo ac1 = ac2;
+      ac1.pNext = &ac2;
+      const uint64_t id = next_id++;
+      VkFramebuffer fh = (VkFramebuffer)(uintptr_t)id;
+      VkFramebufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .pNext = &ac1,
+                                       .flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, .renderPass = (VkRenderPass)w.rp,
+                                       .attachmentCount = 1, .width = 64, .height = 64, .layers = 1 };
+      struct vn_command_vkCreateFramebuffer cf = { .device = DEVH, .pCreateInfo = &info, .pFramebuffer = &fh };
+      step("vkCreateFramebuffer (imageless), two attachment infos");
+      D->dispatch_vkCreateFramebuffer(D, &cf);
+      last_ret = cf.ret;
+      return created(cf.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("r-repeat-rendering")) {
+      VkDeviceGroupRenderPassBeginInfo g2 = { .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_RENDER_PASS_BEGIN_INFO,
+                                              .deviceMask = 1 };
+      VkDeviceGroupRenderPassBeginInfo g1 = g2;
+      g1.pNext = &g2;
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)w.iv,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .pNext = &g1,
+                             .renderArea = { { 0, 0 }, { 64, 64 } }, .layerCount = 1, .colorAttachmentCount = 1,
+                             .pColorAttachments = &att };
+      begin(w.cmd);
+      struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)w.cmd, .pRenderingInfo = &ri };
+      step("vkCmdBeginRendering, two device group infos");
+      D->dispatch_vkCmdBeginRendering(D, &b);
+      if (!ended()) {
+         struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)w.cmd };
+         D->dispatch_vkCmdEndRendering(D, &e);
+      }
+      return end(w.cmd);
+   }
+   if (IS("c-repeat-inheritance")) {
+      VkFormat formats[1] = { FMT };
+      VkCommandBufferInheritanceRenderingInfo r2 = {
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO, .colorAttachmentCount = 1,
+         .pColorAttachmentFormats = formats, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+      VkCommandBufferInheritanceRenderingInfo r1 = r2;
+      r1.pNext = &r2;
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      begin_secondary(sec, &r1);
+      return end(sec);
+   }
+   if (IS("d-repeat-layout") || IS("d-repeat-two-types-ok")) {
+      const VkDescriptorSetLayoutBinding b = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL };
+      const VkDescriptorBindingFlags none = 0;
+      VkDescriptorSetLayoutBindingFlagsCreateInfo f2 = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, .bindingCount = 1,
+         .pBindingFlags = &none };
+      VkDescriptorSetLayoutBindingFlagsCreateInfo f1 = f2;
+      f1.pNext = &f2;
+      if (IS("d-repeat-layout"))
+         return created(set_layout_of(&b, 1, 0, &f1));
+      /* the control: binding flags on the layout, a variable count info on the allocation */
+      void *dsl = set_layout_of(&b, 1, 0, &f2);
+      if (!dsl)
+         return created(dsl);
+      VkDescriptorSetVariableDescriptorCountAllocateInfo v = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO };
+      return created(set_from(w.pool, dsl, &v));
+   }
+   if (IS("d-repeat-alloc")) {
+      VkDescriptorSetVariableDescriptorCountAllocateInfo v2 = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO };
+      VkDescriptorSetVariableDescriptorCountAllocateInfo v1 = v2;
+      v1.pNext = &v2;
+      return created(set_from(w.pool, w.dsl, &v1));
+   }
+   if (IS("d-repeat-pool")) {
+      VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4 };
+      VkDescriptorPoolInlineUniformBlockCreateInfo i2 = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO };
+      VkDescriptorPoolInlineUniformBlockCreateInfo i1 = i2;
+      i1.pNext = &i2;
+      const uint64_t id = next_id++;
+      VkDescriptorPool h = (VkDescriptorPool)(uintptr_t)id;
+      VkDescriptorPoolCreateInfo info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .pNext = &i1,
+                                          .maxSets = 4, .poolSizeCount = 1, .pPoolSizes = &size };
+      struct vn_command_vkCreateDescriptorPool cp = { .device = DEVH, .pCreateInfo = &info, .pDescriptorPool = &h };
+      step("vkCreateDescriptorPool, two inline block infos");
+      D->dispatch_vkCreateDescriptorPool(D, &cp);
+      last_ret = cp.ret;
+      return created(cp.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("d-repeat-write")) {
+      if (!max_inline_block) {
+         printf("skip: no inline uniform blocks\n");
+         return SKIP;
+      }
+      uint8_t data[16] = { 1 };
+      VkWriteDescriptorSetInlineUniformBlock i2 = {
+         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK, .dataSize = 16, .pData = data };
+      VkWriteDescriptorSetInlineUniformBlock i1 = i2;
+      i1.pNext = &i2;
+      VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &i1,
+                                  .dstSet = (VkDescriptorSet)w.set, .dstBinding = 5, .descriptorCount = 16,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK };
+      struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1,
+                                                     .pDescriptorWrites = &wr };
+      step("vkUpdateDescriptorSets, two inline block data infos");
+      D->dispatch_vkUpdateDescriptorSets(D, &u);
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("d-repeat-buffer")) {
+      VkExternalMemoryBufferCreateInfo e2 = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
+      VkExternalMemoryBufferCreateInfo e1 = e2;
+      e1.pNext = &e2;
+      const uint64_t id = next_id++;
+      VkBuffer h = (VkBuffer)(uintptr_t)id;
+      VkBufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &e1, .size = 4096,
+                                  .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT };
+      struct vn_command_vkCreateBuffer cb = { .device = DEVH, .pCreateInfo = &info, .pBuffer = &h };
+      step("vkCreateBuffer, two external memory infos");
+      D->dispatch_vkCreateBuffer(D, &cb);
+      last_ret = cb.ret;
+      return created(cb.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("d-repeat-buffer-view")) {
+      /* a texel buffer and a view of it with usage flags 2 twice (maintenance5) */
+      const uint64_t bid = next_id++;
+      VkBuffer bh = (VkBuffer)(uintptr_t)bid;
+      VkBufferCreateInfo binfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 65536,
+                                   .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT };
+      struct vn_command_vkCreateBuffer cb = { .device = DEVH, .pCreateInfo = &binfo, .pBuffer = &bh };
+      D->dispatch_vkCreateBuffer(D, &cb);
+      struct vkr_buffer *buf = object(bid);
+      if (cb.ret != VK_SUCCESS || !buf)
+         broken("texel buffer");
+      VkMemoryRequirements req = { 0 };
+      struct vn_command_vkGetBufferMemoryRequirements r = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                           .pMemoryRequirements = &req };
+      D->dispatch_vkGetBufferMemoryRequirements(D, &r);
+      struct vn_command_vkBindBufferMemory bm = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                  .memory = (VkDeviceMemory)allocate(req.size, memory_type(req.memoryTypeBits)) };
+      D->dispatch_vkBindBufferMemory(D, &bm);
+      if (bm.ret != VK_SUCCESS)
+         broken("texel buffer memory");
+      VkBufferUsageFlags2CreateInfo u2 = { .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO,
+                                           .usage = VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT };
+      VkBufferUsageFlags2CreateInfo u1 = u2;
+      u1.pNext = &u2;
+      const uint64_t id = next_id++;
+      VkBufferView h = (VkBufferView)(uintptr_t)id;
+      VkBufferViewCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .pNext = &u1,
+                                      .buffer = (VkBuffer)buf, .format = VK_FORMAT_R32_UINT, .range = 256 };
+      struct vn_command_vkCreateBufferView cv = { .device = DEVH, .pCreateInfo = &info, .pView = &h };
+      step("vkCreateBufferView, two usage flags 2 infos");
+      D->dispatch_vkCreateBufferView(D, &cv);
+      last_ret = cv.ret;
+      return created(cv.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("d-repeat-sampler")) {
+      VkSamplerReductionModeCreateInfo r2 = { .sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+                                              .reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE };
+      VkSamplerReductionModeCreateInfo r1 = r2;
+      r1.pNext = &r2;
+      const uint64_t id = next_id++;
+      VkSampler h = (VkSampler)(uintptr_t)id;
+      VkSamplerCreateInfo info = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .pNext = &r1,
+                                   .magFilter = VK_FILTER_LINEAR, .minFilter = VK_FILTER_LINEAR, .maxLod = 1 };
+      struct vn_command_vkCreateSampler cs = { .device = DEVH, .pCreateInfo = &info, .pSampler = &h };
+      step("vkCreateSampler, two reduction mode infos");
+      D->dispatch_vkCreateSampler(D, &cs);
+      last_ret = cs.ret;
+      return created(cs.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("p-repeat-inline-spirv")) {
+      /* two SPIR-V modules chained into the stage: vkr scans the first only */
+      VkShaderModuleCreateInfo m2 = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                      .codeSize = sizeof(spv_comp), .pCode = spv_comp };
+      VkShaderModuleCreateInfo m1 = m2;
+      m1.pNext = &m2;
+      return created(compute_pipeline(w.layout, NULL, &m1, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   VkPipelineCreationFeedback whole1, whole2;
+   VkPipelineCreationFeedbackCreateInfo fb2 = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                .pPipelineCreationFeedback = &whole2 };
+   VkPipelineCreationFeedbackCreateInfo fb1 = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                .pNext = &fb2, .pPipelineCreationFeedback = &whole1 };
+   if (IS("p-repeat-compute"))
+      return created(compute_pipeline(w.layout, w.comp, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, &fb1));
+   struct gfx g = { .rp = w.rp, .colors = 1, .vert = w.vert, .frag = w.frag };
+   if (IS("p-repeat-gfx")) {
+      g.feedback = true;
+      g.next = &fb2; /* after the feedback info graphics_pipeline() chains first */
+   } else if (IS("p-repeat-gfx-two-types-ok")) {
+      g.feedback = true; /* a feedback info once; a divisor info once on the vertex input */
+   }
+   VkPipelineVertexInputDivisorStateCreateInfo d2 = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO };
+   VkPipelineVertexInputDivisorStateCreateInfo d1 = d2;
+   d1.pNext = &d2;
+   if (IS("p-repeat-gfx-vertex"))
+      g.vi_next = &d1;
+   if (IS("p-repeat-gfx-two-types-ok"))
+      g.vi_next = &d2;
+   VkPipelineSampleLocationsStateCreateInfoEXT s2 = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT };
+   VkPipelineSampleLocationsStateCreateInfoEXT s1 = s2;
+   s1.pNext = &s2;
+   if (IS("p-repeat-gfx-ms"))
+      g.ms_next = &s1;
+   VkPipelineColorWriteCreateInfoEXT cw2 = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_WRITE_CREATE_INFO_EXT };
+   VkPipelineColorWriteCreateInfoEXT cw1 = cw2;
+   cw1.pNext = &cw2;
+   if (IS("p-repeat-gfx-blend"))
+      g.cb_next = &cw1;
+   return created(graphics_pipeline(w.layout, &g));
+}
+
+/* ---------------- values Vulkan ignores (virgl-venus-ignored-values.patch) ----------------
+ * d-texel-*: a texel buffer view of the whole size with less than one texel after its
+ * offset (LEGAL: VUID-VkBufferViewCreateInfo-offset-00925, -range-04059; both Mac drivers end
+ * the process in Metal on it, "MTLTextureDescriptor has width of zero"). With nullDescriptor
+ * on (-nd) vkr makes it a view without a driver view: written into a set (-nd), pushed
+ * (-push), copied from one set into another (-copy), and alive when the context ends
+ * (-teardown), each with a dispatch recorded; d-texel-empty: without nullDescriptor it stays
+ * refused, with its reason; -misaligned: the offset rule still holds.
+ * p-gfx-vstride-dynamic: LEGAL: a pipeline stride past maxVertexInputBindingStride while the
+ * stride is dynamic (VUID-VkVertexInputBindingDescription-stride-00619 does not apply);
+ * -bind: with vkCmdBindVertexBuffers2 at stride 16 and a draw recorded.
+ * p-gfx-blend-*: a color blend state whose array or count the drivers read: no array (Mesa
+ * and MoltenVK end the process), a count past the colors (MoltenVK reads past its formats).
+ * Neither Mac driver has the extendedDynamicState3 blend features, so the dynamic blend
+ * states never make them ignored here. -discard-ok: LEGAL, rasterization off, the state is
+ * ignored; -dyn-ok: the count matches (vkr refuses nothing it did before).
+ * c-null-text-*: refusal lines say "the whole size" and "no buffer". */
+static void *texel_buffer(VkDeviceSize size)
+{
+   const uint64_t id = next_id++;
+   VkBuffer h = (VkBuffer)(uintptr_t)id;
+   VkBufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                               .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT };
+   struct vn_command_vkCreateBuffer c = { .device = DEVH, .pCreateInfo = &info, .pBuffer = &h };
+   D->dispatch_vkCreateBuffer(D, &c);
+   struct vkr_buffer *buf = object(id);
+   if (c.ret != VK_SUCCESS || !buf)
+      broken("texel buffer");
+   VkMemoryRequirements req = { 0 };
+   struct vn_command_vkGetBufferMemoryRequirements r = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                        .pMemoryRequirements = &req };
+   D->dispatch_vkGetBufferMemoryRequirements(D, &r);
+   struct vn_command_vkBindBufferMemory bm = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                               .memory = (VkDeviceMemory)allocate(req.size, memory_type(req.memoryTypeBits)) };
+   D->dispatch_vkBindBufferMemory(D, &bm);
+   if (bm.ret != VK_SUCCESS)
+      broken("texel buffer memory");
+   return buf;
+}
+
+/* a whole-size RGBA32F (16-byte texel) view `left` bytes before the end of its buffer, at
+ * offset `offset`; NULL when vkr refused it */
+static void *texel_view(VkDeviceSize offset, VkDeviceSize left)
+{
+   void *buf = texel_buffer(offset + left);
+   const uint64_t id = next_id++;
+   VkBufferView h = (VkBufferView)(uintptr_t)id;
+   VkBufferViewCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = (VkBuffer)buf,
+                                   .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offset,
+                                   .range = VK_WHOLE_SIZE };
+   struct vn_command_vkCreateBufferView cv = { .device = DEVH, .pCreateInfo = &info, .pView = &h };
+   step("vkCreateBufferView the whole size at %" PRIu64 ", %" PRIu64 " bytes left (16-byte texels)",
+        offset, left);
+   D->dispatch_vkCreateBufferView(D, &cv);
+   last_ret = cv.ret;
+   step("vkCreateBufferView = %d", cv.ret);
+   return cv.ret == VK_SUCCESS && !ended() ? object(id) : NULL;
+}
+
+static int texel_ignored_case(const char *c)
+{
+   const bool push = IS("d-texel-empty-push");
+   setup((IS("d-texel-empty") ? 0 : N_NULLDESC) | (push ? N_PUSHDESC : 0));
+   struct world w = { 0 };
+   make_world(&w, true);
+   const VkDeviceSize align = MAX2(lim.minTexelBufferOffsetAlignment, 16);
+   void *view;
+   if (IS("d-texel-one-nd"))
+      view = texel_view(align, 16);
+   else if (IS("d-texel-empty-nd-misaligned"))
+      view = texel_view(align + 4, 8);
+   else
+      view = texel_view(align, 8);
+   if (!view)
+      return created(NULL);
+   if (IS("d-texel-empty") || IS("d-texel-empty-nd-misaligned"))
+      return WORKS;
+   /* set 1: the texel buffer, beside the world's set 0 (what the compute shader reads) */
+   const VkDescriptorSetLayoutBinding tb = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL };
+   void *tdsl = set_layout_of(&tb, 1, push ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR : 0, NULL);
+   void *dsls[2] = { w.dsl, tdsl };
+   const VkPushConstantRange range = { VK_SHADER_STAGE_ALL, 0, 128 };
+   void *layout = tdsl ? pipeline_layout_of(dsls, 2, &range, 1) : NULL;
+   void *pipe = layout ? compute_pipeline(layout, w.comp, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL) : NULL;
+   if (!pipe)
+      broken("texel layout and pipeline");
+   VkBufferView vh = (VkBufferView)view;
+   VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0,
+                               .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+                               .pTexelBufferView = &vh };
+   void *set = NULL;
+   if (!push) {
+      VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 2 };
+      const uint64_t pid = next_id++;
+      VkDescriptorPool ph = (VkDescriptorPool)(uintptr_t)pid;
+      VkDescriptorPoolCreateInfo pinfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2,
+                                           .poolSizeCount = 1, .pPoolSizes = &size };
+      struct vn_command_vkCreateDescriptorPool cpool = { .device = DEVH, .pCreateInfo = &pinfo,
+                                                         .pDescriptorPool = &ph };
+      D->dispatch_vkCreateDescriptorPool(D, &cpool);
+      void *tpool = cpool.ret == VK_SUCCESS ? object(pid) : NULL;
+      set = tpool ? set_from(tpool, tdsl, NULL) : NULL;
+      void *set2 = tpool ? set_from(tpool, tdsl, NULL) : NULL;
+      if (!set || !set2)
+         broken("texel sets");
+      wr.dstSet = (VkDescriptorSet)set;
+      struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1,
+                                                     .pDescriptorWrites = &wr };
+      step("vkUpdateDescriptorSets the view");
+      D->dispatch_vkUpdateDescriptorSets(D, &u);
+      if (ended())
+         return FATAL;
+      if (IS("d-texel-empty-copy")) {
+         VkCopyDescriptorSet cp = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = (VkDescriptorSet)set,
+                                    .dstSet = (VkDescriptorSet)set2, .descriptorCount = 1 };
+         struct vn_command_vkUpdateDescriptorSets uc = { .device = DEVH, .descriptorCopyCount = 1,
+                                                         .pDescriptorCopies = &cp };
+         step("vkUpdateDescriptorSets a copy of it into a second set");
+         D->dispatch_vkUpdateDescriptorSets(D, &uc);
+         if (ended())
+            return FATAL;
+         set = set2;
+      }
+      if (IS("d-texel-empty-teardown")) {
+         step("the context ends with the view alive");
+         vkr_context_destroy(ctx);
+         step("the context is gone");
+         return WORKS;
+      }
+   }
+   begin(w.cmd);
+   bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_COMPUTE);
+   if (push) {
+      struct vn_command_vkCmdPushDescriptorSet p = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                     .pipelineBindPoint = VK_PIPELINE_BIND_POINT_COMPUTE,
+                                                     .layout = (VkPipelineLayout)layout, .set = 1,
+                                                     .descriptorWriteCount = 1, .pDescriptorWrites = &wr };
+      step("vkCmdPushDescriptorSet the view");
+      D->dispatch_vkCmdPushDescriptorSet(D, &p);
+   } else {
+      bind_sets(w.cmd, layout, 1, &set, 1, NULL, 0);
+   }
+   struct vn_command_vkCmdDispatch d = { .commandBuffer = (VkCommandBuffer)w.cmd, .groupCountX = 1,
+                                         .groupCountY = 1, .groupCountZ = 1 };
+   step("vkCmdDispatch 1 x 1 x 1");
+   D->dispatch_vkCmdDispatch(D, &d);
+   const int r = end(w.cmd);
+   if (r != WORKS || !IS("d-texel-empty-nd"))
+      return r;
+   struct vn_command_vkDestroyBufferView dv = { .device = DEVH, .bufferView = vh };
+   step("vkDestroyBufferView");
+   D->dispatch_vkDestroyBufferView(D, &dv);
+   return ended() ? FATAL : WORKS;
+}
+
+static int case_ignored(const char *c)
+{
+   if (!strncmp(c, "d-texel-", 8))
+      return texel_ignored_case(c);
+   setup(0);
+   struct world w = { 0 };
+   make_world(&w, true);
+   if (!strncmp(c, "c-null-text-", 12)) {
+      begin(w.cmd);
+      const VkCommandBuffer cb = (VkCommandBuffer)w.cmd;
+      if (IS("c-null-text-bind2")) {
+         VkBuffer none = VK_NULL_HANDLE;
+         VkDeviceSize off = 0, size = VK_WHOLE_SIZE, stride = 16;
+         struct vn_command_vkCmdBindVertexBuffers2 b = { .commandBuffer = cb, .bindingCount = 1, .pBuffers = &none,
+                                                         .pOffsets = &off, .pSizes = &size, .pStrides = &stride };
+         step("vkCmdBindVertexBuffers2 no buffer, the whole size (nullDescriptor off)");
+         D->dispatch_vkCmdBindVertexBuffers2(D, &b);
+      } else if (IS("c-null-text-barrier")) {
+         VkBufferMemoryBarrier bb = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .size = VK_WHOLE_SIZE };
+         struct vn_command_vkCmdPipelineBarrier p = { .commandBuffer = cb,
+                                                      .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                                      .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                                      .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &bb };
+         step("vkCmdPipelineBarrier a buffer barrier naming no buffer");
+         D->dispatch_vkCmdPipelineBarrier(D, &p);
+      } else if (IS("c-null-text-fill")) {
+         struct vn_command_vkCmdFillBuffer f = { .commandBuffer = cb, .dstBuffer = (VkBuffer)w.buf,
+                                                 .dstOffset = 65536, .size = VK_WHOLE_SIZE };
+         step("vkCmdFillBuffer the whole size at the end of a 65536-byte buffer");
+         D->dispatch_vkCmdFillBuffer(D, &f);
+      } else {
+         return BROKEN;
+      }
+      return end(w.cmd);
+   }
+   /* graphics: the world's pass has 1 color */
+   struct gfx g = { .rp = w.rp, .colors = 1, .vert = w.vert, .frag = w.frag };
+   static VkDynamicState blend3[4] = { VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
+                                       VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT };
+   static VkDynamicState stride_dynamic[1] = { VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE };
+   static VkDynamicState discard_dynamic[1] = { VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE };
+   if (IS("p-gfx-vstride-dynamic") || IS("p-gfx-vstride-dynamic-bind")) {
+      if (lim.maxVertexInputBindingStride > 0xfffffffbu)
+         return SKIP;
+      g.vstride = lim.maxVertexInputBindingStride + 4;
+      g.dynamic = stride_dynamic;
+      g.dynamic_count = 1;
+   } else if (IS("p-gfx-blend-null")) {
+      g.blend_null = true;
+   } else if (IS("p-gfx-blend-null-dyn")) {
+      g.rp = NULL;
+      g.colors = 2;
+      g.blend_count = 1;
+      g.blend_null = true;
+      g.dynamic = blend3;
+      g.dynamic_count = 3;
+   } else if (IS("p-gfx-blend-more-dyn")) {
+      g.blend_count = 3;
+      g.dynamic = blend3;
+      g.dynamic_count = 3;
+   } else if (IS("p-gfx-blend-dyn-ok")) {
+      g.dynamic = blend3;
+      g.dynamic_count = 3;
+   } else if (IS("p-gfx-blend-discard-ok")) {
+      g.blend_null = true;
+      g.discard = true;
+   } else if (IS("p-gfx-blend-discard-dyn")) {
+      g.blend_null = true;
+      g.discard = true;
+      g.dynamic = discard_dynamic;
+      g.dynamic_count = 1;
+   } else {
+      return BROKEN;
+   }
+   void *pipe = graphics_pipeline(w.layout, &g);
+   if (!IS("p-gfx-vstride-dynamic-bind") || !pipe)
+      return created(pipe);
+   begin(w.cmd);
+   begin_pass(w.cmd, w.rp, w.fb, 64, 64);
+   bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   VkBuffer vb = (VkBuffer)w.buf;
+   VkDeviceSize off = 0, size = VK_WHOLE_SIZE, stride = 16;
+   struct vn_command_vkCmdBindVertexBuffers2 b = { .commandBuffer = (VkCommandBuffer)w.cmd, .bindingCount = 1,
+                                                   .pBuffers = &vb, .pOffsets = &off, .pSizes = &size,
+                                                   .pStrides = &stride };
+   step("vkCmdBindVertexBuffers2 stride 16");
+   D->dispatch_vkCmdBindVertexBuffers2(D, &b);
+   struct vn_command_vkCmdDraw draw = { .commandBuffer = (VkCommandBuffer)w.cmd, .vertexCount = 3,
+                                        .instanceCount = 1 };
+   step("vkCmdDraw 3");
+   D->dispatch_vkCmdDraw(D, &draw);
+   end_pass(w.cmd);
+   return end(w.cmd);
+}
+
+/* ---------------- state a draw or dispatch never set (virgl-venus-unset-state.patch) ----------------
+ * MoltenVK reads, when it encodes (at the submit, or at the end with prefill), the set at
+ * each set the bound pipeline's shaders use and the index buffer of an indexed draw: one
+ * never bound is a NULL slot, SIGSEGV (the M1 probes, work/v624-unset). Refused (Vulkan
+ * does not allow them): u-set-unset (a draw, the world's fragment shader uses set 0,
+ * nothing bound: VUID-vkCmdDraw-None-08600), -second-unset (a vertex shader of sets 0 and
+ * 1, set 0 bound), -unset-dispatch, -second-unset-dispatch (a compute shader of sets 0, 1
+ * and 2, sets 0 and 1 bound), -other-point (the set bound at the compute point, then a
+ * draw), -secondary (a secondary inherits no state: the primary's set does not count);
+ * u-ib-unset* (each of the four indexed draws without an index buffer, maintenance6 off:
+ * -None-07312). LEGAL, taken: u-set-*-ok: a set only in the layout, a set only listed in a
+ * SPIR-V 1.6 interface (vkr counts what a reached function uses: fewer sets than Vulkan's
+ * static use), sets bound before the pipeline and kept over a second pipeline, a push, the
+ * *2 binds by stage (graphics, compute, both at once), a push2; u-ib-*-m6-ok: maintenance6
+ * on, the NULL index buffer bound or none at all (vkr binds the NULL one), each indexed
+ * entry, then (MoltenVK) submitted and waited for: 3 vertices at index 0, a legal draw;
+ * u-ib-bound-ok. Kept (invalid, but no driver reads it when it encodes, so vkr lets it
+ * through): u-set-execute-kept (a dispatch after vkCmdExecuteCommands on the primary's
+ * bindings), u-pc-unset-kept (push constants never set), u-vb-unset-kept (a vertex buffer
+ * the vertex shader reads, never bound).
+ *
+ * glslc --target-env=vulkan1.0 (shaderc v2026.4), spirv-val clean
+ * (work/v624-unset/build/shaders): a vertex shader using set 0 and set 1 (a uniform buffer
+ * at binding 0 each, read only past vertex 1000000) and a fragment shader of no set. */
+static const uint32_t spv_u_vs_set01[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x00000042, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0007000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000c, 0x00000021, 0x00030003,
+   0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79,
+   0x656e696c, 0x7269645f, 0x69746365, 0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45,
+   0x64756c63, 0x69645f65, 0x74636572, 0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000,
+   0x00030005, 0x00000009, 0x00000070, 0x00060005, 0x0000000c, 0x565f6c67, 0x65747265, 0x646e4978,
+   0x00007865, 0x00060005, 0x0000001f, 0x505f6c67, 0x65567265, 0x78657472, 0x00000000, 0x00060006,
+   0x0000001f, 0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69, 0x00070006, 0x0000001f, 0x00000001,
+   0x505f6c67, 0x746e696f, 0x657a6953, 0x00000000, 0x00070006, 0x0000001f, 0x00000002, 0x435f6c67,
+   0x4470696c, 0x61747369, 0x0065636e, 0x00070006, 0x0000001f, 0x00000003, 0x435f6c67, 0x446c6c75,
+   0x61747369, 0x0065636e, 0x00030005, 0x00000021, 0x00000000, 0x00030005, 0x00000032, 0x00003055,
+   0x00040006, 0x00000032, 0x00000000, 0x00000076, 0x00030005, 0x00000034, 0x00003075, 0x00030005,
+   0x00000038, 0x00003155, 0x00040006, 0x00000038, 0x00000000, 0x00000076, 0x00030005, 0x0000003a,
+   0x00003175, 0x00040047, 0x0000000c, 0x0000000b, 0x0000002a, 0x00030047, 0x0000001f, 0x00000002,
+   0x00050048, 0x0000001f, 0x00000000, 0x0000000b, 0x00000000, 0x00050048, 0x0000001f, 0x00000001,
+   0x0000000b, 0x00000001, 0x00050048, 0x0000001f, 0x00000002, 0x0000000b, 0x00000003, 0x00050048,
+   0x0000001f, 0x00000003, 0x0000000b, 0x00000004, 0x00030047, 0x00000032, 0x00000002, 0x00050048,
+   0x00000032, 0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x00000034, 0x00000021, 0x00000000,
+   0x00040047, 0x00000034, 0x00000022, 0x00000000, 0x00030047, 0x00000038, 0x00000002, 0x00050048,
+   0x00000038, 0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x0000003a, 0x00000021, 0x00000000,
+   0x00040047, 0x0000003a, 0x00000022, 0x00000001, 0x00020013, 0x00000002, 0x00030021, 0x00000003,
+   0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000002,
+   0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00040015, 0x0000000a, 0x00000020, 0x00000001,
+   0x00040020, 0x0000000b, 0x00000001, 0x0000000a, 0x0004003b, 0x0000000b, 0x0000000c, 0x00000001,
+   0x0004002b, 0x0000000a, 0x0000000e, 0x00000001, 0x0004002b, 0x00000006, 0x00000011, 0x40000000,
+   0x0004002b, 0x00000006, 0x00000013, 0x3f800000, 0x00040017, 0x0000001b, 0x00000006, 0x00000004,
+   0x00040015, 0x0000001c, 0x00000020, 0x00000000, 0x0004002b, 0x0000001c, 0x0000001d, 0x00000001,
+   0x0004001c, 0x0000001e, 0x00000006, 0x0000001d, 0x0006001e, 0x0000001f, 0x0000001b, 0x00000006,
+   0x0000001e, 0x0000001e, 0x00040020, 0x00000020, 0x00000003, 0x0000001f, 0x0004003b, 0x00000020,
+   0x00000021, 0x00000003, 0x0004002b, 0x0000000a, 0x00000022, 0x00000000, 0x0004002b, 0x00000006,
+   0x00000024, 0x3f000000, 0x0004002b, 0x00000006, 0x00000026, 0x00000000, 0x00040020, 0x0000002a,
+   0x00000003, 0x0000001b, 0x0004002b, 0x0000000a, 0x0000002d, 0x000f4240, 0x00020014, 0x0000002e,
+   0x0003001e, 0x00000032, 0x0000001b, 0x00040020, 0x00000033, 0x00000002, 0x00000032, 0x0004003b,
+   0x00000033, 0x00000034, 0x00000002, 0x00040020, 0x00000035, 0x00000002, 0x0000001b, 0x0003001e,
+   0x00000038, 0x0000001b, 0x00040020, 0x00000039, 0x00000002, 0x00000038, 0x0004003b, 0x00000039,
+   0x0000003a, 0x00000002, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
+   0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007, 0x0004003d, 0x0000000a, 0x0000000d,
+   0x0000000c, 0x000500c7, 0x0000000a, 0x0000000f, 0x0000000d, 0x0000000e, 0x0004006f, 0x00000006,
+   0x00000010, 0x0000000f, 0x00050085, 0x00000006, 0x00000012, 0x00000010, 0x00000011, 0x00050083,
+   0x00000006, 0x00000014, 0x00000012, 0x00000013, 0x0004003d, 0x0000000a, 0x00000015, 0x0000000c,
+   0x000500c3, 0x0000000a, 0x00000016, 0x00000015, 0x0000000e, 0x0004006f, 0x00000006, 0x00000017,
+   0x00000016, 0x00050085, 0x00000006, 0x00000018, 0x00000017, 0x00000011, 0x00050083, 0x00000006,
+   0x00000019, 0x00000018, 0x00000013, 0x00050050, 0x00000007, 0x0000001a, 0x00000014, 0x00000019,
+   0x0003003e, 0x00000009, 0x0000001a, 0x0004003d, 0x00000007, 0x00000023, 0x00000009, 0x0005008e,
+   0x00000007, 0x00000025, 0x00000023, 0x00000024, 0x00050051, 0x00000006, 0x00000027, 0x00000025,
+   0x00000000, 0x00050051, 0x00000006, 0x00000028, 0x00000025, 0x00000001, 0x00070050, 0x0000001b,
+   0x00000029, 0x00000027, 0x00000028, 0x00000026, 0x00000013, 0x00050041, 0x0000002a, 0x0000002b,
+   0x00000021, 0x00000022, 0x0003003e, 0x0000002b, 0x00000029, 0x0004003d, 0x0000000a, 0x0000002c,
+   0x0000000c, 0x000500ad, 0x0000002e, 0x0000002f, 0x0000002c, 0x0000002d, 0x000300f7, 0x00000031,
+   0x00000000, 0x000400fa, 0x0000002f, 0x00000030, 0x00000031, 0x000200f8, 0x00000030, 0x00050041,
+   0x00000035, 0x00000036, 0x00000034, 0x00000022, 0x0004003d, 0x0000001b, 0x00000037, 0x00000036,
+   0x00050041, 0x00000035, 0x0000003b, 0x0000003a, 0x00000022, 0x0004003d, 0x0000001b, 0x0000003c,
+   0x0000003b, 0x00050081, 0x0000001b, 0x0000003d, 0x00000037, 0x0000003c, 0x00050041, 0x0000002a,
+   0x0000003e, 0x00000021, 0x00000022, 0x0004003d, 0x0000001b, 0x0000003f, 0x0000003e, 0x00050081,
+   0x0000001b, 0x00000040, 0x0000003f, 0x0000003d, 0x00050041, 0x0000002a, 0x00000041, 0x00000021,
+   0x00000022, 0x0003003e, 0x00000041, 0x00000040, 0x000200f9, 0x00000031, 0x000200f8, 0x00000031,
+   0x000100fd, 0x00010038,
+};
+static const uint32_t spv_u_fs[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x0000000e, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0006000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x00030010, 0x00000004,
+   0x00000007, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45,
+   0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576, 0x00080004, 0x475f4c47,
+   0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669, 0x00040005, 0x00000004,
+   0x6e69616d, 0x00000000, 0x00030005, 0x00000009, 0x0000006f, 0x00040047, 0x00000009, 0x0000001e,
+   0x00000000, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006,
+   0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004, 0x00040020, 0x00000008, 0x00000003,
+   0x00000007, 0x0004003b, 0x00000008, 0x00000009, 0x00000003, 0x0004002b, 0x00000006, 0x0000000a,
+   0x3f800000, 0x0004002b, 0x00000006, 0x0000000b, 0x3f000000, 0x0004002b, 0x00000006, 0x0000000c,
+   0x3e800000, 0x0007002c, 0x00000007, 0x0000000d, 0x0000000a, 0x0000000b, 0x0000000c, 0x0000000a,
+   0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0003003e,
+   0x00000009, 0x0000000d, 0x000100fd, 0x00010038,
+};
+
+static void *u_layout(VkDescriptorType type, uint32_t binding, VkDescriptorSetLayoutCreateFlags flags)
+{
+   const VkDescriptorSetLayoutBinding b = { binding, type, 1, VK_SHADER_STAGE_ALL, NULL };
+   void *l = set_layout_of(&b, 1, flags, NULL);
+   if (!l)
+      broken("set layout");
+   return l;
+}
+
+/* the one write of a u_layout set (a buffer at 1024, or the world's image and sampler) */
+static VkWriteDescriptorSet u_write(struct world *w, void *set, VkDescriptorType type, uint32_t binding)
+{
+   static VkDescriptorBufferInfo bi;
+   static VkDescriptorImageInfo ii;
+   bi = (VkDescriptorBufferInfo){ (VkBuffer)w->buf, 1024, 256 };
+   ii = (VkDescriptorImageInfo){ (VkSampler)w->smp, (VkImageView)w->iv, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+   const bool image = type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+   return (VkWriteDescriptorSet){ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = (VkDescriptorSet)set,
+                                  .dstBinding = binding, .descriptorCount = 1, .descriptorType = type,
+                                  .pBufferInfo = image ? NULL : &bi, .pImageInfo = image ? &ii : NULL };
+}
+
+/* a set of a u_layout from the world's pool, written */
+static void *u_set(struct world *w, void *dsl, VkDescriptorType type, uint32_t binding)
+{
+   void *set = set_from(w->pool, dsl, NULL);
+   if (!set)
+      broken("set");
+   VkWriteDescriptorSet wr = u_write(w, set, type, binding);
+   struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1, .pDescriptorWrites = &wr };
+   D->dispatch_vkUpdateDescriptorSets(D, &u);
+   return set;
+}
+
+static void u_bind(void *cmd, VkPipelineBindPoint point, void *layout, uint32_t first, void **sets, uint32_t n)
+{
+   VkDescriptorSet s[8];
+   for (uint32_t i = 0; i < n && i < 8; i++)
+      s[i] = (VkDescriptorSet)sets[i];
+   struct vn_command_vkCmdBindDescriptorSets b = { .commandBuffer = (VkCommandBuffer)cmd, .pipelineBindPoint = point,
+                                                   .layout = (VkPipelineLayout)layout, .firstSet = first,
+                                                   .descriptorSetCount = n, .pDescriptorSets = s };
+   step("vkCmdBindDescriptorSets point %d sets %u + %u", point, first, n);
+   D->dispatch_vkCmdBindDescriptorSets(D, &b);
+}
+
+static void u_draw(void *cmd)
+{
+   struct vn_command_vkCmdDraw d = { .commandBuffer = (VkCommandBuffer)cmd, .vertexCount = 3, .instanceCount = 1 };
+   step("vkCmdDraw 3");
+   D->dispatch_vkCmdDraw(D, &d);
+}
+
+static void u_dispatch(void *cmd)
+{
+   struct vn_command_vkCmdDispatch d = { .commandBuffer = (VkCommandBuffer)cmd, .groupCountX = 1, .groupCountY = 1,
+                                         .groupCountZ = 1 };
+   step("vkCmdDispatch 1 x 1 x 1");
+   D->dispatch_vkCmdDispatch(D, &d);
+}
+
+/* the world's set by vkCmdBindDescriptorSets2 for `stages` */
+static void u_bind2(void *cmd, struct world *w, VkShaderStageFlags stages)
+{
+   VkDescriptorSet set = (VkDescriptorSet)w->set;
+   const uint32_t off = 0;
+   VkBindDescriptorSetsInfo info = { .sType = VK_STRUCTURE_TYPE_BIND_DESCRIPTOR_SETS_INFO, .stageFlags = stages,
+                                     .layout = (VkPipelineLayout)w->layout, .descriptorSetCount = 1,
+                                     .pDescriptorSets = &set, .dynamicOffsetCount = 1, .pDynamicOffsets = &off };
+   struct vn_command_vkCmdBindDescriptorSets2 b = { .commandBuffer = (VkCommandBuffer)cmd,
+                                                    .pBindDescriptorSetsInfo = &info };
+   step("vkCmdBindDescriptorSets2 stages 0x%x", stages);
+   D->dispatch_vkCmdBindDescriptorSets2(D, &b);
+}
+
+/* the submit of a recorded command buffer, and the driver's own wait (vkr refuses
+ * vkQueueWaitIdle from a guest) */
+static int u_submit(void *cmd)
+{
+   struct vkr_queue *q = device_queue();
+   VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb };
+   struct vn_command_vkQueueSubmit s = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &submit };
+   step("vkQueueSubmit");
+   D->dispatch_vkQueueSubmit(D, &s);
+   step("vkQueueSubmit = %d", s.ret);
+   if (ended())
+      return FATAL;
+   q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+   step("the queue is idle");
+   return s.ret == VK_SUCCESS ? WORKS : ERROR;
+}
+
+static int unset_set_case(const char *c)
+{
+   unsigned needs = 0;
+   if (strstr(c, "-push"))
+      needs |= N_PUSHDESC;
+   if (strstr(c, "-bind2") || strstr(c, "-push2"))
+      needs |= N_MAINT6;
+   setup(needs);
+   struct world w = { 0 };
+   make_world(&w, true);
+   void *cmd = w.cmd;
+   const VkPipelineBindPoint G = VK_PIPELINE_BIND_POINT_GRAPHICS, C = VK_PIPELINE_BIND_POINT_COMPUTE;
+   const VkPushConstantRange push = { VK_SHADER_STAGE_ALL, 0, 128 };
+   void *ubo = u_layout(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, 0);
+   /* the vertex shader of sets 0 and 1 (set 1: a plain or a push layout) */
+   void *vs01_pipe = NULL, *vs01_layout = NULL, *set0 = NULL;
+   if (IS("u-set-second-unset") || IS("u-set-push-ok") || IS("u-set-push2-ok")) {
+      void *dsls[2] = { ubo, IS("u-set-second-unset") ? ubo
+                                                      : u_layout(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0,
+                                                                 VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR) };
+      vs01_layout = pipeline_layout_of(dsls, 2, NULL, 0);
+      const struct gfx g = { .rp = w.rp, .colors = 1, .vert = shader(spv_u_vs_set01, sizeof(spv_u_vs_set01)),
+                             .frag = shader(spv_u_fs, sizeof(spv_u_fs)) };
+      vs01_pipe = vs01_layout && g.vert && g.frag ? graphics_pipeline(vs01_layout, &g) : NULL;
+      if (!vs01_pipe)
+         broken("the pipeline of sets 0 and 1");
+      set0 = u_set(&w, ubo, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0);
+   }
+   begin(cmd);
+   if (IS("u-set-unset") || IS("u-set-other-point")) {
+      begin_pass(cmd, w.rp, w.fb, 64, 64);
+      bind_pipeline(cmd, G, w.gfx_pipe);
+      ready_except_set(cmd, &w, G);
+      if (IS("u-set-other-point"))
+         bind_world_set(cmd, &w, C);
+      u_draw(cmd);
+      end_pass(cmd);
+   } else if (vs01_pipe) {
+      begin_pass(cmd, w.rp, w.fb, 64, 64);
+      bind_pipeline(cmd, G, vs01_pipe);
+      u_bind(cmd, G, vs01_layout, 0, &set0, 1);
+      if (!IS("u-set-second-unset")) {
+         VkWriteDescriptorSet wr = u_write(&w, NULL, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0);
+         if (IS("u-set-push-ok")) {
+            struct vn_command_vkCmdPushDescriptorSet p = { .commandBuffer = (VkCommandBuffer)cmd, .pipelineBindPoint = G,
+                                                           .layout = (VkPipelineLayout)vs01_layout, .set = 1,
+                                                           .descriptorWriteCount = 1, .pDescriptorWrites = &wr };
+            step("vkCmdPushDescriptorSet set 1");
+            D->dispatch_vkCmdPushDescriptorSet(D, &p);
+         } else {
+            VkPushDescriptorSetInfo info = { .sType = VK_STRUCTURE_TYPE_PUSH_DESCRIPTOR_SET_INFO,
+                                             .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+                                             .layout = (VkPipelineLayout)vs01_layout, .set = 1,
+                                             .descriptorWriteCount = 1, .pDescriptorWrites = &wr };
+            struct vn_command_vkCmdPushDescriptorSet2 p = { .commandBuffer = (VkCommandBuffer)cmd,
+                                                            .pPushDescriptorSetInfo = &info };
+            step("vkCmdPushDescriptorSet2 set 1, the vertex stage");
+            D->dispatch_vkCmdPushDescriptorSet2(D, &p);
+         }
+      }
+      u_draw(cmd);
+      end_pass(cmd);
+   } else if (IS("u-set-declared-ok")) {
+      /* set 1 in the layout, no shader uses it */
+      void *dsls[2] = { w.dsl, ubo };
+      void *layout = pipeline_layout_of(dsls, 2, &push, 1);
+      const struct gfx g = { .rp = w.rp, .colors = 1, .vert = w.vert, .frag = w.frag };
+      void *pipe = layout ? graphics_pipeline(layout, &g) : NULL;
+      if (!pipe)
+         broken("the pipeline of 2 sets");
+      begin_pass(cmd, w.rp, w.fb, 64, 64);
+      bind_pipeline(cmd, G, pipe);
+      ready(cmd, &w, G);
+      u_draw(cmd);
+      end_pass(cmd);
+   } else if (IS("u-set-rebind-ok")) {
+      /* the sets before any pipeline, then two pipelines of the same layout */
+      const struct gfx g = { .rp = w.rp, .colors = 1, .vert = w.vert, .frag = w.frag };
+      void *second = graphics_pipeline(w.layout, &g);
+      if (!second)
+         broken("a second pipeline");
+      begin_pass(cmd, w.rp, w.fb, 64, 64);
+      ready(cmd, &w, G);
+      bind_pipeline(cmd, G, w.gfx_pipe);
+      u_draw(cmd);
+      bind_pipeline(cmd, G, second);
+      u_draw(cmd);
+      end_pass(cmd);
+   } else if (IS("u-set-bind2-ok")) {
+      begin_pass(cmd, w.rp, w.fb, 64, 64);
+      bind_pipeline(cmd, G, w.gfx_pipe);
+      ready_except_set(cmd, &w, G);
+      u_bind2(cmd, &w, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+      u_draw(cmd);
+      end_pass(cmd);
+   } else if (IS("u-set-bind2-dispatch-ok")) {
+      bind_pipeline(cmd, C, w.comp_pipe);
+      ready_except_set(cmd, &w, C);
+      u_bind2(cmd, &w, VK_SHADER_STAGE_COMPUTE_BIT);
+      u_dispatch(cmd);
+   } else if (IS("u-set-bind2-both-ok")) {
+      /* one bind for both points */
+      u_bind2(cmd, &w, VK_SHADER_STAGE_ALL);
+      bind_pipeline(cmd, C, w.comp_pipe);
+      ready_except_set(cmd, &w, C);
+      u_dispatch(cmd);
+      begin_pass(cmd, w.rp, w.fb, 64, 64);
+      bind_pipeline(cmd, G, w.gfx_pipe);
+      ready_except_set(cmd, &w, G);
+      u_draw(cmd);
+      end_pass(cmd);
+   } else if (IS("u-set-unset-dispatch")) {
+      bind_pipeline(cmd, C, w.comp_pipe);
+      ready_except_set(cmd, &w, C);
+      u_dispatch(cmd);
+   } else if (IS("u-set-second-unset-dispatch") || IS("u-set-interface-only-ok")) {
+      /* sets 0 (storage buffer 0), 1 (combined image sampler 0), 2 (uniform buffer 3); the
+       * 1.6 shader also lists set 5 (storage buffer 1) in its interface, used nowhere */
+      const bool iface = IS("u-set-interface-only-ok");
+      void *ssbo0 = u_layout(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0, 0);
+      void *cis0 = u_layout(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0, 0);
+      void *ubo3 = u_layout(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3, 0);
+      void *dsls[6] = { ssbo0, cis0, ubo3, ubo, ubo, u_layout(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, 0) };
+      void *layout = pipeline_layout_of(dsls, iface ? 6 : 3, NULL, 0);
+      void *module = iface ? shader(spv_comp16, sizeof(spv_comp16)) : shader(spv_comp10, sizeof(spv_comp10));
+      void *pipe = layout && module ? compute_pipeline(layout, module, NULL, VK_SHADER_STAGE_COMPUTE_BIT, NULL, NULL)
+                                    : NULL;
+      if (!pipe)
+         broken("the pipeline of sets 0, 1, 2");
+      void *sets[3] = { u_set(&w, ssbo0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0),
+                        u_set(&w, cis0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 0),
+                        u_set(&w, ubo3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3) };
+      bind_pipeline(cmd, C, pipe);
+      u_bind(cmd, C, layout, 0, sets, iface ? 3 : 2);
+      u_dispatch(cmd);
+   } else if (IS("u-set-secondary")) {
+      /* the primary binds the set; a secondary binds the pipeline and dispatches */
+      ready(cmd, &w, C);
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      if (begin_secondary(sec, NULL) != VK_SUCCESS)
+         broken("secondary begin");
+      bind_pipeline(sec, C, w.comp_pipe);
+      ready_except_set(sec, &w, C);
+      u_dispatch(sec);
+      return end(sec);
+   } else if (IS("u-set-execute-kept")) {
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      if (begin_secondary(sec, NULL) != VK_SUCCESS || end(sec) != WORKS)
+         broken("an empty secondary");
+      bind_pipeline(cmd, C, w.comp_pipe);
+      ready(cmd, &w, C);
+      VkCommandBuffer s = (VkCommandBuffer)sec;
+      struct vn_command_vkCmdExecuteCommands e = { .commandBuffer = (VkCommandBuffer)cmd, .commandBufferCount = 1,
+                                                   .pCommandBuffers = &s };
+      step("vkCmdExecuteCommands (an empty secondary)");
+      D->dispatch_vkCmdExecuteCommands(D, &e);
+      u_dispatch(cmd);
+   } else if (IS("u-pc-unset-kept") || IS("u-vb-unset-kept")) {
+      begin_pass(cmd, w.rp, w.fb, 64, 64);
+      bind_pipeline(cmd, G, w.gfx_pipe);
+      bind_world_set(cmd, &w, G);
+      if (IS("u-pc-unset-kept")) {
+         VkBuffer vb = (VkBuffer)w.buf;
+         VkDeviceSize vo = 0;
+         struct vn_command_vkCmdBindVertexBuffers v = { .commandBuffer = (VkCommandBuffer)cmd, .bindingCount = 1,
+                                                        .pBuffers = &vb, .pOffsets = &vo };
+         D->dispatch_vkCmdBindVertexBuffers(D, &v);
+      } else {
+         static uint8_t data[128];
+         struct vn_command_vkCmdPushConstants p = { .commandBuffer = (VkCommandBuffer)cmd,
+                                                    .layout = (VkPipelineLayout)w.layout,
+                                                    .stageFlags = VK_SHADER_STAGE_ALL, .size = 128, .pValues = data };
+         D->dispatch_vkCmdPushConstants(D, &p);
+      }
+      u_draw(cmd);
+      end_pass(cmd);
+   } else {
+      return BROKEN;
+   }
+   return end(cmd);
+}
+
+/* an indexed draw of the entry the name ends in (-indirect, -indirect-count, -multi, else
+ * vkCmdDrawIndexed): 3 indices, one instance; the indirect ones read `ind` (a command at
+ * 0, a count of 1 at 256) */
+static void u_draw_indexed(const char *c, void *cmd, void *ind)
+{
+   const VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   if (strstr(c, "-indirect-count")) {
+      struct vn_command_vkCmdDrawIndexedIndirectCount d = { .commandBuffer = cb, .buffer = (VkBuffer)ind,
+                                                             .countBuffer = (VkBuffer)ind, .countBufferOffset = 256,
+                                                             .maxDrawCount = 1, .stride = 20 };
+      step("vkCmdDrawIndexedIndirectCount");
+      D->dispatch_vkCmdDrawIndexedIndirectCount(D, &d);
+   } else if (strstr(c, "-indirect")) {
+      struct vn_command_vkCmdDrawIndexedIndirect d = { .commandBuffer = cb, .buffer = (VkBuffer)ind, .drawCount = 1,
+                                                        .stride = 20 };
+      step("vkCmdDrawIndexedIndirect");
+      D->dispatch_vkCmdDrawIndexedIndirect(D, &d);
+   } else if (strstr(c, "-multi")) {
+      static VkMultiDrawIndexedInfoEXT info = { 0, 3, 0 };
+      struct vn_command_vkCmdDrawMultiIndexedEXT d = { .commandBuffer = cb, .drawCount = 1, .pIndexInfo = &info,
+                                                        .instanceCount = 1, .stride = sizeof(info) };
+      step("vkCmdDrawMultiIndexedEXT 1 draw");
+      D->dispatch_vkCmdDrawMultiIndexedEXT(D, &d);
+   } else {
+      struct vn_command_vkCmdDrawIndexed d = { .commandBuffer = cb, .indexCount = 3, .instanceCount = 1 };
+      step("vkCmdDrawIndexed 3");
+      D->dispatch_vkCmdDrawIndexed(D, &d);
+   }
+}
+
+static int unset_index_case(const char *c)
+{
+   const bool m6 = strstr(c, "-m6") != NULL;
+   setup((m6 ? N_MAINT6 : 0) | (strstr(c, "-multi") ? N_MULTIDRAW : 0));
+   if (strstr(c, "-indirect-count") && !have_indirect_count) {
+      printf("skip: the device has no drawIndirectCount\n");
+      return SKIP;
+   }
+   struct world w = { 0 };
+   make_world(&w, true);
+   void *cmd = w.cmd;
+   const VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   void *ind = buffer(4096);
+   begin(cmd);
+   /* the indirect command (3 indices, one instance) and its count, before the pass */
+   static const uint32_t command[5] = { 3, 1, 0, 0, 0 }, count = 1;
+   struct vn_command_vkCmdUpdateBuffer u1 = { .commandBuffer = cb, .dstBuffer = (VkBuffer)ind, .dataSize = 20,
+                                              .pData = command };
+   D->dispatch_vkCmdUpdateBuffer(D, &u1);
+   struct vn_command_vkCmdUpdateBuffer u2 = { .commandBuffer = cb, .dstBuffer = (VkBuffer)ind, .dstOffset = 256,
+                                              .dataSize = 4, .pData = &count };
+   D->dispatch_vkCmdUpdateBuffer(D, &u2);
+   VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                          .dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT };
+   struct vn_command_vkCmdPipelineBarrier b = { .commandBuffer = cb, .srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                                .dstStageMask = VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                                                .memoryBarrierCount = 1, .pMemoryBarriers = &mb };
+   D->dispatch_vkCmdPipelineBarrier(D, &b);
+   begin_pass(cmd, w.rp, w.fb, 64, 64);
+   bind_pipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
+   ready(cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   if (IS("u-ib-null-m6-ok") || IS("u-ib-bound-ok")) {
+      struct vn_command_vkCmdBindIndexBuffer ib = { .commandBuffer = cb,
+                                                    .buffer = IS("u-ib-bound-ok") ? (VkBuffer)w.buf : VK_NULL_HANDLE,
+                                                    .indexType = VK_INDEX_TYPE_UINT32 };
+      step("vkCmdBindIndexBuffer %s", ib.buffer ? "a buffer" : "VK_NULL_HANDLE");
+      D->dispatch_vkCmdBindIndexBuffer(D, &ib);
+   }
+   u_draw_indexed(c, cmd, ind);
+   end_pass(cmd);
+   const int r = end(cmd);
+   if (r != WORKS || !m6)
+      return r;
+   if (kosmickrisp) {
+      printf("note: recorded only on KosmicKrisp (MoltenVK submits it)\n");
+      return WORKS;
+   }
+   return u_submit(cmd);
+}
+
+static int case_unset(const char *c)
+{
+   return !strncmp(c, "u-ib-", 5) ? unset_index_case(c) : unset_set_case(c);
+}
+
 struct test_case {
    const char *name;
    int expect;
@@ -5249,8 +6505,18 @@ static const struct test_case cases[] = {
    { "s-submit-chain-twice", E_REFUSE, "chained twice" }, { "s-bind-sparse-chain-twice", E_REFUSE, "chained twice" },
    { "x-dedicated-bound-ok", E_WORKS }, { "x-dedicated-unbound-ok", E_WORKS },
    { "x-dedicated-buffer-unbound-ok", E_WORKS }, { "x-dedicated-context-end-ok", E_WORKS },
-   { "x-dedicated-other", E_REFUSE, "dedicated to another" }, { "x-dedicated-alias", E_CHILD, "dedicated to another" },
+   { "x-dedicated-other", E_REFUSE, "dedicated to another" },
    { "x-dedicated-alias-half", E_REFUSE, "dedicated to another" },
+   /* a swapchain's memory (virgl-venus-alias-memory.patch) */
+   { "x-dedicated-alias", E_WORKS }, { "x-dedicated-alias-b-first-ok", E_WORKS },
+   { "x-dedicated-alias-free-a-b", E_WORKS }, { "x-dedicated-alias-context-end", E_WORKS },
+   { "x-dedicated-alias-held", E_WORKS }, { "x-dedicated-alias-own-dedicated", E_WORKS },
+   { "x-dedicated-alias-bind2", E_WORKS },
+   { "x-dedicated-alias-params", E_REFUSE, "unlike the image" },
+   { "x-dedicated-alias-params-usage", E_REFUSE, "unlike the image" },
+   { "x-dedicated-alias-params-flags", E_REFUSE, "unlike the image" },
+   { "x-dedicated-alias-twice", E_REFUSE, "bound already" },
+   { "x-dedicated-alias-bind2-twice", E_REFUSE, "named twice" },
    { "x-dedicated-chain-twice", E_REFUSE, "chained twice" }, { "x-dedicated-chain-null", E_REFUSE, "chained twice" },
    { "x-dedicated-other-device", E_REFUSE, "another device" },
    { "x-dedicated-buffer-to-image", E_REFUSE, "dedicated to another" },
@@ -5262,6 +6528,62 @@ static const struct test_case cases[] = {
    { "t-same-id", E_REFUSE, "taken" },
    { "t-command-free-buffer", E_WORKS }, { "t-same-command-buffer", E_WORKS }, { "t-export-free-memory", E_WORKS },
    { "t-wait-ring-nested-ok", E_WORKS }, { "t-compile-no-delay-ok", E_WORKS }, { "t-teardown-paused-ok", E_WORKS },
+   /* a structure type twice in a chain (virgl-venus-chain-repeats.patch) */
+   { "r-repeat-multiview", E_REFUSE, "twice in the chain of VkRenderPassCreateInfo" },
+   { "r-repeat-multiview-short", E_REFUSE, "twice in the chain of VkRenderPassCreateInfo" },
+   { "r-repeat-attachment-begin", E_REFUSE, "twice in the chain of VkRenderPassBeginInfo" },
+   { "r-repeat-begin", E_REFUSE, "twice in the chain of VkRenderPassBeginInfo" },
+   { "r-repeat-pass2-subpass", E_REFUSE, "twice in the chain of VkSubpassDescription2" },
+   { "r-repeat-framebuffer", E_REFUSE, "twice in the chain of VkFramebufferCreateInfo" },
+   { "r-repeat-rendering", E_REFUSE, "twice in the chain of VkRenderingInfo" },
+   { "r-repeat-two-types-ok", E_WORKS }, { "r-repeat-begin-two-types-ok", E_WORKS },
+   { "c-repeat-inheritance", E_REFUSE, "twice in the chain of VkCommandBufferInheritanceInfo" },
+   { "d-repeat-layout", E_REFUSE, "twice in the chain of VkDescriptorSetLayoutCreateInfo" },
+   { "d-repeat-write", E_REFUSE, "twice in the chain of VkWriteDescriptorSet" },
+   { "d-repeat-alloc", E_REFUSE, "twice in the chain of VkDescriptorSetAllocateInfo" },
+   { "d-repeat-pool", E_REFUSE, "twice in the chain of VkDescriptorPoolCreateInfo" },
+   { "d-repeat-buffer", E_REFUSE, "twice in the chain of VkBufferCreateInfo" },
+   { "d-repeat-buffer-view", E_REFUSE, "twice in the chain of VkBufferViewCreateInfo" },
+   { "d-repeat-sampler", E_REFUSE, "twice in the chain of VkSamplerCreateInfo" },
+   { "d-repeat-two-types-ok", E_WORKS },
+   { "p-repeat-inline-spirv", E_REFUSE, "twice in the chain of VkPipelineShaderStageCreateInfo" },
+   { "p-repeat-gfx", E_REFUSE, "twice in the chain of VkGraphicsPipelineCreateInfo" },
+   { "p-repeat-gfx-vertex", E_REFUSE, "twice in the chain of VkPipelineVertexInputStateCreateInfo" },
+   { "p-repeat-gfx-ms", E_REFUSE, "twice in the chain of VkPipelineMultisampleStateCreateInfo" },
+   { "p-repeat-gfx-blend", E_REFUSE, "twice in the chain of VkPipelineColorBlendStateCreateInfo" },
+   { "p-repeat-compute", E_REFUSE, "twice in the chain of VkComputePipelineCreateInfo" },
+   { "p-repeat-gfx-two-types-ok", E_WORKS },
+   /* values Vulkan ignores, refusal texts (virgl-venus-ignored-values.patch) */
+   { "d-texel-empty-nd", E_WORKS }, { "d-texel-one-nd", E_WORKS }, { "d-texel-empty-push", E_WORKS },
+   { "d-texel-empty-copy", E_WORKS }, { "d-texel-empty-teardown", E_WORKS },
+   { "d-texel-empty", E_REFUSE, "fewer than one 16-byte texel (a view of no texel needs nullDescriptor)" },
+   { "d-texel-empty-nd-misaligned", E_REFUSE, "not aligned" },
+   { "p-gfx-vstride-dynamic", E_WORKS }, { "p-gfx-vstride-dynamic-bind", E_WORKS },
+   { "p-gfx-blend-null", E_REFUSE, "1 attachments (no array) for 1 colors" },
+   { "p-gfx-blend-null-dyn", E_REFUSE, "1 attachments (no array) for 2 colors" },
+   { "p-gfx-blend-more-dyn", E_REFUSE, "3 attachments for 1 colors" },
+   { "p-gfx-blend-dyn-ok", E_WORKS }, { "p-gfx-blend-discard-ok", E_WORKS },
+   { "p-gfx-blend-discard-dyn", E_REFUSE, "(no array)" },
+   { "c-null-text-bind2", E_REFUSE, "binding 0: the whole size at 0, no buffer, stride 16" },
+   { "c-null-text-barrier", E_REFUSE, "buffer barrier 0: the whole size at 0, no buffer" },
+   { "c-null-text-fill", E_REFUSE, "the whole size at 65536 of a 65536-byte buffer" },
+   /* state a draw or dispatch never set (virgl-venus-unset-state.patch) */
+   { "u-set-unset", E_REFUSE, "uses set 0, but no set was bound there since vkBeginCommandBuffer (VUID-vkCmdDraw-None-08600)" },
+   { "u-set-second-unset", E_REFUSE, "uses set 1, but no set was bound" },
+   { "u-set-unset-dispatch", E_REFUSE, "uses set 0, but no set was bound there since vkBeginCommandBuffer (VUID-vkCmdDispatch-None-08600)" },
+   { "u-set-second-unset-dispatch", E_REFUSE, "uses set 2, but no set was bound" },
+   { "u-set-other-point", E_REFUSE, "uses set 0, but no set was bound" },
+   { "u-set-secondary", E_REFUSE, "uses set 0, but no set was bound" },
+   { "u-ib-unset", E_REFUSE, "no index buffer bound since vkBeginCommandBuffer (maintenance6 is off: VUID-vkCmdDrawIndexed-None-07312)" },
+   { "u-ib-unset-indirect", E_REFUSE, "VUID-vkCmdDrawIndexedIndirect-None-07312" },
+   { "u-ib-unset-indirect-count", E_REFUSE, "VUID-vkCmdDrawIndexedIndirectCount-None-07312" },
+   { "u-ib-unset-multi", E_REFUSE, "VUID-vkCmdDrawMultiIndexedEXT-None-07312" },
+   { "u-set-declared-ok", E_WORKS }, { "u-set-interface-only-ok", E_WORKS }, { "u-set-rebind-ok", E_WORKS },
+   { "u-set-push-ok", E_WORKS }, { "u-set-push2-ok", E_WORKS }, { "u-set-bind2-ok", E_WORKS },
+   { "u-set-bind2-dispatch-ok", E_WORKS }, { "u-set-bind2-both-ok", E_WORKS },
+   { "u-ib-null-m6-ok", E_WORKS }, { "u-ib-unset-m6-ok", E_WORKS }, { "u-ib-unset-m6-indirect-ok", E_WORKS },
+   { "u-ib-unset-m6-indirect-count-ok", E_WORKS }, { "u-ib-unset-m6-multi-ok", E_WORKS }, { "u-ib-bound-ok", E_WORKS },
+   { "u-set-execute-kept", E_WORKS }, { "u-pc-unset-kept", E_WORKS }, { "u-vb-unset-kept", E_WORKS },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -5273,6 +6595,13 @@ static int run_case(const char *c)
       make_world(&w, false);
       return descriptor_probe(&w);
    }
+   if (strstr(c, "-repeat-"))
+      return case_repeat(c);
+   if (!strncmp(c, "d-texel-", 8) || !strncmp(c, "p-gfx-vstride-dynamic", 21) ||
+       !strncmp(c, "p-gfx-blend-null", 16) || !strncmp(c, "p-gfx-blend-more-dyn", 20) ||
+       !strncmp(c, "p-gfx-blend-dyn-", 16) || !strncmp(c, "p-gfx-blend-discard-", 20) ||
+       !strncmp(c, "c-null-text-", 12))
+      return case_ignored(c);
    switch (c[0]) {
    case 'p': return case_pipeline(c);
    case 'r': return case_render_pass(c);
@@ -5284,6 +6613,7 @@ static int run_case(const char *c)
    case 'x': return case_dedicated(c);
    case 'm': return case_memory(c);
    case 't': return case_threads(c);
+   case 'u': return case_unset(c);
    default: return BROKEN;
    }
 }

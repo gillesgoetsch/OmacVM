@@ -1776,10 +1776,29 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   draws stay on the GPU. 3.2.19 does the same for a vertex shader that passes clip distances
   straight to an evaluation shader (no control shader); on the M1 Max such draws drew nothing.
   Update the app.
+- **3.2.20:** an OpenGL program pipeline (separate shader programs) whose tessellation patch values
+  do not start at 0 or have a gap (explicit locations such as 1 and 3) ran on Apple's CPU vertex
+  path ("Fallback to SW vertex processing because buildPipelineState failed" in qemu.log, a first
+  draw of ~270 ms) on the M1 Max and drew nothing on the M4; the control shader now writes the gaps
+  and the draws stay on the GPU. Update the app.
+- **3.2.20:** a shader that writes its clip distances in a loop (a control shader copying
+  `gl_ClipDistance[i]` in a `for` loop, also a vertex, geometry or evaluation shader) was refused
+  ("Swizzle of non-vector primitive float" in qemu.log after "the host refused a shader") and
+  its draws were skipped; 3.2.20 compiles it. A vertex shader that writes `gl_ClipDistance[4..7]`
+  into a control shader drew nothing on the M1 Max and M4 GPUs; 3.2.20 passes them as plain
+  varyings too. One case is left in the VM's Mesa: a control shader that copies 5 to 8 distances
+  in a loop gets only 0..3 back, and 4..7 are undefined. On the M4 they read 0 (a negative one
+  does not clip), on the M1 Max the draw is clipped away. The fix is a patch for OmacVM's own
+  guest Mesa build (`src/app/guest/mesa/`, #694), which the VM's Arch Mesa does not have. One
+  statement per distance avoids it: the VM's Mesa then passes them as plain varyings. Update the
+  app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
-  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19); tests
-  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`;
+  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),
+  `virgl-shader-separable-patch-fill-writes.patch`, `virgl-shader-indirect-temps.patch`,
+  `virgl-shader-vs-tcs-clip-varyings.patch` (3.2.20); tests
+  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`,
+  `test-separable-pervertex.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.
 

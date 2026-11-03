@@ -15,8 +15,9 @@ buildPipelineState failed"): the draw ran on Apple's CPU vertex path, Metal's sh
 crashed in GLDTessellationControlShader::mergeVSCSToCompute and
 GLDTessellationEvaluationShader::parseShaderInput, and the first draw took 260-272 ms (M1 Max,
 macOS 27). The same values as plain varyings build on the GPU. Apple's software
-renderer has no such failure. Apple matches varyings without a location by name (as
-virgl-shader-separable-patch-varyings.patch relies on).
+renderer has no such failure. Without a location Apple's GL gives the varyings of separate
+programs their slots in the order of their names, not by name (as
+virgl-shader-separable-patch-varyings.patch states).
 Upstream: not sent (a workaround for Apple's GL).
 Test: Tests/virgl/test-core-glsl-shaders.c: the GLSL of tessellation shaders with clip
 distances on the Mac's config (whole and separable, 1 and 8 distances, an indirect read, an
