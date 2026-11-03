@@ -1,0 +1,378 @@
+virglrenderer: Venus refuses a structure type twice in a chain
+
+What: vkr refuses a guest call whose chain has one structure type twice (Vulkan forbids it:
+VUID-<struct>-sType-unique) in every chain a vkr check reads: image create info (also the
+vkGetDeviceImage* queries), image binds, image memory requirements, sampler, buffer and
+buffer view create info, descriptor set layout, descriptor writes (also push descriptors),
+set allocation and pool create info, render pass create info (v1, v2 and each v2 subpass),
+render pass begin, framebuffer, a secondary's inheritance, dynamic rendering, shader stages,
+graphics pipelines (with their vertex input, multisample and color blend states) and compute
+pipelines. Each goes through its call's refusal path (a create the guest waits for gets its
+error, the rest end the app's Venus context). vkr_chain_repeat compares each struct with
+the ones before it and stops at the first repeat. #664 did the same for submits, sparse
+binds and memory allocation (vkr_chain_repeats).
+Why: vkr's checks read the first struct of a type (vkr_find_struct) and the Mac's drivers
+the last. Mesa's vk_common_CreateRenderPass (KosmicKrisp) keeps the last
+VkRenderPassMultiviewCreateInfo: masks [0x1, 0x1ff] passed vkr's check and the pass's begin
+ended QEMU in Metal ("maxVertexAmplificationCount (9) is not supported"), and Mesa reads
+that last struct's masks for every subpass, past its own array when it has fewer (MoltenVK
+too).
+MoltenVK's vkCmdBeginRenderPass keeps the last VkRenderPassAttachmentBeginInfo: vkr checked
+and held the first one's views, so MoltenVK could read past the last one's array or use a
+view the app destroyed. MoltenVK and Mesa keep the last of others too (plane info, stencil
+usage, vertex divisors, ycbcr, border and reduction info).
+Left alone: VkDeviceCreateInfo (repeats of VkDevicePrivateDataCreateInfo are legal; vkr
+reads robustness2 nullDescriptor, which MoltenVK refuses in any struct and Mesa ORs, so the
+driver has at least what vkr read; maintenance6, which MoltenVK's NULL index buffer path
+does not need; the texel buffer alignment, which no offset ends the process on), the image
+format query (vkr changes its first external info: a repeat asks the driver about DMA_BUF,
+which is unsupported, no crash), views (vkr reads nothing in their chains), output chains
+and vkr's own ring and queue chains. Exceptions the VUIDs allow (Metal export and import
+structs) are not in venus-protocol: the decoder ends the context on them before vkr. The
+guest's Venus driver keeps one slot per type when it rewrites a chain, so legal input never
+reaches vkr with a repeat.
+Upstream: OmacVM policy (ADR 0065).
+Tests: Tests/virgl/test-venus-commands.c (the -repeat- cases, three also under libgmalloc)
+and Tests/virgl/test-venus-image-limits.c (the repeat- cases, two under libgmalloc).
+
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index 07e9270..70ba98a 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -59,6 +59,14 @@ vkr_dispatch_vkCreateBuffer(struct vn_dispatch_context *dispatch,
+ {
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+ 
++   /* OmacVM (virgl-venus-chain-repeats.patch): before vkr's own fixes; vkr keeps the first
++    * usage flags 2 for its view and descriptor checks, the drivers the last */
++   if (!vkr_context_chain_ok(dispatch->data, "vkCreateBuffer", args->pCreateInfo->pNext,
++                             "VkBufferCreateInfo")) {
++      args->ret = VK_ERROR_UNKNOWN;
++      return;
++   }
++
+    /* if host does not natively support dmabuf we need to patch create info */
+    const bool window = vkr_buffer_is_window_buffer(dev, (VkBufferCreateInfo *)args->pCreateInfo);
+    if (!window && dev->physical_device->is_dma_buf_emulated) {
+@@ -312,6 +320,9 @@ vkr_buffer_view_ok(const struct vkr_device *dev,
+       snprintf(why, why_size, "no buffer");
+       return false;
+    }
++   /* OmacVM (virgl-venus-chain-repeats.patch) */
++   if (!vkr_chain_once(info->pNext, "VkBufferViewCreateInfo", why, why_size))
++      return false;
+    struct vkr_physical_device *physical_dev = dev->physical_device;
+    const VkBufferUsageFlags2CreateInfo *usage2 =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO);
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 15b3bad..f72ad8c 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -316,6 +316,11 @@ vkr_cmd_inheritance_ok(struct vkr_context *ctx,
+                        const VkCommandBufferInheritanceInfo *info)
+ {
+    const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   /* OmacVM (virgl-venus-chain-repeats.patch): the counts below and the secondary's state
++    * come from the first struct of a type, the drivers' from the last */
++   if (!vkr_context_chain_ok(ctx, "vkBeginCommandBuffer", info->pNext,
++                             "VkCommandBufferInheritanceInfo"))
++      return false;
+    const VkCommandBufferInheritanceRenderingInfo *rendering = vkr_find_struct(
+       info->pNext, VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO);
+    const VkRenderingAttachmentLocationInfo *locations =
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index 8e4fa1f..a3e4be7 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -15,6 +15,7 @@
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -263,6 +264,33 @@ vkr_chain_repeats(const void *chain)
+    return false;
+ }
+ 
++/* OmacVM (virgl-venus-chain-repeats.patch, ADR 0065): the first structure type chained a
++ * second time, or 0 (no chain vkr reads takes VkApplicationInfo). Each struct is compared
++ * with the ones before it and the walk stops at the first repeat: the decoder takes only
++ * a few types in a chain, so at most (known types)^2 compares, however long the chain. */
++static inline VkStructureType
++vkr_chain_repeat(const void *chain)
++{
++   for (const VkBaseInStructure *s = chain; s; s = s->pNext) {
++      for (const VkBaseInStructure *t = chain; t != s; t = t->pNext) {
++         if (t->sType == s->sType)
++            return s->sType;
++      }
++   }
++   return 0;
++}
++
++/* the same with why ("structure type N twice in the chain of OF") for the checks that
++ * write one */
++static inline bool
++vkr_chain_once(const void *chain, const char *of, char *why, size_t why_size)
++{
++   const VkStructureType type = vkr_chain_repeat(chain);
++   if (type)
++      snprintf(why, why_size, "structure type %u twice in the chain of %s", (unsigned)type, of);
++   return !type;
++}
++
+ /*
+  * Find struct in the pNext of chain and return its previous struct.
+  */
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index d95c9e7..8b7b2cb 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -266,6 +266,17 @@ bool
+ vkr_context_check(struct vkr_context *ctx, bool ok, const char *call, const char *fmt, ...)
+    PRINTFLIKE(4, 5);
+ 
++/* OmacVM (virgl-venus-chain-repeats.patch): no structure type twice in chain (the pNext
++ * of OF), or the call is refused as vkr_context_check does. vkr's checks read the first
++ * struct of a type and the Mac's drivers the last (VUID-<OF>-sType-unique). */
++static inline bool
++vkr_context_chain_ok(struct vkr_context *ctx, const char *call, const void *chain, const char *of)
++{
++   const VkStructureType type = vkr_chain_repeat(chain);
++   return vkr_context_check(ctx, !type, call, "structure type %u twice in the chain of %s",
++                            (unsigned)type, of);
++}
++
+ static inline bool
+ vkr_context_validate_object_id(struct vkr_context *ctx, vkr_object_id id)
+ {
+diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
+index c65f6f3..98281c2 100644
+--- a/src/venus/vkr_descriptor_set.c
++++ b/src/venus/vkr_descriptor_set.c
+@@ -109,6 +109,10 @@ vkr_set_layout_create(const struct vkr_physical_device *physical_dev,
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
+    const bool push = info->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+ 
++   /* OmacVM (virgl-venus-chain-repeats.patch): the table is made from the first binding
++    * flags and mutable types, the drivers use the last */
++   if (!vkr_chain_once(info->pNext, "VkDescriptorSetLayoutCreateInfo", why, why_size))
++      return NULL;
+    if (info->bindingCount > VKR_MAX_BINDINGS ||
+        (flags_info && flags_info->bindingCount && flags_info->bindingCount != info->bindingCount)) {
+       snprintf(why, why_size, "%u bindings, %u binding flags", info->bindingCount,
+@@ -485,6 +489,9 @@ vkr_descriptor_write_parts(const struct vkr_device *dev,
+                            char *why,
+                            size_t why_size)
+ {
++   /* OmacVM (virgl-venus-chain-repeats.patch): inline block data */
++   if (!vkr_chain_once(w->pNext, "VkWriteDescriptorSet", why, why_size))
++      return 0;
+    uint32_t variable_count, index;
+    const struct vkr_set_layout *layout = vkr_write_layout(push, w, &variable_count);
+    const struct vkr_set_layout_binding *b =
+@@ -757,6 +764,10 @@ vkr_dispatch_vkCreateDescriptorPool(struct vn_dispatch_context *dispatch,
+    const VkDescriptorPoolCreateInfo *info = args->pCreateInfo;
+    const VkMutableDescriptorTypeCreateInfoEXT *mutable_info =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
++   /* OmacVM (virgl-venus-chain-repeats.patch) */
++   if (!vkr_context_chain_ok(dispatch->data, "vkCreateDescriptorPool", info->pNext,
++                             "VkDescriptorPoolCreateInfo"))
++      return;
+    bool ok = info->maxSets <= VKR_MAX_DESCRIPTORS;
+    for (uint32_t i = 0; ok && i < info->poolSizeCount; i++) {
+       const VkDescriptorPoolSize *size = &info->pPoolSizes[i];
+@@ -844,6 +855,10 @@ vkr_dispatch_vkAllocateDescriptorSets(struct vn_dispatch_context *dispatch,
+    const VkDescriptorSetAllocateInfo *info = args->pAllocateInfo;
+    const VkDescriptorSetVariableDescriptorCountAllocateInfo *variable = vkr_find_struct(
+       info->pNext, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO);
++   /* OmacVM (virgl-venus-chain-repeats.patch) */
++   if (!vkr_context_chain_ok(ctx, "vkAllocateDescriptorSets", info->pNext,
++                             "VkDescriptorSetAllocateInfo"))
++      return;
+    if (!vkr_context_check(ctx,
+                           !variable || !variable->descriptorSetCount ||
+                              variable->descriptorSetCount == info->descriptorSetCount,
+diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
+index 0560e55..e77ce25 100644
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -291,6 +291,9 @@ vkr_image_bind_ok(const struct vkr_image *image,
+                   char *why,
+                   size_t why_size)
+ {
++   /* OmacVM (virgl-venus-chain-repeats.patch): MoltenVK binds the last plane info */
++   if (!vkr_chain_once(next, "VkBindImageMemoryInfo", why, why_size))
++      return false;
+    const VkBindImagePlaneMemoryInfo *plane_info =
+       vkr_find_struct(next, VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO);
+    if (!image || !mem) {
+@@ -327,6 +330,9 @@ vkr_image_device_info_ok(struct vkr_device *dev,
+                          char *why,
+                          size_t why_size)
+ {
++   /* OmacVM (virgl-venus-chain-repeats.patch): before vkr's own fixes, as vkCreateImage */
++   if (!vkr_chain_once(info->pNext, "VkImageCreateInfo", why, why_size))
++      return false;
+    if (dev->physical_device->is_dma_buf_emulated)
+       vkr_image_fix_create_info(dev, info);
+    if (!dev->physical_device->EXT_image_drm_format_modifier &&
+@@ -344,6 +350,15 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    const bool drm = args->pCreateInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+ 
++   /* OmacVM (virgl-venus-chain-repeats.patch): vkr's fixes and checks below read the first
++    * struct of a type, the drivers the last (stencil usage, external memory, modifiers) */
++   char why[192];
++   if (!vkr_chain_once(args->pCreateInfo->pNext, "VkImageCreateInfo", why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkCreateImage", "%s", why);
++      args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
++      return;
++   }
++
+    /* if host does not natively support dmabuf we need to patch create info */
+    if (dev->physical_device->is_dma_buf_emulated) {
+       vkr_image_fix_create_info(dev, (VkImageCreateInfo *)args->pCreateInfo);
+@@ -362,7 +377,6 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+     * passes it to the app). The guest waits for this answer unless an earlier
+     * successful create or requirements query of the same description is in its cache:
+     * then the app's first use of the image ends its context. */
+-   char why[192];
+    if (!vkr_image_info_ok(dev->physical_device, args->pCreateInfo, why, sizeof(why))) {
+       vkr_context_refuse(dispatch->data, false, "vkCreateImage", "%s", why);
+       args->ret = VK_ERROR_FORMAT_NOT_SUPPORTED;
+@@ -437,6 +451,14 @@ vkr_dispatch_vkGetImageMemoryRequirements2(
+    const struct vkr_image *image = vkr_image_from_handle(args->pInfo->image);
+    const VkImagePlaneMemoryRequirementsInfo *plane =
+       vkr_find_struct(args->pInfo->pNext, VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO);
++   /* OmacVM (virgl-venus-chain-repeats.patch) */
++   char why[192];
++   if (!vkr_chain_once(args->pInfo->pNext, "VkImageMemoryRequirementsInfo2", why, sizeof(why))) {
++      vkr_context_refuse(dispatch->data, false, "vkGetImageMemoryRequirements2", "%s", why);
++      memset(&args->pMemoryRequirements->memoryRequirements, 0,
++             sizeof(args->pMemoryRequirements->memoryRequirements));
++      return;
++   }
+    if (!image || (plane && vkr_image_plane_index(plane->planeAspect) >= image->plane_count) ||
+        (!plane && image->plane_count > 1)) {
+       vkr_context_refuse(dispatch->data, false, "vkGetImageMemoryRequirements2",
+@@ -769,6 +791,10 @@ vkr_dispatch_vkDestroyImageView(struct vn_dispatch_context *dispatch,
+ static bool
+ vkr_sampler_info_ok(const VkSamplerCreateInfo *info, char *why, size_t why_size)
+ {
++   /* OmacVM (virgl-venus-chain-repeats.patch): vkr counts the first ycbcr conversion's
++    * planes, the drivers use the last conversion, border and reduction structs */
++   if (!vkr_chain_once(info->pNext, "VkSamplerCreateInfo", why, why_size))
++      return false;
+ #define VKR_FILTER_OK(f)                                                                    \
+    ((f) == VK_FILTER_NEAREST || (f) == VK_FILTER_LINEAR || (f) == VK_FILTER_CUBIC_EXT)
+ #define VKR_ADDRESS_OK(a) ((uint32_t)(a) <= VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE)
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 48b5cb9..aba4051 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -404,6 +404,10 @@ vkr_stage_ok(const VkPipelineShaderStageCreateInfo *st,
+              char *why,
+              size_t why_size)
+ {
++   /* OmacVM (virgl-venus-chain-repeats.patch): vkr_spirv_scan reads the first chained
++    * SPIR-V, a driver that walks the chain could compile a second one unscanned */
++   if (!vkr_chain_once(st->pNext, "VkPipelineShaderStageCreateInfo", why, why_size))
++      return false;
+    const VkShaderModuleCreateInfo *code =
+       vkr_find_struct(st->pNext, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
+    if (!vkr_one_bit(st->stage) || !(st->stage & allowed) || !st->pName ||
+@@ -549,6 +553,18 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+    const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
+    const VkPipelineDynamicStateCreateInfo *dyn = info->pDynamicState;
+ 
++   /* OmacVM (virgl-venus-chain-repeats.patch): the chains vkr reads below */
++   if (!vkr_chain_once(info->pNext, "VkGraphicsPipelineCreateInfo", why, why_size) ||
++       (info->pVertexInputState &&
++        !vkr_chain_once(info->pVertexInputState->pNext, "VkPipelineVertexInputStateCreateInfo",
++                        why, why_size)) ||
++       (info->pMultisampleState &&
++        !vkr_chain_once(info->pMultisampleState->pNext, "VkPipelineMultisampleStateCreateInfo",
++                        why, why_size)) ||
++       (info->pColorBlendState &&
++        !vkr_chain_once(info->pColorBlendState->pNext, "VkPipelineColorBlendStateCreateInfo",
++                        why, why_size)))
++      return false;
+    for (uint32_t i = 0; dyn && i < dyn->dynamicStateCount; i++) {
+       if (!vkr_dynamic_state_ok(dyn->pDynamicStates[i])) {
+          snprintf(why, why_size, "dynamic state %d", dyn->pDynamicStates[i]);
+@@ -835,7 +851,9 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+       const VkComputePipelineCreateInfo *info = &args->pCreateInfos[i];
+       const VkPipelineCreationFeedbackCreateInfo *feedback =
+          vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
+-      if (!vkr_stage_ok(&info->stage, VK_SHADER_STAGE_COMPUTE_BIT, why, sizeof(why)) ||
++      /* OmacVM (virgl-venus-chain-repeats.patch) */
++      if (!vkr_chain_once(info->pNext, "VkComputePipelineCreateInfo", why, sizeof(why)) ||
++          !vkr_stage_ok(&info->stage, VK_SHADER_STAGE_COMPUTE_BIT, why, sizeof(why)) ||
+           !vkr_stage_shader_ok(dev->physical_device, vkr_pipeline_layout_from_handle(info->layout),
+                                &info->stage, why, sizeof(why)) ||
+           !vkr_context_check(ctx,
+diff --git a/src/venus/vkr_render_pass.c b/src/venus/vkr_render_pass.c
+index bb58dae..fbdcda2 100644
+--- a/src/venus/vkr_render_pass.c
++++ b/src/venus/vkr_render_pass.c
+@@ -182,6 +182,11 @@ vkr_render_pass_info_1(const struct vkr_physical_device *physical_dev,
+                        size_t why_size)
+ {
+    const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   /* OmacVM (virgl-venus-chain-repeats.patch): Mesa's vk_common_CreateRenderPass keeps the
++    * last multiview struct (a 9-view pass past vkr's check of the first ended QEMU in
++    * Metal on KosmicKrisp) and reads its masks for every subpass */
++   if (!vkr_chain_once(info->pNext, "VkRenderPassCreateInfo", why, why_size))
++      return NULL;
+    const VkRenderPassMultiviewCreateInfo *mv =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO);
+    const VkRenderPassInputAttachmentAspectCreateInfo *aspects = vkr_find_struct(
+@@ -265,6 +270,13 @@ vkr_render_pass_info_2(const struct vkr_physical_device *physical_dev,
+                        size_t why_size)
+ {
+    const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   /* OmacVM (virgl-venus-chain-repeats.patch) */
++   if (!vkr_chain_once(info->pNext, "VkRenderPassCreateInfo2", why, why_size))
++      return NULL;
++   for (uint32_t i = 0; i < info->subpassCount; i++) {
++      if (!vkr_chain_once(info->pSubpasses[i].pNext, "VkSubpassDescription2", why, why_size))
++         return NULL;
++   }
+    if (!info->subpassCount) {
+       snprintf(why, why_size, "no subpass");
+       return NULL;
+@@ -390,6 +402,10 @@ vkr_render_pass_begin_ok(struct vkr_context *ctx,
+                          const struct vkr_limits *limits,
+                          const VkRenderPassBeginInfo *info)
+ {
++   /* OmacVM (virgl-venus-chain-repeats.patch): vkr checks and holds the first attachment
++    * views, MoltenVK's begin uses the last */
++   if (!vkr_context_chain_ok(ctx, call, info->pNext, "VkRenderPassBeginInfo"))
++      return false;
+    const struct vkr_render_pass *pass = vkr_render_pass_from_handle(info->renderPass);
+    const struct vkr_framebuffer *fb = vkr_framebuffer_from_handle(info->framebuffer);
+    const VkRenderPassAttachmentBeginInfo *views =
+@@ -445,6 +461,9 @@ vkr_rendering_ok(struct vkr_context *ctx,
+                  const VkRenderingInfo *info)
+ {
+    const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
++   /* OmacVM (virgl-venus-chain-repeats.patch): shading rate and density map views */
++   if (!vkr_context_chain_ok(ctx, "vkCmdBeginRendering", info->pNext, "VkRenderingInfo"))
++      return false;
+    bool ok = info->colorAttachmentCount <= lim->maxColorAttachments &&
+              vkr_view_mask_ok(&physical_dev->limits, info->viewMask) &&
+              (info->viewMask || info->layerCount <= lim->maxFramebufferLayers) &&
+@@ -584,6 +603,10 @@ vkr_dispatch_vkCreateFramebuffer(struct vn_dispatch_context *dispatch,
+    const bool imageless = info->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT;
+    const VkFramebufferAttachmentsCreateInfo *images =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO);
++   /* OmacVM (virgl-venus-chain-repeats.patch) */
++   if (!vkr_context_chain_ok(dispatch->data, "vkCreateFramebuffer", info->pNext,
++                             "VkFramebufferCreateInfo"))
++      return;
+    const uint32_t count = imageless ? (images ? images->attachmentImageInfoCount : 0)
+                                     : info->attachmentCount;
+    bool ok = pass && count == pass->attachment_count && info->width && info->height &&

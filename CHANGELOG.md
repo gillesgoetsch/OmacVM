@@ -34,6 +34,11 @@ in more words.
   negative one does not clip), on the M1 Max they clip the draw away. OmacVM's own guest Mesa
   build has a patch for it (#694); the VM's Arch Mesa does not. One statement per distance avoids it.
   Needs the app update (from the VM's next start).
+- **A Vulkan program that chains one structure type twice no longer gets past QEMU's checks
+  (OmacVM.app, #687, see #624).** With Graphics on Vulkan, QEMU checked the first of two
+  structures of one type and the Mac's driver used the last: a render pass with a second
+  multiview structure of 9 views ended the VM on KosmicKrisp. Vulkan does not allow such a chain;
+  now it ends only that program's Vulkan connection. Needs the app update.
 
 ## 3.2.19
 

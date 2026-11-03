@@ -123,12 +123,14 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "c-state-secondary-held-teardown-ok c-state-secondary-held-control-ok "
                  "t-pipeline-destroy-layout t-pipeline-destroy-module "
                  "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
-                 "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok")
+                 "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok "
+                 # a structure type twice in a chain (virgl-venus-chain-repeats.patch)
+                 "r-repeat-multiview-short r-repeat-attachment-begin r-repeat-begin-two-types-ok")
 # test-venus-image-limits under libgmalloc: plane binds, where a driver reads a plane's memory
 # slot by the guest's plane aspect
 image_gmalloc_cases = ("bind-plane-info bind-disjoint-no-plane bind-disjoint-planes-ok "
                        "bind-alias-plane0-ok bind-alias-plane1-ok bind-alias-no-plane bind-alias-v1 "
-                       "bind-alias-plane1-aspect")
+                       "bind-alias-plane1-aspect repeat-bind-plane repeat-reqs-plane")
 gmalloc_runs = {"test-venus-commands": ("VENUS_COMMANDS_CASES", gmalloc_cases),
                 "test-venus-image-limits": ("VENUS_IMAGE_CASES", image_gmalloc_cases)}
 gmalloc = Path("/usr/lib/libgmalloc.dylib")
