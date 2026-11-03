@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.3.0 (unreleased)
+## 3.2.20 (unreleased)
 
 - **OpenGL program pipelines whose patch values do not start at 0 stay on the GPU (OmacVM.app,
   #688, see #589).** An app that gives its tessellation patch values explicit locations in
