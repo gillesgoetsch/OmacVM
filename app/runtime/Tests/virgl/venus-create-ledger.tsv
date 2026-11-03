@@ -62,3 +62,4 @@ vkDestroyImage / vkDestroyBuffer	a target of live dedicated memory	C	the driver'
 vkCreateFramebuffer	pAttachments	C	the views kept by id and serial for the begin	c-state-destroyed-view-begin
 Venus contexts, vkCreateRingMESA, vkCreateDevice	threads, open files	C	one process budget of 1024 guest threads; contexts within a sixteenth of the open-file limit and 256	test-venus-threads: contexts, rings, queues, context-files
 replies	chained output structs	C	temporary memory zeroed for commands with a reply	o-refused-chain, o-unwritten-chain (test-venus-robust)
+every create, bind, begin, write and pipeline chain vkr checks	a structure type twice (VUID-<struct>-sType-unique)	C	no type twice in the chain (vkr_chain_repeat); VkDeviceCreateInfo, views and output chains left alone (the patch header says why)	r-repeat-multiview (KK abort before), r-repeat-multiview-short, r-repeat-attachment-begin, the other -repeat- cases; legal: the -two-types-ok cases, repeat-once-ok

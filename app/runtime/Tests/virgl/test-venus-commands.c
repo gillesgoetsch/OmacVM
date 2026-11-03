@@ -13,7 +13,8 @@
  * context's stream take turns on the app's objects, command buffers hold the views their
  * passes named and primaries the secondaries they executed (virgl-venus-ring-lock.patch,
  * virgl-venus-command-holds.patch, virgl-venus-secondary-holds.patch; the t- cases stop a
- * real ring with virgl-venus-test-pause.patch's hook).
+ * real ring with virgl-venus-test-pause.patch's hook), and no chain vkr checks has one
+ * structure type twice (virgl-venus-chain-repeats.patch: the -repeat- cases).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -892,6 +893,8 @@ struct gfx {
    void *vert, *frag;
    const void *next;    /* chained after the rendering info */
    const void *ms_next; /* chained on the multisample state */
+   const void *vi_next; /* chained on the vertex input state */
+   const void *cb_next; /* chained on the color blend state */
    const VkDynamicState *dynamic;
    uint32_t dynamic_count;
    VkShaderStageFlagBits vert_stage;
@@ -915,7 +918,7 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
    VkVertexInputBindingDescription vb = { g->vbinding, g->vstride ? g->vstride : 16, VK_VERTEX_INPUT_RATE_VERTEX };
    VkVertexInputAttributeDescription va = { g->vlocation, g->vbinding, VK_FORMAT_R32G32B32A32_SFLOAT, 0 };
    VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-                                               .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vb,
+                                               .pNext = g->vi_next, .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &vb,
                                                .vertexAttributeDescriptionCount = 1,
                                                .pVertexAttributeDescriptions = &va };
    VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -941,7 +944,7 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
       cba[i] = (VkPipelineColorBlendAttachmentState){ .blendEnable = g->src_factor != 0, .colorWriteMask = 0xf,
                                                       .srcColorBlendFactor = g->src_factor };
    VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                              .attachmentCount = g->blend_count ? g->blend_count : g->colors,
+                                              .pNext = g->cb_next, .attachmentCount = g->blend_count ? g->blend_count : g->colors,
                                               .pAttachments = cba };
    static VkFormat formats[64];
    for (int i = 0; i < 64; i++)
@@ -5093,6 +5096,363 @@ static int ring_time(int n)
 }
 
 /* ---------------- the cases and what each must see ---------------- */
+/* ---------------- a structure type twice in a chain ----------------
+ * VUID-<struct>-sType-unique; each struct alone is legal. vkr's checks read the first of a
+ * type, the drivers the last (virgl-venus-chain-repeats.patch). r-repeat-multiview: Mesa's
+ * vk_common_CreateRenderPass (KosmicKrisp) keeps the second struct, 9 views, and Metal ended
+ * the process at the pass's begin; r-repeat-multiview-short: Mesa reads the second struct's
+ * masks for both subpasses, past its one-mask array (guarded memory); r-repeat-attachment-
+ * begin: MoltenVK's begin keeps the second attachment info, which has no views, and reads
+ * the pass's one attachment from it. The -two-types-ok cases have the same structs once
+ * (beside a second type where the chain takes one). */
+static void *one_subpass_pass(const void *next)
+{
+   VkAttachmentDescription att = { 0, FMT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                   VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                   VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+                                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+   VkAttachmentReference ref = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+   VkSubpassDescription sub = { .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                                .pColorAttachments = &ref };
+   const uint64_t id = next_id++;
+   VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+   VkRenderPassCreateInfo info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .pNext = next,
+                                   .attachmentCount = 1, .pAttachments = &att, .subpassCount = 1, .pSubpasses = &sub };
+   struct vn_command_vkCreateRenderPass cr = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+   step("vkCreateRenderPass 1 subpass, a chain");
+   D->dispatch_vkCreateRenderPass(D, &cr);
+   last_ret = cr.ret;
+   step("vkCreateRenderPass = %d", cr.ret);
+   return cr.ret == VK_SUCCESS ? object(id) : NULL;
+}
+
+/* a pass of one attachment on view v, begun with next on the begin info, ended */
+static int pass_on(void *rp, void *v, const void *begin_next, bool imageless)
+{
+   void *views[1] = { v };
+   void *fb = imageless ? imageless_framebuffer(rp) : framebuffer(rp, views, 1, 64, 64, 1);
+   if (!fb)
+      return imageless ? SKIP : created(fb);
+   void *cmd = command_buffer();
+   begin(cmd);
+   VkClearValue clear = { 0 };
+   VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .pNext = begin_next,
+                                .renderPass = (VkRenderPass)rp, .framebuffer = (VkFramebuffer)fb,
+                                .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1, .pClearValues = &clear };
+   struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
+                                                .contents = VK_SUBPASS_CONTENTS_INLINE };
+   step("vkCmdBeginRenderPass, a chain on the begin info");
+   D->dispatch_vkCmdBeginRenderPass(D, &b);
+   end_pass(cmd);
+   return end(cmd);
+}
+
+static int case_repeat(const char *c)
+{
+   unsigned needs = 0;
+   if (IS("p-repeat-inline-spirv") || IS("d-repeat-buffer-view"))
+      needs |= N_MAINT5;
+   if (IS("p-repeat-gfx-ms"))
+      needs |= N_SAMPLELOC;
+   setup(needs);
+   struct world w = { 0 };
+   make_world(&w, c[0] == 'p');
+
+   if (IS("r-repeat-multiview") || IS("r-repeat-two-types-ok")) {
+      if (9 > lim.maxImageArrayLayers || 9 > lim.maxFramebufferLayers) {
+         printf("skip: 9 layers\n");
+         return SKIP;
+      }
+      static const uint32_t one = 0x1, nine = 0x1ff;
+      VkRenderPassMultiviewCreateInfo mv2 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .subpassCount = 1, .pViewMasks = &nine };
+      VkRenderPassInputAttachmentAspectCreateInfo ia = {
+         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO };
+      VkRenderPassMultiviewCreateInfo mv1 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .pNext = IS("r-repeat-multiview") ? (const void *)&mv2 : &ia,
+                                              .subpassCount = 1, .pViewMasks = &one };
+      void *rp = one_subpass_pass(&mv1);
+      if (!rp)
+         return created(rp);
+      return pass_on(rp, view(image(64, 64, 9, CA_SA), 9), NULL, false);
+   }
+   if (IS("r-repeat-multiview-short")) {
+      static const uint32_t masks[2] = { 1, 1 };
+      uint32_t *short_masks = guarded(sizeof(uint32_t));
+      short_masks[0] = 1;
+      VkRenderPassMultiviewCreateInfo mv2 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .subpassCount = 1, .pViewMasks = short_masks };
+      VkRenderPassMultiviewCreateInfo mv1 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO,
+                                              .pNext = &mv2, .subpassCount = 2, .pViewMasks = masks };
+      return created(two_subpass_pass(&mv1, 0));
+   }
+   if (IS("r-repeat-attachment-begin")) {
+      VkImageView one = (VkImageView)w.iv;
+      VkRenderPassAttachmentBeginInfo ab2 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO };
+      VkRenderPassAttachmentBeginInfo ab1 = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
+                                              .pNext = &ab2, .attachmentCount = 1, .pAttachments = &one };
+      return pass_on(w.rp, NULL, &ab1, true);
+   }
+   if (IS("r-repeat-begin") || IS("r-repeat-begin-two-types-ok")) {
+      /* device group begin infos (core 1.1), device mask 1, no areas */
+      VkDeviceGroupRenderPassBeginInfo g2 = { .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_RENDER_PASS_BEGIN_INFO,
+                                              .deviceMask = 1 };
+      VkImageView one = (VkImageView)w.iv;
+      VkRenderPassAttachmentBeginInfo ab = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO,
+                                             .attachmentCount = 1, .pAttachments = &one };
+      VkDeviceGroupRenderPassBeginInfo g1 = { .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_RENDER_PASS_BEGIN_INFO,
+                                              .pNext = IS("r-repeat-begin") ? (const void *)&g2 : &ab,
+                                              .deviceMask = 1 };
+      return pass_on(w.rp, w.iv, &g1, IS("r-repeat-begin-two-types-ok"));
+   }
+   if (IS("r-repeat-pass2-subpass")) {
+      /* depth/stencil resolve infos with no resolve (core 1.2) */
+      VkSubpassDescriptionDepthStencilResolve r2 = {
+         .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE };
+      VkSubpassDescriptionDepthStencilResolve r1 = r2;
+      r1.pNext = &r2;
+      VkAttachmentDescription2 att = { .sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2, .format = FMT,
+                                       .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                       .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                       .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+      VkAttachmentReference2 ref = { .sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, .attachment = 0,
+                                     .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT };
+      VkSubpassDescription2 sub = { .sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2, .pNext = &r1,
+                                    .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    .colorAttachmentCount = 1, .pColorAttachments = &ref };
+      const uint64_t id = next_id++;
+      VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+      VkRenderPassCreateInfo2 info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, .attachmentCount = 1,
+                                       .pAttachments = &att, .subpassCount = 1, .pSubpasses = &sub };
+      struct vn_command_vkCreateRenderPass2 cr = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+      step("vkCreateRenderPass2, two depth/stencil resolve infos on the subpass");
+      D->dispatch_vkCreateRenderPass2(D, &cr);
+      last_ret = cr.ret;
+      return created(cr.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("r-repeat-framebuffer")) {
+      const VkFormat fmt = FMT;
+      VkFramebufferAttachmentImageInfo ai = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO,
+                                              .usage = CA_SA, .width = 64, .height = 64, .layerCount = 1,
+                                              .viewFormatCount = 1, .pViewFormats = &fmt };
+      VkFramebufferAttachmentsCreateInfo ac2 = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO,
+                                                 .attachmentImageInfoCount = 1, .pAttachmentImageInfos = &ai };
+      VkFramebufferAttachmentsCreateInfo ac1 = ac2;
+      ac1.pNext = &ac2;
+      const uint64_t id = next_id++;
+      VkFramebuffer fh = (VkFramebuffer)(uintptr_t)id;
+      VkFramebufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .pNext = &ac1,
+                                       .flags = VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, .renderPass = (VkRenderPass)w.rp,
+                                       .attachmentCount = 1, .width = 64, .height = 64, .layers = 1 };
+      struct vn_command_vkCreateFramebuffer cf = { .device = DEVH, .pCreateInfo = &info, .pFramebuffer = &fh };
+      step("vkCreateFramebuffer (imageless), two attachment infos");
+      D->dispatch_vkCreateFramebuffer(D, &cf);
+      last_ret = cf.ret;
+      return created(cf.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("r-repeat-rendering")) {
+      VkDeviceGroupRenderPassBeginInfo g2 = { .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_RENDER_PASS_BEGIN_INFO,
+                                              .deviceMask = 1 };
+      VkDeviceGroupRenderPassBeginInfo g1 = g2;
+      g1.pNext = &g2;
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)w.iv,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .pNext = &g1,
+                             .renderArea = { { 0, 0 }, { 64, 64 } }, .layerCount = 1, .colorAttachmentCount = 1,
+                             .pColorAttachments = &att };
+      begin(w.cmd);
+      struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)w.cmd, .pRenderingInfo = &ri };
+      step("vkCmdBeginRendering, two device group infos");
+      D->dispatch_vkCmdBeginRendering(D, &b);
+      if (!ended()) {
+         struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)w.cmd };
+         D->dispatch_vkCmdEndRendering(D, &e);
+      }
+      return end(w.cmd);
+   }
+   if (IS("c-repeat-inheritance")) {
+      VkFormat formats[1] = { FMT };
+      VkCommandBufferInheritanceRenderingInfo r2 = {
+         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO, .colorAttachmentCount = 1,
+         .pColorAttachmentFormats = formats, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+      VkCommandBufferInheritanceRenderingInfo r1 = r2;
+      r1.pNext = &r2;
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      begin_secondary(sec, &r1);
+      return end(sec);
+   }
+   if (IS("d-repeat-layout") || IS("d-repeat-two-types-ok")) {
+      const VkDescriptorSetLayoutBinding b = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL };
+      const VkDescriptorBindingFlags none = 0;
+      VkDescriptorSetLayoutBindingFlagsCreateInfo f2 = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, .bindingCount = 1,
+         .pBindingFlags = &none };
+      VkDescriptorSetLayoutBindingFlagsCreateInfo f1 = f2;
+      f1.pNext = &f2;
+      if (IS("d-repeat-layout"))
+         return created(set_layout_of(&b, 1, 0, &f1));
+      /* the control: binding flags on the layout, a variable count info on the allocation */
+      void *dsl = set_layout_of(&b, 1, 0, &f2);
+      if (!dsl)
+         return created(dsl);
+      VkDescriptorSetVariableDescriptorCountAllocateInfo v = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO };
+      return created(set_from(w.pool, dsl, &v));
+   }
+   if (IS("d-repeat-alloc")) {
+      VkDescriptorSetVariableDescriptorCountAllocateInfo v2 = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO };
+      VkDescriptorSetVariableDescriptorCountAllocateInfo v1 = v2;
+      v1.pNext = &v2;
+      return created(set_from(w.pool, w.dsl, &v1));
+   }
+   if (IS("d-repeat-pool")) {
+      VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4 };
+      VkDescriptorPoolInlineUniformBlockCreateInfo i2 = {
+         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO };
+      VkDescriptorPoolInlineUniformBlockCreateInfo i1 = i2;
+      i1.pNext = &i2;
+      const uint64_t id = next_id++;
+      VkDescriptorPool h = (VkDescriptorPool)(uintptr_t)id;
+      VkDescriptorPoolCreateInfo info = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .pNext = &i1,
+                                          .maxSets = 4, .poolSizeCount = 1, .pPoolSizes = &size };
+      struct vn_command_vkCreateDescriptorPool cp = { .device = DEVH, .pCreateInfo = &info, .pDescriptorPool = &h };
+      step("vkCreateDescriptorPool, two inline block infos");
+      D->dispatch_vkCreateDescriptorPool(D, &cp);
+      last_ret = cp.ret;
+      return created(cp.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("d-repeat-write")) {
+      if (!max_inline_block) {
+         printf("skip: no inline uniform blocks\n");
+         return SKIP;
+      }
+      uint8_t data[16] = { 1 };
+      VkWriteDescriptorSetInlineUniformBlock i2 = {
+         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK, .dataSize = 16, .pData = data };
+      VkWriteDescriptorSetInlineUniformBlock i1 = i2;
+      i1.pNext = &i2;
+      VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .pNext = &i1,
+                                  .dstSet = (VkDescriptorSet)w.set, .dstBinding = 5, .descriptorCount = 16,
+                                  .descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK };
+      struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1,
+                                                     .pDescriptorWrites = &wr };
+      step("vkUpdateDescriptorSets, two inline block data infos");
+      D->dispatch_vkUpdateDescriptorSets(D, &u);
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("d-repeat-buffer")) {
+      VkExternalMemoryBufferCreateInfo e2 = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
+      VkExternalMemoryBufferCreateInfo e1 = e2;
+      e1.pNext = &e2;
+      const uint64_t id = next_id++;
+      VkBuffer h = (VkBuffer)(uintptr_t)id;
+      VkBufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &e1, .size = 4096,
+                                  .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT };
+      struct vn_command_vkCreateBuffer cb = { .device = DEVH, .pCreateInfo = &info, .pBuffer = &h };
+      step("vkCreateBuffer, two external memory infos");
+      D->dispatch_vkCreateBuffer(D, &cb);
+      last_ret = cb.ret;
+      return created(cb.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("d-repeat-buffer-view")) {
+      /* a texel buffer and a view of it with usage flags 2 twice (maintenance5) */
+      const uint64_t bid = next_id++;
+      VkBuffer bh = (VkBuffer)(uintptr_t)bid;
+      VkBufferCreateInfo binfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 65536,
+                                   .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT };
+      struct vn_command_vkCreateBuffer cb = { .device = DEVH, .pCreateInfo = &binfo, .pBuffer = &bh };
+      D->dispatch_vkCreateBuffer(D, &cb);
+      struct vkr_buffer *buf = object(bid);
+      if (cb.ret != VK_SUCCESS || !buf)
+         broken("texel buffer");
+      VkMemoryRequirements req = { 0 };
+      struct vn_command_vkGetBufferMemoryRequirements r = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                           .pMemoryRequirements = &req };
+      D->dispatch_vkGetBufferMemoryRequirements(D, &r);
+      struct vn_command_vkBindBufferMemory bm = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                  .memory = (VkDeviceMemory)allocate(req.size, memory_type(req.memoryTypeBits)) };
+      D->dispatch_vkBindBufferMemory(D, &bm);
+      if (bm.ret != VK_SUCCESS)
+         broken("texel buffer memory");
+      VkBufferUsageFlags2CreateInfo u2 = { .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO,
+                                           .usage = VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT };
+      VkBufferUsageFlags2CreateInfo u1 = u2;
+      u1.pNext = &u2;
+      const uint64_t id = next_id++;
+      VkBufferView h = (VkBufferView)(uintptr_t)id;
+      VkBufferViewCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .pNext = &u1,
+                                      .buffer = (VkBuffer)buf, .format = VK_FORMAT_R32_UINT, .range = 256 };
+      struct vn_command_vkCreateBufferView cv = { .device = DEVH, .pCreateInfo = &info, .pView = &h };
+      step("vkCreateBufferView, two usage flags 2 infos");
+      D->dispatch_vkCreateBufferView(D, &cv);
+      last_ret = cv.ret;
+      return created(cv.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("d-repeat-sampler")) {
+      VkSamplerReductionModeCreateInfo r2 = { .sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+                                              .reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE };
+      VkSamplerReductionModeCreateInfo r1 = r2;
+      r1.pNext = &r2;
+      const uint64_t id = next_id++;
+      VkSampler h = (VkSampler)(uintptr_t)id;
+      VkSamplerCreateInfo info = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .pNext = &r1,
+                                   .magFilter = VK_FILTER_LINEAR, .minFilter = VK_FILTER_LINEAR, .maxLod = 1 };
+      struct vn_command_vkCreateSampler cs = { .device = DEVH, .pCreateInfo = &info, .pSampler = &h };
+      step("vkCreateSampler, two reduction mode infos");
+      D->dispatch_vkCreateSampler(D, &cs);
+      last_ret = cs.ret;
+      return created(cs.ret == VK_SUCCESS ? object(id) : NULL);
+   }
+   if (IS("p-repeat-inline-spirv")) {
+      /* two SPIR-V modules chained into the stage: vkr scans the first only */
+      VkShaderModuleCreateInfo m2 = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                      .codeSize = sizeof(spv_comp), .pCode = spv_comp };
+      VkShaderModuleCreateInfo m1 = m2;
+      m1.pNext = &m2;
+      return created(compute_pipeline(w.layout, NULL, &m1, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL));
+   }
+   VkPipelineCreationFeedback whole1, whole2;
+   VkPipelineCreationFeedbackCreateInfo fb2 = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                .pPipelineCreationFeedback = &whole2 };
+   VkPipelineCreationFeedbackCreateInfo fb1 = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                .pNext = &fb2, .pPipelineCreationFeedback = &whole1 };
+   if (IS("p-repeat-compute"))
+      return created(compute_pipeline(w.layout, w.comp, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, &fb1));
+   struct gfx g = { .rp = w.rp, .colors = 1, .vert = w.vert, .frag = w.frag };
+   if (IS("p-repeat-gfx")) {
+      g.feedback = true;
+      g.next = &fb2; /* after the feedback info graphics_pipeline() chains first */
+   } else if (IS("p-repeat-gfx-two-types-ok")) {
+      g.feedback = true; /* a feedback info once; a divisor info once on the vertex input */
+   }
+   VkPipelineVertexInputDivisorStateCreateInfo d2 = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO };
+   VkPipelineVertexInputDivisorStateCreateInfo d1 = d2;
+   d1.pNext = &d2;
+   if (IS("p-repeat-gfx-vertex"))
+      g.vi_next = &d1;
+   if (IS("p-repeat-gfx-two-types-ok"))
+      g.vi_next = &d2;
+   VkPipelineSampleLocationsStateCreateInfoEXT s2 = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT };
+   VkPipelineSampleLocationsStateCreateInfoEXT s1 = s2;
+   s1.pNext = &s2;
+   if (IS("p-repeat-gfx-ms"))
+      g.ms_next = &s1;
+   VkPipelineColorWriteCreateInfoEXT cw2 = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_WRITE_CREATE_INFO_EXT };
+   VkPipelineColorWriteCreateInfoEXT cw1 = cw2;
+   cw1.pNext = &cw2;
+   if (IS("p-repeat-gfx-blend"))
+      g.cb_next = &cw1;
+   return created(graphics_pipeline(w.layout, &g));
+}
+
 struct test_case {
    const char *name;
    int expect;
@@ -5262,6 +5622,31 @@ static const struct test_case cases[] = {
    { "t-same-id", E_REFUSE, "taken" },
    { "t-command-free-buffer", E_WORKS }, { "t-same-command-buffer", E_WORKS }, { "t-export-free-memory", E_WORKS },
    { "t-wait-ring-nested-ok", E_WORKS }, { "t-compile-no-delay-ok", E_WORKS }, { "t-teardown-paused-ok", E_WORKS },
+   /* a structure type twice in a chain (virgl-venus-chain-repeats.patch) */
+   { "r-repeat-multiview", E_REFUSE, "twice in the chain of VkRenderPassCreateInfo" },
+   { "r-repeat-multiview-short", E_REFUSE, "twice in the chain of VkRenderPassCreateInfo" },
+   { "r-repeat-attachment-begin", E_REFUSE, "twice in the chain of VkRenderPassBeginInfo" },
+   { "r-repeat-begin", E_REFUSE, "twice in the chain of VkRenderPassBeginInfo" },
+   { "r-repeat-pass2-subpass", E_REFUSE, "twice in the chain of VkSubpassDescription2" },
+   { "r-repeat-framebuffer", E_REFUSE, "twice in the chain of VkFramebufferCreateInfo" },
+   { "r-repeat-rendering", E_REFUSE, "twice in the chain of VkRenderingInfo" },
+   { "r-repeat-two-types-ok", E_WORKS }, { "r-repeat-begin-two-types-ok", E_WORKS },
+   { "c-repeat-inheritance", E_REFUSE, "twice in the chain of VkCommandBufferInheritanceInfo" },
+   { "d-repeat-layout", E_REFUSE, "twice in the chain of VkDescriptorSetLayoutCreateInfo" },
+   { "d-repeat-write", E_REFUSE, "twice in the chain of VkWriteDescriptorSet" },
+   { "d-repeat-alloc", E_REFUSE, "twice in the chain of VkDescriptorSetAllocateInfo" },
+   { "d-repeat-pool", E_REFUSE, "twice in the chain of VkDescriptorPoolCreateInfo" },
+   { "d-repeat-buffer", E_REFUSE, "twice in the chain of VkBufferCreateInfo" },
+   { "d-repeat-buffer-view", E_REFUSE, "twice in the chain of VkBufferViewCreateInfo" },
+   { "d-repeat-sampler", E_REFUSE, "twice in the chain of VkSamplerCreateInfo" },
+   { "d-repeat-two-types-ok", E_WORKS },
+   { "p-repeat-inline-spirv", E_REFUSE, "twice in the chain of VkPipelineShaderStageCreateInfo" },
+   { "p-repeat-gfx", E_REFUSE, "twice in the chain of VkGraphicsPipelineCreateInfo" },
+   { "p-repeat-gfx-vertex", E_REFUSE, "twice in the chain of VkPipelineVertexInputStateCreateInfo" },
+   { "p-repeat-gfx-ms", E_REFUSE, "twice in the chain of VkPipelineMultisampleStateCreateInfo" },
+   { "p-repeat-gfx-blend", E_REFUSE, "twice in the chain of VkPipelineColorBlendStateCreateInfo" },
+   { "p-repeat-compute", E_REFUSE, "twice in the chain of VkComputePipelineCreateInfo" },
+   { "p-repeat-gfx-two-types-ok", E_WORKS },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -5273,6 +5658,8 @@ static int run_case(const char *c)
       make_world(&w, false);
       return descriptor_probe(&w);
    }
+   if (strstr(c, "-repeat-"))
+      return case_repeat(c);
    switch (c[0]) {
    case 'p': return case_pipeline(c);
    case 'r': return case_render_pass(c);

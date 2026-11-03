@@ -45,7 +45,8 @@ extern char **environ;
 /* what a case saw: the child's exit status */
 enum { WORKS = 10, REFUSED = 11, FATAL = 12, SKIP = 13, BROKEN = 2 };
 /* what a case must see */
-enum { E_WORKS, E_REFUSED, E_FATAL, E_NOT_WORKS, E_REFUSED_KK, E_WORKS_OR_SKIP, E_FATAL_OR_SKIP };
+enum { E_WORKS, E_REFUSED, E_FATAL, E_NOT_WORKS, E_REFUSED_KK, E_WORKS_OR_SKIP, E_FATAL_OR_SKIP,
+       E_REFUSED_OR_SKIP };
 /* the _OR_SKIP ones may skip on MoltenVK only (it makes no DISJOINT one-plane image), never on
  * KosmicKrisp: a skip there fails the case */
 
@@ -710,6 +711,73 @@ static const VkSamplerCreateInfo base_sampler = {
  * device and the description only), and the guest's later use of the handle it named
  * ends the context: the guest's Mesa sends a create without waiting when the same
  * description is in its requirements cache. */
+/* A structure type twice in a chain (virgl-venus-chain-repeats.patch, VUID-<struct>-sType-
+ * unique): each struct alone is legal; vkr's checks read the first and the drivers the last
+ * (MoltenVK binds the last plane info). Refused: the create and the queries get an error or
+ * zeros, a bind or sampler ends the context. */
+static int repeat_case(const char *name)
+{
+   VkExternalMemoryImageCreateInfo ext2 = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO };
+   VkExternalMemoryImageCreateInfo ext1 = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+                                            .pNext = &ext2 };
+   VkImageCreateInfo info = image_info(BGRA, OPT, S);
+   if (!strcmp(name, "repeat-once-ok")) {
+      /* the control: two types, each once */
+      static const VkFormat formats[1] = { BGRA };
+      VkImageFormatListCreateInfo list = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+                                           .viewFormatCount = 1, .pViewFormats = formats };
+      ext1.pNext = &list;
+      info.pNext = &ext1;
+      return create_case(info);
+   }
+   if (!strcmp(name, "repeat-create")) {
+      info.pNext = &ext1;
+      return create_case(info);
+   }
+   if (!strcmp(name, "repeat-devreq")) {
+      info.pNext = &ext1;
+      return devreq_case(info);
+   }
+   if (!strcmp(name, "repeat-sampler")) {
+      VkSamplerReductionModeCreateInfo r2 = { .sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO,
+                                              .reductionMode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE };
+      VkSamplerReductionModeCreateInfo r1 = r2;
+      r1.pNext = &r2;
+      VkSamplerCreateInfo si = base_sampler;
+      si.pNext = &r1;
+      return sampler_case(si);
+   }
+   /* a DISJOINT two-plane image: plane 0's requirements asked with plane info [PLANE_0,
+    * PLANE_1]; or plane 0's bind with [PLANE_0, PLANE_1] (MoltenVK binds plane 1 to plane 0's
+    * memory) and plane 1's as usual */
+   struct disjoint_parent p;
+   VkBindImageMemoryInfo binds[2];
+   if (!disjoint_parent(&p, binds))
+      return SKIP;
+   VkImagePlaneMemoryRequirementsInfo q2 = { .sType = VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO,
+                                             .planeAspect = VK_IMAGE_ASPECT_PLANE_1_BIT };
+   VkImagePlaneMemoryRequirementsInfo q1 = { .sType = VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO,
+                                             .pNext = &q2, .planeAspect = VK_IMAGE_ASPECT_PLANE_0_BIT };
+   if (!strcmp(name, "repeat-reqs-plane")) {
+      VkImageMemoryRequirementsInfo2 ri = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+                                            .pNext = &q1, .image = (VkImage)p.image };
+      VkMemoryRequirements2 out = { .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 };
+      struct vn_command_vkGetImageMemoryRequirements2 a = {
+         .device = (VkDevice)dev, .pInfo = &ri, .pMemoryRequirements = &out };
+      printf("vkGetImageMemoryRequirements2 (plane info PLANE_0, PLANE_1) ...\n");
+      D->dispatch_vkGetImageMemoryRequirements2(D, &a);
+      printf("size %" PRIu64 "\n", out.memoryRequirements.size);
+      if (vkr_context_get_fatal(ctx))
+         return FATAL;
+      return out.memoryRequirements.size ? WORKS : REFUSED;
+   }
+   VkBindImagePlaneMemoryInfo b2 = p.planes[1];
+   p.planes[0].pNext = &b2;
+   printf("plane 0's bind with plane info [PLANE_0, PLANE_1], plane 1's as usual\n");
+   const VkResult ret = bind2(binds, 2);
+   return vkr_context_get_fatal(ctx) ? FATAL : ret == VK_SUCCESS ? WORKS : BROKEN;
+}
+
 static unsigned host_creates, host_binds;
 static PFN_vkCreateImage real_create_image;
 static PFN_vkBindImageMemory real_bind_image;
@@ -890,6 +958,13 @@ static const struct test_case cases[] = {
    { "sampler-lod-huge", E_WORKS },
    /* a refused description: never the driver, its handle's use ends the context */
    { "refused-then-used", E_FATAL },
+   /* a structure type twice in a chain (virgl-venus-chain-repeats.patch) */
+   { "repeat-once-ok", E_WORKS },
+   { "repeat-create", E_REFUSED },
+   { "repeat-devreq", E_REFUSED },
+   { "repeat-sampler", E_FATAL },
+   { "repeat-reqs-plane", E_REFUSED_OR_SKIP },
+   { "repeat-bind-plane", E_FATAL_OR_SKIP },
 };
 
 #define IS(n) (!strcmp(name, n))
@@ -1061,6 +1136,8 @@ static int run_case(const char *name)
       return query_case(BGRA, VK_IMAGE_TYPE_2D, OPT, S, NULL);
    if (IS("sparse-bad-samples"))
       return sparse_case(3);
+   if (!strncmp(name, "repeat-", 7))
+      return repeat_case(name);
    if (IS("bind-disjoint-planes-ok"))
       return disjoint_planes_case();
    if (IS("bind-alias-plane0-ok"))
@@ -1338,6 +1415,7 @@ int main(int argc, char **argv)
       case E_NOT_WORKS: ok = got == REFUSED || got == FATAL; break;
       case E_WORKS_OR_SKIP: ok = got == WORKS || (!kk && got == SKIP); break;
       case E_FATAL_OR_SKIP: ok = got == FATAL || (!kk && got == SKIP); break;
+      case E_REFUSED_OR_SKIP: ok = got == REFUSED || (!kk && got == SKIP); break;
       default: /* E_REFUSED_KK */
          ok = kk ? got == REFUSED : (got == REFUSED || got == WORKS || got == FATAL);
          break;
