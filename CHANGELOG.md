@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.20 (unreleased)
+
+- **OpenGL program pipelines whose patch values do not start at 0 stay on the GPU (OmacVM.app,
+  #688, see #589).** An app that gives its tessellation patch values explicit locations in
+  separate shader programs (for example locations 1 and 3) left the gaps unwritten in the control
+  shader the Mac gets, and Apple's OpenGL could not build the GPU pipeline ("Fallback to SW vertex
+  processing because buildPipelineState failed" in qemu.log). On the MacBook Pro M1 Max such
+  draws ran on Apple's CPU vertex path, the first draw took 262-272 ms and Apple's shader compiler
+  crashed now and then; on the Mac mini M4 they drew nothing. Now the control shader also writes
+  the gaps: on both Macs no fallback line, the pixels of Apple's software renderer, the first draw
+  in 5-6 ms (M1 Max) and 5-100 ms (M4). In a test VM on the M1 Max the VM's Mesa keeps such gaps,
+  and the fallback line is gone with the same pixels. Needs the app update (from the VM's next
+  start); nothing in the VM.
+
 ## 3.2.19
 
 In OmacVM.app VMs, a Vulkan program's threads take turns in QEMU, and what a recorded command buffer

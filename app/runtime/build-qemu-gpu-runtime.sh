@@ -1568,6 +1568,13 @@ grep -q 'static int vs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_sourc
   grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d.%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q '(prev->type == PIPE_SHADER_VERTEX && !key->tcs_present)) &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c: a vertex shader still passes clip distances to an evaluation shader in gl_PerVertex on the Mac (vs-tes-clip-varyings patch)"
+# OmacVM: ... and a separable control shader writes the padding patch varyings it declares
+# (patch-varyings patch): never written, Apple's Metal pipeline build failed, the draws ran on
+# its CPU vertex path and its shader compiler crashed now and then (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-patch-fill-writes.patch"
+grep -q 'static uint64_t patch_fill_mask(' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q '"patch%02d = vec4(0.0);\\n"' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: a separable control shader still leaves its padding patch varyings unwritten (patch-fill-writes patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.

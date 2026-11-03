@@ -1776,10 +1776,17 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   draws stay on the GPU. 3.2.19 does the same for a vertex shader that passes clip distances
   straight to an evaluation shader (no control shader); on the M1 Max such draws drew nothing.
   Update the app.
+- **3.2.20:** an OpenGL program pipeline (separate shader programs) whose tessellation patch values
+  do not start at 0 or have a gap (explicit locations such as 1 and 3) ran on Apple's CPU vertex
+  path ("Fallback to SW vertex processing because buildPipelineState failed" in qemu.log, a first
+  draw of ~270 ms) on the M1 Max and drew nothing on the M4; the control shader now writes the gaps
+  and the draws stay on the GPU. Update the app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
-  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19); tests
-  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`;
+  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),
+  `virgl-shader-separable-patch-fill-writes.patch` (3.2.20); tests
+  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`,
+  `test-separable-pervertex.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.
 

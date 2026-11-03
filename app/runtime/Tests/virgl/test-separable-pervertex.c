@@ -36,7 +36,10 @@
  * GL takes no layout location on a patch variable and gives patch varyings their slots in the
  * order of their names (virgl-shader-separable-patch-varyings.patch): one patch varying
  * (white), the evaluation shader reading one of two (D1) or both (D2), patch varyings 1 and 3
- * beside a per-vertex varying (D4), twelve patch varyings read at 2 and 10 (D6); and programs
+ * beside a per-vertex varying (D4), twelve patch varyings read at 2 and 10 (D6), only patch
+ * varying 1 (D7; in D4 and D7 the control shader writes the padding patch varyings below,
+ * virgl-shader-separable-patch-fill-writes.patch: Apple's software renderer drew them before
+ * too, its GPU fell back to the CPU, see the patch); and programs
  * of separable and whole stages linked as one (M1-M4, patch varyings and a varying array):
  * drawn right, or refused, never drawn wrong.
  * Last, varying arrays, which Apple's GL still refuses as separable programs: vrend puts one
@@ -754,6 +757,16 @@ static const char *tes_gen_patches =
    "  6: MOV OUT[1], TEMP[1]\n"
    "  7: END\n";
 
+/* only PATCH[1] green (PATCH[0] is padding) */
+static const char *tcs_patch1_only =
+   TCS_PATCH_HEAD
+   "DCL OUT[3], PATCH[1]\n"
+   "DCL ADDR[0]\n"
+   "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n"
+   TCS_PATCH_BODY
+   "  6: MOV OUT[3], IMM[0].yxyx\n"
+   "  7: END\n";
+
 /* twelve patch varyings: PATCH[2] (0, 1, 0, 0) and PATCH[10] (0, 0, 0, 1), the others red
  * ("patch10" sorts before "patch2") */
 static const char *tcs_patches12 =
@@ -1174,6 +1187,10 @@ static void io_rows(void)
           { 156, SHADER_VERTEX, vs_triangle }, { 157, SHADER_TESS_CTRL, tcs_patches12 },
           { 158, SHADER_TESS_EVAL, tes_patch2_10 }, { 159, SHADER_FRAGMENT, fs_varying },
           { 0 } },
+       PRIM_PATCHES, 3, 8, 8, GREEN);
+   row("D7 only patch varying 1", (const struct stage[]){
+          { 160, SHADER_VERTEX, vs_triangle }, { 161, SHADER_TESS_CTRL, tcs_patch1_only },
+          { 162, SHADER_TESS_EVAL, tes_patch1 }, { 163, SHADER_FRAGMENT, fs_varying }, { 0 } },
        PRIM_PATCHES, 3, 8, 8, GREEN);
 
    /* separable and whole stages linked as one program (the whole stage matches by name) */

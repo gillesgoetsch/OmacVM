@@ -389,6 +389,122 @@ static int vs_tes_clip_rows(bool have_gl)
    return failed;
 }
 
+/* #589 (virgl-shader-separable-patch-fill-writes.patch): between two separable stages on
+ * desktop GL a control shader declares every patch varying from 0 up to its highest one
+ * (virgl-shader-separable-patch-varyings.patch); it also writes the padding ones
+ * ("patchNN = vec4(0.0);"): Apple's GL links a control shader with a patch output it never
+ * writes, but its Metal pipeline build fails (the draws ran on its CPU vertex path; the M1
+ * rows are in work/v589-rest). The written set must be the declared padding set: WRITE.
+ * REAL: the patch varyings of the shader itself. Each patch output is declared once. */
+static int patch_fill(const char *name, const char *text, const struct vrend_shader_key *key,
+                      enum host host, uint64_t real, uint64_t write, const char *must,
+                      bool have_gl)
+{
+   static char glsl[32768];
+   struct vrend_variable_shader_info var;
+   if (!translate(name, text, key, host, glsl, &var))
+      return 1;
+   bool tcs = stage_type(text) == GL_TESS_CONTROL_SHADER;
+   uint64_t wrote = 0, declared = 0;
+   bool twice = false;
+   char what[32];
+   for (int sid = 0; sid < 64; sid++) {
+      snprintf(what, sizeof(what), "patch%02d = vec4(0.0);", sid);
+      if (strstr(glsl, what))
+         wrote |= 1ull << sid;
+   }
+   /* "patch out vec4 patch01;", "patch out vec4 patch02[2];" (in the evaluation shader "in") */
+   const char *decl = tcs ? "patch out vec4 patch" : "patch in vec4 patch";
+   for (const char *d = strstr(glsl, decl); d; d = strstr(d + 1, decl)) {
+      char *end;
+      long sid = strtol(d + strlen(decl), &end, 10);
+      long n = *end == '[' ? strtol(end + 1, NULL, 10) : 1;
+      for (long i = sid; i < sid + n && i < 64; i++) {
+         twice |= (declared >> i) & 1;
+         declared |= 1ull << i;
+      }
+   }
+   bool ok = wrote == (tcs ? write : 0) && declared == (real | write) && !twice;
+   if (!ok || (must && !strstr(glsl, must))) {
+      printf("FAIL: %s (padding written 0x%llx, want 0x%llx; declared 0x%llx, want 0x%llx; "
+             "one declared twice %d):\n%s\n", name, (unsigned long long)wrote,
+             (unsigned long long)(tcs ? write : 0), (unsigned long long)declared,
+             (unsigned long long)(real | write), twice, glsl);
+      return 1;
+   }
+   have_gl = have_gl && host == HOST_MAC;
+   if (have_gl && !gl_compiles(name, stage_type(text), glsl))
+      return 1;
+   printf("PASS: %s%s\n", name, have_gl ? " (compiled by the Mac's OpenGL)" : "");
+   return 0;
+}
+
+#define TCS_PATCH_PRE TCS_HEAD "DCL IN[][0], POSITION\nDCL SV[0], INVOCATIONID\n" \
+   "DCL OUT[][0], POSITION\n" TCS_LEVELS
+#define TCS_PATCH_POS "IMM[0] FLT32 {    1.0000,     0.0000,     0.0000,     0.0000}\n" \
+   "UARL ADDR[0].x, SV[0].xxxx\nMOV OUT[ADDR[0].x][0], IN[ADDR[0].x][0]\n" TCS_LEVELS_SET
+/* patch varyings 1 and 3 (test-separable-pervertex.c D4 without its per-vertex varying) */
+static const char *tcs_patch13 =
+   TCS_PATCH_PRE "DCL OUT[4], PATCH[1]\nDCL OUT[5], PATCH[3]\nDCL ADDR[0]\n" TCS_PATCH_POS
+   "MOV OUT[4], IMM[0].yxyx\nMOV OUT[5], IMM[0].yyxx\nEND\n";
+/* only patch varying 1 (D7) */
+static const char *tcs_patch1 =
+   TCS_PATCH_PRE "DCL OUT[4], PATCH[1]\nDCL ADDR[0]\n" TCS_PATCH_POS
+   "MOV OUT[4], IMM[0].yxyx\nEND\n";
+/* a patch array at 2..3, written with an indirect index */
+static const char *tcs_patch_array23 =
+   TCS_PATCH_PRE "DCL OUT[4..5], ARRAY(1), PATCH[2]\nDCL ADDR[0..1]\n" TCS_PATCH_POS
+   "UARL ADDR[1].x, SV[0].xxxx\nMOV OUT[ADDR[1].x+4], IMM[0].yxyx\nEND\n";
+/* patch varying 1, a barrier and a return in an if: the writes come before both */
+static const char *tcs_patch1_barrier =
+   TCS_PATCH_PRE "DCL OUT[4], PATCH[1]\nDCL ADDR[0]\n" TCS_PATCH_POS
+   "BARRIER\nUIF SV[0].xxxx\nRET\nENDIF\nMOV OUT[4], IMM[0].yxyx\nEND\n";
+/* patch varyings 0 to 11: nothing to pad */
+static const char *tcs_patch0_11 =
+   TCS_PATCH_PRE "DCL OUT[4..15], ARRAY(1), PATCH[0]\nDCL ADDR[0]\n" TCS_PATCH_POS
+   "MOV OUT[4], IMM[0].yxyx\nMOV OUT[15], IMM[0].yyxx\nEND\n";
+/* the evaluation shader that reads patch varying 1 only (D1, D7) */
+static const char *tes_patch1 =
+   TES_HEAD "DCL IN[][0], POSITION\nDCL IN[1], PATCH[1]\nDCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\nDCL TEMP[0]\n" TES_POS "MOV OUT[1], IN[1]\nEND\n";
+
+static int patch_fill_rows(bool have_gl)
+{
+   int failed = 0;
+   struct vrend_shader_key key;
+   memset(&key, 0, sizeof(key));
+   key.separable_out = 1;
+   failed |= patch_fill("separable TCS, patch varyings 1 and 3: writes the padding 0 and 2",
+                        separable(tcs_patch13), &key, HOST_MAC, 0xa, 0x5,
+                        "{\npatch00 = vec4(0.0);\npatch02 = vec4(0.0);\n", have_gl);
+   failed |= patch_fill("separable TCS, only patch varying 1: writes the padding 0",
+                        separable(tcs_patch1), &key, HOST_MAC, 0x2, 0x1, "patch00 = vec4(0.0);", have_gl);
+   failed |= patch_fill("separable TCS, a patch array at 2..3 with an indirect index: writes 0 and 1",
+                        separable(tcs_patch_array23), &key, HOST_MAC, 0xc, 0x3, "patch out vec4 patch02[2];",
+                        have_gl);
+   failed |= patch_fill("separable TCS with a barrier and a return: the padding is written first",
+                        separable(tcs_patch1_barrier), &key, HOST_MAC, 0x2, 0x1,
+                        "{\npatch00 = vec4(0.0);\n", have_gl);
+   /* kept as before */
+   failed |= patch_fill("separable TCS, patch varyings 0 to 11: no padding",
+                        separable(tcs_patch0_11), &key, HOST_MAC, 0xfff, 0, NULL, have_gl);
+   memset(&key, 0, sizeof(key));
+   failed |= patch_fill("TCS before a whole evaluation shader (separable_out 0): no padding",
+                        separable(tcs_patch13), &key, HOST_MAC, 0xa, 0, NULL, have_gl);
+   failed |= patch_fill("whole TCS, patch varyings 1 and 3: no padding", tcs_patch13, &key,
+                        HOST_MAC, 0xa, 0, NULL, have_gl);
+   key.separable_out = 1;
+   failed |= patch_fill("separable TCS on GLES: no padding (its own names)", separable(tcs_patch13),
+                        &key, HOST_GLES, 0xa, 0, "patch out vec4 patch1;", false);
+   /* the evaluation shader declares its padding and writes nothing (as before) */
+   memset(&key, 0, sizeof(key));
+   key.separable_in = 1;
+   key.tcs_present = 1;
+   failed |= patch_fill("separable TES reading patch varying 1: declares the padding 0, writes none",
+                        separable(tes_patch1), &key, HOST_MAC, 0x2, 0x1, "patch in vec4 patch00;", have_gl);
+   return failed;
+}
+
 int main(void)
 {
    bool have_gl = cgl_init_current();
@@ -681,6 +797,7 @@ int main(void)
 
    failed |= tess_clip_rows(have_gl);
    failed |= vs_tes_clip_rows(have_gl);
+   failed |= patch_fill_rows(have_gl);
 
    /* A plain float shader is unchanged apart from the version. */
    memset(&key, 0, sizeof(key));
