@@ -15,7 +15,8 @@ Why: vkr's checks read the first struct of a type (vkr_find_struct) and the Mac'
 the last. Mesa's vk_common_CreateRenderPass (KosmicKrisp) keeps the last
 VkRenderPassMultiviewCreateInfo: masks [0x1, 0x1ff] passed vkr's check and the pass's begin
 ended QEMU in Metal ("maxVertexAmplificationCount (9) is not supported"), and Mesa reads
-that last struct's masks for every subpass, past its own array when it has fewer.
+that last struct's masks for every subpass, past its own array when it has fewer (MoltenVK
+too).
 MoltenVK's vkCmdBeginRenderPass keeps the last VkRenderPassAttachmentBeginInfo: vkr checked
 and held the first one's views, so MoltenVK could read past the last one's array or use a
 view the app destroyed. MoltenVK and Mesa keep the last of others too (plane info, stencil
@@ -31,8 +32,8 @@ structs) are not in venus-protocol: the decoder ends the context on them before 
 guest's Venus driver keeps one slot per type when it rewrites a chain, so legal input never
 reaches vkr with a repeat.
 Upstream: OmacVM policy (ADR 0065).
-Tests: Tests/virgl/test-venus-commands.c (the r-repeat- cases, also under libgmalloc) and
-Tests/virgl/test-venus-image-limits.c (the repeat- cases).
+Tests: Tests/virgl/test-venus-commands.c (the -repeat- cases, three also under libgmalloc)
+and Tests/virgl/test-venus-image-limits.c (the repeat- cases, two under libgmalloc).
 
 diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
 index 07e9270..70ba98a 100644
