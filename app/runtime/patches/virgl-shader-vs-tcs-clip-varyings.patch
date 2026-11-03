@@ -1,0 +1,261 @@
+virglrenderer: clip distances from a vertex shader to a control shader as varyings on the Mac (#692)
+
+What: on a desktop GL without cull distances (the Mac's 4.1) a vertex shader that writes
+clip distances and is followed by a tessellation control shader passes them as plain
+varyings, omacvm_vclip0 (and omacvm_vclip1 for more than 4), without a location, instead of
+gl_ClipDistance in its gl_PerVertex block, as virgl-shader-vs-tes-clip-varyings.patch does
+before an evaluation shader without a control shader (omacvm_clipK there). Own names: the
+control shader writes omacvm_clipK for its evaluation shader itself. The control shader's
+key gets vs_clip_in from the vertex shader's variable info (tess_clip_out), in whole and
+separable programs; it then has no gl_ClipDistance in its gl_in[] block, declares the same
+omacvm_vclipK[] arrays, also when it reads none, and reads them the way the evaluation
+shader reads omacvm_clipK[] (one helper, clip_varyings_in(), and the name as a parameter of
+emit_tess_clip_varyings() and create_tes_clip_varyings_src()): an indirect index picks the
+array at run time, a distance not passed reads 0. A control shader's reads of its own
+gl_out[] are not changed. Not as the last stage, not with cull distances, nor when the
+varyings would not fit (MAX_VARYING): then both keep gl_PerVertex as before. GLES and
+hosts with cull distances keep their GLSL. Without a control shader nothing changes.
+Why: a whole program whose vertex shader writes gl_ClipDistance[4..7] into a control
+shader drew nothing on the M4's and the M1 Max's GPUs (macOS 27), with no fallback line
+and no crash; the same text writing only [0..3] drew, and Apple's software renderer drew
+all of it (#692, from #589). The guest's Mesa sends that whenever an app writes 5 to 8
+clip distances in a loop before a control shader (the 3.2.19 gate's tcs-8*loop rows).
+The same values as plain varyings draw on both GPUs.
+Upstream: not sent (a workaround for Apple's GL).
+Test: Tests/virgl/test-core-glsl-shaders.c: the GLSL of a vertex shader with 1, 5 and 8
+clip distances before a control shader on the Mac's config (whole and separable) has no
+gl_ClipDistance, declares omacvm_vclip0 (and omacvm_vclip1), and compiles on the Mac's GL;
+its control shader declares the same names and reads them, with a constant and an indirect
+index; as the last stage, before an evaluation shader without a control shader, with cull
+distances and on GLES the text is as before. Tests/virgl/test-whole-program-shapes.c L
+rows with 5-8 distances draw on the GPU.
+
+--- a/src/vrend/vrend_renderer.c
++++ b/src/vrend/vrend_renderer.c
+@@ -5420,6 +5420,9 @@
+                              (prev->type == PIPE_SHADER_TESS_CTRL ||
+                               (prev->type == PIPE_SHADER_VERTEX && !key->tcs_present)) &&
+                              prev->current->var_sinfo.tess_clip_out;
++         /* ... and a control shader's from the vertex shader (#692) */
++         key->vs_clip_in = type == PIPE_SHADER_TESS_CTRL && prev->type == PIPE_SHADER_VERTEX &&
++                           prev->current->var_sinfo.tess_clip_out;
+ 
+          if (vrend_state.use_gles && type == PIPE_SHADER_FRAGMENT)
+             key->fs.available_color_in_bits = prev->current->var_sinfo.legacy_color_bits;
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -2765,13 +2765,22 @@
+ 
+ /* ... the evaluation shader's side: the clip distances it gets as omacvm_clip0[] (and
+  * omacvm_clip1[]), all declared also when it reads none (Apple places varyings without a
+- * location by their names, also between separate programs), 0: gl_in[] as before */
+-static int tes_clip_varyings(const struct dump_ctx *ctx)
+-{
+-   if (ctx->prog_type != TGSI_PROCESSOR_TESS_EVAL || ctx->cfg->use_gles ||
+-       ctx->cfg->has_cull_distance || !ctx->key->tess_clip_in || ctx->key->num_in_cull)
++ * location by their names, also between separate programs), 0: gl_in[] as before.
++ * OmacVM (#692): the same for a control shader whose vertex shader passes them as
++ * omacvm_vclip0[] (and omacvm_vclip1[]). *name: the varyings' name without the number. */
++static int clip_varyings_in(const struct dump_ctx *ctx, const char **name)
++{
++   if (ctx->cfg->use_gles || ctx->cfg->has_cull_distance || ctx->key->num_in_cull)
+       return 0;
+-   return ctx->key->num_in_clip;
++   if (ctx->prog_type == TGSI_PROCESSOR_TESS_EVAL && ctx->key->tess_clip_in) {
++      *name = "omacvm_clip";
++      return ctx->key->num_in_clip;
++   }
++   if (ctx->prog_type == TGSI_PROCESSOR_TESS_CTRL && ctx->key->vs_clip_in) {
++      *name = "omacvm_vclip";
++      return ctx->key->num_in_clip;
++   }
++   return 0;
+ }
+ 
+ /* OmacVM (#589): the same for a vertex shader whose clip distances go straight to an
+@@ -2779,15 +2788,18 @@
+  * the evaluation shader's gl_in[] made Apple's Metal pipeline build fail as well. On a
+  * desktop GL without cull distances it writes them to the varyings omacvm_clip0 (and
+  * omacvm_clip1), no location, and says so in its variable info (tess_clip_out); the
+- * evaluation shader reads them as above (tess_clip_in). Not as the last stage (no
+- * evaluation shader: it writes the user clip planes), not with a control shader (#684's
+- * case), not with cull distances, nor when the varyings would not fit. The count is the
+- * shader's own, not key->num_out_clip: the evaluation shader takes its count from here.
++ * evaluation shader reads them as above (tess_clip_in). (#692) Before a control shader
++ * the same as omacvm_vclip0 (and omacvm_vclip1), its own names (the control shader writes
++ * omacvm_clipK itself), read by the control shader as above (vs_clip_in): with
++ * gl_ClipDistance[4..7] in the block the M4's and M1 Max's GPUs drew nothing. Not as the
++ * last stage (no evaluation shader: it writes the user clip planes), not with cull
++ * distances, nor when the varyings would not fit. The count is the shader's own, not
++ * key->num_out_clip: the next shader takes its count from here.
+  * Returns the number of clip distances passed that way, 0: none. */
+ static int vs_clip_varyings(const struct dump_ctx *ctx)
+ {
+    if (ctx->prog_type != TGSI_PROCESSOR_VERTEX || !ctx->key->tes_present ||
+-       ctx->key->tcs_present || ctx->is_last_vertex_stage || ctx->cfg->use_gles ||
++       ctx->is_last_vertex_stage || ctx->cfg->use_gles ||
+        ctx->cfg->has_cull_distance || !ctx->num_out_clip_dist ||
+        ctx->num_cull_dist_prop || ctx->key->num_out_cull)
+       return 0;
+@@ -2797,11 +2809,17 @@
+    return n;
+ }
+ 
++/* ... the vertex shader's varyings' name without the number */
++static const char *vs_clip_name(const struct dump_ctx *ctx)
++{
++   return ctx->key->tcs_present ? "omacvm_vclip" : "omacvm_clip";
++}
++
+ static void emit_tess_clip_varyings(struct vrend_glsl_strbufs *glsl_strbufs,
+-                                    const char *inout, int num_clip)
++                                    const char *inout, const char *name, int num_clip)
+ {
+    for (int k = 0; k * 4 < num_clip; k++)
+-      emit_hdrf(glsl_strbufs, "%s vec4 omacvm_clip%d[];\n", inout, k);
++      emit_hdrf(glsl_strbufs, "%s vec4 %s%d[];\n", inout, name, k);
+ }
+ 
+ static void emit_clip_dist_movs(const struct dump_ctx *ctx,
+@@ -2868,8 +2886,8 @@
+          continue;
+       }
+       if (vs_clip) {
+-         emit_buff(glsl_strbufs, "omacvm_clip%d.%c = clip_dist_temp[%d].%c;\n",
+-                   clipidx, wm, clipidx, wm);
++         emit_buff(glsl_strbufs, "%s%d.%c = clip_dist_temp[%d].%c;\n",
++                   vs_clip_name(ctx), clipidx, wm, clipidx, wm);
+          continue;
+       }
+       emit_buff(glsl_strbufs, "%sgl_%sDistance[%d] = clip_dist_temp[%d].%c;\n", prefix, clip_cull,
+@@ -4057,7 +4075,8 @@
+ }
+ 
+ /* OmacVM: an evaluation shader's read of the clip distances its control shader passes as
+- * varyings (tes_clip_varyings, #589); one it does not pass reads 0 */
++ * varyings (clip_varyings_in, #589), or a control shader's of its vertex shader's (#692),
++ * NAME0[]/NAME1[]; one it does not pass reads 0 */
+ static void
+ create_tes_clip_varyings_src(const struct dump_ctx *ctx,
+                              struct vrend_strbuf *result,
+@@ -4065,9 +4084,9 @@
+                              int input_idx,
+                              const char *stypeprefix,
+                              const char *prefix,
+-                             const char *arrayname, int offset)
++                             const char *arrayname, int offset,
++                             const char *name, int num_clip)
+ {
+-   int num_clip = tes_clip_varyings(ctx);
+    unsigned swz[4] = { src->Register.SwizzleX, src->Register.SwizzleY,
+                        src->Register.SwizzleZ, src->Register.SwizzleW };
+    char comp[4][256];
+@@ -4079,14 +4098,14 @@
+          snprintf(e, sizeof(e), "(4 * (addr%d + %d) + %d)", src->Indirect.Index,
+                   src->Register.Index - offset, idx);
+          if (num_clip > 4)
+-            snprintf(comp[cc], sizeof(comp[cc]), "(%s < 4 ? %somacvm_clip0%s[%s & 3] : %somacvm_clip1%s[%s & 3])",
+-                     e, prefix, arrayname, e, prefix, arrayname, e);
++            snprintf(comp[cc], sizeof(comp[cc]), "(%s < 4 ? %s%s0%s[%s & 3] : %s%s1%s[%s & 3])",
++                     e, prefix, name, arrayname, e, prefix, name, arrayname, e);
+          else
+-            snprintf(comp[cc], sizeof(comp[cc]), "%somacvm_clip0%s[%s & 3]", prefix, arrayname, e);
++            snprintf(comp[cc], sizeof(comp[cc]), "%s%s0%s[%s & 3]", prefix, name, arrayname, e);
+       } else {
+          int v = 4 * (src->Register.Index - offset) + idx;
+          if (v >= 0 && v < num_clip)
+-            snprintf(comp[cc], sizeof(comp[cc]), "%somacvm_clip%d%s[%d]", prefix, v / 4, arrayname, v % 4);
++            snprintf(comp[cc], sizeof(comp[cc]), "%s%s%d%s[%d]", prefix, name, v / 4, arrayname, v % 4);
+          else
+             snprintf(comp[cc], sizeof(comp[cc]), "%s0.0", prefix);
+       }
+@@ -4108,8 +4127,12 @@
+ 
+    char clip_indirect[32] = "";
+ 
+-   if (gl_in && tes_clip_varyings(ctx)) {
+-      create_tes_clip_varyings_src(ctx, result, src, input_idx, stypeprefix, prefix, arrayname, offset);
++   /* OmacVM: gl_in only: a control shader's reads of its own gl_out[] stay as they are */
++   const char *clip_name;
++   int clip_in = gl_in ? clip_varyings_in(ctx, &clip_name) : 0;
++   if (clip_in) {
++      create_tes_clip_varyings_src(ctx, result, src, input_idx, stypeprefix, prefix, arrayname, offset,
++                                   clip_name, clip_in);
+       return;
+    }
+ 
+@@ -7854,8 +7877,9 @@
+    if (ctx->separable_program && !clip_buf[0] && writes_ucp_clip_dist(ctx))
+       snprintf(clip_buf, 64, "out float gl_ClipDistance[%d];\n", VIRGL_NUM_CLIP_PLANES);
+ 
+-   /* OmacVM (#589): clip distances for an evaluation shader without a control shader go
+-    * as varyings, not in the block (no gl_ClipDistance is left in the shader) */
++   /* OmacVM (#589): clip distances for an evaluation shader without a control shader, or
++    * for a control shader (#692), go as varyings, not in the block (no gl_ClipDistance is
++    * left in the shader) */
+    int vs_clip = vs_clip_varyings(ctx);
+    if (vs_clip)
+       clip_buf[0] = 0;
+@@ -7864,7 +7888,7 @@
+       emit_hdrf(glsl_strbufs, "out gl_PerVertex {\n vec4 gl_Position;\n %s%s%s};\n", clip_buf, cull_buf, psize_buf);
+    }
+    for (int k = 0; k * 4 < vs_clip; k++)
+-      emit_hdrf(glsl_strbufs, "out vec4 omacvm_clip%d;\n", k);
++      emit_hdrf(glsl_strbufs, "out vec4 %s%d;\n", vs_clip_name(ctx), k);
+ }
+ 
+ static const char *get_depth_layout(int depth_layout)
+@@ -8035,8 +8059,9 @@
+ {
+    char clip_var[64] = "";
+    char cull_var[64] = "";
+-   /* OmacVM: not in gl_in[] when they come as varyings (#589) */
+-   int tes_clip = tes_clip_varyings(ctx);
++   /* OmacVM: not in gl_in[] when they come as varyings (#589, #692) */
++   const char *clip_name;
++   int tes_clip = clip_varyings_in(ctx, &clip_name);
+ 
+    if (ctx->num_in_clip_dist && !tes_clip) {
+       int clip_dist, cull_dist;
+@@ -8061,7 +8086,8 @@
+                 clip_var, cull_var, ctx->has_pointsize_input ? "float gl_PointSize;\n" : "");
+ 
+    }
+-   emit_tess_clip_varyings(glsl_strbufs, "in", tes_clip);
++   if (tes_clip)
++      emit_tess_clip_varyings(glsl_strbufs, "in", clip_name, tes_clip);
+ 
+ }
+ 
+@@ -8094,7 +8120,7 @@
+                 ctx->has_pointsize_output ? "float gl_PointSize;\n" : "",
+                 instance_var);
+    }
+-   emit_tess_clip_varyings(glsl_strbufs, "out", tcs_clip);
++   emit_tess_clip_varyings(glsl_strbufs, "out", "omacvm_clip", tcs_clip);
+ 
+    if (clip_dist + cull_dist > 0)
+       emit_hdr(glsl_strbufs, "vec4 clip_dist_temp[2];\n");
+--- a/src/vrend/vrend_shader.h
++++ b/src/vrend/vrend_shader.h
+@@ -181,7 +181,8 @@
+    uint32_t num_out_cull:4;
+    /* OmacVM (#589): a tessellation control shader passes its num_out_clip clip distances
+     * as the varyings omacvm_clip0[]/omacvm_clip1[], not in gl_out[]; a vertex shader
+-    * before an evaluation shader without a control shader as omacvm_clip0/omacvm_clip1 */
++    * before an evaluation shader without a control shader as omacvm_clip0/omacvm_clip1,
++    * and before a control shader as omacvm_vclip0/omacvm_vclip1 (#692) */
+    uint32_t tess_clip_out:1;
+    int num_ucp;
+    int legacy_color_bits;
+@@ -267,6 +268,10 @@
+     * before this evaluation shader passes its num_in_clip clip distances as varyings
+     * (vrend_variable_shader_info.tess_clip_out) */
+    uint8_t tess_clip_in : 1;
++   /* OmacVM (#692): the vertex shader before this control shader passes its num_in_clip
++    * clip distances as the varyings omacvm_vclip0/omacvm_vclip1 (tess_clip_out); not
++    * tess_clip_in: this control shader may pass its own to the evaluation shader too */
++   uint8_t vs_clip_in : 1;
+ };
+ 
+ struct vrend_shader_cfg {

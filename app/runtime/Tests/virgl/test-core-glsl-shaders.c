@@ -276,10 +276,11 @@ static int tess_clip_rows(bool have_gl)
  * straight to an evaluation shader (no control shader). On the Mac (WANT distances) it
  * writes the varyings omacvm_clip0 (omacvm_clip1 for more than 4) and has no gl_ClipDistance
  * at all (Apple's Metal pipeline build failed on it, and a loose gl_ClipDistance beside the
- * block crashed Apple's GLSL compiler); its variable info says so (tess_clip_out). WANT 0:
- * the text as before. The evaluation shader's key comes from vrend_sync_shader_io, which this
- * test does not reach: test-whole-program-shapes.c C17, C18, C21-C24 draw it (only C23/C24
- * fail without it). */
+ * block crashed Apple's GLSL compiler); its variable info says so (tess_clip_out). #692
+ * (virgl-shader-vs-tcs-clip-varyings.patch): before a control shader (key->tcs_present) the
+ * same as omacvm_vclip0/omacvm_vclip1. WANT 0: the text as before. The next shader's key
+ * comes from vrend_sync_shader_io, which this test does not reach (vs_tcs_pair() below fills
+ * it the same way): test-whole-program-shapes.c C17, C18, C21-C24 and the L rows draw it. */
 static int vs_tes_clip(const char *name, const char *text, const struct vrend_shader_key *key,
                        enum host host, int want, const char *must, bool have_gl)
 {
@@ -287,15 +288,19 @@ static int vs_tes_clip(const char *name, const char *text, const struct vrend_sh
    struct vrend_variable_shader_info var;
    if (!translate(name, text, key, host, glsl, &var))
       return 1;
+   const char *vn = key->tcs_present ? "omacvm_vclip" : "omacvm_clip";
+   char d0[48], d1[48];
+   snprintf(d0, sizeof(d0), "out vec4 %s0;", vn);
+   snprintf(d1, sizeof(d1), "out vec4 %s1;", vn);
    bool clip = strstr(glsl, "gl_ClipDistance") != NULL;
-   bool decl0 = strstr(glsl, "out vec4 omacvm_clip0;") != NULL;
-   bool decl1 = strstr(glsl, "out vec4 omacvm_clip1;") != NULL;
+   bool decl0 = strstr(glsl, d0) != NULL;
+   bool decl1 = strstr(glsl, d1) != NULL;
    bool ok = want ? !clip && decl0 && decl1 == (want > 4) && var.tess_clip_out &&
                     var.num_out_clip == want
-                  : !strstr(glsl, "omacvm_clip") && !var.tess_clip_out;
+                  : !strstr(glsl, "omacvm_clip") && !strstr(glsl, "omacvm_vclip") && !var.tess_clip_out;
    if (!ok || (must && !strstr(glsl, must))) {
-      printf("FAIL: %s (want %d; gl_ClipDistance %d, omacvm_clip0 %d, omacvm_clip1 %d, "
-             "tess_clip_out %d, num_out_clip %d):\n%s\n", name, want, clip, decl0, decl1,
+      printf("FAIL: %s (want %d; gl_ClipDistance %d, %s0 %d, %s1 %d, "
+             "tess_clip_out %d, num_out_clip %d):\n%s\n", name, want, clip, vn, decl0, vn, decl1,
              var.tess_clip_out, var.num_out_clip, glsl);
       return 1;
    }
@@ -315,6 +320,10 @@ static const char *vs_clip8 =
    "VERT\nPROPERTY NUM_CLIPDIST_ENABLED 8\nDCL IN[0]\nDCL OUT[0], POSITION\n"
    "DCL OUT[1], CLIPDIST[0]\nDCL OUT[2], CLIPDIST[1]\n"
    "MOV OUT[0], IN[0]\nMOV OUT[1], IN[0]\nMOV OUT[2], IN[0].wzyx\nEND\n";
+static const char *vs_clip5 =
+   "VERT\nPROPERTY NUM_CLIPDIST_ENABLED 5\nDCL IN[0]\nDCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\nDCL OUT[2].x, CLIPDIST[1]\n"
+   "MOV OUT[0], IN[0]\nMOV OUT[1], IN[0]\nMOV OUT[2].x, IN[0].wwww\nEND\n";
 
 static int vs_tes_clip_rows(bool have_gl)
 {
@@ -349,12 +358,8 @@ static int vs_tes_clip_rows(bool have_gl)
       failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 1,
                             "omacvm_clip0.x = clip_dist_temp[0].x;", have_gl);
       key.gs_present = 0;
-      /* kept as before: a control shader in between (gl_in[] there is fine) */
-      key.tcs_present = 1;
-      snprintf(name, sizeof(name), "%s VS -> TCS keeps gl_ClipDistance", how);
-      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 0,
-                            "gl_ClipDistance[0] = clip_dist_temp[0].x;", have_gl);
-      key.tcs_present = 0;
+      /* a control shader in between: kept gl_ClipDistance up to 3.2.19; vs_tcs_clip_rows()
+       * has the rows since #692 */
       /* other hosts and a cull distance after it (text only) */
       snprintf(name, sizeof(name), "%s VS -> TES on a GL with cull distances keeps gl_ClipDistance", how);
       failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_CULL, 0,
@@ -642,6 +647,191 @@ static int indirect_temp_rows(bool have_gl)
                            "MOV TEMP[3], IN[0]\nADD OUT[0], TEMP[1], TEMP[3]\nEND\n",
                            &key, "vec4 temp0;\n vec4 temp1;\n vec4 temp2;\n vec4 temp3;\n", "temp1 = ", "temp1[",
                            have_gl);
+   return failed;
+}
+
+/* #692 (virgl-shader-vs-tcs-clip-varyings.patch): the control shader after a vertex shader
+ * that passes its clip distances as omacvm_vclip0/omacvm_vclip1 (vs_clip_in). On the Mac
+ * (WANT distances) it has no gl_ClipDistance in its gl_in[] block and reads none from
+ * gl_in[], and declares in vec4 omacvm_vclip0[] (omacvm_vclip1[] for more than 4), also when
+ * it reads none. WANT 0: no omacvm_vclip. MUST, MUST2: strings the text holds. */
+static bool gl_in_clip_read(const char *glsl)
+{
+   for (const char *g = strstr(glsl, "gl_in["); g; g = strstr(g + 1, "gl_in[")) {
+      const char *e = strchr(g, ']');
+      if (e && !strncmp(e + 1, ".gl_ClipDistance", 16))
+         return true;
+   }
+   return false;
+}
+
+static int vs_tcs_clip(const char *name, const char *text, const struct vrend_shader_key *key,
+                       enum host host, int want, const char *must, const char *must2, bool have_gl)
+{
+   static char glsl[32768];
+   struct vrend_variable_shader_info var;
+   if (!translate(name, text, key, host, glsl, &var))
+      return 1;
+   bool block_clip = block_has_clip(glsl, "gl_in[]");
+   bool access = gl_in_clip_read(glsl);
+   bool decl0 = strstr(glsl, "in vec4 omacvm_vclip0[];") != NULL;
+   bool decl1 = strstr(glsl, "in vec4 omacvm_vclip1[];") != NULL;
+   bool ok = want ? !block_clip && !access && decl0 && decl1 == (want > 4)
+                  : !strstr(glsl, "omacvm_vclip");
+   if (!ok || (must && !strstr(glsl, must)) || (must2 && !strstr(glsl, must2))) {
+      printf("FAIL: %s (want %d; gl_in[] clip %d, gl_in[] clip read %d, omacvm_vclip0[] %d, "
+             "omacvm_vclip1[] %d; want \"%s\", \"%s\"):\n%s\n", name, want, block_clip, access,
+             decl0, decl1, must ? must : "", must2 ? must2 : "", glsl);
+      return 1;
+   }
+   have_gl = have_gl && host == HOST_MAC;
+   if (have_gl && !gl_compiles(name, GL_TESS_CONTROL_SHADER, glsl))
+      return 1;
+   printf("PASS: %s%s\n", name, have_gl ? " (compiled by the Mac's OpenGL)" : "");
+   return 0;
+}
+
+/* a vertex shader and its control shader as vrend_sync_shader_io keys them: the control
+ * shader's vs_clip_in and num_in_clip from the vertex shader's variable info. Both sides
+ * declare the same names (Apple matches varyings without a location by their names). */
+static int vs_tcs_pair(const char *name, const char *vs, const char *tcs, bool sep, int want,
+                       const char *must_tcs, bool have_gl)
+{
+   static char glsl_vs[32768], glsl_tcs[32768];
+   struct vrend_variable_shader_info var, tvar;
+   struct vrend_shader_key key;
+   char what[200];
+   memset(&key, 0, sizeof(key));
+   key.tes_present = 1;
+   key.tcs_present = 1;
+   key.use_pervertex_in = !sep;
+   if (!translate(name, sep ? separable(vs) : vs, &key, HOST_MAC, glsl_vs, &var))
+      return 1;
+   memset(&key, 0, sizeof(key));
+   key.tes_present = 1;
+   key.tcs_present = 1;
+   key.vs_clip_in = var.tess_clip_out;
+   key.num_in_clip = var.num_out_clip;
+   key.num_out_clip = sep ? 0 : var.num_out_clip;
+   if (!translate(name, sep ? separable(tcs) : tcs, &key, HOST_MAC, glsl_tcs, &tvar))
+      return 1;
+   for (int k = 0; k < 2; k++) {
+      char o[48], i[48];
+      snprintf(o, sizeof(o), "out vec4 omacvm_vclip%d;", k);
+      snprintf(i, sizeof(i), "in vec4 omacvm_vclip%d[];", k);
+      if (!strstr(glsl_vs, o) != !strstr(glsl_tcs, i) || var.num_out_clip != want) {
+         printf("FAIL: %s: omacvm_vclip%d declared %d in the VS, %d in the TCS (num_out_clip %d, "
+                "want %d):\n%s\n%s\n", name, k, !!strstr(glsl_vs, o), !!strstr(glsl_tcs, i),
+                var.num_out_clip, want, glsl_vs, glsl_tcs);
+         return 1;
+      }
+   }
+   snprintf(what, sizeof(what), "%s: the VS side", name);
+   memset(&key, 0, sizeof(key));
+   key.tes_present = 1;
+   key.tcs_present = 1;
+   key.use_pervertex_in = !sep;
+   int failed = vs_tes_clip(what, sep ? separable(vs) : vs, &key, HOST_MAC, want, NULL, have_gl);
+   snprintf(what, sizeof(what), "%s: the TCS side", name);
+   key.vs_clip_in = var.tess_clip_out;
+   key.num_in_clip = var.num_out_clip;
+   key.num_out_clip = sep ? 0 : var.num_out_clip;
+   key.use_pervertex_in = 0;
+   failed |= vs_tcs_clip(what, sep ? separable(tcs) : tcs, &key, HOST_MAC, want, must_tcs, NULL, have_gl);
+   return failed;
+}
+
+static int vs_tcs_clip_rows(bool have_gl)
+{
+   int failed = 0;
+   struct vrend_shader_key key;
+   char name[160];
+   for (int sep = 0; sep < 2; sep++) {
+      const char *how = sep ? "separable" : "whole";
+      /* the vertex shader before a control shader (an evaluation shader after it) */
+      memset(&key, 0, sizeof(key));
+      key.tes_present = 1;
+      key.tcs_present = 1;
+      key.use_pervertex_in = !sep;
+      snprintf(name, sizeof(name), "%s VS -> TCS passes 1 clip distance as omacvm_vclip0", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 1,
+                            "omacvm_vclip0.x = clip_dist_temp[0].x;", have_gl);
+      snprintf(name, sizeof(name), "%s VS -> TCS passes 5 clip distances as omacvm_vclip0 and omacvm_vclip1", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip5) : vs_clip5, &key, HOST_MAC, 5,
+                            "omacvm_vclip1.x = clip_dist_temp[1].x;", have_gl);
+      snprintf(name, sizeof(name), "%s VS -> TCS passes 8 clip distances as omacvm_vclip0 and omacvm_vclip1", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip8) : vs_clip8, &key, HOST_MAC, 8,
+                            "omacvm_vclip1.w = clip_dist_temp[1].w;", have_gl);
+      snprintf(name, sizeof(name), "%s VS -> TCS, 8 clip distances written in the guest's loop", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip_loop) : vs_clip_loop, &key, HOST_MAC, 8,
+                            "omacvm_vclip1.w = clip_dist_temp[1].w;", have_gl);
+      /* other hosts and a cull distance after it: the text as before (text only) */
+      snprintf(name, sizeof(name), "%s VS -> TCS on a GL with cull distances keeps gl_ClipDistance", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_CULL, 0,
+                            "gl_ClipDistance[0] = clip_dist_temp[0].x;", false);
+      snprintf(name, sizeof(name), "%s VS -> TCS on GLES keeps its text", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_GLES, 0, NULL, false);
+      key.num_out_cull = 1;
+      snprintf(name, sizeof(name), "%s VS -> TCS with a cull distance keeps gl_ClipDistance", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 0, NULL, false);
+
+      /* the control shader after it */
+      memset(&key, 0, sizeof(key));
+      key.tes_present = 1;
+      key.tcs_present = 1;
+      key.vs_clip_in = 1;
+      key.num_in_clip = 1;
+      key.num_out_clip = sep ? 0 : 1;
+      snprintf(name, sizeof(name), "%s TCS reads 1 distance from omacvm_vclip0[]", how);
+      failed |= vs_tcs_clip(name, sep ? separable(tcs_clip1) : tcs_clip1, &key, HOST_MAC, 1,
+                            "omacvm_vclip0[addr0][0]", "out vec4 omacvm_clip0[];", have_gl);
+      key.num_in_clip = 4;
+      key.num_out_clip = sep ? 0 : 4;
+      snprintf(name, sizeof(name), "%s TCS reads 4 distances from omacvm_vclip0[] in the guest's loop", how);
+      failed |= vs_tcs_clip(name, sep ? separable(tcs_clip_loop(4, 0)) : tcs_clip_loop(4, 0), &key,
+                            HOST_MAC, 4, "omacvm_vclip0[addr1][", "out vec4 omacvm_clip0[];", have_gl);
+      for (int n = 5; n <= 8; n += 3) {
+         key.num_in_clip = n;
+         key.num_out_clip = sep ? 0 : n;
+         snprintf(name, sizeof(name), "%s TCS reads %d distances from omacvm_vclip0[] and omacvm_vclip1[] "
+                  "in the guest's loop (indirect index)", how, n);
+         failed |= vs_tcs_clip(name, sep ? separable(tcs_clip_loop(n, 1)) : tcs_clip_loop(n, 1), &key,
+                               HOST_MAC, n, " < 4 ? omacvm_vclip0[addr1][", " : omacvm_vclip1[addr1][",
+                               have_gl);
+      }
+      key.num_in_clip = 5;
+      key.num_out_clip = sep ? 0 : 8;
+      snprintf(name, sizeof(name), "%s TCS that reads no clip distance still declares omacvm_vclip0[] and "
+               "omacvm_vclip1[]", how);
+      failed |= vs_tcs_clip(name, sep ? separable(tcs_clip8) : tcs_clip8, &key, HOST_MAC, 5,
+                            "out vec4 omacvm_clip1[];", NULL, have_gl);
+      /* the text as before: a vertex shader that kept gl_ClipDistance (no vs_clip_in), other
+       * hosts */
+      key.vs_clip_in = 0;
+      key.num_in_clip = 1;
+      key.num_out_clip = sep ? 0 : 1;
+      snprintf(name, sizeof(name), "%s TCS after a VS with gl_ClipDistance keeps gl_in[]", how);
+      failed |= vs_tcs_clip(name, sep ? separable(tcs_clip1) : tcs_clip1, &key, HOST_MAC, 0,
+                            "gl_in[addr0].gl_ClipDistance", NULL, have_gl);
+      key.vs_clip_in = 1;
+      snprintf(name, sizeof(name), "%s TCS on a GL with cull distances keeps gl_in[]", how);
+      failed |= vs_tcs_clip(name, sep ? separable(tcs_clip1) : tcs_clip1, &key, HOST_CULL, 0,
+                            "gl_in[addr0].gl_ClipDistance", NULL, false);
+      snprintf(name, sizeof(name), "%s TCS on GLES keeps gl_in[]", how);
+      failed |= vs_tcs_clip(name, sep ? separable(tcs_clip1) : tcs_clip1, &key, HOST_GLES, 0, NULL, NULL,
+                            false);
+
+      /* both sides keyed as vrend_sync_shader_io keys them: the same names */
+      static const struct { const char **vs; int want; } pairs[] = {
+         { &vs_clip1, 1 }, { &vs_clip5, 5 }, { &vs_clip8, 8 }, { &vs_clip_loop, 8 } };
+      for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++) {
+         int w = pairs[i].want;
+         snprintf(name, sizeof(name), "%s VS -> TCS pair, %d distance%s%s: the same names on both sides",
+                  how, w, w > 1 ? "s" : "", *pairs[i].vs == vs_clip_loop ? " (the guest's loop)" : "");
+         failed |= vs_tcs_pair(name, *pairs[i].vs, tcs_clip_loop(w, 1), sep, w,
+                               w > 4 ? " : omacvm_vclip1[addr1][" : "omacvm_vclip0[addr1][", have_gl);
+      }
+   }
    return failed;
 }
 
@@ -937,6 +1127,7 @@ int main(void)
 
    failed |= tess_clip_rows(have_gl);
    failed |= vs_tes_clip_rows(have_gl);
+   failed |= vs_tcs_clip_rows(have_gl);
    failed |= indirect_temp_rows(have_gl);
 
    /* A plain float shader is unchanged apart from the version. */
