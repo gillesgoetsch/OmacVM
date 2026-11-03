@@ -1,0 +1,178 @@
+virglrenderer: temps indexed at run time without an ARRAY declaration are arrays (#589)
+
+What: a TEMP declaration without ARRAY that the shader still addresses with an
+address register (TEMP[ADDR[0].x+18]) becomes one GLSL array from its lowest
+indexed register to its last (vec4 temp18[2]); direct uses of those registers
+say temp18[1], indexed ones temp18[clamp(addr0 + 0, 0, 1)]. The registers
+before it, and every declaration the shader never indexes, stay single vec4s,
+so a shader without indexed temps gets the same GLSL as before (the first pass
+notes the indexed registers; the declarations change only when tgsi_scan says
+TEMPORARY is indexed). An indexed write uses the address register it names
+(addr1 for ADDR[1]), as reads already did, and is refused when its index is
+not in an address register.
+Why: the guest's Mesa sends such temps for a clip distance output written in a
+loop that it does not unroll: virgl_tgsi_transform_instruction (Mesa 26.2.5,
+src/gallium/drivers/virgl/virgl_tgsi.c) moves each clip distance output into a
+temp and keeps the indirect index, so gl_out[gl_InvocationID].gl_ClipDistance[i]
+in a for loop arrives as DCL TEMP[18..19] and MOV TEMP[ADDR[1].x][ADDR[0].x+18].x.
+Each such temp was a plain vec4, so the write "temp18[clamp(addr0 + 0, 0, 0)].x"
+swizzled a float: the Mac refused the shader ("Swizzle of non-vector primitive
+float", Apple's GPU and its software renderer, M1 Max and M4) and skipped every
+draw that needs it; an indexed read gave one component in all four. The same
+holds for vertex, geometry and evaluation shaders that write clip distances in
+such a loop. Older than virgl-shader-index-clamp.patch (upstream wrote
+temp18[addr0 + 0], the same error) and than the clip varyings patches.
+Not fixed here: that same Mesa code copies the temps back to the outputs with
+the declared register only (MOV OUT[1], TEMP[18]), so in the looped form the
+second vec4 (distances 4..7) never reaches OUT[2]. That is the guest's Mesa;
+those distances stay undefined after this patch too.
+Upstream: not sent; vrend upstream has the same bug (an upstream fix would
+declare such temps as arrays too). The Mesa part is for Mesa's virgl driver
+(not sent; OmacVM posts nothing upstream without the maintainer).
+Test: Tests/virgl/test-core-glsl-shaders.c: the gate's control shader as the
+guest sent it, the loop for 1..8 distances, a vertex, geometry and evaluation
+shader with the loop (whole and separable), an indexed read and write without
+ARRAY, an index in ADDR[1]: array text, compiled by the Mac's GL; an ARRAY(1)
+temp and a shader with no indexed temp keep their text.
+Tests/virgl/test-whole-program-shapes.c L rows: the looped control shader for
+1..8 distances draws (refused before), each distance cut on its own reaches
+the evaluation shader (distances 4..7 of the guest's loop: printed as info).
+
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -232,6 +232,10 @@
+ 
+    uint32_t num_temp_ranges;
+    struct vrend_temp_range *temp_ranges;
++   /* OmacVM (#589): the register index of every TEMP access with an indirect index
++    * (first pass), each once */
++   uint32_t num_indirect_temps;
++   int *indirect_temps;
+ 
+    struct vrend_shader_sampler samplers[32];
+    uint32_t samplers_used;
+@@ -896,7 +900,44 @@
+ 
+ 
+    }
++   return true;
++}
++
++/* OmacVM (#589): a TEMP declaration without ARRAY that the shader still indexes at run
++ * time. The guest's Mesa sends one when it moves a clip distance output it writes in a loop
++ * into a temp (virgl_tgsi.c: DCL TEMP[18..19], then MOV TEMP[ADDR[0].x+18].x). Each such temp
++ * was a plain vec4, so "temp18[clamp(addr0 + 0, 0, 0)].x" picked a float and swizzled it:
++ * the Mac refused the shader ("Swizzle of non-vector primitive float") and a read gave one
++ * component in all four. The part of the declaration from the lowest indexed register on
++ * becomes one array (any array id > 0 makes the GLSL an array); the temps before it, and
++ * every declaration the shader never indexes, stay single vec4s as before. */
++#define INDIRECT_TEMP_ARRAY_ID 0x7fffffff
++
++static bool note_indirect_temp(struct dump_ctx *ctx, int index)
++{
++   for (uint32_t i = 0; i < ctx->num_indirect_temps; i++)
++      if (ctx->indirect_temps[i] == index)
++         return true;
++   int *n = realloc(ctx->indirect_temps, sizeof(int) * (ctx->num_indirect_temps + 1));
++   if (!n)
++      return false;
++   ctx->indirect_temps = n;
++   ctx->indirect_temps[ctx->num_indirect_temps++] = index;
+    return true;
++}
++
++/* the lowest indexed register in first..last, or -1 */
++static int lowest_indirect_temp(const struct dump_ctx *ctx, int first, int last)
++{
++   int lowest = -1;
++   if (!(ctx->info.indirect_files & (1 << TGSI_FILE_TEMPORARY)))
++      return -1;
++   for (uint32_t i = 0; i < ctx->num_indirect_temps; i++) {
++      int index = ctx->indirect_temps[i];
++      if (index >= first && index <= last && (lowest < 0 || index < lowest))
++         lowest = index;
++   }
++   return lowest;
+ }
+ 
+ static struct vrend_temp_range *find_temp_range(const struct dump_ctx *ctx, int index)
+@@ -2125,6 +2166,20 @@
+          return false;
+       }
+ 
++      if (!decl->Array.ArrayID) {
++         /* OmacVM (#589): indexed at run time, though not declared as an array */
++         int base = lowest_indirect_temp(ctx, decl->Range.First, decl->Range.Last);
++         if (base >= 0) {
++            if (base > decl->Range.First &&
++                !allocate_temp_range(&ctx->temp_ranges, &ctx->num_temp_ranges, decl->Range.First,
++                                     base - 1, 0))
++               return false;
++            if (!allocate_temp_range(&ctx->temp_ranges, &ctx->num_temp_ranges, base, decl->Range.Last,
++                                     INDIRECT_TEMP_ARRAY_ID))
++               return false;
++            break;
++         }
++      }
+       if (!allocate_temp_range(&ctx->temp_ranges, &ctx->num_temp_ranges, decl->Range.First, decl->Range.Last,
+                                decl->Array.ArrayID))
+          return false;
+@@ -5002,7 +5057,10 @@
+       }
+       case TGSI_FILE_TEMPORARY: {
+          char temp_buf[64];
+-         get_temp(ctx, dst_reg->Register.Indirect, 0, dst_reg->Register.Index,
++         /* OmacVM (#589): the address register the write names, not always addr0 */
++         if (dst_reg->Register.Indirect && dst_reg->Indirect.File != TGSI_FILE_ADDRESS)
++            return false;
++         get_temp(ctx, dst_reg->Register.Indirect, dst_reg->Indirect.Index, dst_reg->Register.Index,
+                   temp_buf, &ctx->require_dummy_value);
+          strbuf_fmt(&dst_bufs[i], "%s%s", temp_buf, writemask);
+          if (inst->Instruction.Precise) {
+@@ -8471,6 +8529,18 @@
+          ctx->integer_memory = true;
+    }
+ 
++   /* OmacVM (#589): temps indexed at run time (iter_declaration makes them arrays) */
++   for (int i = 0; i < inst->Instruction.NumDstRegs; ++i) {
++      if (inst->Dst[i].Register.File == TGSI_FILE_TEMPORARY && inst->Dst[i].Register.Indirect &&
++          !note_indirect_temp(ctx, inst->Dst[i].Register.Index))
++         return false;
++   }
++   for (int i = 0; i < inst->Instruction.NumSrcRegs; ++i) {
++      if (inst->Src[i].Register.File == TGSI_FILE_TEMPORARY && inst->Src[i].Register.Indirect &&
++          !note_indirect_temp(ctx, inst->Src[i].Register.Index))
++         return false;
++   }
++
+    if (!ctx->fs_uses_clipdist_input && (ctx->prog_type == TGSI_PROCESSOR_FRAGMENT)) {
+       for (int i = 0; i < inst->Instruction.NumSrcRegs; ++i) {
+          if (inst->Src[i].Register.File == TGSI_FILE_INPUT) {
+@@ -8786,8 +8856,10 @@
+    ctx.iter.iterate_instruction = analyze_instruction;
+    ctx.ssbo_first_binding = UINT32_MAX;
+    bret = tgsi_iterate_shader(tokens, &ctx.iter);
+-   if (bret == false)
++   if (bret == false) {
++      free(ctx.indirect_temps);
+       return false;
++   }
+ 
+    ctx.is_last_vertex_stage =
+          (ctx.iter.processor.Processor == TGSI_PROCESSOR_GEOMETRY) ||
+@@ -8934,6 +9006,7 @@
+       goto fail;
+ 
+    free(ctx.temp_ranges);
++   free(ctx.indirect_temps);
+ 
+    fill_sinfo(&ctx, sinfo);
+    fill_var_sinfo(&ctx, var_sinfo);
+@@ -8953,6 +9026,7 @@
+    strbuf_free(&ctx.glsl_strbufs.glsl_ver_ext);
+    free(ctx.so_names);
+    free(ctx.temp_ranges);
++   free(ctx.indirect_temps);
+    return false;
+ }
+ 
