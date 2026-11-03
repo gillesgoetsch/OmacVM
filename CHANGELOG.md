@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.21 (unreleased)
+
+- **OmacVM's own guest Mesa build has a folder of its own (guest Mesa, manual build, see #694).**
+  `src/app/guest/mesa/build.sh` installed into `/opt/omacvm-mesa` unless `PREFIX` named another
+  folder, and that is where a VM with Graphics on Vulkan keeps its Venus Mesa, so a run in such a
+  VM replaced the Venus Mesa. Its default is `/opt/omacvm-gl-mesa` now (apps use it with
+  `LD_LIBRARY_PATH=/opt/omacvm-gl-mesa/lib`), and it stops without building when the folder holds
+  the Venus Mesa. A build made before into `/opt/omacvm-mesa` in a VM without Vulkan stays where it
+  is. No VM runs this script by itself: nothing changes for a VM that does not use it.
+
 ## 3.2.20
 
 In OmacVM.app VMs, more desktop OpenGL programs with tessellation draw on the Mac's GPU: separate
