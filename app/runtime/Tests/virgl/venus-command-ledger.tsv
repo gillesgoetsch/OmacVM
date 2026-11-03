@@ -1,5 +1,5 @@
 command	guest values	verdict	what vkr checks	evidence
-vkCmdBindPipeline	pipelineBindPoint, pipeline	A+B	A: bind point a known one (KK kk_cmd_buffer.h:298 UNREACHABLE) and the pipeline's own; B: none	c-bind-wrong-point (KK 11, MVK-p 11)
+vkCmdBindPipeline	pipelineBindPoint, pipeline	A+B+P	A: bind point a known one (KK kk_cmd_buffer.h:298 UNREACHABLE) and the pipeline's own; B: none; P: Metal passes in the command buffer at most 16384 (encoder cap; in a pass, a pipeline with static sample locations or attachment locations is a pass; a MoltenVK batch 32768)	c-bind-wrong-point (KK 11, MVK-p 11)
 vkCmdSetViewport	firstViewport, viewportCount	A	first + count <= maxViewports (64-bit)	c-viewport-far (KK 10), c-viewport-17 (KK writes viewports[16])
 vkCmdSetScissor	firstScissor, scissorCount	A	first + count <= maxViewports	c-scissor-far (KK 10)
 vkCmdSetLineWidth	lineWidth	values only		SET_DYN_VALUE
@@ -12,29 +12,29 @@ vkCmdSetStencilReference	faceMask, reference	values only
 vkCmdBindDescriptorSets	bindPoint, layout, firstSet, count, sets, dynamicOffsetCount	A	bind point; firstSet + count <= the layout's set count; each set's layout has the layout's dynamic count for that set; dynamicOffsetCount = their sum (KK reads pDynamicOffsets by the layouts' counts)	c-sets-first-far (KK 11/10, MVK-p 10), gap 4: c-sets-fewer-offsets, c-sets-layout-mismatch
 vkCmdBindIndexBuffer	buffer, offset, indexType	A	indexType a known one the device has (KK vk_to_mtl_map.c:304 UNREACHABLE); offset < size; NULL buffer only with maintenance6 at offset 0	c-ibuf-type-bad, c-ibuf-offset-past
 vkCmdBindVertexBuffers	firstBinding, bindingCount, buffers, offsets	A	first + count <= maxVertexInputBindings; offset <= size; NULL buffer only with nullDescriptor	c-vbuf-first-far (KK 10, MVK-p 10), c-vbuf-offset-past, gap 8: c-vbuf-null
-vkCmdDraw	counts	B	a graphics pipeline bound, inside a pass	c-draw-no-pipeline (KK 11, MVK-p 11); PR-B: c-state-draw-no-pipeline, c-state-draw-outside
-vkCmdDrawIndexed	counts	B	as vkCmdDraw	as c-draw-no-pipeline
-vkCmdDrawIndirect	buffer, offset, drawCount, stride	A+B	A: offset + (n-1)*stride + 16 <= size, offset and stride multiples of 4, stride >= 16 for n > 1, n <= maxDrawIndirectCount; B: pipeline bound	c-draw-indirect-past (accepted: GPU read)
-vkCmdDrawIndexedIndirect	buffer, offset, drawCount, stride	A+B	as vkCmdDrawIndirect with 20 bytes	
+vkCmdDraw	counts	B+P	a graphics pipeline bound, inside a pass; P: Metal passes in the command buffer at most 16384 (encoder cap; a tessellated draw, or on KosmicKrisp one it unrolls or predicates (fan, flat with the last vertex, conditional rendering), is a pass; a MoltenVK batch 32768)	c-draw-no-pipeline (KK 11, MVK-p 11); PR-B: c-state-draw-no-pipeline, c-state-draw-outside; h-pass-draw-fan, h-pass-draw-tess, h-pass-draw-flat-last, h-pass-draw-pred; fit: h-pass-draw-flat-first
+vkCmdDrawIndexed	counts	B+P	as vkCmdDraw; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDraw; on KosmicKrisp also 8-bit indices, 8/16-bit strips without restart, list restart, index robustness; a MoltenVK batch 32768)	as c-draw-no-pipeline; h-pass-draw-u8, h-pass-draw-strip16, h-pass-draw-list-restart; fit: h-pass-draw-list16, h-pass-draw-strip16-restart, h-pass-draw-strip32, h-pass-draw-robust-plain
+vkCmdDrawIndirect	buffer, offset, drawCount, stride	A+B+P	A: offset + (n-1)*stride + 16 <= size, offset and stride multiples of 4, stride >= 16 for n > 1, n <= maxDrawIndirectCount; B: pipeline bound; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDraw, a tessellated one per draw; a MoltenVK batch 32768)	c-draw-indirect-past (accepted: GPU read)
+vkCmdDrawIndexedIndirect	buffer, offset, drawCount, stride	A+B+P	as vkCmdDrawIndirect with 20 bytes; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDrawIndexed, a tessellated one per draw; robust: counted; a MoltenVK batch 32768)	h-pass-draw-robust-indirect
 vkCmdDispatch	group counts	A+B	A: each count <= maxComputeWorkGroupCount; B: compute pipeline bound	c-dispatch-huge (accepted: GPU watchdog), c-dispatch-no-pipeline (KK 11, MVK-p 11); PR-B: c-state-dispatch-no-pipeline, c-state-dispatch-inside
 vkCmdDispatchIndirect	buffer, offset	A+B	A: offset + 12 <= size, offset % 4; B: pipeline bound	c-dispatch-indirect-past (accepted)
 vkCmdCopyBuffer	src, dst, regions	A	each region inside both buffers, size > 0 (64-bit)	c-copy-buffer-past, c-copy-buffer-far (accepted: GPU)
 vkCmdCopyBuffer2	info: regions	A	as vkCmdCopyBuffer	
 vkCmdCopyImage	images, regions	A+B	A: mip level and layer range inside each image; B: offsets + extents	c-copy-image-past (accepted); PR-B: c-region-image-past, c-region-image-max
 vkCmdCopyImage2	info	A+B	as vkCmdCopyImage	
-vkCmdBlitImage	images, regions, filter	A+B+P	A: subresources; B: offsets inside the level; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region; a MoltenVK batch 32768)	c-blit-level (KK 6: Metal newLevelRange), c-blit-past (accepted); PR-B: c-region-blit-past, c-region-blit-mirror; h-pass-blits-over
-vkCmdBlitImage2	info	A+B+P	as vkCmdBlitImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region; a MoltenVK batch 32768)	
+vkCmdBlitImage	images, regions, filter	A+B+P	A: subresources; B: offsets inside the level; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region, to be safe; a MoltenVK batch 32768)	c-blit-level (KK 6: Metal newLevelRange), c-blit-past (accepted); PR-B: c-region-blit-past, c-region-blit-mirror; h-pass-blits-over
+vkCmdBlitImage2	info	A+B+P	as vkCmdBlitImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region, to be safe; a MoltenVK batch 32768)	
 vkCmdCopyBufferToImage	buffer, image, regions	A+B	A: image subresource, bufferOffset < size; B: texel extent and the buffer bytes it needs	c-copy-b2i-level, c-copy-b2i-past (accepted); PR-B: c-region-b2i-past, -rowlength, -extent, -offset, -aspect, -max
 vkCmdCopyBufferToImage2	info	A+B	as vkCmdCopyBufferToImage	
 vkCmdCopyImageToBuffer	image, buffer, regions	A+B	as vkCmdCopyBufferToImage	c-copy-i2b-past (accepted); PR-B: c-region-i2b-past, c-region-i2b-max
 vkCmdCopyImageToBuffer2	info	A+B	as vkCmdCopyBufferToImage	
 vkCmdUpdateBuffer	dst, offset, dataSize	A+M	offset + dataSize <= size, both % 4, dataSize <= 65536; M: the recording is charged (host memory: 512 B per command, its data x 1.5 more (KK 84017 B per 64 KB))	c-update-past (accepted); h-rec-updates
 vkCmdFillBuffer	dst, offset, size	A+M	offset < size, offset + size <= size or WHOLE, % 4; M: the recording is charged (host memory: 512 B per command, 3 KB more on KosmicKrisp (2423 B measured))	c-fill-past (accepted); h-rec-fills
-vkCmdClearColorImage	image, ranges	A+P	level and layer ranges inside the image (REMAINING resolved); P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per level of its ranges; a MoltenVK batch 32768)	c-clear-color-range (KK 6: Metal newLevelRange); h-pass-clear-over, h-pass-levels-over, h-pass-default-past-metal (KK 6 before)
+vkCmdClearColorImage	image, ranges	A+P	level and layer ranges inside the image (REMAINING resolved); P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per level of its ranges, a 3D level's slices one pass; a MoltenVK batch 32768)	c-clear-color-range (KK 6: Metal newLevelRange); h-pass-clear-over, h-pass-levels-over, h-pass-default-past-metal (KK 6 before); h-pass-3d-ok, h-pass-3d-over
 vkCmdClearDepthStencilImage	image, ranges	A+P	as vkCmdClearColorImage; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdClearColorImage; a MoltenVK batch 32768)	
 vkCmdClearAttachments	attachments[].colorAttachment, rects	A+B+M	A: colorAttachment < maxColorAttachments for COLOR (KK vk_meta_clear.c:221 writes push.color_values[a] on the stack, assert compiled out); B: < the pass's color count; M: the recording is charged (host memory: 512 B per command, 3 KB more on KosmicKrisp (2958 B measured))	gap 1: c-clear-att-8, c-clear-att-far; PR-B: c-state-clear-beyond, c-state-clear-outside; h-rec-reuse-ok
-vkCmdResolveImage	images, regions	A+B+P	as vkCmdCopyImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region; a MoltenVK batch 32768)	
-vkCmdResolveImage2	info	A+B+P	as vkCmdCopyImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region; a MoltenVK batch 32768)	
+vkCmdResolveImage	images, regions	A+B+P	as vkCmdCopyImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region, to be safe; a MoltenVK batch 32768)	
+vkCmdResolveImage2	info	A+B+P	as vkCmdCopyImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region, to be safe; a MoltenVK batch 32768)	
 vkCmdSetEvent	event, stageMask	values only		
 vkCmdResetEvent	event, stageMask	values only		
 vkCmdWaitEvents	events, barriers	A+P	image barrier ranges inside the image, buffer barrier ranges inside the buffer; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass inside a pass on KosmicKrisp; a MoltenVK batch 32768)	gap 9: c-barrier-range
@@ -54,15 +54,15 @@ vkCmdDispatchBase	bases, counts	A+B	A: base + count <= maxComputeWorkGroupCount 
 vkCmdBeginRenderPass2	begin info	A+B+P	as vkCmdBeginRenderPass; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass; a MoltenVK batch 32768)	
 vkCmdNextSubpass2		B+P	as vkCmdNextSubpass; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass; a MoltenVK batch 32768)	
 vkCmdEndRenderPass2		B	as vkCmdEndRenderPass	
-vkCmdDrawIndirectCount	buffer, offset, countBuffer, countOffset, maxDrawCount, stride	A+B	A: both ranges, maxDrawCount as drawCount; B: pipeline	
-vkCmdDrawIndexedIndirectCount	as above	A+B	as vkCmdDrawIndirectCount with 20 bytes	
+vkCmdDrawIndirectCount	buffer, offset, countBuffer, countOffset, maxDrawCount, stride	A+B+P	A: both ranges, maxDrawCount as drawCount; B: pipeline; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDrawIndirect, maxDrawCount draws; a MoltenVK batch 32768)	
+vkCmdDrawIndexedIndirectCount	as above	A+B+P	as vkCmdDrawIndirectCount with 20 bytes; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDrawIndexedIndirect, maxDrawCount draws; a MoltenVK batch 32768)	
 vkCmdSetLineStipple	factor, pattern	values only		
 vkCmdBindTransformFeedbackBuffersEXT	first, count, buffers, offsets, sizes	stub	no Mac driver has VK_EXT_transform_feedback; A bound kept (first + count <= maxTransformFeedbackBuffers)	
 vkCmdBeginTransformFeedbackEXT	firstCounterBuffer, count	stub	as above	
 vkCmdEndTransformFeedbackEXT	firstCounterBuffer, count	stub	as above	
 vkCmdBeginQueryIndexedEXT	pool, query, index	stub	query < count kept; + the views of the open multiview pass	
 vkCmdEndQueryIndexedEXT	pool, query, index	stub	query < count kept; + the views of the open multiview pass	
-vkCmdDrawIndirectByteCountEXT	counter buffer, offset	stub		
+vkCmdDrawIndirectByteCountEXT	counter buffer, offset	stub+P	P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDraw; a MoltenVK batch 32768)	
 vkCmdBindVertexBuffers2	first, count, buffers, offsets, sizes, strides	A	as vkCmdBindVertexBuffers; offset + size <= buffer size; stride <= maxVertexInputBindingStride	
 vkCmdBindIndexBuffer2	buffer, offset, size, indexType	A	as vkCmdBindIndexBuffer; offset + size <= buffer size	
 vkCmdSetCullMode	cullMode	A	0..3 (KK vk_to_mtl_map.c:250 UNREACHABLE at draw)	c-enum-cull
@@ -90,8 +90,8 @@ vkCmdResetEvent2	event, stageMask	values only
 vkCmdSetEvent2	event, dependency info	A	barrier ranges	
 vkCmdWaitEvents2	events, dependency infos	A+P	barrier ranges; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass inside a pass on KosmicKrisp; a MoltenVK batch 32768)	
 vkCmdWriteTimestamp2	stage, pool, query	A+B	as vkCmdWriteTimestamp	
-vkCmdDrawMultiEXT	drawCount, pVertexInfo, stride	A+B	A: stride passed as sizeof(VkMultiDrawInfoEXT) (the decoder packs the array), NULL array with drawCount > 0 refused; B: pipeline	gap 2: c-drawmulti-stride, c-drawmulti-null
-vkCmdDrawMultiIndexedEXT	drawCount, pIndexInfo, stride, pVertexOffset	A+B	as vkCmdDrawMultiEXT	gap 2
+vkCmdDrawMultiEXT	drawCount, pVertexInfo, stride	A+B+P	A: stride passed as sizeof(VkMultiDrawInfoEXT) (the decoder packs the array), NULL array with drawCount > 0 refused; B: pipeline; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDrawIndirect; a MoltenVK batch 32768)	gap 2: c-drawmulti-stride, c-drawmulti-null
+vkCmdDrawMultiIndexedEXT	drawCount, pIndexInfo, stride, pVertexOffset	A+B+P	as vkCmdDrawMultiEXT; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdDrawIndexed, a tessellated one per draw; a MoltenVK batch 32768)	gap 2
 vkCmdPushDescriptorSet	bindPoint, layout, set, writes	A+C	set < the layout's set count and a push-descriptor set layout there; writes checked as vkUpdateDescriptorSets; C: split per binding as vkUpdateDescriptorSets	c-push-set-oob; C legal: c-push-set-split-ok
 vkCmdSetColorWriteEnableEXT	count	A	count <= maxColorAttachments (Mesa vk_graphics_state.c:3154)	gap 3
 vkCmdSetVertexInputEXT	bindings, attributes	A	binding < maxVertexInputBindings, location < maxVertexInputAttributes, stride <= max, counts <= max	gap 3
@@ -113,12 +113,12 @@ vkCmdSetPolygonModeEXT	mode	values only		SET_DYN_VALUE
 vkCmdSetProvokingVertexModeEXT	mode	values only		
 vkCmdSetRasterizationSamplesEXT	samples	A	one bit within the device's sample counts (Mesa assert <= 16)	
 vkCmdSetRasterizationStreamEXT	stream	stub	transform feedback	
-vkCmdSetSampleLocationsEnableEXT	bool	values only		
+vkCmdSetSampleLocationsEnableEXT	bool	P	P: Metal passes in the command buffer at most 16384 (encoder cap; in a pass, a pass; a MoltenVK batch 32768)	
 vkCmdSetSampleMaskEXT	samples, mask	values only		Mesa reads pSampleMask[0] only; the decoder sizes the array
 vkCmdSetTessellationDomainOriginEXT	origin	values only		
 vkCmdSetFragmentShadingRateKHR	size, combinerOps	stub	no Mac driver has the extension	
-vkCmdSetSampleLocationsEXT	sample locations info	A	count = grid w x h x per pixel, grid within maxSampleLocationGridSize, per pixel a sample count the device has (Mesa copies into locations[32])	gap 3: c-sample-locations-64
-vkCmdSetRenderingAttachmentLocations	location info	A	colorAttachmentCount <= maxColorAttachments (Mesa color_map[8])	gap 3: c-att-locations-9
+vkCmdSetSampleLocationsEXT	sample locations info	A+P	count = grid w x h x per pixel, grid within maxSampleLocationGridSize, per pixel a sample count the device has (Mesa copies into locations[32]); P: Metal passes in the command buffer at most 16384 (encoder cap; in a pass, a pass; a MoltenVK batch 32768)	gap 3: c-sample-locations-64; h-pass-draw-sample-locations
+vkCmdSetRenderingAttachmentLocations	location info	A+P	colorAttachmentCount <= maxColorAttachments (Mesa color_map[8]); P: Metal passes in the command buffer at most 16384 (encoder cap; in a pass, a pass; a MoltenVK batch 32768)	gap 3: c-att-locations-9; h-pass-draw-attachment-locations
 vkCmdSetRenderingInputAttachmentIndices	index info	A	colorAttachmentCount <= maxColorAttachments	gap 3
 vkCmdBindDescriptorSets2	info	A	as vkCmdBindDescriptorSets; stageFlags graphics/compute; layout not NULL	
 vkCmdPushConstants2	info	A	as vkCmdPushConstants	
