@@ -272,6 +272,123 @@ static int tess_clip_rows(bool have_gl)
    return failed;
 }
 
+/* #589 (virgl-shader-vs-tes-clip-varyings.patch): a vertex shader whose clip distances go
+ * straight to an evaluation shader (no control shader). On the Mac (WANT distances) it
+ * writes the varyings omacvm_clip0 (omacvm_clip1 for more than 4) and has no gl_ClipDistance
+ * at all (Apple's Metal pipeline build failed on it, and a loose gl_ClipDistance beside the
+ * block crashed Apple's GLSL compiler); its variable info says so (tess_clip_out). WANT 0:
+ * the text as before. The evaluation shader's key comes from vrend_sync_shader_io, which this
+ * test does not reach: test-whole-program-shapes.c C17, C18, C21-C24 draw it (only C23/C24
+ * fail without it). */
+static int vs_tes_clip(const char *name, const char *text, const struct vrend_shader_key *key,
+                       enum host host, int want, const char *must, bool have_gl)
+{
+   static char glsl[32768];
+   struct vrend_variable_shader_info var;
+   if (!translate(name, text, key, host, glsl, &var))
+      return 1;
+   bool clip = strstr(glsl, "gl_ClipDistance") != NULL;
+   bool decl0 = strstr(glsl, "out vec4 omacvm_clip0;") != NULL;
+   bool decl1 = strstr(glsl, "out vec4 omacvm_clip1;") != NULL;
+   bool ok = want ? !clip && decl0 && decl1 == (want > 4) && var.tess_clip_out &&
+                    var.num_out_clip == want
+                  : !strstr(glsl, "omacvm_clip") && !var.tess_clip_out;
+   if (!ok || (must && !strstr(glsl, must))) {
+      printf("FAIL: %s (want %d; gl_ClipDistance %d, omacvm_clip0 %d, omacvm_clip1 %d, "
+             "tess_clip_out %d, num_out_clip %d):\n%s\n", name, want, clip, decl0, decl1,
+             var.tess_clip_out, var.num_out_clip, glsl);
+      return 1;
+   }
+   have_gl = have_gl && host == HOST_MAC;
+   if (have_gl && !gl_compiles(name, GL_VERTEX_SHADER, glsl))
+      return 1;
+   printf("PASS: %s%s\n", name, have_gl ? " (compiled by the Mac's OpenGL)" : "");
+   return 0;
+}
+
+/* gl_ClipDistance[0] = y beside a generic varying (test-whole-program-shapes.c C21/C22) */
+static const char *vs_clip1 =
+   "VERT\nPROPERTY NUM_CLIPDIST_ENABLED 1\nDCL IN[0]\nDCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\nDCL OUT[2], GENERIC[0]\n"
+   "MOV OUT[0], IN[0]\nMOV OUT[1].x, IN[0].yyyy\nMOV OUT[2], IN[0]\nEND\n";
+static const char *vs_clip8 =
+   "VERT\nPROPERTY NUM_CLIPDIST_ENABLED 8\nDCL IN[0]\nDCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\nDCL OUT[2], CLIPDIST[1]\n"
+   "MOV OUT[0], IN[0]\nMOV OUT[1], IN[0]\nMOV OUT[2], IN[0].wzyx\nEND\n";
+
+static int vs_tes_clip_rows(bool have_gl)
+{
+   int failed = 0;
+   struct vrend_shader_key key;
+   char name[160];
+   for (int sep = 0; sep < 2; sep++) {
+      const char *how = sep ? "separable" : "whole";
+      /* the keys vrend_fill_shader_key gives: an evaluation shader, no control shader; a
+       * whole program's evaluation shader redeclares gl_in[] (use_pervertex_in) */
+      memset(&key, 0, sizeof(key));
+      key.tes_present = 1;
+      key.use_pervertex_in = !sep;
+      snprintf(name, sizeof(name), "%s VS -> TES (no TCS) passes 1 clip distance as omacvm_clip0", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 1,
+                            "omacvm_clip0.x = clip_dist_temp[0].x;", have_gl);
+      snprintf(name, sizeof(name), "%s VS -> TES (no TCS) passes 8 clip distances as omacvm_clip0 and omacvm_clip1", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip8) : vs_clip8, &key, HOST_MAC, 8,
+                            "omacvm_clip1.w = clip_dist_temp[1].w;", have_gl);
+      /* the evaluation shader after it (key from the vertex shader's variable info) */
+      struct vrend_shader_key tes_key;
+      memset(&tes_key, 0, sizeof(tes_key));
+      tes_key.tes_present = 1;
+      tes_key.tess_clip_in = 1;
+      tes_key.num_in_clip = 1;
+      snprintf(name, sizeof(name), "%s TES after a VS (no TCS) reads omacvm_clip0[]", how);
+      failed |= tess_clip(name, sep ? separable(tes_clip1) : tes_clip1, &tes_key, HOST_MAC, 1,
+                          "omacvm_clip0[2][0]", have_gl);
+      /* the geometry shader after the evaluation shader changes nothing for the VS */
+      key.gs_present = 1;
+      snprintf(name, sizeof(name), "%s VS -> TES -> GS (no TCS) passes 1 clip distance as omacvm_clip0", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 1,
+                            "omacvm_clip0.x = clip_dist_temp[0].x;", have_gl);
+      key.gs_present = 0;
+      /* kept as before: a control shader in between (gl_in[] there is fine) */
+      key.tcs_present = 1;
+      snprintf(name, sizeof(name), "%s VS -> TCS keeps gl_ClipDistance", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 0,
+                            "gl_ClipDistance[0] = clip_dist_temp[0].x;", have_gl);
+      key.tcs_present = 0;
+      /* other hosts and a cull distance after it (text only) */
+      snprintf(name, sizeof(name), "%s VS -> TES on a GL with cull distances keeps gl_ClipDistance", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_CULL, 0,
+                            "gl_ClipDistance[0] = clip_dist_temp[0].x;", false);
+      snprintf(name, sizeof(name), "%s VS -> TES on GLES keeps its text", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_GLES, 0, NULL, false);
+      key.num_out_cull = 1;
+      snprintf(name, sizeof(name), "%s VS -> TES with a cull distance keeps gl_ClipDistance", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 0, NULL, false);
+      /* the last stage: no evaluation shader */
+      memset(&key, 0, sizeof(key));
+      snprintf(name, sizeof(name), "%s VS as the last stage keeps gl_ClipDistance", how);
+      failed |= vs_tes_clip(name, sep ? separable(vs_clip1) : vs_clip1, &key, HOST_MAC, 0,
+                            "gl_ClipDistance[0] = clip_dist_temp[0].x;", have_gl);
+   }
+   /* a vertex shader whose varyings would not fit (position, clip, 30 generics): as before,
+    * never refused */
+   static char full[8192];
+   int n = snprintf(full, sizeof(full), "VERT\nPROPERTY NUM_CLIPDIST_ENABLED 1\nDCL IN[0]\n"
+                    "DCL OUT[0], POSITION\nDCL OUT[1], CLIPDIST[0]\n");
+   for (int i = 0; i < 30; i++)
+      n += snprintf(full + n, sizeof(full) - n, "DCL OUT[%d], GENERIC[%d]\n", 2 + i, i);
+   n += snprintf(full + n, sizeof(full) - n, "MOV OUT[0], IN[0]\nMOV OUT[1].x, IN[0].yyyy\n");
+   for (int i = 0; i < 30; i++)
+      n += snprintf(full + n, sizeof(full) - n, "MOV OUT[%d], IN[0]\n", 2 + i);
+   snprintf(full + n, sizeof(full) - n, "END\n");
+   memset(&key, 0, sizeof(key));
+   key.tes_present = 1;
+   key.use_pervertex_in = 1;
+   failed |= vs_tes_clip("VS -> TES with 30 varyings beside its clip distance keeps gl_ClipDistance (no slot left)",
+                         full, &key, HOST_MAC, 0, "gl_ClipDistance[0] = clip_dist_temp[0].x;", false);
+   return failed;
+}
+
 int main(void)
 {
    bool have_gl = cgl_init_current();
@@ -563,6 +680,7 @@ int main(void)
                      &key, "texture(fssamp0, ", "fssamp0.", have_gl);
 
    failed |= tess_clip_rows(have_gl);
+   failed |= vs_tes_clip_rows(have_gl);
 
    /* A plain float shader is unchanged apart from the version. */
    memset(&key, 0, sizeof(key));
