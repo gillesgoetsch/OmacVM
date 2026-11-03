@@ -165,8 +165,12 @@ def test_rows_cursor_and_hint(world):
     names = [t for _, t in g.table(text)]
     assert names[:2] == ["OmacVM Bridge", "Wallpaper on the Mac"] and "Graphics" in names and "Touch ID" in names
     assert g.cursor_line(g.screen(ansi=True)) == g.table(text)[0][0], "the cursor starts on the first row"
+    # The hint names its row: another row's state is not read from it.
+    ok, text, _ = g.watch(lambda s: g.below_table(s).startswith("OmacVM Bridge: "), 10)
+    assert ok, g.below_table(text)
+    assert g.state_of("The Mac's clock", text)["on"] is None
     r = call(g.cmd_row, "The Mac's clock")
-    assert r["ok"] and r["on"] == "on" and r["status"] == "works"
+    assert r["ok"] and r["on"] == "on" and r["status"] == "works" and r["below"].startswith("The Mac's clock: "), r
     assert call(g.cmd_row, "No such row")["ok"] is False
 
 

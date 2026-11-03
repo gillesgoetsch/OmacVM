@@ -277,7 +277,9 @@ class FeaturesScreen(Screen):
         hint = ""
         if r is not None:
             on = "on" if r.on else "off"
-            hint = f"{r.feature.summary}  ·  {on}, {look.WORD[r.status]}"
+            # Named after its row: a reader (and the release gate's driver) can tell which row it
+            # is about while it is drawn a moment after the cursor moved.
+            hint = f"{r.feature.title}: {r.feature.summary}  ·  {on}, {look.WORD[r.status]}"
         self.query_one("#hint", Static).update(Text(hint, style="bright_black"))
 
     @on(DataTable.RowHighlighted)
