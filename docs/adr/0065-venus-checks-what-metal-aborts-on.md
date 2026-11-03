@@ -758,3 +758,63 @@ build: 376 ok on KosmicKrisp (4 skipped), MoltenVK (13) and with prefill (21),
 KosmicKrisp timing (20000 calls, A B B A): `vkUpdateDescriptorSets` 0.024,
 0.024, 0.025, 0.024 us; a render pass begin and end 13.82, 13.32, 13.29,
 13.55 us: no change outside the noise.
+
+## Values Vulkan ignores (amendment, 3.2.20)
+
+Lane `v624-batch` (#624's batch after #687). Read in vkr at #687's head
+(e66b77c5), Mesa e5f06878, MoltenVK 1.4.2 and validusage.json 1.4.363; every new
+value first went straight to both drivers on the M1 Max (no vkr, nothing
+submitted, 3 runs on KosmicKrisp, MoltenVK, MoltenVK with prefill and both under
+libgmalloc; raw in work/v624-batch/probe/out).
+
+- A whole-size texel view with less than one texel after its offset is legal
+  (`VUID-VkBufferViewCreateInfo-offset-00925`, `-range-04059`), and both drivers
+  end the process on it in Metal ("MTLTextureDescriptor has width of zero":
+  KosmicKrisp at the create, MoltenVK at the descriptor write). So it never
+  goes to them: with nullDescriptor on, vkr makes the view without a driver view
+  (handle `VK_NULL_HANDLE`), and the decoder writes a null descriptor wherever
+  the guest names it (`VUID-VkWriteDescriptorSet-descriptorType-02994/02995`);
+  a view of no texel reads 0, as a null descriptor does. The format, usage,
+  offset and alignment checks still come first. Such a view is freed without
+  `vkr_buffer_view_from_handle`, which asserts a driver handle. MoltenVK has no
+  nullDescriptor (it refuses a device asking for it), so there the view stays
+  refused, now with its reason.
+- A pipeline's vertex binding stride is not checked while the stride is dynamic
+  (`VUID-VkVertexInputBindingDescription-stride-00619` does not apply); the
+  stride used is `vkCmdBindVertexBuffers2`'s, which vkr bounds. Both drivers take
+  a pipeline stride past the limit then, also with a draw recorded after a
+  `vkCmdBindVertexBuffers` without strides.
+- A color blend state needs its array and a count equal to the colors wherever
+  Vulkan reads them. vkr let a NULL array through always, and any count with
+  the three dynamic blend states set, features or not. A NULL array with
+  nothing dynamic ended the process on both drivers (Mesa's
+  `vk_color_blend_state_init`, MoltenVK's `addFragmentOutputToPipeline`), and
+  with the three dynamic on MoltenVK. Now the array counts as ignored only with
+  `COLOR_BLEND_ENABLE`, `EQUATION`, `WRITE_MASK` and `ADVANCED` dynamic
+  (`VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-07353`), the count
+  with the first three and `ADVANCED` too when advancedBlendCoherentOperations
+  is on (`VUID-VkGraphicsPipelineCreateInfo-renderPass-07609`, `-06055`), each
+  only with its extendedDynamicState3 feature on (`-07378`, `-07379`, `-07380`,
+  `-07386`). Neither Mac driver has these features today. The whole state stays
+  ignored with rasterization statically off, for a library without fragment
+  output and without colors (both drivers take a NULL array there, and the
+  guest's Venus driver drops such a state itself).
+- Dropped: `attachmentCount` past `maxColorAttachments` with the blend states
+  dynamic. Those states need the features (neither driver has them), and a
+  count of 9 makes MoltenVK crash and Mesa write past its 8-entry array.
+- Refusal lines print a buffer range as "16 bytes at 0 of a 64-byte buffer",
+  "the whole size at 0, no buffer", not 18446744073709551615 and "of 0"; the text
+  is made only on a refusal.
+
+Tests: 18 cases in `test-venus-commands.c` (`case_ignored`) and `tview-empty` in
+`test-venus-image-limits.c`; five run under libgmalloc too. On the M1 Max
+(virgl-only builds of e66b77c5 and of this one, this one's test files, drivers
+of the 3.2.18 test app, 3 runs in the five modes): before, 15 cases fail on
+KosmicKrisp and 10 on MoltenVK: the view and stride cases are refused, the
+NULL-array cases end the process (SIGSEGV), the count-past case works (1 of 3
+runs a SIGSEGV on MoltenVK, also with prefill), and the texts show
+18446744073709551615. After, all 25
+listed cases as expected in every mode, no crash report. The whole file
+(`run-venus-limits.py`) on this build: 394 cases on KosmicKrisp (4 skipped),
+MoltenVK (19) and with prefill (27), 60 under libgmalloc on both, the image file
+114 on both, no GPU restart.

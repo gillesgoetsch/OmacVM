@@ -9,9 +9,9 @@ vkCreateRenderPass(2)	VkRenderPassInputAttachmentAspectCreateInfo subpass, index
 vkCreateRenderPass2	depth/stencil resolve modes	A	known single bits (KK vk_to_mtl_map.c:266/278 UNREACHABLE)	
 vkCreateFramebuffer	attachmentCount, width, height, layers	A	count = the pass's (imageless: attachment image info count), 1..maxFramebuffer*	r-fb-fewer (KK 11)
 vkCreateGraphicsPipelines	viewportCount, scissorCount	A	<= maxViewports (Mesa copies into [16])	p-gfx-viewports-32 (KK 10)
-vkCreateGraphicsPipelines	color blend attachmentCount	A	<= maxColorAttachments, = the subpass's/rendering's colors	p-gfx-colors-32 (KK 6), p-gfx-blend-count (MVK 11)
+vkCreateGraphicsPipelines	color blend attachmentCount, pAttachments	A	<= maxColorAttachments; where the state is read (colors, rasterization on, fragment output): = the subpass's/rendering's colors and an array unless the extendedDynamicState3 blend states ignore them (ignored-values patch)	p-gfx-colors-32 (KK 6), p-gfx-blend-count (MVK 11), p-gfx-blend-null (KK+MVK SIGSEGV), p-gfx-blend-null-dyn, p-gfx-blend-more-dyn; legal: p-gfx-blend-discard-ok
 vkCreateGraphicsPipelines	VkPipelineRenderingCreateInfo colorAttachmentCount, viewMask	A	<= max, view count	p-gfx-colors-9 (MVK 6)
-vkCreateGraphicsPipelines	vertex binding, location, stride, divisor binding	A	< maxVertexInputBindings / Attributes, stride <= max	p-gfx-vbinding-far, p-gfx-vlocation-far (KK accepted: Mesa [32])
+vkCreateGraphicsPipelines	vertex binding, location, stride, divisor binding	A	< maxVertexInputBindings / Attributes, stride <= max unless the stride is dynamic	p-gfx-vbinding-far, p-gfx-vlocation-far (KK accepted: Mesa [32]); legal: p-gfx-vstride-dynamic
 vkCreateGraphicsPipelines	rasterizationSamples	A	one bit within the device's counts	p-gfx-samples-64 (KK 11)
 vkCreateGraphicsPipelines	subpass	A	< the pass's subpassCount	p-gfx-subpass-oob (KK 11 once)
 vkCreateGraphicsPipelines	stages[].stage	A	one known stage bit (Mesa indexes stage arrays by it)	

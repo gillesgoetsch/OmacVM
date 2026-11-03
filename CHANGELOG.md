@@ -39,6 +39,15 @@ in more words.
   structures of one type and the Mac's driver used the last: a render pass with a second
   multiview structure of 9 views ended the VM on KosmicKrisp. Vulkan does not allow such a chain;
   now it ends only that program's Vulkan connection. Needs the app update.
+- **A Vulkan program with a color blend state that has no attachment array can no longer end the VM
+  (OmacVM.app, #690, see #624).** With Graphics on Vulkan, QEMU passed such a pipeline (not allowed in
+  Vulkan) to the Mac's driver, which crashed. Now it ends only the program's Vulkan connection. Needs
+  the app update.
+- **Two legal Vulkan values no longer end a program's Vulkan connection (OmacVM.app, #690, see #624).**
+  A texel buffer view with less than one texel (when the program asked for nullDescriptor, on
+  KosmicKrisp) now works as an empty view, and a pipeline's vertex stride is no longer checked when
+  the program sets it at draw time. Refused buffer values in QEMU's log now say "no buffer" and "the
+  whole size" instead of 18446744073709551615. Needs the app update.
 
 ## 3.2.19
 

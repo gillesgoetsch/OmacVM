@@ -14,7 +14,10 @@
  * passes named and primaries the secondaries they executed (virgl-venus-ring-lock.patch,
  * virgl-venus-command-holds.patch, virgl-venus-secondary-holds.patch; the t- cases stop a
  * real ring with virgl-venus-test-pause.patch's hook), and no chain vkr checks has one
- * structure type twice (virgl-venus-chain-repeats.patch: the -repeat- cases).
+ * structure type twice (virgl-venus-chain-repeats.patch: the -repeat- cases); a texel
+ * view of no element, a dynamic vertex stride and color blend states vkr counts as read or
+ * ignored as Vulkan does, and refusal lines without 18446744073709551615
+ * (virgl-venus-ignored-values.patch: case_ignored).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -905,6 +908,8 @@ struct gfx {
    uint32_t feedback_count; /* chain a creation feedback with this many stage entries */
    bool feedback;
    VkFormat color_format, depth_format; /* dynamic rendering's (0: FMT, none) */
+   bool blend_null; /* the color blend state without its attachment array */
+   bool discard;    /* rasterizerDiscardEnable VK_TRUE */
 };
 
 static void *graphics_pipeline(void *layout, const struct gfx *g)
@@ -934,7 +939,7 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
                                             .scissorCount = g->viewports ? g->viewports : 1, .pScissors = scs };
    VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                  .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = g->cull,
-                                                 .lineWidth = 1 };
+                                                 .lineWidth = 1, .rasterizerDiscardEnable = g->discard };
    VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                .pNext = g->ms_next, .rasterizationSamples = g->samples ? g->samples : VK_SAMPLE_COUNT_1_BIT };
    VkPipelineDepthStencilStateCreateInfo ds = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -945,7 +950,7 @@ static void *graphics_pipeline(void *layout, const struct gfx *g)
                                                       .srcColorBlendFactor = g->src_factor };
    VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .pNext = g->cb_next, .attachmentCount = g->blend_count ? g->blend_count : g->colors,
-                                              .pAttachments = cba };
+                                              .pAttachments = g->blend_null ? NULL : cba };
    static VkFormat formats[64];
    for (int i = 0; i < 64; i++)
       formats[i] = g->color_format ? g->color_format : FMT;
@@ -5453,6 +5458,260 @@ static int case_repeat(const char *c)
    return created(graphics_pipeline(w.layout, &g));
 }
 
+/* ---------------- values Vulkan ignores (virgl-venus-ignored-values.patch) ----------------
+ * d-texel-*: a texel buffer view of the whole size with less than one texel after its
+ * offset (LEGAL: VUID-VkBufferViewCreateInfo-offset-00925, -range-04059; both Mac drivers end
+ * the process in Metal on it, "MTLTextureDescriptor has width of zero"). With nullDescriptor
+ * on (-nd) vkr makes it a view without a driver view: written into a set (-nd), pushed
+ * (-push), copied from one set into another (-copy), and alive when the context ends
+ * (-teardown), each with a dispatch recorded; d-texel-empty: without nullDescriptor it stays
+ * refused, with its reason; -misaligned: the offset rule still holds.
+ * p-gfx-vstride-dynamic: LEGAL: a pipeline stride past maxVertexInputBindingStride while the
+ * stride is dynamic (VUID-VkVertexInputBindingDescription-stride-00619 does not apply);
+ * -bind: with vkCmdBindVertexBuffers2 at stride 16 and a draw recorded.
+ * p-gfx-blend-*: a color blend state whose array or count the drivers read: no array (Mesa
+ * and MoltenVK end the process), a count past the colors (MoltenVK reads past its formats).
+ * Neither Mac driver has the extendedDynamicState3 blend features, so the dynamic blend
+ * states never make them ignored here. -discard-ok: LEGAL, rasterization off, the state is
+ * ignored; -dyn-ok: the count matches (vkr refuses nothing it did before).
+ * c-null-text-*: refusal lines say "the whole size" and "no buffer". */
+static void *texel_buffer(VkDeviceSize size)
+{
+   const uint64_t id = next_id++;
+   VkBuffer h = (VkBuffer)(uintptr_t)id;
+   VkBufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size,
+                               .usage = VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT };
+   struct vn_command_vkCreateBuffer c = { .device = DEVH, .pCreateInfo = &info, .pBuffer = &h };
+   D->dispatch_vkCreateBuffer(D, &c);
+   struct vkr_buffer *buf = object(id);
+   if (c.ret != VK_SUCCESS || !buf)
+      broken("texel buffer");
+   VkMemoryRequirements req = { 0 };
+   struct vn_command_vkGetBufferMemoryRequirements r = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                        .pMemoryRequirements = &req };
+   D->dispatch_vkGetBufferMemoryRequirements(D, &r);
+   struct vn_command_vkBindBufferMemory bm = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                               .memory = (VkDeviceMemory)allocate(req.size, memory_type(req.memoryTypeBits)) };
+   D->dispatch_vkBindBufferMemory(D, &bm);
+   if (bm.ret != VK_SUCCESS)
+      broken("texel buffer memory");
+   return buf;
+}
+
+/* a whole-size RGBA32F (16-byte texel) view `left` bytes before the end of its buffer, at
+ * offset `offset`; NULL when vkr refused it */
+static void *texel_view(VkDeviceSize offset, VkDeviceSize left)
+{
+   void *buf = texel_buffer(offset + left);
+   const uint64_t id = next_id++;
+   VkBufferView h = (VkBufferView)(uintptr_t)id;
+   VkBufferViewCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = (VkBuffer)buf,
+                                   .format = VK_FORMAT_R32G32B32A32_SFLOAT, .offset = offset,
+                                   .range = VK_WHOLE_SIZE };
+   struct vn_command_vkCreateBufferView cv = { .device = DEVH, .pCreateInfo = &info, .pView = &h };
+   step("vkCreateBufferView the whole size at %" PRIu64 ", %" PRIu64 " bytes left (16-byte texels)",
+        offset, left);
+   D->dispatch_vkCreateBufferView(D, &cv);
+   last_ret = cv.ret;
+   step("vkCreateBufferView = %d", cv.ret);
+   return cv.ret == VK_SUCCESS && !ended() ? object(id) : NULL;
+}
+
+static int texel_ignored_case(const char *c)
+{
+   const bool push = IS("d-texel-empty-push");
+   setup((IS("d-texel-empty") ? 0 : N_NULLDESC) | (push ? N_PUSHDESC : 0));
+   struct world w = { 0 };
+   make_world(&w, true);
+   const VkDeviceSize align = MAX2(lim.minTexelBufferOffsetAlignment, 16);
+   void *view;
+   if (IS("d-texel-one-nd"))
+      view = texel_view(align, 16);
+   else if (IS("d-texel-empty-nd-misaligned"))
+      view = texel_view(align + 4, 8);
+   else
+      view = texel_view(align, 8);
+   if (!view)
+      return created(NULL);
+   if (IS("d-texel-empty") || IS("d-texel-empty-nd-misaligned"))
+      return WORKS;
+   /* set 1: the texel buffer, beside the world's set 0 (what the compute shader reads) */
+   const VkDescriptorSetLayoutBinding tb = { 0, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL };
+   void *tdsl = set_layout_of(&tb, 1, push ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR : 0, NULL);
+   void *dsls[2] = { w.dsl, tdsl };
+   const VkPushConstantRange range = { VK_SHADER_STAGE_ALL, 0, 128 };
+   void *layout = tdsl ? pipeline_layout_of(dsls, 2, &range, 1) : NULL;
+   void *pipe = layout ? compute_pipeline(layout, w.comp, NULL, VK_SHADER_STAGE_COMPUTE_BIT, &spec_ok, NULL) : NULL;
+   if (!pipe)
+      broken("texel layout and pipeline");
+   VkBufferView vh = (VkBufferView)view;
+   VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0,
+                               .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+                               .pTexelBufferView = &vh };
+   void *set = NULL;
+   if (!push) {
+      VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 2 };
+      const uint64_t pid = next_id++;
+      VkDescriptorPool ph = (VkDescriptorPool)(uintptr_t)pid;
+      VkDescriptorPoolCreateInfo pinfo = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 2,
+                                           .poolSizeCount = 1, .pPoolSizes = &size };
+      struct vn_command_vkCreateDescriptorPool cpool = { .device = DEVH, .pCreateInfo = &pinfo,
+                                                         .pDescriptorPool = &ph };
+      D->dispatch_vkCreateDescriptorPool(D, &cpool);
+      void *tpool = cpool.ret == VK_SUCCESS ? object(pid) : NULL;
+      set = tpool ? set_from(tpool, tdsl, NULL) : NULL;
+      void *set2 = tpool ? set_from(tpool, tdsl, NULL) : NULL;
+      if (!set || !set2)
+         broken("texel sets");
+      wr.dstSet = (VkDescriptorSet)set;
+      struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1,
+                                                     .pDescriptorWrites = &wr };
+      step("vkUpdateDescriptorSets the view");
+      D->dispatch_vkUpdateDescriptorSets(D, &u);
+      if (ended())
+         return FATAL;
+      if (IS("d-texel-empty-copy")) {
+         VkCopyDescriptorSet cp = { .sType = VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, .srcSet = (VkDescriptorSet)set,
+                                    .dstSet = (VkDescriptorSet)set2, .descriptorCount = 1 };
+         struct vn_command_vkUpdateDescriptorSets uc = { .device = DEVH, .descriptorCopyCount = 1,
+                                                         .pDescriptorCopies = &cp };
+         step("vkUpdateDescriptorSets a copy of it into a second set");
+         D->dispatch_vkUpdateDescriptorSets(D, &uc);
+         if (ended())
+            return FATAL;
+         set = set2;
+      }
+      if (IS("d-texel-empty-teardown")) {
+         step("the context ends with the view alive");
+         vkr_context_destroy(ctx);
+         step("the context is gone");
+         return WORKS;
+      }
+   }
+   begin(w.cmd);
+   bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_COMPUTE);
+   if (push) {
+      struct vn_command_vkCmdPushDescriptorSet p = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                     .pipelineBindPoint = VK_PIPELINE_BIND_POINT_COMPUTE,
+                                                     .layout = (VkPipelineLayout)layout, .set = 1,
+                                                     .descriptorWriteCount = 1, .pDescriptorWrites = &wr };
+      step("vkCmdPushDescriptorSet the view");
+      D->dispatch_vkCmdPushDescriptorSet(D, &p);
+   } else {
+      bind_sets(w.cmd, layout, 1, &set, 1, NULL, 0);
+   }
+   struct vn_command_vkCmdDispatch d = { .commandBuffer = (VkCommandBuffer)w.cmd, .groupCountX = 1,
+                                         .groupCountY = 1, .groupCountZ = 1 };
+   step("vkCmdDispatch 1 x 1 x 1");
+   D->dispatch_vkCmdDispatch(D, &d);
+   const int r = end(w.cmd);
+   if (r != WORKS || !IS("d-texel-empty-nd"))
+      return r;
+   struct vn_command_vkDestroyBufferView dv = { .device = DEVH, .bufferView = vh };
+   step("vkDestroyBufferView");
+   D->dispatch_vkDestroyBufferView(D, &dv);
+   return ended() ? FATAL : WORKS;
+}
+
+static int case_ignored(const char *c)
+{
+   if (!strncmp(c, "d-texel-", 8))
+      return texel_ignored_case(c);
+   setup(0);
+   struct world w = { 0 };
+   make_world(&w, true);
+   if (!strncmp(c, "c-null-text-", 12)) {
+      begin(w.cmd);
+      const VkCommandBuffer cb = (VkCommandBuffer)w.cmd;
+      if (IS("c-null-text-bind2")) {
+         VkBuffer none = VK_NULL_HANDLE;
+         VkDeviceSize off = 0, size = VK_WHOLE_SIZE, stride = 16;
+         struct vn_command_vkCmdBindVertexBuffers2 b = { .commandBuffer = cb, .bindingCount = 1, .pBuffers = &none,
+                                                         .pOffsets = &off, .pSizes = &size, .pStrides = &stride };
+         step("vkCmdBindVertexBuffers2 no buffer, the whole size (nullDescriptor off)");
+         D->dispatch_vkCmdBindVertexBuffers2(D, &b);
+      } else if (IS("c-null-text-barrier")) {
+         VkBufferMemoryBarrier bb = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .size = VK_WHOLE_SIZE };
+         struct vn_command_vkCmdPipelineBarrier p = { .commandBuffer = cb,
+                                                      .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                                      .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                                      .bufferMemoryBarrierCount = 1, .pBufferMemoryBarriers = &bb };
+         step("vkCmdPipelineBarrier a buffer barrier naming no buffer");
+         D->dispatch_vkCmdPipelineBarrier(D, &p);
+      } else if (IS("c-null-text-fill")) {
+         struct vn_command_vkCmdFillBuffer f = { .commandBuffer = cb, .dstBuffer = (VkBuffer)w.buf,
+                                                 .dstOffset = 65536, .size = VK_WHOLE_SIZE };
+         step("vkCmdFillBuffer the whole size at the end of a 65536-byte buffer");
+         D->dispatch_vkCmdFillBuffer(D, &f);
+      } else {
+         return BROKEN;
+      }
+      return end(w.cmd);
+   }
+   /* graphics: the world's pass has 1 color */
+   struct gfx g = { .rp = w.rp, .colors = 1, .vert = w.vert, .frag = w.frag };
+   static VkDynamicState blend3[4] = { VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT,
+                                       VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT, VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT };
+   static VkDynamicState stride_dynamic[1] = { VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE };
+   static VkDynamicState discard_dynamic[1] = { VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE };
+   if (IS("p-gfx-vstride-dynamic") || IS("p-gfx-vstride-dynamic-bind")) {
+      if (lim.maxVertexInputBindingStride > 0xfffffffbu)
+         return SKIP;
+      g.vstride = lim.maxVertexInputBindingStride + 4;
+      g.dynamic = stride_dynamic;
+      g.dynamic_count = 1;
+   } else if (IS("p-gfx-blend-null")) {
+      g.blend_null = true;
+   } else if (IS("p-gfx-blend-null-dyn")) {
+      g.rp = NULL;
+      g.colors = 2;
+      g.blend_count = 1;
+      g.blend_null = true;
+      g.dynamic = blend3;
+      g.dynamic_count = 3;
+   } else if (IS("p-gfx-blend-more-dyn")) {
+      g.blend_count = 3;
+      g.dynamic = blend3;
+      g.dynamic_count = 3;
+   } else if (IS("p-gfx-blend-dyn-ok")) {
+      g.dynamic = blend3;
+      g.dynamic_count = 3;
+   } else if (IS("p-gfx-blend-discard-ok")) {
+      g.blend_null = true;
+      g.discard = true;
+   } else if (IS("p-gfx-blend-discard-dyn")) {
+      g.blend_null = true;
+      g.discard = true;
+      g.dynamic = discard_dynamic;
+      g.dynamic_count = 1;
+   } else {
+      return BROKEN;
+   }
+   void *pipe = graphics_pipeline(w.layout, &g);
+   if (!IS("p-gfx-vstride-dynamic-bind") || !pipe)
+      return created(pipe);
+   begin(w.cmd);
+   begin_pass(w.cmd, w.rp, w.fb, 64, 64);
+   bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   VkBuffer vb = (VkBuffer)w.buf;
+   VkDeviceSize off = 0, size = VK_WHOLE_SIZE, stride = 16;
+   struct vn_command_vkCmdBindVertexBuffers2 b = { .commandBuffer = (VkCommandBuffer)w.cmd, .bindingCount = 1,
+                                                   .pBuffers = &vb, .pOffsets = &off, .pSizes = &size,
+                                                   .pStrides = &stride };
+   step("vkCmdBindVertexBuffers2 stride 16");
+   D->dispatch_vkCmdBindVertexBuffers2(D, &b);
+   struct vn_command_vkCmdDraw draw = { .commandBuffer = (VkCommandBuffer)w.cmd, .vertexCount = 3,
+                                        .instanceCount = 1 };
+   step("vkCmdDraw 3");
+   D->dispatch_vkCmdDraw(D, &draw);
+   end_pass(w.cmd);
+   return end(w.cmd);
+}
+
 struct test_case {
    const char *name;
    int expect;
@@ -5647,6 +5906,20 @@ static const struct test_case cases[] = {
    { "p-repeat-gfx-blend", E_REFUSE, "twice in the chain of VkPipelineColorBlendStateCreateInfo" },
    { "p-repeat-compute", E_REFUSE, "twice in the chain of VkComputePipelineCreateInfo" },
    { "p-repeat-gfx-two-types-ok", E_WORKS },
+   /* values Vulkan ignores, refusal texts (virgl-venus-ignored-values.patch) */
+   { "d-texel-empty-nd", E_WORKS }, { "d-texel-one-nd", E_WORKS }, { "d-texel-empty-push", E_WORKS },
+   { "d-texel-empty-copy", E_WORKS }, { "d-texel-empty-teardown", E_WORKS },
+   { "d-texel-empty", E_REFUSE, "fewer than one 16-byte texel (a view of no texel needs nullDescriptor)" },
+   { "d-texel-empty-nd-misaligned", E_REFUSE, "not aligned" },
+   { "p-gfx-vstride-dynamic", E_WORKS }, { "p-gfx-vstride-dynamic-bind", E_WORKS },
+   { "p-gfx-blend-null", E_REFUSE, "1 attachments (no array) for 1 colors" },
+   { "p-gfx-blend-null-dyn", E_REFUSE, "1 attachments (no array) for 2 colors" },
+   { "p-gfx-blend-more-dyn", E_REFUSE, "3 attachments for 1 colors" },
+   { "p-gfx-blend-dyn-ok", E_WORKS }, { "p-gfx-blend-discard-ok", E_WORKS },
+   { "p-gfx-blend-discard-dyn", E_REFUSE, "(no array)" },
+   { "c-null-text-bind2", E_REFUSE, "binding 0: the whole size at 0, no buffer, stride 16" },
+   { "c-null-text-barrier", E_REFUSE, "buffer barrier 0: the whole size at 0, no buffer" },
+   { "c-null-text-fill", E_REFUSE, "the whole size at 65536 of a 65536-byte buffer" },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -5660,6 +5933,11 @@ static int run_case(const char *c)
    }
    if (strstr(c, "-repeat-"))
       return case_repeat(c);
+   if (!strncmp(c, "d-texel-", 8) || !strncmp(c, "p-gfx-vstride-dynamic", 21) ||
+       !strncmp(c, "p-gfx-blend-null", 16) || !strncmp(c, "p-gfx-blend-more-dyn", 20) ||
+       !strncmp(c, "p-gfx-blend-dyn-", 16) || !strncmp(c, "p-gfx-blend-discard-", 20) ||
+       !strncmp(c, "c-null-text-", 12))
+      return case_ignored(c);
    switch (c[0]) {
    case 'p': return case_pipeline(c);
    case 'r': return case_render_pass(c);
