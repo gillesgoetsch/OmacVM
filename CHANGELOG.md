@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.20 (unreleased)
+## 3.2.20
 
 In OmacVM.app VMs, more desktop OpenGL programs with tessellation draw on the Mac's GPU: separate
 control shaders whose patch values leave gaps, clip distances written in a loop, and a vertex
