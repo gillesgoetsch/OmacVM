@@ -1776,9 +1776,16 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   draws stay on the GPU. 3.2.19 does the same for a vertex shader that passes clip distances
   straight to an evaluation shader (no control shader); on the M1 Max such draws drew nothing.
   Update the app.
+- **3.2.20:** a shader that writes its clip distances in a loop (a control shader copying
+  `gl_ClipDistance[i]` in a `for` loop, also a vertex, geometry or evaluation shader) was refused
+  ("Swizzle of non-vector primitive float" in qemu.log after "the host refused a shader") and
+  its draws were skipped; 3.2.20 compiles it. In such a loop the VM's Mesa passes only distances
+  0..3 on (a Mesa bug in its virgl driver, not in OmacVM): with more than 4, write one statement
+  per distance. Update the app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
-  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19); tests
+  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),
+  `virgl-shader-indirect-temps.patch` (3.2.20); tests
   `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.

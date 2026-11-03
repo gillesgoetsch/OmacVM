@@ -191,6 +191,15 @@ commit 82927e9. Changes here:
   build failed on as well: on the M1 Max those draws ran on its CPU vertex path
   and drew nothing (#589). Checked by `Tests/virgl/test-core-glsl-shaders.c` and
   `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-indirect-temps.patch`: a temp the guest indexes at run time
+  without an ARRAY declaration is a GLSL array (`vec4 temp18[2]`) from its lowest
+  indexed register on; the rest stay single `vec4`s. The VM's Mesa sends clip
+  distances written in a loop that way, and `temp18[i].x` on a plain `vec4` did
+  not compile on the Mac ("Swizzle of non-vector primitive float"), so those draws
+  were skipped (#589). Indexed writes use the address register they name. In such a
+  loop the VM's Mesa still copies only distances 0..3 back to their output. Checked
+  by `Tests/virgl/test-core-glsl-shaders.c` and `Tests/virgl/test-whole-program-shapes.c`
+  (L rows)
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
