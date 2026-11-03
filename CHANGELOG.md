@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.20 (unreleased)
+
+- **OpenGL shaders that write their clip distances in a loop compile on the Mac (OmacVM.app,
+  #691, see #589).** A tessellation control shader that copies `gl_ClipDistance[i]` in a `for`
+  loop (also a vertex, geometry or evaluation shader that writes them in one) came from the VM's
+  Mesa with temps indexed at run time, and the Mac refused it ("Swizzle of non-vector primitive
+  float" in qemu.log), so its draws were skipped (3.2.18 and 3.2.19 alike). Now it compiles; with
+  up to 4 distances it draws what one statement per distance draws, on the M1 Max and M4 GPUs and
+  Apple's software renderer. The VM's Mesa still passes only distances 0..3 on from such a loop
+  (its virgl driver copies back the first vec4 only); with more than 4, write one statement per
+  distance. Needs the app update (from the VM's next start); nothing in the VM.
+
 ## 3.2.19
 
 In OmacVM.app VMs, a Vulkan program's threads take turns in QEMU, and what a recorded command buffer
