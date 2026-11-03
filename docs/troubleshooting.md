@@ -1804,6 +1804,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `virgl-venus-pipeline-formats.patch`, `virgl-venus-submit-counts.patch`,
   `virgl-venus-pool-frees.patch`, `virgl-venus-dedicated-memory.patch`,
   `virgl-venus-pass-views.patch`, `virgl-venus-thread-budget.patch` (the
-  threads line); tests `app/runtime/Tests/virgl/test-venus-commands.c`,
+  threads line), `virgl-venus-ring-lock.patch` (two threads of one app: `a
+  pipeline call of another thread uses it`, `its id was taken while it was
+  made`), `virgl-venus-command-holds.patch`; tests `app/runtime/Tests/virgl/test-venus-commands.c`,
   `test-venus-threads.c`, `fuzz-venus-spirv.sh`, `venus-command-ledger.tsv`;
   ADR 0065.

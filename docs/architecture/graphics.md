@@ -665,6 +665,16 @@ Patches (all in `app/runtime/patches`, one per concern):
   a time (`vkr_set_walk_*`, tested against a model by
   `Tests/virgl/test-venus-descriptor-walk.c`); `Tests/virgl/test-venus-threads.c`
   drives every thread site to its refusal.
+- `virgl-venus-test-pause.patch`, `virgl-venus-ring-lock.patch`,
+  `virgl-venus-command-holds.patch` (3.2.19, ADR 0065's fourth amendment): one
+  dispatch lock per Venus context (a ring per batch, the context's stream per
+  command, QEMU's blob export, resource removal and queue fences); waits for a
+  ring and ring joins give it up, the pipeline creates and cache reads give it
+  up with their objects pinned (a destroy of a pinned object is refused); an id
+  named twice is refused. Command buffers hold the views, framebuffers and render
+  passes their passes named until the driver let go of the recording; a destroyed
+  held object waits as a zombie on its device. The test hook stops a call between
+  vkr and the driver for the `t-` cases of `Tests/virgl/test-venus-commands.c`.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended

@@ -9,7 +9,10 @@
  * their pool once, a submit's chained arrays fit its counts, dedicated memory outlives its
  * image or buffer in the driver, and a pass's image views live while it is open
  * (virgl-venus-pool-frees.patch, virgl-venus-submit-counts.patch,
- * virgl-venus-dedicated-memory.patch, virgl-venus-pass-views.patch).
+ * virgl-venus-dedicated-memory.patch, virgl-venus-pass-views.patch); a ring and the
+ * context's stream take turns on the app's objects, and command buffers hold the views
+ * their passes named (virgl-venus-ring-lock.patch, virgl-venus-command-holds.patch; the
+ * t- cases stop a real ring with virgl-venus-test-pause.patch's hook).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -24,7 +27,10 @@
  * submitted (the s- cases submit a batch with no command buffer, only a semaphore signal,
  * and wait for the queue), and a child ends with _exit() right after its last call, so no
  * recorded command buffer is reset or destroyed (MoltenVK commits a prefilled Metal command
- * buffer then). Run with
+ * buffer then). Exceptions: c-state-destroyed-view-held-submit and c-probe-descriptor-view
+ * submit one legal 64x64 clear pass (or a bound set and nothing else) on MoltenVK without
+ * prefill and wait for the queue; the held reset, free and teardown cases skip MoltenVK
+ * with prefill. Run with
  * MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1, MoltenVK encodes at vkEndCommandBuffer what
  * it otherwise encodes at vkQueueSubmit in QEMU, still without committing (standards 14).
  *
@@ -32,15 +38,18 @@
  *   test-venus-commands CASE         one case (what the children run)
  *   test-venus-commands --list       the case names
  *   test-venus-commands --time N     microseconds per command through vkr
+ *   test-venus-commands --ring-time N   the same through a ring and the context's stream
  *
  * The driver is vkr's choice from OMACVM_VULKAN_DRIVER, the binary sits beside the
  * runtime's loader and drivers (run-venus-limits.py builds that folder). */
 #include <fcntl.h>
 #include <inttypes.h>
 #include <libproc.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +60,7 @@
 #include <unistd.h>
 
 #include "virgl_util.h"
+#include "virglrenderer.h"
 #include "vkr_buffer.h"
 #include "vkr_command_buffer.h"
 #include "vkr_context.h"
@@ -73,7 +83,7 @@ enum { WORKS = 10, ERROR = 11, FATAL = 12, SKIP = 13, BROKEN = 2 };
 /* what a case must see: refused (the context ends with a log line), kept (works or a
  * VkResult error, no refusal), works (no error, no refusal); the multiview and push
  * constant cases decide in the child from the device's limits ("expect:" line) */
-enum { E_REFUSE, E_KEEP, E_WORKS, E_CHILD };
+enum { E_REFUSE, E_KEEP, E_WORKS, E_CHILD, E_PROBE };
 
 /* device features a case needs; a case whose feature the device lacks is skipped */
 enum {
@@ -2832,6 +2842,7 @@ static int destroyed_case(const char *c, struct world *w)
 
 /* the pass views cases (below, with the venus-624-c cases) */
 static int views_case(const char *c, struct world *w);
+static int held_case(const char *c, struct world *w, void *v);
 
 static int state_case(const char *c, struct world *w)
 {
@@ -3988,6 +3999,8 @@ static int views_case(const char *c, struct world *w)
    void *cmd = w->cmd;
    void *v = view(w->img, 1);
    void *views[1] = { v };
+   if (!strncmp(c, "c-state-destroyed-view-held-", 28))
+      return held_case(c, w, v);
    /* LEGAL: with no resolve the resolve view is ignored, destroying it changes nothing */
    const bool ignored = IS("c-state-destroyed-view-resolve-none-ok");
    if (IS("c-state-destroyed-view-rendering") || ignored) {
@@ -4067,6 +4080,880 @@ static int views_case(const char *c, struct world *w)
    }
    end_pass(cmd);
    return end(cmd);
+}
+
+/* ---------------- held views (virgl-venus-command-holds.patch) ---------------- */
+
+/* a 64x64 color image of `samples` and a view of it (MSAA: an attachment only) */
+static void *ms_view(VkSampleCountFlagBits samples)
+{
+   const uint64_t id = next_id++;
+   VkImage hd = (VkImage)(uintptr_t)id;
+   VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = FMT, .extent = { 64, 64, 1 }, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT };
+   struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
+   D->dispatch_vkCreateImage(D, &c);
+   struct vkr_image *img = object(id);
+   if (c.ret != VK_SUCCESS || !img)
+      broken("vkCreateImage (MSAA)");
+   const VkMemoryRequirements req = requirements_of(img, NULL);
+   if (bind_image_at(img, allocate(req.size, memory_type(req.memoryTypeBits))) != VK_SUCCESS)
+      broken("vkBindImageMemory (MSAA)");
+   return view(img, 1);
+}
+
+/* a pass of a 4x color attachment (0) resolved into a 1x one (1), with a self-dependency
+ * (barriers inside it are legal) */
+static void *ms_pass(void)
+{
+   VkAttachmentDescription att[2] = {
+      { 0, FMT, VK_SAMPLE_COUNT_4_BIT, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+      { 0, FMT, VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE,
+        VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL } };
+   VkAttachmentReference color = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL },
+                         resolve = { 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+   VkSubpassDescription sub = { .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                                .pColorAttachments = &color, .pResolveAttachments = &resolve };
+   VkSubpassDependency self = { 0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_DEPENDENCY_BY_REGION_BIT };
+   const uint64_t id = next_id++;
+   VkRenderPass h = (VkRenderPass)(uintptr_t)id;
+   VkRenderPassCreateInfo info = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 2,
+                                   .pAttachments = att, .subpassCount = 1, .pSubpasses = &sub,
+                                   .dependencyCount = 1, .pDependencies = &self };
+   struct vn_command_vkCreateRenderPass c = { .device = DEVH, .pCreateInfo = &info, .pRenderPass = &h };
+   step("vkCreateRenderPass: 4x color resolved into 1x");
+   D->dispatch_vkCreateRenderPass(D, &c);
+   if (c.ret != VK_SUCCESS || !object(id))
+      broken("vkCreateRenderPass (MSAA)");
+   return object(id);
+}
+
+/* a memory barrier between color attachment writes and reads (inside a pass: by region) */
+static void color_barrier(void *cmd)
+{
+   if (ended())
+      return;
+   VkMemoryBarrier2 mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT };
+   VkDependencyInfo dep = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                            .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT, .memoryBarrierCount = 1,
+                            .pMemoryBarriers = &mb };
+   struct vn_command_vkCmdPipelineBarrier2 b = { .commandBuffer = (VkCommandBuffer)cmd, .pDependencyInfo = &dep };
+   step("vkCmdPipelineBarrier2 (color writes to reads, by region)");
+   D->dispatch_vkCmdPipelineBarrier2(D, &b);
+}
+
+static void reset_command_buffer(void *cmd)
+{
+   struct vn_command_vkResetCommandBuffer r = { .commandBuffer = (VkCommandBuffer)cmd };
+   step("vkResetCommandBuffer");
+   D->dispatch_vkResetCommandBuffer(D, &r);
+   step("vkResetCommandBuffer = %d", r.ret);
+}
+
+/* zombies of the device: objects destroyed while a command buffer held them (-1: this vkr
+ * has no holds) */
+static int zombies(void)
+{
+#ifdef VKR_COMMAND_HOLDS
+   return (int)list_length(&dev->zombies);
+#else
+   return -1;
+#endif
+}
+
+/* The app destroys image views (and their image, memory, framebuffer, render pass) that a
+ * command buffer named: the command buffer becomes invalid (legal) and vkr keeps the
+ * driver's objects until the command buffer is reset, begun again or freed.
+ *   -rendering-barrier, -pass-barrier: a 4x pass resolving into a 1x view; the resolve
+ *     view is destroyed inside it, then a barrier: KosmicKrisp's barrier with samples > 1
+ *     applies the pass's store ops and reads the resolve view (kk_cmd_buffer.c). Refused at
+ *     the pass's end (the view is gone from vkr's table), as with -end.
+ *   -submit: recorded, ended, the view destroyed, then submitted and waited for: MoltenVK
+ *     encodes at the submit (MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS) and reads the view's
+ *     object then. MoltenVK only, not with prefill (its encode was at the end), not on
+ *     KosmicKrisp (it encodes while recording and its pending reads are the GPU's).
+ *   -reset-ok, -begin-ok, -free-ok: LEGAL: recorded, ended, the view destroyed, then the
+ *     command buffer reset, begun again or freed; with holds the view is a zombie until then.
+ *   -image-memory-ok: LEGAL: the view, its image and the image's memory go, then a reset.
+ *   -teardown-ok: LEGAL: view, framebuffer and render pass destroyed, then the context ends.
+ *   -control-ok: the view destroyed after a reset is destroyed at once (no zombie).
+ * The reset, free and teardown cases skip MoltenVK with prefill (its reset commits the
+ * prefilled Metal command buffer: GPU work on a view vkr without holds destroyed). */
+static int held_case(const char *c, struct world *w, void *v)
+{
+   void *cmd = w->cmd;
+   const bool prefill = getenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS") != NULL;
+   if (IS("c-state-destroyed-view-held-rendering-barrier")) {
+      void *msv = ms_view(VK_SAMPLE_COUNT_4_BIT);
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)msv, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT, .resolveImageView = (VkImageView)v,
+                                        .resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                             .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
+      struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderingInfo = &ri };
+      step("vkCmdBeginRendering: 4x resolved into the view");
+      D->dispatch_vkCmdBeginRendering(D, &b);
+      destroy_view(v);
+      color_barrier(cmd);
+      if (!ended()) {
+         struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)cmd };
+         step("vkCmdEndRendering");
+         D->dispatch_vkCmdEndRendering(D, &e);
+      }
+      return end(cmd);
+   }
+   if (IS("c-state-destroyed-view-held-pass-barrier")) {
+      void *rp = ms_pass();
+      void *att[2] = { ms_view(VK_SAMPLE_COUNT_4_BIT), v };
+      void *fb = framebuffer(rp, att, 2, 64, 64, 1);
+      if (!fb)
+         broken("framebuffer (MSAA)");
+      begin_pass_clear(cmd, rp, fb, 64, 64, 1);
+      destroy_view(v);
+      color_barrier(cmd);
+      end_pass(cmd);
+      return end(cmd);
+   }
+
+   /* -image-memory-ok: a view of an image whose memory the case frees */
+   struct vkr_image *img = NULL;
+   struct vkr_device_memory *mem = NULL;
+   if (IS("c-state-destroyed-view-held-image-memory-ok")) {
+      img = image_unbound(0, FMT, CA_SA);
+      const VkMemoryRequirements req = requirements_of(img, NULL);
+      mem = allocate(req.size, memory_type(req.memoryTypeBits));
+      if (bind_image_at(img, mem) != VK_SUCCESS)
+         broken("vkBindImageMemory");
+      v = view(img, 1);
+   }
+
+   /* recorded and ended: a pass on a framebuffer of the view */
+   void *rp = render_pass(1, 1, 0, 0);
+   void *views[1] = { v };
+   void *fb = rp ? framebuffer(rp, views, 1, 64, 64, 1) : NULL;
+   if (!fb)
+      broken("framebuffer of a fresh view");
+   begin_pass(cmd, rp, fb, 64, 64);
+   end_pass(cmd);
+   int r = end(cmd);
+   if (r != WORKS)
+      return r;
+
+   if (IS("c-state-destroyed-view-held-submit")) {
+      if (kosmickrisp || prefill) {
+         printf("skip: %s\n", kosmickrisp ? "KosmicKrisp encodes while recording (its pending reads are the GPU's)"
+                                          : "MoltenVK with prefill encoded at the end");
+         return SKIP;
+      }
+      destroy_view(v);
+      struct vkr_queue *q = device_queue();
+      VkCommandBuffer cb = (VkCommandBuffer)cmd;
+      VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                              .pCommandBuffers = &cb };
+      struct vn_command_vkQueueSubmit s = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &submit };
+      step("vkQueueSubmit of the command buffer whose view was destroyed (a 64x64 clear)");
+      D->dispatch_vkQueueSubmit(D, &s);
+      step("vkQueueSubmit = %d", s.ret);
+      if (ended())
+         return FATAL;
+      q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+      step("the queue is idle");
+      return s.ret == VK_SUCCESS ? WORKS : ERROR;
+   }
+   if (prefill) {
+      printf("skip: MoltenVK with prefill commits its Metal command buffer at a reset\n");
+      return SKIP;
+   }
+   if (IS("c-state-destroyed-view-held-control-ok")) {
+      reset_command_buffer(cmd);
+      destroy_view(v);
+      step("zombies after the reset and the destroy: %d", zombies());
+      return zombies() > 0 ? ERROR : WORKS;
+   }
+   destroy_view(v);
+   step("zombies after the destroy: %d", zombies());
+   if (zombies() == 0)
+      return ERROR;
+   if (IS("c-state-destroyed-view-held-image-memory-ok")) {
+      destroy_image(img);
+      free_memory(mem);
+      reset_command_buffer(cmd);
+   } else if (IS("c-state-destroyed-view-held-reset-ok")) {
+      reset_command_buffer(cmd);
+   } else if (IS("c-state-destroyed-view-held-begin-ok")) {
+      begin(cmd);
+      r = end(cmd);
+      if (r != WORKS)
+         return r;
+   } else if (IS("c-state-destroyed-view-held-free-ok")) {
+      struct vkr_command_buffer *cbo = cmd;
+      VkCommandBuffer cb = (VkCommandBuffer)cmd;
+      struct vn_command_vkFreeCommandBuffers f = { .device = DEVH, .commandPool = (VkCommandPool)cbo->pool,
+                                                   .commandBufferCount = 1, .pCommandBuffers = &cb };
+      step("vkFreeCommandBuffers");
+      D->dispatch_vkFreeCommandBuffers(D, &f);
+   } else if (IS("c-state-destroyed-view-held-teardown-ok")) {
+      struct vn_command_vkDestroyFramebuffer df = { .device = DEVH, .framebuffer = (VkFramebuffer)fb };
+      struct vn_command_vkDestroyRenderPass dr = { .device = DEVH, .renderPass = (VkRenderPass)rp };
+      step("vkDestroyFramebuffer, vkDestroyRenderPass");
+      D->dispatch_vkDestroyFramebuffer(D, &df);
+      D->dispatch_vkDestroyRenderPass(D, &dr);
+      if (ended())
+         return FATAL;
+      step("the context ends with the command buffer recorded");
+      vkr_context_destroy(ctx);
+      step("the context is gone");
+      return WORKS;
+   } else {
+      return BROKEN;
+   }
+   if (ended())
+      return FATAL;
+   step("zombies now: %d", zombies());
+   return zombies() > 0 ? ERROR : WORKS;
+}
+
+/* PROBE (no fix here): a view written into a descriptor set the command buffer binds, the
+ * view destroyed (a stale descriptor nothing uses is legal), then the command buffer
+ * submitted: whether MoltenVK reads the view at the bind or the submit. MoltenVK only (not
+ * with prefill); the outcome is printed, not judged. */
+static int descriptor_probe(struct world *w)
+{
+   const bool prefill = getenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS") != NULL;
+   if (kosmickrisp || prefill) {
+      printf("skip: MoltenVK only, without prefill\n");
+      return SKIP;
+   }
+   void *cmd = w->cmd;
+   void *v = view(w->img, 1);
+   VkDescriptorImageInfo cis = { (VkSampler)w->smp, (VkImageView)v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+   VkWriteDescriptorSet wr = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = (VkDescriptorSet)w->set,
+                               .dstBinding = 1, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &cis };
+   struct vn_command_vkUpdateDescriptorSets u = { .device = DEVH, .descriptorWriteCount = 1, .pDescriptorWrites = &wr };
+   step("vkUpdateDescriptorSets: the view at binding 1");
+   D->dispatch_vkUpdateDescriptorSets(D, &u);
+   begin(cmd);
+   uint32_t offset = 0;
+   bind_sets(cmd, w->layout, 0, &w->set, 1, &offset, 1);
+   int r = end(cmd);
+   if (r != WORKS)
+      return r;
+   destroy_view(v);
+   struct vkr_queue *q = device_queue();
+   VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb };
+   struct vn_command_vkQueueSubmit s = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &submit };
+   step("vkQueueSubmit: the set bound, its view destroyed, nothing dispatched");
+   D->dispatch_vkQueueSubmit(D, &s);
+   step("vkQueueSubmit = %d", s.ret);
+   if (ended())
+      return FATAL;
+   q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+   step("the queue is idle");
+   return s.ret == VK_SUCCESS ? WORKS : ERROR;
+}
+
+/* ---------------- two threads on one context (virgl-venus-ring-lock.patch) ----------------
+ * A real ring (vkCreateRingMESA on shared memory, its own thread) runs one guest call that
+ * the test hook (virgl-venus-test-pause.patch) stops between vkr's reads and the driver's
+ * call; meanwhile the context's own stream (QEMU's thread in the VM) sends another call,
+ * encoded as the guest does. With one dispatch lock per context a ring's batch and the
+ * stream's call never overlap, except where a pipeline call gives the lock up with its
+ * objects pinned. */
+#define RING_RES 900
+#define NEST_RES 901
+#define EXPORT_RES 902
+#define RING_ID 77
+#define RING_SIZE 32768u
+#define PAUSE_MS 1000
+#define ID(o) (((struct vkr_object *)(o))->id)
+
+static uint8_t enc[RING_SIZE];
+static size_t enc_n;
+
+struct test_ring {
+   uint64_t id;
+   uint32_t res;
+   uint8_t *mem;
+   uint32_t tail;
+   uint64_t idle_ns; /* how long it polls before it waits for a notify */
+};
+/* ring 1 (the compile thread's in --ring-time) is never notified: it polls for 10 s */
+static struct test_ring rings[2] = { { RING_ID, RING_RES, NULL, 0, 1000000 },
+                                     { RING_ID + 1, RING_RES + 10, NULL, 0, 10000000000ull } };
+#define ring_mem (rings[0].mem)
+#define ring_tail (rings[0].tail)
+
+static void e_put(const void *p, size_t n)
+{
+   const size_t padded = (n + 3) & ~(size_t)3;
+   if (enc_n + padded > sizeof(enc))
+      broken("encoder full");
+   memcpy(enc + enc_n, p, n);
+   memset(enc + enc_n + n, 0, padded - n);
+   enc_n += padded;
+}
+static void e_u32(uint32_t v) { e_put(&v, 4); }
+static void e_i32(int32_t v) { e_put(&v, 4); }
+static void e_u64(uint64_t v) { e_put(&v, 8); }
+static void e_cmd(VkCommandTypeEXT type)
+{
+   e_i32(type);
+   e_u32(0); /* no reply */
+}
+
+/* the encoded calls through the context's own stream */
+static bool e_submit(void)
+{
+   const bool ok = vkr_context_submit_cmd(ctx, enc, enc_n);
+   enc_n = 0;
+   return ok;
+}
+
+static double ms_now(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+static void *shm_resource(uint32_t res_id, uint64_t size)
+{
+   struct virgl_context_blob blob;
+   if (!vkr_context_create_resource(ctx, res_id, 0, size, VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE, &blob))
+      broken("shared memory resource");
+   close(blob.u.fd);
+   return vkr_context_get_resource(ctx, res_id)->u.data;
+}
+
+/* a ring: head 0, tail 4, status 8, buffer 64 + RING_SIZE */
+static void ring_start_n(struct test_ring *r)
+{
+   r->mem = shm_resource(r->res, 64 + RING_SIZE);
+   e_cmd(VK_COMMAND_TYPE_vkCreateRingMESA_EXT);
+   e_u64(r->id);
+   e_u64(1);
+   e_i32(VK_STRUCTURE_TYPE_RING_CREATE_INFO_MESA);
+   e_u64(0);
+   e_u32(0);
+   e_u32(r->res);
+   e_u64(0);
+   e_u64(64 + RING_SIZE);
+   e_u64(r->idle_ns);
+   e_u64(0);
+   e_u64(4);
+   e_u64(8);
+   e_u64(64);
+   e_u64(RING_SIZE);
+   e_u64(64 + RING_SIZE);
+   e_u64(0);
+   if (!e_submit() || ended())
+      broken("vkCreateRingMESA");
+   step("ring %llu runs", (unsigned long long)r->id);
+}
+
+static void ring_start(void)
+{
+   ring_start_n(&rings[0]);
+}
+
+/* bytes of the encoder into the ring (no notify) */
+static void ring_put(struct test_ring *r, const uint8_t *bytes, size_t n)
+{
+   for (size_t i = 0; i < n; i++)
+      r->mem[64 + ((r->tail + i) & (RING_SIZE - 1))] = bytes[i];
+   r->tail += (uint32_t)n;
+   atomic_store_explicit((_Atomic uint32_t *)(void *)(r->mem + 4), r->tail, memory_order_release);
+}
+
+/* the ring's head (how far it read) */
+static uint32_t ring_head(const struct test_ring *r)
+{
+   return atomic_load_explicit((_Atomic uint32_t *)(void *)r->mem, memory_order_acquire);
+}
+
+/* what is encoded goes into the ring, its tail moves and the ring is woken through the
+ * context's stream; returns the ring position after it */
+static uint32_t ring_write_n(struct test_ring *r)
+{
+   ring_put(r, enc, enc_n);
+   enc_n = 0;
+   e_cmd(VK_COMMAND_TYPE_vkNotifyRingMESA_EXT);
+   e_u64(r->id);
+   e_u32(r->tail);
+   e_u32(0);
+   e_submit();
+   return r->tail;
+}
+
+static uint32_t ring_write(void)
+{
+   return ring_write_n(&rings[0]);
+}
+
+/* the ring read everything written, or stopped (its fatal bit) */
+static bool ring_done_n(const struct test_ring *r, int ms)
+{
+   for (int i = 0; i < ms * 10; i++) {
+      const uint32_t status =
+         atomic_load_explicit((_Atomic uint32_t *)(void *)(r->mem + 8), memory_order_acquire);
+      if (ring_head(r) == r->tail || (status & VK_RING_STATUS_FATAL_BIT_MESA))
+         return true;
+      usleep(100);
+   }
+   return false;
+}
+
+static bool ring_done(int ms)
+{
+   return ring_done_n(&rings[0], ms);
+}
+
+/* the test hook: the first thread to reach pause_at stops there until resumed, at most
+ * PAUSE_MS */
+static const char *pause_at;
+static atomic_int paused, resumed;
+
+static void pause_hook(const char *where)
+{
+   if (!pause_at || strcmp(where, pause_at) || atomic_exchange(&paused, 1))
+      return;
+   printf("step: paused at \"%s\"\n", where);
+   for (int i = 0; i < PAUSE_MS && !atomic_load(&resumed); i++)
+      usleep(1000);
+   printf("step: going on from \"%s\"\n", where);
+}
+
+static bool wait_paused(void)
+{
+   for (int i = 0; i < 5000 && !atomic_load(&paused); i++)
+      usleep(1000);
+   return atomic_load(&paused);
+}
+
+static void e_destroy(VkCommandTypeEXT type, uint64_t object_id)
+{
+   e_cmd(type);
+   e_u64(dev->base.id);
+   e_u64(object_id);
+   e_u64(0);
+}
+
+static void e_compute_pipeline(uint64_t cache_id, uint64_t layout_id, uint64_t module_id, uint64_t pipe_id)
+{
+   e_cmd(VK_COMMAND_TYPE_vkCreateComputePipelines_EXT);
+   e_u64(dev->base.id);
+   e_u64(cache_id);
+   e_u32(1);
+   e_u64(1);
+   e_i32(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
+   e_u64(0);
+   e_u32(0);
+   e_i32(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+   e_u64(0);
+   e_u32(0);
+   e_u32(VK_SHADER_STAGE_COMPUTE_BIT);
+   e_u64(module_id);
+   e_u64(5);
+   e_put("main", 5);
+   e_u64(0);
+   e_u64(layout_id);
+   e_u64(0);
+   e_i32(-1);
+   e_u64(0);
+   e_u64(1);
+   e_u64(pipe_id);
+}
+
+static void e_create_buffer(uint64_t id)
+{
+   e_cmd(VK_COMMAND_TYPE_vkCreateBuffer_EXT);
+   e_u64(dev->base.id);
+   e_u64(1);
+   e_i32(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+   e_u64(0);
+   e_u32(0);
+   e_u64(256);
+   e_u32(VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+   e_i32(VK_SHARING_MODE_EXCLUSIVE);
+   e_u32(0);
+   e_u64(0);
+   e_u64(0);
+   e_u64(1);
+   e_u64(id);
+}
+
+static void e_fill(void *cmd, struct vkr_buffer *buf)
+{
+   e_cmd(VK_COMMAND_TYPE_vkCmdFillBuffer_EXT);
+   e_u64(ID(cmd));
+   e_u64(ID(buf));
+   e_u64(0);
+   e_u64(256);
+   e_u32(7);
+}
+
+static void *pipeline_cache(void)
+{
+   const uint64_t id = next_id++;
+   VkPipelineCache h = (VkPipelineCache)(uintptr_t)id;
+   VkPipelineCacheCreateInfo info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+   struct vn_command_vkCreatePipelineCache c = { .device = DEVH, .pCreateInfo = &info, .pPipelineCache = &h };
+   D->dispatch_vkCreatePipelineCache(D, &c);
+   if (c.ret != VK_SUCCESS || !object(id))
+      broken("vkCreatePipelineCache");
+   return object(id);
+}
+
+/* host-visible memory (a blob QEMU may export) */
+static struct vkr_device_memory *visible_memory(void)
+{
+   const VkPhysicalDeviceMemoryProperties *mp = &pdev->memory_properties;
+   for (uint32_t i = 0; i < mp->memoryTypeCount; i++)
+      if (mp->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+         return allocate(65536, i);
+   broken("no host-visible memory type");
+   return NULL;
+}
+
+static struct vkr_device_memory *export_mem;
+static bool export_ok;
+
+static void *export_thread(void *arg)
+{
+   (void)arg;
+   struct virgl_context_blob blob;
+   step("QEMU's thread: a blob of memory %llu", (unsigned long long)ID(export_mem));
+   export_ok = vkr_context_create_resource(ctx, EXPORT_RES, ID(export_mem), 65536,
+                                           VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE, &blob);
+   step("QEMU's thread: blob %s", export_ok ? "made" : "not made");
+   return NULL;
+}
+
+static void *watchdog(void *arg)
+{
+   const int ms = (int)(intptr_t)arg;
+   usleep(ms * 1000);
+   printf("step: still waiting after %d ms: a deadlock\n", ms);
+   fflush(stdout);
+   _exit(BROKEN);
+}
+
+/* t- cases: a ring stopped inside one call while the context's stream sends another.
+ *   -pipeline-destroy-layout, -pipeline-destroy-module, -cache-data-destroy: a pipeline call
+ *     (vkCreateComputePipelines, vkGetPipelineCacheData) runs in the driver without the
+ *     lock; the stream destroys an object it names: refused (an app must not destroy what
+ *     another thread's call uses; spec "Threading Behavior", object lifetime). Before the
+ *     fix vkr and the driver read the destroyed object.
+ *   -same-id: the stream makes a buffer with the id the paused create named for its
+ *     pipeline: refused when the create adds it (the guest named one id twice), the new
+ *     pipeline destroyed. Before: vkr_context_add_object's assert.
+ *   -command-free-buffer, -same-command-buffer, -export-free-memory: the ring (or QEMU's
+ *     blob export) is stopped inside a call that holds the lock (vkCmdFillBuffer; the
+ *     export); the stream's vkDestroyBuffer, vkCmdFillBuffer on the same command buffer,
+ *     vkFreeMemory must wait for it (>= PAUSE_MS / 2). LEGAL apart from -command-free-buffer
+ *     and -same-command-buffer (invalid usage that must not crash). Before: no wait.
+ *   -wait-ring-nested-ok: the ring waits in vkWaitVirtqueueSeqnoMESA, then makes and
+ *     destroys 100 buffers; the stream, inside vkExecuteCommandStreamsMESA (which takes the
+ *     lock), submits that seqno and waits in vkWaitRingSeqnoMESA for the ring's end: both
+ *     waits give the lock up, else a deadlock (stopped after 5 s).
+ *   -compile-no-delay-ok: with a pipeline create paused, the stream's unrelated
+ *     vkDestroyBuffer takes < 1 ms (median of 3).
+ *   -teardown-paused-ok: the context ends while the ring is paused in a create: within 15 s. */
+static int case_threads(const char *c)
+{
+   setup(0);
+   struct world w;
+   make_world(&w, true);
+   vkr_test_pause_hook = pause_hook;
+   ring_start();
+   if (IS("t-pipeline-destroy-layout") || IS("t-pipeline-destroy-module") || IS("t-same-id") ||
+       IS("t-compile-no-delay-ok") || IS("t-teardown-paused-ok")) {
+      const uint64_t pipe = next_id++;
+      pause_at = "pipeline";
+      e_compute_pipeline(0, ID(w.layout), ID(w.comp), pipe);
+      ring_write();
+      if (!wait_paused())
+         broken("the ring did not reach vkCreateComputePipelines's pause");
+      if (IS("t-teardown-paused-ok")) {
+         const double t0 = ms_now();
+         pthread_t wd;
+         pthread_create(&wd, NULL, watchdog, (void *)(intptr_t)30000);
+         step("the context ends while the ring is paused");
+         vkr_context_destroy(ctx);
+         const double dt = ms_now() - t0;
+         step("the context is gone after %.1f ms", dt);
+         /* the pause (<= PAUSE_MS plus sleep overshoot) and a device's teardown; a build Mac
+          * under load took 4.4 s (M1 Max, background QoS): a deadlock never ends */
+         return dt < 15000 ? WORKS : ERROR;
+      }
+      if (IS("t-compile-no-delay-ok")) {
+         double took[3];
+         for (int i = 0; i < 3; i++) {
+            struct vkr_buffer *b = buffer(256);
+            const uint64_t id = ID(b);
+            e_destroy(VK_COMMAND_TYPE_vkDestroyBuffer_EXT, id);
+            const double t0 = ms_now();
+            e_submit();
+            took[i] = ms_now() - t0;
+            if (object(id))
+               broken("the stream's vkDestroyBuffer did not destroy the buffer");
+         }
+         const double a = took[0], b = took[1], m = took[2];
+         const double median = a > b ? (b > m ? b : (a > m ? m : a)) : (a > m ? a : (b > m ? m : b));
+         step("vkDestroyBuffer beside the paused create: %.3f, %.3f, %.3f ms (median %.3f)", took[0], took[1],
+              took[2], median);
+         atomic_store(&resumed, 1);
+         if (!ring_done(10000))
+            broken("the ring did not finish");
+         return ended() ? FATAL : median < 1.0 ? WORKS : ERROR;
+      }
+      if (IS("t-same-id")) {
+         step("the stream makes a buffer with the pipeline's id %llu", (unsigned long long)pipe);
+         e_create_buffer(pipe);
+      } else {
+         const bool layout = IS("t-pipeline-destroy-layout");
+         step("the stream destroys the create's %s", layout ? "pipeline layout" : "shader module");
+         e_destroy(layout ? VK_COMMAND_TYPE_vkDestroyPipelineLayout_EXT : VK_COMMAND_TYPE_vkDestroyShaderModule_EXT,
+                   layout ? ID(w.layout) : ID(w.comp));
+      }
+      e_submit();
+      atomic_store(&resumed, 1);
+      if (!ring_done(10000))
+         broken("the ring did not finish");
+      step("the ring is done: the pipeline %s", object(pipe) && ((struct vkr_object *)object(pipe))->type ==
+                                                                    VK_OBJECT_TYPE_PIPELINE ? "was added" : "is not there");
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("t-cache-data-destroy")) {
+      void *cache = pipeline_cache();
+      pause_at = "cache-data";
+      e_cmd(VK_COMMAND_TYPE_vkGetPipelineCacheData_EXT);
+      e_u64(dev->base.id);
+      e_u64(ID(cache));
+      e_u64(1);
+      e_u64(0);
+      e_u64(0);
+      ring_write();
+      if (!wait_paused())
+         broken("the ring did not reach vkGetPipelineCacheData's pause");
+      step("the stream destroys the cache");
+      e_destroy(VK_COMMAND_TYPE_vkDestroyPipelineCache_EXT, ID(cache));
+      e_submit();
+      atomic_store(&resumed, 1);
+      if (!ring_done(10000))
+         broken("the ring did not finish");
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("t-command-free-buffer") || IS("t-same-command-buffer") || IS("t-export-free-memory")) {
+      pthread_t qemu;
+      if (IS("t-export-free-memory")) {
+         export_mem = visible_memory();
+         pause_at = "export";
+         pthread_create(&qemu, NULL, export_thread, NULL);
+      } else {
+         begin(w.cmd);
+         pause_at = "command";
+         e_fill(w.cmd, w.buf);
+         ring_write();
+      }
+      if (!wait_paused())
+         broken("no pause reached");
+      if (IS("t-command-free-buffer"))
+         e_destroy(VK_COMMAND_TYPE_vkDestroyBuffer_EXT, ID(w.buf));
+      else if (IS("t-same-command-buffer"))
+         e_fill(w.cmd, w.buf2);
+      else
+         e_destroy(VK_COMMAND_TYPE_vkFreeMemory_EXT, ID(export_mem));
+      const double t0 = ms_now();
+      e_submit();
+      const double dt = ms_now() - t0;
+      step("the stream's call took %.1f ms beside the paused call", dt);
+      if (IS("t-export-free-memory"))
+         pthread_join(qemu, NULL);
+      else if (!ring_done(10000))
+         broken("the ring did not finish");
+      if (ended())
+         return FATAL;
+      return dt >= PAUSE_MS / 2 ? WORKS : ERROR;
+   }
+   if (IS("t-wait-ring-nested-ok")) {
+      /* the ring waits for the stream's virtqueue seqno 6 (giving the lock up), then makes
+       * and destroys 100 buffers (needing it again); the stream, holding the lock in
+       * vkExecuteCommandStreamsMESA, submits seqno 6 and waits for the ring's end */
+      e_cmd(VK_COMMAND_TYPE_vkWaitVirtqueueSeqnoMESA_EXT);
+      e_u64(6);
+      for (int i = 0; i < 100; i++) {
+         const uint64_t id = next_id++;
+         e_create_buffer(id);
+         e_destroy(VK_COMMAND_TYPE_vkDestroyBuffer_EXT, id);
+      }
+      const uint32_t seqno = ring_write();
+      usleep(100000);
+      const uint32_t head = atomic_load_explicit((_Atomic uint32_t *)(void *)ring_mem, memory_order_acquire);
+      step("the ring waits for virtqueue seqno 6 at %u of %u", head, seqno);
+      if (head == seqno)
+         broken("the ring did not wait for the virtqueue seqno");
+      uint8_t *nest = shm_resource(NEST_RES, 4096);
+      e_cmd(VK_COMMAND_TYPE_vkSubmitVirtqueueSeqnoMESA_EXT);
+      e_u64(RING_ID);
+      e_u64(6);
+      e_cmd(VK_COMMAND_TYPE_vkWaitRingSeqnoMESA_EXT);
+      e_u64(RING_ID);
+      e_u64(seqno);
+      memcpy(nest, enc, enc_n);
+      const size_t n = enc_n;
+      enc_n = 0;
+      e_cmd(VK_COMMAND_TYPE_vkExecuteCommandStreamsMESA_EXT);
+      e_u32(1);
+      e_u64(1);
+      e_u32(NEST_RES);
+      e_u64(0);
+      e_u64(n);
+      e_u64(0);
+      e_u32(0);
+      e_u64(0);
+      e_u32(0);
+      pthread_t wd;
+      pthread_create(&wd, NULL, watchdog, (void *)(intptr_t)5000);
+      const double t0 = ms_now();
+      step("vkExecuteCommandStreamsMESA { vkSubmitVirtqueueSeqnoMESA(6), vkWaitRingSeqnoMESA(%u) }", seqno);
+      const bool ok = e_submit();
+      const uint32_t after = atomic_load_explicit((_Atomic uint32_t *)(void *)ring_mem, memory_order_acquire);
+      step("the wait returned after %.1f ms (%s), the ring at %u of %u", ms_now() - t0, ok ? "ok" : "failed",
+           after, seqno);
+      return ended() ? FATAL : ok && after == seqno ? WORKS : ERROR;
+   }
+   return BROKEN;
+}
+
+/* --ring-time N: guest calls through a real ring and the context's stream, the way the VM
+ * sends them, so the dispatch lock (virgl-venus-ring-lock.patch) and the holds are in what
+ * is timed: N vkCmdDraw through ring 0 (in batches of 512, as one command buffer records),
+ * then the same with ring 1 making and destroying compute pipelines all the time (a compile
+ * thread beside the main ring), and N vkGetBufferMemoryRequirements with a reply through the
+ * context's stream. Prints microseconds per call. Nothing is submitted. */
+static atomic_int compile_stop;
+static atomic_int compiled;
+static struct world *timed_world;
+
+static void *compile_ring(void *arg)
+{
+   (void)arg;
+   static uint8_t local[RING_SIZE];
+   struct test_ring *r = &rings[1];
+   while (!atomic_load(&compile_stop)) {
+      /* the encoder is the main thread's: this thread encodes by hand into its own buffer */
+      size_t n = 0;
+#define L32(v) do { const uint32_t _v = (v); memcpy(local + n, &_v, 4); n += 4; } while (0)
+#define L64(v) do { const uint64_t _v = (v); memcpy(local + n, &_v, 8); n += 8; } while (0)
+      const uint64_t pipe = 1000000 + (uint64_t)atomic_fetch_add(&compiled, 1);
+      L32(VK_COMMAND_TYPE_vkCreateComputePipelines_EXT); L32(0);
+      L64(dev->base.id); L64(0); L32(1); L64(1);
+      L32(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO); L64(0); L32(0);
+      L32(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO); L64(0); L32(0);
+      L32(VK_SHADER_STAGE_COMPUTE_BIT); L64(ID(timed_world->comp));
+      L64(5); memcpy(local + n, "main\0\0\0\0", 8); n += 8;
+      L64(0); L64(ID(timed_world->layout)); L64(0); L32((uint32_t)-1); L64(0); L64(1); L64(pipe);
+      L32(VK_COMMAND_TYPE_vkDestroyPipeline_EXT); L32(0); L64(dev->base.id); L64(pipe); L64(0);
+#undef L32
+#undef L64
+      ring_put(r, local, n);
+      /* the ring polls its tail while busy; wake it in case it went idle */
+      while (ring_head(r) != r->tail && !atomic_load(&compile_stop))
+         usleep(50);
+   }
+   return NULL;
+}
+
+static double draws_through_ring(void *cmd, int n)
+{
+   const double t0 = ms_now();
+   for (int done = 0; done < n;) {
+      const int batch = n - done < 512 ? n - done : 512;
+      for (int i = 0; i < batch; i++) {
+         e_cmd(VK_COMMAND_TYPE_vkCmdDraw_EXT);
+         e_u64(ID(cmd));
+         e_u32(3);
+         e_u32(1);
+         e_u32(0);
+         e_u32(0);
+      }
+      ring_write();
+      if (!ring_done(10000))
+         broken("the ring did not finish its draws");
+      done += batch;
+   }
+   return (ms_now() - t0) * 1000.0 / n;
+}
+
+static int ring_time(int n)
+{
+   setup(0);
+   struct world w = { 0 };
+   make_world(&w, true);
+   timed_world = &w;
+   ring_start();
+   ring_start_n(&rings[1]);
+   begin(w.cmd);
+   begin_pass(w.cmd, w.rp, w.fb, 64, 64);
+   bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
+   ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+   const double alone = draws_through_ring(w.cmd, n);
+   pthread_t t;
+   pthread_create(&t, NULL, compile_ring, NULL);
+   while (atomic_load(&compiled) < 2)
+      usleep(100);
+   const int before = atomic_load(&compiled);
+   const double beside = draws_through_ring(w.cmd, n);
+   const int made = atomic_load(&compiled) - before;
+   atomic_store(&compile_stop, 1);
+   pthread_join(t, NULL);
+   ring_done_n(&rings[1], 10000);
+   /* a call with a reply through the context's stream */
+   uint8_t *reply_mem = shm_resource(EXPORT_RES + 1, 4096);
+   (void)reply_mem;
+   e_cmd(VK_COMMAND_TYPE_vkSetReplyCommandStreamMESA_EXT);
+   e_u64(1);
+   e_u32(EXPORT_RES + 1);
+   e_u64(0);
+   e_u64(4096);
+   e_submit();
+   const double t0 = ms_now();
+   for (int i = 0; i < n; i++) {
+      e_cmd(VK_COMMAND_TYPE_vkSeekReplyCommandStreamMESA_EXT);
+      e_u64(0);
+      e_i32(VK_COMMAND_TYPE_vkGetBufferMemoryRequirements_EXT);
+      e_u32(VK_COMMAND_GENERATE_REPLY_BIT_EXT);
+      e_u64(dev->base.id);
+      e_u64(ID(w.buf));
+      e_u64(1);
+      e_submit();
+   }
+   const double reply_us = (ms_now() - t0) * 1000.0 / n;
+   if (ended()) {
+      printf("timing: the context ended while timing\n");
+      return 1;
+   }
+   printf("ring-time: %d each, us per call: vkCmdDraw through a ring %.3f, the same beside a compile ring "
+          "%.3f (%d pipelines made meanwhile), vkGetBufferMemoryRequirements with a reply through the "
+          "context's stream %.3f\n", n, alone, beside, made, reply_us);
+   fflush(stdout);
+   _exit(0);
 }
 
 /* ---------------- the cases and what each must see ---------------- */
@@ -4195,6 +5082,14 @@ static const struct test_case cases[] = {
    { "c-state-destroyed-view-end", E_REFUSE }, { "c-state-destroyed-view-imageless", E_REFUSE },
    { "c-state-destroyed-view-rendering", E_REFUSE }, { "c-state-destroyed-view-after-ok", E_WORKS },
    { "c-state-destroyed-view-resolve-none-ok", E_WORKS },
+   /* command buffers hold what their passes named (virgl-venus-command-holds.patch) */
+   { "c-state-destroyed-view-held-rendering-barrier", E_REFUSE, "was destroyed" },
+   { "c-state-destroyed-view-held-pass-barrier", E_REFUSE, "was destroyed" },
+   { "c-state-destroyed-view-held-submit", E_KEEP },
+   { "c-state-destroyed-view-held-reset-ok", E_WORKS }, { "c-state-destroyed-view-held-begin-ok", E_WORKS },
+   { "c-state-destroyed-view-held-free-ok", E_WORKS }, { "c-state-destroyed-view-held-image-memory-ok", E_WORKS },
+   { "c-state-destroyed-view-held-teardown-ok", E_WORKS }, { "c-state-destroyed-view-held-control-ok", E_WORKS },
+   { "c-probe-descriptor-view", E_PROBE },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
    { "c-region-i2b-max", E_WORKS }, { "c-region-i2b-past", E_REFUSE },
@@ -4219,11 +5114,24 @@ static const struct test_case cases[] = {
    { "x-dedicated-other-device", E_REFUSE, "another device" },
    { "x-dedicated-buffer-to-image", E_REFUSE, "dedicated to another" },
    { "m-alloc0-device", E_KEEP }, { "m-alloc0-host", E_KEEP },
+   /* two threads on one context: a ring and the context's stream (virgl-venus-ring-lock.patch) */
+   { "t-pipeline-destroy-layout", E_REFUSE, "another thread uses it" },
+   { "t-pipeline-destroy-module", E_REFUSE, "another thread uses it" },
+   { "t-cache-data-destroy", E_REFUSE, "another thread uses it" },
+   { "t-same-id", E_REFUSE, "taken" },
+   { "t-command-free-buffer", E_WORKS }, { "t-same-command-buffer", E_WORKS }, { "t-export-free-memory", E_WORKS },
+   { "t-wait-ring-nested-ok", E_WORKS }, { "t-compile-no-delay-ok", E_WORKS }, { "t-teardown-paused-ok", E_WORKS },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 
 static int run_case(const char *c)
 {
+   if (IS("c-probe-descriptor-view")) {
+      setup(0);
+      struct world w;
+      make_world(&w, false);
+      return descriptor_probe(&w);
+   }
    switch (c[0]) {
    case 'p': return case_pipeline(c);
    case 'r': return case_render_pass(c);
@@ -4234,6 +5142,7 @@ static int run_case(const char *c)
    case 's': return case_submit(c);
    case 'x': return case_dedicated(c);
    case 'm': return case_memory(c);
+   case 't': return case_threads(c);
    default: return BROKEN;
    }
 }
@@ -4404,15 +5313,19 @@ int main(int argc, char **argv)
    }
    if (argc == 3 && !strcmp(argv[1], "--time"))
       return time_commands(atoi(argv[2]));
+   if (argc == 3 && !strcmp(argv[1], "--ring-time"))
+      return ring_time(atoi(argv[2]));
    if (argc == 2 && !strcmp(argv[1], "driver")) {
       instance_and_physical_device();
       printf("maxMultiviewViewCount told to the guest: %u\n", max_views);
       _exit(kosmickrisp ? ERROR : WORKS);
    }
    if (argc == 2) {
-      /* the destroyed-object cases: macOS's malloc fills freed memory with 0x55 bytes, so a
-       * read of a destroyed pass faults at once instead of finding its old values */
-      if (!strncmp(argv[1], "c-state-destroyed-", 18) && !getenv("MallocScribble")) {
+      /* the destroyed-object and two-thread cases: macOS's malloc fills freed memory with
+       * 0x55 bytes, so a read of a destroyed object faults at once instead of finding its
+       * old values */
+      if ((!strncmp(argv[1], "c-state-destroyed-", 18) || !strncmp(argv[1], "t-", 2)) &&
+          !getenv("MallocScribble")) {
          setenv("MallocScribble", "1", 1);
          setenv("MallocNanoZone", "0", 1);
          execv(argv[0], argv);
@@ -4501,6 +5414,9 @@ int main(int argc, char **argv)
       if (got == SKIP) {
          ok = true;
          skipped++;
+      } else if (want == E_PROBE) {
+         ok = true;
+         printf("probe: %s: %s%s\n", tc->name, seen, refused_line ? " (a refusal line)" : "");
       } else if (want == E_REFUSE) {
          ok = got == FATAL && refused_line && (!tc->line || strstr(refusal, tc->line));
       } else if (want == E_WORKS) {
