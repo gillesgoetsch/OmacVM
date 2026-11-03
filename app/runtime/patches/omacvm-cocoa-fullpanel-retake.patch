@@ -82,15 +82,15 @@ omacvm-cocoa-display-settle.patch.
 diff --git a/ui/cocoa.m b/ui/cocoa.m
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -51,6 +51,7 @@
- #include "ui/omacvm-notch-park.h"
+@@ -52,6 +52,7 @@
  #include "ui/omacvm-ime.h"
+ #include "ui/omacvm-ime-shift.h"
  #include "ui/omacvm-fullpanel.h"
 +#include "ui/omacvm-fullpanel-retake.h"
  #include "ui/omacvm-close.h"
  #include "ui/omacvm-modifiers.h"
  #include "ui/omacvm-display-settle.h"
-@@ -3519,14 +3520,44 @@ @interface OmacVMFullPanelState : NSObject
+@@ -3546,14 +3547,44 @@ @interface OmacVMFullPanelState : NSObject
      bool reveal_logged;
      bool fallback_logged;
      bool options_logged;
@@ -135,7 +135,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static char omacvm_fullpanel_state_key;
  static char omacvm_fullpanel_titlebar_context;
  static char omacvm_fullpanel_options_context;
-@@ -3737,6 +3768,172 @@ static bool omacvm_fullpanel_install_reservation(void)
+@@ -3764,6 +3795,172 @@ static bool omacvm_fullpanel_install_reservation(void)
  QEMU_BUILD_BUG_ON(NSApplicationPresentationHideMenuBar != OMACVM_FP_HIDE_MENU_BAR);
  QEMU_BUILD_BUG_ON(NSApplicationPresentationFullScreen != OMACVM_FP_FULL_SCREEN);
  
@@ -308,7 +308,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  @implementation OmacVMFullPanelState
  
  - (id)initWithWindow:(NSWindow *)w
-@@ -3804,11 +4001,15 @@ - (void)dealloc
+@@ -3831,11 +4028,15 @@ - (void)dealloc
      [super dealloc];
  }
  
@@ -327,7 +327,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  }
  
  /*
-@@ -3850,6 +4051,10 @@ - (void)endFullScreen
+@@ -3877,6 +4078,10 @@ - (void)endFullScreen
      inside = armed = entered = accepted = rejected = lost = released = reveal = false;
      own_known = false;
      covered_logged = reveal_logged = fallback_logged = options_logged = false;
@@ -338,7 +338,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  }
  
  /* Whether AppKit gave this full screen the whole display (definitive: didEnterFullScreen). */
-@@ -3964,6 +4169,9 @@ - (bool)engage
+@@ -3991,6 +4196,9 @@ - (bool)engage
          [self releaseSystemState];
          return false;
      }
@@ -348,7 +348,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      if (!covered_logged) {
          covered_logged = true;
          /* omacvm check reads this line: the strip beside the notch shows the VM. */
-@@ -3972,6 +4180,10 @@ - (bool)engage
+@@ -3999,6 +4207,10 @@ - (bool)engage
                  [screen safeAreaInsets].top, immersive_mode_enabled ?
                  "menu bar hidden (Keep the Dock away)" : "menu bar at the top edge");
      }
@@ -359,7 +359,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      return true;
  }
  
-@@ -4267,6 +4479,11 @@ - (void)releaseSystemState
+@@ -4294,6 +4506,11 @@ - (void)releaseSystemState
  {
      [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(checkReturn)
                                                 object:nil];
@@ -371,7 +371,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      return_pending = false;
      return_from_away = false;
      reassert_scheduled = false;
-@@ -4281,11 +4498,15 @@ - (void)releaseSystemState
+@@ -4308,11 +4525,15 @@ - (void)releaseSystemState
      [self restoreOptions];
  }
  
@@ -389,7 +389,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  
      if (!armed || !inside || !omacvm_fullpanel_in_full_screen(window)) {
          return;
-@@ -4293,20 +4514,52 @@ - (void)frameChanged:(NSNotification *)notification
+@@ -4320,20 +4541,52 @@ - (void)frameChanged:(NSNotification *)notification
      if (!accepted) {
          [self verify:false];
      } else if (entered && !lost && !released && screen) {
@@ -448,7 +448,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          }
      }
      [self comeBack];
-@@ -4319,15 +4572,35 @@ - (void)frameChanged:(NSNotification *)notification
+@@ -4346,15 +4599,35 @@ - (void)frameChanged:(NSNotification *)notification
  - (void)screenChanged:(NSNotification *)notification
  {
      bool full = omacvm_fullpanel_in_full_screen(window);
@@ -485,7 +485,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          covered_logged = false;
          [self relayout];
          [self comeBack];
-@@ -4438,6 +4711,7 @@ - (void)comeBack
+@@ -4465,6 +4738,7 @@ - (void)comeBack
      }
      return_pending = true;
      return_again_done = false;
@@ -493,7 +493,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      return_from_away = was_away;
      return_checks = OMACVM_FP_RETURN_CHECKS;
      [self performSelector:@selector(checkReturn) withObject:nil afterDelay:0.016
-@@ -4471,6 +4745,16 @@ - (void)checkReturn
+@@ -4498,6 +4772,16 @@ - (void)checkReturn
          return_pending = false;
          return;
      }
@@ -510,7 +510,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
      if (return_checks-- == 0) {
          return_pending = false;
          if ([window isOnActiveSpace] && [window isKeyWindow]) {
-@@ -4483,6 +4767,188 @@ - (void)checkReturn
+@@ -4510,6 +4794,188 @@ - (void)checkReturn
                    inModes:[NSArray arrayWithObject:NSRunLoopCommonModes]];
  }
  
@@ -699,7 +699,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  /*
   * Once per return from away with the menu bar held back: release the
   * options for one main-queue turn, hold them again on the next, then the
-@@ -4571,6 +5037,40 @@ static bool omacvm_fullpanel_vm_window(id w)
+@@ -4598,6 +5064,40 @@ static bool omacvm_fullpanel_vm_window(id w)
             [w isKindOfClass:objc_getClass("OmacVMHeadWindow")];
  }
  
@@ -740,7 +740,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  /*
   * At the start, before any window goes full screen: the reservation answer
   * (AppKit asks during the way in) and, on every way into full screen of a
-@@ -9718,6 +10218,10 @@ - (void)windowDidEnterFullScreen:(NSNotification *)note
+@@ -9745,6 +10245,10 @@ - (void)windowDidEnterFullScreen:(NSNotification *)note
      }
      omacvm_full_busy = false;
      omacvm_full_next();
@@ -751,7 +751,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  }
  
  /* A display changed its resolution, or the window found its full-screen size. */
-@@ -10141,6 +10645,19 @@ static double omacvm_displays_apply(void)
+@@ -10168,6 +10672,19 @@ static double omacvm_displays_apply(void)
  static bool omacvm_ds_screen_locked, omacvm_ds_asleep, omacvm_ds_away, omacvm_ds_test_locked;
  static double omacvm_ds_locked_at;
  
@@ -771,7 +771,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static void omacvm_ds_fired(void);
  
  static void omacvm_ds_arm(double at)
-@@ -10168,6 +10685,15 @@ static void omacvm_ds_fired(void)
+@@ -10195,6 +10712,15 @@ static void omacvm_ds_fired(void)
      if (omacvm_ds_done(&omacvm_ds_timer, omacvm_ds_clock(), retry, &at)) {
          omacvm_ds_arm(at);
      }
