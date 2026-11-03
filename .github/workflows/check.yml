@@ -528,6 +528,12 @@ jobs:
       - name: No macOS prompt for QEMU's full-grab tap at the VM's start (made only when already allowed)
         run: app/runtime/Tests/keys/test-tap-no-ask.sh
 
+      - name: Shift also goes to macOS while a Mac input method has the keys, the input method gets it back (issue 357; nothing else, mac-ime only)
+        run: app/runtime/Tests/keys/test-ime-shift.sh
+
+      - name: The runtime build's python3 (3.11 or newer, alone in PATH; cc not shadowed with only the Command Line Tools)
+        run: app/runtime/Tests/toolchain/test-build-python.sh
+
       - name: Modifier keys follow each event's flags (Universal Control, issue 412; the old rules fail it)
         run: app/runtime/Tests/keys/test-modifier-state.sh
 

@@ -298,16 +298,15 @@ log() {
 source "$pinned_bottles"
 
 for tool in awk bash chmod curl ditto file grep install mkdir mktemp patch \
-  pkg-config python3 rm sed shasum sw_vers tar uname; do
+  pkg-config rm sed shasum sw_vers tar uname; do
   command -v "$tool" >/dev/null 2>&1 || die "required tool is unavailable: $tool"
 done
-# Apple's /usr/bin/python3 is a shim under SIP: macOS drops DYLD_LIBRARY_PATH
-# for it, so the virgl test binaries it starts below would not find libepoxy.
-# The python3 it stands for (Xcode's or the Command Line Tools') keeps it.
-if [[ $(command -v python3) == /usr/bin/python3 ]] && real_python=$(xcrun -f python3 2>/dev/null) &&
-   [[ -x $real_python && $real_python != /usr/bin/* ]]; then
-  PATH="$(dirname "$real_python"):$PATH"
-fi
+# The build's python3 (3.11 or newer, not Apple's shim): build-python.sh. It
+# goes first in PATH alone, in a folder of its own, so cc and the rest stay
+# as PATH has them (a whole toolchain folder first would shadow /usr/bin/cc,
+# and the Command Line Tools' clang does not find the SDK on its own).
+# shellcheck source=build-python.sh
+source "$native_dir/build-python.sh"
 
 [[ $(uname -s) == Darwin ]] || die "this source build requires macOS"
 [[ $(uname -m) == arm64 ]] || die "this source build requires Apple Silicon (arm64)"
@@ -401,6 +400,9 @@ source_parent="$work_dir/source"
 dependency_root="$work_dir/dependencies"
 tool_root="$work_dir/tools"
 mkdir -p "$archive_dir" "$listing_dir" "$source_parent" "$dependency_root" "$tool_root"
+build_python=$(omacvm_build_python "$work_dir/python-bin") || exit 1
+PATH="$work_dir/python-bin:$PATH"
+log "python3 for the build: $build_python ($(python3 --version 2>&1))"
 
 download_and_verify() {
   local label=$1
@@ -974,6 +976,15 @@ grep -q 'eventsTap = CGEventTapCreate(kCGHIDEventTap, place, kCGEventTapOptionDe
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-tap-no-ask.patch"
 "$native_dir/Tests/keys/test-tap-no-ask.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the full-grab tap is made (and asked for) without the permission (test-tap-no-ask.sh)"
+# mac-ime (#357, from #655): a Shift change the VM took in the full-grab tap
+# also goes on to macOS (an input method's lone-Shift switch watches the
+# system's events), only while an input method has the keys; the input
+# method gets it from the copy macOS gives back. Its rules' test, then the
+# wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift.patch"
+"$native_dir/Tests/keys/test-ime-shift.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: Shift does not go on to macOS as tested (test-ime-shift.sh)"
 # OmacVM.app's "Closing the window" (#358): Shut down, Keep running (the app
 # hidden, the Dock icon brings it back), Ask. Its rules' test, then the wiring.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-close-logic.patch"
