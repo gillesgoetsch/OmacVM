@@ -1727,6 +1727,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-alias-memory
 grep -q 'vkr_image_hold_alias_memory(image, mem);' "$virgl_source/src/venus/vkr_image.c" && \
   grep -q 'vkr_device_memory_free(dev, (struct vkr_device_memory \*)obj, obj->zombie_destroy_vk);' "$virgl_source/src/venus/vkr_device.c" || \
   die "vkr_image.c, vkr_device.c: an image bound to a swapchain's memory does not hold it (alias-memory patch)"
+# An image that aliases one plane of a disjoint YCbCr image (DISJOINT|ALIAS on a one-plane
+# format) is asked about without DISJOINT after the driver's "no", in vkCreateImage's check and
+# in the guest's format query: MoltenVK's query refuses it, its create makes it (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-disjoint-alias-format.patch"
+grep -q 'q.flags = vkr_physical_device_retry_flags(info->format, info->flags, r);' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'args->pImageFormatInfo->format, args->pImageFormatInfo->flags, args->ret);' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_image.c, vkr_physical_device.c: a one-plane DISJOINT|ALIAS image is asked about with DISJOINT (disjoint-alias-format patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
