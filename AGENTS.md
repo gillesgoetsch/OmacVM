@@ -348,7 +348,18 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   flipped (`omacvm-cocoa-modifier-state*.patch`, ui/omacvm-modifiers.h, #412:
   with Universal Control Shift went up the moment it went down); only
   a key going down or a modifier changing presses one, a pointer event only
-  releases (`app/runtime/Tests/keys/test-modifier-state.sh`).
+  releases (`app/runtime/Tests/keys/test-modifier-state.sh`). The tap deletes
+  every key and modifier change the VM took from macOS's event stream; the one
+  exception: with mac-ime on, while an input method has the keys, a Shift change
+  also goes on to macOS (an input method's lone-Shift switch, #357): the tap
+  decides before handleEvent, the VM gets it in the tap, and the input method
+  gets the copy macOS gives back, which handleEvent takes by key code and
+  direction (never its time stamp or CGEvent: on a real Mac neither matches)
+  and never gives to the VM (`omacvm-cocoa-ime-shift*.patch`, ADR 0043;
+  `test-ime-shift.sh`). Never let other modifier changes through: chords would
+  look like lone or double modifier presses to macOS (#655's first form). Never
+  give the input method a passed Shift in the tap: it then has it before macOS
+  delivered it and WeChat Input does not switch (#655, 2026-11-01).
 - Escape combo (Gestures): NEVER take the VM out of full screen or hide it
   (user, 2026-10-05). Out = macOS's own "Move left/right a space" shortcut
   (symbolic hotkeys 79/81, read per press: key, modifiers, enabled), posted

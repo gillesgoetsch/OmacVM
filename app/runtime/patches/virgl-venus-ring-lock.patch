@@ -1,0 +1,673 @@
+virglrenderer: Venus rings of one app take turns on its objects
+
+What: one dispatch lock per Venus context. A ring takes it for each batch it reads, the
+context's own stream for each command (not for the ring and reply-stream commands, which
+touch no object), and QEMU's calls for a device memory's blob, a resource's removal and a
+fence on a queue; nested command streams keep it. A call that waits for a ring
+(vkWaitRingSeqnoMESA, vkWaitVirtqueueSeqnoMESA) or joins one (vkDestroyRingMESA) gives it
+up meanwhile. vkCreateGraphicsPipelines, vkCreateComputePipelines and vkGetPipelineCacheData
+give it up while the driver runs them, with the objects they name pinned (device, cache,
+layout, render pass, shader modules, base pipeline, libraries); the pins go before the
+answer or the ring position reaches the guest. Destroying a pinned object (or the
+instance while a pipeline call runs) is refused: the app's context ends. An object id the
+table already has is refused when it is added (the guest named one id twice; a pipeline
+made while the lock was given up is destroyed again).
+Why: each ring has its own thread and vkr let go of its table lock before a call used
+what it looked up, so a ring could destroy an image, buffer or layout another ring's call
+was reading (freed memory in vkr and the driver), two rings could record into one command
+buffer, and QEMU exported memory a ring freed. Guest Mesa uses a second ring only for
+pipeline creation and cache reads (vn_tls_get_ring), so those keep running beside the
+app's main ring: Chromium's, Dawn's and Zink's compile threads do not stall a frame.
+Not covered (ADR 0065): a guest call that blocks in the driver (a fence or semaphore wait
+without end) holds its app's lock and stops that app's other rings; it already blocked
+its own ring and the context's end.
+Upstream: OmacVM policy (the spec's Threading Behavior and Object Lifetime sections: an
+object must not be destroyed while another thread's command uses it).
+Tests: Tests/virgl/test-venus-commands.c (the t- cases: a real ring stopped by
+virgl-venus-test-pause.patch's hook beside the context's stream; also under libgmalloc).
+
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index 0605cd2..32706ed 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -165,6 +165,11 @@ struct vkr_object {
+    } handle;
+ 
+    struct list_head track_head;
++
++   /* OmacVM (virgl-venus-ring-lock.patch, ADR 0065): pipeline calls running in the driver
++    * without the context's dispatch lock that name the object (vkr_context.h); a destroy of
++    * it then is refused. Counted under that lock. */
++   uint32_t pins;
+ };
+ 
+ struct object_array {
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index dc6bfb8..6b5294b 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -165,12 +165,42 @@ vkr_context_submit_fence(struct vkr_context *ctx,
+    /* always merge fences */
+    assert(!(flags & ~VIRGL_RENDERER_FENCE_FLAG_MERGEABLE));
+    flags = VIRGL_RENDERER_FENCE_FLAG_MERGEABLE;
+-   bool ok = vkr_queue_sync_submit(ctx->sync_queues[ring_idx], flags, ring_idx, fence_id);
++   /* OmacVM (virgl-venus-ring-lock.patch): the queue is a ring's to destroy */
++   const bool locked = vkr_context_lock(ctx);
++   bool ok = ctx->sync_queues[ring_idx] &&
++             vkr_queue_sync_submit(ctx->sync_queues[ring_idx], flags, ring_idx, fence_id);
++   vkr_context_unlock(ctx, locked);
+ 
+    return ok;
+ }
+ 
+ _Thread_local struct vkr_context *vkr_dispatching_context;
++_Thread_local struct vkr_context *vkr_locked_context;
++
++/* OmacVM (virgl-venus-ring-lock.patch): whether the context's next command takes the
++ * dispatch lock: all but the ring and reply-stream commands, which touch no object and
++ * some of which wait for a ring (that needs the lock) or join one */
++static bool
++vkr_context_command_locks(const struct vkr_cs_decoder *dec)
++{
++   int32_t type;
++   if (dec->end - dec->cur < (ptrdiff_t)sizeof(type))
++      return true;
++   memcpy(&type, dec->cur, sizeof(type));
++   switch (type) {
++   case VK_COMMAND_TYPE_vkSetReplyCommandStreamMESA_EXT:
++   case VK_COMMAND_TYPE_vkSeekReplyCommandStreamMESA_EXT:
++   case VK_COMMAND_TYPE_vkCreateRingMESA_EXT:
++   case VK_COMMAND_TYPE_vkDestroyRingMESA_EXT:
++   case VK_COMMAND_TYPE_vkNotifyRingMESA_EXT:
++   case VK_COMMAND_TYPE_vkWriteRingExtraMESA_EXT:
++   case VK_COMMAND_TYPE_vkSubmitVirtqueueSeqnoMESA_EXT:
++   case VK_COMMAND_TYPE_vkWaitRingSeqnoMESA_EXT:
++      return false;
++   default:
++      return true;
++   }
++}
+ 
+ static bool
+ vkr_context_dispatch_stream(struct vkr_context *ctx, const void *buffer, size_t size)
+@@ -184,7 +214,11 @@ vkr_context_dispatch_stream(struct vkr_context *ctx, const void *buffer, size_t
+    vkr_cs_decoder_set_buffer_stream(&ctx->decoder, buffer, size);
+ 
+    while (vkr_cs_decoder_has_command(&ctx->decoder)) {
++      /* OmacVM (virgl-venus-ring-lock.patch): the dispatch lock per command */
++      const bool locked =
++         vkr_context_command_locks(&ctx->decoder) && vkr_context_lock(ctx);
+       vn_dispatch_command(&ctx->dispatch);
++      vkr_context_unlock(ctx, locked);
+       if (vkr_context_get_fatal(ctx)) {
+          vkr_log("submit_cmd: vn_dispatch_command failed");
+ 
+@@ -452,12 +486,16 @@ vkr_context_create_resource(struct vkr_context *ctx,
+    /* blob_id == 0 does not refer to an existing VkDeviceMemory, but implies a shm
+     * allocation. It is logically contiguous and it can be exported.
+     */
++   /* OmacVM (virgl-venus-ring-lock.patch): a device memory's blob reads the memory a ring
++    * may free */
++   const bool locked = vkr_context_lock(ctx);
+    bool ok;
+    if (!blob_id && blob_flags == VIRGL_RENDERER_BLOB_FLAG_USE_MAPPABLE)
+       ok = vkr_context_create_resource_from_shm(ctx, res_id, blob_size, out_blob);
+    else
+       ok = vkr_context_create_resource_from_device_memory(ctx, res_id, blob_id, blob_size,
+                                                           blob_flags, out_blob);
++   vkr_context_unlock(ctx, locked);
+ 
+    /* OmacVM: the guest's blob (virgl_resource) keeps the storage after this context
+     * lets the resource go (DETACH at GEM close, while a dma-buf fd or mapping keeps the
+@@ -509,7 +547,11 @@ vkr_context_destroy_resource(struct vkr_context *ctx, uint32_t res_id)
+    }
+    mtx_unlock(&ctx->ring_mutex);
+ 
++   /* OmacVM (virgl-venus-ring-lock.patch): not while a ring's command uses it (the rings
++    * above are joined without the lock) */
++   const bool locked = vkr_context_lock(ctx);
+    vkr_context_remove_resource(ctx, res_id);
++   vkr_context_unlock(ctx, locked);
+ }
+ 
+ /* OmacVM (virgl-venus-lost-context-count.patch): the guest closed a resource this context's
+@@ -807,6 +849,7 @@ vkr_context_destroy(struct vkr_context *ctx)
+ 
+    _mesa_hash_table_destroy(ctx->object_table, vkr_context_free_object);
+    mtx_destroy(&ctx->object_mutex);
++   mtx_destroy(&ctx->dispatch_mutex);
+ 
+    vkr_cs_encoder_fini(&ctx->encoder);
+    vkr_cs_decoder_fini(&ctx->decoder);
+@@ -830,9 +873,8 @@ vkr_key_u64_equal(const void *key1, const void *key2)
+ }
+ 
+ void
+-vkr_context_free_object(struct hash_entry *entry)
++vkr_object_free(struct vkr_object *obj)
+ {
+-   struct vkr_object *obj = entry->data;
+    /* OmacVM (virgl-venus-descriptor-limits.patch): what vkr keeps with the object */
+    vkr_descriptor_object_release(obj);
+    vkr_render_pass_object_release(obj);
+@@ -841,6 +883,12 @@ vkr_context_free_object(struct hash_entry *entry)
+    free(obj);
+ }
+ 
++void
++vkr_context_free_object(struct hash_entry *entry)
++{
++   vkr_object_free(entry->data);
++}
++
+ struct vkr_context *
+ vkr_context_create(uint32_t ctx_id,
+                    vkr_renderer_retire_fence_callback_type cb,
+@@ -880,6 +928,9 @@ vkr_context_create(uint32_t ctx_id,
+    if (!vkr_context_wait_ring_init(ctx))
+       goto err_ctx_wait_ring_init;
+ 
++   if (mtx_init(&ctx->dispatch_mutex, mtx_plain) != thrd_success)
++      goto err_ctx_dispatch_mutex;
++
+    if (mtx_init(&ctx->object_mutex, mtx_plain) != thrd_success)
+       goto err_ctx_object_mutex;
+ 
+@@ -924,6 +975,8 @@ err_ctx_resource_mutex:
+ err_ctx_object_table:
+    mtx_destroy(&ctx->object_mutex);
+ err_ctx_object_mutex:
++   mtx_destroy(&ctx->dispatch_mutex);
++err_ctx_dispatch_mutex:
+    vkr_context_wait_ring_fini(ctx);
+ err_ctx_wait_ring_init:
+    free(ctx->debug_name);
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index 26a4a9c..d95c9e7 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -102,6 +102,18 @@ struct vkr_context {
+       atomic_uint report_period_us;
+    } ring_monitor;
+ 
++   /* OmacVM (virgl-venus-ring-lock.patch, ADR 0065): the dispatch lock. Every thread that
++    * runs this context's guest commands (its rings, its own stream) or that reads its objects
++    * for QEMU (a device memory's blob) holds it, so no ring uses an object another ring
++    * destroys. Rings take it per batch, the context's stream per command (not for the ring
++    * and reply-stream commands, which wait on rings), QEMU's calls per call; nested streams
++    * keep it (vkr_locked_context). It is never held while joining or waiting for a ring
++    * (vkWaitRingSeqnoMESA, vkWaitVirtqueueSeqnoMESA, vkDestroyRingMESA give it up), and the
++    * long pipeline calls give it up with their objects pinned (vkr_pipeline.c). */
++   mtx_t dispatch_mutex;
++   /* pipeline calls of this context in the driver without the lock right now */
++   uint32_t pinned_calls;
++
+    mtx_t object_mutex;
+    struct hash_table *object_table;
+ 
+@@ -132,6 +144,50 @@ struct vkr_context {
+  * commands sets it too. */
+ extern _Thread_local struct vkr_context *vkr_dispatching_context;
+ 
++/* OmacVM (virgl-venus-ring-lock.patch): the context whose dispatch lock this thread holds */
++extern _Thread_local struct vkr_context *vkr_locked_context;
++
++/* takes ctx's dispatch lock unless this thread holds it already; pass the result to
++ * vkr_context_unlock */
++static inline bool
++vkr_context_lock(struct vkr_context *ctx)
++{
++   if (vkr_locked_context == ctx)
++      return false;
++   mtx_lock(&ctx->dispatch_mutex);
++   vkr_locked_context = ctx;
++   return true;
++}
++
++static inline void
++vkr_context_unlock(struct vkr_context *ctx, bool locked)
++{
++   if (!locked)
++      return;
++   vkr_locked_context = NULL;
++   mtx_unlock(&ctx->dispatch_mutex);
++}
++
++/* a call that waits for a ring, or runs long in the driver, gives the lock up when this
++ * thread holds it (true), and takes it back with vkr_context_lock_again before it touches
++ * vkr's objects again */
++static inline bool
++vkr_context_lock_give_up(struct vkr_context *ctx)
++{
++   if (vkr_locked_context != ctx)
++      return false;
++   vkr_locked_context = NULL;
++   mtx_unlock(&ctx->dispatch_mutex);
++   return true;
++}
++
++static inline void
++vkr_context_lock_again(struct vkr_context *ctx, bool given_up)
++{
++   if (given_up)
++      vkr_context_lock(ctx);
++}
++
+ struct vkr_context *
+ vkr_context_create(uint32_t ctx_id,
+                    vkr_renderer_retire_fence_callback_type cb,
+@@ -241,28 +297,51 @@ vkr_context_alloc_object(UNUSED struct vkr_context *ctx,
+ void
+ vkr_context_free_object(struct hash_entry *entry);
+ 
+-static inline void
++/* OmacVM (virgl-venus-ring-lock.patch): what vkr keeps with the object, and the object */
++void
++vkr_object_free(struct vkr_object *obj);
++
++/* OmacVM (virgl-venus-ring-lock.patch): an id the table has already is refused (the guest
++ * named it for two objects; the app's context ends) and the object is not added: it stays
++ * with its device or pool, which destroys it as it does the others */
++static inline bool
+ vkr_context_add_object(struct vkr_context *ctx, struct vkr_object *obj)
+ {
+    assert(vkr_is_recognized_object_type(obj->type));
+    assert(obj->id);
+ 
+    mtx_lock(&ctx->object_mutex);
+-   assert(!_mesa_hash_table_search(ctx->object_table, &obj->id));
+-   _mesa_hash_table_insert(ctx->object_table, &obj->id, obj);
++   const bool taken = _mesa_hash_table_search(ctx->object_table, &obj->id) != NULL;
++   if (likely(!taken))
++      _mesa_hash_table_insert(ctx->object_table, &obj->id, obj);
+    mtx_unlock(&ctx->object_mutex);
++
++   if (unlikely(taken))
++      vkr_context_refuse(ctx, true, "an object create", "id %" PRIu64 " is taken", obj->id);
++   return !taken;
+ }
+ 
++/* frees obj; its id leaves the table when the entry there is obj (not when the add was
++ * refused) */
+ static inline void
+ vkr_context_remove_object_locked(struct vkr_context *ctx, struct vkr_object *obj)
+ {
+-   assert(_mesa_hash_table_search(ctx->object_table, &obj->id));
+-
+    struct hash_entry *entry = _mesa_hash_table_search(ctx->object_table, &obj->id);
+-   if (likely(entry)) {
+-      vkr_context_free_object(entry);
++   if (likely(entry && entry->data == obj))
+       _mesa_hash_table_remove(ctx->object_table, entry);
+-   }
++   vkr_object_free(obj);
++}
++
++/* OmacVM (virgl-venus-ring-lock.patch): a destroy of obj while a pipeline call names it
++ * (a thread of the app destroys what another thread's call uses: the object-lifetime rule
++ * of the spec's "Threading Behavior") is refused, and true */
++static inline bool
++vkr_context_pinned(struct vkr_context *ctx, const struct vkr_object *obj, const char *call)
++{
++   if (likely(!obj || !obj->pins))
++      return false;
++   vkr_context_refuse(ctx, true, call, "a pipeline call of another thread uses it");
++   return true;
+ }
+ 
+ static inline void
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index f0acffe..1940c0c 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -525,6 +525,9 @@ vkr_dispatch_vkDestroyDevice(struct vn_dispatch_context *dispatch,
+    /* this never happens */
+    if (!dev)
+       return;
++   /* OmacVM (virgl-venus-ring-lock.patch) */
++   if (vkr_context_pinned(ctx, &dev->base, "vkDestroyDevice"))
++      return;
+ 
+    vkr_device_destroy(ctx, dev, true);
+ }
+diff --git a/src/venus/vkr_device_object.py b/src/venus/vkr_device_object.py
+index 4873c95..7877151 100644
+--- a/src/venus/vkr_device_object.py
++++ b/src/venus/vkr_device_object.py
+@@ -318,6 +318,9 @@ vkr_{destroy_func_name}_destroy_and_remove(
+    struct vkr_{vkr_type} *obj = vkr_{vkr_type}_from_handle(args->{destroy_obj});
+    if (!obj)
+       return;
++   /* OmacVM (virgl-venus-ring-lock.patch) */
++   if (vkr_context_pinned(ctx, &obj->base, "{destroy_cmd}"))
++      return;
+ 
+    vkr_{destroy_func_name}_destroy_driver_handle(ctx, args);
+ 
+diff --git a/src/venus/vkr_instance.c b/src/venus/vkr_instance.c
+index 6052fea..ff232da 100644
+--- a/src/venus/vkr_instance.c
++++ b/src/venus/vkr_instance.c
+@@ -283,6 +283,10 @@ vkr_dispatch_vkDestroyInstance(struct vn_dispatch_context *dispatch,
+       vkr_context_set_fatal(ctx);
+       return;
+    }
++   /* OmacVM (virgl-venus-ring-lock.patch): not under a pipeline call of its devices */
++   if (!vkr_context_check(ctx, !ctx->pinned_calls, "vkDestroyInstance",
++                          "a pipeline call of another thread uses its device"))
++      return;
+ 
+    vkr_instance_destroy(ctx, instance, true);
+ }
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 48e5221..48b5cb9 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -181,18 +181,101 @@ vkr_dispatch_vkDestroyPipelineCache(struct vn_dispatch_context *dispatch,
+    vkr_pipeline_cache_destroy_and_remove(dispatch->data, args);
+ }
+ 
++/* OmacVM (virgl-venus-ring-lock.patch, ADR 0065): the objects a pipeline call names,
++ * pinned while the driver runs the call without the context's dispatch lock (vkr_context.h),
++ * so other rings go on meanwhile (Chromium's and Zink's compile threads). A destroy of a
++ * pinned object is refused (vkr_context_pinned): an app must not destroy what another
++ * thread's call uses, and a legal app never meets the refusal, because the pins go before
++ * the call's answer or ring position reaches the guest. The pins are counted under the
++ * lock; vkr reads nothing of its own while the driver runs. */
++struct vkr_pins {
++   struct vkr_object **objects;
++   uint32_t count;
++   uint32_t size;
++};
++
++static bool
++vkr_pin(struct vkr_pins *pins, const void *handle)
++{
++   struct vkr_object *obj = (struct vkr_object *)handle;
++   if (!obj)
++      return true;
++   if (pins->count == pins->size) {
++      const uint32_t size = pins->size ? 2 * pins->size : 16;
++      struct vkr_object **objects = realloc(pins->objects, sizeof(*objects) * size);
++      if (!objects)
++         return false;
++      pins->objects = objects;
++      pins->size = size;
++   }
++   obj->pins++;
++   pins->objects[pins->count++] = obj;
++   return true;
++}
++
++static void
++vkr_unpin(struct vkr_context *ctx, struct vkr_pins *pins)
++{
++   for (uint32_t i = 0; i < pins->count; i++)
++      pins->objects[i]->pins--;
++   free(pins->objects);
++   ctx->pinned_calls--;
++}
++
++/* the call's device and cache; false (refused) when out of host memory */
++static bool
++vkr_pins_begin(struct vkr_context *ctx,
++               struct vkr_pins *pins,
++               const char *call,
++               VkDevice device,
++               VkPipelineCache cache)
++{
++   *pins = (struct vkr_pins){ 0 };
++   ctx->pinned_calls++;
++   if (vkr_context_check(ctx, vkr_pin(pins, device) && vkr_pin(pins, cache), call,
++                         "out of host memory"))
++      return true;
++   vkr_unpin(ctx, pins);
++   return false;
++}
++
++/* a create info's pipeline libraries (VkPipelineLibraryCreateInfoKHR, each one chained) */
++static bool
++vkr_pin_libraries(struct vkr_pins *pins, const void *next)
++{
++   for (const VkBaseInStructure *s = next; s; s = s->pNext) {
++      if (s->sType != VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR)
++         continue;
++      const VkPipelineLibraryCreateInfoKHR *lib = (const VkPipelineLibraryCreateInfoKHR *)s;
++      for (uint32_t i = 0; lib->pLibraries && i < lib->libraryCount; i++) {
++         if (!vkr_pin(pins, lib->pLibraries[i]))
++            return false;
++      }
++   }
++   return true;
++}
++
+ static void
+-vkr_dispatch_vkGetPipelineCacheData(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkGetPipelineCacheData(struct vn_dispatch_context *dispatch,
+                                     struct vn_command_vkGetPipelineCacheData *args)
+ {
+    TRACE_FUNC();
++   struct vkr_context *ctx = dispatch->data;
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+-   vkr_test_pause("cache-data"); /* OmacVM (virgl-venus-test-pause.patch) */
++   /* OmacVM (virgl-venus-ring-lock.patch): without the dispatch lock, device and cache
++    * pinned */
++   struct vkr_pins pins;
++   if (!vkr_pins_begin(ctx, &pins, "vkGetPipelineCacheData", args->device, args->pipelineCache))
++      return;
+    vn_replace_vkGetPipelineCacheData_args_handle(args);
++   const bool given_up = vkr_context_lock_give_up(ctx);
++   vkr_test_pause("cache-data"); /* OmacVM (virgl-venus-test-pause.patch) */
+    args->ret = vk->GetPipelineCacheData(args->device, args->pipelineCache,
+                                         args->pDataSize, args->pData);
++   vkr_context_lock_again(ctx, given_up);
++   vkr_unpin(ctx, &pins);
+ }
+ 
+ static void
+@@ -631,6 +714,55 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+    return true;
+ }
+ 
++/* OmacVM (virgl-venus-ring-lock.patch): after the driver made the pipelines without the
++ * dispatch lock, their ids must still be free: another ring may have made an object with
++ * one meanwhile (the guest named it twice). Then the new pipelines are destroyed and the
++ * call is refused (the app's context ends). */
++static bool
++vkr_pipeline_ids_free(struct vkr_context *ctx,
++                      struct vkr_device *dev,
++                      struct object_array *arr,
++                      VkPipeline *out,
++                      const char *call)
++{
++   uint32_t i = 0;
++   while (i < arr->count &&
++          !(((VkPipeline *)arr->handle_storage)[i] &&
++            vkr_context_get_object(ctx, ((struct vkr_object *)arr->objects[i])->id)))
++      i++;
++   if (i == arr->count)
++      return true;
++   for (uint32_t j = 0; j < arr->count; j++) {
++      const VkPipeline p = ((VkPipeline *)arr->handle_storage)[j];
++      if (p)
++         dev->proc_table.DestroyPipeline(dev->base.handle.device, p, NULL);
++   }
++   memset(out, 0, arr->count * sizeof(*out));
++   object_array_fini(arr);
++   vkr_context_refuse(ctx, true, call, "pipeline %u: its id was taken while it was made", i);
++   return false;
++}
++
++/* the driver's create without the dispatch lock (ret: the call's result); false when the
++ * call ends here */
++static bool
++vkr_pipelines_made(struct vkr_context *ctx,
++                   struct vkr_device *dev,
++                   struct vkr_pins *pins,
++                   struct object_array *arr,
++                   VkResult ret,
++                   VkPipeline *out,
++                   const char *call)
++{
++   vkr_unpin(ctx, pins);
++   if (ret < VK_SUCCESS) {
++      memset(out, 0, arr->count * sizeof(*out));
++      object_array_fini(arr);
++      return false;
++   }
++   return vkr_pipeline_ids_free(ctx, dev, arr, out, call);
++}
++
+ static void
+ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+                                        struct vn_command_vkCreateGraphicsPipelines *args)
+@@ -650,16 +782,39 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+       }
+    }
+ 
+-   /* OmacVM (virgl-venus-test-pause.patch): vkr_graphics_pipeline_create_array, with the
+-    * test's pause between the id checks and the driver */
++   /* OmacVM (virgl-venus-ring-lock.patch): vkr_graphics_pipeline_create_array, the driver
++    * without the dispatch lock and the objects named pinned */
+    if (vkr_graphics_pipeline_init_array(ctx, args, &arr) != VK_SUCCESS)
+       return;
+-   vkr_test_pause("pipeline");
+-   if (vkr_graphics_pipeline_create_driver_handles(ctx, args, &arr) < VK_SUCCESS) {
+-      memset(args->pPipelines, 0, args->createInfoCount * sizeof(args->pPipelines[0]));
++   struct vkr_pins pins;
++   if (!vkr_pins_begin(ctx, &pins, "vkCreateGraphicsPipelines", args->device,
++                       args->pipelineCache)) {
+       object_array_fini(&arr);
+       return;
+    }
++   bool pinned = true;
++   for (uint32_t i = 0; pinned && i < args->createInfoCount; i++) {
++      const VkGraphicsPipelineCreateInfo *info = &args->pCreateInfos[i];
++      pinned = vkr_pin(&pins, info->layout) && vkr_pin(&pins, info->renderPass) &&
++               vkr_pin(&pins, info->basePipelineHandle) && vkr_pin_libraries(&pins, info->pNext);
++      for (uint32_t s = 0; pinned && info->pStages && s < info->stageCount; s++)
++         pinned = vkr_pin(&pins, info->pStages[s].module);
++   }
++   if (!vkr_context_check(ctx, pinned, "vkCreateGraphicsPipelines", "out of host memory")) {
++      vkr_unpin(ctx, &pins);
++      object_array_fini(&arr);
++      return;
++   }
++   vn_replace_vkCreateGraphicsPipelines_args_handle(args);
++   const bool given_up = vkr_context_lock_give_up(ctx);
++   vkr_test_pause("pipeline"); /* OmacVM (virgl-venus-test-pause.patch) */
++   args->ret = dev->proc_table.CreateGraphicsPipelines(args->device, args->pipelineCache,
++                                                       args->createInfoCount, args->pCreateInfos,
++                                                       NULL, arr.handle_storage);
++   vkr_context_lock_again(ctx, given_up);
++   if (!vkr_pipelines_made(ctx, dev, &pins, &arr, args->ret, args->pPipelines,
++                           "vkCreateGraphicsPipelines"))
++      return;
+ 
+    vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+@@ -696,16 +851,36 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+       }
+    }
+ 
+-   /* OmacVM (virgl-venus-test-pause.patch): vkr_compute_pipeline_create_array, with the
+-    * test's pause between the id checks and the driver */
++   /* OmacVM (virgl-venus-ring-lock.patch): as vkCreateGraphicsPipelines */
+    if (vkr_compute_pipeline_init_array(ctx, args, &arr) != VK_SUCCESS)
+       return;
+-   vkr_test_pause("pipeline");
+-   if (vkr_compute_pipeline_create_driver_handles(ctx, args, &arr) < VK_SUCCESS) {
+-      memset(args->pPipelines, 0, args->createInfoCount * sizeof(args->pPipelines[0]));
++   struct vkr_pins pins;
++   if (!vkr_pins_begin(ctx, &pins, "vkCreateComputePipelines", args->device,
++                       args->pipelineCache)) {
+       object_array_fini(&arr);
+       return;
+    }
++   bool pinned = true;
++   for (uint32_t i = 0; pinned && i < args->createInfoCount; i++) {
++      const VkComputePipelineCreateInfo *info = &args->pCreateInfos[i];
++      pinned = vkr_pin(&pins, info->layout) && vkr_pin(&pins, info->basePipelineHandle) &&
++               vkr_pin(&pins, info->stage.module);
++   }
++   if (!vkr_context_check(ctx, pinned, "vkCreateComputePipelines", "out of host memory")) {
++      vkr_unpin(ctx, &pins);
++      object_array_fini(&arr);
++      return;
++   }
++   vn_replace_vkCreateComputePipelines_args_handle(args);
++   const bool given_up = vkr_context_lock_give_up(ctx);
++   vkr_test_pause("pipeline"); /* OmacVM (virgl-venus-test-pause.patch) */
++   args->ret = dev->proc_table.CreateComputePipelines(args->device, args->pipelineCache,
++                                                      args->createInfoCount, args->pCreateInfos,
++                                                      NULL, arr.handle_storage);
++   vkr_context_lock_again(ctx, given_up);
++   if (!vkr_pipelines_made(ctx, dev, &pins, &arr, args->ret, args->pPipelines,
++                           "vkCreateComputePipelines"))
++      return;
+ 
+    vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_COMPUTE);
+    vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
+diff --git a/src/venus/vkr_ring.c b/src/venus/vkr_ring.c
+index 32a242a..08669fe 100644
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -306,7 +306,11 @@ vkr_ring_thread(void *arg)
+          const uint32_t ring_head = ring->buffer.cur;
+          vkr_ring_read_buffer(ring, ring->cmd, cmd_size);
+ 
+-         if (!vkr_ring_submit_cmd(ring, ring->cmd, cmd_size, ring_head)) {
++         /* OmacVM (virgl-venus-ring-lock.patch): the context's dispatch lock per batch */
++         const bool locked = vkr_context_lock(ctx);
++         const bool ok = vkr_ring_submit_cmd(ring, ring->cmd, cmd_size, ring_head);
++         vkr_context_unlock(ctx, locked);
++         if (!ok) {
+             ret = -EINVAL;
+             break;
+          }
+diff --git a/src/venus/vkr_transport.c b/src/venus/vkr_transport.c
+index 1a24509..08b49fb 100644
+--- a/src/venus/vkr_transport.c
++++ b/src/venus/vkr_transport.c
+@@ -280,8 +280,12 @@ vkr_dispatch_vkDestroyRingMESA(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
++   /* OmacVM (virgl-venus-ring-lock.patch): the ring may wait for the dispatch lock */
+    struct vkr_ring *ring = lookup_ring(ctx, args->ring);
+-   if (!ring || !vkr_ring_stop(ring)) {
++   const bool given_up = vkr_context_lock_give_up(ctx);
++   const bool stopped = ring && vkr_ring_stop(ring);
++   vkr_context_lock_again(ctx, given_up);
++   if (!stopped) {
+       vkr_context_set_fatal(ctx);
+       return;
+    }
+@@ -371,7 +375,11 @@ vkr_dispatch_vkWaitVirtqueueSeqnoMESA(struct vn_dispatch_context *dispatch,
+ #pragma GCC diagnostic ignored "-Wpedantic"
+    struct vkr_ring *ring = container_of(dispatch, struct vkr_ring, dispatch);
+ #pragma GCC diagnostic pop
+-   if (!vkr_ring_wait_virtqueue_seqno(ring, args->seqno))
++   /* OmacVM (virgl-venus-ring-lock.patch): the context's stream may need the lock first */
++   const bool given_up = vkr_context_lock_give_up(ctx);
++   const bool ok = vkr_ring_wait_virtqueue_seqno(ring, args->seqno);
++   vkr_context_lock_again(ctx, given_up);
++   if (!ok)
+       vkr_context_set_fatal(ctx);
+ }
+ 
+@@ -396,7 +404,11 @@ vkr_dispatch_vkWaitRingSeqnoMESA(struct vn_dispatch_context *dispatch,
+    /* ensure to wake ring up to properly error out invalid ring wait */
+    vkr_ring_notify(ring);
+ 
+-   if (!vkr_context_wait_ring_seqno(ctx, ring, args->seqno))
++   /* OmacVM (virgl-venus-ring-lock.patch): the ring needs the lock to get there */
++   const bool given_up = vkr_context_lock_give_up(ctx);
++   const bool ok = vkr_context_wait_ring_seqno(ctx, ring, args->seqno);
++   vkr_context_lock_again(ctx, given_up);
++   if (!ok)
+       vkr_context_set_fatal(ctx);
+ }
+ 

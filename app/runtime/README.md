@@ -176,6 +176,21 @@ commit 82927e9. Changes here:
   their first location, past the last); the VM's Mesa splits such arrays into
   single varyings, also at a computed index. Checked by
   `Tests/virgl/test-separable-pervertex.c`
+- `patches/virgl-shader-tess-clip-varyings.patch`: on a desktop GL without cull
+  distances (the Mac) a tessellation control shader passes its clip distances to
+  the evaluation shader as plain varyings (`omacvm_clip0[]`, `omacvm_clip1[]`, no
+  location), not as `gl_ClipDistance` in `gl_out[]`/`gl_in[]`: with those, Apple's
+  Metal pipeline build failed, the draws ran on its CPU vertex path and its
+  shader compiler crashed (#589). Kept as before with cull distances or when the
+  varyings would not fit. Checked by `Tests/virgl/test-core-glsl-shaders.c` and
+  `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-vs-tes-clip-varyings.patch`: the same for a vertex shader
+  whose clip distances go straight to an evaluation shader (no control shader):
+  it writes `omacvm_clip0` (`omacvm_clip1`, no location) instead of
+  `gl_ClipDistance` in its `gl_PerVertex` block, which Apple's Metal pipeline
+  build failed on as well: on the M1 Max those draws ran on its CPU vertex path
+  and drew nothing (#589). Checked by `Tests/virgl/test-core-glsl-shaders.c` and
+  `Tests/virgl/test-whole-program-shapes.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once

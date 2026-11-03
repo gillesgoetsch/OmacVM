@@ -54,6 +54,12 @@ def rows(a):
     return {r.feature.name: r for r in a.rows}
 
 
+def shown(a):
+    """The screen shows what the controller knows: the workers' redraw came
+    (a fixed pause missed it when the app's loop ran late)."""
+    return a.rows == a.c.rows()
+
+
 def test_first_frame_fast(world):
     """The budget is 0.5 s (measured in a real pty by vm_e2e.py). Here the
     process's CPU time is checked against it, and the wall time only loosely:
@@ -75,8 +81,7 @@ def test_statuses_fill_in(world):
     async def go():
         a = app()
         async with a.run_test(size=(110, 30)) as pilot:
-            assert await settle(pilot, lambda: a.c.linked and a.c.vm_checks is not None)
-            await pilot.pause(0.2)
+            assert await settle(pilot, lambda: a.c.linked and a.c.vm_checks is not None and shown(a))
             r = rows(a)
             from omacvm_cc.state import Status
             assert r["bridge"].status is Status.WORKS
@@ -218,7 +223,9 @@ def test_unavailable_does_not_ask_the_mac(world):
     async def go():
         a = app()
         async with a.run_test(size=(110, 30)) as pilot:
-            assert await settle(pilot, lambda: a.c.mac_status is not None)
+            assert await settle(pilot, lambda: a.c.mac_status is not None and shown(a))
+            from omacvm_cc.state import Status
+            assert rows(a)["omanotch"].status is Status.UNAVAILABLE
             names = [r.feature.name for r in a.rows]
             from textual.widgets import DataTable
             a.screen.query_one(DataTable).move_cursor(row=names.index("omanotch"))
@@ -278,7 +285,7 @@ def test_updates_screen_and_silence(world):
             from omacvm_cc.tui import UpdatesScreen
             assert await settle(pilot, lambda: isinstance(a.screen, UpdatesScreen))
             await pilot.press("s")
-            assert await settle(pilot, lambda: not world.checks_enabled and not a.c.checks_enabled)
+            assert await settle(pilot, lambda: not world.checks_enabled and not a.c.checks_enabled and shown(a))
             # Checks off: no marks, no count on the features screen; the Updates screen still shows it.
             assert not any(r.update for r in a.rows) and "update" not in a.subtitle()
             assert rows_with_updates(a)["gestures"].update
@@ -947,9 +954,8 @@ def test_mac_helper_that_did_not_build(world, action, key, state, where):
             if action == "enable":
                 _move_to(a, "gestures")
             await pilot.press(key)
-            await pilot.pause(0.3)
-            from omacvm_cc.tui import ConfirmScreen
-            if isinstance(a.screen, ConfirmScreen):
+            if action == "update":   # an update asks first; waited for, the y is lost before it
+                assert await asks(pilot)
                 await pilot.press("y")
             assert await settle(pilot, lambda: bool(a.last_result), 10)
             r = a.last_result
@@ -1166,7 +1172,9 @@ def test_gpu_memory_row_live(tmp_path, monkeypatch):
             from textual.widgets import DataTable
             t = a.screen.query_one(DataTable)
             t.move_cursor(row=[x.feature.name for x in a.rows].index("gpu-memory"))
-            await pilot.pause(0.1)
+            # The hint follows the cursor a moment later: once it names the row.
+            assert await settle(pilot, lambda: str(a.screen.query_one("#hint").render()).startswith("Graphics memory: "),
+                                seconds=10), str(a.screen.query_one("#hint").render())
             hint = str(a.screen.query_one("#hint").render())
             assert "VM memory is the Mac memory you gave the VM" in hint
             # macOS gets short of memory: the row warns at the next look.
@@ -1249,10 +1257,13 @@ def test_updates_screen_updates_omarchy_too(world, tmp_path, monkeypatch):
         async with a.run_test(size=(110, 40)) as pilot:
             await pilot.press("U")
             from omacvm_cc.tui import ConfirmScreen, UpdatesScreen
-            assert await settle(pilot, lambda: a.omarchy_waiting == 2)
-            body = str(a.screen.query_one("#body").render())
-            assert isinstance(a.screen, UpdatesScreen)
-            assert "Omarchy: 2 updates waiting" in body and "not OmacVM" in body
+            # The count comes from a worker thread; the screen draws it a moment later on a busy
+            # Mac: wait for the drawn body, not for the count.
+            def body():
+                s = a.screen
+                return str(s.query_one("#body").render()) if isinstance(s, UpdatesScreen) and s.query("#body") else ""
+            assert await settle(pilot, lambda: "Omarchy: 2 updates waiting" in body()), body()
+            assert a.omarchy_waiting == 2 and "not OmacVM" in body()
             await pilot.press("o")
             assert await asks(pilot)
             await pilot.press("n")
@@ -1261,9 +1272,7 @@ def test_updates_screen_updates_omarchy_too(world, tmp_path, monkeypatch):
             await pilot.press("o")
             assert await asks(pilot)
             await pilot.press("y")
-            end = time.monotonic() + 3
-            while time.monotonic() < end and not calls.exists():
-                await pilot.pause(0.05)
+            assert await settle(pilot, lambda: calls.exists() and calls.read_text().strip() != "")
             assert calls.read_text().strip() == "omacvm --window update-system --yes"
             # Nothing went to the Mac: this is not the OmacVM update.
             assert not any(p == "/omacvm/jobs" for _, p, _ in world.requests)
@@ -1678,8 +1687,7 @@ def test_graphics_row_fits_and_details_say_it_all(tmp_path, monkeypatch):
     async def go():
         a = app()
         async with a.run_test(size=(80, 30)) as pilot:
-            assert await settle(pilot, lambda: a.c.linked and a.c.graphics() == "vulkan")
-            await pilot.pause(0.2)
+            assert await settle(pilot, lambda: a.c.linked and a.c.graphics() == "vulkan" and shown(a))
             cell = str(a.screen.query_one(DataTable).get_cell("graphics", "note"))
             assert cell == "Vulkan: OpenGL until r builds it", cell
             _move_to(a, "graphics")
@@ -1717,3 +1725,24 @@ def test_keyboard_light_note_only_while_macos_adjusts_it(world):
                 assert "keyboard light" in body
                 assert (S.KEYBOARD_AUTO_NOTE in body) is auto, body
         asyncio.run(go())
+
+
+def test_a_refresh_before_a_screen_is_drawn(world):
+    """A worker's refresh that comes while the details or updates screen is
+    pushed but not drawn yet waits for its own first drawing; it raised
+    NoMatches in the worker, which ends the control centre (CI 10-29, and
+    with every call from a thread 0.3 s late)."""
+    from omacvm_cc.tui import DetailsScreen, UpdatesScreen
+
+    async def go():
+        a = app()
+        async with a.run_test(size=(110, 30)) as pilot:
+            assert await settle(pilot, lambda: a.c.linked and shown(a))
+            for screen, name in ((DetailsScreen("bridge"), "details"), (UpdatesScreen(), "updates")):
+                a.push_screen(screen)
+                assert a.screen is screen and not screen.query(".box"), f"{name}: pushed, not drawn yet"
+                a.refresh_all()
+                assert await settle(pilot, lambda: any(str(w.render()).strip() for w in screen.query("#body"))), name
+                await pilot.press("escape")
+                assert await settle(pilot, lambda: a.screen is not screen), name
+    asyncio.run(go())

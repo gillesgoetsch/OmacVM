@@ -277,7 +277,9 @@ class FeaturesScreen(Screen):
         hint = ""
         if r is not None:
             on = "on" if r.on else "off"
-            hint = f"{r.feature.summary}  ·  {on}, {look.WORD[r.status]}"
+            # Named after its row: a reader (and the release gate's driver) can tell which row it
+            # is about while it is drawn a moment after the cursor moved.
+            hint = f"{r.feature.title}: {r.feature.summary}  ·  {on}, {look.WORD[r.status]}"
         self.query_one("#hint", Static).update(Text(hint, style="bright_black"))
 
     @on(DataTable.RowHighlighted)
@@ -365,9 +367,11 @@ class DetailsScreen(Screen):
         r = self.row()
         if r is None:
             return
+        if not self.query("#body"):   # pushed, not drawn yet (#body comes last): on_mount draws
+            return
+        box = self.query_one(".box")
         app: ControlCentre = self.app  # type: ignore[assignment]
         f = r.feature
-        box = self.query_one(".box")
         box.border_title = f.title
         box.border_subtitle = look.WORD[r.status] if r.status in (S.Status.OFF, S.Status.UNAVAILABLE) else f"on · {look.WORD[r.status]}"
         t = Text()
@@ -487,6 +491,8 @@ class UpdatesScreen(Screen):
         app: ControlCentre = self.app  # type: ignore[assignment]
         u = app.c.updates or {}
         m = u.get("manifest") if isinstance(u.get("manifest"), dict) else None
+        if not self.query("#body"):   # pushed, not drawn yet (#body comes last): on_mount draws
+            return
         box = self.query_one(".box")
         box.border_subtitle = f"checked {local_time(u['checked_at'])}" if u.get("checked_at") else "not checked yet"
         t = Text()

@@ -298,16 +298,15 @@ log() {
 source "$pinned_bottles"
 
 for tool in awk bash chmod curl ditto file grep install mkdir mktemp patch \
-  pkg-config python3 rm sed shasum sw_vers tar uname; do
+  pkg-config rm sed shasum sw_vers tar uname; do
   command -v "$tool" >/dev/null 2>&1 || die "required tool is unavailable: $tool"
 done
-# Apple's /usr/bin/python3 is a shim under SIP: macOS drops DYLD_LIBRARY_PATH
-# for it, so the virgl test binaries it starts below would not find libepoxy.
-# The python3 it stands for (Xcode's or the Command Line Tools') keeps it.
-if [[ $(command -v python3) == /usr/bin/python3 ]] && real_python=$(xcrun -f python3 2>/dev/null) &&
-   [[ -x $real_python && $real_python != /usr/bin/* ]]; then
-  PATH="$(dirname "$real_python"):$PATH"
-fi
+# The build's python3 (3.11 or newer, not Apple's shim): build-python.sh. It
+# goes first in PATH alone, in a folder of its own, so cc and the rest stay
+# as PATH has them (a whole toolchain folder first would shadow /usr/bin/cc,
+# and the Command Line Tools' clang does not find the SDK on its own).
+# shellcheck source=build-python.sh
+source "$native_dir/build-python.sh"
 
 [[ $(uname -s) == Darwin ]] || die "this source build requires macOS"
 [[ $(uname -m) == arm64 ]] || die "this source build requires Apple Silicon (arm64)"
@@ -401,6 +400,9 @@ source_parent="$work_dir/source"
 dependency_root="$work_dir/dependencies"
 tool_root="$work_dir/tools"
 mkdir -p "$archive_dir" "$listing_dir" "$source_parent" "$dependency_root" "$tool_root"
+build_python=$(omacvm_build_python "$work_dir/python-bin") || exit 1
+PATH="$work_dir/python-bin:$PATH"
+log "python3 for the build: $build_python ($(python3 --version 2>&1))"
 
 download_and_verify() {
   local label=$1
@@ -974,6 +976,15 @@ grep -q 'eventsTap = CGEventTapCreate(kCGHIDEventTap, place, kCGEventTapOptionDe
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-tap-no-ask.patch"
 "$native_dir/Tests/keys/test-tap-no-ask.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the full-grab tap is made (and asked for) without the permission (test-tap-no-ask.sh)"
+# mac-ime (#357, from #655): a Shift change the VM took in the full-grab tap
+# also goes on to macOS (an input method's lone-Shift switch watches the
+# system's events), only while an input method has the keys; the input
+# method gets it from the copy macOS gives back. Its rules' test, then the
+# wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift.patch"
+"$native_dir/Tests/keys/test-ime-shift.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: Shift does not go on to macOS as tested (test-ime-shift.sh)"
 # OmacVM.app's "Closing the window" (#358): Shut down, Keep running (the app
 # hidden, the Dock icon brings it back), Ask. Its rules' test, then the wiring.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-close-logic.patch"
@@ -1537,6 +1548,26 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 grep -q 'static void emit_patch_fill(const struct dump_ctx \*ctx,' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q 'key->separable_out = 1;' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c, vrend_renderer.c: separable patch varyings still take a location (patch-varyings patch)"
+# OmacVM: on a desktop GL without cull distances a tessellation control shader passes its
+# clip distances to the evaluation shader as plain varyings (omacvm_clip0[]): gl_ClipDistance
+# in gl_out[] or gl_in[] made Apple's Metal pipeline build fail, the draws ran on its CPU
+# vertex path and its shader compiler crashed (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-tess-clip-varyings.patch"
+grep -q 'static int tcs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d\[gl_InvocationID\].%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (clip_dist && !tcs_clip)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (ctx->num_in_clip_dist && !tes_clip) {' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (gl_in && tes_clip_varyings(ctx)) {' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->tess_clip_in = type == PIPE_SHADER_TESS_EVAL' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: tessellation shaders still pass clip distances in gl_out[]/gl_in[] on the Mac (tess-clip-varyings patch)"
+# OmacVM: ... and so does a vertex shader before an evaluation shader without a control
+# shader (omacvm_clip0): gl_ClipDistance in its gl_PerVertex block failed the same way and
+# the draws drew nothing on the M1 Max's GPU (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-vs-tes-clip-varyings.patch"
+grep -q 'static int vs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d.%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q '(prev->type == PIPE_SHADER_VERTEX && !key->tcs_present)) &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: a vertex shader still passes clip distances to an evaluation shader in gl_PerVertex on the Mac (vs-tes-clip-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
@@ -1650,6 +1681,26 @@ grep -q 'virgl_thread_budget_take("thread of a new Venus ring")' "$virgl_source/
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pass-views.patch"
 grep -q '!vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd->view_count))' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_command_buffer.c: a pass's image views are not checked (pass-views patch)"
+# A test hook stops a guest call between vkr and the driver (the cross-ring tests, #624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-test-pause.patch"
+grep -q 'vkr_test_pause("pipeline");' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: no test pause hook (test-pause patch)"
+# The rings of one app take turns on its objects; pipeline calls run beside them with their
+# objects pinned (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-ring-lock.patch"
+grep -q 'const bool locked = vkr_context_lock(ctx);' "$virgl_source/src/venus/vkr_ring.c" && \
+  grep -q 'if (!vkr_pins_begin(ctx, &pins, "vkCreateGraphicsPipelines", args->device,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_ring.c, vkr_pipeline.c: rings of one app do not take turns (ring-lock patch)"
+# Command buffers hold the image views, framebuffers and render passes their passes named (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-holds.patch"
+grep -q 'if (vkr_device_object_held(ctx, obj, ctx->on_worker_thread))' "$virgl_source/src/venus/vkr_device.c" && \
+  grep -q 'vkr_cmd_unhold_all(cmd);' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_device.c, vkr_command_buffer.c: command buffers do not hold their views (command-holds patch)"
+# A primary holds the secondaries it executed; a freed one waits in the driver for it (#676).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-secondary-holds.patch"
+grep -q 'vkr_command_pool_destroy(ctx, pool->device, pool, true);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'if (vkr_device_object_held(ctx, &obj->base, true)) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
+  die "vkr_command_buffer.c, vkr_device_object.py: primaries do not hold their secondaries (secondary-holds patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

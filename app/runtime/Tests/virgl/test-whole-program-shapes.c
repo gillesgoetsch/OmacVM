@@ -20,6 +20,15 @@
  *        a vertex shader's gl_ClipDistance read from gl_in and written again by a geometry
  *        shader, or by tessellation control and evaluation shaders, whole and separable, with
  *        the planes on, off and on (C13-C16: the geometry shader writes them only for planes on);
+ *        the vertex shader's gl_ClipDistance read by an evaluation shader without a control
+ *        shader (C17, C18; beside a generic varying, 1 and 8 distances: C21-C24), and a
+ *        control shader's gl_ClipDistance its evaluation shader does not read (C19, C20),
+ *        whole and separable, planes on, off and on (on the Mac the control shader passes
+ *        them as varyings: virgl-shader-tess-clip-varyings.patch; the vertex shader before
+ *        an evaluation shader without one too: virgl-shader-vs-tes-clip-varyings.patch,
+ *        whose evaluation shader key is set only in vrend_sync_shader_io, so these rows are
+ *        its only test here; Apple's software renderer never fell back on the old text, so
+ *        they pass before and after it: the GPU rows are in work/v589-vs);
  *        and a vertex shader that writes gl_CullDistance, which the Mac's GL has not: it stays
  *        refused, nothing drawn, no context error, the next rows still draw;
  *  E     a whole program with a varying array into a geometry shader, and one whose
@@ -451,6 +460,97 @@ static const char *tes_clip_pass =
    "  6: MAD TEMP[1].x, IN[2][1].xxxx, SV[0].zzzz, TEMP[1].xxxx\n"
    "  7: MOV OUT[1].x, TEMP[1].xxxx\n"
    "  8: END\n";
+
+/* The vertex shader's clip distances read by an evaluation shader without a control shader,
+ * beside a generic varying the evaluation shader passes on as the colour (C21-C24): on the
+ * Mac the clip distances go as varyings without a location next to the generic's
+ * (virgl-shader-vs-tes-clip-varyings.patch), so a wrong colour or clip shows a mix-up.
+ * One distance (= y) and green: */
+static const char *vs_clip_green =
+   "VERT\n"
+   "PROPERTY NUM_CLIPDIST_ENABLED 1\n"
+   "DCL SV[0], VERTEXID\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\n"
+   "DCL OUT[2], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   "IMM[0] UINT32 {1, 2, 0, 0}\n"
+   "IMM[1] FLT32 {    4.0000,    -1.0000,     0.5000,     1.0000}\n"
+   "IMM[2] FLT32 {    0.0000,     1.0000,     0.0000,     1.0000}\n"
+   VS_POS_BODY
+   "  4: MAD TEMP[1].xy, TEMP[0].xyyy, IMM[1].xxxx, IMM[1].yyyy\n"
+   "  5: MOV TEMP[1].zw, IMM[1].zzzw\n"
+   "  6: MOV OUT[0], TEMP[1]\n"
+   "  7: MOV OUT[1].x, TEMP[1].yyyy\n"
+   "  8: MOV OUT[2], IMM[2]\n"
+   "  9: END\n";
+
+static const char *tes_clip_green =
+   "TESS_EVAL\n"
+   TES_PROPS
+   "PROPERTY NUM_CLIPDIST_ENABLED 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], CLIPDIST[0]\n"
+   "DCL IN[][2], GENERIC[0]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\n"
+   "DCL OUT[2], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   TES_POS
+   "  4: MUL TEMP[1].x, IN[0][1].xxxx, SV[0].xxxx\n"
+   "  5: MAD TEMP[1].x, IN[1][1].xxxx, SV[0].yyyy, TEMP[1].xxxx\n"
+   "  6: MAD TEMP[1].x, IN[2][1].xxxx, SV[0].zzzz, TEMP[1].xxxx\n"
+   "  7: MOV OUT[1].x, TEMP[1].xxxx\n"
+   "  8: MOV OUT[2], IN[0][2]\n"
+   "  9: END\n";
+
+/* eight distances (y, then seven 1.0) and green; the evaluation shader clips on distance 0
+ * times distance 7 */
+static const char *vs_clip8_green =
+   "VERT\n"
+   "PROPERTY NUM_CLIPDIST_ENABLED 8\n"
+   "DCL SV[0], VERTEXID\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\n"
+   "DCL OUT[2], CLIPDIST[1]\n"
+   "DCL OUT[3], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   "IMM[0] UINT32 {1, 2, 0, 0}\n"
+   "IMM[1] FLT32 {    4.0000,    -1.0000,     0.5000,     1.0000}\n"
+   "IMM[2] FLT32 {    0.0000,     1.0000,     0.0000,     1.0000}\n"
+   "IMM[3] FLT32 {    1.0000,     1.0000,     1.0000,     1.0000}\n"
+   VS_POS_BODY
+   "  4: MAD TEMP[1].xy, TEMP[0].xyyy, IMM[1].xxxx, IMM[1].yyyy\n"
+   "  5: MOV TEMP[1].zw, IMM[1].zzzw\n"
+   "  6: MOV OUT[0], TEMP[1]\n"
+   "  7: MOV OUT[1].x, TEMP[1].yyyy\n"
+   "  8: MOV OUT[1].yzw, IMM[3]\n"
+   "  9: MOV OUT[2], IMM[3]\n"
+   " 10: MOV OUT[3], IMM[2]\n"
+   " 11: END\n";
+
+static const char *tes_clip8_green =
+   "TESS_EVAL\n"
+   TES_PROPS
+   "PROPERTY NUM_CLIPDIST_ENABLED 1\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], CLIPDIST[0]\n"
+   "DCL IN[][2], CLIPDIST[1]\n"
+   "DCL IN[][3], GENERIC[0]\n"
+   "DCL SV[0], TESSCOORD\n"
+   "DCL OUT[0], POSITION\n"
+   "DCL OUT[1], CLIPDIST[0]\n"
+   "DCL OUT[2], GENERIC[0]\n"
+   "DCL TEMP[0..1]\n"
+   TES_POS
+   "  4: MUL TEMP[1].x, IN[0][1].xxxx, SV[0].xxxx\n"
+   "  5: MAD TEMP[1].x, IN[1][1].xxxx, SV[0].yyyy, TEMP[1].xxxx\n"
+   "  6: MAD TEMP[1].x, IN[2][1].xxxx, SV[0].zzzz, TEMP[1].xxxx\n"
+   "  7: MUL TEMP[1].x, TEMP[1].xxxx, IN[0][2].wwww\n"
+   "  8: MOV OUT[1].x, TEMP[1].xxxx\n"
+   "  9: MOV OUT[2], IN[0][3]\n"
+   " 10: END\n";
 
 /* records (0.25, 0.5, 0.75, 1) for each evaluated point (emit_shader_so) */
 static const char *tes_xfb =
@@ -967,6 +1067,36 @@ int main(int argc, char **argv)
                         { 0, SHADER_TESS_CTRL, sep ? separable(tcs_clip_pass) : tcs_clip_pass, 0 },
                         { 0, SHADER_TESS_EVAL, sep ? separable(tes_clip_pass) : tes_clip_pass, 0 },
                         { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
+                     PRIM_PATCHES, top);
+         snprintf(text, sizeof(text), "C%d %s: gl_ClipDistance from the vertex shader read by an "
+                  "evaluation shader without a control shader", 17 + sep, sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip) : vs_clip, 0 },
+                        { 0, SHADER_TESS_EVAL, sep ? separable(tes_clip_pass) : tes_clip_pass, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
+                     PRIM_PATCHES, top);
+         snprintf(text, sizeof(text), "C%d %s: a control shader's gl_ClipDistance its evaluation "
+                  "shader does not read", 19 + sep, sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip) : vs_clip, 0 },
+                        { 0, SHADER_TESS_CTRL, sep ? separable(tcs_clip_pass) : tcs_clip_pass, 0 },
+                        { 0, SHADER_TESS_EVAL, sep ? separable(tes_pos) : tes_pos, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_green) : fs_green, 0 }, { 0 } },
+                     PRIM_PATCHES, top);
+         snprintf(text, sizeof(text), "C%d %s: the vertex shader's gl_ClipDistance and a generic "
+                  "varying read by an evaluation shader without a control shader", 21 + sep,
+                  sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip_green) : vs_clip_green, 0 },
+                        { 0, SHADER_TESS_EVAL, sep ? separable(tes_clip_green) : tes_clip_green, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_varying) : fs_varying, 0 }, { 0 } },
+                     PRIM_PATCHES, top);
+         snprintf(text, sizeof(text), "C%d %s: the same with 8 clip distances", 23 + sep,
+                  sep ? "separable" : "whole");
+         toggle_rows(text, (const struct stage[]){
+                        { 0, SHADER_VERTEX, sep ? separable(vs_clip8_green) : vs_clip8_green, 0 },
+                        { 0, SHADER_TESS_EVAL, sep ? separable(tes_clip8_green) : tes_clip8_green, 0 },
+                        { 0, SHADER_FRAGMENT, sep ? separable(fs_varying) : fs_varying, 0 }, { 0 } },
                      PRIM_PATCHES, top);
       }
       /* its own context: the refusal is logged once per context */

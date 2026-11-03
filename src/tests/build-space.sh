@@ -85,6 +85,13 @@ has() { [[ $2 == *"$1"* ]] && echo yes || echo "$2"; }
   expect "utm in UTM's library, 20 GB on the Mac: refused" yes "$(has "30 GB free on this Mac's disk to build (UTM's library); it has 20 GB free" "$(try utm "" build)")"
   HOME_GB=60
   expect "utm in UTM's library, 60 GB: builds" ok "$(try utm "" build)"
+
+  # space_problem stops reading at a drive that is too small: the rest of
+  # space_targets goes quietly where SIGPIPE is ignored (CI runners: bash's
+  # "printf: write error: Broken pipe"). A slow drive look makes it sure.
+  drive_id() { sleep 0.3; [[ $1 == /Volumes/SD4TB* ]] && echo sd || echo int; }
+  HOME_GB=100 SD_GB=5
+  expect "SIGPIPE ignored, the VM's drive too small: nothing on stderr" "" "$( (trap '' PIPE; try parallels "$SD" build >/dev/null) 2>&1)"
   exit "$fail"
 ) || fail=1
 

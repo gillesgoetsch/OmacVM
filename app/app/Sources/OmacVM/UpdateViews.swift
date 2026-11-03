@@ -48,7 +48,7 @@ struct UpdateBanner: View {
         }
     }
 
-    private func line(_ news: WhatsNew?) -> String {
+    private func line(_ news: WhatsNewList?) -> String {
         if updater.restarting { return "The VM shuts down for the update and starts again with the new version." }
         if updater.installWhenIdle { return "It goes in once the VM has shut down. Your VMs are not changed." }
         return news?.summary() ?? "You have \(updater.currentVersion). Your VMs are not changed."
@@ -63,7 +63,8 @@ struct UpdateBanner: View {
     }
 }
 
-/// What's New: the new version's section of its CHANGELOG.md.
+/// What's New: the new version's section of its CHANGELOG.md, and when the
+/// update skips versions, theirs too (newest first, each under its version).
 struct WhatsNewSheet: View {
     @ObservedObject var updater: Updater
     var running: Bool
@@ -72,30 +73,45 @@ struct WhatsNewSheet: View {
     var body: some View {
         let s = updater.staged
         let news = s.flatMap { updater.whatsNew($0) }
+        let sections = news?.sections ?? []
         SheetFrame(title: "What’s New in \(Product.name) \(s?.version ?? "")") {
-            if let intro = news?.intro {
-                Text(Self.markdown(intro)).fixedSize(horizontal: false, vertical: true)
-            }
-            ScrollView {
-                Card {
-                    ForEach(Array((news?.items ?? []).enumerated()), id: \.offset) { _, item in
-                        HStack(alignment: .firstTextBaseline, spacing: 9) {
-                            Circle().fill(Color.accentColor).frame(width: 6, height: 6).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
-                            Text(Self.markdown(item))
-                                .font(.system(size: 12.5))
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+            if sections.count <= 1 {
+                // One version: as it always looked.
+                if let intro = sections.first?.news.intro {
+                    Text(Self.markdown(intro)).fixedSize(horizontal: false, vertical: true)
+                }
+                ScrollView { Self.card(sections.first?.news.items ?? []) }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(maxHeight: 440)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                // Several: all in the one scroll area, so the sheet keeps its height.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(Array(sections.enumerated()), id: \.offset) { i, section in
+                            Text(section.version)
+                                .font(.system(size: 13, weight: .semibold))
+                                .padding(.top, i == 0 ? 0 : 8)
+                                .accessibilityAddTraits(.isHeader)
+                                .accessibilityLabel("\(Product.name) \(section.version)")
+                            if let intro = section.news.intro {
+                                Text(Self.markdown(intro)).fixedSize(horizontal: false, vertical: true)
+                            }
+                            if !section.news.items.isEmpty { Self.card(section.news.items) }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
                     }
                 }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: 440)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .frame(maxHeight: 440)
-            .fixedSize(horizontal: false, vertical: true)
-            if let n = s?.notes {
+            if let note = news?.omittedNote {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(note).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Link("Changelog on GitHub", destination: WhatsNewList.changelogURL).fixedSize()
+                }
+                .font(.subheadline)
+            } else if let n = s?.notes {
                 Link("Release notes on GitHub", destination: n).font(.subheadline)
             }
         } buttons: {
@@ -108,6 +124,23 @@ struct WhatsNewSheet: View {
                 Button(UpdateBanner.updateTitle(running: running)) { done(); UpdateBanner.update(updater) }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    static func card(_ items: [String]) -> some View {
+        Card {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Circle().fill(Color.accentColor).frame(width: 6, height: 6).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
+                    Text(markdown(item))
+                        .font(.system(size: 12.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
             }
         }
     }

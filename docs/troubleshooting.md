@@ -1769,9 +1769,17 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   case. "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log is expected: Apple's
   OpenGL records transform feedback from a tessellation evaluation shader on its software vertex
   path (on the CPU); the values are right.
+- **3.2.19:** a program whose tessellation control shader passes clip distances to its evaluation
+  shader ran on Apple's CPU vertex path with 3.2.18 ("Fallback to SW vertex processing because
+  buildPipelineState failed" in qemu.log, a first draw of ~270 ms, MTLCompilerService crash
+  reports), and on the M1 Max often drew nothing; 3.2.19 passes them as plain varyings and the
+  draws stay on the GPU. 3.2.19 does the same for a vertex shader that passes clip distances
+  straight to an evaluation shader (no control shader); on the M1 Max such draws drew nothing.
+  Update the app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
-  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`; test
-  `app/runtime/Tests/virgl/test-whole-program-shapes.c`;
+  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
+  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19); tests
+  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.
 
@@ -1804,6 +1812,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   `virgl-venus-pipeline-formats.patch`, `virgl-venus-submit-counts.patch`,
   `virgl-venus-pool-frees.patch`, `virgl-venus-dedicated-memory.patch`,
   `virgl-venus-pass-views.patch`, `virgl-venus-thread-budget.patch` (the
-  threads line); tests `app/runtime/Tests/virgl/test-venus-commands.c`,
+  threads line), `virgl-venus-ring-lock.patch` (two threads of one app: `a
+  pipeline call of another thread uses it`, `its id was taken while it was
+  made`), `virgl-venus-command-holds.patch`, `virgl-venus-secondary-holds.patch`; tests `app/runtime/Tests/virgl/test-venus-commands.c`,
   `test-venus-threads.c`, `fuzz-venus-spirv.sh`, `venus-command-ledger.tsv`;
   ADR 0065.
