@@ -197,11 +197,17 @@ commit 82927e9. Changes here:
   distances written in a loop that way, and `temp18[i].x` on a plain `vec4` did
   not compile on the Mac ("Swizzle of non-vector primitive float"), so those draws
   were skipped (#589). Indexed writes use the address register they name. In such a
-  loop the VM's Mesa still copies only distances 0..3 back to their output, and the
-  Mac's GPU draws nothing for a vertex shader that writes `gl_ClipDistance[4..7]`
-  into a control shader, whole or separable (both open in #692). Checked
+  loop the VM's Mesa still copies only distances 0..3 back to their output (a patch
+  for OmacVM's own guest Mesa build, `src/app/guest/mesa/`, #692). Checked
   by `Tests/virgl/test-core-glsl-shaders.c` and `Tests/virgl/test-whole-program-shapes.c`
   (L rows)
+- `patches/virgl-shader-vs-tcs-clip-varyings.patch`: a vertex shader before a
+  tessellation control shader passes its clip distances as plain varyings
+  (`omacvm_vclip0`/`omacvm_vclip1`, no location) instead of `gl_ClipDistance` in its
+  `gl_PerVertex` block; the control shader reads them like the evaluation shader
+  reads `omacvm_clipK[]`. With `gl_ClipDistance[4..7]` in that block the M4's and
+  M1 Max's GPUs drew nothing (#692). Checked by `Tests/virgl/test-core-glsl-shaders.c`
+  and the L rows of `Tests/virgl/test-whole-program-shapes.c` on the GPU
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
