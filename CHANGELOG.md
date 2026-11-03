@@ -14,7 +14,7 @@ in more words.
   Apple's software renderer; with 5 to 8 before a control shader, see the next entry. Needs the
   app update (from the VM's next start).
 - **OpenGL programs whose vertex shader writes 5 to 8 clip distances in a loop into a
-  tessellation control shader draw on the Mac's GPU (OmacVM.app, #PRA, see #589).** With
+  tessellation control shader draw on the Mac's GPU (OmacVM.app, #695, see #589).** With
   `gl_ClipDistance[4..7]` going from a vertex shader into a control shader, the M4's and M1 Max's
   GPUs drew nothing (Apple's software renderer drew it); the VM's Mesa sends that when the vertex
   shader writes its distances in a loop. The vertex shader now passes them to the control shader
