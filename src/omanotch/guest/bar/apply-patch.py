@@ -46,6 +46,11 @@ What the patch adds:
     a bar's room; with FullPanel's bar they keep the strip's height and the
     gap (barSizeFor, which Omarchy's notifications ask from about October
     2026; older ones get guest/omanotch-notifications.sh).
+  * Omarchy's tray in the strip (#662): its icons take the helper's clicks
+    and scrolls as their own mouse area does (they are no click targets),
+    and a left click on the drawer's chevron opens or closes the drawer on
+    both bars of the strip (it opens on hover, which the strip does not pass
+    on); it closes when the pointer leaves the strip or the strip goes.
 
 Omarchy's Bar.qml changed in October 2026 (upstream's notch floor from
 display-cutouts.json, a bar thickness per screen, the centre's hover area):
@@ -56,7 +61,7 @@ import os
 import sys
 
 MARK = "omarchy-notch-bar"
-VERSION = 35
+VERSION = 36
 VERSION_LINE = f"// omarchy-notch-bar patch v{VERSION}"
 
 
@@ -88,6 +93,8 @@ PIECES = [
     "  function notchPeekActiveIn(area) {\n",                               # 1. their width at rest
     "    function notchSettle() {\n",                                         # 9. one glide per change
     "    property bool notchHold: false\n",                                  # 8. a list made again
+    "  function notchTraySpans(onNotch) {\n",                                # 1. Omarchy's tray (#662)
+    "    function onNotchParkedChanged() { root.notchTraySet(false, \"\", \"\") }\n",  # 2. its drawer closes
 ]
 
 
@@ -325,6 +332,8 @@ def main():
   // pointer is on the bar's free space and stay until it leaves the bar.
   property bool notchHovering: false
   function notchHover(x) {
+    // Leaving the strip closes a tray's drawer, as leaving the drawer does.
+    if (x < 0) root.notchTraySet(false, "", "")
     var stock = typeof root.setCenterSectionHovered === "function" && typeof root.setBarHovered === "function"
     if (x < 0 || root.barHidden || root.notchFullscreen) {
       if (!root.notchHovering) return "off"
@@ -346,9 +355,13 @@ def main():
       var w = targetWindow(t)
       if (!w || !w.screen || String(w.screen.name) !== notchParkedScreen) continue
       // x only: the bar is a single row, and the parked copy is 1 px tall.
-      var p = t.mapToItem(w.contentItem, 0, 0)
-      if (x >= p.x && x < p.x + t.width) return t
+      var s = notchSpan(t, w)
+      if (s && x >= s[0] && x < s[0] + s[1]) return t
     }
+    // Omarchy's tray icons are no click targets (#662).
+    var icons = notchTraySpans(false)
+    for (var j = 0; j < icons.length; j++)
+      if (x >= icons[j][1][0] && x < icons[j][1][0] + icons[j][1][1]) return notchTrayTarget(icons[j][0])
     return null
   }
   function notchTargetRects() {
@@ -358,10 +371,130 @@ def main():
       if (!moduleTargetClickable(t) || t.enabled === false) continue
       var w = targetWindow(t)
       if (!w || !w.screen || String(w.screen.name).indexOf("NOTCH") !== 0) continue
-      var p = t.mapToItem(w.contentItem, 0, 0)
-      out.push([Math.round(p.x), Math.round(p.y), Math.round(t.width), Math.round(t.height)])
+      var s = notchSpan(t, w)
+      if (s) out.push([Math.round(s[0]), Math.round(s[2]), Math.round(s[1]), Math.round(t.height)])
+    }
+    var icons = notchTraySpans(true)
+    for (var j = 0; j < icons.length; j++)
+      out.push([Math.round(icons[j][1][0]), Math.round(icons[j][1][2]), Math.round(icons[j][1][1]),
+                Math.round(icons[j][0].height)])
+    return out
+  }
+  // Omarchy's tray (#662). Its icons are plain items with a mouse area of
+  // their own, not click targets, and its drawer opens on hover, which the
+  // strip does not pass on. So the strip finds the icons by their shape and
+  // presses them as their mouse area does, and a left click on the drawer's
+  // chevron opens or closes the drawer on both bars of the strip (the parked
+  // one takes the clicks, NOTCH shows it). A tray: `expanded`, its drawer's
+  // items and openTrayMenu; an icon: displayMenu and a tray item that can
+  // activate. A clone of the tray has the same shape.
+  function notchIsTray(item) {
+    return !!item && typeof item.expanded === "boolean" && item.drawerItems !== undefined &&
+      typeof item.openTrayMenu === "function"
+  }
+  function notchTrayOf(item, depth) {
+    for (var p = item, i = 0; p && i <= depth; p = p.parent, i++)
+      if (notchIsTray(p)) return p
+    return null
+  }
+  function notchIsTrayIcon(item) {
+    return !!item && typeof item.displayMenu === "function" && !!item.modelData &&
+      typeof item.modelData.activate === "function"
+  }
+  function notchTrayIconsIn(item, depth, out) {
+    var kids = item && depth <= 8 ? item.children || [] : []
+    for (var i = 0; i < kids.length; i++) {
+      if (notchIsTrayIcon(kids[i])) out.push(kids[i])
+      else notchTrayIconsIn(kids[i], depth + 1, out)
     }
     return out
+  }
+  // How far the drawer still slides (600 ms): the strip asks for its targets
+  // meanwhile, and a click then means where the icons end up.
+  function notchTrayDx(tray) {
+    var e = Number(tray.drawerExtent), r = Number(tray.revealProgress)
+    if (!(e > 0) || !isFinite(r)) return 0
+    return -e * ((tray.expanded ? 1 : 0) - r)
+  }
+  // Where an item shows on window w: [x, width, y], x only. For the tray's
+  // chevron and its drawer's icons where the slide ends, cut to the drawer
+  // (a closed drawer's icons: null).
+  function notchSpan(t, w) {
+    var p = t.mapToItem(w.contentItem, 0, 0)
+    var chevron = t.text === "\\uf053"
+    var tray = chevron || notchIsTrayIcon(t) ? notchTrayOf(t, 8) : null
+    if (!tray) return [p.x, t.width, p.y]
+    var a = p.x, b = p.x + t.width, clips = []
+    for (var c = t.parent; c && c !== tray; c = c.parent) if (c.clip === true) clips.push(c)
+    if (chevron || clips.length) {
+      var dx = notchTrayDx(tray)
+      a += dx
+      b += dx
+    }
+    for (var i = 0; i < clips.length; i++) {
+      var q = clips[i].mapToItem(w.contentItem, 0, 0)
+      a = Math.max(a, q.x)
+      b = Math.min(b, q.x + clips[i].width)
+    }
+    return b - a >= 1 ? [a, b - a, p.y] : null
+  }
+  // The tray icons that show on the strip's bars: the parked one (false) or
+  // NOTCH (true), as [icon, span].
+  function notchTraySpans(onNotch) {
+    var out = []
+    for (var i = 0; i < moduleSlots.length; i++) {
+      var s = moduleSlots[i], tray = s ? s.activeItem : null
+      if (!notchIsTray(tray) || s.enabled === false || tray.visible === false) continue
+      var w = slotWindow(s), n = w && w.screen && w.contentItem ? String(w.screen.name) : ""
+      if (onNotch ? n.indexOf("NOTCH") !== 0 : n !== notchParkedScreen) continue
+      var icons = notchTrayIconsIn(tray, 0, [])
+      for (var j = 0; j < icons.length; j++) {
+        var it = icons[j]
+        if (it.visible !== true || !(it.width > 0) || it.enabled === false) continue
+        var sp = notchSpan(it, w)
+        if (sp) out.push([it, sp])
+      }
+    }
+    return out
+  }
+  // A tray icon as a click target: the buttons and the wheel as its own mouse
+  // area takes them.
+  function notchTrayTarget(it) {
+    return {
+      trayIcon: it,
+      triggerPress: function(button) {
+        var at = { x: it.width / 2, y: it.height / 2 }
+        if (button === Qt.RightButton) it.displayMenu(at)
+        else if (button === Qt.MiddleButton) it.modelData.secondaryActivate()
+        else if (it.modelData.onlyMenu) it.displayMenu(at)
+        else it.modelData.activate()
+      },
+      wheelMoved: function(delta) { it.modelData.scroll(delta, false) }
+    }
+  }
+  // The drawer of the trays on the strip's two bars, open or closed: the
+  // module `name` in `region`, or every tray there (name ""). Not saved: a
+  // bar out of the strip has its own hover again.
+  function notchTraySet(open, name, region) {
+    for (var i = 0; i < moduleSlots.length; i++) {
+      var s = moduleSlots[i], tray = s ? s.activeItem : null
+      if (!notchIsTray(tray) || tray.expanded === open) continue
+      if (name && (s.moduleName !== name || s.region !== region)) continue
+      var w = slotWindow(s), n = w && w.screen ? String(w.screen.name) : ""
+      if (n === notchParkedScreen || n.indexOf("NOTCH") === 0) tray.expanded = open
+    }
+  }
+  // A left click on a tray's chevron: its drawer opens or closes. False for
+  // any other target.
+  function notchTrayToggle(t) {
+    var tray = t && t.text === "\\uf053" ? notchTrayOf(t, 4) : null
+    if (!tray) return false
+    var open = !tray.expanded
+    for (var i = 0; i < moduleSlots.length; i++)
+      if (moduleSlots[i] && moduleSlots[i].activeItem === tray)
+        notchTraySet(open, moduleSlots[i].moduleName, moduleSlots[i].region)
+    tray.expanded = open
+    return true
   }
   // Skip the notch (OmacVM.app's setting for a VM, off by default): on a bar
   // in the notch strip, items that no longer fit on their side of the camera
@@ -578,6 +711,9 @@ def main():
       if (root.barHidden || root.notchFullscreen) return "miss"
       var t = root.notchTargetAt(x, y)
       if (!t) return "miss"
+      // The tray's drawer opens on hover only; from the strip a left click
+      // on its chevron does it (#662). Right and middle stay Omarchy's.
+      if (button !== 2 && button !== 3 && root.notchTrayToggle(t)) return "ok"
       t.triggerPress(button === 3 ? Qt.MiddleButton : button === 2 ? Qt.RightButton : Qt.LeftButton)
       return "ok"
     }
@@ -630,6 +766,17 @@ def main():
       }
       return JSON.stringify(out)
     }
+    // Each tray's drawer: [screen, id, open, how far it has slid (0-1)].
+    function trays(): string {
+      var out = []
+      for (var i = 0; i < root.moduleSlots.length; i++) {
+        var s = root.moduleSlots[i], w = s ? root.slotWindow(s) : null
+        if (!s || !root.notchIsTray(s.activeItem) || !w || !w.screen) continue
+        out.push([String(w.screen.name), s.moduleName, s.activeItem.expanded,
+                  Math.round(Number(s.activeItem.revealProgress) * 100) / 100])
+      }
+      return JSON.stringify(out)
+    }
   }
 
   // Heartbeat and state go through two small files in
@@ -659,6 +806,14 @@ def main():
                                             fullpanel: notchPanel.length ? (notchPanelOn ? "strip" : "waiting") : "off" }) + "\n")
   }
   onNotchParkedChanged: notchWriteState()
+  // A tray's drawer opened from the strip closes when the strip goes (the
+  // bar comes back with its own hover), and when the strip shows no bar.
+  Connections {
+    target: root
+    function onNotchParkedChanged() { root.notchTraySet(false, "", "") }
+    function onBarHiddenChanged() { if (root.barHidden) root.notchTraySet(false, "", "") }
+    function onNotchFullscreenChanged() { if (root.notchFullscreen) root.notchTraySet(false, "", "") }
+  }
   onNotchPanelOnChanged: notchWriteState()
   onBarSizeChanged: notchWriteState()
   Timer {
