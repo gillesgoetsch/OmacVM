@@ -694,3 +694,67 @@ destroyed; plain MoltenVK and KosmicKrisp submit it without a crash. After, 7 of
 7 on all five; the whole file (`run-venus-limits.py`) 351 ok on KosmicKrisp (4
 skipped), MoltenVK (13) and with prefill (21), 52 under libgmalloc on both, no
 teardown zombie line, no GPU restart.
+
+## A structure type twice in a chain (amendment, 3.2.20)
+
+Lane `v624-rest` (#624's "structure types chained twice on the calls other than
+these" above). Read in vkr at #683's head (9462653d), Mesa e5f06878 (KosmicKrisp,
+the runtime, the guest's Venus driver) and MoltenVK 1.4.2.
+
+vkr's checks read the first struct of a type (`vkr_find_struct`); the drivers
+read the last. Mesa's `vk_common_CreateRenderPass` (KosmicKrisp) keeps the last
+`VkRenderPassMultiviewCreateInfo` and reads its masks for every subpass;
+MoltenVK's `vkCmdBeginRenderPass` keeps the last
+`VkRenderPassAttachmentBeginInfo`, whose views vkr had not checked or held. Both
+drivers keep the last of others too (plane info, stencil usage, vertex
+divisors, ycbcr, border and reduction info). Every struct concerned has a
+`VUID-<struct>-sType-unique` rule; the exceptions some allow (Metal export and
+import structs) are not in venus-protocol, so the decoder ends the context on
+them first. The guest's Venus driver keeps one slot per type when it rewrites a
+chain, so legal input never reaches vkr with a repeat.
+
+- `virgl-venus-chain-repeats.patch` (last in the series): `vkr_chain_repeat`
+  compares each struct with the ones before it and stops at the first repeat
+  (at most the known types squared). Every chain a vkr check reads goes through
+  it first, through its call's refusal path: image create info (also the
+  `vkGetDeviceImage*` queries; before vkr's own fixes), image binds, image
+  memory requirements, samplers, buffers (before vkr's fixes) and buffer
+  views, descriptor set layouts, writes (also push descriptors), set
+  allocation and pools, render passes (v1, v2 and each v2 subpass), begins,
+  framebuffers, a secondary's inheritance, dynamic rendering, shader stages
+  (vkr scans the first chained SPIR-V only), graphics pipelines with their
+  vertex input, multisample and color blend states, compute pipelines. The
+  text names the type: "structure type 1000053000 twice in the chain of
+  VkRenderPassCreateInfo".
+- Left alone: `VkDeviceCreateInfo` (repeats of `VkDevicePrivateDataCreateInfo`
+  are legal; MoltenVK sets each feature from every struct in turn, so the last
+  wins, Mesa ORs them; vkr reads robustness2's `nullDescriptor`, which MoltenVK
+  refuses in any struct and Mesa then has on; maintenance6, which MoltenVK's
+  NULL index buffer path does not need; texel buffer alignment, which no
+  offset ends the process on), the image format query (vkr changes its first
+  external info: a repeat asks the driver about DMA_BUF, unsupported), views
+  (vkr reads nothing in their chains), output chains, and vkr's own ring and
+  queue chains.
+
+A check in the decoder (this ADR's earlier note) would also refuse the legal
+repeats of `VkDeviceCreateInfo`, and it cannot say which chain a check reads;
+one call per checked chain keeps the exceptions in view.
+
+Tests: 25 cases in `test-venus-commands.c` (21 `-repeat-` cases that must be
+refused, 4 `-two-types-ok` controls), 6 `repeat-` cases in
+`test-venus-image-limits.c` (5 refused, 1 control); the rows below ran them
+beside r-ok, r-mv-legal-9, r-fb-fewer, d-ok, p-gfx-ok, c-inherit-ok, opt-2d and
+bind-disjoint-planes-ok (39 cases a run). On the M1 Max (virgl-only builds of
+9462653d and of this one, this one's test files, drivers of the 3.2.18 test app,
+3 runs each on KosmicKrisp, MoltenVK, MoltenVK with prefill and both under
+libgmalloc): before, every refusal case works or ends the process:
+r-repeat-multiview ends it on KosmicKrisp (SIGABRT, Metal), r-repeat-multiview-
+short on both drivers (SIGBUS: Mesa and MoltenVK read the second struct's one
+mask for both subpasses, into a guard page), r-repeat-attachment-begin on
+MoltenVK with prefill (SIGSEGV when it encodes); after, all 39 as expected on
+all five, no crash report. The whole file (`run-venus-limits.py`) on this
+build: 376 ok on KosmicKrisp (4 skipped), MoltenVK (13) and with prefill (21),
+55 under libgmalloc on both, the image file 113 on both, no GPU restart.
+KosmicKrisp timing (20000 calls, A B B A): `vkUpdateDescriptorSets` 0.024,
+0.024, 0.025, 0.024 us; a render pass begin and end 13.82, 13.32, 13.29,
+13.55 us: no change outside the noise.

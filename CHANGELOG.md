@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.20 (unreleased)
+
+- **A Vulkan program that chains one structure type twice no longer gets past QEMU's checks
+  (OmacVM.app, #687, see #624).** With Graphics on Vulkan, QEMU checked the first of two
+  structures of one type and the Mac's driver used the last: a render pass with a second
+  multiview structure of 9 views ended the VM on KosmicKrisp. Vulkan does not allow such a chain;
+  now it ends only that program's Vulkan connection. Needs the app update.
+
 ## 3.2.19
 
 In OmacVM.app VMs, a Vulkan program's threads take turns in QEMU, and what a recorded command buffer
