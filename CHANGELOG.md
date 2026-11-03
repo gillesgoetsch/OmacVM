@@ -21,7 +21,7 @@ in more words.
   One case stays in the VM's Mesa: a control shader that copies 5 to 8 distances in a loop gets
   only 0..3 back, and 4..7 are then undefined. On the M4 they read 0 (the draw is there, but a
   negative one does not clip), on the M1 Max they clip the draw away. OmacVM's own guest Mesa
-  build has that fix (#694); the VM's Arch Mesa does not. One statement per distance avoids it.
+  build has a patch for it (#694); the VM's Arch Mesa does not. One statement per distance avoids it.
   Needs the app update (from the VM's next start).
 
 ## 3.2.19
