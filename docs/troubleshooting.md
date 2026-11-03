@@ -1781,11 +1781,12 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   ("Swizzle of non-vector primitive float" in qemu.log after "the host refused a shader") and
   its draws were skipped; 3.2.20 compiles it. A vertex shader that writes `gl_ClipDistance[4..7]`
   into a control shader drew nothing on the M1 Max and M4 GPUs; 3.2.20 passes them as plain
-  varyings too, and those draws draw. One case is left in the VM's Mesa: a control shader that
-  copies 5 to 8 distances in a loop gets only 0..3 back, so a negative distance 4..7 does not clip
-  (a patch for OmacVM's own guest Mesa build, `src/app/guest/mesa/`, not used by the VM's Arch
-  Mesa; #692). One statement per distance avoids it: the VM's Mesa then passes them as plain
-  varyings. Update the app.
+  varyings too. One case is left in the VM's Mesa: a control shader that copies 5 to 8 distances
+  in a loop gets only 0..3 back, and 4..7 are undefined. On the M4 they read 0 (a negative one
+  does not clip), on the M1 Max the draw is clipped away. The fix is a patch for OmacVM's own
+  guest Mesa build (`src/app/guest/mesa/`, #694), which the VM's Arch Mesa does not have. One
+  statement per distance avoids it: the VM's Mesa then passes them as plain varyings. Update the
+  app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
   `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),

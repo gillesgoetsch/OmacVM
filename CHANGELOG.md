@@ -13,15 +13,16 @@ in more words.
   up to 4 distances it draws what one statement per distance draws, on the M1 Max and M4 GPUs and
   Apple's software renderer; with 5 to 8 before a control shader, see the next entry. Needs the
   app update (from the VM's next start).
-- **OpenGL programs whose vertex shader writes 5 to 8 clip distances in a loop into a
-  tessellation control shader draw on the Mac's GPU (OmacVM.app, #695, see #589).** With
-  `gl_ClipDistance[4..7]` going from a vertex shader into a control shader, the M4's and M1 Max's
-  GPUs drew nothing (Apple's software renderer drew it); the VM's Mesa sends that when the vertex
-  shader writes its distances in a loop. The vertex shader now passes them to the control shader
-  as plain varyings, as 3.2.19 does before an evaluation shader. One case stays in the VM's Mesa:
-  a control shader that copies 5 to 8 distances in a loop gets only 0..3 back, so a negative
-  distance 4..7 does not clip (OmacVM's own guest Mesa build has the fix, #694; the VM's Arch Mesa
-  does not). One statement per distance avoids it. Needs the app update (from the VM's next start).
+- **A vertex shader's clip distances 4..7 reach a tessellation control shader on the Mac's GPU
+  (OmacVM.app, #695, see #589).** With `gl_ClipDistance[4..7]` going from a vertex shader into a
+  control shader, the M4's and M1 Max's GPUs drew nothing (Apple's software renderer drew it); the
+  VM's Mesa sends that when the vertex shader writes its distances in a loop. The vertex shader now
+  passes them to the control shader as plain varyings, as 3.2.19 does before an evaluation shader.
+  One case stays in the VM's Mesa: a control shader that copies 5 to 8 distances in a loop gets
+  only 0..3 back, and 4..7 are then undefined. On the M4 they read 0 (the draw is there, but a
+  negative one does not clip), on the M1 Max they clip the draw away. OmacVM's own guest Mesa
+  build has that fix (#694); the VM's Arch Mesa does not. One statement per distance avoids it.
+  Needs the app update (from the VM's next start).
 
 ## 3.2.19
 
