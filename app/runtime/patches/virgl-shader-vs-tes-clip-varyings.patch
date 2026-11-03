@@ -21,7 +21,7 @@ Test: Tests/virgl/test-core-glsl-shaders.c: the GLSL of a vertex shader with cli
 before an evaluation shader without a control shader on the Mac's config (whole and
 separable, 1 and 8 distances) has no gl_ClipDistance and compiles on the Mac's GL; with a
 control shader, as the last stage, with cull distances or on GLES it keeps its text.
-Tests/virgl/test-whole-program-shapes.c C17, C18, C21 and C22 draw the same (the only test
+Tests/virgl/test-whole-program-shapes.c C17, C18 and C21-C24 draw the same (the only test
 of the key change in vrend_renderer.c).
 
 --- a/src/vrend/vrend_renderer.c
