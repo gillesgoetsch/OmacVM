@@ -77,6 +77,11 @@ in more words.
   program's Vulkan connection since 3.2.14. Now it binds, and a plane the image does not have is
   still refused. Nothing that bound before is refused now. Needs the app update.
 
+- Tests: app-drive-drop.sh no longer fails with "rename image not under /Volumes: ''" when other
+  disk images attach at the same time. hdiutil then can print the volume's line (with its mount
+  point) before the disk's own lines; the test took the last line. It now takes the line that has
+  the mount point, and when there is none prints hdiutil's output and detaches the image.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
