@@ -7,6 +7,7 @@ in more words.
 
 - **A Vulkan program can no longer end the VM with too many drawing passes, or make QEMU hold memory without limit
   (OmacVM.app, #700, see #624).** With Graphics on Vulkan, about 98000 clears or passes in one command buffer
+  (or 74000-82000 draws of a kind that starts a new pass on the Mac, such as triangle fans)
   crashed QEMU on the Mac's GPU, and a program could record commands or make objects until QEMU held many
   gigabytes. Now QEMU counts both per program and ends only that program's Vulkan connection when it goes too far
   (16384 passes per command buffer; a quarter of the apps' GPU memory share, at most 4 GB, for recordings and
