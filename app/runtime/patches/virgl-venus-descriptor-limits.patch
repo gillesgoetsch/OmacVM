@@ -1187,10 +1187,10 @@ index 1a31cfa..9186001 100644
  vkr_descriptor_pool_release(struct vkr_context *ctx, struct vkr_descriptor_pool *pool)
  {
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index 9a9d6b1..8fbb97b 100644
+index d560197..02d95f7 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
-@@ -687,7 +687,14 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+@@ -690,7 +690,14 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
        return;
     }
  
@@ -1206,7 +1206,7 @@ index 9a9d6b1..8fbb97b 100644
  }
  
  static void
-@@ -742,7 +749,15 @@ vkr_dispatch_vkCreateSampler(struct vn_dispatch_context *dispatch,
+@@ -745,7 +752,15 @@ vkr_dispatch_vkCreateSampler(struct vn_dispatch_context *dispatch,
        return;
     }
  
@@ -1223,7 +1223,7 @@ index 9a9d6b1..8fbb97b 100644
  }
  
  static void
-@@ -757,7 +772,12 @@ vkr_dispatch_vkCreateSamplerYcbcrConversion(
+@@ -760,7 +775,12 @@ vkr_dispatch_vkCreateSamplerYcbcrConversion(
     struct vn_dispatch_context *dispatch,
     struct vn_command_vkCreateSamplerYcbcrConversion *args)
  {

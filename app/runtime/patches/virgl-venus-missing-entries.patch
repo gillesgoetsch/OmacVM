@@ -150,10 +150,10 @@ index f7cbebb..fc2ba2d 100644
           return false;
        }
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index 0d4daaf..63853fb 100644
+index f5f066c..2cfd408 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
-@@ -551,12 +551,12 @@ vkr_dispatch_vkGetImageSubresourceLayout2(
+@@ -554,12 +554,12 @@ vkr_dispatch_vkGetImageSubresourceLayout2(
  
     /* OmacVM: only a subresource of the image, and only on a device that has the call (a
      * guest can send any command: an entry point of an API version or extension the device
@@ -169,7 +169,7 @@ index 0d4daaf..63853fb 100644
         !vkr_image_subresource_ok(image->format, image->drm_linear, image->mip_levels,
                                   image->array_layers, &args->pSubresource->imageSubresource,
                                   why, sizeof(why))) {
-@@ -583,7 +583,8 @@ vkr_dispatch_vkGetDeviceImageSubresourceLayout(
+@@ -586,7 +586,8 @@ vkr_dispatch_vkGetDeviceImageSubresourceLayout(
     VkImageCreateInfo *info = (VkImageCreateInfo *)args->pInfo->pCreateInfo;
     const bool drm = info->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
     char why[192] = "the device has no vkGetDeviceImageSubresourceLayout";
@@ -179,7 +179,7 @@ index 0d4daaf..63853fb 100644
         !vkr_image_subresource_ok(info->format, drm && info->tiling == VK_IMAGE_TILING_LINEAR,
                                   info->mipLevels, info->arrayLayers,
                                   &args->pInfo->pSubresource->imageSubresource, why,
-@@ -794,7 +795,7 @@ vkr_dispatch_vkGetDeviceImageMemoryRequirements(
+@@ -797,7 +798,7 @@ vkr_dispatch_vkGetDeviceImageMemoryRequirements(
     /* OmacVM: the create info as vkCreateImage makes it, checked the same way (and the
      * device has the call) */
     char why[192] = "the device has no vkGetDeviceImageMemoryRequirements";
@@ -188,7 +188,7 @@ index 0d4daaf..63853fb 100644
         !vkr_image_device_info_ok(dev, (VkImageCreateInfo *)args->pInfo->pCreateInfo, why,
                                   sizeof(why))) {
        vkr_context_refuse(dispatch->data, false, "vkGetDeviceImageMemoryRequirements", "%s",
-@@ -820,7 +821,7 @@ vkr_dispatch_vkGetDeviceImageSparseMemoryRequirements(
+@@ -823,7 +824,7 @@ vkr_dispatch_vkGetDeviceImageSparseMemoryRequirements(
     /* OmacVM: the create info as vkCreateImage makes it, checked the same way (and the
      * device has the call) */
     char why[192] = "the device has no vkGetDeviceImageSparseMemoryRequirements";
