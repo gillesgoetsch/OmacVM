@@ -5,6 +5,18 @@ in more words.
 
 ## 3.2.20 (unreleased)
 
+In OmacVM.app VMs, more desktop OpenGL programs with tessellation draw on the Mac's GPU: separate
+control shaders whose patch values leave gaps, clip distances written in a loop, and a vertex
+shader's clip distances 4..7 going into a control shader. With Graphics on Vulkan, a program that
+chains one structure type twice, leaves out a blend attachment array or draws with a descriptor set
+or index buffer it never bound now ends only its own Vulkan connection, not the VM; on MoltenVK,
+an image bound to a swapchain's memory and an image that aliases one plane of a YCbCr image now
+work. Needs the app update only (from the VM's next start); no Update VM. UTM, Fusion and Parallels
+get nothing from 3.2.20. One case stays with the VM's Mesa: a control shader that copies 5 to 8
+clip distances in a loop gets undefined values for 4..7; one statement per distance avoids it.
+OmacVM's own guest Mesa build (built by hand, #694) has a fix for it; no VM gets that build from
+this release, and whether it becomes the default is not decided.
+
 - **OpenGL program pipelines whose patch values do not start at 0 stay on the GPU (OmacVM.app,
   #688, see #589).** An app that gives its tessellation patch values explicit locations in
   separate shader programs (for example locations 1 and 3) left the gaps unwritten in the control
@@ -68,11 +80,13 @@ in more words.
   manual build, #694, see #589).** In a tessellation control shader that copies 5 to 8 clip
   distances in a loop, Mesa's virgl driver copied only distances 0..3 back to their output, and
   4..7 were undefined: a negative one did not clip on the M4's GPU and Apple's software renderer,
-  and on the M1 Max's GPU the draw was clipped away (#692). `src/app/guest/mesa/build.sh`, which builds Mesa's virgl driver with OmacVM's
-  patches into a folder of its own (`/opt/omacvm-mesa`, used with `LD_LIBRARY_PATH`), now has
-  `mesa-virgl-tgsi-clip-copyback.patch` for it. The VM's own Mesa (Arch's) does not get it:
-  nothing changes in a VM that does not use that build. One statement per distance avoids the
-  case with any Mesa.
+  and on the M1 Max's GPU the draw was clipped away (#692). `src/app/guest/mesa/build.sh`, which
+  builds Mesa's virgl driver with OmacVM's patches for apps started with `LD_LIBRARY_PATH`, now
+  has `mesa-virgl-tgsi-clip-copyback.patch` for it. Its default folder, `/opt/omacvm-mesa`, is
+  also where a VM with Vulkan on keeps its Venus Mesa: in such a VM give `PREFIX` another folder
+  (for example `PREFIX=/opt/omacvm-gl-mesa`), or the build replaces the Venus Mesa. The VM's own
+  Mesa (Arch's) does not get the patch: nothing changes in a VM that does not use that build. One
+  statement per distance avoids the case with any Mesa.
 
 ## 3.2.19
 

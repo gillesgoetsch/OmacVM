@@ -2,6 +2,9 @@
 # Guest side, as root in the VM: build Mesa 26.2.3 (virgl only) with OmacVM's virgl
 # patches into /opt/omacvm-mesa. Not installed over the system Mesa: apps use it
 # with LD_LIBRARY_PATH=/opt/omacvm-mesa/lib GBM_BACKENDS_PATH=/opt/omacvm-mesa/lib/gbm.
+# /opt/omacvm-mesa is also where a VM with Vulkan on keeps its Venus Mesa
+# (venus/install.sh): in such a VM set PREFIX to another folder
+# (PREFIX=/opt/omacvm-gl-mesa ./build.sh), or this build replaces the Venus Mesa.
 # Needs Mesa's build dependencies (pacman -S --needed base-devel meson ninja
 # python-mako glslang libdrm wayland wayland-protocols libxrandr libxshmfence ...).
 set -euo pipefail
