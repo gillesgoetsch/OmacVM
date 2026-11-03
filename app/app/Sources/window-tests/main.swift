@@ -555,6 +555,143 @@ let long = WhatsNew(intro: nil, items: ["OmacVM.app: the **start animation** pla
 expect(long.summary(limit: 60)!.count <= 60 && long.summary(limit: 60)!.hasSuffix("…"), "a long first sentence is cut with …")
 expect(WhatsNew(intro: nil, items: ["OmacVM.app: fixed. More."]).summary() == "OmacVM.app: fixed.", "the first sentence, not the app's name's dot")
 
+// An update past several versions: every section after the running one, newest first.
+let several = """
+# Changelog
+
+## Unreleased
+
+- Not yet.
+
+## 3.3.0-rc1
+
+- A pre-release.
+
+## 3.2.5
+
+Five.
+
+- Five a.
+- Five b.
+
+## 3.2.4 (2026-01-02)
+
+Four, with a date.
+
+### Fixed
+
+- Four a.
+  Four a's second line.
+
+## 3.2.2
+
+- Two.
+
+## 3.2.3
+
+Three, out of order.
+
+## 3.2.1
+
+- One.
+
+## 3.2.0
+
+- Zero.
+
+## 3.2
+
+- Zero again, the same version.
+"""
+func versions(_ l: WhatsNewList?) -> [String] { l?.sections.map(\.version) ?? [] }
+let range = WhatsNew.parse(changelog: several, running: "3.2.1", staged: "3.2.5")
+expect(versions(range) == ["3.2.5", "3.2.4", "3.2.3", "3.2.2"], "after 3.2.1 up to 3.2.5, newest first, out-of-order sections sorted")
+expect(range?.omittedVersions == 0 && range?.omittedItems == 0, "all of it fits: nothing left out")
+expect(range?.omittedNote == nil, "nothing left out: no note")
+expect(range?.sections[1].news.intro == "Four, with a date." && range?.sections[1].news.items == ["Four a. Four a's second line."],
+       "\"## 3.2.4 (date)\" is 3.2.4; a ### heading is not its intro")
+expect(range?.sections[2].news.intro == "Three, out of order." && range?.sections[2].news.items == [], "a section with only an intro")
+expect(range?.summary() == "Five.", "the banner: the staged version's line")
+expect(versions(WhatsNew.parse(changelog: several, running: "3.3.0", staged: "3.3.0")).isEmpty
+       && WhatsNew.parse(changelog: several, running: "3.2.5", staged: "3.3.0") == nil, "3.3.0-rc1 is not 3.3.0: no section, nothing")
+expect(versions(WhatsNew.parse(changelog: several, running: "3.2.4.5", staged: "3.2.5")) == ["3.2.5"], "a running version without a heading: by comparison")
+expect(versions(WhatsNew.parse(changelog: several, running: "3.1.9", staged: "3.2.2")) == ["3.2.2", "3.2.1", "3.2.0"],
+       "3.2 and 3.2.0 taken once (the first)")
+expect(WhatsNew.parse(changelog: several, running: "3.1.9", staged: "3.2.2")?.sections.last?.news.items == ["Zero."], "the first of the two")
+expect(versions(WhatsNew.parse(changelog: several, running: "3.2", staged: "3.2.1")) == ["3.2.1"], "running 3.2 = 3.2.0: not shown")
+expect(versions(WhatsNew.parse(changelog: several, running: "?", staged: "3.2.5")) == ["3.2.5"], "a running version that is not one: the staged section")
+expect(versions(WhatsNew.parse(changelog: several, running: "3.2.5", staged: "3.2.5")) == ["3.2.5"], "running the staged version: its section")
+expect(versions(WhatsNew.parse(changelog: several, running: "3.9.0", staged: "3.2.5")) == ["3.2.5"], "running a newer one: the staged section")
+expect(WhatsNew.parse(changelog: several, running: "3.2.1", staged: "3.2.6") == nil, "no section for the staged version: nothing")
+expect(WhatsNew.parse(changelog: several, running: "3.2.1", staged: "4.0-beta") == nil
+       && versions(WhatsNew.parse(changelog: several, running: "3.2.1", staged: "3.3.0-rc1")) == ["3.3.0-rc1"],
+       "a staged version that is not one: its section by title, as before")
+let one = WhatsNew.parse(changelog: changelog, running: "3.0.18", staged: "3.1.0")
+expect(one?.sections.count == 1 && one?.sections.first?.news == news && one?.omittedNote == nil, "an update by one version: as before")
+
+// The caps: 5 versions, 30 items in all, filled newest first.
+var big = "# Changelog\n"
+for v in (1...8).reversed() {
+    big += "\n## 4.0.\(v)\n\nVersion \(v).\n\n" + (1...12).map { "- Item \(v).\($0)." }.joined(separator: "\n") + "\n"
+}
+let capped = WhatsNew.parse(changelog: big, running: "4.0.0", staged: "4.0.8")
+expect(versions(capped) == ["4.0.8", "4.0.7", "4.0.6"], "30 items: 12 + 12 + 6, then no room")
+expect(capped?.sections.map(\.news.items.count) == [12, 12, 6] && capped?.sections[2].news.intro == "Version 6.", "the third keeps its intro and 6 items")
+expect(capped?.omittedVersions == 5 && capped?.omittedItems == 6, "5 versions and 6 items left out")
+expect(capped?.omittedNote == "5 earlier versions and 6 more items are in the changelog.", "the note says what is left out")
+var short = "# Changelog\n"
+for v in (1...8).reversed() { short += "\n## 4.0.\(v)\n\n- Item \(v).\n" }
+let fiveOnly = WhatsNew.parse(changelog: short, running: "4.0.0", staged: "4.0.8")
+expect(versions(fiveOnly) == ["4.0.8", "4.0.7", "4.0.6", "4.0.5", "4.0.4"] && fiveOnly?.omittedVersions == 3 && fiveOnly?.omittedItems == 0,
+       "at most 5 versions")
+expect(fiveOnly?.omittedNote == "3 earlier versions are in the changelog.", "the note: versions only")
+let manyItems = "## 5.0.0\n\nMany.\n\n" + (1...33).map { "- I\($0)." }.joined(separator: "\n")
+let manyOne = WhatsNew.parse(changelog: manyItems, running: "4.9.9", staged: "5.0.0")
+expect(manyOne?.sections.first?.news.items.count == 30 && manyOne?.omittedItems == 3 && manyOne?.omittedVersions == 0,
+       "one version: its first 30 items, 3 counted")
+expect(WhatsNew.parse(changelog: manyItems, version: "5.0.0")?.items.count == 30, "the one-version parse keeps its 30")
+let summaryList = WhatsNewList(staged: "3.2", sections: [.init(version: "3.2.1", news: WhatsNew(intro: "Newer.", items: [])),
+                                                          .init(version: "3.2.0", news: WhatsNew(intro: "Staged.", items: []))])
+expect(summaryList.summary() == "Staged.", "the summary is the staged version's section, not the first one")
+expect(WhatsNew.parse(changelog: String(repeating: "x", count: WhatsNew.maxBytes + 1), running: "1.0", staged: "2.0") == nil,
+       "past maxBytes without a section: nothing")
+
+// A changelog past maxBytes (CHANGELOG.md was 274 KB of the 512 KiB, #674's review): What's New
+// reads from the top to the running version's heading, so the file's size does not matter.
+var huge = "# Changelog\n\n## 3.2.19 (unreleased)\n\n- Not out yet, and below the running version: no stop above the staged one.\n\n## 9.0.2\n\nTwo.\n\n- Two a.\n\n## 9.0.1\n\n- One a.\n\n## 9.0.0\n\n- Zero.\n"
+let oldItems = (1...100).map { "- Old item \($0) " + String(repeating: "x", count: 90) }.joined(separator: "\n")
+for v in (0..<80).reversed() { huge += "\n## 8.0.\(v)\n\n" + oldItems + "\n" }
+expect(huge.utf8.count > WhatsNew.maxBytes + 200_000, "the test changelog is past maxBytes (\(huge.utf8.count) bytes)")
+expect(versions(WhatsNew.parse(changelog: huge, running: "9.0.0", staged: "9.0.2")) == ["9.0.2", "9.0.1"], "past maxBytes: the versions since the running one")
+expect(versions(WhatsNew.parse(changelog: huge, running: "?", staged: "9.0.2")) == ["9.0.2"], "past maxBytes, no running version: the staged section")
+expect(WhatsNew.parse(changelog: huge, version: "9.0.1")?.items == ["One a."], "past maxBytes: one version's section")
+expect(WhatsNew.head(huge, running: "9.0.0", staged: "9.0.2").hasSuffix("- One a.\n\n"), "the head ends at the running version's heading")
+let farHead = WhatsNew.head(huge, running: "1.0.0", staged: "9.0.2")
+expect(farHead.utf8.count <= WhatsNew.maxBytes && huge.hasPrefix(farHead) && huge.utf8[farHead.endIndex] == 0x0A,
+       "a running version below all of it: at most maxBytes, cut at a line's end")
+let far = WhatsNew.parse(changelog: huge, running: "1.0.0", staged: "9.0.2")
+expect(versions(far) == ["9.0.2", "9.0.1", "9.0.0", "8.0.79"] && (far?.omittedVersions ?? 0) > 0, "a running version below all of it: the caps as before")
+
+// The file: read in steps, only as far as needed.
+let newsDir = FileManager.default.temporaryDirectory.appendingPathComponent("whats-new-tests-\(getpid())")
+try? FileManager.default.createDirectory(at: newsDir, withIntermediateDirectories: true)
+let hugeFile = newsDir.appendingPathComponent("CHANGELOG.md")
+try? Data(huge.utf8).write(to: hugeFile)
+expect(versions(WhatsNew.read(hugeFile, running: "9.0.0", staged: "9.0.2")) == ["9.0.2", "9.0.1"], "a file past maxBytes: the versions since the running one")
+expect(versions(WhatsNew.read(hugeFile, running: "1.0.0", staged: "9.0.2")) == ["9.0.2", "9.0.1", "9.0.0", "8.0.79"],
+       "a file past maxBytes, running below all of it: what fits in maxBytes")
+let badTail = newsDir.appendingPathComponent("bad-tail.md")
+try? (Data(several.utf8) + Data([0xFF, 0xFE, 0x0A]) + Data(huge.utf8)).write(to: badTail)
+expect(versions(WhatsNew.read(badTail, running: "3.2.1", staged: "3.2.5")) == ["3.2.5", "3.2.4", "3.2.3", "3.2.2"],
+       "text after the running version's heading is never read (not UTF-8 there)")
+expect(WhatsNew.read(badTail, running: "?", staged: "3.2.5")?.summary() == "Five.", "the staged section alone: read up to the next heading")
+expect(WhatsNew.read(newsDir.appendingPathComponent("none.md"), running: "3.2.1", staged: "3.2.5") == nil, "no file: nothing")
+let smallFile = newsDir.appendingPathComponent("small.md")
+try? Data(several.utf8).write(to: smallFile)
+expect(WhatsNew.read(smallFile, running: "3.1.9", staged: "3.2.2") == WhatsNew.parse(changelog: several, running: "3.1.9", staged: "3.2.2"),
+       "a small file read to its end: the same as parsing the text")
+try? FileManager.default.removeItem(at: newsDir)
+
 // MARK: Window sides (the pictures' frames: OmacVM --render-vm-window)
 
 expect(WindowLayout.width == 800 && WindowLayout.contentWidth == 552 && WindowLayout.inset == 16, "800 pt window, 552 pt of settings, 16 pt margin")

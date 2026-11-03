@@ -80,7 +80,7 @@ printf "NAME='Omarchy'\nCPUS=4\nMEM_MB=8192\nDISK_GB=64\nSSH_PORT=52222\nVM_USER
 # this test's main instead of the app's.
 mkdir -p "$T/mods"
 for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio OmacVMIcon OmacVMMedia; do
-  swiftc -swift-version 5 -parse-as-library -module-cache-path "$T/mc" -module-name $m -emit-module \
+  swiftc -swift-version 5 -parse-as-library -module-cache-path "$T/mc" -I "$T/mods" -module-name $m -emit-module \
     -emit-module-path "$T/mods/$m.swiftmodule" -emit-library -static -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift ||
     { echo "FAIL $m does not build"; exit 1; }
 done

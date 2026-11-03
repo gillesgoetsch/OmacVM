@@ -83,8 +83,10 @@ The app updates itself ([ADR 0033](../docs/adr/0033-app-self-update.md)):
   checked: size and SHA-256 from the feed, then the app and its QEMU signed
   with a Developer ID of a team the feed names. A banner under the window's
   header then offers it: the first line of the new version's CHANGELOG
-  (read from the downloaded app itself), What's New (its whole section, with
-  Skip This Version), Later and Update Now. **Check Now** next to the weekly
+  (read from the downloaded app itself), What's New (its whole section, and
+  when the update skips versions each of theirs since the running one, newest
+  first: at most 5 versions and 30 items, the rest counted with a link to the
+  changelog; with Skip This Version), Later and Update Now. **Check Now** next to the weekly
   switch (or *OmacVM › Check for Updates…*) asks right away, also with weekly
   checks off.
 - A VM that runs from the app is never replaced under it: the banner's button

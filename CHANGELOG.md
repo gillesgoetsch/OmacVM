@@ -22,6 +22,14 @@ in more words.
   report and the cause. Checked in a test VM with Omarchy 4.0.3rc4: before, every click on a tray
   icon missed; after, each button and the wheel reached the app. Needs Update VM.
 
+- **What's New lists every version since yours (OmacVM.app).** When an update skips versions, its
+  What's New showed only the newest one's notes. Now it shows each version after the one you run, up
+  to the update, newest first, each under its own version number, from the update's own CHANGELOG.
+  At most 5 versions and 30 items; the rest is counted, with a link to the changelog on GitHub. The
+  banner's line stays the update's, and an update by one version looks as before. It reads the
+  changelog only down to your version, so a long changelog no longer hides What's New (past 512 KiB
+  it showed nothing).
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
