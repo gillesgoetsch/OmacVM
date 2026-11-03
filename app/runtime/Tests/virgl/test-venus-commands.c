@@ -3804,13 +3804,14 @@ static int case_submit(const char *c)
    return s.ret == VK_SUCCESS ? WORKS : ERROR;
 }
 
-/* an image not bound yet (flags: create flags) */
-static struct vkr_image *image_unbound(VkImageCreateFlags flags, VkFormat format, VkImageUsageFlags usage)
+/* an image not bound yet (flags: create flags), size x size */
+static struct vkr_image *image_unbound_size(VkImageCreateFlags flags, VkFormat format, VkImageUsageFlags usage,
+                                            uint32_t size)
 {
    const uint64_t id = next_id++;
    VkImage hd = (VkImage)(uintptr_t)id;
    VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags,
-                              .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = { 64, 64, 1 },
+                              .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = { size, size, 1 },
                               .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage };
    struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
@@ -3819,6 +3820,11 @@ static struct vkr_image *image_unbound(VkImageCreateFlags flags, VkFormat format
    if (c.ret != VK_SUCCESS || !img)
       broken("vkCreateImage");
    return img;
+}
+
+static struct vkr_image *image_unbound(VkImageCreateFlags flags, VkFormat format, VkImageUsageFlags usage)
+{
+   return image_unbound_size(flags, format, usage, 64);
 }
 
 static struct vkr_buffer *buffer_unbound(VkDeviceSize size)
@@ -3903,18 +3909,20 @@ static void free_memory(struct vkr_device_memory *mem)
  * freed memory, seen under libgmalloc), also when the app's context ends in between; bound,
  * then destroyed and freed. Refused (the bind ends the context): another image on memory
  * dedicated to one (VUID-vkBindImageMemory-memory-02628), a buffer on memory dedicated to an
- * image (VUID-vkBindBufferMemory-memory-10925). Two ALIAS_BIT images on such memory are what
- * guest Mesa binds for VkBindImageMemorySwapchainInfoKHR: they work on KosmicKrisp, which
- * ignores dedicated allocations, and stay refused on MoltenVK, which took the second image
- * without counting it and locked the freed memory's mutex at its destroy. Refused at the
+ * image (VUID-vkBindBufferMemory-memory-10925). Two ALIAS_BIT images on such memory with
+ * the same create info are what guest Mesa binds for VkBindImageMemorySwapchainInfoKHR: the
+ * x-dedicated-alias cases (case_alias). Refused at the
  * allocation (the chain names one thing for vkr and another for MoltenVK, whose loop keeps
  * the last, VUID-VkMemoryAllocateInfo-sType-unique): a dedicated struct chained twice, the
  * first naming image A or nothing, then image B destroyed before the free; a target of
  * another device. */
+static int case_alias(const char *c);
+
 static int case_dedicated(const char *c)
 {
+   if (!strncmp(c, "x-dedicated-alias", 17))
+      return case_alias(c);
    setup(0);
-   const bool alias = IS("x-dedicated-alias"), half = IS("x-dedicated-alias-half");
    const VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    if (IS("x-dedicated-chain-twice") || IS("x-dedicated-chain-null")) {
       struct vkr_image *a = image_unbound(0, FMT, usage), *b = image_unbound(0, FMT, usage);
@@ -3949,7 +3957,7 @@ static int case_dedicated(const char *c)
       free_memory(mem);
       return ended() ? FATAL : WORKS;
    }
-   struct vkr_image *a = image_unbound(alias ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
+   struct vkr_image *a = image_unbound(0, FMT, usage);
    struct vkr_device_memory *mem = dedicated_memory(a, NULL);
    if (IS("x-dedicated-bound-ok")) {
       if (bind_image_at(a, mem) != VK_SUCCESS)
@@ -3964,10 +3972,8 @@ static int case_dedicated(const char *c)
       vkr_context_destroy(ctx);
       step("the context is gone");
       return WORKS;
-   } else if (IS("x-dedicated-other") || alias || half) {
-      if (alias)
-         expect(!kosmickrisp);
-      struct vkr_image *b = image_unbound(alias || half ? VK_IMAGE_CREATE_ALIAS_BIT : 0, FMT, usage);
+   } else if (IS("x-dedicated-other")) {
+      struct vkr_image *b = image_unbound(0, FMT, usage);
       bind_image_at(b, mem);
       if (!ended()) {
          free_memory(mem);
@@ -4528,6 +4534,157 @@ static int secondary_case(const char *c, struct world *w)
       return FATAL;
    step("zombies now: %d", zombies());
    return zombies() > 0 ? ZOMBIES : WORKS;
+}
+
+/* ---------------- a swapchain's memory (virgl-venus-alias-memory.patch) ----------------
+ * LEGAL, what guest Mesa sends for an app's image bound with VkBindImageMemorySwapchainInfoKHR:
+ * image B, made from the swapchain's create info (ALIAS_BIT, VUID-VkImageSwapchainCreateInfoKHR-
+ * swapchain-00995), bound to the memory M dedicated to the swapchain's image A at offset 0.
+ * MoltenVK binds B without counting it in M and locks M when B is destroyed: M freed first
+ * (destroying the swapchain before B breaks no VUID) was a freed-mutex lock (SIGABRT, under
+ * libgmalloc SIGSEGV). So B holds M: a freed M is a zombie until B's driver destroy.
+ *   x-dedicated-alias: bind B, free M (a zombie), destroy B (none left)
+ *   -b-first-ok: B destroyed before M's free and A's destroy (the order before the fix)
+ *   -free-a-b: free M, destroy A, then B
+ *   -context-end: M freed, the context ends with A and B
+ *   -held: a view of B a command buffer's rendering names; free M, destroy the view and B
+ *     (B, M and the view zombies), then the command buffer's free lets go of all three
+ *   -own-dedicated: B is itself the target of memory M2: B's driver destroy waits for M2's
+ *     free, and M's for that destroy
+ *   -bind2: two such images in one vkBindImageMemory2
+ * Refused: -half (A without ALIAS_BIT, VUID 02628), -params, -params-usage, -params-flags (B
+ * unlike A: the extent, a usage bit, MUTABLE_FORMAT: MoltenVK draws B from A's texture),
+ * -twice (B bound again, VUID-VkBindImageMemoryInfo-image-07460), -bind2-twice (B twice in
+ * one call, VUID-vkBindImageMemory2-pBindInfos-04006). */
+/* a wrong count is told at the end: the case goes on, so a vkr without the hold reaches the
+ * driver's destroy of B (MoltenVK's freed-mutex lock) */
+static bool alias_bad;
+static void alias_zombies(int want, const char *when)
+{
+   const int z = zombies();
+   step("zombies %s: %d (want %d)", when, z, want);
+   alias_bad |= z != want;
+}
+
+static int alias_end(void)
+{
+   return ended() ? FATAL : alias_bad ? ZOMBIES : WORKS;
+}
+
+static int case_alias(const char *c)
+{
+   setup(0);
+   const bool held = IS("x-dedicated-alias-held");
+   const VkImageUsageFlags usage = held ? CA_SA : VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   const VkImageCreateFlags alias = VK_IMAGE_CREATE_ALIAS_BIT;
+   struct vkr_image *a = image_unbound(IS("x-dedicated-alias-half") ? 0 : alias, FMT, usage);
+   struct vkr_device_memory *mem = dedicated_memory(a, NULL);
+   if (!mem)
+      return FATAL;
+
+   VkImageCreateFlags bflags = alias;
+   VkImageUsageFlags busage = usage;
+   uint32_t bsize = 64;
+   if (IS("x-dedicated-alias-params"))
+      bsize = 32;
+   else if (IS("x-dedicated-alias-params-usage"))
+      busage |= VK_IMAGE_USAGE_STORAGE_BIT;
+   else if (IS("x-dedicated-alias-params-flags"))
+      bflags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+   struct vkr_image *b = image_unbound_size(bflags, FMT, busage, bsize);
+
+   if (IS("x-dedicated-alias-bind2") || IS("x-dedicated-alias-bind2-twice")) {
+      const bool twice = IS("x-dedicated-alias-bind2-twice");
+      struct vkr_image *b2 = twice ? b : image_unbound(alias, FMT, usage);
+      VkBindImageMemoryInfo binds[2] = {
+         { .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .image = (VkImage)b, .memory = (VkDeviceMemory)mem },
+         { .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .image = (VkImage)b2, .memory = (VkDeviceMemory)mem },
+      };
+      struct vn_command_vkBindImageMemory2 bi = { .device = DEVH, .bindInfoCount = 2, .pBindInfos = binds };
+      step("vkBindImageMemory2: two images to memory dedicated to another");
+      D->dispatch_vkBindImageMemory2(D, &bi);
+      if (ended())
+         return FATAL;
+      if (bi.ret != VK_SUCCESS)
+         return ERROR;
+      free_memory(mem);
+      alias_zombies(1, "after the free");
+      destroy_image(b);
+      alias_zombies(1, "after the first image's destroy");
+      if (b2 != b)
+         destroy_image(b2);
+      destroy_image(a);
+      alias_zombies(0, "at the end");
+      return alias_end();
+   }
+
+   /* B's own dedicated memory, never bound (legal) */
+   struct vkr_device_memory *own = IS("x-dedicated-alias-own-dedicated") ? dedicated_memory(b, NULL) : NULL;
+   if (ended())
+      return FATAL;
+   if (bind_image_at(b, mem) != VK_SUCCESS)
+      return ended() ? FATAL : ERROR;
+   if (IS("x-dedicated-alias-twice")) {
+      bind_image_at(b, mem);
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("x-dedicated-alias-b-first-ok")) {
+      destroy_image(b);
+      free_memory(mem);
+      destroy_image(a);
+      alias_zombies(0, "at the end");
+      return alias_end();
+   }
+   void *v = NULL, *cmd = NULL;
+   if (held) {
+      v = view(b, 1);
+      cmd = command_buffer();
+      begin(cmd);
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)v,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                             .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
+      struct vn_command_vkCmdBeginRendering br = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderingInfo = &ri };
+      step("vkCmdBeginRendering into a view of B");
+      D->dispatch_vkCmdBeginRendering(D, &br);
+      if (ended())
+         return FATAL;
+      struct vn_command_vkCmdEndRendering er = { .commandBuffer = (VkCommandBuffer)cmd };
+      D->dispatch_vkCmdEndRendering(D, &er);
+      const int r = end(cmd);
+      if (r != WORKS)
+         return r;
+   }
+   free_memory(mem);
+   alias_zombies(1, "after the free of A's memory");
+   if (IS("x-dedicated-alias-context-end")) {
+      step("the context ends with A and B");
+      vkr_context_destroy(ctx);
+      step("the context is gone");
+      return alias_bad ? ZOMBIES : WORKS;
+   }
+   if (IS("x-dedicated-alias-free-a-b")) {
+      destroy_image(a);
+      alias_zombies(1, "after A's destroy");
+   }
+   if (held)
+      destroy_view(v);
+   destroy_image(b);
+   if (held) {
+      alias_zombies(3, "after the view's and B's destroy");
+      free_command_buffer(cmd);
+   } else if (own) {
+      alias_zombies(1, "after B's destroy (its memory alive)");
+      free_memory(own);
+   }
+   alias_zombies(0, "after B's destroy");
+   if (!IS("x-dedicated-alias-free-a-b"))
+      destroy_image(a);
+   if (IS("x-dedicated-alias") || IS("x-dedicated-alias-free-a-b") || held || own)
+      return alias_end();
+   return BROKEN;
 }
 
 /* ---------------- two threads on one context (virgl-venus-ring-lock.patch) ----------------
@@ -6348,8 +6505,18 @@ static const struct test_case cases[] = {
    { "s-submit-chain-twice", E_REFUSE, "chained twice" }, { "s-bind-sparse-chain-twice", E_REFUSE, "chained twice" },
    { "x-dedicated-bound-ok", E_WORKS }, { "x-dedicated-unbound-ok", E_WORKS },
    { "x-dedicated-buffer-unbound-ok", E_WORKS }, { "x-dedicated-context-end-ok", E_WORKS },
-   { "x-dedicated-other", E_REFUSE, "dedicated to another" }, { "x-dedicated-alias", E_CHILD, "dedicated to another" },
+   { "x-dedicated-other", E_REFUSE, "dedicated to another" },
    { "x-dedicated-alias-half", E_REFUSE, "dedicated to another" },
+   /* a swapchain's memory (virgl-venus-alias-memory.patch) */
+   { "x-dedicated-alias", E_WORKS }, { "x-dedicated-alias-b-first-ok", E_WORKS },
+   { "x-dedicated-alias-free-a-b", E_WORKS }, { "x-dedicated-alias-context-end", E_WORKS },
+   { "x-dedicated-alias-held", E_WORKS }, { "x-dedicated-alias-own-dedicated", E_WORKS },
+   { "x-dedicated-alias-bind2", E_WORKS },
+   { "x-dedicated-alias-params", E_REFUSE, "unlike the image" },
+   { "x-dedicated-alias-params-usage", E_REFUSE, "unlike the image" },
+   { "x-dedicated-alias-params-flags", E_REFUSE, "unlike the image" },
+   { "x-dedicated-alias-twice", E_REFUSE, "bound already" },
+   { "x-dedicated-alias-bind2-twice", E_REFUSE, "named twice" },
    { "x-dedicated-chain-twice", E_REFUSE, "chained twice" }, { "x-dedicated-chain-null", E_REFUSE, "chained twice" },
    { "x-dedicated-other-device", E_REFUSE, "another device" },
    { "x-dedicated-buffer-to-image", E_REFUSE, "dedicated to another" },
