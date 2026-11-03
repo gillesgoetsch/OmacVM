@@ -11,12 +11,17 @@ in more words.
   Mesa with temps indexed at run time, and the Mac refused it ("Swizzle of non-vector primitive
   float" in qemu.log), so its draws were skipped (3.2.18 and 3.2.19 alike). Now it compiles; with
   up to 4 distances it draws what one statement per distance draws, on the M1 Max and M4 GPUs and
-  Apple's software renderer. With a control shader, distances 4..7 written in a loop still draw
-  nothing on both GPUs (without one they draw), for two reasons: the Mac's GPU draws nothing when a vertex shader writes `gl_ClipDistance[4..7]` into
-  a control shader, and in a looped control shader the VM's Mesa copies only distances 0..3 back.
-  Both are open in #692; the Mesa part goes into OmacVM's own guest Mesa patches. One statement per
-  distance draws on both GPUs (the VM's Mesa then passes them as plain varyings), so with more than
-  4, write them that way. Needs the app update (from the VM's next start).
+  Apple's software renderer; with 5 to 8 before a control shader, see the next entry. Needs the
+  app update (from the VM's next start).
+- **OpenGL programs whose vertex shader writes 5 to 8 clip distances in a loop into a
+  tessellation control shader draw on the Mac's GPU (OmacVM.app, #PRA, see #589).** With
+  `gl_ClipDistance[4..7]` going from a vertex shader into a control shader, the M4's and M1 Max's
+  GPUs drew nothing (Apple's software renderer drew it); the VM's Mesa sends that when the vertex
+  shader writes its distances in a loop. The vertex shader now passes them to the control shader
+  as plain varyings, as 3.2.19 does before an evaluation shader. One case stays in the VM's Mesa:
+  a control shader that copies 5 to 8 distances in a loop gets only 0..3 back, so a negative
+  distance 4..7 does not clip (OmacVM's own guest Mesa build has the fix, #694; the VM's Arch Mesa
+  does not). One statement per distance avoids it. Needs the app update (from the VM's next start).
 
 ## 3.2.19
 
