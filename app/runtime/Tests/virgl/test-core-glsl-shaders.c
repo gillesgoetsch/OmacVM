@@ -278,7 +278,8 @@ static int tess_clip_rows(bool have_gl)
  * at all (Apple's Metal pipeline build failed on it, and a loose gl_ClipDistance beside the
  * block crashed Apple's GLSL compiler); its variable info says so (tess_clip_out). WANT 0:
  * the text as before. The evaluation shader's key comes from vrend_sync_shader_io, which this
- * test does not reach: test-whole-program-shapes.c C17, C18, C21-C24 draw it. */
+ * test does not reach: test-whole-program-shapes.c C17, C18, C21-C24 draw it (only C23/C24
+ * fail without it). */
 static int vs_tes_clip(const char *name, const char *text, const struct vrend_shader_key *key,
                        enum host host, int want, const char *must, bool have_gl)
 {
