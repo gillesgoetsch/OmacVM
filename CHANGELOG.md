@@ -53,6 +53,12 @@ in more words.
   such a draw (not allowed in Vulkan) to the Mac's GPU. Now only that program's Vulkan connection ends.
   An indexed draw without an index buffer still works where the program turned on maintenance6, which
   allows it. Needs the app update.
+- **A Vulkan program that binds an image to a window's swapchain now works on MoltenVK too (OmacVM.app,
+  #696, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU ended the program's Vulkan connection at such
+  a bind (`VkBindImageMemorySwapchainInfoKHR`); letting it through as it was would have crashed QEMU when the
+  program closed the swapchain before the image. Now QEMU keeps the swapchain's memory until the image is
+  gone, on both drivers. On KosmicKrisp, an image unlike the swapchain's on that memory is now refused (Vulkan
+  does not allow it). Needs the app update.
 
 ## 3.2.19
 

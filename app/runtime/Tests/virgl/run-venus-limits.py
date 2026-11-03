@@ -107,6 +107,11 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "x-dedicated-chain-null x-dedicated-bound-ok x-dedicated-unbound-ok "
                  "x-dedicated-buffer-unbound-ok x-dedicated-context-end-ok x-dedicated-other "
                  "x-dedicated-alias c-state-destroyed-view-begin c-state-destroyed-view-next "
+                 # a swapchain's memory freed before the image bound to it
+                 # (virgl-venus-alias-memory.patch)
+                 "x-dedicated-alias-b-first-ok x-dedicated-alias-free-a-b x-dedicated-alias-context-end "
+                 "x-dedicated-alias-held x-dedicated-alias-own-dedicated x-dedicated-alias-bind2 "
+                 "x-dedicated-alias-twice x-dedicated-alias-bind2-twice "
                  "c-state-destroyed-view-end c-state-destroyed-view-imageless "
                  "c-state-destroyed-view-rendering c-state-destroyed-view-after-ok d-planes-ok "
                  "d-mutable-ok d-start-next-ok d-copy-start-next-ok "
