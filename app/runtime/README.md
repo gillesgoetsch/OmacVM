@@ -191,6 +191,12 @@ commit 82927e9. Changes here:
   build failed on as well: on the M1 Max those draws ran on its CPU vertex path
   and drew nothing (#589). Checked by `Tests/virgl/test-core-glsl-shaders.c` and
   `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-separable-patch-fill-writes.patch`: a separable control
+  shader also writes the padding patch varyings it declares (`patch00 = vec4(0.0);`
+  for patch varyings that do not start at 0 or have a gap): never written, Apple's
+  Metal pipeline build failed, the draws ran on its CPU vertex path and its shader
+  compiler crashed now and then (#589). Checked by
+  `Tests/virgl/test-core-glsl-shaders.c` and `Tests/virgl/test-separable-pervertex.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once

@@ -1,0 +1,133 @@
+virglrenderer: a separable control shader writes its padding patch varyings on the Mac (#589)
+
+What: between two separable stages on desktop GL, virgl-shader-separable-patch-varyings.patch
+has the control shader declare every patch varying from 0 up to its highest one (Apple's GL
+matches separable patch varyings by the order of their names). The padding ones were
+declared and never written. Now the control shader also writes each of them at the start of
+main ("patch00 = vec4(0.0);"), so every way out of main has written them. The evaluation
+shader, whole programs, GLES and control shaders without a gap keep their GLSL; no key bit,
+no new shader variant (it uses that patch's separable_out).
+Why: Apple's GL links and draws such a pipeline right, but its Metal pipeline build fails
+for a control shader with a patch output it never writes ("Fallback to SW vertex processing
+because buildPipelineState failed"): on the M1 Max (macOS 27) a separable pipeline with
+patch varyings 1 and 3 (or only 1) ran on Apple's CPU vertex path, its first draw took
+250-370 ms instead of 5-120 ms, and Metal's shader compiler (MTLCompilerService) sometimes
+crashed. With the padding written: no fallback, the same pixels. Apple's software renderer
+never had the failure.
+Upstream: not sent (a workaround for Apple's GL, on top of the patch-varyings patch).
+Test: Tests/virgl/test-core-glsl-shaders.c: a separable control shader with patch varyings
+1 and 3, only 1, a patch array at 2..3 with an indirect index, and a barrier and a return
+writes exactly the padding it declares, each declared once, and compiles on the Mac's GL;
+with patch varyings 0 to 11, before a whole evaluation shader, as a whole program, on GLES
+and in the evaluation shader nothing is written. Tests/virgl/test-separable-pervertex.c D4
+and D7 draw the same on Apple's software renderer (the GPU fallback is the M1 rows in the
+PR).
+
+--- a/src/vrend/vrend_shader.c
++++ b/src/vrend/vrend_shader.c
+@@ -280,6 +280,8 @@
+ 
+    uint64_t shader_req_bits;
+    uint64_t patches_emitted_mask;
++   /* OmacVM (#589): the padding patch varyings a separable control shader writes */
++   uint64_t patch_fill_out;
+ 
+    struct pipe_stream_output_info *so;
+    char **so_names;
+@@ -542,6 +544,39 @@
+    return ctx->cfg->use_gles ? 0 : 2;
+ }
+ 
++/* OmacVM (#589): those padding patch varyings: between two separable stages on desktop GL,
++ * the ones below the highest one declared that are not declared themselves */
++static uint64_t patch_fill_mask(const struct dump_ctx *ctx, uint64_t declared, enum io_type iot)
++{
++   if (ctx->cfg->use_gles || !declared ||
++       !(iot == io_in ? ctx->key->separable_in : ctx->key->separable_out))
++      return 0;
++   int top = 64 - __builtin_clzll(declared);
++   return (top == 64 ? ~0ull : (1ull << top) - 1) & ~declared;
++}
++
++/* OmacVM (#589): the patch slots one patch io takes, as emit_ios_patch counts them */
++static uint64_t patch_io_mask(const struct vrend_shader_io *io)
++{
++   if (io->last == io->first)
++      return 1ull << io->sid;
++   return ((1ull << (io->last - io->first + 1)) - 1) << io->sid;
++}
++
++/* OmacVM (#589): the patch outputs emit_ios_tcs declares */
++static uint64_t tcs_out_patches(const struct dump_ctx *ctx)
++{
++   uint64_t mask = 0;
++   /* patch_ios.output_range.used is never set upstream; kept as emit_ios_tcs has it */
++   if (ctx->patch_ios.output_range.used)
++      mask |= patch_io_mask(&ctx->patch_ios.output_range.io);
++   for (uint32_t i = 0; i < ctx->num_outputs; i++) {
++      if (!ctx->outputs[i].glsl_predefined_no_emit && ctx->outputs[i].name == TGSI_SEMANTIC_PATCH)
++         mask |= patch_io_mask(&ctx->outputs[i]);
++   }
++   return mask;
++}
++
+ /* We prefer arrays of arrays, but if this is not available then TCS, GEOM, and TES
+  * inputs must be blocks, but FS input should not because interpolateAt* doesn't
+  * support dereferencing block members. */
+@@ -6046,6 +6081,15 @@
+       const_ubo_decide(ctx);
+ 
+       emit_buf(&ctx->glsl_strbufs, "void main(void)\n{\n");
++      /* OmacVM (#589): a separable control shader writes its padding patch varyings (a
++       * constant nothing reads) first, so every way out of main has written them: Apple's GL
++       * links a control shader with a patch output it never writes, but its Metal pipeline
++       * build fails, the draws run on its CPU vertex path and its shader compiler can crash. */
++      if (ctx->prog_type == TGSI_PROCESSOR_TESS_CTRL) {
++         uint64_t fill = ctx->patch_fill_out = patch_fill_mask(ctx, tcs_out_patches(ctx), io_out);
++         while (fill)
++            emit_buff(&ctx->glsl_strbufs, "patch%02d = vec4(0.0);\n", u_bit_scan64(&fill));
++      }
+       if (iter->processor.Processor == TGSI_PROCESSOR_FRAGMENT) {
+          emit_color_select(ctx, &ctx->glsl_strbufs);
+          if (ctx->fs_uses_clipdist_input)
+@@ -7660,16 +7704,10 @@
+    return emitted_patches;
+ }
+ 
+-/* OmacVM (#589, patch_sid_width): between two separable stages on desktop GL, the patch
+- * varyings below the highest one declared that are not declared themselves */
+-static void emit_patch_fill(const struct dump_ctx *ctx, struct vrend_glsl_strbufs *glsl_strbufs,
+-                            uint64_t declared, enum io_type iot)
++/* OmacVM (#589, patch_sid_width): declares the padding patch varyings (patch_fill_mask) */
++static void emit_patch_fill(struct vrend_glsl_strbufs *glsl_strbufs, uint64_t fill,
++                            enum io_type iot)
+ {
+-   if (ctx->cfg->use_gles || !declared ||
+-       !(iot == io_in ? ctx->key->separable_in : ctx->key->separable_out))
+-      return;
+-   int top = 64 - __builtin_clzll(declared);
+-   uint64_t fill = (top == 64 ? ~0ull : (1ull << top) - 1) & ~declared;
+    while (fill) {
+       int sid = u_bit_scan64(&fill);
+       emit_hdrf(glsl_strbufs, "patch %s vec4 patch%02d;\n", iot == io_in ? "in" : "out", sid);
+@@ -8184,7 +8222,10 @@
+       }
+    }
+ 
+-   emit_patch_fill(ctx, glsl_strbufs, emitted_patches, io_out);
++   /* OmacVM (#589): the ones main writes (the same set; never one declared above) */
++   emit_patch_fill(glsl_strbufs,
++                   (ctx->patch_fill_out | patch_fill_mask(ctx, emitted_patches, io_out)) &
++                      ~emitted_patches, io_out);
+ 
+    emit_ios_per_vertex_in(ctx, glsl_strbufs, has_pervertex);
+    emit_ios_per_vertex_out(ctx, glsl_strbufs, " gl_out[]");
+@@ -8222,7 +8263,7 @@
+             emit_ios_generic(ctx, glsl_strbufs, generic_ios, texcoord_ios, io_in, "", &ctx->inputs[i], "in", "[]");
+       }
+    }
+-   emit_patch_fill(ctx, glsl_strbufs, in_patches, io_in);
++   emit_patch_fill(glsl_strbufs, patch_fill_mask(ctx, in_patches, io_in), io_in);
+ 
+    emit_hdrf(glsl_strbufs, "layout(%s, %s, %s%s) in;\n",
+              prim_to_tes_name(ctx->tes_prim_mode),
