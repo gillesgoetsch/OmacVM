@@ -88,7 +88,7 @@ t "" "$(diff -r "$O/omarchy-a06ec133/shell" "$T/s/shell")" "  upstream's files a
 t "already patched (v$(sed -n 's/^VERSION = //p' "$R/src/omanotch/guest/bar/apply-patch.py"))" \
   "$(python3 "$R/src/omanotch/guest/bar/apply-patch.py" "$T/s/plugins/me.bar/Bar.qml")" "  Omanotch's patch still sees itself in the clone"
 rm -rf "$T/s/shell"; cp -R "$O/omarchy-mac-ba546a61/shell" "$T/s/shell"
-t "patched 5 files (QtQuick 6.11)" "$(python3 "$FIX" --qmltypes "$T/qt612.qmltypes" "$T/s/shell")" "omarchy-mac's shell: its files with the bare Color (Ui's ToggleSwitch and PanelToolTip too)"
+t "patched 6 files (QtQuick 6.11)" "$(python3 "$FIX" --qmltypes "$T/qt612.qmltypes" "$T/s/shell")" "omarchy-mac's shell: its files with the bare Color (Ui's ToggleSwitch and PanelToolTip, the tray too)"
 has "$T/s/shell/plugins/bar/Bar.qml" "import QtQuick 6.11 $MARK" "  its bar among them"
 
 # --- Qt 6.11 (no QtQuick Color): nothing on stock files, marked lines go back ---
