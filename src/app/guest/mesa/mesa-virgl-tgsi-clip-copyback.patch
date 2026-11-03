@@ -10,7 +10,8 @@ distance temporary back. Direct writes, CLIPVERTEX and COLOR are as before.
 Why: in a tessellation control shader that copies 5 to 8 clip distances in a loop (the
 3.2.19 gate's tcs-8*loop rows) the evaluation shader got undefined values for
 distances 4..7: a negative distance 5 did not clip on the M4's GPU nor on Apple's
-software renderer (#692, from #589). virglrenderer's dump of that shader showed
+software renderer, and on the M1 Max's GPU the undefined values clipped the whole draw
+(#692, from #589). virglrenderer's dump of that shader showed
 clip_dist_temp[0] = temp18[0] and no [1].
 Applies to: Mesa 26.2.3 (virgl_tgsi.c is the same in 26.2.5).
 Upstream: not sent.
