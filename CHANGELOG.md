@@ -3,6 +3,18 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.20 (unreleased)
+
+- **OmacVM's own guest Mesa build copies every clip distance back after a loop (guest Mesa,
+  manual build, #PRB, see #589).** In a tessellation control shader that copies 5 to 8 clip
+  distances in a loop, Mesa's virgl driver copied only distances 0..3 back to their output, so a
+  negative distance 4..7 did not clip, on the M4's GPU and on Apple's software renderer alike
+  (#692). `src/app/guest/mesa/build.sh`, which builds Mesa's virgl driver with OmacVM's
+  patches into a folder of its own (`/opt/omacvm-mesa`, used with `LD_LIBRARY_PATH`), now has
+  `mesa-virgl-tgsi-clip-copyback.patch` for it. The VM's own Mesa (Arch's) does not get it:
+  nothing changes in a VM that does not use that build. One statement per distance avoids the
+  case with any Mesa.
+
 ## 3.2.19
 
 In OmacVM.app VMs, a Vulkan program's threads take turns in QEMU, and what a recorded command buffer
