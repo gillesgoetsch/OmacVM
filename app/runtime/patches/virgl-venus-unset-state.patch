@@ -1,0 +1,574 @@
+virglrenderer: Venus refuses draws with a descriptor set or index buffer never bound
+
+What: vkr keeps, per command buffer, which descriptor sets were bound at each bind point
+since vkBeginCommandBuffer and whether an index buffer was (#624).
+- Each graphics and compute pipeline gets the sets its shaders use: the bits the SPIR-V
+  scan's walk (vkr_spirv_bindings_ok, from virgl-venus-spirv-scan.patch) finds in the
+  functions an entry point reaches, collected in the layout callback vkr_stage_shader_ok
+  already passes, before a scan of chained code is freed. A variable only listed in a
+  SPIR-V 1.4 interface does not count, so vkr counts fewer sets than Vulkan's static use.
+  Unknown (no check) for a pipeline without a layout, one that links libraries, and one
+  that takes descriptor buffers. One mask per create info index, set on the pipeline
+  objects that are made before the driver's call, so a partial failure or
+  VK_PIPELINE_COMPILE_REQUIRED keeps each pipeline's own.
+- vkCmdBindPipeline copies the pipeline's mask (a later destroy does not matter);
+  vkCmdBindDescriptorSets and vkCmdPushDescriptorSet mark their sets at their bind point,
+  vkCmdBindDescriptorSets2 and vkCmdPushDescriptorSet2 by their stages (the compute stage
+  marks the compute point, any graphics, task or mesh stage the graphics point, both when
+  both are named); vkCmdBindIndexBuffer and vkCmdBindIndexBuffer2 mark the index buffer.
+  Begin, reset and a pool reset clear it all; a secondary starts with none (it inherits no
+  state); vkCmdExecuteCommands leaves the primary's as they were.
+- Every draw and dispatch is refused when the bound pipeline uses a set to which nothing
+  was bound at that point since the begin (VUID-vkCmdDraw-None-08600, the same VUID for
+  each draw and dispatch). The four indexed draws (vkCmdDrawIndexed, -IndexedIndirect,
+  -IndexedIndirectCount, vkCmdDrawMultiIndexedEXT) are refused without an index buffer
+  bound since the begin unless the guest turned maintenance6 on (-None-07312). With
+  maintenance6 that draw is legal: after every check passed, vkr binds the NULL index
+  buffer (VK_INDEX_TYPE_UINT32) on the driver's handle once per recording, as the app
+  could have.
+Why: MoltenVK reads that state when it encodes the command buffer (at vkQueueSubmit in
+QEMU, at vkEndCommandBuffer with prefill). On the M1 Max (Apple7), straight to the driver
+with robust buffer access on (work/v624-unset, 3 runs per case in KosmicKrisp, MoltenVK and
+MoltenVK prefill, each also under libgmalloc; 900 runs, 0 GPU restarts): a set the shader
+uses that was never bound SIGSEGV in bindMetalResources (<- prepareDraw / prepareComputeDispatch,
+a NULL set slot at 0x28) in 18 of 18 plain MoltenVK submits (graphics set 0, graphics set 1
+with only set 0 bound, compute set 0), and with prefill at the end or the submit depending on
+the heap; an indexed draw without an index buffer SIGSEGV in -[AGXG13XFamilyRenderContext
+drawIndexedPrimitives:...] <- MVKCmdDrawIndexed::encode (a nil buffer, 0x20) at 6 of 6 plain
+submits and 6 of 6 prefill ends; a NULL index buffer bound with maintenance6 works in all four
+MoltenVK modes. KosmicKrisp crashed in none.
+Left alone: a set bound with an incompatible layout, descriptors never written, push
+constants never set (with and without maintenance4) and vertex buffers never bound: no crash
+on either driver at the end or the submit, so they stay with the drivers; what the GPU then
+reads stays robust buffer access's. After vkCmdExecuteCommands the primary keeps its masks
+(Vulkan leaves its state undefined there, so an app binds again): a primary that draws with a
+pipeline bound only inside a secondary is not checked for sets. The push descriptor template
+calls have no handler (the guest driver sends them as plain pushes).
+Upstream: OmacVM policy (ADR 0065).
+Tests: Tests/virgl/test-venus-commands.c (the u- cases of case_unset; those that record a
+refused draw or submit also under libgmalloc).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index fc77b3a..307e864 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -661,13 +661,82 @@ vkr_cmd_state_reset(struct vkr_command_buffer *cmd)
+    vkr_cmd_set_views(cmd, NULL, 0);
+ }
+ 
++/* OmacVM (virgl-venus-unset-state.patch, ADR 0065): MoltenVK reads, when it encodes a draw
++ * or dispatch (at vkQueueSubmit in QEMU, or at vkEndCommandBuffer with prefill), the
++ * descriptor set at every set its shaders use (bindMetalResources: a set never bound is a
++ * NULL slot, SIGSEGV) and the index buffer of an indexed draw (a nil Metal buffer, SIGSEGV
++ * in drawIndexedPrimitives). So a draw or dispatch is refused when the bound pipeline's
++ * shaders use a set to which nothing was bound at that bind point since the begin, which
++ * Vulkan does not allow (VUID-vkCmdDraw-None-08600 and the same for every draw and
++ * dispatch; "use" here is narrower than Vulkan's static use: only a reached function's
++ * use, so vkr refuses less, never more), and an indexed draw without an index buffer
++ * unless maintenance6 is on (-None-07312). With maintenance6 such a draw is legal: vkr
++ * binds the NULL index buffer for it, as the app could (MoltenVK takes that). A set bound
++ * with another layout, unwritten descriptors, push constants never set and vertex buffers
++ * never bound are left to the drivers (they read none of them at encode time: the M1
++ * probes, work/v624-unset). */
++enum { VKR_CMD_GRAPHICS, VKR_CMD_COMPUTE };
++
++/* the set bits first .. first + count - 1 (first + count <= 32 past vkr_cmd_sets_ok and
++ * vkr_cmd_push_set_ok for every driver here; sets past 32 are not tracked) */
++static uint32_t
++vkr_cmd_set_bits(uint32_t first, uint32_t count)
++{
++   if (first >= 32 || !count)
++      return 0;
++   const uint64_t bits = (count >= 64 ? ~0ull : (1ull << count) - 1) << first;
++   return (uint32_t)bits;
++}
++
++static void
++vkr_cmd_sets_at_point(struct vkr_cmd_state *st,
++                      VkPipelineBindPoint point,
++                      uint32_t first,
++                      uint32_t count)
++{
++   if (point == VK_PIPELINE_BIND_POINT_GRAPHICS)
++      st->sets_bound[VKR_CMD_GRAPHICS] |= vkr_cmd_set_bits(first, count);
++   else if (point == VK_PIPELINE_BIND_POINT_COMPUTE)
++      st->sets_bound[VKR_CMD_COMPUTE] |= vkr_cmd_set_bits(first, count);
++}
++
++/* the *2 calls name stages: the compute stage binds at the compute point, any graphics
++ * stage (mesh and task too) at the graphics point, both at once when both are named */
++static void
++vkr_cmd_sets_at_stages(struct vkr_cmd_state *st,
++                       VkShaderStageFlags stages,
++                       uint32_t first,
++                       uint32_t count)
++{
++   if (stages & (VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_TASK_BIT_EXT |
++                 VK_SHADER_STAGE_MESH_BIT_EXT))
++      vkr_cmd_sets_at_point(st, VK_PIPELINE_BIND_POINT_GRAPHICS, first, count);
++   if (stages & VK_SHADER_STAGE_COMPUTE_BIT)
++      vkr_cmd_sets_at_point(st, VK_PIPELINE_BIND_POINT_COMPUTE, first, count);
++}
++
++/* every set the bound pipeline uses at `point` was bound there */
++static bool
++vkr_cmd_used_sets_ok(struct vn_dispatch_context *dispatch,
++                     const struct vkr_cmd_state *st,
++                     int point,
++                     const char *call)
++{
++   const uint32_t missing = st->sets_used[point] & ~st->sets_bound[point];
++   return vkr_context_check(dispatch->data, !missing, call,
++                            "the bound pipeline uses set %u, but no set was bound there since "
++                            "vkBeginCommandBuffer (VUID-%s-None-08600)",
++                            missing ? (uint32_t)__builtin_ctz(missing) : 0, call);
++}
++
+ static bool
+ vkr_cmd_draw_ok(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, const char *call)
+ {
+    const struct vkr_cmd_state *st = vkr_cmd_state(handle);
+    return vkr_context_check(dispatch->data, st->pass != VKR_CMD_PASS_NONE && st->graphics_bound,
+                             call, "%s", st->pass == VKR_CMD_PASS_NONE ? "outside a render pass"
+-                                                                      : "no graphics pipeline bound");
++                                                                      : "no graphics pipeline bound") &&
++          vkr_cmd_used_sets_ok(dispatch, st, VKR_CMD_GRAPHICS, call);
+ }
+ 
+ static bool
+@@ -676,7 +745,32 @@ vkr_cmd_dispatch_ok(struct vn_dispatch_context *dispatch, VkCommandBuffer handle
+    const struct vkr_cmd_state *st = vkr_cmd_state(handle);
+    return vkr_context_check(dispatch->data, st->pass == VKR_CMD_PASS_NONE && st->compute_bound,
+                             call, "%s", st->pass != VKR_CMD_PASS_NONE ? "inside a render pass"
+-                                                                      : "no compute pipeline bound");
++                                                                      : "no compute pipeline bound") &&
++          vkr_cmd_used_sets_ok(dispatch, st, VKR_CMD_COMPUTE, call);
++}
++
++/* an indexed draw: an index buffer was bound since the begin, or maintenance6 is on */
++static bool
++vkr_cmd_index_ok(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, const char *call)
++{
++   const struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(handle);
++   return vkr_context_check(dispatch->data, cmd->state.index_bound || cmd->device->maintenance6,
++                            call, "no index buffer bound since vkBeginCommandBuffer (maintenance6 "
++                            "is off: VUID-%s-None-07312)", call);
++}
++
++/* right before an indexed draw that passed every check: with no index buffer bound (legal
++ * with maintenance6 only, vkr_cmd_index_ok), the NULL one, once per recording, on the
++ * driver's handle (vkCmdBindIndexBuffer is core: never NULL in the proc table) */
++static void
++vkr_cmd_index_default(VkCommandBuffer handle)
++{
++   struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(handle);
++   if (cmd->state.index_bound || !cmd->state.recording)
++      return;
++   cmd->device->proc_table.CmdBindIndexBuffer(cmd->base.handle.command_buffer, VK_NULL_HANDLE, 0,
++                                              VK_INDEX_TYPE_UINT32);
++   cmd->state.index_bound = true;
+ }
+ 
+ /* a pass begins: none may be open */
+@@ -1030,11 +1124,15 @@ vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
+                           args->pipelineBindPoint, pipeline ? (int)pipeline->bind_point : -1))
+       return;
+    VKR_CMD_CALL(CmdBindPipeline, args, args->pipelineBindPoint, args->pipeline);
+-   /* OmacVM (virgl-venus-command-state.patch) */
+-   if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS)
++   /* OmacVM (virgl-venus-command-state.patch; virgl-venus-unset-state.patch: its sets, copied,
++    * so a later destroy of the pipeline does not matter) */
++   if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+       st->graphics_bound = true;
+-   else if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE)
++      st->sets_used[VKR_CMD_GRAPHICS] = pipeline->used_sets;
++   } else if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE) {
+       st->compute_bound = true;
++      st->sets_used[VKR_CMD_COMPUTE] = pipeline->used_sets;
++   }
+ }
+ 
+ static void
+@@ -1127,9 +1225,13 @@ vkr_dispatch_vkCmdBindDescriptorSets(struct vn_dispatch_context *dispatch,
+                         args->descriptorSetCount, args->pDescriptorSets,
+                         args->dynamicOffsetCount))
+       return;
++   /* OmacVM (virgl-venus-unset-state.patch): every set is non-NULL (vkr_cmd_sets_ok); the
++    * state is read before the handles are replaced */
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    VKR_CMD_CALL(CmdBindDescriptorSets, args, args->pipelineBindPoint, args->layout,
+                 args->firstSet, args->descriptorSetCount, args->pDescriptorSets,
+                 args->dynamicOffsetCount, args->pDynamicOffsets);
++   vkr_cmd_sets_at_point(st, args->pipelineBindPoint, args->firstSet, args->descriptorSetCount);
+ }
+ 
+ static void
+@@ -1145,7 +1247,10 @@ vkr_dispatch_vkCmdBindIndexBuffer(struct vn_dispatch_context *dispatch,
+                           args->indexType,
+                           ok ? "" : vkr_range_text(r, false, 0, args->offset, size)))
+       return;
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    VKR_CMD_CALL(CmdBindIndexBuffer, args, args->buffer, args->offset, args->indexType);
++   /* OmacVM (virgl-venus-unset-state.patch) */
++   st->index_bound = true;
+ }
+ 
+ static void
+@@ -1185,8 +1290,10 @@ static void
+ vkr_dispatch_vkCmdDrawIndexed(struct vn_dispatch_context *dispatch,
+                               struct vn_command_vkCmdDrawIndexed *args)
+ {
+-   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed"))
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed") ||
++       !vkr_cmd_index_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed"))
+       return;
++   vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawIndexed, args, args->indexCount, args->instanceCount,
+                 args->firstIndex, args->vertexOffset, args->firstInstance);
+ }
+@@ -1209,13 +1316,15 @@ static void
+ vkr_dispatch_vkCmdDrawIndexedIndirect(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdDrawIndexedIndirect *args)
+ {
+-   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirect"))
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirect") ||
++       !vkr_cmd_index_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirect"))
+       return;
+    if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirect", args->buffer,
+                             args->offset, args->drawCount,
+                             VKR_CMD_LIM(args)->maxDrawIndirectCount, args->stride,
+                             sizeof(VkDrawIndexedIndirectCommand)))
+       return;
++   vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawIndexedIndirect, args, args->buffer, args->offset, args->drawCount,
+                 args->stride);
+ }
+@@ -1811,6 +1920,11 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+                 args->pCommandBuffers);
+    st->graphics_bound |= graphics;
+    st->compute_bound |= compute;
++   /* OmacVM (virgl-venus-unset-state.patch): the primary's sets, pipeline sets and index
++    * buffer stay as they were (Vulkan makes all of the primary's state undefined here, so
++    * an app binds again; keeping them refuses nothing it may do). A primary that draws
++    * with a pipeline bound only inside a secondary has no pipeline sets: its draws are not
++    * checked for sets (ADR 0065: not covered). */
+ }
+ 
+ static void
+@@ -1919,7 +2033,8 @@ static void
+ vkr_dispatch_vkCmdDrawIndexedIndirectCount(
+    struct vn_dispatch_context *dispatch, struct vn_command_vkCmdDrawIndexedIndirectCount *args)
+ {
+-   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirectCount"))
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirectCount") ||
++       !vkr_cmd_index_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexedIndirectCount"))
+       return;
+    if (!vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirectCount", args->buffer,
+                             args->offset, args->maxDrawCount, UINT32_MAX, args->stride,
+@@ -1927,6 +2042,7 @@ vkr_dispatch_vkCmdDrawIndexedIndirectCount(
+        !vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirectCount", args->countBuffer,
+                             args->countBufferOffset, 1, 1, 0, 4))
+       return;
++   vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawIndexedIndirectCount, args, args->buffer, args->offset,
+                 args->countBuffer, args->countBufferOffset, args->maxDrawCount,
+                 args->stride);
+@@ -2090,8 +2206,11 @@ vkr_dispatch_vkCmdBindIndexBuffer2(struct vn_dispatch_context *dispatch,
+                           args->indexType,
+                           ok ? "" : vkr_range_text(r, true, args->size, args->offset, size)))
+       return;
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    VKR_CMD_CALL(CmdBindIndexBuffer2, args, args->buffer, args->offset, args->size,
+                 args->indexType);
++   /* OmacVM (virgl-venus-unset-state.patch) */
++   st->index_bound = true;
+ }
+ 
+ static void
+@@ -2373,12 +2492,14 @@ static void
+ vkr_dispatch_vkCmdDrawMultiIndexedEXT(struct vn_dispatch_context *dispatch,
+                                       struct vn_command_vkCmdDrawMultiIndexedEXT *args)
+ {
+-   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawMultiIndexedEXT"))
++   if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawMultiIndexedEXT") ||
++       !vkr_cmd_index_ok(dispatch, args->commandBuffer, "vkCmdDrawMultiIndexedEXT"))
+       return;
+    if (!vkr_context_check(dispatch->data, !args->drawCount || args->pIndexInfo,
+                           "vkCmdDrawMultiIndexedEXT", "%u draws without their array",
+                           args->drawCount))
+       return;
++   vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawMultiIndexedEXT, args, args->drawCount, args->pIndexInfo,
+                 args->instanceCount, args->firstInstance, sizeof(VkMultiDrawIndexedInfoEXT),
+                 args->pVertexOffset);
+@@ -2395,8 +2516,12 @@ vkr_dispatch_vkCmdPushDescriptorSet(struct vn_dispatch_context *dispatch,
+                             vkr_pipeline_layout_from_handle(args->layout), args->set,
+                             &args->descriptorWriteCount, &args->pDescriptorWrites))
+       return;
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    VKR_CMD_CALL(CmdPushDescriptorSet, args, args->pipelineBindPoint, args->layout,
+                 args->set, args->descriptorWriteCount, args->pDescriptorWrites);
++   /* OmacVM (virgl-venus-unset-state.patch): a push binds its set. (The template pushes have
++    * no handler: the guest driver sends them as plain pushes.) */
++   vkr_cmd_sets_at_point(st, args->pipelineBindPoint, args->set, 1);
+ }
+ 
+ static void
+@@ -2723,7 +2848,12 @@ vkr_dispatch_vkCmdBindDescriptorSets2(struct vn_dispatch_context *dispatch,
+                         info->descriptorSetCount, info->pDescriptorSets,
+                         info->dynamicOffsetCount))
+       return;
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   const VkShaderStageFlags stages = info->stageFlags;
++   const uint32_t first = info->firstSet, count = info->descriptorSetCount;
+    VKR_CMD_CALL(CmdBindDescriptorSets2, args, args->pBindDescriptorSetsInfo);
++   /* OmacVM (virgl-venus-unset-state.patch) */
++   vkr_cmd_sets_at_stages(st, stages, first, count);
+ }
+ 
+ static void
+@@ -2750,7 +2880,12 @@ vkr_dispatch_vkCmdPushDescriptorSet2(struct vn_dispatch_context *dispatch,
+                             vkr_pipeline_layout_from_handle(info->layout), info->set,
+                             &info->descriptorWriteCount, &info->pDescriptorWrites))
+       return;
++   struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
++   const VkShaderStageFlags stages = info->stageFlags;
++   const uint32_t set = info->set;
+    VKR_CMD_CALL(CmdPushDescriptorSet2, args, args->pPushDescriptorSetInfo);
++   /* OmacVM (virgl-venus-unset-state.patch) */
++   vkr_cmd_sets_at_stages(st, stages, set, 1);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index ddc8e57..f126b0a 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -48,6 +48,12 @@ struct vkr_cmd_state {
+    uint64_t render_pass_serial, framebuffer_serial;
+    bool graphics_bound, compute_bound;
+    bool conditional;
++   /* OmacVM (virgl-venus-unset-state.patch): per bind point (VKR_CMD_GRAPHICS, _COMPUTE) the
++    * sets bound there since the begin (bit n: set n) and the sets the bound pipeline uses;
++    * whether an index buffer was bound. A secondary starts with none (it inherits no
++    * state); vkCmdExecuteCommands leaves the primary's as they were. */
++   uint32_t sets_bound[2], sets_used[2];
++   bool index_bound;
+ };
+ 
+ /* a dynamic rendering's views with 8 color attachments: colors and their resolves, depth,
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 07b28b2..93248b9 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -302,6 +302,21 @@ vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_p
+    }
+ }
+ 
++/* OmacVM (virgl-venus-unset-state.patch): each object, made before the driver's call, gets
++ * the sets of its create info (the objects are by create info index, so whichever the
++ * driver then makes, a partial failure or VK_PIPELINE_COMPILE_REQUIRED included, has its
++ * own); frees `used` (arr NULL: the objects were not made) */
++static void
++vkr_pipeline_set_used_sets(struct object_array *arr, uint32_t *used)
++{
++   for (uint32_t i = 0; arr && i < arr->count; i++) {
++      struct vkr_pipeline *pipeline = arr->objects[i];
++      if (pipeline)
++         pipeline->used_sets = used[i];
++   }
++   free(used);
++}
++
+ /* OmacVM (virgl-venus-pipeline-limits.patch, ADR 0065): a pipeline's create info names
+  * stages, vertex bindings, viewports, color attachments, samples, subpasses, dynamic
+  * states and enum values inside what the driver indexes. Mesa's vk_graphics_state
+@@ -453,14 +468,41 @@ vkr_spec_lookup(const void *data, uint32_t spec_id, uint32_t *value)
+    return false;
+ }
+ 
+-/* a descriptor a shader uses is in the pipeline layout */
++/* OmacVM (virgl-venus-unset-state.patch): the layout, and the sets the shader uses */
++struct vkr_layout_use {
++   const struct vkr_pipeline_layout *layout;
++   uint32_t sets;
++};
++
++/* a descriptor a shader uses is in the pipeline layout (and its set counts as used) */
+ static bool
+ vkr_layout_has(const void *data, uint32_t set, uint32_t binding)
+ {
+-   const struct vkr_pipeline_layout *layout = data;
++   struct vkr_layout_use *use = (struct vkr_layout_use *)data;
++   const struct vkr_pipeline_layout *layout = use->layout;
+    uint32_t index;
+-   return set < layout->set_count && layout->sets[set] &&
+-          vkr_set_layout_find(layout->sets[set], binding, &index);
++   if (!(set < layout->set_count && layout->sets[set] &&
++         vkr_set_layout_find(layout->sets[set], binding, &index)))
++      return false;
++   /* set < set_count <= maxBoundDescriptorSets (vkCreatePipelineLayout); a set past 32 is
++    * not tracked (no draw is checked for it) */
++   if (set < 32)
++      use->sets |= 1u << set;
++   return true;
++}
++
++/* the sets a pipeline uses are known: it has a layout, links no libraries (their shaders
++ * are not scanned here) and takes no descriptor buffers (it binds no sets) */
++static bool
++vkr_used_sets_known(const void *next,
++                    VkPipelineCreateFlags flags,
++                    const struct vkr_pipeline_layout *layout)
++{
++   const VkPipelineCreateFlags2CreateInfo *f2 =
++      vkr_find_struct(next, VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO);
++   const VkPipelineCreateFlags2 all = f2 ? f2->flags : flags;
++   return layout && !(all & VK_PIPELINE_CREATE_2_DESCRIPTOR_BUFFER_BIT_EXT) &&
++          !vkr_find_struct(next, VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR);
+ }
+ 
+ static uint32_t
+@@ -479,11 +521,14 @@ vkr_stage_model(VkShaderStageFlagBits stage)
+ 
+ /* the stage's SPIR-V (its module's summary, or a scan of the code chained into the stage)
+  * has an entry point of that name for the stage, a workgroup size inside the device's
+- * limits after specialization, and descriptor sets and bindings the layout has */
++ * limits after specialization, and descriptor sets and bindings the layout has; the sets
++ * its reached functions use are added to *used_sets (virgl-venus-unset-state.patch; the
++ * scan is done before a scan of chained code is freed) */
+ static bool
+ vkr_stage_shader_ok(const struct vkr_physical_device *physical_dev,
+                     const struct vkr_pipeline_layout *layout,
+                     const VkPipelineShaderStageCreateInfo *st,
++                    uint32_t *used_sets,
+                     char *why,
+                     size_t why_size)
+ {
+@@ -517,10 +562,12 @@ vkr_stage_shader_ok(const struct vkr_physical_device *physical_dev,
+                lim->maxComputeWorkGroupSize[2], lim->maxComputeWorkGroupInvocations);
+    } else {
+       uint32_t set, binding;
+-      ok = !layout || vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, layout, &set, &binding);
++      struct vkr_layout_use use = { .layout = layout };
++      ok = !layout || vkr_spirv_bindings_ok(spirv, entry, vkr_layout_has, &use, &set, &binding);
+       if (!ok)
+          snprintf(why, why_size, "stage 0x%x: set %u binding %u, not in the pipeline layout (%u sets)",
+                   st->stage, set, binding, layout->set_count);
++      *used_sets |= use.sets;
+    }
+    vkr_spirv_free(own);
+    return ok;
+@@ -543,9 +590,11 @@ vkr_stencil_ok(const VkStencilOpState *s)
+           vkr_stencil_op_ok(s->depthFailOp) && vkr_compare_op_ok(s->compareOp);
+ }
+ 
++/* (used_sets: the sets its stages use, virgl-venus-unset-state.patch) */
+ static bool
+ vkr_graphics_pipeline_ok(const struct vkr_device *dev,
+                          const VkGraphicsPipelineCreateInfo *info,
++                         uint32_t *used_sets,
+                          char *why,
+                          size_t why_size)
+ {
+@@ -574,12 +623,15 @@ vkr_graphics_pipeline_ok(const struct vkr_device *dev,
+    }
+    VkShaderStageFlags seen = 0;
+    const struct vkr_pipeline_layout *layout = vkr_pipeline_layout_from_handle(info->layout);
++   *used_sets = 0;
+    for (uint32_t i = 0; i < info->stageCount; i++) {
+       if (!vkr_stage_ok(&info->pStages[i], VKR_GRAPHICS_STAGES & ~seen, why, why_size) ||
+-          !vkr_stage_shader_ok(physical_dev, layout, &info->pStages[i], why, why_size))
++          !vkr_stage_shader_ok(physical_dev, layout, &info->pStages[i], used_sets, why, why_size))
+          return false;
+       seen |= info->pStages[i].stage;
+    }
++   if (!vkr_used_sets_known(info->pNext, info->flags, layout))
++      *used_sets = 0;
+ 
+    /* the color attachments the blend state must describe */
+    const VkPipelineRenderingCreateInfo *rendering =
+@@ -819,16 +871,24 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+ 
+    /* OmacVM (virgl-venus-pipeline-limits.patch): read before the handles are replaced */
+    char why[192];
++   /* OmacVM (virgl-venus-unset-state.patch): the sets each create info's stages use, by
++    * index, given to its pipeline object once it is made */
++   uint32_t *used = calloc(MAX2(args->createInfoCount, 1), sizeof(*used));
++   if (!vkr_context_check(ctx, used, "vkCreateGraphicsPipelines", "out of host memory"))
++      return;
+    for (uint32_t i = 0; i < args->createInfoCount; i++) {
+-      if (!vkr_graphics_pipeline_ok(dev, &args->pCreateInfos[i], why, sizeof(why))) {
++      if (!vkr_graphics_pipeline_ok(dev, &args->pCreateInfos[i], &used[i], why, sizeof(why))) {
+          vkr_context_refuse(ctx, true, "vkCreateGraphicsPipelines", "pipeline %u: %s", i, why);
++         free(used);
+          return;
+       }
+    }
+ 
+    /* OmacVM (virgl-venus-ring-lock.patch): vkr_graphics_pipeline_create_array, the driver
+     * without the dispatch lock and the objects named pinned */
+-   if (vkr_graphics_pipeline_init_array(ctx, args, &arr) != VK_SUCCESS)
++   const bool init = vkr_graphics_pipeline_init_array(ctx, args, &arr) == VK_SUCCESS;
++   vkr_pipeline_set_used_sets(init ? &arr : NULL, used);
++   if (!init)
+       return;
+    struct vkr_pins pins;
+    if (!vkr_pins_begin(ctx, &pins, "vkCreateGraphicsPipelines", args->device,
+@@ -875,15 +935,20 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+ 
+    /* OmacVM (virgl-venus-pipeline-limits.patch) */
+    char why[192];
++   /* OmacVM (virgl-venus-unset-state.patch): as vkCreateGraphicsPipelines */
++   uint32_t *used = calloc(MAX2(args->createInfoCount, 1), sizeof(*used));
++   if (!vkr_context_check(ctx, used, "vkCreateComputePipelines", "out of host memory"))
++      return;
+    for (uint32_t i = 0; i < args->createInfoCount; i++) {
+       const VkComputePipelineCreateInfo *info = &args->pCreateInfos[i];
+       const VkPipelineCreationFeedbackCreateInfo *feedback =
+          vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
++      const struct vkr_pipeline_layout *layout = vkr_pipeline_layout_from_handle(info->layout);
+       /* OmacVM (virgl-venus-chain-repeats.patch) */
+       if (!vkr_chain_once(info->pNext, "VkComputePipelineCreateInfo", why, sizeof(why)) ||
+           !vkr_stage_ok(&info->stage, VK_SHADER_STAGE_COMPUTE_BIT, why, sizeof(why)) ||
+-          !vkr_stage_shader_ok(dev->physical_device, vkr_pipeline_layout_from_handle(info->layout),
+-                               &info->stage, why, sizeof(why)) ||
++          !vkr_stage_shader_ok(dev->physical_device, layout, &info->stage, &used[i], why,
++                               sizeof(why)) ||
+           !vkr_context_check(ctx,
+                              (!feedback || feedback->pipelineStageCreationFeedbackCount <= 1) &&
+                                 vkr_robustness_ok(vkr_find_struct(
+@@ -893,12 +958,17 @@ vkr_dispatch_vkCreateComputePipelines(struct vn_dispatch_context *dispatch,
+                              feedback ? feedback->pipelineStageCreationFeedbackCount : 0)) {
+          if (!vkr_context_get_fatal(ctx))
+             vkr_context_refuse(ctx, true, "vkCreateComputePipelines", "pipeline %u: %s", i, why);
++         free(used);
+          return;
+       }
++      if (!vkr_used_sets_known(info->pNext, info->flags, layout))
++         used[i] = 0;
+    }
+ 
+    /* OmacVM (virgl-venus-ring-lock.patch): as vkCreateGraphicsPipelines */
+-   if (vkr_compute_pipeline_init_array(ctx, args, &arr) != VK_SUCCESS)
++   const bool init = vkr_compute_pipeline_init_array(ctx, args, &arr) == VK_SUCCESS;
++   vkr_pipeline_set_used_sets(init ? &arr : NULL, used);
++   if (!init)
+       return;
+    struct vkr_pins pins;
+    if (!vkr_pins_begin(ctx, &pins, "vkCreateComputePipelines", args->device,
+diff --git a/src/venus/vkr_pipeline.h b/src/venus/vkr_pipeline.h
+index c1d304d..5ae1219 100644
+--- a/src/venus/vkr_pipeline.h
++++ b/src/venus/vkr_pipeline.h
+@@ -36,6 +36,10 @@ struct vkr_pipeline {
+    struct vkr_object base;
+    /* OmacVM (virgl-venus-command-limits.patch): vkCmdBindPipeline binds it here only */
+    VkPipelineBindPoint bind_point;
++   /* OmacVM (virgl-venus-unset-state.patch): the descriptor sets (bit n: set n, n < 32) its
++    * shaders' reached functions use; 0 when not known (no layout, libraries, descriptor
++    * buffers): then a draw or dispatch is not checked for them */
++   uint32_t used_sets;
+ };
+ VKR_DEFINE_OBJECT_CAST(pipeline, VK_OBJECT_TYPE_PIPELINE, VkPipeline)
+ 

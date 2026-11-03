@@ -1714,6 +1714,12 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-ignored-valu
 grep -q 'if (check == VKR_VIEW_EMPTY) {' "$virgl_source/src/venus/vkr_buffer.c" && \
   grep -q 'const bool count_read = !(three && (advanced || !dev->blend_coherent));' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_buffer.c, vkr_pipeline.c: Venus refuses values Vulkan ignores or passes blend states the drivers read past (ignored-values patch)"
+# A draw or dispatch with a descriptor set its pipeline uses, or an index buffer, never bound
+# since the begin is refused: MoltenVK reads the NULL slot when it encodes (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-unset-state.patch"
+grep -q 'vkr_cmd_used_sets_ok(dispatch, st, VKR_CMD_GRAPHICS, call);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'vkr_pipeline_set_used_sets(init ? &arr : NULL, used);' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_command_buffer.c, vkr_pipeline.c: a draw with a set or index buffer never bound gets past vkr (unset-state patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
