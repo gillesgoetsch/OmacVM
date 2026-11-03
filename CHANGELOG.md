@@ -82,6 +82,18 @@ in more words.
   point) before the disk's own lines; the test took the last line. It now takes the line that has
   the mount point, and when there is none prints hdiutil's output and detaches the image.
 
+- **Desktop OpenGL programs that pass clip distances between tessellation shaders run on the
+  Mac's GPU (OmacVM.app, #684, see #589).** When a tessellation control shader passed
+  gl_ClipDistance on to the evaluation shader, Apple's OpenGL could not build the GPU pipeline:
+  such draws ran on Apple's CPU vertex path, its shader compiler crashed in the background
+  (MTLCompilerService reports) and the first draw took about 270 ms (qemu.log: "Fallback to SW
+  vertex processing because buildPipelineState failed"); on the MacBook Pro M1 Max 4 of the 6
+  such programs of the test drew nothing. Now the control shader passes them as plain varyings:
+  the same programs draw on the GPU with the pixels of Apple's software renderer, the first draw
+  in 6-100 ms, no fallback line, no crash report. Clip distances from a vertex shader straight
+  into an evaluation shader (no control shader) still take the CPU path. Needs only the app
+  update (from the VM's next start); nothing in the VM.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
