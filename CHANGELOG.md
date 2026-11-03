@@ -15,7 +15,7 @@ in more words.
   Its Ghostty line said "a Vulkan app's GPU context was lost", but only Ghostty's own lost context
   keeps the next Ghostty off the Mac's GPU; it now says so.
 
-- **Omarchy's tray works in the notch strip (Omanotch, #662).** With the bar in the strip, tray
+- **Omarchy's tray works in the notch strip (Omanotch, #671, see #662).** With the bar in the strip, tray
   icons did not answer clicks and the drawer's arrow did nothing, so icons in the drawer could not
   be reached at all. Now the icons take left, right and middle clicks and scrolling as on the bar
   in the VM (a right click opens the app's menu right under the strip), and a left click on the
@@ -24,7 +24,7 @@ in more words.
   report and the cause. Checked in a test VM with Omarchy 4.0.3rc4: before, every click on a tray
   icon missed; after, each button and the wheel reached the app. Needs Update VM.
 
-- **What's New lists every version since yours (OmacVM.app).** When an update skips versions, its
+- **What's New lists every version since yours (OmacVM.app, #674).** When an update skips versions, its
   What's New showed only the newest one's notes. Now it shows each version after the one you run, up
   to the update, newest first, each under its own version number, from the update's own CHANGELOG.
   At most 5 versions and 30 items; the rest is counted, with a link to the changelog on GitHub. The
@@ -33,7 +33,7 @@ in more words.
   it showed nothing).
 
 - **Mac input methods: a lone Shift reaches an input method that switches on it (OmacVM.app,
-  experimental, #357, #655 by @Vocllum).** While the VM has the keyboard, QEMU's key tap took every
+  experimental, #657, see #357, #655 by @Vocllum).** While the VM has the keyboard, QEMU's key tap took every
   key and modifier from macOS's event stream, so an input method that switches between its modes on
   a lone Shift from that stream never saw Shift in the VM: in @Vocllum's captures WeChat Input stayed
   in Chinese after each Shift tap followed by a letter (7 of 7 in 3.2.8), and switched at each one
@@ -65,7 +65,7 @@ in more words.
   buffer named is legal, but the Mac's drivers still read it: KosmicKrisp at a barrier in a
   multisampled pass, MoltenVK when the command buffer is submitted. Now the driver's copy waits
   until the command buffer is reset, begun again or freed. Needs the app update.
-- **A command buffer that ran another one keeps it until it lets go (OmacVM.app, #676).** With
+- **A command buffer that ran another one keeps it until it lets go (OmacVM.app, #678, see #676).** With
   Graphics on Vulkan, a program could destroy a secondary command buffer's pool after a primary
   command buffer ran it and then submit the primary: MoltenVK reads the secondary at the submit,
   so QEMU read freed memory (a free alone hands the secondary back to its pool). Now the primary
@@ -77,7 +77,7 @@ in more words.
   program's Vulkan connection since 3.2.14. Now it binds, and a plane the image does not have is
   still refused. Nothing that bound before is refused now. Needs the app update.
 
-- Tests: app-drive-drop.sh no longer fails with "rename image not under /Volumes: ''" when other
+- Tests (#681): app-drive-drop.sh no longer fails with "rename image not under /Volumes: ''" when other
   disk images attach at the same time. hdiutil then can print the volume's line (with its mount
   point) before the disk's own lines; the test took the last line. It now takes the line that has
   the mount point, and when there is none prints hdiutil's output and detaches the image.
