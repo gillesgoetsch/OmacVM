@@ -24,6 +24,7 @@ cat > "$B/python3" <<EOF
 for a in "\$@"; do
   if [[ \$a == *Library/Containers/com.utmapp.UTM/* ]]; then
     echo "\$\$" >> "$T/read"
+    perl -MTime::HiRes=time -e 'printf "%.3f\n", time' >> "$T/read-at"
     [[ -n \${UTM_FIXTURE:-} ]] && exec "$PY" "\$1" "\$UTM_FIXTURE" "\${@:3}"
     exec sleep 60
   fi
@@ -35,10 +36,15 @@ printf '#!/bin/bash\necho none\n' > "$B/swift"
 printf '#!/bin/bash\n[[ "$*" == "-xq UTM" || "$*" == "-x UTM" ]] && exit 1\nexec /usr/bin/pgrep "$@"\n' > "$B/pgrep"
 printf '#!/bin/bash\necho "$*" >> "%s/utmctl"\nexit 1\n' "$T" > "$B/utmctl"
 chmod +x "$B"/*
-run() {   # ENV... -- vms.sh --json, in the fake HOME; prints the seconds it took on the last line
-  local s=$SECONDS
+# The clock to the millisecond: SECONDS counts the clock's whole seconds, so
+# 0.1 s of work across a second's turn reads 1 (bash 3.2 and 5 alike).
+now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
+since() { perl -e 'printf "%.2f\n", $ARGV[1] - $ARGV[0]' "$1" "${2:-$(now)}"; }   # FROM [TO]: seconds
+below() { [[ -n $1 ]] && perl -e 'exit !($ARGV[0] < $ARGV[1])' "$1" "$2"; }      # SECONDS LIMIT
+run() {   # ENV... -- vms.sh --json, in the fake HOME; the last line: took=SECONDS end=CLOCK
+  local s e; s=$(now)
   env HOME="$H" PATH="$B:$PATH" PRLCTL=/nonexistent UTMCTL="$B/utmctl" "$@" "$R/src/cmd/vms.sh" --json < /dev/null
-  echo "took=$((SECONDS - s))"
+  e=$(now); echo "took=$(since "$s" "$e") end=$e"
 }
 SUP="$H/Library/Application Support/omacvm"
 
@@ -63,11 +69,13 @@ check "UTM used, no person: UTM's container not read" no "$([[ -e $T/read ]] && 
 check "UTM used, no person: app VM still listed" yes "$(grep -q '"name": "Work", "type": "app"' <<<"$out" && echo yes)"
 check "valid JSON" ok "$(sed '$d' <<<"$out" | "$PY" -c 'import json,sys; json.load(sys.stdin); print("ok")' 2>&1)"
 
-# 3. Asked for UTM (OMACVM_UTM=1) while macOS holds the read: back within 3 s,
-# the same row, and the stuck reader is gone.
+# 3. Asked for UTM (OMACVM_UTM=1) while macOS holds the read: back within 3 s
+# of the read (it is cut at 2 s), the same row, and the stuck reader is gone.
+# Counted from the read, not from the start: a busy runner took 4-8 s for all
+# of it (CI 10-14 .. 10-28), the part before the read included.
 out=$(run OMACVM_UTM=1)
-took=$(sed -n 's/^took=//p' <<<"$out")
-check "read held back: vms --json within 3 s" yes "$( (( took <= 3 )) && echo yes || echo "$took s")"
+end=$(sed -n 's/^took=.* end=//p' <<<"$out"); waited=$(since "$(head -1 "$T/read-at" 2>/dev/null)" "$end" 2>/dev/null)
+check "read held back: vms --json back within 3 s of the read" yes "$(below "$waited" 3 && echo yes || echo "${waited:-no read} s")"
 check "read held back: it was tried once" 1 "$(grep -c . "$T/read" 2>/dev/null)"
 check "read held back: UTM row unknown (UTM data not readable)" yes \
   "$(grep -q '"name": "Dev VM", "type": "utm", "state": "unknown", .*"note": "UTM data not readable"' <<<"$out" && echo yes || echo "$out")"
@@ -97,9 +105,12 @@ check "readable: OmacVM's list follows" "Fixture A Fixture B" "$(sort "$SUP/utm-
 # 5. The other readers give up at once without permission (no read at all).
 rm -f "$T/read"
 got=$(HOME=$H PATH="$B:$PATH" bash -c 'source "$1/src/lib/mac.sh"; source "$1/src/lib/vm.sh"
-  s=$SECONDS; utm_bundle "Fixture A"; echo "bundle=$?"; vm_marked "Fixture A" utm; echo "marked=$?"
-  utm_add_sound "Fixture A"; echo "sound=$?"; echo "took=$((SECONDS - s))"' _ "$R" < /dev/null)
-check "no permission: utm_bundle/vm_marked fail, utm_add_sound skips, at once" "bundle=1 marked=1 sound=0 took=0" "$(paste -sd' ' - <<<"$got")"
+  now() { perl -MTime::HiRes=time -e '\''printf "%.3f\n", time'\''; }
+  now; utm_bundle "Fixture A"; echo "bundle=$?"; vm_marked "Fixture A" utm; echo "marked=$?"
+  utm_add_sound "Fixture A"; echo "sound=$?"; now' _ "$R" < /dev/null)
+took=$(since "$(sed -n 1p <<<"$got")" "$(sed -n '$p' <<<"$got")")
+check "no permission: utm_bundle/vm_marked fail, utm_add_sound skips, at once (under 1 s)" "bundle=1 marked=1 sound=0 yes" \
+  "$(sed '1d;$d' <<<"$got" | paste -sd' ' -) $(below "$took" 1 && echo yes || echo "$took s")"
 check "no permission: UTM's container not read" no "$([[ -e $T/read ]] && echo yes || echo no)"
 
 # 6. The test identity lists only its own app's VMs.
@@ -110,7 +121,9 @@ check "test identity: no UTM row" 0 "$(grep -c '"type": "utm"' <<<"$out")"
 # person at a terminal, with UTM used here: UTM's data is not read at all.
 rm -f "$T/read"
 got=$(HOME=$H PATH="$B:$PATH" PRLCTL=/nonexistent UTMCTL="$B/utmctl" bash -c 'source "$1/src/lib/mac.sh"; source "$1/src/lib/vm.sh"
-  UTM_TTY=1; VM=Work; TYPE=app; s=$SECONDS; resolve_vm; echo "type=$TYPE ip=${IP:-none} quick=$((SECONDS - s < 2))"' _ "$R" < /dev/null 2>&1)
+  now() { perl -MTime::HiRes=time -e '\''printf "%.3f\n", time'\''; }
+  UTM_TTY=1; VM=Work; TYPE=app; s=$(now); resolve_vm
+  echo "type=$TYPE ip=${IP:-none} quick=$(perl -e '\''print $ARGV[1] - $ARGV[0] < 2 ? 1 : 0'\'' "$s" "$(now)")"' _ "$R" < /dev/null 2>&1)
 check "app VM named: resolved without starting it, no 2 s UTM wait" "type=app ip=none quick=1" "$(tail -1 <<<"$got")"
 check "app VM named: UTM's container not read" no "$([[ -e $T/read ]] && echo yes || echo no)"
 

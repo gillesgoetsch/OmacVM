@@ -62,7 +62,8 @@ space_targets() {
   # A prebuilt VM's download: prebuilt_space_ok checks it with the image's size.
   [[ $src == prebuilt ]] && return
   [[ $(drive_id "$dir") == "$(drive_id "$SPACE_CACHE")" ]] && return
-  printf '%s\t%s\t%s\n' "$SPACE_CACHE" "$SPACE_CACHE_GB" "the download and the temporary installer, $(sed "s|^$HOME|~|" <<<"$SPACE_CACHE")"
+  # space_problem stops reading at a drive that is too small: no "write error" where SIGPIPE is ignored (CI).
+  printf '%s\t%s\t%s\n' "$SPACE_CACHE" "$SPACE_CACHE_GB" "the download and the temporary installer, $(sed "s|^$HOME|~|" <<<"$SPACE_CACHE")" 2>/dev/null
 }
 
 # Sets SPACE_WHY (the build does not fit: status 1) and SPACE_NOTE (it fits,
