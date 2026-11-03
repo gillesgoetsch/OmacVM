@@ -1803,6 +1803,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-encoder-cap.
 grep -q 'if (!vkr_cmd_weigh(dispatch, args->commandBuffer, weight, "vkCmdExecuteCommands"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit", i, submit->commandBufferCount,' "$virgl_source/src/venus/vkr_queue.c" || \
   die "vkr_command_buffer.c, vkr_queue.c: Metal passes per command buffer are not capped (encoder-cap patch)"
+# Recordings and objects are charged per context and to the shared budget, the reported heaps
+# are at most the apps' share, big decoder temp buffers go (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-host-memory.patch"
+grep -q 'if (!vkr_cmd_cost(dispatch->data, _cmd, VKR_CMD_COST_BASE, "vk" #cmd_name))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'vkr_object_charge(ctx, obj); /\* OmacVM (virgl-venus-host-memory.patch) \*/' "$virgl_source/src/venus/vkr_context.h" && \
+  grep -q 'vkr_memory_heaps_clamp(&physical_dev->memory_properties);' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c: recordings and objects are not charged (host-memory patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

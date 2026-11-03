@@ -21,7 +21,9 @@
  * set, and no indexed draw an index buffer, never bound since the begin
  * (virgl-venus-unset-state.patch: the u- cases, case_unset); a command buffer and a MoltenVK
  * batch open no more Metal passes than vkr's cap, below where Metal ends the process
- * (virgl-venus-encoder-cap.patch: the h-pass- cases, case_host).
+ * (virgl-venus-encoder-cap.patch: the h-pass- cases, case_host), and recordings and objects
+ * are charged for the Mac memory they take, the heaps reported are the apps' share and the
+ * charge comes back at the teardown (virgl-venus-host-memory.patch: the other h- cases).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -6439,6 +6441,17 @@ static void h_passes(void *cmd, void *rp, void *fb, uint32_t n, bool rendering, 
    step("%u %s recorded%s", n, rendering ? "renderings" : "render passes", ended() ? " (the context ended)" : "");
 }
 
+static void h_fills(void *cmd, struct vkr_buffer *buf, uint32_t n)
+{
+   uint32_t i = 0;
+   for (; i < n && !ended(); i++) {
+      struct vn_command_vkCmdFillBuffer f = { .commandBuffer = (VkCommandBuffer)cmd, .dstBuffer = (VkBuffer)buf,
+                                              .size = 256, .data = 7 };
+      D->dispatch_vkCmdFillBuffer(D, &f);
+   }
+   step("%u fills recorded%s", i, ended() ? " (the context ended)" : "");
+}
+
 /* a real submit of the command buffers in one batch, and the driver's wait */
 static int h_submit(void **cmds, uint32_t n)
 {
@@ -6589,9 +6602,230 @@ static int case_host_passes(const char *c)
    return BROKEN;
 }
 
+/* recordings, objects, heaps, the temp pool and the charge's return
+ * (virgl-venus-host-memory.patch) */
+static int case_host_memory(const char *c)
+{
+   if (IS("h-temp-big")) {
+      setup(0);
+      /* one 256 MB command: the decoder kept it for the context's next commands */
+      void *t = vkr_cs_decoder_alloc_temp(&ctx->decoder, 256u << 20);
+      if (!t)
+         broken("temp");
+      vkr_cs_decoder_reset(&ctx->decoder);
+      const size_t kept = ctx->decoder.temp_pool.total_size;
+      step("temp pool after the reset: %zu MB", kept >> 20);
+      void *small = vkr_cs_decoder_alloc_temp(&ctx->decoder, 4096);
+      vkr_cs_decoder_reset(&ctx->decoder);
+      return small && kept <= (16u << 20) ? WORKS : ERROR;
+   }
+   if (IS("h-heap")) {
+      setup(0);
+      const uint64_t apps = virgl_gpu_budget_apps_limit();
+      struct vkr_device_memory *mem = allocate(64u << 20, memory_type(~0u));
+      (void)mem;
+      VkPhysicalDeviceMemoryProperties mp = { 0 };
+      struct vn_command_vkGetPhysicalDeviceMemoryProperties g1 = { .physicalDevice = (VkPhysicalDevice)pdev,
+                                                                  .pMemoryProperties = &mp };
+      D->dispatch_vkGetPhysicalDeviceMemoryProperties(D, &g1);
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT bp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
+      VkPhysicalDeviceMemoryProperties2 mp2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                                .pNext = lists(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) ? &bp : NULL };
+      struct vn_command_vkGetPhysicalDeviceMemoryProperties2 g2 = { .physicalDevice = (VkPhysicalDevice)pdev,
+                                                                   .pMemoryProperties = &mp2 };
+      D->dispatch_vkGetPhysicalDeviceMemoryProperties2(D, &g2);
+      VkPhysicalDeviceMaintenance3Properties m3 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES };
+      VkPhysicalDeviceMaintenance4Properties m4 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES,
+                                                    .pNext = &m3 };
+      VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m4 };
+      struct vn_command_vkGetPhysicalDeviceProperties2 gp = { .physicalDevice = (VkPhysicalDevice)pdev, .pProperties = &p2 };
+      D->dispatch_vkGetPhysicalDeviceProperties2(D, &gp);
+      bool ok = mp.memoryHeapCount && mp2.memoryProperties.memoryHeapCount;
+      uint64_t heap = 0;
+      for (uint32_t i = 0; i < mp.memoryHeapCount; i++) {
+         const uint64_t s1 = mp.memoryHeaps[i].size, s2 = mp2.memoryProperties.memoryHeaps[i].size;
+         step("heap %u: %" PRIu64 " MB (vkGetPhysicalDeviceMemoryProperties), %" PRIu64
+              " MB (...2), apps' share %" PRIu64 " MB, budget %" PRIu64 " MB, usage %" PRIu64 " MB", i,
+              s1 >> 20, s2 >> 20, apps >> 20, (uint64_t)bp.heapBudget[i] >> 20, (uint64_t)bp.heapUsage[i] >> 20);
+         ok = ok && s1 <= apps && s2 <= apps && s1 == s2;
+         if (mp2.pNext)
+            ok = ok && bp.heapBudget[i] && bp.heapBudget[i] <= s2 && bp.heapUsage[i] >= (64u << 20) &&
+                 bp.heapUsage[i] < (1u << 30);
+         heap = s1 > heap ? s1 : heap;
+      }
+      step("maxMemoryAllocationSize %" PRIu64 " MB, maxBufferSize %" PRIu64 " MB", (uint64_t)m3.maxMemoryAllocationSize >> 20,
+           (uint64_t)m4.maxBufferSize >> 20);
+      ok = ok && m3.maxMemoryAllocationSize <= heap && m4.maxBufferSize <= heap;
+      return ended() ? FATAL : ok ? WORKS : ERROR;
+   }
+   if (IS("h-zink-frame-ok")) {
+      /* a Zink-like frame: 2000 passes of 5 draws each, a barrier between them, at the
+       * default caps and budget */
+      setup(0);
+      struct world w = { 0 };
+      make_world(&w, true);
+      begin(w.cmd);
+      bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
+      ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+      for (int p = 0; p < 2000 && !ended(); p++) {
+         VkClearValue clear = { 0 };
+         VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                      .renderPass = (VkRenderPass)w.rp, .framebuffer = (VkFramebuffer)w.fb,
+                                      .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                      .pClearValues = &clear };
+         struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)w.cmd, .pRenderPassBegin = &bi,
+                                                      .contents = VK_SUBPASS_CONTENTS_INLINE };
+         D->dispatch_vkCmdBeginRenderPass(D, &b);
+         for (int d = 0; d < 5; d++) {
+            struct vn_command_vkCmdDraw dr = { .commandBuffer = (VkCommandBuffer)w.cmd, .vertexCount = 3,
+                                               .instanceCount = 1 };
+            D->dispatch_vkCmdDraw(D, &dr);
+         }
+         struct vn_command_vkCmdEndRenderPass e = { .commandBuffer = (VkCommandBuffer)w.cmd };
+         D->dispatch_vkCmdEndRenderPass(D, &e);
+         VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
+         struct vn_command_vkCmdPipelineBarrier pb = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                                       .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                                       .memoryBarrierCount = 1, .pMemoryBarriers = &mb };
+         D->dispatch_vkCmdPipelineBarrier(D, &pb);
+      }
+      return end(w.cmd);
+   }
+   h_env("256", NULL, NULL);
+   const uint64_t before = virgl_gpu_budget_in_use();
+   setup(0);
+   if (IS("h-rec-fills") || IS("h-rec-updates")) {
+      /* one command buffer, never ended: KosmicKrisp held 2423 B per fill, an update's 64 KB
+       * x 1.28 (2 GB in under 0.6 s) */
+      void *cmd = command_buffer();
+      begin(cmd);
+      struct vkr_buffer *buf = buffer(1u << 20);
+      if (IS("h-rec-fills")) {
+         h_fills(cmd, buf, 4000000);
+      } else {
+         static uint8_t data[65536];
+         uint32_t i = 0;
+         for (; i < 200000 && !ended(); i++) {
+            struct vn_command_vkCmdUpdateBuffer u = { .commandBuffer = (VkCommandBuffer)cmd, .dstBuffer = (VkBuffer)buf,
+                                                      .dataSize = sizeof(data), .pData = data };
+            D->dispatch_vkCmdUpdateBuffer(D, &u);
+         }
+         step("%u updates of 64 KB recorded%s", i, ended() ? " (the context ended)" : "");
+      }
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("h-rec-reuse-ok") || IS("h-rec-spare-ok")) {
+      /* 200 recordings of 20000 fills (KosmicKrisp: 70 MB each) in one command buffer, reset
+       * between; or each in a new command buffer of the pool, the last one freed: the
+       * charge stays at the most one recording took */
+      const bool spare = IS("h-rec-spare-ok");
+      void *pool = NULL, *cmds[4];
+      pool = pool_with_buffers(1, cmds);
+      struct vkr_buffer *buf = buffer(1u << 20);
+      void *cmd = cmds[0];
+      uint64_t first = 0;
+      for (int i = 0; i < 200 && !ended(); i++) {
+         begin(cmd);
+         h_fills(cmd, buf, 20000);
+         if (end(cmd) != WORKS)
+            break;
+         if (!i)
+            first = virgl_gpu_budget_in_use();
+         if (spare) {
+            free_command_buffer(cmd);
+            cmd = command_buffer_in(pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+         } else {
+            reset_command_buffer(cmd);
+         }
+      }
+      const uint64_t last = virgl_gpu_budget_in_use();
+      step("charged after the first recording %" PRIu64 " KB, after the last %" PRIu64 " KB", first >> 10, last >> 10);
+      if (ended())
+         return FATAL;
+      /* a new command buffer charges 40 KB itself */
+      return last <= first + (64u << 10) ? WORKS : ERROR;
+   }
+   if (IS("h-obj-events") || IS("h-obj-events-again-ok")) {
+      /* KosmicKrisp held 18366 B per event (1148 MB in 0.47 s) */
+      const bool again = IS("h-obj-events-again-ok");
+      const uint32_t n = again ? 4000 : 2000000;
+      static uint64_t ids[4000];
+      uint32_t i = 0;
+      for (int round = 0; round < (again ? 3 : 1) && !ended(); round++) {
+         for (i = 0; i < n && !ended(); i++) {
+            const uint64_t id = next_id++;
+            VkEvent h = (VkEvent)(uintptr_t)id;
+            VkEventCreateInfo info = { .sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO };
+            struct vn_command_vkCreateEvent ce = { .device = DEVH, .pCreateInfo = &info, .pEvent = &h };
+            D->dispatch_vkCreateEvent(D, &ce);
+            if (ce.ret != VK_SUCCESS)
+               return ended() ? FATAL : ERROR;
+            if (again)
+               ids[i] = id;
+         }
+         step("%u events made in round %d%s", i, round, ended() ? " (the context ended)" : "");
+         for (uint32_t k = 0; again && k < i && !ended(); k++) {
+            struct vn_command_vkDestroyEvent de = { .device = DEVH, .event = (VkEvent)object(ids[k]) };
+            D->dispatch_vkDestroyEvent(D, &de);
+         }
+      }
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("h-release-end") || IS("h-release-fatal")) {
+      /* objects, a recording, a held view destroyed (a zombie) and a pool's spare; then the
+       * context's teardown: every charge comes back. fatal: after a refusal (budget) */
+      if (h_prefill())
+         return SKIP; /* the teardown commits a prefilled recording */
+      const uint64_t setup_charge = virgl_gpu_budget_in_use();
+      struct world w = { 0 };
+      make_world(&w, false);
+      void *pool = NULL, *cmds[4];
+      pool = pool_with_buffers(2, cmds);
+      begin(cmds[0]);
+      h_fills(cmds[0], w.buf, 5000);
+      begin(cmds[1]);
+      h_fills(cmds[1], w.buf, 5000);
+      end(cmds[1]);
+      free_command_buffer(cmds[1]);
+      /* a view a pass names, destroyed while the command buffer holds it */
+      void *v = view(w.img, 1);
+      void *fb = framebuffer(w.rp, &v, 1, 64, 64, 1);
+      begin(w.cmd);
+      begin_pass(w.cmd, w.rp, fb, 64, 64);
+      end_pass(w.cmd);
+      destroy_view(v);
+      for (int i = 0; i < 100; i++) {
+         VkEventCreateInfo info = { .sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO };
+         VkEvent h = (VkEvent)(uintptr_t)next_id++;
+         struct vn_command_vkCreateEvent ce = { .device = DEVH, .pCreateInfo = &info, .pEvent = &h };
+         D->dispatch_vkCreateEvent(D, &ce);
+      }
+      const uint64_t during = virgl_gpu_budget_in_use();
+      if (IS("h-release-fatal"))
+         h_fills(cmds[0], w.buf, 4000000);
+      step("zombies %d, charged before the setup %" PRIu64 " KB, after it %" PRIu64 " KB, with the objects %" PRIu64
+           " KB, context ended %d", zombies(), before >> 10, setup_charge >> 10, during >> 10, ended());
+      if (IS("h-release-fatal") && !ended())
+         return ERROR;
+      (void)pool;
+      vkr_context_destroy(ctx);
+      const uint64_t after = virgl_gpu_budget_in_use();
+      step("charged after the teardown %" PRIu64 " KB", after >> 10);
+      if (log_len && strstr(log_text, "still charged"))
+         return ERROR;
+      /* the objects charged (more than 400 KB: 100 events alone are 2000 KB) and all came back */
+      return during > setup_charge + (400u << 10) && after == before ? (IS("h-release-fatal") ? FATAL : WORKS)
+                                                                      : ERROR;
+   }
+   return BROKEN;
+}
+
 static int case_host(const char *c)
 {
-   return !strncmp(c, "h-pass-", 7) ? case_host_passes(c) : BROKEN;
+   return !strncmp(c, "h-pass-", 7) ? case_host_passes(c) : case_host_memory(c);
 }
 
 struct test_case {
@@ -6829,7 +7063,7 @@ static const struct test_case cases[] = {
    { "u-ib-null-m6-ok", E_WORKS }, { "u-ib-unset-m6-ok", E_WORKS }, { "u-ib-unset-m6-indirect-ok", E_WORKS },
    { "u-ib-unset-m6-indirect-count-ok", E_WORKS }, { "u-ib-unset-m6-multi-ok", E_WORKS }, { "u-ib-bound-ok", E_WORKS },
    { "u-set-execute-kept", E_WORKS }, { "u-pc-unset-kept", E_WORKS }, { "u-vb-unset-kept", E_WORKS },
-   /* Metal passes (virgl-venus-encoder-cap.patch) */
+   /* host memory (virgl-venus-encoder-cap.patch, virgl-venus-host-memory.patch) */
    { "h-pass-clear-max-ok", E_WORKS }, { "h-pass-clear-over", E_REFUSE, "Metal passes" },
    { "h-pass-default-max-ok", E_WORKS }, { "h-pass-default-over", E_REFUSE, "Metal passes" },
    { "h-pass-default-past-metal", E_REFUSE, "Metal passes" },
@@ -6839,7 +7073,11 @@ static const struct test_case cases[] = {
    { "h-pass-blits-over", E_REFUSE, "Metal passes" }, { "h-pass-split-barriers", E_CHILD },
    { "h-pass-secondary-ok", E_WORKS }, { "h-pass-secondary-over", E_REFUSE, "Metal passes" },
    { "h-pass-batch-ok", E_WORKS }, { "h-pass-batch-over", E_CHILD },
-
+   { "h-rec-fills", E_REFUSE, "host memory" }, { "h-rec-updates", E_REFUSE, "host memory" },
+   { "h-rec-reuse-ok", E_WORKS }, { "h-rec-spare-ok", E_WORKS },
+   { "h-obj-events", E_REFUSE, "host memory" }, { "h-obj-events-again-ok", E_WORKS },
+   { "h-release-end", E_WORKS }, { "h-release-fatal", E_REFUSE, "host memory" },
+   { "h-heap", E_WORKS }, { "h-temp-big", E_WORKS }, { "h-zink-frame-ok", E_WORKS },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 

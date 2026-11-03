@@ -28,11 +28,11 @@ vkCmdCopyBufferToImage	buffer, image, regions	A+B	A: image subresource, bufferOf
 vkCmdCopyBufferToImage2	info	A+B	as vkCmdCopyBufferToImage	
 vkCmdCopyImageToBuffer	image, buffer, regions	A+B	as vkCmdCopyBufferToImage	c-copy-i2b-past (accepted); PR-B: c-region-i2b-past, c-region-i2b-max
 vkCmdCopyImageToBuffer2	info	A+B	as vkCmdCopyBufferToImage	
-vkCmdUpdateBuffer	dst, offset, dataSize	A	offset + dataSize <= size, both % 4, dataSize <= 65536	c-update-past (accepted)
-vkCmdFillBuffer	dst, offset, size	A	offset < size, offset + size <= size or WHOLE, % 4	c-fill-past (accepted)
+vkCmdUpdateBuffer	dst, offset, dataSize	A+M	offset + dataSize <= size, both % 4, dataSize <= 65536; M: the recording is charged (host memory: 512 B per command, its data x 1.5 more (KK 84017 B per 64 KB))	c-update-past (accepted); h-rec-updates
+vkCmdFillBuffer	dst, offset, size	A+M	offset < size, offset + size <= size or WHOLE, % 4; M: the recording is charged (host memory: 512 B per command, 3 KB more on KosmicKrisp (2423 B measured))	c-fill-past (accepted); h-rec-fills
 vkCmdClearColorImage	image, ranges	A+P	level and layer ranges inside the image (REMAINING resolved); P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per level of its ranges; a MoltenVK batch 32768)	c-clear-color-range (KK 6: Metal newLevelRange); h-pass-clear-over, h-pass-levels-over, h-pass-default-past-metal (KK 6 before)
 vkCmdClearDepthStencilImage	image, ranges	A+P	as vkCmdClearColorImage; P: Metal passes in the command buffer at most 16384 (encoder cap; as vkCmdClearColorImage; a MoltenVK batch 32768)	
-vkCmdClearAttachments	attachments[].colorAttachment, rects	A+B	A: colorAttachment < maxColorAttachments for COLOR (KK vk_meta_clear.c:221 writes push.color_values[a] on the stack, assert compiled out); B: < the pass's color count	gap 1: c-clear-att-8, c-clear-att-far; PR-B: c-state-clear-beyond, c-state-clear-outside
+vkCmdClearAttachments	attachments[].colorAttachment, rects	A+B+M	A: colorAttachment < maxColorAttachments for COLOR (KK vk_meta_clear.c:221 writes push.color_values[a] on the stack, assert compiled out); B: < the pass's color count; M: the recording is charged (host memory: 512 B per command, 3 KB more on KosmicKrisp (2958 B measured))	gap 1: c-clear-att-8, c-clear-att-far; PR-B: c-state-clear-beyond, c-state-clear-outside; h-rec-reuse-ok
 vkCmdResolveImage	images, regions	A+B+P	as vkCmdCopyImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region; a MoltenVK batch 32768)	
 vkCmdResolveImage2	info	A+B+P	as vkCmdCopyImage; P: Metal passes in the command buffer at most 16384 (encoder cap; a pass per region; a MoltenVK batch 32768)	
 vkCmdSetEvent	event, stageMask	values only		

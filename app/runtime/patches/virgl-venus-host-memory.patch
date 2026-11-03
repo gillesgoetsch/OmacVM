@@ -1,0 +1,729 @@
+virglrenderer: Venus charges recordings and objects for the Mac memory they take
+
+What: each Venus context has a host memory account (OMACVM_VENUS_HOST_MB, else a quarter
+of the apps' share of the GPU memory budget, 256 MB to 4 GB), and the same bytes go to
+the shared budget. Charged: every object at a fixed estimate per type (event, query pool,
+pipeline, pipeline cache 20 KB; command pool 160 KB; command buffer 40 KB; descriptor
+pool 12 KB plus a byte per set; shader module, device memory, view, framebuffer, render
+pass 4 KB; image 2 KB; buffer, fence, semaphore, sampler, set 512 B; 1 KB the rest;
+a query pool 16 B more per query value), and every recording: 512 B per command, an
+update's data x 1.5, a Metal pass (virgl-venus-encoder-cap.patch) 184 KB, on KosmicKrisp
+3 KB per fill and attachment clear and 40 KB per blit or resolve region. A command
+buffer takes its context's account 1 MB at a time and keeps the most a recording of it
+took (a reset gives nothing back); freed, that goes to its pool, whose next recordings
+use it first, and back when the pool goes. Past the account or the budget the call is
+refused and the app's context ends (a lost device: the guest made the object or recorded
+without waiting); a budget refusal counts the loss as "guard". Everything comes back
+where vkr frees the object: after the driver's destroy, a zombie's at its last holder,
+and in the context's teardown, which logs the peak. The reported heaps are at most the
+apps' share (vkGetPhysicalDeviceMemoryProperties and ...2), maxMemoryAllocationSize
+and maxBufferSize at most the heap; VK_EXT_memory_budget reports this context's device
+memory as heapUsage and that plus what the share has left as heapBudget (a page at
+least, at most the heap). The decoder frees a temp buffer over 16 MB after each stream.
+Why: one guest program made QEMU hold Mac memory far past what vkr counted, uncharged and
+without a limit: 2 GB of recording in under 0.6 s (KosmicKrisp: 2423 B per 44 B fill),
+1148 MB of events in 0.47 s, 1110 MB of MoltenVK command pools in 0.09 s, 12.6 MB per
+2^20 timestamps; a submitted pass held up to 179 KB (wired) after the queue went idle, at
+any image size, also after a reset, free or destroy (Metal keeps it for the process's
+next command buffers): 8 x 16384 clears in one KosmicKrisp submit took 22 GB. KosmicKrisp
+kept copies and clears past a reset and a free until the pool's destroy, MoltenVK an
+update's data past that. MoltenVK reported a 32768 MB heap (all of the M1 Max), more
+than the 22528 MB apps' share, and both drivers a 19169 MB maxBufferSize. One 256 MB
+command left 320 MB in the decoder, per context and ring, up to 1 GB each. Each charge
+is at least what the M1 probes measured (work/v624-hostmem/kit/costs.py over the probe
+output, out/costs.txt). Device memory was charged right already (unchanged).
+Upstream: OmacVM policy; nothing posted.
+Tests: Tests/virgl/test-venus-commands.c (h-rec-, h-obj-, h-release-, h-heap, h-temp-big,
+h-zink-frame-ok; run-venus-limits.py runs h-rec-spare-ok, h-release-end and
+h-pass-secondary-ok under libgmalloc too).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index f514f6f..6008dbc 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -31,6 +31,9 @@
+       if (!vkr_context_check(dispatch->data, _cmd->state.recording, "vk" #cmd_name,      \
+                              "the command buffer is not recording"))                     \
+          return;                                                                         \
++      /* OmacVM (virgl-venus-host-memory.patch) */                                       \
++      if (!vkr_cmd_cost(dispatch->data, _cmd, VKR_CMD_COST_BASE, "vk" #cmd_name))         \
++         return;                                                                         \
+       vn_replace_vk##cmd_name##_args_handle(args);                                       \
+       _vk->cmd_name(args->commandBuffer, ##__VA_ARGS__);                                 \
+    } while (0)
+@@ -45,6 +48,68 @@
+ #define VKR_CMD_LIMITS(args) (&VKR_CMD_DEVICE(args)->physical_device->limits)
+ #define VKR_CMD_LIM(args) (&VKR_CMD_DEVICE(args)->physical_device->properties.limits)
+ 
++/* OmacVM (virgl-venus-host-memory.patch, ADR 0065): what a recording costs the Mac, per
++ * driver, at least what the M1 probes measured (work/v624-hostmem, kit/costs.py over the
++ * probe output: bytes of the process's footprint per command): every command 512 (at most
++ * 339 measured: copies, draws, barriers, push constants, a rendering begin and end); a
++ * KosmicKrisp fill 3072 (2423) and attachment clear 3072 (2958); a KosmicKrisp blit or
++ * resolve region 40960 (36415); an update its data x 1.5 (84017 for 64 KB); each Metal pass
++ * 188416: recorded (7145) and held by Metal from the command buffer's submit on (171 KB per
++ * pass after the queue went idle, any image size, also after a reset, free or destroy:
++ * Metal keeps it for the process's next command buffers) */
++enum { VKR_CMD_COST_BASE = 512, VKR_CMD_COST_PASS = 188416 };
++enum vkr_cmd_cost_kind { VKR_COST_FILL, VKR_COST_CLEAR_ATTACHMENTS, VKR_COST_REGION, VKR_COST_KINDS };
++static const uint32_t vkr_cmd_costs_kosmickrisp[VKR_COST_KINDS] = { 3072, 3072, 40960 };
++static const uint32_t vkr_cmd_costs_moltenvk[VKR_COST_KINDS] = { 512, 512, 512 };
++/* the context's account is charged 1 MB at a time: no shared counter per command */
++#define VKR_CMD_RESERVE_CHUNK ((uint64_t)1 << 20)
++
++static bool
++vkr_cmd_reserve(struct vkr_context *ctx, struct vkr_command_buffer *cmd, const char *call)
++{
++   uint64_t need = cmd->state.cost - cmd->reserved;
++   struct vkr_command_pool *pool = cmd->pool;
++   if (pool && pool->spare) {
++      const uint64_t take = MIN2(pool->spare, need);
++      pool->spare -= take;
++      pool->base.host_charge -= take;
++      cmd->base.host_charge += take;
++      cmd->reserved += take;
++      need -= take;
++      if (!need)
++         return true;
++   }
++   const uint64_t chunk = MAX2(align64(need, VKR_CMD_RESERVE_CHUNK), VKR_CMD_RESERVE_CHUNK);
++   if (!vkr_host_charge(ctx, chunk, call))
++      return false;
++   cmd->base.host_charge += chunk;
++   cmd->reserved += chunk;
++   return true;
++}
++
++/* BYTES more for the recording: refused (the context ends) past the context's cap or the
++ * shared budget, before the driver gets the command */
++static inline bool
++vkr_cmd_cost(struct vkr_context *ctx, struct vkr_command_buffer *cmd, uint64_t bytes, const char *call)
++{
++   cmd->state.cost += bytes;
++   return likely(cmd->state.cost <= cmd->reserved) || vkr_cmd_reserve(ctx, cmd, call);
++}
++
++static inline uint64_t
++vkr_cmd_cost_of(const struct vkr_command_buffer *cmd, enum vkr_cmd_cost_kind kind)
++{
++   return cmd->device->physical_device->limits.kosmickrisp ? vkr_cmd_costs_kosmickrisp[kind]
++                                                           : vkr_cmd_costs_moltenvk[kind];
++}
++
++static bool
++vkr_cmd_extra(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, uint64_t bytes,
++              const char *call)
++{
++   return vkr_cmd_cost(dispatch->data, vkr_command_buffer_from_handle(handle), bytes, call);
++}
++
+ static bool
+ vkr_cmd_buffer_ok(VkBuffer handle, VkDeviceSize offset, VkDeviceSize size)
+ {
+@@ -509,6 +574,17 @@ vkr_command_buffer_object_release(struct vkr_object *obj)
+    if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER) {
+       struct vkr_command_buffer *cmd = (struct vkr_command_buffer *)obj;
+       vkr_cmd_set_views(cmd, NULL, 0);
++      /* OmacVM (virgl-venus-host-memory.patch): KosmicKrisp keeps a freed command buffer's
++       * copies and clears until its pool goes (run10: 2090 MB of copies after the free,
++       * back at the destroy): its recording charge stays with the pool, for the pool's
++       * next recordings. A command buffer goes before its pool (the pool's destroy, the
++       * device's teardown, a zombie held its pool). */
++      if (cmd->reserved && cmd->pool) {
++         cmd->pool->spare += cmd->reserved;
++         cmd->pool->base.host_charge += cmd->reserved;
++         cmd->base.host_charge -= cmd->reserved;
++         cmd->reserved = 0;
++      }
+       /* OmacVM (virgl-venus-command-holds.patch): the driver freed it already */
+       vkr_cmd_unhold_all(cmd);
+       _mesa_hash_table_destroy(cmd->held, NULL);
+@@ -690,7 +766,8 @@ vkr_cmd_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, uint
+                           total, cap))
+       return false;
+    st->weight = (uint32_t)total;
+-   return true;
++   /* OmacVM (virgl-venus-host-memory.patch): and what each costs the Mac */
++   return vkr_cmd_extra(dispatch, handle, w * VKR_CMD_COST_PASS, call);
+ }
+ 
+ /* the levels of a clear's ranges (each level is a pass; the layers of one are one layered
+@@ -1520,6 +1597,13 @@ vkr_dispatch_vkCmdBlitImage(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+    if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdBlitImage"))
+       return;
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   if (!vkr_cmd_extra(dispatch, args->commandBuffer,
++                      (uint64_t)args->regionCount *
++                         vkr_cmd_cost_of(vkr_command_buffer_from_handle(args->commandBuffer),
++                                         VKR_COST_REGION),
++                      "vkCmdBlitImage"))
++      return;
+    VKR_CMD_CALL(CmdBlitImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions, args->filter);
+ }
+@@ -1541,6 +1625,13 @@ vkr_dispatch_vkCmdBlitImage2(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+    if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdBlitImage2"))
+       return;
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   if (!vkr_cmd_extra(dispatch, args->commandBuffer,
++                      (uint64_t)info->regionCount *
++                         vkr_cmd_cost_of(vkr_command_buffer_from_handle(args->commandBuffer),
++                                         VKR_COST_REGION),
++                      "vkCmdBlitImage2"))
++      return;
+    VKR_CMD_CALL(CmdBlitImage2, args, args->pBlitImageInfo);
+ }
+ 
+@@ -1638,6 +1729,10 @@ vkr_dispatch_vkCmdUpdateBuffer(struct vn_dispatch_context *dispatch,
+                           ok ? "" : vkr_range_text(r, true, args->dataSize, args->dstOffset,
+                                                    vkr_cmd_buffer_size(args->dstBuffer))))
+       return;
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   if (!vkr_cmd_extra(dispatch, args->commandBuffer, args->dataSize + args->dataSize / 2,
++                      "vkCmdUpdateBuffer"))
++      return;
+    VKR_CMD_CALL(CmdUpdateBuffer, args, args->dstBuffer, args->dstOffset, args->dataSize,
+                 args->pData);
+ }
+@@ -1655,6 +1750,12 @@ vkr_dispatch_vkCmdFillBuffer(struct vn_dispatch_context *dispatch,
+                           ok ? "" : vkr_range_text(r, true, args->size, args->dstOffset, total)))
+       return;
+    vkr_test_pause("command"); /* OmacVM (virgl-venus-test-pause.patch) */
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   if (!vkr_cmd_extra(dispatch, args->commandBuffer,
++                      vkr_cmd_cost_of(vkr_command_buffer_from_handle(args->commandBuffer),
++                                      VKR_COST_FILL),
++                      "vkCmdFillBuffer"))
++      return;
+    VKR_CMD_CALL(CmdFillBuffer, args, args->dstBuffer, args->dstOffset, args->size,
+                 args->data);
+ }
+@@ -1720,6 +1821,12 @@ vkr_dispatch_vkCmdClearAttachments(struct vn_dispatch_context *dispatch,
+                              a->colorAttachment, max, st->colors))
+          return;
+    }
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   if (!vkr_cmd_extra(dispatch, args->commandBuffer,
++                      vkr_cmd_cost_of(vkr_command_buffer_from_handle(args->commandBuffer),
++                                      VKR_COST_CLEAR_ATTACHMENTS),
++                      "vkCmdClearAttachments"))
++      return;
+    VKR_CMD_CALL(CmdClearAttachments, args, args->attachmentCount, args->pAttachments,
+                 args->rectCount, args->pRects);
+ }
+@@ -1741,6 +1848,13 @@ vkr_dispatch_vkCmdResolveImage(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+    if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdResolveImage"))
+       return;
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   if (!vkr_cmd_extra(dispatch, args->commandBuffer,
++                      (uint64_t)args->regionCount *
++                         vkr_cmd_cost_of(vkr_command_buffer_from_handle(args->commandBuffer),
++                                         VKR_COST_REGION),
++                      "vkCmdResolveImage"))
++      return;
+    VKR_CMD_CALL(CmdResolveImage, args, args->srcImage, args->srcImageLayout,
+                 args->dstImage, args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+@@ -1763,6 +1877,13 @@ vkr_dispatch_vkCmdResolveImage2(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+    if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdResolveImage2"))
+       return;
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   if (!vkr_cmd_extra(dispatch, args->commandBuffer,
++                      (uint64_t)info->regionCount *
++                         vkr_cmd_cost_of(vkr_command_buffer_from_handle(args->commandBuffer),
++                                         VKR_COST_REGION),
++                      "vkCmdResolveImage2"))
++      return;
+    VKR_CMD_CALL(CmdResolveImage2, args, args->pResolveImageInfo);
+ }
+ 
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index d2177ba..69d87dd 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -17,6 +17,9 @@ struct vkr_command_pool {
+    struct list_head command_buffers;
+    /* OmacVM (virgl-venus-secondary-holds.patch) */
+    struct vkr_device *device;
++   /* OmacVM (virgl-venus-host-memory.patch): the recording charge of its freed command
++    * buffers (part of its host_charge), taken first by its command buffers' recordings */
++   uint64_t spare;
+ };
+ VKR_DEFINE_OBJECT_CAST(command_pool, VK_OBJECT_TYPE_COMMAND_POOL, VkCommandPool)
+ 
+@@ -57,6 +60,8 @@ struct vkr_cmd_state {
+    /* OmacVM (virgl-venus-encoder-cap.patch, ADR 0065): the Metal passes (render encoders)
+     * this recording opens, its secondaries' each time they are executed included */
+    uint32_t weight;
++   /* OmacVM (virgl-venus-host-memory.patch): what this recording costs the Mac so far */
++   uint64_t cost;
+ };
+ 
+ /* OmacVM (virgl-venus-encoder-cap.patch): Metal ends the process (SIGABRT, "Failed to
+@@ -101,6 +106,11 @@ struct vkr_command_buffer {
+    /* OmacVM (virgl-venus-command-holds.patch, vkr_device.h): the objects it holds (keys),
+     * NULL until its first pass; emptied when the driver let go of what it recorded */
+    struct hash_table *held;
++   /* OmacVM (virgl-venus-host-memory.patch): its recordings' charge (part of host_charge),
++    * the most any recording of it cost: a reset gives nothing back (KosmicKrisp kept the
++    * memory of copies and clears past a reset, MoltenVK an update's, Metal a submitted
++    * pass's), the next recording uses it again; it goes to the pool when it is freed */
++   uint64_t reserved;
+ };
+ VKR_DEFINE_OBJECT_CAST(command_buffer, VK_OBJECT_TYPE_COMMAND_BUFFER, VkCommandBuffer)
+ 
+diff --git a/src/venus/vkr_common.h b/src/venus/vkr_common.h
+index a3e4be7..d7a23ed 100644
+--- a/src/venus/vkr_common.h
++++ b/src/venus/vkr_common.h
+@@ -125,6 +125,25 @@ enum vkr_debug_flags {
+    VKR_DEBUG_UDMABUF = 1 << 1,
+ };
+ 
++/*
++ * OmacVM (virgl-venus-host-memory.patch, ADR 0065): the Mac memory a context makes the
++ * driver hold besides device memory: objects (a fixed estimate per type, at least what the
++ * M1 probes measured) and command recordings (vkr_command_buffer.c: per command, per Metal
++ * pass). Charged to the context's cap (OMACVM_VENUS_HOST_MB, else a quarter of the apps'
++ * share, at most 4 GB) and to the shared GPU memory budget; past either the call is
++ * refused and the app's context ends (the guest made the object or recorded the command
++ * without waiting: it sees a lost device). Given back where vkr frees the object
++ * (vkr_object_free: after the driver's destroy, a zombie's too, and at the context's end).
++ */
++struct vkr_host_account {
++   atomic_uint_fast64_t charged;
++   /* the context's device memory (what vkGetPhysicalDeviceMemoryProperties2 reports as its
++    * heapUsage) */
++   atomic_uint_fast64_t memory;
++   atomic_uint_fast64_t peak;
++   uint64_t cap;
++};
++
+ /* base class for all objects */
+ struct vkr_object {
+    VkObjectType type;
+@@ -180,6 +199,10 @@ struct vkr_object {
+    bool zombie;
+    /* the zombie's driver object is destroyed when the last holder lets go */
+    bool zombie_destroy_vk;
++
++   /* OmacVM (virgl-venus-host-memory.patch): what it holds of its context's account */
++   struct vkr_host_account *host_account;
++   uint64_t host_charge;
+ };
+ 
+ struct object_array {
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+index 8a278ba..afb7a24 100644
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -613,6 +613,112 @@ vkr_context_refuse(struct vkr_context *ctx, bool fatal, const char *call, const
+       vkr_context_set_fatal(ctx);
+ }
+ 
++/* OmacVM (virgl-venus-host-memory.patch) */
++uint64_t
++vkr_host_cap(void)
++{
++   const char *env = getenv("OMACVM_VENUS_HOST_MB");
++   const unsigned long long mb = env ? strtoull(env, NULL, 0) : 0;
++   if (mb >= 1 && mb <= (1ull << 24))
++      return (uint64_t)mb << 20;
++   const uint64_t quarter = virgl_gpu_budget_apps_limit() / 4;
++   return MIN2(MAX2(quarter, (uint64_t)256 << 20), (uint64_t)4 << 30);
++}
++
++bool
++vkr_host_charge(struct vkr_context *ctx, uint64_t bytes, const char *call)
++{
++   struct vkr_host_account *acc = &ctx->host;
++   const uint64_t now = atomic_fetch_add(&acc->charged, bytes) + bytes;
++   if (unlikely(now > acc->cap)) {
++      atomic_fetch_sub(&acc->charged, bytes);
++      vkr_context_refuse(ctx, true, call,
++                         "host memory for recordings and objects at %" PRIu64
++                         " MB, past the app's %" PRIu64 " MB (OMACVM_VENUS_HOST_MB)",
++                         now >> 20, acc->cap >> 20);
++      return false;
++   }
++   if (unlikely(virgl_gpu_budget_charge(bytes, false))) {
++      atomic_fetch_sub(&acc->charged, bytes);
++      atomic_store(&ctx->budget_refused, true);
++      vkr_context_refuse(ctx, true, call,
++                         "%" PRIu64 " KB of host memory for recordings and objects: the guest "
++                         "GPU memory budget of %" PRIu64 " MB is full (%" PRIu64 " MB in use)",
++                         bytes >> 10, virgl_gpu_budget_limit() >> 20,
++                         virgl_gpu_budget_in_use() >> 20);
++      return false;
++   }
++   uint_fast64_t peak = atomic_load(&acc->peak);
++   while (now > peak && !atomic_compare_exchange_weak(&acc->peak, &peak, now))
++      ;
++   return true;
++}
++
++void
++vkr_host_uncharge(struct vkr_host_account *account, uint64_t bytes)
++{
++   virgl_gpu_budget_uncharge(bytes);
++   atomic_fetch_sub(&account->charged, bytes);
++}
++
++/* at least what one costs the Mac in the M1 probes (KosmicKrisp and MoltenVK, the larger;
++ * work/v624-hostmem/out run4: events 18366 B, command pools 142082, command buffers 34137,
++ * query pools 18976 + 12.6 MB per 2^20 timestamps, descriptor pools 9305 (49944 with 65536
++ * sets), pipelines 18384, shader modules 2383, images 1680, device memory 2089 untouched
++ * (2.4 KB past its pages written), held views with their framebuffer 13613 with the image,
++ * buffers 408, fences 331, semaphores 315, samplers 348, sets 315); 1 KB for the rest */
++static uint64_t
++vkr_object_host_cost(VkObjectType type)
++{
++   switch (type) {
++   case VK_OBJECT_TYPE_EVENT:
++   case VK_OBJECT_TYPE_QUERY_POOL:
++   case VK_OBJECT_TYPE_PIPELINE:
++   case VK_OBJECT_TYPE_PIPELINE_CACHE:
++      return 20 << 10;
++   case VK_OBJECT_TYPE_COMMAND_POOL:
++      return 160 << 10;
++   case VK_OBJECT_TYPE_COMMAND_BUFFER:
++      return 40 << 10;
++   case VK_OBJECT_TYPE_DESCRIPTOR_POOL:
++      return 12 << 10;
++   case VK_OBJECT_TYPE_SHADER_MODULE:
++   case VK_OBJECT_TYPE_DEVICE_MEMORY:
++   case VK_OBJECT_TYPE_IMAGE_VIEW:
++   case VK_OBJECT_TYPE_FRAMEBUFFER:
++   case VK_OBJECT_TYPE_RENDER_PASS:
++      return 4 << 10;
++   case VK_OBJECT_TYPE_IMAGE:
++      return 2 << 10;
++   case VK_OBJECT_TYPE_BUFFER:
++   case VK_OBJECT_TYPE_FENCE:
++   case VK_OBJECT_TYPE_SEMAPHORE:
++   case VK_OBJECT_TYPE_SAMPLER:
++   case VK_OBJECT_TYPE_DESCRIPTOR_SET:
++      return 512;
++   default:
++      return 1 << 10;
++   }
++}
++
++void
++vkr_object_charge(struct vkr_context *ctx, struct vkr_object *obj)
++{
++   obj->host_account = &ctx->host;
++   vkr_object_charge_more(ctx, obj, vkr_object_host_cost(obj->type), "an object create");
++}
++
++void
++vkr_object_charge_more(struct vkr_context *ctx,
++                       struct vkr_object *obj,
++                       uint64_t bytes,
++                       const char *call)
++{
++   /* refused: the context ends; the object stays and goes as the others do */
++   if (vkr_host_charge(ctx, bytes, call))
++      obj->host_charge += bytes;
++}
++
+ bool
+ vkr_context_check(struct vkr_context *ctx, bool ok, const char *call, const char *fmt, ...)
+ {
+@@ -851,6 +957,16 @@ vkr_context_destroy(struct vkr_context *ctx)
+    mtx_destroy(&ctx->object_mutex);
+    mtx_destroy(&ctx->dispatch_mutex);
+ 
++   /* OmacVM (virgl-venus-host-memory.patch): the peak, and nothing left charged */
++   const uint64_t left = atomic_load(&ctx->host.charged);
++   vkr_log("venus context %u (%s) ends: host memory for recordings and objects peaked at "
++           "%" PRIu64 " MB of its %" PRIu64 " MB%s",
++           ctx->ctx_id, ctx->debug_name ? ctx->debug_name : "?",
++           (uint64_t)(atomic_load(&ctx->host.peak) >> 20), ctx->host.cap >> 20,
++           left ? " (some still charged: a vkr bug)" : "");
++   if (left)
++      vkr_host_uncharge(&ctx->host, left);
++
+    vkr_cs_encoder_fini(&ctx->encoder);
+    vkr_cs_decoder_fini(&ctx->decoder);
+ 
+@@ -879,8 +995,17 @@ vkr_object_free(struct vkr_object *obj)
+    vkr_descriptor_object_release(obj);
+    vkr_render_pass_object_release(obj);
+    vkr_pipeline_object_release(obj);
++   /* (a command buffer's recording charge goes to its pool here) */
+    vkr_command_buffer_object_release(obj);
+    vkr_image_object_release(obj);
++   /* OmacVM (virgl-venus-host-memory.patch): the driver let go of it */
++   if (obj->host_account) {
++      if (obj->host_charge)
++         vkr_host_uncharge(obj->host_account, obj->host_charge);
++      if (obj->type == VK_OBJECT_TYPE_DEVICE_MEMORY)
++         atomic_fetch_sub(&obj->host_account->memory,
++                          ((struct vkr_device_memory *)obj)->usage_bytes);
++   }
+    free(obj);
+ }
+ 
+@@ -908,6 +1033,8 @@ vkr_context_create(uint32_t ctx_id,
+ 
+    ctx->ctx_id = ctx_id;
+    ctx->retire_fence = cb;
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   ctx->host.cap = vkr_host_cap();
+    ctx->debug_name = malloc(debug_len + 1);
+    if (!ctx->debug_name)
+       goto err_debug_name;
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index 8b7b2cb..26bd505 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -68,6 +68,8 @@ struct vkr_context {
+    atomic_bool closing;
+    /* the budget refused a Venus allocation of this context: its loss counts as "guard" */
+    atomic_bool budget_refused;
++   /* OmacVM (virgl-venus-host-memory.patch, vkr_common.h) */
++   struct vkr_host_account host;
+    enum vkr_context_validate_level validate_level;
+    bool validate_fatal;
+ 
+@@ -266,6 +268,28 @@ bool
+ vkr_context_check(struct vkr_context *ctx, bool ok, const char *call, const char *fmt, ...)
+    PRINTFLIKE(4, 5);
+ 
++/* OmacVM (virgl-venus-host-memory.patch, vkr_common.h): BYTES more for the context, or the
++ * call is refused (the context ends: past its cap or the shared budget) and false */
++bool
++vkr_host_charge(struct vkr_context *ctx, uint64_t bytes, const char *call);
++
++void
++vkr_host_uncharge(struct vkr_host_account *account, uint64_t bytes);
++
++/* an object just added: its type's estimate; and BYTES more for it (a pool's queries) */
++void
++vkr_object_charge(struct vkr_context *ctx, struct vkr_object *obj);
++
++void
++vkr_object_charge_more(struct vkr_context *ctx,
++                       struct vkr_object *obj,
++                       uint64_t bytes,
++                       const char *call);
++
++/* the context's cap: OMACVM_VENUS_HOST_MB, else a quarter of the apps' share, 4 GB at most */
++uint64_t
++vkr_host_cap(void);
++
+ /* OmacVM (virgl-venus-chain-repeats.patch): no structure type twice in chain (the pNext
+  * of OF), or the call is refused as vkr_context_check does. vkr's checks read the first
+  * struct of a type and the Mac's drivers the last (VUID-<OF>-sType-unique). */
+@@ -329,6 +353,8 @@ vkr_context_add_object(struct vkr_context *ctx, struct vkr_object *obj)
+ 
+    if (unlikely(taken))
+       vkr_context_refuse(ctx, true, "an object create", "id %" PRIu64 " is taken", obj->id);
++   else
++      vkr_object_charge(ctx, obj); /* OmacVM (virgl-venus-host-memory.patch) */
+    return !taken;
+ }
+ 
+diff --git a/src/venus/vkr_cs.c b/src/venus/vkr_cs.c
+index a9e3f09..6cc6b45 100644
+--- a/src/venus/vkr_cs.c
++++ b/src/venus/vkr_cs.c
+@@ -107,6 +107,9 @@ vkr_cs_decoder_sanity_check(const struct vkr_cs_decoder *dec)
+    assert(dec->cur <= dec->end);
+ }
+ 
++/* OmacVM (virgl-venus-host-memory.patch) */
++#define VKR_CS_DECODER_TEMP_KEEP ((size_t)16 << 20)
++
+ static void
+ vkr_cs_decoder_gc_temp_pool(struct vkr_cs_decoder *dec)
+ {
+@@ -128,6 +131,17 @@ vkr_cs_decoder_gc_temp_pool(struct vkr_cs_decoder *dec)
+ 
+    pool->total_size = pool->end - pool->cur;
+ 
++   /* OmacVM (virgl-venus-host-memory.patch): a buffer past 16 MB goes too (one 256 MB
++    * command left 320 MB behind, per context and per ring, up to 1 GB each) */
++   if (pool->total_size > VKR_CS_DECODER_TEMP_KEEP) {
++      free(pool->buffers[0]);
++      pool->buffer_count = 0;
++      pool->reset_to = NULL;
++      pool->cur = NULL;
++      pool->end = NULL;
++      pool->total_size = 0;
++   }
++
+    vkr_cs_decoder_sanity_check(dec);
+ }
+ 
+diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
+index aa685b2..3163af8 100644
+--- a/src/venus/vkr_descriptor_set.c
++++ b/src/venus/vkr_descriptor_set.c
+@@ -796,6 +796,8 @@ vkr_dispatch_vkCreateDescriptorPool(struct vn_dispatch_context *dispatch,
+    pool->flags = args->pCreateInfo->flags;
+ 
+    list_inithead(&pool->descriptor_sets);
++   /* OmacVM (virgl-venus-host-memory.patch): MoltenVK, 49944 B for 65536 sets */
++   vkr_object_charge_more(dispatch->data, &pool->base, info->maxSets, "vkCreateDescriptorPool");
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+index 7312480..ac6a956 100644
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -852,6 +852,9 @@ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+    mem->allocation_size = alloc_info->allocationSize;
+    mem->memory_type_index = mem_type_index;
+    mem->charge = charge;
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   mem->usage_bytes = alloc_info->allocationSize;
++   atomic_fetch_add(&ctx->host.memory, mem->usage_bytes);
+    if (dedicated_image || dedicated_buffer)
+       vkr_device_memory_link_dedicated(ctx, dev, mem, dedicated_image, dedicated_buffer,
+                                        &args->ret);
+diff --git a/src/venus/vkr_device_memory.h b/src/venus/vkr_device_memory.h
+index 6622b29..3032edf 100644
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -88,6 +88,8 @@ struct vkr_device_memory {
+ 
+    /* OmacVM (virgl-venus-dedicated-memory.patch): the target it was made for, or NULL */
+    struct vkr_dedicated *dedicated;
++   /* OmacVM (virgl-venus-host-memory.patch): its bytes in its context's heapUsage */
++   uint64_t usage_bytes;
+ };
+ VKR_DEFINE_OBJECT_CAST(device_memory, VK_OBJECT_TYPE_DEVICE_MEMORY, VkDeviceMemory)
+ 
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index f5bd808..53af29a 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -182,6 +182,46 @@ vkr_physical_device_init_id_properties(struct vkr_physical_device *physical_dev)
+    vk->GetPhysicalDeviceProperties2(handle, &props2);
+ }
+ 
++/* OmacVM (virgl-venus-host-memory.patch, ADR 0065): no heap bigger than the apps' share of
++ * the GPU memory budget, which is all Venus device memory gets (MoltenVK reported all of the
++ * Mac's memory, KosmicKrisp three quarters, both more than the share) */
++static void
++vkr_memory_heaps_clamp(VkPhysicalDeviceMemoryProperties *props)
++{
++   const uint64_t apps = virgl_gpu_budget_apps_limit();
++   for (uint32_t i = 0; apps && i < props->memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; i++) {
++      if (props->memoryHeaps[i].size > apps)
++         props->memoryHeaps[i].size = apps;
++   }
++}
++
++/* VK_EXT_memory_budget: this context's device memory as the usage, and as the budget that
++ * plus what the apps' share has left, at most the heap and never 0 (a page) */
++static void
++vkr_memory_budget_fill(struct vkr_context *ctx,
++                       const VkPhysicalDeviceMemoryProperties *props,
++                       VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget)
++{
++   const uint64_t page = getpagesize();
++   const uint64_t apps = virgl_gpu_budget_apps_limit(), in_use = virgl_gpu_budget_in_use();
++   const uint64_t mine = atomic_load(&ctx->host.memory);
++   const uint64_t left = apps > in_use ? apps - in_use : 0;
++   for (uint32_t i = 0; apps && i < props->memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; i++) {
++      const uint64_t size = props->memoryHeaps[i].size;
++      budget->heapUsage[i] = MIN2(mine, size);
++      budget->heapBudget[i] = MAX2(MIN2(mine + left, size), MIN2(page, size));
++   }
++}
++
++static uint64_t
++vkr_memory_heap_max(const struct vkr_physical_device *physical_dev)
++{
++   uint64_t max = 0;
++   for (uint32_t i = 0; i < physical_dev->memory_properties.memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; i++)
++      max = MAX2(max, physical_dev->memory_properties.memoryHeaps[i].size);
++   return max;
++}
++
+ static void
+ vkr_physical_device_init_memory_properties(struct vkr_physical_device *physical_dev)
+ {
+@@ -189,6 +229,8 @@ vkr_physical_device_init_memory_properties(struct vkr_physical_device *physical_
+ 
+    VkPhysicalDevice handle = physical_dev->base.handle.physical_device;
+    vk->GetPhysicalDeviceMemoryProperties(handle, &physical_dev->memory_properties);
++   /* OmacVM (virgl-venus-host-memory.patch) */
++   vkr_memory_heaps_clamp(&physical_dev->memory_properties);
+ 
+    /* XXX When a VkMemoryType has VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, we
+     * assume any VkDeviceMemory with the memory type can be made external and
+@@ -1028,6 +1070,26 @@ vkr_dispatch_vkGetPhysicalDeviceProperties2(
+       vkr_find_struct(args->pProperties->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES);
+    if (p11 && p11->maxMultiviewViewCount > views)
+       p11->maxMultiviewViewCount = views;
++
++   /* OmacVM (virgl-venus-host-memory.patch): no allocation or buffer bigger than the heap
++    * vkr reports (19169 MB of a 5.5 GB apps' share on an 8 GB Mac otherwise) */
++   const uint64_t heap = vkr_memory_heap_max(physical_dev);
++   VkPhysicalDeviceMaintenance3Properties *m3 = vkr_find_struct(
++      args->pProperties->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES);
++   VkPhysicalDeviceMaintenance4Properties *m4 = vkr_find_struct(
++      args->pProperties->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES);
++   VkPhysicalDeviceVulkan13Properties *p13 = vkr_find_struct(
++      args->pProperties->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES);
++   if (heap) {
++      if (m3 && m3->maxMemoryAllocationSize > heap)
++         m3->maxMemoryAllocationSize = heap;
++      if (p11 && p11->maxMemoryAllocationSize > heap)
++         p11->maxMemoryAllocationSize = heap;
++      if (m4 && m4->maxBufferSize > heap)
++         m4->maxBufferSize = heap;
++      if (p13 && p13->maxBufferSize > heap)
++         p13->maxBufferSize = heap;
++   }
+ }
+ 
+ static void
+@@ -1047,7 +1109,7 @@ vkr_dispatch_vkGetPhysicalDeviceQueueFamilyProperties2(
+ 
+ static void
+ vkr_dispatch_vkGetPhysicalDeviceMemoryProperties2(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkGetPhysicalDeviceMemoryProperties2 *args)
+ {
+    struct vkr_physical_device *physical_dev =
+@@ -1063,6 +1125,15 @@ vkr_dispatch_vkGetPhysicalDeviceMemoryProperties2(
+       vn_replace_vkGetPhysicalDeviceMemoryProperties2_args_handle(args);
+       vk->GetPhysicalDeviceMemoryProperties2(args->physicalDevice,
+                                              args->pMemoryProperties);
++      /* OmacVM (virgl-venus-host-memory.patch): the heaps of the cached query, and the
++       * budget of this context */
++      vkr_memory_heaps_clamp(&args->pMemoryProperties->memoryProperties);
++      VkPhysicalDeviceMemoryBudgetPropertiesEXT *budget =
++         vkr_find_struct(args->pMemoryProperties->pNext,
++                         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT);
++      if (budget)
++         vkr_memory_budget_fill(dispatch->data, &args->pMemoryProperties->memoryProperties,
++                                budget);
+    }
+ }
+ 
+diff --git a/src/venus/vkr_query_pool.c b/src/venus/vkr_query_pool.c
+index df26e0a..f1db188 100644
+--- a/src/venus/vkr_query_pool.c
++++ b/src/venus/vkr_query_pool.c
+@@ -58,6 +58,9 @@ vkr_dispatch_vkCreateQueryPool(struct vn_dispatch_context *dispatch,
+       pool->type = type;
+       pool->count = count;
+       pool->values = values;
++      /* OmacVM (virgl-venus-host-memory.patch): MoltenVK, 12.6 MB per 2^20 timestamps */
++      vkr_object_charge_more(dispatch->data, &pool->base, (uint64_t)count * values * 16,
++                             "vkCreateQueryPool");
+    }
+ }
+ 
