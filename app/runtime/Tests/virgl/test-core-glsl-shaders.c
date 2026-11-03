@@ -389,6 +389,262 @@ static int vs_tes_clip_rows(bool have_gl)
    return failed;
 }
 
+/* #589 (virgl-shader-indirect-temps.patch): temps the shader indexes at run time without an
+ * ARRAY declaration. The guest's Mesa sends them for a clip distance output written in a loop
+ * (virgl_tgsi_transform_instruction moves the output into a temp and keeps the indirect
+ * index: MOV TEMP[ADDR[1].x][ADDR[0].x+18].x). Each was a plain "vec4 temp18;", so the write
+ * "temp18[clamp(addr0 + 0, 0, 0)].x" did not compile on the Mac ("Swizzle of non-vector
+ * primitive float") and a read gave one component in all four. Now the declaration from its
+ * lowest indexed register on is one array; the rest of the GLSL is as before. MUST: strings
+ * the text holds, MUST_NOT: one it must not. */
+static int indirect_temp(const char *name, const char *text, const struct vrend_shader_key *key,
+                         const char *must1, const char *must2, const char *must_not, bool have_gl)
+{
+   static char glsl[32768];
+   struct vrend_variable_shader_info var;
+   if (!translate(name, text, key, HOST_MAC, glsl, &var))
+      return 1;
+   if ((must1 && !strstr(glsl, must1)) || (must2 && !strstr(glsl, must2)) ||
+       (must_not && strstr(glsl, must_not))) {
+      printf("FAIL: %s (want \"%s\", \"%s\", not \"%s\"):\n%s\n", name, must1 ? must1 : "",
+             must2 ? must2 : "", must_not ? must_not : "", glsl);
+      return 1;
+   }
+   if (have_gl && !gl_compiles(name, stage_type(text), glsl))
+      return 1;
+   printf("PASS: %s%s\n", name, have_gl ? " (compiled by the Mac's OpenGL)" : "");
+   return 0;
+}
+
+/* the control shader of the 3.2.19 gate's tcs-8loop row as the guest's Mesa 26.2.5 sent it
+ * (work/release-3.2.19 r4-qemu-b-take2.log): a for loop copies gl_in[].gl_ClipDistance[i]
+ * into gl_out[].gl_ClipDistance[i]; only OUT[1] is copied back from the temps (OUT[2],
+ * distances 4..7, never: that is the guest's Mesa) */
+static const char *tcs_loop8_guest =
+   "TESS_CTRL\n"
+   "PROPERTY TCS_VERTICES_OUT 3\n"
+   "DCL IN[][0], POSITION\n"
+   "DCL IN[][1], CLIPDIST\n"
+   "DCL IN[][2], CLIPDIST[1]\n"
+   "DCL SV[0], INVOCATIONID\n"
+   "DCL OUT[][0].xy, POSITION\n"
+   "DCL OUT[][1], CLIPDIST\n"
+   "DCL OUT[][2], CLIPDIST[1]\n"
+   "DCL OUT[3].xyz, TESSOUTER\n"
+   "DCL OUT[4].x, TESSINNER\n"
+   "DCL TEMP[0..13]\n"
+   "DCL ADDR[0..1]\n"
+   "IMM[0] UINT32 {0, 3, 2, 1}\n"
+   "IMM[1] UINT32 {8, 1065353216, 0, 0}\n"
+   "DCL TEMP[14..17]\n"
+   "DCL TEMP[18..19]\n"
+   "  0: UARL ADDR[1].x, SV[0].xxxx\n"
+   "  1: MOV TEMP[4].xy, IN[ADDR[1].x][0].xyyy\n"
+   "  2: UARL ADDR[1].x, SV[0].xxxx\n"
+   "  3: MOV OUT[ADDR[1].x][0].xy, TEMP[4].xyxx\n"
+   "  4: MOV TEMP[3].x, IMM[0].xxxx\n"
+   "  5: BGNLOOP :0\n"
+   "  6:   AND TEMP[5].x, TEMP[3].xxxx, IMM[0].yyyy\n"
+   "  7:   ISHR TEMP[6].x, TEMP[3].xxxx, IMM[0].zzzz\n"
+   "  8:   ISLT TEMP[7].xyz, TEMP[5].xxxx, IMM[0].zwyz\n"
+   "  9:   MOV TEMP[8].x, TEMP[7].yxxx\n"
+   " 10:   UARL ADDR[0].x, TEMP[6].xxxx\n"
+   " 11:   UARL ADDR[1].x, SV[0].xxxx\n"
+   " 12:   MOV TEMP[9], IN[ADDR[1].x][ADDR[0].x+1]\n"
+   " 13:   MOV TEMP[10].x, TEMP[7].zxxx\n"
+   " 14:   MOV TEMP[11].x, TEMP[7].xxxx\n"
+   " 15:   UIF TEMP[11].xxxx :27\n"
+   " 16:     UIF TEMP[8].xxxx :21\n"
+   " 17:       MOV TEMP[12].x, TEMP[9].xxxx\n"
+   " 18:       UARL ADDR[0].x, TEMP[6].xxxx\n"
+   " 19:       UARL ADDR[1].x, SV[0].xxxx\n"
+   " 20:       MOV TEMP[ADDR[1].x][ADDR[0].x+18].x, TEMP[12].xxxx\n"
+   " 21:       MOV OUT[1], TEMP[18]\n"
+   " 22:     ELSE :26\n"
+   " 23:       MOV TEMP[2].y, TEMP[9].xyxx\n"
+   " 24:       UARL ADDR[0].x, TEMP[6].xxxx\n"
+   " 25:       UARL ADDR[1].x, SV[0].xxxx\n"
+   " 26:       MOV TEMP[ADDR[1].x][ADDR[0].x+18].y, TEMP[2].xyxx\n"
+   " 27:       MOV OUT[1], TEMP[18]\n"
+   " 28:     ENDIF\n"
+   " 29:   ELSE :39\n"
+   " 30:     UIF TEMP[10].xxxx :33\n"
+   " 31:       MOV TEMP[1].z, TEMP[9].xxzx\n"
+   " 32:       UARL ADDR[0].x, TEMP[6].xxxx\n"
+   " 33:       UARL ADDR[1].x, SV[0].xxxx\n"
+   " 34:       MOV TEMP[ADDR[1].x][ADDR[0].x+18].z, TEMP[1].xxzx\n"
+   " 35:       MOV OUT[1], TEMP[18]\n"
+   " 36:     ELSE :38\n"
+   " 37:       MOV TEMP[0].w, TEMP[9].xxxw\n"
+   " 38:       UARL ADDR[0].x, TEMP[6].xxxx\n"
+   " 39:       UARL ADDR[1].x, SV[0].xxxx\n"
+   " 40:       MOV TEMP[ADDR[1].x][ADDR[0].x+18].w, TEMP[0].xxxw\n"
+   " 41:       MOV OUT[1], TEMP[18]\n"
+   " 42:     ENDIF\n"
+   " 43:   ENDIF\n"
+   " 44:   UADD TEMP[3].x, TEMP[3].xxxx, IMM[0].wwww\n"
+   " 45:   ISGE TEMP[13].x, TEMP[3].xxxx, IMM[1].xxxx\n"
+   " 46:   UIF TEMP[13].xxxx :44\n"
+   " 47:     BRK\n"
+   " 48:   ENDIF\n"
+   " 49: ENDLOOP :0\n"
+   " 50: MOV OUT[3].x, IMM[1].yyyy\n"
+   " 51: MOV OUT[3].y, IMM[1].yyyy\n"
+   " 52: MOV OUT[3].z, IMM[1].yyyy\n"
+   " 53: MOV OUT[4].x, IMM[1].yyyy\n"
+   " 54: END\n";
+
+/* The same loop for N distances (1..8; one vec4 temp up to 4, two above). FIXED: the second
+ * vec4 is copied back too (what a guest Mesa that copied every element would send). */
+static const char *tcs_clip_loop(int n, int fixed)
+{
+   static char buf[4][8192];
+   static int next;
+   char *b = buf[next++ % 4];
+   const int o = n > 4 ? 3 : 2;
+   char copy[64];
+   snprintf(copy, sizeof(copy), n > 4 && fixed ? "MOV OUT[1], TEMP[18]\nMOV OUT[2], TEMP[19]\n" :
+            "MOV OUT[1], TEMP[18]\n");
+   snprintf(b, sizeof(buf[0]),
+            "TESS_CTRL\nPROPERTY TCS_VERTICES_OUT 3\nDCL IN[][0], POSITION\nDCL IN[][1], CLIPDIST\n%s"
+            "DCL SV[0], INVOCATIONID\nDCL OUT[][0], POSITION\nDCL OUT[][1], CLIPDIST\n%s"
+            "DCL OUT[%d].xyz, TESSOUTER\nDCL OUT[%d].x, TESSINNER\nDCL TEMP[0..13]\nDCL ADDR[0..1]\n"
+            "IMM[0] UINT32 {0, 3, 2, 1}\nIMM[1] UINT32 {%d, 1065353216, 0, 0}\nDCL TEMP[14..17]\n%s"
+            "UARL ADDR[1].x, SV[0].xxxx\nMOV TEMP[4], IN[ADDR[1].x][0]\nUARL ADDR[1].x, SV[0].xxxx\n"
+            "MOV OUT[ADDR[1].x][0], TEMP[4]\nMOV TEMP[3].x, IMM[0].xxxx\nBGNLOOP\n"
+            "AND TEMP[5].x, TEMP[3].xxxx, IMM[0].yyyy\nISHR TEMP[6].x, TEMP[3].xxxx, IMM[0].zzzz\n"
+            "ISLT TEMP[7].xyz, TEMP[5].xxxx, IMM[0].zwyz\nMOV TEMP[8].x, TEMP[7].yxxx\n"
+            "UARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+            "MOV TEMP[9], IN[ADDR[1].x][ADDR[0].x+1]\nMOV TEMP[10].x, TEMP[7].zxxx\n"
+            "MOV TEMP[11].x, TEMP[7].xxxx\nUIF TEMP[11].xxxx\nUIF TEMP[8].xxxx\n"
+            "MOV TEMP[12].x, TEMP[9].xxxx\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+            "MOV TEMP[ADDR[1].x][ADDR[0].x+18].x, TEMP[12].xxxx\n%sELSE\n"
+            "MOV TEMP[2].y, TEMP[9].xyxx\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+            "MOV TEMP[ADDR[1].x][ADDR[0].x+18].y, TEMP[2].xyxx\n%sENDIF\nELSE\nUIF TEMP[10].xxxx\n"
+            "MOV TEMP[1].z, TEMP[9].xxzx\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+            "MOV TEMP[ADDR[1].x][ADDR[0].x+18].z, TEMP[1].xxzx\n%sELSE\n"
+            "MOV TEMP[0].w, TEMP[9].xxxw\nUARL ADDR[0].x, TEMP[6].xxxx\nUARL ADDR[1].x, SV[0].xxxx\n"
+            "MOV TEMP[ADDR[1].x][ADDR[0].x+18].w, TEMP[0].xxxw\n%sENDIF\nENDIF\n"
+            "UADD TEMP[3].x, TEMP[3].xxxx, IMM[0].wwww\nISGE TEMP[13].x, TEMP[3].xxxx, IMM[1].xxxx\n"
+            "UIF TEMP[13].xxxx\nBRK\nENDIF\nENDLOOP\n"
+            "MOV OUT[%d].x, IMM[1].yyyy\nMOV OUT[%d].y, IMM[1].yyyy\nMOV OUT[%d].z, IMM[1].yyyy\n"
+            "MOV OUT[%d].x, IMM[1].yyyy\nEND\n",
+            n > 4 ? "DCL IN[][2], CLIPDIST[1]\n" : "", n > 4 ? "DCL OUT[][2], CLIPDIST[1]\n" : "",
+            o, o + 1, n, n > 4 ? "DCL TEMP[18..19]\n" : "DCL TEMP[18]\n", copy, copy, copy, copy,
+            o, o, o, o + 1);
+   return b;
+}
+
+/* the guest's form in the other stages: gl_ClipDistance[i] = 1.0 for i < 8 in a loop (TEMP[2..3]
+ * hold the two vec4s; TEMP[1].x is i) */
+#define CLIP_LOOP \
+   "MOV TEMP[1].x, IMM[0].xxxx\nBGNLOOP\nISHR TEMP[1].y, TEMP[1].xxxx, IMM[0].wwww\n" \
+   "UARL ADDR[0].x, TEMP[1].yyyy\nMOV TEMP[ADDR[0].x+2].x, IMM[1].xxxx\nMOV OUT[1], TEMP[2]\n" \
+   "UADD TEMP[1].x, TEMP[1].xxxx, IMM[0].yyyy\nISGE TEMP[1].y, TEMP[1].xxxx, IMM[0].zzzz\n" \
+   "UIF TEMP[1].yyyy\nBRK\nENDIF\nENDLOOP\n"
+#define CLIP_LOOP_DCL \
+   "DCL OUT[1], CLIPDIST\nDCL OUT[2], CLIPDIST[1]\nDCL TEMP[0..1]\nDCL ADDR[0]\n" \
+   "IMM[0] UINT32 {0, 1, 8, 2}\nIMM[1] FLT32 {    1.0000,     1.0000,     1.0000,     1.0000}\n" \
+   "IMM[2] INT32 {0, 0, 0, 0}\nDCL TEMP[2..3]\n"
+static const char *vs_clip_loop =
+   "VERT\nDCL IN[0]\nDCL OUT[0], POSITION\n" CLIP_LOOP_DCL "MOV OUT[0], IN[0]\n" CLIP_LOOP "END\n";
+static const char *gs_clip_loop =
+   "GEOM\nPROPERTY GS_INPUT_PRIMITIVE TRIANGLES\nPROPERTY GS_OUTPUT_PRIMITIVE TRIANGLE_STRIP\n"
+   "PROPERTY GS_MAX_OUTPUT_VERTICES 3\nPROPERTY GS_INVOCATIONS 1\nDCL IN[][0], POSITION\n"
+   "DCL OUT[0], POSITION\n" CLIP_LOOP_DCL "MOV OUT[0], IN[0][0]\n" CLIP_LOOP "EMIT IMM[2].xxxx\nEND\n";
+static const char *tes_clip_loop =
+   TES_HEAD "DCL IN[][0], POSITION\nDCL SV[0], TESSCOORD\nDCL OUT[0], POSITION\n" CLIP_LOOP_DCL
+   TES_POS CLIP_LOOP "END\n";
+
+/* a temp array read and written with an indirect index: DECL is its declaration (TEMP[0] then
+ * the three that are indexed); WRITE the indexed write (ADDR[0] or ADDR[1]) */
+static const char *temp_index_frag(const char *decl, const char *addr)
+{
+   static char buf[4][1024];
+   static int next;
+   char *b = buf[next++ % 4];
+   snprintf(b, sizeof(buf[0]),
+            "FRAG\nDCL IN[0], GENERIC[0], CONSTANT\nDCL OUT[0], COLOR\n%sDCL ADDR[0..1]\n"
+            "IMM[0] FLT32 {    0.0000,     1.0000,     0.0000,     1.0000}\n"
+            "IMM[1] FLT32 {    1.0000,     0.0000,     0.0000,     1.0000}\n"
+            "MOV TEMP[0], IN[0]\nMOV TEMP[1], IMM[0]\nMOV TEMP[2], IMM[1]\n"
+            "ARL ADDR[%s].x, TEMP[0].xxxx\nMOV TEMP[ADDR[%s].x+1].y, IMM[1].xxxx\n"
+            "MOV OUT[0], TEMP[ADDR[%s].x+1]\nEND\n", decl, addr, addr, addr);
+   return b;
+}
+
+static int indirect_temp_rows(bool have_gl)
+{
+   int failed = 0;
+   struct vrend_shader_key key;
+   char name[160];
+   for (int sep = 0; sep < 2; sep++) {
+      const char *how = sep ? "separable" : "whole";
+      /* the key of a whole program carries the evaluation shader's count */
+      memset(&key, 0, sizeof(key));
+      key.num_in_clip = 8;
+      key.num_out_clip = sep ? 0 : 8;
+      snprintf(name, sizeof(name), "%s TCS from the guest's Mesa: 8 clip distances copied in a loop", how);
+      failed |= indirect_temp(name, sep ? separable(tcs_loop8_guest) : tcs_loop8_guest, &key,
+                              "vec4 temp18[2];", "temp18[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp18;",
+                              have_gl);
+      for (int n = 1; n <= 8; n++) {
+         for (int fixed = 0; fixed < 1 + (n > 4); fixed++) {
+            /* the guest sends no NUM_CLIPDIST_ENABLED on the Mac: the counts are the declared
+             * vec4s' */
+            memset(&key, 0, sizeof(key));
+            key.num_in_clip = n > 4 ? 8 : 4;
+            key.num_out_clip = sep ? 0 : key.num_in_clip;
+            snprintf(name, sizeof(name), "%s TCS copies %d clip distance%s in a loop%s", how, n,
+                     n > 1 ? "s" : "", fixed ? " (both vec4s copied back)" : "");
+            failed |= indirect_temp(name, sep ? separable(tcs_clip_loop(n, fixed)) : tcs_clip_loop(n, fixed),
+                                    &key, n > 4 ? "vec4 temp18[2];" : "vec4 temp18[1];",
+                                    n > 4 ? "temp18[clamp(addr0 + 0, 0, 1)].w = " :
+                                            "temp18[clamp(addr0 + 0, 0, 0)].w = ",
+                                    "vec4 temp18;", have_gl);
+         }
+      }
+      /* the other stages that write clip distances in a loop; the counter temps stay single */
+      memset(&key, 0, sizeof(key));
+      snprintf(name, sizeof(name), "%s VS writes 8 clip distances in a loop", how);
+      failed |= indirect_temp(name, sep ? separable(vs_clip_loop) : vs_clip_loop, &key, "vec4 temp2[2];",
+                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[", have_gl);
+      snprintf(name, sizeof(name), "%s GS writes 8 clip distances in a loop", how);
+      failed |= indirect_temp(name, sep ? separable(gs_clip_loop) : gs_clip_loop, &key, "vec4 temp2[2];",
+                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[", have_gl);
+      key.tcs_present = 1;
+      snprintf(name, sizeof(name), "%s TES writes 8 clip distances in a loop", how);
+      failed |= indirect_temp(name, sep ? separable(tes_clip_loop) : tes_clip_loop, &key, "vec4 temp2[2];",
+                              "temp2[clamp(addr0 + 0, 0, 1)].x = ", "vec4 temp1[", have_gl);
+   }
+   memset(&key, 0, sizeof(key));
+   /* a read: the indexed vec4, not one component of a single temp in all four; TEMP[0], before
+    * the lowest indexed register, stays single (Mesa's one DCL TEMP[0..N]) */
+   failed |= indirect_temp("indexed temp read and write without ARRAY",
+                           temp_index_frag("DCL TEMP[0..3]\n", "0"), &key, "vec4 temp0;\n",
+                           " vec4(temp1[clamp(addr0 + 0, 0, 2)])", "vec4 temp1;", have_gl);
+   failed |= indirect_temp("direct writes into the indexed part use its array",
+                           temp_index_frag("DCL TEMP[0..3]\n", "0"), &key, "temp1[1] = ",
+                           "temp1[clamp(addr0 + 0, 0, 2)].y = ", NULL, have_gl);
+   /* an index in ADDR[1]: the write names addr1 as the read always did */
+   failed |= indirect_temp("indexed temp write through ADDR[1]",
+                           temp_index_frag("DCL TEMP[0..3]\n", "1"), &key,
+                           "temp1[clamp(addr1 + 0, 0, 2)].y = ", " vec4(temp1[clamp(addr1 + 0, 0, 2)])",
+                           "addr0 + 0", have_gl);
+   /* a declared array keeps its text */
+   failed |= indirect_temp("indexed temp ARRAY(1) as before",
+                           temp_index_frag("DCL TEMP[0]\nDCL TEMP[1..3], ARRAY(1)\n", "0"), &key,
+                           "vec4 temp1[3];", "temp1[clamp(addr0 + 0, 0, 2)].y = ", NULL, have_gl);
+   /* no temp indexed (an indexed constant instead): every temp a single vec4 as before */
+   failed |= indirect_temp("no temp indexed: single temps as before",
+                           "VERT\nDCL IN[0]\nDCL OUT[0], POSITION\nDCL CONST[0..3]\nDCL TEMP[0..3]\n"
+                           "DCL ADDR[0]\nARL ADDR[0].x, IN[0].xxxx\nMOV TEMP[1], CONST[ADDR[0].x+1]\n"
+                           "MOV TEMP[3], IN[0]\nADD OUT[0], TEMP[1], TEMP[3]\nEND\n",
+                           &key, "vec4 temp0;\n vec4 temp1;\n vec4 temp2;\n vec4 temp3;\n", "temp1 = ", "temp1[",
+                           have_gl);
+   return failed;
+}
+
 int main(void)
 {
    bool have_gl = cgl_init_current();
@@ -681,6 +937,7 @@ int main(void)
 
    failed |= tess_clip_rows(have_gl);
    failed |= vs_tes_clip_rows(have_gl);
+   failed |= indirect_temp_rows(have_gl);
 
    /* A plain float shader is unchanged apart from the version. */
    memset(&key, 0, sizeof(key));
