@@ -6,7 +6,7 @@ in more words.
 ## 3.2.20 (unreleased)
 
 - **OmacVM's own guest Mesa build copies every clip distance back after a loop (guest Mesa,
-  manual build, #PRB, see #589).** In a tessellation control shader that copies 5 to 8 clip
+  manual build, #694, see #589).** In a tessellation control shader that copies 5 to 8 clip
   distances in a loop, Mesa's virgl driver copied only distances 0..3 back to their output, so a
   negative distance 4..7 did not clip, on the M4's GPU and on Apple's software renderer alike
   (#692). `src/app/guest/mesa/build.sh`, which builds Mesa's virgl driver with OmacVM's
