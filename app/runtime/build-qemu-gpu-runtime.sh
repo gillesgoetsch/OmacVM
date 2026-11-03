@@ -1708,6 +1708,12 @@ grep -q 'vkr_chain_repeat(const void \*chain)' "$virgl_source/src/venus/vkr_comm
   grep -q '"VkRenderPassCreateInfo", why, why_size)' "$virgl_source/src/venus/vkr_render_pass.c" && \
   grep -q '"VkRenderPassBeginInfo"))' "$virgl_source/src/venus/vkr_render_pass.c" || \
   die "vkr_common.h, vkr_render_pass.c: a structure type twice in a chain gets past vkr (chain-repeats patch)"
+# A texel view of no element, a dynamic vertex stride and blend states: what Vulkan ignores is
+# taken, what the drivers read must be there (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-ignored-values.patch"
+grep -q 'if (check == VKR_VIEW_EMPTY) {' "$virgl_source/src/venus/vkr_buffer.c" && \
+  grep -q 'const bool count_read = !(three && (advanced || !dev->blend_coherent));' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_buffer.c, vkr_pipeline.c: Venus refuses values Vulkan ignores or passes blend states the drivers read past (ignored-values patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
