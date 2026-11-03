@@ -16,6 +16,18 @@ in more words.
   in 5-6 ms (M1 Max) and 5-100 ms (M4). In a test VM on the M1 Max the VM's Mesa keeps such gaps,
   and the fallback line is gone with the same pixels. Needs the app update (from the VM's next
   start); nothing in the VM.
+- **OpenGL shaders that write their clip distances in a loop compile on the Mac (OmacVM.app,
+  #691, see #589).** A tessellation control shader that copies `gl_ClipDistance[i]` in a `for`
+  loop (also a vertex, geometry or evaluation shader that writes them in one) came from the VM's
+  Mesa with temps indexed at run time, and the Mac refused it ("Swizzle of non-vector primitive
+  float" in qemu.log), so its draws were skipped (3.2.18 and 3.2.19 alike). Now it compiles; with
+  up to 4 distances it draws what one statement per distance draws, on the M1 Max and M4 GPUs and
+  Apple's software renderer. With a control shader, distances 4..7 written in a loop still draw
+  nothing on both GPUs (without one they draw), for two reasons: the Mac's GPU draws nothing when a vertex shader writes `gl_ClipDistance[4..7]` into
+  a control shader, and in a looped control shader the VM's Mesa copies only distances 0..3 back.
+  Both are open in #692; the Mesa part goes into OmacVM's own guest Mesa patches. One statement per
+  distance draws on both GPUs (the VM's Mesa then passes them as plain varyings), so with more than
+  4, write them that way. Needs the app update (from the VM's next start).
 
 ## 3.2.19
 

@@ -1575,6 +1575,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 grep -q 'static uint64_t patch_fill_mask(' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q '"patch%02d = vec4(0.0);\\n"' "$virgl_source/src/vrend/vrend_shader.c" || \
   die "vrend_shader.c: a separable control shader still leaves its padding patch varyings unwritten (patch-fill-writes patch)"
+# OmacVM: a temp the guest indexes at run time without an ARRAY declaration is a GLSL array:
+# the guest's Mesa sends clip distances written in a loop that way, and "temp18[i].x" on a
+# plain vec4 did not compile on the Mac, so those draws were skipped (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-indirect-temps.patch"
+grep -q 'static int lowest_indirect_temp(const struct dump_ctx \*ctx, int first, int last)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'get_temp(ctx, dst_reg->Register.Indirect, dst_reg->Indirect.Index, dst_reg->Register.Index,' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: a temp indexed at run time without ARRAY is still a single vec4 (indirect-temps patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.

@@ -1781,11 +1781,20 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   path ("Fallback to SW vertex processing because buildPipelineState failed" in qemu.log, a first
   draw of ~270 ms) on the M1 Max and drew nothing on the M4; the control shader now writes the gaps
   and the draws stay on the GPU. Update the app.
+- **3.2.20:** a shader that writes its clip distances in a loop (a control shader copying
+  `gl_ClipDistance[i]` in a `for` loop, also a vertex, geometry or evaluation shader) was refused
+  ("Swizzle of non-vector primitive float" in qemu.log after "the host refused a shader") and
+  its draws were skipped; 3.2.20 compiles it. With a control shader, distances 4..7 written in a
+  loop still draw nothing on the M1 Max and M4 GPUs (without one they draw): the Mac's GPU draws nothing when a vertex shader writes
+  `gl_ClipDistance[4..7]` into a control shader, and in a looped control shader the VM's Mesa
+  copies only 0..3 back (both open in #692; the Mesa part goes into OmacVM's own guest Mesa patches,
+  `src/app/guest/mesa/`). With more than 4, write one statement per distance: the VM's Mesa then
+  passes them as plain varyings, which draw on both GPUs. Update the app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
   `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
   `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),
-  `virgl-shader-separable-patch-fill-writes.patch` (3.2.20); tests
-  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`,
+  `virgl-shader-separable-patch-fill-writes.patch`, `virgl-shader-indirect-temps.patch` (3.2.20);
+  tests `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`,
   `test-separable-pervertex.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.
