@@ -7,7 +7,8 @@ pipeline, pipeline cache 20 KB; command pool 160 KB; command buffer 40 KB; descr
 pool 12 KB plus a byte per set; shader module, device memory, view, framebuffer, render
 pass 4 KB; image 2 KB; buffer, fence, semaphore, sampler, set 512 B; 1 KB the rest;
 a query pool 16 B more per query value), and every recording: 512 B per command, an
-update's data x 1.5, a Metal pass (virgl-venus-encoder-cap.patch) 184 KB, on KosmicKrisp
+update's data x 1.5, a Metal pass or a draw that splits one (virgl-venus-encoder-cap.patch)
+184 KB (a split draw measured up to 112941 B), on KosmicKrisp
 3 KB per fill and attachment clear and 40 KB per blit or resolve region. A command
 buffer takes its context's account 1 MB at a time and keeps the most a recording of it
 took (a reset gives nothing back); freed, that goes to its pool, whose next recordings
@@ -24,8 +25,11 @@ Why: one guest program made QEMU hold Mac memory far past what vkr counted, unch
 without a limit: 2 GB of recording in under 0.6 s (KosmicKrisp: 2423 B per 44 B fill),
 1148 MB of events in 0.47 s, 1110 MB of MoltenVK command pools in 0.09 s, 12.6 MB per
 2^20 timestamps; a submitted pass held up to 179 KB (wired) after the queue went idle, at
-any image size, also after a reset, free or destroy (Metal keeps it for the process's
-next command buffers): 8 x 16384 clears in one KosmicKrisp submit took 22 GB. KosmicKrisp
+any image size, also after a reset, free or destroy: 8 x 16384 clears in one KosmicKrisp
+submit took 22 GB. That memory is used again by the process's next command buffers (10
+rounds of pool, 2048 submitted passes, free and destroy stayed at 301-317 MB on
+KosmicKrisp and 356-363 MB on MoltenVK, also with a pool reset each round and over 10
+contexts in turn: fix/out-C), so the charge comes back at the pool's destroy. KosmicKrisp
 kept copies and clears past a reset and a free until the pool's destroy, MoltenVK an
 update's data past that. MoltenVK reported a 32768 MB heap (all of the M1 Max), more
 than the 22528 MB apps' share, and both drivers a 19169 MB maxBufferSize. One 256 MB
@@ -38,7 +42,7 @@ h-zink-frame-ok; run-venus-limits.py runs h-rec-spare-ok, h-release-end and
 h-pass-secondary-ok under libgmalloc too).
 
 diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
-index f514f6f..6008dbc 100644
+index 8ad25cb..a1ace72 100644
 --- a/src/venus/vkr_command_buffer.c
 +++ b/src/venus/vkr_command_buffer.c
 @@ -31,6 +31,9 @@
@@ -51,7 +55,7 @@ index f514f6f..6008dbc 100644
        vn_replace_vk##cmd_name##_args_handle(args);                                       \
        _vk->cmd_name(args->commandBuffer, ##__VA_ARGS__);                                 \
     } while (0)
-@@ -45,6 +48,68 @@
+@@ -45,6 +48,73 @@
  #define VKR_CMD_LIMITS(args) (&VKR_CMD_DEVICE(args)->physical_device->limits)
  #define VKR_CMD_LIM(args) (&VKR_CMD_DEVICE(args)->physical_device->properties.limits)
  
@@ -61,9 +65,14 @@ index f514f6f..6008dbc 100644
 + * 339 measured: copies, draws, barriers, push constants, a rendering begin and end); a
 + * KosmicKrisp fill 3072 (2423) and attachment clear 3072 (2958); a KosmicKrisp blit or
 + * resolve region 40960 (36415); an update its data x 1.5 (84017 for 64 KB); each Metal pass
-+ * 188416: recorded (7145) and held by Metal from the command buffer's submit on (171 KB per
-+ * pass after the queue went idle, any image size, also after a reset, free or destroy:
-+ * Metal keeps it for the process's next command buffers) */
++ * 188416: recorded (7145; a draw that splits a pass up to 112941) and held by Metal from
++ * the command buffer's submit on (171 KB per pass after the queue went idle, any image
++ * size, also after a reset, free or destroy). That memory is used again by the process's
++ * next command buffers: 10 rounds of a new pool, 2048 submitted passes, free and destroy
++ * stayed at 301-317 MB (KosmicKrisp; MoltenVK 356-363 MB), also with one pool reset each
++ * round, and over 10 contexts in turn (307-317 MB); 64 KB updates likewise (MoltenVK
++ * 243-260 MB). So the charge comes back at the destroy, and the process keeps about its
++ * peak (fix-700 rounds probes, work/v624-hostmem/fix/out/out-C) */
 +enum { VKR_CMD_COST_BASE = 512, VKR_CMD_COST_PASS = 188416 };
 +enum vkr_cmd_cost_kind { VKR_COST_FILL, VKR_COST_CLEAR_ATTACHMENTS, VKR_COST_REGION, VKR_COST_KINDS };
 +static const uint32_t vkr_cmd_costs_kosmickrisp[VKR_COST_KINDS] = { 3072, 3072, 40960 };
@@ -120,7 +129,7 @@ index f514f6f..6008dbc 100644
  static bool
  vkr_cmd_buffer_ok(VkBuffer handle, VkDeviceSize offset, VkDeviceSize size)
  {
-@@ -509,6 +574,17 @@ vkr_command_buffer_object_release(struct vkr_object *obj)
+@@ -509,6 +579,17 @@ vkr_command_buffer_object_release(struct vkr_object *obj)
     if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER) {
        struct vkr_command_buffer *cmd = (struct vkr_command_buffer *)obj;
        vkr_cmd_set_views(cmd, NULL, 0);
@@ -138,7 +147,7 @@ index f514f6f..6008dbc 100644
        /* OmacVM (virgl-venus-command-holds.patch): the driver freed it already */
        vkr_cmd_unhold_all(cmd);
        _mesa_hash_table_destroy(cmd->held, NULL);
-@@ -690,7 +766,8 @@ vkr_cmd_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, uint
+@@ -690,7 +771,8 @@ vkr_cmd_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, uint
                            total, cap))
        return false;
     st->weight = (uint32_t)total;
@@ -148,8 +157,8 @@ index f514f6f..6008dbc 100644
  }
  
  /* the levels of a clear's ranges (each level is a pass; the layers of one are one layered
-@@ -1520,6 +1597,13 @@ vkr_dispatch_vkCmdBlitImage(struct vn_dispatch_context *dispatch,
-    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+@@ -1629,6 +1711,13 @@ vkr_dispatch_vkCmdBlitImage(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
     if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdBlitImage"))
        return;
 +   /* OmacVM (virgl-venus-host-memory.patch) */
@@ -162,8 +171,8 @@ index f514f6f..6008dbc 100644
     VKR_CMD_CALL(CmdBlitImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
                  args->dstImageLayout, args->regionCount, args->pRegions, args->filter);
  }
-@@ -1541,6 +1625,13 @@ vkr_dispatch_vkCmdBlitImage2(struct vn_dispatch_context *dispatch,
-    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+@@ -1650,6 +1739,13 @@ vkr_dispatch_vkCmdBlitImage2(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
     if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdBlitImage2"))
        return;
 +   /* OmacVM (virgl-venus-host-memory.patch) */
@@ -176,7 +185,7 @@ index f514f6f..6008dbc 100644
     VKR_CMD_CALL(CmdBlitImage2, args, args->pBlitImageInfo);
  }
  
-@@ -1638,6 +1729,10 @@ vkr_dispatch_vkCmdUpdateBuffer(struct vn_dispatch_context *dispatch,
+@@ -1747,6 +1843,10 @@ vkr_dispatch_vkCmdUpdateBuffer(struct vn_dispatch_context *dispatch,
                            ok ? "" : vkr_range_text(r, true, args->dataSize, args->dstOffset,
                                                     vkr_cmd_buffer_size(args->dstBuffer))))
        return;
@@ -187,7 +196,7 @@ index f514f6f..6008dbc 100644
     VKR_CMD_CALL(CmdUpdateBuffer, args, args->dstBuffer, args->dstOffset, args->dataSize,
                  args->pData);
  }
-@@ -1655,6 +1750,12 @@ vkr_dispatch_vkCmdFillBuffer(struct vn_dispatch_context *dispatch,
+@@ -1764,6 +1864,12 @@ vkr_dispatch_vkCmdFillBuffer(struct vn_dispatch_context *dispatch,
                            ok ? "" : vkr_range_text(r, true, args->size, args->dstOffset, total)))
        return;
     vkr_test_pause("command"); /* OmacVM (virgl-venus-test-pause.patch) */
@@ -200,7 +209,7 @@ index f514f6f..6008dbc 100644
     VKR_CMD_CALL(CmdFillBuffer, args, args->dstBuffer, args->dstOffset, args->size,
                  args->data);
  }
-@@ -1720,6 +1821,12 @@ vkr_dispatch_vkCmdClearAttachments(struct vn_dispatch_context *dispatch,
+@@ -1829,6 +1935,12 @@ vkr_dispatch_vkCmdClearAttachments(struct vn_dispatch_context *dispatch,
                               a->colorAttachment, max, st->colors))
           return;
     }
@@ -213,8 +222,8 @@ index f514f6f..6008dbc 100644
     VKR_CMD_CALL(CmdClearAttachments, args, args->attachmentCount, args->pAttachments,
                  args->rectCount, args->pRects);
  }
-@@ -1741,6 +1848,13 @@ vkr_dispatch_vkCmdResolveImage(struct vn_dispatch_context *dispatch,
-    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+@@ -1850,6 +1962,13 @@ vkr_dispatch_vkCmdResolveImage(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
     if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdResolveImage"))
        return;
 +   /* OmacVM (virgl-venus-host-memory.patch) */
@@ -227,8 +236,8 @@ index f514f6f..6008dbc 100644
     VKR_CMD_CALL(CmdResolveImage, args, args->srcImage, args->srcImageLayout,
                  args->dstImage, args->dstImageLayout, args->regionCount, args->pRegions);
  }
-@@ -1763,6 +1877,13 @@ vkr_dispatch_vkCmdResolveImage2(struct vn_dispatch_context *dispatch,
-    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
+@@ -1872,6 +1991,13 @@ vkr_dispatch_vkCmdResolveImage2(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
     if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdResolveImage2"))
        return;
 +   /* OmacVM (virgl-venus-host-memory.patch) */
@@ -242,10 +251,10 @@ index f514f6f..6008dbc 100644
  }
  
 diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
-index d2177ba..69d87dd 100644
+index 4c5e048..6840193 100644
 --- a/src/venus/vkr_command_buffer.h
 +++ b/src/venus/vkr_command_buffer.h
-@@ -17,6 +17,9 @@ struct vkr_command_pool {
+@@ -19,6 +19,9 @@ struct vkr_command_pool {
     struct list_head command_buffers;
     /* OmacVM (virgl-venus-secondary-holds.patch) */
     struct vkr_device *device;
@@ -255,7 +264,7 @@ index d2177ba..69d87dd 100644
  };
  VKR_DEFINE_OBJECT_CAST(command_pool, VK_OBJECT_TYPE_COMMAND_POOL, VkCommandPool)
  
-@@ -57,6 +60,8 @@ struct vkr_cmd_state {
+@@ -65,6 +68,8 @@ struct vkr_cmd_state {
     /* OmacVM (virgl-venus-encoder-cap.patch, ADR 0065): the Metal passes (render encoders)
      * this recording opens, its secondaries' each time they are executed included */
     uint32_t weight;
@@ -264,7 +273,7 @@ index d2177ba..69d87dd 100644
  };
  
  /* OmacVM (virgl-venus-encoder-cap.patch): Metal ends the process (SIGABRT, "Failed to
-@@ -101,6 +106,11 @@ struct vkr_command_buffer {
+@@ -112,6 +117,11 @@ struct vkr_command_buffer {
     /* OmacVM (virgl-venus-command-holds.patch, vkr_device.h): the objects it holds (keys),
      * NULL until its first pass; emptied when the driver let go of what it recorded */
     struct hash_table *held;
