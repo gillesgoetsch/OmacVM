@@ -13,9 +13,17 @@ in more words.
   vertex processing because buildPipelineState failed"); on the MacBook Pro M1 Max 4 of the 6
   such programs of the test drew nothing. Now the control shader passes them as plain varyings:
   the same programs draw on the GPU with the pixels of Apple's software renderer, the first draw
-  in 6-100 ms, no fallback line, no crash report. Clip distances from a vertex shader straight
-  into an evaluation shader (no control shader) still take the CPU path. Needs only the app
-  update (from the VM's next start); nothing in the VM.
+  in 6-100 ms, no fallback line, no crash report. Needs only the app update (from the VM's next
+  start); nothing in the VM.
+- **Desktop OpenGL programs whose vertex shader passes clip distances straight to a tessellation
+  evaluation shader (no control shader) draw on the Mac's GPU (OmacVM.app, #685, see #589).**
+  Apple's OpenGL could not build the GPU pipeline for them either ("Fallback to SW vertex
+  processing because buildPipelineState failed" in qemu.log): on the MacBook Pro M1 Max all 6
+  such programs of the test drew nothing, the first draw took 260-284 ms and Apple's shader
+  compiler crashed for one of them. Now the vertex shader passes them as plain varyings: the same
+  programs draw on the GPU with the pixels of Apple's software renderer, the first draw in 4-128
+  ms, no fallback line, no crash report. Needs only the app update (from the VM's next start);
+  nothing in the VM.
 
 ## 3.2.18
 
