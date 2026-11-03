@@ -1,0 +1,404 @@
+virglrenderer: Venus ends an app's context before Metal ends QEMU on too many passes
+
+What: vkr counts the Metal passes (render encoders) each command buffer opens: a clear of
+an image (one per level of its ranges; the layers of a level are one layered pass), a
+render pass begin and each next subpass, a dynamic rendering begin, a blit or resolve
+region, on KosmicKrisp a barrier inside a pass (it splits a multisampled pass there; vkr
+does not keep the pass's samples, so every in-pass barrier counts there), and the
+secondaries a primary executes (their passes each time). A command buffer may open
+16384 (OMACVM_VENUS_ENCODER_CAP, tests only); a MoltenVK batch (all command buffers of
+one VkSubmitInfo or VkSubmitInfo2) twice that. The command past it is refused before the
+driver gets it, and the app's context ends with a log line (the guest recorded and
+submitted without waiting: it sees a lost device). Draws, copies, fills, updates and
+attachment clears do not count.
+Why: Metal ends the process (SIGABRT: "Failed to allocate IOGPUDeviceShmem" in
+IOGPUMetalCommandBufferStorageGrowKernelCommandBuffer, from AGX::RenderContext::
+beginRenderPass) when one Metal command buffer has about 98304 passes. One guest program
+ended QEMU and the VM so, with no submit on KosmicKrisp: probes through vkr's dispatch
+on the M1 Max (macOS 27, the 3.2.18 drivers, work/v624-hostmem): KosmicKrisp aborted
+while recording past 98304 clears of one level (run7-9; 90000 with 150000 asked), past
+98304 empty passes (run10), between 90112 and 98304 in-pass barriers of a 4x pass and
+between 6144 and 6656 clears of 15 levels; 1M
+draws, 204800 copies, 204800 1x in-pass barriers and 200 clears of 2048 layers did not.
+MoltenVK aborted at the encode: with prefill at vkEndCommandBuffer after 150000 clears,
+204800 passes, renderings, blits or resolves; without prefill at vkQueueSubmit of one
+batch of 8 x 16384 clears (4 x 16384 in one batch, 8 batches of 16384 and 8 submits
+went through). KosmicKrisp took 8 x 16384 in one batch and 16 live command buffers of
+16384 each (also over 2 contexts). 16384 is 6x below the abort; a Zink frame has about
+2000 passes. The M4 and an 8 GB Mac are not measured yet (the cap stays fixed).
+Upstream: OmacVM policy; nothing posted.
+Tests: Tests/virgl/test-venus-commands.c (the h-pass- cases: the legal maximum and one
+past it per kind at a cap of 1024, the default cap, 100000 clears that ended the process
+before, levels, layers, secondaries, a real MoltenVK batch).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 307e864..f514f6f 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -654,6 +654,75 @@ vkr_cmd_rendering_views(struct vn_dispatch_context *dispatch,
+    return true;
+ }
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch) */
++uint32_t
++vkr_encoder_cap(void)
++{
++   static atomic_uint cap;
++   uint32_t c = atomic_load(&cap);
++   if (unlikely(!c)) {
++      const char *env = getenv("OMACVM_VENUS_ENCODER_CAP");
++      const unsigned long v = env ? strtoul(env, NULL, 0) : 0;
++      c = v >= 1 && v <= (1u << 20) ? (uint32_t)v : VKR_ENCODER_CAP;
++      atomic_store(&cap, c);
++   }
++   return c;
++}
++
++uint32_t
++vkr_command_buffer_weight(VkCommandBuffer handle)
++{
++   const struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(handle);
++   return cmd ? cmd->state.weight : 0;
++}
++
++/* the command opens W more Metal passes in its command buffer: refused (the context ends)
++ * past the cap, before the driver gets it */
++static bool
++vkr_cmd_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, uint64_t w,
++              const char *call)
++{
++   struct vkr_cmd_state *st = vkr_cmd_state(handle);
++   const uint64_t total = st->weight + w, cap = vkr_encoder_cap();
++   if (!vkr_context_check(dispatch->data, total <= cap, call,
++                          "%" PRIu64 " Metal passes in one command buffer, past vkr's %" PRIu64
++                          " (Metal ends the process at about 98304)",
++                          total, cap))
++      return false;
++   st->weight = (uint32_t)total;
++   return true;
++}
++
++/* the levels of a clear's ranges (each level is a pass; the layers of one are one layered
++ * pass on both drivers: 2048 layers x 200 clears in the probes) */
++static uint64_t
++vkr_cmd_range_levels(VkImage handle, uint32_t count, const VkImageSubresourceRange *ranges)
++{
++   const struct vkr_image *img = vkr_image_from_handle(handle);
++   uint64_t n = 0;
++   for (uint32_t i = 0; i < count; i++) {
++      const VkImageSubresourceRange *r = &ranges[i];
++      /* past vkr_cmd_range_ok: the base is inside the image */
++      n += r->levelCount == VK_REMAINING_MIP_LEVELS
++              ? (img && img->mip_levels > r->baseMipLevel ? img->mip_levels - r->baseMipLevel : 1)
++              : r->levelCount;
++   }
++   return n;
++}
++
++/* a barrier inside a pass: KosmicKrisp splits a multisampled pass there (a new Metal pass,
++ * 98304 such barriers ended the process); vkr does not keep the pass's samples, so every
++ * in-pass barrier counts on KosmicKrisp (1x passes did not split: 204800 in the probe) */
++static bool
++vkr_cmd_barrier_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle,
++                      bool kosmickrisp, const char *call)
++{
++   const struct vkr_cmd_state *st = vkr_cmd_state(handle);
++   if (!kosmickrisp || st->pass == VKR_CMD_PASS_NONE)
++      return true;
++   return vkr_cmd_weigh(dispatch, handle, 1, call);
++}
++
+ static void
+ vkr_cmd_state_reset(struct vkr_command_buffer *cmd)
+ {
+@@ -1448,6 +1517,9 @@ vkr_dispatch_vkCmdBlitImage(struct vn_dispatch_context *dispatch,
+                              "vkCmdBlitImage", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdBlitImage"))
++      return;
+    VKR_CMD_CALL(CmdBlitImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions, args->filter);
+ }
+@@ -1466,6 +1538,9 @@ vkr_dispatch_vkCmdBlitImage2(struct vn_dispatch_context *dispatch,
+                              "vkCmdBlitImage2", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdBlitImage2"))
++      return;
+    VKR_CMD_CALL(CmdBlitImage2, args, args->pBlitImageInfo);
+ }
+ 
+@@ -1595,6 +1670,11 @@ vkr_dispatch_vkCmdClearColorImage(struct vn_dispatch_context *dispatch,
+                              r->baseMipLevel, r->levelCount, r->baseArrayLayer, r->layerCount))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer,
++                      vkr_cmd_range_levels(args->image, args->rangeCount, args->pRanges),
++                      "vkCmdClearColorImage"))
++      return;
+    VKR_CMD_CALL(CmdClearColorImage, args, args->image, args->imageLayout, args->pColor,
+                 args->rangeCount, args->pRanges);
+ }
+@@ -1610,6 +1690,11 @@ vkr_dispatch_vkCmdClearDepthStencilImage(struct vn_dispatch_context *dispatch,
+                              r->baseMipLevel, r->levelCount, r->baseArrayLayer, r->layerCount))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer,
++                      vkr_cmd_range_levels(args->image, args->rangeCount, args->pRanges),
++                      "vkCmdClearDepthStencilImage"))
++      return;
+    VKR_CMD_CALL(CmdClearDepthStencilImage, args, args->image, args->imageLayout, args->pDepthStencil,
+                 args->rangeCount, args->pRanges);
+ }
+@@ -1653,6 +1738,9 @@ vkr_dispatch_vkCmdResolveImage(struct vn_dispatch_context *dispatch,
+                              "vkCmdResolveImage", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdResolveImage"))
++      return;
+    VKR_CMD_CALL(CmdResolveImage, args, args->srcImage, args->srcImageLayout,
+                 args->dstImage, args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+@@ -1672,6 +1760,9 @@ vkr_dispatch_vkCmdResolveImage2(struct vn_dispatch_context *dispatch,
+                              "vkCmdResolveImage2", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdResolveImage2"))
++      return;
+    VKR_CMD_CALL(CmdResolveImage2, args, args->pResolveImageInfo);
+ }
+ 
+@@ -1697,6 +1788,10 @@ vkr_dispatch_vkCmdWaitEvents(struct vn_dispatch_context *dispatch,
+                             args->pBufferMemoryBarriers, args->imageMemoryBarrierCount,
+                             args->pImageMemoryBarriers))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdWaitEvents"))
++      return;
+    VKR_CMD_CALL(CmdWaitEvents, args, args->eventCount, args->pEvents, args->srcStageMask,
+                 args->dstStageMask, args->memoryBarrierCount, args->pMemoryBarriers,
+                 args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+@@ -1711,6 +1806,10 @@ vkr_dispatch_vkCmdPipelineBarrier(struct vn_dispatch_context *dispatch,
+                             args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+                             args->imageMemoryBarrierCount, args->pImageMemoryBarriers))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdPipelineBarrier"))
++      return;
+    VKR_CMD_CALL(CmdPipelineBarrier, args, args->srcStageMask, args->dstStageMask,
+                 args->dependencyFlags, args->memoryBarrierCount, args->pMemoryBarriers,
+                 args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+@@ -1831,6 +1930,9 @@ vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
+       vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+    const struct vkr_framebuffer *fb =
+       vkr_framebuffer_from_handle(args->pRenderPassBegin->framebuffer);
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdBeginRenderPass"))
++      return;
+    VKR_CMD_CALL(CmdBeginRenderPass, args, args->pRenderPassBegin, args->contents);
+    /* OmacVM (virgl-venus-command-state.patch) */
+    vkr_cmd_begin_render_pass(st, pass, fb);
+@@ -1849,6 +1951,9 @@ vkr_dispatch_vkCmdNextSubpass(struct vn_dispatch_context *dispatch,
+        !vkr_cmd_pass_views_ok(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
+                               "vkCmdNextSubpass"))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdNextSubpass"))
++      return;
+    VKR_CMD_CALL(CmdNextSubpass, args, args->contents);
+    vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
+ }
+@@ -1910,12 +2015,18 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+    }
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    bool graphics = false, compute = false;
++   uint64_t weight = 0;
+    for (uint32_t i = 0; i < args->commandBufferCount; i++) {
+       const struct vkr_command_buffer *sec =
+          vkr_command_buffer_from_handle(args->pCommandBuffers[i]);
+       graphics |= sec->state.graphics_bound;
+       compute |= sec->state.compute_bound;
++      weight += sec->state.weight;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): the secondaries' passes go into the primary's
++    * Metal command buffer (each again where one is named twice) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, weight, "vkCmdExecuteCommands"))
++      return;
+    VKR_CMD_CALL(CmdExecuteCommands, args, args->commandBufferCount,
+                 args->pCommandBuffers);
+    st->graphics_bound |= graphics;
+@@ -1973,6 +2084,9 @@ vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
+       vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+    const struct vkr_framebuffer *fb =
+       vkr_framebuffer_from_handle(args->pRenderPassBegin->framebuffer);
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdBeginRenderPass2"))
++      return;
+    VKR_CMD_CALL(CmdBeginRenderPass2, args, args->pRenderPassBegin,
+                 args->pSubpassBeginInfo);
+    /* OmacVM (virgl-venus-command-state.patch) */
+@@ -1992,6 +2106,9 @@ vkr_dispatch_vkCmdNextSubpass2(struct vn_dispatch_context *dispatch,
+        !vkr_cmd_pass_views_ok(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
+                               "vkCmdNextSubpass2"))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdNextSubpass2"))
++      return;
+    VKR_CMD_CALL(CmdNextSubpass2, args, args->pSubpassBeginInfo, args->pSubpassEndInfo);
+    vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
+ }
+@@ -2400,6 +2517,9 @@ vkr_dispatch_vkCmdBeginRendering(struct vn_dispatch_context *dispatch,
+       return;
+    const uint32_t colors = args->pRenderingInfo->colorAttachmentCount;
+    const uint32_t view_mask = args->pRenderingInfo->viewMask;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdBeginRendering"))
++      return;
+    VKR_CMD_CALL(CmdBeginRendering, args, args->pRenderingInfo);
+    /* OmacVM (virgl-venus-command-state.patch) */
+    st->pass = VKR_CMD_PASS_RENDERING;
+@@ -2428,6 +2548,10 @@ vkr_dispatch_vkCmdPipelineBarrier2(struct vn_dispatch_context *dispatch,
+ {
+    if (!vkr_cmd_dependency_ok(dispatch->data, "vkCmdPipelineBarrier2", args->pDependencyInfo))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdPipelineBarrier2"))
++      return;
+    VKR_CMD_CALL(CmdPipelineBarrier2, args, args->pDependencyInfo);
+ }
+ 
+@@ -2455,6 +2579,10 @@ vkr_dispatch_vkCmdWaitEvents2(struct vn_dispatch_context *dispatch,
+       if (!vkr_cmd_dependency_ok(dispatch->data, "vkCmdWaitEvents2", &args->pDependencyInfos[i]))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdWaitEvents2"))
++      return;
+    VKR_CMD_CALL(CmdWaitEvents2, args, args->eventCount, args->pEvents,
+                 args->pDependencyInfos);
+ }
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index f126b0a..d2177ba 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -54,8 +54,28 @@ struct vkr_cmd_state {
+     * state); vkCmdExecuteCommands leaves the primary's as they were. */
+    uint32_t sets_bound[2], sets_used[2];
+    bool index_bound;
++   /* OmacVM (virgl-venus-encoder-cap.patch, ADR 0065): the Metal passes (render encoders)
++    * this recording opens, its secondaries' each time they are executed included */
++   uint32_t weight;
+ };
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch): Metal ends the process (SIGABRT, "Failed to
++ * allocate IOGPUDeviceShmem") when one Metal command buffer has about 98304 passes; the M1
++ * probes (work/v624-hostmem): KosmicKrisp at record time (each clear, pass begin, level of
++ * a clear, in-pass barrier of a multisampled pass, blit and resolve region), MoltenVK when
++ * it encodes the command buffer (at vkQueueSubmit, or at vkEndCommandBuffer with prefill),
++ * all command buffers of one batch into one Metal command buffer. A command buffer may
++ * open VKR_ENCODER_CAP, a MoltenVK batch twice that; past it the app's context ends.
++ * OMACVM_VENUS_ENCODER_CAP sets it (tests). */
++#define VKR_ENCODER_CAP 16384u
++
++uint32_t
++vkr_encoder_cap(void);
++
++/* the passes of a command buffer (0 for a handle vkr does not know) */
++uint32_t
++vkr_command_buffer_weight(VkCommandBuffer handle);
++
+ /* a dynamic rendering's views with 8 color attachments: colors and their resolves, depth,
+  * stencil and their resolves, shading rate, density map */
+ #define VKR_CMD_VIEW_STORAGE 22
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index f74f8e6..5aee693 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -9,6 +9,8 @@
+ 
+ #include "vkr_context.h"
+ #include "vkr_physical_device.h"
++/* OmacVM (virgl-venus-encoder-cap.patch) */
++#include "vkr_command_buffer.h"
+ #include "vkr_queue_gen.h"
+ 
+ #ifdef __APPLE__
+@@ -498,6 +500,32 @@ vkr_submit_chain_ok(struct vn_dispatch_context *dispatch,
+                             signal_count);
+ }
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch): MoltenVK encodes a batch's command buffers into one
++ * Metal command buffer at the submit; Metal ended the process at 8 x 16384 passes in one
++ * batch (4 x 16384 and 8 batches of 16384 went through). A batch may open twice what a
++ * command buffer may; past it the app's context ends. KosmicKrisp has a Metal command
++ * buffer per command buffer (8 x 16384 in one batch went through). */
++static bool
++vkr_batch_weight_ok(struct vn_dispatch_context *dispatch,
++                    const struct vkr_queue *queue,
++                    const char *call,
++                    uint32_t batch,
++                    uint32_t count,
++                    const VkCommandBuffer *cmds,
++                    const VkCommandBufferSubmitInfo *infos)
++{
++   if (queue->device->physical_device->limits.kosmickrisp)
++      return true;
++   uint64_t total = 0;
++   for (uint32_t i = 0; i < count; i++)
++      total += vkr_command_buffer_weight(cmds ? cmds[i] : infos[i].commandBuffer);
++   const uint64_t cap = 2 * (uint64_t)vkr_encoder_cap();
++   return vkr_context_check(dispatch->data, total <= cap, call,
++                            "batch %u: %" PRIu64 " Metal passes in its %u command buffers, past "
++                            "vkr's %" PRIu64 " for one Metal command buffer",
++                            batch, total, count, cap);
++}
++
+ static void
+ vkr_dispatch_vkQueueSubmit(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkQueueSubmit *args)
+@@ -513,6 +541,10 @@ vkr_dispatch_vkQueueSubmit(struct vn_dispatch_context *dispatch,
+                                submit->waitSemaphoreCount, submit->commandBufferCount,
+                                submit->signalSemaphoreCount, true))
+          return;
++      /* OmacVM (virgl-venus-encoder-cap.patch) */
++      if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit", i, submit->commandBufferCount,
++                               submit->pCommandBuffers, NULL))
++         return;
+    }
+ 
+    vn_replace_vkQueueSubmit_args_handle(args);
+@@ -567,13 +599,22 @@ vkr_dispatch_vkQueueWaitIdle(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkQueueSubmit2(struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkQueueSubmit2 *args)
+ {
+    TRACE_FUNC();
+    struct vkr_queue *queue = vkr_queue_from_handle(args->queue);
+    struct vn_device_proc_table *vk = &queue->device->proc_table;
+ 
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   for (uint32_t i = 0; i < args->submitCount; i++) {
++      const VkSubmitInfo2 *submit = &args->pSubmits[i];
++      if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit2", i,
++                               submit->commandBufferInfoCount, NULL,
++                               submit->pCommandBufferInfos))
++         return;
++   }
++
+    vn_replace_vkQueueSubmit2_args_handle(args);
+ 
+    mtx_lock(&queue->vk_mutex);

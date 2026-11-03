@@ -1797,6 +1797,12 @@ grep -q 'if (!vkr_spirv_valid(dev->physical_device, spirv, args->pCreateInfo->pC
   grep -q 'vkr_physical_device_init_spirv_target(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" && \
   grep -q '"ray tracing shaders are not checked");' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_pipeline.c, vkr_physical_device.c: guest SPIR-V is not validated (spirv-validate patch)"
+# A command buffer opens at most 16384 Metal passes, a MoltenVK batch 32768: Metal ended QEMU at
+# about 98304 in one Metal command buffer (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-encoder-cap.patch"
+grep -q 'if (!vkr_cmd_weigh(dispatch, args->commandBuffer, weight, "vkCmdExecuteCommands"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit", i, submit->commandBufferCount,' "$virgl_source/src/venus/vkr_queue.c" || \
+  die "vkr_command_buffer.c, vkr_queue.c: Metal passes per command buffer are not capped (encoder-cap patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

@@ -19,7 +19,9 @@
  * ignored as Vulkan does, and refusal lines without 18446744073709551615
  * (virgl-venus-ignored-values.patch: case_ignored); no draw or dispatch uses a descriptor
  * set, and no indexed draw an index buffer, never bound since the begin
- * (virgl-venus-unset-state.patch: the u- cases, case_unset).
+ * (virgl-venus-unset-state.patch: the u- cases, case_unset); a command buffer and a MoltenVK
+ * batch open no more Metal passes than vkr's cap, below where Metal ends the process
+ * (virgl-venus-encoder-cap.patch: the h-pass- cases, case_host).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -6349,6 +6351,249 @@ static int case_unset(const char *c)
    return !strncmp(c, "u-ib-", 5) ? unset_index_case(c) : unset_set_case(c);
 }
 
+/* ---------------- host memory: Metal passes, recordings, objects, heaps (h-) ----------------
+ * virgl-venus-encoder-cap.patch, virgl-venus-host-memory.patch, ADR 0065. Metal ends the
+ * process at about 98304 passes in one Metal command buffer (KosmicKrisp while recording,
+ * MoltenVK when it encodes); recordings and objects cost the Mac memory vkr did not count.
+ * Each case sets its budget and caps before the setup (OMACVM_GPU_MEMORY_MB,
+ * OMACVM_VENUS_HOST_MB, OMACVM_VENUS_ENCODER_CAP: the tests' 1024 makes the legal maximum
+ * small enough to charge). Refused: the context ends with a refusal line. */
+static void h_env(const char *budget_mb, const char *host_mb, const char *cap)
+{
+   setenv("OMACVM_GPU_MEMORY_RESERVE_MB", "0", 1);
+   if (budget_mb)
+      setenv("OMACVM_GPU_MEMORY_MB", budget_mb, 1);
+   if (host_mb)
+      setenv("OMACVM_VENUS_HOST_MB", host_mb, 1);
+   if (cap)
+      setenv("OMACVM_VENUS_ENCODER_CAP", cap, 1);
+}
+
+static struct vkr_image *h_image(uint32_t w, uint32_t h, uint32_t levels, uint32_t layers)
+{
+   const uint64_t id = next_id++;
+   VkImage hd = (VkImage)(uintptr_t)id;
+   VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = FMT, .extent = { w, h, 1 }, .mipLevels = levels, .arrayLayers = layers,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = CA_SA };
+   struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
+   D->dispatch_vkCreateImage(D, &c);
+   struct vkr_image *img = object(id);
+   if (c.ret != VK_SUCCESS || !img)
+      broken("vkCreateImage (levels, layers)");
+   const VkMemoryRequirements req = requirements_of(img, NULL);
+   if (bind_image_at(img, allocate(req.size, memory_type(req.memoryTypeBits))) != VK_SUCCESS)
+      broken("vkBindImageMemory (levels, layers)");
+   return img;
+}
+
+/* n clears of LEVELS levels (REMAINING when levels is 0) and every layer, quietly; stops
+ * at a refusal */
+static void h_clears(void *cmd, struct vkr_image *img, uint32_t n, uint32_t levels)
+{
+   const VkClearColorValue color = { { 0, 0, 0, 1 } };
+   for (uint32_t i = 0; i < n && !ended(); i++) {
+      const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                              levels ? levels : VK_REMAINING_MIP_LEVELS, 0,
+                                              VK_REMAINING_ARRAY_LAYERS };
+      struct vn_command_vkCmdClearColorImage c = { .commandBuffer = (VkCommandBuffer)cmd, .image = (VkImage)img,
+                                                   .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .pColor = &color,
+                                                   .rangeCount = 1, .pRanges = &range };
+      D->dispatch_vkCmdClearColorImage(D, &c);
+   }
+   step("%u clears of %u levels recorded%s", n, levels, ended() ? " (the context ended)" : "");
+}
+
+static void h_passes(void *cmd, void *rp, void *fb, uint32_t n, bool rendering, void *v)
+{
+   for (uint32_t i = 0; i < n && !ended(); i++) {
+      if (rendering) {
+         VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                           .imageView = (VkImageView)v,
+                                           .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                           .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                           .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+         VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                                .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
+         struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderingInfo = &ri };
+         D->dispatch_vkCmdBeginRendering(D, &b);
+         if (ended())
+            break;
+         struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)cmd };
+         D->dispatch_vkCmdEndRendering(D, &e);
+      } else {
+         VkClearValue clear = { 0 };
+         VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                      .renderPass = (VkRenderPass)rp, .framebuffer = (VkFramebuffer)fb,
+                                      .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                      .pClearValues = &clear };
+         struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
+                                                      .contents = VK_SUBPASS_CONTENTS_INLINE };
+         D->dispatch_vkCmdBeginRenderPass(D, &b);
+         if (ended())
+            break;
+         struct vn_command_vkCmdEndRenderPass e = { .commandBuffer = (VkCommandBuffer)cmd };
+         D->dispatch_vkCmdEndRenderPass(D, &e);
+      }
+   }
+   step("%u %s recorded%s", n, rendering ? "renderings" : "render passes", ended() ? " (the context ended)" : "");
+}
+
+/* a real submit of the command buffers in one batch, and the driver's wait */
+static int h_submit(void **cmds, uint32_t n)
+{
+   struct vkr_queue *q = device_queue();
+   VkCommandBuffer hs[8];
+   for (uint32_t i = 0; i < n; i++)
+      hs[i] = (VkCommandBuffer)cmds[i];
+   VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = n, .pCommandBuffers = hs };
+   struct vn_command_vkQueueSubmit s = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &si };
+   step("vkQueueSubmit: one batch of %u command buffers", n);
+   D->dispatch_vkQueueSubmit(D, &s);
+   step("vkQueueSubmit = %d", s.ret);
+   if (ended())
+      return FATAL;
+   q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+   step("the queue is idle");
+   return s.ret == VK_SUCCESS ? WORKS : ERROR;
+}
+
+static bool h_prefill(void)
+{
+   return !kosmickrisp && getenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS");
+}
+
+/* Metal passes per command buffer and per MoltenVK batch (virgl-venus-encoder-cap.patch) */
+static int case_host_passes(const char *c)
+{
+   const bool tight = strstr(c, "-default") == NULL;
+   /* the default cap with room to charge it (a pass charges 184 KB); else a cap of 1024 */
+   if (tight)
+      h_env("1024", "1024", "1024");
+   else
+      h_env("8192", "4096", NULL);
+   setup(0);
+   const uint32_t cap = tight ? 1024 : 16384;
+   void *cmd = command_buffer();
+   begin(cmd);
+   if (IS("h-pass-clear-max-ok") || IS("h-pass-clear-over") || IS("h-pass-default-max-ok") ||
+       IS("h-pass-default-over") || IS("h-pass-default-past-metal")) {
+      const uint32_t n = IS("h-pass-default-past-metal") ? 100000 : strstr(c, "-over") ? cap + 1 : cap;
+      h_clears(cmd, image(64, 64, 1, CA_SA), n, 1);
+      return end(cmd);
+   }
+   if (IS("h-pass-levels-ok") || IS("h-pass-levels-over")) {
+      /* 15 levels (REMAINING): 68 x 15 = 1020, 69 x 15 = 1035 */
+      h_clears(cmd, h_image(16384, 1, 15, 1), IS("h-pass-levels-ok") ? 68 : 69, 0);
+      return end(cmd);
+   }
+   if (IS("h-pass-layers-ok")) {
+      /* one layered pass per clear: 1024 clears of 2048 layers */
+      h_clears(cmd, h_image(64, 64, 1, 2048), cap, 1);
+      return end(cmd);
+   }
+   if (IS("h-pass-render-passes-over") || IS("h-pass-renderings-over") || IS("h-pass-render-passes-ok")) {
+      void *rp = render_pass(1, 1, 0, 0);
+      void *v = view(image(64, 64, 1, CA_SA), 1);
+      void *fb = framebuffer(rp, &v, 1, 64, 64, 1);
+      if (!rp || !fb)
+         broken("pass");
+      h_passes(cmd, rp, fb, IS("h-pass-render-passes-ok") ? cap : cap + 1, IS("h-pass-renderings-over"), v);
+      return end(cmd);
+   }
+   if (IS("h-pass-blits-over")) {
+      struct vkr_image *a = image(64, 64, 1, CA_SA), *b = image(64, 64, 1, CA_SA);
+      const VkImageSubresourceLayers l = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+      const VkImageBlit r[2] = { { l, { { 0, 0, 0 }, { 64, 64, 1 } }, l, { { 0, 0, 0 }, { 32, 32, 1 } } },
+                                 { l, { { 0, 0, 0 }, { 64, 64, 1 } }, l, { { 0, 0, 0 }, { 16, 16, 1 } } } };
+      /* 512 blits of 2 regions fit, the 513th does not */
+      for (uint32_t i = 0; i < cap / 2 + 1 && !ended(); i++) {
+         struct vn_command_vkCmdBlitImage bl = { .commandBuffer = (VkCommandBuffer)cmd, .srcImage = (VkImage)a,
+                                                 .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL, .dstImage = (VkImage)b,
+                                                 .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 2,
+                                                 .pRegions = r, .filter = VK_FILTER_LINEAR };
+         D->dispatch_vkCmdBlitImage(D, &bl);
+      }
+      return end(cmd);
+   }
+   if (IS("h-pass-split-barriers")) {
+      /* by-region barriers inside one pass: KosmicKrisp splits a multisampled pass at each
+       * (counted on KosmicKrisp, which vkr cannot tell apart from a 1x pass); MoltenVK does
+       * not split */
+      expect(kosmickrisp);
+      void *rp = ms_pass();
+      void *v[2] = { ms_view(VK_SAMPLE_COUNT_4_BIT), ms_view(VK_SAMPLE_COUNT_1_BIT) };
+      void *fb = framebuffer(rp, v, 2, 64, 64, 1);
+      VkClearValue clear[2] = { 0 };
+      VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = (VkRenderPass)rp,
+                                   .framebuffer = (VkFramebuffer)fb, .renderArea = { { 0, 0 }, { 64, 64 } },
+                                   .clearValueCount = 2, .pClearValues = clear };
+      struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
+                                                   .contents = VK_SUBPASS_CONTENTS_INLINE };
+      D->dispatch_vkCmdBeginRenderPass(D, &b);
+      for (uint32_t i = 0; i < cap && !ended(); i++) {
+         VkMemoryBarrier2 mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                 .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                 .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT };
+         VkDependencyInfo dep = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                  .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT, .memoryBarrierCount = 1,
+                                  .pMemoryBarriers = &mb };
+         struct vn_command_vkCmdPipelineBarrier2 pb = { .commandBuffer = (VkCommandBuffer)cmd, .pDependencyInfo = &dep };
+         D->dispatch_vkCmdPipelineBarrier2(D, &pb);
+      }
+      end_pass(cmd);
+      return end(cmd);
+   }
+   if (IS("h-pass-secondary-ok") || IS("h-pass-secondary-over")) {
+      /* two secondaries of 500 clears (ok: 1000 in the primary) or 600 (1200) */
+      struct vkr_image *img = image(64, 64, 1, CA_SA);
+      VkCommandBuffer s[2];
+      for (int k = 0; k < 2; k++) {
+         void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+         if (begin_secondary(sec, NULL) != VK_SUCCESS)
+            broken("secondary begin");
+         h_clears(sec, img, IS("h-pass-secondary-ok") ? 500 : 600, 1);
+         const int r = end(sec);
+         if (r != WORKS)
+            return r;
+         s[k] = (VkCommandBuffer)sec;
+      }
+      struct vn_command_vkCmdExecuteCommands e = { .commandBuffer = (VkCommandBuffer)cmd, .commandBufferCount = 2,
+                                                   .pCommandBuffers = s };
+      step("vkCmdExecuteCommands of the two secondaries");
+      D->dispatch_vkCmdExecuteCommands(D, &e);
+      return end(cmd);
+   }
+   if (IS("h-pass-batch-ok") || IS("h-pass-batch-over")) {
+      /* a real submit: one batch of 2 x 1000 (ok: 2000 <= 2 x 1024) or 3 x 700 (2100) clears;
+       * MoltenVK encodes a batch into one Metal command buffer, KosmicKrisp has one each */
+      const bool over = IS("h-pass-batch-over");
+      if (h_prefill())
+         return SKIP;
+      expect(over && !kosmickrisp);
+      struct vkr_image *img = image(64, 64, 1, CA_SA);
+      void *cmds[3] = { cmd, command_buffer(), command_buffer() };
+      const uint32_t n = over ? 3 : 2;
+      for (uint32_t i = 0; i < n; i++) {
+         if (i)
+            begin(cmds[i]);
+         h_clears(cmds[i], img, over ? 700 : 1000, 1);
+         const int r = end(cmds[i]);
+         if (r != WORKS)
+            return r;
+      }
+      return h_submit(cmds, n);
+   }
+   return BROKEN;
+}
+
+static int case_host(const char *c)
+{
+   return !strncmp(c, "h-pass-", 7) ? case_host_passes(c) : BROKEN;
+}
+
 struct test_case {
    const char *name;
    int expect;
@@ -6584,6 +6829,17 @@ static const struct test_case cases[] = {
    { "u-ib-null-m6-ok", E_WORKS }, { "u-ib-unset-m6-ok", E_WORKS }, { "u-ib-unset-m6-indirect-ok", E_WORKS },
    { "u-ib-unset-m6-indirect-count-ok", E_WORKS }, { "u-ib-unset-m6-multi-ok", E_WORKS }, { "u-ib-bound-ok", E_WORKS },
    { "u-set-execute-kept", E_WORKS }, { "u-pc-unset-kept", E_WORKS }, { "u-vb-unset-kept", E_WORKS },
+   /* Metal passes (virgl-venus-encoder-cap.patch) */
+   { "h-pass-clear-max-ok", E_WORKS }, { "h-pass-clear-over", E_REFUSE, "Metal passes" },
+   { "h-pass-default-max-ok", E_WORKS }, { "h-pass-default-over", E_REFUSE, "Metal passes" },
+   { "h-pass-default-past-metal", E_REFUSE, "Metal passes" },
+   { "h-pass-levels-ok", E_WORKS }, { "h-pass-levels-over", E_REFUSE, "Metal passes" },
+   { "h-pass-layers-ok", E_WORKS }, { "h-pass-render-passes-ok", E_WORKS },
+   { "h-pass-render-passes-over", E_REFUSE, "Metal passes" }, { "h-pass-renderings-over", E_REFUSE, "Metal passes" },
+   { "h-pass-blits-over", E_REFUSE, "Metal passes" }, { "h-pass-split-barriers", E_CHILD },
+   { "h-pass-secondary-ok", E_WORKS }, { "h-pass-secondary-over", E_REFUSE, "Metal passes" },
+   { "h-pass-batch-ok", E_WORKS }, { "h-pass-batch-over", E_CHILD },
+
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -6614,6 +6870,7 @@ static int run_case(const char *c)
    case 'm': return case_memory(c);
    case 't': return case_threads(c);
    case 'u': return case_unset(c);
+   case 'h': return case_host(c);
    default: return BROKEN;
    }
 }
