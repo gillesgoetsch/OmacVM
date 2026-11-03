@@ -935,9 +935,13 @@ So vkr now (`virgl-venus-alias-memory.patch`):
   memory, its destroy is deferred and the hold moves to B's record, so M goes
   after that deferred destroy too. The order is always B, then M, then A.
 - refuses a second bind of such an image (VUID
-  `VkBindImageMemoryInfo-image-07460`) and one image twice in one
-  `vkBindImageMemory2` (`vkBindImageMemory2-pBindInfos-04006`), so a hold is
-  never lost.
+  `VkBindImageMemoryInfo-image-07460`), so a hold is never lost. In one
+  `vkBindImageMemory2` it refuses an image named again only when the later bind
+  is such a bind (`vkBindImageMemory2-pBindInfos-04006`). Such a bind followed
+  by a plain bind of the same image in the same call still reaches the driver:
+  invalid in Vulkan, but the image takes its one hold on the memory either way,
+  so no hold is lost; no crash with it (v624-swap). (Wording corrected after
+  3.2.20: it said one image twice in one call was refused.)
 - frees all memory through one helper (`vkr_device_memory_free`): the guest's
   `vkFreeMemory`, the device's teardown and a zombie's last holder. In the
   teardown zombies go after images (rank: command buffers, views, images,
