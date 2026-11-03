@@ -59,6 +59,11 @@ in more words.
   program closed the swapchain before the image. Now QEMU keeps the swapchain's memory until the image is
   gone, on both drivers. On KosmicKrisp, an image unlike the swapchain's on that memory is now refused (Vulkan
   does not allow it). Needs the app update.
+- **A Vulkan program can now make an image that aliases one plane of a YCbCr video image on MoltenVK
+  (OmacVM.app, #697, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU refused such an image (one-plane
+  format with DISJOINT and ALIAS, which Vulkan allows) because MoltenVK's format check says no to it, while
+  MoltenVK makes it fine. Now QEMU asks MoltenVK about the same image without DISJOINT, which changes nothing
+  for one plane, and tells the program the same answer. KosmicKrisp is not changed. Needs the app update.
 
 ## 3.2.19
 

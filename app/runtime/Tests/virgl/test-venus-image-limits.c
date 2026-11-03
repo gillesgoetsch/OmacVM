@@ -46,9 +46,10 @@ extern char **environ;
 enum { WORKS = 10, REFUSED = 11, FATAL = 12, SKIP = 13, BROKEN = 2 };
 /* what a case must see */
 enum { E_WORKS, E_REFUSED, E_FATAL, E_NOT_WORKS, E_REFUSED_KK, E_WORKS_OR_SKIP, E_FATAL_OR_SKIP,
-       E_REFUSED_OR_SKIP };
-/* the _OR_SKIP ones may skip on MoltenVK only (it makes no DISJOINT one-plane image), never on
- * KosmicKrisp: a skip there fails the case */
+       E_REFUSED_OR_SKIP, E_WORKS_MVK };
+/* the _OR_SKIP ones (a DISJOINT two-plane image) may skip on MoltenVK only, never on
+ * KosmicKrisp: a skip there fails the case. E_WORKS_MVK: works on MoltenVK; on KosmicKrisp,
+ * which has no such format, refused everywhere (not one call alone). */
 
 static struct vkr_context *ctx;
 static struct vn_dispatch_context *D;
@@ -493,18 +494,26 @@ static int view_case(VkImageCreateInfo info, VkImageViewType type, VkFormat form
 #define COLOR(base_level, levels, base_layer, layers)                                       \
    ((VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, base_level, levels, base_layer, layers })
 
-/* whether the driver itself makes this description (its own format query, the answer printed):
- * the plane cases skip only when it does not */
+/* vkGetPhysicalDeviceImageFormatProperties2 through vkr, as the guest asks it */
+static VkResult guest_query2(VkFormat format, VkImageCreateFlags flags, VkImageUsageFlags usage)
+{
+   VkPhysicalDeviceImageFormatInfo2 q = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = format,
+      .type = VK_IMAGE_TYPE_2D, .tiling = OPT, .usage = usage, .flags = flags };
+   VkImageFormatProperties2 p = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
+   struct vn_command_vkGetPhysicalDeviceImageFormatProperties2 a = {
+      .physicalDevice = (VkPhysicalDevice)pdev, .pImageFormatInfo = &q, .pImageFormatProperties = &p };
+   D->dispatch_vkGetPhysicalDeviceImageFormatProperties2(D, &a);
+   return a.ret;
+}
+
+/* whether the guest is told this description is made (vkr's own format query, as dEQP's
+ * checks ask it; the answer printed): the plane cases skip only when it is not */
 static bool driver_makes(const VkImageCreateInfo *info)
 {
-   const VkPhysicalDeviceImageFormatInfo2 q = {
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = info->format,
-      .type = info->imageType, .tiling = info->tiling, .usage = info->usage, .flags = info->flags };
-   VkImageFormatProperties2 p = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
-   const VkResult r = pdev->proc_table.GetPhysicalDeviceImageFormatProperties2(
-      pdev->base.handle.physical_device, &q, &p);
-   printf("driver's format query: format %d flags 0x%x usage 0x%x = %d%s\n", info->format,
-          info->flags, info->usage, r, r == VK_SUCCESS ? "" : " (skip: the driver does not make it)");
+   const VkResult r = guest_query2(info->format, info->flags, info->usage);
+   printf("format query through vkr: format %d flags 0x%x usage 0x%x = %d%s\n", info->format,
+          info->flags, info->usage, r, r == VK_SUCCESS ? "" : " (skip: the guest is told no)");
    return r == VK_SUCCESS;
 }
 
@@ -629,6 +638,34 @@ static int alias_case(uint32_t plane, VkImageAspectFlags aspect, bool v1)
    if (ret != VK_SUCCESS)
       return BROKEN;
    return make_view(alias, VK_IMAGE_VIEW_TYPE_2D, format, COLOR(0, 1, 0, 1));
+}
+
+/* VUID-VkImageCreateInfo-imageCreateMaxMipLevels-02251: an image is made with values a
+ * format query said yes to. What the guest is told (vkr's query, versions 1 and 2) and what
+ * vkCreateImage does must agree for OPTIMAL 64x64 SAMPLED|TRANSFER_DST in FORMAT with FLAGS:
+ * works when all three say yes, refused when all three say no (dEQP: NotSupported), broken
+ * when they differ (the guest makes what it was told it may and is refused, #624). */
+static int agree_case(VkFormat format, VkImageCreateFlags flags)
+{
+   const VkImageUsageFlags usage = S | TD;
+   const VkResult q2 = guest_query2(format, flags, usage);
+   VkImageFormatProperties p1 = { 0 };
+   struct vn_command_vkGetPhysicalDeviceImageFormatProperties a = {
+      .physicalDevice = (VkPhysicalDevice)pdev, .format = format, .type = VK_IMAGE_TYPE_2D,
+      .tiling = OPT, .usage = usage, .flags = flags, .pImageFormatProperties = &p1 };
+   D->dispatch_vkGetPhysicalDeviceImageFormatProperties(D, &a);
+   VkImageCreateInfo info = image_info(format, OPT, usage);
+   info.flags = flags;
+   VkResult c;
+   const struct vkr_image *image = create_image(&info, &c);
+   printf("format %d flags 0x%x: query2 %d, query %d (max levels %u), vkCreateImage %d\n", format,
+          flags, q2, a.ret, p1.maxMipLevels, c);
+   if (vkr_context_get_fatal(ctx))
+      return FATAL;
+   if (q2 == VK_SUCCESS && a.ret == VK_SUCCESS && image)
+      return WORKS;
+   const VkResult no = VK_ERROR_FORMAT_NOT_SUPPORTED;
+   return q2 == no && a.ret == no && c == no ? REFUSED : BROKEN;
 }
 
 static VkImageCreateInfo with(VkImageCreateInfo info, VkImageCreateFlags flags, uint32_t layers,
@@ -904,11 +941,25 @@ static const struct test_case cases[] = {
    /* DISJOINT planes and one-plane DISJOINT|ALIAS images on them (dEQP's
     * ycbcr.plane_view.memory_alias, #624) */
    { "bind-disjoint-planes-ok", E_WORKS_OR_SKIP },
-   { "bind-alias-plane0-ok", E_WORKS_OR_SKIP },
-   { "bind-alias-plane1-ok", E_WORKS_OR_SKIP },
-   { "bind-alias-no-plane", E_WORKS_OR_SKIP },
-   { "bind-alias-v1", E_WORKS_OR_SKIP },
-   { "bind-alias-plane1-aspect", E_FATAL_OR_SKIP },
+   { "bind-alias-plane0-ok", E_WORKS },
+   { "bind-alias-plane1-ok", E_WORKS },
+   { "bind-alias-no-plane", E_WORKS },
+   { "bind-alias-v1", E_WORKS },
+   { "bind-alias-plane1-aspect", E_FATAL },
+   /* the guest is told what vkCreateImage does (VUID 02251): MUTABLE|ALIAS|DISJOINT on
+    * one-plane formats (VUID 01577; MoltenVK's query says no to DISJOINT there, its create
+    * makes it, virgl-venus-disjoint-alias-format.patch), DISJOINT without ALIAS (not legal
+    * on one plane) and a DISJOINT two-plane image */
+   { "agree-alias-r8", E_WORKS },
+   { "agree-alias-r8-uint", E_WORKS },
+   { "agree-alias-r16", E_WORKS },
+   { "agree-alias-r8g8", E_WORKS },
+   { "agree-alias-r32-uint", E_WORKS },
+   { "agree-alias-r10x6", E_WORKS_MVK },
+   { "agree-alias-r12x4", E_WORKS_MVK },
+   { "agree-disjoint-r8", E_REFUSED },
+   { "agree-planar", E_WORKS },
+   { "devreq-alias", E_WORKS },
    /* layouts and requirements of a subresource */
    { "layout-plane1", E_REFUSED },
    { "layout-plane2", E_REFUSED },
@@ -1151,6 +1202,31 @@ static int run_case(const char *name)
       return alias_case(0, 0, true);
    if (IS("bind-alias-plane1-aspect"))
       return alias_case(0, VK_IMAGE_ASPECT_PLANE_1_BIT, false);
+   const VkImageCreateFlags MA = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_ALIAS_BIT;
+   const VkImageCreateFlags DJ = VK_IMAGE_CREATE_DISJOINT_BIT;
+   if (IS("agree-alias-r8"))
+      return agree_case(VK_FORMAT_R8_UNORM, MA | DJ);
+   if (IS("agree-alias-r8-uint"))
+      return agree_case(VK_FORMAT_R8_UINT, MA | DJ);
+   if (IS("agree-alias-r16"))
+      return agree_case(VK_FORMAT_R16_UNORM, MA | DJ);
+   if (IS("agree-alias-r8g8"))
+      return agree_case(VK_FORMAT_R8G8_UNORM, MA | DJ);
+   if (IS("agree-alias-r32-uint"))
+      return agree_case(VK_FORMAT_R32_UINT, MA | DJ);
+   if (IS("agree-alias-r10x6"))
+      return agree_case(VK_FORMAT_R10X6_UNORM_PACK16, MA | DJ);
+   if (IS("agree-alias-r12x4"))
+      return agree_case(VK_FORMAT_R12X4_UNORM_PACK16, MA | DJ);
+   if (IS("agree-disjoint-r8"))
+      return agree_case(VK_FORMAT_R8_UNORM, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | DJ);
+   if (IS("agree-planar"))
+      return agree_case(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, MA | DJ);
+   if (IS("devreq-alias")) {
+      info = image_info(VK_FORMAT_R8_UNORM, OPT, S | TD);
+      info.flags = MA | DJ;
+      return devreq_case(info);
+   }
    if (!strncmp(name, "bind-", 5) && !IS("bind-disjoint-no-plane"))
       return bind_case(name + 5);
    if (IS("bind-disjoint-no-plane"))
@@ -1421,6 +1497,7 @@ int main(int argc, char **argv)
       case E_WORKS_OR_SKIP: ok = got == WORKS || (!kk && got == SKIP); break;
       case E_FATAL_OR_SKIP: ok = got == FATAL || (!kk && got == SKIP); break;
       case E_REFUSED_OR_SKIP: ok = got == REFUSED || (!kk && got == SKIP); break;
+      case E_WORKS_MVK: ok = got == WORKS || (kk && got == REFUSED); break;
       default: /* E_REFUSED_KK */
          ok = kk ? got == REFUSED : (got == REFUSED || got == WORKS || got == FATAL);
          break;

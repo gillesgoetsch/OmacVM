@@ -967,3 +967,70 @@ a guest program that binds an image with `VkBindImageMemorySwapchainInfoKHR`
 beside vkcube in three orders (the image first, the swapchain first, the
 process ending with the image alive): all three work on both drivers, with 0
 refusal lines.
+
+## The image that aliases a YCbCr plane on MoltenVK (amendment, 3.2.20)
+
+Lane `v624-aliasfmt` (#624, after #696). Found by owed-m4 on the M4: 349 of the
+400 `dEQP-VK.ycbcr.plane_view.memory_alias.*_fragment` cases failed on MoltenVK
+with `VK_ERROR_FORMAT_NOT_SUPPORTED` at `vkCreateImage` (3.2.18, 3.2.19, #693).
+qemu.log: `the driver has no format 9 ... flags 0x608`.
+
+Each case makes a disjoint multi-planar image, then an image of a one-plane
+format at one plane's extent with the same flags, `MUTABLE | ALIAS | DISJOINT`
+(0x608), and binds it with `PLANE_0` to that plane's memory. That is legal:
+VUID `VkImageCreateInfo-format-01577` allows `DISJOINT` on a format that is not
+multi-planar when `ALIAS` is set. dEQP asks the format query only for the
+multi-planar format; VUID `VkImageCreateInfo-imageCreateMaxMipLevels-02251`
+wants one for the alias too, so strictly dEQP skips a query, but it is not the
+one that was wrong.
+
+MoltenVK 1.4.2's format query refuses `DISJOINT` on every format that is not
+multi-planar and does not look at `ALIAS` (`MVKDevice.mm:1578`). Its
+`vkCreateImage` makes the image with one memory binding, as without `DISJOINT`
+(`MVKImage.mm:1261`). vkr's create check asks the driver's query with exactly
+the guest's flags, so it refused what MoltenVK makes.
+
+Driver probe on the M4, straight to the 3.2.19 app's drivers, no vkr, all 400
+cases per run (raw in work/v624-aliasfmt/probe/out):
+
+- MoltenVK, 3 runs, 3 under libgmalloc, 1 with Metal validation: 0 crashes, 0
+  validation errors, every run the same. The query says no to 0x608 for all
+  400, yes to 0x408 for 388 (no for 12: R4G4, which MoltenVK has not). It makes
+  all 388 with 0x608; their memory requirements equal a 0x408 image's, also
+  asked with `PLANE_0`. In the 349 cases dEQP runs, bytes copied into the alias
+  come out of the multi-planar image's plane unchanged, as with a 0x408 alias.
+- MoltenVK ends the process (Metal: invalid pixel format) when asked to make
+  the R4G4 image its query refused. So the second question must stay a real
+  question.
+- KosmicKrisp, 3 runs and 3 under libgmalloc: it answers 0x608 as 0x408 in 400
+  of 400 (296 yes with the same limits, 104 no), and 128 cases bind and copy.
+
+So vkr now (`virgl-venus-disjoint-alias-format.patch`) asks the driver once more
+without `DISJOINT` when it said `FORMAT_NOT_SUPPORTED` to a one-plane format
+(one that vkr's table knows) with `DISJOINT | ALIAS`. That answer counts in
+`vkr_image_info_ok` (vkCreateImage and the three `vkGetDeviceImage*` queries)
+and in what the guest is told by `vkGetPhysicalDeviceImageFormatProperties` and
+`...2` (a copy of the guest's info, its chain kept). The create info goes to the
+driver as the guest sent it. A driver that answers these flags itself keeps its
+answer, so KosmicKrisp is not changed. One-plane `DISJOINT` without `ALIAS` (not
+legal) and multi-planar `DISJOINT` are not changed. The refusal line names the
+flags asked too.
+
+Tests, on the M4 with the 3.2.19 app's drivers:
+
+- `test-venus-image-limits.c`: the `bind-alias-*` cases asked MoltenVK directly
+  and so always skipped there; they now ask vkr's query, as the guest does, and
+  must work (or end the context) on both drivers. New `agree-*` cases check
+  that the guest's query (versions 1 and 2) and `vkCreateImage` agree (02251)
+  for R8, R8_UINT, R16, R8G8, R32_UINT, R10X6 and R12X4 with 0x608, R8 with
+  0x208 (refused on both) and a two-plane 0x608 image; `devreq-alias` covers
+  `vkGetDeviceImageMemoryRequirements`.
+- Before (virgl-only build of #696, 383437be), MoltenVK: 12 cases fail (4
+  bind-alias, 7 agree-alias, devreq-alias); KosmicKrisp: 124 of 124. After:
+  124 of 124 on both, 3 runs, and the 10 plane-bind cases under libgmalloc.
+- The test app built from source (3f3efaa1): 0 FAIL lines; `run-venus-limits.py`
+  all ok (the image file 124 on both drivers).
+- dEQP-VK in a hidden clone (guest 3.2.19), the 2880-case subset and all 800
+  `memory_alias` cases, against owed-m4's #693 rows case by case: KosmicKrisp 0
+  cases differ; MoltenVK 349 `memory_alias` cases Fail -> Pass (3 of them in the
+  subset), 0 new failures, 11 refusal lines -> 0, 0 GPU faults.
