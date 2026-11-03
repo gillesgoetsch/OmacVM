@@ -1740,6 +1740,7 @@ grep -q 'if (check == VKR_VIEW_EMPTY) {' "$virgl_source/src/venus/vkr_buffer.c" 
 # since the begin is refused: MoltenVK reads the NULL slot when it encodes (#624).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-unset-state.patch"
 grep -q 'vkr_cmd_used_sets_ok(dispatch, st, VKR_CMD_GRAPHICS, call);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q '!vkr_cmd_index_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'vkr_pipeline_set_used_sets(init ? &arr : NULL, used);' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_command_buffer.c, vkr_pipeline.c: a draw with a set or index buffer never bound gets past vkr (unset-state patch)"
 # An app's image bound to a swapchain's memory (an ALIAS_BIT image with the swapchain image's
