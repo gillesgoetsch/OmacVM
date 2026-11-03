@@ -1701,6 +1701,13 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-secondary-ho
 grep -q 'vkr_command_pool_destroy(ctx, pool->device, pool, true);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'if (vkr_device_object_held(ctx, &obj->base, true)) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
   die "vkr_command_buffer.c, vkr_device_object.py: primaries do not hold their secondaries (secondary-holds patch)"
+# A structure type twice in a chain vkr checks is refused: vkr reads the first, the drivers the
+# last (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-chain-repeats.patch"
+grep -q 'vkr_chain_repeat(const void \*chain)' "$virgl_source/src/venus/vkr_common.h" && \
+  grep -q '"VkRenderPassCreateInfo", why, why_size)' "$virgl_source/src/venus/vkr_render_pass.c" && \
+  grep -q '"VkRenderPassBeginInfo"))' "$virgl_source/src/venus/vkr_render_pass.c" || \
+  die "vkr_common.h, vkr_render_pass.c: a structure type twice in a chain gets past vkr (chain-repeats patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
