@@ -1342,7 +1342,9 @@ int main(void) {
     keys = spaceKeys = 0;
     for (int i = 0; i < 50 && world[0].cur == 102; i++) settleSteps();
     check(spaceKeys == 1 && world[0].cur == 101, "swipe out: a real connection: \"X left\" in two pieces after a too long line: out");
-    closeClient(rp[0]); clients[0].fd = save0;
+    // Closed and the slot given back under sendLock, as the helper does: else
+    // the reader can see the close first and drop the slot's client (CI, 3x).
+    pthread_mutex_lock(&sendLock); closeClient(rp[0]); clients[0].fd = save0; pthread_mutex_unlock(&sendLock);
     for (int i = 0; i < 100 && !ra.done; i++) usleep(20000);
     check(ra.done, "swipe out: closing the client ends its reader");
     pthread_join(th, NULL); close(rp[1]);

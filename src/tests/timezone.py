@@ -87,7 +87,14 @@ def stream(*zones, other=True):
 def run(*zones, other=True):
     stream(*zones, other=other)
     f = tz.Follower()
-    tz.from_bridge(f)
+    # These rows are about the zones, not the 45 s silence cut (held() below
+    # tests it): they wait for the stand-in client's end, however late a busy
+    # Mac starts the fresh script (CI 10-31: 46 s, cut off with nothing read).
+    silence, tz.SILENCE_SECONDS = tz.SILENCE_SECONDS, 3600
+    try:
+        tz.from_bridge(f)
+    finally:
+        tz.SILENCE_SECONDS = silence
     return f
 
 
