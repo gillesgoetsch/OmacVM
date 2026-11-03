@@ -1779,8 +1779,8 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
 - **3.2.20:** a shader that writes its clip distances in a loop (a control shader copying
   `gl_ClipDistance[i]` in a `for` loop, also a vertex, geometry or evaluation shader) was refused
   ("Swizzle of non-vector primitive float" in qemu.log after "the host refused a shader") and
-  its draws were skipped; 3.2.20 compiles it. Distances 4..7 written in a loop still draw nothing
-  on the M1 Max and M4 GPUs: the Mac's GPU draws nothing when a vertex shader writes
+  its draws were skipped; 3.2.20 compiles it. With a control shader, distances 4..7 written in a
+  loop still draw nothing on the M1 Max and M4 GPUs (without one they draw): the Mac's GPU draws nothing when a vertex shader writes
   `gl_ClipDistance[4..7]` into a control shader, and in a looped control shader the VM's Mesa
   copies only 0..3 back (both open in #692; the Mesa part goes into OmacVM's own guest Mesa patches,
   `src/app/guest/mesa/`). With more than 4, write one statement per distance: the VM's Mesa then
