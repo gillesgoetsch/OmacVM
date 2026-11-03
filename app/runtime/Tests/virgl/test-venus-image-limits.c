@@ -949,6 +949,7 @@ static const struct test_case cases[] = {
    { "tview-ok", E_WORKS },
    { "tview-min-offset", E_WORKS },
    { "tview-whole", E_WORKS },
+   { "tview-empty", E_FATAL },
    /* samplers */
    { "sampler-bad-filter", E_FATAL },
    { "sampler-bad-address", E_FATAL },
@@ -1248,6 +1249,10 @@ static int run_case(const char *name)
       return texel_case(UT, 65536, RGBA, props.limits.minTexelBufferOffsetAlignment, 256);
    if (IS("tview-whole"))
       return texel_case(UT, 65538, RGBA, 0, VK_WHOLE_SIZE);
+   /* the whole size with less than one texel after the offset: LEGAL, but this device has no
+    * nullDescriptor, so vkr has no stand-in for it (virgl-venus-ignored-values.patch) */
+   if (IS("tview-empty"))
+      return texel_case(UT, 65536 + 8, VK_FORMAT_R32G32B32A32_SFLOAT, 65536, VK_WHOLE_SIZE);
    if (IS("sampler-bad-filter")) {
       si.magFilter = 7;
       return sampler_case(si);

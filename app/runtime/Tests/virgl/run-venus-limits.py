@@ -125,7 +125,11 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
                  "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok "
                  # a structure type twice in a chain (virgl-venus-chain-repeats.patch)
-                 "r-repeat-multiview-short r-repeat-attachment-begin r-repeat-begin-two-types-ok")
+                 "r-repeat-multiview-short r-repeat-attachment-begin r-repeat-begin-two-types-ok "
+                 # a view without a driver view, blend states the drivers read past
+                 # (virgl-venus-ignored-values.patch)
+                 "d-texel-empty-nd d-texel-empty-teardown p-gfx-vstride-dynamic p-gfx-blend-null-dyn "
+                 "p-gfx-blend-more-dyn")
 # test-venus-image-limits under libgmalloc: plane binds, where a driver reads a plane's memory
 # slot by the guest's plane aspect
 image_gmalloc_cases = ("bind-plane-info bind-disjoint-no-plane bind-disjoint-planes-ok "
