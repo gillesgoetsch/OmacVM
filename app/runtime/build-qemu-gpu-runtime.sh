@@ -1549,6 +1549,14 @@ grep -q 'static int tcs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_sour
   grep -q 'if (gl_in && tes_clip_varyings(ctx)) {' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q 'key->tess_clip_in = type == PIPE_SHADER_TESS_EVAL' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c: tessellation shaders still pass clip distances in gl_out[]/gl_in[] on the Mac (tess-clip-varyings patch)"
+# OmacVM: ... and so does a vertex shader before an evaluation shader without a control
+# shader (omacvm_clip0): gl_ClipDistance in its gl_PerVertex block failed the same way and
+# the draws drew nothing on the M1 Max's GPU (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-vs-tes-clip-varyings.patch"
+grep -q 'static int vs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d.%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q '(prev->type == PIPE_SHADER_VERTEX && !key->tcs_present)) &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: a vertex shader still passes clip distances to an evaluation shader in gl_PerVertex on the Mac (vs-tes-clip-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.

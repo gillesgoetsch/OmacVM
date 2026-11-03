@@ -184,6 +184,13 @@ commit 82927e9. Changes here:
   shader compiler crashed (#589). Kept as before with cull distances or when the
   varyings would not fit. Checked by `Tests/virgl/test-core-glsl-shaders.c` and
   `Tests/virgl/test-whole-program-shapes.c`
+- `patches/virgl-shader-vs-tes-clip-varyings.patch`: the same for a vertex shader
+  whose clip distances go straight to an evaluation shader (no control shader):
+  it writes `omacvm_clip0` (`omacvm_clip1`, no location) instead of
+  `gl_ClipDistance` in its `gl_PerVertex` block, which Apple's Metal pipeline
+  build failed on as well: on the M1 Max those draws ran on its CPU vertex path
+  and drew nothing (#589). Checked by `Tests/virgl/test-core-glsl-shaders.c` and
+  `Tests/virgl/test-whole-program-shapes.c`
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
   the guest through a status buffer the guest's Mesa names
   (`src/app/guest/mesa/`), and the log says so once
