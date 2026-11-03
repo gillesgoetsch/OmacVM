@@ -13,16 +13,17 @@ with a control shader, not with cull distances, nor when the varyings would not 
 keep their GLSL.
 Why: Apple's GL on Metal builds no pipeline for such a draw either ("Fallback to SW vertex
 processing because buildPipelineState failed"): on the M1 Max (macOS 27) it ran on Apple's
-CPU vertex path, drew nothing, took 250-261 ms for the first draw, and Metal's shader
-compiler crashed for the separable shape. The same values as plain varyings build on the
-GPU and draw the right pixels. Apple's software renderer has no such failure.
+CPU vertex path: all 6 such programs of the shapes test drew nothing, the first draw took
+260-284 ms, and Metal's shader compiler crashed for one of them. The same values as plain
+varyings build on the GPU and draw the pixels of Apple's software renderer (first draw
+4-128 ms). Apple's software renderer has no such failure.
 Upstream: not sent (a workaround for Apple's GL).
 Test: Tests/virgl/test-core-glsl-shaders.c: the GLSL of a vertex shader with clip distances
 before an evaluation shader without a control shader on the Mac's config (whole and
 separable, 1 and 8 distances) has no gl_ClipDistance and compiles on the Mac's GL; with a
 control shader, as the last stage, with cull distances or on GLES it keeps its text.
-Tests/virgl/test-whole-program-shapes.c C17, C18 and C21-C24 draw the same (the only test
-of the key change in vrend_renderer.c).
+Tests/virgl/test-whole-program-shapes.c C17, C18 and C21-C24 draw the same; C23/C24 (8
+distances) are the only rows that fail without the key change in vrend_renderer.c.
 
 --- a/src/vrend/vrend_renderer.c
 +++ b/src/vrend/vrend_renderer.c
