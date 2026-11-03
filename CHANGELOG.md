@@ -9,6 +9,10 @@ in more words.
   Enter on a row or U for updates, at the moment the control centre redrew with the Mac's latest
   answer, could end it with "No nodes match '#body'". That screen now draws itself once it is ready.
 
+- **omacvm check names the right cause when Ghostty draws on the CPU after a lost GPU context (#675).**
+  Its Ghostty line said "a Vulkan app's GPU context was lost", but only Ghostty's own lost context
+  keeps the next Ghostty off the Mac's GPU; it now says so.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns
