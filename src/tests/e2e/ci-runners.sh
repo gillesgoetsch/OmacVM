@@ -49,7 +49,8 @@ runners() {   # LABEL<TAB>PLIST<TAB>FOLDER per runner
   done
 }
 loaded() { launchctl print "$DOMAIN/$1" >/dev/null 2>&1; }
-busy() { [[ -n $1 ]] && LC_ALL=C pgrep -f "$1/bin/Runner.Worker" >/dev/null 2>&1; }
+# A runner that updated itself runs its Worker from bin.<version>/ (2.338.2 on 2026-11-03), not bin/.
+busy() { [[ -n $1 ]] && LC_ALL=C pgrep -f "$1/bin(\.[0-9.]+)?/Runner\.Worker" >/dev/null 2>&1; }
 stopped() { cat "$STATE/stopped" 2>/dev/null; }
 # A holder is its pid and its start time (a pid used again by another process is not the holder).
 started() { ps -o lstart= -p "$1" 2>/dev/null; }
