@@ -39,7 +39,7 @@
  *        loop its Mesa never copies distances 4..7 back to their output (virgl_tgsi.c): those
  *        rows print their colour as info and check only that no shader was refused; the loop
  *        with both halves copied back checks them;
- *  E    a whole program with a varying array into a geometry shader, and one whose
+ *  E     a whole program with a varying array into a geometry shader, and one whose
  *        tessellation evaluation shader reads its patch varyings as an array (both dynamically
  *        indexed: GL_ARB_arrays_of_arrays only where the GL has it,
  *        virgl-shader-arrays-of-arrays.patch), and the controls: single varyings into the
