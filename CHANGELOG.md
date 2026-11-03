@@ -48,6 +48,11 @@ in more words.
   KosmicKrisp) now works as an empty view, and a pipeline's vertex stride is no longer checked when
   the program sets it at draw time. Refused buffer values in QEMU's log now say "no buffer" and "the
   whole size" instead of 18446744073709551615. Needs the app update.
+- **A Vulkan program that draws with a descriptor set or index buffer it never bound can no longer end
+  the VM (OmacVM.app, #693, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU crashed when it sent
+  such a draw (not allowed in Vulkan) to the Mac's GPU. Now only that program's Vulkan connection ends.
+  An indexed draw without an index buffer still works where the program turned on maintenance6, which
+  allows it. Needs the app update.
 
 ## 3.2.19
 

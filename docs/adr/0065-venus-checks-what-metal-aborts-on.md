@@ -818,3 +818,78 @@ listed cases as expected in every mode, no crash report. The whole file
 (`run-venus-limits.py`) on this build: 394 cases on KosmicKrisp (4 skipped),
 MoltenVK (19) and with prefill (27), 60 under libgmalloc on both, the image file
 114 on both, no GPU restart.
+
+## State a draw or dispatch never set (amendment, 3.2.20)
+
+Lane `v624-unset` (#624, after #690). MoltenVK reads some bound state only when it
+encodes a command buffer: at `vkQueueSubmit` in QEMU, or at `vkEndCommandBuffer`
+with prefill. First every unset case went straight to both drivers on the M1 Max
+(Apple7), with no vkr and robust buffer access on: 3 runs each on KosmicKrisp,
+MoltenVK and MoltenVK with prefill, each also under libgmalloc, 900 runs, 0 GPU
+restarts (raw in work/v624-unset/out).
+
+- A set the bound shaders use that was never bound: MoltenVK SIGSEGV in
+  `bindMetalResources` (<- `prepareDraw` / `prepareComputeDispatch`, a NULL set
+  slot). That happened at 18 of 18 plain submits (graphics set 0, graphics set 1
+  with only set 0 bound, compute set 0). With prefill it crashed at the end or the
+  submit, depending on the heap.
+- An indexed draw without an index buffer: MoltenVK SIGSEGV in
+  `drawIndexedPrimitives` (<- `MVKCmdDrawIndexed::encode`, a nil Metal buffer). That
+  happened at 6 of 6 plain submits and 6 of 6 prefill ends. A NULL index buffer
+  bound with maintenance6 works in all four MoltenVK modes.
+- KosmicKrisp crashed in none. No driver crashed on these: a set bound with
+  another layout, descriptors never written, push constants never set (with and
+  without maintenance4), vertex buffers never bound.
+
+So vkr now keeps, per command buffer, the sets bound at each bind point since
+`vkBeginCommandBuffer` and whether an index buffer was bound
+(`virgl-venus-unset-state.patch`):
+
+- Each graphics and compute pipeline gets the sets its shaders use. These come
+  from the SPIR-V scan's walk over the functions an entry point reaches, collected
+  in the layout check `vkr_stage_shader_ok` already makes. A variable only listed
+  in a SPIR-V 1.4 interface does not count, so vkr counts fewer sets than Vulkan's
+  static use and refuses less, never more. A pipeline without a layout, with
+  libraries or with descriptor buffers is not checked. There is one mask per
+  create info, set on the pipeline objects before the driver's call, so a partial
+  failure keeps each its own.
+- A draw or dispatch is refused when the bound pipeline uses a set to which
+  nothing was bound at that point since the begin (`VUID-vkCmdDraw-None-08600`,
+  the same for every draw and dispatch).
+- An indexed draw (`vkCmdDrawIndexed`, `-IndexedIndirect`, `-IndexedIndirectCount`,
+  `vkCmdDrawMultiIndexedEXT`) is refused without an index buffer unless the guest
+  turned maintenance6 on (`-None-07312`). With maintenance6 that draw is legal, so
+  vkr binds the NULL index buffer for it, once per recording, after every check.
+- The `*2` binds count by their stages: the compute stage binds at the compute
+  point, any graphics, task or mesh stage at the graphics point.
+- A secondary starts with nothing bound (it inherits no state).
+  `vkCmdExecuteCommands` leaves the primary's state as it was. Vulkan makes all of
+  the primary's state undefined there, so keeping it refuses nothing an app may do.
+- The cost per draw is two 32-bit masks and an AND.
+
+Not covered:
+
+- A primary that draws with a pipeline bound only inside a secondary has no
+  pipeline sets, so those draws are not checked.
+- What the GPU reads from a vertex buffer never bound or a descriptor never
+  written stays with robust buffer access (the GPU-side item of #624).
+- The push descriptor template calls have no handler: the guest driver sends
+  them as plain pushes.
+
+Tests: 27 `u-` cases in `test-venus-commands.c` (`case_unset`), 11 also under
+libgmalloc. On the M1 Max (virgl-only builds of #690's head de1ba2c8 and of this
+one, this one's test file, drivers of the 3.2.18 test app, 3 runs in the five
+modes):
+
+- Before, 10 cases fail in every mode. On KosmicKrisp, vkr refuses none of the
+  10 not-allowed cases. On MoltenVK 8 of them run (2 skip), and vkr refuses none;
+  with prefill all 8 end the process (SIGSEGV). The two legal maintenance6
+  draws without an index buffer also end the process (SIGSEGV) in all three
+  MoltenVK modes, 9 of 9 each, so the NULL bind vkr adds is needed.
+- After, every case is as expected in every mode, with no crash report.
+- MoltenVK has neither drawIndirectCount nor VK_EXT_multi_draw, so those 4
+  cases skip there. KosmicKrisp records the maintenance6 cases but does not
+  submit them.
+- The whole file (`run-venus-limits.py`) on this build: 421 cases on KosmicKrisp
+  (4 skipped), MoltenVK (23) and with prefill (31), 71 under libgmalloc, the image
+  file 114 on both, no GPU restart.
