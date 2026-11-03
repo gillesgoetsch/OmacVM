@@ -893,3 +893,77 @@ modes):
 - The whole file (`run-venus-limits.py`) on this build: 421 cases on KosmicKrisp
   (4 skipped), MoltenVK (23) and with prefill (31), 71 under libgmalloc, the image
   file 114 on both, no GPU restart.
+
+## An app's image on a swapchain's memory (amendment, 3.2.20)
+
+Lane `v624-swap` (#624, after #693). This changes the KosmicKrisp-only exception of
+`virgl-venus-dedicated-memory.patch` above.
+
+An app may make an image with `VkImageSwapchainCreateInfoKHR` and bind it with
+`VkBindImageMemorySwapchainInfoKHR`. Venus has no host swapchain, so guest Mesa
+does this itself: it makes the image B from the swapchain's own create info
+(`ALIAS_BIT`, VUID `VkImageSwapchainCreateInfoKHR-swapchain-00995`) and binds it
+to memory M at offset 0. M is dedicated to the swapchain's image A. vkr allowed
+that bind on KosmicKrisp only, so on MoltenVK the app's context ended.
+
+What MoltenVK 1.4.2 does with it, straight to the drivers on the M1 Max (Apple7),
+no vkr, 3 runs each on KosmicKrisp, MoltenVK and MoltenVK with prefill, each
+also under libgmalloc (504 runs, 0 GPU restarts, raw in work/v624-swap/out/m1):
+
+- The bind works on both drivers.
+- Every order that frees M before B is destroyed ends the process on MoltenVK
+  at `vkDestroyImage(B)`: 60 SIGABRT, and 60 SIGSEGV under libgmalloc, in
+  `MVKDeviceMemory::removeImageMemoryBinding` on the freed memory.
+  `MVKDeviceMemory.mm:171` lets an aliasable image bind to dedicated memory, but
+  `:175` counts it only in non-dedicated memory, so `~MVKDeviceMemory` never
+  clears B's pointer to M. That order is legal: `vkDestroySwapchainKHR` has only
+  VUIDs 01282-01284, and memory may be freed with images bound to it.
+- B draws from A's `MTLTexture` (`MVKImage.mm:105-111`), so B must match A.
+- KosmicKrisp crashed in none.
+
+So vkr now (`virgl-venus-alias-memory.patch`):
+
+- lets an `ALIAS_BIT` image bind at offset 0 to memory dedicated to an
+  `ALIAS_BIT` image on both drivers, only when its create info equals the
+  target's: type, format, tiling, flags, usage, extent, levels, layers and
+  samples. That is what Mesa sends. Other create info is refused with a log
+  line. On KosmicKrisp such binds went through before; they break 02628 for the
+  host driver and are not what a legal guest call becomes.
+- makes B hold M for every such bind it passes on, whatever the driver returns
+  (MoltenVK stores M in B before it can fail). A freed M stays in the driver as
+  a zombie until B's driver destroy. When B is itself the target of dedicated
+  memory, its destroy is deferred and the hold moves to B's record, so M goes
+  after that deferred destroy too. The order is always B, then M, then A.
+- refuses a second bind of such an image (VUID
+  `VkBindImageMemoryInfo-image-07460`) and one image twice in one
+  `vkBindImageMemory2` (`vkBindImageMemory2-pBindInfos-04006`), so a hold is
+  never lost.
+- frees all memory through one helper (`vkr_device_memory_free`): the guest's
+  `vkFreeMemory`, the device's teardown and a zombie's last holder. In the
+  teardown zombies go after images (rank: command buffers, views, images,
+  memory, pools).
+
+A zombie M keeps its GPU memory charge until B is destroyed; the guest's own B
+bounds that. Nothing changes on a hot path.
+
+Tests: 13 `x-dedicated-alias` cases in `test-venus-commands.c` (`case_alias`), 9
+of them also under libgmalloc. On the M1 Max (virgl-only builds of #693's head
+cb8f58b3 and of this one, this one's test file, drivers of the 3.2.18 test app,
+3 runs in the five modes, 21 dedicated-memory cases each):
+
+- Before, 11 cases fail on KosmicKrisp (no refusal, no hold) and 12 on MoltenVK
+  (every alias bind refused, the legal ones too).
+- After, 21 of 21 in every mode, with no crash report.
+- The same build without the hold: the 5 legal cases that free M before B end
+  the process on MoltenVK every time (30 SIGABRT, 15 SIGSEGV under libgmalloc).
+  So the hold is what keeps QEMU alive, not the bind rule.
+- The whole file (`run-venus-limits.py`) on this build: 432 cases on KosmicKrisp
+  (4 skipped), MoltenVK (23) and with prefill (31), 79 under libgmalloc, the
+  image file 114 on both, no GPU restart.
+
+VM row on a hidden clone on the M1, both drivers: Ghostty on Zink (KosmicKrisp),
+vkcube resized twice, Zink glxgears, the validation layer with 0 VUID lines, and
+a guest program that binds an image with `VkBindImageMemorySwapchainInfoKHR`
+beside vkcube in three orders (the image first, the swapchain first, the
+process ending with the image alive): all three work on both drivers, with 0
+refusal lines.
