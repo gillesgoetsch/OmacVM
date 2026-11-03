@@ -252,10 +252,10 @@ index a9875a8..2092d8c 100644
  
     mtx_t free_sync_mutex;
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index 61c7b73..0d4daaf 100644
+index b4b3497..f5f066c 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
-@@ -616,10 +616,92 @@ vkr_dispatch_vkGetImageDrmFormatModifierPropertiesEXT(
+@@ -619,10 +619,92 @@ vkr_dispatch_vkGetImageDrmFormatModifierPropertiesEXT(
     }
  }
  
@@ -348,7 +348,7 @@ index 61c7b73..0d4daaf 100644
     vkr_image_view_create_and_add(dispatch->data, args);
  }
  
-@@ -630,10 +712,51 @@ vkr_dispatch_vkDestroyImageView(struct vn_dispatch_context *dispatch,
+@@ -633,10 +715,51 @@ vkr_dispatch_vkDestroyImageView(struct vn_dispatch_context *dispatch,
     vkr_image_view_destroy_and_remove(dispatch->data, args);
  }
  

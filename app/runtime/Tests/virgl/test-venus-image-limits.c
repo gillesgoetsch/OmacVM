@@ -13,6 +13,7 @@
  * no command buffer, nothing runs on the GPU (standards 14).
  *
  *   test-venus-image-limits              every case, one child each, then a summary
+ *                                        (VENUS_IMAGE_CASES="a b": only those)
  *   test-venus-image-limits CASE         one case (what the children run)
  *   test-venus-image-limits --time N     microseconds per vkCreateImage through vkr
  *
@@ -44,7 +45,9 @@ extern char **environ;
 /* what a case saw: the child's exit status */
 enum { WORKS = 10, REFUSED = 11, FATAL = 12, SKIP = 13, BROKEN = 2 };
 /* what a case must see */
-enum { E_WORKS, E_REFUSED, E_FATAL, E_NOT_WORKS, E_REFUSED_KK };
+enum { E_WORKS, E_REFUSED, E_FATAL, E_NOT_WORKS, E_REFUSED_KK, E_WORKS_OR_SKIP, E_FATAL_OR_SKIP };
+/* the _OR_SKIP ones may skip on MoltenVK only (it makes no DISJOINT one-plane image), never on
+ * KosmicKrisp: a skip there fails the case */
 
 static struct vkr_context *ctx;
 static struct vn_dispatch_context *D;
@@ -460,11 +463,10 @@ static int disjoint_case(void)
    return vkr_context_get_fatal(ctx) ? FATAL : ret == VK_SUCCESS ? WORKS : BROKEN;
 }
 
-/* vkCreateImageView of an image made from info */
-static int view_case(VkImageCreateInfo info, VkImageViewType type, VkFormat format,
+/* vkCreateImageView of a bound image */
+static int make_view(struct vkr_image *image, VkImageViewType type, VkFormat format,
                      VkImageSubresourceRange range)
 {
-   struct vkr_image *image = made_image(info);
    VkImageViewCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                                 .image = (VkImage)image, .viewType = type, .format = format,
                                 .subresourceRange = range };
@@ -480,8 +482,153 @@ static int view_case(VkImageCreateInfo info, VkImageViewType type, VkFormat form
    return a.ret == VK_SUCCESS && object(id) ? WORKS : BROKEN;
 }
 
+/* vkCreateImageView of an image made from info */
+static int view_case(VkImageCreateInfo info, VkImageViewType type, VkFormat format,
+                     VkImageSubresourceRange range)
+{
+   return make_view(made_image(info), type, format, range);
+}
+
 #define COLOR(base_level, levels, base_layer, layers)                                       \
    ((VkImageSubresourceRange){ VK_IMAGE_ASPECT_COLOR_BIT, base_level, levels, base_layer, layers })
+
+/* whether the driver itself makes this description (its own format query, the answer printed):
+ * the plane cases skip only when it does not */
+static bool driver_makes(const VkImageCreateInfo *info)
+{
+   const VkPhysicalDeviceImageFormatInfo2 q = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, .format = info->format,
+      .type = info->imageType, .tiling = info->tiling, .usage = info->usage, .flags = info->flags };
+   VkImageFormatProperties2 p = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2 };
+   const VkResult r = pdev->proc_table.GetPhysicalDeviceImageFormatProperties2(
+      pdev->base.handle.physical_device, &q, &p);
+   printf("driver's format query: format %d flags 0x%x usage 0x%x = %d%s\n", info->format,
+          info->flags, info->usage, r, r == VK_SUCCESS ? "" : " (skip: the driver does not make it)");
+   return r == VK_SUCCESS;
+}
+
+/* the memory requirements of one plane of a DISJOINT image */
+static VkMemoryRequirements plane_requirements(struct vkr_image *image, VkImageAspectFlagBits aspect)
+{
+   VkImagePlaneMemoryRequirementsInfo plane = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_PLANE_MEMORY_REQUIREMENTS_INFO, .planeAspect = aspect };
+   VkImageMemoryRequirementsInfo2 info = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+                                           .pNext = &plane, .image = (VkImage)image };
+   VkMemoryRequirements2 out = { .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2 };
+   struct vn_command_vkGetImageMemoryRequirements2 a = {
+      .device = (VkDevice)dev, .pInfo = &info, .pMemoryRequirements = &out };
+   D->dispatch_vkGetImageMemoryRequirements2(D, &a);
+   return out.memoryRequirements;
+}
+
+/* several binds in one vkBindImageMemory2 */
+static VkResult bind2(VkBindImageMemoryInfo *infos, uint32_t count)
+{
+   struct vn_command_vkBindImageMemory2 a = { .device = (VkDevice)dev, .bindInfoCount = count,
+                                              .pBindInfos = infos };
+   printf("vkBindImageMemory2(%u binds) ...\n", count);
+   D->dispatch_vkBindImageMemory2(D, &a);
+   printf("vkBindImageMemory2 = %d%s\n", a.ret, vkr_context_get_fatal(ctx) ? " (context ended)" : "");
+   return a.ret;
+}
+
+/* dEQP's ycbcr.plane_view parent: G8_B8R8_2PLANE_420_UNORM 64x64 OPTIMAL DISJOINT, each plane
+ * in memory of its own, made to its plane's requirements; binds[0..1] bind both planes
+ * (planes[] their plane infos). false: the driver does not make it. */
+struct disjoint_parent {
+   struct vkr_image *image;
+   struct vkr_device_memory *mem[2];
+   VkMemoryRequirements req[2];
+   VkBindImagePlaneMemoryInfo planes[2];
+};
+
+static bool disjoint_parent(struct disjoint_parent *p, VkBindImageMemoryInfo binds[2])
+{
+   VkImageCreateInfo info = image_info(VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, OPT, S);
+   info.flags = VK_IMAGE_CREATE_DISJOINT_BIT;
+   if (!driver_makes(&info))
+      return false;
+   VkResult ret;
+   p->image = create_image(&info, &ret);
+   if (!p->image)
+      broken("the DISJOINT image was not made");
+   for (uint32_t i = 0; i < 2; i++) {
+      p->req[i] = plane_requirements(p->image, VK_IMAGE_ASPECT_PLANE_0_BIT << i);
+      printf("plane %u: size %" PRIu64 " alignment %" PRIu64 " types 0x%x\n", i, p->req[i].size,
+             p->req[i].alignment, p->req[i].memoryTypeBits);
+      p->mem[i] = p->req[i].size ? allocate(p->req[i].size, memory_type(p->req[i].memoryTypeBits, 0))
+                                 : NULL;
+      if (!p->mem[i])
+         broken("no memory for a plane");
+      p->planes[i] = (VkBindImagePlaneMemoryInfo){
+         .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO,
+         .planeAspect = VK_IMAGE_ASPECT_PLANE_0_BIT << i };
+      binds[i] = (VkBindImageMemoryInfo){ .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,
+                                          .pNext = &p->planes[i], .image = (VkImage)p->image,
+                                          .memory = (VkDeviceMemory)p->mem[i] };
+   }
+   return true;
+}
+
+static int disjoint_planes_case(void)
+{
+   struct disjoint_parent p;
+   VkBindImageMemoryInfo binds[2];
+   if (!disjoint_parent(&p, binds))
+      return SKIP;
+   const VkResult ret = bind2(binds, 2);
+   return vkr_context_get_fatal(ctx) ? FATAL : ret == VK_SUCCESS ? WORKS : BROKEN;
+}
+
+/* dEQP's ycbcr.plane_view.memory_alias: an image in the format of the parent's plane PLANE
+ * (R8 64x64 for plane 0, R8G8 32x32 for plane 1), DISJOINT|ALIAS (legal on a one-plane
+ * format with ALIAS, VUID 01577), on that plane's memory at offset 0. It binds in the
+ * parent's vkBindImageMemory2 with plane info ASPECT (0: none), or after it with
+ * vkBindImageMemory (v1); then its view in that format, as dEQP samples it. */
+static int alias_case(uint32_t plane, VkImageAspectFlags aspect, bool v1)
+{
+   struct disjoint_parent p;
+   VkBindImageMemoryInfo binds[3];
+   if (!disjoint_parent(&p, binds))
+      return SKIP;
+   const VkFormat format = plane ? VK_FORMAT_R8G8_UNORM : VK_FORMAT_R8_UNORM;
+   VkImageCreateInfo info = image_info(format, OPT, S);
+   if (plane)
+      info.extent = (VkExtent3D){ 32, 32, 1 };
+   info.flags = VK_IMAGE_CREATE_DISJOINT_BIT | VK_IMAGE_CREATE_ALIAS_BIT;
+   if (!driver_makes(&info))
+      return SKIP;
+   VkResult ret;
+   struct vkr_image *alias = create_image(&info, &ret);
+   if (!alias)
+      broken("the alias image was not made");
+   const VkMemoryRequirements req = image_requirements(alias);
+   printf("alias: size %" PRIu64 " alignment %" PRIu64 " types 0x%x; plane %u's memory %" PRIu64
+          " bytes of type %u\n", req.size, req.alignment, req.memoryTypeBits, plane,
+          p.req[plane].size, p.mem[plane]->memory_type_index);
+   /* what dEQP's bind would need too: otherwise a second cause, not this one */
+   if (req.size > p.req[plane].size || !(req.memoryTypeBits & (1u << p.mem[plane]->memory_type_index)))
+      broken("the alias does not fit its plane's memory");
+   VkBindImagePlaneMemoryInfo alias_plane = {
+      .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_PLANE_MEMORY_INFO, .planeAspect = aspect };
+   binds[2] = (VkBindImageMemoryInfo){ .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,
+                                       .pNext = aspect ? &alias_plane : NULL, .image = (VkImage)alias,
+                                       .memory = (VkDeviceMemory)p.mem[plane] };
+   ret = bind2(binds, v1 ? 2 : 3);
+   if (v1 && ret == VK_SUCCESS && !vkr_context_get_fatal(ctx)) {
+      struct vn_command_vkBindImageMemory b = { .device = (VkDevice)dev, .image = (VkImage)alias,
+                                                .memory = (VkDeviceMemory)p.mem[plane] };
+      printf("vkBindImageMemory ...\n");
+      D->dispatch_vkBindImageMemory(D, &b);
+      printf("vkBindImageMemory = %d%s\n", b.ret, vkr_context_get_fatal(ctx) ? " (context ended)" : "");
+      ret = b.ret;
+   }
+   if (vkr_context_get_fatal(ctx))
+      return FATAL;
+   if (ret != VK_SUCCESS)
+      return BROKEN;
+   return make_view(alias, VK_IMAGE_VIEW_TYPE_2D, format, COLOR(0, 1, 0, 1));
+}
 
 static VkImageCreateInfo with(VkImageCreateInfo info, VkImageCreateFlags flags, uint32_t layers,
                               uint32_t depth)
@@ -686,6 +833,14 @@ static const struct test_case cases[] = {
    { "bind-plane-info", E_FATAL },
    { "bind-wrong-type", E_FATAL },
    { "bind-disjoint-no-plane", E_NOT_WORKS },
+   /* DISJOINT planes and one-plane DISJOINT|ALIAS images on them (dEQP's
+    * ycbcr.plane_view.memory_alias, #624) */
+   { "bind-disjoint-planes-ok", E_WORKS_OR_SKIP },
+   { "bind-alias-plane0-ok", E_WORKS_OR_SKIP },
+   { "bind-alias-plane1-ok", E_WORKS_OR_SKIP },
+   { "bind-alias-no-plane", E_WORKS_OR_SKIP },
+   { "bind-alias-v1", E_WORKS_OR_SKIP },
+   { "bind-alias-plane1-aspect", E_FATAL_OR_SKIP },
    /* layouts and requirements of a subresource */
    { "layout-plane1", E_REFUSED },
    { "layout-plane2", E_REFUSED },
@@ -906,6 +1061,18 @@ static int run_case(const char *name)
       return query_case(BGRA, VK_IMAGE_TYPE_2D, OPT, S, NULL);
    if (IS("sparse-bad-samples"))
       return sparse_case(3);
+   if (IS("bind-disjoint-planes-ok"))
+      return disjoint_planes_case();
+   if (IS("bind-alias-plane0-ok"))
+      return alias_case(0, VK_IMAGE_ASPECT_PLANE_0_BIT, false);
+   if (IS("bind-alias-plane1-ok"))
+      return alias_case(1, VK_IMAGE_ASPECT_PLANE_0_BIT, false);
+   if (IS("bind-alias-no-plane"))
+      return alias_case(0, 0, false);
+   if (IS("bind-alias-v1"))
+      return alias_case(0, 0, true);
+   if (IS("bind-alias-plane1-aspect"))
+      return alias_case(0, VK_IMAGE_ASPECT_PLANE_1_BIT, false);
    if (!strncmp(name, "bind-", 5) && !IS("bind-disjoint-no-plane"))
       return bind_case(name + 5);
    if (IS("bind-disjoint-no-plane"))
@@ -1134,8 +1301,19 @@ int main(int argc, char **argv)
    posix_spawn_file_actions_init(&to_log);
    posix_spawn_file_actions_adddup2(&to_log, log_fd, 1);
    posix_spawn_file_actions_adddup2(&to_log, log_fd, 2);
+   /* VENUS_IMAGE_CASES="a b ...": only these cases (run-venus-limits.py's libgmalloc run) */
+   const char *only = getenv("VENUS_IMAGE_CASES");
+   size_t run = 0;
    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
       const struct test_case *c = &cases[i];
+      if (only) {
+         char pad[128], hay[4096];
+         snprintf(pad, sizeof(pad), " %s ", c->name);
+         snprintf(hay, sizeof(hay), " %s ", only);
+         if (!strstr(hay, pad))
+            continue;
+      }
+      run++;
       const char *args[] = { argv[0], c->name, NULL };
       if (ftruncate(log_fd, 0) || lseek(log_fd, 0, SEEK_SET) ||
           posix_spawn(&pid, argv[0], &to_log, NULL, (char **)args, environ) ||
@@ -1158,6 +1336,8 @@ int main(int argc, char **argv)
       case E_REFUSED: ok = got == REFUSED; break;
       case E_FATAL: ok = got == FATAL || got == SKIP; break;
       case E_NOT_WORKS: ok = got == REFUSED || got == FATAL; break;
+      case E_WORKS_OR_SKIP: ok = got == WORKS || (!kk && got == SKIP); break;
+      case E_FATAL_OR_SKIP: ok = got == FATAL || (!kk && got == SKIP); break;
       default: /* E_REFUSED_KK */
          ok = kk ? got == REFUSED : (got == REFUSED || got == WORKS || got == FATAL);
          break;
@@ -1176,7 +1356,10 @@ int main(int argc, char **argv)
    posix_spawn_file_actions_destroy(&to_log);
    close(log_fd);
    unlink(log);
-   printf("%s: %zu cases on %s\n", failures ? "FAILED" : "all ok", sizeof(cases) / sizeof(cases[0]),
-          kk ? "KosmicKrisp" : "MoltenVK");
+   if (only && !run) {
+      printf("FAIL: no case named in VENUS_IMAGE_CASES\n");
+      failures++;
+   }
+   printf("%s: %zu cases on %s\n", failures ? "FAILED" : "all ok", run, kk ? "KosmicKrisp" : "MoltenVK");
    return failures != 0;
 }

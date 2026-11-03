@@ -489,10 +489,10 @@ index 7877151..c2c2723 100644
     vkr_{destroy_func_name}_destroy_driver_handle(ctx, args);
  
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index 60fac0f..7162a49 100644
+index 4a5d5e6..0560e55 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
-@@ -399,6 +399,10 @@ vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
+@@ -402,6 +402,10 @@ vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
      * driver's destroy waits for that memory's free */
     struct vkr_image *image = vkr_image_from_handle(args->image);
     struct vkr_device *dev = vkr_device_from_handle(args->device);
@@ -503,7 +503,7 @@ index 60fac0f..7162a49 100644
     if (image && vkr_dedicated_target_destroyed(image->device, image->dedicated)) {
        vkr_device_remove_object(dispatch->data, dev, &image->base);
        return;
-@@ -710,10 +714,33 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+@@ -713,10 +717,33 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
     const uint32_t planes = (info->subresourceRange.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT)
                                ? vkr_format_plane_count(info->format)
                                : 1;

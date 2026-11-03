@@ -18,9 +18,13 @@ driver before it does (src/venus/vkr_image.c):
   an image type or tiling outside the spec; KosmicKrisp's query ends in
   UNREACHABLE for them (undefined in its release build).
 - vkBindImageMemory(2): the memory's type is one of the image's, the offset is
-  aligned, the image (per plane for DISJOINT images) ends inside the memory. vkr
-  keeps each image's type, format, levels, layers and the host's memory
-  requirements (one query at create).
+  aligned, the image (per plane for DISJOINT images) ends inside the memory.
+  Plane info only for a DISJOINT image, and needed when it has 2+ memory planes:
+  a one-plane DISJOINT|ALIAS image (VUID 01577; dEQP's
+  ycbcr.plane_view.memory_alias cases) binds with PLANE_0 or without it, and a
+  plane past the image's memory planes is refused (vkr keeps one memory slot per
+  plane). vkr keeps each image's type, format, levels, layers and the host's
+  memory requirements (one query at create).
 - vkGetImageSubresourceLayout(2) and vkGetImageMemoryRequirements2: an aspect,
   level, layer and plane of the image.
 - vkGetImageSubresourceLayout2 and the three vkGetDeviceImage* queries only on a
@@ -356,7 +360,7 @@ index 0000000..a261c73
 +/* 264 formats */
 +#endif /* VKR_FORMAT_TABLE_H */
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index 770440a..61c7b73 100644
+index 770440a..b4b3497 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
 @@ -5,9 +5,18 @@
@@ -378,7 +382,7 @@ index 770440a..61c7b73 100644
  static void
  vkr_image_fix_create_info(struct vkr_device *dev,
                            VkImageCreateInfo *pCreateInfo)
-@@ -66,11 +75,277 @@ vkr_image_emulate_drm_format_modifier_properties(UNUSED struct vkr_device *dev,
+@@ -66,11 +75,280 @@ vkr_image_emulate_drm_format_modifier_properties(UNUSED struct vkr_device *dev,
     return VK_SUCCESS;
  }
  
@@ -604,7 +608,10 @@ index 770440a..61c7b73 100644
 +      return false;
 +   }
 +   const uint32_t plane = plane_info ? vkr_image_plane_index(plane_info->planeAspect) : 0;
-+   if (!plane_info != (image->plane_count == 1) || plane >= image->plane_count) {
++   /* plane info only for a DISJOINT image, needed with 2+ memory planes; a one-plane
++    * DISJOINT|ALIAS image (VUID 01577) binds with PLANE_0 or without. memory[] is per plane. */
++   const bool disjoint = image->flags & VK_IMAGE_CREATE_DISJOINT_BIT;
++   if (plane_info ? !disjoint || plane >= image->plane_count : image->plane_count > 1) {
 +      snprintf(why, why_size, "plane aspect 0x%x for an image of %u memory planes",
 +               plane_info ? plane_info->planeAspect : 0, image->plane_count);
 +      return false;
@@ -656,7 +663,7 @@ index 770440a..61c7b73 100644
  
     /* if host does not natively support dmabuf we need to patch create info */
     if (dev->physical_device->is_dma_buf_emulated) {
-@@ -84,6 +359,19 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+@@ -84,6 +362,19 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
        }
     }
  
@@ -676,7 +683,7 @@ index 770440a..61c7b73 100644
     /* XXX If VkExternalMemoryImageCreateInfo is chained by the app, all is
      * good.  If it is not chained, we might still bind an external memory to
      * the image, because vkr_dispatch_vkAllocateMemory makes any HOST_VISIBLE
-@@ -103,7 +391,10 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+@@ -103,7 +394,10 @@ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
      * situation because the app does not consider the memory external.
      */
  
@@ -688,7 +695,7 @@ index 770440a..61c7b73 100644
  }
  
  static void
-@@ -127,12 +418,26 @@ vkr_dispatch_vkGetImageMemoryRequirements(
+@@ -127,12 +421,26 @@ vkr_dispatch_vkGetImageMemoryRequirements(
  
  static void
  vkr_dispatch_vkGetImageMemoryRequirements2(
@@ -716,7 +723,7 @@ index 770440a..61c7b73 100644
     vn_replace_vkGetImageMemoryRequirements2_args_handle(args);
     vk->GetImageMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
  }
-@@ -166,36 +471,71 @@ vkr_dispatch_vkGetImageSparseMemoryRequirements2(
+@@ -166,36 +474,71 @@ vkr_dispatch_vkGetImageSparseMemoryRequirements2(
  }
  
  static void
@@ -791,7 +798,7 @@ index 770440a..61c7b73 100644
     vn_replace_vkGetImageSubresourceLayout_args_handle(args);
     vk->GetImageSubresourceLayout(args->device, args->image, args->pSubresource,
                                   args->pLayout);
-@@ -203,12 +543,28 @@ vkr_dispatch_vkGetImageSubresourceLayout(
+@@ -203,12 +546,28 @@ vkr_dispatch_vkGetImageSubresourceLayout(
  
  static void
  vkr_dispatch_vkGetImageSubresourceLayout2(
@@ -821,7 +828,7 @@ index 770440a..61c7b73 100644
     vn_replace_vkGetImageSubresourceLayout2_args_handle(args);
     vk->GetImageSubresourceLayout2(args->device, args->image, args->pSubresource,
                                    args->pLayout);
-@@ -216,15 +572,25 @@ vkr_dispatch_vkGetImageSubresourceLayout2(
+@@ -216,15 +575,25 @@ vkr_dispatch_vkGetImageSubresourceLayout2(
  
  static void
  vkr_dispatch_vkGetDeviceImageSubresourceLayout(
@@ -851,7 +858,7 @@ index 770440a..61c7b73 100644
     }
  
     vn_replace_vkGetDeviceImageSubresourceLayout_args_handle(args);
-@@ -296,15 +662,23 @@ vkr_dispatch_vkDestroySamplerYcbcrConversion(
+@@ -296,15 +665,23 @@ vkr_dispatch_vkDestroySamplerYcbcrConversion(
  
  static void
  vkr_dispatch_vkGetDeviceImageMemoryRequirements(
@@ -879,7 +886,7 @@ index 770440a..61c7b73 100644
     }
  
     vn_replace_vkGetDeviceImageMemoryRequirements_args_handle(args);
-@@ -314,15 +688,22 @@ vkr_dispatch_vkGetDeviceImageMemoryRequirements(
+@@ -314,15 +691,22 @@ vkr_dispatch_vkGetDeviceImageMemoryRequirements(
  
  static void
  vkr_dispatch_vkGetDeviceImageSparseMemoryRequirements(
