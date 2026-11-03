@@ -13,7 +13,7 @@ Why: Apple's GL on Metal builds no pipeline for a draw whose control-to-evaluati
 holds gl_ClipDistance, on either side ("Fallback to SW vertex processing because
 buildPipelineState failed"): the draw ran on Apple's CPU vertex path, Metal's shader compiler
 crashed in GLDTessellationControlShader::mergeVSCSToCompute and
-GLDTessellationEvaluationShader::parseShaderInput, and the first draw took ~255 ms (M1 Max,
+GLDTessellationEvaluationShader::parseShaderInput, and the first draw took 260-272 ms (M1 Max,
 macOS 27). The same values as plain varyings build on the GPU. Apple's software
 renderer has no such failure. Apple matches varyings without a location by name (as
 virgl-shader-separable-patch-varyings.patch relies on).
