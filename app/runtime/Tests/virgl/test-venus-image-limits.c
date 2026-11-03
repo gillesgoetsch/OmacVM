@@ -46,10 +46,11 @@ extern char **environ;
 enum { WORKS = 10, REFUSED = 11, FATAL = 12, SKIP = 13, BROKEN = 2 };
 /* what a case must see */
 enum { E_WORKS, E_REFUSED, E_FATAL, E_NOT_WORKS, E_REFUSED_KK, E_WORKS_OR_SKIP, E_FATAL_OR_SKIP,
-       E_REFUSED_OR_SKIP, E_WORKS_MVK };
+       E_REFUSED_OR_SKIP, E_WORKS_MVK, E_FATAL_ONLY };
 /* the _OR_SKIP ones (a DISJOINT two-plane image) may skip on MoltenVK only, never on
  * KosmicKrisp: a skip there fails the case. E_WORKS_MVK: works on MoltenVK; on KosmicKrisp,
- * which has no such format, refused everywhere (not one call alone). */
+ * which has no such format, refused everywhere (not one call alone). E_FATAL takes a skip on
+ * both drivers; E_FATAL_ONLY takes none (a case that must reach its check on both). */
 
 static struct vkr_context *ctx;
 static struct vn_dispatch_context *D;
@@ -945,7 +946,7 @@ static const struct test_case cases[] = {
    { "bind-alias-plane1-ok", E_WORKS },
    { "bind-alias-no-plane", E_WORKS },
    { "bind-alias-v1", E_WORKS },
-   { "bind-alias-plane1-aspect", E_FATAL },
+   { "bind-alias-plane1-aspect", E_FATAL_ONLY },
    /* the guest is told what vkCreateImage does (VUID 02251): MUTABLE|ALIAS|DISJOINT on
     * one-plane formats (VUID 01577; MoltenVK's query says no to DISJOINT there, its create
     * makes it, virgl-venus-disjoint-alias-format.patch), DISJOINT without ALIAS (not legal
@@ -1498,6 +1499,7 @@ int main(int argc, char **argv)
       case E_FATAL_OR_SKIP: ok = got == FATAL || (!kk && got == SKIP); break;
       case E_REFUSED_OR_SKIP: ok = got == REFUSED || (!kk && got == SKIP); break;
       case E_WORKS_MVK: ok = got == WORKS || (kk && got == REFUSED); break;
+      case E_FATAL_ONLY: ok = got == FATAL; break;
       default: /* E_REFUSED_KK */
          ok = kk ? got == REFUSED : (got == REFUSED || got == WORKS || got == FATAL);
          break;
