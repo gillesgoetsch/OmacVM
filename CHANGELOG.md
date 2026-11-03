@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.19 (unreleased)
+## 3.2.19
 
 In OmacVM.app VMs, a Vulkan program's threads take turns in QEMU, and what a recorded command buffer
 uses (image views, other command buffers) stays until it lets go of it; a one-plane alias of a YCbCr
