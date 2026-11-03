@@ -811,8 +811,9 @@ Tests: 18 cases in `test-venus-commands.c` (`case_ignored`) and `tview-empty` in
 (virgl-only builds of e66b77c5 and of this one, this one's test files, drivers
 of the 3.2.18 test app, 3 runs in the five modes): before, 15 cases fail on
 KosmicKrisp and 10 on MoltenVK: the view and stride cases are refused, the
-NULL-array cases end the process (SIGSEGV), the count-past case works (once a
-SIGSEGV on MoltenVK), and the texts show 18446744073709551615. After, all 25
+NULL-array cases end the process (SIGSEGV), the count-past case works (1 of 3
+runs a SIGSEGV on MoltenVK, also with prefill), and the texts show
+18446744073709551615. After, all 25
 listed cases as expected in every mode, no crash report. The whole file
 (`run-venus-limits.py`) on this build: 394 cases on KosmicKrisp (4 skipped),
 MoltenVK (19) and with prefill (27), 60 under libgmalloc on both, the image file
