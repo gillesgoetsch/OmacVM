@@ -11,8 +11,8 @@ Why: Apple's GL links and draws such a pipeline right, but its Metal pipeline bu
 for a control shader with a patch output it never writes ("Fallback to SW vertex processing
 because buildPipelineState failed"): on the M1 Max (macOS 27) a separable pipeline with
 patch varyings 1 and 3 (or only 1) ran on Apple's CPU vertex path, its first draw took
-250-370 ms instead of 5-120 ms, and Metal's shader compiler (MTLCompilerService) sometimes
-crashed. With the padding written: no fallback, the same pixels. Apple's software renderer
+262-272 ms, and Metal's shader compiler (MTLCompilerService) sometimes crashed. With the
+padding written: no fallback, the same pixels, a first draw of 5-6 ms. Apple's software renderer
 never had the failure.
 Upstream: not sent (a workaround for Apple's GL, on top of the patch-varyings patch).
 Test: Tests/virgl/test-core-glsl-shaders.c: a separable control shader with patch varyings
