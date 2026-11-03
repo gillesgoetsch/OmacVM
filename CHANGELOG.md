@@ -11,9 +11,12 @@ in more words.
   Mesa with temps indexed at run time, and the Mac refused it ("Swizzle of non-vector primitive
   float" in qemu.log), so its draws were skipped (3.2.18 and 3.2.19 alike). Now it compiles; with
   up to 4 distances it draws what one statement per distance draws, on the M1 Max and M4 GPUs and
-  Apple's software renderer. The VM's Mesa still passes only distances 0..3 on from such a loop
-  (its virgl driver copies back the first vec4 only); with more than 4, write one statement per
-  distance. Needs the app update (from the VM's next start); nothing in the VM.
+  Apple's software renderer. Distances 4..7 written in a loop still draw nothing on both GPUs, for
+  two reasons: the Mac's GPU draws nothing when a vertex shader writes `gl_ClipDistance[4..7]` into
+  a control shader, and in a looped control shader the VM's Mesa copies only distances 0..3 back.
+  Both are open in #692; the Mesa part goes into OmacVM's own guest Mesa patches. One statement per
+  distance draws on both GPUs (the VM's Mesa then passes them as plain varyings), so with more than
+  4, write them that way. Needs the app update (from the VM's next start).
 
 ## 3.2.19
 

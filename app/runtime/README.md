@@ -197,7 +197,9 @@ commit 82927e9. Changes here:
   distances written in a loop that way, and `temp18[i].x` on a plain `vec4` did
   not compile on the Mac ("Swizzle of non-vector primitive float"), so those draws
   were skipped (#589). Indexed writes use the address register they name. In such a
-  loop the VM's Mesa still copies only distances 0..3 back to their output. Checked
+  loop the VM's Mesa still copies only distances 0..3 back to their output, and the
+  Mac's GPU draws nothing for a vertex shader that writes `gl_ClipDistance[4..7]`
+  into a control shader, whole or separable (both open in #692). Checked
   by `Tests/virgl/test-core-glsl-shaders.c` and `Tests/virgl/test-whole-program-shapes.c`
   (L rows)
 - `patches/virgl-context-loss-report.patch`: a context that is lost anyway tells
