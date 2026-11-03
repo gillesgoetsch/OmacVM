@@ -1582,6 +1582,14 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-indirect-te
 grep -q 'static int lowest_indirect_temp(const struct dump_ctx \*ctx, int first, int last)' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q 'get_temp(ctx, dst_reg->Register.Indirect, dst_reg->Indirect.Index, dst_reg->Register.Index,' "$virgl_source/src/vrend/vrend_shader.c" || \
   die "vrend_shader.c: a temp indexed at run time without ARRAY is still a single vec4 (indirect-temps patch)"
+# OmacVM: ... and a vertex shader before a control shader (omacvm_vclip0, its own names: the
+# control shader writes omacvm_clip0 itself): with gl_ClipDistance[4..7] in its gl_PerVertex
+# block the M4's and M1 Max's GPUs drew nothing (#692).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-vs-tcs-clip-varyings.patch"
+grep -q 'static int clip_varyings_in(const struct dump_ctx \*ctx, const char \*\*name)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'return ctx->key->tcs_present ? "omacvm_vclip" : "omacvm_clip";' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->vs_clip_in = type == PIPE_SHADER_TESS_CTRL && prev->type == PIPE_SHADER_VERTEX &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: a vertex shader still passes clip distances to a control shader in gl_PerVertex on the Mac (vs-tcs-clip-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
