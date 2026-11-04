@@ -1,0 +1,4 @@
+stage comp
+entry main
+bind 0 1 7 1
+push 128

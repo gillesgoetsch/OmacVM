@@ -1034,3 +1034,29 @@ Tests, on the M4 with the 3.2.19 app's drivers:
   `memory_alias` cases, against owed-m4's #693 rows case by case: KosmicKrisp 0
   cases differ; MoltenVK 349 `memory_alias` cases Fail -> Pass (3 of them in the
   subset), 0 new failures, 11 refusal lines -> 0, 0 GPU faults.
+
+## Full SPIR-V validation (amendment, 3.2.21)
+
+The structural scan let 66 of 138 modules that end QEMU in KosmicKrisp's or
+MoltenVK's compiler through (#624, M4, compile only). Guest SPIR-V now goes
+through SPIRV-Tools' validator after the scan (`virgl-venus-spirv-validate.patch`),
+for the device's Vulkan version and the layouts its features allow, never what
+one app enabled; spirv-val refuses 65 of the 66, a Function element cap
+(2^20 after specialization) the last one. Passed modules are cached by
+SHA-256 (4096 entries, LRU).
+
+spirv-val is guest-facing too, so it gets the same treatment as the drivers,
+on the CPU only (hostile modules never reach a real driver, STANDARDS 14b):
+an Input of a struct of uint[2^32-1] took it past 512 MB, a type DAG 30 deep
+past 20 s, 1000 nested loops 53 s, and two fuzzed modules ended the process
+(a NULL read after an assert compiled out, an abort from `at()`). So before it
+reads a module the scan's caps refuse interface variables past the device's
+location limits (VUID-RuntimeSpirv-Location-06272) and types that cost more
+than 2^24; inside it (`spirv-tools-val-catch-throws.patch`) asserts stay on and
+throw, exceptions are caught, and a CPU budget of 2 s stops its superlinear
+walks. Those refusals hold also in a log-only build. The slowest hostile
+module measured takes 2.03 s; real modules at most 3.6 ms. Ray tracing
+pipelines are refused (no Mac driver has them). MoltenVK's own crash after a
+caught SPIRV-Cross error (92 of its 119 crash modules) is not patched here:
+the runtime takes MoltenVK from Homebrew's bottle; the fix is drafted for
+upstream.

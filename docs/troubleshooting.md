@@ -1826,8 +1826,9 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   correct app that ends this way is an OmacVM bug: please report it with the
   line.
 - **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`,
-  `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` (shaders:
-  the line says `SPIR-V: ...`), `virgl-venus-copy-regions.patch`,
+  `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` and
+  `virgl-venus-spirv-validate.patch` (shaders: the line says `SPIR-V: ...` or
+  `spirv-val (...): ...`), `virgl-venus-copy-regions.patch`,
   `virgl-venus-pipeline-formats.patch`, `virgl-venus-submit-counts.patch`,
   `virgl-venus-pool-frees.patch`, `virgl-venus-dedicated-memory.patch`,
   `virgl-venus-pass-views.patch`, `virgl-venus-thread-budget.patch` (the

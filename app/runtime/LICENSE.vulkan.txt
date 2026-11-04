@@ -22,6 +22,14 @@ lib/libvulkan.1.dylib: the Khronos Vulkan loader 1.4.357,
   Corporation, LunarG, Inc., Google Inc., and others.
   Built into it: cJSON, MIT, text below.
 
+lib/libvirglrenderer.1.dylib (MIT, see THIRD_PARTY_NOTICES.md) has
+  Venus check the VM's SPIR-V with, built in statically, symbols hidden
+  (app/runtime/build-qemu-gpu-runtime.sh, patches/spirv-tools-*.patch):
+  - SPIRV-Tools 2026.3, github.com/KhronosGroup/SPIRV-Tools, Apache-2.0.
+    Copyright (c) 2015-2026 The Khronos Group Inc., Google Inc., and others.
+  - SPIRV-Headers (commit 29981f65), Apache-2.0 OR MIT (used here under
+    Apache-2.0). Copyright 2015-2024 The Khronos Group Inc.
+
 None of these projects has a NOTICE file. Their source is at the
 addresses above; Homebrew's formulas (molten-vk, vulkan-loader) say how
 the bottles were built.

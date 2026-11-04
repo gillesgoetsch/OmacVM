@@ -1,0 +1,5 @@
+stage frag
+entry main
+fout 0 f
+fin 0 1 u 1
+push 128
