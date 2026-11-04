@@ -1051,9 +1051,16 @@ SHA-256 (4096 entries, LRU). The device's version is the one the guest is
 told: KosmicKrisp reports its own, MoltenVK the instance's, so a 1.0 or 1.1
 app on MoltenVK is validated as Vulkan 1.1 (SPIR-V up to 1.4), as it was
 told. Private arrays count against the same element cap, and a stage's
-Workgroup variables may take at most maxComputeSharedMemorySize bytes (both
-for all of the module's variables): a Private or Workgroup uint[2^32-1]
-passed the scan and spirv-val. A stage the device lacks keeps Vulkan's
+Workgroup variables may take at most maxComputeSharedMemorySize bytes: a
+Private or Workgroup uint[2^32-1] passed the scan and spirv-val. Both count
+what the stage's compiler gets (3.2.22; 3.2.21 counted every variable of the
+module): the Function variables of the functions its entry point reaches,
+and every Private and Workgroup variable of the module, as MoltenVK's
+SPIRV-Cross declares each in every entry point it compiles (Mesa's
+spirv_to_nir too before SPIR-V 1.4); on KosmicKrisp from SPIR-V 1.4 only
+those in the entry point's interface, as spirv_to_nir skips the rest. So two
+compute entry points in one module no longer add up their Function arrays.
+A stage the device lacks keeps Vulkan's
 minimum interface locations, so vkd3d-proton's geometry module still
 creates on MoltenVK.
 
@@ -1086,3 +1093,158 @@ Homebrew's MoltenVK bottle. When the MoltenVK or SPIRV-Tools pin moves, run
 the same SPIRV-Cross check on the new versions; an accepted module that throws
 in the parser or crashes SPIRV-Cross reopens this. The upstream report is
 drafted, not sent.
+
+## Metal passes and host memory (amendment, 3.2.22)
+
+Lane `v624-hostmem` (#624's "host-memory caps", after #697). The question: can
+one guest program make QEMU (vkr and the Mac's driver) hold memory beyond what
+the guest's own limits allow, or end it that way? Probes through vkr's own
+dispatch on the M1 Max (macOS 27, the 3.2.18 test app's KosmicKrisp and
+MoltenVK, each probe its own bounded process, no VM; raw in
+work/v624-hostmem/out run4-run12).
+
+Device memory was already charged right (written memory matches the charge, a
+budget refusal leaves the context alive). Three things were not:
+
+- **Metal passes end QEMU.** One Metal command buffer with about 98304 passes
+  (render encoders) ends the process: SIGABRT, "Failed to allocate
+  IOGPUDeviceShmem" in `IOGPUMetalCommandBufferStorageGrowKernelCommandBuffer`
+  from `AGX::RenderContext::beginRenderPass`. KosmicKrisp opens a pass while
+  recording for each clear (per level; a level's layers are one layered pass,
+  and so are a 3D level's depth slices), render pass begin, rendering, and
+  each by-region barrier inside a 4x pass; it aborted past 98304 clears, past
+  98304 empty passes, between 90112 and 98304 split barriers, between 6144
+  and 6656 clears of 15 levels, with no submit. 1M plain draws, 204800 copies
+  and 1x in-pass barriers, 16384 clears of a 2048-deep 3D image and 65536
+  blits or resolves did not. MoltenVK encodes at the submit (at
+  `vkEndCommandBuffer` with prefill) and puts a batch's command buffers into
+  one Metal command buffer: with prefill it aborted at the end after 150000
+  clears or 204800 passes, renderings, blits or resolves; without, one batch
+  of 8 x 16384 clears aborted at `vkQueueSubmit`, 4 x 16384 in one batch went
+  through.
+- **Some draws split a pass** (found in the review, probed in fix-700,
+  work/v624-hostmem/fix/out). KosmicKrisp unrolls a draw in a compute pass
+  first (`kk_cmd_draw.c`, `requires_unroll`) for triangle fans, 8-bit indices,
+  8- or 16-bit strips with restart off, list restart with
+  `primitiveTopologyListRestart`, a Flat fragment input with the last vertex
+  provoking, and index robustness; it applies predicates (conditional
+  rendering) the same way, runs each tessellated draw's stages as compute, and
+  starts a new pass when sample locations or the color attachment map change.
+  Each such draw cost 60-113 KB while recording (a color-map or
+  sample-location change 24 KB; a plain draw 0.1 KB), and between 73728 and
+  81920 fan draws in one pass ended the process. MoltenVK with prefill ended
+  the process at the end of 114688 tessellated draws, or draws with a
+  sample-location or color-map change each. 32-bit strips, strips with
+  restart, flat inputs with the first vertex provoking, timestamps in a pass
+  and robust draws inside an aligned index buffer did not split.
+- **Recordings and objects cost memory nobody counted.** Per command
+  (footprint): KosmicKrisp 2423 B per 44-byte fill (2 GB in 0.57 s), 84017 B per
+  64 KB update, 36415 B per blit region; MoltenVK 65881 B per update. Per
+  object: KosmicKrisp 18366 B per event (1148 MB in 0.47 s) and 34137 B per
+  command buffer, MoltenVK 142082 B per command pool (1110 MB in 0.09 s) and
+  12.6 MB per 2^20 timestamps. A submitted pass held 171-179 KB, most of it
+  wired, after the queue went idle, at any image size and also after the
+  command buffer's reset, free or its pool's destroy. 8 x 16384 clears in one
+  KosmicKrisp submit took the process to 22 GB (memory level 86 -> 74). That
+  storage is used again for the process's next command buffers (fix-700,
+  out-C): 10 rounds of a new pool, 2048 submitted passes, free and destroy
+  stayed at 301-317 MB on KosmicKrisp and 356-363 MB on MoltenVK, also with
+  one pool reset each round and over 10 contexts in turn (307-317 MB), and
+  10 rounds of 2048 64 KB updates on MoltenVK at 243-260 MB. The process
+  keeps about its peak; it does not grow from round to round.
+- **The reported heaps were bigger than what Venus may use.** MoltenVK
+  reported 32768 MB (all of the M1 Max), KosmicKrisp 25559 MB, both more than
+  the 22528 MB apps' share; maxBufferSize 19169 MB.
+
+What vkr does now:
+
+1. `virgl-venus-encoder-cap.patch`: each command buffer counts its passes
+   (clears per level, pass begins, next subpasses, renderings, on KosmicKrisp
+   every barrier inside a pass, because vkr does not keep a pass's sample
+   count, and a primary the passes of the secondaries it executes, each
+   time). Blit and resolve regions count as a pass each, to be safe. So do
+   the draws that split a pass (`vkr_cmd_draw_weigh`): on both drivers each
+   tessellated draw and each sample-location or attachment-location change
+   inside a pass; on KosmicKrisp a draw call it unrolls or predicates. For
+   that vkr keeps each graphics pipeline's topology, restart, provoking mode,
+   tessellation and Flat use (from the SPIR-V scan; pipeline libraries
+   merged) and follows the recording's dynamic state and index buffer.
+   Robust indirect or over-reading indexed draws count on any macOS (macOS 27's
+   KosmicKrisp also needs a misaligned index buffer for those). Past 16384
+   per command buffer, or 32768 in one MoltenVK batch, the command (or the
+   submit) is refused and the app's context ends. 16384 is 6x below the clear
+   abort and 4.5x below the fan-draw abort; a Zink frame has about 2000
+   passes. `OMACVM_VENUS_ENCODER_CAP` sets it for tests. The cap is fixed,
+   not measured per Mac. On the mini's M4 KosmicKrisp aborted between 74752
+   and 75264 clears of one level (fix-700 r2), so 16384 is 4.6x below there;
+   an 8 GB Mac is not measured.
+2. `virgl-venus-host-memory.patch`: each context has a host memory account
+   (`OMACVM_VENUS_HOST_MB`, else a quarter of the apps' share, 256 MB to
+   4 GB), and the same bytes go to the shared GPU budget, so one app's
+   recordings cannot starve the others and all apps stay inside the budget.
+   Objects are charged a fixed estimate per type, whatever their size (a
+   shader module 4 KB though its code may be 4 MB, which both drivers keep a
+   copy of; a pipeline cache 20 KB whatever its initial data; charging these
+   by size is a follow-up), recordings 512 B per command,
+   184 KB per pass or draw that splits one (recorded and held after the
+   submit), an update's data x
+   1.5, on KosmicKrisp 3 KB per fill and attachment clear and 40 KB per blit or
+   resolve region. Every charge is at least what a probe measured
+   (`kit/costs.py` over the probe output). A command buffer takes 1 MB at a
+   time (no shared counter per command: `--time` shows no change, e.g.
+   vkCmdDraw 0.168-0.170 us before and 0.169-0.170 after on KosmicKrisp) and
+   keeps the most one recording took through resets; freed, that goes to its
+   pool for the pool's next recordings, and back with the pool (the memory
+   stays in the process but is used again: the rounds above). Charges come
+   back where vkr frees the object: after the driver's destroy, a zombie's at
+   its last holder, and in the context's teardown, which logs the peak. A lost
+   context the guest never closes keeps its charge until its teardown.
+3. The same patch reports heaps of at most the apps' share (both memory
+   property queries), maxMemoryAllocationSize and maxBufferSize at most the
+   heap, and for VK_EXT_memory_budget this context's device memory as
+   heapUsage and that plus what the share has left as heapBudget (a page at
+   least, at most the heap). Zink, DXVK and Chromium read these; 32 -> 22 GB
+   changes nothing for them on this Mac.
+4. The decoder frees a temp buffer over 16 MB after each stream (one 256 MB
+   command left 320 MB per context and per ring).
+
+Every refusal here ends the app's context. The guest's Mesa records, submits and
+creates without waiting for vkr, so no `VK_ERROR_OUT_OF_*_MEMORY` would reach the
+app there: it sees a lost device, the VM goes on. Only `vkAllocateMemory` (with
+`VN_PERF=no_async_mem_alloc`) and what vkr reports can tell an app about memory
+before that. Venus against macOS memory pressure (the GPU guard's levels) is a
+later patch.
+
+Tests, on the M1 Max: `test-venus-commands.c`'s h- cases (28), on KosmicKrisp,
+MoltenVK and MoltenVK with prefill. On the build before (#697, 85270088, the 3.2.20 set) 16
+fail on KosmicKrisp and on MoltenVK and 13 with prefill (its 4 submit and
+teardown cases skip there), among them `h-pass-default-past-metal` ending the
+process (signal 6) on KosmicKrisp and with prefill, and `h-rec-fills`,
+`h-rec-updates` and `h-obj-events` stopped at 1.5 GB on KosmicKrisp; the 12
+legal cases work before and after. With both patches all 28 pass on every
+driver.
+
+The review's follow-up (fix-700) adds 17 cases: `h-pass-draw-` for each draw
+kind that splits a pass and each that does not, and `h-pass-3d-ok`/`-over`.
+On the build before it, 10 fail on KosmicKrisp (fan, u8, strip16,
+list-restart, flat-last, pred, robust-indirect, tess, sample-locations,
+attachment-locations: they fit where they must not) and 3 on MoltenVK and with
+prefill (tess, sample-locations, attachment-locations); after it all 45 h-
+cases pass on all three.
+
+Second follow-up (fix-700 r2, 2026-11-04). On the mini's M4 (16 GB): a submitted
+pass held 86 KB on KosmicKrisp and 36 KB on MoltenVK after the queue went idle
+(4096 clears, also after the free and the pool's destroy), below the 184 KB
+charge; 10 rounds of a new pool (or a new context) with 2048 submitted clears
+stayed at 150-215 MB. The VM row on the M1 (fc5d5bde, hidden 4 GB clone,
+KosmicKrisp and MoltenVK) logged each context's peak against its 4096 MB
+account: Ghostty on Zink 37 MB, Zink glxgears 26, Zink glxinfo 7, Chromium
+(WebGL, ANGLE on Venus) 21-27, vkcube 8 (KosmicKrisp) and 27 (MoltenVK, also
+with the validation layer), clinfo 2, vulkaninfo 0; 0 "still charged" lines.
+On an 8 GB Mac the budget is 6144 MB, the desktop keeps 512 MB, the apps'
+share is 5632 MB and each context's account 1408 MB: about 7800 passes held at
+once (184 KB each), summed over each live command buffer's largest recording.
+The row's apps used at most 37 MB (about 200 passes' worth). DXVK or Zink with
+4 frames in flight fit up to about 1900 passes per frame; a frame near the
+2000 of `h-zink-frame-ok` with 4 or more in flight would end the app's context
+there. Not measured with DXVK (no Windows app in the row).

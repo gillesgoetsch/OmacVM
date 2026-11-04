@@ -139,7 +139,10 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  # binds (virgl-venus-unset-state.patch)
                  "u-set-unset u-set-second-unset u-set-unset-dispatch u-set-second-unset-dispatch "
                  "u-set-secondary u-ib-unset u-ib-null-m6-ok u-ib-unset-m6-ok u-ib-unset-m6-indirect-ok "
-                 "u-set-interface-only-ok u-set-execute-kept")
+                 "u-set-interface-only-ok u-set-execute-kept "
+                 # recording charges moved to a pool, a teardown with zombies, secondaries
+                 # (virgl-venus-host-memory.patch, virgl-venus-encoder-cap.patch)
+                 "h-rec-spare-ok h-release-end h-pass-secondary-ok")
 # test-venus-image-limits under libgmalloc: plane binds, where a driver reads a plane's memory
 # slot by the guest's plane aspect
 image_gmalloc_cases = ("bind-plane-info bind-disjoint-no-plane bind-disjoint-planes-ok "

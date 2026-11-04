@@ -19,7 +19,11 @@
  * ignored as Vulkan does, and refusal lines without 18446744073709551615
  * (virgl-venus-ignored-values.patch: case_ignored); no draw or dispatch uses a descriptor
  * set, and no indexed draw an index buffer, never bound since the begin
- * (virgl-venus-unset-state.patch: the u- cases, case_unset).
+ * (virgl-venus-unset-state.patch: the u- cases, case_unset); a command buffer and a MoltenVK
+ * batch open no more Metal passes than vkr's cap, below where Metal ends the process
+ * (virgl-venus-encoder-cap.patch: the h-pass- cases, case_host), and recordings and objects
+ * are charged for the Mac memory they take, the heaps reported are the apps' share and the
+ * charge comes back at the teardown (virgl-venus-host-memory.patch: the other h- cases).
  *
  * A real vkr context on the runtime's real driver, as in test-venus-image-limits.c: every
  * case goes through vkr's own dispatch functions (ctx->dispatch, where the decoder hands
@@ -6349,6 +6353,963 @@ static int case_unset(const char *c)
    return !strncmp(c, "u-ib-", 5) ? unset_index_case(c) : unset_set_case(c);
 }
 
+/* ---------------- host memory: Metal passes, recordings, objects, heaps (h-) ----------------
+ * virgl-venus-encoder-cap.patch, virgl-venus-host-memory.patch, ADR 0065. Metal ends the
+ * process at about 98304 passes in one Metal command buffer (KosmicKrisp while recording,
+ * MoltenVK when it encodes); recordings and objects cost the Mac memory vkr did not count.
+ * Each case sets its budget and caps before the setup (OMACVM_GPU_MEMORY_MB,
+ * OMACVM_VENUS_HOST_MB, OMACVM_VENUS_ENCODER_CAP: the tests' 1024 makes the legal maximum
+ * small enough to charge). Refused: the context ends with a refusal line. */
+static void h_env(const char *budget_mb, const char *host_mb, const char *cap)
+{
+   setenv("OMACVM_GPU_MEMORY_RESERVE_MB", "0", 1);
+   if (budget_mb)
+      setenv("OMACVM_GPU_MEMORY_MB", budget_mb, 1);
+   if (host_mb)
+      setenv("OMACVM_VENUS_HOST_MB", host_mb, 1);
+   if (cap)
+      setenv("OMACVM_VENUS_ENCODER_CAP", cap, 1);
+}
+
+static struct vkr_image *h_image(uint32_t w, uint32_t h, uint32_t levels, uint32_t layers)
+{
+   const uint64_t id = next_id++;
+   VkImage hd = (VkImage)(uintptr_t)id;
+   VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = FMT, .extent = { w, h, 1 }, .mipLevels = levels, .arrayLayers = layers,
+                              .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = CA_SA };
+   struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
+   D->dispatch_vkCreateImage(D, &c);
+   struct vkr_image *img = object(id);
+   if (c.ret != VK_SUCCESS || !img)
+      broken("vkCreateImage (levels, layers)");
+   const VkMemoryRequirements req = requirements_of(img, NULL);
+   if (bind_image_at(img, allocate(req.size, memory_type(req.memoryTypeBits))) != VK_SUCCESS)
+      broken("vkBindImageMemory (levels, layers)");
+   return img;
+}
+
+/* n clears of LEVELS levels (REMAINING when levels is 0) and every layer, quietly; stops
+ * at a refusal */
+static void h_clears(void *cmd, struct vkr_image *img, uint32_t n, uint32_t levels)
+{
+   const VkClearColorValue color = { { 0, 0, 0, 1 } };
+   for (uint32_t i = 0; i < n && !ended(); i++) {
+      const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                              levels ? levels : VK_REMAINING_MIP_LEVELS, 0,
+                                              VK_REMAINING_ARRAY_LAYERS };
+      struct vn_command_vkCmdClearColorImage c = { .commandBuffer = (VkCommandBuffer)cmd, .image = (VkImage)img,
+                                                   .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .pColor = &color,
+                                                   .rangeCount = 1, .pRanges = &range };
+      D->dispatch_vkCmdClearColorImage(D, &c);
+   }
+   step("%u clears of %u levels recorded%s", n, levels, ended() ? " (the context ended)" : "");
+}
+
+static void h_passes(void *cmd, void *rp, void *fb, uint32_t n, bool rendering, void *v)
+{
+   for (uint32_t i = 0; i < n && !ended(); i++) {
+      if (rendering) {
+         VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                           .imageView = (VkImageView)v,
+                                           .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                           .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                           .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+         VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                                .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
+         struct vn_command_vkCmdBeginRendering b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderingInfo = &ri };
+         D->dispatch_vkCmdBeginRendering(D, &b);
+         if (ended())
+            break;
+         struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)cmd };
+         D->dispatch_vkCmdEndRendering(D, &e);
+      } else {
+         VkClearValue clear = { 0 };
+         VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                      .renderPass = (VkRenderPass)rp, .framebuffer = (VkFramebuffer)fb,
+                                      .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                      .pClearValues = &clear };
+         struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
+                                                      .contents = VK_SUBPASS_CONTENTS_INLINE };
+         D->dispatch_vkCmdBeginRenderPass(D, &b);
+         if (ended())
+            break;
+         struct vn_command_vkCmdEndRenderPass e = { .commandBuffer = (VkCommandBuffer)cmd };
+         D->dispatch_vkCmdEndRenderPass(D, &e);
+      }
+   }
+   step("%u %s recorded%s", n, rendering ? "renderings" : "render passes", ended() ? " (the context ended)" : "");
+}
+
+static void h_fills(void *cmd, struct vkr_buffer *buf, uint32_t n)
+{
+   uint32_t i = 0;
+   for (; i < n && !ended(); i++) {
+      struct vn_command_vkCmdFillBuffer f = { .commandBuffer = (VkCommandBuffer)cmd, .dstBuffer = (VkBuffer)buf,
+                                              .size = 256, .data = 7 };
+      D->dispatch_vkCmdFillBuffer(D, &f);
+   }
+   step("%u fills recorded%s", i, ended() ? " (the context ended)" : "");
+}
+
+/* a real submit of the command buffers in one batch, and the driver's wait */
+static int h_submit(void **cmds, uint32_t n)
+{
+   struct vkr_queue *q = device_queue();
+   VkCommandBuffer hs[8];
+   for (uint32_t i = 0; i < n; i++)
+      hs[i] = (VkCommandBuffer)cmds[i];
+   VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = n, .pCommandBuffers = hs };
+   struct vn_command_vkQueueSubmit s = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &si };
+   step("vkQueueSubmit: one batch of %u command buffers", n);
+   D->dispatch_vkQueueSubmit(D, &s);
+   step("vkQueueSubmit = %d", s.ret);
+   if (ended())
+      return FATAL;
+   q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+   step("the queue is idle");
+   return s.ret == VK_SUCCESS ? WORKS : ERROR;
+}
+
+static bool h_prefill(void)
+{
+   return !kosmickrisp && getenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS");
+}
+
+/* Metal passes per command buffer and per MoltenVK batch (virgl-venus-encoder-cap.patch) */
+static int case_host_passes(const char *c)
+{
+   const bool tight = strstr(c, "-default") == NULL;
+   /* the default cap with room to charge it (a pass charges 184 KB); else a cap of 1024 */
+   if (tight)
+      h_env("1024", "1024", "1024");
+   else
+      h_env("8192", "4096", NULL);
+   setup(0);
+   const uint32_t cap = tight ? 1024 : 16384;
+   void *cmd = command_buffer();
+   begin(cmd);
+   if (IS("h-pass-clear-max-ok") || IS("h-pass-clear-over") || IS("h-pass-default-max-ok") ||
+       IS("h-pass-default-over") || IS("h-pass-default-past-metal")) {
+      const uint32_t n = IS("h-pass-default-past-metal") ? 100000 : strstr(c, "-over") ? cap + 1 : cap;
+      h_clears(cmd, image(64, 64, 1, CA_SA), n, 1);
+      return end(cmd);
+   }
+   if (IS("h-pass-levels-ok") || IS("h-pass-levels-over")) {
+      /* 15 levels (REMAINING): 68 x 15 = 1020, 69 x 15 = 1035 */
+      h_clears(cmd, h_image(16384, 1, 15, 1), IS("h-pass-levels-ok") ? 68 : 69, 0);
+      return end(cmd);
+   }
+   if (IS("h-pass-layers-ok")) {
+      /* one layered pass per clear: 1024 clears of 2048 layers */
+      h_clears(cmd, h_image(64, 64, 1, 2048), cap, 1);
+      return end(cmd);
+   }
+   if (IS("h-pass-render-passes-over") || IS("h-pass-renderings-over") || IS("h-pass-render-passes-ok")) {
+      void *rp = render_pass(1, 1, 0, 0);
+      void *v = view(image(64, 64, 1, CA_SA), 1);
+      void *fb = framebuffer(rp, &v, 1, 64, 64, 1);
+      if (!rp || !fb)
+         broken("pass");
+      h_passes(cmd, rp, fb, IS("h-pass-render-passes-ok") ? cap : cap + 1, IS("h-pass-renderings-over"), v);
+      return end(cmd);
+   }
+   if (IS("h-pass-blits-over")) {
+      struct vkr_image *a = image(64, 64, 1, CA_SA), *b = image(64, 64, 1, CA_SA);
+      const VkImageSubresourceLayers l = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+      const VkImageBlit r[2] = { { l, { { 0, 0, 0 }, { 64, 64, 1 } }, l, { { 0, 0, 0 }, { 32, 32, 1 } } },
+                                 { l, { { 0, 0, 0 }, { 64, 64, 1 } }, l, { { 0, 0, 0 }, { 16, 16, 1 } } } };
+      /* 512 blits of 2 regions fit, the 513th does not */
+      for (uint32_t i = 0; i < cap / 2 + 1 && !ended(); i++) {
+         struct vn_command_vkCmdBlitImage bl = { .commandBuffer = (VkCommandBuffer)cmd, .srcImage = (VkImage)a,
+                                                 .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL, .dstImage = (VkImage)b,
+                                                 .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 2,
+                                                 .pRegions = r, .filter = VK_FILTER_LINEAR };
+         D->dispatch_vkCmdBlitImage(D, &bl);
+      }
+      return end(cmd);
+   }
+   if (IS("h-pass-split-barriers")) {
+      /* by-region barriers inside one pass: KosmicKrisp splits a multisampled pass at each
+       * (counted on KosmicKrisp, which vkr cannot tell apart from a 1x pass); MoltenVK does
+       * not split */
+      expect(kosmickrisp);
+      void *rp = ms_pass();
+      void *v[2] = { ms_view(VK_SAMPLE_COUNT_4_BIT), ms_view(VK_SAMPLE_COUNT_1_BIT) };
+      void *fb = framebuffer(rp, v, 2, 64, 64, 1);
+      VkClearValue clear[2] = { 0 };
+      VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = (VkRenderPass)rp,
+                                   .framebuffer = (VkFramebuffer)fb, .renderArea = { { 0, 0 }, { 64, 64 } },
+                                   .clearValueCount = 2, .pClearValues = clear };
+      struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)cmd, .pRenderPassBegin = &bi,
+                                                   .contents = VK_SUBPASS_CONTENTS_INLINE };
+      D->dispatch_vkCmdBeginRenderPass(D, &b);
+      for (uint32_t i = 0; i < cap && !ended(); i++) {
+         VkMemoryBarrier2 mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                                 .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                 .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                 .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT };
+         VkDependencyInfo dep = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+                                  .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT, .memoryBarrierCount = 1,
+                                  .pMemoryBarriers = &mb };
+         struct vn_command_vkCmdPipelineBarrier2 pb = { .commandBuffer = (VkCommandBuffer)cmd, .pDependencyInfo = &dep };
+         D->dispatch_vkCmdPipelineBarrier2(D, &pb);
+      }
+      end_pass(cmd);
+      return end(cmd);
+   }
+   if (IS("h-pass-secondary-ok") || IS("h-pass-secondary-over")) {
+      /* two secondaries of 500 clears (ok: 1000 in the primary) or 600 (1200) */
+      struct vkr_image *img = image(64, 64, 1, CA_SA);
+      VkCommandBuffer s[2];
+      for (int k = 0; k < 2; k++) {
+         void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+         if (begin_secondary(sec, NULL) != VK_SUCCESS)
+            broken("secondary begin");
+         h_clears(sec, img, IS("h-pass-secondary-ok") ? 500 : 600, 1);
+         const int r = end(sec);
+         if (r != WORKS)
+            return r;
+         s[k] = (VkCommandBuffer)sec;
+      }
+      struct vn_command_vkCmdExecuteCommands e = { .commandBuffer = (VkCommandBuffer)cmd, .commandBufferCount = 2,
+                                                   .pCommandBuffers = s };
+      step("vkCmdExecuteCommands of the two secondaries");
+      D->dispatch_vkCmdExecuteCommands(D, &e);
+      return end(cmd);
+   }
+   if (IS("h-pass-batch-ok") || IS("h-pass-batch-over")) {
+      /* a real submit: one batch of 2 x 1000 (ok: 2000 <= 2 x 1024) or 3 x 700 (2100) clears;
+       * MoltenVK encodes a batch into one Metal command buffer, KosmicKrisp has one each */
+      const bool over = IS("h-pass-batch-over");
+      if (h_prefill())
+         return SKIP;
+      expect(over && !kosmickrisp);
+      struct vkr_image *img = image(64, 64, 1, CA_SA);
+      void *cmds[3] = { cmd, command_buffer(), command_buffer() };
+      const uint32_t n = over ? 3 : 2;
+      for (uint32_t i = 0; i < n; i++) {
+         if (i)
+            begin(cmds[i]);
+         h_clears(cmds[i], img, over ? 700 : 1000, 1);
+         const int r = end(cmds[i]);
+         if (r != WORKS)
+            return r;
+      }
+      return h_submit(cmds, n);
+   }
+   return BROKEN;
+}
+
+/* the draw-split cases' shaders (glslc --target-env=vulkan1.0 -O; sources in the comments): a
+ * vertex shader with no inputs, its flat-output twin, a plain and a flat fragment shader, a
+ * tessellation control and evaluation pair */
+/* #version 450 void main() { gl_Position = vec4(float(gl_VertexIndex & 1), float(gl_VertexIndex >> 1), 0.0, 1.0); } */
+static const uint32_t spv_split_plain_vert[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x0000001e, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0007000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000d, 0x00000011, 0x00030047,
+   0x0000000b, 0x00000002, 0x00050048, 0x0000000b, 0x00000000, 0x0000000b, 0x00000000, 0x00050048,
+   0x0000000b, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000000b, 0x00000002, 0x0000000b,
+   0x00000003, 0x00050048, 0x0000000b, 0x00000003, 0x0000000b, 0x00000004, 0x00040047, 0x00000011,
+   0x0000000b, 0x0000002a, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016,
+   0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004, 0x00040015, 0x00000008,
+   0x00000020, 0x00000000, 0x0004002b, 0x00000008, 0x00000009, 0x00000001, 0x0004001c, 0x0000000a,
+   0x00000006, 0x00000009, 0x0006001e, 0x0000000b, 0x00000007, 0x00000006, 0x0000000a, 0x0000000a,
+   0x00040020, 0x0000000c, 0x00000003, 0x0000000b, 0x0004003b, 0x0000000c, 0x0000000d, 0x00000003,
+   0x00040015, 0x0000000e, 0x00000020, 0x00000001, 0x0004002b, 0x0000000e, 0x0000000f, 0x00000000,
+   0x00040020, 0x00000010, 0x00000001, 0x0000000e, 0x0004003b, 0x00000010, 0x00000011, 0x00000001,
+   0x0004002b, 0x0000000e, 0x00000013, 0x00000001, 0x0004002b, 0x00000006, 0x00000019, 0x00000000,
+   0x0004002b, 0x00000006, 0x0000001a, 0x3f800000, 0x00040020, 0x0000001c, 0x00000003, 0x00000007,
+   0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
+   0x0000000e, 0x00000012, 0x00000011, 0x000500c7, 0x0000000e, 0x00000014, 0x00000012, 0x00000013,
+   0x0004006f, 0x00000006, 0x00000015, 0x00000014, 0x000500c3, 0x0000000e, 0x00000017, 0x00000012,
+   0x00000013, 0x0004006f, 0x00000006, 0x00000018, 0x00000017, 0x00070050, 0x00000007, 0x0000001b,
+   0x00000015, 0x00000018, 0x00000019, 0x0000001a, 0x00050041, 0x0000001c, 0x0000001d, 0x0000000d,
+   0x0000000f, 0x0003003e, 0x0000001d, 0x0000001b, 0x000100fd, 0x00010038,
+};
+/* #version 450 layout(location = 0) flat out int v; void main() { v = gl_VertexIndex; gl_Position = vec4(float(gl_VertexIndex & 1), float(gl_VertexIndex >> 1), 0.0, 1.0); } */
+static const uint32_t spv_split_flat_vert[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x00000021, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0008000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x00000008, 0x0000000a, 0x00000013,
+   0x00030047, 0x00000008, 0x0000000e, 0x00040047, 0x00000008, 0x0000001e, 0x00000000, 0x00040047,
+   0x0000000a, 0x0000000b, 0x0000002a, 0x00030047, 0x00000011, 0x00000002, 0x00050048, 0x00000011,
+   0x00000000, 0x0000000b, 0x00000000, 0x00050048, 0x00000011, 0x00000001, 0x0000000b, 0x00000001,
+   0x00050048, 0x00000011, 0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x00000011, 0x00000003,
+   0x0000000b, 0x00000004, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00040015,
+   0x00000006, 0x00000020, 0x00000001, 0x00040020, 0x00000007, 0x00000003, 0x00000006, 0x0004003b,
+   0x00000007, 0x00000008, 0x00000003, 0x00040020, 0x00000009, 0x00000001, 0x00000006, 0x0004003b,
+   0x00000009, 0x0000000a, 0x00000001, 0x00030016, 0x0000000c, 0x00000020, 0x00040017, 0x0000000d,
+   0x0000000c, 0x00000004, 0x00040015, 0x0000000e, 0x00000020, 0x00000000, 0x0004002b, 0x0000000e,
+   0x0000000f, 0x00000001, 0x0004001c, 0x00000010, 0x0000000c, 0x0000000f, 0x0006001e, 0x00000011,
+   0x0000000d, 0x0000000c, 0x00000010, 0x00000010, 0x00040020, 0x00000012, 0x00000003, 0x00000011,
+   0x0004003b, 0x00000012, 0x00000013, 0x00000003, 0x0004002b, 0x00000006, 0x00000014, 0x00000000,
+   0x0004002b, 0x00000006, 0x00000016, 0x00000001, 0x0004002b, 0x0000000c, 0x0000001c, 0x00000000,
+   0x0004002b, 0x0000000c, 0x0000001d, 0x3f800000, 0x00040020, 0x0000001f, 0x00000003, 0x0000000d,
+   0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d,
+   0x00000006, 0x0000000b, 0x0000000a, 0x0003003e, 0x00000008, 0x0000000b, 0x000500c7, 0x00000006,
+   0x00000017, 0x0000000b, 0x00000016, 0x0004006f, 0x0000000c, 0x00000018, 0x00000017, 0x000500c3,
+   0x00000006, 0x0000001a, 0x0000000b, 0x00000016, 0x0004006f, 0x0000000c, 0x0000001b, 0x0000001a,
+   0x00070050, 0x0000000d, 0x0000001e, 0x00000018, 0x0000001b, 0x0000001c, 0x0000001d, 0x00050041,
+   0x0000001f, 0x00000020, 0x00000013, 0x00000014, 0x0003003e, 0x00000020, 0x0000001e, 0x000100fd,
+   0x00010038,
+};
+/* #version 450 layout(location = 0) out vec4 c; void main() { c = vec4(0.0, 1.0, 0.0, 1.0); } */
+static const uint32_t spv_split_plain_frag[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x0000000d, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0006000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x00030010, 0x00000004,
+   0x00000007, 0x00040047, 0x00000009, 0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021,
+   0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006,
+   0x00000004, 0x00040020, 0x00000008, 0x00000003, 0x00000007, 0x0004003b, 0x00000008, 0x00000009,
+   0x00000003, 0x0004002b, 0x00000006, 0x0000000a, 0x00000000, 0x0004002b, 0x00000006, 0x0000000b,
+   0x3f800000, 0x0007002c, 0x00000007, 0x0000000c, 0x0000000a, 0x0000000b, 0x0000000a, 0x0000000b,
+   0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0003003e,
+   0x00000009, 0x0000000c, 0x000100fd, 0x00010038,
+};
+/* #version 450 layout(location = 0) flat in int v; layout(location = 0) out vec4 c; void main() { c = vec4(float(v)); } */
+static const uint32_t spv_split_flat_frag[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x00000010, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0007000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x00000009, 0x0000000c, 0x00030010,
+   0x00000004, 0x00000007, 0x00040047, 0x00000009, 0x0000001e, 0x00000000, 0x00030047, 0x0000000c,
+   0x0000000e, 0x00040047, 0x0000000c, 0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021,
+   0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006,
+   0x00000004, 0x00040020, 0x00000008, 0x00000003, 0x00000007, 0x0004003b, 0x00000008, 0x00000009,
+   0x00000003, 0x00040015, 0x0000000a, 0x00000020, 0x00000001, 0x00040020, 0x0000000b, 0x00000001,
+   0x0000000a, 0x0004003b, 0x0000000b, 0x0000000c, 0x00000001, 0x00050036, 0x00000002, 0x00000004,
+   0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003d, 0x0000000a, 0x0000000d, 0x0000000c,
+   0x0004006f, 0x00000006, 0x0000000e, 0x0000000d, 0x00070050, 0x00000007, 0x0000000f, 0x0000000e,
+   0x0000000e, 0x0000000e, 0x0000000e, 0x0003003e, 0x00000009, 0x0000000f, 0x000100fd, 0x00010038,
+};
+/* #version 450 layout(vertices = 3) out; void main() { gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position; gl_TessLevelOuter[0] = 1.0; gl_TessLevelOuter[1] = 1.0; gl_TessLevelOuter[2] = 1.0; gl_TessLevelInner[0] = 1.0; } */
+static const uint32_t spv_split_t_tesc[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x00000030, 0x00000000, 0x00020011, 0x00000003, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x000a000f, 0x00000001, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000f, 0x00000012, 0x00000019,
+   0x00000023, 0x0000002e, 0x00040010, 0x00000004, 0x0000001a, 0x00000003, 0x00030047, 0x0000000b,
+   0x00000002, 0x00050048, 0x0000000b, 0x00000000, 0x0000000b, 0x00000000, 0x00050048, 0x0000000b,
+   0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000000b, 0x00000002, 0x0000000b, 0x00000003,
+   0x00050048, 0x0000000b, 0x00000003, 0x0000000b, 0x00000004, 0x00040047, 0x00000012, 0x0000000b,
+   0x00000008, 0x00030047, 0x00000015, 0x00000002, 0x00050048, 0x00000015, 0x00000000, 0x0000000b,
+   0x00000000, 0x00050048, 0x00000015, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x00000015,
+   0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x00000015, 0x00000003, 0x0000000b, 0x00000004,
+   0x00040047, 0x00000023, 0x0000000b, 0x0000000b, 0x00030047, 0x00000023, 0x0000000f, 0x00040047,
+   0x0000002e, 0x0000000b, 0x0000000c, 0x00030047, 0x0000002e, 0x0000000f, 0x00020013, 0x00000002,
+   0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007,
+   0x00000006, 0x00000004, 0x00040015, 0x00000008, 0x00000020, 0x00000000, 0x0004002b, 0x00000008,
+   0x00000009, 0x00000001, 0x0004001c, 0x0000000a, 0x00000006, 0x00000009, 0x0006001e, 0x0000000b,
+   0x00000007, 0x00000006, 0x0000000a, 0x0000000a, 0x0004002b, 0x00000008, 0x0000000c, 0x00000003,
+   0x0004001c, 0x0000000d, 0x0000000b, 0x0000000c, 0x00040020, 0x0000000e, 0x00000003, 0x0000000d,
+   0x0004003b, 0x0000000e, 0x0000000f, 0x00000003, 0x00040015, 0x00000010, 0x00000020, 0x00000001,
+   0x00040020, 0x00000011, 0x00000001, 0x00000010, 0x0004003b, 0x00000011, 0x00000012, 0x00000001,
+   0x0004002b, 0x00000010, 0x00000014, 0x00000000, 0x0006001e, 0x00000015, 0x00000007, 0x00000006,
+   0x0000000a, 0x0000000a, 0x0004002b, 0x00000008, 0x00000016, 0x00000020, 0x0004001c, 0x00000017,
+   0x00000015, 0x00000016, 0x00040020, 0x00000018, 0x00000001, 0x00000017, 0x0004003b, 0x00000018,
+   0x00000019, 0x00000001, 0x00040020, 0x0000001b, 0x00000001, 0x00000007, 0x00040020, 0x0000001e,
+   0x00000003, 0x00000007, 0x0004002b, 0x00000008, 0x00000020, 0x00000004, 0x0004001c, 0x00000021,
+   0x00000006, 0x00000020, 0x00040020, 0x00000022, 0x00000003, 0x00000021, 0x0004003b, 0x00000022,
+   0x00000023, 0x00000003, 0x0004002b, 0x00000006, 0x00000024, 0x3f800000, 0x00040020, 0x00000025,
+   0x00000003, 0x00000006, 0x0004002b, 0x00000010, 0x00000027, 0x00000001, 0x0004002b, 0x00000010,
+   0x00000029, 0x00000002, 0x0004002b, 0x00000008, 0x0000002b, 0x00000002, 0x0004001c, 0x0000002c,
+   0x00000006, 0x0000002b, 0x00040020, 0x0000002d, 0x00000003, 0x0000002c, 0x0004003b, 0x0000002d,
+   0x0000002e, 0x00000003, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
+   0x00000005, 0x0004003d, 0x00000010, 0x00000013, 0x00000012, 0x00060041, 0x0000001b, 0x0000001c,
+   0x00000019, 0x00000013, 0x00000014, 0x0004003d, 0x00000007, 0x0000001d, 0x0000001c, 0x00060041,
+   0x0000001e, 0x0000001f, 0x0000000f, 0x00000013, 0x00000014, 0x0003003e, 0x0000001f, 0x0000001d,
+   0x00050041, 0x00000025, 0x00000026, 0x00000023, 0x00000014, 0x0003003e, 0x00000026, 0x00000024,
+   0x00050041, 0x00000025, 0x00000028, 0x00000023, 0x00000027, 0x0003003e, 0x00000028, 0x00000024,
+   0x00050041, 0x00000025, 0x0000002a, 0x00000023, 0x00000029, 0x0003003e, 0x0000002a, 0x00000024,
+   0x00050041, 0x00000025, 0x0000002f, 0x0000002e, 0x00000014, 0x0003003e, 0x0000002f, 0x00000024,
+   0x000100fd, 0x00010038,
+};
+/* #version 450 layout(triangles) in; void main() { gl_Position = gl_TessCoord.x * gl_in[0].gl_Position + gl_TessCoord.y * gl_in[1].gl_Position + gl_TessCoord.z * gl_in[2].gl_Position; } */
+static const uint32_t spv_split_t_tese[] = {
+   0x07230203, 0x00010000, 0x000d000b, 0x00000031, 0x00000000, 0x00020011, 0x00000003, 0x0006000b,
+   0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+   0x0008000f, 0x00000002, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000d, 0x00000012, 0x0000001b,
+   0x00030010, 0x00000004, 0x00000016, 0x00030010, 0x00000004, 0x00000001, 0x00030010, 0x00000004,
+   0x00000005, 0x00030047, 0x0000000b, 0x00000002, 0x00050048, 0x0000000b, 0x00000000, 0x0000000b,
+   0x00000000, 0x00050048, 0x0000000b, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000000b,
+   0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x0000000b, 0x00000003, 0x0000000b, 0x00000004,
+   0x00040047, 0x00000012, 0x0000000b, 0x0000000d, 0x00030047, 0x00000017, 0x00000002, 0x00050048,
+   0x00000017, 0x00000000, 0x0000000b, 0x00000000, 0x00050048, 0x00000017, 0x00000001, 0x0000000b,
+   0x00000001, 0x00050048, 0x00000017, 0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x00000017,
+   0x00000003, 0x0000000b, 0x00000004, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002,
+   0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000004, 0x00040015,
+   0x00000008, 0x00000020, 0x00000000, 0x0004002b, 0x00000008, 0x00000009, 0x00000001, 0x0004001c,
+   0x0000000a, 0x00000006, 0x00000009, 0x0006001e, 0x0000000b, 0x00000007, 0x00000006, 0x0000000a,
+   0x0000000a, 0x00040020, 0x0000000c, 0x00000003, 0x0000000b, 0x0004003b, 0x0000000c, 0x0000000d,
+   0x00000003, 0x00040015, 0x0000000e, 0x00000020, 0x00000001, 0x0004002b, 0x0000000e, 0x0000000f,
+   0x00000000, 0x00040017, 0x00000010, 0x00000006, 0x00000003, 0x00040020, 0x00000011, 0x00000001,
+   0x00000010, 0x0004003b, 0x00000011, 0x00000012, 0x00000001, 0x0004002b, 0x00000008, 0x00000013,
+   0x00000000, 0x00040020, 0x00000014, 0x00000001, 0x00000006, 0x0006001e, 0x00000017, 0x00000007,
+   0x00000006, 0x0000000a, 0x0000000a, 0x0004002b, 0x00000008, 0x00000018, 0x00000020, 0x0004001c,
+   0x00000019, 0x00000017, 0x00000018, 0x00040020, 0x0000001a, 0x00000001, 0x00000019, 0x0004003b,
+   0x0000001a, 0x0000001b, 0x00000001, 0x00040020, 0x0000001c, 0x00000001, 0x00000007, 0x0004002b,
+   0x0000000e, 0x00000022, 0x00000001, 0x0004002b, 0x00000008, 0x00000027, 0x00000002, 0x0004002b,
+   0x0000000e, 0x0000002a, 0x00000002, 0x00040020, 0x0000002f, 0x00000003, 0x00000007, 0x00050036,
+   0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x00050041, 0x00000014,
+   0x00000015, 0x00000012, 0x00000013, 0x0004003d, 0x00000006, 0x00000016, 0x00000015, 0x00060041,
+   0x0000001c, 0x0000001d, 0x0000001b, 0x0000000f, 0x0000000f, 0x0004003d, 0x00000007, 0x0000001e,
+   0x0000001d, 0x0005008e, 0x00000007, 0x0000001f, 0x0000001e, 0x00000016, 0x00050041, 0x00000014,
+   0x00000020, 0x00000012, 0x00000009, 0x0004003d, 0x00000006, 0x00000021, 0x00000020, 0x00060041,
+   0x0000001c, 0x00000023, 0x0000001b, 0x00000022, 0x0000000f, 0x0004003d, 0x00000007, 0x00000024,
+   0x00000023, 0x0005008e, 0x00000007, 0x00000025, 0x00000024, 0x00000021, 0x00050081, 0x00000007,
+   0x00000026, 0x0000001f, 0x00000025, 0x00050041, 0x00000014, 0x00000028, 0x00000012, 0x00000027,
+   0x0004003d, 0x00000006, 0x00000029, 0x00000028, 0x00060041, 0x0000001c, 0x0000002b, 0x0000001b,
+   0x0000002a, 0x0000000f, 0x0004003d, 0x00000007, 0x0000002c, 0x0000002b, 0x0005008e, 0x00000007,
+   0x0000002d, 0x0000002c, 0x00000029, 0x00050081, 0x00000007, 0x0000002e, 0x00000026, 0x0000002d,
+   0x00050041, 0x0000002f, 0x00000030, 0x0000000d, 0x0000000f, 0x0003003e, 0x00000030, 0x0000002e,
+   0x000100fd, 0x00010038,
+};
+
+/* ---- draws and state changes that split a Metal pass (virgl-venus-encoder-cap.patch) ---- */
+static struct {
+   bool u8, last, cond, sl, lr, list_restart, robust2, tess;
+} split;
+
+/* a second device with what the draw-split cases need (robust: robustBufferAccess and
+ * robustBufferAccess2 on); it replaces the case's device */
+static void split_device(bool robust)
+{
+   VkPhysicalDevice host = pdev->base.handle.physical_device;
+   VkPhysicalDeviceIndexTypeUint8FeaturesKHR u8 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR };
+   VkPhysicalDeviceProvokingVertexFeaturesEXT pv = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT };
+   VkPhysicalDeviceConditionalRenderingFeaturesEXT cr = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CONDITIONAL_RENDERING_FEATURES_EXT };
+   VkPhysicalDeviceDynamicRenderingLocalReadFeaturesKHR lr = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_LOCAL_READ_FEATURES_KHR };
+   VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT lrs = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT };
+   VkPhysicalDeviceRobustness2FeaturesEXT r2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT };
+   VkPhysicalDeviceVulkan13Features f13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+   VkPhysicalDeviceFeatures2 f2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f13 };
+   const char *exts[8];
+   uint32_t n_ext = 0;
+   void **tail = &f13.pNext;
+#define SPLIT_EXT(name, s)                                                                \
+   if (lists(name)) {                                                                     \
+      *tail = &(s);                                                                       \
+      tail = &(s).pNext;                                                                  \
+      exts[n_ext++] = name;                                                               \
+   }
+   SPLIT_EXT(VK_KHR_INDEX_TYPE_UINT8_EXTENSION_NAME, u8)
+   else SPLIT_EXT(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, u8)
+   SPLIT_EXT(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, pv)
+   SPLIT_EXT(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, cr)
+   SPLIT_EXT(VK_KHR_DYNAMIC_RENDERING_LOCAL_READ_EXTENSION_NAME, lr)
+   SPLIT_EXT(VK_EXT_PRIMITIVE_TOPOLOGY_LIST_RESTART_EXTENSION_NAME, lrs)
+   SPLIT_EXT(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, r2)
+#undef SPLIT_EXT
+   split.sl = lists(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
+   if (split.sl)
+      exts[n_ext++] = VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME;
+   pdev->proc_table.GetPhysicalDeviceFeatures2(host, &f2);
+   /* only what the cases use */
+   pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
+   cr.inheritedConditionalRendering = VK_FALSE;
+   lrs.primitiveTopologyPatchListRestart = VK_FALSE;
+   r2.robustImageAccess2 = VK_FALSE;
+   r2.robustBufferAccess2 = robust && f2.features.robustBufferAccess && r2.robustBufferAccess2;
+   split.u8 = u8.indexTypeUint8, split.last = pv.provokingVertexLast, split.cond = cr.conditionalRendering;
+   split.lr = lr.dynamicRenderingLocalRead, split.list_restart = lrs.primitiveTopologyListRestart;
+   split.robust2 = r2.robustBufferAccess2, split.tess = f2.features.tessellationShader;
+   VkPhysicalDeviceVulkan13Features e13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+                                            .pNext = f13.pNext, .dynamicRendering = f13.dynamicRendering,
+                                            .synchronization2 = f13.synchronization2 };
+   VkPhysicalDeviceFeatures2 e2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e13 };
+   e2.features.tessellationShader = f2.features.tessellationShader;
+   e2.features.robustBufferAccess = split.robust2;
+   const float priority = 1;
+   const VkDeviceQueueCreateInfo q = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1,
+                                       .pQueuePriorities = &priority };
+   VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2,
+                              .queueCreateInfoCount = 1, .pQueueCreateInfos = &q,
+                              .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = exts };
+   const uint64_t device_object = next_id++;
+   VkDevice device_id = (VkDevice)(uintptr_t)device_object;
+   struct vn_command_vkCreateDevice cd = { .physicalDevice = (VkPhysicalDevice)pdev, .pCreateInfo = &dci,
+                                           .pDevice = &device_id };
+   D->dispatch_vkCreateDevice(D, &cd);
+   if (cd.ret != VK_SUCCESS || !object(device_object))
+      broken("vkCreateDevice (draw splits)");
+   dev = object(device_object);
+   step("draw-split device: u8 %d, last %d, conditional %d, sample locations %d, local read %d, list "
+        "restart %d, robust2 %d, tessellation %d",
+        split.u8, split.last, split.cond, split.sl, split.lr, split.list_restart, split.robust2, split.tess);
+}
+
+struct split_pipe {
+   VkPrimitiveTopology topology;
+   bool flat, tess, last, restart_dynamic, sl, rendering;
+};
+
+static void *split_pipeline(void *layout, void *rp, const struct split_pipe *o)
+{
+   void *vs = o->flat ? shader(spv_split_flat_vert, sizeof(spv_split_flat_vert))
+                      : shader(spv_split_plain_vert, sizeof(spv_split_plain_vert));
+   void *fs = o->flat ? shader(spv_split_flat_frag, sizeof(spv_split_flat_frag))
+                      : shader(spv_split_plain_frag, sizeof(spv_split_plain_frag));
+   void *tc = o->tess ? shader(spv_split_t_tesc, sizeof(spv_split_t_tesc)) : NULL;
+   void *te = o->tess ? shader(spv_split_t_tese, sizeof(spv_split_t_tese)) : NULL;
+   if (!vs || !fs || (o->tess && (!tc || !te)))
+      broken("draw-split shaders");
+   VkPipelineShaderStageCreateInfo st[4] = {
+      { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .module = (VkShaderModule)vs, .pName = "main" },
+      { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .module = (VkShaderModule)fs, .pName = "main" },
+      { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT,
+        .module = (VkShaderModule)tc, .pName = "main" },
+      { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, .module = (VkShaderModule)te, .pName = "main" } };
+   VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+   VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = o->tess ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : o->topology };
+   VkPipelineTessellationStateCreateInfo ts = { .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+                                                .patchControlPoints = 3 };
+   VkViewport vp0 = { 0, 0, 64, 64, 0, 1 };
+   VkRect2D sc0 = { { 0, 0 }, { 64, 64 } };
+   VkPipelineViewportStateCreateInfo vp = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+                                            .viewportCount = 1, .pViewports = &vp0, .scissorCount = 1,
+                                            .pScissors = &sc0 };
+   VkPipelineRasterizationProvokingVertexStateCreateInfoEXT pvs = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT,
+      .provokingVertexMode = VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT };
+   VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .pNext = o->last ? &pvs : NULL, .polygonMode = VK_POLYGON_MODE_FILL,
+                                                 .lineWidth = 1 };
+   VkSampleLocationsInfoEXT sli = valid_sample_locations();
+   VkPipelineSampleLocationsStateCreateInfoEXT sls = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT, .sampleLocationsEnable = VK_TRUE,
+      .sampleLocationsInfo = sli };
+   VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                               .pNext = o->sl ? &sls : NULL,
+                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+   VkPipelineColorBlendAttachmentState cba = { .colorWriteMask = 0xf };
+   VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = 1, .pAttachments = &cba };
+   VkDynamicState dyn[2];
+   uint32_t nd = 0;
+   if (o->restart_dynamic)
+      dyn[nd++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE;
+   if (o->sl)
+      dyn[nd++] = VK_DYNAMIC_STATE_SAMPLE_LOCATIONS_EXT;
+   VkPipelineDynamicStateCreateInfo ds = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                           .dynamicStateCount = nd, .pDynamicStates = dyn };
+   VkFormat fmt = FMT;
+   VkPipelineRenderingCreateInfo ri = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+                                        .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt };
+   const uint64_t id = next_id++;
+   VkPipeline h = (VkPipeline)(uintptr_t)id;
+   VkGraphicsPipelineCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = o->rendering ? &ri : NULL,
+      .stageCount = o->tess ? 4 : 2, .pStages = st, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
+      .pTessellationState = o->tess ? &ts : NULL, .pViewportState = &vp, .pRasterizationState = &rs,
+      .pMultisampleState = &ms, .pColorBlendState = &cb, .pDynamicState = nd ? &ds : NULL,
+      .layout = (VkPipelineLayout)layout, .renderPass = o->rendering ? NULL : (VkRenderPass)rp };
+   struct vn_command_vkCreateGraphicsPipelines c = { .device = DEVH, .createInfoCount = 1, .pCreateInfos = &info,
+                                                     .pPipelines = &h };
+   step("vkCreateGraphicsPipelines (draw split): topology %d, flat %d, tess %d, last %d", ia.topology, o->flat,
+        o->tess, o->last);
+   D->dispatch_vkCreateGraphicsPipelines(D, &c);
+   if (c.ret != VK_SUCCESS || !object(id))
+      broken("draw-split pipeline");
+   return object(id);
+}
+
+/* h-pass-draw-KIND: a pass and as many draws of the kind as the cap (1024) in one command
+ * buffer: the draws that split the pass on the driver (the M1 probes,
+ * work/v624-hostmem/fix) take it past the cap, the others fit. KosmicKrisp unrolls or
+ * predicates in a compute pass first (fan, u8, strip16: 16-bit strips with restart off,
+ * list-restart, flat-last: flat inputs with the last vertex provoking, pred, robust-indirect:
+ * counted on any macOS); on both drivers each tessellated draw and each sample-location or
+ * attachment-location change in a pass splits. Fit on both: list16, strip16-restart,
+ * strip32, flat-first, robust-plain. h-pass-3d-*: a clear of a 3D image is one pass,
+ * whatever its depth. */
+static int case_host_draws(const char *c)
+{
+   h_env("1024", "1024", "1024");
+   setup(0);
+   const uint32_t cap = 1024;
+   if (IS("h-pass-3d-ok") || IS("h-pass-3d-over")) {
+      /* a 64 x 64 x 256 3D image, one level: 1024 clears fit, 1025 do not (the M1: 16384
+       * clears of a 2048-deep one recorded, 6072 B each) */
+      const uint64_t id = next_id++;
+      VkImage hd = (VkImage)(uintptr_t)id;
+      VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_3D,
+                                 .format = FMT, .extent = { 64, 64, 256 }, .mipLevels = 1, .arrayLayers = 1,
+                                 .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                 .usage = CA_SA };
+      struct vn_command_vkCreateImage ci = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
+      D->dispatch_vkCreateImage(D, &ci);
+      struct vkr_image *img = object(id);
+      if (ci.ret != VK_SUCCESS || !img)
+         broken("vkCreateImage (3D)");
+      const VkMemoryRequirements req = requirements_of(img, NULL);
+      if (bind_image_at(img, allocate(req.size, memory_type(req.memoryTypeBits))) != VK_SUCCESS)
+         broken("bind (3D)");
+      void *cmd = command_buffer();
+      begin(cmd);
+      h_clears(cmd, img, IS("h-pass-3d-ok") ? cap : cap + 1, 1);
+      return end(cmd);
+   }
+#define K(x) IS("h-pass-draw-" x)
+   const bool robust = K("robust-indirect") || K("robust-plain");
+   split_device(robust);
+   if (((K("u8")) && !split.u8) || (K("flat-last") && !split.last) || (K("pred") && !split.cond) ||
+       ((K("sample-locations")) && !split.sl) || (K("attachment-locations") && !split.lr) ||
+       (K("list-restart") && !split.list_restart) || (K("tess") && !split.tess) || (robust && !split.robust2)) {
+      printf("skip: the device lacks the feature\n");
+      return SKIP;
+   }
+   const bool counted = K("tess") || K("sample-locations") || K("attachment-locations") ||
+                        (kosmickrisp && (K("fan") || K("u8") || K("strip16") || K("list-restart") ||
+                                         K("flat-last") || K("pred") || K("robust-indirect")));
+   expect(counted);
+   struct world w = { 0 };
+   make_world(&w, false);
+   struct vkr_buffer *ib = buffer(1u << 16);
+   struct split_pipe o = { .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+   bool indexed = false, indirect = false;
+   VkIndexType itype = VK_INDEX_TYPE_UINT16;
+   if (K("fan"))
+      o.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+   else if (K("u8"))
+      indexed = true, itype = VK_INDEX_TYPE_UINT8_KHR;
+   else if (K("strip16") || K("strip16-restart") || K("strip32"))
+      indexed = true, o.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP, o.restart_dynamic = true,
+      itype = K("strip32") ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+   else if (K("list-restart") || K("list16"))
+      indexed = true, o.restart_dynamic = true;
+   else if (K("flat-last"))
+      o.flat = true, o.last = true;
+   else if (K("flat-first"))
+      o.flat = true;
+   else if (K("robust-indirect"))
+      indexed = true, indirect = true;
+   else if (K("robust-plain"))
+      indexed = true;
+   else if (K("tess"))
+      o.tess = true;
+   else if (K("sample-locations"))
+      o.sl = true;
+   else if (K("attachment-locations"))
+      o.rendering = true;
+   void *pipe = split_pipeline(w.layout, w.rp, &o);
+   begin(w.cmd);
+   if (o.rendering) {
+      VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = (VkImageView)w.iv,
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+      VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { { 0, 0 }, { 64, 64 } },
+                             .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &att };
+      struct vn_command_vkCmdBeginRendering br = { .commandBuffer = (VkCommandBuffer)w.cmd, .pRenderingInfo = &ri };
+      D->dispatch_vkCmdBeginRendering(D, &br);
+   } else {
+      begin_pass(w.cmd, w.rp, w.fb, 64, 64);
+   }
+   bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+   if (indexed) {
+      struct vn_command_vkCmdBindIndexBuffer b = { .commandBuffer = (VkCommandBuffer)w.cmd, .buffer = (VkBuffer)ib,
+                                                   .indexType = itype };
+      D->dispatch_vkCmdBindIndexBuffer(D, &b);
+   }
+   if (o.restart_dynamic) {
+      struct vn_command_vkCmdSetPrimitiveRestartEnable pr = {
+         .commandBuffer = (VkCommandBuffer)w.cmd, .primitiveRestartEnable = K("strip16-restart") || K("list-restart") };
+      D->dispatch_vkCmdSetPrimitiveRestartEnable(D, &pr);
+   }
+   if (K("pred")) {
+      VkConditionalRenderingBeginInfoEXT cri = { .sType = VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT,
+                                                 .buffer = (VkBuffer)w.buf };
+      struct vn_command_vkCmdBeginConditionalRenderingEXT bc = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                                 .pConditionalRenderingBegin = &cri };
+      D->dispatch_vkCmdBeginConditionalRenderingEXT(D, &bc);
+   }
+   uint32_t i = 0;
+   for (; i < cap && !ended(); i++) {
+      if (K("sample-locations")) {
+         VkSampleLocationsInfoEXT sli = valid_sample_locations();
+         VkSampleLocationEXT l[64];
+         for (uint32_t k = 0; k < sli.sampleLocationsCount && k < 64; k++)
+            l[k] = (VkSampleLocationEXT){ (i & 1) ? 0.25f : 0.75f, 0.5f };
+         sli.pSampleLocations = l;
+         struct vn_command_vkCmdSetSampleLocationsEXT s = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                            .pSampleLocationsInfo = &sli };
+         D->dispatch_vkCmdSetSampleLocationsEXT(D, &s);
+      } else if (K("attachment-locations")) {
+         uint32_t locs[1] = { (i & 1) ? VK_ATTACHMENT_UNUSED : 0 };
+         VkRenderingAttachmentLocationInfoKHR li = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO_KHR,
+                                                     .colorAttachmentCount = 1, .pColorAttachmentLocations = locs };
+         struct vn_command_vkCmdSetRenderingAttachmentLocations s = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                                      .pLocationInfo = &li };
+         D->dispatch_vkCmdSetRenderingAttachmentLocations(D, &s);
+      }
+      if (indirect) {
+         struct vn_command_vkCmdDrawIndexedIndirect d = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                          .buffer = (VkBuffer)w.buf, .drawCount = 1,
+                                                          .stride = sizeof(VkDrawIndexedIndirectCommand) };
+         D->dispatch_vkCmdDrawIndexedIndirect(D, &d);
+      } else if (indexed) {
+         struct vn_command_vkCmdDrawIndexed d = { .commandBuffer = (VkCommandBuffer)w.cmd, .indexCount = 3,
+                                                  .instanceCount = 1 };
+         D->dispatch_vkCmdDrawIndexed(D, &d);
+      } else {
+         struct vn_command_vkCmdDraw d = { .commandBuffer = (VkCommandBuffer)w.cmd, .vertexCount = 3,
+                                           .instanceCount = 1 };
+         D->dispatch_vkCmdDraw(D, &d);
+      }
+   }
+   step("%u draws recorded%s", i, ended() ? " (the context ended)" : "");
+#undef K
+   if (ended())
+      return FATAL;
+   if (IS("h-pass-draw-pred")) {
+      struct vn_command_vkCmdEndConditionalRenderingEXT ec = { .commandBuffer = (VkCommandBuffer)w.cmd };
+      D->dispatch_vkCmdEndConditionalRenderingEXT(D, &ec);
+   }
+   if (o.rendering) {
+      struct vn_command_vkCmdEndRendering e = { .commandBuffer = (VkCommandBuffer)w.cmd };
+      D->dispatch_vkCmdEndRendering(D, &e);
+   } else {
+      end_pass(w.cmd);
+   }
+   return end(w.cmd);
+}
+
+/* recordings, objects, heaps, the temp pool and the charge's return
+ * (virgl-venus-host-memory.patch) */
+static int case_host_memory(const char *c)
+{
+   if (IS("h-temp-big")) {
+      setup(0);
+      /* one 256 MB command: the decoder kept it for the context's next commands */
+      void *t = vkr_cs_decoder_alloc_temp(&ctx->decoder, 256u << 20);
+      if (!t)
+         broken("temp");
+      vkr_cs_decoder_reset(&ctx->decoder);
+      const size_t kept = ctx->decoder.temp_pool.total_size;
+      step("temp pool after the reset: %zu MB", kept >> 20);
+      void *small = vkr_cs_decoder_alloc_temp(&ctx->decoder, 4096);
+      vkr_cs_decoder_reset(&ctx->decoder);
+      return small && kept <= (16u << 20) ? WORKS : ERROR;
+   }
+   if (IS("h-heap")) {
+      setup(0);
+      const uint64_t apps = virgl_gpu_budget_apps_limit();
+      struct vkr_device_memory *mem = allocate(64u << 20, memory_type(~0u));
+      (void)mem;
+      VkPhysicalDeviceMemoryProperties mp = { 0 };
+      struct vn_command_vkGetPhysicalDeviceMemoryProperties g1 = { .physicalDevice = (VkPhysicalDevice)pdev,
+                                                                  .pMemoryProperties = &mp };
+      D->dispatch_vkGetPhysicalDeviceMemoryProperties(D, &g1);
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT bp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT };
+      VkPhysicalDeviceMemoryProperties2 mp2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                                .pNext = lists(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) ? &bp : NULL };
+      struct vn_command_vkGetPhysicalDeviceMemoryProperties2 g2 = { .physicalDevice = (VkPhysicalDevice)pdev,
+                                                                   .pMemoryProperties = &mp2 };
+      D->dispatch_vkGetPhysicalDeviceMemoryProperties2(D, &g2);
+      VkPhysicalDeviceMaintenance3Properties m3 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES };
+      VkPhysicalDeviceMaintenance4Properties m4 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES,
+                                                    .pNext = &m3 };
+      VkPhysicalDeviceProperties2 p2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &m4 };
+      struct vn_command_vkGetPhysicalDeviceProperties2 gp = { .physicalDevice = (VkPhysicalDevice)pdev, .pProperties = &p2 };
+      D->dispatch_vkGetPhysicalDeviceProperties2(D, &gp);
+      bool ok = mp.memoryHeapCount && mp2.memoryProperties.memoryHeapCount;
+      uint64_t heap = 0;
+      for (uint32_t i = 0; i < mp.memoryHeapCount; i++) {
+         const uint64_t s1 = mp.memoryHeaps[i].size, s2 = mp2.memoryProperties.memoryHeaps[i].size;
+         step("heap %u: %" PRIu64 " MB (vkGetPhysicalDeviceMemoryProperties), %" PRIu64
+              " MB (...2), apps' share %" PRIu64 " MB, budget %" PRIu64 " MB, usage %" PRIu64 " MB", i,
+              s1 >> 20, s2 >> 20, apps >> 20, (uint64_t)bp.heapBudget[i] >> 20, (uint64_t)bp.heapUsage[i] >> 20);
+         ok = ok && s1 <= apps && s2 <= apps && s1 == s2;
+         if (mp2.pNext)
+            ok = ok && bp.heapBudget[i] && bp.heapBudget[i] <= s2 && bp.heapUsage[i] >= (64u << 20) &&
+                 bp.heapUsage[i] < (1u << 30);
+         heap = s1 > heap ? s1 : heap;
+      }
+      step("maxMemoryAllocationSize %" PRIu64 " MB, maxBufferSize %" PRIu64 " MB", (uint64_t)m3.maxMemoryAllocationSize >> 20,
+           (uint64_t)m4.maxBufferSize >> 20);
+      ok = ok && m3.maxMemoryAllocationSize <= heap && m4.maxBufferSize <= heap;
+      return ended() ? FATAL : ok ? WORKS : ERROR;
+   }
+   if (IS("h-zink-frame-ok")) {
+      /* a Zink-like frame: 2000 passes of 5 draws each, a barrier between them, at the
+       * default caps and budget */
+      setup(0);
+      struct world w = { 0 };
+      make_world(&w, true);
+      begin(w.cmd);
+      bind_pipeline(w.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, w.gfx_pipe);
+      ready(w.cmd, &w, VK_PIPELINE_BIND_POINT_GRAPHICS);
+      for (int p = 0; p < 2000 && !ended(); p++) {
+         VkClearValue clear = { 0 };
+         VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                                      .renderPass = (VkRenderPass)w.rp, .framebuffer = (VkFramebuffer)w.fb,
+                                      .renderArea = { { 0, 0 }, { 64, 64 } }, .clearValueCount = 1,
+                                      .pClearValues = &clear };
+         struct vn_command_vkCmdBeginRenderPass b = { .commandBuffer = (VkCommandBuffer)w.cmd, .pRenderPassBegin = &bi,
+                                                      .contents = VK_SUBPASS_CONTENTS_INLINE };
+         D->dispatch_vkCmdBeginRenderPass(D, &b);
+         for (int d = 0; d < 5; d++) {
+            struct vn_command_vkCmdDraw dr = { .commandBuffer = (VkCommandBuffer)w.cmd, .vertexCount = 3,
+                                               .instanceCount = 1 };
+            D->dispatch_vkCmdDraw(D, &dr);
+         }
+         struct vn_command_vkCmdEndRenderPass e = { .commandBuffer = (VkCommandBuffer)w.cmd };
+         D->dispatch_vkCmdEndRenderPass(D, &e);
+         VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                                .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
+         struct vn_command_vkCmdPipelineBarrier pb = { .commandBuffer = (VkCommandBuffer)w.cmd,
+                                                       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                                       .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                                       .memoryBarrierCount = 1, .pMemoryBarriers = &mb };
+         D->dispatch_vkCmdPipelineBarrier(D, &pb);
+      }
+      return end(w.cmd);
+   }
+   h_env("256", NULL, NULL);
+   const uint64_t before = virgl_gpu_budget_in_use();
+   setup(0);
+   if (IS("h-rec-fills") || IS("h-rec-updates")) {
+      /* one command buffer, never ended: KosmicKrisp held 2423 B per fill, an update's 64 KB
+       * x 1.28 (2 GB in under 0.6 s) */
+      void *cmd = command_buffer();
+      begin(cmd);
+      struct vkr_buffer *buf = buffer(1u << 20);
+      if (IS("h-rec-fills")) {
+         h_fills(cmd, buf, 4000000);
+      } else {
+         static uint8_t data[65536];
+         uint32_t i = 0;
+         for (; i < 200000 && !ended(); i++) {
+            struct vn_command_vkCmdUpdateBuffer u = { .commandBuffer = (VkCommandBuffer)cmd, .dstBuffer = (VkBuffer)buf,
+                                                      .dataSize = sizeof(data), .pData = data };
+            D->dispatch_vkCmdUpdateBuffer(D, &u);
+         }
+         step("%u updates of 64 KB recorded%s", i, ended() ? " (the context ended)" : "");
+      }
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("h-rec-reuse-ok") || IS("h-rec-spare-ok")) {
+      /* 200 recordings of 20000 fills (KosmicKrisp: 70 MB each) in one command buffer, reset
+       * between; or each in a new command buffer of the pool, the last one freed: the
+       * charge stays at the most one recording took */
+      const bool spare = IS("h-rec-spare-ok");
+      void *pool = NULL, *cmds[4];
+      pool = pool_with_buffers(1, cmds);
+      struct vkr_buffer *buf = buffer(1u << 20);
+      void *cmd = cmds[0];
+      uint64_t first = 0;
+      for (int i = 0; i < 200 && !ended(); i++) {
+         begin(cmd);
+         h_fills(cmd, buf, 20000);
+         if (end(cmd) != WORKS)
+            break;
+         if (!i)
+            first = virgl_gpu_budget_in_use();
+         if (spare) {
+            free_command_buffer(cmd);
+            cmd = command_buffer_in(pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+         } else {
+            reset_command_buffer(cmd);
+         }
+      }
+      const uint64_t last = virgl_gpu_budget_in_use();
+      step("charged after the first recording %" PRIu64 " KB, after the last %" PRIu64 " KB", first >> 10, last >> 10);
+      if (ended())
+         return FATAL;
+      /* a new command buffer charges 40 KB itself */
+      return last <= first + (64u << 10) ? WORKS : ERROR;
+   }
+   if (IS("h-obj-events") || IS("h-obj-events-again-ok")) {
+      /* KosmicKrisp held 18366 B per event (1148 MB in 0.47 s) */
+      const bool again = IS("h-obj-events-again-ok");
+      const uint32_t n = again ? 4000 : 2000000;
+      static uint64_t ids[4000];
+      uint32_t i = 0;
+      for (int round = 0; round < (again ? 3 : 1) && !ended(); round++) {
+         for (i = 0; i < n && !ended(); i++) {
+            const uint64_t id = next_id++;
+            VkEvent h = (VkEvent)(uintptr_t)id;
+            VkEventCreateInfo info = { .sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO };
+            struct vn_command_vkCreateEvent ce = { .device = DEVH, .pCreateInfo = &info, .pEvent = &h };
+            D->dispatch_vkCreateEvent(D, &ce);
+            if (ce.ret != VK_SUCCESS)
+               return ended() ? FATAL : ERROR;
+            if (again)
+               ids[i] = id;
+         }
+         step("%u events made in round %d%s", i, round, ended() ? " (the context ended)" : "");
+         for (uint32_t k = 0; again && k < i && !ended(); k++) {
+            struct vn_command_vkDestroyEvent de = { .device = DEVH, .event = (VkEvent)object(ids[k]) };
+            D->dispatch_vkDestroyEvent(D, &de);
+         }
+      }
+      return ended() ? FATAL : WORKS;
+   }
+   if (IS("h-release-end") || IS("h-release-fatal")) {
+      /* objects, a recording, a held view destroyed (a zombie) and a pool's spare; then the
+       * context's teardown: every charge comes back. fatal: after a refusal (budget) */
+      if (h_prefill())
+         return SKIP; /* the teardown commits a prefilled recording */
+      const uint64_t setup_charge = virgl_gpu_budget_in_use();
+      struct world w = { 0 };
+      make_world(&w, false);
+      void *pool = NULL, *cmds[4];
+      pool = pool_with_buffers(2, cmds);
+      begin(cmds[0]);
+      h_fills(cmds[0], w.buf, 5000);
+      begin(cmds[1]);
+      h_fills(cmds[1], w.buf, 5000);
+      end(cmds[1]);
+      free_command_buffer(cmds[1]);
+      /* a view a pass names, destroyed while the command buffer holds it */
+      void *v = view(w.img, 1);
+      void *fb = framebuffer(w.rp, &v, 1, 64, 64, 1);
+      begin(w.cmd);
+      begin_pass(w.cmd, w.rp, fb, 64, 64);
+      end_pass(w.cmd);
+      destroy_view(v);
+      for (int i = 0; i < 100; i++) {
+         VkEventCreateInfo info = { .sType = VK_STRUCTURE_TYPE_EVENT_CREATE_INFO };
+         VkEvent h = (VkEvent)(uintptr_t)next_id++;
+         struct vn_command_vkCreateEvent ce = { .device = DEVH, .pCreateInfo = &info, .pEvent = &h };
+         D->dispatch_vkCreateEvent(D, &ce);
+      }
+      const uint64_t during = virgl_gpu_budget_in_use();
+      if (IS("h-release-fatal"))
+         h_fills(cmds[0], w.buf, 4000000);
+      step("zombies %d, charged before the setup %" PRIu64 " KB, after it %" PRIu64 " KB, with the objects %" PRIu64
+           " KB, context ended %d", zombies(), before >> 10, setup_charge >> 10, during >> 10, ended());
+      if (IS("h-release-fatal") && !ended())
+         return ERROR;
+      (void)pool;
+      vkr_context_destroy(ctx);
+      const uint64_t after = virgl_gpu_budget_in_use();
+      step("charged after the teardown %" PRIu64 " KB", after >> 10);
+      if (log_len && strstr(log_text, "still charged"))
+         return ERROR;
+      /* the objects charged (more than 400 KB: 100 events alone are 2000 KB) and all came back */
+      return during > setup_charge + (400u << 10) && after == before ? (IS("h-release-fatal") ? FATAL : WORKS)
+                                                                      : ERROR;
+   }
+   return BROKEN;
+}
+
+static int case_host(const char *c)
+{
+   if (!strncmp(c, "h-pass-draw-", 12) || !strncmp(c, "h-pass-3d-", 10))
+      return case_host_draws(c);
+   return !strncmp(c, "h-pass-", 7) ? case_host_passes(c) : case_host_memory(c);
+}
+
 struct test_case {
    const char *name;
    int expect;
@@ -6584,6 +7545,29 @@ static const struct test_case cases[] = {
    { "u-ib-null-m6-ok", E_WORKS }, { "u-ib-unset-m6-ok", E_WORKS }, { "u-ib-unset-m6-indirect-ok", E_WORKS },
    { "u-ib-unset-m6-indirect-count-ok", E_WORKS }, { "u-ib-unset-m6-multi-ok", E_WORKS }, { "u-ib-bound-ok", E_WORKS },
    { "u-set-execute-kept", E_WORKS }, { "u-pc-unset-kept", E_WORKS }, { "u-vb-unset-kept", E_WORKS },
+   /* host memory (virgl-venus-encoder-cap.patch, virgl-venus-host-memory.patch) */
+   { "h-pass-clear-max-ok", E_WORKS }, { "h-pass-clear-over", E_REFUSE, "Metal passes" },
+   { "h-pass-default-max-ok", E_WORKS }, { "h-pass-default-over", E_REFUSE, "Metal passes" },
+   { "h-pass-default-past-metal", E_REFUSE, "Metal passes" },
+   { "h-pass-levels-ok", E_WORKS }, { "h-pass-levels-over", E_REFUSE, "Metal passes" },
+   { "h-pass-layers-ok", E_WORKS }, { "h-pass-render-passes-ok", E_WORKS },
+   { "h-pass-render-passes-over", E_REFUSE, "Metal passes" }, { "h-pass-renderings-over", E_REFUSE, "Metal passes" },
+   { "h-pass-blits-over", E_REFUSE, "Metal passes" }, { "h-pass-split-barriers", E_CHILD },
+   { "h-pass-secondary-ok", E_WORKS }, { "h-pass-secondary-over", E_REFUSE, "Metal passes" },
+   { "h-pass-batch-ok", E_WORKS }, { "h-pass-batch-over", E_CHILD },
+   /* draws and state changes that split a pass (fix-700) */
+   { "h-pass-draw-fan", E_CHILD }, { "h-pass-draw-u8", E_CHILD }, { "h-pass-draw-strip16", E_CHILD },
+   { "h-pass-draw-list-restart", E_CHILD }, { "h-pass-draw-flat-last", E_CHILD }, { "h-pass-draw-pred", E_CHILD },
+   { "h-pass-draw-robust-indirect", E_CHILD }, { "h-pass-draw-tess", E_CHILD },
+   { "h-pass-draw-sample-locations", E_CHILD }, { "h-pass-draw-attachment-locations", E_CHILD },
+   { "h-pass-draw-list16", E_CHILD }, { "h-pass-draw-strip16-restart", E_CHILD }, { "h-pass-draw-strip32", E_CHILD },
+   { "h-pass-draw-flat-first", E_CHILD }, { "h-pass-draw-robust-plain", E_CHILD },
+   { "h-pass-3d-ok", E_WORKS }, { "h-pass-3d-over", E_REFUSE, "Metal passes" },
+   { "h-rec-fills", E_REFUSE, "host memory" }, { "h-rec-updates", E_REFUSE, "host memory" },
+   { "h-rec-reuse-ok", E_WORKS }, { "h-rec-spare-ok", E_WORKS },
+   { "h-obj-events", E_REFUSE, "host memory" }, { "h-obj-events-again-ok", E_WORKS },
+   { "h-release-end", E_WORKS }, { "h-release-fatal", E_REFUSE, "host memory" },
+   { "h-heap", E_WORKS }, { "h-temp-big", E_WORKS }, { "h-zink-frame-ok", E_WORKS },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
 
@@ -6614,6 +7598,7 @@ static int run_case(const char *c)
    case 'm': return case_memory(c);
    case 't': return case_threads(c);
    case 'u': return case_unset(c);
+   case 'h': return case_host(c);
    default: return BROKEN;
    }
 }
