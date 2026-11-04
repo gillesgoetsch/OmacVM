@@ -1248,3 +1248,29 @@ The row's apps used at most 37 MB (about 200 passes' worth). DXVK or Zink with
 4 frames in flight fit up to about 1900 passes per frame; a frame near the
 2000 of `h-zink-frame-ok` with 4 or more in flight would end the app's context
 there. Not measured with DXVK (no Windows app in the row).
+
+## A shader module's charge by its code size (amendment, 3.2.23)
+
+Lane `venus-3223` (X3 of the 3.2.22 architecture review). The host-memory
+account charged a shader module 4 KB whatever its code, up to 4 MB, of which
+both drivers keep a copy and vkr its scan. A capped probe (work/venus-3223/kit/
+probe, phys_footprint inside the process, 512 MB) made N modules of one real
+corpus module through vkr's dispatch on the mini's M4 and kept them:
+
+| Module | Code | KosmicKrisp | MoltenVK | MoltenVK prefill |
+|---|---|---|---|---|
+| dxvk-d3d11-004 (x200) | 68496 B | 106906 B (1.56/B) | 121979 B (1.78/B) | 121651 B (1.78/B) |
+| dxvk-d3d11-009 (x500) | 17808 B | 30310 B (1.70/B) | 30442 B (1.71/B) | 30507 B (1.71/B) |
+| vkcube-frag (x1000) | 2644 B | 6160 B (2.33/B) | 6390 B (2.42/B) | 6308 B (2.39/B) |
+
+(bytes per module; per code byte in brackets). The same number of creates and
+destroys of one module left the footprint where it was on every driver.
+`virgl-venus-host-memory.patch` now charges a module 2 B per byte of its code
+on top of the 4 KB (68 KB of code: 141 KB; 2.6 KB: 9.3 KB), at least what
+each row took. `h-obj-module-size` (200 of the 68 KB module under an 8 MB
+account) works on main and is refused with the change; `h-obj-module-again-ok`
+(2000 creates and destroys) works on both. Not changed: a pipeline cache stays
+20 KB whatever its initial data, and pipelines that leave Metal libraries in a
+module (MoltenVK without a cache) or a cache stay uncharged until a probe
+measures them, repeats included.
+

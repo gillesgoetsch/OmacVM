@@ -3,6 +3,12 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.23 (unreleased)
+
+- **A Vulkan program's shader modules now count by their size (OmacVM.app, #707, see #624).** With Graphics on
+  Vulkan, QEMU counted every shader module as 4 KB of Mac memory, though the drivers keep its code (up to 4 MB). It
+  now counts 2 bytes per byte of code on top of that (measured 1.5-1.8 with real shaders). Needs the app update.
+
 ## 3.2.22
 
 In OmacVM.app VMs with Graphics on Vulkan, QEMU now counts the Metal passes and the Mac memory each
