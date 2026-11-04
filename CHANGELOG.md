@@ -3,6 +3,20 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.21 (unreleased)
+
+- **A Vulkan shader that would crash the Mac's driver now ends only its own app (OmacVM.app, #702,
+  see #624).** With Graphics on Vulkan, QEMU checks each shader a VM sends with SPIRV-Tools' validator
+  before KosmicKrisp or MoltenVK compiles it, for the Vulkan version and features the Mac's driver
+  has. On an M4, 138 of 900 test shaders ended the driver's process (the VM); the check from 3.2.18
+  stopped 72 of them, the validator now stops 65 of the other 66 and a cap on huge unused arrays the
+  last one. The validator itself is guarded: limits on interface variables and types before it reads
+  a shader, its own checks kept on, and at most 2 s of CPU per shader. Real shaders pass (106 from
+  DXVK, Chromium, dEQP, vkcube and Zink; Ghostty on Zink, glxgears, vkcube and Chromium ran in a test
+  VM with no refusal). It costs about 42 µs per KB once per shader (cached after). Ray tracing
+  pipelines, which no Mac driver has, are refused. Needs the app update only (from the VM's next
+  start); nothing in the VM.
+
 ## 3.2.20
 
 In OmacVM.app VMs, more desktop OpenGL programs with tessellation draw on the Mac's GPU: separate
