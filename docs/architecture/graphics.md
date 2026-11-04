@@ -484,9 +484,17 @@ one patch each, each with a build-time test that compiles or runs on the Mac's G
 | no cull distances: vrend wrote no clip distances (a shader writing gl_ClipDistance refused, user clip planes and the clip distances of tessellation and geometry shaders ignored), and a last tessellation evaluation shader lost its y prescale (upside down in a window) and its transform feedback (#589) | `virgl-shader-clip-distances.patch` (clip distances on every desktop GL; the user clip planes' stores in a variant for planes on: key bit `ucp_enabled` for the last vertex or evaluation shader, `gs.emit_clip_distance` for the geometry shader; a vertex shader still never declares gl_CullDistance; transform feedback from a last evaluation shader runs on Apple's software vertex path: "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log) | `test-whole-program-shapes.c` |
 | `GL_ARB_arrays_of_arrays` asked for by a geometry or tessellation shader with a varying array, without checking the host (#589) | `virgl-shader-arrays-of-arrays.patch` (only where the GL has it; interface blocks otherwise, as vrend already declared them) | `test-whole-program-shapes.c` |
 | guest told 0 tessellation shader outputs (asked only on a GL with atomic counters): the guest's Mesa refused every whole program whose tessellation shader had an output (#589) | `virgl-caps-tess-outputs.patch` (the per-vertex limits, on every GL with tessellation) | `test-whole-program-shapes.c` |
+| clip distances between tessellation shaders (`gl_ClipDistance` in the control shader's `gl_out[]` or the evaluation shader's `gl_in[]`, also from a vertex shader straight into an evaluation shader with no control shader): Apple's Metal pipeline build failed ("Fallback to SW vertex processing because buildPipelineState failed"), the draws ran on its CPU vertex path and its shader compiler crashed; Apple's software renderer has no such failure (#589) | `virgl-shader-tess-clip-varyings.patch` (plain per-vertex varyings `omacvm_clip0[]`/`omacvm_clip1[]` without a location, named in the control shader's variable info and the evaluation shader's key; gl_PerVertex as before with cull distances or no free varying slot); `virgl-shader-vs-tes-clip-varyings.patch` (the same from a vertex shader with no control shader: `omacvm_clip0`/`omacvm_clip1`, the evaluation shader's key from the vertex shader) | `test-core-glsl-shaders.c` (text), `test-whole-program-shapes.c` |
+| a temp indexed at run time without an ARRAY declaration (`TEMP[ADDR[0].x+18]`; the VM's Mesa sends clip distances written in a loop that way, virgl_tgsi.c): vrend wrote `temp18[i].x` on a plain `vec4`, "Swizzle of non-vector primitive float", the shader was refused and its draws skipped; an indexed read gave one component in all four (#589). In the looped form the VM's Mesa copies only the first vec4 (distances 0..3) back to the output (the patch for OmacVM's own guest Mesa build, `src/app/guest/mesa/mesa-virgl-tgsi-clip-copyback.patch`; the VM's Arch Mesa keeps it, #692) | `virgl-shader-indirect-temps.patch` (the declaration from its lowest indexed register on is one array; other temps and shaders without indexed temps unchanged; indexed writes use their own address register) | `test-core-glsl-shaders.c` (text, compile), `test-whole-program-shapes.c` (L rows) |
+| a vertex shader that writes `gl_ClipDistance[4..7]` into a tessellation control shader, whole or separable: the M4's and M1 Max's GPUs drew nothing, no fallback line, no crash; Apple's software renderer drew it (#692; the VM's Mesa sends that interface only for a vertex shader that indexes its clip distances at run time) | `virgl-shader-vs-tcs-clip-varyings.patch` (plain varyings `omacvm_vclip0`/`omacvm_vclip1` without a location, own names because the control shader writes `omacvm_clipK`; the control shader's key bit `vs_clip_in` from the vertex shader's variable info; read like the evaluation shader's `omacvm_clipK[]`, an indirect index picks the array; gl_PerVertex as before with cull distances or no free varying slot) | `test-core-glsl-shaders.c` (text, compile, both sides' names), `test-whole-program-shapes.c` (L rows on the GPU) |
+
+Known limit (#589): on the Mac's OpenGL, a tessellation evaluation shader together with a
+geometry shader, transform feedback or point_mode puts the vertex stages on Apple's CPU path. It
+draws right (checked at level 1); heavily tessellated draws are slower (Mac mini M4, 1000 patches:
+level 8 about 20x for a GS, 9x for transform feedback). Apple's limit, not OmacVM's.
 
 The patches apply after gpu-native's and only touch `vrend_shader.[ch]` (the
-clip distance patch adds a shader key bit), `vrend_blitter.[ch]` and
+clip distance patches add shader key bits), `vrend_blitter.[ch]` and
 `vrend_renderer.c` (framebuffer state, caps).
 `virgl-shader-core-glsl-version.patch` covers gpu-robust's `virgl-core-instance-id.patch`
 (same loop in `emit_header`); both apply in either order, drop that one when both land.
@@ -647,7 +655,13 @@ Patches (all in `app/runtime/patches`, one per concern):
   open pass, the bound pipelines, recording); guest SPIR-V through a
   structural scan (`vkr_spirv.c`: header, instructions, id bound, entry
   points, workgroup sizes, the descriptor sets an entry point's call graph
-  uses), fuzzed on the CPU by `Tests/virgl/fuzz-venus-spirv.sh`; copy regions
+  uses), fuzzed on the CPU by `Tests/virgl/fuzz-venus-spirv.sh`, then (3.2.21,
+  `virgl-venus-spirv-validate.patch`) SPIRV-Tools' validator for the device's
+  Vulkan version and features (on MoltenVK the instance's version, as the
+  guest is told), after caps on interface locations and type cost, with a 2 s
+  budget and its asserts kept, and at pipeline creation caps on Function,
+  Private and Workgroup arrays (`spirv-tools-val-*.patch`;
+  `Tests/virgl/test-venus-spirv-validate.sh`); copy regions
   inside their images and buffers (`vkr_format_extent.h`); attachment formats
   the device renders to.
 - `virgl-venus-submit-counts.patch`, `virgl-venus-pool-frees.patch`,
@@ -665,6 +679,20 @@ Patches (all in `app/runtime/patches`, one per concern):
   a time (`vkr_set_walk_*`, tested against a model by
   `Tests/virgl/test-venus-descriptor-walk.c`); `Tests/virgl/test-venus-threads.c`
   drives every thread site to its refusal.
+- `virgl-venus-test-pause.patch`, `virgl-venus-ring-lock.patch`,
+  `virgl-venus-command-holds.patch` (3.2.19, ADR 0065's fourth amendment): one
+  dispatch lock per Venus context (a ring per batch, the context's stream per
+  command, QEMU's blob export, resource removal and queue fences); waits for a
+  ring and ring joins give it up, the pipeline creates and cache reads give it
+  up with their objects pinned (a destroy of a pinned object is refused); an id
+  named twice is refused. Command buffers hold the views, framebuffers and render
+  passes their passes named until the driver let go of the recording; a destroyed
+  held object waits as a zombie on its device. The test hook stops a call between
+  vkr and the driver for the `t-` cases of `Tests/virgl/test-venus-commands.c`.
+- `virgl-venus-secondary-holds.patch` (3.2.19, ADR 0065's fourth amendment, #676):
+  a primary holds the secondaries it executed in the same way (MoltenVK reads them
+  when it encodes the primary at the submit); a freed held secondary stays in the
+  driver as a zombie holding its pool, and a destroyed pool with one waits for it.
 - `virgl-set-type-without-egl.patch`: Vulkan windows. Hyprland imports a
   Venus image (a Metal heap) as a dma-buf (`PIPE_RESOURCE_SET_TYPE` in its
   virgl context). macOS OpenGL cannot import it, and the old EINVAL ended

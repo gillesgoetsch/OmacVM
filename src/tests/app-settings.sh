@@ -25,7 +25,7 @@ expect() {   # WHAT WANT GOT
 # The app's modules, then its sources with this test's main, as an app of its own id.
 mkdir -p "$T/mods"
 for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio OmacVMIcon OmacVMMedia OmacVMDrop; do
-  swiftc -swift-version 5 -parse-as-library -module-cache-path "$T/mc" -module-name $m -emit-module \
+  swiftc -swift-version 5 -parse-as-library -module-cache-path "$T/mc" -I "$T/mods" -module-name $m -emit-module \
     -emit-module-path "$T/mods/$m.swiftmodule" -emit-library -static -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift 2>"$T/cc.log" ||
     { cat "$T/cc.log"; echo "FAIL $m does not build"; exit 1; }
 done

@@ -1,0 +1,398 @@
+SPIRV-Tools: the validator ends in an error, never the process or the clock
+
+What: the library is built with C++ exceptions (CMakeLists.txt no longer adds
+-fno-exceptions). assert() comes from source/omacvm/assert.h: every assert
+stays in a release build and throws when it fails. Its walks that grow faster
+than the module (dominator chains, depth-first traversals and the dominator
+calculation, construct blocks, continue exits, the block order check,
+ContainsType, the block layout check, the decoration subset checks) count
+steps in source/omacvm/budget.h; every 1024th reads the thread's CPU time, and
+2 s after the start the validation throws.
+omacvmValidateWithOptions calls spvValidateWithOptions inside try/catch: an
+exception (a failed assert, the step budget, an at() past the end,
+std::bad_alloc) gives SPV_ERROR_INTERNAL and no diagnostic.
+omacvmValidatorSteps says how many steps the last validation took. The
+BuiltIn checks refuse a BuiltIn variable whose pointer gives no data type (an
+untyped pointer) instead of reading the type id 0.
+Why: Venus runs spirv-val on every guest module (virgl-venus-spirv-validate.
+patch), on the thread of the guest's command ring. Fuzzed modules ended the
+process inside it: ValidateImage on OpImage of an id without a type
+(assert(def), compiled out by NDEBUG, then a NULL read: SIGSEGV),
+CheckDecorationsFromDecoration on an OpDecorateId ArrayStrideIdEXT
+(std::out_of_range; without exceptions libc++ calls abort()), and a 332-byte
+module with BuiltIn SampleMask on an OpUntypedVariableKHR
+(BuiltInsValidator::ValidateI32Arr read FindDef(0): SIGSEGV; valfuzz seed 104,
+5 minutes in). Small modules kept it busy for long: 1000 nested loops (88 KB)
+53 s, 400 of them 1.8 s, a
+chain of 100000 blocks 5 s, 10000 loops in a row 7.5 s (M4, one core; the
+validator's dominance test walks the dominator chain for each block of each
+construct). vkr refuses such a module like one spirv-val reads as invalid,
+also when refusals are only logged.
+Upstream: not reported yet (drafts in work/spirv-624/build/upstream-drafts.md).
+Tests: Tests/virgl/test-venus-spirv-validate.sh (spirv-corpus/refuse/
+throw-*.spv and val-cfg-*.spv are refused and the process lives; every real
+module passes and its steps are reported; the corpus under AddressSanitizer).
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -184,11 +184,14 @@
+ 
+ function(spvtools_default_compile_options TARGET)
+   target_compile_options(${TARGET} PRIVATE ${SPIRV_WARNINGS})
++  # OmacVM: assert() throws (source/omacvm/assert.h), also in a release build
++  target_include_directories(${TARGET} BEFORE PRIVATE
++    ${spirv-tools_SOURCE_DIR}/source/omacvm)
+ 
+   if (${COMPILER_IS_LIKE_GNU})
+     target_compile_options(${TARGET} PRIVATE
+       -Wall -Wextra -Wno-long-long -Wshadow -Wundef -Wconversion
+-      -Wno-sign-conversion -fno-exceptions)
++      -Wno-sign-conversion)
+ 
+     if(NOT ENABLE_RTTI)
+         add_compile_options(-fno-rtti)
+diff --git a/include/spirv-tools/libspirv.h b/include/spirv-tools/libspirv.h
+--- a/include/spirv-tools/libspirv.h
++++ b/include/spirv-tools/libspirv.h
+@@ -953,6 +953,17 @@
+     const spv_const_context context, const spv_const_validator_options options,
+     const spv_const_binary binary, spv_diagnostic* diagnostic);
+ 
++// OmacVM: spvValidateWithOptions, but a C++ exception thrown inside it (an at()
++// past the end on a hostile module, std::bad_alloc) is caught: SPV_ERROR_INTERNAL
++// and no diagnostic instead of the end of the process.
++SPIRV_TOOLS_EXPORT spv_result_t omacvmValidateWithOptions(
++    const spv_const_context context, const spv_const_validator_options options,
++    const spv_const_binary binary, spv_diagnostic* diagnostic);
++
++// OmacVM: the steps the last omacvmValidateWithOptions on this thread took
++// (its budget: source/omacvm/budget.h).
++SPIRV_TOOLS_EXPORT uint64_t omacvmValidatorSteps(void);
++
+ // Validates a raw SPIR-V binary for correctness. Any errors will be written
+ // into *diagnostic if diagnostic is non-null, otherwise the context's message
+ // consumer will be used.
+diff --git a/source/cfa.h b/source/cfa.h
+--- a/source/cfa.h
++++ b/source/cfa.h
+@@ -19,6 +19,7 @@
+ 
+ #include <algorithm>
+ #include <cassert>
++#include "source/omacvm/budget.h"
+ #include <cstdint>
+ #include <functional>
+ #include <map>
+@@ -157,6 +158,7 @@
+ bool CFA<BB>::FindInWorkList(const std::vector<block_info>& work_list,
+                              uint32_t id) {
+   for (const auto& b : work_list) {
++    omacvm::step();
+     if (b.block->id() == id) return true;
+   }
+   return false;
+@@ -196,6 +198,7 @@
+   processed.insert(entry->id());
+ 
+   while (!work_list.empty()) {
++    omacvm::step();
+     block_info& top = work_list.back();
+     if (terminal(top.block) || top.iter == end(*successor_func(top.block))) {
+       postorder(top.block);
+@@ -235,6 +238,7 @@
+   while (changed) {
+     changed = false;
+     for (auto b = postorder.rbegin() + 1; b != postorder.rend(); ++b) {
++      omacvm::step();
+       const std::vector<BB*>& predecessors = *predecessor_func(*b);
+       // Find the first processed/reachable predecessor that is reachable
+       // in the forward traversal.
+@@ -259,9 +263,11 @@
+           size_t finger2 = idom_idx;
+           while (finger1 != finger2) {
+             while (finger1 < finger2) {
++              omacvm::step();
+               finger1 = idoms[postorder[finger1]].dominator;
+             }
+             while (finger2 < finger1) {
++              omacvm::step();
+               finger2 = idoms[postorder[finger2]].dominator;
+             }
+           }
+diff --git a/source/val/basic_block.cpp b/source/val/basic_block.cpp
+--- a/source/val/basic_block.cpp
++++ b/source/val/basic_block.cpp
+@@ -14,6 +14,8 @@
+ 
+ #include "source/val/basic_block.h"
+ 
++#include "source/omacvm/budget.h"
++
+ #include <algorithm>
+ #include <vector>
+ 
+@@ -103,6 +105,7 @@
+     : current_(block), dom_func_(dominator_func) {}
+ 
+ BasicBlock::DominatorIterator& BasicBlock::DominatorIterator::operator++() {
++  omacvm::step();
+   if (current_ == dom_func_(current_)) {
+     current_ = nullptr;
+   } else {
+diff --git a/source/val/construct.cpp b/source/val/construct.cpp
+--- a/source/val/construct.cpp
++++ b/source/val/construct.cpp
+@@ -14,6 +14,8 @@
+ 
+ #include "source/val/construct.h"
+ 
++#include "source/omacvm/budget.h"
++
+ #include <cassert>
+ #include <cstddef>
+ 
+@@ -83,6 +85,7 @@
+   stack.push_back(const_cast<BasicBlock*>(header));
+   ConstructBlockSet construct_blocks;
+   while (!stack.empty()) {
++    omacvm::step();
+     auto* block = stack.back();
+     stack.pop_back();
+ 
+diff --git a/source/val/validate.cpp b/source/val/validate.cpp
+--- a/source/val/validate.cpp
++++ b/source/val/validate.cpp
+@@ -14,6 +14,10 @@
+ 
+ #include "source/val/validate.h"
+ 
++#include "source/omacvm/budget.h"
++
++#include <ctime>
++
+ #include <functional>
+ #include <iterator>
+ #include <memory>
+@@ -515,4 +519,40 @@
+ 
+   return spvtools::val::ValidateBinaryUsingContextAndValidationState(
+       hijack_context, binary->code, binary->wordCount, pDiagnostic, &vstate);
++}
++
++// OmacVM: what source/omacvm/assert.h makes of a failed assert()
++void omacvm_spirv_assert(const char*, const char*, unsigned) { throw 0; }
++
++// OmacVM: the steps and the CPU time budget of the validation running on this
++// thread (budget.h)
++thread_local uint64_t omacvm::steps;
++thread_local uint64_t omacvm::deadline_ns;
++
++uint64_t omacvm::ThreadCpuNs() {
++  timespec ts;
++  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
++  return uint64_t(ts.tv_sec) * 1000000000 + uint64_t(ts.tv_nsec);
++}
++
++uint64_t omacvmValidatorSteps(void) { return omacvm::steps; }
++
++spv_result_t omacvmValidateWithOptions(const spv_const_context context,
++                                       spv_const_validator_options options,
++                                       const spv_const_binary binary,
++                                       spv_diagnostic* pDiagnostic) {
++  omacvm::steps = 0;
++  omacvm::deadline_ns = omacvm::ThreadCpuNs() + omacvm::kMaxCpuNs;
++  spv_result_t result;
++  try {
++    result = spvValidateWithOptions(context, options, binary, pDiagnostic);
++  } catch (...) {
++    if (pDiagnostic) {
++      spvDiagnosticDestroy(*pDiagnostic);
++      *pDiagnostic = nullptr;
++    }
++    result = SPV_ERROR_INTERNAL;
++  }
++  omacvm::deadline_ns = 0;
++  return result;
+ }
+diff --git a/source/val/validate_builtins.cpp b/source/val/validate_builtins.cpp
+--- a/source/val/validate_builtins.cpp
++++ b/source/val/validate_builtins.cpp
+@@ -91,6 +91,13 @@
+            << " is decorated with BuiltIn. BuiltIn decoration should only be "
+               "applied to struct types, variables and constants.";
+   }
++  // OmacVM: an untyped pointer gives no data type (0); every caller reads
++  // FindDef(*underlying_type) without a check (a NULL read on valfuzz's module)
++  if (!*underlying_type || !_.FindDef(*underlying_type)) {
++    return _.diag(SPV_ERROR_INVALID_DATA, &inst)
++           << GetIdDesc(inst)
++           << " is decorated with BuiltIn but has no data type to check.";
++  }
+   return SPV_SUCCESS;
+ }
+ 
+diff --git a/source/val/validate_cfg.cpp b/source/val/validate_cfg.cpp
+--- a/source/val/validate_cfg.cpp
++++ b/source/val/validate_cfg.cpp
+@@ -31,6 +31,7 @@
+ #include "source/val/construct.h"
+ #include "source/val/function.h"
+ #include "source/val/validate.h"
++#include "source/omacvm/budget.h"
+ #include "source/val/validation_state.h"
+ 
+ namespace spvtools {
+@@ -433,6 +434,7 @@
+     };
+ 
+     for (auto construct : constructs) {
++      omacvm::step();
+       if (is_this_header(construct)) {
+         Construct* continue_construct =
+             construct.corresponding_constructs().back();
+@@ -1053,6 +1055,7 @@
+       // they dominate
+       for (auto block = begin(blocks) + 1; block != end(blocks); ++block) {
+         if (auto idom = (*block)->immediate_dominator()) {
++          omacvm::add(uint64_t(block - begin(blocks)));
+           if (idom != function.pseudo_entry_block() &&
+               block == std::find(begin(blocks), block, idom)) {
+             return _.diag(SPV_ERROR_INVALID_CFG, _.FindDef(idom->id()))
+diff --git a/source/val/validate_decorations.cpp b/source/val/validate_decorations.cpp
+--- a/source/val/validate_decorations.cpp
++++ b/source/val/validate_decorations.cpp
+@@ -15,6 +15,7 @@
+ #include <algorithm>
+ #include <cassert>
+ #include <string>
++#include "source/omacvm/budget.h"
+ #include <tuple>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -443,6 +444,7 @@
+                          bool scalar_block_layout, uint32_t incoming_offset,
+                          MemberConstraints& constraints,
+                          ValidationState_t& vstate) {
++  omacvm::step();
+   if (vstate.options()->skip_block_layout) return SPV_SUCCESS;
+ 
+   // blockRules are the same as bufferBlock rules if the uniform buffer
+diff --git a/source/val/validate_function.cpp b/source/val/validate_function.cpp
+--- a/source/val/validate_function.cpp
++++ b/source/val/validate_function.cpp
+@@ -18,6 +18,7 @@
+ #include "source/table2.h"
+ #include "source/val/instruction.h"
+ #include "source/val/validate.h"
++#include "source/omacvm/budget.h"
+ #include "source/val/validation_state.h"
+ 
+ namespace spvtools {
+@@ -37,6 +38,7 @@
+   const auto& dec_a = _.id_decorations(a->id());
+   const auto& dec_b = _.id_decorations(b->id());
+   for (const auto& dec : dec_b) {
++    omacvm::add(dec_a.size());
+     if (std::find(dec_a.begin(), dec_a.end(), dec) == dec_a.end()) {
+       return false;
+     }
+diff --git a/source/val/validate_memory.cpp b/source/val/validate_memory.cpp
+--- a/source/val/validate_memory.cpp
++++ b/source/val/validate_memory.cpp
+@@ -25,6 +25,7 @@
+ #include "source/table2.h"
+ #include "source/val/instruction.h"
+ #include "source/val/validate.h"
++#include "source/omacvm/budget.h"
+ #include "source/val/validate_scopes.h"
+ #include "source/val/validation_state.h"
+ 
+@@ -132,6 +133,7 @@
+     // type1_decorations, anything new will not be found in
+     // type1_decoration.  Therefore, it cannot lead to a conflict.
+     for (const Decoration& decoration : type1_decorations) {
++      omacvm::add(type2_decorations.size());
+       switch (decoration.dec_type()) {
+         case spv::Decoration::Offset: {
+           // Since these affect the layout of the struct, they must be present
+diff --git a/source/val/validation_state.cpp b/source/val/validation_state.cpp
+--- a/source/val/validation_state.cpp
++++ b/source/val/validation_state.cpp
+@@ -16,6 +16,8 @@
+ // limitations under the License.
+ 
+ #include "source/val/validation_state.h"
++
++#include "source/omacvm/budget.h"
+ 
+ #include <cassert>
+ #include <cstdint>
+@@ -2035,6 +2037,7 @@
+     const auto& dec_b = id_decorations(rhs->id());
+ 
+     for (const auto& dec : dec_b) {
++      omacvm::add(dec_a.size());
+       if (std::find(dec_a.begin(), dec_a.end(), dec) == dec_a.end()) {
+         return false;
+       }
+@@ -2111,6 +2114,7 @@
+ bool ValidationState_t::ContainsType(
+     uint32_t id, const std::function<bool(const Instruction*)>& f,
+     bool traverse_all_types) const {
++  omacvm::step();
+   const auto inst = FindDef(id);
+   if (!inst) return false;
+ 
+diff --git a/source/omacvm/assert.h b/source/omacvm/assert.h
+new file mode 100644
+--- /dev/null
++++ b/source/omacvm/assert.h
+@@ -0,0 +1,11 @@
++// OmacVM (spirv-tools-val-catch-throws.patch): SPIRV-Tools' own assert(). The
++// validator asserts that what it looked up exists (assert(def) and then def->);
++// a release build (NDEBUG) dropped the check and a hostile module ended the
++// process there. Here the check stays in every build and throws, and
++// omacvmValidateWithOptions turns that into SPV_ERROR_INTERNAL. No include
++// guard, as for the system's <assert.h>.
++#undef assert
++[[noreturn]] void omacvm_spirv_assert(const char* expr, const char* file,
++                                      unsigned line);
++#define assert(e) \
++  ((e) ? (void)0 : omacvm_spirv_assert(#e, __FILE__, __LINE__))
+diff --git a/source/omacvm/budget.h b/source/omacvm/budget.h
+new file mode 100644
+--- /dev/null
++++ b/source/omacvm/budget.h
+@@ -0,0 +1,31 @@
++// OmacVM (spirv-tools-val-catch-throws.patch): a time budget for one
++// validation. The validator's walks over dominator chains, depth-first
++// traversals and the dominator calculation, construct blocks, types and block
++// layouts grow faster than the module (88 KB of 1000 nested loops kept it busy
++// 53 s); each step of them counts here, every 1024th step reads the thread's
++// CPU time, and past kMaxCpuNs since omacvmValidateWithOptions began the
++// validation throws, which it turns into SPV_ERROR_INTERNAL. Outside it
++// (deadline_ns 0) there is no budget.
++#ifndef OMACVM_BUDGET_H_
++#define OMACVM_BUDGET_H_
++
++#include <cstdint>
++
++namespace omacvm {
++constexpr uint64_t kMaxCpuNs = 2000000000;  // 2 s
++extern thread_local uint64_t steps;
++extern thread_local uint64_t deadline_ns;
++uint64_t ThreadCpuNs();
++inline void step() {
++  if ((++steps & 1023) == 0 && deadline_ns && ThreadCpuNs() > deadline_ns) throw 1;
++}
++// n cheap steps at once (a linear search of n)
++inline void add(uint64_t n) {
++  const uint64_t before = steps;
++  steps += n;
++  if ((before >> 10) != (steps >> 10) && deadline_ns && ThreadCpuNs() > deadline_ns)
++    throw 1;
++}
++}  // namespace omacvm
++
++#endif  // OMACVM_BUDGET_H_

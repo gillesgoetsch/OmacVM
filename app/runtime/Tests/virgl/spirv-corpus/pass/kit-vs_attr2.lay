@@ -1,0 +1,4 @@
+stage vert
+entry main
+vin 0 4 f
+vin 1 4 f

@@ -1,0 +1,596 @@
+virglrenderer: Venus takes values Vulkan ignores, refuses blend states the drivers read past
+
+What: four changes in what vkr counts as read (#624).
+- A texel buffer view of the whole size with less than one texel after its offset is legal
+  (VUID-VkBufferViewCreateInfo-offset-00925, -range-04059; -range-00928/00929 only apply to
+  a range that is not VK_WHOLE_SIZE). vkr refused it. Now, when the guest turned
+  nullDescriptor on, vkr makes the view without a driver view: its handle is VK_NULL_HANDLE,
+  so every descriptor the guest writes, pushes or copies with it is a null descriptor
+  (VUID-VkWriteDescriptorSet-descriptorType-02994/02995), which reads 0, as a view of no
+  texel does. The format, usage, offset and alignment checks run first, as before. Its
+  destroy frees it without vkr_buffer_view_from_handle (which asserts a driver handle); the
+  device's teardown destroys VK_NULL_HANDLE for it, which the drivers skip. Without
+  nullDescriptor the view stays refused, with the reason in the line.
+- A pipeline's vertex binding stride is not checked against maxVertexInputBindingStride
+  while VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE is set: Vulkan ignores it then
+  (VUID-VkVertexInputBindingDescription-stride-00619 does not apply; the Khronos layer skips
+  it, sl_pipeline.cpp:1188). The stride used is vkCmdBindVertexBuffers2's, which vkr
+  already bounds (VUID-vkCmdBindVertexBuffers2-pStrides-03362).
+- A color blend state must have its attachment array (attachmentCount > 0) and a count equal
+  to the subpass's or rendering's colors wherever Vulkan reads them: not with rasterization
+  statically off, not for a library without fragment output, not without colors (vkr let
+  those through before and still does). The array is ignored only with the four blend states
+  COLOR_BLEND_ENABLE, EQUATION, WRITE_MASK and ADVANCED dynamic
+  (VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-07353), the count with the first
+  three, and ADVANCED too when advancedBlendCoherentOperations is on
+  (VUID-VkGraphicsPipelineCreateInfo-renderPass-07609, -06055); each counts only when the
+  guest turned its extendedDynamicState3 feature on (-07378, -07379, -07380, -07386), read
+  from the device create chain as vkr reads robustness2.
+- Refused buffer ranges in vkCmd* lines say "the whole size" and "no buffer" instead of
+  18446744073709551615 and "of 0" (barriers, vertex and index binds v1 and v2, update, fill,
+  transform feedback binds, a NULL buffer descriptor). The text is made only on a refusal.
+Why: vkr checked the blend state's array and count only when the three dynamic blend states
+were set, with or without their features, and let a NULL array through always. Neither Mac
+driver has those features. On the M1 Max, straight to the driver (3 runs in 5 modes:
+KosmicKrisp, MoltenVK, MoltenVK prefill, each under libgmalloc): a NULL array with nothing
+dynamic SIGSEGV on both (Mesa's vk_color_blend_state_init reads pAttachments[a],
+vk_graphics_state.c:1047; MoltenVK's addFragmentOutputToPipeline, MVKPipeline.mm:1952), a
+NULL array or a count of 9 with the three dynamic SIGSEGV on MoltenVK. With rasterization off
+(static) or a subpass without colors a NULL array works on both (15/15 each). The 0-element
+view ends the process on both drivers in Metal ("MTLTextureDescriptor has width of zero":
+KosmicKrisp at the create, MoltenVK at the descriptor write), so it never goes to them; a
+null texel view written, pushed or copied works on KosmicKrisp (6/6 each). A dynamic stride
+past the limit works on both, also bound with vkCmdBindVertexBuffers (no strides) and a draw
+recorded (15/15, KosmicKrisp 6/6 at 65552).
+Left alone: attachmentCount stays <= maxColorAttachments even with the blend states dynamic
+(those need the features, and a count of 9 crashes MoltenVK and overflows Mesa's 8-entry
+array); MoltenVK has no nullDescriptor (it refuses a device asking for it), so a 0-element
+view stays refused there; "of 0" in copy, query and image-copy lines (those sizes cannot be
+VK_WHOLE_SIZE). The features are read from the first struct of their type, as robustness2
+(see virgl-venus-chain-repeats.patch: Mesa ORs repeats, MoltenVK refuses features it lacks).
+Upstream: OmacVM policy (ADR 0065).
+Tests: Tests/virgl/test-venus-commands.c (d-texel-*, p-gfx-vstride-dynamic*, p-gfx-blend-*
+of case_ignored, c-null-text-*; five also under libgmalloc), test-venus-image-limits.c
+(tview-empty).
+
+diff --git a/src/venus/vkr_buffer.c b/src/venus/vkr_buffer.c
+index 70ba98a..3dfb6d2 100644
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -308,8 +308,18 @@ vkr_buffer_view_offset_aligned(const struct vkr_device *dev,
+  * has no entry for), the buffer's texel usage, an aligned offset and whole texels inside
+  * the buffer, at most maxTexelBufferElements of them (Metal ends the process past its
+  * texture width). KosmicKrisp hands offset and range on to Metal as a texture over the
+- * buffer's memory: past the buffer the GPU would read and write memory it must not. */
+-static bool
++ * buffer's memory: past the buffer the GPU would read and write memory it must not.
++ * OmacVM (virgl-venus-ignored-values.patch): VKR_VIEW_EMPTY for a legal view of no element
++ * (the whole size with less than one texel after the offset, VUID-VkBufferViewCreateInfo-
++ * offset-00925, -range-04059): both Mac drivers end the process on it in Metal
++ * ("MTLTextureDescriptor has width of zero"), so it never goes to them (below). */
++enum vkr_view_check {
++   VKR_VIEW_REFUSED,
++   VKR_VIEW_OK,
++   VKR_VIEW_EMPTY,
++};
++
++static enum vkr_view_check
+ vkr_buffer_view_ok(const struct vkr_device *dev,
+                    const VkBufferViewCreateInfo *info,
+                    char *why,
+@@ -318,11 +328,11 @@ vkr_buffer_view_ok(const struct vkr_device *dev,
+    const struct vkr_buffer *buffer = vkr_buffer_from_handle(info->buffer);
+    if (!buffer) {
+       snprintf(why, why_size, "no buffer");
+-      return false;
++      return VKR_VIEW_REFUSED;
+    }
+    /* OmacVM (virgl-venus-chain-repeats.patch) */
+    if (!vkr_chain_once(info->pNext, "VkBufferViewCreateInfo", why, why_size))
+-      return false;
++      return VKR_VIEW_REFUSED;
+    struct vkr_physical_device *physical_dev = dev->physical_device;
+    const VkBufferUsageFlags2CreateInfo *usage2 =
+       vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO);
+@@ -340,34 +350,45 @@ vkr_buffer_view_ok(const struct vkr_device *dev,
+         !(props.bufferFeatures & VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT))) {
+       snprintf(why, why_size, "format %d (buffer features 0x%x) for texel usage 0x%" PRIx64,
+                info->format, props.bufferFeatures, (uint64_t)usage);
+-      return false;
++      return VKR_VIEW_REFUSED;
+    }
+    if (info->offset >= buffer->size) {
+       snprintf(why, why_size, "offset %" PRIu64 " of a %" PRIu64 "-byte buffer", info->offset,
+                buffer->size);
+-      return false;
++      return VKR_VIEW_REFUSED;
+    }
+    const VkDeviceSize range = info->range == VK_WHOLE_SIZE
+                                  ? (buffer->size - info->offset) / texel * texel
+                                  : info->range;
+-   if (!range || range % texel || range > buffer->size - info->offset) {
++   const bool empty = info->range == VK_WHOLE_SIZE && !range;
++   if (!empty && (!range || range % texel || range > buffer->size - info->offset)) {
+       snprintf(why, why_size,
+                "range %" PRIu64 " at %" PRIu64 " of a %" PRIu64 "-byte buffer (%u-byte texels)",
+                info->range, info->offset, buffer->size, texel);
+-      return false;
++      return VKR_VIEW_REFUSED;
+    }
+    if (range / texel > physical_dev->properties.limits.maxTexelBufferElements) {
+       snprintf(why, why_size, "%" PRIu64 " texels past the driver's %u", range / texel,
+                physical_dev->properties.limits.maxTexelBufferElements);
+-      return false;
++      return VKR_VIEW_REFUSED;
+    }
+    if (!vkr_buffer_view_offset_aligned(dev, usage, texel, info->offset)) {
+       snprintf(why, why_size, "offset %" PRIu64 " not aligned for format %d (minimum %" PRIu64 ")",
+                info->offset, info->format,
+                physical_dev->properties.limits.minTexelBufferOffsetAlignment);
+-      return false;
++      return VKR_VIEW_REFUSED;
+    }
+-   return true;
++   /* OmacVM (virgl-venus-ignored-values.patch): with nullDescriptor on, vkr gives the view no
++    * driver view: a null descriptor (reads 0) is what a view of no texel reads. Without it
++    * there is nothing to stand in, the view stays refused. */
++   if (empty && !dev->null_descriptor) {
++      snprintf(why, why_size,
++               "the whole size: %" PRIu64 " bytes after offset %" PRIu64 ", fewer than one "
++               "%u-byte texel (a view of no texel needs nullDescriptor)",
++               buffer->size - info->offset, info->offset, texel);
++      return VKR_VIEW_REFUSED;
++   }
++   return empty ? VKR_VIEW_EMPTY : VKR_VIEW_OK;
+ }
+ 
+ static void
+@@ -375,22 +396,53 @@ vkr_dispatch_vkCreateBufferView(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkCreateBufferView *args)
+ {
+    /* OmacVM: made without waiting for an answer: a refused view ends the app's context */
++   struct vkr_context *ctx = dispatch->data;
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
+    char why[192];
+-   if (!vkr_buffer_view_ok(vkr_device_from_handle(args->device), args->pCreateInfo, why,
+-                           sizeof(why))) {
+-      vkr_context_refuse(dispatch->data, true, "vkCreateBufferView", "%s", why);
++   const enum vkr_view_check check = vkr_buffer_view_ok(dev, args->pCreateInfo, why, sizeof(why));
++   if (check == VKR_VIEW_REFUSED) {
++      vkr_context_refuse(ctx, true, "vkCreateBufferView", "%s", why);
+       args->ret = VK_ERROR_UNKNOWN;
+       return;
+    }
++   if (check == VKR_VIEW_EMPTY) {
++      /* OmacVM (virgl-venus-ignored-values.patch): a view of no texel: an object without a
++       * driver view (handle VK_NULL_HANDLE, so the decoder writes a null descriptor wherever
++       * the app names it, VUID-VkWriteDescriptorSet-descriptorType-02994/02995), made and
++       * added as vkr_buffer_view_create_and_add does */
++      struct vkr_buffer_view *view = vkr_context_alloc_object(
++         ctx, sizeof(*view), VK_OBJECT_TYPE_BUFFER_VIEW, args->pView);
++      if (!view) {
++         args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
++         return;
++      }
++      view->empty = true;
++      vkr_device_add_object(ctx, dev, &view->base);
++      args->ret = VK_SUCCESS;
++      return;
++   }
+ 
+-   vkr_buffer_view_create_and_add(dispatch->data, args);
++   vkr_buffer_view_create_and_add(ctx, args);
+ }
+ 
+ static void
+ vkr_dispatch_vkDestroyBufferView(struct vn_dispatch_context *dispatch,
+                                  struct vn_command_vkDestroyBufferView *args)
+ {
+-   vkr_buffer_view_destroy_and_remove(dispatch->data, args);
++   /* OmacVM (virgl-venus-ignored-values.patch): a view without a driver view (above) is
++    * freed here, not by vkr_buffer_view_destroy_and_remove: vkr_buffer_view_from_handle
++    * asserts a driver handle. The device's teardown destroys VK_NULL_HANDLE for it, which
++    * the drivers skip. */
++   struct vkr_context *ctx = dispatch->data;
++   struct vkr_buffer_view *view = (struct vkr_buffer_view *)(uintptr_t)args->bufferView;
++   if (view && view->empty) {
++      if (vkr_context_pinned(ctx, &view->base, "vkDestroyBufferView") ||
++          vkr_device_object_held(ctx, &view->base, true))
++         return;
++      vkr_device_remove_object(ctx, vkr_device_from_handle(args->device), &view->base);
++      return;
++   }
++   vkr_buffer_view_destroy_and_remove(ctx, args);
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_buffer.h b/src/venus/vkr_buffer.h
+index 4336e67..23873af 100644
+--- a/src/venus/vkr_buffer.h
++++ b/src/venus/vkr_buffer.h
+@@ -29,6 +29,9 @@ VKR_DEFINE_OBJECT_CAST(buffer, VK_OBJECT_TYPE_BUFFER, VkBuffer)
+ 
+ struct vkr_buffer_view {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-ignored-values.patch): a view of no texel, without a driver view
++    * (vkr_buffer.c) */
++   bool empty;
+ };
+ VKR_DEFINE_OBJECT_CAST(buffer_view, VK_OBJECT_TYPE_BUFFER_VIEW, VkBufferView)
+ 
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index f72ad8c..fc77b3a 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -242,12 +242,12 @@ vkr_cmd_barriers_ok(struct vkr_context *ctx,
+                     const VkImageMemoryBarrier *images)
+ {
+    for (uint32_t i = 0; i < buffer_count; i++) {
+-      if (!vkr_context_check(ctx,
+-                             vkr_whole_range_ok(buffers[i].offset, buffers[i].size,
+-                                                vkr_cmd_buffer_size(buffers[i].buffer)),
+-                             call, "buffer barrier %u: %" PRIu64 " bytes at %" PRIu64
+-                             " of %" PRIu64, i, buffers[i].size, buffers[i].offset,
+-                             vkr_cmd_buffer_size(buffers[i].buffer)))
++      const VkDeviceSize total = vkr_cmd_buffer_size(buffers[i].buffer);
++      const bool ok = vkr_whole_range_ok(buffers[i].offset, buffers[i].size, total);
++      char r[VKR_RANGE_TEXT_SIZE];
++      if (!vkr_context_check(ctx, ok, call, "buffer barrier %u: %s", i,
++                             ok ? "" : vkr_range_text(r, true, buffers[i].size,
++                                                      buffers[i].offset, total)))
+          return false;
+    }
+    for (uint32_t i = 0; i < image_count; i++) {
+@@ -268,12 +268,11 @@ vkr_cmd_dependency_ok(struct vkr_context *ctx, const char *call, const VkDepende
+       return true;
+    for (uint32_t i = 0; i < info->bufferMemoryBarrierCount; i++) {
+       const VkBufferMemoryBarrier2 *b = &info->pBufferMemoryBarriers[i];
+-      if (!vkr_context_check(ctx,
+-                             vkr_whole_range_ok(b->offset, b->size,
+-                                                vkr_cmd_buffer_size(b->buffer)),
+-                             call, "buffer barrier %u: %" PRIu64 " bytes at %" PRIu64
+-                             " of %" PRIu64, i, b->size, b->offset,
+-                             vkr_cmd_buffer_size(b->buffer)))
++      const VkDeviceSize total = vkr_cmd_buffer_size(b->buffer);
++      const bool ok = vkr_whole_range_ok(b->offset, b->size, total);
++      char r[VKR_RANGE_TEXT_SIZE];
++      if (!vkr_context_check(ctx, ok, call, "buffer barrier %u: %s", i,
++                             ok ? "" : vkr_range_text(r, true, b->size, b->offset, total)))
+          return false;
+    }
+    for (uint32_t i = 0; i < info->imageMemoryBarrierCount; i++) {
+@@ -1138,12 +1137,13 @@ vkr_dispatch_vkCmdBindIndexBuffer(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdBindIndexBuffer *args)
+ {
+    const VkDeviceSize size = vkr_cmd_buffer_size(args->buffer);
+-   if (!vkr_context_check(dispatch->data,
+-                          vkr_index_type_ok(VKR_CMD_LIMITS(args), args->indexType) &&
+-                             (size ? args->offset < size
+-                                   : VKR_CMD_DEVICE(args)->maintenance6 && !args->offset),
+-                          "vkCmdBindIndexBuffer", "index type %d at %" PRIu64 " of %" PRIu64,
+-                          args->indexType, args->offset, size))
++   const bool ok = vkr_index_type_ok(VKR_CMD_LIMITS(args), args->indexType) &&
++                   (size ? args->offset < size
++                         : VKR_CMD_DEVICE(args)->maintenance6 && !args->offset);
++   char r[VKR_RANGE_TEXT_SIZE];
++   if (!vkr_context_check(dispatch->data, ok, "vkCmdBindIndexBuffer", "index type %d, %s",
++                          args->indexType,
++                          ok ? "" : vkr_range_text(r, false, 0, args->offset, size)))
+       return;
+    VKR_CMD_CALL(CmdBindIndexBuffer, args, args->buffer, args->offset, args->indexType);
+ }
+@@ -1161,11 +1161,10 @@ vkr_dispatch_vkCmdBindVertexBuffers(struct vn_dispatch_context *dispatch,
+    const bool null_ok = VKR_CMD_DEVICE(args)->null_descriptor;
+    for (uint32_t i = 0; i < args->bindingCount; i++) {
+       const VkDeviceSize size = vkr_cmd_buffer_size(args->pBuffers[i]);
+-      if (!vkr_context_check(ctx,
+-                             size ? args->pOffsets[i] < size : null_ok && !args->pOffsets[i],
+-                             "vkCmdBindVertexBuffers",
+-                             "binding %u: offset %" PRIu64 " of %" PRIu64 "%s", i,
+-                             args->pOffsets[i], size, size ? "" : " (no buffer)"))
++      const bool ok = size ? args->pOffsets[i] < size : null_ok && !args->pOffsets[i];
++      char r[VKR_RANGE_TEXT_SIZE];
++      if (!vkr_context_check(ctx, ok, "vkCmdBindVertexBuffers", "binding %u: %s", i,
++                             ok ? "" : vkr_range_text(r, false, 0, args->pOffsets[i], size)))
+          return;
+    }
+    VKR_CMD_CALL(CmdBindVertexBuffers, args, args->firstBinding, args->bindingCount,
+@@ -1447,12 +1446,13 @@ static void
+ vkr_dispatch_vkCmdUpdateBuffer(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCmdUpdateBuffer *args)
+ {
+-   if (!vkr_context_check(dispatch->data,
+-                          args->dataSize && args->dataSize <= 65536 && !(args->dataSize & 3) &&
+-                             !(args->dstOffset & 3) &&
+-                             vkr_cmd_buffer_ok(args->dstBuffer, args->dstOffset, args->dataSize),
+-                          "vkCmdUpdateBuffer", "%" PRIu64 " bytes at %" PRIu64 " of %" PRIu64,
+-                          args->dataSize, args->dstOffset, vkr_cmd_buffer_size(args->dstBuffer)))
++   const bool ok = args->dataSize && args->dataSize <= 65536 && !(args->dataSize & 3) &&
++                   !(args->dstOffset & 3) &&
++                   vkr_cmd_buffer_ok(args->dstBuffer, args->dstOffset, args->dataSize);
++   char r[VKR_RANGE_TEXT_SIZE];
++   if (!vkr_context_check(dispatch->data, ok, "vkCmdUpdateBuffer", "%s",
++                          ok ? "" : vkr_range_text(r, true, args->dataSize, args->dstOffset,
++                                                   vkr_cmd_buffer_size(args->dstBuffer))))
+       return;
+    VKR_CMD_CALL(CmdUpdateBuffer, args, args->dstBuffer, args->dstOffset, args->dataSize,
+                 args->pData);
+@@ -1462,13 +1462,13 @@ static void
+ vkr_dispatch_vkCmdFillBuffer(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkCmdFillBuffer *args)
+ {
+-   if (!vkr_context_check(dispatch->data,
+-                          !(args->dstOffset & 3) &&
+-                             (args->size == VK_WHOLE_SIZE || (args->size && !(args->size & 3))) &&
+-                             vkr_whole_range_ok(args->dstOffset, args->size,
+-                                                vkr_cmd_buffer_size(args->dstBuffer)),
+-                          "vkCmdFillBuffer", "%" PRIu64 " bytes at %" PRIu64 " of %" PRIu64,
+-                          args->size, args->dstOffset, vkr_cmd_buffer_size(args->dstBuffer)))
++   const VkDeviceSize total = vkr_cmd_buffer_size(args->dstBuffer);
++   const bool ok = !(args->dstOffset & 3) &&
++                   (args->size == VK_WHOLE_SIZE || (args->size && !(args->size & 3))) &&
++                   vkr_whole_range_ok(args->dstOffset, args->size, total);
++   char r[VKR_RANGE_TEXT_SIZE];
++   if (!vkr_context_check(dispatch->data, ok, "vkCmdFillBuffer", "%s",
++                          ok ? "" : vkr_range_text(r, true, args->size, args->dstOffset, total)))
+       return;
+    vkr_test_pause("command"); /* OmacVM (virgl-venus-test-pause.patch) */
+    VKR_CMD_CALL(CmdFillBuffer, args, args->dstBuffer, args->dstOffset, args->size,
+@@ -1953,12 +1953,11 @@ vkr_dispatch_vkCmdBindTransformFeedbackBuffersEXT(
+       return;
+    for (uint32_t i = 0; i < args->bindingCount; i++) {
+       const VkDeviceSize size = args->pSizes ? args->pSizes[i] : VK_WHOLE_SIZE;
+-      if (!vkr_context_check(ctx,
+-                             vkr_whole_range_ok(args->pOffsets[i], size,
+-                                                vkr_cmd_buffer_size(args->pBuffers[i])),
+-                             "vkCmdBindTransformFeedbackBuffersEXT",
+-                             "buffer %u: %" PRIu64 " bytes at %" PRIu64, i, size,
+-                             args->pOffsets[i]))
++      const VkDeviceSize total = vkr_cmd_buffer_size(args->pBuffers[i]);
++      const bool ok = vkr_whole_range_ok(args->pOffsets[i], size, total);
++      char r[VKR_RANGE_TEXT_SIZE];
++      if (!vkr_context_check(ctx, ok, "vkCmdBindTransformFeedbackBuffersEXT", "buffer %u: %s",
++                             i, ok ? "" : vkr_range_text(r, true, size, args->pOffsets[i], total)))
+          return;
+    }
+    VKR_CMD_CALL(CmdBindTransformFeedbackBuffersEXT, args, args->firstBinding,
+@@ -2064,13 +2063,14 @@ vkr_dispatch_vkCmdBindVertexBuffers2(struct vn_dispatch_context *dispatch,
+       const VkDeviceSize size = vkr_cmd_buffer_size(args->pBuffers[i]);
+       const VkDeviceSize range = args->pSizes ? args->pSizes[i] : VK_WHOLE_SIZE;
+       const VkDeviceSize stride = args->pStrides ? args->pStrides[i] : 0;
+-      if (!vkr_context_check(ctx,
+-                             (size ? vkr_whole_range_ok(args->pOffsets[i], range, size)
+-                                   : null_ok && !args->pOffsets[i]) &&
+-                                stride <= lim->maxVertexInputBindingStride,
+-                             "vkCmdBindVertexBuffers2",
+-                             "binding %u: %" PRIu64 " bytes at %" PRIu64 " of %" PRIu64
+-                             ", stride %" PRIu64, i, range, args->pOffsets[i], size, stride))
++      const bool ok = (size ? vkr_whole_range_ok(args->pOffsets[i], range, size)
++                            : null_ok && !args->pOffsets[i]) &&
++                      stride <= lim->maxVertexInputBindingStride;
++      char r[VKR_RANGE_TEXT_SIZE];
++      if (!vkr_context_check(ctx, ok, "vkCmdBindVertexBuffers2",
++                             "binding %u: %s, stride %" PRIu64 " (at most %u)", i,
++                             ok ? "" : vkr_range_text(r, true, range, args->pOffsets[i], size),
++                             stride, lim->maxVertexInputBindingStride))
+          return;
+    }
+    VKR_CMD_CALL(CmdBindVertexBuffers2, args, args->firstBinding, args->bindingCount,
+@@ -2082,13 +2082,13 @@ vkr_dispatch_vkCmdBindIndexBuffer2(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCmdBindIndexBuffer2 *args)
+ {
+    const VkDeviceSize size = vkr_cmd_buffer_size(args->buffer);
+-   if (!vkr_context_check(dispatch->data,
+-                          vkr_index_type_ok(VKR_CMD_LIMITS(args), args->indexType) &&
+-                             (size ? vkr_whole_range_ok(args->offset, args->size, size)
+-                                   : VKR_CMD_DEVICE(args)->maintenance6 && !args->offset),
+-                          "vkCmdBindIndexBuffer2",
+-                          "index type %d, %" PRIu64 " bytes at %" PRIu64 " of %" PRIu64,
+-                          args->indexType, args->size, args->offset, size))
++   const bool ok = vkr_index_type_ok(VKR_CMD_LIMITS(args), args->indexType) &&
++                   (size ? vkr_whole_range_ok(args->offset, args->size, size)
++                         : VKR_CMD_DEVICE(args)->maintenance6 && !args->offset);
++   char r[VKR_RANGE_TEXT_SIZE];
++   if (!vkr_context_check(dispatch->data, ok, "vkCmdBindIndexBuffer2", "index type %d, %s",
++                          args->indexType,
++                          ok ? "" : vkr_range_text(r, true, args->size, args->offset, size)))
+       return;
+    VKR_CMD_CALL(CmdBindIndexBuffer2, args, args->buffer, args->offset, args->size,
+                 args->indexType);
+diff --git a/src/venus/vkr_descriptor_set.c b/src/venus/vkr_descriptor_set.c
+index 98281c2..aa685b2 100644
+--- a/src/venus/vkr_descriptor_set.c
++++ b/src/venus/vkr_descriptor_set.c
+@@ -438,10 +438,13 @@ vkr_write_part_ok(const struct vkr_device *dev,
+             if (!null_ok)
+                snprintf(why, why_size, "binding %u element %u: no buffer (the device's "
+                         "nullDescriptor is off)", b->binding, e);
+-            else
+-               snprintf(why, why_size, "binding %u element %u: no buffer at offset %" PRIu64
+-                        ", range %" PRIu64 " (a null descriptor needs 0 and the whole size)",
+-                        b->binding, e, bi->offset, bi->range);
++            else {
++               /* OmacVM (virgl-venus-ignored-values.patch) */
++               char r[VKR_RANGE_TEXT_SIZE];
++               snprintf(why, why_size, "binding %u element %u: %s (a null descriptor needs "
++                        "offset 0 and the whole size)", b->binding, e,
++                        vkr_range_text(r, true, bi->range, bi->offset, 0));
++            }
+             return false;
+          }
+          const uint64_t range =
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 422c49f..49ad9b7 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -322,6 +322,18 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+    const VkPhysicalDeviceVulkan14Features *v14 = vkr_find_struct(
+       args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES);
+    dev->maintenance6 = (maintenance6 && maintenance6->maintenance6) || (v14 && v14->maintenance6);
++   /* OmacVM (virgl-venus-ignored-values.patch) */
++   const VkPhysicalDeviceExtendedDynamicState3FeaturesEXT *dynamic3 = vkr_find_struct(
++      args->pCreateInfo->pNext,
++      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT);
++   const VkPhysicalDeviceBlendOperationAdvancedFeaturesEXT *advanced = vkr_find_struct(
++      args->pCreateInfo->pNext,
++      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BLEND_OPERATION_ADVANCED_FEATURES_EXT);
++   dev->blend_dynamic3 = dynamic3 && dynamic3->extendedDynamicState3ColorBlendEnable &&
++                         dynamic3->extendedDynamicState3ColorBlendEquation &&
++                         dynamic3->extendedDynamicState3ColorWriteMask;
++   dev->blend_advanced_dynamic = dynamic3 && dynamic3->extendedDynamicState3ColorBlendAdvanced;
++   dev->blend_coherent = advanced && advanced->advancedBlendCoherentOperations;
+ 
+    vkr_device_init_proc_table(dev, physical_dev->api_version,
+                               args->pCreateInfo->ppEnabledExtensionNames,
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index 6001ee7..99e53f8 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -33,6 +33,13 @@ struct vkr_device {
+     * (maintenance6) */
+    bool null_descriptor;
+    bool maintenance6;
++   /* OmacVM (virgl-venus-ignored-values.patch): the extendedDynamicState3 blend features
++    * the guest turned on (enable, equation and write mask all three; advanced), and
++    * advancedBlendCoherentOperations: when a color blend state's array and count are
++    * ignored (vkr_pipeline.c). Neither Mac driver has them today. */
++   bool blend_dynamic3;
++   bool blend_advanced_dynamic;
++   bool blend_coherent;
+ 
+    struct list_head queues;
+ 
+diff --git a/src/venus/vkr_limits.h b/src/venus/vkr_limits.h
+index 07f03a5..0bf47d8 100644
+--- a/src/venus/vkr_limits.h
++++ b/src/venus/vkr_limits.h
+@@ -62,6 +62,28 @@ vkr_whole_range_ok(uint64_t offset, uint64_t size, uint64_t total)
+    return size == VK_WHOLE_SIZE ? offset < total : vkr_range_ok(offset, size, total);
+ }
+ 
++/* OmacVM (virgl-venus-ignored-values.patch): a buffer range in a refusal line: "N bytes at O
++ * of a T-byte buffer", "the whole size" for VK_WHOLE_SIZE and ", no buffer" when the handle
++ * names none (total 0), not 18446744073709551615 and "of 0"; sized false prints the offset
++ * only. Callers make it only on a refusal (ok ? "" : vkr_range_text(...)). */
++#define VKR_RANGE_TEXT_SIZE 128
++static inline const char *
++vkr_range_text(char *out, bool sized, uint64_t size, uint64_t offset, uint64_t total)
++{
++   char what[64];
++   if (!sized)
++      snprintf(what, sizeof(what), "offset %" PRIu64, offset);
++   else if (size == VK_WHOLE_SIZE)
++      snprintf(what, sizeof(what), "the whole size at %" PRIu64, offset);
++   else
++      snprintf(what, sizeof(what), "%" PRIu64 " bytes at %" PRIu64, size, offset);
++   if (total)
++      snprintf(out, VKR_RANGE_TEXT_SIZE, "%s of a %" PRIu64 "-byte buffer", what, total);
++   else
++      snprintf(out, VKR_RANGE_TEXT_SIZE, "%s, no buffer", what);
++   return out;
++}
++
+ /* first + (count - 1) * stride + elem <= total, count >= 1 */
+ static inline bool
+ vkr_strided_ok(uint64_t offset, uint32_t count, uint64_t stride, uint64_t elem, uint64_t total)
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index aba4051..07b28b2 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -544,11 +544,12 @@ vkr_stencil_ok(const VkStencilOpState *s)
+ }
+ 
+ static bool
+-vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
++vkr_graphics_pipeline_ok(const struct vkr_device *dev,
+                          const VkGraphicsPipelineCreateInfo *info,
+                          char *why,
+                          size_t why_size)
+ {
++   const struct vkr_physical_device *physical_dev = dev->physical_device;
+    const struct vkr_limits *l = &physical_dev->limits;
+    const VkPhysicalDeviceLimits *lim = &physical_dev->properties.limits;
+    const VkPipelineDynamicStateCreateInfo *dyn = info->pDynamicState;
+@@ -632,12 +633,16 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+    if (vi) {
+       const VkPipelineVertexInputDivisorStateCreateInfo *div = vkr_find_struct(
+          vi->pNext, VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_DIVISOR_STATE_CREATE_INFO);
++      /* OmacVM (virgl-venus-ignored-values.patch): a dynamic stride is ignored here
++       * (VUID-VkVertexInputBindingDescription-stride-00619 does not apply then; the
++       * stride used is vkCmdBindVertexBuffers2's, checked there) */
++      const bool stride_dynamic = vkr_dynamic(dyn, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
+       bool ok = vi->vertexBindingDescriptionCount <= lim->maxVertexInputBindings &&
+                 vi->vertexAttributeDescriptionCount <= lim->maxVertexInputAttributes;
+       for (uint32_t i = 0; ok && i < vi->vertexBindingDescriptionCount; i++) {
+          const VkVertexInputBindingDescription *b = &vi->pVertexBindingDescriptions[i];
+          ok = b->binding < lim->maxVertexInputBindings &&
+-              b->stride <= lim->maxVertexInputBindingStride &&
++              (stride_dynamic || b->stride <= lim->maxVertexInputBindingStride) &&
+               (uint32_t)b->inputRate <= VK_VERTEX_INPUT_RATE_INSTANCE;
+       }
+       for (uint32_t i = 0; ok && i < vi->vertexAttributeDescriptionCount; i++) {
+@@ -699,12 +704,35 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+          vkr_find_struct(cb->pNext, VK_STRUCTURE_TYPE_PIPELINE_COLOR_WRITE_CREATE_INFO_EXT);
+       const VkPipelineColorBlendAdvancedStateCreateInfoEXT *adv = vkr_find_struct(
+          cb->pNext, VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_ADVANCED_STATE_CREATE_INFO_EXT);
+-      /* with enable, equation and write mask all dynamic, pAttachments is not read */
+-      const bool attachments_read = !(vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT) &&
+-                                      vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT) &&
+-                                      vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT));
++      /* OmacVM (virgl-venus-ignored-values.patch): the array and the count are read by
++       * both Mac drivers (Mesa's vk_color_blend_state_init, MoltenVK's
++       * addFragmentOutputToPipeline: a NULL array or a count past the colors crashes or
++       * reads past them) unless Vulkan ignores them. The whole state is ignored with
++       * rasterization statically off, for a library without fragment output, and for a
++       * subpass or rendering without colors. The array is ignored with the four blend
++       * states dynamic (VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-07353), the
++       * count with enable, equation and write mask dynamic, and the advanced one too
++       * when advancedBlendCoherentOperations is on (-renderPass-07609, -06055); each
++       * dynamic state counts only with its feature on (-extendedDynamicState3*-07378,
++       * -07379, -07380, -07386). */
++      const VkGraphicsPipelineLibraryCreateInfoEXT *library = vkr_find_struct(
++         info->pNext, VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT);
++      const bool state_read =
++         colors && !(rs && rs->rasterizerDiscardEnable &&
++                     !vkr_dynamic(dyn, VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE)) &&
++         !(library &&
++           !(library->flags & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT));
++      const bool three = dev->blend_dynamic3 &&
++                         vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_ENABLE_EXT) &&
++                         vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_EQUATION_EXT) &&
++                         vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_WRITE_MASK_EXT);
++      const bool advanced = dev->blend_advanced_dynamic &&
++                            vkr_dynamic(dyn, VK_DYNAMIC_STATE_COLOR_BLEND_ADVANCED_EXT);
++      const bool attachments_read = !(three && advanced);
++      const bool count_read = !(three && (advanced || !dev->blend_coherent));
+       bool ok = cb->attachmentCount <= lim->maxColorAttachments &&
+-                (!cb->pAttachments || !attachments_read || !colors || cb->attachmentCount == colors) &&
++                (!state_read || !attachments_read || !cb->attachmentCount || cb->pAttachments) &&
++                (!state_read || !count_read || cb->attachmentCount == colors) &&
+                 (!cw || cw->attachmentCount <= lim->maxColorAttachments) &&
+                 (!adv || vkr_blend_overlap_ok(adv->blendOverlap)) &&
+                 (!cb->logicOpEnable || vkr_dynamic(dyn, VK_DYNAMIC_STATE_LOGIC_OP_EXT) ||
+@@ -721,9 +749,10 @@ vkr_graphics_pipeline_ok(const struct vkr_physical_device *physical_dev,
+       }
+       if (!ok) {
+          snprintf(why, why_size,
+-                  "a color blend state of %u attachments for %u colors (at most %u), %u color "
+-                  "write enables, or a blend factor, op or logic op", cb->attachmentCount, colors,
+-                  lim->maxColorAttachments, cw ? cw->attachmentCount : 0);
++                  "a color blend state of %u attachments%s for %u colors (at most %u), %u color "
++                  "write enables, or a blend factor, op or logic op", cb->attachmentCount,
++                  cb->pAttachments ? "" : " (no array)", colors, lim->maxColorAttachments,
++                  cw ? cw->attachmentCount : 0);
+          return false;
+       }
+    }
+@@ -791,8 +820,7 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-pipeline-limits.patch): read before the handles are replaced */
+    char why[192];
+    for (uint32_t i = 0; i < args->createInfoCount; i++) {
+-      if (!vkr_graphics_pipeline_ok(dev->physical_device, &args->pCreateInfos[i], why,
+-                                    sizeof(why))) {
++      if (!vkr_graphics_pipeline_ok(dev, &args->pCreateInfos[i], why, sizeof(why))) {
+          vkr_context_refuse(ctx, true, "vkCreateGraphicsPipelines", "pipeline %u: %s", i, why);
+          return;
+       }

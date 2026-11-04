@@ -209,7 +209,7 @@ EOF
 cat > "$B/pgrep" <<EOF
 #!/bin/bash
 # fake: a runner folder with a job is a file in $W
-p=\${@: -1}; d=\${p%/bin/Runner.Worker}; [[ -e "$W/\${d##*/}" ]]
+p=\${@: -1}; d=\${p%/bin*}; [[ -e "$W/\${d##*/}" ]]
 EOF
 chmod +x "$B/launchctl" "$B/pgrep"
 for n in 1 2; do
@@ -280,6 +280,20 @@ gone() { ! kill -0 "$1" 2>/dev/null; }
 upto 5 gone $pz && ok "ci: the holder gone -> its pause ends while jobs still run" || { bad "ci: pause still waits for a dead holder"; kill $pz; }
 rm -f "$W/actions-runner-1" "$W/actions-runner-2"
 upto 5 [ ! -e "$T/ci-state" ] || bad "ci: state left after the holder died: $(ls "$T/ci-state" | tr '\n' ' ')"
+# busy() with the real pgrep: a runner that updated itself runs its Worker from bin.<version>/.
+sed -n '/^busy() {/p' "$R/src/tests/e2e/ci-runners.sh" > "$T/busy.sh"; source "$T/busy.sh"
+RW=$T/rw; WP=()
+for d in plain/bin upd/bin.2.338.2; do
+  mkdir -p "$RW/$d"; printf '#!/bin/bash\nsleep 30\n' > "$RW/$d/Runner.Worker"; chmod +x "$RW/$d/Runner.Worker"
+  "$RW/$d/Runner.Worker" & WP+=($!)
+done
+mkdir -p "$RW/idle/bin"
+upto 5 busy "$RW/plain" && ok "ci: busy sees a Worker in bin/" || bad "ci: busy misses bin/Runner.Worker"
+upto 5 busy "$RW/upd" && ok "ci: busy sees a Worker in bin.2.338.2/ (a runner that updated itself)" ||
+  bad "ci: busy misses bin.2.338.2/Runner.Worker"
+busy "$RW/idle" && bad "ci: busy sees a Worker in a runner folder that has none" || ok "ci: no Worker -> not busy"
+busy "$RW/up" && bad "ci: busy matched another folder whose name starts the same" || ok "ci: busy matches the folder only"
+kill "${WP[@]}" 2>/dev/null; wait "${WP[@]}" 2>/dev/null
 
 # ---- onscreen.sh: waits only between rows, its windows hidden meanwhile; inside a row only a look
 sed -n '/^onscreen_ok() {/,/^}/p; /^onscreen_mid() {/,/^}/p; /^hide_ours() {/,/^}/p; /^show_ours() {/,/^}/p' "$E/onscreen.sh" > "$T/os-gate.sh"

@@ -1,0 +1,3 @@
+stage vert
+entry main
+bind 0 0 6 1

@@ -15,11 +15,13 @@ MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1 (it encodes at vkEndCommandBuffer wha
 encodes at the submit; nothing recorded is submitted). The cases whose harm shows only as
 a write to freed or unowned heap memory (frees, submit counts, dedicated memory, pass
 views, descriptor parts) run once more under libgmalloc (freed memory unmapped: such a
-write ends the process). Then microseconds per vkCreateImage, per vkCreateBuffer and per
-command. First, src/venus/vkr_proc_entries.h must be what
-venus-missing-entries.py makes of the built tree (virgl-venus-missing-entries.patch), and
-venus-command-ledger.tsv must give a verdict for every vkCmd* handler of the tree's
-vkr_command_buffer.c (a new one needs a decision on its guest values)."""
+write ends the process), and so do test-venus-image-limits' plane binds (DISJOINT planes
+and one-plane DISJOINT|ALIAS images on them, dEQP's ycbcr.plane_view.memory_alias, #624).
+Then microseconds per vkCreateImage, per vkCreateBuffer and per command. First,
+src/venus/vkr_proc_entries.h must be what venus-missing-entries.py makes of the built tree
+(virgl-venus-missing-entries.patch), and venus-command-ledger.tsv must give a verdict for
+every vkCmd* handler of the tree's vkr_command_buffer.c (a new one needs a decision on its
+guest values)."""
 import json
 import os
 from pathlib import Path
@@ -105,9 +107,49 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "x-dedicated-chain-null x-dedicated-bound-ok x-dedicated-unbound-ok "
                  "x-dedicated-buffer-unbound-ok x-dedicated-context-end-ok x-dedicated-other "
                  "x-dedicated-alias c-state-destroyed-view-begin c-state-destroyed-view-next "
+                 # a swapchain's memory freed before the image bound to it
+                 # (virgl-venus-alias-memory.patch)
+                 "x-dedicated-alias-b-first-ok x-dedicated-alias-free-a-b x-dedicated-alias-context-end "
+                 "x-dedicated-alias-held x-dedicated-alias-own-dedicated x-dedicated-alias-bind2 "
+                 "x-dedicated-alias-twice x-dedicated-alias-bind2-twice "
                  "c-state-destroyed-view-end c-state-destroyed-view-imageless "
                  "c-state-destroyed-view-rendering c-state-destroyed-view-after-ok d-planes-ok "
-                 "d-mutable-ok d-start-next-ok d-copy-start-next-ok")
+                 "d-mutable-ok d-start-next-ok d-copy-start-next-ok "
+                 # views destroyed and secondaries freed under a command buffer, two threads
+                 # on one context (virgl-venus-command-holds.patch,
+                 # virgl-venus-secondary-holds.patch, virgl-venus-ring-lock.patch)
+                 "c-state-destroyed-view-held-rendering-barrier c-state-destroyed-view-held-pass-barrier "
+                 "c-state-destroyed-view-held-submit c-state-destroyed-view-held-reset-ok "
+                 "c-state-destroyed-view-held-begin-ok c-state-destroyed-view-held-free-ok "
+                 "c-state-destroyed-view-held-image-memory-ok c-state-destroyed-view-held-teardown-ok "
+                 "c-state-destroyed-view-held-control-ok c-state-secondary-held-free-submit "
+                 "c-state-secondary-held-pool-submit c-state-secondary-held-reset-ok "
+                 "c-state-secondary-held-free-primary-ok c-state-secondary-held-same-pool-ok "
+                 "c-state-secondary-held-teardown-ok c-state-secondary-held-control-ok "
+                 "t-pipeline-destroy-layout t-pipeline-destroy-module "
+                 "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
+                 "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok "
+                 # a structure type twice in a chain (virgl-venus-chain-repeats.patch)
+                 "r-repeat-multiview-short r-repeat-attachment-begin r-repeat-begin-two-types-ok "
+                 # a view without a driver view, blend states the drivers read past
+                 # (virgl-venus-ignored-values.patch)
+                 "d-texel-empty-nd d-texel-empty-teardown p-gfx-vstride-dynamic p-gfx-blend-null-dyn "
+                 "p-gfx-blend-more-dyn "
+                 # draws with a set or index buffer never bound, the NULL index buffer vkr
+                 # binds (virgl-venus-unset-state.patch)
+                 "u-set-unset u-set-second-unset u-set-unset-dispatch u-set-second-unset-dispatch "
+                 "u-set-secondary u-ib-unset u-ib-null-m6-ok u-ib-unset-m6-ok u-ib-unset-m6-indirect-ok "
+                 "u-set-interface-only-ok u-set-execute-kept "
+                 # recording charges moved to a pool, a teardown with zombies, secondaries
+                 # (virgl-venus-host-memory.patch, virgl-venus-encoder-cap.patch)
+                 "h-rec-spare-ok h-release-end h-pass-secondary-ok")
+# test-venus-image-limits under libgmalloc: plane binds, where a driver reads a plane's memory
+# slot by the guest's plane aspect
+image_gmalloc_cases = ("bind-plane-info bind-disjoint-no-plane bind-disjoint-planes-ok "
+                       "bind-alias-plane0-ok bind-alias-plane1-ok bind-alias-no-plane bind-alias-v1 "
+                       "bind-alias-plane1-aspect repeat-bind-plane repeat-reqs-plane")
+gmalloc_runs = {"test-venus-commands": ("VENUS_COMMANDS_CASES", gmalloc_cases),
+                "test-venus-image-limits": ("VENUS_IMAGE_CASES", image_gmalloc_cases)}
 gmalloc = Path("/usr/lib/libgmalloc.dylib")
 
 icd = runtime / "share/vulkan/icd.d"
@@ -144,9 +186,10 @@ for test, _ in tests:
     variants = [(name, title, {}) for name, title in drivers]
     if test == "test-venus-commands":
         variants.append(("moltenvk", "MoltenVK", {"MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS": "1"}))
-        if gmalloc.exists():
-            variants += [(name, title, {"DYLD_INSERT_LIBRARIES": str(gmalloc),
-                                        "VENUS_COMMANDS_CASES": gmalloc_cases}) for name, title in drivers]
+    if test in gmalloc_runs and gmalloc.exists():
+        variable, cases = gmalloc_runs[test]
+        variants += [(name, title, {"DYLD_INSERT_LIBRARIES": str(gmalloc), variable: cases})
+                     for name, title in drivers]
     for name, title, extra in variants:
         variant_env = {**env, "OMACVM_VULKAN_DRIVER": name, **extra}
         label = title + (" (prefilled Metal command buffers)" if "MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS" in extra
@@ -162,6 +205,11 @@ for test, _ in tests:
         timing = subprocess.run([str(binary), "--time", "10000"], env=variant_env,
                                 capture_output=True, text=True)
         lines = [line for line in timing.stdout.splitlines() if line.startswith("timing:")]
+        if test == "test-venus-commands":
+            # through a real ring and the context's stream (virgl-venus-ring-lock.patch)
+            ring_timing = subprocess.run([str(binary), "--ring-time", "10000"], env=variant_env,
+                                         capture_output=True, text=True)
+            lines += [line for line in ring_timing.stdout.splitlines() if line.startswith("ring-time:")]
         for line in lines:
             print(f"{label} {line}")
 

@@ -1,0 +1,7 @@
+stage frag
+entry main
+bind 0 0 6 1
+bind 0 1 2 1
+bind 0 2 2 1
+fout 0 f
+fin 0 2 f 0

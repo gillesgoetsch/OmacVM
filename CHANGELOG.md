@@ -14,6 +14,274 @@ in more words.
   control centre's row says "from the next start" until then). Not yet:
   folders, Photos/Mail/Safari images, and dragging out of the VM. See docs/drag-and-drop.md.
 
+## 3.2.22
+
+In OmacVM.app VMs with Graphics on Vulkan, QEMU now counts the Metal passes and the Mac memory each
+Vulkan program's commands and objects take; a program that goes too far loses only its own Vulkan
+connection, not the VM. Needs the app update only (from the VM's next start); no Update VM. UTM,
+Fusion and Parallels get nothing. Known limit: Chromium with ANGLE on Vulkan, without the flag the
+KosmicKrisp notes give, is refused at an 8 GB Mac's share (see the item).
+
+- **A Vulkan program can no longer end the VM with too many drawing passes, or make QEMU hold memory without limit
+  (OmacVM.app, #700, see #624).** With Graphics on Vulkan, about 75000-98000 clears or passes in one command buffer
+  (or, on the M1 Max, 74000-82000 draws of a kind that starts a new pass on the Mac, such as triangle fans) crashed
+  QEMU on the Mac's GPU, and a program could record commands or make objects until QEMU held many gigabytes. Now
+  QEMU counts both per program and ends only that program's Vulkan connection when it goes too far (16384 passes
+  per command buffer; a quarter of the apps' GPU memory share, at most 4 GB, for recordings and objects). Programs
+  are told a GPU memory size no bigger than what they may use (MoltenVK said all of the Mac's memory). Needs the
+  app update. Known limit: Chromium with ANGLE on Vulkan but without the
+  `--disable-angle-features=supportsPrimitiveTopologyListRestart` flag that
+  [the KosmicKrisp notes](docs/experiments/kosmickrisp.md) give is refused with an 8 GB Mac's 1408 MB share per
+  program (forced on a 16 GB Mac mini M4; no 8 GB Mac was run) at about 5000 fish in WebGL Aquarium: on KosmicKrisp
+  each of its draws is a pass, 1408 MB within seconds. The page goes black and Chromium stops using the GPU until
+  it is started again; Chromium, the VM and the desktop keep running (QEMU at most 5033 MB with a 4 GB VM). Started
+  again with the flag it draws 30000 fish at 45 fps (316 MB). With the 4096 MB share of the 32 GB M1 Max the same
+  page took at least 2936 MB in 20 s.
+
+## 3.2.21
+
+In OmacVM.app VMs with Graphics on Vulkan, QEMU now checks each shader a VM sends with SPIRV-Tools'
+validator before the Mac's driver compiles it; a refused shader ends only its own app's Vulkan
+connection, not the VM. Needs the app update only (from the VM's next start). Update VM only
+refreshes the VM's copy of OmacVM's own guest Mesa build script (built by hand), which now installs
+into a folder of its own. UTM, Fusion and Parallels get only that script default.
+
+- **A Vulkan shader that would crash the Mac's driver now ends only its own app (OmacVM.app, #702,
+  see #624).** With Graphics on Vulkan, QEMU checks each shader a VM sends with SPIRV-Tools'
+  validator before KosmicKrisp or MoltenVK compiles it, for the Vulkan version and features the
+  Mac's driver has. On an M4, 138 of 900 test shaders ended or hung the Mac's driver when compiled
+  (in QEMU each would end the VM); the check from 3.2.18 stopped 72 of them, the validator now stops
+  65 of the other 66 and a cap on huge unused arrays the last one; huge Private and shared
+  (Workgroup) arrays are capped too. The validator itself is guarded: limits on interface variables
+  and types before it reads a shader, its own checks kept on, and at most 2 s of CPU per shader.
+  Real shaders pass (90 from DXVK, Chromium, dEQP, vkcube, Zink and glslc tests, and vkd3d-proton's
+  42; Ghostty on Zink, glxgears, vkcube and Chromium ran in a test VM on KosmicKrisp with no
+  refusal). On MoltenVK an app that asks for Vulkan 1.0 or 1.1 may send SPIR-V up to 1.4, as
+  MoltenVK tells it. On the M4 it costs about 40 µs per KB once per shader (cached after). Ray
+  tracing pipelines, which no Mac driver has, are refused. Needs the app update only (from the VM's
+  next start); nothing in the VM.
+- **OmacVM's own guest Mesa build has a folder of its own (guest Mesa, manual build, see #694).**
+  `src/app/guest/mesa/build.sh` installed into `/opt/omacvm-mesa` unless `PREFIX` named another
+  folder, and that is where a VM with Graphics on Vulkan keeps its Venus Mesa, so a run in such a
+  VM replaced the Venus Mesa. Its default is `/opt/omacvm-gl-mesa` now (apps use it with
+  `LD_LIBRARY_PATH=/opt/omacvm-gl-mesa/lib`), and it stops without building when the folder holds
+  the Venus Mesa. A build made before into `/opt/omacvm-mesa` stays only in UTM, Fusion and Parallels
+  VMs; in an OmacVM.app VM with Vulkan off the next Update VM removes that folder, so build again
+  with the new default. If an earlier build replaced the Venus Mesa in a Vulkan VM, switch Vulkan
+  off and on again (or `venus/install.sh --remove`, then enable it) to rebuild it. In an OmacVM.app
+  VM the VM's copy of the script gets the new default with Update VM; UTM, Fusion and Parallels VMs
+  get it with their own update. No VM runs this script by itself: nothing changes for a VM that
+  does not use it.
+
+## 3.2.20
+
+In OmacVM.app VMs, more desktop OpenGL programs with tessellation draw on the Mac's GPU: separate
+control shaders whose patch values leave gaps, clip distances written in a loop, and a vertex
+shader's clip distances 4..7 going into a control shader. With Graphics on Vulkan, a program that
+chains one structure type twice, leaves out a blend attachment array or draws with a descriptor set
+or index buffer it never bound now ends only its own Vulkan connection, not the VM; on MoltenVK,
+an image bound to a swapchain's memory and an image that aliases one plane of a YCbCr image now
+work. Needs the app update only (from the VM's next start); no Update VM. UTM, Fusion and Parallels
+get nothing from 3.2.20. One case stays with the VM's Mesa: a control shader that copies 5 to 8
+clip distances in a loop gets undefined values for 4..7; one statement per distance avoids it.
+OmacVM's own guest Mesa build (built by hand, #694) has a fix for it; no VM gets that build from
+this release, and whether it becomes the default is not decided.
+
+- **OpenGL program pipelines whose patch values do not start at 0 stay on the GPU (OmacVM.app,
+  #688, see #589).** An app that gives its tessellation patch values explicit locations in
+  separate shader programs (for example locations 1 and 3) left the gaps unwritten in the control
+  shader the Mac gets, and Apple's OpenGL could not build the GPU pipeline ("Fallback to SW vertex
+  processing because buildPipelineState failed" in qemu.log). On the MacBook Pro M1 Max such
+  draws ran on Apple's CPU vertex path, the first draw took 262-272 ms and Apple's shader compiler
+  crashed now and then; on the Mac mini M4 they drew nothing. Now the control shader also writes
+  the gaps: on both Macs no fallback line, the pixels of Apple's software renderer, the first draw
+  in 5-6 ms (M1 Max) and 5-100 ms (M4). In a test VM on the M1 Max the VM's Mesa keeps such gaps,
+  and the fallback line is gone with the same pixels. Needs the app update (from the VM's next
+  start); nothing in the VM.
+- **OpenGL shaders that write their clip distances in a loop compile on the Mac (OmacVM.app,
+  #691, see #589).** A tessellation control shader that copies `gl_ClipDistance[i]` in a `for`
+  loop (also a vertex, geometry or evaluation shader that writes them in one) came from the VM's
+  Mesa with temps indexed at run time, and the Mac refused it ("Swizzle of non-vector primitive
+  float" in qemu.log), so its draws were skipped (3.2.18 and 3.2.19 alike). Now it compiles; with
+  up to 4 distances it draws what one statement per distance draws, on the M1 Max and M4 GPUs and
+  Apple's software renderer; with 5 to 8 before a control shader, see the next entry. Needs the
+  app update (from the VM's next start).
+- **A vertex shader's clip distances 4..7 reach a tessellation control shader on the Mac's GPU
+  (OmacVM.app, #695, see #589).** With `gl_ClipDistance[4..7]` going from a vertex shader into a
+  control shader, the M4's and M1 Max's GPUs drew nothing (Apple's software renderer drew it); the
+  VM's Mesa sends that when the vertex shader writes its distances in a loop. The vertex shader now
+  passes them to the control shader as plain varyings, as 3.2.19 does before an evaluation shader.
+  One case stays in the VM's Mesa: a control shader that copies 5 to 8 distances in a loop gets
+  only 0..3 back, and 4..7 are then undefined. On the M4 they read 0 (the draw is there, but a
+  negative one does not clip), on the M1 Max they clip the draw away. OmacVM's own guest Mesa
+  build has a patch for it (#694); the VM's Arch Mesa does not. One statement per distance avoids it.
+  Needs the app update (from the VM's next start).
+- **A Vulkan program that chains one structure type twice no longer gets past QEMU's checks
+  (OmacVM.app, #687, see #624).** With Graphics on Vulkan, QEMU checked the first of two
+  structures of one type and the Mac's driver used the last: a render pass with a second
+  multiview structure of 9 views ended the VM on KosmicKrisp. Vulkan does not allow such a chain;
+  now it ends only that program's Vulkan connection. Needs the app update.
+- **A Vulkan program with a color blend state that has no attachment array can no longer end the VM
+  (OmacVM.app, #690, see #624).** With Graphics on Vulkan, QEMU passed such a pipeline (not allowed in
+  Vulkan) to the Mac's driver, which crashed. Now it ends only the program's Vulkan connection. Needs
+  the app update.
+- **Two legal Vulkan values no longer end a program's Vulkan connection (OmacVM.app, #690, see #624).**
+  A texel buffer view with less than one texel (when the program asked for nullDescriptor, on
+  KosmicKrisp) now works as an empty view, and a pipeline's vertex stride is no longer checked when
+  the program sets it at draw time. Refused buffer values in QEMU's log now say "no buffer" and "the
+  whole size" instead of 18446744073709551615. Needs the app update.
+- **A Vulkan program that draws with a descriptor set or index buffer it never bound can no longer end
+  the VM (OmacVM.app, #693, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU crashed when it sent
+  such a draw (not allowed in Vulkan) to the Mac's GPU. Now only that program's Vulkan connection ends.
+  An indexed draw without an index buffer still works where the program turned on maintenance6, which
+  allows it. Needs the app update.
+- **A Vulkan program that binds an image to a window's swapchain now works on MoltenVK too (OmacVM.app,
+  #696, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU ended the program's Vulkan connection at such
+  a bind (`VkBindImageMemorySwapchainInfoKHR`); letting it through as it was would have crashed QEMU when the
+  program closed the swapchain before the image. Now QEMU keeps the swapchain's memory until the image is
+  gone, on both drivers. On KosmicKrisp, an image unlike the swapchain's on that memory is now refused (Vulkan
+  does not allow it). Needs the app update.
+- **A Vulkan program can now make an image that aliases one plane of a YCbCr video image on MoltenVK
+  (OmacVM.app, #697, see #624).** With Graphics on Vulkan, on MoltenVK, QEMU refused such an image (one-plane
+  format with DISJOINT and ALIAS, which Vulkan allows) because MoltenVK's format check says no to it, while
+  MoltenVK makes it fine. Now QEMU asks MoltenVK about the same image without DISJOINT, which changes nothing
+  for one plane, and tells the program the same answer. KosmicKrisp is not changed. Needs the app update.
+- **OmacVM's own guest Mesa build copies every clip distance back after a loop (guest Mesa,
+  manual build, #694, see #589).** In a tessellation control shader that copies 5 to 8 clip
+  distances in a loop, Mesa's virgl driver copied only distances 0..3 back to their output, and
+  4..7 were undefined: a negative one did not clip on the M4's GPU and Apple's software renderer,
+  and on the M1 Max's GPU the draw was clipped away (#692). `src/app/guest/mesa/build.sh`, which
+  builds Mesa's virgl driver with OmacVM's patches for apps started with `LD_LIBRARY_PATH`, now
+  has `mesa-virgl-tgsi-clip-copyback.patch` for it. Its default folder, `/opt/omacvm-mesa`, is
+  also where a VM with Vulkan on keeps its Venus Mesa: in such a VM give `PREFIX` another folder
+  (for example `PREFIX=/opt/omacvm-gl-mesa`), or the build replaces the Venus Mesa. The VM's own
+  Mesa (Arch's) does not get the patch: nothing changes in a VM that does not use that build. One
+  statement per distance avoids the case with any Mesa.
+
+## 3.2.19
+
+In OmacVM.app VMs, a Vulkan program's threads take turns in QEMU, and what a recorded command buffer
+uses (image views, other command buffers) stays until it lets go of it; a one-plane alias of a YCbCr
+image's plane binds. Desktop OpenGL programs that pass clip distances on to a tessellation
+evaluation shader draw on the Mac's GPU instead of Apple's CPU path. From 3.2.19 on, What's New
+lists every version since yours. New and experimental: a lone Shift reaches a Mac input method that
+switches on it. Omarchy's tray works in the notch strip, and the control centre no longer quits when
+news comes as a screen opens. Needs the app update (from the VM's next start); Update VM too for the
+tray, the control centre and the check's Ghostty line. UTM, Fusion and Parallels get only those
+guest items.
+
+- **Mac input methods: a lone Shift reaches an input method that switches on it (OmacVM.app,
+  experimental, #657, see #357, #655 by @Vocllum).** While the VM has the keyboard, QEMU's key tap
+  took every key and modifier from macOS's event stream, so an input method that switches between
+  its modes on a lone Shift from that stream never saw Shift in the VM: in @Vocllum's captures
+  WeChat Input stayed in Chinese after each Shift tap followed by a letter (7 of 7 in 3.2.8), and
+  switched at each one (taps 3-8 of 8) with a 3.2.8 QEMU that let modifier changes through. Now,
+  while an input method has the keys in a VM text field, a Shift press and release also go on to
+  macOS; nothing else does (no Command, Control, Option, fn or Caps Lock, no Shift with one of them
+  held), and nothing changes with the feature off or a plain layout. The VM gets the Shift at once;
+  the input method gets it when macOS gives it back, as in any Mac app (a key typed before that
+  comes after it). The first form of this change gave the input method the Shift before macOS had it
+  and never recognised the copy coming back (@Vocllum's build: the mode changed 0 times); his
+  matcher for that copy is in. @Vocllum tried this form with WeChat Input (3.0.0): lone Shift taps
+  switched its mode 9 of 9 times, 5 quick Shift+letter chords typed in Chinese mode stayed in
+  Chinese, and the Shift came back from macOS in 1-15 ms. Not tried yet with Squirrel (Rime) or
+  Apple's Pinyin. `OMACVM_IME_SHIFT=0` turns it off. Needs the app update, from the VM's next start.
+
+- **What's New lists every version since yours (OmacVM.app, #674).** When an update skips versions,
+  its What's New showed only the newest one's notes. From 3.2.19 on it shows each version after the
+  one you run, up to the update, newest first, each under its own version number, from the update's
+  own CHANGELOG. At most 5 versions and 30 items; the rest is counted, with a link to the changelog
+  on GitHub. The banner's line stays the update's, and an update by one version looks as before.
+  What's New is drawn by the app you run before the update, so an update to 3.2.19 itself still
+  shows only 3.2.19's notes (3.2.18's are in its release notes); the list of every version starts
+  with updates from 3.2.19 on. It reads the changelog only down to your version, so a long changelog
+  no longer hides What's New (past 512 KiB it showed nothing).
+
+- **A Vulkan program's threads take turns in QEMU, and image views a recorded command buffer named
+  stay until it lets go of them (OmacVM.app, #673, see #624).** With Graphics on Vulkan, a program's
+  threads reach QEMU on rings of their own, and nothing kept one ring from using what another had
+  just destroyed: a program that destroyed an object while another of its threads was making a
+  pipeline with it, or two threads recording into one command buffer, could make QEMU and the Mac's
+  driver use freed memory. Now one thread at a time works on a program's objects; making pipelines
+  still runs beside the rest (Chromium's, Dawn's and Zink's compile threads), and destroying what
+  such a call uses ends only that program's Vulkan connection (troubleshooting 55). Destroying an
+  image view (or its image, framebuffer or render pass) that a recorded command buffer named is
+  legal, but the Mac's drivers still read it: KosmicKrisp at a barrier in a multisampled pass,
+  MoltenVK when the command buffer is submitted. Now the driver's copy waits until the command
+  buffer is reset, begun again or freed. Needs the app update.
+
+- **A command buffer that ran another one keeps it until it lets go (OmacVM.app, #678, see #676).**
+  With Graphics on Vulkan, a program could destroy a secondary command buffer's pool after a primary
+  command buffer ran it and then submit the primary: MoltenVK reads the secondary at the submit, so
+  QEMU read freed memory (a free alone hands the secondary back to its pool). Now the primary holds
+  its secondaries as it holds its image views: the driver's copy of a freed one, and its pool, wait
+  until the primary is reset, begun again or freed. Needs the app update.
+
+- **A Vulkan program can bind memory to a one-plane alias of a YCbCr image's plane (OmacVM.app,
+  #683, see #624).** With Graphics on Vulkan, binding memory with plane 0 to a one-plane image made
+  with DISJOINT and ALIAS (legal; dEQP's ycbcr.plane_view.memory_alias cases do it) ended the
+  program's Vulkan connection since 3.2.14. Now it binds, and a plane the image does not have is
+  still refused. Nothing that bound before is refused now. Needs the app update.
+
+- **Desktop OpenGL programs that pass clip distances between tessellation shaders run on the Mac's
+  GPU (OmacVM.app, #684, see #589).** When a tessellation control shader passed gl_ClipDistance on
+  to the evaluation shader, Apple's OpenGL could not build the GPU pipeline: such draws ran on
+  Apple's CPU vertex path, its shader compiler crashed in the background (MTLCompilerService
+  reports) and the first draw took about 270 ms (qemu.log: "Fallback to SW vertex processing because
+  buildPipelineState failed"); on the MacBook Pro M1 Max 4 of the 6 such programs of the test drew
+  nothing. Now the control shader passes them as plain varyings: on the MacBook Pro M1 Max and the
+  Mac mini M4 the same programs draw on the GPU with the pixels of Apple's software renderer, no
+  fallback line, no crash report, the first draw in 6-100 ms on the M1 Max. Needs only the app
+  update (from the VM's next start); nothing in the VM.
+
+- **Desktop OpenGL programs whose vertex shader passes clip distances straight to a tessellation
+  evaluation shader (no control shader) draw on the Mac's GPU (OmacVM.app, #685, see #589).**
+  Apple's OpenGL could not build the GPU pipeline for them either ("Fallback to SW vertex processing
+  because buildPipelineState failed" in qemu.log): on the MacBook Pro M1 Max all 6 such programs of
+  the test drew nothing, the first draw took 260-284 ms and Apple's shader compiler crashed for one
+  of them. Now the vertex shader passes them as plain varyings: on the MacBook Pro M1 Max and the
+  Mac mini M4 the same programs draw on the GPU with the pixels of Apple's software renderer, no
+  fallback line, no crash report, the first draw in 4-128 ms on the M1 Max. Needs only the app
+  update (from the VM's next start); nothing in the VM.
+
+- **Omarchy's tray works in the notch strip (Omanotch, #671, see #662).** With the bar in the strip,
+  tray icons did not answer clicks and the drawer's arrow did nothing, so icons in the drawer could
+  not be reached at all. Now the icons take left, right and middle clicks and scrolling as on the
+  bar in the VM (a right click opens the app's menu right under the strip), and a left click on the
+  arrow opens or closes the drawer; it closes when the pointer leaves the strip. The bar in the VM
+  keeps opening the drawer on hover. Also for a clone of the tray. Thanks to @mlamoure for the
+  report and the cause. Checked in a test VM with Omarchy 4.0.3rc4: before, every click on a tray
+  icon missed; after, each button and the wheel reached the app. Needs Update VM.
+
+- **The control centre no longer quits when news from the Mac comes as a screen opens (#672).**
+  Enter on a row or U for updates, at the moment the control centre redrew with the Mac's latest
+  answer, could end it with "No nodes match '#body'". That screen now draws itself once it is ready.
+  Needs Update VM.
+
+- The control centre's hint under the table starts with its row's name, so it is clear which row it
+  describes while the cursor moves (#680). Needs Update VM.
+
+- **omacvm check names the right cause when Ghostty draws on the CPU after a lost GPU context
+  (#675).** Its Ghostty line said "a Vulkan app's GPU context was lost", but only Ghostty's own lost
+  context keeps the next Ghostty off the Mac's GPU; it now says so. Needs Update VM.
+
+- **Correction to 3.2.18: USB Devices… in the app menu (#660).** 3.2.18 said that the Mac mini's
+  check that the app builds its list was still to run, and that the list on screen was not checked.
+  Both ran before 3.2.18 came out: on a Mac mini M4 the app built its list, and a click on the item
+  opened the list in front of the VM's window, where Connect, Disconnect and Return worked with a
+  made-up device. Over a full-screen VM it is still not checked.
+
+- **Building the QEMU runtime with only the Command Line Tools (no Xcode)** (#657, reported by
+  @Vocllum in #655). The build put the Command Line Tools' folder first in PATH, so its `cc` did not
+  find the SDK (`Hypervisor/Hypervisor.h`) and its Python 3.9 made QEMU's configure ask for `tomli`.
+  The build now takes a Python 3.11 or newer from PATH and puts only that `python3` first; `cc`
+  stays `/usr/bin/cc`. Without such a Python it stops at once and says what to install.
+
+- Tests (#681): app-drive-drop.sh no longer fails with "rename image not under /Volumes: ''" when
+  other disk images attach at the same time. hdiutil then can print the volume's line (with its
+  mount point) before the disk's own lines; the test took the last line. It now takes the line that
+  has the mount point, and when there is none prints hdiutil's output and detaches the image.
+
 ## 3.2.18
 
 In OmacVM.app VMs, what the VM frees reaches the Mac when it is idle; 3.2.17's own-view sweep turns

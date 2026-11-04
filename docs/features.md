@@ -382,6 +382,16 @@ nothing changes at all. Password fields always get plain keys.
 - **Your own input method in the VM** (Mozc, Rime, Hangul in Fcitx5) keeps
   working: with a plain layout on the Mac, keys go to the VM and Fcitx5
   composes as before.
+- **A lone Shift** (#357): while your input method has the keys in a VM
+  text field, a Shift press and release also go to macOS (nothing else,
+  and nothing with the feature off or a plain layout), so an input method
+  that switches its mode on a lone Shift from what macOS sees (WeChat
+  Input's Chinese and English) sees it in the VM too. The VM gets the Shift
+  at once, your input method when macOS gives it back, as in any Mac app.
+  With WeChat Input (3.0.0), @Vocllum's test: lone Shift taps switched
+  its mode 9 of 9 times, and 5 quick Shift+letter chords typed in Chinese
+  mode stayed in Chinese. Not tried yet with Squirrel (Rime) or Apple's
+  Pinyin.
 - **Tested** on a MacBook Air (macOS 26.6): Pinyin (`zhongwen` + Space
   gives 中文, Esc drops it, Backspace edits it), Japanese Romaji (`nihon` +
   Return gives にほん) and 2-Set Korean (한국 어) in a GTK app; Pinyin in foot;

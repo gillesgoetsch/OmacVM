@@ -600,13 +600,13 @@ hdr_capture_line() {
 # 4.3, the VM's GPU gives 4.1, so OmacVM's EGL vendor library starts Ghostty alone on Mesa's CPU
 # renderer, or on Zink over Venus with 4.3 when the app asks (ADR 0064). MARKER 1: host.env has
 # OMACVM_GLZINK=1 (OmacVM.app's experimental setting, Vulkan on KosmicKrisp); ZINKOFF 1: a Venus
-# context was lost in this boot (/run/omacvm/gl-zink-off); RECORD: a running Ghostty's line from
+# context of Ghostty was lost in this boot (/run/omacvm/gl-zink-off); RECORD: a running Ghostty's line from
 # the library, "PID ASKED GOT WHY" (ghostty_running), "" for none. No GL call: glvnd's file and
 # the library, which has those parts when it names the variables it sets.
 ghostty_line() {
   local cpu="draws on the VM's CPU (Mesa's llvmpipe): it needs OpenGL 4.3, the VM's GPU gives 4.1; fast output keeps about 2 of the VM's cores busy (more in a bigger window), Alacritty and Kitty draw on the Mac's GPU; with Ghostty as the default terminal, Omarchy's screensaver draws on the CPU too (off: omarchy-toggle-screensaver or omacvm enable no-idle-lock)"
   local gpu="draws on the Mac's GPU (Zink over Venus with OpenGL 4.3, OmacVM.app's experimental setting); if the Mac refuses its GPU commands (also when the VM's graphics memory is used up) that Ghostty ends or stops responding: close it (programs in it end)"
-  local lost="draws on the VM's CPU (Mesa's llvmpipe): a Vulkan app's GPU context was lost in this boot, so Ghostty stays off the Mac's GPU until the VM starts again"
+  local lost="draws on the VM's CPU (Mesa's llvmpipe): Ghostty on the Mac's GPU lost its GPU context in this boot, so Ghostty stays off the Mac's GPU until the VM starts again"
   local rec=${6:-} asked got why
   [[ $1 == 1 ]] || return 0
   if ! [[ -f $2 && -f $3 ]] || ! grep -qaF LIBGL_ALWAYS_SOFTWARE "$3"; then

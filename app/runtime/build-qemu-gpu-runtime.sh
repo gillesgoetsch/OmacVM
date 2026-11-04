@@ -266,6 +266,22 @@ virgl_tap_root=homebrew-virglrenderer-$virgl_tap_commit
 virgl_tap_archive_name="$virgl_tap_root.tar.gz"
 virgl_tap_url="https://codeload.github.com/startergo/homebrew-virglrenderer/tar.gz/$virgl_tap_commit"
 virgl_tap_sha256=373db13456610847b97a2d442f1b7cd2ffa0c9a60c6850dc2185d40b09dfa5e4
+# SPIRV-Tools' validator for the guest's SPIR-V (virgl-venus-spirv-validate.patch, #624): the
+# release and the SPIRV-Headers commit its DEPS names (MoltenVK 1.4.2 uses the same headers),
+# built static with hidden symbols by the pinned CMake.
+spirv_tools_root_name=SPIRV-Tools-2026.3
+spirv_tools_archive_name="$spirv_tools_root_name.tar.gz"
+spirv_tools_url="https://codeload.github.com/KhronosGroup/SPIRV-Tools/tar.gz/refs/tags/v2026.3"
+spirv_tools_sha256=fff0667b25dfb98177da3cc4cc61ac277d076786df42baaf8d9635a25bdf9226
+spirv_headers_commit=29981f65241605e08b0ede4cfeb999fe3b723c6a
+spirv_headers_root_name="SPIRV-Headers-$spirv_headers_commit"
+spirv_headers_archive_name="$spirv_headers_root_name.tar.gz"
+spirv_headers_url="https://codeload.github.com/KhronosGroup/SPIRV-Headers/tar.gz/$spirv_headers_commit"
+spirv_headers_sha256=232899f1ad4104fb5bc377b94596c7621575eee62ad9a9e8f929b63a7dd8a7ad
+cmake_root=cmake-3.31.6-macos-universal
+cmake_archive_name="$cmake_root.tar.gz"
+cmake_url="https://github.com/Kitware/CMake/releases/download/v3.31.6/$cmake_archive_name"
+cmake_sha256=330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d
 pyyaml_root=pyyaml-6.0.3
 pyyaml_archive_name="$pyyaml_root.tar.gz"
 pyyaml_url="https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/$pyyaml_archive_name"
@@ -298,16 +314,15 @@ log() {
 source "$pinned_bottles"
 
 for tool in awk bash chmod curl ditto file grep install mkdir mktemp patch \
-  pkg-config python3 rm sed shasum sw_vers tar uname; do
+  pkg-config rm sed shasum sw_vers tar uname; do
   command -v "$tool" >/dev/null 2>&1 || die "required tool is unavailable: $tool"
 done
-# Apple's /usr/bin/python3 is a shim under SIP: macOS drops DYLD_LIBRARY_PATH
-# for it, so the virgl test binaries it starts below would not find libepoxy.
-# The python3 it stands for (Xcode's or the Command Line Tools') keeps it.
-if [[ $(command -v python3) == /usr/bin/python3 ]] && real_python=$(xcrun -f python3 2>/dev/null) &&
-   [[ -x $real_python && $real_python != /usr/bin/* ]]; then
-  PATH="$(dirname "$real_python"):$PATH"
-fi
+# The build's python3 (3.11 or newer, not Apple's shim): build-python.sh. It
+# goes first in PATH alone, in a folder of its own, so cc and the rest stay
+# as PATH has them (a whole toolchain folder first would shadow /usr/bin/cc,
+# and the Command Line Tools' clang does not find the SDK on its own).
+# shellcheck source=build-python.sh
+source "$native_dir/build-python.sh"
 
 [[ $(uname -s) == Darwin ]] || die "this source build requires macOS"
 [[ $(uname -m) == arm64 ]] || die "this source build requires Apple Silicon (arm64)"
@@ -401,6 +416,9 @@ source_parent="$work_dir/source"
 dependency_root="$work_dir/dependencies"
 tool_root="$work_dir/tools"
 mkdir -p "$archive_dir" "$listing_dir" "$source_parent" "$dependency_root" "$tool_root"
+build_python=$(omacvm_build_python "$work_dir/python-bin") || exit 1
+PATH="$work_dir/python-bin:$PATH"
+log "python3 for the build: $build_python ($(python3 --version 2>&1))"
 
 download_and_verify() {
   local label=$1
@@ -499,6 +517,9 @@ keycodemap_archive="$archive_dir/$keycodemap_archive_name"
 dtc_archive="$archive_dir/$dtc_archive_name"
 ninja_archive="$archive_dir/$ninja_archive_name"
 virgl_archive="$archive_dir/$virgl_archive_name"
+spirv_tools_archive="$archive_dir/$spirv_tools_archive_name"
+spirv_headers_archive="$archive_dir/$spirv_headers_archive_name"
+cmake_archive="$archive_dir/$cmake_archive_name"
 virgl_tap_archive="$archive_dir/$virgl_tap_archive_name"
 pyyaml_archive="$archive_dir/$pyyaml_archive_name"
 angle_archive="$archive_dir/$angle_archive_name"
@@ -516,6 +537,9 @@ obtain_and_verify "dtc $dtc_commit" "$dtc_url" "$dtc_sha256" "$dtc_archive"
 obtain_and_verify "Ninja $ninja_version" "$ninja_url" "$ninja_sha256" "$ninja_archive"
 obtain_and_verify "virglrenderer source" "$virgl_url" "$virgl_sha256" "$virgl_archive"
 obtain_and_verify "virglrenderer patches and regression tests" "$virgl_tap_url" "$virgl_tap_sha256" "$virgl_tap_archive"
+obtain_and_verify "SPIRV-Tools source" "$spirv_tools_url" "$spirv_tools_sha256" "$spirv_tools_archive"
+obtain_and_verify "SPIRV-Headers $spirv_headers_commit" "$spirv_headers_url" "$spirv_headers_sha256" "$spirv_headers_archive"
+obtain_and_verify "CMake" "$cmake_url" "$cmake_sha256" "$cmake_archive"
 obtain_and_verify "PyYAML source" "$pyyaml_url" "$pyyaml_sha256" "$pyyaml_archive"
 obtain_and_verify "ANGLE $angle_version" "$angle_url" "$angle_sha256" "$angle_archive"
 obtain_and_verify "libepoxy $epoxy_version" "$epoxy_url" "$epoxy_sha256" "$epoxy_archive"
@@ -537,6 +561,9 @@ validate_tar_root "keycodemapdb" "$keycodemap_archive" "$keycodemap_root" "$list
 validate_tar_root "dtc" "$dtc_archive" "$dtc_root" "$listing_dir/dtc.txt"
 validate_tar_root "virglrenderer" "$virgl_archive" "$virgl_source_root" "$listing_dir/virglrenderer.txt"
 validate_tar_root "virglrenderer patches" "$virgl_tap_archive" "$virgl_tap_root" "$listing_dir/virgl-tap.txt"
+validate_tar_root "SPIRV-Tools" "$spirv_tools_archive" "$spirv_tools_root_name" "$listing_dir/spirv-tools.txt"
+validate_tar_root "SPIRV-Headers" "$spirv_headers_archive" "$spirv_headers_root_name" "$listing_dir/spirv-headers.txt"
+validate_tar_root "CMake" "$cmake_archive" "$cmake_root" "$listing_dir/cmake.txt"
 validate_tar_root "PyYAML" "$pyyaml_archive" "$pyyaml_root" "$listing_dir/pyyaml.txt"
 validate_tar_root "ANGLE" "$angle_archive" "angle/$angle_version" "$listing_dir/angle.txt"
 validate_tar_root "libepoxy" "$epoxy_archive" "libepoxy/$epoxy_version" "$listing_dir/libepoxy.txt"
@@ -558,6 +585,11 @@ patch -d "$source_parent/$slirp_source_root" -p1 -f -i "$native_dir/patches/libs
 tar -xzf "$qemu_archive" -C "$source_parent"
 tar -xzf "$virgl_archive" -C "$source_parent"
 tar -xzf "$virgl_tap_archive" -C "$source_parent"
+tar -xzf "$spirv_tools_archive" -C "$source_parent"
+tar -xzf "$spirv_headers_archive" -C "$source_parent"
+# only CMake's command and its modules (not cmake-gui and its Qt)
+tar -xzf "$cmake_archive" -C "$tool_root" "$cmake_root/CMake.app/Contents/bin/cmake" \
+  "$cmake_root/CMake.app/Contents/share"
 tar -xzf "$pyyaml_archive" -C "$tool_root"
 # Use the pinned pure-Python YAML implementation for generated Gallium tables.
 export PYTHONPATH="$tool_root/$pyyaml_root/lib"
@@ -974,6 +1006,15 @@ grep -q 'eventsTap = CGEventTapCreate(kCGHIDEventTap, place, kCGEventTapOptionDe
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-tap-no-ask.patch"
 "$native_dir/Tests/keys/test-tap-no-ask.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: the full-grab tap is made (and asked for) without the permission (test-tap-no-ask.sh)"
+# mac-ime (#357, from #655): a Shift change the VM took in the full-grab tap
+# also goes on to macOS (an input method's lone-Shift switch watches the
+# system's events), only while an input method has the keys; the input
+# method gets it from the copy macOS gives back. Its rules' test, then the
+# wiring.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift-logic.patch"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-ime-shift.patch"
+"$native_dir/Tests/keys/test-ime-shift.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: Shift does not go on to macOS as tested (test-ime-shift.sh)"
 # OmacVM.app's "Closing the window" (#358): Shut down, Keep running (the app
 # hidden, the Dock icon brings it back), Ask. Its rules' test, then the wiring.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-close-logic.patch"
@@ -1547,6 +1588,48 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-p
 grep -q 'static void emit_patch_fill(const struct dump_ctx \*ctx,' "$virgl_source/src/vrend/vrend_shader.c" && \
   grep -q 'key->separable_out = 1;' "$virgl_source/src/vrend/vrend_renderer.c" || \
   die "vrend_shader.c, vrend_renderer.c: separable patch varyings still take a location (patch-varyings patch)"
+# OmacVM: on a desktop GL without cull distances a tessellation control shader passes its
+# clip distances to the evaluation shader as plain varyings (omacvm_clip0[]): gl_ClipDistance
+# in gl_out[] or gl_in[] made Apple's Metal pipeline build fail, the draws ran on its CPU
+# vertex path and its shader compiler crashed (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-tess-clip-varyings.patch"
+grep -q 'static int tcs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d\[gl_InvocationID\].%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (clip_dist && !tcs_clip)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (ctx->num_in_clip_dist && !tes_clip) {' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'if (gl_in && tes_clip_varyings(ctx)) {' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->tess_clip_in = type == PIPE_SHADER_TESS_EVAL' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: tessellation shaders still pass clip distances in gl_out[]/gl_in[] on the Mac (tess-clip-varyings patch)"
+# OmacVM: ... and so does a vertex shader before an evaluation shader without a control
+# shader (omacvm_clip0): gl_ClipDistance in its gl_PerVertex block failed the same way and
+# the draws drew nothing on the M1 Max's GPU (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-vs-tes-clip-varyings.patch"
+grep -q 'static int vs_clip_varyings(const struct dump_ctx \*ctx)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'emit_buff(glsl_strbufs, "omacvm_clip%d.%c = clip_dist_temp\[%d\].%c;\\n",' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q '(prev->type == PIPE_SHADER_VERTEX && !key->tcs_present)) &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: a vertex shader still passes clip distances to an evaluation shader in gl_PerVertex on the Mac (vs-tes-clip-varyings patch)"
+# OmacVM: ... and a separable control shader writes the padding patch varyings it declares
+# (patch-varyings patch): never written, Apple's Metal pipeline build failed, the draws ran on
+# its CPU vertex path and its shader compiler crashed now and then (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-separable-patch-fill-writes.patch"
+grep -q 'static uint64_t patch_fill_mask(' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q '"patch%02d = vec4(0.0);\\n"' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: a separable control shader still leaves its padding patch varyings unwritten (patch-fill-writes patch)"
+# OmacVM: a temp the guest indexes at run time without an ARRAY declaration is a GLSL array:
+# the guest's Mesa sends clip distances written in a loop that way, and "temp18[i].x" on a
+# plain vec4 did not compile on the Mac, so those draws were skipped (#589).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-indirect-temps.patch"
+grep -q 'static int lowest_indirect_temp(const struct dump_ctx \*ctx, int first, int last)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'get_temp(ctx, dst_reg->Register.Indirect, dst_reg->Indirect.Index, dst_reg->Register.Index,' "$virgl_source/src/vrend/vrend_shader.c" || \
+  die "vrend_shader.c: a temp indexed at run time without ARRAY is still a single vec4 (indirect-temps patch)"
+# OmacVM: ... and a vertex shader before a control shader (omacvm_vclip0, its own names: the
+# control shader writes omacvm_clip0 itself): with gl_ClipDistance[4..7] in its gl_PerVertex
+# block the M4's and M1 Max's GPUs drew nothing (#692).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-shader-vs-tcs-clip-varyings.patch"
+grep -q 'static int clip_varyings_in(const struct dump_ctx \*ctx, const char \*\*name)' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'return ctx->key->tcs_present ? "omacvm_vclip" : "omacvm_clip";' "$virgl_source/src/vrend/vrend_shader.c" && \
+  grep -q 'key->vs_clip_in = type == PIPE_SHADER_TESS_CTRL && prev->type == PIPE_SHADER_VERTEX &&' "$virgl_source/src/vrend/vrend_renderer.c" || \
+  die "vrend_shader.c: a vertex shader still passes clip distances to a control shader in gl_PerVertex on the Mac (vs-tcs-clip-varyings patch)"
 # OmacVM: a texture the guest samples at a smaller size than it is (a NOP payload from its VA-API
 # driver for video planes Mesa rounds up to 16): apps that sample the planes showed the picture
 # squeezed with its last row repeated as a strip at the bottom.
@@ -1660,6 +1743,83 @@ grep -q 'virgl_thread_budget_take("thread of a new Venus ring")' "$virgl_source/
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-pass-views.patch"
 grep -q '!vkr_cmd_views_ok(dispatch->data, "vkCmdEndRendering", cmd->views, cmd->view_count))' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_command_buffer.c: a pass's image views are not checked (pass-views patch)"
+# A test hook stops a guest call between vkr and the driver (the cross-ring tests, #624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-test-pause.patch"
+grep -q 'vkr_test_pause("pipeline");' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: no test pause hook (test-pause patch)"
+# The rings of one app take turns on its objects; pipeline calls run beside them with their
+# objects pinned (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-ring-lock.patch"
+grep -q 'const bool locked = vkr_context_lock(ctx);' "$virgl_source/src/venus/vkr_ring.c" && \
+  grep -q 'if (!vkr_pins_begin(ctx, &pins, "vkCreateGraphicsPipelines", args->device,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_ring.c, vkr_pipeline.c: rings of one app do not take turns (ring-lock patch)"
+# Command buffers hold the image views, framebuffers and render passes their passes named (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-command-holds.patch"
+grep -q 'if (vkr_device_object_held(ctx, obj, ctx->on_worker_thread))' "$virgl_source/src/venus/vkr_device.c" && \
+  grep -q 'vkr_cmd_unhold_all(cmd);' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_device.c, vkr_command_buffer.c: command buffers do not hold their views (command-holds patch)"
+# A primary holds the secondaries it executed; a freed one waits in the driver for it (#676).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-secondary-holds.patch"
+grep -q 'vkr_command_pool_destroy(ctx, pool->device, pool, true);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'if (vkr_device_object_held(ctx, &obj->base, true)) {{' "$virgl_source/src/venus/vkr_device_object.py" || \
+  die "vkr_command_buffer.c, vkr_device_object.py: primaries do not hold their secondaries (secondary-holds patch)"
+# A structure type twice in a chain vkr checks is refused: vkr reads the first, the drivers the
+# last (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-chain-repeats.patch"
+grep -q 'vkr_chain_repeat(const void \*chain)' "$virgl_source/src/venus/vkr_common.h" && \
+  grep -q '"VkRenderPassCreateInfo", why, why_size)' "$virgl_source/src/venus/vkr_render_pass.c" && \
+  grep -q '"VkRenderPassBeginInfo"))' "$virgl_source/src/venus/vkr_render_pass.c" || \
+  die "vkr_common.h, vkr_render_pass.c: a structure type twice in a chain gets past vkr (chain-repeats patch)"
+# A texel view of no element, a dynamic vertex stride and blend states: what Vulkan ignores is
+# taken, what the drivers read must be there (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-ignored-values.patch"
+grep -q 'if (check == VKR_VIEW_EMPTY) {' "$virgl_source/src/venus/vkr_buffer.c" && \
+  grep -q 'const bool count_read = !(three && (advanced || !dev->blend_coherent));' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_buffer.c, vkr_pipeline.c: Venus refuses values Vulkan ignores or passes blend states the drivers read past (ignored-values patch)"
+# A draw or dispatch with a descriptor set its pipeline uses, or an index buffer, never bound
+# since the begin is refused: MoltenVK reads the NULL slot when it encodes (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-unset-state.patch"
+grep -q 'vkr_cmd_used_sets_ok(dispatch, st, VKR_CMD_GRAPHICS, call);' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q '!vkr_cmd_index_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'vkr_pipeline_set_used_sets(init ? &arr : NULL, used);' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_command_buffer.c, vkr_pipeline.c: a draw with a set or index buffer never bound gets past vkr (unset-state patch)"
+# An app's image bound to a swapchain's memory (an ALIAS_BIT image with the swapchain image's
+# create info, on memory dedicated to that image) binds on MoltenVK too and holds the memory
+# until its driver destroy: MoltenVK locked the freed memory at that destroy (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-alias-memory.patch"
+grep -q 'vkr_image_hold_alias_memory(image, mem);' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'vkr_device_memory_free(dev, (struct vkr_device_memory \*)obj, obj->zombie_destroy_vk);' "$virgl_source/src/venus/vkr_device.c" || \
+  die "vkr_image.c, vkr_device.c: an image bound to a swapchain's memory does not hold it (alias-memory patch)"
+# An image that aliases one plane of a disjoint YCbCr image (DISJOINT|ALIAS on a one-plane
+# format) is asked about without DISJOINT after the driver's "no", in vkCreateImage's check and
+# in the guest's format query: MoltenVK's query refuses it, its create makes it (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-disjoint-alias-format.patch"
+grep -q 'q.flags = vkr_physical_device_retry_flags(info->format, info->flags, r);' "$virgl_source/src/venus/vkr_image.c" && \
+  grep -q 'args->pImageFormatInfo->format, args->pImageFormatInfo->flags, args->ret);' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_image.c, vkr_physical_device.c: a one-plane DISJOINT|ALIAS image is asked about with DISJOINT (disjoint-alias-format patch)"
+# Guest SPIR-V goes through SPIRV-Tools' validator after the scan, for the device's Vulkan version
+# and features, after the interface locations and the type cost are checked; Function and
+# Private variables are counted and Workgroup bytes checked after specialization; ray tracing
+# pipelines are refused (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-validate.patch"
+grep -q 'if (!vkr_spirv_valid(dev->physical_device, spirv, args->pCreateInfo->pCode,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_spirv_interface_ok(spirv, &physical_dev->spirv_target.io, vkr_spec_lookup,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_physical_device_init_spirv_target(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q '"ray tracing shaders are not checked");' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c, vkr_physical_device.c: guest SPIR-V is not validated (spirv-validate patch)"
+# A command buffer opens at most 16384 Metal passes, a MoltenVK batch 32768: Metal ended QEMU at
+# about 98304 in one Metal command buffer on an M1 Max, 75000 on an M4 (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-encoder-cap.patch"
+grep -q 'if (!vkr_cmd_weigh(dispatch, args->commandBuffer, weight, "vkCmdExecuteCommands"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit", i, submit->commandBufferCount,' "$virgl_source/src/venus/vkr_queue.c" || \
+  die "vkr_command_buffer.c, vkr_queue.c: Metal passes per command buffer are not capped (encoder-cap patch)"
+# Recordings and objects are charged per context and to the shared budget, the reported heaps
+# are at most the apps' share, big decoder temp buffers go (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-host-memory.patch"
+grep -q 'if (!vkr_cmd_cost(dispatch->data, _cmd, VKR_CMD_COST_BASE, "vk" #cmd_name))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'vkr_object_charge(ctx, obj); /\* OmacVM (virgl-venus-host-memory.patch) \*/' "$virgl_source/src/venus/vkr_context.h" && \
+  grep -q 'vkr_memory_heaps_clamp(&physical_dev->memory_properties);' "$virgl_source/src/venus/vkr_physical_device.c" || \
+  die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c: recordings and objects are not charged (host-memory patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
@@ -1668,6 +1828,47 @@ if grep -rnE --include='*.[ch]' --exclude=vkr_allocator.c --exclude-dir=venus-pr
      "$virgl_source/src/venus"; then
   die "src/venus: a proc table entry tested against NULL; entries are never NULL, use VKR_MISSING (missing-entries patch)"
 fi
+# SPIRV-Tools' validator for Venus (virgl-venus-spirv-validate.patch): a static library with
+# hidden symbols, so libvirglrenderer exports none of them (MoltenVK carries a private copy of
+# its own), spirv-tools-*.patch applied; once more with AddressSanitizer for the CPU test.
+spirv_tools_source="$source_parent/$spirv_tools_root_name"
+for spirv_tools_patch in "$native_dir"/patches/spirv-tools-*.patch; do
+  patch -d "$spirv_tools_source" -p1 -f -i "$spirv_tools_patch"
+done
+cmake="$tool_root/$cmake_root/CMake.app/Contents/bin/cmake"
+spirv_tools_root="$dependency_root/spirv-tools"
+spirv_tools_asan_root="$dependency_root/spirv-tools-asan"
+build_spirv_tools() { # PREFIX CFLAGS
+  local build="$source_parent/build-${1##*/}"
+  "$cmake" -S "$spirv_tools_source" -B "$build" -G Ninja -DCMAKE_MAKE_PROGRAM="$ninja" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" \
+    -DCMAKE_C_FLAGS="$2" -DCMAKE_CXX_FLAGS="$2" \
+    -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
+    -DSPIRV-Headers_SOURCE_DIR="$source_parent/$spirv_headers_root_name" \
+    -DSPIRV_SKIP_TESTS=ON -DSPIRV_SKIP_EXECUTABLES=ON -DSPIRV_WERROR=OFF -DBUILD_SHARED_LIBS=OFF \
+    > "$build.cmake.log" 2>&1 || { tail -20 "$build.cmake.log" >&2; die "SPIRV-Tools: cmake failed"; }
+  "$ninja" ${ninja_jobs[@]+"${ninja_jobs[@]}"} -C "$build" SPIRV-Tools-static
+  mkdir -p "$1/lib/pkgconfig" "$1/include"
+  install -m 0644 "$build/source/libSPIRV-Tools.a" "$1/lib/"
+  cp -R "$spirv_tools_source/include/spirv-tools" "$1/include/"
+}
+log "Building SPIRV-Tools 2026.3 (static, hidden symbols) for Venus' SPIR-V validation"
+build_spirv_tools "$spirv_tools_root" ""
+build_spirv_tools "$spirv_tools_asan_root" "-fsanitize=address -fno-omit-frame-pointer -g"
+cat > "$spirv_tools_root/lib/pkgconfig/omacvm-spirv-tools.pc" <<EOF
+Name: omacvm-spirv-tools
+Description: SPIRV-Tools 2026.3, static with hidden symbols (OmacVM's runtime build)
+Version: 2026.3
+Libs: $spirv_tools_root/lib/libSPIRV-Tools.a -lc++
+Cflags: -I$spirv_tools_root/include
+EOF
+pkg_config_libdir+=":$spirv_tools_root/lib/pkgconfig"
+spirv_tools_link=("$spirv_tools_root/lib/libSPIRV-Tools.a" -lc++)
+# The validator and vkr's checks on the CPU alone: every real module passes, every module that
+# ended a Mac driver's process is refused, the cache and the Function element count (#624).
+"$native_dir/Tests/virgl/test-venus-spirv-validate.sh" "$spirv_tools_root" "$spirv_tools_asan_root" "$virgl_source" || \
+  die "the Venus SPIR-V validation test failed"
+
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
@@ -1690,7 +1891,7 @@ env DYLD_LIBRARY_PATH="$private_libraries" \
     "-L$epoxy_root/lib" -lepoxy \
     -framework Metal -framework CoreFoundation -lobjc \
     -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
-    "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
+    "${spirv_tools_link[@]}" "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
 # Probe real format-selection code with controlled GL availability and failures.
 env DYLD_LIBRARY_PATH="$private_libraries" \
   python3 "$native_dir/Tests/virgl/run-regressions.py" \
@@ -1698,9 +1899,14 @@ env DYLD_LIBRARY_PATH="$private_libraries" \
     "-L$epoxy_root/lib" -lepoxy \
     -framework Metal -framework CoreFoundation -lobjc \
     -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
-    "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
+    "${spirv_tools_link[@]}" "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
 python3 "$meson" install -C "$virgl_build" --no-rebuild
 require_private_pkg_version virglrenderer 1.3.0
+# SPIRV-Tools stays private to the renderer: no spv symbol exported, so neither its copy nor
+# MoltenVK's can bind to the other's
+if nm -gU "$virgl_root/lib/libvirglrenderer.1.dylib" | grep -E ' _(spv|_ZN8spvtools)'; then
+  die "libvirglrenderer exports SPIRV-Tools symbols (build it with hidden visibility)"
+fi
 
 # Build against the same pinned private GLib used by QEMU; never use host libraries.
 slirp_build="$source_parent/$slirp_source_root/build"
@@ -1867,7 +2073,7 @@ python3 "$native_dir/Tests/virgl/run-venus-limits.py" \
   "-L$epoxy_root/lib" -lepoxy \
   -framework Metal -framework CoreFoundation -lobjc \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
-  "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib" || \
+  "${spirv_tools_link[@]}" "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib" || \
   die "the Venus limits tests failed"
 
 # The firmware must show the logo and name the disk's boot entry as QEMU's

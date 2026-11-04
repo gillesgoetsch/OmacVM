@@ -43,8 +43,9 @@ let package = Package(
         .executableTarget(name: "build-progress-tests", dependencies: ["OmacVMBuildProgress"]),
         // The VM window's rules: custom resources, disk Grow/Compact,
         // "omacvm in Terminal", the keyboard note: `swift run window-tests`.
-        .target(name: "OmacVMWindow"),
-        .executableTarget(name: "window-tests", dependencies: ["OmacVMWindow", "OmacVMIcon"]),
+        // What's New compares versions with OmacVMUpdate's Version.
+        .target(name: "OmacVMWindow", dependencies: ["OmacVMUpdate"]),
+        .executableTarget(name: "window-tests", dependencies: ["OmacVMWindow", "OmacVMIcon", "OmacVMUpdate"]),
         // The icon's looks (IconTheme, IconArt) and what the Dock tile
         // plug-in shows while the app is not running: `swift run icon-tests`.
         .target(name: "OmacVMIcon"),

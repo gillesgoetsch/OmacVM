@@ -175,8 +175,12 @@ VM — `systemctl --user edit notchcast`, `Environment=…`:
 - Hover effects (tooltips, hover highlights) are not mirrored; clicks, right
   and middle clicks and scrolling are. The one hover the strip passes on: the
   pointer on the bar's free space shows Omarchy's auto-hidden indicators, and
-  they stay until it leaves the strip, as on the bar itself. Tray icons show up but can't be clicked
-  in the strip.
+  they stay until it leaves the strip, as on the bar itself.
+- Omarchy's tray works in the strip (#662): its icons take left, right and
+  middle clicks and scrolling as on the bar itself, and a left click on the
+  drawer's arrow opens or closes the drawer (on the bar it opens on hover,
+  which the strip does not pass on). The drawer closes when the pointer
+  leaves the strip. A right click on the arrow still opens the tray's list.
 - The bar and background clones follow Omarchy's updates the way Omarchy
   updates its own plugins (`omarchy plugin update`: your changes stay when
   they don't touch what comes in, the update is refused when they do, and

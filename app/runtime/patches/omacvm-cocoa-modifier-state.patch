@@ -25,15 +25,15 @@ Applies after omacvm-cocoa-present-unseen.patch, before App Nap's.
 
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -52,6 +52,7 @@
- #include "ui/omacvm-ime.h"
+@@ -53,6 +53,7 @@
+ #include "ui/omacvm-ime-shift.h"
  #include "ui/omacvm-fullpanel.h"
  #include "ui/omacvm-close.h"
 +#include "ui/omacvm-modifiers.h"
  #include "hw/core/boards.h"
  #include "system/system.h"
  #include "system/runstate.h"
-@@ -2007,8 +2008,59 @@
+@@ -2067,8 +2068,59 @@
      }];
  }
  
@@ -95,7 +95,7 @@ Applies after omacvm-cocoa-present-unseen.patch, before App Nap's.
  }
  
  // Does the work of sending input to the monitor
-@@ -2260,74 +2312,16 @@
+@@ -2324,74 +2376,16 @@
      }
  
      /*
@@ -174,7 +174,7 @@ Applies after omacvm-cocoa-present-unseen.patch, before App Nap's.
  
      if (qemu_console_is_graphic(dcl.con) && [self handleInjectedText:event]) {
          return true;
-@@ -2339,75 +2333,7 @@
+@@ -2403,75 +2397,7 @@
  
      switch ([event type]) {
          case NSEventTypeFlagsChanged:

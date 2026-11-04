@@ -23,15 +23,15 @@ omacvm-cocoa-no-app-nap.patch.
 
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -50,6 +50,7 @@
- #include "ui/omacvm-notch-park.h"
+@@ -52,6 +52,7 @@
  #include "ui/omacvm-ime.h"
+ #include "ui/omacvm-ime-shift.h"
  #include "ui/omacvm-fullpanel.h"
 +#include "ui/omacvm-close.h"
  #include "hw/core/boards.h"
  #include "system/system.h"
  #include "system/runstate.h"
-@@ -4194,9 +4195,88 @@
+@@ -4776,9 +4777,88 @@
  - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)theApplication
  {
      return NO;
@@ -120,7 +120,7 @@ omacvm-cocoa-no-app-nap.patch.
   * OmacVM: Quit, the close button, a logout or a restart press the guest's
   * power button, and the quit waits (NSTerminateLater): QEMU exits by itself
   * once the guest is off (-action shutdown=poweroff). A guest that does not
-@@ -4428,6 +4508,17 @@
+@@ -5010,6 +5090,17 @@
  - (BOOL)windowShouldClose:(id)sender
  {
      COCOA_DEBUG("QemuCocoaAppController: windowShouldClose\n");

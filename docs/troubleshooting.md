@@ -1769,9 +1769,36 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   case. "Fallback to SW vertex processing for EVAL_PROG TF" once in qemu.log is expected: Apple's
   OpenGL records transform feedback from a tessellation evaluation shader on its software vertex
   path (on the CPU); the values are right.
+- **3.2.19:** a program whose tessellation control shader passes clip distances to its evaluation
+  shader ran on Apple's CPU vertex path with 3.2.18 ("Fallback to SW vertex processing because
+  buildPipelineState failed" in qemu.log, a first draw of ~270 ms, MTLCompilerService crash
+  reports), and on the M1 Max often drew nothing; 3.2.19 passes them as plain varyings and the
+  draws stay on the GPU. 3.2.19 does the same for a vertex shader that passes clip distances
+  straight to an evaluation shader (no control shader); on the M1 Max such draws drew nothing.
+  Update the app.
+- **3.2.20:** an OpenGL program pipeline (separate shader programs) whose tessellation patch values
+  do not start at 0 or have a gap (explicit locations such as 1 and 3) ran on Apple's CPU vertex
+  path ("Fallback to SW vertex processing because buildPipelineState failed" in qemu.log, a first
+  draw of ~270 ms) on the M1 Max and drew nothing on the M4; the control shader now writes the gaps
+  and the draws stay on the GPU. Update the app.
+- **3.2.20:** a shader that writes its clip distances in a loop (a control shader copying
+  `gl_ClipDistance[i]` in a `for` loop, also a vertex, geometry or evaluation shader) was refused
+  ("Swizzle of non-vector primitive float" in qemu.log after "the host refused a shader") and
+  its draws were skipped; 3.2.20 compiles it. A vertex shader that writes `gl_ClipDistance[4..7]`
+  into a control shader drew nothing on the M1 Max and M4 GPUs; 3.2.20 passes them as plain
+  varyings too. One case is left in the VM's Mesa: a control shader that copies 5 to 8 distances
+  in a loop gets only 0..3 back, and 4..7 are undefined. On the M4 they read 0 (a negative one
+  does not clip), on the M1 Max the draw is clipped away. The fix is a patch for OmacVM's own
+  guest Mesa build (`src/app/guest/mesa/`, #694), which the VM's Arch Mesa does not have. One
+  statement per distance avoids it: the VM's Mesa then passes them as plain varyings. Update the
+  app.
 - **Where:** `app/runtime/patches/virgl-shader-clip-distances.patch`,
-  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`; test
-  `app/runtime/Tests/virgl/test-whole-program-shapes.c`;
+  `virgl-shader-arrays-of-arrays.patch`, `virgl-caps-tess-outputs.patch`,
+  `virgl-shader-tess-clip-varyings.patch`, `virgl-shader-vs-tes-clip-varyings.patch` (3.2.19),
+  `virgl-shader-separable-patch-fill-writes.patch`, `virgl-shader-indirect-temps.patch`,
+  `virgl-shader-vs-tcs-clip-varyings.patch` (3.2.20); tests
+  `app/runtime/Tests/virgl/test-whole-program-shapes.c`, `test-core-glsl-shaders.c`,
+  `test-separable-pervertex.c`;
   [architecture/graphics.md](architecture/graphics.md#4a-shaders-and-limits-on-apples-gl-built-gl-compat)
   and ADR 0019.
 
@@ -1799,11 +1826,14 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   correct app that ends this way is an OmacVM bug: please report it with the
   line.
 - **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`,
-  `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` (shaders:
-  the line says `SPIR-V: ...`), `virgl-venus-copy-regions.patch`,
+  `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` and
+  `virgl-venus-spirv-validate.patch` (shaders: the line says `SPIR-V: ...` or
+  `spirv-val (...): ...`), `virgl-venus-copy-regions.patch`,
   `virgl-venus-pipeline-formats.patch`, `virgl-venus-submit-counts.patch`,
   `virgl-venus-pool-frees.patch`, `virgl-venus-dedicated-memory.patch`,
   `virgl-venus-pass-views.patch`, `virgl-venus-thread-budget.patch` (the
-  threads line); tests `app/runtime/Tests/virgl/test-venus-commands.c`,
+  threads line), `virgl-venus-ring-lock.patch` (two threads of one app: `a
+  pipeline call of another thread uses it`, `its id was taken while it was
+  made`), `virgl-venus-command-holds.patch`, `virgl-venus-secondary-holds.patch`; tests `app/runtime/Tests/virgl/test-venus-commands.c`,
   `test-venus-threads.c`, `fuzz-venus-spirv.sh`, `venus-command-ledger.tsv`;
   ADR 0065.

@@ -44,7 +44,10 @@ OmacVM.app's own code is MIT (`LICENSE`). It ships or uses:
   libslirp, PCRE2 (BSD); SDL (zlib); zstd, lz4 (BSD); xz (0BSD).
   virglrenderer is built with OmacVM's VideoToolbox video backend
   (`runtime/patches/virgl-videotoolbox-decode.patch`, MIT like
-  virglrenderer); it uses Apple's VideoToolbox, part of macOS.
+  virglrenderer); it uses Apple's VideoToolbox, part of macOS. It also has
+  SPIRV-Tools 2026.3 and SPIRV-Headers (Apache-2.0, Khronos) built in to
+  check the VM's SPIR-V (`runtime/patches/spirv-tools-*.patch`); their
+  licence is in `LICENSE.vulkan.txt`.
 - **Vulkan for the VM (Venus)**: MoltenVK 1.4.2 (Apache-2.0, The Brenwill
   Workshop / Khronos; with SPIRV-Cross and SPIRV-Tools, Apache-2.0, and
   cereal, BSD-3-Clause, built in) and the Khronos Vulkan loader 1.4.357

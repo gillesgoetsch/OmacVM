@@ -178,7 +178,7 @@ class Patch(unittest.TestCase):
         self.text = patched()
 
     def test_version(self):
-        self.assertEqual(V, 35)
+        self.assertEqual(V, 36)
         self.assertIn(VERSION_LINE, self.text)
 
     def test_state_files_read_fresh_after_reload(self):
@@ -1165,7 +1165,9 @@ var root = {
   setCenterSectionHovered: function(h) { calls.push("center " + h) },
   setBarHovered: function(h) { calls.push("bar " + h) },
   notchTargetAt: function(x, y) { return x >= 100 && x < 130 ? {} : null },
+  notchTraySet: function(open, name, region) { closed++ },
 };
+var closed = 0;
 root.notchHover = function(x) { %s };
 var out = [];
 %s.forEach(function(x) { calls = []; out.push([root.notchHover(x), calls]) });
@@ -1399,6 +1401,234 @@ class Hover(unittest.TestCase):
 
     def test_ipc_entry(self):
         self.assertIn("return root.notchHover(x)", function(patched(), "hover"))
+
+
+# Omarchy's tray (#662) on fake bars: the parked copy on Virtual-1 takes the
+# strip's clicks, NOTCH shows it, Virtual-2 is another display. Each bar has
+# the tray as Omarchy's Tray.qml lays it out (horizontal): the drawer's
+# chevron (a click target), the drawer (clip) with two icons that slide in from
+# its right edge, one pinned icon after it; and a clock (a click target).
+TRAY = r"""
+var log = [];
+var Qt = { LeftButton: 1, RightButton: 2, MiddleButton: 4 };
+function Item(o, kids) {
+  var it = { x: 0, width: 0, height: 30, visible: true, enabled: true, opacity: 1, clip: false, parent: null };
+  for (var k in o) Object.defineProperty(it, k, Object.getOwnPropertyDescriptor(o, k));
+  it.children = kids || [];
+  it.children.forEach(function(c) { c.parent = it });
+  it.mapToItem = function(to, px, py) {
+    var ax = 0;
+    for (var p = this; p && p !== to; p = p.parent) ax += p.x;
+    return { x: ax + px, y: py };
+  };
+  return it;
+}
+function Icon(screen, id, x, extra) {
+  var md = { activate: function() { log.push(screen + " " + id + " activate") },
+             secondaryActivate: function() { log.push(screen + " " + id + " secondary") },
+             scroll: function(d, h) { log.push(screen + " " + id + " scroll " + d + " " + h) },
+             onlyMenu: !!(extra && extra.onlyMenu) };
+  return Item({ x: x, width: 32, modelData: md,
+                displayMenu: function(m) { log.push(screen + " " + id + " menu " + m.x + "," + m.y) } });
+}
+var windows = {}, clickTargets = [], moduleSlots = [];
+function Bar(screen, trayX) {
+  var de = 64;
+  var tray = Item({ x: trayX, expanded: false, revealProgress: 0, drawerExtent: de, drawerItems: [1, 2],
+                    openTrayMenu: function() {} });
+  var chevron = Item({ width: 32, text: "\uf053", get x() { return de - de * tray.revealProgress },
+                       triggerPress: function(b) { log.push(screen + " chevron press " + b) } });
+  var icons = Item({ width: de, get x() { return de - de * tray.revealProgress } },
+                   [Icon(screen, "drawer0", 0), Icon(screen, "drawer1", 32, { onlyMenu: true })]);
+  var clip = Item({ x: 32, width: de, clip: true }, [icons]);
+  var drawer = Item({ x: 0, width: 32 + de }, [chevron, clip]);
+  var pinned = Item({ x: 32 + de, width: 32 }, [Icon(screen, "pinned", 0)]);
+  var trayRoot = Item({ width: 32 + de + 32 }, [drawer, pinned]);
+  var loader = Item({ width: 32 + de + 32 }, [trayRoot]);
+  tray.children = [loader]; loader.parent = tray;
+  var clock = Item({ x: 1450, width: 60, triggerPress: function(b) { log.push(screen + " clock press " + b) } });
+  var content = Item({ width: 1512 }, [tray, clock]);
+  windows[screen] = { screen: { name: screen }, contentItem: content };
+  clickTargets.push(chevron, clock);
+  moduleSlots.push({ activeItem: tray, moduleName: "omarchy.tray", region: "right", enabled: true });
+  return { tray: tray, chevron: chevron };
+}
+var root = {
+  notchParkedScreen: "Virtual-1", barHidden: false, notchFullscreen: false, notchHovering: false,
+  clickTargets: clickTargets, moduleSlots: moduleSlots,
+  moduleTargetClickable: function(t) {
+    return t && t.visible !== false && t.opacity !== 0 && t.interactive !== false && t.pressable !== false &&
+      t.concealed !== true && typeof t.triggerPress === "function";
+  },
+  targetWindow: function(t) {
+    var p = t; while (p && p.parent) p = p.parent;
+    for (var n in windows) if (windows[n].contentItem === p) return windows[n];
+    return null;
+  },
+  slotWindow: function(s) { return root.targetWindow(s.activeItem) },
+  setCenterSectionHovered: function() {}, setBarHovered: function() {},
+};
+FUNCS
+var parked = Bar("Virtual-1", 1290), notch = Bar("NOTCH", 1290), other = Bar("Virtual-2", 1290);
+function slide() { [parked, notch, other].forEach(function(b) { b.tray.revealProgress = b.tray.expanded ? 1 : 0 }) }
+function state() { return [parked, notch, other].map(function(b) { return b.tray.expanded }) }
+var out = {};
+function step(name, f) { log = []; var r; try { r = f() } catch (e) { r = String(e) } out[name] = { r: r, log: log, open: state() } }
+STEPS
+console.log(JSON.stringify(out));
+"""
+
+# The functions the tray needs from the patch, and its IPC calls.
+TRAY_FUNCS = ["notchTargetAt", "notchTargetRects", "notchHover", "notchIsTray", "notchTrayOf", "notchIsTrayIcon",
+              "notchTrayIconsIn", "notchTrayDx", "notchSpan", "notchTraySpans", "notchTrayTarget", "notchTraySet",
+              "notchTrayToggle", "click", "wheel", "targets", "trays"]
+
+
+def tray_js(text, steps):
+    """TRAY with the patch's functions (those this patch has) on the fake root."""
+    funcs = []
+    for name in TRAY_FUNCS:
+        m = re.search(r"function %s\(([^)]*)\)" % name, text)
+        if not m:
+            continue
+        args = ", ".join(a.split(":")[0].strip() for a in m.group(1).split(",") if a.strip())
+        funcs.append("with (root) { root.%s = function(%s) { %s } }" % (name, args, function(text, name)))
+    return TRAY.replace("FUNCS", "\n".join(funcs)).replace("STEPS", steps)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class Tray(unittest.TestCase):
+    """#662: Omarchy's tray in the strip. Fails with v35 (icons "miss", the
+    chevron's left click does nothing), passes from v36."""
+
+    STEPS = r"""
+// Clicks at x on the strip: the pinned icon is at 1290+96, the closed
+// drawer's icons are cut off, the chevron at 1290+64 (closed) or 1290 (open).
+step("pinned left", function() { return root.click(1390, 20, 1) });
+step("pinned middle", function() { return root.click(1390, 20, 3) });
+step("pinned right", function() { return root.click(1390, 20, 2) });
+step("pinned wheel", function() { return root.wheel(1390, 20, -120) });
+step("closed drawer icon", function() { return root.click(1290 + 32 + 10, 20, 1) });
+step("targets closed", function() { return JSON.parse(root.targets()) });
+step("chevron right", function() { return root.click(1290 + 64 + 10, 20, 2) });
+step("chevron left", function() { return root.click(1290 + 64 + 10, 20, 1) });
+// Mid-slide (the parked copy has not slid yet): where the slide ends.
+step("targets sliding", function() { return JSON.parse(root.targets()) });
+step("drawer0 sliding", function() { return root.click(1290 + 32 + 10, 20, 1) });
+slide();
+step("trays open", function() { return JSON.parse(root.trays()) });
+step("drawer0 left", function() { return root.click(1290 + 32 + 10, 20, 1) });
+step("drawer1 left (only a menu)", function() { return root.click(1290 + 64 + 10, 20, 1) });
+step("hover drawer1", function() { return root.notchHover(1290 + 64 + 10) });
+step("chevron left again", function() { return root.click(1290 + 10, 20, 1) });
+slide();
+step("closed again", function() { return root.click(1290 + 32 + 10, 20, 1) });
+step("clock", function() { return root.click(1460, 20, 1) });
+// Opened again, then the pointer leaves the strip.
+root.click(1290 + 64 + 10, 20, 1); slide();
+other.tray.expanded = true;
+step("hover off", function() { return root.notchHover(-1) });
+root.click(1290 + 64 + 10, 20, 1);
+step("unparked", function() { root.notchTraySet(false, "", ""); return null });
+"""
+
+    def run_tray(self, text):
+        js = tray_js(text, self.STEPS)
+        return json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+
+    def setUp(self):
+        self.r = self.run_tray(patched())
+
+    def test_icons_take_the_buttons_and_the_wheel_as_their_mouse_area(self):
+        r = self.r
+        self.assertEqual(r["pinned left"], {"r": "ok", "log": ["Virtual-1 pinned activate"], "open": [False] * 3})
+        self.assertEqual(r["pinned middle"]["log"], ["Virtual-1 pinned secondary"])
+        self.assertEqual(r["pinned right"]["log"], ["Virtual-1 pinned menu 16,15"])
+        self.assertEqual(r["pinned wheel"], {"r": "ok", "log": ["Virtual-1 pinned scroll -120 false"], "open": [False] * 3})
+        self.assertEqual(r["drawer0 left"]["log"], ["Virtual-1 drawer0 activate"])
+        self.assertEqual(r["drawer1 left (only a menu)"]["log"], ["Virtual-1 drawer1 menu 16,15"])
+        self.assertEqual(r["hover drawer1"]["r"], "widget")
+
+    def test_a_closed_drawers_icons_are_not_there(self):
+        r = self.r
+        # Under the closed drawer's icons: nothing (the chevron sits right of them).
+        self.assertEqual(r["closed drawer icon"], {"r": "miss", "log": [], "open": [False] * 3})
+        self.assertEqual(r["closed again"]["r"], "miss")
+        # NOTCH's targets: the chevron, the clock, the pinned icon only.
+        self.assertEqual(sorted(r["targets closed"]["r"]), [[1354, 0, 32, 30], [1386, 0, 32, 30], [1450, 0, 60, 30]])
+
+    def test_the_chevron_opens_and_closes_the_drawer_on_both_bars(self):
+        r = self.r
+        self.assertEqual(r["chevron right"], {"r": "ok", "log": ["Virtual-1 chevron press 2"], "open": [False] * 3})
+        self.assertEqual(r["chevron left"], {"r": "ok", "log": [], "open": [True, True, False]})
+        self.assertEqual(r["trays open"]["r"], [["Virtual-1", "omarchy.tray", True, 1], ["NOTCH", "omarchy.tray", True, 1],
+                                                ["Virtual-2", "omarchy.tray", False, 0]])
+        self.assertEqual(r["chevron left again"], {"r": "ok", "log": [], "open": [False, False, False]})
+        self.assertEqual(r["clock"]["log"], ["Virtual-1 clock press 1"])
+
+    def test_while_the_drawer_slides_where_it_ends(self):
+        r = self.r
+        self.assertEqual(sorted(r["targets sliding"]["r"]),
+                         [[1290, 0, 32, 30], [1322, 0, 32, 30], [1354, 0, 32, 30], [1386, 0, 32, 30], [1450, 0, 60, 30]])
+        self.assertEqual(r["drawer0 sliding"]["log"], ["Virtual-1 drawer0 activate"])
+
+    def test_leaving_the_strip_and_unparking_close_it_there_only(self):
+        r = self.r
+        self.assertEqual(r["hover off"]["open"], [False, False, True])   # another display's bar keeps its own
+        self.assertEqual(r["unparked"]["open"], [False, False, True])
+
+    def test_v35_missed_them(self):
+        # The patch before #662 on the same bars: icons miss, the chevron's
+        # left click is pressed on Omarchy's button, which does nothing with it.
+        before = subprocess.run(["git", "-C", str(ROOT), "show", "61c2de6f:src/omanotch/guest/bar/apply-patch.py"],
+                                capture_output=True, text=True)
+        if before.returncode != 0:
+            self.skipTest("no git history")
+        d = pathlib.Path(tempfile.mkdtemp())
+        try:
+            (d / "apply-patch.py").write_text(before.stdout)
+            f = d / "Bar.qml"
+            f.write_text(BAR)
+            subprocess.run([sys.executable, str(d / "apply-patch.py"), str(f)], check=True, capture_output=True)
+            js = tray_js(f.read_text(), 'step("pinned", function() { return root.click(1390, 20, 1) });\n'
+                                        'step("chevron", function() { return root.click(1364, 20, 1) });\n')
+            r = json.loads(subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True).stdout)
+        finally:
+            shutil.rmtree(d)
+        self.assertEqual(r["pinned"], {"r": "miss", "log": [], "open": [False] * 3})
+        self.assertEqual(r["chevron"], {"r": "ok", "log": ["Virtual-1 chevron press 1"], "open": [False] * 3})
+
+
+TRAYS = sorted((ROOT / "src/tests/omarchy-shell").glob("*/shell/plugins/bar/widgets/Tray.qml"))
+
+
+class TrayShape(unittest.TestCase):
+    """What the patch finds Omarchy's tray by is still there (omarchy-mac's and upstream's Tray.qml)."""
+
+    def test_shape(self):
+        self.assertEqual(len(TRAYS), 2, TRAYS)
+        for f in TRAYS:
+            with self.subTest(omarchy=f.parts[-6]):
+                q = f.read_text()
+                self.assertIn("  property bool expanded: false\n", q)
+                self.assertIn("  readonly property var drawerItems: ", q)
+                self.assertIn("  function openTrayMenu(item, anchorItem, mouse) {\n", q)
+                self.assertIn("  readonly property int drawerExtent: ", q)
+                self.assertIn("  property real revealProgress: expanded ? 1 : 0\n", q)
+                self.assertEqual(q.count('          text: "\\uf053"\n'), 2)
+                self.assertEqual(q.count("onHoveredChanged: root.expanded = hovered"), 2)
+                # The horizontal drawer: chevron and icons slide by the same amount, the icons in a clip.
+                self.assertEqual(q.count("x: root.drawerExtent - root.revealExtent\n"), 2)
+                self.assertIn("          id: trayClip\n          x: expandIcon.width\n", q)
+                self.assertEqual(q.count("          clip: true\n"), 2)
+                # The icons: displayMenu, and what their mouse area does with each button.
+                item = q[q.index("  component TrayItem: Item {"):]
+                self.assertIn("    function displayMenu(mouse) {\n", item)
+                self.assertIn("trayItemRoot.modelData.secondaryActivate()", item)
+                self.assertIn("} else if (trayItemRoot.modelData.onlyMenu) {\n          trayItemRoot.displayMenu(mouse)", item)
+                self.assertIn("trayItemRoot.modelData.activate()", item)
+                self.assertIn("trayItemRoot.modelData.scroll(wheel.angleDelta.y, false)", item)
+                self.assertIn("if (mouse.button === Qt.RightButton) {\n          trayItemRoot.displayMenu(mouse)", item)
 
 
 # The notched Macs at their default resolution: strip height and display

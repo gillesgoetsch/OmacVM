@@ -29,7 +29,7 @@ for f in "$R"/app/app/Sources/OmacVM/*.swift; do
 done
 libs=()
 for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio OmacVMIcon OmacVMMedia OmacVMDrop; do   # the app's library targets (Package.swift)
-  swiftc -swift-version 5 -parse-as-library -static -emit-library -emit-module -module-name $m \
+  swiftc -swift-version 5 -parse-as-library -static -emit-library -emit-module -I "$T" -module-name $m \
     -emit-module-path "$T/$m.swiftmodule" -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift
   libs+=(-l$m)
 done

@@ -1,0 +1,4 @@
+stage frag
+entry main
+fout 0 f
+fin 0 1 f 0

@@ -540,3 +540,711 @@ write), one write 0.013 -> 0.016 and 0.023 -> 0.026 us, a
 us; `vkCmdDraw`, `SetViewport`, `PushConstants`, `BindDescriptorSets` and
 `PipelineBarrier` stay within their noise, and so does a command with a reply
 through the decoder (0.059 -> 0.055 and 0.034 -> 0.035 us).
+
+## Rings of one app, and views under a command buffer (amendment, 3.2.19)
+
+Lane `open-1102/venus` (#624's two open points above). Read in vkr at
+61c2de6f, guest Mesa 26.2.4, KosmicKrisp at the runtime's pin and MoltenVK
+1.4.2; the architecture review (`work/tracks/venus-624.md`, 2026-11-02 07:56)
+replaced the read-write lock this ADR named with what follows.
+
+**Two threads on one object.** Each ring has its own thread, and the context's
+own stream runs on QEMU's (in QEMU `on_worker_thread` is false). vkr let go of its table lock right after
+a lookup, so one ring could destroy an image, buffer, layout or pipeline cache
+another ring's call was reading (freed memory in vkr and the driver), two rings
+could record into one command buffer, QEMU's blob export read a memory a ring
+freed (`vkr_context_create_resource_from_device_memory`), and two creates of one
+id could both pass the id check (the second hit `vkr_context_add_object`'s
+assert; release builds keep asserts). A read-write lock would not cover two
+readers on one command buffer or pool, would stall a destroy on the main ring
+behind every compile on another ring, missed the export, and its read side was
+taken again by nested `vkExecuteCommandStreamsMESA`.
+
+Guest Mesa 26.2.4 sends only pipeline creation and pipeline cache reads to a
+second ring (`vn_tls_get_ring`, synchronous there); each VkInstance is its own
+context. So:
+
+- `virgl-venus-ring-lock.patch`: one dispatch lock per context. A ring takes it
+  per batch it reads, the context's stream per command (not for the ring and
+  reply-stream commands, which touch no object), QEMU's calls per call (a device
+  memory's blob, a resource's removal, a fence on a queue); nested streams keep
+  it (`vkr_locked_context`, thread-local). `vkWaitRingSeqnoMESA`,
+  `vkWaitVirtqueueSeqnoMESA` and `vkDestroyRingMESA` give it up while they wait
+  for or join a ring. `vkCreateGraphicsPipelines`, `vkCreateComputePipelines`
+  and `vkGetPipelineCacheData` give it up while the driver runs them, with the
+  objects they name pinned (device, cache, layout, render pass, shader modules,
+  base pipeline, libraries; a count under the lock); the pins go before the
+  answer or the ring position reaches the guest. Destroying a pinned object, or
+  the instance while a pipeline call runs, is refused: the spec's Threading
+  Behavior and Object Lifetime rules do not let an app destroy what another
+  thread's call uses, and a legal app never sees it (its create returned before
+  it can destroy). An id the table has already is refused when it is added (the
+  guest named it twice); pipelines made while the lock was given up are checked
+  for that and destroyed again.
+- Not covered: a call that blocks in the driver (a fence or semaphore wait
+  without end) holds its app's lock and stops that app's other rings and its own
+  stream. QEMU's thread takes the same lock for that app's fences, blobs and
+  resource removals, so a ring stuck under it in a `vkWaitForFences` or
+  `vkWaitSemaphores` with a guest-chosen timeout (`vkr_queue.c`) stops QEMU's
+  thread at that app's next fence or blob, and with it the whole VM. Not a new
+  kind of hang: the context's stream and a teardown joining a stuck ring could
+  already do it. Other apps' calls do not take this lock.
+
+**Views read after their destroy.** KosmicKrisp reads a pass's views (and a
+view's image: its views do not keep it) where it splits a pass while
+recording: a barrier with more than one sample or a split, a draw after a color
+map or sample location change, the store ops at the end. MoltenVK's recorded
+commands keep raw image view, framebuffer and render pass pointers, and with its
+default synchronous submits it reads them at `vkQueueSubmit`.
+
+- `virgl-venus-command-holds.patch`: a command buffer holds the image views, the
+  framebuffers and render passes its render pass begins, dynamic renderings and
+  a secondary's inheritance named, until the driver let go of what it recorded
+  (a reset, a new begin, a free, a pool reset or destroy, the context's end; the
+  pool's destroy now lets the driver free its command buffers first). An image
+  view holds its image. Destroying a held object is legal (the command buffer
+  becomes invalid): the id leaves the table at once, and the driver's destroy
+  waits for the last holder (a zombie on its device). Dedicated memory still goes
+  before its image; a device's teardown frees its pools, which lets go of its
+  zombies, before the device. Holds stay within one device (a begin naming
+  another device's object, or a view of another device's image, is refused:
+  the commonparent VUIDs, VUID-vkCreateImageView-image-parent). The pass-views
+  checks at the begin, a next subpass and the end stay.
+- Not covered: views reached only through descriptor sets (probe on MoltenVK: a
+  stale set bound, nothing dispatched, submitted: no read, plain and under
+  libgmalloc), what a pending KosmicKrisp command buffer reads on the GPU
+  (Metal 4 command buffers keep no texture alive), and secondaries (next
+  paragraph).
+
+**Secondaries read after their free (#676).** MoltenVK keeps raw secondary
+pointers in `MVKCmdExecuteCommands` and reads them when it encodes the primary
+at `vkQueueSubmit`; a free hands a command buffer back to its pool (reset), the
+pool's destroy deletes it. KosmicKrisp replays a secondary into the primary
+while recording.
+
+- `virgl-venus-secondary-holds.patch`: a primary holds the secondaries
+  `vkCmdExecuteCommands` named, as it holds its views (same release points). A
+  freed held secondary leaves the table and stays in the driver as a zombie
+  that holds its pool; the last holder frees it into the pool. A destroyed pool
+  with a held command buffer frees its other command buffers one by one, leaves
+  the table and waits for its last zombie; without one it goes at once, as
+  before. `vkFreeCommandBuffers` hands the driver NULL for a held one. The
+  device's teardown destroys pools this way, and frees zombies left over
+  holders first (command buffers, then views, framebuffers and passes, then
+  images, then pools).
+
+`virgl-venus-test-pause.patch` (first, test only, NULL in QEMU) stops a call
+between vkr's reads and the driver, so a build without the fix runs the same
+tests. `test-venus-commands.c` has 344 cases now: 10 `t-` cases with a real ring
+beside the context's stream (destroys under a paused pipeline create and cache
+read, a duplicate id, a destroy, a recording and a memory free beside a paused
+call, a nested wait, a destroy beside a compile, a teardown), 9 held-view cases
+and the probe; `--ring-time` times calls through a ring and the stream.
+
+On the mini's M4 with the hook alone, the three destroy-under-a-pipeline-call
+cases ended the process (SIGSEGV) on KosmicKrisp and MoltenVK, plainly and
+under libgmalloc; the duplicate id hit the assert; the destroy, recording and
+memory free beside a paused call did not wait (SIGSEGV on KosmicKrisp and under
+libgmalloc); MoltenVK's submit of a command buffer whose view was destroyed
+ended the process; KosmicKrisp's barrier in a multisampled pass read the freed
+resolve view under libgmalloc (`kk_get_attachment_store_op` from
+`kk_CmdPipelineBarrier2`). The mini's MoltenVK-with-prefill run before the fix
+was stopped before the `t-` cases; on the M1 Max that run has the three destroy
+cases end the process (SIGSEGV), the duplicate id the assert, and the other
+three not wait, and passes with the fix. The legal held cases and the
+no-deadlock cases pass before too. With the patches the 20 new cases pass where
+they run: 20 on MoltenVK plain and under libgmalloc, 18 on KosmicKrisp plain
+and under libgmalloc (the held submit and the probe are MoltenVK-only and skip),
+12 on MoltenVK with prefill (it commits at a reset and encodes at the end, so the
+7 held-view cases and the probe skip); every case of the file once: 344 ok
+(skipped among them: 4 on KosmicKrisp, 13 on MoltenVK, 21 with prefill), 47
+under libgmalloc. Without the give-up in `vkWaitRingSeqnoMESA` the nested-wait
+case deadlocks. On the M1 Max (Apple7, KosmicKrisp new there) the runtime's
+build runs them all: 344 of 344 on KosmicKrisp, MoltenVK and MoltenVK with
+prefill, 45 of 45 under libgmalloc. Timing there (A B B A A B, medians of 3, the
+hook-only build against this one, no VM or CI job at the start, bench lock):
+per call in microseconds, KosmicKrisp `vkCmdDraw` 0.168 and 0.168, 1000
+descriptor writes 15.86 and 15.70, a render pass begin and end 12.78 and 12.69;
+MoltenVK `vkCmdDraw` 0.027 and 0.027, a render pass begin and end 0.147 and
+0.185 (the holds), a call with a reply through the context's stream 0.084 and
+0.092; `vkCmdDraw` through a ring beside a compile ring 0.317 and 0.313
+(KosmicKrisp), 0.284 and 0.298 (MoltenVK). In a
+4 GB test VM there (guest Mesa 26.2.4), vkcube, vkmark, Zink, rusticl, Chromium's
+WebGPU matmul and WebGL Aquarium show no refusal line, and a guest program
+through its own driver ends only itself: a free through another pool and a
+layout destroyed while another thread compiled with it are refused, vkcube beside
+it keeps drawing. Through guest Mesa a view destroyed mid-recording reaches QEMU
+before the recorded commands (Mesa sends a command buffer's commands when it
+flushes them), so that begin names a gone view and the decoder ends the context;
+the holds matter for commands QEMU already has. The dEQP-VK subset made the M1's
+GPU restart (firmware-detected lockup, timeline semaphore cases with
+tessellation and geometry stages) on 3.2.18 and this branch alike; it was
+stopped there (STANDARDS 14) and stays to compare on an M4.
+
+The secondary holds have 7 `c-state-secondary-held-` cases (a primary executes
+a secondary that records one barrier; the secondary is freed, or freed and its
+pool destroyed, then the primary is submitted, reset or freed, or both share a
+pool, or the context ends; a free after the primary's reset leaves no zombie).
+On the M1 Max (virgl-only builds of #673's head and this one, the case file of
+this one, drivers of the 3.2.16 test app): before, 6 of 7 fail on KosmicKrisp,
+MoltenVK and MoltenVK with prefill, plainly and under libgmalloc (the freed
+secondary goes at once: no zombie), and MoltenVK under libgmalloc ends the
+process (SIGSEGV) in the submit of the primary whose secondary's pool was
+destroyed; plain MoltenVK and KosmicKrisp submit it without a crash. After, 7 of
+7 on all five; the whole file (`run-venus-limits.py`) 351 ok on KosmicKrisp (4
+skipped), MoltenVK (13) and with prefill (21), 52 under libgmalloc on both, no
+teardown zombie line, no GPU restart.
+
+## A structure type twice in a chain (amendment, 3.2.20)
+
+Lane `v624-rest` (#624's "structure types chained twice on the calls other than
+these" above). Read in vkr at #683's head (9462653d), Mesa e5f06878 (KosmicKrisp,
+the runtime, the guest's Venus driver) and MoltenVK 1.4.2.
+
+vkr's checks read the first struct of a type (`vkr_find_struct`); the drivers
+read the last. Mesa's `vk_common_CreateRenderPass` (KosmicKrisp) keeps the last
+`VkRenderPassMultiviewCreateInfo` and reads its masks for every subpass;
+MoltenVK's `vkCmdBeginRenderPass` keeps the last
+`VkRenderPassAttachmentBeginInfo`, whose views vkr had not checked or held. Both
+drivers keep the last of others too (plane info, stencil usage, vertex
+divisors, ycbcr, border and reduction info). Every struct concerned has a
+`VUID-<struct>-sType-unique` rule; the exceptions some allow (Metal export and
+import structs) are not in venus-protocol, so the decoder ends the context on
+them first. The guest's Venus driver keeps one slot per type when it rewrites a
+chain, so legal input never reaches vkr with a repeat.
+
+- `virgl-venus-chain-repeats.patch` (last in the series): `vkr_chain_repeat`
+  compares each struct with the ones before it and stops at the first repeat
+  (at most the known types squared). Every chain a vkr check reads goes through
+  it first, through its call's refusal path: image create info (also the
+  `vkGetDeviceImage*` queries; before vkr's own fixes), image binds, image
+  memory requirements, samplers, buffers (before vkr's fixes) and buffer
+  views, descriptor set layouts, writes (also push descriptors), set
+  allocation and pools, render passes (v1, v2 and each v2 subpass), begins,
+  framebuffers, a secondary's inheritance, dynamic rendering, shader stages
+  (vkr scans the first chained SPIR-V only), graphics pipelines with their
+  vertex input, multisample and color blend states, compute pipelines. The
+  text names the type: "structure type 1000053000 twice in the chain of
+  VkRenderPassCreateInfo".
+- Left alone: `VkDeviceCreateInfo` (repeats of `VkDevicePrivateDataCreateInfo`
+  are legal; MoltenVK sets each feature from every struct in turn, so the last
+  wins, Mesa ORs them; vkr reads robustness2's `nullDescriptor`, which MoltenVK
+  refuses in any struct and Mesa then has on; maintenance6, which MoltenVK's
+  NULL index buffer path does not need; texel buffer alignment, which no
+  offset ends the process on), the image format query (vkr changes its first
+  external info: a repeat asks the driver about DMA_BUF, unsupported), views
+  (vkr reads nothing in their chains), output chains, and vkr's own ring and
+  queue chains.
+
+A check in the decoder (this ADR's earlier note) would also refuse the legal
+repeats of `VkDeviceCreateInfo`, and it cannot say which chain a check reads;
+one call per checked chain keeps the exceptions in view.
+
+Tests: 25 cases in `test-venus-commands.c` (21 `-repeat-` cases that must be
+refused, 4 `-two-types-ok` controls), 6 `repeat-` cases in
+`test-venus-image-limits.c` (5 refused, 1 control); the rows below ran them
+beside r-ok, r-mv-legal-9, r-fb-fewer, d-ok, p-gfx-ok, c-inherit-ok, opt-2d and
+bind-disjoint-planes-ok (39 cases a run). On the M1 Max (virgl-only builds of
+9462653d and of this one, this one's test files, drivers of the 3.2.18 test app,
+3 runs each on KosmicKrisp, MoltenVK, MoltenVK with prefill and both under
+libgmalloc): before, every refusal case works or ends the process:
+r-repeat-multiview ends it on KosmicKrisp (SIGABRT, Metal), r-repeat-multiview-
+short on both drivers (SIGBUS: Mesa and MoltenVK read the second struct's one
+mask for both subpasses, into a guard page), r-repeat-attachment-begin on
+MoltenVK with prefill (SIGSEGV when it encodes); after, all 39 as expected on
+all five, no crash report. The whole file (`run-venus-limits.py`) on this
+build: 376 ok on KosmicKrisp (4 skipped), MoltenVK (13) and with prefill (21),
+55 under libgmalloc on both, the image file 113 on both, no GPU restart.
+KosmicKrisp timing (20000 calls, A B B A): `vkUpdateDescriptorSets` 0.024,
+0.024, 0.025, 0.024 us; a render pass begin and end 13.82, 13.32, 13.29,
+13.55 us: no change outside the noise.
+
+## Values Vulkan ignores (amendment, 3.2.20)
+
+Lane `v624-batch` (#624's batch after #687). Read in vkr at #687's head
+(e66b77c5), Mesa e5f06878, MoltenVK 1.4.2 and validusage.json 1.4.363; every new
+value first went straight to both drivers on the M1 Max (no vkr, nothing
+submitted, 3 runs on KosmicKrisp, MoltenVK, MoltenVK with prefill and both under
+libgmalloc; raw in work/v624-batch/probe/out).
+
+- A whole-size texel view with less than one texel after its offset is legal
+  (`VUID-VkBufferViewCreateInfo-offset-00925`, `-range-04059`), and both drivers
+  end the process on it in Metal ("MTLTextureDescriptor has width of zero":
+  KosmicKrisp at the create, MoltenVK at the descriptor write). So it never
+  goes to them: with nullDescriptor on, vkr makes the view without a driver view
+  (handle `VK_NULL_HANDLE`), and the decoder writes a null descriptor wherever
+  the guest names it (`VUID-VkWriteDescriptorSet-descriptorType-02994/02995`);
+  a view of no texel reads 0, as a null descriptor does. The format, usage,
+  offset and alignment checks still come first. Such a view is freed without
+  `vkr_buffer_view_from_handle`, which asserts a driver handle. MoltenVK has no
+  nullDescriptor (it refuses a device asking for it), so there the view stays
+  refused, now with its reason.
+- A pipeline's vertex binding stride is not checked while the stride is dynamic
+  (`VUID-VkVertexInputBindingDescription-stride-00619` does not apply); the
+  stride used is `vkCmdBindVertexBuffers2`'s, which vkr bounds. Both drivers take
+  a pipeline stride past the limit then, also with a draw recorded after a
+  `vkCmdBindVertexBuffers` without strides.
+- A color blend state needs its array and a count equal to the colors wherever
+  Vulkan reads them. vkr let a NULL array through always, and any count with
+  the three dynamic blend states set, features or not. A NULL array with
+  nothing dynamic ended the process on both drivers (Mesa's
+  `vk_color_blend_state_init`, MoltenVK's `addFragmentOutputToPipeline`), and
+  with the three dynamic on MoltenVK. Now the array counts as ignored only with
+  `COLOR_BLEND_ENABLE`, `EQUATION`, `WRITE_MASK` and `ADVANCED` dynamic
+  (`VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-07353`), the count
+  with the first three and `ADVANCED` too when advancedBlendCoherentOperations
+  is on (`VUID-VkGraphicsPipelineCreateInfo-renderPass-07609`, `-06055`), each
+  only with its extendedDynamicState3 feature on (`-07378`, `-07379`, `-07380`,
+  `-07386`). Neither Mac driver has these features today. The whole state stays
+  ignored with rasterization statically off, for a library without fragment
+  output and without colors (both drivers take a NULL array there, and the
+  guest's Venus driver drops such a state itself).
+- Dropped: `attachmentCount` past `maxColorAttachments` with the blend states
+  dynamic. Those states need the features (neither driver has them), and a
+  count of 9 makes MoltenVK crash and Mesa write past its 8-entry array.
+- Refusal lines print a buffer range as "16 bytes at 0 of a 64-byte buffer",
+  "the whole size at 0, no buffer", not 18446744073709551615 and "of 0"; the text
+  is made only on a refusal.
+
+Tests: 18 cases in `test-venus-commands.c` (`case_ignored`) and `tview-empty` in
+`test-venus-image-limits.c`; five run under libgmalloc too. On the M1 Max
+(virgl-only builds of e66b77c5 and of this one, this one's test files, drivers
+of the 3.2.18 test app, 3 runs in the five modes): before, 15 cases fail on
+KosmicKrisp and 10 on MoltenVK: the view and stride cases are refused, the
+NULL-array cases end the process (SIGSEGV), the count-past case works (1 of 3
+runs a SIGSEGV on MoltenVK, also with prefill), and the texts show
+18446744073709551615. After, all 25
+listed cases as expected in every mode, no crash report. The whole file
+(`run-venus-limits.py`) on this build: 394 cases on KosmicKrisp (4 skipped),
+MoltenVK (19) and with prefill (27), 60 under libgmalloc on both, the image file
+114 on both, no GPU restart.
+
+## State a draw or dispatch never set (amendment, 3.2.20)
+
+Lane `v624-unset` (#624, after #690). MoltenVK reads some bound state only when it
+encodes a command buffer: at `vkQueueSubmit` in QEMU, or at `vkEndCommandBuffer`
+with prefill. First every unset case went straight to both drivers on the M1 Max
+(Apple7), with no vkr and robust buffer access on: 3 runs each on KosmicKrisp,
+MoltenVK and MoltenVK with prefill, each also under libgmalloc, 900 runs, 0 GPU
+restarts (raw in work/v624-unset/out).
+
+- A set the bound shaders use that was never bound: MoltenVK SIGSEGV in
+  `bindMetalResources` (<- `prepareDraw` / `prepareComputeDispatch`, a NULL set
+  slot). That happened at 18 of 18 plain submits (graphics set 0, graphics set 1
+  with only set 0 bound, compute set 0). With prefill it crashed at the end or the
+  submit, depending on the heap.
+- An indexed draw without an index buffer: MoltenVK SIGSEGV in
+  `drawIndexedPrimitives` (<- `MVKCmdDrawIndexed::encode`, a nil Metal buffer). That
+  happened at 6 of 6 plain submits and 6 of 6 prefill ends. A NULL index buffer
+  bound with maintenance6 works in all four MoltenVK modes.
+- KosmicKrisp crashed in none. No driver crashed on these: a set bound with
+  another layout, descriptors never written, push constants never set (with and
+  without maintenance4), vertex buffers never bound.
+
+So vkr now keeps, per command buffer, the sets bound at each bind point since
+`vkBeginCommandBuffer` and whether an index buffer was bound
+(`virgl-venus-unset-state.patch`):
+
+- Each graphics and compute pipeline gets the sets its shaders use. These come
+  from the SPIR-V scan's walk over the functions an entry point reaches, collected
+  in the layout check `vkr_stage_shader_ok` already makes. A variable only listed
+  in a SPIR-V 1.4 interface does not count, so vkr counts fewer sets than Vulkan's
+  static use and refuses less, never more. A pipeline without a layout, with
+  libraries or with descriptor buffers is not checked. There is one mask per
+  create info, set on the pipeline objects before the driver's call, so a partial
+  failure keeps each its own.
+- A draw or dispatch is refused when the bound pipeline uses a set to which
+  nothing was bound at that point since the begin (`VUID-vkCmdDraw-None-08600`,
+  the same for every draw and dispatch).
+- An indexed draw (`vkCmdDrawIndexed`, `-IndexedIndirect`, `-IndexedIndirectCount`,
+  `vkCmdDrawMultiIndexedEXT`) is refused without an index buffer unless the guest
+  turned maintenance6 on (`-None-07312`). With maintenance6 that draw is legal, so
+  vkr binds the NULL index buffer for it, once per recording, after every check.
+- The `*2` binds count by their stages: the compute stage binds at the compute
+  point, any graphics, task or mesh stage at the graphics point.
+- A secondary starts with nothing bound (it inherits no state).
+  `vkCmdExecuteCommands` leaves the primary's state as it was. Vulkan makes all of
+  the primary's state undefined there, so keeping it refuses nothing an app may do.
+- The cost per draw is two 32-bit masks and an AND.
+
+Not covered:
+
+- A primary that draws with a pipeline bound only inside a secondary has no
+  pipeline sets, so those draws are not checked.
+- What the GPU reads from a vertex buffer never bound or a descriptor never
+  written stays with robust buffer access (the GPU-side item of #624).
+- The push descriptor template calls have no handler: the guest driver sends
+  them as plain pushes.
+
+Tests: 27 `u-` cases in `test-venus-commands.c` (`case_unset`), 11 also under
+libgmalloc. On the M1 Max (virgl-only builds of #690's head de1ba2c8 and of this
+one, this one's test file, drivers of the 3.2.18 test app, 3 runs in the five
+modes):
+
+- Before, 10 cases fail in every mode. On KosmicKrisp, vkr refuses none of the
+  10 not-allowed cases. On MoltenVK 8 of them run (2 skip), and vkr refuses none;
+  with prefill all 8 end the process (SIGSEGV). The two legal maintenance6
+  draws without an index buffer also end the process (SIGSEGV) in all three
+  MoltenVK modes, 9 of 9 each, so the NULL bind vkr adds is needed.
+- After, every case is as expected in every mode, with no crash report.
+- MoltenVK has neither drawIndirectCount nor VK_EXT_multi_draw, so those 4
+  cases skip there. KosmicKrisp records the maintenance6 cases but does not
+  submit them.
+- The whole file (`run-venus-limits.py`) on this build: 421 cases on KosmicKrisp
+  (4 skipped), MoltenVK (23) and with prefill (31), 71 under libgmalloc, the image
+  file 114 on both, no GPU restart.
+
+## An app's image on a swapchain's memory (amendment, 3.2.20)
+
+Lane `v624-swap` (#624, after #693). This changes the KosmicKrisp-only exception of
+`virgl-venus-dedicated-memory.patch` above.
+
+An app may make an image with `VkImageSwapchainCreateInfoKHR` and bind it with
+`VkBindImageMemorySwapchainInfoKHR`. Venus has no host swapchain, so guest Mesa
+does this itself: it makes the image B from the swapchain's own create info
+(`ALIAS_BIT`, VUID `VkImageSwapchainCreateInfoKHR-swapchain-00995`) and binds it
+to memory M at offset 0. M is dedicated to the swapchain's image A. vkr allowed
+that bind on KosmicKrisp only, so on MoltenVK the app's context ended.
+
+What MoltenVK 1.4.2 does with it, straight to the drivers on the M1 Max (Apple7),
+no vkr, 3 runs each on KosmicKrisp, MoltenVK and MoltenVK with prefill, each
+also under libgmalloc (504 runs, 0 GPU restarts, raw in work/v624-swap/out/m1):
+
+- The bind works on both drivers.
+- Every order that frees M before B is destroyed ends the process on MoltenVK
+  at `vkDestroyImage(B)`: 60 SIGABRT, and 60 SIGSEGV under libgmalloc, in
+  `MVKDeviceMemory::removeImageMemoryBinding` on the freed memory.
+  `MVKDeviceMemory.mm:171` lets an aliasable image bind to dedicated memory, but
+  `:175` counts it only in non-dedicated memory, so `~MVKDeviceMemory` never
+  clears B's pointer to M. That order is legal: `vkDestroySwapchainKHR` has only
+  VUIDs 01282-01284, and memory may be freed with images bound to it.
+- B draws from A's `MTLTexture` (`MVKImage.mm:105-111`), so B must match A.
+- KosmicKrisp crashed in none.
+
+So vkr now (`virgl-venus-alias-memory.patch`):
+
+- lets an `ALIAS_BIT` image bind at offset 0 to memory dedicated to an
+  `ALIAS_BIT` image on both drivers, only when its create info equals the
+  target's: type, format, tiling, flags, usage, extent, levels, layers and
+  samples. That is what Mesa sends. Other create info is refused with a log
+  line. On KosmicKrisp such binds went through before; they break 02628 for the
+  host driver and are not what a legal guest call becomes.
+- makes B hold M for every such bind it passes on, whatever the driver returns
+  (MoltenVK stores M in B before it can fail). A freed M stays in the driver as
+  a zombie until B's driver destroy. When B is itself the target of dedicated
+  memory, its destroy is deferred and the hold moves to B's record, so M goes
+  after that deferred destroy too. The order is always B, then M, then A.
+- refuses a second bind of such an image (VUID
+  `VkBindImageMemoryInfo-image-07460`), so a hold is never lost. In one
+  `vkBindImageMemory2` it refuses an image named again only when the later bind
+  is such a bind (`vkBindImageMemory2-pBindInfos-04006`). Such a bind followed
+  by a plain bind of the same image in the same call still reaches the driver:
+  invalid in Vulkan, but the image takes its one hold on the memory either way,
+  so no hold is lost; no crash with it (v624-swap). (Wording corrected after
+  3.2.20: it said one image twice in one call was refused.)
+- frees all memory through one helper (`vkr_device_memory_free`): the guest's
+  `vkFreeMemory`, the device's teardown and a zombie's last holder. In the
+  teardown zombies go after images (rank: command buffers, views, images,
+  memory, pools).
+
+A zombie M keeps its GPU memory charge until B is destroyed; the guest's own B
+bounds that. Nothing changes on a hot path.
+
+Tests: 13 `x-dedicated-alias` cases in `test-venus-commands.c` (`case_alias`), 9
+of them also under libgmalloc. On the M1 Max (virgl-only builds of #693's head
+cb8f58b3 and of this one, this one's test file, drivers of the 3.2.18 test app,
+3 runs in the five modes, 21 dedicated-memory cases each):
+
+- Before, 11 cases fail on KosmicKrisp (no refusal, no hold) and 12 on MoltenVK
+  (every alias bind refused, the legal ones too).
+- After, 21 of 21 in every mode, with no crash report.
+- The same build without the hold: the 5 legal cases that free M before B end
+  the process on MoltenVK every time (30 SIGABRT, 15 SIGSEGV under libgmalloc).
+  So the hold is what keeps QEMU alive, not the bind rule.
+- The whole file (`run-venus-limits.py`) on this build: 432 cases on KosmicKrisp
+  (4 skipped), MoltenVK (23) and with prefill (31), 79 under libgmalloc, the
+  image file 114 on both, no GPU restart.
+
+VM row on a hidden clone on the M1, both drivers: Ghostty on Zink (KosmicKrisp),
+vkcube resized twice, Zink glxgears, the validation layer with 0 VUID lines, and
+a guest program that binds an image with `VkBindImageMemorySwapchainInfoKHR`
+beside vkcube in three orders (the image first, the swapchain first, the
+process ending with the image alive): all three work on both drivers, with 0
+refusal lines.
+
+## The image that aliases a YCbCr plane on MoltenVK (amendment, 3.2.20)
+
+Lane `v624-aliasfmt` (#624, after #696). Found by owed-m4 on the M4: 349 of the
+400 `dEQP-VK.ycbcr.plane_view.memory_alias.*_fragment` cases failed on MoltenVK
+with `VK_ERROR_FORMAT_NOT_SUPPORTED` at `vkCreateImage` (3.2.18, 3.2.19, #693).
+qemu.log: `the driver has no format 9 ... flags 0x608`.
+
+Each case makes a disjoint multi-planar image, then an image of a one-plane
+format at one plane's extent with the same flags, `MUTABLE | ALIAS | DISJOINT`
+(0x608), and binds it with `PLANE_0` to that plane's memory. That is legal:
+VUID `VkImageCreateInfo-format-01577` allows `DISJOINT` on a format that is not
+multi-planar when `ALIAS` is set. dEQP asks the format query only for the
+multi-planar format; VUID `VkImageCreateInfo-imageCreateMaxMipLevels-02251`
+wants one for the alias too, so strictly dEQP skips a query, but it is not the
+one that was wrong.
+
+MoltenVK 1.4.2's format query refuses `DISJOINT` on every format that is not
+multi-planar and does not look at `ALIAS` (`MVKDevice.mm:1578`). Its
+`vkCreateImage` makes the image with one memory binding, as without `DISJOINT`
+(`MVKImage.mm:1261`). vkr's create check asks the driver's query with exactly
+the guest's flags, so it refused what MoltenVK makes.
+
+Driver probe on the M4, straight to the 3.2.19 app's drivers, no vkr, all 400
+cases per run (raw in work/v624-aliasfmt/probe/out):
+
+- MoltenVK, 3 runs, 3 under libgmalloc, 1 with Metal validation: 0 crashes, 0
+  validation errors, every run the same. The query says no to 0x608 for all
+  400, yes to 0x408 for 388 (no for 12: R4G4, which MoltenVK has not). It makes
+  all 388 with 0x608; their memory requirements equal a 0x408 image's, also
+  asked with `PLANE_0`. In the 349 cases dEQP runs, bytes copied into the alias
+  come out of the multi-planar image's plane unchanged, as with a 0x408 alias.
+- MoltenVK ends the process (Metal: invalid pixel format) when asked to make
+  the R4G4 image its query refused. So the second question must stay a real
+  question.
+- KosmicKrisp, 3 runs and 3 under libgmalloc: it answers 0x608 as 0x408 in 400
+  of 400 (296 yes with the same limits, 104 no), and 128 cases bind and copy.
+
+So vkr now (`virgl-venus-disjoint-alias-format.patch`) asks the driver once more
+without `DISJOINT` when it said `FORMAT_NOT_SUPPORTED` to a one-plane format
+(one that vkr's table knows) with `DISJOINT | ALIAS`. That answer counts in
+`vkr_image_info_ok` (vkCreateImage and the three `vkGetDeviceImage*` queries)
+and in what the guest is told by `vkGetPhysicalDeviceImageFormatProperties` and
+`...2` (a copy of the guest's info, its chain kept). The create info goes to the
+driver as the guest sent it. A driver that answers these flags itself keeps its
+answer, so KosmicKrisp is not changed. One-plane `DISJOINT` without `ALIAS` (not
+legal) and multi-planar `DISJOINT` are not changed. The refusal line names the
+flags asked too.
+
+Tests, on the M4 with the 3.2.19 app's drivers:
+
+- `test-venus-image-limits.c`: the `bind-alias-*` cases asked MoltenVK directly
+  and so always skipped there; they now ask vkr's query, as the guest does, and
+  must work (or end the context) on both drivers. New `agree-*` cases check
+  that the guest's query (versions 1 and 2) and `vkCreateImage` agree (02251)
+  for R8, R8_UINT, R16, R8G8, R32_UINT, R10X6 and R12X4 with 0x608, R8 with
+  0x208 (refused on both) and a two-plane 0x608 image; `devreq-alias` covers
+  `vkGetDeviceImageMemoryRequirements`.
+- Before (virgl-only build of #696, 383437be), MoltenVK: 12 cases fail (4
+  bind-alias, 7 agree-alias, devreq-alias); KosmicKrisp: 124 of 124. After:
+  124 of 124 on both, 3 runs, and the 10 plane-bind cases under libgmalloc.
+- The test app built from source (3f3efaa1): 0 FAIL lines; `run-venus-limits.py`
+  all ok (the image file 124 on both drivers).
+- dEQP-VK in a hidden clone (guest 3.2.19), the 2880-case subset and all 800
+  `memory_alias` cases, against owed-m4's #693 rows case by case: KosmicKrisp 0
+  cases differ; MoltenVK 349 `memory_alias` cases Fail -> Pass (3 of them in the
+  subset), 0 new failures, 11 refusal lines -> 0, 0 GPU faults.
+
+## Full SPIR-V validation (amendment, 3.2.21)
+
+The structural scan let 66 of 138 modules that end QEMU in KosmicKrisp's or
+MoltenVK's compiler through (#624, M4, compile only). Guest SPIR-V now goes
+through SPIRV-Tools' validator after the scan (`virgl-venus-spirv-validate.patch`),
+for the device's Vulkan version and the layouts its features allow, never what
+one app enabled; spirv-val refuses 65 of the 66, a Function element cap
+(2^20 after specialization) the last one. Passed modules are cached by
+SHA-256 (4096 entries, LRU). The device's version is the one the guest is
+told: KosmicKrisp reports its own, MoltenVK the instance's, so a 1.0 or 1.1
+app on MoltenVK is validated as Vulkan 1.1 (SPIR-V up to 1.4), as it was
+told. Private arrays count against the same element cap, and a stage's
+Workgroup variables may take at most maxComputeSharedMemorySize bytes: a
+Private or Workgroup uint[2^32-1] passed the scan and spirv-val. Both count
+what the stage's compiler gets (3.2.22; 3.2.21 counted every variable of the
+module): the Function variables of the functions its entry point reaches,
+and every Private and Workgroup variable of the module, as MoltenVK's
+SPIRV-Cross declares each in every entry point it compiles (Mesa's
+spirv_to_nir too before SPIR-V 1.4); on KosmicKrisp from SPIR-V 1.4 only
+those in the entry point's interface, as spirv_to_nir skips the rest. So two
+compute entry points in one module no longer add up their Function arrays.
+A stage the device lacks keeps Vulkan's
+minimum interface locations, so vkd3d-proton's geometry module still
+creates on MoltenVK.
+
+spirv-val is guest-facing too, so it gets the same treatment as the drivers,
+on the CPU only (hostile modules never reach a real driver, STANDARDS 14b):
+an Input of a struct of uint[2^32-1] took it past 512 MB, a type DAG 30 deep
+past 20 s, 1000 nested loops 53 s, and three fuzzed modules ended the process
+(a NULL read after an assert compiled out, an abort from `at()`, a NULL read
+for a BuiltIn untyped variable). So before it reads a module the scan's caps
+refuse interface variables past the device's location limits
+(VUID-RuntimeSpirv-Location-06272) and types that cost more than 2^24; inside
+it (`spirv-tools-val-catch-throws.patch`) asserts stay on and throw,
+exceptions are caught, a BuiltIn check no longer reads a missing type, and a
+CPU budget of 2 s stops its superlinear walks. Those refusals hold also in a log-only build. The slowest hostile
+module measured takes 2.03 s; real modules at most 3.1 ms. Ray tracing
+pipelines are refused (no Mac driver has them).
+
+MoltenVK's own crash after a caught SPIRV-Cross error (decided: no
+MoltenVK from source). Of the 127 modules that ended or hung MoltenVK, 119
+ended it in a plain run (6 more only under Guard Malloc, 2 were runaway
+compiles past 2 GB). In 93 of the 119 SPIRV-Cross's parser threw in
+`new CompilerMSL`, MoltenVK caught it and then called the compiler it never
+got (`SPIRVToMSLConverter::convert`); in the other 26 SPIRV-Cross crashed by
+itself, which no MoltenVK patch can catch. A throw in `compile()` (134
+modules) fails the pipeline cleanly. SPIRV-Cross run as a CPU library on the
+324 modules the validator lets through for MoltenVK: 0 throw in the parser,
+0 crash, 24 throw in `compile()` (f64 in buffers, a clean error). So the
+validator already stops every module the fix would save, and the runtime keeps
+Homebrew's MoltenVK bottle. When the MoltenVK or SPIRV-Tools pin moves, run
+the same SPIRV-Cross check on the new versions; an accepted module that throws
+in the parser or crashes SPIRV-Cross reopens this. The upstream report is
+drafted, not sent.
+
+## Metal passes and host memory (amendment, 3.2.22)
+
+Lane `v624-hostmem` (#624's "host-memory caps", after #697). The question: can
+one guest program make QEMU (vkr and the Mac's driver) hold memory beyond what
+the guest's own limits allow, or end it that way? Probes through vkr's own
+dispatch on the M1 Max (macOS 27, the 3.2.18 test app's KosmicKrisp and
+MoltenVK, each probe its own bounded process, no VM; raw in
+work/v624-hostmem/out run4-run12).
+
+Device memory was already charged right (written memory matches the charge, a
+budget refusal leaves the context alive). Three things were not:
+
+- **Metal passes end QEMU.** One Metal command buffer with about 98304 passes
+  (render encoders) ends the process: SIGABRT, "Failed to allocate
+  IOGPUDeviceShmem" in `IOGPUMetalCommandBufferStorageGrowKernelCommandBuffer`
+  from `AGX::RenderContext::beginRenderPass`. KosmicKrisp opens a pass while
+  recording for each clear (per level; a level's layers are one layered pass,
+  and so are a 3D level's depth slices), render pass begin, rendering, and
+  each by-region barrier inside a 4x pass; it aborted past 98304 clears, past
+  98304 empty passes, between 90112 and 98304 split barriers, between 6144
+  and 6656 clears of 15 levels, with no submit. 1M plain draws, 204800 copies
+  and 1x in-pass barriers, 16384 clears of a 2048-deep 3D image and 65536
+  blits or resolves did not. MoltenVK encodes at the submit (at
+  `vkEndCommandBuffer` with prefill) and puts a batch's command buffers into
+  one Metal command buffer: with prefill it aborted at the end after 150000
+  clears or 204800 passes, renderings, blits or resolves; without, one batch
+  of 8 x 16384 clears aborted at `vkQueueSubmit`, 4 x 16384 in one batch went
+  through.
+- **Some draws split a pass** (found in the review, probed in fix-700,
+  work/v624-hostmem/fix/out). KosmicKrisp unrolls a draw in a compute pass
+  first (`kk_cmd_draw.c`, `requires_unroll`) for triangle fans, 8-bit indices,
+  8- or 16-bit strips with restart off, list restart with
+  `primitiveTopologyListRestart`, a Flat fragment input with the last vertex
+  provoking, and index robustness; it applies predicates (conditional
+  rendering) the same way, runs each tessellated draw's stages as compute, and
+  starts a new pass when sample locations or the color attachment map change.
+  Each such draw cost 60-113 KB while recording (a color-map or
+  sample-location change 24 KB; a plain draw 0.1 KB), and between 73728 and
+  81920 fan draws in one pass ended the process. MoltenVK with prefill ended
+  the process at the end of 114688 tessellated draws, or draws with a
+  sample-location or color-map change each. 32-bit strips, strips with
+  restart, flat inputs with the first vertex provoking, timestamps in a pass
+  and robust draws inside an aligned index buffer did not split.
+- **Recordings and objects cost memory nobody counted.** Per command
+  (footprint): KosmicKrisp 2423 B per 44-byte fill (2 GB in 0.57 s), 84017 B per
+  64 KB update, 36415 B per blit region; MoltenVK 65881 B per update. Per
+  object: KosmicKrisp 18366 B per event (1148 MB in 0.47 s) and 34137 B per
+  command buffer, MoltenVK 142082 B per command pool (1110 MB in 0.09 s) and
+  12.6 MB per 2^20 timestamps. A submitted pass held 171-179 KB, most of it
+  wired, after the queue went idle, at any image size and also after the
+  command buffer's reset, free or its pool's destroy. 8 x 16384 clears in one
+  KosmicKrisp submit took the process to 22 GB (memory level 86 -> 74). That
+  storage is used again for the process's next command buffers (fix-700,
+  out-C): 10 rounds of a new pool, 2048 submitted passes, free and destroy
+  stayed at 301-317 MB on KosmicKrisp and 356-363 MB on MoltenVK, also with
+  one pool reset each round and over 10 contexts in turn (307-317 MB), and
+  10 rounds of 2048 64 KB updates on MoltenVK at 243-260 MB. The process
+  keeps about its peak; it does not grow from round to round.
+- **The reported heaps were bigger than what Venus may use.** MoltenVK
+  reported 32768 MB (all of the M1 Max), KosmicKrisp 25559 MB, both more than
+  the 22528 MB apps' share; maxBufferSize 19169 MB.
+
+What vkr does now:
+
+1. `virgl-venus-encoder-cap.patch`: each command buffer counts its passes
+   (clears per level, pass begins, next subpasses, renderings, on KosmicKrisp
+   every barrier inside a pass, because vkr does not keep a pass's sample
+   count, and a primary the passes of the secondaries it executes, each
+   time). Blit and resolve regions count as a pass each, to be safe. So do
+   the draws that split a pass (`vkr_cmd_draw_weigh`): on both drivers each
+   tessellated draw and each sample-location or attachment-location change
+   inside a pass; on KosmicKrisp a draw call it unrolls or predicates. For
+   that vkr keeps each graphics pipeline's topology, restart, provoking mode,
+   tessellation and Flat use (from the SPIR-V scan; pipeline libraries
+   merged) and follows the recording's dynamic state and index buffer.
+   Robust indirect or over-reading indexed draws count on any macOS (macOS 27's
+   KosmicKrisp also needs a misaligned index buffer for those). Past 16384
+   per command buffer, or 32768 in one MoltenVK batch, the command (or the
+   submit) is refused and the app's context ends. 16384 is 6x below the clear
+   abort and 4.5x below the fan-draw abort; a Zink frame has about 2000
+   passes. `OMACVM_VENUS_ENCODER_CAP` sets it for tests. The cap is fixed,
+   not measured per Mac. On the mini's M4 KosmicKrisp aborted between 74752
+   and 75264 clears of one level (fix-700 r2), so 16384 is 4.6x below there;
+   an 8 GB Mac is not measured.
+2. `virgl-venus-host-memory.patch`: each context has a host memory account
+   (`OMACVM_VENUS_HOST_MB`, else a quarter of the apps' share, 256 MB to
+   4 GB), and the same bytes go to the shared GPU budget, so one app's
+   recordings cannot starve the others and all apps stay inside the budget.
+   Objects are charged a fixed estimate per type, whatever their size (a
+   shader module 4 KB though its code may be 4 MB, which both drivers keep a
+   copy of; a pipeline cache 20 KB whatever its initial data; charging these
+   by size is a follow-up), recordings 512 B per command,
+   184 KB per pass or draw that splits one (recorded and held after the
+   submit), an update's data x
+   1.5, on KosmicKrisp 3 KB per fill and attachment clear and 40 KB per blit or
+   resolve region. Every charge is at least what a probe measured
+   (`kit/costs.py` over the probe output). A command buffer takes 1 MB at a
+   time (no shared counter per command: `--time` shows no change, e.g.
+   vkCmdDraw 0.168-0.170 us before and 0.169-0.170 after on KosmicKrisp) and
+   keeps the most one recording took through resets; freed, that goes to its
+   pool for the pool's next recordings, and back with the pool (the memory
+   stays in the process but is used again: the rounds above). Charges come
+   back where vkr frees the object: after the driver's destroy, a zombie's at
+   its last holder, and in the context's teardown, which logs the peak. A lost
+   context the guest never closes keeps its charge until its teardown.
+3. The same patch reports heaps of at most the apps' share (both memory
+   property queries), maxMemoryAllocationSize and maxBufferSize at most the
+   heap, and for VK_EXT_memory_budget this context's device memory as
+   heapUsage and that plus what the share has left as heapBudget (a page at
+   least, at most the heap). Zink, DXVK and Chromium read these; 32 -> 22 GB
+   changes nothing for them on this Mac.
+4. The decoder frees a temp buffer over 16 MB after each stream (one 256 MB
+   command left 320 MB per context and per ring).
+
+Every refusal here ends the app's context. The guest's Mesa records, submits and
+creates without waiting for vkr, so no `VK_ERROR_OUT_OF_*_MEMORY` would reach the
+app there: it sees a lost device, the VM goes on. Only `vkAllocateMemory` (with
+`VN_PERF=no_async_mem_alloc`) and what vkr reports can tell an app about memory
+before that. Venus against macOS memory pressure (the GPU guard's levels) is a
+later patch.
+
+Tests, on the M1 Max: `test-venus-commands.c`'s h- cases (28), on KosmicKrisp,
+MoltenVK and MoltenVK with prefill. On the build before (#697, 85270088, the 3.2.20 set) 16
+fail on KosmicKrisp and on MoltenVK and 13 with prefill (its 4 submit and
+teardown cases skip there), among them `h-pass-default-past-metal` ending the
+process (signal 6) on KosmicKrisp and with prefill, and `h-rec-fills`,
+`h-rec-updates` and `h-obj-events` stopped at 1.5 GB on KosmicKrisp; the 12
+legal cases work before and after. With both patches all 28 pass on every
+driver.
+
+The review's follow-up (fix-700) adds 17 cases: `h-pass-draw-` for each draw
+kind that splits a pass and each that does not, and `h-pass-3d-ok`/`-over`.
+On the build before it, 10 fail on KosmicKrisp (fan, u8, strip16,
+list-restart, flat-last, pred, robust-indirect, tess, sample-locations,
+attachment-locations: they fit where they must not) and 3 on MoltenVK and with
+prefill (tess, sample-locations, attachment-locations); after it all 45 h-
+cases pass on all three.
+
+Second follow-up (fix-700 r2, 2026-11-04). On the mini's M4 (16 GB): a submitted
+pass held 86 KB on KosmicKrisp and 36 KB on MoltenVK after the queue went idle
+(4096 clears, also after the free and the pool's destroy), below the 184 KB
+charge; 10 rounds of a new pool (or a new context) with 2048 submitted clears
+stayed at 150-215 MB. The VM row on the M1 (fc5d5bde, hidden 4 GB clone,
+KosmicKrisp and MoltenVK) logged each context's peak against its 4096 MB
+account: Ghostty on Zink 37 MB, Zink glxgears 26, Zink glxinfo 7, Chromium
+(WebGL, ANGLE on Venus) 21-27, vkcube 8 (KosmicKrisp) and 27 (MoltenVK, also
+with the validation layer), clinfo 2, vulkaninfo 0; 0 "still charged" lines.
+On an 8 GB Mac the budget is 6144 MB, the desktop keeps 512 MB, the apps'
+share is 5632 MB and each context's account 1408 MB: about 7800 passes held at
+once (184 KB each), summed over each live command buffer's largest recording.
+The row's apps used at most 37 MB (about 200 passes' worth). DXVK or Zink with
+4 frames in flight fit up to about 1900 passes per frame; a frame near the
+2000 of `h-zink-frame-ok` with 4 or more in flight would end the app's context
+there. Not measured with DXVK (no Windows app in the row).

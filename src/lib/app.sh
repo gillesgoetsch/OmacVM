@@ -140,7 +140,9 @@ app_vm_dirs() {   # every app VM folder (with vm.env), one per line
     # until a program it starts has read it (the removable-volume check).
     # macOS's own ls, without the colours a terminal may force (CLICOLOR_FORCE).
     while IFS= read -r d; do
-      [[ -f $r/$d/vm.env ]] && echo "$r/$d"
+      # A reader that has what it wanted stops early (app_any_fast_network):
+      # done, without bash's "write error" where SIGPIPE is ignored (CI).
+      [[ -f $r/$d/vm.env ]] && { echo "$r/$d" 2>/dev/null || return 0; }
     done < <(env -u CLICOLOR -u CLICOLOR_FORCE /bin/ls -1 "$r" 2>/dev/null)
   done < <(app_vms_roots)
 }

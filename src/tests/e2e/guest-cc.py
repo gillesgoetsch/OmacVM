@@ -146,6 +146,20 @@ def below_table(text: str) -> str:
     return re.sub(r"\s+", " ", " ".join(rest))
 
 
+def hint_row(hint: str) -> str | None:
+    """The row the hint names ("Title: summary · on, works"); None from a control centre whose
+    hint gives only the summary (3.2.18 and older)."""
+    global TITLES
+    if TITLES is None:
+        TITLES = titles()
+    return next((t for t in TITLES if hint.startswith(t + ":")), None)
+
+
+def hint_is(title: str, text: str) -> bool:
+    """The hint under the table is title's (or names no row: an older control centre)."""
+    return hint_row(below_table(text)) in (title, None)
+
+
 def row_line(text: str, title: str) -> str:
     for i, t in table(text):
         if t == title:
@@ -164,6 +178,13 @@ def goto(title: str) -> dict:
         cur_line = cursor_line(screen(ansi=True))
         cur = next((k for k, (i, _) in enumerate(rows) if i == cur_line), None)
         if cur == want:
+            # The hint under the table follows the cursor a moment later (more on a busy Mac):
+            # read on once it names this row.
+            end = time.monotonic() + 10
+            while not hint_is(title, screen()) and time.monotonic() < end:
+                time.sleep(0.1)
+            if not hint_is(title, screen()):
+                return {"error": f"the hint did not name '{title}'", "rows": names, "hint": below_table(screen())}
             return {"rows": names}
         if cur is None:
             # The cursor's colour is not readable here: from the top, then trust the count.
@@ -180,10 +201,11 @@ def goto(title: str) -> dict:
 
 
 def state_of(title: str, text: str) -> dict:
+    """on and status from the hint, while it is title's; the note from title's own line."""
     hint = below_table(text)
     line = row_line(text, title)
     note = line.split(title, 1)[1].strip(" │") if title in line else ""
-    m = re.search(r"·\s+(on|off),\s+(works|needs you|failing|off|unavailable|not checked|working|from the next start)", hint)
+    m = None if hint_row(hint) not in (title, None) else re.search(r"·\s+(on|off),\s+(works|needs you|failing|off|unavailable|not checked|working|from the next start)", hint)
     return {"on": m.group(1) if m else None, "status": m.group(2) if m else None, "note": note, "below": hint}
 
 
@@ -321,14 +343,16 @@ def cmd_graphics(a: list[str]) -> None:
         if st["note"].startswith(want + ":") and st["status"] != "working":
             out(True, steps=steps, after=st, seconds=round(time.monotonic() - t0, 1), trouble=seen, screen=screen())
         keys("space")
-        time.sleep(0.8)
-        q = re.sub(r"\s+", " ", screen())
-        if not asked(q):
+        # Graphics always asks: waited for, not a fixed 0.8 s (a busy Mac draws it later).
+        if not watch(lambda s: asked(re.sub(r"\s+", " ", s)), 15)[0]:
             out(False, error="Space on Graphics asked nothing", steps=steps, screen=screen())
         keys("y")
         prev = st["note"]
+        # Ended: the row's own note is a setting again ("to Vulkan…" while the job runs; the hint
+        # under the table can still say the status from before, and a Space then is refused).
         ok, text, s2 = watch(lambda s: state_of("Graphics", s)["status"] not in ("working", None)
-                             and state_of("Graphics", s)["note"] != prev, secs)
+                             and state_of("Graphics", s)["note"] != prev
+                             and re.match(r"(Automatic|OpenGL|Vulkan):", state_of("Graphics", s)["note"]) is not None, secs)
         seen += [x for x in s2 if x not in seen]
         steps.append({"from": prev, "to": state_of("Graphics", text)["note"], "ended": ok})
         if not ok:
@@ -339,8 +363,8 @@ def cmd_graphics(a: list[str]) -> None:
 def cmd_updates(a: list[str]) -> None:
     secs = float(a[0]) if a else 120
     keys("U")
-    time.sleep(1)
-    if "Updates" not in screen():
+    # The screen is drawn once its body is (a busy Mac: later than 1 s), not after a fixed pause.
+    if not watch(lambda s: "Updates" in s and "Update checks" in s, 15)[0]:
         out(False, error="U did not open the updates screen", screen=screen())
     before = screen()
     keys("c")

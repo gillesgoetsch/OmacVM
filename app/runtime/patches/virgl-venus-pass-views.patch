@@ -375,10 +375,10 @@ index 57b2c31..8d56415 100644
  }
  
 diff --git a/src/venus/vkr_image.c b/src/venus/vkr_image.c
-index 10c55b4..60fac0f 100644
+index b012da7..4a5d5e6 100644
 --- a/src/venus/vkr_image.c
 +++ b/src/venus/vkr_image.c
-@@ -711,8 +711,18 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
+@@ -714,8 +714,18 @@ vkr_dispatch_vkCreateImageView(struct vn_dispatch_context *dispatch,
                                ? vkr_format_plane_count(info->format)
                                : 1;
     struct vkr_image_view *view = vkr_image_view_create_and_add(dispatch->data, args);
