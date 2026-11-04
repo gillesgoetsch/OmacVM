@@ -288,7 +288,7 @@ new file mode 100644
 index 0000000..426aa9a
 --- /dev/null
 +++ b/src/venus/vkr_spirv.c
-@@ -0,0 +1,1251 @@
+@@ -0,0 +1,1341 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -438,9 +438,10 @@ index 0000000..426aa9a
 +   uint32_t id, pointee, storage;
 +};
 +
-+/* a Function, Private or Workgroup variable: its pointer type, or (untyped) its data type */
++/* a Function, Private or Workgroup variable: its id, the function it is in (0: none), its
++ * pointer type, or (untyped) its data type */
 +struct local {
-+   uint32_t type;
++   uint32_t id, function, type;
 +   bool pointer;
 +};
 +
@@ -708,7 +709,8 @@ index 0000000..426aa9a
 +            vec_add(w[3] == STORAGE_WORKGROUP ? &s->shared : &s->locals, 1, sizeof(*l));
 +         if (!l)
 +            return fail(s, "out of host memory", at);
-+         *l = (struct local){ op == OP_VARIABLE ? w[1] : w[4], op == OP_VARIABLE };
++         *l = (struct local){ w[2], s->function, op == OP_VARIABLE ? w[1] : w[4],
++                              op == OP_VARIABLE };
 +      }
 +      if ((w[3] == STORAGE_INPUT || w[3] == STORAGE_OUTPUT) && id_ok(s, w[2]) &&
 +          (op == OP_VARIABLE || len >= 5)) {
@@ -961,16 +963,19 @@ index 0000000..426aa9a
 +   info->member_count = s->members.n;
 +   s->entries.p = s->names.p = s->consts.p = s->functions.p = s->calls.p = s->uses.p = NULL;
 +   s->types.p = s->members.p = NULL;
-+   /* each Function variable's type: the pointee of its pointer type (0: none known) */
++   /* each Function and Private variable's type: the pointee of its pointer type (0: none
++    * known), and the function it is in */
 +   if (s->locals.n) {
-+      info->locals = malloc(sizeof(uint32_t) * (size_t)s->locals.n);
++      info->locals = malloc(sizeof(*info->locals) * (size_t)s->locals.n);
 +      if (!info->locals)
 +         return fail(s, "out of host memory", 0);
 +      const struct local *locals = s->locals.p;
 +      for (uint32_t i = 0; i < s->locals.n; i++) {
 +         const struct pointer *p =
 +            locals[i].pointer ? find(&s->pointers, sizeof(*p), locals[i].type) : NULL;
-+         info->locals[i] = locals[i].pointer ? (p ? p->pointee : 0) : locals[i].type;
++         info->locals[i] = (struct vkr_spirv_local){
++            locals[i].id, locals[i].function,
++            locals[i].pointer ? (p ? p->pointee : 0) : locals[i].type };
 +      }
 +      info->local_count = s->locals.n;
 +   }
@@ -984,6 +989,7 @@ index 0000000..426aa9a
 +         const struct pointer *p =
 +            shared[i].pointer ? find(&s->pointers, sizeof(*p), shared[i].type) : NULL;
 +         struct vkr_spirv_shared *v = &info->shared[i];
++         v->id = shared[i].id;
 +         v->type = shared[i].pointer ? (p ? p->pointee : 0) : shared[i].type;
 +         for (const struct deco *d = v->type ? find(&s->decos, sizeof(*d), v->type) : NULL;
 +              d && d < decos + s->decos.n && d->id == v->type; d++) {
@@ -1075,6 +1081,8 @@ index 0000000..426aa9a
 +      return NULL;
 +   }
 +   s.info = calloc(1, sizeof(*s.info));
++   if (s.info)
++      s.info->version = version;
 +   s.weight = calloc(s.bound, 2 * sizeof(uint32_t));
 +   s.type_of = s.weight ? s.weight + s.bound : NULL;
 +   s.is_struct = calloc(s.bound, 1);
@@ -1205,31 +1213,21 @@ index 0000000..426aa9a
 +   return f ? (uint32_t)(f - info->functions) : UINT32_MAX;
 +}
 +
-+bool
-+vkr_spirv_bindings_ok(const struct vkr_spirv_info *info,
-+                      const struct vkr_spirv_entry *entry,
-+                      bool (*ok)(const void *data, uint32_t set, uint32_t binding),
-+                      const void *data,
-+                      uint32_t *set,
-+                      uint32_t *binding)
++/* the functions an entry point reaches through calls, itself too: 1 at their index in
++ * info->functions (breadth first, each function once); NULL out of host memory */
++static uint8_t *
++reached(const struct vkr_spirv_info *info, const struct vkr_spirv_entry *entry)
 +{
-+   *set = *binding = UINT32_MAX;
++   uint8_t *seen = calloc(info->function_count + 1, 1);
++   uint32_t *queue = malloc(sizeof(*queue) * ((size_t)info->function_count + 1));
 +   const uint32_t first = function_index(info, entry->function);
-+   if (first == UINT32_MAX)
-+      return true;
-+   /* breadth first over the call graph: each function once */
-+   uint8_t *seen = calloc(info->function_count, 1);
-+   uint32_t *queue = malloc(sizeof(*queue) * (size_t)info->function_count);
-+   bool result = seen && queue;
 +   uint32_t head = 0, tail = 0;
-+   if (result) {
++   if (seen && queue && first != UINT32_MAX) {
 +      seen[first] = 1;
 +      queue[tail++] = first;
 +   }
 +   const struct vec calls = { .p = info->calls, .n = info->call_count };
-+   const struct vec uses = { .p = info->uses, .n = info->use_count };
-+   const struct vec vars = { .p = info->vars, .n = info->var_count };
-+   while (result && head < tail) {
++   while (seen && queue && head < tail) {
 +      const uint32_t function = info->functions[queue[head++]];
 +      for (const struct vkr_spirv_pair *c = find(&calls, sizeof(*c), function);
 +           c && c < info->calls + info->call_count && c->function == function; c++) {
@@ -1239,7 +1237,31 @@ index 0000000..426aa9a
 +            queue[tail++] = callee;
 +         }
 +      }
-+      for (const struct vkr_spirv_pair *u = find(&uses, sizeof(*u), function);
++   }
++   free(queue);
++   if (!queue) {
++      free(seen);
++      return NULL;
++   }
++   return seen;
++}
++
++bool
++vkr_spirv_bindings_ok(const struct vkr_spirv_info *info,
++                      const struct vkr_spirv_entry *entry,
++                      bool (*ok)(const void *data, uint32_t set, uint32_t binding),
++                      const void *data,
++                      uint32_t *set,
++                      uint32_t *binding)
++{
++   *set = *binding = UINT32_MAX;
++   uint8_t *seen = reached(info, entry);
++   bool result = seen != NULL;
++   const struct vec uses = { .p = info->uses, .n = info->use_count };
++   const struct vec vars = { .p = info->vars, .n = info->var_count };
++   for (uint32_t i = 0; result && i < info->function_count; i++) {
++      const uint32_t function = info->functions[i];
++      for (const struct vkr_spirv_pair *u = seen[i] ? find(&uses, sizeof(*u), function) : NULL;
 +           result && u && u < info->uses + info->use_count && u->function == function; u++) {
 +         const struct vkr_spirv_var *v = find(&vars, sizeof(*v), u->id);
 +         if (v && !ok(data, v->set, v->binding)) {
@@ -1250,8 +1272,63 @@ index 0000000..426aa9a
 +      }
 +   }
 +   free(seen);
-+   free(queue);
 +   return result;
++}
++
++/* which Function, Private and Workgroup variables an entry point's code gets: see
++ * vkr_spirv_function_elements */
++struct reach {
++   const struct vkr_spirv_info *info;
++   uint8_t *seen;  /* reached(); NULL: every variable */
++   uint32_t *ids;  /* the entry point's interface, sorted; NULL: every global */
++   uint32_t id_count;
++};
++
++static bool
++reach_init(struct reach *r,
++           const struct vkr_spirv_info *info,
++           const struct vkr_spirv_entry *entry,
++           bool interface_globals)
++{
++   *r = (struct reach){ .info = info };
++   if (!entry)
++      return true;
++   r->seen = reached(info, entry);
++   if (!r->seen)
++      return false;
++   if (!interface_globals || info->version < 0x10400)
++      return true;
++   /* from SPIR-V 1.4 an entry point's interface lists every global it uses */
++   const uint32_t index = (uint32_t)(entry - info->entries);
++   r->ids = malloc(sizeof(*r->ids) * ((size_t)info->interface_count + 1));
++   if (!r->ids)
++      return false;
++   for (uint32_t i = 0; i < info->interface_count; i++) {
++      if (info->interface[i].function == index)
++         r->ids[r->id_count++] = info->interface[i].id;
++   }
++   qsort(r->ids, r->id_count, sizeof(*r->ids), cmp_u32);
++   return true;
++}
++
++static bool
++reach_has(const struct reach *r, uint32_t function, uint32_t id)
++{
++   if (!r->seen)
++      return true;
++   if (function) {
++      const uint32_t i = function_index(r->info, function);
++      return i != UINT32_MAX && r->seen[i];
++   }
++   const struct vec ids = { .p = r->ids, .n = r->id_count };
++   return !r->ids || find(&ids, sizeof(uint32_t), id);
++}
++
++static void
++reach_fini(struct reach *r)
++{
++   free(r->seen);
++   free(r->ids);
 +}
 +
 +/* one type's elements (memo: 0 not yet, 1 counting, 2 counted into elems), or with bytes
@@ -1332,6 +1409,8 @@ index 0000000..426aa9a
 +
 +bool
 +vkr_spirv_function_elements(const struct vkr_spirv_info *info,
++                            const struct vkr_spirv_entry *entry,
++                            bool interface_globals,
 +                            bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
 +                            const void *data,
 +                            uint64_t *count)
@@ -1341,13 +1420,18 @@ index 0000000..426aa9a
 +      return true;
 +   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
 +                         calloc(info->type_count + 1, sizeof(uint64_t)), false };
-+   bool ok = e.state && e.elems;
++   struct reach r;
++   bool ok = reach_init(&r, info, entry, interface_globals) && e.state && e.elems;
 +   for (uint32_t i = 0; ok && i < info->local_count; i++) {
++      const struct vkr_spirv_local *l = &info->locals[i];
++      if (!reach_has(&r, l->function, l->id))
++         continue;
 +      uint64_t n;
-+      ok = type_elements(&e, info->locals[i], 0, &n);
++      ok = type_elements(&e, l->type, 0, &n);
 +      if (ok && __builtin_add_overflow(*count, n, count))
 +         *count = UINT64_MAX;
 +   }
++   reach_fini(&r);
 +   free(e.state);
 +   free(e.elems);
 +   return ok;
@@ -1355,6 +1439,8 @@ index 0000000..426aa9a
 +
 +bool
 +vkr_spirv_workgroup_bytes(const struct vkr_spirv_info *info,
++                          const struct vkr_spirv_entry *entry,
++                          bool interface_globals,
 +                          bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
 +                          const void *data,
 +                          uint64_t *bytes)
@@ -1364,9 +1450,12 @@ index 0000000..426aa9a
 +      return true;
 +   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
 +                         calloc(info->type_count + 1, sizeof(uint64_t)), true };
-+   bool ok = e.state && e.elems;
++   struct reach r;
++   bool ok = reach_init(&r, info, entry, interface_globals) && e.state && e.elems;
 +   uint64_t sum = 0, block = 0;
 +   for (uint32_t i = 0; ok && i < info->shared_count; i++) {
++      if (!reach_has(&r, 0, info->shared[i].id))
++         continue;
 +      uint64_t n;
 +      ok = type_elements(&e, info->shared[i].type, 0, &n);
 +      if (ok && info->shared[i].block)
@@ -1374,6 +1463,7 @@ index 0000000..426aa9a
 +      else if (ok && __builtin_add_overflow(sum, n, &sum))
 +         sum = UINT64_MAX;
 +   }
++   reach_fini(&r);
 +   free(e.state);
 +   free(e.elems);
 +   /* Block ones alias each other (SPV_KHR_workgroup_memory_explicit_layout): the largest */
@@ -1545,7 +1635,7 @@ new file mode 100644
 index 0000000..1b79868
 --- /dev/null
 +++ b/src/venus/vkr_spirv.h
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,254 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -1668,14 +1758,24 @@ index 0000000..1b79868
 +   uint32_t id;
 +};
 +
++/* a Function or Private variable: the function a Function one is in (0 for a Private one)
++ * and its data type (0: none known) */
++struct vkr_spirv_local {
++   uint32_t id;
++   uint32_t function;
++   uint32_t type;
++};
++
 +/* a Workgroup variable: its data type (0: none known); block: a Block type, which aliases
 + * the other Block ones (SPV_KHR_workgroup_memory_explicit_layout) */
 +struct vkr_spirv_shared {
++   uint32_t id;
 +   uint32_t type;
 +   bool block;
 +};
 +
 +struct vkr_spirv_info {
++   uint32_t version; /* the header's: 0x00010400 is SPIR-V 1.4 */
 +   uint32_t entry_count;
 +   struct vkr_spirv_entry *entries;
 +   char *names;
@@ -1693,14 +1793,14 @@ index 0000000..1b79868
 +   struct vkr_spirv_pair *calls;
 +   uint32_t use_count;
 +   struct vkr_spirv_pair *uses;
-+   /* arrays and structs (sorted by id), the structs' member types, the type of each
-+    * Function and Private variable and the Workgroup variables */
++   /* arrays and structs (sorted by id), the structs' member types, the Function and
++    * Private variables and the Workgroup variables */
 +   uint32_t type_count;
 +   struct vkr_spirv_type *types;
 +   uint32_t member_count;
 +   uint32_t *members;
 +   uint32_t local_count;
-+   uint32_t *locals;
++   struct vkr_spirv_local *locals;
 +   uint32_t shared_count;
 +   struct vkr_spirv_shared *shared;
 +   /* Input and Output variables (sorted by id) and the entry points' interfaces */
@@ -1743,24 +1843,34 @@ index 0000000..1b79868
 +                      uint32_t *set,
 +                      uint32_t *binding);
 +
-+/* the elements of all Function and Private variables after specialization (lookup as for
-+ * the workgroup size), at most UINT64_MAX; false when an array length is no known constant
-+ * (a spec constant operation) or the types nest past 64 levels or in a loop */
++/* the elements of the Function and Private variables the code of `entry` gets, after
++ * specialization (lookup as for the workgroup size), at most UINT64_MAX; false when an array
++ * length is no known constant (a spec constant operation), the types nest past 64 levels or
++ * in a loop, or out of host memory. entry NULL: every one of the module's. Else the Function
++ * variables of the functions it reaches through calls (both Mac compilers translate only
++ * those) and the Private ones: every one of the module's (MoltenVK's SPIRV-Cross declares
++ * each in every entry point it compiles; Mesa's spirv_to_nir before SPIR-V 1.4 makes them all
++ * too), or with interface_globals and SPIR-V 1.4 or later only those in its interface (Mesa's
++ * spirv_to_nir skips the others: KosmicKrisp, VKR_SPIRV_INTERFACE_GLOBALS) */
 +bool
 +vkr_spirv_function_elements(const struct vkr_spirv_info *info,
++                            const struct vkr_spirv_entry *entry,
++                            bool interface_globals,
 +                            bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
 +                            const void *data,
 +                            uint64_t *count);
 +
-+/* the bytes the module's Workgroup variables take at least, after specialization (lookup
-+ * as for the workgroup size): their sum, or the largest Block one when that is more; no
-+ * padding, an array length from a spec constant operation counts once. Against
-+ * maxComputeSharedMemorySize (VUID-RuntimeSpirv-Workgroup-06530) for every variable of the
-+ * module, not only the entry point's, as the element count: a Workgroup uint[2^32-1] passed
-+ * the scan and spirv-val. False when the types nest past 64 levels or in a loop or out of
-+ * host memory. */
++/* the bytes the Workgroup variables the code of `entry` gets take at least, after
++ * specialization (lookup as for the workgroup size): their sum, or the largest Block one
++ * when that is more; no padding, an array length from a spec constant operation counts
++ * once. Which variables: as the Private ones of vkr_spirv_function_elements. Against
++ * maxComputeSharedMemorySize (VUID-RuntimeSpirv-Workgroup-06530): a Workgroup uint[2^32-1]
++ * passed the scan and spirv-val. False when the types nest past 64 levels or in a loop or
++ * out of host memory. */
 +bool
 +vkr_spirv_workgroup_bytes(const struct vkr_spirv_info *info,
++                          const struct vkr_spirv_entry *entry,
++                          bool interface_globals,
 +                          bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
 +                          const void *data,
 +                          uint64_t *bytes);

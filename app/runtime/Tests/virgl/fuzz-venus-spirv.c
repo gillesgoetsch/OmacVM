@@ -544,8 +544,11 @@ use_summary(const struct vkr_spirv_info *info)
     * locations (virgl-venus-spirv-validate.patch's caps), with limits from none to past any
     * device's */
    uint64_t elements, bytes;
-   vkr_spirv_function_elements(info, lookup, pick(2) ? spec : NULL, &elements);
-   vkr_spirv_workgroup_bytes(info, lookup, pick(2) ? spec : NULL, &bytes);
+   /* for the module or one entry point, with or without its interface's globals only */
+   const struct vkr_spirv_entry *entry =
+      info->entry_count && pick(4) ? &info->entries[pick(info->entry_count)] : NULL;
+   vkr_spirv_function_elements(info, entry, pick(2), lookup, pick(2) ? spec : NULL, &elements);
+   vkr_spirv_workgroup_bytes(info, entry, pick(2), lookup, pick(2) ? spec : NULL, &bytes);
    struct vkr_spirv_io_limits limits;
    uint32_t *l = &limits.vertex_in;
    for (size_t i = 0; i < sizeof(limits) / sizeof(*l); i++)

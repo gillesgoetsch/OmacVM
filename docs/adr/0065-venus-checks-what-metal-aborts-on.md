@@ -1051,9 +1051,16 @@ SHA-256 (4096 entries, LRU). The device's version is the one the guest is
 told: KosmicKrisp reports its own, MoltenVK the instance's, so a 1.0 or 1.1
 app on MoltenVK is validated as Vulkan 1.1 (SPIR-V up to 1.4), as it was
 told. Private arrays count against the same element cap, and a stage's
-Workgroup variables may take at most maxComputeSharedMemorySize bytes (both
-for all of the module's variables): a Private or Workgroup uint[2^32-1]
-passed the scan and spirv-val. A stage the device lacks keeps Vulkan's
+Workgroup variables may take at most maxComputeSharedMemorySize bytes: a
+Private or Workgroup uint[2^32-1] passed the scan and spirv-val. Both count
+what the stage's compiler gets (3.2.22; 3.2.21 counted every variable of the
+module): the Function variables of the functions its entry point reaches,
+and every Private and Workgroup variable of the module, as MoltenVK's
+SPIRV-Cross declares each in every entry point it compiles (Mesa's
+spirv_to_nir too before SPIR-V 1.4); on KosmicKrisp from SPIR-V 1.4 only
+those in the entry point's interface, as spirv_to_nir skips the rest. So two
+compute entry points in one module no longer add up their Function arrays.
+A stage the device lacks keeps Vulkan's
 minimum interface locations, so vkd3d-proton's geometry module still
 creates on MoltenVK.
 
