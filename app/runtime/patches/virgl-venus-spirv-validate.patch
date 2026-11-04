@@ -55,7 +55,7 @@ slowest of 118 such modules took 2.03 s (a chain of 262118 blocks, stopped at
 more crash in spirv-val on the final checks (seed 104: a BuiltIn untyped
 variable, spirv-tools-val-catch-throws.patch); after its fix seed 104 again
 (134.9 million mutants, 13.4 million through the scan) hit no cap and no
-crash. Real modules cost at most 17002 and take at most 3.6 ms. With the final checks on the CPU, the 90 real modules of the CPU
+crash. Real modules cost at most 17002 and take at most 3.1 ms. With the final checks on the CPU, the 90 real modules of the CPU
 test's corpus (and their 16 paired vertex shaders) and vkd3d-proton 3.1's 42
 pass for both drivers' targets; under a 1.0 or 1.1 app on MoltenVK the 37
 past SPIR-V 1.4 are refused. Earlier, spirv-val alone on 126 real modules:

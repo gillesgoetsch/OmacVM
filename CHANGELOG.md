@@ -15,7 +15,7 @@ in more words.
   own checks kept on, and at most 2 s of CPU per shader. Real shaders pass (90 from DXVK, Chromium,
   dEQP, vkcube, Zink and glslc tests, and vkd3d-proton's 42; Ghostty on Zink, glxgears, vkcube and
   Chromium ran in a test VM on KosmicKrisp with no refusal). On MoltenVK an app that asks for Vulkan
-  1.0 or 1.1 may send SPIR-V up to 1.4, as MoltenVK tells it. It costs about 42 µs per KB once per
+  1.0 or 1.1 may send SPIR-V up to 1.4, as MoltenVK tells it. It costs about 40 µs per KB once per
   shader (cached after). Ray tracing pipelines, which no Mac driver has, are refused. Needs the app
   update only (from the VM's next start); nothing in the VM.
 

@@ -1064,7 +1064,7 @@ refuse interface variables past the device's location limits
 it (`spirv-tools-val-catch-throws.patch`) asserts stay on and throw,
 exceptions are caught, a BuiltIn check no longer reads a missing type, and a
 CPU budget of 2 s stops its superlinear walks. Those refusals hold also in a log-only build. The slowest hostile
-module measured takes 2.03 s; real modules at most 3.6 ms. Ray tracing
+module measured takes 2.03 s; real modules at most 3.1 ms. Ray tracing
 pipelines are refused (no Mac driver has them).
 
 Still open: MoltenVK's own crash after a caught SPIRV-Cross error. Of the 127
