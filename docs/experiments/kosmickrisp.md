@@ -117,18 +117,18 @@ device (`VK_ERROR_DEVICE_LOST` on the Mac, Chrome's GPU process aborts). With th
 the X11 path with Mesa's software WSI copy, `MESA_VK_WSI_DEBUG=sw`).
 
 Known limit since #700 (Venus charges each pass to a per-program share): without the flag,
-every unrolled draw is a pass. On an 8 GB Mac the share is 1408 MB, and Aquarium at 5,000
-fish is refused within seconds (Mac mini M4, 1408 MB forced: Chromium's Vulkan context
-ended twice as the page loaded and a third time when it was reloaded about a minute later,
-each time at the 1408 MB share, with up to 5097 passes in one command buffer). Chromium's
-GPU process exits 3 times (a reload does not bring the page back), then Chromium draws
-without the GPU and gives no WebGL until it is started again. The page goes black and OmacVM shows
-"chromium stopped drawing". Chromium, the VM and the desktop keep running, QEMU stayed at
-or under 5033 MB with a 4 GB VM, and macOS memory pressure stayed normal. Chromium started
-again with the flag drew 30,000 fish at 45.4 fps in 316 MB. At 1,000 fish without the flag
-it runs (764 MB, 6.7 fps). On a 16 GB Mac the share is 2816 MB, on the 32 GB M1 Max 4096
-MB. There the same page took at least 2936 MB in 20 s and pushed the Mac to memory
-pressure warn (QEMU 9553 MB with a 4 GB VM).
+every unrolled draw is a pass. On an 8 GB Mac the share is 1408 MB. With that share Aquarium
+at 5,000 fish is refused within seconds (forced on a 16 GB Mac mini M4; no 8 GB Mac was run:
+Chromium's Vulkan context ended twice as the page loaded and a third time when it was
+reloaded about a minute later, each time at the 1408 MB share, with up to 5097 passes in one
+command buffer). Chromium's GPU process exits 3 times (a reload does not bring the page
+back), then Chromium draws without the GPU and gives no WebGL until it is started again. The
+page goes black and OmacVM shows "chromium stopped drawing". Chromium, the VM and the
+desktop keep running, QEMU stayed at or under 5033 MB with a 4 GB VM, and macOS memory
+pressure stayed normal. Chromium started again with the flag drew 30,000 fish at 45.4 fps in
+316 MB. At 1,000 fish without the flag it runs (764 MB, 6.7 fps). On a 16 GB Mac the share
+is 2816 MB, on the 32 GB M1 Max 4096 MB. There the same page took at least 2936 MB in 20 s
+and pushed the Mac to memory pressure warn (QEMU 9553 MB with a 4 GB VM).
 
 Stability: the conformance branch's `tests/graphics/soak.sh --vk --minutes 30` (with the
 Vulkan load pointed at the guest's Mesa through a `GPUENV` hook): vkmark over Venus on
