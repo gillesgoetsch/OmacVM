@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.23 (unreleased)
+## 3.2.23
 
 In OmacVM.app VMs with Graphics on Vulkan, QEMU now submits a Vulkan program's command buffers only in
 the state Vulkan allows, and counts its shader modules and pipeline caches by their size. Correct
