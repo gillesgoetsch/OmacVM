@@ -6,9 +6,12 @@ the shared budget. Charged: every object at a fixed estimate per type (event, qu
 pipeline, pipeline cache 20 KB; command pool 160 KB; command buffer 40 KB; descriptor
 pool 12 KB plus a byte per set; shader module, device memory, view, framebuffer, render
 pass 4 KB; image 2 KB; buffer, fence, semaphore, sampler, set 512 B; 1 KB the rest;
-a query pool 16 B more per query value; the estimate does not grow with the object: a
-shader module is 4 KB whatever its code, up to 4 MB, of which both drivers keep a copy,
-and a pipeline cache 20 KB whatever its initial data), and every recording: 512 B per
+a query pool 16 B more per query value, a shader module 2 B more per byte of its code
+(both drivers keep a copy, vkr its scan: real modules of 17-68 KB took 1.56-1.78 B per
+code byte on the mini's M4, 107-122 KB a module at 68 KB of code; the 4 KB covers small
+ones: 2644 B of code took 2.33-2.42 B per byte, 6.2-6.4 KB), a pipeline cache 1 B more
+per byte of its initial data (a cache made from a driver's own data reports as much
+data again: 2597 B on KosmicKrisp, 6570 B on MoltenVK)), and every recording: 512 B per
 command, an update's data x 1.5, a Metal pass or a draw that splits one
 (virgl-venus-encoder-cap.patch) 184 KB (a split draw measured up to 112941 B), on KosmicKrisp
 3 KB per fill and attachment clear and 40 KB per blit or resolve region. A command
@@ -41,7 +44,9 @@ command left 320 MB in the decoder, per context and ring, up to 1 GB each. Each 
 is at least what the M1 probes measured (work/v624-hostmem/kit/costs.py over the probe
 output, out/costs.txt). Device memory was charged right already (unchanged).
 Upstream: OmacVM policy; nothing posted.
-Tests: Tests/virgl/test-venus-commands.c (h-rec-, h-obj-, h-release-, h-heap, h-temp-big,
+Tests: Tests/virgl/test-venus-commands.c (h-rec-, h-obj- (h-obj-module-size reads
+spirv-corpus/pass/dxvk-d3d11-004.spv; h-obj-cache-size gives new caches the driver's
+own data of a cache), h-release-, h-heap, h-temp-big,
 h-zink-frame-ok; run-venus-limits.py runs h-rec-spare-ok, h-release-end and
 h-pass-secondary-ok under libgmalloc too).
 
@@ -726,6 +731,37 @@ index f5bd808..53af29a 100644
     }
  }
  
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 9893b76..aec8698 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -101,6 +101,11 @@ vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
+       return;
+    }
+    module->spirv = spirv;
++   /* OmacVM (virgl-venus-host-memory.patch): both drivers keep a copy of the code, vkr its
++    * scan; real modules took 107-122 KB each at 68 KB of code, 6.2-6.4 KB at 2.6 KB (M4):
++    * 2 bytes per code byte on top of the 4 KB every module has */
++   vkr_object_charge_more(ctx, &module->base, 2 * (uint64_t)args->pCreateInfo->codeSize,
++                          "vkCreateShaderModule");
+ }
+ 
+ void
+@@ -212,7 +217,13 @@ vkr_dispatch_vkDestroyPipelineLayout(struct vn_dispatch_context *dispatch,
+ vkr_dispatch_vkCreatePipelineCache(struct vn_dispatch_context *dispatch,
+                                    struct vn_command_vkCreatePipelineCache *args)
+ {
+-   vkr_pipeline_cache_create_and_add(dispatch->data, args);
++   struct vkr_pipeline_cache *cache = vkr_pipeline_cache_create_and_add(dispatch->data, args);
++   /* OmacVM (virgl-venus-host-memory.patch): a cache keeps what its initial data holds; one
++    * made from a driver's own data reports as much data again (2597 B on KosmicKrisp, 6570 B
++    * on MoltenVK, M4): 1 byte per byte of data on top of the 20 KB every cache has */
++   if (cache)
++      vkr_object_charge_more(dispatch->data, &cache->base,
++                             args->pCreateInfo->initialDataSize, "vkCreatePipelineCache");
+ }
+ 
+ static void
 diff --git a/src/venus/vkr_query_pool.c b/src/venus/vkr_query_pool.c
 index df26e0a..f1db188 100644
 --- a/src/venus/vkr_query_pool.c

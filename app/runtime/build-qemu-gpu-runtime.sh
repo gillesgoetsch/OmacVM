@@ -1808,8 +1808,10 @@ grep -q 'if (!vkr_cmd_weigh(dispatch, args->commandBuffer, weight, "vkCmdExecute
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-host-memory.patch"
 grep -q 'if (!vkr_cmd_cost(dispatch->data, _cmd, VKR_CMD_COST_BASE, "vk" #cmd_name))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'vkr_object_charge(ctx, obj); /\* OmacVM (virgl-venus-host-memory.patch) \*/' "$virgl_source/src/venus/vkr_context.h" && \
-  grep -q 'vkr_memory_heaps_clamp(&physical_dev->memory_properties);' "$virgl_source/src/venus/vkr_physical_device.c" || \
-  die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c: recordings and objects are not charged (host-memory patch)"
+  grep -q 'vkr_memory_heaps_clamp(&physical_dev->memory_properties);' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q 'vkr_object_charge_more(ctx, &module->base, 2 \* (uint64_t)args->pCreateInfo->codeSize,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'args->pCreateInfo->initialDataSize, "vkCreatePipelineCache");' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c, vkr_pipeline.c: recordings and objects are not charged (host-memory patch)"
 # Only an ended primary is submitted, and only while its secondaries are the recordings it
 # executed: MoltenVK encodes a secondary's current content at the submit (or the primary's
 # end with prefill), past the passes vkr weighed at the execute (#676).

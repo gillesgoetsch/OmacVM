@@ -1296,3 +1296,40 @@ reset, while the context lives) work. `s-submit-secondary`, `-recording` and
 get). With the patch all 11 pass on all 6 runs, and all 488 cases pass on
 the three drivers (4, 28 and 40 skipped, as on 3.2.22); 0 GPU Restart.
 
+## A shader module's charge by its code size (amendment, 3.2.23)
+
+Lane `venus-3223` (X3 of the 3.2.22 architecture review). The host-memory
+account charged a shader module 4 KB whatever its code, up to 4 MB, of which
+both drivers keep a copy and vkr its scan. A capped probe (work/venus-3223/kit/
+probe, phys_footprint inside the process, 512 MB) made N modules of one real
+corpus module through vkr's dispatch on the mini's M4 and kept them:
+
+| Module | Code | KosmicKrisp | MoltenVK | MoltenVK prefill |
+|---|---|---|---|---|
+| dxvk-d3d11-004 (x200) | 68496 B | 106906 B (1.56/B) | 121979 B (1.78/B) | 121651 B (1.78/B) |
+| dxvk-d3d11-009 (x500) | 17808 B | 30310 B (1.70/B) | 30442 B (1.71/B) | 30507 B (1.71/B) |
+| vkcube-frag (x1000) | 2644 B | 6160 B (2.33/B) | 6390 B (2.42/B) | 6308 B (2.39/B) |
+
+(bytes per module; per code byte in brackets). The same number of creates and
+destroys of one module left the footprint where it was on every driver.
+`virgl-venus-host-memory.patch` now charges a module 2 B per byte of its code
+on top of the 4 KB (68 KB of code: 141 KB; 2.6 KB: 9.3 KB), at least what
+each row took. `h-obj-module-size` (200 of the 68 KB module under an 8 MB
+account) works on main and is refused with the change; `h-obj-module-again-ok`
+(2000 creates and destroys) works on both. Small modules take more per code
+byte (2.33-2.42 at 2644 B), which the 4 KB covers (9384 B charged against
+6160-6390 B taken).
+
+A pipeline cache was 20 KB whatever its initial data. A cache made from a
+driver's own data (`vkGetPipelineCacheData` of a cache with a real compute
+pipeline) reports as much data again: 2597 B on KosmicKrisp, 6570 B on
+MoltenVK and MoltenVK prefill (lane `venus-3223`'s run). It now counts 1 B per
+byte of initial data on top of the 20 KB, back at its destroy.
+`h-obj-cache-size` gives 50 new caches the driver's data of a cache with 32
+pipelines (84673 B on KosmicKrisp, 6570 B on MoltenVK): 20480 B a cache before
+the change (the case fails), the data on top with it, all of it back after the
+destroys; `h-obj-cache-again-ok` (2000 creates and destroys under an 8 MB
+account) works on both. Not changed: pipelines that leave Metal libraries in a
+module (MoltenVK without a cache) or a cache stay uncharged until a probe
+measures them, repeats included.
+

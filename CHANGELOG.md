@@ -10,6 +10,10 @@ in more words.
   buffers whose secondary command buffers are still what they ran. A program that records one again after it was
   used, or submits one that is not finished, loses only its own Vulkan connection; Vulkan does not allow either, so
   correct programs never meet it. Needs the app update.
+- **A Vulkan program's shader modules and pipeline caches now count by their size (OmacVM.app, #707, see #624).**
+  With Graphics on Vulkan, QEMU counted every shader module as 4 KB of Mac memory, though the drivers keep its code
+  (up to 4 MB). It now counts 2 bytes per byte of code on top of that (real shaders of 17-68 KB took 1.56-1.78; the
+  4 KB covers small ones). A pipeline cache counts its initial data on top of its 20 KB. Needs the app update.
 
 ## 3.2.22
 
