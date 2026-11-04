@@ -1238,8 +1238,8 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop.patch"
   die "ui/cocoa.m: drag and drop is not wired as tested, or its rules fail (test-drop.sh)"
 # OmacVM, HDR (ADR 0049, amended): PQ frames ask macOS for the display's
 # headroom only while they show HDR (tagged 1x while SDR): an untagged PQ
-# layer raised an XDR panel to its most for SDR frames (a short bright flash
-# as white windows opened). The wiring checks must fail on the code before.
+# layer raised an XDR panel to its most for SDR frames (likely the short
+# bright flash as white windows opened). The wiring checks must fail on the code before.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-sdr-tag-logic.patch"
 "$native_dir/Tests/display/test-hdr-sdr-tag.sh" || \
   die "ui/omacvm-hdr-tag.h: the HDR tag rules or the peak shader fail (test-hdr-sdr-tag.sh)"
