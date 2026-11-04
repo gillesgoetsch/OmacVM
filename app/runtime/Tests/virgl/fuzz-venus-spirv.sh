@@ -29,6 +29,7 @@ echo "fuzz-venus-spirv: memory cap ${FUZZ_CAP_MB:-512} MB; an input past it goes
 rc=0
 FUZZ_CAP_OUT="$cap_out" "$work/fuzz-venus-spirv" "$@" || rc=$?
 if (( rc == 3 )); then
-  echo "FAIL: fuzz-venus-spirv went past its memory cap of ${FUZZ_CAP_MB:-512} MB; the input: $cap_out"
+  if [[ -s $cap_out ]]; then saved="the input: $cap_out"; else saved="no input was being scanned or walked"; fi
+  echo "FAIL: fuzz-venus-spirv went past its memory cap of ${FUZZ_CAP_MB:-512} MB; $saved"
 fi
 exit "$rc"

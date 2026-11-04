@@ -22,8 +22,8 @@
  *
  * On macOS the memory cap is inside the process (STANDARDS 14c): a thread reads
  * phys_footprint every 10 ms; past FUZZ_CAP_MB (default 512) it stops the main thread,
- * writes the input being scanned (if one is) to FUZZ_CAP_OUT (fuzz-venus-spirv.sh puts it
- * under TMPDIR) and ends the process with exit code 3.
+ * writes the input being scanned or walked (if one is) to FUZZ_CAP_OUT (fuzz-venus-spirv.sh
+ * puts it under TMPDIR) and ends the process with exit code 3.
  *
  * Seeds (shaderc v2026.4, spirv-tools v2026.4; spirv-val clean for vulkan1.3):
  *   spec10 / spec16: glslc -fshader-stage=comp --target-env=vulkan1.0 / vulkan1.3 -O0 of
@@ -297,23 +297,35 @@ check(bool ok, const char *what)
    }
 }
 
-/* the input being scanned, for the memory cap (which stops this thread before it reads it):
- * taken out before its free */
-static _Atomic(void *) cap_input;
+/* the input being scanned or walked, for the memory cap (which stops this thread before it
+ * reads it): taken out before its free */
+static _Atomic(const void *) cap_input;
 static _Atomic size_t cap_input_bytes;
 
+/* the input for the cap: NULL first, so a stop between the stores never pairs one input
+ * with another's size */
+static void
+cap_publish(const void *in, size_t bytes)
+{
+   atomic_store(&cap_input, NULL);
+   atomic_store(&cap_input_bytes, bytes);
+   atomic_store(&cap_input, in);
+}
+
 /* the scan of a copy in a heap block of exactly `bytes` bytes (reads past it fault; the copy
- * is freed after the scan, so a summary that kept a pointer into it faults too) */
+ * is freed after the scan, so a summary that kept a pointer into it faults too); the cap's
+ * input is the caller's again after it */
 static struct vkr_spirv_info *
 scan_copy(const uint32_t *words, size_t bytes, char *why, size_t why_size)
 {
+   const void *outer = atomic_load(&cap_input);
+   const size_t outer_bytes = atomic_load(&cap_input_bytes);
    void *copy = malloc(bytes ? bytes : 1);
    if (bytes)
       memcpy(copy, words, bytes);
-   atomic_store(&cap_input_bytes, bytes);
-   atomic_store(&cap_input, copy);
+   cap_publish(copy, bytes);
    struct vkr_spirv_info *info = vkr_spirv_scan(copy, bytes, why, why_size);
-   atomic_store(&cap_input, NULL);
+   cap_publish(outer, outer_bytes);
    free(copy);
    return info;
 }
@@ -710,12 +722,15 @@ part_mutations(uint32_t iterations)
       }
       char why[192];
       const size_t bytes = n * 4 - (pick(16) ? 0 : (n ? 1 + pick(3) : 0));
+      /* the input for the cap through the scan and the summary walks */
+      cap_publish(w, bytes);
       struct vkr_spirv_info *info = scan_copy(w, bytes, why, sizeof(why));
       if (info) {
          accepted++;
          use_summary(info);
          vkr_spirv_free(info);
       }
+      cap_publish(NULL, 0);
    }
    free(w);
    printf("mutations: %u, accepted %u, refused %u\n", iterations, accepted, iterations - accepted);
