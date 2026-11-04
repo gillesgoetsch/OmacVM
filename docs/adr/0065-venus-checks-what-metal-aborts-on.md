@@ -1269,8 +1269,20 @@ destroys of one module left the footprint where it was on every driver.
 on top of the 4 KB (68 KB of code: 141 KB; 2.6 KB: 9.3 KB), at least what
 each row took. `h-obj-module-size` (200 of the 68 KB module under an 8 MB
 account) works on main and is refused with the change; `h-obj-module-again-ok`
-(2000 creates and destroys) works on both. Not changed: a pipeline cache stays
-20 KB whatever its initial data, and pipelines that leave Metal libraries in a
+(2000 creates and destroys) works on both. Small modules take more per code
+byte (2.33-2.42 at 2644 B), which the 4 KB covers (9384 B charged against
+6160-6390 B taken).
+
+A pipeline cache was 20 KB whatever its initial data. A cache made from a
+driver's own data (`vkGetPipelineCacheData` of a cache with a real compute
+pipeline) reports as much data again: 2597 B on KosmicKrisp, 6570 B on
+MoltenVK and MoltenVK prefill (lane `venus-3223`'s run). It now counts 1 B per
+byte of initial data on top of the 20 KB, back at its destroy.
+`h-obj-cache-size` gives 50 new caches the driver's data of a cache with 32
+pipelines (84673 B on KosmicKrisp, 6570 B on MoltenVK): 20480 B a cache before
+the change (the case fails), the data on top with it, all of it back after the
+destroys; `h-obj-cache-again-ok` (2000 creates and destroys under an 8 MB
+account) works on both. Not changed: pipelines that leave Metal libraries in a
 module (MoltenVK without a cache) or a cache stay uncharged until a probe
 measures them, repeats included.
 
