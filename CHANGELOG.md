@@ -5,8 +5,8 @@ in more words.
 
 ## 3.4.5 (unreleased)
 
-- **With HDR on, an HDR screen no longer jumps to full brightness while the VM shows only normal (SDR)
-  pictures (OmacVM.app).** The user reported a flash of full brightness for a split second when opening Chrome
+- **With HDR on, QEMU asks macOS for 1x while the VM shows only normal (SDR) pictures, so an HDR screen
+  should no longer jump to full brightness (OmacVM.app).** The user reported a flash of full brightness for a split second when opening Chrome
   or other apps on an HDR screen, with Extra brightness off. QEMU showed the VM's HDR frames without saying how
   much brightness they need, so macOS gave the screen its full HDR headroom (up to 16x on a MacBook Pro's XDR
   screen) whenever the VM showed; that is the likely cause (the VM's own pictures were clean). Now QEMU looks at
