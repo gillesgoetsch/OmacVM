@@ -1,0 +1,25 @@
+stage vert
+entry main
+bind 2 0 6 1
+bind 2 1 6 1
+bind 2 2 7 1
+bind 3 0 6 1
+vin 0 4 f
+vin 1 4 f
+vin 2 4 f
+vin 3 4 f
+vin 4 4 f
+vin 5 4 f
+vin 6 4 f
+vin 7 4 f
+vin 8 4 f
+vin 9 4 f
+vin 10 4 f
+vin 11 4 f
+vin 12 4 f
+vin 13 4 f
+vin 14 1 f
+vin 15 1 f
+vin 16 4 f
+vin 17 4 f
+push 128

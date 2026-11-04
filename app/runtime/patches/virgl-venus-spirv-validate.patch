@@ -1,0 +1,784 @@
+virglrenderer: Venus validates guest SPIR-V with SPIRV-Tools after the scan
+
+What: a shader module (vkCreateShaderModule) and SPIR-V chained into a
+pipeline stage go through spirv-val after vkr_spirv_scan, before the driver
+sees them (src/venus/vkr_spirv_validate.c). The target follows the device, not
+the app: its Vulkan version as vkr reports it (vulkan1.1spv1.4 on a 1.1 device
+with VK_KHR_spirv_1_4) and the block layouts and modes its features allow
+(scalar, standard uniform, scalar workgroup, LocalSizeId, relaxed), so code the
+device runs passes. That version is the one the guest's driver tells the app:
+KosmicKrisp reports its own, MoltenVK the instance's (at least 1.1, as vkr
+creates it), so on MoltenVK an app that asks for 1.0 or 1.1 is told 1.1 and its
+SPIR-V is validated as Vulkan 1.1's (up to SPIR-V 1.4). Before spirv-val reads
+a module, it is refused unread when it is past 4 MiB, when its types cost more
+than 2^24 (vkr_spirv.h,
+VKR_SPIRV_MAX_TYPE_COST), or when an Input or Output variable of an entry
+point takes more locations than the device's limits give its stage
+(maxVertexInputAttributes, the component limits / 4,
+maxFragmentOutputAttachments; VUID-RuntimeSpirv-Location-06272; a stage the
+device lacks, as MoltenVK's geometry stage, keeps Vulkan's minimum); a pipeline
+checks the locations again after specialization. spirv-val itself runs through
+omacvmValidateWithOptions (spirv-tools-val-catch-throws.patch): a failed
+assert, an exception or 2 s of CPU in it is a refusal, not the end of QEMU or a
+stalled ring. Modules that passed are kept by the SHA-256 of target and code in
+a bounded LRU cache (4096 entries, one mutex for all contexts; the validator
+runs outside it); refusals are not kept. A refusal ends the app's context with
+the first reason (VKR_SPIRV_VALIDATE_ENFORCE 0 at build time: spirv-val's
+refusals are only logged, one line per module; the refusals before it stay).
+A pipeline stage's Function and Private variables may hold at most 2^20
+elements after specialization (arrays of arrays multiplied, struct members
+added; a length from a spec constant operation is refused), and its Workgroup
+variables at most maxComputeSharedMemorySize bytes (VUID-RuntimeSpirv-
+Workgroup-06530; their sum without padding, the largest Block one when that
+is more, a length from a spec constant operation counted once), both over all
+of the module's variables, not only the entry point's. vkCreateRayTracingPipelinesKHR
+ends the context and VK_KHR_ray_tracing_pipeline is no longer offered: its
+stages would reach the driver unchecked (neither Mac driver has it). qemu.log
+names the target once per Vulkan version.
+Why: of 900 modules fed to KosmicKrisp and MoltenVK on an M4 (compile only),
+138 ended the process or hung the driver; the scan alone refused 72 of them,
+spirv-val 65 of the other 66, the element cap the last one (an unused
+uint[2^32-1], legal SPIR-V, took KosmicKrisp's nir_split_array_vars to 9 GB;
+2^20 elements peaked at 480 MB in 0.5 s, 2^24 passed 2 GB in 2.4 s). A
+Private or Workgroup uint[2^32-1] passed the scan and spirv-val too (Private
+arrays were measured on the drivers only up to 2^24); real modules hold at
+most 406 elements and 8192 Workgroup bytes (Dawn's matmul). The scan
+stays first: it refuses two crash modules spirv-val accepts and costs 0.6 us a
+module against spirv-val's 92 us (median of 126 real modules, 4.2 ms the
+slowest; 52 us per KB). spirv-val on hostile input (CPU only, each run capped
+at 512 MB inside the process): a 304-byte module with an Input struct of
+uint[2^32-1] took it past 512 MB (location tracking per element; 7 of 7 fuzz
+seeds found that class within seconds), a struct of two of the previous one 30
+deep past 20 s, 1000 nested loops (88 KB) 53 s; with the checks above the
+slowest of 118 such modules took 2.03 s (a chain of 262118 blocks, stopped at
+2 s). valfuzz (one process, 10 minutes, capped at 512 MB inside it) found one
+more crash in spirv-val on the final checks (seed 104: a BuiltIn untyped
+variable, spirv-tools-val-catch-throws.patch); after its fix seed 104 again
+(134.9 million mutants, 13.4 million through the scan) hit no cap and no
+crash. Real modules cost at most 17002 and take at most 3.1 ms. With the final checks on the CPU, the 90 real modules of the CPU
+test's corpus (and their 16 paired vertex shaders) and vkd3d-proton 3.1's 42
+pass for both drivers' targets; under a 1.0 or 1.1 app on MoltenVK the 37
+past SPIR-V 1.4 are refused. Earlier, spirv-val alone on 126 real modules:
+vulkan1.3 defaults refused 5 (DXVK's d3d9 and vkd3d-proton use scalar
+layouts), a vulkan1.2 target 71 SPIR-V 1.6 modules.
+Upstream: OmacVM policy, not for upstream as is (it needs SPIRV-Tools).
+Tests: Tests/virgl/test-venus-spirv-validate.sh (the CPU alone, also under
+AddressSanitizer, each module under a 512 MB footprint cap, for KosmicKrisp,
+MoltenVK and MoltenVK under a 1.1 app: real modules pass, the crash and
+hostile modules are refused, the cache, the targets, the Function and Private
+element count, the Workgroup bytes, the interface locations per stage, the
+type cost),
+Tests/virgl/fuzz-venus-spirv.sh (the element count, the Workgroup bytes and
+the interface check under the sanitizers). Hostile modules never reach a real driver in a test
+(STANDARDS 14b).
+
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -364,6 +364,9 @@
+    else
+       venus_dep = dependency('vulkan')
+    endif
++   # OmacVM (virgl-venus-spirv-validate.patch): SPIRV-Tools' validator, a static library
++   # built with hidden symbols (the runtime build writes this .pc)
++   venus_dep += dependency('omacvm-spirv-tools')
+ 
+    if host_machine.system() in ['freebsd', 'openbsd']
+       # When building for FreeBSD, epoll(7) is provided by a userspace
+diff --git a/src/meson.build b/src/meson.build
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -86,6 +86,7 @@
+    'venus/vkr_queue.c',
+    'venus/vkr_render_pass.c',
+    'venus/vkr_spirv.c',
++   'venus/vkr_spirv_validate.c',
+    'venus/vkr_renderer.c',
+    'venus/vkr_ring.c',
+    'venus/vkr_transport.c',
+diff --git a/src/venus/vkr_common.c b/src/venus/vkr_common.c
+--- a/src/venus/vkr_common.c
++++ b/src/venus/vkr_common.c
+@@ -125,7 +125,8 @@
+    .KHR_pipeline_library = true,
+    .KHR_ray_query = true,
+    .KHR_ray_tracing_maintenance1 = true,
+-   .KHR_ray_tracing_pipeline = true,
++   /* OmacVM (virgl-venus-spirv-validate.patch): its shaders are not checked */
++   .KHR_ray_tracing_pipeline = false,
+    .KHR_ray_tracing_position_fetch = true,
+    .KHR_robustness2 = true,
+    .KHR_shader_bfloat16 = true,
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -531,7 +531,116 @@
+    l->kosmickrisp = driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP;
+    if (driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP)
+       l->multiview_views = MIN2(l->multiview_views, vkr_metal_max_vertex_amplification());
++
++}
++
++/* OmacVM (virgl-venus-spirv-validate.patch): the target guest SPIR-V is validated for. The
++ * device's Vulkan version as vkr reports it, which is the version the guest's driver tells
++ * the app (Mesa's Venus caps it; only VK_VERSION_OVERRIDE raises it), VK_KHR_spirv_1_4 on
++ * 1.1, the layouts and modes the device's features allow, not the ones an app enabled: a
++ * module the device runs passes, so a sloppy app that works on the driver keeps working
++ * (DXVK's d3d9 shaders use scalar layout), and the validator still refuses what neither
++ * driver can take. KosmicKrisp reports its own version whatever the instance asked (an app
++ * asking for 1.0 may still send SPIR-V 1.6); MoltenVK reports the instance's (MVKDevice.mm),
++ * at least 1.1 as vkr creates it, so there an app asking for 1.0 or 1.1 is told 1.1 and its
++ * SPIR-V is validated as Vulkan 1.1's (up to 1.4 with VK_KHR_spirv_1_4). */
++static void
++vkr_physical_device_init_spirv_target(struct vkr_physical_device *physical_dev)
++{
++   struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
++   VkPhysicalDevice handle = physical_dev->base.handle.physical_device;
++   const uint32_t version = physical_dev->properties.apiVersion;
++
++   VkPhysicalDeviceVulkan12Features f12 = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
++   };
++   VkPhysicalDeviceScalarBlockLayoutFeatures scalar = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES,
++   };
++   VkPhysicalDeviceUniformBufferStandardLayoutFeatures std_layout = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES,
++   };
++   VkPhysicalDeviceMaintenance4Features m4 = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES,
++   };
++   VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR wg = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR,
++   };
++   VkPhysicalDeviceFeatures2 f2 = {
++      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
++   };
++   void **tail = &f2.pNext;
++   if (version >= VK_API_VERSION_1_2) {
++      *tail = &f12;
++      tail = &f12.pNext;
++   } else {
++      if (vkr_physical_device_lists(physical_dev, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME)) {
++         *tail = &scalar;
++         tail = &scalar.pNext;
++      }
++      if (vkr_physical_device_lists(physical_dev,
++                                    VK_KHR_UNIFORM_BUFFER_STANDARD_LAYOUT_EXTENSION_NAME)) {
++         *tail = &std_layout;
++         tail = &std_layout.pNext;
++      }
++   }
++   if (version >= VK_API_VERSION_1_3 ||
++       vkr_physical_device_lists(physical_dev, VK_KHR_MAINTENANCE_4_EXTENSION_NAME)) {
++      *tail = &m4;
++      tail = &m4.pNext;
++   }
++   if (vkr_physical_device_lists(physical_dev,
++                                 VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME)) {
++      *tail = &wg;
++      tail = &wg.pNext;
++   }
++   vk->GetPhysicalDeviceFeatures2(handle, &f2);
++
++   /* VK_KHR_relaxed_block_layout is core from 1.1, the oldest version vkr runs on */
++   uint32_t options = VKR_SPIRV_RELAXED_LAYOUT;
++   if (f12.scalarBlockLayout || scalar.scalarBlockLayout)
++      options |= VKR_SPIRV_SCALAR_LAYOUT;
++   if (f12.uniformBufferStandardLayout || std_layout.uniformBufferStandardLayout)
++      options |= VKR_SPIRV_STD_UNIFORM_LAYOUT;
++   if (m4.maintenance4)
++      options |= VKR_SPIRV_LOCAL_SIZE_ID;
++   if (wg.workgroupMemoryExplicitLayoutScalarBlockLayout)
++      options |= VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT;
++   physical_dev->spirv_target_ok = vkr_spirv_target_init(
++      &physical_dev->spirv_target, version,
++      vkr_physical_device_lists(physical_dev, VK_KHR_SPIRV_1_4_EXTENSION_NAME), options);
++   /* interface variables may take the locations the device's limits give (a component
++    * limit / 4), checked before spirv-val, whose walk over them grows with them. A stage the
++    * device lacks keeps Vulkan's minimum (vkr_spirv_target_init): MoltenVK has no geometry
++    * shaders (0 components), and vkd3d-proton's geometry module would else end its context
++    * at vkCreateShaderModule */
++   const VkPhysicalDeviceLimits *l = &physical_dev->properties.limits;
++   struct vkr_spirv_io_limits *io = &physical_dev->spirv_target.io;
++   io->vertex_in = MAX2(io->vertex_in, l->maxVertexInputAttributes);
++   io->vertex_out = MAX2(io->vertex_out, l->maxVertexOutputComponents / 4);
++   io->tess_control_in =
++      MAX2(io->tess_control_in, l->maxTessellationControlPerVertexInputComponents / 4);
++   io->tess_control_out =
++      MAX2(io->tess_control_out, l->maxTessellationControlPerVertexOutputComponents / 4);
++   io->tess_control_patch_out =
++      MAX2(io->tess_control_patch_out, l->maxTessellationControlPerPatchOutputComponents / 4);
++   io->tess_eval_in = MAX2(io->tess_eval_in, l->maxTessellationEvaluationInputComponents / 4);
++   io->tess_eval_out = MAX2(io->tess_eval_out, l->maxTessellationEvaluationOutputComponents / 4);
++   io->geometry_in = MAX2(io->geometry_in, l->maxGeometryInputComponents / 4);
++   io->geometry_out = MAX2(io->geometry_out, l->maxGeometryOutputComponents / 4);
++   io->fragment_in = MAX2(io->fragment_in, l->maxFragmentInputComponents / 4);
++   io->fragment_out = MAX2(io->fragment_out, l->maxFragmentOutputAttachments);
+ 
++   /* once per process and Vulkan version (MoltenVK's follows the app): which target, and
++    * whether a refusal ends the app's context */
++   static atomic_uint_fast64_t logged;
++   const uint64_t bit = (uint64_t)1 << (physical_dev->spirv_target.env & 63);
++   if (physical_dev->spirv_target_ok && !(atomic_fetch_or(&logged, bit) & bit)) {
++      char text[128];
++      vkr_spirv_target_text(&physical_dev->spirv_target, text, sizeof(text));
++      vkr_log("guest SPIR-V is validated for %s (%s)", text,
++              VKR_SPIRV_VALIDATE_ENFORCE ? "a refusal ends the app's context" : "log-only");
++   }
+ }
+ 
+ static void
+@@ -713,6 +822,7 @@
+       vkr_physical_device_init_extensions(physical_dev);
+       vkr_physical_device_init_missing_entries(physical_dev);
+       vkr_physical_device_init_limits(physical_dev);
++      vkr_physical_device_init_spirv_target(physical_dev);
+       vkr_physical_device_init_memory_properties(physical_dev);
+       vkr_physical_device_init_id_properties(physical_dev);
+       vkr_physical_device_init_queue_family_properties(physical_dev);
+diff --git a/src/venus/vkr_physical_device.h b/src/venus/vkr_physical_device.h
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -8,6 +8,7 @@
+ 
+ #include "vkr_common.h"
+ #include "vkr_limits.h"
++#include "vkr_spirv_validate.h"
+ 
+ #include "venus-protocol/vn_protocol_renderer_util.h"
+ 
+@@ -20,6 +21,9 @@
+    /* OmacVM (virgl-venus-command-limits.patch): limits and features beyond properties */
+    struct vkr_limits limits;
+    uint32_t api_version;
++   /* OmacVM (virgl-venus-spirv-validate.patch): what guest SPIR-V is validated for */
++   struct vkr_spirv_target spirv_target;
++   bool spirv_target_ok;
+ 
+    VkExtensionProperties *extensions;
+    uint32_t extension_count;
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -10,7 +10,39 @@
+ #include "vkr_physical_device.h"
+ #include "vkr_render_pass.h"
+ #include "vkr_spirv.h"
++#include "vkr_spirv_validate.h"
+ 
++/* OmacVM (virgl-venus-spirv-validate.patch): SPIR-V the scan passed, through spirv-val for
++ * the device (vkr_spirv_validate.h). False with why set when it is refused; with
++ * VKR_SPIRV_VALIDATE_ENFORCE 0 a refusal is only logged (one line per module, up to 256,
++ * then the 512th, 1024th ...) and the module goes on. */
++static bool
++vkr_spirv_valid(const struct vkr_physical_device *physical_dev,
++                const struct vkr_spirv_info *spirv,
++                const uint32_t *code,
++                size_t bytes,
++                char *why,
++                size_t why_size)
++{
++   bool unsafe = false;
++   if (!physical_dev->spirv_target_ok) {
++      snprintf(why, why_size, "no SPIR-V target for Vulkan 0x%x",
++               physical_dev->properties.apiVersion);
++   } else if (vkr_spirv_validate(&physical_dev->spirv_target, spirv, code, bytes, why, why_size,
++                                 &unsafe)) {
++      return true;
++   }
++   /* what spirv-val could not safely read is refused also when refusals are logged */
++   if (VKR_SPIRV_VALIDATE_ENFORCE || unsafe)
++      return false;
++   static atomic_uint_fast64_t logged;
++   const uint64_t n = atomic_fetch_add(&logged, 1) + 1;
++   if (n <= 256 || !(n & (n - 1)))
++      vkr_log("SPIR-V of %zu bytes passed on, though not valid (log-only, %" PRIu64 " so far): %s",
++              bytes, n, why);
++   return true;
++}
++
+ static void
+ vkr_dispatch_vkCreateShaderModule(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCreateShaderModule *args)
+@@ -51,6 +83,15 @@
+    struct vkr_spirv_info *spirv =
+       vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));
+    if (!spirv) {
++      vkr_context_refuse(ctx, true, "vkCreateShaderModule", "%s", why);
++      return;
++   }
++   /* then the validator (virgl-venus-spirv-validate.patch): the scan let through 66 modules
++    * that ended QEMU in the Mac's compilers */
++   const struct vkr_device *dev = vkr_device_from_handle(args->device);
++   if (!vkr_spirv_valid(dev->physical_device, spirv, args->pCreateInfo->pCode,
++                        args->pCreateInfo->codeSize, why, sizeof(why))) {
++      vkr_spirv_free(spirv);
+       vkr_context_refuse(ctx, true, "vkCreateShaderModule", "%s", why);
+       return;
+    }
+@@ -542,13 +583,48 @@
+       own = vkr_spirv_scan(code->pCode, code->codeSize, why, why_size);
+       if (!own)
+          return false;
++      /* OmacVM (virgl-venus-spirv-validate.patch): and the validator, as in
++       * vkCreateShaderModule */
++      if (!vkr_spirv_valid(physical_dev, own, code->pCode, code->codeSize, why, why_size)) {
++         vkr_spirv_free(own);
++         return false;
++      }
+       spirv = own;
+    }
+    bool ok = false;
+    const struct vkr_spirv_entry *entry = vkr_spirv_entry(spirv, st->pName, vkr_stage_model(st->stage));
+    uint32_t size[3];
++   /* OmacVM (virgl-venus-spirv-validate.patch): KosmicKrisp splits an unused Function array
++    * into a variable per element; legal SPIR-V took it to 9 GB. Private variables count with
++    * them; Workgroup ones may take maxComputeSharedMemorySize (VUID-RuntimeSpirv-Workgroup-
++    * 06530), all of the module's, not only the entry point's */
++   uint64_t elements = 0, shared = 0;
++   const bool counted = spirv && vkr_spirv_function_elements(spirv, vkr_spec_lookup,
++                                                             st->pSpecializationInfo, &elements);
++   const bool sized = spirv && vkr_spirv_workgroup_bytes(spirv, vkr_spec_lookup,
++                                                         st->pSpecializationInfo, &shared);
+    if (!spirv) {
+       snprintf(why, why_size, "stage 0x%x: a shader module without its scan", st->stage);
++   } else if (!counted) {
++      snprintf(why, why_size,
++               "stage 0x%x: Function or Private variables of a size the scan cannot know (an "
++               "array length from a spec constant operation, or types nested past 64 levels)",
++               st->stage);
++   } else if (elements > VKR_SPIRV_MAX_FUNCTION_ELEMENTS) {
++      snprintf(why, why_size,
++               "stage 0x%x: Function and Private variables of %" PRIu64 " elements (at most %u)",
++               st->stage, elements, VKR_SPIRV_MAX_FUNCTION_ELEMENTS);
++   } else if (!sized) {
++      snprintf(why, why_size,
++               "stage 0x%x: Workgroup variables of types nested past 64 levels", st->stage);
++   } else if (shared > lim->maxComputeSharedMemorySize) {
++      snprintf(why, why_size,
++               "stage 0x%x: Workgroup variables of %" PRIu64
++               " bytes or more (maxComputeSharedMemorySize %u)",
++               st->stage, shared, lim->maxComputeSharedMemorySize);
++   } else if (!vkr_spirv_interface_ok(spirv, &physical_dev->spirv_target.io, vkr_spec_lookup,
++                                      st->pSpecializationInfo, why, why_size)) {
++      /* the interface after the stage's specialization (a module was checked without) */
+    } else if (!entry) {
+       snprintf(why, why_size, "stage 0x%x: no entry point \"%.64s\" for the stage", st->stage,
+                st->pName);
+@@ -1015,15 +1091,12 @@
+    struct vn_command_vkCreateRayTracingPipelinesKHR *args)
+ {
+    TRACE_FUNC();
+-   struct vkr_context *ctx = dispatch->data;
+-   struct vkr_device *dev = vkr_device_from_handle(args->device);
+-   struct object_array arr;
+-
+-   if (vkr_ray_tracing_pipeline_create_array(ctx, args, &arr) < VK_SUCCESS)
+-      return;
+-
+-   vkr_pipeline_set_bind_point(&arr, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
+-   vkr_pipeline_add_array(ctx, dev, &arr, args->pPipelines);
++   /* OmacVM (virgl-venus-spirv-validate.patch): ray tracing stages would reach the driver
++    * without the scan, the validator and the pipeline checks; neither Mac driver has
++    * VK_KHR_ray_tracing_pipeline and vkr no longer offers it, so the call ends the context */
++   (void)args;
++   vkr_context_refuse(dispatch->data, true, "vkCreateRayTracingPipelinesKHR",
++                      "ray tracing shaders are not checked");
+ }
+ 
+ static void
+diff --git a/src/venus/vkr_spirv_validate.c b/src/venus/vkr_spirv_validate.c
+--- /dev/null
++++ b/src/venus/vkr_spirv_validate.c
+@@ -0,0 +1,294 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-spirv-validate.patch): see vkr_spirv_validate.h. The cache keeps the
++ * SHA-256 of (target, code) of modules that passed: CACHE_SIZE entries in a fixed array,
++ * chained by hash in BUCKETS lists and kept in least-recently-used order in a second list,
++ * so a lookup, an insert and an eviction cost O(1) and the cache never grows. Refusals are
++ * not kept (a refused module ends its context). The validator runs outside the lock. */
++
++#include "vkr_spirv_validate.h"
++
++#include <CommonCrypto/CommonDigest.h>
++#include <inttypes.h>
++#include <pthread.h>
++#include <spirv-tools/libspirv.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "vkr_spirv.h"
++
++#define CACHE_SIZE 4096
++#define BUCKETS 4096 /* a power of two */
++#define NONE UINT16_MAX
++
++struct entry {
++   uint8_t key[CC_SHA256_DIGEST_LENGTH];
++   uint16_t chain;      /* the next entry of its bucket */
++   uint16_t prev, next; /* the LRU list, most recent first */
++};
++
++static struct {
++   pthread_mutex_t lock;
++   struct entry entries[CACHE_SIZE];
++   uint16_t buckets[BUCKETS];
++   uint16_t head, tail; /* most and least recently used */
++   uint32_t count;
++   uint64_t hits, misses, evictions;
++   bool ready;
++} cache = { .lock = PTHREAD_MUTEX_INITIALIZER };
++
++bool
++vkr_spirv_target_init(struct vkr_spirv_target *target,
++                      uint32_t api_version,
++                      bool spirv_1_4,
++                      uint32_t options)
++{
++   /* VK_API_VERSION_MAJOR/MINOR without the variant */
++   const uint32_t major = (api_version >> 22) & 0x7f, minor = (api_version >> 12) & 0x3ff;
++   spv_target_env env;
++   /* Vulkan's required minimums (maxVertexInputAttributes 16, 64 components, 120 per patch,
++    * maxFragmentOutputAttachments 4) until the device sets its own */
++   target->io = (struct vkr_spirv_io_limits){ 16, 16, 16, 16, 30, 16, 16, 16, 16, 16, 4 };
++   if (major != 1 || minor < 1)
++      return false;
++   if (minor == 1)
++      env = spirv_1_4 ? SPV_ENV_VULKAN_1_1_SPIRV_1_4 : SPV_ENV_VULKAN_1_1;
++   else if (minor == 2)
++      env = SPV_ENV_VULKAN_1_2;
++   else if (minor == 3)
++      env = SPV_ENV_VULKAN_1_3;
++   else
++      env = SPV_ENV_VULKAN_1_4;
++   target->env = env;
++   target->options = options;
++   return true;
++}
++
++void
++vkr_spirv_target_text(const struct vkr_spirv_target *target, char *out, size_t out_size)
++{
++   static const char *const names[] = { "scalar", "std", "workgroup-scalar", "local-size-id",
++                                         "relaxed" };
++   size_t n = (size_t)snprintf(out, out_size, "%s", spvTargetEnvDescription(target->env));
++   for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]) && n < out_size; i++) {
++      if (target->options & (1u << i))
++         n += (size_t)snprintf(out + n, out_size - n, " %s", names[i]);
++   }
++}
++
++static void
++cache_init_locked(void)
++{
++   if (cache.ready)
++      return;
++   memset(cache.entries, 0, sizeof(cache.entries));
++   for (unsigned i = 0; i < BUCKETS; i++)
++      cache.buckets[i] = NONE;
++   cache.head = cache.tail = NONE;
++   cache.count = 0;
++   cache.ready = true;
++}
++
++static uint32_t
++bucket_of(const uint8_t *key)
++{
++   uint32_t b;
++   memcpy(&b, key, sizeof(b));
++   return b & (BUCKETS - 1);
++}
++
++static void
++lru_unlink(uint16_t i)
++{
++   struct entry *e = &cache.entries[i];
++   if (e->prev != NONE)
++      cache.entries[e->prev].next = e->next;
++   else
++      cache.head = e->next;
++   if (e->next != NONE)
++      cache.entries[e->next].prev = e->prev;
++   else
++      cache.tail = e->prev;
++}
++
++static void
++lru_push_front(uint16_t i)
++{
++   struct entry *e = &cache.entries[i];
++   e->prev = NONE;
++   e->next = cache.head;
++   if (cache.head != NONE)
++      cache.entries[cache.head].prev = i;
++   cache.head = i;
++   if (cache.tail == NONE)
++      cache.tail = i;
++}
++
++static bool
++cache_lookup(const uint8_t *key)
++{
++   pthread_mutex_lock(&cache.lock);
++   cache_init_locked();
++   bool hit = false;
++   for (uint16_t i = cache.buckets[bucket_of(key)]; i != NONE; i = cache.entries[i].chain) {
++      if (!memcmp(cache.entries[i].key, key, CC_SHA256_DIGEST_LENGTH)) {
++         lru_unlink(i);
++         lru_push_front(i);
++         hit = true;
++         break;
++      }
++   }
++   if (hit)
++      cache.hits++;
++   else
++      cache.misses++;
++   pthread_mutex_unlock(&cache.lock);
++   return hit;
++}
++
++static void
++cache_insert(const uint8_t *key)
++{
++   pthread_mutex_lock(&cache.lock);
++   cache_init_locked();
++   const uint32_t b = bucket_of(key);
++   /* another thread may have validated the same module meanwhile */
++   for (uint16_t i = cache.buckets[b]; i != NONE; i = cache.entries[i].chain) {
++      if (!memcmp(cache.entries[i].key, key, CC_SHA256_DIGEST_LENGTH)) {
++         pthread_mutex_unlock(&cache.lock);
++         return;
++      }
++   }
++   uint16_t slot;
++   if (cache.count < CACHE_SIZE) {
++      slot = (uint16_t)cache.count++;
++   } else {
++      /* the least recently used one goes: out of its bucket's chain and the list */
++      slot = cache.tail;
++      struct entry *old = &cache.entries[slot];
++      uint16_t *p = &cache.buckets[bucket_of(old->key)];
++      while (*p != slot)
++         p = &cache.entries[*p].chain;
++      *p = old->chain;
++      lru_unlink(slot);
++      cache.evictions++;
++   }
++   struct entry *e = &cache.entries[slot];
++   memcpy(e->key, key, CC_SHA256_DIGEST_LENGTH);
++   e->chain = cache.buckets[b];
++   cache.buckets[b] = slot;
++   lru_push_front(slot);
++   pthread_mutex_unlock(&cache.lock);
++}
++
++void
++vkr_spirv_cache_stats(struct vkr_spirv_cache_stats *stats)
++{
++   pthread_mutex_lock(&cache.lock);
++   stats->hits = cache.hits;
++   stats->misses = cache.misses;
++   stats->evictions = cache.evictions;
++   stats->entries = cache.count;
++   pthread_mutex_unlock(&cache.lock);
++}
++
++void
++vkr_spirv_cache_reset(void)
++{
++   pthread_mutex_lock(&cache.lock);
++   cache.ready = false;
++   cache_init_locked();
++   cache.hits = cache.misses = cache.evictions = 0;
++   pthread_mutex_unlock(&cache.lock);
++}
++
++static spv_validator_options
++options_for(const struct vkr_spirv_target *target)
++{
++   spv_validator_options o = spvValidatorOptionsCreate();
++   if (!o)
++      return NULL;
++   const uint32_t f = target->options;
++   spvValidatorOptionsSetScalarBlockLayout(o, f & VKR_SPIRV_SCALAR_LAYOUT);
++   spvValidatorOptionsSetUniformBufferStandardLayout(o, f & VKR_SPIRV_STD_UNIFORM_LAYOUT);
++   spvValidatorOptionsSetWorkgroupScalarBlockLayout(o, f & VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT);
++   spvValidatorOptionsSetAllowLocalSizeId(o, f & VKR_SPIRV_LOCAL_SIZE_ID);
++   spvValidatorOptionsSetRelaxBlockLayout(o, f & VKR_SPIRV_RELAXED_LAYOUT);
++   /* the same bound as the scan (spirv-val's own is 4M ids) */
++   spvValidatorOptionsSetUniversalLimit(o, spv_validator_limit_max_id_bound, VKR_SPIRV_MAX_BOUND);
++   /* names only matter in messages; without them no pass over OpName */
++   spvValidatorOptionsSetFriendlyNames(o, false);
++   return o;
++}
++
++bool
++vkr_spirv_validate(const struct vkr_spirv_target *target,
++                   const struct vkr_spirv_info *info,
++                   const uint32_t *code,
++                   size_t bytes,
++                   char *why,
++                   size_t why_size,
++                   bool *unsafe)
++{
++   bool ignored;
++   unsafe = unsafe ? unsafe : &ignored;
++   *unsafe = true;
++   if (bytes > VKR_SPIRV_MAX_CODE_SIZE) {
++      snprintf(why, why_size, "SPIR-V of %zu bytes (at most %u)", bytes, VKR_SPIRV_MAX_CODE_SIZE);
++      return false;
++   }
++   if (info->type_cost > VKR_SPIRV_MAX_TYPE_COST) {
++      snprintf(why, why_size, "SPIR-V: types too costly to validate (%" PRIu64 ", at most %u)",
++               info->type_cost, VKR_SPIRV_MAX_TYPE_COST);
++      return false;
++   }
++   /* the key: target first (fixed size), then the code */
++   uint8_t key[CC_SHA256_DIGEST_LENGTH];
++   CC_SHA256_CTX sha;
++   CC_SHA256_Init(&sha);
++   CC_SHA256_Update(&sha, target, sizeof(*target));
++   CC_SHA256_Update(&sha, code, (CC_LONG)bytes);
++   CC_SHA256_Final(key, &sha);
++   if (cache_lookup(key))
++      return true;
++   /* spirv-val's walk over interface locations grows with them: the device's limits first */
++   if (!vkr_spirv_interface_ok(info, &target->io, NULL, NULL, why, why_size))
++      return false;
++
++   spv_context ctx = spvContextCreate(target->env);
++   spv_validator_options opt = ctx ? options_for(target) : NULL;
++   if (!opt) {
++      if (ctx)
++         spvContextDestroy(ctx);
++      snprintf(why, why_size, "SPIR-V validator: out of host memory");
++      return false;
++   }
++   *unsafe = false;
++   spv_const_binary_t binary = { code, bytes / 4 };
++   spv_diagnostic diag = NULL;
++   /* spirv-tools-val-catch-throws.patch: an exception inside (an at() past the end, out of
++    * memory) is SPV_ERROR_INTERNAL, not the end of QEMU */
++   const spv_result_t r = omacvmValidateWithOptions(ctx, opt, &binary, &diag);
++   if (r != SPV_SUCCESS) {
++      if (diag && diag->error)
++         snprintf(why, why_size, "spirv-val (%s): %s (word %zu)", spvTargetEnvDescription(target->env),
++                  diag->error, diag->position.index);
++      else if (r == SPV_ERROR_INTERNAL)
++         snprintf(why, why_size, "spirv-val (%s): an exception inside it", spvTargetEnvDescription(target->env));
++      else
++         snprintf(why, why_size, "spirv-val (%s): error %d", spvTargetEnvDescription(target->env), r);
++   }
++   spvDiagnosticDestroy(diag);
++   spvValidatorOptionsDestroy(opt);
++   spvContextDestroy(ctx);
++   if (r != SPV_SUCCESS) {
++      /* spirv-val's own out of memory (its allocations throw, caught by its C API) */
++      *unsafe = r == SPV_ERROR_OUT_OF_MEMORY || r == SPV_ERROR_INTERNAL;
++      return false;
++   }
++   cache_insert(key);
++   return true;
++}
+diff --git a/src/venus/vkr_spirv_validate.h b/src/venus/vkr_spirv_validate.h
+--- /dev/null
++++ b/src/venus/vkr_spirv_validate.h
+@@ -0,0 +1,92 @@
++/*
++ * Copyright 2026 OmacVM contributors
++ * SPDX-License-Identifier: MIT
++ */
++
++/* OmacVM (virgl-venus-spirv-validate.patch, ADR 0065): the guest's SPIR-V through
++ * SPIRV-Tools' validator (spirv-val) after vkr_spirv_scan and before the Mac's shader
++ * compilers. The scan alone let 66 of 138 modules that end QEMU (KosmicKrisp's
++ * spirv_to_nir, MoltenVK's SPIRV-Cross) through; the validator refuses 65 of those, and
++ * the scan the two it misses. The target follows the device: its Vulkan version as vkr
++ * reports it (VK_KHR_spirv_1_4 on a 1.1 device) and the layouts and modes its features
++ * allow, never what one app enabled, so code a device runs passes. A module that passed
++ * is remembered by the SHA-256 of its code and target (a bounded cache shared by every
++ * context, behind a mutex). Self-contained but for SPIRV-Tools' C API and CommonCrypto,
++ * so it is tested on the CPU alone (Tests/virgl/test-venus-spirv-validate.sh). */
++
++#ifndef VKR_SPIRV_VALIDATE_H
++#define VKR_SPIRV_VALIDATE_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include "vkr_spirv.h"
++
++/* the largest module the validator takes: past it the module is refused unread (64 times
++ * the largest real one seen, 67 KB; spirv-val's time grows with the size, see the patch's
++ * header for the numbers) */
++#define VKR_SPIRV_MAX_CODE_SIZE (4u << 20)
++
++/* 1: a module the validator refuses ends the app's context; 0: it is only logged (one
++ * line per module) and goes on to the driver. Built in, no switch. */
++#ifndef VKR_SPIRV_VALIDATE_ENFORCE
++#define VKR_SPIRV_VALIDATE_ENFORCE 1
++#endif
++
++/* what the device allows beyond its Vulkan version's defaults */
++enum {
++   VKR_SPIRV_SCALAR_LAYOUT = 1 << 0,           /* scalarBlockLayout */
++   VKR_SPIRV_STD_UNIFORM_LAYOUT = 1 << 1,      /* uniformBufferStandardLayout */
++   VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT = 1 << 2, /* workgroupMemoryExplicitLayoutScalarBlockLayout */
++   VKR_SPIRV_LOCAL_SIZE_ID = 1 << 3,           /* maintenance4 */
++   VKR_SPIRV_RELAXED_LAYOUT = 1 << 4,          /* VK_KHR_relaxed_block_layout, core in 1.1 */
++};
++
++struct vkr_spirv_target {
++   uint32_t env;     /* spv_target_env */
++   uint32_t options; /* VKR_SPIRV_* above */
++   /* the device's interface limits, checked before spirv-val (vkr_spirv_interface_ok) */
++   struct vkr_spirv_io_limits io;
++};
++
++/* the target for a device of api_version (VK_MAKE_API_VERSION) with or without
++ * VK_KHR_spirv_1_4, and its VKR_SPIRV_* options; false for a version below 1.1. The
++ * interface limits start at Vulkan's required minimums; the device sets its own. */
++bool
++vkr_spirv_target_init(struct vkr_spirv_target *target,
++                      uint32_t api_version,
++                      bool spirv_1_4,
++                      uint32_t options);
++
++/* "vulkan1.3 scalar std ..." for log lines */
++void
++vkr_spirv_target_text(const struct vkr_spirv_target *target, char *out, size_t out_size);
++
++/* `bytes` bytes of SPIR-V whose scan is `info` valid for the target: true, or false with
++ * the reason in why. *unsafe (may be NULL) tells a module refused before spirv-val read
++ * it: past VKR_SPIRV_MAX_CODE_SIZE, interface variables past the device's limits (spirv-val's
++ * own walk over them grows with them) or out of host memory; those are refused also when
++ * refusals are only logged. */
++bool
++vkr_spirv_validate(const struct vkr_spirv_target *target,
++                   const struct vkr_spirv_info *info,
++                   const uint32_t *code,
++                   size_t bytes,
++                   char *why,
++                   size_t why_size,
++                   bool *unsafe);
++
++/* the cache's counts (tests) and a reset (tests: a cold run) */
++struct vkr_spirv_cache_stats {
++   uint64_t hits, misses, evictions;
++   uint32_t entries;
++};
++
++void
++vkr_spirv_cache_stats(struct vkr_spirv_cache_stats *stats);
++
++void
++vkr_spirv_cache_reset(void);
++
++#endif /* VKR_SPIRV_VALIDATE_H */

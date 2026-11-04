@@ -655,7 +655,13 @@ Patches (all in `app/runtime/patches`, one per concern):
   open pass, the bound pipelines, recording); guest SPIR-V through a
   structural scan (`vkr_spirv.c`: header, instructions, id bound, entry
   points, workgroup sizes, the descriptor sets an entry point's call graph
-  uses), fuzzed on the CPU by `Tests/virgl/fuzz-venus-spirv.sh`; copy regions
+  uses), fuzzed on the CPU by `Tests/virgl/fuzz-venus-spirv.sh`, then (3.2.21,
+  `virgl-venus-spirv-validate.patch`) SPIRV-Tools' validator for the device's
+  Vulkan version and features (on MoltenVK the instance's version, as the
+  guest is told), after caps on interface locations and type cost, with a 2 s
+  budget and its asserts kept, and at pipeline creation caps on Function,
+  Private and Workgroup arrays (`spirv-tools-val-*.patch`;
+  `Tests/virgl/test-venus-spirv-validate.sh`); copy regions
   inside their images and buffers (`vkr_format_extent.h`); attachment formats
   the device renders to.
 - `virgl-venus-submit-counts.patch`, `virgl-venus-pool-frees.patch`,

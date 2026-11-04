@@ -1,0 +1,6 @@
+stage vert
+entry main
+bind 0 0 6 1
+bind 1 0 6 1
+vin 0 4 f
+push 128

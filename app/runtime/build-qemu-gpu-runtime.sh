@@ -266,6 +266,22 @@ virgl_tap_root=homebrew-virglrenderer-$virgl_tap_commit
 virgl_tap_archive_name="$virgl_tap_root.tar.gz"
 virgl_tap_url="https://codeload.github.com/startergo/homebrew-virglrenderer/tar.gz/$virgl_tap_commit"
 virgl_tap_sha256=373db13456610847b97a2d442f1b7cd2ffa0c9a60c6850dc2185d40b09dfa5e4
+# SPIRV-Tools' validator for the guest's SPIR-V (virgl-venus-spirv-validate.patch, #624): the
+# release and the SPIRV-Headers commit its DEPS names (MoltenVK 1.4.2 uses the same headers),
+# built static with hidden symbols by the pinned CMake.
+spirv_tools_root_name=SPIRV-Tools-2026.3
+spirv_tools_archive_name="$spirv_tools_root_name.tar.gz"
+spirv_tools_url="https://codeload.github.com/KhronosGroup/SPIRV-Tools/tar.gz/refs/tags/v2026.3"
+spirv_tools_sha256=fff0667b25dfb98177da3cc4cc61ac277d076786df42baaf8d9635a25bdf9226
+spirv_headers_commit=29981f65241605e08b0ede4cfeb999fe3b723c6a
+spirv_headers_root_name="SPIRV-Headers-$spirv_headers_commit"
+spirv_headers_archive_name="$spirv_headers_root_name.tar.gz"
+spirv_headers_url="https://codeload.github.com/KhronosGroup/SPIRV-Headers/tar.gz/$spirv_headers_commit"
+spirv_headers_sha256=232899f1ad4104fb5bc377b94596c7621575eee62ad9a9e8f929b63a7dd8a7ad
+cmake_root=cmake-3.31.6-macos-universal
+cmake_archive_name="$cmake_root.tar.gz"
+cmake_url="https://github.com/Kitware/CMake/releases/download/v3.31.6/$cmake_archive_name"
+cmake_sha256=330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d
 pyyaml_root=pyyaml-6.0.3
 pyyaml_archive_name="$pyyaml_root.tar.gz"
 pyyaml_url="https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/$pyyaml_archive_name"
@@ -501,6 +517,9 @@ keycodemap_archive="$archive_dir/$keycodemap_archive_name"
 dtc_archive="$archive_dir/$dtc_archive_name"
 ninja_archive="$archive_dir/$ninja_archive_name"
 virgl_archive="$archive_dir/$virgl_archive_name"
+spirv_tools_archive="$archive_dir/$spirv_tools_archive_name"
+spirv_headers_archive="$archive_dir/$spirv_headers_archive_name"
+cmake_archive="$archive_dir/$cmake_archive_name"
 virgl_tap_archive="$archive_dir/$virgl_tap_archive_name"
 pyyaml_archive="$archive_dir/$pyyaml_archive_name"
 angle_archive="$archive_dir/$angle_archive_name"
@@ -518,6 +537,9 @@ obtain_and_verify "dtc $dtc_commit" "$dtc_url" "$dtc_sha256" "$dtc_archive"
 obtain_and_verify "Ninja $ninja_version" "$ninja_url" "$ninja_sha256" "$ninja_archive"
 obtain_and_verify "virglrenderer source" "$virgl_url" "$virgl_sha256" "$virgl_archive"
 obtain_and_verify "virglrenderer patches and regression tests" "$virgl_tap_url" "$virgl_tap_sha256" "$virgl_tap_archive"
+obtain_and_verify "SPIRV-Tools source" "$spirv_tools_url" "$spirv_tools_sha256" "$spirv_tools_archive"
+obtain_and_verify "SPIRV-Headers $spirv_headers_commit" "$spirv_headers_url" "$spirv_headers_sha256" "$spirv_headers_archive"
+obtain_and_verify "CMake" "$cmake_url" "$cmake_sha256" "$cmake_archive"
 obtain_and_verify "PyYAML source" "$pyyaml_url" "$pyyaml_sha256" "$pyyaml_archive"
 obtain_and_verify "ANGLE $angle_version" "$angle_url" "$angle_sha256" "$angle_archive"
 obtain_and_verify "libepoxy $epoxy_version" "$epoxy_url" "$epoxy_sha256" "$epoxy_archive"
@@ -539,6 +561,9 @@ validate_tar_root "keycodemapdb" "$keycodemap_archive" "$keycodemap_root" "$list
 validate_tar_root "dtc" "$dtc_archive" "$dtc_root" "$listing_dir/dtc.txt"
 validate_tar_root "virglrenderer" "$virgl_archive" "$virgl_source_root" "$listing_dir/virglrenderer.txt"
 validate_tar_root "virglrenderer patches" "$virgl_tap_archive" "$virgl_tap_root" "$listing_dir/virgl-tap.txt"
+validate_tar_root "SPIRV-Tools" "$spirv_tools_archive" "$spirv_tools_root_name" "$listing_dir/spirv-tools.txt"
+validate_tar_root "SPIRV-Headers" "$spirv_headers_archive" "$spirv_headers_root_name" "$listing_dir/spirv-headers.txt"
+validate_tar_root "CMake" "$cmake_archive" "$cmake_root" "$listing_dir/cmake.txt"
 validate_tar_root "PyYAML" "$pyyaml_archive" "$pyyaml_root" "$listing_dir/pyyaml.txt"
 validate_tar_root "ANGLE" "$angle_archive" "angle/$angle_version" "$listing_dir/angle.txt"
 validate_tar_root "libepoxy" "$epoxy_archive" "libepoxy/$epoxy_version" "$listing_dir/libepoxy.txt"
@@ -560,6 +585,11 @@ patch -d "$source_parent/$slirp_source_root" -p1 -f -i "$native_dir/patches/libs
 tar -xzf "$qemu_archive" -C "$source_parent"
 tar -xzf "$virgl_archive" -C "$source_parent"
 tar -xzf "$virgl_tap_archive" -C "$source_parent"
+tar -xzf "$spirv_tools_archive" -C "$source_parent"
+tar -xzf "$spirv_headers_archive" -C "$source_parent"
+# only CMake's command and its modules (not cmake-gui and its Qt)
+tar -xzf "$cmake_archive" -C "$tool_root" "$cmake_root/CMake.app/Contents/bin/cmake" \
+  "$cmake_root/CMake.app/Contents/share"
 tar -xzf "$pyyaml_archive" -C "$tool_root"
 # Use the pinned pure-Python YAML implementation for generated Gallium tables.
 export PYTHONPATH="$tool_root/$pyyaml_root/lib"
@@ -1757,6 +1787,16 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-disjoint-ali
 grep -q 'q.flags = vkr_physical_device_retry_flags(info->format, info->flags, r);' "$virgl_source/src/venus/vkr_image.c" && \
   grep -q 'args->pImageFormatInfo->format, args->pImageFormatInfo->flags, args->ret);' "$virgl_source/src/venus/vkr_physical_device.c" || \
   die "vkr_image.c, vkr_physical_device.c: a one-plane DISJOINT|ALIAS image is asked about with DISJOINT (disjoint-alias-format patch)"
+# Guest SPIR-V goes through SPIRV-Tools' validator after the scan, for the device's Vulkan version
+# and features, after the interface locations and the type cost are checked; Function and
+# Private variables are counted and Workgroup bytes checked after specialization; ray tracing
+# pipelines are refused (#624).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-validate.patch"
+grep -q 'if (!vkr_spirv_valid(dev->physical_device, spirv, args->pCreateInfo->pCode,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_spirv_interface_ok(spirv, &physical_dev->spirv_target.io, vkr_spec_lookup,' "$virgl_source/src/venus/vkr_pipeline.c" && \
+  grep -q 'vkr_physical_device_init_spirv_target(physical_dev);' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q '"ray tracing shaders are not checked");' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c, vkr_physical_device.c: guest SPIR-V is not validated (spirv-validate patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
@@ -1765,6 +1805,47 @@ if grep -rnE --include='*.[ch]' --exclude=vkr_allocator.c --exclude-dir=venus-pr
      "$virgl_source/src/venus"; then
   die "src/venus: a proc table entry tested against NULL; entries are never NULL, use VKR_MISSING (missing-entries patch)"
 fi
+# SPIRV-Tools' validator for Venus (virgl-venus-spirv-validate.patch): a static library with
+# hidden symbols, so libvirglrenderer exports none of them (MoltenVK carries a private copy of
+# its own), spirv-tools-*.patch applied; once more with AddressSanitizer for the CPU test.
+spirv_tools_source="$source_parent/$spirv_tools_root_name"
+for spirv_tools_patch in "$native_dir"/patches/spirv-tools-*.patch; do
+  patch -d "$spirv_tools_source" -p1 -f -i "$spirv_tools_patch"
+done
+cmake="$tool_root/$cmake_root/CMake.app/Contents/bin/cmake"
+spirv_tools_root="$dependency_root/spirv-tools"
+spirv_tools_asan_root="$dependency_root/spirv-tools-asan"
+build_spirv_tools() { # PREFIX CFLAGS
+  local build="$source_parent/build-${1##*/}"
+  "$cmake" -S "$spirv_tools_source" -B "$build" -G Ninja -DCMAKE_MAKE_PROGRAM="$ninja" \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" \
+    -DCMAKE_C_FLAGS="$2" -DCMAKE_CXX_FLAGS="$2" \
+    -DCMAKE_CXX_VISIBILITY_PRESET=hidden -DCMAKE_VISIBILITY_INLINES_HIDDEN=ON \
+    -DSPIRV-Headers_SOURCE_DIR="$source_parent/$spirv_headers_root_name" \
+    -DSPIRV_SKIP_TESTS=ON -DSPIRV_SKIP_EXECUTABLES=ON -DSPIRV_WERROR=OFF -DBUILD_SHARED_LIBS=OFF \
+    > "$build.cmake.log" 2>&1 || { tail -20 "$build.cmake.log" >&2; die "SPIRV-Tools: cmake failed"; }
+  "$ninja" ${ninja_jobs[@]+"${ninja_jobs[@]}"} -C "$build" SPIRV-Tools-static
+  mkdir -p "$1/lib/pkgconfig" "$1/include"
+  install -m 0644 "$build/source/libSPIRV-Tools.a" "$1/lib/"
+  cp -R "$spirv_tools_source/include/spirv-tools" "$1/include/"
+}
+log "Building SPIRV-Tools 2026.3 (static, hidden symbols) for Venus' SPIR-V validation"
+build_spirv_tools "$spirv_tools_root" ""
+build_spirv_tools "$spirv_tools_asan_root" "-fsanitize=address -fno-omit-frame-pointer -g"
+cat > "$spirv_tools_root/lib/pkgconfig/omacvm-spirv-tools.pc" <<EOF
+Name: omacvm-spirv-tools
+Description: SPIRV-Tools 2026.3, static with hidden symbols (OmacVM's runtime build)
+Version: 2026.3
+Libs: $spirv_tools_root/lib/libSPIRV-Tools.a -lc++
+Cflags: -I$spirv_tools_root/include
+EOF
+pkg_config_libdir+=":$spirv_tools_root/lib/pkgconfig"
+spirv_tools_link=("$spirv_tools_root/lib/libSPIRV-Tools.a" -lc++)
+# The validator and vkr's checks on the CPU alone: every real module passes, every module that
+# ended a Mac driver's process is refused, the cache and the Function element count (#624).
+"$native_dir/Tests/virgl/test-venus-spirv-validate.sh" "$spirv_tools_root" "$spirv_tools_asan_root" "$virgl_source" || \
+  die "the Venus SPIR-V validation test failed"
+
 virgl_build="$virgl_source/build"
 meson="$tool_root/$meson_root/meson.py"
 # Optimize the graphics command path while retaining assertions and diagnostics.
@@ -1787,7 +1868,7 @@ env DYLD_LIBRARY_PATH="$private_libraries" \
     "-L$epoxy_root/lib" -lepoxy \
     -framework Metal -framework CoreFoundation -lobjc \
     -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
-    "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
+    "${spirv_tools_link[@]}" "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
 # Probe real format-selection code with controlled GL availability and failures.
 env DYLD_LIBRARY_PATH="$private_libraries" \
   python3 "$native_dir/Tests/virgl/run-regressions.py" \
@@ -1795,9 +1876,14 @@ env DYLD_LIBRARY_PATH="$private_libraries" \
     "-L$epoxy_root/lib" -lepoxy \
     -framework Metal -framework CoreFoundation -lobjc \
     -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
-    "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
+    "${spirv_tools_link[@]}" "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib"
 python3 "$meson" install -C "$virgl_build" --no-rebuild
 require_private_pkg_version virglrenderer 1.3.0
+# SPIRV-Tools stays private to the renderer: no spv symbol exported, so neither its copy nor
+# MoltenVK's can bind to the other's
+if nm -gU "$virgl_root/lib/libvirglrenderer.1.dylib" | grep -E ' _(spv|_ZN8spvtools)'; then
+  die "libvirglrenderer exports SPIRV-Tools symbols (build it with hidden visibility)"
+fi
 
 # Build against the same pinned private GLib used by QEMU; never use host libraries.
 slirp_build="$source_parent/$slirp_source_root/build"
@@ -1964,7 +2050,7 @@ python3 "$native_dir/Tests/virgl/run-venus-limits.py" \
   "-L$epoxy_root/lib" -lepoxy \
   -framework Metal -framework CoreFoundation -lobjc \
   -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework OpenGL -framework IOSurface \
-  "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib" || \
+  "${spirv_tools_link[@]}" "-Wl,-rpath,$epoxy_root/lib" "-Wl,-rpath,$angle_root/lib" || \
   die "the Venus limits tests failed"
 
 # The firmware must show the logo and name the disk's boot entry as QEMU's
