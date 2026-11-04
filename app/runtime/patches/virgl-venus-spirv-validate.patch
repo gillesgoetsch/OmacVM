@@ -50,7 +50,10 @@ arrays were measured on the drivers only up to 2^24); real modules hold at
 most 406 elements and 8192 Workgroup bytes (Dawn's matmul). The scan
 stays first: it refuses two crash modules spirv-val accepts and costs 0.6 us a
 module against spirv-val's 92 us (median of 126 real modules, 4.2 ms the
-slowest; 52 us per KB). spirv-val on hostile input (CPU only, each run capped
+slowest; 52 us per KB: spirv-val alone with the plan's options; vkr's
+validator with the device's options took 40-42 us per KB on 100-106 modules
+in test-venus-spirv-validate.sh on the M4, the CHANGELOG's "about 40").
+spirv-val on hostile input (CPU only, each run capped
 at 512 MB inside the process): a 304-byte module with an Input struct of
 uint[2^32-1] took it past 512 MB (location tracking per element; 7 of 7 fuzz
 seeds found that class within seconds), a struct of two of the previous one 30

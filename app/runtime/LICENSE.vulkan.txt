@@ -11,9 +11,10 @@ lib/libMoltenVK.dylib: MoltenVK 1.4.2, github.com/KhronosGroup/MoltenVK
     Workshop Ltd., and others.
   - SPIRV-Tools (commit 0d6fd73c), Apache-2.0.
     Copyright (c) 2015-2016 The Khronos Group Inc., Google Inc., and others.
-  - SPIRV-Headers (commit 29981f65) and Vulkan-Headers (commit e3b1eec0),
-    Apache-2.0 OR MIT (used here under Apache-2.0).
-    Copyright 2015-2026 The Khronos Group Inc.
+  - SPIRV-Headers (commit 29981f65), Apache-2.0 OR MIT (used here under
+    Apache-2.0). Copyright 2015-2024 The Khronos Group Inc.
+  - Vulkan-Headers (commit e3b1eec0), Apache-2.0 OR MIT (used here under
+    Apache-2.0). Copyright 2015-2026 The Khronos Group Inc.
   - cereal (commit a56bad8b), BSD-3-Clause, text below.
 
 lib/libvulkan.1.dylib: the Khronos Vulkan loader 1.4.357,
@@ -27,8 +28,7 @@ lib/libvirglrenderer.1.dylib (MIT, see THIRD_PARTY_NOTICES.md) has
   (app/runtime/build-qemu-gpu-runtime.sh, patches/spirv-tools-*.patch):
   - SPIRV-Tools 2026.3, github.com/KhronosGroup/SPIRV-Tools, Apache-2.0.
     Copyright (c) 2015-2026 The Khronos Group Inc., Google Inc., and others.
-  - SPIRV-Headers (commit 29981f65), Apache-2.0 OR MIT (used here under
-    Apache-2.0). Copyright 2015-2024 The Khronos Group Inc.
+  - SPIRV-Headers, the same commit as MoltenVK's above.
 
 None of these projects has a NOTICE file. Their source is at the
 addresses above; Homebrew's formulas (molten-vk, vulkan-loader) say how
