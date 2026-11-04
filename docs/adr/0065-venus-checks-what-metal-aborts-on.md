@@ -1087,7 +1087,7 @@ the same SPIRV-Cross check on the new versions; an accepted module that throws
 in the parser or crashes SPIRV-Cross reopens this. The upstream report is
 drafted, not sent.
 
-## Metal passes and host memory (amendment, 3.2.21)
+## Metal passes and host memory (amendment, 3.2.22)
 
 Lane `v624-hostmem` (#624's "host-memory caps", after #697). The question: can
 one guest program make QEMU (vkr and the Mac's driver) hold memory beyond what

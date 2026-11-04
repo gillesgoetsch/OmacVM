@@ -12,7 +12,14 @@ in more words.
   gigabytes. Now QEMU counts both per program and ends only that program's Vulkan connection when it goes too far
   (16384 passes per command buffer; a quarter of the apps' GPU memory share, at most 4 GB, for recordings and
   objects). Programs are told a GPU memory size no bigger than what they may use (MoltenVK said all of the Mac's
-  memory). Needs the app update.
+  memory). Needs the app update. Known limit: Chromium with ANGLE on Vulkan but without the
+  `--disable-angle-features=supportsPrimitiveTopologyListRestart` flag that
+  [the KosmicKrisp notes](docs/experiments/kosmickrisp.md) give is refused on an 8 GB Mac (a 1408 MB share per
+  program) at about 5000 fish in WebGL Aquarium: on KosmicKrisp each of its draws is a pass, 1408 MB within
+  seconds. The page goes black and Chromium stops using the GPU until it is started again; Chromium, the VM and
+  the desktop keep running (Mac mini M4, 1408 MB forced, QEMU at most 5033 MB with a 4 GB VM). Started again
+  with the flag it draws 30000 fish at 45 fps (316 MB). With the 4096 MB share of the 32 GB M1 Max the same page
+  took at least 2936 MB in 20 s.
 
 ## 3.2.21
 
