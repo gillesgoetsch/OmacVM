@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.23 (unreleased)
+
+- **A Vulkan program can no longer get past the drawing-pass limit by recording a used secondary command buffer
+  again (OmacVM.app, #706, see #676).** With Graphics on Vulkan, QEMU now submits only finished primary command
+  buffers whose secondary command buffers are still what they ran. A program that records one again after it was
+  used, or submits one that is not finished, loses only its own Vulkan connection; Vulkan does not allow either, so
+  correct programs never meet it. Needs the app update.
+
 ## 3.2.22
 
 In OmacVM.app VMs with Graphics on Vulkan, QEMU now counts the Metal passes and the Mac memory each

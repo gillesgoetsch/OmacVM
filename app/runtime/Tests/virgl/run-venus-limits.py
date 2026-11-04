@@ -126,6 +126,12 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "c-state-secondary-held-pool-submit c-state-secondary-held-reset-ok "
                  "c-state-secondary-held-free-primary-ok c-state-secondary-held-same-pool-ok "
                  "c-state-secondary-held-teardown-ok c-state-secondary-held-control-ok "
+                 # secondaries recorded again, what is submitted (virgl-venus-submit-state.patch)
+                 "c-state-secondary-held-resubmit-ok c-state-secondary-held-rerecord-ok "
+                 "c-state-secondary-held-rerecord-submit c-state-secondary-held-reset-submit "
+                 "c-state-secondary-held-pool-reset-submit c-state-secondary-held-free-pool-reset-submit "
+                 "c-state-secondary-held-rerecord-end s-submit-secondary s-submit-recording s-submit-initial "
+                 "h-release-secondary-ok "
                  "t-pipeline-destroy-layout t-pipeline-destroy-module "
                  "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
                  "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok "
