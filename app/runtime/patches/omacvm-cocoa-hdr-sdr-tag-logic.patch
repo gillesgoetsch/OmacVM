@@ -1,0 +1,236 @@
+From: OmacVM
+Subject: [PATCH] ui: when HDR frames ask macOS for headroom, tested without AppKit
+
+What: a header with no AppKit in it (ui/omacvm-hdr-tag.h): the rule for
+PQ frames' headroom tag (1x while the frames' brightest pixel is SDR
+white or less, untagged from the first look that sees more, 1x again 10 s
+after the last), the headroom the guest is told meanwhile (what it had
+untagged on this display, or the display's most; after untagging not less
+than that until macOS's ramp is done), the PQ decode of the peak, and the
+peak shader (the max of 16x16 blocks, run twice). Used by
+omacvm-cocoa-hdr-sdr-tag.patch (which explains the why; ADR 0049).
+
+Why its own file: so the rules and the shader are tested without QEMU or
+a window (app/runtime/Tests/display/test-hdr-sdr-tag.sh applies this
+patch and omacvm-cocoa-hdr-headroom-logic.patch to an empty folder; at
+build time and in CI), including a model of macOS's headroom ramp.
+
+Upstream: OmacVM only.
+Test: app/runtime/Tests/display/test-hdr-sdr-tag.c (rules, the ramp
+model, --self-test: older rules fail it), test-hdr-sdr-tag-shader.m (the
+shader on Apple's software renderer).
+
+--- /dev/null
++++ b/ui/omacvm-hdr-tag.h
+@@ -0,0 +1,211 @@
++/*
++ * OmacVM, HDR (ADR 0049, amended): ask macOS for the display's headroom
++ * only while the guest's frames use it. No AppKit in here, so it is tested
++ * on its own (app/runtime/Tests/display/test-hdr-sdr-tag.sh); ui/cocoa.m
++ * feeds it the frames' peak and NSScreen's values.
++ *
++ * A PQ frame with no headroom tag makes macOS raise the panel's EDR
++ * headroom to its most (16 on an XDR panel at low brightness), even when
++ * every pixel is SDR. Tagged 1x, the panel stays at SDR. So: a look at the
++ * frame's brightest pixel a few times a second; frames tagged 1x while it
++ * is SDR white or less; untagged (as before) from the first look that sees
++ * HDR, back to 1x after 10 s without HDR.
++ *
++ * The guest tone-maps into the headroom it is told (omacvm-edr.h). While
++ * frames are tagged 1x the panel's headroom falls to about 1, so the guest
++ * is told what it had while untagged (or the display's most), never that
++ * 1: told 1 it would fit its HDR into SDR and never ask again.
++ */
++#ifndef OMACVM_HDR_TAG_H
++#define OMACVM_HDR_TAG_H
++
++#include <math.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include "omacvm-edr.h"
++
++/* Above this (x SDR white, PQ 203 nits) a frame shows HDR: code 600 of 1023. */
++#define OMACVM_HDR_SDR_PEAK 1.05
++/* Untagged this long after the last HDR look: past macOS's own hold (5-15 s). */
++#define OMACVM_HDR_HOLD_NS 10000000000LL
++/* A look at most this often: 4 a second. */
++#define OMACVM_HDR_LOOK_NS 250000000LL
++/* After untagging, the guest keeps its value until macOS's ramp is done. */
++#define OMACVM_HDR_SETTLE_NS 3000000000LL
++/* Each pass of the peak shader takes the max of a block this wide. */
++#define OMACVM_HDR_BLOCK 16
++
++/* A PQ value (0..1, the 10-bit code / 1023) in SDR white units (1 = 203 nits). */
++static inline double omacvm_hdr_pq_units(double e)
++{
++    const double m1 = 2610.0 / 16384, m2 = 2523.0 / 4096 * 128;
++    const double c1 = 3424.0 / 4096, c2 = 2413.0 / 4096 * 32, c3 = 2392.0 / 4096 * 32;
++
++    if (!(e >= 0)) {
++        return NAN;     /* counts as HDR: the safe side is the old behaviour */
++    }
++    if (e > 1) {
++        e = 1;
++    }
++    double p = pow(e, 1 / m2);
++    return 10000.0 * pow(fmax(p - c1, 0) / (c2 - c3 * p), 1 / m1) / 203.0;
++}
++
++/* The size of a pass's output for an input of n texels. */
++static inline int omacvm_hdr_blocks(int n)
++{
++    return (n + OMACVM_HDR_BLOCK - 1) / OMACVM_HDR_BLOCK;
++}
++
++/* The largest of the last pass's values; NaN if one is NaN (counts as HDR). */
++static inline double omacvm_hdr_max(const float *v, size_t n)
++{
++    double m = 0;
++
++    for (size_t i = 0; i < n; i++) {
++        if (isnan(v[i])) {
++            return NAN;
++        }
++        m = fmax(m, v[i]);
++    }
++    return m;
++}
++
++/* NaN, negative or above SDR white counts as HDR. */
++static inline bool omacvm_hdr_is_hdr(double peak)
++{
++    return !(peak >= 0 && peak <= OMACVM_HDR_SDR_PEAK);
++}
++
++typedef struct OmacvmHdrNeed {
++    double need;        /* 1: frames tagged 1x (SDR); 0: untagged, the display's headroom */
++    double peak;        /* the last look's peak, x SDR white */
++    int64_t hdr_ns;     /* the last look that saw HDR */
++} OmacvmHdrNeed;
++
++/* PQ frames start (VM start, extra brightness off, a new display): 1x. */
++static inline void omacvm_hdr_need_reset(OmacvmHdrNeed *n)
++{
++    n->need = 1;
++    n->peak = 0;
++    n->hdr_ns = 0;
++}
++
++/* Time only: 1x again once the hold is over without HDR. True when need changed. */
++static inline bool omacvm_hdr_need_tick(OmacvmHdrNeed *n, int64_t now)
++{
++    if (n->need == 0 && !omacvm_hdr_is_hdr(n->peak) &&
++        now - n->hdr_ns >= OMACVM_HDR_HOLD_NS) {
++        n->need = 1;
++        return true;
++    }
++    return false;
++}
++
++/* A look's result: untagged at once on HDR. True when need changed. */
++static inline bool omacvm_hdr_need_peak(OmacvmHdrNeed *n, double peak, int64_t now)
++{
++    n->peak = peak;
++    if (omacvm_hdr_is_hdr(peak)) {
++        n->hdr_ns = now;
++        if (n->need != 0) {
++            n->need = 0;
++            return true;
++        }
++        return false;
++    }
++    return omacvm_hdr_need_tick(n, now);
++}
++
++/* When the hold ends (for a timer), or -1 when nothing is due. */
++static inline int64_t omacvm_hdr_need_due(const OmacvmHdrNeed *n)
++{
++    return n->need == 0 ? n->hdr_ns + OMACVM_HDR_HOLD_NS : -1;
++}
++
++typedef struct OmacvmEdrHold {
++    bool known;         /* a display was seen */
++    uint32_t display;   /* the key: the window's display ... */
++    double potential;   /* ... and its most */
++    double held;        /* the last settled value while untagged (> SDR), -1 none */
++    int64_t open_ns;    /* the untagging this was settled for */
++    bool settled;
++} OmacvmEdrHold;
++
++/*
++ * The headroom the guest is told (omacvm-edr.h's rules for the value).
++ * Tagged 1x: what it had while untagged on this display, else the
++ * display's most (capped 16). Untagged: the current headroom, but not less
++ * than the tagged value until macOS's ramp is done (current reaches it, or
++ * 3 s). A new display (or a new most) forgets the held value; *new_display
++ * says so. Never more than the display's most.
++ */
++static inline double omacvm_edr_guest(OmacvmEdrHold *h, bool *new_display, uint32_t display,
++                                      double current, double potential, bool use_potential,
++                                      bool tagged, int64_t open_ns, int64_t now)
++{
++    bool same = h->known && display == h->display &&
++                fabs(potential - h->potential) <= 0.01 * fmax(fabs(h->potential), 1.0);
++    if (!same) {
++        *new_display = h->known;
++        h->known = true;
++        h->display = display;
++        h->potential = potential;
++        h->held = -1;
++        h->settled = false;
++    }
++    double top = omacvm_edr_value(potential, potential, true);
++    double base = h->held > 0 && h->held < top ? h->held : top;
++    if (tagged) {
++        return base;
++    }
++    double v = omacvm_edr_value(current, potential, use_potential);
++    if (open_ns != h->open_ns) {
++        h->open_ns = open_ns;
++        h->settled = false;
++    }
++    if (!h->settled) {
++        if (v < base && now - open_ns < OMACVM_HDR_SETTLE_NS) {
++            return base;
++        }
++        h->settled = true;
++    }
++    if (v > OMACVM_HDR_SDR_PEAK) {
++        h->held = v;
++    }
++    return v;
++}
++
++/*
++ * The peak shader (desktop GL core, as QEMU's own blit): each output texel
++ * is the largest colour value of a 16x16 block of the bound texture (its
++ * size in "size"), so every pixel counts. Run twice: the frame into a
++ * texture 1/16 its size, that into one 1/256, which is read back.
++ */
++#define OMACVM_HDR_PEAK_VERT \
++    "#version 140\n" \
++    "in vec2 in_position;\n" \
++    "void main(void) {\n" \
++    "    gl_Position = vec4(in_position, 0.0, 1.0);\n" \
++    "}\n"
++
++#define OMACVM_HDR_PEAK_FRAG \
++    "#version 140\n" \
++    "uniform sampler2D image;\n" \
++    "uniform ivec2 size;\n" \
++    "out vec4 out_frag_color;\n" \
++    "void main(void) {\n" \
++    "    ivec2 o = ivec2(gl_FragCoord.xy) * 16;\n" \
++    "    ivec2 e = min(o + ivec2(16), size);\n" \
++    "    float m = 0.0;\n" \
++    "    for (int y = o.y; y < e.y; y++) {\n" \
++    "        for (int x = o.x; x < e.x; x++) {\n" \
++    "            vec3 c = texelFetch(image, ivec2(x, y), 0).rgb;\n" \
++    "            m = max(m, max(c.r, max(c.g, c.b)));\n" \
++    "        }\n" \
++    "    }\n" \
++    "    out_frag_color = vec4(m, m, m, 1.0);\n" \
++    "}\n"
++
++#endif
