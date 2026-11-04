@@ -900,7 +900,12 @@ The less obvious ones, with causes and where the fix lives, are in
   `Tests/virgl/test-venus-spirv-validate.sh` (the corpus, plain and under
   AddressSanitizer) and the fuzzer; when the MoltenVK pin moves, ADR 0065's
   SPIRV-Cross check (`pinned-runtime-bottles.sh`) and the corpus for `mvk`
-  and `mvk11`. A new `vkCmd*` that needs a pass, a pipeline or
+  and `mvk11`; when the Mesa (KosmicKrisp) pin moves, the corpus for `kk`.
+  On either driver's bump, check that it still reads a primary's secondaries
+  inside `vkQueueSubmit` on the calling thread (MoltenVK's
+  `MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS` default, KosmicKrisp's immediate
+  submit): vkr's holds of executed secondaries rest on that (ADR 0065).
+  A new `vkCmd*` that needs a pass, a pipeline or
   a recording buffer checks `vkr_cmd_state`; an object kept there is kept by id
   and serial, never as a pointer (an app may destroy it while recording).
   A descriptor update reaches the driver one binding at a time
