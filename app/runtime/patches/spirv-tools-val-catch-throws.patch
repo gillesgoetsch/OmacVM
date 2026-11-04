@@ -5,21 +5,25 @@ What: the library is built with C++ exceptions (CMakeLists.txt no longer adds
 stays in a release build and throws when it fails. Its walks that grow faster
 than the module (dominator chains, depth-first traversals and the dominator
 calculation, construct blocks, continue exits, the block order check,
-ContainsType, the block
-layout check, the decoration subset checks) count steps in
-source/omacvm/budget.h; every 1024th reads the thread's CPU time, and 2 s after
-the start the validation throws.
+ContainsType, the block layout check, the decoration subset checks) count
+steps in source/omacvm/budget.h; every 1024th reads the thread's CPU time, and
+2 s after the start the validation throws.
 omacvmValidateWithOptions calls spvValidateWithOptions inside try/catch: an
 exception (a failed assert, the step budget, an at() past the end,
 std::bad_alloc) gives SPV_ERROR_INTERNAL and no diagnostic.
-omacvmValidatorSteps says how many steps the last validation took.
+omacvmValidatorSteps says how many steps the last validation took. The
+BuiltIn checks refuse a BuiltIn variable whose pointer gives no data type (an
+untyped pointer) instead of reading the type id 0.
 Why: Venus runs spirv-val on every guest module (virgl-venus-spirv-validate.
 patch), on the thread of the guest's command ring. Fuzzed modules ended the
 process inside it: ValidateImage on OpImage of an id without a type
 (assert(def), compiled out by NDEBUG, then a NULL read: SIGSEGV),
 CheckDecorationsFromDecoration on an OpDecorateId ArrayStrideIdEXT
-(std::out_of_range; without exceptions libc++ calls abort()). Small modules
-kept it busy for long: 1000 nested loops (88 KB) 53 s, 400 of them 1.8 s, a
+(std::out_of_range; without exceptions libc++ calls abort()), and a 332-byte
+module with BuiltIn SampleMask on an OpUntypedVariableKHR
+(BuiltInsValidator::ValidateI32Arr read FindDef(0): SIGSEGV; valfuzz seed 104,
+5 minutes in). Small modules kept it busy for long: 1000 nested loops (88 KB)
+53 s, 400 of them 1.8 s, a
 chain of 100000 blocks 5 s, 10000 loops in a row 7.5 s (M4, one core; the
 validator's dominance test walks the dominator chain for each block of each
 construct). vkr refuses such a module like one spirv-val reads as invalid,
@@ -211,6 +215,23 @@ diff --git a/source/val/validate.cpp b/source/val/validate.cpp
 +  omacvm::deadline_ns = 0;
 +  return result;
  }
+diff --git a/source/val/validate_builtins.cpp b/source/val/validate_builtins.cpp
+--- a/source/val/validate_builtins.cpp
++++ b/source/val/validate_builtins.cpp
+@@ -91,6 +91,13 @@
+            << " is decorated with BuiltIn. BuiltIn decoration should only be "
+               "applied to struct types, variables and constants.";
+   }
++  // OmacVM: an untyped pointer gives no data type (0); every caller reads
++  // FindDef(*underlying_type) without a check (a NULL read on valfuzz's module)
++  if (!*underlying_type || !_.FindDef(*underlying_type)) {
++    return _.diag(SPV_ERROR_INVALID_DATA, &inst)
++           << GetIdDesc(inst)
++           << " is decorated with BuiltIn but has no data type to check.";
++  }
+   return SPV_SUCCESS;
+ }
+ 
 diff --git a/source/val/validate_cfg.cpp b/source/val/validate_cfg.cpp
 --- a/source/val/validate_cfg.cpp
 +++ b/source/val/validate_cfg.cpp
