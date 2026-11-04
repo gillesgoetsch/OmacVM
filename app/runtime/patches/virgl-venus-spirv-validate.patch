@@ -399,6 +399,7 @@ diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
  
  static void
 diff --git a/src/venus/vkr_spirv_validate.c b/src/venus/vkr_spirv_validate.c
+new file mode 100644
 --- /dev/null
 +++ b/src/venus/vkr_spirv_validate.c
 @@ -0,0 +1,318 @@
@@ -721,6 +722,7 @@ diff --git a/src/venus/vkr_spirv_validate.c b/src/venus/vkr_spirv_validate.c
 +   return true;
 +}
 diff --git a/src/venus/vkr_spirv_validate.h b/src/venus/vkr_spirv_validate.h
+new file mode 100644
 --- /dev/null
 +++ b/src/venus/vkr_spirv_validate.h
 @@ -0,0 +1,111 @@
