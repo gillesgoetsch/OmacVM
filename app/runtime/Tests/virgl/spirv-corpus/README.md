@@ -11,8 +11,9 @@ both Mac drivers' targets and, with a `.lay` beside it, the pipeline checks.
 | `dxvk-` | 29 | DXVK 3.1.1's d3d9 and d3d11 shaders, taken out of its release DLLs |
 | `dawn-` | 2 | Chromium's WebGPU (Dawn) compute shaders |
 | `deqp-` | 36 | dEQP-VK shader data |
-| `kit-` | 17 | the probe kit's glslc shaders |
-| `vkcube-` | 3 | vkcube's two shaders |
+| `kit-` | 15 | the probe kit's glslc shaders |
+| `vkcube-` | 2 | vkcube's two shaders |
+| `zink-` | 6 | Zink's modules for glxgears in an OmacVM.app test VM (`ZINK_DEBUG=spirv`, KosmicKrisp, 2026-11-04) |
 
 A `NAME.vs.spv` is the vertex shader a `.lay` pipeline pairs a fragment shader with.
 
