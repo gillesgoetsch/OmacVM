@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.21 (unreleased)
+## 3.2.21
 
 In OmacVM.app VMs with Graphics on Vulkan, QEMU now checks each shader a VM sends with SPIRV-Tools'
 validator before the Mac's driver compiles it; a refused shader ends only its own app's Vulkan
