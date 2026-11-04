@@ -956,9 +956,10 @@ index f74f8e6..5aee693 100644
  
     mtx_lock(&queue->vk_mutex);
 diff --git a/src/venus/vkr_spirv.c b/src/venus/vkr_spirv.c
+index 7881058..f429747 100644
 --- a/src/venus/vkr_spirv.c
 +++ b/src/venus/vkr_spirv.c
-@@ -110,6 +110,7 @@
+@@ -110,6 +110,7 @@ enum {
     DEC_PER_TASK = 5273,
     DEC_PER_VERTEX = 5285,
     DEC_DESCRIPTOR_SET = 34,
@@ -966,7 +967,7 @@ diff --git a/src/venus/vkr_spirv.c b/src/venus/vkr_spirv.c
     BUILT_IN_WORKGROUP_SIZE = 25,
     MODE_LOCAL_SIZE = 17,
     MODE_LOCAL_SIZE_ID = 38,
-@@ -313,6 +314,9 @@
+@@ -313,6 +314,9 @@ record(struct scan *s, size_t at, uint32_t op, uint32_t len)
     case OP_DECORATE:
        if (len < 3 || !id_ok(s, w[1]))
           return fail(s, "a decoration of an id past the bound", at);
@@ -976,7 +977,7 @@ diff --git a/src/venus/vkr_spirv.c b/src/venus/vkr_spirv.c
        if (w[2] == DEC_BUILT_IN && len >= 4 && w[3] == BUILT_IN_WORKGROUP_SIZE) {
           s->workgroup_composite = w[1];
        } else if (w[2] == DEC_SPEC_ID || w[2] == DEC_BINDING || w[2] == DEC_DESCRIPTOR_SET ||
-@@ -332,6 +336,9 @@
+@@ -332,6 +336,9 @@ record(struct scan *s, size_t at, uint32_t op, uint32_t len)
        }
        return true;
     case OP_MEMBER_DECORATE:
@@ -987,17 +988,17 @@ diff --git a/src/venus/vkr_spirv.c b/src/venus/vkr_spirv.c
        if (len >= 4 && w[3] == DEC_BUILT_IN && id_ok(s, w[1])) {
           struct deco *d = vec_add(&s->decos, 1, sizeof(*d));
 diff --git a/src/venus/vkr_spirv.h b/src/venus/vkr_spirv.h
-index 1b79868..7605e6b 100644
+index 819c718..8c12bc7 100644
 --- a/src/venus/vkr_spirv.h
 +++ b/src/venus/vkr_spirv.h
-@@ -55,6 +55,10 @@ struct vkr_spirv_pair {
- };
- 
- struct vkr_spirv_info {
+@@ -162,6 +162,10 @@ struct vkr_spirv_info {
+    struct vkr_spirv_pair *interface;
+    /* what the types cost (VKR_SPIRV_MAX_TYPE_COST) */
+    uint64_t type_cost;
 +   /* OmacVM (virgl-venus-encoder-cap.patch): the module decorates something Flat (a
 +    * fragment shader's flat inputs: KosmicKrisp unrolls such draws when the last vertex
 +    * provokes, vkr_command_buffer.c) */
 +   bool flat;
-    uint32_t entry_count;
-    struct vkr_spirv_entry *entries;
-    char *names;
+ };
+ 
+ /* the scan of `bytes` bytes of SPIR-V; NULL with a reason in why (malformed or too big) */
