@@ -4569,8 +4569,10 @@ static int secondary_case(const char *c, struct world *w)
 
 /* ---------------- secondaries recorded again (virgl-venus-submit-state.patch) ----------------
  * A primary P executes a secondary S that records one barrier.
- *   -resubmit-ok: LEGAL: P reusable (no ONE_TIME_SUBMIT), S freed (a zombie), P submitted
- *     twice, each waited for: KosmicKrisp replays S's commands at the 2nd submit.
+ *   -resubmit-ok: TOLERATED: P reusable (no ONE_TIME_SUBMIT), S freed (a zombie), P submitted
+ *     twice, each waited for: KosmicKrisp replays S's commands at the 2nd submit. Vulkan
+ *     calls P invalid once S is freed; vkr allows it on purpose (the hold keeps it
+ *     memory-safe).
  *   -rerecord-submit, -reset-submit, -pool-reset-submit, -free-pool-reset-submit: after P's
  *     end S is begun again (two barriers), reset, its pool reset, or freed and then its pool
  *     reset; P's submit is refused (Vulkan: P is invalid; MoltenVK encodes S's new content

@@ -5,15 +5,23 @@ in more words.
 
 ## 3.2.23 (unreleased)
 
+In OmacVM.app VMs with Graphics on Vulkan, QEMU now submits a Vulkan program's command buffers only in
+the state Vulkan allows, and counts its shader modules and pipeline caches by their size. Correct
+programs are unaffected; a program that breaks Vulkan's rules or goes past its memory share loses only
+its own Vulkan connection, not the VM. Needs the app update only (from the VM's next start); no Update
+VM. UTM, Fusion and Parallels get nothing.
+
 - **A Vulkan program can no longer get past the drawing-pass limit by recording a used secondary command buffer
   again (OmacVM.app, #706, see #676).** With Graphics on Vulkan, QEMU now submits only finished primary command
-  buffers whose secondary command buffers are still what they ran. A program that records one again after it was
-  used, or submits one that is not finished, loses only its own Vulkan connection; Vulkan does not allow either, so
-  correct programs never meet it. Needs the app update.
+  buffers whose secondary command buffers are still what they ran. A program that submits or finishes a primary
+  command buffer after recording one of its secondary command buffers again, or submits a command buffer that is
+  not a finished primary, loses only its own Vulkan connection; Vulkan does not allow either, so correct programs
+  never meet it. Needs the app update.
 - **A Vulkan program's shader modules and pipeline caches now count by their size (OmacVM.app, #707, see #624).**
   With Graphics on Vulkan, QEMU counted every shader module as 4 KB of Mac memory, though the drivers keep its code
-  (up to 4 MB). It now counts 2 bytes per byte of code on top of that (real shaders of 17-68 KB took 1.56-1.78; the
-  4 KB covers small ones). A pipeline cache counts its initial data on top of its 20 KB. Needs the app update.
+  (up to 4 MB). It now counts 2 bytes per byte of code on top of that (real shaders of 17-68 KB took 1.56-1.78 bytes
+  per byte of code; the 4 KB covers small ones). A pipeline cache counts its initial data on top of its 20 KB.
+  Needs the app update.
 
 ## 3.2.22
 

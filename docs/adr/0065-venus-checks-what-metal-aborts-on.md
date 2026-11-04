@@ -1288,10 +1288,13 @@ MoltenVK and MoltenVK with prefill, each also under libgmalloc; raw in
 work/venus-3223/out): 11 new cases. On main the 5 refusal cases
 (`-rerecord-submit`, `-reset-submit`, `-pool-reset-submit`,
 `-free-pool-reset-submit`, `-rerecord-end`) work where they must be refused,
-on all 6 runs; the 3 legal ones (`-resubmit-ok`: a reusable primary
-submitted twice after its secondary's free, `-rerecord-ok`,
+on all 6 runs; the 3 that must work (`-rerecord-ok`,
 `h-release-secondary-ok`: the charge is back to the byte after the primary's
-reset, while the context lives) work. `s-submit-secondary`, `-recording` and
+reset, while the context lives, and `-resubmit-ok`: a reusable primary
+submitted twice after its secondary's free) work. `-resubmit-ok` is not
+legal Vulkan: vkFreeCommandBuffers of the secondary makes the primary
+invalid. vkr tolerates it on purpose: the hold (#678) keeps it
+memory-safe. `s-submit-secondary`, `-recording` and
 `-initial` were not run on main (they would hand a driver what it must not
 get). With the patch all 11 pass on all 6 runs, and all 488 cases pass on
 the three drivers (4, 28 and 40 skipped, as on 3.2.22); 0 GPU Restart.
