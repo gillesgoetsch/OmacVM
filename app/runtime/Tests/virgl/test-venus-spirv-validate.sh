@@ -14,7 +14,7 @@
 #    scan, spirv-val, the element cap or the pipeline checks;
 #  - units: the targets, the cache (hits, bound, LRU order, no refusals kept, 8 threads),
 #    the size cap, the Function and Private element cases, the Workgroup bytes, the
-#    variables one entry point gets, BuiltIns on untyped variables;
+#    variables one entry point gets;
 #  - venus-spirv-extensions.tsv: every SPIR-V extension a Vulkan extension vkr offers
 #    enables is one this SPIRV-Tools knows (an unknown one would refuse real modules), and
 #    with VIRGL_SOURCE every extension vkr_common.c's table offers has a row.
