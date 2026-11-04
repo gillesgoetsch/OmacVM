@@ -956,27 +956,17 @@ index f74f8e6..5aee693 100644
  
     mtx_lock(&queue->vk_mutex);
 diff --git a/src/venus/vkr_spirv.c b/src/venus/vkr_spirv.c
-index 426aa9a..b2a4069 100644
 --- a/src/venus/vkr_spirv.c
 +++ b/src/venus/vkr_spirv.c
-@@ -69,6 +69,8 @@ enum {
-    DEC_BUILT_IN = 11,
-    DEC_BINDING = 33,
+@@ -110,6 +110,7 @@
+    DEC_PER_TASK = 5273,
+    DEC_PER_VERTEX = 5285,
     DEC_DESCRIPTOR_SET = 34,
 +   DEC_FLAT = 14, /* OmacVM (virgl-venus-encoder-cap.patch) */
-+   OP_MEMBER_DECORATE = 72,
     BUILT_IN_WORKGROUP_SIZE = 25,
     MODE_LOCAL_SIZE = 17,
     MODE_LOCAL_SIZE_ID = 38,
-@@ -231,9 +233,17 @@ instruction(struct scan *s, size_t at, uint32_t op, uint32_t len)
-       memcpy(m->v, &w[3], sizeof(m->v));
-       return true;
-    }
-+   /* OmacVM (virgl-venus-encoder-cap.patch) */
-+   case OP_MEMBER_DECORATE:
-+      if (len >= 4 && w[3] == DEC_FLAT)
-+         s->info->flat = true;
-+      return true;
+@@ -313,6 +314,9 @@
     case OP_DECORATE:
        if (len < 3 || !id_ok(s, w[1]))
           return fail(s, "a decoration of an id past the bound", at);
@@ -985,7 +975,17 @@ index 426aa9a..b2a4069 100644
 +         s->info->flat = true;
        if (w[2] == DEC_BUILT_IN && len >= 4 && w[3] == BUILT_IN_WORKGROUP_SIZE) {
           s->workgroup_composite = w[1];
-       } else if (w[2] == DEC_SPEC_ID || w[2] == DEC_BINDING || w[2] == DEC_DESCRIPTOR_SET) {
+       } else if (w[2] == DEC_SPEC_ID || w[2] == DEC_BINDING || w[2] == DEC_DESCRIPTOR_SET ||
+@@ -332,6 +336,9 @@
+       }
+       return true;
+    case OP_MEMBER_DECORATE:
++      /* OmacVM (virgl-venus-encoder-cap.patch) */
++      if (len >= 4 && w[3] == DEC_FLAT)
++         s->info->flat = true;
+       /* a struct with a BuiltIn member is a built-in block: kept as BuiltIn on the struct */
+       if (len >= 4 && w[3] == DEC_BUILT_IN && id_ok(s, w[1])) {
+          struct deco *d = vec_add(&s->decos, 1, sizeof(*d));
 diff --git a/src/venus/vkr_spirv.h b/src/venus/vkr_spirv.h
 index 1b79868..7605e6b 100644
 --- a/src/venus/vkr_spirv.h
