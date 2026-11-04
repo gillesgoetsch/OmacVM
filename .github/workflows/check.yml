@@ -581,6 +581,11 @@ jobs:
       - name: HDR's headroom for the guest (ADR 0049; the checks catch code without it)
         run: app/runtime/Tests/display/test-hdr-headroom.sh
 
+      - name: HDR frames tagged 1x while they are SDR (ADR 0049; macOS ramp model, peak shader; older rules fail it)
+        run: |
+          app/runtime/Tests/display/test-hdr-sdr-tag.sh
+          app/runtime/Tests/display/test-hdr-sdr-tag.sh --self-test
+
       - name: Partial present, only what the guest changed (ADR 0051; the checks catch code without it)
         run: |
           app/runtime/Tests/display/test-present-damage.sh
