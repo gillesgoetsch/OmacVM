@@ -874,6 +874,9 @@ jobs:
       - name: OmacVM's virtio-gpu patches with GNU patch, as the builder in the VM (no fuzz)
         run: src/tests/virtio-gpu-patches.sh
 
+      - name: OmacVM's own guest Mesa build never installs over the Venus Mesa (its own default folder; GNU tools, as in the VM)
+        run: src/tests/guest-mesa-prefix.sh
+
       - name: omacvm check's "HDR recordings" line says whether the running driver gives recorders the HDR metadata
         run: src/tests/hdr-recording-check.sh
 

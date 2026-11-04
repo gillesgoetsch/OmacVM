@@ -10,8 +10,10 @@ A memory the guest frees then stays in the driver as a zombie until the image's 
 destroy, also a deferred one (the image is itself a dedicated target). The order is: the
 image, the memory, the image the memory was dedicated to. Refused with a log line: an
 ALIAS_BIT image with other create info (type, format, tiling, flags, usage, extent,
-levels, layers, samples), a second bind of such an image, and one image twice in one
-vkBindImageMemory2. KosmicKrisp let those through before. All memory frees (vkFreeMemory,
+levels, layers, samples), a second bind of such an image, and in one vkBindImageMemory2
+an image named again by a later bind of that kind (an earlier one of that kind followed
+by a plain bind of the image reaches the driver; the hold stays). KosmicKrisp let those
+through before. All memory frees (vkFreeMemory,
 the device's teardown, a zombie's last holder) go through one helper,
 vkr_device_memory_free.
 Why: MoltenVK 1.4.2 binds an aliasable image to dedicated memory (MVKDeviceMemory.mm:171)
