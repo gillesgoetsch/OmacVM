@@ -1,0 +1,1004 @@
+virglrenderer: Venus ends an app's context before Metal ends QEMU on too many passes
+
+What: vkr counts the Metal passes (render encoders) each command buffer opens: a clear of
+an image (one per level of its ranges; the layers of a level, and a 3D level's depth
+slices, are one layered pass), a render pass begin and each next subpass, a dynamic
+rendering begin, a blit or resolve region (counted to be safe), on KosmicKrisp a barrier
+inside a pass (it splits a multisampled pass there; vkr does not keep the pass's
+samples, so every in-pass barrier counts there), the draws that split a pass, and the
+secondaries a primary executes (their passes each time). Draws that split a pass: on
+both drivers each tessellated draw, and a sample-location or attachment-location change
+inside a pass (the pipeline's or a command's); on KosmicKrisp a draw call it unrolls or
+predicates in a compute pass first: triangle fans, 8-bit indices, strips with 8- or
+16-bit indices and restart off, list restart with primitiveTopologyListRestart, a Flat
+fragment input with the last vertex provoking, conditional rendering, and index
+robustness (a NULL index buffer, or with robustBufferAccess2 or pipelineRobustness an
+indirect or over-reading indexed draw). For that vkr keeps each graphics pipeline's
+topology, restart, provoking mode, tessellation and Flat use (the SPIR-V scan; pipeline
+libraries merged) and the recording's dynamic state and index buffer. A command buffer
+may open 16384 (OMACVM_VENUS_ENCODER_CAP, tests only); a MoltenVK batch (all command
+buffers of one VkSubmitInfo or VkSubmitInfo2) twice that. The command past it is refused
+before the driver gets it, and the app's context ends with a log line (the guest
+recorded and submitted without waiting: it sees a lost device). Other draws, copies,
+fills, updates, timestamps and attachment clears do not count.
+Why: Metal ends the process (SIGABRT: "Failed to allocate IOGPUDeviceShmem" in
+IOGPUMetalCommandBufferStorageGrowKernelCommandBuffer, from AGX::RenderContext::
+beginRenderPass) when one Metal command buffer has about 98304 passes. One guest program
+ended QEMU and the VM so, with no submit on KosmicKrisp: probes through vkr's dispatch
+on the M1 Max (macOS 27, the 3.2.18 drivers, work/v624-hostmem): KosmicKrisp aborted
+while recording past 98304 clears of one level (run7-9; 90000 with 150000 asked), past
+98304 empty passes (run10), between 90112 and 98304 in-pass barriers of a 4x pass,
+between 6144 and 6656 clears of 15 levels, and between 73728 and 81920 triangle fan
+draws in one pass (fix/out-B); fans, 8-bit indices, 16-bit strips without restart, list
+restart, flat with the last vertex, tessellation, predicates and color-map or
+sample-location changes cost 24-113 KB per draw while recording (a pass about 7 KB, a
+plain draw 0.1 KB: fix/out-A). 1M plain draws, 204800 copies, 204800 1x in-pass
+barriers, 200 clears of 2048 layers, 16384 clears of a 2048-deep 3D image and 65536
+blits or resolves did not abort on KosmicKrisp. MoltenVK aborted at the encode: with
+prefill at vkEndCommandBuffer after 150000 clears, 204800 passes, renderings, blits or
+resolves, and 114688 tessellated draws or draws with a color-map or sample-location
+change each; without prefill at vkQueueSubmit of one batch of 8 x 16384 clears (4 x
+16384 in one batch, 8 batches of 16384 and 8 submits went through). KosmicKrisp took
+8 x 16384 in one batch and 16 live command buffers of 16384 each (also over 2
+contexts). 16384 is 6x below the clear abort and 4.5x below the fan-draw abort; a Zink
+frame has about 2000 passes. On the mini's M4 (fix-700 r2) KosmicKrisp aborted between
+74752 and 75264 clears of one level, 4.6x above the cap. An 8 GB Mac is not measured (the
+cap stays fixed).
+Upstream: OmacVM policy; nothing posted.
+Tests: Tests/virgl/test-venus-commands.c (the h-pass- cases: the legal maximum and one
+past it per kind at a cap of 1024, the default cap, 100000 clears that ended the process
+before, levels, layers, 3D clears, secondaries, a real MoltenVK batch, and the
+h-pass-draw- cases: each draw kind that splits a pass past the cap, the ones that do not
+within it).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index 307e864..8ad25cb 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -654,6 +654,147 @@ vkr_cmd_rendering_views(struct vn_dispatch_context *dispatch,
+    return true;
+ }
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch) */
++uint32_t
++vkr_encoder_cap(void)
++{
++   static atomic_uint cap;
++   uint32_t c = atomic_load(&cap);
++   if (unlikely(!c)) {
++      const char *env = getenv("OMACVM_VENUS_ENCODER_CAP");
++      const unsigned long v = env ? strtoul(env, NULL, 0) : 0;
++      c = v >= 1 && v <= (1u << 20) ? (uint32_t)v : VKR_ENCODER_CAP;
++      atomic_store(&cap, c);
++   }
++   return c;
++}
++
++uint32_t
++vkr_command_buffer_weight(VkCommandBuffer handle)
++{
++   const struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(handle);
++   return cmd ? cmd->state.weight : 0;
++}
++
++/* the command opens W more Metal passes in its command buffer: refused (the context ends)
++ * past the cap, before the driver gets it */
++static bool
++vkr_cmd_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, uint64_t w,
++              const char *call)
++{
++   struct vkr_cmd_state *st = vkr_cmd_state(handle);
++   const uint64_t total = st->weight + w, cap = vkr_encoder_cap();
++   if (!vkr_context_check(dispatch->data, total <= cap, call,
++                          "%" PRIu64 " Metal passes in one command buffer, past vkr's %" PRIu64
++                          " (Metal ends the process at about 75000-98000)",
++                          total, cap))
++      return false;
++   st->weight = (uint32_t)total;
++   return true;
++}
++
++/* the levels of a clear's ranges (each level is a pass; the layers of one are one layered
++ * pass on both drivers: 2048 layers x 200 clears in the probes; so are a 3D image's depth
++ * slices: KosmicKrisp recorded 16384 clears of a 64 x 64 x 2048 image, 6072 B each) */
++static uint64_t
++vkr_cmd_range_levels(VkImage handle, uint32_t count, const VkImageSubresourceRange *ranges)
++{
++   const struct vkr_image *img = vkr_image_from_handle(handle);
++   uint64_t n = 0;
++   for (uint32_t i = 0; i < count; i++) {
++      const VkImageSubresourceRange *r = &ranges[i];
++      /* past vkr_cmd_range_ok: the base is inside the image */
++      n += r->levelCount == VK_REMAINING_MIP_LEVELS
++              ? (img && img->mip_levels > r->baseMipLevel ? img->mip_levels - r->baseMipLevel : 1)
++              : r->levelCount;
++   }
++   return n;
++}
++
++/* a barrier inside a pass: KosmicKrisp splits a multisampled pass there (a new Metal pass,
++ * 98304 such barriers ended the process); vkr does not keep the pass's samples, so every
++ * in-pass barrier counts on KosmicKrisp (1x passes did not split: 204800 in the probe) */
++static bool
++vkr_cmd_barrier_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle,
++                      bool kosmickrisp, const char *call)
++{
++   const struct vkr_cmd_state *st = vkr_cmd_state(handle);
++   if (!kosmickrisp || st->pass == VKR_CMD_PASS_NONE)
++      return true;
++   return vkr_cmd_weigh(dispatch, handle, 1, call);
++}
++
++/* a draw call that splits its Metal pass (the M1 probes, work/v624-hostmem/fix: draws in
++ * one pass, bytes of footprint per draw while recording, a plain draw 121-139):
++ * - on both drivers each tessellated draw (they run the tessellation stages as compute
++ *   between two passes; KosmicKrisp 112815 B per draw, MoltenVK with prefill ended the
++ *   process at the end of 114688 such draws): one per draw of the call;
++ * - on KosmicKrisp a draw call it unrolls in a compute pass first (kk_cmd_draw.c,
++ *   requires_unroll) or whose predicates it applies there (conditional rendering): one.
++ *   Unrolled: triangle fans, 8-bit indices, strips with 8- or 16-bit indices and restart
++ *   off, list restart with primitiveTopologyListRestart, the last vertex provoking with a
++ *   Flat fragment shader (77580-77603 B per draw each; 73728 fan draws recorded, the
++ *   process ended before 81920), and index robustness: a NULL index buffer, or with
++ *   robustBufferAccess2 or pipelineRobustness an indirect or over-reading draw (KosmicKrisp
++ *   also needs a misaligned buffer for those on macOS 27; vkr counts them on any).
++ *   Predicated: 60022 B per draw.
++ * Not split (121-139 B): lists, strips with restart on or 32-bit indices, flat inputs with
++ * the first vertex provoking, timestamps in a pass, robust direct draws inside the buffer.
++ * MAX_INDEX: the largest index the call reads (firstIndex + indexCount), UINT64_MAX for an
++ * indirect one. */
++static bool
++vkr_cmd_draw_weigh(struct vn_dispatch_context *dispatch,
++                   VkCommandBuffer handle,
++                   bool indexed,
++                   uint64_t max_index,
++                   uint32_t draws,
++                   const char *call)
++{
++   const struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(handle);
++   const struct vkr_cmd_state *st = &cmd->state;
++   const struct vkr_pipeline_draw *d = &st->draw;
++   if (d->tess)
++      return vkr_cmd_weigh(dispatch, handle, draws, call);
++   if (!cmd->device->physical_device->limits.kosmickrisp)
++      return true;
++   bool split = st->conditional || d->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN ||
++                (d->flat && d->last);
++   if (indexed) {
++      const bool strip = d->topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP ||
++                         d->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
++      const bool list = d->topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST ||
++                        d->topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST ||
++                        d->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST ||
++                        d->topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY ||
++                        d->topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY;
++      const uint64_t bytes = max_index == UINT64_MAX ? UINT64_MAX : max_index * st->index_size;
++      split |= st->index_size < 2 || (strip && !d->restart && st->index_size < 4) ||
++               (list && d->restart && cmd->device->list_restart) ||
++               (cmd->device->robust_index && bytes > st->index_range);
++   }
++   return !split || vkr_cmd_weigh(dispatch, handle, 1, call);
++}
++
++/* sample locations or attachment locations that change inside a pass: the next draw starts
++ * a new Metal pass on both drivers (KosmicKrisp kk_flush_render_pass: 24178 B per draw
++ * with a color map change; MoltenVK with prefill ended the process at the end of 114688
++ * draws with either change). One per change, inside a pass. */
++static bool
++vkr_cmd_pass_state_weigh(struct vn_dispatch_context *dispatch, VkCommandBuffer handle, const char *call)
++{
++   return vkr_cmd_state(handle)->pass == VKR_CMD_PASS_NONE || vkr_cmd_weigh(dispatch, handle, 1, call);
++}
++
++/* the largest index of a multi draw */
++static uint64_t
++vkr_cmd_multi_max_index(uint32_t count, const VkMultiDrawIndexedInfoEXT *info)
++{
++   uint64_t m = 0;
++   for (uint32_t i = 0; info && i < count; i++)
++      m = MAX2(m, (uint64_t)info[i].firstIndex + info[i].indexCount);
++   return m;
++}
++
+ static void
+ vkr_cmd_state_reset(struct vkr_command_buffer *cmd)
+ {
+@@ -1123,12 +1264,27 @@ vkr_dispatch_vkCmdBindPipeline(struct vn_dispatch_context *dispatch,
+                           "vkCmdBindPipeline", "bind point %d for a pipeline of %d",
+                           args->pipelineBindPoint, pipeline ? (int)pipeline->bind_point : -1))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch): before the call replaces the handle */
++   if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS && pipeline->draw.pass_state &&
++       !vkr_cmd_pass_state_weigh(dispatch, args->commandBuffer, "vkCmdBindPipeline"))
++      return;
+    VKR_CMD_CALL(CmdBindPipeline, args, args->pipelineBindPoint, args->pipeline);
+    /* OmacVM (virgl-venus-command-state.patch; virgl-venus-unset-state.patch: its sets, copied,
+     * so a later destroy of the pipeline does not matter) */
+    if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+       st->graphics_bound = true;
+       st->sets_used[VKR_CMD_GRAPHICS] = pipeline->used_sets;
++      /* OmacVM (virgl-venus-encoder-cap.patch) */
++      const struct vkr_pipeline_draw *p = &pipeline->draw;
++      struct vkr_pipeline_draw *d = &st->draw;
++      const uint8_t sets = p->known & ~p->dynamic;
++      if (sets & VKR_DRAW_TOPOLOGY)
++         d->topology = p->topology;
++      if (sets & VKR_DRAW_RESTART)
++         d->restart = p->restart;
++      if (sets & VKR_DRAW_PROVOKING)
++         d->last = p->last;
++      d->tess = p->tess, d->flat = p->flat;
+    } else if (pipeline->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE) {
+       st->compute_bound = true;
+       st->sets_used[VKR_CMD_COMPUTE] = pipeline->used_sets;
+@@ -1234,6 +1390,13 @@ vkr_dispatch_vkCmdBindDescriptorSets(struct vn_dispatch_context *dispatch,
+    vkr_cmd_sets_at_point(st, args->pipelineBindPoint, args->firstSet, args->descriptorSetCount);
+ }
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch): bytes per index (past vkr_index_type_ok) */
++static uint8_t
++vkr_index_size(VkIndexType type)
++{
++   return type == VK_INDEX_TYPE_UINT8_KHR ? 1 : type == VK_INDEX_TYPE_UINT16 ? 2 : 4;
++}
++
+ static void
+ vkr_dispatch_vkCmdBindIndexBuffer(struct vn_dispatch_context *dispatch,
+                                   struct vn_command_vkCmdBindIndexBuffer *args)
+@@ -1251,6 +1414,9 @@ vkr_dispatch_vkCmdBindIndexBuffer(struct vn_dispatch_context *dispatch,
+    VKR_CMD_CALL(CmdBindIndexBuffer, args, args->buffer, args->offset, args->indexType);
+    /* OmacVM (virgl-venus-unset-state.patch) */
+    st->index_bound = true;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   st->index_size = size ? vkr_index_size(args->indexType) : 0;
++   st->index_range = size ? size - args->offset : 0;
+ }
+ 
+ static void
+@@ -1282,6 +1448,9 @@ vkr_dispatch_vkCmdDraw(struct vn_dispatch_context *dispatch,
+ {
+    if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDraw"))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, false, 0, 1, "vkCmdDraw"))
++      return;
+    VKR_CMD_CALL(CmdDraw, args, args->vertexCount, args->instanceCount, args->firstVertex,
+                 args->firstInstance);
+ }
+@@ -1293,6 +1462,9 @@ vkr_dispatch_vkCmdDrawIndexed(struct vn_dispatch_context *dispatch,
+    if (!vkr_cmd_draw_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed") ||
+        !vkr_cmd_index_ok(dispatch, args->commandBuffer, "vkCmdDrawIndexed"))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, true, (uint64_t)args->firstIndex + args->indexCount, 1, "vkCmdDrawIndexed"))
++      return;
+    vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawIndexed, args, args->indexCount, args->instanceCount,
+                 args->firstIndex, args->vertexOffset, args->firstInstance);
+@@ -1308,6 +1480,9 @@ vkr_dispatch_vkCmdDrawIndirect(struct vn_dispatch_context *dispatch,
+                             args->drawCount, VKR_CMD_LIM(args)->maxDrawIndirectCount,
+                             args->stride, sizeof(VkDrawIndirectCommand)))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, false, 0, args->drawCount, "vkCmdDrawIndirect"))
++      return;
+    VKR_CMD_CALL(CmdDrawIndirect, args, args->buffer, args->offset, args->drawCount,
+                 args->stride);
+ }
+@@ -1324,6 +1499,9 @@ vkr_dispatch_vkCmdDrawIndexedIndirect(struct vn_dispatch_context *dispatch,
+                             VKR_CMD_LIM(args)->maxDrawIndirectCount, args->stride,
+                             sizeof(VkDrawIndexedIndirectCommand)))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, true, UINT64_MAX, args->drawCount, "vkCmdDrawIndexedIndirect"))
++      return;
+    vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawIndexedIndirect, args, args->buffer, args->offset, args->drawCount,
+                 args->stride);
+@@ -1448,6 +1626,9 @@ vkr_dispatch_vkCmdBlitImage(struct vn_dispatch_context *dispatch,
+                              "vkCmdBlitImage", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdBlitImage"))
++      return;
+    VKR_CMD_CALL(CmdBlitImage, args, args->srcImage, args->srcImageLayout, args->dstImage,
+                 args->dstImageLayout, args->regionCount, args->pRegions, args->filter);
+ }
+@@ -1466,6 +1647,9 @@ vkr_dispatch_vkCmdBlitImage2(struct vn_dispatch_context *dispatch,
+                              "vkCmdBlitImage2", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdBlitImage2"))
++      return;
+    VKR_CMD_CALL(CmdBlitImage2, args, args->pBlitImageInfo);
+ }
+ 
+@@ -1595,6 +1779,11 @@ vkr_dispatch_vkCmdClearColorImage(struct vn_dispatch_context *dispatch,
+                              r->baseMipLevel, r->levelCount, r->baseArrayLayer, r->layerCount))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer,
++                      vkr_cmd_range_levels(args->image, args->rangeCount, args->pRanges),
++                      "vkCmdClearColorImage"))
++      return;
+    VKR_CMD_CALL(CmdClearColorImage, args, args->image, args->imageLayout, args->pColor,
+                 args->rangeCount, args->pRanges);
+ }
+@@ -1610,6 +1799,11 @@ vkr_dispatch_vkCmdClearDepthStencilImage(struct vn_dispatch_context *dispatch,
+                              r->baseMipLevel, r->levelCount, r->baseArrayLayer, r->layerCount))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer,
++                      vkr_cmd_range_levels(args->image, args->rangeCount, args->pRanges),
++                      "vkCmdClearDepthStencilImage"))
++      return;
+    VKR_CMD_CALL(CmdClearDepthStencilImage, args, args->image, args->imageLayout, args->pDepthStencil,
+                 args->rangeCount, args->pRanges);
+ }
+@@ -1653,6 +1847,9 @@ vkr_dispatch_vkCmdResolveImage(struct vn_dispatch_context *dispatch,
+                              "vkCmdResolveImage", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, args->regionCount, "vkCmdResolveImage"))
++      return;
+    VKR_CMD_CALL(CmdResolveImage, args, args->srcImage, args->srcImageLayout,
+                 args->dstImage, args->dstImageLayout, args->regionCount, args->pRegions);
+ }
+@@ -1672,6 +1869,9 @@ vkr_dispatch_vkCmdResolveImage2(struct vn_dispatch_context *dispatch,
+                              "vkCmdResolveImage2", "region %u: a level, layer, aspect or texel outside the image", i))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): a pass per region, to be safe */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, info->regionCount, "vkCmdResolveImage2"))
++      return;
+    VKR_CMD_CALL(CmdResolveImage2, args, args->pResolveImageInfo);
+ }
+ 
+@@ -1697,6 +1897,10 @@ vkr_dispatch_vkCmdWaitEvents(struct vn_dispatch_context *dispatch,
+                             args->pBufferMemoryBarriers, args->imageMemoryBarrierCount,
+                             args->pImageMemoryBarriers))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdWaitEvents"))
++      return;
+    VKR_CMD_CALL(CmdWaitEvents, args, args->eventCount, args->pEvents, args->srcStageMask,
+                 args->dstStageMask, args->memoryBarrierCount, args->pMemoryBarriers,
+                 args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+@@ -1711,6 +1915,10 @@ vkr_dispatch_vkCmdPipelineBarrier(struct vn_dispatch_context *dispatch,
+                             args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+                             args->imageMemoryBarrierCount, args->pImageMemoryBarriers))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdPipelineBarrier"))
++      return;
+    VKR_CMD_CALL(CmdPipelineBarrier, args, args->srcStageMask, args->dstStageMask,
+                 args->dependencyFlags, args->memoryBarrierCount, args->pMemoryBarriers,
+                 args->bufferMemoryBarrierCount, args->pBufferMemoryBarriers,
+@@ -1831,6 +2039,9 @@ vkr_dispatch_vkCmdBeginRenderPass(struct vn_dispatch_context *dispatch,
+       vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+    const struct vkr_framebuffer *fb =
+       vkr_framebuffer_from_handle(args->pRenderPassBegin->framebuffer);
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdBeginRenderPass"))
++      return;
+    VKR_CMD_CALL(CmdBeginRenderPass, args, args->pRenderPassBegin, args->contents);
+    /* OmacVM (virgl-venus-command-state.patch) */
+    vkr_cmd_begin_render_pass(st, pass, fb);
+@@ -1849,6 +2060,9 @@ vkr_dispatch_vkCmdNextSubpass(struct vn_dispatch_context *dispatch,
+        !vkr_cmd_pass_views_ok(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
+                               "vkCmdNextSubpass"))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdNextSubpass"))
++      return;
+    VKR_CMD_CALL(CmdNextSubpass, args, args->contents);
+    vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
+ }
+@@ -1910,12 +2124,18 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+    }
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+    bool graphics = false, compute = false;
++   uint64_t weight = 0;
+    for (uint32_t i = 0; i < args->commandBufferCount; i++) {
+       const struct vkr_command_buffer *sec =
+          vkr_command_buffer_from_handle(args->pCommandBuffers[i]);
+       graphics |= sec->state.graphics_bound;
+       compute |= sec->state.compute_bound;
++      weight += sec->state.weight;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch): the secondaries' passes go into the primary's
++    * Metal command buffer (each again where one is named twice) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, weight, "vkCmdExecuteCommands"))
++      return;
+    VKR_CMD_CALL(CmdExecuteCommands, args, args->commandBufferCount,
+                 args->pCommandBuffers);
+    st->graphics_bound |= graphics;
+@@ -1973,6 +2193,9 @@ vkr_dispatch_vkCmdBeginRenderPass2(struct vn_dispatch_context *dispatch,
+       vkr_render_pass_from_handle(args->pRenderPassBegin->renderPass);
+    const struct vkr_framebuffer *fb =
+       vkr_framebuffer_from_handle(args->pRenderPassBegin->framebuffer);
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdBeginRenderPass2"))
++      return;
+    VKR_CMD_CALL(CmdBeginRenderPass2, args, args->pRenderPassBegin,
+                 args->pSubpassBeginInfo);
+    /* OmacVM (virgl-venus-command-state.patch) */
+@@ -1992,6 +2215,9 @@ vkr_dispatch_vkCmdNextSubpass2(struct vn_dispatch_context *dispatch,
+        !vkr_cmd_pass_views_ok(dispatch, vkr_command_buffer_from_handle(args->commandBuffer),
+                               "vkCmdNextSubpass2"))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdNextSubpass2"))
++      return;
+    VKR_CMD_CALL(CmdNextSubpass2, args, args->pSubpassBeginInfo, args->pSubpassEndInfo);
+    vkr_cmd_enter_subpass(st, pass, st->subpass + 1);
+ }
+@@ -2025,6 +2251,9 @@ vkr_dispatch_vkCmdDrawIndirectCount(struct vn_dispatch_context *dispatch,
+        !vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndirectCount", args->countBuffer,
+                             args->countBufferOffset, 1, 1, 0, 4))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, false, 0, args->maxDrawCount, "vkCmdDrawIndirectCount"))
++      return;
+    VKR_CMD_CALL(CmdDrawIndirectCount, args, args->buffer, args->offset, args->countBuffer,
+                 args->countBufferOffset, args->maxDrawCount, args->stride);
+ }
+@@ -2042,6 +2271,9 @@ vkr_dispatch_vkCmdDrawIndexedIndirectCount(
+        !vkr_cmd_indirect_ok(dispatch->data, "vkCmdDrawIndexedIndirectCount", args->countBuffer,
+                             args->countBufferOffset, 1, 1, 0, 4))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, true, UINT64_MAX, args->maxDrawCount, "vkCmdDrawIndexedIndirectCount"))
++      return;
+    vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawIndexedIndirectCount, args, args->buffer, args->offset,
+                 args->countBuffer, args->countBufferOffset, args->maxDrawCount,
+@@ -2157,6 +2389,9 @@ vkr_dispatch_vkCmdDrawIndirectByteCountEXT(
+                           "vkCmdDrawIndirectByteCountEXT", "counter at %" PRIu64 ", stride %u",
+                           args->counterBufferOffset, args->vertexStride))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, false, 0, 1, "vkCmdDrawIndirectByteCountEXT"))
++      return;
+    VKR_CMD_CALL(CmdDrawIndirectByteCountEXT, args, args->instanceCount,
+                 args->firstInstance, args->counterBuffer, args->counterBufferOffset,
+                 args->counterOffset, args->vertexStride);
+@@ -2211,6 +2446,9 @@ vkr_dispatch_vkCmdBindIndexBuffer2(struct vn_dispatch_context *dispatch,
+                 args->indexType);
+    /* OmacVM (virgl-venus-unset-state.patch) */
+    st->index_bound = true;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   st->index_size = size ? vkr_index_size(args->indexType) : 0;
++   st->index_range = !size ? 0 : args->size == VK_WHOLE_SIZE ? size - args->offset : args->size;
+ }
+ 
+ static void
+@@ -2269,6 +2507,8 @@ vkr_dispatch_vkCmdSetPrimitiveTopology(struct vn_dispatch_context *dispatch,
+    if (!vkr_context_check(dispatch->data, vkr_topology_ok(args->primitiveTopology),
+                           "vkCmdSetPrimitiveTopology", "topology %d", args->primitiveTopology))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) (before the call replaces the handle) */
++   vkr_cmd_state(args->commandBuffer)->draw.topology = (uint8_t)args->primitiveTopology;
+    VKR_CMD_CALL(CmdSetPrimitiveTopology, args, args->primitiveTopology);
+ }
+ 
+@@ -2347,6 +2587,8 @@ vkr_dispatch_vkCmdSetPrimitiveRestartEnable(
+    UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdSetPrimitiveRestartEnable *args)
+ {
++   /* OmacVM (virgl-venus-encoder-cap.patch) (before the call replaces the handle) */
++   vkr_cmd_state(args->commandBuffer)->draw.restart = args->primitiveRestartEnable;
+    VKR_CMD_CALL(CmdSetPrimitiveRestartEnable, args, args->primitiveRestartEnable);
+ }
+ 
+@@ -2400,6 +2642,9 @@ vkr_dispatch_vkCmdBeginRendering(struct vn_dispatch_context *dispatch,
+       return;
+    const uint32_t colors = args->pRenderingInfo->colorAttachmentCount;
+    const uint32_t view_mask = args->pRenderingInfo->viewMask;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_weigh(dispatch, args->commandBuffer, 1, "vkCmdBeginRendering"))
++      return;
+    VKR_CMD_CALL(CmdBeginRendering, args, args->pRenderingInfo);
+    /* OmacVM (virgl-venus-command-state.patch) */
+    st->pass = VKR_CMD_PASS_RENDERING;
+@@ -2428,6 +2673,10 @@ vkr_dispatch_vkCmdPipelineBarrier2(struct vn_dispatch_context *dispatch,
+ {
+    if (!vkr_cmd_dependency_ok(dispatch->data, "vkCmdPipelineBarrier2", args->pDependencyInfo))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdPipelineBarrier2"))
++      return;
+    VKR_CMD_CALL(CmdPipelineBarrier2, args, args->pDependencyInfo);
+ }
+ 
+@@ -2455,6 +2704,10 @@ vkr_dispatch_vkCmdWaitEvents2(struct vn_dispatch_context *dispatch,
+       if (!vkr_cmd_dependency_ok(dispatch->data, "vkCmdWaitEvents2", &args->pDependencyInfos[i]))
+          return;
+    }
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_barrier_weigh(dispatch, args->commandBuffer, VKR_CMD_LIMITS(args)->kosmickrisp,
++                              "vkCmdWaitEvents2"))
++      return;
+    VKR_CMD_CALL(CmdWaitEvents2, args, args->eventCount, args->pEvents,
+                 args->pDependencyInfos);
+ }
+@@ -2484,6 +2737,9 @@ vkr_dispatch_vkCmdDrawMultiEXT(struct vn_dispatch_context *dispatch,
+    if (!vkr_context_check(dispatch->data, !args->drawCount || args->pVertexInfo,
+                           "vkCmdDrawMultiEXT", "%u draws without their array", args->drawCount))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, false, 0, args->drawCount, "vkCmdDrawMultiEXT"))
++      return;
+    VKR_CMD_CALL(CmdDrawMultiEXT, args, args->drawCount, args->pVertexInfo,
+                 args->instanceCount, args->firstInstance, sizeof(VkMultiDrawInfoEXT));
+ }
+@@ -2499,6 +2755,9 @@ vkr_dispatch_vkCmdDrawMultiIndexedEXT(struct vn_dispatch_context *dispatch,
+                           "vkCmdDrawMultiIndexedEXT", "%u draws without their array",
+                           args->drawCount))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_draw_weigh(dispatch, args->commandBuffer, true, vkr_cmd_multi_max_index(args->drawCount, args->pIndexInfo), args->drawCount, "vkCmdDrawMultiIndexedEXT"))
++      return;
+    vkr_cmd_index_default(args->commandBuffer);
+    VKR_CMD_CALL(CmdDrawMultiIndexedEXT, args, args->drawCount, args->pIndexInfo,
+                 args->instanceCount, args->firstInstance, sizeof(VkMultiDrawIndexedInfoEXT),
+@@ -2741,6 +3000,9 @@ vkr_dispatch_vkCmdSetProvokingVertexModeEXT(
+    UNUSED struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdSetProvokingVertexModeEXT *args)
+ {
++   /* OmacVM (virgl-venus-encoder-cap.patch) (before the call replaces the handle) */
++   vkr_cmd_state(args->commandBuffer)->draw.last =
++      args->provokingVertexMode == VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT;
+    VKR_CMD_CALL(CmdSetProvokingVertexModeEXT, args, args->provokingVertexMode);
+ }
+ 
+@@ -2766,9 +3028,12 @@ vkr_dispatch_vkCmdSetRasterizationStreamEXT(
+ 
+ static void
+ vkr_dispatch_vkCmdSetSampleLocationsEnableEXT(
+-   UNUSED struct vn_dispatch_context *dispatch,
++   struct vn_dispatch_context *dispatch,
+    struct vn_command_vkCmdSetSampleLocationsEnableEXT *args)
+ {
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_pass_state_weigh(dispatch, args->commandBuffer, "vkCmdSetSampleLocationsEnableEXT"))
++      return;
+    VKR_CMD_CALL(CmdSetSampleLocationsEnableEXT, args, args->sampleLocationsEnable);
+ }
+ 
+@@ -2807,6 +3072,9 @@ vkr_dispatch_vkCmdSetSampleLocationsEXT(struct vn_dispatch_context *dispatch,
+                           info->sampleLocationGridSize.width,
+                           info->sampleLocationGridSize.height, info->sampleLocationsPerPixel))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_pass_state_weigh(dispatch, args->commandBuffer, "vkCmdSetSampleLocationsEXT"))
++      return;
+    VKR_CMD_CALL(CmdSetSampleLocationsEXT, args, args->pSampleLocationsInfo);
+ }
+ 
+@@ -2820,6 +3088,10 @@ vkr_dispatch_vkCmdSetRenderingAttachmentLocations(
+                           "vkCmdSetRenderingAttachmentLocations", "%u attachments of %u",
+                           args->pLocationInfo->colorAttachmentCount, max))
+       return;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   if (!vkr_cmd_pass_state_weigh(dispatch, args->commandBuffer,
++                                 "vkCmdSetRenderingAttachmentLocations"))
++      return;
+    VKR_CMD_CALL(CmdSetRenderingAttachmentLocations, args, args->pLocationInfo);
+ }
+ 
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index f126b0a..4c5e048 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -7,6 +7,8 @@
+ #define VKR_COMMAND_BUFFER_H
+ 
+ #include "vkr_common.h"
++/* OmacVM (virgl-venus-encoder-cap.patch): struct vkr_pipeline_draw */
++#include "vkr_pipeline.h"
+ 
+ #include "vkr_context.h"
+ #include "vkr_image.h"
+@@ -54,8 +56,37 @@ struct vkr_cmd_state {
+     * state); vkCmdExecuteCommands leaves the primary's as they were. */
+    uint32_t sets_bound[2], sets_used[2];
+    bool index_bound;
++   /* OmacVM (virgl-venus-encoder-cap.patch): what decides whether a draw splits its pass
++    * (vkr_cmd_draw_weigh): the bound graphics pipeline's summary with the dynamic state
++    * set since, and the bound index buffer (index_size 0: none or a NULL one) */
++   struct vkr_pipeline_draw draw;
++   uint8_t index_size;
++   VkDeviceSize index_range;
++   /* OmacVM (virgl-venus-encoder-cap.patch, ADR 0065): the Metal passes (render encoders)
++    * this recording opens, its secondaries' each time they are executed included */
++   uint32_t weight;
+ };
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch): Metal ends the process (SIGABRT, "Failed to
++ * allocate IOGPUDeviceShmem") at about 98304 passes in one Metal command buffer (M4: 75000); the M1
++ * probes (work/v624-hostmem): KosmicKrisp at record time (each clear level, pass begin,
++ * in-pass barrier of a multisampled pass, and draws that split a pass:
++ * vkr_cmd_draw_weigh), MoltenVK when it encodes the command buffer (at vkQueueSubmit, or
++ * at vkEndCommandBuffer with prefill), all command buffers of one batch into one Metal
++ * command buffer. Blit and resolve regions count as a pass each to be safe (KosmicKrisp
++ * took 65536 of either; MoltenVK with prefill ended the process at the end of 204800).
++ * A 3D image's depth slices are one pass with its level. A command buffer may
++ * open VKR_ENCODER_CAP, a MoltenVK batch twice that; past it the app's context ends.
++ * OMACVM_VENUS_ENCODER_CAP sets it (tests). */
++#define VKR_ENCODER_CAP 16384u
++
++uint32_t
++vkr_encoder_cap(void);
++
++/* the passes of a command buffer (0 for a handle vkr does not know) */
++uint32_t
++vkr_command_buffer_weight(VkCommandBuffer handle);
++
+ /* a dynamic rendering's views with 8 color attachments: colors and their resolves, depth,
+  * stencil and their resolves, shading rate, density map */
+ #define VKR_CMD_VIEW_STORAGE 22
+diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
+index 1c84241..03fe07d 100644
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -322,6 +322,16 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
+    const VkPhysicalDeviceVulkan14Features *v14 = vkr_find_struct(
+       args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES);
+    dev->maintenance6 = (maintenance6 && maintenance6->maintenance6) || (v14 && v14->maintenance6);
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   const VkPhysicalDevicePipelineRobustnessFeaturesEXT *robustness = vkr_find_struct(
++      args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT);
++   const VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT *list_restart = vkr_find_struct(
++      args->pCreateInfo->pNext,
++      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT);
++   dev->robust_index = (robustness2 && robustness2->robustBufferAccess2) ||
++                       (robustness && robustness->pipelineRobustness) ||
++                       (v14 && v14->pipelineRobustness);
++   dev->list_restart = list_restart && list_restart->primitiveTopologyListRestart;
+    /* OmacVM (virgl-venus-ignored-values.patch) */
+    const VkPhysicalDeviceExtendedDynamicState3FeaturesEXT *dynamic3 = vkr_find_struct(
+       args->pCreateInfo->pNext,
+diff --git a/src/venus/vkr_device.h b/src/venus/vkr_device.h
+index 5d76f54..f722097 100644
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -33,6 +33,11 @@ struct vkr_device {
+     * (maintenance6) */
+    bool null_descriptor;
+    bool maintenance6;
++   /* OmacVM (virgl-venus-encoder-cap.patch): robustBufferAccess2 or pipelineRobustness, and
++    * primitiveTopologyListRestart, as the guest turned them on (KosmicKrisp unrolls indexed
++    * draws for them, vkr_command_buffer.c) */
++   bool robust_index;
++   bool list_restart;
+    /* OmacVM (virgl-venus-ignored-values.patch): the extendedDynamicState3 blend features
+     * the guest turned on (enable, equation and write mask all three; advanced), and
+     * advancedBlendCoherentOperations: when a color blend state's array and count are
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+index 93248b9..863d848 100644
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -302,6 +302,122 @@ vkr_pipeline_set_bind_point(struct object_array *arr, VkPipelineBindPoint bind_p
+    }
+ }
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch): a stage's module has a Flat decoration (code
++ * chained into the stage is scanned again here; it passed vkr_stage_shader_ok) */
++static bool
++vkr_stage_flat(const VkPipelineShaderStageCreateInfo *st)
++{
++   const struct vkr_shader_module *module = vkr_shader_module_from_handle(st->module);
++   if (module)
++      return !module->spirv || module->spirv->flat;
++   const VkShaderModuleCreateInfo *code =
++      vkr_find_struct(st->pNext, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
++   char why[64];
++   struct vkr_spirv_info *own = code ? vkr_spirv_scan(code->pCode, code->codeSize, why, sizeof(why)) : NULL;
++   const bool flat = !own || own->flat;
++   vkr_spirv_free(own);
++   return flat;
++}
++
++/* OmacVM (virgl-venus-encoder-cap.patch): the draw summary of a graphics pipeline's create
++ * info: its libraries' first, then its own parts (all of them without a
++ * VkGraphicsPipelineLibraryCreateInfoEXT) */
++static void
++vkr_pipeline_draw_of(const VkGraphicsPipelineCreateInfo *info, struct vkr_pipeline_draw *d)
++{
++   memset(d, 0, sizeof(*d));
++   for (const VkBaseInStructure *s = info->pNext; s; s = s->pNext) {
++      if (s->sType != VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR)
++         continue;
++      const VkPipelineLibraryCreateInfoKHR *lib = (const VkPipelineLibraryCreateInfoKHR *)s;
++      for (uint32_t i = 0; lib->pLibraries && i < lib->libraryCount; i++) {
++         const struct vkr_pipeline *p = vkr_pipeline_from_handle(lib->pLibraries[i]);
++         if (!p)
++            continue;
++         const struct vkr_pipeline_draw *l = &p->draw;
++         d->tess |= l->tess;
++         d->flat |= l->flat;
++         d->pass_state |= l->pass_state;
++         d->dynamic |= l->dynamic;
++         if (l->known & VKR_DRAW_TOPOLOGY)
++            d->topology = l->topology;
++         if (l->known & VKR_DRAW_RESTART)
++            d->restart = l->restart;
++         if (l->known & VKR_DRAW_PROVOKING)
++            d->last = l->last;
++         d->known |= l->known;
++      }
++   }
++   const VkGraphicsPipelineLibraryCreateInfoEXT *parts =
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT);
++   const VkGraphicsPipelineLibraryFlagsEXT flags =
++      parts ? parts->flags
++            : VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT |
++                 VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT |
++                 VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT |
++                 VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT;
++   const VkPipelineDynamicStateCreateInfo *dyn = info->pDynamicState;
++   for (uint32_t i = 0; dyn && i < dyn->dynamicStateCount; i++) {
++      switch (dyn->pDynamicStates[i]) {
++      case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY:
++         d->dynamic |= VKR_DRAW_TOPOLOGY;
++         break;
++      case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE:
++         d->dynamic |= VKR_DRAW_RESTART;
++         break;
++      case VK_DYNAMIC_STATE_PROVOKING_VERTEX_MODE_EXT:
++         d->dynamic |= VKR_DRAW_PROVOKING;
++         break;
++      default:
++         break;
++      }
++   }
++   for (uint32_t i = 0; info->pStages && i < info->stageCount; i++) {
++      const VkPipelineShaderStageCreateInfo *st = &info->pStages[i];
++      if (st->stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT &&
++          (flags & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT))
++         d->tess = true;
++      if (st->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
++          (flags & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT))
++         d->flat |= vkr_stage_flat(st);
++   }
++   const VkPipelineInputAssemblyStateCreateInfo *ia = info->pInputAssemblyState;
++   if (ia && (flags & VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT)) {
++      d->topology = (uint8_t)MIN2((uint32_t)ia->topology, 255u);
++      d->restart = ia->primitiveRestartEnable;
++      d->known |= VKR_DRAW_TOPOLOGY | VKR_DRAW_RESTART;
++   }
++   const VkPipelineRasterizationStateCreateInfo *rs = info->pRasterizationState;
++   if (rs && (flags & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT)) {
++      const VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *pv = vkr_find_struct(
++         rs->pNext, VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT);
++      d->last = pv && pv->provokingVertexMode == VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT;
++      d->known |= VKR_DRAW_PROVOKING;
++   }
++   const VkPipelineMultisampleStateCreateInfo *ms = info->pMultisampleState;
++   if (ms && (flags & (VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT |
++                       VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT))) {
++      const VkPipelineSampleLocationsStateCreateInfoEXT *sl = vkr_find_struct(
++         ms->pNext, VK_STRUCTURE_TYPE_PIPELINE_SAMPLE_LOCATIONS_STATE_CREATE_INFO_EXT);
++      d->pass_state |= sl && sl->sampleLocationsEnable;
++   }
++   d->pass_state |=
++      vkr_find_struct(info->pNext, VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO) != NULL;
++}
++
++/* OmacVM (virgl-venus-encoder-cap.patch): as vkr_pipeline_set_used_sets, for the draw
++ * summaries; frees `draws` */
++static void
++vkr_pipeline_set_draws(struct object_array *arr, struct vkr_pipeline_draw *draws)
++{
++   for (uint32_t i = 0; arr && i < arr->count; i++) {
++      struct vkr_pipeline *pipeline = arr->objects[i];
++      if (pipeline)
++         pipeline->draw = draws[i];
++   }
++   free(draws);
++}
++
+ /* OmacVM (virgl-venus-unset-state.patch): each object, made before the driver's call, gets
+  * the sets of its create info (the objects are by create info index, so whichever the
+  * driver then makes, a partial failure or VK_PIPELINE_COMPILE_REQUIRED included, has its
+@@ -874,20 +990,28 @@ vkr_dispatch_vkCreateGraphicsPipelines(struct vn_dispatch_context *dispatch,
+    /* OmacVM (virgl-venus-unset-state.patch): the sets each create info's stages use, by
+     * index, given to its pipeline object once it is made */
+    uint32_t *used = calloc(MAX2(args->createInfoCount, 1), sizeof(*used));
+-   if (!vkr_context_check(ctx, used, "vkCreateGraphicsPipelines", "out of host memory"))
++   /* OmacVM (virgl-venus-encoder-cap.patch): and each one's draw summary */
++   struct vkr_pipeline_draw *draws = calloc(MAX2(args->createInfoCount, 1), sizeof(*draws));
++   if (!vkr_context_check(ctx, used && draws, "vkCreateGraphicsPipelines", "out of host memory")) {
++      free(used);
++      free(draws);
+       return;
++   }
+    for (uint32_t i = 0; i < args->createInfoCount; i++) {
+       if (!vkr_graphics_pipeline_ok(dev, &args->pCreateInfos[i], &used[i], why, sizeof(why))) {
+          vkr_context_refuse(ctx, true, "vkCreateGraphicsPipelines", "pipeline %u: %s", i, why);
+          free(used);
++         free(draws);
+          return;
+       }
++      vkr_pipeline_draw_of(&args->pCreateInfos[i], &draws[i]);
+    }
+ 
+    /* OmacVM (virgl-venus-ring-lock.patch): vkr_graphics_pipeline_create_array, the driver
+     * without the dispatch lock and the objects named pinned */
+    const bool init = vkr_graphics_pipeline_init_array(ctx, args, &arr) == VK_SUCCESS;
+    vkr_pipeline_set_used_sets(init ? &arr : NULL, used);
++   vkr_pipeline_set_draws(init ? &arr : NULL, draws); /* OmacVM (virgl-venus-encoder-cap.patch) */
+    if (!init)
+       return;
+    struct vkr_pins pins;
+diff --git a/src/venus/vkr_pipeline.h b/src/venus/vkr_pipeline.h
+index 5ae1219..a1a6e23 100644
+--- a/src/venus/vkr_pipeline.h
++++ b/src/venus/vkr_pipeline.h
+@@ -32,8 +32,29 @@ struct vkr_pipeline_cache {
+ };
+ VKR_DEFINE_OBJECT_CAST(pipeline_cache, VK_OBJECT_TYPE_PIPELINE_CACHE, VkPipelineCache)
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch): what decides whether its draws split a Metal pass
++ * (vkr_cmd_draw_weigh in vkr_command_buffer.c) */
++enum {
++   VKR_DRAW_TOPOLOGY = 1 << 0,  /* topology */
++   VKR_DRAW_RESTART = 1 << 1,   /* primitive restart */
++   VKR_DRAW_PROVOKING = 1 << 2, /* provoking vertex mode */
++};
++struct vkr_pipeline_draw {
++   uint8_t topology; /* VkPrimitiveTopology */
++   bool restart, last; /* primitive restart on; the last vertex provokes */
++   bool tess;          /* a tessellation evaluation stage */
++   bool flat;          /* its fragment shader has a Flat decoration */
++   /* static sample locations on, or attachment locations: a bind inside a pass may start a
++    * new Metal pass */
++   bool pass_state;
++   uint8_t known;   /* VKR_DRAW_*: the state it (or a library it links) sets */
++   uint8_t dynamic; /* VKR_DRAW_*: of that, what is dynamic */
++};
++
+ struct vkr_pipeline {
+    struct vkr_object base;
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   struct vkr_pipeline_draw draw;
+    /* OmacVM (virgl-venus-command-limits.patch): vkCmdBindPipeline binds it here only */
+    VkPipelineBindPoint bind_point;
+    /* OmacVM (virgl-venus-unset-state.patch): the descriptor sets (bit n: set n, n < 32) its
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index f74f8e6..5aee693 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -9,6 +9,8 @@
+ 
+ #include "vkr_context.h"
+ #include "vkr_physical_device.h"
++/* OmacVM (virgl-venus-encoder-cap.patch) */
++#include "vkr_command_buffer.h"
+ #include "vkr_queue_gen.h"
+ 
+ #ifdef __APPLE__
+@@ -498,6 +500,32 @@ vkr_submit_chain_ok(struct vn_dispatch_context *dispatch,
+                             signal_count);
+ }
+ 
++/* OmacVM (virgl-venus-encoder-cap.patch): MoltenVK encodes a batch's command buffers into one
++ * Metal command buffer at the submit; Metal ended the process at 8 x 16384 passes in one
++ * batch (4 x 16384 and 8 batches of 16384 went through). A batch may open twice what a
++ * command buffer may; past it the app's context ends. KosmicKrisp has a Metal command
++ * buffer per command buffer (8 x 16384 in one batch went through). */
++static bool
++vkr_batch_weight_ok(struct vn_dispatch_context *dispatch,
++                    const struct vkr_queue *queue,
++                    const char *call,
++                    uint32_t batch,
++                    uint32_t count,
++                    const VkCommandBuffer *cmds,
++                    const VkCommandBufferSubmitInfo *infos)
++{
++   if (queue->device->physical_device->limits.kosmickrisp)
++      return true;
++   uint64_t total = 0;
++   for (uint32_t i = 0; i < count; i++)
++      total += vkr_command_buffer_weight(cmds ? cmds[i] : infos[i].commandBuffer);
++   const uint64_t cap = 2 * (uint64_t)vkr_encoder_cap();
++   return vkr_context_check(dispatch->data, total <= cap, call,
++                            "batch %u: %" PRIu64 " Metal passes in its %u command buffers, past "
++                            "vkr's %" PRIu64 " for one Metal command buffer",
++                            batch, total, count, cap);
++}
++
+ static void
+ vkr_dispatch_vkQueueSubmit(struct vn_dispatch_context *dispatch,
+                            struct vn_command_vkQueueSubmit *args)
+@@ -513,6 +541,10 @@ vkr_dispatch_vkQueueSubmit(struct vn_dispatch_context *dispatch,
+                                submit->waitSemaphoreCount, submit->commandBufferCount,
+                                submit->signalSemaphoreCount, true))
+          return;
++      /* OmacVM (virgl-venus-encoder-cap.patch) */
++      if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit", i, submit->commandBufferCount,
++                               submit->pCommandBuffers, NULL))
++         return;
+    }
+ 
+    vn_replace_vkQueueSubmit_args_handle(args);
+@@ -567,13 +599,22 @@ vkr_dispatch_vkQueueWaitIdle(struct vn_dispatch_context *dispatch,
+ }
+ 
+ static void
+-vkr_dispatch_vkQueueSubmit2(UNUSED struct vn_dispatch_context *dispatch,
++vkr_dispatch_vkQueueSubmit2(struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkQueueSubmit2 *args)
+ {
+    TRACE_FUNC();
+    struct vkr_queue *queue = vkr_queue_from_handle(args->queue);
+    struct vn_device_proc_table *vk = &queue->device->proc_table;
+ 
++   /* OmacVM (virgl-venus-encoder-cap.patch) */
++   for (uint32_t i = 0; i < args->submitCount; i++) {
++      const VkSubmitInfo2 *submit = &args->pSubmits[i];
++      if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit2", i,
++                               submit->commandBufferInfoCount, NULL,
++                               submit->pCommandBufferInfos))
++         return;
++   }
++
+    vn_replace_vkQueueSubmit2_args_handle(args);
+ 
+    mtx_lock(&queue->vk_mutex);
+diff --git a/src/venus/vkr_spirv.c b/src/venus/vkr_spirv.c
+index 7881058..f429747 100644
+--- a/src/venus/vkr_spirv.c
++++ b/src/venus/vkr_spirv.c
+@@ -110,6 +110,7 @@ enum {
+    DEC_PER_TASK = 5273,
+    DEC_PER_VERTEX = 5285,
+    DEC_DESCRIPTOR_SET = 34,
++   DEC_FLAT = 14, /* OmacVM (virgl-venus-encoder-cap.patch) */
+    BUILT_IN_WORKGROUP_SIZE = 25,
+    MODE_LOCAL_SIZE = 17,
+    MODE_LOCAL_SIZE_ID = 38,
+@@ -313,6 +314,9 @@ record(struct scan *s, size_t at, uint32_t op, uint32_t len)
+    case OP_DECORATE:
+       if (len < 3 || !id_ok(s, w[1]))
+          return fail(s, "a decoration of an id past the bound", at);
++      /* OmacVM (virgl-venus-encoder-cap.patch) */
++      if (w[2] == DEC_FLAT)
++         s->info->flat = true;
+       if (w[2] == DEC_BUILT_IN && len >= 4 && w[3] == BUILT_IN_WORKGROUP_SIZE) {
+          s->workgroup_composite = w[1];
+       } else if (w[2] == DEC_SPEC_ID || w[2] == DEC_BINDING || w[2] == DEC_DESCRIPTOR_SET ||
+@@ -332,6 +336,9 @@ record(struct scan *s, size_t at, uint32_t op, uint32_t len)
+       }
+       return true;
+    case OP_MEMBER_DECORATE:
++      /* OmacVM (virgl-venus-encoder-cap.patch) */
++      if (len >= 4 && w[3] == DEC_FLAT)
++         s->info->flat = true;
+       /* a struct with a BuiltIn member is a built-in block: kept as BuiltIn on the struct */
+       if (len >= 4 && w[3] == DEC_BUILT_IN && id_ok(s, w[1])) {
+          struct deco *d = vec_add(&s->decos, 1, sizeof(*d));
+diff --git a/src/venus/vkr_spirv.h b/src/venus/vkr_spirv.h
+index 819c718..8c12bc7 100644
+--- a/src/venus/vkr_spirv.h
++++ b/src/venus/vkr_spirv.h
+@@ -162,6 +162,10 @@ struct vkr_spirv_info {
+    struct vkr_spirv_pair *interface;
+    /* what the types cost (VKR_SPIRV_MAX_TYPE_COST) */
+    uint64_t type_cost;
++   /* OmacVM (virgl-venus-encoder-cap.patch): the module decorates something Flat (a
++    * fragment shader's flat inputs: KosmicKrisp unrolls such draws when the last vertex
++    * provokes, vkr_command_buffer.c) */
++   bool flat;
+ };
+ 
+ /* the scan of `bytes` bytes of SPIR-V; NULL with a reason in why (malformed or too big) */

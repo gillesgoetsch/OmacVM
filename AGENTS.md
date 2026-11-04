@@ -906,6 +906,22 @@ The less obvious ones, with causes and where the fix lives, are in
   first of a type and the drivers use the last: a chain vkr checks refuses
   repeats first (`vkr_chain_once`, `vkr_context_chain_ok`; a new check of a
   chain goes behind one, with a `-repeat-` case).
+- Do not let a guest Venus call open Metal passes or make the Mac hold memory
+  that vkr does not count. Metal ends the process at about 98304 passes in one
+  Metal command buffer on an M1 Max, about 75000 on an M4 (KosmicKrisp while recording, MoltenVK when it encodes,
+  a batch in one): a `vkCmd*` that opens a pass weighs it (`vkr_cmd_weigh`; 16384
+  per command buffer, a MoltenVK batch 32768), and so does a draw or state
+  change that splits a pass (`vkr_cmd_draw_weigh`: KosmicKrisp's unrolled and
+  predicated draws, tessellation, sample-location and attachment-location
+  changes). Count by a probe (footprint per call, the abort point), never by
+  reading alone; what a probe did not settle (blits and resolves: no abort on
+  KosmicKrisp at 65536) is counted to be safe and said so. A new object type or a recording
+  that costs more than 512 B per command gets a charge in the context's host
+  account (`vkr_object_host_cost`, `vkr_cmd_extra`) of at least what a probe
+  measured (footprint per operation, both drivers, also after a submit), and an
+  h- case in `test-venus-commands.c`; charges come back in `vkr_object_free`,
+  never where the id leaves the table (ADR 0065, "Metal passes and host
+  memory").
 - Do not run guest apps on Zink as their OpenGL (`MESA_LOADER_DRIVER_OVERRIDE=zink`)
   in an OmacVM.app VM with Vulkan: on KosmicKrisp it gives OpenGL 2.1 only.
   Ghostty's OpenGL 4.3 comes from llvmpipe instead. With the 3.2.13 app and
