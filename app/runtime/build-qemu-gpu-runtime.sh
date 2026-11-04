@@ -1808,8 +1808,9 @@ grep -q 'if (!vkr_cmd_weigh(dispatch, args->commandBuffer, weight, "vkCmdExecute
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-host-memory.patch"
 grep -q 'if (!vkr_cmd_cost(dispatch->data, _cmd, VKR_CMD_COST_BASE, "vk" #cmd_name))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'vkr_object_charge(ctx, obj); /\* OmacVM (virgl-venus-host-memory.patch) \*/' "$virgl_source/src/venus/vkr_context.h" && \
-  grep -q 'vkr_memory_heaps_clamp(&physical_dev->memory_properties);' "$virgl_source/src/venus/vkr_physical_device.c" || \
-  die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c: recordings and objects are not charged (host-memory patch)"
+  grep -q 'vkr_memory_heaps_clamp(&physical_dev->memory_properties);' "$virgl_source/src/venus/vkr_physical_device.c" && \
+  grep -q 'vkr_object_charge_more(ctx, &module->base, 2 \* (uint64_t)args->pCreateInfo->codeSize,' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c, vkr_pipeline.c: recordings and objects are not charged (host-memory patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
