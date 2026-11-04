@@ -61,34 +61,32 @@ static int failures;
       }                                                                                      \
    } while (0)
 
+/* the interface limits both drivers report on an M4 (out2/limits-*.txt; MoltenVK: 124
+ * components, no geometry shaders), as VkPhysicalDeviceLimits gives them to
+ * vkr_physical_device_init_spirv_target */
+static const struct vkr_spirv_device_io kk_io = { 32, 128, 128, 128, 120, 128, 128, 128, 128, 128, 8 };
+static const struct vkr_spirv_device_io mvk_io = { 31, 124, 124, 124, 120, 124, 124, 0, 0, 124, 8 };
+
 static bool
 profile(const char *name, struct vkr_spirv_target *t)
 {
    const uint32_t common = VKR_SPIRV_SCALAR_LAYOUT | VKR_SPIRV_STD_UNIFORM_LAYOUT |
                            VKR_SPIRV_LOCAL_SIZE_ID | VKR_SPIRV_RELAXED_LAYOUT;
-   /* the interface limits both drivers report on an M4 (MoltenVK: 124 components, no
-    * geometry shaders) as vkr keeps them */
-   if (!strcmp(name, "kk")) {
-      const bool ok = vkr_spirv_target_init(t, API(1, 4), true, common | VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT);
-      t->io = (struct vkr_spirv_io_limits){ 32, 32, 32, 32, 30, 32, 32, 32, 32, 32, 8 };
-      return ok;
-   }
-   if (!strcmp(name, "mvk") || !strcmp(name, "mvk11")) {
-      const bool ok = vkr_spirv_target_init(t, name[3] ? API(1, 1) : API(1, 4), true, common);
-      /* no geometry shaders: Vulkan's minimum, 16 locations (vkr_physical_device.c) */
-      t->io = (struct vkr_spirv_io_limits){ 31, 31, 31, 31, 30, 31, 31, 16, 16, 31, 8 };
-      return ok;
-   }
+   if (!strcmp(name, "kk"))
+      return vkr_spirv_target_init(t, API(1, 4), true, common | VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT,
+                                   &kk_io);
+   if (!strcmp(name, "mvk") || !strcmp(name, "mvk11"))
+      return vkr_spirv_target_init(t, name[3] ? API(1, 1) : API(1, 4), true, common, &mvk_io);
    if (!strcmp(name, "1.1"))
-      return vkr_spirv_target_init(t, API(1, 1), false, 0);
+      return vkr_spirv_target_init(t, API(1, 1), false, 0, NULL);
    if (!strcmp(name, "1.1spv1.4"))
-      return vkr_spirv_target_init(t, API(1, 1), true, 0);
+      return vkr_spirv_target_init(t, API(1, 1), true, 0, NULL);
    if (!strcmp(name, "1.2"))
-      return vkr_spirv_target_init(t, API(1, 2), true, 0);
+      return vkr_spirv_target_init(t, API(1, 2), true, 0, NULL);
    if (!strcmp(name, "1.3"))
-      return vkr_spirv_target_init(t, API(1, 3), true, 0);
+      return vkr_spirv_target_init(t, API(1, 3), true, 0, NULL);
    if (!strcmp(name, "1.4"))
-      return vkr_spirv_target_init(t, API(1, 4), true, 0);
+      return vkr_spirv_target_init(t, API(1, 4), true, 0, NULL);
    return false;
 }
 
@@ -498,7 +496,7 @@ target_units(void)
 {
    struct vkr_spirv_target t;
    char text[128];
-   CHECK(!vkr_spirv_target_init(&t, API(1, 0), true, 0), "target: Vulkan 1.0 has none");
+   CHECK(!vkr_spirv_target_init(&t, API(1, 0), true, 0, NULL), "target: Vulkan 1.0 has none");
    static const struct {
       uint32_t api;
       bool spv14;
@@ -512,13 +510,35 @@ target_units(void)
       { API(1, 9), false, "SPIR-V 1.6 (under Vulkan 1.4 semantics)" },
    };
    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-      CHECK(vkr_spirv_target_init(&t, cases[i].api | 363, cases[i].spv14, 0), "target %u", i);
+      CHECK(vkr_spirv_target_init(&t, cases[i].api | 363, cases[i].spv14, 0, NULL), "target %u", i);
       vkr_spirv_target_text(&t, text, sizeof(text));
       CHECK(!strcmp(text, cases[i].want), "target %u: %s, want %s", i, text, cases[i].want);
    }
-   vkr_spirv_target_init(&t, API(1, 4), true, VKR_SPIRV_SCALAR_LAYOUT | VKR_SPIRV_RELAXED_LAYOUT);
+   vkr_spirv_target_init(&t, API(1, 4), true, VKR_SPIRV_SCALAR_LAYOUT | VKR_SPIRV_RELAXED_LAYOUT,
+                         NULL);
    vkr_spirv_target_text(&t, text, sizeof(text));
    CHECK(strstr(text, " scalar") && strstr(text, " relaxed") && !strstr(text, " std"), "target text: %s", text);
+
+   /* the interface limits from the device's (vkr_physical_device_init_spirv_target): its
+    * components / 4, a stage it lacks (MoltenVK's geometry, 0 components) Vulkan's minimum,
+    * no device all of Vulkan's minimums */
+   static const struct {
+      const char *name;
+      const struct vkr_spirv_device_io *device;
+      struct vkr_spirv_io_limits want;
+   } io_cases[] = {
+      { "kk", &kk_io, { 32, 32, 32, 32, 30, 32, 32, 32, 32, 32, 8 } },
+      { "mvk", &mvk_io, { 31, 31, 31, 31, 30, 31, 31, 16, 16, 31, 8 } },
+      { "none", NULL, { 16, 16, 16, 16, 30, 16, 16, 16, 16, 16, 4 } },
+   };
+   for (unsigned i = 0; i < sizeof(io_cases) / sizeof(io_cases[0]); i++) {
+      CHECK(vkr_spirv_target_init(&t, API(1, 4), true, 0, io_cases[i].device), "target io %s",
+            io_cases[i].name);
+      CHECK(!memcmp(&t.io, &io_cases[i].want, sizeof(t.io)),
+            "target io %s: geometry in %u out %u, vertex in %u out %u, fragment out %u",
+            io_cases[i].name, t.io.geometry_in, t.io.geometry_out, t.io.vertex_in,
+            t.io.vertex_out, t.io.fragment_out);
+   }
 }
 
 /* --- units: Function and Private elements, Workgroup bytes --- */

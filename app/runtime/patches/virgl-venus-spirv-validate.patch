@@ -112,7 +112,7 @@ diff --git a/src/venus/vkr_common.c b/src/venus/vkr_common.c
 diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
 --- a/src/venus/vkr_physical_device.c
 +++ b/src/venus/vkr_physical_device.c
-@@ -531,7 +531,116 @@
+@@ -531,7 +531,112 @@
     l->kosmickrisp = driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP;
     if (driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP)
        l->multiview_views = MIN2(l->multiview_views, vkr_metal_max_vertex_amplification());
@@ -191,30 +191,26 @@ diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
 +      options |= VKR_SPIRV_LOCAL_SIZE_ID;
 +   if (wg.workgroupMemoryExplicitLayoutScalarBlockLayout)
 +      options |= VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT;
++   /* interface variables may take the locations the device's limits give, checked before
++    * spirv-val, whose walk over them grows with them (vkr_spirv_target_init: a stage the
++    * device lacks keeps Vulkan's minimum) */
++   const VkPhysicalDeviceLimits *l = &physical_dev->properties.limits;
++   const struct vkr_spirv_device_io io = {
++      .vertex_input_attributes = l->maxVertexInputAttributes,
++      .vertex_output_components = l->maxVertexOutputComponents,
++      .tess_control_input_components = l->maxTessellationControlPerVertexInputComponents,
++      .tess_control_output_components = l->maxTessellationControlPerVertexOutputComponents,
++      .tess_control_patch_output_components = l->maxTessellationControlPerPatchOutputComponents,
++      .tess_eval_input_components = l->maxTessellationEvaluationInputComponents,
++      .tess_eval_output_components = l->maxTessellationEvaluationOutputComponents,
++      .geometry_input_components = l->maxGeometryInputComponents,
++      .geometry_output_components = l->maxGeometryOutputComponents,
++      .fragment_input_components = l->maxFragmentInputComponents,
++      .fragment_output_attachments = l->maxFragmentOutputAttachments,
++   };
 +   physical_dev->spirv_target_ok = vkr_spirv_target_init(
 +      &physical_dev->spirv_target, version,
-+      vkr_physical_device_lists(physical_dev, VK_KHR_SPIRV_1_4_EXTENSION_NAME), options);
-+   /* interface variables may take the locations the device's limits give (a component
-+    * limit / 4), checked before spirv-val, whose walk over them grows with them. A stage the
-+    * device lacks keeps Vulkan's minimum (vkr_spirv_target_init): MoltenVK has no geometry
-+    * shaders (0 components), and vkd3d-proton's geometry module would else end its context
-+    * at vkCreateShaderModule */
-+   const VkPhysicalDeviceLimits *l = &physical_dev->properties.limits;
-+   struct vkr_spirv_io_limits *io = &physical_dev->spirv_target.io;
-+   io->vertex_in = MAX2(io->vertex_in, l->maxVertexInputAttributes);
-+   io->vertex_out = MAX2(io->vertex_out, l->maxVertexOutputComponents / 4);
-+   io->tess_control_in =
-+      MAX2(io->tess_control_in, l->maxTessellationControlPerVertexInputComponents / 4);
-+   io->tess_control_out =
-+      MAX2(io->tess_control_out, l->maxTessellationControlPerVertexOutputComponents / 4);
-+   io->tess_control_patch_out =
-+      MAX2(io->tess_control_patch_out, l->maxTessellationControlPerPatchOutputComponents / 4);
-+   io->tess_eval_in = MAX2(io->tess_eval_in, l->maxTessellationEvaluationInputComponents / 4);
-+   io->tess_eval_out = MAX2(io->tess_eval_out, l->maxTessellationEvaluationOutputComponents / 4);
-+   io->geometry_in = MAX2(io->geometry_in, l->maxGeometryInputComponents / 4);
-+   io->geometry_out = MAX2(io->geometry_out, l->maxGeometryOutputComponents / 4);
-+   io->fragment_in = MAX2(io->fragment_in, l->maxFragmentInputComponents / 4);
-+   io->fragment_out = MAX2(io->fragment_out, l->maxFragmentOutputAttachments);
++      vkr_physical_device_lists(physical_dev, VK_KHR_SPIRV_1_4_EXTENSION_NAME), options, &io);
  
 +   /* once per process and Vulkan version (MoltenVK's follows the app): which target, and
 +    * whether a refusal ends the app's context */
@@ -229,7 +225,7 @@ diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
  }
  
  static void
-@@ -713,6 +822,7 @@
+@@ -713,6 +818,7 @@
        vkr_physical_device_init_extensions(physical_dev);
        vkr_physical_device_init_missing_entries(physical_dev);
        vkr_physical_device_init_limits(physical_dev);
@@ -391,7 +387,7 @@ diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
 diff --git a/src/venus/vkr_spirv_validate.c b/src/venus/vkr_spirv_validate.c
 --- /dev/null
 +++ b/src/venus/vkr_spirv_validate.c
-@@ -0,0 +1,294 @@
+@@ -0,0 +1,318 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -434,18 +430,42 @@ diff --git a/src/venus/vkr_spirv_validate.c b/src/venus/vkr_spirv_validate.c
 +   bool ready;
 +} cache = { .lock = PTHREAD_MUTEX_INITIALIZER };
 +
++static uint32_t
++at_least(uint32_t minimum, uint32_t value)
++{
++   return value > minimum ? value : minimum;
++}
++
 +bool
 +vkr_spirv_target_init(struct vkr_spirv_target *target,
 +                      uint32_t api_version,
 +                      bool spirv_1_4,
-+                      uint32_t options)
++                      uint32_t options,
++                      const struct vkr_spirv_device_io *device)
 +{
 +   /* VK_API_VERSION_MAJOR/MINOR without the variant */
 +   const uint32_t major = (api_version >> 22) & 0x7f, minor = (api_version >> 12) & 0x3ff;
 +   spv_target_env env;
 +   /* Vulkan's required minimums (maxVertexInputAttributes 16, 64 components, 120 per patch,
-+    * maxFragmentOutputAttachments 4) until the device sets its own */
-+   target->io = (struct vkr_spirv_io_limits){ 16, 16, 16, 16, 30, 16, 16, 16, 16, 16, 4 };
++    * maxFragmentOutputAttachments 4), raised to the device's */
++   struct vkr_spirv_io_limits *io = &target->io;
++   *io = (struct vkr_spirv_io_limits){ 16, 16, 16, 16, 30, 16, 16, 16, 16, 16, 4 };
++   if (device) {
++      io->vertex_in = at_least(io->vertex_in, device->vertex_input_attributes);
++      io->vertex_out = at_least(io->vertex_out, device->vertex_output_components / 4);
++      io->tess_control_in =
++         at_least(io->tess_control_in, device->tess_control_input_components / 4);
++      io->tess_control_out =
++         at_least(io->tess_control_out, device->tess_control_output_components / 4);
++      io->tess_control_patch_out =
++         at_least(io->tess_control_patch_out, device->tess_control_patch_output_components / 4);
++      io->tess_eval_in = at_least(io->tess_eval_in, device->tess_eval_input_components / 4);
++      io->tess_eval_out = at_least(io->tess_eval_out, device->tess_eval_output_components / 4);
++      io->geometry_in = at_least(io->geometry_in, device->geometry_input_components / 4);
++      io->geometry_out = at_least(io->geometry_out, device->geometry_output_components / 4);
++      io->fragment_in = at_least(io->fragment_in, device->fragment_input_components / 4);
++      io->fragment_out = at_least(io->fragment_out, device->fragment_output_attachments);
++   }
 +   if (major != 1 || minor < 1)
 +      return false;
 +   if (minor == 1)
@@ -689,7 +709,7 @@ diff --git a/src/venus/vkr_spirv_validate.c b/src/venus/vkr_spirv_validate.c
 diff --git a/src/venus/vkr_spirv_validate.h b/src/venus/vkr_spirv_validate.h
 --- /dev/null
 +++ b/src/venus/vkr_spirv_validate.h
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,107 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -742,14 +762,29 @@ diff --git a/src/venus/vkr_spirv_validate.h b/src/venus/vkr_spirv_validate.h
 +   struct vkr_spirv_io_limits io;
 +};
 +
++/* the device's interface limits as VkPhysicalDeviceLimits gives them (the fields of the same
++ * names: maxVertexInputAttributes, the component limits, maxFragmentOutputAttachments) */
++struct vkr_spirv_device_io {
++   uint32_t vertex_input_attributes, vertex_output_components;
++   uint32_t tess_control_input_components, tess_control_output_components;
++   uint32_t tess_control_patch_output_components;
++   uint32_t tess_eval_input_components, tess_eval_output_components;
++   uint32_t geometry_input_components, geometry_output_components;
++   uint32_t fragment_input_components, fragment_output_attachments;
++};
++
 +/* the target for a device of api_version (VK_MAKE_API_VERSION) with or without
-+ * VK_KHR_spirv_1_4, and its VKR_SPIRV_* options; false for a version below 1.1. The
-+ * interface limits start at Vulkan's required minimums; the device sets its own. */
++ * VK_KHR_spirv_1_4, its VKR_SPIRV_* options and its interface limits (a component limit / 4;
++ * NULL: Vulkan's required minimums); false for a version below 1.1. A limit below Vulkan's
++ * minimum keeps the minimum: a stage the device lacks, as MoltenVK's geometry stage (0
++ * components), would else refuse every module that has one (vkd3d-proton's geometry module
++ * at vkCreateShaderModule). */
 +bool
 +vkr_spirv_target_init(struct vkr_spirv_target *target,
 +                      uint32_t api_version,
 +                      bool spirv_1_4,
-+                      uint32_t options);
++                      uint32_t options,
++                      const struct vkr_spirv_device_io *device);
 +
 +/* "vulkan1.3 scalar std ..." for log lines */
 +void
