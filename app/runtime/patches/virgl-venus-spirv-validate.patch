@@ -51,18 +51,25 @@ uint[2^32-1] took it past 512 MB (location tracking per element; 7 of 7 fuzz
 seeds found that class within seconds), a struct of two of the previous one 30
 deep past 20 s, 1000 nested loops (88 KB) 53 s; with the checks above the
 slowest of 118 such modules took 2.03 s (a chain of 262118 blocks, stopped at
-2 s), and a 10-minute fuzz run (136 million mutants, 13.6 million through the
-scan) hit no cap and no crash. Real modules cost at most 17002 and take at
-most 3.6 ms. With the device's options 0 of the real modules are refused
-(vulkan1.3 defaults refused 5: DXVK's d3d9 and vkd3d-proton use scalar
-layouts; a vulkan1.2 target refused 71 SPIR-V 1.6 modules).
+2 s). valfuzz (one process, 10 minutes, capped at 512 MB inside it) found one
+more crash in spirv-val on the final checks (seed 104: a BuiltIn untyped
+variable, spirv-tools-val-catch-throws.patch); after its fix seed 104 again
+(134.9 million mutants, 13.4 million through the scan) hit no cap and no
+crash. Real modules cost at most 17002 and take at most 3.6 ms. With the final checks on the CPU, the 90 real modules of the CPU
+test's corpus (and their 16 paired vertex shaders) and vkd3d-proton 3.1's 42
+pass for both drivers' targets; under a 1.0 or 1.1 app on MoltenVK the 37
+past SPIR-V 1.4 are refused. Earlier, spirv-val alone on 126 real modules:
+vulkan1.3 defaults refused 5 (DXVK's d3d9 and vkd3d-proton use scalar
+layouts), a vulkan1.2 target 71 SPIR-V 1.6 modules.
 Upstream: OmacVM policy, not for upstream as is (it needs SPIRV-Tools).
 Tests: Tests/virgl/test-venus-spirv-validate.sh (the CPU alone, also under
-AddressSanitizer, each module under a 512 MB footprint cap: real modules pass,
-the crash and hostile modules are refused, the cache, the targets, the element
-count, the interface locations per stage, the type cost),
-Tests/virgl/fuzz-venus-spirv.sh (the element count and the interface check
-under the sanitizers). Hostile modules never reach a real driver in a test
+AddressSanitizer, each module under a 512 MB footprint cap, for KosmicKrisp,
+MoltenVK and MoltenVK under a 1.1 app: real modules pass, the crash and
+hostile modules are refused, the cache, the targets, the Function and Private
+element count, the Workgroup bytes, the interface locations per stage, the
+type cost),
+Tests/virgl/fuzz-venus-spirv.sh (the element count, the Workgroup bytes and
+the interface check under the sanitizers). Hostile modules never reach a real driver in a test
 (STANDARDS 14b).
 
 diff --git a/meson.build b/meson.build

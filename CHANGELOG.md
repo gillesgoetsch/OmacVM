@@ -6,16 +6,18 @@ in more words.
 ## 3.2.21 (unreleased)
 
 - **A Vulkan shader that would crash the Mac's driver now ends only its own app (OmacVM.app, #702,
-  see #624).** With Graphics on Vulkan, QEMU checks each shader a VM sends with SPIRV-Tools' validator
-  before KosmicKrisp or MoltenVK compiles it, for the Vulkan version and features the Mac's driver
-  has. On an M4, 138 of 900 test shaders ended the driver's process (the VM); the check from 3.2.18
-  stopped 72 of them, the validator now stops 65 of the other 66 and a cap on huge unused arrays the
-  last one. The validator itself is guarded: limits on interface variables and types before it reads
-  a shader, its own checks kept on, and at most 2 s of CPU per shader. Real shaders pass (106 from
-  DXVK, Chromium, dEQP, vkcube and Zink; Ghostty on Zink, glxgears, vkcube and Chromium ran in a test
-  VM with no refusal). It costs about 42 µs per KB once per shader (cached after). Ray tracing
-  pipelines, which no Mac driver has, are refused. Needs the app update only (from the VM's next
-  start); nothing in the VM.
+  see #624).** With Graphics on Vulkan, QEMU checks each shader a VM sends with SPIRV-Tools'
+  validator before KosmicKrisp or MoltenVK compiles it, for the Vulkan version and features the
+  Mac's driver has. On an M4, 138 of 900 test shaders ended the driver's process (the VM); the check
+  from 3.2.18 stopped 72 of them, the validator now stops 65 of the other 66 and a cap on huge
+  unused arrays the last one; huge Private and shared (Workgroup) arrays are capped too. The
+  validator itself is guarded: limits on interface variables and types before it reads a shader, its
+  own checks kept on, and at most 2 s of CPU per shader. Real shaders pass (90 from DXVK, Chromium,
+  dEQP, vkcube, Zink and glslc tests, and vkd3d-proton's 42; Ghostty on Zink, glxgears, vkcube and
+  Chromium ran in a test VM on KosmicKrisp with no refusal). On MoltenVK an app that asks for Vulkan
+  1.0 or 1.1 may send SPIR-V up to 1.4, as MoltenVK tells it. It costs about 42 µs per KB once per
+  shader (cached after). Ray tracing pipelines, which no Mac driver has, are refused. Needs the app
+  update only (from the VM's next start); nothing in the VM.
 
 ## 3.2.20
 

@@ -1043,20 +1043,36 @@ through SPIRV-Tools' validator after the scan (`virgl-venus-spirv-validate.patch
 for the device's Vulkan version and the layouts its features allow, never what
 one app enabled; spirv-val refuses 65 of the 66, a Function element cap
 (2^20 after specialization) the last one. Passed modules are cached by
-SHA-256 (4096 entries, LRU).
+SHA-256 (4096 entries, LRU). The device's version is the one the guest is
+told: KosmicKrisp reports its own, MoltenVK the instance's, so a 1.0 or 1.1
+app on MoltenVK is validated as Vulkan 1.1 (SPIR-V up to 1.4), as it was
+told. Private arrays count against the same element cap, and a stage's
+Workgroup variables may take at most maxComputeSharedMemorySize bytes (both
+for all of the module's variables): a Private or Workgroup uint[2^32-1]
+passed the scan and spirv-val. A stage the device lacks keeps Vulkan's
+minimum interface locations, so vkd3d-proton's geometry module still
+creates on MoltenVK.
 
 spirv-val is guest-facing too, so it gets the same treatment as the drivers,
 on the CPU only (hostile modules never reach a real driver, STANDARDS 14b):
 an Input of a struct of uint[2^32-1] took it past 512 MB, a type DAG 30 deep
-past 20 s, 1000 nested loops 53 s, and two fuzzed modules ended the process
-(a NULL read after an assert compiled out, an abort from `at()`). So before it
-reads a module the scan's caps refuse interface variables past the device's
-location limits (VUID-RuntimeSpirv-Location-06272) and types that cost more
-than 2^24; inside it (`spirv-tools-val-catch-throws.patch`) asserts stay on and
-throw, exceptions are caught, and a CPU budget of 2 s stops its superlinear
-walks. Those refusals hold also in a log-only build. The slowest hostile
+past 20 s, 1000 nested loops 53 s, and three fuzzed modules ended the process
+(a NULL read after an assert compiled out, an abort from `at()`, a NULL read
+for a BuiltIn untyped variable). So before it reads a module the scan's caps
+refuse interface variables past the device's location limits
+(VUID-RuntimeSpirv-Location-06272) and types that cost more than 2^24; inside
+it (`spirv-tools-val-catch-throws.patch`) asserts stay on and throw,
+exceptions are caught, a BuiltIn check no longer reads a missing type, and a
+CPU budget of 2 s stops its superlinear walks. Those refusals hold also in a log-only build. The slowest hostile
 module measured takes 2.03 s; real modules at most 3.6 ms. Ray tracing
-pipelines are refused (no Mac driver has them). MoltenVK's own crash after a
-caught SPIRV-Cross error (92 of its 119 crash modules) is not patched here:
-the runtime takes MoltenVK from Homebrew's bottle; the fix is drafted for
-upstream.
+pipelines are refused (no Mac driver has them).
+
+Still open: MoltenVK's own crash after a caught SPIRV-Cross error. Of the 127
+modules that ended or hung MoltenVK, 119 ended it in a plain run (6 more only
+under Guard Malloc, 2 were runaway compiles past 2 GB); in 92 of the 119
+SPIRV-Cross threw, MoltenVK caught it and then read the compiler it had just
+lost (`SPIRVToMSLConverter::convert`). The validator refuses those modules
+before MoltenVK sees them. The fix (return after the caught error) is its own
+follow-up: the runtime takes MoltenVK from Homebrew's bottle, and building it
+from source changes the release build and needs its own architecture review.
+It is drafted for upstream, not sent.
