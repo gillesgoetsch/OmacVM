@@ -1917,6 +1917,11 @@ patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-refusal-text
   [[ $(grep -cF 'if ((unsigned char)*c < 0x20)' "$virgl_source/src/venus/vkr_context.c") == 2 ]] && \
   grep -qxF '              name, call, why,' "$virgl_source/src/venus/vkr_context.c" || \
   die "vkr_pipeline.c, vkr_context.c: refusal reasons are cut at 192 bytes, span lines or keep control bytes (refusal-text patch)"
+# Pipeline caches start empty: the guest's initial data does not reach the driver (vkr's
+# checks on guest input do not cover the drivers' own cache loaders).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-cache-data.patch"
+grep -q 'info.pInitialData = NULL;' "$virgl_source/src/venus/vkr_pipeline.c" || \
+  die "vkr_pipeline.c: the guest's pipeline cache data reaches the driver (cache-data patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
