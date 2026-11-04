@@ -1168,7 +1168,9 @@ What vkr does now:
    submit) is refused and the app's context ends. 16384 is 6x below the clear
    abort and 4.5x below the fan-draw abort; a Zink frame has about 2000
    passes. `OMACVM_VENUS_ENCODER_CAP` sets it for tests. The cap is fixed,
-   not measured per Mac; the M4 and an 8 GB Mac are still to be measured.
+   not measured per Mac. On the mini's M4 KosmicKrisp aborted between 74752
+   and 75264 clears of one level (fix-700 r2), so 16384 is 4.6x below there;
+   an 8 GB Mac is not measured.
 2. `virgl-venus-host-memory.patch`: each context has a host memory account
    (`OMACVM_VENUS_HOST_MB`, else a quarter of the apps' share, 256 MB to
    4 GB), and the same bytes go to the shared GPU budget, so one app's
@@ -1219,3 +1221,20 @@ list-restart, flat-last, pred, robust-indirect, tess, sample-locations,
 attachment-locations: they fit where they must not) and 3 on MoltenVK and with
 prefill (tess, sample-locations, attachment-locations); after it all 45 h-
 cases pass on all three.
+
+Second follow-up (fix-700 r2, 2026-11-04). On the mini's M4 (16 GB): a submitted
+pass held 86 KB on KosmicKrisp and 36 KB on MoltenVK after the queue went idle
+(4096 clears, also after the free and the pool's destroy), below the 184 KB
+charge; 10 rounds of a new pool (or a new context) with 2048 submitted clears
+stayed at 150-215 MB. The VM row on the M1 (fc5d5bde, hidden 4 GB clone,
+KosmicKrisp and MoltenVK) logged each context's peak against its 4096 MB
+account: Ghostty on Zink 37 MB, Zink glxgears 26, Zink glxinfo 7, Chromium
+(WebGL, ANGLE on Venus) 21-27, vkcube 8 (KosmicKrisp) and 27 (MoltenVK, also
+with the validation layer), clinfo 2, vulkaninfo 0; 0 "still charged" lines.
+On an 8 GB Mac the budget is 6144 MB, the desktop keeps 512 MB, the apps'
+share is 5632 MB and each context's account 1408 MB: about 7800 passes held at
+once (184 KB each), summed over each live command buffer's largest recording.
+The row's apps used at most 37 MB (about 200 passes' worth). DXVK or Zink with
+4 frames in flight fit up to about 1900 passes per frame; a frame near the
+2000 of `h-zink-frame-ok` with 4 or more in flight would end the app's context
+there. Not measured with DXVK (no Windows app in the row).
