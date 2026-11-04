@@ -6,9 +6,11 @@ the shared budget. Charged: every object at a fixed estimate per type (event, qu
 pipeline, pipeline cache 20 KB; command pool 160 KB; command buffer 40 KB; descriptor
 pool 12 KB plus a byte per set; shader module, device memory, view, framebuffer, render
 pass 4 KB; image 2 KB; buffer, fence, semaphore, sampler, set 512 B; 1 KB the rest;
-a query pool 16 B more per query value), and every recording: 512 B per command, an
-update's data x 1.5, a Metal pass or a draw that splits one (virgl-venus-encoder-cap.patch)
-184 KB (a split draw measured up to 112941 B), on KosmicKrisp
+a query pool 16 B more per query value; the estimate does not grow with the object: a
+shader module is 4 KB whatever its code, up to 4 MB, of which both drivers keep a copy,
+and a pipeline cache 20 KB whatever its initial data), and every recording: 512 B per
+command, an update's data x 1.5, a Metal pass or a draw that splits one
+(virgl-venus-encoder-cap.patch) 184 KB (a split draw measured up to 112941 B), on KosmicKrisp
 3 KB per fill and attachment clear and 40 KB per blit or resolve region. A command
 buffer takes its context's account 1 MB at a time and keeps the most a recording of it
 took (a reset gives nothing back); freed, that goes to its pool, whose next recordings

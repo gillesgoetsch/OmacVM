@@ -1175,7 +1175,10 @@ What vkr does now:
    (`OMACVM_VENUS_HOST_MB`, else a quarter of the apps' share, 256 MB to
    4 GB), and the same bytes go to the shared GPU budget, so one app's
    recordings cannot starve the others and all apps stay inside the budget.
-   Objects are charged a fixed estimate per type, recordings 512 B per command,
+   Objects are charged a fixed estimate per type, whatever their size (a
+   shader module 4 KB though its code may be 4 MB, which both drivers keep a
+   copy of; a pipeline cache 20 KB whatever its initial data; charging these
+   by size is a follow-up), recordings 512 B per command,
    184 KB per pass or draw that splits one (recorded and held after the
    submit), an update's data x
    1.5, on KosmicKrisp 3 KB per fill and attachment clear and 40 KB per blit or
