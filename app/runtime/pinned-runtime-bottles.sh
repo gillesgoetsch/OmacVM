@@ -20,6 +20,7 @@ readonly PINNED_PCRE2_ROOT=pcre2/10.47_1
 readonly PINNED_ZSTD_ROOT=zstd/1.5.7_1
 readonly PINNED_LZ4_ROOT=lz4/1.10.0
 readonly PINNED_XZ_ROOT=xz/5.8.3
+# On a MoltenVK (or SPIRV-Tools) bump: run the SPIRV-Cross check of ADR 0065 ("no MoltenVK from source") on the new versions.
 readonly PINNED_MOLTENVK_ROOT=molten-vk/1.4.2
 readonly PINNED_VULKAN_LOADER_ROOT=vulkan-loader/1.4.357.0
 

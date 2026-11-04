@@ -1067,12 +1067,18 @@ CPU budget of 2 s stops its superlinear walks. Those refusals hold also in a log
 module measured takes 2.03 s; real modules at most 3.1 ms. Ray tracing
 pipelines are refused (no Mac driver has them).
 
-Still open: MoltenVK's own crash after a caught SPIRV-Cross error. Of the 127
-modules that ended or hung MoltenVK, 119 ended it in a plain run (6 more only
-under Guard Malloc, 2 were runaway compiles past 2 GB); in 92 of the 119
-SPIRV-Cross threw, MoltenVK caught it and then read the compiler it had just
-lost (`SPIRVToMSLConverter::convert`). The validator refuses those modules
-before MoltenVK sees them. The fix (return after the caught error) is its own
-follow-up: the runtime takes MoltenVK from Homebrew's bottle, and building it
-from source changes the release build and needs its own architecture review.
-It is drafted for upstream, not sent.
+MoltenVK's own crash after a caught SPIRV-Cross error (decided: no
+MoltenVK from source). Of the 127 modules that ended or hung MoltenVK, 119
+ended it in a plain run (6 more only under Guard Malloc, 2 were runaway
+compiles past 2 GB). In 93 of the 119 SPIRV-Cross's parser threw in
+`new CompilerMSL`, MoltenVK caught it and then called the compiler it never
+got (`SPIRVToMSLConverter::convert`); in the other 26 SPIRV-Cross crashed by
+itself, which no MoltenVK patch can catch. A throw in `compile()` (134
+modules) fails the pipeline cleanly. SPIRV-Cross run as a CPU library on the
+324 modules the validator lets through for MoltenVK: 0 throw in the parser,
+0 crash, 24 throw in `compile()` (f64 in buffers, a clean error). So the
+validator already stops every module the fix would save, and the runtime keeps
+Homebrew's MoltenVK bottle. When the MoltenVK or SPIRV-Tools pin moves, run
+the same SPIRV-Cross check on the new versions; an accepted module that throws
+in the parser or crashes SPIRV-Cross reopens this. The upstream report is
+drafted, not sent.
