@@ -288,7 +288,7 @@ new file mode 100644
 index 0000000..426aa9a
 --- /dev/null
 +++ b/src/venus/vkr_spirv.c
-@@ -0,0 +1,1341 @@
+@@ -0,0 +1,1342 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -485,7 +485,8 @@ index 0000000..426aa9a
 +static void *
 +vec_add(struct vec *v, uint32_t count, size_t elem)
 +{
-+   if (!v->p || v->n + (uint64_t)count > v->cap) { /* an empty vec gets room even for 0, never NULL + 0 */
++   /* an empty vec gets room even for 0, never NULL + 0 */
++   if (!v->p || v->n + (uint64_t)count > v->cap) {
 +      uint64_t c = v->cap ? v->cap : 16;
 +      while (c < v->n + (uint64_t)count)
 +         c *= 2;

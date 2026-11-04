@@ -20,6 +20,11 @@
  *     constants and uses scans and walks in linear time.
  *   fuzz-venus-spirv [ITERATIONS [SEED]]   (default 200000, 1)
  *
+ * On macOS the memory cap is inside the process (STANDARDS 14c): a thread reads
+ * phys_footprint every 10 ms; past FUZZ_CAP_MB (default 512) it stops the main thread,
+ * writes the input being scanned or walked (if one is) to FUZZ_CAP_OUT (fuzz-venus-spirv.sh
+ * puts it under TMPDIR) and ends the process with exit code 3.
+ *
  * Seeds (shaderc v2026.4, spirv-tools v2026.4; spirv-val clean for vulkan1.3):
  *   spec10 / spec16: glslc -fshader-stage=comp --target-env=vulkan1.0 / vulkan1.3 -O0 of
  *     #version 450
@@ -41,14 +46,26 @@
  *     layout(set = 0, binding = 0) uniform M { mat4 m; }; ... gl_Position = m * pos;
  *     layout(set = 1, binding = 2) uniform sampler2D t; ... color = texture(t, gl_FragCoord.xy);
  *   two: spirv-as --target-env vulkan1.0: GLCompute entry points "a" (LocalSize 4 1 1, a
- *     uniform block at set 3 binding 0) and "b" (LocalSize 2048 1 1, set 0 binding 1). */
+ *     uniform block at set 3 binding 0) and "b" (LocalSize 2048 1 1, set 0 binding 1).
+ *   empty_struct: spirv-as --target-env vulkan1.0 (spirv-tools v2026.3, spirv-val clean for
+ *     vulkan1.0) of a GLCompute "main" (LocalSize 1 1 1) whose first and only struct is an
+ *     OpTypeStruct with no members, used by nothing (the scan's first add to an empty list
+ *     was NULL + 0 under UBSan before a31187f7). */
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#ifdef __APPLE__
+#include <fcntl.h>
+#include <mach/mach.h>
+#include <pthread.h>
+#include <unistd.h>
+#endif
 
 #include "vkr_spirv.h"
 
@@ -248,6 +265,14 @@ static const uint32_t seed_two[] = {
    0x0004003d, 0x00000008, 0x00000012, 0x00000011, 0x000100fd, 0x00010038,
 };
 
+static const uint32_t seed_empty_struct[] = {
+   0x07230203, 0x00010000, 0x00070000, 0x00000006, 0x00000000, 0x00020011, 0x00000001, 0x0003000e,
+   0x00000000, 0x00000001, 0x0005000f, 0x00000005, 0x00000001, 0x6e69616d, 0x00000000, 0x00060010,
+   0x00000001, 0x00000011, 0x00000001, 0x00000001, 0x00000001, 0x00020013, 0x00000002, 0x0002001e,
+   0x00000003, 0x00030021, 0x00000004, 0x00000002, 0x00050036, 0x00000002, 0x00000001, 0x00000000,
+   0x00000004, 0x000200f8, 0x00000005, 0x000100fd, 0x00010038,
+};
+
 #define LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 static const struct {
@@ -258,6 +283,7 @@ static const struct {
    { "spec10", seed_spec10, LEN(seed_spec10) },     { "spec16", seed_spec16, LEN(seed_spec16) },
    { "helper", seed_helper, LEN(seed_helper) },     { "gfx_vert", seed_gfx_vert, LEN(seed_gfx_vert) },
    { "gfx_frag", seed_gfx_frag, LEN(seed_gfx_frag) }, { "two", seed_two, LEN(seed_two) },
+   { "empty_struct", seed_empty_struct, LEN(seed_empty_struct) },
 };
 
 static int failures;
@@ -271,17 +297,91 @@ check(bool ok, const char *what)
    }
 }
 
-/* the scan of a copy in a heap block of exactly `bytes` bytes (reads past it fault) */
+/* the input being scanned or walked, for the memory cap (which stops this thread before it
+ * reads it): taken out before its free */
+static _Atomic(const void *) cap_input;
+static _Atomic size_t cap_input_bytes;
+
+/* the input for the cap: NULL first, so a stop between the stores never pairs one input
+ * with another's size */
+static void
+cap_publish(const void *in, size_t bytes)
+{
+   atomic_store(&cap_input, NULL);
+   atomic_store(&cap_input_bytes, bytes);
+   atomic_store(&cap_input, in);
+}
+
+/* the scan of a copy in a heap block of exactly `bytes` bytes (reads past it fault; the copy
+ * is freed after the scan, so a summary that kept a pointer into it faults too); the cap's
+ * input is the caller's again after it */
 static struct vkr_spirv_info *
 scan_copy(const uint32_t *words, size_t bytes, char *why, size_t why_size)
 {
+   const void *outer = atomic_load(&cap_input);
+   const size_t outer_bytes = atomic_load(&cap_input_bytes);
    void *copy = malloc(bytes ? bytes : 1);
    if (bytes)
       memcpy(copy, words, bytes);
+   cap_publish(copy, bytes);
    struct vkr_spirv_info *info = vkr_spirv_scan(copy, bytes, why, why_size);
+   cap_publish(outer, outer_bytes);
    free(copy);
    return info;
 }
+
+#ifdef __APPLE__
+static thread_act_t cap_main;
+static uint64_t cap_bytes;
+
+/* past the cap: the main thread stops (so the input stays), the input goes to FUZZ_CAP_OUT,
+ * exit code 3 */
+static void *
+cap_watch(void *arg)
+{
+   (void)arg;
+   const struct timespec tick = { 0, 10 * 1000 * 1000 };
+   for (;;) {
+      task_vm_info_data_t vi;
+      mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+      if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS &&
+          vi.phys_footprint > cap_bytes) {
+         thread_suspend(cap_main);
+         const void *in = atomic_load(&cap_input);
+         const size_t bytes = atomic_load(&cap_input_bytes);
+         const char *out = getenv("FUZZ_CAP_OUT");
+         int fd = in && out ? open(out, O_WRONLY | O_CREAT | O_TRUNC, 0644) : -1;
+         const bool saved = fd >= 0 && write(fd, in, bytes) == (ssize_t)bytes;
+         if (fd >= 0)
+            close(fd);
+         char m[512];
+         const int l = snprintf(m, sizeof(m), "fuzz-venus-spirv: past %llu MB (phys_footprint %llu MB); input %s%s\n",
+                                (unsigned long long)(cap_bytes >> 20),
+                                (unsigned long long)(vi.phys_footprint >> 20),
+                                saved ? "saved to " : "not saved", saved ? out : "");
+         if (l > 0)
+            (void)!write(2, m, (size_t)l < sizeof(m) ? (size_t)l : sizeof(m) - 1);
+         _exit(3);
+      }
+      nanosleep(&tick, NULL);
+   }
+   return NULL;
+}
+
+static void
+cap_start(void)
+{
+   const char *mb = getenv("FUZZ_CAP_MB");
+   cap_bytes = (uint64_t)(mb && atoi(mb) > 0 ? atoi(mb) : 512) << 20;
+   cap_main = mach_thread_self();
+   pthread_t t;
+   if (pthread_create(&t, NULL, cap_watch, NULL)) {
+      printf("FAIL: no memory cap thread\n");
+      exit(1);
+   }
+   pthread_detach(t);
+}
+#endif
 
 /* specialization: SpecId 0 -> spec[0], SpecId 1 -> spec[1] */
 static bool
@@ -622,12 +722,15 @@ part_mutations(uint32_t iterations)
       }
       char why[192];
       const size_t bytes = n * 4 - (pick(16) ? 0 : (n ? 1 + pick(3) : 0));
+      /* the input for the cap through the scan and the summary walks */
+      cap_publish(w, bytes);
       struct vkr_spirv_info *info = scan_copy(w, bytes, why, sizeof(why));
       if (info) {
          accepted++;
          use_summary(info);
          vkr_spirv_free(info);
       }
+      cap_publish(NULL, 0);
    }
    free(w);
    printf("mutations: %u, accepted %u, refused %u\n", iterations, accepted, iterations - accepted);
@@ -715,6 +818,9 @@ main(int argc, char **argv)
    rng = argc > 2 ? strtoull(argv[2], NULL, 0) : 1;
    if (!rng)
       rng = 1;
+#ifdef __APPLE__
+   cap_start();
+#endif
    part_seeds();
    part_refusals();
    part_mutations(iterations);
