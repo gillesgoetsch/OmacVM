@@ -6,12 +6,17 @@ sees them (src/venus/vkr_spirv_validate.c). The target follows the device, not
 the app: its Vulkan version as vkr reports it (vulkan1.1spv1.4 on a 1.1 device
 with VK_KHR_spirv_1_4) and the block layouts and modes its features allow
 (scalar, standard uniform, scalar workgroup, LocalSizeId, relaxed), so code the
-device runs passes. Before spirv-val reads a module, it is refused unread when
-it is past 4 MiB, when its types cost more than 2^24 (vkr_spirv.h,
+device runs passes. That version is the one the guest's driver tells the app:
+KosmicKrisp reports its own, MoltenVK the instance's (at least 1.1, as vkr
+creates it), so on MoltenVK an app that asks for 1.0 or 1.1 is told 1.1 and its
+SPIR-V is validated as Vulkan 1.1's (up to SPIR-V 1.4). Before spirv-val reads
+a module, it is refused unread when it is past 4 MiB, when its types cost more
+than 2^24 (vkr_spirv.h,
 VKR_SPIRV_MAX_TYPE_COST), or when an Input or Output variable of an entry
 point takes more locations than the device's limits give its stage
 (maxVertexInputAttributes, the component limits / 4,
-maxFragmentOutputAttachments; VUID-RuntimeSpirv-Location-06272); a pipeline
+maxFragmentOutputAttachments; VUID-RuntimeSpirv-Location-06272; a stage the
+device lacks, as MoltenVK's geometry stage, keeps Vulkan's minimum); a pipeline
 checks the locations again after specialization. spirv-val itself runs through
 omacvmValidateWithOptions (spirv-tools-val-catch-throws.patch): a failed
 assert, an exception or 2 s of CPU in it is a refusal, not the end of QEMU or a
@@ -25,7 +30,7 @@ specialization (arrays of arrays multiplied, struct members added; a length
 from a spec constant operation is refused). vkCreateRayTracingPipelinesKHR
 ends the context and VK_KHR_ray_tracing_pipeline is no longer offered: its
 stages would reach the driver unchecked (neither Mac driver has it). qemu.log
-names the target once.
+names the target once per Vulkan version.
 Why: of 900 modules fed to KosmicKrisp and MoltenVK on an M4 (compile only),
 138 ended the process or hung the driver; the scan alone refused 72 of them,
 spirv-val 65 of the other 66, the element cap the last one (an unused
@@ -93,17 +98,24 @@ diff --git a/src/venus/vkr_common.c b/src/venus/vkr_common.c
 diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
 --- a/src/venus/vkr_physical_device.c
 +++ b/src/venus/vkr_physical_device.c
-@@ -534,7 +534,105 @@
- 
- }
- 
+@@ -531,7 +531,116 @@
+    l->kosmickrisp = driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP;
+    if (driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP)
+       l->multiview_views = MIN2(l->multiview_views, vkr_metal_max_vertex_amplification());
++
++}
++
 +/* OmacVM (virgl-venus-spirv-validate.patch): the target guest SPIR-V is validated for. The
-+ * device's Vulkan version as vkr reports it (not the app's: an app asking for 1.0 may still
-+ * send SPIR-V 1.6), VK_KHR_spirv_1_4 on 1.1, and the layouts and modes the device's
-+ * features allow, not the ones an app enabled: a module the device runs passes, so a
-+ * sloppy app that works on the driver keeps working (DXVK's d3d9 shaders use scalar
-+ * layout), and the validator still refuses what neither driver can take. */
- static void
++ * device's Vulkan version as vkr reports it, which is the version the guest's driver tells
++ * the app (Mesa's Venus caps it; only VK_VERSION_OVERRIDE raises it), VK_KHR_spirv_1_4 on
++ * 1.1, the layouts and modes the device's features allow, not the ones an app enabled: a
++ * module the device runs passes, so a sloppy app that works on the driver keeps working
++ * (DXVK's d3d9 shaders use scalar layout), and the validator still refuses what neither
++ * driver can take. KosmicKrisp reports its own version whatever the instance asked (an app
++ * asking for 1.0 may still send SPIR-V 1.6); MoltenVK reports the instance's (MVKDevice.mm),
++ * at least 1.1 as vkr creates it, so there an app asking for 1.0 or 1.1 is told 1.1 and its
++ * SPIR-V is validated as Vulkan 1.1's (up to 1.4 with VK_KHR_spirv_1_4). */
++static void
 +vkr_physical_device_init_spirv_target(struct vkr_physical_device *physical_dev)
 +{
 +   struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
@@ -169,37 +181,41 @@ diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
 +      &physical_dev->spirv_target, version,
 +      vkr_physical_device_lists(physical_dev, VK_KHR_SPIRV_1_4_EXTENSION_NAME), options);
 +   /* interface variables may take the locations the device's limits give (a component
-+    * limit / 4), checked before spirv-val, whose walk over them grows with them */
++    * limit / 4), checked before spirv-val, whose walk over them grows with them. A stage the
++    * device lacks keeps Vulkan's minimum (vkr_spirv_target_init): MoltenVK has no geometry
++    * shaders (0 components), and vkd3d-proton's geometry module would else end its context
++    * at vkCreateShaderModule */
 +   const VkPhysicalDeviceLimits *l = &physical_dev->properties.limits;
-+   physical_dev->spirv_target.io = (struct vkr_spirv_io_limits){
-+      .vertex_in = l->maxVertexInputAttributes,
-+      .vertex_out = l->maxVertexOutputComponents / 4,
-+      .tess_control_in = l->maxTessellationControlPerVertexInputComponents / 4,
-+      .tess_control_out = l->maxTessellationControlPerVertexOutputComponents / 4,
-+      .tess_control_patch_out = l->maxTessellationControlPerPatchOutputComponents / 4,
-+      .tess_eval_in = l->maxTessellationEvaluationInputComponents / 4,
-+      .tess_eval_out = l->maxTessellationEvaluationOutputComponents / 4,
-+      .geometry_in = l->maxGeometryInputComponents / 4,
-+      .geometry_out = l->maxGeometryOutputComponents / 4,
-+      .fragment_in = l->maxFragmentInputComponents / 4,
-+      .fragment_out = l->maxFragmentOutputAttachments,
-+   };
-+
-+   /* once per process: which target, and whether a refusal ends the app's context */
-+   static atomic_bool logged;
-+   if (physical_dev->spirv_target_ok && !atomic_exchange(&logged, true)) {
++   struct vkr_spirv_io_limits *io = &physical_dev->spirv_target.io;
++   io->vertex_in = MAX2(io->vertex_in, l->maxVertexInputAttributes);
++   io->vertex_out = MAX2(io->vertex_out, l->maxVertexOutputComponents / 4);
++   io->tess_control_in =
++      MAX2(io->tess_control_in, l->maxTessellationControlPerVertexInputComponents / 4);
++   io->tess_control_out =
++      MAX2(io->tess_control_out, l->maxTessellationControlPerVertexOutputComponents / 4);
++   io->tess_control_patch_out =
++      MAX2(io->tess_control_patch_out, l->maxTessellationControlPerPatchOutputComponents / 4);
++   io->tess_eval_in = MAX2(io->tess_eval_in, l->maxTessellationEvaluationInputComponents / 4);
++   io->tess_eval_out = MAX2(io->tess_eval_out, l->maxTessellationEvaluationOutputComponents / 4);
++   io->geometry_in = MAX2(io->geometry_in, l->maxGeometryInputComponents / 4);
++   io->geometry_out = MAX2(io->geometry_out, l->maxGeometryOutputComponents / 4);
++   io->fragment_in = MAX2(io->fragment_in, l->maxFragmentInputComponents / 4);
++   io->fragment_out = MAX2(io->fragment_out, l->maxFragmentOutputAttachments);
+ 
++   /* once per process and Vulkan version (MoltenVK's follows the app): which target, and
++    * whether a refusal ends the app's context */
++   static atomic_uint_fast64_t logged;
++   const uint64_t bit = (uint64_t)1 << (physical_dev->spirv_target.env & 63);
++   if (physical_dev->spirv_target_ok && !(atomic_fetch_or(&logged, bit) & bit)) {
 +      char text[128];
 +      vkr_spirv_target_text(&physical_dev->spirv_target, text, sizeof(text));
 +      vkr_log("guest SPIR-V is validated for %s (%s)", text,
 +              VKR_SPIRV_VALIDATE_ENFORCE ? "a refusal ends the app's context" : "log-only");
 +   }
-+}
-+
-+static void
- vkr_physical_device_init_properties(struct vkr_physical_device *physical_dev)
- {
-    struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
-@@ -713,6 +811,7 @@
+ }
+ 
+ static void
+@@ -713,6 +822,7 @@
        vkr_physical_device_init_extensions(physical_dev);
        vkr_physical_device_init_missing_entries(physical_dev);
        vkr_physical_device_init_limits(physical_dev);

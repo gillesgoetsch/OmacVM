@@ -51,7 +51,9 @@ for f in "$corpus"/refuse/*.spv; do [[ $f == *.vs.spv ]] || refuse+=("$f"); done
 (( ${#pass[@]} > 50 && ${#refuse[@]} > 100 )) || { echo "FAIL: the corpus is missing"; exit 1; }
 for bin in validate validate-asan; do
   "$work/$bin" units "$corpus/pass/vkcube-vert.spv"
-  for profile in kk mvk; do
+  # mvk11: MoltenVK's device under an app that asks for Vulkan 1.0 or 1.1 (it reports the
+  # instance's version): SPIR-V past 1.4 is refused there, all else as on mvk
+  for profile in kk mvk mvk11; do
     "$work/$bin" pass "$profile" "${pass[@]}"
     "$work/$bin" refuse "$profile" "${refuse[@]}"
   done

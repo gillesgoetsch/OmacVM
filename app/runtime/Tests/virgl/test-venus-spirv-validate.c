@@ -10,7 +10,8 @@
  * AddressSanitizer, and runs, each module under a 512 MB footprint cap (STANDARDS 14c):
  *   pass PROFILE FILE...     every module passes the scan, the interface limits, spirv-val
  *                            and the element cap, and with a FILE.lay beside it vkr's
- *                            pipeline checks
+ *                            pipeline checks; a module of a SPIR-V version past the
+ *                            target's is refused by spirv-val instead
  *   refuse PROFILE FILE...   every module is refused by one of them (each crashed a Mac
  *                            driver: KosmicKrisp or MoltenVK ended the process or hung; or
  *                            took spirv-val past 512 MB, 2 s or the process)
@@ -27,7 +28,8 @@
  *                            locations of each model and the type cost
  * PROFILE: kk or mvk (what the 3.2.20 drivers report on an M4: Vulkan 1.4, scalar and
  * standard layouts, LocalSizeId, relaxed layout; KosmicKrisp also scalar workgroup
- * layout), or the plain targets 1.1, 1.1spv1.4, 1.2, 1.3, 1.4. */
+ * layout), mvk11 (MoltenVK under an app that asks for Vulkan 1.0 or 1.1: its device then
+ * reports 1.1, with VK_KHR_spirv_1_4), or the plain targets 1.1, 1.1spv1.4, 1.2, 1.3, 1.4. */
 
 #include <mach/mach.h>
 #include <pthread.h>
@@ -36,6 +38,8 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <spirv-tools/libspirv.h>
 
 #include "vkr_spirv.h"
 #include "vkr_spirv_validate.h"
@@ -59,15 +63,16 @@ profile(const char *name, struct vkr_spirv_target *t)
    const uint32_t common = VKR_SPIRV_SCALAR_LAYOUT | VKR_SPIRV_STD_UNIFORM_LAYOUT |
                            VKR_SPIRV_LOCAL_SIZE_ID | VKR_SPIRV_RELAXED_LAYOUT;
    /* the interface limits both drivers report on an M4 (MoltenVK: 124 components, no
-    * geometry shaders) */
+    * geometry shaders) as vkr keeps them */
    if (!strcmp(name, "kk")) {
       const bool ok = vkr_spirv_target_init(t, API(1, 4), true, common | VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT);
       t->io = (struct vkr_spirv_io_limits){ 32, 32, 32, 32, 30, 32, 32, 32, 32, 32, 8 };
       return ok;
    }
-   if (!strcmp(name, "mvk")) {
-      const bool ok = vkr_spirv_target_init(t, API(1, 4), true, common);
-      t->io = (struct vkr_spirv_io_limits){ 31, 31, 31, 31, 30, 31, 31, 0, 0, 31, 8 };
+   if (!strcmp(name, "mvk") || !strcmp(name, "mvk11")) {
+      const bool ok = vkr_spirv_target_init(t, name[3] ? API(1, 1) : API(1, 4), true, common);
+      /* no geometry shaders: Vulkan's minimum, 16 locations (vkr_physical_device.c) */
+      t->io = (struct vkr_spirv_io_limits){ 31, 31, 31, 31, 30, 31, 31, 16, 16, 31, 8 };
       return ok;
    }
    if (!strcmp(name, "1.1"))
@@ -100,6 +105,16 @@ load(const char *path, size_t *bytes)
    fclose(f);
    *bytes = w ? (size_t)n : 0;
    return w;
+}
+
+/* the newest SPIR-V version a target takes (word 1 of a module) */
+static uint32_t
+target_spirv(const struct vkr_spirv_target *t)
+{
+   return t->env == SPV_ENV_VULKAN_1_1             ? 0x10300
+          : t->env == SPV_ENV_VULKAN_1_1_SPIRV_1_4 ? 0x10400
+          : t->env == SPV_ENV_VULKAN_1_2           ? 0x10500
+                                                   : 0x10600;
 }
 
 /* scan, the interface limits and spirv-val, element cap (no specialization: the defaults),
@@ -251,7 +266,7 @@ corpus(int want, const char *prof, int argc, char **argv)
       printf("FAIL: profile %s\n", prof);
       return 1;
    }
-   unsigned counts[6] = { 0 };
+   unsigned counts[6] = { 0 }, newer = 0;
    pthread_t cap;
    pthread_create(&cap, NULL, capper, NULL);
    uint64_t most = 0, top = 0;
@@ -271,17 +286,24 @@ corpus(int want, const char *prof, int argc, char **argv)
          most_at = strrchr(argv[i], '/') ? strrchr(argv[i], '/') + 1 : argv[i];
       }
       counts[r]++;
-      if (want == 1)
+      /* SPIR-V past the target's version (an app told Vulkan 1.1 sends 1.5): spirv-val's */
+      const bool too_new = code && bytes >= 8 && code[1] > target_spirv(&t);
+      newer += too_new && r == BY_VALIDATOR;
+      if (want == 1 && too_new)
+         CHECK(r == BY_VALIDATOR && strstr(why, "version"), "%s %s (SPIR-V 0x%x): %s", prof,
+               argv[i], code[1], r == PASSED ? "passed" : why);
+      else if (want == 1)
          CHECK(r == PASSED, "%s %s refused: %s", prof, argv[i], code ? why : "unreadable");
       else if (want == 0)
          CHECK(r != PASSED, "%s %s passed (a Mac driver ended the process on it)", prof, argv[i]);
       free(code);
    }
-   printf("%s %s: %d modules; passed %u, refused by the scan %u, by spirv-val %u, before it or "
-          "by an exception in it %u, by the element cap %u, by the pipeline checks %u; largest "
-          "rise %llu KB (%s), at most %llu MB in all (cap %d MB)\n",
+   printf("%s %s: %d modules; passed %u, refused by the scan %u, by spirv-val %u (%u of a "
+          "newer SPIR-V than the target's), before it or by an exception in it %u, by the element "
+          "cap %u, by the pipeline checks %u; largest rise %llu KB (%s), at most %llu MB in all "
+          "(cap %d MB)\n",
           want == 1 ? "pass" : want == 0 ? "refuse" : "run", prof, argc, counts[PASSED], counts[BY_SCAN],
-          counts[BY_VALIDATOR], counts[BY_UNSAFE], counts[BY_ELEMENTS], counts[BY_PIPELINE],
+          counts[BY_VALIDATOR], newer, counts[BY_UNSAFE], counts[BY_ELEMENTS], counts[BY_PIPELINE],
           (unsigned long long)(most >> 10), most_at, (unsigned long long)(top >> 20), CAP_MB);
    return failures != 0;
 }
