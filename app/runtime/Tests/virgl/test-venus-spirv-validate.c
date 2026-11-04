@@ -23,9 +23,11 @@
  *   run PROFILE FILE...      every module through all of them, no expectation (under
  *                            AddressSanitizer: the validator on hostile input)
  *   time PROFILE REPS FILE...  microseconds per spirv-val run (cache off), median of REPS
- *   units FILE               targets, the cache (hits, LRU order, eviction, threads) on a
- *                            module that passes, the Function and Private element cases, the
- *                            Workgroup bytes, the interface locations of each model and the
+ *   units FILE               targets (their interface limits from the drivers' own), the
+ *                            cache (hits, LRU order, eviction, threads) on a module that
+ *                            passes, the Function and Private element cases, the Workgroup
+ *                            bytes, the variables one entry point gets, the interface
+ *                            locations of each model and the
  *                            type cost
  * PROFILE: kk or mvk (what the 3.2.20 drivers report on an M4: Vulkan 1.4, scalar and
  * standard layouts, LocalSizeId, relaxed layout; KosmicKrisp also scalar workgroup
@@ -61,34 +63,35 @@ static int failures;
       }                                                                                      \
    } while (0)
 
+/* the interface limits both drivers report on an M4 (out2/limits-*.txt; MoltenVK: 124
+ * components, no geometry shaders), as VkPhysicalDeviceLimits gives them to
+ * vkr_physical_device_init_spirv_target */
+static const struct vkr_spirv_device_io
+   kk_io = { 32, 128, 128, 128, 120, 128, 128, 128, 128, 128, 8 },
+   mvk_io = { 31, 124, 124, 124, 120, 124, 124, 0, 0, 124, 8 };
+
 static bool
 profile(const char *name, struct vkr_spirv_target *t)
 {
    const uint32_t common = VKR_SPIRV_SCALAR_LAYOUT | VKR_SPIRV_STD_UNIFORM_LAYOUT |
                            VKR_SPIRV_LOCAL_SIZE_ID | VKR_SPIRV_RELAXED_LAYOUT;
-   /* the interface limits both drivers report on an M4 (MoltenVK: 124 components, no
-    * geometry shaders) as vkr keeps them */
-   if (!strcmp(name, "kk")) {
-      const bool ok = vkr_spirv_target_init(t, API(1, 4), true, common | VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT);
-      t->io = (struct vkr_spirv_io_limits){ 32, 32, 32, 32, 30, 32, 32, 32, 32, 32, 8 };
-      return ok;
-   }
-   if (!strcmp(name, "mvk") || !strcmp(name, "mvk11")) {
-      const bool ok = vkr_spirv_target_init(t, name[3] ? API(1, 1) : API(1, 4), true, common);
-      /* no geometry shaders: Vulkan's minimum, 16 locations (vkr_physical_device.c) */
-      t->io = (struct vkr_spirv_io_limits){ 31, 31, 31, 31, 30, 31, 31, 16, 16, 31, 8 };
-      return ok;
-   }
+   if (!strcmp(name, "kk"))
+      return vkr_spirv_target_init(t, API(1, 4), true,
+                                   common | VKR_SPIRV_WORKGROUP_SCALAR_LAYOUT |
+                                      VKR_SPIRV_INTERFACE_GLOBALS,
+                                   &kk_io);
+   if (!strcmp(name, "mvk") || !strcmp(name, "mvk11"))
+      return vkr_spirv_target_init(t, name[3] ? API(1, 1) : API(1, 4), true, common, &mvk_io);
    if (!strcmp(name, "1.1"))
-      return vkr_spirv_target_init(t, API(1, 1), false, 0);
+      return vkr_spirv_target_init(t, API(1, 1), false, 0, NULL);
    if (!strcmp(name, "1.1spv1.4"))
-      return vkr_spirv_target_init(t, API(1, 1), true, 0);
+      return vkr_spirv_target_init(t, API(1, 1), true, 0, NULL);
    if (!strcmp(name, "1.2"))
-      return vkr_spirv_target_init(t, API(1, 2), true, 0);
+      return vkr_spirv_target_init(t, API(1, 2), true, 0, NULL);
    if (!strcmp(name, "1.3"))
-      return vkr_spirv_target_init(t, API(1, 3), true, 0);
+      return vkr_spirv_target_init(t, API(1, 3), true, 0, NULL);
    if (!strcmp(name, "1.4"))
-      return vkr_spirv_target_init(t, API(1, 4), true, 0);
+      return vkr_spirv_target_init(t, API(1, 4), true, 0, NULL);
    return false;
 }
 
@@ -233,21 +236,34 @@ check_module(const struct vkr_spirv_target *t, const char *path, const uint32_t 
    if (!info)
       return BY_SCAN;
    int r = PASSED;
-   uint64_t n;
    struct layout l;
    load_layout(path, &l);
    const struct vkr_spirv_entry *e = l.have ? vkr_spirv_entry(info, l.entry, l.model) : NULL;
    uint32_t size[3], set, binding;
    bool unsafe = false;
+   /* the elements and Workgroup bytes as vkr_stage_shader_ok counts them for the layout's
+    * entry point, else for each entry point (a pipeline may pick any): the most */
+   const bool by_interface = t->options & VKR_SPIRV_INTERFACE_GLOBALS;
+   uint64_t elements = 0, shared = 0;
+   bool counted = true;
+   for (uint32_t i = 0; i < info->entry_count && counted; i++) {
+      const struct vkr_spirv_entry *at = e ? e : &info->entries[i];
+      uint64_t a = 0, b = 0;
+      counted = vkr_spirv_function_elements(info, at, by_interface, NULL, NULL, &a) &&
+                vkr_spirv_workgroup_bytes(info, at, by_interface, NULL, NULL, &b);
+      elements = a > elements ? a : elements;
+      shared = b > shared ? b : shared;
+      if (e)
+         break;
+   }
    if (!vkr_spirv_validate(t, info, code, bytes, why, why_size, &unsafe)) {
       r = unsafe ? BY_UNSAFE : BY_VALIDATOR;
-   } else if (!vkr_spirv_function_elements(info, NULL, NULL, &n) ||
-              n > VKR_SPIRV_MAX_FUNCTION_ELEMENTS) {
+   } else if (!counted || elements > VKR_SPIRV_MAX_FUNCTION_ELEMENTS) {
       snprintf(why, why_size, "Function and Private variables of %llu elements",
-               (unsigned long long)n);
+               (unsigned long long)elements);
       r = BY_ELEMENTS;
-   } else if (!vkr_spirv_workgroup_bytes(info, NULL, NULL, &n) || n > SHARED_MAX) {
-      snprintf(why, why_size, "Workgroup variables of %llu bytes", (unsigned long long)n);
+   } else if (shared > SHARED_MAX) {
+      snprintf(why, why_size, "Workgroup variables of %llu bytes", (unsigned long long)shared);
       r = BY_ELEMENTS;
    } else if (l.have && !e) {
       snprintf(why, why_size, "no entry point %s for the stage", l.entry);
@@ -498,7 +514,7 @@ target_units(void)
 {
    struct vkr_spirv_target t;
    char text[128];
-   CHECK(!vkr_spirv_target_init(&t, API(1, 0), true, 0), "target: Vulkan 1.0 has none");
+   CHECK(!vkr_spirv_target_init(&t, API(1, 0), true, 0, NULL), "target: Vulkan 1.0 has none");
    static const struct {
       uint32_t api;
       bool spv14;
@@ -512,13 +528,35 @@ target_units(void)
       { API(1, 9), false, "SPIR-V 1.6 (under Vulkan 1.4 semantics)" },
    };
    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
-      CHECK(vkr_spirv_target_init(&t, cases[i].api | 363, cases[i].spv14, 0), "target %u", i);
+      CHECK(vkr_spirv_target_init(&t, cases[i].api | 363, cases[i].spv14, 0, NULL), "target %u", i);
       vkr_spirv_target_text(&t, text, sizeof(text));
       CHECK(!strcmp(text, cases[i].want), "target %u: %s, want %s", i, text, cases[i].want);
    }
-   vkr_spirv_target_init(&t, API(1, 4), true, VKR_SPIRV_SCALAR_LAYOUT | VKR_SPIRV_RELAXED_LAYOUT);
+   vkr_spirv_target_init(&t, API(1, 4), true, VKR_SPIRV_SCALAR_LAYOUT | VKR_SPIRV_RELAXED_LAYOUT,
+                         NULL);
    vkr_spirv_target_text(&t, text, sizeof(text));
    CHECK(strstr(text, " scalar") && strstr(text, " relaxed") && !strstr(text, " std"), "target text: %s", text);
+
+   /* the interface limits from the device's (vkr_physical_device_init_spirv_target): its
+    * components / 4, a stage it lacks (MoltenVK's geometry, 0 components) Vulkan's minimum,
+    * no device all of Vulkan's minimums */
+   static const struct {
+      const char *name;
+      const struct vkr_spirv_device_io *device;
+      struct vkr_spirv_io_limits want;
+   } io_cases[] = {
+      { "kk", &kk_io, { 32, 32, 32, 32, 30, 32, 32, 32, 32, 32, 8 } },
+      { "mvk", &mvk_io, { 31, 31, 31, 31, 30, 31, 31, 16, 16, 31, 8 } },
+      { "none", NULL, { 16, 16, 16, 16, 30, 16, 16, 16, 16, 16, 4 } },
+   };
+   for (unsigned i = 0; i < sizeof(io_cases) / sizeof(io_cases[0]); i++) {
+      CHECK(vkr_spirv_target_init(&t, API(1, 4), true, 0, io_cases[i].device), "target io %s",
+            io_cases[i].name);
+      CHECK(!memcmp(&t.io, &io_cases[i].want, sizeof(t.io)),
+            "target io %s: geometry in %u out %u, vertex in %u out %u, fragment out %u",
+            io_cases[i].name, t.io.geometry_in, t.io.geometry_out, t.io.vertex_in,
+            t.io.vertex_out, t.io.fragment_out);
+   }
 }
 
 /* --- units: Function and Private elements, Workgroup bytes --- */
@@ -627,7 +665,8 @@ elements_case(const char *name, struct mod *m, const struct spec *spec, bool wan
    if (!info)
       return;
    uint64_t n = 0;
-   const bool ok = vkr_spirv_function_elements(info, spec ? spec_lookup : NULL, spec, &n);
+   const bool ok =
+      vkr_spirv_function_elements(info, NULL, false, spec ? spec_lookup : NULL, spec, &n);
    CHECK(ok == want_ok && (!ok || n == want), "elements %s: %s %llu, want %s %llu", name,
          ok ? "ok" : "unknown", (unsigned long long)n, want_ok ? "ok" : "unknown",
          (unsigned long long)want);
@@ -773,7 +812,8 @@ bytes_case(const char *name, struct mod *m, const struct spec *spec, bool want_o
    if (!info)
       return;
    uint64_t n = 0;
-   const bool ok = vkr_spirv_workgroup_bytes(info, spec ? spec_lookup : NULL, spec, &n);
+   const bool ok =
+      vkr_spirv_workgroup_bytes(info, NULL, false, spec ? spec_lookup : NULL, spec, &n);
    CHECK(ok == want_ok && (!ok || n == want), "bytes %s: %s %llu, want %s %llu", name,
          ok ? "ok" : "unknown", (unsigned long long)n, want_ok ? "ok" : "unknown",
          (unsigned long long)want);
@@ -1101,6 +1141,117 @@ interface_units(void)
    io_case("spec-default-64", &io, "kk", &(struct spec){ 4, 8, true }, false);
 }
 
+/* --- units: the variables of one entry point --- */
+
+/* SPIR-V `version` with two compute entry points "a" and "b". Each calls a function with a
+ * Function uint[fn_len] and has a Private uint[priv_len] and a Workgroup uint[shared_len]
+ * of its own (in its interface from SPIR-V 1.4, as there every global it uses must be); a
+ * function no entry point reaches has a Function uint[2^32-1]. ids: entry points at e[2]. */
+static void
+two_entries(struct mod *m, uint32_t version, uint32_t fn_len, uint32_t priv_len,
+            uint32_t shared_len, uint32_t e[2])
+{
+   memset(m, 0, sizeof(*m));
+   const uint32_t head[] = { 0x07230203, version, 0, 0, 0 };
+   memcpy(m->w, head, sizeof(head));
+   m->n = 5;
+   m->next = FIRST_FREE;
+   uint32_t f[2], h[2], priv[2], shared[2];
+   for (int i = 0; i < 2; i++) {
+      f[i] = m->next++;
+      h[i] = m->next++;
+      priv[i] = m->next++;
+      shared[i] = m->next++;
+      e[i] = f[i];
+   }
+   const uint32_t dead = m->next++;
+   OP(m, 17, 1);    /* OpCapability Shader */
+   OP(m, 14, 0, 1); /* OpMemoryModel Logical GLSL450 */
+   for (int i = 0; i < 2; i++) {
+      if (version >= 0x10400)
+         OP(m, 15, 5, f[i], 0x61 + (uint32_t)i, priv[i], shared[i]); /* OpEntryPoint GLCompute */
+      else
+         OP(m, 15, 5, f[i], 0x61 + (uint32_t)i);
+   }
+   for (int i = 0; i < 2; i++)
+      OP(m, 16, f[i], 17, 1, 1, 1); /* LocalSize 1 1 1 */
+   OP(m, 19, T_VOID);
+   OP(m, 33, T_FN, T_VOID);
+   OP(m, 21, T_UINT, 32, 0);
+   const uint32_t fn_arr = mod_array(m, T_UINT, mod_const(m, fn_len));
+   const uint32_t priv_arr = mod_array(m, T_UINT, mod_const(m, priv_len));
+   const uint32_t shared_arr = mod_array(m, T_UINT, mod_const(m, shared_len));
+   const uint32_t huge = mod_array(m, T_UINT, mod_const(m, 0xffffffff));
+   const uint32_t p_fn = m->next++, p_huge = m->next++, p_priv = m->next++, p_shared = m->next++;
+   OP(m, 32, p_fn, 7, fn_arr); /* OpTypePointer Function */
+   OP(m, 32, p_huge, 7, huge);
+   OP(m, 32, p_priv, 6, priv_arr);     /* Private */
+   OP(m, 32, p_shared, 4, shared_arr); /* Workgroup */
+   for (int i = 0; i < 2; i++) {
+      OP(m, 59, p_priv, priv[i], 6);     /* OpVariable Private */
+      OP(m, 59, p_shared, shared[i], 4); /* OpVariable Workgroup */
+   }
+   for (int i = 0; i < 2; i++) {
+      OP(m, 54, T_VOID, f[i], 0, T_FN);
+      OP(m, 248, m->next++);
+      OP(m, 57, T_VOID, m->next++, h[i]); /* OpFunctionCall */
+      OP(m, 62, priv[i], mod_const(m, 0)); /* OpStore (uses the Private one) */
+      OP(m, 253);
+      OP(m, 56);
+      OP(m, 54, T_VOID, h[i], 0, T_FN);
+      OP(m, 248, m->next++);
+      OP(m, 59, p_fn, m->next++, 7); /* OpVariable Function */
+      OP(m, 253);
+      OP(m, 56);
+   }
+   OP(m, 54, T_VOID, dead, 0, T_FN);
+   OP(m, 248, m->next++);
+   OP(m, 59, p_huge, m->next++, 7);
+   OP(m, 253);
+   OP(m, 56);
+   m->w[3] = m->next;
+}
+
+static void
+entry_case(const char *name, uint32_t version, bool entry_a, bool by_interface, uint64_t want_elements,
+           uint64_t want_bytes)
+{
+   struct mod m;
+   uint32_t e[2];
+   two_entries(&m, version, 600000, 1000, 6144, e);
+   char why[192];
+   struct vkr_spirv_info *info = vkr_spirv_scan(m.w, m.n * 4, why, sizeof(why));
+   CHECK(info, "entry %s: scan: %s", name, why);
+   if (!info)
+      return;
+   const struct vkr_spirv_entry *entry = entry_a ? vkr_spirv_entry(info, "a", 5) : NULL;
+   CHECK(!entry_a || (entry && entry->function == e[0]), "entry %s: no entry point a", name);
+   uint64_t n = 0, b = 0;
+   const bool ok = vkr_spirv_function_elements(info, entry, by_interface, NULL, NULL, &n) &&
+                   vkr_spirv_workgroup_bytes(info, entry, by_interface, NULL, NULL, &b);
+   CHECK(ok && n == want_elements && b == want_bytes,
+         "entry %s: %llu elements and %llu bytes, want %llu and %llu", name,
+         (unsigned long long)n, (unsigned long long)b, (unsigned long long)want_elements,
+         (unsigned long long)want_bytes);
+   vkr_spirv_free(info);
+}
+
+static void
+entry_units(void)
+{
+   /* the module: both helpers' Function uint[600000] (over the cap together), the dead
+    * function's uint[2^32-1], both Private uint[1000], both Workgroup uint[6144] (48 KB) */
+   const uint64_t dead = 0xffffffffull;
+   entry_case("module", 0x10600, false, false, 1200000 + dead + 2000, 49152);
+   /* entry point a on MoltenVK: its helper's Function variable (not b's, not the dead
+    * function's), every Private and Workgroup variable (SPIRV-Cross declares each in it) */
+   entry_case("a-mvk", 0x10600, true, false, 600000 + 2000, 49152);
+   /* on KosmicKrisp from SPIR-V 1.4: only the globals in its interface */
+   entry_case("a-kk", 0x10600, true, true, 600000 + 1000, 24576);
+   /* before SPIR-V 1.4 the interface lists no globals: all of them */
+   entry_case("a-kk-1.3", 0x10300, true, true, 600000 + 2000, 49152);
+}
+
 /* a struct of two of the previous one, `depth` deep, as a Private variable */
 static uint32_t
 dag_module(uint32_t depth, uint32_t *w)
@@ -1174,6 +1325,7 @@ main(int argc, char **argv)
       elements_units();
       bytes_units();
       interface_units();
+      entry_units();
       cost_units();
       free(code);
       printf("units: %s\n", failures ? "FAIL" : "all ok");
