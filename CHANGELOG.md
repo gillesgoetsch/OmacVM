@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.22 (unreleased)
+## 3.2.22
 
 In OmacVM.app VMs with Graphics on Vulkan, QEMU now counts the Metal passes and the Mac memory each
 Vulkan program's commands and objects take; a program that goes too far loses only its own Vulkan
