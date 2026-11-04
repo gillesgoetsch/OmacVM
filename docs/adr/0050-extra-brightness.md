@@ -41,8 +41,10 @@ A plain 2x of a PQ frame doubles HDR highlights and clips them.
    from 1 to 16 within 2 s (backlight for nothing); with the layer's
    `contentsHeadroom` at 2 it stayed at 2. Boosted frames set it to 2 on
    the commit thread (macOS 26+) and every other frame back to 0
-   (untagged), so HDR keeps the full headroom; the surfaces also carry
-   `kIOSurfaceContentHeadroom` 2.0 (macOS 15+).
+   (untagged); the surfaces also carry `kIOSurfaceContentHeadroom` 2.0
+   (macOS 15+). PQ frames take their own surface's tag since 2026-11-04:
+   1x while they are SDR, untagged only while they show HDR (ADR 0049,
+   amended), so SDR frames with HDR on no longer raise the panel either.
 4. **Live, from the app's key.** QEMU runs as the app, so it reads
    `extraBrightness` from its own defaults and watches it with KVO (which
    also reports `defaults write` and the app's window), and reads it again

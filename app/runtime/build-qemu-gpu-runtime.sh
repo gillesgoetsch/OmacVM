@@ -1236,6 +1236,18 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop-logic.pa
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop.patch"
 "$native_dir/Tests/drop/test-drop.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: drag and drop is not wired as tested, or its rules fail (test-drop.sh)"
+# OmacVM, HDR (ADR 0049, amended): PQ frames ask macOS for the display's
+# headroom only while they show HDR (tagged 1x while SDR): an untagged PQ
+# layer raised an XDR panel to its most for SDR frames (a short bright flash
+# as white windows opened). The wiring checks must fail on the code before.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-sdr-tag-logic.patch"
+"$native_dir/Tests/display/test-hdr-sdr-tag.sh" || \
+  die "ui/omacvm-hdr-tag.h: the HDR tag rules or the peak shader fail (test-hdr-sdr-tag.sh)"
+"$native_dir/Tests/display/test-hdr-sdr-tag.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: an HDR tag wiring check passes without the patch (test-hdr-sdr-tag.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-hdr-sdr-tag.patch"
+"$native_dir/Tests/display/test-hdr-sdr-tag.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the HDR tag is not wired as tested (test-hdr-sdr-tag.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"

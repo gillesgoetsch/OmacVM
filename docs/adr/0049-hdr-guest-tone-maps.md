@@ -6,7 +6,8 @@ Status: accepted, built (`hdr`), behind the app's experimental switch
 [0050](0050-extra-brightness.md) (2026-10-21): while Extra brightness is
 on, the guest is told headroom 1 and its PQ frames end at SDR white.
 Amended 2026-10-27 (#579, below): screenshots and screen sharing of HDR
-windows.
+windows. Amended 2026-11-04 (hdr-flash, below): PQ frames ask macOS for
+the panel's headroom only while they show HDR.
 Notes and numbers: work/tracks/hdr.md.
 
 ## Context
@@ -192,3 +193,32 @@ BT.2100 PQ, and the layer asks for EDR. It stayed hidden because:
   display-sync sets Virtual-1's mode. Hyprland sends no new metadata when
   only the headroom moves: the blob keeps the start's peak,
   gpu-screen-recorder takes the peak from the Wayland output instead.
+- Amended 2026-11-04 (hdr-flash, a user's report: "a flash of full
+  brightness when opening chrome or so, for a split second" with HDR on
+  and Extra brightness off). QEMU showed PQ frames with no headroom tag, so
+  macOS raised the panel's EDR headroom to its most (1.2 -> 16 within 2 s
+  on the M1 Max at brightness 0.1) whenever the VM showed, also when every
+  pixel was SDR, and kept it 5-15 s after. The guest's frames were clean
+  (no pixel above SDR white in 57 app opens), so that headroom is the
+  likely cause; the flash itself was not seen on a test Mac. Now
+  (`omacvm-cocoa-hdr-sdr-tag*.patch`, `ui/omacvm-hdr-tag.h`) a look at
+  most 4 times a second takes the frame's brightest pixel on the GPU (the
+  max of 16x16 blocks, twice, read back without a wait). While it is SDR
+  white or less (PQ code 599 or less) the PQ surfaces carry
+  `kIOSurfaceContentHeadroom` 1.0 and each layer, main and tiles, the same
+  as its `contentsHeadroom` (macOS 26+); from the first look that sees
+  more they are untagged as before, and tagged 1x again 10 s after the
+  last such look (longer than macOS's own hold, so dark scenes in an HDR
+  video do not ramp the panel again and again). PQ frames start at 1x (the
+  VM's start, Extra brightness off, the 10-bit switch, another display).
+  While tagged, the guest is told the headroom it had untagged on this
+  display (else the display's most, at most 16), not the ~1 the panel
+  falls to: told 1 it would fit HDR into SDR and never untag. After
+  untagging it keeps that value until macOS's ramp is done (3 s). Costs:
+  HDR content shows clipped at the panel's headroom for up to about half a
+  second plus macOS's ramp (about 2 s) when it appears; one small GPU pass
+  over the frame 4 times a second while PQ frames are drawn. HDR off does
+  not change (no EDR at all). macOS 15 has only the surface tag (no layer
+  property); measured on macOS 27 only (`work/hdr-flash/`).
+  `OMACVM_HDR_SDR_TAG=0` gives 3.2.22's untagged frames,
+  `OMACVM_HDR_TRACE=1` one qemu.log line per frame and layer (tests).
