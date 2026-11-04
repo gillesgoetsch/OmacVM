@@ -3,6 +3,17 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.5 (unreleased)
+
+- **With HDR on, an HDR screen no longer jumps to full brightness while the VM shows only normal (SDR)
+  pictures (OmacVM.app).** The user reported a flash of full brightness for a split second when opening Chrome
+  or other apps on an HDR screen, with Extra brightness off. QEMU showed the VM's HDR frames without saying how
+  much brightness they need, so macOS gave the screen its full HDR headroom (up to 16x on a MacBook Pro's XDR
+  screen) whenever the VM showed; that is the likely cause (the VM's own pictures were clean). Now QEMU looks at
+  the brightest pixel a few times a second and asks macOS for 1x until a frame really is brighter than white; HDR
+  videos and pictures still get the full headroom, about half a second plus macOS's own ramp after they appear.
+  With HDR off nothing changes. Needs the app update only (from the VM's next start); no Update VM.
+
 ## 3.4.4
 
 - **omacvm check** read the bar's state (`omarchy-shell notchbar state`) with Qt's locale warning
