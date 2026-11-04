@@ -24,15 +24,15 @@ rows src/tests/e2e/drag-drop.sh.
 diff --git a/ui/cocoa.m b/ui/cocoa.m
 --- a/ui/cocoa.m
 +++ b/ui/cocoa.m
-@@ -52,6 +52,7 @@
- #include "ui/omacvm-fullpanel-scale.h"
+@@ -53,6 +53,7 @@
  #include "ui/omacvm-notch-park.h"
  #include "ui/omacvm-ime.h"
+ #include "ui/omacvm-ime-shift.h"
 +#include "ui/omacvm-drop.h"
  #include "ui/omacvm-fullpanel.h"
  #include "ui/omacvm-fullpanel-retake.h"
  #include "ui/omacvm-close.h"
-@@ -1091,6 +1092,8 @@
+@@ -1099,6 +1100,8 @@
  static bool omacvm_pointer_over_ours(void);
  static void omacvm_guard_corners(NSEvent *event);
  static int omacvm_guarded_target(NSView **view, int *output, NSPoint *p);
@@ -41,7 +41,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static OmacVMGuard omacvm_guard;         /* the full-screen pointer guard */
  /* When the VM takes the pointer by itself; the Mac's cursor (main thread). */
  static OmacVMPointerStart omacvm_ptr;
-@@ -12305,6 +12308,7 @@
+@@ -12332,6 +12335,7 @@
      self = [super initWithFrame:frame];
      if (self) {
          output = index;
@@ -49,7 +49,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
          NSTrackingArea *area = [[NSTrackingArea alloc]
              initWithRect:CGRectZero
                   options:NSTrackingActiveAlways | NSTrackingMouseEnteredAndExited |
-@@ -15112,9 +15116,345 @@
+@@ -15288,9 +15292,345 @@
      if (icon) {
          [NSApp setApplicationIconImage:icon];
          [icon release];
@@ -395,7 +395,7 @@ diff --git a/ui/cocoa.m b/ui/cocoa.m
  static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
  {
      NSAutoreleasePool * pool = [[NSAutoreleasePool alloc] init];
-@@ -15251,6 +15591,7 @@
+@@ -15427,6 +15767,7 @@
      omacvm_shortcuts_init();
      omacvm_globe_init();
      omacvm_ime_init();
