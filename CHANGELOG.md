@@ -3,6 +3,41 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.21
+
+In OmacVM.app VMs with Graphics on Vulkan, QEMU now checks each shader a VM sends with SPIRV-Tools'
+validator before the Mac's driver compiles it; a refused shader ends only its own app's Vulkan
+connection, not the VM. Needs the app update only (from the VM's next start). Update VM only
+refreshes the VM's copy of OmacVM's own guest Mesa build script (built by hand), which now installs
+into a folder of its own. UTM, Fusion and Parallels get only that script default.
+
+- **A Vulkan shader that would crash the Mac's driver now ends only its own app (OmacVM.app, #702,
+  see #624).** With Graphics on Vulkan, QEMU checks each shader a VM sends with SPIRV-Tools'
+  validator before KosmicKrisp or MoltenVK compiles it, for the Vulkan version and features the
+  Mac's driver has. On an M4, 138 of 900 test shaders ended or hung the Mac's driver when compiled
+  (in QEMU each would end the VM); the check from 3.2.18 stopped 72 of them, the validator now stops
+  65 of the other 66 and a cap on huge unused arrays the last one; huge Private and shared
+  (Workgroup) arrays are capped too. The validator itself is guarded: limits on interface variables
+  and types before it reads a shader, its own checks kept on, and at most 2 s of CPU per shader.
+  Real shaders pass (90 from DXVK, Chromium, dEQP, vkcube, Zink and glslc tests, and vkd3d-proton's
+  42; Ghostty on Zink, glxgears, vkcube and Chromium ran in a test VM on KosmicKrisp with no
+  refusal). On MoltenVK an app that asks for Vulkan 1.0 or 1.1 may send SPIR-V up to 1.4, as
+  MoltenVK tells it. On the M4 it costs about 40 µs per KB once per shader (cached after). Ray
+  tracing pipelines, which no Mac driver has, are refused. Needs the app update only (from the VM's
+  next start); nothing in the VM.
+- **OmacVM's own guest Mesa build has a folder of its own (guest Mesa, manual build, see #694).**
+  `src/app/guest/mesa/build.sh` installed into `/opt/omacvm-mesa` unless `PREFIX` named another
+  folder, and that is where a VM with Graphics on Vulkan keeps its Venus Mesa, so a run in such a
+  VM replaced the Venus Mesa. Its default is `/opt/omacvm-gl-mesa` now (apps use it with
+  `LD_LIBRARY_PATH=/opt/omacvm-gl-mesa/lib`), and it stops without building when the folder holds
+  the Venus Mesa. A build made before into `/opt/omacvm-mesa` stays only in UTM, Fusion and Parallels
+  VMs; in an OmacVM.app VM with Vulkan off the next Update VM removes that folder, so build again
+  with the new default. If an earlier build replaced the Venus Mesa in a Vulkan VM, switch Vulkan
+  off and on again (or `venus/install.sh --remove`, then enable it) to rebuild it. In an OmacVM.app
+  VM the VM's copy of the script gets the new default with Update VM; UTM, Fusion and Parallels VMs
+  get it with their own update. No VM runs this script by itself: nothing changes for a VM that
+  does not use it.
+
 ## 3.2.20
 
 In OmacVM.app VMs, more desktop OpenGL programs with tessellation draw on the Mac's GPU: separate

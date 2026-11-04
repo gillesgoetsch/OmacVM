@@ -13,7 +13,9 @@
  *  3. mutations of the real modules (bit flips, words set to edge values, truncation,
  *     inserted, removed and copied words, opcodes and lengths changed) never fault and never
  *     read outside the code (each in an exactly sized heap block), and every summary answers
- *     the pipeline's questions (entry point, workgroup size, bindings) without a fault;
+ *     the pipeline's questions (entry point, workgroup size, bindings, the elements of its
+ *     Function and Private variables, the bytes of its Workgroup ones, its interface's
+ *     locations) without a fault;
  *  4. a module at the id bound with 2^17 functions in a call chain and 2^17 decorations,
  *     constants and uses scans and walks in linear time.
  *   fuzz-venus-spirv [ITERATIONS [SEED]]   (default 200000, 1)
@@ -538,6 +540,18 @@ use_summary(const struct vkr_spirv_info *info)
       struct seen s = { .refuse_after = pick(3) ? UINT32_MAX : pick(4) };
       vkr_spirv_bindings_ok(info, e, record, &s, &set, &binding);
    }
+   /* the Function and Private element count, the Workgroup bytes and the interface
+    * locations (virgl-venus-spirv-validate.patch's caps), with limits from none to past any
+    * device's */
+   uint64_t elements, bytes;
+   vkr_spirv_function_elements(info, lookup, pick(2) ? spec : NULL, &elements);
+   vkr_spirv_workgroup_bytes(info, lookup, pick(2) ? spec : NULL, &bytes);
+   struct vkr_spirv_io_limits limits;
+   uint32_t *l = &limits.vertex_in;
+   for (size_t i = 0; i < sizeof(limits) / sizeof(*l); i++)
+      l[i] = pick(4) ? 32 : interesting(64);
+   char why[192];
+   vkr_spirv_interface_ok(info, &limits, lookup, pick(2) ? spec : NULL, why, sizeof(why));
 }
 
 static void

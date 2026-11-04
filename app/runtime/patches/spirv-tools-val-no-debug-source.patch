@@ -1,0 +1,31 @@
+SPIRV-Tools: the validator's messages leave out the shader's debug source
+
+What: ValidationState_t::diag no longer calls InspectShaderDebugInfo, so an
+error message carries the disassembled instruction but not the source lines
+that NonSemantic.Shader.DebugInfo names.
+Why: Venus runs spirv-val on every guest module (virgl-venus-spirv-validate.
+patch). On SPIRV-Tools' own test module ext_inst_debug-503 the printer
+(PrintShaderDebugInfoSource) read an operand the module's DebugSource does not
+have; operands_.at() past the end under -fno-exceptions calls abort(), which
+would end QEMU. The source lines only make messages longer.
+Upstream: not reported yet (draft in the lane's upstream-drafts.md).
+Tests: Tests/virgl/test-venus-spirv-validate.sh (the corpus under
+AddressSanitizer, ext_inst_debug-503 among the refused modules).
+
+diff --git a/source/val/validation_state.cpp b/source/val/validation_state.cpp
+--- a/source/val/validation_state.cpp
++++ b/source/val/validation_state.cpp
+@@ -355,10 +355,12 @@
+   }
+ 
+   std::string disassembly;
++  // OmacVM: no shader debug info source in messages: its printer reads the
++  // module's debug instructions unchecked and ended the process on hostile
++  // ones (operands_.at() past the end under -fno-exceptions)
+   std::string shader_debug_info;
+   if (inst) {
+     disassembly = Disassemble(*inst);
+-    shader_debug_info = InspectShaderDebugInfo(*inst);
+   }
+ 
+   return DiagnosticStream({0, 0, inst ? inst->LineNum() : 0},
