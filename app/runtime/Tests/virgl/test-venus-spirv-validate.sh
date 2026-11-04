@@ -1,17 +1,19 @@
 #!/bin/bash
 # SPIRV-Tools' validator as Venus runs it (virgl-venus-spirv-validate.patch) and the scan's
-# Function element count (virgl-venus-spirv-scan.patch) on the CPU alone, ADR 0065, #624: the
-# four new and changed files come out of the patches into an empty folder, and
-# test-venus-spirv-validate.c runs against them and the runtime build's SPIRV-Tools, once as
-# built and once under AddressSanitizer (SPIRV-Tools built with it too) and
-# UndefinedBehaviorSanitizer (vkr's code). No Vulkan driver, no GPU: invalid and crash
+# Function and Private element count and Workgroup bytes (virgl-venus-spirv-scan.patch) on the
+# CPU alone, ADR 0065, #624: the four new and changed files come out of the patches into an
+# empty folder, and test-venus-spirv-validate.c runs against them and the runtime build's
+# SPIRV-Tools, once as built and once under AddressSanitizer (SPIRV-Tools built with it too)
+# and UndefinedBehaviorSanitizer (vkr's code). No Vulkan driver, no GPU: invalid and crash
 # modules never reach a real driver (STANDARDS 14b).
-#  - spirv-corpus/pass: real modules (DXVK, Dawn, vkcube, dEQP-VK data, glslc shaders) pass
-#    for both drivers' targets, with their pipeline's checks (spirv-corpus/README.md);
+#  - spirv-corpus/pass: real modules (DXVK, Dawn, vkcube, dEQP-VK data, Zink, glslc test
+#    shaders) pass for both drivers' targets, with their pipeline's checks
+#    (spirv-corpus/README.md);
 #  - spirv-corpus/refuse: modules that ended KosmicKrisp's or MoltenVK's process or hung
-#    them on an M4 are refused by the scan, spirv-val, the element cap or the pipeline checks;
+#    them on an M4, or took spirv-val past 512 MB, 2 s or the process, are refused by the
+#    scan, spirv-val, the element cap or the pipeline checks;
 #  - units: the targets, the cache (hits, bound, LRU order, no refusals kept, 8 threads),
-#    the size cap and the Function element cases;
+#    the size cap, the Function and Private element cases and the Workgroup bytes;
 #  - venus-spirv-extensions.tsv: every SPIR-V extension a Vulkan extension vkr offers
 #    enables is one this SPIRV-Tools knows (an unknown one would refuse real modules), and
 #    with VIRGL_SOURCE every extension vkr_common.c's table offers has a row.

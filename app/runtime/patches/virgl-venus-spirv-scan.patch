@@ -11,12 +11,14 @@ resolved) inside the device's limits, and every descriptor set and binding
 that the functions its entry point reaches use in its layout. Descriptors no
 function uses need not be there (glslang lists them in SPIR-V 1.4+
 interfaces too). A refusal ends the app's context. The scan also keeps what
-virgl-venus-spirv-validate.patch checks before spirv-val: the types of
-Function variables (their elements after specialization), the Input and
-Output variables with their Location, BuiltIn, Patch and per-vertex
-decorations and each entry point's interface (their locations against the
-device's limits), and what the types would cost spirv-val's walks over them
-(each instruction the weights of the types it names and reads).
+virgl-venus-spirv-validate.patch checks before spirv-val and at pipeline
+creation: the types of Function and Private variables (their elements after
+specialization), of Workgroup variables (their bytes, Block ones aliasing
+each other), the Input and Output variables with their Location, BuiltIn,
+Patch and per-vertex decorations and each entry point's interface (their
+locations against the device's limits), and what the types would cost
+spirv-val's walks over them (each instruction the weights of the types it
+names and reads).
 Why: KosmicKrisp's spirv_to_nir ended QEMU on a bad magic (NULL in its own
 error path) and on an id bound of 0x3fffffff (SIGBUS in
 linear_zalloc_child_array); MoltenVK's SPIRV-Cross on garbage, truncated code
@@ -26,7 +28,8 @@ workgroup of 65536 threads; KosmicKrisp dereferenced a descriptor set the
 layout lacks (kk_nir_lower_descriptors).
 Upstream: OmacVM policy (spec VUIDs), draft only.
 Tests: Tests/virgl/fuzz-venus-spirv.sh (the scan alone on the CPU, under
-AddressSanitizer and UndefinedBehaviorSanitizer); Tests/virgl/
+AddressSanitizer and UndefinedBehaviorSanitizer, with the element and byte
+counts); Tests/virgl/
 test-venus-commands.c (p-spirv-, p-entry-missing, p-stage-mismatch,
 p-shader-layout-, p-unused-set-, p-workgroup- cases).
 
@@ -285,7 +288,7 @@ new file mode 100644
 index 0000000..426aa9a
 --- /dev/null
 +++ b/src/venus/vkr_spirv.c
-@@ -0,0 +1,1180 @@
+@@ -0,0 +1,1251 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -390,6 +393,7 @@ index 0000000..426aa9a
 +
 +enum {
 +   DEC_SPEC_ID = 1,
++   DEC_BLOCK = 2,
 +   DEC_BUILT_IN = 11,
 +   DEC_PATCH = 15,
 +   DEC_LOCATION = 30,
@@ -402,6 +406,8 @@ index 0000000..426aa9a
 +   MODE_LOCAL_SIZE_ID = 38,
 +   STORAGE_INPUT = 1,
 +   STORAGE_OUTPUT = 3,
++   STORAGE_WORKGROUP = 4,
++   STORAGE_PRIVATE = 6,
 +   STORAGE_FUNCTION = 7,
 +   MODEL_TESS_CONTROL = 1,
 +   MODEL_TESS_EVAL = 2,
@@ -412,7 +418,7 @@ index 0000000..426aa9a
 +};
 +
 +/* a decoration this scan keeps: SpecId, Binding or DescriptorSet with its value; Location,
-+ * BuiltIn (a member's too, under its struct's id), Patch, PerVertexKHR or PerTaskNV */
++ * BuiltIn (a member's too, under its struct's id), Patch, PerVertexKHR, PerTaskNV or Block */
 +struct deco {
 +   uint32_t id, kind, value;
 +};
@@ -432,7 +438,7 @@ index 0000000..426aa9a
 +   uint32_t id, pointee, storage;
 +};
 +
-+/* a Function variable: its pointer type, or (untyped) its data type */
++/* a Function, Private or Workgroup variable: its pointer type, or (untyped) its data type */
 +struct local {
 +   uint32_t type;
 +   bool pointer;
@@ -458,7 +464,7 @@ index 0000000..426aa9a
 +   size_t why_size;
 +   struct vkr_spirv_info *info;
 +   struct vec entries, names, decos, modes, consts, composites, functions, calls, uses;
-+   struct vec types, members, pointers, locals, ios, interface;
++   struct vec types, members, pointers, locals, shared, ios, interface;
 +   /* per id (bound entries): a type's weight (0: not a type), a value's type, struct types */
 +   uint32_t *weight, *type_of;
 +   uint8_t *is_struct;
@@ -609,7 +615,7 @@ index 0000000..426aa9a
 +            return fail(s, "out of host memory", at);
 +         *d = (struct deco){ w[1], w[2], w[3] };
 +      } else if (w[2] == DEC_BUILT_IN || w[2] == DEC_PATCH || w[2] == DEC_PER_VERTEX ||
-+                 w[2] == DEC_PER_TASK) {
++                 w[2] == DEC_PER_TASK || w[2] == DEC_BLOCK) {
 +         struct deco *d = vec_add(&s->decos, 1, sizeof(*d));
 +         if (!d)
 +            return fail(s, "out of host memory", at);
@@ -693,9 +699,13 @@ index 0000000..426aa9a
 +   case OP_UNTYPED_VARIABLE:
 +      if (len < 4)
 +         return fail(s, "a variable without a storage class", at);
-+      /* an untyped variable's elements are its data type's, when it has one */
-+      if (w[3] == STORAGE_FUNCTION && (op == OP_VARIABLE || len >= 5)) {
-+         struct local *l = vec_add(&s->locals, 1, sizeof(*l));
++      /* an untyped variable's elements are its data type's, when it has one. Private
++       * variables are per invocation like Function ones and counted with them; Workgroup
++       * ones in bytes (vkr_spirv_workgroup_bytes) */
++      if ((w[3] == STORAGE_FUNCTION || w[3] == STORAGE_PRIVATE || w[3] == STORAGE_WORKGROUP) &&
++          (op == OP_VARIABLE || len >= 5)) {
++         struct local *l =
++            vec_add(w[3] == STORAGE_WORKGROUP ? &s->shared : &s->locals, 1, sizeof(*l));
 +         if (!l)
 +            return fail(s, "out of host memory", at);
 +         *l = (struct local){ op == OP_VARIABLE ? w[1] : w[4], op == OP_VARIABLE };
@@ -964,6 +974,25 @@ index 0000000..426aa9a
 +      }
 +      info->local_count = s->locals.n;
 +   }
++   /* each Workgroup variable's type and whether it is a Block (those alias each other) */
++   if (s->shared.n) {
++      info->shared = calloc(s->shared.n, sizeof(*info->shared));
++      if (!info->shared)
++         return fail(s, "out of host memory", 0);
++      const struct local *shared = s->shared.p;
++      for (uint32_t i = 0; i < s->shared.n; i++) {
++         const struct pointer *p =
++            shared[i].pointer ? find(&s->pointers, sizeof(*p), shared[i].type) : NULL;
++         struct vkr_spirv_shared *v = &info->shared[i];
++         v->type = shared[i].pointer ? (p ? p->pointee : 0) : shared[i].type;
++         for (const struct deco *d = v->type ? find(&s->decos, sizeof(*d), v->type) : NULL;
++              d && d < decos + s->decos.n && d->id == v->type; d++) {
++            if (d->kind == DEC_BLOCK)
++               v->block = true;
++         }
++      }
++      info->shared_count = s->shared.n;
++   }
 +   /* Input and Output variables: their data type, Location and the decorations that decide
 +    * whether they are arrayed or built in, sorted by id */
 +   if (s->ios.n) {
@@ -1076,6 +1105,7 @@ index 0000000..426aa9a
 +   free(s.members.p);
 +   free(s.pointers.p);
 +   free(s.locals.p);
++   free(s.shared.p);
 +   free(s.ios.p);
 +   free(s.interface.p);
 +   free(s.weight);
@@ -1102,6 +1132,7 @@ index 0000000..426aa9a
 +   free(info->types);
 +   free(info->members);
 +   free(info->locals);
++   free(info->shared);
 +   free(info->ios);
 +   free(info->interface);
 +   free(info);
@@ -1223,13 +1254,17 @@ index 0000000..426aa9a
 +   return result;
 +}
 +
-+/* one type's elements (memo: 0 not yet, 1 counting, 2 counted into elems) */
++/* one type's elements (memo: 0 not yet, 1 counting, 2 counted into elems), or with bytes
++ * set its size in bytes at least: no padding or offsets, a scalar its width, a vector or
++ * matrix its parts', a runtime array 0, a type the scan does not keep (bool, pointer) 1,
++ * and an array whose length is no known constant (a spec constant operation) its element's */
 +struct elements {
 +   const struct vkr_spirv_info *info;
 +   bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value);
 +   const void *data;
 +   uint8_t *state;
 +   uint64_t *elems;
++   bool bytes;
 +};
 +
 +static bool
@@ -1255,17 +1290,28 @@ index 0000000..426aa9a
 +      uint64_t inner;
 +      const struct vec v = { .p = e->info->constants, .n = e->info->constant_count };
 +      const struct vkr_spirv_constant *c = find(&v, sizeof(*c), t->b);
-+      if (!c || !constant_value(e->info, t->b, e->lookup, e->data, &lo) ||
-+          !type_elements(e, t->a, depth + 1, &inner))
++      if (!type_elements(e, t->a, depth + 1, &inner))
 +         return false;
 +      /* vkr_spec_lookup gives a specialized length's lower 32 bits: a 64-bit one with a
 +       * SpecId is not known */
-+      const bool specialized = c->spec_id < UINT32_MAX - 1;
-+      if (specialized && c->wide)
++      const bool known = c && constant_value(e->info, t->b, e->lookup, e->data, &lo) &&
++                         !(c->spec_id < UINT32_MAX - 1 && c->wide);
++      if (!known && !e->bytes)
 +         return false;
-+      const uint64_t length = specialized ? lo : ((uint64_t)c->high << 32 | lo);
++      const uint64_t length =
++         !known ? 1 : c->spec_id < UINT32_MAX - 1 ? lo : ((uint64_t)c->high << 32 | lo);
 +      if (__builtin_mul_overflow(length, inner, &n))
 +         n = UINT64_MAX;
++   } else if (e->bytes && t->kind == VKR_SPIRV_TYPE_SCALAR) {
++      n = t->a >= 8 ? t->a / 8 : 1;
++   } else if (e->bytes && (t->kind == VKR_SPIRV_TYPE_VECTOR || t->kind == VKR_SPIRV_TYPE_MATRIX)) {
++      uint64_t part;
++      if (!type_elements(e, t->a, depth + 1, &part))
++         return false;
++      if (__builtin_mul_overflow((uint64_t)t->b, part, &n))
++         n = UINT64_MAX;
++   } else if (e->bytes && t->kind == VKR_SPIRV_TYPE_RUNTIME_ARRAY) {
++      n = 0;
 +   } else if (t->kind != VKR_SPIRV_TYPE_STRUCT) {
 +      n = 1; /* a scalar, vector, matrix or runtime array */
 +   } else {
@@ -1294,7 +1340,7 @@ index 0000000..426aa9a
 +   if (!info->local_count)
 +      return true;
 +   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
-+                         calloc(info->type_count + 1, sizeof(uint64_t)) };
++                         calloc(info->type_count + 1, sizeof(uint64_t)), false };
 +   bool ok = e.state && e.elems;
 +   for (uint32_t i = 0; ok && i < info->local_count; i++) {
 +      uint64_t n;
@@ -1304,6 +1350,34 @@ index 0000000..426aa9a
 +   }
 +   free(e.state);
 +   free(e.elems);
++   return ok;
++}
++
++bool
++vkr_spirv_workgroup_bytes(const struct vkr_spirv_info *info,
++                          bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                          const void *data,
++                          uint64_t *bytes)
++{
++   *bytes = 0;
++   if (!info->shared_count)
++      return true;
++   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
++                         calloc(info->type_count + 1, sizeof(uint64_t)), true };
++   bool ok = e.state && e.elems;
++   uint64_t sum = 0, block = 0;
++   for (uint32_t i = 0; ok && i < info->shared_count; i++) {
++      uint64_t n;
++      ok = type_elements(&e, info->shared[i].type, 0, &n);
++      if (ok && info->shared[i].block)
++         block = n > block ? n : block;
++      else if (ok && __builtin_add_overflow(sum, n, &sum))
++         sum = UINT64_MAX;
++   }
++   free(e.state);
++   free(e.elems);
++   /* Block ones alias each other (SPV_KHR_workgroup_memory_explicit_layout): the largest */
++   *bytes = sum > block ? sum : block;
 +   return ok;
 +}
 +
@@ -1420,7 +1494,7 @@ index 0000000..426aa9a
 +   if (!info->io_count)
 +      return true;
 +   struct elements e = { info, lookup, data, calloc(info->type_count + 1, 1),
-+                         calloc(info->type_count + 1, sizeof(uint64_t)) };
++                         calloc(info->type_count + 1, sizeof(uint64_t)), false };
 +   bool ok = e.state && e.elems;
 +   if (!ok)
 +      snprintf(why, why_size, "SPIR-V: out of host memory");
@@ -1471,7 +1545,7 @@ new file mode 100644
 index 0000000..1b79868
 --- /dev/null
 +++ b/src/venus/vkr_spirv.h
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,234 @@
 +/*
 + * Copyright 2026 OmacVM contributors
 + * SPDX-License-Identifier: MIT
@@ -1485,8 +1559,9 @@ index 0000000..1b79868
 + * lacks (KosmicKrisp). This is not a validator: it checks what those crashes need (the
 + * header, every instruction inside the code, the ids it reads inside the bound, entry
 + * points, workgroup sizes, descriptor sets) and keeps a summary for pipeline creation,
-+ * with the types of Function variables, whose elements a pipeline counts (SPIRV-Tools'
-+ * validator comes after it: virgl-venus-spirv-validate.patch).
++ * with the types of Function and Private variables, whose elements a pipeline counts, and
++ * of Workgroup variables, whose bytes it counts (SPIRV-Tools' validator comes after it:
++ * virgl-venus-spirv-validate.patch).
 + * Self-contained (no Vulkan driver), so it is fuzzed on the CPU alone
 + * (Tests/virgl/fuzz-venus-spirv.sh). */
 +
@@ -1500,10 +1575,12 @@ index 0000000..1b79868
 +/* the largest id bound: KosmicKrisp allocates per id (a bound of 0x3fffffff ended QEMU) */
 +#define VKR_SPIRV_MAX_BOUND (1u << 20)
 +
-+/* the most elements in a module's Function variables after specialization (arrays of
-+ * arrays multiplied, struct members added): KosmicKrisp splits an unused Function array
-+ * into one variable per element at about 360 bytes each; 2^20 peaked at 480 MB in 0.5 s,
-+ * 2^24 passed 2 GB in 2.4 s, and uint[2^32-1] (legal SPIR-V) took 9 GB */
++/* the most elements in a module's Function and Private variables after specialization
++ * (arrays of arrays multiplied, struct members added): KosmicKrisp splits an unused
++ * Function array into one variable per element at about 360 bytes each; 2^20 peaked at
++ * 480 MB in 0.5 s, 2^24 passed 2 GB in 2.4 s, and uint[2^32-1] (legal SPIR-V) took 9 GB.
++ * Private variables are per invocation too (measured on the drivers only up to 2^24); a
++ * Private uint[2^32-1] passed the scan and spirv-val, so they count against the same cap. */
 +#define VKR_SPIRV_MAX_FUNCTION_ELEMENTS (1u << 20)
 +
 +/* the most a module's types may cost spirv-val (info->type_cost, the sum vkr_spirv.c's
@@ -1591,6 +1668,13 @@ index 0000000..1b79868
 +   uint32_t id;
 +};
 +
++/* a Workgroup variable: its data type (0: none known); block: a Block type, which aliases
++ * the other Block ones (SPV_KHR_workgroup_memory_explicit_layout) */
++struct vkr_spirv_shared {
++   uint32_t type;
++   bool block;
++};
++
 +struct vkr_spirv_info {
 +   uint32_t entry_count;
 +   struct vkr_spirv_entry *entries;
@@ -1609,14 +1693,16 @@ index 0000000..1b79868
 +   struct vkr_spirv_pair *calls;
 +   uint32_t use_count;
 +   struct vkr_spirv_pair *uses;
-+   /* arrays and structs (sorted by id), the structs' member types, and the type of each
-+    * Function variable */
++   /* arrays and structs (sorted by id), the structs' member types, the type of each
++    * Function and Private variable and the Workgroup variables */
 +   uint32_t type_count;
 +   struct vkr_spirv_type *types;
 +   uint32_t member_count;
 +   uint32_t *members;
 +   uint32_t local_count;
 +   uint32_t *locals;
++   uint32_t shared_count;
++   struct vkr_spirv_shared *shared;
 +   /* Input and Output variables (sorted by id) and the entry points' interfaces */
 +   uint32_t io_count;
 +   struct vkr_spirv_io *ios;
@@ -1657,14 +1743,27 @@ index 0000000..1b79868
 +                      uint32_t *set,
 +                      uint32_t *binding);
 +
-+/* the elements of all Function variables after specialization (lookup as for the
-+ * workgroup size), at most UINT64_MAX; false when an array length is no known constant
++/* the elements of all Function and Private variables after specialization (lookup as for
++ * the workgroup size), at most UINT64_MAX; false when an array length is no known constant
 + * (a spec constant operation) or the types nest past 64 levels or in a loop */
 +bool
 +vkr_spirv_function_elements(const struct vkr_spirv_info *info,
 +                            bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
 +                            const void *data,
 +                            uint64_t *count);
++
++/* the bytes the module's Workgroup variables take at least, after specialization (lookup
++ * as for the workgroup size): their sum, or the largest Block one when that is more; no
++ * padding, an array length from a spec constant operation counts once. Against
++ * maxComputeSharedMemorySize (VUID-RuntimeSpirv-Workgroup-06530) for every variable of the
++ * module, not only the entry point's, as the element count: a Workgroup uint[2^32-1] passed
++ * the scan and spirv-val. False when the types nest past 64 levels or in a loop or out of
++ * host memory. */
++bool
++vkr_spirv_workgroup_bytes(const struct vkr_spirv_info *info,
++                          bool (*lookup)(const void *data, uint32_t spec_id, uint32_t *value),
++                          const void *data,
++                          uint64_t *bytes);
 +
 +/* every Input and Output variable of an entry point's interface, but built-ins, takes at
 + * most the locations `limits` gives its model and storage class (after the outer array of

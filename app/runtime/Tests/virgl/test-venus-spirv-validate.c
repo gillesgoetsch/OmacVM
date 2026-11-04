@@ -3,15 +3,15 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* vkr_spirv_validate.c and vkr_spirv.c's Function element count, interface locations and
- * type cost (patches/virgl-venus-spirv-validate.patch, virgl-venus-spirv-scan.patch,
+/* vkr_spirv_validate.c and vkr_spirv.c's Function and Private element count, Workgroup
+ * bytes, interface locations and type cost (patches/virgl-venus-spirv-validate.patch, virgl-venus-spirv-scan.patch,
  * spirv-tools-val-*.patch, ADR 0065) on the CPU alone: no Vulkan driver, no GPU.
  * test-venus-spirv-validate.sh builds it against the pinned SPIRV-Tools, also under
  * AddressSanitizer, and runs, each module under a 512 MB footprint cap (STANDARDS 14c):
- *   pass PROFILE FILE...     every module passes the scan, the interface limits, spirv-val
- *                            and the element cap, and with a FILE.lay beside it vkr's
- *                            pipeline checks; a module of a SPIR-V version past the
- *                            target's is refused by spirv-val instead
+ *   pass PROFILE FILE...     every module passes the scan, the interface limits, spirv-val,
+ *                            the element cap and the Workgroup bytes, and with a FILE.lay
+ *                            beside it vkr's pipeline checks; a module of a SPIR-V version
+ *                            past the target's is refused by spirv-val instead
  *   refuse PROFILE FILE...   every module is refused by one of them (each crashed a Mac
  *                            driver: KosmicKrisp or MoltenVK ended the process or hung; or
  *                            took spirv-val past 512 MB, 2 s or the process)
@@ -24,8 +24,9 @@
  *                            AddressSanitizer: the validator on hostile input)
  *   time PROFILE REPS FILE...  microseconds per spirv-val run (cache off), median of REPS
  *   units FILE               targets, the cache (hits, LRU order, eviction, threads) on a
- *                            module that passes, the Function element cases, the interface
- *                            locations of each model and the type cost
+ *                            module that passes, the Function and Private element cases, the
+ *                            Workgroup bytes, the interface locations of each model and the
+ *                            type cost
  * PROFILE: kk or mvk (what the 3.2.20 drivers report on an M4: Vulkan 1.4, scalar and
  * standard layouts, LocalSizeId, relaxed layout; KosmicKrisp also scalar workgroup
  * layout), mvk11 (MoltenVK under an app that asks for Vulkan 1.0 or 1.1: its device then
@@ -43,6 +44,9 @@
 
 #include "vkr_spirv.h"
 #include "vkr_spirv_validate.h"
+
+/* maxComputeSharedMemorySize of both Mac drivers on an M4 (out2/limits-*.txt) */
+#define SHARED_MAX 32768u
 
 #define API(major, minor) (((uint32_t)(major) << 22) | ((uint32_t)(minor) << 12))
 
@@ -117,9 +121,9 @@ target_spirv(const struct vkr_spirv_target *t)
                                                    : 0x10600;
 }
 
-/* scan, the interface limits and spirv-val, element cap (no specialization: the defaults),
- * pipeline checks: 0 passed, else which refused (BY_UNSAFE: before spirv-val read it, or
- * an exception inside it) */
+/* scan, the interface limits and spirv-val, element cap and Workgroup bytes (no
+ * specialization: the defaults), pipeline checks: 0 passed, else which refused (BY_UNSAFE:
+ * before spirv-val read it, or an exception inside it) */
 enum { PASSED, BY_SCAN, BY_VALIDATOR, BY_ELEMENTS, BY_PIPELINE, BY_UNSAFE };
 
 /* vkr_spirv_validate after the scan, as vkr calls it (a module the scan refuses is checked
@@ -239,7 +243,11 @@ check_module(const struct vkr_spirv_target *t, const char *path, const uint32_t 
       r = unsafe ? BY_UNSAFE : BY_VALIDATOR;
    } else if (!vkr_spirv_function_elements(info, NULL, NULL, &n) ||
               n > VKR_SPIRV_MAX_FUNCTION_ELEMENTS) {
-      snprintf(why, why_size, "Function variables of %llu elements", (unsigned long long)n);
+      snprintf(why, why_size, "Function and Private variables of %llu elements",
+               (unsigned long long)n);
+      r = BY_ELEMENTS;
+   } else if (!vkr_spirv_workgroup_bytes(info, NULL, NULL, &n) || n > SHARED_MAX) {
+      snprintf(why, why_size, "Workgroup variables of %llu bytes", (unsigned long long)n);
       r = BY_ELEMENTS;
    } else if (l.have && !e) {
       snprintf(why, why_size, "no entry point %s for the stage", l.entry);
@@ -300,8 +308,8 @@ corpus(int want, const char *prof, int argc, char **argv)
    }
    printf("%s %s: %d modules; passed %u, refused by the scan %u, by spirv-val %u (%u of a "
           "newer SPIR-V than the target's), before it or by an exception in it %u, by the element "
-          "cap %u, by the pipeline checks %u; largest rise %llu KB (%s), at most %llu MB in all "
-          "(cap %d MB)\n",
+          "or Workgroup byte cap %u, by the pipeline checks %u; largest rise %llu KB (%s), at most "
+          "%llu MB in all (cap %d MB)\n",
           want == 1 ? "pass" : want == 0 ? "refuse" : "run", prof, argc, counts[PASSED], counts[BY_SCAN],
           counts[BY_VALIDATOR], newer, counts[BY_UNSAFE], counts[BY_ELEMENTS], counts[BY_PIPELINE],
           (unsigned long long)(most >> 10), most_at, (unsigned long long)(top >> 20), CAP_MB);
@@ -513,7 +521,7 @@ target_units(void)
    CHECK(strstr(text, " scalar") && strstr(text, " relaxed") && !strstr(text, " std"), "target text: %s", text);
 }
 
-/* --- units: Function elements --- */
+/* --- units: Function and Private elements, Workgroup bytes --- */
 
 /* a compute module with Function and Private variables of the types the caller adds */
 struct mod {
@@ -718,17 +726,132 @@ elements_units(void)
    mod_end(&m, (uint32_t[]){ st, 0 }, 0);
    elements_case("loop", &m, NULL, false, 0);
 
-   /* Private arrays are not counted (KosmicKrisp handled 2^24 of them), nor are pointees
-    * of pointers or Function variables of an undeclared pointer type */
+   /* Private arrays count with the Function ones (a Private uint[2^32-1] passed the scan and
+    * spirv-val); pointees of pointers do not */
    mod_begin(&m);
    a = mod_array(&m, T_UINT, mod_const(&m, 1u << 24));
    mod_end(&m, (uint32_t[]){ T_UINT, 0 }, a);
-   elements_case("private", &m, NULL, true, 1);
+   elements_case("private", &m, NULL, true, (1u << 24) + 1);
+   mod_begin(&m);
+   a = mod_array(&m, T_UINT, mod_const(&m, 0xffffffff));
+   mod_end(&m, (uint32_t[]){ 0 }, a);
+   elements_case("private-2e32", &m, NULL, true, 0xffffffffull);
 
    /* no Function variables at all */
    mod_begin(&m);
    mod_end(&m, (uint32_t[]){ 0 }, 0);
    elements_case("none", &m, NULL, true, 0);
+}
+
+/* a compute module with a Workgroup variable of each type in vars (0 ends); block: their
+ * types are decorated Block (they alias) */
+static void
+shared_end(struct mod *m, const uint32_t *vars, bool block)
+{
+   uint32_t ptr[8] = { 0 }, n = 0;
+   for (; vars[n]; n++) {
+      ptr[n] = m->next++;
+      if (block)
+         OP(m, 71, vars[n], 2); /* OpDecorate Block */
+      OP(m, 32, ptr[n], 4, vars[n]); /* OpTypePointer Workgroup */
+   }
+   for (uint32_t i = 0; i < n; i++)
+      OP(m, 59, ptr[i], m->next++, 4); /* OpVariable Workgroup */
+   OP(m, 54, T_VOID, F_MAIN, 0, T_FN);
+   OP(m, 248, LBL);
+   OP(m, 253);
+   OP(m, 56);
+   m->w[3] = m->next;
+}
+
+static void
+bytes_case(const char *name, struct mod *m, const struct spec *spec, bool want_ok, uint64_t want)
+{
+   char why[192];
+   struct vkr_spirv_info *info = vkr_spirv_scan(m->w, m->n * 4, why, sizeof(why));
+   CHECK(info, "bytes %s: scan: %s", name, why);
+   if (!info)
+      return;
+   uint64_t n = 0;
+   const bool ok = vkr_spirv_workgroup_bytes(info, spec ? spec_lookup : NULL, spec, &n);
+   CHECK(ok == want_ok && (!ok || n == want), "bytes %s: %s %llu, want %s %llu", name,
+         ok ? "ok" : "unknown", (unsigned long long)n, want_ok ? "ok" : "unknown",
+         (unsigned long long)want);
+   vkr_spirv_free(info);
+}
+
+static void
+bytes_units(void)
+{
+   struct mod m;
+   /* uint[8192]: 32 KB, maxComputeSharedMemorySize itself; uint[8193] 4 bytes past it */
+   mod_begin(&m);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, mod_const(&m, 8192)), 0 }, false);
+   bytes_case("uint-8192", &m, NULL, true, SHARED_MAX);
+   mod_begin(&m);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, mod_const(&m, 8193)), 0 }, false);
+   bytes_case("uint-8193", &m, NULL, true, SHARED_MAX + 4);
+
+   /* uint64_t[2048] + uvec4[1024] + uint: the variables add up */
+   mod_begin(&m);
+   uint32_t v4 = m.next++;
+   OP(&m, 23, v4, T_UINT, 4); /* OpTypeVector uint 4 */
+   uint32_t a = mod_array(&m, T_ULONG, mod_const(&m, 2048)), b = mod_array(&m, v4, mod_const(&m, 1024));
+   shared_end(&m, (uint32_t[]){ a, b, T_UINT, 0 }, false);
+   bytes_case("sum", &m, NULL, true, 16384 + 16384 + 4);
+
+   /* struct { uint; uint64_t; mat2x4 of uint }[100]: no padding, 4 + 8 + 32 a struct */
+   mod_begin(&m);
+   v4 = m.next++;
+   OP(&m, 23, v4, T_UINT, 4);
+   const uint32_t mat = m.next++, st = m.next++;
+   OP(&m, 24, mat, v4, 2); /* OpTypeMatrix 2 columns */
+   OP(&m, 30, st, T_UINT, T_ULONG, mat);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, st, mod_const(&m, 100)), 0 }, false);
+   bytes_case("struct", &m, NULL, true, 4400);
+
+   /* two Block structs of uint[8192] alias each other: 32 KB, not 64 */
+   mod_begin(&m);
+   a = mod_array(&m, T_UINT, mod_const(&m, 8192));
+   const uint32_t s1 = m.next++, s2 = m.next++;
+   OP(&m, 30, s1, a);
+   OP(&m, 30, s2, a);
+   shared_end(&m, (uint32_t[]){ s1, s2, 0 }, true);
+   bytes_case("blocks-alias", &m, NULL, true, SHARED_MAX);
+
+   /* a spec constant length (clspv's local arrays): its default, then the pipeline's */
+   mod_begin(&m);
+   uint32_t sc = m.next++;
+   OP(&m, 71, sc, 1, 5); /* OpDecorate SpecId 5 */
+   OP(&m, 50, T_UINT, sc, 16);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, sc), 0 }, false);
+   bytes_case("spec-default", &m, NULL, true, 64);
+   bytes_case("spec-given", &m, &(struct spec){ 5, 16384, true }, true, 65536);
+
+   /* a length from a spec constant operation (glslang's shared x[gl_WorkGroupSize.x]):
+    * counted once, not refused */
+   mod_begin(&m);
+   const uint32_t op_id = m.next++;
+   OP(&m, 52, T_UINT, op_id, 128 /* IAdd */, mod_const(&m, 1), mod_const(&m, 2));
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, op_id), 0 }, false);
+   bytes_case("spec-op", &m, NULL, true, 4);
+
+   /* uint[2^32-1] (passed the scan and spirv-val before this check) */
+   mod_begin(&m);
+   shared_end(&m, (uint32_t[]){ mod_array(&m, T_UINT, mod_const(&m, 0xffffffff)), 0 }, false);
+   bytes_case("uint-2e32", &m, NULL, true, 4ull * 0xffffffff);
+
+   /* 70 levels of uint[2]; and none at all */
+   mod_begin(&m);
+   const uint32_t k = mod_const(&m, 2);
+   a = T_UINT;
+   for (int i = 0; i < 70; i++)
+      a = mod_array(&m, a, k);
+   shared_end(&m, (uint32_t[]){ a, 0 }, false);
+   bytes_case("deep", &m, NULL, false, 0);
+   mod_begin(&m);
+   shared_end(&m, (uint32_t[]){ 0 }, false);
+   bytes_case("none", &m, NULL, true, 0);
 }
 
 /* --- units: interface locations and type cost --- */
@@ -1049,6 +1172,7 @@ main(int argc, char **argv)
       target_units();
       cache_units(code, bytes);
       elements_units();
+      bytes_units();
       interface_units();
       cost_units();
       free(code);

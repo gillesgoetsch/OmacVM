@@ -1787,8 +1787,9 @@ grep -q 'q.flags = vkr_physical_device_retry_flags(info->format, info->flags, r)
   grep -q 'args->pImageFormatInfo->format, args->pImageFormatInfo->flags, args->ret);' "$virgl_source/src/venus/vkr_physical_device.c" || \
   die "vkr_image.c, vkr_physical_device.c: a one-plane DISJOINT|ALIAS image is asked about with DISJOINT (disjoint-alias-format patch)"
 # Guest SPIR-V goes through SPIRV-Tools' validator after the scan, for the device's Vulkan version
-# and features, after the interface locations and the type cost are checked; Function variables
-# are counted after specialization; ray tracing pipelines are refused (#624).
+# and features, after the interface locations and the type cost are checked; Function and
+# Private variables are counted and Workgroup bytes checked after specialization; ray tracing
+# pipelines are refused (#624).
 patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-spirv-validate.patch"
 grep -q 'if (!vkr_spirv_valid(dev->physical_device, spirv, args->pCreateInfo->pCode,' "$virgl_source/src/venus/vkr_pipeline.c" && \
   grep -q 'vkr_spirv_interface_ok(spirv, &physical_dev->spirv_target.io, vkr_spec_lookup,' "$virgl_source/src/venus/vkr_pipeline.c" && \

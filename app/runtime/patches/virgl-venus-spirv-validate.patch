@@ -25,9 +25,13 @@ a bounded LRU cache (4096 entries, one mutex for all contexts; the validator
 runs outside it); refusals are not kept. A refusal ends the app's context with
 the first reason (VKR_SPIRV_VALIDATE_ENFORCE 0 at build time: spirv-val's
 refusals are only logged, one line per module; the refusals before it stay).
-A pipeline stage's Function variables may hold at most 2^20 elements after
-specialization (arrays of arrays multiplied, struct members added; a length
-from a spec constant operation is refused). vkCreateRayTracingPipelinesKHR
+A pipeline stage's Function and Private variables may hold at most 2^20
+elements after specialization (arrays of arrays multiplied, struct members
+added; a length from a spec constant operation is refused), and its Workgroup
+variables at most maxComputeSharedMemorySize bytes (VUID-RuntimeSpirv-
+Workgroup-06530; their sum without padding, the largest Block one when that
+is more, a length from a spec constant operation counted once), both over all
+of the module's variables, not only the entry point's. vkCreateRayTracingPipelinesKHR
 ends the context and VK_KHR_ray_tracing_pipeline is no longer offered: its
 stages would reach the driver unchecked (neither Mac driver has it). qemu.log
 names the target once per Vulkan version.
@@ -35,7 +39,10 @@ Why: of 900 modules fed to KosmicKrisp and MoltenVK on an M4 (compile only),
 138 ended the process or hung the driver; the scan alone refused 72 of them,
 spirv-val 65 of the other 66, the element cap the last one (an unused
 uint[2^32-1], legal SPIR-V, took KosmicKrisp's nir_split_array_vars to 9 GB;
-2^20 elements peaked at 480 MB in 0.5 s, 2^24 passed 2 GB in 2.4 s). The scan
+2^20 elements peaked at 480 MB in 0.5 s, 2^24 passed 2 GB in 2.4 s). A
+Private or Workgroup uint[2^32-1] passed the scan and spirv-val too (Private
+arrays were measured on the drivers only up to 2^24); real modules hold at
+most 406 elements and 8192 Workgroup bytes (Dawn's matmul). The scan
 stays first: it refuses two crash modules spirv-val accepts and costs 0.6 us a
 module against spirv-val's 92 us (median of 126 real modules, 4.2 ms the
 slowest; 52 us per KB). spirv-val on hostile input (CPU only, each run capped
@@ -303,7 +310,7 @@ diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
        vkr_context_refuse(ctx, true, "vkCreateShaderModule", "%s", why);
        return;
     }
-@@ -542,13 +583,35 @@
+@@ -542,13 +583,48 @@
        own = vkr_spirv_scan(code->pCode, code->codeSize, why, why_size);
        if (!own)
           return false;
@@ -319,27 +326,40 @@ diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
     const struct vkr_spirv_entry *entry = vkr_spirv_entry(spirv, st->pName, vkr_stage_model(st->stage));
     uint32_t size[3];
 +   /* OmacVM (virgl-venus-spirv-validate.patch): KosmicKrisp splits an unused Function array
-+    * into a variable per element; legal SPIR-V took it to 9 GB */
-+   uint64_t elements = 0;
++    * into a variable per element; legal SPIR-V took it to 9 GB. Private variables count with
++    * them; Workgroup ones may take maxComputeSharedMemorySize (VUID-RuntimeSpirv-Workgroup-
++    * 06530), all of the module's, not only the entry point's */
++   uint64_t elements = 0, shared = 0;
 +   const bool counted = spirv && vkr_spirv_function_elements(spirv, vkr_spec_lookup,
 +                                                             st->pSpecializationInfo, &elements);
++   const bool sized = spirv && vkr_spirv_workgroup_bytes(spirv, vkr_spec_lookup,
++                                                         st->pSpecializationInfo, &shared);
     if (!spirv) {
        snprintf(why, why_size, "stage 0x%x: a shader module without its scan", st->stage);
 +   } else if (!counted) {
 +      snprintf(why, why_size,
-+               "stage 0x%x: Function variables of a size the scan cannot know (an array length "
-+               "from a spec constant operation, or types nested past 64 levels)",
++               "stage 0x%x: Function or Private variables of a size the scan cannot know (an "
++               "array length from a spec constant operation, or types nested past 64 levels)",
 +               st->stage);
 +   } else if (elements > VKR_SPIRV_MAX_FUNCTION_ELEMENTS) {
-+      snprintf(why, why_size, "stage 0x%x: Function variables of %" PRIu64 " elements (at most %u)",
++      snprintf(why, why_size,
++               "stage 0x%x: Function and Private variables of %" PRIu64 " elements (at most %u)",
 +               st->stage, elements, VKR_SPIRV_MAX_FUNCTION_ELEMENTS);
++   } else if (!sized) {
++      snprintf(why, why_size,
++               "stage 0x%x: Workgroup variables of types nested past 64 levels", st->stage);
++   } else if (shared > lim->maxComputeSharedMemorySize) {
++      snprintf(why, why_size,
++               "stage 0x%x: Workgroup variables of %" PRIu64
++               " bytes or more (maxComputeSharedMemorySize %u)",
++               st->stage, shared, lim->maxComputeSharedMemorySize);
 +   } else if (!vkr_spirv_interface_ok(spirv, &physical_dev->spirv_target.io, vkr_spec_lookup,
 +                                      st->pSpecializationInfo, why, why_size)) {
 +      /* the interface after the stage's specialization (a module was checked without) */
     } else if (!entry) {
        snprintf(why, why_size, "stage 0x%x: no entry point \"%.64s\" for the stage", st->stage,
                 st->pName);
-@@ -1015,15 +1078,12 @@
+@@ -1015,15 +1091,12 @@
     struct vn_command_vkCreateRayTracingPipelinesKHR *args)
  {
     TRACE_FUNC();
