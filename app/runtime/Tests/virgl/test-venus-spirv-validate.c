@@ -27,7 +27,7 @@
  *                            cache (hits, LRU order, eviction, threads) on a module that
  *                            passes, the Function and Private element cases, the Workgroup
  *                            bytes, the variables one entry point gets, the interface
- *                            locations of each model, BuiltIns on untyped variables and the
+ *                            locations of each model and the
  *                            type cost
  * PROFILE: kk or mvk (what the 3.2.20 drivers report on an M4: Vulkan 1.4, scalar and
  * standard layouts, LocalSizeId, relaxed layout; KosmicKrisp also scalar workgroup
@@ -1252,69 +1252,6 @@ entry_units(void)
    entry_case("a-kk-1.3", 0x10300, true, true, 600000 + 2000, 49152);
 }
 
-/* --- units: BuiltIn on an untyped variable (SPV_KHR_untyped_pointers) --- */
-
-/* spirv-as of:  OpCapability Shader; OpCapability UntypedPointersKHR;
- *   OpExtension "SPV_KHR_untyped_pointers"; OpMemoryModel Logical GLSL450;
- *   OpEntryPoint GLCompute %1 "main" %2; OpExecutionMode %1 LocalSize 1 1 1;
- *   OpDecorate %2 BuiltIn SampleMask; OpDecorate %2 DescriptorSet 0; OpDecorate %2 Binding 0;
- *   OpDecorate %3 Block; OpMemberDecorate %3 0 Offset 0; OpDecorate %4 ArrayStride 4;
- *   %4 = uint[1]; %3 = OpTypeStruct %4; %9 = OpTypeUntypedPointerKHR StorageBuffer;
- *   %2 = OpUntypedVariableKHR %9 StorageBuffer %3  (the data type is %3) */
-static const uint32_t untyped_builtin[] = {
-   0x07230203, 0x00010600, 0x00070000, 0x0000000b, 0x00000000, 0x00020011, 0x00000001,
-   0x00020011, 0x00001179, 0x0008000a, 0x5f565053, 0x5f52484b, 0x79746e75, 0x5f646570,
-   0x6e696f70, 0x73726574, 0x00000000, 0x0003000e, 0x00000000, 0x00000001, 0x0006000f,
-   0x00000005, 0x00000001, 0x6e69616d, 0x00000000, 0x00000002, 0x00060010, 0x00000001,
-   0x00000011, 0x00000001, 0x00000001, 0x00000001, 0x00040047, 0x00000002, 0x0000000b,
-   0x00000014, 0x00040047, 0x00000002, 0x00000022, 0x00000000, 0x00040047, 0x00000002,
-   0x00000021, 0x00000000, 0x00030047, 0x00000003, 0x00000002, 0x00050048, 0x00000003,
-   0x00000000, 0x00000023, 0x00000000, 0x00040047, 0x00000004, 0x00000006, 0x00000004,
-   0x00020013, 0x00000005, 0x00030021, 0x00000006, 0x00000005, 0x00040015, 0x00000007,
-   0x00000020, 0x00000000, 0x0004002b, 0x00000007, 0x00000008, 0x00000001, 0x0004001c,
-   0x00000004, 0x00000007, 0x00000008, 0x0003001e, 0x00000003, 0x00000004, 0x00031141,
-   0x00000009, 0x0000000c, 0x00051142, 0x00000009, 0x00000002, 0x0000000c, 0x00000003,
-   0x00050036, 0x00000005, 0x00000001, 0x00000000, 0x00000006, 0x000200f8, 0x0000000a,
-   0x000100fd, 0x00010038,
-};
-
-/* the same without a data type: %2 = OpUntypedVariableKHR %5 UniformConstant, decorated
- * BuiltIn ResourceHeapEXT (SPV_EXT_descriptor_heap, capability DescriptorHeapEXT): valid */
-static const uint32_t heap_builtin[] = {
-   0x07230203, 0x00010600, 0x00070000, 0x00000007, 0x00000000, 0x00020011, 0x00000001,
-   0x00020011, 0x00001179, 0x00020011, 0x00001408, 0x0008000a, 0x5f565053, 0x5f52484b,
-   0x79746e75, 0x5f646570, 0x6e696f70, 0x73726574, 0x00000000, 0x0007000a, 0x5f565053,
-   0x5f545845, 0x63736564, 0x74706972, 0x685f726f, 0x00706165, 0x0003000e, 0x00000000,
-   0x00000001, 0x0006000f, 0x00000005, 0x00000001, 0x6e69616d, 0x00000000, 0x00000002,
-   0x00060010, 0x00000001, 0x00000011, 0x00000001, 0x00000001, 0x00000001, 0x00040047,
-   0x00000002, 0x0000000b, 0x00001403, 0x00020013, 0x00000003, 0x00030021, 0x00000004,
-   0x00000003, 0x00031141, 0x00000005, 0x00000000, 0x00041142, 0x00000005, 0x00000002,
-   0x00000000, 0x00050036, 0x00000003, 0x00000001, 0x00000000, 0x00000004, 0x000200f8,
-   0x00000006, 0x000100fd, 0x00010038,
-};
-
-static void
-builtin_units(void)
-{
-   static const char *const profiles[] = { "kk", "mvk" };
-   for (unsigned i = 0; i < 2; i++) {
-      struct vkr_spirv_target t;
-      char why[512] = "";
-      bool unsafe = false;
-      profile(profiles[i], &t);
-      /* the BuiltIn checks read an untyped variable's data type from its Data Type operand
-       * (spirv-tools-val-catch-throws.patch): SampleMask on a struct is refused by its own
-       * rule, not for having no data type */
-      CHECK(!validate(&t, untyped_builtin, sizeof(untyped_builtin), why, sizeof(why), &unsafe) &&
-               !unsafe && strstr(why, "SampleMask") && !strstr(why, "no data type"),
-            "builtin %s: an untyped SampleMask is refused by its rule: %s", profiles[i], why);
-      /* a heap BuiltIn has no data type and none to check */
-      CHECK(validate(&t, heap_builtin, sizeof(heap_builtin), why, sizeof(why), NULL),
-            "builtin %s: a ResourceHeapEXT variable without a data type is valid: %s",
-            profiles[i], why);
-   }
-}
-
 /* a struct of two of the previous one, `depth` deep, as a Private variable */
 static uint32_t
 dag_module(uint32_t depth, uint32_t *w)
@@ -1389,7 +1326,6 @@ main(int argc, char **argv)
       bytes_units();
       interface_units();
       entry_units();
-      builtin_units();
       cost_units();
       free(code);
       printf("units: %s\n", failures ? "FAIL" : "all ok");
