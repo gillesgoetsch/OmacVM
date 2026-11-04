@@ -41,8 +41,9 @@ change each; without prefill at vkQueueSubmit of one batch of 8 x 16384 clears (
 16384 in one batch, 8 batches of 16384 and 8 submits went through). KosmicKrisp took
 8 x 16384 in one batch and 16 live command buffers of 16384 each (also over 2
 contexts). 16384 is 6x below the clear abort and 4.5x below the fan-draw abort; a Zink
-frame has about 2000 passes. The M4 and an 8 GB Mac are not measured yet (the cap stays
-fixed).
+frame has about 2000 passes. On the mini's M4 (fix-700 r2) KosmicKrisp aborted between
+74752 and 75264 clears of one level, 4.6x above the cap. An 8 GB Mac is not measured (the
+cap stays fixed).
 Upstream: OmacVM policy; nothing posted.
 Tests: Tests/virgl/test-venus-commands.c (the h-pass- cases: the legal maximum and one
 past it per kind at a cap of 1024, the default cap, 100000 clears that ended the process
@@ -90,7 +91,7 @@ index 307e864..8ad25cb 100644
 +   const uint64_t total = st->weight + w, cap = vkr_encoder_cap();
 +   if (!vkr_context_check(dispatch->data, total <= cap, call,
 +                          "%" PRIu64 " Metal passes in one command buffer, past vkr's %" PRIu64
-+                          " (Metal ends the process at about 98304)",
++                          " (Metal ends the process at about 75000-98000)",
 +                          total, cap))
 +      return false;
 +   st->weight = (uint32_t)total;
@@ -623,7 +624,7 @@ index f126b0a..4c5e048 100644
  };
  
 +/* OmacVM (virgl-venus-encoder-cap.patch): Metal ends the process (SIGABRT, "Failed to
-+ * allocate IOGPUDeviceShmem") when one Metal command buffer has about 98304 passes; the M1
++ * allocate IOGPUDeviceShmem") at about 98304 passes in one Metal command buffer (M4: 75000); the M1
 + * probes (work/v624-hostmem): KosmicKrisp at record time (each clear level, pass begin,
 + * in-pass barrier of a multisampled pass, and draws that split a pass:
 + * vkr_cmd_draw_weigh), MoltenVK when it encodes the command buffer (at vkQueueSubmit, or

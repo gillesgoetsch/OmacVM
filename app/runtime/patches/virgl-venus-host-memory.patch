@@ -29,7 +29,9 @@ any image size, also after a reset, free or destroy: 8 x 16384 clears in one Kos
 submit took 22 GB. That memory is used again by the process's next command buffers (10
 rounds of pool, 2048 submitted passes, free and destroy stayed at 301-317 MB on
 KosmicKrisp and 356-363 MB on MoltenVK, also with a pool reset each round and over 10
-contexts in turn: fix/out-C), so the charge comes back at the pool's destroy. KosmicKrisp
+contexts in turn: fix/out-C; on the mini's M4 a submitted pass held 86 KB on KosmicKrisp
+and 36 KB on MoltenVK, and 10 rounds stayed at 150-215 MB: fix/r2/m4), so the charge
+comes back at the pool's destroy. KosmicKrisp
 kept copies and clears past a reset and a free until the pool's destroy, MoltenVK an
 update's data past that. MoltenVK reported a 32768 MB heap (all of the M1 Max), more
 than the 22528 MB apps' share, and both drivers a 19169 MB maxBufferSize. One 256 MB
