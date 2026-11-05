@@ -209,8 +209,10 @@ BT.2100 PQ, and the layer asks for EDR. It stayed hidden because:
   is SDR white or less (PQ code 599 or less) each PQ surface carries a
   private SDR flag and its layer, main and tiles alike, has
   `wantsExtendedDynamicRangeContent` off; from the first look that sees
-  more the flag goes and EDR is on, as before; off again 10 s after the
-  last such look (fewer ramps for dark scenes in an HDR video). PQ
+  more the flag goes and EDR is on, as before; off again 10 s after HDR
+  last showed (fewer ramps for dark scenes in an HDR video; a still HDR
+  picture keeps EDR until it goes; QEMU's timer for this is never set in
+  the past, which hung QEMU in a first build). PQ
   surfaces carry no headroom tag. `toneMapMode` is never for every PQ or
   linear surface in both states: with EDR off and `automatic`, macOS maps
   PQ again and SDR white drops to half (above). A switch is a whole frame
