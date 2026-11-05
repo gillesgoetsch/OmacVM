@@ -12,7 +12,11 @@ for a in "$@"; do
 done
 "$R/bridge/mac/uninstall.sh" $PURGE
 "$R/gestures/mac/uninstall.sh"
-"$R/clipboard/mac/uninstall.sh"
+# The clipboard helper of the retired Parallels route (OmacVM 3.3 and older).
+source "$R/lib/labels.sh"
+CLIP=$(omacvm_label clip-in)
+launchctl bootout "gui/$(id -u)/$CLIP" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/$CLIP.plist" "$HOME/.local/share/omacvm/omacvm-clip-in"
 "$R/omanotch/mac/uninstall.sh"
 # OmacVM.app's fast network (a system service: macOS asks for the password):
 # off for this Mac user; off the Mac when no other user has it.
