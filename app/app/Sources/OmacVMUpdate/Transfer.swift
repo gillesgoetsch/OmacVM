@@ -6,7 +6,8 @@ import Foundation
 /// progress for the Updates row. One session per check; redirects stay on
 /// https (or http to this Mac, a test feed), as Appcast.isAllowedDownload.
 /// A server error, 429, a timeout or a lost connection is tried again as
-/// `retry` says (FetchRetry), each retry told to `note`.
+/// `retry` says (FetchRetry, within its time limits), each retry told to
+/// `note`, and so is a retry left out for time.
 public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     public enum Failure: LocalizedError, Equatable, CustomStringConvertible {
         /// More than the limit (said or sent).
@@ -76,7 +77,7 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
     /// GET into memory, at most `cap` bytes. A status other than 200 comes
     /// back with no data (the body is not read).
     public func data(_ url: URL, cap: Int) async throws -> (Data, Int) {
-        try await retrying(url) {
+        try await retrying(url, whole: false) {
             let job = Job(name: url.lastPathComponent, cap: Int64(cap), exact: nil, file: nil, progress: nil)
             let status = try await self.run(url, job)
             return ((status == 200 ? job.data : Data(), status), status, job.retryAfter)
@@ -87,7 +88,7 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
     /// far, about every 256 KB. The HTTP status; on a failure the file is gone.
     public func file(_ url: URL, to file: URL, length: Int64,
                      progress: (@Sendable (Int64) -> Void)? = nil) async throws -> Int {
-        try await retrying(url) {
+        try await retrying(url, whole: true) {
             let (status, after) = try await self.fileOnce(url, to: file, length: length, progress: progress)
             return (status, status, after)
         }
@@ -113,21 +114,37 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
         }
     }
 
-    /// ONCE tried again while its status (or its error) is worth it and
-    /// retries are left; each retry is told to `note` first.
-    private func retrying<T>(_ url: URL, _ once: () async throws -> (T, Int, String?)) async throws -> T {
+    /// ONCE tried again while its status (or its error) is worth it,
+    /// retries are left and the retry fits the time limits (WHOLE: a
+    /// download, FetchRetry.tooLong); each retry is told to `note` first.
+    private func retrying<T>(_ url: URL, whole: Bool, _ once: () async throws -> (T, Int, String?)) async throws -> T {
+        let first = retry.clock()
         var n = 0
         while true {
-            let wait: Double, why: String
+            let began = retry.clock()
+            let outcome: Result<T, Error>
+            var status = 0, after: String?
             do {
-                let (result, status, after) = try await once()
+                let r = try await once()
+                outcome = .success(r.0); status = r.1; after = r.2
+            } catch {
+                outcome = .failure(error)
+            }
+            let wait: Double, why: String
+            switch outcome {
+            case .success(let result):
                 guard FetchRetry.retries(status: status), n < retry.waits.count else { return result }
                 wait = retry.wait(n, retryAfter: FetchRetry.retryAfter(after))
                 why = "HTTP \(status)"
-            } catch {
+            case .failure(let error):
                 guard FetchRetry.retries(error), n < retry.waits.count else { throw error }
                 wait = retry.wait(n, retryAfter: nil)
                 why = error.localizedDescription
+            }
+            let now = retry.clock()
+            if let late = retry.tooLong(wait: wait, sinceFirst: now - first, thisTry: now - began, whole: whole) {
+                await note("\(url.absoluteString): \(why); not tried again: \(late)")
+                return try outcome.get()
             }
             n += 1
             await note(String(format: "%@: %@; trying again in %.0f s (retry %d of %d)", url.absoluteString, why, wait, n, retry.waits.count))

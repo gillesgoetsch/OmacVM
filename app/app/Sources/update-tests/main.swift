@@ -418,12 +418,17 @@ expect(UpdateFolders.work(for: elsewhere, home: home).path == "/dev/.omacvm-upda
 final class MockHTTP: URLProtocol {
     struct Reply { var status = 200; var headers: [String: String] = [:]; var chunks: [Data] = []; var redirect: String? = nil
                    /// Fails the request with this error instead (after any chunks).
-                   var error: URLError.Code? = nil }
+                   var error: URLError.Code? = nil
+                   /// Seconds this answer "takes" on the made-up clock (`clock`).
+                   var takes: Double = 0 }
     static let lock = NSLock()
     nonisolated(unsafe) static var replies: [String: Reply] = [:]
     /// Answers in turn, before `replies` (504 first, then 200).
     nonisolated(unsafe) static var queued: [String: [Reply]] = [:]
     nonisolated(unsafe) static var requests: [String] = []
+    /// A made-up clock for FetchRetry's time limits: answers move it on by
+    /// `takes`, the retries' waits by theirs.
+    nonisolated(unsafe) static var clock: Double = 0
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -436,6 +441,7 @@ final class MockHTTP: URLProtocol {
             return MockHTTP.replies[url.absoluteString]
         }
         guard let r else { client?.urlProtocol(self, didFailWithError: URLError(.cannotFindHost)); return }
+        MockHTTP.lock.withLock { MockHTTP.clock += r.takes }
         if let e = r.error, r.chunks.isEmpty { client?.urlProtocol(self, didFailWithError: URLError(e)); return }
         if let to = r.redirect, let t = URL(string: to) {
             let resp = HTTPURLResponse(url: url, statusCode: 302, httpVersion: "HTTP/1.1", headerFields: ["Location": to])!
@@ -612,6 +618,69 @@ do {
     expect(FetchRetry.retryAfter(httpDate(at.addingTimeInterval(-60)), now: at) == 0, "Retry-After: a date gone by is 0 s")
     expect(FetchRetry.standard.waits == [2, 6] && FetchRetry.standard.maxRetryAfter == 30, "the updater's retries: 2 s and 6 s, Retry-After up to 30 s")
     rnet.finish()
+
+    // Time limits (review of #714): the feed and .sig keep their retries
+    // within 45 s of the first try; the zip is never fetched again after a
+    // try that ran over 60 s (a late failure, the 30-minute resource
+    // timeout). On a made-up clock: answers take `takes`, waits their length.
+    let timed = FetchRetry(waits: [2, 6], sleep: { s in rt.waits.append(s); MockHTTP.lock.withLock { MockHTTP.clock += s } },
+                           clock: { MockHTTP.lock.withLock { MockHTTP.clock } })
+    let tnet = Transfer(configuration: cfg, retry: timed) { line in rt.notes.append(line) }
+    expect(FetchRetry.standard.budget == 45 && FetchRetry.standard.longestTry == 60, "the updater's time limits: 45 s for a fetch, 60 s for a try of the zip")
+
+    let uSlow = "https://github.test/t/feed-times-out.json"
+    serve(uSlow, .init(error: .timedOut, takes: 30))
+    fresh()
+    e = thrown { _ = try await tnet.data(URL(string: uSlow)!, cap: 64 * 1024) }
+    expect((e as? URLError)?.code == .timedOut && asked(uSlow) == 2 && rt.waits == [2],
+           "budget: a feed that times out (30 s each): one retry (30+2 s fits 45), not a second (62+6): 2 requests (\(asked(uSlow)), \(rt.waits))")
+    expect(rt.notes.count == 2 && rt.notes[1].contains("not tried again") && rt.notes[1].contains("45 s"),
+           "budget: the left-out retry is said (\(rt.notes.last ?? "none"))")
+
+    let uLate = "https://github.test/t/late-503.json"
+    serve(uLate, .init(status: 503, headers: ["Retry-After": "30"], takes: 20))
+    fresh(); g.status = 0
+    blocking { if let (_, s) = try? await tnet.data(URL(string: uLate)!, cap: 64 * 1024) { g.status = s } }
+    expect(g.status == 503 && asked(uLate) == 1 && rt.waits.isEmpty, "budget: a 503 after 20 s with Retry-After 30 (50 s): no retry, the status")
+
+    let uQuick = "https://github.test/t/quick-504.json"
+    serve(uQuick, inTurn: [.init(status: 504, takes: 1), .init(status: 504, takes: 1)])
+    serve(uQuick, .init(chunks: [feedBody], takes: 1))
+    fresh(); g.status = 0
+    blocking { if let (_, s) = try? await tnet.data(URL(string: uQuick)!, cap: 64 * 1024) { g.status = s } }
+    expect(g.status == 200 && asked(uQuick) == 3 && rt.waits == [2, 6], "budget: quick 504s keep both retries (10 s in all)")
+
+    let uResource = "https://github.test/t/resource-timeout.zip"
+    serve(uResource, inTurn: [.init(chunks: [zipBytes.prefix(200_000)], error: .timedOut, takes: 1800)])
+    serve(uResource, .init(headers: ["Content-Length": "\(zipBytes.count)"], chunks: [zipBytes]))
+    fresh()
+    e = thrown { _ = try await tnet.file(URL(string: uResource)!, to: zip, length: len) }
+    expect((e as? URLError)?.code == .timedOut && asked(uResource) == 1 && rt.waits.isEmpty && !exists(),
+           "budget: the zip's 30-minute resource timeout is not tried again (\(asked(uResource)) requests)")
+    expect(rt.notes.count == 1 && rt.notes[0].contains("not tried again") && rt.notes[0].contains("whole download"),
+           "budget: said why (\(rt.notes.first ?? "none"))")
+
+    let uLateLost = "https://github.test/t/lost-late.zip"
+    serve(uLateLost, inTurn: [.init(chunks: [zipBytes.prefix(200_000)], error: .networkConnectionLost, takes: 90)])
+    serve(uLateLost, .init(headers: ["Content-Length": "\(zipBytes.count)"], chunks: [zipBytes]))
+    fresh()
+    e = thrown { _ = try await tnet.file(URL(string: uLateLost)!, to: zip, length: len) }
+    expect((e as? URLError)?.code == .networkConnectionLost && asked(uLateLost) == 1 && rt.waits.isEmpty,
+           "budget: the zip's connection lost after 90 s: not fetched again")
+
+    let uEarlyLost = "https://github.test/t/lost-early.zip"
+    serve(uEarlyLost, inTurn: [.init(chunks: [zipBytes.prefix(200_000)], error: .networkConnectionLost, takes: 50)])
+    serve(uEarlyLost, .init(headers: ["Content-Length": "\(zipBytes.count)"], chunks: [zipBytes]))
+    fresh(); g.status = 0
+    blocking { g.status = (try? await tnet.file(URL(string: uEarlyLost)!, to: zip, length: len)) ?? -1 }
+    expect(g.status == 200 && asked(uEarlyLost) == 2 && rt.waits == [2],
+           "budget: the zip lost after 50 s (under 60): fetched again (the 45 s is for the feed only)")
+
+    expect(timed.tooLong(wait: 6, sinceFirst: 39, thisTry: 1, whole: false) == nil
+           && timed.tooLong(wait: 6, sinceFirst: 40, thisTry: 1, whole: false) != nil, "budget: 39+6 fits 45, 40+6 does not")
+    expect(timed.tooLong(wait: 6, sinceFirst: 500, thisTry: 60, whole: true) == nil
+           && timed.tooLong(wait: 2, sinceFirst: 61, thisTry: 61, whole: true) != nil, "budget: a zip try of 60 s may be retried, 61 s not")
+    tnet.finish()
     try? FileManager.default.removeItem(at: dir)
 }
 
