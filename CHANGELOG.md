@@ -6,10 +6,11 @@ in more words.
 ## 3.3.1 (unreleased)
 
 - **Docs: why OpenGL on Zink with `LIBGL_KOPPER_DISABLE=1` ends at once (OmacVM.app).** Without
-  kopper, Zink in the VM does not wait for the Mac's GPU and queues work without limit; since 3.2.22
-  the app's Mac memory account ends such an app in under a second (before, QEMU grew by about 5 GB
-  in 8 seconds). OmacVM never sets that variable. Troubleshooting 55 says what the `host memory`
-  line means. Nothing changes in the app or the VM.
+  kopper, Zink in the VM does not hold the app to the pace of the Mac's GPU and the queued work
+  keeps growing; since 3.2.22 the app's Mac memory account ends such an app in under a second
+  (before, QEMU grew by 5 GB in 7 seconds and was still growing). OmacVM never sets that
+  variable. Troubleshooting 55 says what the `host memory` line means. Nothing changes in the app
+  or the VM.
 
 ## 3.3.0
 

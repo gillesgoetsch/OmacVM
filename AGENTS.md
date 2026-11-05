@@ -941,9 +941,10 @@ The less obvious ones, with causes and where the fix lives, are in
   -B`) aborted QEMU in Metal's linear-texture check, the VM gone at once (ADR
   0064); from 3.2.14 vkr reports that image as unsupported and the VM goes on
   (ADR 0065). Nor `LIBGL_KOPPER_DISABLE=1` as a test load (earlier lanes ran
-  glxgears so): without kopper Zink does not wait for the GPU and queues
-  batches without limit, and from 3.2.22 the host memory account ends it in
-  under a second (troubleshooting 55). The one exception: Ghostty alone, with the app's experimental
+  glxgears so): without kopper Zink does not hold the app to the GPU's pace
+  and the queued work keeps growing (3.2.20: QEMU +5.0 GB in 7 s), and from
+  3.2.22 the host memory account ends it in under a second (troubleshooting
+  55). The one exception: Ghostty alone, with the app's experimental
   switch "Ghostty on the Mac's GPU" (off by default), gets Zink with a forced
   4.3 from the EGL vendor library, only on KosmicKrisp and only for its
   `eglInitialize` (ADR 0064's amendment). KosmicKrisp still lacks transform
