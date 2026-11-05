@@ -10,7 +10,9 @@ in more words.
   for a moment. The app's update feed, its signature and the download, and the Bridge's manifest for the
   control centre, are now tried twice more on HTTP 500-599, 429, a timeout or a lost connection (after 2 s,
   then 6 s; a Retry-After of up to 30 s is honoured), each retry logged. Never on 404 or 403; the
-  signature checks are as before. When GitHub still fails, the message says so: "GitHub answered HTTP 504 (a
+  signature checks are as before. The retries keep to a time limit: the feed gives up within about a minute,
+  the download is never started again after a try that ran over a minute, and the control centre's check
+  answers within 25 s. When GitHub still fails, the message says so: "GitHub answered HTTP 504 (a
   server error on GitHub's side) for the update feed at ...; try again in a few minutes", and the app's own
   weekly check looks again an hour later instead of a week later. The app's part
   needs the app update; the control centre's part needs `omacvm update` on the Mac (OmacVM.app: the app's

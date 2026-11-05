@@ -61,7 +61,8 @@ never while `update_checks` is false in
 file). Automatic checks stay off metered and Low Data networks. "Check for
 Updates…" in the app menu always works. A server answer, even a 404, starts
 the week again, so there is no hourly retry while no release has a feed;
-a server error (5xx) or 429 does not, so the next hourly look tries again.
+a server error (5xx) or 429 for the feed or its signature does not, so the
+next hourly look tries again.
 
 **Retries** (3.2.24, after a user's "No update feed (HTTP 504)": GitHub's
 `latest/download` redirect answered one request with a 504). The feed, its
@@ -72,8 +73,18 @@ a refused redirect, a size problem or a failed signature or digest check
 (those come after the fetch and are unchanged). Each retry is a line in
 `update.log`; when the last try still gets a server error the window says
 "GitHub answered HTTP 504 (a server error on GitHub's side) for the update
-feed at URL; try again in a few minutes". The Bridge's manifest fetch for
-the control centre retries the same way (`feedRetryWait`).
+feed at URL; try again in a few minutes". Retries keep to a time limit:
+the feed and its signature (30 s request timeout each) get no retry whose
+wait would end more than 45 s after the first try (a feed that times out
+gives up after about 62 s, not 98 s); the zip gets no retry after a try
+that ran longer than 60 s, since a retry starts the whole zip again (so
+never after the session's 30-minute resource timeout). The Bridge's
+manifest fetch for the control centre retries the same way
+(`feedRetryWait`), but the manifest and its `.sig` together get 25 s,
+because the guest waits 30 s for `POST /omacvm/updates/check`: each try's
+timeout is what is left (at most 20 s), a retry needs its wait plus 5 s
+left, a `Retry-After` is cut to fit, and the last error uses the same plain
+words.
 
 **Download and checks.** The zip goes to
 `~/Library/Application Support/OmacVM/Updates/<bundle id>/<copy>/staged/`: size and
