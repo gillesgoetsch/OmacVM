@@ -1397,9 +1397,12 @@ file 500 of 500 per driver (4, 28 and 40 skipped); 0 GPU Restart.
 
 **dEQP-VK** (the fix's libvirglrenderer in the 3.2.23 test app, the same
 hidden VM): the 240 self_dep cases and `api.command_buffers` (129) on MoltenVK
-end as 3.2.22 ended them (194 Pass, 24 Fail, 22 NotSupported; 57 Pass, 72
-NotSupported), case for case, with 0 refusal lines and one "could not record"
-line per app; on KosmicKrisp as before (207 Pass, 33 NotSupported), 0 lines.
+end case for case as the build that let failed ends through (v706-find's
+mvklo row: 194 Pass, 24 Fail, 22 NotSupported; 57 Pass, 72 NotSupported), with
+0 refusal lines and one "could not record" line per app; the 108 of them that
+are also in the gate's subset end as the 3.2.23 gate run (3.2.22's behaviour).
+On KosmicKrisp case for case as v706-find's kk row (207 Pass, 33
+NotSupported), 0 lines.
 The gate's subset (2880 cases) and the 800 memory_alias cases match the 3.2.23
 gate's run case for case on both drivers (0 refusal lines, 0 Crash; MoltenVK's
 3 "is lost" lines as before).
