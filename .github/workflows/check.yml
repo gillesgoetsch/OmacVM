@@ -429,6 +429,9 @@ jobs:
       - name: A VM not shut down cleanly, or copied while it ran, warns before a start
         run: src/tests/app-run-marker.sh
 
+      - name: Move to Omarchy 4.5 backs up first, resumes, undoes byte for byte and deletes the backup only when asked
+        run: src/tests/app-move-vm.sh
+
       - name: Update VM never waits forever (disk errors, a read-only VM, a hang), asks before a kernel build
         run: src/tests/update-vm-watch.sh
 
