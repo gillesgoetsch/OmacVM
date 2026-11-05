@@ -3,6 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.24 (unreleased)
+
+- **A Vulkan program can no longer get past the drawing-pass limit by recording a used secondary command buffer
+  again (OmacVM.app, see #676).** With Graphics on Vulkan, QEMU now submits only primary command buffers the
+  program finished, whose secondary command buffers are still what they ran. A program that breaks either rule
+  loses only its own Vulkan connection; Vulkan allows neither, so correct programs never meet it. The first try
+  (#706) was taken out of 3.2.23: it also stopped correct programs on MoltenVK when the Mac's driver could not
+  record one command (a resolve of an integer image), and they hung. Such a command buffer now goes on as on
+  3.2.22 (MoltenVK skips it). Needs the app update.
+
 ## 3.2.23
 
 - **A Vulkan program's shader modules and pipeline caches now count by their size (OmacVM.app, #707, see #624).**
