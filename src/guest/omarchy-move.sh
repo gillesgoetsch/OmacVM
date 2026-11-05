@@ -161,14 +161,25 @@ refuse() {   # CODE EXIT REASON
   PF_CODE=$1 PF_EXIT=$2 PF_REASON=$3
 }
 preflight() {
-  local v ln ch pl vendor free need f missing="" db tmp
+  local v ln ch pl vendor free need f missing="" db tmp st pd
   v=$(version); ln=$(lane); ch=$(lane_channel)
-  if [[ -z ${IN_RUN:-} && $(jget state) == running ]] && alive; then
+  st=$(jget state); pd=$(jget phase-done)
+  # A move that began here and stopped (Resume): the journal says it was
+  # omarchy-mac 4.0 then; the VM may be half way now.
+  PF_RESUME=""; [[ -n $pd && $st != done && $st != refused ]] && PF_RESUME=$pd
+  if [[ -z ${IN_RUN:-} && $st == running ]] && alive; then
     chk move-running 0 "a move to Omarchy 4.5 runs now"
     refuse move-running 3 "A move to Omarchy 4.5 is already running in this VM."
   fi
+  if [[ -n $PF_RESUME ]]; then
+    if [[ $(resumable) == 0 ]]; then
+      chk journal 0 "the package switch was cut off"
+      refuse undo-only 3 "The package switch was cut off; Undo puts the VM back as it was before the move."
+    else
+      chk journal 1 "the move goes on after: $PF_RESUME"
+    fi
   # Omarchy 4.0 from omarchy-mac, and nothing else.
-  if [[ -z $v ]]; then
+  elif [[ -z $v ]]; then
     chk omarchy 0 "no omarchy package"; refuse not-omarchy 3 "This VM has no Omarchy package; there is nothing to move."
   elif at45 "$v"; then
     chk omarchy 0 "Omarchy $v"; refuse already-moved 3 "This VM is on Omarchy $v already."
@@ -177,7 +188,9 @@ preflight() {
   else
     chk omarchy 1 "Omarchy $v"
   fi
-  if [[ $ln == omarchy-mac ]] || pacman -Q omarchy-mac-keyring >/dev/null 2>&1; then
+  if [[ -n $PF_RESUME ]]; then
+    :
+  elif [[ $ln == omarchy-mac ]] || pacman -Q omarchy-mac-keyring >/dev/null 2>&1; then
     chk lane 1 "omarchy-mac (${ch:-?})"
   elif [[ -n $v ]] && ! at45 "$v"; then
     chk lane 0 "repos: $ln"
@@ -202,7 +215,9 @@ preflight() {
   fi
   # pacman: free, and not cut off in the middle of a run.
   if [[ -e $ROOT/var/lib/pacman/db.lck ]]; then
-    if pgrep -x pacman >/dev/null 2>&1; then
+    if [[ -n $PF_RESUME && -z ${IN_RUN:-} ]] && ! pgrep -x pacman >/dev/null 2>&1; then
+      chk pacman 1 "a lock the stopped move left (removed when it goes on)"
+    elif pgrep -x pacman >/dev/null 2>&1; then
       chk pacman 0 "pacman runs"; refuse pacman-busy 3 "pacman is running in this VM (an update?); try again when it is done."
     else
       chk pacman 0 "pacman's lock without pacman"
@@ -252,8 +267,9 @@ preflight_json() {
   printf '{"format": 1, "ok": %s, "code": %s, "reason": %s, "omarchy": %s, "lane": %s, "channel": %s, "platform": %s, ' \
     "$(jbool "$([[ -z $PF_CODE ]] && echo 1)")" "$(js "$PF_CODE")" "$(js "$PF_REASON")" "$(js "${PF_VERSION%-*}")" \
     "$(js "$PF_LANE")" "$(js "$PF_CHANNEL")" "$(js "$PF_PLATFORM")"
-  printf '"free_gb": %s, "need_gb": %s, "target": {"omarchy": %s, "channel": %s}, "checks": [%s]}\n' \
-    "${PF_FREE:-0}" "$NEED_GB" "$(js "$PF_TARGET")" "$(js "$CHANNEL")" "$CHECKS"
+  printf '"free_gb": %s, "need_gb": %s, "target": {"omarchy": %s, "channel": %s}, "resume": %s, "phase_done": %s, "checks": [%s]}\n' \
+    "${PF_FREE:-0}" "$NEED_GB" "$(js "$PF_TARGET")" "$(js "$CHANNEL")" "$(jbool "$([[ -n $PF_RESUME ]] && echo 1)")" \
+    "$(js "$PF_RESUME")" "$CHECKS"
 }
 cmd_preflight() {
   preflight
@@ -390,6 +406,7 @@ step_keyring() {
   [[ -e $J/keyring-done ]] && key_trusted && return 0
   key_ok || { REASON="OmacVM's copy of Omarchy's package key is not Omarchy's"; return 1; }
   # The old keyring stays beside it (Undo restores the whole disk anyway).
+  gpgconf --homedir "$GNUPG" --kill gpg-agent >/dev/null 2>&1 || true
   if [[ -d $GNUPG && ! -e $GNUPG.omacvm-40 ]]; then mv "$GNUPG" "$GNUPG.omacvm-40" || return 1
   else rm -rf "$GNUPG"; fi
   for k in archlinuxarm archlinux omarchy; do [[ -f $ROOT/usr/share/pacman/keyrings/$k.gpg ]] && list+=("$k"); done
@@ -592,6 +609,12 @@ cmd_run() {
     # Going on: the journal says this VM was on omarchy-mac when it began.
     for i in "${!PHASES[@]}"; do [[ ${PHASES[$i]} == "$done_p" ]] && start=$((i + 1)); done
     say "going on after: $done_p"
+    # A VM reset in the download leaves pacman's lock (no pacman runs now).
+    if [[ -e $ROOT/var/lib/pacman/db.lck ]] && ! pgrep -x pacman >/dev/null 2>&1; then
+      rm -f "$ROOT/var/lib/pacman/db.lck"; say "pacman's lock from the stopped move: removed"
+    fi
+    IN_RUN=1 preflight
+    if [[ -n $PF_CODE ]]; then finish failed "$PF_CODE" "$PF_REASON" "$PF_EXIT"; fi
   fi
   rm -f "$J/stop"
   jset state running; jset code ""; jset reason ""; jset finished ""
@@ -629,12 +652,8 @@ cmd_start() {
   local out rc=0
   mkdir -p "$J" || die "could not make $J"
   if [[ $(jget state) == running ]] && alive; then say "the move runs already"; return 0; fi
-  if [[ -z $(jget phase-done) ]]; then
-    out=$(cmd_preflight --json) || rc=$?
-    if (( rc )); then echo "$out"; return "$rc"; fi
-  elif [[ $(resumable) == 0 ]]; then
-    say "the package switch was cut off: Undo only"; return 3
-  fi
+  out=$(cmd_preflight --json) || rc=$?
+  if (( rc )); then echo "$out"; return "$rc"; fi
   systemctl reset-failed "$UNIT" >/dev/null 2>&1 || true
   systemd-run --quiet --collect --unit="$UNIT" -p StandardInput=null \
     -p "StandardOutput=append:$LOG" -p "StandardError=append:$LOG" -p KillSignal=SIGINT -p TimeoutStopSec=900 \

@@ -242,6 +242,9 @@ out=$(o run 2>&1); expect "run again: done, nothing again" "0 1" "$? $(calls 'pa
 fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; rc=$?
 expect "omarchy update fails: exit 1, state failed, code update, resumable" "1 failed update True" \
   "$rc $(o status --json | json '" ".join(str(x) for x in [d["state"], d["code"], d["resumable"]])')"
+out=$(o preflight --json); rc=$?
+expect "preflight on a stopped move (Omarchy is 4.5 now): ok to go on, resume, after kernel" "0 True True kernel" \
+  "$rc $(json '" ".join(str(x) for x in [d["ok"], d["resume"], d["phase_done"]])' <<<"$out")"
 o run >/dev/null 2>&1; rc=$?
 expect "resume: done, the switch and the download not again" "0 done 1 1" "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -Syyuuw')"
 
@@ -251,6 +254,7 @@ o run >/dev/null 2>&1; rc=$?
 expect "cut off inside the switch: refused (exit 1), Undo only" "1 failed commit False" \
   "$rc $(o status --json | json '" ".join(str(x) for x in [d["state"], d["code"], d["resumable"]])')"
 expect "start: refused too (exit 3), no unit" "3 0" "$(o start >/dev/null 2>&1; echo $?) $(calls systemd-run)"
+expect "preflight then: undo-only (exit 3)" "undo-only 3" "$(o preflight --json | json 'd["code"]') $(o preflight >/dev/null 2>&1; echo $?)"
 
 # pacman refuses the switch before it changes anything: Resume is fine.
 fresh; : > "$P/commit-refused"; o run >/dev/null 2>&1; rc=$?
@@ -264,7 +268,9 @@ fresh; o preflight >/dev/null; : > "$P/net-down"
 out=$(o run 2>&1); rc=$?
 expect "network down in the download: exit 4, failed, code network, resumable" "4 failed network True" \
   "$rc $(o status --json | json '" ".join(str(x) for x in [d["state"], d["code"], d["resumable"]])')"
-rm -f "$P/net-down"; o run >/dev/null 2>&1; expect "resume after the network: done" "0 done" "$? $(cat "$J/state")"
+rm -f "$P/net-down"; : > "$RT/var/lib/pacman/db.lck"
+expect "preflight after a VM reset in the download (pacman's lock left): ok to go on" "True" "$(o preflight --json | json 'd["ok"]')"
+o run >/dev/null 2>&1; expect "resume after the network: done, the lock removed" "0 done no" "$? $(cat "$J/state") $([[ -e $RT/var/lib/pacman/db.lck ]] && echo yes || echo no)"
 
 # Stop: after the current step.
 fresh; : > "$P/stop-on-D"; o run >/dev/null 2>&1; rc=$?
