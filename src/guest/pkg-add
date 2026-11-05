@@ -1,6 +1,10 @@
 #!/bin/bash
 # pkg-add [--asdeps] PACKAGE...: installs the PACKAGEs this VM does not have
 # yet, and nothing else. Every OmacVM guest script installs through this.
+# Without --asdeps (what OmacVM keeps using), a PACKAGE the VM has only as a
+# dependency is marked as installed on purpose: Omarchy 4.5 removes orphans
+# on every update, and one of OmacVM's must not go with the package that
+# brought it (guest/keep-packages.txt has the list; guest/omarchy-move.sh).
 #
 # OmacVM never updates a package the VM already has. One package newer than
 # the rest of the system is a partial update, which Arch does not support:
@@ -29,6 +33,11 @@ LOG=${OMACVM_PKG_LOG:-/var/log/omacvm-pacman.log}
 asdeps=()
 [[ ${1:-} == --asdeps ]] && { asdeps=(--asdeps); shift; }
 (( $# )) || exit 0
+if (( ! ${#asdeps[@]} )); then
+  dep=$(pacman -Qqd "$@" 2>/dev/null) || true
+  # shellcheck disable=SC2086 # one package per word
+  [[ -z $dep ]] || pacman -D --asexplicit $dep >/dev/null 2>&1 || true
+fi
 # pacman -T prints what is not installed (status 127 then).
 missing=$(pacman -T "$@") || true
 [[ -n $missing ]] || exit 0
