@@ -89,8 +89,6 @@ qml() { printf 'import QtQuick\nimport qs.Commons\nItem { color: Color.bar.text 
 run_all() {
   ( cd "$G/workspaces/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
   ( cd "$G/keyboard/guest" && bash ./install.sh "$LU" us ) >/dev/null 2>&1
-  ( cd "$G/display/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
-  ( cd "$G/clipboard/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
   bash "$G/gestures/guest/glide.sh" "$LU" on >/dev/null 2>&1
   bash "$G/gestures/guest/glide.sh" "$LU" off >/dev/null 2>&1
   bash "$G/guest/hypr-vm.sh" "$LU" >/dev/null 2>&1
@@ -171,7 +169,6 @@ chown -R "$LU:" "$H/.config/hypr" "$H/.config/omarchy" "$H/.config/chromium-flag
 echo old > "$H/.local/state/omacvm/restart-shell"
 ( cd "$G/workspaces/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
 ( cd "$G/keyboard/guest" && bash ./install.sh "$LU" us ) >/dev/null 2>&1
-( cd "$G/display/guest" && bash ./install.sh "$LU" ) >/dev/null 2>&1
 bash "$G/gestures/guest/glide.sh" "$LU" on >/dev/null 2>&1
 bash "$G/guest/hypr-vm.sh" "$LU" >/dev/null 2>&1
 bash "$G/clock/guest/clock.sh" "$LU" on "HH:mm" >/dev/null 2>&1

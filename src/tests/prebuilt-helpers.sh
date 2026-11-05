@@ -62,7 +62,7 @@ expect "the team of nothing" "" "$(helpers_team "$T/nothing.app")"
 # src/mac/install.sh with stand-ins: which installer call it makes.
 S=$T/run/src; mkdir -p "$T/run" "$T/home" "$T/bin"
 cp -R "$IN" "$S"
-for d in bridge/mac gestures/mac clipboard/mac omanotch/mac; do
+for d in bridge/mac gestures/mac omanotch/mac; do
   printf '#!/bin/bash\necho "%s $*" >> "%s/calls"\n' "$d" "$T" > "$S/$d/install.sh"; chmod +x "$S/$d/install.sh"
 done
 # The stand-ins are part of the helpers' sources: the app's copy gets the same.
