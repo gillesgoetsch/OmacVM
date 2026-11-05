@@ -3,18 +3,17 @@
 #   omacvm resources --vm NAME                  what it has, and what each tier gives
 #   omacvm resources --vm NAME --resources low|balanced|high|best
 #   omacvm resources --vm NAME --cpus N --memory-gb N   (either one alone too)
-#   --vm-type parallels|utm|fusion|app   when the name is used in more than one app
+#   --vm-type app   (the only one; kept for scripts)
 #   --json   the VM's resources, the limits and the tiers (after a change: the
 #            new ones and "changed": true; a change applies on the next start),
 #            and "warning" when its memory is above this Mac's Best tier
 # The same tiers and limits as omacvm build: 1 CPU up to this Mac's, 4 GB up
-# to its memory, within the Parallels licence. Parallels, UTM and VMware Fusion
-# change a stopped VM only (shut it down first); OmacVM.app's VM takes the
-# change at its next start. In a terminal without a change it asks (not with
+# to its memory. The VM takes the change at its next start. In a terminal
+# without a change it asks (not with
 # --yes or --json). Memory above this Mac's Best tier is allowed, with a
 # warning (also when it only reads a VM that has it); the setting is never
 # lowered by itself.
-# Exit codes: 0 done, 1 failed, 2 usage, 3 needs a person (shut the VM down).
+# Exit codes: 0 done, 1 failed, 2 usage, 3 needs a person (a retired VM).
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -22,8 +21,6 @@ source "$R/src/lib/vm.sh"
 source "$R/src/lib/setup.sh"
 source "$R/src/lib/features.sh"
 source "$R/src/lib/ui.sh"
-source "$R/src/vm/utm.sh"
-source "$R/src/vm/fusion.sh"
 source "$R/src/lib/resources.sh"
 VM=""; TYPE=""; RES=""; CPUS=""; MEM_GB=""; JSON=0; YES=0
 usage() { echo "omacvm resources: $*" >&2; exit 2; }
@@ -40,51 +37,44 @@ while (( $# )); do
     --memory-gb) MEM_GB=$2; shift 2 ;;
     --json) JSON=1; shift ;;
     --yes|-y) YES=1; shift ;;
-    -h|--help) sed -n '2,14s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) usage "unknown option $1 (see --help)" ;;
   esac
 done
 [[ -n $VM ]] || usage "which VM? --vm NAME (omacvm vms lists them)"
-case $TYPE in ""|parallels|utm|fusion|app) ;; *) usage "--vm-type parallels, utm, fusion or app" ;; esac
+case $TYPE in ""|app|parallels|utm|fusion) ;; *) usage "--vm-type app (the only one)" ;; esac
 case $RES in ""|low|balanced|high|best) ;; *) usage "--resources low, balanced, high or best" ;; esac
 [[ -z $CPUS || $CPUS =~ ^[0-9]+$ ]] || usage "--cpus: a number"
 [[ -z $MEM_GB || $MEM_GB =~ ^[0-9]+$ ]] || usage "--memory-gb: a number of GB"
-app_label() { case $1 in parallels) echo Parallels ;; utm) echo UTM ;; fusion) echo "VMware Fusion" ;; app) echo OmacVM.app ;; *) echo "$1" ;; esac; }
 
-# The one VM of that name (and type). A name in two apps, or twice in one
-# app, is refused: changing the wrong VM is worse than asking. With a type
-# other than UTM, UTM's data is not read.
-skip=""; [[ -n $TYPE && $TYPE != utm ]] && skip=no-utm
-hits=$(vms_list $skip | awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && (t == "" || $2 == t) { print $2 "\t" $3 }')
+# The one OmacVM.app VM of that name. Twice in one VMs folder is refused:
+# changing the wrong VM is worse than asking. A retired VM (no OmacVM.app VM
+# of that name): exit 3 with what to do.
+list=$(vms_list)
+hits=$(awk -F'\t' -v n="$VM" '$1 == n && $2 == "app" { print $2 "\t" $3 }' <<<"$list")
+if [[ -n $TYPE && $TYPE != app ]]; then
+  awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && $2 == t { f = 1 } END { exit !f }' <<<"$list" && retired_stop "$VM" "$TYPE"
+  usage "no $(retired_name "$TYPE") VM of OmacVM's named '$VM'"
+fi
+if [[ -z $hits ]]; then
+  old=$(awk -F'\t' -v n="$VM" '$1 == n && $3 == "retired" { print $2; exit }' <<<"$list")
+  [[ -n $old && -z $TYPE ]] && retired_stop "$VM" "$old"
+  usage "no OmacVM.app VM named '$VM' (omacvm vms lists them)"
+fi
 count=$(grep -c . <<<"$hits" || true)
-if (( count == 0 )); then
-  usage "no ${TYPE:+$(app_label "$TYPE") }VM named '$VM' (omacvm vms lists them)"
-elif (( count > 1 )); then
-  types=$(cut -f1 <<<"$hits" | sort -u)
-  if [[ $(grep -c . <<<"$types") == 1 ]]; then
-    usage "$(app_label "$types") has $count VMs named '$VM': rename one first"
-  fi
-  usage "'$VM' is the name of a VM in $(while read -r t; do app_label "$t"; done <<<"$types" | paste -sd, - | sed 's/,/ and /g'): add --vm-type $(paste -sd'|' - <<<"$types")"
-fi
-TYPE=${hits%%$'\t'*}; STATE=${hits#*$'\t'}
-[[ $STATE != invalid ]] || die "Parallels lists '$VM' as invalid (its files are gone)"
+(( count == 1 )) || usage "OmacVM.app has $count VMs named '$VM': rename one first"
+TYPE=app; STATE=${hits#*$'\t'}
 
-# Limits as omacvm build has them: this Mac, and the Parallels licence.
+# Limits as omacvm build has them: this Mac.
 mac_specs
-CAP_CPUS=$mac_cores; CAP_MEM_GB=$mac_mem_gb; LIMITED=""
-if [[ $TYPE == parallels ]]; then
-  parallels_limits || parallels_standard_limits
-  (( CAP_CPUS > mac_cores )) && CAP_CPUS=$mac_cores
-  (( CAP_MEM_GB > mac_mem_gb )) && CAP_MEM_GB=$mac_mem_gb
-  [[ $P_EDITION == standard ]] && LIMITED=" (Parallels Desktop Standard: $CAP_CPUS CPUs / $CAP_MEM_GB GB per VM)"
-fi
+CAP_CPUS=$mac_cores; CAP_MEM_GB=$mac_mem_gb
 
-now=$(res_get "$VM" "$TYPE") || die "could not read the CPUs and memory of '$VM' from its $(app_label "$TYPE") settings"
+now=$(res_get "$VM" "$TYPE") || die "could not read the CPUs and memory of '$VM' from its OmacVM.app settings"
 OLD_CPUS=${now% *}; OLD_MB=${now#* }
 # An OmacVM.app VM's graphics peak of its last run (QEMU's logs/gpu-memory),
 # for the warning: they come on top of its memory.
 PEAK=""
-if [[ $TYPE == app ]] && d=$(app_dir "$VM" 2>/dev/null) && [[ -f $d/logs/gpu-memory && ! -L $d/logs/gpu-memory ]]; then
+if d=$(app_dir "$VM" 2>/dev/null) && [[ -f $d/logs/gpu-memory && ! -L $d/logs/gpu-memory ]]; then
   PEAK=$(sed -n 's/^peak_mb=//p' "$d/logs/gpu-memory" | head -1)
 fi
 warning() { mem_warning "$TYPE" "$OLD_MB" "$VM" "$PEAK"; }
@@ -104,7 +94,7 @@ show_json() {   # CHANGED
   t=$(warning); [[ -z $t ]] || printf ',\n  "warning": %s' "$(json_str "$t")"
   printf '}\n'
 }
-cpus_text() { (( $1 )) && echo "$1 CPUs" || echo "UTM's default CPUs"; }
+cpus_text() { echo "$1 CPUs"; }
 mem_text() { (( $1 % 1024 )) && echo "$1 MB" || echo "$(( $1 / 1024 )) GB"; }   # MB -> "6 GB", or "6000 MB" when not whole GB
 
 # No change asked: in a terminal, ask; else (or with --yes) say what it has.
@@ -112,8 +102,8 @@ if [[ -z $RES$CPUS$MEM_GB ]]; then
   if (( JSON || YES )) || ! { : < "$TTY"; } 2>/dev/null; then
     if (( JSON )); then show_json false
     else
-      echo "'$VM' ($(app_label "$TYPE"), $STATE): $(cpus_text "$OLD_CPUS"), $(mem_text "$OLD_MB") memory"
-      echo "This Mac: $mac_cores CPUs, $mac_mem_gb GB${LIMITED}. Change with --resources low|balanced|high|best, --cpus N or --memory-gb N."
+      echo "'$VM' (OmacVM.app, $STATE): $(cpus_text "$OLD_CPUS"), $(mem_text "$OLD_MB") memory"
+      echo "This Mac: $mac_cores CPUs, $mac_mem_gb GB. Change with --resources low|balanced|high|best, --cpus N or --memory-gb N."
       say_warning
     fi
     exit 0
@@ -121,7 +111,7 @@ if [[ -z $RES$CPUS$MEM_GB ]]; then
   opts=()
   for t in 0 1 2 3; do tier_values "$t"; opts+=("${TIERS[$t]}|$T_CPUS CPUs, $T_MEM GB memory"); done
   opts+=("Custom|choose CPUs and memory" "Keep|$(cpus_text "$OLD_CPUS"), $(mem_text "$OLD_MB") memory, as it is")
-  ui_select tier "How much of this Mac ($mac_cores CPUs, $mac_mem_gb GB${LIMITED}) should '$VM' get?" 5 "${opts[@]}"
+  ui_select tier "How much of this Mac ($mac_cores CPUs, $mac_mem_gb GB) should '$VM' get?" 5 "${opts[@]}"
   case $tier in
     5) say_warning; exit 0 ;;
     4) CPUS=$(ask_value "CPUs (1-$CAP_CPUS)" "$OLD_CPUS" '^[0-9]+$')
@@ -143,27 +133,15 @@ fi
 [[ -n $CPUS ]] && NEW_CPUS=$CPUS
 [[ -n $MEM_GB ]] && NEW_MB=$(( MEM_GB * 1024 ))
 # Only what changes is checked: a VM set up by hand keeps what it had.
-[[ $NEW_CPUS == "$OLD_CPUS" ]] || (( NEW_CPUS >= 1 && NEW_CPUS <= CAP_CPUS )) || usage "--cpus: 1 to $CAP_CPUS$LIMITED"
-[[ $NEW_MB == "$OLD_MB" ]] || (( NEW_MB >= 4096 && NEW_MB <= CAP_MEM_GB * 1024 )) || usage "--memory-gb: 4 to $CAP_MEM_GB GB$LIMITED"
+[[ $NEW_CPUS == "$OLD_CPUS" ]] || (( NEW_CPUS >= 1 && NEW_CPUS <= CAP_CPUS )) || usage "--cpus: 1 to $CAP_CPUS"
+[[ $NEW_MB == "$OLD_MB" ]] || (( NEW_MB >= 4096 && NEW_MB <= CAP_MEM_GB * 1024 )) || usage "--memory-gb: 4 to $CAP_MEM_GB GB"
 
 if [[ $NEW_CPUS == "$OLD_CPUS" && $NEW_MB == "$OLD_MB" ]]; then
   if (( JSON )); then show_json false; else echo "'$VM' already has $(cpus_text "$NEW_CPUS") and $(mem_text "$NEW_MB") memory: nothing changed"; say_warning; fi
   exit 0
 fi
 
-# Parallels, UTM and Fusion keep a running VM's settings in memory and would
-# refuse or overwrite the change: stopped only. OmacVM.app reads vm.env at
-# each start.
-if [[ $TYPE != app ]]; then
-  [[ $STATE == stopped ]] || needs_person "'$VM' is $STATE: shut it down in $(app_label "$TYPE") first (a suspended VM too: resume it, then shut it down), then run this again"
-  if [[ $TYPE == fusion ]]; then
-    x=$(fusion_vmx "$VM")
-    if compgen -G "$(dirname "$x")/*.vmss" >/dev/null; then
-      needs_person "'$VM' is suspended in VMware Fusion: resume it, shut it down, then run this again"
-    fi
-  fi
-fi
-res_set "$VM" "$TYPE" "$NEW_CPUS" "$NEW_MB" || die "could not change the CPUs and memory of '$VM' in its $(app_label "$TYPE") settings"
+res_set "$VM" "$TYPE" "$NEW_CPUS" "$NEW_MB" || die "could not change the CPUs and memory of '$VM' in its OmacVM.app settings"
 OLD_CPUS=$NEW_CPUS; OLD_MB=$NEW_MB
 if (( JSON )); then show_json true; exit 0; fi
 msg="'$VM' now has $(cpus_text "$NEW_CPUS") and $(mem_text "$NEW_MB") memory"
