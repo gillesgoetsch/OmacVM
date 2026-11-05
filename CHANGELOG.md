@@ -2687,7 +2687,7 @@ VMs that move between Macs: copied, on an external drive, or opened on a smaller
 - UTM VMs can go on an external drive: `omacvm build --vm-type utm
   --vm-dir PATH` (or another folder in the build's "Where should the VM
   go?"). The drive needs about 30 GB free, the Mac's own disk only a little
-  ([UTM route](https://github.com/gillesgoetsch/OmacVM/blob/v3.3.0/docs/routes/utm.md#utm-on-an-external-drive)).
+  ([UTM route](docs/routes/utm.md#utm-on-an-external-drive)).
 - A UTM build no longer stops at "Could not write domain" when macOS keeps
   the terminal out of UTM's data: it says so and builds the VM without
   UTM's speed settings.
@@ -4123,7 +4123,7 @@ plus fixes from testing 2.7.0 on a Mac mini.
 - VMware Fusion is the third way, next to Parallels and UTM: every display
   in the macOS arrangement, the GPU, and all of OmacVM's features. OmacVM
   builds Hyprland with a fix for Fusion's black screen and builds VMware
-  Tools. See [docs/routes/vmware-fusion.md](https://github.com/gillesgoetsch/OmacVM/blob/v3.3.0/docs/routes/vmware-fusion.md).
+  Tools. See [docs/routes/vmware-fusion.md](docs/routes/vmware-fusion.md).
 - Choose where the VM goes (`--vm-dir`, also on an external drive).
 - New Parallels VMs use every display in full screen; the slide between
   workspaces is back after a three-finger swipe; Omanotch repairs itself if
