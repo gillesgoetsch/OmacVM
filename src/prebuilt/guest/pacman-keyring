@@ -28,7 +28,7 @@ rm -rf "$GNUPG"
 "$PK" --init >/dev/null 2>&1 || { say "pacman-key --init failed"; exit 1; }
 "$PK" --populate >/dev/null 2>&1 || { say "pacman-key --populate failed"; exit 1; }
 if ! "$PK" --list-keys "$KEY" >/dev/null 2>&1; then
-  for f in "$(dirname "$REQ")/omarchy-key.asc" "$S"/guest/omarchy-key.asc "$S"/guest/keys/omarchy.asc; do
+  for f in "$(dirname "$REQ")/omarchy-key.asc" "$S"/guest/omarchy-45/omarchy-key.asc; do
     [[ -f $f ]] || continue
     # The primary keys in the file (the fpr line after each pub): exactly KEY.
     h=$(mktemp -d)

@@ -33,7 +33,7 @@ esac
 EOF
 chmod +x "$T/pacman-key"
 export OMACVM_PACMAN_KEY=$T/pacman-key OMACVM_GNUPG=$G OMACVM_SHARE=$T/share
-P=$T/prebuilt; mkdir -p "$P" "$T/share/guest"
+P=$T/prebuilt; mkdir -p "$P" "$T/share/guest/omarchy-45"
 reset() { rm -rf "$G" "$P"/* "$T/calls" "$T"/fail-*; mkdir -p "$G"; : > "$G/old-master"; : > "$P/keyring"; echo "$1" > "$T/pop"; }
 
 reset "archlinuxarm $KEY"
@@ -79,11 +79,18 @@ if command -v gpg >/dev/null; then
     got=0; [[ -e $G/$A.lsigned ]] && got=1
     [[ $rc == 0 && $got == "$want" ]] && pass "$what" || bad "$what: rc $rc, signed $got, said '$out'"
   done
-  reset archlinuxarm; rm -f "$P/omarchy-key.asc"; cp "$T/a.asc" "$T/share/guest/omarchy-key.asc"
+  reset archlinuxarm; rm -f "$P/omarchy-key.asc"; cp "$T/a.asc" "$T/share/guest/omarchy-45/omarchy-key.asc"
   out=$("$T/pkr" "$P/keyring" 2>&1); rc=$?
-  [[ $rc == 0 && -e $G/$A.lsigned ]] && pass "OmacVM's own copy of the key (guest/omarchy-key.asc): imported, signed" ||
+  [[ $rc == 0 && -e $G/$A.lsigned ]] && pass "OmacVM's own copy of the key (guest/omarchy-45/omarchy-key.asc): imported, signed" ||
     bad "OmacVM's copy: rc $rc, said '$out'"
-  rm -f "$T/share/guest/omarchy-key.asc"
+  rm -f "$T/share/guest/omarchy-45/omarchy-key.asc"
+  # The key OmacVM ships (src/guest/omarchy-45, from Omarchy 4.5.0) is Omarchy's and only that.
+  if [[ -f $R/src/guest/omarchy-45/omarchy-key.asc ]]; then
+    h=$T/gh2; mkdir -m700 "$h"
+    fp=$(gpg --homedir "$h" --batch --with-colons --import-options show-only --import "$R/src/guest/omarchy-45/omarchy-key.asc" 2>/dev/null |
+      awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')
+    [[ $fp == "$KEY" ]] && pass "the shipped guest/omarchy-45/omarchy-key.asc is Omarchy's key $KEY" || bad "shipped key file: '$fp'"
+  fi
 else
   echo "skip key files: no gpg here (Linux CI runs them)"
 fi
