@@ -232,14 +232,17 @@ utm_install_help() {
   say "    Then open UTM once."
 }
 
-# Which Omarchy a new VM gets: "4.0" (omarchy-mac, the supported one) or,
-# for tests only, "4.5" (upstream Omarchy 4.5, which merges omarchy-mac;
-# guest/omarchy-45.sh) when OMACVM_TEST_OMARCHY=4.5. Nothing in OmacVM sets
-# it, and no option or setting offers it: 4.5 waits for its release.
-# OMACVM_TEST_OMARCHY_CHANNEL: 4.5's package channel (rc until 4.5 is out).
-omarchy_route() { [[ ${OMACVM_TEST_OMARCHY:-} == 4.5 ]] && echo 4.5 || echo 4.0; }
+# Which Omarchy a new VM gets: "4.5" (Omarchy 4.5 on Omarchy's own aarch64
+# repos, guest/omarchy-move.sh) for OmacVM.app (TYPE app: its create-vm.sh
+# builds it); "4.0" (omarchy-mac) on Parallels, UTM and Fusion, as before.
+# Tests only: OMACVM_TEST_OMARCHY=4.0|4.5 picks one, and
+# OMACVM_TEST_OMARCHY_CHANNEL another of 4.5's channels (rc, edge).
+omarchy_route() {
+  case ${OMACVM_TEST_OMARCHY:-} in 4.0|4.5) echo "$OMACVM_TEST_OMARCHY"; return ;; esac
+  [[ ${TYPE:-} == app ]] && echo 4.5 || echo 4.0
+}
 omarchy45_channel() {
-  case ${OMACVM_TEST_OMARCHY_CHANNEL:-rc} in stable|rc|edge) echo "${OMACVM_TEST_OMARCHY_CHANNEL:-rc}" ;; *) echo rc ;; esac
+  case ${OMACVM_TEST_OMARCHY_CHANNEL:-stable} in stable|rc|edge) echo "${OMACVM_TEST_OMARCHY_CHANNEL:-stable}" ;; *) echo stable ;; esac
 }
 
 # omarchy-mac's published package lane: stable once it exists, else rc.
