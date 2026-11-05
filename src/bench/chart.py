@@ -1,34 +1,22 @@
 #!/usr/bin/env python3
-"""docs/images/benchmarks.svg from a results JSON: each route as a share of the Mac.
+"""The benchmark charts, drawn from docs/benchmarks/chart.json (never edit the SVGs by hand).
 
-  chart.py [--panel gpu] docs/benchmarks/chart.json docs/images/benchmarks.svg "MacBook Pro M4 Max · macOS 15.7 · Chrome 154"
+  chart.py docs/benchmarks/chart.json docs/images/benchmarks.svg "MacBook Pro M4 Max · macOS 15.7 · Google Chrome 155"
 
-The JSON is report.py's ("medians", "missing"), plus optional "unreleased":
-{route: [test, ...]} for numbers from a build that is not out yet, or
-{route: {test: tag}} to name it (say "2.9.0 RC"). Those bars are striped and
-tagged ("not released" without a name). An optional "note" (a string, or a
-list for several lines) replaces the line under the chart. Tests without a Mac
-value are left out.
-
---panel gpu [--aquarium] [--only KEY,...] draws the GPU panel instead (tests/bench/final-round,
-summarize.py's JSON): GPU throughput first (with the timing method from
-"methods"), GPU compute (vkpeak, Geekbench OpenCL and Vulkan), glmark2 and
-vkmark (VMs only, scores), Basemark, and Aquarium with --aquarium (--only: just
-these rows, e.g. gpu-throughput,vkpeak-fp32,geekbench-gpu-opencl,webgpu); macOS =
-100 %. A route without a number gets an empty hatched bar with the reason from
-"missing". "placeholder": true in the JSON marks the whole chart as made-up
-data (for drafts), "preliminary": true (summarize.py) as not from the agreed
-quiet Mac.
+The speed chart: one bar per test, OmacVM.app as a share of the Mac
+("medians": {"mac": {...}, "app": {...}}), a dashed line at 100 % (macOS),
+the share at the end of each bar. A test the app has no number for shows
+the reason from "missing". "note" (a string, or a list for several lines)
+goes under the chart. Tests without a Mac value are left out.
 
 --panel power draws docs/images/power.svg from the JSON's "power" part: the
-whole Mac's draw in watts per load (lower is better) and the battery hours, a
-bar per route and one for macOS, each load on its own scale; below it an
-optional second round ("round") of OmacVM.app against macOS on one scale.
+whole Mac's draw in watts per load (lower is better) and the hours on a full
+battery, a bar for OmacVM.app and one for macOS, each load on its own scale.
 Optional: "digits" (decimals of the watts, default 1), "loads" ({load: what
-runs}, replaces the default text under a load's name) and "extra" ({route:
-{load: "Chrome, CPU"}}, said after the route's name, e.g. which decoder played
-the video or the frame rate; "bar_width" (pixels for the longest bar, default
-480) leaves room for it).
+runs}, replaces the default text under a load's name), "labels" ({"app":
+"OmacVM.app 3.0.3"}), "extra" ({"app": {load: "Chromium"}}, said after the
+name, e.g. which decoder played the video) and "bar_width" (pixels for the
+longest bar, default 420).
 
 --panel progress draws docs/images/gpu-progress.svg from the JSON's
 "gpu_progress" part: one Mac and one VM, a bar per OmacVM.app version and
@@ -36,6 +24,15 @@ test, as a multiple of the oldest version measured (= 1x), the median's
 number on each bar and a thin line from the lowest to the highest run. One
 scale for every test; the "highlight" version in the app's colour. A version
 without a number gets an empty hatched bar with the reason from "missing".
+
+--panel gpu [--aquarium] [--only KEY,...] draws the GPU panel of
+tests/bench/final-round (summarize.py's JSON): GPU throughput first (with the
+timing method from "methods"), GPU compute (vkpeak, Geekbench OpenCL and
+Vulkan), glmark2 and vkmark (scores), Basemark, and Aquarium with
+--aquarium; macOS = 100 %. A build without a number gets an empty hatched
+bar with the reason from "missing". "placeholder": true marks the whole
+chart as made-up data (for drafts), "preliminary": true as not from the
+agreed quiet Mac.
 """
 import json, sys
 from xml.sax.saxutils import escape
@@ -43,20 +40,16 @@ from xml.sax.saxutils import escape
 FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 MONO = "ui-monospace, 'SF Mono', Menlo, monospace"
 INK, SOFT, MUTED, BG = "#e0def4", "#908caa", "#6e6a86", "#191724"
-ROUTES = [  # report.py names (file names), label, colour; the app first
-    ("app", "OmacVM.app", "#ebbcba"),
-    ("utm", "UTM", "#c4a7e7"),
-    ("fusion", "VMware Fusion", "#f6c177"),
-    ("parallels", "Parallels", "#9ccfd8"),
-]
+APP = ("app", "OmacVM.app", "#ebbcba")
+MACOS = ("mac", "macOS", SOFT)
 TESTS = [
     ("geekbench-cpu-multi", "CPU, all cores", "Geekbench 7"),
     ("speedometer", "Web apps", "Speedometer 3.1"),
-    ("aquarium", "Browser graphics", "WebGL Aquarium"),
+    ("aquarium", "Browser graphics", "WebGL Aquarium, 30,000 fish"),
     ("basemark", "Browser overall", "Basemark Web 3.0"),
     ("geekbench-gpu-opencl", "GPU compute", "Geekbench 7 GPU, OpenCL"),
 ]
-NOTE = "Striped: not released yet (OmacVM.app with Vulkan in the VM). glmark2 and vkmark have no macOS version: see docs/benchmarks."
+DOTS = '<pattern id="dots" width="40" height="40" patternUnits="userSpaceOnUse"><rect x="20" y="20" width="2" height="2" fill="#26233a"/></pattern>'
 
 
 def text(x, y, s, size=12, fill=INK, font=FONT, weight=None, anchor=None, halo=False):
@@ -76,6 +69,27 @@ def monow(s, size):
     return 0.62 * size * len(s)
 
 
+def legend(s, W, y, items):
+    """A centred legend: (label, colour, kind) with kind bar, line (dashed), range or none (plain text)."""
+    widths = [(18 if kind != "none" else 0) + textw(rl, 13) + 22 for rl, _, kind in items]
+    x = (W - sum(widths) + 22) / 2
+    for (rl, col, kind), w in zip(items, widths):
+        if kind == "bar":
+            s.append(f'<rect x="{x:.0f}" y="{y - 11}" width="12" height="12" rx="3" fill="{col}"/>')
+        elif kind == "line":
+            s.append(f'<line x1="{x + 6:.0f}" y1="{y - 13}" x2="{x + 6:.0f}" y2="{y + 3}" stroke="{INK}" stroke-opacity="0.6" stroke-dasharray="3 3"/>')
+        elif kind == "range":
+            s.append(f'<path d="M{x:.0f} {y - 8}v6M{x:.0f} {y - 5}h12M{x + 12:.0f} {y - 8}v6" stroke="{INK}" stroke-opacity="0.8" fill="none"/>')
+        tx = x + (18 if kind != "none" else 0)
+        s.append(text(f"{tx:.0f}", y, rl, 13, MUTED if kind == "none" else INK, weight="600" if kind == "bar" and col == APP[2] else None))
+        x += w
+
+
+def notes_of(data):
+    n = data.get("note", [])
+    return [n] if isinstance(n, str) else n
+
+
 def main():
     args = sys.argv[1:]
     if args[:2] == ["--panel", "gpu"]:
@@ -86,89 +100,51 @@ def main():
         return progress_panel(*args[2:])
     data = json.load(open(args[0]))
     out, subtitle = args[1], args[2] if len(args) > 2 else ""
-    med, missing = data["medians"], data.get("missing", {})
-    unrel = {}  # (route, test) -> tag on the bar
-    for r, ts in data.get("unreleased", {}).items():
-        for t in ts:
-            unrel[(r, t)] = ts[t] if isinstance(ts, dict) else "not released"
-    note = data.get("note", NOTE)
-    notes = [note] if isinstance(note, str) else note
-    mac = med.get("mac", {})
-    routes = [r for r in ROUTES if r[0] in med]
-    tests = [t for t in TESTS if mac.get(t[0]) and any(t[0] in med[r[0]] or t[0] in missing.get(r[0], {}) for r in routes)]
+    med = data["medians"]
+    mac, app = med.get("mac", {}), med.get(APP[0], {})
+    why = data.get("missing", {}).get(APP[0], {})
+    tests = [t for t in TESTS if mac.get(t[0]) and (t[0] in app or t[0] in why)]
+    notes = notes_of(data)
 
-    W, left, full = 1000, 230, 620          # full = width of 100 % (the Mac)
-    pitch, bar, gap, top = 15, 11, 16, 104
-    group = len(routes) * pitch
-    H = top + len(tests) * (group + gap) + 14 + 16 * len(notes)
+    W, left, full = 1000, 270, 560          # full = width of 100 % (the Mac)
+    pitch, bar, top = 50, 20, 124
+    H = top + len(tests) * pitch + 20 + 18 * len(notes)
 
-    def share(name, key):
-        v = med.get(name, {}).get(key)
+    def share(key):
+        v = app.get(key)
         return None if v is None else 100 * v / mac[key]
 
-    desc = []
-    for key, label, bench in tests:
-        parts = []
-        for name, rl, _ in routes:
-            p = share(name, key)
-            if p is None:
-                parts.append(f"{rl} {missing.get(name, {}).get(key, 'not available')}")
-            else:
-                tag = unrel.get((name, key))
-                parts.append(f"{rl} {round(p)} percent" + (f" ({'not released yet' if tag == 'not released' else tag})" if tag else ""))
-        desc.append(f"{label} ({bench}): " + ", ".join(parts))
-
+    desc = [f"{label} ({bench}): " + (f"{APP[1]} {round(share(key))} percent" if share(key) is not None
+                                       else f"{APP[1]} {why.get(key, 'not available')}")
+            for key, label, bench in tests]
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-labelledby="t d">',
-         '<title id="t">How fast Omarchy runs in OmacVM.app, UTM, VMware Fusion and Parallels, as a share of macOS itself</title>',
-         f'<desc id="d">{escape(". ".join(desc))}. macOS itself is 100 percent.</desc>',
-         '<defs><pattern id="dots" width="40" height="40" patternUnits="userSpaceOnUse"><rect x="20" y="20" width="2" height="2" fill="#26233a"/></pattern>']
-    for name, _, col in routes:
-        s.append(f'<pattern id="hatch-{name}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
-                 f'<rect width="6" height="6" fill="{col}" fill-opacity="0.25"/><rect width="3" height="6" fill="{col}"/></pattern>')
-    s.append('</defs>')
-    s.append(f'<rect width="{W}" height="{H}" fill="{BG}"/><rect width="{W}" height="{H}" fill="url(#dots)"/>')
-    s.append(text(W / 2, 34, "How fast is Omarchy in a VM?", 20, weight="600", anchor="middle"))
-    s.append(text(W / 2, 56, subtitle, 13, SOFT, anchor="middle"))
-
-    # legend, centred: the routes in chart order, then the Mac's line
-    items = [(rl, col) for _, rl, col in routes] + [("macOS = 100 %", None)]
-    widths = [18 + textw(rl, 13) + 22 for rl, _ in items]
-    x = (W - sum(widths) + 22) / 2
-    for (rl, col), w in zip(items, widths):
-        if col:
-            s.append(f'<rect x="{x:.0f}" y="69" width="12" height="12" rx="3" fill="{col}"/>')
-        else:
-            s.append(f'<line x1="{x + 6:.0f}" y1="67" x2="{x + 6:.0f}" y2="83" stroke="{INK}" stroke-opacity="0.6" stroke-dasharray="3 3"/>')
-        s.append(text(f"{x + 18:.0f}", 80, rl, 13, weight="600" if rl == routes[0][1] else None))
-        x += w
+         '<title id="t">How fast Omarchy runs in OmacVM.app, as a share of macOS itself</title>',
+         f'<desc id="d">{escape(". ".join(desc))}. macOS itself is 100 percent; higher is better.</desc>',
+         f'<defs>{DOTS}</defs>',
+         f'<rect width="{W}" height="{H}" fill="{BG}"/><rect width="{W}" height="{H}" fill="url(#dots)"/>',
+         text(W / 2, 38, "How fast is Omarchy in OmacVM.app?", 20, weight="600", anchor="middle"),
+         text(W / 2, 60, subtitle, 13, SOFT, anchor="middle")]
+    legend(s, W, 90, [(APP[1], APP[2], "bar"), ("macOS itself = 100 %", None, "line"), ("higher is better", None, "none")])
 
     # the Mac: one dashed line at 100 % through every row, behind the bars
-    s.append(f'<line x1="{left + full}" y1="{top - 4}" x2="{left + full}" y2="{top + len(tests) * (group + gap) - gap + 4}" stroke="{INK}" stroke-opacity="0.45" stroke-dasharray="3 3"/>')
-    y = top
-    for key, label, bench in tests:
-        s.append(text(40, y + group / 2 - 3, label, 15, weight="600"))
-        s.append(text(40, y + group / 2 + 14, bench, 12, MUTED))
-        for i, (name, rl, col) in enumerate(routes):
-            by = y + i * pitch
-            p = share(name, key)
-            if p is None:
-                s.append(text(left, by + 10, f"– {rl}: " + missing.get(name, {}).get(key, "not available"), 11, MUTED, MONO))
-                continue
-            w = max(2, min(full * 1.1, full * p / 100))
-            fill = f"url(#hatch-{name})" if (name, key) in unrel else col
-            s.append(f'<rect x="{left}" y="{by + (pitch - bar) / 2:.1f}" width="{w:.1f}" height="{bar}" rx="3" fill="{fill}"/>')
-            tx = left + w + 8
-            if tx - 8 < left + full < tx + 40:  # keep the Mac's line out from behind the value
-                s.append(f'<rect x="{left + w + 1:.1f}" y="{by}" width="52" height="{pitch}" fill="{BG}"/>')
-            s.append(text(f"{tx:.1f}", by + 11, f"{round(p)} %", 12, INK, MONO, "600" if name == routes[0][0] else None, halo=True))
-            if (name, key) in unrel:
-                tag = unrel[(name, key)]
-                tw = textw(tag, 10) + 28
-                s.append(f'<rect x="{tx + 42:.1f}" y="{by + 1}" width="{tw:.0f}" height="13" rx="6.5" fill="none" stroke="{col}" stroke-opacity="0.7"/>')
-                s.append(text(f"{tx + 42 + tw / 2:.1f}", by + 11, tag, 10, col, anchor="middle"))
-        y += group + gap
+    s.append(f'<line x1="{left + full}" y1="{top - 6}" x2="{left + full}" y2="{top + len(tests) * pitch - pitch + bar + 14}" stroke="{INK}" stroke-opacity="0.45" stroke-dasharray="3 3"/>')
+    for i, (key, label, bench) in enumerate(tests):
+        y = top + i * pitch
+        s.append(text(40, y + 8, label, 15, weight="600"))
+        s.append(text(40, y + 26, bench, 12, MUTED))
+        p = share(key)
+        if p is None:
+            s.append(text(left, y + 15, "– " + why.get(key, "not available"), 12, MUTED, MONO))
+            continue
+        w = max(3, min(full * 1.1, full * p / 100))
+        s.append(f'<rect x="{left}" y="{y}" width="{w:.1f}" height="{bar}" rx="4" fill="{APP[2]}"/>')
+        num = f"{round(p)} %"
+        tx = left + w + 10
+        if tx - 10 < left + full < tx + monow(num, 14) + 6:  # keep the Mac's line out from behind the value
+            s.append(f'<rect x="{left + w + 1:.1f}" y="{y - 2}" width="{monow(num, 14) + 16:.0f}" height="{bar + 4}" fill="{BG}"/>')
+        s.append(text(f"{tx:.1f}", y + 15, num, 14, INK, MONO, "600", halo=True))
     for i, line in enumerate(notes):
-        s.append(text(W / 2, H - 14 - 16 * (len(notes) - 1 - i), line, 12, MUTED, anchor="middle"))
+        s.append(text(W / 2, H - 14 - 18 * (len(notes) - 1 - i), line, 12, MUTED, anchor="middle"))
     s.append('</svg>')
     open(out, "w").write("\n".join(s) + "\n")
 
@@ -185,6 +161,10 @@ GPU_TESTS = [  # key, label, benchmark, headline, the Mac's key ("" = no macOS v
     ("aquarium", "Browser 3D", "WebGL Aquarium, 30,000 fish", False, "aquarium"),
 ]
 METHOD = {"timer": "GPU time (timer query)", "wall": "wall time, long frames"}
+# The final-round harness (tests/bench/final-round) names each VM by its JSON file: OmacVM.app, a second
+# app build, and the other VM apps its older rounds measured. Only for --panel gpu.
+GPU_ROUTES = [APP, ("app-rc2", "OmacVM.app (second build)", "#eb6f92"), ("utm", "UTM", "#c4a7e7"),
+              ("fusion", "VMware Fusion", "#f6c177"), ("parallels", "Parallels", "#9ccfd8")]
 
 
 def wrap(s, size, width):
@@ -219,8 +199,7 @@ def gpu_panel(*args):
     # A second app build (summarize.py's "app-rc2", e.g. a 3.0.0 RC with Vulkan) sits under the app, only in
     # the rows it has a number or a reason for. "labels" names the builds ("OmacVM 2.9.1").
     labels = data.get("labels", {})
-    routes = [(n, labels.get(n, rl), c) for n, rl, c in ROUTES[:1] + [("app-rc2", "OmacVM.app (second build)", "#eb6f92")] + ROUTES[1:]
-              if n in med or n in missing]
+    routes = [(n, labels.get(n, rl), c) for n, rl, c in GPU_ROUTES if n in med or n in missing]
     tests = []
     for key, label, bench, headline, base in GPU_TESTS:
         if key == "aquarium" and not aquarium and not (only and key in only):
@@ -334,131 +313,82 @@ def gpu_panel(*args):
 POWER_LOADS = [  # key, label, what runs
     ("idle", "Idle", "the desktop, nothing open"),
     ("light", "Reading", "Chrome scrolling a text page"),
-    ("video", "YouTube 4K", "Chrome, SDR; macOS decodes in hardware, the VMs on the CPU"),
+    ("video", "YouTube 4K", "SDR, 60 fps"),
     ("cpu", "Every core busy", "all CPU cores at 100 %"),
     ("gpu", "WebGL Aquarium", "30,000 fish in Chrome; each draws its own frame rate"),
 ]
-MACOS = ("mac", "macOS", SOFT)
 
 
 def power_panel(src, out, subtitle=""):
     """The power chart: watts of the whole Mac per load (lower is better) and hours on a full battery.
 
-    Top: one round, a bar per route and one for macOS, each load scaled to its
-    own largest draw. Below: "round", OmacVM.app against macOS on other Macs,
-    one scale for all its rows."""
+    A bar for OmacVM.app and one for macOS per load, each load scaled to its own larger draw."""
     data = json.load(open(src))["power"]
     watts, missing, wh = data["watts"], data.get("missing", {}), data["battery_wh"]
-    labels = data.get("labels", {})  # e.g. {"app": "OmacVM.app preview"}: the build the round ran
-    routes = [(n, labels.get(n, rl), c) for n, rl, c in ROUTES if n in watts or n in missing] + [MACOS]
+    labels = data.get("labels", {})  # e.g. {"app": "OmacVM.app 3.0.3"}: the build the round ran
+    routes = [(n, labels.get(n, rl), c) for n, rl, c in (APP, MACOS)]
     whats, extra, digits = data.get("loads", {}), data.get("extra", {}), data.get("digits", 1)
     loads = [(k, l, whats.get(k, w)) for k, l, w in POWER_LOADS if any(k in watts.get(r[0], {}) for r in routes)]
-    rnd = data.get("round")
-    rows = rnd["rows"] if rnd else []
-    rapp = rnd.get("app_label", "OmacVM.app") if rnd else ""
-    app_col = ROUTES[0][2]
+    notes = notes_of(data)
 
-    def fmt(v, cap, digits=1):
-        return f"{v:.{digits}f} W", f"{cap / v:.1f} h"
+    def fmt(v):
+        return f"{v:.{digits}f} W", f"{wh / v:.1f} h"
 
-    W, left, full = 1000, 250, data.get("bar_width", 480)
-    pitch, bar, gap, top = 22, 14, 26, 128
-    rgap, rpitch = 22, 22
-    main_h = len(loads) * (len(routes) * pitch + gap) - gap
-    round_top = top + main_h + 60
-    round_h = len(rows) * (2 * rpitch + rgap) - rgap if rows else 0
-    notes = data.get("note", [])
-    notes = [notes] if isinstance(notes, str) else notes
-    H = (round_top + 34 + round_h if rows else top + main_h) + 28 + 16 * len(notes)
+    W, left, full = 1000, 250, data.get("bar_width", 420)
+    pitch, bar, gap, top = 24, 16, 28, 128
+    H = top + len(loads) * (len(routes) * pitch + gap) - gap + 28 + 18 * len(notes)
 
     desc = []
     for key, label, what in loads:
         parts = []
         for name, rl, _ in routes:
             v = watts.get(name, {}).get(key)
+            ex = extra.get(name, {}).get(key)
             if v is None:
                 parts.append(f"{rl} {missing.get(name, {}).get(key, 'not measured')}")
             else:
-                w, h = fmt(v, wh, digits)
-                ex = extra.get(name, {}).get(key)
+                w, h = fmt(v)
                 parts.append(f"{rl}{f' ({ex})' if ex else ''} {w} ({h})")
         desc.append(f"{label} ({what}): " + ", ".join(parts))
-    for r in rows:
-        parts = []
-        for rl, v in ((rapp, r["app"]), ("macOS", r.get("macos"))):
-            if v is None:
-                parts.append(f"{rl} {r.get('macos_missing', 'not measured')}")
-            else:
-                w, h = fmt(v, r["wh"], 2)
-                parts.append(f"{rl} {w} ({h})")
-        desc.append(f"{r['mac']}, {dict((k, l) for k, l, _ in POWER_LOADS)[r['load']]}: " + ", ".join(parts))
 
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-labelledby="t d">',
-         '<title id="t">Power draw of the whole Mac with Omarchy in OmacVM.app, UTM, VMware Fusion and Parallels, and macOS itself</title>',
+         '<title id="t">Power draw of the whole Mac with Omarchy in OmacVM.app, and with macOS itself</title>',
          f'<desc id="d">{escape(". ".join(desc))}. Watts, lower is better; hours on a full battery.</desc>',
-         '<defs><pattern id="dots" width="40" height="40" patternUnits="userSpaceOnUse"><rect x="20" y="20" width="2" height="2" fill="#26233a"/></pattern></defs>',
+         f'<defs>{DOTS}</defs>',
          f'<rect width="{W}" height="{H}" fill="{BG}"/><rect width="{W}" height="{H}" fill="url(#dots)"/>',
-         text(W / 2, 34, "How much power does the Mac draw?", 20, weight="600", anchor="middle"),
-         text(W / 2, 56, subtitle, 13, SOFT, anchor="middle")]
-
-    items = [(rl, col) for _, rl, col in routes]
-    widths = [18 + textw(rl, 13) + 22 for rl, _ in items]
-    x = (W - sum(widths) + 22) / 2
-    for (rl, col), w in zip(items, widths):
-        s.append(f'<rect x="{x:.0f}" y="69" width="12" height="12" rx="3" fill="{col}"/>')
-        s.append(text(f"{x + 18:.0f}", 80, rl, 13, weight="600" if rl == routes[0][1] else None))
-        x += w
-    s.append(text(W / 2, 104, f"Watts, lower is better · hours on a full {wh:g} Wh battery", 13, INK, anchor="middle"))
-
-    def bar_row(y, v, cap, col, rl, scale, first, digits=1):
-        w = max(3, full * v / scale)
-        s.append(f'<rect x="{left}" y="{y:.1f}" width="{w:.1f}" height="{bar}" rx="4" fill="{col}"/>')
-        wt, hours = fmt(v, cap, digits)
-        tx = left + w + 8
-        s.append(text(f"{tx:.1f}", y + 11.5, wt, 13, INK, MONO, "600" if first else None, halo=True))
-        tx += monow(wt, 13) + 8
-        s.append(text(f"{tx:.1f}", y + 11.5, hours, 12, SOFT, MONO, halo=True))
-        s.append(text(f"{tx + monow(hours, 12) + 10:.1f}", y + 11.5, rl, 11, SOFT, halo=True))
-
-    def label(y, h, title, lines):
-        ly = y + h / 2 - 4 - 7.5 * len(lines) + 7.5
-        s.append(text(40, ly, title, 15, weight="600"))
-        for j, ln in enumerate(lines):
-            s.append(text(40, ly + 18 + 15 * j, ln, 12, MUTED))
+         text(W / 2, 38, "How much power does the Mac draw?", 20, weight="600", anchor="middle"),
+         text(W / 2, 60, subtitle, 13, SOFT, anchor="middle")]
+    legend(s, W, 90, [(rl, col, "bar") for _, rl, col in routes] +
+           [(f"watts, lower is better · hours on a full {wh:g} Wh battery", None, "none")])
 
     y = top
     for key, title, what in loads:
         group = len(routes) * pitch
-        label(y, group, title, wrap(what, 12, left - 60))
+        lines = wrap(what, 12, left - 60)
+        ly = y + group / 2 - 4 - 7.5 * len(lines) + 7.5
+        s.append(text(40, ly, title, 15, weight="600"))
+        for j, ln in enumerate(lines):
+            s.append(text(40, ly + 18 + 15 * j, ln, 12, MUTED))
         scale = max(watts.get(n, {}).get(key) or 0 for n, _, _ in routes)
         for i, (name, rl, col) in enumerate(routes):
             by = y + i * pitch + (pitch - bar) / 2
             v = watts.get(name, {}).get(key)
             if v is None:
-                s.append(text(left, by + 11, f"– {rl}: " + missing.get(name, {}).get(key, "not measured"), 11, MUTED, MONO))
+                s.append(text(left, by + 12, f"– {rl}: " + missing.get(name, {}).get(key, "not measured"), 12, MUTED, MONO))
                 continue
+            w = max(3, full * v / scale)
+            s.append(f'<rect x="{left}" y="{by:.1f}" width="{w:.1f}" height="{bar}" rx="4" fill="{col}"/>')
+            wt, hours = fmt(v)
+            tx = left + w + 10
+            s.append(text(f"{tx:.1f}", by + 12.5, wt, 13, INK, MONO, "600" if name == APP[0] else None, halo=True))
+            tx += monow(wt, 13) + 8
+            s.append(text(f"{tx:.1f}", by + 12.5, hours, 12, SOFT, MONO, halo=True))
             ex = extra.get(name, {}).get(key)
-            bar_row(by, v, wh, col, f"{rl} · {ex}" if ex else rl, scale, name == routes[0][0], digits)
+            if ex:   # the legend names the bars; say only what differs (which browser, the frame rate)
+                s.append(text(f"{tx + monow(hours, 12) + 10:.1f}", by + 12.5, ex, 12, SOFT, halo=True))
         y += group + gap
-
-    if rows:
-        s.append(f'<line x1="40" y1="{round_top - 34}" x2="{W - 40}" y2="{round_top - 34}" stroke="{INK}" stroke-opacity="0.12"/>')
-        s.append(text(40, round_top - 8, rnd["title"], 16, weight="600"))
-        s.append(text(40 + textw(rnd["title"], 16) * 1.1 + 14, round_top - 8, rnd.get("subtitle", ""), 12, MUTED))
-        scale = max(max(r["app"], r.get("macos") or 0) for r in rows)
-        y = round_top + 20
-        names = dict((k, l) for k, l, _ in POWER_LOADS)
-        for r in rows:
-            label(y, 2 * rpitch, names[r["load"]], [r["mac"]])
-            bar_row(y + (rpitch - bar) / 2, r["app"], r["wh"], app_col, rapp, scale, True, 2)
-            by = y + rpitch + (rpitch - bar) / 2
-            if r.get("macos") is None:
-                s.append(text(left, by + 11, "– macOS: " + r.get("macos_missing", "not measured"), 11, MUTED, MONO))
-            else:
-                bar_row(by, r["macos"], r["wh"], MACOS[2], "macOS", scale, False, 2)
-            y += 2 * rpitch + rgap
     for i, line in enumerate(notes):
-        s.append(text(W / 2, H - 14 - 16 * (len(notes) - 1 - i), line, 12, MUTED, anchor="middle"))
+        s.append(text(W / 2, H - 14 - 18 * (len(notes) - 1 - i), line, 12, MUTED, anchor="middle"))
     s.append('</svg>')
     open(out, "w").write("\n".join(s) + "\n")
 
@@ -487,7 +417,7 @@ def progress_panel(src, out, subtitle=""):
     """GPU progress: the same Mac and VM, only the OmacVM.app version changes; each test against its oldest version."""
     data = json.load(open(src))["gpu_progress"]
     versions, hl, tests = data["versions"], data["highlight"], data["tests"]
-    app_col, old_col = ROUTES[0][2], SOFT
+    app_col, old_col = APP[2], SOFT
     summ = [(t,) + progress_summary(t, versions) for t in tests]
     top_ratio = max(hi / b for t, rows, b in summ for v, m, lo, hi, r, why in rows if m is not None)
 
