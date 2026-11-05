@@ -1,10 +1,9 @@
 #!/bin/bash
-# omacvm apply: put OmacVM onto a running VM (Parallels, UTM or VMware Fusion), or bring it up
-# to this version: the Mac side the VM's features need, then the VM side. Also
-# for an Omarchy you installed by hand from omarchy-mac.
-#   omacvm apply [--vm NAME | --ip IP] [--vm-type parallels|utm|fusion|app] [--user NAME]
+# omacvm apply: put OmacVM onto a running OmacVM.app VM, or bring it up to
+# this version: the Mac side the VM's features need, then the VM side.
+#   omacvm apply [--vm NAME | --ip IP] [--vm-type app] [--user NAME]
 #                [--feature NAME=on|off]... [--FEATURE | --no-FEATURE]...
-#                [--keyboard "LAYOUT [VARIANT]"] [--display WxH@Hz] [--key PRIVATE_KEY] [--vm-key PRIVATE_KEY] [--no-mac]
+#                [--keyboard "LAYOUT [VARIANT]"] [--key PRIVATE_KEY] [--vm-key PRIVATE_KEY] [--no-mac]
 #                [--reset-host-key] [--reinstall FEATURE]... [--transaction] [--yes]
 #                [--allow-downgrade] [--kernel]
 # Features: `omacvm features` lists them (src/features.tsv). Not given: what the
@@ -23,9 +22,9 @@
 # /etc/omacvm/installed.json); other parts keep being only logged.
 # VM: the one named Omarchy, else the only running one. A stopped VM is
 # started only when named with --vm (else exit 3: it is not started). User: the VM's desktop user. Key: ~/.ssh/omacvm, and an OmacVM.app VM's own (--vm-key, else its folder's ssh-key). Keyboard: the
-# Mac's current layout. Display (UTM, Fusion): the Mac's built-in display below
-# the notch (no built-in display: the main one). The VM's SSH host key is
-# remembered the first time; --reset-host-key forgets it (a rebuilt VM).
+# Mac's current layout. The VM's SSH host key is remembered the first time;
+# --reset-host-key forgets it (a rebuilt VM). A retired Parallels, UTM or
+# VMware Fusion VM is not touched (exit 3, src/lib/retired.sh).
 # Exit codes: 0 done, 1 failed, 2 usage, 3 needs a person (see the message),
 # 4 failed and rolled back (--transaction).
 # A VM with a newer OmacVM than this omacvm is not touched (exit 3, before
@@ -44,7 +43,7 @@ source "$R/src/lib/features.sh"
 source "$R/src/lib/graphics.sh"
 source "$R/src/lib/mac-setup.sh"
 features_load
-VM=""; IP=""; TYPE=""; U=""; KEY=~/.ssh/omacvm; VMKEY=""; KB=""; MODE=""; MAC=1; NAMED=1; TOKEN=1; TOOLS=1; TRANSACTION=0
+VM=""; IP=""; TYPE=""; U=""; KEY=~/.ssh/omacvm; VMKEY=""; KB=""; MAC=1; NAMED=1; TOKEN=1; TRANSACTION=0
 YES=0; NEWKEY=0; REINSTALL=(); KERNEL=0
 SETN=(); SETV=()
 set_feature() {   # NAME on|off (an old name too: idle-lock=off is no-idle-lock=on)
@@ -63,7 +62,6 @@ while (( $# )); do
     --key) KEY=$2; shift 2 ;;
     --vm-key) VMKEY=$2; shift 2 ;;
     --keyboard) KB=$2; shift 2 ;;
-    --display) MODE=$2; shift 2 ;;
     --no-mac) MAC=0; shift ;;
     --reset-host-key) export OMA_PIN_RESET=1; NEWKEY=1; shift ;;
     --transaction) TRANSACTION=1; shift ;;
@@ -74,10 +72,10 @@ while (( $# )); do
                  feature_index "$f" >/dev/null || { echo "omacvm apply: --reinstall: unknown feature '${2:-}' (omacvm features lists them)" >&2; exit 2; }
                  REINSTALL+=("$f"); shift 2 ;;
     --no-token) TOKEN=0; shift ;;   # prebuilt images: no Bridge token in the VM
-    --no-tools) TOOLS=0; shift ;;   # prebuilt images: no Parallels Tools
+    --no-tools) shift ;;   # nothing to leave out any more (OmacVM.app's apply-vm.sh passes it for images)
     --feature) set_feature "${2%%=*}" "${2#*=}"; shift 2 ;;
     --no-*) set_feature "${1#--no-}" off; shift ;;
-    -h|--help) sed -n '2,38s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,37s/^# \{0,1\}//p' "$0"; exit 0 ;;
     --*) f=$(feature_alias "${1#--}"); feature_index "${f%% *}" >/dev/null || { echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2; }
          set_feature "${1#--}" on; shift ;;
     *) echo "omacvm apply: unknown option $1 (see --help)" >&2; exit 2 ;;
@@ -86,7 +84,7 @@ done
 # Steps for the control centre's progress (step, lib/mac.sh).
 (( OMA_STEPS )) || OMA_STEPS=$(( MAC ? 4 : 3 ))
 macos=$(sw_vers -productVersion 2>/dev/null)
-(( ${macos%%.*} >= 14 )) || { echo "omacvm apply: OmacVM needs macOS 14 (Sonoma) or newer; this Mac runs $macos" >&2; exit 3; }
+(( ${macos%%.*} >= 15 )) || { echo "omacvm apply: OmacVM.app needs macOS 15 (Sequoia) or newer; this Mac runs $macos" >&2; exit 3; }
 export OMA_KEY=$KEY
 [[ -f $KEY ]] || { log "SSH key for the VM: $KEY"; mkdir -p "$(dirname "$KEY")" && chmod 700 "$(dirname "$KEY")"; ssh-keygen -t ed25519 -N "" -C omacvm -f "$KEY" -q; }
 NOTCH=$(mac_tool mac-notch 2>/dev/null || echo none)
@@ -95,20 +93,20 @@ NOTCH=$(mac_tool mac-notch 2>/dev/null || echo none)
 # Its SSH host key: remembered now when there is none yet, checked after that.
 export OMA_PIN_NEW=1
 if [[ -n $IP ]]; then
-  [[ -n $TYPE ]] || TYPE=$(vm_type "${VM:-Omarchy}") || { echo "omacvm apply: with --ip, pass --vm-type parallels, utm, fusion or app" >&2; exit 2; }
+  [[ -n $TYPE ]] || TYPE=$(vm_type "${VM:-Omarchy}") || TYPE=app
+  route_retired "$TYPE" && retired_stop "${VM:-the VM at $IP}" "$TYPE"
   if [[ -n $VM ]]; then vm_pin "$VM" "$TYPE"
   else VM="the VM at $IP"; NAMED=0; OMA_PIN=""; OMA_PIN_ARGS="--ip $IP --vm-type $TYPE"; export OMA_PIN OMA_PIN_ARGS; fi   # an address is no identity (DHCP reuses it): no key kept
 else
   resolve_vm start
 fi
-case $TYPE in parallels|utm|fusion|app) ;; *) echo "omacvm apply: --vm-type parallels, utm, fusion or app" >&2; exit 2 ;; esac
+[[ $TYPE == app ]] || { echo "omacvm apply: --vm-type app (the only one)" >&2; exit 2; }
 # OmacVM.app: the VM folder's own SSH key (app_ssh_key), made now when the
 # folder has none; put into the VM below.
 if [[ -n $VMKEY ]]; then OMA_VM_KEY=$VMKEY
 elif [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM" 2>/dev/null); then OMA_VM_KEY=$(app_ssh_key "$d") || OMA_VM_KEY=""
 fi
 export OMA_VM_KEY
-vm_network_ok "$TYPE" "$IP" || exit 3
 ssh_ok=0; (wait_ssh "$IP" 120) >/dev/null 2>&1 || ssh_ok=$?
 (( ssh_ok != 3 )) || { hostkey_error; exit 3; }
 if (( ssh_ok )); then
@@ -123,8 +121,6 @@ if (( ssh_ok )); then
   fi
   exit 3
 fi
-[[ $TYPE == utm || $TYPE == fusion ]] && [[ -z $MODE ]] && MODE=$(mac_tool mac-display)
-[[ -z $MODE || $MODE =~ ^[0-9]+x[0-9]+(@[0-9.]+)?$ ]] || die "--display WxH@Hz, not '$MODE'"
 # OmacVM.app's VMs keep the layout chosen at setup (vm.env KEYBOARD, as the
 # app's own apply-vm.sh passes it): a switch from the control centre or the
 # command must not change it to the Mac's. Other VMs follow the Mac.
@@ -190,15 +186,12 @@ before=("${FV[@]}"); features_fix
 for ((i = 0; i < ${#FN[@]}; i++)); do
   [[ ${before[$i]} != "${FV[$i]}" ]] && info "${FTITLE[$i]}: off (it needs ${FNEEDS[$i]})"
 done
-# Parallels shows the Mac's battery itself.
-[[ $TYPE == parallels ]] && FV[$(feature_index battery)]=off
 on() { [[ ${FV[$(feature_index "$1")]} == on ]]; }
 for f in ${REINSTALL[@]+"${REINSTALL[@]}"}; do
   on "$f" || { echo "omacvm apply: --reinstall $f: it is off in '$VM' (omacvm enable $f)" >&2; exit 2; }
 done
 # The Mac helpers the features need (mac_helper_of in src/lib/mac-setup.sh:
-# the control centre asks the Mac through the Bridge, and UTM and Fusion get
-# the Mac's battery and camera from it, also with its bar features off).
+# the control centre asks the Mac through the Bridge).
 needs_bridge() { mac_helpers_needed; mac_needs "OmacVM Bridge"; }
 log "$TYPE VM '$VM' at $IP, user $U${had:+, OmacVM $had}"
 info "features: $(for ((i = 0; i < ${#FN[@]}; i++)); do printf '%s=%s ' "${FN[$i]}" "${FV[$i]}"; done)"
@@ -265,9 +258,8 @@ if (( MAC )); then
   mac_helpers_needed
   mac_needs "OmacVM Bridge" || args+=(--no-bridge)
   mac_needs "OmacVM Gestures" || args+=(--skip-gestures)
-  [[ $TYPE == parallels ]] || args+=(--skip-clip)   # the VM -> Mac clipboard of Parallels' shared folder
-  # Omanotch from src/omanotch. OmacVM.app too, as for the other routes: its
-  # full screen sits below the camera and Omanotch fills the strip.
+  # Omanotch from src/omanotch: the app's full screen sits below the camera
+  # and Omanotch fills the strip.
   mac_needs Omanotch && args+=(--omanotch)
   MAC_FAILED=$(mktemp -t omacvm-mac)
   mrc=0; OMACVM_MAC_FAILED_FILE=$MAC_FAILED "$R/src/mac/install.sh" "${args[@]}" || mrc=$?
@@ -321,28 +313,15 @@ if (( MAC )); then
       esac
     fi
   fi
-  # Chrome in the guest gets no GPU with UTM's "Apple Core OpenGL" renderer.
-  if [[ $TYPE == utm ]]; then
-    case $(utm_data defaults read com.utmapp.UTM QEMURendererBackend 2>/dev/null || echo 0) in
-      0|2) ;;
-      *) defaults write com.utmapp.UTM QEMURendererBackend -int 0
-         log "UTM renderer set to Default: quit UTM and start the VM again for the GPU in Chrome" ;;
-    esac
-  fi
 fi
 
-# An Omanotch from before OmacVM.app listens only on the other routes' networks.
-if on omanotch && [[ $TYPE == app ]]; then
+# An Omanotch from before OmacVM.app does not serve its VMs.
+if on omanotch; then
   rc=0; omanotch_serves_app || rc=$?
   (( rc != 1 )) || info "Omanotch on this Mac is too old for OmacVM.app's VMs (it does not serve 127.0.0.1): the strip beside the notch stays empty until it is updated (omacvm update)"
 fi
 
 # ---------- the VM side ----------
-# Parallels Tools: a prebuilt VM comes without them (they are Parallels' own).
-if (( TOOLS )) && [[ $TYPE == parallels ]] && ! gssh "$IP" "systemctl cat prltoolsd >/dev/null 2>&1" < /dev/null; then
-  log "Parallels Tools (from this Mac's Parallels Desktop)"
-  parallels_tools_install "$IP"
-fi
 T=$BRIDGE_TOKEN
 # A Bridge installed a moment ago writes its token when it first starts.
 if (( MAC )) && needs_bridge; then for _ in $(seq 20); do [[ -f $T ]] && break; sleep 1; done; fi
@@ -406,9 +385,7 @@ if (( TOKEN && NAMED )) && on control-centre; then
   vm_user_file vm-key < "$vk"
 fi
 # Touch ID (ADR 0041): its own key, root's alone in the VM (PAM asks as
-# root), and for Parallels/UTM/Fusion the Bridge token (they reach the Bridge
-# over the network). OmacVM.app's VMs ask through the app's port: no Bridge
-# token in them. Off: the Mac's copy goes (the VM's goes in guest/install.sh).
+# root). The VM asks through the app's port: no Bridge token in it. Off: the Mac's copy goes (the VM's goes in guest/install.sh).
 # A rebuilt VM (--reset-host-key) starts without the old one's theme.
 if (( NEWKEY && NAMED )); then
   rm -f "$OMA_BRIDGE_SUPPORT/touchid-theme/$(basename "$(vm_key_file "$TYPE" "$VM")").json"
@@ -416,8 +393,7 @@ fi
 if (( TOKEN && NAMED )) && on touch-id; then
   tk=$(touchid_key_ensure "$TYPE" "$VM" "$( (( NEWKEY )) && echo new)")
   gssh "$IP" "set -e; install -d -m755 /etc/omacvm; install -m600 -o root -g root /dev/stdin /etc/omacvm/touchid-key" < "$tk"
-  if [[ $TYPE == app ]]; then gssh "$IP" "rm -f /etc/omacvm/touchid-token" < /dev/null
-  else gssh "$IP" "set -e; install -m600 -o root -g root /dev/stdin /etc/omacvm/touchid-token" < "$T"; fi
+  gssh "$IP" "rm -f /etc/omacvm/touchid-token" < /dev/null
 else
   # The key. The theme the VM sent for the Touch ID panel stays (colours
   # only): with Touch ID back on, the panel looks like the VM at once.
@@ -488,12 +464,6 @@ fi
 # older OmacVM, when going back), all when empty.
 GI_ARGS=""; KNOWN=""
 [[ $KERNEL_NEW == build ]] && GI_ARGS+=" --kernel-new build"
-# Fusion, new VM: its display scale is the Mac display's (2 on Retina; a
-# prebuilt image has the scale of the Mac it was made on). Later applies keep
-# the scale in the VM: the one Omarchy's scaling menu chose stays.
-if [[ $TYPE == fusion ]] && (( FRESH )) && ds=$(mac_tool mac-display --scale 2>/dev/null) && [[ $ds =~ ^[1-4](\.[0-9]+)?$ ]]; then
-  GI_ARGS+=" --display-scale $ds"
-fi
 guest_install() {
   local fargs="" i fmt v=("$@")
   for ((i = 0; i < ${#FN[@]}; i++)); do
@@ -505,7 +475,6 @@ guest_install() {
     fi
     fargs+=" --feature ${FN[$i]}=${v[$i]}"
   done
-  [[ $TYPE == fusion ]] && fargs+=" --host $(fusion_host)"
   # The Mac's clock format (the app's built copy, else swift; without either
   # the bar keeps its own format).
   if [[ ${v[$(feature_index mac-clock)]} == on ]] && fmt=$(mac_tool mac-clock 2>/dev/null) && [[ -n $fmt ]]; then
@@ -513,7 +482,7 @@ guest_install() {
   fi
   # Its name, so the Mac's gestures helper tells it from another VM in the same app.
   (( NAMED )) && fargs+=" --vm-name-b64 $(printf %s "$VM" | base64 | tr -d '\n')"
-  gssh "$IP" "/usr/local/share/omacvm/guest/install.sh --user '$U' --keyboard '$KB' --vm-type $TYPE ${MODE:+--display $MODE}$fargs$GI_ARGS" < /dev/null
+  gssh "$IP" "/usr/local/share/omacvm/guest/install.sh --user '$U' --keyboard '$KB' --vm-type $TYPE$fargs$GI_ARGS" < /dev/null
 }
 step vm "the VM side"
 # OmacVM.app: what the VM's Graphics setting gives it on this Mac; with
@@ -753,14 +722,6 @@ if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
   fi
 fi
 
-if [[ $TYPE == parallels ]]; then
-  PVM=$(vm_bundle "$VM")
-  [[ -d $PVM ]] && { log "Dock icon"; "$R/src/icon/set-vm-icon.sh" "$PVM"; }
-  if (( MAC )) && ! parallels_sends_shortcuts; then
-    info "Parallels: set Settings > Shortcuts > macOS System Shortcuts > Send macOS system shortcuts: Always"
-    parallels_shortcuts_alert
-  fi
-fi
 # Touch ID turned on by this run: whether it works now, and an app that needs
 # its own switch for it (omacvm-touchid-apps in the VM: 1Password). Asked
 # from the VM itself, so "ready" means its key and PAM line are there.
