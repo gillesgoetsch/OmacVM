@@ -1309,22 +1309,59 @@ enum FeedFetch: Equatable { case got, offline(String), unsigned }
 /// twice more, after 2 s and then 6 s (the server's Retry-After instead, at
 /// most 30 s); never 404, 403 or anything else. STATUS: the HTTP status (nil
 /// when no answer came), ERROR: the URL error's code. nil: no more tries.
+///
+/// Time: the guest waits 30 s for POST /omacvm/updates/check
+/// (src/control/omacvm_cc/bridge.py), so the manifest and its .sig together
+/// get feedBudget (25 s) from the start of the check. Each try's timeout is
+/// what is left of it, at most feedTryTimeout (20 s): feedTryTimeout(elapsed:).
+/// A retry needs its wait plus feedMinTry (5 s) of the budget left; a
+/// standard wait that does not fit means no retry, a Retry-After is cut to
+/// what fits. ELAPSED: seconds since the check began.
 let feedRetryWaits: [Double] = [2, 6]
-func feedRetryWait(attempt n: Int, status: Int?, error: Int?, retryAfter: String?, now: Date = Date()) -> Double? {
+let feedBudget: Double = 25
+let feedTryTimeoutMax: Double = 20
+let feedMinTry: Double = 5
+func feedRetryWait(attempt n: Int, status: Int?, error: Int?, retryAfter: String?, elapsed: Double = 0, now: Date = Date()) -> Double? {
   guard n < feedRetryWaits.count else { return nil }
+  let room = feedBudget - feedMinTry - elapsed
+  let standard = feedRetryWaits[n] <= room ? feedRetryWaits[n] : nil
   if let s = status {
     guard s == 429 || (500...599).contains(s) else { return nil }
     if let r = retryAfter?.trimmingCharacters(in: .whitespaces), !r.isEmpty {
-      if let secs = Double(r), secs.isFinite { return min(max(0, secs), 30) }
-      let f = DateFormatter()
-      f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "GMT")
-      f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-      if let d = f.date(from: r) { return min(max(0, d.timeIntervalSince(now)), 30) }
+      var after: Double?
+      if let secs = Double(r), secs.isFinite { after = max(0, secs) }
+      else {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        after = f.date(from: r).map { max(0, $0.timeIntervalSince(now)) }
+      }
+      if let a = after { return room >= 0 ? min(a, 30, room) : nil }
     }
-    return feedRetryWaits[n]
+    return standard
   }
   guard let e = error, e == NSURLErrorTimedOut || e == NSURLErrorNetworkConnectionLost else { return nil }
-  return feedRetryWaits[n]
+  return standard
+}
+
+/// The timeout of a try that starts ELAPSED seconds into the check: what is
+/// left of feedBudget, at most feedTryTimeoutMax, at least 1 s.
+func feedTryTimeout(elapsed: Double) -> Double { max(1, min(feedTryTimeoutMax, feedBudget - elapsed)) }
+
+/// The last error after the retries, in the app's words for a server error
+/// or 429 (OmacVM.app's FetchRetry.problem); nil for anything else (the bare
+/// "HTTP 404" stays: feedFetch reads it as "not signed").
+func feedProblem(status: Int?, what: String, url: URL) -> String? {
+  guard let s = status else { return nil }
+  let host = url.host ?? ""
+  let who = host == "github.com" || host.hasSuffix(".github.com") ? "GitHub" : (host.isEmpty ? "the server" : host)
+  if (500...599).contains(s) {
+    return "\(who) answered HTTP \(s) (a server error on \(who)'s side) for \(what) at \(url.absoluteString); try again in a few minutes"
+  }
+  if s == 429 {
+    return "\(who) answered HTTP 429 (too many requests) for \(what) at \(url.absoluteString); try again in a few minutes"
+  }
+  return nil
 }
 
 func feedFetch(manifest: Data?, manifestError: String?, sig: Data?, sigError: String?) -> FeedFetch {
