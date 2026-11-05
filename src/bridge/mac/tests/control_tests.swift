@@ -817,6 +817,70 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(feedFetch(manifest: some, manifestError: nil, sig: nil, sigError: "HTTP 503") == .offline("HTTP 503"), ".sig 503: offline")
     expect(feedFetch(manifest: nil, manifestError: "HTTP 404", sig: nil, sigError: "HTTP 404") == .offline("HTTP 404"), "no manifest: offline")
 
+    // ---- the manifest fetch's retries (GitHub's 504 from latest/download, 2026-11-05) ----
+    expect(feedRetryWait(attempt: 0, status: 504, error: nil, retryAfter: nil) == 2, "504: again after 2 s")
+    expect(feedRetryWait(attempt: 1, status: 503, error: nil, retryAfter: nil) == 6, "503 again: after 6 s")
+    expect(feedRetryWait(attempt: 2, status: 503, error: nil, retryAfter: nil) == nil, "a third 503: no more tries")
+    expect(feedRetryWait(attempt: 0, status: 429, error: nil, retryAfter: "12") == 12, "429 with Retry-After 12: 12 s")
+    expect(feedRetryWait(attempt: 0, status: 503, error: nil, retryAfter: "600") == 20, "Retry-After 600: cut to what fits the 25 s (20 s)")
+    let at = Date(timeIntervalSince1970: 1_800_000_000)
+    let hd = DateFormatter(); hd.locale = Locale(identifier: "en_US_POSIX"); hd.timeZone = TimeZone(identifier: "GMT")
+    hd.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+    expect(feedRetryWait(attempt: 0, status: 503, error: nil, retryAfter: hd.string(from: at.addingTimeInterval(9)), now: at) == 9, "Retry-After as a date: 9 s")
+    for s in [404, 403, 410, 400, 301] {
+      expect(feedRetryWait(attempt: 0, status: s, error: nil, retryAfter: nil) == nil, "HTTP \(s): no retry")
+    }
+    expect(feedRetryWait(attempt: 0, status: nil, error: NSURLErrorTimedOut, retryAfter: nil) == 2, "a timeout: again after 2 s")
+    expect(feedRetryWait(attempt: 1, status: nil, error: NSURLErrorNetworkConnectionLost, retryAfter: nil) == 6, "a lost connection: again")
+    expect(feedRetryWait(attempt: 0, status: nil, error: NSURLErrorCannotFindHost, retryAfter: nil) == nil, "no such host: no retry")
+    expect(feedRetryWait(attempt: 0, status: nil, error: NSURLErrorNotConnectedToInternet, retryAfter: nil) == nil, "offline: no retry")
+    expect(feedRetryWait(attempt: 0, status: nil, error: nil, retryAfter: nil) == nil, "no answer and no error: no retry")
+
+    // ---- ... within the guest's 30 s (bridge.py's check_updates; review of #714) ----
+    // The check gets 25 s in all: each try's timeout is what is left (at most
+    // 20 s); a retry needs its wait and 5 s of it.
+    expect(feedTryTimeout(elapsed: 0) == 20 && feedTryTimeout(elapsed: 12) == 13 && feedTryTimeout(elapsed: 24.5) == 1
+           && feedTryTimeout(elapsed: 40) == 1, "try timeout: 20 s, then what is left of 25 s (at least 1 s)")
+    expect(feedRetryWait(attempt: 0, status: nil, error: NSURLErrorTimedOut, retryAfter: nil, elapsed: 20) == nil,
+           "a 20 s timeout: no retry (20+2+5 > 25)")
+    expect(feedRetryWait(attempt: 0, status: 504, error: nil, retryAfter: nil, elapsed: 10) == 2,
+           "a 504 after 10 s: again after 2 s (10+2+5 fits)")
+    expect(feedRetryWait(attempt: 1, status: 504, error: nil, retryAfter: nil, elapsed: 14.5) == nil
+           && feedRetryWait(attempt: 1, status: 504, error: nil, retryAfter: nil, elapsed: 14) == 6,
+           "a second 504: the 6 s wait only while 6+5 s are left")
+    expect(feedRetryWait(attempt: 0, status: 503, error: nil, retryAfter: "15", elapsed: 8) == 12,
+           "Retry-After 15 at 8 s: cut to 12 s (8+12+5 = 25)")
+    expect(feedRetryWait(attempt: 0, status: 429, error: nil, retryAfter: "3", elapsed: 21) == nil,
+           "Retry-After with under 5 s left: no retry")
+    // The worst case of the whole check, step by step as fetch() does it.
+    func worst(_ tries: [(Double, Int?, Int?, String?)]) -> (Double, Int) {
+      var t = 0.0, n = 0
+      for (took, status, code, after) in tries {
+        t += min(took, feedTryTimeout(elapsed: t))
+        guard let w = feedRetryWait(attempt: n, status: status, error: code, retryAfter: after, elapsed: t) else { return (t, n + 1) }
+        t += w; n += 1
+      }
+      return (t, n)
+    }
+    let timeouts = worst([(99, nil, NSURLErrorTimedOut, nil), (99, nil, NSURLErrorTimedOut, nil), (99, nil, NSURLErrorTimedOut, nil)])
+    expect(timeouts.0 <= 25 && timeouts.1 == 1, "timeouts: one 20 s try, done by 25 s (\(timeouts))")
+    let slow504 = worst([(4, 504, nil, nil), (99, nil, NSURLErrorTimedOut, nil), (99, nil, NSURLErrorTimedOut, nil)])
+    expect(slow504.0 <= 25 && slow504.1 == 2, "a 504 after 4 s, then timeouts: 2 tries, done by 25 s (\(slow504))")
+    let after30 = worst([(1, 503, nil, "30"), (1, 503, nil, "30"), (1, 503, nil, "30")])
+    expect(after30.0 <= 25, "Retry-After 30 every time: done by 25 s (\(after30))")
+
+    // ---- the last error says it plainly (as OmacVM.app) ----
+    let feedU = URL(string: "https://github.com/gillesgoetsch/omacvm/releases/latest/download/omacvm-update.json")!
+    expect(feedProblem(status: 504, what: "the update manifest", url: feedU)
+           == "GitHub answered HTTP 504 (a server error on GitHub's side) for the update manifest at \(feedU.absoluteString); try again in a few minutes",
+           "a 504 after the retries: GitHub's side, the URL")
+    expect(feedProblem(status: 429, what: "the update manifest", url: feedU)?.contains("HTTP 429 (too many requests)") == true, "429: too many requests")
+    expect(feedProblem(status: 404, what: "x", url: feedU) == nil && feedProblem(status: nil, what: "x", url: feedU) == nil,
+           "404 or no answer: the bare words stay (404 = not signed)")
+    expect(feedFetch(manifest: some, manifestError: nil, sig: nil,
+                     sigError: feedProblem(status: 503, what: "the update manifest's signature", url: feedU)) != .unsigned,
+           ".sig 503 in plain words: offline, not unsigned")
+
     // ---- OmacVM.app's VMs through the app (an external drive) ----
     let appCLI = "/Users/max/Applications/OmacVM.app/Contents/Resources/omacvm/omacvm"
     let info: [String: Any] = ["OmacVMControlRun": true, "CFBundleExecutable": "OmacVM", "CFBundleIdentifier": "org.omacvm.app"]
