@@ -1825,7 +1825,19 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   next start), which avoids Venus. A
   correct app that ends this way is an OmacVM bug: please report it with the
   line.
+- **Not an app bug: Zink without kopper.** An OpenGL app on Zink started with
+  `LIBGL_KOPPER_DISABLE=1` (OmacVM never sets it) ends in under a second with
+  `host memory for recordings and objects at 2816 MB, past the app's 2816 MB`
+  (the number depends on the Mac). Without kopper, Zink (Mesa 26.2) does not
+  wait for the GPU between frames: glxgears put about 2200 draws into each
+  submit and made 450 command pools in its first second, far more than the
+  Mac's GPU ran in that time. Before 3.2.22 nothing stopped it, and QEMU grew
+  by about 5 GB in 8 seconds; from 3.2.22 the app's account for Mac memory
+  (`OMACVM_VENUS_HOST_MB`) ends it first. Fix: leave `LIBGL_KOPPER_DISABLE`
+  unset (with kopper, Zink waits for each frame: glxgears runs at 60 FPS and
+  takes 26 MB). This is a Mesa (Zink) problem, not fixed in OmacVM.
 - **Where:** `app/runtime/patches/virgl-venus-*-limits.patch`,
+  `virgl-venus-host-memory.patch` (the `host memory` line),
   `virgl-venus-command-state.patch`, `virgl-venus-spirv-scan.patch` and
   `virgl-venus-spirv-validate.patch` (shaders: the line says `SPIR-V: ...` or
   `spirv-val (...): ...`), `virgl-venus-copy-regions.patch`,

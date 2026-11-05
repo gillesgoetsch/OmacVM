@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.3.1 (unreleased)
+
+- **Docs: why OpenGL on Zink with `LIBGL_KOPPER_DISABLE=1` ends at once (OmacVM.app).** Without
+  kopper, Zink in the VM does not wait for the Mac's GPU and queues work without limit; since 3.2.22
+  the app's Mac memory account ends such an app in under a second (before, QEMU grew by about 5 GB
+  in 8 seconds). OmacVM never sets that variable. Troubleshooting 55 says what the `host memory`
+  line means. Nothing changes in the app or the VM.
+
 ## 3.3.0
 
 OmacVM.app can now take files dragged from the Finder into the VM's window (experimental, off by
