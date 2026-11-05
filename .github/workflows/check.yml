@@ -165,6 +165,9 @@ jobs:
       - name: OmacVM.app AirPods and media controls (the port's lines, when the VM is Now Playing, a fuzz)
         working-directory: app/app
         run: swift run media-tests
+      - name: OmacVM.app drag and drop (names, QEMU's frames, the port's lines, staging, arguments, a whole drop)
+        working-directory: app/app
+        run: swift run drop-tests
 
       - name: Install dialog defaults (previous copy, Run Without Installing)
         run: src/tests/install-defaults.sh
@@ -518,6 +521,9 @@ jobs:
 
       - name: Mac input methods, VM side (the Fcitx5 module's protocol, fuzzed; its VM step)
         run: src/ime/tests/run.sh
+
+      - name: Drag and drop in QEMU's window code (rules, frames; off = no drop target)
+        run: app/runtime/Tests/drop/test-drop.sh
 
       - name: QEMU's full-grab tap goes when Accessibility is taken away (issue 192)
         run: app/runtime/Tests/keys/test-tap-permission.sh
@@ -902,7 +908,14 @@ jobs:
         run: sudo src/tests/home-links.sh
 
       - name: The guest's udev rules parse (udevadm verify)
-        run: udevadm verify --resolve-names=never src/vdec/guest/70-omacvm-vdec.rules src/ime/guest/70-omacvm-ime.rules
+        run: udevadm verify --resolve-names=never src/vdec/guest/70-omacvm-vdec.rules src/ime/guest/70-omacvm-ime.rules src/drop/guest/70-omacvm-drop.rules
+
+      - name: Drag and drop, VM side (omacvm-drop's lines and places, its VM step; the drop helper builds with -Werror)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends libwayland-dev libwayland-bin pkg-config
+          src/drop/tests/run.sh
+          src/drop/tests/build-helper.sh
 
       - name: Mac input methods' Fcitx5 module builds (Ubuntu's Fcitx5), its protocol test with the sanitizers
         run: |

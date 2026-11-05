@@ -8,7 +8,7 @@
 #                    [--graphics opengl|vulkan]   (--vm-type app: OmacVM.app) [--kernel-new build|keep]
 # Features: the list in ../features.tsv (bridge, wallpaper, gestures, scroll-momentum,
 # omanotch, mac-clock, camera, no-idle-lock, autologin, thp-kernel, battery, external-brightness,
-# control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime) with its defaults; a feature
+# control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime, drag-drop) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
 # --vm-type defaults to what the hardware says (Parallels or QEMU = UTM);
@@ -179,6 +179,7 @@ esac
 [[ $TYPE == app ]] || F[vulkan]=off
 [[ $TYPE == app ]] || F[gpu-compute]=off
 [[ $TYPE == app ]] || F[mac-ime]=off
+[[ $TYPE == app ]] || F[drag-drop]=off
 # Fusion: the public DNS from fusion/guest/install.sh goes again also when a
 # later step fails.
 [[ $TYPE == fusion ]] && FUSION_DNS=1
@@ -482,6 +483,17 @@ if want mac-ime; then
     "$R/ime/guest/install.sh" "$U" on || not_set_up mac-ime "Mac input methods"
   else
     "$R/ime/guest/install.sh" "$U" off || not_set_up mac-ime "Mac input methods (off)"
+  fi
+fi
+# Drag and drop of files from the Mac (OmacVM.app): the drop helper, built
+# once in the VM, its service, the share's mount and the port's rule. Off on
+# the other routes (nothing is installed there).
+if want drag-drop; then
+  if [[ ${F[drag-drop]} == on ]]; then
+    log "drag and drop of files from the Mac (experimental; the first time a small helper builds)"
+    "$R/drop/guest/install.sh" "$U" on || not_set_up drag-drop "drag and drop"
+  else
+    "$R/drop/guest/install.sh" "$U" off || not_set_up drag-drop "drag and drop (off)"
   fi
 fi
 if ! want battery; then

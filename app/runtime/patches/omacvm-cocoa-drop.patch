@@ -1,0 +1,405 @@
+From: OmacVM
+Subject: [PATCH] ui/cocoa: drag and drop of files into the VM (drag-drop)
+
+What: with OMACVM_DROP_SOCKET set (the VM's drag-drop switch is on), every
+VM window (the main view in every mode, each display head) is a drop target
+for file URLs. A drag is taken (copy) only while the app's side said
+"ready" (the VM's omacvm-drop answers), with 1-256 files and no folder
+(ui/omacvm-drop.h); the guest's pointer follows the drag (omacvmQueuePointer).
+performDragOperation returns at once: a serial utility queue opens the files
+(O_NOFOLLOW, regular files only, 30 s for a drop) and sends them, open, with
+their names to the app over the socket (SCM_RIGHTS, 32 per frame). No path
+leaves QEMU. OMACVM_DROP_TEST=1 also takes the app's "test-drop" lines,
+which run the same code as a drop after the pasteboard (the hidden VM rows).
+Without OMACVM_DROP_SOCKET nothing of this runs: no drop types, as before.
+
+Why: QEMU is the process the person drops on, so macOS gives it, and only
+it, access to the dropped files (no prompt for Desktop or Documents); opening
+off the main thread keeps the window drawing while an iCloud file downloads.
+
+Upstream: not applicable (OmacVM.app's drop share and port, ADR 0069).
+Test: app/runtime/Tests/drop/test-drop.sh (rules and wiring), the hidden VM
+rows src/tests/e2e/drag-drop.sh.
+
+diff --git a/ui/cocoa.m b/ui/cocoa.m
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -53,6 +53,7 @@
+ #include "ui/omacvm-notch-park.h"
+ #include "ui/omacvm-ime.h"
+ #include "ui/omacvm-ime-shift.h"
++#include "ui/omacvm-drop.h"
+ #include "ui/omacvm-fullpanel.h"
+ #include "ui/omacvm-fullpanel-retake.h"
+ #include "ui/omacvm-close.h"
+@@ -1099,6 +1100,8 @@
+ static bool omacvm_pointer_over_ours(void);
+ static void omacvm_guard_corners(NSEvent *event);
+ static int omacvm_guarded_target(NSView **view, int *output, NSPoint *p);
++/* Drag and drop of files into the VM (drag-drop; omacvm-cocoa-drop.patch). */
++static void omacvm_drop_register(NSView *view);
+ static OmacVMGuard omacvm_guard;         /* the full-screen pointer guard */
+ /* When the VM takes the pointer by itself; the Mac's cursor (main thread). */
+ static OmacVMPointerStart omacvm_ptr;
+@@ -12332,6 +12335,7 @@
+     self = [super initWithFrame:frame];
+     if (self) {
+         output = index;
++        omacvm_drop_register(self);
+         NSTrackingArea *area = [[NSTrackingArea alloc]
+             initWithRect:CGRectZero
+                  options:NSTrackingActiveAlways | NSTrackingMouseEnteredAndExited |
+@@ -15288,9 +15292,345 @@
+     if (icon) {
+         [NSApp setApplicationIconImage:icon];
+         [icon release];
++    }
++}
++
++
++/*
++ * OmacVM drag-drop: files dropped on the VM's windows go into the VM
++ * (docs/adr/0069-drag-and-drop.md). Only with OMACVM_DROP_SOCKET (the
++ * feature is on for the VM): then every VM window (the main view in every
++ * mode, each display head) takes file URLs. The app's side listens on that
++ * socket; it says "ready" once the VM's omacvm-drop answers, "wait" when it
++ * does not, and before its first line no drop is taken (the cursor shows no
++ * drop). A taken drop returns at once: a serial queue opens the files
++ * (O_NOFOLLOW, regular files only; an iCloud file that is not downloaded yet
++ * or a slow network volume never stalls the window), and sends the open
++ * files with their names to the app (SCM_RIGHTS), never their paths: QEMU
++ * is the process macOS gave access to what was dropped on it. While a drag
++ * is over a window, the guest's pointer follows it (omacvmQueuePointer), so
++ * the files land where the person lets go. Rules: ui/omacvm-drop.h.
++ * Threads: the connection's on its own thread; drags on the main thread;
++ * opening and sending on omacvm_drop_queue.
++ */
++static bool omacvm_drop_on;              /* OMACVM_DROP_SOCKET set (main thread, set once) */
++static bool omacvm_drop_test;            /* OMACVM_DROP_TEST=1: the app's test-drop lines count */
++static const char *omacvm_drop_path;
++static _Atomic int omacvm_drop_fd = -1;  /* connected to the app's side */
++static _Atomic bool omacvm_drop_ready;
++static _Atomic bool omacvm_drop_opening;
++static int omacvm_drop_seq;              /* omacvm_drop_queue */
++static dispatch_queue_t omacvm_drop_queue;
++
++static void omacvm_drop_register(NSView *view)
++{
++    if (omacvm_drop_on) {
++        [view registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
++    }
++}
++
++static int64_t omacvm_drop_now_ms(void)
++{
++    struct timespec t;
++    clock_gettime(CLOCK_REALTIME, &t);
++    return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
++}
++
++/* One frame with its open files; false when the app's side is gone. */
++static bool omacvm_drop_send_frame(int sock, const char *buf, size_t len, const int *fds, int n)
++{
++    size_t off = 0;
++    bool first = true;
++
++    while (off < len) {
++        struct iovec iov = { .iov_base = (void *)(buf + off), .iov_len = len - off };
++        union {
++            struct cmsghdr h;
++            char space[CMSG_SPACE(sizeof(int) * OMACVM_DROP_PER_FRAME)];
++        } c;
++        struct msghdr m = { .msg_iov = &iov, .msg_iovlen = 1 };
++        ssize_t w;
++
++        if (first && n > 0) {
++            memset(&c, 0, sizeof(c));
++            m.msg_control = c.space;
++            m.msg_controllen = CMSG_SPACE(sizeof(int) * n);
++            c.h.cmsg_level = SOL_SOCKET;
++            c.h.cmsg_type = SCM_RIGHTS;
++            c.h.cmsg_len = CMSG_LEN(sizeof(int) * n);
++            memcpy(CMSG_DATA(&c.h), fds, sizeof(int) * n);
++        }
++        w = sendmsg(sock, &m, 0);
++        if (w < 0 && errno == EINTR) {
++            continue;
++        }
++        if (w <= 0) {
++            return false;
++        }
++        off += (size_t)w;
++        first = false;
++    }
++    return true;
++}
++
++/* omacvm_drop_queue: open the dropped files and hand them to the app. */
++static void omacvm_drop_send(NSArray<NSString *> *paths)
++{
++    static char frame[OMACVM_DROP_FRAME_MAX + 4];
++    int fds[OMACVM_DROP_PER_FRAME];
++    char *names[OMACVM_DROP_PER_FRAME];
++    int n = 0, sent = 0, skipped = 0, drop = ++omacvm_drop_seq;
++    int64_t at = omacvm_drop_now_ms();
++    double start = CACurrentMediaTime();
++    int sock = omacvm_drop_fd;
++    bool ok = sock >= 0;
++    NSUInteger i = 0;
++
++    for (; ok && i < [paths count]; i++) {
++        const char *path = [[paths objectAtIndex:i] fileSystemRepresentation];
++        const char *base = omacvm_drop_base(path);
++        struct stat st;
++        int fd;
++
++        if (CACurrentMediaTime() - start > OMACVM_DROP_OPEN_LIMIT) {
++            break;
++        }
++        if (!omacvm_drop_name_ok(base)) {
++            skipped++;
++            continue;
++        }
++        fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
++        if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
++            if (fd >= 0) {
++                close(fd);
++            }
++            skipped++;
++            continue;
++        }
++        fds[n] = fd;
++        names[n] = g_strdup(base);
++        n++;
++        if (n == OMACVM_DROP_PER_FRAME) {
++            size_t len = omacvm_drop_frame(frame, sizeof(frame), drop, at, false,
++                                           (const char *const *)names, n, 0);
++            ok = len > 0 && omacvm_drop_send_frame(sock, frame, len, fds, n);
++            sent += ok ? n : 0;
++            for (int k = 0; k < n; k++) {
++                close(fds[k]);
++                g_free(names[k]);
++            }
++            n = 0;
++        }
+     }
++    skipped += (int)([paths count] - i);
++    if (ok) {
++        size_t len = omacvm_drop_frame(frame, sizeof(frame), drop, at, true,
++                                       (const char *const *)names, n, skipped);
++        ok = len > 0 && omacvm_drop_send_frame(sock, frame, len, fds, n);
++        sent += ok ? n : 0;
++    }
++    for (int k = 0; k < n; k++) {
++        close(fds[k]);
++        g_free(names[k]);
++    }
++    info_report("omacvm-drop: %d file%s to the app in %.2f s%s%s", sent, sent == 1 ? "" : "s",
++                CACurrentMediaTime() - start, skipped ? ", some skipped (not a file, or too slow to open)" : "",
++                ok ? "" : ": the app's side is gone");
++    omacvm_drop_opening = false;
+ }
+ 
++/* The drag's file URLs (the pasteboard read once; no disk access). */
++static NSArray<NSURL *> *omacvm_drop_urls(id<NSDraggingInfo> info)
++{
++    return [[info draggingPasteboard] readObjectsForClasses:@[[NSURL class]]
++                                                    options:@{NSPasteboardURLReadingFileURLsOnlyKey: @YES}];
++}
++
++static int omacvm_drop_verdict_for(NSArray<NSURL *> *urls)
++{
++    OmacVMDropIn in = {
++        .ready = omacvm_drop_ready && omacvm_drop_fd >= 0,
++        .count = (int)[urls count],
++        .busy = omacvm_drop_opening,
++    };
++
++    for (NSURL *u in urls) {
++        /* Finder's folder URLs end in "/": known without touching the disk. */
++        if ([u hasDirectoryPath]) {
++            in.folder = true;
++            break;
++        }
++    }
++    return omacvm_drop_verdict(&in);
++}
++
++/*
++ * Main thread: a drop (from the window, or the app's test-drop line). The
++ * same checks as while dragging, then the files are opened off this thread.
++ */
++static bool omacvm_drop_take(NSArray<NSURL *> *urls)
++{
++    int v = omacvm_drop_verdict_for(urls);
++    NSMutableArray<NSString *> *paths;
++
++    if (v != OMACVM_DROP_TAKE) {
++        info_report("omacvm-drop: refused a drop: %s", omacvm_drop_why(v));
++        return false;
++    }
++    paths = [NSMutableArray arrayWithCapacity:[urls count]];
++    for (NSURL *u in urls) {
++        [paths addObject:[u path]];
++    }
++    omacvm_drop_opening = true;
++    [paths retain];
++    dispatch_async(omacvm_drop_queue, ^{
++        omacvm_drop_send(paths);
++        [paths release];
++    });
++    return true;
++}
++
++static void omacvm_drop_line_cb(const char *line, void *ctx)
++{
++    switch (omacvm_drop_line(line)) {
++    case OMACVM_DROP_LINE_READY:
++        if (!omacvm_drop_ready) {
++            info_report("omacvm-drop: ready (the VM's omacvm-drop answers): files dropped on the window go into the VM");
++        }
++        omacvm_drop_ready = true;
++        break;
++    case OMACVM_DROP_LINE_WAIT:
++        if (omacvm_drop_ready) {
++            info_report("omacvm-drop: waiting for the VM's omacvm-drop: no drops taken");
++        }
++        omacvm_drop_ready = false;
++        break;
++    case OMACVM_DROP_LINE_TEST:
++        if (omacvm_drop_test) {
++            NSMutableArray<NSURL *> *urls = [NSMutableArray array];
++            for (NSString *p in [[NSString stringWithUTF8String:line + 10] componentsSeparatedByString:@"\t"]) {
++                if ([p length]) {
++                    [urls addObject:[NSURL fileURLWithPath:p]];
++                }
++            }
++            [urls retain];
++            dispatch_async(dispatch_get_main_queue(), ^{
++                omacvm_drop_take(urls);
++                [urls release];
++            });
++        }
++        break;
++    }
++}
++
++/* Its own thread: connected to the app's side, again after it went (every second). */
++static void omacvm_drop_connection(void)
++{
++    static OmacVMDropLines lines;
++    bool said = false;
++
++    for (;;) {
++        struct sockaddr_un a = { .sun_family = AF_UNIX };
++        int s = socket(AF_UNIX, SOCK_STREAM, 0);
++        char buf[4096];
++        ssize_t n;
++
++        if (s < 0 || strlen(omacvm_drop_path) >= sizeof(a.sun_path)) {
++            error_report("omacvm-drop: no socket: drag and drop is off");
++            return;
++        }
++        fcntl(s, F_SETFD, FD_CLOEXEC);
++        {
++            int one = 1;
++            setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
++        }
++        g_strlcpy(a.sun_path, omacvm_drop_path, sizeof(a.sun_path));
++        if (connect(s, (struct sockaddr *)&a, sizeof(a)) != 0) {
++            close(s);
++            sleep(1);
++            continue;
++        }
++        if (!said) {
++            info_report("omacvm-drop: on, connected to the app; drops are taken once the VM's omacvm-drop answers");
++            said = true;
++        }
++        memset(&lines, 0, sizeof(lines));
++        omacvm_drop_fd = s;
++        while ((n = read(s, buf, sizeof(buf))) > 0 || (n < 0 && errno == EINTR)) {
++            if (n > 0) {
++                omacvm_drop_feed(&lines, buf, (size_t)n, omacvm_drop_line_cb, NULL);
++            }
++        }
++        omacvm_drop_ready = false;
++        omacvm_drop_fd = -1;
++        /* An open in flight still holds s through its own copy of the number: wait for it. */
++        dispatch_sync(omacvm_drop_queue, ^{});
++        close(s);
++        sleep(1);
++    }
++}
++
++/* Main thread, with the BQL (from cocoa_display_init). */
++static void omacvm_drop_init(void)
++{
++    const char *path = getenv("OMACVM_DROP_SOCKET");
++
++    if (!path || !*path) {
++        return;
++    }
++    omacvm_drop_on = true;
++    omacvm_drop_path = g_strdup(path);
++    omacvm_drop_test = getenv("OMACVM_DROP_TEST") && !strcmp(getenv("OMACVM_DROP_TEST"), "1");
++    omacvm_drop_queue = dispatch_queue_create("org.omacvm.drop.open", DISPATCH_QUEUE_SERIAL);
++    dispatch_set_target_queue(omacvm_drop_queue, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
++    omacvm_drop_register(cocoaView);
++    info_report("cocoa: drag-drop: on (OMACVM_DROP_SOCKET): the VM's windows take files%s",
++                omacvm_drop_test ? " (OMACVM_DROP_TEST=1: the app's test-drop lines too)" : "");
++    [NSThread detachNewThreadWithBlock:^{ omacvm_drop_connection(); }];
++}
++
++/*
++ * The drag over one of the VM's views: copy or no drop, and the guest's
++ * pointer under the Mac's (as a move would put it: omacvmQueuePointer).
++ */
++static NSDragOperation omacvm_drag_over(id<NSDraggingInfo> info, NSView *view, int output)
++{
++    if (omacvm_drop_verdict_for(omacvm_drop_urls(info)) != OMACVM_DROP_TAKE) {
++        return NSDragOperationNone;
++    }
++    NSEvent *e = [NSEvent mouseEventWithType:NSEventTypeMouseMoved location:[info draggingLocation]
++                               modifierFlags:0 timestamp:0 windowNumber:[[view window] windowNumber]
++                                     context:nil eventNumber:0 clickCount:0 pressure:0];
++    with_bql(^{
++        if ([cocoaView omacvmQueuePointer:e view:view output:output]) {
++            qemu_input_event_sync();
++        }
++    });
++    return NSDragOperationCopy;
++}
++
++@implementation QemuCocoaView (OmacVMDrop)
++- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info { return omacvm_drag_over(info, self, 0); }
++- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)info { return omacvm_drag_over(info, self, 0); }
++- (BOOL)wantsPeriodicDraggingUpdates { return NO; }
++- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)info
++{
++    return omacvm_drop_verdict_for(omacvm_drop_urls(info)) == OMACVM_DROP_TAKE;
++}
++- (BOOL)performDragOperation:(id<NSDraggingInfo>)info { return omacvm_drop_take(omacvm_drop_urls(info)); }
++@end
++
++@implementation OmacVMHeadView (OmacVMDrop)
++- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)info { return omacvm_drag_over(info, self, output); }
++- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)info { return omacvm_drag_over(info, self, output); }
++- (BOOL)wantsPeriodicDraggingUpdates { return NO; }
++- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)info
++{
++    return omacvm_drop_verdict_for(omacvm_drop_urls(info)) == OMACVM_DROP_TAKE;
++}
++- (BOOL)performDragOperation:(id<NSDraggingInfo>)info { return omacvm_drop_take(omacvm_drop_urls(info)); }
++@end
++
+ static void cocoa_display_init(DisplayState *ds, DisplayOptions *opts)
+ {
+     NSAutoreleasePool * pool = [[NSAutoreleasePool alloc] init];
+@@ -15427,6 +15767,7 @@
+     omacvm_shortcuts_init();
+     omacvm_globe_init();
+     omacvm_ime_init();
++    omacvm_drop_init();
+ 
+     if (opts->has_show_cursor && opts->show_cursor) {
+         cursor_hide = 0;

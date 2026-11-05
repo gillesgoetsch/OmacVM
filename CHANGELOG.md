@@ -3,7 +3,16 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.2.24 (unreleased)
+## 3.3.0 (unreleased)
+
+- **Drag and drop files into the VM (OmacVM.app, experimental, off by default).** Drop files from
+  the Finder onto the VM's window: they go into the app under the pointer (a Files folder, a
+  browser's upload field), or into Downloads when no app takes them, with a notice. Files only, up
+  to 256 at a time; the VM gets read-only copies of just those files (APFS clones on the VM's drive:
+  instant, no extra space). Switch: **Sharing & Devices > Drag and drop files** in the VM's window
+  (with (i)), `omacvm enable drag-drop` or the control centre, then restart the VM once (the
+  control centre's row says "from the next start" until then). Not yet:
+  folders, Photos/Mail/Safari images, and dragging out of the VM. See docs/drag-and-drop.md.
 
 - **An update no longer stops at GitHub's first server error (OmacVM.app and the control centre; reported by
   the user).** A check said "No update feed (HTTP 504)" when GitHub answered one request with a server error

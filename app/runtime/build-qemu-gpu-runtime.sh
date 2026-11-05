@@ -1226,6 +1226,16 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volat
 # skip must still be wired as present-unseen's test reads it.
 "$native_dir/Tests/display/test-present-unseen.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: frames are drawn for a window out of sight after the volatile patch (test-present-unseen.sh)"
+# OmacVM: drag and drop of files into the VM (drag-drop, ADR 0069): with
+# OMACVM_DROP_SOCKET the VM's windows take files and hand them, open, to the
+# app. Its rules' test, a check that the wiring checks fail on the code
+# before, the wiring. Before no-app-nap, which stays the last cocoa patch.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop-logic.patch"
+"$native_dir/Tests/drop/test-drop.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a drag-drop wiring check passes without the patch (test-drop.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop.patch"
+"$native_dir/Tests/drop/test-drop.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: drag and drop is not wired as tested, or its rules fail (test-drop.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
