@@ -1,0 +1,57 @@
+virglrenderer: Venus logs a refusal's reason whole
+
+What: the reason buffers of vkCreateShaderModule, vkCreateGraphicsPipelines and
+vkCreateComputePipelines, and the line vkr_context_refuse formats, take 512 bytes (were
+192 and 256). Nothing else changes: the same checks, the same refusals.
+Why: spirv-val's message for one module runs to about 300 characters with the
+"spirv-val (SPIR-V 1.6 (under Vulkan 1.4 semantics)): " prefix and the instruction it
+names. 192 cut it in qemu.log (#710: "... the Function storage class has a ex"), so
+the reason a context ended was not readable.
+Upstream: no (OmacVM's own checks).
+Tests: build-qemu-gpu-runtime.sh checks the four buffers after the patch; the long
+message in qemu.log was seen whole in a test VM (work/zed-710 row, #710).
+
+diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -600,7 +600,7 @@
+ 
+    /* the 1st, 2nd, 4th, 8th ... refusal: a guest in a loop cannot flood the log */
+    if (!(n & (n - 1))) {
+-      char why[256];
++      char why[512]; /* OmacVM (virgl-venus-refusal-text.patch) */
+       va_list va;
+       va_start(va, fmt);
+       vsnprintf(why, sizeof(why), fmt, va);
+diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
+--- a/src/venus/vkr_pipeline.c
++++ b/src/venus/vkr_pipeline.c
+@@ -79,7 +79,9 @@
+ 
+    /* OmacVM (virgl-venus-spirv-scan.patch): the structural scan first; both Mac shader
+     * compilers ended QEMU on malformed SPIR-V */
+-   char why[192];
++   /* OmacVM (virgl-venus-refusal-text.patch): 512, so that spirv-val's message (about 300
++    * characters with the instruction) is not cut in qemu.log (#710) */
++   char why[512];
+    struct vkr_spirv_info *spirv =
+       vkr_spirv_scan(args->pCreateInfo->pCode, args->pCreateInfo->codeSize, why, sizeof(why));
+    if (!spirv) {
+@@ -1077,7 +1079,7 @@
+    struct object_array arr;
+ 
+    /* OmacVM (virgl-venus-pipeline-limits.patch): read before the handles are replaced */
+-   char why[192];
++   char why[512];
+    /* OmacVM (virgl-venus-unset-state.patch): the sets each create info's stages use, by
+     * index, given to its pipeline object once it is made */
+    uint32_t *used = calloc(MAX2(args->createInfoCount, 1), sizeof(*used));
+@@ -1149,7 +1151,7 @@
+    struct object_array arr;
+ 
+    /* OmacVM (virgl-venus-pipeline-limits.patch) */
+-   char why[192];
++   char why[512];
+    /* OmacVM (virgl-venus-unset-state.patch): as vkCreateGraphicsPipelines */
+    uint32_t *used = calloc(MAX2(args->createInfoCount, 1), sizeof(*used));
+    if (!vkr_context_check(ctx, used, "vkCreateComputePipelines", "out of host memory"))
