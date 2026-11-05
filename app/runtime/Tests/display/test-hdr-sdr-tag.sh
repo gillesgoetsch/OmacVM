@@ -11,7 +11,8 @@
 #   - with a patched ui/cocoa.m: the wiring (the look in the present before surface n is taken and before
 #     the tiles, every PQ surface flagged SDR or not before Core Animation sees it, whole frames and tiles
 #     alike, no headroom tag on PQ, each layer's EDR from its surface's flag, tone map never on its own
-#     condition, hidden tile layers drop EDR, a switch is a whole frame and a redraw, the hold's timer,
+#     condition, hidden tile layers drop EDR, a switch is a whole frame and a redraw, the hold's timer
+#     (never at or before now: a timer in the past hangs QEMU), a look later for a frame no look saw,
 #     the guest's headroom from the rule, macOS 26+ only, the look's read back without a wait, the
 #     trace's commit numbers, OMACVM_HDR_SDR_TAG=0); it fails on 3.3.0's first try (a 1.0 tag);
 #   - with --self-test [<ui/cocoa.m without the patch>]: every wiring check fails on that code (CI: a
@@ -34,7 +35,7 @@ order() {
     END {exit !(x && y && (c == "" || z))}' <<<"$1"
 }
 checks() {
-  local m=$1 present tiles follow edrnow guest look read tag frame changed wanted rule hide trace
+  local m=$1 present tiles follow edrnow guest look read arm tag frame changed wanted rule hide trace
   present=$(body "$m" 'static bool cocoa_gl_present(void)')
   tiles=$(body "$m" 'static int cocoa_gl_present_tiles(GLuint src, bool flip)')
   follow=$(body "$m" 'static void cocoa_gl_layer_follow(CALayer *layer, IOSurfaceRef surf, bool linear)')
@@ -42,6 +43,7 @@ checks() {
   guest=$(body "$m" 'static double omacvm_hdr_guest_edr(uint32_t display, double current, double potential,')
   look=$(body "$m" 'static void omacvm_hdr_look(GLuint src, uint32_t w, uint32_t h)')
   read=$(body "$m" 'static void omacvm_hdr_read(int64_t now, bool in_present)')
+  arm=$(body "$m" 'static void omacvm_hdr_arm(int64_t now)')
   tag=$(body "$m" 'static void omacvm_hdr_tag(IOSurfaceRef s)')
   frame=$(body "$m" 'static void omacvm_hdr_frame(GLuint src, uint32_t w, uint32_t h, bool pq)')
   changed=$(body "$m" 'static void omacvm_hdr_changed(int64_t now, bool redraw)')
@@ -102,7 +104,19 @@ checks() {
     'double peak = omacvm_hdr_pq_units(m);' 'changed = omacvm_hdr_need_peak(&omacvm_hdr.n, peak, now);' \
     'changed |= omacvm_hdr_need_tick(&omacvm_hdr.n, now);'
   chk "the hold ends on a timer, also with no new frame" order "$read" \
-    'int64_t due = omacvm_hdr_need_due(&omacvm_hdr.n);' 'timer_mod(omacvm_hdr.timer, due);'
+    'changed |= omacvm_hdr_need_tick(&omacvm_hdr.n, now);' 'omacvm_hdr_arm(now);'
+  chk "the hold's timer is never set at or before now (QEMU runs it again and again: a hang)" order "$arm" \
+    'int64_t due = omacvm_hdr_need_due(&omacvm_hdr.n);' 'due = omacvm_hdr_timer_at(due, now);' \
+    'timer_mod(omacvm_hdr.timer, due);'
+  chk "the result sets the timer only through omacvm_hdr_arm" lacks_with "$read" 'timer_mod(' 'omacvm_hdr_arm(now);'
+  chk "the look's timer and omacvm_hdr_arm's are the only ones" \
+    test "$(grep -c 'timer_mod(omacvm_hdr.timer,' "$m")" = 2 -a -n "$arm"
+  chk "a frame no look saw sets the timer" order "$look" \
+    'omacvm_hdr.skipped = true;' 'omacvm_hdr_arm(now);' 'omacvm_hdr.skipped = false;'
+  chk "the timer has a frame no look saw drawn again for one" order "$read" \
+    'now - omacvm_hdr.look_ns >= OMACVM_HDR_RELOOK_NS) {' 'cocoa_gl_present_request();' 'omacvm_hdr_arm(now);'
+  chk "the timer for a frame no look saw is the hold's timer" has "$arm" \
+    'int64_t re = omacvm_hdr.look_ns + OMACVM_HDR_RELOOK_NS;'
   chk "a switch redraws the newest frame" order "$changed" \
     'qatomic_set(&omacvm_hdr_need_c, one ? 100 : 0);' 'gl_dirty = true;' 'cocoa_gl_present_request();'
   chk "a switch says so in qemu.log" has "$changed" '"cocoa: HDR: SDR frames (peak %.2fx), EDR off"'
