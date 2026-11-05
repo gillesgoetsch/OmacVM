@@ -69,6 +69,14 @@ first `omacvm apply` brings the VM side to the current version anyway. With no
 such image (or no connection), `--prebuilt` builds the VM here instead and
 says so (OmacVM.app too, and an OmacVM.app from before prebuilt images).
 
+From OmacVM 3.4.0, new VMs are Omarchy 4.5 (the official aarch64 repos): an
+app from 3.4.0 on takes only an image from `prebuilt-3.4.0` on whose signed
+manifest says Omarchy 4.5 or later (`OMARCHY_FLOOR` in
+`src/prebuilt/manifest.py`); with none it builds the VM here. Older apps
+never take a 3.4.0 image (it is newer than they are) and keep the 4.0 ones.
+`make-image.sh` and `release.sh` refuse to make or ship an image the
+version's app would not take.
+
 OmacVM.app's image is only the disk (`Omarchy/disk.img`, raw, sparse): the
 app keeps its settings in `vm.env` itself. Its script
 (`app/scripts/prebuilt-vm.sh`, the app runs it as it runs `create-vm.sh`)
@@ -150,6 +158,11 @@ src/prebuilt/make-image.sh parallels clean     # delete the image VM
     NetworkManager connections and its secret key, systemd's random seed and
     credential secret, snapper snapshots, the journal and logs, the pacman
     cache, temporary files, the build's sudo rule
+  - pacman's keyring (`/etc/pacman.d/gnupg`): its master key would be the
+    same in every VM from the image. Only Omarchy's public package key stays
+    (`/var/lib/omacvm/prebuilt/omarchy-key.asc`); each VM's first boot makes
+    its own keyring (`pacman-keyring`: init, populate, Omarchy's key signed),
+    and `first-update` tries again if that failed
   - the first-boot service is installed
   - a search for the build Mac's user name, full name, computer name, git
     name and e-mail, every SSH public key in `~/.ssh` and the Bridge token in
