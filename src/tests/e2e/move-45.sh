@@ -139,12 +139,19 @@ J() { sed -n "s/^$1=//p" "$VD/move-4.5" 2>/dev/null | tail -1; }   # the Mac-sid
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 records() { (cd "$VD" && for f in vm.env features graphics omacvm-version guest-pointer; do [[ -f $f ]] && printf '%s %s\n' "$f" "$(sha "$f")"; done) | sed "s/^vm.env .*/vm.env $(grep -v '^SSH_PORT=' "$VD/vm.env" | shasum -a 256 | cut -d' ' -f1)/"; }
 
-# move-vm.sh as the app runs it: answers on fd 3 ("later" to the kernel
-# question), progress on stdout into the row's log.
+# move-vm.sh as the app runs it (no answers on fd 3: the clones know their
+# folder's SSH key), progress into the row's log.
 MV_PID=""
-mv() { "$S/move-vm.sh" "$VD" "$@" 3< <(while :; do echo later; sleep 5; done) >> "$OUT/logs/$TAG.move.log" 2>&1; }
-mv_bg() { mv "$@" & MV_PID=$!; }
-mv_wait() { wait "$MV_PID"; local rc=$?; MV_PID=""; return $rc; }
+mvm() { "$S/move-vm.sh" "$VD" "$@" 3< /dev/null >> "$OUT/logs/$TAG.move.log" 2>&1; }
+mvm_bg() { mvm "$@" & MV_PID=$!; }
+mvm_wait() { wait "$MV_PID"; local rc=$?; MV_PID=""; return $rc; }
+descendants() { local c; for c in $(pgrep -P "$1"); do echo "$c"; descendants "$c"; done; }
+power_off_all() {   # everything of this move at once, no traps (the Mac loses power): move-vm.sh, its children, QEMU
+  local all; all="$MV_PID $(descendants "$MV_PID") $(qemu_pid)"
+  kill -STOP $all 2>/dev/null; kill -9 $all 2>/dev/null
+  wait "$MV_PID" 2>/dev/null; MV_PID=""
+}
+mv_script_pid() { pgrep -P "$MV_PID" -f move-vm.sh | head -1; }   # move-vm.sh itself (MV_PID is its subshell)
 wait_until() {   # SECONDS CMD...: poll CMD every 3 s
   local end=$(( $(date +%s) + $1 )); shift
   while (( $(date +%s) < end )); do "$@" && return 0; sleep 3; done; return 1
@@ -200,7 +207,7 @@ moved_ok() {   # WHEN
 # ---------- rows ----------
 row_clean() {
   pre_hash
-  mv run; local rc=$?
+  mvm run; local rc=$?
   check "move-vm.sh run" $((rc == 0)) "exit $rc"
   journal_state done
   check "backup folder there" $([[ -f $VD/before-omarchy-4.5/disk.img ]] && echo 1 || echo 0) ""
@@ -220,9 +227,9 @@ row_clean() {
 }
 row_undo() {
   pre_hash
-  mv run; local rc=$?
+  mvm run; local rc=$?
   check "move-vm.sh run" $((rc == 0)) "exit $rc"
-  mv undo; rc=$?
+  mvm undo; rc=$?
   check "move-vm.sh undo" $((rc == 0)) "exit $rc"
   journal_state undone
   same_as_before
@@ -230,20 +237,20 @@ row_undo() {
 }
 row_again() {
   pre_hash
-  mv run; check "first move" $(( $? == 0 )) ""
-  mv undo; check "undo" $(( $? == 0 )) ""
+  mvm run; check "first move" $(( $? == 0 )) ""
+  mvm undo; check "undo" $(( $? == 0 )) ""
   same_as_before
-  mv run; local rc=$?
+  mvm run; local rc=$?
   check "second move" $((rc == 0)) "exit $rc"
   journal_state done
   vm_on && { moved_ok "after the second move"; vm_off; } || check "boots after the second move" 0 ""
 }
 row_delete() {
-  mv run; check "move" $(( $? == 0 )) ""
+  mvm run; check "move" $(( $? == 0 )) ""
   local size before after freed
   size=$(mv_status_size)
   before=$(df -k "$VD" | awk 'NR == 2 { print $4 }')
-  mv delete-backup; local rc=$?
+  mvm delete-backup; local rc=$?
   sync; sleep 5
   after=$(df -k "$VD" | awk 'NR == 2 { print $4 }')
   freed=$(( (after - before) * 1024 ))
@@ -254,21 +261,25 @@ row_delete() {
   local ok; ok=$(python3 -I -c 'import sys; s, f = int(sys.argv[1] or 0), int(sys.argv[2]); print(int(s > 0 and abs(f - s) <= max(0.05 * s, 200e6)))' "$size" "$freed")
   check "space shown = space freed" "$ok" "shown $size, freed $freed"
 }
-mv_status_size() { "$S/move-vm.sh" "$VD" status 2>/dev/null | sed -n 's/^backup_bytes=//p' | tail -1; }
+mv_status_size() {   # the backup's own bytes (what the card shows: blocks no longer shared with the live disk)
+  local b=$VD/before-omarchy-4.5 n=0 f x
+  for f in "$b"/*; do [[ -f $f ]] || continue; x=$(python3 -I "$HERE/move-45-result.py" privsize "$f") || return 1; n=$((n + x)); done
+  echo "$n"
+}
 fault_then_resume() {   # the move must stop resumable, then Resume finishes it
-  mv_wait; local rc=$?
+  mvm_wait; local rc=$?
   check "stopped by the fault" $((rc != 0)) "exit $rc"
   check "journal: resumable" $([[ $(J resumable) == 1 ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) reason=$(J reason)"
   vm_off
-  mv run; rc=$?
+  mvm run; rc=$?
   check "Resume (run again)" $((rc == 0)) "exit $rc"
   journal_state done
   vm_on && { moved_ok "after Resume"; vm_off; } || check "boots after Resume" 0 ""
 }
 row_net_cut() {
   pre_hash
-  mv_bg run
-  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mv_wait; return; }
+  mvm_bg run
+  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mvm_wait; return; }
   g "ip route save > /run/omacvm-route; ip route del default; ip -6 route del default 2>/dev/null; true"
   log "internet cut in the VM"
   wait_until 900 eval '[[ $(gstat state) != running ]] || ! kill -0 $MV_PID 2>/dev/null'
@@ -277,85 +288,88 @@ row_net_cut() {
 }
 row_link_cut() {
   pre_hash
-  mv_bg run
-  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mv_wait; return; }
+  mvm_bg run
+  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mvm_wait; return; }
   local q; q=$(qmp_sock)
   printf '{"execute":"qmp_capabilities"}\n{"execute":"set_link","arguments":{"name":"net0","up":false}}\n' | nc -U -w 2 "$q" >/dev/null
   log "link down 90 s"; sleep 90
   printf '{"execute":"qmp_capabilities"}\n{"execute":"set_link","arguments":{"name":"net0","up":true}}\n' | nc -U -w 2 "$q" >/dev/null
-  mv_wait; local rc=$?
+  mvm_wait; local rc=$?
   if (( rc != 0 )); then
     check "link back: resumable when it stopped" $([[ $(J resumable) == 1 ]] && echo 1 || echo 0) "exit $rc, $(J reason)"
-    vm_off; mv run; rc=$?
+    vm_off; mvm run; rc=$?
   fi
   check "done after the link came back" $((rc == 0)) "exit $rc"
   journal_state done
 }
 row_kill_early() {
   pre_hash
-  mv_bg run
+  mvm_bg run
   wait_until 2400 eval '[[ $(gstat phase) == protect || $(gstat phase) == keyring || $(gstat phase) == repos || $(gstat phase) == download ]]' ||
-    { check "reached a phase before the switch" 0 "phase $(gstat phase)"; mv_wait; return; }
+    { check "reached a phase before the switch" 0 "phase $(gstat phase)"; mvm_wait; return; }
   local p; p=$(qemu_pid); log "kill -9 QEMU $p in $(gstat phase)"; kill -9 "$p"
   fault_then_resume
 }
 row_kill_commit() {
   pre_hash
-  mv_bg run
-  wait_until 3600 committing || { check "reached the package switch" 0 "phase $(gstat phase)"; mv_wait; return; }
+  mvm_bg run
+  wait_until 3600 committing || { check "reached the package switch" 0 "phase $(gstat phase)"; mvm_wait; return; }
   sleep 20
   local p; p=$(qemu_pid); log "kill -9 QEMU $p inside the switch"; kill -9 "$p"
-  mv_wait; local rc=$?
+  mvm_wait; local rc=$?
   check "stopped" $((rc != 0)) "exit $rc"
   check "journal: Undo only (not resumable)" $([[ $(J resumable) == 0 ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) resumable=$(J resumable)"
-  mv run; rc=$?
+  mvm run; rc=$?
   check "Resume refused" $((rc != 0)) "exit $rc"
-  mv undo; rc=$?
+  mvm undo; rc=$?
   check "Undo" $((rc == 0)) "exit $rc"
   same_as_before
   boots_40
 }
 row_app_quit() {
   pre_hash
-  mv_bg run
-  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mv_wait; return; }
-  log "SIGTERM move-vm.sh $MV_PID (the app quits)"; kill -TERM "$MV_PID"
+  mvm_bg run
+  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mvm_wait; return; }
+  local sp; sp=$(mv_script_pid)
+  log "SIGTERM move-vm.sh $sp (the app quits)"; kill -TERM "$sp"
   local t=$(date +%s)
   fault_then_resume_after_quit "$t"
 }
 fault_then_resume_after_quit() {
-  mv_wait; local rc=$?
+  mvm_wait; local rc=$?
   check "stopped within 10 min (a step boundary)" $(( $(date +%s) - $1 < 600 )) "$(( $(date +%s) - $1 )) s, exit $rc"
   check "QEMU off after the stop" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
   check "journal: interrupted or failed, resumable" $([[ $(J resumable) == 1 && $(J state) =~ ^(interrupted|failed)$ ]] && echo 1 || echo 0) "state=$(J state) resumable=$(J resumable)"
-  mv run; rc=$?
+  mvm run; rc=$?
   check "Resume" $((rc == 0)) "exit $rc"
   journal_state done
 }
 row_power_loss() {
   pre_hash
-  mv_bg run
-  wait_until 3600 committing || { check "reached the package switch" 0 ""; mv_wait; return; }
+  mvm_bg run
+  wait_until 3600 committing || { check "reached the package switch" 0 ""; mvm_wait; return; }
   sleep 20
-  local p; p=$(qemu_pid)
-  log "power loss: kill -9 move-vm.sh $MV_PID and its children, QEMU $p"
-  pkill -9 -P "$MV_PID" 2>/dev/null; kill -9 "$MV_PID" "$p" 2>/dev/null; wait "$MV_PID" 2>/dev/null; MV_PID=""
-  check "journal still says running (nobody wrote it)" $([[ $(J state) == running ]] && echo 1 || echo 0) "state=$(J state)"
-  local st; st=$("$S/move-vm.sh" "$VD" status 2>/dev/null | sed -n 's/^state=//p' | tail -1)
-  check "status after it: interrupted" $([[ $st == interrupted ]] && echo 1 || echo 0) "status state=$st"
-  mv undo; local rc=$?
+  log "power loss: move-vm.sh, its children and QEMU $(qemu_pid) killed (-9) at once"
+  power_off_all
+  # Nobody wrote the journal: "running" with a dead pid, which the app shows as interrupted.
+  local jp; jp=$(J pid)
+  check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && ! kill -0 "${jp:-0}" 2>/dev/null && echo 1 || echo 0) "state=$(J state) pid=$jp commit_started=$(J commit_started)"
+  mvm run; local rr=$?
+  check "Resume refused inside the switch" $((rr != 0)) "exit $rr"
+  mvm undo; local rc=$?
   check "Undo" $((rc == 0)) "exit $rc"
   same_as_before
   boots_40
 }
 row_power_backup() {
   pre_hash
-  mv_bg run
-  wait_until 300 eval '[[ -e $VD/before-omarchy-4.5 ]]' || { check "backup started" 0 ""; mv_wait; return; }
-  pkill -9 -P "$MV_PID" 2>/dev/null; kill -9 "$MV_PID" 2>/dev/null; wait "$MV_PID" 2>/dev/null; MV_PID=""
-  local st; st=$("$S/move-vm.sh" "$VD" status 2>/dev/null | sed -n 's/^state=//p' | tail -1)
-  check "status: interrupted" $([[ $st == interrupted ]] && echo 1 || echo 0) "status state=$st"
-  mv undo; local rc=$?
+  mvm_bg run
+  # As soon as the backup folder shows (the clone takes moments: the kill lands in it or right after).
+  local i; for ((i = 0; i < 6000; i++)); do [[ -e $VD/before-omarchy-4.5 ]] && break; sleep 0.05; done
+  power_off_all
+  log "killed at step $(J step), backup_at '$(J backup_at)'"
+  check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && echo 1 || echo 0) "state=$(J state) step=$(J step)"
+  mvm undo; local rc=$?
   check "Undo" $((rc == 0)) "exit $rc"
   same_as_before
 }
@@ -366,10 +380,10 @@ row_guest_full() {
   g "f=\$(df -B1 --output=avail / | tail -1); fallocate -l \$(( f - 3 * 1024 * 1024 * 1024 )) /var/omacvm-fill && sync; df -h / | tail -1"
   vm_off
   pre_hash   # the fill is the VM's state before the move
-  mv run; local rc=$?
+  mvm run; local rc=$?
   check "refused" $((rc != 0)) "exit $rc"
   check "journal: reason low-space" $([[ $(J reason)$(J code) == *low-space* || $(J reason) == *space* ]] && echo 1 || echo 0) "state=$(J state) reason=$(J reason)"
-  if [[ -e $VD/before-omarchy-4.5 ]]; then mv undo; check "Undo" $(( $? == 0 )) ""; fi
+  if [[ -e $VD/before-omarchy-4.5 ]]; then mvm undo; check "Undo" $(( $? == 0 )) ""; fi
   same_as_before
 }
 mac_side_refusal() {   # FS SIZE_MB: the VM on a small disk image of FS; the move refuses, nothing changes
@@ -385,7 +399,7 @@ mac_side_refusal() {   # FS SIZE_MB: the VM on a small disk image of FS; the mov
     log "free $(df -h "$MNT" | awk 'NR == 2 { print $4 }'), disk.img allocated $((alloc >> 20)) MB"
   fi
   pre_hash
-  mv run; local rc=$?
+  mvm run; local rc=$?
   check "refused" $((rc != 0)) "exit $rc, $(tail -2 "$OUT/logs/$TAG.move.log" | tr '\n' ' ' | head -c 200)"
   check "nothing changed: disk.img" $([[ $(sha "$VD/disk.img") == "$PRE_DISK" ]] && echo 1 || echo 0) ""
   check "nothing changed: no backup" $([[ ! -e $VD/before-omarchy-4.5 ]] && echo 1 || echo 0) ""

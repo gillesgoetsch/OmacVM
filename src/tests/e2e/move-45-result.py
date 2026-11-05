@@ -3,6 +3,7 @@
   move-45-result.py row FILE ROW BASE SECONDS     checks on stdin (NAME\\tOK\\tDETAIL) -> FILE
   move-45-result.py summary DIR REPO              DIR/rows/*.json -> DIR/result.json
   move-45-result.py gate RESULT M REPO            exit 0 when RESULT passes for release commit M
+  move-45-result.py privsize FILE...              bytes only FILE holds (APFS clones: not shared)
 
 The gate wants every row of move-45.sh --rows passed on at least MIN_BASES
 test VMs of different ages, "clean" on every base, on MIN_MACS Macs, and the
@@ -81,10 +82,29 @@ def gate(a):
         print("    moves: only %d Mac (goal %d)" % (len(o["macs"]), MIN_MACS_GOAL))
 
 
+def privsize(a):
+    """getattrlist ATTR_CMNEXT_PRIVATESIZE: what deleting FILE gives back on APFS."""
+    import ctypes
+    import ctypes.util
+    import struct
+
+    class Attrlist(ctypes.Structure):
+        _fields_ = [("bitmapcount", ctypes.c_ushort), ("reserved", ctypes.c_uint16), ("commonattr", ctypes.c_uint32),
+                    ("volattr", ctypes.c_uint32), ("dirattr", ctypes.c_uint32), ("fileattr", ctypes.c_uint32),
+                    ("forkattr", ctypes.c_uint32)]
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    for p in a:
+        al = Attrlist(5, 0, 0, 0, 0, 0, 0x8)   # ATTR_CMNEXT_PRIVATESIZE
+        buf = ctypes.create_string_buffer(64)
+        if libc.getattrlist(p.encode(), ctypes.byref(al), buf, 64, 0x20 | 0x1) != 0:   # FSOPT_ATTR_CMN_EXTENDED | NOFOLLOW
+            sys.exit("privsize: %s: errno %d" % (p, ctypes.get_errno()))
+        print(struct.unpack_from("q", buf, 4)[0])
+
+
 if __name__ == "__main__":
     cmd, rest = sys.argv[1], sys.argv[2:]
     try:
-        {"row": row, "summary": summary, "gate": gate}[cmd](rest)
+        {"row": row, "summary": summary, "gate": gate, "privsize": privsize}[cmd](rest)
     except AssertionError as e:
         print("move-45 gate: %s" % e, file=sys.stderr)
         sys.exit(1)
