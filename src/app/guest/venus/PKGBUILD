@@ -9,12 +9,12 @@
 # - mesa-venus-tls-after-unload.patch: Mesa main's fix (935c4ec3) for apps that
 #   unload Vulkan while a thread that used it still runs; that thread crashed
 #   when it ended (Moonlight at start).
-# Same name, files and dependencies as the distro's vulkan-virtio. The version
-# 26.2.4.omacvm2 sorts after the distro's 26.2.4-x (so a distro rebuild of the
-# same Mesa does not drop the patch) and before 26.2.5 (a newer Mesa from the
-# distro still replaces it on pacman -Syu). Built and installed by
+# The distro's vulkan-virtio's files and dependencies under a name of its own
+# (3.4.0; before: vulkan-virtio): no repo has it, so no update replaces it
+# (Omarchy 4.5's Arch Linux ARM snapshot can be older or newer than it). It
+# provides vulkan-virtio and takes its place. Built and installed by
 # vulkan-virtio.sh, which rebuilds it when its libraries go missing.
-pkgname=vulkan-virtio
+pkgname=omacvm-vulkan-virtio
 epoch=1
 _mesaver=26.2.4
 pkgver=$_mesaver.omacvm2
@@ -28,7 +28,8 @@ depends=(expat glibc libdisplay-info libdrm libgcc libx11 libxcb libxshmfence sy
 makedepends=(meson ninja python-mako python-yaml python-packaging glslang wayland-protocols
              libxrandr libxext libxfixes libxxf86vm xorgproto bison flex)
 optdepends=("vulkan-mesa-layers: additional vulkan layers")
-provides=(vulkan-driver)
+provides=(vulkan-driver "vulkan-virtio=$epoch:$pkgver")
+conflicts=(vulkan-virtio)
 options=(!debug)
 source=("https://archive.mesa3d.org/mesa-$_mesaver.tar.xz"
         mesa-venus-opaque-fd-semaphores.patch

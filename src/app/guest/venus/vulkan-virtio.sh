@@ -5,11 +5,15 @@
 # Venus driver does not, the guest kernel refuses its first blob and every
 # Vulkan app fails with "vkCreateInstance failed with ERROR_OUT_OF_HOST_MEMORY".
 # Mesa 26.2.4 does. Chrome's WebGPU also needs shared (OPAQUE_FD) semaphores,
-# which Venus lacks upstream. This builds the distro's vulkan-virtio package
-# from Mesa 26.2.4 with that patch (PKGBUILD here, Venus only, a few minutes)
-# and installs it with pacman; a newer Mesa from the distro replaces it on
-# pacman -Syu (Vulkan keeps working, WebGPU in Chrome waits for OmacVM's next
-# build). OpenGL stays on the distro's Mesa.
+# which Venus lacks upstream. This builds Mesa 26.2.4's Venus driver with that
+# patch (PKGBUILD here, Venus only, a few minutes) as omacvm-vulkan-virtio
+# (it provides and replaces the distro's vulkan-virtio) and installs it with
+# pacman, as installed on purpose. A package of its own name is in no repo,
+# so no update replaces it (Omarchy 4.5's snapshot had an older Mesa than
+# Arch Linux ARM, and its updates remove orphans); it is built again when
+# its libraries go missing. Before 3.4.0 the build was named vulkan-virtio
+# (a version with "omacvm" in it): built again under the new name. OpenGL
+# stays on the distro's Mesa.
 #   vulkan-virtio.sh            install it if this VM needs it (silent when Vulkan is off)
 #   vulkan-virtio.sh --want     install it also before the VM has Vulkan (omacvm apply,
 #                               when the VM's Graphics setting gives it Vulkan here)
@@ -37,11 +41,23 @@ FIXED=1:26.2.4                       # the first Venus driver that honours blob 
 OURS=$(bash -c 'source ./PKGBUILD && echo "$epoch:$pkgver"')
 LIB=${OMACVM_VENUS_LIB:-/usr/lib/libvulkan_virtio.so}
 LOG=/var/log/omacvm-vulkan-virtio.log
+PKG=omacvm-vulkan-virtio
+# The installed Venus driver's version: ours, else the distro's.
+installed() {
+  local v
+  v=$(pacman -Q "$PKG" 2>/dev/null | awk '{ print $2 }') || v=""
+  [[ -n $v ]] || v=$(pacman -Q vulkan-virtio 2>/dev/null | awk '{ print $2 }') || v=""
+  echo "$v"
+}
+# OmacVM's build under the distro's name (3.3 and older): an update replaces it.
+old_name() { [[ -z $(pacman -Q "$PKG" 2>/dev/null) && $(pacman -Q vulkan-virtio 2>/dev/null) == *omacvm* ]]; }
 
+ldd_missing() { [[ -e $LIB ]] && command -v ldd >/dev/null && ldd "$LIB" 2>/dev/null | grep -q 'not found'; }
 # The installed driver is ours or newer. A distro update can leave ours
 # without a library it links (a new soname): then it counts as missing.
 current() {   # VERSION
   [[ -n $1 ]] && (( $(vercmp "$1" "$OURS") >= 0 )) || return 1
+  ! old_name || return 1
   [[ ! -e $LIB ]] || ! command -v ldd >/dev/null || ! ldd "$LIB" 2>/dev/null | grep -q 'not found'
 }
 # Our build is due: no driver, an older one, or ours with libraries missing
@@ -60,13 +76,15 @@ status() {
   local p venus align have
   p=${OMACVM_VENUS_PROBE:-$(python3 ./venus-probe.py 2>/dev/null || echo "venus=0 blob_alignment=0")}
   venus=$(sed -n 's/.*venus=\([0-9]*\).*/\1/p' <<<"$p"); align=$(sed -n 's/.*blob_alignment=\([0-9]*\).*/\1/p' <<<"$p")
-  have=$(pacman -Q vulkan-virtio 2>/dev/null | awk '{ print $2 }' || true)
+  have=$(installed)
   if [[ ${venus:-0} != 1 ]]; then
     echo "no-venus Vulkan is off in OmacVM.app for this VM${have:+ (vulkan-virtio $have)}"
   elif (( ${align:-0} <= 4096 )); then
     echo "no-pages the GPU needs no page alignment here${have:+ (vulkan-virtio $have)}"
   elif current "$have"; then
     echo "ok vulkan-virtio $have sizes GPU memory to ${align}-byte pages$(webgpu "$have")"
+  elif old_name && ! ldd_missing; then
+    echo "update vulkan-virtio $have: OmacVM's build gets a name of its own ($PKG), so no update replaces it"
   elif [[ -n $have ]] && (( $(vercmp "$have" "$OURS") >= 0 )); then
     # Libraries missing: ours is rebuilt; the distro's own (newer) is pacman's.
     if [[ $have == *omacvm* ]]; then echo "needed vulkan-virtio $have cannot load its libraries (after a distro update): rebuilt"
@@ -84,7 +102,7 @@ status() {
 ready() {
   local have
   [[ -f ${OMACVM_MESA_ICD:-/etc/vulkan/icd.d/omacvm_venus_icd.json} ]] && return 0
-  have=$(pacman -Q vulkan-virtio 2>/dev/null | awk '{ print $2 }' || true)
+  have=$(installed)
   [[ -n $have ]] && (( $(vercmp "$have" "$FIXED") >= 0 ))
 }
 
@@ -95,7 +113,7 @@ case ${1:-} in
   *) echo "usage: vulkan-virtio.sh [--want | --ready | --status]" >&2; exit 2 ;;
 esac
 s=$(status)
-have=$(pacman -Q vulkan-virtio 2>/dev/null | awk '{ print $2 }' || true)
+have=$(installed)
 case ${s%% *} in
   needed) ;;
   # OmacVM's Mesa (the vulkan feature) has the semaphores itself.
@@ -127,7 +145,7 @@ cleanup() {
   local rm=$tools
   # The driver's own dependencies (vulkan-mesa-implicit-layers) stay with it:
   # pacman refuses the whole -Rns otherwise.
-  if [[ -n $rm ]] && pacman -Q vulkan-virtio >/dev/null 2>&1; then
+  if [[ -n $rm && -n $(installed) ]]; then
     rm=$(grep -vxF -f <(printf '%s\n' "${rdeps[@]}") <<<"$rm" || true)
   fi
   rm -rf "$B"
@@ -168,7 +186,7 @@ if (( rc == 3 )); then
   fi
   (( urc == 0 )) || fail "not built: the VM's system update did not go through (see above)"
   # The update can bring a driver that needs no build (a newer Mesa).
-  have=$(pacman -Q vulkan-virtio 2>/dev/null | awk '{ print $2 }' || true)
+  have=$(installed)
   if current "$have"; then
     echo "Vulkan (Venus): the update brought vulkan-virtio $have, nothing to build"
     exit 0
@@ -193,16 +211,15 @@ chown -R nobody: "$B"
     makepkg --nodeps --noconfirm --noprogressbar ) >>"$LOG" 2>&1 || fail "the build failed"
 pkg=""
 # name-epoch:pkgver-pkgrel-arch
-for f in "$B"/vulkan-virtio-"$OURS"-*-aarch64.pkg.tar.*; do [[ -f $f ]] && pkg=$f; done
+for f in "$B"/"$PKG"-"$OURS"-*-aarch64.pkg.tar.*; do [[ -f $f ]] && pkg=$f; done
 [[ -n $pkg ]] || fail "the build made no package"
-# Keep how the distro's package was installed (a dependency of Omarchy's, or by hand).
-reason=--asexplicit
-LC_ALL=C pacman -Qi vulkan-virtio 2>/dev/null | grep -q '^Install Reason *: Installed as a dependency' && reason=--asdeps
-pacman -U --noconfirm "$reason" "$pkg" >>"$LOG" 2>&1 || fail "pacman could not install $(basename "$pkg")"
+# Installed on purpose (an orphan step never takes it); --ask 4: yes to
+# removing the distro's vulkan-virtio (or OmacVM's older build of that name).
+pacman -U --noconfirm --ask 4 --asexplicit "$pkg" >>"$LOG" 2>&1 || fail "pacman could not install $(basename "$pkg")"
 s=$(status)
 if [[ ${s%% *} == no-venus || ${s%% *} == no-pages ]]; then
-  current "$(pacman -Q vulkan-virtio | awk '{ print $2 }')" || fail "installed, but it is not ${OURS#*:} or newer"
-  echo "Vulkan (Venus): vulkan-virtio $(pacman -Q vulkan-virtio | awk '{ print $2 }') ready for the VM's next start"
+  current "$(installed)" || fail "installed, but it is not ${OURS#*:} or newer"
+  echo "Vulkan (Venus): $PKG $(installed) ready for the VM's next start"
   exit 0
 fi
 [[ ${s%% *} == ok ]] || fail "installed, but: ${s#* }"

@@ -351,7 +351,7 @@ sed -e "s#/var/log/#$T/#" -e '/^(( EUID == 0 )) ||/d' src/app/guest/venus/vulkan
 ours=$(cd "$V" && bash -c 'source ./PKGBUILD && echo "$epoch:$pkgver-$pkgrel"')
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/chown"
 printf '#!/bin/bash\nwhile [[ $1 != -- ]]; do shift; done; shift; exec "$@"\n' > "$T/bin/runuser"
-printf '#!/bin/bash\n: > "$PKGDEST/vulkan-virtio-%s-aarch64.pkg.tar.zst"\n' "$ours" > "$T/bin/makepkg"
+printf '#!/bin/bash\n: > "$PKGDEST/omacvm-vulkan-virtio-%s-aarch64.pkg.tar.zst"\n' "$ours" > "$T/bin/makepkg"
 cat > "$T/bin/vercmp" <<'EOF'
 #!/usr/bin/env python3
 import re, sys
@@ -396,7 +396,7 @@ prebuilt
 out=$(OMACVM_SYSTEM_UPDATE_OK=1 vv "$OFF" --want); rc=$?
 c=$(cut -d' ' -f1-3 "$T/calls" | uniq | tr '\n' ',')
 [[ $rc == 0 && $c == "pacman -S --noconfirm,omarchy update -y,pacman -S --noconfirm,pacman -U --noconfirm,pacman -Rns --noconfirm," &&
-   $(awk '$1 == "vulkan-virtio"' "$T/db") == "vulkan-virtio $ours" && $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.4-1" &&
+   $(awk '$1 == "omacvm-vulkan-virtio"' "$T/db") == "omacvm-vulkan-virtio $ours" && $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.4-1" &&
    $out == *"updating the whole system first"*"up to date"*"building"*"ready for the VM's next start"* &&
    $out != *"Update the system with omarchy update"* ]] &&
   pass "Graphics Vulkan, old package list: system updated, then the driver built" ||
@@ -411,7 +411,7 @@ rm_=$(grep 'pacman -Rns' "$T/calls")
 # What the update installed itself (an Omarchy migration) is never removed after.
 prebuilt 26.2.4; : > "$T/update-adds"
 out=$(OMACVM_SYSTEM_UPDATE_OK=1 vv "$OFF" --want); rc=$?
-[[ $rc == 0 && $(awk '$1 == "vulkan-virtio"' "$T/db") == "vulkan-virtio $ours" && -n $(meson) &&
+[[ $rc == 0 && $(awk '$1 == "omacvm-vulkan-virtio"' "$T/db") == "omacvm-vulkan-virtio $ours" && -n $(meson) &&
    $(grep 'pacman -Rns' "$T/calls") != *meson* ]] &&
   pass "the update brings the distro's 26.2.4 and meson: ours built (WebGPU), meson stays" ||
   fail "update with 26.2.4 and meson: rc $rc, calls '$(cat "$T/calls")', said '$out'"

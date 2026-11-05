@@ -14,8 +14,15 @@ T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 # Stand-ins for pacman and vercmp (pacman's own version order for these cases).
 cat > "$T/pacman" <<'EOF'
 #!/bin/bash
-[[ $1 == -Q && -n ${HAVE:-} ]] && { echo "vulkan-virtio $HAVE"; exit 0; }
-exit 1
+# HAVE: the installed driver's version; OmacVM's build (a version with "omacvm")
+# is omacvm-vulkan-virtio, or vulkan-virtio with OLDNAME=1 (3.3 and older).
+[[ $1 == -Q && -n ${HAVE:-} ]] || exit 1
+rc=1
+for n in "${@:2}"; do
+  if [[ $HAVE == *omacvm* && -z ${OLDNAME:-} ]]; then [[ $n == omacvm-vulkan-virtio ]] && { echo "$n $HAVE"; rc=0; }
+  else [[ $n == vulkan-virtio ]] && { echo "$n $HAVE"; rc=0; }; fi
+done
+exit $rc
 EOF
 cat > "$T/vercmp" <<'EOF'
 #!/usr/bin/env python3
@@ -63,6 +70,11 @@ expect "ours (26.2.4 + WebGPU patch)"    "$V" "$O"           ok
 expect "ours before 3.0.11 (omacvm1)"    "$V" "1:26.2.4.omacvm1-1" update
 [[ $(PATH="$T:$PATH" OMACVM_VENUS_PROBE=$V HAVE=1:26.2.4.omacvm1-1 "$D/vulkan-virtio.sh" --status) == *"has newer fixes"* ]] &&
   pass "ours before 3.0.11: says the new build has fixes" || fail "ours before 3.0.11: wrong reason"
+# 3.3 and older built it as vulkan-virtio: Omarchy 4.5's snapshot (26.2.5)
+# would replace it, so it is built again as omacvm-vulkan-virtio.
+out=$(PATH="$T:$PATH" OMACVM_VENUS_PROBE=$V HAVE=$O OLDNAME=1 "$D/vulkan-virtio.sh" --status)
+[[ $out == "update vulkan-virtio $O: OmacVM's build gets a name of its own (omacvm-vulkan-virtio)"* ]] &&
+  pass "ours under the distro's name (3.3 and older): built again as omacvm-vulkan-virtio" || fail "ours under the old name: '$out'"
 expect "ours from 3.0.0 (26.2.4-0.1)"    "$V" "1:26.2.4-0.1" update
 expect "the distro's 26.2.4"             "$V" "1:26.2.4-1"   update
 expect "a distro rebuild of 26.2.4"      "$V" "1:26.2.4-3"   update
@@ -145,12 +157,14 @@ CALLS=$P/calls PULLS=spirv-tools PATH="$P:$PATH" OMACVM_VENUS_PROBE="$V" OMACVM_
 # the distro's builds of the same Mesa, a newer Mesa replaces it.
 eval "$(bash -c "source $D/PKGBUILD"' && declare -p pkgname epoch pkgver pkgrel _mesaver source sha256sums')"
 fixed=$(sed -n 's/^FIXED=\([^ ]*\).*/\1/p' "$D/vulkan-virtio.sh")
-[[ $pkgname == vulkan-virtio && "$epoch:$_mesaver" == "$fixed" && $pkgver == "$_mesaver".omacvm* ]] &&
+eval "$(bash -c "source $D/PKGBUILD"' && declare -p provides conflicts')"
+[[ " ${provides[*]} " == *" vulkan-virtio=$epoch:$pkgver "* && ${conflicts[*]} == vulkan-virtio ]] &&
+  pass "PKGBUILD: omacvm-vulkan-virtio provides vulkan-virtio and takes its place (no repo update replaces it)" ||
+  fail "PKGBUILD provides '${provides[*]}', conflicts '${conflicts[*]}'"
+[[ $pkgname == omacvm-vulkan-virtio && "$epoch:$_mesaver" == "$fixed" && $pkgver == "$_mesaver".omacvm* ]] &&
   pass "PKGBUILD is $epoch:$pkgver (Mesa ${fixed#*:})" || fail "PKGBUILD $pkgname $epoch:$pkgver vs FIXED $fixed"
 [[ $("$T/vercmp" "$epoch:$pkgver-$pkgrel" "$epoch:$_mesaver-9") == 1 ]] && pass "ours stays over the distro's $_mesaver-x" ||
   fail "the distro's $_mesaver-9 would replace ours"
-[[ $("$T/vercmp" "$epoch:$pkgver-$pkgrel" "$epoch:26.3.0-1") == -1 ]] && pass "a newer Mesa replaces ours" ||
-  fail "ours would hold back a newer Mesa"
 sum() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 [[ ${#source[@]} == 3 && ${source[1]} == mesa-venus-opaque-fd-semaphores.patch &&
    ${source[2]} == mesa-venus-tls-after-unload.patch &&
@@ -258,7 +272,7 @@ grep -q '^OCL_ICD_VENDORS=$CLONLY$' "$D/install.sh" && grep -q 'cp "$CLICD" "$CL
 
 # WebGPU (venus/webgpu.sh): the launcher and Firefox's switch; --off keeps them while gpu-compute
 # gives them (Graphics Vulkan) or the vulkan feature's Mesa is there.
-grep -q '"WebGPU in Chromium"' src/guest/check.sh && grep -qF 'pacman -Q vulkan-virtio 2>/dev/null) == *omacvm*' src/guest/check.sh &&
+grep -q '"WebGPU in Chromium"' src/guest/check.sh && grep -qF 'pacman -Q omacvm-vulkan-virtio vulkan-virtio 2>/dev/null) == *omacvm*' src/guest/check.sh &&
   pass "check has the WebGPU row for Graphics Vulkan" || fail "no WebGPU check row for Graphics Vulkan"
 grep -q './webgpu.sh --off' "$D/install.sh" && ! grep -q 'FFPREF' "$D/install.sh" && pass "vulkan feature off leaves the launcher and Firefox's switch to webgpu.sh" ||
   fail "venus/install.sh --remove deletes the launcher or Firefox's switch itself"
