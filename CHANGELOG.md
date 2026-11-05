@@ -3,7 +3,7 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.3.0 (unreleased)
+## 3.3.0
 
 OmacVM.app can now take files dragged from the Finder into the VM's window (experimental, off by
 default, OmacVM.app only). It needs the app update and Update VM; switching it on in a VM that does
