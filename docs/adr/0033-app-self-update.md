@@ -76,7 +76,7 @@ a refused redirect, a size problem or a failed signature or digest check
 feed at URL; try again in a few minutes". Retries keep to a time limit:
 the feed and its signature (30 s request timeout each) get no retry whose
 wait would end more than 45 s after the first try (a feed that times out
-gives up after about 62 s, not 98 s); the zip gets no retry after a try
+gives up after about 62 s when every try times out and within about 75 s at most, not 98 s); the zip gets no retry after a try
 that ran longer than 60 s, since a retry starts the whole zip again (so
 never after the session's 30-minute resource timeout). The Bridge's
 manifest fetch for the control centre retries the same way
