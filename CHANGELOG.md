@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.3.1 (unreleased)
+
+- **The Mac's screen no longer turns off while a video plays in the VM (OmacVM.app, reported by the
+  user).** On battery the display went dark after 2 minutes even while the user watched a video in
+  the VM. Now, as with a Mac video player, the Mac's display stays on while a player in the VM plays
+  a video and the VM's window can be seen (`pmset -g assertions`: "OmacVM: the VM is playing video").
+  It does not stay on for a paused video, music, a background tab, a minimised or covered window,
+  another Space, a locked screen, a stopped VM, Hyprland's full-screen window rules or Omarchy's
+  Stay Awake, and lets go 30 s after the VM stops saying so. Display only: the Mac still sleeps when
+  the lid closes. Players that tell Linux they play a video count (mpv, Firefox, Chromium 157 or
+  newer); Chromium before 157, Chrome, Brave and Electron apps do not, as they also say so for music
+  and downloads (ADR 0070). Needs the app update and Update VM.
+
 ## 3.3.0
 
 OmacVM.app can now take files dragged from the Finder into the VM's window (experimental, off by
