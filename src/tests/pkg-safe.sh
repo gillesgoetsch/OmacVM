@@ -525,8 +525,11 @@ grep -q '"$R/guest/gbm-guard" begin && GBM_GUARD=1' src/guest/install.sh &&
   fail "guest/install.sh does not run the GBM guard"
 bad=$(git grep -nE 'pacman +(-S[a-zA-Z]*|--sync)( |$)' -- 'src/**' ':!src/tests/**' ':!src/guest/pkg-add' ':!src/vm/**' \
   ':!**/*.md' ':!src/bench/**' | grep -vE '^[^:]+:[0-9]+:\s*#' |
-  grep -vE 'pacman -(Syu|Scc|Si) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
-# Allowed above: a full update, cache cleaning and reads; "(pacman -S x)" in a
+  grep -vE '^src/guest/omarchy-move\.sh:[0-9]+:.*pacman -(Syy --noconfirm|Suup --print-format)|pacman -(Syu|Sy?y?uuw?|Scc|Si) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
+# Allowed above: a full update (also -uu: the move to Omarchy 4.5 and its
+# install take the snapshot's versions; omarchy-move.sh's lists again before
+# one more try of the same transaction, and its download list), cache
+# cleaning and reads; "(pacman -S x)" in a
 # message; openssh only when missing; the kernel's own headers version (dkms.sh).
 [[ -z $bad ]] && pass "no pacman -S/-Sy in guest code outside guest/pkg-add" || { fail "pacman -S outside guest/pkg-add:"; echo "$bad"; }
 ! grep -q OMACVM_SYSTEM_UPDATE_OK src/app/guest/install.sh src/guest/install.sh src/cmd/apply.sh &&
