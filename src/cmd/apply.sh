@@ -43,6 +43,7 @@ source "$R/src/lib/vm.sh"
 source "$R/src/lib/features.sh"
 source "$R/src/lib/graphics.sh"
 source "$R/src/lib/mac-setup.sh"
+source "$R/src/lib/omarchy-move.sh"
 features_load
 VM=""; IP=""; TYPE=""; U=""; KEY=~/.ssh/omacvm; VMKEY=""; KB=""; MODE=""; MAC=1; NAMED=1; TOKEN=1; TOOLS=1; TRANSACTION=0
 YES=0; NEWKEY=0; REINSTALL=(); KERNEL=0
@@ -92,6 +93,12 @@ export OMA_KEY=$KEY
 NOTCH=$(mac_tool mac-notch 2>/dev/null || echo none)
 
 # ---------- which VM ----------
+# An OmacVM.app VM in the middle of its move to Omarchy 4.5: not started, not
+# changed (the app's Resume or Undo comes first).
+if [[ -n $VM && ( -z $TYPE || $TYPE == app ) ]] && md=$(app_dir "$VM" 2>/dev/null) && move_open "$md"; then
+  echo "omacvm apply: $(move_open_text "$VM"); nothing was changed" >&2
+  exit 3
+fi
 # Its SSH host key: remembered now when there is none yet, checked after that.
 export OMA_PIN_NEW=1
 if [[ -n $IP ]]; then
@@ -664,6 +671,11 @@ if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
   # Which OmacVM the VM has now: the app offers "Update VM" while it has
   # an older one (or none recorded: made by an app before 3.0.1).
   echo "$now" > "$d/omacvm-version"
+  # Which Omarchy it has (the app's Move to Omarchy 4.5 card): the guest's own
+  # answer, once its OmacVM has omarchy-move.sh.
+  if rec=$(gssh "$IP" "/usr/local/share/omacvm/guest/omarchy-move.sh record" < /dev/null 2>/dev/null) && rec=$(move_record "$rec"); then
+    echo "$rec" > "$d/omarchy"
+  fi
   # The app reads them at each start of the VM: a feature that is off gets
   # no port to the Mac's helpers and nothing on its virtio port (MacLinks.swift).
   # Vulkan without OmacVM's Mesa in the VM is off, in the record too: else it

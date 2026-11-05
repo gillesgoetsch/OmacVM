@@ -20,6 +20,7 @@ set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
 source "$R/src/lib/vm.sh"
+source "$R/src/lib/omarchy-move.sh"
 VM=""; TYPE=""; PULL=1; ARGS=("$@"); COMMIT=""; APPLY_ARGS=()
 while (( $# )); do
   case $1 in
@@ -86,7 +87,7 @@ fi
 # of the VMs this run updates: the running ones OmacVM set up from this Mac,
 # or --vm NAME (stopped: an OmacVM.app VM's folder says its version; another
 # one is asked by apply once it runs).
-now=$(cat "$R/src/VERSION"); newer=()
+now=$(cat "$R/src/VERSION"); newer=(); moving=()
 while IFS=$'\t' read -r name type state _; do
   [[ -n $name ]] || continue
   if [[ -n $VM ]]; then
@@ -95,7 +96,11 @@ while IFS=$'\t' read -r name type state _; do
     [[ $state == running ]] || continue
   fi
   v=""
-  if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""; fi
+  if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then
+    v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""
+    # Its move to Omarchy 4.5 is not over: --vm NAME stops here, else it is skipped below.
+    move_open "$d" && { moving+=("$name"); continue; }
+  fi
   if [[ $state == running ]] && ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null); then
     vm_pin "$name" "$type"
     [[ -n $VM || -s $OMA_PIN ]] || vm_marked "$name" "$type" || continue
@@ -103,6 +108,10 @@ while IFS=$'\t' read -r name type state _; do
   fi
   if [[ -n $v ]] && omacvm_downgrade update "'$name'" "$v" "$now"; then newer+=("$name"); fi
 done < <(vms_list)
+if [[ -n $VM ]] && (( ${#moving[@]} )); then
+  failed_part "" "$(move_open_text "$VM"): nothing was updated" mac
+  exit 3
+fi
 if (( ${#newer[@]} )); then
   failed_part "" "$(printf '%s, ' "${newer[@]}" | sed 's/, $//') has a newer OmacVM than this omacvm ($now): nothing was updated" mac
   exit 3
@@ -174,6 +183,7 @@ while IFS=$'\t' read -r name type state _; do
   [[ -n $name ]] || continue
   if [[ $state == unknown ]]; then unanswered+=("$name"); continue; fi
   if [[ $state != running ]]; then stopped+=("$name"); continue; fi
+  if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null) && move_open "$d"; then info "$(move_open_text "$name"); not updated"; continue; fi
   ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null) || continue
   vm_pin "$name" "$type"
   # Not reachable with OmacVM's key (another OS, no OmacVM, or another host
