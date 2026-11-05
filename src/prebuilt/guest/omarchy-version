@@ -1,0 +1,22 @@
+#!/bin/bash
+# omarchy-version USER (in the image VM, before generalize.sh): the Omarchy
+# line of the image's manifest ("omarchy"; manifest.py fits reads its leading
+# MAJOR.MINOR: from OmacVM 3.4.0 only 4.5 or later is offered).
+#   Omarchy 4.5+ (the official aarch64 repos): "4.5.0 (aarch64 stable)"
+#   omarchy-mac 4.0 (a git checkout in the user's home): "4.0.3rc4 (omarchy-mac ba546a61f)"
+# Test: src/tests/prebuilt-guest.sh (stand-in pacman).
+set -uo pipefail
+U=${1:?usage: omarchy-version USER}
+CONF=${OMACVM_PACMAN_CONF:-/etc/pacman.conf}
+HOMES=${OMACVM_HOMES:-/home}
+d=$HOMES/$U/.local/share/omarchy
+if [[ -d $d/.git ]]; then
+  echo "$(cat "$d/version") (omarchy-mac $(git -c safe.directory='*' -C "$d" rev-parse --short HEAD))"
+  exit
+fi
+v=$(LC_ALL=C pacman -Q omarchy 2>/dev/null | awk '{ print $2 }')
+v=${v%-*}; v=${v#*:}
+[[ $v =~ ^[0-9]+\.[0-9]+ ]] || { echo unknown; exit; }
+ch=$(sed -n 's#^[[:space:]]*Server[[:space:]]*=[[:space:]]*https://pkgs\.omarchy\.org/\([a-z]*\)/.*#\1#p' "$CONF" | head -1)
+pf=$(omarchy-hw-platform 2>/dev/null || echo aarch64)
+echo "$v ($pf ${ch:-stable})"

@@ -452,6 +452,8 @@ step_image() {
   local v; v=$(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omacvm) || die "the image manifest does not verify"
   [[ $v == "$VERSION" ]] || die "the image is for $v"
   [[ $(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" route) == app ]] || die "the image is not route app"
+  python3 "$R/src/prebuilt/manifest.py" fits "$VERSION" "$(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omarchy)" ||
+    die "the image's Omarchy is too old for $VERSION (from 3.4.0: 4.5 or later; manifest.py OMARCHY_FLOOR)"
   note "image ok: $(du -ch "$img"/$base.tar.zst.part-* | tail -1 | cut -f1) in $(ls "$img"/$base.tar.zst.part-* | wc -l | tr -d ' ') parts, Omarchy $(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omarchy)"
 }
 

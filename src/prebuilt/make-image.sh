@@ -140,15 +140,16 @@ stage_generalize() {
     for k in "$HOME"/.ssh/*.pub; do awk '{ print $2 }' "$k"; done
     cat "$HOME/Library/Application Support/omacvm-bridge/token" 2>/dev/null; echo
   } | awk 'length($0) >= 4' | sort -u | base64)
-  [[ -s $OUT/omarchy-version ]] || gssh "$ip" "d=/home/$PREBUILT_USER/.local/share/omarchy; echo \"\$(cat \$d/version) (omarchy-mac \$(git -c safe.directory='*' -C \$d rev-parse --short HEAD))\"" \
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src/prebuilt/guest" -czf - . |
+    gssh "$ip" "rm -rf /root/omacvm-prebuilt && mkdir -p /root/omacvm-prebuilt && tar --no-same-owner -C /root/omacvm-prebuilt -xzf -"
+  # Omarchy 4.5+: the package's version and channel; omarchy-mac 4.0: its checkout.
+  [[ -s $OUT/omarchy-version ]] || gssh "$ip" "bash /root/omacvm-prebuilt/omarchy-version '$PREBUILT_USER'" \
     < /dev/null > "$OUT/omarchy-version"
   log "Omarchy $(cat "$OUT/omarchy-version")"
   gssh "$ip" "LC_ALL=C pacman -Qi | awk -F' *: ' '/^Name/ { n = \$2 } /^Version/ { v = \$2 } /^Licenses/ { print n, v, \$2 }'" \
     < /dev/null > "$OUT/packages.txt"
   log "$(wc -l < "$OUT/packages.txt" | tr -d ' ') packages"
   log "generalize $VM at $ip"
-  COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src/prebuilt/guest" -czf - . |
-    gssh "$ip" "rm -rf /root/omacvm-prebuilt && mkdir -p /root/omacvm-prebuilt && tar --no-same-owner -C /root/omacvm-prebuilt -xzf -"
   gssh "$ip" "bash /root/omacvm-prebuilt/generalize.sh --user '$PREBUILT_USER' --type '$ROUTE' --audit-b64 '$(tr -d '\n' <<<"$audit")'" < /dev/null
   log "waiting for $VM to power off"
   wait_off
@@ -224,6 +225,9 @@ compress_stage() {
     die "the files above still name this Mac's user"
   fi
   omarchy=$(cat "$OUT/omarchy-version" 2>/dev/null || echo unknown)
+  # An image this version's app would not take (from 3.4.0: Omarchy 4.5 or later) is not made.
+  python3 "$R/src/prebuilt/manifest.py" fits "$VERSION" "$omarchy" ||
+    die "an OmacVM $VERSION image must be Omarchy 4.5 or later, this VM is Omarchy $omarchy (manifest.py OMARCHY_FLOOR)"
   local base=omacvm-prebuilt-$VERSION-$ROUTE
   rm -f "$OUT/$base".tar.zst.* "$OUT/$base.json" "$OUT/$base.json.sig"
   log "compressing (zstd -19, a while)"
