@@ -108,6 +108,12 @@ final class Creator: ObservableObject {
         manualKeyCommand = VMKey.keyLine(folder: vm.folder).flatMap(SSHRepair.manualCommand)   // makes the folder's key
     }
 
+    /// The window pictures (RenderVMWindow): a move at this step, or stopped there.
+    func showForRendering(move s: Int, detail d: String, failed f: String?) {
+        job = .move; step = s; steps = OmarchyMove.steps.count; title = OmarchyMove.stepTitle(s)
+        kernelQuestion = nil; manualKeyCommand = nil; detail = d; failed = f
+    }
+
     /// The window pictures (RenderVMWindow): Update VM at its kernel question.
     func showForRendering(kernel q: KernelQuestion) {
         job = .update; failed = nil; step = 1; steps = 3
@@ -116,7 +122,8 @@ final class Creator: ObservableObject {
 
     /// What runs: a new VM (create-vm.sh, prebuilt-vm.sh) or an existing VM's
     /// OmacVM brought up to this app's (update-vm.sh).
-    enum Job { case build, update }
+    /// .move: Omarchy 4.0 to 4.5 with a backup first (move-vm.sh run, OmarchyMoveCard).
+    enum Job { case build, update, move }
     @Published private(set) var job = Job.build
 
     func start(config: VMConfig, password: String, prebuilt: Bool = false, graphics: GraphicsChoice = .auto) {
@@ -145,6 +152,27 @@ final class Creator: ObservableObject {
         launch(script: "update-vm.sh", folder: config.folder, log: "update.log", input: nil, env: size)
     }
 
+    /// Move to Omarchy 4.5 (move-vm.sh run): a new move or the resume of a
+    /// stopped one (the script reads the VM folder's journal). Its steps are
+    /// OmarchyMove.steps; SSH that turns the folder's key down is fixed as
+    /// Update VM does, at its step 4.
+    func move(config: VMConfig) {
+        reset(.move, folder: config.folder, route: .build)
+        updating = config
+        steps = OmarchyMove.steps.count
+        try? FileManager.default.removeItem(at: MoveFiles.stopURL(config))
+        let fit = config.forThisMac
+        let size = fit == config ? [:] : ["OMACVM_START_CPUS": "\(fit.cpus)", "OMACVM_START_MEM_MB": "\(fit.memoryMB)"]
+        launch(script: "move-vm.sh", folder: config.folder, log: "move.log", input: nil, env: size, args: ["run"])
+    }
+
+    /// Stop and Quit during a move: the script stops at its next safe point
+    /// (never inside the guest's package switch) and shuts the VM down.
+    func requestStop() {
+        guard job == .move, let c = updating else { return }
+        FileManager.default.createFile(atPath: MoveFiles.stopURL(c).path, contents: nil)
+    }
+
     /// The log of the last build or update.
     var log: URL? { logURL }
 
@@ -163,11 +191,12 @@ final class Creator: ObservableObject {
         title = "Preparing"
     }
 
-    private func launch(script: String, folder: URL, log logFile: String, input text: String?, env extra: [String: String] = [:]) {
+    private func launch(script: String, folder: URL, log logFile: String, input text: String?, env extra: [String: String] = [:],
+                        args: [String] = []) {
         let id = run
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [Paths.scripts.appendingPathComponent(script).path, folder.path]
+        p.arguments = [Paths.scripts.appendingPathComponent(script).path, folder.path] + args
         // Progress lines only for the app: omacvm build runs the same scripts
         // in a terminal, where they would be noise. Downloads go to the drive
         // of the VMs folder (PrebuiltImage.environment).
@@ -221,7 +250,7 @@ final class Creator: ObservableObject {
         } catch {
             reader?.readabilityHandler = nil
             reader = nil
-            failed = "Could not start the \(job == .build ? "build" : "update"): \(error.localizedDescription)"
+            failed = "Could not start the \(jobWord): \(error.localizedDescription)"
             onEnded?(false)
         }
     }
@@ -259,7 +288,7 @@ final class Creator: ObservableObject {
             onEnded?(true)
         } else {
             if failed == nil {
-                failed = "The \(job == .build ? "build" : "update") stopped (exit \(status)). Log: \(logURL?.path ?? "")"
+                failed = "The \(jobWord) stopped (exit \(status)). Log: \(logURL?.path ?? "")"
             }
             onEnded?(false)
         }
@@ -276,9 +305,19 @@ final class Creator: ObservableObject {
         if buffer.count > 4096 { buffer = String(buffer.suffix(512)) }
     }
 
+    private var jobWord: String {
+        switch job {
+        case .build: return "build"
+        case .update: return "update"
+        case .move: return "move"
+        }
+    }
+
     private func handle(_ line: String) {
         if !line.isEmpty { lastOutput = Date() }
-        if let e = keyLines.take(line, update: job == .update, step: step) {
+        // Update VM waits for SSH in its step 1, a move in its step 4.
+        let sshStep = job == .move ? 4 : 1
+        if let e = keyLines.take(line, update: job != .build, step: step == sshStep ? 1 : 0) {
             switch e {
             case .fix: fixKey()
             case .refused:

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import OmacVMWindow
 
 // Where VM folders live and how they move. Plain Foundation and no app types,
 // so src/tests/app-storage.sh compiles this file alone and tests it on
@@ -282,6 +283,16 @@ final class FolderMover: @unchecked Sendable {
         }
         if let drive = Storage.missingDrive(for: root) {
             throw StorageError.failed("\(drive) is not connected.")
+        }
+        // A copy to another drive would take the move's backup at its full
+        // size (the clone shares its blocks only on this volume).
+        if !Storage.sameVolume(source, root),
+           fm.fileExists(atPath: source.appendingPathComponent(OmarchyMove.backupName).path) {
+            throw StorageError.failed("\(source.lastPathComponent) keeps its disk from before the move to Omarchy 4.5: delete the old backup or undo the move first.")
+        }
+        if !Storage.sameVolume(source, root),
+           let j = (try? String(contentsOf: source.appendingPathComponent(OmarchyMove.journalName), encoding: .utf8)).flatMap(OmarchyMove.Journal.parse), j.open {
+            throw StorageError.failed("\(source.lastPathComponent) is in the middle of its move to Omarchy 4.5: resume or undo it first.")
         }
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         if Storage.sameVolume(source, root) {

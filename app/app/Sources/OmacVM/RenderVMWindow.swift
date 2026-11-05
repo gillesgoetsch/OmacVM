@@ -44,6 +44,10 @@ enum RenderVMWindow {
         var notchSkipInfo: Bool? = nil
         /// This Mac not set up for the VM (the notice, the header's Update VM).
         var macSetup: MacSetup? = nil
+        /// Move to Omarchy 4.5: the card's state (nil: hidden in the pictures).
+        var move: OmarchyMoveCard.Preview? = OmarchyMoveCard.Preview(card: .hidden)
+        /// The backup row under Storage & Updates (nil: not shown).
+        var moveBackup: (bytes: Int64, exact: Bool)? = nil
     }
 
     static func allowed(bundleID: String?) -> Bool {

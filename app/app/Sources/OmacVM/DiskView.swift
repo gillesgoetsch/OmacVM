@@ -82,6 +82,10 @@ enum VMDisk {
     /// without APFS clones (the copy kept while it shrinks). nil: it can.
     static func smallerBlocked(_ c: VMConfig) -> String? {
         if jobs(c).contains(.grow) { return "Omarchy grows into the last change first, when the VM starts." }
+        // The move's backup shares disk.img's blocks: a shrink would rewrite them all.
+        if FileManager.default.fileExists(atPath: c.folder.appendingPathComponent(OmarchyMove.backupName).path) {
+            return "the disk from before the move to Omarchy 4.5 is kept: delete the old backup or undo the move first."
+        }
         if (try? c.folder.resourceValues(forKeys: [.volumeSupportsFileCloningKey]))?.volumeSupportsFileCloning == false {
             return "making it smaller needs the VM on a Mac-formatted (APFS) drive."
         }
@@ -391,7 +395,8 @@ struct DiskRow: View {
                     Text("No disk.img").font(.subheadline).foregroundStyle(.secondary)
                 }
                 Button("Change…") { open() }
-                    .disabled(info == nil || resize != nil || state.storage.moving != nil || editing)
+                    .disabled(info == nil || resize != nil || state.storage.moving != nil || editing
+                              || (preview == nil && MoveFiles.journal(state.config)?.open == true))
             }
             if let r = resize { resizeButtons(r) }
             if editing { editor }

@@ -147,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.startVM = { [weak self] in self?.startVM() }
         state.checkForUpdates = { [weak self] in self?.checkForUpdates(nil) }
         state.showVM = { Self.qemuApp?.activate() }
+        state.powerDownVM = { [weak self] in self?.runner?.powerDown() }
         state.vmRunning = { [weak self] in self?.runner?.isRunning == true || Self.qemuApp != nil }
         state.storage.appBusy = { [weak self] in
             guard let self else { return false }
@@ -164,7 +165,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Updater.shared.busyReason = { [weak self] in
             guard let self else { return nil }
             if self.runner?.isRunning == true { return "The VM runs" }
-            if self.state.screen == .building { return "A VM is being built" }
+            if self.state.screen == .building {
+                return self.state.creator.job == .move ? "A VM moves to Omarchy 4.5" : "A VM is being built"
+            }
             if self.quitting { return "Quitting" }
             return nil
         }
@@ -179,7 +182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         u.startVMAgain = { [weak self] folder in self?.startAgain(folder) }
         u.restartBlocker = { [weak self] in
             guard let self else { return nil }
-            if self.state.screen == .building { return "a VM is being built" }
+            if self.state.screen == .building {
+                return self.state.creator.job == .move ? "a VM moves to Omarchy 4.5" : "a VM is being built"
+            }
             if self.state.storage.moving != nil { return "a VM is being moved" }
             if self.quitting { return "it is quitting" }
             return nil
@@ -311,6 +316,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateLater
         }
         if state.screen == .building {
+            if state.creator.job == .move, state.creator.running {
+                // The move stops at its next safe point (never inside the
+                // guest's package switch) and shuts the VM down; the window
+                // offers Resume or Undo at the next open.
+                showWindow()
+                let alert = NSAlert()
+                alert.messageText = "Moving \(state.config.name) to Omarchy 4.5 (step \(state.creator.step) of \(state.creator.steps))"
+                alert.informativeText = "Quit stops the move after the current part (a few minutes) and shuts the VM down. When you open OmacVM again, it offers Resume or Undo."
+                alert.addButton(withTitle: "Keep Moving")
+                alert.addButton(withTitle: "Stop and Quit")
+                guard alert.runModal() == .alertSecondButtonReturn else { return .terminateCancel }
+                state.creator.requestStop()
+                func wait() {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                        guard let c = self?.state.creator, c.running else {
+                            NSApp.reply(toApplicationShouldTerminate: true)
+                            return
+                        }
+                        wait()
+                    }
+                }
+                wait()
+                return .terminateLater
+            }
             if state.creator.job == .update {
                 // Stopping the update script would leave its apply running in
                 // the user's VM while the VM shuts down: quit once the script
@@ -453,6 +482,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let p = state.config.filesProblem {
             state.message = p
+            showWindow()
+            return
+        }
+        // A move to Omarchy 4.5 that stopped: Resume or Undo first (or Keep This Disk).
+        if let why = MoveFiles.openWhy(state.config) {
+            state.message = why
             showWindow()
             return
         }
