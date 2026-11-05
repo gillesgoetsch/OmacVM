@@ -3,6 +3,14 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.0 (unreleased)
+
+- **OmacVM.app only: Parallels, UTM and VMware Fusion are retired.** A VM on one of them keeps
+  running as it is, with its OmacVM 3.3.x, and nothing in it is changed or deleted; it gets no more
+  OmacVM updates. To move: `omacvm build` makes a new VM in OmacVM.app, then copy your files over
+  ([how](README.md#retired-routes), ADR 0071). The README, the feature list, the docs and the
+  benchmark charts are shorter: OmacVM.app against the Mac itself.
+
 ## 3.3.1
 
 Zed and other wgpu apps run on Vulkan again in OmacVM.app: this needs only the app update and counts
@@ -2679,7 +2687,7 @@ VMs that move between Macs: copied, on an external drive, or opened on a smaller
 - UTM VMs can go on an external drive: `omacvm build --vm-type utm
   --vm-dir PATH` (or another folder in the build's "Where should the VM
   go?"). The drive needs about 30 GB free, the Mac's own disk only a little
-  ([UTM route](docs/routes/utm.md#utm-on-an-external-drive)).
+  ([UTM route](https://github.com/gillesgoetsch/OmacVM/blob/v3.3.0/docs/routes/utm.md#utm-on-an-external-drive)).
 - A UTM build no longer stops at "Could not write domain" when macOS keeps
   the terminal out of UTM's data: it says so and builds the VM without
   UTM's speed settings.
@@ -4115,7 +4123,7 @@ plus fixes from testing 2.7.0 on a Mac mini.
 - VMware Fusion is the third way, next to Parallels and UTM: every display
   in the macOS arrangement, the GPU, and all of OmacVM's features. OmacVM
   builds Hyprland with a fix for Fusion's black screen and builds VMware
-  Tools. See [docs/routes/vmware-fusion.md](docs/routes/vmware-fusion.md).
+  Tools. See [docs/routes/vmware-fusion.md](https://github.com/gillesgoetsch/OmacVM/blob/v3.3.0/docs/routes/vmware-fusion.md).
 - Choose where the VM goes (`--vm-dir`, also on an external drive).
 - New Parallels VMs use every display in full screen; the slide between
   workspaces is back after a three-finger swipe; Omanotch repairs itself if
