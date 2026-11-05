@@ -165,8 +165,10 @@ OUTCOME=""   # done | failed | stopped
 STARTED=0    # only a QEMU this run started is ever stopped
 stop_vm() {
   (( STARTED )) && qemu_running || return 0
-  vssh "systemctl poweroff" < /dev/null 2>/dev/null || qmp system_powerdown || true
-  qemu_wait_exit 120 || qemu_quit
+  # The guest's move unit stops at its next safe point on a shutdown (up to
+  # 15 minutes inside the package switch): never cut that off early.
+  if vssh "systemctl poweroff" < /dev/null 2>/dev/null; then qemu_wait_exit 960 || qemu_quit
+  else qmp system_powerdown || true; qemu_wait_exit 120 || qemu_quit; fi
 }
 finish() {
   local rc=$?
