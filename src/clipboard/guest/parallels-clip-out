@@ -1,7 +1,0 @@
-#!/bin/bash
-# parallels-clip-out: run by `wl-paste --type text --watch` on every copy.
-# Hands the copied text to the Mac through the "clip" Parallels shared folder
-# (see clipboard/mac/omacvm-clip-in on the Mac). Parallels Tools only syncs Mac -> guest here.
-dir=/mnt/psf/clip
-[[ -d "$dir" ]] || exit 0
-head -c 4194304 > "$dir/.guest-clipboard.$$" && mv -f "$dir/.guest-clipboard.$$" "$dir/guest-clipboard"
