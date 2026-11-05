@@ -17,7 +17,8 @@
 # app's answer on stdin, as update-vm.sh. The guest side is
 # /usr/local/share/omacvm/guest/omarchy-move.sh (work/v340/contract.md).
 # Exit: 0 done, 1 failed (the journal says why and whether Resume works),
-# 2 usage, 3 refused (nothing changed).
+# 2 usage, 3 refused (nothing changed). OMACVM_MOVE_NO_MAC=1 (test rows): the
+# Mac's helpers are left as they are (apply-vm.sh --no-mac).
 set -euo pipefail
 exec 3<&0 < /dev/null
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -284,7 +285,9 @@ elif (( rc != 0 )); then
 fi
 exec 3<&-
 export OMACVM_KERNEL_NEW=keep OMACVM_MOVE_RUN=1
-run_logged "$LOG/move-apply.log" "$HERE/apply-vm.sh" "$VM_DIR" ||
+# Test rows: the Mac's helpers left as they are (as create-vm.sh's OMACVM_CREATE_NO_MAC).
+APPLY_ARGS=(); [[ ${OMACVM_MOVE_NO_MAC:-} == 1 ]] && APPLY_ARGS=(--no-mac)
+run_logged "$LOG/move-apply.log" "$HERE/apply-vm.sh" "$VM_DIR" ${APPLY_ARGS[@]+"${APPLY_ARGS[@]}"} ||
   fail 4 "$(disk_why || echo "OmacVM did not update in the VM (log: $LOG/move-apply.log). Nothing of Omarchy was changed.")" 1 apply
 vssh "test -x $G" < /dev/null || fail 4 "This VM's OmacVM has no Omarchy move (log: $LOG/move-apply.log)." 1 guest-old
 stop_asked && stopped
@@ -388,7 +391,7 @@ jset commit_started 1
 stop_asked && stopped
 
 step 6 "Update OmacVM again"
-run_logged "$LOG/move-apply.log" "$HERE/apply-vm.sh" "$VM_DIR" ||
+run_logged "$LOG/move-apply.log" "$HERE/apply-vm.sh" "$VM_DIR" ${APPLY_ARGS[@]+"${APPLY_ARGS[@]}"} ||
   fail 6 "$(disk_why || echo "OmacVM did not update after the move (log: $LOG/move-apply.log). Resume tries again.")" 1 apply-after
 
 step 7 "Restart and check"
