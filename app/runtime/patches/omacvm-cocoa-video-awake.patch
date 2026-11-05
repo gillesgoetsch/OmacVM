@@ -1,0 +1,329 @@
+From: OmacVM
+Subject: [PATCH] cocoa: the Mac's display stays on while a video plays in the VM
+
+What: the guest's display agent (omacvm-displays) sends
+{"inhibit": ["Virtual-1", ...]} over org.omacvm.display: the outputs that
+show a window whose app asks Wayland not to idle (zwp_idle_inhibit, as
+mpv, Chromium 157+ and Firefox do while a video plays), without Hyprland
+window rules, on a workspace that is shown, the session not locked; again
+every 10 s, [] when it ends. QEMU then holds macOS's
+PreventUserIdleDisplaySleep assertion "OmacVM: the VM is playing video"
+(display only; the Mac still sleeps when the lid closes or someone picks
+Sleep) while a listed output's Mac window can be seen (the sight
+guest-pause uses: on screen, not covered, the screen neither locked nor
+asleep, nobody else on the console), the VM runs and the word is under
+30 s old. It is let go at once on [], at the lease's end, out of sight, a
+lock, the channel closing, the VM stopping (QMP stop, shutdown) and before
+the Mac sleeps; powerd's own timeout (45 s, Release, armed again every
+10 s) backs a stuck main thread, and the assertion dies with QEMU. A line
+with more than 16 names or anything but Virtual-N is ignored; older QEMUs
+ignore the key, and an older guest sends none. qemu.log: the state at
+start, each hold and release with why (at most 10 lines a minute), never
+a word from the guest. OMACVM_VIDEO_AWAKE=0 leaves it out;
+OMACVM_TEST_VIDEO_SEEN=1 counts a hidden test window as seen (tests).
+
+Why: on battery macOS turned the display off after 2 min while the user
+watched a video in the VM: a Mac player holds this assertion while it
+plays, the VM's player only told the guest's compositor. ADR 0070.
+
+Upstream: not sent (OmacVM's display channel).
+Test: app/runtime/Tests/display/test-video-awake.sh (the rules, and the
+wiring in the patched ui/cocoa.m at build time); src/app/guest/tests/
+test_omacvm_displays.py (the agent's side). Applies after
+omacvm-cocoa-guest-pause.patch, omacvm-cocoa-displays.patch and
+omacvm-cocoa-drop.patch.
+
+--- a/ui/cocoa.m
++++ b/ui/cocoa.m
+@@ -68,6 +68,7 @@
+ #include "ui/omacvm-present-damage.h"
+ #include "ui/omacvm-present-volatile.h"
+ #include "ui/omacvm-guest-pause.h"
++#include "ui/omacvm-video-awake.h"
+ #include "hw/core/boards.h"
+ #include "system/system.h"
+ #include "system/runstate.h"
+@@ -86,6 +87,7 @@
+ #include "qemu/error-report.h"
+ #include "trace.h"
+ #include <Carbon/Carbon.h>
++#include <IOKit/pwr_mgt/IOPMLib.h>
+ #include <dlfcn.h>
+ #include <objc/runtime.h>
+ #include <AppKit/NSOpenGL.h>
+@@ -203,6 +205,8 @@
+ static bool omacvm_gp_dark;     /* the guest's display went off while told (BQL) */
+ static void omacvm_gp_update(void);
+ static void omacvm_gp_hello(NSDictionary *hello);
++/* OmacVM: the Mac's display on while a video plays in the VM (omacvm-cocoa-video-awake.patch). */
++static void omacvm_va_update(void);
+ 
+ /*
+  * QEMU thread, BQL: the guest drew a frame, from a GL scanout's flush or a
+@@ -13689,6 +13693,7 @@
+         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(0.0, due - now) * NSEC_PER_SEC)),
+                        dispatch_get_main_queue(), ^{ omacvm_gp_fire(gen); });
+     }
++    omacvm_va_update();     /* the same sight keeps the Mac's display on for a video (or not) */
+ }
+ 
+ /* The guest's display agent said hello (again): whether it can pause; it knows nothing yet. */
+@@ -13709,9 +13714,232 @@
+     });
+     if (told) {
+         omacvm_gp_tell(OMACVM_GP_UNSEEN);
++    }
++}
++
++/*
++ * OmacVM: the Mac's display stays on while a video plays in the VM and its
++ * window can be seen, as with a Mac video player (ADR 0070; rules in
++ * ui/omacvm-video-awake.h). The guest's display agent sends
++ * {"inhibit": ["Virtual-1", ...]}: the outputs showing a window whose app
++ * asks Wayland not to idle, again every 10 s, [] when it ends. QEMU then
++ * holds PreventUserIdleDisplaySleep (the display only; the Mac still sleeps
++ * when the lid closes or someone picks Sleep), while a listed output's
++ * window can be seen (the sight guest-pause uses), the VM runs and the word
++ * is under 30 s old. Released at once on [], at the lease's end, out of
++ * sight, the screen locked or asleep, another user on the console, the
++ * channel closed, the VM stopped and before the Mac sleeps; powerd's own
++ * timeout (45 s, armed again every 10 s) backs that up, and it dies with
++ * QEMU. No switch: a Mac player does the same by itself. OMACVM_VIDEO_AWAKE=0
++ * leaves it out (tests); OMACVM_TEST_VIDEO_SEEN=1 counts a hidden test
++ * window as seen (the lock, sleep and test lock still count). qemu.log:
++ * each hold and release with why, at most 10 lines a minute; never a word
++ * from the guest. Main thread, but for the VM's run state (QEMU's thread).
++ */
++static OmacVMVideoAwake omacvm_va;
++static IOPMAssertionID omacvm_va_id;    /* the assertion; 0 = none */
++static bool omacvm_va_ready;            /* omacvm_va_init ran */
++static bool omacvm_va_on;
++static bool omacvm_va_test_seen;
++static bool omacvm_va_running;          /* the VM runs (QEMU's run state; atomic) */
++static unsigned omacvm_va_gen;          /* the next look's */
++
++static void omacvm_va_say(const char *what, OmacVMVaWhy why)
++{
++    static double minute;
++    static int lines;
++    double now = CACurrentMediaTime();
++
++    if (now - minute >= 60) {
++        minute = now;
++        lines = 0;
++    }
++    if (++lines <= 10) {
++        info_report("OmacVM: video awake: %s (%s)", what, omacvm_va_why_text(why));
++    } else if (lines == 11) {
++        info_report("OmacVM: video awake: more changes this minute, not logged");
++    }
++}
++
++/* Which outputs' windows can be seen: bit i = output i (0 = the main window). */
++static unsigned omacvm_va_seen(void)
++{
++    unsigned seen = 0;
++
++    if (omacvm_ds_screen_locked || omacvm_ds_asleep || omacvm_ds_away || omacvm_ds_test_locked) {
++        return 0;
+     }
++    for (int i = 0; i < omacvm_outputs && i < OMACVM_VA_OUTPUTS; i++) {
++        NSWindow *w = i ? omacvm_heads[i].window : [cocoaView window];
++        if (w && (omacvm_va_test_seen ||
++                  ([w isVisible] && ([w occlusionState] & NSWindowOcclusionStateVisible)))) {
++            seen |= 1u << i;
++        }
++    }
++    return seen;
+ }
+ 
++static bool omacvm_va_create(void)
++{
++    int secs = OMACVM_VA_POWERD_S, level = kIOPMAssertionLevelOn;
++    CFNumberRef timeout = CFNumberCreate(NULL, kCFNumberIntType, &secs);
++    CFNumberRef on = CFNumberCreate(NULL, kCFNumberIntType, &level);
++    const void *keys[] = { kIOPMAssertionTypeKey, kIOPMAssertionNameKey, kIOPMAssertionLevelKey,
++                           kIOPMAssertionTimeoutKey, kIOPMAssertionTimeoutActionKey };
++    const void *values[] = { kIOPMAssertionTypePreventUserIdleDisplaySleep,
++                             CFSTR("OmacVM: the VM is playing video"), on, timeout,
++                             kIOPMAssertionTimeoutActionRelease };
++    CFDictionaryRef props = CFDictionaryCreate(NULL, keys, values, 5, &kCFTypeDictionaryKeyCallBacks,
++                                               &kCFTypeDictionaryValueCallBacks);
++    IOReturn r = IOPMAssertionCreateWithProperties(props, &omacvm_va_id);
++
++    CFRelease(props);
++    CFRelease(on);
++    CFRelease(timeout);
++    if (r != kIOReturnSuccess) {
++        omacvm_va_id = 0;
++        info_report("OmacVM: video awake: macOS refused the assertion (0x%x)", r);
++        return false;
++    }
++    return true;
++}
++
++static void omacvm_va_release(void)
++{
++    if (omacvm_va_id) {
++        IOPMAssertionRelease(omacvm_va_id);
++        omacvm_va_id = 0;
++    }
++}
++
++/* powerd's timeout again; an assertion powerd let go meanwhile (a stuck main thread) is made anew. */
++static void omacvm_va_renew(void)
++{
++    int secs = OMACVM_VA_POWERD_S;
++    CFNumberRef timeout = CFNumberCreate(NULL, kCFNumberIntType, &secs);
++    IOReturn r = omacvm_va_id ? IOPMAssertionSetProperty(omacvm_va_id, kIOPMAssertionTimeoutKey, timeout)
++                              : kIOReturnNotFound;
++
++    CFRelease(timeout);
++    if (r != kIOReturnSuccess) {
++        omacvm_va_release();
++        omacvm_va_create();
++    }
++}
++
++/* Main thread: the rules asked with the sight and run state now; a look again while it matters. */
++static void omacvm_va_update(void)
++{
++    OmacVMVaWhy why;
++    double now = CACurrentMediaTime();
++
++    if (!omacvm_va_ready) {
++        return;
++    }
++    switch (omacvm_va_decide(&omacvm_va, omacvm_va_seen(), qatomic_read(&omacvm_va_running),
++                             omacvm_va_on, now, &why)) {
++    case OMACVM_VA_HOLD:
++        if (omacvm_va_create()) {
++            omacvm_va_say("the Mac's display stays on", why);
++        }
++        break;
++    case OMACVM_VA_RELEASE:
++        omacvm_va_release();
++        omacvm_va_say("the Mac's display may sleep again", why);
++        break;
++    case OMACVM_VA_RENEW:
++        omacvm_va_renew();
++        break;
++    case OMACVM_VA_KEEP:
++        break;
++    }
++    double at = omacvm_va_look_at(&omacvm_va, now);
++    unsigned gen = ++omacvm_va_gen;
++    if (at > 0) {
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(MAX(0.0, at - now) * NSEC_PER_SEC)),
++                       dispatch_get_main_queue(), ^{
++            if (gen == omacvm_va_gen) {
++                omacvm_va_update();
++            }
++        });
++    }
++}
++
++/*
++ * The guest's "inhibit": a list of at most OMACVM_VA_MAX output names
++ * (omacvm_va_name); a line with anything else changes nothing.
++ */
++static void omacvm_va_line(id list)
++{
++    unsigned outputs = 0;
++
++    if (![list isKindOfClass:[NSArray class]] || [list count] > OMACVM_VA_MAX) {
++        return;
++    }
++    for (id n in list) {
++        if (![n isKindOfClass:[NSString class]] || [n length] > 16) {
++            return;
++        }
++        NSData *u = [n dataUsingEncoding:NSUTF8StringEncoding];
++        int i = omacvm_va_name([u bytes], [u length]);
++        if (i == -2) {
++            return;
++        }
++        if (i >= 0) {
++            outputs |= 1u << i;
++        }
++    }
++    if (!omacvm_va_ready) {
++        return;
++    }
++    omacvm_va_list(&omacvm_va, outputs, CACurrentMediaTime());
++    omacvm_va_update();
++}
++
++/* The channel closed or the Mac goes to sleep: the guest's word no longer holds. */
++static void omacvm_va_lost(OmacVMVaWhy why)
++{
++    omacvm_va_forget(&omacvm_va, why);
++    omacvm_va_update();
++}
++
++/* QEMU's thread (BQL): the VM runs or stopped (QMP stop, the Mac's sleep pause, shutdown). */
++static void omacvm_va_vm_change(void *opaque, bool running, RunState state)
++{
++    qatomic_set(&omacvm_va_running, running);
++    dispatch_async(dispatch_get_main_queue(), ^{ omacvm_va_update(); });
++}
++
++static void omacvm_va_init(void)
++{
++    const char *e = getenv("OMACVM_VIDEO_AWAKE");
++    const char *t = getenv("OMACVM_TEST_VIDEO_SEEN");
++    __block bool running = false;
++
++    omacvm_va_on = !(e && !strcmp(e, "0"));
++    omacvm_va_test_seen = t && !strcmp(t, "1");
++    with_bql(^{
++        running = runstate_is_running();
++        qemu_add_vm_change_state_handler(omacvm_va_vm_change, NULL);
++    });
++    qatomic_set(&omacvm_va_running, running);
++    [[[NSWorkspace sharedWorkspace] notificationCenter]
++        addObserverForName:NSWorkspaceWillSleepNotification
++                    object:nil
++                     queue:[NSOperationQueue mainQueue]
++                usingBlock:^(NSNotification *note) {
++        omacvm_va_lost(OMACVM_VA_WHY_SLEEP);
++    }];
++    info_report("OmacVM: video awake: %s", omacvm_va_on ?
++                "on (the Mac's display stays on while a video plays in the VM and its window can be seen)" :
++                "off (OMACVM_VIDEO_AWAKE=0)");
++    if (omacvm_va_test_seen) {
++        info_report("OmacVM: video awake: test: hidden windows count as seen (OMACVM_TEST_VIDEO_SEEN)");
++    }
++    omacvm_va_ready = true;
++    omacvm_va_update();
++}
++
+ static void omacvm_send_layout(void)
+ {
+     NSMutableArray *outputs = [NSMutableArray array];
+@@ -13945,6 +14173,9 @@
+         double scale;
+         if (omacvm_json_number(d[@"scale"], &scale)) {
+             omacvm_fp_scale_from_guest(scale);
++        }
++        if (d[@"inhibit"]) {
++            omacvm_va_line(d[@"inhibit"]);    /* a video plays in the VM (or no longer) */
+         }
+         if (update) {
+             omacvm_guest_update();
+@@ -13963,6 +14194,7 @@
+     omacvm_guest_ready = false;
+     omacvm_gp_able = false;
+     omacvm_chan_tries = 0;
++    omacvm_va_lost(OMACVM_VA_WHY_CHANNEL);
+     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+                    dispatch_get_main_queue(), ^{ omacvm_chan_connect(); });
+ }
+@@ -15200,6 +15432,7 @@
+     omacvm_head_delegate = [[OmacVMHeadDelegate alloc] init];
+     omacvm_ds_watch_lock();
+     omacvm_gp_update();     /* reads the switch and says it in qemu.log */
++    omacvm_va_init();       /* the Mac's display on for a video in the VM; says it in qemu.log */
+     /* Another Space: the detached cursor must move there (see omacvm_guard_corners). */
+     [[[NSWorkspace sharedWorkspace] notificationCenter]
+         addObserverForName:NSWorkspaceActiveSpaceDidChangeNotification
