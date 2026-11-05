@@ -1,8 +1,6 @@
 # Drag and drop files into the VM
 
-*OmacVM.app only, experimental, off by default (from 3.3). UTM, VMware
-Fusion and Parallels have their own drag and drop or none; nothing changes
-there.*
+*Experimental, off by default (from 3.3).*
 
 Drag files from the Finder (or the Desktop, or any app that drags files)
 onto the VM's window and let go:

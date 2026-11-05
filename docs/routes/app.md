@@ -1,6 +1,6 @@
 # OmacVM.app
 
-Omarchy in its own Mac app, without Parallels, UTM or VMware Fusion. The app
+Omarchy in its own Mac app. The app
 brings QEMU (built from try-omarchy's patched source) and runs it with Apple's
 Hypervisor framework. The GPU goes through VirGL on the Mac's OpenGL.
 
@@ -69,9 +69,9 @@ VM runs, and goes back by itself when a new version does not start
   SSH access, the VM does not know this VM folder's key yet: start it once in
   the app (it adds the key through the guest agent), or run the one command
   `omacvm apply` prints in the VM's terminal.
-- The build: the same steps as the other routes (try-omarchy as a temporary
+- The build: try-omarchy as a temporary
   live system, Arch Linux ARM on btrfs with GRUB, Omarchy from omarchy-mac,
-  OmacVM's VM side). 10 to 30 minutes (8 on an M4 Max), plus a 1.4 GB
+  OmacVM's VM side. 10 to 30 minutes (8 on an M4 Max), plus a 1.4 GB
   download the first time.
 - A normal install: boots through UEFI and GRUB, so `omarchy update` and
   snapshots work.
@@ -221,7 +221,7 @@ VM runs, and goes back by itself when a new version does not start
 - A window you cannot see (minimised, hidden, covered, on another Space) gets
   no new frames drawn until it shows again: no GPU time for pictures nobody
   sees (`OMACVM_PRESENT_HIDDEN=1` in QEMU's environment draws them anyway).
-- Full screen, like Parallels: macOS's own, in a Space of its own on every
+- Full screen: macOS's own, in a Space of its own on every
   display; on a MacBook with a notch Omanotch puts Omarchy's bar beside the
   notch (below).
 - Every Mac display in full screen: with an external display connected, full
@@ -238,7 +238,7 @@ VM runs, and goes back by itself when a new version does not start
   keeps the setting (`~/.config/omacvm/displays.conf`; also
   `omacvm-displays external on|off`).
 - ⌘ shortcuts (⌘Space too) go to Omarchy as Super in full screen, through
-  OmacVM Gestures, as on UTM: the app needs no Accessibility of its own.
+  OmacVM Gestures: the app needs no Accessibility of its own.
   With the gestures feature off the VM does not talk to Gestures, so these
   shortcuts stay with macOS.
 - A feature switched off gets nothing of the Mac: from the VM's next start
@@ -279,7 +279,7 @@ VM runs, and goes back by itself when a new version does not start
   port, not the network).
 - Sound through the Mac (QEMU's HDA card; PipeWire in the VM), and the Mac's
   microphone: the app asks for it when it starts a VM, because QEMU cannot
-  ask itself and records nothing without it ([finding 22](../troubleshooting.md#22-parallels-fusion-app-the-microphone-records-nothing-or-silence)).
+  ask itself and records nothing without it ([finding 22](../troubleshooting.md#22-app-the-microphone-records-nothing-or-silence)).
   Until you allow it, the VM starts without recording (QEMU would wait
   minutes for an answer): allow it, then restart the VM. QEMU starts the
   recording on a thread of its own, so the VM never stops for it; until the
@@ -375,9 +375,7 @@ VM runs, and goes back by itself when a new version does not start
 
 ## From the omacvm command
 
-`omacvm build --vm-type app` (or OmacVM.app in the build's first question)
-builds the VM through the app instead of in it. The questions and the summary
-are the same as for the other routes; the VM goes into the app's VMs folder
+`omacvm build` builds the VM through the app. The VM goes into the app's VMs folder
 (~/OmacVM, or the one set in the app; no `--vm-dir`; a drive that is not
 connected stops it, exit 3). Then:
 
@@ -397,7 +395,7 @@ connected stops it, exit 3). Then:
    with the password on stdin: the same script and steps as a build in the
    app. It leaves the VM shut down.
 3. `omacvm apply` from this checkout, which starts the VM in the app, then a
-   reboot, as on the other routes.
+   reboot.
 
 No Homebrew tools are needed (the app brings QEMU and zstd). OmacVM.app runs
 one VM at a time: the build stops at the start while another one runs.
@@ -410,7 +408,7 @@ one VM at a time: the build stops at the start while another one runs.
   DNS server and devices on your network). Updates keep the answer; another
   version in another folder is asked again
   ([troubleshooting 42](../troubleshooting.md#42-app-macos-asks-to-let-omacvm-find-devices-on-local-networks)).
-- The permissions OmacVM's Mac helpers ask for (as on the other routes).
+- The permissions OmacVM's Mac helpers ask for.
 
 ## Not done yet
 
@@ -443,7 +441,7 @@ the VM's SSH on `127.0.0.1:<port>`.
 
 - The VM reaches only three of the Mac's local ports through `10.0.2.2`:
   47811 (Omanotch), 47830 (Gestures) and 47831 (Bridge). Everything else the Mac runs on
-  127.0.0.1 (dev servers, databases) is refused, like on the other routes.
+  127.0.0.1 (dev servers, databases) is refused.
   The app's QEMU carries a libslirp patch for that
   (`OMACVM_SLIRP_HOST_PORTS`). One more port when the Mac has a proxy on
   its 127.0.0.1 (`MacProxy.swift`, [Behind a proxy](../guide.md#behind-a-proxy)).
@@ -773,7 +771,7 @@ from the VM:
 
 `omacvm enable fast-network --vm NAME`, or the **Fast network
 (experimental)** switch on the VM's screen in the app, puts the VM on macOS's own VM
-network (vmnet, shared mode, as Parallels and UTM) instead of QEMU's user
+network (vmnet, shared mode) instead of QEMU's user
 network.
 The VM gets an address of its own on a network of its own, `192.168.77.0/24`
 (the Mac is `192.168.77.1`), and traffic between the VM and the Mac no
@@ -804,7 +802,7 @@ longer goes through one QEMU thread. Measured: see
   the internet). The service now adds that NAT itself, while a VM is on the
   fast network, for each network that is up and that macOS's sharing does
   not cover: Ethernet, Wi-Fi and VPN tunnels (`en`, `utun`, `ipsec`, `ppp`,
-  `tun`, `tap`), never a bridge (Parallels' and other VM networks stay as
+  `tun`, `tap`), never a bridge (other VM apps' networks stay as
   they are). IPv4, and IPv6 where the VPN has an IPv6 address. The rules are
   the same as macOS's own (`nat on utun5 inet from 192.168.77.0/24 to any ->
   (utun5:0) extfilter ei`) and live only in the service's own pf anchor,
@@ -821,9 +819,9 @@ longer goes through one QEMU thread. Measured: see
   the Mac (`192.168.77.1`), and the Mac asks the VPN's DNS servers where
   macOS uses them. pf keeps the emptied anchor listed (without rules) until
   the Mac restarts.
-- Its own network, not UTM's `192.168.64.0/24`: while UTM (or another app)
+- Its own network, not macOS's usual `192.168.64.0/24`: while another VM app
   has that one up, vmnet refuses an isolated interface on it. With its own,
-  UTM VMs and the fast network run side by side (tested on the Mac mini).
+  other VM apps and the fast network run side by side (tested on the Mac mini).
   Each refused start costs macOS's vmnet service a descriptor it never gives
   back (at 256 vmnet stops working on the whole Mac until a restart), so after
   a failed start the service waits 30 s before the next one, doubling up to
@@ -840,10 +838,8 @@ longer goes through one QEMU thread. Measured: see
   interface on the Mac goes with it, but vmnet tells no one. The service
   watches that process and closes its connections when it exits; QEMU
   connects again at once and gets a new interface (tested: the VM answered
-  again 3 s after the kill). Parallels' shared and host-only networks are
-  gone after such a restart too, and Parallels does not notice: quit and
-  reopen Parallels Desktop, or `sudo killall prl_naptd` (its watchdog starts
-  it again within about a minute, with its networks).
+  again 3 s after the kill). Another VM app's shared networks can be gone
+  after such a restart too: quit and reopen that app.
 - The app picks the network at each start: the fast network when the VM has
   it (its `fast-network` file, with its own MAC address), the service is
   there and would take this app's QEMU; else QEMU's user network as before.
@@ -912,7 +908,7 @@ What is missing before it can become the default: [below](#fast-network-not-done
 ### Fast network: not done yet
 
 - Tested on a Mac mini (macOS 27): SSH, DNS, IPv6, the Bridge (proof on
-  `192.168.77.1`), a UTM VM on UTM's shared network at the same time, the
+  `192.168.77.1`), another VM app's VM on its shared network at the same time, the
   service going away and coming back under a running VM (user network after
   7 s, vmnet again after 13 s), a start with the service unreachable (user
   network after 17 s), vmnet refusing (back-off), a restart of the service
@@ -969,12 +965,10 @@ What is missing before it can become the default: [below](#fast-network-not-done
     --remove`): removed at once.
   - Untouched: macOS's main ruleset, its own anchors (sharing, AirDrop,
     firewall), Tailscale (the VM reaches the other Mac through it with
-    macOS's own NAT), and Parallels' `10.211.55.2`/`10.37.129.2` while
-    awake. After a wake with the test tunnel up, Parallels' two networks
-    came back as `192.168.18.1`/`192.168.19.1`; that happened with only the
-    tunnel too (no VM, no service), and not without it: Parallels' (or
-    macOS's) doing with a tunnel present, not the NAT. Quit and reopen
-    Parallels Desktop, or `sudo killall prl_naptd`, brings them back.
+    macOS's own NAT), and another VM app's networks while awake (after a
+    wake with a tunnel up they can come back on other addresses, with or
+    without the service: that app's or macOS's doing, not the NAT; quit and
+    reopen that app).
 - A real WireGuard client on the Mac mini (macOS 27, 2026-10-06):
   `wireguard-go` on a `utun`, set up as a VPN app does (addresses, MTU
   1420, split routes), and a WireGuard server in userspace that takes only
@@ -1001,7 +995,7 @@ What is missing before it can become the default: [below](#fast-network-not-done
   tunnel for 25 s: the VM's requests to `1.1.1.1` and `9.9.9.9` went
   through it as `10.99.0.1`; internet as before after. The VM restarting
   with the tunnel up: NAT in the same second, all of the above again.
-  pf outside the service's anchor, Parallels and Tailscale unchanged.
+  pf outside the service's anchor and Tailscale unchanged.
 - Not tested yet: a VPN app's own tunnel (WireGuard app, an IKEv2 profile in
   System Settings; the tests above use the same kernel interfaces without
   touching the Mac's VPN settings), real trackpad gestures over the fast network
@@ -1079,7 +1073,6 @@ user can write there; without a share it does nothing (18 ms) and leaves no
 
 - One folder per VM, read and write; no read-only switch.
 - It changes only at the VM's next start.
-- Not measured: Parallels' and UTM's shared folders on the same Mac.
 - QEMU cannot save a VM's state while the folder is mounted (9p blocks it):
   matters once instant resume comes.
 
@@ -1414,8 +1407,7 @@ to the Mac), and when macOS still holds a quarter of the Mac compressed and
 the VM had little left to give, that a smaller VM memory leaves the Mac more
 (`omacvm resources`); idle give-backs on their own: how many and how much in
 all, by the VM's own count. A large VM's footprint can still be well above what
-Linux uses (ADR 0059, "What this does not explain"). UTM, Parallels and
-Fusion: nothing changes (their balloons do not report free pages).
+Linux uses (ADR 0059, "What this does not explain").
 
 **No fixed limit.** QEMU asks macOS how much memory it can give
 (`virgl-darwin-memory-pressure.patch`):
@@ -1655,17 +1647,6 @@ outside the setting, and the runaway guard stays at three quarters of the
 Mac whatever the VM's memory (ADR 0034; one sized from the VM's memory
 would stop Chrome at about 3 GB of graphics on a 16 GB Mac with an 8 GB VM,
 below the 4.5 GB it used at 5K).
-
-**Other VM apps** (what we checked; their own documents may say more):
-
-- **UTM** runs the same QEMU and virglrenderer: graphics memory comes from
-  the Mac on top of the VM's memory, with no limit at all.
-- **VMware Fusion** has a graphics memory setting of its own
-  (`svga.graphicsMemoryKB` in the `.vmx`, 8 GB at most; OmacVM's Fusion route
-  sets it), taken from the VM's memory.
-- **Parallels Desktop** has a video memory setting (OmacVM's Parallels route
-  sets 0, automatic) and draws with the Mac's GPU in its own way; how much
-  memory that takes on the Mac it does not say.
 
 Tests: `app/runtime/Tests/virgl/test-resource-budget.c` (build time: the
 budget, refusals at critical and warn, the status file, a lost context),
