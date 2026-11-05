@@ -15,8 +15,7 @@ BEGIN='-- >>> OmacVM per-display workspaces' END='-- <<< OmacVM per-display work
 # (default/hypr/monitor-workspaces.lua: blocks of ten as here, kept per
 # monitor, and its own bar widget shows each monitor's). OmacVM's would fight
 # it over the same keys and moves: there ours goes, with its bindings block
-# and bar widget, and Omarchy's widget comes back. (Omarchy 4.5 is test only:
-# branch omarchy-45.)
+# and bar widget, and Omarchy's widget comes back.
 if [[ -f ${OMARCHY_PATH:-/usr/share/omarchy}/default/hypr/monitor-workspaces.lua ]]; then
   # The block first: bindings.lua requires the file. Read whole into a file
   # of root's, then written: piped straight into home_write, the file was
