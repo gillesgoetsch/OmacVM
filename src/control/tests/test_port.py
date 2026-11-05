@@ -110,6 +110,6 @@ def test_silent_app_times_out(monkeypatch):
 
 def test_other_vms_use_the_network(port_env):
     app = port_env(lambda r: (200, {}))
-    assert Bridge({"OMACVM_VM_TYPE": "parallels"}, "2.9.0").port_path == ""
+    assert Bridge({"OMACVM_VM_TYPE": "other"}, "2.9.0").port_path == ""
     assert Bridge({"OMACVM_VM_TYPE": "app"}, "2.9.0", url="http://127.0.0.1:1").port_path == ""
     assert Bridge({"OMACVM_VM_TYPE": "app"}, "2.9.0").port_path == app.path

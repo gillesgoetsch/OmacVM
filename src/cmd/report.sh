@@ -12,6 +12,19 @@ R=$(cd "$(dirname "$0")/../.." && pwd)
 case ${1:-} in -h|--help) sed -n '2,9s/^# \{0,1\}//p' "$0"; exit 0 ;; esac
 # macOS's python3 with Xcode's Command Line Tools, else OmacVM.app's (never
 # the stub that asks to install them: src/lib/tools.sh).
+# A retired Parallels, UTM or VMware Fusion VM (src/lib/retired.sh): exit 3,
+# nothing collected from it.
+vm=""; t=""; prev=""
+for a in "$@"; do
+  case $prev in --vm) vm=$a ;; --vm-type) t=$a ;; esac
+  prev=$a
+done
+if [[ -n $vm && $t != app ]]; then
+  source "$R/src/lib/mac.sh"
+  source "$R/src/lib/vm.sh"
+  old=$(retired_list | awk -F'\t' -v n="$vm" -v t="$t" '$1 == n && (t == "" || $2 == t) { print $2; exit }')
+  if [[ -n $old ]] && { [[ -n $t ]] || ! app_dir "$vm" >/dev/null 2>&1; }; then retired_stop "$vm" "$old"; fi
+fi
 source "$R/src/lib/tools.sh"
 export PYTHONDONTWRITEBYTECODE=1   # nothing written into OmacVM.app's copy
 PY=$(tools_python) || { echo "omacvm report needs python3: install Xcode's Command Line Tools (xcode-select --install) or OmacVM.app" >&2; exit 3; }
