@@ -120,6 +120,29 @@ section "Session ($TYPE VM, the Mac is $HOST)"
 if pgrep -u "$U" -x Hyprland >/dev/null; then ok "Hyprland" "running for $U"
 else bad "Hyprland" "not running for $U: log in first, the checks below need the session"; fi
 check "Omarchy shell" "answers" as_user omarchy-shell shell ping
+# Which Omarchy, from where (3.4.0): Omarchy 4.5 on Omarchy's own aarch64
+# repos, platform aarch64 (never Apple's files); a 4.0 VM from omarchy-mac
+# moves in OmacVM.app (guest/omarchy-move.sh, whose journal says how far).
+om_v=$(pacman -Q omarchy 2>/dev/null | awk '{ print $2 }'); om_v=${om_v%-*}
+om_c=$(sed -n 's|^Server = https://pkgs.omarchy.org/\([a-z]*\)/.*|\1|p' /etc/pacman.conf 2>/dev/null | head -1)
+om_mv=$(cat /var/lib/omacvm/move-4.5/state 2>/dev/null)
+[[ $om_mv == running ]] && flock -n /var/lib/omacvm/move-4.5/lock true 2>/dev/null && om_mv=interrupted
+if [[ $om_mv == running ]]; then warn "Omarchy" "${om_v:-?}: the move to Omarchy 4.5 runs now ($(cat /var/lib/omacvm/move-4.5/phase 2>/dev/null))"
+elif [[ $om_mv == failed || $om_mv == interrupted || $om_mv == stopped ]]; then
+  warn "Omarchy" "${om_v:-?}: the move to Omarchy 4.5 stopped at '$(cat /var/lib/omacvm/move-4.5/phase 2>/dev/null)': Resume or Undo in OmacVM.app"
+elif [[ $om_v =~ ^([0-9]+)\.([0-9]+) ]] && (( BASH_REMATCH[1] > 4 || (BASH_REMATCH[1] == 4 && BASH_REMATCH[2] >= 5) )); then
+  om_p=$(omarchy-hw-platform 2>/dev/null)
+  if grep -qiE 'asahi|aarch64-apple|^\[omarchy-aarch64\]' /etc/pacman.conf /etc/pacman.d/mirrorlist 2>/dev/null; then
+    bad "Omarchy" "$om_v, but pacman.conf names Apple's or omarchy-mac's repos (Update VM)"
+  elif [[ $om_p != aarch64 ]]; then bad "Omarchy" "$om_v, platform '${om_p:-unknown}', not aarch64"
+  else ok "Omarchy" "$om_v, Omarchy's aarch64 repos (${om_c:-?}), platform aarch64"; fi
+elif grep -q '^\[omarchy-aarch64\]' /etc/pacman.conf 2>/dev/null; then
+  om_l=$(awk '/^\[omarchy-aarch64\]/ { s = 1; next } /^\[/ { s = 0 } s && /^Server/ { n = split($0, p, "/"); print p[n]; exit }' /etc/pacman.conf)
+  if [[ $TYPE == app ]]; then warn "Omarchy" "${om_v:-?} from omarchy-mac (${om_l:-?}): Move to Omarchy 4.5 in OmacVM.app"
+  else ok "Omarchy" "${om_v:-?} from omarchy-mac (${om_l:-?})"; fi
+else
+  skip "Omarchy" "${om_v:-no omarchy package} (repos: neither Omarchy's aarch64 nor omarchy-mac's)"
+fi
 # Omarchy's shell colours (#376). Qt 6.12's QtQuick has a Color of its own,
 # which hides Omarchy's in every file that imports both: each colour the shell
 # reads is undefined (these lines in its log), and its bar, menus, OSD and
@@ -731,10 +754,10 @@ app)
     # WebGPU in Chromium: the launcher, on a Venus driver with shared semaphores (OmacVM's vulkan-virtio build).
     if [[ ! -x /usr/local/bin/omacvm-chromium-webgpu ]]; then
       bad "WebGPU in Chromium" "no \"Chromium (WebGPU)\" launcher: omacvm apply"
-    elif [[ $(pacman -Q vulkan-virtio 2>/dev/null) == *omacvm* ]]; then
+    elif [[ $(pacman -Q omacvm-vulkan-virtio vulkan-virtio 2>/dev/null) == *omacvm* ]]; then
       ok "WebGPU in Chromium" "\"Chromium (WebGPU)\" in the menu (omacvm-chromium-webgpu)"
     else
-      skip "WebGPU in Chromium" "after OmacVM's Venus driver build ($(pacman -Q vulkan-virtio 2>/dev/null || echo "no vulkan-virtio") now; the VM builds it after its next start)"
+      skip "WebGPU in Chromium" "after OmacVM's Venus driver build ($(pacman -Q omacvm-vulkan-virtio 2>/dev/null || pacman -Q vulkan-virtio 2>/dev/null || echo "no vulkan-virtio") now; the VM builds it after its next start)"
     fi
   elif [[ ${OMACVM_GRAPHICS:-} == vulkan ]]; then
     # Graphics Vulkan and gpu-compute on, but venus/opencl.sh did not get
@@ -1077,7 +1100,8 @@ fi
 z=$(swapon --show=NAME,SIZE --noheadings 2>/dev/null | awk '/zram/ { print $2; exit }')
 [[ -n $z ]] && ok "zram swap" "$z" || bad "zram swap" "none (reboot after omacvm apply?)"
 if command -v grub-mkconfig >/dev/null; then
-  if ! systemctl is-active -q grub-btrfsd; then bad "bootable snapshots" "grub-btrfsd is not running"
+  if ! command -v snapper >/dev/null; then bad "bootable snapshots" "snapper is not installed (pacman -S snapper)"
+  elif ! systemctl is-active -q grub-btrfsd; then bad "bootable snapshots" "grub-btrfsd is not running"
   elif [[ ! -s /boot/grub/grub-btrfs.cfg ]] && btrfs subvolume list -s / 2>/dev/null | grep -q .; then
     bad "bootable snapshots" "no snapshots menu in GRUB: it finds no kernel with an initramfs (omacvm apply)"
   else ok "bootable snapshots" "grub-btrfsd, snapshots menu in GRUB"; fi
