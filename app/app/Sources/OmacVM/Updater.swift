@@ -280,16 +280,17 @@ final class Updater: ObservableObject {
             let (raw, code) = try await net.data(feedURL, cap: Appcast.maxFeedBytes)
             // The server answered: the week starts again even without a feed
             // (no release has one yet), so nobody asks every hour. Not after
-            // a server error or 429 (still there after the retries): the
-            // next hourly look tries again.
-            if !FetchRetry.retries(status: code) { lastCheck = Date() }
+            // a server error or 429 (still there after the retries), for the
+            // feed or its signature: the next hourly look tries again.
             guard code == 200 else {
+                if !FetchRetry.retries(status: code) { lastCheck = Date() }
                 return failed(FetchRetry.problem(status: code, what: "the update feed", url: feedURL)
                     ?? "no update feed (HTTP \(code)) at \(feedURL.absoluteString)")
             }
             let tFeed = Date()
             let sigURL = feedURL.appendingPathExtension("sig")
             let (sig, scode) = try await net.data(sigURL, cap: Appcast.maxSignatureBytes)
+            if !FetchRetry.retries(status: scode) { lastCheck = Date() }
             guard scode == 200 else {
                 return failed(FetchRetry.problem(status: scode, what: "the update feed's signature", url: sigURL)
                     ?? "the update feed has no signature (HTTP \(scode))")
