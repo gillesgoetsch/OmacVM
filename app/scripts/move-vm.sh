@@ -60,10 +60,12 @@ in_use() {
 }
 alloc_bytes() { echo $(( $(stat -f %b "$1") * 512 )); }
 free_bytes() { echo $(( $(df -k "$VM_DIR" | awk 'NR==2 { print $4 }') * 1024 )); }
-clones_ok() {   # the VM folder's volume makes APFS clones
-  local t=$VM_DIR/.move-clone-test
+clones_ok() {   # the VM folder's volume is APFS: cp -c makes clones there (elsewhere it copies, rc 0)
+  local dev t=$VM_DIR/.move-clone-test ok=1
+  dev=$(df "$VM_DIR" | awk 'NR == 2 { print $1 }')
+  [[ -n $dev ]] && /sbin/mount | awk -v d="$dev" '$1 == d' | grep -q '(apfs[,)]' || return 1
   rm -f "$t" "$t.c"; echo x > "$t"
-  local ok=1; cp -c "$t" "$t.c" 2>/dev/null || ok=0
+  cp -c "$t" "$t.c" 2>/dev/null || ok=0
   rm -f "$t" "$t.c"; (( ok ))
 }
 gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; if (g >= 10) printf "%d GB", g + 0.5; else printf "%.1f GB", g }'; }
@@ -220,6 +222,8 @@ step 3 "Back up the disk"
 if [[ -n $(jget backup_at) && -f $B/disk.img ]]; then
   log "the backup from $(jget backup_at) is kept"
 else
+  # Checked again right before: on another file system cp -c copies the whole disk.
+  clones_ok || fail 3 "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM to one under Storage first." 1 mac
   rm -rf "$B"; mkdir -p "$B"
   # clonefile: no copy of the data, the two share every block until one changes.
   cp -c "$VM_DIR/disk.img" "$B/disk.img" || { rm -rf "$B"; fail 3 "Could not back up disk.img (APFS clone failed)." 1 backup; }
@@ -319,9 +323,12 @@ if [[ $(jget commit_started) != 1 ]]; then
   fi
 fi
 if (( ! moved_already )); then
+  # start checks again (resume-aware) and answers like preflight when it will not.
   src=0; vssh "$G start" < /dev/null > "$ST" 2>> "$LOG/move-apply.log" || src=$?
   if (( src == 3 )); then
     fail 5 "$(jv reason "$ST" | grep . || echo "The VM refused the move.") Undo brings the disk from before back." 0 "$(jv code "$ST")"
+  elif (( src == 4 )); then
+    fail 5 "$(jv reason "$ST" | grep . || echo "Omarchy's package servers did not answer.") Check the Mac's network, then Resume." 1 "$(jv code "$ST")"
   elif (( src != 0 )); then
     fail 5 "The move did not start in the VM (exit $src)." 1 start
   fi
@@ -351,6 +358,9 @@ if (( ! moved_already )); then
         fail 5 "$(jv reason "$ST" | grep . || echo "The move failed in the VM.") (log: $LOG/move-4.5.log)" "$res" "$(jv code "$ST")" ;;
       stopped)
         stopped ;;
+      interrupted)   # the guest's unit ended without a word (killed): as its journal says
+        res=1; [[ $(jv resumable "$ST") == false ]] && res=0
+        fail 5 "The move stopped in the VM without finishing (log: $LOG/move-4.5.log)." "$res" interrupted ;;
       running|none) ;;   # none: the unit has not written its first state yet
       *) fail 5 "The VM says the move is '$gs'." 1 state ;;
     esac

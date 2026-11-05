@@ -265,6 +265,23 @@ expect "killed: the journal still says running, its pid is gone" "running gone" 
 mv_run ok run; rc=$?
 expect "Resume after the kill: to the end" "0 done" "$rc $(jget state)"
 
+# ---------- a VM on Mac OS Extended (cp -c copies there, rc 0): refused ----------
+H=$T/hfs
+if hdiutil create -quiet -size 40m -fs HFS+ -volname omacvm-move-test "$T/hfs.dmg" 2>/dev/null && mkdir -p "$H" &&
+   hdiutil attach -quiet -nobrowse -mountpoint "$H" "$T/hfs.dmg" 2>/dev/null; then
+  Vs=$V; V=$H/Old; mkdir -p "$V"
+  cp "$Vs/vm.env" "$Vs/efi-vars.fd" "$Vs/ready" "$V/"; dd if=/dev/urandom of="$V/disk.img" bs=1k count=64 2>/dev/null
+  mv_run ok plan; rc=$?
+  expect "HFS+: plan refuses (exit 3), apfs=0" "3 apfs=0" "$rc $(grep '^apfs=' "$T/out")"
+  mv_run ok run; rc=$?
+  expect "HFS+: run fails at step 1, no backup" "1 1 none" "$rc $(jget failed_step) $([[ -d $V/before-omarchy-4.5 ]] && echo made || echo none)"
+  rm -rf "$(getconf DARWIN_USER_TEMP_DIR)omacvm/$(VMID "$V")".*
+  V=$Vs
+  hdiutil detach -quiet "$H" 2>/dev/null || hdiutil detach -quiet -force "$H"
+else
+  echo "skip: no HFS+ disk image here"
+fi
+
 # ---------- a guest without omarchy-move.sh ----------
 fresh
 mv_run guest-old run; rc=$?
