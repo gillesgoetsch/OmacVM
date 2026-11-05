@@ -17,7 +17,9 @@
 #   clean       delete the image VM (only the one this script made)
 #
 # Output: ~/Library/Caches/omacvm/prebuilt-out/<route>/ (or $OMACVM_PREBUILT_OUT).
-# Resources: 8 CPUs, 12 GB memory, a 64 GB disk (grown on install).
+# Resources: 8 CPUs, 12 GB memory, a 64 GB disk (grown on install);
+# OMACVM_PREBUILT_CPUS / OMACVM_PREBUILT_MEM_MB for a Mac that has less to
+# spare (the image does not keep them: the app writes each VM's own vm.env).
 # app: OmacVM.app's own create script from this checkout (app/scripts, with
 # the QEMU runtime built: app/scripts/build-app.sh), the VM in <output>/vm,
 # headless, without a window and without the Mac's helpers.
@@ -104,6 +106,8 @@ stage_build() {
 # no Mac helpers). The password is thrown away with the user.
 stage_build_app() {
   local port
+  BUILD_CPUS=${OMACVM_PREBUILT_CPUS:-8} BUILD_MEM_MB=${OMACVM_PREBUILT_MEM_MB:-12288}
+  [[ $BUILD_CPUS =~ ^[1-9][0-9]?$ && $BUILD_MEM_MB =~ ^[1-9][0-9]{3,5}$ ]] || die "OMACVM_PREBUILT_CPUS / OMACVM_PREBUILT_MEM_MB: whole numbers"
   [[ -e $APPVM/disk.img ]] && die "$APPVM exists: delete it first (make-image.sh app clean)"
   if [[ -n ${OMACVM_PREBUILT_APP:-} ]]; then
     [[ -x $OMACVM_PREBUILT_APP/Contents/Resources/runtime/bin/OmacVM ]] || die "no QEMU runtime in $OMACVM_PREBUILT_APP"
@@ -115,7 +119,7 @@ stage_build_app() {
   port=$(app_free_port) || die "no free port for the VM's SSH"
   mkdir -p "$APPVM"
   {
-    printf "NAME='%s'\nCPUS=8\nMEM_MB=12288\nDISK_GB=%s\nSSH_PORT=%s\n" "$VM" "$PREBUILT_DISK_GB" "$port"
+    printf "NAME='%s'\nCPUS=%s\nMEM_MB=%s\nDISK_GB=%s\nSSH_PORT=%s\n" "$VM" "$BUILD_CPUS" "$BUILD_MEM_MB" "$PREBUILT_DISK_GB" "$port"
     printf "VM_USER='%s'\nVM_FULLNAME='%s'\nVM_HOSTNAME=omarchy\n" "$PREBUILT_USER" "$PREBUILT_FULLNAME"
     printf "VM_TZ=UTC\nVM_LANG=en_US.UTF-8\nKEYBOARD=us\nFEATURES='%s'\n" "$PREBUILT_FEATURES"
   } > "$APPVM/vm.env"
