@@ -3,6 +3,15 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.4.0 (unreleased)
+
+- **The `omacvm` command is OmacVM.app only.** The Parallels, UTM and VMware Fusion code, its
+  builders, prebuilt images and tests are gone, and so are the Homebrew tools the build needed for
+  them. A VM OmacVM set up there is listed by `omacvm vms` as retired; `apply`, `update --vm`,
+  `features`, `check` and the rest stop on it with exit 3 and say how to move (`--json`:
+  `"error": "route-retired"`), and change nothing in it. `omacvm update` leaves such VMs as they
+  are. `omacvm uninstall` still removes the old clipboard helper. A test keeps those routes out.
+
 ## 3.3.1
 
 Zed and other wgpu apps run on Vulkan again in OmacVM.app: this needs only the app update and counts

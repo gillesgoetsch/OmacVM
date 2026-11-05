@@ -220,9 +220,8 @@ if (( ${#stopped[@]} )); then
 fi
 if (( ${#retired[@]} )); then
   for r in "${retired[@]}"; do info "$r: retired in OmacVM $RETIRED_IN, not updated; nothing in it was changed"; done
-  info "Those retired VMs keep running with their OmacVM 3.3, but this Mac's OmacVM helpers no longer serve them:"
-  info "the Bridge's bar items, gestures and scroll momentum, Omanotch, the camera and battery (retired UTM and VMware Fusion);"
-  info "Touch ID asks for the password. The VM app's own tools keep working. Move to OmacVM.app: $RETIRED_URL"
+  info "Those retired VMs keep running with their OmacVM 3.3; OmacVM no longer updates, repairs or switches anything in them."
+  info "Move to OmacVM.app: omacvm build makes a new VM, then copy your files over ($RETIRED_URL)"
 fi
 (( ${failed_app:-0} )) && failed+=("OmacVM.app")
 (( ${#mac_failed[@]} )) && { mac_failure; failed+=("the Mac side"); }
