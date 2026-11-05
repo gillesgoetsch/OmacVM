@@ -278,6 +278,9 @@ jobs:
       - name: Release script (KosmicKrisp from another Mac, bad arguments)
         run: src/tests/release-script.sh
 
+      - name: The moves gate (3.4.0 on) reads the move matrix's rows
+        run: src/tests/move-45-gate.sh
+
       - name: Vulkan (Venus) driver step for app VMs (when it builds Mesa's vulkan-virtio)
         run: src/tests/venus-driver.sh
       - name: The guest check's Vulkan line without vulkaninfo says "not checked" (#332)

@@ -26,6 +26,9 @@
 #   e2e       the gate: the person's path end to end on the test Mac
 #             (src/tests/e2e/cc-switches.sh) passed for a test identity
 #             build of M; publish refuses without it
+#   moves     (3.4.0 on) the move to Omarchy 4.5 on real 4.0 VMs with faults
+#             (src/tests/e2e/move-45.sh) passed, its files as in M; publish
+#             refuses without it, and without the prebuilt image (Omarchy 4.5)
 #   publish   tag M, the GitHub release (latest), the prebuilt pre-release
 #             (dry run: prints the commands only)
 #   after     download what GitHub serves and check it again
@@ -56,7 +59,11 @@
 # OUT/e2e/result.json), or OMACVM_E2E_SSH + OMACVM_E2E_ARGS (run it on the
 # test Mac now: src/tests/e2e/remote.sh), or OMACVM_RELEASE_E2E_OVERRIDE=
 # "<why>" (publish without it; written to the output folder's
-# e2e-override.log and said again at publish and after).
+# e2e-override.log and said again at publish and after). The moves gate
+# (3.4.0 on): OMACVM_RELEASE_MOVES_RESULT (move-45.sh --summary's
+# result.json, default OUT/moves/result.json) or OMACVM_RELEASE_MOVES_OVERRIDE
+# "<why>" (logged as the e2e override); OMACVM_RELEASE_NO_IMAGE="<why>"
+# publishes 3.4.0 or later without a prebuilt image (new VMs then build here).
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 GH_REPO=gillesgoetsch/omacvm
@@ -77,7 +84,7 @@ VERSION=${1:-}
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; exit 2; }
 shift
 STEPS=("$@")
-(( ${#STEPS[@]} )) || STEPS=(check bump merge build notarize package verify image e2e publish after)
+(( ${#STEPS[@]} )) || STEPS=(check bump merge build notarize package verify image e2e moves publish after)
 # OMACVM_RELEASE_APP_FROM: an absolute path only; a relative one would name
 # another folder for each folder release.sh is run from. The app brings its
 # own runtime: none from OMACVM_RELEASE_RUNTIME_FROM beside it.
@@ -492,6 +499,24 @@ PY
   note "e2e gate passed for M"
 }
 
+# From 3.4.0 (Omarchy 4.5): the move matrix for M (src/tests/e2e/move-45.sh).
+moves_needed() { [[ $(printf '%s\n' "$VERSION" 3.4.0 | sort -t. -k1,1n -k2,2n -k3,3n | head -1) == 3.4.0 ]]; }
+step_moves() {
+  moves_needed || { note "moves: not needed before 3.4.0"; return; }
+  local m; m=$(get M); [[ -n $m ]] || die "no M: run merge first"
+  if [[ -n ${OMACVM_RELEASE_MOVES_OVERRIDE:-} ]]; then
+    local why=$OMACVM_RELEASE_MOVES_OVERRIDE
+    [[ ${#why} -ge 10 ]] || die "OMACVM_RELEASE_MOVES_OVERRIDE: say why in a sentence (it is logged)"
+    printf '%s\t%s\tM=%s\tby %s\tmoves: %s\n' "$(date '+%F %T')" "$VERSION" "$m" "$(id -un)" "$why" >> "$OUT/e2e-override.log"
+    put MOVES override; put MOVES_M "$m"
+    printf '\n    !!! MOVES GATE OVERRIDDEN for %s: %s\n\n' "$VERSION" "$why"; return
+  fi
+  local r=${OMACVM_RELEASE_MOVES_RESULT:-$OUT/moves/result.json}
+  [[ -f $r ]] || die "no move matrix result ($r): src/tests/e2e/move-45.sh on the test Macs, then --summary (or OMACVM_RELEASE_MOVES_OVERRIDE=\"<why>\")"
+  python3 -I "$R/src/tests/e2e/move-45-result.py" gate "$r" "$m" "$R" || die "the moves gate did not pass for M ($r)"
+  put MOVES pass; put MOVES_M "$m"
+}
+
 notes_file() {   # the release text, without the unnotarized lines once notarized
   if [[ $(get NOTARIZED) == 1 ]]; then
     sed '/<!-- if-unnotarized -->/,/<!-- end-if -->/d' "$NOTES"
@@ -511,6 +536,20 @@ step_publish() {
     *) if (( DRY )); then note "dry run: the e2e gate has not passed (a real publish stops here)"
        else die "the e2e gate has not passed for M: release.sh $VERSION e2e (or OMACVM_RELEASE_E2E_OVERRIDE=\"<why>\" release.sh $VERSION e2e)"; fi ;;
   esac
+  if moves_needed; then
+    local mv; mv=$(get MOVES); [[ $(get MOVES_M) == "$m" ]] || mv=""
+    case $mv in
+      pass) note "moves gate: passed for M" ;;
+      override) note "moves gate: OVERRIDDEN" ;;
+      *) if (( DRY )); then note "dry run: the moves gate has not passed (a real publish stops here)"
+         else die "the moves gate has not passed for M: release.sh $VERSION moves"; fi ;;
+    esac
+    if [[ ! -d $OUT/prebuilt ]]; then
+      if [[ -n ${OMACVM_RELEASE_NO_IMAGE:-} ]]; then note "!!! no prebuilt image: ${OMACVM_RELEASE_NO_IMAGE} (new VMs build here)"
+      elif (( DRY )); then note "dry run: no prebuilt image in $OUT/prebuilt (a real publish stops here)"
+      else die "no prebuilt image in $OUT/prebuilt: a $VERSION app would build every new VM here (step image, or OMACVM_RELEASE_NO_IMAGE=\"<why>\")"; fi
+    fi
+  fi
   local title=${OMACVM_RELEASE_TITLE:-OmacVM $VERSION}
   local nf; nf=$(notes_file)
   local assets=("$FILES/OmacVM-$VERSION.zip" "$FILES/OmacVM-$VERSION.zip.sha256" "$FILES/OmacVM-appcast.json"
@@ -607,7 +646,7 @@ clean() {
 TIMES=$OUT/times.tsv
 for s in "${STEPS[@]}"; do
   case $s in
-    check|bump|merge|build|notarize|package|verify|image|e2e|publish|after) fn=step_$s ;;
+    check|bump|merge|build|notarize|package|verify|image|e2e|moves|publish|after) fn=step_$s ;;
     rollback-prep) fn=rollback_prep ;;
     rollback|clean) fn=$s ;;
     *) die "unknown step $s" ;;
