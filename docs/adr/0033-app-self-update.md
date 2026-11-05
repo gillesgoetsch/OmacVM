@@ -60,7 +60,20 @@ never while `update_checks` is false in
 `~/Library/Application Support/omacvm/settings.json` (the control centre's
 file). Automatic checks stay off metered and Low Data networks. "Check for
 Updates…" in the app menu always works. A server answer, even a 404, starts
-the week again, so there is no hourly retry while no release has a feed.
+the week again, so there is no hourly retry while no release has a feed;
+a server error (5xx) or 429 does not, so the next hourly look tries again.
+
+**Retries** (3.2.24, after a user's "No update feed (HTTP 504)": GitHub's
+`latest/download` redirect answered one request with a 504). The feed, its
+signature and the zip are each tried at most twice more on HTTP 500-599,
+429, a timeout or a lost connection: after 2 s, then 6 s, or the server's
+`Retry-After` up to 30 s (`FetchRetry`, in `Transfer`). Never on 404, 403,
+a refused redirect, a size problem or a failed signature or digest check
+(those come after the fetch and are unchanged). Each retry is a line in
+`update.log`; when the last try still gets a server error the window says
+"GitHub answered HTTP 504 (a server error on GitHub's side) for the update
+feed at URL; try again in a few minutes". The Bridge's manifest fetch for
+the control centre retries the same way (`feedRetryWait`).
 
 **Download and checks.** The zip goes to
 `~/Library/Application Support/OmacVM/Updates/<bundle id>/<copy>/staged/`: size and

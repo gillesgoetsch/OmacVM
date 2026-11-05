@@ -268,7 +268,10 @@ final class Updater: ObservableObject {
         config.timeoutIntervalForResource = 30 * 60
         config.allowsExpensiveNetworkAccess = manual
         config.allowsConstrainedNetworkAccess = manual
-        let net = Transfer(configuration: config)
+        // GitHub's release downloads fail now and then for a moment (a 504
+        // from the redirect): 5xx, 429, timeouts and lost connections are
+        // tried twice more (FetchRetry), each retry in update.log.
+        let net = Transfer(configuration: config, retry: .standard) { [weak self] line in await self?.log("retry: " + line) }
         defer { net.finish() }
         let started = Date()
 
@@ -276,12 +279,21 @@ final class Updater: ObservableObject {
         do {
             let (raw, code) = try await net.data(feedURL, cap: Appcast.maxFeedBytes)
             // The server answered: the week starts again even without a feed
-            // (no release has one yet), so nobody asks every hour.
-            lastCheck = Date()
-            guard code == 200 else { return failed("no update feed (HTTP \(code)) at \(feedURL.absoluteString)") }
+            // (no release has one yet), so nobody asks every hour. Not after
+            // a server error or 429 (still there after the retries): the
+            // next hourly look tries again.
+            if !FetchRetry.retries(status: code) { lastCheck = Date() }
+            guard code == 200 else {
+                return failed(FetchRetry.problem(status: code, what: "the update feed", url: feedURL)
+                    ?? "no update feed (HTTP \(code)) at \(feedURL.absoluteString)")
+            }
             let tFeed = Date()
-            let (sig, scode) = try await net.data(feedURL.appendingPathExtension("sig"), cap: Appcast.maxSignatureBytes)
-            guard scode == 200 else { return failed("the update feed has no signature (HTTP \(scode))") }
+            let sigURL = feedURL.appendingPathExtension("sig")
+            let (sig, scode) = try await net.data(sigURL, cap: Appcast.maxSignatureBytes)
+            guard scode == 200 else {
+                return failed(FetchRetry.problem(status: scode, what: "the update feed's signature", url: sigURL)
+                    ?? "the update feed has no signature (HTTP \(scode))")
+            }
             let tSig = Date()
             switch Appcast.verified(feed: raw, signature: sig, keys: keys) {
             case .success(let f): feed = f; feedData = raw; feedSig = sig
@@ -362,7 +374,9 @@ final class Updater: ObservableObject {
             let code = try await net.file(feed.url, to: zip, length: feed.length) { done in
                 Task { @MainActor in if Updater.shared.downloading != nil { Updater.shared.downloaded = (done, total) } }
             }
-            guard code == 200 else { throw HelperError.io("the download failed (HTTP \(code))") }
+            guard code == 200 else {
+                throw HelperError.io(FetchRetry.problem(status: code, what: "the download", url: feed.url) ?? "the download failed (HTTP \(code))")
+            }
             log("download: \(Self.rate(feed.length, Date(), t0))")
             let id = bundleID
             let (app, timing) = try await Task.detached { () throws -> (URL, String) in
