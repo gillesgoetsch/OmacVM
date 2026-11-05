@@ -1,0 +1,223 @@
+From: OmacVM
+Subject: [PATCH] ui: when the Mac's display stays on for a video in the VM, tested without AppKit
+
+What: a header with no AppKit in it: when QEMU holds macOS's
+PreventUserIdleDisplaySleep assertion for a video the guest plays (the
+guest's list of outputs is under 30 s old, one of their windows can be
+seen, the VM runs), each way it lets go and why ([], the lease's end, out of
+sight, the VM stopped, the channel closed, the Mac's sleep), when powerd's
+own timeout is armed again (every 10 s), and which output names the guest
+may send. Used by omacvm-cocoa-video-awake.patch (which explains the why).
+
+Why its own file: so the rules are tested without QEMU or a window
+(app/runtime/Tests/display/test-video-awake.sh applies this patch to an
+empty folder; at build time and in CI).
+
+Upstream: not applicable (OmacVM's display channel).
+Test: app/runtime/Tests/display/test-video-awake.c.
+
+diff --git a/ui/omacvm-video-awake.h b/ui/omacvm-video-awake.h
+new file mode 100644
+--- /dev/null
++++ b/ui/omacvm-video-awake.h
+@@ -0,0 +1,200 @@
++/*
++ * OmacVM: the Mac's display stays on while a video plays in the VM and its
++ * window can be seen (omacvm-cocoa-video-awake.patch, ADR 0070).
++ *
++ * No AppKit in here, so it is tested on its own
++ * (app/runtime/Tests/display/test-video-awake.c); ui/cocoa.m feeds it.
++ *
++ * The guest's display agent (omacvm-displays) sends {"inhibit": [outputs]}
++ * over org.omacvm.display: the outputs that show a window whose app asks
++ * Wayland not to idle (a playing video), again every 10 s while the list is
++ * not empty, [] once when it ends. This says when QEMU holds macOS's
++ * PreventUserIdleDisplaySleep assertion (display only; the Mac still sleeps
++ * when the lid closes or the user picks Sleep), as a Mac video player does
++ * while it plays:
++ *
++ * - held while the guest's list is not empty and newer than
++ *   OMACVM_VA_LEASE_S, one of its outputs' Mac windows can be seen, the VM
++ *   runs and the feature is on;
++ * - released at once on [], at the lease's end (the agent stopped or hangs),
++ *   when no listed window can be seen (minimised, covered, another Space,
++ *   the screen locked or asleep), when the channel closes or the Mac goes
++ *   to sleep (forget) and when the VM stops;
++ * - while held, powerd's own timeout (OMACVM_VA_POWERD_S, action Release) is
++ *   armed again every OMACVM_VA_RENEW_S, so a stuck main thread cannot hold
++ *   it for good.
++ *
++ * Only names Virtual-1 ... Virtual-999 are taken, at most OMACVM_VA_MAX of
++ * them; a line with anything else is ignored as a whole. Outputs past
++ * OMACVM_VA_OUTPUTS have no window here and never count.
++ */
++#ifndef OMACVM_VIDEO_AWAKE_H
++#define OMACVM_VIDEO_AWAKE_H
++
++#include <stdbool.h>
++#include <stddef.h>
++
++#define OMACVM_VA_LEASE_S 30.0      /* the guest says it again every 10 s */
++#define OMACVM_VA_POWERD_S 45       /* powerd releases it by itself after this */
++#define OMACVM_VA_RENEW_S 10.0      /* powerd's timeout armed again this often */
++#define OMACVM_VA_LOOK_S 2.0        /* a look while the list is live or held */
++#define OMACVM_VA_MAX 16            /* names per line */
++#define OMACVM_VA_OUTPUTS 8         /* outputs with a window (OMACVM_MAX_OUTPUTS) */
++
++typedef enum OmacVMVaWhy {
++    OMACVM_VA_WHY_NONE,
++    OMACVM_VA_WHY_PLAYING,      /* held: a video plays in a window that can be seen */
++    OMACVM_VA_WHY_ENDED,        /* the guest said [] */
++    OMACVM_VA_WHY_LEASE,        /* no word from the guest for OMACVM_VA_LEASE_S */
++    OMACVM_VA_WHY_UNSEEN,       /* no listed window can be seen */
++    OMACVM_VA_WHY_STOPPED,      /* the VM stopped (paused, shut down) */
++    OMACVM_VA_WHY_OFF,          /* OMACVM_VIDEO_AWAKE=0 */
++    OMACVM_VA_WHY_CHANNEL,      /* the display channel closed */
++    OMACVM_VA_WHY_SLEEP,        /* the Mac goes to sleep */
++} OmacVMVaWhy;
++
++typedef enum OmacVMVaDo {
++    OMACVM_VA_KEEP,             /* nothing to do */
++    OMACVM_VA_HOLD,             /* create the assertion */
++    OMACVM_VA_RELEASE,          /* release it */
++    OMACVM_VA_RENEW,            /* arm powerd's timeout again */
++} OmacVMVaDo;
++
++typedef struct OmacVMVideoAwake {
++    unsigned outputs;       /* the guest's list: bit i = Virtual-(i + 1) */
++    double renewed;         /* when it last said a non-empty list */
++    OmacVMVaWhy forgot;     /* why the list was dropped (channel, sleep) */
++    bool held;
++    double armed_at;        /* powerd's timeout last armed */
++} OmacVMVideoAwake;
++
++/*
++ * One name from the guest: its output's index (0 = Virtual-1), -1 for a
++ * valid name without a window here, -2 for anything else.
++ */
++static inline int omacvm_va_name(const char *s, size_t len)
++{
++    static const char pre[] = "Virtual-";
++    const size_t n = sizeof(pre) - 1;
++    unsigned v = 0;
++
++    if (!s || len <= n || len > n + 3) {
++        return -2;
++    }
++    for (size_t i = 0; i < n; i++) {
++        if (s[i] != pre[i]) {
++            return -2;
++        }
++    }
++    if (s[n] == '0') {
++        return -2;
++    }
++    for (size_t i = n; i < len; i++) {
++        if (s[i] < '0' || s[i] > '9') {
++            return -2;
++        }
++        v = v * 10 + (unsigned)(s[i] - '0');
++    }
++    return v <= OMACVM_VA_OUTPUTS ? (int)v - 1 : -1;
++}
++
++/* A list from the guest, already checked (omacvm_va_name): its outputs. */
++static inline void omacvm_va_list(OmacVMVideoAwake *v, unsigned outputs, double now)
++{
++    v->outputs = outputs;
++    v->forgot = OMACVM_VA_WHY_NONE;
++    if (outputs) {
++        v->renewed = now;
++    }
++}
++
++/* The channel closed or the Mac goes to sleep: the guest's word no longer holds. */
++static inline void omacvm_va_forget(OmacVMVideoAwake *v, OmacVMVaWhy why)
++{
++    if (v->outputs) {
++        v->forgot = why;
++    }
++    v->outputs = 0;
++}
++
++/* The guest's list is live: not empty, and said within the lease. */
++static inline bool omacvm_va_live(const OmacVMVideoAwake *v, double now)
++{
++    return v->outputs && now - v->renewed < OMACVM_VA_LEASE_S && now >= v->renewed;
++}
++
++/*
++ * What to do now. SEEN: bit i = output i's window can be seen; RUNNING: the
++ * VM runs; ON: the feature. *WHY says why on HOLD and RELEASE.
++ */
++static inline OmacVMVaDo omacvm_va_decide(OmacVMVideoAwake *v, unsigned seen, bool running, bool on,
++                                          double now, OmacVMVaWhy *why)
++{
++    bool live = omacvm_va_live(v, now);
++    bool want = on && running && live && (v->outputs & seen);
++
++    *why = OMACVM_VA_WHY_NONE;
++    if (want && !v->held) {
++        v->held = true;
++        v->armed_at = now;
++        *why = OMACVM_VA_WHY_PLAYING;
++        return OMACVM_VA_HOLD;
++    }
++    if (!want && v->held) {
++        v->held = false;
++        if (!on) {
++            *why = OMACVM_VA_WHY_OFF;
++        } else if (!running) {
++            *why = OMACVM_VA_WHY_STOPPED;
++        } else if (!v->outputs) {
++            *why = v->forgot != OMACVM_VA_WHY_NONE ? v->forgot : OMACVM_VA_WHY_ENDED;
++        } else if (!live) {
++            *why = OMACVM_VA_WHY_LEASE;
++        } else {
++            *why = OMACVM_VA_WHY_UNSEEN;
++        }
++        return OMACVM_VA_RELEASE;
++    }
++    if (want && (now - v->armed_at >= OMACVM_VA_RENEW_S || now < v->armed_at)) {
++        v->armed_at = now;
++        return OMACVM_VA_RENEW;
++    }
++    return OMACVM_VA_KEEP;
++}
++
++/* When to look again by itself (0: nothing to wait for). */
++static inline double omacvm_va_look_at(const OmacVMVideoAwake *v, double now)
++{
++    if (!v->held && !omacvm_va_live(v, now)) {
++        return 0;
++    }
++    double at = now + OMACVM_VA_LOOK_S;
++    double end = v->renewed + OMACVM_VA_LEASE_S;
++    return v->outputs && end > now && end < at ? end : at;
++}
++
++static inline const char *omacvm_va_why_text(OmacVMVaWhy why)
++{
++    switch (why) {
++    case OMACVM_VA_WHY_PLAYING:
++        return "a video plays in the VM and its window can be seen";
++    case OMACVM_VA_WHY_ENDED:
++        return "the video ended or paused";
++    case OMACVM_VA_WHY_LEASE:
++        return "no word from the VM for 30 s";
++    case OMACVM_VA_WHY_UNSEEN:
++        return "its window cannot be seen";
++    case OMACVM_VA_WHY_STOPPED:
++        return "the VM stopped";
++    case OMACVM_VA_WHY_OFF:
++        return "OMACVM_VIDEO_AWAKE=0";
++    case OMACVM_VA_WHY_CHANNEL:
++        return "the VM's display agent went away";
++    case OMACVM_VA_WHY_SLEEP:
++        return "the Mac goes to sleep";
++    default:
++        return "";
++    }
++}
++
++#endif
