@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# OmacVM's edits of Omarchy's shell on omarchy-mac's files and on upstream's
-# from October 2026 (omarchy-shell/README.md), offline: the toasts under
+# OmacVM's edits of Omarchy's shell on omarchy-mac's files, on upstream's
+# from October 2026 and on Omarchy 4.5.0's (omarchy-shell/README.md), offline: the toasts under
 # Omanotch's strip (guest/omanotch-notifications.sh), Omanotch's display
 # panel (NOTCH left out), OmacVM.app's display panel and the Bridge's night
 # light indicator. The bar and background patches have their own tests
@@ -16,6 +16,7 @@ t() {  # want got name
 }
 MAC=omarchy-mac-ba546a61
 UP=omarchy-a06ec133
+UP45=omarchy-ac2690cd   # Omarchy 4.5.0
 
 # --- Toasts under the strip: omarchy-mac's service is patched, upstream's asks the bar ---
 N=$R/src/guest/omanotch-notifications.sh
@@ -70,12 +71,16 @@ t "" "$(diff "$O/$MAC/shell/plugins/notifications/Service.qml" "$T/v1b-Service.q
 out=$(bash "$N" on "$T/$UP-Service.qml" 2>&1); rc=$?
 t "0 " "$rc $out" "$UP: nothing to patch, no error (the bar's barSizeFor answers)"
 t "" "$(diff "$O/$UP/shell/plugins/notifications/Service.qml" "$T/$UP-Service.qml")" "  the service as Omarchy shipped it"
+cp "$O/$UP45/shell/plugins/notifications/Service.qml" "$T/$UP45-Service.qml"
+out=$(bash "$N" on "$T/$UP45-Service.qml" 2>&1); rc=$?
+t "0 " "$rc $out" "$UP45: nothing to patch, no error (Delivery.barThickness asks the bar)"
+t "" "$(diff "$O/$UP45/shell/plugins/notifications/Service.qml" "$T/$UP45-Service.qml")" "  the service as Omarchy shipped it"
 sed 's/service.barClearanceFor(/service.someOtherClearance(/' "$O/$UP/shell/plugins/notifications/Service.qml" > "$T/x-Service.qml"
 out=$(bash "$N" on "$T/x-Service.qml" 2>&1); rc=$?
 t "1" "$rc" "a service in neither form: says so (exit 1)"
 
 # --- Omanotch's display panel and OmacVM.app's: on both panels ---
-for v in $MAC $UP; do
+for v in $MAC $UP $UP45; do
   r=$(OMARCHY_PATH="$O/$v" XDG_CONFIG_HOME="$T/$v-config" python3 - "$R/src/omanotch/guest/monitor/display-panel.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("dp", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -107,7 +112,7 @@ layout() {  # the indicators widget with these items ("" = none of its own)
 }
 want_mac='["Dictation","ScreenRecording","Reminder","Dnd","StayAwake"]'
 want_up='["PasswordlessSudo","ScreenRecording","RemoteSession","Reminder","Dnd","StayAwake"]'
-for v in $MAC $UP; do
+for v in $MAC $UP $UP45; do
   [[ $v == "$MAC" ]] && want=$want_mac || want=$want_up
   layout "" > "$T/$v.json"; rm -f "$T/$v.mark"
   t "changed" "$(bash "$I" "$T/$v.json" "$T/$v.mark" "$O/$v/shell/plugins/bar/widgets/Indicators.qml")" "$v: no items of its own: Omarchy's default less NightLight"
