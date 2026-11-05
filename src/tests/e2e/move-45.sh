@@ -34,8 +34,8 @@ app-quit     the app quits mid-move (SIGTERM to move-vm.sh): it stops at a step 
 power-loss   move-vm.sh and QEMU killed (-9) together in the package switch (the Mac loses power): interrupted, Undo exact
 power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo (or Resume) leaves the VM as before
 guest-full   the VM's own disk nearly full: refused before the switch, Undo restores the disk exactly
-mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes
-non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anything changes"
+mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes, plan says why
+non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anything changes, plan says why"
 
 # The files a result is tied to: a result for commit C counts for release M
 # only while these are the same in C and M (src/release/release.sh step moves).
@@ -93,10 +93,11 @@ finish() {
 # Next to BASE (same volume: cp -c), named for the row; rows that need another
 # volume make their own (mac-full, non-apfs).
 VD="$(dirname "$BASE")/$BN mv-$ROW"
-clone_to() {   # DIR: BASE's folder as a fresh VM at DIR (cp -c where it can)
+clone_to() {   # DIR [stand-in]: BASE's folder as a fresh VM at DIR (cp -c); stand-in: the disk's first 2 GiB only
   local d=$1 port
   rm -rf "$d"; mkdir -p "$d"
-  cp -c "$BASE/disk.img" "$d/disk.img" 2>/dev/null || cp "$BASE/disk.img" "$d/disk.img" || return 1
+  if [[ ${2:-} == stand-in ]]; then dd if="$BASE/disk.img" of="$d/disk.img" bs=4m count=512 status=none || return 1
+  else cp -c "$BASE/disk.img" "$d/disk.img" || return 1; fi
   local f; for f in efi-vars.fd vm.env features graphics omacvm-version guest-pointer ssh-key ssh-key.pub ready mac-setup fast-network; do
     [[ -e $BASE/$f ]] && cp -p "$BASE/$f" "$d/$f"
   done
@@ -386,27 +387,31 @@ row_guest_full() {
   if [[ -e $VD/before-omarchy-4.5 ]]; then mvm undo; check "Undo" $(( $? == 0 )) ""; fi
   same_as_before
 }
-mac_side_refusal() {   # FS SIZE_MB: the VM on a small disk image of FS; the move refuses, nothing changes
-  IMG=$OUT/$TAG.dmg
-  hdiutil create -quiet -size "$2m" -fs "$1" -volname "mv-$ROW" "$IMG" || { check "disk image" 0 ""; return; }
-  MNT=$(hdiutil attach -nobrowse -noautoopen "$IMG" | awk -F'\t' 'END { print $NF }')
+mac_side_refusal() {   # FS GB WHY: the VM on a GB disk image of FS; the move refuses at once, nothing changes
+  # The disk is a stand-in, the base disk's first 2 GiB: Mac OS Extended has no sparse files (a copy
+  # would write all 64 GB), and the Mac's checks refuse before anything reads or clones it. APFS, 6 GB:
+  # the move needs 2 GiB + 14 GB and finds about 4. HFS+, 20 GB: space enough, so only "not APFS" can
+  # refuse it; OMACVM_TEST_MOVE_STOP=backup stops a run that wrongly goes on before any VM starts.
+  IMG=$OUT/$TAG.sparseimage
+  rm -f "$IMG"
+  hdiutil create -quiet -type SPARSE -size "$2g" -fs "$1" -volname "mv-$ROW" "$OUT/$TAG" || { check "disk image" 0 ""; return; }
+  MNT=$(hdiutil attach -nobrowse -noautoopen "$IMG" 2>/dev/null | awk -F'\t' 'END { print $NF }')
+  [[ -d $MNT ]] || { check "disk image attached" 0 ""; return; }
   VD="$MNT/$BN mv-$ROW"
-  clone_to "$VD" || { check "VM copied to the disk image" 0 ""; return; }
-  if [[ $1 == APFS ]]; then   # fill to leave about 2 GB less than the move needs (D1)
-    local alloc kb; alloc=$(( $(stat -f %b "$VD/disk.img") * 512 ))
-    kb=$(df -k "$MNT" | awk 'NR == 2 { print $4 }')
-    mkfile -n $(( kb * 1024 - alloc - 2 * 1024 * 1024 * 1024 )) "$MNT/fill" 2>/dev/null || true
-    log "free $(df -h "$MNT" | awk 'NR == 2 { print $4 }'), disk.img allocated $((alloc >> 20)) MB"
-  fi
+  clone_to "$VD" stand-in || { check "VM copied to the disk image" 0 ""; return; }
+  log "free $(df -h "$MNT" | awk 'NR == 2 { print $4 }') on $1"
   pre_hash
-  mvm run; local rc=$?
-  check "refused" $((rc != 0)) "exit $rc, $(tail -2 "$OUT/logs/$TAG.move.log" | tr '\n' ' ' | head -c 200)"
+  OMACVM_TEST_MOVE_STOP=backup mvm run; local rc=$?
+  check "refused" $((rc != 0)) "exit $rc: $(J reason)"
+  check "said why ($3)" $([[ $(J reason) == *"$3"* ]] && echo 1 || echo 0) "$(J reason)"
   check "nothing changed: disk.img" $([[ $(sha "$VD/disk.img") == "$PRE_DISK" ]] && echo 1 || echo 0) ""
   check "nothing changed: no backup" $([[ ! -e $VD/before-omarchy-4.5 ]] && echo 1 || echo 0) ""
   check "no QEMU started" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
+  local p; p=$("$S/move-vm.sh" "$VD" plan 2>/dev/null | sed -n 's/^problem=//p')
+  check "plan says the same (the card's Blocked state)" $([[ $p == *"$3"* ]] && echo 1 || echo 0) "$p"
 }
-row_mac_full() { mac_side_refusal APFS $(( ($(stat -f %b "$BASE/disk.img") * 512 >> 20) + 4096 )); }
-row_non_apfs() { mac_side_refusal HFS+ $(( ($(stat -f %b "$BASE/disk.img") * 512 >> 20) + 30720 )); }
+row_mac_full() { mac_side_refusal APFS 6 "Not enough free space"; }
+row_non_apfs() { mac_side_refusal HFS+ 20 "APFS"; }
 
 log "row $ROW on $BN (app $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :OmacVMCommit' "$APP/Contents/Info.plist" | tr '\n' ' '))"
 case $ROW in
