@@ -538,6 +538,314 @@ MOVE = "misc:mouse_move_enables_dpms"
 KEY = "misc:key_press_enables_dpms"
 
 
+class FakeVideoHypr:
+    """Hyprland 0.56.2's j/clients, j/monitors and j/getprop ... idle_inhibit for the
+    video check: inhibitingIdle is true for an app's own zwp_idle_inhibit AND for
+    windows with an idle_inhibit rule (Omarchy's full-screen and noidle rules)."""
+
+    def __init__(self):
+        self.clients = []
+        self.monitors = [{"name": "Virtual-1", "id": 0, "activeWorkspace": {"id": 1, "name": "1"},
+                          "specialWorkspace": {"id": 0, "name": ""}, "dpmsStatus": True, "disabled": False}]
+        self.rules = {}           # address -> idle_inhibit mode (0 none, 1 always, 2 focus, 3 fullscreen)
+        self.asked = []
+        self.down = False         # Hyprland does not answer
+
+    def window(self, address, pid=100, ws=1, inhibiting=True, **extra):
+        c = {"address": address, "pid": pid, "workspace": {"id": ws, "name": str(ws)},
+             "inhibitingIdle": inhibiting, "hidden": False, "mapped": True, "fullscreen": 0}
+        c.update(extra)
+        self.clients.append(c)
+        return c
+
+    def json(self, command):
+        self.asked.append(command)
+        if self.down:
+            return None
+        if command == "j/clients":
+            return self.clients
+        if command == "j/monitors":
+            return self.monitors
+        if command.startswith("j/getprop address:") and command.endswith(" idle_inhibit"):
+            return {"idle_inhibit": self.rules.get(command.split(":", 1)[1].split()[0], 0)}
+        return None
+
+
+class VideoOutputs(unittest.TestCase):
+    """Which outputs show a video (the Mac keeps its display on for them): no false positives."""
+
+    def setUp(self):
+        self.h = FakeVideoHypr()
+        self.locked = False
+        self.exe = {100: "/usr/bin/mpv"}
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.proc = self.tmp / "proc"
+        self.local = self.tmp / "pacman-local"
+        self.local.mkdir()
+        self.chromium_dir = self.tmp / "usr/lib/chromium"
+        self.chromium_dir.mkdir(parents=True)
+        (self.chromium_dir / "icudtl.dat").write_bytes(b"")
+        self.electron_dir = self.tmp / "usr/lib/electron39"
+        self.electron_dir.mkdir(parents=True)
+        (self.electron_dir / "icudtl.dat").write_bytes(b"")
+        for target, value in [("hypr_json", self.h.json), ("screen_locked", lambda: self.locked),
+                              ("CHROMIUM_EXE", str(self.chromium_dir / "chromium")),
+                              ("PACMAN_LOCAL", self.local), ("log", lambda m: None)]:
+            patcher = mock.patch.object(od, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        od._chromium_cache.clear()
+
+    def counts(self, pid):
+        """player_counts against a fake /proc made from self.exe."""
+        for p, exe in self.exe.items():
+            d = self.proc / str(p)
+            d.mkdir(parents=True, exist_ok=True)
+            link = d / "exe"
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(exe)
+        return od.player_counts(pid, proc=self.proc, local=self.local)
+
+    def outputs(self):
+        return od.inhibiting_outputs(self.h.json("j/clients"), self.h.json("j/monitors"),
+                                     od.idle_rule_free, od.screen_locked, counts=self.counts)
+
+    def chromium(self, version):
+        for d in self.local.iterdir():
+            d.rmdir()
+        (self.local / f"chromium-{version}").mkdir()
+        od._chromium_cache.clear()
+
+    def test_mpv_playing_counts(self):
+        self.h.window("0xaaab1b61d100")
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_nothing_inhibits_nothing_more_asked(self):
+        self.h.window("0x1", inhibiting=False)
+        self.assertEqual(od.video_outputs(), [])
+        self.assertEqual(self.h.asked, ["j/clients"])   # idle: one request per look
+
+    def test_paused_video_does_not_count(self):
+        # mpv and browsers drop their inhibitor while paused: inhibitingIdle false.
+        self.h.window("0x1", inhibiting=False)
+        self.assertEqual(self.outputs(), [])
+
+    def test_window_rules_do_not_count(self):
+        # A full-screen terminal (Omarchy's fullscreen rule), a noidle-tagged window: Hyprland's rule, not the app.
+        for address, mode in (("0x1", 3), ("0x2", 1), ("0x3", 2)):
+            self.h.window(address)
+            self.h.rules[address] = mode
+        self.assertEqual(self.outputs(), [])
+        self.assertTrue(all(c.startswith("j/getprop") for c in self.h.asked[2:]))
+
+    def test_an_odd_getprop_answer_does_not_count(self):
+        self.h.window("0x1")
+        for answer in (None, {}, {"idle_inhibit": "0"}, {"idle_inhibit": False}, [0]):
+            with mock.patch.object(od, "hypr_json", lambda c, a=answer: a if "getprop" in c else self.h.json(c)):
+                self.assertEqual(self.outputs(), [], answer)
+
+    def test_other_workspace_does_not_count(self):
+        self.h.window("0x1", ws=2)
+        self.assertEqual(self.outputs(), [])
+
+    def test_hidden_special_workspace_does_not_count_shown_one_does(self):
+        self.h.window("0x1", ws=-98)
+        self.assertEqual(self.outputs(), [])
+        self.h.monitors[0]["specialWorkspace"] = {"id": -98, "name": "special:scratchpad"}
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_output_off_or_disabled_does_not_count(self):
+        self.h.window("0x1")
+        self.h.monitors[0]["dpmsStatus"] = False
+        self.assertEqual(self.outputs(), [])
+        self.h.monitors[0]["dpmsStatus"] = True
+        self.h.monitors[0]["disabled"] = True
+        self.assertEqual(self.outputs(), [])
+
+    def test_not_a_mac_output_does_not_count(self):
+        self.h.window("0x1")
+        self.h.monitors[0]["name"] = "NOTCH"
+        self.assertEqual(self.outputs(), [])
+
+    def test_hidden_or_unmapped_window_does_not_count(self):
+        self.h.window("0x1", hidden=True)
+        self.h.window("0x2", mapped=False)
+        self.assertEqual(self.outputs(), [])
+
+    def test_covered_by_another_full_screen_window(self):
+        self.h.window("0x1")
+        self.h.window("0x2", inhibiting=False, fullscreen=1, pid=200)
+        self.assertEqual(self.outputs(), [])
+
+    def test_the_video_itself_full_screen_counts(self):
+        self.h.window("0x1", fullscreen=1)
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_locked_session_does_not_count(self):
+        self.h.window("0x1")
+        self.locked = True
+        self.assertEqual(self.outputs(), [])
+
+    def test_lock_asked_only_when_something_counts(self):
+        asked = []
+        self.h.window("0x1", ws=2)
+        od.inhibiting_outputs(self.h.clients, self.h.monitors, od.idle_rule_free,
+                              lambda: asked.append(1) or False, counts=self.counts)
+        self.assertEqual(asked, [])
+
+    def test_two_outputs(self):
+        self.h.monitors.append({"name": "Virtual-2", "activeWorkspace": {"id": 5}, "specialWorkspace": {"id": 0},
+                                "dpmsStatus": True})
+        self.h.window("0x1", ws=5)
+        self.assertEqual(self.outputs(), ["Virtual-2"])
+        self.h.window("0x2", ws=1)
+        self.assertEqual(self.outputs(), ["Virtual-1", "Virtual-2"])
+
+    def test_chromium_before_157_does_not_count(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.h.window("0x1")
+        self.chromium("156.0.7500.1-1")
+        self.assertEqual(self.outputs(), [])
+        self.chromium("153.0.8010.36-1")
+        self.assertEqual(self.outputs(), [])
+
+    def test_chromium_157_counts(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.h.window("0x1")
+        self.chromium("157.0.7600.10-1")
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_chromium_replaced_while_it_runs_does_not_count(self):
+        self.exe[100] = str(self.chromium_dir / "chromium") + " (deleted)"
+        self.h.window("0x1")
+        self.chromium("157.0.7600.10-1")
+        self.assertEqual(self.outputs(), [])
+
+    def test_chromium_unknown_version_does_not_count(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.h.window("0x1")
+        self.assertEqual(self.outputs(), [])   # no chromium package in the database
+
+    def test_electron_and_other_chromium_builds_do_not_count(self):
+        self.chromium("160.0.1-1")
+        self.exe[100] = str(self.electron_dir / "electron")
+        self.h.window("0x1")
+        self.assertEqual(self.outputs(), [])
+
+    def test_unknown_process_does_not_count(self):
+        self.h.window("0x1", pid=999)
+        self.h.window("0x2", pid=0)
+        self.h.window("0x3", pid="100")
+        self.assertEqual(self.outputs(), [])
+
+    def test_garbage_from_hyprland(self):
+        for clients, monitors in ((None, []), ([], None), ("x", []), ([1, None, "x", {"inhibitingIdle": True}], []),
+                                  ([{"inhibitingIdle": True, "address": "0x1", "pid": 100, "workspace": 1}],
+                                   self.h.monitors),
+                                  ([{"inhibitingIdle": True, "address": "rm -rf", "pid": 100,
+                                     "workspace": {"id": 1}}], self.h.monitors),
+                                  ([{"inhibitingIdle": 1, "address": "0x1", "pid": 100, "workspace": {"id": 1}}],
+                                   self.h.monitors),
+                                  ([], [{"name": "Virtual-1", "activeWorkspace": {"id": True}}])):
+            self.assertEqual(od.inhibiting_outputs(clients, monitors, od.idle_rule_free, lambda: False,
+                                                   counts=self.counts), [], (clients, monitors))
+
+    def test_no_answer_from_hyprland_is_none(self):
+        self.h.down = True
+        self.assertIsNone(od.video_outputs())
+
+
+class VideoToTheMac(unittest.TestCase):
+    """The agent's {"inhibit": [...]} lines: at once on a change, every 10 s while a video plays, [] once."""
+
+    def make(self):
+        a = od.Agent.__new__(od.Agent)
+        a.outbox = b""
+        a.inhibit = []
+        a.last_inhibit = 0.0
+        self.sent = []
+        a.flush = lambda: None
+        self.clock = [1000.0]
+        for patcher in (mock.patch.object(od.time, "monotonic", lambda: self.clock[0]),
+                        mock.patch.object(od, "log", lambda m: None)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return a
+
+    def lines(self, a):
+        return [json.loads(l) for l in a.outbox.split(b"\n") if l]
+
+    def test_change_refresh_end(self):
+        a = self.make()
+        a.check_inhibit(lambda: [])
+        self.assertEqual(a.outbox, b"")                    # nothing plays: nothing said
+        a.check_inhibit(lambda: ["Virtual-1"])
+        self.assertEqual(self.lines(a), [{"inhibit": ["Virtual-1"]}])
+        a.outbox = b""
+        a.check_inhibit(lambda: ["Virtual-1"])              # the refresh (the Mac's lease)
+        self.assertEqual(self.lines(a), [{"inhibit": ["Virtual-1"]}])
+        a.outbox = b""
+        a.check_inhibit(lambda: [])
+        self.assertEqual(self.lines(a), [{"inhibit": []}])  # [] once
+        a.outbox = b""
+        a.check_inhibit(lambda: [])
+        self.assertEqual(a.outbox, b"")
+
+    def test_no_answer_sends_nothing(self):
+        a = self.make()
+        a.check_inhibit(lambda: ["Virtual-1"])
+        a.outbox = b""
+        a.check_inhibit(lambda: None)                       # Hyprland gone: the Mac's lease runs out
+        self.assertEqual(a.outbox, b"")
+        self.assertEqual(a.inhibit, ["Virtual-1"])
+
+    def test_only_the_newest_list_waits(self):
+        a = self.make()
+        a.outbox = b'{"monitors":[]}\n'
+        a.check_inhibit(lambda: ["Virtual-1"])
+        a.check_inhibit(lambda: ["Virtual-1"])
+        a.check_inhibit(lambda: ["Virtual-1", "Virtual-2"])
+        self.assertEqual(self.lines(a), [{"monitors": []}, {"inhibit": ["Virtual-1", "Virtual-2"]}])
+        # A line half written stays whole.
+        a.outbox = b'hibit":["Virtual-1"]}\n'
+        a.check_inhibit(lambda: [])
+        self.assertEqual(a.outbox, b'hibit":["Virtual-1"]}\n{"inhibit":[]}\n')
+
+    def test_asked_every_10_s_with_the_report(self):
+        a = self.make()
+        asked = []
+        a.check_inhibit = lambda: asked.append(self.clock[0])
+        a.reported = None
+        a.lua_changed = lambda: None
+        with mock.patch.object(od, "monitors", lambda: None):
+            for _ in range(60):          # the report every 0.5 s while following a change
+                a.report()
+                a.last_inhibit = asked[-1] if asked else a.last_inhibit
+                self.clock[0] += 0.5
+        # 30 s of reports every 0.5 s: about every 10 s, not every report.
+        self.assertEqual(len(asked), 4)
+        self.assertTrue(all(b - a >= od.INHIBIT_EVERY - 0.5 for a, b in zip(asked, asked[1:])))
+
+    def test_stop_says_no_video(self):
+        a = self.make()
+        a.check_inhibit(lambda: ["Virtual-1"])
+        with self.assertRaises(SystemExit):
+            a.stop()
+        self.assertEqual(self.lines(a)[-1], {"inhibit": []})
+        b = self.make()
+        with self.assertRaises(SystemExit):
+            b.stop()
+        self.assertEqual(b.outbox, b"")   # nothing played: nothing said
+
+    def test_stay_awake_and_no_idle_lock_are_never_sent(self):
+        src = (HERE.parent / "omacvm-displays").read_text()
+        self.assertNotIn("stay-awake", src)
+        self.assertNotIn("no-idle-lock", src.split('"""', 2)[2])   # only the docstring names it
+        self.assertEqual(src.count('self.send({"inhibit": outputs})'), 1)
+
+
 class FakeHypr:
     """Hyprland's outputs with their DPMS, for Pause, and its two wake options
     (Omarchy turns both on): as Hyprland 0.56.2, a pointer move (or a key) with
@@ -1216,12 +1524,16 @@ class AgentStart(unittest.TestCase):
                 order.append("agent")
                 agent_ran.set()
 
+            def stop(self, *_args):
+                pass
+
         with tempfile.TemporaryDirectory() as tmp:
             port = pathlib.Path(tmp) / "port"
             port.write_text("")
             with mock.patch.object(od, "PORT", port), mock.patch.object(od, "refresh_widget", side_effect=widget), \
-                    mock.patch.object(od, "Agent", FakeAgent):
+                    mock.patch.object(od, "Agent", FakeAgent), mock.patch.object(od.signal, "signal") as sig:
                 self.assertEqual(od.main(["omacvm-displays"]), 0)
+                self.assertEqual(sig.call_args[0][0], od.signal.SIGTERM)   # [] to the Mac when stopped
                 widget_done.wait(5)
         self.assertEqual(order, ["agent", "widget rebuilt"])
 

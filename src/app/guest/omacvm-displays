@@ -49,6 +49,25 @@ org.omacvm.display, one JSON object per line:
                 the usual way), and at the agent's next start
                 ($XDG_RUNTIME_DIR/omacvm/paused-wake). A config reload puts
                 Omarchy's values back: they are turned off again.
+  to the Mac    {"inhibit": ["Virtual-1"]}  the outputs that show a video
+                now, so the Mac keeps its display on while that window can
+                be seen (as a Mac video player does; ADR 0070). A window
+                counts only when its app asks Wayland not to idle
+                (zwp_idle_inhibit: mpv, Firefox, Chromium while a video
+                plays; Hyprland's inhibitingIdle) and Hyprland has no window
+                rule for it (Omarchy's full-screen and noidle rules: a
+                full-screen terminal is no video), its workspace is shown on
+                an output that is on, no other window is full screen there,
+                and the session is not locked. Chromium-based apps count only
+                as the system's Chromium 157 or newer (156 also asks for
+                audio-only tabs, downloads and calls); Electron apps and
+                other Chromium builds never do. Omarchy's Stay Awake and the
+                no-idle-lock feature are never sent. Asked every 10 s with
+                the layout compare (one Hyprland request while nothing plays);
+                sent at once when the list changes, again every 10 s while it
+                is not empty (the Mac lets go 30 s after the last one), []
+                once when it ends and when the agent stops. No answer from
+                Hyprland: nothing is sent, and the Mac's lease runs out.
 
 Hyprland's event socket has no event when an output only moves (display-sync
 and Omanotch move them with hyprctl eval, a config reload puts them back to
@@ -69,7 +88,7 @@ The switch "Use external displays" is ~/.config/omacvm/displays.conf
   omacvm-displays                   run the agent (the user service)
   omacvm-displays external on|off|toggle
   omacvm-displays state             "on" or "off" (nothing without the port)
-  omacvm-displays status            the switch and the outputs, as JSON
+  omacvm-displays status            the switch, the outputs and the ones showing a video ("inhibit"), as JSON
   omacvm-displays desktop           displays that show no desktop, as JSON
   omacvm-displays poke              tell the agent the layout moved (Hyprland's hook)
   omacvm-displays pause             whether it can pause drawing, the displays it turned off and
@@ -106,6 +125,7 @@ import os
 from pathlib import Path
 import re
 import select
+import signal
 import socket
 import struct
 import subprocess
@@ -750,6 +770,125 @@ def write_state(message: dict) -> None:
         BUILTIN.unlink(missing_ok=True)
 
 
+INHIBIT_EVERY = 10.0   # seconds between two looks for a video (with the layout compare)
+CHROMIUM_MIN = 157     # Chromium asks Wayland not to idle only for video from 157 on
+CHROMIUM_EXE = "/usr/lib/chromium/chromium"
+PACMAN_LOCAL = Path("/var/lib/pacman/local")
+_chromium_cache: dict[Path, tuple[float, int | None]] = {}
+
+
+def chromium_major(local: Path = PACMAN_LOCAL) -> int | None:
+    """The installed chromium package's major version (pacman's database), cached."""
+    try:
+        mtime = local.stat().st_mtime
+    except OSError:
+        return None
+    cached = _chromium_cache.get(local)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    major = None
+    try:
+        for d in local.iterdir():
+            m = re.fullmatch(r"chromium-([0-9]+)\.[0-9.]+-[0-9.]+", d.name)
+            if m:
+                major = int(m.group(1))
+                break
+    except OSError:
+        return None
+    _chromium_cache[local] = (mtime, major)
+    return major
+
+
+def player_counts(pid, proc: Path = Path("/proc"), local: Path = PACMAN_LOCAL) -> bool:
+    """Whether the window's process may keep the Mac's display on. Chromium-based
+    ones (icudtl.dat beside the program) only as the system's Chromium 157 or
+    newer, not replaced on disk while it runs: older ones also ask Wayland not
+    to idle for audio-only tabs, downloads and calls (fixed in 157); Electron
+    and other Chromium builds never. An unknown process does not count."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        exe = os.readlink(proc / str(pid) / "exe")
+    except OSError:
+        return False
+    deleted = exe.endswith(" (deleted)")
+    exe = exe.removesuffix(" (deleted)")
+    if not os.path.exists(os.path.join(os.path.dirname(exe), "icudtl.dat")):
+        return True
+    if exe != CHROMIUM_EXE or deleted:
+        return False
+    major = chromium_major(local)
+    return major is not None and major >= CHROMIUM_MIN
+
+
+def inhibiting_outputs(clients, monitors, rule_free, locked, counts=player_counts) -> list[str]:
+    """The outputs showing a video now (the Mac keeps its display on for them).
+
+    clients and monitors are Hyprland's j/clients and j/monitors; rule_free(address)
+    says Hyprland has no idle_inhibit window rule for the window (asked only for
+    a window that passes everything else); locked() whether the session is
+    locked (asked only when some window counts); counts(pid) player_counts."""
+    if not isinstance(clients, list) or not isinstance(monitors, list):
+        return []
+    shown: dict[int, str] = {}   # workspace id -> the output showing it
+    for m in monitors:
+        if not isinstance(m, dict) or m.get("disabled") or m.get("dpmsStatus") is False:
+            continue
+        name = m.get("name")
+        if not isinstance(name, str) or not re.fullmatch(r"Virtual-[0-9]+", name):
+            continue
+        for key in ("activeWorkspace", "specialWorkspace"):
+            ws = m.get(key)
+            wid = ws.get("id") if isinstance(ws, dict) else None
+            if isinstance(wid, int) and not isinstance(wid, bool) and wid != 0:
+                shown[wid] = name
+    full: dict[int, set[str]] = {}   # workspace id -> its full-screen windows
+    for c in clients:
+        if isinstance(c, dict) and c.get("fullscreen") and isinstance(c.get("workspace"), dict):
+            full.setdefault(c["workspace"].get("id"), set()).add(str(c.get("address")))
+    out: set[str] = set()
+    for c in clients:
+        if not isinstance(c, dict) or c.get("inhibitingIdle") is not True:
+            continue
+        if c.get("hidden") is True or c.get("mapped") is False:
+            continue
+        ws = c.get("workspace")
+        wid = ws.get("id") if isinstance(ws, dict) else None
+        name = shown.get(wid) if isinstance(wid, int) else None
+        address = c.get("address")
+        if name is None or name in out or not isinstance(address, str):
+            continue
+        if not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", address):
+            continue
+        if full.get(wid, set()) - {address}:
+            continue   # another window is full screen over it
+        if not counts(c.get("pid")) or not rule_free(address):
+            continue
+        out.add(name)
+    if out and locked():
+        return []
+    return sorted(out)
+
+
+def idle_rule_free(address: str) -> bool:
+    """No idle_inhibit window rule for the window (0 = none in Hyprland 0.56)."""
+    prop = hypr_json(f"j/getprop address:{address} idle_inhibit")
+    return isinstance(prop, dict) and prop.get("idle_inhibit") == 0 and not isinstance(prop.get("idle_inhibit"), bool)
+
+
+def video_outputs() -> list[str] | None:
+    """inhibiting_outputs for this session now; None when Hyprland does not answer."""
+    clients = hypr_json("j/clients")
+    if not isinstance(clients, list):
+        return None
+    if not any(isinstance(c, dict) and c.get("inhibitingIdle") is True for c in clients):
+        return []   # nothing asks: no more requests
+    monitors_data = hypr_json("j/monitors")
+    if not isinstance(monitors_data, list):
+        return None
+    return inhibiting_outputs(clients, monitors_data, idle_rule_free, screen_locked)
+
+
 PAUSED = RUNTIME / "omacvm/paused-displays"
 LEASE = 15.0          # no "unseen" from the Mac for this long: the displays on again
 CAST_SETTLE = 3.0     # after a start or a lost event socket: shares unknown for this long
@@ -1133,6 +1272,8 @@ class Agent:
         self.poke = Poke(POKE)
         self.pause = Pause()
         self.scale: float | None = None   # the scale last told to the Mac
+        self.inhibit: list[str] = []       # the outputs showing a video, as last told to the Mac
+        self.last_inhibit = 0.0
         self.lua_scale: float | None = None   # monitors.lua's, when last looked at
 
     def send(self, message: dict) -> None:
@@ -1181,6 +1322,38 @@ class Agent:
             self.reported = current
             self.send({"monitors": current})
         self.lua_changed()
+        if self.last_report - getattr(self, "last_inhibit", 0.0) >= INHIBIT_EVERY - 0.5:
+            self.check_inhibit()
+
+    def check_inhibit(self, find=video_outputs) -> None:
+        """Whether a video plays (inhibiting_outputs), to the Mac: at once when
+        it changes, again every INHIBIT_EVERY while it plays, [] once."""
+        self.last_inhibit = time.monotonic()
+        outputs = find()
+        if outputs is None:
+            return   # Hyprland does not answer: the Mac's lease runs out
+        if outputs != self.inhibit:
+            log(f"a video plays on {', '.join(outputs)}: the Mac's display stays on while it can be seen"
+                if outputs else "no video plays: the Mac's display may sleep")
+        if outputs or self.inhibit:
+            self.inhibit = outputs
+            self.send_inhibit(outputs)
+
+    def send_inhibit(self, outputs: list[str]) -> None:
+        """Only the newest list waits in the outbox (the Mac may not read for a while)."""
+        lines = self.outbox.split(b"\n")
+        self.outbox = b"".join(line + b"\n" for line in lines[:-1]
+                               if not line.startswith(b'{"inhibit":')) + lines[-1]
+        self.send({"inhibit": outputs})
+
+    def stop(self, *_args) -> None:
+        """SIGTERM (the user service stops): the Mac lets go at once, not after its lease."""
+        if self.inhibit:
+            try:
+                self.send_inhibit([])   # after what is still queued: lines stay whole
+            except OSError:
+                pass
+        raise SystemExit(0)
 
     def lua_changed(self) -> None:
         """monitors.lua's scale to the Mac when it changed there. A scale just
@@ -1471,7 +1644,7 @@ def main(argv: list[str]) -> int:
         except (OSError, ValueError):
             pass
         print(json.dumps({"external": external_on(), "port": PORT.exists(),
-                          "layout": layout, "monitors": monitors()}, indent=2))
+                          "layout": layout, "monitors": monitors(), "inhibit": video_outputs()}, indent=2))
         return 0
     if len(argv) >= 2 and argv[1] == "desktop":
         repairs = None
@@ -1510,7 +1683,9 @@ def main(argv: list[str]) -> int:
         log(f"{PORT} is missing (an OmacVM.app without external displays)")
         return 0
     threading.Thread(target=refresh_widget, name="widget", daemon=True).start()
-    Agent().run()
+    agent = Agent()
+    signal.signal(signal.SIGTERM, agent.stop)
+    agent.run()
     return 0
 
 
