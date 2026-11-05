@@ -2,11 +2,13 @@ virglrenderer: Venus logs a refusal's reason whole
 
 What: the reason buffers of vkCreateShaderModule, vkCreateGraphicsPipelines and
 vkCreateComputePipelines, and the line vkr_context_refuse formats, take 512 bytes (were
-192 and 256). Nothing else changes: the same checks, the same refusals.
+192 and 256), and that line's newlines become spaces. Nothing else changes: the same
+checks, the same refusals.
 Why: spirv-val's message for one module runs to about 300 characters with the
 "spirv-val (SPIR-V 1.6 (under Vulkan 1.4 semantics)): " prefix and the instruction it
 names. 192 cut it in qemu.log (#710: "... the Function storage class has a ex"), so
-the reason a context ended was not readable.
+the reason a context ended was not readable. Whole, the message puts the instruction and
+"(word N)" on lines of their own; one refusal stays one line.
 Upstream: no (OmacVM's own checks).
 Tests: build-qemu-gpu-runtime.sh checks the four buffers after the patch; the long
 message in qemu.log was seen whole in a test VM (work/zed-710 row, #710).
@@ -14,7 +16,7 @@ message in qemu.log was seen whole in a test VM (work/zed-710 row, #710).
 diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
 --- a/src/venus/vkr_context.c
 +++ b/src/venus/vkr_context.c
-@@ -600,7 +600,7 @@
+@@ -600,11 +600,16 @@
  
     /* the 1st, 2nd, 4th, 8th ... refusal: a guest in a loop cannot flood the log */
     if (!(n & (n - 1))) {
@@ -23,6 +25,15 @@ diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
        va_list va;
        va_start(va, fmt);
        vsnprintf(why, sizeof(why), fmt, va);
+       va_end(va);
++      /* spirv-val names the instruction on lines of its own: one refusal, one line */
++      for (char *c = why; *c; c++) {
++         if (*c == '\n')
++            *c = ' ';
++      }
+       vkr_log("%s: %s refused: %s%s (%" PRIu64 " refused so far)",
+               ctx->debug_name ? ctx->debug_name : "?", call, why,
+               fatal ? "; the app's Vulkan context ends" : "", n);
 diff --git a/src/venus/vkr_pipeline.c b/src/venus/vkr_pipeline.c
 --- a/src/venus/vkr_pipeline.c
 +++ b/src/venus/vkr_pipeline.c
