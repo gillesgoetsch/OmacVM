@@ -18,5 +18,7 @@ v=$(LC_ALL=C pacman -Q omarchy 2>/dev/null | awk '{ print $2 }')
 v=${v%-*}; v=${v#*:}
 [[ $v =~ ^[0-9]+\.[0-9]+ ]] || { echo unknown; exit; }
 ch=$(sed -n 's#^[[:space:]]*Server[[:space:]]*=[[:space:]]*https://pkgs\.omarchy\.org/\([a-z]*\)/.*#\1#p' "$CONF" | head -1)
-pf=$(omarchy-hw-platform 2>/dev/null || echo aarch64)
+hp=$(command -v omarchy-hw-platform || echo /usr/share/omarchy/bin/omarchy-hw-platform)
+pf=$("$hp" 2>/dev/null) || pf=""
+[[ $pf =~ ^[a-z0-9-]{1,24}$ ]] || pf=unknown-platform
 echo "$v ($pf ${ch:-stable})"

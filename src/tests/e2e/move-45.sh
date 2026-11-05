@@ -181,7 +181,7 @@ moved_ok() {   # WHEN
   local w=$1 v pc pf fail
   v=$(g "pacman -Q omarchy" | awk '{ print $2 }')
   check "$w: omarchy 4.5 or later" $([[ $v =~ ^4\.([5-9]|[1-9][0-9]) || $v =~ ^[5-9]\. ]] && echo 1 || echo 0) "omarchy $v"
-  pf=$(g "omarchy-hw-platform" 2>/dev/null)
+  pf=$(g 'p=$(command -v omarchy-hw-platform || echo /usr/share/omarchy/bin/omarchy-hw-platform); "$p"' 2>/dev/null)
   check "$w: platform aarch64" $([[ $pf == aarch64 ]] && echo 1 || echo 0) "$pf"
   pc=$(g "grep -nE 'asahi|aarch64-apple|omarchy-aarch64|TrustAll' /etc/pacman.conf /etc/pacman.d/mirrorlist" | head -3)
   check "$w: no omarchy-mac or asahi repos" $([[ -z $pc ]] && echo 1 || echo 0) "$pc"
