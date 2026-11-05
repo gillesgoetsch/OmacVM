@@ -6,9 +6,7 @@ limit set in macOS). Time left and Omarchy's low-battery warning should work
 the same way but are not tested yet with the Mac on battery (see Tested). The
 VM never suspends or powers off for a low battery, the Mac decides that.
 
-Feature `battery`: on by default for UTM, VMware Fusion and OmacVM.app on a
-Mac with a battery. Parallels gives the VM the Mac's battery itself, so
-OmacVM leaves it alone there.
+Feature `battery`: on by default on a Mac with a battery.
 
 From try-omarchy (github.com/omacom/try-omarchy, MIT; the module
 GPL-2.0-only): the kernel module, the agent and the Mac's snapshots.
@@ -17,8 +15,7 @@ GPL-2.0-only): the kernel module, the agent and the Mac's snapshots.
 
 ```
 Mac                                              VM
-IOKit power sources ─┬─ OmacVM Bridge (UTM, Fusion) ── GET /battery, "battery" events ──┐
-                     └─ OmacVM.app ── virtio port org.omacvm.battery ───────────────────┤
+IOKit power sources ─── OmacVM.app ── virtio port org.omacvm.battery ───────────────────┐
                                                                                         ▼
                                   omacvm-battery.service (root) ── /sys/devices/platform/omacvm-battery/state
                                                                                         ▼
@@ -77,7 +74,6 @@ pacman's DKMS hook builds the module for the new kernel before the reboot.
 upower -i /org/freedesktop/UPower/devices/battery_BAT0
 cat /sys/devices/platform/omacvm-battery/state
 journalctl -u omacvm-battery
-omacvm-bridge battery          # UTM, Fusion: what the Bridge sends
 ```
 
 ## Tests
@@ -90,10 +86,10 @@ in a row. `--live` also prints this Mac's snapshot.
 ## Tested
 
 MacBook Pro M4 Max, macOS 15.7.4, Arch Linux ARM's kernel 7.2.8, upower
-1.91.4, dkms 3.4.3: a UTM 5 VM (through the Bridge) and an OmacVM.app VM
+1.91.4, dkms 3.4.3: an OmacVM.app VM (and a retired UTM 5 VM through the Bridge)
 (virtio port) show the Mac's battery (100 %, on the charger, full) in UPower and in
 Omarchy's bar; `omacvm check` passes the battery rows; `omacvm disable
 battery` removes module, agent and DKMS entry, `enable` brings them back;
 reinstalling the kernel headers makes pacman's DKMS hook rebuild the module.
-Not tested yet: a VMware Fusion VM (the same path as UTM), and the Mac on
+Not tested yet: the Mac on
 battery power (discharging, time left, the low-battery warning).

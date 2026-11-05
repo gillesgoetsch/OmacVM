@@ -50,6 +50,9 @@ retired_list() {
   # The test identity has only its own app's VMs.
   [[ ${OMACVM_TEST_IDENTITY:-} == 1 ]] && return 0
   local prl=${PRLCTL:-/usr/local/bin/prlctl} n h x
+  # A subshell without set -e and pipefail: a VM app that is not there (a
+  # failed glob, no file) is an empty list, not the end of the caller.
+  ( set +e +o pipefail
   {
     # Parallels: its own list (names only); a VM OmacVM set up (its pin) or built (its description).
     if [[ -x $prl ]]; then
@@ -76,7 +79,7 @@ retired_list() {
     while IFS= read -r n; do
       [[ -n $n ]] && retired_pinned utm "$n" && printf '%s\tutm\tretired\n' "$n"
     done < <(cat "$OMA_SUPPORT/utm-vms" 2>/dev/null)
-  } | awk -F'\t' '!seen[$1 FS $2]++'
+  } | awk -F'\t' '!seen[$1 FS $2]++' )
   return 0
 }
 

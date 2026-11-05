@@ -1,8 +1,8 @@
 #!/bin/bash
 # omacvm vms [--json] [--app-only]: your OmacVM.app VMs and their OmacVM state
 # (asks the running ones over SSH; stopped VMs are not started), then the
-# Parallels, UTM and VMware Fusion VMs OmacVM set up here before 3.4.0, as
-# retired (never reached: src/lib/retired.sh).
+# retired Parallels, UTM and VMware Fusion VMs OmacVM set up here before 3.4.0
+# (never reached: src/lib/retired.sh).
 # --app-only: only OmacVM.app's VMs (the Bridge runs this through the app, so a
 # VMs folder on an external drive can be read: src/bridge/mac/control.swift).
 # --json: {"omacvm", "vms": [{"name", "type", "state", "ip", "omacvm",

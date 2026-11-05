@@ -11,7 +11,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/app.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/retired.sh"
 
 vms_list() {
-  app_list
+  app_list || :   # its status says nothing here; under set -e it must not end the list
   retired_list
 }
 
@@ -77,8 +77,8 @@ ssh_setup_command() {
 # "start" starts one, and only one the caller named (--vm): a command that
 # changes a VM. A VM picked by default is never started, so a command run
 # without --vm never boots the person's VM (exit 3 says so). Exits 2 when it
-# cannot tell which VM ("soft": returns 1). A Parallels, UTM or VMware Fusion
-# VM: exit 3 with the retired text (retired.sh), nothing done to it.
+# cannot tell which VM ("soft": returns 1). A retired Parallels, UTM or
+# VMware Fusion VM: exit 3 with the text of retired.sh, nothing done to it.
 resolve_vm() {
   local running list apps state named=0
   [[ -n ${VM:-} ]] && named=1

@@ -11,8 +11,8 @@
 # control-centre, fast-network, chromium-video, gpu-compute, vulkan, x86-apps, touch-id, mac-ime, drag-drop) with its defaults; a feature
 # needing another one is off without it. Choices are kept in /etc/omacvm/env,
 # so a later run without --feature keeps them.
-# --vm-type: app (OmacVM.app), the only one since 3.4.0 retired Parallels, UTM
-# and VMware Fusion; anything else stops (exit 2).
+# --vm-type: app (OmacVM.app), the only one; anything else stops (exit 2):
+# 3.4.0 retired Parallels, UTM and VMware Fusion.
 # --vm-name-b64: the VM's name in its app, base64 (kept in /etc/omacvm/env): the
 # gestures daemon says it, so the Mac tells two VMs of one app apart.
 # Idempotent: run it again after an update of this repository.

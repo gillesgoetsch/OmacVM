@@ -31,8 +31,8 @@ out=$( (VM=Work; TYPE=""; resolve_vm start; echo "TYPE=$TYPE") 2>&1); rc=$?
 expect "resolve_vm, a retired VM: exit 3" 3 "$rc"
 expect "resolve_vm, a retired VM: the retired text, nothing started" yes \
   "$([[ $out == *"'Work' is a UTM VM. OmacVM 3.4.0 retired"*"#retired-routes"* && $out != *STARTED* && $out != *TYPE=* ]] && echo yes || echo "$out")"
-( VM="OmacVM Test"; TYPE=fusion; resolve_vm ) >/dev/null 2>&1; expect "resolve_vm, --vm-type fusion: exit 3" 3 $?
-( VM="New"; TYPE=parallels; resolve_vm ) >/dev/null 2>&1; expect "resolve_vm, --vm-type parallels for an app VM: exit 2" 2 $?
+( VM="OmacVM Test"; TYPE=fusion; resolve_vm ) >/dev/null 2>&1; expect "resolve_vm, retired --vm-type fusion: exit 3" 3 $?
+( VM="New"; TYPE=parallels; resolve_vm ) >/dev/null 2>&1; expect "resolve_vm, retired --vm-type parallels for an app VM: exit 2" 2 $?
 out=$( (VM=Nope; TYPE=""; resolve_vm) 2>&1); rc=$?
 expect "resolve_vm, unknown name: exit 2" 2 "$rc"
 expect "resolve_vm, unknown name: says so" yes "$([[ $out == *"no OmacVM.app VM named 'Nope'"* ]] && echo yes || echo "$out")"
