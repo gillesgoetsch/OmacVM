@@ -1812,6 +1812,13 @@ grep -q 'if (!vkr_cmd_cost(dispatch->data, _cmd, VKR_CMD_COST_BASE, "vk" #cmd_na
   grep -q 'vkr_object_charge_more(ctx, &module->base, 2 \* (uint64_t)args->pCreateInfo->codeSize,' "$virgl_source/src/venus/vkr_pipeline.c" && \
   grep -q 'args->pCreateInfo->initialDataSize, "vkCreatePipelineCache");' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c, vkr_pipeline.c: recordings and objects are not charged (host-memory patch)"
+# Only an ended primary is submitted, and only while its secondaries are the recordings it
+# executed: MoltenVK encodes a secondary's current content at the submit (or the primary's
+# end with prefill), past the passes vkr weighed at the execute (#676).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-submit-state.patch"
+grep -q 'if (!vkr_command_buffer_submit_ok(dispatch->data, submit->pCommandBuffers\[j\],' "$virgl_source/src/venus/vkr_queue.c" && \
+  grep -q 'if (!vkr_cmd_secondaries_current(dispatch->data, cmd, "vkEndCommandBuffer"))' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_queue.c, vkr_command_buffer.c: a secondary recorded again or a command buffer not ended reaches the driver at the submit (submit-state patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

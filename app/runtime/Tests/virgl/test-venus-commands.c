@@ -42,7 +42,10 @@
  * submit one legal 64x64 clear pass (or a bound set and nothing else) on MoltenVK without
  * prefill and wait for the queue; the held reset, free and teardown cases skip MoltenVK
  * with prefill; c-state-secondary-held-*-submit submit a primary whose secondary holds one
- * barrier, on every driver, and the c-state-secondary-held- cases reset or free it; the
+ * barrier, on every driver, and the c-state-secondary-held- cases reset or free it
+ * (-resubmit-ok submits it twice; virgl-venus-submit-state.patch refuses the submit or the
+ * end of one whose secondary was recorded again, and s-submit-secondary, -recording and
+ * -initial: built without that patch, those three hand the driver what it must not get); the
  * u-ib-*-m6-ok cases submit their legal indexed draw (3 vertices at index 0, 64x64) on
  * MoltenVK and wait for the queue. Run with
  * MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1, MoltenVK encodes at vkEndCommandBuffer what
@@ -2877,6 +2880,7 @@ static int destroyed_case(const char *c, struct world *w)
 static int views_case(const char *c, struct world *w);
 static int held_case(const char *c, struct world *w, void *v);
 static int secondary_case(const char *c, struct world *w);
+static int secondary_again_case(const char *c, struct world *w);
 
 static int state_case(const char *c, struct world *w)
 {
@@ -2903,6 +2907,11 @@ static int state_case(const char *c, struct world *w)
       D->dispatch_vkCmdExecuteCommands(D, &e);
       return end(cmd);
    }
+   if (IS("c-state-secondary-held-resubmit-ok") || IS("c-state-secondary-held-rerecord-ok") ||
+       IS("c-state-secondary-held-rerecord-submit") || IS("c-state-secondary-held-reset-submit") ||
+       IS("c-state-secondary-held-pool-reset-submit") || IS("c-state-secondary-held-free-pool-reset-submit") ||
+       IS("c-state-secondary-held-rerecord-end"))
+      return secondary_again_case(c, w);
    begin(cmd);
    if (!strncmp(c, "c-state-after-mv", 16))
       return after_mv_case(c, w);
@@ -3755,9 +3764,27 @@ static void *binary_semaphore(void)
  * vkQueueBindSparse on a queue without sparse binding (VUID-vkQueueBindSparse-queuetype), and
  * a value struct chained twice (VUID-VkSubmitInfo-sType-unique, VUID-VkBindSparseInfo-sType-unique):
  * vkr fitted the first, MoltenVK used the second and wrote its 64 values past its array. */
+static void record_secondary(void *sec, int barriers);
+static int submit_one(void *cmd, const char *what);
+static void color_barrier(void *cmd);
+
 static int case_submit(const char *c)
 {
    setup(0);
+   /* only an ended primary is submitted (virgl-venus-submit-state.patch); one that records a
+    * barrier: a secondary, a primary still recording, one never begun (before the queue:
+    * submit_one gets it) */
+   if (IS("s-submit-secondary") || IS("s-submit-recording") || IS("s-submit-initial")) {
+      void *cmd = command_buffer_level(IS("s-submit-secondary") ? VK_COMMAND_BUFFER_LEVEL_SECONDARY
+                                                                : VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+      if (IS("s-submit-secondary")) {
+         record_secondary(cmd, 1);
+      } else if (IS("s-submit-recording")) {
+         begin(cmd);
+         color_barrier(cmd);
+      }
+      return submit_one(cmd, c);
+   }
    struct vkr_queue *q = device_queue();
    const VkQueue qh = (VkQueue)q;
    static uint64_t values[64], one[1];
@@ -4538,6 +4565,124 @@ static int secondary_case(const char *c, struct world *w)
       return FATAL;
    step("zombies now: %d", zombies());
    return zombies() > 0 ? ZOMBIES : WORKS;
+}
+
+/* ---------------- secondaries recorded again (virgl-venus-submit-state.patch) ----------------
+ * A primary P executes a secondary S that records one barrier.
+ *   -resubmit-ok: TOLERATED: P reusable (no ONE_TIME_SUBMIT), S freed (a zombie), P submitted
+ *     twice, each waited for: KosmicKrisp replays S's commands at the 2nd submit. Vulkan
+ *     calls P invalid once S is freed; vkr allows it on purpose (the hold keeps it
+ *     memory-safe).
+ *   -rerecord-submit, -reset-submit, -pool-reset-submit, -free-pool-reset-submit: after P's
+ *     end S is begun again (two barriers), reset, its pool reset, or freed and then its pool
+ *     reset; P's submit is refused (Vulkan: P is invalid; MoltenVK encodes S's new content
+ *     past what vkr weighed at the execute, KosmicKrisp replays it at a 2nd submit).
+ *   -rerecord-end: S begun again before P's end: the end is refused (MoltenVK with prefill
+ *     encodes S there).
+ *   -rerecord-ok: LEGAL: S recorded again, P's pool reset, P recorded again, submitted and
+ *     waited for. */
+static void record_secondary(void *sec, int barriers)
+{
+   if (begin_secondary(sec, NULL) != VK_SUCCESS)
+      broken("secondary begin");
+   for (int i = 0; i < barriers; i++)
+      color_barrier(sec);
+   if (end(sec) != WORKS)
+      broken("secondary end");
+}
+
+static void reset_command_pool(void *pool)
+{
+   struct vn_command_vkResetCommandPool r = { .device = DEVH, .commandPool = (VkCommandPool)pool };
+   step("vkResetCommandPool");
+   D->dispatch_vkResetCommandPool(D, &r);
+   step("vkResetCommandPool = %d", r.ret);
+}
+
+static void begin_flags(void *cmd, VkCommandBufferUsageFlags flags)
+{
+   VkCommandBufferBeginInfo info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = flags };
+   struct vn_command_vkBeginCommandBuffer b = { .commandBuffer = (VkCommandBuffer)cmd, .pBeginInfo = &info };
+   step("vkBeginCommandBuffer (flags 0x%x)", flags);
+   D->dispatch_vkBeginCommandBuffer(D, &b);
+   if (b.ret != VK_SUCCESS)
+      broken("vkBeginCommandBuffer");
+}
+
+static void execute_secondary(void *cmd, void *sec)
+{
+   VkCommandBuffer s = (VkCommandBuffer)sec;
+   struct vn_command_vkCmdExecuteCommands e = { .commandBuffer = (VkCommandBuffer)cmd, .commandBufferCount = 1,
+                                                .pCommandBuffers = &s };
+   step("vkCmdExecuteCommands of the secondary");
+   D->dispatch_vkCmdExecuteCommands(D, &e);
+}
+
+/* one submit of CMD, waited for with the driver's own wait (vkr refuses vkQueueWaitIdle) */
+static int submit_one(void *cmd, const char *what)
+{
+   static struct vkr_queue *q; /* vkr gives a queue once */
+   if (!q)
+      q = device_queue();
+   VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                           .pCommandBuffers = &cb };
+   struct vn_command_vkQueueSubmit qs = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &submit };
+   step("vkQueueSubmit of %s", what);
+   D->dispatch_vkQueueSubmit(D, &qs);
+   step("vkQueueSubmit = %d", qs.ret);
+   if (ended())
+      return FATAL;
+   q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+   step("the queue is idle");
+   return qs.ret == VK_SUCCESS ? WORKS : ERROR;
+}
+
+static int secondary_again_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   const bool reusable = IS("c-state-secondary-held-resubmit-ok");
+   begin_flags(cmd, reusable ? 0 : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+   void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+   void *pool = ((struct vkr_command_buffer *)sec)->pool;
+   record_secondary(sec, 1);
+   execute_secondary(cmd, sec);
+   if (IS("c-state-secondary-held-rerecord-end")) {
+      record_secondary(sec, 2);
+      return end(cmd);
+   }
+   int r = end(cmd);
+   if (r != WORKS)
+      return r;
+   if (reusable) {
+      free_command_buffer(sec);
+      step("zombies after the free: %d", zombies());
+      r = submit_one(cmd, "the reusable primary (1st)");
+      return r != WORKS ? r : submit_one(cmd, "the reusable primary (2nd: KosmicKrisp replays the secondary)");
+   }
+   if (IS("c-state-secondary-held-rerecord-submit") || IS("c-state-secondary-held-rerecord-ok")) {
+      record_secondary(sec, 2);
+   } else if (IS("c-state-secondary-held-reset-submit")) {
+      reset_command_buffer(sec);
+   } else if (IS("c-state-secondary-held-pool-reset-submit")) {
+      reset_command_pool(pool);
+   } else if (IS("c-state-secondary-held-free-pool-reset-submit")) {
+      free_command_buffer(sec);
+      step("zombies after the free: %d", zombies());
+      reset_command_pool(pool);
+   } else {
+      return BROKEN;
+   }
+   if (ended())
+      return FATAL;
+   if (IS("c-state-secondary-held-rerecord-ok")) {
+      reset_command_pool(((struct vkr_command_buffer *)cmd)->pool);
+      begin_flags(cmd, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+      execute_secondary(cmd, sec);
+      if ((r = end(cmd)) != WORKS)
+         return r;
+   }
+   return submit_one(cmd, "the primary");
 }
 
 /* ---------------- a swapchain's memory (virgl-venus-alias-memory.patch) ----------------
@@ -7393,6 +7538,32 @@ static int case_host_memory(const char *c)
       }
       return ended() ? FATAL : WORKS;
    }
+   if (IS("h-release-secondary-ok")) {
+      /* a primary records a barrier; a secondary of a second pool, executed in it, is freed
+       * and its pool destroyed (two zombies); the primary's reset lets both go: the charge
+       * is back where it was before the second pool, while the context lives (#676, #700) */
+      void *cmd = command_buffer();
+      begin(cmd);
+      color_barrier(cmd);
+      const uint64_t s0 = virgl_gpu_budget_in_use();
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      void *pool = ((struct vkr_command_buffer *)sec)->pool;
+      record_secondary(sec, 1);
+      execute_secondary(cmd, sec);
+      if (end(cmd) != WORKS)
+         return ended() ? FATAL : ERROR;
+      free_command_buffer(sec);
+      destroy_command_pool(pool);
+      const int z = zombies();
+      const uint64_t held = virgl_gpu_budget_in_use();
+      reset_command_buffer(cmd);
+      const uint64_t s1 = virgl_gpu_budget_in_use();
+      step("charged %" PRIu64 " B before the second pool, %" PRIu64 " B with %d zombies, %" PRIu64
+           " B after the primary's reset (%d zombies)", s0, held, z, s1, zombies());
+      if (ended())
+         return FATAL;
+      return z == 2 && zombies() == 0 && held > s0 && s1 == s0 ? WORKS : ERROR;
+   }
    if (IS("h-release-end") || IS("h-release-fatal")) {
       /* objects, a recording, a held view destroyed (a zombie) and a pool's spare; then the
        * context's teardown: every charge comes back. fatal: after a refusal (budget) */
@@ -7586,6 +7757,13 @@ static const struct test_case cases[] = {
    { "c-state-secondary-held-reset-ok", E_WORKS }, { "c-state-secondary-held-free-primary-ok", E_WORKS },
    { "c-state-secondary-held-same-pool-ok", E_WORKS }, { "c-state-secondary-held-teardown-ok", E_WORKS },
    { "c-state-secondary-held-control-ok", E_WORKS },
+   /* a secondary recorded again after its primary executed it (virgl-venus-submit-state.patch) */
+   { "c-state-secondary-held-resubmit-ok", E_WORKS }, { "c-state-secondary-held-rerecord-ok", E_WORKS },
+   { "c-state-secondary-held-rerecord-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-reset-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-pool-reset-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-free-pool-reset-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-rerecord-end", E_REFUSE, "recorded again" },
    { "c-probe-descriptor-view", E_PROBE },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
@@ -7600,6 +7778,8 @@ static const struct test_case cases[] = {
    { "f-cmds-ok", E_WORKS }, { "f-cmds-null-ok", E_WORKS }, { "f-cmds-dup", E_REFUSE, "named twice" },
    { "f-cmds-other-pool", E_REFUSE, "of another pool" }, { "f-sets-ok", E_WORKS }, { "f-sets-reset-ok", E_WORKS },
    { "f-sets-dup", E_REFUSE, "named twice" }, { "f-sets-other-pool", E_REFUSE, "of another pool" },
+   { "s-submit-secondary", E_REFUSE, "is a secondary" }, { "s-submit-recording", E_REFUSE, "still records" },
+   { "s-submit-initial", E_REFUSE, "was not ended" },
    { "s-submit-ok", E_WORKS }, { "s-submit-values-64", E_WORKS },
    { "s-submit-group-counts", E_REFUSE, "device group counts" }, { "s-bind-sparse", E_REFUSE, "no sparse binding" },
    { "s-submit-chain-twice", E_REFUSE, "chained twice" }, { "s-bind-sparse-chain-twice", E_REFUSE, "chained twice" },
@@ -7708,6 +7888,7 @@ static const struct test_case cases[] = {
    { "h-obj-module-size", E_REFUSE, "host memory" }, { "h-obj-module-again-ok", E_WORKS },
    { "h-obj-cache-size", E_WORKS }, { "h-obj-cache-again-ok", E_WORKS },
    { "h-release-end", E_WORKS }, { "h-release-fatal", E_REFUSE, "host memory" },
+   { "h-release-secondary-ok", E_WORKS },
    { "h-heap", E_WORKS }, { "h-temp-big", E_WORKS }, { "h-zink-frame-ok", E_WORKS },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))
