@@ -12,9 +12,11 @@ in more words.
   It does not stay on for a paused video, music, a background tab, a minimised or covered window,
   another Space, a locked screen, a stopped VM, Hyprland's full-screen window rules or Omarchy's
   Stay Awake, and lets go 30 s after the VM stops saying so. Display only: the Mac still sleeps when
-  the lid closes. Players that tell Linux they play a video count (mpv, Firefox, Chromium 157 or
-  newer); Chromium before 157, Chrome, Brave and Electron apps do not, as they also say so for music
-  and downloads (ADR 0070). Needs the app update and Update VM.
+  the lid closes. mpv counts, and so does a video in Omarchy's Chromium (156 now) and its web apps:
+  Chromium before 157 also tells Linux not to idle for music, downloads and calls, so OmacVM counts a
+  Chromium window only while Chromium holds its display wake lock, which it takes for a video playing
+  where it can be seen (as Chrome does on a Mac). Firefox was not tested (ADR 0070). Needs the app
+  update and Update VM.
 
 ## 3.3.0
 

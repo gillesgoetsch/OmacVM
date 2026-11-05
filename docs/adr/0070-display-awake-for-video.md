@@ -25,7 +25,27 @@ What Omarchy 4 has: no hypridle; idle is the shell's Quickshell
 `inhibitingIdle` in `j/clients` is true for a window whose app holds an
 inhibitor AND for windows with an `idle_inhibit` window rule (Omarchy's
 full-screen rules for some apps, its `noidle` tag). Chromium 156 and older
-also inhibit for audio-only tabs, downloads and calls (fixed in 157).
+also inhibit for audio-only tabs, downloads and calls (fixed in 157 by
+4dd9a00d80, a plain code change, no flag or switch). Omarchy's Chromium on
+Arch Linux ARM is 156.0.8078.79 (2026-11-05); 157 reached Chrome's stable
+channel on 2026-11-03.
+
+What tells a video from music in Chromium 156: its wake lock's type.
+`power_save_blocker_linux.cc` (the same at 153.0.8010.36, 156.0.8078.79 and,
+but for the Wayland line, 157.0.8103.38) asks Wayland not to idle for every
+type, but over D-Bus it tells `kPreventDisplaySleep` locks to
+`org.freedesktop.ScreenSaver` and `kPreventAppSuspension` locks (music
+"Playing audio", downloads, WebRTC) to `org.freedesktop.PowerManagement`,
+each only if the name has an owner (after `org.gnome.SessionManager`, which
+Omarchy has not). A display lock is Blink's "Video Wake Lock" (a playing
+video on a visible page, at least 20 % of the view or with sound, or in
+picture-in-picture; released on pause, end and a hidden tab) or a page's
+screen wake lock: the same locks that Chrome turns into this assertion on a
+Mac. Nothing in Omarchy owns `org.freedesktop.ScreenSaver` (checked in the
+test VM: no ScreenSaver, PowerManagement or SessionManager on the session
+bus). MPRIS (PlaybackStatus is Playing for music too, no video flag),
+PipeWire (a browser's video is no PipeWire stream) and full screen (most
+videos play in a window) do not tell them apart.
 
 ## Decision
 
@@ -39,11 +59,17 @@ also inhibit for audio-only tabs, downloads and calls (fixed in 157).
      Mac output (`Virtual-N`) whose display is on, and no other window is
      full screen there; the window is mapped and not hidden;
    - the session is not locked (`omarchy-hyprland-session-locked`);
-   - Chromium-based programs (`icudtl.dat` beside the program) only as the
-     system's `/usr/lib/chromium/chromium`, not replaced on disk while it
-     runs, with pacman's `chromium` 157 or newer. Electron apps, Chrome,
-     Brave and older Chromium never count: a missed video is better than a
-     display that never sleeps.
+   - Chromium-based programs (`icudtl.dat` beside the program: Chromium,
+     its web apps, Chrome, Brave, Electron apps) only while their process
+     holds a display wake lock. The agent serves `org.freedesktop.ScreenSaver`
+     on the session bus (`serve_display_locks`, Gio, in its own thread):
+     a Chromium-based caller (by the pid the bus gives) gets a cookie, any
+     other caller an error, so Firefox, SDL and the rest fall back as when
+     nobody serves the name. A lock goes with `UnInhibit`, when its caller
+     leaves the bus, or when its pid belongs to another process; at most 64.
+     Also counted, by Wayland alone: the system's `/usr/lib/chromium/chromium`,
+     not replaced on disk while it runs, with pacman's `chromium` 157 or
+     newer (if another program owns the name).
    It sends `{"inhibit": ["Virtual-1", ...]}` at once on a change, again
    every 10 s while not empty, `[]` once (and on SIGTERM). No answer from
    Hyprland: nothing is sent. Omarchy's Stay Awake and OmacVM's no-idle-lock
@@ -73,9 +99,15 @@ mini with the switch off: guest saying `inhibit`, nothing held.
 ## Consequences
 
 - Only OmacVM.app: UTM, Fusion and Parallels cannot see the VM's window.
-- A video in Chromium 156 or older, Electron apps or Chrome does not keep
-  the display on (troubleshooting 56). Omarchy's Chromium was 153 when this
-  was written.
+- A video in Chromium (156 now) and its web apps counts as on a Mac.
+  Chromium has one Wayland inhibit per process, put on the window that has
+  the focus when its first lock starts: with music in one Chromium window and
+  a video in another, the first one's display counts (troubleshooting 56).
+- Firefox was not tested.
+- The agent now owns `org.freedesktop.ScreenSaver` in the session. Only
+  Chromium-based callers get an answer other than an error; an app that
+  only ever tries that name (and not Wayland) keeps its behaviour, as it
+  got an error before too.
 - Battery: while nothing plays one Hyprland request every 10 s in the agent
   (its loop already wakes then) and nothing on the Mac.
 - Old guest with the new app: nothing sent, nothing held. New guest with an
@@ -87,6 +119,11 @@ mini with the switch off: guest saying `inhibit`, nothing held.
   use logind's inhibitor on Hyprland.
 - The Bridge (HTTP): it cannot see the VM's window and is an optional helper.
 - `inhibitingIdle` alone: it counts Hyprland's own window rules.
+- Counting Chromium only from 157 (the first build of this ADR): Omarchy's
+  Chromium is 156, so a browser video, the user's case, went dark.
+- A Chromium flag or switch for 156: 4dd9a00d80 has none.
+- Watching D-Bus without owning the name: with no owner Chromium sends no
+  `Inhibit`, and its release is never seen.
 - A system-sleep assertion, or NSProcessInfo's `NSActivityIdleDisplaySleepDisabled`
   in the no-app-nap activity: either would keep the display on whenever the
   VM runs.

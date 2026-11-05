@@ -407,11 +407,13 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   a window inhibits idle on Wayland (Hyprland's `inhibitingIdle`) with no
   `idle_inhibit` window rule (`j/getprop`: 0), on a shown workspace of an
   output that is on, not under another full-screen window, the session
-  unlocked, and, if Chromium-based, only the system's Chromium 157+; `[]`
-  once when it ends. QEMU (`omacvm-cocoa-video-awake*.patch`,
-  ui/omacvm-video-awake.h) holds PreventUserIdleDisplaySleep "OmacVM: the VM
-  is playing video" while a listed output's window can be seen (guest-pause's
-  sight), the VM runs and the list is under 30 s old; released on `[]`, the
+  unlocked, and, if Chromium-based, only while its process holds a display
+  wake lock (`DisplayLocks`: the agent serves `org.freedesktop.ScreenSaver`
+  on the session bus, where Chromium tells only those; other callers get an
+  error) or as the system's Chromium 157+; `[]` once when it ends. QEMU
+  (`omacvm-cocoa-video-awake*.patch`, ui/omacvm-video-awake.h) holds
+  PreventUserIdleDisplaySleep "OmacVM: the VM is playing video" while a
+  listed output's window can be seen (guest-pause's sight), the VM runs and the list is under 30 s old; released on `[]`, the
   lease, out of sight, channel close, VM stop and before the Mac sleeps;
   powerd timeout 45 s, re-armed every 10 s. Never a system-sleep assertion;
   Stay Awake and no-idle-lock are never sent. qemu.log `OmacVM: video awake:
