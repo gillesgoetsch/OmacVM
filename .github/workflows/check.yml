@@ -236,6 +236,10 @@ jobs:
 
       - name: Which VM --vm NAME means
         run: src/tests/vm-names.sh
+      - name: Retired Parallels, UTM and VMware Fusion VMs are listed and refused, never touched
+        run: src/tests/retired-routes.sh
+      - name: No retired route comes back without the owner's consent
+        run: src/tests/no-retired-routes.sh
 
       - name: input-latency-vm without a VM (its stage split on a made-up QEMU trace, it refuses ~/OmacVM)
         run: src/tests/input-latency-harness.sh
