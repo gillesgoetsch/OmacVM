@@ -1,7 +1,7 @@
 #!/bin/bash
 # Turn a freshly built OmacVM VM into a prebuilt image. Runs as root in the
 # VM (make-image.sh copies this folder to /root/omacvm-prebuilt):
-#   generalize.sh --user PLACEHOLDER --type parallels|utm|fusion --audit-b64 LIST
+#   generalize.sh --user PLACEHOLDER --type app --audit-b64 LIST
 # --audit-b64: base64 of strings (one per line) that must not be anywhere in
 # the image: the build Mac's user, names, keys, token. A hit stops here.
 # Ends with the VM powering off.
@@ -26,9 +26,6 @@ else
   [[ -d $P/home ]] || { echo "generalize.sh: no user $U and no home template" >&2; exit 1; }
   H=""
 fi
-
-[[ -d /usr/lib/parallels-tools || -e /etc/init.d/prltoolsd || -e /usr/lib/systemd/system/prltoolsd.service ]] &&
-  { echo "generalize.sh: Parallels Tools are installed; an image must not contain them" >&2; exit 1; }
 
 # Omanotch's build tools (Mac-independent): omacvm apply only has to clone
 # and build it when the Mac has a notch.

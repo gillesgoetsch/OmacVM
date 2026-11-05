@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """omacvm-gestures (guest side): replays the Mac trackpad's multi-finger
 gestures on a virtual touchpad, so libinput/Hyprland see 3/4-finger swipes and
-pinch/rotate like on a real Apple touchpad; on UTM it also types the Mac's Cmd
+pinch/rotate like on a real Apple touchpad; it also types the Mac's Cmd
 shortcuts as Super.
 
 Connects to the Mac helper (gestures/mac) at the Mac's address on the VM
@@ -18,7 +18,7 @@ from a listener without the proof is acted on. Then it reads lines:
   O <natural> <w> <h>               the Mac's scrolling direction, trackpad size (1/100 mm)
   A <dx> <dy>, W <dx> <dy>, P       scroll momentum: macOS's scroll while touching, its
                                     momentum (points), a pinch macOS recognized
-  K <code> <value>                  UTM: a key on the virtual keyboard
+  K <code> <value>                  a key on the virtual keyboard (Cmd as Super)
   X <on [2]|off>                    Swipe out to macOS on or off (the Mac's setting); "2": the
                                     Mac takes such a swipe itself and follows the fingers
   N <why>                           (Mac helpers up to 3.0.18) the escape combo found no way
@@ -92,7 +92,7 @@ def env_floats(name, default):
     return [float(x) for x in default.split()]
 
 
-HOST = os.environ.get("OMACVM_GESTURES_HOST") or os.environ.get("OMACVM_HOST") or "10.211.55.2"
+HOST = os.environ.get("OMACVM_GESTURES_HOST") or os.environ.get("OMACVM_HOST") or "10.0.2.2"
 PORT = int(env_float("OMACVM_GESTURES_PORT", 47830))
 # The VM's feature choices (/etc/omacvm/env, loaded by the service).
 GESTURES = os.environ.get("OMACVM_FEATURE_gestures", "on") == "on"
@@ -549,7 +549,7 @@ class Glide:
 
 
 def make_keyboard():
-    """A virtual keyboard for the Mac's Cmd shortcuts on UTM (sent as Super+key)."""
+    """A virtual keyboard for the Mac's Cmd shortcuts (sent as Super+key)."""
     return UInput({e.EV_KEY: list(range(1, 249))}, name="OmacVM keyboard (Mac shortcuts)")
 
 
@@ -1328,7 +1328,7 @@ def keepalive(s):
 def proof(tok, who, addr, gn, mn):
     """HMAC-SHA256(token, "omacvm-gestures <who> <Mac address> <guest nonce> <mac nonce>"), hex.
     With the address, a listener on 127.0.0.1 cannot pass on a proof it got from
-    the helper on 10.211.55.2."""
+    the helper on 192.168.77.1."""
     msg = f"omacvm-gestures {who} {addr} {gn} {mn}"
     return hmac.new(tok.encode(), msg.encode(), hashlib.sha256).hexdigest().encode()
 

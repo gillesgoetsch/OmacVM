@@ -14,7 +14,7 @@
 #                  start (system-update's line says why: no restart then).
 #                  With 0 or 1 the last line is "OmacVM: restart: ..." when
 #                  the running kernel was replaced (its modules are gone:
-#                  DKMS and Parallels Tools build for the kernel that runs,
+#                  DKMS builds for the kernel that runs,
 #                  so the VM restarts first)
 # Tests: src/tests/pkg-safe.sh (stand-ins for both scripts and the modules).
 set -uo pipefail

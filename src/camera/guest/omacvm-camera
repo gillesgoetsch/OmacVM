@@ -2,8 +2,7 @@
 # OmacVM: from try-omarchy (omarchy-native-camera-bridge), MIT, (c) Try Omarchy contributors.
 """The Mac's camera as a Linux camera: /dev/video42, "Mac Camera".
   omacvm-camera            the service (omacvm-camera.service, as the desktop user)
-  omacvm-camera --status   JSON: the Bridge's /camera/status (UTM, Fusion), or
-                           whether OmacVM.app's port is there
+  omacvm-camera --status   JSON: whether OmacVM.app's port is there
 
 v4l2loopback makes /dev/video42 (exclusive_caps: apps see a normal camera).
 This service writes the Mac's frames into it, 1280x720 NV12, and asks the Mac
@@ -16,13 +15,10 @@ ffmpeg fills the gap with copies of it (all black; `-t 10` ends at once). So
 the frames go in through mmap buffers with their own time (FrameClock): the
 monotonic clock, stopped while no app reads.
 
-Where the frames come from (OMACVM_VM_TYPE in /etc/omacvm/env):
-  app        OmacVM.app, the virtio port org.omacvm.camera
-  utm|fusion OmacVM Bridge on the Mac, GET /camera on port 47831, connected
-             only while an app reads; the token goes only to a Bridge that
-             proved it knows it (as omacvm-bridge)
-Both carry the same messages (src/bridge/mac/camera.swift): {"type": "start"}
-and {"type": "stop"} lines to the Mac, status and frame messages back.
+Where the frames come from: OmacVM.app, the virtio port org.omacvm.camera
+(OMACVM_VM_TYPE app in /etc/omacvm/env). Its messages (src/bridge/mac/camera.swift):
+{"type": "start"} and {"type": "stop"} lines to the Mac, status and frame
+messages back.
 """
 
 from __future__ import annotations
@@ -30,15 +26,11 @@ from __future__ import annotations
 import ctypes
 import errno
 import fcntl
-import hashlib
-import hmac
-import http.client
 import json
 import mmap
 import os
 from pathlib import Path
 import select
-import socket
 import struct
 import sys
 import time
@@ -47,9 +39,7 @@ from typing import Any
 
 PORT = Path("/dev/virtio-ports/org.omacvm.camera")
 CAMERA = Path("/dev/video42")
-TOKEN = Path.home() / ".config/omacvm-bridge/token"
 CLOCK_STATE = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}") / "omacvm-camera-clock"
-BRIDGE_PORT = 47831
 MAGIC = b"TOCM"
 VERSION = 1
 HEADER = struct.Struct("<4sBBHII")
@@ -488,89 +478,6 @@ class Port:
             self.fd = -1
 
 
-class Bridge:
-    """UTM and VMware Fusion: OmacVM Bridge, connected only while an app reads."""
-
-    def __init__(self, host: str) -> None:
-        self.host = host
-        self.fd = -1
-        self.sock: socket.socket | None = None
-        self.rest = b""
-
-    def proven(self, token: bytes) -> bool:
-        nonce = os.urandom(16).hex()
-        try:
-            c = http.client.HTTPConnection(self.host, BRIDGE_PORT, timeout=5)
-            c.request("GET", f"/proof?nonce={nonce}")
-            proof = json.loads(c.getresponse().read()).get("proof", "")
-            c.close()
-        except (OSError, ValueError, AttributeError, http.client.HTTPException):
-            return False
-        want = hmac.new(token, f"omacvm-bridge mac {self.host} {nonce}".encode(), hashlib.sha256).hexdigest()
-        return isinstance(proof, str) and hmac.compare_digest(want, proof)
-
-    def status(self) -> dict[str, Any]:
-        """GET /camera/status: the Mac's camera permission and who reads it."""
-        token = TOKEN.read_bytes().strip()
-        if not self.proven(token):
-            raise RuntimeError(f"{self.host}:{BRIDGE_PORT} did not prove it is OmacVM's Bridge")
-        c = http.client.HTTPConnection(self.host, BRIDGE_PORT, timeout=5)
-        c.request("GET", "/camera/status", headers={"Authorization": "Bearer " + token.decode()})
-        r = c.getresponse()
-        if r.status != 200:
-            raise RuntimeError(f"the Bridge answered {r.status} (too old? omacvm update)")
-        return json.loads(r.read())
-
-    def want(self, on: bool) -> bool:
-        if not on:
-            if self.fd >= 0:
-                try:
-                    send_all(self.fd, request("stop"))
-                except OSError:
-                    pass
-            self.close()
-            return True
-        if self.fd >= 0:
-            return True
-        try:
-            token = TOKEN.read_bytes().strip()
-        except OSError:
-            log(f"no {TOKEN} (omacvm apply copies it)")
-            return False
-        if not self.proven(token):
-            log(f"{self.host}:{BRIDGE_PORT} did not prove it is OmacVM's Bridge (not running, or too old: omacvm update); token not sent")
-            return False
-        try:
-            s = socket.create_connection((self.host, BRIDGE_PORT), timeout=5)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * FRAME_BYTES)
-            s.sendall(f"GET /camera HTTP/1.1\r\nHost: {self.host}\r\nAuthorization: Bearer ".encode()
-                      + token + b"\r\n\r\n")
-            head = b""
-            while b"\r\n\r\n" not in head and len(head) < 4096:
-                part = s.recv(4096)
-                if not part:
-                    break
-                head += part
-            head, _, self.rest = head.partition(b"\r\n\r\n")
-            first = head.split(b"\r\n")[0].decode(errors="replace")
-            if not first.startswith("HTTP/1.1 200"):
-                log(f"the Bridge said: {first or 'nothing'}")
-                s.close()
-                return False
-            s.setblocking(False)
-        except OSError as error:
-            log(f"cannot reach the Bridge at {self.host}:{BRIDGE_PORT}: {error}")
-            return False
-        self.sock, self.fd = s, s.fileno()
-        send_all(self.fd, request("start"))
-        return True
-
-    def close(self) -> None:
-        if self.sock is not None:
-            self.sock.close()
-        self.sock, self.fd = None, -1
-
-
 def open_camera() -> int:
     while True:
         try:
@@ -581,7 +488,7 @@ def open_camera() -> int:
 
 def wait_ms(active: bool, now: float, quiet_until: float) -> int:
     """How long the loop may sleep. While an app reads: 200 ms (black frames
-    while the Mac is not there yet, Bridge reconnects). Otherwise only the
+    while the Mac is not there yet). Otherwise only the
     camera's reader events and the Mac's lines wake it (-1: no timeout), so
     an unused camera does not wake the VM; a quiet port is looked at again
     once its time is up."""
@@ -595,19 +502,14 @@ def wait_ms(active: bool, now: float, quiet_until: float) -> int:
 def main() -> int:
     values = env()
     kind = values.get("OMACVM_VM_TYPE", "")
-    link: Port | Bridge
-    if kind == "app":
-        link = Port()
-    elif kind in ("utm", "fusion"):
-        link = Bridge(values.get("OMACVM_HOST", ""))
-    else:
-        log(f"nothing to do on {kind or 'this VM'} (Parallels passes the camera itself)")
+    if kind != "app":
+        log(f"nothing to do on {kind or 'this VM'} (OmacVM.app's VMs only)")
         return 0
+    link = Port()
     camera, frames = setup_camera()
     parser = Parser()
     active = False       # an app reads the camera
     streaming = False    # the Mac sends frames
-    retry = 0.0          # Bridge: when to connect again
     quiet_until = 0.0    # Port: the app is not connected, look again then
     black_at = 0.0
     unavailable = ""     # the Mac's last reason, logged once (the Mac tries again by itself)
@@ -634,17 +536,10 @@ def main() -> int:
                     log(f"the Mac's camera is unavailable ({reason}); black until it is back")
                 unavailable = reason
 
-    if isinstance(link, Port):
-        link.want(False)   # whatever an earlier run left on
+    link.want(False)   # whatever an earlier run left on
     try:
         while True:
             now = time.monotonic()
-            if active and isinstance(link, Bridge) and link.fd < 0 and now >= retry:
-                if link.want(True):
-                    parser = Parser()
-                    handle(link.rest)
-                else:
-                    retry = now + 5
             # Waiting for the Mac (its permission prompt, a reconnect): black
             # frames, so the app shows black instead of stalling.
             if active and not streaming and now >= black_at:
@@ -664,8 +559,7 @@ def main() -> int:
                     if active:
                         frames.clock.go(time.monotonic())
                         save_offset(frames.clock.offset)   # for a restart while it reads
-                        retry = 0.0
-                        if isinstance(link, Port) and not link.want(True):
+                        if not link.want(True):
                             log(f"no {PORT}: start the VM from an OmacVM.app with the camera (omacvm update)")
                     else:
                         streaming = False
@@ -683,13 +577,8 @@ def main() -> int:
                         chunk = b""
                 if chunk:
                     handle(chunk)
-                elif isinstance(link, Port):
-                    quiet_until = time.monotonic() + 1   # the app is not connected (yet)
                 else:
-                    log("the Bridge closed the camera")
-                    link.close()
-                    streaming = False
-                    retry = time.monotonic() + 2
+                    quiet_until = time.monotonic() + 1   # the app is not connected (yet)
     finally:
         try:
             link.want(False)
@@ -704,11 +593,8 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--status"]:   # for omacvm check
         values = env()
         try:
-            if values.get("OMACVM_VM_TYPE") in ("utm", "fusion"):
-                print(json.dumps(Bridge(values.get("OMACVM_HOST", "")).status()))
-            else:
-                print(json.dumps({"port": PORT.exists()}))
-        except (OSError, ValueError, RuntimeError, http.client.HTTPException) as error:
+            print(json.dumps({"port": PORT.exists()}))
+        except (OSError, ValueError, RuntimeError) as error:
             print(json.dumps({"error": str(error)}))
             raise SystemExit(1)
         raise SystemExit(0)
