@@ -67,8 +67,8 @@ plugins_off_at_login() {
   return 0
 }
 
-# Gestures: the daemon (a system service) on every route; on UTM, Fusion and
-# OmacVM.app it also typed Cmd as Super, which goes with it.
+# Gestures: the daemon (a system service); it also typed Cmd as Super, which
+# goes with it.
 gestures_off() {
   systemctl is-enabled -q omacvm-gestures 2>/dev/null || systemctl is-active -q omacvm-gestures 2>/dev/null || return 0
   log "gestures: off"
@@ -99,7 +99,7 @@ omanotch_off() {
     # Omanotch's own uninstall needs the session (Hyprland, the shell); the
     # files go here too, so it is off also without one.
     if off_any "$n" "$u" "$tool"; then in_session bash "$R/omanotch/guest/uninstall.sh" >/dev/null 2>&1 || true; fi
-    # Its display panel clone (UTM, Fusion, Parallels): without the session,
+    # Its display panel clone: without the session,
     # Omarchy's panel goes back in its place in shell.json itself (as the user).
     if [[ -d $ROOT$panel ]]; then
       XDG_CONFIG_HOME=$ROOT$H/.config home_run python3 "$R/omanotch/guest/monitor/display-panel.py" --drop >/dev/null 2>&1 < /dev/null || true

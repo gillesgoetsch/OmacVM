@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The benchmark results side by side, on the Mac.
 
-  report.py mac.jsonl parallels.jsonl utm.jsonl fusion.jsonl app.jsonl [--json out.json]
+  report.py mac.jsonl app.jsonl [--json out.json]
 
 Each file is one bench.sh run, named after where it ran (the first one is the
 baseline, 100%). Geekbench scores are read from their result pages in Chrome

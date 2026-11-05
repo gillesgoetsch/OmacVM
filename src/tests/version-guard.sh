@@ -117,7 +117,7 @@ time.sleep(600)' "$S/port" "file=$D/disk.img,if=none" &
 start_qemu
 run() {   # omacvm ARGS... -> OUT, RC
   OUT=$(cd "$T" && HOME=$H PATH="$B:$PATH" OMACVM_TEST_IDENTITY=1 OMACVM_APP_ID=org.omacvm.versionguard.none \
-        PRLCTL=/nonexistent "$CO/omacvm" "$@" 2>&1 < /dev/null); RC=$?
+        "$CO/omacvm" "$@" 2>&1 < /dev/null); RC=$?
 }
 untouched() {   # WHAT [SSH]: nothing changed on the Mac or in the VM (SSH: what went to it, the probe)
   expect "$1: exit 3" 3 "$RC"

@@ -42,7 +42,7 @@ while (( $# )); do
   esac
 done
 [[ -n $VM ]] || usage "which VM? --vm NAME (omacvm vms lists them)"
-case $TYPE in ""|app|parallels|utm|fusion) ;; *) usage "--vm-type app (the only one)" ;; esac
+route_retired "$TYPE" || case $TYPE in ""|app) ;; *) usage "--vm-type app (the only one)" ;; esac
 case $RES in ""|low|balanced|high|best) ;; *) usage "--resources low, balanced, high or best" ;; esac
 [[ -z $CPUS || $CPUS =~ ^[0-9]+$ ]] || usage "--cpus: a number"
 [[ -z $MEM_GB || $MEM_GB =~ ^[0-9]+$ ]] || usage "--memory-gb: a number of GB"

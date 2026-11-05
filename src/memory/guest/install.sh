@@ -1,6 +1,6 @@
 #!/bin/bash
 # Memory tuning for the guest, every route. Run as root inside the VM: ./install.sh
-# Parallels, UTM and Fusion keep every page the guest ever touched until the VM
+# A VM app keeps every page the guest ever touched until the VM
 # stops, so the guest should not hoard: a small zram, smooth reclaim, THP
 # without allocation stalls, MGLRU protection. OmacVM.app's balloon takes freed
 # memory out of QEMU's footprint (free page reporting); the tmpfiles file sets
