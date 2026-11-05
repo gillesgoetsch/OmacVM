@@ -533,8 +533,18 @@ step_kernel() {
 }
 
 step_update() {
-  local rc=0
+  local rc=0 sec
   "$S/system-update" >> "$LOG" 2>&1 || rc=$?
+  # omarchy update builds AUR packages last (after its migrations and the
+  # orphan step): one that does not build on aarch64 is a warning here.
+  if (( rc == 1 )); then
+    sec=$(awk '/ omarchy update -y \(OmacVM\)$/ { b = "" } { b = b $0 "\n" } END { printf "%s", b }' \
+      "${OMACVM_SYSTEM_UPDATE_LOG:-/var/log/omacvm-system-update.log}" 2>/dev/null)
+    if [[ $sec == *"Update AUR packages"* && $sec == *"omarchy update exit 1"* ]]; then
+      echo "omarchy update: AUR packages not updated ($(pacman -Qqm 2>/dev/null | grep -vxE 'linux-aarch64-thp(-headers)?|omacvm-vulkan-virtio' | tr '\n' ' ')): see /var/log/omacvm-system-update.log" >> "$J/warnings"
+      return 0
+    fi
+  fi
   case $rc in
     0) return 0 ;;
     2) REASON="omarchy update ran, but the desktop's graphics would not start (see /var/log/omacvm-system-update.log)" ;;

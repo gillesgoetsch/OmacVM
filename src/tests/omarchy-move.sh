@@ -41,7 +41,13 @@ B=$T/bin; mkdir -p "$B"
 P=$T/pk; mkdir -p "$P"
 cat > "$GD/system-update" <<EOF
 #!/bin/bash
-echo update >> "$P/calls"; [[ -e $P/update-fails ]] && { rm -f "$P/update-fails"; exit 1; }; exit 0
+echo update >> "$P/calls"; [[ -e $P/update-fails ]] && { rm -f "$P/update-fails"; exit 1; }
+if [[ -e $P/aur-fails ]]; then
+  printf '%s\n' "== 2026-11-06 01:00:00 omarchy update -y (OmacVM)" "Update system packages" "Orphan system packages" \
+    "Update AUR packages" "==> ERROR: dotnet-runtime-2.1 is not available for the 'aarch64' architecture." "== omarchy update exit 1" >> "$T/su.log"
+  exit 1
+fi
+exit 0
 EOF
 printf '#!/bin/bash\necho mpv >> "%s/calls"\n' "$P" > "$TR/app/guest/venus/mpv.sh"
 printf '#!/bin/bash\necho "vulkan $*" >> "%s/calls"\n' "$P" > "$TR/app/guest/venus/vulkan-virtio.sh"
@@ -158,7 +164,7 @@ export P DB=$T/omarchy.db J=$T/j CACHE=$T/cache GNUPG=$T/gnupg
 o() {
   PATH="$B:$T/compat:$PATH" OMACVM_MOVE_ROOT=$RT OMACVM_MOVE_MACHINE=aarch64 OMACVM_PACMAN_CONF=$T/pacman.conf \
     OMACVM_PACMAN_MIRRORS=$T/mirrorlist OMACVM_PACMAN_GNUPG=$GNUPG OMACVM_MOVE_DIR=$J OMACVM_MOVE_LOG=$T/move.log \
-    OMACVM_PACMAN_CACHE=$CACHE OMACVM_MOVE_WAIT404=0 OMARCHY_PATH=$T/omarchy "$M" "$@"
+    OMACVM_PACMAN_CACHE=$CACHE OMACVM_MOVE_WAIT404=0 OMACVM_SYSTEM_UPDATE_LOG=$T/su.log OMARCHY_PATH=$T/omarchy "$M" "$@"
 }
 calls() { grep -c -e "$1" "$P/calls" 2>/dev/null; }
 
@@ -247,6 +253,12 @@ expect "preflight on a stopped move (Omarchy is 4.5 now): ok to go on, resume, a
   "$rc $(json '" ".join(str(x) for x in [d["ok"], d["resume"], d["phase_done"]])' <<<"$out")"
 o run >/dev/null 2>&1; rc=$?
 expect "resume: done, the switch and the download not again" "0 done 1 1" "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -Syyuuw')"
+
+# omarchy update stops at an AUR package that does not build on aarch64 (after its migrations): a warning.
+fresh; : > "$P/aur-fails"; o run >/dev/null 2>&1; rc=$?
+expect "omarchy update fails only in its AUR step: done, with a warning" "0 done 1" \
+  "$rc $(cat "$J/state") $(o status --json | json 'sum("AUR packages not updated" in w for w in d["result"]["warnings"])')"
+rm -f "$P/aur-fails" "$T/su.log"
 
 # Cut off inside the switch: Undo only.
 fresh; o run >/dev/null 2>&1; rm -f "$J/commit-done" "$J/state"; echo download > "$J/phase-done"; : > "$J/commit-started"
