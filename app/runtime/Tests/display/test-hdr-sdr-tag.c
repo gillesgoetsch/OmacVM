@@ -285,21 +285,46 @@ int main(int argc, char **argv)
           "the SDR flag is macOS's headroom key (a tag of 1.0 is ignored)");
     layer_checks(LAYER_REAL);
 
-    /* The need: SDR from the start, 0 (EDR) at once on HDR, SDR 10 s after the last HDR look. */
+    /* The need: SDR from the start, 0 (EDR) at once on HDR, SDR 10 s after HDR last showed. */
     OmacvmHdrNeed n;
+    int64_t due;
     omacvm_hdr_need_reset(&n);
     check(n.need == 1 && omacvm_hdr_need_due(&n) == -1, "PQ frames do not start SDR");
     check(!omacvm_hdr_need_peak(&n, 1.0, S(1)) && n.need == 1, "SDR turns EDR on");
     check(omacvm_hdr_need_peak(&n, 4.93, S(2)) && n.need == 0, "HDR does not turn EDR on at once");
-    check(omacvm_hdr_need_due(&n) == S(12), "the hold does not end 10 s after the last HDR look");
-    check(!omacvm_hdr_need_peak(&n, 4.93, S(3)) && omacvm_hdr_need_due(&n) == S(13), "HDR again does not move the hold");
-    check(!omacvm_hdr_need_peak(&n, 1.0, S(12.9)) && n.need == 0, "EDR off before the hold is over");
-    check(!omacvm_hdr_need_tick(&n, S(12.99)) && n.need == 0, "EDR off before the hold is over (time only)");
-    check(omacvm_hdr_need_tick(&n, S(13)) && n.need == 1, "EDR not off when the hold is over (time only)");
+    check(omacvm_hdr_need_due(&n) == -1, "a timer is due while the last look saw HDR");
+    check(!omacvm_hdr_need_peak(&n, 4.93, S(3)) && omacvm_hdr_need_due(&n) == -1, "HDR again sets a timer");
+    check(!omacvm_hdr_need_peak(&n, 1.0, S(3.25)) && n.need == 0, "EDR off at the first look without HDR");
+    check(omacvm_hdr_need_due(&n) == S(13.25), "the hold does not end 10 s after HDR last showed");
+    check(!omacvm_hdr_need_peak(&n, 1.0, S(13.2)) && n.need == 0, "EDR off before the hold is over");
+    check(!omacvm_hdr_need_tick(&n, S(13.24)) && n.need == 0, "EDR off before the hold is over (time only)");
+    check(omacvm_hdr_need_tick(&n, S(13.25)) && n.need == 1, "EDR not off when the hold is over (time only)");
+    check(omacvm_hdr_need_due(&n) == -1, "a timer is due after the hold");
+    /*
+     * A still HDR picture (a paused HDR video, an HDR photo): no new frame,
+     * so no look; only the timer runs. It must keep EDR and must not be set
+     * to now or before: QEMU runs a timer set in the past again in the same
+     * pass, for ever, with the BQL held (the VM hangs; #709 at 219a95c1).
+     */
     omacvm_hdr_need_reset(&n);
     omacvm_hdr_need_peak(&n, 2.0, S(1));
-    check(!omacvm_hdr_need_tick(&n, S(30)) && n.need == 0, "a still HDR frame lost its headroom");
-    check(omacvm_hdr_need_peak(&n, 0.5, S(30)) && n.need == 1, "SDR after a long HDR frame keeps EDR");
+    for (int64_t t = S(1); t <= S(60); t += S(0.25)) {
+        check(!omacvm_hdr_need_tick(&n, t) && n.need == 0, "a still HDR frame lost its headroom");
+        due = omacvm_hdr_need_due(&n);
+        if (due >= 0 && due <= t) {
+            check(false, "after a still HDR frame the hold's timer is due at or before now (a hang)");
+            break;
+        }
+    }
+    /* The picture goes at 60 s: the hold starts then, not at the last look 59 s before. */
+    check(!omacvm_hdr_need_peak(&n, 0.5, S(60)) && n.need == 0, "SDR after a still HDR frame ends EDR at once");
+    check(omacvm_hdr_need_due(&n) == S(70), "the hold after a still HDR frame does not start as it goes");
+    check(omacvm_hdr_need_tick(&n, S(70)) && n.need == 1, "EDR not off 10 s after a still HDR frame went");
+    /* The timer's time: never now or before (also for a due time already past). */
+    check(omacvm_hdr_timer_at(-1, S(5)) == -1, "a timer set with nothing due");
+    check(omacvm_hdr_timer_at(S(9), S(5)) == S(9), "a timer in the future moved");
+    check(omacvm_hdr_timer_at(S(5), S(5)) > S(5) && omacvm_hdr_timer_at(S(4), S(5)) > S(5) &&
+          omacvm_hdr_timer_at(0, S(5)) > S(5), "a timer set to now or before (a hang)");
     omacvm_hdr_need_reset(&n);
     check(omacvm_hdr_need_peak(&n, NAN, S(1)) && n.need == 0, "an unreadable peak does not turn EDR on");
 

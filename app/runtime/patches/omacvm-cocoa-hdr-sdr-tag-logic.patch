@@ -3,8 +3,10 @@ Subject: [PATCH] ui: when HDR frames get EDR, tested without AppKit
 
 What: a header with no AppKit in it (ui/omacvm-hdr-tag.h): the rule for
 PQ frames' EDR (off while the frames' brightest pixel is SDR white or
-less, on from the first look that sees more, off again 10 s after the
-last), what a layer asks of macOS for a surface (EDR from the surface's
+less, on from the first look that sees more, off again 10 s after HDR
+last showed; a still HDR picture keeps it), the time for QEMU's timer
+(never in the past: QEMU would run it again and again with the BQL held),
+what a layer asks of macOS for a surface (EDR from the surface's
 SDR flag, tone map never for every PQ or linear surface in both states),
 the macOS version the rule runs on (26 and later), the headroom the guest
 is told meanwhile (what it had with EDR on, on this display, or the
@@ -25,7 +27,7 @@ test-hdr-sdr-tag-shader.m (the shader on Apple's software renderer).
 
 --- /dev/null
 +++ b/ui/omacvm-hdr-tag.h
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,280 @@
 +/*
 + * OmacVM, HDR (ADR 0049, amended): EDR only while the guest's frames show
 + * HDR. No AppKit in here, so it is tested on its own
@@ -38,8 +40,9 @@ test-hdr-sdr-tag-shader.m (the shader on Apple's software renderer).
 + * a layer with EDR off keeps the panel at SDR (measured on macOS 27.0.1).
 + * So: a look at the frame's brightest pixel a few times a second; EDR off
 + * while it is SDR white or less (the frames are SDR); on from the first
-+ * look that sees HDR; off again 10 s after the last such look. The PQ
-+ * frames themselves stay as they are (untagged, tone map never).
++ * look that sees HDR; off again 10 s after HDR last showed (a still HDR
++ * picture keeps it on until it goes). The PQ frames themselves stay as
++ * they are (untagged, tone map never).
 + *
 + * The guest tone-maps into the headroom it is told (omacvm-edr.h). While
 + * EDR is off the panel's headroom falls to about 1, so the guest is told
@@ -57,10 +60,12 @@ test-hdr-sdr-tag-shader.m (the shader on Apple's software renderer).
 +
 +/* Above this (x SDR white, PQ 203 nits) a frame shows HDR: code 600 of 1023. */
 +#define OMACVM_HDR_SDR_PEAK 1.05
-+/* EDR on this long after the last HDR look (macOS holds the panel ~15 s anyway). */
++/* EDR on this long after HDR last showed (macOS holds the panel ~15 s anyway). */
 +#define OMACVM_HDR_HOLD_NS 10000000000LL
 +/* A look at most this often: 4 a second. */
 +#define OMACVM_HDR_LOOK_NS 250000000LL
++/* A frame no look saw (one came too soon or during a read back): a look this long after the last. */
++#define OMACVM_HDR_RELOOK_NS (2 * OMACVM_HDR_LOOK_NS)
 +/* After EDR turns on, the guest keeps its value until macOS's ramp is done. */
 +#define OMACVM_HDR_SETTLE_NS 3000000000LL
 +/* Each pass of the peak shader takes the max of a block this wide. */
@@ -149,7 +154,7 @@ test-hdr-sdr-tag-shader.m (the shader on Apple's software renderer).
 +typedef struct OmacvmHdrNeed {
 +    double need;        /* 1: the frames are SDR (EDR off); 0: they show HDR (EDR on) */
 +    double peak;        /* the last look's peak, x SDR white */
-+    int64_t hdr_ns;     /* the last look that saw HDR */
++    int64_t hdr_ns;     /* HDR last showed: a look that saw it, or the first look after without it */
 +} OmacvmHdrNeed;
 +
 +/* PQ frames start (VM start, extra brightness off, a new display): SDR. */
@@ -171,9 +176,15 @@ test-hdr-sdr-tag-shader.m (the shader on Apple's software renderer).
 +    return false;
 +}
 +
-+/* A look's result: HDR (EDR on) at once. True when need changed. */
++/*
++ * A look's result: HDR (EDR on) at once. The first look without HDR after
++ * one with it starts the hold: HDR showed until this frame, also when it
++ * stood still for minutes with no look. True when need changed.
++ */
 +static inline bool omacvm_hdr_need_peak(OmacvmHdrNeed *n, double peak, int64_t now)
 +{
++    bool was_hdr = omacvm_hdr_is_hdr(n->peak);
++
 +    n->peak = peak;
 +    if (omacvm_hdr_is_hdr(peak)) {
 +        n->hdr_ns = now;
@@ -183,13 +194,33 @@ test-hdr-sdr-tag-shader.m (the shader on Apple's software renderer).
 +        }
 +        return false;
 +    }
++    if (was_hdr && n->need == 0) {
++        n->hdr_ns = now;
++    }
 +    return omacvm_hdr_need_tick(n, now);
 +}
 +
-+/* When the hold ends (for a timer), or -1 when nothing is due. */
++/*
++ * When the hold ends (for a timer), or -1 when nothing is due: SDR, or the
++ * last look saw HDR (a still HDR picture keeps EDR; only a new frame's look
++ * can end it). After omacvm_hdr_need_tick at now it is later than now.
++ */
 +static inline int64_t omacvm_hdr_need_due(const OmacvmHdrNeed *n)
 +{
-+    return n->need == 0 ? n->hdr_ns + OMACVM_HDR_HOLD_NS : -1;
++    return n->need == 0 && !omacvm_hdr_is_hdr(n->peak) ? n->hdr_ns + OMACVM_HDR_HOLD_NS : -1;
++}
++
++/*
++ * The time to set QEMU's timer to for due (-1: none): never now or before.
++ * QEMU's timer list runs a timer set in the past again in the same pass,
++ * for ever, with the BQL held: the VM would hang.
++ */
++static inline int64_t omacvm_hdr_timer_at(int64_t due, int64_t now)
++{
++    if (due < 0) {
++        return -1;
++    }
++    return due > now ? due : now + OMACVM_HDR_LOOK_NS;
 +}
 +
 +typedef struct OmacvmEdrHold {
