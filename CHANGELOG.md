@@ -5,11 +5,6 @@ in more words.
 
 ## 3.2.23
 
-In OmacVM.app VMs with Graphics on Vulkan, QEMU now counts a Vulkan program's shader modules and pipeline
-caches by their size. Correct programs are unaffected; a program that goes past its memory share loses only
-its own Vulkan connection, not the VM. Needs the app update only (from the VM's next start); no Update VM.
-UTM, Fusion and Parallels get nothing.
-
 - **A Vulkan program's shader modules and pipeline caches now count by their size (OmacVM.app, #707, see #624).**
   With Graphics on Vulkan, QEMU counted every shader module as 4 KB of Mac memory, though the drivers keep its code
   (up to 4 MB). It now counts 2 bytes per byte of code on top of that (real shaders of 17-68 KB took 1.56-1.78 bytes
