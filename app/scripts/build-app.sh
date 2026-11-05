@@ -200,8 +200,10 @@ install -m644 "$ROOT/THIRD_PARTY_NOTICES.md" "$C/Resources/licenses/"
 install -m644 "$ROOT/runtime/LICENSE.try-omarchy" "$C/Resources/licenses/"
 install -m644 "$RT/firmware/edk2-licenses.txt" "$C/Resources/licenses/"
 install -m644 "$ROOT/runtime/boot-logo/LICENSE.omarchy" "$C/Resources/licenses/"
-# MoltenVK and the Vulkan loader (Apache-2.0) need their licence texts.
-if [[ -e $RT/qemu-gpu-runtime/lib/libMoltenVK.dylib || -e $RT/qemu-gpu-runtime/lib/libvulkan.1.dylib ]]; then
+# MoltenVK, the Vulkan loader and libvirglrenderer (SPIRV-Tools and SPIRV-Headers built in)
+# carry Apache-2.0 code and need its licence text.
+if [[ -e $RT/qemu-gpu-runtime/lib/libMoltenVK.dylib || -e $RT/qemu-gpu-runtime/lib/libvulkan.1.dylib ||
+      -e $RT/qemu-gpu-runtime/lib/libvirglrenderer.1.dylib ]]; then
   install -m644 "$ROOT/runtime/LICENSE.vulkan.txt" "$C/Resources/licenses/"
 fi
 # A runtime with KosmicKrisp must carry its licence notice.

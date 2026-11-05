@@ -14,6 +14,14 @@ in more words.
   control centre's row says "from the next start" until then). Not yet:
   folders, Photos/Mail/Safari images, and dragging out of the VM. See docs/drag-and-drop.md.
 
+## 3.2.23
+
+- **A Vulkan program's shader modules and pipeline caches now count by their size (OmacVM.app, #707, see #624).**
+  With Graphics on Vulkan, QEMU counted every shader module as 4 KB of Mac memory, though the drivers keep its code
+  (up to 4 MB). It now counts 2 bytes per byte of code on top of that (real shaders of 17-68 KB took 1.56-1.78 bytes
+  per byte of code; the 4 KB covers small ones). A pipeline cache counts its initial data on top of its 20 KB.
+  Needs the app update.
+
 ## 3.2.22
 
 In OmacVM.app VMs with Graphics on Vulkan, QEMU now counts the Metal passes and the Mac memory each

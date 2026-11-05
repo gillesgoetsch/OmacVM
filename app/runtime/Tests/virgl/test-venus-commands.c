@@ -6360,6 +6360,59 @@ static int case_unset(const char *c)
  * Each case sets its budget and caps before the setup (OMACVM_GPU_MEMORY_MB,
  * OMACVM_VENUS_HOST_MB, OMACVM_VENUS_ENCODER_CAP: the tests' 1024 makes the legal maximum
  * small enough to charge). Refused: the context ends with a refusal line. */
+/* a real module of Tests/virgl/spirv-corpus/pass (VENUS_SPIRV_CORPUS, else beside this
+ * file): its bytes in OUT */
+static size_t corpus_module(const char *name, uint32_t *out, size_t max)
+{
+   char path[2048];
+   const char *dir = getenv("VENUS_SPIRV_CORPUS");
+   const char *slash = strrchr(__FILE__, '/');
+   if (dir)
+      snprintf(path, sizeof(path), "%s/%s", dir, name);
+   else
+      snprintf(path, sizeof(path), "%.*s/spirv-corpus/pass/%s", slash ? (int)(slash - __FILE__) : 1,
+               slash ? __FILE__ : ".", name);
+   FILE *f = fopen(path, "rb");
+   if (!f)
+      broken(path);
+   const size_t n = fread(out, 1, max, f);
+   fclose(f);
+   if (!n || n % 4 || n == max)
+      broken("a corpus module of a size this test does not take");
+   return n;
+}
+
+/* a pipeline cache made from DATA (NULL: an empty one); NULL when refused */
+static void *cache_made(const void *data, size_t bytes)
+{
+   const uint64_t id = next_id++;
+   VkPipelineCache h = (VkPipelineCache)(uintptr_t)id;
+   VkPipelineCacheCreateInfo info = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+                                      .initialDataSize = bytes, .pInitialData = data };
+   struct vn_command_vkCreatePipelineCache c = { .device = DEVH, .pCreateInfo = &info, .pPipelineCache = &h };
+   D->dispatch_vkCreatePipelineCache(D, &c);
+   last_ret = c.ret;
+   return c.ret == VK_SUCCESS ? object(id) : NULL;
+}
+
+/* the driver's own data of CACHE (vkGetPipelineCacheData) into OUT: its size */
+static size_t cache_data(void *cache, uint8_t *out, size_t max)
+{
+   size_t bytes = 0;
+   struct vn_command_vkGetPipelineCacheData g = { .device = DEVH, .pipelineCache = (VkPipelineCache)cache,
+                                                  .pDataSize = &bytes };
+   D->dispatch_vkGetPipelineCacheData(D, &g);
+   if (g.ret != VK_SUCCESS || !bytes || bytes > max)
+      broken("vkGetPipelineCacheData (size)");
+   /* fresh arguments: vkr replaced the handles of the first call's */
+   struct vn_command_vkGetPipelineCacheData g2 = { .device = DEVH, .pipelineCache = (VkPipelineCache)cache,
+                                                   .pDataSize = &bytes, .pData = out };
+   D->dispatch_vkGetPipelineCacheData(D, &g2);
+   if (g2.ret != VK_SUCCESS)
+      broken("vkGetPipelineCacheData");
+   return bytes;
+}
+
 static void h_env(const char *budget_mb, const char *host_mb, const char *cap)
 {
    setenv("OMACVM_GPU_MEMORY_RESERVE_MB", "0", 1);
@@ -7174,6 +7227,92 @@ static int case_host_memory(const char *c)
       }
       return end(w.cmd);
    }
+   if (IS("h-obj-cache-size") || IS("h-obj-cache-again-ok")) {
+      /* a pipeline cache's charge grows with its initial data: the driver's own data of a
+       * cache with real compute pipelines in it (one shader, 32 work group sizes) given to 50
+       * new caches, each charged its data on top of the 20 KB and all of it back at their
+       * destroy; again: 2000 made and destroyed, under an 8 MB account. Only data the driver
+       * wrote reaches it (STANDARDS 14b). */
+      const bool again = IS("h-obj-cache-again-ok");
+      h_env("256", again ? "8" : "64", NULL);
+      setup(0);
+      void *layout = pipeline_layout(set_layout());
+      void *comp = shader(spv_comp, sizeof(spv_comp));
+      void *first = cache_made(NULL, 0);
+      if (!comp || !first)
+         broken("shader module, pipeline cache");
+      for (uint32_t size = 1; size <= 32; size++) {
+         spec_local_size = size;
+         const uint64_t id = next_id++;
+         VkPipeline h = (VkPipeline)(uintptr_t)id;
+         VkComputePipelineCreateInfo info = {
+            .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                       .module = (VkShaderModule)comp, .pName = "main", .pSpecializationInfo = &spec_ok },
+            .layout = (VkPipelineLayout)layout };
+         struct vn_command_vkCreateComputePipelines c = { .device = DEVH, .pipelineCache = (VkPipelineCache)first,
+                                                          .createInfoCount = 1, .pCreateInfos = &info,
+                                                          .pPipelines = &h };
+         D->dispatch_vkCreateComputePipelines(D, &c);
+         if (c.ret != VK_SUCCESS || !object(id))
+            broken("vkCreateComputePipelines with a cache");
+         struct vn_command_vkDestroyPipeline d = { .device = DEVH, .pipeline = (VkPipeline)object(id) };
+         D->dispatch_vkDestroyPipeline(D, &d);
+      }
+      spec_local_size = 64;
+      static uint8_t data[4 << 20];
+      const size_t bytes = cache_data(first, data, sizeof(data));
+      const uint64_t before = virgl_gpu_budget_in_use();
+      static void *caches[50];
+      const int n = again ? 2000 : 50;
+      int i = 0;
+      for (; i < n && !ended(); i++) {
+         void *cache = cache_made(data, bytes);
+         if (!cache)
+            return ended() ? FATAL : ERROR;
+         if (again) {
+            struct vn_command_vkDestroyPipelineCache d = { .device = DEVH, .pipelineCache = (VkPipelineCache)cache };
+            D->dispatch_vkDestroyPipelineCache(D, &d);
+         } else {
+            caches[i] = cache;
+         }
+      }
+      const uint64_t kept = virgl_gpu_budget_in_use();
+      for (int k = 0; !again && k < i && !ended(); k++) {
+         struct vn_command_vkDestroyPipelineCache d = { .device = DEVH, .pipelineCache = (VkPipelineCache)caches[k] };
+         D->dispatch_vkDestroyPipelineCache(D, &d);
+      }
+      const uint64_t after = virgl_gpu_budget_in_use();
+      const uint64_t each = kept > before && i ? (kept - before) / (uint64_t)i : 0;
+      step("%d caches made from %zu B of the driver's data: %" PRIu64 " B charged a cache, %" PRIu64
+           " KB in use before, %" PRIu64 " KB after the destroys%s", i, bytes, each, before >> 10, after >> 10,
+           ended() ? " (the context ended)" : "");
+      if (ended())
+         return FATAL;
+      return after <= before && (again || each >= (20u << 10) + bytes) ? WORKS : ERROR;
+   }
+   if (IS("h-obj-module-size") || IS("h-obj-module-again-ok")) {
+      /* a module's charge grows with its code (both drivers keep a copy, vkr its scan): the
+       * corpus' largest real module (DXVK, 68496 B; 4 KB a module before), 200 kept or 2000
+       * made and destroyed again, under an 8 MB account */
+      h_env("256", "8", NULL);
+      setup(0);
+      static uint32_t code[1 << 16];
+      const size_t bytes = corpus_module("dxvk-d3d11-004.spv", code, sizeof(code));
+      const bool again = IS("h-obj-module-again-ok");
+      int i = 0;
+      for (; i < (again ? 2000 : 200) && !ended(); i++) {
+         void *m = shader(code, bytes);
+         if (!m)
+            return ended() ? FATAL : ERROR;
+         if (again) {
+            struct vn_command_vkDestroyShaderModule d = { .device = DEVH, .shaderModule = (VkShaderModule)m };
+            D->dispatch_vkDestroyShaderModule(D, &d);
+         }
+      }
+      step("%d modules of %zu B made%s", i, bytes, ended() ? " (the context ended)" : "");
+      return ended() ? FATAL : WORKS;
+   }
    h_env("256", NULL, NULL);
    const uint64_t before = virgl_gpu_budget_in_use();
    setup(0);
@@ -7566,6 +7705,8 @@ static const struct test_case cases[] = {
    { "h-rec-fills", E_REFUSE, "host memory" }, { "h-rec-updates", E_REFUSE, "host memory" },
    { "h-rec-reuse-ok", E_WORKS }, { "h-rec-spare-ok", E_WORKS },
    { "h-obj-events", E_REFUSE, "host memory" }, { "h-obj-events-again-ok", E_WORKS },
+   { "h-obj-module-size", E_REFUSE, "host memory" }, { "h-obj-module-again-ok", E_WORKS },
+   { "h-obj-cache-size", E_WORKS }, { "h-obj-cache-again-ok", E_WORKS },
    { "h-release-end", E_WORKS }, { "h-release-fatal", E_REFUSE, "host memory" },
    { "h-heap", E_WORKS }, { "h-temp-big", E_WORKS }, { "h-zink-frame-ok", E_WORKS },
 };
