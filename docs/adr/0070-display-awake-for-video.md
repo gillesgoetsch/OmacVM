@@ -64,8 +64,11 @@ also inhibit for audio-only tabs, downloads and calls (fixed in 157).
    dies with QEMU.
 
 No switch and no settings row: a Mac player does the same by itself.
-`OMACVM_VIDEO_AWAKE=0` leaves it out; `OMACVM_TEST_VIDEO_SEEN=1` counts a
-hidden test window as seen.
+`OMACVM_VIDEO_AWAKE=0` leaves it out; `OMACVM_TEST_VIDEO_SEEN=1` (tests)
+counts a hidden test window as seen and lets `org.omacvm.test.lock`
+(`OMACVM_TEST_LOCK_HOOK=1`) stand for the test Mac's own lock, sleep and
+console: a test Mac nobody sits at is locked. The real lock was shown on the
+mini with the switch off: guest saying `inhibit`, nothing held.
 
 ## Consequences
 

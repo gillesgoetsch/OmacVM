@@ -20,7 +20,8 @@ with more than 16 names or anything but Virtual-N is ignored; older QEMUs
 ignore the key, and an older guest sends none. qemu.log: the state at
 start, each hold and release with why (at most 10 lines a minute), never
 a word from the guest. OMACVM_VIDEO_AWAKE=0 leaves it out;
-OMACVM_TEST_VIDEO_SEEN=1 counts a hidden test window as seen (tests).
+OMACVM_TEST_VIDEO_SEEN=1 (tests) counts a hidden test window as seen and
+the test Mac's own lock as none: org.omacvm.test.lock stands for it.
 
 Why: on battery macOS turned the display off after 2 min while the user
 watched a video in the VM: a Mac player holds this assertion while it
@@ -68,7 +69,7 @@ omacvm-cocoa-drop.patch.
  }
  
  /* The guest's display agent said hello (again): whether it can pause; it knows nothing yet. */
-@@ -13709,9 +13714,232 @@
+@@ -13709,7 +13714,235 @@
      });
      if (told) {
          omacvm_gp_tell(OMACVM_GP_UNSEEN);
@@ -90,7 +91,9 @@ omacvm-cocoa-drop.patch.
 + * timeout (45 s, armed again every 10 s) backs that up, and it dies with
 + * QEMU. No switch: a Mac player does the same by itself. OMACVM_VIDEO_AWAKE=0
 + * leaves it out (tests); OMACVM_TEST_VIDEO_SEEN=1 counts a hidden test
-+ * window as seen (the lock, sleep and test lock still count). qemu.log:
++ * window as seen and leaves the test Mac's own lock, sleep and console out
++ * (a test Mac nobody sits at is locked): org.omacvm.test.lock stands for
++ * them (OMACVM_TEST_LOCK_HOOK=1). qemu.log:
 + * each hold and release with why, at most 10 lines a minute; never a word
 + * from the guest. Main thread, but for the VM's run state (QEMU's thread).
 + */
@@ -123,10 +126,12 @@ omacvm-cocoa-drop.patch.
 +static unsigned omacvm_va_seen(void)
 +{
 +    unsigned seen = 0;
++    bool mac_locked = omacvm_ds_screen_locked || omacvm_ds_asleep || omacvm_ds_away;
 +
-+    if (omacvm_ds_screen_locked || omacvm_ds_asleep || omacvm_ds_away || omacvm_ds_test_locked) {
++    /* Tests: the test lock stands for the test Mac's own (OMACVM_TEST_VIDEO_SEEN). */
++    if (omacvm_ds_test_locked || (mac_locked && !omacvm_va_test_seen)) {
 +        return 0;
-     }
++    }
 +    for (int i = 0; i < omacvm_outputs && i < OMACVM_VA_OUTPUTS; i++) {
 +        NSWindow *w = i ? omacvm_heads[i].window : [cocoaView window];
 +        if (w && (omacvm_va_test_seen ||
@@ -135,8 +140,8 @@ omacvm-cocoa-drop.patch.
 +        }
 +    }
 +    return seen;
- }
- 
++}
++
 +static bool omacvm_va_create(void)
 +{
 +    int secs = OMACVM_VA_POWERD_S, level = kIOPMAssertionLevelOn;
@@ -292,16 +297,15 @@ omacvm-cocoa-drop.patch.
 +                "on (the Mac's display stays on while a video plays in the VM and its window can be seen)" :
 +                "off (OMACVM_VIDEO_AWAKE=0)");
 +    if (omacvm_va_test_seen) {
-+        info_report("OmacVM: video awake: test: hidden windows count as seen (OMACVM_TEST_VIDEO_SEEN)");
-+    }
++        info_report("OmacVM: video awake: test: hidden windows count as seen, only the test lock counts "
++                    "(OMACVM_TEST_VIDEO_SEEN)");
+     }
 +    omacvm_va_ready = true;
 +    omacvm_va_update();
-+}
-+
+ }
+ 
  static void omacvm_send_layout(void)
- {
-     NSMutableArray *outputs = [NSMutableArray array];
-@@ -13945,6 +14173,9 @@
+@@ -13945,6 +14178,9 @@
          double scale;
          if (omacvm_json_number(d[@"scale"], &scale)) {
              omacvm_fp_scale_from_guest(scale);
@@ -311,7 +315,7 @@ omacvm-cocoa-drop.patch.
          }
          if (update) {
              omacvm_guest_update();
-@@ -13963,6 +14194,7 @@
+@@ -13963,6 +14199,7 @@
      omacvm_guest_ready = false;
      omacvm_gp_able = false;
      omacvm_chan_tries = 0;
@@ -319,7 +323,7 @@ omacvm-cocoa-drop.patch.
      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
                     dispatch_get_main_queue(), ^{ omacvm_chan_connect(); });
  }
-@@ -15200,6 +15432,7 @@
+@@ -15200,6 +15437,7 @@
      omacvm_head_delegate = [[OmacVMHeadDelegate alloc] init];
      omacvm_ds_watch_lock();
      omacvm_gp_update();     /* reads the switch and says it in qemu.log */

@@ -74,10 +74,11 @@ has "... release" "$update" 'omacvm_va_release();'
 has "... renew" "$update" 'omacvm_va_renew();'
 has "... and look again by itself" "$update" 'double at = omacvm_va_look_at(&omacvm_va, now);'
 # Seen: the window on screen and not covered, nobody locked out (the sight guest-pause uses); the test switch only for hidden windows.
-has "seen: the lock, sleep, another user, the test lock" "$seen" 'if (omacvm_ds_screen_locked || omacvm_ds_asleep || omacvm_ds_away || omacvm_ds_test_locked) {'
+has "seen: the Mac's lock, sleep, another user" "$seen" 'bool mac_locked = omacvm_ds_screen_locked || omacvm_ds_asleep || omacvm_ds_away;'
+has "... and the test lock; the test switch only stands the test lock in for the Mac's" "$seen" 'if (omacvm_ds_test_locked || (mac_locked && !omacvm_va_test_seen)) {'
 has "seen: each output's own window" "$seen" 'NSWindow *w = i ? omacvm_heads[i].window : [cocoaView window];'
 has "seen: on screen and not covered" "$seen" '[w isVisible] && ([w occlusionState] & NSWindowOcclusionStateVisible)'
-order "the lock is checked before the test switch" "$seen" 'omacvm_ds_test_locked) {' 'omacvm_va_test_seen ||'
+order "the locks are checked before the windows" "$seen" '!omacvm_va_test_seen)) {' 'omacvm_va_test_seen ||'
 # What feeds it: the guest's line, every change of sight (through guest-pause's update), the VM's run state, the Mac's sleep, the channel.
 has "the guest's inhibit reaches it" "$chan" 'omacvm_va_line(d[@"inhibit"]);'
 has "a line is checked before it counts" "$line" 'int i = omacvm_va_name([u bytes], [u length]);'

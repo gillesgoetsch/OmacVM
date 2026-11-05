@@ -417,7 +417,8 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   Stay Awake and no-idle-lock are never sent. qemu.log `OmacVM: video awake:
   ...`; `omacvm-displays status` `"inhibit"`. Tests `test-video-awake.sh`,
   `test_omacvm_displays.py`; `OMACVM_VIDEO_AWAKE=0` off,
-  `OMACVM_TEST_VIDEO_SEEN=1` for hidden test windows.
+  `OMACVM_TEST_VIDEO_SEEN=1` for hidden test windows on a locked test Mac
+  (the test lock stands for the Mac's own).
 - SSH: `gssh` checks each VM's host key, remembered the first time OmacVM sets
   the VM up (`~/Library/Application Support/omacvm/known_hosts/`, `vm_pin`);
   another key stops with exit 3 and `omacvm apply --vm NAME --reset-host-key`.
