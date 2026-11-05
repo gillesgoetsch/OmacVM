@@ -1,14 +1,17 @@
 From: OmacVM
-Subject: [PATCH] ui: when HDR frames ask macOS for headroom, tested without AppKit
+Subject: [PATCH] ui: when HDR frames get EDR, tested without AppKit
 
 What: a header with no AppKit in it (ui/omacvm-hdr-tag.h): the rule for
-PQ frames' headroom tag (1x while the frames' brightest pixel is SDR
-white or less, untagged from the first look that sees more, 1x again 10 s
-after the last), the headroom the guest is told meanwhile (what it had
-untagged on this display, or the display's most; after untagging not less
-than that until macOS's ramp is done), the PQ decode of the peak, and the
-peak shader (the max of 16x16 blocks, run twice). Used by
-omacvm-cocoa-hdr-sdr-tag.patch (which explains the why; ADR 0049).
+PQ frames' EDR (off while the frames' brightest pixel is SDR white or
+less, on from the first look that sees more, off again 10 s after the
+last), what a layer asks of macOS for a surface (EDR from the surface's
+SDR flag, tone map never for every PQ or linear surface in both states),
+the macOS version the rule runs on (26 and later), the headroom the guest
+is told meanwhile (what it had with EDR on, on this display, or the
+display's most; after EDR turns on not less than that until macOS's ramp
+is done), the PQ decode of the peak, and the peak shader (the max of
+16x16 blocks, run twice). Used by omacvm-cocoa-hdr-sdr-tag.patch (which
+explains the why; ADR 0049).
 
 Why its own file: so the rules and the shader are tested without QEMU or
 a window (app/runtime/Tests/display/test-hdr-sdr-tag.sh applies this
@@ -16,30 +19,32 @@ patch and omacvm-cocoa-hdr-headroom-logic.patch to an empty folder; at
 build time and in CI), including a model of macOS's headroom ramp.
 
 Upstream: OmacVM only.
-Test: app/runtime/Tests/display/test-hdr-sdr-tag.c (rules, the ramp
-model, --self-test: older rules fail it), test-hdr-sdr-tag-shader.m (the
-shader on Apple's software renderer).
+Test: app/runtime/Tests/display/test-hdr-sdr-tag.c (rules, the layer
+rule, the ramp model, --self-test: older rules fail it),
+test-hdr-sdr-tag-shader.m (the shader on Apple's software renderer).
 
 --- /dev/null
 +++ b/ui/omacvm-hdr-tag.h
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,251 @@
 +/*
-+ * OmacVM, HDR (ADR 0049, amended): ask macOS for the display's headroom
-+ * only while the guest's frames use it. No AppKit in here, so it is tested
-+ * on its own (app/runtime/Tests/display/test-hdr-sdr-tag.sh); ui/cocoa.m
-+ * feeds it the frames' peak and NSScreen's values.
++ * OmacVM, HDR (ADR 0049, amended): EDR only while the guest's frames show
++ * HDR. No AppKit in here, so it is tested on its own
++ * (app/runtime/Tests/display/test-hdr-sdr-tag.sh); ui/cocoa.m feeds it the
++ * frames' peak and NSScreen's values.
 + *
-+ * A PQ frame with no headroom tag makes macOS raise the panel's EDR
-+ * headroom to its most (16 on an XDR panel at low brightness), even when
-+ * every pixel is SDR. Tagged 1x, the panel stays at SDR. So: a look at the
-+ * frame's brightest pixel a few times a second; frames tagged 1x while it
-+ * is SDR white or less; untagged (as before) from the first look that sees
-+ * HDR, back to 1x after 10 s without HDR.
++ * A layer with EDR on makes macOS raise the panel's headroom to its most
++ * (16 on an XDR panel at low brightness), even when every pixel is SDR. A
++ * tag of 1.0 on the surface does not stop it (macOS ignores exactly 1.0);
++ * a layer with EDR off keeps the panel at SDR (measured on macOS 27.0.1).
++ * So: a look at the frame's brightest pixel a few times a second; EDR off
++ * while it is SDR white or less (the frames are SDR); on from the first
++ * look that sees HDR; off again 10 s after the last such look. The PQ
++ * frames themselves stay as they are (untagged, tone map never).
 + *
 + * The guest tone-maps into the headroom it is told (omacvm-edr.h). While
-+ * frames are tagged 1x the panel's headroom falls to about 1, so the guest
-+ * is told what it had while untagged (or the display's most), never that
-+ * 1: told 1 it would fit its HDR into SDR and never ask again.
++ * EDR is off the panel's headroom falls to about 1, so the guest is told
++ * what it had with EDR on (or the display's most), never that 1: told 1 it
++ * would fit its HDR into SDR and never show HDR again.
 + */
 +#ifndef OMACVM_HDR_TAG_H
 +#define OMACVM_HDR_TAG_H
@@ -52,11 +57,11 @@ shader on Apple's software renderer).
 +
 +/* Above this (x SDR white, PQ 203 nits) a frame shows HDR: code 600 of 1023. */
 +#define OMACVM_HDR_SDR_PEAK 1.05
-+/* Untagged this long after the last HDR look: past macOS's own hold (5-15 s). */
++/* EDR on this long after the last HDR look (macOS holds the panel ~15 s anyway). */
 +#define OMACVM_HDR_HOLD_NS 10000000000LL
 +/* A look at most this often: 4 a second. */
 +#define OMACVM_HDR_LOOK_NS 250000000LL
-+/* After untagging, the guest keeps its value until macOS's ramp is done. */
++/* After EDR turns on, the guest keeps its value until macOS's ramp is done. */
 +#define OMACVM_HDR_SETTLE_NS 3000000000LL
 +/* Each pass of the peak shader takes the max of a block this wide. */
 +#define OMACVM_HDR_BLOCK 16
@@ -103,13 +108,51 @@ shader on Apple's software renderer).
 +    return !(peak >= 0 && peak <= OMACVM_HDR_SDR_PEAK);
 +}
 +
++/*
++ * The private IOSurface value ui/cocoa.m puts on a PQ surface whose frame
++ * is SDR (QEMU's thread, before Core Animation gets it). No value: EDR on,
++ * as in 3.2.22 (the look failed, OMACVM_HDR_SDR_TAG=0, macOS 15, HDR).
++ */
++#define OMACVM_HDR_SURF_SDR_KEY "org.omacvm.hdr-sdr"
++
++/*
++ * The rule is on from macOS 26 (measured on 27.0.1). macOS 15 keeps
++ * 3.2.22's EDR on: a no-EDR PQ layer with tone map never was not checked
++ * there, and if 15 tone-mapped it SDR white would drop to half.
++ * OMACVM_HDR_SDR_TAG=0 turns it off too.
++ */
++static inline bool omacvm_hdr_rule_on(int macos_major, const char *env)
++{
++    return macos_major >= 26 && !(env && env[0] == '0' && !env[1]);
++}
++
++typedef struct OmacvmHdrLayer {
++    bool edr;           /* wantsExtendedDynamicRangeContent */
++    bool never;         /* toneMapMode never (else automatic) */
++} OmacvmHdrLayer;
++
++/*
++ * What a layer asks of macOS for one surface (cocoa_gl_layer_follow).
++ * colour: a half-float surface with tagged colour and HDR wanted, or
++ * linear (extra brightness). EDR: such a surface, but a PQ one only while
++ * its frame is not SDR (no OMACVM_HDR_SURF_SDR_KEY on it); linear always
++ * (extra brightness keeps its 2x). Tone map never for every such surface
++ * in both states, on its own condition: with EDR off and automatic, macOS
++ * maps PQ again and SDR white drops to half (ADR 0049).
++ */
++static inline OmacvmHdrLayer omacvm_hdr_layer(bool colour, bool linear, bool surf_sdr)
++{
++    OmacvmHdrLayer l = { colour && (linear || !surf_sdr), colour };
++    return l;
++}
++
 +typedef struct OmacvmHdrNeed {
-+    double need;        /* 1: frames tagged 1x (SDR); 0: untagged, the display's headroom */
++    double need;        /* 1: the frames are SDR (EDR off); 0: they show HDR (EDR on) */
 +    double peak;        /* the last look's peak, x SDR white */
 +    int64_t hdr_ns;     /* the last look that saw HDR */
 +} OmacvmHdrNeed;
 +
-+/* PQ frames start (VM start, extra brightness off, a new display): 1x. */
++/* PQ frames start (VM start, extra brightness off, a new display): SDR. */
 +static inline void omacvm_hdr_need_reset(OmacvmHdrNeed *n)
 +{
 +    n->need = 1;
@@ -117,7 +160,7 @@ shader on Apple's software renderer).
 +    n->hdr_ns = 0;
 +}
 +
-+/* Time only: 1x again once the hold is over without HDR. True when need changed. */
++/* Time only: SDR again once the hold is over without HDR. True when need changed. */
 +static inline bool omacvm_hdr_need_tick(OmacvmHdrNeed *n, int64_t now)
 +{
 +    if (n->need == 0 && !omacvm_hdr_is_hdr(n->peak) &&
@@ -128,7 +171,7 @@ shader on Apple's software renderer).
 +    return false;
 +}
 +
-+/* A look's result: untagged at once on HDR. True when need changed. */
++/* A look's result: HDR (EDR on) at once. True when need changed. */
 +static inline bool omacvm_hdr_need_peak(OmacvmHdrNeed *n, double peak, int64_t now)
 +{
 +    n->peak = peak;
@@ -153,22 +196,22 @@ shader on Apple's software renderer).
 +    bool known;         /* a display was seen */
 +    uint32_t display;   /* the key: the window's display ... */
 +    double potential;   /* ... and its most */
-+    double held;        /* the last settled value while untagged (> SDR), -1 none */
-+    int64_t open_ns;    /* the untagging this was settled for */
++    double held;        /* the last settled value while HDR showed (> SDR), -1 none */
++    int64_t open_ns;    /* the switch to HDR this was settled for */
 +    bool settled;
 +} OmacvmEdrHold;
 +
 +/*
 + * The headroom the guest is told (omacvm-edr.h's rules for the value).
-+ * Tagged 1x: what it had while untagged on this display, else the
-+ * display's most (capped 16). Untagged: the current headroom, but not less
-+ * than the tagged value until macOS's ramp is done (current reaches it, or
-+ * 3 s). A new display (or a new most) forgets the held value; *new_display
-+ * says so. Never more than the display's most.
++ * SDR (EDR off): what it had while HDR showed on this display, else the
++ * display's most (capped 16). HDR: the current headroom, but not less than
++ * the SDR value until macOS's ramp is done (current reaches it, or 3 s). A
++ * new display (or a new most) forgets the held value; *new_display says
++ * so. Never more than the display's most.
 + */
 +static inline double omacvm_edr_guest(OmacvmEdrHold *h, bool *new_display, uint32_t display,
 +                                      double current, double potential, bool use_potential,
-+                                      bool tagged, int64_t open_ns, int64_t now)
++                                      bool sdr, int64_t open_ns, int64_t now)
 +{
 +    bool same = h->known && display == h->display &&
 +                fabs(potential - h->potential) <= 0.01 * fmax(fabs(h->potential), 1.0);
@@ -182,7 +225,7 @@ shader on Apple's software renderer).
 +    }
 +    double top = omacvm_edr_value(potential, potential, true);
 +    double base = h->held > 0 && h->held < top ? h->held : top;
-+    if (tagged) {
++    if (sdr) {
 +        return base;
 +    }
 +    double v = omacvm_edr_value(current, potential, use_potential);

@@ -1,13 +1,16 @@
 /*
  * test-hdr-sdr-tag: the rules of ui/omacvm-hdr-tag.h (ADR 0049, amended):
- * when PQ frames are tagged 1x and when untagged, and the headroom the
- * guest is told. Besides the plain cases, a model of a Mac: macOS raises
- * the panel's headroom to its most within 2 s while any untagged frame
- * shows and keeps it 5 s after; the guest fits its HDR into the headroom
- * it is told. It must show: SDR frames never untagged, HDR untagged within
- * a look, no lock (the guest told 1 forever) and no back and forth.
+ * when PQ frames get EDR (only while they show HDR), what a layer asks of
+ * macOS for a surface, the macOS versions the rule runs on, and the
+ * headroom the guest is told. Besides the plain cases, a model of a Mac:
+ * macOS raises the panel's headroom to its most within 2 s while any EDR
+ * layer shows and keeps it 5 s after; the guest fits its HDR into the
+ * headroom it is told. It must show: SDR frames never get EDR, HDR gets it
+ * within a look, no lock (the guest told 1 forever) and no back and forth.
  * --self-test: the same model with older or simpler rules must fail
- * (3.2.22: never tagged; the guest told the current headroom; a 2 s hold).
+ * (3.2.22: EDR always; the guest told the current headroom; a 2 s hold),
+ * and so must older layer rules (3.2.22's EDR from the colour alone, #709's
+ * tone map that follows EDR).
  * Run by test-hdr-sdr-tag.sh.
  */
 #include <stdio.h>
@@ -38,8 +41,8 @@ typedef struct Model {
     OmacvmEdrHold h;
     double cur;             /* macOS's current headroom */
     double potential;
-    int64_t untagged_ns;    /* the last time an untagged frame showed */
-    int64_t open_ns;        /* need 1 -> 0 */
+    int64_t edr_ns;         /* the last time an EDR frame showed */
+    int64_t open_ns;        /* need 1 -> 0 (EDR on) */
     double told;            /* what the guest was told (-1 nothing yet) */
     int downs, ups;         /* need 1 -> 0, 0 -> 1 */
     int64_t first_down;
@@ -69,9 +72,9 @@ static void mac_step(Model *m, int64_t t)
 {
     double dt = 0.05;
     if (need_now(m) == 0) {
-        m->untagged_ns = t;
+        m->edr_ns = t;
         m->cur = fmin(m->potential, m->cur * pow(16.0, dt / 2.0));    /* 1 -> 16 in 2 s */
-    } else if (t - m->untagged_ns >= S(5)) {
+    } else if (t - m->edr_ns >= S(5)) {
         m->cur = fmax(1.0, m->cur / pow(16.0, dt / 2.0));             /* after its 5 s hold */
     }
 }
@@ -162,34 +165,75 @@ static double scenes(double t)
     return fmod(t - 5, 9) < 3 ? 4.0 : 0.9;
 }
 
+enum layer_rule { LAYER_REAL, LAYER_3222, LAYER_TM_FOLLOWS_EDR };
+
+/* A layer rule: the real one, 3.2.22's (EDR from the colour alone), #709's tone map (follows EDR). */
+static OmacvmHdrLayer layer_rule(enum layer_rule r, bool colour, bool linear, bool sdr)
+{
+    OmacvmHdrLayer l = omacvm_hdr_layer(colour, linear, sdr);
+    if (r == LAYER_3222) {
+        l.edr = colour;
+        l.never = colour;
+    } else if (r == LAYER_TM_FOLLOWS_EDR) {
+        l.never = l.edr;
+    }
+    return l;
+}
+
+/* The layer rule's checks; returns how many failed. */
+static int layer_checks(enum layer_rule r)
+{
+    int before = failures;
+    OmacvmHdrLayer l;
+
+    /* A PQ surface whose frame is SDR: no EDR, tone map never (SDR white stays 1.0). */
+    l = layer_rule(r, true, false, true);
+    check(!l.edr, "a PQ surface with an SDR frame gets EDR (the panel goes to its most)");
+    check(l.never, "a PQ surface with an SDR frame is tone-mapped by macOS (SDR white at half)");
+    /* No flag (HDR shows, the look failed, the rule off): EDR on, as 3.2.22. */
+    l = layer_rule(r, true, false, false);
+    check(l.edr && l.never, "a PQ surface without the SDR flag has no EDR or is tone-mapped");
+    /* Extra brightness: linear keeps EDR, also with a flag left on the surface. */
+    l = layer_rule(r, true, true, true);
+    check(l.edr && l.never, "a linear surface lost EDR to an SDR flag");
+    l = layer_rule(r, true, true, false);
+    check(l.edr && l.never, "a linear surface has no EDR");
+    /* 8-bit or untagged colour: no EDR, macOS's own tone mapping, as before. */
+    l = layer_rule(r, false, false, true);
+    check(!l.edr && !l.never, "an 8-bit surface (SDR flag) gets EDR or tone map never");
+    l = layer_rule(r, false, false, false);
+    check(!l.edr && !l.never, "an 8-bit surface gets EDR or tone map never");
+    return failures - before;
+}
+
 /* The model's checks; returns how many failed. */
 static int model_checks(enum rule r)
 {
     int before = failures;
     Model m;
 
-    /* SDR only: frames stay tagged 1x, the panel stays at SDR. */
+    /* SDR only: frames keep EDR off, the panel stays at SDR. */
     model_init(&m, r, 16);
     run(&m, 30, sdr_only);
-    check(m.downs == 0 && need_now(&m) == 1, "SDR frames were untagged");
+    check(m.downs == 0 && need_now(&m) == 1, "SDR frames got EDR");
     check(m.cur < 1.3, "the panel's headroom rose with SDR frames only");
 
-    /* HDR video 5-25 s: untagged within a look and its result, once; 1x 10 s after. */
+    /* HDR video 5-25 s: EDR on within a look and its result, once; off 10 s after. */
     model_init(&m, r, 16);
     run(&m, 24, video);
     check(m.downs == 1 && m.first_down >= S(5) && m.first_down <= S(5.6),
-          "HDR frames were not untagged within a look");
+          "HDR frames did not get EDR within a look");
     check(m.ups == 0 && need_now(&m) == 0, "HDR frames lost their headroom (a lock or back and forth)");
     check(m.told >= 15.9, "the guest was not told the panel's headroom while HDR showed");
     model_init(&m, r, 16);
     run(&m, 37, video);
-    check(m.ups == 1 && need_now(&m) == 1, "frames not tagged 1x again 10 s after HDR ended");
+    check(m.ups == 1 && need_now(&m) == 1, "EDR not off again 10 s after HDR ended");
     check(m.told >= 15.9, "the guest lost its headroom after HDR ended (it would be told 1)");
 
     /* Dark and bright scenes: one rise of the panel for the whole video. */
     model_init(&m, r, 16);
     run(&m, 64, scenes);
-    check(m.downs == 1 && m.ups == 0, "dark scenes in an HDR video tagged the frames 1x again");
+    check(m.downs == 1 && m.ups == 0, "dark scenes in an HDR video turned EDR off again");
     return failures - before;
 }
 
@@ -203,16 +247,19 @@ int main(int argc, char **argv)
         quiet = true;
         int old = model_checks(OLD_3222), naive = model_checks(NAIVE_GUEST),
             hold = model_checks(SHORT_HOLD);
+        int l3222 = layer_checks(LAYER_3222), l709 = layer_checks(LAYER_TM_FOLLOWS_EDR);
         quiet = false;
         failures = 0;
-        check(old > 0, "the model passes 3.2.22 (frames never tagged)");
+        check(old > 0, "the model passes 3.2.22 (EDR always)");
         check(naive > 0, "the model passes a guest told the current headroom");
         check(hold > 0, "the model passes a 2 s hold");
+        check(l3222 > 0, "the layer checks pass 3.2.22's layer (EDR from the colour alone)");
+        check(l709 > 0, "the layer checks pass a tone map that follows EDR (#709)");
         if (failures) {
             return 1;
         }
-        printf("test-hdr-sdr-tag: self-test ok (3.2.22 %d, current-headroom guest %d, 2 s hold %d checks fail)\n",
-               old, naive, hold);
+        printf("test-hdr-sdr-tag: self-test ok (3.2.22 %d, current-headroom guest %d, 2 s hold %d, "
+               "3.2.22 layer %d, tone map follows EDR %d checks fail)\n", old, naive, hold, l3222, l709);
         return 0;
     }
 
@@ -224,40 +271,49 @@ int main(int argc, char **argv)
     check(fabs(omacvm_hdr_pq_units(0.7518) - 4.925) < 0.01, "PQ 1000 nits is not 4.93x");
     check(omacvm_hdr_pq_units(0) == 0 && !omacvm_hdr_is_hdr(0), "black is not 0 or counts as HDR");
     check(omacvm_hdr_pq_units(2.0) == omacvm_hdr_pq_units(1.0), "a value above 1 is not 10000 nits");
-    /* The safe side (the old behaviour, untagged) for what cannot be read. */
+    /* The safe side (the old behaviour, EDR on) for what cannot be read. */
     check(omacvm_hdr_is_hdr(NAN) && omacvm_hdr_is_hdr(-0.5) && omacvm_hdr_is_hdr(INFINITY) &&
           omacvm_hdr_is_hdr(omacvm_hdr_pq_units(NAN)) && omacvm_hdr_is_hdr(omacvm_hdr_pq_units(-1)),
           "NaN, negative or huge peaks count as SDR");
 
-    /* The need: 1x from the start, 0 at once on HDR, 1x 10 s after the last HDR look. */
+    /* Where the rule runs: macOS 26 and later, not with OMACVM_HDR_SDR_TAG=0. */
+    check(!omacvm_hdr_rule_on(15, NULL), "the rule runs on macOS 15 (not checked there)");
+    check(omacvm_hdr_rule_on(26, NULL) && omacvm_hdr_rule_on(27, NULL) && omacvm_hdr_rule_on(27, "1") &&
+          omacvm_hdr_rule_on(27, ""), "the rule is off on macOS 26 or 27");
+    check(!omacvm_hdr_rule_on(27, "0"), "OMACVM_HDR_SDR_TAG=0 does not turn the rule off");
+    check(strcmp(OMACVM_HDR_SURF_SDR_KEY, "IOSurfaceContentHeadroom") != 0,
+          "the SDR flag is macOS's headroom key (a tag of 1.0 is ignored)");
+    layer_checks(LAYER_REAL);
+
+    /* The need: SDR from the start, 0 (EDR) at once on HDR, SDR 10 s after the last HDR look. */
     OmacvmHdrNeed n;
     omacvm_hdr_need_reset(&n);
-    check(n.need == 1 && omacvm_hdr_need_due(&n) == -1, "PQ frames do not start at 1x");
-    check(!omacvm_hdr_need_peak(&n, 1.0, S(1)) && n.need == 1, "SDR untags");
-    check(omacvm_hdr_need_peak(&n, 4.93, S(2)) && n.need == 0, "HDR does not untag at once");
+    check(n.need == 1 && omacvm_hdr_need_due(&n) == -1, "PQ frames do not start SDR");
+    check(!omacvm_hdr_need_peak(&n, 1.0, S(1)) && n.need == 1, "SDR turns EDR on");
+    check(omacvm_hdr_need_peak(&n, 4.93, S(2)) && n.need == 0, "HDR does not turn EDR on at once");
     check(omacvm_hdr_need_due(&n) == S(12), "the hold does not end 10 s after the last HDR look");
     check(!omacvm_hdr_need_peak(&n, 4.93, S(3)) && omacvm_hdr_need_due(&n) == S(13), "HDR again does not move the hold");
-    check(!omacvm_hdr_need_peak(&n, 1.0, S(12.9)) && n.need == 0, "1x before the hold is over");
-    check(!omacvm_hdr_need_tick(&n, S(12.99)) && n.need == 0, "1x before the hold is over (time only)");
-    check(omacvm_hdr_need_tick(&n, S(13)) && n.need == 1, "not 1x when the hold is over (time only)");
+    check(!omacvm_hdr_need_peak(&n, 1.0, S(12.9)) && n.need == 0, "EDR off before the hold is over");
+    check(!omacvm_hdr_need_tick(&n, S(12.99)) && n.need == 0, "EDR off before the hold is over (time only)");
+    check(omacvm_hdr_need_tick(&n, S(13)) && n.need == 1, "EDR not off when the hold is over (time only)");
     omacvm_hdr_need_reset(&n);
     omacvm_hdr_need_peak(&n, 2.0, S(1));
     check(!omacvm_hdr_need_tick(&n, S(30)) && n.need == 0, "a still HDR frame lost its headroom");
-    check(omacvm_hdr_need_peak(&n, 0.5, S(30)) && n.need == 1, "SDR after a long HDR frame is not 1x");
+    check(omacvm_hdr_need_peak(&n, 0.5, S(30)) && n.need == 1, "SDR after a long HDR frame keeps EDR");
     omacvm_hdr_need_reset(&n);
-    check(omacvm_hdr_need_peak(&n, NAN, S(1)) && n.need == 0, "an unreadable peak does not untag");
+    check(omacvm_hdr_need_peak(&n, NAN, S(1)) && n.need == 0, "an unreadable peak does not turn EDR on");
 
     /* The guest's headroom. */
     OmacvmEdrHold h = { .held = -1 };
     double v;
-    /* Tagged before anything was untagged: the display's most, capped at 16. */
+    /* SDR before any HDR: the display's most, capped at 16. */
     v = omacvm_edr_guest(&h, &nd, 1, 1.2, 16, false, true, -1, S(0));
-    check(v == 16 && !nd, "tagged at start: not the display's most");
+    check(v == 16 && !nd, "SDR at start: not the display's most");
     check(omacvm_edr_guest(&h, &nd, 1, 1.0, 24, false, true, -1, S(0)) == 16, "more than 16");
     check(nd, "a new most of the display is not a new display");
     nd = false;
     omacvm_edr_guest(&h, &nd, 1, 1.0, 16, false, true, -1, S(0));
-    /* Untagged at 10 s: not less than 16 while macOS ramps, at most 3 s. */
+    /* EDR on at 10 s: not less than 16 while macOS ramps, at most 3 s. */
     check(omacvm_edr_guest(&h, &nd, 1, 1.4, 16, false, false, S(10), S(10.2)) == 16,
           "the guest is told the ramp's start");
     check(omacvm_edr_guest(&h, &nd, 1, 5.0, 16, false, false, S(10), S(12.9)) == 16,
@@ -266,10 +322,10 @@ int main(int argc, char **argv)
           "the guest is not told the current headroom after 3 s");
     check(omacvm_edr_guest(&h, &nd, 1, 6.0, 16, false, false, S(10), S(14)) == 6,
           "the guest does not follow the current headroom once settled");
-    /* Tagged again: what it had (6), not the 1.2 the panel falls to. */
+    /* SDR again: what it had (6), not the 1.2 the panel falls to. */
     check(omacvm_edr_guest(&h, &nd, 1, 1.2, 16, false, true, S(10), S(30)) == 6,
-          "tagged again: the guest is not told what it had");
-    /* Untagged again: settled as soon as the current headroom reaches the held one. */
+          "SDR again: the guest is not told what it had");
+    /* EDR on again: settled as soon as the current headroom reaches the held one. */
     check(omacvm_edr_guest(&h, &nd, 1, 2.0, 16, false, false, S(40), S(40.5)) == 6, "the second ramp");
     check(omacvm_edr_guest(&h, &nd, 1, 7.0, 16, false, false, S(40), S(41)) == 7,
           "not settled when the current headroom reached the held one");
