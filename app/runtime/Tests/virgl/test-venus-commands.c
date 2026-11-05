@@ -42,8 +42,13 @@
  * submit one legal 64x64 clear pass (or a bound set and nothing else) on MoltenVK without
  * prefill and wait for the queue; the held reset, free and teardown cases skip MoltenVK
  * with prefill; c-state-secondary-held-*-submit submit a primary whose secondary holds one
- * barrier, on every driver, and the c-state-secondary-held- cases reset or free it; the
- * u-ib-*-m6-ok cases submit their legal indexed draw (3 vertices at index 0, 64x64) on
+ * barrier, on every driver, and the c-state-secondary-held- cases reset or free it
+ * (-resubmit-ok submits it twice; virgl-venus-submit-state.patch refuses the submit or the
+ * end of one whose secondary was recorded again, and s-submit-secondary, -recording and
+ * -initial: built without that patch, those three hand the driver what it must not get);
+ * c-state-end-failed-* and c-state-end-hook-* submit a primary (a fill of host-visible
+ * memory and an R8_UINT resolve, or one barrier) on every driver and wait for the queue;
+ * the u-ib-*-m6-ok cases submit their legal indexed draw (3 vertices at index 0, 64x64) on
  * MoltenVK and wait for the queue. Run with
  * MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1, MoltenVK encodes at vkEndCommandBuffer what
  * it otherwise encodes at vkQueueSubmit in QEMU, still without committing (standards 14).
@@ -293,6 +298,7 @@ static uint64_t next_id = 100;
 static VkPhysicalDeviceProperties props;
 static VkPhysicalDeviceLimits lim;
 static bool kosmickrisp;
+static bool moltenvk;
 static unsigned have;            /* N_* the device was made with */
 static uint32_t max_views;       /* maxMultiviewViewCount as vkr reports it to the guest */
 static uint32_t max_push_descriptors, max_inline_block;
@@ -415,6 +421,7 @@ static void instance_and_physical_device(void)
                                                           .pProperties = &p2 };
    D->dispatch_vkGetPhysicalDeviceProperties2(D, &gp);
    kosmickrisp = drv.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP;
+   moltenvk = drv.driverID == VK_DRIVER_ID_MOLTENVK;
    max_views = mvp.maxMultiviewViewCount;
    max_push_descriptors = pdp.maxPushDescriptors;
    max_inline_block = iub.maxInlineUniformBlockSize;
@@ -2877,6 +2884,8 @@ static int destroyed_case(const char *c, struct world *w)
 static int views_case(const char *c, struct world *w);
 static int held_case(const char *c, struct world *w, void *v);
 static int secondary_case(const char *c, struct world *w);
+static int secondary_again_case(const char *c, struct world *w);
+static int end_failed_case(const char *c, struct world *w);
 
 static int state_case(const char *c, struct world *w)
 {
@@ -2903,6 +2912,13 @@ static int state_case(const char *c, struct world *w)
       D->dispatch_vkCmdExecuteCommands(D, &e);
       return end(cmd);
    }
+   if (IS("c-state-secondary-held-resubmit-ok") || IS("c-state-secondary-held-rerecord-ok") ||
+       IS("c-state-secondary-held-rerecord-submit") || IS("c-state-secondary-held-reset-submit") ||
+       IS("c-state-secondary-held-pool-reset-submit") || IS("c-state-secondary-held-free-pool-reset-submit") ||
+       IS("c-state-secondary-held-rerecord-end"))
+      return secondary_again_case(c, w);
+   if (!strncmp(c, "c-state-end-failed-", 19) || !strncmp(c, "c-state-end-hook-", 17))
+      return end_failed_case(c, w);
    begin(cmd);
    if (!strncmp(c, "c-state-after-mv", 16))
       return after_mv_case(c, w);
@@ -3755,9 +3771,27 @@ static void *binary_semaphore(void)
  * vkQueueBindSparse on a queue without sparse binding (VUID-vkQueueBindSparse-queuetype), and
  * a value struct chained twice (VUID-VkSubmitInfo-sType-unique, VUID-VkBindSparseInfo-sType-unique):
  * vkr fitted the first, MoltenVK used the second and wrote its 64 values past its array. */
+static void record_secondary(void *sec, int barriers);
+static int submit_one(void *cmd, const char *what);
+static void color_barrier(void *cmd);
+
 static int case_submit(const char *c)
 {
    setup(0);
+   /* only an ended primary is submitted (virgl-venus-submit-state.patch); one that records a
+    * barrier: a secondary, a primary still recording, one never begun (before the queue:
+    * submit_one gets it) */
+   if (IS("s-submit-secondary") || IS("s-submit-recording") || IS("s-submit-initial")) {
+      void *cmd = command_buffer_level(IS("s-submit-secondary") ? VK_COMMAND_BUFFER_LEVEL_SECONDARY
+                                                                : VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+      if (IS("s-submit-secondary")) {
+         record_secondary(cmd, 1);
+      } else if (IS("s-submit-recording")) {
+         begin(cmd);
+         color_barrier(cmd);
+      }
+      return submit_one(cmd, c);
+   }
    struct vkr_queue *q = device_queue();
    const VkQueue qh = (VkQueue)q;
    static uint64_t values[64], one[1];
@@ -4538,6 +4572,383 @@ static int secondary_case(const char *c, struct world *w)
       return FATAL;
    step("zombies now: %d", zombies());
    return zombies() > 0 ? ZOMBIES : WORKS;
+}
+
+/* ---------------- secondaries recorded again (virgl-venus-submit-state.patch) ----------------
+ * A primary P executes a secondary S that records one barrier.
+ *   -resubmit-ok: TOLERATED: P reusable (no ONE_TIME_SUBMIT), S freed (a zombie), P submitted
+ *     twice, each waited for: KosmicKrisp replays S's commands at the 2nd submit. Vulkan
+ *     calls P invalid once S is freed; vkr allows it on purpose (the hold keeps it
+ *     memory-safe).
+ *   -rerecord-submit, -reset-submit, -pool-reset-submit, -free-pool-reset-submit: after P's
+ *     end S is begun again (two barriers), reset, its pool reset, or freed and then its pool
+ *     reset; P's submit is refused (Vulkan: P is invalid; MoltenVK encodes S's new content
+ *     past what vkr weighed at the execute, KosmicKrisp replays it at a 2nd submit).
+ *   -rerecord-end: S begun again before P's end: the end is refused (MoltenVK with prefill
+ *     encodes S there).
+ *   -rerecord-ok: LEGAL: S recorded again, P's pool reset, P recorded again, submitted and
+ *     waited for. */
+static void record_secondary(void *sec, int barriers)
+{
+   if (begin_secondary(sec, NULL) != VK_SUCCESS)
+      broken("secondary begin");
+   for (int i = 0; i < barriers; i++)
+      color_barrier(sec);
+   if (end(sec) != WORKS)
+      broken("secondary end");
+}
+
+static void reset_command_pool(void *pool)
+{
+   struct vn_command_vkResetCommandPool r = { .device = DEVH, .commandPool = (VkCommandPool)pool };
+   step("vkResetCommandPool");
+   D->dispatch_vkResetCommandPool(D, &r);
+   step("vkResetCommandPool = %d", r.ret);
+}
+
+static void begin_flags(void *cmd, VkCommandBufferUsageFlags flags)
+{
+   VkCommandBufferBeginInfo info = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = flags };
+   struct vn_command_vkBeginCommandBuffer b = { .commandBuffer = (VkCommandBuffer)cmd, .pBeginInfo = &info };
+   step("vkBeginCommandBuffer (flags 0x%x)", flags);
+   D->dispatch_vkBeginCommandBuffer(D, &b);
+   if (b.ret != VK_SUCCESS)
+      broken("vkBeginCommandBuffer");
+}
+
+static void execute_secondary(void *cmd, void *sec)
+{
+   VkCommandBuffer s = (VkCommandBuffer)sec;
+   struct vn_command_vkCmdExecuteCommands e = { .commandBuffer = (VkCommandBuffer)cmd, .commandBufferCount = 1,
+                                                .pCommandBuffers = &s };
+   step("vkCmdExecuteCommands of the secondary");
+   D->dispatch_vkCmdExecuteCommands(D, &e);
+}
+
+/* one submit of CMD, waited for with the driver's own wait (vkr refuses vkQueueWaitIdle) */
+static VkResult submit_ret; /* the driver's vkQueueSubmit result of the last submit_one */
+static int submit_one(void *cmd, const char *what)
+{
+   static struct vkr_queue *q; /* vkr gives a queue once */
+   if (!q)
+      q = device_queue();
+   VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   VkSubmitInfo submit = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1,
+                           .pCommandBuffers = &cb };
+   struct vn_command_vkQueueSubmit qs = { .queue = (VkQueue)q, .submitCount = 1, .pSubmits = &submit };
+   step("vkQueueSubmit of %s", what);
+   D->dispatch_vkQueueSubmit(D, &qs);
+   step("vkQueueSubmit = %d", qs.ret);
+   submit_ret = qs.ret;
+   if (ended())
+      return FATAL;
+   q->device->proc_table.QueueWaitIdle(q->base.handle.queue);
+   step("the queue is idle");
+   return qs.ret == VK_SUCCESS ? WORKS : ERROR;
+}
+
+static int secondary_again_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   const bool reusable = IS("c-state-secondary-held-resubmit-ok");
+   begin_flags(cmd, reusable ? 0 : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+   void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+   void *pool = ((struct vkr_command_buffer *)sec)->pool;
+   record_secondary(sec, 1);
+   execute_secondary(cmd, sec);
+   if (IS("c-state-secondary-held-rerecord-end")) {
+      record_secondary(sec, 2);
+      return end(cmd);
+   }
+   int r = end(cmd);
+   if (r != WORKS)
+      return r;
+   if (reusable) {
+      free_command_buffer(sec);
+      step("zombies after the free: %d", zombies());
+      r = submit_one(cmd, "the reusable primary (1st)");
+      return r != WORKS ? r : submit_one(cmd, "the reusable primary (2nd: KosmicKrisp replays the secondary)");
+   }
+   if (IS("c-state-secondary-held-rerecord-submit") || IS("c-state-secondary-held-rerecord-ok")) {
+      record_secondary(sec, 2);
+   } else if (IS("c-state-secondary-held-reset-submit")) {
+      reset_command_buffer(sec);
+   } else if (IS("c-state-secondary-held-pool-reset-submit")) {
+      reset_command_pool(pool);
+   } else if (IS("c-state-secondary-held-free-pool-reset-submit")) {
+      free_command_buffer(sec);
+      step("zombies after the free: %d", zombies());
+      reset_command_pool(pool);
+   } else {
+      return BROKEN;
+   }
+   if (ended())
+      return FATAL;
+   if (IS("c-state-secondary-held-rerecord-ok")) {
+      reset_command_pool(((struct vkr_command_buffer *)cmd)->pool);
+      begin_flags(cmd, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+      execute_secondary(cmd, sec);
+      if ((r = end(cmd)) != WORKS)
+         return r;
+   }
+   return submit_one(cmd, "the primary");
+}
+
+/* ---------------- a driver end that failed (virgl-venus-submit-state.patch) ----------------
+ * The guest's Venus driver ends a command buffer without a reply, so it never sees the
+ * driver's vkEndCommandBuffer result: vkr counts a buffer as ended from the guest's call.
+ * MoltenVK's end fails (VK_ERROR_FEATURE_NOT_PRESENT) when it could not record one command,
+ * e.g. vkCmdResolveImage of an integer format (Metal resolves none): it then skips such a
+ * primary at the submit (MVKCommandBuffer::canExecute) and encodes such a secondary without
+ * that command. KosmicKrisp records these.
+ *   -failed-submit-ok, -failed-resubmit-ok: LEGAL (dEQP-VK renderpasses.*.self_dep_*_ms): a
+ *     primary fills 256 bytes of host-visible memory and resolves a 4-sample R8_UINT image,
+ *     is submitted (twice: reusable) and waited for. MoltenVK: its end fails and the fill
+ *     never runs; KosmicKrisp: the fill runs. The first version of the patch (#706) refused
+ *     this submit on MoltenVK ("was not ended") and the app hung.
+ *   -failed-secondary-ok: LEGAL: the fill and the resolve in a secondary the primary
+ *     executes: the fill runs on both drivers.
+ *   -failed-reset-submit, -failed-rebegin-submit: an end made to fail (the hook below),
+ *     then a reset (or a begin), then the submit: refused ("was not ended", "still
+ *     records"), on every driver.
+ *   -hook-submit, -hook-secondary: an end made to fail (VK_ERROR_OUT_OF_HOST_MEMORY) with
+ *     vkr_test_end_result_hook (no legal recording fails on demand; KosmicKrisp's ends
+ *     fail only out of memory): MoltenVK goes on (submit and wait); any other driver
+ *     refuses the submit, or the vkCmdExecuteCommands of the secondary.
+ *   -hook-reset-ok: LEGAL: an end made to fail, the buffer reset and recorded again: its
+ *     submit works on every driver. */
+static VkResult end_inject; /* the next end's result, once (VK_SUCCESS: the driver's) */
+
+static VkResult end_hook(VkResult result)
+{
+   if (end_inject == VK_SUCCESS)
+      return result;
+   step("the test hook makes the driver's end result %d into %d", result, end_inject);
+   result = end_inject;
+   end_inject = VK_SUCCESS;
+   return result;
+}
+
+/* a 64x64 R8_UINT image with SAMPLES, bound (NULL: the device cannot make it) */
+static struct vkr_image *uint_image(VkSampleCountFlagBits samples, VkImageUsageFlags usage)
+{
+   VkImageFormatProperties ip = { 0 };
+   if (pdev->proc_table.GetPhysicalDeviceImageFormatProperties(
+          pdev->base.handle.physical_device, VK_FORMAT_R8_UINT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+          usage, 0, &ip) != VK_SUCCESS ||
+       !(ip.sampleCounts & samples))
+      return NULL;
+   const uint64_t id = next_id++;
+   VkImage hd = (VkImage)(uintptr_t)id;
+   VkImageCreateInfo info = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = VK_FORMAT_R8_UINT, .extent = { 64, 64, 1 }, .mipLevels = 1,
+                              .arrayLayers = 1, .samples = samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                              .usage = usage };
+   struct vn_command_vkCreateImage c = { .device = DEVH, .pCreateInfo = &info, .pImage = &hd };
+   D->dispatch_vkCreateImage(D, &c);
+   struct vkr_image *img = object(id);
+   if (c.ret != VK_SUCCESS || !img)
+      broken("vkCreateImage (R8_UINT)");
+   VkMemoryRequirements req = { 0 };
+   struct vn_command_vkGetImageMemoryRequirements r = { .device = DEVH, .image = (VkImage)img,
+                                                       .pMemoryRequirements = &req };
+   D->dispatch_vkGetImageMemoryRequirements(D, &r);
+   struct vkr_device_memory *mem = allocate(req.size, memory_type(req.memoryTypeBits));
+   struct vn_command_vkBindImageMemory b = { .device = DEVH, .image = (VkImage)img,
+                                             .memory = (VkDeviceMemory)mem };
+   D->dispatch_vkBindImageMemory(D, &b);
+   if (b.ret != VK_SUCCESS)
+      broken("vkBindImageMemory (R8_UINT)");
+   return img;
+}
+
+/* 256 bytes of host-visible, coherent memory, mapped by the test through the driver and
+ * set to 0, bound to a buffer */
+static struct vkr_buffer *mapped_buffer(volatile uint32_t **words)
+{
+   const uint64_t id = next_id++;
+   VkBuffer h = (VkBuffer)(uintptr_t)id;
+   VkBufferCreateInfo info = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
+                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+   struct vn_command_vkCreateBuffer c = { .device = DEVH, .pCreateInfo = &info, .pBuffer = &h };
+   D->dispatch_vkCreateBuffer(D, &c);
+   struct vkr_buffer *buf = object(id);
+   if (c.ret != VK_SUCCESS || !buf)
+      broken("vkCreateBuffer");
+   VkMemoryRequirements req = { 0 };
+   struct vn_command_vkGetBufferMemoryRequirements r = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                                        .pMemoryRequirements = &req };
+   D->dispatch_vkGetBufferMemoryRequirements(D, &r);
+   const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+   const VkPhysicalDeviceMemoryProperties *mp = &pdev->memory_properties;
+   uint32_t type = 0;
+   while (type < mp->memoryTypeCount &&
+          (!(req.memoryTypeBits & (1u << type)) || (mp->memoryTypes[type].propertyFlags & want) != want))
+      type++;
+   if (type == mp->memoryTypeCount)
+      broken("no host-visible coherent memory type for a buffer");
+   struct vkr_device_memory *mem = allocate(req.size, type);
+   struct vn_command_vkBindBufferMemory b = { .device = DEVH, .buffer = (VkBuffer)buf,
+                                              .memory = (VkDeviceMemory)mem };
+   D->dispatch_vkBindBufferMemory(D, &b);
+   if (b.ret != VK_SUCCESS)
+      broken("vkBindBufferMemory");
+   void *p = NULL;
+   if (dev->proc_table.MapMemory(dev->base.handle.device, mem->base.handle.device_memory, 0, VK_WHOLE_SIZE, 0,
+                                 &p) != VK_SUCCESS || !p)
+      broken("vkMapMemory (the test's own)");
+   memset(p, 0, 256);
+   *words = p;
+   return buf;
+}
+
+/* into CMD: a fill of BUF with 0x5a5a5a5a, the two images to GENERAL, the resolve 4x -> 1x */
+static void record_fill_resolve(void *cmd, struct vkr_buffer *buf, struct vkr_image *ms, struct vkr_image *one)
+{
+   const VkCommandBuffer cb = (VkCommandBuffer)cmd;
+   struct vn_command_vkCmdFillBuffer f = { .commandBuffer = cb, .dstBuffer = (VkBuffer)buf, .dstOffset = 0,
+                                           .size = 256, .data = 0x5a5a5a5a };
+   step("vkCmdFillBuffer 256 bytes of host-visible memory");
+   D->dispatch_vkCmdFillBuffer(D, &f);
+   VkImageMemoryBarrier2 ib[2];
+   for (int i = 0; i < 2; i++)
+      ib[i] = (VkImageMemoryBarrier2){ .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                       .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                       .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                       .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT |
+                                                        VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                       .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                       .image = (VkImage)(i ? one : ms),
+                                       .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+   VkDependencyInfo di = { .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 2,
+                           .pImageMemoryBarriers = ib };
+   struct vn_command_vkCmdPipelineBarrier2 p = { .commandBuffer = cb, .pDependencyInfo = &di };
+   step("vkCmdPipelineBarrier2: both images to GENERAL");
+   D->dispatch_vkCmdPipelineBarrier2(D, &p);
+   VkImageResolve reg = { .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                          .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .extent = { 64, 64, 1 } };
+   struct vn_command_vkCmdResolveImage rs = { .commandBuffer = cb, .srcImage = (VkImage)ms,
+                                              .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL, .dstImage = (VkImage)one,
+                                              .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL, .regionCount = 1,
+                                              .pRegions = &reg };
+   step("vkCmdResolveImage R8_UINT 4x -> 1x");
+   D->dispatch_vkCmdResolveImage(D, &rs);
+}
+
+/* the guest's end: the driver's result is only printed (the guest never sees it) */
+static VkResult end_any(void *cmd)
+{
+   step("vkEndCommandBuffer");
+   struct vn_command_vkEndCommandBuffer e = { .commandBuffer = (VkCommandBuffer)cmd };
+   D->dispatch_vkEndCommandBuffer(D, &e);
+   step("vkEndCommandBuffer = %d (the driver's)", e.ret);
+   return e.ret;
+}
+
+static int end_failed_case(const char *c, struct world *w)
+{
+   void *cmd = w->cmd;
+   vkr_test_end_result_hook = end_hook;
+   if (!strncmp(c, "c-state-end-hook-", 17)) {
+      const bool sec_case = IS("c-state-end-hook-secondary");
+      if (!IS("c-state-end-hook-reset-ok"))
+         expect(!moltenvk);
+      begin_flags(cmd, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+      if (sec_case) {
+         void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+         if (begin_secondary(sec, NULL) != VK_SUCCESS)
+            broken("secondary begin");
+         color_barrier(sec);
+         end_inject = VK_ERROR_OUT_OF_HOST_MEMORY;
+         end_any(sec);
+         execute_secondary(cmd, sec);
+         if (ended())
+            return FATAL;
+      } else {
+         color_barrier(cmd);
+         end_inject = VK_ERROR_OUT_OF_HOST_MEMORY;
+      }
+      if (IS("c-state-end-hook-reset-ok")) {
+         end_any(cmd);
+         reset_command_buffer(cmd);
+         begin_flags(cmd, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+         color_barrier(cmd);
+      }
+      const VkResult r = end_any(cmd);
+      if (ended())
+         return FATAL;
+      if (r != (IS("c-state-end-hook-submit") ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_SUCCESS))
+         return ERROR;
+      return submit_one(cmd, "the primary");
+   }
+   if (IS("c-state-end-failed-reset-submit") || IS("c-state-end-failed-rebegin-submit")) {
+      begin_flags(cmd, 0);
+      color_barrier(cmd);
+      end_inject = VK_ERROR_OUT_OF_HOST_MEMORY;
+      end_any(cmd);
+      if (IS("c-state-end-failed-reset-submit")) {
+         reset_command_buffer(cmd);
+      } else {
+         begin_flags(cmd, 0);
+         color_barrier(cmd);
+      }
+      return submit_one(cmd, "the primary");
+   }
+   /* the fill and the integer resolve */
+   struct vkr_image *ms = uint_image(VK_SAMPLE_COUNT_4_BIT,
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+   struct vkr_image *one = uint_image(VK_SAMPLE_COUNT_1_BIT,
+                                      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+   if (!ms || !one) {
+      printf("skip: no 4-sample R8_UINT color attachment\n");
+      return SKIP;
+   }
+   volatile uint32_t *words = NULL;
+   struct vkr_buffer *buf = mapped_buffer(&words);
+   const bool sec_case = IS("c-state-end-failed-secondary-ok");
+   const bool twice = IS("c-state-end-failed-resubmit-ok");
+   VkResult r;
+   begin_flags(cmd, twice ? 0 : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+   if (sec_case) {
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      if (begin_secondary(sec, NULL) != VK_SUCCESS)
+         broken("secondary begin");
+      record_fill_resolve(sec, buf, ms, one);
+      const VkResult rs = end_any(sec);
+      execute_secondary(cmd, sec);
+      r = end_any(cmd);
+      step("the secondary's end %d, the primary's %d", rs, r);
+   } else {
+      record_fill_resolve(cmd, buf, ms, one);
+      r = end_any(cmd);
+   }
+   if (ended())
+      return FATAL;
+   /* MoltenVK skips a primary whose end failed (what it encodes runs in full otherwise),
+    * still signals the submit's fence and semaphores, and returns the end's error from
+    * vkQueueSubmit too (the guest's Venus driver submits without a reply as well) */
+   const bool skipped = moltenvk && r != VK_SUCCESS;
+   int s = submit_one(cmd, "the primary");
+   if (s == ERROR && skipped && submit_ret == r)
+      s = WORKS;
+   if (s == WORKS && twice) {
+      s = submit_one(cmd, "the primary again (reusable)");
+      if (s == ERROR && skipped && submit_ret != VK_SUCCESS)
+         s = WORKS;
+   }
+   if (s != WORKS)
+      return s;
+   const uint32_t got = words[0];
+   step("the fill's first word: 0x%08x (%s)", got,
+        skipped ? "MoltenVK skips a primary whose end failed: 0 expected" : "0x5a5a5a5a expected");
+   /* vkr says so once per app */
+   int lines = 0;
+   for (const char *l = log_text; (l = strstr(l, "could not record a command buffer")); l++)
+      lines++;
+   step("'could not record a command buffer' lines: %d", lines);
+   return got == (skipped ? 0u : 0x5a5a5a5au) && lines == (skipped ? 1 : 0) ? WORKS : ERROR;
 }
 
 /* ---------------- a swapchain's memory (virgl-venus-alias-memory.patch) ----------------
@@ -7393,6 +7804,32 @@ static int case_host_memory(const char *c)
       }
       return ended() ? FATAL : WORKS;
    }
+   if (IS("h-release-secondary-ok")) {
+      /* a primary records a barrier; a secondary of a second pool, executed in it, is freed
+       * and its pool destroyed (two zombies); the primary's reset lets both go: the charge
+       * is back where it was before the second pool, while the context lives (#676, #700) */
+      void *cmd = command_buffer();
+      begin(cmd);
+      color_barrier(cmd);
+      const uint64_t s0 = virgl_gpu_budget_in_use();
+      void *sec = command_buffer_level(VK_COMMAND_BUFFER_LEVEL_SECONDARY);
+      void *pool = ((struct vkr_command_buffer *)sec)->pool;
+      record_secondary(sec, 1);
+      execute_secondary(cmd, sec);
+      if (end(cmd) != WORKS)
+         return ended() ? FATAL : ERROR;
+      free_command_buffer(sec);
+      destroy_command_pool(pool);
+      const int z = zombies();
+      const uint64_t held = virgl_gpu_budget_in_use();
+      reset_command_buffer(cmd);
+      const uint64_t s1 = virgl_gpu_budget_in_use();
+      step("charged %" PRIu64 " B before the second pool, %" PRIu64 " B with %d zombies, %" PRIu64
+           " B after the primary's reset (%d zombies)", s0, held, z, s1, zombies());
+      if (ended())
+         return FATAL;
+      return z == 2 && zombies() == 0 && held > s0 && s1 == s0 ? WORKS : ERROR;
+   }
    if (IS("h-release-end") || IS("h-release-fatal")) {
       /* objects, a recording, a held view destroyed (a zombie) and a pool's spare; then the
        * context's teardown: every charge comes back. fatal: after a refusal (budget) */
@@ -7586,6 +8023,21 @@ static const struct test_case cases[] = {
    { "c-state-secondary-held-reset-ok", E_WORKS }, { "c-state-secondary-held-free-primary-ok", E_WORKS },
    { "c-state-secondary-held-same-pool-ok", E_WORKS }, { "c-state-secondary-held-teardown-ok", E_WORKS },
    { "c-state-secondary-held-control-ok", E_WORKS },
+   /* a secondary recorded again after its primary executed it (virgl-venus-submit-state.patch) */
+   { "c-state-secondary-held-resubmit-ok", E_WORKS }, { "c-state-secondary-held-rerecord-ok", E_WORKS },
+   { "c-state-secondary-held-rerecord-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-reset-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-pool-reset-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-free-pool-reset-submit", E_REFUSE, "recorded again" },
+   { "c-state-secondary-held-rerecord-end", E_REFUSE, "recorded again" },
+   /* a driver end that failed; ended from the guest's call (virgl-venus-submit-state.patch) */
+   { "c-state-end-failed-submit-ok", E_WORKS }, { "c-state-end-failed-resubmit-ok", E_WORKS },
+   { "c-state-end-failed-secondary-ok", E_WORKS },
+   { "c-state-end-failed-reset-submit", E_REFUSE, "was not ended" },
+   { "c-state-end-failed-rebegin-submit", E_REFUSE, "still records" },
+   { "c-state-end-hook-submit", E_CHILD, "could not record it" },
+   { "c-state-end-hook-secondary", E_CHILD, "could not record it" },
+   { "c-state-end-hook-reset-ok", E_WORKS },
    { "c-probe-descriptor-view", E_PROBE },
    { "c-region-b2i-max", E_WORKS }, { "c-region-b2i-past", E_REFUSE }, { "c-region-b2i-rowlength", E_REFUSE },
    { "c-region-b2i-extent", E_REFUSE }, { "c-region-b2i-offset", E_REFUSE }, { "c-region-b2i-aspect", E_REFUSE },
@@ -7600,6 +8052,8 @@ static const struct test_case cases[] = {
    { "f-cmds-ok", E_WORKS }, { "f-cmds-null-ok", E_WORKS }, { "f-cmds-dup", E_REFUSE, "named twice" },
    { "f-cmds-other-pool", E_REFUSE, "of another pool" }, { "f-sets-ok", E_WORKS }, { "f-sets-reset-ok", E_WORKS },
    { "f-sets-dup", E_REFUSE, "named twice" }, { "f-sets-other-pool", E_REFUSE, "of another pool" },
+   { "s-submit-secondary", E_REFUSE, "is a secondary" }, { "s-submit-recording", E_REFUSE, "still records" },
+   { "s-submit-initial", E_REFUSE, "was not ended" },
    { "s-submit-ok", E_WORKS }, { "s-submit-values-64", E_WORKS },
    { "s-submit-group-counts", E_REFUSE, "device group counts" }, { "s-bind-sparse", E_REFUSE, "no sparse binding" },
    { "s-submit-chain-twice", E_REFUSE, "chained twice" }, { "s-bind-sparse-chain-twice", E_REFUSE, "chained twice" },
@@ -7708,6 +8162,7 @@ static const struct test_case cases[] = {
    { "h-obj-module-size", E_REFUSE, "host memory" }, { "h-obj-module-again-ok", E_WORKS },
    { "h-obj-cache-size", E_WORKS }, { "h-obj-cache-again-ok", E_WORKS },
    { "h-release-end", E_WORKS }, { "h-release-fatal", E_REFUSE, "host memory" },
+   { "h-release-secondary-ok", E_WORKS },
    { "h-heap", E_WORKS }, { "h-temp-big", E_WORKS }, { "h-zink-frame-ok", E_WORKS },
 };
 #define N_CASES (sizeof(cases) / sizeof(cases[0]))

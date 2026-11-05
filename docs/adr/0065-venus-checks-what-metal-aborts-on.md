@@ -1305,3 +1305,119 @@ killed run is lost). A next attempt has to tell such a command buffer apart
 from one the guest never ended; the gate's dEQP-VK subset on MoltenVK is its
 test. The gap #706 closed (a secondary recorded again after a primary
 executed it gets past the encoder cap) is open again.
+
+## Submit checks again: ended is the guest's call (amendment, 3.2.24)
+
+Lane `v706-retry` (plan, review and raw output in work/v706-retry). The submit
+checks of #706 are back (`virgl-venus-submit-state.patch`), with the one change
+that took them out of 3.2.23 fixed.
+
+**What they close** (#676's follow-up, from the driver sources at the pins).
+#678 (3.2.19) made a primary hold the secondaries it executed. Two gaps were
+left:
+
+- **A secondary recorded again.** Begin, reset or a pool reset of a secondary a
+  primary executed is legal; the primary becomes invalid. MoltenVK encodes the
+  secondary's current content when it encodes the primary (at the submit, or at
+  the primary's `vkEndCommandBuffer` with prefill). KosmicKrisp replays it at a
+  reusable primary's 2nd and later submit (`kk_queue.c`, `vk_command_buffer.c`).
+  vkr weighed the secondary's Metal passes at the execute, so a secondary
+  recorded again with more passes got past the encoder cap.
+- **What is submitted.** Nothing checked that a submitted command buffer is a
+  primary the guest ended.
+
+A command buffer has a serial (one more at each begin, reset and pool reset,
+also of a pool's held zombies, before the driver's call). The primary's held
+entry of a secondary keeps the secondary's serial from the execute.
+vkQueueSubmit and vkQueueSubmit2 refuse, before any driver call, a command
+buffer that is none, a secondary, still recording or not ended since its begin
+or reset, and a primary whose secondary's serial changed; the primary's end
+refuses the latter too. The holds rest on one assumption: both drivers read a
+secondary inside `vkQueueSubmit` on the calling thread (MoltenVK's
+`MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS` defaults to 1; KosmicKrisp submits in
+Mesa's immediate mode). A pin bump that changes either needs the
+`c-state-secondary-held-` cases again, under libgmalloc too.
+
+**Why #706 was taken out, proven.** #706 counted a command buffer as ended only
+when the driver's `vkEndCommandBuffer` returned `VK_SUCCESS`. The guest never
+sees that result: Mesa's Venus driver sends the end on the same ring as the
+later submit and returns `VK_SUCCESS` without a reply (`vn_command_buffer.c`).
+MoltenVK's end returns `VK_ERROR_FEATURE_NOT_PRESENT` (-8) when it could not
+record one command. With #706 and a test-only log of the driver's results
+(hidden 4 GB VM on the Mac mini M4, 3.2.23 guest, MoltenVK): 30 of 30 refused
+submits came right after that buffer's failed end with -8, all 30 hung cases
+were integer-format `renderpasses.*.self_dep_*_ms` cases, and
+`api.command_buffers` (129 cases) had 0 refusals. A probe that only records
+showed MoltenVK's `vkCmdResolveImage` of a 4-sample integer image ends with -8
+(unorm and sfloat 0; KosmicKrisp 0 for all six formats): Metal resolves no
+integer format. With the failed ends let through, the same build ran the
+gate's 108 self_dep subset cases as 3.2.22 did, case for case.
+
+**What MoltenVK does with a failed end** (1.4.2): it skips a primary whose end
+failed at the submit (`MVKCommandBuffer::canExecute` returns the configuration
+result: nothing of it is encoded) and still signals the submit's fence and
+semaphores; its `vkQueueSubmit` returns the end's error, which the guest does
+not see either. A secondary whose end failed is encoded without the command it
+dropped (`MVKCmdExecuteCommands` does not check). That is what 3.2.22 did: the
+dEQP cases end as Fail, not hung. Mesa (KosmicKrisp) marks a failed buffer
+invalid but checks that only in debug builds (`vk_queue.c`), so it would run
+what it recorded up to the failure; KosmicKrisp's ends fail only when it runs
+out of memory.
+
+**The fix.** `ended` is set by the guest's `vkEndCommandBuffer` (after vkr's
+own checks), whatever the driver returns, and the driver's result is kept
+beside it (cleared at begin and reset). On MoltenVK (`limits.moltenvk`,
+`VK_DRIVER_ID_MOLTENVK`) a buffer whose end failed goes to the driver as
+before, with one line per app: "the Mac's Vulkan driver could not record a
+command buffer (vkEndCommandBuffer returned R); it skips it, as before". On
+any other driver its submit is refused ("the Mac's driver could not record it
+(vkEndCommandBuffer returned R)"), and so is the `vkCmdExecuteCommands` of a
+secondary whose end failed. The let-through is keyed to the driver, not the
+result code: MoltenVK skips such a primary whatever the code, and a -8 from
+KosmicKrisp would not be safe. Nothing in the holds, the hash entries or #700's
+account changes (two fields in a charged struct, one flag per context).
+
+**Tests** (mini M4, virgl-only builds of #706 as reverted and of the fix,
+KosmicKrisp, MoltenVK and MoltenVK with prefill, each also under libgmalloc;
+raw in work/v706-retry/out): 8 new cases. `c-state-end-failed-submit-ok` and
+`-resubmit-ok` fill 256 bytes of host-visible memory and resolve a 4-sample
+R8_UINT image in a primary, submit it (twice) and wait: on MoltenVK the end
+returns -8 and the fill stays 0 (the primary is skipped), on KosmicKrisp the
+fill is written. `-secondary-ok` does the same in a secondary: the fill is
+written on both (MoltenVK runs the secondary without the resolve).
+`-reset-submit` and `-rebegin-submit` are refused ("was not ended", "still
+records"). `c-state-end-hook-submit`, `-secondary` and `-reset-ok` make an end
+fail with a test hook (`vkr_test_end_result_hook`, NULL in QEMU): refused on
+KosmicKrisp at the submit and at the execute, work on MoltenVK; a reset and a
+new recording work everywhere. Before the fix the two MoltenVK cases were
+refused ("was not ended") on all MoltenVK runs, and the hook cases failed (that
+build has no hook; on KosmicKrisp the secondary was executed where it must be
+refused). After: 8 of 8 on all 6 runs, #706's 11 cases 11 of 11, and the whole
+file 500 of 500 per driver (4, 28 and 40 skipped); 0 GPU Restart.
+
+**dEQP-VK** (the fix's libvirglrenderer in the 3.2.23 test app, the same
+hidden VM): the 240 self_dep cases and `api.command_buffers` (129) on MoltenVK
+end case for case as the build that let failed ends through (v706-find's
+mvklo row: 194 Pass, 24 Fail, 22 NotSupported; 57 Pass, 72 NotSupported), with
+0 refusal lines and one "could not record" line per app; the 108 of them that
+are also in the gate's subset end as the 3.2.23 gate run (3.2.22's behaviour).
+On KosmicKrisp case for case as v706-find's kk row (207 Pass, 33
+NotSupported), 0 lines.
+The gate's subset (2880 cases) and the 800 memory_alias cases match the 3.2.23
+gate's run case for case on both drivers (0 refusal lines, 0 Crash; MoltenVK's
+3 "is lost" lines as before).
+
+**Still not checked** (notes, no change):
+
+- A 2nd submit of a ONE_TIME_SUBMIT primary. MoltenVK refuses it itself
+  (`canExecute`: not reusable and executed, nothing encoded). KosmicKrisp
+  replays it (Mesa checks only in debug builds). The content is what vkr
+  weighed, so no cap is passed; the risk is KosmicKrisp using what its own
+  one-time cleanup freed (not seen). A check needs the begin flags per buffer
+  and a submitted mark.
+- A submit while the buffer is still pending, without SIMULTANEOUS_USE.
+  MoltenVK accepts it: `_isExecutingNonConcurrently` is cleared at the end of
+  `submit()`, after the encode, not when the GPU finishes, so a resubmit
+  encodes a second Metal command buffer, as KosmicKrisp does. Neither passes
+  the cap (the same weighed recording). vkr does not know when a submit
+  completes without tracking fences per buffer.
