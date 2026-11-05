@@ -596,9 +596,11 @@ class VideoOutputs(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         od._chromium_cache.clear()
+        self.start = {}
+        self.locks = od.DisplayLocks(proc=self.proc)
 
-    def counts(self, pid):
-        """player_counts against a fake /proc made from self.exe."""
+    def fake_proc(self):
+        """A fake /proc from self.exe, with each process's start time (self.start)."""
         for p, exe in self.exe.items():
             d = self.proc / str(p)
             d.mkdir(parents=True, exist_ok=True)
@@ -606,7 +608,12 @@ class VideoOutputs(unittest.TestCase):
             if link.is_symlink():
                 link.unlink()
             link.symlink_to(exe)
-        return od.player_counts(pid, proc=self.proc, local=self.local)
+            (d / "stat").write_text(f"{p} (a (b) c) S " + "0 " * 18 + f"{self.start.get(p, 4242)} 0 0\n")
+
+    def counts(self, pid):
+        """player_counts against the fake /proc."""
+        self.fake_proc()
+        return od.player_counts(pid, proc=self.proc, local=self.local, locks=self.locks)
 
     def outputs(self):
         return od.inhibiting_outputs(self.h.json("j/clients"), self.h.json("j/monitors"),
@@ -734,6 +741,106 @@ class VideoOutputs(unittest.TestCase):
         self.h.window("0x1")
         self.assertEqual(self.outputs(), [])
 
+    # Chromium 156 and older: the kind of its wake lock, told to org.freedesktop.ScreenSaver (DisplayLocks).
+
+    def display_lock(self, pid=100, sender=":1.49"):
+        self.fake_proc()
+        return self.locks.inhibit(sender, pid)
+
+    def test_chromium_156_counts_with_a_display_lock(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.chromium("156.0.8078.79-1")
+        self.h.window("0x1")
+        self.assertEqual(self.outputs(), [])              # music, a download, a call: Wayland only
+        self.assertIsInstance(self.display_lock(), int)
+        self.assertEqual(self.outputs(), ["Virtual-1"])   # "Video Wake Lock", told over D-Bus
+
+    def test_chromium_display_lock_without_wayland_inhibit_does_not_count(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.chromium("156.0.8078.79-1")
+        self.h.window("0x1", inhibiting=False)
+        self.display_lock()
+        self.assertEqual(self.outputs(), [])              # Hyprland says which window, and that it is seen
+
+    def test_chromium_display_lock_on_a_hidden_workspace_does_not_count(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.h.window("0x1", ws=3)
+        self.display_lock()
+        self.assertEqual(self.outputs(), [])
+
+    def test_chromium_display_lock_released(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.chromium("156.0.8078.79-1")
+        self.h.window("0x1")
+        cookie = self.display_lock()
+        self.locks.uninhibit(":1.7", cookie)              # another caller cannot release it
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+        self.locks.uninhibit(":1.49", cookie)             # paused, or the tab went to the background
+        self.assertEqual(self.outputs(), [])
+
+    def test_chromium_gone_from_the_bus_lets_go(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.h.window("0x1")
+        self.display_lock()
+        self.locks.gone(":1.49")                          # quit or crashed without UnInhibit
+        self.assertEqual(self.outputs(), [])
+
+    def test_a_pid_used_again_does_not_count(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.h.window("0x1")
+        self.display_lock()
+        self.start[100] = 9999                            # Chromium died, another process got its pid
+        self.assertEqual(self.outputs(), [])
+        self.assertEqual(self.locks.count(), 0)
+
+    def test_electron_with_a_display_lock_counts(self):
+        self.exe[100] = str(self.electron_dir / "electron")
+        self.h.window("0x1")
+        self.assertEqual(self.outputs(), [])
+        self.display_lock()
+        self.assertEqual(self.outputs(), ["Virtual-1"])
+
+    def test_only_chromium_based_callers_get_a_lock(self):
+        self.exe[100] = "/usr/bin/mpv"
+        self.exe[101] = "/usr/lib/firefox/firefox"
+        self.assertIsNone(self.display_lock(100))
+        self.assertIsNone(self.display_lock(101))
+        self.assertIsNone(self.display_lock(102))         # no such process
+        for pid in (0, -1, True, "100", None):
+            self.assertIsNone(self.locks.inhibit(":1.9", pid), pid)
+        self.assertIsNone(self.locks.inhibit(None, 100))
+        self.assertEqual(self.locks.count(), 0)
+
+    def test_display_locks_are_capped(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        cookies = {self.display_lock() for _ in range(od.DISPLAY_LOCKS_MAX)}
+        self.assertEqual(len(cookies), od.DISPLAY_LOCKS_MAX)
+        self.assertIsNone(self.display_lock())
+
+    def test_screensaver_answers(self):
+        self.exe[100] = str(self.chromium_dir / "chromium")
+        self.exe[101] = "/usr/lib/firefox/firefox"
+        self.fake_proc()
+        kind, cookie = od.screensaver_answer(self.locks, "Inhibit", ":1.49",
+                                             ("/usr/lib/chromium/chromium", "Video Wake Lock"), 100)
+        self.assertEqual(kind, "cookie")
+        self.assertTrue(self.locks.holds(100))
+        # Firefox, SDL and the rest get an error, so they fall back as when nobody serves the name
+        self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.50", ("firefox", "video-playing"), 101)[0],
+                         "error")
+        self.assertEqual(od.screensaver_answer(self.locks, "Inhibit", ":1.51", ("x", "y"), None)[0], "error")
+        self.assertEqual(od.screensaver_answer(self.locks, "UnInhibit", ":1.49", (cookie,), None), ("done", None))
+        self.assertFalse(self.locks.holds(100))
+        self.assertEqual(od.screensaver_answer(self.locks, "UnInhibit", ":1.49", ("x",), None), ("done", None))
+        self.assertEqual(od.screensaver_answer(self.locks, "GetActive", ":1.49", (), 100)[0], "error")
+
+    def test_proc_start(self):
+        self.exe[100] = "/usr/bin/mpv"
+        self.start[100] = 777
+        self.fake_proc()
+        self.assertEqual(od.proc_start(100, self.proc), "777")   # a name with ")" and spaces in it
+        self.assertIsNone(od.proc_start(5, self.proc))
+
     def test_unknown_process_does_not_count(self):
         self.h.window("0x1", pid=999)
         self.h.window("0x2", pid=0)
@@ -755,6 +862,88 @@ class VideoOutputs(unittest.TestCase):
     def test_no_answer_from_hyprland_is_none(self):
         self.h.down = True
         self.assertIsNone(od.video_outputs())
+
+
+def _gio():
+    try:
+        from gi.repository import Gio, GLib
+        return Gio, GLib
+    except ImportError:
+        return None
+
+
+@unittest.skipUnless(shutil.which("dbus-daemon") and _gio(), "needs dbus-daemon and python-gobject (as in the VM)")
+class ScreenSaverOnTheBus(unittest.TestCase):
+    """serve_display_locks on a private bus: a Chromium-based caller gets a cookie and
+    gives it back, a caller that leaves the bus loses it, anyone else gets an error."""
+
+    def test_the_service(self):
+        import os
+        import subprocess
+        import threading
+        import time
+        Gio, GLib = _gio()
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "chromium").mkdir()
+        (tmp / "chromium/icudtl.dat").write_bytes(b"")
+        me = tmp / "proc" / str(os.getpid())
+        me.mkdir(parents=True)
+        (me / "stat").write_text(f"{os.getpid()} (python3) S " + "0 " * 18 + "4242 0 0\n")
+
+        def caller_is(exe):
+            if (me / "exe").is_symlink():
+                (me / "exe").unlink()
+            (me / "exe").symlink_to(exe)
+
+        daemon = subprocess.Popen(["dbus-daemon", "--session", "--nofork", "--nopidfile", "--print-address=1"],
+                                  stdout=subprocess.PIPE, text=True)
+        self.addCleanup(daemon.kill)
+        address = daemon.stdout.readline().strip()
+        locks = od.DisplayLocks(proc=tmp / "proc")
+        with mock.patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": address}), mock.patch.object(od, "log"):
+            threading.Thread(target=od.serve_display_locks, args=(locks,), daemon=True).start()
+
+            def connect():
+                return Gio.DBusConnection.new_for_address_sync(
+                    address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT |
+                    Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+
+            def call(conn, method, args, reply):
+                return conn.call_sync(od.SCREENSAVER, od.SCREENSAVER_PATHS[0], od.SCREENSAVER, method, args,
+                                      GLib.VariantType(reply), Gio.DBusCallFlags.NONE, 3000, None)
+
+            conn = connect()
+            for _ in range(50):
+                owned = conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                       "NameHasOwner", GLib.Variant("(s)", (od.SCREENSAVER,)),
+                                       GLib.VariantType("(b)"), Gio.DBusCallFlags.NONE, 3000, None).unpack()[0]
+                if owned:
+                    break
+                time.sleep(0.1)
+            self.assertTrue(owned)
+
+            caller_is(str(tmp / "chromium/chromium"))
+            (cookie,) = call(conn, "Inhibit", GLib.Variant("(ss)", ("chromium", "Video Wake Lock")), "(u)").unpack()
+            self.assertTrue(locks.holds(os.getpid()))
+            call(conn, "UnInhibit", GLib.Variant("(u)", (cookie,)), "()")
+            self.assertFalse(locks.holds(os.getpid()))
+
+            other = connect()
+            call(other, "Inhibit", GLib.Variant("(ss)", ("chromium", "Video Wake Lock")), "(u)")
+            self.assertTrue(locks.holds(os.getpid()))
+            other.close_sync(None)                     # quit without UnInhibit
+            for _ in range(50):
+                if not locks.holds(os.getpid()):
+                    break
+                time.sleep(0.1)
+            self.assertFalse(locks.holds(os.getpid()))
+
+            caller_is("/usr/lib/firefox/firefox")
+            with self.assertRaises(GLib.Error) as refused:
+                call(conn, "Inhibit", GLib.Variant("(ss)", ("firefox", "video-playing")), "(u)")
+            self.assertIn("NotSupported", refused.exception.message)
+            self.assertEqual(locks.count(), 0)
 
 
 class VideoToTheMac(unittest.TestCase):
@@ -1530,11 +1719,14 @@ class AgentStart(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             port = pathlib.Path(tmp) / "port"
             port.write_text("")
+            served = threading.Event()
             with mock.patch.object(od, "PORT", port), mock.patch.object(od, "refresh_widget", side_effect=widget), \
-                    mock.patch.object(od, "Agent", FakeAgent), mock.patch.object(od.signal, "signal") as sig:
+                    mock.patch.object(od, "Agent", FakeAgent), mock.patch.object(od.signal, "signal") as sig, \
+                    mock.patch.object(od, "serve_display_locks", side_effect=lambda: served.set()):
                 self.assertEqual(od.main(["omacvm-displays"]), 0)
                 self.assertEqual(sig.call_args[0][0], od.signal.SIGTERM)   # [] to the Mac when stopped
                 widget_done.wait(5)
+                self.assertTrue(served.wait(5))   # org.freedesktop.ScreenSaver for Chromium, its own thread
         self.assertEqual(order, ["agent", "widget rebuilt"])
 
 
