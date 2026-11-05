@@ -6,7 +6,7 @@
 # SPIRV-Tools, once as built and once under AddressSanitizer (SPIRV-Tools built with it too)
 # and UndefinedBehaviorSanitizer (vkr's code). No Vulkan driver, no GPU: invalid and crash
 # modules never reach a real driver (STANDARDS 14b).
-#  - spirv-corpus/pass: real modules (DXVK, Dawn, vkcube, dEQP-VK data, Zink, glslc test
+#  - spirv-corpus/pass: real modules (DXVK, Dawn, vkcube, dEQP-VK data, Zink, naga (Zed, wgpu), glslc test
 #    shaders) pass for both drivers' targets, with their pipeline's checks
 #    (spirv-corpus/README.md);
 #  - spirv-corpus/refuse: modules that ended KosmicKrisp's or MoltenVK's process or hung
@@ -51,7 +51,7 @@ corpus="$here/spirv-corpus"
 pass=("$corpus"/pass/*.spv)
 refuse=()
 for f in "$corpus"/refuse/*.spv; do [[ $f == *.vs.spv ]] || refuse+=("$f"); done
-(( ${#pass[@]} > 50 && ${#refuse[@]} > 100 )) || { echo "FAIL: the corpus is missing"; exit 1; }
+(( ${#pass[@]} > 150 && ${#refuse[@]} > 100 )) || { echo "FAIL: the corpus is missing"; exit 1; }
 for bin in validate validate-asan; do
   "$work/$bin" units "$corpus/pass/vkcube-vert.spv"
   # mvk11: MoltenVK's device under an app that asks for Vulkan 1.0 or 1.1 (it reports the

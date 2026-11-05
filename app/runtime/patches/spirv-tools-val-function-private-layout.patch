@@ -1,0 +1,49 @@
+SPIRV-Tools: layout decorations on Function and Private types at every SPIR-V version
+
+What: AllowsLayout (validate_decorations.cpp) returns true for the Function and
+Private storage classes at every SPIR-V version, not only up to 1.4. Block,
+BufferBlock, Offset, ArrayStride and MatrixStride on the types of Function and
+Private variables are no longer refused with VUID-StandaloneSpirv-None-10684 in
+SPIR-V 1.5 and 1.6 modules. Workgroup (without WorkgroupMemoryExplicitLayoutKHR),
+UniformConstant and the untyped pointer cases are still refused, and every
+later check (interfaces, built-ins, limits, logical pointers, OmacVM's own)
+still runs.
+Why: Venus runs spirv-val on every guest module (virgl-venus-spirv-validate.
+patch, #624) and a refusal ends the app's Vulkan context. wgpu 30 asks naga for
+SPIR-V 1.6 on a Vulkan 1.3+ device, and naga puts Offset/ArrayStride on every
+struct and array type, also on the types of `var` locals (gfx-rs/wgpu#7696,
+open). So Zed 1.27 (wgpu) ended at its first shader module on Venus since 3.2.21
+(#710), as does any wgpu app with a struct or array local (21 of 63 modules of
+wgpu's own examples). The Vulkan spec allows these decorations on Function and
+Private types for SPIR-V 1.4 and earlier (interfaces.adoc, explicit layout
+decorations), so a guest could already send them in a 1.4 module and pass; this
+makes 1.5/1.6 behave the same. Mesa drops them for these storage classes
+(spirv_to_nir.c, glsl_get_bare_type: "to allow SPIR-V generators perform type
+deduplication"); KosmicKrisp built all 9 of Zed's pipelines from the 1.6
+modules, MoltenVK 7 (the other 2 fail in SPIRV-Cross at SPIR-V 1.0 too, not
+this). Measured on the CPU before the change (work/zed-710): VUID-10684 is the
+first error of 0 of the 157 refuse corpus modules and of 0 of #624's crash, fuzz
+and hand-made modules; the only modules that flip are 3 of SPIRV-Tools' own test
+modules, which both drivers built in #624's recorded run.
+Upstream: not for SPIRV-Tools (its check is right to the spec); the naga side is
+gfx-rs/wgpu#7696.
+Tests: Tests/virgl/test-venus-spirv-validate.sh (units: layout cases at SPIR-V
+1.6 for Function, Private, Workgroup and UniformConstant; spirv-corpus/pass:
+Zed's and wgpu's naga modules at SPIR-V 1.6 and 1.4).
+
+diff --git a/source/val/validate_decorations.cpp b/source/val/validate_decorations.cpp
+--- a/source/val/validate_decorations.cpp
++++ b/source/val/validate_decorations.cpp
+@@ -2267,7 +2267,11 @@
+           spv::Capability::WorkgroupMemoryExplicitLayoutKHR);
+     case spv::StorageClass::Function:
+     case spv::StorageClass::Private:
+-      return vstate.version() <= SPV_SPIRV_VERSION_WORD(1, 4);
++      // OmacVM: allowed at every SPIR-V version, as the spec allows it up to
++      // 1.4: naga (wgpu) puts Offset and ArrayStride on the types of Function
++      // variables in SPIR-V 1.6 too (gfx-rs/wgpu#7696), and Mesa drops layout
++      // on these storage classes (spirv-tools-val-function-private-layout.patch)
++      return true;
+     case spv::StorageClass::Input:
+     case spv::StorageClass::Output:
+       // Block is used generally and mesh shaders use Offset.

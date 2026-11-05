@@ -6,7 +6,7 @@ driver, no GPU; STANDARDS 14b: invalid and hostile modules never reach a real dr
 `pass/`: real modules; each must pass vkr's scan, the interface limits, spirv-val for
 both Mac drivers' targets, the element and Workgroup byte caps and, with a `.lay` beside
 it, the pipeline checks (on MoltenVK under a Vulkan 1.0 or 1.1 app, `mvk11`, those past
-SPIR-V 1.4 must be refused by spirv-val instead). 90 modules:
+SPIR-V 1.4 must be refused by spirv-val instead). 144 modules:
 
 | Prefix | Modules | From | Licence |
 |---|---|---|---|
@@ -16,9 +16,20 @@ SPIR-V 1.4 must be refused by spirv-val instead). 90 modules:
 | `kit-` | 15 | glslc test shaders of the probe kit (not from an app) | MIT (this repository) |
 | `vkcube-` | 2 | vkcube's two shaders | Apache-2.0 (Vulkan-Tools' LICENSE.txt) |
 | `zink-` | 6 | Zink's modules for glxgears in an OmacVM.app test VM (`ZINK_DEBUG=spirv`, KosmicKrisp, 2026-11-04) | MIT (Mesa's Zink) |
+| `naga-zed-` | 24 | Zed 1.27.0's gpui_wgpu shaders as wgpu 30 (Zed's pinned rev cddb2f5d) has naga write them for vkCreateShaderModule: SPIR-V 1.6 (a Vulkan 1.3+ device: the storage set and subpixel text) and 1.4 (quad, paths, subpixel text); naga puts Offset/ArrayStride on the types of Function variables (#710, gfx-rs/wgpu#7696) | Apache-2.0 (gpui_wgpu's LICENSE-APACHE); the contrast functions MIT (Microsoft Terminal, noted in shaders.wgsl) |
+| `naga-wgpu-` | 30 | wgpu 30's own example shaders (same rev) through naga: 22 at SPIR-V 1.6, 8 at 1.4 | MIT or Apache-2.0 (wgpu's LICENSE.MIT / LICENSE.APACHE) |
 
 A `NAME.vs.spv` is the vertex shader a `.lay` pipeline pairs a fragment shader with: 16
-more files, 6 different ones; the test runs them as real modules too (106 files in all).
+more files, 6 different ones; the test runs them as real modules too (160 files in all).
+
+The pass corpus is kept per shader compiler, at each SPIR-V version it writes, so that a
+new spirv-val rule that a real compiler breaks shows here before a release (#710: naga's
+layout on Function types at SPIR-V 1.6 passed every app-collected module above). On a
+SPIRV-Tools pin move, add the current naga, Tint, glslang, DXC or Zink output for every
+SPIR-V version they write, not only the apps at hand. Known open case: naga's
+`var<workgroup>` arrays and structs carry ArrayStride/Offset without
+WorkgroupMemoryExplicitLayoutKHR; spirv-val refuses them at every SPIR-V version (illegal
+at all of them, ADR 0065's "Relaxed spirv-val rules"), so they are not in `pass/`.
 
 vkd3d-proton's modules are not here: vkd3d-proton is LGPL-2.1, this repository MIT. Its
 42 real modules (vkd3d-proton 3.1's release DLLs) and its two crash modules
