@@ -53,7 +53,7 @@ expect "unpacked: sparse" 1 "$(( $(kb "$T/x/Omarchy/disk.img") <= 3 * 1024 ))"
 M=$R/src/prebuilt/make-image.sh
 expect "package: app disk made sparse after dd" 1 \
   "$(grep -A1 'dd if="$b/disk.img" of="$stage/disk.img"' "$M" | grep -c 'sparse_disk "$stage/disk.img"')"
-expect "repack: app disk made sparse" 1 "$(grep -c 'app) sparse_disk "$stage/disk.img"' "$M")"
+expect "repack: app disk made sparse" 1 "$(awk '/^stage_repack\(\) \{/ {on=1} on && /sparse_disk "\$stage\/disk.img"/ {n++} on && /^}$/ {exit} END {print n+0}' "$M")"
 expect "sparse_disk stops on a disk still half allocated" 1 "$(grep -c 'kb < PREBUILT_DISK_GB \* 1048576 / 2' "$M")"
 expect "tar names root as the owner" 1 "$(grep -c 'tar --no-xattrs --uid 0 --gid 0 --uname root --gname root' "$M")"
 

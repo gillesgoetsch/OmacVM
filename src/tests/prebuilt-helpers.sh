@@ -68,17 +68,17 @@ done
 # The stand-ins are part of the helpers' sources: the app's copy gets the same.
 for d in bridge/mac gestures/mac omanotch/mac; do cp "$S/$d/install.sh" "$IN/$d/install.sh"; done
 printf '#!/bin/bash\nexit 1\n' > "$T/bin/launchctl"; chmod +x "$T/bin/launchctl"   # nothing installed, nothing running
-run() { rm -f "$T/calls"; HOME=$T/home PATH=$T/bin:$PATH OMACVM_HELPERS=$1 "$S/mac/install.sh" --skip-clip --quiet >/dev/null 2>&1; cat "$T/calls" 2>/dev/null; }
+run() { rm -f "$T/calls"; HOME=$T/home PATH=$T/bin:$PATH OMACVM_HELPERS=$1 "$S/mac/install.sh" --quiet >/dev/null 2>&1; cat "$T/calls" 2>/dev/null; }
 calls=$(run "$H")
 expect "install.sh: the Bridge from the app" "bridge/mac --prebuilt $H/OmacVMBridge.app" "$(grep ^bridge <<<"$calls")"
 expect "install.sh: Gestures from the app" "gestures/mac --prebuilt $H/OmacVMGestures.app" "$(grep ^gestures <<<"$calls")"
 rm -f "$T/calls"
-HOME=$T/home PATH=$T/bin:$PATH OMACVM_HELPERS=$H "$S/mac/install.sh" --omanotch --skip-clip --quiet >/dev/null 2>&1
+HOME=$T/home PATH=$T/bin:$PATH OMACVM_HELPERS=$H "$S/mac/install.sh" --omanotch --quiet >/dev/null 2>&1
 expect "install.sh --omanotch: Omanotch from the app" "omanotch/mac --prebuilt $H/Omanotch.app" "$(grep ^omanotch "$T/calls")"
 calls=$(run "$T/none")
 expect "install.sh without the app: built here" "bridge/mac " "$(grep ^bridge <<<"$calls")"
 rm -f "$T/calls"
-HOME=$T/home PATH=$T/bin:$PATH OMACVM_HELPERS=$H "$S/mac/install.sh" --keys-only --skip-clip --quiet >/dev/null 2>&1
+HOME=$T/home PATH=$T/bin:$PATH OMACVM_HELPERS=$H "$S/mac/install.sh" --keys-only --quiet >/dev/null 2>&1
 expect "install.sh --keys-only: the app's Gestures, keys only" "gestures/mac --prebuilt $H/OmacVMGestures.app --keys-only" "$(grep ^gestures "$T/calls")"
 
 # The Bridge runs from ~/Applications, never from the app's Helpers: macOS

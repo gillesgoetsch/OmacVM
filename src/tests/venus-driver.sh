@@ -313,11 +313,6 @@ grep -qx 'venus/mpv.sh || echo .*' src/app/guest/install.sh && ! grep -q 'mpv.sh
 grep -q 'app/guest/venus/mpv.sh' src/cmd/graphics.sh && pass "omacvm graphics sets mpv's default" || fail "omacvm graphics skips mpv"
 grep -q '"mpv" "vo=gpu' src/guest/check.sh && grep -q 'mpv_row; fi' src/guest/check.sh &&
   pass "check has the mpv row for every app VM" || fail "no mpv check row for every app VM"
-# UTM VMs draw with virgl too (virtio-gpu-gl): the same mpv.sh from UTM's install, and the check row.
-grep -qx '\.\./\.\./app/guest/venus/mpv\.sh || echo .*' src/utm/guest/install.sh &&
-  pass "UTM install sets mpv's defaults (the app's mpv.sh)" || fail "UTM install does not run app/guest/venus/mpv.sh"
-awk '/^utm\)/ { s = 1 } /^app\)/ { s = 0 } s' src/guest/check.sh | grep -qx '  mpv_row ;;' &&
-  pass "check has the mpv row for UTM VMs" || fail "no mpv check row for UTM VMs"
 M=$T/mpvroot; MC=$M/etc/mpv/mpv.conf; mkdir -p "$M/etc/omacvm"
 mp() { OMACVM_MPV_ROOT=$M "$D/mpv.sh" "$@" >/dev/null 2>&1; }
 blocks() { grep -c '^# OmacVM: begin' "$MC" 2>/dev/null || true; }
@@ -338,8 +333,8 @@ printf 'OMACVM_GRAPHICS=opengl\nOMACVM_FEATURE_vulkan=on\n' > "$M/etc/omacvm/env
 [[ $(lines) == 'vo=gpu gpu-api=opengl ' ]] && pass "mpv.sh: gpu-api=opengl with the vulkan feature" || fail "mpv.sh with the vulkan feature: $(lines)"
 echo OMACVM_GRAPHICS=opengl > "$M/etc/omacvm/env"; mkdir -p "$M/etc/vulkan/icd.d"; : > "$M/etc/vulkan/icd.d/omacvm_venus_icd.json"; mp
 [[ $(lines) == 'vo=gpu gpu-api=opengl ' ]] && pass "mpv.sh: gpu-api=opengl while OmacVM's Venus driver is there" || fail "mpv.sh with the Venus ICD: $(lines)"
-rm -f "$M/etc/vulkan/icd.d/omacvm_venus_icd.json"; printf 'OMACVM_VM_TYPE=utm\nOMACVM_FEATURE_vulkan=off\n' > "$M/etc/omacvm/env"; mp
-[[ $(blocks) == 1 && $(lines) == 'vo=gpu ' ]] && pass "mpv.sh in a UTM VM: vo=gpu only" || fail "mpv.sh in a UTM VM wrote: $(lines)"
+rm -f "$M/etc/vulkan/icd.d/omacvm_venus_icd.json"; printf 'OMACVM_VM_TYPE=app\nOMACVM_FEATURE_vulkan=off\n' > "$M/etc/omacvm/env"; mp
+[[ $(blocks) == 1 && $(lines) == 'vo=gpu ' ]] && pass "mpv.sh, vulkan off: vo=gpu only" || fail "mpv.sh, vulkan off, wrote: $(lines)"
 OMACVM_MPV_ROOT=$M "$D/mpv.sh" --nonsense >/dev/null 2>&1; [[ $? == 2 ]] && pass "mpv.sh: unknown option: usage" || fail "mpv.sh: unknown option accepted"
 if (( EUID != 0 )); then
   out=$("$D/mpv.sh" 2>&1); rc=$?
