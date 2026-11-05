@@ -1249,56 +1249,6 @@ The row's apps used at most 37 MB (about 200 passes' worth). DXVK or Zink with
 2000 of `h-zink-frame-ok` with 4 or more in flight would end the app's context
 there. Not measured with DXVK (no Windows app in the row).
 
-## Secondaries recorded again, and what is submitted (amendment, 3.2.23)
-
-Lane `venus-3223` (#676's follow-up; plan and review in work/venus-3223). #678
-(3.2.19) made a primary hold the secondaries it executed, so a freed secondary
-stays in the driver until the primary lets go; #700 gives its charge back then.
-Two gaps were left, both from the driver sources at the pins:
-
-- **A secondary recorded again.** Begin, reset or a pool reset of a secondary a
-  primary executed is legal; the primary becomes invalid. MoltenVK encodes the
-  secondary's current content when it encodes the primary (at the submit, or at
-  the primary's `vkEndCommandBuffer` with prefill). KosmicKrisp replays it into
-  the primary while recording and again at a reusable primary's 2nd and later
-  submit (`kk_queue.c`, `vk_command_buffer.c`). vkr weighed the secondary's
-  Metal passes and its pass continuation at the execute, so a secondary
-  recorded again with more passes got past the encoder cap.
-- **What is submitted.** Nothing checked that a submitted command buffer is an
-  ended primary. MoltenVK refuses a secondary and a 2nd submit of a one-time
-  buffer itself (`canExecute`); KosmicKrisp relies on the app.
-
-`virgl-venus-submit-state.patch`: a command buffer has a serial (one more at
-each begin, reset and pool reset, also of a pool's held zombies, before the
-driver's call) and an executable flag (a successful end; cleared by begin,
-reset, pool reset, free). The primary's held entry of a secondary keeps the
-secondary's serial from the execute. vkQueueSubmit and vkQueueSubmit2 refuse,
-before any driver call, a command buffer that is not an ended primary and a
-primary whose secondary's serial changed; the primary's end refuses the
-latter too. Vulkan calls all of these invalid.
-
-The holds rest on one assumption, now written down: both drivers read a
-secondary inside `vkQueueSubmit` on the calling thread (MoltenVK's
-`MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS` defaults to 1; KosmicKrisp submits in
-Mesa's immediate mode and never threaded). A pin bump that changes either
-needs the `c-state-secondary-held-` cases again, under libgmalloc too.
-
-Tests (mini M4, virgl-only builds of main and of the patch, KosmicKrisp,
-MoltenVK and MoltenVK with prefill, each also under libgmalloc; raw in
-work/venus-3223/out): 11 new cases. On main the 5 refusal cases
-(`-rerecord-submit`, `-reset-submit`, `-pool-reset-submit`,
-`-free-pool-reset-submit`, `-rerecord-end`) work where they must be refused,
-on all 6 runs; the 3 that must work (`-rerecord-ok`,
-`h-release-secondary-ok`: the charge is back to the byte after the primary's
-reset, while the context lives, and `-resubmit-ok`: a reusable primary
-submitted twice after its secondary's free) work. `-resubmit-ok` is not
-legal Vulkan: vkFreeCommandBuffers of the secondary makes the primary
-invalid. vkr tolerates it on purpose: the hold (#678) keeps it
-memory-safe. `s-submit-secondary`, `-recording` and
-`-initial` were not run on main (they would hand a driver what it must not
-get). With the patch all 11 pass on all 6 runs, and all 488 cases pass on
-the three drivers (4, 28 and 40 skipped, as on 3.2.22); 0 GPU Restart.
-
 ## A shader module's charge by its code size (amendment, 3.2.23)
 
 Lane `venus-3223` (X3 of the 3.2.22 architecture review). The host-memory
@@ -1336,3 +1286,22 @@ account) works on both. Not changed: pipelines that leave Metal libraries in a
 module (MoltenVK without a cache) or a cache stay uncharged until a probe
 measures them, repeats included.
 
+
+## Submit checks taken out of 3.2.23 (amendment, 3.2.23)
+
+The submit checks of #706 (`virgl-venus-submit-state.patch`: only an ended
+primary whose secondaries are what it executed is submitted) were reverted
+before 3.2.23 shipped, by the 3.2.23 gate's stop rule. In the gate's dEQP-VK
+subset on MoltenVK (the release build, a hidden 4 GB VM on the Mac mini M4),
+qemu.log had 3 lines "vkQueueSubmit refused: batch 0: command buffer 2 was not
+ended since its begin or reset" (its counter reached 4), and 5 renderpass
+`self_dep_*_ms` cases hung until the run's 120 s limit. 3.2.22 ran the same
+cases on the same VM to an end (4 Fail, 1 Pass) with 0 refusals. The patch
+counted a command buffer as ended only when the driver's `vkEndCommandBuffer`
+returned `VK_SUCCESS`; the guest's Venus driver does not wait for that result,
+so a program whose end failed on the Mac likely saw a successful end and
+submitted. Not proven which case each line belongs to (deqp-vk's output of a
+killed run is lost). A next attempt has to tell such a command buffer apart
+from one the guest never ended; the gate's dEQP-VK subset on MoltenVK is its
+test. The gap #706 closed (a secondary recorded again after a primary
+executed it gets past the encoder cap) is open again.
