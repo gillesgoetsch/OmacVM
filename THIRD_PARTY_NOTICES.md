@@ -32,12 +32,6 @@ each file taken from them:
   from UTM. It still follows UTM's approach: the menu bar's backdrop made
   transparent with SkyLight, the menu bar held back with the app's
   presentation options ([ADR 0044](docs/adr/0044-fullpanel.md#replacement)).
-- **omarchy-parallels** (github.com/vincenzopalazzo/omarchy-parallels), MIT,
-  (c) Vincenzo Palazzo, `src/vm/live/LICENSE`: the live image builder in
-  `src/vm/live`.
-- **omarchy-arm-utm** (github.com/ggalancs/omarchy-arm-utm), MIT, by ggalancs:
-  `src/utm/guest/omacvm-vdagent` is based on its Wayland SPICE agent, and
-  `src/utm/guest/90-omacvm-utm.conf` comes from it.
 - **Omarchy** (github.com/basecamp/omarchy), MIT, (c) David Heinemeier Hansson:
   the bar widgets in `src/bridge/plugins` and `src/workspaces/plugins` are
   derived from Omarchy's own, each with its `LICENSE`; OmacVM.app's display
