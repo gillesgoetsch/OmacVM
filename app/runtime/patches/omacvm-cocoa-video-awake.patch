@@ -4,8 +4,9 @@ Subject: [PATCH] cocoa: the Mac's display stays on while a video plays in the VM
 What: the guest's display agent (omacvm-displays) sends
 {"inhibit": ["Virtual-1", ...]} over org.omacvm.display: the outputs that
 show a window whose app asks Wayland not to idle (zwp_idle_inhibit, as
-mpv, Chromium 157+ and Firefox do while a video plays), without Hyprland
-window rules, on a workspace that is shown, the session not locked; again
+mpv does while a video plays; Chromium only while it holds a display wake
+lock, which it tells the agent over D-Bus), without Hyprland window rules,
+on a workspace that is shown, the session not locked; again
 every 10 s, [] when it ends. QEMU then holds macOS's
 PreventUserIdleDisplaySleep assertion "OmacVM: the VM is playing video"
 (display only; the Mac still sleeps when the lid closes or someone picks
