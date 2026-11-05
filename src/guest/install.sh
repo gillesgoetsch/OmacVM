@@ -63,6 +63,13 @@ while (( $# )); do
   esac
 done
 [[ -n $U ]] && id "$U" >/dev/null || { echo "guest/install.sh: --user must be the desktop user" >&2; exit 2; }
+# The move to Omarchy 4.5 runs (guest/omarchy-move.sh, its journal and lock):
+# nothing of this meanwhile, it changes the same packages and files.
+MV=${OMACVM_MOVE_DIR:-/var/lib/omacvm/move-4.5}
+if [[ $(cat "$MV/state" 2>/dev/null) == running && -e $MV/lock ]] && ! flock -n "$MV/lock" true 2>/dev/null; then
+  echo "guest/install.sh: the move to Omarchy 4.5 runs in this VM; try again when it is done" >&2
+  exit 3
+fi
 log() { LAST_STEP=$*; printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 # A run that stops says where (apply shows it as what failed).
 # One EXIT trap for everything that must run at the end (Fusion's DNS below).
