@@ -1013,6 +1013,15 @@ if [[ -n $PREV ]] && want update; then
     # would wait for them ("A VM runs from OmacVM Test" is any process inside the app).
     GESTURES_RAN=$(LC_ALL=C pgrep -f "OmacVM Test Gestures.app/Contents/MacOS/" | head -1)
     stop_inside_app
+    # What the person set stays through the app's update: the app's settings (window places,
+    # times and update bookkeeping aside) and the VM folder's records.
+    settings_snap() { defaults export "$APPID" - 2>/dev/null | /usr/bin/python3 -I -c 'import plistlib, re, sys
+d = plistlib.loads(sys.stdin.buffer.read() or plistlib.dumps({}))
+skip = re.compile(r"NSWindow|Frame|NSSplitView|NSToolbar|NSNavPanel|Last|Date|Time|Seconds|Check|Update|SU[A-Z]|Sparkle|ServiceOK|HelpersLater", re.I)
+for k in sorted(d):
+    if not skip.search(k): print(k, repr(d[k])[:200])'
+      (cd "$VMD" && for f in vm.env features graphics fast-network; do [[ -f $f ]] && echo "$f $(shasum -a 256 "$f" | cut -c1-16)"; done); }
+    SET_BEFORE=$(settings_snap)
     hide=(); (( HIDDEN )) && hide=(--env OMACVM_COCOA_HIDDEN=1)   # the updated app starts again: no window either
     open -n -g --env "OMACVM_APPCAST_URL=http://127.0.0.1:$PORT/OmacVM-appcast.json" --env "OMACVM_APPCAST_KEY=$(cat "$F/key.pub")" \
       ${hide[@]+"${hide[@]}"} "$APP" --args --update-now
@@ -1021,6 +1030,9 @@ if [[ -n $PREV ]] && want update; then
     UPD=$(ls -dt "$HOME/Library/Application Support/OmacVM/Updates/$APPID"/*/ 2>/dev/null | head -1)
     if [[ $(plist "$APP" CFBundleShortVersionString) == "$CV" ]] && codesign --verify --deep --strict "$APP" 2>/dev/null; then
       res app-self-update ok "$PV -> $CV through the app's updater: $(grep 'result:' "$UPD/update.log" 2>/dev/null | tail -1)"
+      SET_DIFF=$(diff <(printf '%s\n' "$SET_BEFORE") <(settings_snap) | grep '^<' | head -5 | tr '\n' ' ')
+      if [[ -z $SET_DIFF ]]; then res settings-kept ok "$(wc -l <<<"$SET_BEFORE" | tr -d ' ') settings and VM records as before the update"
+      else res settings-kept FAIL "changed or gone after the update: $SET_DIFF"; fi
       bridge_start   # this build's Bridge (an installed app restarts it when its helpers change)
       # A person's Gestures runs on through an update (it lives outside the app); the test one was stopped.
       [[ -n $GESTURES_RAN ]] && { gestures_start || res gestures-again FAIL "the test Gestures does not listen on 47930 again"; }

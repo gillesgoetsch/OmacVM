@@ -24,7 +24,7 @@ was green; nobody had pressed the switches in a real VM.
 | window | Check Now, the Fast network switch (Turn On…/Turn Off… before 3.0.5) in the app's window (VM stopped) | no error in the window; the VM's `fast-network` file |
 | keys | (none: key events with exact flags go into the VM's QEMU only, `modifier-keys.sh`) | Shift+2 as the Mac's keyboard sends it; Shift's flagsChanged twice, or an event without flags right after it (Universal Control, #412); left and right Shift, Option, Control; Command without the keyboard; Caps Lock; a held key: the guest's virtio keyboard shows exactly those keys |
 | unplug | a 6K virtual display plugged in and taken away while the VM's window is on it (`display-unplug.sh`): full screen with one window per display (3 times), Full screen including notch (a made-up notch, twice), a window (VM stopped first; not with `--hidden`) | the same QEMU runs on 8 s after each unplug, the VM answers over SSH, no new crash report (#402) |
-| update | the release before installed, its Update VM, the features a new VM has, its control centre (`previous-*`); the app updates itself to this build (local feed, throwaway key); Update VM; every switch again | the app's version and signature, `update.log`, the switches as above |
+| update | the release before installed, its Update VM, the features a new VM has, its control centre (`previous-*`); the app updates itself to this build (local feed, throwaway key); Update VM; every switch again | the app's version and signature, `update.log`, the app's settings and the VM's records as before (`settings-kept`), the switches as above |
 
 The control centre is the real one: `omacvm` in tmux, started in the desktop
 user's service manager (`systemd-run --user`) as a terminal on the desktop
@@ -305,3 +305,29 @@ again. Any pixel below the bar that changed is a stale frame: in the guest's
 buffer, or on the Mac. A grim screenshot cannot show this itself: Hyprland's
 screencopy damages the whole output first. `src/tests/stale-frames-diff.sh`
 tests the comparison offline (CI).
+
+## The move to Omarchy 4.5 (`move-45.sh`, release gate from 3.4.0)
+
+`move-45.sh` moves real Omarchy 4.0 test VMs to 4.5 with the app's own
+scripts (`move-vm.sh`: backup, Update VM, the guest's `omarchy-move.sh`,
+restart), one row at a time on an APFS clone, and puts in a fault at the
+step the row names. `move-45.sh --rows` lists them: a clean move (then
+Omarchy's own second update must keep snapper, iwd and OmacVM), Undo (the
+disk's SHA-256 equal to before the move), a move again after Undo, Delete
+the old backup (space shown = space freed), the internet cut during the
+download, the network link down for 90 s, QEMU killed before and inside the
+package switch, the app quitting, a power loss in the switch and in the
+backup, the VM's disk nearly full, the Mac's drive nearly full, and a
+non-APFS drive. Resume must finish a move that stopped resumable; Undo must
+give back exactly the VM from before.
+
+    move-45.sh --app "<test identity build>.app" --base "<test VMs>/OmacVM M-mv-a308" --row clean --out DIR
+    move-45.sh --summary DIR        # DIR/result.json for the gate
+
+Bases: 4.0 VMs of every age we shipped (a VM from prebuilt-3.0.0, one from
+prebuilt-3.0.8, a fresh 4.0.3rc4 build with more features), powered off, in
+the test app's VMs folder. The caller holds the Mac's VM lock and memory
+gate; nothing shows on the screen. `src/release/release.sh` step `moves`
+passes when every row passed, "clean" on three ages, on one tested commit
+whose move files (`move-45.sh --paths`) are the same in the release commit
+(`move-45-result.py gate`; `src/tests/move-45-gate.sh` tests the gate).
