@@ -47,7 +47,7 @@ class Copies(unittest.TestCase):
                           XDG_RUNTIME_DIR=str(self.tmp / "run"))
         # copies.py with its patchers, as installed (~/.local/lib/omanotch).
         self.lib = self.tmp / "lib"
-        for f in ("copies.py", "bar/apply-patch.py", "background/apply-patch.py"):
+        for f in ("copies.py", "bar/apply-patch.py", "bar/workspaces-patch.py", "background/apply-patch.py"):
             (self.lib / f).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(GUEST / f, self.lib / f)
         self.load()
@@ -175,6 +175,11 @@ class Copies(unittest.TestCase):
                     self.assertEqual(backup.read_bytes(), (SHELLS / which / "shell/plugins" / name / self.entry(name).name).read_bytes())
                     self.assertEqual(self.state(name)["result"], "current")
                     self.assertEqual(self.check()[f"{name} copy"][0], "ok")
+                # 4.5's workspaces widget: the NOTCH copy shows the built-in display's.
+                ws = self.copy() / "widgets/Workspaces.qml"
+                self.assertEqual(ws.exists(), which == UP45)
+                if which == UP45:
+                    self.assertIn("// omarchy-notch-bar: the copy on Omanotch's hidden NOTCH output shows", ws.read_text())
                 n = self.restarts
                 self.assertEqual(self.follow(), 0)
                 self.assertEqual(self.restarts, n, "nothing changed: no restart")
@@ -218,6 +223,7 @@ class Copies(unittest.TestCase):
         self.assertEqual(text.replace(mine + "  // mine: stays\n", mine), self.patched("bar", UP45).decode())
         self.assertEqual(self.check()["bar copy"][0], "ok")
         self.assertEqual(self.entry("background").read_bytes(), self.patched("background", UP45))
+        self.assertIn("notchParkedScreen", (self.copy() / "widgets/Workspaces.qml").read_text())
 
     def test_your_edits_stay_when_they_merge(self):
         self.follow(install=True)

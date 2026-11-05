@@ -2263,5 +2263,61 @@ tray.set({x: 105, n: 746, hidden: false, animate: true}); flush(); out.push(tray
         self.assertEqual(tray, [])       # the tray stays where it showed
 
 
+
+WSPATCH = ROOT / "src/omanotch/guest/bar/workspaces-patch.py"
+
+
+class Workspaces45(unittest.TestCase):
+    """Omarchy 4.5 shows each output's own workspaces; the NOTCH copy of the
+    bar must show the built-in display's (what the strip stands in for), at
+    the parked bar's width, or the strip's clicks land beside the widgets."""
+
+    def stock(self):
+        return (SHELL_DIR / "omarchy-ac2690cd/shell/plugins/bar/widgets/Workspaces.qml").read_text()
+
+    def run_patch(self, text):
+        d = pathlib.Path(tempfile.mkdtemp())
+        try:
+            f = d / "Workspaces.qml"
+            f.write_text(text)
+            out = subprocess.run([sys.executable, str(WSPATCH), str(f)], capture_output=True, text=True)
+            return out, f.read_text()
+        finally:
+            shutil.rmtree(d)
+
+    def test_patch_and_again(self):
+        out, full = self.run_patch(self.stock())
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, "patched"))
+        self.assertEqual(full.count("// omarchy-notch-bar"), 1)
+        self.assertEqual(len(full.splitlines()) - len(self.stock().splitlines()), 7)
+        out, again = self.run_patch(full)
+        self.assertEqual((out.returncode, out.stdout.strip(), again), (0, "already patched", full))
+
+    def test_an_older_widget_stays(self):
+        # Omarchy 4.0's widget has no per-output workspaces: nothing to do.
+        older = self.stock().replace("return screen ? Hyprland.monitorFor(screen) : Hyprland.focusedMonitor",
+                                     "return Hyprland.focusedMonitor")
+        out, text = self.run_patch(older)
+        self.assertEqual((out.returncode, out.stdout.strip(), text), (0, "nothing to patch", older))
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_notch_copy_shows_the_built_in_displays(self):
+        out, full = self.run_patch(self.stock())
+        body = re.search(r"  readonly property var monitor: \{\n(.*?)\n  \}\n", full, re.S).group(1)
+        js = """
+var mons = { "Virtual-1": { name: "Virtual-1" }, "Virtual-2": { name: "Virtual-2" }, "NOTCH": { name: "NOTCH" } };
+var Hyprland = { monitors: { values: [mons["Virtual-1"], mons["Virtual-2"], mons.NOTCH] },
+                 focusedMonitor: mons["Virtual-2"], monitorFor: function (s) { return mons[s.name] } };
+function pick(screenName, parked, noBar) {
+  var root = { QsWindow: { window: screenName ? { screen: { name: screenName } } : null },
+               bar: noBar ? null : { notchParkedScreen: parked } };
+  return (function () { BODY })().name;
+}
+console.log(JSON.stringify([pick("NOTCH", "Virtual-1"), pick("NOTCH", "Virtual-2"), pick("Virtual-1", "Virtual-2"),
+  pick("NOTCH", "Virtual-9"), pick("NOTCH", "Virtual-1", true), pick(null, "Virtual-1")]));
+""".replace("BODY", body)
+        r = subprocess.run(["node", "-e", js], check=True, capture_output=True, text=True)
+        self.assertEqual(json.loads(r.stdout), ["Virtual-1", "Virtual-2", "Virtual-1", "NOTCH", "NOTCH", "Virtual-2"])
+
 if __name__ == "__main__":
     unittest.main()

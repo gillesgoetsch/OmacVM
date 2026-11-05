@@ -14,6 +14,7 @@ switch and tooltip of OmacVM.app's Extra brightness row):
   (ac2690cd, 2026-11-05), Omarchy 4.5.0: each bar surface spans its screen,
   a widget pool per surface, the centre in three sections (centerBegin,
   center, centerEnd); the notifications ask the bar for its room through
-  `Delivery.js` (here too).
+  `Delivery.js` (here too); each bar's workspaces widget shows its own output's
+  workspaces (`widgets/Workspaces.qml`).
 
 Same paths as in Omarchy (`shell/plugins/...`). Omarchy's MIT licence: `LICENSE`.
