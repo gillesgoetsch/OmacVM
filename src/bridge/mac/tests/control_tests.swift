@@ -817,6 +817,25 @@ func err(_ r: Result<ControlRoute, PolicyError>) -> PolicyError? { if case .fail
     expect(feedFetch(manifest: some, manifestError: nil, sig: nil, sigError: "HTTP 503") == .offline("HTTP 503"), ".sig 503: offline")
     expect(feedFetch(manifest: nil, manifestError: "HTTP 404", sig: nil, sigError: "HTTP 404") == .offline("HTTP 404"), "no manifest: offline")
 
+    // ---- the manifest fetch's retries (GitHub's 504 from latest/download, 2026-11-05) ----
+    expect(feedRetryWait(attempt: 0, status: 504, error: nil, retryAfter: nil) == 2, "504: again after 2 s")
+    expect(feedRetryWait(attempt: 1, status: 503, error: nil, retryAfter: nil) == 6, "503 again: after 6 s")
+    expect(feedRetryWait(attempt: 2, status: 503, error: nil, retryAfter: nil) == nil, "a third 503: no more tries")
+    expect(feedRetryWait(attempt: 0, status: 429, error: nil, retryAfter: "12") == 12, "429 with Retry-After 12: 12 s")
+    expect(feedRetryWait(attempt: 0, status: 503, error: nil, retryAfter: "600") == 30, "Retry-After 600: cut to 30 s")
+    let at = Date(timeIntervalSince1970: 1_800_000_000)
+    let hd = DateFormatter(); hd.locale = Locale(identifier: "en_US_POSIX"); hd.timeZone = TimeZone(identifier: "GMT")
+    hd.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+    expect(feedRetryWait(attempt: 0, status: 503, error: nil, retryAfter: hd.string(from: at.addingTimeInterval(9)), now: at) == 9, "Retry-After as a date: 9 s")
+    for s in [404, 403, 410, 400, 301] {
+      expect(feedRetryWait(attempt: 0, status: s, error: nil, retryAfter: nil) == nil, "HTTP \(s): no retry")
+    }
+    expect(feedRetryWait(attempt: 0, status: nil, error: NSURLErrorTimedOut, retryAfter: nil) == 2, "a timeout: again after 2 s")
+    expect(feedRetryWait(attempt: 1, status: nil, error: NSURLErrorNetworkConnectionLost, retryAfter: nil) == 6, "a lost connection: again")
+    expect(feedRetryWait(attempt: 0, status: nil, error: NSURLErrorCannotFindHost, retryAfter: nil) == nil, "no such host: no retry")
+    expect(feedRetryWait(attempt: 0, status: nil, error: NSURLErrorNotConnectedToInternet, retryAfter: nil) == nil, "offline: no retry")
+    expect(feedRetryWait(attempt: 0, status: nil, error: nil, retryAfter: nil) == nil, "no answer and no error: no retry")
+
     // ---- OmacVM.app's VMs through the app (an external drive) ----
     let appCLI = "/Users/max/Applications/OmacVM.app/Contents/Resources/omacvm/omacvm"
     let info: [String: Any] = ["OmacVMControlRun": true, "CFBundleExecutable": "OmacVM", "CFBundleIdentifier": "org.omacvm.app"]

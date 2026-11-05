@@ -919,16 +919,31 @@ final class Control {
     return shipped.isEmpty ? nil : ReleaseKeys(shipped: shipped, store: store)
   }
 
+  /// One GET, tried again on a server error, 429, a timeout or a lost
+  /// connection (feedRetryWait: at most twice, 2 s then 6 s), each retry logged.
   private func fetch(_ url: URL) -> (Data?, String?) {
-    var result: (Data?, String?) = (nil, "no answer")
+    var n = 0
+    while true {
+      let (data, err, status, code, after) = fetchOnce(url)
+      guard data == nil, let wait = feedRetryWait(attempt: n, status: status, error: code, retryAfter: after) else { return (data, err) }
+      n += 1
+      log("control: update check: \(url.absoluteString): \(err ?? "no answer"); trying again in \(Int(wait)) s (retry \(n) of \(feedRetryWaits.count))")
+      Thread.sleep(forTimeInterval: wait)
+    }
+  }
+
+  private func fetchOnce(_ url: URL) -> (Data?, String?, Int?, Int?, String?) {
+    var result: (Data?, String?, Int?, Int?, String?) = (nil, "no answer", nil, nil, nil)
     let sem = DispatchSemaphore(value: 0)
     var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
     req.setValue("OmacVM-Bridge", forHTTPHeaderField: "User-Agent")
     URLSession.shared.dataTask(with: req) { d, r, e in
-      if let e { result = (nil, e.localizedDescription) }
-      else if let h = r as? HTTPURLResponse, h.statusCode != 200 { result = (nil, "HTTP \(h.statusCode)") }
-      else if let d, d.count <= 256 << 10 { result = (d, nil) }
-      else { result = (nil, "too large") }
+      if let e { result = (nil, e.localizedDescription, nil, (e as NSError).domain == NSURLErrorDomain ? (e as NSError).code : nil, nil) }
+      else if let h = r as? HTTPURLResponse, h.statusCode != 200 {
+        result = (nil, "HTTP \(h.statusCode)", h.statusCode, nil, h.value(forHTTPHeaderField: "Retry-After"))
+      }
+      else if let d, d.count <= 256 << 10 { result = (d, nil, 200, nil, nil) }
+      else { result = (nil, "too large", 200, nil, nil) }
       sem.signal()
     }.resume()
     sem.wait()

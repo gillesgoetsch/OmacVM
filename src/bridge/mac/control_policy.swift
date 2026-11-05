@@ -1303,6 +1303,30 @@ struct ConnectionGate {
 /// the server (404/403/410): an unsigned release, refused, not "offline".
 enum FeedFetch: Equatable { case got, offline(String), unsigned }
 
+/// The manifest fetch's retries, as OmacVM.app's FetchRetry: GitHub's release
+/// downloads fail now and then for a moment (a 504 from latest/download). A
+/// server error (5xx), 429, a timeout or a lost connection is tried at most
+/// twice more, after 2 s and then 6 s (the server's Retry-After instead, at
+/// most 30 s); never 404, 403 or anything else. STATUS: the HTTP status (nil
+/// when no answer came), ERROR: the URL error's code. nil: no more tries.
+let feedRetryWaits: [Double] = [2, 6]
+func feedRetryWait(attempt n: Int, status: Int?, error: Int?, retryAfter: String?, now: Date = Date()) -> Double? {
+  guard n < feedRetryWaits.count else { return nil }
+  if let s = status {
+    guard s == 429 || (500...599).contains(s) else { return nil }
+    if let r = retryAfter?.trimmingCharacters(in: .whitespaces), !r.isEmpty {
+      if let secs = Double(r), secs.isFinite { return min(max(0, secs), 30) }
+      let f = DateFormatter()
+      f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "GMT")
+      f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+      if let d = f.date(from: r) { return min(max(0, d.timeIntervalSince(now)), 30) }
+    }
+    return feedRetryWaits[n]
+  }
+  guard let e = error, e == NSURLErrorTimedOut || e == NSURLErrorNetworkConnectionLost else { return nil }
+  return feedRetryWaits[n]
+}
+
 func feedFetch(manifest: Data?, manifestError: String?, sig: Data?, sigError: String?) -> FeedFetch {
   guard manifest != nil else { return .offline(manifestError ?? "no answer") }
   if sig != nil { return .got }
