@@ -778,6 +778,8 @@ def write_state(message: dict) -> None:
 
 
 INHIBIT_EVERY = 10.0   # seconds between two looks for a video (with the layout compare)
+INHIBIT_STATE = RUNTIME / "omacvm/video-outputs"   # the agent's last list, for `status`
+INHIBIT_FRESH = 25.0   # seconds: older, the agent has stopped looking
 CHROMIUM_MIN = 157     # Chromium asks Wayland not to idle only for video from 157 on
 CHROMIUM_EXE = "/usr/lib/chromium/chromium"
 PACMAN_LOCAL = Path("/var/lib/pacman/local")
@@ -1055,6 +1057,31 @@ def inhibiting_outputs(clients, monitors, rule_free, locked, counts=player_count
     if out and locked():
         return []
     return sorted(out)
+
+
+def save_inhibit(outputs: list[str]) -> None:
+    """The agent's list with the time, for `status` (another process: it cannot
+    see the agent's Chromium display locks)."""
+    try:
+        INHIBIT_STATE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = INHIBIT_STATE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"time": time.time(), "inhibit": outputs}))
+        tmp.replace(INHIBIT_STATE)
+    except OSError:
+        pass
+
+
+def status_inhibit() -> list[str] | None:
+    """What `status` shows: the agent's list while it is fresh, else this
+    process's own look (Wayland and Chromium 157+ only, no display locks)."""
+    try:
+        saved = json.loads(INHIBIT_STATE.read_text())
+        if (isinstance(saved, dict) and isinstance(saved.get("inhibit"), list)
+                and 0 <= time.time() - float(saved.get("time")) <= INHIBIT_FRESH):
+            return [o for o in saved["inhibit"] if isinstance(o, str)]
+    except (OSError, ValueError, TypeError):
+        pass
+    return video_outputs()
 
 
 def idle_rule_free(address: str) -> bool:
@@ -1525,6 +1552,7 @@ class Agent:
         if outputs or self.inhibit:
             self.inhibit = outputs
             self.send_inhibit(outputs)
+            save_inhibit(outputs)
 
     def send_inhibit(self, outputs: list[str]) -> None:
         """Only the newest list waits in the outbox (the Mac may not read for a while)."""
@@ -1535,6 +1563,7 @@ class Agent:
 
     def stop(self, *_args) -> None:
         """SIGTERM (the user service stops): the Mac lets go at once, not after its lease."""
+        INHIBIT_STATE.unlink(missing_ok=True)
         if self.inhibit:
             try:
                 self.send_inhibit([])   # after what is still queued: lines stay whole
@@ -1831,7 +1860,7 @@ def main(argv: list[str]) -> int:
         except (OSError, ValueError):
             pass
         print(json.dumps({"external": external_on(), "port": PORT.exists(),
-                          "layout": layout, "monitors": monitors(), "inhibit": video_outputs()}, indent=2))
+                          "layout": layout, "monitors": monitors(), "inhibit": status_inhibit()}, indent=2))
         return 0
     if len(argv) >= 2 and argv[1] == "desktop":
         repairs = None

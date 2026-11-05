@@ -957,7 +957,11 @@ class VideoToTheMac(unittest.TestCase):
         self.sent = []
         a.flush = lambda: None
         self.clock = [1000.0]
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
         for patcher in (mock.patch.object(od.time, "monotonic", lambda: self.clock[0]),
+                        mock.patch.object(od.time, "time", lambda: self.clock[0]),
+                        mock.patch.object(od, "INHIBIT_STATE", self.tmp / "omacvm/video-outputs"),
                         mock.patch.object(od, "log", lambda m: None)):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -981,6 +985,29 @@ class VideoToTheMac(unittest.TestCase):
         a.outbox = b""
         a.check_inhibit(lambda: [])
         self.assertEqual(a.outbox, b"")
+
+    def test_status_shows_what_the_agent_counts(self):
+        # `omacvm-displays status` runs in its own process: it cannot see the agent's
+        # Chromium display locks, so it shows the agent's last list while that is fresh.
+        a = self.make()
+        with mock.patch.object(od, "video_outputs", lambda: ["Virtual-9"]):
+            self.assertEqual(od.status_inhibit(), ["Virtual-9"])     # no agent: the Wayland view
+            a.check_inhibit(lambda: ["Virtual-1"])
+            self.assertEqual(od.status_inhibit(), ["Virtual-1"])
+            self.clock[0] += 10
+            a.check_inhibit(lambda: ["Virtual-1"])                    # refreshed while it plays
+            self.clock[0] += 20
+            self.assertEqual(od.status_inhibit(), ["Virtual-1"])
+            a.check_inhibit(lambda: [])
+            self.assertEqual(od.status_inhibit(), [])
+            self.clock[0] += 31
+            self.assertEqual(od.status_inhibit(), ["Virtual-9"])     # stale (the agent stopped looking)
+            a.check_inhibit(lambda: ["Virtual-1"])
+            with self.assertRaises(SystemExit):
+                a.stop()
+            self.assertEqual(od.status_inhibit(), ["Virtual-9"])     # the agent stopped
+            od.INHIBIT_STATE.write_text("garbage")
+            self.assertEqual(od.status_inhibit(), ["Virtual-9"])
 
     def test_no_answer_sends_nothing(self):
         a = self.make()
