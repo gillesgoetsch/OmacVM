@@ -919,16 +919,37 @@ final class Control {
     return shipped.isEmpty ? nil : ReleaseKeys(shipped: shipped, store: store)
   }
 
-  private func fetch(_ url: URL) -> (Data?, String?) {
-    var result: (Data?, String?) = (nil, "no answer")
+  /// One GET, tried again on a server error, 429, a timeout or a lost
+  /// connection (feedRetryWait: at most twice, 2 s then 6 s), each retry
+  /// logged; all within feedBudget from STARTED (the check's start), so the
+  /// guest's 30 s wait gets the real answer. WHAT names it in the last error.
+  private func fetch(_ url: URL, what: String, started: Date) -> (Data?, String?) {
+    var n = 0
+    while true {
+      let (data, err, status, code, after) = fetchOnce(url, timeout: feedTryTimeout(elapsed: Date().timeIntervalSince(started)))
+      guard data == nil else { return (data, err) }
+      guard let wait = feedRetryWait(attempt: n, status: status, error: code, retryAfter: after,
+                                     elapsed: Date().timeIntervalSince(started)) else {
+        return (nil, feedProblem(status: status, what: what, url: url) ?? err)
+      }
+      n += 1
+      log("control: update check: \(url.absoluteString): \(err ?? "no answer"); trying again in \(Int(wait.rounded())) s (retry \(n) of \(feedRetryWaits.count))")
+      Thread.sleep(forTimeInterval: wait)
+    }
+  }
+
+  private func fetchOnce(_ url: URL, timeout: Double) -> (Data?, String?, Int?, Int?, String?) {
+    var result: (Data?, String?, Int?, Int?, String?) = (nil, "no answer", nil, nil, nil)
     let sem = DispatchSemaphore(value: 0)
-    var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+    var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
     req.setValue("OmacVM-Bridge", forHTTPHeaderField: "User-Agent")
     URLSession.shared.dataTask(with: req) { d, r, e in
-      if let e { result = (nil, e.localizedDescription) }
-      else if let h = r as? HTTPURLResponse, h.statusCode != 200 { result = (nil, "HTTP \(h.statusCode)") }
-      else if let d, d.count <= 256 << 10 { result = (d, nil) }
-      else { result = (nil, "too large") }
+      if let e { result = (nil, e.localizedDescription, nil, (e as NSError).domain == NSURLErrorDomain ? (e as NSError).code : nil, nil) }
+      else if let h = r as? HTTPURLResponse, h.statusCode != 200 {
+        result = (nil, "HTTP \(h.statusCode)", h.statusCode, nil, h.value(forHTTPHeaderField: "Retry-After"))
+      }
+      else if let d, d.count <= 256 << 10 { result = (d, nil, 200, nil, nil) }
+      else { result = (nil, "too large", 200, nil, nil) }
       sem.signal()
     }.resume()
     sem.wait()
@@ -951,8 +972,9 @@ final class Control {
       return out
     }
     guard let url = URL(string: feed), let sigURL = URL(string: feed + ".sig") else { out["error"] = "bad feed address"; return out }
-    let (data, e1) = fetch(url)
-    let (sig, e2) = data == nil ? (nil, e1) : fetch(sigURL)
+    let started = Date()
+    let (data, e1) = fetch(url, what: "the update manifest", started: started)
+    let (sig, e2) = data == nil ? (nil, e1) : fetch(sigURL, what: "the update manifest's signature", started: started)
     switch feedFetch(manifest: data, manifestError: e1, sig: sig, sigError: e2) {
     case .got: break
     case .unsigned:

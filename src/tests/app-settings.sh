@@ -24,7 +24,7 @@ expect() {   # WHAT WANT GOT
 
 # The app's modules, then its sources with this test's main, as an app of its own id.
 mkdir -p "$T/mods"
-for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio OmacVMIcon OmacVMMedia; do
+for m in OmacVMUpdate OmacVMNet OmacVMUSB OmacVMFolder OmacVMFeatures OmacVMAuth OmacVMBuildProgress OmacVMWindow OmacVMDesktop OmacVMAudio OmacVMIcon OmacVMMedia OmacVMDrop; do
   swiftc -swift-version 5 -parse-as-library -module-cache-path "$T/mc" -I "$T/mods" -module-name $m -emit-module \
     -emit-module-path "$T/mods/$m.swiftmodule" -emit-library -static -o "$T/lib$m.a" "$R"/app/app/Sources/$m/*.swift 2>"$T/cc.log" ||
     { cat "$T/cc.log"; echo "FAIL $m does not build"; exit 1; }
@@ -42,7 +42,7 @@ cat > "$T/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 swiftc -swift-version 5 -module-cache-path "$T/mc" -I "$T/mods" -L "$T" -lOmacVMUpdate -lOmacVMNet -lOmacVMUSB -lOmacVMFolder \
-  -lOmacVMFeatures -lOmacVMAuth -lOmacVMBuildProgress -lOmacVMWindow -lOmacVMDesktop -lOmacVMAudio -lOmacVMIcon -lOmacVMMedia \
+  -lOmacVMFeatures -lOmacVMAuth -lOmacVMBuildProgress -lOmacVMWindow -lOmacVMDesktop -lOmacVMAudio -lOmacVMIcon -lOmacVMMedia -lOmacVMDrop \
   -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$T/Info.plist" \
   -o "$T/t" "${srcs[@]}" "$R/src/tests/app-settings/main.swift" 2>"$T/cc.log" || { cat "$T/cc.log"; echo "FAIL the test app does not build"; exit 1; }
 
@@ -95,6 +95,7 @@ for i in 0 1; do
   expect "fresh $n: USB devices off, none remembered" "false 0" "$(val vms.$i.usb) $(val vms.$i.usbRemembered)"
   expect "fresh $n: fast network off" false "$(val vms.$i.fastNetwork)"
   expect "fresh $n: Mac input off" false "$(val vms.$i.macIME)"
+  expect "fresh $n: drag and drop off" false "$(val vms.$i.dragDrop)"
   expect "fresh $n: resources as built" "4 8 64" "$(val vms.$i.cpus) $(val vms.$i.memoryGB) $(val vms.$i.diskGB)"
 done
 # The ways back while both graphics switches are on by default: GPU safe mode turns both off,

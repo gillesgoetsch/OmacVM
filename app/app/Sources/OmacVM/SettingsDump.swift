@@ -60,6 +60,8 @@ enum SettingsDump {
             "usbRemembered": USBMemory.load(folder: f).devices.count,
             "fastNetwork": FastNetwork.isOn(c),
             "macIME": MacIME.pending(pending) ?? MacIME.isOn(features: record),
+            "dragDrop": DragDrop.switchState.pending(
+                try? String(contentsOf: f.appendingPathComponent(DragDrop.switchState.pendingFile), encoding: .utf8)) ?? DragDrop.isOn(features: record),
             "gpuCompute": GPUCompute.switchState.pending(
                 try? String(contentsOf: f.appendingPathComponent(GPUCompute.pendingFile), encoding: .utf8)) ?? GPUCompute.isOn(features: record),
         ]

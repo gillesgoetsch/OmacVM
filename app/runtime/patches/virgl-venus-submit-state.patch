@@ -1,0 +1,372 @@
+virglrenderer: Venus submits only primaries the guest ended, whose secondaries are what they executed
+
+What: a command buffer gets a serial, one more at each begin, reset and pool reset (also
+of a pool's freed secondaries a primary still holds), whatever the driver's call returns;
+an ended flag, set when the guest ends it (whatever the driver returns) and cleared by a
+begin, reset, pool reset or free; and the driver's vkEndCommandBuffer result.
+vkCmdExecuteCommands keeps the serial of each secondary in the primary's held entry
+(virgl-venus-secondary-holds.patch). vkQueueSubmit and vkQueueSubmit2 refuse, before any
+driver call, a command buffer that is not a primary the guest ended, and a primary whose
+secondary was begun, reset or had its pool reset since the primary executed it; the
+primary's vkEndCommandBuffer refuses the latter too. A command buffer whose driver end
+failed goes on as before on MoltenVK (one line per app); on other drivers its submit, or
+the vkCmdExecuteCommands of such a secondary, is refused. A refusal ends the app's
+context. Vulkan calls all of the refused cases invalid, so a legal app never meets them
+(a driver that cannot record a command is the driver's limit, not the app's error).
+Why: both drivers read a secondary's commands after vkCmdExecuteCommands. MoltenVK encodes
+the secondary's current content when it encodes the primary (at vkQueueSubmit, at the
+primary's vkEndCommandBuffer with MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS);
+KosmicKrisp replays it at a reusable primary's 2nd and later submit (kk_queue.c,
+vk_command_buffer.c). vkr checked the Metal passes a secondary opens and the pass it
+continues at the execute (virgl-venus-encoder-cap.patch, virgl-venus-command-state.patch),
+so a secondary recorded again with more passes got past the cap below which Metal keeps
+QEMU alive. Nothing checked what was submitted: MoltenVK refuses a secondary and a 2nd
+submit of a one-time buffer itself (MVKCommandBuffer::canExecute), KosmicKrisp relies on
+the app. Both drivers read secondaries inside vkQueueSubmit on the calling thread (MoltenVK's
+MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS is 1, KosmicKrisp submits in Mesa's immediate mode),
+which the holds rely on (#676).
+"Ended" is the guest's call because the guest never sees the driver's end result: Mesa's
+Venus driver sends the end without a reply and returns VK_SUCCESS (vn_command_buffer.c).
+The first version (#706, taken out of 3.2.23 by #712) used the driver's result and refused
+legal submits on MoltenVK: its vkEndCommandBuffer returns VK_ERROR_FEATURE_NOT_PRESENT when
+it could not record one command, e.g. vkCmdResolveImage of an integer format (Metal
+resolves none; dEQP-VK renderpasses.*.self_dep_*_ms), and the app hung. MoltenVK skips a
+primary whose end failed at the submit (canExecute: nothing of it is encoded, its fence
+still signals) and encodes a secondary without the command it dropped (vkr weighed them
+all), so both go on there. Mesa (KosmicKrisp) marks such a buffer invalid but checks that
+only in debug builds (vk_queue.c), so it would run what it recorded up to the failure.
+Upstream: OmacVM policy (VUID-vkQueueSubmit-pCommandBuffers-00070, -00071, -00072,
+VUID-vkEndCommandBuffer-commandBuffer-00059).
+Tests: Tests/virgl/test-venus-commands.c (c-state-secondary-held-resubmit-ok, -rerecord-ok,
+-rerecord-submit, -reset-submit, -pool-reset-submit, -free-pool-reset-submit,
+-rerecord-end, s-submit-secondary, -recording, -initial, h-release-secondary-ok,
+c-state-end-failed-submit-ok, -resubmit-ok, -secondary-ok, -reset-submit, -rebegin-submit,
+c-state-end-hook-submit, -secondary, -reset-ok; also under libgmalloc). The -hook- cases
+make an end fail with vkr_test_end_result_hook (NULL in QEMU).
+
+diff --git a/src/venus/vkr_command_buffer.c b/src/venus/vkr_command_buffer.c
+index d92e401..30e49a4 100644
+--- a/src/venus/vkr_command_buffer.c
++++ b/src/venus/vkr_command_buffer.c
+@@ -535,10 +535,11 @@ vkr_cmd_view_room(struct vkr_command_buffer *cmd, uint32_t count)
+  * (NULL: none) until the driver let go of what it recorded. An object of another device is
+  * refused (the commonparent VUIDs of the begin infos); false after a refusal. */
+ static bool
+-vkr_cmd_hold(struct vkr_context *ctx,
+-             struct vkr_command_buffer *cmd,
+-             void *handle,
+-             const char *call)
++vkr_cmd_hold_data(struct vkr_context *ctx,
++                  struct vkr_command_buffer *cmd,
++                  void *handle,
++                  void *data,
++                  const char *call)
+ {
+    struct vkr_object *obj = handle;
+    if (!obj)
+@@ -554,13 +555,86 @@ vkr_cmd_hold(struct vkr_context *ctx,
+    const uint32_t hash = _mesa_hash_pointer(obj);
+    if (_mesa_hash_table_search_pre_hashed(cmd->held, hash, obj))
+       return true;
+-   if (!vkr_context_check(ctx, _mesa_hash_table_insert_pre_hashed(cmd->held, hash, obj, obj),
++   if (!vkr_context_check(ctx, _mesa_hash_table_insert_pre_hashed(cmd->held, hash, obj, data),
+                           call, "out of host memory"))
+       return false;
+    vkr_object_hold(obj);
+    return true;
+ }
+ 
++static bool
++vkr_cmd_hold(struct vkr_context *ctx,
++             struct vkr_command_buffer *cmd,
++             void *handle,
++             const char *call)
++{
++   return vkr_cmd_hold_data(ctx, cmd, handle, handle, call);
++}
++
++/* OmacVM (virgl-venus-submit-state.patch): every secondary the primary holds is still the
++ * recording it executed (not begun, reset or its pool reset since): MoltenVK encodes a
++ * secondary's content when it encodes the primary (at the submit, or at the primary's end
++ * with prefill), KosmicKrisp replays it at a reusable primary's 2nd and later submit, and
++ * vkr checked the Metal passes it opens and the pass it continues at the execute (Vulkan:
++ * such a primary is invalid). A secondary executed twice keeps its first serial. False
++ * after a refusal. */
++static bool
++vkr_cmd_secondaries_current(struct vkr_context *ctx,
++                            const struct vkr_command_buffer *cmd,
++                            const char *call)
++{
++   if (cmd->level != VK_COMMAND_BUFFER_LEVEL_PRIMARY || !cmd->held)
++      return true;
++   hash_table_foreach (cmd->held, entry) {
++      const struct vkr_object *obj = entry->key;
++      if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER &&
++          !vkr_context_check(ctx,
++                             ((const struct vkr_command_buffer *)obj)->serial ==
++                                (uintptr_t)entry->data,
++                             call, "a secondary was recorded again after the primary executed it"))
++         return false;
++   }
++   return true;
++}
++
++VkResult (*vkr_test_end_result_hook)(VkResult result);
++
++bool
++vkr_command_buffer_submit_ok(struct vkr_context *ctx,
++                             VkCommandBuffer handle,
++                             const char *call,
++                             uint32_t batch,
++                             uint32_t index)
++{
++   const struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(handle);
++   const bool primary = cmd && cmd->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY;
++   if (!vkr_context_check(ctx, primary && cmd->ended, call,
++                          "batch %u: command buffer %u %s", batch, index,
++                          !cmd               ? "is none"
++                          : !primary         ? "is a secondary"
++                          : cmd->state.recording ? "still records"
++                                             : "was not ended since its begin or reset"))
++      return false;
++   /* the guest ended it and the driver's vkEndCommandBuffer failed (the guest never sees
++    * that result: Venus ends without a reply). MoltenVK skips such a primary at the submit
++    * (MVKCommandBuffer::canExecute: nothing of it is encoded, its fence still signals): it
++    * goes to the driver as before, with one line per app. KosmicKrisp (Mesa marks it
++    * invalid and only asserts that at the submit) would run what it recorded up to the
++    * failure: refused. */
++   if (cmd->end_result != VK_SUCCESS) {
++      if (!vkr_context_check(ctx, cmd->device->physical_device->limits.moltenvk, call,
++                             "batch %u: command buffer %u: the Mac's driver could not record it "
++                             "(vkEndCommandBuffer returned %d)",
++                             batch, index, cmd->end_result))
++         return false;
++      if (!atomic_exchange(&ctx->end_failed_logged, true))
++         vkr_log("%s: %s: the Mac's Vulkan driver could not record a command buffer "
++                 "(vkEndCommandBuffer returned %d); it skips it, as before (logged once per app)",
++                 ctx->debug_name ? ctx->debug_name : "?", call, cmd->end_result);
++   }
++   return vkr_cmd_secondaries_current(ctx, cmd, call);
++}
++
+ /* the driver let go of what the command buffer recorded (reset, begin, free): a zombie it
+  * held last is destroyed now */
+ static void
+@@ -882,6 +956,10 @@ vkr_cmd_state_reset(struct vkr_command_buffer *cmd)
+ {
+    memset(&cmd->state, 0, sizeof(cmd->state));
+    vkr_cmd_set_views(cmd, NULL, 0);
++   /* OmacVM (virgl-venus-submit-state.patch): whatever the driver's call returns */
++   cmd->serial++;
++   cmd->ended = false;
++   cmd->end_result = VK_SUCCESS;
+ }
+ 
+ /* OmacVM (virgl-venus-unset-state.patch, ADR 0065): MoltenVK reads, when it encodes a draw
+@@ -1168,6 +1246,15 @@ vkr_dispatch_vkResetCommandPool(UNUSED struct vn_dispatch_context *dispatch,
+    if (pool) {
+       list_for_each_entry (struct vkr_command_buffer, cmd, &pool->command_buffers, base.track_head)
+          vkr_cmd_state_reset(cmd);
++      /* OmacVM (virgl-venus-submit-state.patch): the driver resets the pool's freed
++       * secondaries a primary still holds (zombies) as well */
++      mtx_lock(&dev->object_mutex);
++      list_for_each_entry (struct vkr_object, obj, &dev->zombies, track_head) {
++         if (obj->type == VK_OBJECT_TYPE_COMMAND_BUFFER &&
++             ((struct vkr_command_buffer *)obj)->pool == pool)
++            ((struct vkr_command_buffer *)obj)->serial++;
++      }
++      mtx_unlock(&dev->object_mutex);
+    }
+ 
+    vn_replace_vkResetCommandPool_args_handle(args);
+@@ -1234,6 +1321,13 @@ vkr_dispatch_vkFreeCommandBuffers(struct vn_dispatch_context *dispatch,
+       return;
+    }
+ 
++   /* OmacVM (virgl-venus-submit-state.patch) */
++   for (uint32_t i = 0; i < args->commandBufferCount; i++) {
++      struct vkr_command_buffer *cmd = vkr_command_buffer_from_handle(args->pCommandBuffers[i]);
++      if (cmd)
++         cmd->ended = false;
++   }
++
+    if (!vkr_command_buffer_destroy_driver_handles(ctx, args, &free_list))
+       return;
+    vkr_context_remove_objects(ctx, &free_list);
+@@ -1295,6 +1389,11 @@ vkr_dispatch_vkBeginCommandBuffer(struct vn_dispatch_context *dispatch,
+    void *inh_pass = inh ? (void *)inh->renderPass : NULL;
+    void *inh_fb = inh ? (void *)inh->framebuffer : NULL;
+ 
++   /* OmacVM (virgl-venus-submit-state.patch): whatever the driver's call returns */
++   cmd->serial++;
++   cmd->ended = false;
++   cmd->end_result = VK_SUCCESS;
++
+    vn_replace_vkBeginCommandBuffer_args_handle(args);
+    args->ret = vk->BeginCommandBuffer(args->commandBuffer, args->pBeginInfo);
+    cmd->state = st;
+@@ -1328,10 +1427,20 @@ vkr_dispatch_vkEndCommandBuffer(struct vn_dispatch_context *dispatch,
+                           : st->conditional ? "conditional rendering left open"
+                                             : "a render pass left open"))
+       return;
++   /* OmacVM (virgl-venus-submit-state.patch): MoltenVK with prefill encodes the
++    * secondaries here */
++   if (!vkr_cmd_secondaries_current(dispatch->data, cmd, "vkEndCommandBuffer"))
++      return;
+    cmd->state.recording = false;
+ 
+    vn_replace_vkEndCommandBuffer_args_handle(args);
+    args->ret = vk->EndCommandBuffer(args->commandBuffer);
++   /* OmacVM (virgl-venus-submit-state.patch): ended by the guest, whatever the driver
++    * returned; the result decides at the submit and the execute */
++   if (unlikely(vkr_test_end_result_hook))
++      args->ret = vkr_test_end_result_hook(args->ret);
++   cmd->ended = true;
++   cmd->end_result = args->ret;
+ }
+ 
+ static void
+@@ -2238,14 +2347,28 @@ vkr_dispatch_vkCmdExecuteCommands(struct vn_dispatch_context *dispatch,
+                              : sec->state.continues_pass ? "continues a pass outside one"
+                                                          : "does not continue the open pass"))
+          return;
++      /* OmacVM (virgl-venus-submit-state.patch): a secondary whose driver end failed.
++       * MoltenVK encodes it without the one command it could not record (vkr weighed them
++       * all); KosmicKrisp (Mesa marks it invalid) would replay what it recorded up to the
++       * failure: refused. It cannot change without a begin or reset, which the serial
++       * catches. */
++      if (!vkr_context_check(ctx,
++                             sec->end_result == VK_SUCCESS ||
++                                cmd->device->physical_device->limits.moltenvk,
++                             "vkCmdExecuteCommands",
++                             "secondary %u: the Mac's driver could not record it "
++                             "(vkEndCommandBuffer returned %d)",
++                             i, sec->end_result))
++         return;
+    }
+    /* OmacVM (virgl-venus-secondary-holds.patch): the primary holds what it executes until
+     * the driver let go of what it recorded: MoltenVK keeps the secondaries' pointers and
+     * reads them when it encodes the primary (at vkQueueSubmit) */
+    for (uint32_t i = 0; i < args->commandBufferCount; i++) {
+-      if (!vkr_cmd_hold(ctx, (struct vkr_command_buffer *)cmd,
+-                        vkr_command_buffer_from_handle(args->pCommandBuffers[i]),
+-                        "vkCmdExecuteCommands"))
++      /* OmacVM (virgl-venus-submit-state.patch): with the serial of the recording */
++      struct vkr_command_buffer *sec = vkr_command_buffer_from_handle(args->pCommandBuffers[i]);
++      if (!vkr_cmd_hold_data(ctx, (struct vkr_command_buffer *)cmd, sec,
++                             (void *)sec->serial, "vkCmdExecuteCommands"))
+          return;
+    }
+    struct vkr_cmd_state *st = vkr_cmd_state(args->commandBuffer);
+diff --git a/src/venus/vkr_command_buffer.h b/src/venus/vkr_command_buffer.h
+index 126f04a..4438ca3 100644
+--- a/src/venus/vkr_command_buffer.h
++++ b/src/venus/vkr_command_buffer.h
+@@ -92,6 +92,22 @@ vkr_encoder_cap(void);
+ uint32_t
+ vkr_command_buffer_weight(VkCommandBuffer handle);
+ 
++/* OmacVM (virgl-venus-submit-state.patch): command buffer INDEX of batch BATCH may be
++ * submitted (a primary the guest ended, whose secondaries are the recordings it executed,
++ * and that the driver could record or skips); else the call is refused (the context ends)
++ * and false */
++bool
++vkr_command_buffer_submit_ok(struct vkr_context *ctx,
++                             VkCommandBuffer handle,
++                             const char *call,
++                             uint32_t batch,
++                             uint32_t index);
++
++/* OmacVM (virgl-venus-submit-state.patch): for tests only, NULL in QEMU. Called with the
++ * driver's vkEndCommandBuffer result; what it returns is taken as that result (a test
++ * makes an end fail that no legal recording makes fail on demand). */
++extern VkResult (*vkr_test_end_result_hook)(VkResult result);
++
+ /* a dynamic rendering's views with 8 color attachments: colors and their resolves, depth,
+  * stencil and their resolves, shading rate, density map */
+ #define VKR_CMD_VIEW_STORAGE 22
+@@ -122,6 +138,14 @@ struct vkr_command_buffer {
+     * memory of copies and clears past a reset, MoltenVK an update's, Metal a submitted
+     * pass's), the next recording uses it again; it goes to the pool when it is freed */
+    uint64_t reserved;
++   /* OmacVM (virgl-venus-submit-state.patch): one more at each begin, reset and pool reset
++    * (before the driver's call); a primary keeps the serial of each secondary it executed
++    * in its held entry's data. ended: the guest ended it since then (whatever the driver
++    * returned: the guest never sees that result); end_result: what the driver's
++    * vkEndCommandBuffer returned then. */
++   uintptr_t serial;
++   bool ended;
++   VkResult end_result;
+ };
+ VKR_DEFINE_OBJECT_CAST(command_buffer, VK_OBJECT_TYPE_COMMAND_BUFFER, VkCommandBuffer)
+ 
+diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
+index 26bd505..ac4d32a 100644
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -68,6 +68,9 @@ struct vkr_context {
+    atomic_bool closing;
+    /* the budget refused a Venus allocation of this context: its loss counts as "guard" */
+    atomic_bool budget_refused;
++   /* OmacVM (virgl-venus-submit-state.patch): the line for a submitted command buffer the
++    * driver could not record was logged */
++   atomic_bool end_failed_logged;
+    /* OmacVM (virgl-venus-host-memory.patch, vkr_common.h) */
+    struct vkr_host_account host;
+    enum vkr_context_validate_level validate_level;
+diff --git a/src/venus/vkr_limits.h b/src/venus/vkr_limits.h
+index 0bf47d8..c9d1532 100644
+--- a/src/venus/vkr_limits.h
++++ b/src/venus/vkr_limits.h
+@@ -23,6 +23,8 @@ struct vkr_limits {
+    uint32_t multiview_views;
+    /* OmacVM (virgl-venus-dedicated-memory.patch): the driver is KosmicKrisp */
+    bool kosmickrisp;
++   /* OmacVM (virgl-venus-submit-state.patch): the driver is MoltenVK */
++   bool moltenvk;
+    uint32_t max_push_descriptors;     /* 0 without VK_KHR_push_descriptor */
+    uint32_t max_inline_uniform_block; /* 0 without inline uniform blocks */
+    bool mutable_descriptors;          /* VK_EXT_mutable_descriptor_type */
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index 37dc111..6757c9e 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -571,6 +571,7 @@ vkr_physical_device_init_limits(struct vkr_physical_device *physical_dev)
+    vk->GetPhysicalDeviceProperties2(handle, &driver2);
+    l->multiview_views = l->max_multiview_views;
+    l->kosmickrisp = driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP;
++   l->moltenvk = driver.driverID == VK_DRIVER_ID_MOLTENVK; /* OmacVM (virgl-venus-submit-state.patch) */
+    if (driver.driverID == VK_DRIVER_ID_MESA_KOSMICKRISP)
+       l->multiview_views = MIN2(l->multiview_views, vkr_metal_max_vertex_amplification());
+ 
+diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
+index 5aee693..b90a22d 100644
+--- a/src/venus/vkr_queue.c
++++ b/src/venus/vkr_queue.c
+@@ -545,6 +545,12 @@ vkr_dispatch_vkQueueSubmit(struct vn_dispatch_context *dispatch,
+       if (!vkr_batch_weight_ok(dispatch, queue, "vkQueueSubmit", i, submit->commandBufferCount,
+                                submit->pCommandBuffers, NULL))
+          return;
++      /* OmacVM (virgl-venus-submit-state.patch) */
++      for (uint32_t j = 0; j < submit->commandBufferCount; j++) {
++         if (!vkr_command_buffer_submit_ok(dispatch->data, submit->pCommandBuffers[j],
++                                           "vkQueueSubmit", i, j))
++            return;
++      }
+    }
+ 
+    vn_replace_vkQueueSubmit_args_handle(args);
+@@ -613,6 +619,13 @@ vkr_dispatch_vkQueueSubmit2(struct vn_dispatch_context *dispatch,
+                                submit->commandBufferInfoCount, NULL,
+                                submit->pCommandBufferInfos))
+          return;
++      /* OmacVM (virgl-venus-submit-state.patch) */
++      for (uint32_t j = 0; j < submit->commandBufferInfoCount; j++) {
++         if (!vkr_command_buffer_submit_ok(dispatch->data,
++                                           submit->pCommandBufferInfos[j].commandBuffer,
++                                           "vkQueueSubmit2", i, j))
++            return;
++      }
+    }
+ 
+    vn_replace_vkQueueSubmit2_args_handle(args);

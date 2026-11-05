@@ -1,0 +1,34 @@
+#!/bin/bash
+# OmacVM.app: the drop share (drag and drop, feature drag-drop) read-only at
+# /run/omacvm/drop. The app shares the VM folder's staging folder over
+# virtio-9p (tag omacvm-drop) only while drag and drop is on; without it this
+# does nothing.
+# cache=loose (805 MB/s for a 1 GiB file, 88 MB/s without a cache, M1 spike):
+# safe here because every drop folder is new, written whole on the Mac before
+# the VM hears of it, never changed after, and the VM looks a folder up only
+# by the id it was told; a cached listing of an older folder never matters.
+# Read-only on both sides (QEMU's readonly=on and the mount's ro).
+set -uo pipefail
+TAG=omacvm-drop
+DIR=/run/omacvm/drop
+
+shared() {
+  local f
+  for f in /sys/bus/virtio/drivers/9pnet_virtio/virtio*/mount_tag; do
+    [[ -r $f && $(tr -d '\0\n' < "$f") == "$TAG" ]] && return 0
+  done
+  return 1
+}
+
+if [[ ${1:-} == --stop ]]; then
+  mountpoint -q "$DIR" && umount -l "$DIR"
+  exit 0
+fi
+if grep -qx 0x0009 /sys/bus/virtio/devices/*/device 2>/dev/null; then
+  modprobe -q 9pnet_virtio 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do shared && break; sleep 0.2; done
+fi
+shared || exit 0
+mountpoint -q "$DIR" && exit 0
+install -d -m 755 "$DIR"
+mount -t 9p -o ro,nosuid,nodev,noexec,trans=virtio,version=9p2000.L,access=client,msize=512000,cache=loose "$TAG" "$DIR"

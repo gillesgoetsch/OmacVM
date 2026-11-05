@@ -997,6 +997,24 @@ app)
   elif [[ ${ime%% *} == ok || $ime == *"older"* || $ime == *"built for"* ]]; then
     bad "Mac input methods" "off, but OmacVM's Fcitx5 module is still installed: omacvm apply"
   else skip "Mac input methods" "off (experimental: omacvm enable mac-ime)"; fi
+  # Drag and drop of files from the Mac (drag-drop, docs/drag-and-drop.md): the
+  # helper built, the port and the read-only share (from the VM's start), the
+  # user service holding the port.
+  FEATURE=drag-drop
+  dnd=$(/usr/local/share/omacvm/drop/guest/install.sh "$U" --status 2>/dev/null || true)
+  if [[ ${OMACVM_FEATURE_drag_drop:-off} == on ]]; then
+    port=/dev/virtio-ports/org.omacvm.drop
+    if [[ ${dnd%% *} != ok ]]; then bad "drag and drop" "${dnd#* }"
+    elif [[ ! -e $port ]]; then
+      skip "drag and drop" "on from the VM's next start: shut it down, then start it again (OmacVM.app adds its port and share at the start)" human
+    elif ! findmnt -n -o OPTIONS /run/omacvm/drop 2>/dev/null | grep -q '^ro'; then
+      bad "drag and drop" "the drop share is not mounted read-only at /run/omacvm/drop (systemctl status omacvm-drop-share)"
+    elif ! as_user systemctl --user is-active -q omacvm-drop.service 2>/dev/null; then
+      skip "drag and drop" "its service starts with the desktop (log in; journalctl --user -u omacvm-drop)" human
+    else ok "drag and drop" "files dropped on the VM's window go into the app under the pointer, or into Downloads"; fi
+  elif [[ ${dnd%% *} == ok || ${dnd%% *} == needed ]]; then
+    bad "drag and drop" "off, but its helper or service is still installed: omacvm apply"
+  else skip "drag and drop" "off (experimental: omacvm enable drag-drop)"; fi
   FEATURE="" ;;
 fusion)
   section "VMware Fusion"

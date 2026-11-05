@@ -5,6 +5,9 @@ import Foundation
 /// in (a server that says or sends more is cut off at once), and the zip's
 /// progress for the Updates row. One session per check; redirects stay on
 /// https (or http to this Mac, a test feed), as Appcast.isAllowedDownload.
+/// A server error, 429, a timeout or a lost connection is tried again as
+/// `retry` says (FetchRetry, within its time limits), each retry told to
+/// `note`, and so is a retry left out for time.
 public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     public enum Failure: LocalizedError, Equatable, CustomStringConvertible {
         /// More than the limit (said or sent).
@@ -34,6 +37,8 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
         var file: FileHandle?
         var received: Int64 = 0
         var status = 0
+        /// The answer's Retry-After header, if any.
+        var retryAfter: String?
         var failure: Error?
         let progress: (@Sendable (Int64) -> Void)?
         var lastReport: Int64 = 0
@@ -55,7 +60,13 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
         return q
     }()
 
-    public init(configuration: URLSessionConfiguration) {
+    private let retry: FetchRetry
+    private let note: @Sendable (String) async -> Void
+
+    public init(configuration: URLSessionConfiguration, retry: FetchRetry = .never,
+                note: @escaping @Sendable (String) async -> Void = { _ in }) {
+        self.retry = retry
+        self.note = note
         super.init()
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: queue)
     }
@@ -66,15 +77,25 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
     /// GET into memory, at most `cap` bytes. A status other than 200 comes
     /// back with no data (the body is not read).
     public func data(_ url: URL, cap: Int) async throws -> (Data, Int) {
-        let job = Job(name: url.lastPathComponent, cap: Int64(cap), exact: nil, file: nil, progress: nil)
-        let status = try await run(url, job)
-        return (status == 200 ? job.data : Data(), status)
+        try await retrying(url, whole: false) {
+            let job = Job(name: url.lastPathComponent, cap: Int64(cap), exact: nil, file: nil, progress: nil)
+            let status = try await self.run(url, job)
+            return ((status == 200 ? job.data : Data(), status), status, job.retryAfter)
+        }
     }
 
     /// GET into FILE (made new), exactly `length` bytes. progress: bytes so
     /// far, about every 256 KB. The HTTP status; on a failure the file is gone.
     public func file(_ url: URL, to file: URL, length: Int64,
                      progress: (@Sendable (Int64) -> Void)? = nil) async throws -> Int {
+        try await retrying(url, whole: true) {
+            let (status, after) = try await self.fileOnce(url, to: file, length: length, progress: progress)
+            return (status, status, after)
+        }
+    }
+
+    private func fileOnce(_ url: URL, to file: URL, length: Int64,
+                          progress: (@Sendable (Int64) -> Void)?) async throws -> (Int, String?) {
         let fm = FileManager.default
         try? fm.removeItem(at: file)
         guard fm.createFile(atPath: file.path, contents: nil), let h = try? FileHandle(forWritingTo: file) else {
@@ -85,11 +106,49 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
             let status = try await run(url, job)
             try? h.close()
             if status != 200 { try? fm.removeItem(at: file) }
-            return status
+            return (status, job.retryAfter)
         } catch {
             try? h.close()
             try? fm.removeItem(at: file)
             throw error
+        }
+    }
+
+    /// ONCE tried again while its status (or its error) is worth it,
+    /// retries are left and the retry fits the time limits (WHOLE: a
+    /// download, FetchRetry.tooLong); each retry is told to `note` first.
+    private func retrying<T>(_ url: URL, whole: Bool, _ once: () async throws -> (T, Int, String?)) async throws -> T {
+        let first = retry.clock()
+        var n = 0
+        while true {
+            let began = retry.clock()
+            let outcome: Result<T, Error>
+            var status = 0, after: String?
+            do {
+                let r = try await once()
+                outcome = .success(r.0); status = r.1; after = r.2
+            } catch {
+                outcome = .failure(error)
+            }
+            let wait: Double, why: String
+            switch outcome {
+            case .success(let result):
+                guard FetchRetry.retries(status: status), n < retry.waits.count else { return result }
+                wait = retry.wait(n, retryAfter: FetchRetry.retryAfter(after))
+                why = "HTTP \(status)"
+            case .failure(let error):
+                guard FetchRetry.retries(error), n < retry.waits.count else { throw error }
+                wait = retry.wait(n, retryAfter: nil)
+                why = error.localizedDescription
+            }
+            let now = retry.clock()
+            if let late = retry.tooLong(wait: wait, sinceFirst: now - first, thisTry: now - began, whole: whole) {
+                await note("\(url.absoluteString): \(why); not tried again: \(late)")
+                return try outcome.get()
+            }
+            n += 1
+            await note(String(format: "%@: %@; trying again in %.0f s (retry %d of %d)", url.absoluteString, why, wait, n, retry.waits.count))
+            try await retry.sleep(wait)
         }
     }
 
@@ -131,6 +190,7 @@ public final class Transfer: NSObject, URLSessionDataDelegate, @unchecked Sendab
                            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let j = job(dataTask) else { completionHandler(.cancel); return }
         j.status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        j.retryAfter = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
         // Not 200: the caller says why; the body is not needed.
         guard j.status == 200 else { completionHandler(.cancel); return }
         let said = response.expectedContentLength

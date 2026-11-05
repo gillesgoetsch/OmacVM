@@ -3,6 +3,45 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.3.0
+
+OmacVM.app can now take files dragged from the Finder into the VM's window (experimental, off by
+default, OmacVM.app only). It needs the app update and Update VM; switching it on in a VM that does
+not have 3.3.0 yet puts all of 3.3.0 into the VM, as Update VM does. Updates now try again when
+GitHub answers with a server error: the app's own updates need the app update; the control centre's
+part needs Update VM (OmacVM.app) or `omacvm update` (Parallels, UTM and Fusion). The new Vulkan
+command buffer checks need only the app update, from the VM's next start.
+
+- **Drag and drop files into the VM (OmacVM.app, experimental, off by default).** Drop files from
+  the Finder onto the VM's window: they go into the app under the pointer (a Files folder, a
+  browser's upload field), or into Downloads when no app takes them, with a notice. Files only, up
+  to 256 at a time; the VM gets read-only copies of just those files (APFS clones on the VM's drive:
+  no extra space). Switch: **Sharing & Devices > Drag and drop files** in the VM's window
+  (with (i)), `omacvm enable drag-drop` or the control centre, then restart the VM once (the
+  control centre's row says "from the next start" until then). Not yet:
+  folders, Photos/Mail/Safari images, and dragging out of the VM. See docs/drag-and-drop.md.
+
+- **An update no longer stops at GitHub's first server error (OmacVM.app and the control centre; reported by
+  the user).** A check said "No update feed (HTTP 504)" when GitHub answered one request with a server error
+  for a moment. The app's update feed, its signature and the download, and the Bridge's manifest for the
+  control centre, are now tried twice more on HTTP 500-599, 429, a timeout or a lost connection (after 2 s,
+  then 6 s; a Retry-After of up to 30 s is honoured), each retry logged. Never on 404 or 403; the
+  signature checks are as before. The retries keep to a time limit: the feed gives up within about a minute,
+  the download is never started again after a try that ran over a minute, and the control centre's check
+  stops trying after 25 s, within the 30 s the control centre waits for it. When GitHub still fails, the
+  message says so: "GitHub answered HTTP 504 (a server error on GitHub's side) for the update feed at ...;
+  try again in a few minutes", and the app's own weekly check looks again an hour later instead of a week
+  later. The app's part needs the app update; the control centre's part needs `omacvm update` on the Mac
+  (OmacVM.app: the app's update, then Update VM, which installs the new Bridge).
+
+- **A Vulkan program can no longer get past the drawing-pass limit by recording a used secondary command buffer
+  again (OmacVM.app, see #676).** With Graphics on Vulkan, QEMU now submits only primary command buffers the
+  program finished, whose secondary command buffers are still what they ran. A program that breaks either rule
+  loses only its own Vulkan connection; Vulkan allows neither, so correct programs never meet it. The first try
+  (#706) was taken out of 3.2.23: it also stopped correct programs on MoltenVK when the Mac's driver could not
+  record one command (a resolve of an integer image), and they hung. Such a command buffer now goes on as on
+  3.2.22 (MoltenVK skips it). Needs the app update.
+
 ## 3.2.23
 
 - **A Vulkan program's shader modules and pipeline caches now count by their size (OmacVM.app, #707, see #624).**

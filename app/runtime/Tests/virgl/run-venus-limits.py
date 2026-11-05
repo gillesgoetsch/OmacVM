@@ -126,6 +126,16 @@ gmalloc_cases = ("f-cmds-ok f-cmds-dup f-cmds-other-pool f-sets-ok f-sets-dup f-
                  "c-state-secondary-held-pool-submit c-state-secondary-held-reset-ok "
                  "c-state-secondary-held-free-primary-ok c-state-secondary-held-same-pool-ok "
                  "c-state-secondary-held-teardown-ok c-state-secondary-held-control-ok "
+                 # secondaries recorded again, what is submitted (virgl-venus-submit-state.patch)
+                 "c-state-secondary-held-resubmit-ok c-state-secondary-held-rerecord-ok "
+                 "c-state-secondary-held-rerecord-submit c-state-secondary-held-reset-submit "
+                 "c-state-secondary-held-pool-reset-submit c-state-secondary-held-free-pool-reset-submit "
+                 "c-state-secondary-held-rerecord-end s-submit-secondary s-submit-recording s-submit-initial "
+                 "h-release-secondary-ok "
+                 # a driver end that failed, ended from the guest's call (the same patch)
+                 "c-state-end-failed-submit-ok c-state-end-failed-resubmit-ok c-state-end-failed-secondary-ok "
+                 "c-state-end-failed-reset-submit c-state-end-failed-rebegin-submit c-state-end-hook-submit "
+                 "c-state-end-hook-secondary c-state-end-hook-reset-ok "
                  "t-pipeline-destroy-layout t-pipeline-destroy-module "
                  "t-cache-data-destroy t-same-id t-command-free-buffer t-same-command-buffer "
                  "t-export-free-memory t-wait-ring-nested-ok t-teardown-paused-ok "

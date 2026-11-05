@@ -1226,6 +1226,16 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-present-volat
 # skip must still be wired as present-unseen's test reads it.
 "$native_dir/Tests/display/test-present-unseen.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: frames are drawn for a window out of sight after the volatile patch (test-present-unseen.sh)"
+# OmacVM: drag and drop of files into the VM (drag-drop, ADR 0069): with
+# OMACVM_DROP_SOCKET the VM's windows take files and hand them, open, to the
+# app. Its rules' test, a check that the wiring checks fail on the code
+# before, the wiring. Before no-app-nap, which stays the last cocoa patch.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop-logic.patch"
+"$native_dir/Tests/drop/test-drop.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a drag-drop wiring check passes without the patch (test-drop.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop.patch"
+"$native_dir/Tests/drop/test-drop.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: drag and drop is not wired as tested, or its rules fail (test-drop.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
@@ -1812,6 +1822,16 @@ grep -q 'if (!vkr_cmd_cost(dispatch->data, _cmd, VKR_CMD_COST_BASE, "vk" #cmd_na
   grep -q 'vkr_object_charge_more(ctx, &module->base, 2 \* (uint64_t)args->pCreateInfo->codeSize,' "$virgl_source/src/venus/vkr_pipeline.c" && \
   grep -q 'args->pCreateInfo->initialDataSize, "vkCreatePipelineCache");' "$virgl_source/src/venus/vkr_pipeline.c" || \
   die "vkr_command_buffer.c, vkr_context.h, vkr_physical_device.c, vkr_pipeline.c: recordings and objects are not charged (host-memory patch)"
+# Only a primary the guest ended is submitted, and only while its secondaries are the
+# recordings it executed: MoltenVK encodes a secondary's current content at the submit (or
+# the primary's end with prefill), past the passes vkr weighed at the execute (#676). Ended
+# is the guest's call: the guest never sees the driver's end result, and MoltenVK's fails
+# for a command it could not record (it then skips the primary), which #706 refused.
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-submit-state.patch"
+grep -q 'if (!vkr_command_buffer_submit_ok(dispatch->data, submit->pCommandBuffers\[j\],' "$virgl_source/src/venus/vkr_queue.c" && \
+  grep -q 'if (!vkr_cmd_secondaries_current(dispatch->data, cmd, "vkEndCommandBuffer"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
+  grep -q 'if (!vkr_context_check(ctx, cmd->device->physical_device->limits.moltenvk, call,' "$virgl_source/src/venus/vkr_command_buffer.c" || \
+  die "vkr_queue.c, vkr_command_buffer.c: a secondary recorded again or a command buffer not ended reaches the driver at the submit, or one MoltenVK could not record is refused (submit-state patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).

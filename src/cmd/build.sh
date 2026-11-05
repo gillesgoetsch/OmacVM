@@ -86,6 +86,7 @@ feature_flag() {   # NAME on|off
     fast-network) [[ $2 == off ]] || usage "the fast network goes on after the build: omacvm enable fast-network --vm NAME" ;;
     vulkan) [[ $2 == off ]] || usage "Vulkan goes on after the build: omacvm enable vulkan --vm NAME" ;;
     mac-ime) [[ $2 == off ]] || usage "the Mac's input methods go on after the build: omacvm enable mac-ime --vm NAME" ;;
+    drag-drop) [[ $2 == off ]] || usage "drag and drop goes on after the build: omacvm enable drag-drop --vm NAME" ;;
     *) usage "unknown feature '$1' (omacvm features lists them)" ;;
   esac
   [[ $2 == on || $2 == off ]] || usage "--feature $1=$2: on or off"

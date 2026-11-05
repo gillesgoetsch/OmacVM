@@ -23,6 +23,11 @@ struct MacLinks: Equatable {
     /// window code its socket (Runner, OmacVMFeatures' MacIME); turned on while the VM runs, it
     /// waits for the next start.
     var macIME = false
+    /// Drag and drop (drag-drop): off unless the file says drag-drop=on. Only
+    /// then does this start get the org.omacvm.drop port, the read-only drop
+    /// share and QEMU's drop socket (Runner, OmacVMDrop). Not in `record`:
+    /// its own qemu.log line says it ("drag and drop: ...").
+    var dragDrop = false
 
     init() {}
 
@@ -40,6 +45,7 @@ struct MacLinks: Equatable {
         camera = on["camera"] ?? true
         touchID = on["touch-id"] ?? false
         macIME = on["mac-ime"] ?? false
+        dragDrop = on["drag-drop"] ?? false
     }
 
     static func load(folder: URL) -> MacLinks {

@@ -197,6 +197,18 @@ def test_mac_ime_from_the_next_start_without_its_port(tmp_path, monkeypatch):
     assert S.next_start_note("mac-ime", True, "app") == ""
 
 
+def test_drag_drop_from_the_next_start_without_its_port(tmp_path, monkeypatch):
+    # drag-drop: the app adds org.omacvm.drop (and the drop share) only at a start with the feature on.
+    monkeypatch.setenv("OMACVM_AUTH_PORT", str(tmp_path / "org.omacvm.auth"))
+    monkeypatch.setenv("OMACVM_IME_PORT", str(tmp_path / "org.omacvm.ime"))
+    monkeypatch.setenv("OMACVM_DROP_PORT", str(tmp_path / "org.omacvm.drop"))
+    assert L.next_start("app", {"drag-drop": True}) == {"drag-drop"}
+    assert L.next_start("app", {"drag-drop": False}) == set()
+    assert L.next_start("utm", {"drag-drop": True}) == set()
+    (tmp_path / "org.omacvm.drop").symlink_to("../vport6p10")
+    assert L.next_start("app", {"drag-drop": True, "mac-ime": True}) == {"mac-ime"}
+
+
 def test_about_lists_the_apps(features):
     t = S.feature_about(next(x for x in features if x.name == "touch-id"))
     assert "1Password: Settings › Security › Unlock using system authentication" in t

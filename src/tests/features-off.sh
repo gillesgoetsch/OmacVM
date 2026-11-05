@@ -37,6 +37,7 @@ gpu-compute:venus/compute.sh off on every apply of an app VM (OpenCL switch, the
 vulkan:apply removes the VM's vulkan file (no Venus device from the next start) and venus/install.sh --remove; nothing of it talks to the Mac (src/tests/vulkan-feature.sh)
 x86-apps:x86/guest/install.sh off removes OmacVM's box64 package and its binfmt rule on every apply; nothing of it talks to the Mac (src/tests/x86-apps.sh)
 mac-ime:ime/guest/install.sh off removes OmacVM's Fcitx5 module, its port rule, the GTK line and the Chromium flag on every apply; OmacVM.app adds the org.omacvm.ime port and its socket only for a VM whose record says mac-ime=on, and QEMU's window code reads keys as before without OMACVM_IME_SOCKET (src/ime/tests/run.sh, app/runtime/Tests/keys/test-ime.sh)
+drag-drop:drop/guest/install.sh off removes the drop helper, omacvm-drop, the share's mount and the port's rule on every apply; OmacVM.app adds the org.omacvm.drop port, the read-only drop share and QEMU's drop socket only for a VM whose record says drag-drop=on, and QEMU's windows take no drops without OMACVM_DROP_SOCKET (src/drop/tests/run.sh, app/runtime/Tests/drop/test-drop.sh, swift run drop-tests)
 touch-id:apply deletes the Mac's Touch ID key (the Bridge then says off, no dialog); install.sh runs touchid.sh off: PAM lines, polkit rule, drop-in and the VM's keys gone (src/tests/touchid-client.sh)
 "
 while IFS=$'\t' read -r name _; do
@@ -329,6 +330,16 @@ EOF
       "$("$T/links" "$T/vm" x | grep -o 'Mac input methods [a-z]*')"
     app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on mac-ime=off"
     expect "app: mac-ime=off: no port" "Mac input methods off" "$("$T/links" "$T/vm" x | grep -o 'Mac input methods [a-z]*')"
+    # drag-drop: its port, share and QEMU's drop socket only when named on (off by default).
+    mkdir -p "$T/dnd"
+    printf '%s\n' 'import Foundation' 'print(MacLinks.load(folder: URL(fileURLWithPath: CommandLine.arguments[1])).dragDrop)' > "$T/dnd/main.swift"
+    if swiftc -O -o "$T/dnd/links" "$R/app/app/Sources/OmacVM/MacLinks.swift" "$T/dnd/main.swift" 2>>"$T/swiftc.log"; then
+      expect "app: drag-drop not named: off" "false" "$("$T/dnd/links" "$T/vm")"
+      app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on drag-drop=on"
+      expect "app: drag-drop=on: its port and share this start" "true" "$("$T/dnd/links" "$T/vm")"
+      app_features_write "$T/vm" "bridge=on gestures=on omanotch=on battery=on camera=on drag-drop=off"
+      expect "app: drag-drop=off: none" "false" "$("$T/dnd/links" "$T/vm")"
+    else echo "FAIL MacLinks.swift with drag-drop does not compile"; fail=1; fi
     mkdir -p "$T/old"
     expect "app: a VM from before: Touch ID off, its port all the same" "touchid=false" "$("$T/links" "$T/old" x | grep -o 'touchid=[a-z]*')"
     expect "app: a VM from before (no features file): as before" "ports=47811,47830,47831 battery=true camera=true test=47811>47911,47830>47930,47831>47931" "$("$T/links" "$T/old")"

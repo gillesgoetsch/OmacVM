@@ -252,6 +252,12 @@ struct VMConfig: Equatable {
     var controlSocket: URL { Paths.runDir.appendingPathComponent("\(id).ctl") }
     var authSocket: URL { Paths.runDir.appendingPathComponent("\(id).auth") }
     var imeSocket: URL { Paths.runDir.appendingPathComponent("\(id).ime") }
+    /// Drag and drop (drag-drop on): QEMU's drop socket (this app listens)
+    /// and the org.omacvm.drop port's chardev (QEMU listens).
+    var dropSocket: URL { Paths.runDir.appendingPathComponent("\(id).drop") }
+    var dropPortSocket: URL { Paths.runDir.appendingPathComponent("\(id).dropp") }
+    /// The drop share's root: staging for the VM, read-only to it (OmacVMDrop.DropStage).
+    var dropFolder: URL { folder.appendingPathComponent("drop") }
     var touchIDPanelSocket: URL { Paths.runDir.appendingPathComponent("\(id).tid") }
     var mediaSocket: URL { Paths.runDir.appendingPathComponent("\(id).media") }
 

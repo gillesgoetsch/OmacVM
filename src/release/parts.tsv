@@ -21,4 +21,5 @@ gpu-compute	app/guest/venus/compute.sh app/guest/venus/opencl.sh app/guest/venus
 vulkan	app/guest/venus/**
 x86-apps	x86/**
 mac-ime	ime/**
+drag-drop	drop/**
 core	**

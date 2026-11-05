@@ -1,0 +1,297 @@
+#!/usr/bin/python3
+"""OmacVM.app: drag and drop of files from the Mac, the VM's side.
+
+Feature drag-drop (experimental, off by default; docs/drag-and-drop.md). A
+file dropped on the VM's window is opened by QEMU, cloned by the app into the
+VM folder's drop folder, which the VM sees read-only at /run/omacvm/drop
+(omacvm-drop-share), and announced on the virtio port org.omacvm.drop, one
+JSON object per line (the Mac's side: app/app/Sources/OmacVMDrop):
+
+  to the Mac    {"t":"hello","v":1}  at start and every 15 s: the Mac lets
+                QEMU take drops only while it hears it (45 s lease)
+                {"t":"done","id":ID,"to":"app|downloads|failed","why":".."}
+                where a drop went (no names; the Mac only logs it)
+                {"t":"bye"}  when this service stops
+  from the Mac  {"t":"hello","v":1}
+                {"t":"drop","id":ID,"age":MS,"items":[{"name":..,"bytes":..}]}
+                ID: 16 hex digits, the folder /run/omacvm/drop/ID; MS: how
+                long ago the person dropped the files
+
+Where the files go: into the app under the pointer (omacvm-drop-at, a
+Wayland drag from the pointer's place), else into ~/Downloads with one
+notice. Downloads when: no app took them, the screen is locked (never an
+overlay over the lock screen), the drop is late (more than 1.5 s after the
+person let go: the pointer has moved on), the helper is missing or fails.
+In Downloads a name never overwrites: "name (2).ext". Free space is checked
+first. The Mac is untrusted only as far as this goes: names are checked
+again here, the folder is reached only by its id.
+
+  omacvm-drop            run the service (the user service omacvm-drop)
+  omacvm-drop status     the last drops and the Mac's hello, as JSON
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import select
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+from pathlib import Path
+
+PORT = Path(os.environ.get("OMACVM_DROP_PORT", "/dev/virtio-ports/org.omacvm.drop"))
+SHARE = Path(os.environ.get("OMACVM_DROP_SHARE", "/run/omacvm/drop"))
+HELPER = os.environ.get("OMACVM_DROP_AT", "/usr/local/lib/omacvm/omacvm-drop-at")
+RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+STATUS = RUNTIME / "omacvm/drop"
+HELLO_EVERY = 15.0
+LATE_MS = 1500          # later than this after the drop: Downloads
+MAX_LINE = 64 * 1024
+MAX_ITEMS = 256
+KEEP_FREE = 512 * 1024 * 1024   # Downloads keeps this much free on the VM's disk
+ID = re.compile(r"^[0-9a-f]{16}$")
+
+
+def name_ok(n):
+    """One path component, as the Mac checks it (DropWire.nameOK)."""
+    if not isinstance(n, str) or n in ("", ".", ".."):
+        return False
+    if len(n.encode("utf-8", "surrogatepass")) > 255:
+        return False
+    return not any(c == "/" or ord(c) < 0x20 or ord(c) == 0x7F for c in n)
+
+
+def parse_drop(line):
+    """A drop line from the Mac, checked; None for anything else."""
+    try:
+        o = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(o, dict) or o.get("t") != "drop":
+        return None
+    i, items, age = o.get("id"), o.get("items"), o.get("age", 0)
+    if not isinstance(i, str) or not ID.match(i) or not isinstance(items, list) or not 0 < len(items) <= MAX_ITEMS:
+        return None
+    if not isinstance(age, int) or age < 0:
+        return None
+    names = []
+    for it in items:
+        if not isinstance(it, dict) or not name_ok(it.get("name")) or not isinstance(it.get("bytes", 0), int):
+            return None
+        names.append((it["name"], max(0, it.get("bytes", 0))))
+    return {"id": i, "age": age, "items": names}
+
+
+def uri_list(folder, names):
+    """text/uri-list (RFC 2483): CRLF lines, every name percent-encoded
+    (spaces, #, %, ?, non-ASCII), so an app reads the path it names."""
+    return "".join("file://" + urllib.parse.quote(str(folder / n), safe="/") + "\r\n" for n in names)
+
+
+def free_name(folder, name):
+    """name, else "name (2).ext", "name (3).ext", ... that does not exist."""
+    if not os.path.lexists(folder / name):
+        return name
+    stem, dot, ext = name.rpartition(".")
+    if not stem:
+        stem, dot, ext = name, "", ""
+    for n in range(2, 10000):
+        c = f"{stem} ({n}){dot}{ext}"
+        if len(c.encode()) <= 255 and not os.path.lexists(folder / c):
+            return c
+    raise OSError("no free name")
+
+
+def downloads():
+    try:
+        out = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    home = Path.home()
+    d = Path(out) if out and out != str(home) else home / "Downloads"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def to_downloads(folder, names, total, target=None):
+    """Copies into Downloads (never over a file there); returns the names used."""
+    dest = target or downloads()
+    st = os.statvfs(dest)
+    if st.f_bavail * st.f_frsize - total < KEEP_FREE:
+        raise OSError("not enough free space in the VM")
+    used = []
+    for n in names:
+        new = free_name(dest, n)
+        # O_EXCL: a file that appeared meanwhile is never overwritten.
+        fd = os.open(dest / new, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        with open(folder / n, "rb") as src, os.fdopen(fd, "wb") as out:
+            shutil.copyfileobj(src, out, 1 << 20)
+        used.append(new)
+    return used
+
+
+def run(cmd, timeout):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+
+
+def session_locked():
+    """Omarchy's lock screen is up or on its way (its lock status, as
+    Omanotch reads it); no shell: not locked."""
+    rc, out = run(["omarchy-shell", "lock", "status"], 5)
+    if rc == 0 and out.strip():
+        try:
+            s = json.loads(out.strip().splitlines()[-1])
+            return any(s.get(k) is True for k in ("requested", "sessionLocked", "secure"))
+        except (ValueError, AttributeError):
+            pass
+    rc, out = run(["omarchy-shell", "lock", "isLocked"], 5)
+    return rc == 0 and out.strip().splitlines()[-1:] == ["true"]
+
+
+def notify(text):
+    run(["notify-send", "-a", "OmacVM", "-i", "folder-download", "Files from the Mac", text], 5)
+
+
+def place(drop, received_ms, locked=session_locked, helper=HELPER, share=SHARE, target=None):
+    """Where one drop goes: (to, why). `received_ms`: this service's own
+    time since the line came (added to the Mac's age)."""
+    folder = share / drop["id"]
+    names = [n for n, _ in drop["items"]]
+    total = sum(b for _, b in drop["items"])
+    try:
+        if not all(os.path.isfile(folder / n) for n in names):
+            return "failed", "the files are not in the drop share"
+    except OSError:
+        return "failed", "the drop share cannot be read"
+    late = drop["age"] + received_ms > LATE_MS
+    why = None
+    if late:
+        why = f"late ({drop['age'] + received_ms} ms after the drop)"
+    elif locked():
+        why = "the screen is locked"
+    elif not os.access(helper, os.X_OK):
+        why = "the drop helper is not built (omacvm apply)"
+    else:
+        with tempfile.NamedTemporaryFile("w", prefix="omacvm-drop-", suffix=".uris", dir=RUNTIME, delete=True) as f:
+            f.write(uri_list(folder, names))
+            f.flush()
+            rc, out = run([helper, f.name], 15)
+        res = out.strip().splitlines()[-1] if out.strip() else "error no answer"
+        if rc == 0 and res == "app":
+            return "app", ""
+        why = "no app took them" if res.startswith("none") else res[:120]
+    try:
+        used = to_downloads(folder, names, total, target)
+    except OSError as e:
+        return "failed", f"{why}; Downloads: {e.strerror or e}"[:200]
+    notify(f"{len(used)} file{'s' if len(used) != 1 else ''} from the Mac in Downloads")
+    return "downloads", why
+
+
+def write_status(state):
+    try:
+        STATUS.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATUS.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(STATUS)
+    except OSError:
+        pass
+
+
+def send(fd, obj):
+    data = (json.dumps(obj, separators=(",", ":")) + "\n").encode()
+    while data:
+        n = os.write(fd, data)
+        data = data[n:]
+
+
+def serve():
+    try:
+        fd = os.open(PORT, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as e:
+        print(f"omacvm-drop: {PORT}: {e.strerror} (drag and drop is off this start)", file=sys.stderr)
+        return 0
+    state = {"mac_hello": None, "drops": []}
+    buf = b""
+    last_hello = 0.0
+    try:
+        while True:
+            now = time.monotonic()
+            if now - last_hello >= HELLO_EVERY:
+                try:
+                    send(fd, {"t": "hello", "v": 1})
+                except BlockingIOError:
+                    pass
+                last_hello = now
+            r, _, _ = select.select([fd], [], [], max(0.0, HELLO_EVERY - (time.monotonic() - last_hello)))
+            if not r:
+                continue
+            try:
+                chunk = os.read(fd, 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                time.sleep(0.5)   # the Mac's side is not connected (yet)
+                continue
+            buf += chunk
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                handle(fd, raw, state)
+            if len(buf) > MAX_LINE:
+                buf = b""
+    finally:
+        try:
+            send(fd, {"t": "bye"})
+        except OSError:
+            pass
+
+
+def handle(fd, raw, state):
+    t0 = time.monotonic()
+    line = raw.decode("utf-8", "replace")
+    try:
+        kind = json.loads(line).get("t")
+    except (ValueError, AttributeError):
+        return
+    if kind == "hello":
+        state["mac_hello"] = time.time()
+        write_status(state)
+        return
+    drop = parse_drop(line)
+    if drop is None:
+        return
+    to, why = place(drop, int((time.monotonic() - t0) * 1000))
+    try:
+        send(fd, {"t": "done", "id": drop["id"], "to": to, "why": why or ""})
+    except OSError:
+        pass   # the Mac's side went away meanwhile: it drops the staging at the VM's stop
+    state["drops"] = (state["drops"] + [{"at": time.time(), "files": len(drop["items"]), "to": to, "why": why or ""}])[-10:]
+    write_status(state)
+
+
+def main(argv):
+    if argv[1:] == ["status"]:
+        try:
+            print(STATUS.read_text())
+        except OSError:
+            print("{}")
+        return 0
+    if argv[1:]:
+        print(__doc__, file=sys.stderr)
+        return 2
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    return serve()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
