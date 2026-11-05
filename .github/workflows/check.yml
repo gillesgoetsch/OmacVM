@@ -876,6 +876,9 @@ jobs:
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh
 
+      - name: Prebuilt image guest pieces: own pacman keyring, the Omarchy line (real gpg for the key files)
+        run: src/tests/prebuilt-guest.sh
+
       - name: OmacVM's virtio-gpu driver's loader and builder on Linux (GNU tools, as in the VM)
         run: src/tests/virtio-gpu-load.sh
 

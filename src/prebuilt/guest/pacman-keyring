@@ -1,0 +1,49 @@
+#!/bin/bash
+# pacman-keyring (root, in a VM from a prebuilt image): this VM's own pacman
+# keyring. generalize.sh takes /etc/pacman.d/gnupg out of the image (else
+# every VM made from it would share one master key: anyone with the image
+# could sign packages for all of them) and leaves the request file; the first
+# boot (omacvm-firstboot) runs this, and first-update again if that failed.
+# As Omarchy's own image first boot (omarchy-provision-hardware): a new
+# keyring, --init, --populate (every installed keyring package: Arch Linux
+# ARM's, Omarchy's), then Omarchy's package key signed locally, so the first
+# update trusts [omarchy] even if omarchy-keyring's trust list lacks it.
+#   pacman-keyring [REQUEST]   exit 0 done (REQUEST removed), 1 failed (kept:
+#                              the next run tries again)
+# Test: src/tests/prebuilt-guest.sh (stand-in pacman-key).
+set -uo pipefail
+REQ=${1:-/var/lib/omacvm/prebuilt/keyring}
+GNUPG=${OMACVM_GNUPG:-/etc/pacman.d/gnupg}
+PK=${OMACVM_PACMAN_KEY:-pacman-key}
+KEY=40DFB630FF42BCFFB047046CF0134EE680CAC571   # Omarchy <pkgs@omarchy.org>
+# For a VM without omarchy-keyring: the public key generalize.sh exported
+# from the image's keyring (next to REQ), or a copy in OmacVM's tree;
+# imported only when its fingerprint is KEY.
+S=${OMACVM_SHARE:-/usr/local/share/omacvm}
+[[ -e $REQ ]] || exit 0
+say() { echo "pacman keyring: $*"; }
+
+gpgconf --homedir "$GNUPG" --kill all >/dev/null 2>&1 || true
+rm -rf "$GNUPG"
+"$PK" --init >/dev/null 2>&1 || { say "pacman-key --init failed"; exit 1; }
+"$PK" --populate >/dev/null 2>&1 || { say "pacman-key --populate failed"; exit 1; }
+if ! "$PK" --list-keys "$KEY" >/dev/null 2>&1; then
+  for f in "$(dirname "$REQ")/omarchy-key.asc" "$S"/guest/omarchy-key.asc "$S"/guest/keys/omarchy.asc; do
+    [[ -f $f ]] || continue
+    # The primary keys in the file (the fpr line after each pub): exactly KEY.
+    h=$(mktemp -d)
+    fp=$(gpg --homedir "$h" --batch --with-colons --import-options show-only --import "$f" 2>/dev/null |
+      awk -F: '$1 == "pub" { p = 1; next } $1 == "fpr" && p { print $10; p = 0 }')
+    rm -rf "$h"
+    [[ $fp == "$KEY" ]] || { say "$f is not only Omarchy's key: not used"; continue; }
+    "$PK" --add "$f" >/dev/null 2>&1 && break
+  done
+fi
+if "$PK" --list-keys "$KEY" >/dev/null 2>&1; then
+  "$PK" --lsign-key "$KEY" >/dev/null 2>&1 || { say "could not sign Omarchy's key"; exit 1; }
+  say "new, Omarchy's key trusted"
+else
+  # A 4.0 (omarchy-mac) image: no Omarchy key there, its repos are signed otherwise.
+  say "new (no Omarchy key in this VM)"
+fi
+rm -f "$REQ"

@@ -7,8 +7,10 @@
 # pacman -Sy alone would be a partial update. A VM built here ends up to date
 # (vm/omarchy-install.sh); this brings one from an image to the same point,
 # the way Omarchy updates (guest/system-update: omarchy update -y, then the
-# GBM test). omarchy-targets.sh goes first: on an image from before it,
-# omarchy update stops at hyprtoolkit (omacom/omarchy-mac#741).
+# GBM test). First the VM's own pacman keyring if its first boot could not
+# make it (pacman-keyring). On omarchy-mac 4.0 omarchy-targets.sh goes first:
+# on an image from before it, omarchy update stops at hyprtoolkit
+# (omacom/omarchy-mac#741); Omarchy 4.5 images do not need it.
 #   first-update   exit 0 up to date, 1 not updated (or not all: an update
 #                  stopped part way), 2 updated but the graphics would not
 #                  start (system-update's line says why: no restart then).
@@ -22,8 +24,17 @@ G=$(cd "$(dirname "$0")/../../guest" && pwd)
 TARGETS=${OMACVM_OMARCHY_TARGETS:-$G/omarchy-targets.sh}
 UPDATE=${OMACVM_SYSTEM_UPDATE:-$G/system-update}
 MODULES=${OMACVM_MODULES:-/usr/lib/modules}
-r=$(bash "$TARGETS" --hook 2>&1) ||
-  echo "OmacVM: Omarchy's ARM package targets not fixed ($(tail -1 <<<"$r")): omarchy update may stop at hyprtoolkit"
+KEYRING=${OMACVM_PREBUILT_KEYRING:-/var/lib/omacvm/prebuilt/keyring}
+ARMSRC=${OMACVM_ARM_PACKAGE_SOURCES:-/usr/share/omarchy/install/helpers/arm-package-sources.sh}
+# The VM's own pacman keyring, if its first boot could not make it.
+if [[ -e $KEYRING ]]; then
+  bash "$(dirname "$0")/pacman-keyring" "$KEYRING" || { echo "OmacVM: no pacman keyring in this VM: not updated"; exit 1; }
+fi
+# omarchy-mac 4.0 only (its arm-package-sources.sh); Omarchy 4.5 has no such file.
+if [[ -f $ARMSRC ]]; then
+  r=$(bash "$TARGETS" --hook 2>&1) ||
+    echo "OmacVM: Omarchy's ARM package targets not fixed ($(tail -1 <<<"$r")): omarchy update may stop at hyprtoolkit"
+fi
 "$UPDATE"; rc=$?
 (( rc == 2 )) && exit 2
 k=$(uname -r)
