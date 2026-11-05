@@ -1,19 +1,18 @@
 #!/bin/bash
-# omacvm vms [--json] [--app-only]: your Parallels and UTM VMs and their OmacVM
-# state (asks the running ones over SSH; stopped VMs are not started).
+# omacvm vms [--json] [--app-only]: your OmacVM.app VMs and their OmacVM state
+# (asks the running ones over SSH; stopped VMs are not started), then the
+# Parallels, UTM and VMware Fusion VMs OmacVM set up here before 3.4.0, as
+# retired (never reached: src/lib/retired.sh).
 # --app-only: only OmacVM.app's VMs (the Bridge runs this through the app, so a
 # VMs folder on an external drive can be read: src/bridge/mac/control.swift).
 # --json: {"omacvm", "vms": [{"name", "type", "state", "ip", "omacvm",
 # "reachable", "setup", "features": {NAME: true|false}, "dir", "note", "why"}]}; omacvm = the version in the
 # VM (null: none, or stopped), reachable = OmacVM's SSH key gets in (why: the
 # reason when a running VM is not, one line, else null), setup =
-# OmacVM set it up from this Mac (its SSH host key is remembered, or OmacVM built it);
-# state "unknown": UTM runs but does not answer this terminal (not allowed to
-# control UTM yet, or over SSH), with note "UTM data not readable" when UTM's
-# own files were not read either (macOS guards them: lib/mac.sh utm_data);
-# dir = an OmacVM.app VM's folder (null for the others: the Bridge reads its
-# logs/gpu-memory for the control centre when an older app does not send it). UTM is listed only once it is used
-# with OmacVM on this Mac (OMACVM_UTM=1: always).
+# OmacVM set it up from this Mac (its SSH host key is remembered);
+# dir = an OmacVM.app VM's folder (the Bridge reads its logs/gpu-memory for
+# the control centre when an older app does not send it). A retired VM:
+# type parallels|utm|fusion, state "retired", "retired": true, note "retired in 3.4.0".
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -40,10 +39,19 @@ while IFS=$'\t' read -r name type state note; do
   [[ -n $name ]] || continue
   ip=""; version=""; reach=false; feats=""; setup=false; dir=""; TYPE=""; why=""; hk=0
   [[ $type == app ]] && dir=$(app_dir "$name" 2>/dev/null)
+  if [[ $state == retired ]]; then
+    if (( JSON )); then
+      printf '%s\n  {"name": %s, "type": "%s", "state": "retired", "retired": true, "ip": null, "omacvm": null, "reachable": false, "setup": true, "features": null, "dir": null, "note": "retired in %s", "why": null}' \
+        "$( ((first)) || echo ,)" "$(json_str "$name")" "$type" "$RETIRED_IN"
+    else
+      printf '  %-24s %-10s %-8s %-15s %s\n' "$name" "$type" retired - "retired in OmacVM $RETIRED_IN: move to OmacVM.app ($RETIRED_URL)"
+    fi
+    first=0; continue
+  fi
   if [[ $state == running ]]; then
     ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null) || ip=""
     vm_pin "$name" "$type"
-    { [[ -s $OMA_PIN ]] || vm_marked "$name" "$type"; } && setup=true
+    [[ -s $OMA_PIN ]] && setup=true
     if [[ -z $ip ]]; then
       if [[ $type == app && -n $dir ]]; then why="no address: $(app_no_address "$dir")"
       else why="no address (its app gives none: still starting, or no network)"; fi
@@ -76,9 +84,7 @@ while IFS=$'\t' read -r name type state note; do
       "$( [[ -n $dir ]] && json_str "$dir" || echo null)" "$( [[ -n $note ]] && json_str "$note" || echo null)" \
       "$( [[ -n $why ]] && json_str "$why" || echo null)"
   else
-    if [[ $state == unknown && -n $note ]]; then what="($UTM_UNREADABLE_HINT)"
-    elif [[ $state == unknown ]]; then what="($UTM_NO_ANSWER)"
-    elif [[ $state != running ]]; then what="(start it to see)"
+    if [[ $state != running ]]; then what="(start it to see)"
     elif (( hk )); then what="another SSH host key (rebuilt? omacvm apply --vm \"$name\" --reset-host-key)"
     elif [[ $reach == false ]]; then what="no SSH access (not built by OmacVM? omacvm apply --vm \"$name\" shows how)"
     elif [[ -z $version ]]; then what="not installed (omacvm apply --vm \"$name\")"

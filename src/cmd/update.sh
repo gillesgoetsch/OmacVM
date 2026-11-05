@@ -16,6 +16,9 @@
 # updated, not the Mac side either (exit 3); --allow-downgrade puts this
 # version into it on purpose. --kernel: a newer memory-optimized kernel is
 # built without asking (as apply --kernel; otherwise asked in a terminal).
+# A retired Parallels, UTM or VMware Fusion VM (src/lib/retired.sh) is never
+# updated: --vm NAME for one stops at once with exit 3, before anything
+# changes; without --vm each one is named and left as it is.
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -32,11 +35,27 @@ while (( $# )); do
     --yes|-y) APPLY_ARGS+=(--yes); shift ;;
     --allow-downgrade) APPLY_ARGS+=(--allow-downgrade); export OMACVM_ALLOW_DOWNGRADE=1; shift ;;
     --kernel) APPLY_ARGS+=(--kernel); shift ;;
-    -h|--help) sed -n '2,21s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) echo "omacvm update: unknown option $1 (see --help)" >&2; exit 2 ;;
   esac
 done
 export OMA_KEY=~/.ssh/omacvm
+# A retired VM: refused before the checkout, the Mac side or the app move (an
+# update job from that VM's control centre stops here and changes nothing).
+if [[ -n $VM ]]; then
+  list=$(vms_list)
+  old=""
+  if [[ -n $TYPE ]] && route_retired "$TYPE"; then
+    old=$(awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && $2 == t { print $2; exit }' <<<"$list")
+    [[ -n $old ]] || { echo "omacvm update: no $(retired_name "$TYPE") VM of OmacVM's named '$VM'" >&2; exit 2; }
+  elif [[ -z $TYPE ]] && ! awk -F'\t' -v n="$VM" '$1 == n && $2 == "app" { f = 1 } END { exit !f }' <<<"$list"; then
+    old=$(awk -F'\t' -v n="$VM" '$1 == n && $3 == "retired" { print $2; exit }' <<<"$list")
+  fi
+  if [[ -n $old ]]; then
+    failed_part "" "'$VM' is a $(retired_name "$old") VM: OmacVM $RETIRED_IN retired that route, nothing was changed. Move to OmacVM.app (README: retired routes)" mac
+    retired_stop "$VM" "$old"
+  fi
+fi
 # Steps for the control centre's progress (one VM: its apply's three follow).
 OMA_STEPS=$(( ${#COMMIT} ? 3 : 2 ))
 [[ -n $VM ]] && OMA_STEPS=$((OMA_STEPS + 3))
@@ -98,7 +117,7 @@ while IFS=$'\t' read -r name type state _; do
   if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""; fi
   if [[ $state == running ]] && ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null); then
     vm_pin "$name" "$type"
-    [[ -n $VM || -s $OMA_PIN ]] || vm_marked "$name" "$type" || continue
+    [[ -n $VM || -s $OMA_PIN ]] || continue
     p=$(vm_probe "$ip" | sed -n 's/^OMACVM_VERSION=//p') && [[ -n $p ]] && v=$p
   fi
   if [[ -n $v ]] && omacvm_downgrade update "'$name'" "$v" "$now"; then newer+=("$name"); fi
@@ -113,7 +132,6 @@ args=()
 launchctl print "gui/$(id -u)/$(omacvm_label bridge)" >/dev/null 2>&1 || args+=(--no-bridge)
 if launchctl print "gui/$(id -u)/$(omacvm_label gestures)" 2>/dev/null | grep -q -- --keys-only; then args+=(--keys-only)
 elif ! launchctl print "gui/$(id -u)/$(omacvm_label gestures)" >/dev/null 2>&1; then args+=(--skip-gestures); fi
-launchctl print "gui/$(id -u)/$(omacvm_label clip-in)" >/dev/null 2>&1 || args+=(--skip-clip)
 launchctl print "gui/$(id -u)/$(omacvm_label omanotch)" >/dev/null 2>&1 && args+=(--omanotch)
 step mac "the Mac side"
 log "OmacVM on the Mac"
@@ -169,10 +187,10 @@ if [[ -n $VM ]]; then
   if (( rc == 0 && ${#mac_failed[@]} )); then mac_failure; exit 1; fi
   exit $rc
 fi
-done_any=0; stopped=(); unanswered=(); failed=()
+done_any=0; stopped=(); retired=(); failed=()
 while IFS=$'\t' read -r name type state _; do
   [[ -n $name ]] || continue
-  if [[ $state == unknown ]]; then unanswered+=("$name"); continue; fi
+  if [[ $state == retired ]]; then retired+=("'$name' ($(retired_name "$type"))"); continue; fi
   if [[ $state != running ]]; then stopped+=("$name"); continue; fi
   ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null) || continue
   vm_pin "$name" "$type"
@@ -187,7 +205,7 @@ while IFS=$'\t' read -r name type state _; do
   fi
   rm -f "$perr"
   [[ -n $v ]] || continue
-  if [[ ! -s $OMA_PIN ]] && ! vm_marked "$name" "$type"; then
+  if [[ ! -s $OMA_PIN ]]; then
     info "VM '$name' says it has OmacVM $v, but OmacVM has not set it up from this Mac yet: omacvm update --vm $(printf %q "$name")"
     continue
   fi
@@ -200,7 +218,12 @@ if (( ${#stopped[@]} )); then
   info "not running, so not updated: $(printf '%s, ' "${stopped[@]}" | sed 's/, $//')"
   info "start one and run: omacvm update --vm NAME"
 fi
-(( ${#unanswered[@]} )) && info "not updated: $(printf '%s, ' "${unanswered[@]}" | sed 's/, $//'): $UTM_NO_ANSWER"
+if (( ${#retired[@]} )); then
+  for r in "${retired[@]}"; do info "$r: retired in OmacVM $RETIRED_IN, not updated; nothing in it was changed"; done
+  info "Those VMs keep running with their OmacVM 3.3, but this Mac's OmacVM helpers no longer serve them: the Bridge's bar"
+  info "items, gestures and scroll momentum, Omanotch (and on UTM and VMware Fusion the camera and battery); Touch ID asks for"
+  info "the password. The VM app's own tools keep working. Move to OmacVM.app: $RETIRED_URL"
+fi
 (( ${failed_app:-0} )) && failed+=("OmacVM.app")
 (( ${#mac_failed[@]} )) && { mac_failure; failed+=("the Mac side"); }
 if (( ${#failed[@]} )); then

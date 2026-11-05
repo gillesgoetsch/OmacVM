@@ -3,7 +3,7 @@
 #
 #   omacvm                       asks what you want to do: build a VM, change
 #                                its features, update, check
-#   omacvm build                 a new Omarchy VM in Parallels, UTM, VMware Fusion or OmacVM.app, from nothing
+#   omacvm build                 a new Omarchy VM in OmacVM.app, from nothing
 #   omacvm features [--vm NAME]  a VM's features: see them, switch them
 #                                (--in-vm: open the control centre on the VM's desktop)
 #   omacvm enable FEATURE...     switch features on (omacvm enable scroll-momentum)
