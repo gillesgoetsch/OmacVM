@@ -900,7 +900,11 @@ The less obvious ones, with causes and where the fix lives, are in
   after a change); never take an entry point's interface as the descriptors
   it uses (glslang lists unused ones). When the SPIRV-Tools pin moves, run
   `Tests/virgl/test-venus-spirv-validate.sh` (the corpus, plain and under
-  AddressSanitizer) and the fuzzer; when the MoltenVK pin moves, ADR 0065's
+  AddressSanitizer) and the fuzzer, check that
+  `spirv-tools-val-function-private-layout.patch` still applies and is still
+  needed, and add the current naga, Tint, glslang and Zink output to
+  `spirv-corpus/pass` at every SPIR-V version each writes (a new spirv-val rule
+  refused every naga app, #710; a rule is relaxed only by ADR 0065's bar); when the MoltenVK pin moves, ADR 0065's
   SPIRV-Cross check (`pinned-runtime-bottles.sh`) and the corpus for `mvk`
   and `mvk11`; when the Mesa (KosmicKrisp) pin moves, the corpus for `kk`.
   On either driver's bump, check that it still reads a primary's secondaries
