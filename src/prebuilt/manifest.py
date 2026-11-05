@@ -16,6 +16,8 @@
                                            of the newest image for ROUTE with the same
                                            major version, up to VERSION
   manifest.py local DIR VERSION ROUTE      the same from a folder: NAME IMAGE_VERSION
+  manifest.py fits VERSION OMARCHY         exit 0 when an image with this manifest
+                                           "omarchy" value suits app VERSION (OMARCHY_FLOOR)
   manifest.py asset RELEASES.json TAG NAME the download URL of one asset
 
 get and parts read nothing before MANIFEST.sig checks out: signed by one of
@@ -126,17 +128,38 @@ def vtuple(v):
     return tuple(int(x) for x in v.split("."))
 
 
+# From OmacVM 3.4.0 on, new VMs are Omarchy 4.5 or later (the official aarch64
+# repos); every image before prebuilt-3.4.0 is omarchy-mac 4.0. An app at or
+# above APP takes only images from IMAGE on whose manifest says Omarchy OMARCHY
+# or later; with none, the setup builds the VM here.
+OMARCHY_FLOOR = ((3, 4, 0), (3, 4, 0), (4, 5))   # APP, IMAGE, OMARCHY (major, minor)
+
+
+def image_floor(version):
+    """The oldest image version app VERSION takes (by name, before any download)."""
+    return OMARCHY_FLOOR[1] if vtuple(version) >= OMARCHY_FLOOR[0] else (0, 0, 0)
+
+
+def fits(version, omarchy):
+    """Does an image whose manifest says OMARCHY suit app VERSION?"""
+    if vtuple(version) < OMARCHY_FLOOR[0]:
+        return True
+    m = re.match(r"(\d{1,4})\.(\d{1,4})(?:[.\s]|$)", str(omarchy))
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= OMARCHY_FLOOR[2]
+
+
 def pick(cands, version, route):
     """cands: (tag, published, asset name, url) -> (VERSION, cand) of the best."""
     want = re.compile(r"^omacvm-prebuilt-(\d+\.\d+\.\d+)-%s\.json$" % re.escape(route))
     mine = vtuple(version)
+    floor = image_floor(version)
     best = None
     for c in cands:
         m = want.match(str(c[2]))
         if not m:
             continue
         v = vtuple(m.group(1))
-        if v[0] != mine[0] or v > mine:
+        if v[0] != mine[0] or v > mine or v < floor:
             continue
         key = (v, c[1])
         if best is None or key > best[0]:
@@ -193,6 +216,10 @@ def main(a):
         if not best:
             sys.exit(1)
         print(best[1][2], best[0])
+    elif cmd == "fits":
+        if not VERSION.fullmatch(a[2]):
+            sys.exit("manifest.py: bad version %r" % a[2])
+        sys.exit(0 if fits(a[2], a[3]) else 1)
     elif cmd == "asset":
         for r in json.load(open(a[2])):
             if r.get("tag_name") == a[3]:
