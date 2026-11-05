@@ -1306,7 +1306,7 @@ from one the guest never ended; the gate's dEQP-VK subset on MoltenVK is its
 test. The gap #706 closed (a secondary recorded again after a primary
 executed it gets past the encoder cap) is open again.
 
-## Submit checks again: ended is the guest's call (amendment, 3.2.24)
+## Submit checks again: ended is the guest's call (amendment, 3.3.0)
 
 Lane `v706-retry` (plan, review and raw output in work/v706-retry). The submit
 checks of #706 are back (`virgl-venus-submit-state.patch`), with the one change

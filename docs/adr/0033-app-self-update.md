@@ -64,7 +64,7 @@ the week again, so there is no hourly retry while no release has a feed;
 a server error (5xx) or 429 for the feed or its signature does not, so the
 next hourly look tries again.
 
-**Retries** (3.2.24, after a user's "No update feed (HTTP 504)": GitHub's
+**Retries** (3.3.0, after a user's "No update feed (HTTP 504)": GitHub's
 `latest/download` redirect answered one request with a 504). The feed, its
 signature and the zip are each tried at most twice more on HTTP 500-599,
 429, a timeout or a lost connection: after 2 s, then 6 s, or the server's

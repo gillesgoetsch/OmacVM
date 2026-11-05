@@ -53,8 +53,10 @@ says what is missing in its "drag and drop" line.
    It takes a drop only while the VM's `omacvm-drop` service runs (it says
    hello every 15 s); before that the cursor shows no drop.
 2. QEMU opens the dropped files itself, on a background thread (macOS lets
-   the app you dropped on read them: no permission prompt), and hands the
-   open files to OmacVM.app, never their paths.
+   the app you dropped on read them; files from the Desktop, Documents and a
+   disk image opened with no permission prompt; an iCloud file that is not
+   downloaded yet and USB drives are not checked yet), and hands the open
+   files to OmacVM.app, never their paths.
 3. OmacVM.app clones or copies them into the VM folder's `drop/<id>/`, which
    the VM sees read-only at `/run/omacvm/drop` (virtio-9p), and tells the
    VM over its own virtio port.
