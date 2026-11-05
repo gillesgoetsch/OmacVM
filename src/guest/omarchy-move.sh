@@ -307,7 +307,8 @@ cmd_pacman() {
          curl -fsS --max-time 60 -o "$CACHE/$f.sig.part" "$ALARM_HOST/aarch64/$r/$f.sig"; then
         mv -f "$CACHE/$f.part" "$CACHE/$f"; mv -f "$CACHE/$f.sig.part" "$CACHE/$f.sig"
         say "$f from Arch Linux ARM ($r), checked by pacman as always"
-        echo "$f" >> "$J/single-file-fetches"; n=$((n + 1))
+        [[ ! -d $J ]] || echo "$f" >> "$J/single-file-fetches"
+        n=$((n + 1))
       else
         rm -f "$CACHE/$f.part" "$CACHE/$f.sig.part"
       fi
@@ -703,7 +704,7 @@ case ${1:-} in
   record) cmd_record ;;
   repos) cmd_repos "${2:-}" ;;
   keyring) cmd_keyring ;;
-  pacman) shift; mkdir -p "$J"; cmd_pacman "$@" ;;
+  pacman) shift; cmd_pacman "$@" ;;
   animations) cmd_animations "${2:-}" ;;
   *) echo "usage: omarchy-move.sh preflight [--json] | start | run | stop | status [--json] | record | repos [CHANNEL] | keyring | pacman ARGS... | animations USER" >&2; exit 2 ;;
 esac
