@@ -52,7 +52,7 @@ jset() {   # jset KEY VALUE [KEY VALUE ...]: one write, never half written
   mv -f "$tmp" "$J"
 }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-alive() { local p; p=$(jget pid); [[ $p =~ ^[0-9]+$ ]] && (( p != $$ )) && kill -0 "$p" 2>/dev/null; }
+alive() { local p; p=$(jget pid); [[ $p =~ ^[0-9]+$ ]] && (( p > 1 && p != $$ )) && kill -0 "$p" 2>/dev/null; }
 
 in_use() {
   ps -x -U "$(id -u)" -o args= | grep -v grep | grep -qF -- "file=$(qe "$VM_DIR/disk.img")," && return 0
@@ -170,9 +170,7 @@ finish() {
   local rc=$?
   set +e
   [[ -z $WATCH ]] || kill "$WATCH" 2>/dev/null || true
-  # The guest's own log beside the app's (logs/move-4.5.log).
-  if (( STARTED )) && qemu_running; then vssh "cat /var/log/omacvm-move-45.log" < /dev/null > "$LOG/move-4.5.log.new" 2>/dev/null &&
-    mv -f "$LOG/move-4.5.log.new" "$LOG/move-4.5.log" || rm -f "$LOG/move-4.5.log.new"; fi
+  guest_log
   stop_vm
   rm -f "$AGENT" "$STOP"
   rm -rf "$LOCKD"
@@ -187,6 +185,15 @@ trap finish EXIT
 trap 'touch "$STOP"' TERM INT HUP
 
 step() { jset step "$1"; echo "STEP $1/$STEPS $2"; }
+# The guest's own log beside the app's (logs/move-4.5.log), while the VM runs.
+guest_log() {
+  (( STARTED )) && qemu_running || return 0
+  if vssh "cat /var/log/omacvm-move-45.log" < /dev/null 2>/dev/null | printable > "$LOG/move-4.5.log.new"; then
+    mv -f "$LOG/move-4.5.log.new" "$LOG/move-4.5.log"
+  else
+    rm -f "$LOG/move-4.5.log.new"
+  fi
+}
 fail() {   # fail STEP REASON [resumable 0|1] [code]
   jset state failed failed_step "$1" reason "$2" resumable "${3:-1}" code "${4:-}" finished ""
   OUTCOME=failed
@@ -386,6 +393,7 @@ failed_units=$(vssh "systemctl --failed --no-legend --plain | wc -l" < /dev/null
 log "Omarchy $rec"
 
 step 8 "Shut down"
+guest_log
 stop_vm
 jset state done step 8 finished "$(now_iso)" resumable 1
 OUTCOME=done

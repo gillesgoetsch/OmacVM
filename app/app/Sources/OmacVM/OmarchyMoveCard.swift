@@ -23,7 +23,7 @@ enum MoveFiles {
 
     /// The journal's process runs (a move of another window or app copy).
     static func alive(_ j: OmarchyMove.Journal) -> Bool {
-        j.pid > 0 && j.pid != getpid() && kill(j.pid, 0) == 0
+        j.pid > 1 && j.pid != getpid() && kill(j.pid, 0) == 0
     }
 
     static func card(_ c: VMConfig) -> OmarchyMove.Card {
