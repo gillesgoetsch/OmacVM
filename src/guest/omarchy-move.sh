@@ -301,7 +301,7 @@ cmd_pacman() {
   if (( rc )) && files=$(fourohfour "$out") && [[ -n $files ]]; then
     for f in $files; do
       [[ $f =~ ^[A-Za-z0-9@._+-]+\.pkg\.tar\.(zst|xz|gz)$ ]] || continue
-      r=$(sed -n "s|^\([a-z]*\) $f\$|\1|p" < <(pacman_files) | head -1)
+      r=$(sed -n "s|^\([a-z]*\) $f\$|\1|p" < <(pacman "$@" --print --print-format '%r %f' 2>/dev/null) | head -1)
       case $r in core|extra|alarm) ;; *) say "$f: not one of Arch Linux ARM's (repo ${r:-unknown}); not fetched"; continue ;; esac
       if curl -fsS --max-time 600 -o "$CACHE/$f.part" "$ALARM_HOST/aarch64/$r/$f" &&
          curl -fsS --max-time 60 -o "$CACHE/$f.sig.part" "$ALARM_HOST/aarch64/$r/$f.sig"; then
@@ -320,8 +320,6 @@ cmd_pacman() {
   rm -f "$out"
   return "$rc"
 }
-# "repo file" of everything the switch downloads.
-pacman_files() { pacman -Suup --print-format '%r %f' "${TARGETS[@]}" 2>/dev/null; }
 
 # ---------- repos, keyring ----------
 cmd_repos() {

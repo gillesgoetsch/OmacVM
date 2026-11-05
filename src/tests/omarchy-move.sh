@@ -57,6 +57,8 @@ cat > "$B/pacman" <<'EOF'
 db=$P/db
 names() { awk '{ print $1 }' "$db"; }
 ver() { awk -v n="$1" '$1 == n { print $2 }' "$db"; }
+# --print (the repo and file of each download): the file the 404 case names.
+[[ " $* " == *" --print "* ]] && { echo "extra $(cat "$P/fail404" 2>/dev/null)"; exit 0; }
 case $1 in
   -Q) if (( $# == 1 )); then awk '{ print $1, $2 }' "$db"; exit 0; fi
       rc=0; for n in "${@:2}"; do v=$(ver "$n"); [[ -n $v ]] && echo "$n $v" || rc=1; done; exit $rc ;;
@@ -76,7 +78,6 @@ case $1 in
       [[ -e $P/net-down ]] && { echo "error: failed retrieving file 'x.pkg.tar.zst' from pkgs.omarchy.org : Could not resolve host: pkgs.omarchy.org"; exit 1; }
       exit 0 ;;
   -Syy) echo "pacman $*" >> "$P/calls" ;;
-  -Suup) echo "extra $(cat "$P/fail404" 2>/dev/null)" ;;
   -Suu) echo "pacman $*" >> "$P/calls"
       [[ -e $P/commit-refused ]] && { echo "error: failed to prepare transaction (conflicting dependencies)"; exit 1; }
       [[ -e $P/commit-breaks ]] && { head -2 "$db" > "$db.n"; mv "$db.n" "$db"; exit 1; }

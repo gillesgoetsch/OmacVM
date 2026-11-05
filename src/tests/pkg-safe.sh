@@ -525,7 +525,7 @@ grep -q '"$R/guest/gbm-guard" begin && GBM_GUARD=1' src/guest/install.sh &&
   fail "guest/install.sh does not run the GBM guard"
 bad=$(git grep -nE 'pacman +(-S[a-zA-Z]*|--sync)( |$)' -- 'src/**' ':!src/tests/**' ':!src/guest/pkg-add' ':!src/vm/**' \
   ':!**/*.md' ':!src/bench/**' | grep -vE '^[^:]+:[0-9]+:\s*#' |
-  grep -vE '^src/guest/omarchy-move\.sh:[0-9]+:.*pacman -(Syy --noconfirm|Suup --print-format)|pacman -(Syu|Sy?y?uuw?|Scc|Si) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
+  grep -vE '^src/guest/omarchy-move\.sh:[0-9]+:.*pacman -Syy --noconfirm|pacman -(Syu|Sy?y?uuw?|Scc|Si) |\(pacman -S [a-z0-9 -]*\)|pacman -Q openssh [^|]*\|\| pacman -S |"\$k-headers"' || true)
 # Allowed above: a full update (also -uu: the move to Omarchy 4.5 and its
 # install take the snapshot's versions; omarchy-move.sh's lists again before
 # one more try of the same transaction, and its download list), cache
