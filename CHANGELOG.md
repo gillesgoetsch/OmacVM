@@ -3,6 +3,19 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.2.24 (unreleased)
+
+- **An update no longer stops at GitHub's first server error (OmacVM.app and the control centre; reported by
+  the user).** A check said "No update feed (HTTP 504)" when GitHub answered one request with a server error
+  for a moment. The app's update feed, its signature and the download, and the Bridge's manifest for the
+  control centre, are now tried twice more on HTTP 500-599, 429, a timeout or a lost connection (after 2 s,
+  then 6 s; a Retry-After of up to 30 s is honoured), each retry logged. Never on 404 or 403; the
+  signature checks are as before. When GitHub still fails, the message says so: "GitHub answered HTTP 504 (a
+  server error on GitHub's side) for the update feed at ...; try again in a few minutes", and the app's own
+  weekly check looks again an hour later instead of a week later. The app's part
+  needs the app update; the control centre's part needs `omacvm update` on the Mac (OmacVM.app: the app's
+  update, then Update VM, which installs the new Bridge).
+
 ## 3.2.23
 
 - **A Vulkan program's shader modules and pipeline caches now count by their size (OmacVM.app, #707, see #624).**
