@@ -102,7 +102,8 @@ mini with the switch off: guest saying `inhibit`, nothing held.
 - A video in Chromium (156 now) and its web apps counts as on a Mac.
   Chromium has one Wayland inhibit per process, put on the window that has
   the focus when its first lock starts: with music in one Chromium window and
-  a video in another, the first one's display counts (troubleshooting 56).
+  a video in another, the first one's display counts (not tested;
+  troubleshooting 56).
 - Firefox was not tested.
 - The agent now owns `org.freedesktop.ScreenSaver` in the session. Only
   Chromium-based callers get an answer other than an error; an app that

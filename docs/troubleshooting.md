@@ -1863,11 +1863,15 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
     this (`busctl --user status org.freedesktop.ScreenSaver` names
     `omacvm-displays`). If another program serves that name, a video in
     Chromium before 157 does not count (the agent's log says so).
+  - It stays on, as on a Mac, for a music video with sound (YouTube,
+    YouTube Music with its video shown) and for a large muted video that
+    plays by itself in a visible tab: Chromium takes its display wake lock
+    for both. Music from a plain audio player does not keep it on.
   - Chromium keeps one Wayland inhibit per process, on the window that has
     the focus when its first lock starts. So with music in one Chromium
-    window and a video in another, the first window's display counts; and
-    a video that starts while no Chromium window has the focus (an autoplay
-    in the background) does not count until the next play.
+    window and a video in another, the first window's display counts (not
+    tested); and a video that starts while no Chromium window has the focus
+    (an autoplay in the background) does not count until the next play.
   - Firefox was not tested: it may tell D-Bus instead of Wayland, or not
     reach either. mpv counts.
   - Hyprland window rules (Omarchy's full-screen rules, the `noidle` tag)
