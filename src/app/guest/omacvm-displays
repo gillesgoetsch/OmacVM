@@ -990,6 +990,7 @@ def serve_display_locks(locks: DisplayLocks = DISPLAY_LOCKS) -> None:
             locks.gone(name)
 
     def on_bus(bus, _name) -> None:
+        bus.set_exit_on_close(False)   # Gio's shared bus would SIGTERM the agent when the bus goes away
         for path in SCREENSAVER_PATHS:
             bus.register_object(path, node.interfaces[0], on_call, None, None)
         bus.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",

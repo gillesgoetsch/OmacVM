@@ -945,6 +945,13 @@ class ScreenSaverOnTheBus(unittest.TestCase):
             self.assertIn("NotSupported", refused.exception.message)
             self.assertEqual(locks.count(), 0)
 
+            # The bus goes away (the session ends, dbus restarts): the agent goes on.
+            # Gio's shared bus SIGTERMs its process on close unless told not to.
+            daemon.kill()
+            daemon.wait()
+            time.sleep(1.0)
+            self.assertEqual(locks.count(), 0)   # still here
+
 
 class VideoToTheMac(unittest.TestCase):
     """The agent's {"inhibit": [...]} lines: at once on a change, every 10 s while a video plays, [] once."""
