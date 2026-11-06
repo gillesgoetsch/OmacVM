@@ -199,6 +199,11 @@ finish() {
 }
 trap finish EXIT
 trap 'touch "$STOP"' TERM INT HUP
+# The app gone (crashed, killed): a write to its pipe fails instead of killing
+# this script without its EXIT trap, so the VM still stops at a safe point and
+# the journal says where (the window offers Resume or Undo at the next open).
+trap '' PIPE
+PARENT=$PPID   # the app; gone (crashed, killed): stop at the next safe point
 
 step() { jset step "$1"; echo "STEP $1/$STEPS $2"; }
 # The guest's own log beside the app's (logs/move-4.5.log), while the VM runs.
@@ -355,6 +360,7 @@ if (( ! moved_already )); then
   last="" since=$(date +%s) lost=0 asked_stop=0
   while :; do
     sleep "${OMACVM_MOVE_POLL:-8}"
+    kill -0 "$PARENT" 2>/dev/null || touch "$STOP"
     if ! qemu_running; then
       fail 5 "$(disk_why || echo "The VM stopped during the move (log: $LOG/move-console.log).")" "$(res_now)" vm-stopped
     fi

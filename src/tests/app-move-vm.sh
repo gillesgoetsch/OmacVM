@@ -265,6 +265,20 @@ expect "killed: the journal still says running, its pid is gone" "running gone" 
 mv_run ok run; rc=$?
 expect "Resume after the kill: to the end" "0 done" "$rc $(jget state)"
 
+# ---------- the app gone mid-move (killed): the move still stops at a safe point ----------
+fresh; : > "$T/out"
+( env PATH="$T/bin:$PATH" FAKE_DIR="$T" FAKE_VM="$V" FAKE_MODE=slow OMACVM_KEY="$T/key" OMACVM_HOST_PORTS= OMACVM_MOVE_POLL=0.2 \
+    /bin/bash -c '/bin/bash "$1" "$2" run < /dev/null 2>&1 | tee "$3" > /dev/null' app "$A/scripts/move-vm.sh" "$V" "$T/out" ) &
+BG=$!
+for ((i = 0; i < 100; i++)); do grep -q 'downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
+app=$(pgrep -f "^/bin/bash -c /bin/bash" | head -1); kill -9 "$app" 2>/dev/null
+for ((i = 0; i < 150; i++)); do [[ $(jget state) != running && $(jget pid) == 0 ]] && break; sleep 0.2; done
+wait "$BG" 2>/dev/null; BG=""
+expect "the app killed mid-move: the move stops (interrupted, Resume), QEMU gone" "interrupted 1 gone" "$(jget state) $(jget resumable) $(qemu_gone)"
+expect "... the guest was asked to stop" "yes" "$(grep -q 'omarchy-move.sh stop' "$T/ssh.log" && echo yes)"
+mv_run ok run; rc=$?
+expect "... Resume after that: to the end" "0 done" "$rc $(jget state)"
+
 # ---------- a pid from before the Mac's restart is not a running move ----------
 fresh
 sleep 600 & live=$!
