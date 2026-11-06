@@ -206,7 +206,7 @@ o() {
   PATH="$B:$T/compat:$PATH" OMACVM_MOVE_ROOT=$RT OMACVM_MOVE_MACHINE=aarch64 OMACVM_PACMAN_CONF=$T/pacman.conf \
     OMACVM_PACMAN_MIRRORS=$T/mirrorlist OMACVM_PACMAN_GNUPG=$GNUPG OMACVM_MOVE_DIR=$J OMACVM_MOVE_LOG=$T/move.log \
     OMACVM_PACMAN_CACHE=$CACHE OMACVM_MOVE_WAIT404=0 OMACVM_SYSTEM_UPDATE_LOG=$T/su.log OMARCHY_PATH=$T/omarchy \
-    OMACVM_MOVE_TOPLEVEL=$TOP "$M" "$@"
+    OMACVM_MOVE_TOPLEVEL=$TOP OMACVM_MOVE_PACMAN_WAIT=${PACWAIT_T:-1} "$M" "$@"
 }
 calls() { grep -c -e "$1" "$P/calls" 2>/dev/null; }
 
@@ -383,6 +383,33 @@ fresh; : > "$P/cut-before"; o run >/dev/null 2>&1
 expect "cut off before pacman changed anything: resumable" "interrupted cut-before True" "$(st)"
 o run >/dev/null 2>&1; rc=$?
 expect "... Resume: the switch runs again, done" "0 done 2 0" "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -S ')"
+# Another pacman (the user's, Omarchy's update check, a status call's
+# pacman -Q) says nothing about a cut-off switch: never Undo only for it.
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1; : > "$P/pacman-runs"
+expect "cut off before pacman began, another pacman runs (no lock): cut-before, resumable" "interrupted cut-before True" "$(st)"
+o run >/dev/null 2>&1; rc=$?
+expect "... Resume while it runs: the switch again, done (not 'failed commit')" "0 done 2" "$rc $(cat "$J/state") $(calls 'pacman -Suu ')"
+rm -f "$P/pacman-runs"
+fresh; : > "$P/cut-after"; o run >/dev/null 2>&1; : > "$P/pacman-runs"
+expect "cut off after pacman wrote it, another pacman runs: cut-done, resumable" "interrupted cut-done True" "$(st)"
+rm -f "$P/pacman-runs"
+fresh; : > "$P/cut-half"; o run >/dev/null 2>&1; : > "$P/pacman-runs"
+expect "cut off half way, another pacman runs: half all the same (pacman's database decides)" "interrupted half False" "$(st)"
+rm -f "$P/pacman-runs"
+# Another pacman holds pacman's lock (it may be writing the database): busy,
+# resumable; the cut is read once it is done.
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1; : > "$RT/var/lib/pacman/db.lck"; : > "$P/pacman-runs"
+expect "cut off, another pacman holds pacman's lock: busy, resumable" "interrupted busy True" "$(st)"
+expect "... preflight and start on that Resume: pacman-busy, run again (exit 4), never undo-only" "pacman-busy 4 4 0" \
+  "$(o preflight --json | json 'd["code"]') $(o preflight >/dev/null 2>&1; echo $?) $(o start >/dev/null 2>&1; echo $?) $(calls systemd-run)"
+o run >/dev/null 2>&1; rc=$?
+expect "... run: waits for it, then stops: exit 4, failed pacman-busy, resumable, its lock kept, nothing switched again" \
+  "4 failed pacman-busy True yes 1" \
+  "$rc $(cat "$J/state") $(cat "$J/code") $(o status --json | json 'd["resumable"]') $([[ -e $RT/var/lib/pacman/db.lck ]] && echo yes) $(calls 'pacman -Suu ')"
+rm -f "$P/pacman-runs"; o run >/dev/null 2>&1; rc=$?
+expect "... once it is done: the lock goes, the switch again, done" "0 done no 2" \
+  "$rc $(cat "$J/state") $([[ -e $RT/var/lib/pacman/db.lck ]] && echo yes || echo no) $(calls 'pacman -Suu ')"
+
 # Stopped by its unit inside the switch (the VM shuts down): only the move
 # gets the signal (KillMode=mixed); pacman ends the switch, the move stops after it.
 # (Job control on: a background job of a script would ignore SIGINT.)

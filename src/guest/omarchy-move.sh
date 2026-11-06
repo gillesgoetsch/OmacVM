@@ -75,6 +75,7 @@ CACHE=${OMACVM_PACMAN_CACHE:-/var/cache/pacman/pkg}
 UNIT=omacvm-move-45
 CHANNEL=${OMACVM_TEST_OMARCHY_CHANNEL:-stable}
 NEED_GB=14   # the switch's downloads and files (a few GB), then omarchy update wants 10 GiB free itself
+PACWAIT=${OMACVM_MOVE_PACMAN_WAIT:-120}   # seconds a Resume waits for another pacman with pacman's lock
 WAIT404=${OMACVM_MOVE_WAIT404:-60}
 ALARM_HOST=${OMACVM_MOVE_ALARM:-https://de3.mirror.archlinuxarm.org}
 PHASES=(preflight protect initramfs keyring repos download commit platform mpv vulkan kernel update report)
@@ -153,10 +154,17 @@ platform() {
   else echo "$m"; fi
 }
 
-# The move's own unit or run holds the lock.
+# The move's own unit or run holds the lock (its pacman too: it inherits it).
 alive() {
   [[ -e $J/lock ]] || return 1
   ! flock -n "$J/lock" true 2>/dev/null
+}
+# Another pacman (the user's update, Omarchy's update check, a status
+# call's pacman -Q): waited for, up to SECONDS; 1 when one still runs.
+pacman_wait() {
+  local i
+  for ((i = 0; i < ${1:-0}; i++)); do pgrep -x pacman >/dev/null 2>&1 || return 0; sleep 1; done
+  ! pgrep -x pacman >/dev/null 2>&1
 }
 
 # ---------- preflight ----------
@@ -223,10 +231,15 @@ preflight() {
   fi
   # pacman: free, and not cut off in the middle of a run.
   if [[ -e $ROOT/var/lib/pacman/db.lck ]]; then
+    # On a Resume a short pacman (a status call's) is waited for; one that
+    # still runs then is a wait, never a refusal (exit 4: Resume again).
+    [[ -n $PF_RESUME ]] && pacman_wait $(( PACWAIT < 10 ? PACWAIT : 10 ))
     if [[ -n $PF_RESUME && -z ${IN_RUN:-} ]] && ! pgrep -x pacman >/dev/null 2>&1; then
       chk pacman 1 "a lock the stopped move left (removed when it goes on)"
     elif pgrep -x pacman >/dev/null 2>&1; then
-      chk pacman 0 "pacman runs"; refuse pacman-busy 3 "pacman is running in this VM (an update?); try again when it is done."
+      chk pacman 0 "pacman runs"
+      if [[ -n $PF_RESUME ]]; then refuse pacman-busy 4 "pacman is running in this VM (an update?); Resume when it is done."
+      else refuse pacman-busy 3 "pacman is running in this VM (an update?); try again when it is done."; fi
     else
       chk pacman 0 "pacman's lock without pacman"
       refuse pacman-lock 3 "pacman was cut off in this VM (its lock is left); Update VM clears it, then try again."
@@ -699,11 +712,14 @@ switch_cut() {
   echo half
 }
 # The switch now: none (not begun), running, done, or how it was cut off.
+# Running is the move's own pacman only (it holds the move's lock); any
+# other pacman says nothing about the switch. While one holds pacman's lock
+# (it may be writing pacman's database): busy, read again once it is done.
 switch_now() {
   [[ -e $J/commit-done ]] && { echo done; return; }
   [[ -e $J/commit-started ]] || { echo none; return; }
-  pgrep -x pacman >/dev/null 2>&1 && { echo running; return; }
   [[ -z ${HOLD:-} && $(jget state) == running ]] && alive && { echo running; return; }
+  [[ -e $ROOT/var/lib/pacman/db.lck ]] && pgrep -x pacman >/dev/null 2>&1 && { echo busy; return; }
   switch_cut
 }
 
@@ -956,19 +972,22 @@ cmd_run() {
   flock -n 9 || { say "a move runs already"; exit 3; }
   HOLD=1
   [[ $(jget state) == done ]] && { say "the move is done (Omarchy $(version))"; exit 0; }
+  done_p=$(jget phase-done)
+  # A VM reset in the download or the switch leaves pacman's lock. Another
+  # pacman with it (the user's update) is waited for, then the lock goes;
+  # one that still runs: Resume later (never Undo only for it).
+  if [[ -n $done_p && -e $ROOT/var/lib/pacman/db.lck ]]; then
+    pacman_wait "$PACWAIT" || finish failed pacman-busy "pacman is running in this VM (an update?); Resume when it is done." 4
+    rm -f "$ROOT/var/lib/pacman/db.lck"; say "pacman's lock from the stopped move: removed"
+  fi
   if [[ $(resumable) == 0 ]]; then
     finish failed commit "The package switch was cut off; Undo puts the VM back as it was before the move." 1
   fi
-  done_p=$(jget phase-done)
   if [[ -n $done_p ]]; then
     # Going on: the journal says this VM was on omarchy-mac when it began.
     # START is 1-based: the step after the last one done (PHASES[i] is step i + 1).
     for i in "${!PHASES[@]}"; do [[ ${PHASES[$i]} == "$done_p" ]] && start=$((i + 2)); done
     say "going on after: $done_p"
-    # A VM reset in the download leaves pacman's lock (no pacman runs now).
-    if [[ -e $ROOT/var/lib/pacman/db.lck ]] && ! pgrep -x pacman >/dev/null 2>&1; then
-      rm -f "$ROOT/var/lib/pacman/db.lck"; say "pacman's lock from the stopped move: removed"
-    fi
     IN_RUN=1 preflight
     if [[ -n $PF_CODE ]]; then finish failed "$PF_CODE" "$PF_REASON" "$PF_EXIT"; fi
   fi
