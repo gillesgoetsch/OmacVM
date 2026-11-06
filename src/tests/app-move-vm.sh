@@ -634,4 +634,23 @@ expect "Undo after a finished move, cut off: undoing (not 'done' with the record
 mv_run ok undo; rc=$?
 expect "... Undo again: undone" "0 undone" "$rc $(jget state)"
 
+# ---------- settle with a silent guest: the guest's own time for its switch ----------
+# (the #725 review: a guest that did not answer got 180 s, then QEMU was ended: a switch
+# still running is cut half way.)
+crash_mid
+: > "$T/guest/silent"; echo $(( $(date +%s) + 20 )) > "$T/guest/offat"   # the old ending came after ~12 s
+t0=$(date +%s)
+mv_run ok settle OMACVM_MOVE_SETTLE_SECONDS=1 OMACVM_MOVE_SWITCH_SECONDS=40; rc=$?
+expect "settle, the guest silent from step 5 on: waits for its own shutdown, never ends it" "0 gone off-self" \
+  "$rc $(oq_gone) $(grep -o off-self "$T/power.log" 2>/dev/null | head -1)"
+expect "... the journal: interrupted, Resume asks the VM first" "interrupted 1" "$(jget state) $(jget ask_guest)"
+crash_mid
+: > "$T/guest/silent"; echo $(( $(date +%s) + 35 )) > "$T/guest/offat"
+sed -i '' 's/^step=.*/step=4/; /^guest_state=/d; /^guest_phase=/d' "$V/move-4.5"
+t0=$(date +%s)
+mv_run ok settle OMACVM_MOVE_SETTLE_SECONDS=1 OMACVM_MOVE_SWITCH_SECONDS=40; rc=$?
+expect "settle, silent before the guest's move began (step 4): the short wait, then ended" "0 gone none 1" \
+  "$rc $(oq_gone) $(grep -o off-self "$T/power.log" 2>/dev/null | head -1 | grep . || echo none) $(( $(date +%s) - t0 < 30 ))"
+rm -f "$T/guest/offat"
+
 exit $fail
