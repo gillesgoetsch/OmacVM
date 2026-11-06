@@ -21,10 +21,21 @@ enum MoveFiles {
         FileManager.default.fileExists(atPath: backupURL(c).appendingPathComponent("disk.img").path)
     }
 
-    /// The journal's process runs (a move of another window or app copy).
+    /// The journal's process runs (a move of another window or app copy):
+    /// its pid is alive and the Mac has not restarted since (a pid from
+    /// before a restart belongs to another process now).
     static func alive(_ j: OmarchyMove.Journal) -> Bool {
-        j.pid > 1 && j.pid != getpid() && kill(j.pid, 0) == 0
+        guard j.pid > 1, j.pid != getpid(), kill(j.pid, 0) == 0 else { return false }
+        guard let b = j.other.first(where: { $0.0 == "boot" })?.1, !b.isEmpty else { return true }
+        return b == bootTime
     }
+
+    /// kern.boottime's seconds, as move-vm.sh writes them.
+    static let bootTime: String = {
+        var tv = timeval(), size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &tv, &size, nil, 0) == 0 else { return "" }
+        return String(tv.tv_sec)
+    }()
 
     static func card(_ c: VMConfig) -> OmarchyMove.Card {
         let j = journal(c)

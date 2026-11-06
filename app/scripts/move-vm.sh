@@ -53,7 +53,13 @@ jset() {   # jset KEY VALUE [KEY VALUE ...]: one write, never half written
   mv -f "$tmp" "$J"
 }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-alive() { local p; p=$(jget pid); [[ $p =~ ^[0-9]+$ ]] && (( p > 1 && p != $$ )) && kill -0 "$p" 2>/dev/null; }
+# The Mac's start time: a pid from before a restart is someone else's now.
+boot_time() { sysctl -n kern.boottime | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p'; }
+alive() {
+  local p b; p=$(jget pid); b=$(jget boot)
+  [[ $p =~ ^[0-9]+$ ]] && (( p > 1 && p != $$ )) && kill -0 "$p" 2>/dev/null || return 1
+  [[ -z $b || $b == "$(boot_time)" ]]
+}
 
 in_use() {   # a QEMU (this app's, another copy's, omacvm start's) has the disk open
   ps -x -U "$(id -u)" -o args= | grep -v grep | grep -qF -- "file=$(qe "$VM_DIR/disk.img")," && return 0
@@ -162,7 +168,7 @@ if [[ -z $state || $state == undone ]]; then
     from_omacvm "$(cat "$VM_DIR/omacvm-version" 2>/dev/null || true)" \
     from_disk_gb "$(sed -n 's/^DISK_GB=//p' "$VM_DIR/vm.env" | head -1)" backup_at ""
 fi
-jset state running pid $$ reason "" code "" failed_step 0
+jset state running pid $$ boot "$(boot_time)" reason "" code "" failed_step 0
 rm -f "$STOP"
 
 AGENT=$RUN_DIR/$VM_ID.qga

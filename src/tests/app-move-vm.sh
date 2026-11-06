@@ -265,6 +265,18 @@ expect "killed: the journal still says running, its pid is gone" "running gone" 
 mv_run ok run; rc=$?
 expect "Resume after the kill: to the end" "0 done" "$rc $(jget state)"
 
+# ---------- a pid from before the Mac's restart is not a running move ----------
+fresh
+sleep 600 & live=$!
+bt=$(sysctl -n kern.boottime | sed -n 's/^{ sec = \([0-9]*\),.*/\1/p')
+printf 'format=1\nstate=running\nstep=5\npid=%s\nboot=%s\n' "$live" "$bt" > "$V/move-4.5"
+mv_run ok undo; rc=$?
+expect "a live pid of this boot: undo refused" "1" "$rc"
+printf 'format=1\nstate=running\nstep=5\npid=%s\nboot=12345\n' "$live" > "$V/move-4.5"
+mv_run ok undo; rc=$?
+expect "the same pid from before a restart: not the move, undo goes on" "0 undone" "$rc $(jget state)"
+kill "$live" 2>/dev/null
+
 # ---------- a VM on Mac OS Extended (cp -c copies there, rc 0): refused ----------
 H=$T/hfs
 if hdiutil create -quiet -size 40m -fs HFS+ -volname omacvm-move-test "$T/hfs.dmg" 2>/dev/null && mkdir -p "$H" &&
