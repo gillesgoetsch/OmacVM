@@ -28,7 +28,7 @@ echo b >> "$G/README"; gi commit -qam m; M=$(gi rev-parse HEAD)
 echo v2 > "$G/app/scripts/move-vm.sh"; gi commit -qam m2; M2=$(gi rev-parse HEAD)
 
 ROWS=$("$G/src/tests/e2e/move-45.sh" --rows | awk '{ print $1 }')
-expect "the kit lists its rows" 19 "$(wc -l <<<"$ROWS" | tr -d ' ')"
+expect "the kit lists its rows" 21 "$(wc -l <<<"$ROWS" | tr -d ' ')"
 expect "the kit lists the files a result is tied to" 1 "$("$G/src/tests/e2e/move-45.sh" --paths | grep -c '^app/scripts/move-vm.sh$')"
 
 mkrow() {   # DIR ROW BASE OK [MAC] [COMMIT] [ENDED]: one run of a row, as move-45.sh writes it
@@ -93,7 +93,6 @@ expect "one clean move on the M1 only: summary fails (G6)" 1 "$(sumrc "$D")"
 D=$T/old; full "$D"; sumrc "$D" >/dev/null
 python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["format"]=1; json.dump(o, open(p,"w"))' "$D/result.json"
 expect "a result from the kit before (format 1): gate refuses" 1 "$(gate "$D" "$M")"
-
 D=$T/bad; mkdir -p "$D"; echo '{"kind": "omacvm-e2e-cc-switches", "pass": true}' > "$D/result.json"
 expect "another kind of result: gate refuses" 1 "$(gate "$D" "$M")"
 
@@ -269,5 +268,9 @@ expect "held point: the app deferred it" 0 "$(dv "$T/ul-def")"
 expect "held point: deferred, then handed over anyway: does not count" 1 "$(dv "$T/ul-both")"
 expect "held point: nothing in update.log: does not count" 1 "$(dv "$T/ul-none")"
 expect "the kit: disk-lock has a disk job refused while a move runs" 1 "$("$R/src/tests/e2e/move-45.sh" --rows | grep -c '^disk-lock .*while a move runs')"
+expect "the kit: cuts before the switch run to done (kill-pre)" 1 "$("$R/src/tests/e2e/move-45.sh" --rows | grep -c '^kill-pre .*Update VM.*protect, initramfs, keyring, repos and download.*second update')"
+expect "the kit: cuts after the switch run to done (kill-post)" 1 "$("$R/src/tests/e2e/move-45.sh" --rows | grep -c '^kill-post .*platform, mpv, vulkan, kernel, update, report.*second update')"
+expect "the kit: a Resume that fails with no cut in its run is a FAIL" 1 "$(grep -c '"Resume (run $cycle) goes on with no cut in it" 0' "$R/src/tests/e2e/move-45.sh")"
+expect "the kit: the guest check runs with the desktop up, before and after" 2 "$(grep -c 'desk_on; then' "$R/src/tests/e2e/move-45.sh")"
 
 exit $fail

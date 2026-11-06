@@ -316,7 +316,10 @@ Omarchy's own second update must keep snapper, iwd and OmacVM), Undo (the
 disk's SHA-256 equal to before the move), a move again after Undo, Delete
 the old backup (space shown = space freed), the internet cut during the
 download, the network link down for 90 s, QEMU killed before and inside the
-package switch, the app quitting, a power loss in the switch and in the
+package switch, QEMU killed once in every step before the switch and once in
+every step after it (`kill-pre`, `kill-post`: each Resume must boot the VM
+and go on to done, one that fails with no cut in its run is a FAIL), the app
+quitting, a power loss in the switch and in the
 backup, an app crash, the VM's disk nearly full, the Mac's drive nearly
 full, a non-APFS drive, a disk size change not finished, everything else
 refused while the move runs (Update VM, a second move, Undo, Delete), and
@@ -326,7 +329,11 @@ move's VM starts the app itself must defer it, "deferred" in update.log, not
 hand it to update-swap.sh), and Disk › Change… is locked in the window while
 a move runs and while one not finished waits for Resume or Undo (`disk-lock`). After every fault nothing may start by itself until Resume or Undo.
 Resume must finish a move that stopped resumable; Undo must give back
-exactly the VM from before.
+exactly the VM from before. After a move OmacVM's guest check runs with the
+desktop up (the test app starts the VM without a window, SDDM logs the user
+in for that start) and may fail no line that did not fail on the same 4.0
+VM, checked the same way before the move; the Venus driver meant for the VM
+(the Vulkan feature's own Mesa, else the one it had) must be there and load.
 
     move-45.sh --app "<test identity build>.app" --base "<test VMs>/OmacVM M-mv-a308" --row clean --out DIR
     move-45.sh --summary DIR        # DIR/result.json for the gate
@@ -337,10 +344,14 @@ the test app's VMs folder. The caller holds the Mac's VM lock and memory
 gate; nothing shows on the screen but `disk-lock`, which opens the test
 app's window only when nobody is at the Mac (HID idle over 5 minutes, the
 screen unlocked; else BLOCKED). `app-guards` and `disk-lock` need a
-compiled test build of the commit and hold `~/.omacvm-test-identity.lock`.
+compiled test build of the commit and hold `~/.omacvm-test-identity.lock`
+(so does the guest check while the test app runs the VM).
 Every run writes its own file (`ROW-BASE-MAC-TIME.json`); copy the second
 Mac's into the same `DIR/rows`. `src/release/release.sh` step `moves`
 passes when the newest run of every row passed, "clean" on three ages,
 rows from two Macs with the last two clean moves passed on each, on one
 tested commit whose move files (`move-45.sh --paths`) are the same in the
 release commit (`move-45-result.py gate`; `src/tests/move-45-gate.sh` tests the gate).
+Each row also names the kit it ran with (`move-45.sh` and
+`move-45-result.py`): all rows one kit, and M's, so a row run with older
+checks does not count.

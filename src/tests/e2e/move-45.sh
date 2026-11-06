@@ -20,7 +20,11 @@
 # its Contents/Resources/scripts run the move as the app does. BASE: a test VM
 # folder (never one of the installed app's VMs folders; src/tests/e2e/test-vms.sh).
 # The caller holds the Mac's VM lock and its memory gate (one VM at a time).
-# Nothing visible: QEMU runs headless, no input. app-guards starts the test
+# Nothing visible: QEMU runs headless, no input. OmacVM's guest check, before
+# the move (once per base) and after it, runs with the desktop up: the test
+# app starts the VM without a window (it still has its display) and SDDM logs
+# the user in for that start (holds ~/.omacvm-test-identity.lock while the
+# app runs; the Mac's helpers stay off). app-guards starts the test
 # app without a window (OMACVM_COCOA_HIDDEN), needs OMACVM_SIGN_ID (the
 # Developer ID, to sign the update it offers) and holds
 # ~/.omacvm-test-identity.lock while the app runs; disk-lock opens the test
@@ -29,7 +33,8 @@
 # build of the commit (the app's Swift side is tested), not scripts only.
 # Each run of a row writes DIR/rows/ROW-<base>-<mac>-<time>.json: {row, base,
 # mac, ended, pass, checks: [[name, ok, detail]], seconds}; logs DIR/logs/ the
-# same name. A row stopped before its end (a signal, an error) fails ("row ran
+# same name; "kit" in it = this script and move-45-result.py (the gate wants
+# M's). A row stopped before its end (a signal, an error) fails ("row ran
 # to its end"). Rows from the M1 go into the same DIR/rows (copy them over)
 # before --summary.
 set -uo pipefail
@@ -44,6 +49,8 @@ net-cut      the internet goes during the download (default route out in the VM)
 link-cut     the VM's network link goes for 90 s during the download (SSH too): the move goes on or resumes, then done
 kill-early   QEMU killed (-9) before the package switch: interrupted, Resume finishes it
 kill-commit  QEMU killed (-9) inside the package switch: Undo only, and Undo restores the disk exactly
+kill-pre     QEMU killed (-9) right after Update VM and at the worst moment of protect, initramfs, keyring, repos and download, once each: every Resume boots and goes on to done, then the moved checks and Omarchy's second update
+kill-post    QEMU killed (-9) at the worst moment of each step after the switch (commit's end, platform, mpv, vulkan, kernel, update, report), once each: Resume asks the VM and goes on to done, then the moved checks and the second update
 app-quit     the app quits mid-move (SIGTERM to move-vm.sh): it stops at a step boundary, Resume finishes it
 power-loss   move-vm.sh and QEMU killed (-9) together in the package switch (the Mac loses power): interrupted, Undo exact
 power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo (or Resume) leaves the VM as before
@@ -64,7 +71,7 @@ src/cmd/apply.sh src/lib/omarchy-move.sh app/app/Sources/OmacVMWindow/OmarchyMov
 app/app/Sources/OmacVM/OmarchyMoveCard.swift app/app/Sources/OmacVM/DiskView.swift app/app/Sources/OmacVM/Updater.swift
 src/tests/e2e/move-45.sh src/tests/e2e/move-45-result.py"
 
-usage() { sed -n '2,34s/^# \{0,1\}//p' "$0"; exit 2; }
+usage() { sed -n '2,39s/^# \{0,1\}//p' "$0"; exit 2; }
 # On screen (MACS-1030d): nobody at the Mac for 5 minutes and the screen unlocked.
 hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
 screen_locked() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
@@ -152,7 +159,7 @@ cleanup() {
     g "tail -c 200000 /var/log/omacvm-system-update.log" > "$OUT/logs/$TAG.guest-system-update.log" 2>/dev/null
     g "cat /var/log/omacvm-move-45.log" > "$OUT/logs/$TAG.guest-move.log" 2>/dev/null
   fi
-  vm_off || true
+  desk_off 2>/dev/null || true   # the VM off (and the test app quit, its lock released, after a guest check)
   [[ -d ${VD:-}/logs ]] && { rm -rf "$OUT/logs/$TAG.vm-logs"; cp -R "$VD/logs" "$OUT/logs/$TAG.vm-logs" 2>/dev/null; }
   [[ -n ${MNT:-} ]] && { hdiutil detach -quiet "$MNT" 2>/dev/null || hdiutil detach -force -quiet "$MNT" 2>/dev/null; }
   if [[ ${KEEP:-0} != 1 && -n ${VD:-} && $VD == *" mv-$ROW" && -f $VD/vm.env ]]; then rm -rf "$VD"; fi
@@ -213,7 +220,7 @@ wait_until() {   # SECONDS CMD...: poll CMD every 3 s
 }
 in_phase() { [[ $(gstat phase) == "$1" ]]; }
 committing() { [[ $(gstat commit_started) == true ]]; }
-pre_hash() { [[ -n ${PRE_FAILS+x} ]] || pre_fails; PRE_DISK=$(sha "$VD/disk.img"); PRE_EFI=$(sha "$VD/efi-vars.fd"); PRE_REC=$(records); log "before: disk $PRE_DISK"; }
+pre_hash() { PRE_DISK=$(sha "$VD/disk.img"); PRE_EFI=$(sha "$VD/efi-vars.fd"); PRE_REC=$(records); log "before: disk $PRE_DISK"; }
 same_as_before() {   # after Undo: disk, NVRAM and records exactly as before
   local d e r
   d=$(sha "$VD/disk.img"); e=$(sha "$VD/efi-vars.fd"); r=$(records)
@@ -243,17 +250,117 @@ nothing_starts() {
     $([[ -z $q && $j0 == "$j1" ]] && echo 1 || echo 0) "pids '$q', journal $j0 -> $j1, state=$(J state)"
 }
 
-# ---------- the checks after a move (VM on) ----------
-guest_fails() { g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null | awk -F'\t' '\$1 == \"fail\" { print \$2 }'" | sort -u; }
-pre_fails() {   # the guest check's FAIL lines on 4.0, headless: once per base (kept in OUT), before a move
-  local c="$OUT/base-fails-${BN// /_}.txt"
-  if [[ ! -f $c ]]; then
-    vm_on || { PRE_FAILS=""; return; }
-    guest_fails > "$c.new" && mv -f "$c.new" "$c"; vm_off
+# ---------- the desktop, for OmacVM's guest check ----------
+# Many lines of OmacVM's guest check need the person's session (Hyprland, the Omarchy shell, the display,
+# keyboard layout, clipboard, audio): headless they fail on 4.0 and 4.5 alike and compared nothing. So the
+# check runs with the desktop up: the test app starts the VM without a window (OMACVM_COCOA_HIDDEN; the VM
+# still has its display) and SDDM logs the user in for this one start (a drop-in, removed as soon as the
+# session runs, so the check and the move see the VM's own autologin setting). The Mac's helpers stay off
+# (STANDARDS 18/24): the lines that need them fail before and after alike; they are listed, not compared.
+DESK_PID="" DESK_LOCK=0 DESK_SAVED="" DESK_WHY=""
+DESK_DROPIN=/etc/sddm.conf.d/99-move45-autologin.conf
+desk_on() {   # the VM (off) started by the test app, no window, the user's session up; 1 = not (DESK_WHY says why)
+  local i p before name; name=$(basename "$VD"); DESK_WHY=""
+  [[ -z $(qemu_pid) ]] || { DESK_WHY="the VM runs already"; return 1; }
+  # One launcher per bundle id, and the test identity's lock while it runs (other lanes' app rows).
+  if (( ! ULOCK_MINE )); then
+    for ((i = 0; i < 80; i++)); do
+      [[ -z $(LC_ALL=C pgrep -f "OmacVM Test\.app/Contents/MacOS/OmacVM( |$)") ]] && mkdir "$ULOCK" 2>/dev/null && { DESK_LOCK=1; break; }
+      sleep 30
+    done
+    (( DESK_LOCK )) || { DESK_WHY="the test app is busy for 40 min ($(cat "$ULOCK/owner" 2>/dev/null))"; return 1; }
+    echo "move-45 guest check $(date +%H:%M), pid $$" > "$ULOCK/owner"
   fi
-  PRE_FAILS=$(cat "$c" 2>/dev/null)
-  log "4.0 headless guest check FAILs: $(echo $PRE_FAILS | tr '\n' ';' | head -c 200)"
+  DESK_SAVED=$OUT/logs/$TAG.desk-settings.plist; defaults export org.omacvm.app.test "$DESK_SAVED" 2>/dev/null || : > "$DESK_SAVED"
+  # One fixed copy per Mac (STANDARDS 34b), refreshed when it is another build than APP.
+  DUA=${MOVE45_UPDATE_APP:-$HOME/omacvm-work/move45-app/OmacVM Test.app}
+  if [[ $(/usr/libexec/PlistBuddy -c 'Print :OmacVMCommit' -c 'Print :CFBundleShortVersionString' "$DUA/Contents/Info.plist" 2>/dev/null) != \
+        "$(/usr/libexec/PlistBuddy -c 'Print :OmacVMCommit' -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" ]] ||
+     ! codesign -v "$DUA" 2>/dev/null; then
+    mkdir -p "$(dirname "$DUA")"; rm -rf "$DUA"; ditto "$APP" "$DUA" || { DESK_WHY="no copy of the app"; return 1; }
+  fi
+  before=" $(LC_ALL=C pgrep -f "$DUA/Contents/MacOS/OmacVM" | tr '\n' ' ')"
+  open -n -g --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_BACKGROUND=1 --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.move45 \
+    "$DUA" --args --start --vm "$name"
+  for ((i = 0; i < 60; i++)); do
+    for p in $(LC_ALL=C pgrep -f "$DUA/Contents/MacOS/OmacVM( |$)"); do [[ $before == *" $p "* ]] || DESK_PID=$p; done
+    [[ -n $DESK_PID && -n $(qemu_pid) ]] && break; sleep 1
+  done
+  [[ -n $(qemu_pid) ]] || { DESK_WHY="the app started no VM in 60 s"; return 1; }
+  for ((i = 0; i < 100; i++)); do g true 2>/dev/null && break; [[ -n $(qemu_pid) ]] || break; sleep 3; done
+  g true 2>/dev/null || { DESK_WHY="no SSH after the app's start"; return 1; }
+  # Logged in by SDDM (the VM's own autologin, else the drop-in for this start), then the drop-in goes.
+  g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env | tr -d \"'\\\"\"); pgrep -u \"\$u\" -x Hyprland >/dev/null && exit 0
+    s=hyprland-uwsm; [[ -f /usr/share/wayland-sessions/\$s.desktop ]] || s=\$(basename \"\$(ls /usr/share/wayland-sessions/*.desktop | head -1)\" .desktop)
+    mkdir -p /etc/sddm.conf.d && printf '[Autologin]\nUser=%s\nSession=%s\nRelogin=false\n' \"\$u\" \"\$s\" > $DESK_DROPIN && sync && systemctl restart sddm" >/dev/null 2>&1
+  local up=""
+  for ((i = 0; i < 60; i++)); do
+    up=$(g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env | tr -d \"'\\\"\"); pgrep -u \"\$u\" -x Hyprland" 2>/dev/null)
+    [[ -n $up ]] && break; sleep 3
+  done
+  g "rm -f $DESK_DROPIN; sync" >/dev/null 2>&1
+  [[ -n $up ]] || { DESK_WHY="no Hyprland session in 180 s"; return 1; }
+  sleep 30   # the shell, the bar and the session's services
+  return 0
 }
+desk_off() {   # the VM off, the launcher quit, the app's settings back, the lock released
+  vm_off
+  [[ -n $DESK_PID ]] && { kill "$DESK_PID" 2>/dev/null; local i; for ((i = 0; i < 15; i++)); do kill -0 "$DESK_PID" 2>/dev/null || break; sleep 1; done; kill -9 "$DESK_PID" 2>/dev/null; }
+  [[ -n $DESK_SAVED && -f $DESK_SAVED ]] && defaults import org.omacvm.app.test "$DESK_SAVED"
+  (( DESK_LOCK )) && rm -rf "$ULOCK" && echo "move-45 $(date +%H:%M) done (guest check)" >> "$ULOCK.wait"
+  DESK_PID="" DESK_SAVED="" DESK_LOCK=0
+}
+guest_check() {   # TSV: OmacVM's guest check (VM on) into TSV; its FAIL lines' names on stdout
+  g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env | tr -d \"'\\\"\"); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null" > "$1"
+  awk -F'\t' '$1 == "fail" { print $2 }' "$1" | sort -u
+}
+# The VM's Venus driver now: "mesa" (the Vulkan feature's own Mesa, /opt/omacvm-mesa), "PKG VERSION" (the
+# package of /usr/lib/libvulkan_virtio.so), or "none".
+venus_kind() {
+  g 'if [[ -f /etc/vulkan/icd.d/omacvm_venus_icd.json ]]; then echo mesa
+    elif [[ -e /usr/lib/libvulkan_virtio.so ]]; then pacman -Qo /usr/lib/libvulkan_virtio.so 2>/dev/null | awk "{ print \$(NF-1), \$NF }" | grep . || echo "unowned"
+    else echo none; fi' 2>/dev/null | tail -1
+}
+pre_fails() {   # before the move, once per base (kept in OUT): the guest check's FAILs on 4.0 with the desktop up, and its Venus driver
+  local b=${BN// /_}
+  local c="$OUT/base-desk-fails-$b.txt" v="$OUT/base-venus-$b.txt"
+  if [[ ! -f $c || ! -f $v ]]; then
+    if desk_on; then
+      guest_check "$OUT/base-desk-check-$b.tsv" > "$c.new" && [[ -s $OUT/base-desk-check-$b.tsv ]] && mv -f "$c.new" "$c"
+      venus_kind > "$v.new" && [[ -s $v.new ]] && mv -f "$v.new" "$v"
+    fi
+    desk_off
+  fi
+  if [[ -f $c && -f $v ]]; then
+    PRE_FAILS=$(cat "$c"); PRE_VENUS=$(cat "$v")
+    check "before the move: OmacVM's guest check with the desktop up (4.0)" 1 "$(grep -c . "$c" | tr -d ' ') FAIL: $(echo $PRE_FAILS | tr '\n' ';' | cut -c1-300); Venus: $PRE_VENUS"
+  else
+    PRE_FAILS="" PRE_VENUS=""
+    check "before the move: OmacVM's guest check with the desktop up (4.0)" 0 "${DESK_WHY:-no check output}"
+  fi
+}
+# The Venus driver meant for this VM: the Vulkan feature's own Mesa (it provides Venus by design), else the
+# driver the VM had before the move, OmacVM's build under its own name (omacvm-vulkan-virtio) when it was
+# OmacVM's; it must be there and load (no library missing). A VM with none before needs none.
+venus_ok() {   # WHEN (VM on)
+  local w=$1 want pc
+  if grep -q '^vulkan=on' "$VD/features" 2>/dev/null || [[ ${PRE_VENUS:-} == mesa ]]; then want=mesa
+  else case ${PRE_VENUS:-none} in none|"") return 0 ;; *omacvm*) want=omacvm-vulkan-virtio ;; *) want=any ;; esac; fi
+  if [[ $want == mesa ]]; then
+    pc=$(g 'j=/etc/vulkan/icd.d/omacvm_venus_icd.json; [[ -f $j ]] || { echo "no $j"; exit; }
+      l=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\"ICD\"][\"library_path\"])" "$j" 2>&1)
+      [[ $l == /opt/omacvm-mesa/* && -f $l ]] || echo "ICD names $l"
+      n=$(for f in $(find /opt/omacvm-mesa -name "*.so*" -type f); do ldd "$f" 2>/dev/null; done | grep -c "not found"); (( n == 0 )) || echo "$n libraries missing in /opt/omacvm-mesa"
+      /usr/local/share/omacvm/app/guest/venus/vulkan-virtio.sh --ready || echo "vulkan-virtio.sh --ready says no"' 2>&1 | head -4)
+  else
+    pc=$(g 'f=/usr/lib/libvulkan_virtio.so; o=$(pacman -Qqo $f 2>/dev/null); [[ -n $o ]] || { echo "no package has $f"; exit; }
+      [[ '"$want"' == any || $o == '"$want"' ]] || echo "$f from $o"
+      n=$(ldd $f 2>/dev/null | grep -c "not found"); (( n == 0 )) || echo "$n libraries missing for $f"' 2>&1 | head -4)
+  fi
+  check "$w: the Venus driver meant for this VM ($want) is there and loads" $([[ -z $pc ]] && echo 1 || echo 0) "before: ${PRE_VENUS:-?}, now: $(venus_kind)${pc:+; $(echo $pc)}"
+}
+
+# ---------- the checks after a move (VM on; on again at the end) ----------
 moved_ok() {   # WHEN
   local w=$1 v pc pf fail
   v=$(g "pacman -Q omarchy" | awk '{ print $2 }')
@@ -286,19 +393,39 @@ moved_ok() {   # WHEN
   check "$w: snapper and iwd there, root config, snapshots in GRUB" $([[ $pc != *"not found"* && $pc == *grub-btrfs.cfg* ]] && echo 1 || echo 0) "$(echo $pc)"
   fail=$(g "systemctl --failed --no-legend --plain | awk '{ print \$1 }'")
   check "$w: no failed units" $([[ -z $fail ]] && echo 1 || echo 0) "$(echo $fail)"
-  # Headless nobody is logged in, so the desktop's lines fail before the move too: only new FAILs count.
-  pc=$(guest_fails | grep -vxF -f <(printf '%s\n' "${PRE_FAILS:-}") | tr '\n' ';')
-  check "$w: OmacVM's guest check: no FAIL that was not there on 4.0" $([[ -z $pc ]] && echo 1 || echo 0) "${pc:0:300}"
   pc=$(g "cat /usr/local/share/omacvm/VERSION")
   check "$w: OmacVM in the VM is the app's" $([[ $pc == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" ]] && echo 1 || echo 0) "$pc"
-  if grep -q 'vulkan=on' "$VD/features" 2>/dev/null; then
-    pc=$(g "pacman -Qq omacvm-vulkan-virtio 2>&1; pacman -Qo /usr/lib/libvulkan_virtio.so 2>&1 | awk '{ print \$(NF-1) }'")
-    check "$w: Vulkan VM: omacvm-vulkan-virtio provides the driver" $([[ $pc == omacvm-vulkan-virtio*omacvm-vulkan-virtio* ]] && echo 1 || echo 0) "$(echo $pc)"
+  venus_ok "$w"
+  # OmacVM's guest check with the desktop up, as before the move: no FAIL that 4.0 did not have.
+  local t="$OUT/logs/$TAG.check-${w// /_}.tsv" n
+  vm_off
+  if [[ -z ${PRE_FAILS+x} ]]; then
+    check "$w: OmacVM's guest check with the desktop up: no FAIL that 4.0 did not have" 0 "kit: no check before the move (pre_fails)"
+  elif desk_on; then
+    pc=$(guest_check "$t" | grep -vxF -f <(printf '%s\n' "${PRE_FAILS:-}") | tr '\n' ';')
+    n=$(awk -F'\t' '$1 == "ok" { n++ } END { print n + 0 }' "$t")
+    check "$w: OmacVM's guest check with the desktop up: no FAIL that 4.0 did not have" $([[ -s $t && -z $pc ]] && echo 1 || echo 0) \
+      "$n ok, $(awk -F'\t' '$1 == "fail"' "$t" | grep -c .) FAIL (on 4.0 too: $(echo $PRE_FAILS | tr '\n' ';' | cut -c1-160))${pc:+; new: ${pc:0:300}}"
+  else
+    check "$w: OmacVM's guest check with the desktop up: no FAIL that 4.0 did not have" 0 "$DESK_WHY"
   fi
+  desk_off
+  vm_on || check "$w: boots again (headless) after the guest check" 0 "no SSH"
 }
 
 # ---------- rows ----------
+second_update() {   # (VM on) Omarchy's own second update (its orphan step too), a restart, the moved checks again
+  log "second update: Omarchy's own (orphan step included)"
+  g "/usr/local/share/omacvm/guest/system-update" > "$OUT/logs/$TAG.update2.log" 2>&1; local rc=$?
+  check "second update (omarchy update -y)" $((rc == 0)) "exit $rc, $(tail -1 "$OUT/logs/$TAG.update2.log")"
+  g "tail -c 100000 /var/log/omacvm-system-update.log" 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*[A-Za-z]//g' > "$OUT/logs/$TAG.guest-update2.log"
+  g "systemctl reboot" >/dev/null 2>&1; sleep 15
+  local ok=0; for _ in $(seq 60); do g true 2>/dev/null && { ok=1; break; }; sleep 5; done
+  check "restart after the second update" $ok ""
+  ((ok)) && moved_ok "after the second update"
+}
 row_clean() {
+  pre_fails
   pre_hash
   mvm run; local rc=$?
   check "move-vm.sh run" $((rc == 0)) "exit $rc"
@@ -307,16 +434,8 @@ row_clean() {
   vm_on || { check "boots after the move" 0 "no SSH"; return; }
   check "boots after the move" 1 ""
   moved_ok "after the move"
-  local result; result=$(gstat result)
-  log "result: $result"
-  log "second update: Omarchy's own (orphan step included)"
-  g "/usr/local/share/omacvm/guest/system-update" > "$OUT/logs/$TAG.update2.log" 2>&1; rc=$?
-  check "second update (omarchy update -y)" $((rc == 0)) "exit $rc, $(tail -1 "$OUT/logs/$TAG.update2.log")"
-  g "tail -c 100000 /var/log/omacvm-system-update.log" 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*[A-Za-z]//g' > "$OUT/logs/$TAG.guest-update2.log"
-  g "systemctl reboot" >/dev/null 2>&1; sleep 15
-  local ok=0; for _ in $(seq 60); do g true 2>/dev/null && { ok=1; break; }; sleep 5; done
-  check "restart after the second update" $ok ""
-  ((ok)) && moved_ok "after the second update"
+  log "result: $(gstat result)"
+  second_update
   vm_off
 }
 row_undo() {
@@ -330,6 +449,7 @@ row_undo() {
   boots_40
 }
 row_again() {
+  pre_fails
   pre_hash
   mvm run; check "first move" $(( $? == 0 )) ""
   mvm undo; check "undo" $(( $? == 0 )) ""
@@ -380,6 +500,7 @@ fault_then_resume() {   # the move must stop resumable, then Resume finishes it
   fi
 }
 row_net_cut() {
+  pre_fails
   pre_hash
   mvm_bg run
   wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mvm_wait; return; }
@@ -406,6 +527,7 @@ row_link_cut() {
   journal_state done
 }
 row_kill_early() {
+  pre_fails
   pre_hash
   mvm_bg run
   wait_until 2400 eval '[[ $(gstat phase) == protect || $(gstat phase) == keyring || $(gstat phase) == repos || $(gstat phase) == download ]]' ||
@@ -431,6 +553,73 @@ row_kill_commit() {
   same_as_before
   boots_40
 }
+# kill-pre, kill-post: one move cut off once in each step it names (QEMU killed -9, a power cut), each time at
+# the step's worst moment: the guest's test hold (omarchy-move.sh: after the step's work, before its sync), or
+# right after Update VM (apply: "STEP 5/" in move-vm.sh's output). After each cut the person presses Resume.
+# Every Resume must boot the VM and go on: one that fails with no cut in its run is a FAIL (the person would
+# have to press Resume again). Then the moved VM's checks and Omarchy's second update, as in clean.
+GJ=/var/lib/omacvm/move-4.5   # the guest's journal folder (on the VM's disk)
+kill_steps() {   # STEP...
+  local kills="$*" killed=" " cycle=0 rc=1 hit nohit=0 mark h p q L="$OUT/logs/$TAG.move.log"
+  pre_fails
+  vm_on || { check "the clone boots (to set the holds)" 0 "no SSH"; return; }
+  g "mkdir -p $GJ && for p in ${kills//apply/}; do : > $GJ/test-hold-\$p; done; sync" >/dev/null 2>&1
+  check "holds set in the guest's journal" $([[ $(g "ls $GJ | grep -c '^test-hold-'") == $(wc -w <<<"${kills//apply/}" | tr -d ' ') ]] && echo 1 || echo 0) "${kills//apply/}"
+  vm_off
+  pre_hash
+  while (( cycle < 20 )); do
+    cycle=$((cycle + 1)); hit=""
+    mark=$(wc -l < "$L" 2>/dev/null || echo 0); mark=$((mark + 0))
+    mvm_bg run
+    while kill -0 "$MV_PID" 2>/dev/null; do
+      if [[ " $kills " == *" apply "* && $killed != *" apply "* ]] && [[ -n $(tail -n +$((mark + 1)) "$L" 2>/dev/null | grep -m1 '^STEP 5/') ]]; then hit=apply; break; fi
+      h=$(g "ls $GJ 2>/dev/null | sed -n 's/^test-held-//p'" 2>/dev/null)
+      for p in $h; do
+        if [[ $killed == *" $p "* ]]; then g "[[ -e $GJ/test-release-$p ]] || : > $GJ/test-release-$p" >/dev/null 2>&1
+        else hit=$p; break; fi
+      done
+      [[ -n $hit ]] && break
+      sleep 1
+    done
+    if [[ -n $hit ]]; then
+      q=$(qemu_pid); kill -9 $q 2>/dev/null; killed+="$hit "
+      log "run $cycle: QEMU $q killed in '$hit'"
+    fi
+    mvm_wait; rc=$?
+    log "run $cycle: move-vm.sh exit $rc: $(tail -n +$((mark + 1)) "$L" | grep -E '^(ERROR|STEP )' | tail -1 | cut -c1-200) (state=$(J state) step=$(J step) resumable=$(J resumable) ask_guest=$(J ask_guest))"
+    if (( rc == 0 )); then
+      [[ -n $hit ]] && log "run $cycle: the move ended done although cut in '$hit'"
+      break
+    fi
+    if [[ -n $hit ]]; then
+      nohit=0
+      vm_off; nothing_starts 15
+    else
+      # A Resume that failed by itself: the person would have to press Resume again.
+      check "Resume (run $cycle) goes on with no cut in it" 0 "exit $rc (cuts so far:${killed% }): $(tail -n +$((mark + 1)) "$L" | grep '^ERROR' | tail -1 | cut -c1-200)"
+      nohit=$((nohit + 1)); (( nohit >= 2 )) && { log "two runs in a row failed with no cut: stop"; break; }
+      vm_off
+    fi
+  done
+  local missed=""; for p in $kills; do [[ $killed == *" $p "* ]] || missed+=" $p"; done
+  check "cut once in each of: $kills" $([[ -z $missed ]] && echo 1 || echo 0) "cut in:$killed($cycle runs); not cut:${missed:- none}"
+  check "the move done after the cuts (every Resume)" $((rc == 0)) "exit $rc: $(J reason)"
+  journal_state done
+  if (( rc != 0 )); then
+    # What a person does next: Undo. It must give back the VM from before the move.
+    vm_off; mvm undo; rc=$?
+    check "Undo after the failed Resume" $((rc == 0)) "exit $rc"
+    same_as_before
+    return
+  fi
+  vm_on || { check "boots after the move" 0 "no SSH"; return; }
+  moved_ok "after the cuts"
+  log "result: $(gstat result)"
+  second_update
+  vm_off
+}
+row_kill_pre() { kill_steps apply protect initramfs keyring repos download; }
+row_kill_post() { kill_steps commit platform mpv vulkan kernel update report; }
 row_app_quit() {
   pre_hash
   mvm_bg run
