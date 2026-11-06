@@ -186,7 +186,7 @@ ln -s ../Resources/runtime/bin/OmacVM "$C/MacOS/OmacVM-VM"
 install -m644 "$RT/firmware/edk2-aarch64-code.fd" "$RT/firmware/firmware-source" "$C/Resources/firmware/"
 install -m755 "$ROOT/scripts/create-vm.sh" "$ROOT/scripts/prebuilt-vm.sh" "$ROOT/scripts/apply-vm.sh" "$ROOT/scripts/vm-common.sh" \
   "$ROOT/scripts/update-vm.sh" \
-  "$ROOT/scripts/update-swap.sh" "$C/Resources/scripts/"
+  "$ROOT/scripts/update-swap.sh" "$ROOT/scripts/move-vm.sh" "$C/Resources/scripts/"
 # The complete omacvm (entry script + src, as a release checkout): apply-vm.sh
 # runs its src/, and the Bridge runs it for the control centre when there is no
 # checkout (src/lib/mac.sh cli_file_app). The Bridge runs it only when nobody
@@ -325,6 +325,11 @@ EOF
 # Signed by scripts/sign-app.sh (OMACVM_SIGN_ID: Developer ID, hardened runtime,
 # timestamp; else ad hoc), which release.sh also runs on an app put together on
 # another Mac (OMACVM_RELEASE_APP_FROM).
+# Every script the app (and omacvm inside it) runs is in it: a missing one
+# fails only in a built app (move-vm.sh, 3.4.0). FAIL lines stop CI and a release.
+if ! out=$("$REPO/src/tests/app-scripts.sh" "$APP"); then
+  grep -v '^ok ' <<< "$out" >&2; echo "the app lacks a script it runs (src/tests/app-scripts.sh)" >&2; exit 1
+fi
 SIGN_ARGS=("$APP" "$ID"); (( TEST )) && SIGN_ARGS+=(--test-identity)
 "$ROOT/scripts/sign-app.sh" "${SIGN_ARGS[@]}"
 log "built $APP ($(du -sh "$APP" | cut -f1))"
