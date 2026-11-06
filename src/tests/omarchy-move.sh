@@ -405,4 +405,7 @@ expect "drop-in: 4.0's HOOKS get grub-btrfs-overlayfs" "base udev block filesyst
   "$(hooks 'base udev block filesystems fsck')"
 expect "guest/install.sh writes the drop-in from the file" 1 \
   "$(grep -c 'install -Dm644 "$R/guest/mkinitcpio-omacvm.conf" /etc/mkinitcpio.conf.d/zz-omacvm.conf' "$R/src/guest/install.sh")"
+# /boot is FAT: a VM stopped right after Update VM (the move starts then) must find the old or the new menu.
+expect "guest/install.sh: GRUB's menu beside the old one, synced, renamed; everything synced at its end" "0 1 1 1" \
+  "$(grep -c 'grub-mkconfig -o /boot/grub/grub.cfg ' "$R/src/guest/install.sh") $(grep -c 'grub-mkconfig -o /boot/grub/grub.cfg.omacvm-new' "$R/src/guest/install.sh") $(grep -c 'sync && mv -f /boot/grub/grub.cfg.omacvm-new /boot/grub/grub.cfg' "$R/src/guest/install.sh") $(grep -B1 'log "OmacVM guest side installed for' "$R/src/guest/install.sh" | grep -c '^sync ')"
 exit $fail

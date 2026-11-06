@@ -732,6 +732,7 @@ grub_old=$(sed -n 's/^grub //p' $BOOT_STAMP 2>/dev/null || true)
 if [[ $(sed -n 's/^initramfs //p' $BOOT_STAMP 2>/dev/null || true) != "$init_in" ]]; then
   init_ok=; grub_old=
   if mkinitcpio -P >/dev/null 2>&1; then init_ok=$init_conf; fi
+  sync   # /boot is FAT: an image the VM loses power over before it is written comes back broken
 else
   init_ok=$init_in
 fi
@@ -739,8 +740,17 @@ grub_digest() { echo "$(digest /etc/default/grub /etc/grub.d/*)-$(ls /boot | sha
 grub_in=$(grub_digest)
 [[ -f /boot/grub/grub.cfg ]] || grub_in=missing
 grub_ok=$grub_in
+# GRUB's menu written beside the old one, on the disk, then put in its place:
+# grub-mkconfig rewrites grub.cfg in place, and a VM that lost power right
+# after that found an empty menu (a GRUB prompt, 2026-11-06).
 if [[ $grub_old != "$grub_in" ]] && command -v grub-mkconfig >/dev/null; then
-  if grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then grub_ok=$(grub_digest); else grub_ok=; fi
+  rm -f /boot/grub/grub.cfg.omacvm-new
+  if grub-mkconfig -o /boot/grub/grub.cfg.omacvm-new >/dev/null 2>&1 && [[ -s /boot/grub/grub.cfg.omacvm-new ]] &&
+     sync && mv -f /boot/grub/grub.cfg.omacvm-new /boot/grub/grub.cfg; then
+    grub_ok=$(grub_digest)
+  else
+    rm -f /boot/grub/grub.cfg.omacvm-new; grub_ok=
+  fi
 fi
 printf 'initramfs %s\ngrub %s\n' "$init_ok" "$grub_ok" | install -Dm644 /dev/stdin $BOOT_STAMP
 [[ $TYPE == fusion ]] && "$R/fusion/guest/dns.sh" off   # back to Fusion's DNS, which follows the Mac's
@@ -750,4 +760,5 @@ for f in ${SOFT[@]+"${SOFT[@]}"}; do
     REPORTED=1; exit 1
   fi
 done
+sync   # everything above on the disk: the Mac may stop the VM right after (Update VM, the move to Omarchy 4.5)
 log "OmacVM guest side installed for $U (reboot to apply everything)"
