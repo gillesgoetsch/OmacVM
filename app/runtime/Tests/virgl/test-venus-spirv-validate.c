@@ -27,8 +27,8 @@
  *                            cache (hits, LRU order, eviction, threads) on a module that
  *                            passes, the Function and Private element cases, the Workgroup
  *                            bytes, the variables one entry point gets, the interface
- *                            locations of each model and the
- *                            type cost
+ *                            locations of each model, the
+ *                            type cost and explicit layout per storage class
  * PROFILE: kk or mvk (what the 3.2.20 drivers report on an M4: Vulkan 1.4, scalar and
  * standard layouts, LocalSizeId, relaxed layout; KosmicKrisp also scalar workgroup
  * layout), mvk11 (MoltenVK under an app that asks for Vulkan 1.0 or 1.1: its device then
@@ -1141,6 +1141,102 @@ interface_units(void)
    io_case("spec-default-64", &io, "kk", &(struct spec){ 4, 8, true }, false);
 }
 
+/* --- units: explicit layout on Function, Private, Workgroup and UniformConstant types --- */
+
+/* naga (wgpu) puts Offset and ArrayStride on every struct and array type, also on the types
+ * of Function variables, in SPIR-V 1.6 too (#710, gfx-rs/wgpu#7696). The spec allows that
+ * up to SPIR-V 1.4, and spirv-tools-val-function-private-layout.patch allows it at every
+ * version for Function and Private; Workgroup without the capability and UniformConstant
+ * stay refused (VUID-StandaloneSpirv-None-10684). */
+static const char layout_head[] =
+   "OpCapability Shader\n"
+   "OpMemoryModel Logical GLSL450\n";
+static const char layout_types[] =
+   "%void = OpTypeVoid\n"
+   "%fn = OpTypeFunction %void\n"
+   "%float = OpTypeFloat 32\n"
+   "%v4 = OpTypeVector %float 4\n"
+   "%uint = OpTypeInt 32 0\n"
+   "%c4 = OpConstant %uint 4\n"
+   "%S = OpTypeStruct %v4 %v4\n"
+   "%A = OpTypeArray %v4 %c4\n";
+
+static void
+layout_case(const char *name, const char *prof, spv_target_env env, const char *decorations,
+            const char *globals, const char *locals, const char *interface, bool want_ok,
+            const char *want_why)
+{
+   char text[2048], why[512];
+   snprintf(text, sizeof(text),
+            "%sOpEntryPoint GLCompute %%main \"main\"%s\n"
+            "OpExecutionMode %%main LocalSize 1 1 1\n%s%s%s"
+            "%%main = OpFunction %%void None %%fn\n%%l = OpLabel\n%s"
+            "OpReturn\nOpFunctionEnd\n",
+            layout_head, interface, decorations, layout_types, globals, locals);
+   spv_context ctx = spvContextCreate(env);
+   spv_binary bin = NULL;
+   spv_diagnostic diag = NULL;
+   const bool assembled = spvTextToBinary(ctx, text, strlen(text), &bin, &diag) == SPV_SUCCESS;
+   CHECK(assembled, "layout %s: assembles: %s", name, diag ? diag->error : "?");
+   if (assembled) {
+      struct vkr_spirv_target t;
+      profile(prof, &t);
+      bool unsafe = false;
+      const bool ok = validate(&t, bin->code, bin->wordCount * 4, why, sizeof(why), &unsafe);
+      CHECK(ok == want_ok && (ok || !want_why || strstr(why, want_why)),
+            "layout %s (%s): %s, want %s %s", name, prof, ok ? "passed" : why,
+            want_ok ? "passed" : "refused with", want_why ? want_why : "");
+   }
+   spvBinaryDestroy(bin);
+   spvDiagnosticDestroy(diag);
+   spvContextDestroy(ctx);
+}
+
+static void
+layout_units(void)
+{
+   static const char offset[] = "OpMemberDecorate %S 0 Offset 0\nOpMemberDecorate %S 1 Offset 16\n";
+   static const char stride[] = "OpDecorate %A ArrayStride 16\n";
+   static const char fn_s[] = "%pS = OpTypePointer Function %S\n";
+   static const char fn_var[] = "%v = OpVariable %pS Function\n";
+   static const char *const profiles[] = { "kk", "mvk" };
+   for (int i = 0; i < 2; i++) {
+      const char *p = profiles[i];
+      /* Zed's prepare_gradient_color: `var result = GradientColor();`, a struct with Offset */
+      layout_case("function-offset-1.6", p, SPV_ENV_UNIVERSAL_1_6, offset, fn_s, fn_var, "", true,
+                  NULL);
+      layout_case("function-offset-1.4", p, SPV_ENV_UNIVERSAL_1_4, offset, fn_s, fn_var, "", true,
+                  NULL);
+      layout_case("private-offset-1.6", p, SPV_ENV_UNIVERSAL_1_6, offset,
+                  "%pS = OpTypePointer Private %S\n%v = OpVariable %pS Private\n", "", " %v", true,
+                  NULL);
+      layout_case("function-stride-1.6", p, SPV_ENV_UNIVERSAL_1_6, stride,
+                  "%pA = OpTypePointer Function %A\n", "%v = OpVariable %pA Function\n", "", true,
+                  NULL);
+      /* Workgroup takes layout only with WorkgroupMemoryExplicitLayoutKHR */
+      layout_case("workgroup-offset-1.6", p, SPV_ENV_UNIVERSAL_1_6, offset,
+                  "%pS = OpTypePointer Workgroup %S\n%v = OpVariable %pS Workgroup\n", "", " %v",
+                  false, "VUID-StandaloneSpirv-None-10684");
+      layout_case("workgroup-offset-1.4", p, SPV_ENV_UNIVERSAL_1_4, offset,
+                  "%pS = OpTypePointer Workgroup %S\n%v = OpVariable %pS Workgroup\n", "", " %v",
+                  false, "VUID-StandaloneSpirv-None-10684");
+      /* UniformConstant never takes layout: an image array with ArrayStride */
+      layout_case("uniformconstant-stride-1.6", p, SPV_ENV_UNIVERSAL_1_6,
+                  "OpDecorate %I ArrayStride 8\nOpDecorate %v DescriptorSet 0\n"
+                  "OpDecorate %v Binding 0\n",
+                  "%img = OpTypeImage %float 2D 0 0 0 1 Unknown\n%I = OpTypeArray %img %c4\n"
+                  "%pI = OpTypePointer UniformConstant %I\n%v = OpVariable %pI UniformConstant\n",
+                  "", " %v", false, "VUID-StandaloneSpirv-None-10684");
+   }
+   /* MoltenVK under a Vulkan 1.1 app takes SPIR-V up to 1.4: 1.5 and 1.6 stay too new */
+   layout_case("function-offset-1.6", "mvk11", SPV_ENV_UNIVERSAL_1_6, offset, fn_s, fn_var, "",
+               false, NULL);
+   layout_case("function-offset-1.5", "mvk11", SPV_ENV_UNIVERSAL_1_5, offset, fn_s, fn_var, "",
+               false, NULL);
+   layout_case("function-offset-1.4", "mvk11", SPV_ENV_UNIVERSAL_1_4, offset, fn_s, fn_var, "",
+               true, NULL);
+}
+
 /* --- units: the variables of one entry point --- */
 
 /* SPIR-V `version` with two compute entry points "a" and "b". Each calls a function with a
@@ -1327,6 +1423,7 @@ main(int argc, char **argv)
       interface_units();
       entry_units();
       cost_units();
+      layout_units();
       free(code);
       printf("units: %s\n", failures ? "FAIL" : "all ok");
       return failures != 0;

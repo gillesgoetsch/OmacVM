@@ -11,6 +11,18 @@ in more words.
   (before, QEMU grew by 5 GB in 7 seconds and was still growing). OmacVM never sets that
   variable. Troubleshooting 55 says what the `host memory` line means. Nothing changes in the app
   or the VM.
+- **Zed and other wgpu apps start on Vulkan again (OmacVM.app, see #710, reported by @epicoun).**
+  Since 3.2.21 QEMU's shader check refused Zed 1.26 and 1.27's shaders with Graphics on Vulkan, so
+  Zed ended about a second after it started and only ran on the CPU renderer. Zed draws with wgpu,
+  whose shader compiler (naga) adds layout details to local variables when it writes SPIR-V 1.6
+  (gfx-rs/wgpu#7696). The Vulkan spec allows those only up to SPIR-V 1.4, and KosmicKrisp drops
+  them, so the check now takes them at every version, as it already did up to 1.4; everything else
+  is checked as before. In wgpu's own examples 21 of 63 shaders were refused the same way; now none.
+  Still refused: compute shaders with shared (Workgroup) arrays that naga marks the same way, which
+  the spec allows at no version. On MoltenVK (macOS 15) two of Zed's shaders also fail in MoltenVK's
+  own shader translator, at any SPIR-V version; that is not fixed here. A refused shader's reason is
+  now written to qemu.log in full (it was cut at 191 characters). Needs the app update only (from the
+  VM's next start); nothing in the VM.
 
 ## 3.3.0
 
