@@ -184,6 +184,27 @@ has "features --json: not fixed, and why" "$OUT" "the record was not fixed (the 
 expect "features --json: the record as it was" "fast-network=off control-centre=on" "$(cat "$D/features")"
 expect "features --json: nothing written in the VM" "PROBE" "$(sort -u "$S/ssh.log" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
 
+# A VM in the middle of its move to Omarchy 4.5 (the folder's journal, the
+# app's move-vm.sh): update --vm stops before the Mac side (exit 3, the move
+# text); an update of all running VMs skips it: the Mac side goes on, nothing
+# reaches the VM.
+for st in running interrupted failed undoing; do
+  reset_vm 2.9.1; printf 'state=%s\n' "$st" > "$D/move-4.5"
+  run update --vm Test --yes
+  untouched "update --vm on a VM whose move is $st" ""
+  has "update --vm, move $st: the move text" "$OUT" "'Test' is in the middle of its move to Omarchy 4.5: resume or undo it in OmacVM.app first: nothing was updated"
+done
+mkdir -p "$(dirname "$PIN")"; echo "omacvm-vm ssh-ed25519 AAAA" > "$PIN"
+reset_vm 2.9.1; printf 'state=interrupted\n' > "$D/move-4.5"
+run update --yes
+[[ -e $S/mac-install ]] && echo "ok   update, a VM's move not over: the Mac side goes on" || { echo "FAIL update, a VM's move not over: the Mac side did not run: $OUT"; fail=1; }
+expect "update, a VM's move not over: nothing reached the VM" "" "$(sort -u "$S/ssh.log" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+has "update, a VM's move not over: says it was skipped" "$OUT" "move to Omarchy 4.5: resume or undo it in OmacVM.app first; not updated"
+reset_vm 2.9.1; printf 'state=done\n' > "$D/move-4.5"
+run update --vm Test --yes
+[[ -e $S/mac-install ]] && echo "ok   update --vm after a finished move: goes on" || { echo "FAIL update --vm after a finished move did not go on: $OUT"; fail=1; }
+rm -f "$PIN" "$D/move-4.5"
+
 # A stopped VM: update --vm reads the app VM's folder.
 kill "$QEMU" 2>/dev/null; wait "$QEMU" 2>/dev/null; QEMU=""
 reset_vm 3.0.3
