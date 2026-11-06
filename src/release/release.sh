@@ -30,8 +30,9 @@
 #             (src/tests/e2e/move-45.sh) passed, its files as in M; publish
 #             refuses without it, and without the prebuilt image (Omarchy 4.5)
 #   publish   the prebuilt pre-release first (only an image that passed step
-#             image for M; uploaded, then checked on GitHub), then tag M and
-#             the GitHub release (latest) (dry run: prints the commands only)
+#             image for M, its parts still the signed manifest's; uploaded at
+#             M, then checked on GitHub part by part), then tag M and the
+#             GitHub release (latest) (dry run: prints the commands only)
 #   after     download what GitHub serves and check it again
 # Other commands:
 #   rollback-prep  a signed feed for the release before (kept, not uploaded)
@@ -441,7 +442,11 @@ PY
 # generalize it): an image made at another commit counts for M only while
 # these are the same there (3.4.0 on; the manifest's "commit").
 IMAGE_PATHS=(src app/scripts ':(exclude)src/tests')
-image_sum() { cat "$1/$2.json" "$1/$2.json.sig" 2>/dev/null | shasum -a 256 | cut -c1-64; }
+# IMAGE_SUM: the manifest, its signature and the sums file as step image passed them.
+image_sum() { cat "$1/$2.json" "$1/$2.json.sig" "$1/$2.sha256" 2>/dev/null | shasum -a 256 | cut -c1-64; }
+# image_parts DIR BASE: DIR's part files are exactly the SIGNED manifest's (names, sizes, SHA-256);
+# the unsigned .sha256 alone is not enough (made again, it matches any part).
+image_parts() { python3 "$R/src/prebuilt/manifest.py" check "$1/$2.json" "$1" >&2; }
 
 step_image() {
   local img=$OUT/prebuilt base=omacvm-prebuilt-$VERSION-app m
@@ -492,6 +497,7 @@ PY2
     rm -rf "$img"; mv "$OUT/prebuilt-out/app" "$img"; rm -rf "$OUT/prebuilt-out"
   fi
   [[ -f $img/$base.json.sig ]] || ifail "no signed $base.json in $img"
+  image_parts "$img" "$base" || ifail "the image's parts are not those of its signed manifest"
   (cd "$img" && shasum -a 256 -c "$base.sha256" >/dev/null) || ifail "image sums do not match"
   local v; v=$(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omacvm) || ifail "the image manifest does not verify"
   [[ $v == "$VERSION" ]] || ifail "the image is for $v"
@@ -602,7 +608,8 @@ step_publish() {
   local img=$OUT/prebuilt base=omacvm-prebuilt-$VERSION-app have=0
   if [[ -d $img ]]; then
     [[ $(get IMAGE) == pass && $(get IMAGE_M) == "$m" ]] || die "the image in $img has not passed step image for M: release.sh $VERSION image"
-    [[ $(image_sum "$img" "$base") == "$(get IMAGE_SUM)" ]] || die "the image's manifest changed after step image: release.sh $VERSION image"
+    [[ $(image_sum "$img" "$base") == "$(get IMAGE_SUM)" ]] || die "the image's manifest or sums changed after step image: release.sh $VERSION image"
+    image_parts "$img" "$base" || die "the image's parts are not those of its signed manifest: release.sh $VERSION image"
     (cd "$img" && shasum -a 256 -c "$base.sha256" >/dev/null) || die "image sums do not match"
     python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" route >/dev/null || die "the image manifest does not verify"
     have=1; note "image: passed step image for M"
@@ -635,29 +642,64 @@ step_publish() {
   gh release create "$TAG" -R "$GH_REPO" "${assets[@]}" --verify-tag --latest --title "$title" --notes-file "$nf"
 }
 
-# image_published DIR BASE: prebuilt-$VERSION on GitHub serves exactly DIR's image (the manifest,
-# its signature and sums byte for byte; every part there at its size) at M.
+# image_published DIR BASE: prebuilt-$VERSION on GitHub serves exactly DIR's image at M: the manifest,
+# its signature and sums byte for byte; every part of the signed manifest there with its size and
+# SHA-256 (GitHub's asset digest, or the part downloaded when GitHub gives none), no other part; the
+# release's target and its tag both M.
 image_published() {
-  local d=$1 base=$2 t; t=$(mktemp -d)
+  local d=$1 base=$2 m t tagc; m=$(get M); t=$(mktemp -d)
   gh release download "prebuilt-$VERSION" -R "$GH_REPO" -D "$t" -p "$base.json" -p "$base.json.sig" -p "$base.sha256" >/dev/null 2>&1 ||
     { note "prebuilt-$VERSION: could not download its manifest"; rm -rf "$t"; return 1; }
   local f; for f in "$base.json" "$base.json.sig" "$base.sha256"; do
     cmp -s "$t/$f" "$d/$f" || { note "prebuilt-$VERSION: $f differs from $d"; rm -rf "$t"; return 1; }
   done
-  rm -rf "$t"
-  gh release view "prebuilt-$VERSION" -R "$GH_REPO" --json assets,targetCommitish -q '.targetCommitish, (.assets[] | "\(.name) \(.size)")' > "$OUT/prebuilt-assets.txt" ||
-    { note "prebuilt-$VERSION: no asset list"; return 1; }
-  python3 -I - "$d/$base.json" "$OUT/prebuilt-assets.txt" "$(get M)" <<'PY2'
-import json, sys
-m = json.load(open(sys.argv[1]))
-lines = open(sys.argv[2]).read().split("\n")
-target, got = lines[0].strip(), dict(l.rsplit(" ", 1) for l in lines[1:] if " " in l)
-bad = ["%s (%s, want %d)" % (p["name"], got.get(p["name"], "missing"), p["size"]) for p in m["parts"] if got.get(p["name"]) != str(p["size"])]
-if target not in (sys.argv[3], ""):
-    bad.append("its tag is at %s, not M" % target[:12])
+  python3 "$R/src/prebuilt/manifest.py" parts "$d/$base.json" > "$t/parts" || { rm -rf "$t"; return 1; }
+  gh api "repos/$GH_REPO/releases/tags/prebuilt-$VERSION" > "$OUT/prebuilt-release.json" 2>/dev/null ||
+    { note "prebuilt-$VERSION: GitHub does not answer for it"; rm -rf "$t"; return 1; }
+  tagc=$(gh api "repos/$GH_REPO/commits/prebuilt-$VERSION" -q .sha 2>/dev/null) || tagc=""
+  python3 -I - "$OUT/prebuilt-release.json" "$t/parts" "$m" "$tagc" "$base" "prebuilt-$VERSION" "$GH_REPO" "$t" <<'PY2'
+import hashlib, json, os, subprocess, sys
+rel, parts, m, tagc, base, tag, repo, tmp = sys.argv[1:]
+r = json.load(open(rel))
+bad = []
+target = str(r.get("target_commitish") or "")
+if target != m:
+    bad.append("its target is %r, not M %s" % (target[:40], m[:12]))
+if tagc != m:
+    bad.append("its tag is at %s, not M" % (tagc[:12] or "no commit"))
+if r.get("draft"):
+    bad.append("it is a draft")
+assets = {str(a.get("name")): a for a in r.get("assets") or []}
+want = [l.split() for l in open(parts) if l.strip()]
+names = {w[0] for w in want}
+bad += ["%s is not in the manifest" % n for n in sorted(assets) if n.startswith(base + ".tar.zst.part-") and n not in names]
+for n, size, digest in want:
+    a = assets.get(n)
+    if a is None:
+        bad.append("%s is missing" % n)
+    elif a.get("size") != int(size):
+        bad.append("%s is %s bytes, want %s" % (n, a.get("size"), size))
+    elif a.get("digest"):
+        if a["digest"] != "sha256:" + digest:
+            bad.append("%s: GitHub's digest is not the signed manifest's" % n)
+    else:   # no digest from GitHub (older answers): the part itself
+        f = os.path.join(tmp, n)
+        if subprocess.run(["gh", "release", "download", tag, "-R", repo, "-D", tmp, "-p", n, "--clobber"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0 or not os.path.isfile(f):
+            bad.append("%s: could not download it" % n)
+            continue
+        h = hashlib.sha256()
+        with open(f, "rb") as fh:
+            for b in iter(lambda: fh.read(1 << 20), b""):
+                h.update(b)
+        os.remove(f)
+        if h.hexdigest() != digest:
+            bad.append("%s: SHA-256 is not the signed manifest's" % n)
 if bad:
     sys.exit("    prebuilt on GitHub: " + "; ".join(bad))
+print("    prebuilt on GitHub: %d parts as the signed manifest, at M %s" % (len(want), m[:12]))
 PY2
+  local rc=$?; rm -rf "$t"; return $rc
 }
 
 step_after() {

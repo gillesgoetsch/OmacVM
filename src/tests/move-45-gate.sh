@@ -114,7 +114,7 @@ expect "release.sh: the gate runs move-45-result.py" 1 "$(grep -c 'move-45-resul
 # C: the image's commit; M: README only changed (the image's files are M's); M3: a guest file changed.
 X=$T/rel; mkdir -p "$X"; rsync -a --exclude tests "$R/src/" "$X/src/"; echo a > "$X/README"
 gx() { git -C "$X" -c user.name=t -c user.email=t@t "$@"; }
-gx init -q; gx add -A; gx commit -qm c; IC=$(gx rev-parse HEAD)
+gx init -q; gx config user.name t; gx config user.email t@t; gx add -A; gx commit -qm c; IC=$(gx rev-parse HEAD)
 echo b >> "$X/README"; gx commit -qam m; IM=$(gx rev-parse HEAD)
 echo "# changed" >> "$X/src/guest/install.sh"; gx commit -qam m3; IM3=$(gx rev-parse HEAD)
 source "$R/src/tests/release-test-keys.sh"   # OMACVM_RELEASE_TEST_KEYS, $T/sign, sign_doc
@@ -127,7 +127,7 @@ mkimg() {   # DIR COMMIT ["" = none]: a signed stand-in image for 9.9.9 (Omarchy
   sign_doc "$1/$B.json"; (cd "$1" && shasum -a 256 "$B.tar.zst.part-aa" "$B.json" "$B.json.sig" > "$B.sha256")
 }
 O=$T/out; RS=$O/release/state
-rel() { HOME=$H OMACVM_RELEASE_OUT=$O OMACVM_RELEASE_NOTES=$T/notes.md "$X/src/release/release.sh" "$@" > "$T/rel.out" 2>&1; }
+rel() { HOME=$H OMACVM_RELEASE_OUT=$O OMACVM_RELEASE_NOTES=$T/notes.md "$X/src/release/release.sh" "$@" > "$T/rel.out" 2>&1 < /dev/null; }
 st() { sed -n "s/^$1=//p" "$RS" | tail -1; }
 echo "release text" > "$T/notes.md"
 mkdir -p "$O/release"; printf 'M=%s\nE2E=pass\nE2E_M=%s\nMOVES=pass\nMOVES_M=%s\n' "$IM" "$IM" "$IM" > "$RS"
@@ -168,5 +168,92 @@ rel --dry-run 9.9.9 publish
 expect "publish (dry run): an image that passed is published" 0 "$?"
 up=$(grep -n 'make-image.sh app upload' "$T/rel.out" | head -1 | cut -d: -f1); app=$(grep -n 'gh release create v9.9.9' "$T/rel.out" | head -1 | cut -d: -f1)
 expect "publish: the image goes up (and is checked) before the app's release" 1 "$([[ -n $up && -n $app ]] && (( up < app )) && echo 1 || echo 0)"
+
+# ---- the image's parts against its SIGNED manifest, on every path and at publish ----
+# swap DIR: another part-aa, and a .sha256 made again to match it (the manifest and its .sig unchanged).
+swap() { head -c 4096 /dev/urandom > "$1/$B.tar.zst.part-aa"; (cd "$1" && shasum -a 256 "$B.tar.zst.part-aa" "$B.json" "$B.json.sig" > "$B.sha256"); }
+printf 'M=%s\nE2E=pass\nE2E_M=%s\nMOVES=pass\nMOVES_M=%s\nIMAGE=\n' "$IM" "$IM" "$IM" > "$RS"
+mkimg "$T/img-sw" "$IM"; swap "$T/img-sw"
+expect "image: a signed image with a part swapped (its .sha256 made again) is refused" 1 "$(OMACVM_RELEASE_IMAGE_FROM=$T/img-sw rel 9.9.9 image; echo $?)"
+expect "image: says the part is not the signed manifest's" 1 "$(grep -q 'signed manifest' "$T/rel.out" && echo 1)"
+mkimg "$T/img-ex" "$IM"; head -c 10 /dev/urandom > "$T/img-ex/$B.tar.zst.part-ab"
+expect "image: a part the signed manifest does not list is refused" 1 "$(OMACVM_RELEASE_IMAGE_FROM=$T/img-ex rel 9.9.9 image; echo $?)"
+mkimg "$T/img-m" "$IM"
+OMACVM_RELEASE_IMAGE_FROM=$T/img-m rel 9.9.9 image
+expect "image: a good one passes again" "pass" "$(st IMAGE)"
+cp -R "$O/release/prebuilt" "$T/passed"
+swap "$O/release/prebuilt"
+expect "publish: a part swapped after step image (.sha256 made again) is refused" 1 "$(rel 9.9.9 publish; echo $?)"
+expect "publish: says the sums changed" 1 "$(grep -q 'changed after step image' "$T/rel.out" && echo 1)"
+rm -rf "$O/release/prebuilt"; cp -R "$T/passed" "$O/release/prebuilt"
+head -c 4096 /dev/urandom > "$O/release/prebuilt/$B.tar.zst.part-aa"
+expect "publish: a part swapped after step image (.sha256 as it was) is refused" 1 "$(rel 9.9.9 publish; echo $?)"
+expect "publish: says the part is not the signed manifest's" 1 "$(grep -q 'signed manifest' "$T/rel.out" && echo 1)"
+rm -rf "$O/release/prebuilt"; cp -R "$T/passed" "$O/release/prebuilt"
+(cd "$O/release/prebuilt" && shasum -a 256 "$B.json" "$B.json.sig" > "$B.sha256")
+expect "publish: a .sha256 changed after step image is refused (IMAGE_SUM)" 1 "$(rel 9.9.9 publish; echo $?)"
+expect "publish: says so" 1 "$(grep -c 'changed after step image' "$T/rel.out")"
+rm -rf "$O/release/prebuilt"; cp -R "$T/passed" "$O/release/prebuilt"
+
+# ---- publish for real against a stand-in gh (no network): the prebuilt release must be M's ----
+# The stand-in keeps releases in $GHS/rel/TAG/ (TAG.target: its target commit); GHS_TARGET and
+# GHS_TAGSHA change what GitHub says, GHS_BAD names a part GitHub serves other bytes for,
+# GHS_NODIGEST=1 leaves the assets' digests out (older uploads).
+GHS=$T/ghs; mkdir -p "$T/bin" "$GHS/rel"
+cat > "$T/bin/gh" <<'GH'
+#!/bin/bash
+S=$GHS; echo "gh $*" >> "$S/calls"
+a=(); while (( $# )); do case $1 in -R) shift ;; *) a+=("$1") ;; esac; shift; done; set -- "${a[@]}"
+case "$1 $2" in
+  "release view") [[ -d $S/rel/$3 ]] ;;
+  "release create") t=$3; shift 3; tg=main
+    while (( $# )); do [[ $1 == --target ]] && tg=$2; [[ -f $1 ]] && { mkdir -p "$S/rel/$t"; cp "$1" "$S/rel/$t/"; }; shift; done
+    mkdir -p "$S/rel/$t"; echo "$tg" > "$S/rel/$t.target" ;;
+  "release upload") t=$3; shift 3; [[ -d $S/rel/$t ]] || exit 1
+    for f; do [[ -f $f ]] || continue; cp "$f" "$S/rel/$t/"
+      [[ ${f##*/} == "${GHS_BAD:-none}" ]] && printf 'x' >> "$S/rel/$t/${f##*/}"; done; true ;;
+  "release download") t=$3; shift 3; d=.; p=()
+    while (( $# )); do case $1 in -D) d=$2; shift ;; -p) p+=("$2"); shift ;; esac; shift; done
+    for x in "${p[@]}"; do cp "$S/rel/$t/$x" "$d/" || exit 1; done ;;
+  "api "*/releases/tags/*) t=${2##*/}; [[ -d $S/rel/$t ]] || exit 1
+    python3 -I - "$S/rel/$t" "${GHS_TARGET-$(cat "$S/rel/$t.target")}" "${GHS_NODIGEST:-0}" <<'PY'
+import hashlib, json, os, sys
+d, target, nod = sys.argv[1:]
+a = [{"name": n, "size": os.path.getsize(os.path.join(d, n)),
+      "digest": None if nod == "1" else "sha256:" + hashlib.sha256(open(os.path.join(d, n), "rb").read()).hexdigest()}
+     for n in sorted(os.listdir(d))]
+print(json.dumps({"tag_name": os.path.basename(d), "target_commitish": target, "draft": False, "assets": a}))
+PY
+    ;;
+  "api "*/commits/*) t=${2##*/}; [[ -f $S/rel/$t.target ]] || exit 1; echo "${GHS_TAGSHA:-$(cat "$S/rel/$t.target")}" ;;
+  *) echo "gh stand-in: $*" >&2; exit 1 ;;
+esac
+GH
+chmod +x "$T/bin/gh"
+# The worktree publish uploads from (make-image.sh at 9.9.9), and an origin for the tag.
+WTX=$H/omacvm-rel-9.9.9-build; rm -rf "$WTX"; cp -R "$X" "$WTX"; echo 9.9.9 > "$WTX/src/VERSION"
+git init -q --bare "$T/origin.git"; gx remote add origin "$T/origin.git"
+for f in "$B-packages.txt" SOURCES.md; do echo x > "$O/release/prebuilt/$f"; done
+mkdir -p "$O/release/files"; : > "$O/release/prebuilt-assets.txt"
+pub() {   # [AT-COMMIT] [VAR=VALUE...]: publish with --yes against the stand-in (a prebuilt release already
+  # there at AT-COMMIT when given); never the real gh: no token, an empty config, the stand-in first in PATH
+  rm -rf "$GHS/rel" "$GHS/calls"; mkdir -p "$GHS/rel"; gx tag -d v9.9.9 >/dev/null 2>&1
+  git -C "$T/origin.git" tag -d v9.9.9 >/dev/null 2>&1
+  if [[ ${1:-} =~ ^[0-9a-f]{40}$ ]]; then mkdir -p "$GHS/rel/prebuilt-9.9.9"; echo "$1" > "$GHS/rel/prebuilt-9.9.9.target"; shift; fi
+  env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR=$T/ghcfg GHS=$GHS PATH="$T/bin:$PATH" "$@" \
+    HOME=$H OMACVM_RELEASE_OUT=$O OMACVM_RELEASE_NOTES=$T/notes.md "$X/src/release/release.sh" --yes 9.9.9 publish > "$T/rel.out" 2>&1 < /dev/null
+}
+app_out() { grep -c 'release create v9.9.9' "$GHS/calls" 2>/dev/null; }
+expect "publish (stand-in gh): a good image at M goes up, then the app" "0 1" "$(pub; echo $?) $(app_out)"
+expect "publish: the prebuilt release is made at M" "$IM" "$(cat "$GHS/rel/prebuilt-9.9.9.target" 2>/dev/null)"
+expect "publish: prebuilt-9.9.9 already there at another commit: refused, nothing uploaded, nothing of the app" "1 0 0" \
+  "$(pub "$IC"; echo $?) $(app_out) $(ls "$GHS/rel/prebuilt-9.9.9" | grep -c part-aa)"
+expect "publish: GitHub's target is empty: refused" "1 0" "$(pub GHS_TARGET=; echo $?) $(app_out)"
+expect "publish: GitHub's target is a branch, not M: refused" "1 0" "$(pub GHS_TARGET=main; echo $?) $(app_out)"
+expect "publish: the tag is at another commit than M: refused" "1 0" "$(pub GHS_TAGSHA=$IC; echo $?) $(app_out)"
+expect "publish: GitHub serves other bytes for a part (its digest): refused" "1 0" "$(pub GHS_BAD=$B.tar.zst.part-aa; echo $?) $(app_out)"
+expect "publish: says which part" 1 "$(grep -c "$B.tar.zst.part-aa" "$T/rel.out")"
+expect "publish: no digests on GitHub: the parts are downloaded and checked, then the app" "0 1" "$(pub GHS_NODIGEST=1; echo $?) $(app_out)"
+expect "publish: no digests and other bytes for a part: refused" "1 0" "$(pub GHS_NODIGEST=1 GHS_BAD=$B.tar.zst.part-aa; echo $?) $(app_out)"
 
 exit $fail

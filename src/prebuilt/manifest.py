@@ -13,6 +13,8 @@
                                            in images before 3.4.0); the manifest is
                                            checked first, exit 1 if it is bad
   manifest.py parts MANIFEST               one line per part: NAME SIZE SHA256
+  manifest.py check MANIFEST DIR           exit 0 when DIR's part files are exactly the signed
+                                           manifest's: the same names, sizes and SHA-256 sums
   manifest.py release RELEASES.json VERSION ROUTE
                                            from GitHub's release list: TAG URL IMAGE_VERSION
                                            of the newest image for ROUTE with the same
@@ -22,7 +24,7 @@
                                            "omarchy" value suits app VERSION (OMARCHY_FLOOR)
   manifest.py asset RELEASES.json TAG NAME the download URL of one asset
 
-get and parts read nothing before MANIFEST.sig checks out: signed by one of
+get, parts and check read nothing before MANIFEST.sig checks out: signed by one of
 OmacVM's release keys (src/release/keys.py), "kind": "prebuilt-manifest",
 "devid_teams" listed. The parts' SHA-256 sums then come from that signed
 manifest.
@@ -136,6 +138,49 @@ def checked(path):
     return out
 
 
+PART = re.compile(r"^omacvm-prebuilt-[0-9]+\.[0-9]+\.[0-9]+-(parallels|utm|fusion|app)\.tar\.zst\.part-[a-z]{2,4}$")
+
+
+def parts(path):
+    """(name, size, sha256) of each part, from the signed manifest (exit if it is bad)."""
+    try:
+        m = signed(path)
+    except (ValueError, OSError) as e:
+        sys.exit("manifest.py: %s: %s" % (path, e))
+    out = []
+    # The names become file paths on the Mac: only our own part names.
+    for p in m.get("parts") or []:
+        size = p.get("size")
+        if (not PART.match(str(p.get("name"))) or not re.fullmatch(r"[0-9a-f]{64}", str(p.get("sha256")))
+                or type(size) is not int or not 0 < size <= 1 << 40):
+            sys.exit("manifest.py: unexpected part %r" % p.get("name"))
+        out.append((p["name"], size, p["sha256"]))
+    return out
+
+
+def check_dir(path, d):
+    """What in D differs from the signed manifest at PATH: its parts by name, size and SHA-256,
+    and no other part file of that image ([] when none)."""
+    want = parts(path)
+    if not want:
+        return ["the manifest lists no parts"]
+    base = os.path.basename(path)[:-len(".json")] if path.endswith(".json") else ""
+    bad = []
+    names = {n for n, _, _ in want}
+    for n in sorted(os.listdir(d)):
+        if n not in names and (n.startswith(base + ".tar.zst.part-") or PART.match(n)):
+            bad.append("%s is not in the manifest" % n)
+    for n, size, digest in want:
+        f = os.path.join(d, n)
+        if not os.path.isfile(f):
+            bad.append("%s is missing" % n)
+        elif os.path.getsize(f) != size:
+            bad.append("%s is %d bytes, the manifest says %d" % (n, os.path.getsize(f), size))
+        elif sha256(f) != digest:
+            bad.append("%s: SHA-256 is not the manifest's" % n)
+    return bad
+
+
 def vtuple(v):
     return tuple(int(x) for x in v.split("."))
 
@@ -194,18 +239,12 @@ def main(a):
             sys.exit("manifest.py: unknown key %r" % a[3])
         print(m[a[3]])
     elif cmd == "parts":
-        try:
-            m = signed(a[2])
-        except (ValueError, OSError) as e:
-            sys.exit("manifest.py: %s: %s" % (a[2], e))
-        # The names become file paths on the Mac: only our own part names.
-        ok = re.compile(r"^omacvm-prebuilt-[0-9]+\.[0-9]+\.[0-9]+-(parallels|utm|fusion|app)\.tar\.zst\.part-[a-z]{2,4}$")
-        for p in m["parts"]:
-            size = p.get("size")
-            if (not ok.match(str(p.get("name"))) or not re.fullmatch(r"[0-9a-f]{64}", str(p.get("sha256")))
-                    or type(size) is not int or not 0 < size <= 1 << 40):
-                sys.exit("manifest.py: unexpected part %r" % p.get("name"))
-            print(p["name"], size, p["sha256"])
+        for name, size, digest in parts(a[2]):
+            print(name, size, digest)
+    elif cmd == "check":
+        bad = check_dir(a[2], a[3])
+        if bad:
+            sys.exit("manifest.py: %s: not the signed manifest's parts: %s" % (a[3], "; ".join(bad)))
     elif cmd == "release":
         # The newest image for this route with the same major version and a
         # version up to ours (the first omacvm apply brings the guest side
