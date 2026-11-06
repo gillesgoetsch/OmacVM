@@ -492,10 +492,18 @@ fresh; echo "omarchy 4.5.0-3 e" > "$P/db"; o run >/dev/null 2>&1; expect "pendin
 # guest/install.sh, the Update VM of a Resume: nothing of it while pending.
 gblk=$(awk '/^# The move stopped before its package switch was done/ { on = 1 } on { print } on && /^fi$/ { exit }' "$R/src/guest/install.sh")
 gi() { OMACVM_MOVE_DIR=$J bash -c "R='$TR'"$'\n'"$gblk"$'\n''echo goes-on' 2>&1; echo "rc=$?"; }
-fresh; : > "$P/cut-before"; o run >/dev/null 2>&1; out=$(gi)
-expect "guest/install.sh on a cut-off switch: stops at once (exit 0), says why, nothing after it runs" "rc=0 1 0" \
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1; out=$(OMACVM_MOVE_RUN=1 gi)
+expect "guest/install.sh of the move's own apply on a cut-off switch: stops at once (exit 0), says why, nothing after it runs" "rc=0 1 0" \
   "$(tail -1 <<<"$out") $(grep -c '^OmacVM: the move to Omarchy 4.5 is not finished' <<<"$out") $(grep -c goes-on <<<"$out")"
+out=$(gi)
+expect "guest/install.sh of any other apply there: fails (exit 5: apply records nothing), says why, nothing after it runs" "rc=5 1 1 0" \
+  "$(tail -1 <<<"$out") $(grep -c '^OmacVM: the move to Omarchy 4.5 is not finished' <<<"$out") $(grep -c '^guest/install.sh: nothing was set up: .*Resume or Undo' <<<"$out") $(grep -c goes-on <<<"$out")"
 fresh; o run >/dev/null 2>&1; expect "guest/install.sh after a move: goes on" "goes-on rc=0" "$(gi | tr '\n' ' ' | sed 's/ $//')"
+# apply's call of it: OMACVM_MOVE_RUN=1 only from the move's own apply (move-vm.sh).
+ablk=$(awk '/^guest_install\(\) \{/ { on = 1 } on { print } on && /^\}$/ { exit }' "$R/src/cmd/apply.sh")
+ga() { bash -c 'gssh() { echo "$2"; }; feature_index() { echo 0; }; FN=(); TYPE=app U=u KB=k MODE= GI_ARGS= NAMED=0'$'\n'"$ablk"$'\n''guest_install' 2>&1; }
+expect "apply: the move's own apply tells guest/install.sh so (OMACVM_MOVE_RUN=1), any other does not" "1 0" \
+  "$(OMACVM_MOVE_RUN=1 ga | grep -c '^OMACVM_MOVE_RUN=1 /usr/local/share/omacvm/guest/install.sh --user ') $(ga | grep -c OMACVM_MOVE_RUN)"
 gl=$(grep -n '^# The move stopped before its package switch was done' "$R/src/guest/install.sh" | cut -d: -f1)
 expect "guest/install.sh: that check comes before anything that changes a package or pacman's lock" "0 yes" \
   "$(head -n "${gl:-0}" "$R/src/guest/install.sh" | grep -v '^[[:space:]]*#' | grep -cE 'pkg-add|gbm-guard|pacman |db\.lck|makepkg') \

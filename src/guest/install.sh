@@ -21,6 +21,9 @@
 # system steps are skipped. --strict F,...|all: a part of these features that
 # could not be set up fails the run (exit 1, after the other parts); without
 # it, such a part is only logged.
+# Exit 5: a move to Omarchy 4.5 stopped here before its package switch was
+# done (guest/omarchy-move.sh pending): nothing was set up. The move's own
+# apply passes OMACVM_MOVE_RUN=1 and gets exit 0 then.
 # --graphics (OmacVM.app): what the VM's Graphics setting gives it on this Mac
 # (the Mac decides Automatic); vulkan builds its Venus driver ahead of the
 # start that gets Vulkan. Kept in /etc/omacvm/env.
@@ -75,10 +78,16 @@ fi
 # gbm-guard puts some back, pacman's lock would go), else a switch Resume
 # can finish turns into one only Undo can. Nothing of this now: the move's
 # own Update VM after the switch does it all (guest/omarchy-move.sh pending).
+# The move's own apply (OMACVM_MOVE_RUN=1) goes on (exit 0); any other one
+# fails (exit 5), so apply records no part of this OmacVM as installed.
 if why=$("$R/guest/omarchy-move.sh" pending 2>/dev/null); then
   echo "OmacVM: $why"
-  echo "OmacVM: the VM side waits for the move (its Update VM after the switch sets it up)"
-  exit 0
+  if [[ ${OMACVM_MOVE_RUN:-} == 1 ]]; then
+    echo "OmacVM: the VM side waits for the move (its Update VM after the switch sets it up)"
+    exit 0
+  fi
+  echo "guest/install.sh: nothing was set up: the move to Omarchy 4.5 is not finished in this VM; Resume or Undo it in OmacVM.app" >&2
+  exit 5
 fi
 log() { LAST_STEP=$*; printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 # A run that stops says where (apply shows it as what failed).

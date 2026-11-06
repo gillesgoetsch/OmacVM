@@ -513,7 +513,11 @@ guest_install() {
   fi
   # Its name, so the Mac's gestures helper tells it from another VM in the same app.
   (( NAMED )) && fargs+=" --vm-name-b64 $(printf %s "$VM" | base64 | tr -d '\n')"
-  gssh "$IP" "/usr/local/share/omacvm/guest/install.sh --user '$U' --keyboard '$KB' --vm-type $TYPE ${MODE:+--display $MODE}$fargs$GI_ARGS" < /dev/null
+  # The move to Omarchy 4.5's own apply (OmacVM.app's move-vm.sh): install.sh
+  # waits for the move's switch (exit 0); for any other apply a switch not
+  # done is a failure (exit 5, guest/omarchy-move.sh pending).
+  local mv=""; [[ ${OMACVM_MOVE_RUN:-} == 1 ]] && mv="OMACVM_MOVE_RUN=1 "
+  gssh "$IP" "$mv/usr/local/share/omacvm/guest/install.sh --user '$U' --keyboard '$KB' --vm-type $TYPE ${MODE:+--display $MODE}$fargs$GI_ARGS" < /dev/null
 }
 step vm "the VM side"
 # OmacVM.app: what the VM's Graphics setting gives it on this Mac; with
