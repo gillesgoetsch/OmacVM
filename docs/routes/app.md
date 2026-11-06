@@ -452,12 +452,12 @@ the VM's SSH on `127.0.0.1:<port>`.
   [below](#airpods-and-media-controls-on-by-default)) and, with `mac-ime` on, the Mac's input methods (`org.omacvm.ime`,
   [below](#mac-input-methods-experimental-off-by-default)). The battery goes one way; the VM can only ask
   for a fresh reading.
-- Gestures and Bridge also listen on the Mac's 127.0.0.1, where any Mac
+- Gestures and Bridge listen on the Mac's 127.0.0.1, where any Mac
   program could connect, or listen in their place while they are not
   running. So the VM gives the Bridge's token to neither before it has proved
   it knows it (HMAC-SHA256 of a fresh nonce and the Mac address it answered
   on, which must be 127.0.0.1: a proof passed on from the helper on
-  10.211.55.2 fails): Gestures then wants the VM's own proof (the token
+  192.168.77.1 fails): Gestures then wants the VM's own proof (the token
   never goes over the wire, and the VM acts on no key or gesture before the
   proof); the Bridge gets the token on each request after `GET /proof`.
   The app makes the token when the Bridge has not, and puts it into the VM.
