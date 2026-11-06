@@ -477,6 +477,32 @@ rm -f "$P/pacman-runs"; o run >/dev/null 2>&1; rc=$?
 expect "... once it is done: the lock goes, the switch again, done" "0 done no 2" \
   "$rc $(cat "$J/state") $([[ -e $RT/var/lib/pacman/db.lck ]] && echo yes || echo no) $(calls 'pacman -Suu ')"
 
+# pending: a move began here and its switch is not done. Update VM
+# (guest/install.sh), system-update, pkg-add and the Venus build change no
+# package then (src/tests/pkg-safe.sh runs the last ones).
+pend() { o pending >/dev/null 2>&1; echo $?; }
+fresh; expect "pending: no move here" 1 "$(pend)"
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1
+expect "pending: cut off before the switch began (and says why)" "0 1" "$(pend) $(o pending | grep -c 'not finished in this VM (it stopped at .commit.)')"
+fresh; : > "$P/cut-after"; o run >/dev/null 2>&1; expect "pending: cut off after pacman wrote it (hooks not run)" 0 "$(pend)"
+fresh; : > "$P/net-down"; o run >/dev/null 2>&1; expect "pending: stopped in the download (4.5's repos, 4.0's packages)" 0 "$(pend)"
+fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; expect "pending: no, failed after the switch (Update VM sets up the 4.5 system)" 1 "$(pend)"
+fresh; o run >/dev/null 2>&1; expect "pending: no, done" 1 "$(pend)"
+fresh; echo "omarchy 4.5.0-3 e" > "$P/db"; o run >/dev/null 2>&1; expect "pending: no, refused (nothing changed)" 1 "$(pend)"
+# guest/install.sh, the Update VM of a Resume: nothing of it while pending.
+gblk=$(awk '/^# The move stopped before its package switch was done/ { on = 1 } on { print } on && /^fi$/ { exit }' "$R/src/guest/install.sh")
+gi() { OMACVM_MOVE_DIR=$J bash -c "R='$TR'"$'\n'"$gblk"$'\n''echo goes-on' 2>&1; echo "rc=$?"; }
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1; out=$(gi)
+expect "guest/install.sh on a cut-off switch: stops at once (exit 0), says why, nothing after it runs" "rc=0 1 0" \
+  "$(tail -1 <<<"$out") $(grep -c '^OmacVM: the move to Omarchy 4.5 is not finished' <<<"$out") $(grep -c goes-on <<<"$out")"
+fresh; o run >/dev/null 2>&1; expect "guest/install.sh after a move: goes on" "goes-on rc=0" "$(gi | tr '\n' ' ' | sed 's/ $//')"
+gl=$(grep -n '^# The move stopped before its package switch was done' "$R/src/guest/install.sh" | cut -d: -f1)
+expect "guest/install.sh: that check comes before anything that changes a package or pacman's lock" "0 yes" \
+  "$(head -n "${gl:-0}" "$R/src/guest/install.sh" | grep -v '^[[:space:]]*#' | grep -cE 'pkg-add|gbm-guard|pacman |db\.lck|makepkg') \
+$( (( ${gl:-99999} < $(grep -n 'rm -f /var/lib/pacman/db.lck' "$R/src/guest/install.sh" | head -1 | cut -d: -f1) )) && echo yes)"
+expect "the Venus driver's build checks it too (before it builds)" 1 \
+  "$(awk '/omarchy-move.sh" pending/ { p = NR } /building Mesa.s vulkan-virtio/ && p { print 1; exit }' "$R/src/app/guest/venus/vulkan-virtio.sh")"
+
 # Stopped by its unit inside the switch (the VM shuts down): only the move
 # gets the signal (KillMode=mixed); pacman ends the switch, the move stops after it.
 # (Job control on: a background job of a script would ignore SIGINT.)

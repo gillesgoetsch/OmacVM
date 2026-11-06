@@ -20,6 +20,9 @@
 #                                       (never inside the package switch)
 #   omarchy-move.sh record              "<version> <lane> <channel>" for the
 #                                       Mac's record of the VM (or "none")
+#   omarchy-move.sh pending             exit 0 (one line why) while a move began
+#                                       here and its package switch is not done:
+#                                       OmacVM changes no package then
 #   omarchy-move.sh repos [CHANNEL]     4.5's repo files (stable)
 #   omarchy-move.sh keyring             Omarchy's package key, from the copy here
 #   omarchy-move.sh pacman ARGS...      pacman with the rule for a missing file
@@ -1124,6 +1127,19 @@ cmd_status() {
     "$(js "$(version | sed 's/-[^-]*$//')")" "$(js "$(lane)")" "$(js "$(lane_channel)")" "$(js "$LOG")" "$res"
 }
 
+# A move that began here and whose package switch is not done (stopped,
+# failed, cut off before or inside it): the VM is between Omarchy 4.0 and
+# 4.5 (4.5's repos and keyring, 4.0's packages, or a switch cut off). A
+# package OmacVM installs or removes then (guest/install.sh, system-update,
+# pkg-add, the Venus driver) would be a partial update, or turn a cut-off
+# switch that Resume can finish into one only Undo can. Only the move's
+# Resume (or Undo) goes on from there.
+cmd_pending() {
+  local st; st=$(jget state)
+  [[ -n $st && $st != done && $st != refused && ! -e $J/commit-done ]] || return 1
+  echo "the move to Omarchy 4.5 is not finished in this VM (it stopped at '$(jget phase)'): OmacVM changes no packages until Resume finishes it (or Undo)"
+}
+
 cmd_record() {
   local v; v=$(version)
   [[ -n $v ]] || { echo none; return 0; }
@@ -1137,9 +1153,10 @@ case ${1:-} in
   stop) cmd_stop ;;
   status) cmd_status "${2:-}" ;;
   record) cmd_record ;;
+  pending) cmd_pending ;;
   repos) cmd_repos "${2:-}" ;;
   keyring) cmd_keyring ;;
   pacman) shift; cmd_pacman "$@" ;;
   animations) cmd_animations "${2:-}" ;;
-  *) echo "usage: omarchy-move.sh preflight [--json] | start | run | stop | status [--json] | record | repos [CHANNEL] | keyring | pacman ARGS... | animations USER" >&2; exit 2 ;;
+  *) echo "usage: omarchy-move.sh preflight [--json] | start | run | stop | status [--json] | record | pending | repos [CHANNEL] | keyring | pacman ARGS... | animations USER" >&2; exit 2 ;;
 esac

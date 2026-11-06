@@ -132,6 +132,11 @@ if [[ -n ${OMACVM_VENUS_BOOT:-} ]]; then
   for _ in $(seq 120); do [[ -e /var/lib/pacman/db.lck ]] || break; sleep 5; done
   [[ -e /var/lib/pacman/db.lck ]] && { echo "Vulkan (Venus): pacman is busy, trying again at the next boot"; exit 0; }
 fi
+# A move to Omarchy 4.5 stopped before its package switch was done: no
+# build now, its install would change packages (guest/omarchy-move.sh pending).
+if why=$("$PWD/../../../guest/omarchy-move.sh" pending 2>/dev/null); then
+  echo "Vulkan (Venus): not built now: $why"; exit 0
+fi
 echo "Vulkan (Venus): building Mesa's vulkan-virtio ${OURS#*:} (a few minutes, log $LOG)"
 # Build tools this VM lacks are added for the build and removed after.
 deps=(base-devel) rdeps=()

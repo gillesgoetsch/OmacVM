@@ -215,6 +215,25 @@ out=$("$G" end 2>&1); rc=$?
 [[ $rc == 0 && $(cat "$T/calls") == "omarchy update -y" ]] && pass "system-update inside an install: end keeps the update" ||
   fail "end after a system update: rc $rc, calls '$(cat "$T/calls")', said '$out'"
 
+# A move to Omarchy 4.5 stopped before its package switch was done
+# (guest/omarchy-move.sh pending): no package changes, else a switch Resume
+# can finish becomes one only Undo can (src/tests/omarchy-move.sh: when).
+mkdir -p "$T/mv"; echo interrupted > "$T/mv/state"; echo commit > "$T/mv/phase"; echo download > "$T/mv/phase-done"
+: > "$T/mv/commit-started"
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$S" 2>&1); rc=$?
+[[ $rc == 1 && ! -s $T/calls && $out == *"not updated: the move to Omarchy 4.5 is not finished"* ]] &&
+  pass "system-update while the move's switch is not done: not updated, says why" ||
+  fail "system-update, move pending: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$P" jq 2>&1); rc=$?
+[[ $rc == 1 && ! -s $T/calls && $out == *"jq not installed: the move to Omarchy 4.5 is not finished"* ]] &&
+  pass "pkg-add while the move's switch is not done: nothing installed, says why" ||
+  fail "pkg-add, move pending: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+: > "$T/mv/commit-done"
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$P" jq 2>&1); rc=$?
+[[ $rc == 0 && $(cat "$T/calls") == "pacman -S --noconfirm jq" ]] && pass "pkg-add after the move's switch: as always" ||
+  fail "pkg-add after the switch: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+rm -rf "$T/mv"
+
 vm; : > "$T/update-fails"
 out=$("$S" 2>&1); rc=$?; rm -f "$T/update-fails"
 [[ $rc == 1 && $out == *"omarchy update stopped (exit 1"* && $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.3-1" ]] &&

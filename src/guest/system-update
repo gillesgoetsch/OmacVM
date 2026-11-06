@@ -165,6 +165,11 @@ run_unit() {   # -> the update's exit status
 }
 
 [[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]] || (( EUID == 0 )) || { echo "system-update: run as root" >&2; exit 1; }
+# A move to Omarchy 4.5 stopped before its package switch was done: the
+# update would switch half of it (guest/omarchy-move.sh pending says why).
+if why=$("${G%/*}/omarchy-move.sh" pending 2>/dev/null); then
+  say "the VM's system is not updated: $why" >&2; exit 1
+fi
 # One at a time: a second run would delete the first one's helpers and sudoers.
 if ! { exec 9>>"$LOCK" && flock -n 9; } 2>/dev/null; then
   say "the VM's system is not updated: an update runs already: try again when it is done" >&2; exit 1

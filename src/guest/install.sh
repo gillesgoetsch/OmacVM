@@ -70,6 +70,16 @@ if [[ $(cat "$MV/state" 2>/dev/null) == running && -e $MV/lock ]] && ! flock -n 
   echo "guest/install.sh: the move to Omarchy 4.5 runs in this VM; try again when it is done" >&2
   exit 3
 fi
+# The move stopped before its package switch was done (a Resume's Update VM
+# runs first): no package may change (features install and remove some,
+# gbm-guard puts some back, pacman's lock would go), else a switch Resume
+# can finish turns into one only Undo can. Nothing of this now: the move's
+# own Update VM after the switch does it all (guest/omarchy-move.sh pending).
+if why=$("$R/guest/omarchy-move.sh" pending 2>/dev/null); then
+  echo "OmacVM: $why"
+  echo "OmacVM: the VM side waits for the move (its Update VM after the switch sets it up)"
+  exit 0
+fi
 log() { LAST_STEP=$*; printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 # A run that stops says where (apply shows it as what failed).
 # One EXIT trap for everything that must run at the end (Fusion's DNS below).
