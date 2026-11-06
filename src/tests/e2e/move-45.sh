@@ -306,7 +306,15 @@ fault_then_resume() {   # the move must stop resumable, then Resume finishes it
   mvm run; rc=$?
   check "Resume (run again)" $((rc == 0)) "exit $rc"
   journal_state done
-  vm_on && { moved_ok "after Resume"; vm_off; } || check "boots after Resume" 0 ""
+  if (( rc == 0 )); then
+    vm_on && { moved_ok "after Resume"; vm_off; } || check "boots after Resume" 0 ""
+  else
+    # What a person does next: Undo. It must give back the VM from before the move.
+    vm_off; mvm undo; rc=$?
+    check "Undo after the failed Resume" $((rc == 0)) "exit $rc"
+    same_as_before
+    boots_40
+  fi
 }
 row_net_cut() {
   pre_hash
