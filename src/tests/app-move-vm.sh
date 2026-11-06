@@ -351,6 +351,18 @@ expect "start on a Resume: another pacman runs: Resume, pacman-busy, not the net
   "$rc $(jget resumable) $(jget code) $(r=$(jget reason); [[ $r != *network* ]] && echo yes || echo "'$r'")"
 mv_run ok run; rc=$?
 expect "... Resume then: to the end" "0 done" "$rc $(jget state)"
+# A first run (contract v5: preflight and start say pacman-busy with exit 3 there, 4 on a Resume):
+# Resume all the same, never Undo only, and not the network.
+fresh
+mv_run busy-first run; rc=$?
+expect "first run, preflight: another pacman runs (exit 3): Resume, pacman-busy, not the network" "1 failed 5 1 pacman-busy yes" \
+  "$rc $(jget state) $(jget failed_step) $(jget resumable) $(jget code) $(r=$(jget reason); [[ $r == *"Another pacman"* && $r != *network* && $r != *Undo* && $r == *Resume* ]] && echo yes || echo "'$r'")"
+fresh
+mv_run busy-start-first run; rc=$?
+expect "first run, start: another pacman runs (exit 3): Resume, pacman-busy, not the network" "1 1 pacman-busy yes" \
+  "$rc $(jget resumable) $(jget code) $(r=$(jget reason); [[ $r != *network* && $r != *Undo* ]] && echo yes || echo "'$r'")"
+mv_run ok run; rc=$?
+expect "... Resume then: to the end (first run)" "0 done" "$rc $(jget state)"
 
 # ---------- refused by the guest; failed inside the switch ----------
 fresh

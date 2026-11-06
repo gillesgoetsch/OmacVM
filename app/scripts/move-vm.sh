@@ -681,7 +681,9 @@ if [[ $(jget commit_started) != 1 ]]; then
   if [[ $code == already-moved ]]; then
     moved_already=1
     log "Omarchy in $NAME is 4.5 already"
-  elif (( prc == 4 )); then
+  elif (( prc == 4 )) || [[ $prc == 3 && $code == pacman-busy ]]; then
+    # pacman-busy: exit 4 on a Resume, 3 on a first run (contract v5); either
+    # way another pacman passes (Omarchy's update check): Resume, never Undo only.
     [[ -n $why ]] || why="Omarchy's package servers did not answer."
     fail 5 "$why $(later_text "$code")" 1 "${code:-repos-unreachable}"
   elif (( prc == 3 )); then
@@ -705,9 +707,9 @@ if (( ! moved_already )); then
   if (( src == 3 )) && [[ $(jv code "$ST") == already-moved ]]; then
     moved_already=1
     log "Omarchy in $NAME is 4.5 already"
-  elif (( src == 3 )); then
+  elif (( src == 3 )) && [[ $(jv code "$ST") != pacman-busy ]]; then
     fail 5 "$(jv reason "$ST" | grep . || echo "The VM refused the move.") Undo brings the disk from before back." 0 "$(jv code "$ST")"
-  elif (( src == 4 )); then
+  elif (( src == 4 || src == 3 )); then   # 3: pacman-busy on a first run
     fail 5 "$(jv reason "$ST" | grep . || echo "Omarchy's package servers did not answer.") $(later_text "$(jv code "$ST")")" 1 "$(jv code "$ST")"
   elif (( src != 0 )); then
     fail 5 "The move did not start in the VM (exit $src)." 1 start
