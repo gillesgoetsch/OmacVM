@@ -93,6 +93,19 @@ expect "one clean move on the M1 only: summary fails (G6)" 1 "$(sumrc "$D")"
 D=$T/old; full "$D"; sumrc "$D" >/dev/null
 python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["format"]=1; json.dump(o, open(p,"w"))' "$D/result.json"
 expect "a result from the kit before (format 1): gate refuses" 1 "$(gate "$D" "$M")"
+python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["format"]=2; json.dump(o, open(p,"w"))' "$D/result.json"
+expect "a result from the kit before (format 2, no kit tie): gate refuses" 1 "$(gate "$D" "$M")"
+
+# The kit a row ran with (move-45.sh + move-45-result.py): one for all rows, and M's.
+setkit() { python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["kit"]=sys.argv[2]; json.dump(o, open(p,"w"))' "$1" "$2"; }
+D=$T/kit; full "$D"; sumrc "$D" >/dev/null
+expect "every row names its kit" 1 "$(python3 -I -c 'import json,sys,glob; print(int(all(json.load(open(f)).get("kit") for f in glob.glob(sys.argv[1] + "/rows/*.json"))))' "$D")"
+expect "the kit of the rows is M's: gate passes" 0 "$(gate "$D" "$M")"
+D=$T/twokits; full "$D"; setkit "$D/rows/app-guards-M-mv-a300-mini-100.json" 0123456789abcdef
+expect "one row ran with another kit (an older app-guards check): summary fails" 1 "$(sumrc "$D")"
+D=$T/oldkit; full "$D"; for f in "$D"/rows/*.json; do setkit "$f" 0123456789abcdef; done
+expect "every row ran with a kit that is not M's: summary passes, gate refuses" "0 1" "$(sumrc "$D") $(gate "$D" "$M")"
+
 D=$T/bad; mkdir -p "$D"; echo '{"kind": "omacvm-e2e-cc-switches", "pass": true}' > "$D/result.json"
 expect "another kind of result: gate refuses" 1 "$(gate "$D" "$M")"
 

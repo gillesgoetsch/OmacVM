@@ -11,8 +11,11 @@ The gate wants every row of move-45.sh --rows passed on at least MIN_BASES
 test VMs of different ages, "clean" on every base, rows from at least
 MIN_MACS Macs, on each of them the last two clean moves passed (G6: two clean
 moves of an aged VM in a row per Mac), and the files of move-45.sh --paths
-the same in the tested commit and M. A row run again keeps its earlier files
-(ROW-BASE-MAC-TIME.json): the newest one per row, base and Mac counts.
+the same in the tested commit and M. Every row ran with one kit ("kit" in
+each row: move-45.sh and this file), and that kit is M's: a row run with
+another kit had other checks and does not count. A row run again keeps its
+earlier files (ROW-BASE-MAC-TIME.json): the newest one per row, base and Mac
+counts.
 """
 import json
 import os
@@ -24,6 +27,21 @@ KIND = "omacvm-e2e-move-45"
 MIN_BASES = 3   # 4.0 VMs of different ages (prebuilt-3.0.0, prebuilt-3.0.8, a 4.0.3rc4 build)
 MIN_MACS = 2    # the mini and the M1 Max
 CLEAN_IN_A_ROW = 2   # G6
+KIT_FILES = ("src/tests/e2e/move-45.sh", "src/tests/e2e/move-45-result.py")
+
+
+def kit_hash(blobs):
+    """The kit a row ran with: move-45.sh and this file (their bytes, in KIT_FILES' order)."""
+    import hashlib
+    h = hashlib.sha256()
+    for b in blobs:
+        h.update(hashlib.sha256(b).digest())
+    return h.hexdigest()[:16]
+
+
+def kit_here():
+    d = os.path.dirname(os.path.abspath(__file__))
+    return kit_hash(open(os.path.join(d, os.path.basename(f)), "rb").read() for f in KIT_FILES)
 
 
 def mac_name():
@@ -41,7 +59,7 @@ def row(a):
     ok = bool(checks) and all(c[1] for c in checks)
     o = {"row": name, "base": base, "pass": ok, "seconds": secs, "checks": checks,
          "mac": os.environ.get("MOVE45_MAC") or mac_name(), "ended": int(time.time()),
-         "app_commit": os.environ.get("MOVE45_COMMIT", "")}
+         "app_commit": os.environ.get("MOVE45_COMMIT", ""), "kit": kit_here()}
     json.dump(o, open(path, "w"), indent=1)
     print("%s %s on %s: %s (%d checks, %d s)" % ("PASS" if ok else "FAIL", name, base, "ok" if ok else
           "; ".join(c[0] for c in checks if not c[1])[:300], len(checks), secs))
@@ -67,6 +85,7 @@ def summary(a):
         latest[(r["row"], r["base"], r["mac"])] = r
     rows = list(latest.values())
     commits = sorted({r.get("app_commit", "") for r in rows})
+    kits = sorted({r.get("kit", "") for r in rows})
     want = rows_of(repo)
     bases = sorted({r["base"] for r in rows})
     macs = sorted({r["mac"] for r in rows})
@@ -79,15 +98,17 @@ def summary(a):
     g6 = {m: len(v) >= CLEAN_IN_A_ROW and all(v[-CLEAN_IN_A_ROW:]) for m, v in clean_runs.items()}
     g6_macs = sorted(m for m, ok in g6.items() if ok)
     ok = (not missing and not clean_missing and not failed and len(bases) >= MIN_BASES
-          and len(macs) >= MIN_MACS and len(g6_macs) >= MIN_MACS and len(commits) == 1 and commits[0])
-    o = {"kind": KIND, "format": 2, "commit": commits[0] if len(commits) == 1 else "", "pass": bool(ok),
+          and len(macs) >= MIN_MACS and len(g6_macs) >= MIN_MACS and len(commits) == 1 and commits[0]
+          and len(kits) == 1 and kits[0])
+    o = {"kind": KIND, "format": 3, "commit": commits[0] if len(commits) == 1 else "", "pass": bool(ok),
+         "kit": kits[0] if len(kits) == 1 else "", "kits": kits,
          "rows": len(rows), "passed": sum(r["pass"] for r in rows), "failed": failed,
          "missing_rows": missing, "bases": bases, "clean_missing": clean_missing, "macs": macs,
          "clean_moves": {m: "".join("P" if x else "F" for x in v) for m, v in clean_runs.items()},
          "g6_macs": g6_macs, "min_macs": MIN_MACS, "commits": commits}
     json.dump(o, open(os.path.join(d, "result.json"), "w"), indent=1)
-    print(json.dumps({k: o[k] for k in ("pass", "commit", "rows", "passed", "failed", "missing_rows", "bases", "macs",
-                                        "clean_moves", "g6_macs")}))
+    print(json.dumps({k: o[k] for k in ("pass", "commit", "kits", "rows", "passed", "failed", "missing_rows", "bases",
+                                        "macs", "clean_moves", "g6_macs")}))
     sys.exit(0 if ok else 1)
 
 
@@ -95,7 +116,7 @@ def gate(a):
     path, m, repo = a[0], a[1], a[2]
     o = json.load(open(path))
     assert o.get("kind") == KIND, "not a move-45 result"
-    assert o.get("format") == 2, "a result from an older kit (format %s): sum the rows up again" % o.get("format")
+    assert o.get("format") == 3, "a result from an older kit (format %s): sum the rows up again" % o.get("format")
     assert o.get("pass") is True, "not passed: failed %s, missing %s" % (o.get("failed"), o.get("missing_rows"))
     macs, g6 = o.get("macs", []), o.get("g6_macs", [])
     assert len(macs) >= MIN_MACS, "rows from %d Mac(s) (%s), %d needed" % (len(macs), ", ".join(macs), MIN_MACS)
@@ -107,6 +128,13 @@ def gate(a):
     d = subprocess.run(["git", "-C", repo, "diff", "--name-only", c, m, "--"] + paths, capture_output=True, text=True)
     assert d.returncode == 0, "git diff %s %s failed: %s" % (c[:12], m[:12], d.stderr.strip()[:200])
     assert not d.stdout.strip(), "the move's files changed after the tested commit %s: %s" % (c[:12], " ".join(d.stdout.split()))
+    blobs = []
+    for f in KIT_FILES:
+        b = subprocess.run(["git", "-C", repo, "show", "%s:%s" % (m, f)], capture_output=True)
+        assert b.returncode == 0, "no %s in M %s" % (f, m[:12])
+        blobs.append(b.stdout)
+    assert o.get("kit") == kit_hash(blobs), "the rows ran with another kit (%s) than M's (%s): run them again with M's move-45.sh" % (
+        o.get("kits") or o.get("kit"), kit_hash(blobs))
     print("    moves: %d rows passed on %s (%d Macs: %s; two clean moves in a row on each), tested at %s" % (
         o["passed"], ", ".join(o["bases"]), len(macs), ", ".join(macs), c[:12]))
 
