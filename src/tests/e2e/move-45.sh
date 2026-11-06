@@ -47,7 +47,7 @@ power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo
 app-crash    the app crashes mid-download (move-vm.sh killed -9, its headless QEMU runs on): Resume and Undo still work
 disk-pending a disk change not finished (a shrink's journal, a grow): refused before anything changes, plan says why
 busy         while the move runs: Update VM (omacvm apply / update), a second move, Undo and Delete are refused; the move goes on
-app-guards   the app (hidden): opened after a crash nothing starts; an app update offered while the move runs waits, and goes in after it
+app-guards   the app (hidden): opened after a crash nothing starts; an app update offered while the move runs (between its VM starts too) waits, and goes in after it
 disk-lock    the app's window (on screen, no input): a move not finished locks Disk › Change… and shows Resume
 guest-full   the VM's own disk nearly full: refused before the switch, Undo restores the disk exactly
 mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes, plan says why
@@ -664,8 +664,26 @@ row_app_guards() {
   check "app opened after the crash: no QEMU started" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
   check "app opened after the crash: the journal as it was" $([[ $(shasum -a 256 "$VD/move-4.5" | cut -c1-16) == "$j0" ]] && echo 1 || echo 0) "state=$(J state)"
   app_quit
-  # 3. Resume (from the copy, as its window would); while it downloads, the app opens with an update on offer.
+  # 3. Resume (from the copy, as its window would). Between two VM starts nothing but move-vm.sh (bash) runs
+  #    from the app: held there (SIGSTOP), the app opens with an update on offer; it must wait for the move too.
   mvm_bg run
+  local i k=0 tree
+  for ((i = 0; i < 1200; i++)); do
+    [[ $(J step) -ge 3 && -z $(qemu_pid) ]] && { tree="$MV_PID $(descendants "$MV_PID")"; kill -STOP $tree 2>/dev/null; k=1; break; }
+    sleep 0.05
+  done
+  if (( k )) && [[ -z $(qemu_pid) ]]; then
+    log "app-guards: move-vm.sh held at step $(J step), no VM running"
+    app_open --update-now || { kill -CONT $tree 2>/dev/null; check "the app opens with --update-now" 0 ""; app_clean; return; }
+    for ((i = 0; i < 40; i++)); do kill -0 "$UPID" 2>/dev/null || break; sleep 3; done
+    UPID=""
+    check "update on offer between the move's VM starts: not installed (the move itself counts)" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist") == "$pv" ]] && echo 1 || echo 0) "$(upd_log | grep -E 'deferred|install|swap' | tail -2 | tr '\n' ' ' | cut -c1-240)"
+    kill -CONT $tree 2>/dev/null
+  else
+    (( k )) && kill -CONT $tree 2>/dev/null
+    check "update on offer between the move's VM starts (held move-vm.sh)" 0 "kit: the gap was not caught (step $(J step), QEMU $(qemu_pid))"
+  fi
+  # While it downloads (its VM runs from the app), the app opens with the update on offer again.
   wait_until 2400 in_phase download || { check "Resume reached download" 0 "phase $(gstat phase)"; mvm_wait; app_clean; return; }
   app_open --update-now || { check "the app opens with --update-now" 0 ""; app_clean; return; }
   local i; for ((i = 0; i < 40; i++)); do kill -0 "$UPID" 2>/dev/null || break; sleep 3; done   # it quits once it decided
