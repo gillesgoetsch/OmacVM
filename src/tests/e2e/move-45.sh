@@ -545,11 +545,17 @@ row_disk_pending() {   # the disk's size change not finished: the move waits for
     esac
     p=$("$S/move-vm.sh" "$VD" plan 2>/dev/null | sed -n 's/^problem=//p')
     check "$kind pending: plan says why (the card's Blocked state)" $([[ -n $p ]] && echo 1 || echo 0) "$p"
+    # The card is Blocked before (plan); a run anyway stops at step 1 with the reason (as mac-full).
     mvm run; rc=$?
-    check "$kind pending: refused (exit 3)" $((rc == 3)) "exit $rc: $(J reason)"
+    check "$kind pending: refused at step 1, says why" $([[ $rc != 0 && $(J failed_step) == 1 && $(J reason) == "$p" ]] && echo 1 || echo 0) "exit $rc: step $(J failed_step): $(J reason)"
     check "$kind pending: no QEMU started" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
     check "$kind pending: no backup, no move under way" $([[ ! -e $VD/before-omarchy-4.5 && $(J state) != running ]] && echo 1 || echo 0) "state=$(J state)"
     check "$kind pending: disk.img as before" $([[ $(sha "$VD/disk.img") == "$PRE_DISK" ]] && echo 1 || echo 0) ""
+    # The way out (the journal is open, so the VM's start waits for Resume or Undo): Undo, nothing to give back.
+    mvm undo; rc=$?
+    check "$kind pending: Undo closes it (no journal open, the disk job can go on)" $([[ $rc == 0 && $(J state) == undone ]] && echo 1 || echo 0) "exit $rc, state=$(J state)"
+    check "$kind pending: disk.img as before after Undo" $([[ $(sha "$VD/disk.img") == "$PRE_DISK" ]] && echo 1 || echo 0) ""
+    rm -f "$VD/move-4.5"
   done
   rm -f "$VD/disk-resize" "$VD/disk-jobs"
 }
