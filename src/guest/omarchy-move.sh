@@ -531,8 +531,19 @@ step_kernel() {
 }
 
 step_update() {
-  local rc=0 sec
+  local rc=0 sec u uid started=""
+  # Omarchy's migrations talk to the user's systemd (systemctl --user): with
+  # nobody logged in (the app moves the VM without a window) the user's
+  # manager runs for the update and stops after it; system-update hands its
+  # bus to omarchy update.
+  u=$(sed -n 's/^OMACVM_USER=//p' "$ROOT/etc/omacvm/env" 2>/dev/null | tail -1)
+  [[ -n $u ]] || u=$(getent passwd 1000 | cut -d: -f1)
+  uid=$(id -u "$u" 2>/dev/null) || uid=""
+  if [[ -n $uid && ! -S $ROOT/run/user/$uid/bus ]]; then
+    systemctl start "user@$uid.service" >> "$LOG" 2>&1 && started=1
+  fi
   "$S/system-update" >> "$LOG" 2>&1 || rc=$?
+  [[ -z $started ]] || systemctl stop "user@$uid.service" >> "$LOG" 2>&1 || true
   # omarchy update builds AUR packages last (after its migrations and the
   # orphan step): one that does not build on aarch64 is a warning here.
   if (( rc == 1 )); then

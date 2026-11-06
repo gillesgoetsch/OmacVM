@@ -104,7 +104,7 @@ printf '#!/bin/bash\necho "${FSTYPE:-btrfs}"\n' > "$B/findmnt"
 printf '#!/bin/bash\necho Avail; echo "${AVAIL:-42949672960}"\n' > "$B/df"
 printf '#!/bin/bash\n[[ -e "%s/pacman-runs" ]]\n' "$P" > "$B/pgrep"
 printf '#!/bin/bash\nexit 0\n' > "$B/dkms"
-printf '#!/bin/bash\nexit 0\n' > "$B/systemctl"
+printf '#!/bin/bash\necho "systemctl $*" >> "%s/calls"\n' "$P" > "$B/systemctl"
 printf '#!/bin/bash\necho "systemd-run $*" >> "%s/calls"\n' "$P" > "$B/systemd-run"
 # curl: Omarchy's db (a tar with omarchy-4.5.0-3/), the mirror, Arch Linux ARM's file.
 mkdir -p "$T/dbsrc/omarchy-4.5.0-3" "$T/dbsrc/omarchy-keyring-20251027-1"; echo x > "$T/dbsrc/omarchy-4.5.0-3/desc"
@@ -152,6 +152,7 @@ fresh() {   # a 4.0 VM from omarchy-mac: packages, files, journal gone
   echo QEMU > "$RT/sys/class/dmi/id/sys_vendor"; : > "$RT/boot/grub/grub.cfg"; echo 'GRUB_TIMEOUT=2' > "$RT/etc/default/grub"
   : > "$RT/usr/share/pacman/keyrings/archlinuxarm.gpg"; : > "$RT/usr/share/pacman/keyrings/omarchy-mac.gpg"
   echo 'hwdec=auto' > "$RT/etc/mpv/mpv.conf"; echo old > "$T/gnupg/pubring.kbx"
+  mkdir -p "$RT/etc/omacvm"; echo "OMACVM_USER=$(id -un)" > "$RT/etc/omacvm/env"
   printf '%s\n' "omarchy 4.0.3rc4-2 e" "omarchy-settings 4.0.3rc4-2 d" "omarchy-mac-keyring 20260914-2 d" \
     "snapper 0.13-1 d" "iwd 3.10-1 d" "jq 1.8.1-1 e" "obsidian-appimage 1.13.7-2 e" "vi 1:070224-6 e" > "$P/db"
   printf '%s\n' "omarchy 4.5.0-3 e" "omarchy-settings 4.5.0-3 d" "omarchy-mac-keyring 20260914-2 d" \
@@ -241,6 +242,9 @@ expect "keyring: a new one with Arch Linux ARM's keys and Omarchy's, never omarc
   "$(grep -E -- '--populate|--lsign' "$P/calls" | tr '\n' '|' | sed 's/|$//')"
 expect "keyring: the old one kept beside it" old "$(cat "$T/gnupg.omacvm-40/pubring.kbx" 2>/dev/null)"
 expect "initramfs drop-in in place before the switch" same "$(cmp -s "$RT/etc/mkinitcpio.conf.d/zz-omacvm.conf" "$GD/mkinitcpio-omacvm.conf" && echo same)"
+expect "nobody logged in: the user's systemd runs for omarchy update (its migrations use systemctl --user), stops after" \
+  "systemctl start user@$(id -u).service|update|systemctl stop user@$(id -u).service" \
+  "$(grep -E '^(systemctl (start|stop) user@|update$)' "$P/calls" | tr '\n' '|' | sed 's/|$//')"
 expect "mpv.conf kept, mpv and omarchy update ran, GRUB's menu built" "hwdec=auto 1 1 1" \
   "$(cat "$RT/etc/mpv/mpv.conf.omacvm-40") $(calls '^mpv$') $(calls '^update$') $(calls grub-mkconfig)"
 out=$(o run 2>&1); expect "run again: done, nothing again" "0 1" "$? $(calls 'pacman -Suu ')"
