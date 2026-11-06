@@ -669,7 +669,7 @@ row_app_guards() {
   mvm_bg run
   local i k=0 tree
   for ((i = 0; i < 1200; i++)); do
-    [[ $(J step) -ge 3 && -z $(qemu_pid) ]] && { tree="$MV_PID $(descendants "$MV_PID")"; kill -STOP $tree 2>/dev/null; k=1; break; }
+    [[ $(J state) == running && -z $(qemu_pid) ]] && { tree="$MV_PID $(descendants "$MV_PID")"; kill -STOP $tree 2>/dev/null; k=1; break; }
     sleep 0.05
   done
   if (( k )) && [[ -z $(qemu_pid) ]]; then
