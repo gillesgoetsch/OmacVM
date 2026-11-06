@@ -404,7 +404,7 @@ undo)
     # in the backup still and the disk either there or back already. The
     # journal says undoing first: from here only Undo goes on (a Resume
     # would keep a backup whose EFI vars or disk went back already).
-    jset state undoing reason "Undo did not finish (OmacVM quit or the Mac turned off). Undo again puts the disk from before the move back." resumable 0
+    jset state undoing reason "OmacVM quit or the Mac turned off during Undo. Undo again puts the disk from before the move back." resumable 0
     for r in "${RECORDS[@]}"; do
       [[ $r == vm.env ]] && continue
       if [[ -f $B/$r ]]; then cp -p "$B/$r" "$VM_DIR/$r"; else rm -f "$VM_DIR/$r"; fi

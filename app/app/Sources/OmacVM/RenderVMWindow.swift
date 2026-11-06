@@ -330,11 +330,11 @@ enum RenderVMWindow {
         window("window-move-6-interrupted", state, p) { dark in shown("window-move-6-interrupted", dark) }
         p.move = card(.running(step: 5))
         window("window-move-18-running-elsewhere", state, p) { dark in shown("window-move-18-running-elsewhere", dark) }
-        p.move = card(.undoing(reason: "Undo did not finish (OmacVM quit or the Mac turned off). Undo again puts the disk from before the move back."))
-        window("window-move-19-undo-cut-off", state, p) { dark in
-            shown("window-move-19-undo-cut-off", dark)
+        p.move = card(.undoing(reason: "OmacVM quit or the Mac turned off during Undo. Undo again puts the disk from before the move back."))
+        window("window-move-20-undo-cut-off", state, p) { dark in
+            shown("window-move-20-undo-cut-off", dark)
             if LayoutProbe.frames["move-resume"] != nil || LayoutProbe.frames["move-keep"] != nil {
-                note("window-move-19-undo-cut-off: Resume or Keep offered\(dark ? " (dark)" : "")", fail: true)
+                note("window-move-20-undo-cut-off: Resume or Keep offered\(dark ? " (dark)" : "")", fail: true)
             }
         }
         // An app update ready too: the update's banner blue, the offer quiet under it.
