@@ -189,15 +189,23 @@ moved_ok() {   # WHEN
   check "$w: no omarchy-mac or asahi repos" $([[ -z $pc ]] && echo 1 || echo 0) "$pc"
   pc=$(g "grep -c 'pkgs.omarchy.org/stable/' /etc/pacman.conf; grep -c 'arm-stable-mirror.omarchy.org' /etc/pacman.d/mirrorlist")
   check "$w: official stable repos" $([[ $(echo $pc) == "1 1" ]] && echo 1 || echo 0) "$(echo $pc)"
-  pc=$(g "pacman -Q omarchy-mac-keyring 2>&1; pacman-key --list-keys 2>/dev/null | grep -ci 'omarchy-mac'")
-  check "$w: omarchy-mac keyring and its key gone" $([[ $pc == *"not found"* && $(tail -1 <<<"$pc") == 0 ]] && echo 1 || echo 0) "$(echo $pc)"
+  # A new pacman keyring (its own master key, not the 4.0 one an image's VMs shared), and every key in it
+  # from Arch Linux ARM's, Arch's or Omarchy's keyring files: omarchy-mac's key is gone.
+  pc=$(g 'pacman -Q omarchy-mac-keyring >/dev/null 2>&1 && echo "omarchy-mac-keyring installed"
+    G=/etc/pacman.d/gnupg; m() { gpg --homedir "$1" --no-permission-warning --batch --with-colons --list-secret-keys 2>/dev/null | awk -F: "\$1 == \"fpr\" { print \$10; exit }"; }
+    [[ -d $G.omacvm-40 && $(m $G) != "$(m $G.omacvm-40)" ]] || echo "no new master key"
+    ok=$( { for k in /usr/share/pacman/keyrings/{archlinuxarm,archlinux,omarchy}.gpg; do [[ -f $k ]] && gpg --batch --with-colons --show-keys "$k" 2>/dev/null; done; } |
+      awk -F: "\$1 == \"fpr\" { print \$10 }" | sort -u; echo 40DFB630FF42BCFFB047046CF0134EE680CAC571)
+    gpg --homedir $G --no-permission-warning --batch --with-colons --list-keys 2>/dev/null | awk -F: "\$1 == \"pub\" { p = 1; next } \$1 == \"fpr\" && p { print \$10; p = 0 }" |
+      while read -r f; do grep -qx "$f" <<<"$ok" || echo "key $f from elsewhere"; done' 2>&1 | head -5)
+  check "$w: a new pacman keyring, only Arch Linux ARM's, Arch's and Omarchy's keys" $([[ -z $pc ]] && echo 1 || echo 0) "$(echo $pc | head -c 300)"
   pc=$(g "for p in \$(grep -v '^#' /usr/local/share/omacvm/guest/keep-packages.txt 2>/dev/null); do pacman -Qq \$p >/dev/null 2>&1 || continue; r=\$(LC_ALL=C pacman -Qi \$p | sed -n 's/^Install Reason *: //p'); [[ \$r == Explicitly* ]] || echo \"\$p:\$r\"; done")
   check "$w: keep list installed explicitly (orphan step cannot take it)" $([[ -z $pc ]] && echo 1 || echo 0) "$(echo $pc | head -c 200)"
   pc=$(g "pacman -Qq snapper iwd 2>&1; snapper list-configs 2>/dev/null | grep -c root; ls /boot/grub/grub-btrfs.cfg 2>&1")
   check "$w: snapper and iwd there, root config, snapshots in GRUB" $([[ $pc != *"not found"* && $pc == *grub-btrfs.cfg* ]] && echo 1 || echo 0) "$(echo $pc)"
   fail=$(g "systemctl --failed --no-legend --plain | awk '{ print \$1 }'")
   check "$w: no failed units" $([[ -z $fail ]] && echo 1 || echo 0) "$(echo $fail)"
-  pc=$(g "bash /usr/local/share/omacvm/guest/check.sh --tsv 2>/dev/null | awk -F'\t' '\$1 == \"FAIL\" { print \$2 }'")
+  pc=$(g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null | awk -F'\t' '\$1 == \"fail\" { print \$2 }'")
   check "$w: OmacVM's guest check has no FAIL" $([[ -z $pc ]] && echo 1 || echo 0) "$(echo $pc | head -c 300)"
   pc=$(g "cat /usr/local/share/omacvm/VERSION")
   check "$w: OmacVM in the VM is the app's" $([[ $pc == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" ]] && echo 1 || echo 0) "$pc"
