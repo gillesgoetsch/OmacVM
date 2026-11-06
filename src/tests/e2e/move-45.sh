@@ -667,8 +667,8 @@ row_app_guards() {
   # 3. Resume (from the copy, as its window would). Between two VM starts nothing but move-vm.sh (bash) runs
   #    from the app: held there (SIGSTOP), the app opens with an update on offer; it must wait for the move too.
   mvm_bg run
-  local i k=0 tree
-  for ((i = 0; i < 1200; i++)); do
+  local i k=0 tree end=$(( $(date +%s) + 900 ))
+  while (( $(date +%s) < end )) && kill -0 "$MV_PID" 2>/dev/null; do   # a settle first can take minutes
     [[ $(J state) == running && -z $(qemu_pid) ]] && { tree="$MV_PID $(descendants "$MV_PID")"; kill -STOP $tree 2>/dev/null; k=1; break; }
     sleep 0.05
   done
