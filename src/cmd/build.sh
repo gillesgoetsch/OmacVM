@@ -414,7 +414,7 @@ box=("OmacVM will build this VM" ""
      "user       $U ($FULL), hostname $HOST"
      "keyboard   $KB_SHOWN"
      "timezone   $TZ_MAC, language $LANG_VM"
-     "Omarchy    $( [[ $SOURCE == prebuilt ]] && echo "prebuilt VM: Omarchy $PB_OMARCHY ($(pb_gb "$PB_SIZE") GB download, release $PB_TAG)" || echo "omarchy-mac, $CHANNEL packages, built here")" "")
+     "Omarchy    $( [[ $SOURCE == prebuilt ]] && echo "prebuilt VM: Omarchy $PB_OMARCHY ($(pb_gb "$PB_SIZE") GB download, release $PB_TAG)" || { [[ $(omarchy_route) == 4.5 ]] && echo "Omarchy 4.5, $(omarchy45_channel) packages, built here"; } || echo "omarchy-mac, $CHANNEL packages, built here")" "")
 while IFS= read -r l; do box+=("${l#    }"); done < <(explain_features)
 if (( UI_FANCY )) && ! (( YES )); then ui_box "${box[@]}"
 else printf '\n'; for l in "${box[@]}"; do printf '  %s\n' "$l"; done; fi

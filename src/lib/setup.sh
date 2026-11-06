@@ -115,6 +115,16 @@ mem_warning() {
   printf ' %s GB is this Mac'"'"'s Best tier: omacvm resources --vm "%s" --resources best\n' "$best" "$3"
 }
 
+# Which Omarchy a new VM gets: Omarchy 4.5 on Omarchy's own aarch64 repos
+# (guest/omarchy-move.sh), the same rule as app/scripts/vm-common.sh. Tests
+# only: OMACVM_TEST_OMARCHY=4.0 builds omarchy-mac 4.0 as before 3.4.0 (the
+# move matrix's 4.0 bases), OMACVM_TEST_OMARCHY_CHANNEL another of 4.5's
+# channels (rc, edge).
+omarchy_route() { [[ ${OMACVM_TEST_OMARCHY:-} == 4.0 ]] && echo 4.0 || echo 4.5; }
+omarchy45_channel() {
+  case ${OMACVM_TEST_OMARCHY_CHANNEL:-stable} in stable|rc|edge) echo "${OMACVM_TEST_OMARCHY_CHANNEL:-stable}" ;; *) echo stable ;; esac
+}
+
 # omarchy-mac's published package lane: stable once it exists, else rc.
 omarchy_channel() {
   local code

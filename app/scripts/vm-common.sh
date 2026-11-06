@@ -356,6 +356,15 @@ run_logged() {
   return "$rc"
 }
 
+# Which Omarchy a new VM gets: "4.5", Omarchy 4.5 on Omarchy's own aarch64
+# repos (guest/omarchy-move.sh; always the latest stable release). Tests
+# only: OMACVM_TEST_OMARCHY=4.0 builds omarchy-mac 4.0 as before 3.4.0;
+# OMACVM_TEST_OMARCHY_CHANNEL another of 4.5's channels (rc, edge).
+omarchy_route() { [[ ${OMACVM_TEST_OMARCHY:-} == 4.0 ]] && echo 4.0 || echo 4.5; }
+omarchy45_channel() {
+  case ${OMACVM_TEST_OMARCHY_CHANNEL:-stable} in stable|rc|edge) echo "${OMACVM_TEST_OMARCHY_CHANNEL:-stable}" ;; *) echo stable ;; esac
+}
+
 # omarchy-mac's release lane: stable once published, else rc.
 omarchy_channel() {
   local code

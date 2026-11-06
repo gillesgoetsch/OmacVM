@@ -1,0 +1,86 @@
+# Packages an OmacVM VM needs (guest/omarchy-move.sh's protect step marks the
+# installed ones as installed on purpose). Omarchy 4.5 removes orphans on every
+# update (omarchy-update-orphan-pkgs -y): a package that is there only as a
+# dependency of something that goes would go too. Omarchy 4.0's omarchy
+# package depended on snapper and iwd; 4.5's does not. guest/pkg-add marks the
+# packages OmacVM asks for the same way. One name per line.
+# Test: src/tests/omarchy-move.sh (every pkg-add of OmacVM's guest is here).
+
+# Boot, disk, snapshots
+grub
+grub-btrfs
+inotify-tools
+efibootmgr
+btrfs-progs
+mkinitcpio
+snapper
+snap-pac
+linux-aarch64
+linux-aarch64-headers
+linux-aarch64-thp
+linux-aarch64-thp-headers
+dkms
+make
+gcc
+
+# Network, SSH, the VM's agents
+networkmanager
+iwd
+openssh
+sudo
+qemu-guest-agent
+spice-vdagent
+
+# OmacVM's guest parts
+jq
+python
+python-gobject
+python-evdev
+wl-clipboard
+libva-utils
+imagemagick
+file
+pipewire-alsa
+pipewire-pulse
+pipewire-jack
+rtkit
+v4l2loopback-dkms
+
+# Graphics: Vulkan, OpenCL, OmacVM's own Mesa (/opt/omacvm-mesa links these)
+omacvm-vulkan-virtio
+vulkan-icd-loader
+vulkan-tools
+ocl-icd
+clinfo
+opencl-mesa
+spirv-tools
+spirv-llvm-translator
+llvm-libs
+clang
+libclc
+libdrm
+wayland
+libx11
+libxext
+libxrandr
+libxshmfence
+libxxf86vm
+zstd
+expat
+
+# Builds OmacVM runs again after updates (Omanotch, the memory-optimized
+# kernel, hyprpicker)
+base-devel
+git
+lz4
+wayland-protocols
+cmake
+hyprwayland-scanner
+xmlto
+docbook-xsl
+kmod
+inetutils
+bc
+dtc
+pahole
+cpio

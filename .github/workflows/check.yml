@@ -629,6 +629,12 @@ jobs:
       - name: OmacVM's edits of Omarchy's shell on omarchy-mac's and upstream's files (toasts, display panels, night light indicator)
         run: src/tests/omarchy-shell.sh
 
+      - name: Per-display workspaces step aside on Omarchy 4.5 and keep the rest of bindings.lua
+        run: src/tests/workspaces-45.sh
+
+      - name: The move to Omarchy 4.5 (preflight, steps, resume, keyring, report), its repo files, pkg-add's marking
+        run: src/tests/omarchy-move.sh
+
       - name: OmacVM.app moves VM folders safely (fixtures, small disk images)
         run: src/tests/app-storage.sh
 
@@ -860,6 +866,20 @@ jobs:
 
       - name: OmacVM's edits of Omarchy's shell on Linux (GNU tools, as in the VM)
         run: src/tests/omarchy-shell.sh
+
+      - name: Per-display workspaces step aside on Omarchy 4.5 on Linux (GNU awk, as in the VM)
+        run: src/tests/workspaces-45.sh
+
+      - name: The move to Omarchy 4.5 on Linux (bash 5, GNU tools, as in the VM)
+        run: src/tests/omarchy-move.sh
+
+      - name: The move's package switch with the real pacman on made-up repos (split, rename, merge, file moves; Debian's pacman under fakeroot)
+        run: |
+          sudo apt-get install -y -qq pacman-package-manager libarchive-tools fakeroot >/dev/null
+          src/tests/omarchy-move-pacman.sh
+
+      - name: The memory step on a VM whose kernel was replaced since it started (the move to Omarchy 4.5)
+        run: src/tests/memory-kernel-replaced.sh
 
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh

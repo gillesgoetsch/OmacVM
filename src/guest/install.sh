@@ -20,6 +20,9 @@
 # system steps are skipped. --strict F,...|all: a part of these features that
 # could not be set up fails the run (exit 1, after the other parts); without
 # it, such a part is only logged.
+# Exit 5: a move to Omarchy 4.5 stopped here before its package switch was
+# done (guest/omarchy-move.sh pending): nothing was set up. The move's own
+# apply passes OMACVM_MOVE_RUN=1 and gets exit 0 then.
 # --graphics (OmacVM.app): what the VM's Graphics setting gives it on this Mac
 # (the Mac decides Automatic); vulkan builds its Venus driver ahead of the
 # start that gets Vulkan. Kept in /etc/omacvm/env.
@@ -58,6 +61,29 @@ while (( $# )); do
   esac
 done
 [[ -n $U ]] && id "$U" >/dev/null || { echo "guest/install.sh: --user must be the desktop user" >&2; exit 2; }
+# The move to Omarchy 4.5 runs (guest/omarchy-move.sh, its journal and lock):
+# nothing of this meanwhile, it changes the same packages and files.
+MV=${OMACVM_MOVE_DIR:-/var/lib/omacvm/move-4.5}
+if [[ $(cat "$MV/state" 2>/dev/null) == running && -e $MV/lock ]] && ! flock -n "$MV/lock" true 2>/dev/null; then
+  echo "guest/install.sh: the move to Omarchy 4.5 runs in this VM; try again when it is done" >&2
+  exit 3
+fi
+# The move stopped before its package switch was done (a Resume's Update VM
+# runs first): no package may change (features install and remove some,
+# gbm-guard puts some back, pacman's lock would go), else a switch Resume
+# can finish turns into one only Undo can. Nothing of this now: the move's
+# own Update VM after the switch does it all (guest/omarchy-move.sh pending).
+# The move's own apply (OMACVM_MOVE_RUN=1) goes on (exit 0); any other one
+# fails (exit 5), so apply records no part of this OmacVM as installed.
+if why=$("$R/guest/omarchy-move.sh" pending 2>/dev/null); then
+  echo "OmacVM: $why"
+  if [[ ${OMACVM_MOVE_RUN:-} == 1 ]]; then
+    echo "OmacVM: the VM side waits for the move (its Update VM after the switch sets it up)"
+    exit 0
+  fi
+  echo "guest/install.sh: nothing was set up: the move to Omarchy 4.5 is not finished in this VM; Resume or Undo it in OmacVM.app" >&2
+  exit 5
+fi
 log() { LAST_STEP=$*; printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 # A run that stops says where (apply shows it as what failed).
 # One EXIT trap for everything that must run at the end.
@@ -271,9 +297,9 @@ if system && command -v grub-mkconfig >/dev/null; then
   # Snapshots (snapper, set up by omarchy-mac) appear in the GRUB menu.
   "$R/guest/pkg-add" grub-btrfs inotify-tools
   # Read-only snapshots picked in GRUB boot with a temporary writable overlay
-  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB).
-  printf '%s\n' '[[ " ${HOOKS[*]} " == *" grub-btrfs-overlayfs "* ]] || HOOKS+=(grub-btrfs-overlayfs)' \
-    > /etc/mkinitcpio.conf.d/zz-omacvm.conf
+  # (Omarchy does this with Limine on x86; omarchy-mac uses GRUB); Omarchy
+  # 4.5's Limine hook out (the file says why).
+  install -Dm644 "$R/guest/mkinitcpio-omacvm.conf" /etc/mkinitcpio.conf.d/zz-omacvm.conf
   systemctl enable --now grub-btrfsd >/dev/null 2>&1 || true
   # Arch Linux ARM's kernel under a name GRUB pairs with its initramfs.
   "$R/kernel/stock-kernel.sh"
@@ -678,6 +704,7 @@ grub_old=$(sed -n 's/^grub //p' $BOOT_STAMP 2>/dev/null || true)
 if [[ $(sed -n 's/^initramfs //p' $BOOT_STAMP 2>/dev/null || true) != "$init_in" ]]; then
   init_ok=; grub_old=
   if mkinitcpio -P >/dev/null 2>&1; then init_ok=$init_conf; fi
+  sync   # /boot is FAT: an image the VM loses power over before it is written comes back broken
 else
   init_ok=$init_in
 fi
@@ -685,8 +712,17 @@ grub_digest() { echo "$(digest /etc/default/grub /etc/grub.d/*)-$(ls /boot | sha
 grub_in=$(grub_digest)
 [[ -f /boot/grub/grub.cfg ]] || grub_in=missing
 grub_ok=$grub_in
+# GRUB's menu written beside the old one, on the disk, then put in its place:
+# grub-mkconfig rewrites grub.cfg in place, and a VM that lost power right
+# after that found an empty menu (a GRUB prompt, 2026-11-06).
 if [[ $grub_old != "$grub_in" ]] && command -v grub-mkconfig >/dev/null; then
-  if grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1; then grub_ok=$(grub_digest); else grub_ok=; fi
+  rm -f /boot/grub/grub.cfg.omacvm-new
+  if grub-mkconfig -o /boot/grub/grub.cfg.omacvm-new >/dev/null 2>&1 && [[ -s /boot/grub/grub.cfg.omacvm-new ]] &&
+     sync && mv -f /boot/grub/grub.cfg.omacvm-new /boot/grub/grub.cfg; then
+    grub_ok=$(grub_digest)
+  else
+    rm -f /boot/grub/grub.cfg.omacvm-new; grub_ok=
+  fi
 fi
 printf 'initramfs %s\ngrub %s\n' "$init_ok" "$grub_ok" | install -Dm644 /dev/stdin $BOOT_STAMP
 for f in ${SOFT[@]+"${SOFT[@]}"}; do
@@ -695,4 +731,12 @@ for f in ${SOFT[@]+"${SOFT[@]}"}; do
     REPORTED=1; exit 1
   fi
 done
+# Omarchy 4.5 removes orphans on every update: OmacVM's packages and all
+# they need now are installed on purpose (new VMs, prebuilt ones, a moved VM,
+# every Update VM; a 4.0 VM gets it in the move).
+om_v=$(pacman -Q omarchy 2>/dev/null | awk '{ print $2 }')
+if [[ $om_v =~ ^([0-9]+)\.([0-9]+) ]] && (( BASH_REMATCH[1] > 4 || (BASH_REMATCH[1] == 4 && BASH_REMATCH[2] >= 5) )); then
+  "$R/guest/keep-explicit" >/dev/null || echo "guest/install.sh: OmacVM's packages not all marked as installed on purpose" >&2
+fi
+sync   # everything above on the disk: the Mac may stop the VM right after (Update VM, the move to Omarchy 4.5)
 log "OmacVM guest side installed for $U (reboot to apply everything)"
