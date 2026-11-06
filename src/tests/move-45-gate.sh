@@ -197,7 +197,7 @@ rm -rf "$O/release/prebuilt"; cp -R "$T/passed" "$O/release/prebuilt"
 
 # ---- publish for real against a stand-in gh (no network): the prebuilt release must be M's ----
 # The stand-in keeps releases in $GHS/rel/TAG/ (TAG.target: its target commit); GHS_TARGET and
-# GHS_TAGSHA change what GitHub says, GHS_BAD names a part GitHub serves other bytes for,
+# GHS_TAGSHA change what GitHub says, GHS_BAD names a part GitHub serves other bytes for (same size),
 # GHS_NODIGEST=1 leaves the assets' digests out (older uploads).
 GHS=$T/ghs; mkdir -p "$T/bin" "$GHS/rel"
 cat > "$T/bin/gh" <<'GH'
@@ -211,7 +211,7 @@ case "$1 $2" in
     mkdir -p "$S/rel/$t"; echo "$tg" > "$S/rel/$t.target" ;;
   "release upload") t=$3; shift 3; [[ -d $S/rel/$t ]] || exit 1
     for f; do [[ -f $f ]] || continue; cp "$f" "$S/rel/$t/"
-      [[ ${f##*/} == "${GHS_BAD:-none}" ]] && printf 'x' >> "$S/rel/$t/${f##*/}"; done; true ;;
+      [[ ${f##*/} == "${GHS_BAD:-none}" ]] && python3 -I -c 'import sys; p=sys.argv[1]; b=bytearray(open(p,"rb").read()); b[0]^=0xff; open(p,"wb").write(b)' "$S/rel/$t/${f##*/}"; done; true ;;   # same size, other bytes: only the SHA-256 can tell
   "release download") t=$3; shift 3; d=.; p=()
     while (( $# )); do case $1 in -D) d=$2; shift ;; -p) p+=("$2"); shift ;; esac; shift; done
     for x in "${p[@]}"; do cp "$S/rel/$t/$x" "$d/" || exit 1; done ;;
