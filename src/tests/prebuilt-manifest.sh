@@ -218,6 +218,21 @@ expect "manifest.py write: no revoked_keys when empty" None "$(python3 -c 'impor
 expect "manifest.py write: not a key refused" 1 "$(mw --revoked-keys bm90; echo $?)"
 expect "make-image.sh passes OMACVM_REVOKED_KEYS" 1 "$(grep -c -- '--revoked-keys "${OMACVM_REVOKED_KEYS:-}"' "$R/src/prebuilt/make-image.sh")"
 
+# The commit an image was made from (3.4.0 on; release.sh ties it to the release commit).
+C40=0123456789abcdef0123456789abcdef01234567
+mw --commit "$C40"
+expect "manifest.py write: the commit" "\"$C40\"" "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("commit")))' "$T/w.json")"
+expect "manifest.py write: not a full commit id refused" 1 "$(mw --commit 0123abc; echo $?)"
+mw --commit ""
+expect "manifest.py write: no commit when empty" None "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("commit"))' "$T/w.json")"
+manifest commit "\"$C40\""
+expect "manifest.py get commit" "$C40" "$(python3 "$R/src/prebuilt/manifest.py" get "$M" commit)"
+manifest "" ""
+expect "manifest.py get commit: none in an older image" "" "$(python3 "$R/src/prebuilt/manifest.py" get "$M" commit)"
+manifest commit '"main; rm -rf /"'
+expect "manifest.py get: a commit that is no commit id fails the manifest" 1 "$(python3 "$R/src/prebuilt/manifest.py" get "$M" route >/dev/null 2>&1; echo $?)"
+manifest "" ""
+
 # From 3.4.0 new VMs are Omarchy 4.5 (manifest.py OMARCHY_FLOOR): an app at
 # 3.4.0 or later takes no image from before prebuilt-3.4.0 and no manifest
 # below Omarchy 4.5; older apps are as before. Fixed versions, not src/VERSION.

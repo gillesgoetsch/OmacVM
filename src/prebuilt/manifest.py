@@ -3,13 +3,15 @@
 
   manifest.py write OUT.json --route R --omacvm V --omarchy V --bundle NAME
                     --unpacked KB --disk-gb N --teams JSON-LIST [--next-spare-key KEY]
-                    [--revoked-keys "KEY..."] PART...
+                    [--revoked-keys "KEY..."] [--commit SHA] PART...
                                            unsigned: make-image.sh signs it (OUT.json.sig);
                                            the keys: OMACVM_NEXT_SPARE_KEY and
                                            OMACVM_REVOKED_KEYS (docs/release-keys.md)
   manifest.py get MANIFEST KEY             one value (route, omacvm, omarchy, bundle,
-                                           size, unpacked_kb, disk_gb, created); the
-                                           manifest is checked first, exit 1 if it is bad
+                                           size, unpacked_kb, disk_gb, created, commit:
+                                           the OmacVM commit the image was made from, ""
+                                           in images before 3.4.0); the manifest is
+                                           checked first, exit 1 if it is bad
   manifest.py parts MANIFEST               one line per part: NAME SIZE SHA256
   manifest.py release RELEASES.json VERSION ROUTE
                                            from GitHub's release list: TAG URL IMAGE_VERSION
@@ -69,6 +71,10 @@ def write(a):
         "parts": [{"name": os.path.basename(p), "size": os.path.getsize(p), "sha256": sha256(p)} for p in sorted(parts)],
         "devid_teams": keys.teams(json.loads(opts["teams"])),
     }
+    if opts.get("commit"):
+        if not COMMIT.fullmatch(opts["commit"]):
+            sys.exit("manifest.py: --commit is not a full commit id")
+        m["commit"] = opts["commit"]
     if opts.get("next-spare-key"):
         if not keys.key(opts["next-spare-key"]):
             sys.exit("manifest.py: --next-spare-key is not a public key")
@@ -91,6 +97,7 @@ ROUTE = re.compile(r"[a-z]{1,16}")
 VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}")
 TEXT = re.compile(r"[ -~]{1,80}")   # printable ASCII
 CREATED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+COMMIT = re.compile(r"[0-9a-f]{40}")
 INTS = {"disk_gb": (1, 4096), "size": (1, 1 << 40), "unpacked_kb": (1, 1 << 33)}
 
 
@@ -119,6 +126,11 @@ def checked(path):
         out[key] = v
     if out["bundle"] in (".", ".."):
         raise ValueError("bad bundle")
+    # The commit the image was made from (3.4.0 on; the release gate ties it to M): optional.
+    c = m.get("commit", "")
+    if not isinstance(c, str) or (c and not COMMIT.fullmatch(c)):
+        raise ValueError("bad commit")
+    out["commit"] = c
     for key in INTS:
         out[key] = plain_int(m, key)
     return out
