@@ -71,7 +71,7 @@ for r in $(app_vms_roots 2>/dev/null); do
   [[ $BASE == "$r"/* ]] && { echo "move-45.sh: $BASE is in the installed app's VMs folder $r: never for tests" >&2; exit 2; }
 done
 [[ $BASE == "$HOME/OmacVM/"* ]] && { echo "move-45.sh: $BASE is under ~/OmacVM: never for tests" >&2; exit 2; }
-export OMACVM_TEST_IDENTITY=1 OMACVM_CREATE_NO_MAC=1
+export OMACVM_TEST_IDENTITY=1 OMACVM_CREATE_NO_MAC=1 OMACVM_MOVE_NO_MAC=1   # never the Mac's helpers
 MOVE45_COMMIT=$(/usr/libexec/PlistBuddy -c "Print :OmacVMCommit" "$APP/Contents/Info.plist" 2>/dev/null); export MOVE45_COMMIT
 mkdir -p "$OUT/rows" "$OUT/logs"
 BN=$(basename "$BASE"); TAG="$ROW-${BN##* }"
