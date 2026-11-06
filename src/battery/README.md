@@ -24,7 +24,7 @@ IOKit power sources ─── OmacVM.app ── virtio port org.omacvm.battery �
                                   UPower ── Omarchy's bar (battery icon, panel, low-battery warning)
 ```
 
-- The Mac sends a whole snapshot each time (JSON, see `src/bridge/mac/battery.swift`):
+- The Mac sends a whole snapshot each time (JSON, see `app/app/Sources/OmacVM/HostBattery.swift`):
   on every change of its power sources (IOKit notifications), and every
   30 seconds from OmacVM.app. Only the VM's request for a fresh one goes the
   other way; nothing in the VM can change the Mac.

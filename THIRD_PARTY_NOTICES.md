@@ -14,8 +14,8 @@ each file taken from them:
   `src/battery/guest/module/omacvm-battery.c` (GPL-2.0-only, as its original
   file says), its `Makefile` and `dkms.conf`, the agent
   `src/battery/guest/omacvm-battery`, UPower's setting `90-omacvm-battery.conf`,
-  and the Mac's side in `src/bridge/mac/battery.swift` and OmacVM.app's
-  `HostBattery.swift` and `NativeBatteryBridge.swift`.
+  and the Mac's side in OmacVM.app's `HostBattery.swift` and
+  `NativeBatteryBridge.swift`.
   The Mac's camera in the VM: `src/bridge/mac/camera.swift` (from
   `NativeCameraBridge.swift`; OmacVM.app uses it too), the VM's
   `src/camera/guest/omacvm-camera` (from `omarchy-native-camera-bridge`) and
