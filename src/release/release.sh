@@ -242,7 +242,7 @@ step_merge() {
 # these app/scripts files (not the fonts and licence files it also copies). release-script.sh builds its stand-in app from build-app.sh's own
 # lines, so a change there that is not made here too fails CI.
 APP_ARCHIVE=(omacvm src CHANGELOG.md)
-APP_SCRIPTS=(create-vm.sh prebuilt-vm.sh apply-vm.sh vm-common.sh update-vm.sh update-swap.sh)
+APP_SCRIPTS=(create-vm.sh prebuilt-vm.sh apply-vm.sh vm-common.sh update-vm.sh update-swap.sh move-vm.sh)
 # The app's links outside Resources/omacvm: build-app.sh's (QEMU started under
 # the app's name) and python's own.
 APP_LINKS='./Contents/MacOS/OmacVM-VM -> ../Resources/runtime/bin/OmacVM

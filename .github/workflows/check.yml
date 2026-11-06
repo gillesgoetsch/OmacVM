@@ -276,6 +276,9 @@ jobs:
       - name: Release script (KosmicKrisp from another Mac, bad arguments)
         run: src/tests/release-script.sh
 
+      - name: Every script OmacVM.app runs is put into it (build-app.sh, release.sh)
+        run: src/tests/app-scripts.sh
+
       - name: Vulkan (Venus) driver step for app VMs (when it builds Mesa's vulkan-virtio)
         run: src/tests/venus-driver.sh
       - name: The guest check's Vulkan line without vulkaninfo says "not checked" (#332)
@@ -419,6 +422,9 @@ jobs:
 
       - name: A VM not shut down cleanly, or copied while it ran, warns before a start
         run: src/tests/app-run-marker.sh
+
+      - name: Move to Omarchy 4.5 backs up first, resumes, undoes byte for byte and deletes the backup only when asked
+        run: src/tests/app-move-vm.sh
 
       - name: Update VM never waits forever (disk errors, a read-only VM, a hang), asks before a kernel build
         run: src/tests/update-vm-watch.sh

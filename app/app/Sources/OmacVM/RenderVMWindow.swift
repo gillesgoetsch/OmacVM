@@ -44,6 +44,10 @@ enum RenderVMWindow {
         var notchSkipInfo: Bool? = nil
         /// This Mac not set up for the VM (the notice, the header's Update VM).
         var macSetup: MacSetup? = nil
+        /// Move to Omarchy 4.5: the card's state (nil: hidden in the pictures).
+        var move: OmarchyMoveCard.Preview? = OmarchyMoveCard.Preview(card: .hidden)
+        /// The backup row under Storage & Updates (nil: not shown).
+        var moveBackup: (bytes: Int64, exact: Bool)? = nil
     }
 
     static func allowed(bundleID: String?) -> Bool {
@@ -220,6 +224,8 @@ enum RenderVMWindow {
         notSetUp.running = true
         window("window-25-mac-setup-login-items-vm-runs", state, notSetUp)
 
+        movePictures(state, config, usual, staged: staged)
+
         // Long names: a VM name of 62 characters, a deep VMs folder, a
         // message, an older OmacVM in the VM (Update VM).
         let longRoot = tmp.appendingPathComponent("A folder with a rather long name for the VMs of this Mac/and-one-more-level-light-test/vms")
@@ -291,6 +297,128 @@ enum RenderVMWindow {
         print(text, terminator: "")
         print("rendered into \(dir.path)")
         exit(failed ? 1 : 0)
+    }
+
+    /// Move to Omarchy 4.5: the card under the header in each state (the
+    /// offer, blocked by space and by a drive without APFS, stopped with
+    /// Resume, stopped with Undo only, interrupted, an Undo cut off, moved with the backup
+    /// row), the move's progress with its steps (running and stopped), and
+    /// the sheets. The card must be under the header in every picture
+    /// ("move-card"), its buttons inside the window.
+    private static func movePictures(_ state: AppState, _ config: VMConfig, _ usual: Preview, staged: Updater.Staged) {
+        let gib = DiskSize.gib
+        func card(_ c: OmarchyMove.Card, problem: String? = nil, backup: (bytes: Int64, exact: Bool)? = nil) -> OmarchyMoveCard.Preview {
+            OmarchyMoveCard.Preview(card: c, problem: problem, backup: backup)
+        }
+        func shown(_ name: String, _ dark: Bool) {
+            if LayoutProbe.frames["move-card"] == nil { note("\(name): the move card is missing\(dark ? " (dark)" : "")", fail: true) }
+        }
+        var p = usual
+        p.move = card(.offer)
+        window("window-move-1-offer", state, p) { dark in shown("window-move-1-offer", dark) }
+        p.move = card(.offer, problem: OmarchyMove.problem(apfs: true, freeBytes: 21 * gib, allocated: 17 * gib,
+                                                           diskJobPending: false, resizePending: false, otherCopy: nil))
+        window("window-move-2-no-space", state, p) { dark in shown("window-move-2-no-space", dark) }
+        p.move = card(.offer, problem: OmarchyMove.problem(apfs: false, freeBytes: 900 * gib, allocated: 17 * gib,
+                                                           diskJobPending: false, resizePending: false, otherCopy: nil))
+        window("window-move-3-not-apfs", state, p) { dark in shown("window-move-3-not-apfs", dark) }
+        p.move = card(.failed(step: 5, reason: "Omarchy's package servers did not answer. Check the Mac's network, then Resume.", resumable: true))
+        window("window-move-4-failed-resume", state, p) { dark in shown("window-move-4-failed-resume", dark) }
+        p.move = card(.failed(step: 5, reason: "pacman stopped while it switched the packages (log: logs/move-4.5.log).", resumable: false))
+        window("window-move-5-failed-undo-only", state, p) { dark in shown("window-move-5-failed-undo-only", dark) }
+        p.move = card(.interrupted(step: 5, reason: "", resumable: true))
+        window("window-move-6-interrupted", state, p) { dark in shown("window-move-6-interrupted", dark) }
+        p.move = card(.running(step: 5))
+        window("window-move-18-running-elsewhere", state, p) { dark in shown("window-move-18-running-elsewhere", dark) }
+        p.move = card(.undoing(reason: "OmacVM quit or the Mac turned off during Undo. Undo again puts the disk from before the move back."))
+        window("window-move-20-undo-cut-off", state, p) { dark in
+            shown("window-move-20-undo-cut-off", dark)
+            if LayoutProbe.frames["move-resume"] != nil || LayoutProbe.frames["move-keep"] != nil {
+                note("window-move-20-undo-cut-off: Resume or Keep offered\(dark ? " (dark)" : "")", fail: true)
+            }
+        }
+        // An app update ready too: the update's banner blue, the offer quiet under it.
+        p.move = card(.offer)
+        Updater.shared.showForRendering(staged: staged, notice: nil, enabled: true, waiting: false, previous: nil)
+        window("window-move-17-offer-with-update", state, p) { dark in
+            shown("window-move-17-offer-with-update", dark)
+            if LayoutProbe.frames["update-now"] == nil { note("window-move-17-offer-with-update: no update banner", fail: true) }
+        }
+        Updater.shared.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil)
+        p.move = card(.stopping(step: 5))
+        window("window-move-16-stopping", state, p) { dark in
+            shown("window-move-16-stopping", dark)
+            if LayoutProbe.frames["move-stopping"] == nil { note("window-move-16-stopping: no progress in the card\(dark ? " (dark)" : "")", fail: true) }
+        }
+        p.move = card(.done(since: "2026-11-06T01:12:00Z", kept: false), backup: (12 * gib, true))
+        p.moveBackup = (12 * gib, true)
+        p.section = "storage"
+        window("window-move-7-done", state, p) { dark in shown("window-move-7-done", dark) }
+        p.move = card(.done(since: "", kept: true), backup: (17 * gib, false))
+        p.moveBackup = (17 * gib, false)
+        window("window-move-8-kept", state, p) { dark in shown("window-move-8-kept", dark) }
+        p = usual
+        p.move = card(.offer)
+        p.running = true
+        window("window-move-9-offer-vm-runs", state, p) { dark in shown("window-move-9-offer-vm-runs", dark) }
+
+        // The same read from the VM folder's own files (the app's path, no
+        // preview): a failed move, then a finished one with its backup (a
+        // clone of the made-up disk) and the backup row under Storage.
+        let journal = MoveFiles.journalURL(config), backup = MoveFiles.backupURL(config)
+        try? "format=1\nstate=failed\nstep=5\nfailed_step=5\nresumable=1\nreason=Omarchy's package servers did not answer. Check the Mac's network, then Resume.\n"
+            .write(to: journal, atomically: true, encoding: .utf8)
+        try? FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        _ = clonefile(config.disk.path, backup.appendingPathComponent("disk.img").path, 0)
+        p = usual
+        p.move = nil
+        window("window-move-12-from-files-failed", state, p) { dark in shown("window-move-12-from-files-failed", dark) }
+        try? "format=1\nstate=done\nstep=8\nfinished=2026-11-06T01:12:00Z\n".write(to: journal, atomically: true, encoding: .utf8)
+        try? "4.5.0 aarch64 stable\n".write(to: config.folder.appendingPathComponent(OmarchyMove.recordName), atomically: true, encoding: .utf8)
+        p.section = "storage"
+        window("window-move-13-from-files-done", state, p) { dark in
+            shown("window-move-13-from-files-done", dark)
+            if LayoutProbe.frames["trailing-move-backup"] == nil { note("window-move-13-from-files-done: the backup row is missing", fail: true) }
+        }
+        try? FileManager.default.removeItem(at: journal)
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.removeItem(at: config.folder.appendingPathComponent(OmarchyMove.recordName))
+        // No record, no journal: offered (every VM before 3.4.0, D4).
+        p.section = nil
+        window("window-move-14-from-files-offer", state, p) { dark in shown("window-move-14-from-files-offer", dark) }
+        // A VM on Omarchy 4.5: no card.
+        try? "4.5.0 aarch64 stable\n".write(to: config.folder.appendingPathComponent(OmarchyMove.recordName), atomically: true, encoding: .utf8)
+        window("window-move-15-from-files-on-45", state, p) { dark in
+            if LayoutProbe.frames["move-card"] != nil { note("window-move-15-from-files-on-45: a card on a 4.5 VM\(dark ? " (dark)" : "")", fail: true) }
+        }
+        try? FileManager.default.removeItem(at: config.folder.appendingPathComponent(OmarchyMove.recordName))
+
+        // The move's progress (BuildView): at the download, then stopped there.
+        let screen = state.screen
+        state.creator.showForRendering(move: 5, detail: "Downloading packages (part 6 of 13)", failed: nil)
+        state.screen = .building
+        window("window-move-10-progress", state, usual)
+        state.creator.showForRendering(move: 5, detail: "Downloading packages (part 6 of 13)",
+                                       failed: "Omarchy's package servers did not answer. Check the Mac's network, then Resume.", resumable: true)
+        window("window-move-11-progress-stopped", state, usual) { dark in
+            if LayoutProbe.frames["move-resume-progress"] == nil { note("window-move-11-progress-stopped: no Resume\(dark ? " (dark)" : "")", fail: true) }
+        }
+        state.creator.showForRendering(move: 5, detail: "Switching the packages (part 7 of 13)",
+                                       failed: "pacman stopped while it switched the packages (log: logs/move-4.5.log). Undo brings the disk from before back.",
+                                       resumable: false)
+        window("window-move-19-progress-undo-only", state, usual) { dark in
+            if LayoutProbe.frames["move-resume-progress"] != nil { note("window-move-19-progress-undo-only: Resume where it cannot go on", fail: true) }
+        }
+        state.creator.showForRendering(move: 5, detail: "", failed: nil)
+        state.screen = screen
+
+        sheet("sheet-move-1-confirm") { MoveConfirmSheet(vm: config.name, running: false, need: 31 * gib, free: 212 * gib) { _ in } }
+        sheet("sheet-move-2-confirm-vm-runs") { MoveConfirmSheet(vm: config.name, running: true, need: 31 * gib, free: 212 * gib) { _ in } }
+        sheet("sheet-move-3-undo") { MoveUndoSheet(vm: config.name, afterMove: true, since: "6 November 2026") { _ in } }
+        sheet("sheet-move-3b-undo-kept") { MoveUndoSheet(vm: config.name, afterMove: true, kept: true, since: "6 November 2026") { _ in } }
+        sheet("sheet-move-4-undo-stopped") { MoveUndoSheet(vm: config.name, afterMove: false, since: "") { _ in } }
+        sheet("sheet-move-5-delete") { MoveDeleteSheet(size: "about 12 GB") { _ in } }
+        sheet("sheet-move-6-keep") { MoveKeepSheet(vm: config.name) { _ in } }
     }
 
     private static func note(_ s: String, fail: Bool = false) {
@@ -369,7 +497,7 @@ enum RenderVMWindow {
     /// (16 pt in from the card), the header's buttons at its margin.
     private static func sides(_ name: String, height: Double) {
         // The strips under the header and the sidebar run edge to edge.
-        let boxes = LayoutProbe.boxes().filter { !["update-banner", "message", "notice"].contains($0.name) && !$0.name.hasPrefix("nav-") }
+        let boxes = LayoutProbe.boxes().filter { !["update-banner", "message", "notice", "move-card"].contains($0.name) && !$0.name.hasPrefix("nav-") }
         let rowEnd = WindowLayout.width - WindowLayout.contentInset - WindowLayout.rowInset
         var problems = WindowLayout.problems(boxes, width: WindowLayout.width, trailing: ["start"])
         let rows = boxes.filter { $0.name.hasPrefix("trailing-") }

@@ -42,6 +42,7 @@ source "$R/src/lib/vm.sh"
 source "$R/src/lib/features.sh"
 source "$R/src/lib/graphics.sh"
 source "$R/src/lib/mac-setup.sh"
+source "$R/src/lib/omarchy-move.sh"
 features_load
 VM=""; IP=""; TYPE=""; U=""; KEY=~/.ssh/omacvm; VMKEY=""; KB=""; MAC=1; NAMED=1; TOKEN=1; TRANSACTION=0
 YES=0; NEWKEY=0; REINSTALL=(); KERNEL=0
@@ -90,6 +91,12 @@ export OMA_KEY=$KEY
 NOTCH=$(mac_tool mac-notch 2>/dev/null || echo none)
 
 # ---------- which VM ----------
+# An OmacVM.app VM in the middle of its move to Omarchy 4.5: not started, not
+# changed (the app's Resume or Undo comes first).
+if [[ -n $VM && ( -z $TYPE || $TYPE == app ) ]] && md=$(app_dir "$VM" 2>/dev/null) && move_open "$md"; then
+  echo "omacvm apply: $(move_open_text "$VM"); nothing was changed" >&2
+  exit 3
+fi
 # Its SSH host key: remembered now when there is none yet, checked after that.
 export OMA_PIN_NEW=1
 if [[ -n $IP ]]; then
@@ -140,6 +147,14 @@ now=$(cat "$R/src/VERSION")
 # its record or its firewall change.
 if omacvm_downgrade apply "$( (( NAMED )) && echo "'$VM'" || echo "$VM")" "$had" "$now"; then
   failed_part "" "'$VM' has a newer OmacVM than this omacvm ($now): nothing was changed" mac
+  exit 3
+fi
+# An OmacVM.app VM whose move to Omarchy 4.5 began and whose package switch
+# is not done (the probe: guest/omarchy-move.sh pending; also when the Mac's
+# journal says it is over: a disk kept by an older app): only the move's own
+# apply (OMACVM_MOVE_RUN=1) goes on; stop before anything changes.
+if [[ $TYPE == app && -z ${OMACVM_MOVE_RUN:-} ]] && grep -qx 'OMACVM_MOVE_PENDING=1' <<<"$probe"; then
+  failed_part "" "$(move_open_text "$VM"); nothing was changed" vm
   exit 3
 fi
 
@@ -414,6 +429,11 @@ COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src" --exclude build --exclude __pycac
               tar --no-same-owner -C $S.new -xzf - 2>/dev/null
               if [ -d $S ]; then mv $S $S.old; fi; mv $S.new $S" ||
   die "OmacVM did not get into the VM (see above): nothing changed there"
+# A disk the person kept in OmacVM.app after its move stopped (Keep This
+# Disk): the VM learns it, so its move is over there too (check, status).
+if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM" 2>/dev/null) && move_kept "$d"; then
+  gssh "$IP" "/usr/local/share/omacvm/guest/omarchy-move.sh keep" < /dev/null > /dev/null 2>&1 || info "the VM did not take the kept move (omarchy-move.sh keep)"
+fi
 # A VM fresh from a prebuilt image: its whole system up to date, once, before
 # any feature installs a package (prebuilt/guest/first-update says why), and
 # restarted when that brought a new kernel. Not updated: the apply goes on,
@@ -637,6 +657,11 @@ if [[ $TYPE == app ]] && (( NAMED )) && d=$(app_dir "$VM"); then
   # Which OmacVM the VM has now: the app offers "Update VM" while it has
   # an older one (or none recorded: made by an app before 3.0.1).
   echo "$now" > "$d/omacvm-version"
+  # Which Omarchy it has (the app's Move to Omarchy 4.5 card): the guest's own
+  # answer, once its OmacVM has omarchy-move.sh.
+  if rec=$(gssh "$IP" "/usr/local/share/omacvm/guest/omarchy-move.sh record" < /dev/null 2>/dev/null) && rec=$(move_record "$rec"); then
+    echo "$rec" > "$d/omarchy"
+  fi
   # The app reads them at each start of the VM: a feature that is off gets
   # no port to the Mac's helpers and nothing on its virtio port (MacLinks.swift).
   # Vulkan without OmacVM's Mesa in the VM is off, in the record too: else it

@@ -226,6 +226,22 @@ do {
     expect("cancel: no half copy", !fm.fileExists(atPath: ext.appendingPathComponent(".Mid.moving").path)
            && !fm.fileExists(atPath: ext.appendingPathComponent("Mid").path))
 
+    // The move to Omarchy 4.5's backup (an APFS clone of the disk) or a move
+    // not over yet: never copied to another drive (the copy would take the
+    // backup's full size); on the same drive a rename is fine.
+    let movedVM = try makeVM(work.appendingPathComponent("root5"), "Moved", dataMB: 1)
+    try fm.createDirectory(at: movedVM.appendingPathComponent(MoveBackup.folder), withIntermediateDirectories: true)
+    do { _ = try FolderMover().move(movedVM, into: ext); expect("move backup: not to another drive", false) }
+    catch { expect("move backup: not to another drive", error.localizedDescription.contains("delete the old backup or undo"), error.localizedDescription) }
+    try fm.removeItem(at: movedVM.appendingPathComponent(MoveBackup.folder))
+    try "format=1\nstate=failed\n".write(to: movedVM.appendingPathComponent(MoveBackup.journal), atomically: true, encoding: .utf8)
+    expect("move journal: failed is open", MoveBackup.open(movedVM))
+    do { _ = try FolderMover().move(movedVM, into: ext); expect("move not over: not to another drive", false) }
+    catch { expect("move not over: not to another drive", error.localizedDescription.contains("resume or undo"), error.localizedDescription) }
+    try "format=1\nstate=done-final\n".write(to: movedVM.appendingPathComponent(MoveBackup.journal), atomically: true, encoding: .utf8)
+    expect("move journal: done-final is not open", !MoveBackup.open(movedVM))
+    expect("private bytes: a file never cloned holds its own blocks", (MoveBackup.privateBytes(movedVM.appendingPathComponent("disk.img").path) ?? -1) >= 0)
+
     // A drive that is not connected
     do { _ = try FolderMover().move(mid, into: URL(fileURLWithPath: "/Volumes/OmacVM-no-such-drive/VMs")); expect("missing drive refused", false) }
     catch { expect("missing drive refused", error.localizedDescription.contains("not connected"), error.localizedDescription) }

@@ -24,6 +24,7 @@ set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
 source "$R/src/lib/vm.sh"
+source "$R/src/lib/omarchy-move.sh"
 VM=""; TYPE=""; PULL=1; ARGS=("$@"); COMMIT=""; APPLY_ARGS=()
 while (( $# )); do
   case $1 in
@@ -58,10 +59,11 @@ fi
 # older one over a newer one by mistake (#233). Asked before anything changes,
 # of the VMs this run updates: the running ones OmacVM set up from this Mac,
 # or --vm NAME (stopped: an OmacVM.app VM's folder says its version; another
-# one is asked by apply once it runs). NEWER: the names.
+# one is asked by apply once it runs). NEWER: the names. MOVING: OmacVM.app
+# VMs whose move to Omarchy 4.5 is not over (skipped; --vm NAME stops: move_stop).
 newer_vms() {   # VM TYPE (VM empty: the running ones)
   local name type state v d ip p
-  now=$(cat "$R/src/VERSION"); newer=()
+  now=$(cat "$R/src/VERSION"); newer=(); moving=()
   while IFS=$'\t' read -r name type state _; do
     [[ -n $name ]] || continue
     if [[ -n $1 ]]; then
@@ -70,7 +72,11 @@ newer_vms() {   # VM TYPE (VM empty: the running ones)
       [[ $state == running ]] || continue
     fi
     v=""
-    if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""; fi
+    if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then
+      v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""
+      # Its move to Omarchy 4.5 is not over: --vm NAME stops here, else it is skipped below.
+      move_open "$d" && { moving+=("$name"); continue; }
+    fi
     if [[ $state == running ]] && ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null); then
       vm_pin "$name" "$type"
       [[ -n $1 || -s $OMA_PIN ]] || continue
@@ -79,6 +85,11 @@ newer_vms() {   # VM TYPE (VM empty: the running ones)
     if [[ -n $v ]] && omacvm_downgrade update "'$name'" "$v" "$now"; then newer+=("$name"); fi
   done < <(vms_list)
   (( ${#newer[@]} == 0 ))
+}
+move_stop() {
+  [[ -n $VM ]] && (( ${#moving[@]} )) || return 0
+  failed_part "" "$(move_open_text "$VM"): nothing was updated" mac
+  exit 3
 }
 newer_stop() {
   failed_part "" "$(printf '%s, ' "${newer[@]}" | sed 's/, $//') has a newer OmacVM than this omacvm ($now): nothing was updated" mac
@@ -178,8 +189,9 @@ elif [[ -z $COMMIT ]] && (( PULL )) && git -C "$R" rev-parse --abbrev-ref '@{u}'
   fi
 fi
 
-# ---------- a VM with a newer OmacVM, then the Mac ----------
-newer_vms "$VM" "$TYPE" || newer_stop
+# ---------- a VM with a newer OmacVM or a move not over, then the Mac ----------
+newer_vms "$VM" "$TYPE" || { move_stop; newer_stop; }
+move_stop
 mac_side
 
 # ---------- OmacVM.app ----------
@@ -219,6 +231,7 @@ while IFS=$'\t' read -r name type state _; do
   [[ -n $name ]] || continue
   if [[ $state == retired ]]; then retired+=("'$name' ($(retired_name "$type"))"); continue; fi
   if [[ $state != running ]]; then stopped+=("$name"); continue; fi
+  if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null) && move_open "$d"; then info "$(move_open_text "$name"); not updated"; continue; fi
   ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null) || continue
   vm_pin "$name" "$type"
   # Not reachable with OmacVM's key (another OS, no OmacVM, or another host
