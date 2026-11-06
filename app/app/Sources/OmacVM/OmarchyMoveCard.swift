@@ -105,20 +105,41 @@ struct OmarchyMoveCard: View {
         var id: String { rawValue }
     }
 
-    @State private var card = OmarchyMove.Card.hidden
-    @State private var problem: String?
-    @State private var backup: (bytes: Int64, exact: Bool)?
     @State private var sheet: Sheet?
     @State private var busy = false
 
+    /// What the card shows, read from the VM folder each time the window
+    /// draws it (state.tick: the window back in front, every few seconds,
+    /// after each action). A few small files: no waiting.
+    private struct Now {
+        var card = OmarchyMove.Card.hidden
+        var problem: String?
+        var backup: (bytes: Int64, exact: Bool)?
+    }
+
+    private var now: Now {
+        if let p = preview { return Now(card: p.card, problem: p.problem, backup: p.backup) }
+        _ = state.tick
+        let c = state.config
+        var n = Now(card: MoveFiles.card(c))
+        switch n.card {
+        case .offer, .failed, .interrupted: n.problem = MoveFiles.problem(c)
+        case .done: n.backup = OmarchyMove.backupBytes(MoveFiles.backupURL(c))
+        default: break
+        }
+        return n
+    }
+
     var body: some View {
-        Group {
+        let n = now
+        let card = n.card, problem = n.problem, backup = n.backup
+        VStack(spacing: 0) {
             switch card {
             case .hidden:
                 EmptyView()
             case .offer:
                 strip(icon: "arrow.up.circle.fill", tint: .accentColor, background: Look.banner, line: Look.bannerLine,
-                      title: "Omarchy 4.5 is ready for \(state.config.name)",
+                      title: "Omarchy 4.5 is available for this VM",
                       text: problem ?? "Moves Omarchy to its official ARM packages, about 20-40 minutes. A backup of the disk is kept, so you can undo it.",
                       textIsError: problem != nil) {
                     Button("Move to Omarchy 4.5…") { sheet = .move }
@@ -134,9 +155,9 @@ struct OmarchyMoveCard: View {
             case .failed(let step, let reason, let resumable), .interrupted(let step, let reason, let resumable):
                 let stopped = { if case .interrupted = card { return true } else { return false } }()
                 strip(icon: "exclamationmark.triangle.fill", tint: Look.red, background: Look.red.opacity(0.08), line: Look.hairline,
-                      title: stopped ? "The move to Omarchy 4.5 was interrupted at step \(step) of \(OmarchyMove.steps.count)"
-                                     : "The move to Omarchy 4.5 stopped at step \(step): \(OmarchyMove.stepTitle(step))",
-                      text: stoppedText(reason: reason, interrupted: stopped, resumable: resumable),
+                      title: (stopped ? "The move to Omarchy 4.5 was interrupted" : "The move to Omarchy 4.5 stopped")
+                          + " at step \(step) of \(OmarchyMove.steps.count)",
+                      text: stoppedText(reason: reason, interrupted: stopped, resumable: resumable, problem: problem),
                       textIsError: false) {
                     Button("Keep This Disk…") { sheet = .keep }
                         .disabled(busy || running)
@@ -168,10 +189,7 @@ struct OmarchyMoveCard: View {
                 }
             }
         }
-        .onAppear(perform: refresh)
-        .onChange(of: state.tick) { _, _ in refresh() }
-        .onChange(of: state.config) { _, _ in refresh() }
-        .onChange(of: running) { _, _ in refresh() }
+        .onAppear { if let s = preview?.sheet, sheet == nil { sheet = s } }
         .sheet(item: $sheet) { s in
             switch s {
             case .move:
@@ -181,13 +199,13 @@ struct OmarchyMoveCard: View {
                     if go { state.moveVM(resume: false) }
                 }
             case .undo:
-                MoveUndoSheet(vm: state.config.name, afterMove: { if case .done(_, false) = card { return true } else { return false } }(),
+                MoveUndoSheet(vm: state.config.name, afterMove: { if case .done(_, false) = now.card { return true } else { return false } }(),
                               since: backupDate) { go in
                     sheet = nil
                     if go { act("undo", done: "\(state.config.name) is back on the disk from before the move.") }
                 }
             case .delete:
-                MoveDeleteSheet(size: backup.map(OmarchyMove.sizeText)) { go in
+                MoveDeleteSheet(size: now.backup.map(OmarchyMove.sizeText)) { go in
                     sheet = nil
                     if go { act("delete-backup", done: "The old backup is deleted.") }
                 }
@@ -204,13 +222,16 @@ struct OmarchyMoveCard: View {
         preview != nil ? "5 November 2026" : OmarchyMove.dateText(MoveFiles.journal(state.config)?.backupAt ?? "")
     }
 
-    private func stoppedText(reason: String, interrupted: Bool, resumable: Bool) -> String {
+    private func stoppedText(reason: String, interrupted: Bool, resumable: Bool, problem: String?) -> String {
         var s = reason.isEmpty
             ? (interrupted ? "OmacVM quit or the Mac turned off during the move." : "The move did not finish.")
             : reason
         if !s.hasSuffix(".") { s += "." }
-        s += resumable ? " Resume goes on from there; Undo brings back the disk from before."
-                       : " It cannot go on from there: Undo brings back the disk from before."
+        // The script's reasons often say the next step already.
+        if !s.contains("Undo") && !s.contains("Resume") {
+            s += resumable ? " Resume goes on from there; Undo brings back the disk from before."
+                           : " It cannot go on from there: Undo brings back the disk from before."
+        }
         if let p = problem, resumable { s += " " + p }
         return s
     }
@@ -247,21 +268,6 @@ struct OmarchyMoveCard: View {
         .overlay(alignment: .bottom) { Rectangle().fill(line).frame(height: 1) }
         .accessibilityElement(children: .contain)
         .layoutProbe("move-card")
-    }
-
-    private func refresh() {
-        if let p = preview {
-            card = p.card; problem = p.problem; backup = p.backup
-            if let s = p.sheet, sheet == nil { sheet = s }
-            return
-        }
-        let c = state.config
-        card = MoveFiles.card(c)
-        switch card {
-        case .offer, .failed, .interrupted: problem = MoveFiles.problem(c)
-        default: problem = nil
-        }
-        if case .done = card { backup = OmarchyMove.backupBytes(MoveFiles.backupURL(c)) } else { backup = nil }
     }
 
     private func act(_ command: String, done: String?) {
@@ -435,29 +441,24 @@ struct DestructiveSheet: View {
 struct MoveBackupRow: View {
     @ObservedObject var state: AppState
     var preview: (bytes: Int64, exact: Bool)? = nil
-    @State private var size: (bytes: Int64, exact: Bool)?
-    @State private var shown = false
 
-    var body: some View {
-        Group {
-            if shown || preview != nil {
-                SettingRow(title: "Omarchy 4.0 backup",
-                           subtitle: "The disk from before the move to Omarchy 4.5" + ((preview ?? size).map { ", \(OmarchyMove.sizeText($0)) on this drive." } ?? "."),
-                           info: "Kept until you delete it at the top of these settings (Delete the Old Backup…), never on its own. "
-                               + "Undo Move puts it back. A VM with this backup moves to another drive only after it is deleted or undone: a copy would take its full size.",
-                           probe: "move-backup") {
-                    EmptyView()
-                }
-            }
-        }
-        .onAppear(perform: refresh)
-        .onChange(of: state.tick) { _, _ in refresh() }
-        .onChange(of: state.config) { _, _ in refresh() }
+    /// Read each time the window draws it (state.tick), like the card.
+    private var size: (bytes: Int64, exact: Bool)?? {
+        if let p = preview { return .some(p) }
+        _ = state.tick
+        guard MoveFiles.backupExists(state.config) else { return nil }
+        return .some(OmarchyMove.backupBytes(MoveFiles.backupURL(state.config)))
     }
 
-    private func refresh() {
-        guard preview == nil else { return }
-        shown = MoveFiles.backupExists(state.config)
-        size = shown ? OmarchyMove.backupBytes(MoveFiles.backupURL(state.config)) : nil
+    var body: some View {
+        if let s = size {
+            SettingRow(title: "Omarchy 4.0 backup",
+                       subtitle: "The disk from before the move to Omarchy 4.5" + (s.map { ", \(OmarchyMove.sizeText($0)) on this drive." } ?? "."),
+                       info: "Kept until you delete it at the top of these settings (Delete the Old Backup…), never on its own. "
+                           + "Undo Move puts it back. A VM with this backup moves to another drive only after it is deleted or undone: a copy would take its full size.",
+                       probe: "move-backup") {
+                EmptyView()
+            }
+        }
     }
 }

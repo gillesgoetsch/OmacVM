@@ -160,7 +160,7 @@ final class AppState: ObservableObject {
     /// first when it runs, then move-vm.sh in the build panel (BuildView).
     func moveVM(resume: Bool) {
         if let why = Paths.startProblem(config.folder) { say(why); return }
-        if let p = MoveFiles.problem(config), !vmRunning() { say(p); return }
+        if let p = MoveFiles.problem(config) { say(p); return }
         if !resume, !RunMarker.confirmStart(config) { return }
         message = nil
         guard vmRunning() else { creator.move(config: config); screen = .building; return }
