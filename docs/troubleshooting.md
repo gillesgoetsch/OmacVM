@@ -1851,3 +1851,50 @@ Findings 7, 11, 12, 13, 16 and 17 are notes for developers now:
   made`), `virgl-venus-command-holds.patch`, `virgl-venus-secondary-holds.patch`; tests `app/runtime/Tests/virgl/test-venus-commands.c`,
   `test-venus-threads.c`, `fuzz-venus-spirv.sh`, `venus-command-ledger.tsv`;
   ADR 0065.
+
+## 56. app: the Mac's display turns off while a video plays in the VM
+
+- **Symptom:** watching a video in the VM, the Mac's display goes dark
+  after the time set in macOS (2 minutes on battery by default). Up to
+  3.3.0.
+- **Cause:** a Mac video player tells macOS to keep the display on while it
+  plays. A player in the VM told only Omarchy (Wayland's idle inhibit).
+- **Fix (3.3.1, the app update and Update VM):** the VM's display agent
+  tells QEMU which of its outputs show a window whose app asks not to idle,
+  and QEMU keeps the Mac's display on (`pmset -g assertions`: "OmacVM: the
+  VM is playing video") while that window can be seen and the VM runs (ADR
+  [0070](adr/0070-display-awake-for-video.md)). It lets go when the video
+  pauses or ends, the window is minimised, covered or on another Space, the
+  screen locks, the VM stops, or the VM says nothing for 30 s.
+- **Still dark?**
+  - Chromium (Omarchy's browser and web apps, Chrome, Brave, Electron apps)
+    counts only while it holds its display wake lock: Chromium takes it for
+    a video that plays in a visible tab, large enough or with sound, and
+    for a page's screen wake lock, as Chrome does on a Mac. Before 157
+    Chromium also asks Wayland not to idle for music, downloads and calls;
+    those never count. Chromium tells its display locks to
+    `org.freedesktop.ScreenSaver`, which the VM's display agent serves for
+    this (`busctl --user status org.freedesktop.ScreenSaver` names
+    `omacvm-displays`). If another program serves that name, a video in
+    Chromium before 157 does not count (the agent's log says so).
+  - It stays on, as on a Mac, for a music video with sound (YouTube,
+    YouTube Music with its video shown) and for a large muted video that
+    plays by itself in a visible tab: Chromium takes its display wake lock
+    for both. Music from a plain audio player does not keep it on.
+  - Chromium keeps one Wayland inhibit per process, on the window that has
+    the focus when its first lock starts. So with music in one Chromium
+    window and a video in another, the first window's display counts (not
+    tested); and a video that starts while no Chromium window has the focus
+    (an autoplay in the background) does not count until the next play.
+  - Firefox was not tested: it may tell D-Bus instead of Wayland, or not
+    reach either. mpv counts.
+  - Hyprland window rules (Omarchy's full-screen rules, the `noidle` tag)
+    and Omarchy's Stay Awake do not count: they would keep the Mac's display
+    on for any full-screen window or for good.
+  - In the VM: `omacvm-displays status` shows `"inhibit"`, the outputs that
+    count now. QEMU's log: `OmacVM: video awake: ...` (each hold and release
+    with why).
+- **Where:** `app/runtime/patches/omacvm-cocoa-video-awake*.patch`,
+  `src/app/guest/omacvm-displays`; tests
+  `app/runtime/Tests/display/test-video-awake.sh`,
+  `src/app/guest/tests/test_omacvm_displays.py`.

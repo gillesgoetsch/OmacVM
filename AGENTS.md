@@ -291,7 +291,8 @@ Omanotch.app (src/omanotch) :47811     ◀────────── notchca
 OmacVMBridge.app /battery, events ──────────────▶ omacvm-battery (root) → module → BAT0 → UPower (UTM, Fusion)
 OmacVM.app: virtio port org.omacvm.battery ─────▶ omacvm-battery (root) → module → BAT0 → UPower
 OmacVM.app (QEMU's window code): virtio port ◀───▶ omacvm-displays (user) → omacvm-display-sync → Hyprland
-  org.omacvm.display: arrangement out; hello, "Use external displays", Hyprland's outputs back
+  org.omacvm.display: arrangement out; hello, "Use external displays", Hyprland's outputs,
+  the outputs showing a video ("inhibit") back
 OmacVM.app (QEMU's window code, mac-ime on only): ◀▶ Omarchy's Fcitx5 + OmacVM's module → the focused text field
   org.omacvm.ime: focus, field kind, caret in; preedit, commit, cancel from the Mac's input method out
 OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) → MPRIS players (Gio)
@@ -401,6 +402,25 @@ OmacVM.app (launcher, macOS's Now Playing): ◀───▶ omacvm-media (user) 
   outlives a crash). qemu.log `OmacVM: media controls: ...` (the switch at
   each start, claim, command, release with why; never a title); check line
   "media controls".
+- The Mac's display on for a video (OmacVM.app, ADR 0070, no switch):
+  `omacvm-displays` sends `{"inhibit": ["Virtual-1", ...]}` every 10 s while
+  a window inhibits idle on Wayland (Hyprland's `inhibitingIdle`) with no
+  `idle_inhibit` window rule (`j/getprop`: 0), on a shown workspace of an
+  output that is on, not under another full-screen window, the session
+  unlocked, and, if Chromium-based, only while its process holds a display
+  wake lock (`DisplayLocks`: the agent serves `org.freedesktop.ScreenSaver`
+  on the session bus, where Chromium tells only those; other callers get an
+  error) or as the system's Chromium 157+; `[]` once when it ends. QEMU
+  (`omacvm-cocoa-video-awake*.patch`, ui/omacvm-video-awake.h) holds
+  PreventUserIdleDisplaySleep "OmacVM: the VM is playing video" while a
+  listed output's window can be seen (guest-pause's sight), the VM runs and the list is under 30 s old; released on `[]`, the
+  lease, out of sight, channel close, VM stop and before the Mac sleeps;
+  powerd timeout 45 s, re-armed every 10 s. Never a system-sleep assertion;
+  Stay Awake and no-idle-lock are never sent. qemu.log `OmacVM: video awake:
+  ...`; `omacvm-displays status` `"inhibit"`. Tests `test-video-awake.sh`,
+  `test_omacvm_displays.py`; `OMACVM_VIDEO_AWAKE=0` off,
+  `OMACVM_TEST_VIDEO_SEEN=1` for hidden test windows on a locked test Mac
+  (the test lock stands for the Mac's own).
 - SSH: `gssh` checks each VM's host key, remembered the first time OmacVM sets
   the VM up (`~/Library/Application Support/omacvm/known_hosts/`, `vm_pin`);
   another key stops with exit 3 and `omacvm apply --vm NAME --reset-host-key`.

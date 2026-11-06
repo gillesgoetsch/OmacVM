@@ -1236,6 +1236,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop-logic.pa
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop.patch"
 "$native_dir/Tests/drop/test-drop.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: drag and drop is not wired as tested, or its rules fail (test-drop.sh)"
+# OmacVM: the Mac's display stays on while a video plays in the VM and its
+# window can be seen (ADR 0070). Its rules' test, a check that the wiring
+# checks fail on the code before, the wiring. Before no-app-nap.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake-logic.patch"
+"$native_dir/Tests/display/test-video-awake.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a video-awake wiring check passes without the patch (test-video-awake.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake.patch"
+"$native_dir/Tests/display/test-video-awake.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the display is not kept on for a video as tested, or its rules fail (test-video-awake.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"

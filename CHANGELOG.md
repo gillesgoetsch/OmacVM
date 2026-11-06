@@ -23,6 +23,18 @@ in more words.
   own shader translator, at any SPIR-V version; that is not fixed here. A refused shader's reason is
   now written to qemu.log in full (it was cut at 191 characters). Needs the app update only (from the
   VM's next start); nothing in the VM.
+- **The Mac's screen no longer turns off while a video plays in the VM (OmacVM.app, reported by the
+  user).** On battery the display went dark after 2 minutes even while the user watched a video in
+  the VM. Now, as with a Mac video player, the Mac's display stays on while a player in the VM plays
+  a video and the VM's window can be seen (`pmset -g assertions`: "OmacVM: the VM is playing video").
+  It does not stay on for a paused video, music, a background tab, a minimised or covered window,
+  another Space, a locked screen, a stopped VM, Hyprland's full-screen window rules or Omarchy's
+  Stay Awake, and lets go 30 s after the VM stops saying so. Display only: the Mac still sleeps when
+  the lid closes. mpv counts, and so does a video in Omarchy's Chromium (156 now) and its web apps:
+  Chromium before 157 also tells Linux not to idle for music, downloads and calls, so OmacVM counts a
+  Chromium window only while Chromium holds its display wake lock, which it takes for a video playing
+  where it can be seen (as Chrome does on a Mac). Firefox was not tested (ADR 0070). Needs the app
+  update and Update VM.
 
 ## 3.3.0
 
