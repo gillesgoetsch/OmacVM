@@ -1,6 +1,6 @@
 ---
 name: omacvm
-description: Set up, change, update or troubleshoot OmacVM (Omarchy in an OmacVM.app VM on an Apple Silicon Mac) with the omacvm command. Use when someone wants an Omarchy VM built, its CPUs or memory changed, a feature switched (macOS-native scroll momentum, trackpad gestures, Bridge, Omanotch, wallpaper, idle lock, autologin, memory-optimized kernel), OmacVM added to an existing Omarchy VM, updated, or checked.
+description: Set up, change, update or troubleshoot OmacVM (Omarchy in an OmacVM.app VM on an Apple Silicon Mac) with the omacvm command. Use when someone wants an Omarchy VM built, its CPUs or memory changed, a feature switched (macOS-native scroll momentum, trackpad gestures, Bridge, Omanotch, wallpaper, idle lock, autologin, memory-optimized kernel), updated, or checked.
 ---
 
 # OmacVM
@@ -44,8 +44,11 @@ sections 7-8 before fixing anything by hand.
   limits, the tiers), then `./omacvm resources --vm NAME --resources TIER`
   or `--cpus N --memory-gb N`; a change applies on the next start. A `warning` (memory above the Mac's
   Best tier) goes to the person as it is; their setting stays theirs.
-- Omarchy installed by hand: `./omacvm apply --vm NAME`; exit 3 prints one
-  command for the person to run in the VM's terminal, then apply again.
+- OmacVM cannot get into an OmacVM.app VM over SSH: `./omacvm apply --vm NAME`;
+  exit 3 prints one command for the person to run in the VM's terminal, then
+  apply again.
+- A VM from before 3.4.0 (Omarchy 4.0): OmacVM.app's **Move to Omarchy 4.5**
+  card (app only, opt-in, backup and Undo); no omacvm command does it.
 - Update: `./omacvm update` (or `--vm NAME`).
 - A retired Parallels, UTM or VMware Fusion VM (`"retired": true` in `vms
   --json`): commands on it exit 3 (`"error": "route-retired"`). Offer the move:

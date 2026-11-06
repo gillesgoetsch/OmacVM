@@ -187,8 +187,8 @@ reviews, measuring pitfalls, how the VM apps work inside) are in
 - **An external display went black or vanished when the Bridge started**
   (3.1.16 and before, on the Mac's HDMI port): replug it, then update. Until
   then, `omacvm disable external-brightness --vm NAME` stops all DDC/CI.
-- **The VM does not lock again after an unlock** (the lock key and the
-  idle lock do nothing): Omarchy's bug with Quickshell 0.3.2
+- **The VM does not lock again after an unlock** (Omarchy 4.0 VMs; the lock
+  key and the idle lock do nothing): Omarchy's bug with Quickshell 0.3.2
   (omarchy-mac 4.0.x,
   [omacom/omarchy-mac#738](https://github.com/omacom/omarchy-mac/issues/738);
   an open fix: omacom/omarchy-mac#752). It happens after every unlock. A
@@ -870,13 +870,14 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
   `disk.img`, and a trim at every Update VM and once a week
   (`fstrim.timer`) gets the rest. `disk.img` still grows up to the disk's
   set size. The space stays taken when:
-  - an update snapshot still holds the files. omarchy-mac snapshots `/`
+  - an update snapshot still holds the files. Omarchy snapshots `/`
     before every `omarchy update`, so whatever you delete outside `/home`
-    stays until that snapshot goes. omarchy-mac keeps 5 (up to 3.1.24, 5
+    stays until that snapshot goes. omarchy-mac 4.0 keeps 5 (up to 3.1.24, 5
     updates); OmacVM now keeps the last 2.
-  - `@factory`, omarchy-mac's factory-reset copy of the system as
-    installed, still holds files that updates replaced. OmacVM leaves it,
-    so the factory reset keeps working.
+  - Omarchy 4.0 VMs: `@factory`, omarchy-mac's factory-reset copy of the
+    system as installed, still holds files that updates replaced. OmacVM
+    leaves it, so the factory reset keeps working. Omarchy 4.5 VMs have none
+    (the move to 4.5 removes it).
   - the VMs folder is on a Mac OS Extended drive (no sparse files: the disk
     takes its full size there), or another file shares the blocks: an APFS
     clone such as `disk-before-resize.img` during a resize, or a Finder
@@ -1175,8 +1176,9 @@ were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in
 
 ## 46. The lock screen has no password field after an update of a locked VM
 
-- **Symptom:** `omacvm update` or `omacvm apply` ran while the VM's Omarchy
-  session was locked (3.2.12 and older; also switching Omanotch off). The
+- **Symptom:** (Omarchy 4.0 VMs) `omacvm update` or `omacvm apply` ran while
+  the VM's Omarchy session was locked (3.2.12 and older; also switching
+  Omanotch off). The
   lock screen comes back without its password field, and typing the password
   does nothing. Omarchy's shell log (`journalctl --user -t omarchy-shell` in
   the VM) has "Session lock object was destroyed without unlocking", then

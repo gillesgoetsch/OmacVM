@@ -110,6 +110,12 @@ centre. `u` there updates everything: OmacVM.app on the Mac first (the VM
 restarts once, after one confirm), then the VM. OmacVM.app also looks for a
 new version once a week (Check Now in its window; Go Back in its menu).
 
+**A VM from before OmacVM 3.4.0** (Omarchy 4.0, omarchy-mac) shows **Move to
+Omarchy 4.5** at the top of its settings in OmacVM.app: only when you click
+it, with a backup of the disk first, Undo, and the backup deleted only when
+you say so ([how](docs/features.md#move-to-omarchy-45)). Until then nothing
+changes and Update VM works as before.
+
 Add `--vm NAME` for a VM other than the default. **⌃⌥ Esc** moves the
 monitor you work on one Space over to macOS; press it there again to go back
 into the VM; twice quickly opens Mission Control
@@ -136,9 +142,10 @@ people ask for them, only with the maintainer's consent.
 
 ## How it works
 
-OmacVM installs [omarchy-mac](https://github.com/omacom/omarchy-mac), the Arch
-Linux ARM port of Omarchy, onto the VM's own disk: a full Omarchy with
-`omarchy update`, not a demo. OmacVM.app runs it on its own QEMU with the
+OmacVM installs Omarchy 4.5 from Omarchy's official aarch64 repositories
+(pkgs.omarchy.org stable and its Arch Linux ARM snapshot,
+arm-stable-mirror.omarchy.org), always the latest stable release, onto the
+VM's own disk: a full Omarchy with `omarchy update`, not a demo. OmacVM.app runs it on its own QEMU with the
 Mac's GPU. Small helpers on the Mac pass its hardware to the VM over the VM's
 private network, with a secret token: **OmacVM Bridge**, **OmacVM Gestures**
 and **Omanotch**. More: [docs/how-it-works.md](docs/how-it-works.md), the
@@ -172,7 +179,8 @@ deletes them with the settings. Fixed in 2.7.1: run `omacvm update` first.
 
 [Omarchy](https://omarchy.org) (MIT) and [DHH](https://github.com/dhh) for making this!
 
-[omarchy-mac](https://github.com/omacom/omarchy-mac) and
+Omarchy's aarch64 packages, [omarchy-mac](https://github.com/omacom/omarchy-mac)
+(OmacVM's VMs before 3.4.0) and
 [try-omarchy](https://github.com/omacom/try-omarchy) by the Omarchy team.
 try-omarchy (MIT) gives the camera bridge, the Mac's battery in the VM and
 OmacVM.app's pieces. Also [Arch Linux ARM](https://archlinuxarm.org),

@@ -15,7 +15,8 @@ asking. Then a few screens (↑/↓ to choose, space to switch, Return to
 confirm):
 
 1. **Build it yourself or download a prebuilt VM.** Building takes 10 to 30
-   minutes and fetches everything from Arch Linux ARM and omarchy-mac. The
+   minutes and fetches Omarchy 4.5 from Omarchy's official aarch64
+   repositories, always the latest stable release. The
    prebuilt VM is the same build, made by OmacVM without any user in it and
    brought to your OmacVM version on the way: a download of 3.5 to 6 GB, then
    a few minutes. Either way you get your own user, password, features,
@@ -141,11 +142,6 @@ longer talks to the Mac for it, OmacVM.app gives that VM nothing of the Mac
 for it from its next start, and `omacvm check` says "off".
 On OmacVM.app the same goes for turning one on: the VM gets its link to
 the Mac from its next start (shut it down and start it again).
-
-**Already have an Omarchy VM** you installed yourself from omarchy-mac?
-`omacvm apply --vm NAME` adds OmacVM to it. If OmacVM cannot get in yet, it
-prints the one command to run in the VM's terminal first (it lets OmacVM in
-with its own SSH key, from the Mac only).
 
 <a name="graphics-opengl-vulkan-or-automatic-omacvmapp"></a>
 

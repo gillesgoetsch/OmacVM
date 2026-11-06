@@ -6,19 +6,22 @@ build, every VM setting and the dead ends we hit are in
 
 ## A full Omarchy, not a demo
 
-OmacVM installs [omarchy-mac](https://github.com/omacom/omarchy-mac), the Arch
-Linux ARM port of Omarchy, onto the VM's own disk: the real system, with your
-user, `omarchy update` and everything Omarchy ships. It uses omarchy-mac's
-**release candidate** (`rc`) packages for now. Once omarchy-mac publishes a
-`stable` lane, new builds take it automatically; VMs built before stay on `rc`
-(#479).
+OmacVM installs Omarchy 4.5 onto the VM's own disk: the real system, with
+your user, `omarchy update` and everything Omarchy ships. New VMs take
+Omarchy's official aarch64 repositories, always the latest stable release:
+Omarchy's own packages from pkgs.omarchy.org (stable) and Arch Linux ARM from
+Omarchy's snapshot of it, arm-stable-mirror.omarchy.org, so the two always
+match. VMs built before OmacVM 3.4.0 run Omarchy 4.0 from
+[omarchy-mac](https://github.com/omacom/omarchy-mac) and stay on it until you
+click **Move to Omarchy 4.5** in OmacVM.app
+([how](features.md#move-to-omarchy-45)).
 
 [try-omarchy](https://github.com/omacom/try-omarchy) is something else: a
 pinned, try-it-out image. OmacVM only boots it once, as the temporary
 installer that puts Arch Linux ARM onto the disk, and then removes it.
 
 <p align="center">
-  <img src="images/build.svg" alt="A terminal running omacvm: live installer, Arch Linux ARM, Omarchy from omarchy-mac, OmacVM on the Mac and in the VM, then the Omarchy desktop." width="100%">
+  <img src="images/build.svg" alt="A terminal running omacvm: live installer, Arch Linux ARM, Omarchy 4.5 from Omarchy's aarch64 repositories, OmacVM on the Mac and in the VM, then the Omarchy desktop." width="100%">
 </p>
 
 ## The Mac and the VM

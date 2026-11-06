@@ -135,7 +135,7 @@ or choose their password: hand those over, never work around them.
   in the VM (its bar does the strip).
   Skip the notch (off by default, either full screen): `omacvm notch --vm NAME --skip on|off`,
   at once in a running VM; `--json` says `skip` and `skip_ready` (the VM's bar can do it).
-- **An Omarchy installed by hand**: `omacvm apply --vm NAME`. Exit 3 with a
+- **OmacVM cannot get into the VM**: `omacvm apply --vm NAME`. Exit 3 with a
   command in the message = the person runs that command once in the VM's
   terminal (it adds OmacVM's SSH key), then apply again. An OmacVM.app VM
   that knows only another Mac's key: starting it once in the app does the same.

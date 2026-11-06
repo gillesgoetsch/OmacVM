@@ -51,7 +51,7 @@ VM runs, and goes back by itself when a new version does not start
   Update VM and once a week, disk.img sparse:
   [disk options](../adr/0039-system-disk-options.md)). Files deleted
   outside your home folder stay while an update snapshot still holds them:
-  OmacVM keeps the last 2 (omarchy-mac kept 5).
+  OmacVM keeps the last 2 (omarchy-mac 4.0 kept 5).
 - Where things are: the app in `~/Applications`, the VMs in
   `~/OmacVM/<VM name>/`; moves, other drives, sizes and downloads:
   [where things are](#where-things-are).
@@ -70,7 +70,8 @@ VM runs, and goes back by itself when a new version does not start
   the app (it adds the key through the guest agent), or run the one command
   `omacvm apply` prints in the VM's terminal.
 - The build: try-omarchy as a temporary
-  live system, Arch Linux ARM on btrfs with GRUB, Omarchy from omarchy-mac,
+  live system, Arch Linux ARM on btrfs with GRUB (from Omarchy's snapshot,
+  arm-stable-mirror.omarchy.org), Omarchy 4.5 from pkgs.omarchy.org stable,
   OmacVM's VM side. 10 to 30 minutes (8 on an M4 Max), plus a 1.4 GB
   download the first time.
 - A normal install: boots through UEFI and GRUB, so `omarchy update` and

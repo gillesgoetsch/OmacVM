@@ -38,6 +38,7 @@ The short version is the grid at the top of the [README](../README.md).
 | **Mac input methods (Chinese, Japanese, Korean…)** *(experimental, off by default)* | Type Chinese, Japanese, Korean and other languages in Omarchy with your Mac's own input methods (Pinyin, Kotoeri, 2-Set Korean and the rest): the Mac's candidate window opens at the text cursor in the VM, and the text you choose goes into the VM's text field. Keys, Cmd shortcuts and Hyprland's binds stay as they are; password fields get plain keys. **Mac input (Chinese, Japanese, Korean)** in the app's VM window while the VM is stopped: it works from the next start. While the VM runs: `omacvm enable mac-ime` or the control centre, then shut the VM down and start it again once. Requested and scoped by [@Vocllum](https://github.com/Vocllum) ([#273](https://github.com/gillesgoetsch/OmacVM/issues/273)) ([details](#mac-input-methods-chinese-japanese-korean)) |
 | **Drag and drop files** *(experimental, off by default, from 3.3)* | Drop files from the Finder onto the VM's window: they go into the app under the pointer (a Files folder, a browser's upload field), or into Downloads when no app takes them. Files only, up to 256 at a time; the VM gets read-only copies of just those files (APFS clones: instant). **Sharing & Devices > Drag and drop files** in the app's VM window, or `omacvm enable drag-drop`, then restart the VM once ([details](drag-and-drop.md)) |
 | **Touch ID** *(off by default)* | sudo in Omarchy's terminals, polkit prompts and 1Password's "Unlock using system authentication" ask the Mac's Touch ID first. The Mac says what is asked ("sudo in pts/1 wants to run pacman -Syu"), and the VM gets only yes or no. It asks in a panel in your Omarchy theme over the VM's window, on the display under the pointer (no click needed). Only for the person at the VM's screen with the VM in front: over SSH, from a program without a terminal, with the Mac locked or another app in front, the password prompt comes at once. Your password always works. Apps that unlock through polkit use it only with their own switch on: 1Password: Settings › Security › Unlock using system authentication (OmacVM says so once while it is off, and in the control centre's Touch ID details); Bitwarden: Settings › Security › Unlock with system authentication; KeePassXC 2.8 (beta): quick unlock, on by default. `omacvm enable touch-id` or the control centre ([how](adr/0041-touch-id.md)): it works at once, on every route, and ends with "Touch ID is ready: try sudo -v". When it falls back to the password it says why in the prompt; `omacvm check` says what is missing. A VM that OmacVM.app 3.0.3 or older started has no Touch ID port yet: shut it down and start it again once (the update to 3.0.4 does that; a restart inside the VM is not enough; the control centre says "from the next start" until then) |
+| **Move to Omarchy 4.5** *(VMs from before 3.4.0, only when you click it)* | A VM on Omarchy 4.0 (omarchy-mac) shows a card at the top of its settings in OmacVM.app. The move takes the VM to Omarchy 4.5 on Omarchy's official aarch64 repositories, keeps your files, apps and settings, and backs the disk up first: Undo puts the old disk back until you delete the backup yourself ([how](#move-to-omarchy-45)). New VMs are on 4.5 already |
 | **Storage** | VMs live in `~/OmacVM` or a folder you pick, an external drive too; the app moves them for you. Storage in the app's window shows the VM's size; **All VMs…** lists every VM with its size, Show in Finder and Delete. **Downloaded images** are the Omarchy images the app downloaded to set up VMs: **Remove…** frees that space (your VMs keep everything, a new VM downloads them again, the Mac's Downloads folder is not touched) ([where things are](routes/app.md#where-things-are)) |
 | **Fast** | Near-native CPU speed ([numbers](benchmarks/README.md#at-a-glance)); memory tuning so the VM does not hoard the Mac's RAM; btrfs snapshots you can boot from GRUB; optionally a memory-optimized kernel (transparent huge pages, MGLRU) |
 
@@ -48,6 +49,40 @@ The short version is the grid at the top of the [README](../README.md).
 <p align="center">
   <img src="images/displays.svg" alt="The macOS display arrangement and the Omarchy VM's monitors: when a display is moved in macOS, the VM's monitor moves the same way." width="100%">
 </p>
+
+## Move to Omarchy 4.5
+
+New VMs (OmacVM 3.4.0 on) get Omarchy 4.5 from Omarchy's official aarch64
+repositories, always the latest stable release. A VM made before stays on
+Omarchy 4.0 (omarchy-mac) and keeps getting Update VM until you choose to
+move it: **Move to Omarchy 4.5…** at the top of its settings in OmacVM.app
+(the app only; no `omacvm` command does it).
+
+- **Before:** the VM's folder must be on an APFS drive with free space for the
+  disk's allocated size, plus 10 GB to spare and 4 GB of downloads (the
+  confirm sheet says how much). A running VM shuts down first.
+- **The move:** a backup of the disk (an APFS clone: instant, it takes space
+  only as the disk changes), then Update VM, then Omarchy's packages are
+  switched to 4.5 with the VM running without a window. It restarts once and
+  shuts down. About 20-40 minutes, each step shown. A quit, a lost network
+  or a power cut stops it at a safe point: **Resume** goes on, **Undo** goes
+  back. A cut in the middle of the package switch leaves Undo only.
+- **Undo** puts the old disk, firmware variables and records back exactly;
+  files saved in the VM after the move are lost. **Keep This Disk** (a move
+  stopped after 4.5's packages are in) keeps the moved disk as it is.
+  **Delete Backup…** frees the space, only when you click it, with its size
+  shown. While the backup exists the VM moves to another drive and its disk
+  shrinks only after it is deleted or undone.
+- **What changes in the VM:** Omarchy's stable snapshot versions until its
+  mirror moves on (kernel 7.2, Hyprland 0.56, Mesa); omarchy-mac's keyring and
+  key go; `obsidian-appimage` becomes Omarchy's `obsidian`; your own
+  `pacman.conf` lines and packages from elsewhere are listed in the move's
+  report (the packages stay); omarchy-mac's factory-reset snapshot goes, so
+  Omarchy 4.5's Factory Reset refuses (Undo is the way back while the backup
+  exists); OmacVM's packages are kept safe from 4.5's orphan removal; its
+  Vulkan driver package is now `omacvm-vulkan-virtio`. `omacvm check` shows
+  an Omarchy line.
+- An OmacVM.app older than 3.4.0 cannot update a moved VM: update the app.
 
 ## Full screen including notch
 

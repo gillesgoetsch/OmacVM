@@ -13,7 +13,7 @@
 #   omacvm fullscreen --vm NAME  an OmacVM.app VM's full screen: notch via Omanotch (standard)
 #                                or including notch, no Omanotch needed (experimental; = omacvm notch)
 #   omacvm gestures              the Mac's ⌃⌥ Esc, Swipe out to macOS and Magic Mouse swipe (every route)
-#   omacvm apply [--vm NAME]     OmacVM onto a VM, also one installed by hand
+#   omacvm apply [--vm NAME]     OmacVM onto a VM (what Update VM does)
 #   omacvm update                this checkout, the Mac side and your VMs
 #   omacvm check [--vm NAME]     is everything working, on the Mac and in the VM
 #   omacvm vms                   your VMs and their OmacVM state
