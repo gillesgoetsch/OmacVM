@@ -301,7 +301,11 @@ if [[ $BRIDGE == on ]]; then
   if running "$L_BRIDGE"; then
     a=$(listeners "$BRIDGE_PORT")
     if [[ " $a " == *" * "* || $a == *0.0.0.0* ]]; then bad "Bridge" "listens on every interface: $a"
-    elif [[ " $a " == *" $HOST "* ]]; then ok "Bridge" "listening on $a"
+    elif [[ " $a " == *" $HOST "* ]]; then
+      # The retired routes' addresses (Parallels' and the others' networks, when up) get the move text only.
+      b_own="" b_old=""; for b_a in $a; do case $b_a in 127.0.0.1|192.168.77.1) b_own+="$b_a " ;; *) b_old+="$b_a " ;; esac; done
+      [[ -n $b_old ]] && b_old=" (${b_old% }: only the move text for retired routes)"
+      ok "Bridge" "listening on ${b_own% }$b_old"
     else bad "Bridge" "not listening on $HOST (only: ${a:-nothing})"; fi
   else bad "Bridge" "OmacVM Bridge is not running ($HELPER_FIX)"; fi
   T=$OMA_BRIDGE_SUPPORT/token
