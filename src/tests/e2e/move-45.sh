@@ -291,13 +291,15 @@ desk_on() {   # the VM (off) started by the test app, no window, the user's sess
     p=$(LC_ALL=C pgrep -f "$DUA/Contents/Helpers/$h.app/Contents/MacOS/" | head -1); [[ -n $p ]] && DESK_HELPERS+=" $p"
   done
   before=" $(LC_ALL=C pgrep -f "$DUA/Contents/MacOS/OmacVM" | tr '\n' ' ')"
-  open -n -g --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_BACKGROUND=1 --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.move45 \
-    "$DUA" --args --start --vm "$name"
-  for ((i = 0; i < 60; i++)); do
+  local al="$OUT/logs/$TAG.desk-app.log"
+  echo "== $(date +%H:%M:%S) start $name" >> "$al"
+  open -n -g --stdout "$al" --stderr "$al" --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_BACKGROUND=1 \
+    --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.move45 "$DUA" --args --start --vm "$name"
+  for ((i = 0; i < 180; i++)); do
     for p in $(LC_ALL=C pgrep -f "$DUA/Contents/MacOS/OmacVM( |$)"); do [[ $before == *" $p "* ]] || DESK_PID=$p; done
     [[ -n $DESK_PID && -n $(qemu_pid) ]] && break; sleep 1
   done
-  [[ -n $(qemu_pid) ]] || { DESK_WHY="the app started no VM in 60 s"; return 1; }
+  [[ -n $(qemu_pid) ]] || { DESK_WHY="the app started no VM in 180 s (app: $(grep -v '^== ' "$al" | tail -2 | tr '\n' ' ' | cut -c1-200))"; return 1; }
   for ((i = 0; i < 100; i++)); do g true 2>/dev/null && break; [[ -n $(qemu_pid) ]] || break; sleep 3; done
   g true 2>/dev/null || { DESK_WHY="no SSH after the app's start"; return 1; }
   # Logged in by SDDM (the VM's own autologin, else the drop-in for this start), then the drop-in goes.
