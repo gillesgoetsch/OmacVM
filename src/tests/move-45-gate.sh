@@ -307,6 +307,7 @@ expect "the kit: cuts before the switch run to done (kill-pre)" 1 "$("$R/src/tes
 expect "the kit: cuts after the switch run to done (kill-post)" 1 "$("$R/src/tests/e2e/move-45.sh" --rows | grep -c '^kill-post .*platform, mpv, vulkan, kernel, update, report.*second update')"
 expect "the kit: a Resume that fails with no cut in its run is a FAIL" 1 "$(grep -c '"Resume (run $cycle) goes on with no cut in it" 0' "$R/src/tests/e2e/move-45.sh")"
 expect "the kit: the guest check runs with the desktop up, before and after" 2 "$(grep -c 'desk_on; then' "$R/src/tests/e2e/move-45.sh")"
+expect "the kit: the app rows' copy skips the app's Install screen (fix3-a's disk-lock row)" 1 "$(grep -c 'defaults write org.omacvm.app.test skipInstallPaths -array' "$R/src/tests/e2e/move-45.sh")"
 
 # kill_steps (kill-pre, kill-post) run with stand-ins for the VM: a cut run of move-vm.sh that still ends done
 # (exit 0) means move-vm.sh never saw the cut. That is a FAIL check, not a log line (v340-l3k's review: a cut at

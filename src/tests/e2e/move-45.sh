@@ -884,6 +884,9 @@ app_prepare() {   # WINDOW(0|1): the lock, no other launcher, the copy, the upda
   # The copy (the move runs from it), and the same build one version up, offered by a local feed (throwaway key).
   UA=${MOVE45_UPDATE_APP:-$HOME/omacvm-work/move45-app/OmacVM Test.app}
   mkdir -p "$(dirname "$UA")"; rm -rf "$UA"; ditto "$APP" "$UA"
+  # The copy is outside an Applications folder: without this the app shows its "Install OmacVM Test" screen
+  # first, not the VM (fix3-a's disk-lock row, 17:41). The settings go back in app_clean.
+  defaults write org.omacvm.app.test skipInstallPaths -array "$(python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$UA")"
   S=$UA/Contents/Resources/scripts
   local pv cv F="$OUT/feed-$MOVE45_MAC"; pv=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist")
   cv=${pv%.*}.$(( ${pv##*.} + 1 ))
