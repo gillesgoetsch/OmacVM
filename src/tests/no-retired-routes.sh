@@ -26,6 +26,7 @@ THIRD_PARTY_NOTICES.md	UTM	QEMU'"'"'s cocoa code adapted from UTM (Apache-2.0)
 app/THIRD_PARTY_NOTICES.md	UTM	QEMU'"'"'s cocoa code adapted from UTM (Apache-2.0)
 README.md	<a name="four-ways-parallels-utm-vmware-fusion-or-omacvmapp">	the retired-routes section'"'"'s old anchor
 README.md	## Coming from Parallels, UTM or VMware Fusion?	the retired-routes section
+README.md	battery (UTM, VMware Fusion); Touch ID asks for the password	the retired-routes section: what stops for such a VM
 README.md	[UTM](https://github.com/utmapp/UTM)	credit: QEMU'"'"'s cocoa code from UTM
 docs/benchmarks/README.md	Older rounds that also measured Parallels,	the pointer to v3.3.0'"'"'s rounds
 docs/troubleshooting.md	<a name="22-parallels-fusion-app-the-microphone-records-nothing-or-silence">	an old anchor that links still use
