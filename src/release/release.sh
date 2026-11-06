@@ -29,8 +29,9 @@
 #   moves     (3.4.0 on) the move to Omarchy 4.5 on real 4.0 VMs with faults
 #             (src/tests/e2e/move-45.sh) passed, its files as in M; publish
 #             refuses without it, and without the prebuilt image (Omarchy 4.5)
-#   publish   tag M, the GitHub release (latest), the prebuilt pre-release
-#             (dry run: prints the commands only)
+#   publish   the prebuilt pre-release first (only an image that passed step
+#             image for M; uploaded, then checked on GitHub), then tag M and
+#             the GitHub release (latest) (dry run: prints the commands only)
 #   after     download what GitHub serves and check it again
 # Other commands:
 #   rollback-prep  a signed feed for the release before (kept, not uploaded)
@@ -53,7 +54,9 @@
 # runtime; docs/releasing.md says what is checked and what is trusted),
 # OMACVM_RELEASE_IMAGE_FROM (a folder with an image of this version: used
 # instead of building one; one made before the run comes unsigned, its parts
-# are checked against its manifest and the key signs it here),
+# are checked against its manifest and the key signs it here; from 3.4.0 its
+# manifest's "commit" must be M or a commit whose image files, IMAGE_PATHS,
+# are M's),
 # OMACVM_RELEASE_UNNOTARIZED=1 (release
 # without notarization, as 2.x), OMACVM_RELEASE_FROM (dry run only: the
 # commit to start from instead of the PR's head). The e2e gate:
@@ -434,15 +437,25 @@ PY
   (( n == 0 )) || die "verify: $n problem(s)"
 }
 
+# What goes into a prebuilt image (its guest side, the scripts that make and
+# generalize it): an image made at another commit counts for M only while
+# these are the same there (3.4.0 on; the manifest's "commit").
+IMAGE_PATHS=(src app/scripts ':(exclude)src/tests')
+image_sum() { cat "$1/$2.json" "$1/$2.json.sig" 2>/dev/null | shasum -a 256 | cut -c1-64; }
+
 step_image() {
-  local img=$OUT/prebuilt base=omacvm-prebuilt-$VERSION-app
+  local img=$OUT/prebuilt base=omacvm-prebuilt-$VERSION-app m
+  m=$(get M); [[ -n $m ]] || die "no M: run merge first"
+  put IMAGE ""   # publish takes an image only after this step passed for M
+  # A failed step leaves no image folder behind (publish would see one).
+  ifail() { rm -rf "$img"; die "$@"; }
   if [[ -n ${OMACVM_RELEASE_IMAGE_FROM:-} ]]; then
-    mkdir -p "$img"; cp -c "$OMACVM_RELEASE_IMAGE_FROM"/* "$img/"
+    rm -rf "$img"; mkdir -p "$img"; cp -c "$OMACVM_RELEASE_IMAGE_FROM"/* "$img/" || ifail "could not copy $OMACVM_RELEASE_IMAGE_FROM"
     note "image from $OMACVM_RELEASE_IMAGE_FROM"
     if [[ ! -f $img/$base.json.sig ]]; then
       # Made before this run (the release key signs only inside one): its parts must be the
       # manifest's and its values this release's, then the key signs it here (in the worktree at M).
-      python3 -I - "$img" "$base" "$VERSION" <<'PY' || die "the staged image does not match its manifest or $VERSION"
+      python3 -I - "$img" "$base" "$VERSION" <<'PY2' || ifail "the staged image does not match its manifest or $VERSION"
 import hashlib, json, os, sys
 d, base, v = sys.argv[1:]
 m = json.load(open(os.path.join(d, base + ".json")))
@@ -456,8 +469,8 @@ for p in m["parts"]:
             h.update(b)
     assert os.path.getsize(f) == p["size"] and h.hexdigest() == p["sha256"], p["name"]
 print("    staged image: %d parts match the manifest" % len(names))
-PY
-      "$WT/src/release/release-key.sh" sign "$img/$base.json" || die "the release key did not sign the staged image's manifest"
+PY2
+      "$WT/src/release/release-key.sh" sign "$img/$base.json" || ifail "the release key did not sign the staged image's manifest"
       (cd "$img" && shasum -a 256 "$base".tar.zst.part-* "$base.json" "$base.json.sig" > "$base.sha256")
       note "staged image signed in this release run"
     fi
@@ -475,16 +488,30 @@ PY
     fi
     rm -rf "$img/vm"
     (cd "$WT" && OMACVM_PREBUILT_APP=$own OMACVM_PREBUILT_OUT=$OUT/prebuilt-out src/prebuilt/make-image.sh app build generalize package clean) \
-      > "$OUT/image.log" 2>&1 || die "make-image.sh failed: $OUT/image.log"
+      > "$OUT/image.log" 2>&1 || ifail "make-image.sh failed: $OUT/image.log"
     rm -rf "$img"; mv "$OUT/prebuilt-out/app" "$img"; rm -rf "$OUT/prebuilt-out"
   fi
-  [[ -f $img/$base.json.sig ]] || die "no signed $base.json in $img"
-  (cd "$img" && shasum -a 256 -c "$base.sha256" >/dev/null) || die "image sums do not match"
-  local v; v=$(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omacvm) || die "the image manifest does not verify"
-  [[ $v == "$VERSION" ]] || die "the image is for $v"
-  [[ $(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" route) == app ]] || die "the image is not route app"
+  [[ -f $img/$base.json.sig ]] || ifail "no signed $base.json in $img"
+  (cd "$img" && shasum -a 256 -c "$base.sha256" >/dev/null) || ifail "image sums do not match"
+  local v; v=$(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omacvm) || ifail "the image manifest does not verify"
+  [[ $v == "$VERSION" ]] || ifail "the image is for $v"
+  [[ $(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" route) == app ]] || ifail "the image is not route app"
   python3 "$R/src/prebuilt/manifest.py" fits "$VERSION" "$(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omarchy)" ||
-    die "the image's Omarchy is too old for $VERSION (from 3.4.0: 4.5 or later; manifest.py OMARCHY_FLOOR)"
+    ifail "the image's Omarchy is too old for $VERSION (from 3.4.0: 4.5 or later; manifest.py OMARCHY_FLOOR)"
+  if moves_needed; then
+    # 3.4.0 on: the image is M's (made at M, or at a commit whose image files are M's).
+    local c d; c=$(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" commit) || ifail "the image manifest does not verify"
+    [[ -n $c ]] || ifail "the image names no commit it was made from: make it again at M (make-image.sh records it)"
+    if [[ $c != "$m" ]]; then
+      gitr cat-file -e "$c^{commit}" 2>/dev/null || ifail "the image was made from $c, which this repository does not have: make it again at M"
+      d=$(gitr diff --name-only "$c" "$m" -- "${IMAGE_PATHS[@]}") || ifail "git diff $c $m failed"
+      [[ -z $d ]] || ifail "the image was made from ${c:0:12}; M differs in what goes into the image ($(echo $d | cut -c1-300)): make it again at M"
+      note "image made from ${c:0:12}: its files are M's"
+    else
+      note "image made from M"
+    fi
+  fi
+  put IMAGE pass; put IMAGE_M "$m"; put IMAGE_SUM "$(image_sum "$img" "$base")"
   note "image ok: $(du -ch "$img"/$base.tar.zst.part-* | tail -1 | cut -f1) in $(ls "$img"/$base.tar.zst.part-* | wc -l | tr -d ' ') parts, Omarchy $(python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" omarchy)"
 }
 
@@ -568,11 +595,21 @@ step_publish() {
       *) if (( DRY )); then note "dry run: the moves gate has not passed (a real publish stops here)"
          else die "the moves gate has not passed for M: release.sh $VERSION moves"; fi ;;
     esac
-    if [[ ! -d $OUT/prebuilt ]]; then
-      if [[ -n ${OMACVM_RELEASE_NO_IMAGE:-} ]]; then note "!!! no prebuilt image: ${OMACVM_RELEASE_NO_IMAGE} (new VMs build here)"
-      elif (( DRY )); then note "dry run: no prebuilt image in $OUT/prebuilt (a real publish stops here)"
-      else die "no prebuilt image in $OUT/prebuilt: a $VERSION app would build every new VM here (step image, or OMACVM_RELEASE_NO_IMAGE=\"<why>\")"; fi
-    fi
+  fi
+  # The image: only one that passed step image for M, unchanged since; from 3.4.0 one is needed
+  # (or OMACVM_RELEASE_NO_IMAGE with a reason). It goes up and is checked BEFORE the app's
+  # release: a 3.4.0 app never goes out without its Omarchy 4.5 image.
+  local img=$OUT/prebuilt base=omacvm-prebuilt-$VERSION-app have=0
+  if [[ -d $img ]]; then
+    [[ $(get IMAGE) == pass && $(get IMAGE_M) == "$m" ]] || die "the image in $img has not passed step image for M: release.sh $VERSION image"
+    [[ $(image_sum "$img" "$base") == "$(get IMAGE_SUM)" ]] || die "the image's manifest changed after step image: release.sh $VERSION image"
+    (cd "$img" && shasum -a 256 -c "$base.sha256" >/dev/null) || die "image sums do not match"
+    python3 "$R/src/prebuilt/manifest.py" get "$img/$base.json" route >/dev/null || die "the image manifest does not verify"
+    have=1; note "image: passed step image for M"
+  elif moves_needed; then
+    if [[ -n ${OMACVM_RELEASE_NO_IMAGE:-} ]]; then note "!!! no prebuilt image: ${OMACVM_RELEASE_NO_IMAGE} (new VMs build here)"
+    elif (( DRY )); then note "dry run: no prebuilt image in $img (a real publish stops here)"
+    else die "no prebuilt image in $img: a $VERSION app would build every new VM here (step image, or OMACVM_RELEASE_NO_IMAGE=\"<why>\")"; fi
   fi
   local title=${OMACVM_RELEASE_TITLE:-OmacVM $VERSION}
   local nf; nf=$(notes_file)
@@ -581,21 +618,46 @@ step_publish() {
   local imgcmd="(cd $WT && OMACVM_PREBUILT_OUT=$OUT/prebuilt-up OMACVM_PREBUILT_TARGET=$m src/prebuilt/make-image.sh app upload)"
   if (( DRY )); then
     note "dry run, would run:"
+    (( have )) && note "  $imgcmd" && note "  then check prebuilt-$VERSION on GitHub against $img (image_published)"
     note "  git tag -a $TAG -m 'OmacVM $VERSION' $m && git push origin $TAG"
     note "  gh release create $TAG ${assets[*]##*/} --verify-tag --latest --title '$title' --notes-file $nf"
-    note "  $imgcmd"
     return
   fi
-  ask "tag $TAG at $m and publish the release (latest)?"
+  ask "upload prebuilt-$VERSION, then tag $TAG at $m and publish the release (latest)?"
+  if (( have )); then
+    mkdir -p "$OUT/prebuilt-up"; rm -rf "$OUT/prebuilt-up/app"; cp -cR "$img" "$OUT/prebuilt-up/app"
+    eval "$imgcmd" || die "prebuilt upload failed: nothing of the app is published (run publish again)"
+    image_published "$img" "$base" || die "prebuilt-$VERSION on GitHub is not the image that passed: nothing of the app is published"
+    note "prebuilt-$VERSION uploaded and checked"
+  fi
   gitr tag -a "$TAG" -m "OmacVM $VERSION" "$m"
   gitr push -q origin "$TAG"
   gh release create "$TAG" -R "$GH_REPO" "${assets[@]}" --verify-tag --latest --title "$title" --notes-file "$nf"
-  if [[ -d $OUT/prebuilt ]]; then
-    mkdir -p "$OUT/prebuilt-up"; rm -rf "$OUT/prebuilt-up/app"; cp -cR "$OUT/prebuilt" "$OUT/prebuilt-up/app"
-    eval "$imgcmd" || die "prebuilt upload failed (the app release is out; run publish's image part again)"
-  else
-    note "no image in $OUT/prebuilt: prebuilt-$VERSION not uploaded"
-  fi
+}
+
+# image_published DIR BASE: prebuilt-$VERSION on GitHub serves exactly DIR's image (the manifest,
+# its signature and sums byte for byte; every part there at its size) at M.
+image_published() {
+  local d=$1 base=$2 t; t=$(mktemp -d)
+  gh release download "prebuilt-$VERSION" -R "$GH_REPO" -D "$t" -p "$base.json" -p "$base.json.sig" -p "$base.sha256" >/dev/null 2>&1 ||
+    { note "prebuilt-$VERSION: could not download its manifest"; rm -rf "$t"; return 1; }
+  local f; for f in "$base.json" "$base.json.sig" "$base.sha256"; do
+    cmp -s "$t/$f" "$d/$f" || { note "prebuilt-$VERSION: $f differs from $d"; rm -rf "$t"; return 1; }
+  done
+  rm -rf "$t"
+  gh release view "prebuilt-$VERSION" -R "$GH_REPO" --json assets,targetCommitish -q '.targetCommitish, (.assets[] | "\(.name) \(.size)")' > "$OUT/prebuilt-assets.txt" ||
+    { note "prebuilt-$VERSION: no asset list"; return 1; }
+  python3 -I - "$d/$base.json" "$OUT/prebuilt-assets.txt" "$(get M)" <<'PY2'
+import json, sys
+m = json.load(open(sys.argv[1]))
+lines = open(sys.argv[2]).read().split("\n")
+target, got = lines[0].strip(), dict(l.rsplit(" ", 1) for l in lines[1:] if " " in l)
+bad = ["%s (%s, want %d)" % (p["name"], got.get(p["name"], "missing"), p["size"]) for p in m["parts"] if got.get(p["name"]) != str(p["size"])]
+if target not in (sys.argv[3], ""):
+    bad.append("its tag is at %s, not M" % target[:12])
+if bad:
+    sys.exit("    prebuilt on GitHub: " + "; ".join(bad))
+PY2
 }
 
 step_after() {

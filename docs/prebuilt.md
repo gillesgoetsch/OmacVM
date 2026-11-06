@@ -75,7 +75,11 @@ manifest says Omarchy 4.5 or later (`OMARCHY_FLOOR` in
 `src/prebuilt/manifest.py`); with none it builds the VM here. Older apps
 never take a 3.4.0 image (it is newer than they are) and keep the 4.0 ones.
 `make-image.sh` and `release.sh` refuse to make or ship an image the
-version's app would not take.
+version's app would not take. The manifest also names the OmacVM commit the
+image was made from (`commit`); from 3.4.0 `release.sh` takes an image only
+for its release commit M, or one made at a commit whose image files (`src/`
+and `app/scripts`, tests aside) are M's, and its publish step uploads the
+image and checks it on GitHub before the app's release goes out.
 
 OmacVM.app's image is only the disk (`Omarchy/disk.img`, raw, sparse): the
 app keeps its settings in `vm.env` itself. Its script
