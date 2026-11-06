@@ -221,6 +221,7 @@ fi
 if (( ${#retired[@]} )); then
   for r in "${retired[@]}"; do info "$r: retired in OmacVM $RETIRED_IN, not updated; nothing in it was changed"; done
   info "Those retired VMs keep running with their OmacVM 3.3; OmacVM no longer updates, repairs or switches anything in them."
+  info "The Mac's helpers from $RETIRED_IN no longer serve them: no Bridge bar items (Wi-Fi, Bluetooth, audio), media keys, wallpaper or time zone, no gestures or scroll momentum, no Omanotch, no camera or battery (retired VM apps); Touch ID asks for the password, the control centre shows how to move. The VM app's own features keep working."
   info "Move to OmacVM.app: omacvm build makes a new VM, then copy your files over ($RETIRED_URL)"
 fi
 (( ${failed_app:-0} )) && failed+=("OmacVM.app")

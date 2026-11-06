@@ -118,6 +118,8 @@ expect "update: exit 0" 0 "$RC"
 expect "update: the Mac step ran" 1 "$(grep -c "MAC STEP" "$T/calls")"
 expect "update: each retired VM named" 4 "$(grep -c "retired in OmacVM 3.4.0, not updated" <<<"$out")"
 expect "update: what that means, and the move" yes "$(has "OmacVM no longer updates, repairs or switches anything in them" "$out")"
+expect "update: which helpers stop serving them" yes "$(has "helpers from 3.4.0 no longer serve them: no Bridge bar items" "$out")"
+expect "update: ... and Touch ID and the control centre" yes "$(has "Touch ID asks for the password, the control centre shows how to move" "$out")"
 
 # Nothing was reached, started or read.
 expect "no SSH, no start, no app scripting" "" "$(grep FORBIDDEN "$T/calls" | sort -u)"
