@@ -308,4 +308,31 @@ expect "the kit: cuts after the switch run to done (kill-post)" 1 "$("$R/src/tes
 expect "the kit: a Resume that fails with no cut in its run is a FAIL" 1 "$(grep -c '"Resume (run $cycle) goes on with no cut in it" 0' "$R/src/tests/e2e/move-45.sh")"
 expect "the kit: the guest check runs with the desktop up, before and after" 2 "$(grep -c 'desk_on; then' "$R/src/tests/e2e/move-45.sh")"
 
+# kill_steps (kill-pre, kill-post) run with stand-ins for the VM: a cut run of move-vm.sh that still ends done
+# (exit 0) means move-vm.sh never saw the cut. That is a FAIL check, not a log line (v340-l3k's review: a cut at
+# the last step, report, then passed the row). Scenario "cutdone": the cut run ends 0. "resume": the cut run
+# ends 1, the Resume after it 0 (the normal case): no FAIL.
+ksrun() {   # SCENARIO -> the failed checks' names, one per line ("-" when none)
+  local ks; ks=$(awk '/^kill_steps\(\) \{/,/^}$/' "$R/src/tests/e2e/move-45.sh")
+  ( OUT=$T/ks-$1 TAG=t GJ=/var/lib/omacvm/move-4.5 MV_PID="" CHECKS=(); mkdir -p "$OUT/logs"; : > "$OUT/logs/t.move.log"
+    SCEN=$1 N=$T/ks-$1/n; echo 0 > "$N"
+    check() { CHECKS+=("$1"$'\t'"$2"); }
+    log() { :; }; pre_fails() { :; }; pre_hash() { :; }; vm_on() { return 0; }; vm_off() { :; }; nothing_starts() { :; }
+    journal_state() { :; }; moved_ok() { :; }; second_update() { :; }; same_as_before() { :; }
+    J() { echo x; }; gstat() { echo; }; qemu_pid() { :; }; mvm() { return 0; }
+    g() { case $1 in
+            *"grep -c '^test-hold-'"*) echo 1 ;;
+            *"sed -n 's/^test-held-//p'"*) echo report ;;   # the guest holds at report: the cut comes there
+          esac; return 0; }
+    mvm_bg() { sleep 1 & MV_PID=$!; }
+    mvm_wait() { wait "$MV_PID"; MV_PID=""; local n; n=$(( $(cat "$N") + 1 )); echo $n > "$N"
+      [[ $SCEN == resume && $n == 1 ]] && return 1; return 0; }
+    eval "$ks"
+    kill_steps report
+    local c out=""; for c in "${CHECKS[@]}"; do [[ ${c##*$'\t'} == 0 ]] && out+="${c%%$'\t'*}"$'\n'; done
+    printf '%s' "${out:--}" ) 2>/dev/null
+}
+expect "kill_steps: a cut, then Resume to done: no FAIL" "-" "$(ksrun resume)"
+expect "kill_steps: a run cut in 'report' that still ends done is a FAIL" 1 "$(ksrun cutdone | grep -c "cut in 'report' ended done")"
+
 exit $fail

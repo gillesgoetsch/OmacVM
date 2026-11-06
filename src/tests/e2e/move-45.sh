@@ -613,7 +613,8 @@ kill_steps() {   # STEP...
     mvm_wait; rc=$?
     log "run $cycle: move-vm.sh exit $rc: $(tail -n +$((mark + 1)) "$L" | grep -E '^(ERROR|STEP )' | tail -1 | cut -c1-200) (state=$(J state) step=$(J step) resumable=$(J resumable) ask_guest=$(J ask_guest))"
     if (( rc == 0 )); then
-      [[ -n $hit ]] && log "run $cycle: the move ended done although cut in '$hit'"
+      # Done in the run that was cut: move-vm.sh never saw the cut (it would have stopped), so the cut proved nothing.
+      [[ -n $hit ]] && check "run $cycle: a run cut in '$hit' ended done (move-vm.sh did not see the cut)" 0 "QEMU $q killed at the hold of '$hit'"
       break
     fi
     if [[ -n $hit ]]; then
