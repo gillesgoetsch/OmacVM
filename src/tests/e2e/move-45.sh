@@ -333,8 +333,9 @@ row_kill_commit() {
   pre_hash
   mvm_bg run
   wait_until 3600 committing || { check "reached the package switch" 0 "phase $(gstat phase)"; mvm_wait; return; }
-  sleep 20
-  local p; p=$(qemu_pid); log "kill -9 QEMU $p inside the switch"; kill -9 "$p"
+  sleep 10
+  local p ph; ph=$(gstat phase); p=$(qemu_pid); kill -9 "$p"; log "kill -9 QEMU $p in phase '$ph'"
+  check "killed inside the package switch" $([[ $ph == commit ]] && echo 1 || echo 0) "phase $ph"
   mvm_wait; local rc=$?
   check "stopped" $((rc != 0)) "exit $rc"
   check "journal: Undo only (not resumable)" $([[ $(J resumable) == 0 ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) resumable=$(J resumable)"
@@ -367,9 +368,11 @@ row_power_loss() {
   pre_hash
   mvm_bg run
   wait_until 3600 committing || { check "reached the package switch" 0 ""; mvm_wait; return; }
-  sleep 20
-  log "power loss: move-vm.sh, its children and QEMU $(qemu_pid) killed (-9) at once"
+  sleep 10
+  local ph; ph=$(gstat phase)
   power_off_all
+  log "power loss in phase '$ph': move-vm.sh, its children and QEMU killed (-9) at once"
+  check "power lost inside the package switch" $([[ $ph == commit ]] && echo 1 || echo 0) "phase $ph"
   # Nobody wrote the journal: "running" with a dead pid, which the app shows as interrupted.
   local jp; jp=$(J pid)
   check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && ! kill -0 "${jp:-0}" 2>/dev/null && echo 1 || echo 0) "state=$(J state) pid=$jp commit_started=$(J commit_started)"
