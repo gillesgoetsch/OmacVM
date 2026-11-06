@@ -1,10 +1,35 @@
 import CryptoKit
 import Foundation
-import OmacVMWindow
 
 // Where VM folders live and how they move. Plain Foundation and no app types,
 // so src/tests/app-storage.sh compiles this file alone and tests it on
 // fixture folders.
+
+/// The move to Omarchy 4.5's files in a VM folder, by name, so this file
+/// stays plain Foundation (the rules: OmacVMWindow/OmarchyMove.swift).
+enum MoveBackup {
+    static let folder = "before-omarchy-4.5"
+    static let journal = "move-4.5"
+
+    /// The journal says the move is not over: running, failed or interrupted.
+    static func open(_ vm: URL) -> Bool {
+        guard let t = try? String(contentsOf: vm.appendingPathComponent(journal), encoding: .utf8) else { return false }
+        let state = t.split(separator: "\n").first { $0.hasPrefix("state=") }.map { String($0.dropFirst(6)) }
+        return ["running", "failed", "interrupted"].contains(state ?? "")
+    }
+
+    /// The bytes only this file holds (an APFS clone shares the rest with
+    /// the disk): what deleting it frees. nil where the volume does not say.
+    static func privateBytes(_ path: String) -> Int64? {
+        var al = attrlist()
+        al.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        al.forkattr = attrgroup_t(ATTR_CMNEXT_PRIVATESIZE)
+        var buf = [UInt8](repeating: 0, count: 16)
+        let r = buf.withUnsafeMutableBytes { getattrlist(path, &al, $0.baseAddress, 16, UInt32(FSOPT_ATTR_CMN_EXTENDED)) }
+        guard r == 0, buf.withUnsafeBytes({ $0.load(fromByteOffset: 0, as: UInt32.self) }) >= 12 else { return nil }
+        return buf.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: Int64.self) }
+    }
+}
 
 enum StorageError: LocalizedError, Equatable {
     case failed(String)
@@ -78,8 +103,8 @@ enum Storage {
             if let v = try? f.resourceValues(forKeys: Set(keys)), v.isRegularFile == true {
                 // The move's backup shares its blocks with the disk (APFS
                 // clones): only what it holds alone counts.
-                if f.deletingLastPathComponent().lastPathComponent == OmarchyMove.backupName,
-                   let own = OmarchyMove.privateBytes(f.path) {
+                if f.deletingLastPathComponent().lastPathComponent == MoveBackup.folder,
+                   let own = MoveBackup.privateBytes(f.path) {
                     total += own
                 } else {
                     total += Int64(v.totalFileAllocatedSize ?? 0)
@@ -295,11 +320,10 @@ final class FolderMover: @unchecked Sendable {
         // A copy to another drive would take the move's backup at its full
         // size (the clone shares its blocks only on this volume).
         if !Storage.sameVolume(source, root),
-           fm.fileExists(atPath: source.appendingPathComponent(OmarchyMove.backupName).path) {
+           fm.fileExists(atPath: source.appendingPathComponent(MoveBackup.folder).path) {
             throw StorageError.failed("\(source.lastPathComponent) keeps its disk from before the move to Omarchy 4.5: delete the old backup or undo the move first.")
         }
-        if !Storage.sameVolume(source, root),
-           let j = (try? String(contentsOf: source.appendingPathComponent(OmarchyMove.journalName), encoding: .utf8)).flatMap(OmarchyMove.Journal.parse), j.open {
+        if !Storage.sameVolume(source, root), MoveBackup.open(source) {
             throw StorageError.failed("\(source.lastPathComponent) is in the middle of its move to Omarchy 4.5: resume or undo it first.")
         }
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
