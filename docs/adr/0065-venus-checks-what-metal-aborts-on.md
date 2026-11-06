@@ -1421,3 +1421,56 @@ gate's run case for case on both drivers (0 refusal lines, 0 Crash; MoltenVK's
   encodes a second Metal command buffer, as KosmicKrisp does. Neither passes
   the cap (the same weighed recording). vkr does not know when a submit
   completes without tracking fences per buffer.
+
+## Relaxed spirv-val rules (amendment, 3.3.1)
+
+Zed 1.27 ended at its first shader module on Venus from 3.2.21 on (#710).
+wgpu 30 asks naga for SPIR-V 1.6 on a Vulkan 1.3+ device, and naga puts
+Offset and ArrayStride on every struct and array type, also on the types of
+`var` locals (gfx-rs/wgpu#7696, open). The Vulkan spec allows layout
+decorations on the types of Function and Private variables only up to
+SPIR-V 1.4, and spirv-val checks that against the module's own version
+(`AllowsLayout`, VUID-StandaloneSpirv-None-10684); no option turns it off.
+21 of the 63 modules of wgpu's own examples were refused the same way: any
+wgpu app with a struct or array local.
+
+`spirv-tools-val-function-private-layout.patch` allows layout on Function
+and Private types at every SPIR-V version, as 1.4 does today. A guest could
+already send the same decorations in a 1.4 module and pass, so no new input
+reaches a driver. Mesa drops the layout for these storage classes
+(`spirv_to_nir.c`, `glsl_get_bare_type`); KosmicKrisp built all 9 of Zed's
+pipelines from the 1.6 modules and MoltenVK 7 (its other 2 fail in
+SPIRV-Cross's MSL at SPIR-V 1.0 too: Zed on the MoltenVK route is a separate
+problem). Before the change VUID-10684 was the first error of none of the
+157 refuse corpus modules and none of #624's crash, fuzz and hand-made
+modules; the 3 modules that pass after are SPIRV-Tools' own test modules
+(decoration-322, -323, -328), which both drivers built in #624's run.
+Workgroup without `WorkgroupMemoryExplicitLayoutKHR`, UniformConstant and
+the untyped pointer cases stay refused, and every later check still runs.
+
+Not a log-only rule, a per-VM switch or an app list: spirv-val stops at its
+first error, so passing a module on this one message skips the interface,
+built-in and pointer checks that stopped crash modules; a switch or list
+turns off all of the validator for that VM or app. A refusal stays fatal:
+the guest's Mesa creates modules without waiting for the answer, so an
+error code would be lost.
+
+**The bar for relaxing a spirv-val rule** (all four):
+
+1. a real shader compiler emits it (named, with its version);
+2. both Mac drivers ignore what it forbids (cited from their source);
+3. it is legal in some SPIR-V version, so a guest can already send it;
+4. 0 changes in the crash, fuzz and refuse corpora with the change.
+
+**Not relaxed:** naga's `var<workgroup>` arrays and structs. naga 30 puts
+ArrayStride and Offset on them too, also on a plain `array<f32, 64>`
+(four WGSL cases, each refused with VUID-10684 at SPIR-V 1.6, the first
+also at 1.4). That is illegal at every SPIR-V version without the capability
+(rule 3), and with the capability the layout is honoured, so it needs
+driver data first. So a wgpu compute shader with a Workgroup array is still
+refused on Venus (gfx-rs/wgpu#9295, open, would fix it in naga).
+
+The pass corpus is now kept per shader compiler, at each SPIR-V version it
+writes (`spirv-corpus/README.md`): Zed's and wgpu's naga modules at 1.6 and
+1.4 beside the app-collected ones, which had no naga module, so a new
+spirv-val rule broke a real compiler unseen.

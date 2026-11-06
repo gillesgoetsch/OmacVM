@@ -3,6 +3,46 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
+## 3.3.1
+
+Zed and other wgpu apps run on Vulkan again in OmacVM.app: this needs only the app update and counts
+from the VM's next start. The Mac's display now stays on while a video plays in the VM (OmacVM.app):
+this needs the app update and Update VM; either alone does nothing. The troubleshooting guide now says
+why OpenGL on Zink without kopper ends at once.
+
+- **Zed and other wgpu apps start on Vulkan again (OmacVM.app, see #710, reported by @epicoun).**
+  Since 3.2.21 QEMU's shader check refused Zed's shaders (1.26 in the report, 1.27 here) with
+  Graphics on Vulkan, so Zed ended about a second after it started and only ran on the CPU
+  renderer. Zed draws with wgpu,
+  whose shader compiler (naga) adds layout details to local variables when it writes SPIR-V 1.6
+  (gfx-rs/wgpu#7696). The Vulkan spec allows those only up to SPIR-V 1.4, and KosmicKrisp drops
+  them, so the check now takes them at every version, as it already did up to 1.4; everything else
+  is checked as before. In wgpu's own examples 21 of 63 shaders were refused the same way; now none.
+  Still refused: compute shaders with shared (Workgroup) arrays that naga marks the same way, which
+  the spec allows at no version. On MoltenVK (macOS 15) two of Zed's shaders also fail in MoltenVK's
+  own shader translator, at any SPIR-V version; that is not fixed here. A refused shader's reason is
+  now written to qemu.log in full (it was cut at 191 characters). Needs the app update only (from the
+  VM's next start); nothing in the VM.
+- **The Mac's screen no longer turns off while a video plays in the VM (OmacVM.app, reported by the
+  user).** On battery the display went dark after 2 minutes even while the user watched a video in
+  the VM. Now, as with a Mac video player, the Mac's display stays on while a player in the VM plays
+  a video and the VM's window can be seen (`pmset -g assertions`: "OmacVM: the VM is playing video").
+  It does not stay on for a paused video, music from an audio player, a background tab, a minimised
+  or covered window, another Space, a locked screen, a stopped VM, Hyprland's full-screen window
+  rules or Omarchy's Stay Awake, and lets go 30 s after the VM stops saying so. As on a Mac, a music
+  video with sound and a large muted video that plays by itself keep it on. Display only: the Mac
+  still sleeps when the lid closes. mpv counts, and so does a video in Omarchy's Chromium (156 now) and its web apps:
+  Chromium before 157 also tells Linux not to idle for music, downloads and calls, so OmacVM counts a
+  Chromium window only while Chromium holds its display wake lock, which it takes for a video playing
+  where it can be seen (as Chrome does on a Mac). Firefox was not tested (ADR 0070). Needs the app
+  update and Update VM.
+- **Docs: why OpenGL on Zink with `LIBGL_KOPPER_DISABLE=1` ends at once (OmacVM.app).** Without
+  kopper, Zink in the VM does not hold the app to the pace of the Mac's GPU and the queued work
+  keeps growing; since 3.2.22 the app's Mac memory account ends such an app in under a second
+  (before, QEMU grew by 5 GB in 7 seconds and was still growing). OmacVM never sets that
+  variable. Troubleshooting 55 says what the `host memory` line means. Nothing changes in the app
+  or the VM.
+
 ## 3.3.0
 
 OmacVM.app can now take files dragged from the Finder into the VM's window (experimental, off by

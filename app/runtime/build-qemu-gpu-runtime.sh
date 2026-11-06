@@ -1236,6 +1236,15 @@ patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop-logic.pa
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-drop.patch"
 "$native_dir/Tests/drop/test-drop.sh" "$source_dir/ui/cocoa.m" || \
   die "ui/cocoa.m: drag and drop is not wired as tested, or its rules fail (test-drop.sh)"
+# OmacVM: the Mac's display stays on while a video plays in the VM and its
+# window can be seen (ADR 0070). Its rules' test, a check that the wiring
+# checks fail on the code before, the wiring. Before no-app-nap.
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake-logic.patch"
+"$native_dir/Tests/display/test-video-awake.sh" --self-test "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: a video-awake wiring check passes without the patch (test-video-awake.sh)"
+patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-video-awake.patch"
+"$native_dir/Tests/display/test-video-awake.sh" "$source_dir/ui/cocoa.m" || \
+  die "ui/cocoa.m: the display is not kept on for a video as tested, or its rules fail (test-video-awake.sh)"
 # OmacVM: no App Nap while the VM runs: with its window out of sight (screen
 # locked, another Space) macOS slowed the whole VM to a few percent.
 patch -d "$source_dir" -p1 -f -i "$native_dir/patches/omacvm-cocoa-no-app-nap.patch"
@@ -1832,6 +1841,12 @@ grep -q 'if (!vkr_command_buffer_submit_ok(dispatch->data, submit->pCommandBuffe
   grep -q 'if (!vkr_cmd_secondaries_current(dispatch->data, cmd, "vkEndCommandBuffer"))' "$virgl_source/src/venus/vkr_command_buffer.c" && \
   grep -q 'if (!vkr_context_check(ctx, cmd->device->physical_device->limits.moltenvk, call,' "$virgl_source/src/venus/vkr_command_buffer.c" || \
   die "vkr_queue.c, vkr_command_buffer.c: a secondary recorded again or a command buffer not ended reaches the driver at the submit, or one MoltenVK could not record is refused (submit-state patch)"
+# A refusal's reason is logged whole, on one line: spirv-val's message runs to about 300 characters (#710).
+patch -d "$virgl_source" -p1 -f -i "$native_dir/patches/virgl-venus-refusal-text.patch"
+[[ $(grep -c '^   char why\[512\];$' "$virgl_source/src/venus/vkr_pipeline.c") == 3 ]] && \
+  grep -q 'char why\[512\]; /\* OmacVM (virgl-venus-refusal-text.patch) \*/' "$virgl_source/src/venus/vkr_context.c" && \
+  grep -q 'one refusal, one line \*/' "$virgl_source/src/venus/vkr_context.c" || \
+  die "vkr_pipeline.c, vkr_context.c: refusal reasons are cut at 192 bytes or span lines (refusal-text patch)"
 # entries are never NULL: VKR_MISSING tells a stub. Checked on the fully patched tree, after the
 # last Venus patch (vkr_allocator.c keeps tables of its own, venus-protocol's loader fallbacks run
 # before the stubs).
