@@ -283,6 +283,14 @@ expect "preflight on a stopped move (Omarchy is 4.5 now): ok to go on, resume, a
   "$rc $(json '" ".join(str(x) for x in [d["ok"], d["resume"], d["phase_done"]])' <<<"$out")"
 o run >/dev/null 2>&1; rc=$?
 expect "resume: done, the switch and the download not again" "0 done 1 1" "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -Suuw')"
+expect "resume: goes on with the step after the last one done (kernel's GRUB menu not again), update again" "1 2" \
+  "$(calls grub-mkconfig) $(calls '^update$')"
+# Cut off right after the download (the switch done meanwhile would be another case): the switch is next, the
+# download's plan (what the snapshot replaces) is not made again.
+fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; printf 'clang-libs dep clang\n' > "$J/replace"; echo download > "$J/phase-done"
+rm -f "$J/commit-started" "$J/commit-done"; o run >/dev/null 2>&1
+expect "resume after 'download': the switch next, the plan kept" "1 2 clang-libs dep clang" \
+  "$(calls 'pacman -Suuw') $(calls 'pacman -Suu ') $(cat "$J/replace")"
 
 # omarchy update stops at an AUR package that does not build on aarch64 (after its migrations): a warning.
 fresh; : > "$P/aur-fails"; o run >/dev/null 2>&1; rc=$?

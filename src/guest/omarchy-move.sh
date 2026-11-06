@@ -866,7 +866,8 @@ cmd_run() {
   done_p=$(jget phase-done)
   if [[ -n $done_p ]]; then
     # Going on: the journal says this VM was on omarchy-mac when it began.
-    for i in "${!PHASES[@]}"; do [[ ${PHASES[$i]} == "$done_p" ]] && start=$((i + 1)); done
+    # START is 1-based: the step after the last one done (PHASES[i] is step i + 1).
+    for i in "${!PHASES[@]}"; do [[ ${PHASES[$i]} == "$done_p" ]] && start=$((i + 2)); done
     say "going on after: $done_p"
     # A VM reset in the download leaves pacman's lock (no pacman runs now).
     if [[ -e $ROOT/var/lib/pacman/db.lck ]] && ! pgrep -x pacman >/dev/null 2>&1; then
