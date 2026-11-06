@@ -455,6 +455,7 @@ mac_side_refusal() {   # FS GB WHY: the VM on a GB disk image of FS; the move re
   VD="$MNT/$BN mv-$ROW"
   clone_to "$VD" stand-in || { check "VM copied to the disk image" 0 ""; return; }
   log "free $(df -h "$MNT" | awk 'NR == 2 { print $4 }') on $1"
+  PRE_FAILS=""   # a stand-in disk: never started
   pre_hash
   OMACVM_TEST_MOVE_STOP=backup mvm run; local rc=$?
   check "refused" $((rc != 0)) "exit $rc: $(J reason)"
