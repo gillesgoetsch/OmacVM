@@ -137,6 +137,7 @@ case $cmd in
   *"omarchy-move.sh preflight --json")
     case $FAKE_MODE in
       net) printf '{"format":1,"ok":false,"code":"repos-unreachable","reason":"pkgs.omarchy.org did not answer."}\n'; exit 4 ;;
+      busy) printf '{"format":1,"ok":false,"code":"pacman-busy","reason":"Another pacman runs in the VM."}\n'; exit 4 ;;
       refuse) printf '{"format":1,"ok":false,"code":"apple-platform","reason":"This VM says it is an Apple machine."}\n'; exit 3 ;;
       moved) printf '{"format":1,"ok":false,"code":"already-moved","reason":"On 4.5 already."}\n'; exit 3 ;;
     esac
@@ -144,6 +145,7 @@ case $cmd in
     exit 0 ;;
   *"omarchy-move.sh start")
     [[ -f $G/state ]] && [[ $(cat "$G/state") == done ]] && exit 0
+    [[ $FAKE_MODE == busy-start ]] && { printf '{"format":1,"ok":false,"code":"pacman-busy","reason":"Another pacman runs in the VM."}\n'; exit 4; }
     if [[ -e $G/inswitch ]]; then
       printf '{"format":1,"ok":false,"code":"undo-only","reason":"The package switch was cut off; Undo puts the VM back as it was before the move."}\n'; exit 3
     fi
@@ -297,6 +299,18 @@ mv_run net-download run; rc=$?
 expect "network lost in the download: failed, Resume" "1 failed 1 0" "$rc $(jget state) $(jget resumable) $(jget commit_started)"
 mv_run ok run; rc=$?
 expect "Resume after the download: to the end" "0 done" "$rc $(jget state)"
+
+# ---------- another pacman in the VM (contract v5, #722 round 2: pacman-busy, exit 4): Resume, not the network ----------
+fresh
+mv_run busy run; rc=$?
+expect "preflight: another pacman runs: failed at step 5, Resume, pacman-busy" "1 failed 5 1 pacman-busy" "$rc $(jget state) $(jget failed_step) $(jget resumable) $(jget code)"
+expect "... the reason does not send the person to the Mac's network" "yes" "$(r=$(jget reason); [[ $r == *"Another pacman"* && $r != *network* && $r == *Resume* ]] && echo yes || echo "'$r'")"
+mv_run net-download run
+mv_run busy-start run; rc=$?
+expect "start on a Resume: another pacman runs: Resume, pacman-busy, not the network" "1 1 pacman-busy yes" \
+  "$rc $(jget resumable) $(jget code) $(r=$(jget reason); [[ $r != *network* ]] && echo yes || echo "'$r'")"
+mv_run ok run; rc=$?
+expect "... Resume then: to the end" "0 done" "$rc $(jget state)"
 
 # ---------- refused by the guest; failed inside the switch ----------
 fresh

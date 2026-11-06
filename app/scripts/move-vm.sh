@@ -651,6 +651,14 @@ phase_text() {
     *) echo "$1" ;;
   esac
 }
+# Exit 4 from the guest: go on later. pacman-busy (contract v5: another
+# pacman in the VM, e.g. Omarchy's update check) is not the network.
+later_text() {
+  case $1 in
+    pacman-busy) echo "Resume goes on once it is done." ;;
+    *) echo "Check the Mac's network, then Resume." ;;
+  esac
+}
 step 5 "Switch Omarchy's packages"
 PF=$LOG/move-preflight.json ST=$LOG/move-status.json
 moved_already=0
@@ -671,7 +679,7 @@ if [[ $(jget commit_started) != 1 ]]; then
     log "Omarchy in $NAME is 4.5 already"
   elif (( prc == 4 )); then
     [[ -n $why ]] || why="Omarchy's package servers did not answer."
-    fail 5 "$why Check the Mac's network, then Resume." 1 "${code:-repos-unreachable}"
+    fail 5 "$why $(later_text "$code")" 1 "${code:-repos-unreachable}"
   elif (( prc == 3 )); then
     [[ -n $why ]] || why="The VM cannot be moved ($code)."
     fail 5 "$why Undo brings the disk from before back." 0 "$code"
@@ -692,7 +700,7 @@ if (( ! moved_already )); then
   elif (( src == 3 )); then
     fail 5 "$(jv reason "$ST" | grep . || echo "The VM refused the move.") Undo brings the disk from before back." 0 "$(jv code "$ST")"
   elif (( src == 4 )); then
-    fail 5 "$(jv reason "$ST" | grep . || echo "Omarchy's package servers did not answer.") Check the Mac's network, then Resume." 1 "$(jv code "$ST")"
+    fail 5 "$(jv reason "$ST" | grep . || echo "Omarchy's package servers did not answer.") $(later_text "$(jv code "$ST")")" 1 "$(jv code "$ST")"
   elif (( src != 0 )); then
     fail 5 "The move did not start in the VM (exit $src)." 1 start
   fi
