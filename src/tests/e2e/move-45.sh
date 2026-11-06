@@ -263,6 +263,12 @@ moved_ok() {   # WHEN
   check "$w: a new pacman keyring, only Arch Linux ARM's, Arch's and Omarchy's keys" $([[ -z $pc ]] && echo 1 || echo 0) "$(echo $pc | head -c 300)"
   pc=$(g "for p in \$(grep -v '^#' /usr/local/share/omacvm/guest/keep-packages.txt 2>/dev/null); do pacman -Qq \$p >/dev/null 2>&1 || continue; r=\$(LC_ALL=C pacman -Qi \$p | sed -n 's/^Install Reason *: //p'); [[ \$r == Explicitly* ]] || echo \"\$p:\$r\"; done")
   check "$w: keep list installed explicitly (orphan step cannot take it)" $([[ -z $pc ]] && echo 1 || echo 0) "$(echo $pc | head -c 200)"
+  # Omarchy 4.5's Factory Reset (omarchy-system-factory-reset) puts @ back to @factory when there is one. omarchy-mac
+  # 4.0 took @factory at its install (prebuilt images too): left as it is, a reset after the move lands on 4.0.
+  pc=$(g 'd=$(findmnt -no SOURCE / | sed "s/\[.*//"); m=$(mktemp -d); mount -o subvolid=5 "$d" "$m" 2>/dev/null || exit 0
+    if [[ -d $m/@factory ]]; then echo "@factory: $(ls "$m/@factory/var/lib/pacman/local" 2>/dev/null | grep -E "^omarchy-[0-9]" | head -1)"; fi
+    umount "$m"; rmdir "$m"')
+  check "$w: no 4.0 factory snapshot left (Factory Reset would go back to omarchy-mac)" $([[ -z $pc || $pc == *omarchy-4.[5-9]* || $pc == *omarchy-[5-9]* ]] && echo 1 || echo 0) "${pc:-no @factory}"
   pc=$(g "pacman -Qq snapper iwd 2>&1; snapper list-configs 2>/dev/null | grep -c root; ls /boot/grub/grub-btrfs.cfg 2>&1")
   check "$w: snapper and iwd there, root config, snapshots in GRUB" $([[ $pc != *"not found"* && $pc == *grub-btrfs.cfg* ]] && echo 1 || echo 0) "$(echo $pc)"
   fail=$(g "systemctl --failed --no-legend --plain | awk '{ print \$1 }'")
