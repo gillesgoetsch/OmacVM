@@ -33,8 +33,8 @@ dkms=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$R/src/battery/guest/module/dk
 mod=$(sed -n 's/^MODULE_VERSION("\(.*\)");/\1/p' "$R/src/battery/guest/module/omacvm-battery.c")
 if [[ $dkms == "$mod" ]]; then ok "DKMS and the module say the same version ($mod)"
 else bad "DKMS says $dkms, the module $mod (DKMS rebuilds only on a new version)"; fi
-for snap in "$T/snap-app"; do
-  which=OmacVM.app
+snap=$T/snap-app which=OmacVM.app
+{
   json=$("$snap" -573)
   line=$(python3 -I "$B/agent-test.py" "$AGENT" line "$mod" <<<"$json")
   out=$("$T/module" "$line")
@@ -49,7 +49,7 @@ for snap in "$T/snap-app"; do
   line=$(python3 -I "$B/agent-test.py" "$AGENT" line 1.0.0 <<<"$json")
   [[ $line != *current_now* && $line != *power_now* ]] && ok "$which, module 1.0.0: no current_now/power_now" \
     || bad "$which, module 1.0.0 gets: $line"
-done
+}
 # An older Mac side (no current): the module has none, UPower reads none.
 old=$("$T/snap-app" -573 | python3 -c 'import json, sys; d = json.load(sys.stdin); d.pop("currentMicroA"); d.pop("powerMicroW"); print(json.dumps(d))')
 out=$("$T/module" "$(python3 -I "$B/agent-test.py" "$AGENT" line "$mod" <<<"$old")")
