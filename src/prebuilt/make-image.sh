@@ -306,6 +306,13 @@ stage_repack() {
 stage_upload() {
   local base=omacvm-prebuilt-$VERSION-$ROUTE
   ls "$OUT/$base".tar.zst.part-* >/dev/null || die "nothing to upload in $OUT"
+  # The release gate (src/release/release.sh) sets the target: the release commit M. A release
+  # already there at another commit is not this image's: nothing goes up.
+  if [[ -n ${OMACVM_PREBUILT_TARGET:-} ]] && gh release view "$TAG" -R "$PREBUILT_REPO" >/dev/null 2>&1; then
+    local at; at=$(gh api "repos/$PREBUILT_REPO/commits/$TAG" -q .sha 2>/dev/null || true)
+    [[ $at == "$OMACVM_PREBUILT_TARGET" ]] ||
+      die "$TAG is already there at ${at:-an unknown commit}, not $OMACVM_PREBUILT_TARGET: delete it first (gh release delete $TAG -R $PREBUILT_REPO --cleanup-tag)"
+  fi
   if ! gh release view "$TAG" -R "$PREBUILT_REPO" >/dev/null 2>&1; then
     log "creating the pre-release $TAG"
     gh release create "$TAG" -R "$PREBUILT_REPO" --prerelease --target "${OMACVM_PREBUILT_TARGET:-main}" \
