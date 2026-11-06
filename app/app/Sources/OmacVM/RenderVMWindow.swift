@@ -224,6 +224,8 @@ enum RenderVMWindow {
         notSetUp.running = true
         window("window-25-mac-setup-login-items-vm-runs", state, notSetUp)
 
+        movePictures(state, config, usual)
+
         // Long names: a VM name of 62 characters, a deep VMs folder, a
         // message, an older OmacVM in the VM (Update VM).
         let longRoot = tmp.appendingPathComponent("A folder with a rather long name for the VMs of this Mac/and-one-more-level-light-test/vms")
@@ -295,6 +297,65 @@ enum RenderVMWindow {
         print(text, terminator: "")
         print("rendered into \(dir.path)")
         exit(failed ? 1 : 0)
+    }
+
+    /// Move to Omarchy 4.5: the card under the header in each state (the
+    /// offer, blocked by space and by a drive without APFS, stopped with
+    /// Resume, stopped with Undo only, interrupted, moved with the backup
+    /// row), the move's progress with its steps (running and stopped), and
+    /// the sheets. The card must be under the header in every picture
+    /// ("move-card"), its buttons inside the window.
+    private static func movePictures(_ state: AppState, _ config: VMConfig, _ usual: Preview) {
+        let gib = DiskSize.gib
+        func card(_ c: OmarchyMove.Card, problem: String? = nil, backup: (bytes: Int64, exact: Bool)? = nil) -> OmarchyMoveCard.Preview {
+            OmarchyMoveCard.Preview(card: c, problem: problem, backup: backup)
+        }
+        func shown(_ name: String, _ dark: Bool) {
+            if LayoutProbe.frames["move-card"] == nil { note("\(name): the move card is missing\(dark ? " (dark)" : "")", fail: true) }
+        }
+        var p = usual
+        p.move = card(.offer)
+        window("window-move-1-offer", state, p) { dark in shown("window-move-1-offer", dark) }
+        p.move = card(.offer, problem: OmarchyMove.problem(apfs: true, freeBytes: 21 * gib, allocated: 17 * gib,
+                                                           diskJobPending: false, resizePending: false, otherCopy: nil))
+        window("window-move-2-no-space", state, p) { dark in shown("window-move-2-no-space", dark) }
+        p.move = card(.offer, problem: OmarchyMove.problem(apfs: false, freeBytes: 900 * gib, allocated: 17 * gib,
+                                                           diskJobPending: false, resizePending: false, otherCopy: nil))
+        window("window-move-3-not-apfs", state, p) { dark in shown("window-move-3-not-apfs", dark) }
+        p.move = card(.failed(step: 5, reason: "Omarchy's package servers did not answer. Check the Mac's network, then Resume.", resumable: true))
+        window("window-move-4-failed-resume", state, p) { dark in shown("window-move-4-failed-resume", dark) }
+        p.move = card(.failed(step: 5, reason: "pacman stopped while it switched the packages (log: logs/move-4.5.log).", resumable: false))
+        window("window-move-5-failed-undo-only", state, p) { dark in shown("window-move-5-failed-undo-only", dark) }
+        p.move = card(.interrupted(step: 5, reason: "", resumable: true))
+        window("window-move-6-interrupted", state, p) { dark in shown("window-move-6-interrupted", dark) }
+        p.move = card(.done(since: "2026-11-06T01:12:00Z", kept: false), backup: (12 * gib, true))
+        p.moveBackup = (12 * gib, true)
+        p.section = "storage"
+        window("window-move-7-done", state, p) { dark in shown("window-move-7-done", dark) }
+        p.move = card(.done(since: "", kept: true), backup: (17 * gib, false))
+        p.moveBackup = (17 * gib, false)
+        window("window-move-8-kept", state, p) { dark in shown("window-move-8-kept", dark) }
+        p = usual
+        p.move = card(.offer)
+        p.running = true
+        window("window-move-9-offer-vm-runs", state, p) { dark in shown("window-move-9-offer-vm-runs", dark) }
+
+        // The move's progress (BuildView): at the download, then stopped there.
+        let screen = state.screen
+        state.creator.showForRendering(move: 5, detail: "downloading packages (part 6 of 13)", failed: nil)
+        state.screen = .building
+        window("window-move-10-progress", state, usual)
+        state.creator.showForRendering(move: 5, detail: "downloading packages (part 6 of 13)",
+                                       failed: "Omarchy's package servers did not answer. Check the Mac's network, then Resume.")
+        window("window-move-11-progress-stopped", state, usual)
+        state.screen = screen
+
+        sheet("sheet-move-1-confirm") { MoveConfirmSheet(vm: config.name, running: false, need: 31 * gib, free: 212 * gib) { _ in } }
+        sheet("sheet-move-2-confirm-vm-runs") { MoveConfirmSheet(vm: config.name, running: true, need: 31 * gib, free: 212 * gib) { _ in } }
+        sheet("sheet-move-3-undo") { MoveUndoSheet(vm: config.name, afterMove: true, since: "6 November 2026") { _ in } }
+        sheet("sheet-move-4-undo-stopped") { MoveUndoSheet(vm: config.name, afterMove: false, since: "") { _ in } }
+        sheet("sheet-move-5-delete") { MoveDeleteSheet(size: "about 12 GB") { _ in } }
+        sheet("sheet-move-6-keep") { MoveKeepSheet(vm: config.name) { _ in } }
     }
 
     private static func note(_ s: String, fail: Bool = false) {
@@ -373,7 +434,7 @@ enum RenderVMWindow {
     /// (16 pt in from the card), the header's buttons at its margin.
     private static func sides(_ name: String, height: Double) {
         // The strips under the header and the sidebar run edge to edge.
-        let boxes = LayoutProbe.boxes().filter { !["update-banner", "message", "notice"].contains($0.name) && !$0.name.hasPrefix("nav-") }
+        let boxes = LayoutProbe.boxes().filter { !["update-banner", "message", "notice", "move-card"].contains($0.name) && !$0.name.hasPrefix("nav-") }
         let rowEnd = WindowLayout.width - WindowLayout.contentInset - WindowLayout.rowInset
         var problems = WindowLayout.problems(boxes, width: WindowLayout.width, trailing: ["start"])
         let rows = boxes.filter { $0.name.hasPrefix("trailing-") }
