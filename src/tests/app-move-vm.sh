@@ -126,6 +126,8 @@ SSH
 cat > "$A/scripts/apply-vm.sh" <<'APPLY'
 #!/bin/bash
 echo "${OMACVM_KERNEL_NEW:-unset} ${OMACVM_MOVE_RUN:-unset}" >> "$FAKE_DIR/apply.log"
+# apply6-fail: the apply after the move (the second one) fails once.
+if [[ $FAKE_MODE == apply6-fail && $(wc -l < "$FAKE_DIR/apply.log") -eq 2 ]]; then echo "error: the VM side failed"; exit 1; fi
 echo "==> OmacVM applied"
 APPLY
 chmod +x "$A/runtime/bin/OmacVM" "$T/bin/ssh" "$A/scripts/apply-vm.sh"
@@ -240,6 +242,15 @@ mv_run ok keep; rc=$?
 expect "Keep This Disk: kept, the backup stays" "0 kept there" "$rc $(jget state) $([[ -d $V/before-omarchy-4.5 ]] && echo there)"
 mv_run ok delete-backup; rc=$?
 expect "... then Delete the backup" "0 done-final" "$rc $(jget state)"
+
+# ---------- the apply after the move fails: Resume skips the finished guest move ----------
+fresh
+mv_run apply6-fail run; rc=$?
+expect "apply after the move fails: failed at step 6, Resume" "1 failed 6 1" "$rc $(jget state) $(jget failed_step) $(jget resumable)"
+expect "... the VM restarted before that apply (the new kernel)" "yes" "$(grep -c 'systemctl reboot' "$T/ssh.log" | grep -q '^1$' && echo yes)"
+mv_run ok run; rc=$?
+expect "Resume: the guest's move is done, steps 6-8, to the end" "0 done" "$rc $(jget state)"
+expect "... no second start of the guest's move" "1" "$(grep -c 'omarchy-move.sh start' "$T/ssh.log")"
 
 # ---------- Stop and Quit, then Resume ----------
 fresh; : > "$T/out"

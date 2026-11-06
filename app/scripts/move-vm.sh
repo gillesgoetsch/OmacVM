@@ -329,6 +329,11 @@ step 5 "Move to Omarchy 4.5"
 jv() { plutil -extract "$1" raw -o - -- "$2" 2>/dev/null | printable | head -1 | cut -c1-300 || true; }
 PF=$LOG/move-preflight.json ST=$LOG/move-status.json
 moved_already=0
+# A resume after the guest finished (a later step failed): its own journal says done.
+if [[ $(jget commit_started) == 1 ]] && vssh "$G status --json" < /dev/null > "$ST" 2>/dev/null && [[ $(jv state "$ST") == done ]]; then
+  moved_already=1
+  log "the move in $NAME is done already"
+fi
 if [[ $(jget commit_started) != 1 ]]; then
   prc=0; vssh "$G preflight --json" < /dev/null > "$PF" 2>> "$LOG/move-apply.log" || prc=$?
   code=$(jv code "$PF"); why=$(jv reason "$PF")
@@ -350,7 +355,10 @@ fi
 if (( ! moved_already )); then
   # start checks again (resume-aware) and answers like preflight when it will not.
   src=0; vssh "$G start" < /dev/null > "$ST" 2>> "$LOG/move-apply.log" || src=$?
-  if (( src == 3 )); then
+  if (( src == 3 )) && [[ $(jv code "$ST") == already-moved ]]; then
+    moved_already=1
+    log "Omarchy in $NAME is 4.5 already"
+  elif (( src == 3 )); then
     fail 5 "$(jv reason "$ST" | grep . || echo "The VM refused the move.") Undo brings the disk from before back." 0 "$(jv code "$ST")"
   elif (( src == 4 )); then
     fail 5 "$(jv reason "$ST" | grep . || echo "Omarchy's package servers did not answer.") Check the Mac's network, then Resume." 1 "$(jv code "$ST")"
@@ -358,7 +366,7 @@ if (( ! moved_already )); then
     fail 5 "The move did not start in the VM (exit $src)." 1 start
   fi
   last="" since=$(date +%s) lost=0 asked_stop=0
-  while :; do
+  while (( ! moved_already )); do
     sleep "${OMACVM_MOVE_POLL:-8}"
     kill -0 "$PARENT" 2>/dev/null || touch "$STOP"
     if ! qemu_running; then
@@ -411,14 +419,21 @@ vssh "$G status --json" < /dev/null > "$ST" 2>/dev/null || true
 jset commit_started 1
 stop_asked && stopped
 
+# A restart, so OmacVM's next apply and the check meet the new system's kernel
+# (the move replaced the running kernel's modules).
+vm_restart() {   # STEP
+  vssh "systemctl reboot" < /dev/null >/dev/null 2>&1 || true
+  for ((i = 0; i < 60; i++)); do vssh true < /dev/null >/dev/null 2>&1 || break; sleep 2; done
+  wait_ssh 300 || fail "$1" "$(disk_why || echo "$NAME did not come back after the restart (log: $LOG/move-console.log). Undo brings the disk from before back.")" 1 restart
+}
+
 step 6 "Update OmacVM again"
+vm_restart 6
 run_logged "$LOG/move-apply.log" "$HERE/apply-vm.sh" "$VM_DIR" ${APPLY_ARGS[@]+"${APPLY_ARGS[@]}"} ||
   fail 6 "$(disk_why || echo "OmacVM did not update after the move (log: $LOG/move-apply.log). Resume tries again.")" 1 apply-after
 
 step 7 "Restart and check"
-vssh "systemctl reboot" < /dev/null >/dev/null 2>&1 || true
-for ((i = 0; i < 60; i++)); do vssh true < /dev/null >/dev/null 2>&1 || break; sleep 2; done
-wait_ssh 300 || fail 7 "$(disk_why || echo "$NAME did not come back after the restart (log: $LOG/move-console.log). Undo brings the disk from before back.")" 1 restart
+vm_restart 7
 gst=$(vssh "$G status --json" < /dev/null 2>/dev/null > "$ST" && jv state "$ST") || gst=""
 [[ $gst == done ]] || fail 7 "After the restart the VM says the move is '${gst:-unknown}'." 1 check
 rec=$(vssh "$G record" < /dev/null 2>/dev/null | printable | head -1 | cut -c1-80) || rec=""
