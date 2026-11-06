@@ -29,7 +29,6 @@ iwd
 openssh
 sudo
 qemu-guest-agent
-spice-vdagent
 
 # OmacVM's guest parts
 jq

@@ -6,8 +6,10 @@
 #   OMACVM_OMARCHY=4.5   Omarchy 4.5 from its own aarch64 repos, as its ISO sets
 #                        a machine up (OmacVM.app's VMs: omarchy_route);
 #                        OMARCHY_CHANNEL its channel (stable)
-#   OMARCHY_MAC_CHANNEL  else omarchy-mac 4.0 (Parallels, UTM, Fusion): rc
-#                        (default) or stable, passed to `install.sh --channel`
+#   OMARCHY_MAC_CHANNEL  else omarchy-mac 4.0, for tests only
+#                        (OMACVM_TEST_OMARCHY=4.0, the move matrix's 4.0
+#                        bases): rc (default) or stable, passed to
+#                        `install.sh --channel`
 set -euo pipefail
 source /root/omacvm.env
 U=$OMA_USER; H=$(getent passwd "$U" | cut -d: -f6)

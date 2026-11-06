@@ -280,7 +280,7 @@ refusal "Omarchy 3.x" not-omarchy-40 3 'echo "omarchy 3.2.0-1 e" > "$P/db"'
 refusal "not omarchy-mac's" no-omarchy-mac 3 'echo "omarchy 4.0.1-1 e" > "$P/db"; printf "[core]\nInclude = x\n" > "$T/pacman.conf"'
 refusal "an Apple device tree (Asahi)" apple-platform 3 'mkdir -p "$RT/proc/device-tree"; printf "apple,j314s\0apple,arm-platform\0" > "$RT/proc/device-tree/compatible"'
 refusal "an NVIDIA GB10" platform 3 'mkdir -p "$RT/sys/bus/pci/devices/0000:01:00.0"; echo 0x10de > "$RT/sys/bus/pci/devices/0000:01:00.0/vendor"; echo 0x2e12 > "$RT/sys/bus/pci/devices/0000:01:00.0/device"'
-refusal "not QEMU" not-qemu 3 'echo "Parallels International GmbH." > "$RT/sys/class/dmi/id/sys_vendor"'
+refusal "not QEMU" not-qemu 3 'echo "innotek GmbH" > "$RT/sys/class/dmi/id/sys_vendor"'
 refusal "an image record naming Apple" image-target 3 'mkdir -p "$RT/var/lib/omarchy/image"; echo platform=aarch64-apple > "$RT/var/lib/omarchy/image/target"'
 refusal "pacman runs" pacman-busy 3 ': > "$RT/var/lib/pacman/db.lck"; : > "$P/pacman-runs"'
 refusal "pacman's lock without pacman" pacman-lock 3 ': > "$RT/var/lib/pacman/db.lck"'
@@ -641,9 +641,8 @@ PATH="$K:$PATH" "$R/src/guest/pkg-add" snapper jq; PATH="$K:$PATH" "$R/src/guest
 expect "pkg-add: a package there as a dependency is marked as installed on purpose (not with --asdeps)" \
   "pacman -D --asexplicit snapper" "$(cat "$KC")"
 missing=""
-# Code lines only (comments say "pkg-add installs nothing ..."); Parallels,
-# UTM and Fusion keep omarchy-mac 4.0.
-for w in $(git -C "$R" grep -hE '(pkg-add"?|PKG_ADD"?) [a-z0-9]' -- 'src/**' ':!src/tests/**' ':!src/fusion/**' ':!src/utm/**' \
+# Code lines only (comments say "pkg-add installs nothing ...").
+for w in $(git -C "$R" grep -hE '(pkg-add"?|PKG_ADD"?) [a-z0-9]' -- 'src/**' ':!src/tests/**' \
              ':!**/*.md' ':!**/*.py' ':!src/guest/pkg-add' | grep -vE '^\s*#' |
            grep -oE '(pkg-add"?|PKG_ADD"?) [a-z0-9][a-z0-9 ._+-]*' | sed -E 's/^(pkg-add"?|PKG_ADD"?) //'); do
   [[ $w =~ ^[a-z0-9][a-z0-9._+-]*$ ]] || continue
