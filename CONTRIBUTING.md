@@ -35,7 +35,7 @@ Xcode Command Line Tools.
 | Path | What |
 |---|---|
 | `omacvm`, `src/cmd/` | The command and its subcommands (`build`, `apply`, `check`, ...) |
-| `src/lib/` | Mac-side shell libraries (finding VMs, the four apps, signing) |
+| `src/lib/` | Mac-side shell libraries (finding VMs, signing) |
 | `src/guest/` | The VM side: installer (`install.sh`) and checks (`check.sh`) |
 | `src/<feature>/` | One folder per feature, `mac/` and `guest/` inside. The list: `src/features.tsv` |
 | `app/` | OmacVM.app: Swift launcher, QEMU runtime and its patches |
