@@ -418,14 +418,14 @@ undo)
     [[ ${OMACVM_TEST_UNDO_STOP:-} == disk ]] && exit 1   # src/tests/app-move-vm.sh: cut off before the disk
     [[ -f $B/disk.img ]] && mv -f "$B/disk.img" "$VM_DIR/disk.img"
     sync
-    jset state undone finished "$(now_iso)"
+    jset state undone finished "$(now_iso)" reason ""
     rm -rf "$B"
     log "the disk from before the move is back"
   elif [[ -d $B ]]; then
     rm -rf "$B"   # a backup cut short (step 3): the VM's disk and records were never changed
   fi
   rm -f "$STOP"
-  jset state undone finished "$(now_iso)"
+  jset state undone finished "$(now_iso)" reason ""
   echo "UNDONE $NAME"; exit 0 ;;
 esac
 

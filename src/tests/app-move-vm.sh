@@ -284,6 +284,7 @@ expect "undo: disk.img byte for byte as before the move" "$sum0" "$(shasum "$V/d
 expect "undo: the records back (Omarchy 4.0, OmacVM 3.3.0)" "4.0.3rc4 omarchy-mac rc 3.3.0" "$(cat "$V/omarchy") $(cat "$V/omacvm-version")"
 expect "undo: the disk's size back, the CPUs as set since" "64 4" "$(sed -n 's/^DISK_GB=//p' "$V/vm.env") $(sed -n 's/^CPUS=//p' "$V/vm.env")"
 expect "undo: the backup folder is gone, the journal says undone" "gone undone" "$([[ -e $V/before-omarchy-4.5 ]] && echo there || echo gone) $(jget state)"
+expect "undo: no reason left in the journal (the undoing one is over)" "" "$(jget reason)"
 
 # ---------- no network: Resume ----------
 fresh
