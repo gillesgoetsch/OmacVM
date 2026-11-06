@@ -209,7 +209,7 @@ refusal "pacman runs" pacman-busy 3 ': > "$RT/var/lib/pacman/db.lck"; : > "$P/pa
 refusal "pacman's lock without pacman" pacman-lock 3 ': > "$RT/var/lib/pacman/db.lck"'
 refusal "no GRUB" no-grub 3 'rm -f "$RT/boot/grub/grub.cfg"'
 refusal "not btrfs" layout 3 'export FSTYPE=ext4'; unset FSTYPE
-refusal "less than 8 GB free" low-space 3 'export AVAIL=4294967296'; unset AVAIL
+refusal "less than 14 GB free (omarchy update itself wants 10 GiB)" low-space 3 'export AVAIL=12884901888'; unset AVAIL
 refusal "Omarchy's servers do not answer (run again)" repos-unreachable 4 ': > "$P/offline"'
 fresh; cp "$T/omarchy.db" "$T/db45"; ( cd "$T/dbsrc" && rm -rf omarchy-4.5.0-3 && mkdir -p omarchy-4.4.9-1 && tar -cf "$T/omarchy.db" omarchy-4.4.9-1 )
 out=$(pf); expect "preflight: the repo offers no 4.5 (run again)" "repos-unreachable rc=4" "$(sed '$d' <<<"$out" | json 'd["code"]') $(tail -1 <<<"$out")"
