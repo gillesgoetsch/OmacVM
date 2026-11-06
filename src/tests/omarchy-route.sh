@@ -29,7 +29,7 @@ ask() {   # FILE TYPE TEST TEST_CHANNEL -> "route channel"
 for f in setup.sh vm-common.sh; do
   expect "$f: a new VM: Omarchy 4.5 stable" "4.5 stable" "$(ask $f "" "" "")"
   expect "$f: TYPE app: Omarchy 4.5 stable" "4.5 stable" "$(ask $f app "" "")"
-  expect "$f: no other TYPE brings back omarchy-mac" "4.5 stable" "$(ask $f utm "" "")"
+  expect "$f: no other TYPE brings back omarchy-mac" "4.5 stable" "$(ask $f other "" "")"
   expect "$f: tests, OMACVM_TEST_OMARCHY=4.0: omarchy-mac 4.0" "4.0 stable" "$(ask $f "" 4.0 "")"
   expect "$f: OMACVM_TEST_OMARCHY=4.5" "4.5 stable" "$(ask $f "" 4.5 "")"
   expect "$f: OMACVM_TEST_OMARCHY anything else: 4.5" "4.5 stable" "$(ask $f "" 3.9 "")"
