@@ -12,7 +12,7 @@ struct StripGeometry: Equatable {
     var notchHeight: CGFloat
     /// The VM's full-screen window on the built-in display.
     var windowID: CGWindowID
-    /// App that owns it ("Parallels Desktop", "UTM").
+    /// App that owns it ("OmacVM").
     var owner: String
 }
 

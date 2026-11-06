@@ -239,8 +239,8 @@ enum DisplayPick {
   }
 
   /// The media keys' older, looser rule: a window as wide as a display, at
-  /// its left edge and at most 80 points short (Parallels, UTM, Fusion and
-  /// OmacVM.app full screen).
+  /// its left edge and at most 80 points short (OmacVM.app full screen, also
+  /// below the notch).
   static func spansOne(_ windows: [CGRect], _ displays: [CGRect]) -> Bool {
     windows.contains { r in displays.contains { abs(r.width - $0.width) < 2 && r.height >= $0.height - 80 && abs(r.minX - $0.minX) < 2 } }
   }

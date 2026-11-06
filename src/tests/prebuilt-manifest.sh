@@ -18,7 +18,7 @@ source "$R/src/tests/release-test-keys.sh"
 export OMACVM_PREBUILT_SOURCE=$T/src
 mkdir -p "$OMACVM_PREBUILT_SOURCE"
 VERSION=$(cat "$R/src/VERSION")
-M=$OMACVM_PREBUILT_SOURCE/omacvm-prebuilt-$VERSION-parallels.json
+M=$OMACVM_PREBUILT_SOURCE/omacvm-prebuilt-$VERSION-app.json
 PWNED=$T/pwned
 SUM=$(printf '%064d' 0)
 
@@ -32,10 +32,10 @@ manifest() {
   python3 - "$M" "$VERSION" "$1" "$2" <<'PY'
 import json, sys
 m = {"format": 1, "kind": "prebuilt-manifest", "devid_teams": ["722686Y34B"],
-     "route": "parallels", "omacvm": sys.argv[2], "omarchy": "4.0.3 (omarchy-mac abc1234)",
-     "bundle": "Omarchy.pvm", "unpacked_kb": 7000000, "disk_gb": 64, "compression": "tar + zstd --long=27",
+     "route": "app", "omacvm": sys.argv[2], "omarchy": "4.0.3 (omarchy-mac abc1234)",
+     "bundle": "Omarchy", "unpacked_kb": 7000000, "disk_gb": 64, "compression": "tar + zstd --long=27",
      "created": "2026-10-05T03:44:00Z", "size": 3600000000,
-     "parts": [{"name": "omacvm-prebuilt-%s-parallels.tar.zst.part-aa" % sys.argv[2], "size": 3600000000, "sha256": "0" * 64}]}
+     "parts": [{"name": "omacvm-prebuilt-%s-app.tar.zst.part-aa" % sys.argv[2], "size": 3600000000, "sha256": "0" * 64}]}
 if sys.argv[3]:
     m[sys.argv[3]] = json.loads(sys.argv[4])
     if m[sys.argv[3]] is None:
@@ -45,17 +45,17 @@ PY
   sign_doc "$M" "${3:-}"
 }
 
-lookup() { (prebuilt_lookup parallels 2>/dev/null && echo "found $PB_DISK_GB $PB_BUNDLE $PB_SIZE") || echo refused; }
+lookup() { (prebuilt_lookup app 2>/dev/null && echo "found $PB_DISK_GB $PB_BUNDLE $PB_SIZE") || echo refused; }
 
 manifest "" ""
-expect "a good manifest" "found 64 Omarchy.pvm 3600000000" "$(lookup)"
+expect "a good manifest" "found 64 Omarchy 3600000000" "$(lookup)"
 expect "a good manifest: omarchy" "4.0.3 (omarchy-mac abc1234)" "$(python3 "$R/src/prebuilt/manifest.py" get "$M" omarchy)"
-expect "a good manifest: parts" "omacvm-prebuilt-$VERSION-parallels.tar.zst.part-aa 3600000000 $SUM" \
+expect "a good manifest: parts" "omacvm-prebuilt-$VERSION-app.tar.zst.part-aa 3600000000 $SUM" \
   "$(python3 "$R/src/prebuilt/manifest.py" parts "$M")"
 
 # The signature comes first: either release key, nothing else.
 manifest "" "" spare-key
-expect "signed with the spare key" "found 64 Omarchy.pvm 3600000000" "$(lookup)"
+expect "signed with the spare key" "found 64 Omarchy 3600000000" "$(lookup)"
 manifest "" "" stranger-key
 expect "signed with another key: refused" refused "$(lookup)"
 python3 "$R/src/prebuilt/manifest.py" parts "$M" >/dev/null 2>&1; expect "signed with another key: no parts" 1 $?
@@ -80,14 +80,14 @@ a bad team|devid_teams|["722686y34b"]
 next_spare_key not a key|next_spare_key|"bm90IGEga2V5"
 EOF
 manifest devid_teams '["722686Y34B", "ABCDE12345"]'
-expect "two teams" "found 64 Omarchy.pvm 3600000000" "$(lookup)"
+expect "two teams" "found 64 Omarchy 3600000000" "$(lookup)"
 
 # The payload from the review: bash arithmetic on "BASH_VERSINFO[$(cmd)0]" runs cmd.
 for key in disk_gb size unpacked_kb; do
   rm -f "$PWNED"
   manifest "$key" "\"BASH_VERSINFO[\$(touch $PWNED)0]\""
   expect "$key with a command in it: refused" refused "$(lookup)"
-  ( PB_DISK_GB=64; prebuilt_lookup parallels >/dev/null 2>&1; pb_disk_bigger 128 ) >/dev/null 2>&1
+  ( PB_DISK_GB=64; prebuilt_lookup app >/dev/null 2>&1; pb_disk_bigger 128 ) >/dev/null 2>&1
   expect "$key with a command in it: nothing ran" no "$([[ -e $PWNED ]] && echo yes || echo no)"
 done
 rm -f "$PWNED"
@@ -119,12 +119,12 @@ omacvm with more after it|omacvm|"2.8.0; touch x"
 omacvm as a number|omacvm|2.8
 omarchy with an escape|omarchy|"4.0\u001b]52;c;eA==\u0007"
 omarchy too long|omarchy|"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-route not ours|route|"Parallels;x"
+route not ours|route|"Other;x"
 created odd|created|"$(date)"
 EOF
 
 # Parts: sizes must be plain integers too.
-manifest parts '[{"name": "omacvm-prebuilt-'"$VERSION"'-parallels.tar.zst.part-aa", "size": "1e3", "sha256": "'"$SUM"'"}]'
+manifest parts '[{"name": "omacvm-prebuilt-'"$VERSION"'-app.tar.zst.part-aa", "size": "1e3", "sha256": "'"$SUM"'"}]'
 python3 "$R/src/prebuilt/manifest.py" parts "$M" >/dev/null 2>&1; expect "a part size as a string: refused" 1 $?
 manifest parts '[{"name": "../x", "size": 1, "sha256": "'"$SUM"'"}]'
 python3 "$R/src/prebuilt/manifest.py" parts "$M" >/dev/null 2>&1; expect "a part name with a path: refused" 1 $?
@@ -133,14 +133,14 @@ python3 "$R/src/prebuilt/manifest.py" get "$M" parts >/dev/null 2>&1; expect "ge
 
 # A release list with an odd tag or URL is skipped, not printed.
 cat > "$T/rel.json" <<EOF
-[{"tag_name": "prebuilt-$VERSION x", "assets": [{"name": "omacvm-prebuilt-$VERSION-parallels.json", "browser_download_url": "https://github.com/a/b/c.json"}]},
- {"tag_name": "prebuilt-$VERSION", "assets": [{"name": "omacvm-prebuilt-$VERSION-parallels.json", "browser_download_url": "http://evil/c.json"}]}]
+[{"tag_name": "prebuilt-$VERSION x", "assets": [{"name": "omacvm-prebuilt-$VERSION-app.json", "browser_download_url": "https://github.com/a/b/c.json"}]},
+ {"tag_name": "prebuilt-$VERSION", "assets": [{"name": "omacvm-prebuilt-$VERSION-app.json", "browser_download_url": "http://evil/c.json"}]}]
 EOF
-python3 "$R/src/prebuilt/manifest.py" release "$T/rel.json" "$VERSION" parallels >/dev/null 2>&1
+python3 "$R/src/prebuilt/manifest.py" release "$T/rel.json" "$VERSION" app >/dev/null 2>&1
 expect "odd tags and URLs in the release list: none taken" 1 $?
 
-# The other routes find their images the same way (one regex for all).
-for route in utm fusion app; do
+# The local lookup by route (one regex for all).
+for route in app; do
   touch "$OMACVM_PREBUILT_SOURCE/omacvm-prebuilt-$VERSION-$route.json"
   expect "local lookup: $route" "omacvm-prebuilt-$VERSION-$route.json $VERSION" \
     "$(python3 "$R/src/prebuilt/manifest.py" local "$OMACVM_PREBUILT_SOURCE" "$VERSION" "$route")"
@@ -209,7 +209,7 @@ expect "free space: enough" 0 "$( (PB_SIZE=1000 PB_UNPACKED_KB=1000; prebuilt_sp
 # make-image.sh's manifest carries OMACVM_REVOKED_KEYS like the app's feed (docs/release-keys.md).
 S=$(cat "$T/stranger-key.pub")
 head -c 10 /dev/zero > "$T/part-aa"
-mw() { python3 "$R/src/prebuilt/manifest.py" write "$T/w.json" --route parallels --omacvm "$VERSION" --omarchy 4 --bundle Omarchy.pvm \
+mw() { python3 "$R/src/prebuilt/manifest.py" write "$T/w.json" --route app --omacvm "$VERSION" --omarchy 4 --bundle Omarchy \
   --unpacked 1 --disk-gb 64 --teams '["722686Y34B"]' --next-spare-key "" "$@" "$T/part-aa" >/dev/null 2>&1; }
 mw --revoked-keys "$S $S"
 expect "manifest.py write: revoked_keys, once per key" "[\"$S\"]" "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("revoked_keys")))' "$T/w.json")"

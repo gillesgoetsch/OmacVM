@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 380" width="1000" height="380" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
   <title>Before and after</title>
-  <desc>Left: Parallels full screen leaves a black strip beside the notch and Omarchy's bar takes another row below it. Right: the bar sits beside the notch and the windows use the whole height below.</desc>
+  <desc>Left: a VM app's full screen leaves a black strip beside the notch and Omarchy's bar takes another row below it. Right: the bar sits beside the notch and the windows use the whole height below.</desc>
   <defs>
     <!-- Omarchy bar in Rosé Pine Dawn, 400 wide; clock at the far right -->
     <g id="bar">
@@ -44,7 +44,7 @@
     <path d="M428,10 h8 M432,10 v36 M428,46 h8" stroke="#eb6f92" stroke-width="2.5"/>
     <text x="442" y="33" font-size="13" font-weight="700" fill="#eb6f92">69 pt</text>
   </g>
-  <text x="250" y="348" text-anchor="middle" font-size="15" font-weight="600" fill="#908caa">Parallels</text>
+  <text x="250" y="348" text-anchor="middle" font-size="15" font-weight="600" fill="#908caa">Before</text>
 
   <!-- arrow -->
   <path d="M488,176 h24 m-8,-8 l8,8 l-8,8" stroke="#6e6a86" stroke-width="3" fill="none"/>

@@ -320,7 +320,7 @@ expect "... it runs at login and when 1Password's polkit action appears" \
   "$(grep -h -e '^WantedBy' -e '^PathChanged' "$T/root/etc/systemd/user/omacvm-touchid-apps.service" "$T/root/etc/systemd/user/omacvm-touchid-apps.path" | head -2 | tr '\n' ' ' | sed 's/ $//')"
 D=$T/root/etc/systemd/system/polkit-agent-helper@.service.d/omacvm-touchid.conf
 expect "polkit's helper may reach the Bridge (no env: the default address), nothing else" \
-  "PrivateNetwork=no RestrictAddressFamilies=AF_UNIX AF_INET IPAddressDeny=any IPAddressAllow=10.211.55.2" "$(grep -v '^[#[]' "$D" | tr '\n' ' ' | sed 's/ $//')"
+  "PrivateNetwork=no RestrictAddressFamilies=AF_UNIX AF_INET IPAddressDeny=any IPAddressAllow=10.0.2.2" "$(grep -v '^[#[]' "$D" | tr '\n' ' ' | sed 's/ $//')"
 mkdir -p "$T/root/etc/omacvm"; echo "OMACVM_HOST='10.0.2.2'" > "$T/root/etc/omacvm/env"
 OMACVM_TOUCHID_ROOT=$T/root "$G/touchid.sh" on
 expect "... the Bridge's address from the VM's env" "IPAddressAllow=10.0.2.2" "$(grep IPAddressAllow "$D")"

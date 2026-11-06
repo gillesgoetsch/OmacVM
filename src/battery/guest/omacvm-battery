@@ -7,8 +7,6 @@ so Omarchy's bar, read those). Where the snapshots come from:
 
   OmacVM.app      the virtio port org.omacvm.battery (the app's own bridge);
                   this agent asks once for a fresh one when it starts
-  UTM, Fusion     OmacVM Bridge on the Mac: "battery" events of
-                  `omacvm-bridge events` (GET /battery has the same object)
 
 A snapshot (JSON):
   {"present": true, "percentage": 57, "state": "discharging",
@@ -22,17 +20,12 @@ out. Other keys are ignored. Nothing goes back to the Mac but the refresh
 request.
 
 From try-omarchy (github.com/omacom/try-omarchy), MIT, (c) Try Omarchy
-contributors: guest/native-overlay/usr/local/bin/omarchy-native-battery-bridge,
-with the Bridge as a second source.
+contributors: guest/native-overlay/usr/local/bin/omarchy-native-battery-bridge.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import pwd
-import select
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -41,12 +34,9 @@ from typing import Any
 PORT = Path("/dev/virtio-ports/org.omacvm.battery")
 STATE_FILE = Path("/sys/devices/platform/omacvm-battery/state")
 ENV_FILE = Path("/etc/omacvm/env")
-CLIENT = "/usr/local/share/omacvm/bridge/guest/omacvm-bridge"
 STATES = ("charging", "discharging", "full", "not-charging", "unknown")
 MAX_LINE_BYTES = 4096
 REFRESH_LINE = b'{"type":"refresh","chargeLimit":true,"batteryDetails":true}\n'
-# The Bridge pings every 15 s; nothing for this long: reconnect.
-SILENCE_SECONDS = 45
 # The module's own version (MODULE_VERSION): current_now and power_now go only
 # to 1.1.0 or newer. An older module rejects a line with a word it does not
 # know, whole, and the battery would stay as it was until the next boot.
@@ -64,13 +54,6 @@ DETAIL_FIELDS = {
 
 def log(message: str) -> None:
     print(f"omacvm-battery: {message}", file=sys.stderr, flush=True)
-
-
-def say(said: set[str], message: str) -> None:
-    """Log a message once (until `said` is cleared)."""
-    if message not in said:
-        said.add(message)
-        log(message)
 
 
 def is_int(value: Any) -> bool:
@@ -197,56 +180,6 @@ def env_value(text: str, key: str) -> str:
     return value
 
 
-def from_bridge(feeder: Feeder, said: set[str]) -> int:
-    """UTM and Fusion: the Bridge's event stream, through OmacVM's own client
-    (it checks the Bridge's proof before it sends the token)."""
-    user = env_value(ENV_FILE.read_text(), "OMACVM_USER")
-    try:
-        pw = pwd.getpwnam(user)
-        home = pw.pw_dir
-    except KeyError:
-        say(said, f"no desktop user ({user!r}) in {ENV_FILE}")
-        return 1
-    token = f"{home}/.config/omacvm-bridge/token"
-    if not os.path.isfile(token):
-        say(said, f"no Bridge token yet ({token}; omacvm apply puts it there)")
-        return 1
-    env = dict(os.environ, HOME=home, OMACVM_BRIDGE_TOKEN_FILE=token)
-    # The client runs as the desktop user: it reads the token in the user's
-    # home, where a link must not hand this root daemon a file of the system.
-    as_user = dict(user=pw.pw_uid, group=pw.pw_gid, extra_groups=[], cwd="/") if os.geteuid() == 0 else {}
-    proc = subprocess.Popen([CLIENT, "events"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, **as_user)
-    event, buffer, seen = "", b"", time.monotonic()
-    try:
-        while True:
-            ready, _, _ = select.select([proc.stdout], [], [], 5)
-            if ready:
-                chunk = os.read(proc.stdout.fileno(), 65536)
-                if not chunk:
-                    break
-                seen = time.monotonic()
-                buffer += chunk
-                while b"\n" in buffer:
-                    raw, buffer = buffer.split(b"\n", 1)
-                    raw = raw.rstrip(b"\r")
-                    if raw.startswith(b"event: "):
-                        event = raw[7:].decode(errors="replace")
-                    elif raw.startswith(b"data: ") and event == "battery":
-                        feeder.line(raw[6:])
-                if len(buffer) > 1 << 20:
-                    log("the Bridge sent a line that is too long")
-                    break
-            elif time.monotonic() - seen > SILENCE_SECONDS:
-                say(said, "no word from the Bridge: reconnecting")
-                break
-    finally:
-        proc.kill()
-        _, err = proc.communicate()
-        if err.strip():
-            say(said, err.decode(errors="replace").strip().splitlines()[-1])
-    return 1
-
-
 def main() -> int:
     if not STATE_FILE.exists():
         log("the omacvm-battery module is not loaded")
@@ -267,24 +200,6 @@ def main() -> int:
         except OSError as error:
             log(f"the battery port failed: {error}")
             rc = 1
-    elif vm_type in ("utm", "fusion"):
-        # Right after boot the network (or the token) may not be there yet:
-        # keep trying here, slower each time, instead of exiting and leaving
-        # the service failed until systemd restarts it. Each kind of failure
-        # is logged once until the Bridge answers again.
-        delay, said = 2, set()
-        while True:
-            try:
-                from_bridge(feeder, said)
-            except OSError as error:
-                say(said, f"the Bridge failed: {error}")
-            if feeder.last is not None:   # it was connected: start over fast
-                feeder.gone()
-                feeder.last = None
-                log("the Mac's battery is gone for now")
-                delay, said = 2, set()
-            time.sleep(delay)
-            delay = min(delay * 2, 30)
     else:
         log(f"nothing to do on a {vm_type or 'unknown'} VM")
         return 0

@@ -12,21 +12,16 @@ func check<T: Equatable>(_ got: T, _ want: T, _ what: String, line: Int = #line)
     }
 }
 
-let P = "Parallels Desktop", U = "UTM", F = "VMware Fusion", O = "OmacVM"
+// Owners as the window list names VM apps (any names: the picker only compares them).
+let P = "OmacVM", U = "Other", F = "Third", O = "Fourth"
 func g(_ id: Int, _ owner: String?) -> GuestCandidate { GuestCandidate(id: id, owner: owner) }
 func pick(_ guests: [GuestCandidate], _ owner: String, current: Int?) -> Int? {
     GuestPicker.pick(guests, owner: owner, current: current)
 }
 
-// hello and vmname
-check(GuestPicker.owner(hello: "parallels"), P, "hello parallels")
-check(GuestPicker.owner(hello: "qemu"), U, "hello qemu")
-check(GuestPicker.owner(hello: "vmware"), F, "hello vmware")
-check(GuestPicker.owner(hello: "apple"), nil, "hello apple")
-check(GuestPicker.owner(hello: "unknown"), nil, "hello unknown")
-check(GuestPicker.owner(hello: "parallels more words"), P, "hello with more words")
+// vmname
 check(GuestPicker.vmName(base64: "T21hcmNoeQ=="), "Omarchy", "vmname")
-check(GuestPicker.vmName(base64: Data("OmacVM 2 Parallels".utf8).base64EncodedString()), "OmacVM 2 Parallels", "vmname with spaces")
+check(GuestPicker.vmName(base64: Data("OmacVM 2 Work".utf8).base64EncodedString()), "OmacVM 2 Work", "vmname with spaces")
 check(GuestPicker.vmName(base64: Data("Büro – Omarchy".utf8).base64EncodedString()), "Büro – Omarchy", "vmname UTF-8")
 check(GuestPicker.vmName(base64: ""), nil, "empty vmname")
 check(GuestPicker.vmName(base64: "not base64!"), nil, "bad base64")
@@ -37,22 +32,22 @@ check(GuestPicker.vmName(base64: Data(String(repeating: "x", count: 256).utf8).b
 // One guest: it, when it can run in the window's app.
 check(pick([g(1, P)], P, current: nil), 1, "one guest")
 check(pick([g(1, nil)], U, current: nil), 1, "one old guest (app not said)")
-check(pick([g(1, P)], U, current: 1), nil, "a Parallels guest never serves a UTM window")
-check(pick([g(1, O)], P, current: nil), nil, "an OmacVM.app guest never serves a Parallels window")
+check(pick([g(1, P)], U, current: 1), nil, "a guest of one app never serves another app's window")
+check(pick([g(1, O)], P, current: nil), nil, "...either way")
 
 // Guests of different apps: the window's app decides, both ways.
 let apps = [g(1, P), g(2, U), g(3, O)]
-check(pick(apps, U, current: 1), 2, "UTM window")
-check(pick(apps, P, current: 2), 1, "Parallels window")
-check(pick(apps, O, current: 1), 3, "OmacVM.app window")
-check(pick(apps, F, current: 1), nil, "no guest runs in Fusion")
+check(pick(apps, U, current: 1), 2, "the second app's window")
+check(pick(apps, P, current: 2), 1, "the first app's window")
+check(pick(apps, O, current: 1), 3, "the fourth app's window")
+check(pick(apps, F, current: 1), nil, "no guest runs in the third app")
 
 // Two VMs of one app: the current one stays, else the most recently connected.
 let two = [g(1, P), g(2, P)]
 check(pick(two, P, current: 1), 1, "keeps the current one")
 check(pick(two, P, current: 2), 2, "keeps the other current one")
 check(pick(two, P, current: nil), 2, "nothing served yet: most recently connected")
-check(pick(two + [g(3, U)], P, current: 3), 2, "back from UTM: most recently connected")
+check(pick(two + [g(3, U)], P, current: 3), 2, "back from another app: most recently connected")
 
 // A guest that said the window's app beats one that said nothing.
 check(pick([g(1, nil), g(2, P)], P, current: 1), 2, "unknown app vs the front app")
@@ -124,7 +119,7 @@ check(GuestAuth.proof(token: tok, who: "mac", addr: "127.0.0.1", guestNonce: gn,
       "6fa309bdb8d1e1803b2875f65bb9cf1542cc4d9842c7dc07de5a7f775a954ce6", "Mac's proof")
 check(GuestAuth.proof(token: tok, who: "vm", addr: "127.0.0.1", guestNonce: gn, macNonce: mn),
       "48fcac6736d91efc2fbf44882c689c7bfc2f65bb74498f5b7e58026c292e89f2", "VM's proof")
-check(GuestAuth.proof(token: tok, who: "mac", addr: "10.211.55.2", guestNonce: gn, macNonce: mn)
+check(GuestAuth.proof(token: tok, who: "mac", addr: "192.168.77.1", guestNonce: gn, macNonce: mn)
       != GuestAuth.proof(token: tok, who: "mac", addr: "127.0.0.1", guestNonce: gn, macNonce: mn), true,
       "the address counts")
 check(GuestAuth.nonce().count, 32, "nonce length")

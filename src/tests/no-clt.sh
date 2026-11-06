@@ -135,7 +135,7 @@ S=$T/run/src; mkdir -p "$T/run"; cp -R "$IN" "$S"
 for d in bridge/mac gestures/mac omanotch/mac; do
   printf '#!/bin/bash\necho "%s $*" >> "%s/installs"\n' "$d" "$T" > "$S/$d/install.sh"; chmod +x "$S/$d/install.sh"
 done
-out=$("${NOCLT[@]}" OMACVM_HELPERS="$T/none" "$S/mac/install.sh" --skip-clip --omanotch --quiet 2>&1); rc=$?
+out=$("${NOCLT[@]}" OMACVM_HELPERS="$T/none" "$S/mac/install.sh" --omanotch --quiet 2>&1); rc=$?
 expect "install.sh without the app's helpers: exit 5" 5 "$rc"
 expect "... says the Bridge needs the Command Line Tools" 1 "$(grep -c "^OmacVM Bridge: building it needs Xcode's Command Line Tools" <<<"$out")"
 expect "... and Omanotch" 1 "$(grep -c "^Omanotch: building it needs Xcode's Command Line Tools" <<<"$out")"

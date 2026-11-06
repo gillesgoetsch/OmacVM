@@ -16,6 +16,10 @@
 # updated, not the Mac side either (exit 3); --allow-downgrade puts this
 # version into it on purpose. --kernel: a newer memory-optimized kernel is
 # built without asking (as apply --kernel; otherwise asked in a terminal).
+# A retired Parallels, UTM or VMware Fusion VM (src/lib/retired.sh) is never
+# updated or reached: --vm NAME for one brings only the Mac's helpers up to
+# this OmacVM (so they stop serving it at once), then stops with exit 3 and
+# says so; without --vm each one is named and left as it is.
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -32,11 +36,105 @@ while (( $# )); do
     --yes|-y) APPLY_ARGS+=(--yes); shift ;;
     --allow-downgrade) APPLY_ARGS+=(--allow-downgrade); export OMACVM_ALLOW_DOWNGRADE=1; shift ;;
     --kernel) APPLY_ARGS+=(--kernel); shift ;;
-    -h|--help) sed -n '2,21s/^# \{0,1\}//p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25s/^# \{0,1\}//p' "$0"; exit 0 ;;
     *) echo "omacvm update: unknown option $1 (see --help)" >&2; exit 2 ;;
   esac
 done
 export OMA_KEY=~/.ssh/omacvm
+# A retired VM (--vm NAME): OLD is its app. Nothing reaches the VM.
+old=""
+if [[ -n $VM ]]; then
+  list=$(vms_list)
+  if [[ -n $TYPE ]] && route_retired "$TYPE"; then
+    old=$(awk -F'\t' -v n="$VM" -v t="$TYPE" '$1 == n && $2 == t { print $2; exit }' <<<"$list")
+    [[ -n $old ]] || { echo "omacvm update: no $(retired_name "$TYPE") VM of OmacVM's named '$VM'" >&2; exit 2; }
+  elif [[ -z $TYPE ]] && ! awk -F'\t' -v n="$VM" '$1 == n && $2 == "app" { f = 1 } END { exit !f }' <<<"$list"; then
+    old=$(awk -F'\t' -v n="$VM" '$1 == n && $3 == "retired" { print $2; exit }' <<<"$list")
+  fi
+fi
+
+# ---------- a VM with a newer OmacVM ----------
+# Each VM gets this omacvm's OmacVM (apply), and the Mac its helpers: never an
+# older one over a newer one by mistake (#233). Asked before anything changes,
+# of the VMs this run updates: the running ones OmacVM set up from this Mac,
+# or --vm NAME (stopped: an OmacVM.app VM's folder says its version; another
+# one is asked by apply once it runs). NEWER: the names.
+newer_vms() {   # VM TYPE (VM empty: the running ones)
+  local name type state v d ip p
+  now=$(cat "$R/src/VERSION"); newer=()
+  while IFS=$'\t' read -r name type state _; do
+    [[ -n $name ]] || continue
+    if [[ -n $1 ]]; then
+      [[ $name == "$1" && ( -z $2 || $type == "$2" ) ]] || continue
+    else
+      [[ $state == running ]] || continue
+    fi
+    v=""
+    if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""; fi
+    if [[ $state == running ]] && ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null); then
+      vm_pin "$name" "$type"
+      [[ -n $1 || -s $OMA_PIN ]] || continue
+      p=$(vm_probe "$ip" | sed -n 's/^OMACVM_VERSION=//p') && [[ -n $p ]] && v=$p
+    fi
+    if [[ -n $v ]] && omacvm_downgrade update "'$name'" "$v" "$now"; then newer+=("$name"); fi
+  done < <(vms_list)
+  (( ${#newer[@]} == 0 ))
+}
+newer_stop() {
+  failed_part "" "$(printf '%s, ' "${newer[@]}" | sed 's/, $//') has a newer OmacVM than this omacvm ($now): nothing was updated" mac
+  exit 3
+}
+
+# ---------- the Mac ----------
+# A helper that does not build keeps its last build running; the VMs still
+# get this OmacVM (a VM left older than the Mac could not switch features
+# until it is updated), and the run ends failed, naming the helper.
+mac_side() {
+  local args=() mrc=0 h MAC_FAILED
+  launchctl print "gui/$(id -u)/$(omacvm_label bridge)" >/dev/null 2>&1 || args+=(--no-bridge)
+  if launchctl print "gui/$(id -u)/$(omacvm_label gestures)" 2>/dev/null | grep -q -- --keys-only; then args+=(--keys-only)
+  elif ! launchctl print "gui/$(id -u)/$(omacvm_label gestures)" >/dev/null 2>&1; then args+=(--skip-gestures); fi
+  launchctl print "gui/$(id -u)/$(omacvm_label omanotch)" >/dev/null 2>&1 && args+=(--omanotch)
+  step mac "the Mac side"
+  log "OmacVM on the Mac"
+  MAC_FAILED=$(mktemp -t omacvm-mac); mac_failed=()
+  OMACVM_MAC_FAILED_FILE=$MAC_FAILED "$R/src/mac/install.sh" ${args[@]+"${args[@]}"} || mrc=$?
+  if (( mrc == 5 )); then
+    while IFS= read -r h; do [[ -n $h ]] && mac_failed+=("$h"); done < "$MAC_FAILED"
+  elif (( mrc )); then
+    mac_failed+=("the Mac side")
+  fi
+  rm -f "$MAC_FAILED"
+}
+mac_failure() {   # the failed line for the control centre, last (it shows the last one)
+  (( ${#mac_failed[@]} )) || return 0
+  local what
+  what="$(printf '%s, ' "${mac_failed[@]}" | sed 's/, $//') did not build on the Mac"
+  [[ ${mac_failed[0]} == "the Mac side" ]] && what="the Mac side did not install"
+  failed_part "$(mac_helper_feature "${mac_failed[0]}")" "$what" mac
+  echo "omacvm update: $what (see above; what was installed before keeps running). omacvm update tries again" >&2
+}
+
+# ---------- a retired VM ----------
+# Never updated or reached. The Mac's helpers come up to this OmacVM all the
+# same (not the checkout, the app or any VM): an update job from that VM's
+# control centre, run by a 3.3 Bridge once its checkout moved here, leaves
+# 3.4's helpers running, which answer that VM with the move text only. Without
+# that the 3.3 helpers kept serving it, and the 3.3 Bridge, no longer finding
+# it in this omacvm's list, ran omacvm vms again whenever it asked.
+if [[ -n $old ]]; then
+  OMA_STEPS=1; more=""; served=""
+  if ! newer_vms "" ""; then
+    info "$(printf '%s, ' "${newer[@]}" | sed 's/, $//') has a newer OmacVM than this omacvm ($now): the Mac's helpers were left as they are"
+  else
+    mac_side
+    if (( ${#mac_failed[@]} )); then mac_failure
+    else more="This Mac's helpers were updated and no longer serve it."; served=", the Mac's helpers no longer serve it"; fi
+  fi
+  failed_part "" "'$VM' is a $(retired_name "$old") VM: OmacVM $RETIRED_IN retired that route; the VM was not changed$served. Move to OmacVM.app" mac
+  retired_stop "$VM" "$old" "$more"
+fi
+
 # Steps for the control centre's progress (one VM: its apply's three follow).
 OMA_STEPS=$(( ${#COMMIT} ? 3 : 2 ))
 [[ -n $VM ]] && OMA_STEPS=$((OMA_STEPS + 3))
@@ -80,62 +178,9 @@ elif [[ -z $COMMIT ]] && (( PULL )) && git -C "$R" rev-parse --abbrev-ref '@{u}'
   fi
 fi
 
-# ---------- a VM with a newer OmacVM ----------
-# Each VM gets this omacvm's OmacVM (apply), and the Mac its helpers: never an
-# older one over a newer one by mistake (#233). Asked before anything changes,
-# of the VMs this run updates: the running ones OmacVM set up from this Mac,
-# or --vm NAME (stopped: an OmacVM.app VM's folder says its version; another
-# one is asked by apply once it runs).
-now=$(cat "$R/src/VERSION"); newer=()
-while IFS=$'\t' read -r name type state _; do
-  [[ -n $name ]] || continue
-  if [[ -n $VM ]]; then
-    [[ $name == "$VM" && ( -z $TYPE || $type == "$TYPE" ) ]] || continue
-  else
-    [[ $state == running ]] || continue
-  fi
-  v=""
-  if [[ $type == app ]] && d=$(app_dir "$name" 2>/dev/null); then v=$(head -n1 "$d/omacvm-version" 2>/dev/null) || v=""; fi
-  if [[ $state == running ]] && ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null); then
-    vm_pin "$name" "$type"
-    [[ -n $VM || -s $OMA_PIN ]] || vm_marked "$name" "$type" || continue
-    p=$(vm_probe "$ip" | sed -n 's/^OMACVM_VERSION=//p') && [[ -n $p ]] && v=$p
-  fi
-  if [[ -n $v ]] && omacvm_downgrade update "'$name'" "$v" "$now"; then newer+=("$name"); fi
-done < <(vms_list)
-if (( ${#newer[@]} )); then
-  failed_part "" "$(printf '%s, ' "${newer[@]}" | sed 's/, $//') has a newer OmacVM than this omacvm ($now): nothing was updated" mac
-  exit 3
-fi
-
-# ---------- the Mac ----------
-args=()
-launchctl print "gui/$(id -u)/$(omacvm_label bridge)" >/dev/null 2>&1 || args+=(--no-bridge)
-if launchctl print "gui/$(id -u)/$(omacvm_label gestures)" 2>/dev/null | grep -q -- --keys-only; then args+=(--keys-only)
-elif ! launchctl print "gui/$(id -u)/$(omacvm_label gestures)" >/dev/null 2>&1; then args+=(--skip-gestures); fi
-launchctl print "gui/$(id -u)/$(omacvm_label clip-in)" >/dev/null 2>&1 || args+=(--skip-clip)
-launchctl print "gui/$(id -u)/$(omacvm_label omanotch)" >/dev/null 2>&1 && args+=(--omanotch)
-step mac "the Mac side"
-log "OmacVM on the Mac"
-# A helper that does not build keeps its last build running; the VMs still
-# get this OmacVM (a VM left older than the Mac could not switch features
-# until it is updated), and the run ends failed, naming the helper.
-MAC_FAILED=$(mktemp -t omacvm-mac); mac_failed=()
-mrc=0; OMACVM_MAC_FAILED_FILE=$MAC_FAILED "$R/src/mac/install.sh" ${args[@]+"${args[@]}"} || mrc=$?
-if (( mrc == 5 )); then
-  while IFS= read -r h; do [[ -n $h ]] && mac_failed+=("$h"); done < "$MAC_FAILED"
-elif (( mrc )); then
-  mac_failed+=("the Mac side")
-fi
-rm -f "$MAC_FAILED"
-mac_failure() {   # the failed line for the control centre, last (it shows the last one)
-  (( ${#mac_failed[@]} )) || return 0
-  local what
-  what="$(printf '%s, ' "${mac_failed[@]}" | sed 's/, $//') did not build on the Mac"
-  [[ ${mac_failed[0]} == "the Mac side" ]] && what="the Mac side did not install"
-  failed_part "$(mac_helper_feature "${mac_failed[0]}")" "$what" mac
-  echo "omacvm update: $what (see above; what was installed before keeps running). omacvm update tries again" >&2
-}
+# ---------- a VM with a newer OmacVM, then the Mac ----------
+newer_vms "$VM" "$TYPE" || newer_stop
+mac_side
 
 # ---------- OmacVM.app ----------
 step app "OmacVM.app"
@@ -169,10 +214,10 @@ if [[ -n $VM ]]; then
   if (( rc == 0 && ${#mac_failed[@]} )); then mac_failure; exit 1; fi
   exit $rc
 fi
-done_any=0; stopped=(); unanswered=(); failed=()
+done_any=0; stopped=(); retired=(); failed=()
 while IFS=$'\t' read -r name type state _; do
   [[ -n $name ]] || continue
-  if [[ $state == unknown ]]; then unanswered+=("$name"); continue; fi
+  if [[ $state == retired ]]; then retired+=("'$name' ($(retired_name "$type"))"); continue; fi
   if [[ $state != running ]]; then stopped+=("$name"); continue; fi
   ip=$(vm_find_ip "$name" "$type" 3 2>/dev/null) || continue
   vm_pin "$name" "$type"
@@ -187,7 +232,7 @@ while IFS=$'\t' read -r name type state _; do
   fi
   rm -f "$perr"
   [[ -n $v ]] || continue
-  if [[ ! -s $OMA_PIN ]] && ! vm_marked "$name" "$type"; then
+  if [[ ! -s $OMA_PIN ]]; then
     info "VM '$name' says it has OmacVM $v, but OmacVM has not set it up from this Mac yet: omacvm update --vm $(printf %q "$name")"
     continue
   fi
@@ -200,7 +245,12 @@ if (( ${#stopped[@]} )); then
   info "not running, so not updated: $(printf '%s, ' "${stopped[@]}" | sed 's/, $//')"
   info "start one and run: omacvm update --vm NAME"
 fi
-(( ${#unanswered[@]} )) && info "not updated: $(printf '%s, ' "${unanswered[@]}" | sed 's/, $//'): $UTM_NO_ANSWER"
+if (( ${#retired[@]} )); then
+  for r in "${retired[@]}"; do info "$r: retired in OmacVM $RETIRED_IN, not updated; nothing in it was changed"; done
+  info "Those retired VMs keep running with their OmacVM 3.3; OmacVM no longer updates, repairs or switches anything in them."
+  info "The Mac's helpers from $RETIRED_IN no longer serve them: no Bridge bar items (Wi-Fi, Bluetooth, audio), media keys, wallpaper or time zone, no gestures or scroll momentum, no Omanotch, no camera and battery (UTM, VMware Fusion); Touch ID asks for the password, the control centre shows how to move. The VM app's own features keep working."
+  info "Move to OmacVM.app: omacvm build makes a new VM, then copy your files over ($RETIRED_URL)"
+fi
 (( ${failed_app:-0} )) && failed+=("OmacVM.app")
 (( ${#mac_failed[@]} )) && { mac_failure; failed+=("the Mac side"); }
 if (( ${#failed[@]} )); then

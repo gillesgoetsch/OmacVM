@@ -1,6 +1,6 @@
 ---
 name: omacvm
-description: Set up, change, update or troubleshoot OmacVM (Omarchy in a Parallels, UTM or VMware Fusion VM on an Apple Silicon Mac) with the omacvm command. Use when someone wants an Omarchy VM built, its CPUs or memory changed, a feature switched (macOS-native scroll momentum, trackpad gestures, Bridge, Omanotch, wallpaper, idle lock, autologin, memory-optimized kernel), OmacVM added to an existing Omarchy VM, updated, or checked.
+description: Set up, change, update or troubleshoot OmacVM (Omarchy in an OmacVM.app VM on an Apple Silicon Mac) with the omacvm command. Use when someone wants an Omarchy VM built, its CPUs or memory changed, a feature switched (macOS-native scroll momentum, trackpad gestures, Bridge, Omanotch, wallpaper, idle lock, autologin, memory-optimized kernel), OmacVM added to an existing Omarchy VM, updated, or checked.
 ---
 
 # OmacVM
@@ -15,20 +15,17 @@ sections 7-8 before fixing anything by hand.
   Exit codes: 0 done, 1 failed, 2 usage (the message names what is missing),
   3 needs a person (the message says what).
 - Only the person can: choose their Omarchy password, grant macOS permissions
-  (Location Services, Accessibility, Input Monitoring), set Parallels' "Send
-  macOS system shortcuts: Always", install Parallels, UTM 5 or VMware Fusion. Hand these over
+  (Location Services, Accessibility, Input Monitoring). Hand these over
   (`needs_human` in the JSON); never work around them, never invent a password.
 - macOS-native scroll momentum (`scroll-momentum`) is experimental and off by default: offer it, let the person decide.
-- A build takes 30-70 minutes (OmacVM.app 10-30, Fusion 45-85, `minutes` in the plan): run it in the background and follow its output.
+- A build takes 10-30 minutes (`minutes` in the plan): run it in the background and follow its output.
 - Do not edit `/usr/share/omarchy` or the user's macOS Spaces; do not put
   personal data into this repository.
 
 ## New VM
 
-1. `./omacvm vms --json` (a UTM VM with `"state": "unknown"`: UTM does not
-   take orders from this terminal; over SSH it never does, so UTM VMs are
-   driven from a terminal app on the Mac that may control UTM); then
-   `./omacvm build --plan --json --vm-type parallels|utm|fusion [--vm-name NAME] [--feature scroll-momentum=on]`.
+1. `./omacvm vms --json`; then
+   `./omacvm build --plan --json --vm-type app [--vm-name NAME] [--feature scroll-momentum=on]`.
 2. Show the plan (resources, features, `needs_human`), ask for the password
    and for changes.
 3. Run the plan's `command` with `OMACVM_PASSWORD` set.
@@ -45,11 +42,13 @@ sections 7-8 before fixing anything by hand.
   a stopped VM only when it is named with --vm.
 - CPUs and memory: `./omacvm resources --vm NAME --json` (what it has, the
   limits, the tiers), then `./omacvm resources --vm NAME --resources TIER`
-  or `--cpus N --memory-gb N`. Parallels, UTM and Fusion VMs must be stopped
-  (exit 3: the person shuts it down); a change applies on the next start. A
-  name in two apps: add `--vm-type`. A `warning` (memory above the Mac's
+  or `--cpus N --memory-gb N`; a change applies on the next start. A `warning` (memory above the Mac's
   Best tier) goes to the person as it is; their setting stays theirs.
 - Omarchy installed by hand: `./omacvm apply --vm NAME`; exit 3 prints one
   command for the person to run in the VM's terminal, then apply again.
 - Update: `./omacvm update` (or `--vm NAME`).
+- A retired Parallels, UTM or VMware Fusion VM (`"retired": true` in `vms
+  --json`): commands on it exit 3 (`"error": "route-retired"`). Offer the move:
+  `omacvm build`, then copy files over. Never add those routes back without the
+  owner's explicit consent.
 - Problems: `./omacvm check --vm NAME --json`, then `AGENTS.md` section 7.

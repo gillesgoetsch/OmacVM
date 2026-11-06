@@ -249,7 +249,7 @@ rm -rf "$HB"
 # /usr/bin/python3 and swift only ask to install the tools.
 log "Mac tools and python3"
 mkdir -p "$C/Resources/tools"
-for t in display/mac-notch display/mac-display clock/mac-clock lib/mac-free-gb; do
+for t in display/mac-notch clock/mac-clock lib/mac-free-gb; do
   xcrun swiftc -O -swift-version 5 -target arm64-apple-macos14.0 -o "$C/Resources/tools/${t#*/}" \
     "$C/Resources/omacvm/src/$t.swift" || { echo "${t#*/}.swift did not build" >&2; exit 1; }
 done

@@ -164,7 +164,7 @@ def main(a):
         except (ValueError, OSError) as e:
             sys.exit("manifest.py: %s: %s" % (a[2], e))
         # The names become file paths on the Mac: only our own part names.
-        ok = re.compile(r"^omacvm-prebuilt-[0-9]+\.[0-9]+\.[0-9]+-(parallels|utm|fusion|app)\.tar\.zst\.part-[a-z]{2,4}$")
+        ok = re.compile(r"^omacvm-prebuilt-[0-9]+\.[0-9]+\.[0-9]+-app\.tar\.zst\.part-[a-z]{2,4}$")
         for p in m["parts"]:
             size = p.get("size")
             if (not ok.match(str(p.get("name"))) or not re.fullmatch(r"[0-9a-f]{64}", str(p.get("sha256")))

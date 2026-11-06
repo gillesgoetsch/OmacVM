@@ -28,21 +28,20 @@ mkdir -p "$T/home"
 expect "another HOME: test labels" "$TEST" "$(labels "$T/home" "")"
 expect "the test identity in the own HOME: test labels" "$TEST" "$(labels "$own" 1)"
 
-# The clipboard helper (the one seen under the production label, 2026-10-08)
-# installed and removed with another HOME: launchctl only ever hears the test label.
-mkdir -p "$T/bin"
+# The retired clipboard helper (the one seen under the production label,
+# 2026-10-08): uninstall.sh's lines for it, run alone with another HOME (the
+# whole uninstall would reset real permissions): launchctl only hears the test label.
+mkdir -p "$T/bin" "$T/home/Library/LaunchAgents"
 printf '#!/bin/bash\necho "$*" >> "%s/launchctl.log"\n' "$T" > "$T/bin/launchctl"; chmod +x "$T/bin/launchctl"
-HOME=$T/home PATH="$T/bin:$PATH" OMACVM_TEST_IDENTITY="" "$R/src/clipboard/mac/install.sh" > /dev/null
-HOME=$T/home PATH="$T/bin:$PATH" OMACVM_TEST_IDENTITY="" "$R/src/clipboard/mac/uninstall.sh" > /dev/null
-expect "clipboard, another HOME: launchctl calls" \
-  "bootout gui/$(id -u)/org.omacvm.test.clip-in|bootstrap gui/$(id -u) $T/home/Library/LaunchAgents/org.omacvm.test.clip-in.plist|bootout gui/$(id -u)/org.omacvm.test.clip-in" \
-  "$(paste -sd'|' "$T/launchctl.log")"
+sed -n '/^# The clipboard helper of the retired/,/omacvm-clip-in"$/p' "$R/src/mac/uninstall.sh" > "$T/clip.sh"
+HOME=$T/home PATH="$T/bin:$PATH" OMACVM_TEST_IDENTITY="" R="$R/src" bash "$T/clip.sh"
+expect "clipboard, another HOME: launchctl calls" "bootout gui/$(id -u)/org.omacvm.test.clip-in" "$(paste -sd'|' "$T/launchctl.log")"
 expect "clipboard, another HOME: no production label anywhere" 0 "$(grep -c 'org\.omacvm\.clip-in' "$T/launchctl.log")"
 
 # Every script that loads, removes or asks about a helper's LaunchAgent takes
 # its label from omacvm_label, none spells a production one out.
 cd "$R/src"
 hard=$(grep -nE '^LABEL=(org\.omacvm\.(bridge|gestures|clip-in)|ch\.gillesgoetsch\.omanotch)|gui/\$\(id -u\)/(org\.omacvm\.(bridge|gestures|clip-in)|ch\.gillesgoetsch\.omanotch)|install_app "[^"]*" (org\.omacvm|ch\.gillesgoetsch)|running (org\.omacvm|ch\.gillesgoetsch)' \
-  bridge/mac/*.sh gestures/mac/*.sh clipboard/mac/*.sh omanotch/mac/*.sh mac/*.sh cmd/*.sh lib/*.sh)
+  bridge/mac/*.sh gestures/mac/*.sh omanotch/mac/*.sh mac/*.sh cmd/*.sh lib/*.sh)
 expect "no production label spelled out" "" "$hard"
 exit $fail

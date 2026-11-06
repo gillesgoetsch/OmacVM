@@ -2,7 +2,6 @@
 # the terminal directly, so build.sh's own output can be piped or logged.
 
 TTY=/dev/tty
-README_ROUTES="https://github.com/gillesgoetsch/omacvm#four-ways-parallels-utm-vmware-fusion-or-omacvmapp"
 
 say() { printf '%s\n' "$*"; }
 hd() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -98,11 +97,9 @@ tier_info() { tier_values "$1"; printf '%s CPUs, %s GB memory' "$T_CPUS" "$T_MEM
 
 # mem_warning TYPE MEMORY_MB VM [GRAPHICS_PEAK_MB]: what a VM memory above this
 # Mac's Best tier means, one line (nothing at or below it). As OmacVM.app's
-# warning (ResourceLimits.warning): OmacVM.app and UTM take the VM's graphics
-# from the Mac on top of its memory (UTM with no limit; OmacVM.app's last run
-# peaked at GRAPHICS_PEAK_MB, from logs/gpu-memory); VMware Fusion takes its
-# graphics memory out of the VM's, Parallels does not say: no graphics words.
-# Only says so: the setting stays the person's.
+# warning (ResourceLimits.warning): OmacVM.app takes the VM's graphics from the
+# Mac on top of its memory (its last run peaked at GRAPHICS_PEAK_MB, from
+# logs/gpu-memory). Only says so: the setting stays the person's.
 mem_warning() {
   local best mem peak=""
   best=$(tier_best_mem)
@@ -113,123 +110,9 @@ mem_warning() {
   fi
   case $1 in
     app) printf '%s' "$mem and the VM's graphics on top$peak leave macOS too little of this Mac's $mac_mem_gb GB: the Mac can slow down or swap, and apps in the VM can lose their graphics." ;;
-    utm) printf '%s' "$mem and the VM's graphics on top (UTM sets them no limit) leave macOS too little of this Mac's $mac_mem_gb GB: the Mac can slow down or swap." ;;
     *) printf '%s' "$mem leaves macOS too little of this Mac's $mac_mem_gb GB: the Mac can slow down or swap." ;;
   esac
   printf ' %s GB is this Mac'"'"'s Best tier: omacvm resources --vm "%s" --resources best\n' "$best" "$3"
-}
-
-# ---------- the apps ----------
-# Parallels' own licence limits per VM: sets P_EDITION, P_TRIAL, P_STATUS,
-# CAP_CPUS, CAP_MEM_GB. Status 0: read; 1: Parallels does not answer (not set up
-# yet); 2: it answers, but reports no active licence with limits; 3: "No license
-# installed", a fresh install: Parallels starts its trial (or asks to sign in)
-# when the first VM starts, so the build can go ahead.
-parallels_limits() {
-  local info c m
-  info=$(prlsrvctl info --license 2>/dev/null) || return 1
-  grep -q "No license installed" <<<"$info" && { P_STATUS="no licence yet"; return 3; }
-  P_EDITION=$(sed -n 's/.*edition="\([^"]*\)".*/\1/p' <<<"$info")
-  P_TRIAL=$(sed -n 's/.*is_trial="\([^"]*\)".*/\1/p' <<<"$info")
-  P_STATUS=$(sed -n 's/.*status="\([^"]*\)".*/\1/p' <<<"$info")
-  c=$(sed -n 's/.*cpu_total=\([0-9]*\).*/\1/p' <<<"$info")
-  m=$(sed -n 's/.*max_memory=\([0-9]*\).*/\1/p' <<<"$info")
-  [[ -n $P_EDITION && -n $c && -n $m ]] || return 2
-  CAP_CPUS=$c; CAP_MEM_GB=$(( m / 1024 ))
-}
-
-# Standard's per-VM limits: always within what any edition allows.
-parallels_standard_limits() { P_EDITION=standard; P_TRIAL=""; CAP_CPUS=4; CAP_MEM_GB=8; }
-
-# No licence yet (a fresh install): the edition the user plans on, standard or
-# pro (the trial is Pro). P_PLANNED=1 marks the limits as planned, not read.
-parallels_planned_limits() {
-  if [[ $1 == pro ]]; then P_EDITION=pro; P_TRIAL=""; CAP_CPUS=32; CAP_MEM_GB=128
-  else parallels_standard_limits; fi
-  P_PLANNED=1
-}
-
-utm_major() { defaults read /Applications/UTM.app/Contents/Info CFBundleShortVersionString 2>/dev/null | cut -d. -f1; }
-
-# wait_for_app parallels|utm|fusion: until the app is there (and usable), or the user quits.
-wait_for_app() {
-  local a
-  while :; do
-    case $1 in
-      parallels)
-        local rc=1
-        if [[ -x $PRLCTL ]]; then parallels_limits && return 0; rc=$?; fi
-        if [[ -x $PRLCTL && $rc == 3 ]]; then
-          hd "Parallels Desktop has no licence yet"
-          say "    That is fine: it starts its free trial (Pro) or asks you to sign in when the"
-          say "    build starts the VM; click through it then. Until a licence is active it does"
-          say "    not say how much a VM may use."
-          local e
-          ui_select e "Which edition will you use?" 0 \
-            "Standard|4 CPUs, 8 GB per VM" \
-            "Pro or the trial|up to 32 CPUs, 128 GB per VM (if the trial ends in Standard: 4 CPUs / 8 GB in the VM's settings)" \
-            "Check the licence again|after starting the trial or signing in"
-          case $e in
-            0) parallels_planned_limits standard; return 0 ;;
-            1) parallels_planned_limits pro; return 0 ;;
-          esac
-          continue
-        elif [[ -x $PRLCTL && $rc == 2 ]]; then
-          hd "Parallels Desktop has no active licence yet (it reports: ${P_STATUS:-no status}${P_EDITION:+, $P_EDITION})"
-          say "    In Parallels Desktop, start the trial or sign in with your Parallels account,"
-          say "    then press Return here."
-          say "    Or type s to go on with Parallels Standard's limits (4 CPUs, 8 GB per VM),"
-          say "    which every edition allows."
-          read -r -p "  Return to check again, s to go on, q to quit: " a < "$TTY" || die "no answer (no terminal?)"
-          case $a in
-            q) exit 1 ;;
-            s) parallels_standard_limits; return 0 ;;
-          esac
-          continue
-        elif [[ -x $PRLCTL ]]; then
-          hd "Parallels Desktop is installed but not set up yet"
-          say "    Open Parallels Desktop once and sign in or start the trial."
-        else
-          hd "Parallels Desktop is not installed"
-          say "    Download: https://www.parallels.com/products/desktop/"
-          say "    or:       brew install --cask parallels"
-          say "    Install it, open it once and sign in or start the trial."
-        fi ;;
-      utm)
-        if [[ -x $UTMCTL ]] && (( $(utm_major || echo 0) >= 5 )); then return 0; fi
-        utm_install_help ;;
-      fusion)
-        have_fusion && return 0
-        hd "VMware Fusion is not installed"
-        fusion_install_help
-        say "    Then open it once." ;;
-    esac
-    read -r -p "  Press Return to check again, or q to quit: " a < "$TTY" || die "no answer (no terminal?)"
-    [[ $a == q ]] && exit 1
-  done
-}
-
-# How to get UTM 5. It is still a beta: UTM's website, the App Store and
-# Homebrew's plain "utm" cask all give 4.7, whose GPU path leaves Linux apps
-# black (ggalancs/omarchy-arm-utm#7).
-utm_install_help() {
-  local v; v=$(defaults read /Applications/UTM.app/Contents/Info CFBundleShortVersionString 2>/dev/null || true)
-  if [[ -n $v ]]; then hd "UTM $v is installed, but OmacVM needs UTM 5"
-  else hd "UTM 5 is not installed"; fi
-  say "    UTM 5 is still a beta, and it is the first UTM whose GPU acceleration draws"
-  say "    Linux apps (on 4.7 they stay black). UTM's website, the App Store and"
-  say "    \"brew install --cask utm\" give 4.7. Install the beta (tested: 5.0.6):"
-  if [[ -n $v ]] && brew list --cask utm >/dev/null 2>&1; then
-    say "      brew uninstall --cask utm && brew install --cask utm@beta"
-  elif [[ -n $v ]]; then
-    say "      quit UTM, move /Applications/UTM.app to the Trash (your VMs stay), then"
-    say "      brew install --cask utm@beta"
-  else
-    say "      brew install --cask utm@beta"
-  fi
-  say "    or download UTM.dmg from the newest \"Beta\" release:"
-  say "      https://github.com/utmapp/UTM/releases"
-  say "    Then open UTM once."
 }
 
 # omarchy-mac's published package lane: stable once it exists, else rc.

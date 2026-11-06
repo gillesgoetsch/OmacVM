@@ -1,8 +1,8 @@
 #!/bin/bash
-# mpv.sh (as root, in an OmacVM.app or UTM VM): mpv's defaults for the VM, in a
+# mpv.sh (as root, in an OmacVM.app VM): mpv's defaults for the VM, in a
 # marked block of the system-wide mpv.conf. mpv reads the user's
 # ~/.config/mpv/mpv.conf after it, so a vo or gpu-api line there wins.
-# - vo=gpu in every app and UTM VM (both draw OpenGL with virgl, with the same
+# - vo=gpu in every app VM (it draws OpenGL with virgl, with the same
 #   Mesa and mpv). mpv's default output, gpu-next, leaks a GL fence per
 #   frame on OpenGL: mpv presents through its own swap_buffers, and libplacebo
 #   frees its frame fences only in pl_swapchain_swap_buffers, which mpv never

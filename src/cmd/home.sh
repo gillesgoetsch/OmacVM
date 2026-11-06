@@ -14,12 +14,17 @@ fi
 export OMA_KEY=~/.ssh/omacvm
 printf '\n\033[1mOmacVM %s\033[0m: Omarchy in a VM on your Mac, feeling native.\n' "$(cat "$R/src/VERSION")"
 
-app_name() { case $1 in parallels) echo Parallels ;; utm) echo UTM ;; fusion) echo Fusion ;; app) echo OmacVM.app ;; esac; }
+app_name() { case $1 in app) echo OmacVM.app ;; *) retired_name "$1" ;; esac; }
 
 # The VMs, with OmacVM's state for the running ones.
 NAMES=(); TYPES=(); STATES=(); KIND=()   # KIND: omacvm | plain | locked | stopped
 while IFS=$'\t' read -r name type state _; do
   [[ -n $name ]] || continue
+  # Retired (src/lib/retired.sh): named, never offered.
+  if [[ $state == retired ]]; then
+    printf '    %-24s %-10s %s\n' "$name" "$(app_name "$type")" "retired in OmacVM $RETIRED_IN: move to OmacVM.app ($RETIRED_URL)" > "$TTY"
+    continue
+  fi
   kind=stopped; v=""
   if [[ $state == running ]]; then
     kind=locked
@@ -34,7 +39,7 @@ while IFS=$'\t' read -r name type state _; do
     omacvm) what="OmacVM $v" ;;
     plain) what="Omarchy without OmacVM" ;;
     locked) what="running, OmacVM cannot get in yet" ;;
-    *) [[ $state == unknown ]] && what=$UTM_NO_ANSWER || what=${state:-stopped} ;;   # stopped, suspended, paused, ...
+    *) what=${state:-stopped} ;;
   esac
   printf '    %-24s %-10s %s\n' "$name" "$(app_name "$type")" "$what" > "$TTY"
 done < <(vms_list)

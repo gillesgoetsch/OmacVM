@@ -1,7 +1,7 @@
-// omacvm-gestures (Mac side): gives the Omarchy VM in Parallels the Mac trackpad's
-// multi-finger gestures.
+// omacvm-gestures (Mac side): gives the Omarchy VM in OmacVM.app the Mac
+// trackpad's multi-finger gestures.
 //
-// While Parallels or UTM is the frontmost app and its VM window covers a whole display
+// While an OmacVM.app VM is the frontmost app and its window covers a whole display
 // ("capture mode"):
 //   * macOS trackpad gesture events (Spaces / Mission Control swipes, pinch,
 //     rotate, smart zoom) are dropped by an event tap, so macOS reacts to none
@@ -9,12 +9,10 @@
 //   * raw finger contacts from the built-in trackpad (MultitouchSupport) are
 //     sent to the guest daemon, which replays them on a virtual touchpad:
 //     every frame with 3+ fingers, and 2-finger frames once they are a pinch;
-//   * one-finger movement, clicks and two-finger scrolling stay on Parallels'
+//   * one-finger movement, clicks and two-finger scrolling stay on the app's
 //     own path (absolute pointer, native smooth scrolling), unless the VM
 //     uses Glide (below).
-// While the VM is full screen, the macOS pointer is hidden wherever the VM window
-// is what lies under it (the guest draws its own pointer); over anything else
-// (the Omanotch strip, the Dock, menus, another display) it shows.
+// The app's QEMU hides the macOS pointer over the VM itself.
 // A Magic Mouse (any number, also one connected later) while capturing: two
 // fingers sliding sideways swipe Omarchy's workspaces (four virtual fingers on
 // the guest's touchpad, or three with MouseSwipeFingers 3, as the trackpad's
@@ -43,13 +41,13 @@
 // smooth-scrolling mice, a Magic Mouse) still scrolls through the VM app,
 // one to one: decided per event by whether a trackpad's fingers made it
 // (scroll-model.h).
-// --keys-only: no trackpad for any VM (macOS keeps every gesture); on UTM, Cmd
-// still reaches the guest as Super (below). --record: the built-in trackpad's
+// --keys-only: no trackpad for any VM (macOS keeps every gesture); Cmd still
+// reaches the guest as Super where the app does not take it (below). --record: the built-in trackpad's
 // frames and macOS's scroll events to ~/Library/Logs/omacvm-input.tsv (Glide
 // diagnostics, see docs/experiments/scroll-analysis).
 //
-// Protocol (TCP, the guest connects to the Mac on port 47830: 10.211.55.2 on
-// Parallels, 192.168.64.1 on UTM, .1 of Fusion's NAT network), one line per message:
+// Protocol (TCP, the guest connects to the Mac on port 47830: 10.0.2.2, the
+// Mac's 127.0.0.1, or 192.168.77.1 on the fast network), one line per message:
 //   F <n> [<id> <x> <y> <size>]...   x/y 0..1 with y down, size >= 0
 //   S <on|off|esc> [<keys>]           capture state changes; after esc the combo pressed:
 //                                     ctrl-opt, or ctrl-opt-cmd (the old one, through 3.0.x).
@@ -60,7 +58,8 @@
 //   A <dx> <dy>                       Glide: macOS's scroll while the fingers touch (points)
 //   W <dx> <dy>                       Glide: macOS's momentum after a trackpad's fingers lifted (points)
 //   P                                 Glide: macOS recognized a pinch (magnify)
-//   K <code> <0|1|2>                  UTM: a Cmd shortcut as Super+key (Linux keycode)
+//   K <code> <0|1|2>                  a Cmd shortcut as Super+key (Linux keycode; OmacVM.app
+//                                     without Accessibility for it)
 //                                     (any app: a Magic Mouse flick as Back/Forward, 158/159)
 //   X <on 2|off>                      Swipe out to macOS on or off (on connect and when it changes).
 //                                     "2": this helper takes the swipe itself (below); a guest
@@ -85,7 +84,7 @@
 //   M <mac nonce> <proof>             the Mac proves it knows the token: HMAC-SHA256(token,
 //                                     "omacvm-gestures mac <addr> <guest nonce> <mac nonce>"), hex;
 //                                     <addr>: the Mac address it accepted on, so a proof that
-//                                     a listener on 127.0.0.1 fetched from 10.211.55.2 fails
+//                                     a listener on 127.0.0.1 fetched from 192.168.77.1 fails
 //   R <gestures 0|1> <glide 0|1> <proof> [<name>]   from the guest once the Mac's proof
 //                                     holds: what this VM wants, its own proof (as above
 //                                     with "vm") and the VM's name in base64 (omacvm apply
@@ -93,9 +92,11 @@
 // Daemons from before the handshake (OmacVM 2.4, 2.5) send "H <gestures> <glide>
 // <token> [<name>]", still let in until omacvm apply gives them the new one.
 // Daemons from before the token (2.3 and older) are refused: omacvm update.
-// Two VMs in one app share its network: F, K, A, W, P and S on/esc go only to
+// OmacVM.app's VMs share its networks: F, K, A, W, P and S on/esc go only to
 // the VM whose name is in the title of the app's front window; without such a
 // match (VMs from before the name, a renamed VM) to every VM of that app.
+// Parallels, UTM and VMware Fusion are retired (3.4.0): nothing listens on
+// their networks any more (AGENTS.md).
 #include <ApplicationServices/ApplicationServices.h>
 #include <Carbon/Carbon.h>
 #include <CommonCrypto/CommonHMAC.h>
@@ -114,7 +115,6 @@
 #include "scroll-model.h"
 #include "mouse-model.h"
 #include "swipe-take.h"
-#include "cursor-rest.h"
 #include <IOKit/IOKitLib.h>
 #include <fcntl.h>
 #include <mach-o/dyld.h>
@@ -170,44 +170,13 @@ static int testIdentity(void);
 #ifndef BRIDGE_DIR
 #define BRIDGE_DIR (testIdentity() ? "omacvm-test-bridge" : "omacvm-bridge")   // the Bridge's token is in ~/Library/Application Support/BRIDGE_DIR
 #endif
-// The Mac's address on each VM network: Parallels' shared network, UTM's
-// shared network (vmnet), VMware Fusion's NAT network (vmnet8: Fusion picks
-// its subnet at install time, the Mac is .1; empty without Fusion) and
-// OmacVM.app (QEMU's user network reaches the Mac's 127.0.0.1; its fast
-// network, src/net/mac, is 192.168.77.0/24). One listener per address; never
-// 0.0.0.0.
-static char listenAddrs[5][16] = { "10.211.55.2", "192.168.64.1", "", "127.0.0.1", "192.168.77.1" };
-#define NET_UTM 1
-#define NET_FUSION 2
-#define NET_APP 3
-#define NET_APP_FAST 4   // its clients count as NET_APP's
+// The Mac's address for OmacVM.app's VMs: QEMU's user network reaches the
+// Mac's 127.0.0.1, its fast network (src/net/mac) is 192.168.77.0/24. One
+// listener per address; never 0.0.0.0.
+static const char listenAddrs[2][16] = { "127.0.0.1", "192.168.77.1" };
+#define NET_APP 0
+#define NET_APP_FAST 1   // its clients count as NET_APP's
 
-// The first VNET_8_HOSTONLY_SUBNET line, and only a private address (as
-// fusion_host in src/lib/mac.sh and the Bridge read it). Fusion installed
-// after this helper started: the Fusion listener reads it again until found.
-static void readFusionHost(void) {
-  FILE *f = fopen("/Library/Preferences/VMware Fusion/networking", "r");
-  char line[256], net[32];
-  struct in_addr a;
-  if (!f) return;
-  while (fgets(line, sizeof line, f)) {
-    if (sscanf(line, "answer VNET_8_HOSTONLY_SUBNET %31s", net) != 1) continue;
-    if (inet_pton(AF_INET, net, &a) == 1) {
-      uint32_t h = ntohl(a.s_addr);
-      int priv = (h >> 24) == 10 || (h >> 20) == 0xAC1 || (h >> 16) == 0xC0A8;
-      char host[16];
-      snprintf(host, sizeof host, "%u.%u.%u.1", h >> 24, (h >> 16) & 255, (h >> 8) & 255);
-      if (priv && strcmp(host, listenAddrs[0]) && strcmp(host, listenAddrs[NET_UTM]) && strcmp(host, listenAddrs[NET_APP_FAST])) {
-        // Other threads test the first byte: set it last.
-        memcpy(listenAddrs[NET_FUSION] + 1, host + 1, sizeof host - 1);
-        __sync_synchronize();
-        listenAddrs[NET_FUSION][0] = host[0];
-      }
-    }
-    break;
-  }
-  fclose(f);
-}
 #define ESC_KEYCODE 53
 // The escape combo is Ctrl+Option+Esc (since 3.0.0). Ctrl+Option+Cmd+Esc, the
 // combo up to 2.9.x, still works through 3.0.x as a hidden fallback: the
@@ -228,7 +197,6 @@ static const char *escKeys = "ctrl-opt";
 #define PINCH_RATIO 1.3f            // ... and it must exceed the centroid movement by this much
 
 static volatile int frontIsVM, escaped, capturing;
-static pid_t frontPid;   // the full-screen VM app in front whose pointer we hide (not OmacVM.app's), else 0
 // The escape combo's way out and back: the last app in front that was no VM
 // app, and the last full-screen VM, each with its front window.
 static pid_t otherPid, vmPid, appPid;   // appPid: the app in front at the last check
@@ -242,8 +210,7 @@ static CGWindowID winVMWin, leftWinWin;
 // or the Space changed with it in front). Main thread.
 static int vmOffSpace;
 // Every VM that runs the guest daemon stays connected (one per address);
-// frames go only to VMs on the network of the frontmost VM app (0 = Parallels,
-// 1 = UTM, 2 = Fusion, 3 = OmacVM.app, the index into listenAddrs). One connection per VM used to mean
+// frames go only to VMs of the app in front (NET_APP, -1: none). One connection per VM used to mean
 // two running VMs pushed each other off every two seconds.
 #define MAX_CLIENTS 8
 // edge: where the guest says a swipe of fingers going left [0] and right [1]
@@ -324,8 +291,8 @@ static void logf_(const char *fmt, ...) {
 // ---- which VM is in front ----
 // Every VM of an app connects from the app's one network, so the network tells
 // the app, not the VM. The VM is told by its name (from its hello) in the title
-// of the app's front window: Parallels, UTM and VMware Fusion put the VM's name
-// there, in a window or full screen. The name that is the title wins, else the
+// of the app's front window: OmacVM.app puts the VM's name there, in a window
+// or full screen. The name that is the title wins, else the
 // longest name in it ("Omarchy 2" over "Omarchy"). No match: every VM on the
 // front app's network, as before VMs said their name.
 static int nameIs(int i, int exact) {
@@ -639,8 +606,8 @@ static int vmFullScreen(pid_t pid, CGWindowID *win) {
     if (!CGRectMakeWithDictionaryRepresentation(CFDictionaryGetValue(w, kCGWindowBounds), &r)) continue;
     for (uint32_t d = 0; d < nd; d++) {
       CGRect b = CGDisplayBounds(ds[d]);
-      // Parallels' full-screen window spans the display width and sits below the
-      // menu bar / notch strip, so allow a gap at the top.
+      // A full-screen window spans the display width and may sit below the
+      // notch strip (Skip the notch), so allow a gap at the top.
       if (fabs(r.size.width - b.size.width) < 2 && r.size.height >= b.size.height - 80 &&
           fabs(r.origin.x - b.origin.x) < 2) { found = 1; break; }
     }
@@ -668,97 +635,8 @@ static CGWindowID frontWindow(pid_t pid) {
 }
 
 // The capture check runs every 0.2 s while a VM app is in front (to see its
-// window go full screen), else every 2 s plus on every app switch. The pointer
-// check runs only while a full-screen VM is in front (not OmacVM.app's, whose
-// QEMU hides the pointer itself): at 120 Hz while the
-// pointer moves; once it has rested a second, every 0.5 s with the rest tap
-// armed (its first move wakes the check at once), else at 20 Hz
-// (cursor-rest.h).
-static CFRunLoopTimerRef captureTimer, cursorTimer;
-static void updateCursor(CFRunLoopTimerRef t, void *info);
-static void restTapDisarm(void);
-
-static void cursorTimerOn(int on) {
-  static int running = -1;
-  if (!cursorTimer || on == running) return;
-  running = on;
-  if (!on) { restTapDisarm(); updateCursor(NULL, NULL); }   // shows the pointer again
-  CFRunLoopTimerSetNextFireDate(cursorTimer, CFAbsoluteTimeGetCurrent() + (on ? 0 : 1e9));
-}
-
-// ---- the pointer at rest: a tap for its first move instead of a look 20 times a second ----
-// Listen-only (it never holds an event), at the session level, only the
-// pointer's moves and drags, armed only while the pointer rests over a
-// full-screen VM in front: its first event disarms it and wakes the pointer
-// check at once. macOS disabling it (a timeout, user input) arms it again.
-// It cannot be made (no Input Monitoring) or PointerRestTap is off: the check
-// looks 20 times a second at rest, as before. Main thread.
-static CFMachPortRef restTap;
-static CFRunLoopSourceRef restSource;
-static int restArmed, restFailed;
-static int restTapSetting(void);
-
-static CGEventRef restTapCb(CGEventTapProxy proxy, CGEventType type, CGEventRef e, void *info) {
-  (void)proxy; (void)info;
-  if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
-    if (restArmed && restTap) CGEventTapEnable(restTap, true);
-    return e;
-  }
-  if (restArmed) {
-    restArmed = 0;
-    CGEventTapEnable(restTap, false);
-    if (cursorTimer) CFRunLoopTimerSetNextFireDate(cursorTimer, CFAbsoluteTimeGetCurrent());
-  }
-  return e;
-}
-
-static void restTapRemove(void) {
-  restArmed = 0;
-  if (!restTap) return;
-  CGEventTapEnable(restTap, false);
-  CFRunLoopRemoveSource(CFRunLoopGetMain(), restSource, kCFRunLoopCommonModes);
-  CFRunLoopSourceInvalidate(restSource);
-  CFRelease(restSource);
-  CFMachPortInvalidate(restTap);
-  CFRelease(restTap);
-  restTap = NULL;
-  restSource = NULL;
-}
-
-static void restTapDisarm(void) {
-  if (!restArmed) return;
-  restArmed = 0;
-  if (restTap) CGEventTapEnable(restTap, false);
-}
-
-// Armed now (1), or the 20 Hz look (0).
-static int restTapArm(void) {
-  if (restArmed && restTap && CGEventTapIsEnabled(restTap)) return 1;
-  if (!restTapSetting()) { restTapRemove(); return 0; }
-  if (!restTap) {
-    CGEventMask m = CGEventMaskBit(kCGEventMouseMoved) | CGEventMaskBit(kCGEventLeftMouseDragged) |
-                    CGEventMaskBit(kCGEventRightMouseDragged) | CGEventMaskBit(kCGEventOtherMouseDragged);
-    restTap = CGEventTapCreate(kCGSessionEventTap, kCGTailAppendEventTap, kCGEventTapOptionListenOnly, m, restTapCb, NULL);
-    restSource = restTap ? CFMachPortCreateRunLoopSource(NULL, restTap, 0) : NULL;
-    if (!restSource) {
-      if (restTap) { CFMachPortInvalidate(restTap); CFRelease(restTap); restTap = NULL; }
-      if (!restFailed) logf_("pointer at rest: no tap for its moves (Input Monitoring?): looking 20 times a second");
-      restFailed = 1;
-      return 0;
-    }
-    CFRunLoopAddSource(CFRunLoopGetMain(), restSource, kCFRunLoopCommonModes);
-    if (restFailed) logf_("pointer at rest: the tap for its moves works again");
-    restFailed = 0;
-  }
-  restArmed = 1;
-  CGEventTapEnable(restTap, true);
-  if (CGEventTapIsEnabled(restTap)) return 1;
-  // Made, but macOS does not let it run (the permission went): as before.
-  restTapRemove();
-  if (!restFailed) logf_("pointer at rest: the tap for its moves was turned off: looking 20 times a second");
-  restFailed = 1;
-  return 0;
-}
+// window go full screen), else every 2 s plus on every app switch.
+static CFRunLoopTimerRef captureTimer;
 
 // The title of the VM app's focused window (its main window when none has
 // focus), through Accessibility, which this helper has for its event tap
@@ -907,7 +785,6 @@ static int inputPaused;   // main thread: no tap, no trackpads until the permiss
 static int permitted(int perm) { return (perm & PERM_AX) && (perm & tapPerm) == tapPerm; }
 static void stopTrackpads(void);
 static void startTrackpads(void);
-static void cursorTimerOn(int on);
 static void permissionsSeen(int perm);
 
 // No tap and no trackpads: macOS has the keyboard, clicks and gestures.
@@ -916,8 +793,6 @@ static void pauseInput(void) {
   inputPaused = 1;
   stopTrackpads();
   if (capturing) { capturing = 0; logf_("capture off"); sendState("off"); }
-  cursorTimerOn(0);   // the macOS pointer shows again
-  restTapRemove();
 }
 
 // ---- the tap must never hold the Mac's input (#290, the Bridge's rule) ----
@@ -1112,11 +987,7 @@ static void frontChanged(pid_t pid, int net, int front, const char *title, CGWin
   if (!front) noteCameFrom(pid != appPid);
   appPid = pid;
   // OmacVM.app's QEMU hides the Mac's pointer over its VM itself (Omanotch
-  // leaves it alone too, #260): a second hider here showed it again in the
-  // background over QEMU's hide, and the Mac's arrow sat over the VM's own
-  // pointer until the user switched out and back (2026-10-19).
-  frontPid = front && net != NET_APP ? pid : 0;
-  cursorTimerOn(frontPid && !inputPaused);
+  // leaves it alone too, #260): nothing here hides it.
   if (!front && escaped) escaped = 0;   // re-arm once the VM is left
   frontIsVM = front;
   // No capture without the tap and trackpads (a permission taken away).
@@ -1380,115 +1251,11 @@ static void updateCapture(CFRunLoopTimerRef t, void *info) {
   }
 }
 
-// ---- the macOS pointer over the full-screen VM ----
-// Parallels and UTM only hide the macOS pointer over their window when it comes
-// in from their own window; from the Omanotch strip or another app it can stay
-// on top of the guest's pointer. So it is hidden here whenever the window under
-// it is the front VM's full-screen window (Parallels, UTM, VMware Fusion; not
-// OmacVM.app's, see frontChanged). A background process may only
-// do that with the window server's "SetsCursorInBackground" (private, but
-// stable for many macOS releases); without it this does nothing.
-static int cursorHidden, cursorControl = -1;
-
-static int enableCursorControl(void) {
-  typedef int (*DefaultConnection)(void);
-  typedef int (*SetProperty)(int, int, CFStringRef, CFTypeRef);
-  DefaultConnection c = (DefaultConnection)dlsym(RTLD_DEFAULT, "_CGSDefaultConnection");
-  SetProperty set = (SetProperty)dlsym(RTLD_DEFAULT, "CGSSetConnectionProperty");
-  if (!c || !set) return 0;
-  int cid = c();
-  return set(cid, cid, CFSTR("SetsCursorInBackground"), kCFBooleanTrue) == 0;
-}
-
-static void setCursorHidden(int h) {
-  if (h == cursorHidden) return;
-  cursorHidden = h;
-  if (h) CGDisplayHideCursor(kCGNullDirectDisplay); else CGDisplayShowCursor(kCGNullDirectDisplay);
-}
-
-// Whether the window a click at p would reach belongs to the front VM app and
-// is a normal window. AppKit's hit test, not the window list: it skips
-// click-through overlays that cover the whole screen (macOS's screenshot
-// tool keeps one around for hours, Bartender has one over the menu bar).
-typedef long (*WindowAtFn)(id, SEL, CGPoint, long);
-static char hitOwner[64]; static int hitLayer;
-
-static int vmWindowAt(CGPoint p, pid_t pid) {
-  static Class nsWindow; static SEL windowAt;
-  if (!nsWindow) {
-    // AppKit needs its application object before it talks to the window server.
-    ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
-    nsWindow = objc_getClass("NSWindow");
-    windowAt = sel_registerName("windowNumberAtPoint:belowWindowWithWindowNumber:");
-  }
-  // AppKit's screen coordinates start at the primary display's bottom left.
-  CGPoint q = { p.x, CGDisplayBounds(CGMainDisplayID()).size.height - p.y };
-  long n = ((WindowAtFn)objc_msgSend)((id)nsWindow, windowAt, q, 0);
-  hitOwner[0] = 0; hitLayer = -1;
-  if (n <= 0) return 0;
-  CFArrayRef wins = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, (CGWindowID)n);
-  if (!wins) return 0;
-  int hit = 0;
-  if (CFArrayGetCount(wins) > 0) {
-    CFDictionaryRef w = CFArrayGetValueAtIndex(wins, 0);
-    int owner = 0;
-    CFNumberGetValue(CFDictionaryGetValue(w, kCGWindowOwnerPID), kCFNumberIntType, &owner);
-    CFNumberGetValue(CFDictionaryGetValue(w, kCGWindowLayer), kCFNumberIntType, &hitLayer);
-    CFStringRef name = CFDictionaryGetValue(w, kCGWindowOwnerName);
-    if (name) CFStringGetCString(name, hitOwner, sizeof hitOwner, kCFStringEncodingUTF8);
-    hit = owner == pid && hitLayer == 0;
-    // Only a window that fills its display: the VM's full-screen window, not
-    // another window of the same app (VMware Fusion's library, say).
-    CGRect r;
-    CFDictionaryRef b = CFDictionaryGetValue(w, kCGWindowBounds);
-    if (hit && b && CGRectMakeWithDictionaryRepresentation(b, &r)) {
-      CGDirectDisplayID d; uint32_t nd = 0;
-      CGGetDisplaysWithPoint(CGPointMake(CGRectGetMidX(r), CGRectGetMidY(r)), 1, &d, &nd);
-      CGRect s = nd ? CGDisplayBounds(d) : CGRectNull;
-      hit = nd && r.size.width >= s.size.width - 1 && r.size.height >= s.size.height - 80;
-    }
-  }
-  CFRelease(wins);
-  return hit;
-}
-
-static void updateCursor(CFRunLoopTimerRef t, void *info) {
-  (void)t; (void)info;
-  static CGPoint last = { -1, -1 };
-  static CFAbsoluteTime lastCheck, lastMove;
-  if (cursorControl < 0) {
-    cursorControl = enableCursorControl();
-    if (!cursorControl) logf_("cannot hide the macOS pointer from the background");
-  }
-  pid_t pid = inputPaused ? 0 : frontPid;
-  if (!cursorControl || !pid) { setCursorHidden(0); last.x = -1; return; }
-  CGEventRef e = CGEventCreate(NULL);
-  CGPoint p = CGEventGetLocation(e);
-  CFRelease(e);
-  CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-  int moved = p.x != last.x || p.y != last.y;
-  if (moved) { lastMove = now; restTapDisarm(); }
-  // At rest: the next look in 0.5 s with the rest tap armed, else in 50 ms
-  // (the timer goes back to 120 Hz by itself after the first look that sees
-  // it move; the tap's first event brings that look at once).
-  double next = cursorNextLook(now - lastMove, now - lastMove > CURSOR_REST_AFTER && t ? restTapArm() : 0);
-  if (t && next > 0) CFRunLoopTimerSetNextFireDate(t, now + next);
-  // The window list only when the pointer moved, and every half second for
-  // windows that appear under a pointer at rest (the Dock, a notification).
-  if (!moved && now - lastCheck < CURSOR_WINDOWS_EVERY) return;
-  last = p; lastCheck = now;
-  int h = vmWindowAt(p, pid);
-  if (verbose && h != cursorHidden)
-    logf_("macOS pointer %s (over %s, layer %d)", h ? "hidden" : "shown", hitOwner[0] ? hitOwner : "nothing", hitLayer);
-  setCursorHidden(h);
-}
-
-// ---- Cmd as Super on UTM ----
-// UTM does not grab the keyboard (Omanotch needs a free pointer), so macOS keeps
-// Cmd+Space, Cmd+Tab & co. While a UTM VM is full screen and capturing, every
+// ---- Cmd as Super ----
+// OmacVM.app without Accessibility for its keyboard grab leaves Cmd+Space,
+// Cmd+Tab & co. to macOS. While its VM is full screen and capturing, every
 // Cmd+key goes to the guest daemon instead, which types it as Super+key on a
-// virtual keyboard: "K <linux keycode> <0 up|1 down|2 repeat>". Parallels has
-// its own setting for this ("Send macOS system shortcuts: Always").
+// virtual keyboard: "K <linux keycode> <0 up|1 down|2 repeat>".
 static unsigned short macToLinux[128];
 static unsigned char forwarded[128];
 
@@ -1552,8 +1319,7 @@ static void forwardKey(int kc, CGEventFlags f, int val) {
 enum { COMBO_PASS, COMBO_LEAVE, COMBO_CAPTURE, COMBO_ENTER, COMBO_WINDOW_OUT, COMBO_WINDOW_BACK };
 
 // haveVM: a full-screen VM to go back to, and its app is not the one in front
-// (Parallels, UTM or Fusion in a window keep the combo, as before) or it is,
-// with no window on this Space (vmOffSpace: its Space not shown). winVM: an
+// or it is, with no window on this Space (vmOffSpace: its Space not shown). winVM: an
 // OmacVM VM in front in a window. winBack: the windowed VM the combo left,
 // still there and not in front (newer than any full-screen VM left).
 static int comboAction(int vmFront, int esc, int haveVM, int winVM, int winBack) {
@@ -1643,15 +1409,12 @@ static int endsWith(const char *s, const char *end) {
   return a >= b && !strcmp(s + a - b, end);
 }
 
-// Which VM app a front process `name` (its executable `exe` and signing
-// identifier `ident`, NULL if unknown) is: Parallels' VM window, UTM's,
-// VMware Fusion's, or this identity's OmacVM app (-1: none of them).
+// Whether a front process `name` (its executable `exe` and signing
+// identifier `ident`, NULL if unknown) is this identity's OmacVM app
+// (NET_APP), or -1: any other app (the retired VM apps too, 3.4.0).
 // *foreign: a VM (QEMU, not the launcher) of the other identity's OmacVM app.
 static int vmNetOf(const char *name, const char *exe, const char *ident, int *foreign) {
   *foreign = 0;
-  if (!strcmp(name, "prl_client_app")) return 0;
-  if (!strcmp(name, "UTM")) return NET_UTM;
-  if (!strcmp(name, "VMware Fusion")) return listenAddrs[NET_FUSION][0] ? NET_FUSION : -1;
   if (strcmp(name, "OmacVM")) return -1;
   if (vmOursRule(ident, testIdentity())) return NET_APP;
   // Its QEMU ("<id>.qemu", or not the launcher's path), not its launcher.
@@ -1690,8 +1453,8 @@ static pid_t frontNow(void) {
   return GetFrontProcess(&psn) == noErr && GetProcessPID(&psn, &pid) == noErr ? pid : 0;
 }
 
-// This window still exists and belongs to pid: a VM app (Parallels, UTM,
-// Fusion) outlives its VM, and a pid may be used again.
+// This window still exists and belongs to pid: a VM's window may close while
+// its process lives on, and a pid may be used again.
 static int windowAlive(pid_t pid, CGWindowID win) {
   if (!win) return 0;
   CFArrayRef w = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, win);
@@ -2266,16 +2029,6 @@ static int mouseSwipeFingers(void) {
 // write org.omacvm.gestures SwipeOut -bool true): a swipe past the VM's first
 // or last workspace goes on to the macOS Space beside the VM's (#342). A
 // bool, a number or "yes"/"true", as CFPreferences reads a bool.
-// "PointerRestTap" (hidden, on by default; defaults write org.omacvm.gestures
-// PointerRestTap -bool false goes back): the pointer at rest wakes the
-// pointer check through a tap for its moves instead of a look 20 times a
-// second (cursor-rest.h). Read when the pointer comes to rest.
-static int restTapSetting(void) {
-  CFPreferencesAppSynchronize(GESTURES_DOMAIN);
-  Boolean valid = false;
-  int on = CFPreferencesGetAppBooleanValue(CFSTR("PointerRestTap"), GESTURES_DOMAIN, &valid);
-  return !valid || on;
-}
 
 // macOS's Three Finger Drag (System Settings > Accessibility > Pointer
 // Control > Trackpad Options > Dragging style): three fingers on a trackpad
@@ -3538,10 +3291,10 @@ static CGEventRef tapCb(CGEventTapProxy p, CGEventType type, CGEventRef e, void 
       act = COMBO_ENTER;
     if (act == COMBO_PASS) {
       if (kc >= 0 && kc < 128 && macToLinux[kc]) {
-        // UTM, VMware Fusion and OmacVM.app (without Accessibility for it) keep
-        // Cmd shortcuts like Cmd+Space for macOS: in full screen they go to
-        // Omarchy as Super, through the guest daemon.
-        if (type == kCGEventKeyDown && capturing && (frontNet == NET_UTM || frontNet == NET_FUSION || frontNet == NET_APP) &&
+        // OmacVM.app (without Accessibility for it) keeps Cmd shortcuts like
+        // Cmd+Space for macOS: in full screen they go to Omarchy as Super,
+        // through the guest daemon.
+        if (type == kCGEventKeyDown && capturing && frontNet == NET_APP &&
             (f & kCGEventFlagMaskCommand) && haveClient()) {
           forwardKey(kc, f, CGEventGetIntegerValueField(e, kCGKeyboardEventAutorepeat) ? 2 : 1);
           forwarded[kc] = 1;
@@ -3926,7 +3679,6 @@ static void *greet(void *arg) {
 static void *serverThread(void *arg) {
   int net = (int)(intptr_t)arg, inUse = 0;
   const char *addr = listenAddrs[net];
-  while (net == NET_FUSION && !addr[0]) { sleep(10); readFusionHost(); }
   for (;;) {
     int s = socket(AF_INET, SOCK_STREAM, 0), one = 1;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
@@ -4295,9 +4047,6 @@ static void startRunning(void) {
   }
 
 
-  cursorTimer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent() + 1e9, 1.0 / 120, 0, 0, updateCursor, NULL);
-  CFRunLoopTimerSetTolerance(cursorTimer, 0.001);
-  CFRunLoopAddTimer(CFRunLoopGetCurrent(), cursorTimer, kCFRunLoopCommonModes);
   captureTimer = CFRunLoopTimerCreate(NULL, CFAbsoluteTimeGetCurrent(), 0.2, 0, 0, updateCapture, NULL);
   CFRunLoopTimerSetTolerance(captureTimer, 0.02);
   CFRunLoopAddTimer(CFRunLoopGetCurrent(), captureTimer, kCFRunLoopCommonModes);
@@ -4310,9 +4059,7 @@ static void startRunning(void) {
   for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;
   initKeymap();
   loadSwipeSign();
-  readFusionHost();
   for (size_t i = 0; i < sizeof listenAddrs / sizeof *listenAddrs; i++) {
-    if (!listenAddrs[i][0] && i != NET_FUSION) continue;
     pthread_t th; pthread_create(&th, NULL, serverThread, (void *)(intptr_t)i);
   }
   logf_(trackpad ? "running (escape: Ctrl+Option+Esc)" : "running, keys only: trackpad gestures stay with macOS");
@@ -4375,17 +4122,6 @@ int main(int argc, char **argv) {
 #if GESTURES_TEST_IDENTITY
   const char *rd = getenv("OMACVM_TEST_REPLAY_DIR");
   if (rd && rd[0] == '/') { snprintf(replayDir, sizeof replayDir, "%s", rd); logf_("test identity: frames from %s/next.tsv", replayDir); }
-  // SIGUSR2: the rest tap as macOS turns a tap off (a timeout), for the
-  // end-to-end test of re-arming it. Test identity only.
-  signal(SIGUSR2, SIG_IGN);
-  static dispatch_source_t usr2;
-  usr2 = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGUSR2, 0, dispatch_get_main_queue());
-  dispatch_source_set_event_handler(usr2, ^{
-    logf_("test identity: the rest tap turned off as by a timeout (%s)", restArmed ? "armed" : "not armed");
-    if (restTap) CGEventTapEnable(restTap, false);
-    restTapCb(NULL, kCGEventTapDisabledByTimeout, NULL, NULL);
-  });
-  dispatch_resume(usr2);
 #endif
 
   tapMask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) | CGEventMaskBit(kCGEventScrollWheel);
