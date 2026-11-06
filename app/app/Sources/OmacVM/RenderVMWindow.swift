@@ -340,6 +340,37 @@ enum RenderVMWindow {
         p.running = true
         window("window-move-9-offer-vm-runs", state, p) { dark in shown("window-move-9-offer-vm-runs", dark) }
 
+        // The same read from the VM folder's own files (the app's path, no
+        // preview): a failed move, then a finished one with its backup (a
+        // clone of the made-up disk) and the backup row under Storage.
+        let journal = MoveFiles.journalURL(config), backup = MoveFiles.backupURL(config)
+        try? "format=1\nstate=failed\nstep=5\nfailed_step=5\nresumable=1\nreason=Omarchy's package servers did not answer. Check the Mac's network, then Resume.\n"
+            .write(to: journal, atomically: true, encoding: .utf8)
+        try? FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        _ = clonefile(config.disk.path, backup.appendingPathComponent("disk.img").path, 0)
+        p = usual
+        p.move = nil
+        window("window-move-12-from-files-failed", state, p) { dark in shown("window-move-12-from-files-failed", dark) }
+        try? "format=1\nstate=done\nstep=8\nfinished=2026-11-06T01:12:00Z\n".write(to: journal, atomically: true, encoding: .utf8)
+        try? "4.5.0 aarch64 stable\n".write(to: config.folder.appendingPathComponent(OmarchyMove.recordName), atomically: true, encoding: .utf8)
+        p.section = "storage"
+        window("window-move-13-from-files-done", state, p) { dark in
+            shown("window-move-13-from-files-done", dark)
+            if LayoutProbe.frames["trailing-move-backup"] == nil { note("window-move-13-from-files-done: the backup row is missing", fail: true) }
+        }
+        try? FileManager.default.removeItem(at: journal)
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.removeItem(at: config.folder.appendingPathComponent(OmarchyMove.recordName))
+        // No record, no journal: offered (every VM before 3.4.0, D4).
+        p.section = nil
+        window("window-move-14-from-files-offer", state, p) { dark in shown("window-move-14-from-files-offer", dark) }
+        // A VM on Omarchy 4.5: no card.
+        try? "4.5.0 aarch64 stable\n".write(to: config.folder.appendingPathComponent(OmarchyMove.recordName), atomically: true, encoding: .utf8)
+        window("window-move-15-from-files-on-45", state, p) { dark in
+            if LayoutProbe.frames["move-card"] != nil { note("window-move-15-from-files-on-45: a card on a 4.5 VM\(dark ? " (dark)" : "")", fail: true) }
+        }
+        try? FileManager.default.removeItem(at: config.folder.appendingPathComponent(OmarchyMove.recordName))
+
         // The move's progress (BuildView): at the download, then stopped there.
         let screen = state.screen
         state.creator.showForRendering(move: 5, detail: "downloading packages (part 6 of 13)", failed: nil)
