@@ -11,6 +11,7 @@
 #   move-45.sh --rows             the rows, one per line: NAME  what it proves
 #   move-45.sh --paths            the files a result is tied to (release gate)
 #   move-45.sh --summary DIR      DIR/rows/*.json -> DIR/result.json (the gate reads it)
+#   move-45.sh --kit              the kit a row started now runs with (this script + move-45-result.py)
 #   move-45.sh --onscreen         exit 0 when the rows with the app's window may run now
 #   move-45.sh --deferred LOG     exit 0 when LOG (the part of the app's update.log written while
 #                                 it decided) says the app deferred the update itself, not handed
@@ -34,13 +35,18 @@
 # build of the commit (the app's Swift side is tested), not scripts only.
 # Each run of a row writes DIR/rows/ROW-<base>-<mac>-<time>.json: {row, base,
 # mac, ended, pass, checks: [[name, ok, detail]], seconds}; logs DIR/logs/ the
-# same name; "kit" in it = this script and move-45-result.py (the gate wants
-# M's). A row stopped before its end (a signal, an error) fails ("row ran
+# same name; "kit" in it = this script and move-45-result.py as the row
+# started (the gate wants M's; a kit replaced while the row runs fails it).
+# A row stopped before its end (a signal, an error) fails ("row ran
 # to its end"). Rows from the M1 go into the same DIR/rows (copy them over)
 # before --summary.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 R=$(cd "$HERE/../../.." && pwd)
+# The kit this row runs with, taken first thing (never from the caller): the row names it, and if move-45.sh
+# or move-45-result.py is replaced while the row runs (an int tree re-synced mid-queue), the row fails.
+MOVE45_KIT_START=$(python3 -I "$HERE/move-45-result.py" kit 2>/dev/null)
+export MOVE45_KIT_START
 
 ROWS="clean        a clean move: guest checks, a restart, then Omarchy's own second update keeps snapper, iwd and OmacVM
 undo         Undo after a clean move: the disk and records exactly as before (SHA-256), the VM boots Omarchy 4.0
@@ -84,6 +90,7 @@ case ${1:-} in
   --rows) printf '%s\n' "$ROWS"; exit 0 ;;
   --paths) printf '%s\n' $PATHS; exit 0 ;;
   --summary) exec python3 -I "$HERE/move-45-result.py" summary "${2:?usage}" "$R" ;;
+  --kit) [[ -n $MOVE45_KIT_START ]] && echo "$MOVE45_KIT_START"; exit ;;
   --onscreen) onscreen_ok; exit ;;
   --deferred) [[ -f ${2:-} ]] || usage; held_deferred "$(cat "$2")"; exit ;;
 esac

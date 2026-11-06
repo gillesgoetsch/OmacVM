@@ -1,6 +1,8 @@
 """Results of src/tests/e2e/move-45.sh and the release gate that reads them.
 
-  move-45-result.py row FILE ROW BASE SECONDS     checks on stdin (NAME\\tOK\\tDETAIL) -> FILE
+  move-45-result.py row FILE ROW BASE SECONDS     checks on stdin (NAME\\tOK\\tDETAIL) -> FILE; "kit" = the
+                                                  kit move-45.sh started with (MOVE45_KIT_START)
+  move-45-result.py kit                           the kit here (move-45.sh records it when it starts)
   move-45-result.py summary DIR REPO              DIR/rows/*.json -> DIR/result.json
   move-45-result.py gate RESULT M REPO            exit 0 when RESULT passes for release commit M
   move-45-result.py privsize FILE...              bytes only FILE holds (APFS clones: not shared)
@@ -56,10 +58,18 @@ def row(a):
             continue
         parts = ln.split("\t", 2) + ["", ""]
         checks.append([parts[0], parts[1] == "1", parts[2]])
+    # The kit is the one the row STARTED with (move-45.sh hashes it first thing): a kit replaced while the row
+    # ran (an int tree re-synced mid-queue) would otherwise label the row with checks it never ran.
+    start, end = os.environ.get("MOVE45_KIT_START", ""), kit_here()
+    if not start:
+        checks.append(["the kit recorded when the row started", False, "no MOVE45_KIT_START (a move-45.sh before it)"])
+    elif start != end:
+        checks.append(["the kit the row started with is the one it ended with", False,
+                       "started with %s, ends with %s: move-45.sh or move-45-result.py replaced while the row ran" % (start, end)])
     ok = bool(checks) and all(c[1] for c in checks)
     o = {"row": name, "base": base, "pass": ok, "seconds": secs, "checks": checks,
          "mac": os.environ.get("MOVE45_MAC") or mac_name(), "ended": int(time.time()),
-         "app_commit": os.environ.get("MOVE45_COMMIT", ""), "kit": kit_here()}
+         "app_commit": os.environ.get("MOVE45_COMMIT", ""), "kit": start, "kit_end": end}
     json.dump(o, open(path, "w"), indent=1)
     print("%s %s on %s: %s (%d checks, %d s)" % ("PASS" if ok else "FAIL", name, base, "ok" if ok else
           "; ".join(c[0] for c in checks if not c[1])[:300], len(checks), secs))
@@ -200,7 +210,8 @@ def privsize(a):
 if __name__ == "__main__":
     cmd, rest = sys.argv[1], sys.argv[2:]
     try:
-        {"row": row, "summary": summary, "gate": gate, "privsize": privsize, "digest": digest}[cmd](rest)
+        {"row": row, "summary": summary, "gate": gate, "privsize": privsize, "digest": digest,
+         "kit": lambda a: print(kit_here())}[cmd](rest)
     except AssertionError as e:
         print("move-45 gate: %s" % e, file=sys.stderr)
         sys.exit(1)

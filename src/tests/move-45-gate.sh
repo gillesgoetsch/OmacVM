@@ -31,9 +31,10 @@ ROWS=$("$G/src/tests/e2e/move-45.sh" --rows | awk '{ print $1 }')
 expect "the kit lists its rows" 21 "$(wc -l <<<"$ROWS" | tr -d ' ')"
 expect "the kit lists the files a result is tied to" 1 "$("$G/src/tests/e2e/move-45.sh" --paths | grep -c '^app/scripts/move-vm.sh$')"
 
+KIT0=$(python3 -I "$PY" kit 2>/dev/null)   # what move-45.sh records when a row starts
 mkrow() {   # DIR ROW BASE OK [MAC] [COMMIT] [ENDED]: one run of a row, as move-45.sh writes it
   local f="$1/rows/$2-$3-${5:-mini}-${7:-0}.json"
-  printf 'a check\t%s\tdetail\n' "$4" | MOVE45_MAC=${5:-mini} MOVE45_COMMIT=${6:-$C} python3 -I "$PY" row "$f" "$2" "$3" 5 >/dev/null
+  printf 'a check\t%s\tdetail\n' "$4" | MOVE45_KIT_START=$KIT0 MOVE45_MAC=${5:-mini} MOVE45_COMMIT=${6:-$C} python3 -I "$PY" row "$f" "$2" "$3" 5 >/dev/null
   [[ -n ${7:-} ]] && python3 -I -c 'import json,sys; p=sys.argv[1]; o=json.load(open(p)); o["ended"]=int(sys.argv[2]); json.dump(o, open(p,"w"))' "$f" "$7"
   return 0
 }
@@ -105,6 +106,27 @@ D=$T/twokits; full "$D"; setkit "$D/rows/app-guards-M-mv-a300-mini-100.json" 012
 expect "one row ran with another kit (an older app-guards check): summary fails" 1 "$(sumrc "$D")"
 D=$T/oldkit; full "$D"; for f in "$D"/rows/*.json; do setkit "$f" 0123456789abcdef; done
 expect "every row ran with a kit that is not M's: summary passes, gate refuses" "0 1" "$(sumrc "$D") $(gate "$D" "$M")"
+
+# The kit a row STARTED with (v340-l3k's review: the hash was taken when the row ended, so a row that ran while
+# its int tree was re-synced was labelled with the newer kit). move-45.sh hashes the kit when it starts, the row
+# names that one, and a kit replaced while the row ran fails the row.
+K2=$T/k2/src/tests/e2e; mkdir -p "$K2"; cp "$R/src/tests/e2e/move-45.sh" "$R/src/tests/e2e/move-45-result.py" "$K2/"
+KS=$("$K2/move-45.sh" --kit 2>/dev/null)
+expect "move-45.sh --kit: the kit it started with (16 hex)" 1 "$([[ $KS =~ ^[0-9a-f]{16}$ ]] && echo 1 || echo 0)"
+expect "move-45.sh: its start kit is its own files' hash" "$(python3 -I "$K2/move-45-result.py" kit 2>/dev/null)" "$KS"
+expect "move-45.sh: never takes a start kit from its caller's environment" "$KS" "$(MOVE45_KIT_START=0123456789abcdef "$K2/move-45.sh" --kit 2>/dev/null)"
+expect "move-45.sh exports its start kit to the row it writes" 1 "$(grep -c '^export MOVE45_KIT_START$' "$K2/move-45.sh")"
+rk() { python3 -I -c 'import json,sys; o=json.load(open(sys.argv[1])); print(o["pass"], o["kit"])' "$1" 2>/dev/null; }
+D=$T/resync; mkdir -p "$D/rows"
+krow() { printf 'a check\t1\tdetail\n' | MOVE45_KIT_START=$1 python3 -I "$K2/move-45-result.py" row "$D/rows/$2.json" clean M-mv-a300 5 >/dev/null 2>&1; }
+krow "$KS" same
+expect "the kit the same at the row's end: the row passes and names it" "True $KS" "$(rk "$D/rows/same.json")"
+echo "# re-synced" >> "$K2/move-45-result.py"   # an int tree re-synced while the row runs
+krow "$KS" resync
+expect "the kit replaced while the row ran: the row fails and names the kit it started with" "False $KS" "$(rk "$D/rows/resync.json")"
+expect "the kit replaced while the row ran: says so" 1 "$(grep -c 'the kit the row started with is the one it ended with' "$D/rows/resync.json")"
+printf 'a check\t1\tdetail\n' | env -u MOVE45_KIT_START python3 -I "$K2/move-45-result.py" row "$D/rows/nostart.json" clean M-mv-a300 5 >/dev/null 2>&1
+expect "no kit recorded when the row started (a move-45.sh before this): the row fails" False "$(rk "$D/rows/nostart.json" | cut -d' ' -f1)"
 
 D=$T/bad; mkdir -p "$D"; echo '{"kind": "omacvm-e2e-cc-switches", "pass": true}' > "$D/result.json"
 expect "another kind of result: gate refuses" 1 "$(gate "$D" "$M")"
