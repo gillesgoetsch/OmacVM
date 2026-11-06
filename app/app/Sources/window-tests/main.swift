@@ -1077,6 +1077,14 @@ do {
     expect(M.card(recordText: nil, journal: jr("state=failed\nstep=4\nfailed_step=4\ncommit_started=1\nresumable=0\nask_guest=0\ncode=undo-only\n"), backupExists: true, alive: false)
            == .failed(step: 4, reason: "", resumable: false), "card: asked, the VM said its switch was cut off: Undo only")
     expect(jr("state=failed\nask_guest=1\n")?.askGuest == true && jr("state=failed\n")?.askGuest == false, "journal: ask_guest read")
+    // The app's own update waits while a move runs (also between two of its VM starts); not for a stopped one.
+    let run = jr("state=running\nstep=1\npid=4242\n")!, stopped = jr("state=interrupted\nstep=5\n")!
+    expect(M.runs(run, scriptAlive: true, settleAlive: false, qemuAlive: false), "update waits: move-vm.sh runs (no VM yet)")
+    expect(M.runs(run, scriptAlive: false, settleAlive: false, qemuAlive: true), "update waits: the VM a crashed move left runs")
+    expect(M.runs(stopped, scriptAlive: false, settleAlive: true, qemuAlive: false), "update waits: a settle runs")
+    expect(!M.runs(stopped, scriptAlive: false, settleAlive: false, qemuAlive: false), "update goes in: a stopped move (Resume or Undo later)")
+    expect(!M.runs(jr("state=done\n")!, scriptAlive: true, settleAlive: false, qemuAlive: false), "update goes in: a finished move")
+    expect(M.updateWaits == "The move to Omarchy 4.5 runs", "update waits: the reason in plain words")
     expect(M.card(recordText: nil, journal: jr("state=running\nstep=6\ncommit_started=1\nresumable=1\n"), backupExists: true, alive: false)
            == .interrupted(step: 6, reason: "", resumable: true), "card: gone after the switch: Resume")
     expect(M.card(recordText: nil, journal: jr("state=failed\nstep=5\nfailed_step=5\nreason=No network.\nresumable=1\n"), backupExists: true, alive: false)

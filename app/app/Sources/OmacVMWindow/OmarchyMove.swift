@@ -221,6 +221,16 @@ public enum OmarchyMove {
         !j.commitStarted || j.resumable || j.askGuest || j.state == .running
     }
 
+    /// Why the app's own update waits (Updater.busyNow), and the text for it.
+    public static let updateWaits = "The move to Omarchy 4.5 runs"
+
+    /// The move runs now: its script, a settle, or the VM a killed one left
+    /// running (settled at launch). The app's own update waits for it; disk
+    /// changes wait for every move not over (`Journal.open`).
+    public static func runs(_ j: Journal, scriptAlive: Bool, settleAlive: Bool, qemuAlive: Bool) -> Bool {
+        j.open && (scriptAlive || settleAlive || qemuAlive)
+    }
+
     // MARK: The Mac's checks (step 1)
 
     /// What the Mac needs free: the disk's allocated bytes (the backup shares

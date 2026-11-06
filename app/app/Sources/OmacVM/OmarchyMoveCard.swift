@@ -43,6 +43,15 @@ enum MoveFiles {
         return OmarchyMove.needsSettle(j, scriptAlive: alive(j), qemuAlive: runs(j.qemuPid, j), settleAlive: runs(j.settlePid, j))
     }
 
+    /// A VM of these whose move runs now (its script, a settle, or the VM a
+    /// killed move left): the app's own update waits for it (Updater.busyNow).
+    static func running(_ vms: [VMConfig]) -> VMConfig? {
+        vms.first { c in
+            guard let j = journal(c) else { return false }
+            return OmarchyMove.runs(j, scriptAlive: alive(j), settleAlive: runs(j.settlePid, j), qemuAlive: runs(j.qemuPid, j))
+        }
+    }
+
     /// Shuts down a VM a killed move left running (move-vm.sh settle: SSH
     /// and ACPI, ended after a while), so the window can offer Resume and
     /// Undo. At launch for every VM, and when the window shows one.

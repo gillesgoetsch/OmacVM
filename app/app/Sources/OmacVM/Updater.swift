@@ -683,7 +683,8 @@ final class Updater: ObservableObject {
 
     /// The notice while an update waits for the VM.
     static func waitingNotice(_ why: String, version: String) -> String {
-        "\(why): \(Product.name) \(version) goes in once it has shut down."
+        if why == OmarchyMove.updateWaits { return "\(why): \(Product.name) \(version) goes in once it is done." }
+        return "\(why): \(Product.name) \(version) goes in once it has shut down."
     }
 
     /// When the last check ran (weekly or by hand), for the window's line.

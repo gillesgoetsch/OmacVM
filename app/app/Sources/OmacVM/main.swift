@@ -173,6 +173,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return self.state.creator.job == .move ? "A VM moves to Omarchy 4.5" : "A VM is being built"
             }
             if self.quitting { return "Quitting" }
+            // A move to Omarchy 4.5 between two of its VM starts (only move-vm.sh runs, outside the bundle).
+            if MoveFiles.running(VMConfig.all()) != nil { return OmarchyMove.updateWaits }
             return nil
         }
         // Update with a VM restart (Updater.swift): the launcher's VM and its controls.
@@ -190,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return self.state.creator.job == .move ? "a VM moves to Omarchy 4.5" : "a VM is being built"
             }
             if self.state.storage.moving != nil { return "a VM is being moved" }
+            if MoveFiles.running(VMConfig.all()) != nil { return "the move to Omarchy 4.5 runs" }
             if self.quitting { return "it is quitting" }
             return nil
         }

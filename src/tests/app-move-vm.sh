@@ -52,6 +52,12 @@ expect "move_record: empty: refused" "refused" "$(move_record '' || echo refused
 expect "apply refuses a VM in the middle of its move (exit 3)" "yes" \
   "$(grep -q 'move_open "$md"' "$R/src/cmd/apply.sh" && grep -A2 'move_open "$md"' "$R/src/cmd/apply.sh" | grep -q 'exit 3' && echo yes)"
 expect "update refuses it with --vm and skips it otherwise" "2" "$(grep -c 'move_open "$d"' "$R/src/cmd/update.sh")"
+# The app (Swift; OmarchyMove's rules are in window-tests): a disk change and the disk jobs at a start
+# wait while the move is not over; the app's own update waits while one runs (also between its VM starts).
+dv=$R/app/app/Sources/OmacVM/DiskView.swift
+expect "VMDisk.change refuses while the move is not over" "yes" "$(awk '/static func change\(/,/^    }/' "$dv" | grep -q 'MoveFiles.openWhy(c)' && echo yes)"
+expect "the disk jobs at a VM start wait while the move is not over" "yes" "$(awk '/static func runJobs\(/,/^    }/' "$dv" | grep -q 'MoveFiles.journal(c)?.open == true' && echo yes)"
+expect "the app's own update waits while a move runs (busyReason, restartBlocker)" "2" "$(grep -c 'MoveFiles.running(VMConfig.all())' "$R/app/app/Sources/OmacVM/main.swift")"
 
 # ---------- a fixture app ----------
 A=$T/app; mkdir -p "$A/scripts" "$A/runtime/bin" "$A/firmware" "$A/omacvm" "$T/bin" "$T/guest"
