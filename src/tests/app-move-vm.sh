@@ -73,10 +73,18 @@ while [[ $# -gt 0 ]]; do
   if [[ $1 == -chardev && $2 == socket,id=qga0,* ]]; then p=${2#*path=}; p=${p%%,server=*}; : > "$p"; fi
   shift
 done
-: > "$console"
+: > "$console"; echo "$console" > "$FAKE_DIR/qemu.console"
+# A new boot: the guest's first word over SSH gets in (FAKE_FLAKY counts from there).
+[[ -d $FAKE_DIR/guest ]] && { : > "$FAKE_DIR/guest/boot-new"; echo $(( $(cat "$FAKE_DIR/guest/boots" 2>/dev/null || echo 0) + 1 )) > "$FAKE_DIR/guest/boots"; }
 # grub: a VM whose boot files were lost (a cut-off before they were on disk) stops at GRUB's prompt.
 [[ ${FAKE_MODE:-} == grub ]] && printf 'GNU GRUB  version 2:2.16-1\r\n\r\ngrub> ' > "$console"
-while :; do sleep 1; done
+# guest/offat (epoch): the guest shuts itself down then (its switch over), whatever the Mac does.
+while :; do
+  if [[ -f $FAKE_DIR/guest/offat ]] && (( $(date +%s) >= $(cat "$FAKE_DIR/guest/offat") )); then
+    rm -f "$FAKE_DIR/guest/offat"; echo "off-self" >> "$FAKE_DIR/power.log"; exit 0
+  fi
+  sleep 1
+done
 QEMU
 cat > "$T/bin/ssh" <<'SSH'
 #!/bin/bash
@@ -84,9 +92,22 @@ cat > "$T/bin/ssh" <<'SSH'
 # Its state is in $FAKE_DIR/guest/ (it survives the VM's restarts, as a disk does).
 G=$FAKE_DIR/guest
 kill -0 "$(cat "$FAKE_DIR/qemu.pid" 2>/dev/null)" 2>/dev/null || exit 255
-[[ $FAKE_MODE == grub ]] && exit 255   # no system came up
+[[ $FAKE_MODE == grub || -e $G/grubbed ]] && exit 255   # no system came up
+# silent: the guest no longer answers over SSH (it may still run its move).
+[[ -e $G/silent ]] && { echo "kex_exchange_identification: read: Connection reset by peer" >&2; exit 255; }
 cmd=${*: -1}
 echo "$cmd" >> "$FAKE_DIR/ssh.log"
+# FAKE_FLAKY=N: after each boot the guest's first word gets in, the next N do not (sshd up, then its
+# firewall or network starting, or sshd turning the Mac away for a while: v340-m2 kill-pre).
+# (A shutdown still gets through: the stand-in for ACPI, which needs no network; this QEMU has no QMP.)
+if [[ -n ${FAKE_FLAKY:-} && ! -e $G/rebooting && $cmd != "systemctl poweroff" ]]; then
+  if [[ -e $G/boot-new ]]; then
+    rm -f "$G/boot-new"; echo "$FAKE_FLAKY" > "$G/flaky-left"
+  elif (( $(cat "$G/flaky-left" 2>/dev/null || echo 0) > 0 )); then
+    echo $(( $(cat "$G/flaky-left") - 1 )) > "$G/flaky-left"
+    echo "Connection closed by 127.0.0.1 port 52998" >&2; exit 255
+  fi
+fi
 phases=(preflight protect initramfs keyring repos download commit platform mpv vulkan kernel update report)
 json() {   # state phase index commit resumable code reason
   printf '{"format":1,"state":"%s","phase":"%s","phase_index":%s,"phases":[],"commit_started":%s,"resumable":%s,"started":"","finished":"","code":"%s","reason":"%s","omarchy":"4.0.3rc4","lane":"omarchy-mac","channel":"rc","log":"/var/log/omacvm-move-45.log","result":null}\n' "$@"
@@ -101,7 +122,15 @@ case $cmd in
     echo "poweroff $(cat "$G/state" 2>/dev/null || echo none) ${phases[$(cat "$G/i" 2>/dev/null || echo 0)]}" >> "$FAKE_DIR/power.log"
     # FAKE_STUBBORN=1: a VM that does not shut down (OmacVM must end it after a while).
     [[ ${FAKE_STUBBORN:-} == 1 ]] || (sleep 1; kill "$(cat "$FAKE_DIR/qemu.pid")") & exit 0 ;;
-  "systemctl reboot") : > "$G/rebooting"; exit 0 ;;
+  "systemctl reboot")
+    : > "$G/rebooting"; : > "$G/boot-new"; echo $(( $(cat "$G/boots" 2>/dev/null || echo 0) + 1 )) > "$G/boots"
+    # grub-restart: the restart stops at GRUB's prompt (its boot files lost).
+    if [[ $FAKE_MODE == grub-restart ]]; then
+      : > "$G/grubbed"
+      printf 'GNU GRUB  version 2:2.16-1\r\n\r\ngrub> ' >> "$(cat "$FAKE_DIR/qemu.console")"
+    fi
+    exit 0 ;;
+  "cat /proc/sys/kernel/random/boot_id") printf '00000000-0000-0000-0000-%012d\n' "$(cat "$G/boots" 2>/dev/null || echo 0)"; exit 0 ;;
   "test -x "*omarchy-move.sh) [[ $FAKE_MODE == guest-old ]] && exit 1; exit 0 ;;
   *"systemctl --failed"*) echo 0; exit 0 ;;
   "cat /var/log/omacvm-move-45.log") echo "guest log"; exit 0 ;;
@@ -163,6 +192,11 @@ SSH
 cat > "$A/scripts/apply-vm.sh" <<'APPLY'
 #!/bin/bash
 echo "${OMACVM_KERNEL_NEW:-unset} ${OMACVM_MOVE_RUN:-unset}" >> "$FAKE_DIR/apply.log"
+echo "${OMACVM_APPLY_SSH_SECONDS:-unset}" >> "$FAKE_DIR/apply-env.log"
+# apply4-ssh: the first apply cannot reach the VM (apply-vm.sh's own error line).
+if [[ $FAKE_MODE == apply4-ssh && $(wc -l < "$FAKE_DIR/apply.log") -eq 1 ]]; then
+  echo "ERROR: Old does not answer over SSH (127.0.0.1:52998): SSH closed the connection."; exit 1
+fi
 echo "(apply)" >> "$FAKE_DIR/ssh.log"   # in order with what the move asked the VM
 # apply6-fail: the apply after the move (the second one) fails once.
 if [[ $FAKE_MODE == apply6-fail && $(wc -l < "$FAKE_DIR/apply.log") -eq 2 ]]; then echo "error: the VM side failed"; exit 1; fi
@@ -184,7 +218,7 @@ mv_run() {   # MODE CMD [VAR=VALUE...]: exit status; output in $T/out
   local mode=$1 cmd=$2; shift 2
   # A stand-in QEMU left running (an app crash) keeps its pid file: the stand-in ssh reaches it.
   kill -0 "$(cat "$T/qemu.pid" 2>/dev/null)" 2>/dev/null || rm -f "$T/qemu.pid"
-  env PATH="$T/bin:$PATH" FAKE_DIR="$T" FAKE_VM="$V" FAKE_MODE="$mode" OMACVM_KEY="$T/key" OMACVM_HOST_PORTS= OMACVM_MOVE_POLL=0.2 "$@" \
+  env PATH="$T/bin:$PATH" FAKE_DIR="$T" FAKE_VM="$V" FAKE_MODE="$mode" OMACVM_KEY="$T/key" OMACVM_HOST_PORTS= OMACVM_MOVE_POLL=0.2 OMACVM_SSH_PAUSE=0.2 "$@" \
     /bin/bash "$A/scripts/move-vm.sh" "$V" "$cmd" > "$T/out" 2>&1
 }
 jget() { sed -n "s/^$1=//p" "$V/move-4.5" | head -1; }
@@ -521,5 +555,56 @@ fresh
 mv_run guest-old run; rc=$?
 expect "a guest without the move: failed at step 4, Resume" "1 failed 4 guest-old" "$rc $(jget state) $(jget failed_step) $(jget code)"
 mv_run ok status >/dev/null; expect "status prints the journal" "yes" "$(grep -q '^state=failed' "$T/out" && echo yes)"
+
+# ---------- SSH after a boot or a restart: tried again, for a while ----------
+# (v340-m2 kill-pre: three Resumes failed with no cut-off: SSH let the Mac in once after the
+# VM's boot, then not for a moment, and the next single call failed with a wrong reason.)
+ssh_ready_try() {   # FLAKY SECONDS: ssh_ready's exit and SSH_WHY against the stand-in VM
+  ( export PATH="$T/bin:$PATH" FAKE_DIR="$T" FAKE_VM="$V" FAKE_MODE=ok FAKE_FLAKY="$1" OMACVM_KEY="$T/key" OMACVM_HOST_PORTS= OMACVM_SSH_PAUSE=0.2
+    source "$A/scripts/vm-common.sh"; vm_load "$V" > /dev/null 2>&1
+    "$A/runtime/bin/OmacVM" -serial "file:$T/ready-console.log" & q=$!
+    sleep 0.5
+    vssh true < /dev/null 2>/dev/null   # the VM's first word after its boot
+    rc=0; ssh_ready "$2" 2>/dev/null || rc=$?
+    echo "$rc ${SSH_WHY:-}"
+    kill "$q" 2>/dev/null )
+}
+fresh
+expect "ssh_ready: SSH back after 3 refusals: in (apply-vm.sh's first SSH)" "0 " "$(ssh_ready_try 3 30)"
+expect "ssh_ready: never back: exit 1 within its time, ssh's own reason" "1 SSH closed the connection" "$(ssh_ready_try 9999 1 | cut -c1-27)"
+expect "ssh_ready: no time given: one try, as before" "1" "$(ssh_ready_try 3 0 | cut -c1)"
+expect "apply-vm.sh's first SSH uses it, with the time the caller gives" "yes" \
+  "$(grep -q 'ssh_ready "${OMACVM_APPLY_SSH_SECONDS:-0}"' "$R/app/scripts/apply-vm.sh" && echo yes)"
+
+fresh; rm -f "$T/apply-env.log"
+mv_run ok run FAKE_FLAKY=3; rc=$?
+expect "a VM whose SSH drops for a moment after each boot: the move goes to the end" "0 done" "$rc $(jget state)"
+expect "... the move's apply waits for SSH too (120 s)" "120 120" "$(paste -sd' ' "$T/apply-env.log")"
+fresh
+mv_run cut-after-switch run
+mv_run ok run FAKE_FLAKY=3; rc=$?
+expect "a Resume that asks the VM, its SSH dropping after the boot: goes on to the end" "0 done" "$rc $(jget state)"
+fresh
+mv_run ok run FAKE_FLAKY=9999 OMACVM_MOVE_SSH_SECONDS=2; rc=$?
+expect "SSH never back after the boot: failed at step 4, Resume, code ssh" "1 failed 4 1 ssh" "$rc $(jget state) $(jget failed_step) $(jget resumable) $(jget code)"
+expect "... the reason is the real one (SSH), not 'no Omarchy move'" "yes" \
+  "$(r=$(jget reason); [[ $r == *"does not answer over SSH"*"closed the connection"* && $r != *"no Omarchy move"* ]] && echo yes || echo "'$r'")"
+mv_run ok run; rc=$?
+expect "... Resume then: to the end" "0 done" "$rc $(jget state)"
+fresh
+mv_run cut-after-switch run
+mv_run ok run FAKE_FLAKY=9999 OMACVM_MOVE_SSH_SECONDS=2; rc=$?
+expect "a Resume, the VM silent after its boot: not decided (Resume asks again), the reason says SSH" "1 failed 4 1 yes" \
+  "$rc $(jget state) $(jget failed_step) $(jget ask_guest) $(jget reason | grep -q 'over SSH' && echo yes)"
+fresh
+mv_run apply4-ssh run; rc=$?
+expect "apply cannot reach the VM: its own words in the reason" "1 4 yes" \
+  "$rc $(jget failed_step) $(jget reason | grep -q '^OmacVM did not update in the VM: Old does not answer over SSH' && echo yes || jget reason)"
+fresh
+t0=$(date +%s)
+mv_run grub-restart run OMACVM_MOVE_BOOT_SECONDS=60; rc=$?
+expect "the restart after the switch stops at GRUB's prompt: failed at step 6 at once, Undo only" "1 6 0 no-boot" \
+  "$rc $(jget failed_step) $(jget resumable) $(jget code)"
+expect "... within seconds" "1" "$(( $(date +%s) - t0 < 30 ))"
 
 exit $fail

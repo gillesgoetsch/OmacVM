@@ -124,10 +124,55 @@ clones_ok() {   # the VM folder's volume is APFS: cp -c makes clones there (else
 jv() { plutil -extract "$1" raw -o - -- "$2" 2>/dev/null | printable | head -1 | cut -c1-300 || true; }
 gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; if (g >= 10) printf "%d GB", g + 0.5; else printf "%.1f GB", g }'; }
 
-# The guest's move, as it says itself (status --json into FILE): 0 when it answered.
-guest_status() {
-  vssh "$G status --json" < /dev/null > "$1.new" 2>/dev/null && [[ -n $(jv state "$1.new") ]] &&
-    mv -f "$1.new" "$1" || { rm -f "$1.new"; return 1; }
+# ---------- the guest over SSH, after a boot or a restart ----------
+# A VM that just came up can let SSH in once and then not for a moment (its
+# firewall or network still starting, a busy first minute after a cut-off,
+# sshd turning the Mac away for a while after many tries): v340-m2 kill-pre
+# had three Resumes fail with no cut-off that way, each with a wrong reason.
+# So every call after a boot is tried again while ssh itself fails (exit
+# 255), the VM runs and its console shows no GRUB prompt, for up to
+# OMACVM_MOVE_SSH_SECONDS (120). The command's own exit is its answer, never
+# tried again. SSH_WHY (vm-common.sh) keeps ssh's last word for the reason.
+SSH_SECONDS=${OMACVM_MOVE_SSH_SECONDS:-120}
+vtry() {   # COMMAND: its stdout, stderr and exit; 255 = SSH did not get in
+  local end rc out=$LOG/move-ssh.out err=$LOG/move-ssh.err
+  end=$(( $(date +%s) + SSH_SECONDS ))
+  while :; do
+    rc=0; vssh "$1" < /dev/null > "$out" 2> "$err" || rc=$?
+    if (( rc != 255 )); then cat "$out"; cat "$err" >&2; rm -f "$out" "$err"; return "$rc"; fi
+    SSH_WHY=$(ssh_why "$err")
+    grep -q 'Permission denied' "$err" && break
+    qemu_running && ! grub_prompt && (( $(date +%s) < end )) || break
+    sleep "${OMACVM_SSH_PAUSE:-5}"
+  done
+  rm -f "$out" "$err"
+  return 255
+}
+# vtry gave up (STEP WHAT): the VM at GRUB's prompt (Undo), stopped (a cut-off),
+# or running and silent (Resume tries again; the guest's word, if it was to
+# be asked, is still to be asked).
+ssh_lost() {
+  if grub_prompt; then qemu_quit; jset ask_guest 0; fail "$1" "$NO_BOOT_TEXT" 0 no-boot; fi
+  qemu_running || cut_off "$1" "The VM stopped during the move (log: $LOG/move-console.log)." vm-stopped
+  fail "$1" "$NAME does not answer over SSH while $2 (${SSH_WHY:-no answer}; tried for $SSH_SECONDS s). Resume tries again; Undo brings the disk from before the move back." "$(res_now)" ssh
+}
+
+# The guest's move, as it says itself (status --json into FILE): 0 when it
+# answered with a state. After a boot its journal may not be readable at
+# once: asked again while the time lasts. "once": one try (settle's loop).
+guest_status() {   # FILE [once]
+  local end rc
+  end=$(( $(date +%s) + SSH_SECONDS ))
+  while :; do
+    rc=0
+    if [[ ${2:-} == once ]]; then vssh "$G status --json" < /dev/null > "$1.new" 2>/dev/null || rc=$?
+    else vtry "$G status --json" > "$1.new" 2>/dev/null || rc=$?; fi
+    if (( rc == 0 )) && [[ -n $(jv state "$1.new") ]]; then mv -f "$1.new" "$1"; return 0; fi
+    rm -f "$1.new"
+    (( rc == 255 )) || SSH_WHY="its move's status gave no state (exit $rc)"
+    [[ ${2:-} != once ]] && (( rc != 255 )) && qemu_running && ! grub_prompt && (( $(date +%s) < end )) || return 1
+    sleep "${OMACVM_SSH_PAUSE:-5}"
+  done
 }
 # The guest's last word into the journal: whether its switch began, whether
 # the move can go on. Final: nothing left to ask.
@@ -161,7 +206,7 @@ wait_up() {   # SECONDS [refused]
     grub_prompt && return 3
     e=$(vssh true < /dev/null 2>&1 >/dev/null) && return 0
     [[ ${2:-} == refused && $e == *"Permission denied"* ]] && return 2
-    sleep 3
+    sleep "${OMACVM_SSH_PAUSE:-3}"
   done
   grub_prompt && return 3
   return 1
@@ -230,7 +275,7 @@ settle() {
   lim=${OMACVM_MOVE_SETTLE_SECONDS:-180}
   t0=$(date +%s)
   while kill -0 "$q" 2>/dev/null; do
-    if guest_status "$LOG/move-status.json"; then
+    if guest_status "$LOG/move-status.json" once; then
       heard=1
       gs=$(jv state "$LOG/move-status.json"); ph=$(jv phase "$LOG/move-status.json")
       [[ $gs == running ]] || { final=1; break; }
@@ -537,7 +582,10 @@ fi
 # be from before a cut-off), before OmacVM's update changes anything in it.
 if (( PREV_STEP >= 5 )); then
   ST=$LOG/move-status.json
-  guest_status "$ST" || fail 4 "$NAME did not say how far its move got. Resume asks it again; Undo brings the disk from before the move back." "$(res_now)" ask
+  if ! guest_status "$ST"; then
+    if grub_prompt || ! qemu_running; then ssh_lost 4 "asking how far its move got"; fi
+    fail 4 "$NAME did not say over SSH how far its move got (${SSH_WHY:-no answer}; asked for $SSH_SECONDS s). Resume asks it again; Undo brings the disk from before the move back." "$(res_now)" ask
+  fi
   if [[ $(jv resumable "$ST") == false ]]; then
     guest_word "$ST"
     fail 4 "The move stopped while Omarchy's packages were being switched, so it cannot go on. Undo brings the disk from before the move back." 0 undo-only
@@ -546,12 +594,22 @@ if (( PREV_STEP >= 5 )); then
   log "$NAME says its move can go on ($(jv state "$ST"), after: $(jv phase "$ST" | grep . || echo none))"
 fi
 exec 3<&-
-export OMACVM_KERNEL_NEW=keep OMACVM_MOVE_RUN=1
+# apply-vm.sh's first SSH waits as long as vtry (a VM just started or restarted).
+export OMACVM_KERNEL_NEW=keep OMACVM_MOVE_RUN=1 OMACVM_APPLY_SSH_SECONDS=$SSH_SECONDS
 # Test rows: the Mac's helpers left as they are (as create-vm.sh's OMACVM_CREATE_NO_MAC).
 APPLY_ARGS=(); [[ ${OMACVM_MOVE_NO_MAC:-} == 1 ]] && APPLY_ARGS=(--no-mac)
+# Why apply stopped, in its own words (its last ERROR line), for the reason.
+apply_why() { LC_ALL=C sed -n 's/^ERROR: //p' "$LOG/move-apply.log" 2>/dev/null | printable | tail -1 | cut -c1-240 | sed 's/\.$//'; }
+apply_failed() {   # STEP CODE TAIL: a VM that stopped is a cut-off; else apply's own reason
+  qemu_running || cut_off "$1" "The VM stopped during the move (log: $LOG/move-console.log)." vm-stopped
+  local w; w=$(apply_why)
+  fail "$1" "$(disk_why || echo "OmacVM did not update in the VM${w:+: $w} (log: $LOG/move-apply.log). $3")" 1 "$2"
+}
 run_logged "$LOG/move-apply.log" "$HERE/apply-vm.sh" "$VM_DIR" ${APPLY_ARGS[@]+"${APPLY_ARGS[@]}"} ||
-  fail 4 "$(disk_why || echo "OmacVM did not update in the VM (log: $LOG/move-apply.log). Nothing of Omarchy was changed.")" 1 apply
-vssh "test -x $G" < /dev/null || fail 4 "This VM's OmacVM has no Omarchy move (log: $LOG/move-apply.log)." 1 guest-old
+  apply_failed 4 apply "Nothing of Omarchy was changed."
+rc=0; vtry "test -x $G" > /dev/null 2>&1 || rc=$?
+(( rc != 255 )) || ssh_lost 4 "checking OmacVM's move in it"
+(( rc == 0 )) || fail 4 "This VM's OmacVM has no Omarchy move (log: $LOG/move-apply.log)." 1 guest-old
 stop_asked && stopped
 
 # The phases' names (contract.md "phases") in plain words.
@@ -568,12 +626,16 @@ step 5 "Switch Omarchy's packages"
 PF=$LOG/move-preflight.json ST=$LOG/move-status.json
 moved_already=0
 # A resume after the guest finished (a later step failed): its own journal says done.
-if [[ $(jget commit_started) == 1 ]] && vssh "$G status --json" < /dev/null > "$ST" 2>/dev/null && [[ $(jv state "$ST") == done ]]; then
-  moved_already=1
-  log "the move in $NAME is done already"
+if [[ $(jget commit_started) == 1 ]]; then
+  guest_status "$ST" || ssh_lost 5 "asking how far its move got"
+  if [[ $(jv state "$ST") == done ]]; then
+    moved_already=1
+    log "the move in $NAME is done already"
+  fi
 fi
 if [[ $(jget commit_started) != 1 ]]; then
-  prc=0; vssh "$G preflight --json" < /dev/null > "$PF" 2>> "$LOG/move-apply.log" || prc=$?
+  prc=0; vtry "$G preflight --json" > "$PF" 2>> "$LOG/move-apply.log" || prc=$?
+  (( prc != 255 )) || ssh_lost 5 "checking it before the move"
   code=$(jv code "$PF"); why=$(jv reason "$PF")
   if [[ $code == already-moved ]]; then
     moved_already=1
@@ -592,7 +654,9 @@ if [[ $(jget commit_started) != 1 ]]; then
 fi
 if (( ! moved_already )); then
   # start checks again (resume-aware) and answers like preflight when it will not.
-  src=0; vssh "$G start" < /dev/null > "$ST" 2>> "$LOG/move-apply.log" || src=$?
+  # A start that was in fact taken before SSH failed says "running" the second time.
+  src=0; vtry "$G start" > "$ST" 2>> "$LOG/move-apply.log" || src=$?
+  (( src != 255 )) || ssh_lost 5 "starting its move"
   if (( src == 3 )) && [[ $(jv code "$ST") == already-moved ]]; then
     moved_already=1
     log "Omarchy in $NAME is 4.5 already"
@@ -640,9 +704,11 @@ if (( ! moved_already )); then
     esac
     if stop_asked && (( ! asked_stop )); then
       # Stops at the next phase boundary, never inside the package switch.
-      vssh "$G stop" < /dev/null >/dev/null 2>&1 || true
-      asked_stop=1
-      log "stopping after this part"
+      # Not taken (SSH): asked again at the next poll.
+      if vssh "$G stop" < /dev/null >/dev/null 2>&1; then
+        asked_stop=1
+        log "stopping after this part"
+      fi
     fi
     # Per part: downloads and the switch may take long, the rest not.
     lim=1800; [[ $ph == download || $ph == commit || $ph == update ]] && lim=5400
@@ -662,26 +728,47 @@ stop_asked && stopped
 # A restart, so OmacVM's next apply and the check meet the new system's kernel
 # (the move replaced the running kernel's modules).
 vm_restart() {   # STEP
+  local rc=0 b0 b t0 asked=0 end
+  # The new boot is told by its boot id: the old system can still answer for
+  # a moment after the restart was asked, and a flaky SSH is no sign of it.
+  vtry "cat /proc/sys/kernel/random/boot_id" > "$LOG/move-boot-id" 2>/dev/null || rc=$?
+  (( rc != 255 )) || ssh_lost "$1" "restarting it"
+  b0=$(tr -dc '0-9a-f-' < "$LOG/move-boot-id" | cut -c1-40); rm -f "$LOG/move-boot-id"
   vssh "systemctl reboot" < /dev/null >/dev/null 2>&1 || true
-  for ((i = 0; i < 60; i++)); do vssh true < /dev/null >/dev/null 2>&1 || break; sleep 2; done
-  local rc=0; wait_up "${OMACVM_MOVE_BOOT_SECONDS:-300}" || rc=$?
-  (( rc != 3 )) || { qemu_quit; fail "$1" "$NO_BOOT_TEXT" 0 no-boot; }
-  (( rc == 0 )) || fail "$1" "$(disk_why || echo "$NAME did not come back after the restart (log: $LOG/move-console.log). Undo brings the disk from before back.")" 1 restart
+  t0=$(date +%s) end=$(( $(date +%s) + ${OMACVM_MOVE_BOOT_SECONDS:-300} ))
+  while :; do
+    sleep "${OMACVM_SSH_PAUSE:-2}"
+    rc=0; wait_up $(( end - $(date +%s) )) || rc=$?
+    (( rc != 3 )) || { qemu_quit; fail "$1" "$NO_BOOT_TEXT" 0 no-boot; }
+    (( rc == 0 )) || fail "$1" "$(disk_why || echo "$NAME did not come back after the restart (log: $LOG/move-console.log). Undo brings the disk from before back.")" 1 restart
+    [[ -n $b0 ]] || return 0   # no boot id read (not Linux's /proc?): as before, up again is enough
+    b=$(vssh "cat /proc/sys/kernel/random/boot_id" < /dev/null 2>/dev/null | tr -dc '0-9a-f-' | cut -c1-40) || b=""
+    [[ -n $b && $b != "$b0" ]] && return 0
+    # Still the old boot after a minute: the restart was not taken (SSH dropped it): asked once more.
+    if (( ! asked && $(date +%s) - t0 > 60 )) && [[ $b == "$b0" ]]; then
+      vssh "systemctl reboot" < /dev/null >/dev/null 2>&1 || true; asked=1
+    fi
+    (( $(date +%s) < end )) || fail "$1" "$NAME did not restart (log: $LOG/move-console.log). Resume tries again." 1 restart
+  done
 }
 
 step 6 "Update OmacVM again"
 vm_restart 6
 run_logged "$LOG/move-apply.log" "$HERE/apply-vm.sh" "$VM_DIR" ${APPLY_ARGS[@]+"${APPLY_ARGS[@]}"} ||
-  fail 6 "$(disk_why || echo "OmacVM did not update after the move (log: $LOG/move-apply.log). Resume tries again.")" 1 apply-after
+  apply_failed 6 apply-after "Resume tries again."
 
 step 7 "Restart and check"
 vm_restart 7
-gst=$(vssh "$G status --json" < /dev/null 2>/dev/null > "$ST" && jv state "$ST") || gst=""
+guest_status "$ST" || ssh_lost 7 "asking for its move's state after the restart"
+gst=$(jv state "$ST")
 [[ $gst == done ]] || fail 7 "After the restart the VM says the move is '${gst:-unknown}'." 1 check
-rec=$(vssh "$G record" < /dev/null 2>/dev/null | printable | head -1 | cut -c1-80) || rec=""
+rc=0; vtry "$G record" > "$LOG/move-record.txt" 2>/dev/null || rc=$?
+(( rc != 255 )) || ssh_lost 7 "asking which Omarchy it has"
+rec=$(printable < "$LOG/move-record.txt" | head -1 | cut -c1-80) || rec=""
+rm -f "$LOG/move-record.txt"
 [[ $rec =~ ^4\.([5-9]|[1-9][0-9])[.0-9a-z]*\ [a-z0-9-]+ ]] || fail 7 "After the restart the VM says Omarchy is '${rec:-unknown}', not 4.5." 1 check
 echo "$rec" > "$VM_DIR/omarchy"
-failed_units=$(vssh "systemctl --failed --no-legend --plain | wc -l" < /dev/null 2>/dev/null | tr -dc 0-9) || failed_units=""
+failed_units=$(vtry "systemctl --failed --no-legend --plain | wc -l" 2>/dev/null | tr -dc 0-9) || failed_units=""
 [[ -z $failed_units || $failed_units == 0 ]] || log "note: $failed_units system unit(s) failed after the restart (systemctl --failed in the VM)"
 log "Omarchy $rec"
 
