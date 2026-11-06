@@ -24,7 +24,8 @@
 # the move (once per base) and after it, runs with the desktop up: the test
 # app starts the VM without a window (it still has its display) and SDDM logs
 # the user in for that start (holds ~/.omacvm-test-identity.lock while the
-# app runs; the Mac's helpers stay off). app-guards starts the test
+# app runs; the test identity's own Bridge and Gestures, never the person's).
+# app-guards starts the test
 # app without a window (OMACVM_COCOA_HIDDEN), needs OMACVM_SIGN_ID (the
 # Developer ID, to sign the update it offers) and holds
 # ~/.omacvm-test-identity.lock while the app runs; disk-lock opens the test
@@ -71,7 +72,7 @@ src/cmd/apply.sh src/lib/omarchy-move.sh app/app/Sources/OmacVMWindow/OmarchyMov
 app/app/Sources/OmacVM/OmarchyMoveCard.swift app/app/Sources/OmacVM/DiskView.swift app/app/Sources/OmacVM/Updater.swift
 src/tests/e2e/move-45.sh src/tests/e2e/move-45-result.py"
 
-usage() { sed -n '2,39s/^# \{0,1\}//p' "$0"; exit 2; }
+usage() { sed -n '2,40s/^# \{0,1\}//p' "$0"; exit 2; }
 # On screen (MACS-1030d): nobody at the Mac for 5 minutes and the screen unlocked.
 hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
 screen_locked() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
@@ -255,9 +256,11 @@ nothing_starts() {
 # keyboard layout, clipboard, audio): headless they fail on 4.0 and 4.5 alike and compared nothing. So the
 # check runs with the desktop up: the test app starts the VM without a window (OMACVM_COCOA_HIDDEN; the VM
 # still has its display) and SDDM logs the user in for this one start (a drop-in, removed as soon as the
-# session runs, so the check and the move see the VM's own autologin setting). The Mac's helpers stay off
-# (STANDARDS 18/24): the lines that need them fail before and after alike; they are listed, not compared.
-DESK_PID="" DESK_LOCK=0 DESK_SAVED="" DESK_WHY=""
+# session runs, so the check and the move see the VM's own autologin setting). The Mac side is the test
+# identity's own Bridge and Gestures (ports 47931, 47930; never the person's helpers, STANDARDS 18/24/34; the
+# test Bridge leaves the Mac's wallpaper alone): started from the app copy when none runs, stopped after, so
+# their lines (Wi-Fi, audio, Bluetooth, the bar, gestures) count before and after alike.
+DESK_PID="" DESK_LOCK=0 DESK_SAVED="" DESK_WHY="" DESK_HELPERS=""
 DESK_DROPIN=/etc/sddm.conf.d/99-move45-autologin.conf
 desk_on() {   # the VM (off) started by the test app, no window, the user's session up; 1 = not (DESK_WHY says why)
   local i p before name; name=$(basename "$VD"); DESK_WHY=""
@@ -279,6 +282,14 @@ desk_on() {   # the VM (off) started by the test app, no window, the user's sess
      ! codesign -v "$DUA" 2>/dev/null; then
     mkdir -p "$(dirname "$DUA")"; rm -rf "$DUA"; ditto "$APP" "$DUA" || { DESK_WHY="no copy of the app"; return 1; }
   fi
+  local h port
+  for h in "OmacVM Test Bridge:47931" "OmacVM Test Gestures:47930"; do
+    port=${h##*:}; h=${h%:*}
+    lsof -nP -iTCP@127.0.0.1:"$port" -sTCP:LISTEN >/dev/null 2>&1 && continue
+    open -g -n "$DUA/Contents/Helpers/$h.app" 2>/dev/null
+    for ((i = 0; i < 20; i++)); do lsof -nP -iTCP@127.0.0.1:"$port" -sTCP:LISTEN >/dev/null 2>&1 && break; sleep 1; done
+    p=$(LC_ALL=C pgrep -f "$DUA/Contents/Helpers/$h.app/Contents/MacOS/" | head -1); [[ -n $p ]] && DESK_HELPERS+=" $p"
+  done
   before=" $(LC_ALL=C pgrep -f "$DUA/Contents/MacOS/OmacVM" | tr '\n' ' ')"
   open -n -g --env OMACVM_COCOA_HIDDEN=1 --env OMACVM_BACKGROUND=1 --env OMACVM_TEST_PASTEBOARD=org.omacvm.test.move45 \
     "$DUA" --args --start --vm "$name"
@@ -306,9 +317,10 @@ desk_on() {   # the VM (off) started by the test app, no window, the user's sess
 desk_off() {   # the VM off, the launcher quit, the app's settings back, the lock released
   vm_off
   [[ -n $DESK_PID ]] && { kill "$DESK_PID" 2>/dev/null; local i; for ((i = 0; i < 15; i++)); do kill -0 "$DESK_PID" 2>/dev/null || break; sleep 1; done; kill -9 "$DESK_PID" 2>/dev/null; }
+  local p; for p in $DESK_HELPERS; do kill "$p" 2>/dev/null; done   # only the helpers this kit started
   [[ -n $DESK_SAVED && -f $DESK_SAVED ]] && defaults import org.omacvm.app.test "$DESK_SAVED"
   (( DESK_LOCK )) && rm -rf "$ULOCK" && echo "move-45 $(date +%H:%M) done (guest check)" >> "$ULOCK.wait"
-  DESK_PID="" DESK_SAVED="" DESK_LOCK=0
+  DESK_PID="" DESK_SAVED="" DESK_LOCK=0 DESK_HELPERS=""
 }
 guest_check() {   # TSV: OmacVM's guest check (VM on) into TSV; its FAIL lines' names on stdout
   g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env | tr -d \"'\\\"\"); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null" > "$1"
@@ -569,7 +581,7 @@ kill_steps() {   # STEP...
   pre_hash
   while (( cycle < 20 )); do
     cycle=$((cycle + 1)); hit=""
-    mark=$(wc -l < "$L" 2>/dev/null || echo 0); mark=$((mark + 0))
+    mark=0; [[ -f $L ]] && mark=$(wc -l < "$L"); mark=$((mark + 0))
     mvm_bg run
     while kill -0 "$MV_PID" 2>/dev/null; do
       if [[ " $kills " == *" apply "* && $killed != *" apply "* ]] && [[ -n $(tail -n +$((mark + 1)) "$L" 2>/dev/null | grep -m1 '^STEP 5/') ]]; then hit=apply; break; fi

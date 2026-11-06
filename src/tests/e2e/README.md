@@ -331,7 +331,7 @@ a move runs and while one not finished waits for Resume or Undo (`disk-lock`). A
 Resume must finish a move that stopped resumable; Undo must give back
 exactly the VM from before. After a move OmacVM's guest check runs with the
 desktop up (the test app starts the VM without a window, SDDM logs the user
-in for that start) and may fail no line that did not fail on the same 4.0
+in for that start, the test identity's own Bridge and Gestures run) and may fail no line that did not fail on the same 4.0
 VM, checked the same way before the move; the Venus driver meant for the VM
 (the Vulkan feature's own Mesa, else the one it had) must be there and load.
 
