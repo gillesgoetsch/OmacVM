@@ -6,7 +6,10 @@
 # end, Delete the backup, Undo (the disk byte for byte as before), a network
 # failure and its Resume, a refusal, a failure inside the package switch
 # (Undo only), Stop and Quit and its Resume, a killed run (power cut) and
-# its Resume, Keep This Disk, and src/lib/omarchy-move.sh (apply and update
+# its Resume, the move's script killed with its VM left running (an app
+# crash: found, shut down, then Resume, Undo or Keep), a VM that is still
+# going away (Undo waits) or runs elsewhere (refused, no process lines in
+# the reason), Keep This Disk, and src/lib/omarchy-move.sh (apply and update
 # leave a VM in the middle of its move alone; the guest's record line).
 #   src/tests/app-move-vm.sh
 set -uo pipefail
@@ -15,6 +18,9 @@ T=$(mktemp -d)
 VMID() { printf '%s' "$1" | shasum | cut -c1-8; }
 cleanup() {
   [[ -f $T/qemu.pid ]] && kill "$(cat "$T/qemu.pid")" 2>/dev/null
+  [[ -n ${oq:-} ]] && kill "$oq" 2>/dev/null
+  [[ -n ${dying:-} ]] && kill "$dying" 2>/dev/null
+  [[ -n ${other:-} ]] && kill "$other" 2>/dev/null
   [[ -n ${BG:-} ]] && kill "$BG" 2>/dev/null
   pkill -f "$T/app/runtime/bin/OmacVM" 2>/dev/null   # only this test's stand-in QEMUs
   rm -rf "$(getconf DARWIN_USER_TEMP_DIR)omacvm/$(VMID "$T/VMs/Old")".*
@@ -81,7 +87,10 @@ case $cmd in
     # Once after a reboot: the old system is gone for a moment.
     if [[ -e $G/rebooting ]]; then rm -f "$G/rebooting"; exit 255; fi
     exit 0 ;;
-  "systemctl poweroff") (sleep 1; kill "$(cat "$FAKE_DIR/qemu.pid")") & exit 0 ;;
+  "systemctl poweroff")
+    echo poweroff >> "$FAKE_DIR/power.log"
+    # FAKE_STUBBORN=1: a VM that does not shut down (OmacVM must end it after a while).
+    [[ ${FAKE_STUBBORN:-} == 1 ]] || (sleep 1; kill "$(cat "$FAKE_DIR/qemu.pid")") & exit 0 ;;
   "systemctl reboot") : > "$G/rebooting"; exit 0 ;;
   "test -x "*omarchy-move.sh) [[ $FAKE_MODE == guest-old ]] && exit 1; exit 0 ;;
   *"systemctl --failed"*) echo 0; exit 0 ;;
@@ -144,7 +153,8 @@ fresh() {   # a 4.0 VM folder, its guest's move not begun
 }
 mv_run() {   # MODE CMD [VAR=VALUE...]: exit status; output in $T/out
   local mode=$1 cmd=$2; shift 2
-  rm -f "$T/qemu.pid"
+  # A stand-in QEMU left running (an app crash) keeps its pid file: the stand-in ssh reaches it.
+  kill -0 "$(cat "$T/qemu.pid" 2>/dev/null)" 2>/dev/null || rm -f "$T/qemu.pid"
   env PATH="$T/bin:$PATH" FAKE_DIR="$T" FAKE_VM="$V" FAKE_MODE="$mode" OMACVM_KEY="$T/key" OMACVM_HOST_PORTS= OMACVM_MOVE_POLL=0.2 "$@" \
     /bin/bash "$A/scripts/move-vm.sh" "$V" "$cmd" > "$T/out" 2>&1
 }
@@ -318,6 +328,69 @@ if hdiutil create -quiet -size 40m -fs HFS+ -volname omacvm-move-test "$T/hfs.dm
 else
   echo "skip: no HFS+ disk image here"
 fi
+
+# ---------- the move's script killed, its VM left running (an app crash) ----------
+crash_mid() {   # a slow move, its script killed -9 in the download: its QEMU runs on
+  fresh; : > "$T/out"; rm -f "$T/power.log"
+  ( mv_run slow run ) & BG=$!
+  for ((i = 0; i < 100; i++)); do grep -q 'downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
+  local p; p=$(jget pid)
+  [[ $p =~ ^[0-9]+$ ]] && (( p > 1 )) && kill -9 "$p"
+  wait "$BG" 2>/dev/null; BG=""
+  oq=$(cat "$T/qemu.pid")
+}
+no_process_line() { [[ $1 == *runs* && $1 != */* && ! $1 =~ [0-9]{3,} ]] && echo clean || echo "'$1'"; }
+crash_mid
+expect "crash: the journal says running, the script is gone, its VM runs" "running gone runs" "$(jget state) $(kill -0 "$(jget pid)" 2>/dev/null && echo runs || echo gone) $(qemu_gone)"
+expect "crash: the journal names the move's QEMU" "$oq" "$(jget qemu_pid)"
+mv_run ok settle; rc=$?
+oq_gone() { kill -0 "$oq" 2>/dev/null && echo runs || echo gone; }
+expect "settle: exit 0, the VM the move left is shut down" "0 gone" "$rc $(oq_gone)"
+expect "settle: asked the guest to stop at a safe point, then shut it down" "yes" "$(grep -q 'omarchy-move.sh stop' "$T/ssh.log" && grep -q poweroff "$T/power.log" 2>/dev/null && echo yes)"
+expect "settle: the journal says interrupted, Resume, no QEMU" "interrupted 1 0" "$(jget state) $(jget resumable) $(jget qemu_pid)"
+expect "settle: the reason names no process" "yes" "$(r=$(jget reason); [[ -n $r && $r != */* && ! $r =~ [0-9]{3,} ]] && echo yes || echo "'$r'")"
+mv_run ok settle; rc=$?
+expect "settle again: nothing left, exit 0" "0" "$rc"
+mv_run ok run; rc=$?
+expect "settle, then Resume: to the end" "0 done" "$rc $(jget state)"
+
+crash_mid
+mv_run ok run; rc=$?
+expect "crash, then Resume at once: the old VM stopped first, the move to the end" "0 done gone" \
+  "$rc $(jget state) $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone)"
+expect "... the reason never says 'shut it down'" "no" "$(grep -q 'shut it down' "$T/out" && echo yes || echo no)"
+
+crash_mid
+sum1=$(shasum "$V/before-omarchy-4.5/disk.img" | cut -c1-40)
+mv_run ok undo; rc=$?
+expect "crash, then Undo: the old VM stopped first, undone, the disk from before" "0 undone gone $sum1" \
+  "$rc $(jget state) $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone) $(shasum "$V/disk.img" | cut -c1-40)"
+
+crash_mid
+mv_run ok keep; rc=$?
+expect "crash, then Keep This Disk: the old VM stopped first, kept" "0 kept gone" "$rc $(jget state) $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone)"
+
+crash_mid
+mv_run ok settle FAKE_STUBBORN=1 OMACVM_MOVE_SETTLE_SECONDS=2; rc=$?
+expect "a left VM that does not shut down: ended after the wait, exit 0" "0 gone interrupted" "$rc $(oq_gone) $(jget state)"
+
+# ---------- a VM still going away (Undo waits); one that runs on (refused, plainly) ----------
+fresh
+/bin/bash -c 'sleep 3; true' "-drive" "if=none,file=$V/disk.img,format=raw" & dying=$!
+mv_run ok undo; rc=$?
+expect "a VM on its way out (killed, not gone yet): Undo waits for it" "0 undone" "$rc $(jget state)"
+kill "$dying" 2>/dev/null
+fresh
+/bin/bash -c 'sleep 600; true' "-drive" "if=none,file=$V/disk.img,format=raw" & other=$!
+mv_run ok undo OMACVM_MOVE_GONE_SECONDS=2; rc=$?
+expect "a VM that runs on (not the move's): Undo refused" "1" "$rc"
+expect "... its reason names no process" "clean" "$(no_process_line "$(sed -n 's/^ERROR: //p' "$T/out" | tail -1)")"
+expect "... and that VM is left alone" "runs" "$(kill -0 "$other" 2>/dev/null && echo runs || echo gone)"
+mv_run ok run OMACVM_MOVE_GONE_SECONDS=2; rc=$?
+expect "... a move refused at step 1, its reason names no process" "1 1 clean" "$rc $(jget failed_step) $(no_process_line "$(jget reason)")"
+mv_run ok plan OMACVM_MOVE_GONE_SECONDS=2; rc=$?
+expect "... plan's problem names no process" "3 clean" "$rc $(no_process_line "$(sed -n 's/^problem=//p' "$T/out")")"
+kill "$other" 2>/dev/null
 
 # ---------- a guest without omarchy-move.sh ----------
 fresh

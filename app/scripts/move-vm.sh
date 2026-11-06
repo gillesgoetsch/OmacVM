@@ -7,6 +7,7 @@
 #   move-vm.sh VM_DIR undo           the backup's disk back (the VM off); the moved disk goes
 #   move-vm.sh VM_DIR delete-backup  the backup goes (after a move); Undo is no longer possible
 #   move-vm.sh VM_DIR keep           a stopped move: keep this disk as it is (the backup stays)
+#   move-vm.sh VM_DIR settle         the VM a killed move left running (an app crash): shut down
 #   move-vm.sh VM_DIR status         the journal and the backup's size
 # The journal is VM_DIR/move-4.5 (key=value, format=1); the backup is
 # VM_DIR/before-omarchy-4.5/ (APFS clones of disk.img and efi-vars.fd, copies
@@ -14,7 +15,12 @@
 # to stop at the next safe point (the app's Stop and Quit); the guest never
 # stops inside its package switch. Progress lines as update-vm.sh ("STEP
 # n/8", "==>"); SSH that turns the folder's key down: "FIX ssh-key" with the
-# app's answer on stdin, as update-vm.sh. The guest side is
+# app's answer on stdin, as update-vm.sh. A move whose script was killed
+# (the app crashed, the Mac logged out) leaves its VM running without a
+# window: settle, and run, undo and keep before they act, find that QEMU
+# (its serial console is the move's log, its disk this VM's), ask the guest
+# to stop at a safe point and shut it down (SSH, ACPI), and end it after a
+# while (up to 16 minutes inside the package switch). The guest side is
 # /usr/local/share/omacvm/guest/omarchy-move.sh (work/v340/contract.md).
 # Exit: 0 done, 1 failed (the journal says why and whether Resume works),
 # 2 usage, 3 refused (nothing changed). OMACVM_MOVE_NO_MAC=1 (test rows): the
@@ -24,9 +30,9 @@ exec 3<&0 < /dev/null
 HERE=$(cd "$(dirname "$0")" && pwd)
 source "$HERE/vm-common.sh"
 
-[[ $# -eq 2 ]] || { echo "usage: move-vm.sh VM_DIR plan|run|undo|delete-backup|keep|status" >&2; exit 2; }
+[[ $# -eq 2 ]] || { echo "usage: move-vm.sh VM_DIR plan|run|undo|delete-backup|keep|settle|status" >&2; exit 2; }
 CMD=$2
-case $CMD in plan|run|undo|delete-backup|keep|status) ;; *) echo "move-vm.sh: unknown command $CMD" >&2; exit 2 ;; esac
+case $CMD in plan|run|undo|delete-backup|keep|settle|status) ;; *) echo "move-vm.sh: unknown command $CMD" >&2; exit 2 ;; esac
 vm_load "$1"
 J=$VM_DIR/move-4.5
 B=$VM_DIR/before-omarchy-4.5
@@ -61,14 +67,43 @@ alive() {
   [[ -z $b || $b == "$(boot_time)" ]]
 }
 
+# Other programs' text is read with LC_ALL=C (AGENTS.md section 8: one line
+# that is not UTF-8 stops grep and awk in a UTF-8 locale).
+# Never "| grep -q" here: under pipefail its early exit fails ps with SIGPIPE,
+# and a VM that runs reads as none (STANDARDS 52).
 in_use() {   # a QEMU (this app's, another copy's, omacvm start's) has the disk open
-  ps -x -U "$(id -u)" -o args= | grep -v grep | grep -qF -- "file=$(qe "$VM_DIR/disk.img")," && return 0
+  local n
+  n=$(ps -x -U "$(id -u)" -o args= | LC_ALL=C grep -v grep | LC_ALL=C grep -cF -- "file=$(qe "$VM_DIR/disk.img"),") || true
+  [[ ${n:-0} != 0 ]] && return 0
   # Spotlight and backup readers open a new file for a moment: only a VM counts.
-  /usr/sbin/lsof -F c -- "$VM_DIR/disk.img" 2>/dev/null | grep -qiE '^c(OmacVM|qemu)'
+  n=$(/usr/sbin/lsof -F c -- "$VM_DIR/disk.img" 2>/dev/null | LC_ALL=C grep -ciE '^c(OmacVM|qemu)') || true
+  [[ ${n:-0} != 0 ]]
 }
-in_use_who() {   # for the log: which process has the disk
-  { ps -x -U "$(id -u)" -o pid=,comm= -o args= | grep -v grep | grep -F -- "file=$(qe "$VM_DIR/disk.img"),"
-    /usr/sbin/lsof -F pc -- "$VM_DIR/disk.img" 2>/dev/null | paste -sd' ' -; } | cut -c1-120 | head -2 | tr '\n' ' '
+# Which process has the disk: for logs/move-in-use.log only, never for the
+# window (a reason says what to do, not a process line).
+note_in_use() {
+  { date '+%Y-%m-%d %H:%M:%S'
+    ps -x -U "$(id -u)" -o pid=,comm= -o args= | LC_ALL=C grep -v grep | LC_ALL=C grep -F -- "file=$(qe "$VM_DIR/disk.img"),"
+    /usr/sbin/lsof -F pc -- "$VM_DIR/disk.img" 2>/dev/null | paste -sd' ' -
+  } 2>/dev/null | cut -c1-300 >> "$LOG/move-in-use.log" || true
+}
+# A VM still going away (killed, its memory not handed back yet) is waited
+# for: a few seconds, not a reason to refuse.
+wait_unused() {   # [seconds]
+  local i
+  for ((i = 0; i < ${1:-${OMACVM_MOVE_GONE_SECONDS:-30}}; i++)); do in_use || return 0; sleep 1; done
+  in_use && { note_in_use; return 1; }
+  return 0
+}
+RUNS_TEXT="$NAME runs, in a window of OmacVM or another app"
+
+# The QEMU of a move whose script is gone (an app crash): only a process with
+# this VM's disk AND the move's serial console is one.
+move_qemu() {
+  local cons disk
+  cons="file:$(qe "$LOG/move-console.log")" disk="file=$(qe "$VM_DIR/disk.img"),"
+  ps -x -U "$(id -u)" -o pid= -o args= | LC_ALL=C grep -F -- "-serial $cons" | LC_ALL=C grep -F -- "$disk" |
+    LC_ALL=C awk -v me=$$ '$1 != me { print $1; exit }' || true
 }
 alloc_bytes() { echo $(( $(stat -f %b "$1") * 512 )); }
 free_bytes() { echo $(( $(df -k "$VM_DIR" | awk 'NR==2 { print $4 }') * 1024 )); }
@@ -80,11 +115,13 @@ clones_ok() {   # the VM folder's volume is APFS: cp -c makes clones there (else
   cp -c "$t" "$t.c" 2>/dev/null || ok=0
   rm -f "$t" "$t.c"; (( ok ))
 }
+# What the guest says is data: one JSON object, read with plutil, cut short.
+jv() { plutil -extract "$1" raw -o - -- "$2" 2>/dev/null | printable | head -1 | cut -c1-300 || true; }
 gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; if (g >= 10) printf "%d GB", g + 0.5; else printf "%.1f GB", g }'; }
 
 # The Mac's checks (OmarchyMove.problem says the same in the window).
 mac_problem() {
-  in_use && { echo "$NAME runs: shut it down first. ($(in_use_who))"; return; }
+  wait_unused || { echo "$RUNS_TEXT: shut it down there first."; return; }
   clones_ok || { echo "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM to one under Storage first."; return; }
   [[ -f $VM_DIR/disk-resize ]] && { echo "A change of the disk's size is not finished. Start the VM once (or go back) first."; return; }
   grep -qx grow "$VM_DIR/disk-jobs" 2>/dev/null && { echo "Omarchy grows into the disk's new size at the next start. Start the VM once first."; return; }
@@ -96,7 +133,87 @@ mac_problem() {
   return 0
 }
 
-# ---------- plan, status, keep, delete-backup, undo ----------
+# The guest's own logs beside the app's (logs/move-4.5.log, and Omarchy's own
+# update's: the move's last part runs omarchy update), while the VM answers.
+copy_guest_logs() {
+  local f
+  for f in omacvm-move-45:move-4.5 omacvm-system-update:move-system-update; do
+    if vssh "cat /var/log/${f%%:*}.log" < /dev/null 2>/dev/null | printable > "$LOG/${f#*:}.log.new"; then
+      mv -f "$LOG/${f#*:}.log.new" "$LOG/${f#*:}.log"
+    else
+      rm -f "$LOG/${f#*:}.log.new"
+    fi
+  done
+}
+
+# One of run, settle, undo and keep at a time per VM.
+LOCKD=$RUN_DIR/$VM_ID.move.lock
+take_lock() {
+  local h
+  if ! mkdir "$LOCKD" 2>/dev/null; then
+    h=$(cat "$LOCKD/pid" 2>/dev/null) || h=""
+    [[ $h =~ ^[0-9]+$ ]] && (( h != $$ )) && kill -0 "$h" 2>/dev/null && return 1
+    rm -rf "$LOCKD"; mkdir "$LOCKD" 2>/dev/null || return 1
+  fi
+  echo $$ > "$LOCKD/pid"
+}
+drop_lock() { [[ $(cat "$LOCKD/pid" 2>/dev/null) == "$$" ]] && rm -rf "$LOCKD"; return 0; }
+
+# The VM a killed move left running (its script gone: an app crash, a
+# logout): the guest is asked to stop at its next safe point (never inside
+# the package switch), shut down over SSH and by ACPI, waited for (16
+# minutes inside the switch, else 3), then ended; the journal says
+# interrupted, with what the guest got to. A live move owns its VM.
+settle() {
+  alive && return 0
+  local q i lim gs="" ph=""
+  q=$(move_qemu)
+  if [[ -z $q ]]; then
+    [[ -f $J && -n $(jget qemu_pid) && $(jget qemu_pid) != 0 ]] && jset qemu_pid 0
+    return 0
+  fi
+  log "$NAME still runs without a window from the move: shutting it down"
+  printf '%s settle: the move'\''s QEMU %s, its script gone\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$q" >> "$LOG/move-in-use.log"
+  [[ -f $J ]] && jset settle_pid $$
+  lim=${OMACVM_MOVE_SETTLE_SECONDS:-180}
+  if vssh "$G status --json" < /dev/null > "$LOG/move-status.json.new" 2>/dev/null; then
+    mv -f "$LOG/move-status.json.new" "$LOG/move-status.json"
+    gs=$(jv state "$LOG/move-status.json"); ph=$(jv phase "$LOG/move-status.json")
+    if [[ -f $J ]]; then
+      [[ $(jv commit_started "$LOG/move-status.json") == true ]] && jset commit_started 1
+      [[ $(jv resumable "$LOG/move-status.json") == false ]] && jset resumable 0
+    fi
+    [[ $gs == running && $ph == commit ]] && lim=${OMACVM_MOVE_SETTLE_SECONDS:-960}
+    [[ $gs == running ]] && { vssh "$G stop" < /dev/null >/dev/null 2>&1 || true; }
+    copy_guest_logs
+  else
+    rm -f "$LOG/move-status.json.new"
+  fi
+  # A clean shutdown: over SSH (Omarchy may hand the power key to its menu),
+  # and by ACPI (QMP), which needs no network.
+  vssh "systemctl poweroff" < /dev/null >/dev/null 2>&1 || true
+  qmp system_powerdown || true
+  for ((i = 0; i < lim; i++)); do kill -0 "$q" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$q" 2>/dev/null; then
+    log "$NAME did not shut down within $lim s: ending it"
+    qmp quit || true
+    for ((i = 0; i < 10; i++)); do kill -0 "$q" 2>/dev/null || break; sleep 1; done
+    kill -TERM "$q" 2>/dev/null || true
+    for ((i = 0; i < 10; i++)); do kill -0 "$q" 2>/dev/null || break; sleep 1; done
+    kill -KILL "$q" 2>/dev/null || true
+    for ((i = 0; i < 30; i++)); do kill -0 "$q" 2>/dev/null || break; sleep 1; done
+  fi
+  kill -0 "$q" 2>/dev/null && { [[ -f $J ]] && jset settle_pid 0; die "$NAME's VM from the move does not stop"; }
+  rm -f "$STOP"
+  if [[ -f $J ]]; then
+    jset qemu_pid 0 settle_pid 0
+    [[ $(jget state) == running ]] && jset state interrupted pid 0 \
+      reason "OmacVM closed during the move. Its VM, still running without a window, was shut down at a safe point."
+  fi
+  log "$NAME is shut down"
+}
+
+# ---------- plan, status, keep, delete-backup, undo, settle ----------
 case $CMD in
 plan)
   a=$(alloc_bytes "$VM_DIR/disk.img"); f=$(free_bytes)
@@ -109,10 +226,18 @@ status)
   [[ -f $J ]] && cat "$J" || echo "state=none"
   if [[ -d $B ]]; then echo "backup=$B"; fi
   exit 0 ;;
+settle)
+  take_lock || { echo "the move or its stop runs already"; exit 0; }
+  trap drop_lock EXIT
+  settle
+  exit 0 ;;
 keep)
   [[ -f $J ]] || { echo "no move to keep" >&2; exit 3; }
   case $(jget state) in running|failed|interrupted) ;; *) echo "the move is not stopped" >&2; exit 3 ;; esac
   alive && { echo "the move still runs" >&2; exit 3; }
+  take_lock || { echo "the move or its stop runs" >&2; exit 3; }
+  trap drop_lock EXIT
+  settle
   jset state kept finished "$(now_iso)"
   echo "KEPT $NAME"; exit 0 ;;
 delete-backup)
@@ -125,7 +250,10 @@ delete-backup)
   echo "DELETED $B"; exit 0 ;;
 undo)
   alive && die "$NAME is being moved: stop it first"
-  in_use && die "$NAME runs: shut it down, then undo the move"
+  take_lock || die "$NAME is being moved or stopped: wait for it, then undo the move"
+  trap drop_lock EXIT
+  settle
+  wait_unused || die "$RUNS_TEXT: shut it down there, then undo the move."
   if [[ -f $B/disk.img ]]; then
     # The backup's files back in place: rename() replaces the moved ones at once.
     mv -f "$B/disk.img" "$VM_DIR/disk.img"
@@ -151,15 +279,18 @@ esac
 
 # ---------- run ----------
 [[ -f $VM_DIR/disk.img && -f $VM_DIR/efi-vars.fd && -e $VM_DIR/ready ]] || die "$NAME is not a finished VM"
-LOCKD=$RUN_DIR/$VM_ID.move.lock
-mkdir "$LOCKD" 2>/dev/null || { alive && die "$NAME is being moved already"; rm -rf "$LOCKD"; mkdir "$LOCKD"; }
+alive && die "$NAME is being moved already"
+take_lock || die "$NAME is being moved already"
+trap drop_lock EXIT
+# A Resume after an app crash: the VM that move left running goes first (and
+# the journal learns how far its guest got).
+settle
 state=$(jget state)
 case $state in
-  done|kept|done-final) rm -rf "$LOCKD"; echo "move-vm.sh: $NAME was moved already" >&2; exit 3 ;;
-  running) alive && { rm -rf "$LOCKD"; die "$NAME is being moved already"; } ;;
+  done|kept|done-final) drop_lock; echo "move-vm.sh: $NAME was moved already" >&2; exit 3 ;;
 esac
 if [[ $state == running || $state == failed || $state == interrupted ]] && [[ $(jget commit_started) == 1 && $(jget resumable) == 0 ]]; then
-  rm -rf "$LOCKD"
+  drop_lock
   die "The move stopped while Omarchy's packages were being switched, so it cannot go on. Undo brings the disk from before the move back."
 fi
 if [[ -z $state || $state == undone ]]; then
@@ -189,7 +320,8 @@ finish() {
   guest_log
   stop_vm
   rm -f "$AGENT" "$STOP"
-  rm -rf "$LOCKD"
+  qemu_running || jset qemu_pid 0
+  drop_lock
   if [[ $(jget state) == running ]]; then
     # Ended without a word (an error in this script, a signal): stopped, not failed.
     jset state interrupted pid 0 reason "${OUTCOME:-The move stopped (exit $rc).}"
@@ -206,18 +338,10 @@ trap '' PIPE
 PARENT=$PPID   # the app; gone (crashed, killed): stop at the next safe point
 
 step() { jset step "$1"; echo "STEP $1/$STEPS $2"; }
-# The guest's own log beside the app's (logs/move-4.5.log), while the VM runs.
+# The guest's own logs beside the app's, while this run's VM runs.
 guest_log() {
   (( STARTED )) && qemu_running || return 0
-  local f
-  # The move's log, and Omarchy's own update's (its last part runs omarchy update).
-  for f in omacvm-move-45:move-4.5 omacvm-system-update:move-system-update; do
-    if vssh "cat /var/log/${f%%:*}.log" < /dev/null 2>/dev/null | printable > "$LOG/${f#*:}.log.new"; then
-      mv -f "$LOG/${f#*:}.log.new" "$LOG/${f#*:}.log"
-    else
-      rm -f "$LOG/${f#*:}.log.new"
-    fi
-  done
+  copy_guest_logs
 }
 fail() {   # fail STEP REASON [resumable 0|1] [code]
   jset state failed failed_step "$1" reason "$2" resumable "${3:-1}" code "${4:-}" finished ""
@@ -238,7 +362,7 @@ p=$(mac_problem) || true
 stop_asked && stopped
 
 step 2 "Shut down the VM"
-in_use && fail 2 "$NAME runs: shut it down, then move it. ($(in_use_who))" 1 runs
+wait_unused || fail 2 "$RUNS_TEXT: shut it down there, then move it." 1 runs
 log "$NAME is shut down"
 
 step 3 "Back up the disk"
@@ -269,7 +393,8 @@ REASON=$LOG/move-stopped
 rm -f "$REASON"
 watch_disk() {
   local line
-  while qemu_running; do
+  # Ends with this script ($$ is the script's pid in this subshell too).
+  while qemu_running && kill -0 $$ 2>/dev/null; do
     if line=$(disk_error "$LOG/move-console.log"); then printf 'disk %s\n' "$line" > "$REASON"; qemu_quit; return; fi
     sleep 3
   done
@@ -280,6 +405,8 @@ vm_up() {
     -device virtio-serial-pci,id=vser0 -chardev "socket,id=qga0,path=$(qe "$AGENT"),server=on,wait=off" \
     -device virtserialport,bus=vser0.0,nr=1,chardev=qga0,name=org.qemu.guest_agent.0
   STARTED=1
+  # The journal names this QEMU: after a crash of this script the window finds it (settle).
+  jset qemu_pid "$(cat "$PIDFILE")"
   watch_disk &
   WATCH=$!
 }
@@ -325,8 +452,6 @@ phase_text() {
 res_now() { [[ $(jget commit_started) == 1 ]] && echo 0 || echo 1; }
 
 step 5 "Move to Omarchy 4.5"
-# What the guest says is data: one JSON object, read with plutil, cut short.
-jv() { plutil -extract "$1" raw -o - -- "$2" 2>/dev/null | printable | head -1 | cut -c1-300 || true; }
 PF=$LOG/move-preflight.json ST=$LOG/move-status.json
 moved_already=0
 # A resume after the guest finished (a later step failed): its own journal says done.
