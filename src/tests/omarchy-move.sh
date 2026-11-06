@@ -132,14 +132,50 @@ printf '#!/bin/bash\necho "${FSTYPE:-btrfs}"\n' > "$B/findmnt"
 printf '#!/bin/bash\necho Avail; echo "${AVAIL:-42949672960}"\n' > "$B/df"
 printf '#!/bin/bash\n[[ -e "%s/pacman-runs" ]]\n' "$P" > "$B/pgrep"
 printf '#!/bin/bash\nexit 0\n' > "$B/dkms"
-# btrfs: the disk's top level is the folder $TOP (OMACVM_MOVE_TOPLEVEL);
-# subvolume list -o names $TOP/nested; delete removes the folder.
+# btrfs: the disk's top level is the folder $TOP (OMACVM_MOVE_TOPLEVEL).
+# Subvolumes: @ (256), @factory (299), and one per line of $TOP/nested
+# (300, 301 ...) while its folder is there. list: all of them, or with -o
+# only the direct children of one; get-default/set-default: $P/default (a
+# path; the top level when none); delete: refused for the default one, for
+# one with a subvolume still inside it, and inside a read-only @factory
+# ($P/ro-factory until property set ... ro false); rootid: $ROOTID (256).
 cat > "$B/btrfs" <<'EOF'
 #!/bin/bash
 echo "btrfs $*" >> "$P/calls"
+subs() {   # ID PATH of every subvolume there now
+  [[ -d $TOP/@ ]] && echo "256 @"
+  [[ -d $TOP/@factory ]] && echo "299 @factory"
+  local n=299 l
+  [[ -e $TOP/nested ]] && while IFS= read -r l; do n=$((n + 1)); [[ -d $TOP/$l ]] && echo "$n $l"; done < "$TOP/nested"
+}
+parent() {   # PATH: the subvolume it is in (the longest one above it), else the top level
+  local best="" id p
+  while read -r id p; do [[ $1 == "$p"/* && ${#p} -gt ${#best} ]] && best=$p; done < <(subs)
+  echo "$best"
+}
+rel() { local x=${1#"$TOP"}; echo "${x#/}"; }
 case "$1 $2" in
-  "subvolume list") [[ -e $TOP/nested ]] && echo "ID 300 gen 9 top level 299 path $(cat "$TOP/nested")"; exit 0 ;;
-  "subvolume delete") [[ -e $P/btrfs-fails ]] && exit 1; rm -rf "${!#}" ;;
+  "subvolume list")
+    o=""; [[ $3 == -o ]] && o=$(rel "${!#}")
+    subs | while read -r id p; do
+      [[ -z $o || $(parent "$p") == "$o" ]] || continue
+      echo "ID $id gen 9 top level 5 path $p"
+    done ;;
+  "subvolume get-default")
+    d=$(cat "$P/default" 2>/dev/null)
+    if [[ -n $d ]]; then subs | awk -v d="$d" '$2 == d { print "ID " $1 " gen 9 top level 5 path " d }'; else echo "ID 5 (FS_TREE)"; fi ;;
+  "subvolume set-default")
+    subs | awk -v i="$3" '$1 == i { print $2 }' > "$P/default" ;;
+  "subvolume delete")
+    [[ -e $P/btrfs-fails ]] && exit 1
+    t=$(rel "${!#}")
+    [[ -n $t && $t == "$(cat "$P/default" 2>/dev/null)" ]] && { echo "ERROR: cannot delete the default subvolume" >&2; exit 1; }
+    while read -r id p; do [[ $p == "$t"/* ]] && { echo "ERROR: not empty: $p" >&2; exit 1; }; done < <(subs)
+    [[ -e $P/ro-factory && $t == @factory/* ]] && { echo "ERROR: read-only file system" >&2; exit 1; }
+    rm -rf "${!#}" ;;
+  "property set")
+    [[ $(rel "${@: -3:1}") == @factory && ${@: -2:1} == ro && ${!#} == false ]] && rm -f "$P/ro-factory" ;;
+  "inspect-internal rootid") echo "${ROOTID:-256}" ;;
 esac
 EOF
 printf '#!/bin/bash\necho "systemctl $*" >> "%s/calls"\n' "$P" > "$B/systemctl"
@@ -312,18 +348,49 @@ fresh; echo "@factory/var/lib/portables" > "$TOP/nested"; mkdir -p "$TOP/@factor
 expect "a subvolume inside @factory goes first" "btrfs subvolume delete $TOP/@factory/var/lib/portables|btrfs subvolume delete -c $TOP/@factory|no" \
   "$(grep '^btrfs subvolume delete' "$P/calls" | tr '\n' '|')$([[ -d $TOP/@factory ]] && echo yes || echo no)"
 fresh; : > "$P/btrfs-fails"; o run >/dev/null 2>&1; rc=$?
-expect "@factory not removed: the commit step fails, resumable (the switch is done)" "1 failed commit True yes" \
-  "$rc $(o status --json | json '" ".join(str(x) for x in [d["state"], d["code"], d["resumable"]])') $([[ -e $J/commit-done ]] && echo yes)"
-rm -f "$P/btrfs-fails"; o run >/dev/null 2>&1
-expect "... Resume: removed, done, the switch not again" "0 done no removed 1" \
-  "$? $(cat "$J/state") $([[ -d $TOP/@factory ]] && echo yes || echo no) $(cat "$J/factory") $(calls 'pacman -Suu ')"
+expect "@factory that btrfs does not remove: the move goes on to done, factory left, a warning (never stuck at commit)" \
+  "0 done yes left 1" \
+  "$rc $(cat "$J/state") $([[ -d $TOP/@factory ]] && echo yes || echo no) $(o status --json | json 'd["result"]["factory_snapshot"]') \
+$(o status --json | json 'sum("factory snapshot (@factory) is still on the disk (btrfs did not remove it)" in w for w in d["result"]["warnings"])')"
+# Subvolumes inside @factory at any depth (btrfs list -o names only the direct ones), deepest first.
+fresh; printf '%s\n' "@factory/var/lib/machines" "@factory/var/lib/machines/box" > "$TOP/nested"
+mkdir -p "$TOP/@factory/var/lib/machines/box"; o run >/dev/null 2>&1
+expect "a subvolume inside a subvolume inside @factory: the deepest first, then its parent, then @factory" \
+  "btrfs subvolume delete $TOP/@factory/var/lib/machines/box|btrfs subvolume delete $TOP/@factory/var/lib/machines|btrfs subvolume delete -c $TOP/@factory|done removed" \
+  "$(grep '^btrfs subvolume delete' "$P/calls" | tr '\n' '|')$(cat "$J/state") $(cat "$J/factory")"
+fresh; echo "@factory/var/lib/portables" > "$TOP/nested"; mkdir -p "$TOP/@factory/var/lib/portables"; : > "$P/ro-factory"; o run >/dev/null 2>&1
+expect "a read-only @factory with a subvolume inside: made writable first, then all of it goes" "no removed" \
+  "$([[ -d $TOP/@factory ]] && echo yes || echo no) $(cat "$J/factory")"
+fresh; o run >/dev/null 2>&1
+expect "no subvolume inside it: @factory stays read-only until it goes (no property change)" 0 "$(calls 'btrfs property set')"
+# @factory as the disk's default subvolume: the running system's becomes the default first.
+fresh; echo @factory > "$P/default"; o run >/dev/null 2>&1
+expect "@factory is the disk's default subvolume: the running system's (256) the default, then @factory goes" "1 @ no removed" \
+  "$(calls 'btrfs subvolume set-default 256 ') $(cat "$P/default") $([[ -d $TOP/@factory ]] && echo yes || echo no) $(cat "$J/factory")"
+fresh; export ROOTID=299; o run >/dev/null 2>&1; unset ROOTID
+expect "the system runs from @factory: kept, left, a warning, the move done" "yes 0 done left 1" \
+  "$([[ -d $TOP/@factory ]] && echo yes || echo no) $(calls 'btrfs subvolume delete') $(cat "$J/state") $(cat "$J/factory") \
+$(grep -c 'the system runs from it' "$J/warnings")"
 fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; n=$(calls 'btrfs subvolume delete'); rm -f "$P/update-fails"; o run >/dev/null 2>&1
 expect "a Resume after it was removed: not again" "$n done removed" "$(calls 'btrfs subvolume delete') $(cat "$J/state") $(cat "$J/factory")"
 fresh; rm -rf "$TOP/@factory"; o run >/dev/null 2>&1
 expect "no @factory (a VM not from omarchy-mac's install): none" "done none 0" \
   "$(cat "$J/state") $(o status --json | json 'd["result"]["factory_snapshot"]') $(calls 'btrfs subvolume delete')"
 fresh; rm -rf "$TOP/@factory"; mkdir -p "$TOP/@factory/var/lib/pacman/local/omarchy-4.5.0-3"; o run >/dev/null 2>&1
-expect "a 4.5 @factory (not omarchy-mac's): kept" "done yes none" "$(cat "$J/state") $([[ -d $TOP/@factory ]] && echo yes || echo no) $(cat "$J/factory")"
+expect "a 4.5 @factory (not omarchy-mac's): kept" "done yes kept kept" "$(cat "$J/state") $([[ -d $TOP/@factory ]] && echo yes || echo no) $(cat "$J/factory") \
+$(o status --json | json 'd["result"]["factory_snapshot"]')"
+
+# omacvm check's line for it (guest/check.sh), from the disk's subvolumes and the move's journal.
+cblk=$(awk '/# omarchy-mac 4.0.s factory snapshot: the move removes it/ { on = 1 } on { print } on && /^  fi$/ { exit }' "$R/src/guest/check.sh")
+ck() { PATH="$B:$PATH" bash -c 'ok() { echo "ok $1: $2"; }; warn() { echo "warn $1: $2"; }; om_v=4.5.0'$'\n'"${cblk//\/var\/lib\/omacvm\/move-4.5/$J}" 2>&1; }
+fresh; o run >/dev/null 2>&1
+expect "check: removed by the move: ok, nothing to go back to" "ok factory reset: no factory snapshot" "$(ck | cut -d: -f1-2 | cut -d'(' -f1 | sed 's/: Omarchy.*//')"
+fresh; : > "$P/btrfs-fails"; o run >/dev/null 2>&1
+expect "check: the move could not remove it: a warning naming 4.0 and the move's log" 1 "$(ck | grep -c "^warn factory reset: omarchy-mac 4.0's factory snapshot (@factory) is still there (the move could not remove it, /var/log/omacvm-move-45.log)")"
+fresh; rm -rf "$TOP/@factory"; mkdir -p "$TOP/@factory/var/lib/pacman/local/omarchy-4.5.0-3"; o run >/dev/null 2>&1
+expect "check: a 4.5 @factory the move kept: ok, not 'from before 4.5'" 1 "$(ck | grep -c '^ok factory reset: a factory snapshot of Omarchy 4.5 (@factory')"
+fresh
+expect "check: an @factory and no move's word on it: a warning that does not guess its version" 1 "$(ck | grep -c '^warn factory reset: a factory snapshot (@factory) is there: .*may be older than 4.5.0')"
 
 # A step fails after the switch: Resume goes on there, nothing before it again.
 fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; rc=$?

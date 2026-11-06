@@ -137,12 +137,18 @@ elif [[ $om_v =~ ^([0-9]+)\.([0-9]+) ]] && (( BASH_REMATCH[1] > 4 || (BASH_REMAT
   elif [[ $om_p != aarch64 ]]; then bad "Omarchy" "$om_v, platform '${om_p:-unknown}', not aarch64"
   else ok "Omarchy" "$om_v, Omarchy's aarch64 repos (${om_c:-?}), platform aarch64"; fi
   # omarchy-mac 4.0's factory snapshot: the move removes it (Omarchy 4.5's
-  # Factory Reset would put 4.0 back); the 4.5 route makes none.
+  # Factory Reset would put 4.0 back; the move's journal says what it found);
+  # the 4.5 route makes none.
   if om_sv=$(btrfs subvolume list / 2>/dev/null); then
-    if awk '{ print $NF }' <<<"$om_sv" | sed 's|^<FS_TREE>/||' | grep -qx '@factory'; then
-      warn "factory reset" "a factory snapshot from before Omarchy 4.5 (@factory) is still there: Omarchy's Factory Reset would go back to it"
-    else
+    om_f=$(cat /var/lib/omacvm/move-4.5/factory 2>/dev/null)
+    if ! sed -n 's/^ID [0-9]* .* path //p' <<<"$om_sv" | sed 's|^<FS_TREE>/||' | grep -qx '@factory'; then
       ok "factory reset" "no factory snapshot: Omarchy's Factory Reset has nothing to go back to and changes nothing"
+    elif [[ $om_f == kept ]]; then
+      ok "factory reset" "a factory snapshot of Omarchy 4.5 (@factory, not OmacVM's): Omarchy's Factory Reset goes back to it"
+    elif [[ $om_f == left ]]; then
+      warn "factory reset" "omarchy-mac 4.0's factory snapshot (@factory) is still there (the move could not remove it, /var/log/omacvm-move-45.log): Omarchy's Factory Reset would go back to Omarchy 4.0"
+    else
+      warn "factory reset" "a factory snapshot (@factory) is there: Omarchy's Factory Reset goes back to the Omarchy it holds, which may be older than ${om_v}"
     fi
   fi
 elif grep -q '^\[omarchy-aarch64\]' /etc/pacman.conf 2>/dev/null; then

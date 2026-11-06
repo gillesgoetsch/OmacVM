@@ -724,7 +724,7 @@ switch_now() {
 }
 
 # After the switch (again after a cut-off): omarchy-mac's keyring out, 4.0's
-# factory snapshot out, what the replaced packages left that no package has
+# factory snapshot out (or a warning), what the replaced packages left that no package has
 # now (never in /etc), install reasons, the keep list again (the switch can
 # bring new ones as dependencies).
 after_switch() {
@@ -732,7 +732,7 @@ after_switch() {
   if pacman -Q omarchy-mac-keyring >/dev/null 2>&1; then
     pacman -Rdd --noconfirm omarchy-mac-keyring >> "$LOG" 2>&1 || say "omarchy-mac-keyring not removed (listed)"
   fi
-  factory_out || return 1
+  factory_out
   if [[ -s $J/replace && ! -e $J/replace.done ]]; then
     pacman -Qlq 2>/dev/null | sort -u > "$J/owned"
     while read -r x r by; do
@@ -760,38 +760,79 @@ after_switch() {
 # puts / back to it, which would be omarchy-mac 4.0 on its old repos. It goes
 # once the switch is final; Undo brings back the whole disk, @factory with it.
 # A new 4.5 VM has none: 4.5's Factory Reset then says so and changes
-# nothing. A 4.5 one (not OmacVM's) stays. Journal: factory (removed | none).
+# nothing. A 4.5 one (not OmacVM's) stays. One that cannot go (the system
+# runs from it, a subvolume inside it will not go) stays too, with a warning
+# here and in omacvm check: it never stops the move (the switch is done).
+# Journal: factory (removed | none | kept | left).
+factory_left() {   # WHY
+  jset factory left
+  local w="omarchy-mac 4.0's factory snapshot (@factory) is still on the disk ($1): Omarchy's Factory Reset would go back to Omarchy 4.0 (see $LOG)"
+  grep -qxF -- "$w" "$J/warnings" 2>/dev/null || echo "$w" >> "$J/warnings"
+  say "$w"
+}
 factory_out() {
-  local dev top="" m="" v s
-  [[ $(jget factory) == removed ]] && return 0
+  local dev top="" m="" v id root def subs s p why=""
+  case $(jget factory) in removed|kept) return 0 ;; esac
   if [[ -n ${OMACVM_MOVE_TOPLEVEL:-} ]]; then top=$OMACVM_MOVE_TOPLEVEL   # tests
   else
     dev=$(findmnt -no SOURCE / 2>/dev/null); dev=${dev%%\[*}
-    m=$(mktemp -d /run/omacvm-move-top.XXXXXX) || return 1
-    if [[ ! -b $dev ]] || ! mount -o subvolid=5 "$dev" "$m" 2>>"$LOG"; then
-      rmdir "$m"; REASON="the top of the VM's btrfs disk could not be mounted (to remove omarchy-mac 4.0's factory snapshot)"; return 1
+    m=$(mktemp -d /run/omacvm-move-top.XXXXXX) || m=""
+    if [[ -z $m || ! -b $dev ]] || ! mount -o subvolid=5 "$dev" "$m" 2>>"$LOG"; then
+      [[ -z $m ]] || rmdir "$m"
+      # Without the top level: whether there is one at all, from / (as omacvm check reads it).
+      if s=$(btrfs subvolume list / 2>>"$LOG") && ! sed -n 's/^ID [0-9]* .* path //p' <<<"$s" | sed 's|^<FS_TREE>/||' | grep -qx '@factory'; then
+        jset factory none
+      else
+        factory_left "the top of the disk could not be mounted"
+      fi
+      sync; return 0
     fi
     top=$m
   fi
-  if [[ -d $top/@factory ]]; then
+  if [[ ! -d $top/@factory ]]; then
+    jset factory none
+  else
     v=$(ls "$top/@factory/var/lib/pacman/local" 2>/dev/null | sed -n 's/^omarchy-\([0-9][^-]*\)-[^-]*$/\1/p' | head -1)
     if at45 "$v"; then
-      say "factory snapshot: Omarchy $v, kept"; jset factory none
+      say "factory snapshot: Omarchy $v, kept"; jset factory kept
     else
-      # Subvolumes inside it first (deepest first), then @factory.
-      for s in $(btrfs subvolume list -o "$top/@factory" 2>/dev/null | awk '{ print $NF }' | awk '{ print length, $0 }' | sort -rn | cut -d' ' -f2-); do
-        btrfs subvolume delete "$top/${s#<FS_TREE>/}" >> "$LOG" 2>&1
-      done
-      if btrfs subvolume delete -c "$top/@factory" >> "$LOG" 2>&1 && [[ ! -d $top/@factory ]]; then
-        say "omarchy-mac's factory snapshot (Omarchy ${v:-?}) removed: Omarchy 4.5's Factory Reset cannot go back to 4.0"
-        jset factory removed
-      else
-        [[ -z $m ]] || { umount "$m"; rmdir "$m"; }
-        REASON="omarchy-mac 4.0's factory snapshot (@factory) could not be removed (see $LOG)"; return 1
+      # Every subvolume of the disk ("ID n ... path p", paths from its top);
+      # the ones inside @factory at any depth go first, deepest first.
+      s=$(btrfs subvolume list "$top" 2>>"$LOG" | sed -n 's/^ID \([0-9]*\) .* path \(.*\)$/\1 \2/p' | sed 's| <FS_TREE>/| |')
+      id=$(awk '$2 == "@factory" { print $1; exit }' <<<"$s")
+      subs=$(awk '{ i = $1; sub(/^[0-9]+ /, ""); if (index($0, "@factory/") == 1) print i " " $0 }' <<<"$s")
+      root=$(btrfs inspect-internal rootid / 2>/dev/null)
+      def=$(btrfs subvolume get-default "$top" 2>/dev/null | sed -n 's/^ID \([0-9]*\) .*/\1/p')
+      if [[ -n $root && ( $root == "$id" || $'\n'$subs == *$'\n'"$root "* ) ]]; then
+        why="the system runs from it"
+      elif [[ -n $def && ( $def == "$id" || $'\n'$subs == *$'\n'"$def "* ) ]]; then
+        # The disk's default subvolume (what mounts without subvol=): the
+        # one the system runs from now, before @factory can go.
+        if [[ $root =~ ^[0-9]+$ ]] && btrfs subvolume set-default "$root" "$top" >> "$LOG" 2>&1; then
+          say "the disk's default subvolume: the running system's ($root), not @factory"
+        else
+          why="it is the disk's default subvolume"
+        fi
       fi
+      if [[ -z $why ]]; then
+        # Subvolumes inside it: in a read-only snapshot none of them could go.
+        if [[ -n $subs ]]; then
+          btrfs property set -ts "$top/@factory" ro false >> "$LOG" 2>&1 || true
+          while IFS= read -r p; do
+            [[ -n $p ]] || continue
+            btrfs property set -ts "$top/$p" ro false >> "$LOG" 2>&1 || true
+            btrfs subvolume delete "$top/$p" >> "$LOG" 2>&1 || say "a subvolume inside @factory did not go: $p"
+          done < <(cut -d' ' -f2- <<<"$subs" | awk 'NF { print gsub("/", "/") "\t" $0 }' | sort -t$'\t' -k1,1nr | cut -f2-)
+        fi
+        if btrfs subvolume delete -c "$top/@factory" >> "$LOG" 2>&1 && [[ ! -d $top/@factory ]]; then
+          say "omarchy-mac's factory snapshot (Omarchy ${v:-?}) removed: Omarchy 4.5's Factory Reset cannot go back to 4.0"
+          jset factory removed
+        else
+          why="btrfs did not remove it"
+        fi
+      fi
+      [[ -z $why ]] || factory_left "$why"
     fi
-  else
-    [[ -n $(jget factory) ]] || jset factory none
   fi
   [[ -z $m ]] || { umount "$m"; rmdir "$m"; }
   sync
