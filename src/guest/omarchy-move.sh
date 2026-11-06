@@ -242,6 +242,8 @@ preflight() {
   free=$(df -B1 --output=avail / 2>/dev/null | tail -1 | tr -d ' ')
   [[ $free =~ ^[0-9]+$ ]] || free=0
   PF_FREE=$(awk -v b="$free" 'BEGIN { printf "%.1f", b / 1073741824 }')
+  # A Resume after the switch: what is left is omarchy update (its 10 GiB).
+  [[ -n $PF_RESUME && -e $J/commit-done ]] && NEED_GB=10
   if (( free >= NEED_GB * 1073741824 )); then chk space 1 "$PF_FREE GB free"
   else chk space 0 "$PF_FREE GB free"; refuse low-space 3 "The VM has $PF_FREE GB free on its disk; the move needs $NEED_GB GB."; fi
   # OmacVM's guest tree of this version (Update VM brings it).

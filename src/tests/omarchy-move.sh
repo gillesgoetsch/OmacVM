@@ -439,6 +439,11 @@ expect "404 twice: that file from Arch Linux ARM, then done" "0 1 luajit-2.1.176
 expect "... after the lists again (-Syy: the download's, then once more)" 2 "$(calls 'pacman -Syy --noconfirm')"
 expect "... and the repo files name no second mirror" same "$(cmp -s "$T/mirrorlist" "$GD/omarchy-45/mirrorlist-stable" && echo same)"
 
+# A Resume after the switch: what is left is omarchy update (its own 10 GiB).
+fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; rm -f "$P/update-fails"
+expect "a Resume after the switch with 12 GB free: ok (10 needed); before the switch 14" "True 10 | low-space 14" \
+  "$(AVAIL=12884901888 o preflight --json | json '" ".join(str(x) for x in [d["ok"], d["need_gb"]])') | $(fresh; AVAIL=12884901888 o preflight --json | json '" ".join(str(x) for x in [d["code"], d["need_gb"]])')"
+
 # Platform: Omarchy's own answer after the switch must be aarch64.
 fresh; export PLATFORM=aarch64-apple; o run >/dev/null 2>&1; rc=$?; unset PLATFORM
 expect "omarchy-hw-platform says aarch64-apple after the switch: failed, before omarchy update" "1 platform 0" "$rc $(cat "$J/code") $(calls update)"
