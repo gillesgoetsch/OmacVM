@@ -34,7 +34,7 @@ expect "no aarch64-apple, asahi or omarchy-mac lane in them" 0 "$(cat "$R"/src/g
 # the venus scripts. Tools: stand-ins in $T/bin (and BSD's install/flock
 # replaced when the machine has no GNU ones).
 TR=$T/tree; GD=$TR/guest; mkdir -p "$GD" "$TR/app/guest/venus"
-cp "$O" "$R/src/guest/keep-packages.txt" "$R/src/guest/mkinitcpio-omacvm.conf" "$GD/"
+cp "$O" "$R/src/guest/keep-packages.txt" "$R/src/guest/keep-explicit" "$R/src/guest/mkinitcpio-omacvm.conf" "$GD/"
 cp -R "$R/src/guest/omarchy-45" "$GD/"
 M=$GD/omarchy-move.sh
 B=$T/bin; mkdir -p "$B"
@@ -292,6 +292,15 @@ rm -f "$J/commit-started" "$J/commit-done"; o run >/dev/null 2>&1
 expect "resume after 'download': the switch next, the plan kept" "1 2 clang-libs dep clang" \
   "$(calls 'pacman -Suuw') $(calls 'pacman -Suu ') $(cat "$J/replace")"
 
+# The keep set follows pacman's database: what OmacVM's packages need now
+# (libclc, new as a dependency of the switch, needs zz-libdep: not on the list).
+fresh; mkdir -p "$RT/var/lib/pacman/local/libclc-23.1.3-1" "$RT/var/lib/pacman/local/zz-libdep-1-1"
+printf '%%NAME%%\nlibclc\n\n%%DEPENDS%%\nzz-libdep>=1\n\n' > "$RT/var/lib/pacman/local/libclc-23.1.3-1/desc"
+printf '%%NAME%%\nzz-libdep\n\n' > "$RT/var/lib/pacman/local/zz-libdep-1-1/desc"
+echo "zz-libdep 1-1 d" >> "$P/after"; o run >/dev/null 2>&1
+expect "the move: the keep list's packages and what they need marked after the switch (libclc's zz-libdep too)" "e e" \
+  "$(awk '$1 == "libclc" || $1 == "zz-libdep" { print $3 }' "$P/db" | tr '\n' ' ' | sed 's/ $//')"
+
 # omarchy update stops at an AUR package that does not build on aarch64 (after its migrations): a warning.
 fresh; : > "$P/aur-fails"; o run >/dev/null 2>&1; rc=$?
 expect "omarchy update fails only in its AUR step: done, with a warning" "0 done 1" \
@@ -391,6 +400,38 @@ for w in $(git -C "$R" grep -hE '(pkg-add"?|PKG_ADD"?) [a-z0-9]' -- 'src/**' ':!
 done
 expect "every package OmacVM's guest asks pkg-add for is in keep-packages.txt" "" "$missing"
 expect "the keep list has snapper, iwd and OmacVM's Venus driver" 3 "$(grep -cxE 'snapper|iwd|omacvm-vulkan-virtio' "$R/src/guest/keep-packages.txt")"
+
+# ---------- keep-explicit: the keep list and all it needs, from pacman's database ----------
+KD=$T/kdb; KE=$GD/keep-explicit
+desc() {   # NAME DEPENDS PROVIDES
+  mkdir -p "$KD/local/$1-1-1"
+  { printf '%%NAME%%\n%s\n\n%%VERSION%%\n1-1\n\n' "$1"
+    [[ -z $2 ]] || { echo '%DEPENDS%'; printf '%s\n' $2; echo; }
+    [[ -z $3 ]] || { echo '%PROVIDES%'; printf '%s\n' $3; echo; }; } > "$KD/local/$1-1-1/desc"
+}
+rm -rf "$KD"; fresh; : > "$P/calls"
+# opencl-mesa is OmacVM's (keep list), clang too; what they need is not on the list.
+desc opencl-mesa "clang libclc>=19 spirv-llvm-translator sh" ""
+desc clang "llvm-libs=23.1 compiler-rt" ""
+desc libclc "" ""; desc spirv-llvm-translator "spirv-tools" ""; desc spirv-tools "" ""
+desc llvm-libs "zlib libffi.so=8-64" ""; desc zlib "" ""; desc libffi "" "libffi.so=8-64"
+desc compiler-rt "" ""; desc bash "" "sh"; desc zsh "" "sh"; desc firefox "nss" ""; desc nss "" ""
+printf '%s\n' "opencl-mesa 1-1 e" "clang 1-1 d" "libclc 1-1 d" "spirv-llvm-translator 1-1 d" "spirv-tools 1-1 d" \
+  "llvm-libs 1-1 d" "zlib 1-1 d" "libffi 1-1 d" "compiler-rt 1-1 d" "bash 1-1 e" "zsh 1-1 d" "firefox 1-1 e" "nss 1-1 d" > "$P/db"
+k() { PATH="$B:$T/compat:$PATH" OMACVM_PACMAN_DB=$KD "$KE" "$@"; }
+expect "keep set: the keep list's installed packages and everything they need (by name or what provides it), nothing else" \
+  "bash clang compiler-rt libclc libffi llvm-libs opencl-mesa spirv-llvm-translator spirv-tools zlib zsh" "$(k --list | tr '\n' ' ' | sed 's/ $//')"
+expect "--list changes nothing" 0 "$(calls 'pacman -D')"
+expect "keep-explicit: marks the ones installed as dependencies, prints them" \
+  "clang compiler-rt libclc libffi llvm-libs spirv-llvm-translator spirv-tools zlib zsh" "$(k | tr '\n' ' ' | sed 's/ $//')"
+expect "... in pacman's database (firefox's nss untouched)" "e e e d" \
+  "$(awk '$1 == "libclc" || $1 == "zlib" || $1 == "spirv-tools" || $1 == "nss" { print $3 }' "$P/db" | tr '\n' ' ' | sed 's/ $//')"
+expect "... again: nothing left to mark" "" "$(k)"
+expect "guest/install.sh marks it at its end on Omarchy 4.5 (new VMs, prebuilt, moved, Update VM)" 1 \
+  "$(grep -c '"$R/guest/keep-explicit" >/dev/null' "$R/src/guest/install.sh")"
+expect "guest/system-update marks it before and after omarchy update (its orphan step)" 2 \
+  "$(grep -c '^keep$' "$R/src/guest/system-update")"
+expect "keep-explicit can be run (mode 755 in git)" 100755 "$(git -C "$R" ls-files -s src/guest/keep-explicit | cut -d' ' -f1)"
 
 # ---------- animations: Omarchy's VM flags go once ----------
 printf '#!/bin/sh\necho "$2:x:%s:%s::%s/home:/bin/bash"\n' "$(id -u)" "$(id -g)" "$T" > "$B/getent"

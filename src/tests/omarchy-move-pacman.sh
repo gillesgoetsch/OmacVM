@@ -63,7 +63,7 @@ mkrepo() { local d=$1; ( cd "$d" && repo-add -q "${d##*/}.db.tar.gz" ./*.pkg.tar
 
 # ---------- a VM root, the script's tree and stand-ins ----------
 TR=$T/tree; GD=$TR/guest; mkdir -p "$GD" "$TR/app/guest/venus"
-cp "$R/src/guest/omarchy-move.sh" "$R/src/guest/keep-packages.txt" "$R/src/guest/mkinitcpio-omacvm.conf" "$GD/"
+cp "$R/src/guest/omarchy-move.sh" "$R/src/guest/keep-packages.txt" "$R/src/guest/keep-explicit" "$R/src/guest/mkinitcpio-omacvm.conf" "$GD/"
 cp -R "$R/src/guest/omarchy-45" "$GD/"
 printf '#!/bin/bash\nexit 0\n' > "$GD/system-update"
 printf '#!/bin/bash\nexit 0\n' > "$TR/app/guest/venus/mpv.sh"

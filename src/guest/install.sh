@@ -760,5 +760,12 @@ for f in ${SOFT[@]+"${SOFT[@]}"}; do
     REPORTED=1; exit 1
   fi
 done
+# Omarchy 4.5 removes orphans on every update: OmacVM's packages and all
+# they need now are installed on purpose (new VMs, prebuilt ones, a moved VM,
+# every Update VM; a 4.0 VM gets it in the move).
+om_v=$(pacman -Q omarchy 2>/dev/null | awk '{ print $2 }')
+if [[ $om_v =~ ^([0-9]+)\.([0-9]+) ]] && (( BASH_REMATCH[1] > 4 || (BASH_REMATCH[1] == 4 && BASH_REMATCH[2] >= 5) )); then
+  "$R/guest/keep-explicit" >/dev/null || echo "guest/install.sh: OmacVM's packages not all marked as installed on purpose" >&2
+fi
 sync   # everything above on the disk: the Mac may stop the VM right after (Update VM, the move to Omarchy 4.5)
 log "OmacVM guest side installed for $U (reboot to apply everything)"

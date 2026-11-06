@@ -25,6 +25,7 @@
 # systemd tests the unit's way).
 set -uo pipefail
 G=$(cd "$(dirname "$0")" && pwd)/gbm-guard
+KEEP=${G%/*}/keep-explicit
 LOG=${OMACVM_SYSTEM_UPDATE_LOG:-/var/log/omacvm-system-update.log}
 UNIT=omacvm-system-update
 SESSION=omacvm-system-update-session
@@ -187,6 +188,10 @@ if [[ -z ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
   # A sudoers file left from an update cut off (the unit was not there to remove it).
   rm -f "$SUDOERS" "$TMPF"
 fi
+# OmacVM's packages and what they need, installed on purpose before and
+# after: Omarchy 4.5's update removes orphans (guest/keep-explicit).
+keep() { [[ -x $KEEP ]] && { "$KEEP" >/dev/null 2>>"$LOG" || say "OmacVM's packages not all marked as installed on purpose" >&2; }; }
+keep
 say "updating the VM's system with omarchy update (all packages at once; often 5-15 minutes, log $LOG)"
 { echo "== $(date '+%F %T') omarchy update -y (OmacVM)"; } >>"$LOG" 2>/dev/null
 if [[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
@@ -195,6 +200,7 @@ if [[ -n ${OMACVM_SYSTEM_UPDATE_RUN:-} ]]; then
   rc=$(cat "$RUN/rc" 2>/dev/null); rm -rf "$RUN"; [[ $rc =~ ^[0-9]+$ ]] || rc=1
 else run_unit; rc=$?; fi
 (( rc == 0 )) || say "omarchy update stopped (exit $rc; see $LOG)" >&2
+keep
 # Also after a stop: it may have changed some packages already.
 line=$("$G" test 2>&1); ok=$?
 if (( ok != 0 )); then

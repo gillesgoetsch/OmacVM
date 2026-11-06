@@ -245,7 +245,7 @@ preflight() {
   if (( free >= NEED_GB * 1073741824 )); then chk space 1 "$PF_FREE GB free"
   else chk space 0 "$PF_FREE GB free"; refuse low-space 3 "The VM has $PF_FREE GB free on its disk; the move needs $NEED_GB GB."; fi
   # OmacVM's guest tree of this version (Update VM brings it).
-  for f in "$S/system-update" "$S/mkinitcpio-omacvm.conf" "$S/keep-packages.txt" "$F/pacman-stable.conf" \
+  for f in "$S/system-update" "$S/mkinitcpio-omacvm.conf" "$S/keep-packages.txt" "$S/keep-explicit" "$F/pacman-stable.conf" \
            "$F/mirrorlist-stable" "$F/omarchy-key.asc" "$S/../app/guest/venus/mpv.sh"; do
     [[ -e $f ]] || missing+=" ${f##*/}"
   done
@@ -387,16 +387,13 @@ targets() {
   fi
 }
 
-# OmacVM's packages (keep-packages.txt) marked as installed on purpose:
-# Omarchy 4.5 removes orphans on every update.
+# OmacVM's packages (keep-packages.txt) and everything they depend on now
+# (guest/keep-explicit) marked as installed on purpose: Omarchy 4.5 removes
+# orphans on every update.
 keep_marked() {
-  local want have
-  want=$(grep -v '^#' "$S/keep-packages.txt" | awk 'NF { print $1 }')
-  # shellcheck disable=SC2086 # one package per word
-  have=$(pacman -Qqd $want 2>/dev/null || true)
+  local have
+  have=$(OMACVM_PACMAN_DB=$PACDB "$S/keep-explicit") || { REASON="pacman could not mark OmacVM's packages as installed on purpose"; return 1; }
   [[ -n $have ]] || return 0
-  # shellcheck disable=SC2086
-  pacman -D --asexplicit $have >/dev/null || return 1
   echo "$have" >> "$J/keep-marked.txt"
   say "marked as installed on purpose: $(echo $have)"
 }
