@@ -1,9 +1,10 @@
 #!/bin/bash
 # OmacVM is OmacVM.app only since 3.4.0: Parallels, UTM and VMware Fusion are
 # retired and come back only with the owner's explicit consent (AGENTS.md).
-# This keeps them out: no tracked file names them (whole words), except a
-# line that says they are retired, and the files and lines below, each with
-# its reason. Changing this list is changing that rule: say so in the PR.
+# This keeps them out: no tracked file names them (whole words), except the
+# files and lines below, each with its reason (a line that says a route is
+# retired is listed too, by its own text). Changing this list is changing
+# that rule: say so in the PR.
 #   src/tests/no-retired-routes.sh
 set -uo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
@@ -54,14 +55,52 @@ src/omanotch/guest/hypr/notchbar.lua	UTM'"'"'s USB tablet)	in the VM: a change r
 src/workspaces/guest/monitor_workspaces.lua	(Parallels, Fusion	in the VM: a change reloads Hyprland
 src/keyboard/guest/mac-paste.lua	with a Mac keyboard in Parallels	in the VM: a change reloads Hyprland
 src/memory/guest/90-omacvm.sysctl	memory tuning for a Parallels guest	in the VM: a change reapplies the settings
-src/memory/guest/90-omacvm-zram.conf	Parallels, UTM and Fusion keep every page	in the VM: a change restarts zram'
+src/memory/guest/90-omacvm-zram.conf	Parallels, UTM and Fusion keep every page	in the VM: a change restarts zram
+.claude/skills/omacvm/SKILL.md	- A retired Parallels, UTM or VMware Fusion VM (`"retired": true` in `vms	says it is retired
+.github/workflows/check.yml	- name: Retired Parallels, UTM and VMware Fusion VMs are listed and refused, never touched	says it is retired
+AGENTS.md	- OmacVM is OmacVM.app only. Parallels, UTM and VMware Fusion were retired in	says it is retired
+AGENTS.md	- **A Parallels, UTM or VMware Fusion VM** (retired in 3.4.0): `omacvm vms`	says it is retired
+AGENTS.md	| `src/lib/retired.sh` | The retired Parallels, UTM and VMware Fusion VMs (3.4.0): `retired_list`	says it is retired
+AGENTS.md	--full-name --hostname` (`--vm-type parallels|utm|fusion`: exit 2, retired), `--feature NAME=on|off`	says it is retired
+AGENTS.md	Omanotch (uninstall also removes the retired Parallels clipboard helper `clip-in` of 3.3 and	says it is retired
+CONTRIBUTING.md	OmacVM is OmacVM.app only. Parallels, UTM and VMware Fusion were retired in	says it is retired
+docs/README.md	Parallels, UTM and VMware Fusion were retired in 3.4.0	says it is retired
+docs/benchmarks/README.md	UTM and VMware Fusion (retired in 3.4.0) are in	says it is retired
+docs/notes/findings.md	Parallels, UTM and VMware Fusion (retired in 3.4.0) are in	says it is retired
+docs/troubleshooting.md	- **A VM in Parallels, UTM or VMware Fusion**: OmacVM 3.4.0 retired those	says it is retired
+docs/troubleshooting.md	were about Parallels, UTM and VMware Fusion, retired in 3.4.0; they are in	says it is retired
+src/battery/README.md	1.91.4, dkms 3.4.3: an OmacVM.app VM (and a retired UTM 5 VM through the Bridge)	says it is retired
+src/bridge/README.md	Parallels, UTM and VMware Fusion were retired in OmacVM 3.4.0 (AGENTS.md).	says it is retired
+src/bridge/mac/main.swift	// The Mac'"'"'s address on the retired Parallels, UTM and VMware Fusion networks	says it is retired
+src/bridge/mac/test-retired.sh	*	the test of the Bridge on those routes'"'"' addresses
+src/bridge/mac/tests/touchid_tests.swift	let retiredApps = ["Parallels Desktop.app/Contents/MacOS/prl_client_app", "UTM.app/Contents/MacOS/UTM",	says it is retired
+src/cmd/apply.sh	# --reset-host-key forgets it (a rebuilt VM). A retired Parallels, UTM or	says it is retired
+src/cmd/apply.sh	# VMware Fusion VM is not touched (exit 3, src/lib/retired.sh).	says it is retired
+src/cmd/check.sh	# The retired routes'"'"' addresses (Parallels'"'"' and the others'"'"' networks, when up) get the	says it is retired
+src/cmd/report.sh	# A retired Parallels, UTM or VMware Fusion VM (src/lib/retired.sh): exit 3,	says it is retired
+src/cmd/update.sh	# A retired Parallels, UTM or VMware Fusion VM (src/lib/retired.sh) is never	says it is retired
+src/cmd/update.sh	$RETIRED_IN no longer serve them: no Bridge bar items (Wi-Fi, Bluetooth, audio), media keys, wallpaper or time zone, no gestures or scroll momentum, no Omanotch, no camera and battery (UTM,	says it is retired
+src/cmd/vms.sh	# retired Parallels, UTM and VMware Fusion VMs OmacVM set up here before 3.4.0	says it is retired
+src/cmd/vms.sh	# type parallels|utm|fusion, state "retired", "retired": true, note "retired in 3.4.0".	says it is retired
+src/gestures/mac/omacvm-gestures.c	// Parallels, UTM and VMware Fusion are retired (3.4.0): nothing listens on	says it is retired
+src/gestures/mac/test-identity.c	const char *retiredApps[] = { "UTM", "prl_client_app", "VMware Fusion" }; int retiredOurs = 0;	says it is retired
+src/guest/install.sh	# 3.4.0 retired Parallels, UTM and VMware Fusion.	says it is retired
+src/guest/install.sh	echo "guest/install.sh: OmacVM 3.4.0 retired Parallels, UTM and VMware Fusion: --vm-type app	says it is retired
+src/lib/vm.sh	#                            NAME<TAB>parallels|utm|fusion<TAB>retired (retired.sh)	says it is retired
+src/lib/vm.sh	# cannot tell which VM ("soft": returns 1). A retired Parallels, UTM or	says it is retired
+src/lib/vm.sh	# VMware Fusion VM: exit 3 with the text of retired.sh, nothing done to it.	says it is retired
+src/lib/vm.sh	# vm_type NAME -> app, or parallels | utm | fusion for a retired VM. An	says it is retired
+src/mac/uninstall.sh	# The clipboard helper of the retired Parallels route (OmacVM 3.3 and older).	says it is retired
+src/omanotch/README.md	accepted only from that network. The retired Parallels, UTM and VMware Fusion networks are not	says it is retired
+src/prebuilt/make-image.sh	parallels|utm|fusion) echo "make-image.sh: $(retired_build_message)" >&2; exit 2 ;;	says it is retired
+src/tests/vm-names.sh	*	stand-ins: VM names beside retired ones'
 
 # The docs (README.md, docs/, the chart and its test) are the docs PR's: until
 # its ADR 0071 is in, they are 3.3's and not checked here.
 DOCS=1
 ls docs/adr/0071-*.md >/dev/null 2>&1 || { DOCS=0; echo "note README.md and docs/ not checked: their 3.4.0 version (ADR 0071) is not in this tree yet"; }
 
-hits=$(git grep -n -I -i -P "$WORDS" -- . | grep -v -i 'retire' |
+hits=$(git grep -n -I -i -P "$WORDS" -- . |
   ALLOW=$ALLOW DOCS=$DOCS awk '
     BEGIN { docs = ENVIRON["DOCS"] + 0; n = split(ENVIRON["ALLOW"], rows, "\n"); for (i = 1; i <= n; i++) { split(rows[i], f, "\t"); path[i] = f[1]; text[i] = f[2] } }
     {
