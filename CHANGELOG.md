@@ -3,14 +3,6 @@
 What's new in each OmacVM release. The release notes on GitHub say the same
 in more words.
 
-## 3.4.0 (unreleased)
-
-- **OmacVM.app only: Parallels, UTM and VMware Fusion are retired.** A VM on one of them keeps
-  running as it is, with its OmacVM 3.3.x, and nothing in it is changed or deleted; it gets no more
-  OmacVM updates. To move: `omacvm build` makes a new VM in OmacVM.app, then copy your files over
-  ([how](README.md#retired-routes), ADR 0071). The README, the feature list, the docs and the
-  benchmark charts are shorter: OmacVM.app against the Mac itself.
-
 ## 3.3.1
 
 Zed and other wgpu apps run on Vulkan again in OmacVM.app: this needs only the app update and counts
