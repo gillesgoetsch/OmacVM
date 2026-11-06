@@ -164,7 +164,7 @@ fresh() {   # a 4.0 VM from omarchy-mac: packages, files, journal gone
   printf '%s\n' "omarchy 4.0.3rc4-2 e" "omarchy-settings 4.0.3rc4-2 d" "omarchy-mac-keyring 20260914-2 d" \
     "snapper 0.13-1 d" "iwd 3.10-1 d" "jq 1.8.1-1 e" "obsidian-appimage 1.13.7-2 e" "vi 1:070224-6 e" > "$P/db"
   printf '%s\n' "omarchy 4.5.0-3 e" "omarchy-settings 4.5.0-3 d" "omarchy-mac-keyring 20260914-2 d" \
-    "snapper 0.13-1 e" "iwd 3.10-1 e" "jq 1.8.1-1 e" "obsidian 1.15.0-1 e" "vi 1:070224-6 e" "gliff 0.4.2-1 d" > "$P/after"
+    "snapper 0.13-1 e" "iwd 3.10-1 e" "jq 1.8.1-1 e" "obsidian 1.15.0-1 e" "vi 1:070224-6 e" "gliff 0.4.2-1 d" "libclc 23.1.3-1 d" > "$P/after"
   printf 'vi\n' > "$P/foreign"
   printf '[options]\nColor\nHoldPkg = pacman glibc\nArchitecture = aarch64\nIgnorePkg = mine\n\n[omarchy]\nUsage = Sync\nServer = https://pkgs.omarchy.org/edge/$arch\n\n[omarchy-aarch64]\nSigLevel = Optional TrustAll\nServer = https://github.com/omarchy-mac/omarchy-pkgs-aarch64/releases/download/rc\n\n[asahi-alarm]\nInclude = /etc/pacman.d/mirrorlist.asahi-alarm\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n\n[myrepo]\nServer = https://example.invalid/$arch\n' > "$T/pacman.conf"
   printf 'Server = https://de3.mirror.archlinuxarm.org/$arch/$repo\n' > "$T/mirrorlist"
@@ -236,7 +236,7 @@ expect "status JSON: done, last phase, result" "done report 13 True" \
   "$(json '" ".join(str(x) for x in [d["state"], d["phase"], d["phase_index"], d["resumable"]])' <<<"$res")"
 expect "result: removed omarchy-mac-keyring and obsidian-appimage, obsidian swapped" "['obsidian-appimage', 'omarchy-mac-keyring'] swapped" \
   "$(json 'str(sorted(d["result"]["removed"])) + " " + d["result"]["obsidian"]' <<<"$res")"
-expect "result: snapper and iwd marked (keep list), foreign vi listed" "iwd snapper | vi" \
+expect "result: snapper and iwd marked (keep list; libclc after the switch), foreign vi listed" "iwd libclc snapper | vi" \
   "$(json '" ".join(sorted(d["result"]["keep_marked"])) + " | " + " ".join(d["result"]["foreign"])' <<<"$res")"
 expect "result: the user's own pacman.conf lines listed (not carried over)" "IgnorePkg = mine|[myrepo]|Server = https://example.invalid/\$arch" \
   "$(json '"|".join(d["result"]["pacman_conf_lines"])' <<<"$res")"
@@ -251,6 +251,8 @@ expect "on the disk before the journal moves on: a sync after every step, and af
   "$(awk '$1 == "sync" && NF == 3 && $2 != $3 && !s[$2]++ { print $2 }' "$P/calls" | tr '\n' ' ' | sed 's/ $//')|$(awk '$1 == "sync" && NF == 3 && $2 == $3 && !s[$2]++ { print $2 }' "$P/calls" | tr '\n' ' ' | sed 's/ $//')"
 expect "GRUB's menu: written beside it, then put in its place" "grub-mkconfig -o $RT/boot/grub/grub.cfg.omacvm-new|menu 4.5|no" \
   "$(grep '^grub-mkconfig' "$P/calls")|$(cat "$RT/boot/grub/grub.cfg")|$([[ -e $RT/boot/grub/grub.cfg.omacvm-new ]] && echo yes || echo no)"
+expect "keep list after the switch: libclc, new as a dependency of the switch, marked as installed on purpose" "libclc 23.1.3-1 e" \
+  "$(grep '^libclc ' "$P/db")"
 expect "keyring: a new one with Arch Linux ARM's keys and Omarchy's, never omarchy-mac's" \
   "pacman-key --populate archlinuxarm|pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571" \
   "$(grep -E -- '--populate|--lsign' "$P/calls" | tr '\n' '|' | sed 's/|$//')"

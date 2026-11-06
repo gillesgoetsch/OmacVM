@@ -40,7 +40,8 @@
 #   commit     one transaction: omarchy + omarchy-settings with the whole
 #              system (pacman -Suu: Omarchy's snapshot can be older than
 #              Arch Linux ARM), Omarchy's obsidian for obsidian-appimage;
-#              omarchy-mac-keyring removed. Cut off in here: Undo only
+#              omarchy-mac-keyring removed; the keep list again. Cut off in
+#              here: Undo only
 #   platform   Omarchy's own omarchy-hw-platform must say aarch64
 #   mpv        OmacVM's mpv defaults again (4.5's omarchy-settings owns the file)
 #   vulkan     OmacVM's Venus driver, rebuilt when its libraries went missing
@@ -382,19 +383,24 @@ targets() {
   fi
 }
 
-step_protect() {
+# OmacVM's packages (keep-packages.txt) marked as installed on purpose:
+# Omarchy 4.5 removes orphans on every update.
+keep_marked() {
   local want have
-  [[ -s $J/pre-packages.txt ]] || pacman -Q > "$J/pre-packages.txt" || return 1
-  [[ -s $J/pre-explicit.txt ]] || pacman -Qqe > "$J/pre-explicit.txt" || return 1
   want=$(grep -v '^#' "$S/keep-packages.txt" | awk 'NF { print $1 }')
   # shellcheck disable=SC2086 # one package per word
   have=$(pacman -Qqd $want 2>/dev/null || true)
-  if [[ -n $have ]]; then
-    # shellcheck disable=SC2086
-    pacman -D --asexplicit $have >/dev/null || return 1
-    echo "$have" >> "$J/keep-marked.txt"
-    say "marked as installed on purpose: $(echo $have)"
-  fi
+  [[ -n $have ]] || return 0
+  # shellcheck disable=SC2086
+  pacman -D --asexplicit $have >/dev/null || return 1
+  echo "$have" >> "$J/keep-marked.txt"
+  say "marked as installed on purpose: $(echo $have)"
+}
+
+step_protect() {
+  [[ -s $J/pre-packages.txt ]] || pacman -Q > "$J/pre-packages.txt" || return 1
+  [[ -s $J/pre-explicit.txt ]] || pacman -Qqe > "$J/pre-explicit.txt" || return 1
+  keep_marked
 }
 
 step_initramfs() {
@@ -461,6 +467,8 @@ step_commit() {
   if pacman -Q omarchy-mac-keyring >/dev/null 2>&1; then
     pacman -Rdd --noconfirm omarchy-mac-keyring >> "$LOG" 2>&1 || say "omarchy-mac-keyring not removed (listed)"
   fi
+  # The switch can bring OmacVM's packages in as dependencies.
+  keep_marked || return 1
   at45 "$(version)" || { REASON="omarchy is $(version) after the switch"; return 1; }
   jset commit-done 1; sync
 }
