@@ -1103,6 +1103,13 @@ do {
            "card: backup deleted: gone for good")
     expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=undone\n"), backupExists: false, alive: false) == .offer,
            "card: after Undo: offered again")
+    // Keep, then Delete Backup (or the backup gone) on a VM still on 4.0: offered again, never a dead end.
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=done-final\n"), backupExists: false, alive: false) == .offer,
+           "card: kept, backup deleted, still 4.0: offered again")
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=kept\n"), backupExists: false, alive: false) == .offer,
+           "card: kept, backup gone by hand, still 4.0: offered again")
+    expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=kept\n"), backupExists: false, alive: false) == .hidden,
+           "card: kept, backup gone, on 4.5 (record): hidden")
     // An app crash: the script gone, its QEMU running on (settle shuts it down first).
     let crashed = jr("state=running\nstep=5\npid=4242\nqemu_pid=4343\nsettle_pid=0\nboot=1793501514\n")!
     expect(crashed.qemuPid == 4343 && crashed.settlePid == 0 && crashed.boot == "1793501514", "journal: the move's QEMU, settle and boot read")
@@ -1131,6 +1138,11 @@ do {
     expect(M.need(allocated: 20 * gb) == 34 * gb, "need: allocated 20 GB + 10 GB reserve + 4 GB downloads = 34 GB (D1)")
     expect(M.problem(apfs: true, freeBytes: 34 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil) == nil,
            "check: exactly enough free: ok")
+    expect(M.problem(apfs: true, freeBytes: 15 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil,
+                     backupExists: true) == nil && M.need(allocated: 20 * gb, backupExists: true) == 14 * gb,
+           "check: Resume with the backup made: 10 GB reserve + 4 GB downloads are enough (as move-vm.sh's step 1)")
+    expect(M.problem(apfs: true, freeBytes: 13 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil,
+                     backupExists: true) != nil, "check: Resume with the backup made, under 14 GB free: refused")
     let low = M.problem(apfs: true, freeBytes: 33 * gb, allocated: 20 * gb, diskJobPending: false, resizePending: false, otherCopy: nil)
     expect(low == "Not enough free space: the move needs 34 GB free on this drive, it has 33 GB.", "check: too little free: needed and free in the text")
     expect(M.problem(apfs: false, freeBytes: 900 * gb, allocated: gb, diskJobPending: false, resizePending: false, otherCopy: nil)?.contains("APFS") == true,

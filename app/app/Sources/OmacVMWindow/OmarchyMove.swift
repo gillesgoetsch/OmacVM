@@ -184,12 +184,12 @@ public enum OmarchyMove {
             case .interrupted:
                 return .interrupted(step: j.step, reason: j.reason, resumable: resumableAfterStop(j))
             case .done, .kept:
-                // The backup gone by hand: nothing left to undo or delete.
                 if backupExists { return .done(since: j.finished, kept: j.state == .kept) }
-                return .hidden
-            case .final:
-                return .hidden
-            case .undone:
+                // The backup gone (deleted, or by hand): nothing left to undo
+                // or delete; the record says whether the VM is on 4.5 now (a
+                // kept disk stays offered while it is not: the guest decides).
+                if j.state == .done { return .hidden }
+            case .final, .undone:
                 break
             }
         }
@@ -235,20 +235,24 @@ public enum OmarchyMove {
 
     /// What the Mac needs free: the disk's allocated bytes (the backup shares
     /// them, but the move rewrites most of the system: worst case, D1), the
-    /// reserve the disk keeps, and the downloads.
-    public static func need(allocated: Int64) -> Int64 { allocated + DiskSize.macReserve + downloadRoom }
+    /// reserve the disk keeps, and the downloads. A Resume with the backup
+    /// made already: its blocks are held, the reserve and the downloads are
+    /// what is left to find (move-vm.sh's step 1 says the same).
+    public static func need(allocated: Int64, backupExists: Bool = false) -> Int64 {
+        (backupExists ? 0 : allocated) + DiskSize.macReserve + downloadRoom
+    }
 
     /// Why the move cannot start now, with its fix; nil: it can.
     /// apfs: the VMs folder's volume makes clones (nil: unknown, treated as yes).
     public static func problem(apfs: Bool?, freeBytes: Int64?, allocated: Int64, diskJobPending: Bool,
-                               resizePending: Bool, otherCopy: String?) -> String? {
+                               resizePending: Bool, otherCopy: String?, backupExists: Bool = false) -> String? {
         if let o = otherCopy { return o }
         if apfs == false {
             return "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM in Storage & Updates first."
         }
         if resizePending { return "A change of the disk's size is not finished. Start the VM once (or go back) first." }
         if diskJobPending { return "Omarchy grows into the disk's new size at the next start. Start the VM once first." }
-        let n = need(allocated: allocated)
+        let n = need(allocated: allocated, backupExists: backupExists)
         if let f = freeBytes, f < n {
             return "Not enough free space: the move needs \(DiskSize.text(n)) free on this drive, it has \(DiskSize.text(f))."
         }

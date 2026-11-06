@@ -408,6 +408,7 @@ enum RenderVMWindow {
         sheet("sheet-move-1-confirm") { MoveConfirmSheet(vm: config.name, running: false, need: 31 * gib, free: 212 * gib) { _ in } }
         sheet("sheet-move-2-confirm-vm-runs") { MoveConfirmSheet(vm: config.name, running: true, need: 31 * gib, free: 212 * gib) { _ in } }
         sheet("sheet-move-3-undo") { MoveUndoSheet(vm: config.name, afterMove: true, since: "6 November 2026") { _ in } }
+        sheet("sheet-move-3b-undo-kept") { MoveUndoSheet(vm: config.name, afterMove: true, kept: true, since: "6 November 2026") { _ in } }
         sheet("sheet-move-4-undo-stopped") { MoveUndoSheet(vm: config.name, afterMove: false, since: "") { _ in } }
         sheet("sheet-move-5-delete") { MoveDeleteSheet(size: "about 12 GB") { _ in } }
         sheet("sheet-move-6-keep") { MoveKeepSheet(vm: config.name) { _ in } }

@@ -88,7 +88,7 @@ enum MoveFiles {
         let apfs = (try? c.folder.resourceValues(forKeys: [.volumeSupportsFileCloningKey]))?.volumeSupportsFileCloning
         return OmarchyMove.problem(apfs: apfs, freeBytes: VMDisk.info(c)?.freeBytes, allocated: allocated,
                                    diskJobPending: VMDisk.jobs(c).contains(.grow), resizePending: VMDisk.resize(c) != nil,
-                                   otherCopy: Paths.startProblem(c.folder))
+                                   otherCopy: Paths.startProblem(c.folder), backupExists: backupExists(c))
     }
 
     static func need(_ c: VMConfig) -> Int64 {
@@ -174,6 +174,9 @@ struct OmarchyMoveCard: View {
         var card = OmarchyMove.Card.hidden
         var problem: String?
         var backup: (bytes: Int64, exact: Bool)?
+        /// Keep This Disk: only once Omarchy's packages began to change (before
+        /// that the disk is Omarchy 4.0 as it was: Resume or Undo).
+        var canKeep = true
     }
 
     private var now: Now {
@@ -182,7 +185,10 @@ struct OmarchyMoveCard: View {
         let c = state.config
         var n = Now(card: MoveFiles.card(c, settling: settling))
         switch n.card {
-        case .offer, .failed, .interrupted: n.problem = MoveFiles.problem(c)
+        case .offer: n.problem = MoveFiles.problem(c)
+        case .failed, .interrupted:
+            n.problem = MoveFiles.problem(c)
+            n.canKeep = MoveFiles.journal(c)?.commitStarted == true
         case .done: n.backup = OmarchyMove.backupBytes(MoveFiles.backupURL(c))
         default: break
         }
@@ -191,7 +197,7 @@ struct OmarchyMoveCard: View {
 
     var body: some View {
         let n = now
-        let card = n.card, problem = n.problem, backup = n.backup
+        let card = n.card, problem = n.problem, backup = n.backup, canKeep = n.canKeep
         VStack(spacing: 0) {
             switch card {
             case .hidden:
@@ -229,9 +235,11 @@ struct OmarchyMoveCard: View {
                       text: stoppedText(reason: reason, interrupted: stopped, resumable: resumable, problem: problem),
                       textIsError: false) {
                     if busy { ProgressView().controlSize(.small).layoutProbe("move-busy") }
-                    Button("Keep This Disk…") { sheet = .keep }
-                        .disabled(busy || running)
-                        .layoutProbe("move-keep")
+                    if canKeep {
+                        Button("Keep This Disk…") { sheet = .keep }
+                            .disabled(busy || running)
+                            .layoutProbe("move-keep")
+                    }
                     Button("Undo…") { sheet = .undo }
                         .disabled(busy || running)
                         .layoutProbe("move-undo")
@@ -292,7 +300,8 @@ struct OmarchyMoveCard: View {
                     if go { state.moveVM(resume: false) }
                 }
             case .undo:
-                MoveUndoSheet(vm: state.config.name, afterMove: { if case .done(_, false) = now.card { return true } else { return false } }(),
+                MoveUndoSheet(vm: state.config.name, afterMove: { if case .done = now.card { return true } else { return false } }(),
+                              kept: { if case .done(_, true) = now.card { return true } else { return false } }(),
                               since: backupDate) { go in
                     sheet = nil
                     if go { act("undo", done: "\(state.config.name) is back on the disk from before the move.") }
@@ -462,14 +471,16 @@ struct MoveConfirmSheet: View {
 /// Undo: after a finished move it costs what was saved in the VM since (D2).
 struct MoveUndoSheet: View {
     let vm: String
+    /// The VM could be used since (moved, or kept after a stop): what was saved is lost (D2).
     let afterMove: Bool
+    var kept = false
     let since: String
     var done: (Bool) -> Void
 
     var body: some View {
         DestructiveSheet(symbol: "arrow.uturn.backward.circle", title: afterMove ? "Undo the move to Omarchy 4.5?" : "Undo the move?",
                          text: afterMove
-                            ? "\(vm) goes back to the disk from before the move\(since.isEmpty ? "" : " (\(since))"), on Omarchy 4.0. Everything saved in \(vm) since then is lost: files, apps and settings. The Omarchy 4.5 disk is deleted."
+                            ? "\(vm) goes back to the disk from before the move\(since.isEmpty ? "" : " (\(since))"), on Omarchy 4.0. Everything saved in \(vm) since then is lost: files, apps and settings. \(kept ? "The kept disk" : "The Omarchy 4.5 disk") is deleted."
                             : "\(vm) goes back to the disk from before the move. The partly moved disk is deleted.",
                          action: "Undo Move", probe: "move-undo-confirm", done: done)
     }

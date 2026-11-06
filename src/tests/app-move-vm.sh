@@ -282,6 +282,40 @@ expect "Keep This Disk: kept, the backup stays" "0 kept there" "$rc $(jget state
 mv_run ok delete-backup; rc=$?
 expect "... then Delete the backup" "0 done-final" "$rc $(jget state)"
 
+# After Keep and Delete the VM is not on 4.5 (the switch failed): the move is offered and runs again.
+mv_run ok run; rc=$?
+expect "kept, backup deleted, still on 4.0: a new move runs to the end" "0 done" "$rc $(jget state)"
+# Keep before Omarchy's packages began to change: refused (the disk is 4.0 as it was; Resume or Undo).
+fresh
+mv_run net run
+mv_run ok keep; rc=$?
+expect "Keep before the switch began: refused (exit 3), the move still open" "3 failed" "$rc $(jget state)"
+
+# ---------- Undo cut off, then Undo again; Undo after a backup cut short ----------
+fresh
+sum0=$(shasum "$V/disk.img" | cut -c1-40)
+mv_run ok run
+mv "$V/before-omarchy-4.5/disk.img" "$V/disk.img"   # where an Undo that renamed the disk first was cut off
+mv_run ok undo; rc=$?
+expect "Undo after an Undo cut off past the disk: undone, the records from before back (4.0, not 4.5)" \
+  "0 undone 4.0.3rc4 omarchy-mac rc gone $sum0" "$rc $(jget state) $(cat "$V/omarchy") $([[ -e $V/before-omarchy-4.5 ]] && echo there || echo gone) $(shasum "$V/disk.img" | cut -c1-40)"
+fresh
+sum0=$(shasum "$V/disk.img" | cut -c1-40)
+mv_run ok run
+mv_run ok undo OMACVM_TEST_UNDO_STOP=disk; rc=$?
+expect "Undo cut off before the disk: not undone yet, the records already back" "1 done 4.0.3rc4 omarchy-mac rc" "$rc $(jget state) $(cat "$V/omarchy")"
+mv_run ok undo; rc=$?
+expect "... Undo again: the disk from before, undone, the backup gone" "0 undone $sum0 gone" \
+  "$rc $(jget state) $(shasum "$V/disk.img" | cut -c1-40) $([[ -e $V/before-omarchy-4.5 ]] && echo there || echo gone)"
+fresh
+sum0=$(shasum "$V/disk.img" | cut -c1-40)
+mkdir -p "$V/before-omarchy-4.5"; cp -c "$V/disk.img" "$V/before-omarchy-4.5/disk.img"   # step 3 cut short: no records, no backup_at
+printf 'format=1\nstate=interrupted\nstep=3\nbackup_at=\ncommit_started=0\nresumable=1\n' > "$V/move-4.5"
+mv_run ok undo; rc=$?
+expect "Undo after a backup cut short: undone, the VM's records all kept, the disk as it was" \
+  "0 undone features graphics omacvm-version omarchy $sum0" \
+  "$rc $(jget state) $(cd "$V" && ls features graphics omacvm-version omarchy 2>/dev/null | tr '\n' ' ')$(shasum "$V/disk.img" | cut -c1-40)"
+
 # ---------- the apply after the move fails: Resume skips the finished guest move ----------
 fresh
 mv_run apply6-fail run; rc=$?

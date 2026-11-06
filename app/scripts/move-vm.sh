@@ -311,6 +311,9 @@ keep)
   take_lock || { echo "the move or its stop runs" >&2; exit 3; }
   trap drop_lock EXIT
   settle
+  # Before Omarchy's packages began to change the disk is Omarchy 4.0 as it
+  # was: nothing to keep (a kept 4.0 disk would hide the move): Resume or Undo.
+  [[ $(jget commit_started) == 1 ]] || { echo "nothing of Omarchy changed yet: resume or undo the move" >&2; exit 3; }
   jset state kept finished "$(now_iso)"
   echo "KEPT $NAME"; exit 0 ;;
 delete-backup)
@@ -327,10 +330,12 @@ undo)
   trap drop_lock EXIT
   settle
   wait_unused || die "$RUNS_TEXT: shut it down there, then undo the move."
-  if [[ -f $B/disk.img ]]; then
-    # The backup's files back in place: rename() replaces the moved ones at once.
-    mv -f "$B/disk.img" "$VM_DIR/disk.img"
-    [[ -f $B/efi-vars.fd ]] && mv -f "$B/efi-vars.fd" "$VM_DIR/efi-vars.fd"
+  if [[ -n $(jget backup_at) && -d $B ]]; then
+    # A finished backup (backup_at is written after its last file). Safe to
+    # cut off and run again: the records and EFI vars first, the disk last
+    # (rename() replaces the moved one at once: the commit point), then the
+    # journal, then the folder. A second Undo after a cut finds the records
+    # in the backup still and the disk either there or back already.
     for r in "${RECORDS[@]}"; do
       [[ $r == vm.env ]] && continue
       if [[ -f $B/$r ]]; then cp -p "$B/$r" "$VM_DIR/$r"; else rm -f "$VM_DIR/$r"; fi
@@ -340,10 +345,15 @@ undo)
     if [[ $gbk =~ ^[0-9]+$ ]]; then
       sed -i '' "s/^DISK_GB=.*/DISK_GB=$gbk/" "$VM_DIR/vm.env"
     fi
+    [[ -f $B/efi-vars.fd ]] && mv -f "$B/efi-vars.fd" "$VM_DIR/efi-vars.fd"
+    [[ ${OMACVM_TEST_UNDO_STOP:-} == disk ]] && exit 1   # src/tests/app-move-vm.sh: cut off before the disk
+    [[ -f $B/disk.img ]] && mv -f "$B/disk.img" "$VM_DIR/disk.img"
+    sync
+    jset state undone finished "$(now_iso)"
     rm -rf "$B"
     log "the disk from before the move is back"
   elif [[ -d $B ]]; then
-    rm -rf "$B"   # a backup cut short: the disk was never changed
+    rm -rf "$B"   # a backup cut short (step 3): the VM's disk and records were never changed
   fi
   rm -f "$STOP"
   jset state undone finished "$(now_iso)"
@@ -359,6 +369,12 @@ trap drop_lock EXIT
 # the journal learns how far its guest got).
 settle
 state=$(jget state)
+# Kept (or kept, then the backup deleted) while not on 4.5: a new move (the
+# guest's preflight decides). With its backup still there: Undo or Delete first.
+on45() { [[ $(cat "$VM_DIR/omarchy" 2>/dev/null) =~ ^4\.([5-9]|[1-9][0-9])|^([5-9]|[1-9][0-9])\. ]]; }
+if [[ ($state == kept || $state == done-final) && ! -d $B ]] && ! on45; then
+  state=undone
+fi
 case $state in
   done|kept|done-final) drop_lock; echo "move-vm.sh: $NAME was moved already" >&2; exit 3 ;;
 esac
