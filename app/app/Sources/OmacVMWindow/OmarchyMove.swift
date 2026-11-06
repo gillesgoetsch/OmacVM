@@ -38,6 +38,9 @@ public enum OmarchyMove {
 
     public enum State: String, Equatable {
         case running, failed, interrupted, done, undone, kept
+        /// Undo began to put the backup back and did not finish (OmacVM
+        /// quit, the Mac turned off): only Undo goes on from here.
+        case undoing
         /// The backup was deleted: the move is over for good.
         case final = "done-final"
     }
@@ -105,7 +108,7 @@ public enum OmarchyMove {
         public static func == (a: Journal, b: Journal) -> Bool { a.text == b.text }
 
         /// Not over yet: Start, Update VM and disk changes wait for Resume or Undo.
-        public var open: Bool { state == .running || state == .failed || state == .interrupted }
+        public var open: Bool { state == .running || state == .failed || state == .interrupted || state == .undoing }
 
         /// A key move-vm.sh keeps beside the known ones (the last one wins).
         public func value(_ key: String) -> String? { other.last { $0.0 == key }?.1 }
@@ -165,6 +168,9 @@ public enum OmarchyMove {
         case interrupted(step: Int, reason: String, resumable: Bool)
         /// Moved (or kept after a stop); the backup is still there.
         case done(since: String, kept: Bool)
+        /// An Undo cut off: Undo again (never Resume or Keep: the backup's
+        /// EFI vars or disk may be back in the VM already).
+        case undoing(reason: String)
     }
 
     /// recordText: the `omarchy` file (nil: none yet, every VM before
@@ -183,6 +189,8 @@ public enum OmarchyMove {
                 return .failed(step: j.failedStep > 0 ? j.failedStep : j.step, reason: j.reason, resumable: j.resumable || j.askGuest)
             case .interrupted:
                 return .interrupted(step: j.step, reason: j.reason, resumable: resumableAfterStop(j))
+            case .undoing:
+                return .undoing(reason: j.reason)
             case .done, .kept:
                 if backupExists { return .done(since: j.finished, kept: j.state == .kept) }
                 // The backup gone (deleted, or by hand): nothing left to undo

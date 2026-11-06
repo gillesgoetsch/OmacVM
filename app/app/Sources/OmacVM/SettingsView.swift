@@ -35,7 +35,7 @@ struct ReadyView: View {
     private var moveOpen: Bool {
         if let m = preview?.move {
             switch m.card {
-            case .failed, .interrupted, .running, .stopping: return true
+            case .failed, .interrupted, .running, .stopping, .undoing: return true
             default: return false
             }
         }

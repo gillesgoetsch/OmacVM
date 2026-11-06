@@ -1046,7 +1046,7 @@ do {
     var multi = OmarchyMove.Journal(); multi.reason = "one\ntwo"
     expect(OmarchyMove.Journal.parse(multi.text)?.reason == "one two", "journal: a reason never breaks into two lines")
     expect(OmarchyMove.Journal.parse("state=done-final\n")?.state == .final, "journal: done-final")
-    for (s, open) in [("running", true), ("failed", true), ("interrupted", true), ("done", false), ("kept", false), ("undone", false), ("done-final", false)] {
+    for (s, open) in [("running", true), ("failed", true), ("interrupted", true), ("undoing", true), ("done", false), ("kept", false), ("undone", false), ("done-final", false)] {
         expect(OmarchyMove.Journal.parse("state=\(s)\n")?.open == open, "journal \(s): \(open ? "not over (Start waits)" : "over")")
     }
 }
@@ -1077,6 +1077,11 @@ do {
     expect(M.card(recordText: nil, journal: jr("state=failed\nstep=4\nfailed_step=4\ncommit_started=1\nresumable=0\nask_guest=0\ncode=undo-only\n"), backupExists: true, alive: false)
            == .failed(step: 4, reason: "", resumable: false), "card: asked, the VM said its switch was cut off: Undo only")
     expect(jr("state=failed\nask_guest=1\n")?.askGuest == true && jr("state=failed\n")?.askGuest == false, "journal: ask_guest read")
+    // An Undo cut off (move-vm.sh writes undoing before it puts anything back): Undo again, never Resume or Keep.
+    expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=undoing\nstep=5\ncommit_started=1\nresumable=0\nreason=Undo did not finish.\n"), backupExists: true, alive: false)
+           == .undoing(reason: "Undo did not finish."), "card: an Undo cut off: Undo only")
+    expect(M.card(recordText: "4.5.0 aarch64 stable", journal: jr("state=undoing\nstep=8\nresumable=0\nask_guest=1\n"), backupExists: true, alive: false)
+           == .undoing(reason: ""), "card: an Undo after a move cut off: Undo only (not the moved card, not Resume)")
     // The app's own update waits while a move runs (also between two of its VM starts); not for a stopped one.
     let run = jr("state=running\nstep=1\npid=4242\n")!, stopped = jr("state=interrupted\nstep=5\n")!
     expect(M.runs(run, scriptAlive: true, settleAlive: false, qemuAlive: false), "update waits: move-vm.sh runs (no VM yet)")

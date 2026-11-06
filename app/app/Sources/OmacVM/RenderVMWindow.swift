@@ -301,7 +301,7 @@ enum RenderVMWindow {
 
     /// Move to Omarchy 4.5: the card under the header in each state (the
     /// offer, blocked by space and by a drive without APFS, stopped with
-    /// Resume, stopped with Undo only, interrupted, moved with the backup
+    /// Resume, stopped with Undo only, interrupted, an Undo cut off, moved with the backup
     /// row), the move's progress with its steps (running and stopped), and
     /// the sheets. The card must be under the header in every picture
     /// ("move-card"), its buttons inside the window.
@@ -330,6 +330,13 @@ enum RenderVMWindow {
         window("window-move-6-interrupted", state, p) { dark in shown("window-move-6-interrupted", dark) }
         p.move = card(.running(step: 5))
         window("window-move-18-running-elsewhere", state, p) { dark in shown("window-move-18-running-elsewhere", dark) }
+        p.move = card(.undoing(reason: "Undo did not finish (OmacVM quit or the Mac turned off). Undo again puts the disk from before the move back."))
+        window("window-move-19-undo-cut-off", state, p) { dark in
+            shown("window-move-19-undo-cut-off", dark)
+            if LayoutProbe.frames["move-resume"] != nil || LayoutProbe.frames["move-keep"] != nil {
+                note("window-move-19-undo-cut-off: Resume or Keep offered\(dark ? " (dark)" : "")", fail: true)
+            }
+        }
         // An app update ready too: the update's banner blue, the offer quiet under it.
         p.move = card(.offer)
         Updater.shared.showForRendering(staged: staged, notice: nil, enabled: true, waiting: false, previous: nil)

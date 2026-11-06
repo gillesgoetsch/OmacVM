@@ -1,13 +1,13 @@
 # The move of an OmacVM.app VM to Omarchy 4.5 (app/scripts/move-vm.sh, the
 # app's "Move to Omarchy 4.5" card). While the VM folder's journal says the
-# move is not over (running, failed or interrupted), apply and update leave
+# move is not over (running, failed, interrupted, or an Undo cut off: undoing), apply and update leave
 # the VM alone: the app's Resume or Undo comes first. The move's own apply
 # runs with OMACVM_MOVE_RUN=1.
 
-# move_open DIR: 0 when the folder's move is running, failed or interrupted.
+# move_open DIR: 0 when the folder's move is running, failed, interrupted or undoing.
 move_open() {
   [[ -z ${OMACVM_MOVE_RUN:-} && -f $1/move-4.5 ]] || return 1
-  case $(sed -n 's/^state=//p' "$1/move-4.5" | head -1) in running|failed|interrupted) return 0 ;; esac
+  case $(sed -n 's/^state=//p' "$1/move-4.5" | head -1) in running|failed|interrupted|undoing) return 0 ;; esac
   return 1
 }
 

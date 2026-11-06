@@ -380,7 +380,10 @@ undo)
     # cut off and run again: the records and EFI vars first, the disk last
     # (rename() replaces the moved one at once: the commit point), then the
     # journal, then the folder. A second Undo after a cut finds the records
-    # in the backup still and the disk either there or back already.
+    # in the backup still and the disk either there or back already. The
+    # journal says undoing first: from here only Undo goes on (a Resume
+    # would keep a backup whose EFI vars or disk went back already).
+    jset state undoing reason "Undo did not finish (OmacVM quit or the Mac turned off). Undo again puts the disk from before the move back." resumable 0
     for r in "${RECORDS[@]}"; do
       [[ $r == vm.env ]] && continue
       if [[ -f $B/$r ]]; then cp -p "$B/$r" "$VM_DIR/$r"; else rm -f "$VM_DIR/$r"; fi
@@ -422,6 +425,7 @@ if [[ ($state == kept || $state == done-final) && ! -d $B ]] && ! on45; then
 fi
 case $state in
   done|kept|done-final) drop_lock; echo "move-vm.sh: $NAME was moved already" >&2; exit 3 ;;
+  undoing) drop_lock; echo "move-vm.sh: an Undo of $NAME's move did not finish: Undo again first" >&2; exit 3 ;;
 esac
 # Undo only when the guest said so (its last word). Without that word after
 # its switch began (the Mac's last poll said "inside", or the run died with

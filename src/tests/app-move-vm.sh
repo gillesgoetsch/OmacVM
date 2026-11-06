@@ -35,9 +35,9 @@ expect() {   # WHAT WANT GOT
 # ---------- src/lib/omarchy-move.sh ----------
 source "$R/src/lib/omarchy-move.sh"
 mkdir -p "$T/lib"
-for s in running failed interrupted done kept undone done-final; do
+for s in running failed interrupted undoing done kept undone done-final; do
   printf 'format=1\nstate=%s\n' "$s" > "$T/lib/move-4.5"
-  case $s in running|failed|interrupted) want=open ;; *) want=over ;; esac
+  case $s in running|failed|interrupted|undoing) want=open ;; *) want=over ;; esac
   expect "move_open: $s is $want" "$want" "$(move_open "$T/lib" && echo open || echo over)"
 done
 printf 'format=1\nstate=running\n' > "$T/lib/move-4.5"
@@ -337,7 +337,7 @@ fresh
 sum0=$(shasum "$V/disk.img" | cut -c1-40)
 mv_run ok run
 mv_run ok undo OMACVM_TEST_UNDO_STOP=disk; rc=$?
-expect "Undo cut off before the disk: not undone yet, the records already back" "1 done 4.0.3rc4 omarchy-mac rc" "$rc $(jget state) $(cat "$V/omarchy")"
+expect "Undo cut off before the disk: not undone yet (undoing: only Undo), the records already back" "1 undoing 4.0.3rc4 omarchy-mac rc" "$rc $(jget state) $(cat "$V/omarchy")"
 mv_run ok undo; rc=$?
 expect "... Undo again: the disk from before, undone, the backup gone" "0 undone $sum0 gone" \
   "$rc $(jget state) $(shasum "$V/disk.img" | cut -c1-40) $([[ -e $V/before-omarchy-4.5 ]] && echo there || echo gone)"
@@ -606,5 +606,32 @@ mv_run grub-restart run OMACVM_MOVE_BOOT_SECONDS=60; rc=$?
 expect "the restart after the switch stops at GRUB's prompt: failed at step 6 at once, Undo only" "1 6 0 no-boot" \
   "$rc $(jget failed_step) $(jget resumable) $(jget code)"
 expect "... within seconds" "1" "$(( $(date +%s) - t0 < 30 ))"
+
+# ---------- Undo cut off: Undo again, never Resume ----------
+# (the #725 review: an Undo cut off after the EFI vars went back left the journal at failed or
+# interrupted, so Resume was offered on a backup without its efi-vars.fd.)
+fresh
+sum0=$(shasum "$V/disk.img" | cut -c1-40); efi0=$(cat "$V/efi-vars.fd")
+mv_run net-download run
+printf 'efi-moved' > "$V/efi-vars.fd"   # the move's VM changed the EFI vars
+mv_run ok undo OMACVM_TEST_UNDO_STOP=disk; rc=$?
+expect "Undo cut off before the disk (EFI vars back): the journal says undoing" "1 undoing" "$rc $(jget state)"
+n_apply=$(wc -l < "$T/apply.log" | tr -d ' ')
+mv_run ok run; rc=$?
+expect "... Resume is refused at once (exit 3), no VM started, says Undo" "3 undoing $n_apply gone yes" \
+  "$rc $(jget state) $(wc -l < "$T/apply.log" | tr -d ' ') $(qemu_gone) $(grep -q 'Undo' "$T/out" && echo yes)"
+mv_run ok keep; rc=$?
+expect "... Keep is refused" "3 undoing" "$rc $(jget state)"
+mv_run ok delete-backup; rc=$?
+expect "... Delete the backup is refused" "1 there" "$rc $([[ -d $V/before-omarchy-4.5 ]] && echo there)"
+mv_run ok undo; rc=$?
+expect "... Undo again: undone, the disk and the EFI vars from before" "0 undone $sum0 $efi0 gone" \
+  "$rc $(jget state) $(shasum "$V/disk.img" | cut -c1-40) $(cat "$V/efi-vars.fd") $([[ -e $V/before-omarchy-4.5 ]] && echo there || echo gone)"
+fresh
+mv_run ok run
+mv_run ok undo OMACVM_TEST_UNDO_STOP=disk; rc=$?
+expect "Undo after a finished move, cut off: undoing (not 'done' with the records of 4.0)" "1 undoing" "$rc $(jget state)"
+mv_run ok undo; rc=$?
+expect "... Undo again: undone" "0 undone" "$rc $(jget state)"
 
 exit $fail

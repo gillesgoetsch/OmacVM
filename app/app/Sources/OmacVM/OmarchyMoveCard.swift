@@ -250,6 +250,17 @@ struct OmarchyMoveCard: View {
                             .layoutProbe("move-resume")
                     }
                 }
+            case .undoing(let reason):
+                strip(icon: "exclamationmark.triangle.fill", tint: Look.orange, background: Look.orange.opacity(0.08),
+                      line: Look.hairline, title: "Undo of the move to Omarchy 4.5 did not finish",
+                      text: reason.isEmpty ? "OmacVM quit or the Mac turned off during Undo. Undo again puts the disk from before the move back." : reason,
+                      textIsError: false) {
+                    if busy { ProgressView().controlSize(.small).layoutProbe("move-busy") }
+                    Button("Undo…") { sheet = .undo }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(busy || running)
+                        .layoutProbe("move-undo")
+                }
             case .done(let since, let kept):
                 // Moved: the strip goes quiet and small. It stays only for the backup,
                 // which can sit here for months, so it must not shout or take room.
