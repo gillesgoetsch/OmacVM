@@ -163,6 +163,9 @@ eval "$(bash -c "source $D/PKGBUILD"' && declare -p provides conflicts')"
   fail "PKGBUILD provides '${provides[*]}', conflicts '${conflicts[*]}'"
 [[ $pkgname == omacvm-vulkan-virtio && "$epoch:$_mesaver" == "$fixed" && $pkgver == "$_mesaver".omacvm* ]] &&
   pass "PKGBUILD is $epoch:$pkgver (Mesa ${fixed#*:})" || fail "PKGBUILD $pkgname $epoch:$pkgver vs FIXED $fixed"
+# package() checks its files against the list with the package's own name (the license folder).
+grep -qF './usr/share/licenses/$pkgname/license.rst' "$D/PKGBUILD" && ! grep -q 'licenses/vulkan-virtio/' "$D/PKGBUILD" &&
+  pass "PKGBUILD: the file list names the license folder by the package's name" || fail "PKGBUILD: the file list has another package's license folder"
 [[ $("$T/vercmp" "$epoch:$pkgver-$pkgrel" "$epoch:$_mesaver-9") == 1 ]] && pass "ours stays over the distro's $_mesaver-x" ||
   fail "the distro's $_mesaver-9 would replace ours"
 sum() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }

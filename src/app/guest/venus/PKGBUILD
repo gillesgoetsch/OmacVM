@@ -71,6 +71,6 @@ package() {
   # Exactly the distro package's files, nothing else.
   local f
   f=$(cd "$pkgdir" && find . -type f | sort | tr '\n' ' ')
-  [[ $f == "./usr/lib/libvulkan_virtio.so ./usr/share/licenses/vulkan-virtio/license.rst ./usr/share/vulkan/icd.d/virtio_icd.json " ]] ||
-    { echo "vulkan-virtio: unexpected files: $f" >&2; return 1; }
+  [[ $f == "./usr/lib/libvulkan_virtio.so ./usr/share/licenses/$pkgname/license.rst ./usr/share/vulkan/icd.d/virtio_icd.json " ]] ||
+    { echo "$pkgname: unexpected files: $f" >&2; return 1; }
 }
