@@ -224,7 +224,7 @@ enum RenderVMWindow {
         notSetUp.running = true
         window("window-25-mac-setup-login-items-vm-runs", state, notSetUp)
 
-        movePictures(state, config, usual)
+        movePictures(state, config, usual, staged: staged)
 
         // Long names: a VM name of 62 characters, a deep VMs folder, a
         // message, an older OmacVM in the VM (Update VM).
@@ -305,7 +305,7 @@ enum RenderVMWindow {
     /// row), the move's progress with its steps (running and stopped), and
     /// the sheets. The card must be under the header in every picture
     /// ("move-card"), its buttons inside the window.
-    private static func movePictures(_ state: AppState, _ config: VMConfig, _ usual: Preview) {
+    private static func movePictures(_ state: AppState, _ config: VMConfig, _ usual: Preview, staged: Updater.Staged) {
         let gib = DiskSize.gib
         func card(_ c: OmarchyMove.Card, problem: String? = nil, backup: (bytes: Int64, exact: Bool)? = nil) -> OmarchyMoveCard.Preview {
             OmarchyMoveCard.Preview(card: c, problem: problem, backup: backup)
@@ -328,6 +328,16 @@ enum RenderVMWindow {
         window("window-move-5-failed-undo-only", state, p) { dark in shown("window-move-5-failed-undo-only", dark) }
         p.move = card(.interrupted(step: 5, reason: "", resumable: true))
         window("window-move-6-interrupted", state, p) { dark in shown("window-move-6-interrupted", dark) }
+        p.move = card(.running(step: 5))
+        window("window-move-18-running-elsewhere", state, p) { dark in shown("window-move-18-running-elsewhere", dark) }
+        // An app update ready too: the update's banner blue, the offer quiet under it.
+        p.move = card(.offer)
+        Updater.shared.showForRendering(staged: staged, notice: nil, enabled: true, waiting: false, previous: nil)
+        window("window-move-17-offer-with-update", state, p) { dark in
+            shown("window-move-17-offer-with-update", dark)
+            if LayoutProbe.frames["update-now"] == nil { note("window-move-17-offer-with-update: no update banner", fail: true) }
+        }
+        Updater.shared.showForRendering(staged: nil, notice: nil, enabled: true, waiting: false, previous: nil)
         p.move = card(.stopping(step: 5))
         window("window-move-16-stopping", state, p) { dark in
             shown("window-move-16-stopping", dark)
@@ -378,12 +388,21 @@ enum RenderVMWindow {
 
         // The move's progress (BuildView): at the download, then stopped there.
         let screen = state.screen
-        state.creator.showForRendering(move: 5, detail: "downloading packages (part 6 of 13)", failed: nil)
+        state.creator.showForRendering(move: 5, detail: "Downloading packages (part 6 of 13)", failed: nil)
         state.screen = .building
         window("window-move-10-progress", state, usual)
-        state.creator.showForRendering(move: 5, detail: "downloading packages (part 6 of 13)",
-                                       failed: "Omarchy's package servers did not answer. Check the Mac's network, then Resume.")
-        window("window-move-11-progress-stopped", state, usual)
+        state.creator.showForRendering(move: 5, detail: "Downloading packages (part 6 of 13)",
+                                       failed: "Omarchy's package servers did not answer. Check the Mac's network, then Resume.", resumable: true)
+        window("window-move-11-progress-stopped", state, usual) { dark in
+            if LayoutProbe.frames["move-resume-progress"] == nil { note("window-move-11-progress-stopped: no Resume\(dark ? " (dark)" : "")", fail: true) }
+        }
+        state.creator.showForRendering(move: 5, detail: "Switching the packages (part 7 of 13)",
+                                       failed: "pacman stopped while it switched the packages (log: logs/move-4.5.log). Undo brings the disk from before back.",
+                                       resumable: false)
+        window("window-move-19-progress-undo-only", state, usual) { dark in
+            if LayoutProbe.frames["move-resume-progress"] != nil { note("window-move-19-progress-undo-only: Resume where it cannot go on", fail: true) }
+        }
+        state.creator.showForRendering(move: 5, detail: "", failed: nil)
         state.screen = screen
 
         sheet("sheet-move-1-confirm") { MoveConfirmSheet(vm: config.name, running: false, need: 31 * gib, free: 212 * gib) { _ in } }

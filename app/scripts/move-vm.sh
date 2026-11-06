@@ -122,7 +122,7 @@ gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; if (g >= 10) printf "%d GB", g
 # The Mac's checks (OmarchyMove.problem says the same in the window).
 mac_problem() {
   wait_unused || { echo "$RUNS_TEXT: shut it down there first."; return; }
-  clones_ok || { echo "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM to one under Storage first."; return; }
+  clones_ok || { echo "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM in Storage & Updates first."; return; }
   [[ -f $VM_DIR/disk-resize ]] && { echo "A change of the disk's size is not finished. Start the VM once (or go back) first."; return; }
   grep -qx grow "$VM_DIR/disk-jobs" 2>/dev/null && { echo "Omarchy grows into the disk's new size at the next start. Start the VM once first."; return; }
   # A backup made already (a resume) holds its blocks: the downloads and the reserve are what is left to find.
@@ -370,7 +370,7 @@ if [[ -n $(jget backup_at) && -f $B/disk.img ]]; then
   log "the backup from $(jget backup_at) is kept"
 else
   # Checked again right before: on another file system cp -c copies the whole disk.
-  clones_ok || fail 3 "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM to one under Storage first." 1 mac
+  clones_ok || fail 3 "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM in Storage & Updates first." 1 mac
   rm -rf "$B"; mkdir -p "$B"
   # clonefile: no copy of the data, the two share every block until one changes.
   cp -c "$VM_DIR/disk.img" "$B/disk.img" || { rm -rf "$B"; fail 3 "Could not back up disk.img (APFS clone failed)." 1 backup; }
@@ -442,16 +442,16 @@ stop_asked && stopped
 # The phases' names (contract.md "phases") in plain words.
 phase_text() {
   case $1 in
-    preflight) echo "checking the VM" ;; protect) echo "keeping OmacVM's packages" ;; initramfs) echo "boot image settings" ;;
-    keyring) echo "new package keys" ;; repos) echo "Omarchy 4.5's package sources" ;; download) echo "downloading packages" ;;
-    commit) echo "switching the packages" ;; platform) echo "checking the platform" ;; mpv) echo "video player settings" ;;
-    vulkan) echo "the Vulkan driver" ;; kernel) echo "the kernel" ;; update) echo "Omarchy's own update" ;; report) echo "the report" ;;
+    preflight) echo "Checking the VM" ;; protect) echo "Keeping OmacVM's packages" ;; initramfs) echo "Boot image settings" ;;
+    keyring) echo "New package keys" ;; repos) echo "Omarchy 4.5's package sources" ;; download) echo "Downloading packages" ;;
+    commit) echo "Switching the packages" ;; platform) echo "Checking the platform" ;; mpv) echo "Video player settings" ;;
+    vulkan) echo "The Vulkan driver" ;; kernel) echo "The kernel" ;; update) echo "Omarchy's own update" ;; report) echo "The report" ;;
     *) echo "$1" ;;
   esac
 }
 res_now() { [[ $(jget commit_started) == 1 ]] && echo 0 || echo 1; }
 
-step 5 "Move to Omarchy 4.5"
+step 5 "Switch Omarchy's packages"
 PF=$LOG/move-preflight.json ST=$LOG/move-status.json
 moved_already=0
 # A resume after the guest finished (a later step failed): its own journal says done.

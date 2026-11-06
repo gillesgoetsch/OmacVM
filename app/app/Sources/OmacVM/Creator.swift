@@ -109,10 +109,12 @@ final class Creator: ObservableObject {
     }
 
     /// The window pictures (RenderVMWindow): a move at this step, or stopped there.
-    func showForRendering(move s: Int, detail d: String, failed f: String?) {
+    func showForRendering(move s: Int, detail d: String, failed f: String?, resumable r: Bool? = nil) {
         job = .move; step = s; steps = OmarchyMove.steps.count; title = OmarchyMove.stepTitle(s)
-        kernelQuestion = nil; manualKeyCommand = nil; detail = d; failed = f
+        kernelQuestion = nil; manualKeyCommand = nil; detail = d; failed = f; renderResumable = r
     }
+    /// The window pictures: whether the stopped move shows Resume (nil: the VM folder's journal says).
+    private(set) var renderResumable: Bool?
 
     /// The window pictures (RenderVMWindow): Update VM at its kernel question.
     func showForRendering(kernel q: KernelQuestion) {

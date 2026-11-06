@@ -1130,7 +1130,7 @@ do {
            "backup size: about, up to, less than 50 MB")
     expect(M.dateText("2026-11-06T01:02:03Z", locale: Locale(identifier: "en_GB")) == "6 November 2026" && M.dateText("bad") == "",
            "done since: a date, nothing when unreadable")
-    expect(M.steps.count == 8 && M.stepTitle(5) == "Move to Omarchy 4.5" && M.stepTitle(0) == "Preparing" && M.stepTitle(9) == "Preparing",
+    expect(M.steps.count == 8 && M.stepTitle(5) == "Switch Omarchy's packages" && M.stepTitle(0) == "Preparing" && M.stepTitle(9) == "Preparing",
            "steps: 8, as move-vm.sh numbers them")
     // The backup's size on this Mac's volume: a clone shares its blocks until one changes.
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("omacvm-move-test-\(getpid())")

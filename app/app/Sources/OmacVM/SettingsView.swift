@@ -50,7 +50,8 @@ struct ReadyView: View {
             header
         } notices: {
             UpdateBanner(updater: updater, running: running) { sheet = .whatsNew }
-            OmarchyMoveCard(state: state, running: running, preview: preview?.move)
+            // One blue banner at a time: the app's update first, the move's offer quiet meanwhile.
+            OmarchyMoveCard(state: state, running: running, preview: preview?.move, quiet: UpdateBanner.shows(updater))
             notices
         } content: {
             SettingsSections(state: state, preview: preview, running: running) { vm in
@@ -250,7 +251,7 @@ struct SettingsSections: View {
                 DiskRow(state: state, preview: preview?.disk)
                 StorageRows(storage: state.storage, selected: state.config.location == nil ? nil : state.config.folder,
                             open: { state.openExisting() }, delete: delete)
-                MoveBackupRow(state: state, preview: preview?.moveBackup)
+                MoveBackupRow(state: state, running: running, preview: preview?.moveBackup)
                 CommandLineRow(preview: preview?.terminal)
                 UpdateRow(updater: Updater.shared, running: running)
             }

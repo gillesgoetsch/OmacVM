@@ -188,7 +188,7 @@ mv_run ok run; rc=$?
 expect "run: a move to the end exits 0" "0" "$rc"
 expect "run: says MOVED" "MOVED Old" "$(grep '^MOVED' "$T/out")"
 expect "run: the 8 steps in order" "1 2 3 4 5 6 7 8" "$(sed -n 's/^STEP \([0-9]\)\/8 .*/\1/p' "$T/out" | tr '\n' ' ' | sed 's/ $//')"
-expect "run: the guest's parts said as they come" "yes" "$(grep -q '==> downloading packages (part 6 of 13)' "$T/out" && grep -q "==> switching the packages" "$T/out" && echo yes)"
+expect "run: the guest's parts said as they come" "yes" "$(grep -q '==> Downloading packages (part 6 of 13)' "$T/out" && grep -q "==> Switching the packages" "$T/out" && echo yes)"
 expect "run: journal done at step 8" "done 8 1" "$(jget state) $(jget step) $(jget commit_started)"
 expect "run: journal knows where it came from" "3.3.0 64" "$(jget from_omacvm) $(jget from_disk_gb)"
 expect "run: the backup: disk, EFI vars, records, README" "disk.img efi-vars.fd features graphics omacvm-version omarchy README.txt vm.env" \
@@ -265,7 +265,7 @@ expect "... no second start of the guest's move" "1" "$(grep -c 'omarchy-move.sh
 # ---------- Stop and Quit, then Resume ----------
 fresh; : > "$T/out"
 ( mv_run slow run ) & BG=$!
-for ((i = 0; i < 100; i++)); do grep -q 'downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
+for ((i = 0; i < 100; i++)); do grep -q 'Downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
 : > "$V/move-4.5.stop"
 wait "$BG"; rc=$?; BG=""
 expect "Stop and Quit: stops (exit 1), interrupted at step 5" "1 interrupted 5" "$rc $(jget state) $(jget step)"
@@ -277,7 +277,7 @@ expect "Resume after Stop: to the end" "0 done" "$rc $(jget state)"
 # ---------- a killed run (power cut), then Resume ----------
 fresh; : > "$T/out"
 ( mv_run slow run ) & BG=$!
-for ((i = 0; i < 100; i++)); do grep -q 'downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
+for ((i = 0; i < 100; i++)); do grep -q 'Downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
 pid=$(jget pid); qpid=$(cat "$T/qemu.pid")
 [[ $pid =~ ^[0-9]+$ ]] && (( pid > 1 )) || { echo "FAIL the killed run: no pid in the journal"; exit 1; }
 expect "while it runs: undo is refused" "1" "$(mv_run ok undo; echo $?)"
@@ -291,7 +291,7 @@ fresh; : > "$T/out"
 ( env PATH="$T/bin:$PATH" FAKE_DIR="$T" FAKE_VM="$V" FAKE_MODE=slow OMACVM_KEY="$T/key" OMACVM_HOST_PORTS= OMACVM_MOVE_POLL=0.2 \
     /bin/bash -c '/bin/bash "$1" "$2" run < /dev/null 2>&1 | tee "$3" > /dev/null' app "$A/scripts/move-vm.sh" "$V" "$T/out" ) &
 BG=$!
-for ((i = 0; i < 100; i++)); do grep -q 'downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
+for ((i = 0; i < 100; i++)); do grep -q 'Downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
 app=$(pgrep -f "^/bin/bash -c /bin/bash" | head -1); kill -9 "$app" 2>/dev/null
 for ((i = 0; i < 150; i++)); do [[ $(jget state) != running && $(jget pid) == 0 ]] && break; sleep 0.2; done
 wait "$BG" 2>/dev/null; BG=""
@@ -333,7 +333,7 @@ fi
 crash_mid() {   # a slow move, its script killed -9 in the download: its QEMU runs on
   fresh; : > "$T/out"; rm -f "$T/power.log"
   ( mv_run slow run ) & BG=$!
-  for ((i = 0; i < 100; i++)); do grep -q 'downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
+  for ((i = 0; i < 100; i++)); do grep -q 'Downloading packages' "$T/out" 2>/dev/null && break; sleep 0.2; done
   local p; p=$(jget pid)
   [[ $p =~ ^[0-9]+$ ]] && (( p > 1 )) && kill -9 "$p"
   wait "$BG" 2>/dev/null; BG=""

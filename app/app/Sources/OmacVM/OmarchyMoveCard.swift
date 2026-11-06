@@ -87,6 +87,18 @@ enum MoveFiles {
         return OmarchyMove.need(allocated: allocated)
     }
 
+    /// The card's and the backup row's actions: move-vm.sh COMMAND, then the
+    /// window reads the VM folder again; done (or the error) under the header.
+    @MainActor
+    static func act(_ command: String, state: AppState, done: String?) async {
+        let c = state.config
+        let err = await run(command, c)
+        if let err { state.say(err) } else if let done { state.tell(done) }
+        if let fresh = VMConfig.load(from: c.folder), fresh.folder == state.config.folder { state.config = fresh }
+        state.tick += 1
+        state.storage.refresh()
+    }
+
     /// move-vm.sh undo, delete-backup or keep (seconds: renames and a delete),
     /// off the main thread. The error line on failure.
     static func run(_ command: String, _ c: VMConfig) async -> String? {
@@ -126,6 +138,8 @@ struct OmarchyMoveCard: View {
     var running: Bool
     /// The window pictures: this state, this check and this backup size.
     var preview: Preview? = nil
+    /// The app's update banner shows above: the offer is drawn quiet (Look.header).
+    var quiet = false
 
     struct Preview {
         var card: OmarchyMove.Card
@@ -174,7 +188,8 @@ struct OmarchyMoveCard: View {
             case .hidden:
                 EmptyView()
             case .offer:
-                strip(icon: "arrow.up.circle.fill", tint: .accentColor, background: Look.banner, line: Look.bannerLine,
+                strip(icon: "arrow.up.circle.fill", tint: .accentColor, background: quiet ? Look.header : Look.banner,
+                      line: quiet ? Look.hairline : Look.bannerLine,
                       title: "Omarchy 4.5 is available for this VM",
                       text: problem ?? "Moves Omarchy to its official ARM packages, about 20-40 minutes. A backup of the disk is kept, so you can undo it.",
                       textIsError: problem != nil) {
@@ -197,11 +212,14 @@ struct OmarchyMoveCard: View {
                 }
             case .failed(let step, let reason, let resumable), .interrupted(let step, let reason, let resumable):
                 let stopped = { if case .interrupted = card { return true } else { return false } }()
-                strip(icon: "exclamationmark.triangle.fill", tint: Look.red, background: Look.red.opacity(0.08), line: Look.hairline,
+                // Interrupted is a pause (the app quit, the Mac slept), not a failure: orange, not red.
+                strip(icon: "exclamationmark.triangle.fill", tint: stopped ? Look.orange : Look.red,
+                      background: (stopped ? Look.orange : Look.red).opacity(0.08), line: Look.hairline,
                       title: (stopped ? "The move to Omarchy 4.5 was interrupted" : "The move to Omarchy 4.5 stopped")
                           + " at step \(step) of \(OmarchyMove.steps.count)",
                       text: stoppedText(reason: reason, interrupted: stopped, resumable: resumable, problem: problem),
                       textIsError: false) {
+                    if busy { ProgressView().controlSize(.small).layoutProbe("move-busy") }
                     Button("Keep This Disk…") { sheet = .keep }
                         .disabled(busy || running)
                         .layoutProbe("move-keep")
@@ -216,17 +234,22 @@ struct OmarchyMoveCard: View {
                     }
                 }
             case .done(let since, let kept):
-                strip(icon: kept ? "externaldrive.fill" : "checkmark.circle.fill", tint: kept ? Color.secondary : Look.green,
-                      background: Look.header, line: Look.hairline,
+                // Moved: the strip goes quiet and small. It stays only for the backup,
+                // which can sit here for months, so it must not shout or take room.
+                strip(icon: kept ? "externaldrive.fill" : "checkmark.circle.fill", tint: kept ? Look.orange : Look.green,
+                      background: Look.header, line: Look.hairline, compact: true,
                       title: kept ? "You kept this disk after the move stopped"
                                   : "On Omarchy 4.5" + (OmarchyMove.dateText(since).isEmpty ? "" : " since \(OmarchyMove.dateText(since))"),
-                      text: "The disk from before the move is kept" + (backup.map { ", \(OmarchyMove.sizeText($0)) on this drive" } ?? "")
+                      text: "The backup from before is kept" + (backup.map { ", \(OmarchyMove.sizeText($0))" } ?? "")
                           + ". Undo puts it back; delete it when all is well.",
                       textIsError: false) {
+                    if busy { ProgressView().controlSize(.small).layoutProbe("move-busy") }
                     Button("Undo Move…") { sheet = .undo }
+                        .controlSize(.small)
                         .disabled(busy || running)
                         .layoutProbe("move-undo")
-                    Button("Delete the Old Backup…") { sheet = .delete }
+                    Button("Delete Backup…") { sheet = .delete }
+                        .controlSize(.small)
                         .disabled(busy || running)
                         .layoutProbe("move-delete")
                 }
@@ -297,21 +320,23 @@ struct OmarchyMoveCard: View {
         return s
     }
 
+    /// compact: the settled "done" strip, half the height of a live notice.
     @ViewBuilder
-    private func strip<Buttons: View>(icon: String, tint: Color, background: Color, line: Color, title: String, text: String,
+    private func strip<Buttons: View>(icon: String, tint: Color, background: Color, line: Color, compact: Bool = false,
+                                      title: String, text: String,
                                       textIsError: Bool, @ViewBuilder buttons: () -> Buttons) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .center, spacing: compact ? 10 : 12) {
             Group {
-                if icon.hasSuffix(".fill") {
+                if icon.hasSuffix("circle.fill") || icon.hasSuffix("triangle.fill") {   // a white mark on the tint
                     Image(systemName: icon).foregroundStyle(.white, tint)
                 } else {
                     Image(systemName: icon).foregroundStyle(tint)
                 }
             }
-            .font(.system(size: 22))
-            .frame(width: 24)
+            .font(.system(size: compact ? 15 : 22))
+            .frame(width: compact ? 16 : 24)
             .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: compact ? 1 : 2) {
                 Text(title).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                 Text(text)
                     .font(.subheadline)
@@ -324,7 +349,7 @@ struct OmarchyMoveCard: View {
             HStack(spacing: 8) { buttons() }.fixedSize()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, compact ? 6 : 10)
         .background(background, ignoresSafeAreaEdges: [])
         .overlay(alignment: .bottom) { Rectangle().fill(line).frame(height: 1) }
         .accessibilityElement(children: .contain)
@@ -334,14 +359,9 @@ struct OmarchyMoveCard: View {
     private func act(_ command: String, done: String?) {
         guard preview == nil else { return }
         busy = true
-        let c = state.config
         Task {
-            let err = await MoveFiles.run(command, c)
+            await MoveFiles.act(command, state: state, done: done)
             busy = false
-            if let err { state.say(err) } else if let done { state.tell(done) }
-            if let fresh = VMConfig.load(from: c.folder), fresh.folder == state.config.folder { state.config = fresh }
-            state.tick += 1
-            state.storage.refresh()
         }
     }
 }
@@ -400,7 +420,14 @@ struct MoveConfirmSheet: View {
                 point("doc.on.doc", "Your files, apps and settings in Omarchy stay.")
                 point("internaldrive", "Needs up to \(DiskSize.text(need)) free on this drive" + (free.map { " (it has \(DiskSize.text($0)))." } ?? "."))
                 if running {
-                    Text("\(vm) runs: it shuts down first.").font(.subheadline).foregroundStyle(Look.orange)
+                    // Aligned like the points above, so the sheet reads as one list.
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Image(systemName: "power").foregroundStyle(Look.orange).frame(width: 18).accessibilityHidden(true)
+                        Text("\(vm) is running: the move shuts it down first.")
+                            .font(.subheadline)
+                            .foregroundStyle(Look.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .layoutProbe("move-confirm-text")
@@ -501,7 +528,10 @@ struct DestructiveSheet: View {
 /// Storage & Updates: the backup from before the move, while it is kept.
 struct MoveBackupRow: View {
     @ObservedObject var state: AppState
+    var running = false
     var preview: (bytes: Int64, exact: Bool)? = nil
+    @State private var confirm = false
+    @State private var busy = false
 
     /// Read each time the window draws it (state.tick), like the card.
     private var size: (bytes: Int64, exact: Bool)?? {
@@ -515,10 +545,26 @@ struct MoveBackupRow: View {
         if let s = size {
             SettingRow(title: "Omarchy 4.0 backup",
                        subtitle: "The disk from before the move to Omarchy 4.5" + (s.map { ", \(OmarchyMove.sizeText($0)) on this drive." } ?? "."),
-                       info: "Kept until you delete it at the top of these settings (Delete the Old Backup…), never on its own. "
+                       info: "Kept until you delete it at the top of these settings (Delete Backup…), never on its own. "
                            + "Undo Move puts it back. A VM with this backup moves to another drive only after it is deleted or undone: a copy would take its full size.",
                        probe: "move-backup") {
-                EmptyView()
+                HStack(spacing: 8) {
+                    if busy { ProgressView().controlSize(.small) }
+                    Button("Delete…") { confirm = true }
+                        .disabled(busy || running)
+                        .layoutProbe("move-backup-delete")
+                }
+            }
+            .sheet(isPresented: $confirm) {
+                MoveDeleteSheet(size: s.map(OmarchyMove.sizeText)) { go in
+                    confirm = false
+                    guard go else { return }
+                    busy = true
+                    Task {
+                        await MoveFiles.act("delete-backup", state: state, done: "The old backup is deleted.")
+                        busy = false
+                    }
+                }
             }
         }
     }

@@ -598,7 +598,21 @@ struct BuildView: View {
         switch creator.job {
         case .build: return "Building \(state.config.name)"
         case .update: return "Updating OmacVM in \(state.config.name)"
-        case .move: return "Moving \(state.config.name) to Omarchy 4.5"
+        case .move: return "Moving to Omarchy 4.5"
+        }
+    }
+
+    private func back() {
+        state.startAfterUpdate = false
+        state.screen = creator.job == .build ? .setup : .ready
+    }
+
+    /// The stopped move's journal says Resume goes on (the window pictures: a preview's word).
+    private var moveResumable: Bool {
+        if let r = creator.renderResumable { return r }
+        switch MoveFiles.card(state.config) {
+        case .failed(_, _, let r), .interrupted(_, _, let r): return r
+        default: return false
         }
     }
 
@@ -619,6 +633,13 @@ struct BuildView: View {
                 AppIconButton()
             } trailing: {
                 if creator.failed != nil {
+                    // A stopped move that can go on: Resume here too (the card's, same checks).
+                    if creator.job == .move, moveResumable {
+                        Button("Resume") { state.moveVM(resume: true) }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                            .layoutProbe("move-resume-progress")
+                    }
                     if let cmd = creator.manualKeyCommand {
                         CopyCommandButton(command: cmd)
                         InfoButton(topic: "SSH access", text: SSHRepair.info)
@@ -626,13 +647,15 @@ struct BuildView: View {
                     Button("Show Log") {
                         NSWorkspace.shared.open(creator.log ?? state.config.folder.appendingPathComponent("create.log"))
                     }
-                    Button("Back") {
-                        state.startAfterUpdate = false
-                        state.screen = creator.job == .build ? .setup : .ready
+                    if creator.job == .move, moveResumable {
+                        Button("Back") { back() }
+                            .layoutProbe("start")
+                    } else {
+                        Button("Back") { back() }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                            .layoutProbe("start")
                     }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                        .layoutProbe("start")
                 }
             }
         } notices: {
@@ -652,7 +675,8 @@ struct BuildView: View {
                         } else if creator.failed == nil {
                             BuildNowView(creator: creator)
                         } else {
-                            Text(creator.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                            Text(creator.detail.prefix(1).uppercased() + creator.detail.dropFirst())
+                                .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
                         }
                     }
                     .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
@@ -750,7 +774,10 @@ struct BuildNowView: View {
         var s = "This step: \(BuildText.duration(now.timeIntervalSince(creator.stepStarted))) so far"
         // An update has its own steps: no build times for them.
         guard creator.job == .build else {
-            return s + ". Whole \(creator.job == .move ? "move" : "update"): \(BuildText.duration(now.timeIntervalSince(creator.buildStarted)))."
+            // The whole only once it says more than this step (a minute apart).
+            let whole = now.timeIntervalSince(creator.buildStarted), step = now.timeIntervalSince(creator.stepStarted)
+            guard whole - step >= 60 else { return s + "." }
+            return s + ". Whole \(creator.job == .move ? "move" : "update"): \(BuildText.duration(whole))."
         }
         if let last = StepTimes.last(route: creator.route, step: creator.step) {
             s += ", last time \(BuildText.duration(last)) on this Mac"

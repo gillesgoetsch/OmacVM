@@ -28,7 +28,7 @@ public enum OmarchyMove {
         "Shut down the VM",
         "Back up the disk",
         "Update OmacVM in the VM",
-        "Move to Omarchy 4.5",
+        "Switch Omarchy's packages",
         "Update OmacVM again",
         "Restart and check",
         "Shut down",
@@ -228,7 +228,7 @@ public enum OmarchyMove {
                                resizePending: Bool, otherCopy: String?) -> String? {
         if let o = otherCopy { return o }
         if apfs == false {
-            return "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM to one under Storage first."
+            return "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM in Storage & Updates first."
         }
         if resizePending { return "A change of the disk's size is not finished. Start the VM once (or go back) first." }
         if diskJobPending { return "Omarchy grows into the disk's new size at the next start. Start the VM once first." }
