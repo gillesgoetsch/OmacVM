@@ -384,6 +384,11 @@ fault_then_resume_after_quit() {
   mvm run; rc=$?
   check "Resume" $((rc == 0)) "exit $rc"
   journal_state done
+  if (( rc != 0 )); then
+    vm_off; mvm undo; rc=$?
+    check "Undo after the failed Resume" $((rc == 0)) "exit $rc"
+    same_as_before
+  fi
 }
 row_power_loss() {
   pre_hash
