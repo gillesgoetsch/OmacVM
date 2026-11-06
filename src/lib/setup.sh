@@ -125,10 +125,3 @@ omarchy45_channel() {
   case ${OMACVM_TEST_OMARCHY_CHANNEL:-stable} in stable|rc|edge) echo "${OMACVM_TEST_OMARCHY_CHANNEL:-stable}" ;; *) echo stable ;; esac
 }
 
-# omarchy-mac's published package lane: stable once it exists, else rc.
-omarchy_channel() {
-  local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 \
-    https://api.github.com/repos/omarchy-mac/omarchy-pkgs-aarch64/releases/tags/stable) || code=0
-  [[ $code == 200 ]] && echo stable || echo rc
-}

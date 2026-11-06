@@ -47,7 +47,7 @@ linux_name() {
 TYPE=app; VM="Omarchy"; RES=""; CPUS=""; MEM_GB=""; DISK_GB=""; U=$(linux_name "$(id -un)"); FULL=""; HOST="omarchy"
 [[ -n $U ]] || U=omarchy
 BRIDGE=1; WALLPAPER=1; GESTURES=1; GLIDE=1; OMANOTCH=""; MAC_CLOCK=1; CAMERA=1; BATTERY=""; EXT_BRIGHTNESS=1; CHROMIUM_VIDEO=1; GPU_COMPUTE=1; NO_IDLE_LOCK=0; AUTOLOGIN=0; THP=0; CONTROL=1; X86=0
-CHANNEL=""; YES=0; DRY=0; PLAN=0; JSON=0; IMAGE=0; SOURCE=""
+YES=0; DRY=0; PLAN=0; JSON=0; IMAGE=0; SOURCE=""
 usage() { echo "omacvm build: $*" >&2; exit 2; }
 needs_person() { printf '\033[1;31mneeds you:\033[0m %s\n' "$*" >&2; exit 3; }
 feature_flag() {   # NAME on|off
@@ -82,7 +82,7 @@ feature_flag() {   # NAME on|off
 while (( $# )); do
   # A missing value is a usage error, not a set -u abort.
   case $1 in
-    --vm-type|--vm-name|--resources|--cpus|--memory-gb|--disk-gb|--user|--full-name|--hostname|--feature|--channel)
+    --vm-type|--vm-name|--resources|--cpus|--memory-gb|--disk-gb|--user|--full-name|--hostname|--feature)
       [[ $# -ge 2 ]] || usage "$1 needs a value" ;;
   esac
   case $1 in
@@ -99,7 +99,6 @@ while (( $# )); do
     --full-name) FULL=$2; shift 2 ;;
     --hostname) HOST=$2; shift 2 ;;
     --feature) feature_flag "${2%%=*}" "${2#*=}"; shift 2 ;;
-    --channel) CHANNEL=$2; shift 2 ;;          # rc|stable|edge, for testing omarchy-mac
     --image) IMAGE=1; YES=1; shift ;;           # a VM for a prebuilt image (src/prebuilt/make-image.sh)
     --no-mac) NO_MAC=1; shift ;;                # tests: leave this Mac's apps as they are
     --prebuilt) SOURCE=prebuilt; shift ;;
@@ -184,7 +183,7 @@ if [[ -z $SOURCE ]]; then
   SOURCE=build
   if (( PB_OK && ! YES )); then
     ui_select how "How should OmacVM make the VM?" 1 \
-      "Build it yourself|about $(build_minutes) minutes, everything from Arch Linux ARM and omarchy-mac" \
+      "Build it yourself|about $(build_minutes) minutes, Omarchy 4.5 from its official aarch64 repositories" \
       "Download a prebuilt VM|faster: about $(pb_gb "$PB_SIZE") GB, Omarchy ${PB_OMARCHY%% *}, updated to OmacVM $PB_FOR on the way"
     (( how == 1 )) && SOURCE=prebuilt
   fi
@@ -347,7 +346,6 @@ case $lang in
   *-*) LANG_VM="${lang%%-*}_${lang##*-}.UTF-8" ;;
   *) LANG_VM="${lang}_${region##*_}.UTF-8" ;;
 esac
-[[ -n $CHANNEL ]] || CHANNEL=$(omarchy_channel)
 # A prebuilt image carries nothing of this Mac: the first boot sets these.
 (( IMAGE )) && { KB=us; KB_NOTE=""; KB_SHOWN=us; TZ_MAC=UTC; LANG_VM=en_US.UTF-8; }
 
@@ -414,7 +412,7 @@ box=("OmacVM will build this VM" ""
      "user       $U ($FULL), hostname $HOST"
      "keyboard   $KB_SHOWN"
      "timezone   $TZ_MAC, language $LANG_VM"
-     "Omarchy    $( [[ $SOURCE == prebuilt ]] && echo "prebuilt VM: Omarchy $PB_OMARCHY ($(pb_gb "$PB_SIZE") GB download, release $PB_TAG)" || { [[ $(omarchy_route) == 4.5 ]] && echo "Omarchy 4.5, $(omarchy45_channel) packages, built here"; } || echo "omarchy-mac, $CHANNEL packages, built here")" "")
+     "Omarchy    $( [[ $SOURCE == prebuilt ]] && echo "prebuilt VM: Omarchy $PB_OMARCHY ($(pb_gb "$PB_SIZE") GB download, release $PB_TAG)" || { [[ $(omarchy_route) == 4.5 ]] && echo "Omarchy 4.5, $(omarchy45_channel) packages, built here"; } || echo "omarchy-mac 4.0 (tests only), built here")" "")
 while IFS= read -r l; do box+=("${l#    }"); done < <(explain_features)
 if (( UI_FANCY )) && ! (( YES )); then ui_box "${box[@]}"
 else printf '\n'; for l in "${box[@]}"; do printf '  %s\n' "$l"; done; fi

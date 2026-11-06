@@ -282,6 +282,9 @@ jobs:
       - name: The moves gate (3.4.0 on) reads the move matrix's rows
         run: src/tests/move-45-gate.sh
 
+      - name: New VMs are Omarchy 4.5 (CLI and app agree; omarchy-mac 4.0 for tests only)
+        run: src/tests/omarchy-route.sh
+
       - name: Vulkan (Venus) driver step for app VMs (when it builds Mesa's vulkan-virtio)
         run: src/tests/venus-driver.sh
       - name: The guest check's Vulkan line without vulkaninfo says "not checked" (#332)
