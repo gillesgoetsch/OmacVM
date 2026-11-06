@@ -340,6 +340,9 @@ jobs:
       - name: Bridge brightness keys read from the keyboard (made-up keyboards)
         run: src/bridge/mac/test-hid.sh
 
+      - name: Bridge on a retired route's address (3.3.0 guest clients get the move text; one held event stream)
+        run: src/bridge/mac/test-retired.sh
+
       - name: OmacVM.app's signed Mac helpers are used only for the same sources
         run: src/tests/prebuilt-helpers.sh
 

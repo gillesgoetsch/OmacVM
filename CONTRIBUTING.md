@@ -69,7 +69,7 @@ src/tests/prebuilt-manifest.sh && src/tests/build-ctrlc.sh && src/tests/build-sp
 src/tests/retired-routes.sh && src/tests/no-retired-routes.sh
 src/net/mac/test.sh
 src/gestures/mac/test.sh
-src/bridge/mac/test-models.sh && src/bridge/mac/test-hid.sh
+src/bridge/mac/test-models.sh && src/bridge/mac/test-hid.sh && src/bridge/mac/test-retired.sh
 src/bridge/mac/test-wallpaper.sh
 src/tests/venus-driver.sh
 src/tests/vulkan-feature.sh && src/tests/venus-build-tools.sh && src/tests/graphics-setting.sh && src/tests/pkg-safe.sh
