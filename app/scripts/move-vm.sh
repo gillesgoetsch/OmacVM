@@ -204,11 +204,15 @@ step() { jset step "$1"; echo "STEP $1/$STEPS $2"; }
 # The guest's own log beside the app's (logs/move-4.5.log), while the VM runs.
 guest_log() {
   (( STARTED )) && qemu_running || return 0
-  if vssh "cat /var/log/omacvm-move-45.log" < /dev/null 2>/dev/null | printable > "$LOG/move-4.5.log.new"; then
-    mv -f "$LOG/move-4.5.log.new" "$LOG/move-4.5.log"
-  else
-    rm -f "$LOG/move-4.5.log.new"
-  fi
+  local f
+  # The move's log, and Omarchy's own update's (its last part runs omarchy update).
+  for f in omacvm-move-45:move-4.5 omacvm-system-update:move-system-update; do
+    if vssh "cat /var/log/${f%%:*}.log" < /dev/null 2>/dev/null | printable > "$LOG/${f#*:}.log.new"; then
+      mv -f "$LOG/${f#*:}.log.new" "$LOG/${f#*:}.log"
+    else
+      rm -f "$LOG/${f#*:}.log.new"
+    fi
+  done
 }
 fail() {   # fail STEP REASON [resumable 0|1] [code]
   jset state failed failed_step "$1" reason "$2" resumable "${3:-1}" code "${4:-}" finished ""
