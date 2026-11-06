@@ -146,6 +146,9 @@ vm_probe() {
     # The memory-optimized kernel it has (apply asks before a newer one is built).
     echo "OMACVM_THP_KERNEL=$(pacman -Q linux-aarch64-thp 2>/dev/null | cut -d" " -f2)"
     echo "OMACVM_NPROC=$(nproc 2>/dev/null)"
+    # A move to Omarchy 4.5 began here and its package switch is not done (apply stops: OmacVM.app).
+    m=/usr/local/share/omacvm/guest/omarchy-move.sh
+    [ -x "$m" ] && "$m" pending >/dev/null 2>&1 && echo OMACVM_MOVE_PENDING=1
     # Autologin as SDDM does it, whoever wrote the file (src/guest/autologin.sh: the same rule).
     if [ -d /etc/sddm.conf.d ] || [ -f /etc/sddm.conf ]; then
       u=$(cat /usr/lib/sddm/sddm.conf.d/*.conf /etc/sddm.conf.d/*.conf /etc/sddm.conf 2>/dev/null |

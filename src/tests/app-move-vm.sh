@@ -65,18 +65,21 @@ expect "move_kept: no journal" "no" "$(move_kept "$T/none" && echo kept || echo 
 ap=$R/src/cmd/apply.sh
 pblk=$(awk '/^# An OmacVM.app VM whose move to Omarchy 4.5 began/ { on = 1 } on { print } on && /^fi$/ { exit }' "$ap")
 kblk=$(awk '/^# A disk the person kept in OmacVM.app after its move stopped/ { on = 1 } on { print } on && /^fi$/ { exit }' "$ap")
-ga() {   # PENDING(0|1) STATE [VAR=VALUE]: what apply's two checks do (stand-in gssh, the VM's answer)
+ga() {   # PENDING(0|1) STATE [VAR=VALUE]: what apply's two checks do (the probe's answer, a stand-in gssh)
   mkdir -p "$T/ap"; printf 'format=1\nstate=%s\n' "$2" > "$T/ap/move-4.5"; : > "$T/ap/calls"
-  env "${@:3}" bash -c 'source "$1"; TYPE=app NAMED=1 VM=Old IP=127.0.0.1:52998 T=$2 PEND=$3
-    gssh() { echo "gssh ${*: -1}" >> "$T/ap/calls"; [[ ${*: -1} == *pending ]] && { echo "the move to Omarchy 4.5 is not finished in this VM"; return $PEND; }; return 0; }
+  env "${@:3}" bash -c 'source "$1"; TYPE=app NAMED=1 VM=Old IP=127.0.0.1:52998 T=$2
+    probe=$(printf "OMACVM_USER=me\nOMACVM_VERSION=3.4.0\n"; (( $3 == 0 )) && echo OMACVM_MOVE_PENDING=1)
+    gssh() { echo "gssh ${*: -1}" >> "$T/ap/calls"; return 0; }
     info() { echo "info $*" >> "$T/ap/calls"; }; failed_part() { echo "failed $2" >> "$T/ap/calls"; }
     app_dir() { echo "$T/ap"; }'$'\n'"$pblk"$'\n'"$kblk"$'\n''echo "went on" >> "$T/ap/calls"' ga "$R/src/lib/omarchy-move.sh" "$T" "$1"
   echo "rc=$? $(grep -c 'went on' "$T/ap/calls") $(grep -c ' keep$' "$T/ap/calls")"
 }
+expect "the VM's probe says when its move's switch is not done (omarchy-move.sh pending: OMACVM_MOVE_PENDING=1)" 1 \
+  "$(grep -c '"\$m" pending >/dev/null 2>&1 && echo OMACVM_MOVE_PENDING=1' "$R/src/lib/vm.sh")"
 expect "apply on a VM whose move's switch is not done: exit 3 at once, says so, the VM not told to keep" "rc=3 0 0 1" \
   "$(ga 0 failed) $(grep -c "^failed 'Old' is in the middle of its move to Omarchy 4.5: resume or undo it in OmacVM.app first; nothing was changed" "$T/ap/calls")"
 expect "... also when the Mac's journal says kept (an older app kept it)" "rc=3 0 0" "$(ga 0 kept)"
-expect "... the move's own apply (OMACVM_MOVE_RUN=1) goes on, never asks" "rc=0 1 0 0" "$(ga 0 running OMACVM_MOVE_RUN=1) $(grep -c pending "$T/ap/calls")"
+expect "... the move's own apply (OMACVM_MOVE_RUN=1) goes on" "rc=0 1 0" "$(ga 0 running OMACVM_MOVE_RUN=1)"
 expect "apply on a kept disk past its switch: goes on, the VM told (omarchy-move.sh keep)" "rc=0 1 1" "$(ga 1 kept)"
 expect "... the backup deleted after it (done-final): told too" "rc=0 1 1" "$(ga 1 done-final)"
 expect "apply after a finished move, or with no move: goes on, nothing to tell" "rc=0 1 0 | rc=0 1 0" "$(ga 1 done) | $(ga 1 undone)"
