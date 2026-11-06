@@ -4,7 +4,7 @@ import AppKit
 /// (not OmacVM.app's: QEMU hides it there itself).
 ///
 /// Over its VM windows the VM app normally swaps in a transparent cursor (the
-/// guest draws its own), but Parallels does not do so reliably when the pointer comes
+/// guest draws its own), but not every VM app does so reliably when the pointer comes
 /// from another app's window, e.g. the notch strip or when crossing to another
 /// display through it. The result is a macOS arrow on top of the guest cursor.
 /// This hides the cursor outright over those windows and shows it everywhere
@@ -13,7 +13,7 @@ final class VMCursorHider {
     private let vmOwners: Set<String>
     /// The VM app whose guest feeds the strip; nil while the strip is not in
     /// use. Only that app's full-screen windows hide the cursor: other VMs
-    /// (say a Windows VM in UTM) draw no guest cursor of their own.
+    /// (say a Windows VM) draw no guest cursor of their own.
     var activeOwner: String? {
         didSet { if activeOwner != oldValue { refresh() } }
     }
