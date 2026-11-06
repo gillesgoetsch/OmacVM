@@ -52,8 +52,11 @@ non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anyth
 
 # The files a result is tied to: a result for commit C counts for release M
 # only while these are the same in C and M (src/release/release.sh step moves).
-PATHS="app/scripts/move-vm.sh app/scripts/update-vm.sh app/scripts/apply-vm.sh src/guest/omarchy-move.sh
-src/guest/keep-packages.txt src/guest/install.sh src/guest/system-update src/guest/pkg-add src/tests/e2e/move-45.sh"
+PATHS="app/scripts/move-vm.sh app/scripts/update-vm.sh app/scripts/apply-vm.sh app/scripts/vm-common.sh
+src/guest/omarchy-move.sh src/guest/keep-packages.txt src/guest/install.sh src/guest/system-update src/guest/pkg-add
+src/cmd/apply.sh src/lib/omarchy-move.sh app/app/Sources/OmacVMWindow/OmarchyMove.swift
+app/app/Sources/OmacVM/OmarchyMoveCard.swift app/app/Sources/OmacVM/DiskView.swift app/app/Sources/OmacVM/Updater.swift
+src/tests/e2e/move-45.sh src/tests/e2e/move-45-result.py"
 
 usage() { sed -n '2,35s/^# \{0,1\}//p' "$0"; exit 2; }
 # On screen (MACS-1030d): nobody at the Mac for 5 minutes and the screen unlocked.
