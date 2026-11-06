@@ -106,6 +106,16 @@ public enum OmarchyMove {
 
         /// Not over yet: Start, Update VM and disk changes wait for Resume or Undo.
         public var open: Bool { state == .running || state == .failed || state == .interrupted }
+
+        /// A key move-vm.sh keeps beside the known ones (the last one wins).
+        public func value(_ key: String) -> String? { other.last { $0.0 == key }?.1 }
+
+        /// The move's QEMU (its VM runs without a window), while it runs.
+        public var qemuPid: Int32 { Int32(value("qemu_pid") ?? "") ?? 0 }
+        /// move-vm.sh settle, while it shuts down a VM a killed move left running.
+        public var settlePid: Int32 { Int32(value("settle_pid") ?? "") ?? 0 }
+        /// kern.boottime's seconds when the pids were written ("" in older journals).
+        public var boot: String { value("boot") ?? "" }
     }
 
     // MARK: The Omarchy record (VM_DIR/omarchy, written by apply)
@@ -143,6 +153,10 @@ public enum OmarchyMove {
         /// The offer (the Mac's checks decide whether its button is on: `problem`).
         case offer
         case running(step: Int)
+        /// The move's VM shuts down at a safe point: after a Stop and Quit, or
+        /// left running by a move whose script is gone (an app crash; settle).
+        /// Resume and Undo come once it is off.
+        case stopping(step: Int)
         case failed(step: Int, reason: String, resumable: Bool)
         case interrupted(step: Int, reason: String, resumable: Bool)
         /// Moved (or kept after a stop); the backup is still there.
@@ -152,8 +166,11 @@ public enum OmarchyMove {
     /// recordText: the `omarchy` file (nil: none yet, every VM before
     /// 3.4.0's first Update VM: shown, the guest's preflight decides, D4).
     /// alive: the journal's pid still runs (a move in another window).
-    public static func card(recordText: String?, journal: Journal?, backupExists: Bool, alive: Bool) -> Card {
+    /// stopping: its VM shuts down at a safe point (`stopping(...)`).
+    public static func card(recordText: String?, journal: Journal?, backupExists: Bool, alive: Bool,
+                            stopping: Bool = false) -> Card {
         if let j = journal {
+            if j.open && stopping { return .stopping(step: max(j.step, 1)) }
             switch j.state {
             case .running:
                 if alive { return .running(step: j.step) }
@@ -175,6 +192,20 @@ public enum OmarchyMove {
         guard let t = recordText else { return .offer }
         guard let r = Record.parse(t) else { return .hidden }   // "none": no Omarchy package
         return r.isMoved ? .hidden : .offer
+    }
+
+    /// The move's VM is on its way down: the script runs and was asked to
+    /// stop (Stop and Quit, or the app gone: move-vm.sh asks itself), or
+    /// settle shuts down a VM a killed script left running.
+    public static func stopping(_ j: Journal, scriptAlive: Bool, stopAsked: Bool, settleAlive: Bool) -> Bool {
+        j.open && ((scriptAlive && stopAsked) || settleAlive)
+    }
+
+    /// A move whose script is gone (an app crash, a logout) while its QEMU
+    /// runs on without a window: the window has it shut down (move-vm.sh
+    /// settle) before it offers Resume or Undo. Never while a settle runs.
+    public static func needsSettle(_ j: Journal, scriptAlive: Bool, qemuAlive: Bool, settleAlive: Bool) -> Bool {
+        j.open && !scriptAlive && qemuAlive && !settleAlive
     }
 
     /// A move that stopped without saying so (the Mac lost power, the app was

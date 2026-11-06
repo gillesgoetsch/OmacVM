@@ -1086,6 +1086,23 @@ do {
            "card: backup deleted: gone for good")
     expect(M.card(recordText: "4.0.3rc4 omarchy-mac rc", journal: jr("state=undone\n"), backupExists: false, alive: false) == .offer,
            "card: after Undo: offered again")
+    // An app crash: the script gone, its QEMU running on (settle shuts it down first).
+    let crashed = jr("state=running\nstep=5\npid=4242\nqemu_pid=4343\nsettle_pid=0\nboot=1793501514\n")!
+    expect(crashed.qemuPid == 4343 && crashed.settlePid == 0 && crashed.boot == "1793501514", "journal: the move's QEMU, settle and boot read")
+    expect(M.needsSettle(crashed, scriptAlive: false, qemuAlive: true, settleAlive: false), "crash: script gone, its VM runs: settle it")
+    expect(!M.needsSettle(crashed, scriptAlive: true, qemuAlive: true, settleAlive: false), "a live move owns its VM: no settle")
+    expect(!M.needsSettle(crashed, scriptAlive: false, qemuAlive: true, settleAlive: true), "a settle runs already: not a second one")
+    expect(!M.needsSettle(crashed, scriptAlive: false, qemuAlive: false, settleAlive: false), "nothing left running: no settle")
+    expect(!M.needsSettle(jr("state=done\nqemu_pid=4343\n")!, scriptAlive: false, qemuAlive: true, settleAlive: false), "a finished move: no settle")
+    expect(M.stopping(crashed, scriptAlive: false, stopAsked: false, settleAlive: true), "settle runs: stopping")
+    expect(M.stopping(crashed, scriptAlive: true, stopAsked: true, settleAlive: false), "the app gone or Stop and Quit: stopping at a safe point")
+    expect(!M.stopping(crashed, scriptAlive: true, stopAsked: false, settleAlive: false), "a move that runs on: not stopping")
+    expect(M.card(recordText: nil, journal: crashed, backupExists: true, alive: false, stopping: true) == .stopping(step: 5),
+           "card: its VM on the way down: stopping, no buttons")
+    expect(M.card(recordText: nil, journal: crashed, backupExists: true, alive: false, stopping: false)
+           == .interrupted(step: 5, reason: "", resumable: true), "card: once it is off: Resume and Undo")
+    expect(M.card(recordText: nil, journal: jr("state=done\n"), backupExists: true, alive: false, stopping: true) == .done(since: "", kept: false),
+           "card: a finished move never shows stopping")
     expect(M.Record.parse("4.5.0 aarch64 stable") == M.Record(version: "4.5.0", lane: "aarch64", channel: "stable"), "record: three words")
     expect(M.Record.parse("4.0.3rc4 omarchy-mac rc")?.isMoved == false && M.Record.parse("4.5.0-3 aarch64 stable")?.isMoved == true,
            "record: 4.0.3rc4 is not moved, 4.5.0-3 is")

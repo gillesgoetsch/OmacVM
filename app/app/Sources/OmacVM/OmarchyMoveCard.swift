@@ -24,10 +24,32 @@ enum MoveFiles {
     /// The journal's process runs (a move of another window or app copy):
     /// its pid is alive and the Mac has not restarted since (a pid from
     /// before a restart belongs to another process now).
-    static func alive(_ j: OmarchyMove.Journal) -> Bool {
-        guard j.pid > 1, j.pid != getpid(), kill(j.pid, 0) == 0 else { return false }
-        guard let b = j.other.first(where: { $0.0 == "boot" })?.1, !b.isEmpty else { return true }
-        return b == bootTime
+    static func alive(_ j: OmarchyMove.Journal) -> Bool { runs(j.pid, j) }
+
+    /// A pid the journal names (the script, its QEMU, a settle) still runs.
+    static func runs(_ pid: Int32, _ j: OmarchyMove.Journal) -> Bool {
+        guard pid > 1, pid != getpid(), kill(pid, 0) == 0 else { return false }
+        return j.boot.isEmpty || j.boot == bootTime
+    }
+
+    static func stopping(_ c: VMConfig, _ j: OmarchyMove.Journal) -> Bool {
+        OmarchyMove.stopping(j, scriptAlive: alive(j), stopAsked: FileManager.default.fileExists(atPath: stopURL(c).path),
+                             settleAlive: runs(j.settlePid, j))
+    }
+
+    /// The move's VM left running by a script that is gone (an app crash).
+    static func needsSettle(_ c: VMConfig) -> Bool {
+        guard let j = journal(c) else { return false }
+        return OmarchyMove.needsSettle(j, scriptAlive: alive(j), qemuAlive: runs(j.qemuPid, j), settleAlive: runs(j.settlePid, j))
+    }
+
+    /// Shuts down a VM a killed move left running (move-vm.sh settle: SSH
+    /// and ACPI, ended after a while), so the window can offer Resume and
+    /// Undo. At launch for every VM, and when the window shows one.
+    static func settleLeftovers(_ vms: [VMConfig]) {
+        for c in vms where needsSettle(c) {
+            Task { if let err = await run("settle", c) { FileHandle.standardError.write(Data("move: settle \(c.name): \(err)\n".utf8)) } }
+        }
     }
 
     /// kern.boottime's seconds, as move-vm.sh writes them.
@@ -37,9 +59,10 @@ enum MoveFiles {
         return String(tv.tv_sec)
     }()
 
-    static func card(_ c: VMConfig) -> OmarchyMove.Card {
+    static func card(_ c: VMConfig, settling: Bool = false) -> OmarchyMove.Card {
         let j = journal(c)
-        return OmarchyMove.card(recordText: record(c), journal: j, backupExists: backupExists(c), alive: j.map(alive) ?? false)
+        return OmarchyMove.card(recordText: record(c), journal: j, backupExists: backupExists(c), alive: j.map(alive) ?? false,
+                                stopping: settling || (j.map { stopping(c, $0) } ?? false))
     }
 
     /// A move not over yet (running, failed, interrupted): Start, Update VM,
@@ -118,6 +141,8 @@ struct OmarchyMoveCard: View {
 
     @State private var sheet: Sheet?
     @State private var busy = false
+    /// move-vm.sh settle runs for this VM (started by this card).
+    @State private var settling = false
 
     /// What the card shows, read from the VM folder each time the window
     /// draws it (state.tick: the window back in front, every few seconds,
@@ -132,7 +157,7 @@ struct OmarchyMoveCard: View {
         if let p = preview { return Now(card: p.card, problem: p.problem, backup: p.backup) }
         _ = state.tick
         let c = state.config
-        var n = Now(card: MoveFiles.card(c))
+        var n = Now(card: MoveFiles.card(c, settling: settling))
         switch n.card {
         case .offer, .failed, .interrupted: n.problem = MoveFiles.problem(c)
         case .done: n.backup = OmarchyMove.backupBytes(MoveFiles.backupURL(c))
@@ -163,6 +188,13 @@ struct OmarchyMoveCard: View {
                       title: "Moving to Omarchy 4.5: step \(step) of \(OmarchyMove.steps.count)",
                       text: "\(OmarchyMove.stepTitle(step)). Another OmacVM window runs this move; it shows the progress.",
                       textIsError: false) { EmptyView() }
+            case .stopping(let step):
+                strip(icon: "arrow.triangle.2.circlepath", tint: Look.orange, background: Look.header, line: Look.hairline,
+                      title: "Stopping the move to Omarchy 4.5 at step \(step) of \(OmarchyMove.steps.count)",
+                      text: "\(state.config.name) still runs without a window and shuts down at a safe point: a few minutes, up to 15 while Omarchy's packages are being switched. Then you can resume or undo the move.",
+                      textIsError: false) {
+                    ProgressView().controlSize(.small).layoutProbe("move-stopping")
+                }
             case .failed(let step, let reason, let resumable), .interrupted(let step, let reason, let resumable):
                 let stopped = { if case .interrupted = card { return true } else { return false } }()
                 strip(icon: "exclamationmark.triangle.fill", tint: Look.red, background: Look.red.opacity(0.08), line: Look.hairline,
@@ -201,6 +233,24 @@ struct OmarchyMoveCard: View {
             }
         }
         .onAppear { if let s = preview?.sheet, sheet == nil { sheet = s } }
+        // A move whose script is gone (OmacVM crashed or was force quit) left
+        // its VM running without a window: shut it down, then Resume or Undo.
+        .task(id: state.config.folder) {
+            guard preview == nil else { return }
+            let c = state.config
+            if MoveFiles.needsSettle(c) {
+                settling = true
+                if let err = await MoveFiles.run("settle", c) { state.say(err) }
+                settling = false
+                state.tick += 1
+            }
+            // While its VM is on its way down (this settle, the launch's, a
+            // Stop and Quit of another copy), look again every 3 s.
+            while !Task.isCancelled, case .stopping = MoveFiles.card(c) {
+                try? await Task.sleep(for: .seconds(3))
+                state.tick += 1
+            }
+        }
         .sheet(item: $sheet) { s in
             switch s {
             case .move:

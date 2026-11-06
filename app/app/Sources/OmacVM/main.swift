@@ -160,7 +160,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for u in Storage.removeStaleMoves(in: Paths.vmsRoots) {
                 FileHandle.standardError.write(Data("storage: removed the half copy \(u.path)\n".utf8))
             }
-            for vm in VMConfig.all() { Storage.excludeFromBackup(vm.folder) }
+            let vms = VMConfig.all()
+            for vm in vms { Storage.excludeFromBackup(vm.folder) }
+            // A move to Omarchy 4.5 whose script is gone (OmacVM crashed or
+            // was force quit) left its VM running without a window: shut down.
+            MoveFiles.settleLeftovers(vms)
         }
         Updater.shared.busyReason = { [weak self] in
             guard let self else { return nil }

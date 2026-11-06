@@ -328,6 +328,11 @@ enum RenderVMWindow {
         window("window-move-5-failed-undo-only", state, p) { dark in shown("window-move-5-failed-undo-only", dark) }
         p.move = card(.interrupted(step: 5, reason: "", resumable: true))
         window("window-move-6-interrupted", state, p) { dark in shown("window-move-6-interrupted", dark) }
+        p.move = card(.stopping(step: 5))
+        window("window-move-16-stopping", state, p) { dark in
+            shown("window-move-16-stopping", dark)
+            if LayoutProbe.frames["move-stopping"] == nil { note("window-move-16-stopping: no progress in the card\(dark ? " (dark)" : "")", fail: true) }
+        }
         p.move = card(.done(since: "2026-11-06T01:12:00Z", kept: false), backup: (12 * gib, true))
         p.moveBackup = (12 * gib, true)
         p.section = "storage"
