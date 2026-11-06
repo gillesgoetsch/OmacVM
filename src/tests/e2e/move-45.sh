@@ -140,8 +140,12 @@ clone_to() {   # DIR [stand-in]: BASE's folder as a fresh VM at DIR (cp -c); sta
   rm -rf "$d"; mkdir -p "$d"
   if [[ ${2:-} == stand-in ]]; then dd if="$BASE/disk.img" of="$d/disk.img" bs=4m count=512 status=none || return 1
   else cp -c "$BASE/disk.img" "$d/disk.img" || return 1; fi
-  local f; for f in efi-vars.fd vm.env features graphics omacvm-version guest-pointer ssh-key ssh-key.pub ready mac-setup fast-network; do
-    [[ -e $BASE/$f ]] && cp -p "$BASE/$f" "$d/$f"
+  # Every record of the VM folder (features, graphics, vulkan, venus-ready, video-decode, ... as the app keeps
+  # them), not the disk, not a move's or a run's state.
+  local f; for f in "$BASE"/*; do
+    [[ -f $f ]] || continue
+    case ${f##*/} in disk.img|move-4.5|running|*.pid|*.lock|*.sparseimage) continue ;; esac
+    cp -p "$f" "$d/${f##*/}"
   done
   rm -rf "$d/logs" "$d/move-4.5" "$d/before-omarchy-4.5"
   port=$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
@@ -358,7 +362,7 @@ pre_fails() {   # before the move, once per base (kept in OUT): the guest check'
 # OmacVM's; it must be there and load (no library missing). A VM with none before needs none.
 venus_ok() {   # WHEN (VM on)
   local w=$1 want pc
-  if grep -q '^vulkan=on' "$VD/features" 2>/dev/null || [[ ${PRE_VENUS:-} == mesa ]]; then want=mesa
+  if grep -qE '(^|[[:space:]])vulkan=on([[:space:]]|$)' "$VD/features" 2>/dev/null || [[ ${PRE_VENUS:-} == mesa ]]; then want=mesa
   else case ${PRE_VENUS:-none} in none|"") return 0 ;; *omacvm*) want=omacvm-vulkan-virtio ;; *) want=any ;; esac; fi
   if [[ $want == mesa ]]; then
     pc=$(g 'j=/etc/vulkan/icd.d/omacvm_venus_icd.json; [[ -f $j ]] || { echo "no $j"; exit; }
