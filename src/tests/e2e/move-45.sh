@@ -11,13 +11,22 @@
 #   move-45.sh --rows             the rows, one per line: NAME  what it proves
 #   move-45.sh --paths            the files a result is tied to (release gate)
 #   move-45.sh --summary DIR      DIR/rows/*.json -> DIR/result.json (the gate reads it)
+#   move-45.sh --onscreen         exit 0 when the rows with the app's window may run now
 #
 # APP: a test identity build (org.omacvm.app.test) of the commit under test;
 # its Contents/Resources/scripts run the move as the app does. BASE: a test VM
 # folder (never one of the installed app's VMs folders; src/tests/e2e/test-vms.sh).
 # The caller holds the Mac's VM lock and its memory gate (one VM at a time).
-# Nothing visible: QEMU runs headless, nothing on the screen, no input.
-# Rows write DIR/rows/ROW-<base>.json: {row, base, pass, checks: [[name, ok, detail]], seconds}.
+# Nothing visible: QEMU runs headless, no input. Only the row app-guards opens
+# the test app's window (no input either; only when nobody uses the Mac: HID
+# idle > 300 s and the screen unlocked, else that row is BLOCKED); it also
+# needs OMACVM_SIGN_ID (the Developer ID, to sign the update it offers) and
+# holds ~/.omacvm-test-identity.lock while the app runs.
+# Each run of a row writes DIR/rows/ROW-<base>-<mac>-<time>.json: {row, base,
+# mac, ended, pass, checks: [[name, ok, detail]], seconds}; logs DIR/logs/ the
+# same name. A row stopped before its end (a signal, an error) fails ("row ran
+# to its end"). Rows from the M1 go into the same DIR/rows (copy them over)
+# before --summary.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 R=$(cd "$HERE/../../.." && pwd)
@@ -34,6 +43,9 @@ app-quit     the app quits mid-move (SIGTERM to move-vm.sh): it stops at a step 
 power-loss   move-vm.sh and QEMU killed (-9) together in the package switch (the Mac loses power): interrupted, Undo exact
 power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo (or Resume) leaves the VM as before
 app-crash    the app crashes mid-download (move-vm.sh killed -9, its headless QEMU runs on): Resume and Undo still work
+disk-pending a disk change not finished (a shrink's journal, a grow): refused before anything changes, plan says why
+busy         while the move runs: Update VM (omacvm apply / update), a second move, Undo and Delete are refused; the move goes on
+app-guards   the app's window (on screen, no input): opened after a crash nothing starts; while the move runs an app update waits and Disk is locked; the update goes in after
 guest-full   the VM's own disk nearly full: refused before the switch, Undo restores the disk exactly
 mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes, plan says why
 non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anything changes, plan says why"
@@ -43,11 +55,16 @@ non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anyth
 PATHS="app/scripts/move-vm.sh app/scripts/update-vm.sh app/scripts/apply-vm.sh src/guest/omarchy-move.sh
 src/guest/keep-packages.txt src/guest/install.sh src/guest/system-update src/guest/pkg-add src/tests/e2e/move-45.sh"
 
-usage() { sed -n '2,24s/^# \{0,1\}//p' "$0"; exit 2; }
+usage() { sed -n '2,35s/^# \{0,1\}//p' "$0"; exit 2; }
+# On screen (MACS-1030d): nobody at the Mac for 5 minutes and the screen unlocked.
+hid_idle() { ioreg -c IOHIDSystem | awk '/HIDIdleTime/ { print int($NF / 1000000000); exit }'; }
+screen_locked() { [[ $(ioreg -n Root -d1 -a | plutil -extract IOConsoleUsers.0.CGSSessionScreenIsLocked raw - 2>/dev/null) == true ]]; }
+onscreen_ok() { (( $(hid_idle) > 300 )) && ! screen_locked; }
 case ${1:-} in
   --rows) printf '%s\n' "$ROWS"; exit 0 ;;
   --paths) printf '%s\n' $PATHS; exit 0 ;;
   --summary) exec python3 -I "$HERE/move-45-result.py" summary "${2:?usage}" "$R" ;;
+  --onscreen) onscreen_ok; exit ;;
 esac
 
 APP="" BASE="" ROW="" OUT=""
@@ -75,11 +92,12 @@ fi
 export OMACVM_TEST_IDENTITY=1 OMACVM_CREATE_NO_MAC=1 OMACVM_MOVE_NO_MAC=1   # never the Mac's helpers
 MOVE45_COMMIT=$(/usr/libexec/PlistBuddy -c "Print :OmacVMCommit" "$APP/Contents/Info.plist" 2>/dev/null); export MOVE45_COMMIT
 mkdir -p "$OUT/rows" "$OUT/logs"
-BN=$(basename "$BASE"); TAG="$ROW-${BN##* }"
+MOVE45_MAC=${MOVE45_MAC:-$(hostname -s)}; export MOVE45_MAC
+BN=$(basename "$BASE"); TAG="$ROW-${BN##* }-$MOVE45_MAC-$(date +%Y%m%d-%H%M%S)"
 LOGF=$OUT/logs/$TAG.log
 exec > >(tee -a "$LOGF") 2>&1
 T0=$(date +%s)
-CHECKS=()
+CHECKS=() ROW_DONE=0 STOPPED=""
 log() { echo "== $(date +%H:%M:%S) $*"; }
 check() {   # NAME OK(0|1) DETAIL
   local ok=$2; CHECKS+=("$1"$'\t'"$ok"$'\t'"${3:-}")
@@ -87,6 +105,8 @@ check() {   # NAME OK(0|1) DETAIL
 }
 finish() {
   local f=$OUT/rows/$TAG.json
+  # A row cut short (a signal, an error before its end) never passes, also with no check failed yet.
+  (( ROW_DONE )) || check "row ran to its end" 0 "stopped early (${STOPPED:-exit $1}) after: $(grep -E '^== |^(ok|FAIL) ' "$LOGF" | tail -1 | cut -c1-200)"
   printf '%s\n' "${CHECKS[@]+"${CHECKS[@]}"}" | python3 -I "$HERE/move-45-result.py" row "$f" "$ROW" "$BN" $(( $(date +%s) - T0 ))
 }
 
@@ -107,6 +127,7 @@ clone_to() {   # DIR [stand-in]: BASE's folder as a fresh VM at DIR (cp -c); sta
   sed -i '' -e "s/^SSH_PORT=.*/SSH_PORT=$port/" -e "s/^NAME=.*/NAME='$(basename "$d")'/" "$d/vm.env"
 }
 cleanup() {
+  app_clean 2>/dev/null
   # The guest's own logs, then the VM folder's (the clone goes after the row).
   if [[ -n $(qemu_pid) ]]; then
     g "tail -c 200000 /var/log/omacvm-system-update.log" > "$OUT/logs/$TAG.guest-system-update.log" 2>/dev/null
@@ -118,7 +139,10 @@ cleanup() {
   if [[ ${KEEP:-0} != 1 && -n ${VD:-} && $VD == *" mv-$ROW" && -f $VD/vm.env ]]; then rm -rf "$VD"; fi
   [[ -n ${IMG:-} ]] && rm -f "$IMG"
 }
-trap 'cleanup; finish' EXIT
+trap 'rc=$?; cleanup; finish $rc' EXIT
+trap 'STOPPED="SIGTERM"; exit 143' TERM
+trap 'STOPPED="SIGINT"; exit 130' INT
+trap 'STOPPED="SIGHUP"; exit 129' HUP
 
 # ---------- the VM, as the app's scripts run it ----------
 vmc() { ( set +u; source "$S/vm-common.sh" >/dev/null 2>&1; vm_load "$VD" >/dev/null; "$@" ); }
@@ -186,6 +210,19 @@ boots_40() {
   vm_off
 }
 journal_state() { check "journal: state $1" $([[ $(J state) == "$1" ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) resumable=$(J resumable) reason=$(J reason)"; }
+
+# After a fault, nothing goes on by itself: no QEMU, no move-vm.sh, the journal as it was, until
+# a person presses Resume or Undo (SECONDS: how long to watch, default 30).
+nothing_starts() {
+  local j0 j1 i q=""; j0=$(shasum -a 256 "$VD/move-4.5" 2>/dev/null | cut -c1-16)
+  for ((i = 0; i < ${1:-30}; i += 3)); do
+    q=$(qemu_pid)$(LC_ALL=C pgrep -f "move-vm.sh $VD " | head -1)
+    [[ -n $q ]] && break; sleep 3
+  done
+  j1=$(shasum -a 256 "$VD/move-4.5" 2>/dev/null | cut -c1-16)
+  check "after the fault nothing starts by itself (no QEMU or move-vm.sh, journal unchanged ${1:-30} s)" \
+    $([[ -z $q && $j0 == "$j1" ]] && echo 1 || echo 0) "pids '$q', journal $j0 -> $j1, state=$(J state)"
+}
 
 # ---------- the checks after a move (VM on) ----------
 guest_fails() { g "u=\$(sed -n 's/^OMACVM_USER=//p' /etc/omacvm/env); bash /usr/local/share/omacvm/guest/check.sh --user \"\$u\" --tsv 2>/dev/null | awk -F'\t' '\$1 == \"fail\" { print \$2 }'" | sort -u; }
@@ -303,6 +340,7 @@ fault_then_resume() {   # the move must stop resumable, then Resume finishes it
   check "stopped by the fault" $((rc != 0)) "exit $rc"
   check "journal: resumable" $([[ $(J resumable) == 1 ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) reason=$(J reason)"
   vm_off
+  nothing_starts
   mvm run; rc=$?
   check "Resume (run again)" $((rc == 0)) "exit $rc"
   journal_state done
@@ -360,6 +398,7 @@ row_kill_commit() {
   mvm_wait; local rc=$?
   check "stopped" $((rc != 0)) "exit $rc"
   check "journal: Undo only (not resumable)" $([[ $(J resumable) == 0 ]] && echo 1 || echo 0) "state=$(J state) step=$(J step) resumable=$(J resumable)"
+  nothing_starts
   mvm run; rc=$?
   check "Resume refused" $((rc != 0)) "exit $rc"
   mvm undo; rc=$?
@@ -381,6 +420,7 @@ fault_then_resume_after_quit() {
   check "stopped within 10 min (a step boundary)" $(( $(date +%s) - $1 < 600 )) "$(( $(date +%s) - $1 )) s, exit $rc"
   check "QEMU off after the stop" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
   check "journal: interrupted or failed, resumable" $([[ $(J resumable) == 1 && $(J state) =~ ^(interrupted|failed)$ ]] && echo 1 || echo 0) "state=$(J state) resumable=$(J resumable)"
+  nothing_starts
   mvm run; rc=$?
   check "Resume" $((rc == 0)) "exit $rc"
   journal_state done
@@ -402,6 +442,7 @@ row_power_loss() {
   # Nobody wrote the journal: "running" with a dead pid, which the app shows as interrupted.
   local jp; jp=$(J pid)
   check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && ! kill -0 "${jp:-0}" 2>/dev/null && echo 1 || echo 0) "state=$(J state) pid=$jp commit_started=$(J commit_started)"
+  nothing_starts
   mvm run; local rr=$?
   check "Resume refused inside the switch" $((rr != 0)) "exit $rr"
   mvm undo; local rc=$?
@@ -417,6 +458,7 @@ row_power_backup() {
   power_off_all
   log "killed at step $(J step), backup_at '$(J backup_at)'"
   check "journal: running, its pid gone (the app shows interrupted)" $([[ $(J state) == running ]] && echo 1 || echo 0) "state=$(J state) step=$(J step)"
+  nothing_starts
   mvm undo; local rc=$?
   check "Undo" $((rc == 0)) "exit $rc"
   same_as_before
@@ -479,6 +521,150 @@ mac_side_refusal() {   # FS GB WHY: the VM on a GB disk image of FS; the move re
   local p; p=$("$S/move-vm.sh" "$VD" plan 2>/dev/null | sed -n 's/^problem=//p')
   check "plan says the same (the card's Blocked state)" $([[ $p == *"$3"* ]] && echo 1 || echo 0) "$p"
 }
+row_disk_pending() {   # the disk's size change not finished: the move waits for it, before anything changes
+  PRE_FAILS=""   # never started: nothing to compare
+  pre_hash
+  local kind p rc
+  for kind in shrink grow; do
+    rm -f "$VD/disk-resize" "$VD/disk-jobs"
+    case $kind in   # as DiskView.swift writes them (DiskSize.Resize, DiskSize.Job)
+      shrink) printf 'step=shrink\nfrom=64\nto=48\n' > "$VD/disk-resize" ;;
+      grow) echo grow > "$VD/disk-jobs" ;;
+    esac
+    p=$("$S/move-vm.sh" "$VD" plan 2>/dev/null | sed -n 's/^problem=//p')
+    check "$kind pending: plan says why (the card's Blocked state)" $([[ -n $p ]] && echo 1 || echo 0) "$p"
+    mvm run; rc=$?
+    check "$kind pending: refused (exit 3)" $((rc == 3)) "exit $rc: $(J reason)"
+    check "$kind pending: no QEMU started" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
+    check "$kind pending: no backup, no move under way" $([[ ! -e $VD/before-omarchy-4.5 && $(J state) != running ]] && echo 1 || echo 0) "state=$(J state)"
+    check "$kind pending: disk.img as before" $([[ $(sha "$VD/disk.img") == "$PRE_DISK" ]] && echo 1 || echo 0) ""
+  done
+  rm -f "$VD/disk-resize" "$VD/disk-jobs"
+}
+row_busy() {   # while the move runs, whatever else could touch the VM is refused, and the move goes on
+  pre_hash
+  mvm_bg run
+  wait_until 2400 in_phase download || { check "reached download" 0 "phase $(gstat phase)"; mvm_wait; return; }
+  local cli="$APP/Contents/Resources/omacvm/omacvm" name; name=$(basename "$VD")
+  local out rc
+  # Update VM's own route (the app's Update VM and the control centre's jobs run apply); Mac side left alone.
+  out=$("$cli" apply --vm "$name" --no-mac --yes 2>&1 < /dev/null); rc=$?
+  check "omacvm apply refused (exit 3), nothing changed" $((rc == 3)) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
+  out=$("$S/move-vm.sh" "$VD" run 2>&1 3< /dev/null); rc=$?
+  check "a second move refused (exit 3)" $((rc == 3)) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
+  out=$("$S/move-vm.sh" "$VD" undo 2>&1 3< /dev/null); rc=$?
+  check "Undo refused while the move runs" $((rc != 0)) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
+  out=$("$S/move-vm.sh" "$VD" delete-backup 2>&1 3< /dev/null); rc=$?
+  check "Delete the old backup refused while the move runs" $((rc != 0)) "exit $rc: $(tail -1 <<<"$out" | cut -c1-200)"
+  check "the backup is still there" $([[ -f $VD/before-omarchy-4.5/disk.img ]] && echo 1 || echo 0) ""
+  check "the move still runs (journal, QEMU)" $([[ $(J state) == running && -n $(qemu_pid) ]] && echo 1 || echo 0) "state=$(J state)"
+  mvm_wait; rc=$?
+  check "the move finishes" $((rc == 0)) "exit $rc: $(J reason)"
+  journal_state done
+}
+
+# ---------- the app's window (row app-guards) ----------
+# The test app opened as a person opens it (open -n -g, its window on this Mac's screen, no input:
+# Accessibility reads it), from one fixed copy per Mac that the move runs from too, so its updater
+# sees the move (a new folder per run would ask macOS's Local Network question again: STANDARDS 34b).
+UA=""; UPID=""; FEED_PID=""; ULOCK=$HOME/.omacvm-test-identity.lock; ULOCK_MINE=0; USAVED=""
+app_clean() {
+  [[ -n $UPID ]] && { kill "$UPID" 2>/dev/null; sleep 2; kill -9 "$UPID" 2>/dev/null; }
+  [[ -n $FEED_PID ]] && kill "$FEED_PID" 2>/dev/null
+  [[ -n $USAVED && -f $USAVED ]] && defaults import org.omacvm.app.test "$USAVED"
+  (( ULOCK_MINE )) && rm -rf "$ULOCK" && echo "move-45 $(date +%H:%M) done" >> "$ULOCK.wait"
+  UPID="" FEED_PID="" USAVED="" ULOCK_MINE=0
+}
+app_open() {   # [ARGS...]: the copy, with the local feed; UPID = its launcher
+  local before; before=$(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM" | tr '\n' ' ')
+  open -n -g --env "OMACVM_APPCAST_URL=http://127.0.0.1:$FEED_PORT/OmacVM-appcast.json" --env "OMACVM_APPCAST_KEY=$(cat "$OUT/feed-$MOVE45_MAC/key.pub")" \
+    "$UA" --args --vm "$(basename "$VD")" "$@"
+  local i p; UPID=""
+  for ((i = 0; i < 30; i++)); do
+    for p in $(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM( |$)"); do [[ $before == *" $p "* || $before == "$p "* ]] || UPID=$p; done
+    [[ -n $UPID ]] && return 0; sleep 1
+  done
+  return 1
+}
+app_quit() { [[ -n $UPID ]] && { kill "$UPID" 2>/dev/null; local i; for ((i = 0; i < 15; i++)); do kill -0 "$UPID" 2>/dev/null || break; sleep 1; done; kill -9 "$UPID" 2>/dev/null; }; UPID=""; }
+disk_locked() {   # WHEN: the Disk row's Change… is there and disabled (AX on the launcher's pid)
+  local out rc; out=$("$OUT/ax" "$UPID" has "Change…" 2>&1); rc=$?
+  check "$1: Disk › Change… locked in the window" $([[ $rc == 1 && $out == *disabled* ]] && echo 1 || echo 0) "ax rc $rc: $out"
+}
+upd_log() { local f; f=$(ls -t "$HOME/Library/Application Support/OmacVM/Updates/org.omacvm.app.test"/*/update.log 2>/dev/null | head -1); [[ -n $f ]] && tail -c 4000 "$f"; }
+row_app_guards() {
+  local why=""
+  onscreen_ok || why="someone may be at this Mac (HID idle $(hid_idle) s$(screen_locked && echo ', screen locked'))"
+  [[ -z $why && -z ${OMACVM_SIGN_ID:-} ]] && why="OMACVM_SIGN_ID is not set (the Developer ID signs the update on offer)"
+  # One launcher per bundle id: a second one hands over to the first (and --update-now would ask that one to update).
+  local other; other=$(LC_ALL=C pgrep -f "OmacVM Test\.app/Contents/MacOS/OmacVM( |$)" | head -3 | tr '\n' ' ')
+  [[ -z $why && -n $other ]] && why="another test app launcher runs (pids $other)"
+  if [[ -z $why ]]; then
+    local i; for ((i = 0; i < 40; i++)); do mkdir "$ULOCK" 2>/dev/null && { ULOCK_MINE=1; break; }; sleep 30; done
+    (( ULOCK_MINE )) && echo "move-45 app-guards $(date +%H:%M), pid $$" > "$ULOCK/owner" || why="$ULOCK held for 20 min ($(cat "$ULOCK/owner" 2>/dev/null))"
+  fi
+  [[ -z $why ]] && { swiftc -O -o "$OUT/ax" "$HERE/ax.swift" 2> "$OUT/logs/$TAG.ax-build.log" || why="ax.swift does not build"; }
+  if [[ -n $why ]]; then check "BLOCKED: the app's window can be used here now" 0 "$why"; app_clean; return; fi
+  USAVED=$OUT/logs/$TAG.app-settings.plist; defaults export org.omacvm.app.test "$USAVED" 2>/dev/null || : > "$USAVED"
+  # The copy (the move runs from it), and the same build one version up, offered by a local feed (throwaway key).
+  UA=${MOVE45_UPDATE_APP:-$HOME/omacvm-work/move45-app/OmacVM Test.app}
+  mkdir -p "$(dirname "$UA")"; rm -rf "$UA"; ditto "$APP" "$UA"
+  S=$UA/Contents/Resources/scripts
+  local pv cv F="$OUT/feed-$MOVE45_MAC"; pv=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist")
+  cv=${pv%.*}.$(( ${pv##*.} + 1 ))
+  rm -rf "$F"; mkdir -p "$F/c"; ditto "$APP" "$F/c/OmacVM Test.app"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $cv" -c "Set :CFBundleVersion $cv" "$F/c/OmacVM Test.app/Contents/Info.plist"
+  codesign --force --sign "$OMACVM_SIGN_ID" --options runtime --preserve-metadata=entitlements,identifier "$F/c/OmacVM Test.app" 2> "$F/sign.log" ||
+    { check "the update on offer signed" 0 "$(tail -1 "$F/sign.log")"; app_clean; return; }
+  swiftc -O -o "$F/sign" "$R/src/release/sign.swift" 2>/dev/null && "$F/sign" keygen "$F/key" > "$F/key.pub" ||
+    { check "a throwaway feed key" 0 ""; app_clean; return; }
+  (cd "$F/c" && ditto -c -k --keepParent "OmacVM Test.app" "$F/OmacVM-$cv.zip")
+  FEED_PORT=$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+  printf '{"schema": 1, "kind": "app-feed", "version": "%s", "url": "http://127.0.0.1:%s/OmacVM-%s.zip", "length": %s, "sha256": "%s", "minimum_macos": "15.0", "devid_teams": ["%s"]}\n' \
+    "$cv" "$FEED_PORT" "$cv" "$(stat -f %z "$F/OmacVM-$cv.zip")" "$(shasum -a 256 "$F/OmacVM-$cv.zip" | cut -d' ' -f1)" \
+    "$(codesign -dv "$F/c/OmacVM Test.app" 2>&1 | sed -n 's/^TeamIdentifier=//p')" > "$F/OmacVM-appcast.json"
+  "$F/sign" sign "$F/key" "$F/OmacVM-appcast.json" > "$F/OmacVM-appcast.json.sig"
+  /usr/bin/python3 -m http.server "$FEED_PORT" --bind 127.0.0.1 --directory "$F" > "$F/server.log" 2>&1 & FEED_PID=$!
+  pre_hash
+  # 1. The Mac crashes early in the move (QEMU killed): interrupted.
+  mvm_bg run
+  wait_until 2400 eval '[[ $(gstat phase) =~ ^(protect|initramfs|keyring|repos|download)$ ]]' ||
+    { check "reached a phase before the switch" 0 "phase $(gstat phase)"; mvm_wait; app_clean; return; }
+  kill -9 "$(qemu_pid)"; mvm_wait
+  log "app-guards: QEMU killed in $(gstat phase 2>/dev/null)$(J step): state=$(J state)"
+  # 2. The app opens again (as after the Mac's restart): nothing starts, the journal stays, Disk is locked.
+  local j0; j0=$(shasum -a 256 "$VD/move-4.5" | cut -c1-16)
+  app_open || { check "the app opens" 0 ""; app_clean; return; }
+  sleep 45
+  check "app opened after the crash: no QEMU started" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
+  check "app opened after the crash: the journal as it was" $([[ $(shasum -a 256 "$VD/move-4.5" | cut -c1-16) == "$j0" ]] && echo 1 || echo 0) "state=$(J state)"
+  disk_locked "after the crash"
+  app_quit
+  # 3. Resume (from the copy, as its window would); while it downloads, the app opens with an update on offer.
+  mvm_bg run
+  wait_until 2400 in_phase download || { check "Resume reached download" 0 "phase $(gstat phase)"; mvm_wait; app_clean; return; }
+  app_open --update-now || { check "the app opens with --update-now" 0 ""; app_clean; return; }
+  local i; for ((i = 0; i < 40; i++)); do kill -0 "$UPID" 2>/dev/null || break; sleep 3; done   # it quits once it decided
+  UPID=""
+  local ul; ul=$(upd_log)
+  check "update on offer during the move: not installed" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist") == "$pv" ]] && echo 1 || echo 0) "$(grep -E 'deferred|install|update-now' <<<"$ul" | tail -2 | tr '\n' ' ' | cut -c1-240)"
+  check "update on offer during the move: deferred (update.log)" $([[ $ul == *"deferred"* ]] && echo 1 || echo 0) "$(grep -E 'deferred' <<<"$ul" | tail -1 | cut -c1-200)"
+  check "the move goes on (journal running, QEMU)" $([[ $(J state) == running && -n $(qemu_pid) ]] && echo 1 || echo 0) "state=$(J state)"
+  app_open || { check "the app opens during the move" 0 ""; app_clean; return; }
+  sleep 20; disk_locked "while the move runs"; app_quit
+  mvm_wait; local rc=$?
+  check "the move finishes" $((rc == 0)) "exit $rc: $(J reason)"
+  journal_state done
+  # 4. The app opens after the move: the update waiting from step 3 goes in now.
+  app_open || { check "the app opens after the move" 0 ""; app_clean; return; }
+  for ((i = 0; i < 100; i++)); do [[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && break; sleep 3; done
+  check "after the move the waiting update goes in" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist" 2>/dev/null) == "$cv" ]] && echo 1 || echo 0) "$(upd_log | grep -E 'install|swap|result' | tail -2 | tr '\n' ' ' | cut -c1-240)"
+  sleep 5
+  local p; for p in $(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM( |$)"); do kill "$p" 2>/dev/null; done
+  UPID=""
+  check "no QEMU after all of it" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
+  app_clean
+}
 row_mac_full() { mac_side_refusal APFS 6 "Not enough free space"; }
 row_non_apfs() { mac_side_refusal HFS+ 20 "APFS"; }
 
@@ -488,3 +674,4 @@ case $ROW in
   *) clone_to "$VD" || { check "clone" 0 ""; exit 1; } ;;
 esac
 "row_${ROW//-/_}"
+ROW_DONE=1

@@ -317,9 +317,14 @@ disk's SHA-256 equal to before the move), a move again after Undo, Delete
 the old backup (space shown = space freed), the internet cut during the
 download, the network link down for 90 s, QEMU killed before and inside the
 package switch, the app quitting, a power loss in the switch and in the
-backup, the VM's disk nearly full, the Mac's drive nearly full, and a
-non-APFS drive. Resume must finish a move that stopped resumable; Undo must
-give back exactly the VM from before.
+backup, an app crash, the VM's disk nearly full, the Mac's drive nearly
+full, a non-APFS drive, a disk size change not finished, everything else
+refused while the move runs (Update VM, a second move, Undo, Delete), and
+the app's window (`app-guards`): opened after a crash nothing starts, an
+app update offered mid-move waits and goes in after it, Disk › Change… is
+locked. After every fault nothing may start by itself until Resume or Undo.
+Resume must finish a move that stopped resumable; Undo must give back
+exactly the VM from before.
 
     move-45.sh --app "<test identity build>.app" --base "<test VMs>/OmacVM M-mv-a308" --row clean --out DIR
     move-45.sh --summary DIR        # DIR/result.json for the gate
@@ -327,7 +332,12 @@ give back exactly the VM from before.
 Bases: 4.0 VMs of every age we shipped (a VM from prebuilt-3.0.0, one from
 prebuilt-3.0.8, a fresh 4.0.3rc4 build with more features), powered off, in
 the test app's VMs folder. The caller holds the Mac's VM lock and memory
-gate; nothing shows on the screen. `src/release/release.sh` step `moves`
-passes when every row passed, "clean" on three ages, on one tested commit
-whose move files (`move-45.sh --paths`) are the same in the release commit
-(`move-45-result.py gate`; `src/tests/move-45-gate.sh` tests the gate).
+gate; nothing shows on the screen but `app-guards`, which opens the test
+app's window only when nobody is at the Mac (HID idle over 5 minutes, the
+screen unlocked; else BLOCKED) and holds `~/.omacvm-test-identity.lock`.
+Every run writes its own file (`ROW-BASE-MAC-TIME.json`); copy the second
+Mac's into the same `DIR/rows`. `src/release/release.sh` step `moves`
+passes when the newest run of every row passed, "clean" on three ages,
+rows from two Macs with the last two clean moves passed on each, on one
+tested commit whose move files (`move-45.sh --paths`) are the same in the
+release commit (`move-45-result.py gate`; `src/tests/move-45-gate.sh` tests the gate).
