@@ -116,6 +116,10 @@ public enum OmarchyMove {
         public var settlePid: Int32 { Int32(value("settle_pid") ?? "") ?? 0 }
         /// kern.boottime's seconds when the pids were written ("" in older journals).
         public var boot: String { value("boot") ?? "" }
+        /// The VM stopped while the Mac's last word from its guest was "inside
+        /// the package switch": not known yet whether the move can go on.
+        /// Resume boots the VM and asks it first (move-vm.sh, step 4).
+        public var askGuest: Bool { value("ask_guest") == "1" }
     }
 
     // MARK: The Omarchy record (VM_DIR/omarchy, written by apply)
@@ -176,7 +180,7 @@ public enum OmarchyMove {
                 if alive { return .running(step: j.step) }
                 return .interrupted(step: j.step, reason: j.reason, resumable: resumableAfterStop(j))
             case .failed:
-                return .failed(step: j.failedStep > 0 ? j.failedStep : j.step, reason: j.reason, resumable: j.resumable)
+                return .failed(step: j.failedStep > 0 ? j.failedStep : j.step, reason: j.reason, resumable: j.resumable || j.askGuest)
             case .interrupted:
                 return .interrupted(step: j.step, reason: j.reason, resumable: resumableAfterStop(j))
             case .done, .kept:
@@ -208,11 +212,13 @@ public enum OmarchyMove {
         j.open && !scriptAlive && qemuAlive && !settleAlive
     }
 
-    /// A move that stopped without saying so (the Mac lost power, the app was
-    /// killed): it goes on unless the guest's package switch had started and
-    /// the journal says it cannot (a half transaction is not resumed).
+    /// A move that stopped: it goes on unless the guest's package switch had
+    /// started and the guest itself said it cannot (a half transaction is
+    /// not resumed). Without the guest's last word (the Mac lost power, the
+    /// app was killed: the journal still says running; or ask_guest) Resume
+    /// is offered: it boots the VM and asks the guest before anything else.
     static func resumableAfterStop(_ j: Journal) -> Bool {
-        j.commitStarted ? j.resumable : true
+        !j.commitStarted || j.resumable || j.askGuest || j.state == .running
     }
 
     // MARK: The Mac's checks (step 1)

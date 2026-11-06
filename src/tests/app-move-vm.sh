@@ -68,6 +68,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 : > "$console"
+# grub: a VM whose boot files were lost (a cut-off before they were on disk) stops at GRUB's prompt.
+[[ ${FAKE_MODE:-} == grub ]] && printf 'GNU GRUB  version 2:2.16-1\r\n\r\ngrub> ' > "$console"
 while :; do sleep 1; done
 QEMU
 cat > "$T/bin/ssh" <<'SSH'
@@ -76,6 +78,7 @@ cat > "$T/bin/ssh" <<'SSH'
 # Its state is in $FAKE_DIR/guest/ (it survives the VM's restarts, as a disk does).
 G=$FAKE_DIR/guest
 kill -0 "$(cat "$FAKE_DIR/qemu.pid" 2>/dev/null)" 2>/dev/null || exit 255
+[[ $FAKE_MODE == grub ]] && exit 255   # no system came up
 cmd=${*: -1}
 echo "$cmd" >> "$FAKE_DIR/ssh.log"
 phases=(preflight protect initramfs keyring repos download commit platform mpv vulkan kernel update report)
@@ -88,7 +91,8 @@ case $cmd in
     if [[ -e $G/rebooting ]]; then rm -f "$G/rebooting"; exit 255; fi
     exit 0 ;;
   "systemctl poweroff")
-    echo poweroff >> "$FAKE_DIR/power.log"
+    # What the guest's move did when the shutdown came (inside the switch it must not be running).
+    echo "poweroff $(cat "$G/state" 2>/dev/null || echo none) ${phases[$(cat "$G/i" 2>/dev/null || echo 0)]}" >> "$FAKE_DIR/power.log"
     # FAKE_STUBBORN=1: a VM that does not shut down (OmacVM must end it after a while).
     [[ ${FAKE_STUBBORN:-} == 1 ]] || (sleep 1; kill "$(cat "$FAKE_DIR/qemu.pid")") & exit 0 ;;
   "systemctl reboot") : > "$G/rebooting"; exit 0 ;;
@@ -105,6 +109,9 @@ case $cmd in
     exit 0 ;;
   *"omarchy-move.sh start")
     [[ -f $G/state ]] && [[ $(cat "$G/state") == done ]] && exit 0
+    if [[ -e $G/inswitch ]]; then
+      printf '{"format":1,"ok":false,"code":"undo-only","reason":"The package switch was cut off; Undo puts the VM back as it was before the move."}\n'; exit 3
+    fi
     echo running > "$G/state"; rm -f "$G/stop"; [[ -f $G/i ]] || echo 0 > "$G/i"
     exit 0 ;;
   *"omarchy-move.sh stop") : > "$G/stop"; exit 0 ;;
@@ -115,6 +122,20 @@ case $cmd in
     c=false; (( i >= 6 )) && c=true
     if [[ $st == running ]]; then
       ph=${phases[$i]}
+      if [[ $ph == commit && $FAKE_MODE == slow-commit ]]; then
+        # A long switch: 8 answers inside it (a stop waits for its end), then on.
+        n=$(( $(cat "$G/cn" 2>/dev/null || echo 0) + 1 )); echo $n > "$G/cn"
+        if (( n <= 8 )); then json running commit 7 true false "" ""; exit 0; fi
+        echo 7 > "$G/i"; json running platform 8 true true "" ""; exit 0
+      fi
+      if [[ $ph == commit && ( $FAKE_MODE == cut-after-switch || $FAKE_MODE == cut-in-switch ) ]]; then
+        # The Mac's last word from the guest: inside the switch. Then the VM is cut off (QEMU -9): right
+        # after the switch was done (its journal synced: resumable again), or inside it.
+        if [[ ! -e $G/cut ]]; then : > "$G/cut"; json running commit 7 true false "" ""; exit 0; fi
+        echo interrupted > "$G/state"
+        if [[ $FAKE_MODE == cut-after-switch ]]; then echo 7 > "$G/i"; else : > "$G/inswitch"; fi
+        kill -9 "$(cat "$FAKE_DIR/qemu.pid")"; exit 255
+      fi
       if [[ $FAKE_MODE == fail-commit && $ph == commit ]]; then echo failed > "$G/state"; json failed commit 7 true false commit "pacman failed in the switch."; exit 0; fi
       if [[ $FAKE_MODE == net-download && $ph == download ]]; then echo failed > "$G/state"; json failed download 6 false true repos-unreachable "Downloads stopped."; exit 0; fi
       # slow: stays at download (until a stop)
@@ -127,7 +148,8 @@ case $cmd in
       (( i >= ${#phases[@]} )) && echo done > "$G/state"
       exit 0
     fi
-    json "$st" report 13 $c true "" ""
+    r=true; [[ -e $G/inswitch ]] && r=false
+    json "$st" "${phases[$i]:-report}" $((i + 1)) $c $r "" ""
     exit 0 ;;
 esac
 exit 0
@@ -135,6 +157,7 @@ SSH
 cat > "$A/scripts/apply-vm.sh" <<'APPLY'
 #!/bin/bash
 echo "${OMACVM_KERNEL_NEW:-unset} ${OMACVM_MOVE_RUN:-unset}" >> "$FAKE_DIR/apply.log"
+echo "(apply)" >> "$FAKE_DIR/ssh.log"   # in order with what the move asked the VM
 # apply6-fail: the apply after the move (the second one) fails once.
 if [[ $FAKE_MODE == apply6-fail && $(wc -l < "$FAKE_DIR/apply.log") -eq 2 ]]; then echo "error: the VM side failed"; exit 1; fi
 echo "==> OmacVM applied"
@@ -373,6 +396,67 @@ expect "crash, then Keep This Disk: the old VM stopped first, kept" "0 kept gone
 crash_mid
 mv_run ok settle FAKE_STUBBORN=1 OMACVM_MOVE_SETTLE_SECONDS=2; rc=$?
 expect "a left VM that does not shut down: ended after the wait, exit 0" "0 gone interrupted" "$rc $(oq_gone) $(jget state)"
+
+# ---------- an app crash inside the package switch: the guest's own last word decides ----------
+# (v340-m2 crash-commit: settle powered the VM off while the guest switched packages, and the
+# guest's "resumable" after it never reached the Mac.)
+fresh; : > "$T/out"; rm -f "$T/power.log"
+( mv_run slow-commit run ) & BG=$!
+for ((i = 0; i < 150; i++)); do grep -q 'Switching the packages' "$T/out" 2>/dev/null && break; sleep 0.1; done
+p=$(jget pid); [[ $p =~ ^[0-9]+$ ]] && (( p > 1 )) && kill -9 "$p"
+wait "$BG" 2>/dev/null; BG=""; oq=$(cat "$T/qemu.pid")
+expect "crash in the switch: the Mac's last poll said inside it (commit, not resumable)" "running 1 0" "$(jget state) $(jget commit_started) $(jget resumable)"
+mv_run slow-commit settle; rc=$?
+expect "settle in the switch: exit 0, the VM is off" "0 gone" "$rc $(kill -0 "$oq" 2>/dev/null && echo runs || echo gone)"
+expect "settle in the switch: no shutdown while the guest's move ran (it stopped at its safe point first)" "poweroff stopped platform" "$(cat "$T/power.log" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+expect "settle in the switch: the guest's last word wins (switched, resumable)" "interrupted 1 1 none" \
+  "$(jget state) $(jget commit_started) $(jget resumable) $(jget ask_guest | grep -v '^0$' | grep . || echo none)"
+mv_run ok run; rc=$?
+expect "... then Resume: to the end" "0 done" "$rc $(jget state)"
+
+# ---------- the VM cut off right after the switch; the Mac's last poll said inside it ----------
+# (v340-m2 kpost: every Resume refused although the guest had finished its switch.)
+fresh
+sum0=$(shasum "$V/disk.img" | cut -c1-40)
+mv_run cut-after-switch run; rc=$?
+expect "cut off after the switch: failed, Undo only for now, but the VM is to be asked (ask_guest)" "1 failed 0 1 1" \
+  "$rc $(jget state) $(jget resumable) $(jget commit_started) $(jget ask_guest)"
+expect "... the reason says Resume asks the VM" "yes" "$(jget reason | grep -q 'Resume asks' && echo yes)"
+echo "-- resume" >> "$T/ssh.log"
+mv_run ok run; rc=$?
+expect "Resume: the VM is asked first, says the switch is done: to the end" "0 done" "$rc $(jget state)"
+expect "... it asked the VM before OmacVM's update in it" "status" \
+  "$(sed -n '/^-- resume$/,$p' "$T/ssh.log" | grep -m1 -E 'status --json|^\(apply\)' | grep -q status && echo status)"
+expect "... the journal no longer asks" "none" "$(jget ask_guest | grep -v '^0$' | grep . || echo none)"
+
+# ---------- cut off inside the switch: the VM says so, Undo only (nothing else touched) ----------
+fresh
+sum0=$(shasum "$V/disk.img" | cut -c1-40)
+mv_run cut-in-switch run; rc=$?
+expect "cut off inside the switch: failed, to be asked" "1 failed 0 1" "$rc $(jget state) $(jget resumable) $(jget ask_guest)"
+n_apply=$(wc -l < "$T/apply.log" | tr -d ' ')
+mv_run ok run; rc=$?
+expect "Resume: the VM says its switch was cut off: Undo only, decided" "1 failed 0 undo-only none" \
+  "$rc $(jget state) $(jget resumable) $(jget code) $(jget ask_guest | grep -v '^0$' | grep . || echo none)"
+expect "... OmacVM was not updated in that VM, the VM is off" "$n_apply gone" "$(wc -l < "$T/apply.log" | tr -d ' ') $(qemu_gone)"
+mv_run ok run; rc=$?
+expect "... Resume again: refused at once (no VM start)" "1 yes" "$rc $(grep -q 'cannot go on' "$T/out" && echo yes)"
+mv_run ok undo; rc=$?
+expect "... Undo: the disk from before" "0 undone $sum0" "$rc $(jget state) $(shasum "$V/disk.img" | cut -c1-40)"
+
+# ---------- a VM stopped at GRUB's prompt: no 5 minutes of waiting, Undo ----------
+fresh
+mv_run cut-after-switch run
+t0=$(date +%s)
+mv_run grub run OMACVM_MOVE_BOOT_SECONDS=40; rc=$?
+expect "Resume, the VM stops at GRUB's prompt: failed at once at step 4, Undo only" "1 failed 4 0 no-boot" \
+  "$rc $(jget state) $(jget failed_step) $(jget resumable) $(jget code)"
+expect "... within seconds, not the boot wait" "1" "$(( $(date +%s) - t0 < 30 ))"
+expect "... the reason says Undo, QEMU is gone" "yes gone" "$(jget reason | grep -q Undo && echo yes) $(qemu_gone)"
+fresh
+mv_run net run
+mv_run grub run OMACVM_MOVE_BOOT_SECONDS=40; rc=$?
+expect "a Resume before the switch, the VM at GRUB's prompt: failed, Undo only" "1 4 0 no-boot" "$rc $(jget failed_step) $(jget resumable) $(jget code)"
 
 # ---------- a VM still going away (Undo waits); one that runs on (refused, plainly) ----------
 fresh

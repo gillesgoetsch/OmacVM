@@ -19,9 +19,14 @@
 # (the app crashed, the Mac logged out) leaves its VM running without a
 # window: settle, and run, undo and keep before they act, find that QEMU
 # (its serial console is the move's log, its disk this VM's), ask the guest
-# to stop at a safe point and shut it down (SSH, ACPI), and end it after a
-# while (up to 16 minutes inside the package switch). The guest side is
-# /usr/local/share/omacvm/guest/omarchy-move.sh (work/v340/contract.md).
+# to stop at a safe point, wait until its move no longer runs (up to 16
+# minutes inside the package switch), take its last word into the journal,
+# and only then shut it down (SSH, ACPI). The guest's word on whether the
+# move can go on wins over the Mac's: when the Mac did not hear its last
+# word (the VM stopped inside the switch), the journal says ask_guest=1 and
+# Resume boots the VM and asks it before anything else changes. The guest
+# side is /usr/local/share/omacvm/guest/omarchy-move.sh (work/v340/contract.md,
+# work/v340/fix3/contract-notes.md).
 # Exit: 0 done, 1 failed (the journal says why and whether Resume works),
 # 2 usage, 3 refused (nothing changed). OMACVM_MOVE_NO_MAC=1 (test rows): the
 # Mac's helpers are left as they are (apply-vm.sh --no-mac).
@@ -119,6 +124,50 @@ clones_ok() {   # the VM folder's volume is APFS: cp -c makes clones there (else
 jv() { plutil -extract "$1" raw -o - -- "$2" 2>/dev/null | printable | head -1 | cut -c1-300 || true; }
 gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; if (g >= 10) printf "%d GB", g + 0.5; else printf "%.1f GB", g }'; }
 
+# The guest's move, as it says itself (status --json into FILE): 0 when it answered.
+guest_status() {
+  vssh "$G status --json" < /dev/null > "$1.new" 2>/dev/null && [[ -n $(jv state "$1.new") ]] &&
+    mv -f "$1.new" "$1" || { rm -f "$1.new"; return 1; }
+}
+# The guest's last word into the journal: whether its switch began, whether
+# the move can go on. Final: nothing left to ask.
+guest_word() {   # FILE
+  local c=0 r=0
+  [[ $(jv commit_started "$1") == true ]] && c=1
+  [[ $(jv resumable "$1") == true ]] && r=1
+  jset commit_started "$c" resumable "$r" ask_guest 0
+}
+# After a cut-off (the VM stopped or went silent: no last word from the
+# guest): the guest's last polled answer. Inside the switch that is "not
+# resumable" for now, and Resume asks the VM (ask_guest).
+res_now() { [[ $(jget commit_started) == 1 && $(jget resumable) != 1 ]] && echo 0 || echo 1; }
+cut_off() {   # STEP REASON CODE: a VM that stopped or went silent during the move
+  local r why; r=$(res_now)
+  why=$(disk_why) || why=$2
+  if (( r == 0 )); then
+    jset ask_guest 1
+    disk_why > /dev/null || why="$NAME stopped while Omarchy's packages were being switched. Resume asks the VM whether the move can go on; Undo brings the disk from before the move back."
+  fi
+  fail "$1" "$why" "$r" "$3"
+}
+# A VM stopped at GRUB's prompt (its boot files lost by a cut-off before they
+# were on the disk: v340-l3 kill-early) does not come up by waiting.
+grub_prompt() { LC_ALL=C grep -a -q -E '(^|[^[:alnum:]_-])grub( rescue)?> ?' "$LOG/move-console.log" 2>/dev/null; }
+# wait_ssh, but 3 at once for a VM at GRUB's prompt.
+wait_up() {   # SECONDS [refused]
+  local i e
+  for ((i = 0; i < $1; i += 3)); do
+    qemu_running || return 1
+    grub_prompt && return 3
+    e=$(vssh true < /dev/null 2>&1 >/dev/null) && return 0
+    [[ ${2:-} == refused && $e == *"Permission denied"* ]] && return 2
+    sleep 3
+  done
+  grub_prompt && return 3
+  return 1
+}
+NO_BOOT_TEXT="$NAME stops at its boot menu's prompt and does not start. Undo brings the disk from before the move back."
+
 # The Mac's checks (OmarchyMove.problem says the same in the window).
 mac_problem() {
   wait_unused || { echo "$RUNS_TEXT: shut it down there first."; return; }
@@ -161,12 +210,15 @@ drop_lock() { [[ $(cat "$LOCKD/pid" 2>/dev/null) == "$$" ]] && rm -rf "$LOCKD"; 
 
 # The VM a killed move left running (its script gone: an app crash, a
 # logout): the guest is asked to stop at its next safe point (never inside
-# the package switch), shut down over SSH and by ACPI, waited for (16
-# minutes inside the switch, else 3), then ended; the journal says
-# interrupted, with what the guest got to. A live move owns its VM.
+# the package switch) and asked again until its move no longer runs (16
+# minutes inside the switch, else 3); its last word goes into the journal
+# (whether the move can go on: the guest's, not the Mac's last poll). Only
+# then it is shut down over SSH and by ACPI, and ended if it does not go.
+# Without the guest's last word after the switch began, Resume asks it first
+# (ask_guest). A live move owns its VM.
 settle() {
   alive && return 0
-  local q i lim gs="" ph=""
+  local q i lim gs="" ph="" heard=0 final=0 inside=0 t0 asked=0 off
   q=$(move_qemu)
   if [[ -z $q ]]; then
     [[ -f $J && -n $(jget qemu_pid) && $(jget qemu_pid) != 0 ]] && jset qemu_pid 0
@@ -176,26 +228,40 @@ settle() {
   printf '%s settle: the move'\''s QEMU %s, its script gone\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$q" >> "$LOG/move-in-use.log"
   [[ -f $J ]] && jset settle_pid $$
   lim=${OMACVM_MOVE_SETTLE_SECONDS:-180}
-  if vssh "$G status --json" < /dev/null > "$LOG/move-status.json.new" 2>/dev/null; then
-    mv -f "$LOG/move-status.json.new" "$LOG/move-status.json"
-    gs=$(jv state "$LOG/move-status.json"); ph=$(jv phase "$LOG/move-status.json")
-    if [[ -f $J ]]; then
-      [[ $(jv commit_started "$LOG/move-status.json") == true ]] && jset commit_started 1
-      [[ $(jv resumable "$LOG/move-status.json") == false ]] && jset resumable 0
+  t0=$(date +%s)
+  while kill -0 "$q" 2>/dev/null; do
+    if guest_status "$LOG/move-status.json"; then
+      heard=1
+      gs=$(jv state "$LOG/move-status.json"); ph=$(jv phase "$LOG/move-status.json")
+      [[ $gs == running ]] || { final=1; break; }
+      if [[ $ph == commit || $(jv resumable "$LOG/move-status.json") == false ]] && (( ! inside )); then
+        inside=1; lim=${OMACVM_MOVE_SETTLE_SECONDS:-960}
+        log "Omarchy's packages are being switched in $NAME: waiting for that to end"
+      fi
+      (( asked )) || { vssh "$G stop" < /dev/null >/dev/null 2>&1 || true; asked=1; }
     fi
-    [[ $gs == running && $ph == commit ]] && lim=${OMACVM_MOVE_SETTLE_SECONDS:-960}
-    [[ $gs == running ]] && { vssh "$G stop" < /dev/null >/dev/null 2>&1 || true; }
-    copy_guest_logs
-  else
-    rm -f "$LOG/move-status.json.new"
+    (( $(date +%s) - t0 < lim )) || break
+    sleep "${OMACVM_MOVE_POLL:-8}"
+  done
+  if [[ -f $J ]]; then
+    if (( final )); then
+      guest_word "$LOG/move-status.json"
+    elif (( inside )) || [[ $(jget commit_started) == 1 && $(jget resumable) != 1 ]]; then
+      # Still inside the switch at the end of the wait, or never heard: ask it at Resume.
+      jset commit_started 1 resumable 0 ask_guest 1
+    fi
   fi
+  (( heard )) && copy_guest_logs
   # A clean shutdown: over SSH (Omarchy may hand the power key to its menu),
   # and by ACPI (QMP), which needs no network.
   vssh "systemctl poweroff" < /dev/null >/dev/null 2>&1 || true
   qmp system_powerdown || true
-  for ((i = 0; i < lim; i++)); do kill -0 "$q" 2>/dev/null || break; sleep 1; done
+  # The guest's move unit stops at its next safe point on a shutdown: while
+  # it may still be inside the switch, give it its whole time.
+  off=${OMACVM_MOVE_SETTLE_SECONDS:-180}; (( final || ! inside )) || off=${OMACVM_MOVE_SETTLE_SECONDS:-960}
+  for ((i = 0; i < off; i++)); do kill -0 "$q" 2>/dev/null || break; sleep 1; done
   if kill -0 "$q" 2>/dev/null; then
-    log "$NAME did not shut down within $lim s: ending it"
+    log "$NAME did not shut down within $off s: ending it"
     qmp quit || true
     for ((i = 0; i < 10; i++)); do kill -0 "$q" 2>/dev/null || break; sleep 1; done
     kill -TERM "$q" 2>/dev/null || true
@@ -207,8 +273,15 @@ settle() {
   rm -f "$STOP"
   if [[ -f $J ]]; then
     jset qemu_pid 0 settle_pid 0
-    [[ $(jget state) == running ]] && jset state interrupted pid 0 \
-      reason "OmacVM closed during the move. Its VM, still running without a window, was shut down at a safe point."
+    if [[ $(jget state) == running ]]; then
+      if [[ $(jget ask_guest) == 1 ]]; then
+        jset state interrupted pid 0 reason "OmacVM closed while Omarchy's packages were being switched. Resume asks the VM whether the move can go on; Undo brings the disk from before the move back."
+      elif [[ $(jget commit_started) == 1 && $(jget resumable) == 0 ]]; then
+        jset state interrupted pid 0 reason "The move stopped while Omarchy's packages were being switched, so it cannot go on. Undo brings the disk from before the move back."
+      else
+        jset state interrupted pid 0 reason "OmacVM closed during the move. Its VM, still running without a window, was shut down at a safe point."
+      fi
+    fi
   fi
   log "$NAME is shut down"
 }
@@ -289,9 +362,16 @@ state=$(jget state)
 case $state in
   done|kept|done-final) drop_lock; echo "move-vm.sh: $NAME was moved already" >&2; exit 3 ;;
 esac
+# Undo only when the guest said so (its last word). Without that word after
+# its switch began (the Mac's last poll said "inside", or the run died with
+# the journal at running), the VM is asked at step 4, before anything else.
 if [[ $state == running || $state == failed || $state == interrupted ]] && [[ $(jget commit_started) == 1 && $(jget resumable) == 0 ]]; then
-  drop_lock
-  die "The move stopped while Omarchy's packages were being switched, so it cannot go on. Undo brings the disk from before the move back."
+  if [[ $(jget ask_guest) == 1 || $state == running ]]; then
+    jset ask_guest 1
+  else
+    drop_lock
+    die "The move stopped while Omarchy's packages were being switched, so it cannot go on. Undo brings the disk from before the move back."
+  fi
 fi
 if [[ -z $state || $state == undone ]]; then
   rm -f "$J"
@@ -299,6 +379,8 @@ if [[ -z $state || $state == undone ]]; then
     from_omacvm "$(cat "$VM_DIR/omacvm-version" 2>/dev/null || true)" \
     from_disk_gb "$(sed -n 's/^DISK_GB=//p' "$VM_DIR/vm.env" | head -1)" backup_at ""
 fi
+# How far the last run got: from step 5 on the guest's move may have begun.
+PREV_STEP=$(jget step); [[ $PREV_STEP =~ ^[0-9]+$ ]] || PREV_STEP=0
 jset state running pid $$ boot "$(boot_time)" reason "" code "" failed_step 0
 rm -f "$STOP"
 
@@ -418,17 +500,34 @@ disk_why() {
 
 step 4 "Update OmacVM in the VM"
 vm_up
-rc=0; wait_ssh 300 refused || rc=$?
-if (( rc == 2 )); then
+rc=0; wait_up "${OMACVM_MOVE_BOOT_SECONDS:-300}" refused || rc=$?
+if (( rc == 3 )); then
+  qemu_quit   # GRUB's prompt: no system to shut down
+  jset ask_guest 0
+  fail 4 "$NO_BOOT_TEXT" 0 no-boot
+elif (( rc == 2 )); then
   log "$NAME doesn't know this VM folder's SSH key: adding it"
   echo "FIX ssh-key"
   fix=""; read -r -t "${OMACVM_FIX_SECONDS:-180}" -u 3 fix || fix=""
   rc=2
   if [[ $fix == added || $fix == present ]]; then rc=0; wait_ssh 60 refused || rc=$?; fi
-  (( rc == 0 )) || { echo "SSHKEY refused"; fail 4 "$NAME doesn't let this Mac in over SSH. Click Update VM, then move it again." 1 ssh; }
+  (( rc == 0 )) || { echo "SSHKEY refused"; fail 4 "$NAME doesn't let this Mac in over SSH. Click Update VM, then move it again." "$(res_now)" ssh; }
 elif (( rc != 0 )); then
   w=$(disk_why) || w="$NAME did not come up within 5 minutes (log: $LOG/move-console.log)."
-  fail 4 "$w" 1 boot
+  fail 4 "$w" "$(res_now)" boot
+fi
+# A Resume after the guest's move may have begun: the guest says first
+# whether it can go on (its journal is on its disk; the Mac's last poll may
+# be from before a cut-off), before OmacVM's update changes anything in it.
+if (( PREV_STEP >= 5 )); then
+  ST=$LOG/move-status.json
+  guest_status "$ST" || fail 4 "$NAME did not say how far its move got. Resume asks it again; Undo brings the disk from before the move back." "$(res_now)" ask
+  if [[ $(jv resumable "$ST") == false ]]; then
+    guest_word "$ST"
+    fail 4 "The move stopped while Omarchy's packages were being switched, so it cannot go on. Undo brings the disk from before the move back." 0 undo-only
+  fi
+  guest_word "$ST"
+  log "$NAME says its move can go on ($(jv state "$ST"), after: $(jv phase "$ST" | grep . || echo none))"
 fi
 exec 3<&-
 export OMACVM_KERNEL_NEW=keep OMACVM_MOVE_RUN=1
@@ -449,8 +548,6 @@ phase_text() {
     *) echo "$1" ;;
   esac
 }
-res_now() { [[ $(jget commit_started) == 1 ]] && echo 0 || echo 1; }
-
 step 5 "Switch Omarchy's packages"
 PF=$LOG/move-preflight.json ST=$LOG/move-status.json
 moved_already=0
@@ -495,11 +592,11 @@ if (( ! moved_already )); then
     sleep "${OMACVM_MOVE_POLL:-8}"
     kill -0 "$PARENT" 2>/dev/null || touch "$STOP"
     if ! qemu_running; then
-      fail 5 "$(disk_why || echo "The VM stopped during the move (log: $LOG/move-console.log).")" "$(res_now)" vm-stopped
+      cut_off 5 "The VM stopped during the move (log: $LOG/move-console.log)." vm-stopped
     fi
     if ! vssh "$G status --json" < /dev/null > "$ST.new" 2>/dev/null; then
       lost=$((lost + 1))
-      (( lost < 40 )) || fail 5 "The VM stopped answering during the move." "$(res_now)" no-answer
+      (( lost < 40 )) || cut_off 5 "The VM stopped answering during the move." no-answer
       continue
     fi
     lost=0; mv -f "$ST.new" "$ST"
@@ -514,11 +611,13 @@ if (( ! moved_already )); then
       done) break ;;
       failed|refused)
         res=1; [[ $(jv resumable "$ST") == false ]] && res=0
+        jset ask_guest 0
         fail 5 "$(jv reason "$ST" | grep . || echo "The move failed in the VM.") (log: $LOG/move-4.5.log)" "$res" "$(jv code "$ST")" ;;
       stopped)
         stopped ;;
       interrupted)   # the guest's unit ended without a word (killed): as its journal says
         res=1; [[ $(jv resumable "$ST") == false ]] && res=0
+        jset ask_guest 0
         fail 5 "The move stopped in the VM without finishing (log: $LOG/move-4.5.log)." "$res" interrupted ;;
       running|none) ;;   # none: the unit has not written its first state yet
       *) fail 5 "The VM says the move is '$gs'." 1 state ;;
@@ -549,7 +648,9 @@ stop_asked && stopped
 vm_restart() {   # STEP
   vssh "systemctl reboot" < /dev/null >/dev/null 2>&1 || true
   for ((i = 0; i < 60; i++)); do vssh true < /dev/null >/dev/null 2>&1 || break; sleep 2; done
-  wait_ssh 300 || fail "$1" "$(disk_why || echo "$NAME did not come back after the restart (log: $LOG/move-console.log). Undo brings the disk from before back.")" 1 restart
+  local rc=0; wait_up "${OMACVM_MOVE_BOOT_SECONDS:-300}" || rc=$?
+  (( rc != 3 )) || { qemu_quit; fail "$1" "$NO_BOOT_TEXT" 0 no-boot; }
+  (( rc == 0 )) || fail "$1" "$(disk_why || echo "$NAME did not come back after the restart (log: $LOG/move-console.log). Undo brings the disk from before back.")" 1 restart
 }
 
 step 6 "Update OmacVM again"
@@ -571,6 +672,6 @@ log "Omarchy $rec"
 step 8 "Shut down"
 guest_log
 stop_vm
-jset state done step 8 finished "$(now_iso)" resumable 1
+jset state done step 8 finished "$(now_iso)" resumable 1 ask_guest 0
 OUTCOME=done
 echo "MOVED $NAME"
