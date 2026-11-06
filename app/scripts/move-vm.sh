@@ -55,9 +55,14 @@ jset() {   # jset KEY VALUE [KEY VALUE ...]: one write, never half written
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 alive() { local p; p=$(jget pid); [[ $p =~ ^[0-9]+$ ]] && (( p > 1 && p != $$ )) && kill -0 "$p" 2>/dev/null; }
 
-in_use() {
+in_use() {   # a QEMU (this app's, another copy's, omacvm start's) has the disk open
   ps -x -U "$(id -u)" -o args= | grep -v grep | grep -qF -- "file=$(qe "$VM_DIR/disk.img")," && return 0
-  [[ -n $(/usr/sbin/lsof -t -- "$VM_DIR/disk.img" 2>/dev/null) ]]
+  # Spotlight and backup readers open a new file for a moment: only a VM counts.
+  /usr/sbin/lsof -F c -- "$VM_DIR/disk.img" 2>/dev/null | grep -qiE '^c(OmacVM|qemu)'
+}
+in_use_who() {   # for the log: which process has the disk
+  { ps -x -U "$(id -u)" -o pid=,comm= -o args= | grep -v grep | grep -F -- "file=$(qe "$VM_DIR/disk.img"),"
+    /usr/sbin/lsof -F pc -- "$VM_DIR/disk.img" 2>/dev/null | paste -sd' ' -; } | cut -c1-120 | head -2 | tr '\n' ' '
 }
 alloc_bytes() { echo $(( $(stat -f %b "$1") * 512 )); }
 free_bytes() { echo $(( $(df -k "$VM_DIR" | awk 'NR==2 { print $4 }') * 1024 )); }
@@ -73,7 +78,7 @@ gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; if (g >= 10) printf "%d GB", g
 
 # The Mac's checks (OmarchyMove.problem says the same in the window).
 mac_problem() {
-  in_use && { echo "$NAME runs: shut it down first."; return; }
+  in_use && { echo "$NAME runs: shut it down first. ($(in_use_who))"; return; }
   clones_ok || { echo "The backup needs the VM on a Mac-formatted (APFS) drive. Move the VM to one under Storage first."; return; }
   [[ -f $VM_DIR/disk-resize ]] && { echo "A change of the disk's size is not finished. Start the VM once (or go back) first."; return; }
   grep -qx grow "$VM_DIR/disk-jobs" 2>/dev/null && { echo "Omarchy grows into the disk's new size at the next start. Start the VM once first."; return; }
@@ -218,7 +223,7 @@ p=$(mac_problem) || true
 stop_asked && stopped
 
 step 2 "Shut down the VM"
-in_use && fail 2 "$NAME runs: shut it down, then move it." 1 runs
+in_use && fail 2 "$NAME runs: shut it down, then move it. ($(in_use_who))" 1 runs
 log "$NAME is shut down"
 
 step 3 "Back up the disk"
