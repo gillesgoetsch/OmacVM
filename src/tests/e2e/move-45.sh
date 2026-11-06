@@ -247,6 +247,7 @@ row_clean() {
   log "second update: Omarchy's own (orphan step included)"
   g "/usr/local/share/omacvm/guest/system-update" > "$OUT/logs/$TAG.update2.log" 2>&1; rc=$?
   check "second update (omarchy update -y)" $((rc == 0)) "exit $rc, $(tail -1 "$OUT/logs/$TAG.update2.log")"
+  g "tail -c 100000 /var/log/omacvm-system-update.log" 2>/dev/null | sed -e $'s/\x1b\\[[0-9;]*[A-Za-z]//g' > "$OUT/logs/$TAG.guest-update2.log"
   g "systemctl reboot" >/dev/null 2>&1; sleep 15
   local ok=0; for _ in $(seq 60); do g true 2>/dev/null && { ok=1; break; }; sleep 5; done
   check "restart after the second update" $ok ""
