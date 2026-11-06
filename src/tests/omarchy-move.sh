@@ -314,6 +314,15 @@ rm -f "$P/net-down"; : > "$RT/var/lib/pacman/db.lck"
 expect "preflight after a VM reset in the download (pacman's lock left): ok to go on" "True" "$(o preflight --json | json 'd["ok"]')"
 o run >/dev/null 2>&1; expect "resume after the network: done, the lock removed" "0 done no" "$? $(cat "$J/state") $([[ -e $RT/var/lib/pacman/db.lck ]] && echo yes || echo no)"
 
+# Tests' hold (the kill rows): after the step, before its sync, until released.
+fresh; mkdir -p "$J"; : > "$J/test-hold-repos"
+( o run >/dev/null 2>&1 ) & hp=$!
+for _ in $(seq 1 50); do [[ -e $J/test-held-repos ]] && break; sleep 0.2; done
+expect "a test hold: the move waits after the step, before the journal says it is done" "yes repos keyring" \
+  "$([[ -e $J/test-held-repos ]] && echo yes || echo no) $(cat "$J/phase") $(cat "$J/phase-done")"
+: > "$J/test-release-repos"; wait $hp
+expect "... released: done" "0 done" "$? $(cat "$J/state")"
+
 # Stop: after the current step.
 fresh; : > "$P/stop-on-D"; o run >/dev/null 2>&1; rc=$?
 expect "stop asked in the protect step: stopped after it (exit 4)" "4 stopped protect" "$rc $(cat "$J/state") $(cat "$J/phase-done")"

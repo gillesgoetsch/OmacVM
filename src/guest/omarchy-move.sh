@@ -855,7 +855,7 @@ resumable() {   # 1 unless cut off inside the package switch
   if [[ -e $J/commit-started && ! -e $J/commit-done ]]; then echo 0; else echo 1; fi
 }
 cmd_run() {
-  local i p done_p start=1 rc
+  local i p done_p start=1 rc h
   mkdir -p "$J" || die "could not make $J"
   exec 9>"$J/lock"
   flock -n 9 || { say "a move runs already"; exit 3; }
@@ -897,6 +897,14 @@ cmd_run() {
       PF_TARGET=$(jget target)
       REASON="" NETFAIL=0 rc=0
       "step_$p" || rc=$?
+      # Tests only (the move's kill rows): a test-hold-STEP file in the
+      # journal holds the move here, after the step and before its sync,
+      # until test-release-STEP appears (at most 10 minutes), so the VM can
+      # be cut off at the worst moment of each step.
+      if [[ -e $J/test-hold-$p ]]; then
+        : > "$J/test-held-$p"
+        for ((h = 0; h < 600; h++)); do [[ -e $J/test-release-$p ]] && break; sleep 1; done
+      fi
       # On the disk before the journal moves on: a VM that loses power after
       # this point boots and goes on from here (/boot is FAT: unwritten
       # files there come back empty).
