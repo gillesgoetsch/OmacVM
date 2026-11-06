@@ -672,7 +672,8 @@ row_app_guards() {
     [[ $(J state) == running && -z $(qemu_pid) ]] && { tree="$MV_PID $(descendants "$MV_PID")"; kill -STOP $tree 2>/dev/null; k=1; break; }
     sleep 0.05
   done
-  if (( k )) && [[ -z $(qemu_pid) ]]; then
+  local q; q=$(qemu_pid)
+  if (( k )) && [[ -z $q ]]; then
     log "app-guards: move-vm.sh held at step $(J step), no VM running"
     app_open --update-now || { kill -CONT $tree 2>/dev/null; check "the app opens with --update-now" 0 ""; app_clean; return; }
     for ((i = 0; i < 40; i++)); do kill -0 "$UPID" 2>/dev/null || break; sleep 3; done
@@ -681,7 +682,7 @@ row_app_guards() {
     kill -CONT $tree 2>/dev/null
   else
     (( k )) && kill -CONT $tree 2>/dev/null
-    check "update on offer between the move's VM starts (held move-vm.sh)" 0 "kit: the gap was not caught (step $(J step), QEMU $(qemu_pid))"
+    check "update on offer between the move's VM starts (held move-vm.sh)" 0 "kit: the gap was not caught (held $k, state $(J state), step $(J step), QEMU '$(qemu_pid)')"
   fi
   # While it downloads (its VM runs from the app), the app opens with the update on offer again.
   wait_until 2400 in_phase download || { check "Resume reached download" 0 "phase $(gstat phase)"; mvm_wait; app_clean; return; }
