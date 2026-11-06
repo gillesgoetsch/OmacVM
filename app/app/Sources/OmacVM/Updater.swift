@@ -42,6 +42,12 @@ final class Updater: ObservableObject {
     }
 
     @Published private(set) var staged: Staged?
+    /// The launch's look at what is staged (loadStaged: it checks the app
+    /// again and removes a folder that fails). A check waits for it: started
+    /// right at launch (--update-now) it downloaded into the folder that look
+    /// was still checking, which then removed it ("cannot write
+    /// .../update.zip"), and an update deferred before was dropped.
+    private var stagedLoad: Task<Void, Never>?
     /// Later in the banner: hidden for that version until the next launch.
     @Published var later: String?
     @Published private(set) var checking = false
@@ -218,8 +224,10 @@ final class Updater: ObservableObject {
         noteCopy()
         readSwapResult()
         if !keys.shipped.isEmpty, notice == nil { tellWriteProblemOnce() }
+        let load = Task { await loadStaged() }
+        stagedLoad = load
         Task {
-            await loadStaged()
+            await load.value
             resumePending(pending)
         }
         // Not right away: a VM start or the first window comes first.
@@ -263,6 +271,7 @@ final class Updater: ObservableObject {
         let keys = keys
         checking = true
         defer { checking = false }
+        await stagedLoad?.value
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 30 * 60
