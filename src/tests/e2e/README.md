@@ -321,8 +321,10 @@ backup, an app crash, the VM's disk nearly full, the Mac's drive nearly
 full, a non-APFS drive, a disk size change not finished, everything else
 refused while the move runs (Update VM, a second move, Undo, Delete), and
 the app opened after a crash starts nothing and an app update offered
-mid-move waits and goes in after it (`app-guards`, no window), and a move
-not finished locks Disk › Change… in the window (`disk-lock`). After every fault nothing may start by itself until Resume or Undo.
+mid-move waits and goes in after it (`app-guards`, no window; between the
+move's VM starts the app itself must defer it, "deferred" in update.log, not
+hand it to update-swap.sh), and Disk › Change… is locked in the window while
+a move runs and while one not finished waits for Resume or Undo (`disk-lock`). After every fault nothing may start by itself until Resume or Undo.
 Resume must finish a move that stopped resumable; Undo must give back
 exactly the VM from before.
 

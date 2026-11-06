@@ -78,8 +78,11 @@ never take a 3.4.0 image (it is newer than they are) and keep the 4.0 ones.
 version's app would not take. The manifest also names the OmacVM commit the
 image was made from (`commit`); from 3.4.0 `release.sh` takes an image only
 for its release commit M, or one made at a commit whose image files (`src/`
-and `app/scripts`, tests aside) are M's, and its publish step uploads the
-image and checks it on GitHub before the app's release goes out.
+and `app/scripts`, tests aside) are M's. Step image and publish check every
+part against the signed manifest (not only the `.sha256` file, which anyone
+can make again); publish uploads the image to `prebuilt-X.Y.Z` at M and checks
+it on GitHub (each part's SHA-256 digest, the release's target and tag at M)
+before the app's release goes out.
 
 OmacVM.app's image is only the disk (`Omarchy/disk.img`, raw, sparse): the
 app keeps its settings in `vm.env` itself. Its script
