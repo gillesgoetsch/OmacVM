@@ -36,12 +36,15 @@
 #              (omarchy-mac's own key goes with the old one)
 #   repos      4.5's pacman.conf and mirrorlist (the old ones kept as
 #              *.omacvm-40; lines of the user's own are listed, not carried)
-#   download   every package of the switch, nothing installed yet
+#   download   the new lists and their file lists; the plan for packages
+#              newer than Omarchy's snapshot of Arch Linux ARM (split,
+#              renamed, merged since: replaced by the snapshot's own); every
+#              package of the switch, nothing installed yet
 #   commit     one transaction: omarchy + omarchy-settings with the whole
 #              system (pacman -Suu: Omarchy's snapshot can be older than
-#              Arch Linux ARM), Omarchy's obsidian for obsidian-appimage;
-#              omarchy-mac-keyring removed; the keep list again. Cut off in
-#              here: Undo only
+#              Arch Linux ARM), Omarchy's obsidian for obsidian-appimage, the
+#              snapshot's packages for the ones it replaces; omarchy-mac-keyring
+#              removed; the keep list again. Cut off in here: Undo only
 #   platform   Omarchy's own omarchy-hw-platform must say aarch64
 #   mpv        OmacVM's mpv defaults again (4.5's omarchy-settings owns the file)
 #   vulkan     OmacVM's Venus driver, rebuilt when its libraries went missing
@@ -51,7 +54,8 @@
 # Every step ends on the disk (sync) before the journal moves on, and GRUB's
 # menu is written beside the old one first (/boot is FAT): a VM that loses
 # power at any point boots and goes on from its last step.
-# Tests: src/tests/omarchy-move.sh.
+# Tests: src/tests/omarchy-move.sh (stand-ins), src/tests/omarchy-move-pacman.sh
+# (the real pacman on made-up repos: split, rename, merge, file moves).
 set -uo pipefail
 export LC_ALL=C
 G=$(cd "$(dirname "$0")" && pwd)
@@ -432,45 +436,255 @@ step_repos() {
 }
 
 step_download() {
+  local more=() nd=() x
   targets
-  say "downloading Omarchy ${PF_TARGET:-4.5} with the whole system: ${TARGETS[*]} (nothing installed yet)"
-  cmd_pacman -Syyuuw --noconfirm --ask 4 "${TARGETS[@]}" >> "$LOG" 2>&1 && return 0
+  say "the package lists of Omarchy ${PF_TARGET:-4.5} and its snapshot of Arch Linux ARM"
+  cmd_pacman -Syy --noconfirm >> "$LOG" 2>&1 || { (( NETFAIL )) && return 4; REASON="pacman could not read the new package lists (see $LOG)"; return 1; }
+  # The file lists too (the plan below reads which package carries a file).
+  pacman -Fyy --noconfirm >> "$LOG" 2>&1 || say "no file lists from the mirror: the plan goes by package names only"
+  plan_replace || return 1
+  more=(); while IFS= read -r x; do more+=("$x"); done < <(plan_targets)
+  # A package the snapshot replaces can ask for exact versions of others the
+  # switch takes back: those checks wait for the switch, where its record is gone.
+  [[ -s $J/replace ]] && nd=(-d)
+  say "downloading with the whole system: ${TARGETS[*]}${more[*]:+ ${more[*]}} (nothing installed yet)"
+  cmd_pacman -Suuw ${nd[@]+"${nd[@]}"} --noconfirm --ask 4 "${TARGETS[@]}" ${more[@]+"${more[@]}"} >> "$LOG" 2>&1 && return 0
   (( NETFAIL )) && return 4
   return 1
 }
 
+# ---------- packages the snapshot replaces ----------
+# Omarchy's mirror is a snapshot of Arch Linux ARM (2026-10-20 for 4.5.0);
+# Arch Linux ARM goes on, and a VM that updated after the snapshot can have
+# packages the snapshot does not know: split, renamed or merged since
+# (2026-11-06: clang split into clang + clang-libs, so clang-libs owns files
+# the snapshot's clang brings back, and pacman refuses the switch). Such a
+# package (from a repo, in none of the new ones) whose files, name, base or
+# provides a snapshot package carries is replaced by that package in the
+# switch: its record leaves pacman's database right before the switch, the
+# switch writes those paths (--overwrite, exactly them), and its files that
+# no package has afterwards go. Nothing that stays may need it: a package
+# built here (AUR) that needs it gets the snapshot's package that provides
+# it, else the move stops before any change. Packages built here and ones
+# with no counterpart stay (listed in the result).
+# Journal: replace ("NAME REASON BY..."), adds (more packages for the switch),
+# replaced-db/ (their records, put back if the switch does not start),
+# replaced-files/NAME (their paths), overwritten (unowned paths replaced).
+PACDB=${OMACVM_PACMAN_DB:-$ROOT/var/lib/pacman}
+pkgfield() {   # NAME FIELD: one field of pacman -Qi, continuation lines joined
+  pacman -Qi "$1" 2>/dev/null | awk -v f="$2" '
+    /^[A-Z]/ { on = (index($0, f " ") == 1 && $0 ~ /^[^:]*: /); if (on) { sub(/^[^:]*: /, ""); print }; next }
+    on { sub(/^ +/, ""); print }' | tr -s ' \n' '  ' | sed 's/ *$//'
+}
+pkgbase() {   # NAME: its pkgbase from pacman's database (pacman -Qi does not show it)
+  local v; v=$(pacman -Q "$1" 2>/dev/null | awk '{ print $2 }')
+  [[ -n $v ]] && awk '/^%BASE%$/ { getline; print; exit }' "$PACDB/local/$1-$v/desc" 2>/dev/null
+}
+depname() { local d=${1%%[<>=]*}; echo "${d%%:*}"; }
+words() { [[ $1 == None ]] || printf '%s\n' $1; }
+satisfies() {   # NAME DEP: NAME is DEP's package or provides it
+  local n p; n=$(depname "$2")
+  [[ $1 == "$n" ]] && return 0
+  for p in $(words "$(pkgfield "$1" Provides)"); do [[ $(depname "$p") == "$n" ]] && return 0; done
+  return 1
+}
+plan_targets() { awk '{ print $1 }' "$J/adds" 2>/dev/null; awk '{ for (i = 3; i <= NF; i++) print $i }' "$J/replace" 2>/dev/null; }
+plan_replace() {
+  local x r d by meta sync="$J/sync-names"
+  rm -rf "$J/replace" "$J/adds" "$J/replaced-files" "$J/replace-files-by" "$J/replace.done" "$J/overwritten" "$J/overwritten-files"
+  mkdir -p "$J/replaced-files"; : > "$J/replace"; : > "$J/replace-files-by"
+  pacman -Slq 2>/dev/null | sort -u > "$sync"
+  [[ -s $sync ]] || { REASON="pacman lists no packages in the new repos (see $LOG)"; return 1; }
+  for x in $(pacman -Qqm 2>/dev/null); do
+    # Omarchy's obsidian takes obsidian-appimage's place itself (it conflicts).
+    [[ $x == obsidian-appimage ]] && continue
+    [[ $(pkgfield "$x" "Validated By") == None ]] && continue   # built here (AUR, OmacVM's own): kept
+    pacman -Qlq "$x" 2>/dev/null | grep -v '/$' > "$J/replaced-files/$x"
+    by=""
+    if [[ -s $J/replaced-files/$x ]]; then
+      by=$(sed "s|^$ROOT/|/|" "$J/replaced-files/$x" | tr '\n' '\0' | xargs -0 pacman -F --machinereadable -- 2>/dev/null |
+           tr '\0' '\t' | awk -F'\t' 'NF >= 2 { print $2 }' | sort -u | grep -vx -- "$x")
+    fi
+    [[ -n $by ]] && echo "$x" >> "$J/replace-files-by"
+    meta=$( { words "$(pkgfield "$x" Replaces)"; words "$(pkgfield "$x" Provides)"; pkgbase "$x"; } |
+            while read -r d; do [[ -n $d ]] && depname "$d"; done | sort -u | comm -12 - "$sync" | grep -vx -- "$x")
+    by=$(printf '%s\n' $by $meta | sort -u | tr '\n' ' ' | sed 's/ $//')
+    [[ -n $by ]] || { rm -f "$J/replaced-files/$x"; continue; }   # no counterpart: stays
+    if pacman -Qqe "$x" >/dev/null 2>&1; then r=explicit; else r=dep; fi
+    echo "$x $r $by" >> "$J/replace"
+  done
+  needs_check || return 1
+  while read -r x r by; do say "replaced by Omarchy's snapshot in the switch: $x (by $by)"; done < "$J/replace"
+  sync
+}
+# What stays must not need what goes: a package built here that needs one
+# gets the snapshot's package that provides it; else one whose files nothing
+# in the snapshot carries stays, and one whose files it does stops the move
+# before any change.
+needs_check() {
+  local x r d by sat keep="" blocked=""
+  : > "$J/adds"
+  while read -r x _; do
+    for r in $(words "$(pkgfield "$x" "Required By")"); do
+      grep -qx -- "$r" "$J/sync-names" && continue        # switched to the snapshot's own
+      grep -q "^$r " "$J/replace" && continue             # replaced too
+      for d in $(words "$(pkgfield "$r" "Depends On")"); do
+        satisfies "$x" "$d" || continue
+        sat=$(pacman -Sddp --print-format '%n' "$d" 2>/dev/null | head -1)
+        if [[ -n $sat ]]; then echo "$sat $r" >> "$J/adds"
+        elif grep -qx -- "$x" "$J/replace-files-by" 2>/dev/null; then blocked+="${blocked:+, }$x (needed by $r)"
+        else keep+=" $x"; fi
+      done
+    done
+  done < "$J/replace"
+  if [[ -n $blocked ]]; then
+    REASON="Packages newer than Omarchy's snapshot of Arch Linux ARM are needed by packages built in this VM, and the snapshot has nothing in their place: $blocked. Remove those packages, then Resume."
+    return 1
+  fi
+  for x in $keep; do
+    awk -v x="$x" '$1 != x' "$J/replace" > "$J/replace.new" && mv -f "$J/replace.new" "$J/replace"
+    rm -f "$J/replaced-files/$x"
+  done
+  return 0
+}
+
+# The records of what the snapshot replaces leave pacman's database (their
+# files stay until the switch writes the snapshot's), kept in the journal so a
+# switch that does not start puts them back.
+replaced_out() {
+  local x v names=()
+  [[ -s $J/replace ]] || return 0
+  mkdir -p "$J/replaced-db" || return 1
+  while read -r x _; do
+    v=$(pacman -Q "$x" 2>/dev/null | awk '{ print $2 }')
+    [[ -n $v ]] || continue
+    [[ -d $J/replaced-db/$x-$v ]] || cp -a "$PACDB/local/$x-$v" "$J/replaced-db/" || return 1
+    names+=("$x")
+  done < "$J/replace"
+  (( ${#names[@]} )) || return 0
+  sync
+  OMARCHY_UPDATE_PACMAN=1 pacman -Rdd --dbonly --noconfirm "${names[@]}" >> "$LOG" 2>&1 ||
+    { REASON="pacman could not take ${names[*]} out of its database (see $LOG)"; return 1; }
+  sync
+}
+replaced_back() {
+  local d
+  [[ -d $J/replaced-db ]] || return 0
+  for d in "$J"/replaced-db/*/; do
+    [[ -d $d ]] || continue
+    d=${d%/}
+    [[ -d $PACDB/local/${d##*/} ]] || cp -a "$d" "$PACDB/local/" || return 1
+  done
+  rm -rf "$J/replaced-db"; sync
+}
+globq() { sed 's/[][*?\\]/\\&/g'; }   # a path as a pattern that matches only itself
+overwrite_args() {   # -> OW: --overwrite for exactly the paths the switch may write over
+  local x p n=0
+  OW=(--overwrite /etc/mpv/mpv.conf)
+  while read -r x _; do
+    while IFS= read -r p; do OW+=(--overwrite "$p"); n=$((n + 1)); done < <(globq < "$J/replaced-files/$x")
+  done < <(cat "$J/replace" 2>/dev/null)
+  while IFS= read -r p; do OW+=(--overwrite "$p"); n=$((n + 1)); done < <(globq < "$J/overwritten" 2>/dev/null)
+  (( n <= 20000 )) || { REASON="the switch would write over $n files of other packages; OmacVM does not do that many"; return 1; }
+}
+# pacman's own answer when the plan missed something: a file of a package in
+# no new repo (that package is replaced too), or a file no package owns
+# (under /usr or /opt: kept in the journal, then replaced). Once.
+learn_conflicts() {   # OFFSET into $LOG
+  local pkg p o r more=0 bad=""
+  while IFS=$'\t' read -r pkg p; do
+    o=$(pacman -Qqo "$p" 2>/dev/null | head -1)
+    if [[ -n $o ]]; then
+      grep -q "^$o " "$J/replace" 2>/dev/null && continue
+      if grep -qx -- "$o" "$J/sync-names" || [[ $o == obsidian-appimage || $(pkgfield "$o" "Validated By") == None ]]; then
+        bad+="${bad:+, }$p ($o)"; continue
+      fi
+      if pacman -Qqe "$o" >/dev/null 2>&1; then r=explicit; else r=dep; fi
+      pacman -Qlq "$o" 2>/dev/null | grep -v '/$' > "$J/replaced-files/$o"
+      echo "$o $r $pkg" >> "$J/replace"; more=1
+      say "replaced by Omarchy's snapshot in the switch: $o (by $pkg; pacman's answer)"
+    elif [[ ($p == "$ROOT"/usr/* || $p == "$ROOT"/opt/*) && ( -f $p || -L $p ) ]]; then
+      grep -qxF -- "$p" "$J/overwritten" 2>/dev/null && continue
+      mkdir -p "$J/overwritten-files$(dirname "${p#"$ROOT"}")" &&
+        cp -a -- "$p" "$J/overwritten-files${p#"$ROOT"}" && echo "$p" >> "$J/overwritten" && more=1 &&
+        say "a file no package owns, in the switch's way: ${p#"$ROOT"} (kept in $J/overwritten-files, then replaced)"
+    else
+      bad+="${bad:+, }$p"
+    fi
+  done < <(tail -c +"$1" "$LOG" | sed -n 's|^\([^ :]*\): \(/.*\) exists in filesystem.*|\1\t\2|p' |
+           awk -F'\t' -v r="$ROOT" '{ p = $2; if (r != "" && index(p, r "/") == 1) p = substr(p, length(r) + 1); print $1 "\t" r p }' | sort -u)
+  [[ -n $bad ]] && { REASON="files of the switch exist in this VM already and OmacVM does not replace them: $bad"; return 1; }
+  (( more )) || return 1
+  needs_check
+}
+
 step_commit() {
-  local before after
+  local before after more=() try off x
   targets
+  if [[ -e $J/commit-done ]]; then after_switch; return; fi   # cut off after the switch
   # 4.5's omarchy-settings owns /etc/mpv/mpv.conf (hwdec=auto-safe), which
   # OmacVM wrote before (app/guest/venus/mpv.sh): the package's file replaces
   # it (--overwrite), and the mpv step puts OmacVM's block back into it.
   if [[ -f $ROOT/etc/mpv/mpv.conf && ! -e $ROOT/etc/mpv/mpv.conf.omacvm-40 ]]; then
     cp -p "$ROOT/etc/mpv/mpv.conf" "$ROOT/etc/mpv/mpv.conf.omacvm-40" || return 1
   fi
-  before=$(pacman -Q | sha256sum)
-  jset commit-started 1; sync
-  say "the switch: ${TARGETS[*]} with the whole system, from the downloads"
-  # OMARCHY_UPDATE_PACMAN: Omarchy's pacman guard lets an Omarchy update
-  # through. --ask 4: yes to "remove the conflicting package" (listed after).
-  if ! OMARCHY_UPDATE_PACMAN=1 cmd_pacman -Suu --noconfirm --ask 4 --overwrite /etc/mpv/mpv.conf "${TARGETS[@]}" >> "$LOG" 2>&1; then
-    after=$(pacman -Q | sha256sum)
-    if [[ $before == "$after" && ! -e $ROOT/var/lib/pacman/db.lck ]]; then
-      rm -f "$J/commit-started"; sync   # pacman stopped before it changed a package
-      REASON="pacman refused the switch before it changed anything (see $LOG)"
-      (( NETFAIL )) && return 4
-    else
-      REASON="the package switch did not finish (see $LOG)"
+  # Cut off between taking records out and the switch: nothing switched yet.
+  replaced_back || { REASON="the records pacman set aside could not be put back"; return 1; }
+  for try in 1 2; do
+    more=(); while IFS= read -r x; do more+=("$x"); done < <(plan_targets)
+    overwrite_args || return 1
+    replaced_out || { replaced_back; return 1; }
+    before=$(pacman -Q | sha256sum)
+    jset commit-started 1; sync
+    say "the switch: ${TARGETS[*]}${more[*]:+ ${more[*]}} with the whole system, from the downloads"
+    off=$(( $(wc -c < "$LOG" 2>/dev/null || echo 0) + 1 ))
+    # OMARCHY_UPDATE_PACMAN: Omarchy's pacman guard lets an Omarchy update
+    # through. --ask 4: yes to "remove the conflicting package" (listed after).
+    if OMARCHY_UPDATE_PACMAN=1 cmd_pacman -Suu --noconfirm --ask 4 "${OW[@]}" "${TARGETS[@]}" ${more[@]+"${more[@]}"} >> "$LOG" 2>&1; then
+      rm -rf "$J/replaced-db"; jset commit-done 1; sync
+      after_switch; return
     fi
+    after=$(pacman -Q | sha256sum)
+    if [[ $before != "$after" || -e $PACDB/db.lck ]]; then
+      REASON="the package switch did not finish (see $LOG)"; return 1
+    fi
+    # pacman stopped before it changed a package: as before the switch.
+    rm -f "$J/commit-started"; replaced_back; sync
+    (( NETFAIL )) && { REASON="the switch could not download a package (see $LOG)"; return 4; }
+    (( try == 1 )) && learn_conflicts "$off" && continue
+    REASON=${REASON:-"pacman refused the switch before it changed anything (see $LOG)"}
     return 1
-  fi
+  done
+}
+
+# After the switch (again after a cut-off): omarchy-mac's keyring out, what
+# the replaced packages left that no package has now (never in /etc), install
+# reasons, the keep list again (the switch can bring new ones as dependencies).
+after_switch() {
+  local x r by b p
   if pacman -Q omarchy-mac-keyring >/dev/null 2>&1; then
     pacman -Rdd --noconfirm omarchy-mac-keyring >> "$LOG" 2>&1 || say "omarchy-mac-keyring not removed (listed)"
   fi
-  # The switch can bring OmacVM's packages in as dependencies.
+  if [[ -s $J/replace && ! -e $J/replace.done ]]; then
+    pacman -Qlq 2>/dev/null | sort -u > "$J/owned"
+    while read -r x r by; do
+      sort -u "$J/replaced-files/$x" | comm -23 - "$J/owned" | while IFS= read -r p; do
+        [[ $p == "$ROOT"/etc/* ]] && continue
+        [[ -f $p || -L $p ]] && rm -f -- "$p"
+      done
+      for b in $by; do
+        grep -q "^$b " "$J/pre-packages.txt" 2>/dev/null && [[ $r != explicit ]] && continue
+        pacman -D "--as${r/dep/deps}" "$b" >> "$LOG" 2>&1 || true
+      done
+    done < "$J/replace"
+    while read -r b _; do
+      grep -q "^$b " "$J/pre-packages.txt" 2>/dev/null || pacman -D --asdeps "$b" >> "$LOG" 2>&1 || true
+    done < <(cat "$J/adds" 2>/dev/null)
+    rm -f "$J/owned"; : > "$J/replace.done"
+  fi
   keep_marked || return 1
   at45 "$(version)" || { REASON="omarchy is $(version) after the switch"; return 1; }
-  jset commit-done 1; sync
+  sync
 }
 
 step_platform() {
@@ -620,7 +834,11 @@ step_report() {
     printf ' "obsidian": %s,\n "keep_marked": %s,\n' "$(js "$obs")" "$(jlines <<<"$keep")"
     printf ' "vulkan": %s,\n "kernel_thp": %s,\n' \
       "$(js "$(pacman -Qq omacvm-vulkan-virtio vulkan-virtio 2>/dev/null | head -1)")" "$(js "$(jget kernel-thp)")"
-    printf ' "single_file_fetches": %s,\n "warnings": %s}\n' "$(jlines <<<"$fetched")" "$(jlines <<<"$warn")"
+    printf ' "single_file_fetches": %s,\n' "$(jlines <<<"$fetched")"
+    printf ' "replaced": %s,\n "overwritten": %s,\n' \
+      "$(awk '{ b = $3; for (i = 4; i <= NF; i++) b = b " " $i; print $1 " (by " b ")" }' "$J/replace" 2>/dev/null | jlines)" \
+      "$(sed "s|^$ROOT/|/|" "$J/overwritten" 2>/dev/null | jlines)"
+    printf ' "warnings": %s}\n' "$(jlines <<<"$warn")"
   } > "$J/result.json.new" && mv -f "$J/result.json.new" "$J/result.json"
   [[ -z $removed ]] || say "packages gone in the move: $(echo $removed)"
   [[ -z $foreign ]] || say "in no repo now (kept): $(echo $foreign)"

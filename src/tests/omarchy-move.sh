@@ -68,9 +68,16 @@ case $1 in
   -Qqd) for n in "${@:2}"; do awk -v n="$n" '$1 == n && $3 == "d" { print $1 }' "$db"; done ;;
   -Qqm) cat "$P/foreign" 2>/dev/null ;;
   -Ql) cat "$P/files-$2" 2>/dev/null ;;
+  -Qlq) cat "$P/files-$2" 2>/dev/null | awk '{ print $2 }' ;;
+  -Qi) [[ -n $(ver "$2") ]] || exit 1
+       echo "Name            : $2"; echo "Provides        : None"; echo "Replaces        : None"
+       echo "Required By     : None"; echo "Depends On      : None"
+       grep -qx "$2" "$P/foreign" 2>/dev/null && echo "Validated By    : None" || echo "Validated By    : Signature" ;;
+  -Slq) awk '{ print $1 }' "$P/after" | grep -vxf "$P/foreign" ;;
+  -Fyy) echo "pacman $*" >> "$P/calls" ;;
   -D) echo "pacman $*" >> "$P/calls"; [[ -e $P/stop-on-D ]] && : > "$J/stop"
       for n in "${@:3}"; do awk -v n="$n" '$1 == n { $3 = "e" } { print }' "$db" > "$db.n" && mv "$db.n" "$db"; done ;;
-  -Syyuuw|-Syyuu) echo "pacman $*" >> "$P/calls"
+  -Suuw|-Syyuuw) echo "pacman $*" >> "$P/calls"
       if [[ -s $P/fail404 ]]; then
         f=$(cat "$P/fail404")
         [[ -e $CACHE/$f ]] || { echo "error: failed retrieving file '$f' from arm-stable-mirror.omarchy.org : The requested URL returned error: 404"; exit 1; }
@@ -243,8 +250,10 @@ expect "result: the user's own pacman.conf lines listed (not carried over)" "Ign
 expect "result: Omarchy 4.5.0, aarch64, stable" "4.5.0 aarch64 stable" "$(json '" ".join([d["result"]["omarchy"], d["result"]["platform"], d["result"]["channel"]])' <<<"$res")"
 expect "the switch: one transaction with omarchy, omarchy-settings and obsidian, from the downloads" \
   "pacman -Suu --noconfirm --ask 4 --overwrite /etc/mpv/mpv.conf omarchy omarchy-settings obsidian" "$(grep -- '-Suu ' "$P/calls")"
-expect "downloads first, then the switch, then omarchy-mac-keyring out" "-Syyuuw -Suu -Rdd" \
-  "$(grep -oE -- '-Syyuuw|-Suu |-Rdd' "$P/calls" | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')"
+expect "the lists (and their file lists), the downloads, then the switch, then omarchy-mac-keyring out" "-Syy -Fyy -Suuw -Suu -Rdd" \
+  "$(grep -oE -- '-Syy |-Fyy|-Suuw|-Suu |-Rdd' "$P/calls" | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')"
+expect "result: nothing replaced or written over (no package newer than the snapshot)" "[] []" \
+  "$(json 'str(d["result"]["replaced"]) + " " + str(d["result"]["overwritten"])' <<<"$res")"
 # A cut-off write leaves a file empty (/boot is FAT): a power cut must find the old or the new.
 expect "on the disk before the journal moves on: a sync after every step, and after its journal line" \
   "protect initramfs keyring repos download commit platform mpv vulkan kernel update report|preflight protect initramfs keyring repos download commit platform mpv vulkan kernel update report" \
@@ -273,7 +282,7 @@ out=$(o preflight --json); rc=$?
 expect "preflight on a stopped move (Omarchy is 4.5 now): ok to go on, resume, after kernel" "0 True True kernel" \
   "$rc $(json '" ".join(str(x) for x in [d["ok"], d["resume"], d["phase_done"]])' <<<"$out")"
 o run >/dev/null 2>&1; rc=$?
-expect "resume: done, the switch and the download not again" "0 done 1 1" "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -Syyuuw')"
+expect "resume: done, the switch and the download not again" "0 done 1 1" "$rc $(cat "$J/state") $(calls 'pacman -Suu ') $(calls 'pacman -Suuw')"
 
 # omarchy update stops at an AUR package that does not build on aarch64 (after its migrations): a warning.
 fresh; : > "$P/aur-fails"; o run >/dev/null 2>&1; rc=$?
@@ -320,7 +329,7 @@ fresh; echo luajit-2.1.1765228720-1-aarch64.pkg.tar.xz > "$P/fail404"
 o run >/dev/null 2>&1; rc=$?
 expect "404 twice: that file from Arch Linux ARM, then done" "0 1 luajit-2.1.1765228720-1-aarch64.pkg.tar.xz" \
   "$rc $(calls 'curl https://de3.mirror.archlinuxarm.org/aarch64/extra/luajit-2.1.1765228720-1-aarch64.pkg.tar.xz$') $(o status --json | json '" ".join(d["result"]["single_file_fetches"])')"
-expect "... after the lists again (-Syy) once" 1 "$(calls 'pacman -Syy --noconfirm')"
+expect "... after the lists again (-Syy: the download's, then once more)" 2 "$(calls 'pacman -Syy --noconfirm')"
 expect "... and the repo files name no second mirror" same "$(cmp -s "$T/mirrorlist" "$GD/omarchy-45/mirrorlist-stable" && echo same)"
 
 # Platform: Omarchy's own answer after the switch must be aarch64.
