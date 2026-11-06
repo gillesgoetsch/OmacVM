@@ -143,11 +143,11 @@ for good: that was Basemark's hang at test 5 in 2.6.0
 Each runtime build also compiles the shaders of that case with the Mac's
 OpenGL (`app/runtime/Tests/virgl/test-integer-sampler-shader.c`).
 
-### GPU panel
+### GPU throughput and compute
 
-`chart.py --panel gpu` draws a GPU panel from
-[`tests/bench/final-round`](../../tests/bench/final-round/README.md): the
-runbook and the scripts for the Mac and the VM. Two of its tests are new:
+Two tests for a GPU round, beside the browser tests above (the multi-app
+round's kit, `tests/bench/final-round`, and its GPU panel are in
+[v3.3.0](https://github.com/gillesgoetsch/OmacVM/tree/v3.3.0/tests/bench/final-round)):
 
 - [`tests/bench/gpu-throughput`](../../tests/bench/gpu-throughput/index.html):
   pure GPU work in WebGL 2, no network. One draw per frame into a fixed
@@ -155,18 +155,12 @@ runbook and the scripts for the Mac and the VM. Two of its tests are new:
   frame waits for the GPU before and after its draw (`gl.finish()`). Two ways
   to time it: GPU time from Chrome's timer queries (frames of 40 ms), or wall
   time of long frames (80 ms or more, made longer until the fixed cost of the
-  waits is under 2 % of a frame). The table and the chart say which.
-  Headline: a ray-march shader; also an ALU score (GFLOPS) and a fill score
-  (Gpixels/s). `run.py` runs it and prints JSON.
+  waits is under 2 % of a frame). Headline: a ray-march shader; also an ALU
+  score (GFLOPS) and a fill score (Gpixels/s). `run.py` runs it and prints JSON.
 - [`tests/bench/vkpeak`](../../tests/bench/vkpeak/vkpeak.sh): Vulkan compute
   peak with [vkpeak](https://github.com/nihui/vkpeak) (MIT, downloaded or
   built at run time, pinned). On the Mac through vkpeak's own MoltenVK 1.4.1;
-  in OmacVM.app through Venus. A VM with no GPU Vulkan device (none, or only
-  lavapipe) gets "not available".
-- Geekbench 7 GPU (OpenCL, Vulkan; the Mac: OpenCL, Metal), vkmark and
-  glmark2 run in the same round; Geekbench only on a real GPU device, never
-  PoCL or llvmpipe. glmark2 and vkmark have no macOS version: the panel shows
-  their scores.
+  in OmacVM.app through Venus.
 
 ## Power draw and battery life
 
