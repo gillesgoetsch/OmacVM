@@ -724,5 +724,22 @@ mv_run ok settle OMACVM_MOVE_SETTLE_SECONDS=1 OMACVM_MOVE_SWITCH_SECONDS=40; rc=
 expect "settle, silent before the guest's move began (step 4): the short wait, then ended" "0 gone none 1" \
   "$rc $(oq_gone) $(grep -o off-self "$T/power.log" 2>/dev/null | head -1 | grep . || echo none) $(( $(date +%s) - t0 < 30 ))"
 rm -f "$T/guest/offat"
+# A Resume whose script dies right after it sent start, before its first poll: the journal's
+# guest_state is the earlier run's ("failed"), not this run's (the #725 review of 731897ad).
+# The guest went on (into the switch) and is silent: settle must give it its own time.
+fresh
+mv_run net-download run
+expect "stale state: the earlier run's last word is in the journal" "failed failed" "$(jget state) $(jget guest_state)"
+: > "$T/out"; : > "$T/ssh.log"; rm -f "$T/power.log"
+( mv_run ok run OMACVM_MOVE_POLL=30 ) & BG=$!
+for ((i = 0; i < 300; i++)); do grep -q 'omarchy-move.sh start' "$T/ssh.log" 2>/dev/null && break; sleep 0.1; done
+sleep 0.5; p=$(jget pid); [[ $p =~ ^[0-9]+$ ]] && (( p > 1 )) && kill -9 "$p"
+wait "$BG" 2>/dev/null; BG=""; oq=$(cat "$T/qemu.pid")
+expect "... killed right after start: step 5, no word of this run's guest in the journal" "5 -" "$(jget step) $(jget guest_state | grep . || echo -)"
+: > "$T/guest/silent"; echo $(( $(date +%s) + 20 )) > "$T/guest/offat"
+mv_run ok settle OMACVM_MOVE_SETTLE_SECONDS=1 OMACVM_MOVE_SWITCH_SECONDS=40; rc=$?
+expect "... settle, the guest silent: waits for its own shutdown (never ends it), Resume asks the VM" "0 gone off-self 1" \
+  "$rc $(oq_gone) $(grep -o off-self "$T/power.log" 2>/dev/null | head -1) $(jget ask_guest)"
+rm -f "$T/guest/offat" "$T/guest/silent"
 
 exit $fail

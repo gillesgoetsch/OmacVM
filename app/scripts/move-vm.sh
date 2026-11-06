@@ -696,6 +696,10 @@ fi
 if (( ! moved_already )); then
   # start checks again (resume-aware) and answers like preflight when it will not.
   # A start that was in fact taken before SSH failed says "running" the second time.
+  # The guest's last word from an earlier run (stopped, failed) is not this
+  # run's: its move may go on into the switch at once, and a settle after a
+  # crash before the first poll must wait for it (may_switch).
+  jset guest_state "" guest_phase ""
   src=0; vtry "$G start" > "$ST" 2>> "$LOG/move-apply.log" || src=$?
   (( src != 255 )) || ssh_lost 5 "starting its move"
   if (( src == 3 )) && [[ $(jv code "$ST") == already-moved ]]; then
