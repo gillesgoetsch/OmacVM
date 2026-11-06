@@ -38,7 +38,9 @@ svg = read("docs/images/benchmarks.svg")
 data = json.loads(read("docs/benchmarks/chart.json"))
 
 # 1. The SVG is chart.py's output for chart.json (subtitle taken from the SVG).
-sub = re.search(r'font-size="13" fill="#908caa" text-anchor="middle">([^<]*)</text>', svg)
+# The subtitle: the header's right-aligned line (machine and date).
+SUB = r'<text x="\d+" y="\d+" font-size="12" class="soft" text-anchor="end">([^<]*)</text>'
+sub = re.search(SUB, svg)
 out = f"{tmp}/chart.svg"
 subprocess.run([sys.executable, f"{R}/src/bench/chart.py", f"{R}/docs/benchmarks/chart.json", out,
                 sub.group(1) if sub else ""], check=True)
@@ -80,7 +82,7 @@ expect("speed chart: plain bars, no version tags (no \"unreleased\")", not data.
 
 # 3b. The power chart: chart.py's output, hours that follow from the watts, every number in README's alt text.
 psvg = read("docs/images/power.svg")
-sub = re.search(r'font-size="13" fill="#908caa" text-anchor="middle">([^<]*)</text>', psvg)
+sub = re.search(SUB, psvg)
 out = f"{tmp}/power.svg"
 subprocess.run([sys.executable, f"{R}/src/bench/chart.py", "--panel", "power", f"{R}/docs/benchmarks/chart.json", out,
                 sub.group(1) if sub else ""], check=True)

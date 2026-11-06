@@ -9,6 +9,10 @@ the share at the end of each bar. A test the app has no number for shows
 the reason from "missing". "note" (a string, or a list for several lines)
 goes under the chart. Tests without a Mac value are left out.
 
+The speed and power charts follow GitHub's theme: a prefers-color-scheme
+style block switches the card between Rosé Pine (dark) and Rosé Pine Dawn
+(light). Both paint their own card, so the text is readable either way.
+
 --panel power draws docs/images/power.svg from the JSON's "power" part: the
 whole Mac's draw in watts per load (lower is better) and the hours on a full
 battery, a bar for OmacVM.app and one for macOS, each load on its own scale.
@@ -41,7 +45,37 @@ TESTS = [
     ("basemark", "Browser overall", "Basemark Web 3.0"),
     ("geekbench-gpu-opencl", "GPU compute", "Geekbench 7 GPU, OpenCL"),
 ]
-DOTS = '<pattern id="dots" width="40" height="40" patternUnits="userSpaceOnUse"><rect x="20" y="20" width="2" height="2" fill="#26233a"/></pattern>'
+# The theme-following charts (speed, power): Rosé Pine Dawn by day, Rosé Pine by night.
+# ink/soft are text, app/mac the two bars, card the chart's own background, edge its border.
+THEME = f"""<style>
+:root{{--card:#faf4ed;--edge:#dfdad9;--ink:#575279;--soft:#6f6b8a;--app:#d7827e;--mac:#797593}}
+@media (prefers-color-scheme: dark){{:root{{--card:#191724;--edge:#26233a;--ink:#e0def4;--soft:#908caa;--app:#ebbcba;--mac:#908caa}}}}
+text{{font-family:{FONT}}}
+.mono{{font-family:{MONO}}}
+.ink{{fill:var(--ink)}}.soft{{fill:var(--soft)}}.b{{font-weight:600}}
+.halo{{stroke:var(--card);stroke-width:4;paint-order:stroke}}
+.app{{fill:var(--app)}}.mac{{fill:var(--mac)}}.card{{fill:var(--card)}}
+.rule{{stroke:var(--ink);stroke-opacity:.5;stroke-dasharray:3 3}}
+</style>"""
+
+
+def ctext(x, y, s, size=12, cls="ink", anchor=None):
+    """Text whose colour, weight and halo come from THEME's classes."""
+    a = f' text-anchor="{anchor}"' if anchor else ""
+    return f'<text x="{x}" y="{y}" font-size="{size}" class="{cls}"{a}>{escape(s)}</text>'
+
+
+def dbar(x, y, w, h, cls, r=4):
+    """A bar rounded only at its data end, square at the baseline."""
+    w = max(w, r + 1)
+    return (f'<path d="M{x},{y:.1f} h{w - r:.1f} a{r},{r} 0 0 1 {r},{r} v{h - 2 * r} '
+            f'a{r},{r} 0 0 1 -{r},{r} h-{w - r:.1f} z" class="{cls}"/>')
+
+
+def card(W, H):
+    """The chart's own background and hairline border, in the theme's colours."""
+    return [f'<rect width="{W}" height="{H}" class="card"/>',
+            f'<rect x="0.5" y="0.5" width="{W - 1}" height="{H - 1}" fill="none" stroke="var(--edge)"/>']
 
 
 def text(x, y, s, size=12, fill=INK, font=FONT, weight=None, anchor=None, halo=False):
@@ -59,22 +93,6 @@ def textw(s, size):
 def monow(s, size):
     """Width of s in the monospaced font."""
     return 0.62 * size * len(s)
-
-
-def legend(s, W, y, items):
-    """A centred legend: (label, colour, kind) with kind bar, line (dashed), range or none (plain text)."""
-    widths = [(18 if kind != "none" else 0) + textw(rl, 13) + 22 for rl, _, kind in items]
-    x = (W - sum(widths) + 22) / 2
-    for (rl, col, kind), w in zip(items, widths):
-        if kind == "bar":
-            s.append(f'<rect x="{x:.0f}" y="{y - 11}" width="12" height="12" rx="3" fill="{col}"/>')
-        elif kind == "line":
-            s.append(f'<line x1="{x + 6:.0f}" y1="{y - 13}" x2="{x + 6:.0f}" y2="{y + 3}" stroke="{INK}" stroke-opacity="0.6" stroke-dasharray="3 3"/>')
-        elif kind == "range":
-            s.append(f'<path d="M{x:.0f} {y - 8}v6M{x:.0f} {y - 5}h12M{x + 12:.0f} {y - 8}v6" stroke="{INK}" stroke-opacity="0.8" fill="none"/>')
-        tx = x + (18 if kind != "none" else 0)
-        s.append(text(f"{tx:.0f}", y, rl, 13, MUTED if kind == "none" else INK, weight="600" if kind == "bar" and col == APP[2] else None))
-        x += w
 
 
 def notes_of(data):
@@ -96,9 +114,10 @@ def main():
     tests = [t for t in TESTS if mac.get(t[0]) and (t[0] in app or t[0] in why)]
     notes = notes_of(data)
 
-    W, left, full = 1000, 270, 560          # full = width of 100 % (the Mac)
-    pitch, bar, top = 50, 20, 124
-    H = top + len(tests) * pitch + 20 + 18 * len(notes)
+    W, left, full = 1000, 280, 600          # full = width of 100 % (the Mac)
+    pitch, bar, top = 44, 16, 88
+    bottom = top + (len(tests) - 1) * pitch + bar
+    H = bottom + 30 + 16 * len(notes) + 6
 
     def share(key):
         v = app.get(key)
@@ -110,31 +129,32 @@ def main():
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-labelledby="t d">',
          '<title id="t">How fast Omarchy runs in OmacVM.app, as a share of macOS itself</title>',
          f'<desc id="d">{escape(". ".join(desc))}. macOS itself is 100 percent; higher is better.</desc>',
-         f'<defs>{DOTS}</defs>',
-         f'<rect width="{W}" height="{H}" fill="{BG}"/><rect width="{W}" height="{H}" fill="url(#dots)"/>',
-         text(W / 2, 38, "How fast is Omarchy in OmacVM.app?", 20, weight="600", anchor="middle"),
-         text(W / 2, 60, subtitle, 13, SOFT, anchor="middle")]
-    legend(s, W, 90, [(APP[1], APP[2], "bar"), ("macOS itself = 100 %", None, "line"), ("higher is better", None, "none")])
+         THEME,
+         *card(W, H),
+         ctext(36, 34, "How fast is Omarchy in OmacVM.app?", 17, "ink b"),
+         ctext(W - 36, 34, subtitle, 12, "soft", anchor="end"),
+         ctext(36, 57, "Omarchy in the VM, as a share of the same Mac running macOS · higher is better", 12, "soft")]
 
     # the Mac: one dashed line at 100 % through every row, behind the bars
-    s.append(f'<line x1="{left + full}" y1="{top - 6}" x2="{left + full}" y2="{top + len(tests) * pitch - pitch + bar + 14}" stroke="{INK}" stroke-opacity="0.45" stroke-dasharray="3 3"/>')
+    s.append(f'<line x1="{left + full}" y1="{top - 8}" x2="{left + full}" y2="{bottom + 8}" class="rule"/>')
+    s.append(ctext(left + full, top - 14, "macOS = 100 %", 11, "soft halo", anchor="middle"))
     for i, (key, label, bench) in enumerate(tests):
         y = top + i * pitch
-        s.append(text(40, y + 8, label, 15, weight="600"))
-        s.append(text(40, y + 26, bench, 12, MUTED))
+        s.append(ctext(36, y + 13, label, 14, "ink b"))
+        s.append(ctext(36, y + 29, bench, 11, "soft"))
         p = share(key)
         if p is None:
-            s.append(text(left, y + 15, "– " + why.get(key, "not available"), 12, MUTED, MONO))
+            s.append(ctext(left, y + 13, "– " + why.get(key, "not available"), 12, "soft mono"))
             continue
-        w = max(3, min(full * 1.1, full * p / 100))
-        s.append(f'<rect x="{left}" y="{y}" width="{w:.1f}" height="{bar}" rx="4" fill="{APP[2]}"/>')
+        w = max(5, min(full * 1.1, full * p / 100))
+        s.append(dbar(left, y, w, bar, "app"))
         num = f"{round(p)} %"
-        tx = left + w + 10
-        if tx - 10 < left + full < tx + monow(num, 14) + 6:  # keep the Mac's line out from behind the value
-            s.append(f'<rect x="{left + w + 1:.1f}" y="{y - 2}" width="{monow(num, 14) + 16:.0f}" height="{bar + 4}" fill="{BG}"/>')
-        s.append(text(f"{tx:.1f}", y + 15, num, 14, INK, MONO, "600", halo=True))
+        tx = left + w + 9
+        if tx - 9 < left + full < tx + monow(num, 14) + 6:  # keep the Mac's line out from behind the value
+            s.append(f'<rect x="{left + w + 1:.1f}" y="{y - 3}" width="{monow(num, 14) + 18:.0f}" height="{bar + 6}" class="card"/>')
+        s.append(ctext(f"{tx:.1f}", y + 13, num, 14, "ink mono b halo"))
     for i, line in enumerate(notes):
-        s.append(text(W / 2, H - 14 - 18 * (len(notes) - 1 - i), line, 12, MUTED, anchor="middle"))
+        s.append(ctext(36, H - 12 - 16 * (len(notes) - 1 - i), line, 11, "soft"))
     s.append('</svg>')
     open(out, "w").write("\n".join(s) + "\n")
 
@@ -174,8 +194,9 @@ def power_panel(src, out, subtitle=""):
         return f"{v:.{digits}f} W", f"{wh / v:.1f} h"
 
     W, left, full = 1000, 250, data.get("bar_width", 420)
-    pitch, bar, gap, top = 24, 16, 28, 128
-    H = top + len(loads) * (len(routes) * pitch + gap) - gap + 28 + 18 * len(notes)
+    pitch, bar, gap, top = 21, 14, 16, 86
+    bottom = top + len(loads) * (len(routes) * pitch + gap) - gap
+    H = bottom + 26 + 16 * len(notes) + 6
 
     desc = []
     for key, label, what in loads:
@@ -193,41 +214,46 @@ def power_panel(src, out, subtitle=""):
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" role="img" aria-labelledby="t d">',
          '<title id="t">Power draw of the whole Mac with Omarchy in OmacVM.app, and with macOS itself</title>',
          f'<desc id="d">{escape(". ".join(desc))}. Watts, lower is better; hours on a full battery.</desc>',
-         f'<defs>{DOTS}</defs>',
-         f'<rect width="{W}" height="{H}" fill="{BG}"/><rect width="{W}" height="{H}" fill="url(#dots)"/>',
-         text(W / 2, 38, "How much power does the Mac draw?", 20, weight="600", anchor="middle"),
-         text(W / 2, 60, subtitle, 13, SOFT, anchor="middle")]
-    legend(s, W, 90, [(rl, col, "bar") for _, rl, col in routes] +
-           [(f"watts, lower is better · hours on a full {wh:g} Wh battery", None, "none")])
+         THEME,
+         *card(W, H),
+         ctext(36, 34, "How much power does the Mac draw?", 17, "ink b"),
+         ctext(W - 36, 34, subtitle, 12, "soft", anchor="end")]
+    # the legend, one line: the two bars, then how to read the numbers
+    x = 36
+    for name, rl, _ in routes:
+        s.append(f'<rect x="{x}" y="49" width="10" height="10" rx="2" class="{name if name in ("app", "mac") else "mac"}"/>')
+        s.append(ctext(x + 15, 58, rl, 12, "ink b" if name == APP[0] else "ink"))
+        x += 15 + textw(rl, 12) + 18
+    s.append(ctext(x, 58, f"watts, lower is better · hours on a full {wh:g} Wh battery", 12, "soft"))
 
     y = top
     for key, title, what in loads:
         group = len(routes) * pitch
-        lines = wrap(what, 12, left - 60)
-        ly = y + group / 2 - 4 - 7.5 * len(lines) + 7.5
-        s.append(text(40, ly, title, 15, weight="600"))
+        lines = wrap(what, 11, left - 60)
+        ly = y + group / 2 - 3 - 7 * len(lines) + 7
+        s.append(ctext(36, ly, title, 14, "ink b"))
         for j, ln in enumerate(lines):
-            s.append(text(40, ly + 18 + 15 * j, ln, 12, MUTED))
+            s.append(ctext(36, ly + 16 + 14 * j, ln, 11, "soft"))
         scale = max(watts.get(n, {}).get(key) or 0 for n, _, _ in routes)
-        for i, (name, rl, col) in enumerate(routes):
+        for i, (name, rl, _) in enumerate(routes):
             by = y + i * pitch + (pitch - bar) / 2
             v = watts.get(name, {}).get(key)
             if v is None:
-                s.append(text(left, by + 12, f"– {rl}: " + missing.get(name, {}).get(key, "not measured"), 12, MUTED, MONO))
+                s.append(ctext(left, by + 11.5, f"– {rl}: " + missing.get(name, {}).get(key, "not measured"), 12, "soft mono"))
                 continue
-            w = max(3, full * v / scale)
-            s.append(f'<rect x="{left}" y="{by:.1f}" width="{w:.1f}" height="{bar}" rx="4" fill="{col}"/>')
+            w = max(5, full * v / scale)
+            s.append(dbar(left, by, w, bar, name if name in ("app", "mac") else "mac"))
             wt, hours = fmt(v)
-            tx = left + w + 10
-            s.append(text(f"{tx:.1f}", by + 12.5, wt, 13, INK, MONO, "600" if name == APP[0] else None, halo=True))
+            tx = left + w + 9
+            s.append(ctext(f"{tx:.1f}", by + 11.5, wt, 13, "ink mono b halo" if name == APP[0] else "ink mono halo"))
             tx += monow(wt, 13) + 8
-            s.append(text(f"{tx:.1f}", by + 12.5, hours, 12, SOFT, MONO, halo=True))
+            s.append(ctext(f"{tx:.1f}", by + 11.5, hours, 12, "soft mono halo"))
             ex = extra.get(name, {}).get(key)
             if ex:   # the legend names the bars; say only what differs (which browser, the frame rate)
-                s.append(text(f"{tx + monow(hours, 12) + 10:.1f}", by + 12.5, ex, 12, SOFT, halo=True))
+                s.append(ctext(f"{tx + monow(hours, 12) + 9:.1f}", by + 11.5, ex, 11, "soft halo"))
         y += group + gap
     for i, line in enumerate(notes):
-        s.append(text(W / 2, H - 14 - 18 * (len(notes) - 1 - i), line, 12, MUTED, anchor="middle"))
+        s.append(ctext(36, H - 12 - 16 * (len(notes) - 1 - i), line, 11, "soft"))
     s.append('</svg>')
     open(out, "w").write("\n".join(s) + "\n")
 
