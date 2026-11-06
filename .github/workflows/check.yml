@@ -279,6 +279,9 @@ jobs:
       - name: Every script OmacVM.app runs is put into it (build-app.sh, release.sh)
         run: src/tests/app-scripts.sh
 
+      - name: The moves gate (3.4.0 on) reads the move matrix's rows
+        run: src/tests/move-45-gate.sh
+
       - name: Vulkan (Venus) driver step for app VMs (when it builds Mesa's vulkan-virtio)
         run: src/tests/venus-driver.sh
       - name: The guest check's Vulkan line without vulkaninfo says "not checked" (#332)
@@ -889,6 +892,9 @@ jobs:
 
       - name: omarchy-mac's ARM package targets that Omarchy's repo has (bash 5, as in the VM)
         run: src/tests/omarchy-targets.sh
+
+      - name: A prebuilt image VM makes its own pacman keyring; the Omarchy line (real gpg for the key files)
+        run: src/tests/prebuilt-guest.sh
 
       - name: OmacVM's virtio-gpu driver's loader and builder on Linux (GNU tools, as in the VM)
         run: src/tests/virtio-gpu-load.sh

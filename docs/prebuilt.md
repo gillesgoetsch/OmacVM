@@ -60,9 +60,30 @@ first `omacvm apply` brings the VM side to the current version anyway. With no
 such image (or no connection), `--prebuilt` builds the VM here instead and
 says so (an OmacVM.app from before prebuilt images too).
 
-The image is only the disk (`Omarchy/disk.img`, raw, sparse): the app keeps
-its settings in `vm.env` itself. Its script (`app/scripts/prebuilt-vm.sh`,
-the app runs it as it runs `create-vm.sh`) does the steps above.
+From OmacVM 3.4.0, new VMs are Omarchy 4.5 (the official aarch64 repos): an
+app from 3.4.0 on takes only an image from `prebuilt-3.4.0` on whose signed
+manifest says Omarchy 4.5 or later (`OMARCHY_FLOOR` in
+`src/prebuilt/manifest.py`); with none it builds the VM here. Older apps
+never take a 3.4.0 image (it is newer than they are) and keep the 4.0 ones.
+`make-image.sh` and `release.sh` refuse to make or ship an image the
+version's app would not take. The manifest also names the OmacVM commit the
+image was made from (`commit`); from 3.4.0 `release.sh` takes an image only
+for its release commit M, or one made at a commit whose image files (`src/`
+and `app/scripts`, tests aside) are M's. Step image and publish check every
+part against the signed manifest (not only the `.sha256` file, which anyone
+can make again); publish uploads the image to `prebuilt-X.Y.Z` at M and checks
+it on GitHub (each part's SHA-256 digest, the release's target and tag at M)
+before the app's release goes out.
+
+The image is only the disk (`Omarchy/disk.img`, raw, sparse): the app
+keeps its settings in `vm.env` itself. Its script
+(`app/scripts/prebuilt-vm.sh`, the app runs it as it runs `create-vm.sh`)
+downloads and checks the parts, unpacks the disk into the VM's folder, grows
+it, makes fresh firmware variables and the seed, and runs the first boot
+without a window, with the seed as a second disk. Then `omacvm apply` as
+after a build, the VM shuts down and the seed is deleted (also when anything
+fails). A run that fails before the VM is ready also deletes the disk and
+firmware variables it made, so building again starts over.
 
 Before the download it checks for free space (the parts plus the unpacked
 disk plus 2 GB). Only `Omarchy/disk.img` is taken from the archive, and only
@@ -119,6 +140,11 @@ src/prebuilt/make-image.sh app clean           # delete the image VM
     NetworkManager connections and its secret key, systemd's random seed and
     credential secret, snapper snapshots, the journal and logs, the pacman
     cache, temporary files, the build's sudo rule
+  - pacman's keyring (`/etc/pacman.d/gnupg`): its master key would be the
+    same in every VM from the image. Only Omarchy's public package key stays
+    (`/var/lib/omacvm/prebuilt/omarchy-key.asc`); each VM's first boot makes
+    its own keyring (`pacman-keyring`: init, populate, Omarchy's key signed),
+    and `first-update` tries again if that failed
   - the first-boot service is installed
   - a search for the build Mac's user name, full name, computer name, git
     name and e-mail, every SSH public key in `~/.ssh` and the Bridge token in

@@ -499,6 +499,8 @@ FU=src/prebuilt/guest/first-update
 printf '#!/bin/bash\necho "omarchy-targets $*" >> "$T/calls"\n' > "$T/bin/omarchy-targets"; chmod +x "$T/bin/omarchy-targets"
 mkdir -p "$T/modules/$(uname -r)/kernel"
 export OMACVM_OMARCHY_TARGETS=$T/bin/omarchy-targets OMACVM_SYSTEM_UPDATE=$PWD/$S OMACVM_MODULES=$T/modules
+export OMACVM_ARM_PACKAGE_SOURCES=$T/arm-package-sources.sh OMACVM_PREBUILT_KEYRING=$T/no-keyring-request
+: > "$OMACVM_ARM_PACKAGE_SOURCES"   # omarchy-mac 4.0's file (an Omarchy 4.5 image has none)
 image() {   # the image's system and package list; the mirrors have moved on (404s)
   vm; grep -vE '^(opencl-mesa|lldb) ' "$T/sync" | sed 's/^mesa 1:26.2.4-1/mesa 1:26.2.3-1/; s/^llvm-libs 23.1.1-1/llvm-libs 22.1.8-2/' > "$T/sync.n"
   printf '%s\n' "opencl-mesa 1:26.2.3-1 mesa llvm-libs" "clinfo 3.0.25-1" >> "$T/sync.n"; mv "$T/sync.n" "$T/sync"
@@ -515,6 +517,12 @@ out=$("$FU" 2>&1); rc=$?
    $(awk '$1 == "mesa"' "$T/db") == "mesa 1:26.2.4-1" ]] &&
   pass "first-update: ARM targets fixed, then omarchy update -y; same kernel: no restart" ||
   fail "first-update: rc $rc, calls '$(tr '\n' ' ' < "$T/calls")', said '$out'"
+image; rm -f "$OMACVM_ARM_PACKAGE_SOURCES"; : > "$T/calls"
+out=$("$FU" 2>&1); rc=$?
+[[ $rc == 0 && $(tr '\n' ' ' < "$T/calls") == "omarchy update -y " && $out != *"targets not fixed"* ]] &&
+  pass "first-update on an Omarchy 4.5 image: no omarchy-targets, omarchy update -y" ||
+  fail "first-update, 4.5: rc $rc, calls '$(tr '\n' ' ' < "$T/calls")', said '$out'"
+: > "$OMACVM_ARM_PACKAGE_SOURCES"
 out=$("$P" opencl-mesa clinfo 2>&1); rc=$?
 [[ $rc == 0 && $(awk '$1 == "opencl-mesa"' "$T/db") == "opencl-mesa 1:26.2.4-1" ]] &&
   pass "fresh prebuilt VM after first-update: opencl-mesa installs (the mirrors' version)" ||

@@ -32,7 +32,7 @@ manifest() {
   python3 - "$M" "$VERSION" "$1" "$2" <<'PY'
 import json, sys
 m = {"format": 1, "kind": "prebuilt-manifest", "devid_teams": ["722686Y34B"],
-     "route": "app", "omacvm": sys.argv[2], "omarchy": "4.0.3 (omarchy-mac abc1234)",
+     "route": "app", "omacvm": sys.argv[2], "omarchy": "4.5.0 (aarch64 stable)",
      "bundle": "Omarchy", "unpacked_kb": 7000000, "disk_gb": 64, "compression": "tar + zstd --long=27",
      "created": "2026-10-05T03:44:00Z", "size": 3600000000,
      "parts": [{"name": "omacvm-prebuilt-%s-app.tar.zst.part-aa" % sys.argv[2], "size": 3600000000, "sha256": "0" * 64}]}
@@ -49,7 +49,7 @@ lookup() { (prebuilt_lookup app 2>/dev/null && echo "found $PB_DISK_GB $PB_BUNDL
 
 manifest "" ""
 expect "a good manifest" "found 64 Omarchy 3600000000" "$(lookup)"
-expect "a good manifest: omarchy" "4.0.3 (omarchy-mac abc1234)" "$(python3 "$R/src/prebuilt/manifest.py" get "$M" omarchy)"
+expect "a good manifest: omarchy" "4.5.0 (aarch64 stable)" "$(python3 "$R/src/prebuilt/manifest.py" get "$M" omarchy)"
 expect "a good manifest: parts" "omacvm-prebuilt-$VERSION-app.tar.zst.part-aa 3600000000 $SUM" \
   "$(python3 "$R/src/prebuilt/manifest.py" parts "$M")"
 
@@ -217,6 +217,56 @@ mw --revoked-keys ""
 expect "manifest.py write: no revoked_keys when empty" None "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("revoked_keys"))' "$T/w.json")"
 expect "manifest.py write: not a key refused" 1 "$(mw --revoked-keys bm90; echo $?)"
 expect "make-image.sh passes OMACVM_REVOKED_KEYS" 1 "$(grep -c -- '--revoked-keys "${OMACVM_REVOKED_KEYS:-}"' "$R/src/prebuilt/make-image.sh")"
+
+# The commit an image was made from (3.4.0 on; release.sh ties it to the release commit).
+C40=0123456789abcdef0123456789abcdef01234567
+mw --commit "$C40"
+expect "manifest.py write: the commit" "\"$C40\"" "$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("commit")))' "$T/w.json")"
+expect "manifest.py write: not a full commit id refused" 1 "$(mw --commit 0123abc; echo $?)"
+mw --commit ""
+expect "manifest.py write: no commit when empty" None "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("commit"))' "$T/w.json")"
+manifest commit "\"$C40\""
+expect "manifest.py get commit" "$C40" "$(python3 "$R/src/prebuilt/manifest.py" get "$M" commit)"
+manifest "" ""
+expect "manifest.py get commit: none in an older image" "" "$(python3 "$R/src/prebuilt/manifest.py" get "$M" commit)"
+manifest commit '"main; rm -rf /"'
+expect "manifest.py get: a commit that is no commit id fails the manifest" 1 "$(python3 "$R/src/prebuilt/manifest.py" get "$M" route >/dev/null 2>&1; echo $?)"
+manifest "" ""
+
+# From 3.4.0 new VMs are Omarchy 4.5 (manifest.py OMARCHY_FLOOR): an app at
+# 3.4.0 or later takes no image from before prebuilt-3.4.0 and no manifest
+# below Omarchy 4.5; older apps are as before. Fixed versions, not src/VERSION.
+fit() { python3 "$R/src/prebuilt/manifest.py" fits "$1" "$2" && echo yes || echo no; }
+expect "fits: 3.4.0 app, Omarchy 4.5.0" yes "$(fit 3.4.0 "4.5.0 (aarch64 stable)")"
+expect "fits: 3.4.0 app, Omarchy 4.10" yes "$(fit 3.4.0 "4.10.1 (aarch64 stable)")"
+expect "fits: 3.4.0 app, Omarchy 5.0" yes "$(fit 3.4.0 "5.0.0")"
+expect "fits: 3.4.0 app, omarchy-mac 4.0" no "$(fit 3.4.0 "4.0.3rc4 (omarchy-mac ba546a61f)")"
+expect "fits: 3.4.1 app, Omarchy 4.4" no "$(fit 3.4.1 "4.4.9")"
+expect "fits: 3.4.0 app, no version" no "$(fit 3.4.0 "unknown")"
+expect "fits: 3.4.0 app, 45.0 is not 4.5" yes "$(fit 3.4.0 "45.0")"
+expect "fits: 3.4.0 app, 4.50 is not 4.5" yes "$(fit 3.4.0 "4.50")"
+expect "fits: 3.3.1 app, omarchy-mac 4.0" yes "$(fit 3.3.1 "4.0.3rc4 (omarchy-mac ba546a61f)")"
+expect "fits: bad app version refused" no "$(fit 3.4 "4.5.0" 2>/dev/null)"
+F=$T/floor; mkdir -p "$F"
+for v in 3.0.0 3.0.8 3.3.0; do touch "$F/omacvm-prebuilt-$v-app.json"; done
+loc() { python3 "$R/src/prebuilt/manifest.py" local "$F" "$1" app 2>/dev/null || echo none; }
+expect "floor: 3.3.1 app takes prebuilt-3.3.0" "omacvm-prebuilt-3.3.0-app.json 3.3.0" "$(loc 3.3.1)"
+expect "floor: 3.4.0 app takes no 4.0 image" none "$(loc 3.4.0)"
+touch "$F/omacvm-prebuilt-3.4.0-app.json" "$F/omacvm-prebuilt-3.5.0-app.json"
+expect "floor: 3.4.2 app takes prebuilt-3.4.0" "omacvm-prebuilt-3.4.0-app.json 3.4.0" "$(loc 3.4.2)"
+expect "floor: 3.3.1 app never takes prebuilt-3.4.0" "omacvm-prebuilt-3.3.0-app.json 3.3.0" "$(loc 3.3.1)"
+python3 - "$T/rel-floor.json" <<'PY2'
+import json, sys
+u = "https://github.com/gillesgoetsch/omacvm/releases/download/%s/%s"
+rel = [{"tag_name": "prebuilt-" + v, "published_at": "2026-11-0%dT00:00:00Z" % i,
+        "assets": [{"name": "omacvm-prebuilt-%s-app.json" % v, "browser_download_url": u % ("prebuilt-" + v, "omacvm-prebuilt-%s-app.json" % v)}]}
+       for i, v in enumerate(["3.0.0", "3.0.8", "3.4.0"], 1)]
+json.dump(rel, open(sys.argv[1], "w"))
+PY2
+rel() { python3 "$R/src/prebuilt/manifest.py" release "$T/rel-floor.json" "$1" app 2>/dev/null | awk '{ print $1, $3 }' || true; }
+expect "floor (releases): 3.4.0 app takes prebuilt-3.4.0" "prebuilt-3.4.0 3.4.0" "$(rel 3.4.0)"
+expect "floor (releases): 3.3.1 app takes prebuilt-3.0.8" "prebuilt-3.0.8 3.0.8" "$(rel 3.3.1)"
+expect "lib.sh: the lookup asks manifest.py fits" 1 "$(grep -c 'manifest.py" fits "$version" "$PB_OMARCHY" || return 1' "$R/src/prebuilt/lib.sh")"
 
 # No manifest value inside (( )) or $(( )) in the scripts that use them, except
 # behind 10# (then a value with letters is an error, never an expression).

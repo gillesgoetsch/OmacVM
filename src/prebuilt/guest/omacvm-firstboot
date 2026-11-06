@@ -2,6 +2,7 @@
 # OmacVM prebuilt VM, first boot (omacvm-firstboot.service, before the login
 # screen). Once:
 #  * grows the system partition and btrfs to the whole disk
+#  * makes this VM's own pacman keyring (pacman-keyring)
 #  * with a disk labelled OMACVM-SEED (omacvm build --prebuilt makes it):
 #    applies it: user, password hash, root's SSH key, hostname, keyboard,
 #    timezone, language, display mode, the Mac's network for SSH
@@ -33,6 +34,13 @@ grow_disk() {
   log "disk: $(df -h --output=size / | tail -1 | tr -d ' ')"
 }
 grow_disk
+
+# ---------- pacman's keyring (generalize.sh took the image's out) ----------
+# Before anything installs a package; on failure the request stays and
+# first-update (omacvm apply) tries again.
+if [[ -e $P/keyring ]]; then
+  /usr/local/lib/omacvm/omacvm-pacman-keyring "$P/keyring" || log "pacman keyring: not made yet (first-update tries again)"
+fi
 
 # ---------- the answers ----------
 NAME=""; FULL=""; HASH=""; KEY=""; HOST=omarchy; KB=us; TZ=UTC; LANGV=en_US.UTF-8; NET=""

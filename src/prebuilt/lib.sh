@@ -14,6 +14,8 @@ PREBUILT_CACHE=$HOME/Library/Caches/omacvm/prebuilt
 # version and a version up to this one (the first omacvm apply brings its
 # guest side to this version). Sets PB_TAG, PB_MANIFEST (local file), PB_SIZE
 # (bytes), PB_UNPACKED_KB, PB_OMARCHY, PB_VERSION, PB_SOURCE (base URL or folder).
+# From 3.4.0 only an image whose signed manifest says Omarchy 4.5 or later
+# (manifest.py OMARCHY_FLOOR): an older one is not offered, the VM is built here.
 # $OMACVM_PREBUILT_SOURCE: a folder with the files (tests);
 # $OMACVM_PREBUILT_TAG: only that release.
 prebuilt_lookup() {
@@ -58,6 +60,7 @@ PY2
   [[ $route == "$type" ]] || return 1
   PB_VERSION=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omacvm) || return 1
   PB_OMARCHY=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" omarchy) || return 1
+  python3 "$R/src/prebuilt/manifest.py" fits "$version" "$PB_OMARCHY" || return 1
   PB_SIZE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" size) || return 1
   PB_BUNDLE=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" bundle) || return 1
   PB_DISK_GB=$(python3 "$R/src/prebuilt/manifest.py" get "$PB_MANIFEST" disk_gb) || return 1

@@ -17,13 +17,20 @@
 #   clean       delete the image VM (only the one this script made)
 #
 # Output: ~/Library/Caches/omacvm/prebuilt-out/app/ (or $OMACVM_PREBUILT_OUT).
-# Resources: 8 CPUs, 12 GB memory, a 64 GB disk (grown on install).
+# Resources: 8 CPUs, 12 GB memory, a 64 GB disk (grown on install);
+# OMACVM_PREBUILT_CPUS / OMACVM_PREBUILT_MEM_MB for a Mac that has less to
+# spare (the image does not keep them: the app writes each VM's own vm.env).
 # OmacVM.app's own create script from this checkout (app/scripts, with the
 # QEMU runtime built: app/scripts/build-app.sh), the VM in <output>/vm,
 # headless, without a window and without the Mac's helpers.
 # OMACVM_PREBUILT_APP=/path/OmacVM.app: that app's own scripts and
 # runtime instead (Contents/Resources), as the app makes a VM; for an app built
 # on another Mac, which leaves no runtime build here (src/release/release.sh).
+# The manifest names the OmacVM commit the image is made from ("commit": the
+# release gate takes an image only for its release commit, or one whose image
+# files are the same): this checkout's HEAD when src/ and app/scripts are as
+# committed, or OMACVM_PREBUILT_COMMIT (a tree without git, e.g. git archive);
+# with OMACVM_PREBUILT_APP the app's own OmacVMCommit must be that commit.
 set -euo pipefail
 R=$(cd "$(dirname "$0")/../.." && pwd)
 source "$R/src/lib/mac.sh"
@@ -82,6 +89,8 @@ stage_build() {
 # no Mac helpers). The password is thrown away with the user.
 stage_build_app() {
   local port
+  BUILD_CPUS=${OMACVM_PREBUILT_CPUS:-8} BUILD_MEM_MB=${OMACVM_PREBUILT_MEM_MB:-12288}
+  [[ $BUILD_CPUS =~ ^[1-9][0-9]?$ && $BUILD_MEM_MB =~ ^[1-9][0-9]{3,5}$ ]] || die "OMACVM_PREBUILT_CPUS / OMACVM_PREBUILT_MEM_MB: whole numbers"
   [[ -e $APPVM/disk.img ]] && die "$APPVM exists: delete it first (make-image.sh app clean)"
   if [[ -n ${OMACVM_PREBUILT_APP:-} ]]; then
     [[ -x $OMACVM_PREBUILT_APP/Contents/Resources/runtime/bin/OmacVM ]] || die "no QEMU runtime in $OMACVM_PREBUILT_APP"
@@ -93,7 +102,7 @@ stage_build_app() {
   port=$(app_free_port) || die "no free port for the VM's SSH"
   mkdir -p "$APPVM"
   {
-    printf "NAME='%s'\nCPUS=8\nMEM_MB=12288\nDISK_GB=%s\nSSH_PORT=%s\n" "$VM" "$PREBUILT_DISK_GB" "$port"
+    printf "NAME='%s'\nCPUS=%s\nMEM_MB=%s\nDISK_GB=%s\nSSH_PORT=%s\n" "$VM" "$BUILD_CPUS" "$BUILD_MEM_MB" "$PREBUILT_DISK_GB" "$port"
     printf "VM_USER='%s'\nVM_FULLNAME='%s'\nVM_HOSTNAME=omarchy\n" "$PREBUILT_USER" "$PREBUILT_FULLNAME"
     printf "VM_TZ=UTC\nVM_LANG=en_US.UTF-8\nKEYBOARD=us\nFEATURES='%s'\n" "$PREBUILT_FEATURES"
   } > "$APPVM/vm.env"
@@ -114,15 +123,16 @@ stage_generalize() {
     for k in "$HOME"/.ssh/*.pub; do awk '{ print $2 }' "$k"; done
     cat "$HOME/Library/Application Support/omacvm-bridge/token" 2>/dev/null; echo
   } | awk 'length($0) >= 4' | sort -u | base64)
-  [[ -s $OUT/omarchy-version ]] || gssh "$ip" "d=/home/$PREBUILT_USER/.local/share/omarchy; echo \"\$(cat \$d/version) (omarchy-mac \$(git -c safe.directory='*' -C \$d rev-parse --short HEAD))\"" \
+  COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src/prebuilt/guest" -czf - . |
+    gssh "$ip" "rm -rf /root/omacvm-prebuilt && mkdir -p /root/omacvm-prebuilt && tar --no-same-owner -C /root/omacvm-prebuilt -xzf -"
+  # Omarchy 4.5+: the package's version and channel; omarchy-mac 4.0: its checkout.
+  [[ -s $OUT/omarchy-version ]] || gssh "$ip" "bash /root/omacvm-prebuilt/omarchy-version '$PREBUILT_USER'" \
     < /dev/null > "$OUT/omarchy-version"
   log "Omarchy $(cat "$OUT/omarchy-version")"
   gssh "$ip" "LC_ALL=C pacman -Qi | awk -F' *: ' '/^Name/ { n = \$2 } /^Version/ { v = \$2 } /^Licenses/ { print n, v, \$2 }'" \
     < /dev/null > "$OUT/packages.txt"
   log "$(wc -l < "$OUT/packages.txt" | tr -d ' ') packages"
   log "generalize $VM at $ip"
-  COPYFILE_DISABLE=1 tar --no-xattrs -C "$R/src/prebuilt/guest" -czf - . |
-    gssh "$ip" "rm -rf /root/omacvm-prebuilt && mkdir -p /root/omacvm-prebuilt && tar --no-same-owner -C /root/omacvm-prebuilt -xzf -"
   gssh "$ip" "bash /root/omacvm-prebuilt/generalize.sh --user '$PREBUILT_USER' --type '$ROUTE' --audit-b64 '$(tr -d '\n' <<<"$audit")'" < /dev/null
   log "waiting for $VM to power off"
   wait_off
@@ -157,6 +167,21 @@ sparse_disk() {
   log "disk: $((kb / 1024)) MB in use"
 }
 
+# image_commit: the commit the image is made from, or "" (then no release takes it).
+image_commit() {
+  local c=${OMACVM_PREBUILT_COMMIT:-} a
+  if [[ -z $c ]] && git -C "$R" rev-parse --git-dir >/dev/null 2>&1 &&
+     [[ -z $(git -C "$R" status --porcelain -- src app/scripts 2>/dev/null) ]]; then
+    c=$(git -C "$R" rev-parse HEAD)
+  fi
+  [[ -z $c || $c =~ ^[0-9a-f]{40}$ ]] || die "OMACVM_PREBUILT_COMMIT is not a full commit id: $c"
+  if [[ -n $c && -n ${OMACVM_PREBUILT_APP:-} ]]; then
+    a=$(plutil -extract OmacVMCommit raw -o - "$OMACVM_PREBUILT_APP/Contents/Info.plist" 2>/dev/null || true)
+    [[ $a == "$c" ]] || die "OMACVM_PREBUILT_APP is from ${a:-?}, the image from $c: its scripts and guest side would not be the commit's"
+  fi
+  echo "$c"
+}
+
 # compress_stage DIR: the bundle into parts, manifest, sums.
 compress_stage() {
   local stage=$1 omarchy
@@ -165,7 +190,12 @@ compress_stage() {
     die "the files above still name this Mac's user"
   fi
   omarchy=$(cat "$OUT/omarchy-version" 2>/dev/null || echo unknown)
-  local base=omacvm-prebuilt-$VERSION-$ROUTE
+  # An image this version's app would not take (from 3.4.0: Omarchy 4.5 or later) is not made.
+  python3 "$R/src/prebuilt/manifest.py" fits "$VERSION" "$omarchy" ||
+    die "an OmacVM $VERSION image must be Omarchy 4.5 or later, this VM is Omarchy $omarchy (manifest.py OMARCHY_FLOOR)"
+  local base=omacvm-prebuilt-$VERSION-$ROUTE commit
+  commit=$(image_commit) || exit 1
+  [[ -n $commit ]] || log "no commit recorded (src/ or app/scripts not as committed): no release takes this image"
   rm -f "$OUT/$base".tar.zst.* "$OUT/$base.json" "$OUT/$base.json.sig"
   log "compressing (zstd -19, a while)"
   local t0; t0=$(date +%s)
@@ -187,7 +217,7 @@ compress_stage() {
   python3 "$R/src/prebuilt/manifest.py" write "$OUT/$base.json" --route "$ROUTE" --omacvm "$VERSION" \
     --omarchy "$omarchy" --bundle "$(basename "$stage")" --unpacked "$(du -sk "$stage" | cut -f1)" \
     --disk-gb "$PREBUILT_DISK_GB" --teams "$teams" --next-spare-key "${OMACVM_NEXT_SPARE_KEY:-}" \
-    --revoked-keys "${OMACVM_REVOKED_KEYS:-}" "$OUT/$base".tar.zst.part-*
+    --revoked-keys "${OMACVM_REVOKED_KEYS:-}" --commit "$commit" "$OUT/$base".tar.zst.part-*
   "$R/src/release/release-key.sh" sign "$OUT/$base.json" || die "the manifest was not signed"
   python3 "$R/src/prebuilt/manifest.py" get "$OUT/$base.json" route >/dev/null || die "the signed manifest does not read back"
   (cd "$OUT" && shasum -a 256 "$base".tar.zst.part-* "$base.json" "$base.json.sig" > "$base.sha256")
@@ -212,6 +242,13 @@ stage_repack() {
 stage_upload() {
   local base=omacvm-prebuilt-$VERSION-$ROUTE
   ls "$OUT/$base".tar.zst.part-* >/dev/null || die "nothing to upload in $OUT"
+  # The release gate (src/release/release.sh) sets the target: the release commit M. A release
+  # already there at another commit is not this image's: nothing goes up.
+  if [[ -n ${OMACVM_PREBUILT_TARGET:-} ]] && gh release view "$TAG" -R "$PREBUILT_REPO" >/dev/null 2>&1; then
+    local at; at=$(gh api "repos/$PREBUILT_REPO/commits/$TAG" -q .sha 2>/dev/null || true)
+    [[ $at == "$OMACVM_PREBUILT_TARGET" ]] ||
+      die "$TAG is already there at ${at:-an unknown commit}, not $OMACVM_PREBUILT_TARGET: delete it first (gh release delete $TAG -R $PREBUILT_REPO --cleanup-tag)"
+  fi
   if ! gh release view "$TAG" -R "$PREBUILT_REPO" >/dev/null 2>&1; then
     log "creating the pre-release $TAG"
     gh release create "$TAG" -R "$PREBUILT_REPO" --prerelease --target "${OMACVM_PREBUILT_TARGET:-main}" \
