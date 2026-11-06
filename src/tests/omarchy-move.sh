@@ -392,6 +392,12 @@ expect "check: a 4.5 @factory the move kept: ok, not 'from before 4.5'" 1 "$(ck 
 fresh
 expect "check: an @factory and no move's word on it: a warning that does not guess its version" 1 "$(ck | grep -c '^warn factory reset: a factory snapshot (@factory) is there: .*may be older than 4.5.0')"
 
+# A move stopped after its switch and kept: check reads it as over (no "Resume or Undo").
+mblk=$(awk '/^om_mv=\$\(cat/ { on = 1 } on { print } on && /&& om_mv=kept$/ { exit }' "$R/src/guest/check.sh")
+cm() { PATH="$B:$T/compat:$PATH" bash -c "${mblk//\/var\/lib\/omacvm\/move-4.5/$J}"$'\n''echo "$om_mv"' 2>&1; }
+fresh; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "check: a move that failed after its switch: stopped (Resume or Undo); kept: over" "failed kept" "$(cm) $(o keep >/dev/null 2>&1; cm)"
+
 # A step fails after the switch: Resume goes on there, nothing before it again.
 fresh; : > "$P/update-fails"; o run >/dev/null 2>&1; rc=$?
 expect "omarchy update fails: exit 1, state failed, code update, resumable" "1 failed update True" \
@@ -504,6 +510,35 @@ ablk=$(awk '/^guest_install\(\) \{/ { on = 1 } on { print } on && /^\}$/ { exit 
 ga() { bash -c 'gssh() { echo "$2"; }; feature_index() { echo 0; }; FN=(); TYPE=app U=u KB=k MODE= GI_ARGS= NAMED=0'$'\n'"$ablk"$'\n''guest_install' 2>&1; }
 expect "apply: the move's own apply tells guest/install.sh so (OMACVM_MOVE_RUN=1), any other does not" "1 0" \
   "$(OMACVM_MOVE_RUN=1 ga | grep -c '^OMACVM_MOVE_RUN=1 /usr/local/share/omacvm/guest/install.sh --user ') $(ga | grep -c OMACVM_MOVE_RUN)"
+
+# keep: the person keeps the disk a stopped move left (OmacVM.app's Keep
+# This Disk, told by apply). Only once the switch is done: then the move is
+# over here (not pending, status kept, Update VM goes on). On a switch not
+# done the VM is between 4.0 and 4.5: refused, still pending, Update VM fails
+# (never a silent exit 0 that apply records as installed).
+kp() { o keep >/dev/null 2>&1; echo "$? $(pend) $([[ -e $J/kept ]] && echo kept || echo -) $(gi | tail -1)"; }
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1
+expect "keep after a cut-off before the switch: refused (3), still pending, Update VM fails (5)" "3 0 - rc=5" "$(kp)"
+expect "... and says why" 1 "$(o keep 2>&1 | grep -c "stopped at 'commit' before its package switch was done (cut-before): Resume finishes it, or Undo")"
+fresh; : > "$P/cut-half"; o run >/dev/null 2>&1
+expect "keep after a switch cut half way: refused, still pending, Update VM fails" "3 0 - rc=5" "$(kp)"
+fresh; : > "$P/cut-after"; o run >/dev/null 2>&1
+expect "keep after a switch cut off once written (hooks not run): refused, still pending" "3 0 - rc=5" "$(kp)"
+fresh; : > "$P/net-down"; o run >/dev/null 2>&1
+expect "keep after a stop in the download (switch not begun): refused, still pending" "3 0 - rc=5" "$(kp)"
+fresh; : > "$P/update-fails"; o run >/dev/null 2>&1
+expect "keep after a failure after the switch: kept, not pending, Update VM goes on" "0 1 kept goes-on" \
+  "$(o keep >/dev/null 2>&1; echo "$? $(pend) $([[ -e $J/kept ]] && echo kept || echo -) $(gi | grep -c goes-on | sed 's/^1$/goes-on/')")"
+expect "... status says kept; keep again: still 0" "True failed 0" \
+  "$(o status --json | json '" ".join(str(x) for x in [d["kept"], d["state"]])') $(o keep >/dev/null 2>&1; echo $?)"
+o run >/dev/null 2>&1
+expect "... a Resume after it goes on to done, and the kept mark goes" "done False" "$(cat "$J/state") $(o status --json | json 'd["kept"]')"
+fresh; expect "keep with no move here: nothing to keep (0), nothing written" "0 no" "$(o keep >/dev/null 2>&1; echo $?) $([[ -e $J/kept ]] && echo yes || echo no)"
+fresh; o run >/dev/null 2>&1; expect "keep after a finished move: nothing to keep (0)" "0 no" "$(o keep >/dev/null 2>&1; echo $?) $([[ -e $J/kept ]] && echo yes || echo no)"
+fresh; : > "$P/cut-before"; o run >/dev/null 2>&1; echo running > "$J/state"
+( PATH="$B:$T/compat:$PATH"; exec 9>"$J/lock"; flock 9; sleep 3 ) & hp=$!; sleep 0.5
+expect "keep while the move runs: refused (3), says so" "3 1" "$(o keep >/dev/null 2>&1; echo $?) $(o keep 2>&1 | grep -c 'runs now')"
+kill "$hp" 2>/dev/null; wait "$hp" 2>/dev/null
 gl=$(grep -n '^# The move stopped before its package switch was done' "$R/src/guest/install.sh" | cut -d: -f1)
 expect "guest/install.sh: that check comes before anything that changes a package or pacman's lock" "0 yes" \
   "$(head -n "${gl:-0}" "$R/src/guest/install.sh" | grep -v '^[[:space:]]*#' | grep -cE 'pkg-add|gbm-guard|pacman |db\.lck|makepkg') \

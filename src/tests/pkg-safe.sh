@@ -228,7 +228,20 @@ vm; out=$(OMACVM_MOVE_DIR=$T/mv "$P" jq 2>&1); rc=$?
 [[ $rc == 1 && ! -s $T/calls && $out == *"jq not installed: the move to Omarchy 4.5 is not finished"* ]] &&
   pass "pkg-add while the move's switch is not done: nothing installed, says why" ||
   fail "pkg-add, move pending: rc $rc, calls '$(cat "$T/calls")', said '$out'"
+# Keep This Disk (omarchy-move.sh keep, told by apply) on that switch: refused
+# (the VM is between 4.0 and 4.5), so they still change nothing.
+krc=0; OMACVM_MOVE_DIR=$T/mv src/guest/omarchy-move.sh keep >/dev/null 2>&1 || krc=$?
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$S" 2>&1); rc=$?
+[[ $krc == 3 && ! -e $T/mv/kept && $rc == 1 && ! -s $T/calls && $out == *"not updated: the move to Omarchy 4.5 is not finished"* ]] &&
+  pass "Keep on a switch not done: refused (3), system-update still not updated" ||
+  fail "keep, switch not done: keep $krc, system-update rc $rc, calls '$(cat "$T/calls")', said '$out'"
 : > "$T/mv/commit-done"
+# Kept once the switch is done: the move is over here; system-update as always.
+krc=0; OMACVM_MOVE_DIR=$T/mv src/guest/omarchy-move.sh keep >/dev/null 2>&1 || krc=$?
+vm; out=$(OMACVM_MOVE_DIR=$T/mv "$S" 2>&1); rc=$?
+[[ $krc == 0 && -e $T/mv/kept && $rc == 0 && $(cat "$T/calls") == "omarchy update -y" ]] &&
+  pass "Keep after the switch: kept, system-update updates" ||
+  fail "keep after the switch: keep $krc, system-update rc $rc, calls '$(cat "$T/calls")', said '$out'"
 vm; out=$(OMACVM_MOVE_DIR=$T/mv "$P" jq 2>&1); rc=$?
 [[ $rc == 0 && $(cat "$T/calls") == "pacman -S --noconfirm jq" ]] && pass "pkg-add after the move's switch: as always" ||
   fail "pkg-add after the switch: rc $rc, calls '$(cat "$T/calls")', said '$out'"

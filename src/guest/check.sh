@@ -127,6 +127,9 @@ om_v=$(pacman -Q omarchy 2>/dev/null | awk '{ print $2 }'); om_v=${om_v%-*}
 om_c=$(sed -n 's|^Server = https://pkgs.omarchy.org/\([a-z]*\)/.*|\1|p' /etc/pacman.conf 2>/dev/null | head -1)
 om_mv=$(cat /var/lib/omacvm/move-4.5/state 2>/dev/null)
 [[ $om_mv == running ]] && flock -n /var/lib/omacvm/move-4.5/lock true 2>/dev/null && om_mv=interrupted
+# Stopped after its package switch and kept as it was (OmacVM.app's Keep This
+# Disk, omarchy-move.sh keep): the move is over, the checks of 4.5 below.
+[[ $om_mv =~ ^(failed|interrupted|stopped)$ && -e /var/lib/omacvm/move-4.5/kept ]] && om_mv=kept
 if [[ $om_mv == running ]]; then warn "Omarchy" "${om_v:-?}: the move to Omarchy 4.5 runs now ($(cat /var/lib/omacvm/move-4.5/phase 2>/dev/null))"
 elif [[ $om_mv == failed || $om_mv == interrupted || $om_mv == stopped ]]; then
   warn "Omarchy" "${om_v:-?}: the move to Omarchy 4.5 stopped at '$(cat /var/lib/omacvm/move-4.5/phase 2>/dev/null)': Resume or Undo in OmacVM.app"

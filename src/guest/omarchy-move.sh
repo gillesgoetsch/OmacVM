@@ -23,6 +23,10 @@
 #   omarchy-move.sh pending             exit 0 (one line why) while a move began
 #                                       here and its package switch is not done:
 #                                       OmacVM changes no package then
+#   omarchy-move.sh keep                the person keeps the disk as a stopped
+#                                       move left it (OmacVM.app's Keep This
+#                                       Disk; apply says so): only once its
+#                                       package switch is done, else exit 3
 #   omarchy-move.sh repos [CHANNEL]     4.5's repo files (stable)
 #   omarchy-move.sh keyring             Omarchy's package key, from the copy here
 #   omarchy-move.sh pacman ARGS...      pacman with the rule for a missing file
@@ -1042,7 +1046,7 @@ cmd_run() {
   # the unit waits for it (TimeoutStopSec).
   trap ': > "$J/stop"; say "asked to stop: after the step $(jget phase)"' INT TERM
   sync   # what ran before the move (Update VM's GRUB menu, an initramfs) is on the disk first
-  jset state running; jset code ""; jset reason ""; jset finished ""
+  jset state running; jset code ""; jset reason ""; jset finished ""; rm -f "$J/kept"
   [[ -s $J/started ]] || jset started "$(now)"
   for ((i = start - 1; i < ${#PHASES[@]}; i++)); do
     p=${PHASES[$i]}
@@ -1123,8 +1127,9 @@ cmd_status() {
     "$(jbool "$([[ -e $J/commit-started || -e $J/commit-done ]] && echo 1)")" "$(js "$sw")" \
     "$(jbool "$([[ $sw != running && $sw != half ]] && echo 1)")" "$(js "$(jget started)")" \
     "$(js "$(jget finished)")" "$(js "$(jget code)")" "$(js "$(jget reason)")"
-  printf '"omarchy": %s, "lane": %s, "channel": %s, "log": %s, "result": %s}\n' \
-    "$(js "$(version | sed 's/-[^-]*$//')")" "$(js "$(lane)")" "$(js "$(lane_channel)")" "$(js "$LOG")" "$res"
+  printf '"omarchy": %s, "lane": %s, "channel": %s, "log": %s, "kept": %s, "result": %s}\n' \
+    "$(js "$(version | sed 's/-[^-]*$//')")" "$(js "$(lane)")" "$(js "$(lane_channel)")" "$(js "$LOG")" \
+    "$(jbool "$([[ -e $J/kept ]] && echo 1)")" "$res"
 }
 
 # A move that began here and whose package switch is not done (stopped,
@@ -1138,6 +1143,30 @@ cmd_pending() {
   local st; st=$(jget state)
   [[ -n $st && $st != done && $st != refused && ! -e $J/commit-done ]] || return 1
   echo "the move to Omarchy 4.5 is not finished in this VM (it stopped at '$(jget phase)'): OmacVM changes no packages until Resume finishes it (or Undo)"
+}
+
+# The person keeps this disk as a move that stopped left it (OmacVM.app's
+# Keep This Disk; apply tells the VM while the Mac's journal says kept or
+# done-final). Only once the package switch is done: Omarchy 4.5's packages
+# are all in, only steps after the switch did not run, so the move is over
+# here (pending no, status "kept", check says so). Before that (not begun,
+# cut off, half, busy) the VM is between 4.0 and 4.5: a kept disk there
+# would let Update VM, system-update and pkg-add make a partial update.
+# Refused (exit 3, says why): Resume finishes the move, or Undo.
+cmd_keep() {
+  local st sw
+  st=$(jget state)
+  [[ -n $st && $st != refused && $st != done ]] || { say "no stopped move here: nothing to keep"; return 0; }
+  if [[ $st == running ]] && alive; then
+    echo "omarchy-move: the move to Omarchy 4.5 runs now: keep this disk once it stopped" >&2; return 3
+  fi
+  sw=$(switch_now)
+  if [[ $sw != done ]]; then
+    echo "omarchy-move: the move to Omarchy 4.5 stopped at '$(jget phase)' before its package switch was done ($sw): Resume finishes it, or Undo puts the disk from before back" >&2
+    return 3
+  fi
+  [[ -e $J/kept ]] || { jset kept "$(now)"; sync; }
+  say "this disk is kept as the move left it (it stopped at '$(jget phase)', after the package switch)"
 }
 
 cmd_record() {
@@ -1154,9 +1183,10 @@ case ${1:-} in
   status) cmd_status "${2:-}" ;;
   record) cmd_record ;;
   pending) cmd_pending ;;
+  keep) cmd_keep ;;
   repos) cmd_repos "${2:-}" ;;
   keyring) cmd_keyring ;;
   pacman) shift; cmd_pacman "$@" ;;
   animations) cmd_animations "${2:-}" ;;
-  *) echo "usage: omarchy-move.sh preflight [--json] | start | run | stop | status [--json] | record | pending | repos [CHANNEL] | keyring | pacman ARGS... | animations USER" >&2; exit 2 ;;
+  *) echo "usage: omarchy-move.sh preflight [--json] | start | run | stop | status [--json] | record | pending | keep | repos [CHANNEL] | keyring | pacman ARGS... | animations USER" >&2; exit 2 ;;
 esac
