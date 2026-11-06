@@ -28,7 +28,7 @@ echo b >> "$G/README"; gi commit -qam m; M=$(gi rev-parse HEAD)
 echo v2 > "$G/app/scripts/move-vm.sh"; gi commit -qam m2; M2=$(gi rev-parse HEAD)
 
 ROWS=$("$G/src/tests/e2e/move-45.sh" --rows | awk '{ print $1 }')
-expect "the kit lists its rows" 18 "$(wc -l <<<"$ROWS" | tr -d ' ')"
+expect "the kit lists its rows" 19 "$(wc -l <<<"$ROWS" | tr -d ' ')"
 expect "the kit lists the files a result is tied to" 1 "$("$G/src/tests/e2e/move-45.sh" --paths | grep -c '^app/scripts/move-vm.sh$')"
 
 mkrow() {   # DIR ROW BASE OK [MAC] [COMMIT] [ENDED]: one run of a row, as move-45.sh writes it

@@ -17,11 +17,13 @@
 # its Contents/Resources/scripts run the move as the app does. BASE: a test VM
 # folder (never one of the installed app's VMs folders; src/tests/e2e/test-vms.sh).
 # The caller holds the Mac's VM lock and its memory gate (one VM at a time).
-# Nothing visible: QEMU runs headless, no input. Only the row app-guards opens
-# the test app's window (no input either; only when nobody uses the Mac: HID
-# idle > 300 s and the screen unlocked, else that row is BLOCKED); it also
-# needs OMACVM_SIGN_ID (the Developer ID, to sign the update it offers) and
-# holds ~/.omacvm-test-identity.lock while the app runs.
+# Nothing visible: QEMU runs headless, no input. app-guards starts the test
+# app without a window (OMACVM_COCOA_HIDDEN), needs OMACVM_SIGN_ID (the
+# Developer ID, to sign the update it offers) and holds
+# ~/.omacvm-test-identity.lock while the app runs; disk-lock opens the test
+# app's window (no input; only when nobody uses the Mac: HID idle > 300 s and
+# the screen unlocked, else that row is BLOCKED). Both want a compiled test
+# build of the commit (the app's Swift side is tested), not scripts only.
 # Each run of a row writes DIR/rows/ROW-<base>-<mac>-<time>.json: {row, base,
 # mac, ended, pass, checks: [[name, ok, detail]], seconds}; logs DIR/logs/ the
 # same name. A row stopped before its end (a signal, an error) fails ("row ran
@@ -45,7 +47,8 @@ power-backup move-vm.sh killed (-9) while it makes the backup: interrupted, Undo
 app-crash    the app crashes mid-download (move-vm.sh killed -9, its headless QEMU runs on): Resume and Undo still work
 disk-pending a disk change not finished (a shrink's journal, a grow): refused before anything changes, plan says why
 busy         while the move runs: Update VM (omacvm apply / update), a second move, Undo and Delete are refused; the move goes on
-app-guards   the app's window (on screen, no input): opened after a crash nothing starts; while the move runs an app update waits and Disk is locked; the update goes in after
+app-guards   the app (hidden): opened after a crash nothing starts; an app update offered while the move runs waits, and goes in after it
+disk-lock    the app's window (on screen, no input): a move not finished locks Disk › Change… and shows Resume
 guest-full   the VM's own disk nearly full: refused before the switch, Undo restores the disk exactly
 mac-full     the Mac's drive nearly full (the VM on a small APFS disk image): refused before anything changes, plan says why
 non-apfs     the VM on a Mac OS Extended (HFS+) disk image: refused before anything changes, plan says why"
@@ -566,10 +569,11 @@ row_busy() {   # while the move runs, whatever else could touch the VM is refuse
   journal_state done
 }
 
-# ---------- the app's window (row app-guards) ----------
-# The test app opened as a person opens it (open -n -g, its window on this Mac's screen, no input:
-# Accessibility reads it), from one fixed copy per Mac that the move runs from too, so its updater
-# sees the move (a new folder per run would ask macOS's Local Network question again: STANDARDS 34b).
+# ---------- the app (rows app-guards, disk-lock) ----------
+# The test app opened as a person opens it (open -n -g; app-guards without a window, disk-lock with
+# it on this Mac's screen, no input: Accessibility reads it), from one fixed copy per Mac that the move
+# runs from too, so its updater sees the move (a new folder per run would ask macOS's Local Network
+# question again: STANDARDS 34b).
 UA=""; UPID=""; FEED_PID=""; ULOCK=$HOME/.omacvm-test-identity.lock; ULOCK_MINE=0; USAVED=""
 app_clean() {
   [[ -n $UPID ]] && { kill "$UPID" 2>/dev/null; sleep 2; kill -9 "$UPID" 2>/dev/null; }
@@ -578,13 +582,14 @@ app_clean() {
   (( ULOCK_MINE )) && rm -rf "$ULOCK" && echo "move-45 $(date +%H:%M) done" >> "$ULOCK.wait"
   UPID="" FEED_PID="" USAVED="" ULOCK_MINE=0
 }
+UHIDE=(--env OMACVM_COCOA_HIDDEN=1)
 app_open() {   # [ARGS...]: the copy, with the local feed; UPID = its launcher
-  local before; before=$(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM" | tr '\n' ' ')
-  open -n -g --env "OMACVM_APPCAST_URL=http://127.0.0.1:$FEED_PORT/OmacVM-appcast.json" --env "OMACVM_APPCAST_KEY=$(cat "$OUT/feed-$MOVE45_MAC/key.pub")" \
+  local before; before=" $(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM" | tr '\n' ' ')"
+  open -n -g ${UHIDE[@]+"${UHIDE[@]}"} --env "OMACVM_APPCAST_URL=http://127.0.0.1:$FEED_PORT/OmacVM-appcast.json" --env "OMACVM_APPCAST_KEY=$(cat "$OUT/feed-$MOVE45_MAC/key.pub")" \
     "$UA" --args --vm "$(basename "$VD")" "$@"
   local i p; UPID=""
   for ((i = 0; i < 30; i++)); do
-    for p in $(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM( |$)"); do [[ $before == *" $p "* || $before == "$p "* ]] || UPID=$p; done
+    for p in $(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM( |$)"); do [[ $before == *" $p "* ]] || UPID=$p; done
     [[ -n $UPID ]] && return 0; sleep 1
   done
   return 1
@@ -595,9 +600,9 @@ disk_locked() {   # WHEN: the Disk row's Change… is there and disabled (AX on 
   check "$1: Disk › Change… locked in the window" $([[ $rc == 1 && $out == *disabled* ]] && echo 1 || echo 0) "ax rc $rc: $out"
 }
 upd_log() { local f; f=$(ls -t "$HOME/Library/Application Support/OmacVM/Updates/org.omacvm.app.test"/*/update.log 2>/dev/null | head -1); [[ -n $f ]] && tail -c 4000 "$f"; }
-row_app_guards() {
+app_prepare() {   # WINDOW(0|1): the lock, no other launcher, the copy, the update on offer; "" or why it cannot run here
   local why=""
-  onscreen_ok || why="someone may be at this Mac (HID idle $(hid_idle) s$(screen_locked && echo ', screen locked'))"
+  if (( $1 )) && ! onscreen_ok; then why="someone may be at this Mac or it is locked (HID idle $(hid_idle) s$(screen_locked && echo ', screen locked'))"; fi
   [[ -z $why && -z ${OMACVM_SIGN_ID:-} ]] && why="OMACVM_SIGN_ID is not set (the Developer ID signs the update on offer)"
   # One launcher per bundle id: a second one hands over to the first (and --update-now would ask that one to update).
   local other; other=$(LC_ALL=C pgrep -f "OmacVM Test\.app/Contents/MacOS/OmacVM( |$)" | head -3 | tr '\n' ' ')
@@ -606,8 +611,8 @@ row_app_guards() {
     local i; for ((i = 0; i < 40; i++)); do mkdir "$ULOCK" 2>/dev/null && { ULOCK_MINE=1; break; }; sleep 30; done
     (( ULOCK_MINE )) && echo "move-45 app-guards $(date +%H:%M), pid $$" > "$ULOCK/owner" || why="$ULOCK held for 20 min ($(cat "$ULOCK/owner" 2>/dev/null))"
   fi
-  [[ -z $why ]] && { swiftc -O -o "$OUT/ax" "$HERE/ax.swift" 2> "$OUT/logs/$TAG.ax-build.log" || why="ax.swift does not build"; }
-  if [[ -n $why ]]; then check "BLOCKED: the app's window can be used here now" 0 "$why"; app_clean; return; fi
+  (( $1 )) && [[ -z $why ]] && { swiftc -O -o "$OUT/ax" "$HERE/ax.swift" 2> "$OUT/logs/$TAG.ax-build.log" || why="ax.swift does not build"; }
+  if [[ -n $why ]]; then check "BLOCKED: the test app can be used here now" 0 "$why"; app_clean; return 1; fi
   USAVED=$OUT/logs/$TAG.app-settings.plist; defaults export org.omacvm.app.test "$USAVED" 2>/dev/null || : > "$USAVED"
   # The copy (the move runs from it), and the same build one version up, offered by a local feed (throwaway key).
   UA=${MOVE45_UPDATE_APP:-$HOME/omacvm-work/move45-app/OmacVM Test.app}
@@ -618,9 +623,9 @@ row_app_guards() {
   rm -rf "$F"; mkdir -p "$F/c"; ditto "$APP" "$F/c/OmacVM Test.app"
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $cv" -c "Set :CFBundleVersion $cv" "$F/c/OmacVM Test.app/Contents/Info.plist"
   codesign --force --sign "$OMACVM_SIGN_ID" --options runtime --preserve-metadata=entitlements,identifier "$F/c/OmacVM Test.app" 2> "$F/sign.log" ||
-    { check "the update on offer signed" 0 "$(tail -1 "$F/sign.log")"; app_clean; return; }
+    { check "the update on offer signed" 0 "$(tail -1 "$F/sign.log")"; app_clean; return 1; }
   swiftc -O -o "$F/sign" "$R/src/release/sign.swift" 2>/dev/null && "$F/sign" keygen "$F/key" > "$F/key.pub" ||
-    { check "a throwaway feed key" 0 ""; app_clean; return; }
+    { check "a throwaway feed key" 0 ""; app_clean; return 1; }
   (cd "$F/c" && ditto -c -k --keepParent "OmacVM Test.app" "$F/OmacVM-$cv.zip")
   FEED_PORT=$(python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   printf '{"schema": 1, "kind": "app-feed", "version": "%s", "url": "http://127.0.0.1:%s/OmacVM-%s.zip", "length": %s, "sha256": "%s", "minimum_macos": "15.0", "devid_teams": ["%s"]}\n' \
@@ -628,6 +633,11 @@ row_app_guards() {
     "$(codesign -dv "$F/c/OmacVM Test.app" 2>&1 | sed -n 's/^TeamIdentifier=//p')" > "$F/OmacVM-appcast.json"
   "$F/sign" sign "$F/key" "$F/OmacVM-appcast.json" > "$F/OmacVM-appcast.json.sig"
   /usr/bin/python3 -m http.server "$FEED_PORT" --bind 127.0.0.1 --directory "$F" > "$F/server.log" 2>&1 & FEED_PID=$!
+  PV=$pv CV=$cv
+}
+row_app_guards() {
+  app_prepare 0 || return
+  local pv=$PV cv=$CV
   pre_hash
   # 1. The Mac crashes early in the move (QEMU killed): interrupted.
   mvm_bg run
@@ -641,7 +651,6 @@ row_app_guards() {
   sleep 45
   check "app opened after the crash: no QEMU started" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
   check "app opened after the crash: the journal as it was" $([[ $(shasum -a 256 "$VD/move-4.5" | cut -c1-16) == "$j0" ]] && echo 1 || echo 0) "state=$(J state)"
-  disk_locked "after the crash"
   app_quit
   # 3. Resume (from the copy, as its window would); while it downloads, the app opens with an update on offer.
   mvm_bg run
@@ -653,8 +662,11 @@ row_app_guards() {
   check "update on offer during the move: not installed" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist") == "$pv" ]] && echo 1 || echo 0) "$(grep -E 'deferred|install|update-now' <<<"$ul" | tail -2 | tr '\n' ' ' | cut -c1-240)"
   check "update on offer during the move: deferred (update.log)" $([[ $ul == *"deferred"* ]] && echo 1 || echo 0) "$(grep -E 'deferred' <<<"$ul" | tail -1 | cut -c1-200)"
   check "the move goes on (journal running, QEMU)" $([[ $(J state) == running && -n $(qemu_pid) ]] && echo 1 || echo 0) "state=$(J state)"
+  # Opened again while the move runs (the update waiting from before): still not installed, the move goes on.
   app_open || { check "the app opens during the move" 0 ""; app_clean; return; }
-  sleep 20; disk_locked "while the move runs"; app_quit
+  sleep 40
+  check "opened again during the move: the waiting update still not installed" $([[ $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$UA/Contents/Info.plist") == "$pv" && $(J state) == running ]] && echo 1 || echo 0) "$(upd_log | grep -E 'deferred|install' | tail -1 | cut -c1-200)"
+  app_quit
   mvm_wait; local rc=$?
   check "the move finishes" $((rc == 0)) "exit $rc: $(J reason)"
   journal_state done
@@ -666,6 +678,24 @@ row_app_guards() {
   local p; for p in $(LC_ALL=C pgrep -f "$UA/Contents/MacOS/OmacVM( |$)"); do kill "$p" 2>/dev/null; done
   UPID=""
   check "no QEMU after all of it" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
+  app_clean
+}
+row_disk_lock() {   # a move not finished (stopped at the backup, no VM started): the window locks Disk and offers Resume
+  PRE_FAILS=""
+  app_prepare 1 || return
+  pre_hash
+  OMACVM_TEST_MOVE_STOP=backup mvm run
+  check "a move stopped before the VM started (journal open)" $([[ $(J state) =~ ^(interrupted|failed)$ ]] && echo 1 || echo 0) "state=$(J state)"
+  UHIDE=()   # this row's point is the window
+  app_open || { check "the app opens" 0 ""; app_clean; return; }
+  sleep 20
+  disk_locked "a move not finished"
+  local t; t=$("$OUT/ax" "$UPID" text 2>&1)
+  check "the window offers Resume and Undo" $([[ $t == *Resume* && $t == *Undo* ]] && echo 1 || echo 0) "$(grep -E 'Omarchy 4.5|Resume|Undo' <<<"$t" | head -3 | tr '\n' ' ' | cut -c1-200)"
+  check "no QEMU started by the window" $([[ -z $(qemu_pid) ]] && echo 1 || echo 0) ""
+  app_quit
+  mvm undo; check "Undo" $(( $? == 0 )) ""
+  same_as_before
   app_clean
 }
 row_mac_full() { mac_side_refusal APFS 6 "Not enough free space"; }
