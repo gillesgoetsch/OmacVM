@@ -98,7 +98,15 @@ if [[ " $* " == *" --show-keys "* ]]; then echo "fpr:::::::::${FPR:-40DFB630FF42
 [[ -e $GNUPG/trusted ]] && echo "pub:f:4096:1:F0134EE680CAC571:" || echo "pub:-:4096:1:F0134EE680CAC571:"
 EOF
 printf '#!/bin/bash\necho "${PLATFORM:-aarch64}"\n' > "$B/omarchy-hw-platform"
-printf '#!/bin/bash\necho "grub-mkconfig" >> "%s/calls"\n' "$P" > "$B/grub-mkconfig"
+cat > "$B/grub-mkconfig" <<'EOF'
+#!/bin/bash
+echo "grub-mkconfig $*" >> "$P/calls"
+[[ $1 == -o ]] || exit 1
+if [[ -n ${GRUB_FAIL:-} ]]; then : > "$2"; exit 1; fi
+echo "menu 4.5" > "$2"
+EOF
+# sync: what the journal said when it was called (the phase, the last phase done)
+printf '#!/bin/bash\necho "sync $(cat "$J/phase" 2>/dev/null) $(cat "$J/phase-done" 2>/dev/null)" >> "%s/calls"\n' "$P" > "$B/sync"
 printf '#!/bin/bash\necho "mkinitcpio $*" >> "%s/calls"\n' "$P" > "$B/mkinitcpio"
 printf '#!/bin/bash\necho "${FSTYPE:-btrfs}"\n' > "$B/findmnt"
 printf '#!/bin/bash\necho Avail; echo "${AVAIL:-42949672960}"\n' > "$B/df"
@@ -149,7 +157,7 @@ RT=$T/root
 fresh() {   # a 4.0 VM from omarchy-mac: packages, files, journal gone
   rm -rf "$RT" "$T/j" "$T/cache" "$P"/*; mkdir -p "$RT/sys/class/dmi/id" "$RT/boot/grub" "$RT/etc/default" \
     "$RT/usr/share/pacman/keyrings" "$RT/var/lib/pacman" "$RT/etc/mpv" "$T/cache" "$T/gnupg"
-  echo QEMU > "$RT/sys/class/dmi/id/sys_vendor"; : > "$RT/boot/grub/grub.cfg"; echo 'GRUB_TIMEOUT=2' > "$RT/etc/default/grub"
+  echo QEMU > "$RT/sys/class/dmi/id/sys_vendor"; echo "menu 4.0" > "$RT/boot/grub/grub.cfg"; echo 'GRUB_TIMEOUT=2' > "$RT/etc/default/grub"
   : > "$RT/usr/share/pacman/keyrings/archlinuxarm.gpg"; : > "$RT/usr/share/pacman/keyrings/omarchy-mac.gpg"
   echo 'hwdec=auto' > "$RT/etc/mpv/mpv.conf"; echo old > "$T/gnupg/pubring.kbx"
   mkdir -p "$RT/etc/omacvm"; echo "OMACVM_USER=$(id -un)" > "$RT/etc/omacvm/env"
@@ -237,6 +245,12 @@ expect "the switch: one transaction with omarchy, omarchy-settings and obsidian,
   "pacman -Suu --noconfirm --ask 4 --overwrite /etc/mpv/mpv.conf omarchy omarchy-settings obsidian" "$(grep -- '-Suu ' "$P/calls")"
 expect "downloads first, then the switch, then omarchy-mac-keyring out" "-Syyuuw -Suu -Rdd" \
   "$(grep -oE -- '-Syyuuw|-Suu |-Rdd' "$P/calls" | tr -d ' ' | tr '\n' ' ' | sed 's/ $//')"
+# A cut-off write leaves a file empty (/boot is FAT): a power cut must find the old or the new.
+expect "on the disk before the journal moves on: a sync after every step, and after its journal line" \
+  "protect initramfs keyring repos download commit platform mpv vulkan kernel update report|preflight protect initramfs keyring repos download commit platform mpv vulkan kernel update report" \
+  "$(awk '$1 == "sync" && NF == 3 && $2 != $3 && !s[$2]++ { print $2 }' "$P/calls" | tr '\n' ' ' | sed 's/ $//')|$(awk '$1 == "sync" && NF == 3 && $2 == $3 && !s[$2]++ { print $2 }' "$P/calls" | tr '\n' ' ' | sed 's/ $//')"
+expect "GRUB's menu: written beside it, then put in its place" "grub-mkconfig -o $RT/boot/grub/grub.cfg.omacvm-new|menu 4.5|no" \
+  "$(grep '^grub-mkconfig' "$P/calls")|$(cat "$RT/boot/grub/grub.cfg")|$([[ -e $RT/boot/grub/grub.cfg.omacvm-new ]] && echo yes || echo no)"
 expect "keyring: a new one with Arch Linux ARM's keys and Omarchy's, never omarchy-mac's" \
   "pacman-key --populate archlinuxarm|pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571" \
   "$(grep -E -- '--populate|--lsign' "$P/calls" | tr '\n' '|' | sed 's/|$//')"
@@ -310,6 +324,11 @@ expect "... and the repo files name no second mirror" same "$(cmp -s "$T/mirrorl
 # Platform: Omarchy's own answer after the switch must be aarch64.
 fresh; export PLATFORM=aarch64-apple; o run >/dev/null 2>&1; rc=$?; unset PLATFORM
 expect "omarchy-hw-platform says aarch64-apple after the switch: failed, before omarchy update" "1 platform 0" "$rc $(cat "$J/code") $(calls update)"
+
+# GRUB's menu cut off half written (a power cut; /boot is FAT): the old menu stays.
+fresh; GRUB_FAIL=1 o run >/dev/null 2>&1; rc=$?
+expect "GRUB's menu not written to the end: the kernel step fails, the old menu is still there" "1 kernel menu 4.0" \
+  "$rc $(cat "$J/code") $(cat "$RT/boot/grub/grub.cfg")"
 
 # The shipped key must be Omarchy's.
 fresh; export FPR=0000000000000000000000000000000000000000; o run >/dev/null 2>&1; rc=$?; unset FPR

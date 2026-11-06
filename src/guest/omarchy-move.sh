@@ -47,6 +47,9 @@
 #   kernel     every kernel has its modules, initramfs and DKMS modules; GRUB
 #   update     omarchy update (its migrations), as the user (system-update)
 #   report     result.json: packages removed, foreign ones, pacman.conf lines
+# Every step ends on the disk (sync) before the journal moves on, and GRUB's
+# menu is written beside the old one first (/boot is FAT): a VM that loses
+# power at any point boots and goes on from its last step.
 # Tests: src/tests/omarchy-move.sh.
 set -uo pipefail
 export LC_ALL=C
@@ -525,9 +528,19 @@ step_kernel() {
     echo "The memory-optimized kernel has no modules after the move: GRUB starts Arch Linux ARM's kernel (Update VM builds it again)" >> "$J/warnings"
   fi
   echo "$thp" > "$J/kernel-thp"
-  grub-mkconfig -o "$ROOT/boot/grub/grub.cfg" >> "$LOG" 2>&1 || { REASON="GRUB's menu did not build (see $LOG)"; return 1; }
+  grub_menu >> "$LOG" 2>&1 || { REASON="GRUB's menu did not build (see $LOG)"; return 1; }
   (( bad == 0 )) || say "kernel: see the warnings"
   return 0
+}
+
+# GRUB's menu without a moment where a power cut leaves it empty: /boot is
+# FAT, and grub-mkconfig rewrites grub.cfg in place. The new menu is written
+# beside it, on the disk, then put in its place.
+grub_menu() {
+  local cfg=$ROOT/boot/grub/grub.cfg
+  rm -f "$cfg.omacvm-new"
+  grub-mkconfig -o "$cfg.omacvm-new" && [[ -s $cfg.omacvm-new ]] && sync && mv -f "$cfg.omacvm-new" "$cfg" && sync && return 0
+  rm -f "$cfg.omacvm-new"; return 1
 }
 
 step_update() {
@@ -608,7 +621,7 @@ step_report() {
 
 # ---------- run, start, stop, status ----------
 finish() {   # STATE CODE REASON EXIT
-  jset state "$1"; jset code "$2"; jset reason "$3"; jset finished "$(now)"
+  jset state "$1"; jset code "$2"; jset reason "$3"; jset finished "$(now)"; sync
   [[ -n $3 ]] && say "$3"
   exit "$4"
 }
@@ -637,6 +650,7 @@ cmd_run() {
     if [[ -n $PF_CODE ]]; then finish failed "$PF_CODE" "$PF_REASON" "$PF_EXIT"; fi
   fi
   rm -f "$J/stop"
+  sync   # what ran before the move (Update VM's GRUB menu, an initramfs) is on the disk first
   jset state running; jset code ""; jset reason ""; jset finished ""
   [[ -s $J/started ]] || jset started "$(now)"
   for ((i = start - 1; i < ${#PHASES[@]}; i++)); do
@@ -657,13 +671,17 @@ cmd_run() {
       PF_TARGET=$(jget target)
       REASON="" NETFAIL=0 rc=0
       "step_$p" || rc=$?
+      # On the disk before the journal moves on: a VM that loses power after
+      # this point boots and goes on from here (/boot is FAT: unwritten
+      # files there come back empty).
+      sync
       if (( rc == 4 )); then
         finish failed network "The download stopped (network); Resume goes on from there." 4
       elif (( rc )); then
         finish failed "$p" "${REASON:-The step '$p' failed (see $LOG).}" 1
       fi
     fi
-    jset phase-done "$p"; done_p=$p
+    jset phase-done "$p"; done_p=$p; sync
   done
   finish done "" "" 0
 }
