@@ -5,8 +5,9 @@
 # Never added back without the owner's explicit consent (AGENTS.md).
 #   retired_list              NAME<TAB>parallels|utm|fusion<TAB>retired, one per VM
 #   route_retired TYPE        true for parallels, utm and fusion
-#   retired_message NAME TYPE the one text for such a VM
-#   retired_stop NAME TYPE    that text (JSON with JSON=1) and exit 3
+#   retired_message NAME TYPE [MORE]  the one text for such a VM (MORE: one
+#                             sentence after "it keeps running as it is.")
+#   retired_stop NAME TYPE [MORE]     that text (JSON with JSON=1) and exit 3
 # Test: src/tests/retired-routes.sh
 
 RETIRED_IN=3.4.0
@@ -18,9 +19,9 @@ retired_name() {   # TYPE -> how the person knows that app
   case $1 in parallels) echo Parallels ;; utm) echo UTM ;; fusion) echo "VMware Fusion" ;; *) echo "$1" ;; esac
 }
 
-retired_message() {   # NAME TYPE
-  printf "'%s' is a %s VM. OmacVM %s retired Parallels, UTM and VMware Fusion: OmacVM no longer changes or updates this VM, and nothing in it was changed; it keeps running as it is. To stay up to date, move to OmacVM.app: omacvm build makes a new VM there, then copy your files over. How: %s" \
-    "$1" "$(retired_name "$2")" "$RETIRED_IN" "$RETIRED_URL"
+retired_message() {   # NAME TYPE [MORE]
+  printf "'%s' is a %s VM. OmacVM %s retired Parallels, UTM and VMware Fusion: OmacVM no longer changes or updates this VM, and nothing in it was changed; it keeps running as it is.%s To stay up to date, move to OmacVM.app: omacvm build makes a new VM there, then copy your files over. How: %s" \
+    "$1" "$(retired_name "$2")" "$RETIRED_IN" "${3:+ $3}" "$RETIRED_URL"
 }
 
 retired_json_str() {
@@ -29,8 +30,8 @@ retired_json_str() {
   printf '"%s"' "$s"
 }
 
-retired_stop() {   # NAME TYPE: exit 3 (a person decides: move to OmacVM.app)
-  local m; m=$(retired_message "$1" "$2")
+retired_stop() {   # NAME TYPE [MORE]: exit 3 (a person decides: move to OmacVM.app)
+  local m; m=$(retired_message "$1" "$2" "${3:-}")
   if [[ ${JSON:-0} == 1 ]]; then
     printf '{"error": "route-retired", "route": "%s", "vm": %s, "retired_in": "%s", "message": %s}\n' \
       "$2" "$(retired_json_str "$1")" "$RETIRED_IN" "$(retired_json_str "$m")"

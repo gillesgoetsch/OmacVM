@@ -3,8 +3,9 @@
 # A VM OmacVM set up there before is listed as retired and refused (exit 2 for
 # build, exit 3 with one text, or its JSON, for the rest), and never touched:
 # no SSH, no start, no prlctl/utmctl/vmrun call but a listing, nothing read
-# in UTM's container. update refuses one before the Mac step and skips them
-# when it updates everything; uninstall still removes the old clipboard helper.
+# in UTM's container. update --vm for one brings only the Mac's helpers up
+# (so they stop serving it) and says so; update skips them when it updates
+# everything; uninstall still removes the old clipboard helper.
 # A copy of this checkout with a stand-in Mac step, its own HOME, stand-ins for
 # prlctl (it lists), ssh, open, osascript, utmctl and vmrun (they must not run),
 # a Fusion library file and the UTM names OmacVM saw. No VM, nothing of this
@@ -106,13 +107,29 @@ om features --vm "Old F" --vm-type fusion --json; out=$OUT; expect "features --v
 om apply --vm Windows; expect "a Parallels VM OmacVM did not set up: not ours (exit 2)" 2 "$RC"
 om apply --vm "Not ours"; expect "a UTM name without a pin: not ours (exit 2)" 2 "$RC"
 
-# update: one refused before anything (a control centre job of an old VM
-# sends --vm-type and --transaction); all: the retired ones named and left.
+# update --vm for one (a control centre job of an old VM, run by its 3.3
+# Bridge once the checkout moved here, sends --vm-type and --transaction):
+# refused, but the Mac's helpers come up to this OmacVM (the Bridge, Gestures
+# and Omanotch that are loaded), so 3.4's take over at once; nothing reaches
+# the VM. All: the retired ones named and left.
 : > "$T/calls"
 OMACVM_PROGRESS=json om update --vm "Old P" --vm-type parallels --transaction --yes --no-pull; out=$OUT
 expect "update job for a retired VM: exit 3" 3 "$RC"
-expect "update job: the failed line for the control centre" yes "$(has '{"omacvm_failed": 1, "part": "", "text": "'"'Old P'"' is a Parallels VM: OmacVM 3.4.0 retired' "$out")"
-expect "update job: no Mac step" 0 "$(grep -c "MAC STEP" "$T/calls")"
+expect "update job: the failed line for the control centre" yes "$(has '{"omacvm_failed": 1, "part": "", "text": "'"'Old P'"' is a Parallels VM: OmacVM 3.4.0 retired that route; the VM was not changed, the Mac'"'"'s helpers no longer serve it. Move to OmacVM.app"' "$out")"
+expect "update job: the Mac step ran, once (the helpers loaded)" "MAC STEP --no-bridge --skip-gestures" "$(grep "MAC STEP" "$T/calls")"
+expect "update job: the text says the helpers stop serving it" yes "$(has "$TEXT, and nothing in it was changed; it keeps running as it is. This Mac's helpers were updated and no longer serve it. To stay up to date" "$out")"
+expect "update job: only the Mac step (no app, no VM)" "" "$(grep -E '"step": "(release|app)"|apply' <<<"$out")"
+# The Mac step failed: refused all the same, without that sentence.
+printf '#!/bin/bash\necho "MAC STEP $*" >> "%s/calls"\nexit 1\n' "$T" > "$CO/src/mac/install.sh"
+: > "$T/calls"
+OMACVM_PROGRESS=json om update --vm "Old U" --transaction --yes --no-pull; out=$OUT
+expect "update job, Mac step failed: exit 3" 3 "$RC"
+expect "update job, Mac step failed: it ran" 1 "$(grep -c "MAC STEP" "$T/calls")"
+expect "update job, Mac step failed: said" yes "$(has '"text": "the Mac side did not install"' "$out")"
+expect "update job, Mac step failed: the VM's text, without the helpers sentence" "yes 0" \
+  "$(has "'Old U' is a UTM VM. OmacVM 3.4.0 retired" "$out") $(grep -c "helpers were updated" <<<"$out")"
+printf '#!/bin/bash\necho "MAC STEP $*" >> "%s/calls"\n' "$T" > "$CO/src/mac/install.sh"
+: > "$T/calls"
 om update --no-pull; out=$OUT
 expect "update: exit 0" 0 "$RC"
 expect "update: the Mac step ran" 1 "$(grep -c "MAC STEP" "$T/calls")"
