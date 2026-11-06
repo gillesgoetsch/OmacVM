@@ -137,7 +137,9 @@ v = o.get(sys.argv[1], "")
 print(json.dumps(v) if isinstance(v, (dict, list, bool)) else v)' "$1"
 }
 J() { sed -n "s/^$1=//p" "$VD/move-4.5" 2>/dev/null | tail -1; }   # the Mac-side journal
-sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
+sha() {   # a disk: its content digest (holes as zeros, quick on 64 GB); small files: SHA-256
+  if [[ $1 == *.img ]]; then python3 -I "$HERE/move-45-result.py" digest "$1"; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
 records() { (cd "$VD" && for f in vm.env features graphics omacvm-version guest-pointer; do [[ -f $f ]] && printf '%s %s\n' "$f" "$(sha "$f")"; done) | sed "s/^vm.env .*/vm.env $(grep -v '^SSH_PORT=' "$VD/vm.env" | shasum -a 256 | cut -d' ' -f1)/"; }
 
 # move-vm.sh as the app runs it (no answers on fd 3: the clones know their
@@ -163,7 +165,7 @@ pre_hash() { PRE_DISK=$(sha "$VD/disk.img"); PRE_EFI=$(sha "$VD/efi-vars.fd"); P
 same_as_before() {   # after Undo: disk, NVRAM and records exactly as before
   local d e r
   d=$(sha "$VD/disk.img"); e=$(sha "$VD/efi-vars.fd"); r=$(records)
-  check "undo: disk.img SHA-256 as before" $([[ $d == "$PRE_DISK" ]] && echo 1 || echo 0) "$d"
+  check "undo: disk.img content as before (digest)" $([[ $d == "$PRE_DISK" ]] && echo 1 || echo 0) "$d"
   check "undo: efi-vars.fd as before" $([[ $e == "$PRE_EFI" ]] && echo 1 || echo 0) "$e"
   check "undo: records (vm.env, features, graphics, omacvm-version) as before" $([[ $r == "$PRE_REC" ]] && echo 1 || echo 0) "$(diff <(echo "$PRE_REC") <(echo "$r") | tr '\n' ' ')"
   check "undo: no backup folder left" $([[ ! -e $VD/before-omarchy-4.5 ]] && echo 1 || echo 0) ""

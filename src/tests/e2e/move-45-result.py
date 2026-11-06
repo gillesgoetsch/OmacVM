@@ -4,6 +4,8 @@
   move-45-result.py summary DIR REPO              DIR/rows/*.json -> DIR/result.json
   move-45-result.py gate RESULT M REPO            exit 0 when RESULT passes for release commit M
   move-45-result.py privsize FILE...              bytes only FILE holds (APFS clones: not shared)
+  move-45-result.py digest FILE                   the content's digest, holes read as zeros, fast on a
+                                                  sparse 64 GB disk (SHA-256 of the 1 MiB chunks' SHA-256s)
 
 The gate wants every row of move-45.sh --rows passed on at least MIN_BASES
 test VMs of different ages, "clean" on every base, on MIN_MACS Macs, and the
@@ -82,6 +84,45 @@ def gate(a):
         print("    moves: only %d Mac (goal %d)" % (len(o["macs"]), MIN_MACS_GOAL))
 
 
+def digest(a):
+    """Equal for two files exactly when their bytes are equal (holes are zeros), without reading the holes."""
+    import hashlib
+    chunk = 1 << 20
+    zero = hashlib.sha256(bytes(chunk)).digest()
+    fd = os.open(a[0], os.O_RDONLY)
+    try:
+        size = os.fstat(fd).st_size
+        extents, pos = [], 0
+        while pos < size:   # the data extents (SEEK_DATA / SEEK_HOLE)
+            try:
+                d = os.lseek(fd, pos, os.SEEK_DATA)
+            except OSError:
+                break
+            h = os.lseek(fd, d, os.SEEK_HOLE)
+            extents.append((d, h))
+            pos = h
+        out = hashlib.sha256()
+        e = 0
+        for i in range(0, (size + chunk - 1) // chunk):
+            lo, hi = i * chunk, min(size, (i + 1) * chunk)
+            while e < len(extents) and extents[e][1] <= lo:
+                e += 1
+            if e < len(extents) and extents[e][0] < hi:
+                os.lseek(fd, lo, os.SEEK_SET)
+                b = os.read(fd, hi - lo)
+                while len(b) < hi - lo:
+                    more = os.read(fd, hi - lo - len(b))
+                    if not more:
+                        break
+                    b += more
+                out.update(hashlib.sha256(b).digest() if b != bytes(len(b)) or len(b) != chunk else zero)
+            else:
+                out.update(zero if hi - lo == chunk else hashlib.sha256(bytes(hi - lo)).digest())
+        print(out.hexdigest())
+    finally:
+        os.close(fd)
+
+
 def privsize(a):
     """getattrlist ATTR_CMNEXT_PRIVATESIZE: what deleting FILE gives back on APFS."""
     import ctypes
@@ -104,7 +145,7 @@ def privsize(a):
 if __name__ == "__main__":
     cmd, rest = sys.argv[1], sys.argv[2:]
     try:
-        {"row": row, "summary": summary, "gate": gate, "privsize": privsize}[cmd](rest)
+        {"row": row, "summary": summary, "gate": gate, "privsize": privsize, "digest": digest}[cmd](rest)
     except AssertionError as e:
         print("move-45 gate: %s" % e, file=sys.stderr)
         sys.exit(1)

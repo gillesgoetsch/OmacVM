@@ -62,6 +62,15 @@ expect "rows from two commits: summary fails" 1 "$(sumrc "$D")"
 D=$T/bad; mkdir -p "$D"; echo '{"kind": "omacvm-e2e-cc-switches", "pass": true}' > "$D/result.json"
 expect "another kind of result: gate refuses" 1 "$(gate "$D" "$M")"
 
+# The disk digest Undo is checked with: holes read as zeros (a sparse and a dense copy agree), one byte differs.
+mkfile -n 30m "$T/s1" 2>/dev/null || dd if=/dev/zero of="$T/s1" bs=1 count=0 seek=30m 2>/dev/null
+printf 'hello' | dd of="$T/s1" bs=1 seek=3000000 conv=notrunc 2>/dev/null
+dd if="$T/s1" of="$T/s2" bs=1048576 2>/dev/null
+cp "$T/s1" "$T/s3"; printf 'x' | dd of="$T/s3" bs=1 seek=20000000 conv=notrunc 2>/dev/null
+dg() { python3 -I "$PY" digest "$1"; }
+expect "digest: a sparse and a dense copy agree" "$(dg "$T/s1")" "$(dg "$T/s2")"
+expect "digest: one byte changed differs" 1 "$([[ $(dg "$T/s1") != "$(dg "$T/s3")" ]] && echo 1 || echo 0)"
+
 # release.sh asks for the gate from 3.4.0 on, and publish wants it and the image.
 expect "release.sh: step moves in the default steps" 1 "$(grep -c 'e2e moves publish after)' "$R/src/release/release.sh")"
 expect "release.sh: the gate runs move-45-result.py" 1 "$(grep -c 'move-45-result.py" gate' "$R/src/release/release.sh")"
